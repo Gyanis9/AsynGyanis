@@ -31,7 +31,7 @@ namespace Core
         if (m_wakeupFd >= 0)
         {
             constexpr uint64_t val = 1;
-            (void) ::write(m_wakeupFd, &val, sizeof(val));
+            [[maybe_unused]] auto _ = ::write(m_wakeupFd, &val, sizeof(val));
         }
     }
 

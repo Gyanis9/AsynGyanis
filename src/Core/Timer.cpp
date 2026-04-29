@@ -26,7 +26,7 @@ namespace Core
     void Timer::Awaiter::await_resume() const
     {
         uint64_t expirations = 0;
-        (void) ::read(m_fd, &expirations, sizeof(expirations));
+        [[maybe_unused]] auto _ = ::read(m_fd, &expirations, sizeof(expirations));
         m_awaiter.await_resume();
     }
 

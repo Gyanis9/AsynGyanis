@@ -120,15 +120,11 @@ namespace Base
          * @brief 获取当前配置值类型。
          * @return ConfigValueType 当前值类型枚举。
          */
-        ConfigValue(const ConfigValue &) = default;
-
-        ConfigValue(ConfigValue &&) noexcept = default;
-
-        ConfigValue &operator=(const ConfigValue &) = default;
-
+        ConfigValue(const ConfigValue &)                = default;
+        ConfigValue(ConfigValue &&) noexcept            = default;
+        ConfigValue &operator=(const ConfigValue &)     = default;
         ConfigValue &operator=(ConfigValue &&) noexcept = default;
-
-        ~ConfigValue() = default;
+        ~ConfigValue()                                  = default;
 
         // ========================================================================
         // 类型查询

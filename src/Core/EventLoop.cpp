@@ -46,7 +46,7 @@ namespace Core
                 if (ev.data.ptr == &m_wakeupSentinel)
                 {
                     uint64_t val;
-                    (void) ::read(m_wakeupFd, &val, sizeof(val));
+                    [[maybe_unused]] auto _ = ::read(m_wakeupFd, &val, sizeof(val));
                     continue;
                 }
 
@@ -72,7 +72,7 @@ namespace Core
     void EventLoop::wake() const
     {
         constexpr uint64_t val = 1;
-        ::write(m_wakeupFd, &val, sizeof(val));
+        [[maybe_unused]] auto _ = ::write(m_wakeupFd, &val, sizeof(val));
     }
 
     Epoll &EventLoop::epoll() noexcept

@@ -23,8 +23,7 @@ namespace Base
     class Exception : public std::runtime_error
     {
     public:
-        explicit Exception(const std::string &message,
-                           const std::source_location &loc = std::source_location::current());
+        explicit Exception(const std::string &message, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::source_location &location() const noexcept;
 
@@ -41,15 +40,13 @@ namespace Base
     class ConfigException : public Exception
     {
     public:
-        explicit ConfigException(const std::string &message,
-                                 const std::source_location &loc = std::source_location::current());
+        explicit ConfigException(const std::string &message, const std::source_location &loc = std::source_location::current());
     };
 
     class ConfigFileException : public ConfigException
     {
     public:
-        ConfigFileException(const std::string &file_path, const std::string &reason,
-                            const std::source_location &loc = std::source_location::current());
+        ConfigFileException(const std::string &file_path, const std::string &reason, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::string &filePath() const noexcept;
 
@@ -60,8 +57,7 @@ namespace Base
     class ConfigParseException : public ConfigException
     {
     public:
-        ConfigParseException(const std::string &file_path, const std::string &reason,
-                             const std::source_location &loc = std::source_location::current());
+        ConfigParseException(const std::string &file_path, const std::string &reason, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::string &filePath() const noexcept;
 
@@ -72,8 +68,7 @@ namespace Base
     class ConfigKeyNotFoundException : public ConfigException
     {
     public:
-        explicit ConfigKeyNotFoundException(const std::string &key,
-                                            const std::source_location &loc = std::source_location::current());
+        explicit ConfigKeyNotFoundException(const std::string &key, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::string &key() const noexcept;
 
@@ -84,7 +79,7 @@ namespace Base
     class ConfigTypeException : public ConfigException
     {
     public:
-        ConfigTypeException(const std::string &key, const std::string &expected_type, const std::string &actual_type,
+        ConfigTypeException(const std::string &         key, const std::string &expected_type, const std::string &actual_type,
                             const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::string &key() const noexcept;
@@ -100,8 +95,7 @@ namespace Base
     class ConfigValidationException : public ConfigException
     {
     public:
-        ConfigValidationException(const std::string &key, const std::string &reason,
-                                  const std::source_location &loc = std::source_location::current());
+        ConfigValidationException(const std::string &key, const std::string &reason, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::string &key() const noexcept;
 
@@ -119,14 +113,12 @@ namespace Base
     class SystemException : public Exception
     {
     public:
-        explicit SystemException(const std::string &context,
-                                 const std::source_location &loc = std::source_location::current());
+        explicit SystemException(const std::string &context, const std::source_location &loc = std::source_location::current());
 
-        SystemException(const std::string &context, std::error_code ec,
-                        const std::source_location &loc = std::source_location::current());
+        SystemException(const std::string &context, std::error_code ec, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::error_code &errorCode() const noexcept;
-        [[nodiscard]] int nativeError() const noexcept;
+        [[nodiscard]] int                    nativeError() const noexcept;
 
     private:
         std::error_code m_errorCode;
@@ -142,11 +134,9 @@ namespace Base
     class NetworkException : public SystemException
     {
     public:
-        NetworkException(const std::string &context, const std::string &remote_address,
-                         const std::source_location &loc = std::source_location::current());
+        NetworkException(const std::string &context, const std::string &remote_address, const std::source_location &loc = std::source_location::current());
 
-        NetworkException(const std::string &context, std::error_code ec, const std::string &remote_address,
-                         const std::source_location &loc = std::source_location::current());
+        NetworkException(const std::string &context, std::error_code ec, const std::string &remote_address, const std::source_location &loc = std::source_location::current());
 
         [[nodiscard]] const std::string &remoteAddress() const noexcept;
 
@@ -154,6 +144,5 @@ namespace Base
         std::string m_remoteAddress;
     };
 
-} // namespace Base
-
-#endif // BASE_EXCEPTION_H
+}
+#endif
