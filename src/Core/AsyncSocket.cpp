@@ -5,8 +5,8 @@
 #include "Base/Exception.h"
 
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
-#include <arpa/inet.h>
 #include <cerrno>
 #include <sys/socket.h>
 
@@ -44,6 +44,13 @@ namespace Core
         const int fd = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (fd < 0)
             throw Base::SystemException("socket creation failed");
+
+        if (type == SOCK_STREAM)
+        {
+            constexpr int opt = 1;
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        }
+
         return AsyncSocket(loop, fd);
     }
 
@@ -74,6 +81,8 @@ namespace Core
                                      SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (fd >= 0)
             {
+                constexpr int opt = 1;
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
                 co_return AsyncSocket(m_loop, fd);
             }
             if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -114,13 +123,18 @@ namespace Core
         co_return co_await asyncConnect(addr.addr(), addr.addrLen());
     }
 
-    Task<ssize_t> AsyncSocket::asyncRecv(void *const buf, const size_t len)
+    Task<ssize_t> AsyncSocket::asyncRecv(void *const buf, const size_t len) const
     {
+        if (len == 0)
+            co_return 0;
+
         while (true)
         {
             const ssize_t n = ::recv(m_fd, buf, len, MSG_NOSIGNAL);
-            if (n >= 0)
+            if (n > 0)
                 co_return n;
+            if (n == 0)
+                co_return 0;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
@@ -132,13 +146,18 @@ namespace Core
         }
     }
 
-    Task<ssize_t> AsyncSocket::asyncSend(const void *const buf, const size_t len)
+    Task<ssize_t> AsyncSocket::asyncSend(const void *const buf, const size_t len) const
     {
+        if (len == 0)
+            co_return 0;
+
         while (true)
         {
             const ssize_t n = ::send(m_fd, buf, len, MSG_NOSIGNAL);
-            if (n >= 0)
+            if (n > 0)
                 co_return n;
+            if (n == 0)
+                co_return 0;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);

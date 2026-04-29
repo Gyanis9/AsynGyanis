@@ -13,6 +13,7 @@ namespace Core
         {
             throw Base::SystemException("eventfd creation failed");
         }
+        m_scheduler.setWakeupFd(m_wakeupFd);
         m_epoll.addFd(m_wakeupFd, EPOLLIN, &m_wakeupSentinel);
     }
 
@@ -32,18 +33,20 @@ namespace Core
     {
         m_running.store(true, std::memory_order_release);
 
-        while (!m_stopRequested.load(std::memory_order_acquire))
+        while (true)
         {
             m_scheduler.runAll();
+
             if (m_stopRequested.load(std::memory_order_acquire))
                 break;
 
-            for (auto events = m_epoll.wait(1); const auto &ev: events)
+            const int timeoutMs = m_scheduler.hasWork() ? 0 : 1;
+            for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
             {
                 if (ev.data.ptr == &m_wakeupSentinel)
                 {
                     uint64_t val;
-                    read(m_wakeupFd, &val, sizeof(val));
+                    (void) ::read(m_wakeupFd, &val, sizeof(val));
                     continue;
                 }
 

@@ -9,6 +9,7 @@
 #include "EpollAwaiter.h"
 
 #include <chrono>
+#include <coroutine>
 
 namespace Core
 {
@@ -17,9 +18,25 @@ namespace Core
     class Timer
     {
     public:
+        class Awaiter
+        {
+        public:
+            Awaiter(Epoll &epoll, int fd) noexcept;
+
+            bool await_ready() const noexcept;
+            void await_suspend(std::coroutine_handle<> handle) noexcept;
+            void await_resume() const;
+
+        private:
+            EpollAwaiter m_awaiter;
+            int          m_fd;
+        };
+
         explicit Timer(EventLoop &loop);
 
-        EpollAwaiter waitFor(std::chrono::milliseconds duration) const;
+        ~Timer();
+
+        Awaiter waitFor(std::chrono::milliseconds duration) const;
 
     private:
         EventLoop &m_loop;

@@ -1,5 +1,8 @@
 #include "Scheduler.h"
 
+#include <cstdint>
+#include <unistd.h>
+
 namespace Core
 {
     void Scheduler::schedule(std::coroutine_handle<> handle)
@@ -10,26 +13,46 @@ namespace Core
         }
     }
 
+    void Scheduler::setWakeupFd(const int fd) noexcept
+    {
+        m_wakeupFd = fd;
+    }
+
     void Scheduler::scheduleRemote(const std::coroutine_handle<> handle)
     {
         if (!handle)
             return;
-        std::lock_guard lock(m_globalMutex);
-        m_globalQueue.push_back(handle);
+        {
+            std::lock_guard lock(m_globalMutex);
+            m_globalQueue.push_back(handle);
+            m_globalCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (m_wakeupFd >= 0)
+        {
+            constexpr uint64_t val = 1;
+            (void) ::write(m_wakeupFd, &val, sizeof(val));
+        }
     }
 
     bool Scheduler::runOne()
     {
         // 优先处理全局队列中的跨线程任务
+        std::coroutine_handle<> globalHandle = nullptr;
         {
             std::lock_guard lock(m_globalMutex);
             if (!m_globalQueue.empty())
             {
-                const auto handle = m_globalQueue.front();
+                globalHandle = m_globalQueue.front();
                 m_globalQueue.pop_front();
-                handle.resume();
-                return true;
+                m_globalCount.fetch_sub(1, std::memory_order_relaxed);
             }
+        }
+
+        if (globalHandle)
+        {
+            globalHandle.resume();
+            return true;
         }
 
         // 处理本地队列
@@ -61,6 +84,7 @@ namespace Core
             {
                 const auto handle = other.m_globalQueue.front();
                 other.m_globalQueue.pop_front();
+                other.m_globalCount.fetch_sub(1, std::memory_order_relaxed);
                 return handle;
             }
         }
@@ -84,8 +108,7 @@ namespace Core
     {
         if (!m_localQueue.empty())
             return true;
-        // NOTE: 不检查 m_globalQueue 以避免不必要的锁竞争
-        return false;
+        return m_globalCount.load(std::memory_order_relaxed) > 0;
     }
 
     size_t Scheduler::localQueueSize() const

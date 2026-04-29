@@ -1,5 +1,11 @@
 #include "TcpAcceptor.h"
 #include "Base/Exception.h"
+#include "Core/EpollAwaiter.h"
+#include "Core/EventLoop.h"
+
+#include <cerrno>
+#include <netinet/tcp.h>
+
 
 namespace Net
 {
@@ -39,12 +45,74 @@ namespace Net
 
     Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()
     {
-        co_return co_await m_listenSocket.asyncAccept();
+        if (!m_pending.empty())
+        {
+            Core::AsyncSocket sock = std::move(m_pending.front());
+            m_pending.pop_front();
+            co_return sock;
+        }
+
+        const int listenFd = m_listenSocket.fd();
+        if (listenFd < 0)
+        {
+            co_return std::nullopt;
+        }
+
+        while (true)
+        {
+            sockaddr_storage addr{};
+            socklen_t        addrLen = sizeof(addr);
+            const int        fd      = ::accept4(listenFd, reinterpret_cast<sockaddr *>(&addr), &addrLen,
+                                     SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (fd >= 0)
+            {
+                constexpr int opt = 1;
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+                Core::AsyncSocket first(m_loop, fd);
+
+                while (true)
+                {
+                    sockaddr_storage extra{};
+                    socklen_t        extraLen = sizeof(extra);
+                    const int        extraFd  = ::accept4(listenFd, reinterpret_cast<sockaddr *>(&extra), &extraLen,
+                                                  SOCK_NONBLOCK | SOCK_CLOEXEC);
+                    if (extraFd >= 0)
+                    {
+                        setsockopt(extraFd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+                        m_pending.emplace_back(m_loop, extraFd);
+                        continue;
+                    }
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        break;
+                    if (errno == EINTR || errno == ECONNABORTED)
+                        continue;
+                    break;
+                }
+
+                co_return std::move(first);
+            }
+
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                co_await Core::EpollAwaiter(m_loop.epoll(), listenFd, EPOLLIN);
+                continue;
+            }
+            if (errno == EINTR || errno == ECONNABORTED)
+                continue;
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
+            {
+                co_await Core::EpollAwaiter(m_loop.epoll(), listenFd, EPOLLIN);
+                continue;
+            }
+
+            throw Base::SystemException("accept4 failed");
+        }
     }
 
     void TcpAcceptor::close()
     {
         m_listenSocket.close();
+        m_pending.clear();
         m_bound = false;
     }
 

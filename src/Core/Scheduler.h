@@ -6,6 +6,7 @@
 #ifndef CORE_SCHEDULER_H
 #define CORE_SCHEDULER_H
 
+#include <atomic>
 #include <coroutine>
 #include <deque>
 #include <mutex>
@@ -25,6 +26,11 @@ namespace Core
     {
     public:
         Scheduler() = default;
+
+        /**
+         * @brief 绑定跨线程调度唤醒用的 eventfd。
+         */
+        void setWakeupFd(int fd) noexcept;
 
         /**
          * @brief 将协程加入本地就绪队列（本线程调用）。
@@ -68,6 +74,8 @@ namespace Core
         std::vector<std::coroutine_handle<>> m_localQueue;
         std::deque<std::coroutine_handle<>>  m_globalQueue;
         std::mutex                           m_globalMutex;
+        std::atomic<size_t>                  m_globalCount{0};
+        int                                  m_wakeupFd{-1};
     };
 
 }

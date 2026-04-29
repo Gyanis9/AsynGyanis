@@ -76,6 +76,11 @@ namespace Core
         bool delFd(int fd) const;
 
         /**
+         * @brief Re-arm fd with EPOLLONESHOT: mod if registered, add if not
+         */
+        bool rearmFd(int fd, uint32_t events, void *userData = nullptr) const;
+
+        /**
          * @brief 阻塞等待 IO 事件
          * @param timeoutMs 超时毫秒数, -1 表示无限等待, 0 表示立即返回
          * @return 就绪事件列表的视图, 长度为 0 表示超时或无事件

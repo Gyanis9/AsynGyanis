@@ -10,6 +10,7 @@
 #include "Core/Task.h"
 #include "Core/InetAddress.h"
 
+#include <deque>
 #include <optional>
 
 namespace Net
@@ -40,6 +41,7 @@ namespace Net
         Core::EventLoop & m_loop;
         Core::AsyncSocket m_listenSocket;
         Core::InetAddress m_addr;
+        std::deque<Core::AsyncSocket> m_pending;
         bool              m_bound{false};
     };
 

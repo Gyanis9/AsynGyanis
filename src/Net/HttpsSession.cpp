@@ -13,7 +13,8 @@ namespace Net
     HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router) :
         // Pass a dummy socket (-1) to Connection; the real fd is managed by m_tlsSocket.
         Core::Connection(loop, Core::AsyncSocket(loop, -1)),
-        m_tlsSocket(std::move(tlsSocket)), m_router(router)
+        m_tlsSocket(std::move(tlsSocket)), m_router(router),
+        m_recvBuffer(m_recvBufferSize)
     {
     }
 
@@ -33,8 +34,7 @@ namespace Net
         LOG_DEBUG_FMT("HttpsSession TLS handshake done (fd={})", m_tlsSocket.fd());
 
         // Step 2: HTTP keep-alive loop over TLS
-        std::vector<char> buffer(m_recvBufferSize);
-        bool              keepAlive = true;
+        bool keepAlive = true;
 
         auto sendAll = [this](const std::string_view data) -> Core::Task<>
         {
@@ -59,24 +59,24 @@ namespace Net
 
             try
             {
-                ssize_t n = co_await m_tlsSocket.asyncRecv(buffer.data(), buffer.size());
+                ssize_t n = co_await m_tlsSocket.asyncRecv(m_recvBuffer.data(), m_recvBuffer.size());
                 if (n <= 0)
                 {
                     LOG_DEBUG_FMT("HttpsSession recv returned {} (fd={}), closing", n, m_tlsSocket.fd());
                     break;
                 }
 
-                auto status = m_parser.parse(buffer.data(), static_cast<size_t>(n));
+                auto status = m_parser.parse(m_recvBuffer.data(), static_cast<size_t>(n));
 
                 while (status == ParseStatus::NeedMore)
                 {
-                    n = co_await m_tlsSocket.asyncRecv(buffer.data(), buffer.size());
+                    n = co_await m_tlsSocket.asyncRecv(m_recvBuffer.data(), m_recvBuffer.size());
                     if (n <= 0)
                     {
                         LOG_DEBUG_FMT("HttpsSession recv(2) returned {} (fd={}), closing", n, m_tlsSocket.fd());
                         co_return;
                     }
-                    status = m_parser.parse(buffer.data(), static_cast<size_t>(n));
+                    status = m_parser.parse(m_recvBuffer.data(), static_cast<size_t>(n));
                 }
 
                 if (status == ParseStatus::Error)
@@ -125,7 +125,10 @@ namespace Net
                     keepAlive = reqKeepAlive;
 
                     std::string responseStr = res.toString();
-                    co_await sendAll(responseStr);
+                    if (responseStr.size() <= 4096)
+                        co_await m_tlsSocket.asyncSend(responseStr.data(), responseStr.size());
+                    else
+                        co_await sendAll(responseStr);
 
                     if (keepAlive)
                         m_parser.reset();
@@ -141,7 +144,10 @@ namespace Net
 
             if (hasError)
             {
-                co_await sendAll(errorResponse);
+                if (errorResponse.size() <= 4096)
+                    co_await m_tlsSocket.asyncSend(errorResponse.data(), errorResponse.size());
+                else
+                    co_await sendAll(errorResponse);
                 keepAlive = false;
             }
         }

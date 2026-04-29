@@ -95,7 +95,7 @@ namespace Core
          *
          * 内部循环 recv(MSG_NOSIGNAL), EAGAIN 时挂起等待 EPOLLIN。
          */
-        Task<ssize_t> asyncRecv(void *buf, size_t len);
+        Task<ssize_t> asyncRecv(void *buf, size_t len) const;
 
         /**
          * @brief 异步发送数据 (协程式)
@@ -105,7 +105,7 @@ namespace Core
          *
          * 内部循环 send(MSG_NOSIGNAL), EAGAIN 时挂起等待 EPOLLOUT。
          */
-        Task<ssize_t> asyncSend(const void *buf, size_t len);
+        Task<ssize_t> asyncSend(const void *buf, size_t len) const;
 
         /** @brief 关闭 socket (先 shutdown 再 close, 避免 TCP RST) */
         void close();

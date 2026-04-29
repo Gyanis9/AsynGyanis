@@ -36,12 +36,12 @@ namespace Core
         /**
          * @brief TLS-encrypted receive.
          */
-        Task<ssize_t> asyncRecv(void *buf, size_t len);
+        Task<ssize_t> asyncRecv(void *buf, size_t len) const;
 
         /**
          * @brief TLS-encrypted send.
          */
-        Task<ssize_t> asyncSend(const void *buf, size_t len);
+        Task<ssize_t> asyncSend(const void *buf, size_t len) const;
 
         void              close();
         [[nodiscard]] int fd() const noexcept;

@@ -22,9 +22,10 @@ namespace Net
         Core::Task<> start() override;
 
     private:
-        Core::TlsSocket m_tlsSocket;
-        Router &        m_router;
-        HttpParser      m_parser;
+        Core::TlsSocket   m_tlsSocket;
+        Router &          m_router;
+        HttpParser        m_parser;
+        std::vector<char> m_recvBuffer;
         static constexpr int m_recvBufferSize = 8192;
     };
 

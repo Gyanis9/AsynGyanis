@@ -6,6 +6,8 @@
 #include "HttpParser.h"
 #include "Router.h"
 
+#include <vector>
+
 namespace Net
 {
     class HttpSession : public Core::Connection
@@ -18,9 +20,10 @@ namespace Net
     private:
         bool shouldKeepAlive(const HttpRequest &req, const HttpResponse &res) const;
 
-        Router &             m_router;
-        HttpParser           m_parser;
-        static constexpr int m_recvBufferSize = 8192;
+        Router &                  m_router;
+        HttpParser                m_parser;
+        std::vector<char>         m_recvBuffer;
+        static constexpr int      m_recvBufferSize = 8192;
     };
 
 }

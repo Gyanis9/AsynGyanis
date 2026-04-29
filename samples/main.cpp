@@ -64,7 +64,7 @@ int main(int argc, char **argv)
 {
     std::string host     = "localhost";
     uint16_t    port     = 8080;
-    unsigned    threads  = 0; // 0 = hardware_concurrency
+    unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
     bool        useHttps = false;
     std::string certFile = "cert.pem";
     std::string keyFile  = "key.pem";
@@ -86,14 +86,15 @@ int main(int argc, char **argv)
             keyFile = argv[++i];
         else if (arg == "--help")
         {
-            std::cout << "Usage: echo_server [--host localhost] [--port 8080] [--threads 0]\n";
+            std::cout << "Usage: echo_server [--host localhost] [--port 8080] [--threads N]\n";
             std::cout << "                  [--https] [--cert cert.pem] [--key key.pem]\n";
+            std::cout << "  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded\n";
             return 0;
         }
     }
 
     if (threads == 0)
-        threads = std::thread::hardware_concurrency();
+        threads = std::max(1u, std::min(4u, std::thread::hardware_concurrency()));
 
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);

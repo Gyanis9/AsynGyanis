@@ -5,8 +5,6 @@
 
 #include <openssl/err.h>
 
-#include <openssl/err.h>
-
 namespace Core
 {
     TlsSocket::TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket) :
@@ -75,10 +73,13 @@ namespace Core
         }
     }
 
-    Task<ssize_t> TlsSocket::asyncRecv(void *const buf, const size_t len)
+    Task<ssize_t> TlsSocket::asyncRecv(void *const buf, const size_t len) const
     {
-        auto &epoll = m_loop->epoll();
-        int   fd    = m_socket.fd();
+        auto &    epoll = m_loop->epoll();
+        const int fd    = m_socket.fd();
+
+        if (len == 0)
+            co_return 0;
 
         while (true)
         {
@@ -98,9 +99,7 @@ namespace Core
                 continue;
             }
             if (err == SSL_ERROR_ZERO_RETURN)
-            {
-                co_return 0; // orderly TLS shutdown from peer
-            }
+                co_return 0;
 
             char errorBuf[256];
             ERR_error_string_n(ERR_get_error(), errorBuf, sizeof(errorBuf));
@@ -108,10 +107,13 @@ namespace Core
         }
     }
 
-    Task<ssize_t> TlsSocket::asyncSend(const void *const buf, const size_t len)
+    Task<ssize_t> TlsSocket::asyncSend(const void *const buf, const size_t len) const
     {
-        auto &epoll = m_loop->epoll();
-        int   fd    = m_socket.fd();
+        auto &    epoll = m_loop->epoll();
+        const int fd    = m_socket.fd();
+
+        if (len == 0)
+            co_return 0;
 
         while (true)
         {

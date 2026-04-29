@@ -10,14 +10,14 @@
 namespace Net
 {
     HttpSession::HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router) :
-        Core::Connection(loop, std::move(socket)), m_router(router)
+        Core::Connection(loop, std::move(socket)), m_router(router),
+        m_recvBuffer(m_recvBufferSize)
     {
     }
 
     Core::Task<> HttpSession::start()
     {
-        std::vector<char> buffer(m_recvBufferSize);
-        bool              keepAlive = true;
+        bool keepAlive = true;
 
         auto sendAll = [this](const std::string_view data) -> Core::Task<>
         {
@@ -39,18 +39,18 @@ namespace Net
 
             try
             {
-                ssize_t n = co_await socket().asyncRecv(buffer.data(), buffer.size());
+                ssize_t n = co_await socket().asyncRecv(m_recvBuffer.data(), m_recvBuffer.size());
                 if (n <= 0)
                     break;
 
-                auto status = m_parser.parse(buffer.data(), static_cast<size_t>(n));
+                auto status = m_parser.parse(m_recvBuffer.data(), static_cast<size_t>(n));
 
                 while (status == ParseStatus::NeedMore)
                 {
-                    n = co_await socket().asyncRecv(buffer.data(), buffer.size());
+                    n = co_await socket().asyncRecv(m_recvBuffer.data(), m_recvBuffer.size());
                     if (n <= 0)
                         co_return;
-                    status = m_parser.parse(buffer.data(), static_cast<size_t>(n));
+                    status = m_parser.parse(m_recvBuffer.data(), static_cast<size_t>(n));
                 }
 
                 if (status == ParseStatus::Error)
@@ -86,7 +86,11 @@ namespace Net
                         res.setHeader("connection", "keep-alive");
 
                     std::string responseStr = res.toString();
-                    co_await sendAll(responseStr);
+                    // Fast path: single send for small responses (avoids coroutine frame)
+                    if (responseStr.size() <= 4096)
+                        co_await socket().asyncSend(responseStr.data(), responseStr.size());
+                    else
+                        co_await sendAll(responseStr);
 
                     if (keepAlive)
                         m_parser.reset();
@@ -101,7 +105,10 @@ namespace Net
 
             if (hasError)
             {
-                co_await sendAll(errorResponse);
+                if (errorResponse.size() <= 4096)
+                    co_await socket().asyncSend(errorResponse.data(), errorResponse.size());
+                else
+                    co_await sendAll(errorResponse);
                 keepAlive = false;
             }
         }

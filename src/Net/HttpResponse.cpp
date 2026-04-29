@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <format>
 
 namespace Net
 {
@@ -97,31 +96,44 @@ namespace Net
 
     std::string HttpResponse::toString() const
     {
-        std::string result;
-        result.reserve(256 + m_body.size());
+        // Pre-compute size to avoid reallocations
+        size_t estimated = 48 + m_body.size();
+        for (const auto &[key, value]: m_headers)
+            estimated += key.size() + value.size() + 4;
 
-        result += std::format("HTTP/1.1 {} {}\r\n", m_status, statusMessage(m_status));
+        std::string result;
+        result.reserve(estimated);
+
+        // Status line
+        result.append("HTTP/1.1 ");
+        result.append(std::to_string(m_status));
+        result.push_back(' ');
+        result.append(statusMessage(m_status));
+        result.append("\r\n");
 
         bool hasContentLength = false;
         bool hasContentType   = false;
 
         for (const auto &[key, value]: m_headers)
         {
-            result += std::format("{}: {}\r\n", key, value);
+            result.append(key);
+            result.append(": ");
+            result.append(value);
+            result.append("\r\n");
             if (key == "content-length")
                 hasContentLength = true;
-            if (key == "content-type")
+            else if (key == "content-type")
                 hasContentType = true;
         }
 
         if (!hasContentType && !m_body.empty())
-            result += "Content-Type: text/plain\r\n";
+            result.append("content-type: text/plain\r\n");
 
         if (!hasContentLength)
-            result += std::format("Content-Length: {}\r\n", m_body.size());
+            result.append("content-length: ").append(std::to_string(m_body.size())).append("\r\n");
 
-        result += "\r\n";
-        result += m_body;
+        result.append("\r\n");
+        result.append(m_body);
 
         return result;
     }

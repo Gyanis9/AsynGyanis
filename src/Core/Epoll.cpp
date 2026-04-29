@@ -61,6 +61,16 @@ namespace Core
         return epoll_ctl(m_fd, EPOLL_CTL_DEL, fd, nullptr) == 0;
     }
 
+    bool Epoll::rearmFd(const int fd, const uint32_t events, void *const userData) const
+    {
+        epoll_event ev{};
+        ev.events   = events | EPOLLONESHOT;
+        ev.data.ptr = userData;
+        if (epoll_ctl(m_fd, EPOLL_CTL_MOD, fd, &ev) == 0)
+            return true;
+        return epoll_ctl(m_fd, EPOLL_CTL_ADD, fd, &ev) == 0;
+    }
+
     std::span<epoll_event> Epoll::wait(const int timeoutMs)
     {
         const int n = epoll_wait(m_fd, m_events.data(), static_cast<int>(m_events.size()), timeoutMs);
