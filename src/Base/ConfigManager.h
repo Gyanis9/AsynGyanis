@@ -23,7 +23,6 @@
 
 namespace Base
 {
-    // 前向声明
     class ConfigManager;
 
     /**
@@ -31,11 +30,12 @@ namespace Base
      */
     struct ConfigLoadResult
     {
-        bool                                  success{false};
-        std::vector<std::string>              loaded_files;
-        std::vector<std::string>              failed_files;
-        std::vector<std::string>              errors;
-        std::chrono::steady_clock::time_point timestamp;
+        bool                     success{false}; ///<加载是否成功
+        std::vector<std::string> loaded_files;   ///<成功加载的配置文件路径列表
+        std::vector<std::string> failed_files;   ///<加载失败的配置文件路径列表
+        std::vector<std::string> errors;         ///<加载过程中产生的错误信息列表
+
+        std::chrono::steady_clock::time_point timestamp; ///<加载完成时的时间戳
 
         explicit operator bool() const noexcept
         {
@@ -68,14 +68,14 @@ namespace Base
      *   auto result = cfg.loadFromDirectory("./config");
      *   if (!result) {
      *       for (const auto& err : result.errors) {
-     *           std::cerr << err << std::endl;
+     *           LOG_ERROR(err);
      *       }
      *       return -1;
      *   }
      *
      *   // 启用热加载
      *   cfg.enableHotReload([](const ConfigLoadResult& r) {
-     *       std::cout << "Config reloaded, " << r.loaded_files.size() << " files" << std::endl;
+     *       LOG_INFO("Config reloaded, {} files",r.loaded_files.size());
      *   });
      *
      *   // 读取配置
@@ -98,14 +98,10 @@ namespace Base
          */
         static ConfigManager &instance() noexcept;
 
-        // 禁止拷贝和移动
-        ConfigManager(const ConfigManager &) = delete;
-
+        ConfigManager(const ConfigManager &)            = delete;
         ConfigManager &operator=(const ConfigManager &) = delete;
-
-        ConfigManager(ConfigManager &&) = delete;
-
-        ConfigManager &operator=(ConfigManager &&) = delete;
+        ConfigManager(ConfigManager &&)                 = delete;
+        ConfigManager &operator=(ConfigManager &&)      = delete;
 
         // ========================================================================
         // 初始化和加载
@@ -294,24 +290,27 @@ namespace Base
          */
         ~ConfigManager();
 
-        // 内部数据结构：使用原子 shared_ptr 实现无锁热替换
+        /**
+         * @brief 内部配置数据容器
+         * @details 使用原子共享指针（atomic shared_ptr）实现无锁热替换。
+         */
         struct ConfigData
         {
-            std::unordered_map<std::string, ConfigValue> values;
-            std::vector<std::string>                     loaded_files;
-            std::filesystem::path                        config_dir;
-            std::chrono::steady_clock::time_point        load_time;
+            std::unordered_map<std::string, ConfigValue> values; ///< 配置键值对映射表
+
+            std::vector<std::string>              loaded_files; ///< 成功加载的配置文件路径列表
+            std::filesystem::path                 config_dir;   ///< 配置目录的路径
+            std::chrono::steady_clock::time_point load_time;    ///< 配置加载完成的时间戳（单调时钟）
         };
 
-        std::atomic<std::shared_ptr<ConfigData>> m_data{std::make_shared<ConfigData>()};
+        std::atomic<std::shared_ptr<ConfigData>> m_data{std::make_shared<ConfigData>()}; ///< 当前有效的配置数据原子指针，支持无锁热替换
 
-        // 读写锁（仅用于配置数据的构建过程，读取无需加锁）
-        mutable std::shared_mutex m_reload_mutex;
+        mutable std::shared_mutex m_reload_mutex; ///< 用于配置数据构建过程的读写锁，仅在修改时加写锁
 
         // 热加载相关
-        std::unique_ptr<IFileWatcher> m_file_watcher;
-        HotReloadCallback             m_hot_reload_callback;
-        std::atomic<bool>             m_hot_reload_enabled{false};
+        std::unique_ptr<IFileWatcher> m_file_watcher;              ///< 文件监控器（用于热加载）
+        HotReloadCallback             m_hot_reload_callback;       ///< 热加载回调函数，配置文件变化时触发
+        std::atomic<bool>             m_hot_reload_enabled{false}; ///< 热加载功能是否启用（true 启用，false 关闭）
 
         /**
          * @brief 目录加载的内部实现，负责扫描、解析并原子替换配置快照。
@@ -327,7 +326,7 @@ namespace Base
          * @param values 目标配置字典。
          * @param errors 错误信息收集容器。
          */
-        void loadYamlFile(const std::filesystem::path &file_path, std::unordered_map<std::string, ConfigValue> &values, std::vector<std::string> &errors);
+        static void loadYamlFile(const std::filesystem::path &file_path, std::unordered_map<std::string, ConfigValue> &values, std::vector<std::string> &errors);
 
         /**
          * @brief 递归扁平化 YAML 节点，将嵌套键转换为点号路径。
@@ -335,14 +334,14 @@ namespace Base
          * @param prefix 键前缀。
          * @param values 扁平化结果容器。
          */
-        void flattenYamlNode(const YAML::Node &node, const std::string &prefix, std::unordered_map<std::string, ConfigValue> &values);
+        static void flattenYamlNode(const YAML::Node &node, const std::string &prefix, std::unordered_map<std::string, ConfigValue> &values);
 
         /**
          * @brief 将 YAML 节点转换为 ConfigValue。
          * @param node YAML 节点。
          * @return ConfigValue 转换后的配置值。
          */
-        ConfigValue convertYamlNode(const YAML::Node &node);
+        static ConfigValue convertYamlNode(const YAML::Node &node);
 
         /**
          * @brief 处理文件监听回调并触发后台重载。
@@ -363,9 +362,8 @@ namespace Base
          * @param recursive 是否递归。
          * @return std::vector<std::filesystem::path> YAML 文件路径列表。
          */
-        std::vector<std::filesystem::path> scanYamlFiles(const std::filesystem::path &dir, bool recursive) const;
+        static std::vector<std::filesystem::path> scanYamlFiles(const std::filesystem::path &dir, bool recursive);
     };
 }
-
 
 #endif
