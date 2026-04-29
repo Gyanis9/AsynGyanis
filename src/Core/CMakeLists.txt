@@ -1,10 +1,6 @@
 add_library(Core
         Epoll.cpp
         Epoll.h
-        Uring.cpp
-        Uring.h
-        UringAwaiter.cpp
-        UringAwaiter.h
         EpollAwaiter.h
         Task.h
         Scheduler.cpp

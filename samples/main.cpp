@@ -96,7 +96,7 @@ int main(int argc, char **argv)
     LOG_INFO_FMT("echo_server starting — host={} port={} threads={}", host, port, threads);
 
     // ── 多线程运行时 ──
-    Core::IoContext ctx(threads, 512);
+    Core::IoContext ctx(threads);
 
     auto addr = Core::InetAddress::resolve(host, port);
     if (!addr)

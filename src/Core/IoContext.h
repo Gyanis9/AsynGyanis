@@ -31,9 +31,8 @@ namespace Core
         /**
          * @brief 构造异步运行时。
          * @param threadCount 工作线程数，0 表示自动检测
-         * @param queueDepth 每个线程的 io_uring 队列深度
          */
-        explicit IoContext(size_t threadCount = 0, unsigned queueDepth = 256);
+        explicit IoContext(size_t threadCount = 0);
 
         ~IoContext();
 

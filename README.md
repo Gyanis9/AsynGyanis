@@ -1,6 +1,6 @@
 # AsynGyanis
 
-> 基于 C++20 协程、epoll + io_uring 混合驱动的工业级高性能异步 HTTP 服务器框架
+> 基于 C++20 协程、epoll 边缘触发驱动的工业级高性能异步 HTTP 服务器框架
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](https://en.cppreference.com/w/cpp/20)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
@@ -8,9 +8,9 @@
 
 ## 特性
 
-- **epoll + io_uring 混合 I/O** — 网络 I/O 走 io_uring 零拷贝路径，定时器/唤醒走 epoll，统一事件循环
+- **epoll 边缘触发 I/O** — 网络 I/O 走非阻塞 syscall（`accept4`/`recv`/`send`）+ epoll EPOLLET 边缘触发，统一事件循环
 - **真多线程** — `IoContext` 每线程一个 `EventLoop` + 独立 `HttpServer`，`SO_REUSEPORT` 内核级负载均衡
-- **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起/恢复，`UringAwaiter` 提交 SQE 后自动挂起
+- **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起/恢复，`EpollAwaiter` 等待 fd 就绪后自动恢复
 - **工作窃取调度** — `Scheduler` 本地无锁队列 + 全局队列，空闲线程自动窃取任务
 - **并发连接处理** — accept 循环不阻塞，每个连接独立协程并发执行
 - **HTTP/1.1 Keep-Alive** — 持久连接 + llhttp 增量解析
@@ -60,7 +60,6 @@
                         │  │  │ EventLoop│  │ EventLoop│  ...    │    │
                         │  │  │ ┌──────┐ │  │ ┌──────┐ │         │    │
                         │  │  │ │Epoll │ │  │ │Epoll │ │         │    │
-                        │  │  │ │Uring │ │  │ │Uring │ │         │    │
                         │  │  │ └──────┘ │  │ └──────┘ │         │    │
                         │  │  └────┬─────┘  └────┬─────┘         │    │
                         │  └───────┼──────────────┼──────────────┘    │
@@ -73,7 +72,6 @@
                         │                     │                       │
                         │          ┌──────────▼──────────┐            │
                         │          │   co_await 原语      │            │
-                        │          │ UringAwaiter        │            │
                         │          │ EpollAwaiter        │            │
                         │          │ Task<T> (协程类型)    │            │
                         │          └─────────────────────┘            │
@@ -96,11 +94,11 @@
                         │  │  LogSink×4     │  │  ConfigFileWatcher│  │
                         │  │  LogCommon     │  │  ConfigValue      │  │
                         │  └────────────────┘  └───────────────────┘  │
-                        │  ┌──────────────┐  ┌───────────────────┐    │
-                        │  │  Exception   │  │  IOUringContext   │    │
-                        │  │  SystemExc.  │  │  (io_uring RAII)  │    │
-                        │  │  NetworkExc. │  │                   │    │
-                        │  └──────────────┘  └───────────────────┘    │
+                        │  ┌──────────────────────────────────────┐   │
+                        │  │              Exception               │   │
+                        │  │  Exception / SystemException /       │   │
+                        │  │  NetworkException / ConfigException  │   │
+                        │  └──────────────────────────────────────┘   │
                         └─────────────────────────────────────────────┘
 ```
 
@@ -111,10 +109,10 @@ IoContext (主线程，阻塞 run)
   │
   └── ThreadPool
         │
-        ├── std::jthread #0 ── EventLoop[0] ── Epoll[0] + Uring[0] + Scheduler[0]
+        ├── std::jthread #0 ── EventLoop[0] ── Epoll[0] + Scheduler[0]
         │     └── HttpServer[0] ── TcpAcceptor[0] (SO_REUSEPORT)
         │
-        ├── std::jthread #1 ── EventLoop[1] ── Epoll[1] + Uring[1] + Scheduler[1]
+        ├── std::jthread #1 ── EventLoop[1] ── Epoll[1] + Scheduler[1]
         │     └── HttpServer[1] ── TcpAcceptor[1] (SO_REUSEPORT)
         │
         └── ... (N 个线程)
@@ -126,10 +124,10 @@ IoContext (主线程，阻塞 run)
 
 ```
 Client ──TCP──▶ SO_REUSEPORT ──内核分发──▶ TcpAcceptor[N]
-                                                │ (uringAccept → CQE → UringAwaiter)
+                                                │ (accept4 + EpollAwaiter)
                                                 ▼
                                            HttpSession
-                                                │ (uringRead → CQE → UringAwaiter)
+                                                │ (recv + EpollAwaiter)
                                                 ▼
                                            HttpParser ──llhttp──▶ HttpRequest
                                                                      │
@@ -140,25 +138,23 @@ Client ──TCP──▶ SO_REUSEPORT ──内核分发──▶ TcpAcceptor[N
                                                 │    │                    │
                                                 │    └────────────────────┘
                                                 ▼
-                                           HttpResponse ──toString()──▶ (uringWrite) ──▶ Client
+                                           HttpResponse ──toString()──▶ (send) ──▶ Client
 ```
 
-### I/O 模型（epoll + io_uring 混合）
+### I/O 模型（纯 epoll 边缘触发）
 
 ```
 co_await asyncRecv(buf, len)
-  → uringRead(uring, fd, buf, len, -1)      // UringAwaiter
-     → fill SQE + io_uring_sqe_set_data(handle)
-     → io_uring_submit()
-     → 协程挂起                                // Scheduler 运行其他协程
+  → recv(fd, buf, len, MSG_NOSIGNAL)
+     → 成功: co_return n
+     → EAGAIN: co_await EpollAwaiter(epoll, fd, EPOLLIN | EPOLLET)
+        → epoll_ctl(ADD, fd, EPOLLIN | EPOLLET, handle)
+        → 协程挂起                                // Scheduler 运行其他协程
 
-  → io_uring 完成 → 写 eventfd
-     → epoll_wait 返回（m_uringSentinel）
-     → harvestUringCompletions()
-        → UringAwaiter::complete(key, cqe->res)
-        → scheduler.schedule(handle)
-     → re-register eventfd
-     → runAll() → 协程恢复 → await_resume() → cqe->res
+  → fd 可读 → epoll_wait 返回
+     → scheduler.schedule(handle)
+     → 协程恢复 → await_resume() → epoll_ctl(DEL)
+     → 重试 recv()
 ```
 
 ### 依赖关系
@@ -166,12 +162,11 @@ co_await asyncRecv(buf, len)
 ```
 Net  ──▶ Core ──▶ Base
  │                 │
- └── llhttp        ├── liburing
-                   └── yaml-cpp
+ └── llhttp        └── yaml-cpp
 ```
 
-- **Base** 不依赖任何业务模块，依赖 `liburing` + `yaml-cpp`
-- **Core** 依赖 `Base`，在其基础上构建协程运行时 + epoll/io_uring 混合事件循环
+- **Base** 不依赖任何业务模块，依赖 `yaml-cpp`
+- **Core** 依赖 `Base`，在其基础上构建协程运行时 + epoll 事件循环
 - **Net** 依赖 `Core` + `Base` + `llhttp`，提供 HTTP 服务端能力
 
 ## 快速开始
@@ -181,7 +176,7 @@ Net  ──▶ Core ──▶ Base
 - **CMake** ≥ 3.20
 - **Conan** ≥ 2.0
 - **GCC** ≥ 13 或 **Clang** ≥ 17（需支持 C++20 协程）
-- **Linux** ≥ 5.6（io_uring 支持，epoll 需 ≥ 2.6）
+- **Linux** ≥ 2.6.32（epoll 支持）
 
 ### 构建
 
@@ -204,16 +199,16 @@ cmake --build build/release -j$(nproc)
 
 ```bash
 # 默认使用全部 CPU 核心
-./build/debug/samples/echo_server --port 8080
+./build/release/samples/echo_server --port 8080
 
 # 指定 4 个工作线程
-./build/debug/samples/echo_server --port 8080 --threads 4
+./build/release/samples/echo_server --port 8080 --threads 4
 ```
 
 ### 压测
 
 ```bash
-ab -n 100000 -c 200 http://localhost:8080/bench
+ab -n 1000000 -c 200 http://localhost:8080/bench
 wrk -t4 -c200 -d30s http://localhost:8080/bench
 ```
 
@@ -295,7 +290,7 @@ Core::Task<void> ping(Core::EventLoop& loop) {
 
 ## 模块概览
 
-### Base — 基础设施（`libBase.a`，依赖 `liburing` + `yaml-cpp`）
+### Base — 基础设施（`libBase.a`，依赖 `yaml-cpp`）
 
 | 分类 | 类 | 职责 |
 |------|----|------|
@@ -310,26 +305,23 @@ Core::Task<void> ping(Core::EventLoop& loop) {
 | | `ConfigType` | 类型枚举、`splitKey`、`isYamlFile` |
 | **异常** | `Exception` ← `SystemException` ← `NetworkException` | 携带 `source_location` + `error_code` |
 | | `ConfigException` 及其 5 种派生类 | 配置错误层次 |
-| **IO** | `IOUringContext` | io_uring RAII（`queue_init`/`exit`，SQE/CQE 管理） |
 
 ### Core — 异步运行时（`libCore.a`，依赖 `Base`）
 
 | 分类 | 类 | 职责 |
 |------|----|------|
 | **入口** | `IoContext` | 运行时主入口，持有 `ThreadPool`，`run()` 阻塞直到 `stop()`，析构自动停止 |
-| **线程** | `EventLoop` | 每线程事件循环 — epoll 统一等待 uring eventfd / wakeup eventfd / EpollAwaiter，CQE 收割→调度协程 |
+| **线程** | `EventLoop` | 每线程事件循环 — epoll 统一等待 wakeup eventfd / EpollAwaiter，调度协程 |
 | | `ThreadPool` | `std::jthread` 线程池，每线程绑定一个 `EventLoop` |
 | **系统** | `Epoll` | epoll RAII（`addFd` / `modFd` / `delFd` / `wait`） |
-| | `Uring` | io_uring 增强封装（`registerEventFd`、`registerBuffers`、8 种 `sqeFor*`） |
 | **地址** | `InetAddress` | IPv4/IPv6 统一封装（`sockaddr_storage`），DNS 解析、`any()`/`localhost()` 工厂 |
 | **协程** | `Task<T>` | 协程返回类型（惰性启动，`FinalAwaiter` 推入调度器） |
 | | `Scheduler` | 本地无锁队列 + 全局队列，工作窃取 |
 | | `CoroutinePool` | thread-local 协程帧 slab 分配器 |
-| **Awaiter** | `UringAwaiter` | `co_await` io_uring 操作（填 SQE→挂起→CQE→恢复） |
-| | `EpollAwaiter` | `co_await` epoll 事件（fd 就绪→恢复协程） |
+| **Awaiter** | `EpollAwaiter` | `co_await` epoll 边缘触发事件（fd 就绪→恢复协程） |
 | | `Timer` | 可 await 定时器（`timerfd_create` + epoll） |
-| **I/O** | `AsyncSocket` | 异步 TCP socket（io_uring 主路径 + epoll fallback） |
-| **资源** | `BufferPool` | 固定大小缓冲池（支持 io_uring 注册零拷贝） |
+| **I/O** | `AsyncSocket` | 异步 TCP socket（非阻塞 syscall + epoll EPOLLET） |
+| **资源** | `BufferPool` | 固定大小缓冲池 |
 | | `Cancelable` | `std::stop_source` / `std::stop_token` 协作取消 |
 | | `Connection` / `ConnectionManager` | 连接基类 / 全局连接追踪、优雅关闭 |
 
@@ -353,10 +345,10 @@ Core::Task<void> ping(Core::EventLoop& loop) {
 ```
 AsynGyanis/
 ├── src/
-│   ├── Base/        # 基础设施（20 文件）
-│   ├── Core/        # 异步运行时（30 文件）
+│   ├── Base/        # 基础设施（18 文件）
+│   ├── Core/        # 异步运行时（26 文件）
 │   └── Net/         # 网络应用层（20 文件）
-├── tests/Base/      # Catch2 单元测试（9 套）
+├── tests/Base/      # Catch2 单元测试（8 套）
 ├── docs/Base/       # 中文 API 文档（11 份）
 ├── samples/         # 示例 + 压测脚本
 ├── CMakeLists.txt
@@ -369,7 +361,6 @@ AsynGyanis/
 
 | 库 | 版本 | 用途 |
 |----|------|------|
-| [liburing](https://github.com/axboe/liburing) | 2.13 | io_uring 用户态接口 |
 | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 配置解析 |
 | [llhttp](https://github.com/nodejs/llhttp) | 9.3.0 | HTTP/1.1 解析 |
 | [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS（预留） |

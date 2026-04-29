@@ -2,9 +2,8 @@
 
 namespace Core
 {
-    ThreadPool::ThreadPool(const size_t threadCount, const unsigned queueDepth) :
-        m_threadCount(threadCount > 0 ? threadCount : std::thread::hardware_concurrency()),
-        m_queueDepth(queueDepth)
+    ThreadPool::ThreadPool(const size_t threadCount) :
+        m_threadCount(threadCount > 0 ? threadCount : std::thread::hardware_concurrency())
     {
         if (m_threadCount == 0)
             m_threadCount = 1;
@@ -12,7 +11,7 @@ namespace Core
         m_eventLoops.reserve(m_threadCount);
         for (size_t i = 0; i < m_threadCount; ++i)
         {
-            m_eventLoops.push_back(std::make_unique<EventLoop>(m_queueDepth));
+            m_eventLoops.push_back(std::make_unique<EventLoop>());
         }
     }
 
@@ -43,7 +42,6 @@ namespace Core
             }
         }
 
-        // jthread 析构时自动 join
         m_threads.clear();
     }
 

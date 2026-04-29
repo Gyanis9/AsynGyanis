@@ -27,9 +27,8 @@ namespace Core
         /**
          * @brief 构造线程池。
          * @param threadCount 线程数，0 表示使用 hardware_concurrency()
-         * @param queueDepth 每个 EventLoop 的 io_uring 队列深度
          */
-        explicit ThreadPool(size_t threadCount = 0, unsigned queueDepth = 256);
+        explicit ThreadPool(size_t threadCount = 0);
 
         ~ThreadPool();
 
@@ -56,7 +55,6 @@ namespace Core
 
     private:
         size_t                                  m_threadCount;
-        unsigned                                m_queueDepth;
         std::vector<std::unique_ptr<EventLoop>> m_eventLoops;
         std::vector<std::jthread>               m_threads;
     };

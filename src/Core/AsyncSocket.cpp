@@ -1,6 +1,5 @@
 #include "AsyncSocket.h"
 #include "EpollAwaiter.h"
-#include "UringAwaiter.h"
 #include "EventLoop.h"
 #include "InetAddress.h"
 #include "Base/Exception.h"
@@ -9,6 +8,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <cerrno>
+#include <sys/socket.h>
 
 namespace Core
 {
@@ -64,34 +64,39 @@ namespace Core
         return ::listen(m_fd, backlog) == 0;
     }
 
-    Task<AsyncSocket> AsyncSocket::asyncAccept()
+    Task<AsyncSocket> AsyncSocket::asyncAccept() const
     {
-        sockaddr_storage addr{};
-        socklen_t        addrLen = sizeof(addr);
-        const int        result  = co_await uringAccept(m_loop.uring(), m_fd,
-                                                reinterpret_cast<sockaddr *>(&addr), &addrLen);
-        if (result < 0)
+        while (true)
         {
-            if (result == -EAGAIN || result == -EWOULDBLOCK)
+            sockaddr_storage addr{};
+            socklen_t        addrLen = sizeof(addr);
+            const int        fd      = ::accept4(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen,
+                                     SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (fd >= 0)
+            {
+                co_return AsyncSocket(m_loop, fd);
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
-                co_return co_await asyncAccept();
+                continue;
             }
-            if (result == -EINTR || result == -ECONNABORTED)
+            if (errno == EINTR || errno == ECONNABORTED)
+                continue;
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
             {
-                co_return co_await asyncAccept();
+                co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
+                continue;
             }
-            throw Base::SystemException("accept failed", std::error_code(-result, std::system_category()));
+            throw Base::SystemException("accept4 failed");
         }
-        co_return AsyncSocket(m_loop, result);
     }
 
     Task<> AsyncSocket::asyncConnect(const sockaddr *const addr, const socklen_t addrLen) const
     {
-        // 非阻塞 connect: 先尝试，EINPROGRESS 则等待 epoll
         if (const int ret = ::connect(m_fd, addr, addrLen); ret == 0)
             co_return;
-        if (errno != EINPROGRESS)
+        else if (errno != EINPROGRESS)
             throw Base::SystemException("connect failed");
 
         co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);
@@ -111,43 +116,44 @@ namespace Core
 
     Task<ssize_t> AsyncSocket::asyncRecv(void *const buf, const size_t len)
     {
-        const int result = co_await uringRead(m_loop.uring(), m_fd, buf, static_cast<unsigned>(len), -1);
-        if (result < 0)
+        while (true)
         {
-            if (result == -EAGAIN || result == -EWOULDBLOCK)
+            const ssize_t n = ::recv(m_fd, buf, len, MSG_NOSIGNAL);
+            if (n >= 0)
+                co_return n;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
-                co_return co_await asyncRecv(buf, len);
+                continue;
             }
-            throw Base::SystemException("recv failed", std::error_code(-result, std::system_category()));
+            if (errno == EINTR)
+                continue;
+            throw Base::SystemException("recv failed");
         }
-        co_return static_cast<ssize_t>(result);
     }
 
     Task<ssize_t> AsyncSocket::asyncSend(const void *const buf, const size_t len)
     {
-        const int result = co_await uringWrite(m_loop.uring(), m_fd, buf, static_cast<unsigned>(len), -1);
-        if (result < 0)
+        while (true)
         {
-            if (result == -EAGAIN || result == -EWOULDBLOCK)
+            const ssize_t n = ::send(m_fd, buf, len, MSG_NOSIGNAL);
+            if (n >= 0)
+                co_return n;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);
-                co_return co_await asyncSend(buf, len);
+                continue;
             }
-            throw Base::SystemException("send failed", std::error_code(-result, std::system_category()));
+            if (errno == EINTR)
+                continue;
+            throw Base::SystemException("send failed");
         }
-        co_return static_cast<ssize_t>(result);
     }
 
     void AsyncSocket::close()
     {
         if (m_fd >= 0)
         {
-            // Shutdown before close to avoid TCP RST.
-            // If the client has already sent FIN (half-close) and the server
-            // hasn't read it yet, ::close() alone would send RST because there's
-            // "unread" data (the FIN byte in the sequence space).
-            // SHUT_RDWR sends a proper FIN+ACK handshake before closing.
             ::shutdown(m_fd, SHUT_RDWR);
             ::close(m_fd);
             m_fd = -1;

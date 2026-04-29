@@ -13,8 +13,6 @@ add_library(Base
         Exception.h
         Config.h
         LogCommon.h
-        IOUringContext.cpp
-        IOUringContext.h
         LogSink.cpp
         LogSink.h
         Logger.cpp
@@ -24,7 +22,6 @@ add_library(Base
 )
 
 target_link_libraries(Base PUBLIC
-        liburing::liburing
         yaml-cpp::yaml-cpp
 )
 

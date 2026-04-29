@@ -35,7 +35,7 @@ namespace Core
         bool bind(const InetAddress &addr) const;
         bool listen(int backlog = SOMAXCONN) const;
 
-        Task<AsyncSocket> asyncAccept();
+        Task<AsyncSocket> asyncAccept() const;
         Task<>            asyncConnect(const sockaddr *addr, socklen_t addrLen) const;
         Task<>            asyncConnect(const InetAddress &addr) const;
         Task<ssize_t>     asyncRecv(void *buf, size_t len);

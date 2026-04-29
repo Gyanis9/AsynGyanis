@@ -1,6 +1,6 @@
 requirements:
   - "openssl/3.6.2"
   - "yaml-cpp/0.9.0"
-  - "liburing/2.13"
+
   - "catch2/3.8.0"
   - "llhttp/9.3.0"

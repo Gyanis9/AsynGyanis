@@ -2,8 +2,8 @@
 
 namespace Core
 {
-    IoContext::IoContext(const size_t threadCount, const unsigned queueDepth) :
-        m_threadPool(threadCount, queueDepth)
+    IoContext::IoContext(const size_t threadCount) :
+        m_threadPool(threadCount)
     {
     }
 

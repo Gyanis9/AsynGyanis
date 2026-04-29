@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(AsynGyanis
         VERSION 1.0.0
-        DESCRIPTION "Industrial-grade C++20 async server framework based on io_uring"
+        DESCRIPTION "Industrial-grade C++20 async server framework based on epoll"
         LANGUAGES CXX
 )
 
@@ -12,7 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenSSL)
 find_package(yaml-cpp)
-find_package(liburing)
+
 find_package(Catch2)
 find_package(llhttp)
 
