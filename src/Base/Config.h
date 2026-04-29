@@ -10,7 +10,6 @@
 
 namespace Base
 {
-    /// @brief Config 是 ConfigManager 的类型别名，提供配置加载、热更新、类型安全访问。
     using Config = ConfigManager;
 }
 
