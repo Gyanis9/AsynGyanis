@@ -1,0 +1,64 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Debug build with sanitizers",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
+        "ENABLE_SANITIZERS": "ON",
+        "CONAN_COMMAND": "${sourceDir}/.venv/bin/conan"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimized release build with LTO",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
+        "ENABLE_SANITIZERS": "OFF",
+        "CONAN_COMMAND": "${sourceDir}/.venv/bin/conan"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    }
+  ]
+}
