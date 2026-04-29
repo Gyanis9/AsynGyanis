@@ -2,6 +2,10 @@ add_library(Core
         Epoll.cpp
         Epoll.h
         EpollAwaiter.h
+        TlsSocket.cpp
+        TlsSocket.h
+        TlsContext.cpp
+        TlsContext.h
         Task.h
         Scheduler.cpp
         Scheduler.h
@@ -30,6 +34,8 @@ add_library(Core
 
 target_link_libraries(Core PUBLIC
         Base
+        OpenSSL::SSL
+        OpenSSL::Crypto
 )
 
 target_include_directories(Core PUBLIC

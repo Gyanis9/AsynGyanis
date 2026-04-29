@@ -17,6 +17,10 @@ add_library(Net
         Router.h
         HttpServer.cpp
         HttpServer.h
+        HttpsSession.cpp
+        HttpsSession.h
+        HttpsServer.cpp
+        HttpsServer.h
         InetAddress.h
         StreamBuffer.h
         Middleware.h
