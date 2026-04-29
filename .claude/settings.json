@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ctest --test-dir . --output-on-failure)",
+      "Bash(/home/gyanis/Projects/AsynGyanis/build/debug/tests/Base/TestConfigType --verbosity quiet)",
+      "Bash(/home/gyanis/Projects/AsynGyanis/build/debug/tests/Base/TestLoggerConfig --verbosity quiet)"
+    ]
+  }
+}
