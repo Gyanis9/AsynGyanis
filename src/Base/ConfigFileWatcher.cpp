@@ -1,5 +1,4 @@
 #include "ConfigFileWatcher.h"
-#include "Logger.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -18,7 +17,6 @@ namespace Base
         m_inotify_fd = inotify_init1(IN_CLOEXEC);
         if (m_inotify_fd < 0)
         {
-            LOG_ERROR("Failed to initialize inotify");
             throw std::runtime_error("Failed to initialize inotify");
         }
     }
