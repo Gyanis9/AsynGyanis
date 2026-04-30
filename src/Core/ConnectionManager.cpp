@@ -1,6 +1,9 @@
 #include "ConnectionManager.h"
 #include "Connection.h"
 
+#include <ranges>
+
+
 namespace Core
 {
     void ConnectionManager::add(const std::shared_ptr<Connection> &conn)
@@ -10,7 +13,7 @@ namespace Core
             return;
         }
         std::unique_lock lock(m_mutex);
-        m_connections.insert(conn);
+        m_connections.emplace(conn.get(), conn);
     }
 
     void ConnectionManager::remove(const Connection *const conn)
@@ -21,14 +24,9 @@ namespace Core
         }
 
         std::unique_lock lock(m_mutex);
-        for (auto it = m_connections.begin(); it != m_connections.end(); ++it)
+        if (m_connections.erase(conn))
         {
-            if (it->get() == conn)
-            {
-                m_connections.erase(it);
-                m_cv.notify_all();
-                break;
-            }
+            m_cv.notify_all();
         }
     }
 
@@ -41,7 +39,7 @@ namespace Core
     void ConnectionManager::shutdown() const
     {
         std::shared_lock lock(m_mutex);
-        for (auto &conn: m_connections)
+        for (const auto &conn: m_connections | std::views::values)
         {
             if (conn)
             {

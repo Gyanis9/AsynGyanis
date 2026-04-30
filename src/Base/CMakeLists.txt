@@ -23,6 +23,7 @@ add_library(Base
 
 target_link_libraries(Base PUBLIC
         yaml-cpp::yaml-cpp
+        jemalloc::jemalloc
 )
 
 target_include_directories(Base PUBLIC

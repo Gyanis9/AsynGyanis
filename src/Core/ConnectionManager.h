@@ -9,7 +9,7 @@
 #include <condition_variable>
 #include <memory>
 #include <shared_mutex>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace Core
 {
@@ -64,9 +64,9 @@ namespace Core
         void waitAll();
 
     private:
-        mutable std::shared_mutex                       m_mutex;       ///< 保护 m_connections 的读写锁
-        std::unordered_set<std::shared_ptr<Connection>> m_connections; ///< 存储所有活跃连接的集合
-        std::condition_variable_any                     m_cv;          ///< 用于 waitAll 的条件变量，连接移除时通知
+        mutable std::shared_mutex                                          m_mutex;       ///< 保护 m_connections 的读写锁
+        std::unordered_map<const Connection *, std::shared_ptr<Connection>> m_connections; ///< 存储所有活跃连接的集合
+        std::condition_variable_any                                        m_cv;          ///< 用于 waitAll 的条件变量，连接移除时通知
     };
 
 }

@@ -10,9 +10,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenSSL REQUIRED COMPONENTS SSL Crypto)
+find_package(OpenSSL)
 find_package(yaml-cpp)
-
+find_package(jemalloc)
 find_package(Catch2)
 find_package(llhttp)
 

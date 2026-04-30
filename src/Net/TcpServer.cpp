@@ -23,6 +23,7 @@ namespace Net
             throw Base::Exception("TcpServer: listen failed");
 
         m_running = true;
+        size_t nextCleanupThreshold = 64;
 
         while (m_running)
         {
@@ -59,13 +60,14 @@ namespace Net
                 m_connTasks.push_back(std::move(task));
             }
 
-            if (m_connTasks.size() > 64)
+            if (m_connTasks.size() > nextCleanupThreshold)
             {
                 std::erase_if(m_connTasks,
                               [](const Core::Task<> &t)
                               {
                                   return t.isReady();
                               });
+                nextCleanupThreshold = std::max<size_t>(64, m_connTasks.size() + 64);
             }
         }
 

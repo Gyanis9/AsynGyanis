@@ -27,6 +27,7 @@ add_library(Net
 )
 
 target_link_libraries(Net PUBLIC
+        jemalloc::jemalloc
         Core
         Base
         llhttp::llhttp

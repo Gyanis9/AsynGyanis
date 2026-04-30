@@ -33,6 +33,7 @@ add_library(Core
 )
 
 target_link_libraries(Core PUBLIC
+        jemalloc::jemalloc
         Base
         OpenSSL::SSL
         OpenSSL::Crypto
