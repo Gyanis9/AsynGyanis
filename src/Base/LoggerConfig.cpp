@@ -10,11 +10,12 @@ namespace Base
         const auto &cfg = ConfigManager::instance();
 
         const std::string global_level_key = config_prefix + ".global_level";
-        const auto global_level = cfg.get<std::string>(global_level_key, "INFO");
+
+        const auto global_level  = cfg.get<std::string>(global_level_key, "INFO");
         const auto default_level = logLevelFromString(global_level);
 
         // ConfigManager 使用扁平化键存储，此处从 key 前缀提取 logger 名。
-        const std::string logger_prefix = config_prefix + ".loggers.";
+        const std::string     logger_prefix = config_prefix + ".loggers.";
         std::set<std::string> logger_names;
         for (const auto &key: cfg.keys())
         {
@@ -24,9 +25,8 @@ namespace Base
             }
 
             const auto name_start = logger_prefix.size();
-            const auto dot_pos = key.find('.', name_start);
-            const auto name = key.substr(name_start, dot_pos == std::string::npos ? std::string::npos : dot_pos - name_start);
-            if (!name.empty())
+            const auto dot_pos    = key.find('.', name_start);
+            if (const auto name = key.substr(name_start, dot_pos == std::string::npos ? std::string::npos : dot_pos - name_start); !name.empty())
             {
                 logger_names.insert(name);
             }
@@ -47,7 +47,7 @@ namespace Base
             auto &logger = LoggerRegistry::instance().getLogger(name);
 
             ConfigObject logger_cfg_obj;
-            const auto base = logger_prefix + name;
+            const auto   base = logger_prefix + name;
             if (const auto level_opt = cfg.getOptional(base + ".level"); level_opt.has_value())
             {
                 logger_cfg_obj.emplace("level", *level_opt);
@@ -93,23 +93,23 @@ namespace Base
             return nullptr;
         }
 
-        const auto type = sink_cfg["type"].as<std::string>();
+        const auto               type = sink_cfg["type"].as<std::string>();
         std::unique_ptr<LogSink> sink;
 
         if (type == "console")
         {
             bool color = sink_cfg.get<bool>("color").value_or(true);
-            sink = std::make_unique<ConsoleSink>(color);
+            sink       = std::make_unique<ConsoleSink>(color);
         } else if (type == "file")
         {
-            auto path = sink_cfg["path"].as<std::string>();
+            auto path     = sink_cfg["path"].as<std::string>();
             bool truncate = sink_cfg.get<bool>("truncate").value_or(false);
-            sink = std::make_unique<FileSink>(path, truncate);
+            sink          = std::make_unique<FileSink>(path, truncate);
         } else if (type == "rolling_file")
         {
-            auto base_filename = sink_cfg["base_filename"].as<std::string>();
-            std::string dir = sink_cfg.get<std::string>("directory").value_or("logs");
-            const std::string policy_str = sink_cfg.get<std::string>("policy").value_or("size");
+            auto              base_filename = sink_cfg["base_filename"].as<std::string>();
+            std::string       dir           = sink_cfg.get<std::string>("directory").value_or("logs");
+            const std::string policy_str    = sink_cfg.get<std::string>("policy").value_or("size");
 
             RollingPolicy policy;
             if (policy_str == "size")
@@ -126,7 +126,7 @@ namespace Base
                 policy = RollingPolicy::Size;
             }
 
-            size_t max_size = sink_cfg.get<int64_t>("max_size_mb").value_or(10) * 1024 * 1024;
+            size_t max_size   = sink_cfg.get<int64_t>("max_size_mb").value_or(10) * 1024 * 1024;
             size_t max_backup = sink_cfg.get<int64_t>("max_backup").value_or(10);
 
             sink = std::make_unique<RollingFileSink>(base_filename, dir, policy, max_size, max_backup);
@@ -136,11 +136,9 @@ namespace Base
             if (!wrapped)
                 return nullptr;
 
-            size_t queue_size = sink_cfg.get<int64_t>("queue_size").value_or(1024);
-            const std::string overflow = sink_cfg.get<std::string>("overflow_policy").value_or("block");
-            AsyncSink::OverflowPolicy policy = (overflow == "drop")
-                                                   ? AsyncSink::OverflowPolicy::Drop
-                                                   : AsyncSink::OverflowPolicy::Block;
+            size_t                    queue_size = sink_cfg.get<int64_t>("queue_size").value_or(1024);
+            const std::string         overflow   = sink_cfg.get<std::string>("overflow_policy").value_or("block");
+            AsyncSink::OverflowPolicy policy     = (overflow == "drop") ? AsyncSink::OverflowPolicy::Drop : AsyncSink::OverflowPolicy::Block;
 
             sink = std::make_unique<AsyncSink>(std::move(wrapped), queue_size, policy);
         } else

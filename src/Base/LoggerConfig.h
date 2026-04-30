@@ -74,5 +74,4 @@ namespace Base
     };
 }
 
-
-#endif //LOGCONFIG_H
+#endif
