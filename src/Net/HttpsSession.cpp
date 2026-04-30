@@ -42,7 +42,7 @@ namespace Net
             while (totalSent < data.size())
             {
                 const ssize_t n = co_await m_tlsSocket.asyncSend(data.data() + totalSent,
-                                                               data.size() - totalSent);
+                                                                 data.size() - totalSent);
                 if (n <= 0)
                 {
                     LOG_WARN_FMT("HttpsSession sendAll: asyncSend returned {} (fd={})", n, m_tlsSocket.fd());
@@ -103,14 +103,17 @@ namespace Net
                         res = HttpResponse::serverError(e.what());
                     }
 
-                    const auto &version    = req.httpVersion();
-                    const bool  isHttp10   = version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9");
+                    const auto &version      = req.httpVersion();
+                    const bool  isHttp10     = version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9");
                     bool        reqKeepAlive = !isHttp10;
 
                     if (const auto connectionHeader = req.getHeader("connection"); connectionHeader.has_value())
                     {
                         std::string val = connectionHeader.value();
-                        std::ranges::transform(val, val.begin(), [](const unsigned char c) { return std::tolower(c); });
+                        std::ranges::transform(val, val.begin(), [](const unsigned char c)
+                        {
+                            return std::tolower(c);
+                        });
                         if (val == "close")
                             reqKeepAlive = false;
                         else if (val == "keep-alive")

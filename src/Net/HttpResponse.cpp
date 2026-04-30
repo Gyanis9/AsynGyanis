@@ -5,7 +5,6 @@
 
 namespace Net
 {
-
     HttpResponse::HttpResponse() :
         m_status(200)
     {
@@ -25,7 +24,7 @@ namespace Net
     {
         std::string lowerName = name;
         std::ranges::transform(lowerName, lowerName.begin(),
-                               [](unsigned char c)
+                               [](const unsigned char c)
                                {
                                    return std::tolower(c);
                                });

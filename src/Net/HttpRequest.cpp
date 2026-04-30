@@ -74,7 +74,9 @@ namespace Net
                                    return std::tolower(c);
                                });
         if (const auto it = m_headers.find(lowerKey); it != m_headers.end())
+        {
             return it->second;
+        }
         return std::nullopt;
     }
 
@@ -96,16 +98,21 @@ namespace Net
     std::string HttpRequest::path() const
     {
         if (const auto pos = m_uri.find('?'); pos != std::string::npos)
+        {
             return m_uri.substr(0, pos);
+        }
         return m_uri;
     }
 
     std::unordered_map<std::string, std::string> HttpRequest::queryParams() const
     {
         std::unordered_map<std::string, std::string> params;
-        const auto                                   pos = m_uri.find('?');
+
+        const auto pos = m_uri.find('?');
         if (pos == std::string::npos)
+        {
             return params;
+        }
 
         const std::string_view query(&m_uri[pos + 1], m_uri.size() - pos - 1);
 
@@ -142,7 +149,9 @@ namespace Net
     std::optional<std::string> HttpRequest::param(const std::string &key) const
     {
         if (const auto it = m_params.find(key); it != m_params.end())
+        {
             return it->second;
+        }
         return std::nullopt;
     }
 
@@ -154,6 +163,22 @@ namespace Net
         m_headers.clear();
         m_body.clear();
         m_params.clear();
+        m_cancelSource = std::stop_source{};
+    }
+
+    std::stop_token HttpRequest::cancelToken() const noexcept
+    {
+        return m_cancelSource.get_token();
+    }
+
+    std::stop_source &HttpRequest::cancelSource() noexcept
+    {
+        return m_cancelSource;
+    }
+
+    bool HttpRequest::requestCancel() const
+    {
+        return m_cancelSource.request_stop();
     }
 
 }

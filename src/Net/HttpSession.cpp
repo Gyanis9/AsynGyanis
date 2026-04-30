@@ -27,7 +27,9 @@ namespace Net
                 const ssize_t n = co_await socket().asyncSend(data.data() + totalSent,
                                                               data.size() - totalSent);
                 if (n <= 0)
+                {
                     co_return;
+                }
                 totalSent += static_cast<size_t>(n);
             }
         };
@@ -41,7 +43,9 @@ namespace Net
             {
                 ssize_t n = co_await socket().asyncRecv(m_recvBuffer.data(), m_recvBuffer.size());
                 if (n <= 0)
+                {
                     break;
+                }
 
                 auto status = m_parser.parse(m_recvBuffer.data(), static_cast<size_t>(n));
 
@@ -49,7 +53,9 @@ namespace Net
                 {
                     n = co_await socket().asyncRecv(m_recvBuffer.data(), m_recvBuffer.size());
                     if (n <= 0)
+                    {
                         co_return;
+                    }
                     status = m_parser.parse(m_recvBuffer.data(), static_cast<size_t>(n));
                 }
 
@@ -82,7 +88,7 @@ namespace Net
 
                     if (!keepAlive)
                         res.setHeader("connection", "close");
-                    else if (isHttp10 && res.headers().find("connection") == res.headers().end())
+                    else if (isHttp10 && !res.headers().contains("connection"))
                         res.setHeader("connection", "keep-alive");
 
                     std::string responseStr = res.toString();
@@ -117,11 +123,13 @@ namespace Net
         co_return;
     }
 
-    bool HttpSession::shouldKeepAlive(const HttpRequest &req, const HttpResponse &res) const
+    bool HttpSession::shouldKeepAlive(const HttpRequest &req, const HttpResponse &res)
     {
         bool keepAlive = true;
         if (const auto &version = req.httpVersion(); version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9"))
+        {
             keepAlive = false;
+        }
 
         if (const auto connectionHeader = req.getHeader("connection"); connectionHeader.has_value())
         {
@@ -132,23 +140,29 @@ namespace Net
                                        return std::tolower(c);
                                    });
             if (val == "close")
+            {
                 keepAlive = false;
-            else if (val == "keep-alive")
+            } else if (val == "keep-alive")
+            {
                 keepAlive = true;
+            }
         }
 
         if (const auto resConnection = res.headers().find("connection"); resConnection != res.headers().end())
         {
             std::string val = resConnection->second;
             std::ranges::transform(val, val.begin(),
-                                   [](unsigned char c)
+                                   [](const unsigned char c)
                                    {
                                        return std::tolower(c);
                                    });
             if (val == "close")
+            {
                 keepAlive = false;
-            else if (val == "keep-alive")
+            } else if (val == "keep-alive")
+            {
                 keepAlive = true;
+            }
         }
 
         return keepAlive;

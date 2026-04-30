@@ -21,10 +21,12 @@ namespace Net
 
     HttpParser::~HttpParser() = default;
 
-    ParseStatus HttpParser::parse(const char *data, size_t len)
+    ParseStatus HttpParser::parse(const char *data, const size_t len)
     {
         if (m_complete)
+        {
             return ParseStatus::Done;
+        }
 
         const auto result = llhttp_execute(&m_parser, data, len);
 
@@ -77,14 +79,14 @@ namespace Net
 
     int HttpParser::onUrl(llhttp_t *parser, const char *data, const size_t len)
     {
-        auto *self = static_cast<HttpParser *>(parser->data);
+        const auto self = static_cast<HttpParser *>(parser->data);
         self->m_currentUrl.append(data, len);
         return 0;
     }
 
     int HttpParser::onHeaderField(llhttp_t *parser, const char *data, const size_t len)
     {
-        auto *self = static_cast<HttpParser *>(parser->data);
+        const auto self = static_cast<HttpParser *>(parser->data);
         if (!self->m_currentHeaderField.empty() && !self->m_currentHeaderField.empty())
         {
         }
@@ -94,7 +96,7 @@ namespace Net
 
     int HttpParser::onHeaderValue(llhttp_t *parser, const char *data, const size_t len)
     {
-        auto *      self = static_cast<HttpParser *>(parser->data);
+        const auto  self = static_cast<HttpParser *>(parser->data);
         std::string value(data, len);
         self->m_currentRequest.addHeader(self->m_currentHeaderField, std::move(value));
         self->m_currentHeaderField.clear();
@@ -103,7 +105,7 @@ namespace Net
 
     int HttpParser::onBody(llhttp_t *parser, const char *data, const size_t len)
     {
-        auto *self = static_cast<HttpParser *>(parser->data);
+        const auto self = static_cast<HttpParser *>(parser->data);
         self->m_currentRequest.setBody(std::string(data, len));
         return 0;
     }
@@ -143,8 +145,7 @@ namespace Net
 
         self->m_currentRequest.setMethod(method);
         self->m_currentRequest.setUri(self->m_currentUrl);
-        self->m_currentRequest.setHttpVersion(
-                std::format("HTTP/{}.{}", parser->http_major, parser->http_minor));
+        self->m_currentRequest.setHttpVersion(std::format("HTTP/{}.{}", parser->http_major, parser->http_minor));
         self->m_complete = true;
         return 0;
     }

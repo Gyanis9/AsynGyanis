@@ -72,7 +72,7 @@ namespace Net
         res.setBody(notFoundRes.body());
     }
 
-    bool Router::matchRoute(const Route &route, const std::string &path, HttpRequest &req) const
+    bool Router::matchRoute(const Route &route, const std::string &path, HttpRequest &req)
     {
         const auto &pattern = route.pattern;
 
