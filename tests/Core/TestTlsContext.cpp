@@ -1,9 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include "Core/TlsContext.h"
-#include <fstream>
+
 #include <cstdio>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <openssl/ssl.h>
 
 using namespace Core;
 

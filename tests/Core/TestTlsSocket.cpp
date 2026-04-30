@@ -5,8 +5,7 @@
 #include "Core/AsyncSocket.h"
 #include "Core/Scheduler.h"
 #include "Core/Task.h"
-#include <thread>
-#include <atomic>
+
 #include <fstream>
 #include <sys/socket.h>
 #include <unistd.h>
