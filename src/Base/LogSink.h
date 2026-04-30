@@ -101,7 +101,7 @@ namespace Base
         std::string formatEvent(const LogEvent &event) const;
 
     private:
-        std::atomic<LogLevel> m_level{LogLevel::TRACE};
+        std::atomic<LogLevel>         m_level{LogLevel::TRACE};
         std::unique_ptr<LogFormatter> m_formatter;
     };
 
@@ -136,7 +136,7 @@ namespace Base
         void setColorEnabled(bool enabled);
 
     private:
-        bool m_color_enabled;
+        bool       m_color_enabled;
         std::mutex m_mutex;
     };
 
@@ -178,8 +178,8 @@ namespace Base
 
     private:
         std::filesystem::path m_file_path;
-        std::ofstream m_file;
-        std::mutex m_mutex;
+        std::ofstream         m_file;
+        std::mutex            m_mutex;
     };
 
     // ============================================================================
@@ -204,11 +204,11 @@ namespace Base
          * @param max_size_bytes 按大小滚动时的阈值（字节）。
          * @param max_backup_files 最大保留备份文件数。
          */
-        RollingFileSink(const std::string &base_filename,
+        RollingFileSink(const std::string &          base_filename,
                         const std::filesystem::path &directory,
-                        RollingPolicy policy,
-                        size_t max_size_bytes = 10 * 1024 * 1024,
-                        size_t max_backup_files = 10);
+                        RollingPolicy                policy,
+                        size_t                       max_size_bytes   = 10 * 1024 * 1024,
+                        size_t                       max_backup_files = 10);
 
         /**
          * @brief 析构滚动文件 Sink 并刷新残留数据。
@@ -249,15 +249,15 @@ namespace Base
          */
         void cleanupOldFiles() const;
 
-        std::string m_base_filename;
+        std::string           m_base_filename;
         std::filesystem::path m_directory;
-        RollingPolicy m_policy;
-        size_t m_max_size_bytes;
-        size_t m_max_backup_files;
+        RollingPolicy         m_policy;
+        size_t                m_max_size_bytes;
+        size_t                m_max_backup_files;
 
         std::unique_ptr<FileSink> m_current_sink;
-        std::string m_current_suffix;
-        std::mutex m_mutex;
+        std::string               m_current_suffix;
+        std::mutex                m_mutex;
     };
 
     // ============================================================================
@@ -280,8 +280,8 @@ namespace Base
          * @param policy 队列满时溢出策略。
          */
         explicit AsyncSink(std::unique_ptr<LogSink> wrapped_sink,
-                           size_t queue_size = 1024,
-                           OverflowPolicy policy = OverflowPolicy::Block);
+                           size_t                   queue_size = 1024,
+                           OverflowPolicy           policy     = OverflowPolicy::Block);
 
         /**
          * @brief 析构异步 Sink 并停止后台线程。
@@ -311,18 +311,17 @@ namespace Base
         void workerLoop();
 
         std::unique_ptr<LogSink> m_wrapped_sink;
-        std::queue<LogEvent> m_queue;
-        size_t m_max_queue_size;
-        OverflowPolicy m_overflow_policy;
+        std::queue<LogEvent>     m_queue;
+        size_t                   m_max_queue_size;
+        OverflowPolicy           m_overflow_policy;
 
-        std::mutex m_queue_mutex;
+        std::mutex              m_queue_mutex;
         std::condition_variable m_queue_cv;
         std::condition_variable m_flush_cv;
 
         std::atomic<bool> m_running{true};
-        std::thread m_worker_thread;
+        std::thread       m_worker_thread;
     };
 }
 
-
-#endif //LOGSINK_H
+#endif

@@ -1,16 +1,8 @@
-/**
- * @file LogSink.cpp
- * @brief 日志 Sink、格式化器与滚动/异步输出实现。
- */
-
 #include "LogSink.h"
 
 #include <algorithm>
 #include <format>
 #include <iostream>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 namespace Base
 {
@@ -68,11 +60,8 @@ namespace Base
         return default_fmt.format(event);
     }
 
-    // ============================================================================
-    // ConsoleSink 实现
-    // ============================================================================
-
-    ConsoleSink::ConsoleSink(const bool enable_color) : m_color_enabled(enable_color)
+    ConsoleSink::ConsoleSink(const bool enable_color) :
+        m_color_enabled(enable_color)
     {
         if (enable_color)
         {
@@ -81,25 +70,11 @@ namespace Base
         {
             setFormatter(std::make_unique<DefaultFormatter>());
         }
-#ifdef _WIN32
-        if (enable_color)
-        {
-            if (const HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE); hOut != INVALID_HANDLE_VALUE)
-            {
-                DWORD dwMode = 0;
-                if (GetConsoleMode(hOut, &dwMode))
-                {
-                    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-                    SetConsoleMode(hOut, dwMode);
-                }
-            }
-        }
-#endif
     }
 
     void ConsoleSink::write(const LogEvent &event)
     {
-        std::lock_guard lock(m_mutex);
+        std::lock_guard   lock(m_mutex);
         const std::string formatted = formatEvent(event);
         if (event.level >= LogLevel::WARN)
         {
@@ -134,10 +109,10 @@ namespace Base
     // FileSink 实现
     // ============================================================================
 
-    FileSink::FileSink(const std::filesystem::path &file_path, bool truncate)
-        : m_file_path(file_path)
+    FileSink::FileSink(const std::filesystem::path &file_path, const bool truncate) :
+        m_file_path(file_path)
     {
-        if (auto parent = m_file_path.parent_path(); !parent.empty())
+        if (const auto parent = m_file_path.parent_path(); !parent.empty())
         {
             std::filesystem::create_directories(parent);
         }
@@ -187,20 +162,16 @@ namespace Base
         m_file.open(m_file_path, std::ios::out | std::ios::app);
     }
 
-    // ============================================================================
-    // RollingFileSink 实现
-    // ============================================================================
-
-    RollingFileSink::RollingFileSink(const std::string &base_filename,
+    RollingFileSink::RollingFileSink(const std::string &          base_filename,
                                      const std::filesystem::path &directory,
-                                     const RollingPolicy policy,
-                                     const size_t max_size_bytes,
-                                     const size_t max_backup_files)
-        : m_base_filename(base_filename)
-          , m_directory(directory)
-          , m_policy(policy)
-          , m_max_size_bytes(max_size_bytes)
-          , m_max_backup_files(max_backup_files)
+                                     const RollingPolicy          policy,
+                                     const size_t                 max_size_bytes,
+                                     const size_t                 max_backup_files) :
+        m_base_filename(base_filename)
+        , m_directory(directory)
+        , m_policy(policy)
+        , m_max_size_bytes(max_size_bytes)
+        , m_max_backup_files(max_backup_files)
     {
         std::filesystem::create_directories(m_directory);
         m_current_sink = std::make_unique<FileSink>(getCurrentFilename());
@@ -237,7 +208,7 @@ namespace Base
         {
             if (const std::string new_suffix = generateTimestampSuffix(); new_suffix != m_current_suffix)
             {
-                should_roll = true;
+                should_roll      = true;
                 m_current_suffix = new_suffix;
             }
         }
@@ -255,13 +226,13 @@ namespace Base
             auto current_path = getCurrentFilename();
             if (std::filesystem::exists(current_path))
             {
-                auto backup_name = m_base_filename;
-                const auto dot_pos = m_base_filename.rfind('.');
+                auto        backup_name = m_base_filename;
+                const auto  dot_pos     = m_base_filename.rfind('.');
                 std::string name_part, ext_part;
                 if (dot_pos != std::string::npos)
                 {
                     name_part = m_base_filename.substr(0, dot_pos);
-                    ext_part = m_base_filename.substr(dot_pos);
+                    ext_part  = m_base_filename.substr(dot_pos);
                 } else
                 {
                     name_part = m_base_filename;
@@ -304,14 +275,10 @@ namespace Base
 
     std::string RollingFileSink::generateTimestampSuffix() const
     {
-        const auto now = std::chrono::system_clock::now();
-        auto time_t_now = std::chrono::system_clock::to_time_t(now);
-        std::tm tm_buf;
-#ifdef _WIN32
-        localtime_s(&tm_buf, &time_t_now);
-#else
+        const auto now        = std::chrono::system_clock::now();
+        const auto time_t_now = std::chrono::system_clock::to_time_t(now);
+        std::tm    tm_buf;
         localtime_r(&time_t_now, &tm_buf);
-#endif
         if (m_policy == RollingPolicy::Daily)
         {
             return std::format("{:04d}-{:02d}-{:02d}", tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday);
@@ -326,9 +293,9 @@ namespace Base
             return;
         }
         std::vector<std::filesystem::path> backup_files;
-        const auto stem = m_base_filename;
-        const auto dot_pos = stem.rfind('.');
-        const std::string name_part = (dot_pos != std::string::npos) ? stem.substr(0, dot_pos) : stem;
+        const auto                         stem      = m_base_filename;
+        const auto                         dot_pos   = stem.rfind('.');
+        const std::string                  name_part = (dot_pos != std::string::npos) ? stem.substr(0, dot_pos) : stem;
         for (const auto &entry: std::filesystem::directory_iterator(m_directory))
         {
             if (auto filename = entry.path().filename().string(); filename.find(name_part) == 0 && filename != m_base_filename)
@@ -356,11 +323,11 @@ namespace Base
     // ============================================================================
 
     AsyncSink::AsyncSink(std::unique_ptr<LogSink> wrapped_sink,
-                         const size_t queue_size,
-                         const OverflowPolicy policy)
-        : m_wrapped_sink(std::move(wrapped_sink))
-          , m_max_queue_size(queue_size)
-          , m_overflow_policy(policy)
+                         const size_t             queue_size,
+                         const OverflowPolicy     policy) :
+        m_wrapped_sink(std::move(wrapped_sink))
+        , m_max_queue_size(queue_size)
+        , m_overflow_policy(policy)
     {
         m_worker_thread = std::thread(&AsyncSink::workerLoop, this);
     }
