@@ -72,7 +72,8 @@ namespace Core
         size_t                 m_bufferSize;  ///< 每个缓冲区大小（字节）
         size_t                 m_bufferCount; ///< 缓冲区个数
         std::vector<std::byte> m_memory;      ///< 连续内存块，总大小为 bufferSize * bufferCount
-        std::vector<bool>      m_used;        ///< 缓冲区占用标记，true 表示已分配
+        std::vector<int>       m_freeList;    ///< 空闲缓冲区索引栈，O(1) 获取
+        size_t                 m_freeTop{0};  ///< 空闲栈顶位置
     };
 
 }

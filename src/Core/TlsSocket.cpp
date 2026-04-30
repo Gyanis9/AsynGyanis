@@ -12,13 +12,10 @@ namespace Core
     {
     }
 
-    TlsSocket::~TlsSocket()
-    {
-        close();
-    }
+    TlsSocket::~TlsSocket() = default;
 
     TlsSocket::TlsSocket(TlsSocket &&other) noexcept :
-        m_ssl(std::exchange(other.m_ssl, nullptr)),
+        m_ssl(std::move(other.m_ssl)),
         m_loop(other.m_loop),
         m_socket(std::move(other.m_socket)),
         m_handshakeDone(other.m_handshakeDone)
@@ -29,9 +26,8 @@ namespace Core
     {
         if (this != &other)
         {
-            close();
             m_loop          = other.m_loop;
-            m_ssl           = std::exchange(other.m_ssl, nullptr);
+            m_ssl           = std::move(other.m_ssl);
             m_socket        = std::move(other.m_socket);
             m_handshakeDone = other.m_handshakeDone;
         }
@@ -50,14 +46,14 @@ namespace Core
 
         while (true)
         {
-            const int ret = SSL_accept(m_ssl);
+            const int ret = SSL_accept(m_ssl.get());
             if (ret == 1)
             {
                 m_handshakeDone = true;
                 co_return;
             }
 
-            const int err = SSL_get_error(m_ssl, ret);
+            const int err = SSL_get_error(m_ssl.get(), ret);
             if (err == SSL_ERROR_WANT_READ)
             {
                 co_await EpollAwaiter(epoll, fd, EPOLLIN);
@@ -88,13 +84,13 @@ namespace Core
 
         while (true)
         {
-            const int ret = SSL_read(m_ssl, buf, static_cast<int>(len));
+            const int ret = SSL_read(m_ssl.get(), buf, static_cast<int>(len));
             if (ret > 0)
             {
                 co_return static_cast<ssize_t>(ret);
             }
 
-            const int err = SSL_get_error(m_ssl, ret);
+            const int err = SSL_get_error(m_ssl.get(), ret);
             if (err == SSL_ERROR_WANT_READ)
             {
                 co_await EpollAwaiter(epoll, fd, EPOLLIN);
@@ -130,13 +126,13 @@ namespace Core
 
         while (true)
         {
-            const int ret = SSL_write(m_ssl, buf, static_cast<int>(len));
+            const int ret = SSL_write(m_ssl.get(), buf, static_cast<int>(len));
             if (ret > 0)
             {
                 co_return static_cast<ssize_t>(ret);
             }
 
-            const int err = SSL_get_error(m_ssl, ret);
+            const int err = SSL_get_error(m_ssl.get(), ret);
             if (err == SSL_ERROR_WANT_WRITE)
             {
                 co_await EpollAwaiter(epoll, fd, EPOLLOUT);
@@ -157,12 +153,7 @@ namespace Core
 
     void TlsSocket::close()
     {
-        if (m_ssl)
-        {
-            SSL_shutdown(m_ssl);
-            SSL_free(m_ssl);
-            m_ssl = nullptr;
-        }
+        m_ssl.reset();
         m_socket.close();
     }
 

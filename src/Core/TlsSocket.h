@@ -11,6 +11,8 @@
 
 #include <openssl/ssl.h>
 
+#include <memory>
+
 namespace Core
 {
     class EventLoop;
@@ -91,7 +93,19 @@ namespace Core
         [[nodiscard]] int fd() const noexcept;
 
     private:
-        SSL *       m_ssl{nullptr};         ///< OpenSSL SSL 对象，非 RAII 管理（需手动释放）
+        struct SslDeleter
+        {
+            void operator()(SSL *ssl) const noexcept
+            {
+                if (ssl)
+                {
+                    SSL_shutdown(ssl);
+                    SSL_free(ssl);
+                }
+            }
+        };
+
+        std::unique_ptr<SSL, SslDeleter> m_ssl;          ///< OpenSSL SSL 对象，RAII 管理
         EventLoop * m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
         AsyncSocket m_socket;               ///< 底层异步 socket
         bool        m_handshakeDone{false}; ///< 握手是否已完成
