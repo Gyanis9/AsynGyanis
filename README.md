@@ -28,17 +28,17 @@
                         │                  Net (libNet.a)              │
                         │               HTTP / TCP 应用层               │
                         │                                              │
-   HTTP Request ──────▶ │  HttpServer ─▶ Router ─▶ Handler (co_await)  │
+   HTTP Request ─────▶ │  HttpServer ─▶ Router ─▶ Handler (co_await) │
                         │     │              │            │            │
                         │     ▼              │            ▼            │
-   HTTP Response ◀───── │  HttpSession       │      HttpResponse       │
+   HTTP Response ◀──── │  HttpSession       │      HttpResponse       │
                         │     │              │                         │
                         │     ▼              │                         │
                         │  HttpParser        │                         │
                         │  (llhttp)          │                         │
                         └──────┬─────────────┴─────────────────────────┘
                                │  ┌──────────────────────┐
-                               │  │ TcpServer  (×N 线程)  │
+                               │  │ TcpServer  (×N 线程) │
                                │  │ TcpAcceptor          │
                                │  │ TcpStream            │
                                │  │ StreamBuffer         │
@@ -47,11 +47,11 @@
                                │
                         ┌──────▼──────────────────────────────────────┐
                         │                Core (libCore.a)             │
-                        │               异步运行时 + 协程调度            │
+                        │               异步运行时 + 协程调度           │
                         │                                             │
                         │  ┌──────────────┐   ┌──────────────────┐    │
                         │  │  IoContext   │   │  CoroutinePool   │    │
-                        │  │  (阻塞 run)   │   │  (帧内存池)       │    │
+                        │  │  (阻塞 run)  │   │  (帧内存池)       │    │
                         │  └──────┬───────┘   └──────────────────┘    │
                         │         │                                   │
                         │  ┌──────▼──────────────────────────────┐    │
@@ -67,13 +67,13 @@
                         │          │              │                   │
                         │  ┌───────▼──────────────▼──────────────┐    │
                         │  │            Scheduler                │    │
-                        │  │   本地队列 (lock-free) │ 全局队列      │    │
-                        │  │   工作窃取 ◀──▶ 跨线程调度             │    │
+                        │  │   本地队列 (lock-free) │ 全局队列    │    │
+                        │  │   工作窃取 ◀──▶ 跨线程调度          │    │
                         │  └──────────────────┬──────────────────┘    │
                         │                     │                       │
                         │          ┌──────────▼──────────┐            │
                         │          │ co_await 原语       │            │
-                        │          │ EpollAwaiter        │           │
+                        │          │ EpollAwaiter        │            │
                         │          │ Task<T> (协程类型)   │            │
                         │          └─────────────────────┘            │
                         │                                             │
