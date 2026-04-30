@@ -51,8 +51,7 @@ namespace Net
                 break;
             }
 
-            auto conn = createConnection(std::move(result.value()));
-            if (conn)
+            if (auto conn = createConnection(std::move(result.value())))
             {
                 m_connManager.add(conn);
                 auto task = handleConnection(std::move(conn));

@@ -50,7 +50,9 @@ namespace Net
         {
             const ssize_t n = co_await read(dst + totalRead, len - totalRead);
             if (n <= 0)
+            {
                 co_return;
+            }
             totalRead += static_cast<size_t>(n);
         }
     }
@@ -99,12 +101,12 @@ namespace Net
         }
     }
 
-    Core::Task<ssize_t> TcpStream::write(const void *buf, const size_t len)
+    Core::Task<ssize_t> TcpStream::write(const void *buf, const size_t len) const
     {
         co_return co_await m_socket.asyncSend(buf, len);
     }
 
-    Core::Task<> TcpStream::writeAll(const void *buf, const size_t len)
+    Core::Task<> TcpStream::writeAll(const void *buf, const size_t len) const
     {
         size_t totalWritten = 0;
         auto * src          = static_cast<const char *>(buf);
@@ -113,7 +115,9 @@ namespace Net
         {
             const ssize_t n = co_await m_socket.asyncSend(src + totalWritten, len - totalWritten);
             if (n <= 0)
+            {
                 co_return;
+            }
             totalWritten += static_cast<size_t>(n);
         }
     }
