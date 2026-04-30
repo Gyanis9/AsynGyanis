@@ -6,7 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
-#include "Base/Expection.h"
+#include "Base/Exception.h"
 
 using namespace Base;
 
@@ -28,7 +28,7 @@ TEST_CASE("ConfigException stores message and location", "[Exception][ConfigExce
     ConfigException ex("test message", loc);
 
     std::string what_str(ex.what());
-    REQUIRE(what_str.find("[ConfigException]") != std::string::npos);
+    REQUIRE(what_str.find("[Exception]") != std::string::npos);
     REQUIRE(what_str.find("test message") != std::string::npos);
     REQUIRE(what_str.find(loc.file_name()) != std::string::npos);
     REQUIRE(what_str.find(std::to_string(loc.line())) != std::string::npos);
@@ -48,7 +48,7 @@ TEST_CASE("ConfigException with empty message", "[Exception][ConfigException][bo
 {
     ConfigException ex("");
     std::string what_str(ex.what());
-    REQUIRE(what_str.find("[ConfigException]") != std::string::npos);
+    REQUIRE(what_str.find("[Exception]") != std::string::npos);
 }
 
 TEST_CASE("ConfigException with long message", "[Exception][ConfigException][boundary]")

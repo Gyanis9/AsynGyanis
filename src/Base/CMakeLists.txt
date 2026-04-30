@@ -7,8 +7,6 @@ add_library(Base
         ConfigManager.h
         ConfigManager.cpp
         ConfigFileWatcher.cpp
-        Expection.cpp
-        Expection.h
         Exception.cpp
         Exception.h
         Config.h
