@@ -16,7 +16,9 @@ namespace Core
         m_loop(loop), m_fd(fd)
     {
         if (m_fd >= 0)
+        {
             setNonBlocking();
+        }
     }
 
     AsyncSocket::~AsyncSocket()
@@ -43,7 +45,9 @@ namespace Core
     {
         const int fd = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (fd < 0)
+        {
             throw Base::SystemException("socket creation failed");
+        }
 
         if (type == SOCK_STREAM)
         {
@@ -76,27 +80,33 @@ namespace Core
         while (true)
         {
             sockaddr_storage addr{};
-            socklen_t        addrLen = sizeof(addr);
-            const int        fd      = ::accept4(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen,
-                                     SOCK_NONBLOCK | SOCK_CLOEXEC);
-            if (fd >= 0)
+
+            socklen_t addrLen = sizeof(addr);
+            if (const int fd = ::accept4(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen,SOCK_NONBLOCK | SOCK_CLOEXEC);
+                fd >= 0)
             {
                 constexpr int opt = 1;
                 setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
                 co_return AsyncSocket(m_loop, fd);
             }
+
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
                 continue;
             }
+
             if (errno == EINTR || errno == ECONNABORTED)
+            {
                 continue;
+            }
+
             if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
                 continue;
             }
+
             throw Base::SystemException("accept4 failed");
         }
     }
@@ -104,21 +114,27 @@ namespace Core
     Task<> AsyncSocket::asyncConnect(const sockaddr *const addr, const socklen_t addrLen) const
     {
         if (const int ret = ::connect(m_fd, addr, addrLen); ret == 0)
+        {
             co_return;
-        else if (errno != EINPROGRESS)
+        } else if (errno != EINPROGRESS)
+        {
             throw Base::SystemException("connect failed");
+        }
 
         co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);
 
-        int       err = 0;
+        int err = 0;
+
         socklen_t len = sizeof(err);
         getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &err, &len);
         if (err != 0)
+        {
             throw Base::SystemException("connect failed", std::error_code(err, std::system_category()));
+        }
         co_return;
     }
 
-    Task<void> AsyncSocket::asyncConnect(const InetAddress &addr) const
+    Task<> AsyncSocket::asyncConnect(const InetAddress &addr) const
     {
         co_return co_await asyncConnect(addr.addr(), addr.addrLen());
     }
@@ -126,7 +142,9 @@ namespace Core
     Task<ssize_t> AsyncSocket::asyncRecv(void *const buf, const size_t len) const
     {
         if (len == 0)
+        {
             co_return 0;
+        }
 
         while (true)
         {
@@ -149,7 +167,9 @@ namespace Core
     Task<ssize_t> AsyncSocket::asyncSend(const void *const buf, const size_t len) const
     {
         if (len == 0)
+        {
             co_return 0;
+        }
 
         while (true)
         {
@@ -203,7 +223,9 @@ namespace Core
         sockaddr_storage addr{};
         socklen_t        addrLen = sizeof(addr);
         if (getpeername(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen) != 0)
+        {
             return InetAddress();
+        }
         return InetAddress(addr, addrLen);
     }
 
@@ -212,8 +234,9 @@ namespace Core
         sockaddr_storage addr{};
         socklen_t        addrLen = sizeof(addr);
         if (getsockname(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen) != 0)
+        {
             return InetAddress();
+        }
         return InetAddress(addr, addrLen);
     }
-
 }
