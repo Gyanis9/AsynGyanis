@@ -1,6 +1,6 @@
 /**
  * @file FileSender.h
- * @brief Zero-copy static file sender
+ * @brief Zero-copy static file sender using sendfile(2)
  * @copyright Copyright (c) 2026
  */
 #ifndef NET_FILESENDER_H
@@ -11,6 +11,11 @@
 
 #include <string>
 
+namespace Core
+{
+    class EventLoop;
+}
+
 namespace Net
 {
 
@@ -19,7 +24,7 @@ namespace Net
     public:
         FileSender() = delete;
 
-        static Core::Task<> sendFile(TcpStream &stream, const std::string &filePath);
+        static Core::Task<> sendFile(Core::EventLoop &loop, TcpStream &stream, const std::string &filePath);
 
     private:
         static const char *contentTypeForFile(const std::string &filePath);

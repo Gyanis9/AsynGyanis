@@ -1,49 +1,54 @@
-/**
- * @file FileSender.cpp
- * @brief Zero-copy static file sender
- * @copyright Copyright (c) 2026
- */
 #include "FileSender.h"
 
+#include "Core/EpollAwaiter.h"
+#include "Core/EventLoop.h"
+
 #include <fcntl.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#include <cstring>
-#include <string_view>
-#include <vector>
+#include <cerrno>
 
 namespace Net
 {
 
-    Core::Task<> FileSender::sendFile(TcpStream &stream, const std::string &filePath)
+    Core::Task<> FileSender::sendFile(Core::EventLoop &loop, TcpStream &stream, const std::string &filePath)
     {
-        const int fd = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd < 0)
+        const int fileFd = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fileFd < 0)
             co_return;
 
         struct stat st{};
-        if (::fstat(fd, &st) < 0)
+        if (::fstat(fileFd, &st) < 0)
         {
-            ::close(fd);
+            ::close(fileFd);
             co_return;
         }
 
-        size_t            remaining = static_cast<size_t>(st.st_size);
-        std::vector<char> buffer(65536);
+        const int sockFd = stream.socket().fd();
+        size_t    remaining = static_cast<size_t>(st.st_size);
 
         while (remaining > 0)
         {
-            const size_t  toRead = std::min(remaining, buffer.size());
-            const ssize_t n      = ::read(fd, buffer.data(), toRead);
-            if (n <= 0)
+            const ssize_t n = ::sendfile(sockFd, fileFd, nullptr, remaining);
+            if (n > 0)
+            {
+                remaining -= static_cast<size_t>(n);
+                continue;
+            }
+            if (n == 0)
                 break;
-
-            co_await stream.writeAll(buffer.data(), static_cast<size_t>(n));
-            remaining -= static_cast<size_t>(n);
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                co_await Core::EpollAwaiter(loop.epoll(), sockFd, EPOLLOUT);
+                continue;
+            }
+            if (errno == EINTR)
+                continue;
+            break;
         }
 
-        ::close(fd);
+        ::close(fileFd);
     }
 
     const char *FileSender::contentTypeForFile(const std::string &filePath)

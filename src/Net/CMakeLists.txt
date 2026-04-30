@@ -24,6 +24,8 @@ add_library(Net
         InetAddress.h
         StreamBuffer.h
         Middleware.h
+        FileSender.cpp
+        FileSender.h
 )
 
 target_link_libraries(Net PUBLIC
