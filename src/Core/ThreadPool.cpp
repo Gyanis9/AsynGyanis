@@ -1,12 +1,16 @@
 #include "ThreadPool.h"
 
+#include "Base/Logger.h"
+
 namespace Core
 {
     ThreadPool::ThreadPool(const size_t threadCount) :
         m_threadCount(threadCount > 0 ? threadCount : std::thread::hardware_concurrency())
     {
         if (m_threadCount == 0)
+        {
             m_threadCount = 1;
+        }
 
         m_eventLoops.reserve(m_threadCount);
         for (size_t i = 0; i < m_threadCount; ++i)
@@ -29,6 +33,7 @@ namespace Core
             {
                 m_eventLoops[i]->run();
             });
+            LOG_DEBUG("ThreadPool size: "+std::to_string(m_threads.size()));
         }
     }
 
@@ -60,4 +65,4 @@ namespace Core
         return m_eventLoops.at(index)->scheduler();
     }
 
-} // namespace Core
+}

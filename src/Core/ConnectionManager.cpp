@@ -6,7 +6,9 @@ namespace Core
     void ConnectionManager::add(const std::shared_ptr<Connection> &conn)
     {
         if (!conn)
+        {
             return;
+        }
         std::unique_lock lock(m_mutex);
         m_connections.insert(conn);
     }
@@ -14,7 +16,10 @@ namespace Core
     void ConnectionManager::remove(const Connection *const conn)
     {
         if (!conn)
+        {
             return;
+        }
+
         std::unique_lock lock(m_mutex);
         for (auto it = m_connections.begin(); it != m_connections.end(); ++it)
         {
@@ -40,7 +45,7 @@ namespace Core
         {
             if (conn)
             {
-                conn->cancelable().requestStop();
+                [[maybe_unused]] auto _ = conn->cancelable().requestStop();
             }
         }
     }

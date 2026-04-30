@@ -2,6 +2,8 @@
 
 #include "Base/Exception.h"
 
+#include <openssl/ssl.h>
+
 namespace Core
 {
     TlsContext::TlsContext()
@@ -25,16 +27,18 @@ namespace Core
         }
     }
 
-    bool TlsContext::loadCertificate(const std::string &certFile, const std::string &keyFile)
+    bool TlsContext::loadCertificate(const std::string &certFile, const std::string &keyFile) const
     {
         if (SSL_CTX_use_certificate_file(m_ctx, certFile.c_str(), SSL_FILETYPE_PEM) != 1)
         {
             return false;
         }
+
         if (SSL_CTX_use_PrivateKey_file(m_ctx, keyFile.c_str(), SSL_FILETYPE_PEM) != 1)
         {
             return false;
         }
+
         if (SSL_CTX_check_private_key(m_ctx) != 1)
         {
             return false;
@@ -42,7 +46,7 @@ namespace Core
         return true;
     }
 
-    SSL *TlsContext::createSSL(const int fd)
+    SSL *TlsContext::createSSL(const int fd) const
     {
         SSL *ssl = SSL_new(m_ctx);
         if (!ssl)

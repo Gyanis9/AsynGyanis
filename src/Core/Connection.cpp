@@ -34,7 +34,7 @@ namespace Core
     void Connection::close()
     {
         m_alive.store(false, std::memory_order_release);
-        m_cancelable.requestStop();
+        [[maybe_unused]] auto _ = m_cancelable.requestStop();
         m_socket.close();
     }
 

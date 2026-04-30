@@ -38,7 +38,7 @@ namespace Core
         return m_threadPool;
     }
 
-    Scheduler &IoContext::mainScheduler()
+    Scheduler &IoContext::mainScheduler() const
     {
         return m_threadPool.scheduler(0);
     }

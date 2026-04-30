@@ -48,4 +48,4 @@ namespace Core
         return m_bufferCount;
     }
 
-} // namespace Core
+}

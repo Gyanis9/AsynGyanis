@@ -41,10 +41,12 @@ namespace Core
     Task<> TlsSocket::handshake()
     {
         if (m_handshakeDone)
+        {
             co_return;
+        }
 
-        auto &epoll = m_loop->epoll();
-        int   fd    = m_socket.fd();
+        auto &    epoll = m_loop->epoll();
+        const int fd    = m_socket.fd();
 
         while (true)
         {
@@ -61,6 +63,7 @@ namespace Core
                 co_await EpollAwaiter(epoll, fd, EPOLLIN);
                 continue;
             }
+
             if (err == SSL_ERROR_WANT_WRITE)
             {
                 co_await EpollAwaiter(epoll, fd, EPOLLOUT);
@@ -79,13 +82,17 @@ namespace Core
         const int fd    = m_socket.fd();
 
         if (len == 0)
+        {
             co_return 0;
+        }
 
         while (true)
         {
             const int ret = SSL_read(m_ssl, buf, static_cast<int>(len));
             if (ret > 0)
+            {
                 co_return static_cast<ssize_t>(ret);
+            }
 
             const int err = SSL_get_error(m_ssl, ret);
             if (err == SSL_ERROR_WANT_READ)
@@ -93,13 +100,17 @@ namespace Core
                 co_await EpollAwaiter(epoll, fd, EPOLLIN);
                 continue;
             }
+
             if (err == SSL_ERROR_WANT_WRITE)
             {
                 co_await EpollAwaiter(epoll, fd, EPOLLOUT);
                 continue;
             }
+
             if (err == SSL_ERROR_ZERO_RETURN)
+            {
                 co_return 0;
+            }
 
             char errorBuf[256];
             ERR_error_string_n(ERR_get_error(), errorBuf, sizeof(errorBuf));
@@ -113,13 +124,17 @@ namespace Core
         const int fd    = m_socket.fd();
 
         if (len == 0)
+        {
             co_return 0;
+        }
 
         while (true)
         {
             const int ret = SSL_write(m_ssl, buf, static_cast<int>(len));
             if (ret > 0)
+            {
                 co_return static_cast<ssize_t>(ret);
+            }
 
             const int err = SSL_get_error(m_ssl, ret);
             if (err == SSL_ERROR_WANT_WRITE)
@@ -127,6 +142,7 @@ namespace Core
                 co_await EpollAwaiter(epoll, fd, EPOLLOUT);
                 continue;
             }
+
             if (err == SSL_ERROR_WANT_READ)
             {
                 co_await EpollAwaiter(epoll, fd, EPOLLIN);

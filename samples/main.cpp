@@ -101,7 +101,7 @@ int main(int argc, char **argv)
     // Logger init
     auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
     rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
-    rootLogger.setLevel(Base::LogLevel::INFO);
+    rootLogger.setLevel(Base::LogLevel::DEBUG);
 
     const char *proto = useHttps ? "https" : "http";
     LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={}", proto, host, port, threads);

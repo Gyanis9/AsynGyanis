@@ -12,7 +12,7 @@ namespace Core
 
     CoroutinePool::~CoroutinePool()
     {
-        for (auto *chunk: m_chunks)
+        for (const auto chunk: m_chunks)
         {
             ::operator delete(chunk);
         }
@@ -39,7 +39,9 @@ namespace Core
     void CoroutinePool::deallocate(void *const p, const size_t n)
     {
         if (!p)
+        {
             return;
+        }
 
         if (n > m_blockSize)
         {

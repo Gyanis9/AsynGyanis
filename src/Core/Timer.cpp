@@ -18,7 +18,7 @@ namespace Core
         return m_awaiter.await_ready();
     }
 
-    void Timer::Awaiter::await_suspend(const std::coroutine_handle<> handle) noexcept
+    void Timer::Awaiter::await_suspend(const std::coroutine_handle<> handle) const noexcept
     {
         m_awaiter.await_suspend(handle);
     }
@@ -26,6 +26,7 @@ namespace Core
     void Timer::Awaiter::await_resume() const
     {
         uint64_t expirations = 0;
+
         [[maybe_unused]] auto _ = ::read(m_fd, &expirations, sizeof(expirations));
         m_awaiter.await_resume();
     }
@@ -55,7 +56,7 @@ namespace Core
         ts.it_value.tv_sec  = duration.count() / 1000;
         ts.it_value.tv_nsec = (duration.count() % 1000) * 1000000;
         timerfd_settime(m_timerFd, 0, &ts, nullptr);
-        return Timer::Awaiter(m_loop.epoll(), m_timerFd);
+        return Awaiter(m_loop.epoll(), m_timerFd);
     }
 
 }
