@@ -1,5 +1,7 @@
 #include "TcpStream.h"
 
+#include "Base/Exception.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -7,54 +9,51 @@ namespace Net
 {
 
     TcpStream::TcpStream(Core::AsyncSocket socket) :
-        m_socket(std::move(socket))
-        , m_readBuffer(4096)
-        , m_readPos(0)
+        m_socket(std::move(socket)),
+        m_readBuffer(4096),
+        m_readPos(0)
     {
     }
 
-    Core::Task<ssize_t> TcpStream::read(void *buf, const size_t len)
+    Core::Task<ssize_t> TcpStream::read(void *const buf, const size_t len)
     {
-        if (m_readPos > 0 && m_readPos < m_readBuffer.size())
+        if (len == 0)
+            co_return 0;
+
+        // Refill buffer if exhausted
+        if (m_readPos >= m_readBuffer.size())
         {
-            const size_t buffered = m_readBuffer.size() - m_readPos;
-            const size_t toCopy   = std::min(len, buffered);
-            std::memcpy(buf, m_readBuffer.data() + m_readPos, toCopy);
-            m_readPos += toCopy;
-
-            if (m_readPos >= m_readBuffer.size())
-            {
-                m_readBuffer.clear();
-                m_readPos = 0;
-            }
-
-            co_return static_cast<ssize_t>(toCopy);
+            co_await fillBuffer();
+            if (m_readBuffer.empty())
+                co_return 0; // EOF
         }
 
-        m_readBuffer.resize(len);
-        ssize_t n = co_await m_socket.asyncRecv(m_readBuffer.data(), len);
-        if (n <= 0)
-            co_return n;
+        const size_t available = m_readBuffer.size() - m_readPos;
+        const size_t toCopy    = std::min(len, available);
+        std::memcpy(buf, m_readBuffer.data() + m_readPos, toCopy);
+        m_readPos += toCopy;
 
-        std::memcpy(buf, m_readBuffer.data(), static_cast<size_t>(n));
-        m_readBuffer.clear();
-        co_return n;
+        co_return static_cast<ssize_t>(toCopy);
     }
 
-    Core::Task<> TcpStream::readExact(void *buf, const size_t len)
+    Core::Task<> TcpStream::readExact(void *const buf, const size_t len)
     {
-        size_t totalRead = 0;
         auto * dst       = static_cast<char *>(buf);
+        size_t remaining = len;
 
-        while (totalRead < len)
+        while (remaining > 0)
         {
-            const ssize_t n = co_await read(dst + totalRead, len - totalRead);
+            const ssize_t n = co_await read(dst, remaining);
             if (n <= 0)
             {
-                co_return;
+                throw Base::Exception("TcpStream::readExact: connection closed or error before "
+                        "reading required bytes");
             }
-            totalRead += static_cast<size_t>(n);
+            dst       += static_cast<size_t>(n);
+            remaining -= static_cast<size_t>(n);
         }
+
+        co_return;
     }
 
     Core::Task<std::string> TcpStream::readUntil(const char delimiter)
@@ -63,73 +62,95 @@ namespace Net
 
         while (true)
         {
+            // Scan buffered data for delimiter
             if (m_readPos < m_readBuffer.size())
             {
-                auto *      start = m_readBuffer.data() + m_readPos;
-                const auto *end   = m_readBuffer.data() + m_readBuffer.size();
+                const char *start = m_readBuffer.data() + m_readPos;
+                const char *end   = m_readBuffer.data() + m_readBuffer.size();
 
-                if (const auto *found = static_cast<char *>(std::memchr(start, delimiter, end - start)))
+                if (const auto *found = static_cast<const char *>(
+                    std::memchr(start, delimiter,
+                                static_cast<size_t>(end - start))))
                 {
-                    const size_t chunkLen = found - start;
+                    const size_t chunkLen = static_cast<size_t>(found - start);
                     result.append(start, chunkLen);
-                    m_readPos += chunkLen + 1;
-
-                    if (m_readPos >= m_readBuffer.size())
-                    {
-                        m_readBuffer.clear();
-                        m_readPos = 0;
-                    }
-
+                    m_readPos += chunkLen + 1; // skip delimiter
                     co_return result;
-                } else
-                {
-                    result.append(start, end - start);
-                    m_readBuffer.clear();
-                    m_readPos = 0;
                 }
+
+                // Delimiter not found — append all buffered data and refill
+                result.append(start, static_cast<size_t>(end - start));
+                m_readPos = m_readBuffer.size();
             }
 
-            m_readBuffer.resize(4096);
-            const ssize_t n = co_await m_socket.asyncRecv(m_readBuffer.data(), m_readBuffer.size());
-            if (n <= 0)
+            try
             {
-                m_readBuffer.clear();
-                co_return result;
+                co_await fillBuffer();
+            } catch (const Base::SystemException &)
+            {
+                co_return result; // return what we have on error
             }
-            m_readBuffer.resize(static_cast<size_t>(n));
-            m_readPos = 0;
+
+            if (m_readBuffer.empty())
+                co_return result; // EOF
         }
     }
 
-    Core::Task<ssize_t> TcpStream::write(const void *buf, const size_t len) const
+    Core::Task<ssize_t> TcpStream::write(const void *const buf, const size_t len) const
     {
         co_return co_await m_socket.asyncSend(buf, len);
     }
 
-    Core::Task<> TcpStream::writeAll(const void *buf, const size_t len) const
+    Core::Task<> TcpStream::writeAll(const void *const buf, const size_t len) const
     {
-        size_t totalWritten = 0;
-        auto * src          = static_cast<const char *>(buf);
+        auto * src       = static_cast<const char *>(buf);
+        size_t remaining = len;
 
-        while (totalWritten < len)
+        while (remaining > 0)
         {
-            const ssize_t n = co_await m_socket.asyncSend(src + totalWritten, len - totalWritten);
+            const ssize_t n = co_await m_socket.asyncSend(src, remaining);
             if (n <= 0)
             {
-                co_return;
+                throw Base::Exception("TcpStream::writeAll: send failed or connection closed");
             }
-            totalWritten += static_cast<size_t>(n);
+            src       += static_cast<size_t>(n);
+            remaining -= static_cast<size_t>(n);
         }
+
+        co_return;
     }
 
     void TcpStream::close()
     {
+        m_readBuffer.clear();
+        m_readPos = 0;
         m_socket.close();
     }
 
     Core::AsyncSocket &TcpStream::socket()
     {
         return m_socket;
+    }
+
+    Core::Task<> TcpStream::fillBuffer()
+    {
+        m_readBuffer.resize(4096);
+        m_readPos = 0;
+
+        const ssize_t n = co_await m_socket.asyncRecv(m_readBuffer.data(), m_readBuffer.size());
+        if (n > 0)
+        {
+            m_readBuffer.resize(static_cast<size_t>(n));
+            co_return;
+        }
+
+        m_readBuffer.clear();
+        if (n < 0)
+        {
+            throw Base::SystemException("TcpStream::fillBuffer: recv failed");
+        }
+        // n == 0: EOF, buffer stays empty
+        co_return;
     }
 
 }
