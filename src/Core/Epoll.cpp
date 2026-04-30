@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstring>
 #include <stdexcept>
 
 namespace Core
@@ -78,7 +79,7 @@ namespace Core
         {
             if (errno == EINTR)
                 return {};
-            return {};
+            throw std::runtime_error(std::string("epoll_wait failed: ") + std::strerror(errno));
         }
         return {m_events.data(), static_cast<size_t>(n)};
     }

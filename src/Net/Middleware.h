@@ -164,22 +164,22 @@ namespace Net
         {
             auto timedOut = std::make_shared<std::atomic<bool>>(false);
 
-            // 每次请求使用独立的 stop_source，避免跨请求状态污染
             auto &cancelSource = req.cancelSource();
             cancelSource       = std::stop_source{};
 
-            // Watchdog 线程：超时后发出取消信号
-            std::jthread watchdog([timedOut, &cancelSource, timeout]()
+            std::jthread watchdog([timedOut, &cancelSource, timeout](std::stop_token stoken)
             {
-                std::this_thread::sleep_for(timeout);
-                timedOut->store(true, std::memory_order_release);
-                [[maybe_unused]] auto _ = cancelSource.request_stop();
+                std::mutex mtx;
+                std::condition_variable_any cv;
+                std::unique_lock lock(mtx);
+                if (!cv.wait_for(lock, stoken, timeout, [] { return false; }))
+                {
+                    timedOut->store(true, std::memory_order_release);
+                    cancelSource.request_stop();
+                }
             });
 
             co_await next();
-
-            // 处理器完成，停止 watchdog（析构时自动 join）
-            [[maybe_unused]] auto _ = cancelSource.request_stop();
 
             if (timedOut->load(std::memory_order_acquire))
             {

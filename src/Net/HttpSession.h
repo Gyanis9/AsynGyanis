@@ -44,7 +44,7 @@ namespace Net
          */
         Core::Task<> start() override;
 
-    private:
+    public:
         /**
          * @brief 根据 HTTP 请求和响应判断是否应保持连接（Keep-Alive）。
          * @param req  请求对象
@@ -53,6 +53,8 @@ namespace Net
          * @return false 应关闭连接
          */
         static bool shouldKeepAlive(const HttpRequest &req, const HttpResponse &res);
+
+    private:
 
         Router &             m_router;                ///< 路由器引用，用于分发请求
         HttpParser           m_parser;                ///< HTTP 解析器，用于解析请求数据

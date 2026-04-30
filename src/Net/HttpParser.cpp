@@ -87,9 +87,6 @@ namespace Net
     int HttpParser::onHeaderField(llhttp_t *parser, const char *data, const size_t len)
     {
         const auto self = static_cast<HttpParser *>(parser->data);
-        if (!self->m_currentHeaderField.empty() && !self->m_currentHeaderField.empty())
-        {
-        }
         self->m_currentHeaderField.append(data, len);
         return 0;
     }

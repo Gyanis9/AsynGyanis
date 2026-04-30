@@ -2,6 +2,7 @@
 
 #include "Base/Exception.h"
 #include "Base/Logger.h"
+#include "HttpSession.h"
 
 #include <algorithm>
 #include <cctype>
@@ -103,29 +104,7 @@ namespace Net
                         res = HttpResponse::serverError(e.what());
                     }
 
-                    const auto &version      = req.httpVersion();
-                    const bool  isHttp10     = version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9");
-                    bool        reqKeepAlive = !isHttp10;
-
-                    if (const auto connectionHeader = req.getHeader("connection"); connectionHeader.has_value())
-                    {
-                        std::string val = connectionHeader.value();
-                        std::ranges::transform(val, val.begin(), [](const unsigned char c)
-                        {
-                            return std::tolower(c);
-                        });
-                        if (val == "close")
-                            reqKeepAlive = false;
-                        else if (val == "keep-alive")
-                            reqKeepAlive = true;
-                    }
-
-                    if (!reqKeepAlive)
-                        res.setHeader("connection", "close");
-                    else if (isHttp10 && res.headers().find("connection") == res.headers().end())
-                        res.setHeader("connection", "keep-alive");
-
-                    keepAlive = reqKeepAlive;
+                    keepAlive = HttpSession::shouldKeepAlive(req, res);
 
                     std::string responseStr = res.toString();
                     if (responseStr.size() <= 4096)
