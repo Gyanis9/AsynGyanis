@@ -90,14 +90,14 @@ namespace Core
 
         if (m_addr.ss_family == AF_INET)
         {
-            const auto *sin = reinterpret_cast<const sockaddr_in *>(&m_addr);
+            const auto sin = reinterpret_cast<const sockaddr_in *>(&m_addr);
             inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
             return {buf};
         }
 
         if (m_addr.ss_family == AF_INET6)
         {
-            const auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_addr);
+            const auto sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_addr);
             inet_ntop(AF_INET6, &sin6->sin6_addr, buf, sizeof(buf));
             return {buf};
         }
