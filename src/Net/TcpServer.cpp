@@ -83,7 +83,14 @@ namespace Net
 
     Core::Task<> TcpServer::handleConnection(std::shared_ptr<Core::Connection> conn)
     {
-        co_await conn->start();
+        try
+        {
+            co_await conn->start();
+        } catch (...)
+        {
+            m_connManager.remove(conn.get());
+            throw;
+        }
         m_connManager.remove(conn.get());
     }
 

@@ -162,7 +162,7 @@ namespace Base
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
 
-        const auto it = current_data->values.find(key.data());
+        const auto it = current_data->values.find(std::string(key));
         if (it == current_data->values.end())
         {
             throw ConfigKeyNotFoundException(std::string(key));
@@ -174,7 +174,7 @@ namespace Base
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
 
-        const auto it = current_data->values.find(key.data());
+        const auto it = current_data->values.find(std::string(key));
         if (it == current_data->values.end())
         {
             return std::nullopt;
@@ -199,13 +199,13 @@ namespace Base
 
     std::string ConfigManager::getString(const std::string_view key, const std::string &default_value) const
     {
-        return get<std::string>(key, default_value.data());
+        return get<std::string>(key, std::string(default_value));
     }
 
     bool ConfigManager::has(const std::string_view key) const noexcept
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
-        return current_data->values.contains(key.data());
+        return current_data->values.contains(std::string(key));
     }
 
     std::vector<std::string> ConfigManager::keys() const
@@ -449,7 +449,6 @@ namespace Base
 
     void ConfigManager::handleFileChange(const std::string_view file_path, const FileChangeEvent event)
     {
-        // 只处理 YAML 文件的修改事件
         if (!isYamlFile(file_path))
         {
             return;
@@ -460,7 +459,12 @@ namespace Base
             return;
         }
 
-        // 在独立线程中执行重载，避免阻塞监听线程
+        bool expected = false;
+        if (!m_reload_pending.compare_exchange_strong(expected, true))
+        {
+            return;
+        }
+
         std::thread([this]()
         {
             const auto result = doReload();
@@ -469,6 +473,8 @@ namespace Base
             {
                 m_hot_reload_callback(result);
             }
+
+            m_reload_pending.store(false, std::memory_order_release);
         }).detach();
     }
 

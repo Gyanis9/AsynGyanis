@@ -91,18 +91,6 @@ namespace Core
             }
         }
 
-        // 从其他 Scheduler 的本地队列窃取（后半部分）
-        if (other.m_localQueue.size() > 1)
-        {
-            // 窃取前半部分（FIFO 公平性更好）
-            if (const size_t stealCount = other.m_localQueue.size() / 2; stealCount > 0)
-            {
-                const auto handle = other.m_localQueue[0];
-                other.m_localQueue.erase(other.m_localQueue.begin());
-                return handle;
-            }
-        }
-
         return nullptr;
     }
 
