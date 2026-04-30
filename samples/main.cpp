@@ -18,14 +18,13 @@
 #include "Net/Router.h"
 
 #include <csignal>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace
 {
-    std::atomic<bool> g_running{true};
+    std::atomic g_running{true};
 
     void handleSignal(int)
     {
@@ -58,7 +57,7 @@ namespace
             co_return;
         });
     }
-} // namespace
+}
 
 int main(int argc, char **argv)
 {
@@ -71,8 +70,7 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; ++i)
     {
-        std::string_view arg = argv[i];
-        if (arg == "--host" && i + 1 < argc)
+        if (std::string_view arg = argv[i]; arg == "--host" && i + 1 < argc)
             host = argv[++i];
         else if (arg == "--port" && i + 1 < argc)
             port = static_cast<uint16_t>(std::stoi(argv[++i]));
@@ -86,9 +84,9 @@ int main(int argc, char **argv)
             keyFile = argv[++i];
         else if (arg == "--help")
         {
-            std::cout << "Usage: echo_server [--host localhost] [--port 8080] [--threads N]\n";
-            std::cout << "                  [--https] [--cert cert.pem] [--key key.pem]\n";
-            std::cout << "  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded\n";
+            LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
+            LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem]");
+            LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
             return 0;
         }
     }
@@ -121,12 +119,11 @@ int main(int argc, char **argv)
     auto &   pool          = ctx.threadPool();
     unsigned actualThreads = static_cast<unsigned>(pool.threadCount());
 
-    LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads,
-                 std::thread::hardware_concurrency());
+    LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads, std::thread::hardware_concurrency());
 
     // Per-thread server (SO_REUSEPORT kernel-level load balancing)
     std::vector<std::unique_ptr<Net::TcpServer>> servers;
-    std::vector<Core::Task<>>                   acceptTasks;
+    std::vector<Core::Task<>>                    acceptTasks;
     servers.reserve(actualThreads);
     acceptTasks.reserve(actualThreads);
 
@@ -145,8 +142,7 @@ int main(int argc, char **argv)
 
             servers.push_back(std::move(server));
         }
-    }
-    else
+    } else
     {
         for (unsigned i = 0; i < actualThreads; ++i)
         {
@@ -163,16 +159,14 @@ int main(int argc, char **argv)
         }
     }
 
-    LOG_INFO_FMT("{} {}Server instances created, all accept tasks scheduled",
-                 actualThreads, useHttps ? "Https" : "Http");
+    LOG_INFO_FMT("{} {}Server instances created, all accept tasks scheduled", actualThreads, useHttps ? "Https" : "Http");
 
     pool.start();
 
-    std::cout << "[info] " << proto << " server started  " << proto << "://" << addr->toString() << "\n";
-    std::cout << "[info] Worker threads: " << actualThreads
-              << " (logical cores: " << std::thread::hardware_concurrency() << ")\n";
-    std::cout << "[info] Endpoints: GET /  |  GET /json  |  GET /bench\n";
-    std::cout << "[info] Press Ctrl+C to exit\n\n";
+    LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + addr->toString());
+    LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
+    LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench");
+    LOG_INFO("Press Ctrl+C to exit");
 
     // Wait for exit signal
     while (g_running.load())
