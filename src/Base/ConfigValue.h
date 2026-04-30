@@ -21,10 +21,8 @@
 
 namespace Base
 {
-    // 前向声明
     class ConfigValue;
 
-    // 类型别名
     using ConfigArray  = std::vector<ConfigValue>;
     using ConfigObject = std::map<std::string, ConfigValue, std::less<>>;
 
@@ -116,10 +114,6 @@ namespace Base
          */
         explicit ConfigValue(ConfigObject v) noexcept;
 
-        /**
-         * @brief 获取当前配置值类型。
-         * @return ConfigValueType 当前值类型枚举。
-         */
         ConfigValue(const ConfigValue &)                = default;
         ConfigValue(ConfigValue &&) noexcept            = default;
         ConfigValue &operator=(const ConfigValue &)     = default;
@@ -167,11 +161,7 @@ namespace Base
             {
                 return *p;
             }
-            throw ConfigTypeException(
-                    "<unknown>",
-                    typeid(T).name(),
-                    typeName(type())
-                    );
+            throw ConfigTypeException("<unknown>", typeid(T).name(), typeName(type()));
         }
 
         template<typename T>
@@ -181,11 +171,7 @@ namespace Base
             {
                 return *p;
             }
-            throw ConfigTypeException(
-                    "<unknown>",
-                    typeid(T).name(),
-                    typeName(type())
-                    );
+            throw ConfigTypeException("<unknown>", typeid(T).name(), typeName(type()));
         }
 
         /**
@@ -384,7 +370,7 @@ namespace Base
         VariantType &variant() noexcept;
 
     private:
-        VariantType m_value;
+        VariantType m_value; ///<配置类型
     };
 }
 

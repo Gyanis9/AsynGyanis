@@ -182,9 +182,7 @@ namespace Base
         const auto  it  = obj.find(key);
         if (it == obj.end())
         {
-            throw ConfigKeyNotFoundException(
-                    std::string(key)
-                    );
+            throw ConfigKeyNotFoundException(std::string(key));
         }
         return it->second;
     }
@@ -209,9 +207,7 @@ namespace Base
         const auto &arr = as<ConfigArray>();
         if (index >= arr.size())
         {
-            throw ConfigKeyNotFoundException(
-                    "[" + std::to_string(index) + "]"
-                    );
+            throw ConfigKeyNotFoundException("[" + std::to_string(index) + "]");
         }
         return arr[index];
     }
