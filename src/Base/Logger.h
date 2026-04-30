@@ -17,16 +17,9 @@
 
 namespace Base
 {
-    // ============================================================================
-    // 前向声明
-    // ============================================================================
 
     class Logger;
     class LoggerRegistry;
-
-    // ============================================================================
-    // 日志器类
-    // ============================================================================
 
     /**
      * @brief 日志器实例
@@ -48,14 +41,10 @@ namespace Base
          */
         ~Logger();
 
-        // 禁止拷贝，允许移动
-        Logger(const Logger &) = delete;
-
+        Logger(const Logger &)            = delete;
         Logger &operator=(const Logger &) = delete;
-
-        Logger(Logger &&) = delete;
-
-        Logger &operator=(Logger &&) = delete;
+        Logger(Logger &&)                 = delete;
+        Logger &operator=(Logger &&)      = delete;
 
         /**
          * @brief 按当前日志级别过滤后写入日志事件。
@@ -74,7 +63,7 @@ namespace Base
         void log(LogLevel level, const SourceLocation &location, std::string_view message) const;
 
         /**
-         * @brief 使用 C++20 std::format 格式化日志消息并记录。
+         * @brief 使用 std::format 格式化日志消息并记录。
          * @tparam Args 格式化参数类型。
          * @param level 本次日志级别。
          * @param location 源码位置信息。
@@ -146,10 +135,10 @@ namespace Base
          */
         void writeToSinks(const LogEvent &event) const;
 
-        std::string                           m_name;
-        std::atomic<LogLevel>                 m_level{LogLevel::TRACE};
-        std::vector<std::unique_ptr<LogSink>> m_sinks;
-        mutable std::shared_mutex             m_sinks_mutex;
+        std::string                           m_name;                   ///< 日志器名称
+        std::atomic<LogLevel>                 m_level{LogLevel::TRACE}; ///< 当前日志级别
+        std::vector<std::unique_ptr<LogSink>> m_sinks;                  ///< 日志输出目标（Sink）列表
+        mutable std::shared_mutex             m_sinks_mutex;            ///< 保护 m_sinks 的读写锁
     };
 
     // ============================================================================
@@ -172,9 +161,7 @@ namespace Base
          */
         static LoggerRegistry &instance();
 
-        // 禁止拷贝移动
-        LoggerRegistry(const LoggerRegistry &) = delete;
-
+        LoggerRegistry(const LoggerRegistry &)            = delete;
         LoggerRegistry &operator=(const LoggerRegistry &) = delete;
 
         /**
@@ -222,8 +209,8 @@ namespace Base
     private:
         LoggerRegistry() = default;
 
-        mutable std::shared_mutex                                m_mutex{};
-        std::unordered_map<std::string, std::unique_ptr<Logger>> m_loggers{};
+        mutable std::shared_mutex                                m_mutex{};   ///< 保护 m_loggers 的读写锁
+        std::unordered_map<std::string, std::unique_ptr<Logger>> m_loggers{}; ///< 日志器名称到 Logger 实例的映射表
     };
 
     // ============================================================================
@@ -276,5 +263,4 @@ namespace Base
 #define LOG_LOGGER_FATAL_FMT(logger, fmt, ...) LOG_FMT_INTERNAL(logger, Base::LogLevel::FATAL, fmt ,##__VA_ARGS__)
 }
 
-
-#endif //LOGGER_H
+#endif

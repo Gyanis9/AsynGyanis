@@ -4,7 +4,8 @@
 
 namespace Base
 {
-    Logger::Logger(std::string name) : m_name(std::move(name))
+    Logger::Logger(std::string name) :
+        m_name(std::move(name))
     {
     }
 
@@ -21,12 +22,12 @@ namespace Base
         }
 
         const LogEvent event{
-            level,
-            currentTimestamp(),
-            threadIdString(),
-            location,
-            m_name,
-            std::string(message)
+                level,
+                currentTimestamp(),
+                threadIdString(),
+                location,
+                m_name,
+                std::string(message)
         };
 
         writeToSinks(event);
@@ -93,10 +94,6 @@ namespace Base
         }
     }
 
-    // ============================================================================
-    // LoggerRegistry 实现
-    // ============================================================================
-
     LoggerRegistry &LoggerRegistry::instance()
     {
         static LoggerRegistry instance;
@@ -110,8 +107,8 @@ namespace Base
         {
             return *it->second;
         }
-        auto logger = std::make_unique<Logger>(name);
-        Logger &ref = *logger;
+        auto    logger  = std::make_unique<Logger>(name);
+        Logger &ref     = *logger;
         m_loggers[name] = std::move(logger);
         return std::ref(ref);
     }
@@ -139,7 +136,7 @@ namespace Base
 
     std::vector<std::string> LoggerRegistry::getLoggerNames() const
     {
-        std::shared_lock lock(m_mutex);
+        std::shared_lock         lock(m_mutex);
         std::vector<std::string> names;
         names.reserve(m_loggers.size());
         for (const auto &key: m_loggers | std::views::keys)
