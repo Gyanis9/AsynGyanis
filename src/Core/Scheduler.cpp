@@ -5,7 +5,12 @@
 
 namespace Core
 {
-    void Scheduler::schedule(std::coroutine_handle<> handle)
+    void Scheduler::setWakeupFd(const int fd) noexcept
+    {
+        m_wakeupFd = fd;
+    }
+
+    void Scheduler::schedule(const std::coroutine_handle<> handle)
     {
         if (handle)
         {
@@ -13,15 +18,12 @@ namespace Core
         }
     }
 
-    void Scheduler::setWakeupFd(const int fd) noexcept
-    {
-        m_wakeupFd = fd;
-    }
-
     void Scheduler::scheduleRemote(const std::coroutine_handle<> handle)
     {
         if (!handle)
+        {
             return;
+        }
         {
             std::lock_guard lock(m_globalMutex);
             m_globalQueue.push_back(handle);
@@ -30,13 +32,22 @@ namespace Core
 
         if (m_wakeupFd >= 0)
         {
-            constexpr uint64_t val = 1;
-            [[maybe_unused]] auto _ = ::write(m_wakeupFd, &val, sizeof(val));
+            constexpr uint64_t    val = 1;
+            [[maybe_unused]] auto _   = ::write(m_wakeupFd, &val, sizeof(val));
         }
     }
 
     bool Scheduler::runOne()
     {
+        // 处理本地队列
+        if (!m_localQueue.empty())
+        {
+            const auto handle = m_localQueue.back();
+            m_localQueue.pop_back();
+            handle.resume();
+            return true;
+        }
+
         // 优先处理全局队列中的跨线程任务
         std::coroutine_handle<> globalHandle = nullptr;
         {
@@ -52,15 +63,6 @@ namespace Core
         if (globalHandle)
         {
             globalHandle.resume();
-            return true;
-        }
-
-        // 处理本地队列
-        if (!m_localQueue.empty())
-        {
-            const auto handle = m_localQueue.back();
-            m_localQueue.pop_back();
-            handle.resume();
             return true;
         }
 
@@ -107,7 +109,9 @@ namespace Core
     bool Scheduler::hasWork() const
     {
         if (!m_localQueue.empty())
+        {
             return true;
+        }
         return m_globalCount.load(std::memory_order_relaxed) > 0;
     }
 

@@ -38,7 +38,9 @@ namespace Core
             m_scheduler.runAll();
 
             if (m_stopRequested.load(std::memory_order_acquire))
+            {
                 break;
+            }
 
             const int timeoutMs = m_scheduler.hasWork() ? 0 : 1;
             for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
@@ -46,6 +48,7 @@ namespace Core
                 if (ev.data.ptr == &m_wakeupSentinel)
                 {
                     uint64_t val;
+
                     [[maybe_unused]] auto _ = ::read(m_wakeupFd, &val, sizeof(val));
                     continue;
                 }
@@ -71,8 +74,8 @@ namespace Core
 
     void EventLoop::wake() const
     {
-        constexpr uint64_t val = 1;
-        [[maybe_unused]] auto _ = ::write(m_wakeupFd, &val, sizeof(val));
+        constexpr uint64_t    val = 1;
+        [[maybe_unused]] auto _   = ::write(m_wakeupFd, &val, sizeof(val));
     }
 
     Epoll &EventLoop::epoll() noexcept
