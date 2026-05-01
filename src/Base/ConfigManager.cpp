@@ -37,7 +37,7 @@ namespace Base
             return result;
         }
 
-        std::unordered_map<std::string, ConfigValue> values;
+        ConfigKeyValueMap values;
 
         for (const auto &file_path: file_paths)
         {
@@ -177,7 +177,7 @@ namespace Base
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
 
-        const auto it = current_data->values.find(std::string(key));
+        const auto it = current_data->values.find(key);
         if (it == current_data->values.end())
         {
             throw ConfigKeyNotFoundException(std::string(key));
@@ -189,7 +189,7 @@ namespace Base
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
 
-        const auto it = current_data->values.find(std::string(key));
+        const auto it = current_data->values.find(key);
         if (it == current_data->values.end())
         {
             return std::nullopt;
@@ -220,7 +220,7 @@ namespace Base
     bool ConfigManager::has(const std::string_view key) const noexcept
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
-        return current_data->values.contains(std::string(key));
+        return current_data->values.contains(key);
     }
 
     std::vector<std::string> ConfigManager::keys() const
@@ -237,7 +237,7 @@ namespace Base
         return result;
     }
 
-    std::unordered_map<std::string, ConfigValue> ConfigManager::dump() const
+    ConfigKeyValueMap ConfigManager::dump() const
     {
         const auto current_data = m_data.load(std::memory_order_acquire);
         return current_data->values;
@@ -320,7 +320,7 @@ namespace Base
             return result;
         }
 
-        std::unordered_map<std::string, ConfigValue> values;
+        ConfigKeyValueMap values;
 
         for (const auto &file_path: yaml_files)
         {
@@ -348,7 +348,7 @@ namespace Base
         return result;
     }
 
-    void ConfigManager::loadYamlFile(const std::filesystem::path &file_path, std::unordered_map<std::string, ConfigValue> &values, std::vector<std::string> &errors)
+    void ConfigManager::loadYamlFile(const std::filesystem::path &file_path, ConfigKeyValueMap &values, std::vector<std::string> &errors)
     {
         try
         {
@@ -383,7 +383,7 @@ namespace Base
         }
     }
 
-    void ConfigManager::flattenYamlNode(const YAML::Node &node, const std::string &prefix, std::unordered_map<std::string, ConfigValue> &values)
+    void ConfigManager::flattenYamlNode(const YAML::Node &node, const std::string &prefix, ConfigKeyValueMap &values)
     {
         if (!node.IsMap())
         {

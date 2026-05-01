@@ -23,6 +23,38 @@
 
 namespace Base
 {
+    // ============================================================================
+    // 透明哈希与相等比较 — 支持 string_view 异质查找，避免每次 get() 分配临时 string
+    // ============================================================================
+
+    struct TransparentStringHash
+    {
+        using is_transparent = void;
+
+        [[nodiscard]] size_t operator()(const std::string_view sv) const noexcept
+        {
+            return std::hash<std::string_view>{}(sv);
+        }
+
+        [[nodiscard]] size_t operator()(const std::string &s) const noexcept
+        {
+            return std::hash<std::string>{}(s);
+        }
+    };
+
+    struct TransparentStringEqual
+    {
+        using is_transparent = void;
+
+        [[nodiscard]] bool operator()(const std::string_view a, const std::string_view b) const noexcept
+        {
+            return a == b;
+        }
+    };
+
+    // 配置键值映射类型（支持 string_view 异质查找，避免每次 get() 分配临时 string）
+    using ConfigKeyValueMap = std::unordered_map<std::string, ConfigValue, TransparentStringHash, TransparentStringEqual>;
+
     class ConfigManager;
 
     /**
@@ -252,7 +284,7 @@ namespace Base
          * @brief 导出当前配置快照。
          * @return std::unordered_map<std::string, ConfigValue> 配置字典副本。
          */
-        std::unordered_map<std::string, ConfigValue> dump() const;
+        ConfigKeyValueMap dump() const;
 
         /**
          * @brief 获取当前已加载文件列表。
@@ -296,7 +328,7 @@ namespace Base
          */
         struct ConfigData
         {
-            std::unordered_map<std::string, ConfigValue> values; ///< 配置键值对映射表
+            ConfigKeyValueMap values; ///< 配置键值对映射表（支持 string_view 异质查找）
 
             std::vector<std::string>              loaded_files; ///< 成功加载的配置文件路径列表
             std::filesystem::path                 config_dir;   ///< 配置目录的路径
@@ -329,7 +361,7 @@ namespace Base
          * @param values 目标配置字典。
          * @param errors 错误信息收集容器。
          */
-        static void loadYamlFile(const std::filesystem::path &file_path, std::unordered_map<std::string, ConfigValue> &values, std::vector<std::string> &errors);
+        static void loadYamlFile(const std::filesystem::path &file_path, ConfigKeyValueMap &values, std::vector<std::string> &errors);
 
         /**
          * @brief 递归扁平化 YAML 节点，将嵌套键转换为点号路径。
@@ -337,7 +369,7 @@ namespace Base
          * @param prefix 键前缀。
          * @param values 扁平化结果容器。
          */
-        static void flattenYamlNode(const YAML::Node &node, const std::string &prefix, std::unordered_map<std::string, ConfigValue> &values);
+        static void flattenYamlNode(const YAML::Node &node, const std::string &prefix, ConfigKeyValueMap &values);
 
         /**
          * @brief 将 YAML 节点转换为 ConfigValue。
