@@ -27,8 +27,17 @@ namespace Base
     using ConfigObject = std::map<std::string, ConfigValue, std::less<>>;
 
     // 为 ConfigArray / ConfigObject 特化 typeNameOf（在 ConfigType.h 主模板之后）
-    template <> [[nodiscard]] inline const char *typeNameOf<ConfigArray>() noexcept { return "array"; }
-    template <> [[nodiscard]] inline const char *typeNameOf<ConfigObject>() noexcept { return "object"; }
+    template<>
+    [[nodiscard]] inline const char *typeNameOf<ConfigArray>() noexcept
+    {
+        return "array";
+    }
+
+    template<>
+    [[nodiscard]] inline const char *typeNameOf<ConfigObject>() noexcept
+    {
+        return "object";
+    }
 
     /**
      * @brief 配置值类

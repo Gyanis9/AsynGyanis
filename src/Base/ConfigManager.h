@@ -343,7 +343,7 @@ namespace Base
         std::unique_ptr<IFileWatcher> m_file_watcher;              ///< 文件监控器（用于热加载）
         HotReloadCallback             m_hot_reload_callback;       ///< 热加载回调函数，配置文件变化时触发
         std::atomic<bool>             m_hot_reload_enabled{false}; ///< 热加载功能是否启用（true 启用，false 关闭）
-        std::atomic<bool>             m_reload_pending{false};    ///< 是否有重载任务正在执行（节流）
+        std::atomic<bool>             m_reload_pending{false};     ///< 是否有重载任务正在执行（节流）
         std::mutex                    m_reload_threads_mutex;      ///< 保护 m_reload_threads 的互斥锁
         std::vector<std::jthread>     m_reload_threads;            ///< 活跃的重载线程（用于析构前 join）
 
@@ -401,9 +401,9 @@ namespace Base
 
         static void trackFileResult(ConfigLoadResult &result, const std::filesystem::path &file_path);
 
-        void commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loaded_files,
+        void commitConfigData(ConfigKeyValueMap                     values, const std::vector<std::string> &loaded_files,
                               std::chrono::steady_clock::time_point timestamp,
-                              const std::filesystem::path &config_dir = {});
+                              const std::filesystem::path &         config_dir = {});
     };
 }
 

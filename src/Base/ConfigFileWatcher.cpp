@@ -47,8 +47,7 @@ namespace Base
         try
         {
             m_watch_thread = std::make_unique<std::thread>(&InotifyFileWatcher::watchLoop, this);
-        }
-        catch (const std::system_error &)
+        } catch (const std::system_error &)
         {
             return false;
         }

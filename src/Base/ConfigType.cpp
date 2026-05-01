@@ -6,21 +6,29 @@ namespace Base
     {
         switch (type)
         {
-            case ConfigValueType::Null: return "null";
-            case ConfigValueType::Bool: return "bool";
-            case ConfigValueType::Int: return "int";
-            case ConfigValueType::Double: return "double";
-            case ConfigValueType::String: return "string";
-            case ConfigValueType::Array: return "array";
-            case ConfigValueType::Object: return "object";
-            default: return "unknown";
+            case ConfigValueType::Null:
+                return "null";
+            case ConfigValueType::Bool:
+                return "bool";
+            case ConfigValueType::Int:
+                return "int";
+            case ConfigValueType::Double:
+                return "double";
+            case ConfigValueType::String:
+                return "string";
+            case ConfigValueType::Array:
+                return "array";
+            case ConfigValueType::Object:
+                return "object";
+            default:
+                return "unknown";
         }
     }
 
     bool isYamlFile(const std::string_view file_path) noexcept
     {
         constexpr std::string_view YAML_EXT = ".yaml";
-        constexpr std::string_view YML_EXT = ".yml";
+        constexpr std::string_view YML_EXT  = ".yml";
 
         if (file_path.length() < YML_EXT.length())
         {
@@ -45,7 +53,7 @@ namespace Base
         }
 
         size_t start = 0;
-        size_t end = key.find(delimiter);
+        size_t end   = key.find(delimiter);
 
         while (end != std::string_view::npos)
         {
@@ -54,7 +62,7 @@ namespace Base
                 parts.emplace_back(key.substr(start, end - start));
             }
             start = end + 1;
-            end = key.find(delimiter, start);
+            end   = key.find(delimiter, start);
         }
 
         if (start < key.length())

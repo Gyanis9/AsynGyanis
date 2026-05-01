@@ -86,7 +86,6 @@ namespace Base
 
         /**
          * @brief 设置事件防抖时间间隔（默认实现为空操作）
-         * @param interval 防抖间隔（毫秒）
          */
         virtual void setDebounceInterval(std::chrono::milliseconds /*interval*/) noexcept
         {
@@ -201,7 +200,7 @@ namespace Base
         std::unordered_map<std::string, int> m_path_to_wd;        ///< 路径 -> 监视描述符映射
 
         FileChangeCallback           m_callback;           ///< 用户回调函数
-        mutable std::shared_mutex    m_watch_mutex;         ///< 保护 m_watch_descriptors、m_path_to_wd、m_callback 的读写锁
+        mutable std::shared_mutex    m_watch_mutex;        ///< 保护 m_watch_descriptors、m_path_to_wd、m_callback 的读写锁
         std::unique_ptr<std::thread> m_watch_thread;       ///< 监听线程
         std::atomic<bool>            m_running{false};     ///< 是否正在运行
         std::atomic<bool>            m_should_stop{false}; ///< 是否应该停止

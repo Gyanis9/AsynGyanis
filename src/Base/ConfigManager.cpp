@@ -16,11 +16,6 @@ namespace Base
         return instance;
     }
 
-    ConfigManager::~ConfigManager()
-    {
-        disableHotReload();
-    }
-
     ConfigLoadResult ConfigManager::loadFromDirectory(const std::filesystem::path &config_dir, const bool recursive)
     {
         return loadFromDirectoryImpl(config_dir, recursive);
@@ -257,6 +252,11 @@ namespace Base
         return missing;
     }
 
+    ConfigManager::~ConfigManager()
+    {
+        disableHotReload();
+    }
+
     // ============================================================================
     // 内部加载实现
     // ============================================================================
@@ -387,7 +387,10 @@ namespace Base
             {
                 std::string lower(scalar.size(), '\0');
                 std::transform(scalar.begin(), scalar.end(), lower.begin(),
-                               [](const unsigned char c) { return std::tolower(c); });
+                               [](const unsigned char c)
+                               {
+                                   return std::tolower(c);
+                               });
                 if (lower == "true" || lower == "false" || lower == "yes" || lower == "no" ||
                     lower == "on" || lower == "off")
                 {
@@ -397,8 +400,8 @@ namespace Base
 
             // 整数检测
             {
-                char *end = nullptr;
-                errno = 0;
+                char *end              = nullptr;
+                errno                  = 0;
                 const long long intVal = std::strtoll(scalar.c_str(), &end, 10);
                 if (errno == 0 && end == scalar.c_str() + scalar.size())
                 {
@@ -408,8 +411,8 @@ namespace Base
 
             // 浮点数检测
             {
-                char *end = nullptr;
-                errno = 0;
+                char *end             = nullptr;
+                errno                 = 0;
                 const double floatVal = std::strtod(scalar.c_str(), &end);
                 if (errno == 0 && end == scalar.c_str() + scalar.size())
                 {
@@ -482,12 +485,12 @@ namespace Base
 
         // 清理已完成线程，防止积压
         m_reload_threads.erase(
-            std::remove_if(m_reload_threads.begin(), m_reload_threads.end(),
-                           [](const std::jthread &t)
-                           {
-                               return !t.joinable();
-                           }),
-            m_reload_threads.end());
+                std::remove_if(m_reload_threads.begin(), m_reload_threads.end(),
+                               [](const std::jthread &t)
+                               {
+                                   return !t.joinable();
+                               }),
+                m_reload_threads.end());
     }
 
     ConfigLoadResult ConfigManager::doReload()
@@ -551,16 +554,15 @@ namespace Base
         if (result.errors.empty() || result.errors.back().find(file_path.string()) == std::string::npos)
         {
             result.loaded_files.push_back(file_path.string());
-        }
-        else
+        } else
         {
             result.failed_files.push_back(file_path.string());
         }
     }
 
-    void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loaded_files,
+    void ConfigManager::commitConfigData(ConfigKeyValueMap                           values, const std::vector<std::string> &loaded_files,
                                          const std::chrono::steady_clock::time_point timestamp,
-                                         const std::filesystem::path &config_dir)
+                                         const std::filesystem::path &               config_dir)
     {
         const auto new_data    = std::make_shared<ConfigData>();
         new_data->values       = std::move(values);

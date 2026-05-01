@@ -56,15 +56,21 @@ namespace Base
      *
      * 覆盖基本类型；ConfigArray/ConfigObject 的特化在 ConfigValue.h 中。
      */
-    template <typename T>
+    template<typename T>
     [[nodiscard]] const char *typeNameOf() noexcept
     {
-        if constexpr (std::is_same_v<T, bool>)                 return "bool";
-        else if constexpr (std::is_same_v<T, int64_t>)         return "int";
-        else if constexpr (std::is_same_v<T, double>)          return "double";
-        else if constexpr (std::is_same_v<T, std::string>)     return "string";
-        else if constexpr (std::is_same_v<T, std::nullptr_t>)  return "null";
-        else return typeid(T).name();
+        if constexpr (std::is_same_v<T, bool>)
+            return "bool";
+        else if constexpr (std::is_same_v<T, int64_t>)
+            return "int";
+        else if constexpr (std::is_same_v<T, double>)
+            return "double";
+        else if constexpr (std::is_same_v<T, std::string>)
+            return "string";
+        else if constexpr (std::is_same_v<T, std::nullptr_t>)
+            return "null";
+        else
+            return typeid(T).name();
     }
 }
 
