@@ -26,7 +26,6 @@ namespace Net
 
         static Core::Task<> sendFile(Core::EventLoop &loop, TcpStream &stream, const std::string &filePath);
 
-    private:
         static const char *contentTypeForFile(const std::string &filePath);
     };
 

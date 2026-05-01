@@ -28,11 +28,13 @@ namespace Net
     public:
         /**
          * @brief 构造 HTTP 会话。
-         * @param loop   所属的事件循环
-         * @param socket 已建立的异步 socket
-         * @param router 全局路由器，用于分发请求
+         * @param loop      所属的事件循环
+         * @param socket    已建立的异步 socket
+         * @param router    全局路由器，用于分发请求
+         * @param staticDir 静态文件根目录（可选），设置后自动启用静态文件服务
          */
-        HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router);
+        HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
+                    std::optional<std::string> staticDir = std::nullopt);
 
         /**
          * @brief 启动会话主协程。
@@ -57,10 +59,11 @@ namespace Net
 
     private:
 
-        Router &             m_router;                ///< 路由器引用，用于分发请求
-        HttpParser           m_parser;                ///< HTTP 解析器，用于解析请求数据
-        std::vector<char>    m_recvBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
-        static constexpr int m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
+        Router &                  m_router;                ///< 路由器引用，用于分发请求
+        HttpParser                m_parser;                ///< HTTP 解析器，用于解析请求数据
+        std::vector<char>         m_recvBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
+        std::optional<std::string> m_staticDir;             ///< 静态文件根目录，若为 nullopt 表示未启用
+        static constexpr int      m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
     };
 
     // ============================================================================
