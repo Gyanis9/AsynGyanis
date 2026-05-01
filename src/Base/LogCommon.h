@@ -6,6 +6,7 @@
 #ifndef LOGCOMMON_H
 #define LOGCOMMON_H
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <format>
@@ -69,7 +70,7 @@ namespace Base
             return LogLevel::FATAL;
         if (str == "OFF")
             return LogLevel::OFF;
-        return LogLevel::INFO;
+        return LogLevel::OFF;
     }
 
     // ============================================================================
@@ -85,16 +86,24 @@ namespace Base
         std::tm tm_buf;
         localtime_r(&time_t_now, &tm_buf);
 
-        return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
-                           tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
-                           tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms.count());
+        // 使用 thread_local 缓冲区的 format_to_n 避免 std::format 的堆分配
+        thread_local std::array<char, 32> buf;
+        const auto result = std::format_to_n(buf.data(), buf.size(),
+            "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
+            tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+            tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms.count());
+        return std::string(buf.data(), result.out - buf.data());
     }
 
-    inline std::string threadIdString()
+    inline const std::string &threadIdString()
     {
-        std::ostringstream oss;
-        oss << std::this_thread::get_id();
-        return oss.str();
+        thread_local const std::string cached = []
+        {
+            std::ostringstream oss;
+            oss << std::this_thread::get_id();
+            return oss.str();
+        }();
+        return cached;
     }
 
     // ============================================================================

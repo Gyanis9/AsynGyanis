@@ -62,6 +62,25 @@ namespace Net
                                {
                                    return std::tolower(c);
                                });
+        // Set-Cookie 头不能合并（RFC 6265），其他重复头用逗号合并（RFC 7230 §3.2.2）
+        if (const auto it = m_headers.find(key); it != m_headers.end())
+        {
+            if (key == "set-cookie")
+            {
+                // 用唯一后缀保留多个 Set-Cookie：set-cookie, set-cookie_1, set-cookie_2 ...
+                size_t idx = 1;
+                std::string indexedKey;
+                do
+                {
+                    indexedKey = key + "_" + std::to_string(idx++);
+                } while (m_headers.find(indexedKey) != m_headers.end());
+                m_headers[std::move(indexedKey)] = std::move(value);
+                return;
+            }
+            it->second.append(", ");
+            it->second.append(value);
+            return;
+        }
         m_headers[std::move(key)] = std::move(value);
     }
 
@@ -90,6 +109,11 @@ namespace Net
         m_body = std::move(body);
     }
 
+    void HttpRequest::appendBody(const char *data, const size_t len)
+    {
+        m_body.append(data, len);
+    }
+
     std::string_view HttpRequest::body() const
     {
         return m_body;
@@ -116,6 +140,41 @@ namespace Net
 
         const std::string_view query(&m_uri[pos + 1], m_uri.size() - pos - 1);
 
+        // URL percent-decode helper: %XX → char, + → space
+        static constexpr auto percentDecode = [](const std::string_view src) -> std::string
+        {
+            std::string result;
+            result.reserve(src.size());
+            for (size_t i = 0; i < src.size(); ++i)
+            {
+                if (src[i] == '%' && i + 2 < src.size())
+                {
+                    const auto hi = src[i + 1];
+                    const auto lo = src[i + 2];
+                    auto hexVal = [](const char c) -> int
+                    {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        return -1;
+                    };
+                    const int h = hexVal(hi);
+                    const int l = hexVal(lo);
+                    if (h >= 0 && l >= 0)
+                    {
+                        result.push_back(static_cast<char>((h << 4) | l));
+                        i += 2;
+                        continue;
+                    }
+                }
+                if (src[i] == '+')
+                    result.push_back(' ');
+                else
+                    result.push_back(src[i]);
+            }
+            return result;
+        };
+
         size_t start = 0;
         while (start < query.size())
         {
@@ -126,12 +185,12 @@ namespace Net
 
             if (eqPos != std::string_view::npos && eqPos < ampPos)
             {
-                std::string key(query.substr(start, eqPos - start));
-                std::string value(query.substr(eqPos + 1, ampPos - eqPos - 1));
+                auto key   = percentDecode(query.substr(start, eqPos - start));
+                auto value = percentDecode(query.substr(eqPos + 1, ampPos - eqPos - 1));
                 params[std::move(key)] = std::move(value);
             } else
             {
-                std::string key(query.substr(start, ampPos - start));
+                auto key = percentDecode(query.substr(start, ampPos - start));
                 params[std::move(key)] = "";
             }
 

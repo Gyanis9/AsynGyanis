@@ -28,6 +28,21 @@ namespace Net
                                {
                                    return std::tolower(c);
                                });
+        // Set-Cookie 头不能合并（RFC 6265），重复设置时用唯一后缀保留
+        if (const auto it = m_headers.find(lowerName); it != m_headers.end())
+        {
+            if (lowerName == "set-cookie")
+            {
+                size_t idx = 1;
+                std::string indexedKey;
+                do
+                {
+                    indexedKey = lowerName + "_" + std::to_string(idx++);
+                } while (m_headers.find(indexedKey) != m_headers.end());
+                m_headers[std::move(indexedKey)] = value;
+                return;
+            }
+        }
         m_headers[std::move(lowerName)] = value;
     }
 
@@ -95,10 +110,22 @@ namespace Net
 
     std::string HttpResponse::toString() const
     {
-        // Pre-compute size to avoid reallocations
-        size_t estimated = 48 + m_body.size();
+        // Pre-compute size to avoid reallocations（含自动添加的 content-type / content-length）
+        size_t estimated = 48 + m_body.size(); // status line + CRLF CRLF
+        bool hasContentLength = false;
+        bool hasContentType   = false;
         for (const auto &[key, value]: m_headers)
-            estimated += key.size() + value.size() + 4;
+        {
+            estimated += key.size() + value.size() + 4; // "key: value\r\n"
+            if (key == "content-length")
+                hasContentLength = true;
+            else if (key == "content-type")
+                hasContentType = true;
+        }
+        if (!hasContentType && !m_body.empty())
+            estimated += 28; // "content-type: text/plain\r\n"
+        if (!hasContentLength)
+            estimated += 16 + 20 + 2; // "content-length: " + max digits + "\r\n"
 
         std::string result;
         result.reserve(estimated);
@@ -109,9 +136,6 @@ namespace Net
         result.push_back(' ');
         result.append(statusMessage(m_status));
         result.append("\r\n");
-
-        bool hasContentLength = false;
-        bool hasContentType   = false;
 
         for (const auto &[key, value]: m_headers)
         {
