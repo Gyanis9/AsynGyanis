@@ -53,7 +53,11 @@ namespace Core
         {
             throw Base::Exception("TlsContext: SSL_new failed");
         }
-        SSL_set_fd(ssl, fd);
+        if (SSL_set_fd(ssl, fd) == 0)
+        {
+            SSL_free(ssl);
+            throw Base::Exception("TlsContext: SSL_set_fd failed");
+        }
         return ssl;
     }
 

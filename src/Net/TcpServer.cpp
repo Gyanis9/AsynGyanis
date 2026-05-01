@@ -52,6 +52,11 @@ namespace Net
                 break;
             }
 
+            if (m_maxConnections > 0 && m_connManager.activeCount() >= m_maxConnections)
+            {
+                continue;
+            }
+
             if (auto conn = createConnection(std::move(result.value())))
             {
                 m_connManager.add(conn);
@@ -86,10 +91,10 @@ namespace Net
         try
         {
             co_await conn->start();
-        } catch (...)
+        }
+        catch (...)
         {
-            m_connManager.remove(conn.get());
-            throw;
+            // 捕获所有异常防止传播到调度器导致进程终止
         }
         m_connManager.remove(conn.get());
     }
@@ -104,6 +109,11 @@ namespace Net
     {
         stop();
         m_connManager.shutdown();
+    }
+
+    void TcpServer::setMaxConnections(const size_t max)
+    {
+        m_maxConnections = max;
     }
 
     bool TcpServer::isRunning() const

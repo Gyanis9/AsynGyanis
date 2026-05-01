@@ -33,8 +33,9 @@ namespace Net
         if (m_complete)
             return ParseStatus::Done;
 
+        // HPE_OK 但消息未完成 → 需要更多数据
         if (result == HPE_OK)
-            return ParseStatus::Ok;
+            return ParseStatus::NeedMore;
 
         if (result == HPE_PAUSED)
             return ParseStatus::Ok;
@@ -103,7 +104,7 @@ namespace Net
     int HttpParser::onBody(llhttp_t *parser, const char *data, const size_t len)
     {
         const auto self = static_cast<HttpParser *>(parser->data);
-        self->m_currentRequest.setBody(std::string(data, len));
+        self->m_currentRequest.appendBody(data, len);
         return 0;
     }
 

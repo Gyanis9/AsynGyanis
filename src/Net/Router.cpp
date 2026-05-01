@@ -89,6 +89,7 @@ namespace Net
             {
                 co_await handler(req, res);
             });
+            finalizeResponse(req, res);
             co_return;
         }
 
@@ -105,6 +106,7 @@ namespace Net
                 {
                     co_await handler(req, res);
                 });
+                finalizeResponse(req, res);
                 co_return;
             }
         }
@@ -113,6 +115,15 @@ namespace Net
         const auto notFoundRes = HttpResponse::notFound();
         res.setStatus(notFoundRes.status());
         res.setBody(notFoundRes.body());
+    }
+
+    void Router::finalizeResponse(const HttpRequest &req, HttpResponse &res)
+    {
+        // RFC 7231 §4.3.2: HEAD 响应 MUST NOT 包含 body
+        if (req.method() == HttpMethod::HEAD)
+        {
+            res.setBody(std::string_view{});
+        }
     }
 
     bool Router::matchRoute(const Route &route, const std::string &path, HttpRequest &req)

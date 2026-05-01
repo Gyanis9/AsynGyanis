@@ -86,6 +86,11 @@ namespace Net
          */
         void addRoute(HttpMethod method, const std::string &path, Handler handler);
 
+        /**
+         * @brief 路由后的响应收尾处理（HEAD 请求剥离 body 等）。
+         */
+        static void finalizeResponse(const HttpRequest &req, HttpResponse &res);
+
         // 一级索引：精确路径 hash -> handler（O(1) 查找）
         std::unordered_map<std::string, Handler> m_exactRoutes;
 
