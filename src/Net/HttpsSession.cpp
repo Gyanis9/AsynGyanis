@@ -11,7 +11,7 @@
 namespace Net
 {
     HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router) :
-        Core::Connection(loop, Core::AsyncSocket(loop, -1)),
+        Core::Connection(Core::AsyncSocket(loop, -1)),
         m_tlsSocket(std::move(tlsSocket)), m_router(router),
         m_recvBuffer(m_recvBufferSize)
     {

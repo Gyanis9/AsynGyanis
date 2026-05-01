@@ -3,7 +3,7 @@
 
 namespace Core
 {
-    Connection::Connection(EventLoop & /* loop */, AsyncSocket socket) :
+    Connection::Connection(AsyncSocket socket) :
         m_socket(std::move(socket))
     {
     }

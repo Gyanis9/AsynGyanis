@@ -31,7 +31,7 @@ namespace Core
          * @param loop 所属的事件循环
          * @param socket 已建立的异步socket
          */
-        Connection(EventLoop &loop, AsyncSocket socket);
+        explicit Connection(AsyncSocket socket);
 
         /**
          * @brief 虚析构函数，默认实现。

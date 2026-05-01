@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cstdint>
 
 namespace Net
 {
@@ -131,7 +133,10 @@ namespace Net
         // Status line（使用请求对应的 HTTP 版本而非硬编码 HTTP/1.1）
         result.append(m_httpVersion);
         result.push_back(' ');
-        result.append(std::to_string(m_status));
+        // 状态码使用栈缓冲避免 std::to_string 堆分配
+        char statusBuf[8];
+        const auto [ptr, _] = std::to_chars(statusBuf, statusBuf + sizeof(statusBuf), m_status);
+        result.append(statusBuf, static_cast<size_t>(ptr - statusBuf));
         result.push_back(' ');
         result.append(statusMessage(m_status));
         result.append("\r\n");
@@ -142,17 +147,21 @@ namespace Net
             result.append(": ");
             result.append(value);
             result.append("\r\n");
-            if (key == "content-length")
-                hasContentLength = true;
-            else if (key == "content-type")
-                hasContentType = true;
         }
 
         if (!hasContentType && !m_body.empty())
             result.append("content-type: text/plain\r\n");
 
         if (!hasContentLength)
-            result.append("content-length: ").append(std::to_string(m_body.size())).append("\r\n");
+        {
+            result.append("content-length: ");
+            char lenBuf[32];
+            const auto [lp, ec2] = std::to_chars(lenBuf, lenBuf + sizeof(lenBuf),
+                                                      static_cast<uint64_t>(m_body.size()));
+            (void)ec2;
+            result.append(lenBuf, static_cast<size_t>(lp - lenBuf));
+            result.append("\r\n");
+        }
 
         result.append("\r\n");
         result.append(m_body);
