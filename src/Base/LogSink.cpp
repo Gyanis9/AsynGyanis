@@ -244,11 +244,13 @@ namespace Base
                 if (m_policy == RollingPolicy::Size)
                 {
                     int index = 1;
+                    // 上限保护：最多尝试 max_backup_files + 1 次，防止清理失败导致死循环
+                    const int maxAttempts = static_cast<int>(m_max_backup_files) + 2;
                     do
                     {
                         backup_filename = name_part + "." + std::to_string(index) + ext_part;
                         ++index;
-                    } while (std::filesystem::exists(m_directory / backup_filename));
+                    } while (std::filesystem::exists(m_directory / backup_filename) && index < maxAttempts);
                 } else
                 {
                     backup_filename = name_part + "." + m_current_suffix + ext_part;

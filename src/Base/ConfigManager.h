@@ -398,6 +398,12 @@ namespace Base
          * @return std::vector<std::filesystem::path> YAML 文件路径列表。
          */
         static std::vector<std::filesystem::path> scanYamlFiles(const std::filesystem::path &dir, bool recursive);
+
+        static void trackFileResult(ConfigLoadResult &result, const std::filesystem::path &file_path);
+
+        void commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loaded_files,
+                              std::chrono::steady_clock::time_point timestamp,
+                              const std::filesystem::path &config_dir = {});
     };
 }
 

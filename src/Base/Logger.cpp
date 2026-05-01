@@ -89,7 +89,14 @@ namespace Base
         {
             if (sink && sink->shouldLog(event.level))
             {
-                sink->write(event);
+                try
+                {
+                    sink->write(event);
+                }
+                catch (...)
+                {
+                    // 单个 sink 异常不应阻止其他 sink 接收日志
+                }
             }
         }
     }
@@ -110,7 +117,7 @@ namespace Base
         auto    logger  = std::make_unique<Logger>(name);
         Logger &ref     = *logger;
         m_loggers[name] = std::move(logger);
-        return std::ref(ref);
+        return ref;
     }
 
     Logger &LoggerRegistry::getRootLogger()

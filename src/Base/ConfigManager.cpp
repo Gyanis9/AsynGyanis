@@ -38,7 +38,6 @@ namespace Base
         }
 
         ConfigKeyValueMap values;
-
         for (const auto &file_path: file_paths)
         {
             if (!std::filesystem::exists(file_path))
@@ -47,33 +46,17 @@ namespace Base
                 result.errors.push_back("File does not exist: " + file_path.string());
                 continue;
             }
-
             if (!isYamlFile(file_path.string()))
             {
                 result.failed_files.push_back(file_path.string());
                 result.errors.push_back("Not a YAML file: " + file_path.string());
                 continue;
             }
-
             loadYamlFile(file_path, values, result.errors);
-
-            if (result.errors.empty() || result.errors.back().find(file_path.string()) == std::string::npos)
-            {
-                result.loaded_files.push_back(file_path.string());
-            } else
-            {
-                result.failed_files.push_back(file_path.string());
-            }
+            trackFileResult(result, file_path);
         }
 
-        // 原子替换配置数据
-        const auto new_data    = std::make_shared<ConfigData>();
-        new_data->values       = std::move(values);
-        new_data->loaded_files = result.loaded_files;
-        new_data->load_time    = result.timestamp;
-
-        m_data.store(new_data, std::memory_order_release);
-
+        commitConfigData(std::move(values), result.loaded_files, result.timestamp);
         result.success = result.failed_files.empty();
         return result;
     }
@@ -322,25 +305,10 @@ namespace Base
         for (const auto &file_path: yaml_files)
         {
             loadYamlFile(file_path, values, result.errors);
-
-            if (result.errors.empty() || result.errors.back().find(file_path.string()) == std::string::npos)
-            {
-                result.loaded_files.push_back(file_path.string());
-            } else
-            {
-                result.failed_files.push_back(file_path.string());
-            }
+            trackFileResult(result, file_path);
         }
 
-        // 原子替换配置数据
-        const auto new_data    = std::make_shared<ConfigData>();
-        new_data->values       = std::move(values);
-        new_data->loaded_files = result.loaded_files;
-        new_data->config_dir   = config_dir;
-        new_data->load_time    = result.timestamp;
-
-        m_data.store(new_data, std::memory_order_release);
-
+        commitConfigData(std::move(values), result.loaded_files, result.timestamp, config_dir);
         result.success = result.failed_files.empty();
         return result;
     }
@@ -576,6 +544,31 @@ namespace Base
         std::ranges::sort(yaml_files);
 
         return yaml_files;
+    }
+
+    void ConfigManager::trackFileResult(ConfigLoadResult &result, const std::filesystem::path &file_path)
+    {
+        if (result.errors.empty() || result.errors.back().find(file_path.string()) == std::string::npos)
+        {
+            result.loaded_files.push_back(file_path.string());
+        }
+        else
+        {
+            result.failed_files.push_back(file_path.string());
+        }
+    }
+
+    void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loaded_files,
+                                         const std::chrono::steady_clock::time_point timestamp,
+                                         const std::filesystem::path &config_dir)
+    {
+        const auto new_data    = std::make_shared<ConfigData>();
+        new_data->values       = std::move(values);
+        new_data->loaded_files = loaded_files;
+        new_data->config_dir   = config_dir;
+        new_data->load_time    = timestamp;
+
+        m_data.store(new_data, std::memory_order_release);
     }
 
 }
