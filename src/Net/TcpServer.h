@@ -11,6 +11,8 @@
 #include "Core/Task.h"
 #include "TcpAcceptor.h"
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -62,6 +64,12 @@ namespace Net
         void close();
 
         /**
+         * @brief 设置最大并发连接数（0 表示无限制）。
+         * @param max 最大连接数
+         */
+        void setMaxConnections(size_t max);
+
+        /**
          * @brief 检查服务器是否正在运行（accept 循环是否活跃）。
          * @return true 表示运行中，false 表示已停止或未启动
          */
@@ -90,8 +98,10 @@ namespace Net
          */
         Core::Task<> handleConnection(std::shared_ptr<Core::Connection> conn);
 
-        bool                          m_running{false}; ///< 运行标志，控制 accept 循环
-        std::vector<Core::Task<void>> m_connTasks;      ///< 存储每个连接对应的协程任务，确保任务生命周期
+        std::atomic<bool>             m_running{false};         ///< 运行标志，控制 accept 循环（原子操作保证线程安全）
+        size_t                        m_maxConnections{0};      ///< 最大并发连接数，0 表示无限制
+        std::chrono::milliseconds     m_shutdownTimeoutMs{5000}; ///< 优雅关闭超时（毫秒），超时后强制退出
+        std::vector<Core::Task<void>> m_connTasks;              ///< 存储每个连接对应的协程任务，确保任务生命周期
     };
 }
 

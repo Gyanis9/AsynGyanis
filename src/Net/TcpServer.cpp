@@ -3,6 +3,7 @@
 #include "Base/Exception.h"
 
 #include "Core/EventLoop.h"
+#include "Core/Timer.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -76,6 +77,9 @@ namespace Net
             }
         }
 
+        // 优雅关闭：等待所有连接任务自然完成。
+        // stop() 已设置 m_running=false，close() 已调用 ConnectionManager::shutdown()
+        // 强制关闭所有连接 socket，因此此处不会无限阻塞。
         for (auto &t: m_connTasks)
         {
             if (!t.isReady())

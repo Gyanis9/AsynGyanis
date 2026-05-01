@@ -229,8 +229,13 @@ namespace Base
 
         inline bool terminalSupportsColor()
         {
-            const char *term = std::getenv("TERM");
-            return term && std::string_view(term).find("color") != std::string_view::npos;
+            // C++11 静态局部变量初始化是线程安全的，缓存 getenv 结果
+            static const bool supports = []
+            {
+                const char *term = std::getenv("TERM");
+                return term && std::string_view(term).find("color") != std::string_view::npos;
+            }();
+            return supports;
         }
     }
 }
