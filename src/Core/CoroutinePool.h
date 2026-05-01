@@ -61,6 +61,16 @@ namespace Core
         void deallocate(void *p, size_t n);
 
         /**
+         * @brief 检查指针 p 是否属于当前池管理的内存块。
+         *
+         * 用于跨线程安全：若 Task 在非本线程析构，通过此检查可回退到全局 delete。
+         *
+         * @param p 待检查的指针
+         * @return true 指针属于本池，可安全回收
+         */
+        [[nodiscard]] bool owns(void *p) const noexcept;
+
+        /**
          * @brief 获取当前线程的 CoroutinePool 实例（thread_local 单例）。
          * @return 当前线程的内存池引用
          */

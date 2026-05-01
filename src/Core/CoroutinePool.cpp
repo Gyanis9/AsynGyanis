@@ -49,7 +49,26 @@ namespace Core
             return;
         }
 
+        // 跨线程安全：指针不属于本池则回退到全局 delete
+        if (!owns(p))
+        {
+            ::operator delete(p);
+            return;
+        }
+
         m_freeList.push_back(p);
+    }
+
+    bool CoroutinePool::owns(void *const p) const noexcept
+    {
+        for (const auto *chunk: m_chunks)
+        {
+            const auto *begin = static_cast<const std::byte *>(chunk);
+            const auto *ptr   = static_cast<const std::byte *>(p);
+            if (ptr >= begin && ptr < begin + m_allocatedCount * m_blockSize)
+                return true;
+        }
+        return false;
     }
 
     CoroutinePool &CoroutinePool::instance()

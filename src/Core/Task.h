@@ -6,6 +6,8 @@
 #ifndef CORE_TASK_H
 #define CORE_TASK_H
 
+#include "CoroutinePool.h"
+
 #include <coroutine>
 #include <exception>
 #include <optional>
@@ -143,6 +145,28 @@ namespace Core
          */
         struct promise_type
         {
+            /**
+             * @brief 从线程局部 CoroutinePool 分配协程帧内存。
+             *
+             * 若请求大小超过池的块大小，自动回退到全局 ::operator new。
+             * 这样确保大协程帧也能正确分配。
+             */
+            static void *operator new(const size_t size)
+            {
+                return CoroutinePool::instance().allocate(size);
+            }
+
+            /**
+             * @brief 将协程帧内存归还给线程局部 CoroutinePool。
+             *
+             * 若指针不属于当前线程的池（跨线程析构场景），
+             * 自动回退到全局 ::operator delete 保证安全。
+             */
+            static void operator delete(void *const ptr, const size_t size) noexcept
+            {
+                CoroutinePool::instance().deallocate(ptr, size);
+            }
+
             /**
              * @brief 创建协程的返回对象（Task）。
              * @return Task 对象，持有当前 promise 对应的句柄
@@ -329,6 +353,22 @@ namespace Core
          */
         struct promise_type
         {
+            /**
+             * @brief 从线程局部 CoroutinePool 分配协程帧内存。
+             */
+            static void *operator new(const size_t size)
+            {
+                return CoroutinePool::instance().allocate(size);
+            }
+
+            /**
+             * @brief 将协程帧内存归还给线程局部 CoroutinePool。
+             */
+            static void operator delete(void *const ptr, const size_t size) noexcept
+            {
+                CoroutinePool::instance().deallocate(ptr, size);
+            }
+
             /**
              * @brief 创建协程的返回对象（Task<void>）。
              * @return Task<void> 对象
