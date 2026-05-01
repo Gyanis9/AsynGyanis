@@ -64,7 +64,12 @@ namespace Net
         std::string_view body() const;
 
         /**
-         * @brief 将响应序列化为 HTTP/1.1 格式的字符串。
+         * @brief 设置 HTTP 协议版本（默认 "HTTP/1.1"），用于状态行序列化。
+         */
+        void setHttpVersion(std::string version);
+
+        /**
+         * @brief 将响应序列化为 HTTP 格式的字符串。
          * @return 完整的 HTTP 响应字符串（包含状态行、头部、空行、正文）
          */
         std::string toString() const;
@@ -102,9 +107,10 @@ namespace Net
          */
         static const char *statusMessage(int code);
 
-        int                                          m_status;  ///< HTTP 状态码
-        std::unordered_map<std::string, std::string> m_headers; ///< 头部字段映射
-        std::string                                  m_body;    ///< 响应正文
+        int                                          m_status;       ///< HTTP 状态码
+        std::string                                  m_httpVersion{"HTTP/1.1"}; ///< HTTP 版本，默认 1.1
+        std::unordered_map<std::string, std::string> m_headers;      ///< 头部字段映射
+        std::string                                  m_body;         ///< 响应正文
     };
 }
 

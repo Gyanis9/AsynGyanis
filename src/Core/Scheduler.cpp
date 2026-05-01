@@ -33,8 +33,14 @@ namespace Core
 
         if (m_wakeupFd >= 0)
         {
-            constexpr uint64_t    val = 1;
-            [[maybe_unused]] auto _   = ::write(m_wakeupFd, &val, sizeof(val));
+            constexpr uint64_t val = 1;
+            // eventfd 写入可能因计数器溢出而失败（EAGAIN），此时目标线程仍会在下次
+            // epoll_wait 超时后处理全局队列任务，不会永久丢失
+            if (::write(m_wakeupFd, &val, sizeof(val)) < 0)
+            {
+                // errno 可能为 EAGAIN（计数器满）或 EBADF（fd 已关闭），
+                // 两种情况任务均已安全入队，无需额外处理
+            }
         }
     }
 

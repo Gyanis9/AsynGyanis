@@ -146,6 +146,7 @@ namespace Net
                     {
                         auto &       req = parser.request();
                         HttpResponse res;
+                        res.setHttpVersion(req.httpVersion()); // 使用请求版本而非硬编码 HTTP/1.1
 
                         try
                         {

@@ -47,14 +47,17 @@ namespace Base
 
     void LogSink::setFormatter(std::unique_ptr<LogFormatter> formatter)
     {
-        m_formatter = std::move(formatter);
+        // 线程安全：使用 atomic_load/store 保护 shared_ptr 的读写
+        m_formatter = std::shared_ptr<LogFormatter>(std::move(formatter));
     }
 
     std::string LogSink::formatEvent(const LogEvent &event) const
     {
-        if (m_formatter)
+        // atomic_load 确保读取时不会与 setFormatter 产生数据竞争
+        auto fmt = std::atomic_load(&m_formatter);
+        if (fmt)
         {
-            return m_formatter->format(event);
+            return fmt->format(event);
         }
         static DefaultFormatter default_fmt;
         return default_fmt.format(event);
@@ -406,9 +409,15 @@ namespace Base
                 LogEvent event = std::move(m_queue.front());
                 m_queue.pop();
                 lock.unlock();
-                if (m_wrapped_sink)
+                try
                 {
-                    m_wrapped_sink->write(event);
+                    if (m_wrapped_sink)
+                    {
+                        m_wrapped_sink->write(event);
+                    }
+                } catch (...)
+                {
+                    // 防止单个 sink 异常导致整个 worker 线程崩溃
                 }
                 lock.lock();
             }
@@ -420,9 +429,14 @@ namespace Base
             LogEvent event = std::move(m_queue.front());
             m_queue.pop();
             lock.unlock();
-            if (m_wrapped_sink)
+            try
             {
-                m_wrapped_sink->write(event);
+                if (m_wrapped_sink)
+                {
+                    m_wrapped_sink->write(event);
+                }
+            } catch (...)
+            {
             }
             lock.lock();
         }

@@ -15,6 +15,11 @@ namespace Net
         m_status = code;
     }
 
+    void HttpResponse::setHttpVersion(std::string version)
+    {
+        m_httpVersion = std::move(version);
+    }
+
     int HttpResponse::status() const
     {
         return m_status;
@@ -123,8 +128,9 @@ namespace Net
         std::string result;
         result.reserve(estimated);
 
-        // Status line
-        result.append("HTTP/1.1 ");
+        // Status line（使用请求对应的 HTTP 版本而非硬编码 HTTP/1.1）
+        result.append(m_httpVersion);
+        result.push_back(' ');
         result.append(std::to_string(m_status));
         result.push_back(' ');
         result.append(statusMessage(m_status));
@@ -183,7 +189,8 @@ namespace Net
 
     void HttpResponse::reset()
     {
-        m_status = 200;
+        m_status      = 200;
+        m_httpVersion = "HTTP/1.1";
         m_headers.clear();
         m_body.clear();
     }
