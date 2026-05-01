@@ -2,6 +2,7 @@
 #include "Connection.h"
 
 #include <ranges>
+#include <vector>
 
 
 namespace Core
@@ -36,14 +37,24 @@ namespace Core
         return m_connections.size();
     }
 
-    void ConnectionManager::shutdown() const
+    void ConnectionManager::shutdown()
     {
-        std::shared_lock lock(m_mutex);
-        for (const auto &conn: m_connections | std::views::values)
+        std::vector<std::shared_ptr<Connection>> snapshot;
+        {
+            std::shared_lock lock(m_mutex);
+            snapshot.reserve(m_connections.size());
+            for (const auto &conn: m_connections | std::views::values)
+            {
+                snapshot.push_back(conn);
+            }
+        }
+        // 锁外调用 close()，防止回调中的 remove() 死锁
+        for (auto &conn: snapshot)
         {
             if (conn)
             {
                 [[maybe_unused]] auto _ = conn->cancelable().requestStop();
+                conn->close();
             }
         }
     }

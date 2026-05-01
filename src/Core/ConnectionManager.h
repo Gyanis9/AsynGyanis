@@ -53,7 +53,7 @@ namespace Core
          * 遍历所有连接，调用其关闭接口（如 close()），并请求取消（requestStop）。
          * 通常用于服务停止时主动清理所有连接。
          */
-        void shutdown() const;
+        void shutdown();
 
         /**
          * @brief 等待所有连接完全退出。

@@ -33,7 +33,9 @@ namespace Core
 
     void Connection::close()
     {
-        m_alive.store(false, std::memory_order_release);
+        // 双重关闭防护：若已关闭则直接返回，防止重复 shutdown/close
+        if (!m_alive.exchange(false, std::memory_order_acq_rel))
+            return;
         [[maybe_unused]] auto _ = m_cancelable.requestStop();
         m_socket.close();
     }
