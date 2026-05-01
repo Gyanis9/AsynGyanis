@@ -84,7 +84,7 @@ namespace Core
                 return {};
             char errBuf[128];
             throw std::runtime_error(
-                std::string("epoll_wait failed: ") + strerror_r(errno, errBuf, sizeof(errBuf)));
+                    std::string("epoll_wait failed: ") + strerror_r(errno, errBuf, sizeof(errBuf)));
         }
         // 动态扩容：当返回事件数接近容量上限时翻倍，防止高负载下丢失事件
         if (static_cast<size_t>(n) >= m_events.size() / 2)

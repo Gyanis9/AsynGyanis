@@ -84,15 +84,15 @@ namespace Core
          */
         void await_resume() const noexcept
         {
-            m_registered = false;
+            m_registered            = false;
             [[maybe_unused]] auto _ = m_epoll->delFd(m_fd);
         }
 
     private:
-        Epoll *       m_epoll;             ///< epoll 实例指针（非拥有，生命周期由外部保证）
-        int           m_fd;                ///< 被监听的文件描述符
-        uint32_t      m_eventMask;         ///< 要监听的事件掩码（不包含 EPOLLET，内部会自动添加）
-        mutable bool  m_registered{false}; ///< 是否已注册到 epoll（用于 RAII 析构清理）
+        Epoll *      m_epoll;             ///< epoll 实例指针（非拥有，生命周期由外部保证）
+        int          m_fd;                ///< 被监听的文件描述符
+        uint32_t     m_eventMask;         ///< 要监听的事件掩码（不包含 EPOLLET，内部会自动添加）
+        mutable bool m_registered{false}; ///< 是否已注册到 epoll（用于 RAII 析构清理）
     };
 }
 

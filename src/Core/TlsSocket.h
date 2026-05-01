@@ -99,16 +99,22 @@ namespace Core
             {
                 if (ssl)
                 {
-                    SSL_shutdown(ssl);
+                    // TLS 双向关闭：第一次调用发送 close_notify
+                    const int ret = SSL_shutdown(ssl);
+                    if (ret == 0)
+                    {
+                        // 需要第二次调用接收对端的 close_notify
+                        SSL_shutdown(ssl);
+                    }
                     SSL_free(ssl);
                 }
             }
         };
 
-        std::unique_ptr<SSL, SslDeleter> m_ssl;          ///< OpenSSL SSL 对象，RAII 管理
-        EventLoop * m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
-        AsyncSocket m_socket;               ///< 底层异步 socket
-        bool        m_handshakeDone{false}; ///< 握手是否已完成
+        std::unique_ptr<SSL, SslDeleter> m_ssl;                  ///< OpenSSL SSL 对象，RAII 管理
+        EventLoop *                      m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
+        AsyncSocket                      m_socket;               ///< 底层异步 socket
+        bool                             m_handshakeDone{false}; ///< 握手是否已完成
     };
 
 }

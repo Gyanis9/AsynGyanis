@@ -42,7 +42,7 @@ namespace Core
                 break;
             }
 
-            const int timeoutMs = m_scheduler.hasWork() ? 0 : 1;
+            const int timeoutMs = m_scheduler.hasWork() ? 0 : -1;
             for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
             {
                 if (ev.data.ptr == &m_wakeupSentinel)
