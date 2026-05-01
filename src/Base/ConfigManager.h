@@ -312,6 +312,8 @@ namespace Base
         HotReloadCallback             m_hot_reload_callback;       ///< 热加载回调函数，配置文件变化时触发
         std::atomic<bool>             m_hot_reload_enabled{false}; ///< 热加载功能是否启用（true 启用，false 关闭）
         std::atomic<bool>             m_reload_pending{false};    ///< 是否有重载任务正在执行（节流）
+        std::mutex                    m_reload_threads_mutex;      ///< 保护 m_reload_threads 的互斥锁
+        std::vector<std::jthread>     m_reload_threads;            ///< 活跃的重载线程（用于析构前 join）
 
         /**
          * @brief 目录加载的内部实现，负责扫描、解析并原子替换配置快照。

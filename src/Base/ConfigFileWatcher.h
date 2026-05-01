@@ -10,6 +10,8 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -191,6 +193,7 @@ namespace Base
         std::unordered_map<std::string, int> m_path_to_wd;        ///< 路径 -> 监视描述符映射
 
         FileChangeCallback           m_callback;           ///< 用户回调函数
+        mutable std::shared_mutex    m_watch_mutex;         ///< 保护 m_watch_descriptors、m_path_to_wd、m_callback 的读写锁
         std::unique_ptr<std::thread> m_watch_thread;       ///< 监听线程
         std::atomic<bool>            m_running{false};     ///< 是否正在运行
         std::atomic<bool>            m_should_stop{false}; ///< 是否应该停止

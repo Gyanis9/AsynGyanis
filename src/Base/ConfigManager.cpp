@@ -1,8 +1,12 @@
 #include "ConfigManager.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <ranges>
+#include <string_view>
 
 namespace Base
 {
@@ -145,6 +149,17 @@ namespace Base
         }
 
         m_hot_reload_enabled.store(false, std::memory_order_release);
+
+        // 等待所有活跃的重载线程完成，防止 use-after-free
+        {
+            std::lock_guard lock(m_reload_threads_mutex);
+            for (auto &t: m_reload_threads)
+            {
+                if (t.joinable())
+                    t.join();
+            }
+            m_reload_threads.clear();
+        }
 
         if (m_file_watcher)
         {
@@ -397,35 +412,49 @@ namespace Base
         if (node.IsNull())
         {
             return ConfigValue(nullptr);
-        } else if (node.IsScalar())
+        }
+        if (node.IsScalar())
         {
-            // 尝试解析为布尔值
-            try
+            const std::string scalar = node.as<std::string>();
+
+            // YAML 布尔值检测：true/false, yes/no, on/off (大小写不敏感)
+            if (scalar.size() <= 5)
             {
-                return ConfigValue(node.as<bool>());
-            } catch (...)
-            {
+                std::string lower(scalar.size(), '\0');
+                std::transform(scalar.begin(), scalar.end(), lower.begin(),
+                               [](const unsigned char c) { return std::tolower(c); });
+                if (lower == "true" || lower == "false" || lower == "yes" || lower == "no" ||
+                    lower == "on" || lower == "off")
+                {
+                    return ConfigValue(lower == "true" || lower == "yes" || lower == "on");
+                }
             }
 
-            // 尝试解析为整数
-            try
+            // 整数检测
             {
-                return ConfigValue(node.as<int64_t>());
-            } catch (...)
-            {
+                char *end = nullptr;
+                errno = 0;
+                const long long intVal = std::strtoll(scalar.c_str(), &end, 10);
+                if (errno == 0 && end == scalar.c_str() + scalar.size())
+                {
+                    return ConfigValue(static_cast<int64_t>(intVal));
+                }
             }
 
-            // 尝试解析为浮点数
-            try
+            // 浮点数检测
             {
-                return ConfigValue(node.as<double>());
-            } catch (...)
-            {
+                char *end = nullptr;
+                errno = 0;
+                const double floatVal = std::strtod(scalar.c_str(), &end);
+                if (errno == 0 && end == scalar.c_str() + scalar.size())
+                {
+                    return ConfigValue(floatVal);
+                }
             }
 
-            // 默认作为字符串
-            return ConfigValue(node.as<std::string>());
-        } else if (node.IsSequence())
+            return ConfigValue(scalar);
+        }
+        if (node.IsSequence())
         {
             ConfigArray arr;
             for (const auto &item: node)
@@ -433,7 +462,8 @@ namespace Base
                 arr.push_back(convertYamlNode(item));
             }
             return ConfigValue(std::move(arr));
-        } else if (node.IsMap())
+        }
+        if (node.IsMap())
         {
             ConfigObject obj;
             for (const auto &kv: node)
@@ -465,8 +495,16 @@ namespace Base
             return;
         }
 
-        std::thread([this]()
+        // 使用 jthread 替代 detached thread，防止单例析构后 use-after-free
+        // disableHotReload() 会 join 所有活跃线程
+        std::lock_guard lock(m_reload_threads_mutex);
+        m_reload_threads.emplace_back([this]()
         {
+            if (!m_hot_reload_enabled.load(std::memory_order_acquire))
+            {
+                m_reload_pending.store(false, std::memory_order_release);
+                return;
+            }
             const auto result = doReload();
 
             if (m_hot_reload_callback)
@@ -475,7 +513,16 @@ namespace Base
             }
 
             m_reload_pending.store(false, std::memory_order_release);
-        }).detach();
+        });
+
+        // 清理已完成线程，防止积压
+        m_reload_threads.erase(
+            std::remove_if(m_reload_threads.begin(), m_reload_threads.end(),
+                           [](const std::jthread &t)
+                           {
+                               return !t.joinable();
+                           }),
+            m_reload_threads.end());
     }
 
     ConfigLoadResult ConfigManager::doReload()

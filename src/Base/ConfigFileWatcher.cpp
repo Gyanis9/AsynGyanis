@@ -43,9 +43,17 @@ namespace Base
         }
 
         m_should_stop.store(false, std::memory_order_release);
-        m_running.store(true, std::memory_order_release);
 
-        m_watch_thread = std::make_unique<std::thread>(&InotifyFileWatcher::watchLoop, this);
+        try
+        {
+            m_watch_thread = std::make_unique<std::thread>(&InotifyFileWatcher::watchLoop, this);
+        }
+        catch (const std::system_error &)
+        {
+            return false;
+        }
+
+        m_running.store(true, std::memory_order_release);
 
         return true;
     }
@@ -78,22 +86,26 @@ namespace Base
             return false;
         }
 
-        // 检查是否已经在监听
-        if (m_path_to_wd.contains(abs_path))
         {
-            return true;
+            std::lock_guard lock(m_watch_mutex);
+
+            // 检查是否已经在监听
+            if (m_path_to_wd.contains(abs_path))
+            {
+                return true;
+            }
+
+            const int wd = inotify_add_watch(m_inotify_fd, abs_path.c_str(), WATCH_MASK);
+            if (wd < 0)
+            {
+                return false;
+            }
+
+            m_watch_descriptors[wd] = abs_path;
+            m_path_to_wd[abs_path]  = wd;
         }
 
-        const int wd = inotify_add_watch(m_inotify_fd, abs_path.c_str(), WATCH_MASK);
-        if (wd < 0)
-        {
-            return false;
-        }
-
-        m_watch_descriptors[wd] = abs_path;
-        m_path_to_wd[abs_path]  = wd;
-
-        // 递归监听子目录
+        // 递归监听子目录（不在锁内调用以免死锁或长时间持锁）
         if (recursive && std::filesystem::is_directory(abs_path, ec))
         {
             for (const auto &entry: std::filesystem::recursive_directory_iterator(abs_path, ec))
@@ -120,6 +132,8 @@ namespace Base
             return false;
         }
 
+        std::lock_guard lock(m_watch_mutex);
+
         const auto it = m_path_to_wd.find(abs_path);
         if (it == m_path_to_wd.end())
         {
@@ -137,6 +151,7 @@ namespace Base
 
     void InotifyFileWatcher::setCallback(FileChangeCallback callback)
     {
+        std::lock_guard lock(m_watch_mutex);
         m_callback = std::move(callback);
     }
 
@@ -214,29 +229,36 @@ namespace Base
 
             if (event->len > 0)
             {
-                if (auto wd_it = m_watch_descriptors.find(event->wd); wd_it != m_watch_descriptors.end())
+                // 在锁内提取回调相关的数据快照，锁外调用回调以避免死锁
+                FileChangeCallback callbackCopy;
+                std::string        full_path;
+                FileChangeEvent    evt = FileChangeEvent::Modified;
+
                 {
-                    std::string full_path = wd_it->second;
-                    if (!full_path.empty() && full_path.back() != '/')
-                    {
-                        full_path += '/';
-                    }
-                    full_path += event->name;
+                    std::shared_lock lock(m_watch_mutex);
 
-                    auto now = std::chrono::steady_clock::now();
-                    if (auto last_it = m_last_event_time.find(full_path); last_it != m_last_event_time.end())
+                    if (auto wd_it = m_watch_descriptors.find(event->wd); wd_it != m_watch_descriptors.end())
                     {
-                        if (now - last_it->second < m_debounce_interval)
+                        full_path = wd_it->second;
+                        if (!full_path.empty() && full_path.back() != '/')
                         {
-                            i += sizeof(inotify_event) + event->len;
-                            continue;
+                            full_path += '/';
                         }
-                    }
-                    m_last_event_time[full_path] = now;
+                        full_path += event->name;
 
-                    if (m_callback)
-                    {
-                        auto evt = FileChangeEvent::Modified;
+                        auto now = std::chrono::steady_clock::now();
+                        if (auto last_it = m_last_event_time.find(full_path); last_it != m_last_event_time.end())
+                        {
+                            if (now - last_it->second < m_debounce_interval)
+                            {
+                                i += sizeof(inotify_event) + event->len;
+                                continue;
+                            }
+                        }
+                        m_last_event_time[full_path] = now;
+
+                        callbackCopy = m_callback;
+
                         if (event->mask & IN_CLOSE_WRITE)
                         {
                             evt = FileChangeEvent::Modified;
@@ -247,8 +269,13 @@ namespace Base
                         {
                             evt = FileChangeEvent::Deleted;
                         }
-                        m_callback(full_path, evt);
                     }
+                }
+
+                // 锁外调用回调，防止回调中修改 watcher 引起死锁
+                if (callbackCopy)
+                {
+                    callbackCopy(full_path, evt);
                 }
             }
 
