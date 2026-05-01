@@ -111,6 +111,7 @@ namespace Net
          * @param body 正文内容
          */
         void setBody(std::string body);
+        void appendBody(const char *data, size_t len);
 
         /**
          * @brief 获取请求正文（字符串视图）。

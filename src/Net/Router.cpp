@@ -28,8 +28,7 @@ namespace Net
         if (isExactPath(path) && method != HttpMethod::UNKNOWN)
         {
             m_exactRoutes[makeExactKey(method, path)] = std::move(handler);
-        }
-        else
+        } else
         {
             // 参数化路径（":id"）、通配符（"*"）或 UNKNOWN method 进入线性扫描列表
             m_patternRoutes.push_back({method, path, std::move(handler)});

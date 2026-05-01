@@ -40,12 +40,12 @@ namespace Net
         {
             if (lowerName == "set-cookie")
             {
-                size_t idx = 1;
+                size_t      idx = 1;
                 std::string indexedKey;
                 do
                 {
                     indexedKey = lowerName + "_" + std::to_string(idx++);
-                } while (m_headers.find(indexedKey) != m_headers.end());
+                } while (m_headers.contains(indexedKey));
                 m_headers[std::move(indexedKey)] = value;
                 return;
             }
@@ -72,48 +72,81 @@ namespace Net
     {
         switch (code)
         {
-            case 200: return "OK";
-            case 201: return "Created";
-            case 202: return "Accepted";
-            case 204: return "No Content";
-            case 206: return "Partial Content";
-            case 301: return "Moved Permanently";
-            case 302: return "Found";
-            case 304: return "Not Modified";
-            case 307: return "Temporary Redirect";
-            case 308: return "Permanent Redirect";
-            case 400: return "Bad Request";
-            case 401: return "Unauthorized";
-            case 403: return "Forbidden";
-            case 404: return "Not Found";
-            case 405: return "Method Not Allowed";
-            case 406: return "Not Acceptable";
-            case 408: return "Request Timeout";
-            case 409: return "Conflict";
-            case 410: return "Gone";
-            case 413: return "Payload Too Large";
-            case 414: return "URI Too Long";
-            case 415: return "Unsupported Media Type";
-            case 416: return "Range Not Satisfiable";
-            case 422: return "Unprocessable Content";
-            case 429: return "Too Many Requests";
-            case 451: return "Unavailable For Legal Reasons";
-            case 500: return "Internal Server Error";
-            case 501: return "Not Implemented";
-            case 502: return "Bad Gateway";
-            case 503: return "Service Unavailable";
-            case 504: return "Gateway Timeout";
-            case 505: return "HTTP Version Not Supported";
-            default:  return "";
+            case 200:
+                return "OK";
+            case 201:
+                return "Created";
+            case 202:
+                return "Accepted";
+            case 204:
+                return "No Content";
+            case 206:
+                return "Partial Content";
+            case 301:
+                return "Moved Permanently";
+            case 302:
+                return "Found";
+            case 304:
+                return "Not Modified";
+            case 307:
+                return "Temporary Redirect";
+            case 308:
+                return "Permanent Redirect";
+            case 400:
+                return "Bad Request";
+            case 401:
+                return "Unauthorized";
+            case 403:
+                return "Forbidden";
+            case 404:
+                return "Not Found";
+            case 405:
+                return "Method Not Allowed";
+            case 406:
+                return "Not Acceptable";
+            case 408:
+                return "Request Timeout";
+            case 409:
+                return "Conflict";
+            case 410:
+                return "Gone";
+            case 413:
+                return "Payload Too Large";
+            case 414:
+                return "URI Too Long";
+            case 415:
+                return "Unsupported Media Type";
+            case 416:
+                return "Range Not Satisfiable";
+            case 422:
+                return "Unprocessable Content";
+            case 429:
+                return "Too Many Requests";
+            case 451:
+                return "Unavailable For Legal Reasons";
+            case 500:
+                return "Internal Server Error";
+            case 501:
+                return "Not Implemented";
+            case 502:
+                return "Bad Gateway";
+            case 503:
+                return "Service Unavailable";
+            case 504:
+                return "Gateway Timeout";
+            case 505:
+                return "HTTP Version Not Supported";
+            default:
+                return "";
         }
     }
 
     std::string HttpResponse::toString() const
     {
         // Pre-compute size to avoid reallocations（含自动添加的 content-type / content-length）
-        size_t estimated = 48 + m_body.size(); // status line + CRLF CRLF
-        bool hasContentLength = false;
-        bool hasContentType   = false;
+        size_t estimated        = 48 + m_body.size(); // status line + CRLF CRLF
+        bool   hasContentLength = false;
+        bool   hasContentType   = false;
         for (const auto &[key, value]: m_headers)
         {
             estimated += key.size() + value.size() + 4; // "key: value\r\n"
@@ -134,7 +167,7 @@ namespace Net
         result.append(m_httpVersion);
         result.push_back(' ');
         // 状态码使用栈缓冲避免 std::to_string 堆分配
-        char statusBuf[8];
+        char       statusBuf[8];
         const auto [ptr, _] = std::to_chars(statusBuf, statusBuf + sizeof(statusBuf), m_status);
         result.append(statusBuf, static_cast<size_t>(ptr - statusBuf));
         result.push_back(' ');
@@ -155,10 +188,10 @@ namespace Net
         if (!hasContentLength)
         {
             result.append("content-length: ");
-            char lenBuf[32];
+            char       lenBuf[32];
             const auto [lp, ec2] = std::to_chars(lenBuf, lenBuf + sizeof(lenBuf),
-                                                      static_cast<uint64_t>(m_body.size()));
-            (void)ec2;
+                                                 static_cast<uint64_t>(m_body.size()));
+            (void) ec2;
             result.append(lenBuf, static_cast<size_t>(lp - lenBuf));
             result.append("\r\n");
         }

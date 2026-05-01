@@ -107,10 +107,10 @@ namespace Net
          */
         static const char *statusMessage(int code);
 
-        int                                          m_status;       ///< HTTP 状态码
+        int                                          m_status;                  ///< HTTP 状态码
         std::string                                  m_httpVersion{"HTTP/1.1"}; ///< HTTP 版本，默认 1.1
-        std::unordered_map<std::string, std::string> m_headers;      ///< 头部字段映射
-        std::string                                  m_body;         ///< 响应正文
+        std::unordered_map<std::string, std::string> m_headers;                 ///< 头部字段映射
+        std::string                                  m_body;                    ///< 响应正文
     };
 }
 

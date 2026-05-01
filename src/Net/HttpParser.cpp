@@ -146,8 +146,8 @@ namespace Net
 
         // 静态查找表避免每次请求的 std::format 分配
         static constexpr const char *kHttpVersions[2][4] = {
-            {"HTTP/0.9", "HTTP/0.1", "HTTP/0.2", "HTTP/0.3"},
-            {"HTTP/1.0", "HTTP/1.1", "HTTP/1.2", "HTTP/1.3"},
+                {"HTTP/0.9", "HTTP/0.1", "HTTP/0.2", "HTTP/0.3"},
+                {"HTTP/1.0", "HTTP/1.1", "HTTP/1.2", "HTTP/1.3"},
         };
         const auto major = static_cast<size_t>(parser->http_major);
         const auto minor = static_cast<size_t>(parser->http_minor);
@@ -155,7 +155,7 @@ namespace Net
             self->m_currentRequest.setHttpVersion(kHttpVersions[major][minor]);
         else
             self->m_currentRequest.setHttpVersion(
-                std::format("HTTP/{}.{}", parser->http_major, parser->http_minor));
+                    std::format("HTTP/{}.{}", parser->http_major, parser->http_minor));
 
         self->m_complete = true;
         return 0;

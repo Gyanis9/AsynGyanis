@@ -68,12 +68,12 @@ namespace Net
             if (key == "set-cookie")
             {
                 // 用唯一后缀保留多个 Set-Cookie：set-cookie, set-cookie_1, set-cookie_2 ...
-                size_t idx = 1;
+                size_t      idx = 1;
                 std::string indexedKey;
                 do
                 {
                     indexedKey = key + "_" + std::to_string(idx++);
-                } while (m_headers.find(indexedKey) != m_headers.end());
+                } while (m_headers.contains(indexedKey));
                 m_headers[std::move(indexedKey)] = std::move(value);
                 return;
             }
@@ -149,13 +149,16 @@ namespace Net
             {
                 if (src[i] == '%' && i + 2 < src.size())
                 {
-                    const auto hi = src[i + 1];
-                    const auto lo = src[i + 2];
-                    auto hexVal = [](const char c) -> int
+                    const auto hi     = src[i + 1];
+                    const auto lo     = src[i + 2];
+                    auto       hexVal = [](const char c) -> int
                     {
-                        if (c >= '0' && c <= '9') return c - '0';
-                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        if (c >= '0' && c <= '9')
+                            return c - '0';
+                        if (c >= 'A' && c <= 'F')
+                            return c - 'A' + 10;
+                        if (c >= 'a' && c <= 'f')
+                            return c - 'a' + 10;
                         return -1;
                     };
                     const int h = hexVal(hi);
@@ -187,10 +190,12 @@ namespace Net
             {
                 auto key   = percentDecode(query.substr(start, eqPos - start));
                 auto value = percentDecode(query.substr(eqPos + 1, ampPos - eqPos - 1));
+
                 params[std::move(key)] = std::move(value);
             } else
             {
                 auto key = percentDecode(query.substr(start, ampPos - start));
+
                 params[std::move(key)] = "";
             }
 
