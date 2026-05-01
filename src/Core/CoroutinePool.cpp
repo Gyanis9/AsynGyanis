@@ -59,13 +59,12 @@ namespace Core
         m_freeList.push_back(p);
     }
 
-    bool CoroutinePool::owns(void *const p) const noexcept
+    bool CoroutinePool::owns(const void *const p) const noexcept
     {
         for (const auto *chunk: m_chunks)
         {
             const auto *begin = static_cast<const std::byte *>(chunk);
-            const auto *ptr   = static_cast<const std::byte *>(p);
-            if (ptr >= begin && ptr < begin + m_allocatedCount * m_blockSize)
+            if (const auto *ptr = static_cast<const std::byte *>(p); ptr >= begin && ptr < begin + m_allocatedCount * m_blockSize)
                 return true;
         }
         return false;
@@ -91,7 +90,7 @@ namespace Core
     {
         // 上限保护：防止无限增长（256 字节块，16384 块 = 4MB 每线程）
         static constexpr size_t kMaxBlocks = 16384;
-        const size_t newCount = m_allocatedCount + count > kMaxBlocks
+        const size_t            newCount   = m_allocatedCount + count > kMaxBlocks
                                     ? (kMaxBlocks > m_allocatedCount ? kMaxBlocks - m_allocatedCount : 0)
                                     : count;
         if (newCount == 0)

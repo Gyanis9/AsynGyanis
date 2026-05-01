@@ -68,7 +68,7 @@ namespace Core
          * @param p 待检查的指针
          * @return true 指针属于本池，可安全回收
          */
-        [[nodiscard]] bool owns(void *p) const noexcept;
+        [[nodiscard]] bool owns(const void *p) const noexcept;
 
         /**
          * @brief 获取当前线程的 CoroutinePool 实例（thread_local 单例）。

@@ -121,7 +121,7 @@ namespace Core
             if (this != &other)
             {
                 const auto old = m_handle;
-                m_handle = std::exchange(other.m_handle, nullptr);
+                m_handle       = std::exchange(other.m_handle, nullptr);
                 if (old)
                     old.destroy();
             }
@@ -334,7 +334,7 @@ namespace Core
             if (this != &other)
             {
                 const auto old = m_handle;
-                m_handle = std::exchange(other.m_handle, nullptr);
+                m_handle       = std::exchange(other.m_handle, nullptr);
                 if (old)
                     old.destroy();
             }

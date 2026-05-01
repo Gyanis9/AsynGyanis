@@ -28,7 +28,6 @@ namespace Core
     public:
         /**
          * @brief 构造一个连接对象。
-         * @param loop 所属的事件循环
          * @param socket 已建立的异步socket
          */
         explicit Connection(AsyncSocket socket);
