@@ -21,12 +21,15 @@ namespace Net
         const int     fd  = m_listenSocket.fd();
         constexpr int opt = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+        // SO_REUSEPORT 仅 Linux 3.9+ 支持，旧内核失败时忽略（不影响单实例运行）
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0)
+        {
+            // 非致命错误，仅在 EOPNOTSUPP 时静默忽略
+        }
 
         if (m_addr.family() == AF_INET6)
         {
             constexpr int v6only = 0;
-
             [[maybe_unused]] auto _ = m_listenSocket.setSockOpt(IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
         }
 

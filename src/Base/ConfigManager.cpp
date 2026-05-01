@@ -113,10 +113,7 @@ namespace Base
 
             m_hot_reload_callback = std::move(callback);
 
-            if (const auto watcher = dynamic_cast<InotifyFileWatcher *>(m_file_watcher.get()))
-            {
-                watcher->setDebounceInterval(debounce_ms);
-            }
+            m_file_watcher->setDebounceInterval(debounce_ms);
 
             m_file_watcher->setCallback([this](const std::string_view file_path, const FileChangeEvent event)
             {

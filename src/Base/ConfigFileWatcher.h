@@ -83,6 +83,14 @@ namespace Base
          * @return true 正在运行；false 未运行
          */
         [[nodiscard]] virtual bool isRunning() const noexcept = 0;
+
+        /**
+         * @brief 设置事件防抖时间间隔（默认实现为空操作）
+         * @param interval 防抖间隔（毫秒）
+         */
+        virtual void setDebounceInterval(std::chrono::milliseconds /*interval*/) noexcept
+        {
+        }
     };
 
     /**
