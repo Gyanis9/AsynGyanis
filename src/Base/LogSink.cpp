@@ -54,8 +54,7 @@ namespace Base
     std::string LogSink::formatEvent(const LogEvent &event) const
     {
         // atomic_load 确保读取时不会与 setFormatter 产生数据竞争
-        auto fmt = std::atomic_load(&m_formatter);
-        if (fmt)
+        if (const auto fmt = std::atomic_load(&m_formatter))
         {
             return fmt->format(event);
         }

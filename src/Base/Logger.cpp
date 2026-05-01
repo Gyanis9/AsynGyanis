@@ -92,8 +92,7 @@ namespace Base
                 try
                 {
                     sink->write(event);
-                }
-                catch (...)
+                } catch (...)
                 {
                     // 单个 sink 异常不应阻止其他 sink 接收日志
                 }

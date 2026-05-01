@@ -88,11 +88,11 @@ namespace Base
 
         // 使用 thread_local 缓冲区的 format_to_n 避免 std::format 的堆分配
         thread_local std::array<char, 32> buf;
-        const auto result = std::format_to_n(buf.data(), buf.size(),
-            "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
-            tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
-            tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms.count());
-        return std::string(buf.data(), result.out - buf.data());
+        const auto                        [out, size] = std::format_to_n(buf.data(), buf.size(),
+                                                  "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
+                                                  tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+                                                  tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms.count());
+        return std::string(buf.data(), out - buf.data());
     }
 
     inline const std::string &threadIdString()

@@ -39,7 +39,7 @@ namespace Base
     // ConfigFileException
     // ============================================================================
 
-    ConfigFileException::ConfigFileException(const std::string &file_path, const std::string &reason,
+    ConfigFileException::ConfigFileException(const std::string &         file_path, const std::string &reason,
                                              const std::source_location &loc) :
         ConfigException("File '" + file_path + "': " + reason, loc)
         , m_file_path(file_path)
@@ -55,7 +55,7 @@ namespace Base
     // ConfigParseException
     // ============================================================================
 
-    ConfigParseException::ConfigParseException(const std::string &file_path, const std::string &reason,
+    ConfigParseException::ConfigParseException(const std::string &         file_path, const std::string &reason,
                                                const std::source_location &loc) :
         ConfigException("Parse error in '" + file_path + "': " + reason, loc)
         , m_file_path(file_path)
@@ -86,7 +86,7 @@ namespace Base
     // ConfigTypeException
     // ============================================================================
 
-    ConfigTypeException::ConfigTypeException(const std::string &key, const std::string &expected_type, const std::string &actual_type,
+    ConfigTypeException::ConfigTypeException(const std::string &         key, const std::string &expected_type, const std::string &actual_type,
                                              const std::source_location &loc) :
         ConfigException("Type mismatch for key '" + key + "': expected " + expected_type + ", got " + actual_type, loc)
         , m_key(key)
@@ -114,7 +114,7 @@ namespace Base
     // ConfigValidationException
     // ============================================================================
 
-    ConfigValidationException::ConfigValidationException(const std::string &key, const std::string &reason,
+    ConfigValidationException::ConfigValidationException(const std::string &         key, const std::string &reason,
                                                          const std::source_location &loc) :
         ConfigException("Validation failed for key '" + key + "': " + reason, loc)
         , m_key(key)
@@ -158,14 +158,14 @@ namespace Base
     // NetworkException
     // ============================================================================
 
-    NetworkException::NetworkException(const std::string &context, const std::string &remote_address,
+    NetworkException::NetworkException(const std::string &         context, const std::string &remote_address,
                                        const std::source_location &loc) :
         SystemException(context, loc)
         , m_remoteAddress(remote_address)
     {
     }
 
-    NetworkException::NetworkException(const std::string &context, std::error_code ec, const std::string &remote_address,
+    NetworkException::NetworkException(const std::string &         context, std::error_code ec, const std::string &remote_address,
                                        const std::source_location &loc) :
         SystemException(context + " (remote: " + remote_address + ")", std::move(ec), loc)
         , m_remoteAddress(remote_address)
@@ -177,4 +177,4 @@ namespace Base
         return m_remoteAddress;
     }
 
-} // namespace Base
+}

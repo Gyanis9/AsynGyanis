@@ -101,8 +101,8 @@ namespace Base
         std::string formatEvent(const LogEvent &event) const;
 
     private:
-        std::atomic<LogLevel>               m_level{LogLevel::TRACE};
-        std::shared_ptr<LogFormatter>        m_formatter; ///< 通过 shared_ptr 共享所有权，读取时原子拷贝确保线程安全
+        std::atomic<LogLevel>         m_level{LogLevel::TRACE};
+        std::shared_ptr<LogFormatter> m_formatter; ///< 通过 shared_ptr 共享所有权，读取时原子拷贝确保线程安全
     };
 
     // ============================================================================
