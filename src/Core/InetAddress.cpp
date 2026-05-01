@@ -66,14 +66,24 @@ namespace Core
             return std::nullopt;
         }
 
+        // 遍历 getaddrinfo 链表，优先选择 IPv4（兼容性更好）
         std::optional<InetAddress> addr;
-        if (result->ai_addr->sa_family == AF_INET)
+        std::optional<InetAddress> v6addr;
+        for (auto *rp = result; rp != nullptr; rp = rp->ai_next)
         {
-            addr = InetAddress(*reinterpret_cast<sockaddr_in *>(result->ai_addr));
-        } else if (result->ai_addr->sa_family == AF_INET6)
-        {
-            addr = InetAddress(*reinterpret_cast<sockaddr_in6 *>(result->ai_addr));
+            if (rp->ai_addr->sa_family == AF_INET)
+            {
+                addr = InetAddress(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
+                break; // IPv4 优先
+            }
+            if (rp->ai_addr->sa_family == AF_INET6 && !v6addr.has_value())
+            {
+                v6addr = InetAddress(*reinterpret_cast<sockaddr_in6 *>(rp->ai_addr));
+            }
         }
+
+        if (!addr.has_value())
+            addr = std::move(v6addr);
 
         freeaddrinfo(result);
         return addr;
