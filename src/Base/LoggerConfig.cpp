@@ -97,7 +97,7 @@ namespace Base
         const auto type_opt = sink_cfg.get<std::string>("type");
         if (!type_opt.has_value())
         {
-            std::cerr << "LoggerConfig: sink missing 'type' field, skipping" << std::endl;
+            std::cerr << "LoggerConfig: sink missing 'type' field, skipping" << '\n';
             return nullptr;
         }
         const std::string type = type_opt.value();
@@ -113,7 +113,7 @@ namespace Base
             const auto path_opt = sink_cfg.get<std::string>("path");
             if (!path_opt.has_value())
             {
-                std::cerr << "LoggerConfig: file sink missing 'path', skipping" << std::endl;
+                std::cerr << "LoggerConfig: file sink missing 'path', skipping" << '\n';
                 return nullptr;
             }
             bool truncate = sink_cfg.get<bool>("truncate").value_or(false);
@@ -123,7 +123,7 @@ namespace Base
             const auto base_opt = sink_cfg.get<std::string>("base_filename");
             if (!base_opt.has_value())
             {
-                std::cerr << "LoggerConfig: rolling_file sink missing 'base_filename', skipping" << std::endl;
+                std::cerr << "LoggerConfig: rolling_file sink missing 'base_filename', skipping" << '\n';
                 return nullptr;
             }
             const std::string dir        = sink_cfg.get<std::string>("directory").value_or("logs");
@@ -147,7 +147,7 @@ namespace Base
         {
             if (!sink_cfg.contains("wrapped"))
             {
-                std::cerr << "LoggerConfig: async sink missing 'wrapped', skipping" << std::endl;
+                std::cerr << "LoggerConfig: async sink missing 'wrapped', skipping" << '\n';
                 return nullptr;
             }
             auto wrapped = createSinkFromConfig(sink_cfg["wrapped"]);
@@ -162,7 +162,7 @@ namespace Base
         } else
         {
             // 模块初始化阶段日志系统可能尚未就绪，使用 std::cerr
-            std::cerr << "LoggerConfig: unknown sink type '" << type << "', skipping" << std::endl;
+            std::cerr << "LoggerConfig: unknown sink type '" << type << "', skipping" << '\n';
             return nullptr;
         }
 

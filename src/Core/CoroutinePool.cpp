@@ -12,7 +12,7 @@ namespace Core
 
     CoroutinePool::~CoroutinePool()
     {
-        for (const auto chunk: m_chunks)
+        for (const auto &chunk: m_chunks)
         {
             ::operator delete(chunk);
         }

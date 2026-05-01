@@ -81,10 +81,10 @@ namespace Base
         const std::string formatted = formatEvent(event);
         if (event.level >= LogLevel::WARN)
         {
-            std::cerr << formatted << std::endl;
+            std::cerr << formatted << '\n';
         } else
         {
-            std::cout << formatted << std::endl;
+            std::cout << formatted << '\n';
         }
     }
 
@@ -144,7 +144,7 @@ namespace Base
         std::lock_guard lock(m_mutex);
         if (m_file.is_open())
         {
-            m_file << formatEvent(event) << std::endl;
+            m_file << formatEvent(event) << '\n';
         }
     }
 

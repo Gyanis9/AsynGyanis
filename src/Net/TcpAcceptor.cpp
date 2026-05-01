@@ -93,7 +93,7 @@ namespace Net
                     break;
                 }
 
-                co_return std::move(first);
+                co_return first;
             }
 
             if (errno == EAGAIN || errno == EWOULDBLOCK)

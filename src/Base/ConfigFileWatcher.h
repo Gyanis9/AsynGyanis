@@ -176,7 +176,7 @@ namespace Base
          * @brief 设置事件防抖时间间隔
          * @param interval 防抖间隔（毫秒）
          */
-        void setDebounceInterval(std::chrono::milliseconds interval) noexcept;
+        void setDebounceInterval(std::chrono::milliseconds interval) noexcept override;
 
     private:
         /**

@@ -104,7 +104,7 @@ namespace Core
             if (batch.empty())
                 break;
 
-            for (const auto handle: batch)
+            for (const auto &handle: batch)
             {
                 handle.resume();
             }
