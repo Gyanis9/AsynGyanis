@@ -93,7 +93,15 @@ namespace Base
             return nullptr;
         }
 
-        const auto               type = sink_cfg["type"].as<std::string>();
+        // 安全获取 type 字段，避免 operator[] 抛出异常中断整个配置加载
+        const auto type_opt = sink_cfg.get<std::string>("type");
+        if (!type_opt.has_value())
+        {
+            std::cerr << "LoggerConfig: sink missing 'type' field, skipping" << std::endl;
+            return nullptr;
+        }
+        const std::string type = type_opt.value();
+
         std::unique_ptr<LogSink> sink;
 
         if (type == "console")
@@ -102,36 +110,46 @@ namespace Base
             sink       = std::make_unique<ConsoleSink>(color);
         } else if (type == "file")
         {
-            auto path     = sink_cfg["path"].as<std::string>();
+            const auto path_opt = sink_cfg.get<std::string>("path");
+            if (!path_opt.has_value())
+            {
+                std::cerr << "LoggerConfig: file sink missing 'path', skipping" << std::endl;
+                return nullptr;
+            }
             bool truncate = sink_cfg.get<bool>("truncate").value_or(false);
-            sink          = std::make_unique<FileSink>(path, truncate);
+            sink          = std::make_unique<FileSink>(path_opt.value(), truncate);
         } else if (type == "rolling_file")
         {
-            auto              base_filename = sink_cfg["base_filename"].as<std::string>();
-            std::string       dir           = sink_cfg.get<std::string>("directory").value_or("logs");
-            const std::string policy_str    = sink_cfg.get<std::string>("policy").value_or("size");
+            const auto base_opt = sink_cfg.get<std::string>("base_filename");
+            if (!base_opt.has_value())
+            {
+                std::cerr << "LoggerConfig: rolling_file sink missing 'base_filename', skipping" << std::endl;
+                return nullptr;
+            }
+            const std::string dir        = sink_cfg.get<std::string>("directory").value_or("logs");
+            const std::string policy_str = sink_cfg.get<std::string>("policy").value_or("size");
 
             RollingPolicy policy;
             if (policy_str == "size")
-            {
                 policy = RollingPolicy::Size;
-            } else if (policy_str == "daily")
-            {
+            else if (policy_str == "daily")
                 policy = RollingPolicy::Daily;
-            } else if (policy_str == "hourly")
-            {
+            else if (policy_str == "hourly")
                 policy = RollingPolicy::Hourly;
-            } else
-            {
+            else
                 policy = RollingPolicy::Size;
-            }
 
             size_t max_size   = sink_cfg.get<int64_t>("max_size_mb").value_or(10) * 1024 * 1024;
             size_t max_backup = sink_cfg.get<int64_t>("max_backup").value_or(10);
 
-            sink = std::make_unique<RollingFileSink>(base_filename, dir, policy, max_size, max_backup);
+            sink = std::make_unique<RollingFileSink>(base_opt.value(), dir, policy, max_size, max_backup);
         } else if (type == "async")
         {
+            if (!sink_cfg.contains("wrapped"))
+            {
+                std::cerr << "LoggerConfig: async sink missing 'wrapped', skipping" << std::endl;
+                return nullptr;
+            }
             auto wrapped = createSinkFromConfig(sink_cfg["wrapped"]);
             if (!wrapped)
                 return nullptr;
@@ -143,11 +161,11 @@ namespace Base
             sink = std::make_unique<AsyncSink>(std::move(wrapped), queue_size, policy);
         } else
         {
-            std::cerr << "Unknown sink type: " << type << std::endl;
+            // 模块初始化阶段日志系统可能尚未就绪，使用 std::cerr
+            std::cerr << "LoggerConfig: unknown sink type '" << type << "', skipping" << std::endl;
             return nullptr;
         }
 
-        // 设置 sink 等级过滤（可选）
         if (sink && sink_cfg.contains("level"))
         {
             const auto level_str = sink_cfg["level"].as<std::string>();

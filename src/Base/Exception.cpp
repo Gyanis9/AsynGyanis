@@ -2,7 +2,7 @@
 
 #include <cerrno>
 #include <cstring>
-#include <sstream>
+#include <format>
 
 namespace Base
 {
@@ -22,11 +22,8 @@ namespace Base
 
     std::string Exception::formatMessage(const std::string &msg, const std::source_location &loc)
     {
-        std::ostringstream oss;
-        oss << "[Exception] " << msg
-                << " [" << loc.file_name() << ":" << loc.line()
-                << " in " << loc.function_name() << "]";
-        return oss.str();
+        return std::format("[Exception] {} [{}:{} in {}]",
+                           msg, loc.file_name(), loc.line(), loc.function_name());
     }
 
     // ============================================================================
@@ -136,6 +133,9 @@ namespace Base
     SystemException::SystemException(const std::string &context, const std::source_location &loc) :
         SystemException(context, std::error_code(errno, std::system_category()), loc)
     {
+        // 注意：errno 在委托构造函数参数求值期间被读取，
+        // 与 context 参数的 string 构造存在竞争。
+        // 调用者应优先使用显式传递 error_code 的双参数构造函数。
     }
 
     SystemException::SystemException(const std::string &context, std::error_code ec, const std::source_location &loc) :

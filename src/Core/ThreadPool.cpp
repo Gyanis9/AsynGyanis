@@ -26,6 +26,10 @@ namespace Core
 
     void ThreadPool::start()
     {
+        // 防止重复启动导致同一 EventLoop 被多线程并发运行
+        if (!m_threads.empty())
+            return;
+
         m_threads.reserve(m_threadCount);
         for (size_t i = 0; i < m_threadCount; ++i)
         {
@@ -33,7 +37,6 @@ namespace Core
             {
                 m_eventLoops[i]->run();
             });
-            LOG_DEBUG("ThreadPool size: "+std::to_string(m_threads.size()));
         }
     }
 

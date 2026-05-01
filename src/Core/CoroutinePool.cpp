@@ -89,14 +89,22 @@ namespace Core
 
     void CoroutinePool::expand(const size_t count)
     {
-        auto *chunk = static_cast<std::byte *>(::operator new(m_blockSize * count, static_cast<std::align_val_t>(alignof(std::max_align_t))));
+        // 上限保护：防止无限增长（256 字节块，16384 块 = 4MB 每线程）
+        static constexpr size_t kMaxBlocks = 16384;
+        const size_t newCount = m_allocatedCount + count > kMaxBlocks
+                                    ? (kMaxBlocks > m_allocatedCount ? kMaxBlocks - m_allocatedCount : 0)
+                                    : count;
+        if (newCount == 0)
+            return;
+
+        auto *chunk = static_cast<std::byte *>(::operator new(m_blockSize * newCount, static_cast<std::align_val_t>(alignof(std::max_align_t))));
         m_chunks.push_back(chunk);
 
-        for (size_t i = 0; i < count; ++i)
+        for (size_t i = 0; i < newCount; ++i)
         {
             m_freeList.push_back(chunk + i * m_blockSize);
         }
-        m_allocatedCount += count;
+        m_allocatedCount += newCount;
     }
 
 }
