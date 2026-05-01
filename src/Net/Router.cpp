@@ -7,39 +7,68 @@ namespace Net
 
     Router::Router() = default;
 
+    bool Router::isExactPath(const std::string &path)
+    {
+        return path.find(':') == std::string::npos && path.find('*') == std::string::npos;
+    }
+
+    std::string Router::makeExactKey(const HttpMethod method, const std::string &path)
+    {
+        std::string key;
+        key.reserve(16 + path.size());
+        key.append(std::to_string(static_cast<int>(method)));
+        key.push_back(':');
+        key.append(path);
+        return key;
+    }
+
+    void Router::addRoute(const HttpMethod method, const std::string &path, Handler handler)
+    {
+        // 精确路径进入哈希表实现 O(1) 查找
+        if (isExactPath(path) && method != HttpMethod::UNKNOWN)
+        {
+            m_exactRoutes[makeExactKey(method, path)] = std::move(handler);
+        }
+        else
+        {
+            // 参数化路径（":id"）、通配符（"*"）或 UNKNOWN method 进入线性扫描列表
+            m_patternRoutes.push_back({method, path, std::move(handler)});
+        }
+    }
+
     void Router::get(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::GET, path, std::move(handler)});
+        addRoute(HttpMethod::GET, path, std::move(handler));
     }
 
     void Router::post(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::POST, path, std::move(handler)});
+        addRoute(HttpMethod::POST, path, std::move(handler));
     }
 
     void Router::put(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::PUT, path, std::move(handler)});
+        addRoute(HttpMethod::PUT, path, std::move(handler));
     }
 
     void Router::del(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::DELETE, path, std::move(handler)});
+        addRoute(HttpMethod::DELETE, path, std::move(handler));
     }
 
     void Router::patch(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::PATCH, path, std::move(handler)});
+        addRoute(HttpMethod::PATCH, path, std::move(handler));
     }
 
     void Router::head(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::HEAD, path, std::move(handler)});
+        addRoute(HttpMethod::HEAD, path, std::move(handler));
     }
 
     void Router::options(const std::string &path, Handler handler)
     {
-        m_routes.push_back({HttpMethod::OPTIONS, path, std::move(handler)});
+        addRoute(HttpMethod::OPTIONS, path, std::move(handler));
     }
 
     void Router::addMiddleware(MiddlewareFunc middleware)
@@ -51,7 +80,20 @@ namespace Net
     {
         const std::string path = req.path();
 
-        for (auto it = m_routes.rbegin(); it != m_routes.rend(); ++it)
+        // 一级：精确路径 O(1) 哈希查找
+        if (const auto exactIt = m_exactRoutes.find(makeExactKey(req.method(), path));
+            exactIt != m_exactRoutes.end())
+        {
+            auto handler = exactIt->second;
+            co_await m_pipeline.run(req, res, [&req, &res, handler]() -> Core::Task<void>
+            {
+                co_await handler(req, res);
+            });
+            co_return;
+        }
+
+        // 二级：参数化/通配符路径线性扫描
+        for (auto it = m_patternRoutes.rbegin(); it != m_patternRoutes.rend(); ++it)
         {
             if (it->method != req.method() && it->method != HttpMethod::UNKNOWN)
                 continue;
@@ -67,6 +109,7 @@ namespace Net
             }
         }
 
+        // 404 Not Found
         const auto notFoundRes = HttpResponse::notFound();
         res.setStatus(notFoundRes.status());
         res.setBody(notFoundRes.body());

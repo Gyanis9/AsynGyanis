@@ -18,12 +18,16 @@ namespace Net
         if (fileFd < 0)
             co_return;
 
+        // RAII guard: ensure fileFd is always closed, even on coroutine cancellation
+        struct FileGuard
+        {
+            int fd;
+            ~FileGuard() { if (fd >= 0) ::close(fd); }
+        } guard{fileFd};
+
         struct stat st{};
         if (::fstat(fileFd, &st) < 0)
-        {
-            ::close(fileFd);
             co_return;
-        }
 
         const int sockFd = stream.socket().fd();
         size_t    remaining = static_cast<size_t>(st.st_size);
@@ -47,42 +51,41 @@ namespace Net
                 continue;
             break;
         }
-
-        ::close(fileFd);
     }
 
     const char *FileSender::contentTypeForFile(const std::string &filePath)
     {
+        static const std::unordered_map<std::string_view, const char *> kMimeTypes = {
+            {".html",  "text/html"},
+            {".htm",   "text/html"},
+            {".css",   "text/css"},
+            {".js",    "application/javascript"},
+            {".mjs",   "application/javascript"},
+            {".json",  "application/json"},
+            {".xml",   "application/xml"},
+            {".txt",   "text/plain"},
+            {".pdf",   "application/pdf"},
+            {".png",   "image/png"},
+            {".jpg",   "image/jpeg"},
+            {".jpeg",  "image/jpeg"},
+            {".gif",   "image/gif"},
+            {".svg",   "image/svg+xml"},
+            {".ico",   "image/x-icon"},
+            {".webp",  "image/webp"},
+            {".woff",  "font/woff"},
+            {".woff2", "font/woff2"},
+            {".ttf",   "font/ttf"},
+            {".wasm",  "application/wasm"},
+        };
+
         const auto dotPos = filePath.rfind('.');
         if (dotPos == std::string::npos)
             return "application/octet-stream";
 
         const std::string_view ext(&filePath[dotPos]);
 
-        if (ext == ".html" || ext == ".htm")
-            return "text/html";
-        if (ext == ".css")
-            return "text/css";
-        if (ext == ".js")
-            return "application/javascript";
-        if (ext == ".json")
-            return "application/json";
-        if (ext == ".xml")
-            return "application/xml";
-        if (ext == ".txt")
-            return "text/plain";
-        if (ext == ".pdf")
-            return "application/pdf";
-        if (ext == ".png")
-            return "image/png";
-        if (ext == ".jpg" || ext == ".jpeg")
-            return "image/jpeg";
-        if (ext == ".gif")
-            return "image/gif";
-        if (ext == ".svg")
-            return "image/svg+xml";
-        if (ext == ".ico")
-            return "image/x-icon";
+        if (const auto it = kMimeTypes.find(ext); it != kMimeTypes.end())
+            return it->second;
 
         return "application/octet-stream";
     }
