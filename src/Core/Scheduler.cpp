@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <unistd.h>
+#include <vector>
 
 namespace Core
 {
@@ -71,9 +72,44 @@ namespace Core
 
     void Scheduler::runAll()
     {
-        while (hasWork())
+        // 第一阶段：排空本地队列
+        while (!m_localQueue.empty())
         {
-            runOne();
+            const auto handle = m_localQueue.back();
+            m_localQueue.pop_back();
+            handle.resume();
+        }
+
+        // 第二阶段：批量窃取全局队列，防止本地任务持续产生导致全局饥饿
+        while (true)
+        {
+            std::vector<std::coroutine_handle<>> batch;
+            {
+                std::lock_guard lock(m_globalMutex);
+                batch.reserve(m_globalQueue.size());
+                while (!m_globalQueue.empty())
+                {
+                    batch.push_back(m_globalQueue.front());
+                    m_globalQueue.pop_front();
+                }
+                m_globalCount.store(0, std::memory_order_relaxed);
+            }
+
+            if (batch.empty())
+                break;
+
+            for (const auto handle: batch)
+            {
+                handle.resume();
+            }
+
+            // 批量处理期间可能重新产生本地任务，再次排空
+            while (!m_localQueue.empty())
+            {
+                const auto handle = m_localQueue.back();
+                m_localQueue.pop_back();
+                handle.resume();
+            }
         }
     }
 
