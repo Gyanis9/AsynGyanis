@@ -11,6 +11,7 @@
 #include "HttpParser.h"
 #include "Router.h"
 
+#include <functional>
 #include <vector>
 
 namespace Net
@@ -61,6 +62,140 @@ namespace Net
         std::vector<char>    m_recvBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
         static constexpr int m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
     };
+
+    // ============================================================================
+    // 共享 HTTP Keep-Alive 循环模板（HttpSession 与 HttpsSession 共用）
+    // ============================================================================
+
+    namespace detail
+    {
+        /**
+         * @brief 模板化的 HTTP Keep-Alive 请求/响应循环。
+         *
+         * 封装了所有 HTTP/1.1 协议处理逻辑：增量解析、路由分发、错误处理、
+         * Keep-Alive 判断、响应发送等。通过模板参数 Socket 支持普通 TCP
+         *（AsyncSocket）和 TLS 加密（TlsSocket）两种传输层。
+         *
+         * @tparam Socket 传输层类型，需支持 asyncRecv/asyncSend/close 接口
+         * @param sock        传输层 socket 引用
+         * @param router      路由器，用于分发请求
+         * @param parser      HTTP 增量解析器
+         * @param recvBuffer  接收缓冲区
+         * @param isAlive     连接存活检查回调
+         */
+        template <typename Socket>
+        Core::Task<> httpKeepAliveLoop(
+            Socket &sock,
+            Router &router,
+            HttpParser &parser,
+            std::vector<char> &recvBuffer,
+            const std::function<bool()> &isAlive)
+        {
+            // sendAll 辅助：分批发送大数据块，处理部分写入
+            auto sendAll = [&sock](const std::string_view data) -> Core::Task<>
+            {
+                size_t totalSent = 0;
+                while (totalSent < data.size())
+                {
+                    const ssize_t n = co_await sock.asyncSend(
+                        data.data() + totalSent, data.size() - totalSent);
+                    if (n <= 0)
+                        co_return;
+                    totalSent += static_cast<size_t>(n);
+                }
+            };
+
+            bool keepAlive = true;
+
+            while (keepAlive && isAlive())
+            {
+                std::string errorResponse;
+                bool        hasError = false;
+
+                try
+                {
+                    ssize_t n = co_await sock.asyncRecv(recvBuffer.data(), recvBuffer.size());
+                    if (n <= 0)
+                        break;
+
+                    auto status = parser.parse(recvBuffer.data(), static_cast<size_t>(n));
+
+                    // 增量解析：数据不足时持续读取
+                    while (status == ParseStatus::NeedMore)
+                    {
+                        n = co_await sock.asyncRecv(recvBuffer.data(), recvBuffer.size());
+                        if (n <= 0)
+                            co_return;
+                        status = parser.parse(recvBuffer.data(), static_cast<size_t>(n));
+                    }
+
+                    if (status == ParseStatus::Error)
+                    {
+                        HttpResponse res;
+                        res.setStatus(400);
+                        res.setBody(std::format("Bad Request: {}", parser.errorMessage()));
+                        res.setHeader("content-type", "text/plain");
+                        res.setHeader("connection", "close");
+                        errorResponse = res.toString();
+                        hasError      = true;
+                    }
+                    else if (status == ParseStatus::Done)
+                    {
+                        auto &       req = parser.request();
+                        HttpResponse res;
+
+                        try
+                        {
+                            co_await router.route(req, res);
+                        }
+                        catch (const std::exception &)
+                        {
+                            res = HttpResponse::serverError("Internal Server Error");
+                        }
+
+                        keepAlive = HttpSession::shouldKeepAlive(req, res);
+
+                        const auto &version  = req.httpVersion();
+                        const bool  isHttp10 = version.starts_with("HTTP/1.0")
+                                            || version.starts_with("HTTP/0.9");
+
+                        if (!keepAlive)
+                            res.setHeader("connection", "close");
+                        else if (isHttp10 && !res.headers().contains("connection"))
+                            res.setHeader("connection", "keep-alive");
+
+                        const std::string responseStr = res.toString();
+                        // Fast path: 小响应单次发送，避免协程帧分配
+                        if (responseStr.size() <= 4096)
+                            co_await sock.asyncSend(responseStr.data(), responseStr.size());
+                        else
+                            co_await sendAll(responseStr);
+
+                        if (keepAlive)
+                            parser.reset();
+                    }
+                }
+                catch (const std::exception &)
+                {
+                    HttpResponse res = HttpResponse::serverError("Internal Server Error");
+                    res.setHeader("connection", "close");
+                    errorResponse = res.toString();
+                    hasError      = true;
+                }
+
+                if (hasError)
+                {
+                    if (errorResponse.size() <= 4096)
+                        co_await sock.asyncSend(errorResponse.data(), errorResponse.size());
+                    else
+                        co_await sendAll(errorResponse);
+                    keepAlive = false;
+                }
+            }
+            co_return;
+        }
+
+    } // namespace detail
 }
 
 #endif
