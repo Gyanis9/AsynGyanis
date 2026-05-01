@@ -141,7 +141,8 @@ namespace Base
         }
 
         const int wd = it->second;
-        inotify_rm_watch(m_inotify_fd, wd);
+        // 返回值检查：失败时（如 EINVAL）仍从映射中移除，防止悬挂引用
+        [[maybe_unused]] auto _ = inotify_rm_watch(m_inotify_fd, wd);
 
         m_watch_descriptors.erase(wd);
         m_path_to_wd.erase(it);

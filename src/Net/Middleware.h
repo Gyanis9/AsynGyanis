@@ -110,13 +110,14 @@ namespace Net
      */
     inline MiddlewareFunc loggingMiddleware(Base::Logger &logger)
     {
-        return [&logger](const HttpRequest &req, const HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [&logger](HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             const auto start = std::chrono::steady_clock::now();
             co_await next();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-            // 注意：此处 req.uri() 和 res.status() 为只读操作
-            logger.logFormat(Base::LogLevel::INFO, Base::SourceLocation::current(), "{} -> {} {}ms", req.uri(), res.status(), elapsed);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            logger.logFormat(Base::LogLevel::INFO, Base::SourceLocation::current(),
+                "{} -> {} {}ms", req.uri(), res.status(), elapsed);
         };
     }
 
@@ -148,40 +149,16 @@ namespace Net
      * @param timeout 超时持续时间
      * @return MiddlewareFunc 中间件函数
      *
-     * 实现机制：
-     * - 启动一个 watchdog 线程，在 timeout 之后触发 req.cancelSource().request_stop()
-     * - 业务处理器可定期检查 req.cancelToken().stop_requested() 实现协作式取消
-     * - 若处理器在超时前完成，watchdog 被提前停止
-     * - 若超时发生，中间件将响应状态设为 504
-     *
-     * @note 本实现使用协作式取消模型：处理器需主动检查取消令牌才能提前退出。
-     *       对于不检查令牌的处理器，超时仅体现在最终响应状态码上，处理仍会完整执行。
-     *       在生产环境中，建议长期运行的处理器定期调用 req.cancelToken().stop_requested()。
+     * 使用 steady_clock 测量处理器耗时，超时后标记 504 响应。
+     * 不创建额外线程，零开销。需要真正中断处理器的场景应在业务层使用 Core::Timer。
      */
     inline MiddlewareFunc timeoutMiddleware(const std::chrono::milliseconds timeout)
     {
         return [timeout](HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            auto timedOut = std::make_shared<std::atomic<bool>>(false);
-
-            auto &cancelSource = req.cancelSource();
-            cancelSource       = std::stop_source{};
-
-            std::jthread watchdog([timedOut, &cancelSource, timeout](std::stop_token stoken)
-            {
-                std::mutex mtx;
-                std::condition_variable_any cv;
-                std::unique_lock lock(mtx);
-                if (!cv.wait_for(lock, stoken, timeout, [] { return false; }))
-                {
-                    timedOut->store(true, std::memory_order_release);
-                    cancelSource.request_stop();
-                }
-            });
-
+            const auto start = std::chrono::steady_clock::now();
             co_await next();
-
-            if (timedOut->load(std::memory_order_acquire))
+            if (std::chrono::steady_clock::now() - start > timeout)
             {
                 res.setStatus(504);
                 res.setBody("Gateway Timeout");
@@ -262,7 +239,10 @@ namespace Net
                     }
                 } catch (...)
                 {
-                    // Content-Length 格式异常，继续处理（由业务逻辑决定）
+                    res.setStatus(400);
+                    res.setBody("Bad Request: Invalid Content-Length");
+                    res.setHeader("content-type", "text/plain");
+                    co_return;
                 }
             }
             co_await next();
