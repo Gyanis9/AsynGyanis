@@ -8,8 +8,10 @@
 
 namespace Net
 {
-    HttpSession::HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router) :
+    HttpSession::HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
+                             std::optional<std::string> staticDir) :
         Core::Connection(loop, std::move(socket)), m_router(router),
+        m_staticDir(std::move(staticDir)),
         m_recvBuffer(m_recvBufferSize)
     {
     }
