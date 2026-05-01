@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <typeinfo>
 #include <vector>
 
 namespace Base
@@ -48,6 +50,22 @@ namespace Base
      * @return std::vector<std::string> 拆分后的键片段列表。
      */
     std::vector<std::string> splitKey(std::string_view key, char delimiter = '.');
+
+    /**
+     * @brief 编译期类型名称映射，替代 typeid(T).name() 的编译器乱码名。
+     *
+     * 覆盖基本类型；ConfigArray/ConfigObject 的特化在 ConfigValue.h 中。
+     */
+    template <typename T>
+    [[nodiscard]] const char *typeNameOf() noexcept
+    {
+        if constexpr (std::is_same_v<T, bool>)                 return "bool";
+        else if constexpr (std::is_same_v<T, int64_t>)         return "int";
+        else if constexpr (std::is_same_v<T, double>)          return "double";
+        else if constexpr (std::is_same_v<T, std::string>)     return "string";
+        else if constexpr (std::is_same_v<T, std::nullptr_t>)  return "null";
+        else return typeid(T).name();
+    }
 }
 
 #endif

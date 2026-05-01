@@ -26,6 +26,10 @@ namespace Base
     using ConfigArray  = std::vector<ConfigValue>;
     using ConfigObject = std::map<std::string, ConfigValue, std::less<>>;
 
+    // 为 ConfigArray / ConfigObject 特化 typeNameOf（在 ConfigType.h 主模板之后）
+    template <> [[nodiscard]] inline const char *typeNameOf<ConfigArray>() noexcept { return "array"; }
+    template <> [[nodiscard]] inline const char *typeNameOf<ConfigObject>() noexcept { return "object"; }
+
     /**
      * @brief 配置值类
      *
@@ -161,7 +165,7 @@ namespace Base
             {
                 return *p;
             }
-            throw ConfigTypeException("<unknown>", typeid(T).name(), typeName(type()));
+            throw ConfigTypeException("<unknown>", typeNameOf<T>(), typeName(type()));
         }
 
         template<typename T>
@@ -171,7 +175,7 @@ namespace Base
             {
                 return *p;
             }
-            throw ConfigTypeException("<unknown>", typeid(T).name(), typeName(type()));
+            throw ConfigTypeException("<unknown>", typeNameOf<T>(), typeName(type()));
         }
 
         /**
