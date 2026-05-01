@@ -56,12 +56,15 @@ namespace Net
         co_return;
     }
 
-    Core::Task<std::string> TcpStream::readUntil(const char delimiter)
+    Core::Task<std::string> TcpStream::readUntil(const char delimiter, const size_t maxSize)
     {
         std::string result;
 
         while (true)
         {
+            if (maxSize > 0 && result.size() >= maxSize)
+                co_return result;
+
             // Scan buffered data for delimiter
             if (m_readPos < m_readBuffer.size())
             {
@@ -73,13 +76,24 @@ namespace Net
                                 static_cast<size_t>(end - start))))
                 {
                     const size_t chunkLen = static_cast<size_t>(found - start);
+                    if (maxSize > 0 && result.size() + chunkLen > maxSize)
+                    {
+                        result.append(start, maxSize - result.size());
+                        co_return result;
+                    }
                     result.append(start, chunkLen);
                     m_readPos += chunkLen + 1; // skip delimiter
                     co_return result;
                 }
 
                 // Delimiter not found — append all buffered data and refill
-                result.append(start, static_cast<size_t>(end - start));
+                const size_t appendLen = static_cast<size_t>(end - start);
+                if (maxSize > 0 && result.size() + appendLen > maxSize)
+                {
+                    result.append(start, maxSize - result.size());
+                    co_return result;
+                }
+                result.append(start, appendLen);
                 m_readPos = m_readBuffer.size();
             }
 

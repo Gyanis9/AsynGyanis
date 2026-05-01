@@ -33,7 +33,7 @@ namespace Net
          * @param router    全局路由器，用于分发请求
          * @param staticDir 静态文件根目录（可选），设置后自动启用静态文件服务
          */
-        HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
+        HttpSession(Core::EventLoop &          loop, Core::AsyncSocket socket, Router &router,
                     std::optional<std::string> staticDir = std::nullopt);
 
         /**
@@ -58,12 +58,11 @@ namespace Net
         static bool shouldKeepAlive(const HttpRequest &req, const HttpResponse &res);
 
     private:
-
-        Router &                  m_router;                ///< 路由器引用，用于分发请求
-        HttpParser                m_parser;                ///< HTTP 解析器，用于解析请求数据
-        std::vector<char>         m_recvBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
+        Router &                   m_router;                ///< 路由器引用，用于分发请求
+        HttpParser                 m_parser;                ///< HTTP 解析器，用于解析请求数据
+        std::vector<char>          m_recvBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
         std::optional<std::string> m_staticDir;             ///< 静态文件根目录，若为 nullopt 表示未启用
-        static constexpr int      m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
+        static constexpr int       m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
     };
 
     // ============================================================================
@@ -86,13 +85,13 @@ namespace Net
          * @param recvBuffer  接收缓冲区
          * @param isAlive     连接存活检查回调
          */
-        template <typename Socket>
+        template<typename Socket>
         Core::Task<> httpKeepAliveLoop(
-            Socket &sock,
-            Router &router,
-            HttpParser &parser,
-            std::vector<char> &recvBuffer,
-            const std::function<bool()> &isAlive)
+                Socket &                     sock,
+                Router &                     router,
+                HttpParser &                 parser,
+                std::vector<char> &          recvBuffer,
+                const std::function<bool()> &isAlive)
         {
             // sendAll 辅助：分批发送大数据块，处理部分写入
             auto sendAll = [&sock](const std::string_view data) -> Core::Task<>
@@ -101,7 +100,7 @@ namespace Net
                 while (totalSent < data.size())
                 {
                     const ssize_t n = co_await sock.asyncSend(
-                        data.data() + totalSent, data.size() - totalSent);
+                            data.data() + totalSent, data.size() - totalSent);
                     if (n <= 0)
                         co_return;
                     totalSent += static_cast<size_t>(n);
@@ -141,8 +140,7 @@ namespace Net
                         res.setHeader("connection", "close");
                         errorResponse = res.toString();
                         hasError      = true;
-                    }
-                    else if (status == ParseStatus::Done)
+                    } else if (status == ParseStatus::Done)
                     {
                         auto &       req = parser.request();
                         HttpResponse res;
@@ -151,8 +149,7 @@ namespace Net
                         try
                         {
                             co_await router.route(req, res);
-                        }
-                        catch (const std::exception &)
+                        } catch (const std::exception &)
                         {
                             res = HttpResponse::serverError("Internal Server Error");
                         }
@@ -161,7 +158,7 @@ namespace Net
 
                         const auto &version  = req.httpVersion();
                         const bool  isHttp10 = version.starts_with("HTTP/1.0")
-                                            || version.starts_with("HTTP/0.9");
+                                              || version.starts_with("HTTP/0.9");
 
                         if (!keepAlive)
                             res.setHeader("connection", "close");
@@ -178,8 +175,7 @@ namespace Net
                         if (keepAlive)
                             parser.reset();
                     }
-                }
-                catch (const std::exception &)
+                } catch (const std::exception &)
                 {
                     HttpResponse res = HttpResponse::serverError("Internal Server Error");
                     res.setHeader("connection", "close");

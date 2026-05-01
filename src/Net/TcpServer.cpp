@@ -23,7 +23,7 @@ namespace Net
         if (!m_acceptor.listen())
             throw Base::Exception("TcpServer: listen failed");
 
-        m_running = true;
+        m_running                   = true;
         size_t nextCleanupThreshold = 64;
 
         while (m_running)
@@ -95,8 +95,7 @@ namespace Net
         try
         {
             co_await conn->start();
-        }
-        catch (...)
+        } catch (...)
         {
             // 捕获所有异常防止传播到调度器导致进程终止
         }

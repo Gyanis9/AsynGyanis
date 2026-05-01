@@ -23,8 +23,7 @@ namespace Net
         try
         {
             co_await m_tlsSocket.handshake();
-        }
-        catch (const std::exception &e)
+        } catch (const std::exception &e)
         {
             LOG_ERROR_FMT("TLS handshake failed: {} (fd={})", e.what(), m_tlsSocket.fd());
             m_tlsSocket.close();
@@ -35,8 +34,11 @@ namespace Net
 
         // Step 2: HTTP keep-alive loop over TLS (shared template)
         co_await detail::httpKeepAliveLoop(
-            m_tlsSocket, m_router, m_parser, m_recvBuffer,
-            [this]() { return isAlive(); });
+                m_tlsSocket, m_router, m_parser, m_recvBuffer,
+                [this]()
+                {
+                    return isAlive();
+                });
 
         LOG_DEBUG_FMT("HttpsSession closing fd={}", m_tlsSocket.fd());
         m_tlsSocket.close();

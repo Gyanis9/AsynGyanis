@@ -4,23 +4,25 @@
 
 #include <algorithm>
 #include <cctype>
-#include <format>
 
 namespace Net
 {
-    HttpSession::HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
+    HttpSession::HttpSession(Core::EventLoop &          loop, Core::AsyncSocket socket, Router &router,
                              std::optional<std::string> staticDir) :
         Core::Connection(std::move(socket)), m_router(router),
-        m_staticDir(std::move(staticDir)),
-        m_recvBuffer(m_recvBufferSize)
+        m_recvBuffer(m_recvBufferSize),
+        m_staticDir(std::move(staticDir))
     {
     }
 
     Core::Task<> HttpSession::start()
     {
         co_await detail::httpKeepAliveLoop(
-            socket(), m_router, m_parser, m_recvBuffer,
-            [this]() { return isAlive(); });
+                socket(), m_router, m_parser, m_recvBuffer,
+                [this]()
+                {
+                    return isAlive();
+                });
         close();
         co_return;
     }

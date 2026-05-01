@@ -68,12 +68,13 @@ namespace Net
         /**
          * @brief 读取直到遇到指定分隔符。
          * @param delimiter 分隔符字符（如 '\n'）
+         * @param maxSize 最大读取字节数（0 表示无限制），超出限制则返回已读取部分
          * @return Task<std::string> 包含分隔符在内的字符串（若读到分隔符），
          *         若连接关闭且未遇到分隔符，则返回已读取的部分；若出错则抛出异常
          *
          * 常用于读取一行文本。
          */
-        Core::Task<std::string> readUntil(char delimiter);
+        Core::Task<std::string> readUntil(char delimiter, size_t maxSize = 65536);
 
         /**
          * @brief 写入数据（可能只写入部分）。

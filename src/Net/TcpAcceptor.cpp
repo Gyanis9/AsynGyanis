@@ -29,8 +29,8 @@ namespace Net
 
         if (m_addr.family() == AF_INET6)
         {
-            constexpr int v6only = 0;
-            [[maybe_unused]] auto _ = m_listenSocket.setSockOpt(IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+            constexpr int         v6only = 0;
+            [[maybe_unused]] auto _      = m_listenSocket.setSockOpt(IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
         }
 
         if (!m_listenSocket.bind(m_addr))

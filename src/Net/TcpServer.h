@@ -98,10 +98,10 @@ namespace Net
          */
         Core::Task<> handleConnection(std::shared_ptr<Core::Connection> conn);
 
-        std::atomic<bool>             m_running{false};         ///< 运行标志，控制 accept 循环（原子操作保证线程安全）
-        size_t                        m_maxConnections{0};      ///< 最大并发连接数，0 表示无限制
+        std::atomic<bool>             m_running{false};          ///< 运行标志，控制 accept 循环（原子操作保证线程安全）
+        size_t                        m_maxConnections{0};       ///< 最大并发连接数，0 表示无限制
         std::chrono::milliseconds     m_shutdownTimeoutMs{5000}; ///< 优雅关闭超时（毫秒），超时后强制退出
-        std::vector<Core::Task<void>> m_connTasks;              ///< 存储每个连接对应的协程任务，确保任务生命周期
+        std::vector<Core::Task<void>> m_connTasks;               ///< 存储每个连接对应的协程任务，确保任务生命周期
     };
 }
 

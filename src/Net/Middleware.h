@@ -115,9 +115,9 @@ namespace Net
             const auto start = std::chrono::steady_clock::now();
             co_await next();
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - start).count();
+                    std::chrono::steady_clock::now() - start).count();
             logger.logFormat(Base::LogLevel::INFO, Base::SourceLocation::current(),
-                "{} -> {} {}ms", req.uri(), res.status(), elapsed);
+                             "{} -> {} {}ms", req.uri(), res.status(), elapsed);
         };
     }
 

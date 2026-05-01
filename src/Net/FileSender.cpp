@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
+#include <unordered_map>
 
 namespace Net
 {
@@ -22,14 +23,19 @@ namespace Net
         struct FileGuard
         {
             int fd;
-            ~FileGuard() { if (fd >= 0) ::close(fd); }
+
+            ~FileGuard()
+            {
+                if (fd >= 0)
+                    ::close(fd);
+            }
         } guard{fileFd};
 
         struct stat st{};
         if (::fstat(fileFd, &st) < 0)
             co_return;
 
-        const int sockFd = stream.socket().fd();
+        const int sockFd    = stream.socket().fd();
         size_t    remaining = static_cast<size_t>(st.st_size);
 
         while (remaining > 0)
@@ -56,26 +62,26 @@ namespace Net
     const char *FileSender::contentTypeForFile(const std::string &filePath)
     {
         static const std::unordered_map<std::string_view, const char *> kMimeTypes = {
-            {".html",  "text/html"},
-            {".htm",   "text/html"},
-            {".css",   "text/css"},
-            {".js",    "application/javascript"},
-            {".mjs",   "application/javascript"},
-            {".json",  "application/json"},
-            {".xml",   "application/xml"},
-            {".txt",   "text/plain"},
-            {".pdf",   "application/pdf"},
-            {".png",   "image/png"},
-            {".jpg",   "image/jpeg"},
-            {".jpeg",  "image/jpeg"},
-            {".gif",   "image/gif"},
-            {".svg",   "image/svg+xml"},
-            {".ico",   "image/x-icon"},
-            {".webp",  "image/webp"},
-            {".woff",  "font/woff"},
-            {".woff2", "font/woff2"},
-            {".ttf",   "font/ttf"},
-            {".wasm",  "application/wasm"},
+                {".html", "text/html"},
+                {".htm", "text/html"},
+                {".css", "text/css"},
+                {".js", "application/javascript"},
+                {".mjs", "application/javascript"},
+                {".json", "application/json"},
+                {".xml", "application/xml"},
+                {".txt", "text/plain"},
+                {".pdf", "application/pdf"},
+                {".png", "image/png"},
+                {".jpg", "image/jpeg"},
+                {".jpeg", "image/jpeg"},
+                {".gif", "image/gif"},
+                {".svg", "image/svg+xml"},
+                {".ico", "image/x-icon"},
+                {".webp", "image/webp"},
+                {".woff", "font/woff"},
+                {".woff2", "font/woff2"},
+                {".ttf", "font/ttf"},
+                {".wasm", "application/wasm"},
         };
 
         const auto dotPos = filePath.rfind('.');

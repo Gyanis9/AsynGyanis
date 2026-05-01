@@ -61,7 +61,7 @@ namespace Net
             }
 
             const std::string mimeType = FileSender::contentTypeForFile(filePath.string());
-            const auto fileSize = std::filesystem::file_size(filePath, ec);
+            const auto        fileSize = std::filesystem::file_size(filePath, ec);
 
             if (ec)
             {
@@ -74,8 +74,7 @@ namespace Net
             // 读取文件内容并设置响应
             std::string body;
             body.resize(fileSize);
-            std::ifstream file(filePath, std::ios::binary);
-            if (!file.read(body.data(), static_cast<std::streamsize>(fileSize)))
+            if (std::ifstream file(filePath, std::ios::binary); !file.read(body.data(), static_cast<std::streamsize>(fileSize)))
             {
                 res.setStatus(500);
                 res.setBody("Internal Server Error");
