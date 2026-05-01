@@ -45,6 +45,8 @@ namespace Core
     {
         if (m_timerFd >= 0)
         {
+            // 先移除 epoll 注册再关闭 fd，防止 fd 回收后被误用
+            m_loop.epoll().delFd(m_timerFd);
             ::close(m_timerFd);
             m_timerFd = -1;
         }
@@ -55,7 +57,10 @@ namespace Core
         itimerspec ts{};
         ts.it_value.tv_sec  = duration.count() / 1000;
         ts.it_value.tv_nsec = (duration.count() % 1000) * 1000000;
-        timerfd_settime(m_timerFd, 0, &ts, nullptr);
+        if (timerfd_settime(m_timerFd, 0, &ts, nullptr) < 0)
+        {
+            throw Base::SystemException("timerfd_settime failed");
+        }
         return Awaiter(m_loop.epoll(), m_timerFd);
     }
 

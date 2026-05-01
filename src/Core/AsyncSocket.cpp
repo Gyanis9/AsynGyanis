@@ -177,7 +177,7 @@ namespace Core
             if (n > 0)
                 co_return n;
             if (n == 0)
-                co_return 0;
+                co_return -1; // 对端已关闭连接
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);
@@ -209,6 +209,8 @@ namespace Core
         if (m_fd >= 0)
         {
             const int flags = fcntl(m_fd, F_GETFL, 0);
+            if (flags < 0)
+                return;
             fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
         }
     }
@@ -224,7 +226,7 @@ namespace Core
         socklen_t        addrLen = sizeof(addr);
         if (getpeername(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen) != 0)
         {
-            return InetAddress();
+            throw Base::SystemException("getpeername failed");
         }
         return InetAddress(addr, addrLen);
     }
@@ -235,7 +237,7 @@ namespace Core
         socklen_t        addrLen = sizeof(addr);
         if (getsockname(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen) != 0)
         {
-            return InetAddress();
+            throw Base::SystemException("getsockname failed");
         }
         return InetAddress(addr, addrLen);
     }

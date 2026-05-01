@@ -69,7 +69,10 @@ namespace Core
         ev.data.ptr = userData;
         if (epoll_ctl(m_fd, EPOLL_CTL_MOD, fd, &ev) == 0)
             return true;
-        return epoll_ctl(m_fd, EPOLL_CTL_ADD, fd, &ev) == 0;
+        // 仅在 fd 尚未注册时才回退到 ADD，其他错误（如 EBADF）直接返回 false
+        if (errno == ENOENT)
+            return epoll_ctl(m_fd, EPOLL_CTL_ADD, fd, &ev) == 0;
+        return false;
     }
 
     std::span<epoll_event> Epoll::wait(const int timeoutMs)
@@ -79,7 +82,14 @@ namespace Core
         {
             if (errno == EINTR)
                 return {};
-            throw std::runtime_error(std::string("epoll_wait failed: ") + std::strerror(errno));
+            char errBuf[128];
+            throw std::runtime_error(
+                std::string("epoll_wait failed: ") + strerror_r(errno, errBuf, sizeof(errBuf)));
+        }
+        // 动态扩容：当返回事件数接近容量上限时翻倍，防止高负载下丢失事件
+        if (static_cast<size_t>(n) >= m_events.size() / 2)
+        {
+            m_events.resize(m_events.size() * 2);
         }
         return {m_events.data(), static_cast<size_t>(n)};
     }
