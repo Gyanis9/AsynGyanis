@@ -10,7 +10,7 @@ using namespace Core;
 namespace {
     std::shared_ptr<Connection> makeDummyConn() {
         static EventLoop loop;
-        return std::make_shared<Connection>(loop, AsyncSocket(loop, -1));
+        return std::make_shared<Connection>(AsyncSocket(loop, -1));
     }
 }
 
