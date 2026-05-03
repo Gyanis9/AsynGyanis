@@ -31,6 +31,9 @@ namespace Base
     {
         using is_transparent = void;
 
+        // 统一使用 string_view 哈希，确保 std::string 和 std::string_view
+        // 作为键时产生相同哈希值（不同标准库的 hash<string> 和
+        // hash<string_view> 可能不一致）
         [[nodiscard]] size_t operator()(const std::string_view sv) const noexcept
         {
             return std::hash<std::string_view>{}(sv);
@@ -38,7 +41,7 @@ namespace Base
 
         [[nodiscard]] size_t operator()(const std::string &s) const noexcept
         {
-            return std::hash<std::string>{}(s);
+            return std::hash<std::string_view>{}(std::string_view(s));
         }
     };
 
