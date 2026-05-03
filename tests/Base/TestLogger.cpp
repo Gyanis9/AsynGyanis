@@ -170,12 +170,17 @@ TEST_CASE("Logger::clearSinks removes all sinks", "[Logger][sink]")
     logger.addSink(std::unique_ptr<LogSink>(sink));
 
     logger.log(LogLevel::INFO, "before_clear");
+
+    // clearSinks() 会 delete sink，必须在调用前保存数据
+    const size_t event_count = sink->events.size();
+    const std::string last_msg = sink->events.empty() ? "" : sink->events[0].message;
+
     logger.clearSinks();
     logger.log(LogLevel::INFO, "after_clear");
     logger.flush();
 
-    REQUIRE(sink->events.size() == 1);
-    REQUIRE(sink->events[0].message == "before_clear");
+    REQUIRE(event_count == 1);
+    REQUIRE(last_msg == "before_clear");
 }
 
 TEST_CASE("Logger::flush flushes all sinks", "[Logger][sink]")
