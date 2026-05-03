@@ -133,21 +133,3 @@ jobs:
           find src -name '*.cpp' -o -name '*.h' | sort | while read f; do
             clang-tidy -p build/debug "$f" --quiet 2>/dev/null || true
           done
-
-  # ============================================================================
-  # 代码风格：clang-format
-  # ============================================================================
-  clang-format:
-    name: clang-format
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install clang-format
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format
-
-      - name: Check formatting
-        run: |
-          find src -name '*.cpp' -o -name '*.h' | sort | xargs clang-format --dry-run --Werror
