@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <thread>
 
@@ -40,7 +41,7 @@ namespace
     {
     public:
         TempLogDir()
-            : m_path(fs::temp_directory_path() / ("log_test_" + std::to_string(rand())))
+            : m_path(fs::temp_directory_path() / ("log_test_" + std::to_string(std::random_device{}())))
         {
             fs::create_directories(m_path);
         }

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <random>
 #include <thread>
 
 using namespace Base;
@@ -25,7 +26,7 @@ class LoggerConfigFixture
 {
 public:
     LoggerConfigFixture()
-        : m_dir(fs::temp_directory_path() / ("logcfg_test_" + std::to_string(rand())))
+        : m_dir(fs::temp_directory_path() / ("logcfg_test_" + std::to_string(std::random_device{}())))
     {
         configTestMutex().lock();
         fs::create_directories(m_dir);

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <random>
 #include <thread>
 
 using namespace Base;
@@ -33,7 +34,7 @@ namespace
 class ConfigTestFixture
 {
 public:
-    ConfigTestFixture() : m_dir(fs::temp_directory_path() / ("cfg_test_" + std::to_string(rand())))
+    ConfigTestFixture() : m_dir(fs::temp_directory_path() / ("cfg_test_" + std::to_string(std::random_device{}())))
     {
         // ConfigManager 是全局单例，并行测试会相互干扰
         // 通过全局互斥锁确保同一时间只有一个 ConfigManager 测试在执行

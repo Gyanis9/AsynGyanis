@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <thread>
 
 using namespace Base;
@@ -21,7 +22,7 @@ namespace fs = std::filesystem;
 class TempDir
 {
 public:
-    TempDir() : m_path(fs::temp_directory_path() / ("cfw_test_" + std::to_string(rand())))
+    TempDir() : m_path(fs::temp_directory_path() / ("cfw_test_" + std::to_string(std::random_device{}())))
     {
         fs::create_directories(m_path);
     }
