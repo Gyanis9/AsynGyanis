@@ -2,8 +2,8 @@ blank_issues_enabled: false
 
 contact_links:
   - name: 问题咨询
-    url: https://github.com/guo/AsynGyanis/discussions
+    url: https://github.com/Gyanis9/AsynGyanis/discussions
     about: 请先在 Discussions 中搜索或提问
   - name: 安全漏洞报告
-    url: https://github.com/guo/AsynGyanis/security/advisories/new
+    url: https://github.com/Gyanis9/AsynGyanis/security/advisories/new
     about: 请通过 Security Advisory 私密报告安全漏洞
