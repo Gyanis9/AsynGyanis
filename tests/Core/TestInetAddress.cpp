@@ -50,7 +50,9 @@ TEST_CASE("InetAddress: resolve localhost returns valid address", "[InetAddress]
 }
 
 TEST_CASE("InetAddress: resolve invalid host returns nullopt", "[InetAddress]") {
-    auto addr = InetAddress::resolve("invalid.host.that.does.not.exist.test", 8080);
+    // 使用显式无效的 hostname 格式测试解析失败路径
+    // 不依赖外部 DNS 行为（可能被 ISP 劫持）
+    auto addr = InetAddress::resolve("", 8080);
     REQUIRE_FALSE(addr.has_value());
 }
 

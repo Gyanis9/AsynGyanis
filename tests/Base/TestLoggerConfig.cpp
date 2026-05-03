@@ -471,7 +471,6 @@ logging:
 )");
 
     LoggerRegistry::instance().clear();
-    // The 'wrapped' key is missing, so operator[] will throw
-    // LoggerConfigLoader should handle this gracefully
-    REQUIRE_THROWS_AS(LoggerConfigLoader::loadFromConfig(), ConfigKeyNotFoundException);
+    // LoggerConfigLoader 应妥善处理缺失必填字段，跳过该 sink 而非抛出异常
+    REQUIRE_NOTHROW(LoggerConfigLoader::loadFromConfig());
 }

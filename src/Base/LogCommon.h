@@ -70,7 +70,7 @@ namespace Base
             return LogLevel::FATAL;
         if (str == "OFF")
             return LogLevel::OFF;
-        return LogLevel::OFF;
+        return LogLevel::INFO;
     }
 
     // ============================================================================
