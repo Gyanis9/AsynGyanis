@@ -7,9 +7,11 @@
 #include <catch2/generators/catch_generators.hpp>
 #include "Base/LoggerConfig.h"
 #include "Base/ConfigManager.h"
+#include "../TestHelpers.h"
 
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <thread>
 
 using namespace Base;
@@ -25,6 +27,7 @@ public:
     LoggerConfigFixture()
         : m_dir(fs::temp_directory_path() / ("logcfg_test_" + std::to_string(rand())))
     {
+        configTestMutex().lock();
         fs::create_directories(m_dir);
         ConfigManager::instance().clear();
         LoggerRegistry::instance().clear();
@@ -37,6 +40,7 @@ public:
         LoggerRegistry::instance().clear();
         std::error_code ec;
         fs::remove_all(m_dir, ec);
+        configTestMutex().unlock();
     }
 
     fs::path path() const

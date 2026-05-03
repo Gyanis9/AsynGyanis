@@ -7,10 +7,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include "Base/ConfigManager.h"
+#include "../TestHelpers.h"
 
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <thread>
 
 using namespace Base;
@@ -33,6 +35,9 @@ class ConfigTestFixture
 public:
     ConfigTestFixture() : m_dir(fs::temp_directory_path() / ("cfg_test_" + std::to_string(rand())))
     {
+        // ConfigManager 是全局单例，并行测试会相互干扰
+        // 通过全局互斥锁确保同一时间只有一个 ConfigManager 测试在执行
+        configTestMutex().lock();
         fs::create_directories(m_dir);
         ConfigManager::instance().clear();
     }
@@ -43,6 +48,7 @@ public:
         ConfigManager::instance().clear();
         std::error_code ec;
         fs::remove_all(m_dir, ec);
+        configTestMutex().unlock();
     }
 
     fs::path path() const
