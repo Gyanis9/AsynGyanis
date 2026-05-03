@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # GitHub Actions 工作流依赖更新
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # Conan C/C++ 依赖更新（通过 conandata.yml）
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: build
+      include: scope

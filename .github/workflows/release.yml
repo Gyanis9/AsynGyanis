@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ============================================================================
+  # 构建 Release 产物
+  # ============================================================================
+  build:
+    name: Build Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build python3-venv python3-pip
+
+      - name: Setup Conan
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install conan
+          .venv/bin/conan profile detect --force
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-release-${{ hashFiles('conandata.yml') }}
+          restore-keys: conan-release-
+
+      - name: Configure (release)
+        run: cmake --preset release
+
+      - name: Build
+        run: cmake --build build/release -j$(nproc)
+
+      - name: Test
+        working-directory: build/release
+        run: ctest --output-on-failure -j$(nproc)
+
+      - name: Package static libraries
+        run: |
+          mkdir -p dist/include dist/lib
+          cp -r src/Base src/Core src/Net dist/include/
+          cp build/release/src/Base/libBase.a dist/lib/
+          cp build/release/src/Core/libCore.a dist/lib/
+          cp build/release/src/Net/libNet.a dist/lib/
+          cp build/release/samples/echo_server dist/
+          tar -czf asyngyanis-${{ github.ref_name }}-linux-x86_64.tar.gz dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asyngyanis-${{ github.ref_name }}-linux-x86_64
+          path: asyngyanis-${{ github.ref_name }}-linux-x86_64.tar.gz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            ## AsynGyanis ${{ github.ref_name }}
+
+            ### 编译依赖
+            - GCC 13+ 或 Clang 17+
+            - CMake >= 3.20
+            - Conan >= 2.0
+            - Ninja（推荐）
+
+            ### 安装
+            ```bash
+            tar -xzf asyngyanis-${{ github.ref_name }}-linux-x86_64.tar.gz
+            cd dist && cmake --install .
+            ```
+
+            ### 变更
+            详见 [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          files: asyngyanis-${{ github.ref_name }}-linux-x86_64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

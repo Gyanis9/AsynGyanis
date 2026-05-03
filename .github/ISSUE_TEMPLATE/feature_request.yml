@@ -1,0 +1,37 @@
+name: 功能请求
+description: 提出新功能或改进建议
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: 需求背景
+      description: 描述为什么需要这个功能，解决什么问题
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: 期望方案
+      description: 描述你期望的实现方式或 API 设计
+
+  - type: dropdown
+    attributes:
+      label: 影响模块
+      options:
+        - Base（基础设施）
+        - Core（异步运行时）
+        - Net（网络/HTTP）
+        - 多个模块
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: 备选方案
+      description: 考虑过的其他方案
+
+  - type: checkboxes
+    attributes:
+      label: 承诺
+      options:
+        - label: 我愿意提交 PR 实现此功能

@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # Debug 构建 + 单元测试（AddressSanitizer + UndefinedBehaviorSanitizer）
+  # ============================================================================
+  debug:
+    name: Debug (ASan+UBSan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build python3-venv python3-pip
+
+      - name: Setup Conan
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install conan
+          .venv/bin/conan profile detect --force
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-debug-${{ hashFiles('conandata.yml') }}
+          restore-keys: conan-debug-
+
+      - name: Configure (debug)
+        run: cmake --preset debug
+
+      - name: Build
+        run: cmake --build build/debug -j$(nproc)
+
+      - name: Test
+        working-directory: build/debug
+        run: ctest --output-on-failure -j$(nproc)
+
+  # ============================================================================
+  # Release 构建 + 单元测试（优化构建验证）
+  # ============================================================================
+  release:
+    name: Release (LTO)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build python3-venv python3-pip
+
+      - name: Setup Conan
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install conan
+          .venv/bin/conan profile detect --force
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-release-${{ hashFiles('conandata.yml') }}
+          restore-keys: conan-release-
+
+      - name: Configure (release)
+        run: cmake --preset release
+
+      - name: Build
+        run: cmake --build build/release -j$(nproc)
+
+      - name: Test
+        working-directory: build/release
+        run: ctest --output-on-failure -j$(nproc)
+
+  # ============================================================================
+  # 静态分析：clang-tidy
+  # ============================================================================
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build python3-venv python3-pip clang-tidy
+
+      - name: Setup Conan
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install conan
+          .venv/bin/conan profile detect --force
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-debug-${{ hashFiles('conandata.yml') }}
+          restore-keys: conan-debug-
+
+      - name: Configure (debug)
+        run: cmake --preset debug
+
+      - name: Run clang-tidy
+        run: |
+          find src -name '*.cpp' -o -name '*.h' | sort | while read f; do
+            clang-tidy -p build/debug "$f" --quiet 2>/dev/null || true
+          done
+
+  # ============================================================================
+  # 代码风格：clang-format
+  # ============================================================================
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format
+
+      - name: Check formatting
+        run: |
+          find src -name '*.cpp' -o -name '*.h' | sort | xargs clang-format --dry-run --Werror

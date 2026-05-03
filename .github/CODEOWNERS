@@ -1,0 +1,20 @@
+# AsynGyanis 代码所有权
+# 默认审核者自动分配到相关模块的 PR
+
+* @guo
+
+# 基础设施（配置、日志、异常）
+src/Base/    @guo
+
+# 异步运行时（epoll、协程、TLS、调度器）
+src/Core/    @guo
+
+# 网络层（HTTP/HTTPS、路由、中间件）
+src/Net/     @guo
+
+# CI/CD 与构建系统
+.github/     @guo
+CMakeLists.txt      @guo
+CMakePresets.json   @guo
+conanfile.py         @guo
+conandata.yml        @guo

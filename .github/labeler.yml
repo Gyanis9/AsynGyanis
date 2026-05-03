@@ -1,0 +1,41 @@
+# 根据变更文件自动为 PR 打标签
+
+Base:
+  - changed-files:
+      - any-glob-to-any-file: src/Base/**
+
+Core:
+  - changed-files:
+      - any-glob-to-any-file: src/Core/**
+
+Net:
+  - changed-files:
+      - any-glob-to-any-file: src/Net/**
+
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - CMakeLists.txt
+          - CMakePresets.json
+          - conanfile.py
+          - conandata.yml
+          - conan_provider.cmake
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: .github/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: tests/**
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - '*.md'
+          - '!CHANGELOG.md'
+
+samples:
+  - changed-files:
+      - any-glob-to-any-file: samples/**
