@@ -23,150 +23,23 @@
 
 ## 架构
 
-```
-                        ┌──────────────────────────────────────────────┐
-                        │                  Net (libNet.a)              │
-                        │               HTTP / TCP 应用层               │
-                        │                                              │
-   HTTP Request ─────▶ │  HttpServer ─▶ Router ─▶ Handler (co_await) │
-                        │     │              │            │            │
-                        │     ▼              │            ▼            │
-   HTTP Response ◀──── │  HttpSession       │      HttpResponse       │
-                        │     │              │                         │
-                        │     ▼              │                         │
-                        │  HttpParser        │                         │
-                        │  (llhttp)          │                         │
-                        └──────┬─────────────┴─────────────────────────┘
-                               │  ┌──────────────────────┐
-                               │  │ TcpServer  (×N 线程) │
-                               │  │ TcpAcceptor          │
-                               │  │ TcpStream            │
-                               │  │ StreamBuffer         │
-                               │  │ MiddlewarePipeline   │
-                               │  └──────────────────────┘
-                               │
-                        ┌──────▼──────────────────────────────────────┐
-                        │                Core (libCore.a)             │
-                        │               异步运行时 + 协程调度           │
-                        │                                             │
-                        │  ┌──────────────┐   ┌──────────────────┐    │
-                        │  │  IoContext   │   │  CoroutinePool   │    │
-                        │  │  (阻塞 run)  │   │  (帧内存池)       │    │
-                        │  └──────┬───────┘   └──────────────────┘    │
-                        │         │                                   │
-                        │  ┌──────▼──────────────────────────────┐    │
-                        │  │          ThreadPool                 │    │
-                        │  │  std::jthread × N                   │    │
-                        │  │  ┌──────────┐  ┌──────────┐         │    │
-                        │  │  │ EventLoop│  │ EventLoop│  ...    │    │
-                        │  │  │ ┌──────┐ │  │ ┌──────┐ │         │    │
-                        │  │  │ │Epoll │ │  │ │Epoll │ │         │    │
-                        │  │  │ └──────┘ │  │ └──────┘ │         │    │
-                        │  │  └────┬─────┘  └────┬─────┘         │    │
-                        │  └───────┼──────────────┼──────────────┘    │
-                        │          │              │                   │
-                        │  ┌───────▼──────────────▼──────────────┐    │
-                        │  │            Scheduler                │    │
-                        │  │   本地队列 (lock-free) │ 全局队列    │    │
-                        │  │   工作窃取 ◀──▶ 跨线程调度          │    │
-                        │  └──────────────────┬──────────────────┘    │
-                        │                     │                       │
-                        │          ┌──────────▼──────────┐            │
-                        │          │ co_await 原语       │            │
-                        │          │ EpollAwaiter        │            │
-                        │          │ Task<T> (协程类型)   │            │
-                        │          └─────────────────────┘            │
-                        │                                             │
-                        │  ┌───────────┐ ┌───────────┐ ┌───────────┐  │
-                        │  │AsyncSocket│ │InetAddress│ │  Timer    │  │
-                        │  └───────────┘ └───────────┘ └───────────┘  │
-                        │  ┌──────────┐ ┌──────────────────────────┐  │
-                        │  │BufferPool│ │Connection │ ConnectionMgr│  │
-                        │  └──────────┘ └──────────────────────────┘  │
-                        └──────┬──────────────────────────────────────┘
-                               │
-                        ┌──────▼──────────────────────────────────────┐
-                        │                Base (libBase.a)             │
-                        │                基础设施                      │
-                        │                                             │
-                        │  ┌────────────────┐  ┌───────────────────┐  │
-                        │  │  Logger        │  │  Config           │  │
-                        │  │  LoggerRegistry│  │  ConfigManager    │  │
-                        │  │  LogSink×4     │  │  ConfigFileWatcher│  │
-                        │  │  LogCommon     │  │  ConfigValue      │  │
-                        │  └────────────────┘  └───────────────────┘  │
-                        │  ┌──────────────────────────────────────┐   │
-                        │  │              Exception               │   │
-                        │  │  Exception / SystemException /       │   │
-                        │  │  NetworkException / ConfigException  │   │
-                        │  └──────────────────────────────────────┘   │
-                        └─────────────────────────────────────────────┘
-```
+![三层架构总览](asserts/三层架构总览.png)
 
 ### 多线程模型
 
-```
-IoContext (主线程，阻塞 run)
-  │
-  └── ThreadPool
-        │
-        ├── std::jthread #0 ── EventLoop[0] ── Epoll[0] + Scheduler[0]
-        │     └── HttpServer[0] ── TcpAcceptor[0] (SO_REUSEPORT)
-        │
-        ├── std::jthread #1 ── EventLoop[1] ── Epoll[1] + Scheduler[1]
-        │     └── HttpServer[1] ── TcpAcceptor[1] (SO_REUSEPORT)
-        │
-        └── ... (N 个线程)
-        
-  内核 SO_REUSEPORT 将 TCP 连接均匀分发到各 TcpAcceptor
-```
+![多线程模型](asserts/多线程模型.png)
 
 ### 请求处理流程
 
-```
-Client ──TCP──▶ SO_REUSEPORT ──内核分发──▶ TcpAcceptor[N]
-                                                │ (accept4 + EpollAwaiter)
-                                                ▼
-                                           HttpSession
-                                                │ (recv + EpollAwaiter)
-                                                ▼
-                                           HttpParser ──llhttp──▶ HttpRequest
-                                                                     │
-                                                Router ──────────────▶ Handler
-                                                │    │                    │
-                                                │    ▼                    ▼
-                                                │  MiddlewarePipeline  业务逻辑
-                                                │    │                    │
-                                                │    └────────────────────┘
-                                                ▼
-                                           HttpResponse ──toString()──▶ (send) ──▶ Client
-```
+![请求处理流程](asserts/请求处理流程.png)
 
 ### I/O 模型（纯 epoll 边缘触发）
 
-```
-co_await asyncRecv(buf, len)
-  → recv(fd, buf, len, MSG_NOSIGNAL)
-     → 成功: co_return n
-     → EAGAIN: co_await EpollAwaiter(epoll, fd, EPOLLIN | EPOLLET)
-        → epoll_ctl(ADD, fd, EPOLLIN | EPOLLET, handle)
-        → 协程挂起                                // Scheduler 运行其他协程
-
-  → fd 可读 → epoll_wait 返回
-     → scheduler.schedule(handle)
-     → 协程恢复 → await_resume() → epoll_ctl(DEL)
-     → 重试 recv()
-```
+![IO模型](asserts/IO模型.png)
 
 ### 依赖关系
 
-```
-Net  ──▶ Core ──▶ Base
- │        │        │
- │        ├────────┼── OpenSSL (TLS)
- │        │        │
- └── llhttp       └── yaml-cpp
-```
+![依赖关系](asserts/依赖关系.png)
 
 - **Base** 依赖 `yaml-cpp`，提供日志、配置、异常等基础设施
 - **Core** 依赖 `Base` + `OpenSSL`，构建协程运行时 + epoll 事件循环 + TLS 安全层
