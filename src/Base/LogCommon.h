@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <format>
 #include <source_location>
 #include <sstream>
@@ -18,9 +19,25 @@
 
 namespace Base
 {
+
+// 跨平台 localtime：POSIX 用 localtime_r，Windows/MSVC 用 localtime_s（参数顺序相反）
+inline std::tm *portableLocaltime(const std::time_t *timep, std::tm *result)
+{
+#ifdef _WIN32
+    localtime_s(result, timep);
+    return result;
+#else
+    return localtime_r(timep, result);
+#endif
+}
+
     // ============================================================================
     // 日志等级
     // ============================================================================
+
+#ifdef ERROR
+#undef ERROR
+#endif
 
     enum class LogLevel : uint8_t
     {
@@ -84,7 +101,7 @@ namespace Base
         const auto ms         = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
         std::tm tm_buf;
-        localtime_r(&time_t_now, &tm_buf);
+        portableLocaltime(&time_t_now, &tm_buf);
 
         // 使用 thread_local 缓冲区的 format_to_n 避免 std::format 的堆分配
         thread_local std::array<char, 32> buf;

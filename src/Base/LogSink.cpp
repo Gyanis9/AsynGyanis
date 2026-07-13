@@ -282,7 +282,7 @@ namespace Base
         const auto now        = std::chrono::system_clock::now();
         const auto time_t_now = std::chrono::system_clock::to_time_t(now);
         std::tm    tm_buf;
-        localtime_r(&time_t_now, &tm_buf);
+        portableLocaltime(&time_t_now, &tm_buf);
         if (m_policy == RollingPolicy::Daily)
         {
             return std::format("{:04d}-{:02d}-{:02d}", tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday);

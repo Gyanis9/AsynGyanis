@@ -36,7 +36,7 @@ namespace Core
          * @return 如果该停止源之前未请求停止且成功发出停止请求，则返回 true；
          *         如果已经请求过停止，则返回 false。
          */
-        bool requestStop() const
+        bool requestStop()
         {
             return m_stopSource.request_stop();
         }

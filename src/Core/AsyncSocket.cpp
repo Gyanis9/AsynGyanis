@@ -3,12 +3,9 @@
 #include "EventLoop.h"
 #include "InetAddress.h"
 #include "Base/Exception.h"
+#include "Platform/SocketCompat.h"
 
-#include <fcntl.h>
-#include <netinet/tcp.h>
-#include <unistd.h>
 #include <cerrno>
-#include <sys/socket.h>
 
 namespace Core
 {
@@ -43,16 +40,24 @@ namespace Core
 
     AsyncSocket AsyncSocket::create(EventLoop &loop, const int domain, const int type)
     {
+#ifdef _WIN32
+        const int fd = ::socket(domain, type, 0);
+#else
         const int fd = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+#endif
         if (fd < 0)
         {
             throw Base::SystemException("socket creation failed");
         }
 
+#ifdef _WIN32
+        Platform::setNonBlocking(fd);
+#endif
+
         if (type == SOCK_STREAM)
         {
             constexpr int opt = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
         }
 
         return AsyncSocket(loop, fd);
@@ -61,7 +66,7 @@ namespace Core
     bool AsyncSocket::bind(const sockaddr *const addr, const socklen_t addrLen) const
     {
         constexpr int opt = 1;
-        setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
         return ::bind(m_fd, addr, addrLen) == 0;
     }
 
@@ -82,32 +87,32 @@ namespace Core
             sockaddr_storage addr{};
 
             socklen_t addrLen = sizeof(addr);
-            if (const int fd = ::accept4(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen,SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (const int fd = Platform::acceptSocket(m_fd, reinterpret_cast<sockaddr *>(&addr), &addrLen);
                 fd >= 0)
             {
                 constexpr int opt = 1;
-                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
                 co_return AsyncSocket(m_loop, fd);
             }
 
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
                 continue;
             }
 
-            if (errno == EINTR || errno == ECONNABORTED)
+            if (ASYN_ERRNO == ASYN_EINTR || ASYN_ERRNO == ASYN_ECONNABORTED)
             {
                 continue;
             }
 
-            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
+            if (ASYN_ERRNO == ASYN_EMFILE || ASYN_ERRNO == ASYN_ENFILE || ASYN_ERRNO == ASYN_ENOBUFS || ASYN_ERRNO == ASYN_ENOMEM)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
                 continue;
             }
 
-            throw Base::SystemException("accept4 failed");
+            throw Base::SystemException("accept failed");
         }
     }
 
@@ -116,17 +121,16 @@ namespace Core
         if (const int ret = ::connect(m_fd, addr, addrLen); ret == 0)
         {
             co_return;
-        } else if (errno != EINPROGRESS)
+        } else if (ASYN_ERRNO != ASYN_EINPROGRESS)
         {
             throw Base::SystemException("connect failed");
         }
 
         co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);
 
-        int err = 0;
-
+        int       err = 0;
         socklen_t len = sizeof(err);
-        getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &err, &len);
+        getsockopt(m_fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&err), &len);
         if (err != 0)
         {
             throw Base::SystemException("connect failed", std::error_code(err, std::system_category()));
@@ -148,17 +152,17 @@ namespace Core
 
         while (true)
         {
-            const ssize_t n = ::recv(m_fd, buf, len, MSG_NOSIGNAL);
+            const ssize_t n = ::recv(m_fd, static_cast<char *>(buf), static_cast<int>(len), MSG_NOSIGNAL);
             if (n > 0)
                 co_return n;
             if (n == 0)
                 co_return 0;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLIN);
                 continue;
             }
-            if (errno == EINTR)
+            if (ASYN_ERRNO == ASYN_EINTR)
                 continue;
             throw Base::SystemException("recv failed");
         }
@@ -173,17 +177,17 @@ namespace Core
 
         while (true)
         {
-            const ssize_t n = ::send(m_fd, buf, len, MSG_NOSIGNAL);
+            const ssize_t n = ::send(m_fd, static_cast<const char *>(buf), static_cast<int>(len), MSG_NOSIGNAL);
             if (n > 0)
                 co_return n;
             if (n == 0)
                 co_return -1; // 对端已关闭连接
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fd, EPOLLOUT);
                 continue;
             }
-            if (errno == EINTR)
+            if (ASYN_ERRNO == ASYN_EINTR)
                 continue;
             throw Base::SystemException("send failed");
         }
@@ -194,7 +198,7 @@ namespace Core
         if (m_fd >= 0)
         {
             ::shutdown(m_fd, SHUT_RDWR);
-            ::close(m_fd);
+            Platform::closeFd(m_fd);
             m_fd = -1;
         }
     }
@@ -208,16 +212,13 @@ namespace Core
     {
         if (m_fd >= 0)
         {
-            const int flags = fcntl(m_fd, F_GETFL, 0);
-            if (flags < 0)
-                return;
-            fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
+            Platform::setNonBlocking(m_fd);
         }
     }
 
     bool AsyncSocket::setSockOpt(const int level, const int opt, const void *const val, const socklen_t len) const
     {
-        return setsockopt(m_fd, level, opt, val, len) == 0;
+        return setsockopt(m_fd, level, opt, static_cast<const char *>(val), len) == 0;
     }
 
     InetAddress AsyncSocket::remoteAddress() const

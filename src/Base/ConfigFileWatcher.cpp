@@ -1,16 +1,28 @@
 #include "ConfigFileWatcher.h"
 
+#ifdef _WIN32
+  #include "Win32FileWatcher.h"
+#endif
+
 #include <algorithm>
 #include <filesystem>
-#include <poll.h>
+#ifndef _WIN32
+  #include <poll.h>
+#endif
 
 
 namespace Base
 {
     std::unique_ptr<IFileWatcher> FileWatcherFactory::create()
     {
+#ifdef _WIN32
+        return std::make_unique<Win32FileWatcher>();
+#else
         return std::make_unique<InotifyFileWatcher>();
+#endif
     }
+
+#ifndef _WIN32
 
     InotifyFileWatcher::InotifyFileWatcher()
     {
@@ -282,4 +294,5 @@ namespace Base
             i += sizeof(inotify_event) + event->len;
         }
     }
+#endif // _WIN32
 }

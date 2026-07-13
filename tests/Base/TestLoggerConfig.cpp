@@ -9,6 +9,7 @@
 #include "Base/ConfigManager.h"
 #include "../TestHelpers.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -57,7 +58,12 @@ public:
 
     void loadConfig(const std::string &yaml_content)
     {
-        writeYaml("logging.yaml", yaml_content);
+        // Windows 路径使用反斜杠，但 YAML 双引号字符串中反斜杠是转义字符。
+        // 将反斜杠替换为正斜杠以确保 YAML 正确解析路径。
+        // std::filesystem::path 在 Windows 上同时接受 / 和 \。
+        std::string yaml = yaml_content;
+        std::ranges::replace(yaml, '\\', '/');
+        writeYaml("logging.yaml", yaml);
         ConfigManager::instance().loadFromDirectory(m_dir);
     }
 

@@ -13,6 +13,11 @@
 #include <mutex>
 #include <vector>
 
+namespace Platform
+{
+    class EventNotifier;
+}
+
 namespace Core
 {
     /**
@@ -38,14 +43,13 @@ namespace Core
         Scheduler() = default;
 
         /**
-         * @brief 绑定跨线程调度唤醒用的文件描述符
+         * @brief 绑定跨线程调度唤醒器
          *
-         * 当 scheduleRemote() 将任务推入全局队列时，会向该 fd 写入一个字节，
-         * 以唤醒可能阻塞在 epoll_wait 中的目标 EventLoop，使其立即处理新任务。
-         * @param fd 可写的文件描述符（通常是 eventfd 或 pipe 写端），
-         *           传入 -1 表示禁用唤醒功能
+         * 当 scheduleRemote() 将任务推入全局队列时，会通过唤醒器通知
+         * 目标 EventLoop 立即处理新任务。
+         * @param notifier 唤醒器指针，传入 nullptr 表示禁用唤醒功能
          */
-        void setWakeupFd(int fd) noexcept;
+        void setWakeupNotifier(Platform::EventNotifier *notifier) noexcept;
 
         /**
          * @brief 将协程加入本地就绪队列（本线程调用）
@@ -116,7 +120,7 @@ namespace Core
         std::deque<std::coroutine_handle<>>  m_globalQueue;    ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
         std::mutex                           m_globalMutex;    ///< 保护全局队列的互斥锁
         std::atomic<size_t>                  m_globalCount{0}; ///< 全局队列长度（原子变量，用于快速判空）
-        int                                  m_wakeupFd{-1};   ///< 唤醒文件描述符，-1 表示未启用唤醒
+        Platform::EventNotifier *      m_wakeup{nullptr};   ///< 唤醒器指针，nullptr 表示未启用唤醒
     };
 }
 

@@ -7,17 +7,32 @@
 #include "Core/Task.h"
 
 #include <fstream>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <filesystem>
+#include "Platform/Platform.h"
+#include "Platform/SocketCompat.h"
+
+#ifdef _WIN32
+#include <process.h>
+inline int getPid() { return _getpid(); }
+#else
+inline int getPid() { return getpid(); }
+#endif
 
 using namespace Core;
 
 namespace {
     std::pair<std::string, std::string> createTestCert() {
-        std::string certPath = "/tmp/test_tls_cert_" + std::to_string(getpid()) + ".pem";
-        std::string keyPath  = "/tmp/test_tls_key_" + std::to_string(getpid()) + ".pem";
+        auto tmpDir = std::filesystem::temp_directory_path();
+        auto pid    = getPid();
+        std::string certPath = (tmpDir / ("test_tls_cert_" + std::to_string(pid) + ".pem")).string();
+        std::string keyPath  = (tmpDir / ("test_tls_key_" + std::to_string(pid) + ".pem")).string();
         std::string cmd = "openssl req -x509 -newkey rsa:2048 -keyout " + keyPath +
-                          " -out " + certPath + " -days 1 -nodes -subj \"/CN=test\" 2>/dev/null";
+                          " -out " + certPath + " -days 1 -nodes -subj \"/CN=test\"";
+    #ifdef _WIN32
+        cmd += " > NUL 2>&1";
+    #else
+        cmd += " 2>/dev/null";
+    #endif
         system(cmd.c_str());
         return {certPath, keyPath};
     }
@@ -30,7 +45,7 @@ TEST_CASE("TlsSocket: construction", "[TlsSocket]") {
     ctx.loadCertificate(cert, key);
 
     int fds[2];
-    socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+    Platform::createSocketPair(fds[0], fds[1]);
 
     SSL *ssl = ctx.createSSL(fds[0]);
     REQUIRE(ssl != nullptr);
@@ -39,7 +54,7 @@ TEST_CASE("TlsSocket: construction", "[TlsSocket]") {
     REQUIRE(tls.fd() == fds[0]);
 
     tls.close();
-    close(fds[1]);
+    Platform::closeFd(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -51,7 +66,7 @@ TEST_CASE("TlsSocket: move construction", "[TlsSocket]") {
     ctx.loadCertificate(cert, key);
 
     int fds[2];
-    socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+    Platform::createSocketPair(fds[0], fds[1]);
 
     SSL *ssl = ctx.createSSL(fds[0]);
     TlsSocket tls1(ssl, loop, AsyncSocket(loop, fds[0]));
@@ -61,7 +76,7 @@ TEST_CASE("TlsSocket: move construction", "[TlsSocket]") {
     REQUIRE(tls2.fd() == fd);
 
     tls2.close();
-    close(fds[1]);
+    Platform::closeFd(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -73,8 +88,8 @@ TEST_CASE("TlsSocket: move assignment", "[TlsSocket]") {
     ctx.loadCertificate(cert, key);
 
     int fds1[2], fds2[2];
-    socketpair(AF_UNIX, SOCK_STREAM, 0, fds1);
-    socketpair(AF_UNIX, SOCK_STREAM, 0, fds2);
+    Platform::createSocketPair(fds1[0], fds1[1]);
+    Platform::createSocketPair(fds2[0], fds2[1]);
 
     SSL *ssl1 = ctx.createSSL(fds1[0]);
     SSL *ssl2 = ctx.createSSL(fds2[0]);
@@ -88,8 +103,8 @@ TEST_CASE("TlsSocket: move assignment", "[TlsSocket]") {
     REQUIRE(tls2.fd() == fd1);
 
     tls2.close();
-    close(fds1[1]);
-    close(fds2[1]);
+    Platform::closeFd(fds1[1]);
+    Platform::closeFd(fds2[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -101,7 +116,7 @@ TEST_CASE("TlsSocket: close safely", "[TlsSocket]") {
     ctx.loadCertificate(cert, key);
 
     int fds[2];
-    socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+    Platform::createSocketPair(fds[0], fds[1]);
 
     SSL *ssl = ctx.createSSL(fds[0]);
     TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
@@ -110,7 +125,7 @@ TEST_CASE("TlsSocket: close safely", "[TlsSocket]") {
     // Double close should be safe
     REQUIRE_NOTHROW(tls.close());
 
-    close(fds[1]);
+    Platform::closeFd(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -122,7 +137,7 @@ TEST_CASE("TlsSocket: SSL context creation and socket wrapping", "[TlsSocket]") 
     REQUIRE(srvCtx.loadCertificate(cert, key));
 
     int fds[2];
-    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    REQUIRE(Platform::createSocketPair(fds[0], fds[1]));
 
     SSL *ssl = srvCtx.createSSL(fds[0]);
     REQUIRE(ssl != nullptr);
@@ -131,7 +146,7 @@ TEST_CASE("TlsSocket: SSL context creation and socket wrapping", "[TlsSocket]") 
     REQUIRE(tls.fd() == fds[0]);
 
     tls.close();
-    close(fds[1]);
+    Platform::closeFd(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }

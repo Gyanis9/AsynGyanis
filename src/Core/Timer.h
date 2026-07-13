@@ -7,6 +7,7 @@
 #define CORE_TIMER_H
 
 #include "EpollAwaiter.h"
+#include "Platform/TimerFd.h"
 
 #include <chrono>
 #include <coroutine>
@@ -77,11 +78,11 @@ namespace Core
          * @param duration 需要等待的时长
          * @return Awaiter 对象，可用于 co_await
          */
-        Awaiter waitFor(std::chrono::milliseconds duration) const;
+        Awaiter waitFor(std::chrono::milliseconds duration);
 
     private:
-        EventLoop &m_loop;        ///< 所属事件循环
-        int        m_timerFd{-1}; ///< timerfd 文件描述符，-1 表示无效
+        EventLoop &          m_loop; ///< 所属事件循环
+        Platform::TimerFd   m_timer; ///< 跨平台定时器 fd
     };
 
 }

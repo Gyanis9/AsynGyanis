@@ -11,7 +11,12 @@
 #ifndef CORE_EPOLL_H
 #define CORE_EPOLL_H
 
-#include <sys/epoll.h>
+#include "Platform/Platform.h"
+
+#ifdef _WIN32
+  #include "wepoll.h"
+#endif
+
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -90,10 +95,10 @@ namespace Core
         [[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0);
 
         /**
-         * @brief 获取 epoll 文件描述符
-         * @return epoll fd，可用于集成到其他事件循环
+         * @brief 获取 epoll 句柄
+         * @return Linux 返回 epoll fd，Windows 返回 wepoll HANDLE
          */
-        [[nodiscard]] int fd() const noexcept;
+        [[nodiscard]] epoll_handle_t fd() const noexcept;
 
     private:
         /**
@@ -101,7 +106,7 @@ namespace Core
          */
         void destroy();
 
-        int                      m_fd{-1};                  ///< epoll 实例的文件描述符
+        epoll_handle_t           m_fd{kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: fd, Windows: HANDLE）
         std::vector<epoll_event> m_events;                  ///< 存储 wait() 返回的事件数组，容量为 DEFAULT_MAX_EVENTS
         static constexpr int     DEFAULT_MAX_EVENTS = 1024; ///< 默认每次 wait 最多返回的事件数
     };

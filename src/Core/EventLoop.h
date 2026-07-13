@@ -8,6 +8,7 @@
 #define CORE_EVENTLOOP_H
 
 #include "Epoll.h"
+#include "Platform/EventNotifier.h"
 #include "Scheduler.h"
 
 #include <atomic>
@@ -81,12 +82,12 @@ namespace Core
         [[nodiscard]] bool isRunning() const noexcept;
 
     private:
-        Epoll             m_epoll;          ///< epoll 事件管理器
-        Scheduler         m_scheduler;      ///< 协程调度器，管理待运行的任务队列
-        int               m_wakeupFd;       ///< 唤醒文件描述符（通常是 eventfd 或 pipe），用于跨线程唤醒
-        int               m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
-        std::atomic<bool> m_running;        ///< 循环是否正在运行中（原子标记）
-        std::atomic<bool> m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
+        Epoll                       m_epoll;          ///< epoll 事件管理器
+        Scheduler                   m_scheduler;      ///< 协程调度器，管理待运行的任务队列
+        Platform::EventNotifier     m_wakeup;         ///< 跨线程唤醒器
+        int                         m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
+        std::atomic<bool>           m_running;        ///< 循环是否正在运行中（原子标记）
+        std::atomic<bool>           m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
     };
 }
 

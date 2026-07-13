@@ -96,7 +96,9 @@ int main(int argc, char **argv)
 
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
+#ifndef _WIN32
     std::signal(SIGPIPE, SIG_IGN);
+#endif
 
     // Logger init
     auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();

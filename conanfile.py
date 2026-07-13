@@ -20,4 +20,7 @@ class ConanApplication(ConanFile):
     def requirements(self):
         requirements = self.conan_data.get('requirements', [])
         for requirement in requirements:
+            # jemalloc 在 Windows 上不可用，跳过
+            if 'jemalloc' in requirement and self.settings.os == 'Windows':
+                continue
             self.requires(requirement)

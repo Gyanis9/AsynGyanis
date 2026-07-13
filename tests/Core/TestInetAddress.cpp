@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "Core/InetAddress.h"
 #include <optional>
-#include <arpa/inet.h>
+#include "Platform/Platform.h"
 
 using namespace Core;
 

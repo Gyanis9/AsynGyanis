@@ -180,7 +180,7 @@ namespace Net
         std::unordered_map<std::string, std::string> m_headers;                     ///< 头部字段（键值对）
         std::string                                  m_body;                        ///< 消息正文
         std::unordered_map<std::string, std::string> m_params;                      ///< 路由参数
-        std::stop_source                             m_cancelSource;                ///< 协作式取消源
+        mutable std::stop_source                             m_cancelSource;                ///< 协作式取消源
     };
 }
 

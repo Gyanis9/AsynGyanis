@@ -7,8 +7,7 @@
 #ifndef CORE_INETADDRESS_H
 #define CORE_INETADDRESS_H
 
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include "Platform/Platform.h"
 
 #include <cstdint>
 #include <optional>

@@ -2,9 +2,9 @@
 #include "Base/Exception.h"
 #include "Core/EpollAwaiter.h"
 #include "Core/EventLoop.h"
+#include "Platform/SocketCompat.h"
 
 #include <cerrno>
-#include <netinet/tcp.h>
 
 
 namespace Net
@@ -20,12 +20,11 @@ namespace Net
     {
         const int     fd  = m_listenSocket.fd();
         constexpr int opt = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        // SO_REUSEPORT 仅 Linux 3.9+ 支持，旧内核失败时忽略（不影响单实例运行）
-        if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0)
-        {
-            // 非致命错误，仅在 EOPNOTSUPP 时静默忽略
-        }
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
+        // SO_REUSEPORT 仅 Linux 3.9+ 支持，Windows 不支持此选项
+#ifdef SO_REUSEPORT
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char *>(&opt), sizeof(opt));
+#endif
 
         if (m_addr.family() == AF_INET6)
         {
@@ -66,29 +65,27 @@ namespace Net
         {
             sockaddr_storage addr{};
             socklen_t        addrLen = sizeof(addr);
-            const int        fd      = ::accept4(listenFd, reinterpret_cast<sockaddr *>(&addr), &addrLen,
-                                     SOCK_NONBLOCK | SOCK_CLOEXEC);
+            const int        fd      = Platform::acceptSocket(listenFd, reinterpret_cast<sockaddr *>(&addr), &addrLen);
             if (fd >= 0)
             {
                 constexpr int opt = 1;
-                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
                 Core::AsyncSocket first(m_loop, fd);
 
                 while (true)
                 {
                     sockaddr_storage extra{};
                     socklen_t        extraLen = sizeof(extra);
-                    const int        extraFd  = ::accept4(listenFd, reinterpret_cast<sockaddr *>(&extra), &extraLen,
-                                                  SOCK_NONBLOCK | SOCK_CLOEXEC);
+                    const int        extraFd  = Platform::acceptSocket(listenFd, reinterpret_cast<sockaddr *>(&extra), &extraLen);
                     if (extraFd >= 0)
                     {
-                        setsockopt(extraFd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+                        setsockopt(extraFd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
                         m_pending.emplace_back(m_loop, extraFd);
                         continue;
                     }
-                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
                         break;
-                    if (errno == EINTR || errno == ECONNABORTED)
+                    if (ASYN_ERRNO == ASYN_EINTR || ASYN_ERRNO == ASYN_ECONNABORTED)
                         continue;
                     break;
                 }
@@ -96,20 +93,20 @@ namespace Net
                 co_return first;
             }
 
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
             {
                 co_await Core::EpollAwaiter(m_loop.epoll(), listenFd, EPOLLIN);
                 continue;
             }
-            if (errno == EINTR || errno == ECONNABORTED)
+            if (ASYN_ERRNO == ASYN_EINTR || ASYN_ERRNO == ASYN_ECONNABORTED)
                 continue;
-            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
+            if (ASYN_ERRNO == ASYN_EMFILE || ASYN_ERRNO == ASYN_ENFILE || ASYN_ERRNO == ASYN_ENOBUFS || ASYN_ERRNO == ASYN_ENOMEM)
             {
                 co_await Core::EpollAwaiter(m_loop.epoll(), listenFd, EPOLLIN);
                 continue;
             }
 
-            throw Base::SystemException("accept4 failed");
+            throw Base::SystemException("accept failed");
         }
     }
 

@@ -1,15 +1,18 @@
 #include "IoContext.h"
+#include "Platform/SocketCompat.h"
 
 namespace Core
 {
     IoContext::IoContext(const size_t threadCount) :
         m_threadPool(threadCount)
     {
+        Platform::initWinsock();
     }
 
     IoContext::~IoContext()
     {
         stop();
+        Platform::cleanupWinsock();
     }
 
     void IoContext::run()

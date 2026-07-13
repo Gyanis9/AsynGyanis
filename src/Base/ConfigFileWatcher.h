@@ -16,7 +16,10 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
-#include <sys/inotify.h>
+
+#ifndef _WIN32
+  #include <sys/inotify.h>
+#endif
 
 namespace Base
 {
@@ -115,6 +118,7 @@ namespace Base
      *            - 独立监听线程，不阻塞主线程
      *            - 支持防抖，避免短时间内重复触发
      */
+#ifndef _WIN32
     class InotifyFileWatcher : public IFileWatcher
     {
     public:
@@ -211,6 +215,7 @@ namespace Base
         static constexpr size_t   EVENT_BUFFER_SIZE = 4096;                                                         ///< 事件缓冲区大小
         static constexpr uint32_t WATCH_MASK        = IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF; ///< 监听的事件掩码
     };
+#endif // _WIN32
 }
 
 #endif

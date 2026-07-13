@@ -1,14 +1,13 @@
 #include "Scheduler.h"
+#include "Platform/EventNotifier.h"
 
-#include <cstdint>
-#include <unistd.h>
 #include <vector>
 
 namespace Core
 {
-    void Scheduler::setWakeupFd(const int fd) noexcept
+    void Scheduler::setWakeupNotifier(Platform::EventNotifier *const notifier) noexcept
     {
-        m_wakeupFd = fd;
+        m_wakeup = notifier;
     }
 
     void Scheduler::schedule(const std::coroutine_handle<> handle)
@@ -31,16 +30,11 @@ namespace Core
             m_globalCount.fetch_add(1, std::memory_order_relaxed);
         }
 
-        if (m_wakeupFd >= 0)
+        if (m_wakeup)
         {
-            constexpr uint64_t val = 1;
-            // eventfd 写入可能因计数器溢出而失败（EAGAIN），此时目标线程仍会在下次
-            // epoll_wait 超时后处理全局队列任务，不会永久丢失
-            if (::write(m_wakeupFd, &val, sizeof(val)) < 0)
-            {
-                // errno 可能为 EAGAIN（计数器满）或 EBADF（fd 已关闭），
-                // 两种情况任务均已安全入队，无需额外处理
-            }
+            // 唤醒可能阻塞在 epoll_wait 中的目标 EventLoop
+            // 唤醒失败时目标线程仍会在下次 epoll_wait 超时后处理全局队列任务，不会永久丢失
+            m_wakeup->notify();
         }
     }
 

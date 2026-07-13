@@ -29,11 +29,15 @@ add_library(Net
 )
 
 target_link_libraries(Net PUBLIC
-        jemalloc::jemalloc
         Core
         Base
+        Platform
         llhttp::llhttp
 )
+
+if(TARGET jemalloc::jemalloc)
+    target_link_libraries(Net PUBLIC jemalloc::jemalloc)
+endif()
 
 target_include_directories(Net PUBLIC
         ${CMAKE_SOURCE_DIR}/src

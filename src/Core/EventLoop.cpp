@@ -1,32 +1,18 @@
 #include "EventLoop.h"
 #include "Base/Exception.h"
 
-#include <sys/eventfd.h>
-#include <unistd.h>
-
 namespace Core
 {
     EventLoop::EventLoop()
     {
-        m_wakeupFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        if (m_wakeupFd < 0)
-        {
-            throw Base::SystemException("eventfd creation failed");
-        }
-        m_scheduler.setWakeupFd(m_wakeupFd);
-        m_epoll.addFd(m_wakeupFd, EPOLLIN, &m_wakeupSentinel);
+        m_scheduler.setWakeupNotifier(&m_wakeup);
+        m_epoll.addFd(m_wakeup.readFd(), EPOLLIN, &m_wakeupSentinel);
     }
 
     EventLoop::~EventLoop()
     {
         if (m_running.load(std::memory_order_acquire))
             stop();
-
-        if (m_wakeupFd >= 0)
-        {
-            close(m_wakeupFd);
-            m_wakeupFd = -1;
-        }
     }
 
     void EventLoop::run()
@@ -47,9 +33,7 @@ namespace Core
             {
                 if (ev.data.ptr == &m_wakeupSentinel)
                 {
-                    uint64_t val;
-
-                    [[maybe_unused]] auto _ = ::read(m_wakeupFd, &val, sizeof(val));
+                    m_wakeup.drain();
                     continue;
                 }
 
@@ -74,8 +58,7 @@ namespace Core
 
     void EventLoop::wake() const
     {
-        constexpr uint64_t    val = 1;
-        [[maybe_unused]] auto _   = ::write(m_wakeupFd, &val, sizeof(val));
+        m_wakeup.notify();
     }
 
     Epoll &EventLoop::epoll() noexcept

@@ -33,11 +33,19 @@ add_library(Core
 )
 
 target_link_libraries(Core PUBLIC
-        jemalloc::jemalloc
         Base
+        Platform
         OpenSSL::SSL
         OpenSSL::Crypto
 )
+
+if(TARGET jemalloc::jemalloc)
+    target_link_libraries(Core PUBLIC jemalloc::jemalloc)
+endif()
+
+if(WIN32)
+    target_link_libraries(Core PUBLIC wepoll)
+endif()
 
 target_include_directories(Core PUBLIC
         ${CMAKE_SOURCE_DIR}/src

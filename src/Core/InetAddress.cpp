@@ -1,9 +1,7 @@
 #include "InetAddress.h"
 #include "Base/Exception.h"
 
-#include <arpa/inet.h>
 #include <cstring>
-#include <netdb.h>
 
 namespace Core
 {

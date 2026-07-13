@@ -6,7 +6,7 @@
 #include "Core/Task.h"
 #include <thread>
 #include <atomic>
-#include <sys/socket.h>
+#include "Platform/Platform.h"
 
 using namespace Core;
 using namespace std::chrono_literals;

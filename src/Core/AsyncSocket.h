@@ -13,8 +13,8 @@
 #define CORE_ASYNCSOCKET_H
 
 #include "Task.h"
+#include "Platform/Platform.h"
 
-#include <sys/socket.h>
 #include <string>
 
 namespace Core

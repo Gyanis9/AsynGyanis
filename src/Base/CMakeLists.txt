@@ -19,10 +19,21 @@ add_library(Base
         LoggerConfig.h
 )
 
+if(WIN32)
+    target_sources(Base PRIVATE
+            Win32FileWatcher.h
+            Win32FileWatcher.cpp
+    )
+endif()
+
 target_link_libraries(Base PUBLIC
         yaml-cpp::yaml-cpp
-        jemalloc::jemalloc
+        Platform
 )
+
+if(TARGET jemalloc::jemalloc)
+    target_link_libraries(Base PUBLIC jemalloc::jemalloc)
+endif()
 
 target_include_directories(Base PUBLIC
         ${CMAKE_SOURCE_DIR}/src

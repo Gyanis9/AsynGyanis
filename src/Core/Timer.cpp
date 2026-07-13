@@ -1,10 +1,9 @@
 #include "Timer.h"
 #include "EventLoop.h"
 #include "Base/Exception.h"
+#include "Platform/SocketCompat.h"
 
 #include <cstdint>
-#include <sys/timerfd.h>
-#include <unistd.h>
 
 namespace Core
 {
@@ -27,41 +26,29 @@ namespace Core
     {
         uint64_t expirations = 0;
 
-        [[maybe_unused]] auto _ = ::read(m_fd, &expirations, sizeof(expirations));
+        [[maybe_unused]] auto _ = Platform::readFd(m_fd, &expirations, sizeof(expirations));
         m_awaiter.await_resume();
     }
 
     Timer::Timer(EventLoop &loop) :
         m_loop(loop)
     {
-        m_timerFd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-        if (m_timerFd < 0)
+        if (m_timer.fd() < 0)
         {
-            throw Base::SystemException("timerfd_create failed");
+            throw Base::SystemException("TimerFd creation failed");
         }
     }
 
     Timer::~Timer()
     {
-        if (m_timerFd >= 0)
-        {
-            // 先移除 epoll 注册再关闭 fd，防止 fd 回收后被误用
-            m_loop.epoll().delFd(m_timerFd);
-            ::close(m_timerFd);
-            m_timerFd = -1;
-        }
+        // 先移除 epoll 注册，TimerFd 析构会自动关闭 fd
+        m_loop.epoll().delFd(m_timer.fd());
     }
 
-    Timer::Awaiter Timer::waitFor(const std::chrono::milliseconds duration) const
+    Timer::Awaiter Timer::waitFor(const std::chrono::milliseconds duration)
     {
-        itimerspec ts{};
-        ts.it_value.tv_sec  = duration.count() / 1000;
-        ts.it_value.tv_nsec = (duration.count() % 1000) * 1000000;
-        if (timerfd_settime(m_timerFd, 0, &ts, nullptr) < 0)
-        {
-            throw Base::SystemException("timerfd_settime failed");
-        }
-        return Awaiter(m_loop.epoll(), m_timerFd);
+        m_timer.arm(duration);
+        return Awaiter(m_loop.epoll(), m_timer.fd());
     }
 
 }
