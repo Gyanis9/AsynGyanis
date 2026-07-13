@@ -38,6 +38,7 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install conan
           .venv/bin/conan profile detect --force
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Cache Conan packages
         uses: actions/cache@v4
@@ -77,6 +78,7 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install conan
           .venv/bin/conan profile detect --force
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Cache Conan packages
         uses: actions/cache@v4
@@ -155,6 +157,7 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install conan
           .venv/bin/conan profile detect --force
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Cache Conan packages
         uses: actions/cache@v4
