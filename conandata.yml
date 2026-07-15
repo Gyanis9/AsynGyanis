@@ -4,3 +4,4 @@ requirements:
   - "jemalloc/5.3.0"
   - "catch2/3.8.0"
   - "llhttp/9.3.0"
+  - "sqlite3/3.49.1"
