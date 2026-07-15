@@ -89,10 +89,10 @@ namespace Net
 
         /**
          * @brief 创建一个 500 Internal Server Error 响应。
-         * @param msg 错误描述正文（可选，默认为空）
+         * @param message 错误描述正文（可选，默认为空）
          * @return HttpResponse 对象
          */
-        static HttpResponse serverError(std::string msg = "");
+        static HttpResponse serverError(std::string message = "");
 
         /**
          * @brief 重置响应对象到初始状态（状态码 200，清空头部和正文）。

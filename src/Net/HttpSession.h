@@ -31,10 +31,8 @@ namespace Net
          * @param loop      所属的事件循环
          * @param socket    已建立的异步 socket
          * @param router    全局路由器，用于分发请求
-         * @param staticDir 静态文件根目录（可选），设置后自动启用静态文件服务
          */
-        HttpSession(Core::EventLoop &          loop, Core::AsyncSocket socket, Router &router,
-                    std::optional<std::string> staticDir = std::nullopt);
+        HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router);
 
         /**
          * @brief 启动会话主协程。
@@ -50,19 +48,18 @@ namespace Net
     public:
         /**
          * @brief 根据 HTTP 请求和响应判断是否应保持连接（Keep-Alive）。
-         * @param req  请求对象
-         * @param res  响应对象
+         * @param request  请求对象
+         * @param response  响应对象
          * @return true  应保持连接，会话继续处理下一个请求
          * @return false 应关闭连接
          */
-        static bool shouldKeepAlive(const HttpRequest &req, const HttpResponse &res);
+        static bool shouldKeepAlive(const HttpRequest &request, const HttpResponse &response);
 
     private:
         Router &                   m_router;                ///< 路由器引用，用于分发请求
         HttpParser                 m_parser;                ///< HTTP 解析器，用于解析请求数据
-        std::vector<char>          m_recvBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
-        std::optional<std::string> m_staticDir;             ///< 静态文件根目录，若为 nullopt 表示未启用
-        static constexpr int       m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
+        std::vector<char>          m_receiveBuffer;            ///< 接收缓冲区，存储从 socket 读取的原始数据
+        static constexpr int       m_receiveBufferSize = 8192; ///< 接收缓冲区大小（8KB）
     };
 
     // ============================================================================
@@ -78,28 +75,28 @@ namespace Net
          * Keep-Alive 判断、响应发送等。通过模板参数 Socket 支持普通 TCP
          *（AsyncSocket）和 TLS 加密（TlsSocket）两种传输层。
          *
-         * @tparam Socket 传输层类型，需支持 asyncRecv/asyncSend/close 接口
-         * @param sock        传输层 socket 引用
+         * @tparam Socket 传输层类型，需支持 asyncReceive/asyncSend/close 接口
+         * @param socket      传输层 socket 引用
          * @param router      路由器，用于分发请求
          * @param parser      HTTP 增量解析器
-         * @param recvBuffer  接收缓冲区
+         * @param receiveBuffer  接收缓冲区
          * @param isAlive     连接存活检查回调
          */
         template<typename Socket>
         Core::Task<> httpKeepAliveLoop(
-                Socket &                     sock,
+                Socket &                     socket,
                 Router &                     router,
                 HttpParser &                 parser,
-                std::vector<char> &          recvBuffer,
+                std::vector<char> &          receiveBuffer,
                 const std::function<bool()> &isAlive)
         {
             // sendAll 辅助：分批发送大数据块，处理部分写入
-            auto sendAll = [&sock](const std::string_view data) -> Core::Task<>
+            auto sendAll = [&socket](const std::string_view data) -> Core::Task<>
             {
                 size_t totalSent = 0;
                 while (totalSent < data.size())
                 {
-                    const ssize_t n = co_await sock.asyncSend(
+                    const ssize_t n = co_await socket.asyncSend(
                             data.data() + totalSent, data.size() - totalSent);
                     if (n <= 0)
                         co_return;
@@ -116,59 +113,59 @@ namespace Net
 
                 try
                 {
-                    ssize_t n = co_await sock.asyncRecv(recvBuffer.data(), recvBuffer.size());
+                    ssize_t n = co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
                     if (n <= 0)
                         break;
 
-                    auto status = parser.parse(recvBuffer.data(), static_cast<size_t>(n));
+                    auto status = parser.parse(receiveBuffer.data(), static_cast<size_t>(n));
 
                     // 增量解析：数据不足时持续读取
                     while (status == ParseStatus::NeedMore)
                     {
-                        n = co_await sock.asyncRecv(recvBuffer.data(), recvBuffer.size());
+                        n = co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
                         if (n <= 0)
                             co_return;
-                        status = parser.parse(recvBuffer.data(), static_cast<size_t>(n));
+                        status = parser.parse(receiveBuffer.data(), static_cast<size_t>(n));
                     }
 
                     if (status == ParseStatus::Error)
                     {
-                        HttpResponse res;
-                        res.setStatus(400);
-                        res.setBody(std::format("Bad Request: {}", parser.errorMessage()));
-                        res.setHeader("content-type", "text/plain");
-                        res.setHeader("connection", "close");
-                        errorResponse = res.toString();
+                        HttpResponse response;
+                        response.setStatus(400);
+                        response.setBody(std::format("Bad Request: {}", parser.errorMessage()));
+                        response.setHeader("content-type", "text/plain");
+                        response.setHeader("connection", "close");
+                        errorResponse = response.toString();
                         hasError      = true;
                     } else if (status == ParseStatus::Done)
                     {
-                        auto &       req = parser.request();
-                        HttpResponse res;
-                        res.setHttpVersion(req.httpVersion()); // 使用请求版本而非硬编码 HTTP/1.1
+                        auto &       request = parser.request();
+                        HttpResponse response;
+                        response.setHttpVersion(request.httpVersion()); // 使用请求版本而非硬编码 HTTP/1.1
 
                         try
                         {
-                            co_await router.route(req, res);
+                            co_await router.route(request, response);
                         } catch (const std::exception &)
                         {
-                            res = HttpResponse::serverError("Internal Server Error");
+                            response = HttpResponse::serverError("Internal Server Error");
                         }
 
-                        keepAlive = HttpSession::shouldKeepAlive(req, res);
+                        keepAlive = HttpSession::shouldKeepAlive(request, response);
 
-                        const auto &version  = req.httpVersion();
+                        const auto &version  = request.httpVersion();
                         const bool  isHttp10 = version.starts_with("HTTP/1.0")
                                               || version.starts_with("HTTP/0.9");
 
                         if (!keepAlive)
-                            res.setHeader("connection", "close");
-                        else if (isHttp10 && !res.headers().contains("connection"))
-                            res.setHeader("connection", "keep-alive");
+                            response.setHeader("connection", "close");
+                        else if (isHttp10 && !response.headers().contains("connection"))
+                            response.setHeader("connection", "keep-alive");
 
-                        const std::string responseStr = res.toString();
-                        // Fast path: 小响应单次发送，避免协程帧分配
+                        const std::string responseStr = response.toString();
+                        // 快速路径：小响应单次发送，避免协程帧分配
                         if (responseStr.size() <= 4096)
-                            co_await sock.asyncSend(responseStr.data(), responseStr.size());
+                            co_await socket.asyncSend(responseStr.data(), responseStr.size());
                         else
                             co_await sendAll(responseStr);
 
@@ -177,16 +174,16 @@ namespace Net
                     }
                 } catch (const std::exception &)
                 {
-                    HttpResponse res = HttpResponse::serverError("Internal Server Error");
-                    res.setHeader("connection", "close");
-                    errorResponse = res.toString();
+                    HttpResponse response = HttpResponse::serverError("Internal Server Error");
+                    response.setHeader("connection", "close");
+                    errorResponse = response.toString();
                     hasError      = true;
                 }
 
                 if (hasError)
                 {
                     if (errorResponse.size() <= 4096)
-                        co_await sock.asyncSend(errorResponse.data(), errorResponse.size());
+                        co_await socket.asyncSend(errorResponse.data(), errorResponse.size());
                     else
                         co_await sendAll(errorResponse);
                     keepAlive = false;

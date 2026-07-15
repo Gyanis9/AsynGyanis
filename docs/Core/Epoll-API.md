@@ -43,7 +43,7 @@ Epoll& operator=(Epoll&& other) noexcept;
 
 **功能**：转移所有权。移动后源对象的 `m_fd` 被置为 -1，重复析构是安全的。
 
-### addFd
+### addFileDescriptor
 
 ```cpp
 bool addFd(int fd, uint32_t events, void* userData = nullptr) const;
@@ -62,7 +62,7 @@ bool addFd(int fd, uint32_t events, void* userData = nullptr) const;
 
 **注意**：如果 fd 已经在 epoll 中注册，`EPOLL_CTL_ADD` 会失败（`EEXIST`），此时应使用 `modFd`。
 
-### modFd
+### modFileDescriptor
 
 ```cpp
 bool modFd(int fd, uint32_t events, void* userData = nullptr) const;
@@ -72,7 +72,7 @@ bool modFd(int fd, uint32_t events, void* userData = nullptr) const;
 
 **返回值**：调用 `epoll_ctl(EPOLL_CTL_MOD)` 成功时返回 true。
 
-### delFd
+### delFileDescriptor
 
 ```cpp
 bool delFd(int fd) const;

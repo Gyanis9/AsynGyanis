@@ -51,10 +51,10 @@ TEST_CASE("Cancelable: stopSource returns valid reference", "[Cancelable]") {
 
 TEST_CASE("Cancelable: multiple requestStop calls are idempotent", "[Cancelable]") {
     Cancelable c;
-    // First call returns true (transitioned to stopped)
+    // 第一次调用返回 true（转换到已停止状态）
     REQUIRE(c.requestStop());
-    // Second call returns false per std::stop_source spec (already stopped)
+    // 第二次调用返回 false（根据 std::stop_source 规范，已经停止）
     REQUIRE_FALSE(c.requestStop());
-    // But isStopRequested() stays true
+    // 但 isStopRequested() 保持为 true
     REQUIRE(c.isStopRequested());
 }

@@ -41,19 +41,19 @@ namespace Core
 
         /**
          * @brief 加载服务器证书和私钥文件。
-         * @param certFile 证书文件路径（PEM 格式，通常包含证书链）
+         * @param certificateFile 证书文件路径（PEM 格式，通常包含证书链）
          * @param keyFile  私钥文件路径（PEM 格式）
          * @return 成功返回 true，失败返回 false（可通过 OpenSSL 错误栈获取日志）
          */
-        bool loadCertificate(const std::string &certFile, const std::string &keyFile) const;
+        bool loadCertificate(const std::string &certificateFile, const std::string &keyFile) const;
 
         /**
          * @brief 为已建立的连接创建一个新的 SSL 对象。
-         * @param fd 已连接的 socket 文件描述符（用于设置底层 fd）
+         * @param fileDescriptor 已连接的 socket 文件描述符（用于 SSL_set_fd 设置底层描述符）
          * @return SSL 对象指针，所有权转移给调用者（通常由 TlsSocket 持有）；
          *         失败返回 nullptr。
          */
-        SSL *createSSL(int fd) const;
+        SSL *createSSL(int fileDescriptor) const;
 
         /**
          * @brief 获取底层的 SSL_CTX 原生句柄。
@@ -62,7 +62,7 @@ namespace Core
         [[nodiscard]] SSL_CTX *nativeHandle() const noexcept;
 
     private:
-        SSL_CTX *m_ctx{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
+        SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
     };
 }
 

@@ -40,10 +40,10 @@ TEST_CASE("ThreadPool: start and stop", "[ThreadPool]") {
     ThreadPool pool(2);
     pool.start();
 
-    // Verify loops are running
+    // 验证循环正在运行
     for (size_t i = 0; i < pool.threadCount(); ++i) {
         auto &loop = pool.eventLoop(i);
-        // Give threads time to start
+        // 给线程一些启动时间
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
@@ -73,9 +73,9 @@ TEST_CASE("ThreadPool: event loops are distinct", "[ThreadPool]") {
     auto &loop0 = pool.eventLoop(0);
     auto &loop1 = pool.eventLoop(1);
 
-    // Each should have its own epoll fd
-    REQUIRE(loop0.epoll().fd() != loop1.epoll().fd());
-    // Each should have its own scheduler
+    // 每个都应该有自己独立的 epoll fileDescriptor
+    REQUIRE(loop0.epoll().fileDescriptor() != loop1.epoll().fileDescriptor());
+    // 每个都应该有自己独立的调度器
     REQUIRE(&pool.scheduler(0) != &pool.scheduler(1));
 }
 

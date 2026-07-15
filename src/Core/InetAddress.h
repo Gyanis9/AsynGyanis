@@ -46,22 +46,22 @@ namespace Core
 
         /**
          * @brief 从 IPv4 的 sockaddr_in 构造
-         * @param addr IPv4 地址结构
+         * @param address IPv4 地址结构
          */
-        explicit InetAddress(const sockaddr_in &addr);
+        explicit InetAddress(const sockaddr_in &address);
 
         /**
          * @brief 从 IPv6 的 sockaddr_in6 构造
-         * @param addr IPv6 地址结构
+         * @param address IPv6 地址结构
          */
-        explicit InetAddress(const sockaddr_in6 &addr);
+        explicit InetAddress(const sockaddr_in6 &address);
 
         /**
          * @brief 从通用 sockaddr_storage 及长度构造
-         * @param addr 套接字地址存储结构
-         * @param len  地址结构实际长度（必须与 addr 指定的协议族匹配）
+         * @param address 套接字地址存储结构
+         * @param length  地址结构实际长度（必须与 address 指定的协议族匹配）
          */
-        InetAddress(const sockaddr_storage &addr, socklen_t len);
+        InetAddress(const sockaddr_storage &address, socklen_t length);
 
         /**
          * @brief 创建指向本地回环地址（127.0.0.1 或 ::1）的地址对象
@@ -107,13 +107,13 @@ namespace Core
          * @brief 获取指向底层 sockaddr 结构的指针，可用于系统调用
          * @return const sockaddr* 指针，指向内部存储的 sockaddr_in 或 sockaddr_in6
          */
-        [[nodiscard]] const sockaddr *addr() const noexcept;
+        [[nodiscard]] const sockaddr *nativeAddress() const noexcept;
 
         /**
          * @brief 获取底层 sockaddr 结构的实际长度
          * @return 地址结构的字节长度，若地址未初始化则返回 0
          */
-        [[nodiscard]] socklen_t addrLen() const noexcept;
+        [[nodiscard]] socklen_t nativeAddressLength() const noexcept;
 
         /**
          * @brief 将地址转换为可读字符串（"IP:Port" 格式）
@@ -143,8 +143,8 @@ namespace Core
          */
         void fromIpPort(std::string_view ip, uint16_t port);
 
-        sockaddr_storage m_addr;    ///< 内部存储的地址结构，足够容纳 IPv4 或 IPv6
-        socklen_t        m_addrLen; ///< 实际使用的地址结构长度
+        sockaddr_storage m_address;       ///< 内部存储的地址结构，足够容纳 IPv4 或 IPv6
+        socklen_t        m_addressLength; ///< 实际使用的地址结构长度
     };
 }
 

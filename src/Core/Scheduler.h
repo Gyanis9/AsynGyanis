@@ -64,7 +64,7 @@ namespace Core
          * @brief 跨线程调度：将协程推入全局队列（线程安全）
          *
          * 任意线程均可调用此函数，将一个协程投递到本调度器的全局队列。
-         * 若 m_wakeupFd 有效，则向该 fd 写入 1 字节，提醒目标线程有新任务。
+         * 若已设置唤醒器，则通过 notify() 提醒目标线程有新任务。
          * @param handle 准备调度的协程句柄（必须非空）
          */
         void scheduleRemote(std::coroutine_handle<> handle);

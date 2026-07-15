@@ -9,7 +9,7 @@ using namespace Core;
 
 TEST_CASE("EventLoop: construction", "[EventLoop]") {
     EventLoop loop;
-    REQUIRE(epoll_handle_valid(loop.epoll().fd()));
+    REQUIRE(epoll_handle_valid(loop.epoll().fileDescriptor()));
     REQUIRE_FALSE(loop.isRunning());
 }
 

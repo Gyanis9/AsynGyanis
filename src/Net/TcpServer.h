@@ -31,9 +31,9 @@ namespace Net
         /**
          * @brief 构造 TCP 服务器。
          * @param loop 事件循环，用于 I/O 和协程调度
-         * @param addr 监听的本地地址（IP 和端口）
+         * @param address 监听的本地地址（IP 和端口）
          */
-        TcpServer(Core::EventLoop &loop, const Core::InetAddress &addr);
+        TcpServer(Core::EventLoop &loop, const Core::InetAddress &address);
 
         TcpServer(const TcpServer &)            = delete;
         TcpServer &operator=(const TcpServer &) = delete;
@@ -49,7 +49,7 @@ namespace Net
          *
          * 该协程会持续运行直到服务器停止（调用 stop()）。每次成功 accept 后，
          * 调用 createConnection() 创建连接对象，启动 handleConnection 协程，
-         * 并将任务句柄存入 m_connTasks 以保证任务生命周期。
+         * 并将任务句柄存入 m_connectionTasks 以保证任务生命周期。
          */
         Core::Task<> start();
 
@@ -85,23 +85,23 @@ namespace Net
     protected:
         Core::EventLoop &       m_loop;        ///< 事件循环引用
         TcpAcceptor             m_acceptor;    ///< 监听器，用于 accept 新连接
-        Core::ConnectionManager m_connManager; ///< 连接管理器，跟踪所有活跃连接
+        Core::ConnectionManager m_connectionManager; ///< 连接管理器，跟踪所有活跃连接
 
     private:
         /**
          * @brief 处理单个连接的主协程。
-         * @param conn 连接对象
-         * @return Core::Task<> 协程，内部调用 conn->start()，并在完成后从连接管理器中移除
+         * @param connection 连接对象
+         * @return Core::Task<> 协程，内部调用 connection->start()，并在完成后从连接管理器中移除
          *
          * 该任务在服务器接受连接后被启动，等待连接执行完毕（或异常退出），
-         * 最后调用 m_connManager.remove() 并递减任务计数。
+         * 最后调用 m_connectionManager.remove() 并递减任务计数。
          */
-        Core::Task<> handleConnection(std::shared_ptr<Core::Connection> conn);
+        Core::Task<> handleConnection(std::shared_ptr<Core::Connection> connection);
 
         std::atomic<bool>             m_running{false};          ///< 运行标志，控制 accept 循环（原子操作保证线程安全）
         size_t                        m_maxConnections{0};       ///< 最大并发连接数，0 表示无限制
         std::chrono::milliseconds     m_shutdownTimeoutMs{5000}; ///< 优雅关闭超时（毫秒），超时后强制退出
-        std::vector<Core::Task<void>> m_connTasks;               ///< 存储每个连接对应的协程任务，确保任务生命周期
+        std::vector<Core::Task<void>> m_connectionTasks;               ///< 存储每个连接对应的协程任务，确保任务生命周期
     };
 }
 

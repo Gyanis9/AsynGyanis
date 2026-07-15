@@ -7,7 +7,7 @@
 #define CORE_TIMER_H
 
 #include "EpollAwaiter.h"
-#include "Platform/TimerFd.h"
+#include "Platform/TimerFileDescriptor.h"
 
 #include <chrono>
 #include <coroutine>
@@ -35,10 +35,10 @@ namespace Core
         public:
             /**
              * @brief 构造 Awaiter 对象。
-             * @param epoll epoll 实例引用，用于注册等待事件
-             * @param fd    timerfd 的文件描述符
+             * @param epoll          epoll 实例引用，用于注册等待事件
+             * @param fileDescriptor timerfd 的文件描述符
              */
-            Awaiter(Epoll &epoll, int fd) noexcept;
+            Awaiter(Epoll &epoll, int fileDescriptor) noexcept;
 
             /**
              * @brief 是否已就绪（定时器是否已经超时）。
@@ -59,7 +59,7 @@ namespace Core
 
         private:
             EpollAwaiter m_awaiter; ///< 内部封装的 epoll 等待器
-            int          m_fd;      ///< timerfd 文件描述符
+            int          m_fileDescriptor; ///< timerfd 文件描述符
         };
 
         /**
@@ -82,7 +82,7 @@ namespace Core
 
     private:
         EventLoop &          m_loop; ///< 所属事件循环
-        Platform::TimerFd   m_timer; ///< 跨平台定时器 fd
+        Platform::TimerFileDescriptor   m_timer; ///< 跨平台定时器文件描述符
     };
 
 }

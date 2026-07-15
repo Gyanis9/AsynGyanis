@@ -6,14 +6,14 @@
 
 namespace Net
 {
-    HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &addr, const std::string &certFile, const std::string &keyFile) :
-        TcpServer(loop, addr)
+    HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile) :
+        TcpServer(loop, address)
     {
-        if (!m_tlsContext.loadCertificate(certFile, keyFile))
+        if (!m_tlsContext.loadCertificate(certificateFile, keyFile))
         {
             throw Base::Exception("HttpsServer: failed to load certificate or key");
         }
-        LOG_INFO_FMT("HttpsServer: TLS certificate loaded (cert={}, key={})", certFile, keyFile);
+        LOG_INFO_FMT("HttpsServer: TLS certificate loaded (certificate={}, key={})", certificateFile, keyFile);
     }
 
     Router &HttpsServer::router()
@@ -23,7 +23,7 @@ namespace Net
 
     std::shared_ptr<Core::Connection> HttpsServer::createConnection(Core::AsyncSocket socket)
     {
-        SSL *ssl = m_tlsContext.createSSL(socket.fd());
+        SSL *ssl = m_tlsContext.createSSL(socket.fileDescriptor());
 
         Core::TlsSocket tlsSocket(ssl, m_loop, std::move(socket));
         return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router);

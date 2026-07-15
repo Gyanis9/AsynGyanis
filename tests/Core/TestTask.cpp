@@ -28,7 +28,7 @@ TEST_CASE("Task: simple value return", "[Task]") {
     auto task = simpleValueTask();
     REQUIRE_FALSE(task.isReady());
 
-    // Resume the coroutine
+    // 恢复协程
     task.handle().resume();
     REQUIRE(task.isReady());
 
@@ -43,7 +43,7 @@ TEST_CASE("Task: void task returns cleanly", "[Task]") {
     task.handle().resume();
     REQUIRE(task.isReady());
 
-    // Should not throw
+    // 不应抛出异常
     REQUIRE_NOTHROW(task.handle().promise().result());
 }
 

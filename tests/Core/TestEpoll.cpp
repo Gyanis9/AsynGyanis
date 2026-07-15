@@ -8,31 +8,31 @@
 
 using namespace Core;
 
-// Helper: create a triggerable fd for epoll testing.
-// Linux: eventfd (bidirectional, single fd)
-// Windows: socket pair (wepoll can monitor sockets)
+// 辅助工具：创建一个可触发的文件描述符用于 epoll 测试。
+// Linux: eventfd（双向，单个文件描述符）
+// Windows: socket pair（wepoll 可以监听 socket）
 struct TestEventFd {
-    int fd;       // fd to add to epoll (read end on Windows)
-    int writeFd;  // fd to write to trigger (same as fd on Linux)
+    int fileDescriptor;       // 要添加到 epoll 的文件描述符（Windows 上是读端）
+    int writeFileDescriptor;  // 要写入以触发的文件描述符（Linux 上与 fileDescriptor 相同）
 
     TestEventFd() {
 #ifdef _WIN32
-        if (!Platform::createSocketPair(fd, writeFd)) {
-            fd = -1;
-            writeFd = -1;
+        if (!Platform::createSocketPair(fileDescriptor, writeFileDescriptor)) {
+            fileDescriptor = -1;
+            writeFileDescriptor = -1;
             return;
         }
-        Platform::setNonBlocking(fd);
+        Platform::setNonBlocking(fileDescriptor);
 #else
-        fd = static_cast<int>(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
-        writeFd = fd;
+        fileDescriptor = static_cast<int>(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+        writeFileDescriptor = fileDescriptor;
 #endif
     }
 
     ~TestEventFd() {
-        if (fd >= 0) Platform::closeFd(fd);
+        if (fileDescriptor >= 0) Platform::closeFileDescriptor(fileDescriptor);
 #ifdef _WIN32
-        if (writeFd >= 0 && writeFd != fd) Platform::closeFd(writeFd);
+        if (writeFileDescriptor >= 0 && writeFileDescriptor != fileDescriptor) Platform::closeFileDescriptor(writeFileDescriptor);
 #endif
     }
 
@@ -40,44 +40,44 @@ struct TestEventFd {
     TestEventFd &operator=(const TestEventFd &) = delete;
 
     bool trigger() {
-        uint64_t val = 1;
+        uint64_t value = 1;
 #ifdef _WIN32
-        return ::send(writeFd, reinterpret_cast<const char *>(&val), sizeof(val), 0) == sizeof(val);
+        return ::send(writeFileDescriptor, reinterpret_cast<const char *>(&value), sizeof(value), 0) == sizeof(value);
 #else
-        return ::write(writeFd, &val, sizeof(val)) == sizeof(val);
+        return ::write(writeFileDescriptor, &value, sizeof(value)) == sizeof(value);
 #endif
     }
 };
 
 TEST_CASE("Epoll: construction and basic properties", "[Epoll]") {
     Epoll epoll;
-    REQUIRE(epoll.fd() != kInvalidEpollHandle);
+    REQUIRE(epoll.fileDescriptor() != kInvalidEpollHandle);
 }
 
 TEST_CASE("Epoll: move constructor", "[Epoll]") {
     Epoll ep1;
-    epoll_handle_t fd1 = ep1.fd();
+    epoll_handle_t fileDescriptor1 = ep1.fileDescriptor();
     Epoll ep2(std::move(ep1));
-    REQUIRE(ep2.fd() == fd1);
+    REQUIRE(ep2.fileDescriptor() == fileDescriptor1);
 }
 
 TEST_CASE("Epoll: move assignment", "[Epoll]") {
     Epoll ep1;
     Epoll ep2;
-    epoll_handle_t fd1 = ep1.fd();
+    epoll_handle_t fileDescriptor1 = ep1.fileDescriptor();
     ep2 = std::move(ep1);
-    REQUIRE(ep2.fd() == fd1);
+    REQUIRE(ep2.fileDescriptor() == fileDescriptor1);
 }
 
-TEST_CASE("Epoll: addFd and wait for event", "[Epoll]") {
+TEST_CASE("Epoll: addFileDescriptor and wait for event", "[Epoll]") {
     Epoll epoll;
     TestEventFd efd;
-    REQUIRE(efd.fd >= 0);
+    REQUIRE(efd.fileDescriptor >= 0);
 
     int sentinel = 0;
-    REQUIRE(epoll.addFd(efd.fd, EPOLLIN, &sentinel));
+    REQUIRE(epoll.addFileDescriptor(efd.fileDescriptor, EPOLLIN, &sentinel));
 
-    // Write to trigger readability
+    // 写入数据触发可读事件
     REQUIRE(efd.trigger());
 
     auto events = epoll.wait(100);
@@ -86,15 +86,15 @@ TEST_CASE("Epoll: addFd and wait for event", "[Epoll]") {
     REQUIRE(ptr == &sentinel);
 }
 
-TEST_CASE("Epoll: delFd removes fd", "[Epoll]") {
+TEST_CASE("Epoll: delFileDescriptor removes file descriptor", "[Epoll]") {
     Epoll epoll;
     TestEventFd efd;
-    REQUIRE(efd.fd >= 0);
+    REQUIRE(efd.fileDescriptor >= 0);
 
-    REQUIRE(epoll.addFd(efd.fd, EPOLLIN, nullptr));
-    REQUIRE(epoll.delFd(efd.fd));
+    REQUIRE(epoll.addFileDescriptor(efd.fileDescriptor, EPOLLIN, nullptr));
+    REQUIRE(epoll.delFileDescriptor(efd.fileDescriptor));
 
-    // After delFd, writing to efd should NOT trigger epoll
+    // 移除文件描述符后，写入不应触发 epoll
     efd.trigger();
 
     auto events = epoll.wait(10);
@@ -107,16 +107,16 @@ TEST_CASE("Epoll: wait timeout returns empty", "[Epoll]") {
     REQUIRE(events.empty());
 }
 
-TEST_CASE("Epoll: modFd changes event mask", "[Epoll]") {
+TEST_CASE("Epoll: modFileDescriptor changes event mask", "[Epoll]") {
     Epoll epoll;
     TestEventFd efd;
-    REQUIRE(efd.fd >= 0);
+    REQUIRE(efd.fileDescriptor >= 0);
 
     int sentinel = 42;
-    REQUIRE(epoll.addFd(efd.fd, EPOLLIN, &sentinel));
-    REQUIRE(epoll.modFd(efd.fd, EPOLLOUT, &sentinel));
+    REQUIRE(epoll.addFileDescriptor(efd.fileDescriptor, EPOLLIN, &sentinel));
+    REQUIRE(epoll.modFileDescriptor(efd.fileDescriptor, EPOLLOUT, &sentinel));
 
-    // EPOLLOUT should immediately fire (always writable)
+    // EPOLLOUT 应该立即触发（socket 始终可写）
     auto events = epoll.wait(100);
     REQUIRE_FALSE(events.empty());
     REQUIRE(events[0].events & EPOLLOUT);
@@ -126,19 +126,19 @@ TEST_CASE("Epoll: multiple fds", "[Epoll]") {
     Epoll epoll;
     TestEventFd efd1;
     TestEventFd efd2;
-    REQUIRE(efd1.fd >= 0);
-    REQUIRE(efd2.fd >= 0);
+    REQUIRE(efd1.fileDescriptor >= 0);
+    REQUIRE(efd2.fileDescriptor >= 0);
 
     int s1 = 1, s2 = 2;
-    REQUIRE(epoll.addFd(efd1.fd, EPOLLIN, &s1));
-    REQUIRE(epoll.addFd(efd2.fd, EPOLLIN, &s2));
+    REQUIRE(epoll.addFileDescriptor(efd1.fileDescriptor, EPOLLIN, &s1));
+    REQUIRE(epoll.addFileDescriptor(efd2.fileDescriptor, EPOLLIN, &s2));
 
-    // Trigger only efd2
+    // 仅触发 efd2
     efd2.trigger();
 
     auto events = epoll.wait(100);
     REQUIRE_FALSE(events.empty());
-    // At least efd2 should be ready
+    // 至少 efd2 应该就绪
     bool found = false;
     for (auto &ev : events) {
         if (ev.data.ptr == &s2) found = true;

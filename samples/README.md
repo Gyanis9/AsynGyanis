@@ -32,12 +32,20 @@ echo_server [--host localhost] [--port 8080] [--threads 0]
 
 ### HTTP 模式（默认）
 
+**Linux：**
+
 ```bash
 # 使用全部 CPU 核心，监听 localhost:8080
 ./build/release/samples/echo_server
 
 # 监听所有接口，指定 4 个线程
 ./build/release/samples/echo_server --host 0.0.0.0 --port 8080 --threads 4
+```
+
+**Windows：**
+
+```powershell
+.\build\win-release\samples\echo_server.exe --host 0.0.0.0 --port 8080 --threads 4
 ```
 
 ### HTTPS 模式
@@ -49,6 +57,9 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
 
 # 2. 启动 HTTPS 服务器
 ./build/release/samples/echo_server --https --cert cert.pem --key key.pem
+
+# Windows
+.\build\win-release\samples\echo_server.exe --https --cert cert.pem --key key.pem
 
 # 3. 测试（-k 跳过证书验证，仅用于测试）
 curl -k https://localhost:8080/bench
@@ -73,6 +84,8 @@ ab -n 500000 -c 200 https://localhost:8080/bench
 ```
 
 ### 典型性能（Linux, 4 线程, 200 并发）
+
+> 注意：以下数据为 Linux 环境参考值，Windows 性能可能因 wepoll 和系统调度差异而不同。
 
 | 模式 | QPS | 说明 |
 |------|-----|------|
@@ -115,7 +128,7 @@ HttpsServer (继承 TcpServer)
 接受连接时:
   TcpAcceptor::accept() → AsyncSocket
     → HttpsServer::createConnection(socket)
-        → SSL* = m_tlsContext.createSSL(socket.fd())
+        → SSL* = m_tlsContext.createSSL(socket.fileDescriptor())
         → TlsSocket(ssl, loop, socket)
         → HttpsSession(loop, tlsSocket, router)
             → start()
@@ -123,8 +136,8 @@ HttpsServer (继承 TcpServer)
                     WANT_READ  → EpollAwaiter(EPOLLIN)
                     WANT_WRITE → EpollAwaiter(EPOLLOUT)
                 → HTTP keep-alive 循环
-                    tlsSocket.asyncRecv()  SSL_read
-                    tlsSocket.asyncSend()  SSL_write
+                    tlsSocket.asyncReceive()  SSL_read
+                    tlsSocket.asyncSend()     SSL_write
                 → tlsSocket.close()        SSL_shutdown + close
 ```
 

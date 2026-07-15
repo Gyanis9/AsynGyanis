@@ -7,27 +7,27 @@
 
 namespace Core
 {
-    void ConnectionManager::add(const std::shared_ptr<Connection> &conn)
+    void ConnectionManager::add(const std::shared_ptr<Connection> &connection)
     {
-        if (!conn)
+        if (!connection)
         {
             return;
         }
         std::unique_lock lock(m_mutex);
-        m_connections.emplace(conn.get(), conn);
+        m_connections.emplace(connection.get(), connection);
     }
 
-    void ConnectionManager::remove(const Connection *const conn)
+    void ConnectionManager::remove(const Connection *const connection)
     {
-        if (!conn)
+        if (!connection)
         {
             return;
         }
 
         std::unique_lock lock(m_mutex);
-        if (m_connections.erase(conn))
+        if (m_connections.erase(connection))
         {
-            m_cv.notify_all();
+            m_condition.notify_all();
         }
     }
 
@@ -43,18 +43,18 @@ namespace Core
         {
             std::shared_lock lock(m_mutex);
             snapshot.reserve(m_connections.size());
-            for (const auto &conn: m_connections | std::views::values)
+            for (const auto &connection: m_connections | std::views::values)
             {
-                snapshot.push_back(conn);
+                snapshot.push_back(connection);
             }
         }
         // 锁外调用 close()，防止回调中的 remove() 死锁
-        for (auto &conn: snapshot)
+        for (auto &connection: snapshot)
         {
-            if (conn)
+            if (connection)
             {
-                [[maybe_unused]] auto _ = conn->cancelable().requestStop();
-                conn->close();
+                [[maybe_unused]] auto _ = connection->cancelable().requestStop();
+                connection->close();
             }
         }
     }
@@ -62,7 +62,7 @@ namespace Core
     void ConnectionManager::waitAll()
     {
         std::shared_lock lock(m_mutex);
-        m_cv.wait(lock, [this]()
+        m_condition.wait(lock, [this]()
         {
             return m_connections.empty();
         });

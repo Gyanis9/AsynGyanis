@@ -14,7 +14,7 @@ using namespace Base;
 
 namespace
 {
-    // Helper for approximate floating-point comparisons (Catch2 v3 compat)
+    // 浮点近似比较辅助函数（Catch2 v3 兼容）
     bool doubleNear(double a, double b, double eps = 1e-9)
     {
         return std::abs(a - b) < eps;

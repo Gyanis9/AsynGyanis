@@ -68,11 +68,11 @@ namespace Net
             if (key == "set-cookie")
             {
                 // 用唯一后缀保留多个 Set-Cookie：set-cookie, set-cookie_1, set-cookie_2 ...
-                size_t      idx = 1;
+                size_t      index = 1;
                 std::string indexedKey;
                 do
                 {
-                    indexedKey = key + "_" + std::to_string(idx++);
+                    indexedKey = key + "_" + std::to_string(index++);
                 } while (m_headers.contains(indexedKey));
                 m_headers[std::move(indexedKey)] = std::move(value);
                 return;
@@ -109,9 +109,9 @@ namespace Net
         m_body = std::move(body);
     }
 
-    void HttpRequest::appendBody(const char *data, const size_t len)
+    void HttpRequest::appendBody(const char *data, const size_t length)
     {
-        m_body.append(data, len);
+        m_body.append(data, length);
     }
 
     std::string_view HttpRequest::body() const
@@ -140,18 +140,18 @@ namespace Net
 
         const std::string_view query(&m_uri[pos + 1], m_uri.size() - pos - 1);
 
-        // URL percent-decode helper: %XX → char, + → space
-        static constexpr auto percentDecode = [](const std::string_view src) -> std::string
+        // URL 百分号解码辅助函数：%XX → char，+ → space
+        static constexpr auto percentDecode = [](const std::string_view source) -> std::string
         {
             std::string result;
-            result.reserve(src.size());
-            for (size_t i = 0; i < src.size(); ++i)
+            result.reserve(source.size());
+            for (size_t i = 0; i < source.size(); ++i)
             {
-                if (src[i] == '%' && i + 2 < src.size())
+                if (source[i] == '%' && i + 2 < source.size())
                 {
-                    const auto hi     = src[i + 1];
-                    const auto lo     = src[i + 2];
-                    auto       hexVal = [](const char c) -> int
+                    const auto hi     = source[i + 1];
+                    const auto lo     = source[i + 2];
+                    auto       hexValue = [](const char c) -> int
                     {
                         if (c >= '0' && c <= '9')
                             return c - '0';
@@ -161,8 +161,8 @@ namespace Net
                             return c - 'a' + 10;
                         return -1;
                     };
-                    const int h = hexVal(hi);
-                    const int l = hexVal(lo);
+                    const int h = hexValue(hi);
+                    const int l = hexValue(lo);
                     if (h >= 0 && l >= 0)
                     {
                         result.push_back(static_cast<char>((h << 4) | l));
@@ -170,10 +170,10 @@ namespace Net
                         continue;
                     }
                 }
-                if (src[i] == '+')
+                if (source[i] == '+')
                     result.push_back(' ');
                 else
-                    result.push_back(src[i]);
+                    result.push_back(source[i]);
             }
             return result;
         };

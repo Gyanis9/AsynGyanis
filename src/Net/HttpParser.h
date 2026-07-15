@@ -50,10 +50,10 @@ namespace Net
         /**
          * @brief 解析输入数据块。
          * @param data 数据缓冲区指针
-         * @param len  数据长度
+         * @param length  数据长度
          * @return 解析状态，可指示成功、错误、需要更多数据或完成
          */
-        ParseStatus parse(const char *data, size_t len);
+        ParseStatus parse(const char *data, size_t length);
 
         /**
          * @brief 重置解析器状态，以便重新解析新消息。
@@ -80,10 +80,10 @@ namespace Net
 
     private:
         // 静态回调函数，由 llhttp 调用，用于通知解析器不同部分
-        static int onUrl(llhttp_t *parser, const char *data, size_t len);         ///< URL 回调
-        static int onHeaderField(llhttp_t *parser, const char *data, size_t len); ///< 头部字段名回调
-        static int onHeaderValue(llhttp_t *parser, const char *data, size_t len); ///< 头部字段值回调
-        static int onBody(llhttp_t *parser, const char *data, size_t len);        ///< 消息体回调
+        static int onUrl(llhttp_t *parser, const char *data, size_t length);         ///< URL 回调
+        static int onHeaderField(llhttp_t *parser, const char *data, size_t length); ///< 头部字段名回调
+        static int onHeaderValue(llhttp_t *parser, const char *data, size_t length); ///< 头部字段值回调
+        static int onBody(llhttp_t *parser, const char *data, size_t length);        ///< 消息体回调
         static int onMessageComplete(llhttp_t *parser);                           ///< 消息完成回调
 
         llhttp_t          m_parser{};           ///< llhttp 解析器实例
@@ -94,6 +94,10 @@ namespace Net
         bool              m_error{false};       ///< 是否发生解析错误
         std::string       m_errorMessage;       ///< 错误描述消息
         bool              m_complete{false};    ///< 是否已完成整个消息解析
+
+        // 资源上限：防止恶意超大请求导致内存耗尽（DoS）
+        static constexpr size_t kMaxBodySize  = 8ull * 1024 * 1024; ///< 请求体最大字节数（8 MB）
+        static constexpr size_t kMaxUrlLength = 8 * 1024;          ///< 请求 URI 最大长度（8 KB）
     };
 
 }

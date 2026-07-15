@@ -15,12 +15,12 @@ namespace Net
     {
     }
 
-    Core::Task<ssize_t> TcpStream::read(void *const buf, const size_t len)
+    Core::Task<ssize_t> TcpStream::read(void *const buffer, const size_t length)
     {
-        if (len == 0)
+        if (length == 0)
             co_return 0;
 
-        // Refill buffer if exhausted
+        // 如果缓冲区已耗尽则重新填充
         if (m_readPos >= m_readBuffer.size())
         {
             co_await fillBuffer();
@@ -29,28 +29,28 @@ namespace Net
         }
 
         const size_t available = m_readBuffer.size() - m_readPos;
-        const size_t toCopy    = std::min(len, available);
-        std::memcpy(buf, m_readBuffer.data() + m_readPos, toCopy);
+        const size_t toCopy    = std::min(length, available);
+        std::memcpy(buffer, m_readBuffer.data() + m_readPos, toCopy);
         m_readPos += toCopy;
 
         co_return static_cast<ssize_t>(toCopy);
     }
 
-    Core::Task<> TcpStream::readExact(void *const buf, const size_t len)
+    Core::Task<> TcpStream::readExact(void *const buffer, const size_t length)
     {
-        auto * dst       = static_cast<char *>(buf);
-        size_t remaining = len;
+        auto * destination = static_cast<char *>(buffer);
+        size_t remaining   = length;
 
         while (remaining > 0)
         {
-            const ssize_t n = co_await read(dst, remaining);
+            const ssize_t n = co_await read(destination, remaining);
             if (n <= 0)
             {
                 throw Base::Exception("TcpStream::readExact: connection closed or error before "
                         "reading required bytes");
             }
-            dst       += static_cast<size_t>(n);
-            remaining -= static_cast<size_t>(n);
+            destination += static_cast<size_t>(n);
+            remaining   -= static_cast<size_t>(n);
         }
 
         co_return;
@@ -65,7 +65,7 @@ namespace Net
             if (maxSize > 0 && result.size() >= maxSize)
                 co_return result;
 
-            // Scan buffered data for delimiter
+            // 扫描缓冲数据中的分隔符
             if (m_readPos < m_readBuffer.size())
             {
                 const char *start = m_readBuffer.data() + m_readPos;
@@ -86,7 +86,7 @@ namespace Net
                     co_return result;
                 }
 
-                // Delimiter not found — append all buffered data and refill
+                // 未找到分隔符 — 追加所有缓冲数据并重新填充
                 const size_t appendLen = static_cast<size_t>(end - start);
                 if (maxSize > 0 && result.size() + appendLen > maxSize)
                 {
@@ -110,24 +110,24 @@ namespace Net
         }
     }
 
-    Core::Task<ssize_t> TcpStream::write(const void *const buf, const size_t len) const
+    Core::Task<ssize_t> TcpStream::write(const void *const buffer, const size_t length) const
     {
-        co_return co_await m_socket.asyncSend(buf, len);
+        co_return co_await m_socket.asyncSend(buffer, length);
     }
 
-    Core::Task<> TcpStream::writeAll(const void *const buf, const size_t len) const
+    Core::Task<> TcpStream::writeAll(const void *const buffer, const size_t length) const
     {
-        auto * src       = static_cast<const char *>(buf);
-        size_t remaining = len;
+        auto * source    = static_cast<const char *>(buffer);
+        size_t remaining = length;
 
         while (remaining > 0)
         {
-            const ssize_t n = co_await m_socket.asyncSend(src, remaining);
+            const ssize_t n = co_await m_socket.asyncSend(source, remaining);
             if (n <= 0)
             {
                 throw Base::Exception("TcpStream::writeAll: send failed or connection closed");
             }
-            src       += static_cast<size_t>(n);
+            source    += static_cast<size_t>(n);
             remaining -= static_cast<size_t>(n);
         }
 
@@ -151,7 +151,7 @@ namespace Net
         m_readBuffer.resize(4096);
         m_readPos = 0;
 
-        const ssize_t n = co_await m_socket.asyncRecv(m_readBuffer.data(), m_readBuffer.size());
+        const ssize_t n = co_await m_socket.asyncReceive(m_readBuffer.data(), m_readBuffer.size());
         if (n > 0)
         {
             m_readBuffer.resize(static_cast<size_t>(n));

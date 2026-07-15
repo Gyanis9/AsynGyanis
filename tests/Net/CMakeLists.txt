@@ -3,6 +3,7 @@ find_package(Catch2 REQUIRED)
 add_executable(TestNet
         TestHttpRequest.cpp
         TestHttpResponse.cpp
+        TestHttpParser.cpp
 )
 
 target_link_libraries(TestNet PRIVATE

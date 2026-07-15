@@ -30,11 +30,11 @@ namespace Net
         /**
          * @brief 构造 TcpAcceptor 对象。
          * @param loop  关联的事件循环，负责 I/O 事件监控
-         * @param addr  要监听的本地地址（IP 和端口）
+         * @param address  要监听的本地地址（IP 和端口）
          *
          * 构造后未自动绑定或监听，需显式调用 bind() 和 listen()。
          */
-        TcpAcceptor(Core::EventLoop &loop, const InetAddress &addr);
+        TcpAcceptor(Core::EventLoop &loop, const InetAddress &address);
 
         // 禁止拷贝，允许移动
         TcpAcceptor(const TcpAcceptor &)            = delete;
@@ -86,12 +86,12 @@ namespace Net
          * @brief 获取监听套接字的文件描述符。
          * @return 文件描述符，若未创建或已关闭则返回 -1
          */
-        [[nodiscard]] int fd() const;
+        [[nodiscard]] int fileDescriptor() const;
 
     private:
         Core::EventLoop &             m_loop;         ///< 关联的事件循环
         Core::AsyncSocket             m_listenSocket; ///< 非阻塞监听套接字
-        Core::InetAddress             m_addr;         ///< 绑定的本地地址
+        Core::InetAddress             m_address;      ///< 绑定的本地地址
         std::deque<Core::AsyncSocket> m_pending;      ///< 暂未使用的队列（预留扩展）
         bool                          m_bound{false}; ///< 是否已成功绑定
     };

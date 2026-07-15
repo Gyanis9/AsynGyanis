@@ -7,7 +7,7 @@
 namespace Base
 {
     // ============================================================================
-    // Exception
+    // Exception 异常基类
     // ============================================================================
 
     Exception::Exception(const std::string &message, const std::source_location &loc) :
@@ -20,14 +20,14 @@ namespace Base
         return m_location;
     }
 
-    std::string Exception::formatMessage(const std::string &msg, const std::source_location &loc)
+    std::string Exception::formatMessage(const std::string &message, const std::source_location &loc)
     {
         return std::format("[Exception] {} [{}:{} in {}]",
-                           msg, loc.file_name(), loc.line(), loc.function_name());
+                           message, loc.file_name(), loc.line(), loc.function_name());
     }
 
     // ============================================================================
-    // ConfigException
+    // ConfigException 配置异常
     // ============================================================================
 
     ConfigException::ConfigException(const std::string &message, const std::source_location &loc) :
@@ -36,7 +36,7 @@ namespace Base
     }
 
     // ============================================================================
-    // ConfigFileException
+    // ConfigFileException 配置文件异常
     // ============================================================================
 
     ConfigFileException::ConfigFileException(const std::string &         file_path, const std::string &reason,
@@ -52,7 +52,7 @@ namespace Base
     }
 
     // ============================================================================
-    // ConfigParseException
+    // ConfigParseException 配置解析异常
     // ============================================================================
 
     ConfigParseException::ConfigParseException(const std::string &         file_path, const std::string &reason,
@@ -68,7 +68,7 @@ namespace Base
     }
 
     // ============================================================================
-    // ConfigKeyNotFoundException
+    // ConfigKeyNotFoundException 配置键未找到异常
     // ============================================================================
 
     ConfigKeyNotFoundException::ConfigKeyNotFoundException(const std::string &key, const std::source_location &loc) :
@@ -83,7 +83,7 @@ namespace Base
     }
 
     // ============================================================================
-    // ConfigTypeException
+    // ConfigTypeException 配置类型异常
     // ============================================================================
 
     ConfigTypeException::ConfigTypeException(const std::string &         key, const std::string &expected_type, const std::string &actual_type,
@@ -111,7 +111,7 @@ namespace Base
     }
 
     // ============================================================================
-    // ConfigValidationException
+    // ConfigValidationException 配置验证异常
     // ============================================================================
 
     ConfigValidationException::ConfigValidationException(const std::string &         key, const std::string &reason,
@@ -127,7 +127,7 @@ namespace Base
     }
 
     // ============================================================================
-    // SystemException
+    // SystemException 系统异常
     // ============================================================================
 
     SystemException::SystemException(const std::string &context, const std::source_location &loc) :
@@ -155,7 +155,7 @@ namespace Base
     }
 
     // ============================================================================
-    // NetworkException
+    // NetworkException 网络异常
     // ============================================================================
 
     NetworkException::NetworkException(const std::string &         context, const std::string &remote_address,

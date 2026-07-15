@@ -81,7 +81,7 @@ TEST_CASE("LoggerConfigLoader::loadFromConfig with empty config creates root log
     ConfigManager::instance().clear();
     LoggerRegistry::instance().clear();
 
-    // No config loaded — should still not crash
+    // 未加载配置 — 仍然不应崩溃
     REQUIRE_NOTHROW(LoggerConfigLoader::loadFromConfig());
 }
 
@@ -133,13 +133,13 @@ logging:
     LoggerRegistry::instance().clear();
     LoggerConfigLoader::loadFromConfig();
 
-    // Verify loggers exist
+    // 验证日志记录器存在
     auto names = LoggerRegistry::instance().getLoggerNames();
     REQUIRE(std::find(names.begin(), names.end(), "root") != names.end());
     REQUIRE(std::find(names.begin(), names.end(), "network") != names.end());
     REQUIRE(std::find(names.begin(), names.end(), "database") != names.end());
 
-    // Verify levels
+    // 验证日志级别
     auto &net = LoggerRegistry::instance().getLogger("network");
     REQUIRE(net.getLevel() == LogLevel::DEBUG);
 
@@ -210,7 +210,7 @@ logging:
     LoggerRegistry::instance().clear();
     REQUIRE_NOTHROW(LoggerConfigLoader::loadFromConfig());
 
-    // Write to the logger
+    // 写入日志
     auto &root = LoggerRegistry::instance().getRootLogger();
     root.log(LogLevel::INFO, "file_sink_test");
     root.flush();
@@ -243,7 +243,7 @@ logging:
     root.log(LogLevel::INFO, "rolling_test");
     root.flush();
 
-    // Verify the log file was created
+    // 验证日志文件已创建
     REQUIRE(fs::exists(fs::path(log_dir) / "rolling.log"));
 }
 
@@ -431,7 +431,7 @@ logging:
     LoggerRegistry::instance().clear();
     REQUIRE_NOTHROW(LoggerConfigLoader::loadFromConfig());
 
-    // Should have created root logger with default settings
+    // 应该已创建具有默认设置的 root logger
     auto &root = LoggerRegistry::instance().getRootLogger();
     REQUIRE(root.getLevel() == LogLevel::TRACE);
 }
@@ -453,7 +453,7 @@ logging:
     LoggerRegistry::instance().clear();
     REQUIRE_NOTHROW(LoggerConfigLoader::loadFromConfig());
 
-    // Invalid levels should default to INFO
+    // 无效的级别应该默认为 INFO
     auto &root = LoggerRegistry::instance().getRootLogger();
     REQUIRE(root.getLevel() == LogLevel::INFO);
 }
@@ -463,7 +463,7 @@ TEST_CASE("LoggerConfigLoader handles empty config gracefully", "[LoggerConfig][
     LoggerRegistry::instance().clear();
     ConfigManager::instance().clear();
 
-    // No config at all
+    // 完全没有配置
     REQUIRE_NOTHROW(LoggerConfigLoader::loadFromConfig());
 }
 

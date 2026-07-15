@@ -13,34 +13,34 @@ namespace Net
     HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router) :
         Core::Connection(Core::AsyncSocket(loop, -1)),
         m_tlsSocket(std::move(tlsSocket)), m_router(router),
-        m_recvBuffer(m_recvBufferSize)
+        m_receiveBuffer(m_receiveBufferSize)
     {
     }
 
     Core::Task<> HttpsSession::start()
     {
-        // Step 1: TLS handshake
+        // 步骤 1：TLS 握手
         try
         {
             co_await m_tlsSocket.handshake();
         } catch (const std::exception &e)
         {
-            LOG_ERROR_FMT("TLS handshake failed: {} (fd={})", e.what(), m_tlsSocket.fd());
+            LOG_ERROR_FMT("TLS handshake failed: {} (fileDescriptor={})", e.what(), m_tlsSocket.fileDescriptor());
             m_tlsSocket.close();
             co_return;
         }
 
-        LOG_DEBUG_FMT("TLS handshake done (fd={})", m_tlsSocket.fd());
+        LOG_DEBUG_FMT("TLS handshake done (fileDescriptor={})", m_tlsSocket.fileDescriptor());
 
-        // Step 2: HTTP keep-alive loop over TLS (shared template)
+        // 步骤 2：基于 TLS 的 HTTP keep-alive 循环（共享模板）
         co_await detail::httpKeepAliveLoop(
-                m_tlsSocket, m_router, m_parser, m_recvBuffer,
+                m_tlsSocket, m_router, m_parser, m_receiveBuffer,
                 [this]()
                 {
                     return isAlive();
                 });
 
-        LOG_DEBUG_FMT("HttpsSession closing fd={}", m_tlsSocket.fd());
+        LOG_DEBUG_FMT("HttpsSession closing fileDescriptor={}", m_tlsSocket.fileDescriptor());
         m_tlsSocket.close();
         co_return;
     }

@@ -51,10 +51,10 @@ TEST_CASE("TlsSocket: construction", "[TlsSocket]") {
     REQUIRE(ssl != nullptr);
 
     TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
-    REQUIRE(tls.fd() == fds[0]);
+    REQUIRE(tls.fileDescriptor() == fds[0]);
 
     tls.close();
-    Platform::closeFd(fds[1]);
+    Platform::closeFileDescriptor(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -70,13 +70,13 @@ TEST_CASE("TlsSocket: move construction", "[TlsSocket]") {
 
     SSL *ssl = ctx.createSSL(fds[0]);
     TlsSocket tls1(ssl, loop, AsyncSocket(loop, fds[0]));
-    int fd = tls1.fd();
+    int fd = tls1.fileDescriptor();
 
     TlsSocket tls2(std::move(tls1));
-    REQUIRE(tls2.fd() == fd);
+    REQUIRE(tls2.fileDescriptor() == fd);
 
     tls2.close();
-    Platform::closeFd(fds[1]);
+    Platform::closeFileDescriptor(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -97,14 +97,14 @@ TEST_CASE("TlsSocket: move assignment", "[TlsSocket]") {
     TlsSocket tls1(ssl1, loop, AsyncSocket(loop, fds1[0]));
     TlsSocket tls2(ssl2, loop, AsyncSocket(loop, fds2[0]));
 
-    int fd1 = tls1.fd();
+    int fd1 = tls1.fileDescriptor();
     tls2 = std::move(tls1);
 
-    REQUIRE(tls2.fd() == fd1);
+    REQUIRE(tls2.fileDescriptor() == fd1);
 
     tls2.close();
-    Platform::closeFd(fds1[1]);
-    Platform::closeFd(fds2[1]);
+    Platform::closeFileDescriptor(fds1[1]);
+    Platform::closeFileDescriptor(fds2[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -122,10 +122,10 @@ TEST_CASE("TlsSocket: close safely", "[TlsSocket]") {
     TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
 
     tls.close();
-    // Double close should be safe
+    // 双重关闭应该是安全的
     REQUIRE_NOTHROW(tls.close());
 
-    Platform::closeFd(fds[1]);
+    Platform::closeFileDescriptor(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }
@@ -143,10 +143,10 @@ TEST_CASE("TlsSocket: SSL context creation and socket wrapping", "[TlsSocket]") 
     REQUIRE(ssl != nullptr);
 
     TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
-    REQUIRE(tls.fd() == fds[0]);
+    REQUIRE(tls.fileDescriptor() == fds[0]);
 
     tls.close();
-    Platform::closeFd(fds[1]);
+    Platform::closeFileDescriptor(fds[1]);
     std::remove(cert.c_str());
     std::remove(key.c_str());
 }

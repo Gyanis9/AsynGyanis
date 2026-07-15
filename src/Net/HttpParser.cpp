@@ -21,14 +21,14 @@ namespace Net
 
     HttpParser::~HttpParser() = default;
 
-    ParseStatus HttpParser::parse(const char *data, const size_t len)
+    ParseStatus HttpParser::parse(const char *data, const size_t length)
     {
         if (m_complete)
         {
             return ParseStatus::Done;
         }
 
-        const auto result = llhttp_execute(&m_parser, data, len);
+        const auto result = llhttp_execute(&m_parser, data, length);
 
         if (m_complete)
             return ParseStatus::Done;
@@ -78,33 +78,43 @@ namespace Net
         return m_errorMessage;
     }
 
-    int HttpParser::onUrl(llhttp_t *parser, const char *data, const size_t len)
+    int HttpParser::onUrl(llhttp_t *parser, const char *data, const size_t length)
     {
         const auto self = static_cast<HttpParser *>(parser->data);
-        self->m_currentUrl.append(data, len);
+        if (self->m_currentUrl.size() + length > kMaxUrlLength)
+        {
+            llhttp_set_error_reason(parser, "request URI exceeds maximum allowed length");
+            return HPE_USER;
+        }
+        self->m_currentUrl.append(data, length);
         return 0;
     }
 
-    int HttpParser::onHeaderField(llhttp_t *parser, const char *data, const size_t len)
+    int HttpParser::onHeaderField(llhttp_t *parser, const char *data, const size_t length)
     {
         const auto self = static_cast<HttpParser *>(parser->data);
-        self->m_currentHeaderField.append(data, len);
+        self->m_currentHeaderField.append(data, length);
         return 0;
     }
 
-    int HttpParser::onHeaderValue(llhttp_t *parser, const char *data, const size_t len)
+    int HttpParser::onHeaderValue(llhttp_t *parser, const char *data, const size_t length)
     {
         const auto  self = static_cast<HttpParser *>(parser->data);
-        std::string value(data, len);
+        std::string value(data, length);
         self->m_currentRequest.addHeader(self->m_currentHeaderField, std::move(value));
         self->m_currentHeaderField.clear();
         return 0;
     }
 
-    int HttpParser::onBody(llhttp_t *parser, const char *data, const size_t len)
+    int HttpParser::onBody(llhttp_t *parser, const char *data, const size_t length)
     {
         const auto self = static_cast<HttpParser *>(parser->data);
-        self->m_currentRequest.appendBody(data, len);
+        if (self->m_currentRequest.body().size() + length > kMaxBodySize)
+        {
+            llhttp_set_error_reason(parser, "request body exceeds maximum allowed size");
+            return HPE_USER;
+        }
+        self->m_currentRequest.appendBody(data, length);
         return 0;
     }
 

@@ -33,27 +33,27 @@ namespace
 
     void setupRoutes(Net::Router &router)
     {
-        router.get("/", [](Net::HttpRequest &, Net::HttpResponse &res) -> Core::Task<void>
+        router.get("/", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
         {
-            res.setStatus(200);
-            res.setHeader("Content-Type", "text/plain");
-            res.setBody("Hello World");
+            response.setStatus(200);
+            response.setHeader("Content-Type", "text/plain");
+            response.setBody("Hello World");
             co_return;
         });
 
-        router.get("/json", [](Net::HttpRequest &, Net::HttpResponse &res) -> Core::Task<void>
+        router.get("/json", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
         {
-            res.setStatus(200);
-            res.setHeader("Content-Type", "application/json");
-            res.setBody(R"({"status":"ok","version":"1.0.0","server":"AsynGyanis"})");
+            response.setStatus(200);
+            response.setHeader("Content-Type", "application/json");
+            response.setBody(R"({"status":"ok","version":"1.0.0","server":"AsynGyanis"})");
             co_return;
         });
 
-        router.get("/bench", [](Net::HttpRequest &, Net::HttpResponse &res) -> Core::Task<void>
+        router.get("/bench", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
         {
-            res.setStatus(200);
-            res.setHeader("Content-Type", "text/plain");
-            res.setBody("OK");
+            response.setStatus(200);
+            response.setHeader("Content-Type", "text/plain");
+            response.setBody("OK");
             co_return;
         });
     }
@@ -65,7 +65,7 @@ int main(int argc, char **argv)
     uint16_t    port     = 8080;
     unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
     bool        useHttps = false;
-    std::string certFile = "cert.pem";
+    std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
 
     for (int i = 1; i < argc; ++i)
@@ -79,7 +79,7 @@ int main(int argc, char **argv)
         else if (arg == "--https")
             useHttps = true;
         else if (arg == "--cert" && i + 1 < argc)
-            certFile = argv[++i];
+            certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
             keyFile = argv[++i];
         else if (arg == "--help")
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
     std::signal(SIGPIPE, SIG_IGN);
 #endif
 
-    // Logger init
+    // 初始化日志系统
     auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
     rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
     rootLogger.setLevel(Base::LogLevel::DEBUG);
@@ -108,22 +108,22 @@ int main(int argc, char **argv)
     const char *proto = useHttps ? "https" : "http";
     LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={}", proto, host, port, threads);
 
-    // Multi-threaded runtime
-    Core::IoContext ctx(threads);
+    // 多线程运行时
+    Core::IoContext context(threads);
 
-    auto addr = Core::InetAddress::resolve(host, port);
-    if (!addr)
+    auto address = Core::InetAddress::resolve(host, port);
+    if (!address)
     {
         LOG_ERROR_FMT("Failed to resolve host: {}", host);
         return 1;
     }
 
-    auto &   pool          = ctx.threadPool();
+    auto &   pool          = context.threadPool();
     unsigned actualThreads = static_cast<unsigned>(pool.threadCount());
 
     LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads, std::thread::hardware_concurrency());
 
-    // Per-thread server (SO_REUSEPORT kernel-level load balancing)
+    // 每线程一个服务器实例（SO_REUSEPORT 内核级负载均衡）
     std::vector<std::unique_ptr<Net::TcpServer>> servers;
     std::vector<Core::Task<>>                    acceptTasks;
     servers.reserve(actualThreads);
@@ -134,7 +134,7 @@ int main(int argc, char **argv)
         for (unsigned i = 0; i < actualThreads; ++i)
         {
             auto &loop   = pool.eventLoop(i);
-            auto  server = std::make_unique<Net::HttpsServer>(loop, *addr, certFile, keyFile);
+            auto  server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
 
             setupRoutes(server->router());
 
@@ -149,7 +149,7 @@ int main(int argc, char **argv)
         for (unsigned i = 0; i < actualThreads; ++i)
         {
             auto &loop   = pool.eventLoop(i);
-            auto  server = std::make_unique<Net::HttpServer>(loop, *addr);
+            auto  server = std::make_unique<Net::HttpServer>(loop, *address);
 
             setupRoutes(server->router());
 
@@ -165,19 +165,19 @@ int main(int argc, char **argv)
 
     pool.start();
 
-    LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + addr->toString());
+    LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + address->toString());
     LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
     LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench");
     LOG_INFO("Press Ctrl+C to exit");
 
-    // Wait for exit signal
+    // 等待退出信号
     while (g_running.load())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     LOG_INFO("Received shutdown signal, stopping server...");
-    ctx.stop();
+    context.stop();
 
     LOG_INFO("Server stopped successfully");
     return 0;

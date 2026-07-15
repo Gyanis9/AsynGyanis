@@ -26,8 +26,8 @@ namespace Base
 
     InotifyFileWatcher::InotifyFileWatcher()
     {
-        m_inotify_fd = inotify_init1(IN_CLOEXEC);
-        if (m_inotify_fd < 0)
+        m_inotifyFileDescriptor = inotify_init1(IN_CLOEXEC);
+        if (m_inotifyFileDescriptor < 0)
         {
             throw std::runtime_error("Failed to initialize inotify");
         }
@@ -36,9 +36,9 @@ namespace Base
     InotifyFileWatcher::~InotifyFileWatcher()
     {
         stop();
-        if (m_inotify_fd >= 0)
+        if (m_inotifyFileDescriptor >= 0)
         {
-            close(m_inotify_fd);
+            close(m_inotifyFileDescriptor);
         }
     }
 
@@ -49,7 +49,7 @@ namespace Base
             return true;
         }
 
-        if (m_inotify_fd < 0)
+        if (m_inotifyFileDescriptor < 0)
         {
             return false;
         }
@@ -106,7 +106,7 @@ namespace Base
                 return true;
             }
 
-            const int wd = inotify_add_watch(m_inotify_fd, abs_path.c_str(), WATCH_MASK);
+            const int wd = inotify_add_watch(m_inotifyFileDescriptor, abs_path.c_str(), WATCH_MASK);
             if (wd < 0)
             {
                 return false;
@@ -153,7 +153,7 @@ namespace Base
 
         const int wd = it->second;
         // 返回值检查：失败时（如 EINVAL）仍从映射中移除，防止悬挂引用
-        [[maybe_unused]] auto _ = inotify_rm_watch(m_inotify_fd, wd);
+        [[maybe_unused]] auto _ = inotify_rm_watch(m_inotifyFileDescriptor, wd);
 
         m_watch_descriptors.erase(wd);
         m_path_to_wd.erase(it);
@@ -182,7 +182,7 @@ namespace Base
         while (!m_should_stop.load(std::memory_order_acquire))
         {
             pollfd pfd;
-            pfd.fd     = m_inotify_fd;
+            pfd.fd     = m_inotifyFileDescriptor;
             pfd.events = POLLIN;
 
             const int ret = poll(&pfd, 1, 100);
@@ -228,14 +228,14 @@ namespace Base
     {
         char buffer[EVENT_BUFFER_SIZE];
 
-        const ssize_t len = read(m_inotify_fd, buffer, sizeof(buffer));
-        if (len < 0)
+        const ssize_t length = read(m_inotifyFileDescriptor, buffer, sizeof(buffer));
+        if (length < 0)
         {
             return;
         }
 
         ssize_t i = 0;
-        while (i < len)
+        while (i < length)
         {
             const auto event = reinterpret_cast<const inotify_event *>(&buffer[i]);
 

@@ -30,9 +30,9 @@ namespace Net
         /**
          * @brief 构造 HTTP 服务器。
          * @param loop 事件循环，用于管理 I/O 事件
-         * @param addr 监听的本地地址（IP 和端口）
+         * @param address 监听的本地地址（IP 和端口）
          */
-        HttpServer(Core::EventLoop &loop, const Core::InetAddress &addr);
+        HttpServer(Core::EventLoop &loop, const Core::InetAddress &address);
 
         /**
          * @brief 获取路由器的引用，用于注册路由处理函数。

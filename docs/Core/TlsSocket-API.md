@@ -34,7 +34,7 @@ Task<> handshake();
 ### 加密 I/O
 
 ```cpp
-Task<ssize_t> asyncRecv(void* buf, size_t len);
+Task<ssize_t> asyncReceive(void* buf, size_t len);
 Task<ssize_t> asyncSend(const void* buf, size_t len);
 ```
 
@@ -55,7 +55,7 @@ Task<ssize_t> asyncSend(const void* buf, size_t len);
 Core::TlsSocket tlsSocket(ssl, loop, std::move(socket));
 co_await tlsSocket.handshake();  // TLS 握手
 char buf[4096];
-ssize_t n = co_await tlsSocket.asyncRecv(buf, sizeof(buf));
+ssize_t n = co_await tlsSocket.asyncReceive(buf, sizeof(buf));
 co_await tlsSocket.asyncSend("HTTP/1.1 200 OK\r\n\r\n", 19);
 tlsSocket.close();
 ```

@@ -41,8 +41,8 @@ namespace Core
             co_return;
         }
 
-        auto &    epoll = m_loop->epoll();
-        const int fd    = m_socket.fd();
+        auto &    epoll          = m_loop->epoll();
+        const int fileDescriptor = m_socket.fileDescriptor();
 
         while (true)
         {
@@ -53,101 +53,101 @@ namespace Core
                 co_return;
             }
 
-            const int err = SSL_get_error(m_ssl.get(), ret);
-            if (err == SSL_ERROR_WANT_READ)
+            const int error = SSL_get_error(m_ssl.get(), ret);
+            if (error == SSL_ERROR_WANT_READ)
             {
-                co_await EpollAwaiter(epoll, fd, EPOLLIN);
+                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLIN);
                 continue;
             }
 
-            if (err == SSL_ERROR_WANT_WRITE)
+            if (error == SSL_ERROR_WANT_WRITE)
             {
-                co_await EpollAwaiter(epoll, fd, EPOLLOUT);
+                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLOUT);
                 continue;
             }
 
-            char buf[256];
-            ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
-            throw Base::Exception(std::string("TLS handshake failed: ") + buf);
+            char buffer[256];
+            ERR_error_string_n(ERR_get_error(), buffer, sizeof(buffer));
+            throw Base::Exception(std::string("TLS handshake failed: ") + buffer);
         }
     }
 
-    Task<ssize_t> TlsSocket::asyncRecv(void *const buf, const size_t len) const
+    Task<ssize_t> TlsSocket::asyncReceive(void *const buffer, const size_t length) const
     {
-        auto &    epoll = m_loop->epoll();
-        const int fd    = m_socket.fd();
+        auto &    epoll          = m_loop->epoll();
+        const int fileDescriptor = m_socket.fileDescriptor();
 
-        if (len == 0)
+        if (length == 0)
         {
             co_return 0;
         }
 
         while (true)
         {
-            const int ret = SSL_read(m_ssl.get(), buf, static_cast<int>(len));
+            const int ret = SSL_read(m_ssl.get(), buffer, static_cast<int>(length));
             if (ret > 0)
             {
                 co_return static_cast<ssize_t>(ret);
             }
 
-            const int err = SSL_get_error(m_ssl.get(), ret);
-            if (err == SSL_ERROR_WANT_READ)
+            const int error = SSL_get_error(m_ssl.get(), ret);
+            if (error == SSL_ERROR_WANT_READ)
             {
-                co_await EpollAwaiter(epoll, fd, EPOLLIN);
+                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLIN);
                 continue;
             }
 
-            if (err == SSL_ERROR_WANT_WRITE)
+            if (error == SSL_ERROR_WANT_WRITE)
             {
-                co_await EpollAwaiter(epoll, fd, EPOLLOUT);
+                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLOUT);
                 continue;
             }
 
-            if (err == SSL_ERROR_ZERO_RETURN)
+            if (error == SSL_ERROR_ZERO_RETURN)
             {
                 co_return 0;
             }
 
-            char errorBuf[256];
-            ERR_error_string_n(ERR_get_error(), errorBuf, sizeof(errorBuf));
-            throw Base::Exception(std::string("SSL_read failed: ") + errorBuf);
+            char errorBuffer[256];
+            ERR_error_string_n(ERR_get_error(), errorBuffer, sizeof(errorBuffer));
+            throw Base::Exception(std::string("SSL_read failed: ") + errorBuffer);
         }
     }
 
-    Task<ssize_t> TlsSocket::asyncSend(const void *const buf, const size_t len) const
+    Task<ssize_t> TlsSocket::asyncSend(const void *const buffer, const size_t length) const
     {
-        auto &    epoll = m_loop->epoll();
-        const int fd    = m_socket.fd();
+        auto &    epoll          = m_loop->epoll();
+        const int fileDescriptor = m_socket.fileDescriptor();
 
-        if (len == 0)
+        if (length == 0)
         {
             co_return 0;
         }
 
         while (true)
         {
-            const int ret = SSL_write(m_ssl.get(), buf, static_cast<int>(len));
+            const int ret = SSL_write(m_ssl.get(), buffer, static_cast<int>(length));
             if (ret > 0)
             {
                 co_return static_cast<ssize_t>(ret);
             }
 
-            const int err = SSL_get_error(m_ssl.get(), ret);
-            if (err == SSL_ERROR_WANT_WRITE)
+            const int error = SSL_get_error(m_ssl.get(), ret);
+            if (error == SSL_ERROR_WANT_WRITE)
             {
-                co_await EpollAwaiter(epoll, fd, EPOLLOUT);
+                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLOUT);
                 continue;
             }
 
-            if (err == SSL_ERROR_WANT_READ)
+            if (error == SSL_ERROR_WANT_READ)
             {
-                co_await EpollAwaiter(epoll, fd, EPOLLIN);
+                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLIN);
                 continue;
             }
 
-            char errorBuf[256];
-            ERR_error_string_n(ERR_get_error(), errorBuf, sizeof(errorBuf));
-            throw Base::Exception(std::string("SSL_write failed: ") + errorBuf);
+            char errorBuffer[256];
+            ERR_error_string_n(ERR_get_error(), errorBuffer, sizeof(errorBuffer));
+            throw Base::Exception(std::string("SSL_write failed: ") + errorBuffer);
         }
     }
 
@@ -157,9 +157,9 @@ namespace Core
         m_socket.close();
     }
 
-    int TlsSocket::fd() const noexcept
+    int TlsSocket::fileDescriptor() const noexcept
     {
-        return m_socket.fd();
+        return m_socket.fileDescriptor();
     }
 
 }

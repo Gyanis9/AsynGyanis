@@ -10,8 +10,8 @@
 
 namespace Net
 {
-    TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &addr) :
-        m_loop(loop), m_acceptor(loop, addr)
+    TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
+        m_loop(loop), m_acceptor(loop, address)
     {
     }
 
@@ -34,12 +34,12 @@ namespace Net
                 result = co_await m_acceptor.accept();
             } catch (const Base::SystemException &e)
             {
-                const int err = e.nativeError();
-                if (err == EINTR || err == ECONNABORTED || err == EAGAIN || err == EWOULDBLOCK)
+                const int error = e.nativeError();
+                if (error == EINTR || error == ECONNABORTED || error == EAGAIN || error == EWOULDBLOCK)
                 {
                     continue;
                 }
-                if (err == EMFILE || err == ENFILE || err == ENOBUFS || err == ENOMEM)
+                if (error == EMFILE || error == ENFILE || error == ENOBUFS || error == ENOMEM)
                 {
                     continue;
                 }
@@ -53,53 +53,53 @@ namespace Net
                 break;
             }
 
-            if (m_maxConnections > 0 && m_connManager.activeCount() >= m_maxConnections)
+            if (m_maxConnections > 0 && m_connectionManager.activeCount() >= m_maxConnections)
             {
                 continue;
             }
 
-            if (auto conn = createConnection(std::move(result.value())))
+            if (auto connection = createConnection(std::move(result.value())))
             {
-                m_connManager.add(conn);
-                auto task = handleConnection(std::move(conn));
+                m_connectionManager.add(connection);
+                auto task = handleConnection(std::move(connection));
                 m_loop.scheduler().schedule(task.handle());
-                m_connTasks.push_back(std::move(task));
+                m_connectionTasks.push_back(std::move(task));
             }
 
-            if (m_connTasks.size() > nextCleanupThreshold)
+            if (m_connectionTasks.size() > nextCleanupThreshold)
             {
-                std::erase_if(m_connTasks,
+                std::erase_if(m_connectionTasks,
                               [](const Core::Task<> &t)
                               {
                                   return t.isReady();
                               });
-                nextCleanupThreshold = std::max<size_t>(64, m_connTasks.size() + 64);
+                nextCleanupThreshold = std::max<size_t>(64, m_connectionTasks.size() + 64);
             }
         }
 
         // 优雅关闭：等待所有连接任务自然完成。
         // stop() 已设置 m_running=false，close() 已调用 ConnectionManager::shutdown()
         // 强制关闭所有连接 socket，因此此处不会无限阻塞。
-        for (auto &t: m_connTasks)
+        for (auto &t: m_connectionTasks)
         {
             if (!t.isReady())
             {
                 co_await t;
             }
         }
-        m_connManager.waitAll();
+        m_connectionManager.waitAll();
     }
 
-    Core::Task<> TcpServer::handleConnection(std::shared_ptr<Core::Connection> conn)
+    Core::Task<> TcpServer::handleConnection(std::shared_ptr<Core::Connection> connection)
     {
         try
         {
-            co_await conn->start();
+            co_await connection->start();
         } catch (...)
         {
             // 捕获所有异常防止传播到调度器导致进程终止
         }
-        m_connManager.remove(conn.get());
+        m_connectionManager.remove(connection.get());
     }
 
     void TcpServer::stop()
@@ -111,7 +111,7 @@ namespace Net
     void TcpServer::close()
     {
         stop();
-        m_connManager.shutdown();
+        m_connectionManager.shutdown();
     }
 
     void TcpServer::setMaxConnections(const size_t max)

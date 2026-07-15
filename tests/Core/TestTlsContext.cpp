@@ -17,15 +17,15 @@ inline int getPid() { return getpid(); }
 using namespace Core;
 
 namespace {
-    // Create temporary cert and key files for testing
-    std::pair<std::string, std::string> createTestCert() {
+    // 创建用于测试的临时证书和密钥文件
+    std::pair<std::string, std::string> createTestCertificate() {
         auto tmpDir = std::filesystem::temp_directory_path();
         auto pid    = getPid();
-        std::string certPath = (tmpDir / ("test_cert_" + std::to_string(pid) + ".pem")).string();
+        std::string certificatePath = (tmpDir / ("test_cert_" + std::to_string(pid) + ".pem")).string();
         std::string keyPath  = (tmpDir / ("test_key_" + std::to_string(pid) + ".pem")).string();
     
         std::string cmd = "openssl req -x509 -newkey rsa:2048 -keyout " + keyPath +
-                          " -out " + certPath + " -days 1 -nodes -subj \"/CN=test\"";
+                          " -out " + certificatePath + " -days 1 -nodes -subj \"/CN=test\"";
     #ifdef _WIN32
         cmd += " > NUL 2>&1";
     #else
@@ -33,54 +33,54 @@ namespace {
     #endif
         system(cmd.c_str());
 
-        return {certPath, keyPath};
+        return {certificatePath, keyPath};
     }
 }
 
 TEST_CASE("TlsContext: construction", "[TlsContext]") {
-    TlsContext ctx;
-    REQUIRE(ctx.nativeHandle() != nullptr);
+    TlsContext tlsContext;
+    REQUIRE(tlsContext.nativeHandle() != nullptr);
 }
 
 TEST_CASE("TlsContext: load valid certificate", "[TlsContext]") {
-    auto [cert, key] = createTestCert();
-    TlsContext ctx;
-    REQUIRE(ctx.loadCertificate(cert, key));
-    std::remove(cert.c_str());
+    auto [certificate, key] = createTestCertificate();
+    TlsContext tlsContext;
+    REQUIRE(tlsContext.loadCertificate(certificate, key));
+    std::remove(certificate.c_str());
     std::remove(key.c_str());
 }
 
 TEST_CASE("TlsContext: loadCertificate fails with invalid files", "[TlsContext]") {
-    TlsContext ctx;
-    REQUIRE_FALSE(ctx.loadCertificate("/nonexistent/cert.pem", "/nonexistent/key.pem"));
+    TlsContext tlsContext;
+    REQUIRE_FALSE(tlsContext.loadCertificate("/nonexistent/cert.pem", "/nonexistent/key.pem"));
 }
 
 TEST_CASE("TlsContext: createSSL returns non-null", "[TlsContext]") {
-    auto [cert, key] = createTestCert();
-    TlsContext ctx;
-    REQUIRE(ctx.loadCertificate(cert, key));
+    auto [certificate, key] = createTestCertificate();
+    TlsContext tlsContext;
+    REQUIRE(tlsContext.loadCertificate(certificate, key));
 
-    // Create a socket pair for testing
-    int fds[2];
-    REQUIRE(Platform::createSocketPair(fds[0], fds[1]));
+    // 创建用于测试的 socket pair
+    int fileDescriptors[2];
+    REQUIRE(Platform::createSocketPair(fileDescriptors[0], fileDescriptors[1]));
 
-    SSL *ssl = ctx.createSSL(fds[0]);
+    SSL *ssl = tlsContext.createSSL(fileDescriptors[0]);
     REQUIRE(ssl != nullptr);
 
     SSL_free(ssl);
-    Platform::closeFd(fds[0]);
-    Platform::closeFd(fds[1]);
-    std::remove(cert.c_str());
+    Platform::closeFileDescriptor(fileDescriptors[0]);
+    Platform::closeFileDescriptor(fileDescriptors[1]);
+    std::remove(certificate.c_str());
     std::remove(key.c_str());
 }
 
 TEST_CASE("TlsContext: nativeHandle returns same pointer", "[TlsContext]") {
-    TlsContext ctx;
-    auto *handle = ctx.nativeHandle();
+    TlsContext tlsContext;
+    auto *handle = tlsContext.nativeHandle();
     REQUIRE(handle != nullptr);
 }
 
 TEST_CASE("TlsContext: construction throws on SSL init failure is handled", "[TlsContext]") {
-    // Basic construction should succeed on any system with OpenSSL
-    REQUIRE_NOTHROW([]() { TlsContext ctx; }());
+    // 基本的构造在任何安装了 OpenSSL 的系统上都应该成功
+    REQUIRE_NOTHROW([]() { TlsContext tlsContext; }());
 }

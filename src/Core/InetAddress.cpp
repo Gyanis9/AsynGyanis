@@ -20,22 +20,22 @@ namespace Core
         fromIpPort(ip, port);
     }
 
-    InetAddress::InetAddress(const sockaddr_in &addr) :
-        m_addrLen(sizeof(sockaddr_in))
+    InetAddress::InetAddress(const sockaddr_in &address) :
+        m_addressLength(sizeof(sockaddr_in))
     {
-        std::memcpy(&m_addr, &addr, sizeof(addr));
+        std::memcpy(&m_address, &address, sizeof(address));
     }
 
-    InetAddress::InetAddress(const sockaddr_in6 &addr) :
-        m_addrLen(sizeof(sockaddr_in6))
+    InetAddress::InetAddress(const sockaddr_in6 &address) :
+        m_addressLength(sizeof(sockaddr_in6))
     {
-        std::memcpy(&m_addr, &addr, sizeof(addr));
+        std::memcpy(&m_address, &address, sizeof(address));
     }
 
-    InetAddress::InetAddress(const sockaddr_storage &addr, const socklen_t len) :
-        m_addrLen(len)
+    InetAddress::InetAddress(const sockaddr_storage &address, const socklen_t length) :
+        m_addressLength(length)
     {
-        std::memcpy(&m_addr, &addr, len);
+        std::memcpy(&m_address, &address, length);
     }
 
     InetAddress InetAddress::localhost(const uint16_t port)
@@ -65,49 +65,49 @@ namespace Core
         }
 
         // 遍历 getaddrinfo 链表，优先选择 IPv4（兼容性更好）
-        std::optional<InetAddress> addr;
-        std::optional<InetAddress> v6addr;
+        std::optional<InetAddress> address;
+        std::optional<InetAddress> ipv6Address;
         for (auto *rp = result; rp != nullptr; rp = rp->ai_next)
         {
             if (rp->ai_addr->sa_family == AF_INET)
             {
-                addr = InetAddress(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
+                address = InetAddress(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
                 break; // IPv4 优先
             }
-            if (rp->ai_addr->sa_family == AF_INET6 && !v6addr.has_value())
+            if (rp->ai_addr->sa_family == AF_INET6 && !ipv6Address.has_value())
             {
-                v6addr = InetAddress(*reinterpret_cast<sockaddr_in6 *>(rp->ai_addr));
+                ipv6Address = InetAddress(*reinterpret_cast<sockaddr_in6 *>(rp->ai_addr));
             }
         }
 
-        if (!addr.has_value())
-            addr = std::move(v6addr);
+        if (!address.has_value())
+            address = std::move(ipv6Address);
 
         freeaddrinfo(result);
-        return addr;
+        return address;
     }
 
     int InetAddress::family() const noexcept
     {
-        return m_addr.ss_family;
+        return m_address.ss_family;
     }
 
     std::string InetAddress::ip() const
     {
-        char buf[INET6_ADDRSTRLEN]{};
+        char buffer[INET6_ADDRSTRLEN]{};
 
-        if (m_addr.ss_family == AF_INET)
+        if (m_address.ss_family == AF_INET)
         {
-            const auto sin = reinterpret_cast<const sockaddr_in *>(&m_addr);
-            inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
-            return {buf};
+            const auto sin = reinterpret_cast<const sockaddr_in *>(&m_address);
+            inet_ntop(AF_INET, &sin->sin_addr, buffer, sizeof(buffer));
+            return {buffer};
         }
 
-        if (m_addr.ss_family == AF_INET6)
+        if (m_address.ss_family == AF_INET6)
         {
-            const auto sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_addr);
-            inet_ntop(AF_INET6, &sin6->sin6_addr, buf, sizeof(buf));
-            return {buf};
+            const auto sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_address);
+            inet_ntop(AF_INET6, &sin6->sin6_addr, buffer, sizeof(buffer));
+            return {buffer};
         }
 
         return {};
@@ -115,41 +115,41 @@ namespace Core
 
     uint16_t InetAddress::port() const
     {
-        if (m_addr.ss_family == AF_INET)
+        if (m_address.ss_family == AF_INET)
         {
-            const auto *sin = reinterpret_cast<const sockaddr_in *>(&m_addr);
+            const auto *sin = reinterpret_cast<const sockaddr_in *>(&m_address);
             return ntohs(sin->sin_port);
         }
 
-        if (m_addr.ss_family == AF_INET6)
+        if (m_address.ss_family == AF_INET6)
         {
-            const auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_addr);
+            const auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_address);
             return ntohs(sin6->sin6_port);
         }
 
         return 0;
     }
 
-    const sockaddr *InetAddress::addr() const noexcept
+    const sockaddr *InetAddress::nativeAddress() const noexcept
     {
-        return reinterpret_cast<const sockaddr *>(&m_addr);
+        return reinterpret_cast<const sockaddr *>(&m_address);
     }
 
-    socklen_t InetAddress::addrLen() const noexcept
+    socklen_t InetAddress::nativeAddressLength() const noexcept
     {
-        return m_addrLen;
+        return m_addressLength;
     }
 
     std::string InetAddress::toString() const
     {
         std::string result;
 
-        if (m_addr.ss_family == AF_INET6)
+        if (m_address.ss_family == AF_INET6)
             result += '[';
 
         result += ip();
 
-        if (m_addr.ss_family == AF_INET6)
+        if (m_address.ss_family == AF_INET6)
             result += ']';
 
         result += ':';
@@ -159,11 +159,11 @@ namespace Core
 
     bool InetAddress::operator==(const InetAddress &other) const
     {
-        if (m_addrLen != other.m_addrLen)
+        if (m_addressLength != other.m_addressLength)
             return false;
-        if (m_addr.ss_family != other.m_addr.ss_family)
+        if (m_address.ss_family != other.m_address.ss_family)
             return false;
-        return std::memcmp(&m_addr, &other.m_addr, m_addrLen) == 0;
+        return std::memcmp(&m_address, &other.m_address, m_addressLength) == 0;
     }
 
     bool InetAddress::operator!=(const InetAddress &other) const
@@ -181,8 +181,8 @@ namespace Core
         const std::string ipStr(ip);
         if (inet_pton(AF_INET, ipStr.c_str(), &sin.sin_addr) == 1)
         {
-            std::memcpy(&m_addr, &sin, sizeof(sin));
-            m_addrLen = sizeof(sin);
+            std::memcpy(&m_address, &sin, sizeof(sin));
+            m_addressLength = sizeof(sin);
             return;
         }
 
@@ -193,8 +193,8 @@ namespace Core
 
         if (inet_pton(AF_INET6, ipStr.c_str(), &sin6.sin6_addr) == 1)
         {
-            std::memcpy(&m_addr, &sin6, sizeof(sin6));
-            m_addrLen = sizeof(sin6);
+            std::memcpy(&m_address, &sin6, sizeof(sin6));
+            m_addressLength = sizeof(sin6);
             return;
         }
 

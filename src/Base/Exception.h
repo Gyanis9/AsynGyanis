@@ -28,7 +28,7 @@ namespace Base
         [[nodiscard]] const std::source_location &location() const noexcept;
 
     private:
-        static std::string formatMessage(const std::string &msg, const std::source_location &loc);
+        static std::string formatMessage(const std::string &message, const std::source_location &loc);
 
         std::source_location m_location;
     };

@@ -101,7 +101,7 @@ TEST_CASE("Scheduler: work stealing from another scheduler", "[Scheduler]") {
 
     auto stolen = s2.stealFrom(s1);
     // Note: stealFrom may not work if s1 only has 1 task (need > 1 for steal)
-    // If stolen, run it; otherwise run from s1
+    // 如果被窃取，从窃取者运行；否则从 s1 运行
     if (stolen) {
         stolen.resume();
         REQUIRE(counter.load() == 1);

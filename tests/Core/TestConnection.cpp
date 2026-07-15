@@ -8,70 +8,70 @@ using namespace Core;
 
 TEST_CASE("Connection: construction", "[Connection]") {
     EventLoop loop;
-    AsyncSocket sock(loop, -1); // dummy fd
-    Connection conn(std::move(sock));
+    AsyncSocket asyncSocket(loop, -1); // dummy file descriptor
+    Connection connection(std::move(asyncSocket));
 
-    REQUIRE(conn.isAlive());
-    REQUIRE(conn.socket().fd() == -1);
+    REQUIRE(connection.isAlive());
+    REQUIRE(connection.socket().fileDescriptor() == -1);
 }
 
 TEST_CASE("Connection: close sets not alive", "[Connection]") {
     EventLoop loop;
-    AsyncSocket sock(loop, -1);
-    Connection conn(std::move(sock));
+    AsyncSocket asyncSocket(loop, -1);
+    Connection connection(std::move(asyncSocket));
 
-    conn.close();
-    REQUIRE_FALSE(conn.isAlive());
+    connection.close();
+    REQUIRE_FALSE(connection.isAlive());
 }
 
 TEST_CASE("Connection: cancelable requestStop after close", "[Connection]") {
     EventLoop loop;
-    AsyncSocket sock(loop, -1);
-    Connection conn(std::move(sock));
+    AsyncSocket asyncSocket(loop, -1);
+    Connection connection(std::move(asyncSocket));
 
-    conn.close();
-    REQUIRE(conn.cancelable().isStopRequested());
+    connection.close();
+    REQUIRE(connection.cancelable().isStopRequested());
 }
 
 TEST_CASE("Connection: base start returns immediately", "[Connection]") {
     EventLoop loop;
-    AsyncSocket sock(loop, -1);
-    Connection conn(std::move(sock));
+    AsyncSocket asyncSocket(loop, -1);
+    Connection connection(std::move(asyncSocket));
 
-    auto task = conn.start();
+    auto task = connection.start();
     task.handle().resume();
     REQUIRE(task.isReady());
 }
 
 TEST_CASE("Connection: move construction", "[Connection]") {
     EventLoop loop;
-    AsyncSocket sock(loop, -1);
-    Connection conn1(std::move(sock));
+    AsyncSocket asyncSocket(loop, -1);
+    Connection connection1(std::move(asyncSocket));
 
-    conn1.close();
-    Connection conn2(std::move(conn1));
-    REQUIRE_FALSE(conn2.isAlive());
+    connection1.close();
+    Connection connection2(std::move(connection1));
+    REQUIRE_FALSE(connection2.isAlive());
 }
 
 TEST_CASE("Connection: move assignment", "[Connection]") {
     EventLoop loop;
-    auto sock1 = AsyncSocket(loop, -1);
-    auto sock2 = AsyncSocket(loop, -1);
+    auto asyncSocket1 = AsyncSocket(loop, -1);
+    auto asyncSocket2 = AsyncSocket(loop, -1);
 
-    Connection conn1(std::move(sock1));
-    Connection conn2(std::move(sock2));
+    Connection connection1(std::move(asyncSocket1));
+    Connection connection2(std::move(asyncSocket2));
 
-    conn1.close();
-    conn2 = std::move(conn1);
-    REQUIRE_FALSE(conn2.isAlive());
+    connection1.close();
+    connection2 = std::move(connection1);
+    REQUIRE_FALSE(connection2.isAlive());
 }
 
 TEST_CASE("Connection: cancelable propagates", "[Connection]") {
     EventLoop loop;
-    AsyncSocket sock(loop, -1);
-    Connection conn(std::move(sock));
+    AsyncSocket asyncSocket(loop, -1);
+    Connection connection(std::move(asyncSocket));
 
-    auto &cancelable = conn.cancelable();
+    auto &cancelable = connection.cancelable();
     REQUIRE_FALSE(cancelable.isStopRequested());
 
     cancelable.requestStop();

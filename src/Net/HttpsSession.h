@@ -55,8 +55,8 @@ namespace Net
         Core::TlsSocket      m_tlsSocket;             ///< TLS Socket，封装 SSL 对象和原始 socket，提供加密读写
         Router &             m_router;                ///< 路由器引用，用于请求分发
         HttpParser           m_parser;                ///< HTTP 解析器，用于从解密数据中解析请求
-        std::vector<char>    m_recvBuffer;            ///< 接收缓冲区（存储解密后的原始 HTTP 数据）
-        static constexpr int m_recvBufferSize = 8192; ///< 接收缓冲区大小（8KB）
+        std::vector<char>    m_receiveBuffer;            ///< 接收缓冲区（存储解密后的原始 HTTP 数据）
+        static constexpr int m_receiveBufferSize = 8192; ///< 接收缓冲区大小（8KB）
     };
 }
 

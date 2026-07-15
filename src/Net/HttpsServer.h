@@ -29,11 +29,11 @@ namespace Net
         /**
          * @brief 构造 HTTPS 服务器。
          * @param loop      事件循环，用于管理 I/O 事件
-         * @param addr      监听的本地地址（IP 和端口）
-         * @param certFile  服务器证书文件路径（PEM 格式）
+         * @param address   监听的本地地址（IP 和端口）
+         * @param certificateFile  服务器证书文件路径（PEM 格式）
          * @param keyFile   服务器私钥文件路径（PEM 格式）
          */
-        HttpsServer(Core::EventLoop &loop, const Core::InetAddress &addr, const std::string &certFile, const std::string &keyFile);
+        HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile);
 
         /**
          * @brief 获取路由器的引用，用于注册路由处理函数。

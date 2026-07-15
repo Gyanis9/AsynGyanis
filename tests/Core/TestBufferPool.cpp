@@ -20,7 +20,7 @@ TEST_CASE("BufferPool: acquire returns valid indices", "[BufferPool]") {
     REQUIRE(idx1 >= 0);
     REQUIRE(idx2 >= 0);
     REQUIRE(idx3 >= 0);
-    // All indices should be distinct
+    // 所有索引应该各不相同
     REQUIRE(idx0 != idx1);
     REQUIRE(idx0 != idx2);
     REQUIRE(idx0 != idx3);
@@ -55,7 +55,7 @@ TEST_CASE("BufferPool: data returns valid pointer", "[BufferPool]") {
     void *ptr = pool.data(idx);
     REQUIRE(ptr != nullptr);
 
-    // Should be writable
+    // 应该是可写的
     std::memset(ptr, 0xAB, 1024);
 }
 
@@ -67,7 +67,7 @@ TEST_CASE("BufferPool: data is isolated between buffers", "[BufferPool]") {
     std::memset(pool.data(idx0), 0x11, 1024);
     std::memset(pool.data(idx1), 0x22, 1024);
 
-    // Verify isolation
+    // 验证隔离性
     auto *p0 = static_cast<unsigned char *>(pool.data(idx0));
     auto *p1 = static_cast<unsigned char *>(pool.data(idx1));
     REQUIRE(p0[0] == 0x11);
@@ -75,7 +75,7 @@ TEST_CASE("BufferPool: data is isolated between buffers", "[BufferPool]") {
 }
 
 TEST_CASE("BufferPool: bufferSize zero throws or works", "[BufferPool]") {
-    // Test edge case: buffer size 0
+    // 边界测试：缓冲区大小为 0
     BufferPool pool(0, 4);
     REQUIRE(pool.bufferSize() == 0);
     REQUIRE(pool.bufferCount() == 4);

@@ -31,15 +31,15 @@ namespace Core
 
         /**
          * @brief 添加一个连接到管理器。
-         * @param conn 要添加的连接智能指针（通常为 shared_ptr）
+         * @param connection 要添加的连接智能指针（通常为 shared_ptr）
          */
-        void add(const std::shared_ptr<Connection> &conn);
+        void add(const std::shared_ptr<Connection> &connection);
 
         /**
          * @brief 从管理器中移除指定的连接。
-         * @param conn 连接对象的原始指针，若存在则移除。
+         * @param connection 连接对象的原始指针，若存在则移除。
          */
-        void remove(const Connection *conn);
+        void remove(const Connection *connection);
 
         /**
          * @brief 获取当前活跃连接的数量。
@@ -66,7 +66,7 @@ namespace Core
     private:
         mutable std::shared_mutex                                           m_mutex;       ///< 保护 m_connections 的读写锁
         std::unordered_map<const Connection *, std::shared_ptr<Connection>> m_connections; ///< 存储所有活跃连接的集合
-        std::condition_variable_any                                         m_cv;          ///< 用于 waitAll 的条件变量，连接移除时通知
+        std::condition_variable_any                                         m_condition;   ///< 用于 waitAll 的条件变量，连接移除时通知
     };
 
 }

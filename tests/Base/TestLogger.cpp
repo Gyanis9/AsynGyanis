@@ -118,7 +118,7 @@ TEST_CASE("Logger::addSink adds sink to logger", "[Logger][sink]")
     auto *sink = new CaptureSink();
     logger.addSink(std::unique_ptr<LogSink>(sink));
 
-    // Log something
+    // 记录一条日志
     logger.log(LogLevel::INFO, "test message");
     logger.flush();
 
@@ -152,7 +152,7 @@ TEST_CASE("Logger log respects shouldLog across sinks", "[Logger][sink]")
     sink->setLevel(LogLevel::WARN);
     logger.addSink(std::unique_ptr<LogSink>(sink));
 
-    // Sink level is WARN, logger level is TRACE (default)
+    // Sink 级别是 WARN，logger 级别是 TRACE（默认）
     // INFO log should be filtered by sink, not by logger
     logger.log(LogLevel::INFO, "should_not_reach_sink");
     logger.log(LogLevel::WARN, "should_reach_sink");
@@ -287,14 +287,14 @@ TEST_CASE("Logger::logFormat handles format errors gracefully", "[Logger][logFor
     auto *sink = new CaptureSink();
     logger.addSink(std::unique_ptr<LogSink>(sink));
 
-    // Malformed format string - should log error instead of crashing
+    // 格式错误的格式字符串 - 应该记录错误而非崩溃
     REQUIRE_NOTHROW(
         logger.logFormat(LogLevel::INFO, SourceLocation::current(),
                          "malformed {", "arg")
     );
     logger.flush();
 
-    // Should have logged an error about format
+    // 应该已经记录了一条格式错误
     REQUIRE(sink->events.size() >= 1);
 }
 
@@ -320,7 +320,7 @@ TEST_CASE("LoggerRegistry::getLogger creates on first access", "[LoggerRegistry]
     auto &logger1 = LoggerRegistry::instance().getLogger("custom");
     REQUIRE(logger1.name() == "custom");
 
-    // Second access returns same logger
+    // 第二次访问返回同一个 logger
     auto &logger2 = LoggerRegistry::instance().getLogger("custom");
     REQUIRE(&logger1 == &logger2);
 }
@@ -382,7 +382,7 @@ TEST_CASE("LoggerRegistry::unregisterLogger nonexistent is safe", "[LoggerRegist
 
 TEST_CASE("LoggerRegistry::getLoggerNames returns all names", "[LoggerRegistry][query]")
 {
-    // Clear first
+    // 首先清空
     LoggerRegistry::instance().clear();
 
     LoggerRegistry::instance().getLogger("alpha");
@@ -495,9 +495,9 @@ TEST_CASE("LoggerRegistry rapid register/unregister stress", "[LoggerRegistry][s
         LoggerRegistry::instance().unregisterLogger("stress_" + std::to_string(i));
     }
 
-    // Final state should be empty or minimal
+    // 最终状态应为空或最小化
     auto names = LoggerRegistry::instance().getLoggerNames();
-    // Just verify no crash occurred
+    // 只需验证没有崩溃发生
     SUCCEED("Register/unregister stress test passed");
 }
 

@@ -34,7 +34,7 @@ TEST_CASE("ConfigException stores message and location", "[Exception][ConfigExce
     REQUIRE(what_str.find(std::to_string(loc.line())) != std::string::npos);
 
     const auto &stored_loc = ex.location();
-    // Verify location is stored correctly
+    // 验证位置被正确存储
     REQUIRE(stored_loc.line() == loc.line());
 }
 
@@ -117,12 +117,12 @@ TEST_CASE("ConfigParseException stores file path and reason", "[Exception][Confi
 
 TEST_CASE("ConfigParseException boundary cases", "[Exception][ConfigParseException][boundary]")
 {
-    // Very long parse error
+    // 非常长的解析错误
     std::string long_reason(5000, 'e');
     ConfigParseException ex("f.yaml", long_reason);
     REQUIRE(ex.filePath() == "f.yaml");
 
-    // Empty strings
+    // 空字符串
     ConfigParseException ex2("", "");
     REQUIRE(ex2.filePath().empty());
 }
@@ -233,7 +233,7 @@ TEST_CASE("ConfigValidationException empty reason", "[Exception][ConfigValidatio
 
 TEST_CASE("Exception hierarchy is properly catchable by base types", "[Exception][hierarchy]")
 {
-    // All exceptions should be catchable by std::exception
+    // 所有异常都应能被 std::exception 捕获
     auto testCatch = [](const std::exception &e) -> bool
     {
         return std::string(e.what()).length() > 0;

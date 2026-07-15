@@ -88,7 +88,7 @@ Task<> asyncConnect(const InetAddress& addr) const;
 2. `EINPROGRESS` → `co_await EpollAwaiter(epoll, fd, EPOLLOUT)` → `getsockopt(SO_ERROR)` 检查
 3. 其他错误 → 抛出 `SystemException`
 
-#### asyncRecv
+#### asyncReceive
 
 ```cpp
 Task<ssize_t> asyncRecv(void* buf, size_t len);

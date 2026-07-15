@@ -199,7 +199,7 @@ namespace Base
          */
         static std::string getEventDescription(const inotify_event *event);
 
-        int                                  m_inotify_fd{-1};    ///< inotify 文件描述符
+        int                                  m_inotifyFileDescriptor{-1};    ///< inotify 文件描述符
         std::unordered_map<int, std::string> m_watch_descriptors; ///< 监视描述符 -> 路径映射
         std::unordered_map<std::string, int> m_path_to_wd;        ///< 路径 -> 监视描述符映射
 

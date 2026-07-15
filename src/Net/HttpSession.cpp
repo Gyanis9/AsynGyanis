@@ -7,18 +7,16 @@
 
 namespace Net
 {
-    HttpSession::HttpSession(Core::EventLoop &          loop, Core::AsyncSocket socket, Router &router,
-                             std::optional<std::string> staticDir) :
+    HttpSession::HttpSession(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router) :
         Core::Connection(std::move(socket)), m_router(router),
-        m_recvBuffer(m_recvBufferSize),
-        m_staticDir(std::move(staticDir))
+        m_receiveBuffer(m_receiveBufferSize)
     {
     }
 
     Core::Task<> HttpSession::start()
     {
         co_await detail::httpKeepAliveLoop(
-                socket(), m_router, m_parser, m_recvBuffer,
+                socket(), m_router, m_parser, m_receiveBuffer,
                 [this]()
                 {
                     return isAlive();
@@ -27,43 +25,43 @@ namespace Net
         co_return;
     }
 
-    bool HttpSession::shouldKeepAlive(const HttpRequest &req, const HttpResponse &res)
+    bool HttpSession::shouldKeepAlive(const HttpRequest &request, const HttpResponse &response)
     {
         bool keepAlive = true;
-        if (const auto &version = req.httpVersion(); version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9"))
+        if (const auto &version = request.httpVersion(); version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9"))
         {
             keepAlive = false;
         }
 
-        if (const auto connectionHeader = req.getHeader("connection"); connectionHeader.has_value())
+        if (const auto connectionHeader = request.getHeader("connection"); connectionHeader.has_value())
         {
-            std::string val = connectionHeader.value();
-            std::ranges::transform(val, val.begin(),
+            std::string value = connectionHeader.value();
+            std::ranges::transform(value, value.begin(),
                                    [](const unsigned char c)
                                    {
                                        return std::tolower(c);
                                    });
-            if (val == "close")
+            if (value == "close")
             {
                 keepAlive = false;
-            } else if (val == "keep-alive")
+            } else if (value == "keep-alive")
             {
                 keepAlive = true;
             }
         }
 
-        if (const auto resConnection = res.headers().find("connection"); resConnection != res.headers().end())
+        if (const auto responseConnection = response.headers().find("connection"); responseConnection != response.headers().end())
         {
-            std::string val = resConnection->second;
-            std::ranges::transform(val, val.begin(),
+            std::string value = responseConnection->second;
+            std::ranges::transform(value, value.begin(),
                                    [](const unsigned char c)
                                    {
                                        return std::tolower(c);
                                    });
-            if (val == "close")
+            if (value == "close")
             {
                 keepAlive = false;
-            } else if (val == "keep-alive")
+            } else if (value == "keep-alive")
             {
                 keepAlive = true;
             }

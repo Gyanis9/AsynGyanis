@@ -35,7 +35,7 @@ namespace Net
          * @param capacity 缓冲区容量（字节数）
          */
         explicit StreamBuffer(const size_t capacity) :
-            m_buffer(capacity), m_readIdx(0), m_writeIdx(0), m_size(0)
+            m_buffer(capacity), m_readIndex(0), m_writeIndex(0), m_size(0)
         {
         }
 
@@ -51,22 +51,22 @@ namespace Net
 
         /**
          * @brief 向缓冲区写入数据。
-         * @param data 指向要写入数据的指针
-         * @param len  要写入的字节数
-         * @return 实际写入的字节数（可能小于 len，当剩余空间不足时）
+         * @param data   指向要写入数据的指针
+         * @param length 要写入的字节数
+         * @return 实际写入的字节数（可能小于 length，当剩余空间不足时）
          *
          * 当剩余空间不足时只写入部分数据，剩余数据需由调用者后续重试。
          */
-        size_t write(const void *data, const size_t len)
+        size_t write(const void *data, const size_t length)
         {
-            if (len == 0 || m_size == m_buffer.size())
+            if (length == 0 || m_size == m_buffer.size())
                 return 0;
 
             const size_t available = freeSpace();
-            const size_t toWrite   = std::min(len, available);
+            const size_t toWrite   = std::min(length, available);
 
-            const size_t firstChunk = std::min(toWrite, m_buffer.size() - m_writeIdx);
-            std::memcpy(m_buffer.data() + m_writeIdx, data, firstChunk);
+            const size_t firstChunk = std::min(toWrite, m_buffer.size() - m_writeIndex);
+            std::memcpy(m_buffer.data() + m_writeIndex, data, firstChunk);
 
             if (firstChunk < toWrite)
             {
@@ -74,36 +74,36 @@ namespace Net
                 std::memcpy(m_buffer.data(), static_cast<const std::byte *>(data) + firstChunk, secondChunk);
             }
 
-            m_writeIdx = (m_writeIdx + toWrite) % m_buffer.size();
+            m_writeIndex = (m_writeIndex + toWrite) % m_buffer.size();
             m_size     += toWrite;
             return toWrite;
         }
 
         /**
          * @brief 从缓冲区读取数据（消费数据）。
-         * @param buf 存放读取数据的目标缓冲区指针
-         * @param len 最大读取字节数
+         * @param buffer 存放读取数据的目标缓冲区指针
+         * @param length 最大读取字节数
          * @return 实际读取的字节数（0 表示缓冲区为空）
          *
          * 读取后数据从缓冲区中移除，读指针向前移动。
          */
-        size_t read(void *buf, const size_t len)
+        size_t read(void *buffer, const size_t length)
         {
-            if (len == 0 || m_size == 0)
+            if (length == 0 || m_size == 0)
                 return 0;
 
-            const size_t toRead = std::min(len, m_size);
+            const size_t toRead = std::min(length, m_size);
 
-            const size_t firstChunk = std::min(toRead, m_buffer.size() - m_readIdx);
-            std::memcpy(buf, m_buffer.data() + m_readIdx, firstChunk);
+            const size_t firstChunk = std::min(toRead, m_buffer.size() - m_readIndex);
+            std::memcpy(buffer, m_buffer.data() + m_readIndex, firstChunk);
 
             if (firstChunk < toRead)
             {
                 const size_t secondChunk = toRead - firstChunk;
-                std::memcpy(static_cast<std::byte *>(buf) + firstChunk, m_buffer.data(), secondChunk);
+                std::memcpy(static_cast<std::byte *>(buffer) + firstChunk, m_buffer.data(), secondChunk);
             }
 
-            m_readIdx = (m_readIdx + toRead) % m_buffer.size();
+            m_readIndex = (m_readIndex + toRead) % m_buffer.size();
             m_size    -= toRead;
             return toRead;
         }
@@ -124,24 +124,24 @@ namespace Net
             if (m_size == 0)
                 return {};
 
-            if (m_readIdx < m_writeIdx || m_size <= m_buffer.size() - m_readIdx)
+            if (m_readIndex < m_writeIndex || m_size <= m_buffer.size() - m_readIndex)
             {
-                return {m_buffer.data() + m_readIdx, m_size};
+                return {m_buffer.data() + m_readIndex, m_size};
             }
 
-            return {m_buffer.data() + m_readIdx, m_buffer.size() - m_readIdx};
+            return {m_buffer.data() + m_readIndex, m_buffer.size() - m_readIndex};
         }
 
         /**
          * @brief 手动提交已消费的数据（移动读指针）。
-         * @param len 要提交的字节数（不能超过当前可读数据大小）
+         * @param length 要提交的字节数（不能超过当前可读数据大小）
          *
          * 常与 peek() 配合使用：用户通过 peek 获取数据并处理完后，调用 commit 通知缓冲区数据已消费。
          */
-        void commit(const size_t len)
+        void commit(const size_t length)
         {
-            const size_t toCommit = std::min(len, m_size);
-            m_readIdx             = (m_readIdx + toCommit) % m_buffer.size();
+            const size_t toCommit = std::min(length, m_size);
+            m_readIndex             = (m_readIndex + toCommit) % m_buffer.size();
             m_size                -= toCommit;
         }
 
@@ -168,16 +168,16 @@ namespace Net
          */
         void clear()
         {
-            m_readIdx  = 0;
-            m_writeIdx = 0;
+            m_readIndex  = 0;
+            m_writeIndex = 0;
             m_size     = 0;
         }
 
     private:
-        std::vector<std::byte> m_buffer;   ///< 底层存储
-        size_t                 m_readIdx;  ///< 读指针索引（逻辑位置）
-        size_t                 m_writeIdx; ///< 写指针索引
-        size_t                 m_size;     ///< 当前有效数据大小
+        std::vector<std::byte> m_buffer;     ///< 底层存储
+        size_t                 m_readIndex;  ///< 读指针索引（逻辑位置）
+        size_t                 m_writeIndex; ///< 写指针索引
+        size_t                 m_size;       ///< 当前有效数据大小
     };
 
 }

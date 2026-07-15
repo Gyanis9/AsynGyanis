@@ -104,12 +104,12 @@ inline std::tm *portableLocaltime(const std::time_t *timep, std::tm *result)
         portableLocaltime(&time_t_now, &tm_buf);
 
         // 使用 thread_local 缓冲区的 format_to_n 避免 std::format 的堆分配
-        thread_local std::array<char, 32> buf;
-        const auto                        [out, size] = std::format_to_n(buf.data(), buf.size(),
+        thread_local std::array<char, 32> buffer;
+        const auto                        [out, size] = std::format_to_n(buffer.data(), buffer.size(),
                                                   "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
                                                   tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
                                                   tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms.count());
-        return std::string(buf.data(), out - buf.data());
+        return std::string(buffer.data(), out - buffer.data());
     }
 
     inline const std::string &threadIdString()
@@ -189,13 +189,13 @@ inline std::tm *portableLocaltime(const std::time_t *timep, std::tm *result)
 
         LogEvent() = default;
 
-        LogEvent(const LogLevel lvl, std::string ts, std::string tid, const SourceLocation &loc, std::string logger, std::string msg) :
-            level(lvl)
+        LogEvent(const LogLevel logLevel, std::string ts, std::string threadId, const SourceLocation &sourceLocation, std::string logger, std::string message) :
+            level(logLevel)
             , timestamp(std::move(ts))
-            , thread_id(std::move(tid))
-            , location(loc)
+            , thread_id(std::move(threadId))
+            , location(sourceLocation)
             , logger_name(std::move(logger))
-            , message(std::move(msg))
+            , message(std::move(message))
         {
         }
     };

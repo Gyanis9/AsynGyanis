@@ -23,7 +23,7 @@ using namespace std::chrono_literals;
 // 测试辅助
 // ============================================================================
 
-// Create a pair of pipe fds
+// 创建一对管道文件描述符
 struct PipePair
 {
     int read_fd;
@@ -86,20 +86,20 @@ TEST_CASE("AsyncEventLoop run/stop lifecycle", "[AsyncEventLoop][lifecycle]")
 
     REQUIRE_FALSE(loop.isRunning());
 
-    // Start run in separate thread
+    // 在单独的线程中启动 run
     std::thread loop_thread([&]()
     {
         loop.run();
     });
 
-    // Wait for loop to start
+    // 等待循环启动
     while (!loop.isRunning())
     {
         std::this_thread::sleep_for(1ms);
     }
     REQUIRE(loop.isRunning());
 
-    // Stop the loop
+    // 停止循环
     loop.stop();
 
     loop_thread.join();
@@ -120,7 +120,7 @@ TEST_CASE("AsyncEventLoop stop from different thread", "[AsyncEventLoop][lifecyc
         std::this_thread::sleep_for(1ms);
     }
 
-    // Stop from main thread
+    // 从主线程停止
     loop.stop();
     loop_thread.join();
 
@@ -148,11 +148,11 @@ TEST_CASE("AsyncEventLoop destruction stops running loop", "[AsyncEventLoop][lif
         std::this_thread::sleep_for(1ms);
     }
 
-    // Destructor should call stop() internally
+    // 析构函数应该在内部调用 stop()
     loop.reset();
 
     loop_thread.join();
-    // Should not hang or crash
+    // 不应挂起或崩溃
     SUCCEED("Destruction during run is safe");
 }
 
@@ -169,9 +169,9 @@ TEST_CASE("AsyncEventLoop runOnce handles empty queue", "[AsyncEventLoop][lifecy
 TEST_CASE("AsyncEventLoop::context returns valid reference", "[AsyncEventLoop][accessor]")
 {
     AsyncEventLoop loop;
-    auto &ctx = loop.context();
-    REQUIRE(ctx.fd() >= 0);
-    REQUIRE(ctx.entries() > 0);
+    auto &ioContext = loop.context();
+    REQUIRE(ioContext.fileDescriptor() >= 0);
+    REQUIRE(ioContext.entries() > 0);
 }
 
 TEST_CASE("AsyncEventLoop::isRunning reflects run state", "[AsyncEventLoop][accessor]")
@@ -315,16 +315,16 @@ TEST_CASE("AsyncEventLoop cancel timeout operation", "[AsyncEventLoop][cancel]")
         std::this_thread::sleep_for(1ms);
     }
 
-    // Cancel immediately
+    // 立即取消
     bool cancel_result = loop.cancel(opId);
     REQUIRE(cancel_result);
 
-    // Wait a bit and stop
+    // 等待一小段时间后停止
     std::this_thread::sleep_for(100ms);
     loop.stop();
     t.join();
 
-    // Should be cancelled, not timed out
+    // 应该已被取消，而非超时
     REQUIRE(cancelled.load());
     REQUIRE_FALSE(timed_out.load());
 }
@@ -332,10 +332,9 @@ TEST_CASE("AsyncEventLoop cancel timeout operation", "[AsyncEventLoop][cancel]")
 TEST_CASE("AsyncEventLoop cancel nonexistent opId", "[AsyncEventLoop][cancel][boundary]")
 {
     AsyncEventLoop loop;
-    // This should still be able to submit a cancel SQE
-    // but the result is that it may succeed (SQE submission) but
-    // the cancel itself won't find the target
-    // Just ensure it doesn't crash with invalid IDs
+    // 这条仍然应该能够提交一个取消 SQE
+    // 但结果是它可能成功（SQE 提交），而取消本身找不到目标
+    // 只需确保不会因无效 ID 而崩溃
     REQUIRE_NOTHROW(loop.cancel(UINT64_MAX));
     REQUIRE_NOTHROW(loop.cancel(0));
 }
@@ -371,7 +370,7 @@ TEST_CASE("AsyncEventLoop cancel all pending operations", "[AsyncEventLoop][canc
 
     std::this_thread::sleep_for(10ms);
 
-    // Cancel all
+    // 全部取消
     for (auto id: opIds)
     {
         loop.cancel(id);
@@ -381,7 +380,7 @@ TEST_CASE("AsyncEventLoop cancel all pending operations", "[AsyncEventLoop][canc
     loop.stop();
     t.join();
 
-    // At least some should be cancelled
+    // 至少有一些应该被取消
     // (Not all may be cancellable depending on timing)
     REQUIRE(cancelled_count.load() > 0);
 }
@@ -395,7 +394,7 @@ TEST_CASE("AsyncEventLoop read from pipe", "[AsyncEventLoop][read][integration]"
     AsyncEventLoop loop;
     PipePair pipe;
 
-    // Write data to pipe synchronously
+    // 同步写入数据到管道
     const char *msg = "async read test";
     REQUIRE(write(pipe.write_fd, msg, strlen(msg)) == static_cast<ssize_t>(strlen(msg)));
 
@@ -461,7 +460,7 @@ TEST_CASE("AsyncEventLoop write to pipe", "[AsyncEventLoop][write][integration]"
     REQUIRE(bytes_written > 0);
     REQUIRE(static_cast<size_t>(bytes_written) == strlen(msg));
 
-    // Verify data readable from pipe
+    // 验证从管道读取的数据
     char buf[64] = {};
     REQUIRE(read(pipe.read_fd, buf, sizeof(buf)) == bytes_written);
     REQUIRE(std::string(buf) == msg);
@@ -476,7 +475,7 @@ TEST_CASE("AsyncEventLoop runOnce processes pending operations", "[AsyncEventLoo
     AsyncEventLoop loop;
     PipePair pipe;
 
-    // Write data synchronously
+    // 同步写入数据
     const char *msg = "runOnce test";
     REQUIRE(write(pipe.write_fd, msg, strlen(msg)) == static_cast<ssize_t>(strlen(msg)));
 
@@ -489,7 +488,7 @@ TEST_CASE("AsyncEventLoop runOnce processes pending operations", "[AsyncEventLoo
                   read_done.store(true);
               });
 
-    // Use runOnce in a loop until read completes
+    // 使用 runOnce 循环直到读取完成
     int iterations = 0;
     while (!read_done.load() && iterations < 1000)
     {
@@ -511,7 +510,7 @@ TEST_CASE("AsyncEventLoop concurrent read/write operations", "[AsyncEventLoop][t
     std::atomic<int> completed{0};
     constexpr int N = 100;
 
-    // Create pipes and submit operations
+    // 创建管道并提交操作
     std::vector<std::unique_ptr<PipePair>> pipes;
     for (int i = 0; i < N; ++i)
     {

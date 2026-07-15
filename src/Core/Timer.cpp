@@ -7,8 +7,8 @@
 
 namespace Core
 {
-    Timer::Awaiter::Awaiter(Epoll &epoll, const int fd) noexcept :
-        m_awaiter(epoll, fd, EPOLLIN), m_fd(fd)
+    Timer::Awaiter::Awaiter(Epoll &epoll, const int fileDescriptor) noexcept :
+        m_awaiter(epoll, fileDescriptor, EPOLLIN), m_fileDescriptor(fileDescriptor)
     {
     }
 
@@ -26,29 +26,29 @@ namespace Core
     {
         uint64_t expirations = 0;
 
-        [[maybe_unused]] auto _ = Platform::readFd(m_fd, &expirations, sizeof(expirations));
+        [[maybe_unused]] auto _ = Platform::readFileDescriptor(m_fileDescriptor, &expirations, sizeof(expirations));
         m_awaiter.await_resume();
     }
 
     Timer::Timer(EventLoop &loop) :
         m_loop(loop)
     {
-        if (m_timer.fd() < 0)
+        if (m_timer.fileDescriptor() < 0)
         {
-            throw Base::SystemException("TimerFd creation failed");
+            throw Base::SystemException("TimerFileDescriptor creation failed");
         }
     }
 
     Timer::~Timer()
     {
-        // 先移除 epoll 注册，TimerFd 析构会自动关闭 fd
-        m_loop.epoll().delFd(m_timer.fd());
+        // 先移除 epoll 注册，TimerFileDescriptor 析构会自动关闭文件描述符
+        m_loop.epoll().delFileDescriptor(m_timer.fileDescriptor());
     }
 
     Timer::Awaiter Timer::waitFor(const std::chrono::milliseconds duration)
     {
         m_timer.arm(duration);
-        return Awaiter(m_loop.epoll(), m_timer.fd());
+        return Awaiter(m_loop.epoll(), m_timer.fileDescriptor());
     }
 
 }

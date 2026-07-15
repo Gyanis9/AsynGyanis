@@ -1,11 +1,11 @@
 /**
- * @file TimerFd.h
- * @brief 跨平台定时器 fd — Linux 用 timerfd，Windows 用 socket pair + TimerQueueTimer
+ * @file TimerFileDescriptor.h
+ * @brief 跨平台定时器文件描述符 — Linux 用 timerfd，Windows 用 socket pair + TimerQueueTimer
  * @copyright Copyright (c) 2026
  */
 
-#ifndef PLATFORM_TIMERFD_H
-#define PLATFORM_TIMERFD_H
+#ifndef PLATFORM_TIMERFILEDESCRIPTOR_H
+#define PLATFORM_TIMERFILEDESCRIPTOR_H
 
 #include "Platform.h"
 #include "SocketCompat.h"
@@ -22,56 +22,56 @@ namespace Platform
      *          定时器到期时向 socket 写入数据使其变为可读。
      *
      * 用法：
-     * 1. 将 fd() 注册到 epoll 监听 EPOLLIN
+     * 1. 将 fileDescriptor() 注册到 epoll 监听 EPOLLIN
      * 2. 调用 arm(duration) 设置定时器
      * 3. 被 epoll 唤醒后调用 drain() 清空可读数据
      */
-    class TimerFd
+    class TimerFileDescriptor
     {
     public:
-        TimerFd()
+        TimerFileDescriptor()
         {
 #ifdef _WIN32
-            int rfd = -1, wfd = -1;
-            if (createSocketPair(rfd, wfd))
+            int readFileDescriptor = -1, writeFileDescriptor = -1;
+            if (createSocketPair(readFileDescriptor, writeFileDescriptor))
             {
-                m_readFd  = rfd;
-                m_writeFd = wfd;
-                setNonBlocking(m_readFd);
+                m_readFileDescriptor  = readFileDescriptor;
+                m_writeFileDescriptor = writeFileDescriptor;
+                setNonBlocking(m_readFileDescriptor);
             }
 #else
-            m_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+            m_fileDescriptor = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 #endif
         }
 
-        ~TimerFd()
+        ~TimerFileDescriptor()
         {
 #ifdef _WIN32
             cancel();
-            if (m_readFd >= 0)
-                closeFd(m_readFd);
-            if (m_writeFd >= 0)
-                closeFd(m_writeFd);
+            if (m_readFileDescriptor >= 0)
+                closeFileDescriptor(m_readFileDescriptor);
+            if (m_writeFileDescriptor >= 0)
+                closeFileDescriptor(m_writeFileDescriptor);
 #else
-            if (m_fd >= 0)
-                ::close(m_fd);
+            if (m_fileDescriptor >= 0)
+                ::close(m_fileDescriptor);
 #endif
         }
 
-        TimerFd(const TimerFd &)            = delete;
-        TimerFd &operator=(const TimerFd &) = delete;
-        TimerFd(TimerFd &&)                 = delete;
-        TimerFd &operator=(TimerFd &&)      = delete;
+        TimerFileDescriptor(const TimerFileDescriptor &)            = delete;
+        TimerFileDescriptor &operator=(const TimerFileDescriptor &) = delete;
+        TimerFileDescriptor(TimerFileDescriptor &&)                 = delete;
+        TimerFileDescriptor &operator=(TimerFileDescriptor &&)      = delete;
 
         /**
          * @brief 获取供 epoll 监听的文件描述符
          */
-        int fd() const noexcept
+        int fileDescriptor() const noexcept
         {
 #ifdef _WIN32
-            return m_readFd;
+            return m_readFileDescriptor;
 #else
-            return m_fd;
+            return m_fileDescriptor;
 #endif
         }
 
@@ -87,14 +87,14 @@ namespace Platform
             DWORD dueTime = static_cast<DWORD>(duration.count());
             HANDLE timer  = nullptr;
             CreateTimerQueueTimer(
-                &timer, nullptr, &TimerFd::timerCallback, this,
+                &timer, nullptr, &TimerFileDescriptor::timerCallback, this,
                 dueTime, 0, WT_EXECUTEONLYONCE | WT_EXECUTEINTIMERTHREAD);
             m_timer = timer;
 #else
             itimerspec ts{};
             ts.it_value.tv_sec  = duration.count() / 1000;
             ts.it_value.tv_nsec = (duration.count() % 1000) * 1000000;
-            ::timerfd_settime(m_fd, 0, &ts, nullptr);
+            ::timerfd_settime(m_fileDescriptor, 0, &ts, nullptr);
 #endif
         }
 
@@ -104,18 +104,18 @@ namespace Platform
         void drain() const
         {
 #ifdef _WIN32
-            if (m_readFd >= 0)
+            if (m_readFileDescriptor >= 0)
             {
-                char buf[64];
-                while (::recv(m_readFd, buf, sizeof(buf), 0) > 0)
+                char buffer[64];
+                while (::recv(m_readFileDescriptor, buffer, sizeof(buffer), 0) > 0)
                 {
                 }
             }
 #else
-            if (m_fd >= 0)
+            if (m_fileDescriptor >= 0)
             {
                 uint64_t expirations;
-                ::read(m_fd, &expirations, sizeof(expirations));
+                ::read(m_fileDescriptor, &expirations, sizeof(expirations));
             }
 #endif
         }
@@ -139,24 +139,24 @@ namespace Platform
         /**
          * @brief 定时器回调，向 socket pair 写端写入数据触发可读
          */
-        static VOID CALLBACK timerCallback(PVOID ctx, BOOLEAN /*timerOrWaitFired*/)
+        static VOID CALLBACK timerCallback(PVOID context, BOOLEAN /*timerOrWaitFired*/)
         {
-            auto *self = static_cast<TimerFd *>(ctx);
-            if (self->m_writeFd >= 0)
+            auto *self = static_cast<TimerFileDescriptor *>(context);
+            if (self->m_writeFileDescriptor >= 0)
             {
                 char byte = 1;
-                ::send(self->m_writeFd, &byte, 1, 0);
+                ::send(self->m_writeFileDescriptor, &byte, 1, 0);
             }
         }
 
-        int    m_readFd{-1};   ///< 读端 socket（注册到 epoll）
-        int    m_writeFd{-1};  ///< 写端 socket（定时器回调写入）
+        int    m_readFileDescriptor{-1};   ///< 读端 socket（注册到 epoll）
+        int    m_writeFileDescriptor{-1};  ///< 写端 socket（定时器回调写入）
         HANDLE m_timer{nullptr}; ///< TimerQueue 定时器句柄
 #else
-        int m_fd{-1}; ///< timerfd 文件描述符
+        int m_fileDescriptor{-1}; ///< timerfd 文件描述符
 #endif
     };
 
 } // namespace Platform
 
-#endif // PLATFORM_TIMERFD_H
+#endif // PLATFORM_TIMERFILEDESCRIPTOR_H

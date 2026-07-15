@@ -2,7 +2,7 @@
  * @file Epoll.h
  * @brief Linux epoll 实例的 RAII 封装
  *
- * 管理 epoll fd 的生命周期, 提供添加/修改/删除被监听 fd 的接口。
+ * 管理 epoll 文件描述符的生命周期, 提供添加/修改/删除被监听文件描述符的接口。
  * 析构时自动关闭 epoll 文件描述符。支持移动语义, 禁止拷贝。
  *
  * @copyright Copyright (c) 2026
@@ -26,9 +26,9 @@ namespace Core
     /**
      * @brief epoll 实例 RAII 封装
      *
-     * 封装 Linux epoll 系统调用, 提供类型安全的 fd 管理。
+     * 封装 Linux epoll 系统调用, 提供类型安全的文件描述符管理。
      * 内部使用 epoll_create1(EPOLL_CLOEXEC) 创建实例,
-     * 通过 epoll_wait 等待事件, 通过 epoll_ctl 管理监听 fd。
+     * 通过 epoll_wait 等待事件, 通过 epoll_ctl 管理监听文件描述符。
      *
      */
     class Epoll
@@ -51,40 +51,40 @@ namespace Core
 
         /**
          * @brief 向 epoll 添加要监听的文件描述符
-         * @param fd       目标文件描述符
-         * @param events   监听的事件掩码（EPOLLIN、EPOLLOUT 等）
-         * @param userData 挂载到 epoll_event.data.ptr 的用户数据，通常为协程句柄地址
+         * @param fileDescriptor 目标文件描述符
+         * @param events         监听的事件掩码（EPOLLIN、EPOLLOUT 等）
+         * @param userData       挂载到 epoll_event.data.ptr 的用户数据，通常为协程句柄地址
          * @return 成功返回 true，失败返回 false（errno 会被保留）
          */
-        bool addFd(int fd, uint32_t events, void *userData = nullptr) const;
+        bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr) const;
 
         /**
-         * @brief 修改已监听 fd 的事件掩码
-         * @param fd       目标文件描述符
-         * @param events   新的事件掩码
-         * @param userData 新的用户数据（若需保持不变，可传入原值）
+         * @brief 修改已监听文件描述符的事件掩码
+         * @param fileDescriptor 目标文件描述符
+         * @param events         新的事件掩码
+         * @param userData       新的用户数据（若需保持不变，可传入原值）
          * @return 成功返回 true，失败返回 false
          */
-        bool modFd(int fd, uint32_t events, void *userData = nullptr) const;
+        bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr) const;
 
         /**
-         * @brief 从 epoll 移除 fd
-         * @param fd 目标文件描述符
+         * @brief 从 epoll 移除文件描述符
+         * @param fileDescriptor 目标文件描述符
          * @return 成功返回 true，失败返回 false
          */
-        bool delFd(int fd) const;
+        bool delFileDescriptor(int fileDescriptor) const;
 
         /**
-         * @brief 重新装配 fd 并启用 EPOLLONESHOT 模式
+         * @brief 重新装配文件描述符并启用 EPOLLONESHOT 模式
          *
-         * 如果 fd 已经注册，则执行 MOD 操作；否则执行 ADD 操作。
+         * 如果文件描述符已经注册，则执行 MOD 操作；否则执行 ADD 操作。
          * 通常用于一次性触发（one-shot）场景，事件触发后需要重新装配才能再次触发。
-         * @param fd       目标文件描述符
-         * @param events   新的事件掩码（调用者通常应包含 EPOLLONESHOT）
-         * @param userData 挂载的用户数据
+         * @param fileDescriptor 目标文件描述符
+         * @param events         新的事件掩码（调用者通常应包含 EPOLLONESHOT）
+         * @param userData       挂载的用户数据
          * @return 成功返回 true，失败返回 false
          */
-        bool rearmFd(int fd, uint32_t events, void *userData = nullptr) const;
+        bool rearmFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr) const;
 
         /**
          * @brief 阻塞等待 IO 事件
@@ -96,19 +96,19 @@ namespace Core
 
         /**
          * @brief 获取 epoll 句柄
-         * @return Linux 返回 epoll fd，Windows 返回 wepoll HANDLE
+         * @return Linux 返回 epoll 文件描述符，Windows 返回 wepoll HANDLE
          */
-        [[nodiscard]] epoll_handle_t fd() const noexcept;
+        [[nodiscard]] epoll_handle_t fileDescriptor() const noexcept;
 
     private:
         /**
-         * @brief 关闭 epoll fd 并重置状态
+         * @brief 关闭 epoll 文件描述符并重置状态
          */
         void destroy();
 
-        epoll_handle_t           m_fd{kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: fd, Windows: HANDLE）
-        std::vector<epoll_event> m_events;                  ///< 存储 wait() 返回的事件数组，容量为 DEFAULT_MAX_EVENTS
-        static constexpr int     DEFAULT_MAX_EVENTS = 1024; ///< 默认每次 wait 最多返回的事件数
+        epoll_handle_t           m_fileDescriptor{kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: 文件描述符, Windows: HANDLE）
+        std::vector<epoll_event> m_events;                              ///< 存储 wait() 返回的事件数组，容量为 DEFAULT_MAX_EVENTS
+        static constexpr int     DEFAULT_MAX_EVENTS = 1024;             ///< 默认每次 wait 最多返回的事件数
     };
 }
 

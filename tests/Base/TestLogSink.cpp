@@ -202,7 +202,7 @@ TEST_CASE("LogSink::shouldLog boundary checks", "[LogSink][base][boundary]")
 TEST_CASE("LogSink::setFormatter works via public interface", "[LogSink][base]")
 {
     TestSink sink;
-    // Setting a custom formatter should not throw
+    // 设置自定义格式化器不应抛出异常
     sink.setFormatter(std::make_unique<DefaultFormatter>());
     sink.setFormatter(std::make_unique<ColorFormatter>());
     SUCCEED("Formatter set successfully");
@@ -421,8 +421,8 @@ TEST_CASE("RollingFileSink daily policy", "[LogSink][RollingFileSink]")
     sink.write(makeTestEvent(LogLevel::INFO, "daily test"));
     sink.flush();
 
-    // Daily policy appends date suffix (e.g. daily.2026-04-28.log)
-    // Check that at least one log file exists in the directory
+    // 每日滚动策略追加日期后缀（如 daily.2026-04-28.log）
+    // 检查目录中是否至少存在一个日志文件
     bool found = false;
     for (const auto &entry: fs::directory_iterator(dir.path()))
     {
@@ -443,7 +443,7 @@ TEST_CASE("RollingFileSink hourly policy", "[LogSink][RollingFileSink]")
     sink.write(makeTestEvent(LogLevel::INFO, "hourly test"));
     sink.flush();
 
-    // Hourly policy appends datetime suffix
+    // 每小时滚动策略追加日期时间后缀
     bool found = false;
     for (const auto &entry: fs::directory_iterator(dir.path()))
     {
@@ -502,7 +502,7 @@ TEST_CASE("AsyncSink blocks on full queue", "[LogSink][AsyncSink][boundary]")
     auto test_sink = std::make_unique<TestSink>();
     auto *raw_sink = test_sink.get();
 
-    // Use larger queue to avoid deadlock scenarios in test
+    // 使用较大队列以避免测试中的死锁场景
     AsyncSink async(std::move(test_sink), 128, AsyncSink::OverflowPolicy::Block);
 
     for (int i = 0; i < 10; ++i)

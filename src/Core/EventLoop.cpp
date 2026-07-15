@@ -6,7 +6,7 @@ namespace Core
     EventLoop::EventLoop()
     {
         m_scheduler.setWakeupNotifier(&m_wakeup);
-        m_epoll.addFd(m_wakeup.readFd(), EPOLLIN, &m_wakeupSentinel);
+        m_epoll.addFileDescriptor(m_wakeup.readFileDescriptor(), EPOLLIN, &m_wakeupSentinel);
     }
 
     EventLoop::~EventLoop()

@@ -75,57 +75,57 @@ namespace Net
         m_pipeline.use(std::move(middleware));
     }
 
-    Core::Task<> Router::route(HttpRequest &req, HttpResponse &res)
+    Core::Task<> Router::route(HttpRequest &request, HttpResponse &response)
     {
-        const std::string path = req.path();
+        const std::string path = request.path();
 
         // 一级：精确路径 O(1) 哈希查找
-        if (const auto exactIt = m_exactRoutes.find(makeExactKey(req.method(), path));
+        if (const auto exactIt = m_exactRoutes.find(makeExactKey(request.method(), path));
             exactIt != m_exactRoutes.end())
         {
             auto handler = exactIt->second;
-            co_await m_pipeline.run(req, res, [&req, &res, handler]() -> Core::Task<void>
+            co_await m_pipeline.run(request, response, [&request, &response, handler]() -> Core::Task<void>
             {
-                co_await handler(req, res);
+                co_await handler(request, response);
             });
-            finalizeResponse(req, res);
+            finalizeResponse(request, response);
             co_return;
         }
 
         // 二级：参数化/通配符路径线性扫描
         for (auto it = m_patternRoutes.rbegin(); it != m_patternRoutes.rend(); ++it)
         {
-            if (it->method != req.method() && it->method != HttpMethod::UNKNOWN)
+            if (it->method != request.method() && it->method != HttpMethod::UNKNOWN)
                 continue;
 
-            if (matchRoute(*it, path, req))
+            if (matchRoute(*it, path, request))
             {
                 auto handler = it->handler;
-                co_await m_pipeline.run(req, res, [&req, &res, handler]() -> Core::Task<void>
+                co_await m_pipeline.run(request, response, [&request, &response, handler]() -> Core::Task<void>
                 {
-                    co_await handler(req, res);
+                    co_await handler(request, response);
                 });
-                finalizeResponse(req, res);
+                finalizeResponse(request, response);
                 co_return;
             }
         }
 
         // 404 Not Found
-        const auto notFoundRes = HttpResponse::notFound();
-        res.setStatus(notFoundRes.status());
-        res.setBody(notFoundRes.body());
+        const auto notFoundResponse = HttpResponse::notFound();
+        response.setStatus(notFoundResponse.status());
+        response.setBody(notFoundResponse.body());
     }
 
-    void Router::finalizeResponse(const HttpRequest &req, HttpResponse &res)
+    void Router::finalizeResponse(const HttpRequest &request, HttpResponse &response)
     {
         // RFC 7231 §4.3.2: HEAD 响应 MUST NOT 包含 body
-        if (req.method() == HttpMethod::HEAD)
+        if (request.method() == HttpMethod::HEAD)
         {
-            res.setBody(std::string_view{});
+            response.setBody(std::string_view{});
         }
     }
 
-    bool Router::matchRoute(const Route &route, const std::string &path, HttpRequest &req)
+    bool Router::matchRoute(const Route &route, const std::string &path, HttpRequest &request)
     {
         const auto &pattern = route.pattern;
 
@@ -166,7 +166,7 @@ namespace Net
             if (patternSeg.starts_with(':'))
             {
                 std::string paramName(patternSeg.substr(1));
-                req.setParam(std::move(paramName), std::string(pathSeg));
+                request.setParam(std::move(paramName), std::string(pathSeg));
             } else if (patternSeg != pathSeg)
             {
                 return false;

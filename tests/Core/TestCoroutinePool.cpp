@@ -16,11 +16,11 @@ TEST_CASE("CoroutinePool: allocate within block size", "[CoroutinePool]") {
     void *p = pool.allocate(128);
     REQUIRE(p != nullptr);
 
-    // Fill with pattern to verify writable
+    // 用特定模式填充以验证可写性
     std::memset(p, 0xCD, 128);
 
     pool.deallocate(p, 128);
-    // After dealloc, we should be able to allocate again
+    // 释放后，应该可以再次分配
     void *p2 = pool.allocate(128);
     REQUIRE(p2 != nullptr);
     pool.deallocate(p2, 128);

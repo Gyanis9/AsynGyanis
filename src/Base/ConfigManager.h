@@ -102,8 +102,8 @@ namespace Base
      *   auto& cfg = ConfigManager::instance();
      *   auto result = cfg.loadFromDirectory("./config");
      *   if (!result) {
-     *       for (const auto& err : result.errors) {
-     *           LOG_ERROR(err);
+     *       for (const auto& error : result.errors) {
+     *           LOG_ERROR(error);
      *       }
      *       return -1;
      *   }

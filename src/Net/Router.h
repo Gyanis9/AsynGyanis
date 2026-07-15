@@ -55,11 +55,11 @@ namespace Net
 
         /**
          * @brief 路由入口，匹配请求方法和路径，执行对应的处理函数。
-         * @param req HTTP 请求对象（可能被中间件或处理函数修改）
-         * @param res HTTP 响应对象（由中间件或处理函数填充）
+         * @param request HTTP 请求对象（可能被中间件或处理函数修改）
+         * @param response HTTP 响应对象（由中间件或处理函数填充）
          * @return Core::Task<> 协程任务，完成后返回
          */
-        Core::Task<> route(HttpRequest &req, HttpResponse &res);
+        Core::Task<> route(HttpRequest &request, HttpResponse &response);
 
     private:
         struct Route
@@ -69,7 +69,7 @@ namespace Net
             Handler     handler;
         };
 
-        static bool matchRoute(const Route &route, const std::string &path, HttpRequest &req);
+        static bool matchRoute(const Route &route, const std::string &path, HttpRequest &request);
 
         /**
          * @brief 判断路径是否为精确匹配（不含 ":param" 或 "*" 模式）。
@@ -89,7 +89,7 @@ namespace Net
         /**
          * @brief 路由后的响应收尾处理（HEAD 请求剥离 body 等）。
          */
-        static void finalizeResponse(const HttpRequest &req, HttpResponse &res);
+        static void finalizeResponse(const HttpRequest &request, HttpResponse &response);
 
         // 一级索引：精确路径 hash -> handler（O(1) 查找）
         std::unordered_map<std::string, Handler> m_exactRoutes;

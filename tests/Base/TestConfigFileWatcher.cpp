@@ -85,8 +85,8 @@ TEST_CASE("FileWatcher lifecycle - start/stop not running", "[ConfigFileWatcher]
     auto watcher = FileWatcherFactory::create();
     REQUIRE_FALSE(watcher->isRunning());
 
-    // Start without any watches should fail or succeed depending on implementation
-    // Just verify it doesn't crash
+    // 无监视的情况下启动，根据实现可能成功也可能失败
+    // 只需验证不会崩溃
     REQUIRE_NOTHROW(watcher->start());
     REQUIRE_NOTHROW(watcher->stop());
 }
@@ -98,7 +98,7 @@ TEST_CASE("FileWatcher double start is idempotent", "[ConfigFileWatcher][lifecyc
     watcher->addWatch(dir.path().string());
     REQUIRE(watcher->start());
     REQUIRE(watcher->isRunning());
-    // Double start should be safe
+    // 双重启动应该安全
     REQUIRE(watcher->start());
     REQUIRE(watcher->isRunning());
     watcher->stop();
@@ -113,7 +113,7 @@ TEST_CASE("FileWatcher double stop is idempotent", "[ConfigFileWatcher][lifecycl
     watcher->start();
     watcher->stop();
     REQUIRE_FALSE(watcher->isRunning());
-    // Double stop should be safe
+    // 双重停止应该安全
     REQUIRE_NOTHROW(watcher->stop());
     REQUIRE_FALSE(watcher->isRunning());
 }
@@ -140,7 +140,7 @@ TEST_CASE("FileWatcher addWatch duplicate path returns true", "[ConfigFileWatche
     auto watcher = FileWatcherFactory::create();
     TempDir dir;
     REQUIRE(watcher->addWatch(dir.path().string()));
-    // Adding the same path should return true (already watching)
+    // 添加相同路径应该返回 true（已经在监视中）
     REQUIRE(watcher->addWatch(dir.path().string()));
 }
 
@@ -168,7 +168,7 @@ TEST_CASE("FileWatcher addWatch with recursive flag", "[ConfigFileWatcher][addWa
 {
     auto watcher = FileWatcherFactory::create();
     TempDir dir;
-    // Create subdirectories
+    // 创建子目录
     fs::create_directories(dir.path() / "sub1" / "sub2");
     REQUIRE(watcher->addWatch(dir.path().string(), true));
 }
@@ -187,21 +187,21 @@ TEST_CASE("FileWatcher setCallback stores callback", "[ConfigFileWatcher][callba
         called = true;
     });
 
-    // Setting callback shouldn't trigger it immediately
+    // 设置回调不应立即触发
     REQUIRE_FALSE(called);
 }
 
 TEST_CASE("FileWatcher setCallback with nullptr-like callback", "[ConfigFileWatcher][callback][boundary]")
 {
     auto watcher = FileWatcherFactory::create();
-    // Set an empty callback (should not crash when events fire)
+    // 设置空回调（事件触发时不应崩溃）
     REQUIRE_NOTHROW(watcher->setCallback(nullptr));
 
     TempDir dir;
     watcher->addWatch(dir.path().string());
     watcher->start();
 
-    // Write a file - callback is null so no crash expected
+    // 写入文件 - 回调为 null，不期望崩溃
     dir.writeFile("test.yaml", "key: value");
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
@@ -224,18 +224,18 @@ TEST_CASE("FileWatcher detects file modification", "[ConfigFileWatcher][integrat
         callback_called = true;
     });
 
-    // Create initial file
+    // 创建初始文件
     dir.writeFile("config.yaml", "key: value");
     REQUIRE(watcher->addWatch(dir.path().string()));
     REQUIRE(watcher->start());
 
-    // Wait for watcher to be ready
+    // 等待监视器就绪
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Modify file
+    // 修改文件
     dir.writeFile("config.yaml", "key: modified_value");
 
-    // Wait for detection
+    // 等待检测
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
     watcher->stop();

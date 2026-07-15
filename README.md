@@ -1,22 +1,23 @@
 # AsynGyanis
 
-> 基于 C++20 协程、epoll 边缘触发驱动的工业级高性能异步 HTTP 服务器框架
+> 基于 C++20 协程、epoll/wepoll 边缘触发驱动的工业级高性能异步 HTTP 服务器框架（跨平台 Linux/Windows）
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](https://en.cppreference.com/w/cpp/20)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
+[![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## 特性
 
-- **epoll 边缘触发 I/O** — 网络 I/O 走非阻塞 syscall（`accept4`/`recv`/`send`）+ epoll EPOLLET 边缘触发，统一事件循环
+- **epoll/wepoll 边缘触发 I/O** — 网络 I/O 走非阻塞 syscall + epoll/wepoll EPOLLET 边缘触发，统一事件循环，Linux 使用 epoll，Windows 使用 wepoll
 - **真多线程** — `IoContext` 每线程一个 `EventLoop` + 独立 `HttpServer`，`SO_REUSEPORT` 内核级负载均衡
-- **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起/恢复，`EpollAwaiter` 等待 fd 就绪后自动恢复
+- **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起/恢复，`EpollAwaiter` 等待文件描述符就绪后自动恢复
 - **工作窃取调度** — `Scheduler` 本地无锁队列 + 全局队列，空闲线程自动窃取任务
 - **并发连接处理** — accept 循环不阻塞，每个连接独立协程并发执行
 - **TLS/HTTPS 支持** — 基于 OpenSSL 的 `TlsSocket`，`SSL_read`/`SSL_write` + epoll 非阻塞集成
 - **HTTP/1.1 Keep-Alive** — 持久连接 + llhttp 增量解析
-- **优雅启停** — 基于 `std::stop_token` 的协作式取消，`SIGINT`/`SIGTERM` 安全退出
-- **热加载配置** — 基于 inotify 的 YAML/JSON 配置文件自动重载
+- **优雅启停** — 基于 `std::stop_token` 的协作式取消，`SIGINT`/`SIGTERM`（Linux）或 Ctrl+C（Windows）安全退出
+- **热加载配置** — 基于 inotify（Linux）或 Win32 ReadDirectoryChangesW（Windows）的 YAML/JSON 配置文件自动重载
 - **结构化日志** — 6 级日志，4 种 Sink（控制台/文件/滚动/异步），C++20 `std::format`
 - **URL 路由** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、中间件洋葱模型
 - **IPv4/IPv6 统一地址** — `Core::InetAddress` 封装 `sockaddr_storage`，支持 DNS 解析
@@ -33,7 +34,7 @@
 
 ![请求处理流程](asserts/请求处理流程.png)
 
-### I/O 模型（纯 epoll 边缘触发）
+### I/O 模型（epoll/wepoll 边缘触发）
 
 ![IO模型](asserts/IO模型.png)
 
@@ -42,7 +43,7 @@
 ![依赖关系](asserts/依赖关系.png)
 
 - **Base** 依赖 `yaml-cpp`，提供日志、配置、异常等基础设施
-- **Core** 依赖 `Base` + `OpenSSL`，构建协程运行时 + epoll 事件循环 + TLS 安全层
+- **Core** 依赖 `Base` + `OpenSSL`，构建协程运行时 + epoll/wepoll 事件循环 + TLS 安全层
 - **Net** 依赖 `Core` + `llhttp`，提供 HTTP/HTTPS 服务端能力
 
 ## 快速开始
@@ -51,10 +52,10 @@
 
 - **CMake** ≥ 3.20
 - **Conan** ≥ 2.0
-- **GCC** ≥ 13 或 **Clang** ≥ 17（需支持 C++20 协程）
-- **Linux** ≥ 2.6.32（epoll 支持）
+- **编译器**：**GCC** ≥ 13 / **Clang** ≥ 17 / **MSVC** ≥ 19.40（需支持 C++20 协程）
+- **操作系统**：**Linux** ≥ 2.6.32（epoll）/ **Windows** ≥ 10（wepoll）
 
-### 构建
+### Linux 构建
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -64,14 +65,35 @@ cmake --build build/debug -j$(nproc)
 cd build/debug && ctest --output-on-failure
 ```
 
+### Windows 构建
+
+```powershell
+# 使用 Visual Studio 开发者命令提示符或激活 vcvars64.bat
+pip install conan
+cmake --preset windows-debug
+cmake --build build/win-debug
+cd build/win-debug && ctest --output-on-failure
+```
+
 ### Release 构建
+
+**Linux：**
 
 ```bash
 cmake --preset release
 cmake --build build/release -j$(nproc)
 ```
 
+**Windows：**
+
+```powershell
+cmake --preset windows-release
+cmake --build build/win-release
+```
+
 ### 运行
+
+**Linux：**
 
 ```bash
 # HTTP 模式（默认）
@@ -84,6 +106,17 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
 
 # 指定线程数
 ./build/release/samples/echo_server --port 8080 --threads 4
+```
+
+**Windows：**
+
+```powershell
+# HTTP 模式（默认）
+.\build\win-release\samples\echo_server.exe --port 8080
+
+# HTTPS 模式
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
+.\build\win-release\samples\echo_server.exe --https --cert cert.pem --key key.pem
 ```
 
 ### 压测
@@ -108,20 +141,20 @@ ab -n 500000 -c 200 https://localhost:8080/bench
 #include "Net/Router.h"
 
 int main() {
-    Core::IoContext ctx(4);  // 4 个工作线程
-    auto addr = Core::InetAddress::any(8080);
-    auto &pool = ctx.threadPool();
+    Core::IoContext context(4);  // 4 个工作线程
+    auto address = Core::InetAddress::any(8080);
+    auto &pool = context.threadPool();
 
     // 每线程一个 HttpServer（SO_REUSEPORT 负载均衡）
     std::vector<std::unique_ptr<Net::HttpServer>> servers;
     for (unsigned i = 0; i < pool.threadCount(); ++i) {
         auto &loop = pool.eventLoop(i);
-        auto server = std::make_unique<Net::HttpServer>(loop, addr);
+        auto server = std::make_unique<Net::HttpServer>(loop, address);
 
-        server->router().get("/", [](auto& req, auto& res) -> Core::Task<void> {
-            res.setStatus(200);
-            res.setHeader("Content-Type", "text/plain");
-            res.setBody("Hello, AsynGyanis!");
+        server->router().get("/", [](auto& request, auto& response) -> Core::Task<void> {
+            response.setStatus(200);
+            response.setHeader("Content-Type", "text/plain");
+            response.setBody("Hello, AsynGyanis!");
             co_return;
         });
 
@@ -130,7 +163,7 @@ int main() {
         servers.push_back(std::move(server));
     }
 
-    ctx.run();  // 阻塞直到 SIGINT → stop()
+    context.run();  // 阻塞直到 SIGINT → stop()
 }
 ```
 
@@ -145,8 +178,8 @@ int main() {
     Core::EventLoop loop;
     Net::HttpServer server(loop, Core::InetAddress::any(8080));
 
-    server.router().get("/", [](auto& req, auto& res) -> Core::Task<void> {
-        res.setBody("OK");
+    server.router().get("/", [](auto& request, auto& response) -> Core::Task<void> {
+        response.setBody("OK");
         co_return;
     });
 
@@ -166,20 +199,20 @@ int main() {
 #include "Net/Router.h"
 
 int main() {
-    Core::IoContext ctx(4);
-    auto addr = Core::InetAddress::any(443);
-    auto &pool = ctx.threadPool();
+    Core::IoContext context(4);
+    auto address = Core::InetAddress::any(443);
+    auto &pool = context.threadPool();
 
     std::vector<std::unique_ptr<Net::TcpServer>> servers;
     for (unsigned i = 0; i < pool.threadCount(); ++i) {
         auto &loop = pool.eventLoop(i);
         auto server = std::make_unique<Net::HttpsServer>(
-            loop, addr, "cert.pem", "key.pem");
+            loop, address, "cert.pem", "key.pem");
 
-        server->router().get("/", [](auto& req, auto& res) -> Core::Task<void> {
-            res.setStatus(200);
-            res.setHeader("Content-Type", "text/plain");
-            res.setBody("Hello HTTPS!");
+        server->router().get("/", [](auto& request, auto& response) -> Core::Task<void> {
+            response.setStatus(200);
+            response.setHeader("Content-Type", "text/plain");
+            response.setBody("Hello HTTPS!");
             co_return;
         });
 
@@ -188,7 +221,7 @@ int main() {
         servers.push_back(std::move(server));
     }
 
-    ctx.run();
+    context.run();
 }
 ```
 
@@ -196,15 +229,15 @@ int main() {
 
 ```cpp
 Core::Task<void> ping(Core::EventLoop& loop) {
-    auto sock = Core::AsyncSocket::create(loop);
-    co_await sock.asyncConnect(*Core::InetAddress::resolve("localhost", 8080));
+    auto asyncSocket = Core::AsyncSocket::create(loop);
+    co_await asyncSocket.asyncConnect(*Core::InetAddress::resolve("localhost", 8080));
 
-    const char* msg = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    co_await sock.asyncSend(msg, strlen(msg));
+    const char* message = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    co_await asyncSocket.asyncSend(message, strlen(message));
 
-    char buf[4096];
-    ssize_t n = co_await sock.asyncRecv(buf, sizeof(buf));
-    printf("%.*s\n", (int)n, buf);
+    char buffer[4096];
+    ssize_t bytesRead = co_await asyncSocket.asyncReceive(buffer, sizeof(buffer));
+    printf("%.*s\n", (int)bytesRead, buffer);
 }
 ```
 
@@ -231,15 +264,15 @@ Core::Task<void> ping(Core::EventLoop& loop) {
 | 分类 | 类 | 职责 |
 |------|----|------|
 | **入口** | `IoContext` | 运行时主入口，持有 `ThreadPool`，`run()` 阻塞直到 `stop()`，析构自动停止 |
-| **线程** | `EventLoop` | 每线程事件循环 — epoll 统一等待 wakeup eventfd / EpollAwaiter，调度协程 |
+| **线程** | `EventLoop` | 每线程事件循环 — epoll/wepoll 统一等待唤醒事件 / EpollAwaiter，调度协程 |
 | | `ThreadPool` | `std::jthread` 线程池，每线程绑定一个 `EventLoop` |
-| **系统** | `Epoll` | epoll RAII（`addFd` / `modFd` / `delFd` / `wait`） |
+| **系统** | `Epoll` | epoll RAII（`addFileDescriptor` / `modFileDescriptor` / `delFileDescriptor` / `wait`） |
 | **地址** | `InetAddress` | IPv4/IPv6 统一封装（`sockaddr_storage`），DNS 解析、`any()`/`localhost()` 工厂 |
 | **协程** | `Task<T>` | 协程返回类型（惰性启动，`FinalAwaiter` 推入调度器） |
 | | `Scheduler` | 本地无锁队列 + 全局队列，工作窃取 |
 | | `CoroutinePool` | thread-local 协程帧 slab 分配器 |
-| **Awaiter** | `EpollAwaiter` | `co_await` epoll 边缘触发事件（fd 就绪→恢复协程） |
-| | `Timer` | 可 await 定时器（`timerfd_create` + epoll） |
+| **Awaiter** | `EpollAwaiter` | `co_await` epoll 边缘触发事件（文件描述符就绪→恢复协程） |
+| | `Timer` | 可 await 定时器（Linux: `timerfd_create` + epoll / Windows: CreateTimerQueueTimer + socket pair） |
 | **TLS** | `TlsContext` | SSL_CTX RAII 管理（证书加载、SSL 对象创建） |
 | | `TlsSocket` | TLS 套接字（SSL_read/SSL_write + epoll 非阻塞集成） |
 | **I/O** | `AsyncSocket` | 异步 TCP socket（非阻塞 syscall + epoll EPOLLET） |
@@ -295,8 +328,8 @@ AsynGyanis/
 | 规则 | 示例 |
 |------|------|
 | 类名：大驼峰 | `class AsyncSocket` |
-| 函数名：小驼峰 | `void asyncRecv()` |
-| 成员变量：`m_` 前缀 | `int m_fd` |
+| 函数名：小驼峰 | `void asyncReceive()` |
+| 成员变量：`m_` 前缀 | `int m_fileDescriptor` |
 | 命名空间 | `Base`, `Core`, `Net` |
 
 ## 版权

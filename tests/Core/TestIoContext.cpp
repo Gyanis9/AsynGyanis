@@ -39,7 +39,7 @@ TEST_CASE("IoContext: run blocks until stop", "[IoContext]") {
         ctx.run();
     });
 
-    // Wait for run to start
+    // 等待 run 启动
     while (!running.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }

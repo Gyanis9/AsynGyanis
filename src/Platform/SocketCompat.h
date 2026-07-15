@@ -16,34 +16,34 @@ namespace Platform
     // ========================================================================
 
 #ifdef _WIN32
-    inline bool setNonBlocking(int fd)
+    inline bool setNonBlocking(int fileDescriptor)
     {
         u_long mode = 1;
-        return ioctlsocket(fd, FIONBIO, &mode) == 0;
+        return ioctlsocket(fileDescriptor, FIONBIO, &mode) == 0;
     }
 #else
-    inline bool setNonBlocking(int fd)
+    inline bool setNonBlocking(int fileDescriptor)
     {
-        const int flags = fcntl(fd, F_GETFL, 0);
+        const int flags = fcntl(fileDescriptor, F_GETFL, 0);
         if (flags < 0)
             return false;
-        return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+        return fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) == 0;
     }
 #endif
 
     // ========================================================================
-    // 关闭 fd
+    // 关闭文件描述符
     // ========================================================================
 
 #ifdef _WIN32
-    inline int closeFd(int fd)
+    inline int closeFileDescriptor(int fileDescriptor)
     {
-        return ::closesocket(fd);
+        return ::closesocket(fileDescriptor);
     }
 #else
-    inline int closeFd(int fd)
+    inline int closeFileDescriptor(int fileDescriptor)
     {
-        return ::close(fd);
+        return ::close(fileDescriptor);
     }
 #endif
 
@@ -52,24 +52,24 @@ namespace Platform
     // ========================================================================
 
 #ifdef _WIN32
-    inline ssize_t readFd(int fd, void *buf, size_t len)
+    inline ssize_t readFileDescriptor(int fileDescriptor, void *buffer, size_t length)
     {
-        return ::recv(fd, static_cast<char *>(buf), static_cast<int>(len), 0);
+        return ::recv(fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), 0);
     }
 
-    inline ssize_t writeFd(int fd, const void *buf, size_t len)
+    inline ssize_t writeFileDescriptor(int fileDescriptor, const void *buffer, size_t length)
     {
-        return ::send(fd, static_cast<const char *>(buf), static_cast<int>(len), 0);
+        return ::send(fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), 0);
     }
 #else
-    inline ssize_t readFd(int fd, void *buf, size_t len)
+    inline ssize_t readFileDescriptor(int fileDescriptor, void *buffer, size_t length)
     {
-        return ::read(fd, buf, len);
+        return ::read(fileDescriptor, buffer, length);
     }
 
-    inline ssize_t writeFd(int fd, const void *buf, size_t len)
+    inline ssize_t writeFileDescriptor(int fileDescriptor, const void *buffer, size_t length)
     {
-        return ::write(fd, buf, len);
+        return ::write(fileDescriptor, buffer, length);
     }
 #endif
 
@@ -78,19 +78,19 @@ namespace Platform
     // ========================================================================
 
 #ifdef _WIN32
-    inline int acceptSocket(int listenFd, sockaddr *addr, socklen_t *addrLen)
+    inline int acceptSocket(int listenFileDescriptor, sockaddr *address, socklen_t *addressLength)
     {
-        const int fd = ::accept(listenFd, addr, addrLen);
-        if (fd >= 0)
+        const int fileDescriptor = ::accept(listenFileDescriptor, address, addressLength);
+        if (fileDescriptor >= 0)
         {
-            setNonBlocking(fd);
+            setNonBlocking(fileDescriptor);
         }
-        return fd;
+        return fileDescriptor;
     }
 #else
-    inline int acceptSocket(int listenFd, sockaddr *addr, socklen_t *addrLen)
+    inline int acceptSocket(int listenFileDescriptor, sockaddr *address, socklen_t *addressLength)
     {
-        return ::accept4(listenFd, addr, addrLen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        return ::accept4(listenFileDescriptor, address, addressLength, SOCK_NONBLOCK | SOCK_CLOEXEC);
     }
 #endif
 
@@ -99,7 +99,7 @@ namespace Platform
     // ========================================================================
 
 #ifdef _WIN32
-    inline bool createSocketPair(int &readFd, int &writeFd)
+    inline bool createSocketPair(int &readFileDescriptor, int &writeFileDescriptor)
     {
         // 通过 TCP loopback 创建一对已连接的 socket
         const int listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -110,18 +110,18 @@ namespace Platform
         setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
                    reinterpret_cast<char *>(&opt), sizeof(opt));
 
-        sockaddr_in addr{};
-        addr.sin_family      = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port        = 0;
-        if (::bind(listener, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = 0;
+        if (::bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0)
         {
             ::closesocket(listener);
             return false;
         }
 
-        socklen_t addrLen = sizeof(addr);
-        if (::getsockname(listener, reinterpret_cast<sockaddr *>(&addr), &addrLen) < 0)
+        socklen_t addressLength = sizeof(address);
+        if (::getsockname(listener, reinterpret_cast<sockaddr *>(&address), &addressLength) < 0)
         {
             ::closesocket(listener);
             return false;
@@ -140,7 +140,7 @@ namespace Platform
             return false;
         }
 
-        if (::connect(client, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+        if (::connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0)
         {
             ::closesocket(listener);
             ::closesocket(client);
@@ -156,15 +156,15 @@ namespace Platform
             return false;
         }
 
-        readFd  = server;
-        writeFd = client;
+        readFileDescriptor  = server;
+        writeFileDescriptor = client;
         return true;
     }
 #else
-    inline bool createSocketPair(int &readFd, int &writeFd)
+    inline bool createSocketPair(int &readFileDescriptor, int &writeFileDescriptor)
     {
-        (void)readFd;
-        (void)writeFd;
+        (void)readFileDescriptor;
+        (void)writeFileDescriptor;
         return false; // Linux 使用 eventfd，不需要 socket pair
     }
 #endif

@@ -13,92 +13,92 @@ using namespace std::chrono_literals;
 
 TEST_CASE("AsyncSocket: create returns valid socket", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    REQUIRE(sock.fd() >= 0);
+    auto asyncSocket = AsyncSocket::create(loop);
+    REQUIRE(asyncSocket.fileDescriptor() >= 0);
 }
 
 TEST_CASE("AsyncSocket: move construction", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock1 = AsyncSocket::create(loop);
-    int fd = sock1.fd();
+    auto asyncSocket1 = AsyncSocket::create(loop);
+    int fileDescriptor1 = asyncSocket1.fileDescriptor();
 
-    AsyncSocket sock2(std::move(sock1));
-    REQUIRE(sock2.fd() == fd);
+    AsyncSocket asyncSocket2(std::move(asyncSocket1));
+    REQUIRE(asyncSocket2.fileDescriptor() == fileDescriptor1);
 }
 
 TEST_CASE("AsyncSocket: move assignment", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock1 = AsyncSocket::create(loop);
-    auto sock2 = AsyncSocket::create(loop);
-    int fd1 = sock1.fd();
+    auto asyncSocket1 = AsyncSocket::create(loop);
+    auto asyncSocket2 = AsyncSocket::create(loop);
+    int fileDescriptor1 = asyncSocket1.fileDescriptor();
 
-    sock2 = std::move(sock1);
-    REQUIRE(sock2.fd() == fd1);
+    asyncSocket2 = std::move(asyncSocket1);
+    REQUIRE(asyncSocket2.fileDescriptor() == fileDescriptor1);
 }
 
-TEST_CASE("AsyncSocket: close sets fd to -1", "[AsyncSocket]") {
+TEST_CASE("AsyncSocket: close sets fileDescriptor to -1", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    REQUIRE(sock.fd() >= 0);
+    auto asyncSocket = AsyncSocket::create(loop);
+    REQUIRE(asyncSocket.fileDescriptor() >= 0);
 
-    sock.close();
-    REQUIRE(sock.fd() == -1);
+    asyncSocket.close();
+    REQUIRE(asyncSocket.fileDescriptor() == -1);
 }
 
 TEST_CASE("AsyncSocket: double close is safe", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    sock.close();
-    REQUIRE_NOTHROW(sock.close());
+    auto asyncSocket = AsyncSocket::create(loop);
+    asyncSocket.close();
+    REQUIRE_NOTHROW(asyncSocket.close());
 }
 
 TEST_CASE("AsyncSocket: bind to localhost port", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    auto addr = InetAddress::localhost(0);
+    auto asyncSocket = AsyncSocket::create(loop);
+    auto address = InetAddress::localhost(0);
 
-    REQUIRE(sock.bind(addr));
+    REQUIRE(asyncSocket.bind(address));
 }
 
 TEST_CASE("AsyncSocket: listen after bind", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    auto addr = InetAddress::localhost(0);
+    auto asyncSocket = AsyncSocket::create(loop);
+    auto address = InetAddress::localhost(0);
 
-    REQUIRE(sock.bind(addr));
-    REQUIRE(sock.listen());
+    REQUIRE(asyncSocket.bind(address));
+    REQUIRE(asyncSocket.listen());
 }
 
 TEST_CASE("AsyncSocket: setSockOpt", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
+    auto asyncSocket = AsyncSocket::create(loop);
 
     int opt = 1;
-    REQUIRE(sock.setSockOpt(SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)));
+    REQUIRE(asyncSocket.setSockOpt(SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)));
 }
 
 TEST_CASE("AsyncSocket: bind/listen/close lifecycle", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    auto addr = InetAddress::localhost(0);
+    auto asyncSocket = AsyncSocket::create(loop);
+    auto address = InetAddress::localhost(0);
 
-    REQUIRE(sock.bind(addr));
-    REQUIRE(sock.listen());
+    REQUIRE(asyncSocket.bind(address));
+    REQUIRE(asyncSocket.listen());
 
-    auto localAddr = sock.localAddress();
-    REQUIRE(localAddr.port() != 0);
+    auto localAddress = asyncSocket.localAddress();
+    REQUIRE(localAddress.port() != 0);
 
-    sock.close();
-    REQUIRE(sock.fd() == -1);
+    asyncSocket.close();
+    REQUIRE(asyncSocket.fileDescriptor() == -1);
 }
 
 TEST_CASE("AsyncSocket: remoteAddress and localAddress", "[AsyncSocket]") {
     EventLoop loop;
-    auto sock = AsyncSocket::create(loop);
-    auto addr = InetAddress::localhost(0);
-    REQUIRE(sock.bind(addr));
+    auto asyncSocket = AsyncSocket::create(loop);
+    auto address = InetAddress::localhost(0);
+    REQUIRE(asyncSocket.bind(address));
 
     // localAddress should return the bound address
-    auto local = sock.localAddress();
+    auto local = asyncSocket.localAddress();
     REQUIRE(local.port() != 0);
 }

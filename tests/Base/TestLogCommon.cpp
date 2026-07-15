@@ -83,11 +83,11 @@ TEST_CASE("logLevelFromString returns INFO for unknown strings", "[LogCommon][lo
 
 TEST_CASE("logLevelFromString handles edge cases", "[LogCommon][logLevelFromString][boundary]")
 {
-    // Very long string
+    // 非常长的字符串
     std::string long_str(10000, 'X');
     REQUIRE(logLevelFromString(long_str) == LogLevel::INFO);
 
-    // String with null characters
+    // 包含空字符的字符串
     std::string with_nul("INFO\0extra", 9);
     REQUIRE(logLevelFromString(std::string_view(with_nul.data(), 4)) == LogLevel::INFO);
 }
@@ -105,7 +105,7 @@ TEST_CASE("currentTimestamp returns non-empty string", "[LogCommon][currentTimes
 TEST_CASE("currentTimestamp format is YYYY-MM-DD HH:MM:SS.mmm", "[LogCommon][currentTimestamp]")
 {
     auto ts = currentTimestamp();
-    // Expected format: "2026-04-28 20:30:45.123"
+    // 期望格式："2026-04-28 20:30:45.123"
     REQUIRE(ts.size() == 23);
     REQUIRE(ts[4] == '-');
     REQUIRE(ts[7] == '-');
@@ -114,7 +114,7 @@ TEST_CASE("currentTimestamp format is YYYY-MM-DD HH:MM:SS.mmm", "[LogCommon][cur
     REQUIRE(ts[16] == ':');
     REQUIRE(ts[19] == '.');
 
-    // Verify all other chars are digits
+    // 验证其他所有字符都是数字
     for (size_t i = 0; i < ts.size(); ++i)
     {
         if (i == 4 || i == 7 || i == 10 || i == 13 || i == 16 || i == 19)
@@ -127,7 +127,7 @@ TEST_CASE("currentTimestamp is monotonic within reasonable bounds", "[LogCommon]
 {
     auto ts1 = currentTimestamp();
     auto ts2 = currentTimestamp();
-    // Two consecutive calls should produce timestamps
+    // 两次连续调用应产生时间戳
     REQUIRE_FALSE(ts1.empty());
     REQUIRE_FALSE(ts2.empty());
     REQUIRE(ts1 <= ts2);
@@ -198,11 +198,11 @@ TEST_CASE("SourceLocation::shortFileName extracts filename from path", "[LogComm
     SourceLocation loc3("main.cpp", 1, "f");
     REQUIRE(std::string(loc3.shortFileName()) == "main.cpp");
 
-    // Windows path
+    // Windows 路径
     SourceLocation loc4("C:\\Users\\test\\file.cpp", 10, "f");
     REQUIRE(std::string(loc4.shortFileName()) == "file.cpp");
 
-    // No slashes
+    // 没有斜杠
     SourceLocation loc5("file.h", 5, "f");
     REQUIRE(std::string(loc5.shortFileName()) == "file.h");
 
@@ -230,7 +230,7 @@ TEST_CASE("LogEvent default construction initializes string fields empty", "[Log
 {
     LogEvent event;
     // Note: level is uninitialized with =default constructor (trivial type)
-    // Only test std::string fields which are properly default-initialized
+    // 仅测试能正确默认初始化的 std::string 字段
     REQUIRE(event.timestamp.empty());
     REQUIRE(event.thread_id.empty());
     REQUIRE(event.logger_name.empty());
@@ -309,7 +309,7 @@ TEST_CASE("color::getColorForLevel default returns RESET", "[LogCommon][color]")
 
 TEST_CASE("color constants are valid ANSI escape sequences", "[LogCommon][color]")
 {
-    // All color constants should start with \033[
+    // 所有颜色常量应以 \033[ 开头
     auto check_ansi = [](const char *seq)
     {
         REQUIRE(seq[0] == '\033');
@@ -328,7 +328,7 @@ TEST_CASE("color constants are valid ANSI escape sequences", "[LogCommon][color]
 
 TEST_CASE("color::terminalSupportsColor returns bool", "[LogCommon][color]")
 {
-    // Should not crash or throw
+    // 不应崩溃或抛出异常
     auto supports = color::terminalSupportsColor();
     REQUIRE((supports == true || supports == false));
 }
@@ -343,7 +343,7 @@ TEST_CASE("LogLevel round-trip through string conversion", "[LogCommon][roundtri
     {
         auto level = static_cast<LogLevel>(i);
         auto str   = logLevelToString(level);
-        // Remove padding spaces for comparison
+        // 移除填充的空格以进行比较
         std::string trimmed(str);
         while (!trimmed.empty() && trimmed.back() == ' ')
             trimmed.pop_back();

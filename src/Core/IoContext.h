@@ -21,8 +21,8 @@ namespace Core
      *
      * 使用示例：
      * @code
-     *   Core::IoContext ctx(4);  // 4 个工作线程
-     *   ctx.run();               // 阻塞直到 stop() 被调用
+     *   Core::IoContext context(4);  // 4 个工作线程
+     *   context.run();               // 阻塞直到 stop() 被调用
      * @endcode
      */
     class IoContext
@@ -78,7 +78,7 @@ namespace Core
     private:
         ThreadPool              m_threadPool;     ///< 底层线程池，管理所有工作线程
         std::mutex              m_mutex;          ///< 保护 m_stopped 标志的条件锁
-        std::condition_variable m_cv;             ///< 用于等待 stop() 通知的条件变量
+        std::condition_variable m_condition;      ///< 用于等待 stop() 通知的条件变量
         bool                    m_stopped{false}; ///< 是否已请求停止
     };
 

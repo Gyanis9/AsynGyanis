@@ -20,7 +20,7 @@ namespace Core
         m_threadPool.start();
 
         std::unique_lock lock(m_mutex);
-        m_cv.wait(lock, [this]
+        m_condition.wait(lock, [this]
         {
             return m_stopped;
         });
@@ -32,7 +32,7 @@ namespace Core
             std::lock_guard lock(m_mutex);
             m_stopped = true;
         }
-        m_cv.notify_all();
+        m_condition.notify_all();
         m_threadPool.stop();
     }
 

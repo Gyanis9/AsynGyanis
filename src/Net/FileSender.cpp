@@ -21,10 +21,10 @@ namespace Net
 
     Core::Task<> FileSender::sendFile(Core::EventLoop &loop, TcpStream &stream, const std::string &filePath)
     {
-        const int sockFd = stream.socket().fd();
+        const int socketFileDescriptor = stream.socket().fileDescriptor();
 
 #ifdef _WIN32
-        // Windows: 使用 TransmitFile
+        // Windows 平台：使用 TransmitFile
         HANDLE hFile = CreateFileA(
             filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -44,7 +44,7 @@ namespace Net
         {
             const DWORD toSend = static_cast<DWORD>(std::min(remaining, static_cast<size_t>(ULONG_MAX)));
             const BOOL  ok = TransmitFile(
-                static_cast<SOCKET>(sockFd), hFile, toSend, 0, nullptr, nullptr, 0);
+                static_cast<SOCKET>(socketFileDescriptor), hFile, toSend, 0, nullptr, nullptr, 0);
 
             if (ok)
             {
@@ -52,10 +52,10 @@ namespace Net
                 continue;
             }
 
-            const int err = ASYN_ERRNO;
-            if (err == ASYN_EAGAIN || err == ASYN_EWOULDBLOCK)
+            const int error = ASYN_ERRNO;
+            if (error == ASYN_EAGAIN || error == ASYN_EWOULDBLOCK)
             {
-                co_await Core::EpollAwaiter(loop.epoll(), sockFd, EPOLLOUT);
+                co_await Core::EpollAwaiter(loop.epoll(), socketFileDescriptor, EPOLLOUT);
                 continue;
             }
             break; // 其他错误
@@ -64,31 +64,31 @@ namespace Net
         CloseHandle(hFile);
 #else
         // Linux: 使用 sendfile
-        const int fileFd = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fileFd < 0)
+        const int fileDescriptor = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fileDescriptor < 0)
             co_return;
 
-        // RAII guard: ensure fileFd is always closed, even on coroutine cancellation
+        // RAII guard: ensure fileDescriptor is always closed, even on coroutine cancellation
         struct FileGuard
         {
-            int fd;
+            int fileDescriptor;
 
             ~FileGuard()
             {
-                if (fd >= 0)
-                    ::close(fd);
+                if (fileDescriptor >= 0)
+                    ::close(fileDescriptor);
             }
-        } guard{fileFd};
+        } guard{fileDescriptor};
 
         struct stat st{};
-        if (::fstat(fileFd, &st) < 0)
+        if (::fstat(fileDescriptor, &st) < 0)
             co_return;
 
         size_t remaining = static_cast<size_t>(st.st_size);
 
         while (remaining > 0)
         {
-            const ssize_t n = ::sendfile(sockFd, fileFd, nullptr, remaining);
+            const ssize_t n = ::sendfile(socketFileDescriptor, fileDescriptor, nullptr, remaining);
             if (n > 0)
             {
                 remaining -= static_cast<size_t>(n);
@@ -98,7 +98,7 @@ namespace Net
                 break;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                co_await Core::EpollAwaiter(loop.epoll(), sockFd, EPOLLOUT);
+                co_await Core::EpollAwaiter(loop.epoll(), socketFileDescriptor, EPOLLOUT);
                 continue;
             }
             if (errno == EINTR)

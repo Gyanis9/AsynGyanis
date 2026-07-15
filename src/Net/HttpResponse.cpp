@@ -40,11 +40,11 @@ namespace Net
         {
             if (lowerName == "set-cookie")
             {
-                size_t      idx = 1;
+                size_t      index = 1;
                 std::string indexedKey;
                 do
                 {
-                    indexedKey = lowerName + "_" + std::to_string(idx++);
+                    indexedKey = lowerName + "_" + std::to_string(index++);
                 } while (m_headers.contains(indexedKey));
                 m_headers[std::move(indexedKey)] = value;
                 return;
@@ -143,7 +143,7 @@ namespace Net
 
     std::string HttpResponse::toString() const
     {
-        // Pre-compute size to avoid reallocations（含自动添加的 content-type / content-length）
+        // 预计算大小以避免重新分配（含自动添加的 content-type / content-length）
         size_t estimated        = 48 + m_body.size(); // status line + CRLF CRLF
         bool   hasContentLength = false;
         bool   hasContentType   = false;
@@ -163,13 +163,13 @@ namespace Net
         std::string result;
         result.reserve(estimated);
 
-        // Status line（使用请求对应的 HTTP 版本而非硬编码 HTTP/1.1）
+        // 状态行（使用请求对应的 HTTP 版本而非硬编码 HTTP/1.1）
         result.append(m_httpVersion);
         result.push_back(' ');
         // 状态码使用栈缓冲避免 std::to_string 堆分配
-        char       statusBuf[8];
-        const auto [ptr, _] = std::to_chars(statusBuf, statusBuf + sizeof(statusBuf), m_status);
-        result.append(statusBuf, static_cast<size_t>(ptr - statusBuf));
+        char       statusBuffer[8];
+        const auto [ptr, _] = std::to_chars(statusBuffer, statusBuffer + sizeof(statusBuffer), m_status);
+        result.append(statusBuffer, static_cast<size_t>(ptr - statusBuffer));
         result.push_back(' ');
         result.append(statusMessage(m_status));
         result.append("\r\n");
@@ -188,11 +188,11 @@ namespace Net
         if (!hasContentLength)
         {
             result.append("content-length: ");
-            char       lenBuf[32];
-            const auto [lp, ec2] = std::to_chars(lenBuf, lenBuf + sizeof(lenBuf),
+            char       lengthBuffer[32];
+            const auto [lp, ec2] = std::to_chars(lengthBuffer, lengthBuffer + sizeof(lengthBuffer),
                                                  static_cast<uint64_t>(m_body.size()));
             (void) ec2;
-            result.append(lenBuf, static_cast<size_t>(lp - lenBuf));
+            result.append(lengthBuffer, static_cast<size_t>(lp - lengthBuffer));
             result.append("\r\n");
         }
 
@@ -204,29 +204,29 @@ namespace Net
 
     HttpResponse HttpResponse::ok(std::string body)
     {
-        HttpResponse res;
-        res.setStatus(200);
-        res.setBody(std::move(body));
-        res.setHeader("content-type", "text/plain");
-        return res;
+        HttpResponse response;
+        response.setStatus(200);
+        response.setBody(std::move(body));
+        response.setHeader("content-type", "text/plain");
+        return response;
     }
 
     HttpResponse HttpResponse::notFound()
     {
-        HttpResponse res;
-        res.setStatus(404);
-        res.setBody("Not Found");
-        res.setHeader("content-type", "text/plain");
-        return res;
+        HttpResponse response;
+        response.setStatus(404);
+        response.setBody("Not Found");
+        response.setHeader("content-type", "text/plain");
+        return response;
     }
 
-    HttpResponse HttpResponse::serverError(std::string msg)
+    HttpResponse HttpResponse::serverError(std::string message)
     {
-        HttpResponse res;
-        res.setStatus(500);
-        res.setBody(std::move(msg));
-        res.setHeader("content-type", "text/plain");
-        return res;
+        HttpResponse response;
+        response.setStatus(500);
+        response.setBody(std::move(message));
+        response.setHeader("content-type", "text/plain");
+        return response;
     }
 
     void HttpResponse::reset()

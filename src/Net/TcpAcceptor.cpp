@@ -9,30 +9,30 @@
 
 namespace Net
 {
-    TcpAcceptor::TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &addr) :
+    TcpAcceptor::TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address) :
         m_loop(loop),
-        m_listenSocket(Core::AsyncSocket::create(loop, addr.family() == AF_INET6 ? AF_INET6 : AF_INET)),
-        m_addr(addr)
+        m_listenSocket(Core::AsyncSocket::create(loop, address.family() == AF_INET6 ? AF_INET6 : AF_INET)),
+        m_address(address)
     {
     }
 
     bool TcpAcceptor::bind()
     {
-        const int     fd  = m_listenSocket.fd();
-        constexpr int opt = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
+        const int     fileDescriptor = m_listenSocket.fileDescriptor();
+        constexpr int opt            = 1;
+        setsockopt(fileDescriptor, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
         // SO_REUSEPORT 仅 Linux 3.9+ 支持，Windows 不支持此选项
 #ifdef SO_REUSEPORT
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char *>(&opt), sizeof(opt));
+        setsockopt(fileDescriptor, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char *>(&opt), sizeof(opt));
 #endif
 
-        if (m_addr.family() == AF_INET6)
+        if (m_address.family() == AF_INET6)
         {
             constexpr int         v6only = 0;
             [[maybe_unused]] auto _      = m_listenSocket.setSockOpt(IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
         }
 
-        if (!m_listenSocket.bind(m_addr))
+        if (!m_listenSocket.bind(m_address))
             return false;
 
         m_bound = true;
@@ -50,37 +50,37 @@ namespace Net
     {
         if (!m_pending.empty())
         {
-            Core::AsyncSocket sock = std::move(m_pending.front());
+            Core::AsyncSocket socket = std::move(m_pending.front());
             m_pending.pop_front();
-            co_return sock;
+            co_return socket;
         }
 
-        const int listenFd = m_listenSocket.fd();
-        if (listenFd < 0)
+        const int listenFileDescriptor = m_listenSocket.fileDescriptor();
+        if (listenFileDescriptor < 0)
         {
             co_return std::nullopt;
         }
 
         while (true)
         {
-            sockaddr_storage addr{};
-            socklen_t        addrLen = sizeof(addr);
-            const int        fd      = Platform::acceptSocket(listenFd, reinterpret_cast<sockaddr *>(&addr), &addrLen);
-            if (fd >= 0)
+            sockaddr_storage address{};
+            socklen_t        addressLength = sizeof(address);
+            const int        fileDescriptor = Platform::acceptSocket(listenFileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength);
+            if (fileDescriptor >= 0)
             {
                 constexpr int opt = 1;
-                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
-                Core::AsyncSocket first(m_loop, fd);
+                setsockopt(fileDescriptor, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
+                Core::AsyncSocket first(m_loop, fileDescriptor);
 
                 while (true)
                 {
                     sockaddr_storage extra{};
-                    socklen_t        extraLen = sizeof(extra);
-                    const int        extraFd  = Platform::acceptSocket(listenFd, reinterpret_cast<sockaddr *>(&extra), &extraLen);
-                    if (extraFd >= 0)
+                    socklen_t        extraLength         = sizeof(extra);
+                    const int        extraFileDescriptor = Platform::acceptSocket(listenFileDescriptor, reinterpret_cast<sockaddr *>(&extra), &extraLength);
+                    if (extraFileDescriptor >= 0)
                     {
-                        setsockopt(extraFd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
-                        m_pending.emplace_back(m_loop, extraFd);
+                        setsockopt(extraFileDescriptor, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
+                        m_pending.emplace_back(m_loop, extraFileDescriptor);
                         continue;
                     }
                     if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
@@ -95,14 +95,14 @@ namespace Net
 
             if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
             {
-                co_await Core::EpollAwaiter(m_loop.epoll(), listenFd, EPOLLIN);
+                co_await Core::EpollAwaiter(m_loop.epoll(), listenFileDescriptor, EPOLLIN);
                 continue;
             }
             if (ASYN_ERRNO == ASYN_EINTR || ASYN_ERRNO == ASYN_ECONNABORTED)
                 continue;
             if (ASYN_ERRNO == ASYN_EMFILE || ASYN_ERRNO == ASYN_ENFILE || ASYN_ERRNO == ASYN_ENOBUFS || ASYN_ERRNO == ASYN_ENOMEM)
             {
-                co_await Core::EpollAwaiter(m_loop.epoll(), listenFd, EPOLLIN);
+                co_await Core::EpollAwaiter(m_loop.epoll(), listenFileDescriptor, EPOLLIN);
                 continue;
             }
 
@@ -119,12 +119,12 @@ namespace Net
 
     Core::InetAddress TcpAcceptor::localAddress() const
     {
-        return m_addr;
+        return m_address;
     }
 
-    int TcpAcceptor::fd() const
+    int TcpAcceptor::fileDescriptor() const
     {
-        return m_listenSocket.fd();
+        return m_listenSocket.fileDescriptor();
     }
 
 }

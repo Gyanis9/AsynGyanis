@@ -47,23 +47,23 @@ namespace Net
 
         /**
          * @brief 运行中间件管道，从第一个中间件开始依次执行，最终调用业务处理器。
-         * @param req     HTTP 请求对象（可被中间件修改）
-         * @param res     HTTP 响应对象（可被中间件修改）
+         * @param request  HTTP 请求对象（可被中间件修改）
+         * @param response HTTP 响应对象（可被中间件修改）
          * @param handler 最终的业务处理器（协程任务）
          * @return Task<> 协程，完成后返回
          */
-        Core::Task<> run(HttpRequest &req, HttpResponse &res, std::function<Core::Task<>()> handler);
+        Core::Task<> run(HttpRequest &request, HttpResponse &response, std::function<Core::Task<>()> handler);
 
     private:
         /**
          * @brief 递归调用中间件链。
          * @param index   当前中间件索引
-         * @param req     请求对象
-         * @param res     响应对象
+         * @param request  请求对象
+         * @param response 响应对象
          * @param handler 最终处理器
          * @return Task<> 协程
          */
-        Core::Task<> invoke(size_t index, HttpRequest &req, HttpResponse &res, std::function<Core::Task<>()> handler);
+        Core::Task<> invoke(size_t index, HttpRequest &request, HttpResponse &response, std::function<Core::Task<>()> handler);
 
         std::vector<MiddlewareFunc> m_middlewares; ///< 存储已注册的中间件
     };
@@ -77,12 +77,12 @@ namespace Net
         m_middlewares.push_back(std::move(middleware));
     }
 
-    inline Core::Task<> MiddlewarePipeline::run(HttpRequest &req, HttpResponse &res, std::function<Core::Task<void>()> handler)
+    inline Core::Task<> MiddlewarePipeline::run(HttpRequest &request, HttpResponse &response, std::function<Core::Task<void>()> handler)
     {
-        co_await invoke(0, req, res, std::move(handler));
+        co_await invoke(0, request, response, std::move(handler));
     }
 
-    inline Core::Task<> MiddlewarePipeline::invoke(size_t index, HttpRequest &req, HttpResponse &res, std::function<Core::Task<void>()> handler)
+    inline Core::Task<> MiddlewarePipeline::invoke(size_t index, HttpRequest &request, HttpResponse &response, std::function<Core::Task<void>()> handler)
     {
         if (index >= m_middlewares.size())
         {
@@ -90,9 +90,9 @@ namespace Net
             co_return;
         }
 
-        co_await m_middlewares[index](req, res, [this, index, &req, &res, handler]() -> Core::Task<void>
+        co_await m_middlewares[index](request, response, [this, index, &request, &response, handler]() -> Core::Task<void>
         {
-            co_await invoke(index + 1, req, res, handler);
+            co_await invoke(index + 1, request, response, handler);
         });
     }
 
@@ -110,14 +110,14 @@ namespace Net
      */
     inline MiddlewareFunc loggingMiddleware(Base::Logger &logger)
     {
-        return [&logger](HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [&logger](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             const auto start = std::chrono::steady_clock::now();
             co_await next();
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - start).count();
             logger.logFormat(Base::LogLevel::INFO, Base::SourceLocation::current(),
-                             "{} -> {} {}ms", req.uri(), res.status(), elapsed);
+                             "{} -> {} {}ms", request.uri(), response.status(), elapsed);
         };
     }
 
@@ -133,12 +133,12 @@ namespace Net
      */
     inline MiddlewareFunc corsMiddleware()
     {
-        return [](HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            res.setHeader("access-control-allow-origin", "*");
-            res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-            res.setHeader("access-control-allow-headers", "Content-Type, Authorization");
-            res.setHeader("access-control-max-age", "86400");
+            response.setHeader("access-control-allow-origin", "*");
+            response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+            response.setHeader("access-control-allow-headers", "Content-Type, Authorization");
+            response.setHeader("access-control-max-age", "86400");
 
             co_await next();
         };
@@ -154,15 +154,15 @@ namespace Net
      */
     inline MiddlewareFunc timeoutMiddleware(const std::chrono::milliseconds timeout)
     {
-        return [timeout](HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [timeout](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             const auto start = std::chrono::steady_clock::now();
             co_await next();
             if (std::chrono::steady_clock::now() - start > timeout)
             {
-                res.setStatus(504);
-                res.setBody("Gateway Timeout");
-                res.setHeader("content-type", "text/plain");
+                response.setStatus(504);
+                response.setBody("Gateway Timeout");
+                response.setHeader("content-type", "text/plain");
             }
         };
     }
@@ -189,7 +189,7 @@ namespace Net
 
         auto bucket = std::make_shared<Bucket>();
 
-        return [bucket, maxRequests, window](HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [bucket, maxRequests, window](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
 
             // 滑动窗口：窗口过期则重置
@@ -203,10 +203,10 @@ namespace Net
 
             if (bucket->count > maxRequests)
             {
-                res.setStatus(429);
-                res.setBody("Too Many Requests");
-                res.setHeader("content-type", "text/plain");
-                res.setHeader("retry-after", std::to_string(window.count()));
+                response.setStatus(429);
+                response.setBody("Too Many Requests");
+                response.setHeader("content-type", "text/plain");
+                response.setHeader("retry-after", std::to_string(window.count()));
                 co_return;
             }
 
@@ -224,24 +224,24 @@ namespace Net
      */
     inline MiddlewareFunc bodySizeLimitMiddleware(const size_t maxBodySize)
     {
-        return [maxBodySize](const HttpRequest &req, HttpResponse &res, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [maxBodySize](const HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            if (const auto contentLength = req.getHeader("content-length"))
+            if (const auto contentLength = request.getHeader("content-length"))
             {
                 try
                 {
                     if (const auto size = std::stoull(contentLength.value()); size > maxBodySize)
                     {
-                        res.setStatus(413);
-                        res.setBody("Payload Too Large");
-                        res.setHeader("content-type", "text/plain");
+                        response.setStatus(413);
+                        response.setBody("Payload Too Large");
+                        response.setHeader("content-type", "text/plain");
                         co_return;
                     }
                 } catch (...)
                 {
-                    res.setStatus(400);
-                    res.setBody("Bad Request: Invalid Content-Length");
-                    res.setHeader("content-type", "text/plain");
+                    response.setStatus(400);
+                    response.setBody("Bad Request: Invalid Content-Length");
+                    response.setHeader("content-type", "text/plain");
                     co_return;
                 }
             }

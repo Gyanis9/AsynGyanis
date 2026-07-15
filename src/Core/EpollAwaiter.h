@@ -35,11 +35,11 @@ namespace Core
         /**
          * @brief 构造一个针对特定 fd 和事件的等待器
          * @param epoll     epoll 实例引用
-         * @param fd        要监听的文件描述符
+         * @param fileDescriptor        要监听的文件描述符
          * @param eventMask 监听的事件掩码，例如 EPOLLIN、EPOLLOUT 等（内部会自动添加 EPOLLET）
          */
-        EpollAwaiter(Epoll &epoll, int fd, uint32_t eventMask) :
-            m_epoll(&epoll), m_fd(fd), m_eventMask(eventMask)
+        EpollAwaiter(Epoll &epoll, int fileDescriptor, uint32_t eventMask) :
+            m_epoll(&epoll), m_fileDescriptor(fileDescriptor), m_eventMask(eventMask)
         {
         }
 
@@ -50,7 +50,7 @@ namespace Core
         {
             if (m_registered)
             {
-                [[maybe_unused]] auto _ = m_epoll->delFd(m_fd);
+                [[maybe_unused]] auto _ = m_epoll->delFileDescriptor(m_fileDescriptor);
             }
         }
 
@@ -75,7 +75,7 @@ namespace Core
          */
         void await_suspend(std::coroutine_handle<> handle) const noexcept
         {
-            m_epoll->addFd(m_fd, m_eventMask | EPOLLET, handle.address());
+            m_epoll->addFileDescriptor(m_fileDescriptor, m_eventMask | EPOLLET, handle.address());
             m_registered = true;
         }
 
@@ -85,12 +85,12 @@ namespace Core
         void await_resume() const noexcept
         {
             m_registered            = false;
-            [[maybe_unused]] auto _ = m_epoll->delFd(m_fd);
+            [[maybe_unused]] auto _ = m_epoll->delFileDescriptor(m_fileDescriptor);
         }
 
     private:
         Epoll *      m_epoll;             ///< epoll 实例指针（非拥有，生命周期由外部保证）
-        int          m_fd;                ///< 被监听的文件描述符
+        int          m_fileDescriptor;    ///< 被监听的文件描述符
         uint32_t     m_eventMask;         ///< 要监听的事件掩码（不包含 EPOLLET，内部会自动添加）
         mutable bool m_registered{false}; ///< 是否已注册到 epoll（用于 RAII 析构清理）
     };

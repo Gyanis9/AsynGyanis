@@ -49,7 +49,7 @@ void await_suspend(std::coroutine_handle<> handle) noexcept;
 **功能**：挂起协程前，将 fd 注册到 epoll 并关联协程句柄地址。
 
 **流程**：
-1. 调用 `m_epoll->addFd(m_fd, m_eventMask | EPOLLET, handle.address())`
+1. 调用 `m_epoll->addFileDescriptor(m_fd, m_eventMask | EPOLLET, handle.address())`
 2. 将 `handle.address()` 作为 `epoll_event.data.ptr` 存储
 3. 当 fd 就绪时，EventLoop 通过 `std::coroutine_handle<>::from_address(ev.data.ptr)` 恢复该协程
 
@@ -59,7 +59,7 @@ void await_suspend(std::coroutine_handle<> handle) noexcept;
 void await_resume() const;
 ```
 
-**功能**：协程恢复时，从 epoll 中移除 fd。调用 `m_epoll->delFd(m_fd)`。
+**功能**：协程恢复时，从 epoll 中移除 fd。调用 `m_epoll->delFileDescriptor(m_fd)`。
 
 ## 工作流程
 

@@ -19,7 +19,7 @@ namespace Net
      * @brief 带缓冲的 TCP 流，封装 AsyncSocket，提供按行读取、精确读取等高级功能。
      *
      * 该类内部维护一个读取缓冲区，减少系统调用次数，支持：
-     * - read()：读取最多 len 字节
+     * - read()：读取最多 length 字节
      * - readExact()：读取精确长度的数据
      * - readUntil()：读取直到遇到指定分隔符（如 '\n'）
      * - write() / writeAll()：写入数据
@@ -47,23 +47,23 @@ namespace Net
 
         /**
          * @brief 从流中读取数据。
-         * @param buf 接收缓冲区指针
-         * @param len 最多读取的字节数
+         * @param buffer 接收缓冲区指针
+         * @param length 最多读取的字节数
          * @return Task<ssize_t> 实际读取的字节数（0 表示连接关闭，负数表示错误）
          *
          * 优先从内部缓冲区读取，若缓冲区不足则从 socket 读取更多数据。
          */
-        Core::Task<ssize_t> read(void *buf, size_t len);
+        Core::Task<ssize_t> read(void *buffer, size_t length);
 
         /**
          * @brief 精确读取指定长度的数据。
-         * @param buf 接收缓冲区指针
-         * @param len 需要读取的字节数
+         * @param buffer 接收缓冲区指针
+         * @param length 需要读取的字节数
          * @return Task<> 协程，成功时完成，若连接关闭或出错则抛出异常
          *
-         * 反复读取直到接收满 len 字节，或遇到错误/EOF。
+         * 反复读取直到接收满 length 字节，或遇到错误/EOF。
          */
-        Core::Task<> readExact(void *buf, size_t len);
+        Core::Task<> readExact(void *buffer, size_t length);
 
         /**
          * @brief 读取直到遇到指定分隔符。
@@ -78,19 +78,19 @@ namespace Net
 
         /**
          * @brief 写入数据（可能只写入部分）。
-         * @param buf 数据缓冲区指针
-         * @param len 要写入的字节数
+         * @param buffer 数据缓冲区指针
+         * @param length 要写入的字节数
          * @return Task<ssize_t> 实际写入的字节数（负数表示错误）
          */
-        Core::Task<ssize_t> write(const void *buf, size_t len) const;
+        Core::Task<ssize_t> write(const void *buffer, size_t length) const;
 
         /**
          * @brief 写入所有数据，反复重试直到全部写入或出错。
-         * @param buf 数据缓冲区指针
-         * @param len 要写入的字节数
+         * @param buffer 数据缓冲区指针
+         * @param length 要写入的字节数
          * @return Task<> 协程，成功时完成，出错时抛出异常
          */
-        Core::Task<> writeAll(const void *buf, size_t len) const;
+        Core::Task<> writeAll(const void *buffer, size_t length) const;
 
         /**
          * @brief 关闭底层 socket。

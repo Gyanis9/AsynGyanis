@@ -21,14 +21,14 @@ namespace Core
      * @brief TLS socket 包装类，提供异步 SSL 握手、加密读写接口。
      *
      * 内部持有 SSL 对象和底层 AsyncSocket，通过 EpollAwaiter 处理非阻塞读/写事件。
-     * 使用前必须调用 handshake() 完成 TLS 握手，之后方可使用 asyncRecv/asyncSend。
+     * 使用前必须调用 handshake() 完成 TLS 握手，之后方可使用 asyncReceive/asyncSend。
      */
     class TlsSocket
     {
     public:
         /**
          * @brief 构造 TlsSocket 对象。
-         * @param ssl   已关联 socket fd 的 SSL 对象（由 TlsContext::createSSL 获得），所有权转移
+         * @param ssl   已关联 socket 文件描述符的 SSL 对象（由 TlsContext::createSSL 获得），所有权转移
          * @param loop  所属事件循环
          * @param socket 已建立的异步 socket（非阻塞，已连接）
          */
@@ -67,19 +67,19 @@ namespace Core
 
         /**
          * @brief TLS 加密接收数据。
-         * @param buf 接收缓冲区
-         * @param len 缓冲区长度
+         * @param buffer 接收缓冲区
+         * @param length 缓冲区长度
          * @return Task<ssize_t> 协程，恢复时返回实际读取的字节数（0 表示连接关闭，负数表示错误）
          */
-        Task<ssize_t> asyncRecv(void *buf, size_t len) const;
+        Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
         /**
          * @brief TLS 加密发送数据。
-         * @param buf 发送缓冲区
-         * @param len 缓冲区长度
+         * @param buffer 发送缓冲区
+         * @param length 缓冲区长度
          * @return Task<ssize_t> 协程，恢复时返回实际发送的字节数（负数表示错误）
          */
-        Task<ssize_t> asyncSend(const void *buf, size_t len) const;
+        Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
 
         /**
          * @brief 关闭连接，释放 SSL 对象并关闭底层 socket。
@@ -90,7 +90,7 @@ namespace Core
          * @brief 获取底层 socket 的文件描述符。
          * @return 文件描述符值
          */
-        [[nodiscard]] int fd() const noexcept;
+        [[nodiscard]] int fileDescriptor() const noexcept;
 
     private:
         struct SslDeleter

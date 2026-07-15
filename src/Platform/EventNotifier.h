@@ -17,11 +17,11 @@ namespace Platform
     /**
      * @brief 跨线程事件通知器
      *
-     * Linux: 基于 eventfd 实现，readFd() 返回 eventfd。
-     * Windows: 基于 loopback socket pair 实现，readFd() 返回读端 socket。
+     * Linux: 基于 eventfd 实现，readFileDescriptor() 返回 eventfd。
+     * Windows: 基于 loopback socket pair 实现，readFileDescriptor() 返回读端 socket。
      *
      * 用法：
-     * 1. 将 readFd() 注册到 epoll
+     * 1. 将 readFileDescriptor() 注册到 epoll
      * 2. 跨线程调用 notify() 唤醒事件循环
      * 3. 事件循环中被唤醒后调用 drain() 清空数据
      */
@@ -31,28 +31,28 @@ namespace Platform
         EventNotifier()
         {
 #ifdef _WIN32
-            int rfd = -1, wfd = -1;
-            if (createSocketPair(rfd, wfd))
+            int readFileDescriptor = -1, writeFileDescriptor = -1;
+            if (createSocketPair(readFileDescriptor, writeFileDescriptor))
             {
-                m_readFd  = rfd;
-                m_writeFd = wfd;
-                setNonBlocking(m_readFd);
+                m_readFileDescriptor  = readFileDescriptor;
+                m_writeFileDescriptor = writeFileDescriptor;
+                setNonBlocking(m_readFileDescriptor);
             }
 #else
-            m_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+            m_fileDescriptor = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 #endif
         }
 
         ~EventNotifier()
         {
 #ifdef _WIN32
-            if (m_readFd >= 0)
-                closeFd(m_readFd);
-            if (m_writeFd >= 0)
-                closeFd(m_writeFd);
+            if (m_readFileDescriptor >= 0)
+                closeFileDescriptor(m_readFileDescriptor);
+            if (m_writeFileDescriptor >= 0)
+                closeFileDescriptor(m_writeFileDescriptor);
 #else
-            if (m_fd >= 0)
-                ::close(m_fd);
+            if (m_fileDescriptor >= 0)
+                ::close(m_fileDescriptor);
 #endif
         }
 
@@ -64,12 +64,12 @@ namespace Platform
         /**
          * @brief 获取供 epoll 监听的文件描述符
          */
-        int readFd() const noexcept
+        int readFileDescriptor() const noexcept
         {
 #ifdef _WIN32
-            return m_readFd;
+            return m_readFileDescriptor;
 #else
-            return m_fd;
+            return m_fileDescriptor;
 #endif
         }
 
@@ -79,16 +79,16 @@ namespace Platform
         void notify() const
         {
 #ifdef _WIN32
-            if (m_writeFd >= 0)
+            if (m_writeFileDescriptor >= 0)
             {
                 char byte = 1;
-                ::send(m_writeFd, &byte, 1, 0);
+                ::send(m_writeFileDescriptor, &byte, 1, 0);
             }
 #else
-            if (m_fd >= 0)
+            if (m_fileDescriptor >= 0)
             {
-                uint64_t val = 1;
-                ::write(m_fd, &val, sizeof(val));
+                uint64_t value = 1;
+                ::write(m_fileDescriptor, &value, sizeof(value));
             }
 #endif
         }
@@ -99,28 +99,28 @@ namespace Platform
         void drain() const
         {
 #ifdef _WIN32
-            if (m_readFd >= 0)
+            if (m_readFileDescriptor >= 0)
             {
-                char buf[64];
-                while (::recv(m_readFd, buf, sizeof(buf), 0) > 0)
+                char buffer[64];
+                while (::recv(m_readFileDescriptor, buffer, sizeof(buffer), 0) > 0)
                 {
                 }
             }
 #else
-            if (m_fd >= 0)
+            if (m_fileDescriptor >= 0)
             {
-                uint64_t val;
-                ::read(m_fd, &val, sizeof(val));
+                uint64_t value;
+                ::read(m_fileDescriptor, &value, sizeof(value));
             }
 #endif
         }
 
     private:
 #ifdef _WIN32
-        int m_readFd{-1};  ///< 读端 socket（注册到 epoll）
-        int m_writeFd{-1}; ///< 写端 socket（用于唤醒）
+        int m_readFileDescriptor{-1};  ///< 读端 socket（注册到 epoll）
+        int m_writeFileDescriptor{-1}; ///< 写端 socket（用于唤醒）
 #else
-        int m_fd{-1}; ///< eventfd 文件描述符
+        int m_fileDescriptor{-1}; ///< eventfd 文件描述符
 #endif
     };
 

@@ -6,59 +6,57 @@
 using namespace Core;
 
 TEST_CASE("InetAddress: default construction", "[InetAddress]") {
-    InetAddress addr;
-    REQUIRE(addr.family() == AF_INET);
-    REQUIRE(addr.ip() == "0.0.0.0");
-    REQUIRE(addr.port() == 0);
+    InetAddress address;
+    REQUIRE(address.family() == AF_INET);
+    REQUIRE(address.ip() == "0.0.0.0");
+    REQUIRE(address.port() == 0);
 }
 
 TEST_CASE("InetAddress: port and IP constructor (IPv4)", "[InetAddress]") {
-    InetAddress addr(8080, "127.0.0.1");
-    REQUIRE(addr.family() == AF_INET);
-    REQUIRE(addr.ip() == "127.0.0.1");
-    REQUIRE(addr.port() == 8080);
-    REQUIRE(addr.toString() == "127.0.0.1:8080");
+    InetAddress address(8080, "127.0.0.1");
+    REQUIRE(address.family() == AF_INET);
+    REQUIRE(address.ip() == "127.0.0.1");
+    REQUIRE(address.port() == 8080);
+    REQUIRE(address.toString() == "127.0.0.1:8080");
 }
 
 TEST_CASE("InetAddress: IP and port constructor (IPv4)", "[InetAddress]") {
-    InetAddress addr("192.168.1.1", 9090);
-    REQUIRE(addr.family() == AF_INET);
-    REQUIRE(addr.ip() == "192.168.1.1");
-    REQUIRE(addr.port() == 9090);
+    InetAddress address("192.168.1.1", 9090);
+    REQUIRE(address.family() == AF_INET);
+    REQUIRE(address.ip() == "192.168.1.1");
+    REQUIRE(address.port() == 9090);
 }
 
 TEST_CASE("InetAddress: localhost factory", "[InetAddress]") {
-    auto addr = InetAddress::localhost(3000);
-    REQUIRE(addr.ip() == "127.0.0.1");
-    REQUIRE(addr.port() == 3000);
-    REQUIRE(addr.family() == AF_INET);
+    auto address = InetAddress::localhost(3000);
+    REQUIRE(address.ip() == "127.0.0.1");
+    REQUIRE(address.port() == 3000);
+    REQUIRE(address.family() == AF_INET);
 }
 
 TEST_CASE("InetAddress: any factory", "[InetAddress]") {
-    auto addr = InetAddress::any(4000);
-    REQUIRE(addr.ip() == "0.0.0.0");
-    REQUIRE(addr.port() == 4000);
-    REQUIRE(addr.family() == AF_INET);
+    auto address = InetAddress::any(4000);
+    REQUIRE(address.ip() == "0.0.0.0");
+    REQUIRE(address.port() == 4000);
+    REQUIRE(address.family() == AF_INET);
 }
 
 TEST_CASE("InetAddress: resolve localhost returns valid address", "[InetAddress]") {
-    auto addr = InetAddress::resolve("localhost", 8080);
-    REQUIRE(addr.has_value());
-    REQUIRE(addr->port() == 8080);
+    auto address = InetAddress::resolve("localhost", 8080);
+    REQUIRE(address.has_value());
+    REQUIRE(address->port() == 8080);
     // localhost should resolve to 127.0.0.1 or ::1
-    REQUIRE((addr->ip() == "127.0.0.1" || addr->ip() == "::1"));
+    REQUIRE((address->ip() == "127.0.0.1" || address->ip() == "::1"));
 }
 
 TEST_CASE("InetAddress: resolve invalid host returns nullopt", "[InetAddress]") {
-    // 使用显式无效的 hostname 格式测试解析失败路径
-    // 不依赖外部 DNS 行为（可能被 ISP 劫持）
-    auto addr = InetAddress::resolve("", 8080);
-    REQUIRE_FALSE(addr.has_value());
+    auto address = InetAddress::resolve("", 8080);
+    REQUIRE_FALSE(address.has_value());
 }
 
 TEST_CASE("InetAddress: toString with IPv4", "[InetAddress]") {
-    InetAddress addr("10.0.0.1", 1234);
-    REQUIRE(addr.toString() == "10.0.0.1:1234");
+    InetAddress address("10.0.0.1", 1234);
+    REQUIRE(address.toString() == "10.0.0.1:1234");
 }
 
 TEST_CASE("InetAddress: equality operators", "[InetAddress]") {
@@ -78,21 +76,21 @@ TEST_CASE("InetAddress: sockaddr_in constructor", "[InetAddress]") {
     sin.sin_port = htons(5555);
     inet_pton(AF_INET, "10.20.30.40", &sin.sin_addr);
 
-    InetAddress addr(sin);
-    REQUIRE(addr.family() == AF_INET);
-    REQUIRE(addr.port() == 5555);
-    REQUIRE(addr.ip() == "10.20.30.40");
+    InetAddress address(sin);
+    REQUIRE(address.family() == AF_INET);
+    REQUIRE(address.port() == 5555);
+    REQUIRE(address.ip() == "10.20.30.40");
 }
 
-TEST_CASE("InetAddress: addr() and addrLen()", "[InetAddress]") {
-    InetAddress addr(7777, "1.2.3.4");
-    REQUIRE(addr.addr() != nullptr);
-    REQUIRE(addr.addrLen() == sizeof(sockaddr_in));
+TEST_CASE("InetAddress: nativeAddress() and nativeAddressLength()", "[InetAddress]") {
+    InetAddress address(7777, "1.2.3.4");
+    REQUIRE(address.nativeAddress() != nullptr);
+    REQUIRE(address.nativeAddressLength() == sizeof(sockaddr_in));
 }
 
 TEST_CASE("InetAddress: IPv6 address", "[InetAddress]") {
-    InetAddress addr(8080, "::1");
-    REQUIRE(addr.family() == AF_INET6);
-    REQUIRE(addr.ip() == "::1");
-    REQUIRE(addr.port() == 8080);
+    InetAddress address(8080, "::1");
+    REQUIRE(address.family() == AF_INET6);
+    REQUIRE(address.ip() == "::1");
+    REQUIRE(address.port() == 8080);
 }

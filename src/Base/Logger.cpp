@@ -161,11 +161,11 @@ namespace Base
     void LoggerRegistry::forEachLogger(const std::function<void(Logger &)> &func) const
     {
         std::shared_lock lock(m_mutex);
-        for (const auto &val: m_loggers | std::views::values)
+        for (const auto &value: m_loggers | std::views::values)
         {
-            if (val)
+            if (value)
             {
-                func(*val);
+                func(*value);
             }
         }
     }
