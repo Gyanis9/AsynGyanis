@@ -1,0 +1,444 @@
+/**
+ * @file ConfigManager.h
+ * @brief 配置管理器核心接口
+ * @author Gyanis
+ * @date 2026-09-10
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "Base/Config/ConfigLoadResult.h"
+#include "Base/Config/ConfigSchema.h"
+#include "Base/Config/ConfigValidationResult.h"
+#include "Base/Config/ConfigValue.h"
+#include "Platform/FileSystem/FileWatcher.h"
+
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+#include <yaml-cpp/yaml.h>
+
+namespace AsynGyanis::Base
+{
+    /**
+     * @brief 配置管理器类
+     *
+     * 配置管理器，提供以下核心功能：
+     *   - 从指定目录递归加载所有 .json/.yml/.yaml 配置文件
+     *   - 扁平化存储配置键值对
+     *   - 线程安全的读写访问（atomic shared_ptr 无锁热替换）
+     *   - 热加载支持（监听配置文件变更，自动重载）
+     *   - 类型安全的配置值访问
+     *
+     * 使用单例模式（Meyers' Singleton）确保全局唯一实例。
+     * 加载失败时保留上一次的有效配置快照。
+     *
+     * 使用示例：
+     * @code
+     *   // 初始化
+     *   auto& configuration = ConfigManager::instance();
+     *   auto result = configuration.loadFromDirectory("./config");
+     *   if (!result) {
+     *       for (const auto& error : result.errors) {
+     *           LOG_ERROR(error);
+     *       }
+     *       return -1;
+     *   }
+     *
+     *   // 启用热加载
+     *   configuration.enableHotReload([](const ConfigLoadResult& reloadResult) {
+     *       LOG_INFO("Config reloaded, {} files", reloadResult.loadedFiles.size());
+     *   });
+     *
+     *   // 读取配置
+     *   auto port = configuration.get<int64_t>("server.port", 8080);
+     *   auto host = configuration.get<std::string>("server.host", "0.0.0.0");
+     *   auto debug = configuration.get<bool>("debug.enabled", false);
+     *
+     *   // 检查键是否存在
+     *   if (configuration.has("database.url")) {
+     *       auto url = configuration.get<std::string>("database.url");
+     *   }
+     * @endcode
+     */
+    class ConfigManager
+    {
+    public:
+        /**
+         * @brief 获取配置管理器单例。
+         * @return ConfigManager& 单例引用。
+         */
+        static ConfigManager &instance() noexcept;
+
+        ConfigManager(const ConfigManager &) = delete;
+
+        ConfigManager &operator=(const ConfigManager &) = delete;
+
+        ConfigManager(ConfigManager &&) = delete;
+
+        ConfigManager &operator=(ConfigManager &&) = delete;
+
+        /**
+         * @brief 从目录加载 JSON/YAML 配置文件。
+         * @param configDirectory 配置目录。
+         * @param recursive 是否递归扫描子目录。
+         * @return ConfigLoadResult 加载结果。
+         */
+        ConfigLoadResult loadFromDirectory(const std::filesystem::path &configDirectory, bool recursive = true);
+
+        /**
+         * @brief 加载指定文件列表中的配置（支持 .json/.yaml/.yml）。
+         * @details 至少一个文件成功时提交合并结果；全部失败时保留原配置。
+         * @param filePaths 配置文件路径列表。
+         * @return ConfigLoadResult 加载结果。
+         */
+        ConfigLoadResult loadFiles(const std::vector<std::filesystem::path> &filePaths);
+
+        /**
+         * @brief 使用当前目录配置执行一次重载。
+         * @return ConfigLoadResult 重载结果。
+         */
+        ConfigLoadResult reload();
+
+        /**
+         * @brief 启用热加载（监听配置文件变更，自动重载）
+         * @param callback 热加载完成后的回调函数
+         * @param debounceMilliseconds 防抖间隔（毫秒），默认 500ms
+         * @return bool 成功返回 true；重复调用返回 true；未加载目录或平台不支持返回 false
+         */
+        bool enableHotReload(HotReloadCallback callback = nullptr, std::chrono::milliseconds debounceMilliseconds = std::chrono::milliseconds(500));
+
+        /**
+         * @brief 关闭热重载监听并释放监听资源。
+         */
+        void disableHotReload();
+
+        /**
+         * @brief 查询热重载当前是否启用。
+         * @return bool 启用返回 true。
+         */
+        [[nodiscard]] bool isHotReloadEnabled() const noexcept;
+
+        /**
+         * @brief 按键获取配置值，键不存在时抛出异常。
+         * @param key 配置键。
+         * @return ConfigValue 配置值副本。
+         * @throws ConfigKeyNotFoundException 键不存在时抛出。
+         */
+        ConfigValue get(std::string_view key) const;
+
+        /**
+         * @brief 安全获取配置值。
+         * @param key 配置键。
+         * @return std::optional<ConfigValue> 键存在时返回值，否则为空。
+         */
+        [[nodiscard]] std::optional<ConfigValue> getOptional(std::string_view key) const noexcept;
+
+        /**
+         * @brief 获取指定类型的配置值，键不存在或类型不匹配时抛出异常。
+         * @tparam T 目标类型。
+         * @param key 配置键。
+         * @return T 配置值。
+         * @throws ConfigKeyNotFoundException 键不存在
+         * @throws ConfigTypeException 类型不匹配
+         */
+        template<typename T>
+        T get(const std::string_view key) const
+        {
+            return get(key).template as<T>();
+        }
+
+        /**
+         * @brief 获取指定类型的配置值
+         * @param key 配置键
+         * @param defaultValue 默认值（键不存在或类型不匹配时返回）
+         * @return 配置值或默认值
+         */
+        template<typename T>
+        T get(const std::string_view key, T &&defaultValue) const noexcept
+        {
+            const auto optionalValue = getOptional(key);
+            if (!optionalValue)
+            {
+                return std::forward<T>(defaultValue);
+            }
+
+            auto typed = optionalValue->get<std::decay_t<T> >();
+            return typed.value_or(std::forward<T>(defaultValue));
+        }
+
+        /**
+         * @brief 获取配置值，键不存在时抛出异常
+         * @tparam T 目标类型。
+         * @param key 配置键。
+         * @return T 配置值。
+         * @throws ConfigKeyNotFoundException 键不存在
+         * @throws ConfigTypeException 类型不匹配
+         */
+        template<typename T>
+        T getRequired(const std::string_view key) const
+        {
+            return get<T>(key);
+        }
+
+        /**
+         * @brief 读取布尔配置值，缺失或类型不匹配时返回默认值。
+         * @param key 配置键。
+         * @param defaultValue 默认值。
+         * @return bool 配置值或默认值。
+         */
+        bool getBool(std::string_view key, bool defaultValue = false) const noexcept;
+
+        /**
+         * @brief 读取整型配置值，缺失或类型不匹配时返回默认值。
+         * @param key 配置键。
+         * @param defaultValue 默认值。
+         * @return int64_t 配置值或默认值。
+         */
+        int64_t getInt(std::string_view key, int64_t defaultValue = 0) const noexcept;
+
+        /**
+         * @brief 读取浮点配置值，缺失或类型不匹配时返回默认值。
+         * @param key 配置键。
+         * @param defaultValue 默认值。
+         * @return double 配置值或默认值。
+         */
+        double getDouble(std::string_view key, double defaultValue = 0.0) const noexcept;
+
+        /**
+         * @brief 读取字符串配置值，缺失或类型不匹配时返回默认值。
+         * @param key 配置键。
+         * @param defaultValue 默认值。
+         * @return std::string 配置值或默认值。
+         */
+        std::string getString(std::string_view key, const std::string &defaultValue = "") const;
+
+        /**
+         * @brief 宽松字符串读取：字符串原样返回；数字/布尔自动转为文本。
+         * @details 用于内容像数字但语义为字符串的键（如纯数字密码），
+         *          免疫配置类型推断差异导致的取空问题。
+         * @param key 配置键（点号路径）。
+         * @param defaultValue 键缺失时返回的默认值。
+         * @return std::string 文本化取值或默认值。
+         */
+        std::string getText(std::string_view key, const std::string &defaultValue = "") const;
+
+        /**
+         * @brief 设置配置值并立即生效（原子替换内存快照）。
+         * @details 修改同时记入待持久化集合，调用 saveOverrides() 后写入用户覆盖层 settings.json。
+         * @param key 配置键（点号路径，如 part_number.dose）。
+         * @param value 配置值。
+         * @return bool 成功返回 true。
+         */
+        bool setValue(std::string_view key, ConfigValue value);
+
+        /**
+         * @brief 将自上次保存以来的修改写入配置目录下的 settings.json（用户覆盖层）。
+         * @details 与手工编辑等价的部署默认文件 config.yaml 保持只读；settings.json 键覆盖默认值，
+         *          历史 ui.yaml 覆盖残留会在保存时并入并删除。存储为 JSON，类型原生自描述。
+         * @return bool 成功返回 true；无配置目录或写文件失败返回 false。
+         */
+        bool saveOverrides();
+
+        /**
+         * @brief 设置配置值并立即持久化（setValue + saveOverrides 的组合）。
+         * @param key 配置键（点号路径）。
+         * @param value 配置值。
+         * @return bool 内存修改与持久化均成功返回 true。
+         */
+        bool setAndPersist(std::string_view key, ConfigValue value);
+
+        /**
+         * @brief 按 schema 校验当前配置快照。
+         * @param schema 约束条目列表。
+         * @return ConfigValidationResult 校验结果，errors 逐条描述问题键。
+         */
+        [[nodiscard]] ConfigValidationResult validateSchema(const ConfigSchema &schema) const;
+
+        /**
+         * @brief 注册全局 schema，后续加载/热重载提交时自动校验并记录错误日志。
+         * @details 传入空 schema 可取消注册；注册时立即对当前快照校验一次并记日志。
+         * @param schema 约束条目列表。
+         * @return ConfigValidationResult 当前快照的校验结果。
+         */
+        ConfigValidationResult setSchema(ConfigSchema schema);
+
+        /**
+         * @brief 检查配置键是否存在。
+         * @param key 配置键。
+         * @return bool 存在返回 true。
+         */
+        [[nodiscard]] bool has(std::string_view key) const noexcept;
+
+        /**
+         * @brief 返回所有配置键并按字典序排序。
+         * @return std::vector<std::string> 配置键列表。
+         */
+        [[nodiscard]] std::vector<std::string> keys() const;
+
+        /**
+         * @brief 导出当前配置快照。
+         * @return ConfigKeyValueMap 配置字典副本。
+         */
+        [[nodiscard]] ConfigKeyValueMap dump() const;
+
+        /**
+         * @brief 获取当前已加载文件列表。
+         * @return std::vector<std::string> 文件路径列表。
+         */
+        [[nodiscard]] std::vector<std::string> loadedFiles() const;
+
+        /**
+         * @brief 获取当前配置目录。
+         * @return std::filesystem::path 配置目录路径。
+         */
+        [[nodiscard]] std::filesystem::path configDirectory() const;
+
+        /**
+         * @brief 清空所有配置数据。
+         */
+        void clear();
+
+        /**
+         * @brief 校验必需配置键是否都已存在。
+         * @param requiredKeys 必需键列表。
+         * @return std::vector<std::string> 缺失键列表。
+         */
+        std::vector<std::string> validateRequired(const std::vector<std::string> &requiredKeys) const;
+
+    private:
+        /**
+         * @brief 私有构造函数，配合 instance() 约束单例入口。
+         */
+        ConfigManager() = default;
+
+        /**
+         * @brief 析构时自动关闭热重载监听。
+         */
+        ~ConfigManager();
+
+        /**
+         * @brief 内部配置数据容器
+         * @details 使用原子共享指针（atomic shared_ptr）实现无锁热替换。
+         */
+        struct ConfigData
+        {
+            ConfigKeyValueMap values; ///< 配置键值对映射表（支持 string_view 异质查找）
+
+            std::vector<std::string>              loadedFiles;     ///< 成功加载的配置文件路径列表
+            std::filesystem::path                 configDirectory; ///< 配置目录的路径
+            std::chrono::steady_clock::time_point loadTime;        ///< 配置加载完成的时间戳（单调时钟）
+        };
+
+        /**
+         * @brief 热重载任务及其完成标记（用于回收线程资源）。
+         */
+        struct ReloadTask
+        {
+            std::jthread      thread;          ///< 后台重载线程
+            std::atomic<bool> finished{false}; ///< 任务是否已结束
+        };
+
+        std::atomic<std::shared_ptr<ConfigData> > m_data{std::make_shared<ConfigData>()}; ///< 当前有效的配置数据原子指针，支持无锁热替换
+
+        mutable std::shared_mutex m_reloadMutex; ///< 用于配置数据构建过程的读写锁，仅在修改时加写锁
+
+        std::mutex        m_overrideMutex;    ///< 保护待持久化覆盖集的互斥锁
+        ConfigKeyValueMap m_pendingOverrides; ///< 待写入 settings.json 的修改集合（setValue 累积，saveOverrides 清空）
+
+        mutable std::mutex m_schemaMutex; ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
+        ConfigSchema       m_schema;      ///< 全局 schema（setSchema 注册，提交快照时自动校验）
+
+        // 热加载相关
+        std::unique_ptr<Platform::FileWatcher>    m_fileWatcher;             ///< 文件监控器（用于热加载）
+        HotReloadCallback                         m_hotReloadCallback;       ///< 热加载回调函数，配置文件变化时触发
+        std::atomic<bool>                         m_hotReloadEnabled{false}; ///< 热加载功能是否启用（true 启用，false 关闭）
+        std::atomic<bool>                         m_reloadPending{false};    ///< 是否有重载任务正在执行（节流）
+        std::mutex                                m_reloadTasksMutex;        ///< 保护 m_reloadTasks 的互斥锁
+        std::vector<std::unique_ptr<ReloadTask> > m_reloadTasks;             ///< 活跃的重载任务（用于析构前 join）
+
+        /**
+         * @brief 目录加载的内部实现，负责扫描、解析并原子替换配置快照。
+         * @param configDirectory 配置目录。
+         * @param recursive 是否递归扫描。
+         * @return ConfigLoadResult 加载结果。
+         */
+        ConfigLoadResult loadFromDirectoryImplementation(const std::filesystem::path &configDirectory, bool recursive);
+
+        /**
+         * @brief 读取并扁平化单个 JSON/YAML 配置文件到配置字典。
+         * @param filePath 配置文件路径。
+         * @param values 目标配置字典。
+         * @param errors 错误信息收集容器。
+         * @return bool 加载成功返回 true。
+         */
+        static bool loadConfigFile(const std::filesystem::path &filePath, ConfigKeyValueMap &values, std::vector<std::string> &errors);
+
+        /**
+         * @brief 递归扁平化节点，将嵌套键转换为点号路径。
+         * @param node 当前 YAML 节点。
+         * @param prefix 键前缀。
+         * @param values 扁平化结果容器。
+         */
+        static void flattenNode(const YAML::Node &node, const std::string &prefix, ConfigKeyValueMap &values);
+
+        /**
+         * @brief 将 YAML 节点转换为 ConfigValue。
+         * @param node YAML 节点。
+         * @return ConfigValue 转换后的配置值。
+         */
+        static ConfigValue convertNode(const YAML::Node &node);
+
+        /**
+         * @brief 处理文件监听回调并触发后台重载。
+         * @param filePath 发生变化的文件路径。
+         * @param changeType 文件变更类型。
+         */
+        void handleFileChange(std::string_view filePath, Platform::FileChangeType changeType);
+
+        /**
+         * @brief 在互斥保护下执行一次目录重载。
+         * @return ConfigLoadResult 重载结果。
+         */
+        ConfigLoadResult doReload();
+
+        /**
+         * @brief 扫描目录中的 JSON/YAML 配置文件并按路径排序。
+         * @param directory 待扫描目录。
+         * @param recursive 是否递归。
+         * @return std::vector<std::filesystem::path> 配置文件路径列表。
+         */
+        static std::vector<std::filesystem::path> scanConfigFiles(const std::filesystem::path &directory, bool recursive);
+
+        /**
+         * @brief 原子提交新的配置快照。
+         * @param values 扁平化配置字典。
+         * @param loadedFiles 成功加载的文件列表。
+         * @param timestamp 加载时间戳。
+         * @param configDirectory 配置目录（为空时保留原目录）。
+         */
+        void commitConfigData(ConfigKeyValueMap                     values,
+                              const std::vector<std::string> &      loadedFiles,
+                              std::chrono::steady_clock::time_point timestamp,
+                              const std::filesystem::path &         configDirectory = {});
+
+        /**
+         * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。
+         * @param values 扁平化配置字典。
+         */
+        void validateRegisteredSchema(const ConfigKeyValueMap &values) const;
+    };
+} // namespace AsynGyanis::Base
