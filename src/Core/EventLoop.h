@@ -8,7 +8,7 @@
 #define CORE_EVENTLOOP_H
 
 #include "Epoll.h"
-#include "Platform/EventNotifier.h"
+#include "Platform/IO/EventNotifier.h"
 #include "Scheduler.h"
 
 #include <atomic>
