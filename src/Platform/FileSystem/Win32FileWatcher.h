@@ -1,0 +1,170 @@
+/**
+ * @file Win32FileWatcher.h
+ * @brief Windows 平台文件监听器，基于 ReadDirectoryChangesW 重叠 IO
+ * @author Gyanis
+ * @date 2026-09-10
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "Platform/FileSystem/FileWatcher.h"
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <shared_mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace AsynGyanis::Platform
+{
+    /**
+     * @brief Windows 平台文件监听器
+     *
+     * @details 每个被监听目录持有一个 CreateFileW 目录句柄与一次未完成的
+     *          ReadDirectoryChangesW 重叠读请求；监听线程用 WaitForMultipleObjects
+     *          同时等待停止事件（索引 0）与全部目录完成事件。
+     * @note stop() 会关闭所有目录句柄，不残留内核对象；回调统一在锁外批量触发，
+     *       因此在回调中增删监听路径不会造成死锁。
+     */
+    class Win32FileWatcher : public FileWatcher
+    {
+    public:
+        /**
+         * @brief 构造 Windows 文件监听器并创建停止事件
+         */
+        Win32FileWatcher();
+
+        /**
+         * @brief 析构监听器，停止线程并释放全部资源
+         */
+        ~Win32FileWatcher() override;
+
+        /**
+         * @brief 启动目录变更监听线程
+         * @details 重写 FileWatcher::start()：先复位停止事件再创建 jthread，
+         *          线程创建失败时捕获 std::system_error 并返回 false。
+         * @return true 监听线程已运行或本已在运行
+         * @return false 停止事件创建失败或线程创建失败
+         */
+        bool start() override;
+
+        /**
+         * @brief 停止监听线程并关闭全部监听句柄
+         * @details 重写 FileWatcher::stop()：置位停止事件并请求停止令牌，join 返回后
+         *          逐个 CancelIo 并关闭目录与事件句柄，防止内核句柄泄漏。
+         */
+        void stop() override;
+
+        /**
+         * @brief 注册目录监听并发起首次重叠读
+         * @details 重写 FileWatcher::addWatch()：目录路径统一补上尾部反斜杠，
+         *          使回调中的相对文件名可直接拼接；recursive 为真时在锁外
+         *          递归注册全部子目录。
+         * @param path 待监听的目录路径
+         * @param recursive 是否递归监听子目录
+         * @return true 注册成功或路径已在监听集合中
+         * @return false 目录句柄或事件句柄创建失败
+         */
+        bool addWatch(std::string_view path, bool recursive = false) override;
+
+        /**
+         * @brief 解除指定目录的监听
+         * @details 重写 FileWatcher::removeWatch()：先 CancelIo 并等待重叠读结束，
+         *          再关闭该目录的事件与文件句柄。
+         * @param path 之前注册过的目录路径
+         * @return true 移除成功
+         * @return false 该路径未在监听集合中
+         */
+        bool removeWatch(std::string_view path) override;
+
+        /**
+         * @brief 设置文件变更回调
+         * @details 重写 FileWatcher::setCallback()：持写锁替换，事件分发时锁外调用。
+         * @param callback 回调函数对象
+         */
+        void setCallback(FileChangeCallback callback) override;
+
+        /**
+         * @brief 查询监听线程运行状态
+         * @details 重写 FileWatcher::isRunning()。
+         * @return true 监听线程正在运行
+         * @return false 未启动或已停止
+         */
+        [[nodiscard]] bool isRunning() const noexcept override;
+
+        /**
+         * @brief 设置同一文件事件的防抖间隔
+         * @details 重写 FileWatcher::setDebounceInterval()。
+         * @param interval 防抖间隔，非正值表示不防抖
+         */
+        void setDebounceInterval(std::chrono::milliseconds interval) noexcept override;
+
+    private:
+        /**
+         * @brief 单个监听目录的上下文记录
+         */
+        struct WatchEntry
+        {
+            HANDLE               directoryHandle{INVALID_HANDLE_VALUE}; ///< 目录句柄，用于 ReadDirectoryChangesW
+            HANDLE               eventHandle{nullptr};                  ///< 重叠读完成事件句柄
+            std::string          path;                                  ///< 以反斜杠结尾的目录绝对路径
+            std::vector<uint8_t> buffer;                                ///< 变更通知接收缓冲区
+            OVERLAPPED           overlapped{};                          ///< 异步 IO 控制结构
+            bool                 pending{false};                        ///< 是否有一次未完成的读取请求
+        };
+
+        /**
+         * @brief 监听线程主循环，等待停止事件与各目录的完成事件
+         */
+        void watchLoop();
+
+        /**
+         * @brief 解析某个目录已完成的变更通知批次
+         * @param entry 目标目录上下文
+         * @param events 输出参数，收集防抖后待回调的（路径, 变更类型）列表
+         */
+        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType>> &events);
+
+        /**
+         * @brief 为目录发起一次 ReadDirectoryChangesW 重叠读
+         * @param entry 目标目录上下文
+         */
+        void issueRead(WatchEntry &entry) const;
+
+        /**
+         * @brief 取消目录未完成读取并关闭其全部句柄
+         * @param entry 目标目录上下文
+         */
+        void closeEntry(WatchEntry &entry) const;
+
+        /**
+         * @brief 把绝对路径规范化为带尾部反斜杠的目录形式
+         * @param path 绝对路径
+         * @return std::string 规范化后的目录路径
+         */
+        static std::string normalizeDirectoryPath(const std::string &path);
+
+        std::unordered_map<std::string, std::unique_ptr<WatchEntry>> m_watches; ///< 目录路径到监听上下文的映射
+
+        FileChangeCallback        m_callback;           ///< 用户注册的变更回调
+        mutable std::shared_mutex m_watchMutex;         ///< 保护监听映射与回调的读写锁
+        std::jthread              m_watchThread;        ///< 监听线程，停止与析构时自动 join
+        std::atomic<bool>         m_running{false};     ///< 监听线程是否正在运行
+        std::atomic<bool>         m_shouldStop{false};  ///< 是否已请求停止
+        HANDLE                    m_stopEvent{nullptr}; ///< 用于唤醒监听线程的停止事件
+
+        std::chrono::milliseconds                                              m_debounceInterval{100}; ///< 防抖间隔毫秒数
+        std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_lastEventTime;         ///< 各路径上次触发时间（仅监听线程访问）
+
+        static constexpr std::size_t kBufferSize  = 4096; ///< 变更通知缓冲区字节数
+        static constexpr DWORD       kWatchFilter =       ///< 关注的目录变更类型掩码
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
+    };
+} // namespace AsynGyanis::Platform

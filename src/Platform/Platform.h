@@ -1,135 +1,131 @@
 /**
  * @file Platform.h
- * @brief 平台检测宏、类型定义与 errno 兼容层
- * @copyright Copyright (c) 2026
+ * @brief 平台检测宏与操作系统底层头文件聚合，全项目跨平台代码的统一入口
+ * @author Gyanis
+ * @date 2026-09-10
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
 
-#ifndef PLATFORM_PLATFORM_H
-#define PLATFORM_PLATFORM_H
+#pragma once
 
 // ============================================================================
 // 平台检测
+// ----------------------------------------------------------------------------
+// 下列标识符必须是宏（供各模块 #if 分支与头文件裁剪使用），故按规范使用
+// UPPER_SNAKE_CASE，不适用 constexpr 常量规则。
 // ============================================================================
-#ifdef _WIN32
-  #define ASYN_PLATFORM_WIN32 1
-  #define ASYN_PLATFORM_LINUX 0
+#if defined(_WIN32)
+    #define ASYN_PLATFORM_WIN32 1
+    #define ASYN_PLATFORM_LINUX 0
+#elif defined(__linux__)
+    #define ASYN_PLATFORM_WIN32 0
+    #define ASYN_PLATFORM_LINUX 1
 #else
-  #define ASYN_PLATFORM_WIN32 0
-  #define ASYN_PLATFORM_LINUX 1
+    #error "AsynGyanis 仅支持 Windows 与 Linux 平台"
 #endif
 
 // ============================================================================
-// Windows 头文件与类型定义
+// 操作系统头文件与缺失符号替身
 // ============================================================================
-#ifdef _WIN32
-  // winsock2.h 必须在 windows.h 之前包含
-  #ifndef WIN32_LEAN_AND_MEAN
-    #define WIN32_LEAN_AND_MEAN
-  #endif
-  #ifndef NOMINMAX
-    #define NOMINMAX
-  #endif
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-  #include <mswsock.h>
-  #include <windows.h>
+#include <cerrno>
+#include <cstddef>
 
-  // Windows SDK 定义了多个与项目枚举值冲突的宏，必须在此 #undef
-  // DELETE  — winnt.h 中定义为 (0x00010000L) 访问权限常量
-  // ERROR   — winerror.h 中定义为 0，与日志 LogLevel::ERROR 冲突
-  #ifdef DELETE
-    #undef DELETE
-  #endif
-  #ifdef ERROR
-    #undef ERROR
-  #endif
+#if ASYN_PLATFORM_WIN32
+    // winsock2.h 必须先于 windows.h 包含，否则将链接到旧版 winsock
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <mswsock.h>
+    #include <windows.h>
 
-  // wepoll 不提供 EPOLL_CLOEXEC / EPOLLET，补定义
-  #ifndef EPOLL_CLOEXEC
-    #define EPOLL_CLOEXEC 0
-  #endif
-  #ifndef EPOLLET
-    // wepoll 不支持边缘触发 (EPOLLONESHOT 占用了 1U<<31)，
-    // 定义为 0 让 level-triggered 行为保持不变
-    #define EPOLLET 0
-  #endif
+    // Windows SDK 宏与项目标识符冲突，必须在此清除：
+    //   DELETE —— winnt.h 中的访问权限常量 (0x00010000L)
+    //   ERROR  —— winerror.h 中定义为 0，与日志等级 LogLevel::ERROR 冲突
+    #ifdef DELETE
+        #undef DELETE
+    #endif
+    #ifdef ERROR
+        #undef ERROR
+    #endif
 
-  // ssize_t 在 MSVC 中不存在
-  #ifndef _SSIZE_T_DEFINED
-    #define _SSIZE_T_DEFINED
-    using ssize_t = __int64;
-  #endif
+    // wepoll 兼容层未提供的 epoll 标志。EPOLLET 置 0 使边缘触发退化为水平触发，
+    // 因为 wepoll 用 1U<<31 实现了 EPOLLONESHOT。
+    #ifndef EPOLL_CLOEXEC
+        #define EPOLL_CLOEXEC 0
+    #endif
+    #ifndef EPOLLET
+        #define EPOLLET 0
+    #endif
 
-  // epoll handle 类型：wepoll 返回 HANDLE
-  using epoll_handle_t = HANDLE;
+    // MSVC 运行库不提供 ssize_t
+    #ifndef _SSIZE_T_DEFINED
+        #define _SSIZE_T_DEFINED
+        using ssize_t = __int64; ///< 与 POSIX 对齐的带符号尺寸类型
+    #endif
 
-  inline bool epoll_handle_valid(epoll_handle_t h) noexcept
-  {
-      return h != nullptr;
-  }
-
-  inline constexpr epoll_handle_t kInvalidEpollHandle = nullptr;
-
-  // errno 兼容（仅用于 socket 操作）
-  #define ASYN_ERRNO        (::WSAGetLastError())
-  #define ASYN_EAGAIN       WSAEWOULDBLOCK
-  #define ASYN_EWOULDBLOCK  WSAEWOULDBLOCK
-  #define ASYN_EINTR        WSAEINTR
-  #define ASYN_EINPROGRESS  WSAEWOULDBLOCK
-  #define ASYN_ECONNABORTED WSAECONNABORTED
-  #define ASYN_EMFILE       WSAEMFILE
-  #define ASYN_ENFILE       WSAEMFILE
-  #define ASYN_ENOBUFS      WSAENOBUFS
-  #define ASYN_ENOMEM       ERROR_NOT_ENOUGH_MEMORY
-
-  // 缺失常量定义
-  #ifndef MSG_NOSIGNAL
-    #define MSG_NOSIGNAL 0
-  #endif
-  #ifndef SHUT_RDWR
-    #define SHUT_RDWR SD_BOTH
-  #endif
-  #ifndef SOCK_NONBLOCK
-    #define SOCK_NONBLOCK 0
-  #endif
-  #ifndef SOCK_CLOEXEC
-    #define SOCK_CLOEXEC 0
-  #endif
-
-// ============================================================================
-// Linux 头文件与类型定义
-// ============================================================================
+    // POSIX 送/关闭标志在 Windows 上的替身，同样必须是宏以便在系统调用实参处使用
+    #ifndef MSG_NOSIGNAL
+        #define MSG_NOSIGNAL 0
+    #endif
+    #ifndef SHUT_RDWR
+        #define SHUT_RDWR SD_BOTH
+    #endif
+    #ifndef SOCK_NONBLOCK
+        #define SOCK_NONBLOCK 0
+    #endif
+    #ifndef SOCK_CLOEXEC
+        #define SOCK_CLOEXEC 0
+    #endif
 #else
-  #include <sys/epoll.h>
-  #include <sys/socket.h>
-  #include <sys/timerfd.h>
-  #include <sys/eventfd.h>
-  #include <netinet/in.h>
-  #include <netinet/tcp.h>
-  #include <arpa/inet.h>
-  #include <netdb.h>
-  #include <unistd.h>
-  #include <fcntl.h>
-
-  using epoll_handle_t = int;
-
-  inline bool epoll_handle_valid(epoll_handle_t h) noexcept
-  {
-      return h >= 0;
-  }
-
-  inline constexpr epoll_handle_t kInvalidEpollHandle = -1;
-
-  #define ASYN_ERRNO        (errno)
-  #define ASYN_EAGAIN       EAGAIN
-  #define ASYN_EWOULDBLOCK  EWOULDBLOCK
-  #define ASYN_EINTR        EINTR
-  #define ASYN_EINPROGRESS  EINPROGRESS
-  #define ASYN_ECONNABORTED ECONNABORTED
-  #define ASYN_EMFILE       EMFILE
-  #define ASYN_ENFILE       ENFILE
-  #define ASYN_ENOBUFS      ENOBUFS
-  #define ASYN_ENOMEM       ENOMEM
+    #include <arpa/inet.h>
+    #include <fcntl.h>
+    #include <netdb.h>
+    #include <netinet/in.h>
+    #include <netinet/tcp.h>
+    #include <sys/epoll.h>
+    #include <sys/eventfd.h>
+    #include <sys/socket.h>
+    #include <sys/timerfd.h>
+    #include <unistd.h>
 #endif
 
-#endif // PLATFORM_PLATFORM_H
+namespace AsynGyanis::Platform
+{
+    /// epoll 实例句柄类型：Windows 上 wepoll 返回 HANDLE，Linux 上为文件描述符
+    using EpollHandle =
+#if ASYN_PLATFORM_WIN32
+        HANDLE
+#else
+        int
+#endif
+        ;
+
+    inline constexpr EpollHandle kInvalidEpollHandle =
+#if ASYN_PLATFORM_WIN32
+        nullptr
+#else
+        -1
+#endif
+        ;
+
+    /**
+     * @brief 判断 epoll 句柄是否有效
+     * @param handle epoll 实例句柄
+     * @return true 句柄有效
+     * @return false 句柄创建失败
+     */
+    constexpr bool isEpollHandleValid(EpollHandle handle) noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        return handle != nullptr;
+#else
+        return handle >= 0;
+#endif
+    }
+} // namespace AsynGyanis::Platform
