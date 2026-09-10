@@ -122,7 +122,6 @@ portability-simd-intrinsics,
 readability-avoid-const-params-in-decls,
 readability-const-return-type,
 readability-container-size-empty,
-readability-convert-member-functions-to-static,
 readability-delete-null-pointer,
 readability-deleted-default,
 readability-inconsistent-declaration-parameter-name,
@@ -141,4 +140,72 @@ readability-static-accessed-through-instance,
 readability-static-definition-in-anonymous-namespace,
 readability-string-compare,
 readability-uniqueptr-delete-release,
-readability-use-anyofallof'
+readability-use-anyofallof,
+readability-identifier-naming'
+
+# 命名规范与 C++20 编码规范保持一致：
+# 类/结构体/枚举/命名空间 PascalCase，函数与成员函数 camelCase，
+# 非静态私有/保护成员 m_ 前缀，静态成员与常量 k 前缀，宏 UPPER_CASE。
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: PascalCase
+  - key: readability-identifier-naming.ClassCase
+    value: PascalCase
+  - key: readability-identifier-naming.StructCase
+    value: PascalCase
+  - key: readability-identifier-naming.UnionCase
+    value: PascalCase
+  - key: readability-identifier-naming.EnumCase
+    value: PascalCase
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: PascalCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: PascalCase
+  - key: readability-identifier-naming.TypedefCase
+    value: PascalCase
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: PascalCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelCase
+  - key: readability-identifier-naming.MethodCase
+    value: camelCase
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: m_
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: camelCase
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: m_
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: camelCase
+  - key: readability-identifier-naming.PublicMemberCase
+    value: camelCase
+  - key: readability-identifier-naming.StaticPrivateMemberPrefix
+    value: s_
+  - key: readability-identifier-naming.StaticPrivateMemberCase
+    value: camelCase
+  - key: readability-identifier-naming.StaticProtectedMemberPrefix
+    value: s_
+  - key: readability-identifier-naming.StaticProtectedMemberCase
+    value: camelCase
+  - key: readability-identifier-naming.StaticPublicConstantPrefix
+    value: k
+  - key: readability-identifier-naming.StaticPublicConstantCase
+    value: PascalCase
+  - key: readability-identifier-naming.StaticConstantPrefix
+    value: k
+  - key: readability-identifier-naming.StaticConstantCase
+    value: PascalCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: PascalCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: PascalCase
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.ParameterCase
+    value: camelCase
+  - key: readability-identifier-naming.LocalVariableCase
+    value: camelCase

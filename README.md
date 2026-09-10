@@ -302,10 +302,13 @@ Core::Task<void> ping(Core::EventLoop& loop) {
 ```
 AsynGyanis/
 ├── src/
-│   ├── Base/        # 基础设施（18 文件）
-│   ├── Core/        # 异步运行时（30 文件）
-│   └── Net/         # 网络应用层（24 文件）
-├── tests/Base/      # Catch2 单元测试（8 套）
+│   ├── Platform/    # 平台底层封装（描述符/socket/事件通知/定时器/文件监听/原子写）
+│   ├── Base/        # 基础设施（Log / Config / Exception 三个子目录）
+│   ├── Core/        # 异步运行时（本轮未启用构建）
+│   └── Net/         # 网络应用层（本轮未启用构建）
+├── tests/
+│   ├── Platform/    # GoogleTest 单元测试
+│   └── Base/        # GoogleTest 单元测试
 ├── docs/Base/       # 中文 API 文档（11 份）
 ├── samples/         # 示例 + 压测脚本
 ├── CMakeLists.txt

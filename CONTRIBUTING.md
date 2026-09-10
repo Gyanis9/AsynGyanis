@@ -45,19 +45,22 @@ cmake --build build/release -j$(nproc)
 
 ## 代码风格
 
-- 默认不写注释（WHY 而非 WHAT）
+- 注释遵循 C++20 编码规范：文件头写 `@file`/`@brief`/`@author`/`@date`/`@version`/`@copyright`，类与公开方法写完整中文 Doxygen（`@param`/`@return`），成员变量行尾用 `///<`
+- 子类每个 `override` 必须独立书写完整中文注释，`@details` 说明与父类的行为差异，禁止「同上/继承自父类」占位
 - 优先使用 RAII 管理资源
-- 协程接口使用 `Core::Task<T>` 返回类型
-- 异常使用 `Base::Exception` 体系
-- 日志使用 `LOG_*_FMT` 宏
+- 协程接口使用 `AsynGyanis::Core::Task<T>` 返回类型
+- 异常使用 `AsynGyanis::Base` 下的异常体系（`Base/Exception/`）
+- 日志使用 `LOG_*_FMT` 宏（`Base/Log/LogMacros.h`）
+- 平台相关操作一律封装在 `AsynGyanis::Platform`，Base 及以上模块不出现平台宏与系统 API
 
 ## 模块架构
 
 ```
-src/Base/    — 基础设施：配置、日志、异常
+src/Platform/ — 平台底层封装：描述符/socket/事件通知/定时器/文件监听/原子写（Linux 与 Windows 分别实现）
+src/Base/    — 基础设施：Log（日志）、Config（配置）、Exception（异常）
 src/Core/    — 异步运行时：epoll、协程、TLS、调度器
 src/Net/     — 网络层：HTTP/HTTPS、路由、中间件
-tests/       — 单元测试（Catch2）
+tests/       — 单元测试（GoogleTest）
 samples/     — 示例程序
 ```
 
