@@ -15,39 +15,14 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-find_package(OpenSSL REQUIRED)
+# Debug 构建注入 ASYN_DEBUG：日志输出线程号与源码位置，Release 走精简格式
+add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
+
+# 顶层只声明当前启用模块直接需要的依赖，
+# OpenSSL / llhttp / SQLite3 等由各自模块的 CMakeLists 声明
 find_package(yaml-cpp REQUIRED)
-find_package(Catch2 REQUIRED)
-find_package(llhttp REQUIRED)
-
-# jemalloc 在 Windows 上可能不可用，设为可选
-find_package(jemalloc QUIET)
-
-# Windows: 获取 wepoll（基于 IOCP 的 epoll 兼容层）
-if(WIN32)
-    set(WEPOLL_DIR "${CMAKE_BINARY_DIR}/wepoll")
-    file(MAKE_DIRECTORY ${WEPOLL_DIR})
-
-    if(NOT EXISTS "${WEPOLL_DIR}/wepoll.h")
-        file(DOWNLOAD
-            "https://raw.githubusercontent.com/piscisaureus/wepoll/v1.5.7/wepoll.h"
-            "${WEPOLL_DIR}/wepoll.h"
-            STATUS wepoll_h_status)
-    endif()
-
-    if(NOT EXISTS "${WEPOLL_DIR}/wepoll.c")
-        file(DOWNLOAD
-            "https://raw.githubusercontent.com/piscisaureus/wepoll/v1.5.7/wepoll.c"
-            "${WEPOLL_DIR}/wepoll.c"
-            STATUS wepoll_c_status)
-    endif()
-
-    add_library(wepoll STATIC ${WEPOLL_DIR}/wepoll.c)
-    target_include_directories(wepoll PUBLIC ${WEPOLL_DIR})
-endif()
-
-add_subdirectory(src)
 
 enable_testing()
+
+add_subdirectory(src)
 add_subdirectory(tests)
-add_subdirectory(samples)

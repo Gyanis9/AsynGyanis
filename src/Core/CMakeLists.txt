@@ -1,3 +1,29 @@
+# Core 的 TLS 与 epoll 封装所需依赖，由本模块自行声明
+find_package(OpenSSL REQUIRED)
+
+# Windows: 获取 wepoll（基于 IOCP 的 epoll 兼容层）
+if(WIN32)
+    set(WEPOLL_DIR "${CMAKE_BINARY_DIR}/wepoll")
+    file(MAKE_DIRECTORY ${WEPOLL_DIR})
+
+    if(NOT EXISTS "${WEPOLL_DIR}/wepoll.h")
+        file(DOWNLOAD
+            "https://raw.githubusercontent.com/piscisaureus/wepoll/v1.5.7/wepoll.h"
+            "${WEPOLL_DIR}/wepoll.h"
+            STATUS wepoll_h_status)
+    endif()
+
+    if(NOT EXISTS "${WEPOLL_DIR}/wepoll.c")
+        file(DOWNLOAD
+            "https://raw.githubusercontent.com/piscisaureus/wepoll/v1.5.7/wepoll.c"
+            "${WEPOLL_DIR}/wepoll.c"
+            STATUS wepoll_c_status)
+    endif()
+
+    add_library(wepoll STATIC ${WEPOLL_DIR}/wepoll.c)
+    target_include_directories(wepoll PUBLIC ${WEPOLL_DIR})
+endif()
+
 add_library(Core
         Epoll.cpp
         Epoll.h

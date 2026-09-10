@@ -1,3 +1,6 @@
+# Net 的 HTTP 报文解析依赖 llhttp，由本模块自行声明
+find_package(llhttp REQUIRED)
+
 add_library(Net
         TcpAcceptor.cpp
         TcpAcceptor.h
