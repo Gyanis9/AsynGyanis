@@ -8,7 +8,6 @@
   "configurePresets": [
     {
       "name": "debug",
-      "displayName": "Debug",
       "description": "Debug build with sanitizers",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/debug",
@@ -24,7 +23,6 @@
     },
     {
       "name": "release",
-      "displayName": "Release",
       "description": "Optimized release build with LTO",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/release",
@@ -37,74 +35,6 @@
         "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
         "ENABLE_SANITIZERS": "OFF"
       }
-    },
-    {
-      "name": "windows-debug",
-      "displayName": "Windows Debug",
-      "description": "Debug build for Windows (MSVC)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/win-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_STANDARD": "20",
-        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
-        "CMAKE_CXX_EXTENSIONS": "OFF",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
-        "ENABLE_SANITIZERS": "OFF"
-      }
-    },
-    {
-      "name": "windows-release",
-      "displayName": "Windows Release",
-      "description": "Optimized release build for Windows (MSVC)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/win-release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_STANDARD": "20",
-        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
-        "CMAKE_CXX_EXTENSIONS": "OFF",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
-        "ENABLE_SANITIZERS": "OFF"
-      }
-    }
-  ],
-  "buildPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug"
-    },
-    {
-      "name": "release",
-      "configurePreset": "release"
-    },
-    {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug"
-    },
-    {
-      "name": "windows-release",
-      "configurePreset": "windows-release"
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug"
-    },
-    {
-      "name": "release",
-      "configurePreset": "release"
-    },
-    {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug"
-    },
-    {
-      "name": "windows-release",
-      "configurePreset": "windows-release"
     }
   ]
 }
