@@ -1,0 +1,144 @@
+/**
+ * @file Logger.h
+ * @brief 日志器类：等级过滤与 Sink 分发
+ * @author Gyanis
+ * @date 2026-09-10
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "Base/Log/LogEvent.h"
+#include "Base/Log/LogLevel.h"
+#include "Base/Log/LogSink.h"
+#include "Base/Log/SourceLocation.h"
+
+#include <atomic>
+#include <format>
+#include <memory>
+#include <shared_mutex>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace AsynGyanis::Base
+{
+    /**
+     * @brief 日志器实例
+     *
+     * @details 每个日志器拥有自己的名字、等级过滤和一组 Sink。
+     *          线程安全，但通常通过 LoggerRegistry 获取，并由注册表保证创建过程的线程安全。
+     * @note 单个 Sink 抛出的异常会被吞掉，不会中断其余 Sink 的写入。
+     */
+    class Logger
+    {
+    public:
+        /**
+         * @brief 构造日志器实例
+         * @param name 日志器名称
+         */
+        explicit Logger(std::string name);
+
+        /**
+         * @brief 析构日志器并释放所有 Sink
+         */
+        ~Logger();
+
+        Logger(const Logger &) = delete;
+
+        Logger &operator=(const Logger &) = delete;
+
+        Logger(Logger &&) = delete;
+
+        Logger &operator=(Logger &&) = delete;
+
+        /**
+         * @brief 按当前日志级别过滤后写入日志事件
+         * @param level 本次日志级别
+         * @param message 日志消息内容
+         * @param location 源码位置信息
+         */
+        void log(LogLevel level, std::string_view message, const SourceLocation &location = SourceLocation::current()) const;
+
+        /**
+         * @brief 使用 std::format 格式化日志消息并记录
+         * @details 格式串非法时不抛给业务方，而是降级为一条 Error 日志并带上格式串原文。
+         * @tparam Args 格式化参数类型
+         * @param level 本次日志级别
+         * @param location 源码位置信息
+         * @param formatString std::format 格式串
+         * @param arguments 格式化参数
+         */
+        template<typename... Args>
+        void logFormat(const LogLevel level, const SourceLocation &location, std::string_view formatString, Args &&... arguments) const
+        {
+            if (!shouldLog(level))
+            {
+                return;
+            }
+            try
+            {
+                log(level, std::vformat(formatString, std::make_format_args(arguments...)), location);
+            } catch (const std::format_error &exception)
+            {
+                log(LogLevel::Error,
+                    std::format("Log format error: {} [format='{}']", exception.what(), formatString), location);
+            }
+        }
+
+        /**
+         * @brief 向日志器追加一个输出 Sink
+         * @param sink 待接管所有权的 Sink
+         */
+        void addSink(std::unique_ptr<LogSink> sink);
+
+        /**
+         * @brief 清空所有已注册 Sink
+         */
+        void clearSinks();
+
+        /**
+         * @brief 设置日志器最低输出级别
+         * @param level 目标日志级别
+         */
+        void setLevel(LogLevel level);
+
+        /**
+         * @brief 获取当前日志器级别
+         * @return LogLevel 当前日志级别
+         */
+        [[nodiscard]] LogLevel getLevel() const;
+
+        /**
+         * @brief 获取日志器名称
+         * @return const std::string& 日志器名称引用
+         */
+        [[nodiscard]] const std::string &name() const;
+
+        /**
+         * @brief 刷新所有 Sink 的缓冲区
+         */
+        void flush() const;
+
+        /**
+         * @brief 判断指定级别是否满足输出条件
+         * @details 阈值为 LogLevel::Off 时表示关闭全部日志输出，任何级别都不放行。
+         * @param level 待判断日志级别
+         * @return bool 当级别不低于当前阈值时返回 true
+         */
+        [[nodiscard]] bool shouldLog(LogLevel level) const;
+
+    private:
+        /**
+         * @brief 将日志事件分发到全部可用 Sink
+         * @param event 已构造好的日志事件对象
+         */
+        void writeToSinks(const LogEvent &event) const;
+
+        std::string                            m_name;                   ///< 日志器名称
+        std::atomic<LogLevel>                  m_level{LogLevel::Trace}; ///< 当前日志级别
+        std::vector<std::unique_ptr<LogSink> > m_sinks;                  ///< 日志输出目标（Sink）列表
+        mutable std::shared_mutex              m_sinksMutex;             ///< 保护 m_sinks 的读写锁
+    };
+} // namespace AsynGyanis::Base
