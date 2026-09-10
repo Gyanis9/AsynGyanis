@@ -1,0 +1,17 @@
+#include "Base/Exception/ConfigFileException.h"
+
+#include <string>
+
+namespace AsynGyanis::Base
+{
+    ConfigFileException::ConfigFileException(const std::string &filePath, const std::string &reason, const std::source_location &sourceLocation) :
+        ConfigException("File '" + filePath + "': " + reason, sourceLocation)
+        , m_filePath(filePath)
+    {
+    }
+
+    const std::string &ConfigFileException::filePath() const noexcept
+    {
+        return m_filePath;
+    }
+} // namespace AsynGyanis::Base
