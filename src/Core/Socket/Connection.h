@@ -1,10 +1,12 @@
 /**
  * @file Connection.h
  * @brief TCP连接基类，支持协作取消
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
-#ifndef CORE_CONNECTION_H
-#define CORE_CONNECTION_H
+#pragma once
 
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Coroutine/Cancelable.h"
@@ -107,6 +109,4 @@ namespace AsynGyanis::Core
         std::atomic<bool> m_alive{true}; ///< 连接存活标志，原子操作保证线程安全
     };
 
-}
-
-#endif
+} // namespace AsynGyanis::Core

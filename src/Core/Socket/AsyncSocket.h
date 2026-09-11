@@ -1,6 +1,9 @@
 /**
  * @file AsyncSocket.h
  * @brief 异步非阻塞 TCP socket — 基于 epoll 边缘触发的协程式 I/O
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  *
  * 封装了 create/bind/listen/accept/connect/receive/send 等 socket 操作,
  * 所有 I/O 方法返回 Task<> 类型, 通过 co_await 实现异步等待。
@@ -9,8 +12,7 @@
  * @copyright Copyright (c) 2026
  */
 
-#ifndef CORE_ASYNCSOCKET_H
-#define CORE_ASYNCSOCKET_H
+#pragma once
 
 #include "Core/Coroutine/Task.h"
 #include "Platform/Platform.h"
@@ -201,6 +203,4 @@ namespace AsynGyanis::Core
         EventLoop &m_loop;           ///< 关联的事件循环，用于异步等待和事件注册
         int        m_fileDescriptor; ///< 底层 socket 文件描述符，-1 表示无效
     };
-}
-
-#endif
+} // namespace AsynGyanis::Core

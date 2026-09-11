@@ -1,10 +1,12 @@
 /**
 * @file TlsContext.h
  * @brief SSL_CTX RAII 包装器 — 管理 TLS 服务端上下文及每个连接的 SSL 对象创建
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
-#ifndef CORE_TLSCONTEXT_H
-#define CORE_TLSCONTEXT_H
+#pragma once
 
 #include <openssl/err.h>
 
@@ -65,6 +67,4 @@ namespace AsynGyanis::Core
     private:
         SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
     };
-}
-
-#endif
+} // namespace AsynGyanis::Core

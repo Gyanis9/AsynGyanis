@@ -1,11 +1,13 @@
 /**
  * @file InetAddress.h
  * @brief IPv4/IPv6 网络地址封装，支持 DNS 解析
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 
-#ifndef CORE_INETADDRESS_H
-#define CORE_INETADDRESS_H
+#pragma once
 
 #include "Platform/Platform.h"
 
@@ -146,6 +148,4 @@ namespace AsynGyanis::Core
         sockaddr_storage m_address;       ///< 内部存储的地址结构，足够容纳 IPv4 或 IPv6
         socklen_t        m_addressLength; ///< 实际使用的地址结构长度
     };
-}
-
-#endif
+} // namespace AsynGyanis::Core

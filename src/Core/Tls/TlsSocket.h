@@ -1,10 +1,12 @@
 /**
  * @file TlsSocket.h
  * @brief TLS socket 包装器 — SSL_read/SSL_write 与非阻塞 epoll 集成
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
-#ifndef CORE_TLSSOCKET_H
-#define CORE_TLSSOCKET_H
+#pragma once
 
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Coroutine/Task.h"
@@ -118,6 +120,4 @@ namespace AsynGyanis::Core
         bool                             m_handshakeDone{false}; ///< 握手是否已完成
     };
 
-}
-
-#endif
+} // namespace AsynGyanis::Core

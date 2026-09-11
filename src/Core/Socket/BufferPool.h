@@ -1,10 +1,12 @@
 /**
  * @file BufferPool.h
  * @brief 固定大小字节缓冲池
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
-#ifndef CORE_BUFFERPOOL_H
-#define CORE_BUFFERPOOL_H
+#pragma once
 
 #include <cstddef>
 #include <vector>
@@ -79,6 +81,4 @@ namespace AsynGyanis::Core
         size_t                 m_freeTop{0};  ///< 空闲栈顶位置
     };
 
-}
-
-#endif
+} // namespace AsynGyanis::Core

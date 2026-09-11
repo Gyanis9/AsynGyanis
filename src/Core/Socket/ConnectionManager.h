@@ -1,10 +1,12 @@
 /**
  * @file ConnectionManager.h
  * @brief 全局连接跟踪器，支持优雅关闭
+ * @author Gyanis
+ * @date 2026-09-11
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
-#ifndef CORE_CONNECTIONMANAGER_H
-#define CORE_CONNECTIONMANAGER_H
+#pragma once
 
 #include <condition_variable>
 #include <memory>
@@ -69,6 +71,4 @@ namespace AsynGyanis::Core
         std::condition_variable_any                                          m_condition;   ///< 用于 waitAll 的条件变量，连接移除时通知
     };
 
-}
-
-#endif
+} // namespace AsynGyanis::Core
