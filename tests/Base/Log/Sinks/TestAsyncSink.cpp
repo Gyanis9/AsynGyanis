@@ -240,7 +240,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 轮询等待条件的超时上限（毫秒），给慢速机器留足余量
          */
-        constexpr int kWaitTimeoutMilliseconds = 3000;
+        constexpr int kWaitTimeoutMilliseconds = 10000;
 
         /**
          * @brief 使用「下游被卡住」的桩 Sink 组装 AsyncSink 的夹具

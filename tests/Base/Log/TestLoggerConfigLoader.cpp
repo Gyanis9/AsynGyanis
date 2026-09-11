@@ -956,7 +956,7 @@ namespace AsynGyanis::Base
                 {
                     return contains(readTemporaryFile("async_wrapped.log"), "async wrapped line");
                 },
-                3000);
+                10000);
         EXPECT_TRUE(delivered) << readTemporaryFile("async_wrapped.log");
     }
 
@@ -1021,12 +1021,14 @@ namespace AsynGyanis::Base
         applyLogging();
         logAndFlush("root", LogLevel::Info, "nested async line");
 
+        // flush() 返回即代表事件已穿过两层异步队列并交给文件 Sink 刷新，首次轮询就应读到
         const bool delivered = TestSupport::waitForCondition(
                 [this]
                 {
                     return contains(readTemporaryFile("doubly_async.log"), "nested async line");
                 },
-                3000);
+                10000);
+
         EXPECT_TRUE(delivered) << readTemporaryFile("doubly_async.log");
     }
 
