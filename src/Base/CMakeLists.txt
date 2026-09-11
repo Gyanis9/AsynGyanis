@@ -16,12 +16,7 @@ add_library(Base STATIC
 
 target_link_libraries(Base PUBLIC
         Platform
-        yaml-cpp::yaml-cpp
 )
-
-if(TARGET jemalloc::jemalloc)
-    target_link_libraries(Base PUBLIC jemalloc::jemalloc)
-endif()
 
 target_include_directories(Base PUBLIC
         ${CMAKE_SOURCE_DIR}/src

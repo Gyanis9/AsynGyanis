@@ -30,7 +30,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include <yaml-cpp/yaml.h>
+#include "Base/Parser/Value/ParserValue.h"
 
 namespace AsynGyanis::Base
 {
@@ -389,19 +389,14 @@ namespace AsynGyanis::Base
         static bool loadConfigFile(const std::filesystem::path &filePath, ConfigKeyValueMap &values, std::vector<std::string> &errors);
 
         /**
-         * @brief 递归扁平化节点，将嵌套键转换为点号路径。
-         * @param node 当前 YAML 节点。
+         * @brief 递归扁平化文档值，将嵌套键转换为点号路径。
+         * @details 只向下展开对象节点；数组与标量作为叶子值原样存入，
+         *          类型推断已在解析器内完成，此处不再二次判定。
+         * @param node 当前文档值节点（必须是对象）。
          * @param prefix 键前缀。
          * @param values 扁平化结果容器。
          */
-        static void flattenNode(const YAML::Node &node, const std::string &prefix, ConfigKeyValueMap &values);
-
-        /**
-         * @brief 将 YAML 节点转换为 ConfigValue。
-         * @param node YAML 节点。
-         * @return ConfigValue 转换后的配置值。
-         */
-        static ConfigValue convertNode(const YAML::Node &node);
+        static void flattenValue(const ParserValue &node, const std::string &prefix, ConfigKeyValueMap &values);
 
         /**
          * @brief 处理文件监听回调并触发后台重载。

@@ -18,10 +18,6 @@ endif()
 # Debug 构建注入 ASYN_DEBUG：日志输出线程号与源码位置，Release 走精简格式
 add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 
-# 顶层只声明当前启用模块直接需要的依赖，
-# OpenSSL / llhttp / SQLite3 等由各自模块的 CMakeLists 声明
-find_package(yaml-cpp REQUIRED)
-
 enable_testing()
 
 add_subdirectory(src)

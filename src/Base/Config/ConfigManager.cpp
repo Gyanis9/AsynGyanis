@@ -3,13 +3,21 @@
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
+#include "Base/Parser/Json/JsonParser.h"
+#include "Base/Parser/Json/JsonWriter.h"
+#include "Base/Parser/ParserError.h"
+#include "Base/Parser/Yaml/YamlParser.h"
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include <algorithm>
-#include <charconv>
+#include <cctype>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <ranges>
-#include <sstream>
+#include <string_view>
 #include <system_error>
 
 namespace AsynGyanis::Base
@@ -264,298 +272,72 @@ namespace AsynGyanis::Base
 
     namespace
     {
-        // -------- settings.json (user override layer) JSON output helpers --------
+        // -------- 配置文档读取与用户覆盖层辅助 --------
 
         /**
-         * @brief 标量节点的 JSON 输出类别。
+         * @brief 读取文本文件全部内容
+         * @param filePath 目标文件路径
+         * @return std::optional<std::string> 成功返回内容，无法打开返回 std::nullopt
          */
-        enum class ScalarKind
+        [[nodiscard]] std::optional<std::string> readTextFile(const std::filesystem::path &filePath)
         {
-            Integer, ///< 整数，裸写
-            Float,   ///< 浮点，裸写
-            Bool,    ///< 布尔，裸写
-            Null,    ///< 空值，裸写
-            String,  ///< 字符串，带引号
-        };
-
-        /**
-         * @brief 推断 YAML 标量节点应归入的 JSON 输出类别。
-         * @param node 标量节点。
-         * @return ScalarKind 输出类别。
-         */
-        ScalarKind classifyScalar(const YAML::Node &node)
-        {
-            const std::string &tag = node.Tag();
-            if (tag == "tag:yaml.org,2002:str" || tag == "!")
+            std::ifstream file(filePath, std::ios::in | std::ios::binary);
+            if (!file.is_open())
             {
-                return ScalarKind::String;
+                return std::nullopt;
             }
-            if (tag == "tag:yaml.org,2002:int")
-                return ScalarKind::Integer;
-            if (tag == "tag:yaml.org,2002:float")
-                return ScalarKind::Float;
-            if (tag == "tag:yaml.org,2002:bool")
-                return ScalarKind::Bool;
-            if (tag == "tag:yaml.org,2002:null")
-                return ScalarKind::Null;
-
-            // Plain scalar: infer type from text (same rule as loading side convertNode)
-            const std::string &text = node.Scalar();
-            if (text.empty())
-            {
-                return ScalarKind::String;
-            }
-            if (text.size() <= 5)
-            {
-                std::string lower(text.size(), '\0');
-                std::ranges::transform(text, lower.begin(),
-                                       [](const unsigned char character)
-                                       {
-                                           return std::tolower(character);
-                                       });
-                if (lower == "true" || lower == "false" || lower == "yes" || lower == "no" ||
-                    lower == "on" || lower == "off")
-                {
-                    return ScalarKind::Bool;
-                }
-            }
-            const char *begin        = text.data();
-            const char *end          = text.data() + text.size();
-            int64_t     integerValue = 0;
-            if (const auto [first, second] = std::from_chars(begin, end, integerValue);
-                second == std::errc() && first == end)
-            {
-                return ScalarKind::Integer;
-            }
-            double floatingValue = 0.0;
-            if (const auto [first, second] = std::from_chars(begin, end, floatingValue);
-                second == std::errc() && first == end && std::isfinite(floatingValue))
-            {
-                return ScalarKind::Float;
-            }
-            return ScalarKind::String;
+            return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
         }
 
         /**
-         * @brief 待输出的标量值（类别 + 文本形式）。
+         * @brief 判断文本是否只由空白字符组成
+         * @param text 待判定文本
+         * @return true 为空或全空白
          */
-        struct ScalarValue
+        [[nodiscard]] bool isBlankText(std::string_view text) noexcept
         {
-            ScalarKind  kind{ScalarKind::String}; ///< JSON 输出类别
-            std::string text;                     ///< 已格式化好的值文本
-        };
-
-        /**
-         * @brief 将配置值转换为带类别的标量文本。
-         * @param value 配置值。
-         * @return ScalarValue 输出类别与文本。
-         */
-        ScalarValue toScalarValue(const ConfigValue &value)
-        {
-            ScalarValue result;
-            switch (value.type())
-            {
-                case ConfigValueType::Bool:
-                    result.kind = ScalarKind::Bool;
-                    result.text = value.asBool() ? "true" : "false";
-                    break;
-                case ConfigValueType::Int:
-                    result.kind = ScalarKind::Integer;
-                    result.text = std::to_string(value.asInt());
-                    break;
-                case ConfigValueType::Double:
-                {
-                    // to_chars 取最短可往返表示：既免去构造流与 locale facet 查询，
-                    // 也不会像 ostream 默认精度那样把 0.123456789 截成 0.123457
-                    char        buffer[64];
-                    const auto  conversionResult = std::to_chars(buffer, buffer + sizeof(buffer), value.asDouble());
-                    if (conversionResult.ec != std::errc())
-                    {
-                        // NaN 与无穷大没有合法的 JSON 数字表示，落盘为 null
-                        result.kind = ScalarKind::Null;
-                        result.text.clear();
-                    }
-                    else
-                    {
-                        result.kind = ScalarKind::Float;
-                        result.text.assign(buffer, conversionResult.ptr);
-                        if (result.text.find('.') == std::string::npos &&
-                            result.text.find('e') == std::string::npos &&
-                            result.text.find('E') == std::string::npos)
-                        {
-                            result.text += ".0";
-                        }
-                    }
-                    break;
-                }
-                case ConfigValueType::String:
-                    result.text = value.asString();
-                    break;
-                default:
-                    result.kind = ScalarKind::Null;
-                    break;
-            }
-            return result;
+            return std::all_of(text.begin(), text.end(),
+                               [](const unsigned char character)
+                               {
+                                   return std::isspace(character) != 0;
+                               });
         }
 
         /**
-         * @brief 转义 JSON 字符串内容。
-         * @param text 原始文本。
-         * @return std::string 不含外层引号的转义结果。
+         * @brief 按文件后缀选择解析器解析一份配置文档
+         * @details .json 走 JsonParser，其余（.yaml/.yml）走 YamlParser。
+         *          类型推断由解析器在读取时一次完成，配置侧不再二次判定。
+         * @param text 文档文本
+         * @param filePath 文件路径，仅用于挑选后缀
+         * @return ParserValue 文档根值
+         * @throws ParserError 语法非法或使用了不支持的 YAML 特性
          */
-        std::string jsonEscape(const std::string &text)
+        [[nodiscard]] ParserValue parseDocumentBySuffix(std::string_view text, const std::filesystem::path &filePath)
         {
-            std::string escaped;
-            escaped.reserve(text.size() + 8);
-            for (const char character: text)
-            {
-                switch (character)
-                {
-                    case '"':
-                        escaped += "\\\"";
-                        break;
-                    case '\\':
-                        escaped += "\\\\";
-                        break;
-                    case '\b':
-                        escaped += "\\b";
-                        break;
-                    case '\f':
-                        escaped += "\\f";
-                        break;
-                    case '\n':
-                        escaped += "\\n";
-                        break;
-                    case '\r':
-                        escaped += "\\r";
-                        break;
-                    case '\t':
-                        escaped += "\\t";
-                        break;
-                    default:
-                        if (static_cast<unsigned char>(character) < 0x20)
-                        {
-                            escaped += std::format("\\u{:04x}", static_cast<unsigned int>(character));
-                        } else
-                        {
-                            escaped += character;
-                        }
-                        break;
-                }
-            }
-            return escaped;
+            return isJsonFile(filePath.string()) ? JsonParser::parse(text) : YamlParser::parse(text);
         }
 
         /**
-         * @brief 将标量渲染为 JSON 片段。
-         * @param scalar 带类别的标量文本。
-         * @return std::string JSON 值片段。
+         * @brief 把一份扁平文档解析成覆盖层键值表
+         * @details 解析失败或根节点不是对象时返回空表：覆盖层保存宁可丢弃损坏的旧内容，
+         *          也不让整次写盘失败并丢掉本次有效修改。
+         * @param text 文档文本
+         * @param filePath 文件路径，仅用于挑选解析器
+         * @return ParserValueObject 顶层键值表
          */
-        std::string jsonScalar(const ScalarValue &scalar)
+        [[nodiscard]] ParserValueObject parseFlatMembers(std::string_view text, const std::filesystem::path &filePath)
         {
-            switch (scalar.kind)
+            try
             {
-                case ScalarKind::Null:
-                    return "null";
-                case ScalarKind::String:
-                    return "\"" + jsonEscape(scalar.text) + "\"";
-                default:
-                    return scalar.text;
-            }
-        }
-
-        /**
-         * @brief 递归将配置值渲染为 JSON 片段
-         * @details 标量沿用 jsonScalar 的分类输出（数字样字符串仍带引号）；数组与对象
-         *          展开为 JSON 容器，避免界面写入的列表/字典落盘时被降级成 null。
-         * @param value 待序列化的配置值
-         * @return std::string JSON 值片段
-         */
-        std::string configValueToJson(const ConfigValue &value)
-        {
-            switch (value.type())
+                ParserValue document = parseDocumentBySuffix(text, filePath);
+                if (auto *members = std::get_if<ParserValueObject>(&document.variant()); members != nullptr)
+                {
+                    return std::move(*members);
+                }
+            } catch (const ParserError &)
             {
-                case ConfigValueType::Array:
-                {
-                    std::string output = "[";
-                    for (const auto &element: value.asArray())
-                    {
-                        if (output.size() > 1)
-                        {
-                            output += ", ";
-                        }
-                        output += configValueToJson(element);
-                    }
-                    return output + "]";
-                }
-                case ConfigValueType::Object:
-                {
-                    std::string output = "{";
-                    for (const auto &[key, element]: value.asObject())
-                    {
-                        if (output.size() > 1)
-                        {
-                            output += ", ";
-                        }
-                        output += "\"" + jsonEscape(key) + "\": " + configValueToJson(element);
-                    }
-                    return output + "}";
-                }
-                default:
-                    return jsonScalar(toScalarValue(value));
             }
-        }
-
-        /**
-         * @brief 递归将 YAML 节点追加为 JSON 文本。
-         * @param output 输出缓冲。
-         * @param node 当前 YAML 节点。
-         */
-        void appendJsonValue(std::string &output, const YAML::Node &node)
-        {
-            if (!node || node.IsNull())
-            {
-                output += "null";
-                return;
-            }
-            switch (node.Type())
-            {
-                case YAML::NodeType::Map:
-                {
-                    output     += '{';
-                    bool first = true;
-                    for (auto iterator = node.begin(); iterator != node.end(); ++iterator)
-                    {
-                        if (!first)
-                            output += ',';
-                        first  = false;
-                        output += "\"" + jsonEscape(iterator->first.as<std::string>()) + "\":";
-                        appendJsonValue(output, iterator->second);
-                    }
-                    output += '}';
-                    break;
-                }
-                case YAML::NodeType::Sequence:
-                {
-                    output     += '[';
-                    bool first = true;
-                    for (const auto &child: node)
-                    {
-                        if (!first)
-                            output += ',';
-                        first = false;
-                        appendJsonValue(output, child);
-                    }
-                    output += ']';
-                    break;
-                }
-                case YAML::NodeType::Scalar:
-                    output += jsonScalar({.kind = classifyScalar(node), .text = node.Scalar()});
-                    break;
-                default:
-                    output += "null";
-                    break;
-            }
+            return {};
         }
     } // namespace
 
@@ -580,78 +362,36 @@ namespace AsynGyanis::Base
         const std::filesystem::path targetPath = currentData->configDirectory / "settings.json";
         const std::filesystem::path legacyPath = currentData->configDirectory / "ui.yaml";
 
-        YAML::Node root;
-        if (std::error_code errorCode; std::filesystem::exists(targetPath, errorCode))
+        // 既有覆盖层内容先并入；损坏或根节点不是对象时按空表处理，不阻塞本次保存
+        ParserValueObject members;
+        if (const std::optional<std::string> existingText = readTextFile(targetPath); existingText.has_value())
         {
-            try
-            {
-                root = YAML::LoadFile(targetPath.string());
-            } catch (const std::exception &)
-            {
-                root = YAML::Node();
-            }
-        }
-        if (!root.IsMap())
-        {
-            root = YAML::Node(YAML::NodeType::Map);
+            members = parseFlatMembers(*existingText, targetPath);
         }
 
-        // 界面修改（扁平点号键）：JSON 顶层键可含点，读取端按“键已含点”原样使用。
-        // 注意：pending 值不写入 YAML 节点（节点会丢失引号类型信息），序列化时按 ConfigValue 类型直接输出
-        if (std::error_code errorCode; std::filesystem::exists(legacyPath, errorCode))
+        // 历史 ui.yaml 覆盖残留：只并入标量项（扁平点号键），随后删除旧文件完成迁移
+        if (const std::optional<std::string> legacyText = readTextFile(legacyPath); legacyText.has_value())
         {
-            try
+            for (auto &[key, value]: parseFlatMembers(*legacyText, legacyPath))
             {
-                if (const YAML::Node legacy = YAML::LoadFile(legacyPath.string()); legacy.IsMap())
+                if (value.type() != ParserValueType::Object && value.type() != ParserValueType::Array)
                 {
-                    for (auto iterator = legacy.begin(); iterator != legacy.end(); ++iterator)
-                    {
-                        if (iterator->second.IsScalar())
-                        {
-                            root[iterator->first.as<std::string>()] = iterator->second;
-                        }
-                    }
+                    members.insert_or_assign(std::move(key), std::move(value));
                 }
-            } catch (const std::exception &)
-            {
             }
+
             std::error_code ignored;
             std::filesystem::remove(legacyPath, ignored);
         }
 
-        // JSON 序列化（类型原生：字符串带引号、数字/布尔/空值裸写）
-        std::string json         = "{\n";
-        bool        first        = true;
-        const auto  emitKeyValue = [&json, &first](const std::string &key, const std::string &valueJson)
-        {
-            if (!first)
-                json += ",\n";
-            first = false;
-            json  += "  \"" + jsonEscape(key) + "\": " + valueJson;
-        };
-        for (auto iterator = root.begin(); iterator != root.end(); ++iterator)
-        {
-            const auto key = iterator->first.as<std::string>();
-            if (const auto pendingValue = pending.find(key); pendingValue != pending.end())
-            {
-                emitKeyValue(key, configValueToJson(pendingValue->second));
-            } else
-            {
-                std::string valueJson;
-                appendJsonValue(valueJson, iterator->second);
-                emitKeyValue(key, valueJson);
-            }
-        }
-        // 追加尚未存在于 settings.json 的新修改键
+        // 本次界面修改最后写入，同名旧值以本次为准
         for (const auto &[key, value]: pending)
         {
-            if (root[key].IsDefined())
-            {
-                continue;
-            }
-            emitKeyValue(key, configValueToJson(value));
+            members.insert_or_assign(key, value);
         }
-        json += "\n}\n";
+
+        // 类型原生序列化：字符串带引号、整数与浮点裸写，缩进两空格便于人工编辑
+        const std::string json = JsonWriter::write(ParserValue(std::move(members)), true) + "\n";
 
         // 断电安全：经原子写替换，避免中断留下半截 settings.json
         std::string writeError;
@@ -860,160 +600,72 @@ namespace AsynGyanis::Base
 
     bool ConfigManager::loadConfigFile(const std::filesystem::path &filePath, ConfigKeyValueMap &values, std::vector<std::string> &errors)
     {
+        const std::optional<std::string> text = readTextFile(filePath);
+        if (!text.has_value())
+        {
+            errors.push_back("Cannot open file '" + filePath.string() + "': no such file or not readable");
+            return false;
+        }
+
+        if (isBlankText(*text))
+        {
+            // 空文件：不报错、不产出配置项
+            return true;
+        }
+
         try
         {
-            // yaml-cpp 兼容 YAML 1.2 核心模式，JSON 是 YAML 的子集，
-            // 因此 JSON 与 YAML 共用同一解析路径。
-            const YAML::Node root = YAML::LoadFile(filePath.string());
+            const ParserValue document = parseDocumentBySuffix(*text, filePath);
 
-            if (root.IsNull())
+            if (document.type() != ParserValueType::Object)
             {
-                // 空文件，不报错、无配置项
-                return true;
-            }
+                // 沿用 YAML 习惯措辞：数组报 sequence，保持既有错误文案与用例一致
+                const std::string_view kindName = document.type() == ParserValueType::Array
+                                                      ? std::string_view{"sequence"}
+                                                      : document.type() == ParserValueType::Null
+                                                            ? std::string_view{"null"}
+                                                            : std::string_view{typeName(document.type())};
 
-            if (!root.IsMap())
-            {
-                errors.push_back("File '" + filePath.string() +
-                                 "': root node must be a map, got " +
-                                 std::string(root.Type() == YAML::NodeType::Sequence ? "sequence" : root.Type() == YAML::NodeType::Scalar ? "scalar" : "null"));
+                errors.push_back("File '" + filePath.string() + "': root node must be a map, got " + std::string(kindName));
                 return false;
             }
 
-            flattenNode(root, "", values);
-            return true;
-        } catch (const YAML::ParserException &exception)
+            flattenValue(document, "", values);
+        } catch (const ParserError &exception)
         {
-            errors.push_back("Parse error in '" + filePath.string() +
-                             "': " + exception.what() + " at line " + std::to_string(exception.mark.line + 1) +
-                             ", column " + std::to_string(exception.mark.column + 1));
-        } catch (const YAML::BadFile &exception)
-        {
-            errors.push_back("Cannot open file '" + filePath.string() + "': " + exception.what());
+            errors.push_back("Parse error in '" + filePath.string() + "': " + exception.reason() + " at " +
+                             exception.position().describe());
+            return false;
         } catch (const std::exception &exception)
         {
             errors.push_back("Unexpected error loading '" + filePath.string() + "': " + exception.what());
+            return false;
         }
-        return false;
+
+        return true;
     }
 
-    void ConfigManager::flattenNode(const YAML::Node &node, const std::string &prefix, ConfigKeyValueMap &values)
+    void ConfigManager::flattenValue(const ParserValue &node, const std::string &prefix, ConfigKeyValueMap &values)
     {
-        if (!node.IsMap())
+        if (!node.is<ParserValueObject>())
         {
             return;
         }
 
-        for (const auto &keyValue: node)
+        for (const auto &[key, value]: node.asObject())
         {
-            const auto key = keyValue.first.as<std::string>();
-
             const std::string fullKey = prefix.empty() ? key : prefix + "." + key;
-            if (const YAML::Node &valueNode = keyValue.second; valueNode.IsMap())
+
+            if (value.is<ParserValueObject>() && !value.asObject().empty())
             {
-                if (valueNode.size() == 0)
-                {
-                    // 空对象保留为独立的空 ConfigValue，避免数据丢失
-                    values[fullKey] = convertNode(valueNode);
-                } else
-                {
-                    // 非空嵌套对象：递归展开
-                    flattenNode(valueNode, fullKey, values);
-                }
-            } else
-            {
-                // 叶子节点：转换为 ConfigValue 并存储
-                values[fullKey] = convertNode(valueNode);
+                // 非空嵌套对象：递归展开为点号路径
+                flattenValue(value, fullKey, values);
+                continue;
             }
+
+            // 叶子（标量、数组、空对象）原样存入，类型已由解析器判定完毕
+            values.insert_or_assign(fullKey, value);
         }
-    }
-
-    ConfigValue ConfigManager::convertNode(const YAML::Node &node)
-    {
-        if (node.IsNull())
-        {
-            return ConfigValue(nullptr);
-        }
-        if (node.IsScalar())
-        {
-            const auto scalar = node.as<std::string>();
-
-            // 显式字符串标签（!!str）或带引号/块样式（yaml-cpp 中 tag 为 "!"）一律按字符串处理
-            // （裸标量 tag 为 "?"，走后续的类型推断）
-            if (const std::string &tag = node.Tag(); tag == "tag:yaml.org,2002:str" || tag == "!")
-            {
-                return ConfigValue(scalar);
-            }
-
-            // 空字符串边界：避免被误判为整数 0
-            if (scalar.empty())
-            {
-                return ConfigValue(scalar);
-            }
-
-            // 布尔值检测：true/false, yes/no, on/off (大小写不敏感，YAML 1.1 兼容)
-            if (scalar.size() <= 5)
-            {
-                std::string lower(scalar.size(), '\0');
-                std::ranges::transform(scalar, lower.begin(),
-                                       [](const unsigned char character)
-                                       {
-                                           return std::tolower(character);
-                                       });
-                if (lower == "true" || lower == "false" || lower == "yes" || lower == "no" ||
-                    lower == "on" || lower == "off")
-                {
-                    return ConfigValue(lower == "true" || lower == "yes" || lower == "on");
-                }
-            }
-
-            // 整数检测（from_chars 严格全量匹配，不跳过空白）
-            {
-                const char *begin        = scalar.data();
-                const char *end          = scalar.data() + scalar.size();
-                int64_t     integerValue = 0;
-                if (const auto [first, second] = std::from_chars(begin, end, integerValue);
-                    second == std::errc() && first == end)
-                {
-                    return ConfigValue(integerValue);
-                }
-            }
-
-            // 浮点数检测（拒绝无穷/NaN 与超出 double 范围的值）
-            {
-                const char *begin         = scalar.data();
-                const char *end           = scalar.data() + scalar.size();
-                double      floatingValue = 0.0;
-                if (const auto [first, second] = std::from_chars(begin, end, floatingValue);
-                    second == std::errc() && first == end && std::isfinite(floatingValue))
-                {
-                    return ConfigValue(floatingValue);
-                }
-            }
-
-            return ConfigValue(scalar);
-        }
-        if (node.IsSequence())
-        {
-            ConfigArray array;
-            array.reserve(node.size());
-            for (const auto &item: node)
-            {
-                array.push_back(convertNode(item));
-            }
-            return ConfigValue(std::move(array));
-        }
-        if (node.IsMap())
-        {
-            ConfigObject object;
-            for (const auto &keyValue: node)
-            {
-                object[keyValue.first.as<std::string>()] = convertNode(keyValue.second);
-            }
-            return ConfigValue(std::move(object));
-        }
-
-        return ConfigValue(nullptr);
     }
 
     void ConfigManager::handleFileChange(const std::string_view filePath, const Platform::FileChangeType changeType)

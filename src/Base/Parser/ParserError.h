@@ -39,7 +39,16 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] const ParserPosition &position() const noexcept;
 
+        /**
+         * @brief 获取不含位置文本与基类包装的错误原因
+         * @details 供上层自行组织错误列表使用（例如汇总多个配置文件的加载错误），
+         *          避免把异常基类附加的位置噪声再转述一遍。
+         * @return const std::string& 原始原因描述
+         */
+        [[nodiscard]] const std::string &reason() const noexcept;
+
     private:
         ParserPosition m_position; ///< 出错位置快照
+        std::string m_reason;      ///< 未拼接位置与基类前缀的错误原因
     };
 } // namespace AsynGyanis::Base

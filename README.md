@@ -42,7 +42,7 @@
 
 ![依赖关系](asserts/依赖关系.png)
 
-- **Base** 依赖 `yaml-cpp`，提供日志、配置、异常等基础设施
+- **Base** 无第三方依赖，自带日志、配置、异常与手搓 YAML/JSON 解析（`Base/Parser`）
 - **Core** 依赖 `Base` + `OpenSSL`，构建协程运行时 + epoll/wepoll 事件循环 + TLS 安全层
 - **Net** 依赖 `Core` + `llhttp`，提供 HTTP/HTTPS 服务端能力
 
@@ -243,7 +243,7 @@ Core::Task<void> ping(Core::EventLoop& loop) {
 
 ## 模块概览
 
-### Base — 基础设施（`libBase.a`，依赖 `yaml-cpp`）
+### Base — 基础设施（`libBase.a`，依赖 `Platform`）
 
 | 分类 | 类 | 职责 |
 |------|----|------|
@@ -321,10 +321,11 @@ AsynGyanis/
 
 | 库 | 版本 | 用途 |
 |----|------|------|
-| [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 配置解析 |
 | [llhttp](https://github.com/nodejs/llhttp) | 9.3.0 | HTTP/1.1 解析 |
 | [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS 安全传输 |
-| [Catch2](https://github.com/catchorg/Catch2) | 3.8.0 | 单元测试 |
+| [GoogleTest](https://github.com/google/googletest) | 1.17.0 | 单元测试 |
+
+YAML 与 JSON 解析由 `Base/Parser` 自研实现，不引入第三方解析库。
 
 ## 编码规范
 
