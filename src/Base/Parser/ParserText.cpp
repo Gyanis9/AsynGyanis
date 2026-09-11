@@ -71,7 +71,7 @@ namespace AsynGyanis::Base
     {
         if (index + digitCount > text.size())
         {
-            throw ParserError("incomplete \\u escape, expected 4 hexadecimal digits", position);
+            throw ParserError("\\u 转义不完整，应为 4 位十六进制数字", position);
         }
 
         std::uint32_t value = 0;
@@ -80,7 +80,7 @@ namespace AsynGyanis::Base
             const char character = text[index + digit];
             if (!isHexDigit(character))
             {
-                throw ParserError("invalid hexadecimal digit in \\u escape", position);
+                throw ParserError("\\u 转义中存在无效的十六进制数字", position);
             }
             value = (value << 4) | hexValue(character);
         }
@@ -93,7 +93,7 @@ namespace AsynGyanis::Base
     {
         if (index >= text.size())
         {
-            throw ParserError("input ends right after a backslash", position);
+            throw ParserError("反斜杠后输入即结束", position);
         }
 
         const char escapeCharacter = text[index];
@@ -118,7 +118,7 @@ namespace AsynGyanis::Base
             case 't':
                 return '\t';
             default:
-                throw ParserError("unsupported escape sequence", position);
+                throw ParserError("不支持的转义序列", position);
         }
     }
 
@@ -140,7 +140,7 @@ namespace AsynGyanis::Base
 
             if (index >= body.size())
             {
-                throw ParserError("input ends right after a backslash", position);
+                throw ParserError("反斜杠后输入即结束", position);
             }
 
             if (body[index] == 'u')
@@ -153,14 +153,14 @@ namespace AsynGyanis::Base
                 {
                     if (index + 1 >= body.size() || body[index] != '\\' || body[index + 1] != 'u')
                     {
-                        throw ParserError("lone high surrogate in \\u escape", position);
+                        throw ParserError("\\u 转义中出现孤立的高代理项", position);
                     }
 
                     index                            += 2;
                     const std::uint32_t lowSurrogate = decodeHex(body, index, 4, position);
                     if (lowSurrogate < kLowSurrogateMinimum || lowSurrogate > kLowSurrogateMaximum)
                     {
-                        throw ParserError("invalid low surrogate in \\u escape", position);
+                        throw ParserError("\\u 转义中存在无效的低代理项", position);
                     }
 
                     const std::uint32_t mergedCodePoint =
@@ -171,7 +171,7 @@ namespace AsynGyanis::Base
 
                 if (codeUnit >= kLowSurrogateMinimum && codeUnit <= kLowSurrogateMaximum)
                 {
-                    throw ParserError("lone low surrogate in \\u escape", position);
+                    throw ParserError("\\u 转义中出现孤立的低代理项", position);
                 }
 
                 appendUtf8(decoded, codeUnit);

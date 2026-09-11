@@ -29,7 +29,7 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造类型不匹配异常
-         * @details 消息形如 "Type mismatch for key 'a.b': expected int, got string"，
+         * @details 消息形如 "键 'a.b' 类型不匹配：期望 int，实际 string"，
          *          三个字段各自保留，便于上层做提示或统计。
          * @param key 发生类型错误的键或下标描述
          * @param expectedType 调用方期望的类型名称
@@ -43,7 +43,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 构造成员不存在异常
-         * @details 消息形如 "Member not found: 'a.b'"，期望与实际类型均为空串。
+         * @details 消息形如 "成员不存在：'a.b'"，期望与实际类型均为空串。
          * @param key 缺失的键或越界下标描述
          * @param sourceLocation 异常抛出位置，默认取调用点
          * @return ValueAccessError 构造好的异常对象

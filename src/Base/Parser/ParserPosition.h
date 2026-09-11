@@ -28,11 +28,11 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 生成人类可读的位置描述
-         * @return std::string 形如 "line 3, column 12" 的文本
+         * @return std::string 形如 "第 3 行，第 12 列" 的文本
          */
         [[nodiscard]] std::string describe() const
         {
-            return std::format("line {}, column {}", lineNumber, columnNumber);
+            return std::format("第 {} 行，第 {} 列", lineNumber, columnNumber);
         }
     };
 } // namespace AsynGyanis::Base

@@ -7,7 +7,7 @@
 namespace AsynGyanis::Base
 {
     ValueAccessError::ValueAccessError(const std::string &key, const std::string &expectedType, const std::string &actualType, const std::source_location &sourceLocation) :
-        ValueAccessError(std::format("Type mismatch for key '{}': expected {}, got {}", key, expectedType, actualType),
+        ValueAccessError(std::format("键 '{}' 类型不匹配：期望 {}，实际 {}", key, expectedType, actualType),
                          key, expectedType, actualType, sourceLocation)
     {
     }
@@ -15,7 +15,7 @@ namespace AsynGyanis::Base
     ValueAccessError ValueAccessError::missingMember(const std::string &key, const std::source_location &sourceLocation)
     {
         return {
-                std::format("Member not found: '{}'", key), key, std::string{}, std::string{},
+                std::format("成员不存在：'{}'", key), key, std::string{}, std::string{},
                 sourceLocation
         };
     }

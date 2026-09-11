@@ -154,7 +154,7 @@ namespace AsynGyanis::Base
          */
         [[noreturn]] void rejectUnsupportedFeature(const std::string &featureName, const ParserPosition &position)
         {
-            throw ParserError("unsupported YAML feature: " + featureName, position);
+            throw ParserError("不支持的 YAML 特性：" + featureName, position);
         }
     } // namespace
 
@@ -180,7 +180,7 @@ namespace AsynGyanis::Base
         if (index < parser.m_lines.size())
         {
             const Line &leftover = parser.m_lines[index];
-            throw ParserError("unexpected indentation at the document root", makePosition(leftover.number, leftover.indent + 1));
+            throw ParserError("文档根级出现意外的缩进", makePosition(leftover.number, leftover.indent + 1));
         }
 
         return root;
@@ -215,16 +215,16 @@ namespace AsynGyanis::Base
                 // 空行与整行注释不参与结构，因此也不受制表符缩进规则约束
             } else if (indent < rawLine.size() && rawLine[indent] == '\t')
             {
-                throw ParserError("tab characters must not be used for indentation", makePosition(number, indent + 1));
+                throw ParserError("缩进禁止使用制表符", makePosition(number, indent + 1));
             } else
             {
                 if (content == "---" || content == "..." || content.substr(0, std::min<std::size_t>(content.size(), 4)) == "--- ")
                 {
-                    rejectUnsupportedFeature("multiple documents", makePosition(number, indent + 1));
+                    rejectUnsupportedFeature("多文档", makePosition(number, indent + 1));
                 }
                 if (content.front() == '%')
                 {
-                    rejectUnsupportedFeature("directive line", makePosition(number, indent + 1));
+                    rejectUnsupportedFeature("指令行", makePosition(number, indent + 1));
                 }
 
                 // 行尾注释只在引号之外生效
@@ -241,7 +241,7 @@ namespace AsynGyanis::Base
                             const std::size_t closing = findClosingDoubleQuote(content, index);
                             if (closing == std::string_view::npos)
                             {
-                                throw ParserError("unterminated double-quoted string", makePosition(number, indent + index + 1));
+                                throw ParserError("双引号字符串未闭合", makePosition(number, indent + index + 1));
                             }
                             index = closing;
                         } else
@@ -257,7 +257,7 @@ namespace AsynGyanis::Base
                             const std::size_t closing = findClosingSingleQuote(content, index);
                             if (closing == std::string_view::npos)
                             {
-                                throw ParserError("unterminated single-quoted string", makePosition(number, indent + index + 1));
+                                throw ParserError("单引号字符串未闭合", makePosition(number, indent + index + 1));
                             }
                             index = closing;
                         } else
@@ -300,7 +300,7 @@ namespace AsynGyanis::Base
     {
         if (nestingDepth >= kMaximumNestingDepth)
         {
-            throw ParserError("nesting depth limit exceeded", index < m_lines.size()
+            throw ParserError("嵌套深度超出限制", index < m_lines.size()
                                                                   ? makePosition(m_lines[index].number, m_lines[index].indent + 1)
                                                                   : ParserPosition{});
         }
@@ -333,23 +333,23 @@ namespace AsynGyanis::Base
             }
             if (indent > blockIndent)
             {
-                throw ParserError("inconsistent indentation inside a mapping", makePosition(number, indent + 1));
+                throw ParserError("映射内缩进不一致", makePosition(number, indent + 1));
             }
             if (startsSequenceEntry(content))
             {
-                throw ParserError("a sequence entry cannot appear at the same level as mapping keys", makePosition(number, indent + 1));
+                throw ParserError("序列条目不能与映射键同级", makePosition(number, indent + 1));
             }
 
             const std::size_t separator = findKeyValueSeparator(content);
             if (separator == std::string_view::npos)
             {
-                throw ParserError("expected 'key: value'", makePosition(number, indent + 1));
+                throw ParserError("应为 'key: value'", makePosition(number, indent + 1));
             }
 
             const std::string_view keyText = trim(content.substr(0, separator));
             if (keyText.empty())
             {
-                throw ParserError("mapping key must not be empty", makePosition(number, indent + 1));
+                throw ParserError("映射键不能为空", makePosition(number, indent + 1));
             }
 
             std::string_view  remainder     = content.substr(separator + 1);
@@ -373,7 +373,7 @@ namespace AsynGyanis::Base
                 const ParserValue decodedKey = parseInlineValue(keyText, number, indent + 1);
                 if (!decodedKey.is<std::string>())
                 {
-                    throw ParserError("mapping key must be a string", makePosition(number, indent + 1));
+                    throw ParserError("映射键必须是字符串", makePosition(number, indent + 1));
                 }
                 keyName = decodedKey.asString();
             } else
@@ -383,7 +383,7 @@ namespace AsynGyanis::Base
 
             if (members.contains(keyName))
             {
-                throw ParserError("duplicate key: " + keyName, makePosition(number, indent + 1));
+                throw ParserError("重复的键：" + keyName, makePosition(number, indent + 1));
             }
             members.emplace(keyName, std::move(value));
         }
@@ -403,7 +403,7 @@ namespace AsynGyanis::Base
             {
                 if (indent > blockIndent)
                 {
-                    throw ParserError("inconsistent indentation inside a sequence", makePosition(number, indent + 1));
+                    throw ParserError("序列内缩进不一致", makePosition(number, indent + 1));
                 }
                 break;
             }
@@ -453,7 +453,7 @@ namespace AsynGyanis::Base
                 ParserValue value  = parseFlowSequence(text, cursor, number);
                 if (!trim(text.substr(cursor)).empty())
                 {
-                    throw ParserError("unexpected content after a flow sequence", position);
+                    throw ParserError("流式序列之后出现意外内容", position);
                 }
                 return value;
             }
@@ -463,7 +463,7 @@ namespace AsynGyanis::Base
                 ParserValue value  = parseFlowMapping(text, cursor, number);
                 if (!trim(text.substr(cursor)).empty())
                 {
-                    throw ParserError("unexpected content after a flow mapping", position);
+                    throw ParserError("流式映射之后出现意外内容", position);
                 }
                 return value;
             }
@@ -472,11 +472,11 @@ namespace AsynGyanis::Base
                 const std::size_t closing = findClosingDoubleQuote(text, 0);
                 if (closing == std::string_view::npos)
                 {
-                    throw ParserError("unterminated double-quoted string", position);
+                    throw ParserError("双引号字符串未闭合", position);
                 }
                 if (!trim(text.substr(closing + 1)).empty())
                 {
-                    throw ParserError("unexpected content after a quoted scalar", position);
+                    throw ParserError("带引号标量之后出现意外内容", position);
                 }
                 return ParserValue(ParserText::decodeQuotedBody(text.substr(1, closing - 1), position));
             }
@@ -485,27 +485,27 @@ namespace AsynGyanis::Base
                 const std::size_t closing = findClosingSingleQuote(text, 0);
                 if (closing == std::string_view::npos)
                 {
-                    throw ParserError("unterminated single-quoted string", position);
+                    throw ParserError("单引号字符串未闭合", position);
                 }
                 if (!trim(text.substr(closing + 1)).empty())
                 {
-                    throw ParserError("unexpected content after a quoted scalar", position);
+                    throw ParserError("带引号标量之后出现意外内容", position);
                 }
                 return ParserValue(expandSingleQuoteEscapes(text.substr(1, closing - 1)));
             }
             case '&':
             case '*':
-                rejectUnsupportedFeature("anchors and aliases", position);
+                rejectUnsupportedFeature("锚点与别名", position);
             case '|':
             case '>':
-                rejectUnsupportedFeature("block scalar", position);
+                rejectUnsupportedFeature("块标量", position);
             default:
                 break;
         }
 
         if (text.find("!!") != std::string_view::npos)
         {
-            rejectUnsupportedFeature("explicit type tag", position);
+            rejectUnsupportedFeature("显式类型标签", position);
         }
 
         return inferScalar(text);
@@ -520,7 +520,7 @@ namespace AsynGyanis::Base
 
         if (cursor >= text.size())
         {
-            throw ParserError("unexpected end of line inside a flow collection", makePosition(number, cursor + 1));
+            throw ParserError("流式集合内出现意外的行尾", makePosition(number, cursor + 1));
         }
 
         switch (text[cursor])
@@ -534,7 +534,7 @@ namespace AsynGyanis::Base
                 const std::size_t closing = findClosingDoubleQuote(text, cursor);
                 if (closing == std::string_view::npos)
                 {
-                    throw ParserError("unterminated double-quoted string inside a flow collection", makePosition(number, cursor + 1));
+                    throw ParserError("流式集合内双引号字符串未闭合", makePosition(number, cursor + 1));
                 }
                 ParserValue value(ParserText::decodeQuotedBody(text.substr(cursor + 1, closing - cursor - 1), makePosition(number, cursor + 1)));
                 cursor = closing + 1;
@@ -545,7 +545,7 @@ namespace AsynGyanis::Base
                 const std::size_t closing = findClosingSingleQuote(text, cursor);
                 if (closing == std::string_view::npos)
                 {
-                    throw ParserError("unterminated single-quoted string inside a flow collection", makePosition(number, cursor + 1));
+                    throw ParserError("流式集合内单引号字符串未闭合", makePosition(number, cursor + 1));
                 }
                 ParserValue value(expandSingleQuoteEscapes(text.substr(cursor + 1, closing - cursor - 1)));
                 cursor = closing + 1;
@@ -578,7 +578,7 @@ namespace AsynGyanis::Base
 
             if (cursor >= text.size())
             {
-                throw ParserError("unterminated flow sequence, expected ']'", makePosition(number, cursor + 1));
+                throw ParserError("流式序列未闭合，应为 ']'", makePosition(number, cursor + 1));
             }
             if (text[cursor] == ']')
             {
@@ -614,7 +614,7 @@ namespace AsynGyanis::Base
 
             if (cursor >= text.size())
             {
-                throw ParserError("unterminated flow mapping, expected '}'", makePosition(number, cursor + 1));
+                throw ParserError("流式映射未闭合，应为 '}'", makePosition(number, cursor + 1));
             }
             if (text[cursor] == '}')
             {
@@ -630,13 +630,13 @@ namespace AsynGyanis::Base
             }
             if (cursor >= text.size() || text[cursor] != ':')
             {
-                throw ParserError("flow mapping entries must be written as key: value", makePosition(number, keyStart + 1));
+                throw ParserError("流式映射条目必须写成 key: value", makePosition(number, keyStart + 1));
             }
 
             const ParserValue key = parseInlineValue(trim(text.substr(keyStart, cursor - keyStart)), number, keyStart + 1);
             if (!key.is<std::string>() && !key.isNull())
             {
-                throw ParserError("flow mapping key must be a string", makePosition(number, keyStart + 1));
+                throw ParserError("流式映射键必须是字符串", makePosition(number, keyStart + 1));
             }
 
             ++cursor; // 消费 ':'
@@ -645,7 +645,7 @@ namespace AsynGyanis::Base
             const std::string keyName = key.isNull() ? "null" : key.asString();
             if (members.contains(keyName))
             {
-                throw ParserError("duplicate key inside a flow mapping: " + keyName, makePosition(number, keyStart + 1));
+                throw ParserError("流式映射内存在重复键：" + keyName, makePosition(number, keyStart + 1));
             }
             members.emplace(keyName, std::move(value));
 

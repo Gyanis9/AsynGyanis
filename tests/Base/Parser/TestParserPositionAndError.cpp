@@ -32,14 +32,14 @@ namespace AsynGyanis::Base
     {
         const ParserPosition position{3, 12, 40};
 
-        EXPECT_EQ(position.describe(), "line 3, column 12");
+        EXPECT_EQ(position.describe(), "第 3 行，第 12 列");
     }
 
     TEST(ParserPosition, DescribeHandlesLargeValues)
     {
         const ParserPosition position{100000, 999, 100000};
 
-        EXPECT_EQ(position.describe(), "line 100000, column 999");
+        EXPECT_EQ(position.describe(), "第 100000 行，第 999 列");
     }
 
     TEST(ParserError, MessageEmbedsPositionAndReason)
@@ -47,7 +47,7 @@ namespace AsynGyanis::Base
         const ParserError error("tab characters must not be used", ParserPosition{7, 5, 42});
 
         const std::string message(error.what());
-        EXPECT_NE(message.find("Parse error at line 7, column 5"), std::string::npos) << message;
+        EXPECT_NE(message.find("解析错误（第 7 行，第 5 列）"), std::string::npos) << message;
         EXPECT_NE(message.find("tab characters must not be used"), std::string::npos) << message;
     }
 
@@ -71,7 +71,7 @@ namespace AsynGyanis::Base
         } catch (const Exception &baseException)
         {
             caughtAsProjectException = true;
-            EXPECT_NE(std::string(baseException.what()).find("Parse error"), std::string::npos);
+            EXPECT_NE(std::string(baseException.what()).find("解析错误"), std::string::npos);
         }
         catch (...)
         {

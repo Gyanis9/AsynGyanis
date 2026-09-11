@@ -296,7 +296,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("root:\n\tchild: 1\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("tab characters"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("制表符"), std::string::npos);
         EXPECT_EQ(error.position().lineNumber, 2U);
     }
 
@@ -307,7 +307,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("a: 1\nb: 2\na: 3\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("duplicate key: a"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("重复的键：a"), std::string::npos);
         EXPECT_EQ(error.position().lineNumber, 3U);
     }
 
@@ -326,7 +326,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("just a bare line\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("expected 'key: value'"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("应为 'key: value'"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsInconsistentIndentation)
@@ -336,7 +336,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("a: 1\n  b: 2\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("inconsistent indentation"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("缩进不一致"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsSequenceMixedIntoMappingLevel)
@@ -346,7 +346,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("a: 1\n- 2\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("sequence entry"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("序列条目"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsMultipleDocumentMarkers)
@@ -356,7 +356,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("---\na: 1\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("multiple documents"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("多文档"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsAnchorsAndAliases)
@@ -370,8 +370,8 @@ namespace AsynGyanis::Base
             return YamlParser::parse("copy: *anchor\n");
         });
 
-        EXPECT_NE(std::string(anchorError.what()).find("anchors and aliases"), std::string::npos);
-        EXPECT_NE(std::string(aliasError.what()).find("anchors and aliases"), std::string::npos);
+        EXPECT_NE(std::string(anchorError.what()).find("锚点与别名"), std::string::npos);
+        EXPECT_NE(std::string(aliasError.what()).find("锚点与别名"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsBlockScalars)
@@ -381,7 +381,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("script: |\n  echo hi\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("block scalar"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("块标量"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsExplicitTypeTags)
@@ -391,7 +391,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("count: !!int 5\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("explicit type tag"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("显式类型标签"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsDirectiveLines)
@@ -401,7 +401,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("%YAML 1.2\na: 1\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("directive line"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("指令行"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsUnterminatedQuotes)
@@ -411,7 +411,7 @@ namespace AsynGyanis::Base
             return YamlParser::parse("text: \"unclosed\n");
         });
 
-        EXPECT_NE(std::string(error.what()).find("unterminated"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("未闭合"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsUnterminatedFlowCollections)
@@ -425,8 +425,8 @@ namespace AsynGyanis::Base
             return YamlParser::parse("labels: {a: 1\n");
         });
 
-        EXPECT_NE(std::string(sequenceError.what()).find("unterminated flow sequence"), std::string::npos);
-        EXPECT_NE(std::string(mappingError.what()).find("unterminated flow mapping"), std::string::npos);
+        EXPECT_NE(std::string(sequenceError.what()).find("流式序列未闭合"), std::string::npos);
+        EXPECT_NE(std::string(mappingError.what()).find("流式映射未闭合"), std::string::npos);
     }
 
     TEST(YamlParser, RejectsFlowMappingEntryWithoutColon)
@@ -453,6 +453,6 @@ namespace AsynGyanis::Base
             return YamlParser::parse(source);
         });
 
-        EXPECT_NE(std::string(error.what()).find("nesting depth"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("嵌套深度"), std::string::npos);
     }
 } // namespace AsynGyanis::Base

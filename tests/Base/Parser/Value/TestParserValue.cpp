@@ -287,7 +287,7 @@ namespace AsynGyanis::Base
             EXPECT_EQ(exception.key(), "<unknown>");
             EXPECT_EQ(exception.expectedType(), "string");
             EXPECT_EQ(exception.actualType(), "double");
-            EXPECT_NE(std::string(exception.what()).find("Type mismatch"), std::string::npos);
+            EXPECT_NE(std::string(exception.what()).find("类型不匹配"), std::string::npos);
         }
     }
 

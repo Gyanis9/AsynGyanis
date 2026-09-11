@@ -6,7 +6,7 @@
 namespace AsynGyanis::Base
 {
     ParserError::ParserError(const std::string &message, const ParserPosition &position, const std::source_location &sourceLocation) :
-        Exception(std::format("Parse error at {}: {}", position.describe(), message), sourceLocation)
+        Exception(std::format("解析错误（{}）：{}", position.describe(), message), sourceLocation)
         , m_position(position)
         , m_reason(message)
     {

@@ -178,7 +178,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("");
         });
 
-        EXPECT_NE(std::string(error.what()).find("empty"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("为空"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsSingleQuotedStrings)
@@ -188,7 +188,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("'single'");
         });
 
-        EXPECT_NE(std::string(error.what()).find("expected a JSON value"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("应为 JSON 值"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsComments)
@@ -198,7 +198,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("{ /* note */ }");
         });
 
-        EXPECT_NE(std::string(error.what()).find("key"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("对象键"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsTrailingCommaInArray)
@@ -208,7 +208,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("[1,2,]");
         });
 
-        EXPECT_NE(std::string(error.what()).find("expected a JSON value"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("应为 JSON 值"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsTrailingCommaInObject)
@@ -218,7 +218,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse(R"({"a":1,})");
         });
 
-        EXPECT_NE(std::string(error.what()).find("double-quoted"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("双引号"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsLeadingZeros)
@@ -228,7 +228,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("01");
         });
 
-        EXPECT_NE(std::string(error.what()).find("leading zeros"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("前导零"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsIncompleteFractionAndExponent)
@@ -242,8 +242,8 @@ namespace AsynGyanis::Base
             return JsonParser::parse("1e");
         });
 
-        EXPECT_NE(std::string(fractionError.what()).find("decimal point"), std::string::npos);
-        EXPECT_NE(std::string(exponentError.what()).find("exponent"), std::string::npos);
+        EXPECT_NE(std::string(fractionError.what()).find("小数点"), std::string::npos);
+        EXPECT_NE(std::string(exponentError.what()).find("指数"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsNonFiniteLiterals)
@@ -253,7 +253,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("NaN");
         });
 
-        EXPECT_NE(std::string(error.what()).find("expected a JSON value"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("应为 JSON 值"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsIncompleteKeyword)
@@ -263,7 +263,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("truely");
         });
 
-        EXPECT_NE(std::string(error.what()).find("malformed keyword"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("关键字格式错误"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsDuplicateObjectKeys)
@@ -273,7 +273,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse(R"({"a":1,"a":2})");
         });
 
-        EXPECT_NE(std::string(error.what()).find("duplicate object key: a"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("对象存在重复键：a"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsUnterminatedString)
@@ -283,7 +283,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("\"unterminated");
         });
 
-        EXPECT_NE(std::string(error.what()).find("unterminated string"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("字符串未闭合"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsRawControlCharacterInsideString)
@@ -293,7 +293,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse(std::string("\"line\0break\"", 12));
         });
 
-        EXPECT_NE(std::string(error.what()).find("control characters"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("控制字符"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsLoneHighSurrogate)
@@ -303,7 +303,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse(R"("\uD800")");
         });
 
-        EXPECT_NE(std::string(error.what()).find("surrogate"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("代理项"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsInvalidHexEscape)
@@ -313,7 +313,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse(R"("\u00ZZ")");
         });
 
-        EXPECT_NE(std::string(error.what()).find("hexadecimal"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("十六进制"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsUnknownEscapeLetter)
@@ -323,7 +323,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse(R"("\q")");
         });
 
-        EXPECT_NE(std::string(error.what()).find("unsupported escape"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("不支持的转义"), std::string::npos);
     }
 
     TEST(JsonParser, RejectsContentAfterTheDocument)
@@ -333,7 +333,7 @@ namespace AsynGyanis::Base
             return JsonParser::parse("1 2");
         });
 
-        EXPECT_NE(std::string(error.what()).find("after the end of the document"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("文档结束后"), std::string::npos);
     }
 
     TEST(JsonParser, ReportsLineAndColumnOfTheFailure)
@@ -357,6 +357,6 @@ namespace AsynGyanis::Base
             return JsonParser::parse(closed);
         });
 
-        EXPECT_NE(std::string(error.what()).find("nesting depth"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("嵌套深度"), std::string::npos);
     }
 } // namespace AsynGyanis::Base

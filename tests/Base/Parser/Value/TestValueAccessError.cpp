@@ -65,8 +65,8 @@ namespace AsynGyanis::Base
         EXPECT_EQ(exception.key(), "server.port");
         EXPECT_EQ(exception.expectedType(), "int64_t");
         EXPECT_EQ(exception.actualType(), "std::string");
-        EXPECT_TRUE(contains(message, "Type mismatch"));
-        EXPECT_TRUE(contains(message, "expected int64_t, got std::string")) << message;
+        EXPECT_TRUE(contains(message, "类型不匹配"));
+        EXPECT_TRUE(contains(message, "期望 int64_t，实际 std::string")) << message;
     }
 
     TEST(ValueAccessError, AcceptsEmptyFields)
@@ -86,7 +86,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(exception.key(), "logging.level");
         EXPECT_TRUE(exception.expectedType().empty());
         EXPECT_TRUE(exception.actualType().empty());
-        EXPECT_TRUE(contains(message, "Member not found: 'logging.level'")) << message;
+        EXPECT_TRUE(contains(message, "成员不存在：'logging.level'")) << message;
     }
 
     TEST(ValueAccessError, MissingMemberFactoryAcceptsIndexDescription)

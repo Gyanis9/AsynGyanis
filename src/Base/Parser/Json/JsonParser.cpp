@@ -46,7 +46,7 @@ namespace AsynGyanis::Base
     {
         if (m_text.empty())
         {
-            throw ParserError("input is empty", currentPosition());
+            throw ParserError("输入为空", currentPosition());
         }
 
         ParserValue document = parseValue(0);
@@ -54,7 +54,7 @@ namespace AsynGyanis::Base
         skipWhitespace();
         if (m_index < m_text.size())
         {
-            throw ParserError("unexpected content after the end of the document", currentPosition());
+            throw ParserError("文档结束后出现意外内容", currentPosition());
         }
 
         return document;
@@ -81,7 +81,7 @@ namespace AsynGyanis::Base
                 {
                     return parseNumber();
                 }
-                throw ParserError("expected a JSON value", currentPosition());
+                throw ParserError("应为 JSON 值", currentPosition());
         }
     }
 
@@ -89,7 +89,7 @@ namespace AsynGyanis::Base
     {
         if (nestingDepth >= kMaximumNestingDepth)
         {
-            throw ParserError("nesting depth limit exceeded", currentPosition());
+            throw ParserError("嵌套深度超出限制", currentPosition());
         }
 
         expect('{');
@@ -107,7 +107,7 @@ namespace AsynGyanis::Base
             skipWhitespace();
             if (peekCurrent() != '"')
             {
-                throw ParserError("object keys must be double-quoted strings", currentPosition());
+                throw ParserError("对象键必须是双引号字符串", currentPosition());
             }
 
             const ParserValue key = parseString();
@@ -120,7 +120,7 @@ namespace AsynGyanis::Base
             const std::string &keyName = key.asString();
             if (members.contains(keyName))
             {
-                throw ParserError("duplicate object key: " + keyName, currentPosition());
+                throw ParserError("对象存在重复键：" + keyName, currentPosition());
             }
             members.emplace(keyName, std::move(value));
 
@@ -137,7 +137,7 @@ namespace AsynGyanis::Base
                 return ParserValue(std::move(members));
             }
 
-            throw ParserError("expected ',' or '}' inside an object", currentPosition());
+            throw ParserError("对象内应为 ',' 或 '}'", currentPosition());
         }
     }
 
@@ -145,7 +145,7 @@ namespace AsynGyanis::Base
     {
         if (nestingDepth >= kMaximumNestingDepth)
         {
-            throw ParserError("nesting depth limit exceeded", currentPosition());
+            throw ParserError("嵌套深度超出限制", currentPosition());
         }
 
         expect('[');
@@ -175,7 +175,7 @@ namespace AsynGyanis::Base
                 return ParserValue(std::move(elements));
             }
 
-            throw ParserError("expected ',' or ']' inside an array", currentPosition());
+            throw ParserError("数组内应为 ',' 或 ']'", currentPosition());
         }
     }
 
@@ -189,7 +189,7 @@ namespace AsynGyanis::Base
         {
             if (m_index >= m_text.size())
             {
-                throw ParserError("unterminated string", currentPosition());
+                throw ParserError("字符串未闭合", currentPosition());
             }
 
             const char currentCharacter = m_text[m_index];
@@ -198,7 +198,7 @@ namespace AsynGyanis::Base
                 advance();
                 if (m_index >= m_text.size())
                 {
-                    throw ParserError("input ends right after a backslash", currentPosition());
+                    throw ParserError("反斜杠后输入即结束", currentPosition());
                 }
                 advance();
                 continue;
@@ -211,7 +211,7 @@ namespace AsynGyanis::Base
 
             if (static_cast<unsigned char>(currentCharacter) < 0x20)
             {
-                throw ParserError("raw control characters are not allowed inside strings", currentPosition());
+                throw ParserError("字符串内不允许出现原始控制字符", currentPosition());
             }
 
             advance();
@@ -239,13 +239,13 @@ namespace AsynGyanis::Base
             advance();
             if (isDigit(peekCurrent()))
             {
-                throw ParserError("numbers must not have leading zeros", currentPosition());
+                throw ParserError("数字不得有前导零", currentPosition());
             }
         } else
         {
             if (!isDigit(peekCurrent()))
             {
-                throw ParserError("a number must start with a digit", currentPosition());
+                throw ParserError("数字必须以数字开头", currentPosition());
             }
             while (isDigit(peekCurrent()))
             {
@@ -259,7 +259,7 @@ namespace AsynGyanis::Base
             advance();
             if (!isDigit(peekCurrent()))
             {
-                throw ParserError("a decimal point must be followed by at least one digit", currentPosition());
+                throw ParserError("小数点后必须至少有一位数字", currentPosition());
             }
             while (isDigit(peekCurrent()))
             {
@@ -277,7 +277,7 @@ namespace AsynGyanis::Base
             }
             if (!isDigit(peekCurrent()))
             {
-                throw ParserError("an exponent must contain at least one digit", currentPosition());
+                throw ParserError("指数部分必须至少有一位数字", currentPosition());
             }
             while (isDigit(peekCurrent()))
             {
@@ -309,7 +309,7 @@ namespace AsynGyanis::Base
             }
         }
 
-        throw ParserError("number is out of range or malformed: " + std::string(token), currentPosition());
+        throw ParserError("数字超出范围或格式错误：" + std::string(token), currentPosition());
     }
 
     ParserValue JsonParser::parseLiteral(const char leadCharacter)
@@ -339,7 +339,7 @@ namespace AsynGyanis::Base
                                                    : '\0';
             if (std::isalnum(static_cast<unsigned char>(characterAfterKeyword)) != 0)
             {
-                throw ParserError("malformed keyword", currentPosition());
+                throw ParserError("关键字格式错误", currentPosition());
             }
 
             for (std::size_t offset = 0; offset < text.size(); ++offset)
@@ -349,7 +349,7 @@ namespace AsynGyanis::Base
             return value;
         }
 
-        throw ParserError("keyword must be one of true, false, null", currentPosition());
+        throw ParserError("关键字必须是 true、false、null 之一", currentPosition());
     }
 
     void JsonParser::skipWhitespace()
@@ -388,7 +388,7 @@ namespace AsynGyanis::Base
         skipWhitespace();
         if (peekCurrent() != expected)
         {
-            throw ParserError(std::string("expected '") + expected + "'", currentPosition());
+            throw ParserError(std::string("应为 '") + expected + "'", currentPosition());
         }
         advance();
     }
