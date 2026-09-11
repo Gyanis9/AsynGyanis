@@ -29,6 +29,11 @@ add_executable(TestBase
         Log/Sinks/TestFileSink.cpp
         Log/Sinks/TestRollingFileSink.cpp
         Log/Sinks/TestAsyncSink.cpp
+
+        Parser/TestParserPositionAndError.cpp
+        Parser/TestJsonParser.cpp
+        Parser/TestJsonWriter.cpp
+        Parser/TestYamlParser.cpp
 )
 
 target_link_libraries(TestBase PRIVATE
