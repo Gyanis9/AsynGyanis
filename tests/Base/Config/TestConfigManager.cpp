@@ -700,6 +700,52 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(configuration().getBool("committed", false));
     }
 
+    TEST_F(ConfigManagerTest, LoadFilesRecordsCommonDirectoryAndEnablesReload)
+    {
+        const std::filesystem::path configFile = writeFile("cfg.yaml", "value: 7\n");
+
+        ASSERT_TRUE(configuration().loadFiles({configFile}).success);
+
+        // 全部文件同处一个目录时，该目录被记为配置目录，reload 不再报“未设置目录”
+        EXPECT_EQ(configuration().configDirectory(), directory());
+        const ConfigLoadResult reloaded = configuration().reload();
+        EXPECT_TRUE(reloaded.success) << reloaded.errors.front();
+        EXPECT_EQ(configuration().getInt("value", 0), 7);
+    }
+
+    TEST_F(ConfigManagerTest, LoadFilesAcrossDirectoriesKeepsPreviousConfigDirectory)
+    {
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        ASSERT_EQ(configuration().configDirectory(), directory());
+
+        const std::vector<std::filesystem::path> files = {
+                writeFile("root-level.yaml", "rootKey: 1\n"),
+                writeFile("nested/inner.yaml", "nestedKey: 2\n"),
+        };
+
+        const ConfigLoadResult result = configuration().loadFiles(files);
+
+        EXPECT_TRUE(result.success);
+        EXPECT_EQ(result.loadedFiles.size(), 2U);
+        // 跨目录时不猜测公共父目录，保留既有配置目录
+        EXPECT_EQ(configuration().configDirectory(), directory());
+    }
+
+    TEST_F(ConfigManagerTest, HotReloadCanBeEnabledAfterLoadingExplicitFiles)
+    {
+        const std::filesystem::path configFile = writeFile("cfg.yaml", "watched: true\n");
+        ASSERT_TRUE(configuration().loadFiles({configFile}).success);
+
+        // 此前 loadFiles 不设配置目录，导致热加载只能返回 false；修复后应可启用
+        EXPECT_TRUE(configuration().enableHotReload());
+        EXPECT_TRUE(configuration().isHotReloadEnabled());
+
+        configuration().disableHotReload();
+        EXPECT_FALSE(configuration().isHotReloadEnabled());
+        // 重复关闭必须安全
+        EXPECT_NO_THROW(configuration().disableHotReload());
+    }
+
     // ============================================================================
     // 配置访问
     // ============================================================================

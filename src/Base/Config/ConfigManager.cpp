@@ -10,9 +10,7 @@
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -22,6 +20,38 @@
 
 namespace AsynGyanis::Base
 {
+    namespace
+    {
+        /**
+         * @brief 从一批配置文件推导配置目录
+         * @details 只有全部文件同处一个目录时才据此设定配置目录；出现相对路径或跨目录时
+         *          返回空路径，表示不猜测一个并不存在的配置目录，由调用方保留既有取值。
+         * @param filePaths 成功加载的配置文件路径
+         * @return std::filesystem::path 公共父目录，无法判定时为空路径
+         */
+        [[nodiscard]] std::filesystem::path commonParentDirectory(const std::vector<std::filesystem::path> &filePaths)
+        {
+            std::filesystem::path commonDirectory;
+            for (const auto &filePath: filePaths)
+            {
+                const std::filesystem::path parentDirectory = filePath.parent_path();
+                if (parentDirectory.empty())
+                {
+                    return {};
+                }
+                if (commonDirectory.empty())
+                {
+                    commonDirectory = parentDirectory;
+                }
+                else if (commonDirectory != parentDirectory)
+                {
+                    return {};
+                }
+            }
+            return commonDirectory;
+        }
+    } // namespace
+
     ConfigManager &ConfigManager::instance() noexcept
     {
         static ConfigManager instance;
@@ -45,6 +75,7 @@ namespace AsynGyanis::Base
         }
 
         ConfigKeyValueMap values;
+        std::vector<std::filesystem::path> loadedPaths;
         for (const auto &filePath: filePaths)
         {
             if (!std::filesystem::exists(filePath))
@@ -62,6 +93,7 @@ namespace AsynGyanis::Base
             if (loadConfigFile(filePath, values, result.errors))
             {
                 result.loadedFiles.push_back(filePath.string());
+                loadedPaths.push_back(filePath);
             } else
             {
                 result.failedFiles.push_back(filePath.string());
@@ -71,7 +103,14 @@ namespace AsynGyanis::Base
         // 至少一个文件成功才提交，全部失败时保留原有配置
         if (!result.loadedFiles.empty())
         {
-            commitConfigData(std::move(values), result.loadedFiles, result.timestamp);
+            // 显式文件列表同样要留下配置目录，否则后续 reload() 与 enableHotReload() 失去依据：
+            // 能推导出公共父目录时采用它，否则保留既有取值不覆盖。
+            std::filesystem::path directoryToCommit = m_data.load(std::memory_order_acquire)->configDirectory;
+            if (const std::filesystem::path derivedDirectory = commonParentDirectory(loadedPaths); !derivedDirectory.empty())
+            {
+                directoryToCommit = derivedDirectory;
+            }
+            commitConfigData(std::move(values), result.loadedFiles, result.timestamp, directoryToCommit);
         }
         result.success = result.failedFiles.empty() && !result.loadedFiles.empty();
         return result;
@@ -84,7 +123,7 @@ namespace AsynGyanis::Base
         {
             ConfigLoadResult result;
             result.success = false;
-            result.errors.emplace_back("No configuration directory set. Call loadFromDirectory first.");
+            result.errors.emplace_back("No configuration directory set. Call loadFromDirectory or loadFiles first.");
             return result;
         }
         return doReload();
@@ -296,11 +335,11 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] bool isBlankText(std::string_view text) noexcept
         {
-            return std::all_of(text.begin(), text.end(),
-                               [](const unsigned char character)
-                               {
-                                   return std::isspace(character) != 0;
-                               });
+            return std::ranges::all_of(text,
+                                       [](const unsigned char character)
+                                       {
+                                           return std::isspace(character) != 0;
+                                       });
         }
 
         /**
@@ -312,7 +351,7 @@ namespace AsynGyanis::Base
          * @return ParserValue 文档根值
          * @throws ParserError 语法非法或使用了不支持的 YAML 特性
          */
-        [[nodiscard]] ParserValue parseDocumentBySuffix(std::string_view text, const std::filesystem::path &filePath)
+        [[nodiscard]] ParserValue parseDocumentBySuffix(const std::string_view text, const std::filesystem::path &filePath)
         {
             return isJsonFile(filePath.string()) ? JsonParser::parse(text) : YamlParser::parse(text);
         }
@@ -325,12 +364,12 @@ namespace AsynGyanis::Base
          * @param filePath 文件路径，仅用于挑选解析器
          * @return ParserValueObject 顶层键值表
          */
-        [[nodiscard]] ParserValueObject parseFlatMembers(std::string_view text, const std::filesystem::path &filePath)
+        [[nodiscard]] ParserValueObject parseFlatMembers(const std::string_view text, const std::filesystem::path &filePath)
         {
             try
             {
                 ParserValue document = parseDocumentBySuffix(text, filePath);
-                if (auto *members = std::get_if<ParserValueObject>(&document.variant()); members != nullptr)
+                if (const auto members = std::get_if<ParserValueObject>(&document.variant()); members != nullptr)
                 {
                     return std::move(*members);
                 }
@@ -376,7 +415,7 @@ namespace AsynGyanis::Base
             {
                 if (value.type() != ParserValueType::Object && value.type() != ParserValueType::Array)
                 {
-                    members.insert_or_assign(std::move(key), std::move(value));
+                    members.insert_or_assign(key, std::move(value));
                 }
             }
 
@@ -623,8 +662,8 @@ namespace AsynGyanis::Base
                 const std::string_view kindName = document.type() == ParserValueType::Array
                                                       ? std::string_view{"sequence"}
                                                       : document.type() == ParserValueType::Null
-                                                            ? std::string_view{"null"}
-                                                            : std::string_view{typeName(document.type())};
+                                                      ? std::string_view{"null"}
+                                                      : std::string_view{typeName(document.type())};
 
                 errors.push_back("File '" + filePath.string() + "': root node must be a map, got " + std::string(kindName));
                 return false;
@@ -654,7 +693,7 @@ namespace AsynGyanis::Base
 
         for (const auto &[key, value]: node.asObject())
         {
-            const std::string fullKey = prefix.empty() ? key : prefix + "." + key;
+            std::string fullKey = prefix.empty() ? key : std::format("{}.{}", prefix, key);
 
             if (value.is<ParserValueObject>() && !value.asObject().empty())
             {
@@ -735,7 +774,7 @@ namespace AsynGyanis::Base
         {
             ConfigLoadResult result;
             result.success = false;
-            result.errors.emplace_back("No configuration directory set. Call loadFromDirectory first.");
+            result.errors.emplace_back("No configuration directory set. Call loadFromDirectory or loadFiles first.");
             return result;
         }
 

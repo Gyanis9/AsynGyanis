@@ -103,6 +103,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 加载指定文件列表中的配置（支持 .json/.yaml/.yml）。
          * @details 至少一个文件成功时提交合并结果；全部失败时保留原配置。
+         *          文件全部同处一个目录时顺带把该目录记为配置目录，使后续 reload() 与
+         *          enableHotReload() 有据可依；跨目录或含相对路径时保留既有配置目录不覆盖。
          * @param filePaths 配置文件路径列表。
          * @return ConfigLoadResult 加载结果。
          */
