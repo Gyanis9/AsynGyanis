@@ -21,7 +21,7 @@ namespace AsynGyanis::Platform
             std::filesystem::create_directories(parentDirectory, fileSystemError);
             if (fileSystemError)
             {
-                return reportFailure("Failed to create directory '" + parentDirectory.string() + "': " + fileSystemError.message());
+                return reportFailure("创建目录 '" + parentDirectory.string() + "' 失败：" + fileSystemError.message());
             }
         }
 
@@ -31,14 +31,14 @@ namespace AsynGyanis::Platform
             std::ofstream temporaryFile(temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc);
             if (!temporaryFile.is_open())
             {
-                return reportFailure("Failed to open temporary file '" + temporaryPath.string() + "'");
+                return reportFailure("无法打开临时文件 '" + temporaryPath.string() + "'");
             }
 
             temporaryFile.write(text.data(), static_cast<std::streamsize>(text.size()));
             temporaryFile.flush();
             if (!temporaryFile.good())
             {
-                return reportFailure("Failed to write temporary file '" + temporaryPath.string() + "'");
+                return reportFailure("写入临时文件 '" + temporaryPath.string() + "' 失败");
             }
         }
 
@@ -48,7 +48,7 @@ namespace AsynGyanis::Platform
             if (fileSystemError)
             {
                 std::filesystem::remove(temporaryPath, fileSystemError);
-                return reportFailure("Failed to set permissions on '" + temporaryPath.string() + "': " + fileSystemError.message());
+                return reportFailure("设置 '" + temporaryPath.string() + "' 权限失败：" + fileSystemError.message());
             }
         }
 
@@ -56,7 +56,7 @@ namespace AsynGyanis::Platform
         if (fileSystemError)
         {
             std::filesystem::remove(temporaryPath, fileSystemError);
-            return reportFailure("Failed to replace '" + targetPath.string() + "': " + fileSystemError.message());
+            return reportFailure("替换 '" + targetPath.string() + "' 失败：" + fileSystemError.message());
         }
 
         return true;

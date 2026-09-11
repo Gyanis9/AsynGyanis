@@ -15,7 +15,7 @@ namespace AsynGyanis::Platform
         m_inotifyFileDescriptor = ::inotify_init1(IN_CLOEXEC);
         if (m_inotifyFileDescriptor < 0)
         {
-            throw std::runtime_error("Failed to initialize inotify");
+            throw std::runtime_error("inotify 初始化失败");
         }
     }
 
