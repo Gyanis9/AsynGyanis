@@ -1,3 +1,12 @@
+/**
+ * @file ParserValue.cpp
+ * @brief 文档值类型封装，提供类型安全的访问接口
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Parser/Value/ParserValue.h"
 #include "Base/Parser/Value/ValueAccessError.h"
 

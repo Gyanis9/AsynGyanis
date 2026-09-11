@@ -1,3 +1,12 @@
+/**
+ * @file NetworkException.cpp
+ * @brief 网络操作异常，携带远端地址上下文
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Exception/NetworkException.h"
 
 #include <string>

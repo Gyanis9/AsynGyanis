@@ -1,3 +1,12 @@
+/**
+ * @file FileSink.cpp
+ * @brief 文件日志输出目标
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Log/Sinks/FileSink.h"
 
 #include <mutex>

@@ -1,3 +1,12 @@
+/**
+ * @file ConfigValueType.cpp
+ * @brief 配置模块的值类型别名与配置文件后缀、键路径等通用工具
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Config/ConfigValueType.h"
 
 namespace AsynGyanis::Base

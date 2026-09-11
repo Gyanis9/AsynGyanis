@@ -1,3 +1,12 @@
+/**
+ * @file ColorFormatter.cpp
+ * @brief 彩色终端日志格式化器
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Log/Formatters/ColorFormatter.h"
 #include "Base/Log/LogColor.h"
 #include "Base/Log/LogLevel.h"

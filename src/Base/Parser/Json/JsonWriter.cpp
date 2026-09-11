@@ -1,3 +1,12 @@
+/**
+ * @file JsonWriter.cpp
+ * @brief 把配置值序列化为 JSON 文本
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Parser/Json/JsonWriter.h"
 #include "Base/Parser/Value/ParserValueType.h"
 

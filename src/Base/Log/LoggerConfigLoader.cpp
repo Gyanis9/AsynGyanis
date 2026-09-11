@@ -1,3 +1,12 @@
+/**
+ * @file LoggerConfigLoader.cpp
+ * @brief 从配置系统加载并应用日志配置
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Log/LoggerConfigLoader.h"
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"

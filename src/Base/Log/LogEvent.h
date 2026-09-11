@@ -1,3 +1,12 @@
+/**
+ * @file LogEvent.h
+ * @brief 日志事件数据结构，附带时间戳与线程号生成工具
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #pragma once
 
 #include "Base/Log/LogLevel.h"

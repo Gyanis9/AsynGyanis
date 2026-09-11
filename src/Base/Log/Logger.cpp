@@ -1,3 +1,12 @@
+/**
+ * @file Logger.cpp
+ * @brief 日志器类：等级过滤与 Sink 分发
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Log/Logger.h"
 
 #include <memory>

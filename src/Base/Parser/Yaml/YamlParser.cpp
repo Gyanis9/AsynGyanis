@@ -1,3 +1,12 @@
+/**
+ * @file YamlParser.cpp
+ * @brief 手写 YAML 解析器，覆盖配置文件常用子集
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Parser/Yaml/YamlParser.h"
 #include "Base/Parser/ParserError.h"
 #include "Base/Parser/ParserText.h"

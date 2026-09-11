@@ -1,3 +1,12 @@
+/**
+ * @file ConfigManager.cpp
+ * @brief 配置管理器核心接口
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"

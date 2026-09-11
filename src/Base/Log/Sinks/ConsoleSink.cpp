@@ -1,3 +1,12 @@
+/**
+ * @file ConsoleSink.cpp
+ * @brief 控制台日志输出目标
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Formatters/ColorFormatter.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"

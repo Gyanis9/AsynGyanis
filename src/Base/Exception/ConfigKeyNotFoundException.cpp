@@ -1,3 +1,12 @@
+/**
+ * @file ConfigKeyNotFoundException.cpp
+ * @brief 配置键不存在异常
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 
 #include <string>

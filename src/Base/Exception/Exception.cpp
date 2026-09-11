@@ -1,3 +1,12 @@
+/**
+ * @file Exception.cpp
+ * @brief 项目统一异常基类，记录异常消息与抛出位置
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Exception/Exception.h"
 
 #include <format>

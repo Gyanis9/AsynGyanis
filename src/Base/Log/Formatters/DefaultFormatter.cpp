@@ -1,3 +1,12 @@
+/**
+ * @file DefaultFormatter.cpp
+ * @brief 默认纯文本日志格式化器
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/LogLevel.h"
 

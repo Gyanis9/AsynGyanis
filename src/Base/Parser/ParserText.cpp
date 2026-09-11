@@ -1,3 +1,12 @@
+/**
+ * @file ParserText.cpp
+ * @brief JSON 与 YAML 共用的转义与 UTF-8 编码原语
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Base/Parser/ParserText.h"
 #include "Base/Parser/ParserError.h"
 
