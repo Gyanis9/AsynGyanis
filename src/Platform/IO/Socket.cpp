@@ -8,12 +8,12 @@ namespace AsynGyanis::Platform
     {
 #if ASYN_PLATFORM_WIN32
         // Winsock 只需启动一次，static 初始化在 C++11 起保证线程安全
-        static const bool started = []
+        static const bool kstarted = []
         {
             WSADATA socketData{};
             return ::WSAStartup(MAKEWORD(2, 2), &socketData) == 0;
         }();
-        return started;
+        return kstarted;
 #else
         return true;
 #endif
@@ -29,12 +29,12 @@ namespace AsynGyanis::Platform
     int Socket::accept(const int listenDescriptor, sockaddr *address, socklen_t *addressLength) noexcept
     {
 #if ASYN_PLATFORM_WIN32
-        const int fileDescriptor = ::accept(listenDescriptor, address, addressLength);
-        if (fileDescriptor >= 0)
+        const auto fileDescriptor = ::accept(listenDescriptor, address, addressLength);
+        if (static_cast<int>(fileDescriptor) >= 0)
         {
-            FileDescriptor::setNonBlocking(fileDescriptor);
+            FileDescriptor::setNonBlocking(static_cast<int>(fileDescriptor));
         }
-        return fileDescriptor;
+        return static_cast<int>(fileDescriptor);
 #else
         return ::accept4(listenDescriptor, address, addressLength, SOCK_NONBLOCK | SOCK_CLOEXEC);
 #endif

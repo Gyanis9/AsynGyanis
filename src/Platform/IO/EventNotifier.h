@@ -9,8 +9,6 @@
 
 #pragma once
 
-#include "Platform/Platform.h"
-
 namespace AsynGyanis::Platform
 {
     /**
@@ -36,10 +34,13 @@ namespace AsynGyanis::Platform
          */
         ~EventNotifier();
 
-        EventNotifier(const EventNotifier &)            = delete;
+        EventNotifier(const EventNotifier &) = delete;
+
         EventNotifier &operator=(const EventNotifier &) = delete;
-        EventNotifier(EventNotifier &&)                 = delete;
-        EventNotifier &operator=(EventNotifier &&)      = delete;
+
+        EventNotifier(EventNotifier &&) = delete;
+
+        EventNotifier &operator=(EventNotifier &&) = delete;
 
         /**
          * @brief 获取供事件循环监听的可读描述符

@@ -6,7 +6,6 @@
 
 #include <array>
 #include <chrono>
-#include <ctime>
 #include <format>
 #include <sstream>
 #include <string>
@@ -31,10 +30,11 @@ namespace AsynGyanis::Base
         const std::tm localTime   = AsynGyanis::Platform::PlatformTime::localTime(timeValue);
 
         thread_local std::array<char, 32> buffer;
-        const auto                        [out, size] = std::format_to_n(buffer.data(), buffer.size(),
-                                                                         "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
-                                                                         localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday,
-                                                                         localTime.tm_hour, localTime.tm_min, localTime.tm_sec, millisecond.count());
+
+        const auto [out, size] = std::format_to_n(buffer.data(), buffer.size(),
+                                                  "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
+                                                  localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday,
+                                                  localTime.tm_hour, localTime.tm_min, localTime.tm_sec, millisecond.count());
         return {buffer.data(), static_cast<std::string::size_type>(out - buffer.data())};
     }
 

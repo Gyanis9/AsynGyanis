@@ -68,8 +68,8 @@ namespace AsynGyanis::Base
         // 覆盖会销毁旧实例，先置空缓存再替换，避免他人在窗口内解引用已释放指针
         m_cachedRootLogger.store(nullptr, std::memory_order_release);
 
-        Logger *registeredPointer = logger.get();
-        const bool isRootLogger   = registeredPointer->name() == kRootLoggerName;
+        Logger *   registeredPointer         = logger.get();
+        const bool isRootLogger              = registeredPointer->name() == kRootLoggerName;
         m_loggers[registeredPointer->name()] = std::move(logger);
 
         if (isRootLogger)

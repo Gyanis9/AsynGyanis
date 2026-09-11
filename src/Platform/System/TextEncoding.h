@@ -9,8 +9,6 @@
 
 #pragma once
 
-#include "Platform/Platform.h"
-
 #include <string>
 
 namespace AsynGyanis::Platform

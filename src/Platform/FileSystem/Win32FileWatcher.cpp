@@ -67,7 +67,10 @@ namespace AsynGyanis::Platform
         try
         {
             // jthread 直接作为成员启动，无需堆分配；循环靠 m_shouldStop 与停止事件退出
-            m_watchThread = std::jthread([this] { watchLoop(); });
+            m_watchThread = std::jthread([this]
+            {
+                watchLoop();
+            });
         } catch (const std::system_error &)
         {
             return false;
@@ -112,10 +115,9 @@ namespace AsynGyanis::Platform
             return false;
         }
 
-        const std::string directoryPath = normalizeDirectoryPath(absolutePath);
-
         {
-            std::lock_guard lock(m_watchMutex);
+            const std::string directoryPath = normalizeDirectoryPath(absolutePath);
+            std::lock_guard   lock(m_watchMutex);
 
             if (m_watches.contains(directoryPath))
             {
@@ -258,9 +260,9 @@ namespace AsynGyanis::Platform
                 continue;
             }
 
-            const std::string                                   targetPath = pendingPaths[index - 1];
-            std::vector<std::pair<std::string, FileChangeType>> pendingCallbacks;
-            FileChangeCallback                                  callbackSnapshot;
+            const std::string                                    targetPath = pendingPaths[index - 1];
+            std::vector<std::pair<std::string, FileChangeType> > pendingCallbacks;
+            FileChangeCallback                                   callbackSnapshot;
             {
                 std::shared_lock lock(m_watchMutex);
 
@@ -291,7 +293,7 @@ namespace AsynGyanis::Platform
         }
     }
 
-    void Win32FileWatcher::processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType>> &events)
+    void Win32FileWatcher::processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events)
     {
         DWORD bytesTransferred = 0;
         if (!::GetOverlappedResult(entry.directoryHandle, &entry.overlapped, &bytesTransferred, FALSE))
@@ -339,7 +341,7 @@ namespace AsynGyanis::Platform
 
         DWORD      bytesReturned = 0;
         const BOOL success       = ::ReadDirectoryChangesW(entry.directoryHandle, entry.buffer.data(), static_cast<DWORD>(entry.buffer.size()), FALSE, kWatchFilter, &bytesReturned,
-                                                           &entry.overlapped, nullptr);
+                                                     &entry.overlapped, nullptr);
 
         if (!success)
         {

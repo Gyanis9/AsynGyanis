@@ -123,7 +123,7 @@ namespace AsynGyanis::Platform
          * @param entry 目标目录上下文
          * @param events 输出参数，收集防抖后待回调的（路径, 变更类型）列表
          */
-        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType>> &events);
+        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events);
 
         /**
          * @brief 为目录发起一次 ReadDirectoryChangesW 重叠读
@@ -144,7 +144,7 @@ namespace AsynGyanis::Platform
          */
         static std::string normalizeDirectoryPath(const std::string &path);
 
-        std::unordered_map<std::string, std::unique_ptr<WatchEntry>> m_watches; ///< 目录路径到监听上下文的映射
+        std::unordered_map<std::string, std::unique_ptr<WatchEntry> > m_watches; ///< 目录路径到监听上下文的映射
 
         FileChangeCallback        m_callback;           ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;         ///< 保护监听映射与回调的读写锁

@@ -1,6 +1,6 @@
 #include "Platform/IO/Console.h"
-
 #include "Platform/System/ProcessInfo.h"
+#include "Platform/Platform.h"
 
 #include <string>
 
@@ -14,7 +14,10 @@ namespace AsynGyanis::Platform
     {
 #if ASYN_PLATFORM_WIN32
         // 代码页设置是进程级状态，重复设置无副作用但只需做一次
-        static const bool kconfigured = [] { return ::SetConsoleOutputCP(CP_UTF8) != 0; }();
+        static const bool kconfigured = []
+        {
+            return ::SetConsoleOutputCP(CP_UTF8) != 0;
+        }();
         (void) kconfigured;
 #else
         // POSIX 终端的编码由外层环境决定，标准输出直接写 UTF-8 字节即可
@@ -24,7 +27,7 @@ namespace AsynGyanis::Platform
     bool Console::supportsAnsiEscapeCodes()
     {
 #if ASYN_PLATFORM_WIN32
-        const HANDLE standardOutput = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        HANDLE standardOutput = ::GetStdHandle(STD_OUTPUT_HANDLE);
         if (standardOutput == nullptr || standardOutput == INVALID_HANDLE_VALUE)
         {
             return false;

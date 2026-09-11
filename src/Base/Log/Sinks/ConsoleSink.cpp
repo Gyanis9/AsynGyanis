@@ -1,5 +1,4 @@
 #include "Base/Log/Sinks/ConsoleSink.h"
-
 #include "Base/Log/Formatters/ColorFormatter.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/LogLevel.h"

@@ -1,9 +1,9 @@
 #include "Platform/FileSystem/FileWatcher.h"
 
 #if ASYN_PLATFORM_WIN32
-    #include "Platform/FileSystem/Win32FileWatcher.h"
+#include "Platform/FileSystem/Win32FileWatcher.h"
 #else
-    #include "Platform/FileSystem/InotifyFileWatcher.h"
+#include "Platform/FileSystem/InotifyFileWatcher.h"
 #endif
 
 #include <chrono>
@@ -46,8 +46,7 @@ namespace AsynGyanis::Platform
                 if (currentTime - iterator->second >= m_debounceInterval)
                 {
                     iterator = m_lastEventTime.erase(iterator);
-                }
-                else
+                } else
                 {
                     ++iterator;
                 }

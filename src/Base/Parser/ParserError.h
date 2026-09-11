@@ -49,6 +49,6 @@ namespace AsynGyanis::Base
 
     private:
         ParserPosition m_position; ///< 出错位置快照
-        std::string m_reason;      ///< 未拼接位置与基类前缀的错误原因
+        std::string    m_reason;   ///< 未拼接位置与基类前缀的错误原因
     };
 } // namespace AsynGyanis::Base

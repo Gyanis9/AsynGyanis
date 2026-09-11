@@ -156,9 +156,9 @@ namespace AsynGyanis::Base
          */
         void writeToSinks(const LogEvent &event) const;
 
-        std::string m_name;                                        ///< 日志器名称
-        std::atomic<LogLevel> m_level{LogLevel::Trace};            ///< 当前日志级别
+        std::string                                       m_name;                           ///< 日志器名称
+        std::atomic<LogLevel>                             m_level{LogLevel::Trace};         ///< 当前日志级别
         std::atomic<std::shared_ptr<const SinkSnapshot> > m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
-        std::mutex m_sinksWriteMutex;                              ///< 仅用于串行化替换快照的写者，读者不会触碰
+        std::mutex                                        m_sinksWriteMutex;                ///< 仅用于串行化替换快照的写者，读者不会触碰
     };
 } // namespace AsynGyanis::Base

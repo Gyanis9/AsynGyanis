@@ -1,5 +1,4 @@
 #include "Base/Log/Formatters/ColorFormatter.h"
-
 #include "Base/Log/LogColor.h"
 #include "Base/Log/LogLevel.h"
 

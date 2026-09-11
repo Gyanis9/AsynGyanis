@@ -21,7 +21,7 @@ namespace AsynGyanis::Base
      *          配置侧保留原有名字，避免既有代码与用例无意义改名；
      *          两侧是同一个类型，不存在第二份实现或相互转换开销。
      */
-    using ConfigValue = ParserValue;       ///< 配置值即文档值
-    using ConfigArray  = ParserValueArray; ///< 配置数组
+    using ConfigValue  = ParserValue;       ///< 配置值即文档值
+    using ConfigArray  = ParserValueArray;  ///< 配置数组
     using ConfigObject = ParserValueObject; ///< 配置对象
-} // namespace AsynGyanis::Base
+}

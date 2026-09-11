@@ -1,5 +1,4 @@
 #include "Base/Parser/Json/JsonWriter.h"
-
 #include "Base/Parser/Value/ParserValueType.h"
 
 #include <charconv>

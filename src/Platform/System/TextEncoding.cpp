@@ -1,4 +1,5 @@
 #include "Platform/System/TextEncoding.h"
+#include "Platform/Platform.h"
 
 #include <cstdint>
 

@@ -68,14 +68,14 @@ namespace AsynGyanis::Platform
 
 #if ASYN_PLATFORM_WIN32
         // Windows 无 socketpair，用 loopback TCP 的 监听-连接-接受 构造等价描述符对
-        const int listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        const auto listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (listener < 0)
         {
             return false;
         }
 
-        BOOL reuseAddress = TRUE;
-        ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&reuseAddress), sizeof(reuseAddress));
+        constexpr BOOL kreuseAddress = TRUE;
+        ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&kreuseAddress), sizeof(kreuseAddress));
 
         sockaddr_in loopbackAddress{};
         loopbackAddress.sin_family      = AF_INET;
@@ -83,47 +83,47 @@ namespace AsynGyanis::Platform
         loopbackAddress.sin_port        = 0;
         if (::bind(listener, reinterpret_cast<sockaddr *>(&loopbackAddress), sizeof(loopbackAddress)) < 0)
         {
-            close(listener);
+            close(static_cast<int>(listener));
             return false;
         }
 
         socklen_t addressLength = sizeof(loopbackAddress);
         if (::getsockname(listener, reinterpret_cast<sockaddr *>(&loopbackAddress), &addressLength) < 0)
         {
-            close(listener);
+            close(static_cast<int>(listener));
             return false;
         }
 
         if (::listen(listener, 1) < 0)
         {
-            close(listener);
+            close(static_cast<int>(listener));
             return false;
         }
 
-        const int client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        const auto client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (client < 0)
         {
-            close(listener);
+            close(static_cast<int>(listener));
             return false;
         }
 
         if (::connect(client, reinterpret_cast<sockaddr *>(&loopbackAddress), sizeof(loopbackAddress)) < 0)
         {
-            close(listener);
-            close(client);
+            close(static_cast<int>(listener));
+            close(static_cast<int>(client));
             return false;
         }
 
-        const int server = ::accept(listener, nullptr, nullptr);
-        close(listener);
+        const auto server = ::accept(listener, nullptr, nullptr);
+        close(static_cast<int>(listener));
         if (server < 0)
         {
-            close(client);
+            close(static_cast<int>(client));
             return false;
         }
 
-        readDescriptor  = server;
-        writeDescriptor = client;
+        readDescriptor  = static_cast<int>(server);
+        writeDescriptor = static_cast<int>(client);
         if (!setNonBlocking(readDescriptor) || !setNonBlocking(writeDescriptor))
         {
             close(readDescriptor);

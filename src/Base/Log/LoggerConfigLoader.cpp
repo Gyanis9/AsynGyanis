@@ -1,5 +1,4 @@
 #include "Base/Log/LoggerConfigLoader.h"
-
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Log/Sinks/AsyncSink.h"

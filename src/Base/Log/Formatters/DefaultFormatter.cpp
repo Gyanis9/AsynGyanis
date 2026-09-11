@@ -1,5 +1,4 @@
 #include "Base/Log/Formatters/DefaultFormatter.h"
-
 #include "Base/Log/LogLevel.h"
 
 #include <format>

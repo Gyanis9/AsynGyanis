@@ -1,4 +1,5 @@
 #include "Platform/System/ProcessInfo.h"
+#include "Platform/Platform.h"
 
 #include <cstdlib>
 #include <vector>
@@ -34,7 +35,7 @@ namespace AsynGyanis::Platform
     std::optional<std::string> ProcessInfo::environmentVariable(const std::string &variableName)
     {
 #if ASYN_PLATFORM_WIN32
-        char  *rawValue    = nullptr;
+        char * rawValue    = nullptr;
         size_t valueLength = 0;
         if (::_dupenv_s(&rawValue, &valueLength, variableName.c_str()) != 0 || rawValue == nullptr)
         {

@@ -36,10 +36,13 @@ namespace AsynGyanis::Platform
          */
         ~TimerFileDescriptor();
 
-        TimerFileDescriptor(const TimerFileDescriptor &)            = delete;
+        TimerFileDescriptor(const TimerFileDescriptor &) = delete;
+
         TimerFileDescriptor &operator=(const TimerFileDescriptor &) = delete;
-        TimerFileDescriptor(TimerFileDescriptor &&)                 = delete;
-        TimerFileDescriptor &operator=(TimerFileDescriptor &&)      = delete;
+
+        TimerFileDescriptor(TimerFileDescriptor &&) = delete;
+
+        TimerFileDescriptor &operator=(TimerFileDescriptor &&) = delete;
 
         /**
          * @brief 获取供事件循环监听的可读描述符

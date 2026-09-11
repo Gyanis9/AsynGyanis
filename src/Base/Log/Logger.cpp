@@ -51,7 +51,7 @@ namespace AsynGyanis::Base
         // 写者之间串行即可，读者全程无锁；复制上一代指针列表构成新一代快照
         std::lock_guard writeLock(m_sinksWriteMutex);
 
-        auto next = std::make_shared<SinkSnapshot>();
+        auto next   = std::make_shared<SinkSnapshot>();
         next->sinks = m_sinksSnapshot.load(std::memory_order_acquire)->sinks;
         next->sinks.push_back(std::shared_ptr<LogSink>(std::move(sink)));
         m_sinksSnapshot.store(std::move(next), std::memory_order_release);

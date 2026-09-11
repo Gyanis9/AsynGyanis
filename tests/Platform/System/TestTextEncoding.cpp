@@ -7,6 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+#include "Platform/Platform.h"
 #include "Platform/System/TextEncoding.h"
 
 #include <gtest/gtest.h>

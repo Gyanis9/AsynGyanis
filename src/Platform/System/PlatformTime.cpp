@@ -1,4 +1,5 @@
 #include "Platform/System/PlatformTime.h"
+#include "Platform/Platform.h"
 
 namespace AsynGyanis::Platform
 {

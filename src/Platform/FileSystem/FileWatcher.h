@@ -61,10 +61,13 @@ namespace AsynGyanis::Platform
 
         virtual ~FileWatcher() = default;
 
-        FileWatcher(const FileWatcher &)            = delete;
+        FileWatcher(const FileWatcher &) = delete;
+
         FileWatcher &operator=(const FileWatcher &) = delete;
-        FileWatcher(FileWatcher &&)                 = delete;
-        FileWatcher &operator=(FileWatcher &&)      = delete;
+
+        FileWatcher(FileWatcher &&) = delete;
+
+        FileWatcher &operator=(FileWatcher &&) = delete;
 
         /**
          * @brief 启动监听线程

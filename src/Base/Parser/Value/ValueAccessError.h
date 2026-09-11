@@ -81,9 +81,9 @@ namespace AsynGyanis::Base
          * @param sourceLocation 异常抛出位置
          */
         ValueAccessError(const std::string &         message,
-                         std::string          key,
-                         std::string          expectedType,
-                         std::string          actualType,
+                         std::string                 key,
+                         std::string                 expectedType,
+                         std::string                 actualType,
                          const std::source_location &sourceLocation);
 
         std::string m_key;          ///< 发生错误的键或下标描述

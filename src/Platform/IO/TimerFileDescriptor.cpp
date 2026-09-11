@@ -96,8 +96,8 @@ namespace AsynGyanis::Platform
 #else
         if (m_timerHandle != nullptr)
         {
-            const HANDLE finishedHandle = m_timerHandle;
-            m_timerHandle               = nullptr;
+            HANDLE finishedHandle = m_timerHandle;
+            m_timerHandle         = nullptr;
             // 传 INVALID_HANDLE_VALUE 使调用阻塞至回调结束，确保返回后无残留通知
             ::DeleteTimerQueueTimer(nullptr, finishedHandle, INVALID_HANDLE_VALUE);
         }
@@ -118,15 +118,14 @@ namespace AsynGyanis::Platform
     }
 
 #if ASYN_PLATFORM_WIN32
-    VOID CALLBACK TimerFileDescriptor::timerCallback(PVOID context, BOOLEAN timerOrWaitFired)
+    VOID CALLBACK TimerFileDescriptor::timerCallback(PVOID context, const BOOLEAN timerOrWaitFired)
     {
         (void) timerOrWaitFired;
-        auto *timer = static_cast<TimerFileDescriptor *>(context);
-        if (timer != nullptr && timer->m_writeDescriptor >= 0)
+        if (const auto timer = static_cast<TimerFileDescriptor *>(context); timer != nullptr && timer->m_writeDescriptor >= 0)
         {
             // 回调运行于系统线程池，写端不可写时忽略本次到期
-            const char marker = 1;
-            FileDescriptor::write(timer->m_writeDescriptor, &marker, sizeof(marker));
+            constexpr char kmarker = 1;
+            FileDescriptor::write(timer->m_writeDescriptor, &kmarker, sizeof(kmarker));
         }
     }
 #endif
