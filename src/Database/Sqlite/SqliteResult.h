@@ -1,97 +1,201 @@
 /**
  * @file SqliteResult.h
  * @brief SQLite 查询结果集实现
- * @copyright Copyright (c) 2026
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
 
-#ifndef DATABASE_SQLITERESULT_H
-#define DATABASE_SQLITERESULT_H
+#pragma once
 
-#include "DatabaseResult.h"
+#include "Database/Common/DatabaseResult.h"
+#include "Database/Sqlite/SqliteConnection.h"
 
-// SQLite C API 前向声明
-struct sqlite3;
-struct sqlite3_stmt;
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
-namespace Database
+namespace AsynGyanis::Database
 {
     /**
      * @brief SQLite 查询结果集
      *
-     * 封装 SQLite C API 的 sqlite3_stmt，提供统一的 DatabaseResult 接口。
-     * SQLite 使用预编译语句（prepared statement）模型，因此结果集绑定到具体的 stmt。
+     * @details SQLite 用预编译语句（sqlite3_stmt）承载游标，因此结果集就是一条语句的封装：
+     *          构造时读取列数并（对只读语句）预扫描行数，next() 推进游标，
+     *          getValue() 把 SQLite 的存储类映射成 DatabaseValue，析构时 finalize 语句。
+     *
+     * 两种形态：
+     * - 查询结果：持有非空游标，可遍历行；
+     * - 写结果：构造时传入空游标（INSERT/UPDATE/DELETE/DDL 的成功回执），列数与行数均为 0，
+     *   但会快照连接级的影响行数与最近插入 rowid。
+     *
+     * 值映射规则：NULL→std::monostate、INTEGER→std::int64_t、REAL→double、
+     *            TEXT/BLOB→std::string（按字节长度拷贝，内嵌 '\0' 不丢失）。
+     * SQLite 没有独立的布尔存储类，0/1 的整数列一律映射成 std::int64_t，由调用方收窄。
+     *
+     * @warning 本类持有 sqlite3_stmt 的所有权（析构 finalize），同时持有 sqlite3 的非拥有指针；
+     *          连接对象必须比结果集活得更久。基类已删除拷贝与移动，这里不再放开。
      */
     class SqliteResult : public DatabaseResult
     {
     public:
         /**
-         * @brief 使用 SQLite 预编译语句构造
-         * @param statement 已执行 step 的 SQLite 语句句柄
-         * @param database  SQLite 数据库连接（用于错误信息）
+         * @brief 用已编译的预编译语句构造结果集
+         * @details statement 为空表示「写操作的成功回执」，此时不建立游标，只快照连接级计数器。
+         * @param statement 已 prepare 的 SQLite 语句句柄，所有权移交本对象；可为 nullptr
+         * @param database  语句所属的数据库句柄，仅用于读取错误文本与连接级计数器，不接管生命周期
          */
         explicit SqliteResult(sqlite3_stmt *statement, sqlite3 *database = nullptr);
 
         /**
-         * @brief 析构时自动释放语句
+         * @brief 析构时 finalize 语句，释放游标占用的语句与页锁资源
          */
         ~SqliteResult() override;
 
+        // 语句句柄所有权唯一，拷贝会导致双重 finalize；基类同样已删除拷贝与移动。
         SqliteResult(const SqliteResult &)            = delete;
         SqliteResult &operator=(const SqliteResult &) = delete;
-        SqliteResult(SqliteResult &&)                 = default;
-        SqliteResult &operator=(SqliteResult &&)      = default;
+        SqliteResult(SqliteResult &&)                 = delete;
+        SqliteResult &operator=(SqliteResult &&)      = delete;
 
+        /**
+         * @brief 将游标推进到下一行
+         * @details 重写 DatabaseResult::next()：直接 sqlite3_step 一次，只有 SQLITE_ROW 才算成功。
+         *          SQLITE_ERROR / SQLITE_BUSY 与游标耗尽都返回 false——基类契约把本函数归入只读路径，
+         *          因此本实现不会改写 m_lastError，需要区分时请检查语句是否已被连接侧报错。
+         * @return true 游标停在有效行上，可以读取列值
+         * @return false 已无更多行，或推进过程中出错
+         */
         bool next() override;
+
+        /**
+         * @brief 获取结果集行数
+         * @details 重写 DatabaseResult::rowCount()：构造时对只读语句做一次预扫描得到精确行数；
+         *          带写副作用的语句（如 INSERT ... RETURNING）绝不重复执行，按基类契约返回 0 表示未知；
+         *          写回执结果同样返回 0。
+         * @return size_t 行数，0 表示空集或无法预先得知
+         */
         [[nodiscard]] size_t rowCount() const override;
+
+        /**
+         * @brief 获取结果集列数
+         * @details 重写 DatabaseResult::columnCount()：取构造时缓存的 sqlite3_column_count 快照，
+         *          不再每次调用第三方 API；写回执结果没有游标，返回 0。
+         * @return size_t 列数
+         */
         [[nodiscard]] size_t columnCount() const override;
+
+        /**
+         * @brief 按列索引取列名
+         * @details 重写 DatabaseResult::columnName()：用缓存的 size_t 列数做上界判断，
+         *          避免把无符号索引强转成 int 后回绕成负数（旧实现对 size_t(-1) 会越界访问 SQLite）。
+         * @param index 列索引，从 0 开始
+         * @return std::optional<std::string> 列名；无游标或索引越界返回空值
+         */
         [[nodiscard]] std::optional<std::string> columnName(size_t index) const override;
+
+        /**
+         * @brief 按列名取列索引
+         * @details 重写 DatabaseResult::columnIndex()：顺序扫描列名，同名列（SELECT name, name）
+         *          返回第一个匹配，与 SQLite 自身按名取值的规则一致；空列名一律视为不存在。
+         * @param name 列名，区分大小写（与 SQLite 的列别名原文一致）
+         * @return std::optional<size_t> 列索引；无游标或列不存在返回空值
+         */
         [[nodiscard]] std::optional<size_t> columnIndex(std::string_view name) const override;
+
+        /**
+         * @brief 按列索引读取当前行的值
+         * @details 重写 DatabaseResult::getValue()：与基类的额外约束是——游标未停在有效行上
+         *          （未调用 next()、已走完或已 reset()）时直接返回 std::monostate，
+         *          因为 SQLite 规定列读取接口只能在 step 返回 SQLITE_ROW 之后使用，否则是未定义行为。
+         * @param index 列索引，从 0 开始
+         * @return DatabaseValue 列值；无当前行、索引越界或列为 NULL 时返回 std::monostate
+         */
         [[nodiscard]] DatabaseValue getValue(size_t index) const override;
+
+        /**
+         * @brief 按列名读取当前行的值
+         * @details 重写 DatabaseResult::getValue()：先按名解析列索引，再走索引重载，
+         *          保证两条路径的越界与「无当前行」判定完全一致。
+         * @param name 列名
+         * @return DatabaseValue 列值；列不存在、无当前行或值为 NULL 时返回 std::monostate
+         */
         [[nodiscard]] DatabaseValue getValue(std::string_view name) const override;
+
+        /**
+         * @brief 获取全部列名
+         * @details 重写 DatabaseResult::columnNames()：按列顺序返回，长度恒等于 columnCount()；
+         *          SQLite 对表达式列可能给出空名，这里保留空串而不是丢弃，确保下标对齐。
+         * @return std::vector<std::string> 列名列表；无游标时为空向量
+         */
         [[nodiscard]] std::vector<std::string> columnNames() const override;
+
+        /**
+         * @brief 重置游标到首行之前，使结果集可以重新遍历
+         * @details 重写 DatabaseResult::reset()：除 sqlite3_reset 之外还要清掉「当前行有效」标志，
+         *          否则旧的 getValue() 会去读已经失效的列值；并先清空上一轮遗留的错误文本，
+         *          因为一次新的重置代表一次新的尝试。reset 失败（例如 SQLITE_BUSY）时本函数属于
+         *          非 const 写路径，会把原因写入 lastError()。
+         */
         void reset() override;
+
+        /**
+         * @brief 判断结果集是否为空
+         * @details 重写 DatabaseResult::isEmpty()：取构造阶段确定的快照，不随游标推进改变。
+         *          写回执结果没有行，恒为 true；带写副作用因而未预扫描的语句按「可能有行」处理，
+         *          其真实是否有行由 next() 的返回值决定。
+         * @return true 没有任何数据行
+         */
         [[nodiscard]] bool isEmpty() const override;
 
         /**
-         * @brief 获取底层 SQLite 语句句柄（仅供内部使用）
+         * @brief 获取底层 SQLite 语句句柄，供高级场景使用
+         * @warning 所有权仍属于本结果集，调用方不得 sqlite3_finalize，也不得在结果集销毁后使用
+         * @return sqlite3_stmt* 写回执结果为 nullptr
          */
-        [[nodiscard]] sqlite3_stmt *nativeHandle() const { return m_statement; }
+        [[nodiscard]] sqlite3_stmt *nativeHandle() const noexcept { return m_statement; }
 
         /**
-         * @brief 获取最近一次 INSERT 操作生成的行 ID
-         * @return 行 ID
+         * @brief 获取最近一次插入操作生成的 rowid
+         * @details SQLite 的该计数器是连接级状态，构造时快照，之后连接上的新写入不会反映到本对象。
+         * @return std::int64_t rowid，从未插入过时为 0
          */
-        [[nodiscard]] int64_t lastInsertRowId() const { return m_lastInsertRowId; }
+        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept { return m_lastInsertRowId; }
 
         /**
-         * @brief 获取受影响的行数
-         * @return 行数
+         * @brief 获取影响行数
+         * @details 取构造时快照的 sqlite3_changes()，对写回执结果就是本条语句影响的行数；
+         *          对查询结果则是该连接上一条写语句的计数（SQLite 未提供语句级历史）。
+         * @return int 受影响行数
          */
-        [[nodiscard]] int affectedRowCount() const { return m_affectedRows; }
+        [[nodiscard]] int affectedRowCount() const noexcept { return m_affectedRowCount; }
 
     private:
         /**
-         * @brief 将 SQLite 列值转换为统一的 DatabaseValue
-         * @param index 列索引
-         * @return 统一的数据库值
+         * @brief 把 SQLite 的列值按存储类转换成统一的 DatabaseValue
+         * @param index 已通过上层校验的列索引（int 是 SQLite API 的原生索引类型）
+         * @return DatabaseValue 列值，NULL 或未知存储类返回 std::monostate
          */
         [[nodiscard]] DatabaseValue convertValue(int index) const;
 
         /**
-         * @brief 遍历所有行以计算行数
+         * @brief 预扫描只读语句以统计行数，结束后把游标复位
          */
         void countRows();
 
-        sqlite3_stmt *m_statement{nullptr};   ///< SQLite 预编译语句句柄
-        sqlite3      *m_database{nullptr};    ///< SQLite 数据库连接
-        int64_t       m_lastInsertRowId{0};    ///< 最后插入的行 ID
-        int           m_affectedRows{0};       ///< 受影响行数
-        size_t        m_rowCount{0};           ///< 行数缓存
-        size_t        m_columnCount{0};        ///< 列数缓存
-        bool          m_isEmpty{true};         ///< 是否为空
-        bool          m_hasRow{false};         ///< 是否有当前行
+        sqlite3_stmt *m_statement{nullptr};    ///< 预编译语句句柄，非空时由本对象负责 finalize
+        sqlite3 *m_database{nullptr};          ///< 所属连接的句柄，只读引用，不接管生命周期
+        size_t m_columnCount{0};               ///< 列数快照，0 表示这是没有游标的写回执
+        size_t m_rowCount{0};                  ///< 预扫描得到的行数快照，未预扫描时为 0
+        int m_affectedRowCount{0};             ///< 构造时快照的连接级 sqlite3_changes
+        std::int64_t m_lastInsertRowId{0};     ///< 构造时快照的连接级 sqlite3_last_insert_rowid
+        bool m_hasCurrentRow{false};           ///< 游标当前是否停在有效行上，决定能否读取列值
+        bool m_scanCompleted{false};           ///< 游标是否已走到末尾；SQLite 会对已 DONE 的语句再次 step 而重跑查询，必须显式记住耗尽
+        bool m_isEmpty{true};                  ///< 结果集是否为空（写回执恒为 true）
     };
 
-} // namespace Database
-
-#endif // DATABASE_SQLITERESULT_H
+} // namespace AsynGyanis::Database
