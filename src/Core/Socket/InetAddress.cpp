@@ -1,6 +1,6 @@
 /**
  * @file InetAddress.cpp
- * @brief 网络地址实现
+ * @brief IPv4/IPv6 地址封装实现，含 DNS 解析与地址文本化
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -9,6 +9,7 @@
 
 #include "Core/Socket/InetAddress.h"
 #include "Base/Exception/SystemException.h"
+#include "Platform/IO/Socket.h"
 
 #include <cstring>
 
@@ -59,16 +60,32 @@ namespace AsynGyanis::Core
 
     std::optional<InetAddress> InetAddress::resolve(const std::string_view host, const uint16_t port)
     {
+        // 空主机名在 Windows 上会被 getaddrinfo 当作通配地址成功返回，Linux 则报 EAI_NONAME；
+        // 解析结果若用于 connect 会得到「0.0.0.0」这类看似合法实则无意义的对端，故统一拒绝。
+        // 需要监听地址时请改用 InetAddress::any(port)
+        if (host.empty())
+        {
+            return std::nullopt;
+        }
+
+        // Windows 上 getaddrinfo 依赖 Winsock 已初始化，此处自行申请一次初始化引用，
+        // 不依赖调用方是否已经启动过 IoContext 等网络宿主
+        const Platform::Socket::Initialization winsock;
+        if (!winsock.isValid())
+        {
+            return std::nullopt;
+        }
+
         addrinfo hints{};
         hints.ai_family   = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_flags    = AI_ADDRCONFIG;
 
-        const std::string hostStr(host);
-        const std::string portStr = std::to_string(port);
+        const std::string hostString(host);
+        const std::string portString = std::to_string(port);
 
         addrinfo *result = nullptr;
-        if (getaddrinfo(hostStr.c_str(), portStr.c_str(), &hints, &result) != 0)
+        if (getaddrinfo(hostString.c_str(), portString.c_str(), &hints, &result) != 0)
         {
             return std::nullopt;
         }
