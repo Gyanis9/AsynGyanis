@@ -83,7 +83,7 @@ namespace AsynGyanis::Base
             } catch (const std::format_error &exception)
             {
                 log(LogLevel::Error,
-                    std::format("Log format error: {} [format='{}']", exception.what(), formatString), location);
+                    std::format("日志格式化错误：{} [format='{}']", exception.what(), formatString), location);
             }
         }
 

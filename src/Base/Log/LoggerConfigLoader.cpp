@@ -113,7 +113,7 @@ namespace AsynGyanis::Base
         const auto typeOptional = sinkConfiguration.get<std::string>("type");
         if (!typeOptional.has_value())
         {
-            std::cerr << "LoggerConfig: sink missing 'type' field, skipping" << '\n';
+            std::cerr << "LoggerConfig：sink 缺少 'type' 字段，已跳过" << '\n';
             return nullptr;
         }
         const std::string &type = typeOptional.value();
@@ -129,7 +129,7 @@ namespace AsynGyanis::Base
             const auto pathOptional = sinkConfiguration.get<std::string>("path");
             if (!pathOptional.has_value())
             {
-                std::cerr << "LoggerConfig: file sink missing 'path', skipping" << '\n';
+                std::cerr << "LoggerConfig：file sink 缺少 'path'，已跳过" << '\n';
                 return nullptr;
             }
             // 相对路径基于基准目录解析，避免依赖进程工作目录
@@ -149,7 +149,7 @@ namespace AsynGyanis::Base
             const auto baseOptional = sinkConfiguration.get<std::string>("base_filename");
             if (!baseOptional.has_value())
             {
-                std::cerr << "LoggerConfig: rolling_file sink missing 'base_filename', skipping" << '\n';
+                std::cerr << "LoggerConfig：rolling_file sink 缺少 'base_filename'，已跳过" << '\n';
                 return nullptr;
             }
             // 相对目录基于基准目录解析，避免依赖进程工作目录
@@ -183,7 +183,7 @@ namespace AsynGyanis::Base
         {
             if (!sinkConfiguration.contains("wrapped"))
             {
-                std::cerr << "LoggerConfig: async sink missing 'wrapped', skipping" << '\n';
+                std::cerr << "LoggerConfig：async sink 缺少 'wrapped'，已跳过" << '\n';
                 return nullptr;
             }
             auto wrappedSink = createSinkFromConfig(sinkConfiguration["wrapped"], baseDirectory);
@@ -206,7 +206,7 @@ namespace AsynGyanis::Base
         } else
         {
             // 模块初始化阶段日志系统可能尚未就绪，使用 std::cerr
-            std::cerr << "LoggerConfig: unknown sink type '" << type << "', skipping" << '\n';
+            std::cerr << "LoggerConfig：未知的 sink 类型 '" << type << "'，已跳过" << '\n';
             return nullptr;
         }
 

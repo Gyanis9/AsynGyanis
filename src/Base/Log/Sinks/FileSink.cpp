@@ -25,7 +25,7 @@ namespace AsynGyanis::Base
         m_file.open(m_filePath, mode);
         if (!m_file.is_open())
         {
-            throw std::runtime_error("Failed to open log file: " + m_filePath.string());
+            throw std::runtime_error("无法打开日志文件：" + m_filePath.string());
         }
     }
 

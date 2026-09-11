@@ -272,7 +272,7 @@ namespace AsynGyanis::Base
         ASSERT_EQ(events.size(), 1U);
 
         EXPECT_EQ(events[0].level, LogLevel::Error);
-        EXPECT_NE(events[0].message.find("Log format error"), std::string::npos) << events[0].message;
+        EXPECT_NE(events[0].message.find("日志格式化错误"), std::string::npos) << events[0].message;
         EXPECT_NE(events[0].message.find("argument out of range: {9}"), std::string::npos) << events[0].message;
     }
 

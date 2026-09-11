@@ -546,7 +546,7 @@ namespace AsynGyanis::Base
         ASSERT_EQ(m_ledger->eventCount(), 1u);
         const LogEvent event = m_ledger->events().front();
         EXPECT_EQ(event.level, LogLevel::Error);
-        EXPECT_TRUE(contains(event.message, "Log format error")) << event.message;
+        EXPECT_TRUE(contains(event.message, "日志格式化错误")) << event.message;
         EXPECT_TRUE(contains(event.message, "malformed {")) << event.message;
     }
 
