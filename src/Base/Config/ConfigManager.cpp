@@ -81,13 +81,13 @@ namespace AsynGyanis::Base
             if (!std::filesystem::exists(filePath))
             {
                 result.failedFiles.push_back(filePath.string());
-                result.errors.push_back("File does not exist: " + filePath.string());
+                result.errors.push_back("文件不存在：" + filePath.string());
                 continue;
             }
             if (!isConfigFile(filePath.string()))
             {
                 result.failedFiles.push_back(filePath.string());
-                result.errors.push_back("Unsupported config file format (expected .json, .yaml or .yml): " + filePath.string());
+                result.errors.push_back("不支持的配置文件格式（应为 .json、.yaml 或 .yml）：" + filePath.string());
                 continue;
             }
             if (loadConfigFile(filePath, values, result.errors))
@@ -123,7 +123,7 @@ namespace AsynGyanis::Base
         {
             ConfigLoadResult result;
             result.success = false;
-            result.errors.emplace_back("No configuration directory set. Call loadFromDirectory or loadFiles first.");
+            result.errors.emplace_back("尚未设置配置目录，请先调用 loadFromDirectory 或 loadFiles。");
             return result;
         }
         return doReload();
@@ -582,10 +582,10 @@ namespace AsynGyanis::Base
         if (!std::filesystem::exists(configDirectory, errorCode))
         {
             result.success = false;
-            result.errors.push_back("Configuration directory does not exist: " + configDirectory.string());
+            result.errors.push_back("配置目录不存在：" + configDirectory.string());
             if (errorCode)
             {
-                result.errors.push_back("Error: " + errorCode.message());
+                result.errors.push_back("错误：" + errorCode.message());
             }
             return result;
         }
@@ -593,7 +593,7 @@ namespace AsynGyanis::Base
         if (!std::filesystem::is_directory(configDirectory, errorCode))
         {
             result.success = false;
-            result.errors.push_back("Path is not a directory: " + configDirectory.string());
+            result.errors.push_back("路径不是目录：" + configDirectory.string());
             return result;
         }
 
@@ -642,7 +642,7 @@ namespace AsynGyanis::Base
         const std::optional<std::string> text = readTextFile(filePath);
         if (!text.has_value())
         {
-            errors.push_back("Cannot open file '" + filePath.string() + "': no such file or not readable");
+            errors.push_back("无法打开文件 '" + filePath.string() + "'：文件不存在或不可读");
             return false;
         }
 
@@ -665,19 +665,19 @@ namespace AsynGyanis::Base
                                                       ? std::string_view{"null"}
                                                       : std::string_view{typeName(document.type())};
 
-                errors.push_back("File '" + filePath.string() + "': root node must be a map, got " + std::string(kindName));
+                errors.push_back("文件 '" + filePath.string() + "'：根节点必须是映射，实际为 " + std::string(kindName));
                 return false;
             }
 
             flattenValue(document, "", values);
         } catch (const ParserError &exception)
         {
-            errors.push_back("Parse error in '" + filePath.string() + "': " + exception.reason() + " at " +
-                             exception.position().describe());
+            errors.push_back("解析错误：'" + filePath.string() + "'：" + exception.reason() + "（" +
+                             exception.position().describe() + "）");
             return false;
         } catch (const std::exception &exception)
         {
-            errors.push_back("Unexpected error loading '" + filePath.string() + "': " + exception.what());
+            errors.push_back("加载 '" + filePath.string() + "' 时发生意外错误：" + exception.what());
             return false;
         }
 
@@ -774,7 +774,7 @@ namespace AsynGyanis::Base
         {
             ConfigLoadResult result;
             result.success = false;
-            result.errors.emplace_back("No configuration directory set. Call loadFromDirectory or loadFiles first.");
+            result.errors.emplace_back("尚未设置配置目录，请先调用 loadFromDirectory 或 loadFiles。");
             return result;
         }
 

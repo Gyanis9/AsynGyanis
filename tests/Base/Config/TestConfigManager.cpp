@@ -232,7 +232,7 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(static_cast<bool>(result));
         EXPECT_TRUE(result.loadedFiles.empty());
         EXPECT_FALSE(result.errors.empty());
-        EXPECT_TRUE(anyEntryContains(result.errors, "Configuration directory does not exist"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "配置目录不存在"));
         EXPECT_TRUE(configuration().keys().empty());
     }
 
@@ -244,7 +244,7 @@ namespace AsynGyanis::Base
 
         EXPECT_FALSE(result.success);
         EXPECT_TRUE(result.loadedFiles.empty());
-        EXPECT_TRUE(anyEntryContains(result.errors, "Path is not a directory"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "路径不是目录"));
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryWithEmptyDirectorySucceedsWithoutAnyFile)
@@ -413,7 +413,7 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(result.success);
         EXPECT_TRUE(result.loadedFiles.empty());
         EXPECT_EQ(result.failedFiles.size(), 2U);
-        EXPECT_TRUE(anyEntryContains(result.errors, "root node must be a map"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "根节点必须是映射"));
         EXPECT_TRUE(anyEntryContains(result.errors, "sequence"));
         EXPECT_TRUE(anyEntryContains(result.errors, "scalar"));
         EXPECT_TRUE(configuration().keys().empty());
@@ -585,7 +585,7 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(result.success);
         EXPECT_TRUE(result.loadedFiles.empty());
         EXPECT_EQ(result.failedFiles.size(), 1U);
-        EXPECT_TRUE(anyEntryContains(result.errors, "File does not exist"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "文件不存在"));
         EXPECT_TRUE(configuration().keys().empty());
     }
 
@@ -597,7 +597,7 @@ namespace AsynGyanis::Base
 
         EXPECT_FALSE(result.success);
         EXPECT_EQ(result.failedFiles.size(), 1U);
-        EXPECT_TRUE(anyEntryContains(result.errors, "Unsupported config file format"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "不支持的配置文件格式"));
     }
 
     TEST_F(ConfigManagerTest, LoadReportsParseErrorWithLineAndColumn)
@@ -608,9 +608,9 @@ namespace AsynGyanis::Base
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
         EXPECT_FALSE(result.success);
-        EXPECT_TRUE(anyEntryContains(result.errors, "Parse error in")) << result.errors.front();
-        EXPECT_TRUE(anyEntryContains(result.errors, "line 2"));
-        EXPECT_TRUE(anyEntryContains(result.errors, "column"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "解析错误：")) << result.errors.front();
+        EXPECT_TRUE(anyEntryContains(result.errors, "第 2 行"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "第 1 列"));
     }
 
     TEST_F(ConfigManagerTest, LoadAcceptsEmptyFileWithoutProducingKeys)
@@ -633,7 +633,7 @@ namespace AsynGyanis::Base
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
         EXPECT_FALSE(result.success);
-        EXPECT_TRUE(anyEntryContains(result.errors, "root node must be a map, got sequence"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "根节点必须是映射，实际为 sequence"));
     }
 
     TEST_F(ConfigManagerTest, QuotedNumbersStayStringsAfterSwitchToOwnParser)
@@ -658,7 +658,7 @@ namespace AsynGyanis::Base
 
         // 损坏的覆盖层文件会被点名，但其余配置照常提交
         EXPECT_FALSE(result.success);
-        EXPECT_TRUE(anyEntryContains(result.errors, "Parse error in"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "解析错误："));
         EXPECT_EQ(configuration().getString("app.name", ""), "dashboard");
 
         ASSERT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
@@ -1015,7 +1015,7 @@ namespace AsynGyanis::Base
 
         EXPECT_FALSE(result.success);
         EXPECT_TRUE(result.loadedFiles.empty());
-        EXPECT_TRUE(anyEntryContains(result.errors, "No configuration directory set"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "尚未设置配置目录"));
     }
 
     TEST_F(ConfigManagerTest, ReloadFailsAfterClearResetsDirectory)
@@ -1027,7 +1027,7 @@ namespace AsynGyanis::Base
         const ConfigLoadResult result = configuration().reload();
 
         EXPECT_FALSE(result.success);
-        EXPECT_TRUE(anyEntryContains(result.errors, "No configuration directory set"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "尚未设置配置目录"));
     }
 
     TEST_F(ConfigManagerTest, ReloadPicksUpNewlyAddedFile)
