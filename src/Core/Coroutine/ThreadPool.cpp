@@ -1,0 +1,79 @@
+/**
+ * @file ThreadPool.cpp
+ * @brief 线程池实现
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/Coroutine/ThreadPool.h"
+
+
+namespace AsynGyanis::Core
+{
+    ThreadPool::ThreadPool(const size_t threadCount) :
+        m_threadCount(threadCount > 0 ? threadCount : std::thread::hardware_concurrency())
+    {
+        if (m_threadCount == 0)
+        {
+            m_threadCount = 1;
+        }
+
+        m_eventLoops.reserve(m_threadCount);
+        for (size_t i = 0; i < m_threadCount; ++i)
+        {
+            m_eventLoops.push_back(std::make_unique<EventLoop>());
+        }
+    }
+
+    ThreadPool::~ThreadPool()
+    {
+        stop();
+    }
+
+    void ThreadPool::start()
+    {
+        // 防止重复启动导致同一 EventLoop 被多线程并发运行
+        if (!m_threads.empty())
+            return;
+
+        m_threads.reserve(m_threadCount);
+        for (size_t i = 0; i < m_threadCount; ++i)
+        {
+            m_threads.emplace_back([this, i]()
+            {
+                m_eventLoops[i]->run();
+            });
+        }
+    }
+
+    void ThreadPool::stop()
+    {
+        for (auto &loop: m_eventLoops)
+        {
+            if (loop)
+            {
+                loop->stop();
+            }
+        }
+
+        m_threads.clear();
+    }
+
+    size_t ThreadPool::threadCount() const noexcept
+    {
+        return m_threadCount;
+    }
+
+    EventLoop &ThreadPool::eventLoop(const size_t index) const
+    {
+        return *m_eventLoops.at(index);
+    }
+
+    Scheduler &ThreadPool::scheduler(const size_t index) const
+    {
+        return m_eventLoops.at(index)->scheduler();
+    }
+
+}
