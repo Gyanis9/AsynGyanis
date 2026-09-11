@@ -1,102 +1,173 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/ConnectionManager.h"
-#include "Core/Connection.h"
-#include "Core/EventLoop.h"
-#include "Core/AsyncSocket.h"
+/**
+ * @file TestConnectionManager.cpp
+ * @brief ConnectionManager 单元测试：连接增删、优雅关闭与 waitAll 阻塞语义
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/Socket/ConnectionManager.h"
+
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/Socket/AsyncSocket.h"
+#include "Core/Socket/Connection.h"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <memory>
 #include <thread>
 
-using namespace Core;
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// 有界轮询统一使用的超时上限（毫秒），避免固定 sleep 硬等
+        constexpr int kWaitTimeoutMilliseconds = 2000;
 
-namespace {
-    std::shared_ptr<Connection> makeDummyConn() {
-        static EventLoop loop;
-        return std::make_shared<Connection>(AsyncSocket(loop, -1));
+        /// 有界轮询的步进间隔（毫秒）
+        constexpr int kPollIntervalMilliseconds = 10;
+
+        /**
+         * @brief 构造一个挂在指定事件循环上的哑连接（描述符 -1，仅用于管理器增删）
+         * @param loop 关联的事件循环
+         * @return 哑连接的共享指针
+         */
+        std::shared_ptr<Connection> makeDummyConnection(EventLoop &loop)
+        {
+            return std::make_shared<Connection>(AsyncSocket(loop, -1));
+        }
+
+        /**
+         * @brief 在 2 秒超时窗口内轮询等待原子标志置位
+         * @param flag 待轮询的原子标志
+         * @return 超时前置位返回 true，否则返回最后一次读取结果
+         */
+        bool waitForFlag(const std::atomic<bool> &flag)
+        {
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds{kWaitTimeoutMilliseconds};
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (flag.load())
+                {
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{kPollIntervalMilliseconds});
+            }
+            return flag.load();
+        }
     }
-}
 
-TEST_CASE("ConnectionManager: add and activeCount", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    REQUIRE(mgr.activeCount() == 0);
+    TEST(ConnectionManager, AddIncrementsActiveCount)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        ASSERT_EQ(manager.activeCount(), 0);
 
-    auto conn = makeDummyConn();
-    mgr.add(conn);
-    REQUIRE(mgr.activeCount() == 1);
-}
+        manager.add(makeDummyConnection(loop));
+        EXPECT_EQ(manager.activeCount(), 1);
+    }
 
-TEST_CASE("ConnectionManager: remove by pointer", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    auto conn = makeDummyConn();
-    mgr.add(conn);
-    REQUIRE(mgr.activeCount() == 1);
+    TEST(ConnectionManager, RemoveByPointerDecrementsActiveCount)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        std::shared_ptr<Connection> connection = makeDummyConnection(loop);
 
-    mgr.remove(conn.get());
-    REQUIRE(mgr.activeCount() == 0);
-}
+        manager.add(connection);
+        ASSERT_EQ(manager.activeCount(), 1);
 
-TEST_CASE("ConnectionManager: remove null pointer does nothing", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    REQUIRE_NOTHROW(mgr.remove(nullptr));
-}
+        manager.remove(connection.get());
+        EXPECT_EQ(manager.activeCount(), 0);
+    }
 
-TEST_CASE("ConnectionManager: add null pointer does nothing", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    mgr.add(nullptr);
-    REQUIRE(mgr.activeCount() == 0);
-}
+    TEST(ConnectionManager, RemoveNullPointerIsNoOp)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
 
-TEST_CASE("ConnectionManager: multiple connections", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    auto c1 = makeDummyConn();
-    auto c2 = makeDummyConn();
-    auto c3 = makeDummyConn();
+        EXPECT_NO_THROW(manager.remove(nullptr));
+        EXPECT_EQ(manager.activeCount(), 0);
+    }
 
-    mgr.add(c1);
-    mgr.add(c2);
-    mgr.add(c3);
-    REQUIRE(mgr.activeCount() == 3);
+    TEST(ConnectionManager, AddNullPointerIsIgnored)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
 
-    mgr.remove(c2.get());
-    REQUIRE(mgr.activeCount() == 2);
-}
+        manager.add(nullptr);
+        EXPECT_EQ(manager.activeCount(), 0);
+    }
 
-TEST_CASE("ConnectionManager: shutdown requests stop on all", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    auto c1 = makeDummyConn();
-    auto c2 = makeDummyConn();
+    TEST(ConnectionManager, TracksMultipleConnections)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        const auto connection1 = makeDummyConnection(loop);
+        const auto connection2 = makeDummyConnection(loop);
+        const auto connection3 = makeDummyConnection(loop);
 
-    mgr.add(c1);
-    mgr.add(c2);
+        manager.add(connection1);
+        manager.add(connection2);
+        manager.add(connection3);
+        ASSERT_EQ(manager.activeCount(), 3);
 
-    mgr.shutdown();
-    REQUIRE(c1->cancelable().isStopRequested());
-    REQUIRE(c2->cancelable().isStopRequested());
-}
+        manager.remove(connection2.get());
+        EXPECT_EQ(manager.activeCount(), 2);
+    }
 
-TEST_CASE("ConnectionManager: waitAll blocks until empty", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    auto conn = makeDummyConn();
-    mgr.add(conn);
+    TEST(ConnectionManager, ShutdownRequestsStopOnAllConnections)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        const auto connection1 = makeDummyConnection(loop);
+        const auto connection2 = makeDummyConnection(loop);
 
-    std::atomic<bool> done{false};
-    std::thread t([&]() {
-        mgr.waitAll();
-        done.store(true);
-    });
+        manager.add(connection1);
+        manager.add(connection2);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    REQUIRE_FALSE(done.load());
+        manager.shutdown();
 
-    mgr.remove(conn.get());
-    t.join();
-    REQUIRE(done.load());
-}
+        EXPECT_TRUE(connection1->cancelable().isStopRequested());
+        EXPECT_TRUE(connection2->cancelable().isStopRequested());
+    }
 
-TEST_CASE("ConnectionManager: remove non-existent pointer is no-op", "[ConnectionManager]") {
-    ConnectionManager mgr;
-    auto conn = makeDummyConn();
-    mgr.add(conn);
+    TEST(ConnectionManager, WaitAllReturnsOnceAllConnectionsRemoved)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        std::shared_ptr<Connection> connection = makeDummyConnection(loop);
+        manager.add(connection);
 
-    auto other = makeDummyConn();
-    mgr.remove(other.get()); // different pointer
-    REQUIRE(mgr.activeCount() == 1);
+        std::atomic<bool> finished{false};
+        std::thread waiter([&manager, &finished]()
+        {
+            manager.waitAll();
+            finished.store(true);
+        });
+
+        // 集合非空时 waitAll 必然不会返回（不依赖线程调度时序，确定成立）
+        ASSERT_FALSE(finished.load());
+
+        manager.remove(connection.get());
+        EXPECT_TRUE(waitForFlag(finished));
+
+        waiter.join();
+        EXPECT_TRUE(finished.load());
+    }
+
+    TEST(ConnectionManager, RemoveUnknownPointerIsNoOp)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        std::shared_ptr<Connection> connection = makeDummyConnection(loop);
+        manager.add(connection);
+
+        const auto other = makeDummyConnection(loop);
+        manager.remove(other.get()); // 不同的指针，不应影响已加入的连接
+        EXPECT_EQ(manager.activeCount(), 1);
+    }
 }

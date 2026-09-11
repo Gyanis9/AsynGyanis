@@ -1,75 +1,146 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/IoContext.h"
-#include "Core/Task.h"
-#include <thread>
+/**
+ * @file TestIoContext.cpp
+ * @brief IoContext 单元测试：线程池配置、主调度器、启停阻塞与运行前投递任务
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/EventLoop/IoContext.h"
+#include "Core/Coroutine/Task.h"
+
+#include <gtest/gtest.h>
+
 #include <atomic>
-#include <memory>
+#include <chrono>
+#include <thread>
 
-using namespace Core;
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// 等待类断言的轮询上限，避免固定 sleep 硬等，同时防止用例卡死
+        constexpr auto kConditionTimeout = std::chrono::milliseconds(2000);
 
-TEST_CASE("IoContext: construction", "[IoContext]") {
-    IoContext ctx(2);
-    auto &pool = ctx.threadPool();
-    REQUIRE(pool.threadCount() == 2);
-}
+        /**
+         * @brief 在超时上限内逐毫秒轮询等待条件成立
+         * @tparam Predicate 可调用对象，返回 bool
+         * @param predicate 待轮询的条件
+         * @param timeout 超时上限，默认 2 秒
+         * @return true 条件在时限内成立
+         */
+        template<typename Predicate>
+        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout = kConditionTimeout)
+        {
+            // 以 steady_clock 计算截止时间，轮询而非固定 sleep
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!predicate())
+            {
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return true;
+        }
 
-TEST_CASE("IoContext: threadPool access", "[IoContext]") {
-    IoContext ctx(2);
-    auto &pool = ctx.threadPool();
-    REQUIRE(pool.threadCount() == 2);
-}
-
-TEST_CASE("IoContext: mainScheduler returns scheduler 0", "[IoContext]") {
-    IoContext ctx(2);
-    auto &s = ctx.mainScheduler();
-    REQUIRE_FALSE(s.hasWork());
-}
-
-TEST_CASE("IoContext: stop without run", "[IoContext]") {
-    IoContext ctx(1);
-    ctx.stop(); // Should not deadlock
-}
-
-TEST_CASE("IoContext: run blocks until stop", "[IoContext]") {
-    IoContext ctx(1);
-    std::atomic<bool> running{false};
-
-    std::thread t([&]() {
-        running.store(true);
-        ctx.run();
-    });
-
-    // 等待 run 启动
-    while (!running.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        /**
+         * @brief 测试协程：向原子变量写入标记值
+         * @param value 目标原子变量
+         * @return Task<int> 固定返回 0
+         */
+        Task<int> setIoValue(std::atomic<int> &value)
+        {
+            value.store(99);
+            co_return 0;
+        }
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    ctx.stop();
-    t.join();
-}
+    TEST(IoContext, ConstructionCreatesConfiguredThreadPool)
+    {
+        IoContext context(2);
 
-namespace {
-    Task<int> setIoValue(std::atomic<int> &v) { v.store(99); co_return 0; }
-}
+        EXPECT_EQ(context.threadPool().threadCount(), 2u);
+    }
 
-TEST_CASE("IoContext: scheduling task on mainScheduler before run", "[IoContext]") {
-    IoContext ctx(1);
-    std::atomic<int> value{0};
+    TEST(IoContext, ThreadPoolAccessorReturnsConfiguredPool)
+    {
+        IoContext context(2);
 
-    auto task = setIoValue(value);
-    ctx.mainScheduler().schedule(task.handle());
+        auto &pool = context.threadPool();
+        EXPECT_EQ(pool.threadCount(), 2u);
+    }
 
-    std::thread t([&]() { ctx.run(); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    ctx.stop();
-    t.join();
+    TEST(IoContext, MainSchedulerReturnsFirstWorkerScheduler)
+    {
+        IoContext context(2);
 
-    REQUIRE(value.load() == 99);
-}
+        auto &scheduler = context.mainScheduler();
+        EXPECT_FALSE(scheduler.hasWork());
+        EXPECT_EQ(&scheduler, &context.threadPool().scheduler(0));
+    }
 
-TEST_CASE("IoContext: default constructor uses hardware concurrency", "[IoContext]") {
-    IoContext ctx;
-    auto &pool = ctx.threadPool();
-    REQUIRE(pool.threadCount() == std::thread::hardware_concurrency());
-}
+    TEST(IoContext, StopWithoutRunDoesNotDeadlock)
+    {
+        IoContext context(1);
+
+        // 未调用 run() 时停止应当是安全的空操作
+        EXPECT_NO_THROW(context.stop());
+    }
+
+    TEST(IoContext, RunBlocksUntilStopIsRequested)
+    {
+        IoContext context(1);
+        std::atomic<bool> workerStarted{false};
+
+        std::thread worker([&]()
+        {
+            workerStarted.store(true);
+            context.run();
+        });
+
+        // 轮询等待工作线程启动，stop() 应能解除 run() 的阻塞
+        ASSERT_TRUE(waitForCondition([&]()
+        {
+            return workerStarted.load();
+        }));
+
+        context.stop();
+        worker.join();
+    }
+
+    TEST(IoContext, TaskScheduledBeforeRunExecutesAfterRun)
+    {
+        IoContext context(1);
+        std::atomic<int> value{0};
+
+        auto task = setIoValue(value);
+        context.mainScheduler().schedule(task.handle());
+
+        std::thread worker([&]()
+        {
+            context.run();
+        });
+
+        // 轮询等待协程被执行，替代固定 sleep
+        const bool executed = waitForCondition([&]()
+        {
+            return value.load() == 99;
+        });
+
+        context.stop();
+        worker.join();
+
+        EXPECT_TRUE(executed);
+        EXPECT_EQ(value.load(), 99);
+    }
+
+    TEST(IoContext, DefaultConstructorUsesHardwareConcurrency)
+    {
+        IoContext context;
+
+        EXPECT_EQ(context.threadPool().threadCount(), std::thread::hardware_concurrency());
+    }
+} // namespace AsynGyanis::Core

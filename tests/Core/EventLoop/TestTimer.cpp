@@ -1,18 +1,39 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/Timer.h"
-#include "Core/EventLoop.h"
+/**
+ * @file TestTimer.cpp
+ * @brief Timer 单元测试：基于事件循环的构造与等待器创建
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 
-using namespace Core;
-using namespace std::chrono_literals;
+#include "Core/EventLoop/Timer.h"
+#include "Core/EventLoop/EventLoop.h"
 
-TEST_CASE("Timer: construction succeeds", "[Timer]") {
-    EventLoop loop;
-    REQUIRE_NOTHROW([&]() { Timer t(loop); }());
-}
+#include <gtest/gtest.h>
 
-TEST_CASE("Timer: waitFor returns EpollAwaiter", "[Timer]") {
-    EventLoop loop;
-    Timer timer(loop);
-    auto awaiter = timer.waitFor(100ms);
-    (void)awaiter;
-}
+#include <chrono>
+
+namespace AsynGyanis::Core
+{
+    TEST(Timer, ConstructionSucceeds)
+    {
+        EventLoop loop;
+
+        EXPECT_NO_THROW(
+        {
+            Timer timer(loop);
+        });
+    }
+
+    TEST(Timer, WaitForReturnsAwaiter)
+    {
+        EventLoop loop;
+        Timer timer(loop);
+
+        // 未被 co_await 的等待器不会注册任何事件，仅验证可构造
+        auto awaiter = timer.waitFor(std::chrono::milliseconds(100));
+        (void)awaiter;
+        SUCCEED();
+    }
+} // namespace AsynGyanis::Core

@@ -1,84 +1,120 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/BufferPool.h"
+/**
+ * @file TestBufferPool.cpp
+ * @brief BufferPool 单元测试：配置属性、缓冲区获取/释放、数据写入与隔离性
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 
-using namespace Core;
+#include "Core/Socket/BufferPool.h"
 
-TEST_CASE("BufferPool: construction and basic properties", "[BufferPool]") {
-    BufferPool pool(1024, 8);
-    REQUIRE(pool.bufferSize() == 1024);
-    REQUIRE(pool.bufferCount() == 8);
-}
+#include <gtest/gtest.h>
 
-TEST_CASE("BufferPool: acquire returns valid indices", "[BufferPool]") {
-    BufferPool pool(256, 4);
-    int idx0 = pool.acquire();
-    int idx1 = pool.acquire();
-    int idx2 = pool.acquire();
-    int idx3 = pool.acquire();
+#include <cstring>
 
-    REQUIRE(idx0 >= 0);
-    REQUIRE(idx1 >= 0);
-    REQUIRE(idx2 >= 0);
-    REQUIRE(idx3 >= 0);
-    // 所有索引应该各不相同
-    REQUIRE(idx0 != idx1);
-    REQUIRE(idx0 != idx2);
-    REQUIRE(idx0 != idx3);
-    REQUIRE(idx1 != idx2);
-    REQUIRE(idx1 != idx3);
-    REQUIRE(idx2 != idx3);
-}
+namespace AsynGyanis::Core
+{
+    TEST(BufferPool, ConstructionReportsConfiguredProperties)
+    {
+        const BufferPool pool(1024, 8);
 
-TEST_CASE("BufferPool: acquire returns -1 when full", "[BufferPool]") {
-    BufferPool pool(64, 2);
-    REQUIRE(pool.acquire() >= 0);
-    REQUIRE(pool.acquire() >= 0);
-    REQUIRE(pool.acquire() == -1);
-}
+        EXPECT_EQ(pool.bufferSize(), 1024u);
+        EXPECT_EQ(pool.bufferCount(), 8u);
+    }
 
-TEST_CASE("BufferPool: release allows re-acquire", "[BufferPool]") {
-    BufferPool pool(128, 2);
-    int idx0 = pool.acquire();
-    int idx1 = pool.acquire();
-    REQUIRE(pool.acquire() == -1);
+    TEST(BufferPool, AcquireReturnsDistinctValidIndices)
+    {
+        BufferPool pool(256, 4);
 
-    pool.release(idx0);
-    int idx2 = pool.acquire();
-    REQUIRE(idx2 >= 0);
-}
+        const int firstIndex = pool.acquire();
+        const int secondIndex = pool.acquire();
+        const int thirdIndex = pool.acquire();
+        const int fourthIndex = pool.acquire();
 
-TEST_CASE("BufferPool: data returns valid pointer", "[BufferPool]") {
-    BufferPool pool(1024, 4);
-    int idx = pool.acquire();
-    REQUIRE(idx >= 0);
+        ASSERT_GE(firstIndex, 0);
+        ASSERT_GE(secondIndex, 0);
+        ASSERT_GE(thirdIndex, 0);
+        ASSERT_GE(fourthIndex, 0);
 
-    void *ptr = pool.data(idx);
-    REQUIRE(ptr != nullptr);
+        // 所有索引应互不相同
+        EXPECT_NE(firstIndex, secondIndex);
+        EXPECT_NE(firstIndex, thirdIndex);
+        EXPECT_NE(firstIndex, fourthIndex);
+        EXPECT_NE(secondIndex, thirdIndex);
+        EXPECT_NE(secondIndex, fourthIndex);
+        EXPECT_NE(thirdIndex, fourthIndex);
+    }
 
-    // 应该是可写的
-    std::memset(ptr, 0xAB, 1024);
-}
+    TEST(BufferPool, AcquireReturnsMinusOneWhenExhausted)
+    {
+        BufferPool pool(64, 2);
 
-TEST_CASE("BufferPool: data is isolated between buffers", "[BufferPool]") {
-    BufferPool pool(1024, 4);
-    int idx0 = pool.acquire();
-    int idx1 = pool.acquire();
+        EXPECT_GE(pool.acquire(), 0);
+        EXPECT_GE(pool.acquire(), 0);
+        // 缓冲区耗尽后应返回 -1
+        EXPECT_EQ(pool.acquire(), -1);
+    }
 
-    std::memset(pool.data(idx0), 0x11, 1024);
-    std::memset(pool.data(idx1), 0x22, 1024);
+    TEST(BufferPool, ReleaseAllowsReacquire)
+    {
+        BufferPool pool(128, 2);
 
-    // 验证隔离性
-    auto *p0 = static_cast<unsigned char *>(pool.data(idx0));
-    auto *p1 = static_cast<unsigned char *>(pool.data(idx1));
-    REQUIRE(p0[0] == 0x11);
-    REQUIRE(p1[0] == 0x22);
-}
+        const int firstIndex = pool.acquire();
+        const int secondIndex = pool.acquire();
+        ASSERT_GE(firstIndex, 0);
+        ASSERT_GE(secondIndex, 0);
+        ASSERT_EQ(pool.acquire(), -1);
 
-TEST_CASE("BufferPool: bufferSize zero throws or works", "[BufferPool]") {
-    // 边界测试：缓冲区大小为 0
-    BufferPool pool(0, 4);
-    REQUIRE(pool.bufferSize() == 0);
-    REQUIRE(pool.bufferCount() == 4);
-    int idx = pool.acquire();
-    REQUIRE(idx >= 0);
-}
+        pool.release(firstIndex);
+
+        // 释放后应能重新获取到缓冲区
+        const int reacquiredIndex = pool.acquire();
+        EXPECT_GE(reacquiredIndex, 0);
+    }
+
+    TEST(BufferPool, DataReturnsWritablePointer)
+    {
+        BufferPool pool(1024, 4);
+
+        const int index = pool.acquire();
+        ASSERT_GE(index, 0);
+
+        void *pointer = pool.data(index);
+        ASSERT_NE(pointer, nullptr);
+
+        // 缓冲区应可完整写入
+        std::memset(pointer, 0xAB, 1024);
+    }
+
+    TEST(BufferPool, DataIsIsolatedBetweenBuffers)
+    {
+        BufferPool pool(1024, 4);
+
+        const int firstIndex = pool.acquire();
+        const int secondIndex = pool.acquire();
+        ASSERT_GE(firstIndex, 0);
+        ASSERT_GE(secondIndex, 0);
+
+        std::memset(pool.data(firstIndex), 0x11, 1024);
+        std::memset(pool.data(secondIndex), 0x22, 1024);
+
+        // 各缓冲区写入互不影响
+        const auto *firstPointer = static_cast<const unsigned char *>(pool.data(firstIndex));
+        const auto *secondPointer = static_cast<const unsigned char *>(pool.data(secondIndex));
+        EXPECT_EQ(firstPointer[0], 0x11);
+        EXPECT_EQ(secondPointer[0], 0x22);
+    }
+
+    TEST(BufferPool, ZeroBufferSizeConstructionIsTolerated)
+    {
+        // 边界用例：缓冲区大小为 0 时不崩溃，仍可按个数分配索引
+        BufferPool pool(0, 4);
+
+        EXPECT_EQ(pool.bufferSize(), 0u);
+        EXPECT_EQ(pool.bufferCount(), 4u);
+
+        const int index = pool.acquire();
+        EXPECT_GE(index, 0);
+    }
+} // namespace AsynGyanis::Core

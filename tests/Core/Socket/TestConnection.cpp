@@ -1,79 +1,92 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/Connection.h"
-#include "Core/EventLoop.h"
-#include "Core/AsyncSocket.h"
-#include "Core/InetAddress.h"
+/**
+ * @file TestConnection.cpp
+ * @brief Connection 单元测试：构造、关闭、取消传播与基类协程启动
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 
-using namespace Core;
+#include "Core/Socket/Connection.h"
 
-TEST_CASE("Connection: construction", "[Connection]") {
-    EventLoop loop;
-    AsyncSocket asyncSocket(loop, -1); // dummy file descriptor
-    Connection connection(std::move(asyncSocket));
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/Socket/AsyncSocket.h"
 
-    REQUIRE(connection.isAlive());
-    REQUIRE(connection.socket().fileDescriptor() == -1);
-}
+#include <gtest/gtest.h>
 
-TEST_CASE("Connection: close sets not alive", "[Connection]") {
-    EventLoop loop;
-    AsyncSocket asyncSocket(loop, -1);
-    Connection connection(std::move(asyncSocket));
+namespace AsynGyanis::Core
+{
+    TEST(Connection, ConstructionKeepsSocketAndAliveFlag)
+    {
+        EventLoop loop;
+        Connection connection(AsyncSocket(loop, -1)); // 描述符 -1 的哑 socket，仅验证对象生命周期
 
-    connection.close();
-    REQUIRE_FALSE(connection.isAlive());
-}
+        EXPECT_TRUE(connection.isAlive());
+        EXPECT_EQ(connection.socket().fileDescriptor(), -1);
+    }
 
-TEST_CASE("Connection: cancelable requestStop after close", "[Connection]") {
-    EventLoop loop;
-    AsyncSocket asyncSocket(loop, -1);
-    Connection connection(std::move(asyncSocket));
+    TEST(Connection, CloseMarksConnectionNotAlive)
+    {
+        EventLoop loop;
+        Connection connection(AsyncSocket(loop, -1));
 
-    connection.close();
-    REQUIRE(connection.cancelable().isStopRequested());
-}
+        connection.close();
 
-TEST_CASE("Connection: base start returns immediately", "[Connection]") {
-    EventLoop loop;
-    AsyncSocket asyncSocket(loop, -1);
-    Connection connection(std::move(asyncSocket));
+        EXPECT_FALSE(connection.isAlive());
+    }
 
-    auto task = connection.start();
-    task.handle().resume();
-    REQUIRE(task.isReady());
-}
+    TEST(Connection, CloseRequestsStopOnCancelable)
+    {
+        EventLoop loop;
+        Connection connection(AsyncSocket(loop, -1));
 
-TEST_CASE("Connection: move construction", "[Connection]") {
-    EventLoop loop;
-    AsyncSocket asyncSocket(loop, -1);
-    Connection connection1(std::move(asyncSocket));
+        connection.close();
 
-    connection1.close();
-    Connection connection2(std::move(connection1));
-    REQUIRE_FALSE(connection2.isAlive());
-}
+        EXPECT_TRUE(connection.cancelable().isStopRequested());
+    }
 
-TEST_CASE("Connection: move assignment", "[Connection]") {
-    EventLoop loop;
-    auto asyncSocket1 = AsyncSocket(loop, -1);
-    auto asyncSocket2 = AsyncSocket(loop, -1);
+    TEST(Connection, BaseStartCompletesImmediately)
+    {
+        EventLoop loop;
+        Connection connection(AsyncSocket(loop, -1));
 
-    Connection connection1(std::move(asyncSocket1));
-    Connection connection2(std::move(asyncSocket2));
+        auto task = connection.start();
+        task.handle().resume();
+        EXPECT_TRUE(task.isReady());
+    }
 
-    connection1.close();
-    connection2 = std::move(connection1);
-    REQUIRE_FALSE(connection2.isAlive());
-}
+    TEST(Connection, MoveConstructionPreservesAliveState)
+    {
+        EventLoop loop;
+        Connection connection1(AsyncSocket(loop, -1));
+        connection1.close();
 
-TEST_CASE("Connection: cancelable propagates", "[Connection]") {
-    EventLoop loop;
-    AsyncSocket asyncSocket(loop, -1);
-    Connection connection(std::move(asyncSocket));
+        Connection connection2(std::move(connection1));
 
-    auto &cancelable = connection.cancelable();
-    REQUIRE_FALSE(cancelable.isStopRequested());
+        EXPECT_FALSE(connection2.isAlive());
+    }
 
-    cancelable.requestStop();
-    REQUIRE(cancelable.isStopRequested());
+    TEST(Connection, MoveAssignmentPreservesAliveState)
+    {
+        EventLoop loop;
+        Connection connection1(AsyncSocket(loop, -1));
+        Connection connection2(AsyncSocket(loop, -1));
+
+        connection1.close();
+        connection2 = std::move(connection1);
+
+        EXPECT_FALSE(connection2.isAlive());
+    }
+
+    TEST(Connection, CancelableReflectsStopRequest)
+    {
+        EventLoop loop;
+        Connection connection(AsyncSocket(loop, -1));
+
+        Cancelable &cancelable = connection.cancelable();
+        ASSERT_FALSE(cancelable.isStopRequested());
+
+        EXPECT_TRUE(cancelable.requestStop());
+        EXPECT_TRUE(cancelable.isStopRequested());
+    }
 }

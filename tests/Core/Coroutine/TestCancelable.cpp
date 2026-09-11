@@ -1,60 +1,87 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/Cancelable.h"
+/**
+ * @file TestCancelable.cpp
+ * @brief Cancelable 单元测试：停止请求、停止令牌、停止源与移动语义
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 
-using namespace Core;
+#include "Core/Coroutine/Cancelable.h"
 
-TEST_CASE("Cancelable: default state is not stopped", "[Cancelable]") {
-    Cancelable c;
-    REQUIRE_FALSE(c.isStopRequested());
-}
+#include <gtest/gtest.h>
 
-TEST_CASE("Cancelable: requestStop sets stop requested", "[Cancelable]") {
-    Cancelable c;
-    REQUIRE(c.requestStop());
-    REQUIRE(c.isStopRequested());
-}
+namespace AsynGyanis::Core
+{
+    TEST(Cancelable, DefaultStateIsNotStopped)
+    {
+        const Cancelable cancelable;
 
-TEST_CASE("Cancelable: stopToken reflects stop state", "[Cancelable]") {
-    Cancelable c;
-    auto token = c.stopToken();
-    REQUIRE_FALSE(token.stop_requested());
+        EXPECT_FALSE(cancelable.isStopRequested());
+    }
 
-    c.requestStop();
-    REQUIRE(token.stop_requested());
-}
+    TEST(Cancelable, RequestStopSetsStopRequestedFlag)
+    {
+        Cancelable cancelable;
 
-TEST_CASE("Cancelable: move construction preserves state", "[Cancelable]") {
-    Cancelable c1;
-    c1.requestStop();
+        EXPECT_TRUE(cancelable.requestStop());
+        EXPECT_TRUE(cancelable.isStopRequested());
+    }
 
-    Cancelable c2(std::move(c1));
-    REQUIRE(c2.isStopRequested());
-}
+    TEST(Cancelable, StopTokenReflectsStopState)
+    {
+        Cancelable cancelable;
+        const auto token = cancelable.stopToken();
 
-TEST_CASE("Cancelable: move assignment preserves state", "[Cancelable]") {
-    Cancelable c1;
-    c1.requestStop();
+        EXPECT_FALSE(token.stop_requested());
 
-    Cancelable c2;
-    c2 = std::move(c1);
-    REQUIRE(c2.isStopRequested());
-}
+        // 令牌与停止源共享状态，请求停止后令牌同步可见
+        cancelable.requestStop();
+        EXPECT_TRUE(token.stop_requested());
+    }
 
-TEST_CASE("Cancelable: stopSource returns valid reference", "[Cancelable]") {
-    Cancelable c;
-    auto &src = c.stopSource();
-    REQUIRE_FALSE(src.stop_requested());
+    TEST(Cancelable, MoveConstructionPreservesStopState)
+    {
+        Cancelable source;
+        source.requestStop();
 
-    src.request_stop();
-    REQUIRE(c.isStopRequested());
-}
+        const Cancelable target(std::move(source));
 
-TEST_CASE("Cancelable: multiple requestStop calls are idempotent", "[Cancelable]") {
-    Cancelable c;
-    // 第一次调用返回 true（转换到已停止状态）
-    REQUIRE(c.requestStop());
-    // 第二次调用返回 false（根据 std::stop_source 规范，已经停止）
-    REQUIRE_FALSE(c.requestStop());
-    // 但 isStopRequested() 保持为 true
-    REQUIRE(c.isStopRequested());
-}
+        EXPECT_TRUE(target.isStopRequested());
+    }
+
+    TEST(Cancelable, MoveAssignmentPreservesStopState)
+    {
+        Cancelable source;
+        source.requestStop();
+
+        Cancelable target;
+        target = std::move(source);
+
+        EXPECT_TRUE(target.isStopRequested());
+    }
+
+    TEST(Cancelable, StopSourceReturnsModifiableReference)
+    {
+        Cancelable cancelable;
+        auto &source = cancelable.stopSource();
+
+        EXPECT_FALSE(source.stop_requested());
+
+        // 直接操作停止源应同步反映到 Cancelable 的状态查询
+        source.request_stop();
+        EXPECT_TRUE(cancelable.isStopRequested());
+    }
+
+    TEST(Cancelable, RepeatedRequestStopIsIdempotent)
+    {
+        Cancelable cancelable;
+
+        // 第一次调用返回 true（从未停止转为已停止）
+        EXPECT_TRUE(cancelable.requestStop());
+        // 第二次调用返回 false（已经处于停止状态）
+        EXPECT_FALSE(cancelable.requestStop());
+        // 状态查询保持为已停止
+        EXPECT_TRUE(cancelable.isStopRequested());
+    }
+} // namespace AsynGyanis::Core

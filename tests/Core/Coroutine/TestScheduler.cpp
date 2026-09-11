@@ -1,127 +1,181 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/Scheduler.h"
-#include "Core/Task.h"
+/**
+ * @file TestScheduler.cpp
+ * @brief Scheduler 单元测试：本地/跨线程调度、队列查询与工作窃取
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/Coroutine/Scheduler.h"
+#include "Core/Coroutine/Task.h"
+
+#include <gtest/gtest.h>
+
 #include <atomic>
+#include <coroutine>
+#include <thread>
+#include <vector>
 
-using namespace Core;
-
-namespace {
-    Task<int> incrementTask(std::atomic<int> &counter) {
-        counter.fetch_add(1);
-        co_return 0;
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /**
+         * @brief 测试协程：对原子计数器执行一次自增
+         * @param counter 目标原子计数器
+         * @return Task<int> 固定返回 0
+         */
+        Task<int> incrementTask(std::atomic<int> &counter)
+        {
+            counter.fetch_add(1);
+            co_return 0;
+        }
     }
 
-    Task<void> setFlag(std::atomic<bool> &flag) {
-        flag.store(true);
-        co_return;
-    }
-}
+    TEST(Scheduler, ScheduleAndRunOneExecutesTask)
+    {
+        Scheduler scheduler;
+        std::atomic<int> counter{0};
 
-TEST_CASE("Scheduler: schedule and run one task", "[Scheduler]") {
-    Scheduler s;
-    std::atomic<int> counter{0};
-
-    auto task = incrementTask(counter);
-    s.schedule(task.handle());
-
-    REQUIRE(s.hasWork());
-    REQUIRE(s.runOne());
-    REQUIRE(counter.load() == 1);
-}
-
-TEST_CASE("Scheduler: runAll processes all tasks", "[Scheduler]") {
-    Scheduler s;
-    std::atomic<int> counter{0};
-    std::vector<Task<int>> tasks;
-
-    for (int i = 0; i < 10; ++i) {
         auto task = incrementTask(counter);
-        s.schedule(task.handle());
-        tasks.push_back(std::move(task));
+        scheduler.schedule(task.handle());
+
+        EXPECT_TRUE(scheduler.hasWork());
+        ASSERT_TRUE(scheduler.runOne());
+        EXPECT_EQ(counter.load(), 1);
     }
 
-    s.runAll();
-    REQUIRE(counter.load() == 10);
-    REQUIRE_FALSE(s.hasWork());
-}
+    TEST(Scheduler, RunAllProcessesAllScheduledTasks)
+    {
+        Scheduler scheduler;
+        std::atomic<int> counter{0};
+        std::vector<Task<int>> tasks;
 
-TEST_CASE("Scheduler: scheduleRemote allows cross-thread scheduling", "[Scheduler]") {
-    Scheduler s;
-    std::atomic<int> counter{0};
+        for (int round = 0; round < 10; ++round)
+        {
+            auto task = incrementTask(counter);
+            scheduler.schedule(task.handle());
+            tasks.push_back(std::move(task));
+        }
 
-    auto task = incrementTask(counter);
-    s.scheduleRemote(task.handle());
+        scheduler.runAll();
 
-    REQUIRE(s.runOne());
-    REQUIRE(counter.load() == 1);
-}
+        EXPECT_EQ(counter.load(), 10);
+        EXPECT_FALSE(scheduler.hasWork());
+    }
 
-TEST_CASE("Scheduler: hasWork returns false when empty", "[Scheduler]") {
-    Scheduler s;
-    REQUIRE_FALSE(s.hasWork());
-}
+    TEST(Scheduler, ScheduleRemoteFromAnotherThreadExecutesTask)
+    {
+        Scheduler scheduler;
+        std::atomic<int> counter{0};
 
-TEST_CASE("Scheduler: localQueueSize reflects pending tasks", "[Scheduler]") {
-    Scheduler s;
-    REQUIRE(s.localQueueSize() == 0);
+        auto task = incrementTask(counter);
+        std::thread remote([&]()
+        {
+            // scheduleRemote 线程安全，可在任意线程投递到全局队列
+            scheduler.scheduleRemote(task.handle());
+        });
+        remote.join();
 
-    std::atomic<int> counter{0};
-    auto task = incrementTask(counter);
-    s.schedule(task.handle());
+        ASSERT_TRUE(scheduler.runOne());
+        EXPECT_EQ(counter.load(), 1);
+    }
 
-    REQUIRE(s.localQueueSize() == 1);
+    TEST(Scheduler, HasWorkReturnsFalseWhenEmpty)
+    {
+        Scheduler scheduler;
 
-    s.runOne();
-    REQUIRE(s.localQueueSize() == 0);
-}
+        EXPECT_FALSE(scheduler.hasWork());
+    }
 
-TEST_CASE("Scheduler: schedule nullptr handle does nothing", "[Scheduler]") {
-    Scheduler s;
-    s.schedule(nullptr);
-    REQUIRE_FALSE(s.hasWork());
-}
+    TEST(Scheduler, LocalQueueSizeReflectsPendingTasks)
+    {
+        Scheduler scheduler;
+        std::atomic<int> counter{0};
 
-TEST_CASE("Scheduler: scheduleRemote nullptr does nothing", "[Scheduler]") {
-    Scheduler s;
-    s.scheduleRemote(nullptr);
-    REQUIRE_FALSE(s.runOne());
-}
+        EXPECT_EQ(scheduler.localQueueSize(), 0u);
 
-TEST_CASE("Scheduler: runOne returns false when empty", "[Scheduler]") {
-    Scheduler s;
-    REQUIRE_FALSE(s.runOne());
-}
+        auto task = incrementTask(counter);
+        scheduler.schedule(task.handle());
 
-TEST_CASE("Scheduler: work stealing from another scheduler", "[Scheduler]") {
-    Scheduler s1, s2;
-    std::atomic<int> counter{0};
+        EXPECT_EQ(scheduler.localQueueSize(), 1u);
 
-    auto task = incrementTask(counter);
-    s1.schedule(task.handle());
+        scheduler.runOne();
+        EXPECT_EQ(scheduler.localQueueSize(), 0u);
+    }
 
-    auto stolen = s2.stealFrom(s1);
-    // Note: stealFrom may not work if s1 only has 1 task (need > 1 for steal)
-    // 如果被窃取，从窃取者运行；否则从 s1 运行
-    if (stolen) {
+    TEST(Scheduler, ScheduleNullHandleIsIgnored)
+    {
+        Scheduler scheduler;
+
+        // 空句柄应被静默忽略，不进入任何队列
+        scheduler.schedule(nullptr);
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
+    TEST(Scheduler, ScheduleRemoteNullHandleIsIgnored)
+    {
+        Scheduler scheduler;
+
+        scheduler.scheduleRemote(nullptr);
+        EXPECT_FALSE(scheduler.runOne());
+    }
+
+    TEST(Scheduler, RunOneReturnsFalseWhenEmpty)
+    {
+        Scheduler scheduler;
+
+        EXPECT_FALSE(scheduler.runOne());
+    }
+
+    TEST(Scheduler, StealFromTakesOnlyGlobalQueueTasks)
+    {
+        Scheduler source;
+        Scheduler thief;
+        std::atomic<int> counter{0};
+
+        // 本地队列任务对窃取者不可见
+        auto localTask = incrementTask(counter);
+        source.schedule(localTask.handle());
+
+        const auto unstealable = Scheduler::stealFrom(source);
+        EXPECT_FALSE(unstealable);
+
+        // 全局队列中的跨线程任务可以被窃取并由窃取者执行
+        auto remoteTask = incrementTask(counter);
+        source.scheduleRemote(remoteTask.handle());
+
+        auto stolen = Scheduler::stealFrom(source);
+        ASSERT_TRUE(stolen);
         stolen.resume();
-        REQUIRE(counter.load() == 1);
-    }
-}
+        EXPECT_EQ(counter.load(), 1);
 
-TEST_CASE("Scheduler: multiple scheduleRemote calls", "[Scheduler]") {
-    Scheduler s;
-    std::atomic<int> counter{0};
-    std::vector<Task<int>> tasks;
-
-    for (int i = 0; i < 5; ++i) {
-        auto task = incrementTask(counter);
-        s.scheduleRemote(task.handle());
-        tasks.push_back(std::move(task));
+        // 本地任务仍留在源调度器，由其自行执行
+        EXPECT_TRUE(source.runOne());
+        EXPECT_EQ(counter.load(), 2);
+        EXPECT_FALSE(source.hasWork());
     }
 
-    // scheduleRemote puts tasks in global queue; call runOne 5 times
-    for (int i = 0; i < 5; ++i) {
-        REQUIRE(s.runOne());
+    TEST(Scheduler, MultipleScheduleRemoteCallsAreProcessed)
+    {
+        Scheduler scheduler;
+        std::atomic<int> counter{0};
+        std::vector<Task<int>> tasks;
+
+        // 投递 5 个任务进入全局队列，逐个执行
+        for (int round = 0; round < 5; ++round)
+        {
+            auto task = incrementTask(counter);
+            scheduler.scheduleRemote(task.handle());
+            tasks.push_back(std::move(task));
+        }
+
+        for (int round = 0; round < 5; ++round)
+        {
+            ASSERT_TRUE(scheduler.runOne());
+        }
+        EXPECT_EQ(counter.load(), 5);
+        EXPECT_FALSE(scheduler.hasWork());
     }
-    REQUIRE(counter.load() == 5);
-}
+} // namespace AsynGyanis::Core

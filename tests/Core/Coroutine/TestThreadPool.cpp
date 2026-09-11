@@ -1,87 +1,164 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/ThreadPool.h"
-#include "Core/EventLoop.h"
-#include "Core/Task.h"
+/**
+ * @file TestThreadPool.cpp
+ * @brief ThreadPool 单元测试：线程数量、索引访问、启停与跨线程任务执行
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/Coroutine/ThreadPool.h"
+#include "Core/Coroutine/Task.h"
+
+#include <gtest/gtest.h>
+
 #include <atomic>
+#include <chrono>
+#include <stdexcept>
 #include <thread>
-#include <memory>
 
-using namespace Core;
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// 等待类断言的轮询上限，避免固定 sleep 硬等，同时防止用例卡死
+        constexpr auto kConditionTimeout = std::chrono::milliseconds(2000);
 
-TEST_CASE("ThreadPool: construction with default threads", "[ThreadPool]") {
-    ThreadPool pool;
-    REQUIRE(pool.threadCount() >= 1);
-}
+        /**
+         * @brief 在超时上限内逐毫秒轮询等待条件成立
+         * @tparam Predicate 可调用对象，返回 bool
+         * @param predicate 待轮询的条件
+         * @param timeout 超时上限，默认 2 秒
+         * @return true 条件在时限内成立
+         */
+        template<typename Predicate>
+        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout = kConditionTimeout)
+        {
+            // 以 steady_clock 计算截止时间，轮询而非固定 sleep
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!predicate())
+            {
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return true;
+        }
 
-TEST_CASE("ThreadPool: construction with specific count", "[ThreadPool]") {
-    ThreadPool pool(4);
-    REQUIRE(pool.threadCount() == 4);
-}
-
-TEST_CASE("ThreadPool: construction with 0 uses hardware concurrency", "[ThreadPool]") {
-    ThreadPool pool(0);
-    REQUIRE(pool.threadCount() == std::thread::hardware_concurrency());
-}
-
-TEST_CASE("ThreadPool: eventLoop access by index", "[ThreadPool]") {
-    ThreadPool pool(2);
-    REQUIRE_NOTHROW(pool.eventLoop(0));
-    REQUIRE_NOTHROW(pool.eventLoop(1));
-    REQUIRE_THROWS_AS(pool.eventLoop(2), std::out_of_range);
-}
-
-TEST_CASE("ThreadPool: scheduler access by index", "[ThreadPool]") {
-    ThreadPool pool(2);
-    REQUIRE_NOTHROW(pool.scheduler(0));
-    REQUIRE_NOTHROW(pool.scheduler(1));
-}
-
-TEST_CASE("ThreadPool: start and stop", "[ThreadPool]") {
-    ThreadPool pool(2);
-    pool.start();
-
-    // 验证循环正在运行
-    for (size_t i = 0; i < pool.threadCount(); ++i) {
-        auto &loop = pool.eventLoop(i);
-        // 给线程一些启动时间
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        /**
+         * @brief 测试协程：对原子计数器执行一次自增
+         * @param counter 目标原子计数器
+         * @return Task<int> 固定返回 0
+         */
+        Task<int> incrementCounter(std::atomic<int> &counter)
+        {
+            counter.fetch_add(1);
+            co_return 0;
+        }
     }
 
-    pool.stop();
-}
+    TEST(ThreadPool, DefaultConstructionUsesAtLeastOneThread)
+    {
+        ThreadPool pool;
 
-namespace {
-    Task<int> incrementCounter(std::atomic<int> &c) { c.fetch_add(1); co_return 0; }
-}
+        EXPECT_GE(pool.threadCount(), 1u);
+    }
 
-TEST_CASE("ThreadPool: scheduling across threads", "[ThreadPool]") {
-    ThreadPool pool(2);
-    std::atomic<int> counter{0};
+    TEST(ThreadPool, ConstructionWithSpecificCountCreatesExactThreads)
+    {
+        ThreadPool pool(4);
 
-    auto task = incrementCounter(counter);
-    pool.scheduler(0).schedule(task.handle());
+        EXPECT_EQ(pool.threadCount(), 4u);
+    }
 
-    pool.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    pool.stop();
+    TEST(ThreadPool, ConstructionWithZeroUsesHardwareConcurrency)
+    {
+        ThreadPool pool(0);
 
-    REQUIRE(counter.load() >= 1);
-}
+        EXPECT_EQ(pool.threadCount(), std::thread::hardware_concurrency());
+    }
 
-TEST_CASE("ThreadPool: event loops are distinct", "[ThreadPool]") {
-    ThreadPool pool(2);
-    auto &loop0 = pool.eventLoop(0);
-    auto &loop1 = pool.eventLoop(1);
+    TEST(ThreadPool, EventLoopAccessValidatesIndexBounds)
+    {
+        ThreadPool pool(2);
 
-    // 每个都应该有自己独立的 epoll fileDescriptor
-    REQUIRE(loop0.epoll().fileDescriptor() != loop1.epoll().fileDescriptor());
-    // 每个都应该有自己独立的调度器
-    REQUIRE(&pool.scheduler(0) != &pool.scheduler(1));
-}
+        // 每个索引返回各自独立的 EventLoop，越界索引按 at() 的约定抛出
+        EXPECT_NE(&pool.eventLoop(0), &pool.eventLoop(1));
+        EXPECT_THROW(static_cast<void>(pool.eventLoop(2)), std::out_of_range);
+    }
 
-TEST_CASE("ThreadPool: double stop is safe", "[ThreadPool]") {
-    ThreadPool pool(1);
-    pool.start();
-    pool.stop();
-    REQUIRE_NOTHROW(pool.stop());
-}
+    TEST(ThreadPool, SchedulerAccessValidatesIndexBounds)
+    {
+        ThreadPool pool(2);
+
+        EXPECT_NE(&pool.scheduler(0), &pool.scheduler(1));
+        EXPECT_THROW(static_cast<void>(pool.scheduler(2)), std::out_of_range);
+    }
+
+    TEST(ThreadPool, StartRunsAllEventLoopsUntilStop)
+    {
+        ThreadPool pool(2);
+        pool.start();
+
+        // 轮询等待每个工作线程进入事件循环，替代固定 sleep
+        for (size_t index = 0; index < pool.threadCount(); ++index)
+        {
+            ASSERT_TRUE(waitForCondition([&pool, &index]()
+            {
+                return pool.eventLoop(index).isRunning();
+            }));
+        }
+
+        pool.stop();
+
+        // stop() 会 join 全部工作线程，事件循环应已退出
+        for (size_t index = 0; index < pool.threadCount(); ++index)
+        {
+            EXPECT_FALSE(pool.eventLoop(index).isRunning());
+        }
+    }
+
+    TEST(ThreadPool, TaskScheduledBeforeStartExecutesAfterStart)
+    {
+        ThreadPool pool(2);
+        std::atomic<int> counter{0};
+
+        auto task = incrementCounter(counter);
+        pool.scheduler(0).schedule(task.handle());
+
+        pool.start();
+
+        // 轮询等待协程被执行，替代固定 sleep
+        const bool executed = waitForCondition([&]()
+        {
+            return counter.load() >= 1;
+        });
+
+        pool.stop();
+
+        EXPECT_TRUE(executed);
+        EXPECT_GE(counter.load(), 1);
+    }
+
+    TEST(ThreadPool, EventLoopsAndSchedulersAreDistinctPerThread)
+    {
+        ThreadPool pool(2);
+        auto &firstLoop = pool.eventLoop(0);
+        auto &secondLoop = pool.eventLoop(1);
+
+        // 每个工作线程应持有独立的 epoll 实例与调度器
+        EXPECT_NE(firstLoop.epoll().fileDescriptor(), secondLoop.epoll().fileDescriptor());
+        EXPECT_NE(&pool.scheduler(0), &pool.scheduler(1));
+    }
+
+    TEST(ThreadPool, DoubleStopIsSafe)
+    {
+        ThreadPool pool(1);
+        pool.start();
+        pool.stop();
+
+        EXPECT_NO_THROW(pool.stop());
+    }
+} // namespace AsynGyanis::Core

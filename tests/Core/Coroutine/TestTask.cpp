@@ -1,104 +1,145 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/Task.h"
-#include "Core/Scheduler.h"
+/**
+ * @file TestTask.cpp
+ * @brief Task 单元测试：返回值、异常传播、移动语义与等待器接口
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 
-using namespace Core;
+#include "Core/Coroutine/Task.h"
 
-namespace {
-    Task<int> simpleValueTask() {
-        co_return 42;
+#include <gtest/gtest.h>
+
+#include <stdexcept>
+
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /**
+         * @brief 测试协程：返回固定值 42
+         * @return Task<int>
+         */
+        Task<int> simpleValueTask()
+        {
+            co_return 42;
+        }
+
+        /**
+         * @brief 测试协程：无返回值直接结束
+         * @return Task<void>
+         */
+        Task<void> simpleVoidTask()
+        {
+            co_return;
+        }
+
+        /**
+         * @brief 测试协程：抛出运行时异常
+         * @return Task<int>
+         */
+        Task<int> throwingTask()
+        {
+            throw std::runtime_error("test error");
+            co_return 0;
+        }
     }
 
-    Task<void> simpleVoidTask() {
-        co_return;
+    TEST(Task, SimpleValueReturnIsAvailableAfterResume)
+    {
+        auto task = simpleValueTask();
+        ASSERT_FALSE(task.isReady());
+
+        // 恢复协程至最终挂起点
+        task.handle().resume();
+        ASSERT_TRUE(task.isReady());
+
+        const int result = task.handle().promise().result();
+        EXPECT_EQ(result, 42);
     }
 
-    Task<int> throwingTask() {
-        throw std::runtime_error("test error");
-        co_return 0;
+    TEST(Task, VoidTaskCompletesWithoutThrow)
+    {
+        auto task = simpleVoidTask();
+        ASSERT_FALSE(task.isReady());
+
+        task.handle().resume();
+        ASSERT_TRUE(task.isReady());
+
+        // 正常结束的 void 协程取结果不应抛出异常
+        EXPECT_NO_THROW(task.handle().promise().result());
     }
 
-    Task<int> chainedTask(int x) {
-        int val = co_await simpleValueTask();
-        co_return val + x;
+    TEST(Task, ExceptionIsCapturedAndRethrownByResult)
+    {
+        auto task = throwingTask();
+        task.handle().resume();
+        ASSERT_TRUE(task.isReady());
+
+        EXPECT_THROW(task.handle().promise().result(), std::runtime_error);
     }
-}
 
-TEST_CASE("Task: simple value return", "[Task]") {
-    auto task = simpleValueTask();
-    REQUIRE_FALSE(task.isReady());
+    TEST(Task, MoveConstructionTransfersHandle)
+    {
+        auto first = simpleValueTask();
+        const auto originalHandle = first.handle();
 
-    // 恢复协程
-    task.handle().resume();
-    REQUIRE(task.isReady());
+        Task<int> second(std::move(first));
 
-    int result = task.handle().promise().result();
-    REQUIRE(result == 42);
-}
+        EXPECT_EQ(second.handle(), originalHandle);
+    }
 
-TEST_CASE("Task: void task returns cleanly", "[Task]") {
-    auto task = simpleVoidTask();
-    REQUIRE_FALSE(task.isReady());
+    TEST(Task, MoveAssignmentTransfersHandle)
+    {
+        auto first = simpleValueTask();
+        auto second = simpleValueTask();
 
-    task.handle().resume();
-    REQUIRE(task.isReady());
+        const auto originalHandle = first.handle();
+        second = std::move(first);
 
-    // 不应抛出异常
-    REQUIRE_NOTHROW(task.handle().promise().result());
-}
+        EXPECT_EQ(second.handle(), originalHandle);
+    }
 
-TEST_CASE("Task: exception handling", "[Task]") {
-    auto task = throwingTask();
-    task.handle().resume();
-    REQUIRE(task.isReady());
-    REQUIRE_THROWS_AS(task.handle().promise().result(), std::runtime_error);
-}
+    TEST(Task, IsReadyReturnsFalseBeforeResume)
+    {
+        // 惰性启动：协程创建后处于挂起状态，未恢复前未完成
+        auto task = simpleValueTask();
 
-TEST_CASE("Task: move construction", "[Task]") {
-    auto task1 = simpleValueTask();
-    auto handle = task1.handle();
+        EXPECT_FALSE(task.isReady());
+    }
 
-    Task<int> task2(std::move(task1));
-    REQUIRE(task2.handle() == handle);
-}
+    TEST(Task, IsReadyReturnsTrueAfterCompletion)
+    {
+        auto task = simpleValueTask();
+        task.handle().resume();
 
-TEST_CASE("Task: move assignment", "[Task]") {
-    auto task1 = simpleValueTask();
-    auto task2 = simpleValueTask();
+        EXPECT_TRUE(task.isReady());
+    }
 
-    auto h1 = task1.handle();
-    task2 = std::move(task1);
-    REQUIRE(task2.handle() == h1);
-}
+    TEST(Task, AwaitResumeReturnsCoroutineValue)
+    {
+        auto task = simpleValueTask();
+        task.handle().resume();
 
-TEST_CASE("Task: isReady returns false before resume", "[Task]") {
-    auto task = simpleValueTask();
-    REQUIRE_FALSE(task.isReady());
-}
+        const int value = task.await_resume();
+        EXPECT_EQ(value, 42);
+    }
 
-TEST_CASE("Task: isReady returns true after completion", "[Task]") {
-    auto task = simpleValueTask();
-    task.handle().resume();
-    REQUIRE(task.isReady());
-}
+    TEST(Task, AwaitReadyReflectsDoneState)
+    {
+        auto task = simpleValueTask();
+        EXPECT_FALSE(task.await_ready());
 
-TEST_CASE("Task: await_resume returns value for Task<int>", "[Task]") {
-    auto task = simpleValueTask();
-    task.handle().resume();
+        task.handle().resume();
+        EXPECT_TRUE(task.await_ready());
+    }
 
-    int val = task.await_resume();
-    REQUIRE(val == 42);
-}
+    TEST(Task, MovedFromTaskHasNullHandle)
+    {
+        auto first = simpleValueTask();
+        Task<int> second(std::move(first));
 
-TEST_CASE("Task: await_ready reflects done state", "[Task]") {
-    auto task = simpleValueTask();
-    REQUIRE_FALSE(task.await_ready());
-    task.handle().resume();
-    REQUIRE(task.await_ready());
-}
-
-TEST_CASE("Task: moved-from task has null handle", "[Task]") {
-    auto task1 = simpleValueTask();
-    Task<int> task2(std::move(task1));
-    REQUIRE(task1.handle() == nullptr);
-}
+        EXPECT_EQ(first.handle(), nullptr);
+    }
+} // namespace AsynGyanis::Core

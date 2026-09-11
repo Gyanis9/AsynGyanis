@@ -1,152 +1,152 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/TlsSocket.h"
-#include "Core/TlsContext.h"
-#include "Core/EventLoop.h"
-#include "Core/AsyncSocket.h"
-#include "Core/Scheduler.h"
-#include "Core/Task.h"
+/**
+ * @file TestTlsSocket.cpp
+ * @brief TlsSocket 单元测试：构造、移动语义与安全关闭（使用仓库预生成证书）
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 
-#include <fstream>
+#include "Core/Tls/TlsSocket.h"
+
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/Socket/AsyncSocket.h"
+#include "Core/Tls/TlsContext.h"
+#include "Platform/IO/FileDescriptor.h"
+
+#include <gtest/gtest.h>
+
+#include <openssl/ssl.h>
+
 #include <filesystem>
-#include "Platform/Platform.h"
-#include "Platform/SocketCompat.h"
+#include <string>
 
-#ifdef _WIN32
-#include <process.h>
-inline int getPid() { return _getpid(); }
-#else
-inline int getPid() { return getpid(); }
-#endif
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// 仓库内预生成的自签测试证书（CN=asyngyanis-test，有效期至 2036）
+        const std::filesystem::path kTestCertificatePath =
+            std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
 
-using namespace Core;
-
-namespace {
-    std::pair<std::string, std::string> createTestCert() {
-        auto tmpDir = std::filesystem::temp_directory_path();
-        auto pid    = getPid();
-        std::string certPath = (tmpDir / ("test_tls_cert_" + std::to_string(pid) + ".pem")).string();
-        std::string keyPath  = (tmpDir / ("test_tls_key_" + std::to_string(pid) + ".pem")).string();
-        std::string cmd = "openssl req -x509 -newkey rsa:2048 -keyout " + keyPath +
-                          " -out " + certPath + " -days 1 -nodes -subj \"/CN=test\"";
-    #ifdef _WIN32
-        cmd += " > NUL 2>&1";
-    #else
-        cmd += " 2>/dev/null";
-    #endif
-        system(cmd.c_str());
-        return {certPath, keyPath};
+        /// 仓库内预生成的配套私钥
+        const std::filesystem::path kTestKeyPath =
+            std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
     }
-}
 
-TEST_CASE("TlsSocket: construction", "[TlsSocket]") {
-    EventLoop loop;
-    auto [cert, key] = createTestCert();
-    TlsContext ctx;
-    ctx.loadCertificate(cert, key);
+    TEST(TlsSocket, ConstructionWrapsDescriptor)
+    {
+        EventLoop loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-    int fds[2];
-    Platform::createSocketPair(fds[0], fds[1]);
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-    SSL *ssl = ctx.createSSL(fds[0]);
-    REQUIRE(ssl != nullptr);
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
 
-    TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
-    REQUIRE(tls.fileDescriptor() == fds[0]);
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+        EXPECT_EQ(tlsSocket.fileDescriptor(), localDescriptor);
 
-    tls.close();
-    Platform::closeFileDescriptor(fds[1]);
-    std::remove(cert.c_str());
-    std::remove(key.c_str());
-}
+        tlsSocket.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
 
-TEST_CASE("TlsSocket: move construction", "[TlsSocket]") {
-    EventLoop loop;
-    auto [cert, key] = createTestCert();
-    TlsContext ctx;
-    ctx.loadCertificate(cert, key);
+    TEST(TlsSocket, MoveConstructionTransfersDescriptor)
+    {
+        EventLoop loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-    int fds[2];
-    Platform::createSocketPair(fds[0], fds[1]);
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-    SSL *ssl = ctx.createSSL(fds[0]);
-    TlsSocket tls1(ssl, loop, AsyncSocket(loop, fds[0]));
-    int fd = tls1.fileDescriptor();
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
 
-    TlsSocket tls2(std::move(tls1));
-    REQUIRE(tls2.fileDescriptor() == fd);
+        TlsSocket tlsSocket1(ssl, loop, AsyncSocket(loop, localDescriptor));
+        const int wrappedDescriptor = tlsSocket1.fileDescriptor();
 
-    tls2.close();
-    Platform::closeFileDescriptor(fds[1]);
-    std::remove(cert.c_str());
-    std::remove(key.c_str());
-}
+        TlsSocket tlsSocket2(std::move(tlsSocket1));
+        EXPECT_EQ(tlsSocket2.fileDescriptor(), wrappedDescriptor);
 
-TEST_CASE("TlsSocket: move assignment", "[TlsSocket]") {
-    EventLoop loop;
-    auto [cert, key] = createTestCert();
-    TlsContext ctx;
-    ctx.loadCertificate(cert, key);
+        tlsSocket2.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
 
-    int fds1[2], fds2[2];
-    Platform::createSocketPair(fds1[0], fds1[1]);
-    Platform::createSocketPair(fds2[0], fds2[1]);
+    TEST(TlsSocket, MoveAssignmentTransfersDescriptor)
+    {
+        EventLoop loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-    SSL *ssl1 = ctx.createSSL(fds1[0]);
-    SSL *ssl2 = ctx.createSSL(fds2[0]);
+        int firstDescriptor = -1;
+        int firstPeerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(firstDescriptor, firstPeerDescriptor));
+        int secondDescriptor = -1;
+        int secondPeerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(secondDescriptor, secondPeerDescriptor));
 
-    TlsSocket tls1(ssl1, loop, AsyncSocket(loop, fds1[0]));
-    TlsSocket tls2(ssl2, loop, AsyncSocket(loop, fds2[0]));
+        SSL *firstSsl = tlsContext.createSSL(firstDescriptor);
+        SSL *secondSsl = tlsContext.createSSL(secondDescriptor);
+        ASSERT_NE(firstSsl, nullptr);
+        ASSERT_NE(secondSsl, nullptr);
 
-    int fd1 = tls1.fileDescriptor();
-    tls2 = std::move(tls1);
+        TlsSocket tlsSocket1(firstSsl, loop, AsyncSocket(loop, firstDescriptor));
+        TlsSocket tlsSocket2(secondSsl, loop, AsyncSocket(loop, secondDescriptor));
 
-    REQUIRE(tls2.fileDescriptor() == fd1);
+        const int transferredDescriptor = tlsSocket1.fileDescriptor();
+        tlsSocket2 = std::move(tlsSocket1);
 
-    tls2.close();
-    Platform::closeFileDescriptor(fds1[1]);
-    Platform::closeFileDescriptor(fds2[1]);
-    std::remove(cert.c_str());
-    std::remove(key.c_str());
-}
+        EXPECT_EQ(tlsSocket2.fileDescriptor(), transferredDescriptor);
 
-TEST_CASE("TlsSocket: close safely", "[TlsSocket]") {
-    EventLoop loop;
-    auto [cert, key] = createTestCert();
-    TlsContext ctx;
-    ctx.loadCertificate(cert, key);
+        tlsSocket2.close();
+        Platform::FileDescriptor::close(firstPeerDescriptor);
+        Platform::FileDescriptor::close(secondPeerDescriptor);
+    }
 
-    int fds[2];
-    Platform::createSocketPair(fds[0], fds[1]);
+    TEST(TlsSocket, DoubleCloseIsSafe)
+    {
+        EventLoop loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-    SSL *ssl = ctx.createSSL(fds[0]);
-    TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-    tls.close();
-    // 双重关闭应该是安全的
-    REQUIRE_NOTHROW(tls.close());
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
 
-    Platform::closeFileDescriptor(fds[1]);
-    std::remove(cert.c_str());
-    std::remove(key.c_str());
-}
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+        tlsSocket.close();
 
-TEST_CASE("TlsSocket: SSL context creation and socket wrapping", "[TlsSocket]") {
-    EventLoop loop;
-    auto [cert, key] = createTestCert();
-    TlsContext srvCtx;
-    REQUIRE(srvCtx.loadCertificate(cert, key));
+        // 双重关闭应该是安全的
+        EXPECT_NO_THROW(tlsSocket.close());
 
-    int fds[2];
-    REQUIRE(Platform::createSocketPair(fds[0], fds[1]));
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
 
-    SSL *ssl = srvCtx.createSSL(fds[0]);
-    REQUIRE(ssl != nullptr);
+    TEST(TlsSocket, WrapsContextCreatedSslOverSocketPair)
+    {
+        EventLoop loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-    TlsSocket tls(ssl, loop, AsyncSocket(loop, fds[0]));
-    REQUIRE(tls.fileDescriptor() == fds[0]);
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-    tls.close();
-    Platform::closeFileDescriptor(fds[1]);
-    std::remove(cert.c_str());
-    std::remove(key.c_str());
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+        ASSERT_EQ(tlsSocket.fileDescriptor(), localDescriptor);
+
+        tlsSocket.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
 }

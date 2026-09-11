@@ -1,100 +1,212 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/EventLoop.h"
-#include "Core/Task.h"
-#include "Core/Scheduler.h"
-#include <thread>
+/**
+ * @file TestEventLoop.cpp
+ * @brief EventLoop 单元测试：启停状态、跨线程唤醒、调度器接入与协程执行
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/Coroutine/Scheduler.h"
+#include "Core/Coroutine/Task.h"
+
+#include <gtest/gtest.h>
+
 #include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
 
-using namespace Core;
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// 等待类断言的轮询上限，避免固定 sleep 硬等，同时防止用例卡死
+        constexpr auto kConditionTimeout = std::chrono::milliseconds(2000);
 
-TEST_CASE("EventLoop: construction", "[EventLoop]") {
-    EventLoop loop;
-    REQUIRE(epoll_handle_valid(loop.epoll().fileDescriptor()));
-    REQUIRE_FALSE(loop.isRunning());
-}
+        /**
+         * @brief 在超时上限内逐毫秒轮询等待条件成立
+         * @tparam Predicate 可调用对象，返回 bool
+         * @param predicate 待轮询的条件
+         * @param timeout 超时上限，默认 2 秒
+         * @return true 条件在时限内成立
+         */
+        template<typename Predicate>
+        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout = kConditionTimeout)
+        {
+            // 以 steady_clock 计算截止时间，轮询而非固定 sleep
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!predicate())
+            {
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return true;
+        }
 
-TEST_CASE("EventLoop: run and stop", "[EventLoop]") {
-    EventLoop loop;
-    std::atomic<bool> started{false};
-    std::thread worker([&]() { started.store(true); loop.run(); });
-    while (!started.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
-    REQUIRE(loop.isRunning());
-    loop.stop();
-    worker.join();
-    REQUIRE_FALSE(loop.isRunning());
-}
+        /**
+         * @brief 测试协程：向原子变量写入标记值
+         * @param value 目标原子变量
+         * @return Task<int> 固定返回 0
+         */
+        Task<int> setValue(std::atomic<int> &value)
+        {
+            value.store(42);
+            co_return 0;
+        }
+    }
 
-TEST_CASE("EventLoop: scheduler is accessible", "[EventLoop]") {
-    EventLoop loop;
-    REQUIRE_FALSE(loop.scheduler().hasWork());
-}
+    TEST(EventLoop, ConstructionAllocatesValidEpoll)
+    {
+        EventLoop loop;
 
-TEST_CASE("EventLoop: wake interrupts epoll_wait", "[EventLoop]") {
-    EventLoop loop;
-    std::atomic<bool> loopStarted{false};
-    std::thread worker([&]() { loopStarted.store(true); loop.run(); });
-    while (!loopStarted.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
-    loop.wake();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    loop.stop();
-    worker.join();
-}
+        EXPECT_TRUE(Platform::isEpollHandleValid(loop.epoll().fileDescriptor()));
+        EXPECT_FALSE(loop.isRunning());
+    }
 
-namespace {
-    Task<int> setValue(std::atomic<int> &v) { v.store(42); co_return 0; }
-}
+    TEST(EventLoop, RunAndStopTransitionsRunningState)
+    {
+        EventLoop loop;
+        std::atomic<bool> workerStarted{false};
+        std::thread worker([&]()
+        {
+            workerStarted.store(true);
+            loop.run();
+        });
 
-TEST_CASE("EventLoop: scheduling coroutine via scheduler executes it", "[EventLoop]") {
-    EventLoop loop;
-    std::atomic<int> value{0};
+        // 轮询等待事件循环真正进入 run()
+        ASSERT_TRUE(waitForCondition([&]()
+        {
+            return workerStarted.load() && loop.isRunning();
+        }));
 
-    auto task = setValue(value);
-    REQUIRE(task.handle() != nullptr);
-    loop.scheduler().schedule(task.handle());
+        loop.stop();
+        worker.join();
+        EXPECT_FALSE(loop.isRunning());
+    }
 
-    bool ran = loop.scheduler().runOne();
-    REQUIRE(ran);
-    REQUIRE(value.load() == 42);
-}
+    TEST(EventLoop, SchedulerIsAccessibleBeforeRun)
+    {
+        EventLoop loop;
 
-TEST_CASE("EventLoop: multiple coroutines in order", "[EventLoop]") {
-    EventLoop loop;
-    int sequence = 0;
-    int results[3]{};
-    std::vector<Task<void>> tasks;
+        EXPECT_FALSE(loop.scheduler().hasWork());
+    }
 
-    auto t0 = [&]() -> Task<void> { sequence++; results[0] = 1; co_return; }();
-    auto t1 = [&]() -> Task<void> { sequence++; results[1] = 2; co_return; }();
-    auto t2 = [&]() -> Task<void> { sequence++; results[2] = 3; co_return; }();
+    TEST(EventLoop, WakeInterruptsBlockingWait)
+    {
+        EventLoop loop;
+        std::atomic<bool> workerStarted{false};
+        std::thread worker([&]()
+        {
+            workerStarted.store(true);
+            loop.run();
+        });
 
-    loop.scheduler().schedule(t0.handle());
-    loop.scheduler().schedule(t1.handle());
-    loop.scheduler().schedule(t2.handle());
-    tasks.push_back(std::move(t0));
-    tasks.push_back(std::move(t1));
-    tasks.push_back(std::move(t2));
+        ASSERT_TRUE(waitForCondition([&]()
+        {
+            return workerStarted.load() && loop.isRunning();
+        }));
 
-    loop.scheduler().runAll();
-    REQUIRE(results[0] == 1);
-    REQUIRE(results[1] == 2);
-    REQUIRE(results[2] == 3);
-}
+        // 先唤醒阻塞在 epoll_wait 中的事件循环，随后停止应能正常退出
+        loop.wake();
+        loop.stop();
+        worker.join();
+        EXPECT_FALSE(loop.isRunning());
+    }
 
-TEST_CASE("EventLoop: stop from outside thread", "[EventLoop]") {
-    EventLoop loop;
-    std::thread worker([&]() { loop.run(); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    REQUIRE(loop.isRunning());
-    loop.stop();
-    worker.join();
-    REQUIRE_FALSE(loop.isRunning());
-}
+    TEST(EventLoop, SchedulerExecutesScheduledCoroutine)
+    {
+        EventLoop loop;
+        std::atomic<int> value{0};
 
-TEST_CASE("EventLoop: double stop is safe", "[EventLoop]") {
-    EventLoop loop;
-    std::thread worker([&]() { loop.run(); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    loop.stop();
-    loop.stop();
-    worker.join();
-}
+        auto task = setValue(value);
+        ASSERT_NE(task.handle(), nullptr);
+        loop.scheduler().schedule(task.handle());
+
+        EXPECT_TRUE(loop.scheduler().runOne());
+        EXPECT_EQ(value.load(), 42);
+    }
+
+    TEST(EventLoop, RunAllExecutesMultipleCoroutines)
+    {
+        EventLoop loop;
+        int executionCount = 0;
+        int results[3]{};
+        std::vector<Task<void>> tasks;
+
+        // 三个协程各自记录执行结果
+        auto first = [&]() -> Task<void>
+        {
+            ++executionCount;
+            results[0] = 1;
+            co_return;
+        }();
+        auto second = [&]() -> Task<void>
+        {
+            ++executionCount;
+            results[1] = 2;
+            co_return;
+        }();
+        auto third = [&]() -> Task<void>
+        {
+            ++executionCount;
+            results[2] = 3;
+            co_return;
+        }();
+
+        loop.scheduler().schedule(first.handle());
+        loop.scheduler().schedule(second.handle());
+        loop.scheduler().schedule(third.handle());
+        tasks.push_back(std::move(first));
+        tasks.push_back(std::move(second));
+        tasks.push_back(std::move(third));
+
+        loop.scheduler().runAll();
+
+        EXPECT_EQ(executionCount, 3);
+        EXPECT_EQ(results[0], 1);
+        EXPECT_EQ(results[1], 2);
+        EXPECT_EQ(results[2], 3);
+    }
+
+    TEST(EventLoop, StopFromAnotherThreadExitsLoop)
+    {
+        EventLoop loop;
+        std::thread worker([&]()
+        {
+            loop.run();
+        });
+
+        // 轮询等待事件循环进入运行状态，替代固定 sleep
+        ASSERT_TRUE(waitForCondition([&]()
+        {
+            return loop.isRunning();
+        }));
+
+        loop.stop();
+        worker.join();
+        EXPECT_FALSE(loop.isRunning());
+    }
+
+    TEST(EventLoop, DoubleStopIsSafe)
+    {
+        EventLoop loop;
+        std::thread worker([&]()
+        {
+            loop.run();
+        });
+
+        ASSERT_TRUE(waitForCondition([&]()
+        {
+            return loop.isRunning();
+        }));
+
+        loop.stop();
+        EXPECT_NO_THROW(loop.stop());
+        worker.join();
+    }
+} // namespace AsynGyanis::Core

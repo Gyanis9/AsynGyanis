@@ -1,96 +1,121 @@
-#include <catch2/catch_test_macros.hpp>
-#include "Core/InetAddress.h"
-#include <optional>
+/**
+ * @file TestInetAddress.cpp
+ * @brief InetAddress 单元测试：构造、工厂方法、DNS 解析与比较运算
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Core/Socket/InetAddress.h"
+
 #include "Platform/Platform.h"
 
-using namespace Core;
+#include <gtest/gtest.h>
 
-TEST_CASE("InetAddress: default construction", "[InetAddress]") {
-    InetAddress address;
-    REQUIRE(address.family() == AF_INET);
-    REQUIRE(address.ip() == "0.0.0.0");
-    REQUIRE(address.port() == 0);
-}
+#include <optional>
 
-TEST_CASE("InetAddress: port and IP constructor (IPv4)", "[InetAddress]") {
-    InetAddress address(8080, "127.0.0.1");
-    REQUIRE(address.family() == AF_INET);
-    REQUIRE(address.ip() == "127.0.0.1");
-    REQUIRE(address.port() == 8080);
-    REQUIRE(address.toString() == "127.0.0.1:8080");
-}
+namespace AsynGyanis::Core
+{
+    TEST(InetAddress, DefaultConstructionIsUnspecifiedIpv4Address)
+    {
+        const InetAddress address;
+        EXPECT_EQ(address.family(), AF_INET);
+        EXPECT_EQ(address.ip(), "0.0.0.0");
+        EXPECT_EQ(address.port(), 0);
+    }
 
-TEST_CASE("InetAddress: IP and port constructor (IPv4)", "[InetAddress]") {
-    InetAddress address("192.168.1.1", 9090);
-    REQUIRE(address.family() == AF_INET);
-    REQUIRE(address.ip() == "192.168.1.1");
-    REQUIRE(address.port() == 9090);
-}
+    TEST(InetAddress, PortThenIpConstructorParsesIpv4)
+    {
+        const InetAddress address(8080, "127.0.0.1");
+        EXPECT_EQ(address.family(), AF_INET);
+        EXPECT_EQ(address.ip(), "127.0.0.1");
+        EXPECT_EQ(address.port(), 8080);
+        EXPECT_EQ(address.toString(), "127.0.0.1:8080");
+    }
 
-TEST_CASE("InetAddress: localhost factory", "[InetAddress]") {
-    auto address = InetAddress::localhost(3000);
-    REQUIRE(address.ip() == "127.0.0.1");
-    REQUIRE(address.port() == 3000);
-    REQUIRE(address.family() == AF_INET);
-}
+    TEST(InetAddress, IpThenPortConstructorParsesIpv4)
+    {
+        const InetAddress address("192.168.1.1", 9090);
+        EXPECT_EQ(address.family(), AF_INET);
+        EXPECT_EQ(address.ip(), "192.168.1.1");
+        EXPECT_EQ(address.port(), 9090);
+    }
 
-TEST_CASE("InetAddress: any factory", "[InetAddress]") {
-    auto address = InetAddress::any(4000);
-    REQUIRE(address.ip() == "0.0.0.0");
-    REQUIRE(address.port() == 4000);
-    REQUIRE(address.family() == AF_INET);
-}
+    TEST(InetAddress, LocalhostFactoryReturnsLoopbackAddress)
+    {
+        const InetAddress address = InetAddress::localhost(3000);
+        EXPECT_EQ(address.ip(), "127.0.0.1");
+        EXPECT_EQ(address.port(), 3000);
+        EXPECT_EQ(address.family(), AF_INET);
+    }
 
-TEST_CASE("InetAddress: resolve localhost returns valid address", "[InetAddress]") {
-    auto address = InetAddress::resolve("localhost", 8080);
-    REQUIRE(address.has_value());
-    REQUIRE(address->port() == 8080);
-    // localhost should resolve to 127.0.0.1 or ::1
-    REQUIRE((address->ip() == "127.0.0.1" || address->ip() == "::1"));
-}
+    TEST(InetAddress, AnyFactoryReturnsWildcardAddress)
+    {
+        const InetAddress address = InetAddress::any(4000);
+        EXPECT_EQ(address.ip(), "0.0.0.0");
+        EXPECT_EQ(address.port(), 4000);
+        EXPECT_EQ(address.family(), AF_INET);
+    }
 
-TEST_CASE("InetAddress: resolve invalid host returns nullopt", "[InetAddress]") {
-    auto address = InetAddress::resolve("", 8080);
-    REQUIRE_FALSE(address.has_value());
-}
+    TEST(InetAddress, ResolveLocalhostReturnsValidAddress)
+    {
+        const std::optional<InetAddress> address = InetAddress::resolve("localhost", 8080);
+        ASSERT_TRUE(address.has_value());
+        EXPECT_EQ(address->port(), 8080);
+        // localhost 可能解析为 127.0.0.1（IPv4）或 ::1（IPv6）
+        EXPECT_TRUE(address->ip() == "127.0.0.1" || address->ip() == "::1");
+    }
 
-TEST_CASE("InetAddress: toString with IPv4", "[InetAddress]") {
-    InetAddress address("10.0.0.1", 1234);
-    REQUIRE(address.toString() == "10.0.0.1:1234");
-}
+    TEST(InetAddress, ResolveEmptyHostReturnsNullopt)
+    {
+        const std::optional<InetAddress> address = InetAddress::resolve("", 8080);
+        EXPECT_FALSE(address.has_value());
+    }
 
-TEST_CASE("InetAddress: equality operators", "[InetAddress]") {
-    InetAddress a(8080, "127.0.0.1");
-    InetAddress b(8080, "127.0.0.1");
-    InetAddress c(9090, "127.0.0.1");
-    InetAddress d(8080, "192.168.1.1");
+    TEST(InetAddress, ToStringFormatsIpv4Address)
+    {
+        const InetAddress address("10.0.0.1", 1234);
+        EXPECT_EQ(address.toString(), "10.0.0.1:1234");
+    }
 
-    REQUIRE(a == b);
-    REQUIRE(a != c);
-    REQUIRE(a != d);
-}
+    TEST(InetAddress, EqualityOperatorsCompareIpAndPort)
+    {
+        const InetAddress sameFirst(8080, "127.0.0.1");
+        const InetAddress sameSecond(8080, "127.0.0.1");
+        const InetAddress differentPort(9090, "127.0.0.1");
+        const InetAddress differentIp(8080, "192.168.1.1");
 
-TEST_CASE("InetAddress: sockaddr_in constructor", "[InetAddress]") {
-    sockaddr_in sin{};
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(5555);
-    inet_pton(AF_INET, "10.20.30.40", &sin.sin_addr);
+        EXPECT_TRUE(sameFirst == sameSecond);
+        EXPECT_TRUE(sameFirst != differentPort);
+        EXPECT_TRUE(sameFirst != differentIp);
+    }
 
-    InetAddress address(sin);
-    REQUIRE(address.family() == AF_INET);
-    REQUIRE(address.port() == 5555);
-    REQUIRE(address.ip() == "10.20.30.40");
-}
+    TEST(InetAddress, SockaddrInConstructorAdoptsRawAddress)
+    {
+        sockaddr_in rawAddress{};
+        rawAddress.sin_family = AF_INET;
+        rawAddress.sin_port   = htons(5555);
+        inet_pton(AF_INET, "10.20.30.40", &rawAddress.sin_addr);
 
-TEST_CASE("InetAddress: nativeAddress() and nativeAddressLength()", "[InetAddress]") {
-    InetAddress address(7777, "1.2.3.4");
-    REQUIRE(address.nativeAddress() != nullptr);
-    REQUIRE(address.nativeAddressLength() == sizeof(sockaddr_in));
-}
+        const InetAddress address(rawAddress);
+        EXPECT_EQ(address.family(), AF_INET);
+        EXPECT_EQ(address.port(), 5555);
+        EXPECT_EQ(address.ip(), "10.20.30.40");
+    }
 
-TEST_CASE("InetAddress: IPv6 address", "[InetAddress]") {
-    InetAddress address(8080, "::1");
-    REQUIRE(address.family() == AF_INET6);
-    REQUIRE(address.ip() == "::1");
-    REQUIRE(address.port() == 8080);
+    TEST(InetAddress, NativeAddressExposesSockaddrStorage)
+    {
+        const InetAddress address(7777, "1.2.3.4");
+        EXPECT_NE(address.nativeAddress(), nullptr);
+        EXPECT_EQ(address.nativeAddressLength(), sizeof(sockaddr_in));
+    }
+
+    TEST(InetAddress, Ipv6AddressRoundTripsThroughConstructor)
+    {
+        const InetAddress address(8080, "::1");
+        EXPECT_EQ(address.family(), AF_INET6);
+        EXPECT_EQ(address.ip(), "::1");
+        EXPECT_EQ(address.port(), 8080);
+    }
 }
