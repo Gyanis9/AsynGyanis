@@ -199,18 +199,19 @@ namespace AsynGyanis::Platform
         return m_running.load(std::memory_order_acquire);
     }
 
-    void Win32FileWatcher::setDebounceInterval(const std::chrono::milliseconds interval) noexcept
-    {
-        m_debounceInterval = interval;
-    }
-
     void Win32FileWatcher::watchLoop()
     {
+        // 提到循环外并预留到系统上限：clear() 不回收容量，之后每轮收集不再产生堆分配
+        std::vector<HANDLE>      eventHandles;
+        std::vector<std::string> pendingPaths;
+        eventHandles.reserve(MAXIMUM_WAIT_OBJECTS);
+        pendingPaths.reserve(MAXIMUM_WAIT_OBJECTS - 1);
+
         while (!m_shouldStop.load(std::memory_order_acquire))
         {
             // 收集所有待等待的事件句柄及其对应监听路径，停止事件固定占据索引 0
-            std::vector<HANDLE>      eventHandles;
-            std::vector<std::string> pendingPaths;
+            eventHandles.clear();
+            pendingPaths.clear();
 
             eventHandles.push_back(m_stopEvent);
 
@@ -306,16 +307,20 @@ namespace AsynGyanis::Platform
         const auto *information = reinterpret_cast<const FILE_NOTIFY_INFORMATION *>(entry.buffer.data());
         while (true)
         {
-            const std::wstring   wideName(information->FileName, information->FileNameLength / sizeof(wchar_t));
-            const std::string    fullPath   = entry.path + TextEncoding::toUtf8String(wideName);
+            const std::wstring wideName(information->FileName, information->FileNameLength / sizeof(wchar_t));
+            const std::string  fileName = TextEncoding::toUtf8String(wideName);
+
+            std::string fullPath;
+            fullPath.reserve(entry.path.size() + fileName.size());
+            fullPath.append(entry.path);
+            fullPath.append(fileName);
+
             const FileChangeType changeType = changeTypeFromAction(information->Action);
 
-            // 防抖判定：m_lastEventTime 与 m_debounceInterval 仅由监听线程读写，无需额外加锁
-            const auto currentTime = std::chrono::steady_clock::now();
-            if (const auto lastIterator = m_lastEventTime.find(fullPath); lastIterator == m_lastEventTime.end() || currentTime - lastIterator->second >= m_debounceInterval)
+            // 防抖与过期记录清理由基类统一实现，仅监听线程调用
+            if (shouldDispatchChange(fullPath))
             {
-                m_lastEventTime[fullPath] = currentTime;
-                events.emplace_back(fullPath, changeType);
+                events.emplace_back(std::move(fullPath), changeType);
             }
 
             if (information->NextEntryOffset == 0)

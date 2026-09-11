@@ -3,6 +3,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <cstring>
 #include <filesystem>
 #include <poll.h>
 #include <stdexcept>
@@ -146,11 +147,6 @@ namespace AsynGyanis::Platform
         return m_isRunning.load(std::memory_order_acquire);
     }
 
-    void InotifyFileWatcher::setDebounceInterval(const std::chrono::milliseconds interval) noexcept
-    {
-        m_debounceInterval = interval;
-    }
-
     void InotifyFileWatcher::watchLoop(const std::stop_token stopToken)
     {
         while (!stopToken.stop_requested())
@@ -217,22 +213,24 @@ namespace AsynGyanis::Platform
                     continue;
                 }
 
-                changedPath = watchIterator->second;
-                if (!changedPath.empty() && changedPath.back() != '/')
-                {
-                    changedPath += '/';
-                }
-                changedPath += event->name;
+                const std::string &watchedPath = watchIterator->second;
+                const bool needsSeparator = !watchedPath.empty() && watchedPath.back() != '/';
+                // event->name 是柔性数组，event->len 含结尾 NUL 与对齐填充，故按实际字符串长度取
+                const std::size_t nameLength = std::strlen(event->name);
 
-                const auto currentTime = std::chrono::steady_clock::now();
-                if (const auto lastIterator = m_lastEventTime.find(changedPath); lastIterator != m_lastEventTime.end())
+                // 一次预留到位，避免「赋值 + 两次追加」引发的逐步扩容
+                changedPath.reserve(watchedPath.size() + (needsSeparator ? 1U : 0U) + nameLength);
+                changedPath.append(watchedPath);
+                if (needsSeparator)
                 {
-                    if (currentTime - lastIterator->second < m_debounceInterval)
-                    {
-                        continue;
-                    }
+                    changedPath.push_back('/');
                 }
-                m_lastEventTime[changedPath] = currentTime;
+                changedPath.append(event->name, nameLength);
+
+                if (!shouldDispatchChange(changedPath))
+                {
+                    continue;
+                }
 
                 callbackSnapshot = m_callback;
 

@@ -102,13 +102,6 @@ namespace AsynGyanis::Platform
          */
         [[nodiscard]] bool isRunning() const noexcept override;
 
-        /**
-         * @brief 设置同一文件事件的防抖间隔
-         * @details 重写 FileWatcher::setDebounceInterval()。
-         * @param interval 防抖间隔，非正值表示不防抖
-         */
-        void setDebounceInterval(std::chrono::milliseconds interval) noexcept override;
-
     private:
         /**
          * @brief 事件读取循环，轮询 inotify 描述符并分发事件
@@ -129,9 +122,6 @@ namespace AsynGyanis::Platform
         mutable std::shared_mutex m_watchMutex;       ///< 保护监听映射与回调的读写锁
         std::jthread              m_watchThread;      ///< 事件读取线程，析构时自动 join
         std::atomic<bool>         m_isRunning{false}; ///< 监听线程是否正在运行
-
-        std::chrono::milliseconds                                              m_debounceInterval{100}; ///< 防抖间隔毫秒数
-        std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_lastEventTime;         ///< 每个路径上次触发的事件时间
 
         static constexpr std::size_t   kEventBufferBytes = 4096;                                                         ///< 单次读取的事件缓冲区字节数
         static constexpr std::uint32_t kWatchEventMask   = IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF; ///< 注册的事件掩码

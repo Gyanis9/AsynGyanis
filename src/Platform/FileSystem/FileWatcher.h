@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace AsynGyanis::Platform
 {
@@ -109,14 +110,33 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 设置同一文件连续事件的防抖间隔
-         * @param interval 防抖间隔，间隔内的重复事件被丢弃
+         * @details 由基类统一实现，两侧平台实现共用同一份防抖状态。
+         * @param interval 防抖间隔，间隔内的重复事件被丢弃；非正值表示不防抖
          */
-        virtual void setDebounceInterval(std::chrono::milliseconds interval) noexcept = 0;
+        void setDebounceInterval(std::chrono::milliseconds interval) noexcept;
 
     protected:
         /**
          * @brief 构造函数仅供平台实现类调用
          */
         FileWatcher() = default;
+
+        /**
+         * @brief 判断某路径的本次变更是否应当派发
+         * @details 实现「同一路径在防抖窗口内只触发一次」的公共语义，并在防抖表
+         *          超过规模上限时清理已过期记录，避免递归监听大目录树时无界增长。
+         * @param filePath 发生变更的文件绝对路径
+         * @return true 需要派发回调
+         * @return false 仍在防抖窗口内，应当丢弃
+         * @note 仅供监听线程调用：防抖表不做并发保护，各实现只在自己的读取线程内调用本方法
+         */
+        [[nodiscard]] bool shouldDispatchChange(const std::string &filePath);
+
+        std::chrono::milliseconds                                              m_debounceInterval{100}; ///< 防抖间隔毫秒数
+        std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_lastEventTime;         ///< 各路径上次触发的事件时间
+
+    private:
+        /// 防抖时间戳表最多跟踪的路径数，超出后清理已过期记录
+        static constexpr std::size_t kMaximumDebouncedPaths = 4096;
     };
 } // namespace AsynGyanis::Platform

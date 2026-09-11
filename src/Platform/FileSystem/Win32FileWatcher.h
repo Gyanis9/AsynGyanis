@@ -99,13 +99,6 @@ namespace AsynGyanis::Platform
          */
         [[nodiscard]] bool isRunning() const noexcept override;
 
-        /**
-         * @brief 设置同一文件事件的防抖间隔
-         * @details 重写 FileWatcher::setDebounceInterval()。
-         * @param interval 防抖间隔，非正值表示不防抖
-         */
-        void setDebounceInterval(std::chrono::milliseconds interval) noexcept override;
-
     private:
         /**
          * @brief 单个监听目录的上下文记录
@@ -159,9 +152,6 @@ namespace AsynGyanis::Platform
         std::atomic<bool>         m_running{false};     ///< 监听线程是否正在运行
         std::atomic<bool>         m_shouldStop{false};  ///< 是否已请求停止
         HANDLE                    m_stopEvent{nullptr}; ///< 用于唤醒监听线程的停止事件
-
-        std::chrono::milliseconds                                              m_debounceInterval{100}; ///< 防抖间隔毫秒数
-        std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_lastEventTime;         ///< 各路径上次触发时间（仅监听线程访问）
 
         static constexpr std::size_t kBufferSize  = 4096; ///< 变更通知缓冲区字节数
         static constexpr DWORD       kWatchFilter =       ///< 关注的目录变更类型掩码
