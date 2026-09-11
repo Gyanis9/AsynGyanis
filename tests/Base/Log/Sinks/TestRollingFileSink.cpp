@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Base/Log/RollingFileSink.h"
+#include "Base/Log/Sinks/RollingFileSink.h"
 
 #include <gtest/gtest.h>
 

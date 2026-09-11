@@ -1,5 +1,5 @@
-#include "Base/Log/LogSink.h"
-#include "Base/Log/DefaultFormatter.h"
+#include "Base/Log/Sinks/LogSink.h"
+#include "Base/Log/Formatters/DefaultFormatter.h"
 
 #include <memory>
 #include <string>

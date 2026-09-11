@@ -11,7 +11,7 @@
 
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
-#include "Base/Log/LogSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/SourceLocation.h"
 
 #include <atomic>

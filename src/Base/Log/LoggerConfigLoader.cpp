@@ -2,13 +2,13 @@
 
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
-#include "Base/Log/AsyncSink.h"
-#include "Base/Log/ConsoleSink.h"
-#include "Base/Log/FileSink.h"
+#include "Base/Log/Sinks/AsyncSink.h"
+#include "Base/Log/Sinks/ConsoleSink.h"
+#include "Base/Log/Sinks/FileSink.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/LoggerRegistry.h"
-#include "Base/Log/RollingFileSink.h"
+#include "Base/Log/Sinks/RollingFileSink.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/System/ProcessInfo.h"
 

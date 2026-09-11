@@ -10,7 +10,7 @@
 #pragma once
 
 #include "Base/Log/LogEvent.h"
-#include "Base/Log/LogFormatter.h"
+#include "Base/Log/Formatters/LogFormatter.h"
 #include "Base/Log/LogLevel.h"
 
 #include <atomic>

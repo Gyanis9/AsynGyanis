@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "Base/Log/LogFormatter.h"
+#include "Base/Log/Formatters/LogFormatter.h"
 
 #include <string>
 

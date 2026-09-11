@@ -1,6 +1,7 @@
 find_package(GTest REQUIRED)
 
-# 测试目录结构与 src/Base 的三个子目录一一对应，全部链接进同一个 TestBase 可执行文件
+# 测试目录结构与 src/Base 逐级对应（含 Log/Sinks 与 Log/Formatters），
+# 全部链接进同一个 TestBase 可执行文件
 add_executable(TestBase
         BaseTestSupport.h
 
@@ -16,16 +17,18 @@ add_executable(TestBase
         Log/TestSourceLocation.cpp
         Log/TestLogEvent.cpp
         Log/TestLogMacros.cpp
-        Log/TestDefaultFormatter.cpp
-        Log/TestColorFormatter.cpp
-        Log/TestLogSink.cpp
-        Log/TestConsoleSink.cpp
-        Log/TestFileSink.cpp
-        Log/TestRollingFileSink.cpp
-        Log/TestAsyncSink.cpp
         Log/TestLogger.cpp
         Log/TestLoggerRegistry.cpp
         Log/TestLoggerConfigLoader.cpp
+
+        Log/Formatters/TestDefaultFormatter.cpp
+        Log/Formatters/TestColorFormatter.cpp
+
+        Log/Sinks/TestLogSink.cpp
+        Log/Sinks/TestConsoleSink.cpp
+        Log/Sinks/TestFileSink.cpp
+        Log/Sinks/TestRollingFileSink.cpp
+        Log/Sinks/TestAsyncSink.cpp
 )
 
 target_link_libraries(TestBase PRIVATE

@@ -9,8 +9,8 @@
 
 #pragma once
 
-#include "Base/Log/FileSink.h"
-#include "Base/Log/LogSink.h"
+#include "Base/Log/Sinks/FileSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 
 #include <filesystem>
 #include <memory>

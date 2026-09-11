@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Base/Log/ColorFormatter.h"
+#include "Base/Log/Formatters/ColorFormatter.h"
 
 #include <gtest/gtest.h>
 

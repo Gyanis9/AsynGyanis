@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Base/Log/AsyncSink.h"
+#include "Base/Log/Sinks/AsyncSink.h"
 
 #include <gtest/gtest.h>
 
@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "Base/Log/LogEvent.h"
-#include "Base/Log/LogSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
 

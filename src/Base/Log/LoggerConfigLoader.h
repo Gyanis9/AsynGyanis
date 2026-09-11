@@ -12,7 +12,7 @@
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Log/Logger.h"
-#include "Base/Log/LogSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 
 #include <filesystem>
 #include <memory>

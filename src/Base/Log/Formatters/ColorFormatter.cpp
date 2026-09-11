@@ -1,5 +1,6 @@
-#include "Base/Log/DefaultFormatter.h"
+#include "Base/Log/Formatters/ColorFormatter.h"
 
+#include "Base/Log/LogColor.h"
 #include "Base/Log/LogLevel.h"
 
 #include <format>
@@ -7,21 +8,24 @@
 
 namespace AsynGyanis::Base
 {
-    std::string DefaultFormatter::format(const LogEvent &event)
+    std::string ColorFormatter::format(const LogEvent &event)
     {
 #ifdef ASYN_DEBUG
-        return std::format("{} {} [{:<5}] [{}] {:<13} {}",
+        return std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
                            event.timestamp,
                            event.threadId,
+                           LogColor::colorForLevel(event.level),
                            logLevelToString(event.level),
+                           LogColor::kReset,
                            event.loggerName,
                            std::string(event.location.shortFileName()) + ":" + std::to_string(event.location.line),
                            event.message);
 #else
-        // Release：不输出线程号与源码位置，只保留定位问题必需的字段
-        return std::format("{} [{:<5}] [{}] {}",
+        return std::format("{} [{}{:<5}{}] [{}] {}",
                            event.timestamp,
+                           LogColor::colorForLevel(event.level),
                            logLevelToString(event.level),
+                           LogColor::kReset,
                            event.loggerName,
                            event.message);
 #endif

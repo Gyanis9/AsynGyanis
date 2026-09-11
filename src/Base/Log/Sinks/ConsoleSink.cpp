@@ -1,7 +1,7 @@
-#include "Base/Log/ConsoleSink.h"
+#include "Base/Log/Sinks/ConsoleSink.h"
 
-#include "Base/Log/ColorFormatter.h"
-#include "Base/Log/DefaultFormatter.h"
+#include "Base/Log/Formatters/ColorFormatter.h"
+#include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/LogLevel.h"
 #include "Platform/IO/Console.h"
 

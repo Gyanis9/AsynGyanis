@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Base/Log/ConsoleSink.h"
+#include "Base/Log/Sinks/ConsoleSink.h"
 
 #include <gtest/gtest.h>
 
