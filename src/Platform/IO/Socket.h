@@ -18,21 +18,66 @@ namespace AsynGyanis::Platform
      *
      * @details Windows 上任何 socket API 调用前必须完成 WSAStartup，Linux 上
      *          相应接口为空操作，因此调用方无需平台分支。
-     * @note initialize() 可重复调用，内部以幂等方式处理；进程退出前应调用 finalize()。
+     * @note initialize()/finalize() 以引用计数配对：多个持有网络资源的对象可各自成对调用，
+     *       Winsock 只在首个 initialize() 时启动、在最后一个 finalize() 时清理。
      */
     class Socket
     {
     public:
         /**
-         * @brief 初始化网络子系统（Windows 下执行 WSAStartup）
-         * @return true 初始化成功或已完成
+         * @brief Winsock 初始化引用的 RAII 守卫
+         *
+         * @details 构造时申请一次 initialize() 引用，析构时自动释放。适用于存在多条
+         *          返回路径、手工配对 finalize() 容易遗漏的调用方（如域名解析）。
+         */
+        class Initialization
+        {
+        public:
+            /**
+             * @brief 申请一次网络子系统初始化引用
+             */
+            Initialization() noexcept :
+                m_valid(initialize())
+            {
+            }
+
+            ~Initialization() noexcept
+            {
+                // 仅在确实取得引用时释放，避免把引用计数减成负数
+                if (m_valid)
+                {
+                    finalize();
+                }
+            }
+
+            Initialization(const Initialization &) = delete;
+
+            Initialization &operator=(const Initialization &) = delete;
+
+            /**
+             * @brief 查询初始化引用是否申请成功
+             * @return true 引用已建立，可继续调用 socket API
+             */
+            [[nodiscard]] bool isValid() const noexcept
+            {
+                return m_valid;
+            }
+
+        private:
+            bool m_valid = false; ///< 是否成功取得 Winsock 初始化引用
+        };
+
+        /**
+         * @brief 申请网络子系统初始化引用（Windows 下按需执行 WSAStartup）
+         * @return true 引用已建立（首次调用会真正启动 Winsock）
          * @return false Windows 下 WSAStartup 失败
          */
         static bool initialize() noexcept;
 
         /**
-         * @brief 释放网络子系统资源（Windows 下执行 WSACleanup）
-         * @details 与 initialize() 成对调用；调用后需重新 initialize() 才能继续使用 socket。
+         * @brief 释放一次网络子系统初始化引用（引用归零时执行 WSACleanup）
+         * @details 与 initialize() 成对调用；仍有其他引用存活时不会真正清理，
+         *          以免提前拆掉存活 socket 依赖的 Winsock 状态。
          */
         static void finalize() noexcept;
 

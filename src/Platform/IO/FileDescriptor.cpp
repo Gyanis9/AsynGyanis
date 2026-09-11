@@ -1,3 +1,12 @@
+/**
+ * @file FileDescriptor.cpp
+ * @brief 文件描述符级跨平台原语（读写、关闭、非阻塞、描述符对）
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/IO/FileDescriptor.h"
 
 #include "Platform/IO/Socket.h"
@@ -64,6 +73,7 @@ namespace AsynGyanis::Platform
         writeDescriptor = kInvalid;
 
         // Windows 需要完成 Winsock 初始化才能创建 socket
+        // 这里只申请引用而不配对 finalize()：返回的描述符在使用期间必须依赖 Winsock 保持初始化
         Socket::initialize();
 
 #if ASYN_PLATFORM_WIN32
