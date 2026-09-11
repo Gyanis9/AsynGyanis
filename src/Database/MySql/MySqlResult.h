@@ -1,81 +1,205 @@
 /**
  * @file MySqlResult.h
- * @brief MySQL 查询结果集实现
- * @copyright Copyright (c) 2026
+ * @brief MySQL / MariaDB 查询结果集实现
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
 
-#ifndef DATABASE_MYSQLRESULT_H
-#define DATABASE_MYSQLRESULT_H
+#pragma once
 
-#include "DatabaseResult.h"
+#include "Database/Common/DatabaseResult.h"
+#include "Database/MySql/MySqlConnection.h" // 复用其中全局作用域的 MYSQL / MYSQL_RES / MYSQL_ROW 前置声明
 
-// 前向声明 MySQL C API 结构体（实际使用时需 #include <mysql/mysql.h>）
-struct st_mysql_res;
-using MYSQL_RES  = st_mysql_res;
-struct st_mysql;
-using MYSQL      = st_mysql;
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
-namespace Database
+namespace AsynGyanis::Database
 {
     /**
-     * @brief MySQL 查询结果集
+     * @brief MySQL / MariaDB 查询结果集
      *
-     * 封装 MySQL C API 的 MYSQL_RES，提供统一的 DatabaseResult 接口访问。
-     * 内部持有 MYSQL_RES 指针的所有权，析构时自动释放。
+     * @details 封装 mysql_store_result 预读出来的 MYSQL_RES，把 MySQL 的列类型映射到 DatabaseResult 的统一接口。
+     *          本对象持有 MYSQL_RES 的唯一所有权，析构时用 mysql_free_result 一次性回收行缓冲与列元数据。
+     *
+     * 两种形态：
+     * - 查询结果：持有非空句柄，行数与列数在构造时快照，可反复遍历；
+     * - 写回执：构造时传入空句柄（INSERT/UPDATE/DELETE/DDL/事务语句没有返回列），
+     *   0 行 0 列，isEmpty() 恒为 true，表示「执行成功但没有任何数据」。
+     *
+     * 游标语义：行缓冲由 MYSQL_RES 自己持有，m_currentRow 只是指向其中一行的游标位置，
+     *          因此「有没有当前行」与「行指针是否为空」是同一件事，不需要额外的有效标志：
+     *          next() 成功即指向当前行，走到末尾或 reset() 之后为空指针，此时取值一律回 std::monostate。
+     *
+     * 值映射规则（文本协议下所有列都以字符串送达，按元数据声明的列类型解析）：
+     * SQL NULL→std::monostate、TINYINT/SHORT/LONG/LONGLONG/INT24/YEAR→std::int64_t、FLOAT/DOUBLE→double、
+     * DECIMAL/NEWDECIMAL→十进制文本 std::string、日期时间与字符/二进制等其余类型→std::string
+     * （一律按 (指针, 长度) 拷贝，内嵌 '\0' 与 BLOB 不会被截断）。
+     * MySQL 没有布尔存储类，TINYINT(1) 同样映射成 std::int64_t，由调用方自行收窄。
+     *
+     * @warning 数值解析失败或超出 int64 范围（例如 BIGINT UNSIGNED 上界到 2^64-1）时按原始十进制文本交出，
+     *          而不是钳成 LLONG_MAX 或返回空值：凭空造出的错误数值比类型不稳定危险得多。
+     *
+     * @note 与 SqliteResult 的差异：SQLite 的游标挂在连接上，连接必须先于结果集销毁；
+     *       MySQL 的数据已由 mysql_store_result 完整复制进 MYSQL_RES 自有内存，本类不持有任何连接指针，
+     *       因此结果集可以比连接对象活得更久（与 RedisResult 同语义）。
+     *
+     * @code
+     *   auto result = connection->execute("SELECT id, payload FROM records");
+     *   while (result != nullptr && result->next())
+     *   {
+     *       const DatabaseValue identifier = result->getValue("id");
+     *       const DatabaseValue payload    = result->getValue(1);
+     *   }
+     * @endcode
      */
     class MySqlResult : public DatabaseResult
     {
     public:
         /**
-         * @brief 使用 MySQL 结果集句柄构造
-         * @param resultPointer MySQL C API 返回的 MYSQL_RES 指针
-         * @param connection    MySQL 连接句柄（用于错误信息查询）
+         * @brief 用 mysql_store_result 预读出的结果集构造，并接管其所有权
+         * @details 构造阶段一次性快照行数与列数（之后不再调用 mysql_num_rows / mysql_num_fields），
+         *          传 nullptr 表示「写操作的空回执」，此时不建立游标，全部计数保持为 0。
+         *          本构造函数不报告失败：数据已由客户端库完整读出，没有可摘取的服务端错误。
+         * @param ownedResult MySQL C API 交出的 MYSQL_RES 指针，所有权移交本对象；可为 nullptr
          */
-        explicit MySqlResult(MYSQL_RES *resultPointer, MYSQL *connection = nullptr);
+        explicit MySqlResult(MYSQL_RES *ownedResult);
 
         /**
-         * @brief 析构时自动释放 MYSQL_RES
+         * @brief 析构时释放所持有的 MYSQL_RES（行缓冲与列元数据一并回收）
          */
         ~MySqlResult() override;
 
+        // MYSQL_RES 所有权唯一：拷贝会让同一份结果被 mysql_free_result 两次；
+        // 移动则让源对象析构时再次释放已经交给目标对象的句柄。基类同样已删除拷贝与移动。
         MySqlResult(const MySqlResult &)            = delete;
         MySqlResult &operator=(const MySqlResult &) = delete;
-        MySqlResult(MySqlResult &&)                 = default;
-        MySqlResult &operator=(MySqlResult &&)      = default;
-
-        bool next() override;
-        [[nodiscard]] size_t rowCount() const override;
-        [[nodiscard]] size_t columnCount() const override;
-        [[nodiscard]] std::optional<std::string> columnName(size_t index) const override;
-        [[nodiscard]] std::optional<size_t> columnIndex(std::string_view name) const override;
-        [[nodiscard]] DatabaseValue getValue(size_t index) const override;
-        [[nodiscard]] DatabaseValue getValue(std::string_view name) const override;
-        [[nodiscard]] std::vector<std::string> columnNames() const override;
-        void reset() override;
-        [[nodiscard]] bool isEmpty() const override;
+        MySqlResult(MySqlResult &&)                 = delete;
+        MySqlResult &operator=(MySqlResult &&)      = delete;
 
         /**
-         * @brief 获取底层的 MYSQL_RES 指针（仅供内部使用）
+         * @brief 将游标移动到下一行
+         * @details 重写 DatabaseResult::next()：调用 mysql_fetch_row 推进缓冲游标。与基类的差异——
+         *          因为 execute() 一律用 mysql_store_result 把整份结果预读进客户端内存，推进游标
+         *          不再有任何网络往返，返回空指针只可能是「已到末尾」，不存在旧实现那种
+         *          「耗尽与出错无从区分」的情形。按基类契约本方法属只读路径，不会改写 m_lastError。
+         * @return true 游标停在有效行上，可以读取列值
+         * @return false 已无更多行，或本结果集是写回执（没有游标可言）
          */
-        [[nodiscard]] MYSQL_RES *nativeHandle() const { return m_resultPointer; }
+        bool next() override;
+
+        /**
+         * @brief 获取结果集行数
+         * @details 重写 DatabaseResult::rowCount()：取构造时快照的 mysql_num_rows。
+         *          预读结果的分母是确定的，因此这里是精确值，而不是基类注释里「无法预先得知」的那个 0；
+         *          写回执结果没有游标，返回 0。
+         * @return size_t 行数
+         */
+        [[nodiscard]] size_t rowCount() const override;
+
+        /**
+         * @brief 获取结果集列数
+         * @details 重写 DatabaseResult::columnCount()：取构造时快照的 mysql_num_fields，
+         *          不再每次调用第三方 API；写回执结果返回 0。
+         * @return size_t 列数
+         */
+        [[nodiscard]] size_t columnCount() const override;
+
+        /**
+         * @brief 按列索引取列名
+         * @details 重写 DatabaseResult::columnName()：先用缓存的无符号列数判界，再把索引下传给
+         *          mysql_fetch_field_direct——该接口的列号形参是 unsigned int，越界值不经判界就会被
+         *          截断成另一个合法索引，从而读到别的列（旧实现直接把 size_t 强转交出去）。
+         * @param index 列索引，从 0 开始
+         * @return std::optional<std::string> 列名；无结果集、索引越界或该列没有名字时返回空值
+         */
+        [[nodiscard]] std::optional<std::string> columnName(size_t index) const override;
+
+        /**
+         * @brief 按列名取列索引
+         * @details 重写 DatabaseResult::columnIndex()：先判空 mysql_fetch_fields 的返回
+         *          （结果集无列或元数据读取失败时它会给出空指针，旧实现直接按下标解引用），
+         *          再用显式构造的 std::string_view 逐列比较。
+         *          列标识符的大小写敏感性由服务端的排序规则决定，而元数据交出的是服务端写出的原文，
+         *          本方法做的是逐字节精确匹配（区分大小写）；需要大小写无关时请调用方自行归一化，
+         *          免得把服务端规则复制一份到客户端。同名列（SELECT name, name）取第一个匹配。
+         * @param name 列名；空串一律视为不存在
+         * @return std::optional<size_t> 列索引；无结果集或列不存在时返回空值
+         */
+        [[nodiscard]] std::optional<size_t> columnIndex(std::string_view name) const override;
+
+        /**
+         * @brief 按列索引读取当前行的值
+         * @details 重写 DatabaseResult::getValue()：与基类的额外约束——游标必须停在有效行上
+         *          （未调用 next()、已走完或刚 reset() 时返回 std::monostate），因为 mysql_fetch_row
+         *          给出的行指针与 mysql_fetch_lengths 给出的长度表都只到下一次推进之前有效。
+         *          取值一律以 (指针, 长度) 构造 std::string 或解析数值，长度真正参与逻辑，
+         *          不再像旧实现那样只拿它当「非空」布尔判断，从而保证 TEXT/BLOB 内嵌的 '\0' 不被截断。
+         *          本方法是 const 读取路径，绝不改写 m_lastError。
+         * @param index 列索引，从 0 开始
+         * @return DatabaseValue 列值；无当前行、索引越界、列值为 SQL NULL 或长度表不可用时返回 std::monostate
+         */
+        [[nodiscard]] DatabaseValue getValue(size_t index) const override;
+
+        /**
+         * @brief 按列名读取当前行的值
+         * @details 重写 DatabaseResult::getValue()：先把列名解析成索引，再走索引重载，
+         *          保证两条路径的越界判定、「无当前行」判定与 NULL 映射完全一致。
+         * @param name 列名（区分大小写，判定规则见 columnIndex()）
+         * @return DatabaseValue 列值；列不存在、无当前行或值为 SQL NULL 时返回 std::monostate
+         */
+        [[nodiscard]] DatabaseValue getValue(std::string_view name) const override;
+
+        /**
+         * @brief 获取全部列名
+         * @details 重写 DatabaseResult::columnNames()：逐项复用 columnName()，列名来源只有一处真值；
+         *          取不到名字的列（表达式列在部分客户端版本上会缺名）补空串占位，
+         *          保证返回列表长度恒等于 columnCount() 且下标与列序严格对齐
+         *          （旧实现直接跳过缺名列，导致 names[i] 与实际第 i 列错位）。
+         * @return std::vector<std::string> 按列顺序排列的列名；写回执结果为空向量
+         */
+        [[nodiscard]] std::vector<std::string> columnNames() const override;
+
+        /**
+         * @brief 重置游标到首行之前，使结果集可重新遍历
+         * @details 重写 DatabaseResult::reset()：用 mysql_data_seek 退回第 0 行——本驱动的结果集一律由
+         *          mysql_store_result 预读，官方保证随机定位只对预读结果有效，因此这里可安全使用。
+         *          mysql_data_seek 是 void 接口，无法报告失败，这一点与 SQLite 的 sqlite3_reset 不同。
+         *          与基类的差异：除复位游标外还要把 m_currentRow 置空，否则旧的 getValue() 会继续读到
+         *          上一行遗留的数据；并清空上一轮遗留的错误文本（本方法属非 const 写路径）。
+         */
+        void reset() override;
+
+        /**
+         * @brief 判断结果集是否为空
+         * @details 重写 DatabaseResult::isEmpty()：直接由构造时快照的行数判定（预读结果的行数恒精确，
+         *          因此不需要另存一份空标志，同一事实只保留一处真值来源），不随游标推进改变——
+         *          遍历完之后 isEmpty() 依然返回 false，因为它的语义是「结果集本身有没有行」，
+         *          而不是「还剩多少行可读」。写回执结果没有游标，行数恒为 0，因此恒为空。
+         * @return true 没有任何数据行
+         */
+        [[nodiscard]] bool isEmpty() const override;
 
     private:
         /**
-         * @brief 将 MySQL 字段值转换为统一的 DatabaseValue
-         * @param row  当前行指针
-         * @param index 列索引
-         * @return 统一的数据库值
+         * @brief 按列的声明类型把一段 (指针, 长度) 的原始字节转换成统一的 DatabaseValue
+         * @details 纯函数：只读列元数据与传入字节，不写 m_lastError，因此可以安全地在 const 取值路径上调用。
+         * @param rawValue 列值首地址，调用方保证非空
+         * @param byteLength 列值字节长度，来自 mysql_fetch_lengths，可为 0（表示空串而不是 NULL）
+         * @param index 已通过上层判界的列索引，用于取该列的元数据类型
+         * @return DatabaseValue 映射后的值
          */
-        [[nodiscard]] DatabaseValue convertValue(char **row, size_t index) const;
+        [[nodiscard]] DatabaseValue convertValue(const char *rawValue, size_t byteLength, size_t index) const;
 
-        MYSQL_RES *m_resultPointer{nullptr}; ///< MySQL 结果集句柄
-        MYSQL     *m_connection{nullptr};    ///< MySQL 连接句柄（用于错误信息）
-        char     **m_currentRow{nullptr};    ///< 当前行数据
-        size_t     m_rowCount{0};            ///< 缓存的行数
-        size_t     m_columnCount{0};         ///< 缓存的列数
-        bool       m_isEmpty{true};          ///< 是否为空结果集
+        MYSQL_RES *m_result{nullptr};    ///< MySQL 预读结果集句柄，非空时由本对象负责 mysql_free_result
+        MYSQL_ROW m_currentRow{nullptr}; ///< 当前行的列指针数组，空表示游标未停在有效行上
+        size_t m_rowCount{0};            ///< 构造时快照的行数，写回执结果为 0
+        size_t m_columnCount{0};         ///< 构造时快照的列数，写回执结果为 0
     };
 
-} // namespace Database
-
-#endif // DATABASE_MYSQLRESULT_H
+} // namespace AsynGyanis::Database
