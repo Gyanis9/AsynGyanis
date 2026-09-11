@@ -5,7 +5,7 @@
 namespace AsynGyanis::Base
 {
     ConfigFileException::ConfigFileException(const std::string &filePath, const std::string &reason, const std::source_location &sourceLocation) :
-        ConfigException("File '" + filePath + "': " + reason, sourceLocation)
+        ConfigException("文件 '" + filePath + "'：" + reason, sourceLocation)
         , m_filePath(filePath)
     {
     }

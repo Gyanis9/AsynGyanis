@@ -27,7 +27,7 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造配置文件解析失败异常
-         * @details 调用 ConfigException("Parse error in '路径': 原因", sourceLocation)，
+         * @details 调用 ConfigException("解析错误：'路径'：原因", sourceLocation)，
          *          消息明确标识为解析阶段错误。
          * @param filePath 解析失败的配置文件路径
          * @param reason 解析器给出的失败原因描述

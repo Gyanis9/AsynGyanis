@@ -27,7 +27,7 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造配置项校验失败异常
-         * @details 调用 ConfigException("Validation failed for key '键': 原因", sourceLocation)，
+         * @details 调用 ConfigException("配置键 '键' 校验失败：原因", sourceLocation)，
          *          把出错键与违反的约束原因分开保存。
          * @param key 校验失败的配置键
          * @param reason 校验失败原因描述

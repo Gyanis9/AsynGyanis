@@ -16,6 +16,6 @@ namespace AsynGyanis::Base
 
     std::string Exception::formatMessage(const std::string &message, const std::source_location &sourceLocation)
     {
-        return std::format("[Exception] {} [{}:{} in {}]", message, sourceLocation.file_name(), sourceLocation.line(), sourceLocation.function_name());
+        return std::format("[异常] {} [{}:{} in {}]", message, sourceLocation.file_name(), sourceLocation.line(), sourceLocation.function_name());
     }
 } // namespace AsynGyanis::Base

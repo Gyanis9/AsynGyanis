@@ -27,7 +27,7 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造配置文件读写失败异常
-         * @details 调用 ConfigException("File '路径': 原因", sourceLocation)，
+         * @details 调用 ConfigException("文件 '路径'：原因", sourceLocation)，
          *          在配置异常前缀之外再附加具体文件路径。
          * @param filePath 出错的配置文件路径
          * @param reason 失败原因描述

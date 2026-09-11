@@ -27,7 +27,7 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造配置键不存在异常
-         * @details 调用 ConfigException("Configuration key not found: '键'", sourceLocation)，
+         * @details 调用 ConfigException("配置键不存在：'键'", sourceLocation)，
          *          并把原始键单独保存供 key() 读取。
          * @param key 查找失败的配置键（点号路径或 "[下标]"）
          * @param sourceLocation 异常抛出位置，默认取调用点

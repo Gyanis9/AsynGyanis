@@ -62,7 +62,7 @@ namespace AsynGyanis::Base
         const Exception exception("whereami", sourceLocation);
 
         const std::string message(exception.what());
-        EXPECT_TRUE(contains(message, "[Exception]"));
+        EXPECT_TRUE(contains(message, "[异常]"));
         EXPECT_TRUE(contains(message, "whereami"));
         EXPECT_TRUE(contains(message, sourceLocation.file_name()));
         EXPECT_TRUE(contains(message, std::to_string(sourceLocation.line())));
@@ -103,7 +103,7 @@ namespace AsynGyanis::Base
         const ConfigException exception("test message");
         const std::string     message(exception.what());
 
-        EXPECT_TRUE(contains(message, "Config error"));
+        EXPECT_TRUE(contains(message, "配置错误"));
         EXPECT_TRUE(contains(message, "test message"));
     }
 
@@ -180,7 +180,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(exception.filePath(), "config.yaml");
         EXPECT_TRUE(contains(message, "config.yaml"));
         EXPECT_TRUE(contains(message, "unexpected token"));
-        EXPECT_TRUE(contains(message, "Parse error"));
+        EXPECT_TRUE(contains(message, "解析错误"));
     }
 
     TEST(ConfigParseException, HandlesLongReasonAndEmptyFields)
@@ -212,7 +212,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(exception.key(), "database.connection.url");
         EXPECT_TRUE(contains(message, "database.connection.url"));
-        EXPECT_TRUE(contains(message, "not found"));
+        EXPECT_TRUE(contains(message, "不存在"));
     }
 
     TEST(ConfigKeyNotFoundException, AcceptsEmptyKey)
@@ -258,7 +258,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(exception.key(), "server.port");
         EXPECT_TRUE(contains(message, "must be between 1 and 65535"));
-        EXPECT_TRUE(contains(message, "Validation failed"));
+        EXPECT_TRUE(contains(message, "校验失败"));
     }
 
     TEST(ConfigValidationException, AcceptsEmptyReason)
@@ -420,7 +420,7 @@ namespace AsynGyanis::Base
                 throw ValueAccessError("k", "int", "string");
             } catch (const Exception &exception)
             {
-                EXPECT_TRUE(contains(std::string(exception.what()), "Type mismatch"));
+                EXPECT_TRUE(contains(std::string(exception.what()), "类型不匹配"));
                 ++caughtCount;
             }
         }
