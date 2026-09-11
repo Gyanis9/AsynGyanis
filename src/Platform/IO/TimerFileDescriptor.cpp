@@ -1,3 +1,12 @@
+/**
+ * @file TimerFileDescriptor.cpp
+ * @brief 跨平台定时器描述符，把定时到期表现为描述符可读
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/IO/TimerFileDescriptor.h"
 #include "Platform/IO/FileDescriptor.h"
 

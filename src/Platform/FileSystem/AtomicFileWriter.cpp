@@ -1,3 +1,12 @@
+/**
+ * @file AtomicFileWriter.cpp
+ * @brief 原子文本写入，避免断电或中断留下半截文件
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include <fstream>

@@ -1,3 +1,12 @@
+/**
+ * @file FileSystem.cpp
+ * @brief 文件系统路径的跨平台构造
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/FileSystem/FileSystem.h"
 
 #include "Platform/Platform.h"

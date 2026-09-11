@@ -1,3 +1,12 @@
+/**
+ * @file PlatformError.cpp
+ * @brief 跨平台错误码常量与最近一次系统错误的读取
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/System/PlatformError.h"
 
 #include <system_error>

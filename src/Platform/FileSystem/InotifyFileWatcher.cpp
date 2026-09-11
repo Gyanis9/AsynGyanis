@@ -1,3 +1,12 @@
+/**
+ * @file InotifyFileWatcher.cpp
+ * @brief Linux 平台文件监听器，基于内核 inotify 机制
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/FileSystem/InotifyFileWatcher.h"
 
 #include "Platform/IO/FileDescriptor.h"

@@ -1,3 +1,12 @@
+/**
+ * @file Console.cpp
+ * @brief 控制台输出能力封装：UTF-8 代码页与 ANSI 转义序列支持
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/IO/Console.h"
 #include "Platform/System/ProcessInfo.h"
 #include "Platform/Platform.h"

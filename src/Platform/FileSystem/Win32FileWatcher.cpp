@@ -1,3 +1,12 @@
+/**
+ * @file Win32FileWatcher.cpp
+ * @brief Windows 平台文件监听器，基于 ReadDirectoryChangesW 重叠 IO
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/FileSystem/Win32FileWatcher.h"
 
 #include "Platform/System/TextEncoding.h"

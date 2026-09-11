@@ -1,3 +1,12 @@
+/**
+ * @file TextEncoding.cpp
+ * @brief UTF-8 与 UTF-16 字符串互转，供 Windows 宽字符 API 边界使用
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Platform/System/TextEncoding.h"
 #include "Platform/Platform.h"
 
