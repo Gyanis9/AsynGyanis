@@ -1,88 +1,59 @@
 # ============================================================================
-# Database 模块 — 统一数据库抽象层
+# Database 模块 — 统一数据库抽象层与三种驱动实现
 # ============================================================================
-# 提供 MySQL、Redis 等数据库的统一访问接口，屏蔽底层驱动的方言差异。
-#
-# 依赖（按需启用）：
-#   - MySQL 封装需要 libmysqlclient（通过 Conan 安装 mysql-connector-c）
-#   - Redis 封装需要 hiredis（通过 Conan 安装 hiredis）
-# ============================================================================
-
-# 公共头文件（始终编译）
-set(DATABASE_PUBLIC_HEADERS
-    DatabaseType.h
-    DatabaseResult.h
-    DatabaseConnection.h
-    DatabaseFactory.h
-)
-
-# MySQL 实现
-set(DATABASE_MYSQL_SOURCES
-    MySqlConnection.cpp
-    MySqlConnection.h
-    MySqlResult.cpp
-    MySqlResult.h
-)
-
-# Redis 实现
-set(DATABASE_REDIS_SOURCES
-    RedisConnection.cpp
-    RedisConnection.h
-    RedisResult.cpp
-    RedisResult.h
-)
-
-# SQLite 实现
-set(DATABASE_SQLITE_SOURCES
-    SqliteConnection.cpp
-    SqliteConnection.h
-    SqliteResult.cpp
-    SqliteResult.h
-)
-
-# 组合完整源文件列表
-set(DATABASE_SOURCES
-    ${DATABASE_PUBLIC_HEADERS}
-    ${DATABASE_MYSQL_SOURCES}
-    ${DATABASE_REDIS_SOURCES}
-    ${DATABASE_SQLITE_SOURCES}
-    DatabaseFactory.cpp
-)
-
-add_library(Database STATIC ${DATABASE_SOURCES})
-
-target_include_directories(Database PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_link_libraries(Database PUBLIC Base)
-
-# 设置 C++ 标准
-target_compile_features(Database PUBLIC cxx_std_20)
-
-# ============================================================================
-# 数据库驱动依赖
+# Common  定义 DatabaseConnection / DatabaseResult / ConnectionConfig / 工厂契约
+# Sqlite  嵌入式驱动，无需外部服务，故为必选依赖
+# MySql   与 Redis 依赖外部服务与第三方客户端库，按可选依赖处理：
+#         Conan 能提供时编译真实驱动，缺失时编译返回明确错误的桩实现
 # ============================================================================
 
-# SQLite（始终启用，sqlite3 为嵌入式库无外部依赖）
 find_package(SQLite3 REQUIRED)
-target_link_libraries(Database PRIVATE SQLite::SQLite3)
-target_compile_definitions(Database PRIVATE DATABASE_HAS_SQLITE)
-
-# MySQL 支持（可选，需要系统安装 libmysqlclient 或 mysql-connector-c）
-find_package(libmysqlclient QUIET)
-if(libmysqlclient_FOUND)
-    target_link_libraries(Database PRIVATE libmysqlclient::libmysqlclient)
-    target_compile_definitions(Database PRIVATE DATABASE_HAS_MYSQL)
-    message(STATUS "Database: MySQL 支持已启用")
-else()
-    message(STATUS "Database: MySQL 支持未启用（libmysqlclient 未找到）")
-endif()
-
-# Redis 支持（可选，需要系统安装 hiredis）
 find_package(hiredis QUIET)
-if(hiredis_FOUND)
-    target_link_libraries(Database PRIVATE hiredis::hiredis)
-    target_compile_definitions(Database PRIVATE DATABASE_HAS_REDIS)
-    message(STATUS "Database: Redis 支持已启用")
+
+# libmysqlclient 在 Conan 缓存里只有源码包、没有匹配本 profile 的预编译二进制，
+# 自动探测会生成指向不存在头文件目录的配置，最终以「找不到 mysql/mysql.h」失败。
+# 因此 MySQL 驱动默认关闭，准备好客户端库后用 -DDATABASE_WITH_MYSQL=ON 显式开启
+option(DATABASE_WITH_MYSQL "编译 MySQL 驱动（需要可用的 libmysqlclient）" OFF)
+
+# 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
+set_property(GLOBAL PROPERTY AsynGyanisDatabaseSources "")
+
+add_subdirectory(Common)
+add_subdirectory(Sqlite)
+add_subdirectory(MySql)
+add_subdirectory(Redis)
+
+get_property(DATABASE_SOURCES GLOBAL PROPERTY AsynGyanisDatabaseSources)
+
+add_library(Database STATIC
+        ${DATABASE_SOURCES}
+)
+
+target_link_libraries(Database PUBLIC
+        Platform
+        SQLite::SQLite3
+)
+
+# 可选驱动只在启用时才探测客户端库，并用对应宏切换真实实现与报错桩
+if(DATABASE_WITH_MYSQL)
+    find_package(libmysqlclient REQUIRED)
+    target_link_libraries(Database PUBLIC libmysqlclient::libmysqlclient)
+    target_compile_definitions(Database PUBLIC DATABASE_HAS_MYSQL=1)
+    message(STATUS "Database: 启用 MySQL 驱动（libmysqlclient）")
 else()
-    message(STATUS "Database: Redis 支持未启用（hiredis 未找到）")
+    message(STATUS "Database: MySQL 驱动未启用（-DDATABASE_WITH_MYSQL=ON 可开启），退化为报错桩")
 endif()
+
+if(TARGET hiredis::hiredis)
+    target_link_libraries(Database PUBLIC hiredis::hiredis)
+    target_compile_definitions(Database PUBLIC DATABASE_HAS_REDIS=1)
+    message(STATUS "Database: 启用 Redis 驱动（hiredis）")
+else()
+    message(STATUS "Database: 未找到 hiredis，Redis 驱动退化为报错桩")
+endif()
+
+target_include_directories(Database PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+)
+
+target_compile_features(Database PUBLIC cxx_std_20)
