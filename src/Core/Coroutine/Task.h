@@ -5,7 +5,6 @@
  */
 #pragma once
 
-
 #include "Core/Coroutine/CoroutinePool.h"
 
 #include <coroutine>
@@ -99,7 +98,8 @@ namespace AsynGyanis::Core
         {
         }
 
-        Task(const Task &)            = delete;
+        Task(const Task &) = delete;
+
         Task &operator=(const Task &) = delete;
 
         /**
@@ -147,7 +147,7 @@ namespace AsynGyanis::Core
         struct promise_type
         {
             /**
-             * @brief 从线程局部 CoroutinePool 分配协程帧内存。
+             * @brief 从进程级 CoroutinePool 分配协程帧内存。
              *
              * 若请求大小超过池的块大小，自动回退到全局 ::operator new。
              * 这样确保大协程帧也能正确分配。
@@ -158,10 +158,10 @@ namespace AsynGyanis::Core
             }
 
             /**
-             * @brief 将协程帧内存归还给线程局部 CoroutinePool。
+             * @brief 将协程帧内存归还给进程级 CoroutinePool。
              *
-             * 若指针不属于当前线程的池（跨线程析构场景），
-             * 自动回退到全局 ::operator delete 保证安全。
+             * @details 协程帧可能在线程之间迁移，池本身是进程级单例并由互斥锁保护，
+             *          因此任何线程回收自己看到的帧都只会把块压回同一个空闲列表。
              */
             static void operator delete(void *const ptr, const size_t size) noexcept
             {
@@ -312,7 +312,8 @@ namespace AsynGyanis::Core
         {
         }
 
-        Task(const Task &)            = delete;
+        Task(const Task &) = delete;
+
         Task &operator=(const Task &) = delete;
 
         /**
@@ -356,7 +357,7 @@ namespace AsynGyanis::Core
         struct promise_type
         {
             /**
-             * @brief 从线程局部 CoroutinePool 分配协程帧内存。
+             * @brief 从进程级 CoroutinePool 分配协程帧内存。
              */
             static void *operator new(const size_t size)
             {
@@ -364,7 +365,7 @@ namespace AsynGyanis::Core
             }
 
             /**
-             * @brief 将协程帧内存归还给线程局部 CoroutinePool。
+             * @brief 将协程帧内存归还给进程级 CoroutinePool。
              */
             static void operator delete(void *const ptr, const size_t size) noexcept
             {

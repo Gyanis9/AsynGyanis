@@ -1,6 +1,6 @@
 /**
  * @file EventLoop.cpp
- * @brief 事件循环实现
+ * @brief 每线程事件循环实现：epoll 等待、唤醒与协程调度衔接
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -22,6 +22,10 @@ namespace AsynGyanis::Core
     {
         if (m_running.load(std::memory_order_acquire))
             stop();
+
+        // 成员销毁顺序是 m_wakeup 早于 m_epoll，若不先摘除注册，唤醒 socket 会在仍属于
+        // epoll 集合时被 closesocket，wepoll 内部线程会继续访问这个失效句柄并破坏堆
+        m_epoll.delFileDescriptor(m_wakeup.readDescriptor());
     }
 
     void EventLoop::run()
@@ -37,6 +41,7 @@ namespace AsynGyanis::Core
                 break;
             }
 
+            // 有就绪协程时用 0 超时轮询，否则无限阻塞等待 epoll 事件
             const int timeoutMs = m_scheduler.hasWork() ? 0 : -1;
             for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
             {
