@@ -12,6 +12,7 @@
 #include "Base/Config/ConfigValueType.h"
 #include "Base/Exception/ConfigTypeException.h"
 
+#include <concepts>
 #include <functional>
 #include <map>
 #include <optional>
@@ -44,47 +45,15 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 判断类型是否为 ConfigValue 底层变体的直接存储类型。
+     * @details 取代原先按类型逐个特化 std::true_type 的写法，约束语义不变：
+     *          只接受变体的精确替代类型，隐式可转换类型（如 int、const char *）不满足。
      * @tparam T 待判定的类型
      */
     template<typename T>
-    struct IsConfigVariantAlternative : std::false_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<std::nullptr_t> : std::true_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<bool> : std::true_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<int64_t> : std::true_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<double> : std::true_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<std::string> : std::true_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<ConfigArray> : std::true_type
-    {
-    };
-
-    template<>
-    struct IsConfigVariantAlternative<ConfigObject> : std::true_type
-    {
-    };
+    concept ConfigVariantAlternative = std::same_as<T, std::nullptr_t> || std::same_as<T, bool> ||
+                                       std::same_as<T, std::int64_t> || std::same_as<T, double> ||
+                                       std::same_as<T, std::string> || std::same_as<T, ConfigArray> ||
+                                       std::same_as<T, ConfigObject>;
 
     /**
      * @brief 配置值类
@@ -355,7 +324,7 @@ namespace AsynGyanis::Base
                     return static_cast<Target>(*pointer);
                 }
                 return std::nullopt;
-            } else if constexpr (IsConfigVariantAlternative<Target>::value)
+            } else if constexpr (ConfigVariantAlternative<Target>)
             {
                 if (auto *pointer = std::get_if<Target>(&m_value))
                 {
@@ -519,54 +488,24 @@ namespace AsynGyanis::Base
      * @brief 透明字符串哈希，统一 std::string 与 std::string_view 的哈希结果。
      *
      * @details 供 ConfigKeyValueMap 使用，使 unordered_map 能以 string_view 直接查找，
-     *          避免每次取值都构造临时 std::string。
+     *          避免每次取值都构造临时 std::string。只暴露 string_view 一个重载，
+     *          std::string 经隐式转换走同一条哈希路径，从根上杜绝两种键哈希不一致。
      */
     struct TransparentStringHash
     {
         using is_transparent = void; ///< 启用异质查找的标记类型
 
         /**
-         * @brief 计算 string_view 的哈希值。
-         * @param value 字符串视图。
+         * @brief 计算字符串的哈希值。
+         * @param value 字符串视图，std::string 实参隐式转换而来。
          * @return size_t 哈希值。
          */
         [[nodiscard]] size_t operator()(const std::string_view value) const noexcept
         {
             return std::hash<std::string_view>{}(value);
         }
-
-        /**
-         * @brief 计算 string 的哈希值（与 string_view 结果一致）。
-         * @param value 字符串。
-         * @return size_t 哈希值。
-         */
-        [[nodiscard]] size_t operator()(const std::string &value) const noexcept
-        {
-            return std::hash<std::string_view>{}(std::string_view(value));
-        }
     };
 
-    /**
-     * @brief 透明字符串相等比较。
-     *
-     * @details 与 TransparentStringHash 配套，使 string 键可与 string_view 查找键直接比较。
-     */
-    struct TransparentStringEqual
-    {
-        using is_transparent = void; ///< 启用异质查找的标记类型
-
-        /**
-         * @brief 比较两个字符串视图是否相等。
-         * @param left 左操作数。
-         * @param right 右操作数。
-         * @return bool 相等返回 true。
-         */
-        [[nodiscard]] bool operator()(const std::string_view left, const std::string_view right) const noexcept
-        {
-            return left == right;
-        }
-    };
-
-    /// 配置键值映射类型（支持 string_view 异质查找，避免每次 get() 分配临时 string）
-    using ConfigKeyValueMap = std::unordered_map<std::string, ConfigValue, TransparentStringHash, TransparentStringEqual>;
+    /// 配置键值映射类型（透明哈希 + std::equal_to<> 异质查找，避免每次 get() 分配临时 string）
+    using ConfigKeyValueMap = std::unordered_map<std::string, ConfigValue, TransparentStringHash, std::equal_to<>>;
 } // namespace AsynGyanis::Base

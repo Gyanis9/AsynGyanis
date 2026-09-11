@@ -28,7 +28,6 @@ namespace AsynGyanis::Base
 
     void ConsoleSink::write(const LogEvent &event)
     {
-        AsynGyanis::Platform::Console::ensureUtf8Output();
         std::lock_guard   lock(m_mutex);
         const std::string formatted = formatEvent(event);
         if (event.level >= LogLevel::Warn)

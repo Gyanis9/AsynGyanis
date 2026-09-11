@@ -12,11 +12,13 @@
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -107,6 +109,9 @@ namespace AsynGyanis::Base
         void setGlobalLevel(LogLevel level) const;
 
     private:
+        /// 根日志器的固定名称
+        static constexpr std::string_view kRootLoggerName{"root"};
+
         /**
          * @brief 构造函数私有化，仅由 instance() 创建唯一实例
          */
@@ -114,5 +119,8 @@ namespace AsynGyanis::Base
 
         mutable std::shared_mutex                                 m_mutex{};   ///< 保护 m_loggers 的读写锁
         std::unordered_map<std::string, std::unique_ptr<Logger> > m_loggers{}; ///< 日志器名称到 Logger 实例的映射表
+
+        /// 根日志器指针缓存：所有增删日志器的入口都会将其置空，读取时无锁命中缓存
+        std::atomic<Logger *> m_cachedRootLogger{nullptr};
     };
 } // namespace AsynGyanis::Base

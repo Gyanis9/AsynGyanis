@@ -18,7 +18,7 @@ namespace AsynGyanis::Base
                            logLevelToString(event.level),
                            LogColor::kReset,
                            event.loggerName,
-                           std::string(event.location.shortFileName()) + ":" + std::to_string(event.location.line),
+                           std::format("{}:{}", event.location.shortFileName(), event.location.line),
                            event.message);
 #else
         return std::format("{} [{}{:<5}{}] [{}] {}",

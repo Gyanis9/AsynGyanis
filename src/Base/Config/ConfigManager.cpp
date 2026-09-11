@@ -365,15 +365,26 @@ namespace AsynGyanis::Base
                     break;
                 case ConfigValueType::Double:
                 {
-                    result.kind = ScalarKind::Float;
-                    std::ostringstream stream;
-                    stream << value.asDouble();
-                    result.text = stream.str();
-                    if (result.text.find('.') == std::string::npos &&
-                        result.text.find('e') == std::string::npos &&
-                        result.text.find('E') == std::string::npos)
+                    // to_chars 取最短可往返表示：既免去构造流与 locale facet 查询，
+                    // 也不会像 ostream 默认精度那样把 0.123456789 截成 0.123457
+                    char        buffer[64];
+                    const auto  conversionResult = std::to_chars(buffer, buffer + sizeof(buffer), value.asDouble());
+                    if (conversionResult.ec != std::errc())
                     {
-                        result.text += ".0";
+                        // NaN 与无穷大没有合法的 JSON 数字表示，落盘为 null
+                        result.kind = ScalarKind::Null;
+                        result.text.clear();
+                    }
+                    else
+                    {
+                        result.kind = ScalarKind::Float;
+                        result.text.assign(buffer, conversionResult.ptr);
+                        if (result.text.find('.') == std::string::npos &&
+                            result.text.find('e') == std::string::npos &&
+                            result.text.find('E') == std::string::npos)
+                        {
+                            result.text += ".0";
+                        }
                     }
                     break;
                 }
