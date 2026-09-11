@@ -1,3 +1,12 @@
+/**
+ * @file HttpsServer.cpp
+ * @brief HTTPS 服务器，持有 TlsContext 并为每条连接派生 TLS 会话
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpsServer.h"
 #include "HttpsSession.h"
 

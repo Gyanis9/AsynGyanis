@@ -1,3 +1,12 @@
+/**
+ * @file FileSender.cpp
+ * @brief 静态文件零拷贝发送器，直接在内核态把文件内容推入 socket
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "FileSender.h"
 
 #include "Core/EpollAwaiter.h"

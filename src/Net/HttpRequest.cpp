@@ -1,3 +1,12 @@
+/**
+ * @file HttpRequest.cpp
+ * @brief 解析完成的 HTTP 请求数据对象
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpRequest.h"
 
 #include <algorithm>

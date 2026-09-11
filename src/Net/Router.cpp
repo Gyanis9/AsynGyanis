@@ -1,3 +1,12 @@
+/**
+ * @file Router.cpp
+ * @brief URL 路由器，支持路径模式匹配与中间件
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "Router.h"
 
 #include <string_view>

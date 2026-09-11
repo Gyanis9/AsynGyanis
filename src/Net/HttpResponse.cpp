@@ -1,3 +1,12 @@
+/**
+ * @file HttpResponse.cpp
+ * @brief HTTP 响应构建器与序列化器
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpResponse.h"
 
 #include <algorithm>

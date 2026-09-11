@@ -1,3 +1,12 @@
+/**
+ * @file HttpsSession.cpp
+ * @brief HTTPS 会话，先完成 TLS 握手再在加密通道上跑 HTTP 周期
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpsSession.h"
 
 #include "Base/Exception.h"

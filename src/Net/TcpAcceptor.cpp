@@ -1,3 +1,12 @@
+/**
+ * @file TcpAcceptor.cpp
+ * @brief TCP 监听套接字，异步接受新连接
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "TcpAcceptor.h"
 #include "Base/Exception.h"
 #include "Core/EpollAwaiter.h"

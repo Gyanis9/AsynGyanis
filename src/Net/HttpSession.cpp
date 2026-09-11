@@ -1,3 +1,12 @@
+/**
+ * @file HttpSession.cpp
+ * @brief HTTP 会话，处理单个请求/响应周期
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpSession.h"
 
 #include "Base/Exception.h"

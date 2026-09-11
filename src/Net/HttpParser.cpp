@@ -1,3 +1,12 @@
+/**
+ * @file HttpParser.cpp
+ * @brief HTTP/1.1 报文解析器，封装 llhttp C 库回调
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpParser.h"
 
 #include <format>

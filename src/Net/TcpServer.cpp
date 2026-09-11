@@ -1,3 +1,12 @@
+/**
+ * @file TcpServer.cpp
+ * @brief TCP 服务器，组合 TcpAcceptor 与 ConnectionManager
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "TcpServer.h"
 
 #include "Base/Exception.h"

@@ -1,3 +1,12 @@
+/**
+ * @file TcpStream.cpp
+ * @brief 基于 AsyncSocket 的带缓冲 TCP 流，提供高阶读写接口
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "TcpStream.h"
 
 #include "Base/Exception.h"

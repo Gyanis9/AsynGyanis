@@ -1,3 +1,12 @@
+/**
+ * @file HttpServer.cpp
+ * @brief HTTP 服务器，在 TcpServer 之上装配路由与会话
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
 #include "HttpServer.h"
 #include "Core/Task.h"
 #include "FileSender.h"
