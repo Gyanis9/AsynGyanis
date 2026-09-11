@@ -7,10 +7,10 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Base/Parser/YamlParser.h"
+#include "Base/Parser/Yaml/YamlParser.h"
 
-#include "Base/Config/ConfigValue.h"
-#include "Base/Config/ConfigValueType.h"
+#include "Base/Parser/Value/ParserValue.h"
+#include "Base/Parser/Value/ParserValueType.h"
 #include "Base/Parser/ParserError.h"
 #include "Base/Parser/ParserPosition.h"
 
@@ -30,7 +30,7 @@ namespace AsynGyanis::Base
          * @param action 触发解析的动作
          * @return ParserError 捕获到的错误对象副本
          */
-        ParserError catchParserError(const std::function<ConfigValue()> &action)
+        ParserError catchParserError(const std::function<ParserValue()> &action)
         {
             try
             {
@@ -53,14 +53,14 @@ namespace AsynGyanis::Base
          * @brief 取根对象中指定键的值
          * @param value 根值，必须是对象
          * @param key 键名
-         * @return const ConfigValue& 对应值
+         * @return const ParserValue& 对应值
          */
-        const ConfigValue &member(const ConfigValue &value, const std::string &key)
+        const ParserValue &member(const ParserValue &value, const std::string &key)
         {
-            const ConfigObject &members = value.asObject();
+            const ParserValueObject &members = value.asObject();
             const auto iterator         = members.find(key);
             EXPECT_NE(iterator, members.end()) << "缺少键: " << key;
-            static const ConfigValue missingValue(nullptr);
+            static const ParserValue missingValue(nullptr);
             return iterator == members.end() ? missingValue : iterator->second;
         }
     } // namespace
@@ -78,7 +78,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, InfersScalarTypes)
     {
-        const ConfigValue value = YamlParser::parse(
+        const ParserValue value = YamlParser::parse(
                 "text: hello\n"
                 "count: 8080\n"
                 "ratio: 1.5\n"
@@ -92,9 +92,9 @@ namespace AsynGyanis::Base
                 "explicit_null: null\n");
 
         EXPECT_EQ(member(value, "text").asString(), "hello");
-        EXPECT_EQ(member(value, "count").type(), ConfigValueType::Int);
+        EXPECT_EQ(member(value, "count").type(), ParserValueType::Int);
         EXPECT_EQ(member(value, "count").asInt(), 8080);
-        EXPECT_EQ(member(value, "ratio").type(), ConfigValueType::Double);
+        EXPECT_EQ(member(value, "ratio").type(), ParserValueType::Double);
         EXPECT_DOUBLE_EQ(member(value, "ratio").asDouble(), 1.5);
         EXPECT_DOUBLE_EQ(member(value, "exponent").asDouble(), 1000.0);
         EXPECT_DOUBLE_EQ(member(value, "negative").asDouble(), -0.25);
@@ -109,9 +109,9 @@ namespace AsynGyanis::Base
     TEST(YamlParser, QuotedScalarsStayStrings)
     {
         // 带引号的数字样字符串必须保序为字符串，这是覆盖层写回的关键语义
-        const ConfigValue value = YamlParser::parse("port: \"8080\"\nratio: '1.5'\nflag: \"true\"\n");
+        const ParserValue value = YamlParser::parse("port: \"8080\"\nratio: '1.5'\nflag: \"true\"\n");
 
-        EXPECT_EQ(member(value, "port").type(), ConfigValueType::String);
+        EXPECT_EQ(member(value, "port").type(), ParserValueType::String);
         EXPECT_EQ(member(value, "port").asString(), "8080");
         EXPECT_EQ(member(value, "ratio").asString(), "1.5");
         EXPECT_EQ(member(value, "flag").asString(), "true");
@@ -121,7 +121,7 @@ namespace AsynGyanis::Base
     {
         const std::string source = "path: \"C:\\\\temp\"\nquote: \"say \\\"hi\\\"\"\nnewline: \"a\\nb\"\nrocket: \"\\uD83D\\uDE80\"\n";
 
-        const ConfigValue value = YamlParser::parse(source);
+        const ParserValue value = YamlParser::parse(source);
 
         EXPECT_EQ(member(value, "path").asString(), "C:\\temp");
         EXPECT_EQ(member(value, "quote").asString(), "say \"hi\"");
@@ -131,7 +131,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, TreatsDoubledSingleQuoteAsOneQuote)
     {
-        const ConfigValue value = YamlParser::parse("name: 'it''s ok'\n");
+        const ParserValue value = YamlParser::parse("name: 'it''s ok'\n");
 
         EXPECT_EQ(member(value, "name").asString(), "it's ok");
     }
@@ -142,7 +142,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, ParsesNestedMappings)
     {
-        const ConfigValue value = YamlParser::parse(
+        const ParserValue value = YamlParser::parse(
                 "server:\n"
                 "  host: 0.0.0.0\n"
                 "  tls:\n"
@@ -151,10 +151,10 @@ namespace AsynGyanis::Base
                 "logging:\n"
                 "  level: info\n");
 
-        const ConfigValue &server = member(value, "server");
+        const ParserValue &server = member(value, "server");
         EXPECT_EQ(member(server, "host").asString(), "0.0.0.0");
 
-        const ConfigValue &tls = member(server, "tls");
+        const ParserValue &tls = member(server, "tls");
         EXPECT_EQ(member(tls, "enabled").asBool(), true);
         EXPECT_EQ(member(tls, "certificate").asString(), "server.crt");
         EXPECT_EQ(member(member(value, "logging"), "level").asString(), "info");
@@ -162,7 +162,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, ParsesBlockSequences)
     {
-        const ConfigValue value = YamlParser::parse(
+        const ParserValue value = YamlParser::parse(
                 "ports:\n"
                 "  - 80\n"
                 "  - 443\n"
@@ -170,7 +170,7 @@ namespace AsynGyanis::Base
                 "names:\n"
                 "  - alpha\n");
 
-        const ConfigArray &ports = member(value, "ports").asArray();
+        const ParserValueArray &ports = member(value, "ports").asArray();
         ASSERT_EQ(ports.size(), 3U);
         EXPECT_EQ(ports[0].asInt(), 80);
         EXPECT_EQ(ports[2].asInt(), 8080);
@@ -179,14 +179,14 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, ParsesSequenceOfMappings)
     {
-        const ConfigValue value = YamlParser::parse(
+        const ParserValue value = YamlParser::parse(
                 "sinks:\n"
                 "  - type: console\n"
                 "    color: true\n"
                 "  - type: file\n"
                 "    path: logs/app.log\n");
 
-        const ConfigArray &sinks = member(value, "sinks").asArray();
+        const ParserValueArray &sinks = member(value, "sinks").asArray();
         ASSERT_EQ(sinks.size(), 2U);
 
         EXPECT_EQ(member(sinks[0], "type").asString(), "console");
@@ -197,9 +197,9 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, ParsesSequenceOfSequences)
     {
-        const ConfigValue value = YamlParser::parse("matrix:\n  - - 1\n    - 2\n  - - 3\n");
+        const ParserValue value = YamlParser::parse("matrix:\n  - - 1\n    - 2\n  - - 3\n");
 
-        const ConfigArray &matrix = member(value, "matrix").asArray();
+        const ParserValueArray &matrix = member(value, "matrix").asArray();
         ASSERT_EQ(matrix.size(), 2U);
         EXPECT_EQ(matrix[0].asArray().size(), 2U);
         EXPECT_EQ(matrix[1].asArray().size(), 1U);
@@ -207,7 +207,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, KeepsDottedKeysVerbatim)
     {
-        const ConfigValue value = YamlParser::parse("app.name: dashboard\n");
+        const ParserValue value = YamlParser::parse("app.name: dashboard\n");
 
         EXPECT_EQ(member(value, "app.name").asString(), "dashboard");
         EXPECT_EQ(value.asObject().size(), 1U);
@@ -215,7 +215,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, AcceptsQuotedKeys)
     {
-        const ConfigValue value = YamlParser::parse("\"with space\": 1\n\"8080\": two\n");
+        const ParserValue value = YamlParser::parse("\"with space\": 1\n\"8080\": two\n");
 
         EXPECT_EQ(member(value, "with space").asInt(), 1);
         EXPECT_EQ(member(value, "8080").asString(), "two");
@@ -223,9 +223,9 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, ParsesTopLevelSequence)
     {
-        const ConfigValue value = YamlParser::parse("- one\n- 2\n");
+        const ParserValue value = YamlParser::parse("- one\n- 2\n");
 
-        ASSERT_EQ(value.type(), ConfigValueType::Array);
+        ASSERT_EQ(value.type(), ParserValueType::Array);
         EXPECT_EQ(value.asArray()[0].asString(), "one");
         EXPECT_EQ(value.asArray()[1].asInt(), 2);
     }
@@ -236,7 +236,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, IgnoresWholeLineAndTrailingComments)
     {
-        const ConfigValue value = YamlParser::parse(
+        const ParserValue value = YamlParser::parse(
                 "# 顶部注释\n"
                 "port: 8080 # 行尾注释\n"
                 "\n"
@@ -250,7 +250,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, KeepsHashInsideQuotedScalar)
     {
-        const ConfigValue value = YamlParser::parse("color: \"#1A2B3C\"\nplain: a#b\n");
+        const ParserValue value = YamlParser::parse("color: \"#1A2B3C\"\nplain: a#b\n");
 
         EXPECT_EQ(member(value, "color").asString(), "#1A2B3C");
         EXPECT_EQ(member(value, "plain").asString(), "a#b");
@@ -258,7 +258,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, ParsesFlowStyleCollections)
     {
-        const ConfigValue value = YamlParser::parse(
+        const ParserValue value = YamlParser::parse(
                 "ports: [80, 443, 8080]\n"
                 "labels: {region: cn, tier: \"1\"}\n"
                 "empty_list: []\n"
@@ -272,7 +272,7 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(member(value, "empty_list").asArray().empty());
         EXPECT_TRUE(member(value, "empty_map").asObject().empty());
 
-        const ConfigArray &nested = member(value, "nested").asArray();
+        const ParserValueArray &nested = member(value, "nested").asArray();
         ASSERT_EQ(nested.size(), 2U);
         EXPECT_EQ(member(nested[0], "a").asInt(), 1);
         EXPECT_EQ(nested[1].asArray()[0].asInt(), 2);
@@ -280,7 +280,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, TrimsWhitespaceAroundValues)
     {
-        const ConfigValue value = YamlParser::parse("key:    spaced value   \n");
+        const ParserValue value = YamlParser::parse("key:    spaced value   \n");
 
         EXPECT_EQ(member(value, "key").asString(), "spaced value");
     }
@@ -313,7 +313,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlParser, AllowsSameKeyInDifferentBlocks)
     {
-        const ConfigValue value = YamlParser::parse("first:\n  name: a\nsecond:\n  name: b\n");
+        const ParserValue value = YamlParser::parse("first:\n  name: a\nsecond:\n  name: b\n");
 
         EXPECT_EQ(member(member(value, "first"), "name").asString(), "a");
         EXPECT_EQ(member(member(value, "second"), "name").asString(), "b");

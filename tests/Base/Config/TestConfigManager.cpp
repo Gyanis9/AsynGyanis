@@ -19,7 +19,7 @@
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
-#include "Base/Exception/ConfigTypeException.h"
+#include "Base/Parser/Value/ValueAccessError.h"
 
 #include <gtest/gtest.h>
 
@@ -664,8 +664,8 @@ namespace AsynGyanis::Base
         writeFile("cfg.yaml", "name: test\nport: 8080\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        EXPECT_THROW(static_cast<void>(configuration().get<std::string>("port")), ConfigTypeException);
-        EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("name")), ConfigTypeException);
+        EXPECT_THROW(static_cast<void>(configuration().get<std::string>("port")), ValueAccessError);
+        EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("name")), ValueAccessError);
         EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("nonexistent")), ConfigKeyNotFoundException);
         EXPECT_EQ(configuration().get<std::string>("name"), "test");
     }
@@ -705,7 +705,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(configuration().getRequired<std::string>("name"), "test");
         EXPECT_THROW(static_cast<void>(configuration().getRequired<std::string>("nonexistent")), ConfigKeyNotFoundException);
-        EXPECT_THROW(static_cast<void>(configuration().getRequired<int64_t>("name")), ConfigTypeException);
+        EXPECT_THROW(static_cast<void>(configuration().getRequired<int64_t>("name")), ValueAccessError);
     }
 
     TEST_F(ConfigManagerTest, ConvenienceGettersReadLoadedValues)

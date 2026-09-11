@@ -11,7 +11,7 @@
 #include "Base/Exception/ConfigFileException.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigParseException.h"
-#include "Base/Exception/ConfigTypeException.h"
+#include "Base/Parser/Value/ValueAccessError.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/NetworkException.h"
@@ -240,40 +240,6 @@ namespace AsynGyanis::Base
     }
 
     // ============================================================================
-    // ConfigTypeException
-    // ============================================================================
-
-    TEST(ConfigTypeException, InheritsFromConfigException)
-    {
-        const ConfigTypeException exception("server.port", "int64_t", "std::string");
-
-        EXPECT_THROW(throw exception, ConfigException);
-        EXPECT_THROW(throw exception, std::runtime_error);
-    }
-
-    TEST(ConfigTypeException, ExposesExpectedAndActualTypes)
-    {
-        const ConfigTypeException exception("server.port", "int64_t", "std::string");
-        const std::string         message(exception.what());
-
-        EXPECT_EQ(exception.key(), "server.port");
-        EXPECT_EQ(exception.expectedType(), "int64_t");
-        EXPECT_EQ(exception.actualType(), "std::string");
-        EXPECT_TRUE(contains(message, "expected"));
-        EXPECT_TRUE(contains(message, "int64_t"));
-        EXPECT_TRUE(contains(message, "std::string"));
-    }
-
-    TEST(ConfigTypeException, AcceptsEmptyFields)
-    {
-        const ConfigTypeException exception("", "", "");
-
-        EXPECT_TRUE(exception.key().empty());
-        EXPECT_TRUE(exception.expectedType().empty());
-        EXPECT_TRUE(exception.actualType().empty());
-    }
-
-    // ============================================================================
     // ConfigValidationException
     // ============================================================================
 
@@ -389,7 +355,7 @@ namespace AsynGyanis::Base
                 },
                 []
                 {
-                    return std::unique_ptr<std::exception>(std::make_unique<ConfigTypeException>("k", "e", "a"));
+                    return std::unique_ptr<std::exception>(std::make_unique<ValueAccessError>("k", "e", "a"));
                 },
                 []
                 {
@@ -451,7 +417,7 @@ namespace AsynGyanis::Base
         {
             try
             {
-                throw ConfigTypeException("k", "int", "string");
+                throw ValueAccessError("k", "int", "string");
             } catch (const Exception &exception)
             {
                 EXPECT_TRUE(contains(std::string(exception.what()), "Type mismatch"));

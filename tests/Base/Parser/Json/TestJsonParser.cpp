@@ -7,10 +7,10 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Base/Parser/JsonParser.h"
+#include "Base/Parser/Json/JsonParser.h"
 
-#include "Base/Config/ConfigValue.h"
-#include "Base/Config/ConfigValueType.h"
+#include "Base/Parser/Value/ParserValue.h"
+#include "Base/Parser/Value/ParserValueType.h"
 #include "Base/Parser/ParserError.h"
 #include "Base/Parser/ParserPosition.h"
 
@@ -29,7 +29,7 @@ namespace AsynGyanis::Base
          * @param action 触发解析的动作
          * @return ParserError 捕获到的错误对象副本
          */
-        ParserError catchParserError(const std::function<ConfigValue()> &action)
+        ParserError catchParserError(const std::function<ParserValue()> &action)
         {
             try
             {
@@ -69,16 +69,16 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, DistinguishesIntegerFromFloatingPoint)
     {
-        EXPECT_EQ(JsonParser::parse("100").type(), ConfigValueType::Int);
-        EXPECT_EQ(JsonParser::parse("100.0").type(), ConfigValueType::Double);
-        EXPECT_EQ(JsonParser::parse("1e2").type(), ConfigValueType::Double);
+        EXPECT_EQ(JsonParser::parse("100").type(), ParserValueType::Int);
+        EXPECT_EQ(JsonParser::parse("100.0").type(), ParserValueType::Double);
+        EXPECT_EQ(JsonParser::parse("1e2").type(), ParserValueType::Double);
     }
 
     TEST(JsonParser, PromotesIntegersBeyondInt64RangeToDouble)
     {
-        const ConfigValue value = JsonParser::parse("99999999999999999999999");
+        const ParserValue value = JsonParser::parse("99999999999999999999999");
 
-        EXPECT_EQ(value.type(), ConfigValueType::Double);
+        EXPECT_EQ(value.type(), ParserValueType::Double);
         EXPECT_DOUBLE_EQ(value.asDouble(), 1e23);
     }
 
@@ -94,9 +94,9 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, ParsesArrayPreservingOrder)
     {
-        const ConfigValue value = JsonParser::parse("[1, \"two\", false, null]");
+        const ParserValue value = JsonParser::parse("[1, \"two\", false, null]");
 
-        const ConfigArray &elements = value.asArray();
+        const ParserValueArray &elements = value.asArray();
         ASSERT_EQ(elements.size(), 4U);
         EXPECT_EQ(elements[0].asInt(), 1);
         EXPECT_EQ(elements[1].asString(), "two");
@@ -106,12 +106,12 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, ParsesNestedObjectsAndArrays)
     {
-        const ConfigValue value = JsonParser::parse(R"({"server":{"ports":[80,443],"tls":true}})");
+        const ParserValue value = JsonParser::parse(R"({"server":{"ports":[80,443],"tls":true}})");
 
-        const ConfigValue &server = value.asObject().at("server");
+        const ParserValue &server = value.asObject().at("server");
         EXPECT_EQ(server.asObject().at("tls").asBool(), true);
 
-        const ConfigArray &ports = server.asObject().at("ports").asArray();
+        const ParserValueArray &ports = server.asObject().at("ports").asArray();
         ASSERT_EQ(ports.size(), 2U);
         EXPECT_EQ(ports[0].asInt(), 80);
         EXPECT_EQ(ports[1].asInt(), 443);
@@ -119,7 +119,7 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, AcceptsWhitespaceBetweenEveryToken)
     {
-        const ConfigValue value = JsonParser::parse("{\n  \"a\" : [ 1 ,\t2 ]\n}");
+        const ParserValue value = JsonParser::parse("{\n  \"a\" : [ 1 ,\t2 ]\n}");
 
         EXPECT_EQ(value.asObject().at("a").asArray().size(), 2U);
     }
@@ -130,7 +130,7 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, DecodesAllSimpleEscapes)
     {
-        const ConfigValue value = JsonParser::parse(R"("q\"b\\f\fnn\r\t\/u")");
+        const ParserValue value = JsonParser::parse(R"("q\"b\\f\fnn\r\t\/u")");
 
         EXPECT_EQ(value.asString(), "q\"b\\f\fnn\r\t/u");
     }
@@ -148,7 +148,7 @@ namespace AsynGyanis::Base
     {
         const std::string rocketEscape = "\"\\uD83D\\uDE80\"";
 
-        const ConfigValue value = JsonParser::parse(rocketEscape);
+        const ParserValue value = JsonParser::parse(rocketEscape);
 
         // 火箭表情在 UTF-8 下占 4 字节
         EXPECT_EQ(value.asString(), "\xF0\x9F\x9A\x80");
@@ -157,7 +157,7 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, KeepsNonAsciiUtf8TextIntact)
     {
-        const ConfigValue value = JsonParser::parse(R"("中文日志")");
+        const ParserValue value = JsonParser::parse(R"("中文日志")");
 
         EXPECT_EQ(value.asString(), "中文日志");
     }

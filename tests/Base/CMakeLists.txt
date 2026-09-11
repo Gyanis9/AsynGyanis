@@ -6,7 +6,6 @@ add_executable(TestBase
         BaseTestSupport.h
 
         Config/TestConfigValueType.cpp
-        Config/TestConfigValue.cpp
         Config/TestConfigSchema.cpp
         Config/TestConfigManager.cpp
 
@@ -31,9 +30,11 @@ add_executable(TestBase
         Log/Sinks/TestAsyncSink.cpp
 
         Parser/TestParserPositionAndError.cpp
-        Parser/TestJsonParser.cpp
-        Parser/TestJsonWriter.cpp
-        Parser/TestYamlParser.cpp
+        Parser/Value/TestParserValue.cpp
+        Parser/Value/TestValueAccessError.cpp
+        Parser/Json/TestJsonParser.cpp
+        Parser/Json/TestJsonWriter.cpp
+        Parser/Yaml/TestYamlParser.cpp
 )
 
 target_link_libraries(TestBase PRIVATE
