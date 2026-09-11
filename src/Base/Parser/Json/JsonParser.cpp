@@ -1,5 +1,4 @@
-#include "Base/Parser/JsonParser.h"
-
+#include "Base/Parser/Json/JsonParser.h"
 #include "Base/Parser/ParserError.h"
 #include "Base/Parser/ParserText.h"
 
@@ -33,7 +32,7 @@ namespace AsynGyanis::Base
         }
     } // namespace
 
-    ConfigValue JsonParser::parse(const std::string_view text)
+    ParserValue JsonParser::parse(const std::string_view text)
     {
         return JsonParser(text).parseDocument();
     }
@@ -43,14 +42,14 @@ namespace AsynGyanis::Base
     {
     }
 
-    ConfigValue JsonParser::parseDocument()
+    ParserValue JsonParser::parseDocument()
     {
         if (m_text.empty())
         {
             throw ParserError("input is empty", currentPosition());
         }
 
-        ConfigValue document = parseValue(0);
+        ParserValue document = parseValue(0);
 
         skipWhitespace();
         if (m_index < m_text.size())
@@ -61,12 +60,11 @@ namespace AsynGyanis::Base
         return document;
     }
 
-    ConfigValue JsonParser::parseValue(const std::size_t nestingDepth)
+    ParserValue JsonParser::parseValue(const std::size_t nestingDepth)
     {
         skipWhitespace();
 
-        const char currentCharacter = peekCurrent();
-        switch (currentCharacter)
+        switch (const char currentCharacter = peekCurrent())
         {
             case '{':
                 return parseObject(nestingDepth);
@@ -87,7 +85,7 @@ namespace AsynGyanis::Base
         }
     }
 
-    ConfigValue JsonParser::parseObject(const std::size_t nestingDepth)
+    ParserValue JsonParser::parseObject(const std::size_t nestingDepth)
     {
         if (nestingDepth >= kMaximumNestingDepth)
         {
@@ -96,12 +94,12 @@ namespace AsynGyanis::Base
 
         expect('{');
 
-        ConfigObject members;
+        ParserValueObject members;
         skipWhitespace();
         if (peekCurrent() == '}')
         {
             advance();
-            return ConfigValue(std::move(members));
+            return ParserValue(std::move(members));
         }
 
         while (true)
@@ -112,11 +110,11 @@ namespace AsynGyanis::Base
                 throw ParserError("object keys must be double-quoted strings", currentPosition());
             }
 
-            const ConfigValue key = parseString();
+            const ParserValue key = parseString();
             skipWhitespace();
             expect(':');
 
-            ConfigValue value = parseValue(nestingDepth + 1);
+            ParserValue value = parseValue(nestingDepth + 1);
 
             // 配置场景下重复键几乎都是笔误，直接报错而不是静默覆盖
             const std::string &keyName = key.asString();
@@ -136,14 +134,14 @@ namespace AsynGyanis::Base
             if (separator == '}')
             {
                 advance();
-                return ConfigValue(std::move(members));
+                return ParserValue(std::move(members));
             }
 
             throw ParserError("expected ',' or '}' inside an object", currentPosition());
         }
     }
 
-    ConfigValue JsonParser::parseArray(const std::size_t nestingDepth)
+    ParserValue JsonParser::parseArray(const std::size_t nestingDepth)
     {
         if (nestingDepth >= kMaximumNestingDepth)
         {
@@ -152,12 +150,12 @@ namespace AsynGyanis::Base
 
         expect('[');
 
-        ConfigArray elements;
+        ParserValueArray elements;
         skipWhitespace();
         if (peekCurrent() == ']')
         {
             advance();
-            return ConfigValue(std::move(elements));
+            return ParserValue(std::move(elements));
         }
 
         while (true)
@@ -174,19 +172,19 @@ namespace AsynGyanis::Base
             if (separator == ']')
             {
                 advance();
-                return ConfigValue(std::move(elements));
+                return ParserValue(std::move(elements));
             }
 
             throw ParserError("expected ',' or ']' inside an array", currentPosition());
         }
     }
 
-    ConfigValue JsonParser::parseString()
+    ParserValue JsonParser::parseString()
     {
         expect('"');
 
         const ParserPosition stringStart = currentPosition();
-        const std::size_t bodyStart = m_index;
+        const std::size_t    bodyStart   = m_index;
         while (true)
         {
             if (m_index >= m_text.size())
@@ -222,13 +220,13 @@ namespace AsynGyanis::Base
         const std::string_view body = m_text.substr(bodyStart, m_index - bodyStart);
         advance(); // 消费收尾引号
 
-        return ConfigValue(ParserText::decodeQuotedBody(body, stringStart));
+        return ParserValue(ParserText::decodeQuotedBody(body, stringStart));
     }
 
-    ConfigValue JsonParser::parseNumber()
+    ParserValue JsonParser::parseNumber()
     {
-        const std::size_t start = m_index;
-        bool isFloatingPoint    = false;
+        const std::size_t start           = m_index;
+        bool              isFloatingPoint = false;
 
         if (peekCurrent() == '-')
         {
@@ -243,8 +241,7 @@ namespace AsynGyanis::Base
             {
                 throw ParserError("numbers must not have leading zeros", currentPosition());
             }
-        }
-        else
+        } else
         {
             if (!isDigit(peekCurrent()))
             {
@@ -296,7 +293,7 @@ namespace AsynGyanis::Base
             if (const auto [pointer, errorCode] = std::from_chars(token.data(), token.data() + token.size(), integer);
                 errorCode == std::errc() && pointer == token.data() + token.size())
             {
-                return ConfigValue(integer);
+                return ParserValue(integer);
             }
             // 超出 int64 范围的整数按浮点处理，保证数值不丢失
             isFloatingPoint = true;
@@ -308,48 +305,48 @@ namespace AsynGyanis::Base
             if (const auto [pointer, errorCode] = std::from_chars(token.data(), token.data() + token.size(), floatingPoint);
                 errorCode == std::errc() && pointer == token.data() + token.size())
             {
-                return ConfigValue(floatingPoint);
+                return ParserValue(floatingPoint);
             }
         }
 
         throw ParserError("number is out of range or malformed: " + std::string(token), currentPosition());
     }
 
-    ConfigValue JsonParser::parseLiteral(const char leadCharacter)
+    ParserValue JsonParser::parseLiteral(const char leadCharacter)
     {
         struct Keyword
         {
-            std::string_view text;    ///< 字面量文本
-            ConfigValue value;        ///< 对应的配置值
+            std::string_view text;  ///< 字面量文本
+            ParserValue      value; ///< 对应的配置值
         };
 
         const Keyword keywords[] = {
-                Keyword{"true", ConfigValue(true)},
-                Keyword{"false", ConfigValue(false)},
-                Keyword{"null", ConfigValue(nullptr)},
+                Keyword{.text = "true", .value = ParserValue(true)},
+                Keyword{.text = "false", .value = ParserValue(false)},
+                Keyword{.text = "null", .value = ParserValue(nullptr)},
         };
 
-        for (const Keyword &keyword: keywords)
+        for (const auto &[text, value]: keywords)
         {
-            if (leadCharacter != keyword.text.front() || m_text.substr(m_index, keyword.text.size()) != keyword.text)
+            if (leadCharacter != text.front() || m_text.substr(m_index, text.size()) != text)
             {
                 continue;
             }
 
             // 关键字必须是完整词，truely 之类的后续字母属于非法输入
-            const char characterAfterKeyword = m_index + keyword.text.size() < m_text.size()
-                                                   ? m_text[m_index + keyword.text.size()]
+            const char characterAfterKeyword = m_index + text.size() < m_text.size()
+                                                   ? m_text[m_index + text.size()]
                                                    : '\0';
             if (std::isalnum(static_cast<unsigned char>(characterAfterKeyword)) != 0)
             {
                 throw ParserError("malformed keyword", currentPosition());
             }
 
-            for (std::size_t offset = 0; offset < keyword.text.size(); ++offset)
+            for (std::size_t offset = 0; offset < text.size(); ++offset)
             {
                 advance();
             }
-            return keyword.value;
+            return value;
         }
 
         throw ParserError("keyword must be one of true, false, null", currentPosition());
@@ -379,8 +376,7 @@ namespace AsynGyanis::Base
         {
             ++m_line;
             m_column = 1;
-        }
-        else
+        } else
         {
             ++m_column;
         }
@@ -399,6 +395,6 @@ namespace AsynGyanis::Base
 
     ParserPosition JsonParser::currentPosition() const noexcept
     {
-        return ParserPosition{m_line, m_column, m_index};
+        return ParserPosition{.lineNumber = m_line, .columnNumber = m_column, .offset = m_index};
     }
 } // namespace AsynGyanis::Base

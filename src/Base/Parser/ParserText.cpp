@@ -1,5 +1,4 @@
 #include "Base/Parser/ParserText.h"
-
 #include "Base/Parser/ParserError.h"
 
 #include <string>
@@ -50,19 +49,16 @@ namespace AsynGyanis::Base
         if (codePoint < 0x80U)
         {
             output.push_back(static_cast<char>(codePoint));
-        }
-        else if (codePoint < 0x800U)
+        } else if (codePoint < 0x800U)
         {
             output.push_back(static_cast<char>(0xC0U | (codePoint >> 6)));
             output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-        }
-        else if (codePoint < 0x10000U)
+        } else if (codePoint < 0x10000U)
         {
             output.push_back(static_cast<char>(0xE0U | (codePoint >> 12)));
             output.push_back(static_cast<char>(0x80U | ((codePoint >> 6) & 0x3FU)));
             output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
-        }
-        else
+        } else
         {
             output.push_back(static_cast<char>(0xF0U | (codePoint >> 18)));
             output.push_back(static_cast<char>(0x80U | ((codePoint >> 12) & 0x3FU)));
@@ -71,8 +67,7 @@ namespace AsynGyanis::Base
         }
     }
 
-    std::uint32_t ParserText::decodeHex(std::string_view text, std::size_t &index, const std::size_t digitCount,
-                                        const ParserPosition &position)
+    std::uint32_t ParserText::decodeHex(const std::string_view text, std::size_t &index, const std::size_t digitCount, const ParserPosition &position)
     {
         if (index + digitCount > text.size())
         {
@@ -94,7 +89,7 @@ namespace AsynGyanis::Base
         return value;
     }
 
-    char ParserText::decodeSimpleEscape(std::string_view text, std::size_t &index, const ParserPosition &position)
+    char ParserText::decodeSimpleEscape(const std::string_view text, std::size_t &index, const ParserPosition &position)
     {
         if (index >= text.size())
         {
@@ -127,7 +122,7 @@ namespace AsynGyanis::Base
         }
     }
 
-    std::string ParserText::decodeQuotedBody(std::string_view body, const ParserPosition &position)
+    std::string ParserText::decodeQuotedBody(const std::string_view body, const ParserPosition &position)
     {
         std::string decoded;
         decoded.reserve(body.size());
@@ -161,7 +156,7 @@ namespace AsynGyanis::Base
                         throw ParserError("lone high surrogate in \\u escape", position);
                     }
 
-                    index += 2;
+                    index                            += 2;
                     const std::uint32_t lowSurrogate = decodeHex(body, index, 4, position);
                     if (lowSurrogate < kLowSurrogateMinimum || lowSurrogate > kLowSurrogateMaximum)
                     {
@@ -169,8 +164,7 @@ namespace AsynGyanis::Base
                     }
 
                     const std::uint32_t mergedCodePoint =
-                            0x10000U + ((codeUnit - kHighSurrogateMinimum) << 10) +
-                            (lowSurrogate - kLowSurrogateMinimum);
+                            0x10000U + ((codeUnit - kHighSurrogateMinimum) << 10) + (lowSurrogate - kLowSurrogateMinimum);
                     appendUtf8(decoded, mergedCodePoint);
                     continue;
                 }

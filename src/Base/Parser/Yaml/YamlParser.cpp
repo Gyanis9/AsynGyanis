@@ -1,5 +1,4 @@
-#include "Base/Parser/YamlParser.h"
-
+#include "Base/Parser/Yaml/YamlParser.h"
 #include "Base/Parser/ParserError.h"
 #include "Base/Parser/ParserText.h"
 
@@ -7,7 +6,6 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <utility>
 
@@ -20,7 +18,7 @@ namespace AsynGyanis::Base
          * @param text 原始文本
          * @return std::string_view 裁剪后的视图
          */
-        std::string_view trim(std::string_view text) noexcept
+        std::string_view trim(const std::string_view text) noexcept
         {
             const std::size_t begin = text.find_first_not_of(" \t\r\n");
             if (begin == std::string_view::npos)
@@ -36,7 +34,7 @@ namespace AsynGyanis::Base
          * @param text 原始文本
          * @return std::string_view 裁剪后的视图
          */
-        std::string_view trimLeft(std::string_view text) noexcept
+        std::string_view trimLeft(const std::string_view text) noexcept
         {
             const std::size_t begin = text.find_first_not_of(' ');
             return begin == std::string_view::npos ? std::string_view{} : text.substr(begin);
@@ -47,7 +45,7 @@ namespace AsynGyanis::Base
          * @param text 原始文本
          * @return std::size_t 空格个数
          */
-        std::size_t countLeadingSpaces(std::string_view text) noexcept
+        std::size_t countLeadingSpaces(const std::string_view text) noexcept
         {
             return text.find_first_not_of(' ') == std::string_view::npos ? text.size() : text.find_first_not_of(' ');
         }
@@ -74,7 +72,7 @@ namespace AsynGyanis::Base
          * @param openingQuote 起始引号下标
          * @return std::size_t 收尾引号下标，未闭合返回 npos
          */
-        std::size_t findClosingDoubleQuote(std::string_view text, const std::size_t openingQuote) noexcept
+        std::size_t findClosingDoubleQuote(const std::string_view text, const std::size_t openingQuote) noexcept
         {
             for (std::size_t index = openingQuote + 1; index < text.size(); ++index)
             {
@@ -97,7 +95,7 @@ namespace AsynGyanis::Base
          * @param openingQuote 起始引号下标
          * @return std::size_t 收尾引号下标，未闭合返回 npos
          */
-        std::size_t findClosingSingleQuote(std::string_view text, const std::size_t openingQuote) noexcept
+        std::size_t findClosingSingleQuote(const std::string_view text, const std::size_t openingQuote) noexcept
         {
             for (std::size_t index = openingQuote + 1; index < text.size(); ++index)
             {
@@ -120,7 +118,7 @@ namespace AsynGyanis::Base
          * @param body 引号内正文
          * @return std::string 还原后的文本
          */
-        std::string expandSingleQuoteEscapes(std::string_view body)
+        std::string expandSingleQuoteEscapes(const std::string_view body)
         {
             std::string result;
             result.reserve(body.size());
@@ -160,22 +158,22 @@ namespace AsynGyanis::Base
         }
     } // namespace
 
-    ConfigValue YamlParser::parse(const std::string_view text)
+    ParserValue YamlParser::parse(const std::string_view text)
     {
         YamlParser parser(text);
         parser.splitIntoLines();
 
         if (parser.m_lines.empty())
         {
-            return ConfigValue(ConfigObject{});
+            return ParserValue(ParserValueObject{});
         }
 
-        std::size_t index = 0;
-        const Line &firstLine = parser.m_lines.front();
+        std::size_t       index      = 0;
+        const Line &      firstLine  = parser.m_lines.front();
         const std::size_t rootIndent = firstLine.indent;
 
         // 根节点直接按首行形态分派：parseBlock 的「必须比父级更深」判定不适用於顶层
-        ConfigValue root = startsSequenceEntry(firstLine.content)
+        ParserValue root = startsSequenceEntry(firstLine.content)
                                ? parser.parseSequence(index, rootIndent, 0)
                                : parser.parseMapping(index, rootIndent, 0);
 
@@ -195,8 +193,8 @@ namespace AsynGyanis::Base
 
     void YamlParser::splitIntoLines()
     {
-        std::size_t number   = 0;
-        std::size_t start    = 0;
+        std::size_t       number    = 0;
+        std::size_t       start     = 0;
         const std::size_t inputSize = m_text.size();
 
         while (start <= inputSize)
@@ -204,7 +202,7 @@ namespace AsynGyanis::Base
             ++number;
 
             const std::size_t lineEnd = m_text.find('\n', start);
-            std::string_view rawLine  = lineEnd == std::string_view::npos ? m_text.substr(start) : m_text.substr(start, lineEnd - start);
+            std::string_view  rawLine = lineEnd == std::string_view::npos ? m_text.substr(start) : m_text.substr(start, lineEnd - start);
 
             std::size_t indent = 0;
             while (indent < rawLine.size() && rawLine[indent] == ' ')
@@ -212,16 +210,13 @@ namespace AsynGyanis::Base
                 ++indent;
             }
 
-            std::string_view content = trim(rawLine.substr(indent));
-            if (content.empty() || content.front() == '#')
+            if (std::string_view content = trim(rawLine.substr(indent)); content.empty() || content.front() == '#')
             {
                 // 空行与整行注释不参与结构，因此也不受制表符缩进规则约束
-            }
-            else if (indent < rawLine.size() && rawLine[indent] == '\t')
+            } else if (indent < rawLine.size() && rawLine[indent] == '\t')
             {
                 throw ParserError("tab characters must not be used for indentation", makePosition(number, indent + 1));
-            }
-            else
+            } else
             {
                 if (content == "---" || content == "..." || content.substr(0, std::min<std::size_t>(content.size(), 4)) == "--- ")
                 {
@@ -233,9 +228,9 @@ namespace AsynGyanis::Base
                 }
 
                 // 行尾注释只在引号之外生效
-                bool insideDoubleQuote = false;
-                bool insideSingleQuote = false;
-                std::size_t commentStart = std::string_view::npos;
+                bool        insideDoubleQuote = false;
+                bool        insideSingleQuote = false;
+                std::size_t commentStart      = std::string_view::npos;
                 for (std::size_t index = 0; index < content.size(); ++index)
                 {
                     const char character = content[index];
@@ -249,8 +244,7 @@ namespace AsynGyanis::Base
                                 throw ParserError("unterminated double-quoted string", makePosition(number, indent + index + 1));
                             }
                             index = closing;
-                        }
-                        else
+                        } else
                         {
                             insideDoubleQuote = false;
                         }
@@ -266,8 +260,7 @@ namespace AsynGyanis::Base
                                 throw ParserError("unterminated single-quoted string", makePosition(number, indent + index + 1));
                             }
                             index = closing;
-                        }
-                        else
+                        } else
                         {
                             insideSingleQuote = false;
                         }
@@ -291,7 +284,7 @@ namespace AsynGyanis::Base
 
                 if (!content.empty())
                 {
-                    m_lines.push_back(Line{content, indent, number});
+                    m_lines.push_back(Line{.content = content, .indent = indent, .number = number});
                 }
             }
 
@@ -303,18 +296,19 @@ namespace AsynGyanis::Base
         }
     }
 
-    ConfigValue YamlParser::parseBlock(std::size_t &index, const std::size_t parentIndent, const std::size_t nestingDepth)
+    ParserValue YamlParser::parseBlock(std::size_t &index, const std::size_t parentIndent, const std::size_t nestingDepth)
     {
         if (nestingDepth >= kMaximumNestingDepth)
         {
-            throw ParserError("nesting depth limit exceeded", index < m_lines.size() ? makePosition(m_lines[index].number, m_lines[index].indent + 1)
-                                                                                      : ParserPosition{});
+            throw ParserError("nesting depth limit exceeded", index < m_lines.size()
+                                                                  ? makePosition(m_lines[index].number, m_lines[index].indent + 1)
+                                                                  : ParserPosition{});
         }
 
         if (index >= m_lines.size() || m_lines[index].indent <= parentIndent)
         {
             // 该层级没有任何内容，按 YAML 语义这是 null 而不是空映射
-            return ConfigValue(nullptr);
+            return ParserValue(nullptr);
         }
 
         const std::size_t blockIndent = m_lines[index].indent;
@@ -325,99 +319,97 @@ namespace AsynGyanis::Base
         return parseMapping(index, blockIndent, nestingDepth + 1);
     }
 
-    ConfigValue YamlParser::parseMapping(std::size_t &index, const std::size_t blockIndent, const std::size_t nestingDepth)
+    ParserValue YamlParser::parseMapping(std::size_t &index, const std::size_t blockIndent, const std::size_t nestingDepth)
     {
-        ConfigObject members;
+        ParserValueObject members;
 
         while (index < m_lines.size())
         {
-            const Line &line = m_lines[index];
+            const auto &[content, indent, number] = m_lines[index];
 
-            if (line.indent < blockIndent)
+            if (indent < blockIndent)
             {
                 break;
             }
-            if (line.indent > blockIndent)
+            if (indent > blockIndent)
             {
-                throw ParserError("inconsistent indentation inside a mapping", makePosition(line.number, line.indent + 1));
+                throw ParserError("inconsistent indentation inside a mapping", makePosition(number, indent + 1));
             }
-            if (startsSequenceEntry(line.content))
+            if (startsSequenceEntry(content))
             {
-                throw ParserError("a sequence entry cannot appear at the same level as mapping keys", makePosition(line.number, line.indent + 1));
+                throw ParserError("a sequence entry cannot appear at the same level as mapping keys", makePosition(number, indent + 1));
             }
 
-            const std::size_t separator = findKeyValueSeparator(line.content);
+            const std::size_t separator = findKeyValueSeparator(content);
             if (separator == std::string_view::npos)
             {
-                throw ParserError("expected 'key: value'", makePosition(line.number, line.indent + 1));
+                throw ParserError("expected 'key: value'", makePosition(number, indent + 1));
             }
 
-            const std::string_view keyText = trim(line.content.substr(0, separator));
+            const std::string_view keyText = trim(content.substr(0, separator));
             if (keyText.empty())
             {
-                throw ParserError("mapping key must not be empty", makePosition(line.number, line.indent + 1));
+                throw ParserError("mapping key must not be empty", makePosition(number, indent + 1));
             }
 
-            std::string_view remainder = line.content.substr(separator + 1);
+            std::string_view  remainder     = content.substr(separator + 1);
             const std::size_t leadingSpaces = countLeadingSpaces(remainder);
-            remainder = trim(remainder);
+            remainder                       = trim(remainder);
             ++index;
 
-            ConfigValue value;
+            ParserValue value;
             if (remainder.empty())
             {
                 value = parseBlock(index, blockIndent, nestingDepth);
-            }
-            else
+            } else
             {
-                value = parseInlineValue(remainder, line.number, line.indent + separator + 1 + leadingSpaces + 1);
+                value = parseInlineValue(remainder, number, indent + separator + 1 + leadingSpaces + 1);
             }
 
             // 键文本允许带引号（书写含特殊字符的键），裸键一律按字面文本处理
             std::string keyName;
             if (keyText.front() == '"' || keyText.front() == '\'')
             {
-                const ConfigValue decodedKey = parseInlineValue(keyText, line.number, line.indent + 1);
+                const ParserValue decodedKey = parseInlineValue(keyText, number, indent + 1);
                 if (!decodedKey.is<std::string>())
                 {
-                    throw ParserError("mapping key must be a string", makePosition(line.number, line.indent + 1));
+                    throw ParserError("mapping key must be a string", makePosition(number, indent + 1));
                 }
                 keyName = decodedKey.asString();
-            }
-            else
+            } else
             {
                 keyName = std::string(keyText);
             }
 
             if (members.contains(keyName))
             {
-                throw ParserError("duplicate key: " + keyName, makePosition(line.number, line.indent + 1));
+                throw ParserError("duplicate key: " + keyName, makePosition(number, indent + 1));
             }
             members.emplace(keyName, std::move(value));
         }
 
-        return ConfigValue(std::move(members));
+        return ParserValue(std::move(members));
     }
 
-    ConfigValue YamlParser::parseSequence(std::size_t &index, const std::size_t blockIndent, const std::size_t nestingDepth)
+    ParserValue YamlParser::parseSequence(std::size_t &index, const std::size_t blockIndent, const std::size_t nestingDepth)
     {
-        ConfigArray elements;
+        ParserValueArray elements;
 
         while (index < m_lines.size())
         {
-            const Line &line = m_lines[index];
+            const auto &[content, indent, number] = m_lines[index];
 
-            if (line.indent < blockIndent || !startsSequenceEntry(line.content))
+            if (indent < blockIndent || !startsSequenceEntry(content))
             {
-                if (line.indent > blockIndent)
+                if (indent > blockIndent)
                 {
-                    throw ParserError("inconsistent indentation inside a sequence", makePosition(line.number, line.indent + 1));
+                    throw ParserError("inconsistent indentation inside a sequence", makePosition(number, indent + 1));
                 }
                 break;
             }
 
-            std::string_view itemText = trimLeft(line.content.substr(1));
-            const std::size_t leadingSpaces = line.content.size() - itemText.size() - 1;
+            std::string_view  itemText      = trimLeft(content.substr(1));
+            const std::size_t leadingSpaces = content.size() - itemText.size() - 1;
 
             if (itemText.empty())
             {
@@ -426,31 +418,31 @@ namespace AsynGyanis::Base
                 continue;
             }
 
-            const std::size_t itemIndent = line.indent + 1 + leadingSpaces;
+            const std::size_t itemIndent = indent + 1 + leadingSpaces;
 
             // 「- key: value」是内联开始的映射，就地改写这一行后按块解析，
             // 使后续同列的兄弟键自然并入同一个元素
             if (startsSequenceEntry(itemText) || findKeyValueSeparator(itemText) != std::string_view::npos)
             {
-                m_lines[index] = Line{itemText, itemIndent, line.number};
+                m_lines[index] = Line{.content = itemText, .indent = itemIndent, .number = number};
                 elements.push_back(parseBlock(index, blockIndent, nestingDepth));
                 continue;
             }
 
-            elements.push_back(parseInlineValue(itemText, line.number, itemIndent + 1));
+            elements.push_back(parseInlineValue(itemText, number, itemIndent + 1));
             ++index;
         }
 
-        return ConfigValue(std::move(elements));
+        return ParserValue(std::move(elements));
     }
 
-    ConfigValue YamlParser::parseInlineValue(std::string_view text, const std::size_t number, const std::size_t column)
+    ParserValue YamlParser::parseInlineValue(std::string_view text, const std::size_t number, const std::size_t column)
     {
         const ParserPosition position = makePosition(number, column);
 
         if (text.empty())
         {
-            return ConfigValue(nullptr);
+            return ParserValue(nullptr);
         }
 
         switch (text.front())
@@ -458,7 +450,7 @@ namespace AsynGyanis::Base
             case '[':
             {
                 std::size_t cursor = 0;
-                ConfigValue value  = parseFlowSequence(text, cursor, number);
+                ParserValue value  = parseFlowSequence(text, cursor, number);
                 if (!trim(text.substr(cursor)).empty())
                 {
                     throw ParserError("unexpected content after a flow sequence", position);
@@ -468,7 +460,7 @@ namespace AsynGyanis::Base
             case '{':
             {
                 std::size_t cursor = 0;
-                ConfigValue value  = parseFlowMapping(text, cursor, number);
+                ParserValue value  = parseFlowMapping(text, cursor, number);
                 if (!trim(text.substr(cursor)).empty())
                 {
                     throw ParserError("unexpected content after a flow mapping", position);
@@ -486,7 +478,7 @@ namespace AsynGyanis::Base
                 {
                     throw ParserError("unexpected content after a quoted scalar", position);
                 }
-                return ConfigValue(ParserText::decodeQuotedBody(text.substr(1, closing - 1), position));
+                return ParserValue(ParserText::decodeQuotedBody(text.substr(1, closing - 1), position));
             }
             case '\'':
             {
@@ -499,7 +491,7 @@ namespace AsynGyanis::Base
                 {
                     throw ParserError("unexpected content after a quoted scalar", position);
                 }
-                return ConfigValue(expandSingleQuoteEscapes(text.substr(1, closing - 1)));
+                return ParserValue(expandSingleQuoteEscapes(text.substr(1, closing - 1)));
             }
             case '&':
             case '*':
@@ -519,7 +511,7 @@ namespace AsynGyanis::Base
         return inferScalar(text);
     }
 
-    ConfigValue YamlParser::parseFlowValue(std::string_view text, std::size_t &cursor, const std::size_t number)
+    ParserValue YamlParser::parseFlowValue(std::string_view text, std::size_t &cursor, const std::size_t number)
     {
         while (cursor < text.size() && (text[cursor] == ' ' || text[cursor] == '\t'))
         {
@@ -544,8 +536,7 @@ namespace AsynGyanis::Base
                 {
                     throw ParserError("unterminated double-quoted string inside a flow collection", makePosition(number, cursor + 1));
                 }
-                ConfigValue value(ParserText::decodeQuotedBody(text.substr(cursor + 1, closing - cursor - 1),
-                                                               makePosition(number, cursor + 1)));
+                ParserValue value(ParserText::decodeQuotedBody(text.substr(cursor + 1, closing - cursor - 1), makePosition(number, cursor + 1)));
                 cursor = closing + 1;
                 return value;
             }
@@ -556,7 +547,7 @@ namespace AsynGyanis::Base
                 {
                     throw ParserError("unterminated single-quoted string inside a flow collection", makePosition(number, cursor + 1));
                 }
-                ConfigValue value(expandSingleQuoteEscapes(text.substr(cursor + 1, closing - cursor - 1)));
+                ParserValue value(expandSingleQuoteEscapes(text.substr(cursor + 1, closing - cursor - 1)));
                 cursor = closing + 1;
                 return value;
             }
@@ -573,10 +564,10 @@ namespace AsynGyanis::Base
         return inferScalar(trim(text.substr(valueStart, cursor - valueStart)));
     }
 
-    ConfigValue YamlParser::parseFlowSequence(std::string_view text, std::size_t &cursor, const std::size_t number)
+    ParserValue YamlParser::parseFlowSequence(const std::string_view text, std::size_t &cursor, const std::size_t number)
     {
         ++cursor; // 跳过 '['
-        ConfigArray elements;
+        ParserValueArray elements;
 
         while (true)
         {
@@ -592,7 +583,7 @@ namespace AsynGyanis::Base
             if (text[cursor] == ']')
             {
                 ++cursor;
-                return ConfigValue(std::move(elements));
+                return ParserValue(std::move(elements));
             }
 
             elements.push_back(parseFlowValue(text, cursor, number));
@@ -609,10 +600,10 @@ namespace AsynGyanis::Base
         }
     }
 
-    ConfigValue YamlParser::parseFlowMapping(std::string_view text, std::size_t &cursor, const std::size_t number)
+    ParserValue YamlParser::parseFlowMapping(std::string_view text, std::size_t &cursor, const std::size_t number)
     {
         ++cursor; // 跳过 '{'
-        ConfigObject members;
+        ParserValueObject members;
 
         while (true)
         {
@@ -628,7 +619,7 @@ namespace AsynGyanis::Base
             if (text[cursor] == '}')
             {
                 ++cursor;
-                return ConfigValue(std::move(members));
+                return ParserValue(std::move(members));
             }
 
             // 键先扫到冒号，再作为独立文本解析（兼容引号键）
@@ -642,14 +633,14 @@ namespace AsynGyanis::Base
                 throw ParserError("flow mapping entries must be written as key: value", makePosition(number, keyStart + 1));
             }
 
-            const ConfigValue key = parseInlineValue(trim(text.substr(keyStart, cursor - keyStart)), number, keyStart + 1);
+            const ParserValue key = parseInlineValue(trim(text.substr(keyStart, cursor - keyStart)), number, keyStart + 1);
             if (!key.is<std::string>() && !key.isNull())
             {
                 throw ParserError("flow mapping key must be a string", makePosition(number, keyStart + 1));
             }
 
             ++cursor; // 消费 ':'
-            ConfigValue value = parseFlowValue(text, cursor, number);
+            ParserValue value = parseFlowValue(text, cursor, number);
 
             const std::string keyName = key.isNull() ? "null" : key.asString();
             if (members.contains(keyName))
@@ -670,19 +661,19 @@ namespace AsynGyanis::Base
         }
     }
 
-    ConfigValue YamlParser::inferScalar(const std::string_view text)
+    ParserValue YamlParser::inferScalar(const std::string_view text)
     {
         if (text.empty() || text == "~" || equalsIgnoringCase(text, "null"))
         {
-            return ConfigValue(nullptr);
+            return ParserValue(nullptr);
         }
         if (equalsIgnoringCase(text, "true") || equalsIgnoringCase(text, "yes") || equalsIgnoringCase(text, "on"))
         {
-            return ConfigValue(true);
+            return ParserValue(true);
         }
         if (equalsIgnoringCase(text, "false") || equalsIgnoringCase(text, "no") || equalsIgnoringCase(text, "off"))
         {
-            return ConfigValue(false);
+            return ParserValue(false);
         }
 
         const char *begin = text.data();
@@ -692,17 +683,17 @@ namespace AsynGyanis::Base
         if (const auto [integerPointer, integerError] = std::from_chars(begin, end, integer);
             integerError == std::errc() && integerPointer == end)
         {
-            return ConfigValue(integer);
+            return ParserValue(integer);
         }
 
         double floatingPoint = 0.0;
         if (const auto [floatPointer, floatError] = std::from_chars(begin, end, floatingPoint);
             floatError == std::errc() && floatPointer == end)
         {
-            return ConfigValue(floatingPoint);
+            return ParserValue(floatingPoint);
         }
 
-        return ConfigValue(std::string(text));
+        return ParserValue(std::string(text));
     }
 
     bool YamlParser::startsSequenceEntry(const std::string_view content) noexcept

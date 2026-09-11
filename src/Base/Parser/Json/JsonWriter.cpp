@@ -1,9 +1,8 @@
-#include "Base/Parser/JsonWriter.h"
+#include "Base/Parser/Json/JsonWriter.h"
 
-#include "Base/Config/ConfigValueType.h"
+#include "Base/Parser/Value/ParserValueType.h"
 
 #include <charconv>
-#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -23,16 +22,17 @@ namespace AsynGyanis::Base
          */
         void appendUnicodeEscape(std::string &output, const std::uint16_t codeUnit)
         {
-            static constexpr char hexadecimalDigits[] = "0123456789abcdef";
+            static constexpr char khexadecimalDigits[] = "0123456789abcdef";
+
             output += "\\u";
-            output.push_back(hexadecimalDigits[(codeUnit >> 12) & 0xFU]);
-            output.push_back(hexadecimalDigits[(codeUnit >> 8) & 0xFU]);
-            output.push_back(hexadecimalDigits[(codeUnit >> 4) & 0xFU]);
-            output.push_back(hexadecimalDigits[codeUnit & 0xFU]);
+            output.push_back(khexadecimalDigits[(codeUnit >> 12) & 0xFU]);
+            output.push_back(khexadecimalDigits[(codeUnit >> 8) & 0xFU]);
+            output.push_back(khexadecimalDigits[(codeUnit >> 4) & 0xFU]);
+            output.push_back(khexadecimalDigits[codeUnit & 0xFU]);
         }
     } // namespace
 
-    std::string JsonWriter::write(const ConfigValue &value, const bool indented)
+    std::string JsonWriter::write(const ParserValue &value, const bool indented)
     {
         std::string output;
         output.reserve(64);
@@ -40,21 +40,21 @@ namespace AsynGyanis::Base
         return output;
     }
 
-    void JsonWriter::appendValue(std::string &output, const ConfigValue &value, const std::size_t indentationLevel,
-                                 const bool indented)
+    void JsonWriter::appendValue(std::string &output, const ParserValue &value, const std::size_t indentationLevel,
+                                 const bool   indented)
     {
         switch (value.type())
         {
-            case ConfigValueType::Null:
+            case ParserValueType::Null:
                 output += "null";
                 break;
-            case ConfigValueType::Bool:
+            case ParserValueType::Bool:
                 output += value.asBool() ? "true" : "false";
                 break;
-            case ConfigValueType::Int:
+            case ParserValueType::Int:
                 output += std::to_string(value.asInt());
                 break;
-            case ConfigValueType::Double:
+            case ParserValueType::Double:
             {
                 const double floatingPoint = value.asDouble();
                 if (!std::isfinite(floatingPoint))
@@ -64,16 +64,16 @@ namespace AsynGyanis::Base
                     break;
                 }
 
-                char buffer[64];
-                const auto conversionResult = std::to_chars(buffer, buffer + sizeof(buffer), floatingPoint);
-                if (conversionResult.ec != std::errc())
+                char       buffer[64];
+                const auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), floatingPoint);
+                if (ec != std::errc())
                 {
                     output += "null";
                     break;
                 }
 
                 const std::size_t numberStart = output.size();
-                output.append(buffer, conversionResult.ptr);
+                output.append(buffer, ptr);
                 // 整数值的浮点必须带小数点或指数，否则会被重新解析成 int64_t
                 if (output.find_first_of(".eE", numberStart) == std::string::npos)
                 {
@@ -81,12 +81,12 @@ namespace AsynGyanis::Base
                 }
                 break;
             }
-            case ConfigValueType::String:
+            case ParserValueType::String:
                 appendQuotedString(output, value.asString());
                 break;
-            case ConfigValueType::Array:
+            case ParserValueType::Array:
             {
-                const ConfigArray &elements = value.asArray();
+                const ParserValueArray &elements = value.asArray();
                 if (elements.empty())
                 {
                     output += "[]";
@@ -105,19 +105,19 @@ namespace AsynGyanis::Base
                 }
                 output += indented ? "\n" : "";
                 appendIndentation(output, indentationLevel, indented);
-                output += "]";
+                output += ']';
                 break;
             }
-            case ConfigValueType::Object:
+            case ParserValueType::Object:
             {
-                const ConfigObject &members = value.asObject();
+                const ParserValueObject &members = value.asObject();
                 if (members.empty())
                 {
                     output += "{}";
                     break;
                 }
 
-                output += indented ? "{\n" : "{";
+                output             += indented ? "{\n" : "{";
                 bool isFirstMember = true;
                 for (const auto &[key, member]: members)
                 {
@@ -134,7 +134,7 @@ namespace AsynGyanis::Base
                 }
                 output += indented ? "\n" : "";
                 appendIndentation(output, indentationLevel, indented);
-                output += "}";
+                output += '}';
                 break;
             }
             default:
@@ -147,9 +147,8 @@ namespace AsynGyanis::Base
     {
         output.push_back('"');
 
-        for (std::size_t index = 0; index < text.size(); ++index)
+        for (const char character: text)
         {
-            const char character = text[index];
             switch (character)
             {
                 case '"':
@@ -177,8 +176,7 @@ namespace AsynGyanis::Base
                     if (static_cast<unsigned char>(character) < 0x20)
                     {
                         appendUnicodeEscape(output, static_cast<std::uint16_t>(static_cast<unsigned char>(character)));
-                    }
-                    else
+                    } else
                     {
                         output.push_back(character);
                     }

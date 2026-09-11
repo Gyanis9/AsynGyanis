@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Base/Config/ConfigKeyValueMap.h"
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"

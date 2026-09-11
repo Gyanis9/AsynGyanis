@@ -2,29 +2,6 @@
 
 namespace AsynGyanis::Base
 {
-    const char *typeName(const ConfigValueType type) noexcept
-    {
-        switch (type)
-        {
-            case ConfigValueType::Null:
-                return "null";
-            case ConfigValueType::Bool:
-                return "bool";
-            case ConfigValueType::Int:
-                return "int";
-            case ConfigValueType::Double:
-                return "double";
-            case ConfigValueType::String:
-                return "string";
-            case ConfigValueType::Array:
-                return "array";
-            case ConfigValueType::Object:
-                return "object";
-            default:
-                return "unknown";
-        }
-    }
-
     namespace
     {
         /**

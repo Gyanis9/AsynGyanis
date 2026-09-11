@@ -1,0 +1,49 @@
+#include "Base/Parser/Value/ValueAccessError.h"
+
+#include <format>
+#include <string>
+#include <utility>
+
+namespace AsynGyanis::Base
+{
+    ValueAccessError::ValueAccessError(const std::string &key, const std::string &expectedType, const std::string &actualType, const std::source_location &sourceLocation) :
+        ValueAccessError(std::format("Type mismatch for key '{}': expected {}, got {}", key, expectedType, actualType),
+                         key, expectedType, actualType, sourceLocation)
+    {
+    }
+
+    ValueAccessError ValueAccessError::missingMember(const std::string &key, const std::source_location &sourceLocation)
+    {
+        return {
+                std::format("Member not found: '{}'", key), key, std::string{}, std::string{},
+                sourceLocation
+        };
+    }
+
+    ValueAccessError::ValueAccessError(const std::string &         message,
+                                       std::string                 key,
+                                       std::string                 expectedType,
+                                       std::string                 actualType,
+                                       const std::source_location &sourceLocation) :
+        Exception(message, sourceLocation)
+        , m_key(std::move(key))
+        , m_expectedType(std::move(expectedType))
+        , m_actualType(std::move(actualType))
+    {
+    }
+
+    const std::string &ValueAccessError::key() const noexcept
+    {
+        return m_key;
+    }
+
+    const std::string &ValueAccessError::expectedType() const noexcept
+    {
+        return m_expectedType;
+    }
+
+    const std::string &ValueAccessError::actualType() const noexcept
+    {
+        return m_actualType;
+    }
+} // namespace AsynGyanis::Base

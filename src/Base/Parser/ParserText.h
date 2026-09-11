@@ -11,7 +11,6 @@
 
 #include "Base/Parser/ParserPosition.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -43,8 +42,7 @@ namespace AsynGyanis::Base
          * @return std::uint32_t 转换得到的数值
          * @throws ParserError 位数不足或含非十六进制字符
          */
-        static std::uint32_t decodeHex(std::string_view text, std::size_t &index, std::size_t digitCount,
-                                       const ParserPosition &position);
+        static std::uint32_t decodeHex(std::string_view text, std::size_t &index, std::size_t digitCount, const ParserPosition &position);
 
         /**
          * @brief 解析 JSON 风格转义序列（不含 \\u 本体）

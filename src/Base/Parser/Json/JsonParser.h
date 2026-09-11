@@ -9,10 +9,9 @@
 
 #pragma once
 
-#include "Base/Config/ConfigValue.h"
+#include "Base/Parser/Value/ParserValue.h"
 #include "Base/Parser/ParserPosition.h"
 
-#include <cstddef>
 #include <string_view>
 
 namespace AsynGyanis::Base
@@ -22,7 +21,7 @@ namespace AsynGyanis::Base
      *
      * @details 覆盖 RFC 8259 的常用子集：对象、数组、字符串（含 \\uXXXX 与代理对）、
      *          数字、true/false/null。与 YAML 侧共用 ParserText 的转义实现，
-     *          解析结果直接落到 ConfigValue，不引入第二套值类型。
+     *          解析结果直接落到 ParserValue，不引入第二套值类型。
      * @note 明确拒绝：注释、单引号字符串、前导零、尾逗号、`NaN`/`Infinity`、
      *          文档尾部的多余内容；对象内重复键同样视为错误（配置场景下几乎总是笔误）。
      */
@@ -32,10 +31,10 @@ namespace AsynGyanis::Base
         /**
          * @brief 解析一份完整的 JSON 文档
          * @param text UTF-8 编码的 JSON 文本
-         * @return ConfigValue 解析得到的配置值
+         * @return ParserValue 解析得到的配置值
          * @throws ParserError 语法非法、位置越界或嵌套超过 kMaximumNestingDepth 层
          */
-        [[nodiscard]] static ConfigValue parse(std::string_view text);
+        [[nodiscard]] static ParserValue parse(std::string_view text);
 
     private:
         /// 容器嵌套深度上限，防止恶意或损坏的输入耗尽调用栈
@@ -49,49 +48,49 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 解析入口值并确认尾部无残留内容
-         * @return ConfigValue 文档根值
+         * @return ParserValue 文档根值
          */
-        [[nodiscard]] ConfigValue parseDocument();
+        [[nodiscard]] ParserValue parseDocument();
 
         /**
          * @brief 解析单个值
          * @param nestingDepth 当前嵌套深度
-         * @return ConfigValue 解析结果
+         * @return ParserValue 解析结果
          */
-        [[nodiscard]] ConfigValue parseValue(std::size_t nestingDepth);
+        [[nodiscard]] ParserValue parseValue(std::size_t nestingDepth);
 
         /**
          * @brief 解析对象
          * @param nestingDepth 当前嵌套深度
-         * @return ConfigValue 承载 ConfigObject 的值
+         * @return ParserValue 承载 ParserValueObject 的值
          */
-        [[nodiscard]] ConfigValue parseObject(std::size_t nestingDepth);
+        [[nodiscard]] ParserValue parseObject(std::size_t nestingDepth);
 
         /**
          * @brief 解析数组
          * @param nestingDepth 当前嵌套深度
-         * @return ConfigValue 承载 ConfigArray 的值
+         * @return ParserValue 承载 ParserValueArray 的值
          */
-        [[nodiscard]] ConfigValue parseArray(std::size_t nestingDepth);
+        [[nodiscard]] ParserValue parseArray(std::size_t nestingDepth);
 
         /**
          * @brief 解析字符串（含首尾双引号）
-         * @return ConfigValue 字符串值
+         * @return ParserValue 字符串值
          */
-        [[nodiscard]] ConfigValue parseString();
+        [[nodiscard]] ParserValue parseString();
 
         /**
          * @brief 解析数字并判定为整数或浮点
-         * @return ConfigValue 数值
+         * @return ParserValue 数值
          */
-        [[nodiscard]] ConfigValue parseNumber();
+        [[nodiscard]] ParserValue parseNumber();
 
         /**
          * @brief 解析 true/false/null 字面量
          * @param leadCharacter 首字符，用于区分具体字面量
-         * @return ConfigValue 对应的标量值
+         * @return ParserValue 对应的标量值
          */
-        [[nodiscard]] ConfigValue parseLiteral(char leadCharacter);
+        [[nodiscard]] ParserValue parseLiteral(char leadCharacter);
 
         /**
          * @brief 跳过空白字符并同步行列号
@@ -122,9 +121,9 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] ParserPosition currentPosition() const noexcept;
 
-        std::string_view m_text;   ///< 待解析全文
-        std::size_t m_index{0};    ///< 当前扫描偏移
-        std::size_t m_line{1};     ///< 当前行号
-        std::size_t m_column{1};   ///< 当前列号
+        std::string_view m_text;      ///< 待解析全文
+        std::size_t      m_index{0};  ///< 当前扫描偏移
+        std::size_t      m_line{1};   ///< 当前行号
+        std::size_t      m_column{1}; ///< 当前列号
     };
 } // namespace AsynGyanis::Base

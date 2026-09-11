@@ -31,9 +31,7 @@ namespace AsynGyanis::Base
          * @param position 出错位置
          * @param sourceLocation 抛出点，默认取调用位置
          */
-        explicit ParserError(const std::string &message,
-                             const ParserPosition &position,
-                             const std::source_location &sourceLocation = std::source_location::current());
+        explicit ParserError(const std::string &message, const ParserPosition &position, const std::source_location &sourceLocation = std::source_location::current());
 
         /**
          * @brief 获取出错位置

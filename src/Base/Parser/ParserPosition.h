@@ -9,7 +9,6 @@
 
 #pragma once
 
-#include <cstddef>
 #include <format>
 #include <string>
 

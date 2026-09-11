@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "Base/Config/ConfigValue.h"
+#include "Base/Parser/Value/ParserValue.h"
 
 #include <string>
 
@@ -18,7 +18,7 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON 序列化器
      *
-     * @details 与 JsonParser 严格互逆：任何 parse 成功得到的 ConfigValue 再 write 后
+     * @details 与 JsonParser 严格互逆：任何 parse 成功得到的 ParserValue 再 write 后
      *          都能被重新 parse 回等价结果。浮点使用 std::to_chars 的最短往返表示，
      *          不会出现 ostream 默认精度造成的数值截断。
      */
@@ -32,7 +32,7 @@ namespace AsynGyanis::Base
          * @return std::string 合法 JSON 文本
          * @note 非有限的浮点值（NaN、±Inf）没有合法的 JSON 数字表示，输出为 null。
          */
-        [[nodiscard]] static std::string write(const ConfigValue &value, bool indented = false);
+        [[nodiscard]] static std::string write(const ParserValue &value, bool indented = false);
 
     private:
         /**
@@ -42,7 +42,7 @@ namespace AsynGyanis::Base
          * @param indentationLevel 当前缩进层级
          * @param indented 是否启用缩进格式
          */
-        static void appendValue(std::string &output, const ConfigValue &value, std::size_t indentationLevel, bool indented);
+        static void appendValue(std::string &output, const ParserValue &value, std::size_t indentationLevel, bool indented);
 
         /**
          * @brief 追加带引号并转义后的字符串

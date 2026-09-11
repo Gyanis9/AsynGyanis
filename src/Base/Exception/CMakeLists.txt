@@ -14,8 +14,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/ConfigParseException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ConfigKeyNotFoundException.h
         ${CMAKE_CURRENT_LIST_DIR}/ConfigKeyNotFoundException.cpp
-        ${CMAKE_CURRENT_LIST_DIR}/ConfigTypeException.h
-        ${CMAKE_CURRENT_LIST_DIR}/ConfigTypeException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ConfigValidationException.h
         ${CMAKE_CURRENT_LIST_DIR}/ConfigValidationException.cpp
 )

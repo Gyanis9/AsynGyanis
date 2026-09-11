@@ -9,10 +9,9 @@
 
 #pragma once
 
-#include "Base/Config/ConfigValue.h"
+#include "Base/Parser/Value/ParserValue.h"
 #include "Base/Parser/ParserPosition.h"
 
-#include <cstddef>
 #include <string_view>
 #include <vector>
 
@@ -35,10 +34,10 @@ namespace AsynGyanis::Base
         /**
          * @brief 解析一份 YAML 文本
          * @param text UTF-8 编码的 YAML 内容
-         * @return ConfigValue 根节点值；输入为空或全为注释时返回空对象
+         * @return ParserValue 根节点值；输入为空或全为注释时返回空对象
          * @throws ParserError 缩进非法、语法不完整或使用了指明的不支持特性
          */
-        [[nodiscard]] static ConfigValue parse(std::string_view text);
+        [[nodiscard]] static ParserValue parse(std::string_view text);
 
     private:
         /// 嵌套深度上限，避免损坏或恶意输入耗尽调用栈
@@ -49,9 +48,9 @@ namespace AsynGyanis::Base
          */
         struct Line
         {
-            std::string_view content; ///< 去掉缩进与行尾注释后的正文
-            std::size_t indent{0};    ///< 行首空格数
-            std::size_t number{1};    ///< 原始行号，用于错误定位
+            std::string_view content;   ///< 去掉缩进与行尾注释后的正文
+            std::size_t      indent{0}; ///< 行首空格数
+            std::size_t      number{1}; ///< 原始行号，用于错误定位
         };
 
         /**
@@ -71,70 +70,70 @@ namespace AsynGyanis::Base
          * @param index 输入输出参数，当前行下标
          * @param parentIndent 父块缩进，只有更深的行才属于本块
          * @param nestingDepth 当前嵌套深度
-         * @return ConfigValue 块值；没有更深行时返回空对象
+         * @return ParserValue 块值；没有更深行时返回空对象
          */
-        [[nodiscard]] ConfigValue parseBlock(std::size_t &index, std::size_t parentIndent, std::size_t nestingDepth);
+        [[nodiscard]] ParserValue parseBlock(std::size_t &index, std::size_t parentIndent, std::size_t nestingDepth);
 
         /**
          * @brief 解析同缩进的映射块
          * @param index 输入输出参数，当前行下标
          * @param blockIndent 本块缩进
          * @param nestingDepth 当前嵌套深度
-         * @return ConfigValue 映射值
+         * @return ParserValue 映射值
          */
-        [[nodiscard]] ConfigValue parseMapping(std::size_t &index, std::size_t blockIndent, std::size_t nestingDepth);
+        [[nodiscard]] ParserValue parseMapping(std::size_t &index, std::size_t blockIndent, std::size_t nestingDepth);
 
         /**
          * @brief 解析同缩进的序列块
          * @param index 输入输出参数，当前行下标
          * @param blockIndent 本块缩进
          * @param nestingDepth 当前嵌套深度
-         * @return ConfigValue 序列值
+         * @return ParserValue 序列值
          */
-        [[nodiscard]] ConfigValue parseSequence(std::size_t &index, std::size_t blockIndent, std::size_t nestingDepth);
+        [[nodiscard]] ParserValue parseSequence(std::size_t &index, std::size_t blockIndent, std::size_t nestingDepth);
 
         /**
          * @brief 解析出现在某一行内的值
          * @param text 值文本（已去除键与前导空白）
          * @param number 所在行号
          * @param column 值在行内的列号
-         * @return ConfigValue 标量或流式容器值
+         * @return ParserValue 标量或流式容器值
          */
-        [[nodiscard]] ConfigValue parseInlineValue(std::string_view text, std::size_t number, std::size_t column);
+        [[nodiscard]] ParserValue parseInlineValue(std::string_view text, std::size_t number, std::size_t column);
 
         /**
          * @brief 解析流式序列 `[a, b]`
          * @param text 所在行的剩余正文
          * @param cursor 输入输出参数，text 内的偏移
          * @param number 所在行号
-         * @return ConfigValue 序列值
+         * @return ParserValue 序列值
          */
-        [[nodiscard]] ConfigValue parseFlowSequence(std::string_view text, std::size_t &cursor, std::size_t number);
+        [[nodiscard]] ParserValue parseFlowSequence(std::string_view text, std::size_t &cursor, std::size_t number);
 
         /**
          * @brief 解析流式容器内的一个值并把游标推进到其后
          * @param text 所在行的剩余正文
          * @param cursor 输入输出参数，text 内的偏移
          * @param number 所在行号
-         * @return ConfigValue 该位置的值
+         * @return ParserValue 该位置的值
          */
-        [[nodiscard]] ConfigValue parseFlowValue(std::string_view text, std::size_t &cursor, std::size_t number);
+        [[nodiscard]] ParserValue parseFlowValue(std::string_view text, std::size_t &cursor, std::size_t number);
 
         /**
          * @brief 解析流式映射 `{k: v}`
          * @param text 所在行的剩余正文
          * @param cursor 输入输出参数，text 内的偏移
          * @param number 所在行号
-         * @return ConfigValue 映射值
+         * @return ParserValue 映射值
          */
-        [[nodiscard]] ConfigValue parseFlowMapping(std::string_view text, std::size_t &cursor, std::size_t number);
+        [[nodiscard]] ParserValue parseFlowMapping(std::string_view text, std::size_t &cursor, std::size_t number);
 
         /**
          * @brief 按 YAML 规则推断裸标量的类型
          * @param text 标量文本
-         * @return ConfigValue 推断得到的值
+         * @return ParserValue 推断得到的值
          */
-        [[nodiscard]] static ConfigValue inferScalar(std::string_view text);
+        [[nodiscard]] static ParserValue inferScalar(std::string_view text);
 
         /**
          * @brief 判断正文是否以序列项标记开头
@@ -150,7 +149,7 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] static std::size_t findKeyValueSeparator(std::string_view content) noexcept;
 
-        std::string_view m_text;      ///< 原始输入
-        std::vector<Line> m_lines;     ///< 切分后的逻辑行
+        std::string_view  m_text;  ///< 原始输入
+        std::vector<Line> m_lines; ///< 切分后的逻辑行
     };
 } // namespace AsynGyanis::Base
