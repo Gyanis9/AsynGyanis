@@ -17,7 +17,7 @@
 #include <atomic>
 #include <format>
 #include <memory>
-#include <shared_mutex>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -131,14 +131,34 @@ namespace AsynGyanis::Base
 
     private:
         /**
+         * @brief Sink 列表的不可变快照
+         *
+         * @details 读侧原子加载一份快照后即可整轮遍历，无需任何锁；
+         *          写侧（addSink/clearSinks）构造新快照整体替换，旧快照由
+         *          仍在遍历它的线程共同持有，因此不会出现写入已释放 Sink 的情况。
+         */
+        struct SinkSnapshot
+        {
+            std::vector<std::shared_ptr<LogSink> > sinks; ///< 该代快照持有的 Sink 列表
+        };
+
+        /**
+         * @brief 构造不含任何 Sink 的空快照
+         * @return std::shared_ptr<const SinkSnapshot> 只读空快照
+         */
+        [[nodiscard]] static std::shared_ptr<const SinkSnapshot> emptySnapshot();
+
+        /**
          * @brief 将日志事件分发到全部可用 Sink
+         * @details 先原子加载当前快照再遍历，遍历期间即使并发调用 clearSinks()
+         *          也不会解除引用已释放的 Sink。
          * @param event 已构造好的日志事件对象
          */
         void writeToSinks(const LogEvent &event) const;
 
-        std::string                            m_name;                   ///< 日志器名称
-        std::atomic<LogLevel>                  m_level{LogLevel::Trace}; ///< 当前日志级别
-        std::vector<std::unique_ptr<LogSink> > m_sinks;                  ///< 日志输出目标（Sink）列表
-        mutable std::shared_mutex              m_sinksMutex;             ///< 保护 m_sinks 的读写锁
+        std::string m_name;                                        ///< 日志器名称
+        std::atomic<LogLevel> m_level{LogLevel::Trace};            ///< 当前日志级别
+        std::atomic<std::shared_ptr<const SinkSnapshot> > m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
+        std::mutex m_sinksWriteMutex;                              ///< 仅用于串行化替换快照的写者，读者不会触碰
     };
 } // namespace AsynGyanis::Base

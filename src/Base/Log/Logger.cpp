@@ -36,16 +36,33 @@ namespace AsynGyanis::Base
         writeToSinks(event);
     }
 
+    std::shared_ptr<const Logger::SinkSnapshot> Logger::emptySnapshot()
+    {
+        return std::make_shared<const SinkSnapshot>();
+    }
+
     void Logger::addSink(std::unique_ptr<LogSink> sink)
     {
-        std::unique_lock lock(m_sinksMutex);
-        m_sinks.push_back(std::move(sink));
+        if (!sink)
+        {
+            return;
+        }
+
+        // 写者之间串行即可，读者全程无锁；复制上一代指针列表构成新一代快照
+        std::lock_guard writeLock(m_sinksWriteMutex);
+
+        auto next = std::make_shared<SinkSnapshot>();
+        next->sinks = m_sinksSnapshot.load(std::memory_order_acquire)->sinks;
+        next->sinks.push_back(std::shared_ptr<LogSink>(std::move(sink)));
+        m_sinksSnapshot.store(std::move(next), std::memory_order_release);
     }
 
     void Logger::clearSinks()
     {
-        std::unique_lock lock(m_sinksMutex);
-        m_sinks.clear();
+        std::lock_guard writeLock(m_sinksWriteMutex);
+
+        // 旧快照可能仍被并发写日志的线程持有，Sink 会在最后一个引用释放后才销毁
+        m_sinksSnapshot.store(emptySnapshot(), std::memory_order_release);
     }
 
     void Logger::setLevel(const LogLevel level)
@@ -65,8 +82,8 @@ namespace AsynGyanis::Base
 
     void Logger::flush() const
     {
-        std::shared_lock lock(m_sinksMutex);
-        for (auto &sink: m_sinks)
+        const auto snapshot = m_sinksSnapshot.load(std::memory_order_acquire);
+        for (const auto &sink: snapshot->sinks)
         {
             if (sink)
             {
@@ -77,18 +94,20 @@ namespace AsynGyanis::Base
 
     bool Logger::shouldLog(const LogLevel level) const
     {
+        const LogLevel currentLevel = getLevel();
+
         // Off 表示关闭全部输出，且它本身不是可用于记录消息的等级，因此一律不放行
-        if (getLevel() == LogLevel::Off)
+        if (currentLevel == LogLevel::Off)
         {
             return false;
         }
-        return level >= getLevel();
+        return level >= currentLevel;
     }
 
     void Logger::writeToSinks(const LogEvent &event) const
     {
-        std::shared_lock lock(m_sinksMutex);
-        for (auto &sink: m_sinks)
+        const auto snapshot = m_sinksSnapshot.load(std::memory_order_acquire);
+        for (const auto &sink: snapshot->sinks)
         {
             if (sink && sink->shouldLog(event.level))
             {
