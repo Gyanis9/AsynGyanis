@@ -37,7 +37,8 @@ namespace AsynGyanis::Core
          */
         virtual ~Connection() = default;
 
-        Connection(const Connection &)            = delete;
+        Connection(const Connection &) = delete;
+
         Connection &operator=(const Connection &) = delete;
 
         /**

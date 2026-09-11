@@ -32,10 +32,13 @@ namespace AsynGyanis::Core
          */
         ~BufferPool();
 
-        BufferPool(const BufferPool &)            = delete;
+        BufferPool(const BufferPool &) = delete;
+
         BufferPool &operator=(const BufferPool &) = delete;
-        BufferPool(BufferPool &&)                 = delete;
-        BufferPool &operator=(BufferPool &&)      = delete;
+
+        BufferPool(BufferPool &&) = delete;
+
+        BufferPool &operator=(BufferPool &&) = delete;
 
         /**
          * @brief 获取一个空闲缓冲区。

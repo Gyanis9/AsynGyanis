@@ -10,11 +10,10 @@
 #pragma once
 
 
-
 #include "Platform/Platform.h"
 
 #ifdef _WIN32
-  #include "wepoll.h"
+#include "wepoll.h"
 #endif
 
 #include <cstdint>
@@ -45,8 +44,11 @@ namespace AsynGyanis::Core
         ~Epoll();
 
         Epoll(Epoll &&) noexcept;
+
         Epoll &operator=(Epoll &&) noexcept;
-        Epoll(const Epoll &)            = delete;
+
+        Epoll(const Epoll &) = delete;
+
         Epoll &operator=(const Epoll &) = delete;
 
         /**
@@ -106,8 +108,8 @@ namespace AsynGyanis::Core
          */
         void destroy();
 
-        Platform::EpollHandle           m_fileDescriptor{Platform::kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: 文件描述符, Windows: HANDLE）
-        std::vector<epoll_event> m_events;                              ///< 存储 wait() 返回的事件数组，容量为 DEFAULT_MAX_EVENTS
-        static constexpr int     DEFAULT_MAX_EVENTS = 1024;             ///< 默认每次 wait 最多返回的事件数
+        Platform::EpollHandle    m_fileDescriptor{Platform::kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: 文件描述符, Windows: HANDLE）
+        std::vector<epoll_event> m_events;                                        ///< 存储 wait() 返回的事件数组，容量为 kMaximumEventCount
+        static constexpr int     kMaximumEventCount = 1024;                       ///< 默认每次 wait 最多返回的事件数
     };
 }

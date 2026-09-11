@@ -1,6 +1,6 @@
 /**
  * @file TlsSocket.cpp
- * @brief TLS 套接字实现
+ * @brief TLS socket 包装器 — SSL_read/SSL_write 与非阻塞 epoll 集成
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

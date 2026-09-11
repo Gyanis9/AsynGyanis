@@ -36,7 +36,8 @@ namespace AsynGyanis::Core
          */
         ~TlsContext();
 
-        TlsContext(const TlsContext &)            = delete;
+        TlsContext(const TlsContext &) = delete;
+
         TlsContext &operator=(const TlsContext &) = delete;
 
         /**

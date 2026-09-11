@@ -40,7 +40,8 @@ namespace AsynGyanis::Core
         ~IoContext();
 
         // 禁止拷贝
-        IoContext(const IoContext &)            = delete;
+        IoContext(const IoContext &) = delete;
+
         IoContext &operator=(const IoContext &) = delete;
 
         /**

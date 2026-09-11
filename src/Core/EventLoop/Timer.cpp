@@ -1,6 +1,6 @@
 /**
  * @file Timer.cpp
- * @brief 跨平台定时器实现
+ * @brief 可 co_await 的定时器实现：到期事件经描述符交给 epoll
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

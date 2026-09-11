@@ -15,8 +15,6 @@
 #include "Core/Coroutine/Task.h"
 #include "Platform/Platform.h"
 
-#include <string>
-
 namespace AsynGyanis::Core
 {
     class InetAddress;
@@ -49,7 +47,8 @@ namespace AsynGyanis::Core
         ~AsyncSocket();
 
         // 禁止拷贝
-        AsyncSocket(const AsyncSocket &)            = delete;
+        AsyncSocket(const AsyncSocket &) = delete;
+
         AsyncSocket &operator=(const AsyncSocket &) = delete;
 
         /**

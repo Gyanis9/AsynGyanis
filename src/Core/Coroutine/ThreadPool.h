@@ -5,7 +5,6 @@
  */
 #pragma once
 
-
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Coroutine/Scheduler.h"
 
@@ -37,7 +36,8 @@ namespace AsynGyanis::Core
          */
         ~ThreadPool();
 
-        ThreadPool(const ThreadPool &)            = delete;
+        ThreadPool(const ThreadPool &) = delete;
+
         ThreadPool &operator=(const ThreadPool &) = delete;
 
         /**
@@ -79,9 +79,9 @@ namespace AsynGyanis::Core
         [[nodiscard]] Scheduler &scheduler(size_t index) const;
 
     private:
-        size_t                                  m_threadCount; ///< 实际线程数量（启动后不变）
-        std::vector<std::unique_ptr<EventLoop>> m_eventLoops;  ///< 每个线程独立的 EventLoop
-        std::vector<std::jthread>               m_threads;     ///< 工作线程，使用 jthread 自动管理生命周期
+        size_t                                   m_threadCount; ///< 实际线程数量（启动后不变）
+        std::vector<std::unique_ptr<EventLoop> > m_eventLoops;  ///< 每个线程独立的 EventLoop
+        std::vector<std::jthread>                m_threads;     ///< 工作线程，使用 jthread 自动管理生命周期
     };
 
 }

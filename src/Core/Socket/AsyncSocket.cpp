@@ -1,6 +1,6 @@
 /**
  * @file AsyncSocket.cpp
- * @brief 异步套接字实现
+ * @brief 异步非阻塞 TCP socket 实现：边缘触发读写与协程式挂起
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -106,18 +106,22 @@ namespace AsynGyanis::Core
                 co_return AsyncSocket(m_loop, fileDescriptor);
             }
 
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() ==
+                Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
                 continue;
             }
 
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kConnectionAborted)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted || Platform::PlatformError::lastSocketErrorCode() ==
+                Platform::PlatformError::kConnectionAborted)
             {
                 continue;
             }
 
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kTooManyOpenFiles || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kSystemFileTableFull || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kNoBufferSpace || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kOutOfMemory)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kTooManyOpenFiles || Platform::PlatformError::lastSocketErrorCode() ==
+                Platform::PlatformError::kSystemFileTableFull || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kNoBufferSpace ||
+                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kOutOfMemory)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
                 continue;
@@ -139,7 +143,7 @@ namespace AsynGyanis::Core
 
         co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
 
-        int       error = 0;
+        int       error  = 0;
         socklen_t length = sizeof(error);
         getsockopt(m_fileDescriptor, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&error), &length);
         if (error != 0)
@@ -168,7 +172,8 @@ namespace AsynGyanis::Core
                 co_return n;
             if (n == 0)
                 co_return 0;
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() ==
+                Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
                 continue;
@@ -193,7 +198,8 @@ namespace AsynGyanis::Core
                 co_return n;
             if (n == 0)
                 co_return -1; // 对端已关闭连接
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() ==
+                Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
                 continue;

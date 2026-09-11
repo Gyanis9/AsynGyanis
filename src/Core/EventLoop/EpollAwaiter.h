@@ -6,7 +6,6 @@
 #pragma once
 
 
-
 #include "Core/EventLoop/Epoll.h"
 
 #include <coroutine>
@@ -55,10 +54,13 @@ namespace AsynGyanis::Core
         }
 
         // 禁止拷贝和移动（生命周期严格绑定到协程帧）
-        EpollAwaiter(const EpollAwaiter &)            = delete;
+        EpollAwaiter(const EpollAwaiter &) = delete;
+
         EpollAwaiter &operator=(const EpollAwaiter &) = delete;
-        EpollAwaiter(EpollAwaiter &&)                 = delete;
-        EpollAwaiter &operator=(EpollAwaiter &&)      = delete;
+
+        EpollAwaiter(EpollAwaiter &&) = delete;
+
+        EpollAwaiter &operator=(EpollAwaiter &&) = delete;
 
         /**
          * @brief 决定是否立即恢复（不挂起）

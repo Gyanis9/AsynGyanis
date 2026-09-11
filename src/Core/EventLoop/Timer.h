@@ -58,7 +58,7 @@ namespace AsynGyanis::Core
             void await_resume() const;
 
         private:
-            EpollAwaiter m_awaiter; ///< 内部封装的 epoll 等待器
+            EpollAwaiter m_awaiter;        ///< 内部封装的 epoll 等待器
             int          m_fileDescriptor; ///< timerfd 文件描述符
         };
 
@@ -81,8 +81,8 @@ namespace AsynGyanis::Core
         Awaiter waitFor(std::chrono::milliseconds duration);
 
     private:
-        EventLoop &          m_loop; ///< 所属事件循环
-        Platform::TimerFileDescriptor   m_timer; ///< 跨平台定时器文件描述符
+        EventLoop &                   m_loop;  ///< 所属事件循环
+        Platform::TimerFileDescriptor m_timer; ///< 跨平台定时器文件描述符
     };
 
 }

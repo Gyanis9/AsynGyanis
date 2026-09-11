@@ -1,6 +1,6 @@
 /**
  * @file ConnectionManager.cpp
- * @brief 连接管理器实现
+ * @brief 全局连接跟踪器，支持优雅关闭
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -48,7 +48,7 @@ namespace AsynGyanis::Core
 
     void ConnectionManager::shutdown()
     {
-        std::vector<std::shared_ptr<Connection>> snapshot;
+        std::vector<std::shared_ptr<Connection> > snapshot;
         {
             std::shared_lock lock(m_mutex);
             snapshot.reserve(m_connections.size());

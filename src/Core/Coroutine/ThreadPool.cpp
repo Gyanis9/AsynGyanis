@@ -1,6 +1,6 @@
 /**
  * @file ThreadPool.cpp
- * @brief 线程池实现
+ * @brief 固定大小线程池实现：为每个 EventLoop 绑定一条工作线程
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -8,7 +8,6 @@
  */
 
 #include "Core/Coroutine/ThreadPool.h"
-
 
 namespace AsynGyanis::Core
 {
@@ -58,6 +57,7 @@ namespace AsynGyanis::Core
             }
         }
 
+        // std::jthread 的析构会 join，因此这里必须先把停止请求发给全部 EventLoop 再清空
         m_threads.clear();
     }
 

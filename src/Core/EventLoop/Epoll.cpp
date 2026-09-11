@@ -1,6 +1,6 @@
 /**
  * @file Epoll.cpp
- * @brief 跨平台 epoll 封装实现
+ * @brief 跨平台 epoll 实例的 RAII 封装（Linux epoll / Windows wepoll）
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -22,7 +22,7 @@ namespace AsynGyanis::Core
         {
             throw std::runtime_error("epoll_create1 failed");
         }
-        m_events.resize(DEFAULT_MAX_EVENTS);
+        m_events.resize(kMaximumEventCount);
     }
 
     Epoll::~Epoll()

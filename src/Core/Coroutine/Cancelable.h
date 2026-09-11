@@ -26,9 +26,12 @@ namespace AsynGyanis::Core
         Cancelable() = default;
 
         // 禁止拷贝，允许移动
-        Cancelable(const Cancelable &)                = delete;
-        Cancelable &operator=(const Cancelable &)     = delete;
-        Cancelable(Cancelable &&) noexcept            = default;
+        Cancelable(const Cancelable &) = delete;
+
+        Cancelable &operator=(const Cancelable &) = delete;
+
+        Cancelable(Cancelable &&) noexcept = default;
+
         Cancelable &operator=(Cancelable &&) noexcept = default;
 
         /**

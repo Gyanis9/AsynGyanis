@@ -5,8 +5,6 @@
  */
 #pragma once
 
-
-
 #include <atomic>
 #include <coroutine>
 #include <deque>
@@ -116,10 +114,10 @@ namespace AsynGyanis::Core
         [[nodiscard]] size_t localQueueSize() const;
 
     private:
-        std::vector<std::coroutine_handle<>> m_localQueue;     ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
-        std::deque<std::coroutine_handle<>>  m_globalQueue;    ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
-        std::mutex                           m_globalMutex;    ///< 保护全局队列的互斥锁
-        std::atomic<size_t>                  m_globalCount{0}; ///< 全局队列长度（原子变量，用于快速判空）
-        Platform::EventNotifier *      m_wakeup{nullptr};   ///< 唤醒器指针，nullptr 表示未启用唤醒
+        std::vector<std::coroutine_handle<> > m_localQueue;      ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
+        std::deque<std::coroutine_handle<> >  m_globalQueue;     ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
+        std::mutex                            m_globalMutex;     ///< 保护全局队列的互斥锁
+        std::atomic<size_t>                   m_globalCount{0};  ///< 全局队列长度（原子变量，用于快速判空）
+        Platform::EventNotifier *             m_wakeup{nullptr}; ///< 唤醒器指针，nullptr 表示未启用唤醒
     };
 }

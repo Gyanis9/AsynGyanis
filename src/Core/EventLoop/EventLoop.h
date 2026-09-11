@@ -6,7 +6,6 @@
 #pragma once
 
 
-
 #include "Core/EventLoop/Epoll.h"
 #include "Platform/IO/EventNotifier.h"
 #include "Core/Coroutine/Scheduler.h"
@@ -36,7 +35,8 @@ namespace AsynGyanis::Core
          */
         ~EventLoop();
 
-        EventLoop(const EventLoop &)            = delete;
+        EventLoop(const EventLoop &) = delete;
+
         EventLoop &operator=(const EventLoop &) = delete;
 
         /**
@@ -82,11 +82,11 @@ namespace AsynGyanis::Core
         [[nodiscard]] bool isRunning() const noexcept;
 
     private:
-        Epoll                       m_epoll;          ///< epoll 事件管理器
-        Scheduler                   m_scheduler;      ///< 协程调度器，管理待运行的任务队列
-        Platform::EventNotifier     m_wakeup;         ///< 跨线程唤醒器
-        int                         m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
-        std::atomic<bool>           m_running;        ///< 循环是否正在运行中（原子标记）
-        std::atomic<bool>           m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
+        Epoll                   m_epoll;          ///< epoll 事件管理器
+        Scheduler               m_scheduler;      ///< 协程调度器，管理待运行的任务队列
+        Platform::EventNotifier m_wakeup;         ///< 跨线程唤醒器
+        int                     m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
+        std::atomic<bool>       m_running;        ///< 循环是否正在运行中（原子标记）
+        std::atomic<bool>       m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
     };
 }

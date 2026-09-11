@@ -39,7 +39,8 @@ namespace AsynGyanis::Core
          */
         ~TlsSocket();
 
-        TlsSocket(const TlsSocket &)            = delete;
+        TlsSocket(const TlsSocket &) = delete;
+
         TlsSocket &operator=(const TlsSocket &) = delete;
 
         /**

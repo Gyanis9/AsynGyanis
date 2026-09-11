@@ -1,6 +1,6 @@
 /**
  * @file Connection.cpp
- * @brief 连接实现
+ * @brief TCP连接基类，支持协作取消
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

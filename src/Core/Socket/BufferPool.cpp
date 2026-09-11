@@ -1,6 +1,6 @@
 /**
  * @file BufferPool.cpp
- * @brief 缓冲池实现
+ * @brief 固定大小字节缓冲池
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

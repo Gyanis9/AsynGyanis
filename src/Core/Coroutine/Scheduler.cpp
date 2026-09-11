@@ -1,6 +1,6 @@
 /**
  * @file Scheduler.cpp
- * @brief 协程调度器实现
+ * @brief 协程调度器实现：本地队列、全局队列与跨线程唤醒
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -92,7 +92,7 @@ namespace AsynGyanis::Core
         // 第二阶段：批量窃取全局队列，防止本地任务持续产生导致全局饥饿
         while (true)
         {
-            std::vector<std::coroutine_handle<>> batch;
+            std::vector<std::coroutine_handle<> > batch;
             {
                 std::lock_guard lock(m_globalMutex);
                 batch.reserve(m_globalQueue.size());
