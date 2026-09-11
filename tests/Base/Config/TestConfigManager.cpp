@@ -600,6 +600,91 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(anyEntryContains(result.errors, "Unsupported config file format"));
     }
 
+    TEST_F(ConfigManagerTest, LoadReportsParseErrorWithLineAndColumn)
+    {
+        // 制表符缩进被手搓 YAML 解析器拒绝，错误必须带上可定位的行列
+        writeFile("bad.yaml", "root:\n\tchild: 1\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "Parse error in")) << result.errors.front();
+        EXPECT_TRUE(anyEntryContains(result.errors, "line 2"));
+        EXPECT_TRUE(anyEntryContains(result.errors, "column"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadAcceptsEmptyFileWithoutProducingKeys)
+    {
+        writeFile("empty.yaml", "");
+        writeFile("blank.yml", "   \n\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_TRUE(result.success);
+        EXPECT_TRUE(result.errors.empty());
+        EXPECT_EQ(result.loadedFiles.size(), 2U);
+        EXPECT_TRUE(configuration().keys().empty());
+    }
+
+    TEST_F(ConfigManagerTest, LoadRejectsTopLevelSequenceWithLegacyWording)
+    {
+        writeFile("list.yaml", "- alpha\n- beta\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "root node must be a map, got sequence"));
+    }
+
+    TEST_F(ConfigManagerTest, QuotedNumbersStayStringsAfterSwitchToOwnParser)
+    {
+        writeFile("quoted.yaml", "password: \"8080\"\nratio: \"1.5\"\nplain: 8080\n");
+
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getText("password", ""), "8080");
+        EXPECT_EQ(configuration().getText("ratio", ""), "1.5");
+        // 值模型不做隐式转换：字符串键取整数只会落回默认值
+        EXPECT_EQ(configuration().getInt("password", -1), -1);
+        EXPECT_EQ(configuration().getInt("plain", -1), 8080);
+    }
+
+    TEST_F(ConfigManagerTest, SaveOverridesRecoversFromCorruptedSettingsFile)
+    {
+        writeFile(kDeployedConfigFileName, "app:\n  name: dashboard\n");
+        writeFile(kSettingsFileName, "{ this is not valid json ");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        // 损坏的覆盖层文件会被点名，但其余配置照常提交
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "Parse error in"));
+        EXPECT_EQ(configuration().getString("app.name", ""), "dashboard");
+
+        ASSERT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
+
+        const std::string saved = readFileText(filePath(kSettingsFileName));
+        EXPECT_TRUE(textContains(saved, "\"app.theme\": \"dark\"")) << saved;
+        EXPECT_FALSE(textContains(saved, "this is not valid json")) << saved;
+    }
+
+    TEST_F(ConfigManagerTest, SaveOverridesAbsorbsAndRemovesLegacyUiFile)
+    {
+        writeFile(kDeployedConfigFileName, "app:\n  name: dashboard\n");
+        writeFile("ui.yaml", "app.theme: light\napp.width: 1200\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        ASSERT_TRUE(configuration().setAndPersist("app.width", ConfigValue(std::int64_t(1600))));
+
+        EXPECT_FALSE(std::filesystem::exists(filePath("ui.yaml")));
+
+        const std::string saved = readFileText(filePath(kSettingsFileName));
+        EXPECT_TRUE(textContains(saved, "\"app.theme\": \"light\"")) << saved;
+        // 同名键以本次修改为准，旧覆盖层值不会回灌
+        EXPECT_TRUE(textContains(saved, "\"app.width\": 1600")) << saved;
+        EXPECT_FALSE(textContains(saved, "1200")) << saved;
+    }
+
     TEST_F(ConfigManagerTest, LoadFilesCommitsPartialSuccessAndStillReportsFailure)
     {
         const std::vector<std::filesystem::path> files = {
