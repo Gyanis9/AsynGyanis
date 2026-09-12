@@ -28,13 +28,12 @@ namespace AsynGyanis::Net
      * @note 关于基类 Core::Connection 持有的套接字：一条 TLS 连接的描述符只能有一个所有者，
      *       而那个所有者必须是 Core::TlsSocket（它的析构要先 SSL_shutdown 再关描述符，
      *       顺序反了就把 TLS 会话票据连同描述符一起丢了）。因此传给基类的是一条**不持有描述符**的
-     *       占位套接字（fileDescriptor() 为 -1），基类的 close() 只负责置存活位与发出停止请求。
-     * @warning 由此带来两条使用约束：
-     *          @li 不要在本对象上调用基类的 remoteAddress()/localAddress()——占位套接字取不到地址，
-     *              需要地址请从接受连接的那一层拿（TcpServer 的 accept 结果）；
-     *          @li 强制关闭必须走 Core::Connection::close()：start() 在基类的取消源上注册了停止回调，
-     *              回调里才真正关掉 TLS 通道（见 closeTlsTransport()）。绕开它直接析构会话，
-     *              描述符会等 TlsSocket 自己收尾。
+     *       占位套接字（fileDescriptor() 为 -1）。
+     * @note 关闭与存活判定都已重写（见本类的 close() 与 isAlive()）：Core::Connection 把这两个
+     *       接口声明为虚函数，所以 ConnectionManager::shutdown() 经基类指针调用时，真正被关掉的
+     *       是 TLS 通道，而不是那个占位套接字。
+     * @warning 由此带来一条使用约束：不要在本对象上调用基类的 remoteAddress()/localAddress()——
+     *          占位套接字取不到地址，需要地址请从接受连接的那一层拿（TcpServer 的 accept 结果）。
      * @see HttpSession, Core::TlsSocket
      */
     class HttpsSession : public Core::Connection
@@ -72,8 +71,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 真正关闭 TLS 通道：发出 close_notify 并关掉底层描述符。
          *
-         * @details 由 start() 注册的停止回调调用，因此 TcpServer::close() →
-         *          ConnectionManager::shutdown() → Core::Connection::close() 这条强制停链路
+         * @details 由重写后的 close() 直接调用，因此 TcpServer::close() →
+         *          ConnectionManager::shutdown() → 虚函数派发到本类的这条强制停链路
          *          能够唤醒阻塞在 epoll 上的 TLS 读，会话随即退出。
          *          调用方一般不需要直接用本函数；重复调用是安全的空操作。
          */
@@ -85,6 +84,26 @@ namespace AsynGyanis::Net
          * @return false 描述符已失效（已关闭或从未成功建立）
          */
         [[nodiscard]] bool isTlsTransportOpen() const noexcept;
+
+        /**
+         * @brief 关闭连接：先收 TLS 通道，再走基类关闭流程
+         * @details 重写 Core::Connection::close()：基类实现只会关闭自己的套接字，而本类的
+         *          描述符归 TlsSocket 所有，基类那个套接字是不持有描述符的占位对象。
+         *          因此这里先 closeTlsTransport() 发出 close_notify 并关掉真实描述符，
+         *          再调用基类实现复位存活位与取消源。顺序不能反：SSL_shutdown 需要底层
+         *          描述符仍然有效。
+         * @note 经基类指针调用同样有效（ConnectionManager::shutdown() 即走这条路径）。
+         */
+        void close() override;
+
+        /**
+         * @brief 检查会话是否存活
+         * @details 重写 Core::Connection::isAlive()：除基类的存活位之外还要看 TLS 描述符
+         *          是否有效。只信基类标志的话，描述符被外部关掉后本类仍会自称存活，
+         *          事务循环要等到下一次读写失败才能退出。
+         * @return true 基类存活位为真且 TLS 通道仍然打开
+         */
+        [[nodiscard]] bool isAlive() const noexcept override;
 
     private:
         Core::TlsSocket m_tlsSocket;      ///< TLS 通道，持有 SSL 对象与真实描述符

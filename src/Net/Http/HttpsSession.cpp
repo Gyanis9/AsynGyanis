@@ -26,32 +26,6 @@ namespace AsynGyanis::Net
          *          该实现关闭后就把内部描述符置成 -1，所以「-1」等价于「通道已关」。
          */
         constexpr int kInvalidSocketDescriptor = -1;
-
-        /**
-         * @brief 停止回调实体：把 Core::Connection::close() 落到真实的 TLS 通道上
-         * @details 基类的 close() 不是虚函数，派生类无法拦截，所以改用「取消源 + 停止回调」接线：
-         *          Connection::close() 内部先 requestStop()，本次调用就会同步执行到这里，
-         *          关掉描述符之后，阻塞在 epoll 上的 TLS 读会被唤醒并报错，事务循环随即退出。
-         *          没有这一步，强制关闭就只是把一个占位套接字关掉，TLS 会话根本停不下来。
-         * @note stop_callback 只接受 (stop_token, callback) 两参，因此上下文封装在实体里，
-         *       而不是走早期技术规范那套「函数指针 + void*」。
-         */
-        struct TlsTransportCloser
-        {
-            HttpsSession *session = nullptr; ///< 注册回调时所对应的会话，其存活期由该会话的协程帧保证
-
-            /**
-             * @brief 关闭 TLS 传输通道
-             */
-            void operator()() const
-            {
-                // 回调随注册点的栈帧注销，这里判空只防误用
-                if (session != nullptr)
-                {
-                    session->closeTlsTransport();
-                }
-            }
-        };
     } // namespace
 
     HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router) :
@@ -77,13 +51,25 @@ namespace AsynGyanis::Net
         return m_tlsSocket.fileDescriptor() != kInvalidSocketDescriptor;
     }
 
+    void HttpsSession::close()
+    {
+        // 先收 TLS 通道再走基类：SSL_shutdown 需要底层描述符仍然有效
+        closeTlsTransport();
+        Core::Connection::close();
+    }
+
+    bool HttpsSession::isAlive() const noexcept
+    {
+        return Core::Connection::isAlive() && isTlsTransportOpen();
+    }
+
     Core::Task<> HttpsSession::start()
     {
         /**
          * @brief 退出时无条件收口的守卫
          *
-         * @details 收尾只调基类 close()：它会 requestStop()，再由上面注册的停止回调去关
-         *          TLS 通道，于是「自然结束」与「被强制关闭」走同一条清理路径。
+         * @details 收尾调用本类重写后的 close()：它先收 TLS 通道再复位基类存活位与取消源，
+         *          于是「自然结束」与「被强制关闭」走同一条清理路径。
          *          写成 RAII 是为了覆盖事务循环写侧抛异常的路径——原实现只在正常返回与
          *          握手失败两处显式调用，异常穿过时连接会停留在存活状态。
          */
@@ -99,10 +85,6 @@ namespace AsynGyanis::Net
                 }
             }
         } closer{this};
-
-        // 停止回调先于握手注册：握手期间被强制关闭也要能掐断通道，否则这条协程会一直挂在
-        // epoll 上等一个再也不会来的握手事件。回调随本协程帧的结束而注销
-        std::stop_callback<TlsTransportCloser> stopCallback(cancelable().stopToken(), TlsTransportCloser{this});
 
         try
         {

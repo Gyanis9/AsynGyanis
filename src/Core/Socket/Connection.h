@@ -70,14 +70,18 @@ namespace AsynGyanis::Core
          * @brief 主动关闭连接。
          *
          * 设置存活标志为 false，并调用 socket 的关闭接口。
+         * @note 派生类若在套接字之外还持有自有传输层（例如 TLS），必须重写本函数先收掉
+         *       自己那一层再调用基类实现；否则经基类指针（ConnectionManager::shutdown()）
+         *       关闭时，自有传输层收不到任何通知。
          */
-        void close();
+        virtual void close();
 
         /**
          * @brief 检查连接是否存活。
          * @return true 表示连接有效，false 表示已关闭或无效
+         * @note 派生类可重写以叠加自有传输层的判据（例如 TLS 通道是否仍然打开）。
          */
-        [[nodiscard]] bool isAlive() const noexcept;
+        [[nodiscard]] virtual bool isAlive() const noexcept;
 
         /**
          * @brief 获取底层异步socket的引用。
