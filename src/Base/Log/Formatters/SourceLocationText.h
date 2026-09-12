@@ -11,7 +11,6 @@
 
 #include "Base/Log/SourceLocation.h"
 
-#include <cstddef>
 #include <format>
 #include <span>
 #include <string_view>
@@ -37,21 +36,20 @@ namespace AsynGyanis::Base
      * @param buffer 调用方提供的栈缓冲
      * @return std::string_view 命中时指向 buffer 内的文本；装不下时返回空视图（调用方自行回退）
      */
-    [[nodiscard]] inline std::string_view tryFormatSourceLocationText(const SourceLocation &location,
-                                                                      const std::span<char> buffer) noexcept
+    [[nodiscard]] inline std::string_view tryFormatSourceLocationText(const SourceLocation &location, const std::span<char> buffer) noexcept
     {
         // n 的类型是 OutputIt 的差值类型，显式转换避免 size_t 隐式收窄的告警
-        const auto writtenText = std::format_to_n(buffer.data(),
+        const auto [out, size] = std::format_to_n(buffer.data(),
                                                   static_cast<std::ptrdiff_t>(buffer.size()),
                                                   "{}:{}",
                                                   location.shortFileName(),
                                                   location.line);
-        const std::size_t requiredLength = static_cast<std::size_t>(writtenText.size);
+        const auto requiredLength = static_cast<std::size_t>(size);
         if (requiredLength > buffer.size())
         {
             // 截断：缓冲里的前缀不完整，交给调用方走分配路径，避免输出半截「文件:行」
             return {};
         }
-        return std::string_view(buffer.data(), requiredLength);
+        return {buffer.data(), requiredLength};
     }
 } // namespace AsynGyanis::Base

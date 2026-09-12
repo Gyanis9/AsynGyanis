@@ -98,7 +98,7 @@ namespace AsynGyanis::Base
             return LogLevel::Off;
 
         std::cerr << "日志等级：无法识别 '" << levelString
-                  << "'，已回落为 INFO（可用取值：TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF）" << '\n';
+                << "'，已回落为 INFO（可用取值：TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF）" << '\n';
         return LogLevel::Info;
     }
 } // namespace AsynGyanis::Base

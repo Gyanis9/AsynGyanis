@@ -19,8 +19,9 @@ namespace AsynGyanis::Base
         // "{}:{}"，所以文本内容与长度必然逐字节相同（含 {:<13} 用空格补齐到 13 列），
         // 差别仅在内存来源，让「命中」与「回退」对输出不可见
         std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
-        const std::string_view locationText = tryFormatSourceLocationText(event.location, locationBuffer);
-        const std::string overflowLocation = locationText.empty()
+
+        const std::string_view locationText     = tryFormatSourceLocationText(event.location, locationBuffer);
+        const std::string      overflowLocation = locationText.empty()
                                                  ? std::format("{}:{}", event.location.shortFileName(), event.location.line)
                                                  : std::string();
         const std::string_view location = locationText.empty() ? std::string_view(overflowLocation) : locationText;

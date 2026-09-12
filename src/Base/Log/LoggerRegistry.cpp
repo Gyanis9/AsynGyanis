@@ -45,10 +45,9 @@ namespace AsynGyanis::Base
             return *iterator->second;
         }
 
-        auto       logger    = std::make_shared<Logger>(name);
-        Logger    &reference = *logger;
-        const bool isRootLogger = name == kRootLoggerName;
-        if (isRootLogger)
+        auto    logger    = std::make_shared<Logger>(name);
+        Logger &reference = *logger;
+        if (name == kRootLoggerName)
         {
             // 缓存与 map 共享同一份所有权：缓存命中期间 root 不会被析构
             m_cachedRootLogger.store(logger, std::memory_order_release);

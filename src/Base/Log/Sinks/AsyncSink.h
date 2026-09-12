@@ -13,7 +13,6 @@
 
 #include <atomic>
 #include <condition_variable>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -106,7 +105,7 @@ namespace AsynGyanis::Base
          * @brief 后台工作循环，持续消费并转发队列日志事件
          * @param stopToken 本线程的停止令牌，request_stop 后退出循环并排空残留事件
          */
-        void workerLoop(std::stop_token stopToken);
+        void workerLoop(const std::stop_token &stopToken);
 
         std::unique_ptr<LogSink> m_wrappedSink;      ///< 被包装的下游 Sink
         std::queue<LogEvent>     m_queue;            ///< 事件队列

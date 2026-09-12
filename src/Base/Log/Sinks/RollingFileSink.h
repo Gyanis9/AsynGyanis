@@ -13,12 +13,10 @@
 #include "Base/Log/Sinks/LogSink.h"
 
 #include <cstdint>
-#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <utility>
 
 namespace AsynGyanis::Base
 {
@@ -50,8 +48,11 @@ namespace AsynGyanis::Base
          * @param maximumSizeBytes 按大小滚动时的阈值（字节）
          * @param maximumBackupFiles 最大保留备份文件数
          */
-        RollingFileSink(std::string baseFilename, std::filesystem::path directory, RollingPolicy policy, size_t maximumSizeBytes = 10 * 1024 * 1024,
-                        size_t      maximumBackupFiles                                                                           = 10);
+        RollingFileSink(std::string           baseFilename,
+                        std::filesystem::path directory,
+                        RollingPolicy         policy,
+                        size_t                maximumSizeBytes   = 10 * 1024 * 1024,
+                        size_t                maximumBackupFiles = 10);
 
         /**
          * @brief 析构滚动文件 Sink 并刷新残留数据

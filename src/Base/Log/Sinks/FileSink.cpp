@@ -26,9 +26,8 @@ namespace AsynGyanis::Base
                 return {};
             }
 
-            std::error_code errorCode;
             // create_directories 在目录已存在时返回 false 且不置错误码，因此必须同时判错误码
-            if (!std::filesystem::create_directories(parent, errorCode) && errorCode)
+            if (std::error_code errorCode; !std::filesystem::create_directories(parent, errorCode) && errorCode)
             {
                 return "（创建目录失败：" + errorCode.message() + "）";
             }

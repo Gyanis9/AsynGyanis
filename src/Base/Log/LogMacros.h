@@ -53,22 +53,22 @@
     do { \
         auto &internalLogger = (logger_expression); \
         if (internalLogger.shouldLog(level)) { \
-            internalLogger.logFormat(level, LOG_SOURCE_LOCATION(), format_string, ##__VA_ARGS__); \
+            internalLogger.logFormat(level, LOG_SOURCE_LOCATION(), format_string, ## __VA_ARGS__); \
         } \
     } while (0)
 
 /// 使用默认根日志器的格式化宏
-#define LOG_TRACE_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Trace, format_string, ##__VA_ARGS__)
-#define LOG_DEBUG_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Debug, format_string, ##__VA_ARGS__)
-#define LOG_INFO_FMT(format_string, ...)  LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Info,  format_string, ##__VA_ARGS__)
-#define LOG_WARN_FMT(format_string, ...)  LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Warn,  format_string, ##__VA_ARGS__)
-#define LOG_ERROR_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Error, format_string, ##__VA_ARGS__)
-#define LOG_FATAL_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Fatal, format_string, ##__VA_ARGS__)
+#define LOG_TRACE_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Trace, format_string, ## __VA_ARGS__)
+#define LOG_DEBUG_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Debug, format_string, ## __VA_ARGS__)
+#define LOG_INFO_FMT(format_string, ...)  LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Info,  format_string, ## __VA_ARGS__)
+#define LOG_WARN_FMT(format_string, ...)  LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Warn,  format_string, ## __VA_ARGS__)
+#define LOG_ERROR_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Error, format_string, ## __VA_ARGS__)
+#define LOG_FATAL_FMT(format_string, ...) LOG_FORMAT_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Fatal, format_string, ## __VA_ARGS__)
 
 /// 使用指定日志器的格式化宏
-#define LOG_LOGGER_TRACE_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Trace, format_string, ##__VA_ARGS__)
-#define LOG_LOGGER_DEBUG_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Debug, format_string, ##__VA_ARGS__)
-#define LOG_LOGGER_INFO_FMT(logger, format_string, ...)  LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Info,  format_string, ##__VA_ARGS__)
-#define LOG_LOGGER_WARN_FMT(logger, format_string, ...)  LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Warn,  format_string, ##__VA_ARGS__)
-#define LOG_LOGGER_ERROR_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Error, format_string, ##__VA_ARGS__)
-#define LOG_LOGGER_FATAL_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Fatal, format_string, ##__VA_ARGS__)
+#define LOG_LOGGER_TRACE_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Trace, format_string, ## __VA_ARGS__)
+#define LOG_LOGGER_DEBUG_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Debug, format_string, ## __VA_ARGS__)
+#define LOG_LOGGER_INFO_FMT(logger, format_string, ...)  LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Info,  format_string, ## __VA_ARGS__)
+#define LOG_LOGGER_WARN_FMT(logger, format_string, ...)  LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Warn,  format_string, ## __VA_ARGS__)
+#define LOG_LOGGER_ERROR_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Error, format_string, ## __VA_ARGS__)
+#define LOG_LOGGER_FATAL_FMT(logger, format_string, ...) LOG_FORMAT_INTERNAL(logger, AsynGyanis::Base::LogLevel::Fatal, format_string, ## __VA_ARGS__)

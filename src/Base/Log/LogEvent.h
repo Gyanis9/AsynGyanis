@@ -66,8 +66,8 @@ namespace AsynGyanis::Base
         thread_local const std::string kcachedThreadId = []
         {
             std::array<char, 24> buffer{};
-            const auto [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
-                                                       std::hash<std::thread::id>{}(std::this_thread::get_id()));
+            const auto           [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
+                                                        std::hash<std::thread::id>{}(std::this_thread::get_id()));
             return std::string(buffer.data(), static_cast<std::string::size_type>(out - buffer.data()));
         }();
         return kcachedThreadId;
@@ -83,12 +83,12 @@ namespace AsynGyanis::Base
      */
     struct LogEvent
     {
-        LogLevel       level{};      ///< 日志等级
-        std::string    timestamp{};  ///< 时间戳字符串
-        std::string    threadId{};   ///< 线程 ID 字符串
-        [[no_unique_address]] SourceLocation location{}; ///< 源码位置（小对象，允许复用相邻成员的填充字节）
-        std::shared_ptr<const std::string> loggerName{}; ///< 日志器名称（与 Logger 共享同一份常量名字）
-        std::string    message{};    ///< 日志消息内容
+        LogLevel                             level{};      ///< 日志等级
+        std::string                          timestamp{};  ///< 时间戳字符串
+        std::string                          threadId{};   ///< 线程 ID 字符串
+        [[no_unique_address]] SourceLocation location{};   ///< 源码位置（小对象，允许复用相邻成员的填充字节）
+        std::shared_ptr<const std::string>   loggerName{}; ///< 日志器名称（与 Logger 共享同一份常量名字）
+        std::string                          message{};    ///< 日志消息内容
 
         /**
          * @brief 默认构造
@@ -122,7 +122,7 @@ namespace AsynGyanis::Base
          * @param message 日志消息
          */
         LogEvent(const LogLevel logLevel, std::string timestamp, std::string threadId, const SourceLocation &sourceLocation, std::shared_ptr<const std::string> loggerNameSnapshot,
-                 std::string message) :
+                 std::string    message) :
             level(logLevel), timestamp(std::move(timestamp)), threadId(std::move(threadId)), location(sourceLocation), loggerName(std::move(loggerNameSnapshot)),
             message(std::move(message))
         {

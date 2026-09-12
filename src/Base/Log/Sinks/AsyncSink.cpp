@@ -18,7 +18,7 @@ namespace AsynGyanis::Base
     {
         // jthread 在析构时会 request_stop 并 join；本类的 stop() 已负责唤醒条件变量后再 join，
         // 因此把停止状态统一收敛到 stop_token 上，不再另设 m_running 布尔量
-        m_workerThread = std::jthread([this](const std::stop_token stopToken)
+        m_workerThread = std::jthread([this](const std::stop_token &stopToken)
         {
             workerLoop(stopToken);
         });
@@ -122,13 +122,13 @@ namespace AsynGyanis::Base
         });
     }
 
-    void AsyncSink::workerLoop(const std::stop_token stopToken)
+    void AsyncSink::workerLoop(const std::stop_token &stopToken)
     {
         // 取出队首事件并在锁外落地：下游 write 可能长时间阻塞（如磁盘 IO），
         // 持锁写出会卡住所有生产者。落地返回后才核销待落地计数
         const auto drainOneEvent = [this](std::unique_lock<std::mutex> &lock)
         {
-            LogEvent event = std::move(m_queue.front());
+            const LogEvent event = std::move(m_queue.front());
             m_queue.pop();
             lock.unlock();
             try

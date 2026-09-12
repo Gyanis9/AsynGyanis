@@ -33,7 +33,7 @@ namespace AsynGyanis::Base
          */
         struct BackupEntry
         {
-            std::filesystem::path        path;      ///< 备份文件路径
+            std::filesystem::path           path;      ///< 备份文件路径
             std::filesystem::file_time_type writeTime; ///< 预先取好的最后写入时间
         };
 
@@ -63,8 +63,11 @@ namespace AsynGyanis::Base
         }
     } // namespace
 
-    RollingFileSink::RollingFileSink(std::string  baseFilename, std::filesystem::path directory, const RollingPolicy policy, const size_t maximumSizeBytes,
-                                     const size_t maximumBackupFiles) :
+    RollingFileSink::RollingFileSink(std::string           baseFilename,
+                                     std::filesystem::path directory,
+                                     const RollingPolicy   policy,
+                                     const size_t          maximumSizeBytes,
+                                     const size_t          maximumBackupFiles) :
         m_baseFilename(std::move(baseFilename)), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes), m_maximumBackupFiles(maximumBackupFiles)
     {
         // error_code 重载：目录创建失败时不让 std::filesystem_error 从构造路径逃逸，
@@ -133,8 +136,7 @@ namespace AsynGyanis::Base
             // 先关闭当前文件（Windows 不允许重命名打开中的文件）
             m_currentSink.reset();
             const auto currentPath = getCurrentFilename();
-            std::error_code existsError;
-            if (std::filesystem::exists(currentPath, existsError) && !existsError)
+            if (std::error_code existsError; std::filesystem::exists(currentPath, existsError) && !existsError)
             {
                 const auto  dotPosition = m_baseFilename.rfind('.');
                 std::string namePart;
@@ -187,7 +189,7 @@ namespace AsynGyanis::Base
 
         // 追加模式下目标文件可能已存在（同一周期的活动文件、进程重启后的续写），
         // 累计字节数必须从真实大小起算，否则按大小滚动会推迟到超过阈值一倍以上
-        std::error_code   sizeError;
+        std::error_code      sizeError;
         const std::uintmax_t existingSize = std::filesystem::file_size(currentPath, sizeError);
         m_bytesInCurrentFile              = sizeError ? 0 : existingSize;
     }
@@ -222,14 +224,14 @@ namespace AsynGyanis::Base
 
     std::time_t RollingFileSink::nextPeriodBoundary(const std::time_t timeValue) const noexcept
     {
-        const std::tm localTime         = AsynGyanis::Platform::PlatformTime::localTime(timeValue);
-        const bool    isDailyPolicy     = m_policy == RollingPolicy::Daily;
+        const std::tm      localTime     = AsynGyanis::Platform::PlatformTime::localTime(timeValue);
+        const bool         isDailyPolicy = m_policy == RollingPolicy::Daily;
         const std::int64_t periodSeconds = isDailyPolicy ? kSecondsPerDay : kSecondsPerHour;
 
         // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
         const std::int64_t elapsedSeconds = isDailyPolicy
                                                 ? static_cast<std::int64_t>(localTime.tm_hour) * kSecondsPerHour +
-                                                          localTime.tm_min * 60 + localTime.tm_sec
+                                                  localTime.tm_min * 60 + localTime.tm_sec
                                                 : static_cast<std::int64_t>(localTime.tm_min) * 60 + localTime.tm_sec;
 
         // elapsedSeconds == 0 时结果恰为 timeValue + periodSeconds，因此边界恒严格晚于当前时刻，
@@ -262,9 +264,9 @@ namespace AsynGyanis::Base
             {
                 // 时间戳在排序前一次性读好：比较器里再调 last_write_time 会在出错时抛异常，
                 // 而 std::ranges::sort 的比较器抛出是未定义行为
-                std::error_code                   timeError;
-                const auto                        writeTime = std::filesystem::last_write_time(entry.path(), timeError);
-                backupFiles.push_back(BackupEntry{entry.path(), timeError ? std::filesystem::file_time_type::min() : writeTime});
+                std::error_code timeError;
+                const auto      writeTime = std::filesystem::last_write_time(entry.path(), timeError);
+                backupFiles.push_back(BackupEntry{.path = entry.path(), .writeTime = timeError ? std::filesystem::file_time_type::min() : writeTime});
             }
         }
         if (backupFiles.size() > m_maximumBackupFiles)

@@ -18,8 +18,9 @@ namespace AsynGyanis::Base
         // 完全相同的格式串 "{}:{}"，因此命中与回退的输出逐字节一致（含 {:<13} 的右填充空格），
         // 两个格式化器也据此保持同一套源码位置文本
         std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
-        const std::string_view                         locationText = tryFormatSourceLocationText(event.location, locationBuffer);
-        const std::string overflowLocation = locationText.empty()
+
+        const std::string_view locationText     = tryFormatSourceLocationText(event.location, locationBuffer);
+        const std::string      overflowLocation = locationText.empty()
                                                  ? std::format("{}:{}", event.location.shortFileName(), event.location.line)
                                                  : std::string();
         const std::string_view location = locationText.empty() ? std::string_view(overflowLocation) : locationText;
