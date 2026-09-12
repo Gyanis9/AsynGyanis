@@ -528,16 +528,31 @@ namespace AsynGyanis::Base
 
     TEST(JsonParser, ZeroLimitsDisableTheCorrespondingProtections)
     {
-        JsonParseOptions options;
-        options.maximumInputLength        = 0;
-        options.maximumStringLength       = 0;
-        options.maximumContainerElements  = 0;
-        options.maximumDepth              = 0;
+        // 证明「0 = 不限制」的方式是**把限制调小**、而不是把输入调深：同一份 33 层的输入，
+        // 在 maximumDepth = 32 时必须被拦、在 maximumDepth = 0 时必须通过，两个方向的差异
+        // 只来自配置。这样写还有一个实际原因：递归下降解析器每层吃一个栈帧，
+        // 原先用 400 层来「越过默认上限 256」证明该性质时，开了 AddressSanitizer 的构建
+        // 会因每帧额外开销而直接栈溢出——测试不该建立在几百层递归之上
+        const JsonParseOptions limitedOptions{.maximumDepth = 32};
 
-        const std::string deeplyNested(400, '[');
-        const std::string closed = deeplyNested + std::string(400, ']');
+        JsonParseOptions unlimitedOptions;
+        unlimitedOptions.maximumInputLength       = 0;
+        unlimitedOptions.maximumStringLength      = 0;
+        unlimitedOptions.maximumContainerElements = 0;
+        unlimitedOptions.maximumDepth             = 0;
 
-        EXPECT_EQ(JsonParser::parse(closed, options).type(), FormatValueType::Array);
+        const std::string nested(33, '[');
+        const std::string closed = nested + std::string(33, ']');
+
+        // 有上限时同一份输入必须被拒，且原因分类是超深
+        const FormatError error = catchFormatError([&closed, &limitedOptions]
+        {
+            return JsonParser::parse(closed, limitedOptions);
+        });
+        EXPECT_EQ(error.kind(), FormatErrorKind::DepthExceeded);
+
+        // 上限置 0 后同一份输入必须解析成功：这才叫「0 表示不限制」
+        EXPECT_EQ(JsonParser::parse(closed, unlimitedOptions).type(), FormatValueType::Array);
     }
 
     // ============================================================================

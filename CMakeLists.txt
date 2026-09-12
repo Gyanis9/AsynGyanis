@@ -15,6 +15,73 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# ============================================================================
+# 内存与未定义行为检测（Debug preset 里的 ENABLE_SANITIZERS）
+# ============================================================================
+# 此前 ENABLE_SANITIZERS 只写在 CMakePresets.json 里、没有任何 CMakeLists 读它：
+# Debug 构建自称「with sanitizers」，而编译器命令行里什么都没有——对一个跑着事件循环、
+# 线程池与异步数据库的工程来说，这是最不该存在的假安全。这里把它真正接上。
+#
+# 能力边界（决定了这里为什么不是一套参数打天下）：
+# - MSVC 只提供 AddressSanitizer（/fsanitize=address），既无 UBSan 也无 TSan；
+# - GCC/Clang 上顺带打开 UBSan（ASan 不覆盖未定义行为）；
+# - 线程竞态检测（TSan）与 ASan 互斥、且 MSVC 不提供，需要在 Linux 侧单独配置构建。
+option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）" OFF)
+
+# 把 ASan 运行时拷到可执行文件旁边。
+# MSVC 的 ASan 运行库不在系统 PATH 上（它随 Visual Studio 提供，位于 cl.exe 同目录），
+# 因此插桩出来的可执行文件若在「没有 vcvars 环境」的裸 shell 里直接运行，会以
+# 0xC0000135（STATUS_DLL_NOT_FOUND）启动失败——而这个错误不给任何可读提示，
+# 只会让人以为「测试莫名跑不起来」。拷到输出目录即可让二进制自洽。
+#
+# 两份都拷：Debug 产物实测并不只依赖 _dbg_ 那一份（只拷 _dbg_ 仍会以同样的错误启动失败，
+# 把两份补齐后正常）。两份 DLL 各自只有几百 KiB，为省这点体积去猜实际依赖不值得。
+#
+# 用法：在各个可执行目标定义之后调用 asyn_copy_sanitizer_runtime(<目标名>)。
+function(asyn_copy_sanitizer_runtime target_name)
+    if(NOT ENABLE_SANITIZERS OR NOT MSVC)
+        return()
+    endif()
+
+    get_filename_component(compiler_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
+
+    foreach(runtime_name clang_rt.asan_dbg_dynamic-x86_64.dll clang_rt.asan_dynamic-x86_64.dll)
+        add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${compiler_directory}/${runtime_name}"
+                        "$<TARGET_FILE_DIR:${target_name}>"
+                COMMENT "拷贝 AddressSanitizer 运行时（${runtime_name}）到 ${target_name} 输出目录")
+    endforeach()
+endfunction()
+
+if(ENABLE_SANITIZERS)
+    if(MSVC)
+        # 运行库（clang_rt.asan_*_dynamic-x86_64.dll）由 MSVC 自带并位于 cl.exe 同目录，
+        # 构建期无需额外处理；运行期由 asyn_copy_sanitizer_runtime() 拷到可执行文件旁
+        add_compile_options(/fsanitize=address)
+        add_link_options(/fsanitize=address)
+
+        # MSVC 的 ASan 默认给 <vector>/<string>/<optional> 加上容器注解，并在目标文件里留下
+        # annotate_vector / annotate_string / annotate_optional 三个 ABI 标记。Conan 提供的
+        # gtest 没有用 ASan 编译（标记为 0），我们插桩后的对象标记为 1，链接会直接失败
+        # （LNK2038「值不匹配」）。关掉注解即可对齐。代价与出路：
+        # - 失去的是容器越界/迭代器失效这类注解检查；
+        # - 堆、栈、use-after-free、溢出、双重释放等主要检测不受影响；
+        # - 要在 MSVC 上恢复注解，得把 gtest 也用 /fsanitize=address 重建（Conan 侧注入
+        #   cxxflags 重编整个依赖图），代价是第三方库全部插桩；
+        # - GCC/Clang 无此问题（其 ASan 不加容器注解），因此注解只在 MSVC 分支关闭。
+        add_compile_definitions(_DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION _DISABLE_OPTIONAL_ANNOTATION)
+
+        message(STATUS "Sanitizers: 已启用 AddressSanitizer（MSVC 无 UBSan / TSan；"
+                       "因 gtest 未插桩而关闭容器注解，见 CMakeLists 注释）")
+    else()
+        # -fno-omit-frame-pointer：栈回溯才有意义，否则报告里的调用栈会缺帧
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+        message(STATUS "Sanitizers: 已启用 AddressSanitizer + UndefinedBehaviorSanitizer")
+    endif()
+endif()
+
 # Debug 构建注入 ASYN_DEBUG：日志输出线程号与源码位置，Release 走精简格式
 add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 

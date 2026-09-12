@@ -35,3 +35,6 @@ target_compile_features(TestPlatform PRIVATE cxx_std_20)
 
 include(GoogleTest)
 gtest_discover_tests(TestPlatform)
+
+# ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
+asyn_copy_sanitizer_runtime(TestPlatform)
