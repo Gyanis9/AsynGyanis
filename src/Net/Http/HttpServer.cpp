@@ -840,9 +840,13 @@ namespace AsynGyanis::Net
 
     HttpServer::HttpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
         TcpServer(loop, address),
-        m_limits(std::make_shared<const HttpServerLimits>())
+        m_limits(std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::make_shared<HttpMetricsCollector>()),
+        m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
-        // 构造即给出一份默认限额：会话永远拿得到非空配置，不必在创建路径上判空
+        // 构造即给出一份默认限额：会话永远拿得到非空配置，不必在创建路径上判空。
+        // 统计与 request-id 生成器同样构造即就绪：它们没有开关，采集是常开行为，
+        // 会话按 shared_ptr 共享持有，因此生命周期一定覆盖所有会话
     }
 
     Router &HttpServer::router()
@@ -852,9 +856,19 @@ namespace AsynGyanis::Net
 
     std::shared_ptr<Core::Connection> HttpServer::createConnection(Core::AsyncSocket socket)
     {
-        // 与基类契约的差异见头文件 Doxygen：这里只搬移 socket 与转交两个引用，
+        // 与基类契约的差异见头文件 Doxygen：这里只搬移 socket 与转交几个引用，
         // 不做握手、不查地址、不阻塞，因此既不抛异常也不可能返回空指针
-        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits);
+        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator);
+    }
+
+    HttpServerStats HttpServer::stats() const
+    {
+        HttpServerStats snapshot = m_metrics->snapshot();
+
+        // 活跃连接数只有一个真值来源（连接管理器）：另设一份计数迟早与它漂移，
+        // 因此每次取快照都现读一次。size_t 到 uint64_t 是加宽转换，32 位平台上也不会丢信息
+        snapshot.activeConnectionCount = static_cast<std::uint64_t>(m_connectionManager.activeCount());
+        return snapshot;
     }
 
     void HttpServer::ensureStaticFileSettings()

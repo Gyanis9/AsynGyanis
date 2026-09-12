@@ -10,11 +10,14 @@
 #pragma once
 
 #include "Base/Exception/LogicException.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/Connection.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
 
 #include <algorithm>
@@ -52,13 +55,20 @@ namespace AsynGyanis::Net
          * @param socket 已建立的异步 socket，所有权转移给基类 Core::Connection
          * @param router 全局路由器，用于分发请求；其生命周期必须不短于本会话
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
+         * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类与延迟直方图都不更新）
+         * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
          *
          * @note 事件循环由 AsyncSocket 内部持有，会话不需要第二份引用，因此只收一个 socket
          *       （见 Core::Connection 的构造）。
          * @note 配置按 shared_ptr 只读共享而不是按值拷一份：一份配置被本服务器所有会话共用，
          *       换配置时整体换代（HttpServer::setLimits()），在途会话永远读到自己那份完整配置
+         * @note 统计对象与生成器同样按 shared_ptr 共享：它们由服务器持有，会话只是借用来上报，
+         *       因此会话比服务器活得久时也不会写到已释放对象上；计数器内部全是原子量，
+         *       多线程上的会话并发上报同一个服务器是安全的
          */
-        HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr);
+        HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr,
+                    std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
+                    std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr);
 
         /**
          * @brief 启动会话主协程：跑完整条保持活跃循环后关闭连接。
@@ -90,11 +100,23 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static bool shouldKeepAlive(const HttpRequest &request, const HttpResponse &response);
 
+        /**
+         * @brief 本连接被空闲清扫协程按超时关闭时上报到所属服务器的统计
+         *
+         * @details 重写 Core::Connection::onIdleTimeoutClosed()：把这次收口累加进 timeoutClosedCount。
+         *          基类默认实现是空操作（不关心超时的连接无需上报），这里的差异只多一次原子自增，
+         *          不再写日志——清扫协程已经记下了「哪条连接、超时误差多大」。
+         * @note 未持有统计对象时（例如只关心协议的调用方直接构造会话）什么都不做
+         */
+        void onIdleTimeoutClosed() noexcept override;
+
     private:
         Router &m_router;             ///< 路由器引用，用于分发请求
         HttpParser m_parser;          ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
         std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收窗口，首次读取时按固定大小分配
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
+        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，与服务器共享；空指针表示不落定 request-id
     };
 
     // ============================================================================
@@ -237,6 +259,9 @@ namespace AsynGyanis::Net
          * @param isAlive       连接存活谓词，每轮事务与每次挂起前检查
          * @param connection    所属连接，用于按相位刷新空闲截止时间并维护在途工作标记；其生命周期必须覆盖整个循环
          * @param limits        连接级限额，取自 HttpServerLimits；0 字段表示关闭对应项保护
+         * @param metrics       统计采集端，可为空；为空时请求计数、状态码分类与延迟直方图都不更新
+         * @param requestIdGenerator request-id 生成器，可为空；为空时不为请求落定 request-id，
+         *                          响应也不带 x-request-id（HTTPS 会话当前即走这条路）
          */
         template<typename Socket>
         Core::Task<> httpKeepAliveLoop(Socket &socket,
@@ -246,7 +271,9 @@ namespace AsynGyanis::Net
                                        std::vector<char> &receiveBuffer,
                                        const std::function<bool()> &isAlive,
                                        Core::Connection &connection,
-                                       const HttpServerLimits &limits)
+                                       const HttpServerLimits &limits,
+                                       HttpMetricsCollector *metrics = nullptr,
+                                       const HttpRequestIdGenerator *requestIdGenerator = nullptr)
         {
             // 接收窗口里尚未交给解析器的字节数。窗口只用来「接住刚到的字节」：正文由解析器
             // 边收边存，跨读的半行也由解析器自己拼，因此这里永远是「窗口开头的一段」，
@@ -400,6 +427,13 @@ namespace AsynGyanis::Net
                     HttpResponse errorResponse;
                     writeParseErrorResponse(errorResponse, parser.errorKind());
 
+                    // 解析失败/协议错误收口单独计数，不并入已处理的请求条数：
+                    // 两类流量在监控上要能分开看（前者是客户端或攻击，后者是正常业务）
+                    if (metrics != nullptr)
+                    {
+                        metrics->countBadRequest();
+                    }
+
                     co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
 
                     // 断开之前显式复位：把粘滞错误态与半成品请求一起清掉，
@@ -413,8 +447,23 @@ namespace AsynGyanis::Net
                 // 都会走到守卫析构，标记不会停留在「忙碌」上
                 const BusyScope busyScope(connection);
 
+                // 统计口径以「收到完整请求」为界：耗时从这里算到响应发完，条数在这里累加；
+                // 时钟取一次、本轮复用，避免起止两点各取一次时钟引入偏差
+                const std::chrono::steady_clock::time_point requestReceivedTime = std::chrono::steady_clock::now();
+                if (metrics != nullptr)
+                {
+                    metrics->countParsedRequest();
+                }
+
                 // ---------------- 第三步：路由与应答 ----------------
                 HttpRequest &request = parser.request();
+
+                // request-id 在进入业务之前落定：中间件、业务与日志读到的都是同一个值。
+                // 生成器缺席时保持请求对象的空 id，业务侧读 requestId() 得到空串即为「未采集」
+                if (requestIdGenerator != nullptr)
+                {
+                    request.setRequestId(requestIdGenerator->resolve(request));
+                }
 
                 // 响应对象按连接复用：容器容量跨请求保留，省掉每条报文重新分配一遍。
                 // 复用必须配一次复位，否则上一条报文的头部会跟着下一条发出去
@@ -471,12 +520,39 @@ namespace AsynGyanis::Net
                     response.setHeader("connection", "keep-alive");
                 }
 
+                // 响应自动带本次请求的 request-id，与 date 同属「自动补齐」语义：调用方显式设过
+                // 就不覆盖（业务可能想把上游网关的 id 透传下去）。放在 500 改写之后，
+                // 保证异常路径上的响应同样能被日志检索对上
+                const std::string_view requestIdView = request.requestId();
+                if (!requestIdView.empty() && !response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+                {
+                    response.setHeader(std::string(kRequestIdHeaderName), std::string(requestIdView));
+                }
+
                 // 头部序列化一次，正文留在响应对象里：两段一起提交，正文不必再拷一份。
                 // serializedHead 是具名局部，正文视图指向的 response 也活到本次调用之后
                 const std::string serializedHead = response.serializeHead();
                 if (!co_await sendResponse(serializedHead, response.body()))
                 {
+                    // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
+                    // 「对端没收到」的请求算成已应答
                     co_return;
+                }
+
+                // 响应已发出：状态码类与本次耗时（「收到完整请求」到「响应发完」）一起落账
+                const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
+                if (metrics != nullptr)
+                {
+                    metrics->recordResponse(response.status(), requestElapsed);
+                }
+
+                // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的
+                // 处理记录因此能按同一个键对齐（排查线上问题时先要 id 再要日志）
+                if (!requestIdView.empty())
+                {
+                    LOG_INFO_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us",
+                                 requestIdView, request.uri(), response.status(),
+                                 std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
                 }
 
                 // 应答已发出，回到「等一条新请求」的相位：不刷新的话，下一次读之前

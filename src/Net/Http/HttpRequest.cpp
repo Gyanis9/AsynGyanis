@@ -219,6 +219,17 @@ namespace AsynGyanis::Net
         return m_body;
     }
 
+    void HttpRequest::setRequestId(std::string requestId)
+    {
+        // 入参按值接收后移动接管：调用方（会话）交出的就是它自己那份，不必再拷一次
+        m_requestId = std::move(requestId);
+    }
+
+    std::string_view HttpRequest::requestId() const noexcept
+    {
+        return m_requestId;
+    }
+
     std::string_view HttpRequest::path() const
     {
         // 路径与查询串以第一个 '?' 为界；'?' 之前一律算路径，即使里面还有 '?' 也不切开。
@@ -364,6 +375,8 @@ namespace AsynGyanis::Net
         m_headers.clear();
         m_isSingleValueViewStale = true;
         m_body.clear();
+        // request-id 必须跟着清：它是上一条报文的身份，留着会让下一条报文冒用别人的标识
+        m_requestId.clear();
         m_params.clear();
 
         // 取消源：只有**被触发过**才重建。触发过的源会让下一条请求一进来就是「已取消」，

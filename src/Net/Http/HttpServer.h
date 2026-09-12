@@ -11,10 +11,13 @@
 
 #include "Core/EventLoop/EventLoop.h"
 
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/TcpServer.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -139,6 +142,19 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] HttpServerLimits limits() const;
 
+        /**
+         * @brief 取本服务器的统计快照
+         *
+         * @details 各字段分别原子读取，因此快照不是严格同一瞬间的一致切面（跨字段求和可能与某次
+         *          采样略有偏差）；活跃连接数在取快照这一刻从连接管理器读取，与其它字段同为近似同时刻的值。
+         *
+         * @return HttpServerStats 统计快照；尚未处理任何请求时各计数为零
+         * @note 可从任意线程调用（计数是原子量、活跃连接数由连接管理器加锁读取），
+         *       运维线程或测试线程可直接采样，不必把动作投递到事件循环
+         * @see HttpServerStats, HttpMetricsCollector
+         */
+        [[nodiscard]] HttpServerStats stats() const;
+
     private:
         /**
          * @brief 确保静态文件设置对象与 "*" 兜底路由已就绪（幂等）
@@ -150,5 +166,7 @@ namespace AsynGyanis::Net
         Router m_router;                                ///< 路由器，存储路由表与处理函数
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
+        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };
 } // namespace AsynGyanis::Net

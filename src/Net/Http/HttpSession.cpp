@@ -69,11 +69,17 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits) :
+    HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
+                             std::shared_ptr<HttpMetricsCollector> metrics,
+                             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator) :
         Core::Connection(std::move(socket)),
         m_router(router),
         // 空配置按默认限额执行：让只关心协议的调用方不必显式传一份配置，会话内也不必到处判空
-        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>())
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
+        // 统计对象与生成器允许为空：这两种空值都表示「本会话不采集」，是明确的关闭语义，
+        // 而不是待填补的缺省——因此不在构造里补一份新的，否则统计会散进没人读的对象里
+        m_metrics(std::move(metrics)),
+        m_requestIdGenerator(std::move(requestIdGenerator))
     {
         // 接收窗口不在这里分配：真正开始读之前它一直是空的，第一次读时按固定大小一次性分配
     }
@@ -109,13 +115,23 @@ namespace AsynGyanis::Net
             return isAlive();
         };
 
-        // 事务循环与 HTTPS 共用同一份模板实现，差别只在传输层对象、「连接是否存活」的谓词
-        // 与限额配置；把 *this 传进去是为了让循环按相位刷新本连接的空闲截止时间
-        co_await detail::httpKeepAliveLoop(
-                socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits);
+        // 事务循环与 HTTPS 共用同一份模板实现，差别只在传输层对象、「连接是否存活」的谓词、
+        // 限额配置与可选的采集端；把 *this 传进去是为了让循环按相位刷新本连接的空闲截止时间
+        co_await detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate,
+                                          *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get());
 
         // 不再在此处 close()：统一交给上面的守卫，正常路径与异常路径只有一处收口
         co_return;
+    }
+
+    void HttpSession::onIdleTimeoutClosed() noexcept
+    {
+        // 只累加计数：清扫协程已经把「哪条连接、误差多大」写进了日志，这里再写一条只会让它翻倍。
+        // 未持有统计对象时什么都不做——那表示调用方只关心协议本身
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countTimeoutClosedConnection();
+        }
     }
 
     bool HttpSession::shouldKeepAlive(const HttpRequest &request, const HttpResponse &response)

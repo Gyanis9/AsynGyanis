@@ -187,6 +187,10 @@ namespace AsynGyanis::Net
                     // 会话先看到取消信号，随后描述符被关会唤醒仍挂在 epoll 上的读写
                     [[maybe_unused]] auto _ = connection->cancelable().requestStop();
                     connection->close();
+
+                    // 上报「本连接因超时被收口」：协议层据此累计自己的超时计数（默认实现为空操作）。
+                    // 放在 close() 之后调用，保证被计数的连接确实已经关掉
+                    connection->onIdleTimeoutClosed();
                 }
             } catch (const std::exception &sweepException)
             {

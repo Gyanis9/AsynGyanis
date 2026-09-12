@@ -6,6 +6,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/HttpDate.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpMethod.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerLimits.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpServerStats.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpRequestId.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParser.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParser.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpRequest.h

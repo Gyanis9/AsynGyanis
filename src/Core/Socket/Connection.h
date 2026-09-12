@@ -153,6 +153,19 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isBusy() const noexcept;
 
+        /**
+         * @brief 本连接被服务器的空闲清扫协程按超时关闭时的上报钩子
+         *
+         * @details 清扫协程扫出超过空闲截止时间的连接后调用它，默认空实现：不关心超时统计的
+         *          连接子类无需理会，需要上报的协议层（如 HTTP 会话）重写它即可。上报点做成虚函数
+         *          是为了让基础设施不必反过来认识具体协议——服务器一侧因此没有 dynamic_cast。
+         * @note 由清扫协程在所属事件循环线程上、**close() 之后**调用：连接此刻已收口，
+         *       实现里不得再发起任何收发，且必须无异常（异常会穿透清扫协程）。
+         */
+        virtual void onIdleTimeoutClosed() noexcept
+        {
+        }
+
     private:
         AsyncSocket       m_socket;      ///< 底层异步socket
         Cancelable        m_cancelable;  ///< 取消支持（stop_token）

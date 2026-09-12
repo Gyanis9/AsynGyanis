@@ -138,6 +138,25 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view body() const;
 
         /**
+         * @brief 设置本次请求的 request-id
+         *
+         * @details 由会话在请求收齐、进入业务之前落定（见 detail::httpKeepAliveLoop()）：
+         *          客户端自带合法的 x-request-id 就沿用，否则用服务器侧生成器发一个。
+         *          业务、中间件与日志因此都从一处读到同一个值。
+         *
+         * @param requestId 本次请求的标识；传空串表示不采集（例如该会话没有生成器）
+         * @note 它是**可观测性标识，不是安全令牌**：不参与鉴权，也不要求不可预测
+         */
+        void setRequestId(std::string requestId);
+
+        /**
+         * @brief 获取本次请求的 request-id
+         * @return 标识文本的视图，生命周期跟随本请求对象；会话未设置时为空视图
+         * @see setRequestId(), HttpRequestIdGenerator
+         */
+        [[nodiscard]] std::string_view requestId() const noexcept;
+
+        /**
          * @brief 从 URI 中提取路径部分（'?' 之前的内容，不含查询参数）。
          * @return 路径视图；URI 为空时返回空视图
          * @note 返回的是原始文本，未做百分号解码
@@ -265,6 +284,7 @@ namespace AsynGyanis::Net
         mutable std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用：首次查询时才由权威记录建出
         mutable bool m_isSingleValueViewStale{true};               ///< 单值视图是否已过期（新增头部或重置后置位，查询前重建）
         std::string m_body;                                        ///< 消息正文
+        std::string m_requestId;                                   ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
         std::unordered_map<std::string, std::string> m_params;     ///< 路由参数
         mutable std::stop_source m_cancelSource;                   ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
     };
