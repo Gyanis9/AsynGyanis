@@ -1,8 +1,8 @@
 #include "Core/EventLoop/Epoll.h"
 
+#include "Base/Exception/SystemException.h"
+
 #include <cerrno>
-#include <cstring>
-#include <stdexcept>
 
 namespace AsynGyanis::Core
 {
@@ -11,7 +11,9 @@ namespace AsynGyanis::Core
         m_fileDescriptor = epoll_create1(EPOLL_CLOEXEC);
         if (!Platform::isEpollHandleValid(m_fileDescriptor))
         {
-            throw std::runtime_error("epoll_create1 failed");
+            // 系统调用失败交由 SystemException 承载：它会自己读 errno 并附上可读描述，
+            // 不必在这里手工 strerror，也避免把平台差异（strerror_s / strerror_r）写进 Core
+            throw Base::SystemException("epoll_create1 失败");
         }
         m_events.resize(kMaximumEventCount);
     }
@@ -110,14 +112,9 @@ namespace AsynGyanis::Core
         {
             if (errno == EINTR)
                 return {};
-            char errBuf[128];
-#ifdef _WIN32
-            strerror_s(errBuf, sizeof(errBuf), errno);
-            throw std::runtime_error(std::string("epoll_wait failed: ") + errBuf);
-#else
-            throw std::runtime_error(
-                    std::string("epoll_wait failed: ") + strerror_r(errno, errBuf, sizeof(errBuf)));
-#endif
+            // 交由 SystemException 读取 errno 并附上可读描述：既省掉手工 strerror，
+            // 也把 strerror_s / strerror_r 这类平台差异挡在 Core 之外
+            throw Base::SystemException("epoll_wait 失败");
         }
         // 动态扩容：当返回事件数接近容量上限时翻倍，防止高负载下丢失事件
         if (static_cast<size_t>(n) >= m_events.size() / 2)

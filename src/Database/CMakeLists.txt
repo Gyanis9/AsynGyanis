@@ -34,7 +34,10 @@ add_library(Database STATIC
         ${DATABASE_SOURCES}
 )
 
+# Base 是显式依赖：本模块的异常体系（DatabaseException 家族）派生自 Base::Exception，
+# 虽然 Base 会经 Core 传递到本目标，但既然直接使用了它的类型就应当自己声明
 target_link_libraries(Database PUBLIC
+        Base
         Platform
         Core
         SQLite::SQLite3

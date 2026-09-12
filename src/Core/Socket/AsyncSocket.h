@@ -198,14 +198,14 @@ namespace AsynGyanis::Core
         /**
          * @brief 获取对端地址（已连接的 socket）
          * @return InetAddress 对象，包含对端的 IP 和端口
-         * @throws std::runtime_error 如果获取失败（如未连接或 socket 无效）
+         * @throws Base::SystemException 如果获取失败（如未连接或 socket 无效）
          */
         InetAddress remoteAddress() const;
 
         /**
          * @brief 获取本地地址（绑定的地址）
          * @return InetAddress 对象，包含本地的 IP 和端口
-         * @throws std::runtime_error 如果获取失败
+         * @throws Base::SystemException 如果获取失败
          */
         InetAddress localAddress() const;
 

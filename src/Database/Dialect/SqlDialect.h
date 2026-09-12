@@ -33,7 +33,7 @@
  * - 任何 translate*() 都不得修改传入的查询树（入参为 const 引用，实现必须是纯函数）；
  * - 任何 translate*() 产出的 parameters[i] 必须与 SQL 文本中第 i 个占位符一一对应，
  *   写语句里赋值参数在前、WHERE 条件参数在后，顺序与它们在文本中出现的先后一致；
- * - 入参个数与列数/条件不匹配时实现必须抛 std::invalid_argument，绝不能生成半截语句；
+ * - 入参个数与列数/条件不匹配时实现必须抛 Base::InvalidArgumentException，绝不能生成半截语句；
  * - quoteIdentifier() 必须转义标识符内部的引用字符（双引号翻倍 / 反引号翻倍），
  *   否则含引号的列名会破坏语句结构；
  * - 同一个 dialect 实例可能被多个线程并发调用，实现必须无状态（本层不持有可变成员）；
@@ -104,7 +104,7 @@ namespace AsynGyanis::Database
          * @param query 提供表名与待写列的查询树，本方法不修改它
          * @param values 待绑定的字段值，个数必须等于 query.selectColumns 的列数
          * @return SqlStatement INSERT 文本与按列序排列的绑定参数
-         * @throws std::invalid_argument 列数为空，或 values 个数与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
         [[nodiscard]] virtual SqlStatement translateInsert(const Queryable::QueryNode &query,
                                                            std::span<const DatabaseValue> values) const = 0;
@@ -121,7 +121,7 @@ namespace AsynGyanis::Database
          * @param query 提供表名、SET 列与 WHERE 条件的查询树，本方法不修改它
          * @param values 赋给各 SET 列的取值，个数必须等于 query.selectColumns 的列数
          * @return SqlStatement UPDATE 文本与按序排列的绑定参数
-         * @throws std::invalid_argument 列数为空，或 values 个数与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
         [[nodiscard]] virtual SqlStatement translateUpdate(const Queryable::QueryNode &query,
                                                            std::span<const DatabaseValue> values) const = 0;
@@ -150,7 +150,7 @@ namespace AsynGyanis::Database
          * @param query 提供表名与待写列的查询树，本方法不修改它
          * @param rows 待插入的行，每行是该行各列的取值
          * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
-         * @throws std::invalid_argument 列数为空、rows 为空，或某行的取值个数与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空、rows 为空，或某行的取值个数与列数不一致
          */
         [[nodiscard]] virtual SqlStatement translateInsertBatch(const Queryable::QueryNode &query,
                                                                 std::span<const std::vector<DatabaseValue>> rows) const = 0;

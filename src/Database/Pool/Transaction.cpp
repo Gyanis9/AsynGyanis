@@ -1,9 +1,11 @@
 #include "Database/Pool/Transaction.h"
 
+#include "Base/Exception/LogicException.h"
+#include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseResult.h"
+#include "Database/Common/QueryExecutionException.h"
 #include "Database/Dialect/DialectRegistry.h"
 
-#include <stdexcept>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -15,20 +17,20 @@ namespace AsynGyanis::Database
         m_connection = pool.acquire();
         if (!m_connection)
         {
-            throw std::runtime_error("数据库事务：无法从连接池获取连接（池已达上限且等待超时，"
-                                     "或连接工厂创建失败），事务未开启");
+            throw ConnectionUnavailableException("数据库事务：无法从连接池获取连接（池已达上限且等待超时，"
+                                                 "或连接工厂创建失败），事务未开启");
         }
 
         // 事务控制语句的文本由方言提供：SQLite 用 BEGIN IMMEDIATE、MySQL 用 START TRANSACTION，
         // 写死在事务对象里等于把方言知识放到了错误的层。方言在此解析一次并缓存，
-        // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 std::invalid_argument
+        // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
         m_dialect = DialectRegistry::dialectFor(m_connection->databaseType());
 
         // BEGIN 失败（例如同一连接上已有未结束的事务）必须让构造失败：返回一个「看起来在事务里、
         // 实际没有事务」的对象，会让后续每一条语句都静默运行在自动提交模式下
         if (!executeControlStatement(m_dialect->beginTransactionStatement()))
         {
-            throw std::runtime_error(m_lastError);
+            throw QueryExecutionException(m_lastError);
         }
 
         // 走到这里数据库确实进入了事务，标记为活动；析构时会据此决定是否回滚
@@ -97,7 +99,7 @@ namespace AsynGyanis::Database
         // 正常流程下构造成功即持有连接，此分支仅为防御：把空指针解引用换成可定位的中文异常
         if (!m_connection)
         {
-            throw std::logic_error("数据库事务：事务对象未持有连接，无法提供连接（可能构造失败后被继续使用）");
+            throw Base::LogicException("数据库事务：事务对象未持有连接，无法提供连接（可能构造失败后被继续使用）");
         }
         return *m_connection;
     }

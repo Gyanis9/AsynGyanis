@@ -1,9 +1,10 @@
 #include "Database/Common/DatabaseFactory.h"
+
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/MySql/MySqlConnection.h"
 #include "Database/Redis/RedisConnection.h"
 #include "Database/Sqlite/SqliteConnection.h"
 
-#include <stdexcept>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -23,7 +24,7 @@ namespace AsynGyanis::Database
             return createSqlite(config);
         }
 
-        throw std::invalid_argument("无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 未知且未提供数据库名");
+        throw Base::InvalidArgumentException("无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 未知且未提供数据库名");
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::create(const DatabaseType type, const ConnectionConfig &config)
@@ -39,7 +40,7 @@ namespace AsynGyanis::Database
         }
 
         // 枚举取值超出已知范围（反序列化出错或内存被写坏）时不给静默默认值
-        throw std::invalid_argument(std::string("不支持的数据库类型：") + databaseTypeName(type));
+        throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type));
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createMySql(const ConnectionConfig &config)

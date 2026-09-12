@@ -63,8 +63,11 @@
  */
 #pragma once
 
+#include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
+#include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseType.h"
+#include "Database/Common/QueryExecutionException.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
@@ -110,7 +113,12 @@ namespace AsynGyanis::Database::Queryable
      * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）及其
      *       异步版本（toListAsync/firstAsync/countAsync/insertAsync/insertBatchAsync/
      *       updateAsync/executeNonQueryAsync）必须在绑定连接池或事务的在线模式下调用，
-     *       默认构造的离线模式调用它们会抛 std::logic_error。
+     *       默认构造的离线模式调用它们会抛 Base::LogicException。
+     * @note 各方法文档里的 `@throws DatabaseException` 是家族根类型，具体子类按失败原因对应：
+     *       取连接失败 → ConnectionUnavailableException（可重试）；
+     *       语句执行失败 → QueryExecutionException（重试无意义，应记日志让请求失败）；
+     *       结果集映射失败 → RowMappingException（表结构与结构体声明不一致）。
+     *       调用方按需捕获具体子类，或统一捕获 Base::Exception 网住全部运行期故障。
      * @note 本类不是线程安全的：异步方法只保证阻塞执行发生在工作线程上，调用方仍应避免在
      *       同一个查询对象上并发地构建查询与发起执行。
      */
@@ -320,9 +328,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::vector<T> 查询结果列表，无匹配行时为空向量
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败，原因见异常文本
-         * @throws std::invalid_argument 该数据库类型尚无方言实现（如 MySQL / Redis）
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败，原因见异常文本
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（如 MySQL / Redis）
          */
         [[nodiscard]] std::vector<T> toList()
         {
@@ -337,9 +345,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::optional<T> 第一行；没有任何匹配行时返回空
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] std::optional<T> first()
         {
@@ -366,9 +374,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::int64_t 匹配的行数；结果为空或计数列为 NULL 时返回 0
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败或 SQL 执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败或 SQL 执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] std::int64_t count()
         {
@@ -395,9 +403,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::int64_t 受影响的行数；驱动不提供该信息时返回 0
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败或语句执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败或语句执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @warning 查询树不含任何条件时生成的语句是 "DELETE FROM 表"，会清空全表；
          *          需要限定范围请先调用 where()
          */
@@ -417,9 +425,9 @@ namespace AsynGyanis::Database::Queryable
          * @param row 待插入的结构体（主键等字段由调用方填好，本方法不做自增处理）
          * @return std::int64_t 受影响的行数（成功插入一行时为 1；驱动不提供该信息时为 0）
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败或语句执行失败（如唯一约束冲突）
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败或语句执行失败（如唯一约束冲突）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] std::int64_t insert(const T &row)
         {
@@ -439,9 +447,9 @@ namespace AsynGyanis::Database::Queryable
          * @param rows 待插入的行集合，允许为空（空集合直接返回 0，不产生任何语句）
          * @return std::int64_t 累计受影响的行数（正常等于 rows.size()；驱动不提供时为 0）
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败、事务开启失败或语句执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、事务开启失败或语句执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note 已绑定事务时不会自行提交或回滚：分块共用事务的连接，提交与否由调用方决定
          */
         [[nodiscard]] std::int64_t insertBatch(std::span<const T> rows)
@@ -470,11 +478,11 @@ namespace AsynGyanis::Database::Queryable
          * @param row 待更新的结构体，主键字段用于定位目标行
          * @return std::int64_t 受影响的行数；0 表示没有匹配的行（无此主键）
          *
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::logic_error TableSchema<T>::kPrimaryKey 未在 kColumns 中声明，
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws Base::LogicException TableSchema<T>::kPrimaryKey 未在 kColumns 中声明，
          *         或表中只有主键列（没有可更新的列），无法生成 UPDATE
-         * @throws std::runtime_error 取连接失败或语句执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws DatabaseException 取连接失败或语句执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] std::int64_t update(const T &row)
         {
@@ -497,10 +505,10 @@ namespace AsynGyanis::Database::Queryable
          * @param completionLoop 恢复本协程用的事件循环；其 run() 必须正在运行（或即将运行），
          *        且对象生命周期要覆盖到任务完成之后，否则协程永远得不到恢复
          * @return Core::Task<std::vector<T>> 惰性启动的协程，co_await 后得到结果行列表
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败；异常原样穿过工作线程
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败；异常原样穿过工作线程
          *         与调度投递，在 co_await 处重新抛出（类型与消息都不变）
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note 提交动作只做入队，因此 co_await 之前的耗时与数据库无关；真正的等待发生在协程挂起之后
          */
         [[nodiscard]] Core::Task<std::vector<T>> toListAsync(Core::EventLoop &completionLoop)
@@ -534,9 +542,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::optional<T>> 惰性启动的协程；无匹配行时结果为空 optional
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] Core::Task<std::optional<T>> firstAsync(Core::EventLoop &completionLoop)
         {
@@ -573,9 +581,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::int64_t> 惰性启动的协程；结果为空或计数列为 NULL 时为 0
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败或 SQL 执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败或 SQL 执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] Core::Task<std::int64_t> countAsync(Core::EventLoop &completionLoop)
         {
@@ -609,9 +617,9 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（驱动不提供时为 0）
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败或语句执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败或语句执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @warning 查询树不含任何条件时生成的语句是 "DELETE FROM 表"，会清空全表
          */
         [[nodiscard]] Core::Task<std::int64_t> executeNonQueryAsync(Core::EventLoop &completionLoop)
@@ -644,9 +652,9 @@ namespace AsynGyanis::Database::Queryable
          * @param row 待插入的结构体（主键等字段由调用方填好，本方法不做自增处理）
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（驱动不提供时为 0）
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败或语句执行失败（如唯一约束冲突）
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败或语句执行失败（如唯一约束冲突）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note **row 按值接收**，与另几个异步方法的引用/视图入参刻意不同：本方法是惰性启动的
          *       协程，函数体（包括把 row 的取值转成绑定参数）要到**首次 resume** 才执行，
          *       若按引用接收，调用方写「先拿 Task 再 resume」就会让引用指向已销毁的临时对象，
@@ -683,9 +691,9 @@ namespace AsynGyanis::Database::Queryable
          * @param rows 待插入的行集合，允许为空（空集合直接得到 0，不产生任何语句）
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::int64_t> 惰性启动的协程；累计受影响行数
-         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
-         * @throws std::runtime_error 取连接失败、事务开启失败、语句执行失败或本地事务提交失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、事务开启失败、语句执行失败或本地事务提交失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note **rows 按值接收**（理由同 insertAsync）：惰性协程要到首次 resume 才读入参，
          *       视图（span）不持有所指数据，按视图接收会让「先拿 Task 再 resume」静默读到
          *       已销毁的容器。需要传已有容器时用 std::move 转交，避免多一次拷贝；
@@ -726,9 +734,9 @@ namespace AsynGyanis::Database::Queryable
          * @param row 待更新的结构体，主键字段用于定位目标行
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（0 表示没有匹配的行）
-         * @throws std::logic_error 当前为离线模式；或主键未在 kColumns 声明、表中只有主键列
-         * @throws std::runtime_error 取连接失败或语句执行失败
-         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @throws Base::LogicException 当前为离线模式；或主键未在 kColumns 声明、表中只有主键列
+         * @throws DatabaseException 取连接失败或语句执行失败
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note 主键缺失这类编程错误在**首次 resume** 时就会抛出（语句生成阶段），
          *       不会变成工作线程上的异常；row 按值接收的理由见 insertAsync()
          */
@@ -800,7 +808,7 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 校验当前处于在线模式（已绑定连接池或事务）
          * @param operationName 调用方方法名，用于拼出可定位的错误文本
-         * @throws std::logic_error 离线模式（默认构造）下调用执行器方法
+         * @throws Base::LogicException 离线模式（默认构造）下调用执行器方法
          */
         void requireOnline(const std::string_view operationName) const
         {
@@ -808,7 +816,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 return;
             }
-            throw std::logic_error("Queryable: " + std::string(operationName) + " 需要连接池或事务，当前为离线模式");
+            throw Base::LogicException("Queryable: " + std::string(operationName) + " 需要连接池或事务，当前为离线模式");
         }
 
         /**
@@ -819,8 +827,8 @@ namespace AsynGyanis::Database::Queryable
          *          返回共享指针而不是引用，是为了让异步路径能把方言**按值**捕获进工作线程的任务：
          *          工作线程不得再触碰本对象，而引用无法脱离本对象的生命周期独立存在。
          * @return std::shared_ptr<SqlDialect> 方言实例，恒非空
-         * @throws std::runtime_error 无法从池中取得连接以推导类型
-         * @throws std::invalid_argument 该数据库类型尚无方言实现（MySQL / Redis）
+         * @throws DatabaseException 无法从池中取得连接以推导类型
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（MySQL / Redis）
          */
         [[nodiscard]] std::shared_ptr<SqlDialect> resolveDialect()
         {
@@ -846,7 +854,7 @@ namespace AsynGyanis::Database::Queryable
                 PooledConnection probeConnection = m_pool->acquire();
                 if (!probeConnection)
                 {
-                    throw std::runtime_error("Queryable: 无法从连接池获取连接以推导数据库类型，请检查连接池配置");
+                    throw ConnectionUnavailableException("Queryable: 无法从连接池获取连接以推导数据库类型，请检查连接池配置");
                 }
                 resolvedType = probeConnection->databaseType();
             }
@@ -861,8 +869,8 @@ namespace AsynGyanis::Database::Queryable
          * @details 同步路径的便捷入口：内部就是 resolveDialect() 的解引用，
          *          缓存的共享指针由本对象长期持有，引用在对象存活期间始终有效。
          * @return const SqlDialect& 方言实例引用
-         * @throws std::runtime_error 无法从池中取得连接以推导类型
-         * @throws std::invalid_argument 该数据库类型尚无方言实现（MySQL / Redis）
+         * @throws DatabaseException 无法从池中取得连接以推导类型
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（MySQL / Redis）
          */
         [[nodiscard]] const SqlDialect &requireDialect()
         {
@@ -890,7 +898,7 @@ namespace AsynGyanis::Database::Queryable
          * @param pool 连接池，与 transaction 必须有一个非空（由 requireOnline() 保证）
          * @param transaction 事务指针，非空时全部语句走事务连接
          * @return ConnectionLease 连接租约；池连接在租约析构时自动归还，事务连接不归还
-         * @throws std::runtime_error 池已达上限且等待超时，或连接工厂创建失败
+         * @throws DatabaseException 池已达上限且等待超时，或连接工厂创建失败
          */
         [[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, Transaction *transaction)
         {
@@ -904,7 +912,7 @@ namespace AsynGyanis::Database::Queryable
             lease.pooled = pool->acquire();
             if (!lease.pooled)
             {
-                throw std::runtime_error("Queryable: 从连接池获取连接失败，可能是池已达上限或连接创建失败");
+                throw ConnectionUnavailableException("Queryable: 从连接池获取连接失败，可能是池已达上限或连接创建失败");
             }
             lease.connection = lease.pooled.operator->();
             return lease;
@@ -933,7 +941,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 执行一次 SELECT 并把结果映射成结构体列表（同步路径）
          * @param queryNode 已展开列的查询树
          * @return std::vector<T> 映射后的行列表
-         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败
+         * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败
          */
         [[nodiscard]] std::vector<T> fetchRows(const QueryNode &queryNode)
         {
@@ -951,7 +959,7 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 方言，提供 translate()
          * @param queryNode 已展开列的查询树
          * @return std::vector<T> 映射后的行列表
-         * @throws std::runtime_error SQL 执行失败或行映射失败
+         * @throws DatabaseException SQL 执行失败或行映射失败
          * @note SQLite 的结果集持有连接句柄的非拥有指针，因此 connection 必须比结果集活得久：
          *       这一点由调用方持有连接租约、且租约比本函数返回值活得更久来保证
          */
@@ -965,7 +973,7 @@ namespace AsynGyanis::Database::Queryable
                 connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 查询执行失败：" + connection.lastError());
+                throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError());
             }
 
             return mapResultRows<T>(*result);
@@ -977,7 +985,7 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 方言，提供 translate()
          * @param countingNode 已把 SELECT 改成 COUNT(*)、并清掉排序与分页的查询树
          * @return std::int64_t 匹配行数；无结果行或计数列为 NULL 时为 0
-         * @throws std::runtime_error SQL 执行失败
+         * @throws DatabaseException SQL 执行失败
          */
         [[nodiscard]] static std::int64_t countOn(DatabaseConnection &connection,
                                                  const SqlDialect &dialect,
@@ -989,7 +997,7 @@ namespace AsynGyanis::Database::Queryable
                 connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 统计行数失败：" + connection.lastError());
+                throw QueryExecutionException("Queryable: 统计行数失败：" + connection.lastError());
             }
 
             // COUNT(*) 恒返回一行一列；游标推进失败说明语句没有产出任何行，按 0 计
@@ -1012,7 +1020,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 执行一条写语句并返回受影响行数（连接由内部按当前模式决定）
          * @param statement 待执行的参数化语句
          * @return std::int64_t 受影响行数；驱动不提供该信息时为 0
-         * @throws std::runtime_error 取连接失败或语句执行失败
+         * @throws DatabaseException 取连接失败或语句执行失败
          */
         [[nodiscard]] std::int64_t executeStatement(const SqlStatement &statement)
         {
@@ -1028,7 +1036,7 @@ namespace AsynGyanis::Database::Queryable
          * @param connection 目标连接，生命周期由调用方保证
          * @param statement 待执行的参数化语句
          * @return std::int64_t 受影响行数；驱动不提供该信息时为 0
-         * @throws std::runtime_error 语句执行失败，原因见连接的错误文本
+         * @throws DatabaseException 语句执行失败，原因见连接的错误文本
          */
         [[nodiscard]] static std::int64_t executeOn(DatabaseConnection &connection, const SqlStatement &statement)
         {
@@ -1036,7 +1044,7 @@ namespace AsynGyanis::Database::Queryable
                 connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 语句执行失败：" + connection.lastError());
+                throw QueryExecutionException("Queryable: 语句执行失败：" + connection.lastError());
             }
 
             // 影响行数由结果集自己回答：DatabaseResult::affectedRowCount() 带默认实现
@@ -1069,7 +1077,7 @@ namespace AsynGyanis::Database::Queryable
          *          条件树的递归、IN 展开、参数顺序因此与 SELECT / DELETE 完全一致。
          * @param row 待更新的结构体
          * @return SqlStatement "UPDATE 表 SET 列 = ?, … WHERE 主键 = ?"
-         * @throws std::logic_error 主键未在 kColumns 中声明，或表中只有主键列
+         * @throws Base::LogicException 主键未在 kColumns 中声明，或表中只有主键列
          */
         [[nodiscard]] SqlStatement buildUpdateStatement(const T &row)
         {
@@ -1089,15 +1097,15 @@ namespace AsynGyanis::Database::Queryable
 
             if (!primaryKeyCondition.has_value())
             {
-                throw std::logic_error("Queryable: 无法生成 UPDATE，TableSchema<" +
-                                       std::string(TableSchema<T>::kTableName) + ">::kPrimaryKey（" +
-                                       std::string(primaryKeyName) + "）未在 kColumns 中声明");
+                throw Base::LogicException("Queryable: 无法生成 UPDATE，TableSchema<" +
+                                           std::string(TableSchema<T>::kTableName) + ">::kPrimaryKey（" +
+                                           std::string(primaryKeyName) + "）未在 kColumns 中声明");
             }
 
             if (assignmentColumns.empty())
             {
-                throw std::logic_error("Queryable: 无法生成 UPDATE，表 " +
-                                       std::string(TableSchema<T>::kTableName) + " 只有主键列，没有可更新的列");
+                throw Base::LogicException("Queryable: 无法生成 UPDATE，表 " +
+                                           std::string(TableSchema<T>::kTableName) + " 只有主键列，没有可更新的列");
             }
 
             QueryNode updateNode     = makeWriteQueryNode();
@@ -1178,7 +1186,7 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 目标方言，提供 maximumStatementParameters() 与 translateInsertBatch()
          * @param rows 待插入的全部行（非空，空集合由调用方提前返回）
          * @return std::int64_t 累计受影响行数
-         * @throws std::runtime_error 取连接失败、任意一块执行失败，或本地事务提交失败
+         * @throws DatabaseException 取连接失败、任意一块执行失败，或本地事务提交失败
          */
         [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool,
                                                        Transaction *transaction,
@@ -1221,7 +1229,7 @@ namespace AsynGyanis::Database::Queryable
             // 此时事务仍未结束，析构阶段还会再补一次 ROLLBACK
             if (!localTransaction.commit())
             {
-                throw std::runtime_error("Queryable: 批量插入提交失败：" + localTransaction.lastError());
+                throw QueryExecutionException("Queryable: 批量插入提交失败：" + localTransaction.lastError());
             }
             return affectedRows;
         }
@@ -1236,7 +1244,7 @@ namespace AsynGyanis::Database::Queryable
          * @param rows 待插入的全部行
          * @param rowsPerStatement 每块最多容纳的行数（由方言的参数上限换算而来）
          * @return std::int64_t 累计受影响行数
-         * @throws std::runtime_error 任意一块执行失败（此时整个事务由调用方回滚）
+         * @throws DatabaseException 任意一块执行失败（此时整个事务由调用方回滚）
          */
         [[nodiscard]] static std::int64_t executeBatchOn(DatabaseConnection &connection,
                                                         const SqlDialect &dialect,

@@ -14,6 +14,8 @@
 #include "Base/Format/Value/ValueAccessError.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/LogicException.h"
 #include "Base/Exception/NetworkException.h"
 #include "Base/Exception/SystemException.h"
 
@@ -426,5 +428,63 @@ namespace AsynGyanis::Base
         }
 
         EXPECT_EQ(caughtCount, 500);
+    }
+
+    // ============================================================================
+    // LogicException / InvalidArgumentException：std::logic_error 这条分支
+    // ============================================================================
+
+    TEST(LogicException, SitsOnTheLogicErrorBranchNotTheRuntimeErrorOne)
+    {
+        // 继承关系本身就是设计：编程/用法错误留在 std::logic_error 分支上，
+        // 与派生自 std::runtime_error 的 Exception 平行，互不包含
+        static_assert(std::is_base_of_v<std::logic_error, LogicException>);
+        static_assert(!std::is_base_of_v<Exception, LogicException>);
+        static_assert(!std::is_base_of_v<std::runtime_error, LogicException>);
+
+        const LogicException exception("离线模式下不允许执行该操作");
+        EXPECT_THROW(throw exception, std::logic_error);
+        EXPECT_THROW(throw exception, LogicException);
+    }
+
+    TEST(LogicException, MessageUsesSharedFormatAndKeepsThrowLocation)
+    {
+        const std::source_location throwSite = std::source_location::current();
+        const LogicException       exception("表结构不合法", throwSite);
+
+        const std::string message = exception.what();
+        EXPECT_TRUE(contains(message, "[异常]")) << message;
+        EXPECT_TRUE(contains(message, "表结构不合法")) << message;
+        EXPECT_EQ(exception.location().line(), throwSite.line());
+        EXPECT_STREQ(exception.location().file_name(), throwSite.file_name());
+    }
+
+    TEST(InvalidArgumentException, IsCatchableAsBothStandardTypes)
+    {
+        // 派生自 std::invalid_argument，而后者又派生自 std::logic_error：
+        // 按标准分类的上游处理器两种写法都能命中
+        static_assert(std::is_base_of_v<std::invalid_argument, InvalidArgumentException>);
+        static_assert(std::is_base_of_v<std::logic_error, InvalidArgumentException>);
+        static_assert(!std::is_base_of_v<Exception, InvalidArgumentException>);
+
+        const InvalidArgumentException exception("取值个数与列数不一致");
+        EXPECT_THROW(throw exception, std::invalid_argument);
+        EXPECT_THROW(throw exception, std::logic_error);
+    }
+
+    TEST(LogicException, DoesNotCatchItsSiblingInvalidArgumentException)
+    {
+        // 两个类型各自继承标准库的两条分支，无法合成一条（会形成菱形基类），因此是兄弟而非父子。
+        // 要一次网住「所有用法错误」，捕获它们的共同基类 std::logic_error 才是正确写法
+        try
+        {
+            throw InvalidArgumentException("取值个数与列数不一致");
+        } catch (const LogicException &)
+        {
+            FAIL() << "InvalidArgumentException 不应被 LogicException 捕获：二者是兄弟类型";
+        } catch (const std::logic_error &exception)
+        {
+            EXPECT_TRUE(contains(exception.what(), "取值个数与列数不一致"));
+        }
     }
 } // namespace AsynGyanis::Base

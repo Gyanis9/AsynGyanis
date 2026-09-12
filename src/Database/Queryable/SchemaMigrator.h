@@ -21,7 +21,7 @@
  * - 主键：列名等于 TableSchema<T>::kPrimaryKey 的列加 PRIMARY KEY。主键列若是非 optional
  *   成员，约束文本形如 `"id" BIGINT NOT NULL PRIMARY KEY`（PK 本身已隐含 NOT NULL，
  *   显式写出是为了让生成的 DDL 与结构体声明一一对应，读起来不需要脑补隐含规则）。
- *   若 kPrimaryKey 非空却在 kColumns 里找不到同名列，一律抛 std::logic_error：
+ *   若 kPrimaryKey 非空却在 kColumns 里找不到同名列，一律抛 Base::LogicException：
  *   那通常意味着列名拼写不一致，静默建出「没有主键的表」比直接失败危险得多。
  *
  * ## 为什么 createTableStatement() 需要方言参数
@@ -36,7 +36,10 @@
  *
  * ## 失败语义
  * - 编译期错误（缺少 TableSchema 特化、成员类型不受支持）：static_assert，给出中文提示；
- * - 编程错误（kTableName 为空、kPrimaryKey 在 kColumns 中不存在）：抛 std::logic_error；
+ * - 编程错误（kTableName 为空、kPrimaryKey 在 kColumns 中不存在）：抛 Base::LogicException；
+ *   注意它**不属于**本模块的 DatabaseException 家族——那是给运行期故障用的，而这类错误是
+ *   声明写错了，重试无意义，因此刻意留在 std::logic_error 这条标准分支上，
+ *   不被 `catch (const Base::Exception &)` 吞掉；
  * - 运行期失败（取连接失败、方言不支持、DDL 被引擎拒绝）：返回 false，原因见 errorText（可选出参）。
  *
  * @code
@@ -55,6 +58,7 @@
  */
 #pragma once
 
+#include "Base/Exception/LogicException.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
 #include "Database/Dialect/ColumnType.h"
@@ -126,7 +130,7 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 目标引擎的方言，提供类型名映射与标识符引用
          * @param ifNotExists true 生成 "CREATE TABLE IF NOT EXISTS"（默认，便于重复执行）
          * @return SqlStatement 完整建表语句；DDL 不含值，因此 parameters 恒为空
-         * @throws std::logic_error TableSchema<T>::kTableName 为空，或 kPrimaryKey 非空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空，或 kPrimaryKey 非空
          *         但在 kColumns 中找不到同名列（列名拼写不一致）
          */
         template<RowMappable T>
@@ -145,8 +149,8 @@ namespace AsynGyanis::Database::Queryable
             if (tableName.empty())
             {
                 // 表名为空（主模板的默认值，或完全特化里被显式留空）时生成 "CREATE TABLE """ 毫无意义
-                throw std::logic_error("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                                       "请先特化 TableSchema 并填写表名");
+                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
+                                           "请先特化 TableSchema 并填写表名");
             }
 
             bool        primaryKeyDeclared = false;
@@ -165,9 +169,9 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 主键列名与任何列名都不同：多半是 kPrimaryKey 与 kColumns 里的列名拼写不一致。
                 // 静默建出无主键表会让「按主键更新/删除」这类操作在运行期才暴露问题，因此当场失败
-                throw std::logic_error("SchemaMigrator: 表 " + std::string(tableName) + " 的主键列 \"" +
-                                       std::string(TableSchema<T>::kPrimaryKey) +
-                                       "\" 未在 kColumns 中声明，无法生成建表语句");
+                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的主键列 \"" +
+                                           std::string(TableSchema<T>::kPrimaryKey) +
+                                           "\" 未在 kColumns 中声明，无法生成建表语句");
             }
 
             SqlStatement statement;
@@ -192,7 +196,7 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 目标引擎的方言，提供标识符引用
          * @param ifExists true 生成 "DROP TABLE IF EXISTS"（默认，便于收尾清理）
          * @return SqlStatement 完整删表语句，parameters 恒为空
-         * @throws std::logic_error TableSchema<T>::kTableName 为空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空
          */
         template<RowMappable T>
         [[nodiscard]] static SqlStatement dropTableStatement(const SqlDialect &dialect, const bool ifExists = true)
@@ -200,8 +204,8 @@ namespace AsynGyanis::Database::Queryable
             const std::string_view tableName = TableSchema<T>::kTableName;
             if (tableName.empty())
             {
-                throw std::logic_error("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                                       "请先特化 TableSchema 并填写表名");
+                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
+                                           "请先特化 TableSchema 并填写表名");
             }
 
             SqlStatement statement;
@@ -224,7 +228,7 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 语句已被引擎接受（表已存在时同样返回 true，因为目标状态已达成）
          * @return false 取连接失败、方言不支持或 DDL 被引擎拒绝，原因见 errorText
-         * @throws std::logic_error 表结构本身不合法（表名为空、主键列不存在），见 createTableStatement()
+         * @throws Base::LogicException 表结构本身不合法（表名为空、主键列不存在），见 createTableStatement()
          */
         template<RowMappable T>
         [[nodiscard]] static bool createTable(ConnectionPool &pool,
@@ -241,7 +245,7 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
-            // 语句生成可能因表结构不合法抛 std::logic_error，那是编程错误，不在这里转成 false
+            // 语句生成可能因表结构不合法抛 Base::LogicException，那是编程错误，不在这里转成 false
             return executeStatement(pool, createTableStatement<T>(*dialect, ifNotExists), errorText);
         }
 
@@ -254,7 +258,7 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 语句已被引擎接受（表本就不存在时同样返回 true）
          * @return false 取连接失败、方言不支持或 DDL 被引擎拒绝，原因见 errorText
-         * @throws std::logic_error TableSchema<T>::kTableName 为空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空
          */
         template<RowMappable T>
         [[nodiscard]] static bool dropTable(ConnectionPool &pool,
@@ -284,7 +288,7 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 表存在
          * @return false 表不存在，**或**查询失败（用 errorText 区分：失败时它非空）
-         * @throws std::logic_error TableSchema<T>::kTableName 为空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空
          * @note 查询失败不抛异常而返回 false，是因为本方法以布尔语义对外；需要区分「不存在」
          *       与「查询失败」的调用方应传入 errorText 并检查它是否被写入
          */
@@ -297,8 +301,8 @@ namespace AsynGyanis::Database::Queryable
             const std::string_view tableName = TableSchema<T>::kTableName;
             if (tableName.empty())
             {
-                throw std::logic_error("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                                       "请先特化 TableSchema 并填写表名");
+                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
+                                           "请先特化 TableSchema 并填写表名");
             }
 
             const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);

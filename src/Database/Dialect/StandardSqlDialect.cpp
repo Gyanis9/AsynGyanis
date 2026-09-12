@@ -1,7 +1,8 @@
 #include "Database/Dialect/StandardSqlDialect.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -257,17 +258,17 @@ namespace AsynGyanis::Database
     {
         if (query.selectColumns.empty())
         {
-            throw std::invalid_argument(std::string(dialectName()) +
-                                        " 方言：待写列列表为空，无法生成写语句（表 " + query.tableName + "）");
+            throw Base::InvalidArgumentException(std::string(dialectName()) +
+                                                " 方言：待写列列表为空，无法生成写语句（表 " + query.tableName + "）");
         }
 
         // 列与值对错位时生成的语句可能仍能执行，却会把值写进错误的列，
         // 这种错误在业务层极难定位，因此必须在翻译阶段就拦住
         if (valueCount != query.selectColumns.size())
         {
-            throw std::invalid_argument(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(valueCount) +
-                                        "）与待写列数（" + std::to_string(query.selectColumns.size()) +
-                                        "）不一致，无法生成写语句（表 " + query.tableName + "）");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(valueCount) +
+                                                "）与待写列数（" + std::to_string(query.selectColumns.size()) +
+                                                "）不一致，无法生成写语句（表 " + query.tableName + "）");
         }
     }
 
@@ -481,8 +482,8 @@ namespace AsynGyanis::Database
         {
             // 零行插入没有合法写法（"VALUES" 后面必须有至少一组括号），
             // 静默返回一句只能插 0 行的语句会让调用方以为写入了数据，因此直接失败
-            throw std::invalid_argument(std::string(dialectName()) +
-                                        " 方言：批量插入的行集合为空，无法生成 INSERT 语句");
+            throw Base::InvalidArgumentException(std::string(dialectName()) +
+                                                " 方言：批量插入的行集合为空，无法生成 INSERT 语句");
         }
 
         requireMatchingColumnCount(query, rows.front().size());

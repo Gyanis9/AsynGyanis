@@ -40,7 +40,7 @@ namespace AsynGyanis::Database
          * @brief 依据配置推断类型并创建连接
          * @param config 连接配置
          * @return std::unique_ptr<DatabaseConnection> 对应驱动的连接实例
-         * @throws std::invalid_argument 端口无法判定类型且配置不足以推断为 SQLite
+         * @throws Base::InvalidArgumentException 端口无法判定类型且配置不足以推断为 SQLite
          */
         [[nodiscard]] static std::unique_ptr<DatabaseConnection> create(const ConnectionConfig &config);
 
@@ -49,7 +49,7 @@ namespace AsynGyanis::Database
          * @param type 数据库类型
          * @param config 连接配置
          * @return std::unique_ptr<DatabaseConnection> 对应驱动的连接实例
-         * @throws std::invalid_argument 类型不可用
+         * @throws Base::InvalidArgumentException 类型不可用
          */
         [[nodiscard]] static std::unique_ptr<DatabaseConnection> create(DatabaseType type, const ConnectionConfig &config);
 

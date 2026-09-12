@@ -47,7 +47,7 @@ namespace AsynGyanis::Database
          *
          * @param type 数据库类型
          * @return std::shared_ptr<SqlDialect> 该类型的方言实现，恒非空
-         * @throws std::invalid_argument 该类型尚未提供方言实现（如 Oracle），
+         * @throws Base::InvalidArgumentException 该类型尚未提供方言实现（如 Oracle），
          *         或该类型不是 SQL 数据库（Redis），异常文本为中文提示
          */
         [[nodiscard]] static std::shared_ptr<SqlDialect> dialectFor(DatabaseType type);

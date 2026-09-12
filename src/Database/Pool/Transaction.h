@@ -92,9 +92,10 @@ namespace AsynGyanis::Database
          *
          * @param pool 提供连接的连接池，本对象在析构前一直占用其中一条连接
          *
-         * @throws std::runtime_error 池中取不到连接（已达上限且等待超时，或连接工厂创建失败），
-         *         或驱动拒绝 BEGIN（例如同一连接上已有未结束的事务）
-         * @throws std::invalid_argument 该数据库类型尚无方言实现，取不到开启事务的语句文本
+         * @throws ConnectionUnavailableException 池中取不到连接（已达上限且等待超时，
+         *         或连接工厂创建失败）
+         * @throws QueryExecutionException 驱动拒绝 BEGIN（例如同一连接上已有未结束的事务）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现，取不到开启事务的语句文本
          * @note 构造成功即代表数据库已经进入了事务；构造失败不会留下半开状态，
          *       已借出的连接由 PooledConnection 在栈展开时归还池
          */
@@ -151,7 +152,7 @@ namespace AsynGyanis::Database
          * @details Queryable 通过本方法让全部语句都落在同一条连接上，这是事务正确性的前提。
          *          返回的引用在本对象析构前始终有效，调用方不得保存到本对象之后使用。
          * @return DatabaseConnection& 事务持有的连接
-         * @throws std::logic_error 对象未持有连接（构造失败后继续使用等，正常流程不可达）
+         * @throws Base::LogicException 对象未持有连接（构造失败后继续使用等，正常流程不可达）
          */
         [[nodiscard]] DatabaseConnection &connection();
 

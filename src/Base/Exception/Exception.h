@@ -42,14 +42,6 @@ namespace AsynGyanis::Base
         [[nodiscard]] const std::source_location &location() const noexcept;
 
     private:
-        /**
-         * @brief 将原始消息与源位置拼接为最终异常文本
-         * @param message 异常描述消息
-         * @param sourceLocation 异常抛出位置
-         * @return std::string 带位置前缀的完整消息
-         */
-        static std::string formatMessage(const std::string &message, const std::source_location &sourceLocation);
-
         std::source_location m_location; ///< 异常抛出时的源码位置快照
     };
 } // namespace AsynGyanis::Base

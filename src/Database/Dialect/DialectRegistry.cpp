@@ -1,9 +1,9 @@
 #include "Database/Dialect/DialectRegistry.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
 
-#include <stdexcept>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -30,12 +30,12 @@ namespace AsynGyanis::Database
             }
 
             case DatabaseType::Redis:
-                throw std::invalid_argument(
+                throw Base::InvalidArgumentException(
                     "方言注册表：Redis 是键值存储，不参与 SQL 查询树翻译，请改用 RedisConnection 的命令接口");
 
             default:
                 // 新增枚举值却忘了登记方言时走这里，异常文本带上数值便于定位
-                throw std::invalid_argument(
+                throw Base::InvalidArgumentException(
                     "方言注册表：不支持的数据库类型（枚举值 " +
                     std::to_string(static_cast<int>(type)) + "）：请为该类型实现 SqlDialect 后在本注册表登记");
         }

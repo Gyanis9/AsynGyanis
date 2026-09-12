@@ -27,8 +27,11 @@
  *   零长载荷是「有值且为空」而非 NULL；optional 包装双向可用；
  *   文本或整数落到二进制成员一律报错（列声明与成员声明不一致必须暴露，不能静默收下）
  */
+#include "Base/Exception/Exception.h"
 #include "Database/Common/BinaryBytes.h"
+#include "Database/Common/DatabaseException.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/RowMapper.h"
 
 #include <gtest/gtest.h>
@@ -384,6 +387,27 @@ namespace AsynGyanis::Database::Queryable
         const DatabaseValue payload = Detail::toDatabaseValue<BinaryBytes>(BinaryBytes{0xFF});
         EXPECT_FALSE(std::holds_alternative<std::string>(payload)) << databaseValueTypeName(payload);
         EXPECT_TRUE(std::holds_alternative<BinaryBytes>(payload)) << databaseValueTypeName(payload);
+    }
+
+    /**
+     * @brief 验证真实的映射失败能被框架异常基类捕获
+     *
+     * @details 改造前这里抛的是裸 std::runtime_error：调用方即使只想「兜住框架的运行期故障」
+     *          也拿不到任何框架类型可捕，只能退化成 catch (std::exception)。现在它是
+     *          RowMappingException，上溯到 DatabaseException、Base::Exception 与
+     *          std::runtime_error 四层都成立——本条用例把这条链一次钉死。
+     */
+    TEST(RowMapperException, MappingFailureIsCatchableThroughProjectAndModuleBases)
+    {
+        const auto throwMappingFailure = []
+        {
+            static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName));
+        };
+
+        EXPECT_THROW(throwMappingFailure(), RowMappingException);
+        EXPECT_THROW(throwMappingFailure(), DatabaseException);
+        EXPECT_THROW(throwMappingFailure(), Base::Exception);
+        EXPECT_THROW(throwMappingFailure(), std::runtime_error);
     }
 
 } // namespace AsynGyanis::Database::Queryable

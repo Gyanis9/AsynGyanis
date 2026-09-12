@@ -97,7 +97,7 @@ namespace AsynGyanis::Database
          * @param query 提供表名与待写列的查询树
          * @param values 待绑定的字段值，个数必须等于 query.selectColumns 的列数
          * @return SqlStatement INSERT 文本与按列序排列的绑定参数
-         * @throws std::invalid_argument 列数为空，或 values 个数与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
         [[nodiscard]] SqlStatement translateInsert(const Queryable::QueryNode &query,
                                                    std::span<const DatabaseValue> values) const override;
@@ -112,7 +112,7 @@ namespace AsynGyanis::Database
          * @param query 提供表名、SET 列与 WHERE 条件的查询树
          * @param values 赋给各 SET 列的取值，个数必须等于 query.selectColumns 的列数
          * @return SqlStatement UPDATE 文本与按序排列的绑定参数
-         * @throws std::invalid_argument 列数为空，或 values 个数与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
         [[nodiscard]] SqlStatement translateUpdate(const Queryable::QueryNode &query,
                                                    std::span<const DatabaseValue> values) const override;
@@ -140,7 +140,7 @@ namespace AsynGyanis::Database
          * @param query 提供表名与待写列的查询树
          * @param rows 待插入的行，每行的取值个数必须等于 query.selectColumns 的列数
          * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
-         * @throws std::invalid_argument 列数为空、rows 为空，或某行取值个数与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空、rows 为空，或某行取值个数与列数不一致
          */
         [[nodiscard]] SqlStatement translateInsertBatch(const Queryable::QueryNode &query,
                                                         std::span<const std::vector<DatabaseValue>> rows) const override;
@@ -264,7 +264,7 @@ namespace AsynGyanis::Database
          *          这种错误在业务层极难定位，因此在翻译阶段就失败并给出中文原因。
          * @param query 提供 selectColumns 的查询树
          * @param valueCount 本次提供的取值个数
-         * @throws std::invalid_argument 列数为空，或 valueCount 与列数不一致
+         * @throws Base::InvalidArgumentException 列数为空，或 valueCount 与列数不一致
          */
         void requireMatchingColumnCount(const Queryable::QueryNode &query, std::size_t valueCount) const;
 

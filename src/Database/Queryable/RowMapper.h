@@ -26,7 +26,7 @@
  *   二进制列产出文本、或文本列被声明成二进制成员，都说明列的声明与成员的声明不一致，
  *   此时把文本当字节收下会掩盖 schema 漂移，报错才是可定位的行为；
  * - std::optional<U> ← NULL（monostate）映射成空 optional，其余情况递归按 U 转换。
- * 类型不符、列缺失、NULL 落到非 optional 成员，都会抛出带中文说明的 std::runtime_error，
+ * 类型不符、列缺失、NULL 落到非 optional 成员，都会抛出带中文说明的 RowMappingException，
  * 而不是给出一个字段静默为 0 的半成品对象。
  *
  * @note 文本支路是**严格**解析：允许前导负号（目标为有符号时）与十进制数字，其余一概拒绝——
@@ -56,6 +56,7 @@
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/TableSchema.h"
 
@@ -158,10 +159,10 @@ namespace AsynGyanis::Database::Queryable
                                                      const std::string_view expectedTypeName,
                                                      const DatabaseValue &cellValue)
         {
-            throw std::runtime_error("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 期望 " +
-                                     std::string(expectedTypeName) + "，实际为 " +
-                                     databaseValueTypeName(cellValue) +
-                                     "。若该列可能为 NULL，请把成员声明为 std::optional");
+            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 期望 " +
+                                       std::string(expectedTypeName) + "，实际为 " +
+                                       databaseValueTypeName(cellValue) +
+                                       "。若该列可能为 NULL，请把成员声明为 std::optional");
         }
 
         /**
@@ -177,7 +178,7 @@ namespace AsynGyanis::Database::Queryable
          * @param textValue 列值文本
          * @param columnName 列名，仅用于错误信息
          * @return FundamentalType 解析结果
-         * @throws std::runtime_error 文本不是纯十进制整数（含小数点、科学计数法、空白、多余字符，
+         * @throws RowMappingException 文本不是纯十进制整数（含小数点、科学计数法、空白、多余字符，
          *         或无符号成员收到负号），或取值超出目标整型的范围
          */
         template<typename FundamentalType>
@@ -194,24 +195,24 @@ namespace AsynGyanis::Database::Queryable
             // out_of_range 单独给文案：此时文本本身是合法整数，只是超出目标位宽
             if (parseResult.ec == std::errc::result_out_of_range)
             {
-                throw std::runtime_error("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
-                                         " 超出目标整型的取值范围");
+                throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
+                                           " 超出目标整型的取值范围");
             }
 
             // ptr != textEnd 表示尾部仍有余文（如 "12abc"）；无符号目标遇到负号也走这里
             if (parseResult.ec != std::errc{} || parseResult.ptr != textEnd)
             {
-                throw std::runtime_error(std::string("ORM 行映射失败：列 \"") + std::string(columnName) +
-                                         "\" 的文本 \"" + textValue +
-                                         (std::is_unsigned_v<FundamentalType> ? "\" 无法映射到无符号整型（只接受十进制数字，不接受负号、小数点或空格）"
-                                                                             : "\" 无法映射到整型（只接受可选的负号与十进制数字）"));
+                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) +
+                                           "\" 的文本 \"" + textValue +
+                                           (std::is_unsigned_v<FundamentalType> ? "\" 无法映射到无符号整型（只接受十进制数字，不接受负号、小数点或空格）"
+                                                                               : "\" 无法映射到整型（只接受可选的负号与十进制数字）"));
             }
 
             // 「放得下才有意义」：无符号成员收到负号会在上一步被拒，这里再兜一次位宽
             if (!std::in_range<FundamentalType>(parsedValue))
             {
-                throw std::runtime_error("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
-                                         " 超出目标整型的取值范围");
+                throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
+                                           " 超出目标整型的取值范围");
             }
 
             return static_cast<FundamentalType>(parsedValue);
@@ -223,7 +224,7 @@ namespace AsynGyanis::Database::Queryable
          * @param cellValue 结果集当前行的单元格值
          * @param columnName 列名，仅用于错误信息
          * @return MemberType 转换后的值
-         * @throws std::runtime_error 类型不匹配、整型越界或 NULL 落到非 optional 成员
+         * @throws RowMappingException 类型不匹配、整型越界或 NULL 落到非 optional 成员
          */
         template<typename MemberType>
         [[nodiscard]] MemberType convertDatabaseValue(const DatabaseValue &cellValue, const std::string_view columnName)
@@ -260,8 +261,8 @@ namespace AsynGyanis::Database::Queryable
                     // 这类错误在业务层极难定位，宁可在映射处直接失败
                     if (!std::in_range<BareType>(*integerValue))
                     {
-                        throw std::runtime_error("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " +
-                                                 std::to_string(*integerValue) + " 超出目标整型的取值范围");
+                        throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " +
+                                                   std::to_string(*integerValue) + " 超出目标整型的取值范围");
                     }
                     return static_cast<BareType>(*integerValue);
                 }
@@ -357,7 +358,7 @@ namespace AsynGyanis::Database::Queryable
          * @param mappedRow 目标结构体，成员的赋值目标
          * @param columnDescriptor 列的元信息（列名 + 成员指针）
          * @param result 结果集，游标须已停在有效行上
-         * @throws std::runtime_error 列不存在或类型不匹配
+         * @throws RowMappingException 列不存在或类型不匹配
          */
         template<typename T, typename ColumnDescriptorType>
         void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, const DatabaseResult &result)
@@ -367,9 +368,9 @@ namespace AsynGyanis::Database::Queryable
             const std::optional<std::size_t> columnIndex = result.columnIndex(columnDescriptor.columnName);
             if (!columnIndex.has_value())
             {
-                throw std::runtime_error("ORM 行映射失败：结果集中不存在列 \"" +
-                                         std::string(columnDescriptor.columnName) + "\"（表 " +
-                                         std::string(TableSchema<T>::kTableName) + "）");
+                throw RowMappingException("ORM 行映射失败：结果集中不存在列 \"" +
+                                           std::string(columnDescriptor.columnName) + "\"（表 " +
+                                           std::string(TableSchema<T>::kTableName) + "）");
             }
 
             const DatabaseValue cellValue = result.getValue(columnIndex.value());
@@ -390,7 +391,7 @@ namespace AsynGyanis::Database::Queryable
      * @tparam T 已特化 TableSchema 的聚合类型
      * @param result 结果集，只读访问
      * @return T 映射后的结构体
-     * @throws std::runtime_error 列缺失、类型不匹配、整型越界或 NULL 落到非 optional 成员
+     * @throws RowMappingException 列缺失、类型不匹配、整型越界或 NULL 落到非 optional 成员
      */
     template<RowMappable T>
     [[nodiscard]] T mapResultRow(const DatabaseResult &result)
@@ -424,7 +425,7 @@ namespace AsynGyanis::Database::Queryable
      * @tparam T 已特化 TableSchema 的聚合类型
      * @param result 结果集，会推进其游标
      * @return std::vector<T> 映射后的行列表，结果集为空时返回空向量
-     * @throws std::runtime_error 任意一行映射失败
+     * @throws RowMappingException 任意一行映射失败
      */
     template<RowMappable T>
     [[nodiscard]] std::vector<T> mapResultRows(DatabaseResult &result)
