@@ -2,7 +2,7 @@ add_subdirectory(Platform)
 add_subdirectory(Base)
 add_subdirectory(Core)
 add_subdirectory(Database)
+add_subdirectory(Net)
 
-# 本轮重构已推进 Platform、Base、Core 与 Database；Net 源码保留但暂不参与构建。
-# 恢复方式：取消对应 add_subdirectory 注释，并同时启用 tests/CMakeLists.txt 中的测试目录。
-# add_subdirectory(Net)
+# 五个模块全部纳入构建：Platform、Base、Core、Database、Net。
+# 各模块的测试目录开关在 tests/CMakeLists.txt 中与本文件保持同步。

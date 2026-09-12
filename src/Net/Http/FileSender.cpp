@@ -1,157 +1,86 @@
 /**
  * @file FileSender.cpp
- * @brief 静态文件零拷贝发送器，直接在内核态把文件内容推入 socket
+ * @brief 静态文件 MIME 查表实现：扩展名大小写不敏感映射
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "FileSender.h"
+#include "Net/Http/FileSender.h"
 
-#include "Core/EpollAwaiter.h"
-#include "Core/EventLoop.h"
-#include "Platform/Platform.h"
-
-#include <cerrno>
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <ranges>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 
-#ifdef _WIN32
-  #include <windows.h>
-#else
-  #include <fcntl.h>
-  #include <sys/sendfile.h>
-  #include <sys/stat.h>
-  #include <unistd.h>
-#endif
-
-namespace Net
+namespace AsynGyanis::Net
 {
-
-    Core::Task<> FileSender::sendFile(Core::EventLoop &loop, TcpStream &stream, const std::string &filePath)
+    namespace
     {
-        const int socketFileDescriptor = stream.socket().fileDescriptor();
-
-#ifdef _WIN32
-        // Windows 平台：使用 TransmitFile
-        HANDLE hFile = CreateFileA(
-            filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE)
-            co_return;
-
-        LARGE_INTEGER fileSize;
-        if (!GetFileSizeEx(hFile, &fileSize))
-        {
-            CloseHandle(hFile);
-            co_return;
-        }
-
-        size_t remaining = static_cast<size_t>(fileSize.QuadPart);
-
-        while (remaining > 0)
-        {
-            const DWORD toSend = static_cast<DWORD>(std::min(remaining, static_cast<size_t>(ULONG_MAX)));
-            const BOOL  ok = TransmitFile(
-                static_cast<SOCKET>(socketFileDescriptor), hFile, toSend, 0, nullptr, nullptr, 0);
-
-            if (ok)
-            {
-                remaining -= toSend;
-                continue;
-            }
-
-            const int error = ASYN_ERRNO;
-            if (error == ASYN_EAGAIN || error == ASYN_EWOULDBLOCK)
-            {
-                co_await Core::EpollAwaiter(loop.epoll(), socketFileDescriptor, EPOLLOUT);
-                continue;
-            }
-            break; // 其他错误
-        }
-
-        CloseHandle(hFile);
-#else
-        // Linux: 使用 sendfile
-        const int fileDescriptor = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fileDescriptor < 0)
-            co_return;
-
-        // RAII guard: ensure fileDescriptor is always closed, even on coroutine cancellation
-        struct FileGuard
-        {
-            int fileDescriptor;
-
-            ~FileGuard()
-            {
-                if (fileDescriptor >= 0)
-                    ::close(fileDescriptor);
-            }
-        } guard{fileDescriptor};
-
-        struct stat st{};
-        if (::fstat(fileDescriptor, &st) < 0)
-            co_return;
-
-        size_t remaining = static_cast<size_t>(st.st_size);
-
-        while (remaining > 0)
-        {
-            const ssize_t n = ::sendfile(socketFileDescriptor, fileDescriptor, nullptr, remaining);
-            if (n > 0)
-            {
-                remaining -= static_cast<size_t>(n);
-                continue;
-            }
-            if (n == 0)
-                break;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                co_await Core::EpollAwaiter(loop.epoll(), socketFileDescriptor, EPOLLOUT);
-                continue;
-            }
-            if (errno == EINTR)
-                continue;
-            break;
-        }
-#endif
-    }
+        /**
+         * @brief 未识别扩展名时下发的媒体类型
+         *
+         * @details 按二进制流处理是最安全的兜底：浏览器不会把未知内容当脚本文本执行，
+         *          只会退化成下载，宁缺勿错。
+         */
+        constexpr const char *kUnknownMimeType = "application/octet-stream";
+    } // namespace
 
     const char *FileSender::contentTypeForFile(const std::string &filePath)
     {
-        static const std::unordered_map<std::string_view, const char *> kMimeTypes = {
+        // 表内键一律小写，查询方负责把待比较文本转小写。
+        // 键类型用 string_view：字符串字面量的内容与时序都是静态的，查表时不必再构造临时 string
+        static const std::unordered_map<std::string_view, const char *> kMimeTypesByExtension = {
                 {".html", "text/html"},
-                {".htm", "text/html"},
-                {".css", "text/css"},
-                {".js", "application/javascript"},
-                {".mjs", "application/javascript"},
+                {".htm",  "text/html"},
+                {".css",  "text/css"},
+                {".js",   "application/javascript"},
+                {".mjs",  "application/javascript"},
                 {".json", "application/json"},
-                {".xml", "application/xml"},
-                {".txt", "text/plain"},
-                {".pdf", "application/pdf"},
-                {".png", "image/png"},
-                {".jpg", "image/jpeg"},
+                {".xml",  "application/xml"},
+                {".txt",  "text/plain"},
+                {".pdf",  "application/pdf"},
+                {".png",  "image/png"},
+                {".jpg",  "image/jpeg"},
                 {".jpeg", "image/jpeg"},
-                {".gif", "image/gif"},
-                {".svg", "image/svg+xml"},
-                {".ico", "image/x-icon"},
+                {".gif",  "image/gif"},
+                {".svg",  "image/svg+xml"},
+                {".ico",  "image/x-icon"},
                 {".webp", "image/webp"},
                 {".woff", "font/woff"},
                 {".woff2", "font/woff2"},
-                {".ttf", "font/ttf"},
+                {".ttf",  "font/ttf"},
                 {".wasm", "application/wasm"},
         };
 
-        const auto dotPos = filePath.rfind('.');
-        if (dotPos == std::string::npos)
-            return "application/octet-stream";
+        // 只看最后一段扩展名：bundle.min.js 按 .js 判定；没有点的路径无扩展名可言
+        const std::size_t dotPosition = filePath.rfind('.');
+        if (dotPosition == std::string::npos)
+        {
+            return kUnknownMimeType;
+        }
 
-        const std::string_view ext(&filePath[dotPos]);
+        // 连点一起截取，与表内键的形式保持一致。HTTP 的扩展名大小写不敏感，
+        // 因此必须先归一化成小写再查表，否则 IMG.JPG 会落到兜底的二进制流
+        std::string lowerCaseExtension(filePath.begin() + static_cast<std::ptrdiff_t>(dotPosition), filePath.end());
+        std::ranges::transform(lowerCaseExtension, lowerCaseExtension.begin(),
+                               [](const unsigned char character)
+                               {
+                                   // std::tolower 只接受 unsigned char 或 EOF：
+                                   // 直接传可能为负的 char 是未定义行为，故入参按 unsigned char 收
+                                   return static_cast<char>(std::tolower(character));
+                               });
 
-        if (const auto it = kMimeTypes.find(ext); it != kMimeTypes.end())
-            return it->second;
+        if (const auto iterator = kMimeTypesByExtension.find(std::string_view(lowerCaseExtension)); iterator != kMimeTypesByExtension.end())
+        {
+            return iterator->second;
+        }
 
-        return "application/octet-stream";
+        return kUnknownMimeType;
     }
 
-}
+} // namespace AsynGyanis::Net

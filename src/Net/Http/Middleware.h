@@ -1,71 +1,110 @@
 /**
  * @file Middleware.h
- * @brief 请求/响应处理的中间件管道
- * @copyright Copyright (c) 2026
+ * @brief HTTP 请求/响应中间件管道与常用中间件工厂
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
-#ifndef NET_MIDDLEWARE_H
-#define NET_MIDDLEWARE_H
 
-#include "Core/Task.h"
-#include "HttpRequest.h"
-#include "HttpResponse.h"
+#pragma once
 
-#include "Base/Logger.h"
+#include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
+#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpResponse.h"
 
+#include "Base/Log/Logger.h"
+#include "Base/Log/SourceLocation.h"
+
+#include <algorithm>
 #include <chrono>
+#include <charconv>
+#include <exception>
 #include <functional>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
-namespace Net
+namespace AsynGyanis::Net
 {
     /**
      * @brief 中间件函数类型。
      *
-     * 接收请求、响应和一个 next 函数，执行前置处理，调用 next() 继续后续逻辑，再进行后置处理。
-     * 协程返回值 Task<void>。
+     * @details 入参依次为请求、响应、以及「继续走下游」的 next 可调用对象。
+     *          中间件可以先做前置处理，再 `co_await next()` 进入下游，返回后做后置处理；
+     *          也可以不调用 next() 直接短路（限流、CORS 预检就是这么做的）。
+     *
+     * @note next 只在本次中间件调用期间有效：它捕获的是管道内部的局部状态，
+     *       中间件不得把它存起来留到别的请求里再调用，那是悬垂引用。
      */
     using MiddlewareFunc = std::function<Core::Task<void>(HttpRequest &, HttpResponse &, std::function<Core::Task<void>()>)>;
 
     /**
+     * @brief 中间件管道的终点：已经绑定好业务处理器的可调用对象。
+     *
+     * @details Router 把「调用命中的 handler」包装成这个类型交给管道，
+     *          管道全程按 const 引用传递，避免每条请求拷贝一次 std::function。
+     */
+    using TerminalHandler = std::function<Core::Task<void>()>;
+
+    /**
      * @brief 中间件管道，按注册顺序依次执行中间件，最终执行业务处理器。
      *
-     * 支持链式调用，每个中间件可以决定是否继续执行下一个中间件（通过 co_await next()）。
+     * @details 执行顺序为「注册顺序正向进入、逆向退出」的洋葱模型：
+     *          middleware[0] 的前置 → middleware[1] 的前置 → … → handler → … → middleware[1] 的后置 → middleware[0] 的后置。
+     *          任一中间件不 `co_await next()` 即短路，其后的中间件与业务处理器都不再执行。
+     *
+     * @note 管道本身不做任何加锁：一条 HTTP 连接从头到尾在同一个事件循环线程上串行执行，
+     *       中间件内部若要放共享状态，请自行保证与「单循环线程」假设一致（见 rateLimiterMiddleware）。
      */
     class MiddlewarePipeline
     {
     public:
         /**
-         * @brief 默认构造函数，创建一个空的中间件管道。
+         * @brief 默认构造函数，创建一个空管道。
          */
         MiddlewarePipeline() = default;
 
         /**
          * @brief 注册一个中间件到管道末尾。
-         * @param middleware 中间件函数
+         * @param middleware 中间件函数，所有权转移给管道
          */
         void use(MiddlewareFunc middleware);
+
+        /**
+         * @brief 已注册的中间件数量。
+         * @return std::size_t 中间件条数，空管道返回 0
+         */
+        [[nodiscard]] std::size_t middlewareCount() const noexcept;
 
         /**
          * @brief 运行中间件管道，从第一个中间件开始依次执行，最终调用业务处理器。
          * @param request  HTTP 请求对象（可被中间件修改）
          * @param response HTTP 响应对象（可被中间件修改）
-         * @param handler 最终的业务处理器（协程任务）
-         * @return Task<> 协程，完成后返回
+         * @param handler  终点业务处理器；按 const 引用贯穿整条链，本函数不接管其生命周期
+         * @return Core::Task<> 协程任务，整条链结束后完成
+         * @throws std::exception 中间件或业务处理器抛出的异常原样向上传播
+         * @note handler 必须活到返回的协程结束，调用方（Router）是在自己的协程帧里 co_await 本任务的，
+         *       因此把 handler 放在调用方栈上就是安全的
          */
-        Core::Task<> run(HttpRequest &request, HttpResponse &response, std::function<Core::Task<>()> handler);
+        Core::Task<> run(HttpRequest &request, HttpResponse &response, const TerminalHandler &handler);
 
     private:
         /**
-         * @brief 递归调用中间件链。
-         * @param index   当前中间件索引
+         * @brief 递归调用中间件链
+         * @param index    当前要执行的中间件下标，等于 m_middlewares.size() 时执行终点处理器
          * @param request  请求对象
          * @param response 响应对象
-         * @param handler 最终处理器
-         * @return Task<> 协程
+         * @param handler  终点业务处理器（const 引用，逐层继续按引用下传）
+         * @return Core::Task<> 协程
          */
-        Core::Task<> invoke(size_t index, HttpRequest &request, HttpResponse &response, std::function<Core::Task<>()> handler);
+        Core::Task<> invoke(std::size_t index, HttpRequest &request, HttpResponse &response, const TerminalHandler &handler);
 
-        std::vector<MiddlewareFunc> m_middlewares; ///< 存储已注册的中间件
+        std::vector<MiddlewareFunc> m_middlewares; ///< 已注册的中间件，按注册顺序排列
     };
 
     // ============================================================================
@@ -74,139 +113,358 @@ namespace Net
 
     inline void MiddlewarePipeline::use(MiddlewareFunc middleware)
     {
+        // 直接 push_back 并转移所有权：中间件对象可能持有捕获，拷贝一次是白给的开销
         m_middlewares.push_back(std::move(middleware));
     }
 
-    inline Core::Task<> MiddlewarePipeline::run(HttpRequest &request, HttpResponse &response, std::function<Core::Task<void>()> handler)
+    inline std::size_t MiddlewarePipeline::middlewareCount() const noexcept
     {
-        co_await invoke(0, request, response, std::move(handler));
+        return m_middlewares.size();
     }
 
-    inline Core::Task<> MiddlewarePipeline::invoke(size_t index, HttpRequest &request, HttpResponse &response, std::function<Core::Task<void>()> handler)
+    inline Core::Task<> MiddlewarePipeline::run(HttpRequest &request, HttpResponse &response, const TerminalHandler &handler)
     {
+        // 空管道也要 co_await：终点处理器的异常必须沿同一条传播路径回到调用方
+        co_await invoke(0, request, response, handler);
+    }
+
+    inline Core::Task<> MiddlewarePipeline::invoke(const std::size_t index, HttpRequest &request, HttpResponse &response, const TerminalHandler &handler)
+    {
+        // 递归出口：中间件用尽，执行绑定了业务处理器的终点回调
         if (index >= m_middlewares.size())
         {
             co_await handler();
             co_return;
         }
 
-        co_await m_middlewares[index](request, response, [this, index, &request, &response, handler]() -> Core::Task<void>
+        // next 只按引用捕获下游状态，不进 std::function 的对象里再复制一份 handler，
+        // 否则每层中间件都会拷贝一次终点 std::function（大 lambda 的捕获会退化成每请求堆分配）
+        co_await m_middlewares[index](request, response, [this, index, &request, &response, &handler]() -> Core::Task<void>
         {
             co_await invoke(index + 1, request, response, handler);
         });
     }
 
     // ============================================================================
-    // 常用中间件工厂函数
+    // 常用中间件工厂
     // ============================================================================
 
-    /**
-     * @brief 创建一个日志中间件，记录请求 URI、响应状态码和处理耗时。
-     * @param logger 日志记录器引用
-     * @return MiddlewareFunc 中间件函数
-     *
-     * 该中间件会在请求处理前记录开始时间，处理后计算耗时并输出日志。
-     * 注意：中间件签名要求非 const 引用，但内部只读取，不修改请求/响应。
-     */
-    inline MiddlewareFunc loggingMiddleware(Base::Logger &logger)
+    namespace detail
     {
-        return [&logger](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        /// 看门狗首个睡眠分片，单位毫秒：短请求只多等一个分片就能被回收，量级取「人眼不可察」的 1ms
+        inline constexpr std::chrono::milliseconds::rep kTimeoutWatchdogInitialSliceMs = 1;
+
+        /// 看门狗睡眠分片上限，单位毫秒：再长也不会让已完成请求的回收等待超过一个数量级，同时避免高频醒来
+        inline constexpr std::chrono::milliseconds::rep kTimeoutWatchdogMaxSliceMs = 25;
+
+        /**
+         * @brief 超时看门狗与中间件之间共享的状态
+         *
+         * @details 只放「标志位」，不放响应对象指针：响应由中间件在链路收口后单点改写，
+         *          避免看门狗协程与业务协程在各自的挂起间隙交替写同一个 HttpResponse。
+         *          用 shared_ptr 持有是为了让看门狗协程在任何一条退出路径上都不会读到已销毁的状态。
+         */
+        struct TimeoutGuardState
         {
-            const auto start = std::chrono::steady_clock::now();
-            co_await next();
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start).count();
-            logger.logFormat(Base::LogLevel::INFO, Base::SourceLocation::current(),
-                             "{} -> {} {}ms", request.uri(), response.status(), elapsed);
+            bool isChainFinished{false};      ///< 业务链是否已经跑完（看门狗据此提前收工）
+            bool isDeadlineReached{false};    ///< 到期标志，由看门狗在超时点位置位
+            bool isTimerUnavailable{false};   ///< 定时器创建失败，本轮不做超时约束
         };
-    }
 
-    /**
-     * @brief 创建一个 CORS 中间件，为响应添加跨域资源共享头部。
-     * @return MiddlewareFunc 中间件函数
-     *
-     * 添加的头部包括：
-     * - access-control-allow-origin: *
-     * - access-control-allow-methods: 常见 HTTP 方法
-     * - access-control-allow-headers: Content-Type, Authorization
-     * - access-control-max-age: 86400
-     */
-    inline MiddlewareFunc corsMiddleware()
-    {
-        return [](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        /**
+         * @brief 超时看门狗协程：分片睡眠到「业务链结束」或「截止时刻到达」
+         * @param loop 事件循环，定时器与调度器都取自它
+         * @param request 请求对象，到期时对它发出协作式取消
+         * @param timeout 超时时长
+         * @param state 与中间件共享的标志位状态
+         * @return Core::Task<> 协程，两条正常退出路径（结束/到期）都会正常完成
+         * @note 睡眠分片采用「指数增长 + 上限封顶」：短请求只花一个最小分片就能被发现结束，
+         *       长请求也不会因为高频醒来而烧 CPU。最后一跳总是夹到截止时刻，超时判定因此是准的。
+         */
+        inline Core::Task<> timeoutWatchdog(Core::EventLoop &loop, HttpRequest &request, const std::chrono::milliseconds timeout, const std::shared_ptr<TimeoutGuardState> &state)
         {
-            response.setHeader("access-control-allow-origin", "*");
-            response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-            response.setHeader("access-control-allow-headers", "Content-Type, Authorization");
-            response.setHeader("access-control-max-age", "86400");
-
-            co_await next();
-        };
-    }
-
-    /**
-     * @brief 创建一个超时中间件，若处理器在指定时间内未完成则返回 504 Gateway Timeout。
-     * @param timeout 超时持续时间
-     * @return MiddlewareFunc 中间件函数
-     *
-     * 使用 steady_clock 测量处理器耗时，超时后标记 504 响应。
-     * 不创建额外线程，零开销。需要真正中断处理器的场景应在业务层使用 Core::Timer。
-     */
-    inline MiddlewareFunc timeoutMiddleware(const std::chrono::milliseconds timeout)
-    {
-        return [timeout](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            const auto start = std::chrono::steady_clock::now();
-            co_await next();
-            if (std::chrono::steady_clock::now() - start > timeout)
+            try
             {
+                // 每请求一个定时器：Timer 内部只有一个描述符，多个并发请求共用会互相覆盖 epoll 注册
+                Core::Timer timer(loop);
+                const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+                // 指数退避的分片长度，单位毫秒；初值与上限见调用处的常量说明
+                std::chrono::milliseconds slice{kTimeoutWatchdogInitialSliceMs};
+
+                while (true)
+                {
+                    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+
+                    // 已到截止时刻：发出协作式取消后收工，响应改写交给中间件本体（单点写入）
+                    if (remaining <= std::chrono::milliseconds::zero())
+                    {
+                        state->isDeadlineReached = true;
+                        // 这里只「请求」取消：底层业务是否中断取决于它是否检查 cancelToken()
+                        request.requestCancel();
+                        co_return;
+                    }
+
+                    // 挂起点：醒来要么是定时器到期，要么是循环被其他事件唤醒后重新排队
+                    co_await timer.waitFor(std::min(slice, remaining));
+
+                    // 业务链已经跑完，中间件马上会回收本协程，无需再等到截止时刻
+                    if (state->isChainFinished)
+                    {
+                        co_return;
+                    }
+
+                    // 分片翻倍但封顶，兼顾「短请求少等待」与「长请求少空转」
+                    slice = std::min(slice * 2, std::chrono::milliseconds{kTimeoutWatchdogMaxSliceMs});
+                }
+            } catch (const std::exception &)
+            {
+                // 定时器描述符创建失败（文件描述符耗尽一类）：退化成「本轮不做超时约束」，
+                // 绝不因为超时中间件本身失败而让业务请求直接失败
+                state->isTimerUnavailable = true;
+                co_return;
+            }
+        }
+    } // namespace detail
+
+    /**
+     * @brief 创建一个日志中间件，记录请求 URI、响应状态码与处理耗时。
+     * @param logger 日志器；为空指针时本中间件退化为透传（不记日志）
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 前置什么都不做，只在 `co_await next()` 返回后记一条 Info 日志，
+     *          因此业务短路响应（429、504）同样会被记录，方便压障。
+     *
+     * @note 参数从早先的 `Base::Logger &` 改成 shared_ptr：中间件会被塞进类型擦除的
+     *       std::function 里长期存活，按引用捕获外部对象等于把生命周期交给调用方口头保证，
+     *       一旦对方传的是局部 logger 就是悬垂引用。
+     * @note 若日志器由 Base::LoggerRegistry 持有（注册表用 unique_ptr 保管），
+     *       可这样构造一个「不拥有、只借用」的共享指针，注册表单例的生命周期覆盖全进程：
+     *       @code
+     *       auto logger = std::shared_ptr<const Base::Logger>(
+     *               std::shared_ptr<const Base::Logger>{},
+     *               &Base::LoggerRegistry::instance().getLogger("http"));
+     *       @endcode
+     *       若将来会调用 unregisterLogger()/clear()，请改为调用方自己拥有的 shared_ptr。
+     */
+    inline MiddlewareFunc loggingMiddleware(std::shared_ptr<const Base::Logger> logger)
+    {
+        return [logger = std::move(logger)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const auto startTimePoint = std::chrono::steady_clock::now();
+            co_await next();
+
+            // 空指针即「不记录」：让上层无需为「日志可选」这件事再包一层条件判断
+            if (logger == nullptr)
+            {
+                co_return;
+            }
+
+            // 耗时用毫秒整数：日志里读数量级够用，浮点秒反而把噪声写进眼睛
+            const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTimePoint).count();
+            logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(),
+                              "HTTP 请求 {} -> {}（{}ms）", request.uri(), response.status(), elapsedMilliseconds);
+        };
+    }
+
+    /**
+     * @brief CORS 策略，corsMiddleware 的可选项集合
+     */
+    struct CorsPolicy
+    {
+        std::string allowOrigin{"*"};       ///< Access-Control-Allow-Origin 取值，默认放开任意来源
+        std::string allowMethods{"GET, POST, PUT, DELETE, PATCH, OPTIONS"}; ///< 预检应答里声明的方法集合，ASCII 逗号分隔
+        std::string allowHeaders{"Content-Type, Authorization"};            ///< 预检应答里允许的申请头集合
+        std::chrono::seconds maxAge{86400}; ///< 预检结果缓存秒数，0 表示要求每次都发预检
+        bool allowCredentials{false};       ///< 是否声明 Access-Control-Allow-Credentials
+    };
+
+    /**
+     * @brief 创建一个 CORS 中间件，处理跨域请求与 OPTIONS 预检。
+     * @param policy 跨域策略，默认值为「允许任意来源、不携带凭据」
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 两类请求两条路径：
+     *          @li 预检请求（OPTIONS 且带 Access-Control-Request-Method）：就地生成预检应答
+     *              （204 + 一组 access-control-* 头），**不进入业务路由**。
+     *              早先的实现把预检也丢给路由表匹配，结果是业务 handler 收到一个它根本不该处理的
+     *              OPTIONS 请求，要么 404 要么 405，浏览器侧表现为「CORS 一直不通」。
+     *          @li 实际请求：先给响应挂上允许来源的头，再放行下游。
+     *
+     * @warning 凭据与通配来源不能共存：`Access-Control-Allow-Origin: *` 与
+     *          `Access-Control-Allow-Credentials: true` 的组合会被浏览器直接判为失败，
+     *          而若为了「让它通」把 `*` 换成回显请求头里的 Origin，就等于允许任意站点
+     *          带着 Cookie 读取你的接口（CSRF 的翻版）。因此本实现在 allowOrigin 为 `*` 时
+     *          一律不输出 allow-credentials，并附一条 `Vary: Origin` 说明应答随来源而变。
+     *          确实要带凭据，请把 allowOrigin 写成具体站点并且自己维护白名单。
+     */
+    inline MiddlewareFunc corsMiddleware(CorsPolicy policy = {})
+    {
+        return [policy = std::move(policy)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const bool isPreflightRequest = request.method() == HttpMethod::OPTIONS && request.getHeader("access-control-request-method").has_value();
+
+            // 预检分支：应答只描述「允许的跨域方式」，与业务资源无关，所以直接短路
+            if (isPreflightRequest)
+            {
+                response.reset();
+                // 204 不带正文：预检应答没有内容体，省掉一次无意义的 Content-Length 计算
+                response.setStatus(204);
+                response.setHeader("access-control-allow-methods", policy.allowMethods);
+                response.setHeader("access-control-allow-headers", policy.allowHeaders);
+                response.setHeader("access-control-max-age", std::to_string(policy.maxAge.count()));
+                response.setHeader("access-control-allow-origin", policy.allowOrigin);
+                response.setHeader("vary", "Origin");
+
+                // 通配来源下不声明允许凭据，理由见 @warning
+                if (policy.allowCredentials && policy.allowOrigin != "*")
+                {
+                    response.setHeader("access-control-allow-credentials", "true");
+                }
+                co_return;
+            }
+
+            // 实际请求分支：头要在下游之前设好，业务若自行改写 origin 也仍有机会覆盖
+            response.setHeader("access-control-allow-origin", policy.allowOrigin);
+            response.setHeader("vary", "Origin");
+            if (policy.allowCredentials && policy.allowOrigin != "*")
+            {
+                response.setHeader("access-control-allow-credentials", "true");
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief 创建一个协作式超时中间件：到期即请求取消业务链并回 504。
+     * @param loop    事件循环，用于创建定时器与投递看门狗协程，必须比路由器活得久
+     * @param timeout 超时时长；非正值等价于「不启用超时」，只做透传
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 真挂了一个定时任务：中间件把看门狗协程投递到调度器上，看门狗睡到截止时刻，
+     *          醒来后调用 HttpRequest::requestCancel() 并把「已超时」写进共享状态；
+     *          业务链返回时，中间件据这个标志把响应整体重置为 504 Gateway Timeout。
+     *          早先的实现只是 `co_await next()` 之后拿 steady_clock 补一个时间差，
+     *          既不取消任何东西也来不及影响本轮响应，是个纯记录型的假中间件，已废弃。
+     *
+     * @warning 这是**协作式**超时。单线程协程模型里没有抢占：
+     *          @li 业务 handler 必须周期性检查 `request.cancelToken().stop_requested()`
+     *              并尽快 `co_return`，否则中间件只能等它跑完再改写 504；
+     *          @li 全程不让出 CPU 的 handler（死循环、长同步计算、阻塞调用）既不会被定时唤醒打断，
+     *              也会把看门狗一起饿死，因为它同样需要循环空出来才能被调度。
+     *          需要「硬超时」请在业务侧使用可中断的等待，或把长任务放到 ThreadPool 并配合 Core::Cancelable。
+     *
+     * @note 取消信号的落点是 HttpRequest；连接的统一取消入口是 Core::Connection::cancelable()，
+     *       会话在每次路由前注册了一次转发，两个来源到期都会体现在同一个 request.cancelToken() 上。
+     * @note 每条在途请求会额外占一个定时器描述符与一个协程帧，因此本中间件是按需安装的，
+     *       不作为默认管道成员。
+     */
+    inline MiddlewareFunc timeoutMiddleware(Core::EventLoop &loop, const std::chrono::milliseconds timeout)
+    {
+        return [&loop, timeout](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            // 非正数视为「不超时」：省掉一次定时器与协程帧，语义比「立刻超时」更符合调用方直觉
+            if (timeout <= std::chrono::milliseconds::zero())
+            {
+                co_await next();
+                co_return;
+            }
+
+            auto state = std::make_shared<detail::TimeoutGuardState>();
+
+            // 业务链的起始时刻：正常路径由看门狗判到期，这里只给「定时器不可用」的退化路径兜底
+            const auto chainStartTimePoint = std::chrono::steady_clock::now();
+
+            Core::Task<> watchdogTask = detail::timeoutWatchdog(loop, request, timeout, state);
+            // Core::Task 是惰性协程：只构造不会开跑，必须把句柄显式投给调度器
+            loop.scheduler().schedule(watchdogTask.handle());
+
+            // 业务链的异常先存起来：无论它正常返回还是抛出，都必须先把看门狗收干净再往上抛
+            std::exception_ptr chainException = nullptr;
+            try
+            {
+                co_await next();
+            } catch (...)
+            {
+                chainException = std::current_exception();
+            }
+
+            // 置位结束标志：看门狗最迟在当前睡眠分片末尾看到它并正常完成
+            state->isChainFinished = true;
+
+            // 回收看门狗协程帧。本中间件绝不带着未完成的子协程返回——
+            // 否则请求对象与响应对象都可能在协程余下的生命周期里被会话复用掉
+            co_await watchdogTask;
+
+            // 定时器申请不到描述符时看门狗根本没能跑起来，退化成「事后按实际耗时判超时」：
+            // 至少不会悄悄丢掉超时语义；两条判据互斥，正常路径只走前者
+            const bool isElapsedOverTimeout = std::chrono::steady_clock::now() - chainStartTimePoint > timeout && state->isTimerUnavailable;
+
+            // 超时判定只在此处单点改写响应：晚于业务的一切写入，保证线上发的就是 504
+            if (state->isDeadlineReached || isElapsedOverTimeout)
+            {
+                // 先重置再填：业务在半路上写的头与正文都可能带着「已经成功」的痕迹，留着会误导客户端
+                response.reset();
                 response.setStatus(504);
                 response.setBody("Gateway Timeout");
                 response.setHeader("content-type", "text/plain");
+            }
+
+            // 异常原样上抛，由会话统一转成 500：超时中间件不改变业务的失败语义
+            if (chainException)
+            {
+                std::rethrow_exception(chainException);
             }
         };
     }
 
     /**
      * @brief 创建一个速率限制中间件。
-     * @param maxRequests 在 window 时间窗口内允许的最大请求数
-     * @param window      时间窗口长度
+     * @param maximumRequestCount 在 windowDuration 时间窗口内允许的最大请求数，0 表示全部拒绝
+     * @param windowDuration      时间窗口长度；以毫秒为单位接收，传秒字面量会自动换算
      * @return MiddlewareFunc 中间件函数
      *
-     * 使用滑动窗口计数器实现简单的速率限制。
-     * 超出限制时返回 429 Too Many Requests，不调用下游处理器。
+     * @details 固定窗口计数（窗口到期整体清零）。超出上限时直接回 429 Too Many Requests
+     *          并带上 Retry-After，**不调用下游**，因此业务 handler 不会被无谓唤醒。
      *
-     * @note 当前实现为进程内全局计数器，非线程安全（适用于单 EventLoop 线程模型）。
-     *       多线程部署需替换为原子计数或外部存储（Redis）。
+     * @note 计数器为「每个中间件实例一份」，进程内全局共享，非线程安全：
+     *       它假定所有会话跑在同一个事件循环线程上。多循环/多进程部署请换用原子计数或外部存储。
+     * @warning 固定窗口存在「临界突发」现象（窗口切换的前后各放行一整批），
+     *          需要更平滑的限制请实现滑动窗口或令牌桶。
      */
-    inline MiddlewareFunc rateLimiterMiddleware(const size_t maxRequests, const std::chrono::seconds window)
+    inline MiddlewareFunc rateLimiterMiddleware(const std::size_t maximumRequestCount, const std::chrono::milliseconds windowDuration)
     {
-        struct Bucket
+        struct WindowBucket
         {
-            std::chrono::steady_clock::time_point windowStart{std::chrono::steady_clock::now()};
-            size_t                                count{0};
+            std::chrono::steady_clock::time_point windowStartTimePoint{std::chrono::steady_clock::now()}; ///< 本窗口起点
+            std::size_t requestCount{0};                                                                  ///< 本窗口已放行的请求数
         };
 
-        auto bucket = std::make_shared<Bucket>();
+        auto bucket = std::make_shared<WindowBucket>();
 
-        return [bucket, maxRequests, window](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [bucket, maximumRequestCount, windowDuration]([[maybe_unused]] HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-
-            // 滑动窗口：窗口过期则重置
-            if (const auto now = std::chrono::steady_clock::now(); now - bucket->windowStart > window)
+            // 先滑动窗口再计数：窗口刚过期的请求应该落进新窗口，而不是被旧窗口的余额拒绝
+            const auto nowTimePoint = std::chrono::steady_clock::now();
+            if (nowTimePoint - bucket->windowStartTimePoint > windowDuration)
             {
-                bucket->windowStart = now;
-                bucket->count       = 0;
+                bucket->windowStartTimePoint = nowTimePoint;
+                bucket->requestCount         = 0;
             }
 
-            ++bucket->count;
+            ++bucket->requestCount;
 
-            if (bucket->count > maxRequests)
+            // 超限分支：429 + Retry-After，正文 ASCII，原因短语由 HttpResponse 侧统一给出
+            if (bucket->requestCount > maximumRequestCount)
             {
                 response.setStatus(429);
                 response.setBody("Too Many Requests");
                 response.setHeader("content-type", "text/plain");
-                response.setHeader("retry-after", std::to_string(window.count()));
+                // Retry-After 按 RFC 9110 §10.2.3 是「秒」为单位的 delta-seconds，
+                // 窗口以毫秒配置时向上取整换算，避免亚秒窗口被截成 0 让客户端立刻重试
+                const auto retryAfterSeconds = (windowDuration.count() + 999) / 1000;
+                response.setHeader("retry-after", std::to_string(retryAfterSeconds));
                 co_return;
             }
 
@@ -216,39 +474,51 @@ namespace Net
 
     /**
      * @brief 创建一个请求体大小限制中间件。
-     * @param maxBodySize 允许的最大请求体字节数
+     * @param maximumBodySize 允许的最大请求体字节数
      * @return MiddlewareFunc 中间件函数
      *
-     * 在路由到业务处理器之前检查 Content-Length 头部。
-     * 超过限制时返回 413 Payload Too Large。
+     * @details 只看 Content-Length 声明值，在路由到业务处理器之前拦下超限请求并回 413。
+     *          这是一道「便宜的前置闸」：真正的硬上限由 HttpParser 在收字节时把关，
+     *          所以即使客户端谎报 Content-Length，也不会绕过解析器那一层。
+     *
+     * @note 与解析器策略保持一致：Content-Length 非法（非数字、越界）判 400 而不是放行，
+     *       谎报长度的报文要么走私要么残缺，交给业务处理没有好处。
      */
-    inline MiddlewareFunc bodySizeLimitMiddleware(const size_t maxBodySize)
+    inline MiddlewareFunc bodySizeLimitMiddleware(const std::size_t maximumBodySize)
     {
-        return [maxBodySize](const HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [maximumBodySize](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            if (const auto contentLength = request.getHeader("content-length"))
+            if (const auto contentLengthHeader = request.getHeader("content-length"))
             {
-                try
-                {
-                    if (const auto size = std::stoull(contentLength.value()); size > maxBodySize)
-                    {
-                        response.setStatus(413);
-                        response.setBody("Payload Too Large");
-                        response.setHeader("content-type", "text/plain");
-                        co_return;
-                    }
-                } catch (...)
+                const std::string &declaredText = contentLengthHeader.value();
+
+                // Content-Length 必须是纯十进制数字串（RFC 9110 §8.6）。旧实现走 std::stoull：
+                // "-1" 会绕进 unsigned long long 变成 ULLONG_MAX 而误判 413，
+                // "12abc" 则按前缀解析成 12 被直接放行——只有越界才抛异常，三类畸形口径不一致。
+                // 换成 from_chars 后判据统一：解析失败或有残留字符即视为报文不合法
+                unsigned long long declaredBodyLength = 0;
+                const std::from_chars_result parseResult = std::from_chars(declaredText.data(), declaredText.data() + declaredText.size(), declaredBodyLength);
+
+                if (parseResult.ec != std::errc{} || parseResult.ptr != declaredText.data() + declaredText.size())
                 {
                     response.setStatus(400);
                     response.setBody("Bad Request: Invalid Content-Length");
                     response.setHeader("content-type", "text/plain");
                     co_return;
                 }
+
+                // 声明值超上限：立刻短路，后续字节连解析都不用进
+                if (declaredBodyLength > maximumBodySize)
+                {
+                    response.setStatus(413);
+                    response.setBody("Payload Too Large");
+                    response.setHeader("content-type", "text/plain");
+                    co_return;
+                }
             }
+
             co_await next();
         };
     }
 
-}
-
-#endif
+} // namespace AsynGyanis::Net

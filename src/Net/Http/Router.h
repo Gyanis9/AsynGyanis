@@ -1,33 +1,66 @@
 /**
  * @file Router.h
- * @brief URL 路由器，支持路径模式匹配和中间件
- * @copyright Copyright (c) 2026
+ * @brief URL 路由器，按 HTTP 方法与路径模式分发请求并串联中间件
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
-#ifndef NET_ROUTER_H
-#define NET_ROUTER_H
 
-#include "Core/Task.h"
-#include "HttpRequest.h"
-#include "HttpResponse.h"
-#include "Middleware.h"
+#pragma once
 
+#include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpResponse.h"
+#include "Net/Http/HttpMethod.h"
+#include "Net/Http/Middleware.h"
+
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
-namespace Net
+namespace AsynGyanis::Net
 {
     /**
-     * @brief HTTP 路由器，支持按 HTTP 方法和路径模式注册处理函数，并集成中间件管道。
+     * @brief 通配路由捕获到的剩余路径存放在哪个路由参数里
      *
-     * 路由匹配采用两级策略：
-     * - 一级：精确路径哈希表 O(1) 查找（覆盖大多数生产场景）
-     * - 二级：参数化/通配符路由线性扫描（":id"、"*" 等模式）
+     * @details 注册 "/static/*" 时，"/static/css/main.css" 捕获到的 "css/main.css"
+     *          会以本常量作为参数名写入 HttpRequest，handler 用 `request.param(kWildcardParameterName)` 取。
+     *          之所以用 "*" 这个名字：它与模式里写下的通配符字面一致，读者在 handler 里一眼能对上，
+     *          而且路由参数名允许出现 ":id" 这类模板写法取不到的字符，不会与具名参数撞车。
+     */
+    inline constexpr std::string_view kWildcardParameterName = "*";
+
+    /**
+     * @brief HTTP 路由器，按方法与路径模式匹配请求并执行对应处理函数，同时串起中间件管道。
      *
-     * 支持路径参数提取（如 "/user/:id"），并在调用 route() 时按方法和路径匹配最佳路由。
-     * 支持为所有路由统一添加中间件。
+     * @details 匹配分两级，先精确后模式：
+     *          @li 一级：精确路径哈希索引（不含 ':' 与 '*' 的模式都进这张表），一次哈希 + 极短的候选扫描；
+     *          @li 二级：参数化（"/user/:id"）与通配（"/static/*"、"*"）路由按注册顺序线性扫描。
+     *
+     * @note **优先级规则（本类唯一的仲裁口径，注册侧请按此规划）**
+     *       @li 精确路径永远优先于模式路径，与注册先后无关；
+     *       @li 同一层内（同一条精确路径的多个方法绑定之间、模式路由彼此之间）**先注册者优先**，
+     *           指定方法条目与 any() 条目之间也只看注册先后，不做「谁更具体谁优先」的特殊仲裁，
+     *           规则只有一条，读者不必再去推断两层优先级如何交叉；
+     *       @li 旧实现对模式路由用逆序遍历，变成「后注册者优先」，与精确索引的先到先得互相矛盾，已统一；
+     *       @li 以完全相同的 (方法集合, 路径) 再次注册会**就地替换**处理函数且不改变注册位置，
+     *           因此重复调用是幂等的（HttpServer::staticFileDir() 就依赖这一点）。
+     *
+     * @note **方法与 405/404 的判定**
+     *       @li 请求方法命中某条路由且该路由允许此方法 → 执行；
+     *       @li 路径命中但方法不被任何候选路由允许 → 405，并给出 Allow 头列出允许的方法；
+     *       @li 路径根本没有命中 → 404；
+     *       @li HttpMethod::UNKNOWN（CONNECT、TRACE、M-SEARCH 等未收录方法）**不参与业务匹配**，
+     *           连 any() 注册的通配方法路由也不会放行它，只按上面两条产出 404/405。
+     *           早先的实现把 UNKNOWN 同时当作「未识别方法」和「通配方法」两用，
+     *           结果是任何没收录的方法都能蹭到为通配而注册的路由上，等于把 405 防线整个拆掉。
+     *
+     * @see any(), MiddlewarePipeline
      */
     class Router
     {
@@ -37,68 +70,200 @@ namespace Net
          */
         using Handler = std::function<Core::Task<>(HttpRequest &, HttpResponse &)>;
 
-        Router();
+        /**
+         * @brief 构造一个空路由器：没有路由、没有中间件。
+         */
+        Router() = default;
 
+        /**
+         * @brief 注册 GET 路由。
+         * @param path 路径模式：字面路径、":name" 参数段，或以 '*' 结尾的前缀通配
+         * @param handler 处理函数，所有权转移给路由器
+         * @note 同 (方法, 路径) 重复注册为就地替换；与既有路由的先后关系见类注释的优先级规则
+         */
         void get(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册 POST 路由。
+         * @param path 路径模式
+         * @param handler 处理函数，所有权转移给路由器
+         */
         void post(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册 PUT 路由。
+         * @param path 路径模式
+         * @param handler 处理函数，所有权转移给路由器
+         */
         void put(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册 DELETE 路由。
+         * @param path 路径模式
+         * @param handler 处理函数，所有权转移给路由器
+         * @note 方法名为 del() 而非 delete()：后者是 C++ 关键字，无法用作成员函数名
+         */
         void del(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册 PATCH 路由。
+         * @param path 路径模式
+         * @param handler 处理函数，所有权转移给路由器
+         */
         void patch(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册 HEAD 路由。
+         * @param path 路径模式
+         * @param handler 处理函数，所有权转移给路由器
+         * @note 命中的 HEAD 请求会照常执行 handler，但路由层在收尾时按 RFC 9110 §10.6.4 剥掉正文；
+         *       未注册 HEAD 而只有 GET 的路径不会自动应答 HEAD（不做隐式映射，避免语义上的意外）
+         */
         void head(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册 OPTIONS 路由（用于非跨域的方法探测）。
+         * @param path 路径模式
+         * @param handler 处理函数，所有权转移给路由器
+         * @note CORS 预检请求由 corsMiddleware 直接应答，不会走到这里；注册了本路由也不代表能收到预检
+         */
         void options(const std::string &path, Handler handler);
 
         /**
+         * @brief 注册「任意已知方法」都能命中的路由。
+         * @param path 路径模式，字面路径与模式路径皆可（"*" 即全捕获兜底路由的常用写法）
+         * @param handler 处理函数，所有权转移给路由器
+         *
+         * @details 这是显式的通配方法入口，取代早先「用 HttpMethod::UNKNOWN 兼任通配方法」的写法。
+         *          放行的方法集合是 HttpMethod 里除 UNKNOWN 之外的全部枚举值；
+         *          UNKNOWN（CONNECT/TRACE 等未收录方法）一律不放行。
+         * @note 与专属方法路由之间没有「谁更具体」的仲裁：同一层内先注册者优先。
+         *       希望 "/api/:id" 这类专属路由压过 any("/api/:id")，就先把专属路由注册出去。
+         */
+        void any(const std::string &path, Handler handler);
+
+        /**
          * @brief 添加全局中间件，将应用于所有路由。
-         * @param middleware 中间件函数
+         * @param middleware 中间件函数，所有权转移给路由器
          */
         void addMiddleware(MiddlewareFunc middleware);
 
         /**
-         * @brief 路由入口，匹配请求方法和路径，执行对应的处理函数。
-         * @param request HTTP 请求对象（可能被中间件或处理函数修改）
-         * @param response HTTP 响应对象（由中间件或处理函数填充）
-         * @return Core::Task<> 协程任务，完成后返回
+         * @brief 路由入口：匹配方法与路径，跑完中间件管道并填充响应。
+         * @param request  HTTP 请求对象；命中模式路由时其路由参数会被本函数填充
+         * @param response HTTP 响应对象；命中时由中间件与处理函数填充，未命中时被重置后填 404/405
+         * @return Core::Task<> 协程任务，处理链结束后返回
+         *
+         * @details 本函数保证「一定写完响应」：要么由业务 handler 写，要么由这里写 404/405，
+         *          因此调用方（会话循环）不需要再判断响应是否被填过。
+         * @note 写入 response 前会先 reset()：前面中间件已经落下的头部不会残留到错误响应里
          */
         Core::Task<> route(HttpRequest &request, HttpResponse &response);
 
     private:
-        struct Route
+        /// 路由参数的临时收集容器：整条路由命中后才一次性提交给请求
+        using PathParameters = std::unordered_map<std::string, std::string>;
+
+        /**
+         * @brief 模式路由条目（参数化与通配路径），并缓存预解析结果
+         */
+        struct PatternRoute
         {
-            HttpMethod  method;
-            std::string pattern;
-            Handler     handler;
+            /**
+             * @brief 构造一条模式路由并预解析路径
+             * @param routeMethod 绑定的 HTTP 方法，仅当 isAnyMethod 为 false 时有意义
+             * @param matchAnyMethod 是否为 any() 注册的「任意方法」路由
+             * @param routePattern 注册时给出的路径模式原文，所有权转移给本条目
+             * @param routeHandler 处理函数，所有权转移给本条目
+             */
+            PatternRoute(HttpMethod routeMethod, bool matchAnyMethod, std::string routePattern, Handler routeHandler);
+
+            /**
+             * @brief 把路径模式拆成段：普通段原样、":name" 段以 ':' 前缀保留，通配形态记入 isWildcard 与 wildcardPrefix
+             * @param routePattern 路径模式原文
+             */
+            void precomputeSegments(const std::string &routePattern);
+
+            HttpMethod method{HttpMethod::GET}; ///< 绑定的方法；isAnyMethod 为 true 时该字段不参与判定
+            bool       isAnyMethod{false};      ///< 是否为任意方法路由（显式通配，与 UNKNOWN 无关）
+            std::string pattern;                ///< 模式原文，用于替换判等与诊断输出
+            std::vector<std::string> segments;  ///< 预解析的逐段模式，已去掉分隔用的 '/'
+            std::string wildcardPrefix;         ///< 通配路由的目录前缀（含结尾 '/'），非通配路由为空
+            bool        isWildcard{false};      ///< 是否以 '*' 结尾的前缀通配路由
+            Handler     handler;                ///< 业务处理函数，路由期间只按引用使用，不拷贝
         };
 
-        static bool matchRoute(const Route &route, const std::string &path, HttpRequest &request);
-
         /**
-         * @brief 判断路径是否为精确匹配（不含 ":param" 或 "*" 模式）。
+         * @brief 精确路径上的一条绑定：方法（或任意方法）到处理函数
          */
-        static bool isExactPath(const std::string &path);
+        struct ExactRoute
+        {
+            HttpMethod method{HttpMethod::GET}; ///< 绑定的方法；isAnyMethod 为 true 时不参与判定
+            bool       isAnyMethod{false};      ///< 是否为 any() 注册的任意方法条目
+            Handler    handler;                 ///< 业务处理函数
+        };
 
         /**
-         * @brief 生成精确路径查找的哈希键："method:path"。
+         * @brief 判断一条模式路由的路径是否命中请求路径
+         * @param route 待判定的模式路由
+         * @param requestPath 请求路径（未解码的原文）
+         * @param collectedParameters 输出参数：匹配到的 ":name" 与通配剩余路径，仅在本函数返回 true 时应被采信
+         * @return true 路径命中
+         * @return false 路径不命中（此时 collectedParameters 里的残留应被丢弃）
          */
-        static std::string makeExactKey(HttpMethod method, const std::string &path);
+        static bool matchesPattern(const PatternRoute &route, std::string_view requestPath, PathParameters &collectedParameters);
 
         /**
-         * @brief 将路由注册到内部数据结构。
+         * @brief 判断路径是否为精确路径（不含 ":param" 与 '*' 模式字符）
+         * @param path 路径模式
+         * @return true 可进精确索引
+         * @return false 需进模式列表
          */
-        void addRoute(HttpMethod method, const std::string &path, Handler handler);
+        static bool isLiteralPath(std::string_view path);
 
         /**
-         * @brief 路由后的响应收尾处理（HEAD 请求剥离 body 等）。
+         * @brief 把枚举方法名转成 Allow 头里的写法（ASCII）
+         * @param method HTTP 方法
+         * @return 指向静态字符串的视图；UNKNOWN 返回空视图（不参与 Allow 列表）
+         */
+        static std::string_view methodName(HttpMethod method);
+
+        /**
+         * @brief 把路由注册到对应索引：同 (方法集合, 路径) 就地替换，否则按注册顺序追加
+         * @param method 绑定的方法
+         * @param isAnyMethod 是否为任意方法路由
+         * @param path 路径模式
+         * @param handler 处理函数
+         */
+        void addRoute(HttpMethod method, bool isAnyMethod, const std::string &path, Handler handler);
+
+        /**
+         * @brief 一次性提交匹配到的路由参数（先到先得规则在这里落地）
+         * @param request 待写入的请求对象
+         * @param collectedParameters 本条路由攒下的参数
+         */
+        static void commitPathParameters(HttpRequest &request, const PathParameters &collectedParameters);
+
+        /**
+         * @brief 未命中时写入 404/405 响应
+         * @param request 请求对象，用于取协议版本与方法
+         * @param response 响应对象，进入本函数即被重置
+         * @param isMethodNotAllowed true 表示路径命中但方法不允许，回 405 并带 Allow
+         * @param allowedMethods 405 时填入 Allow 头的方法集合文本
+         */
+        static void writeNotFoundOrNotAllowed(const HttpRequest &request, HttpResponse &response, bool isMethodNotAllowed, const std::string &allowedMethods);
+
+        /**
+         * @brief 路由后的响应收尾：按 HTTP 语义对 HEAD/204/304 清空正文
          */
         static void finalizeResponse(const HttpRequest &request, HttpResponse &response);
 
-        // 一级索引：精确路径 hash -> handler（O(1) 查找）
-        std::unordered_map<std::string, Handler> m_exactRoutes;
+        /// 一级索引：字面路径 → 该路径上的方法绑定候选（通常 1~2 条，先到先得）
+        std::unordered_map<std::string, std::vector<ExactRoute>> m_exactRoutes;
 
-        // 二级索引：参数化/通配符路由列表（含 UNKNOWN method 路由）
-        std::vector<Route> m_patternRoutes;
+        /// 二级索引：参数化/通配路由列表，按注册顺序线性扫描，先注册者优先
+        std::vector<PatternRoute> m_patternRoutes;
 
         MiddlewarePipeline m_pipeline; ///< 全局中间件管道
     };
-}
-
-#endif
+} // namespace AsynGyanis::Net

@@ -1,0 +1,24 @@
+# Net/Http —— HTTP/HTTPS 报文、会话、服务器、路由与中间件
+set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
+        ${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpMethod.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpParser.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpParser.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpRequest.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpRequest.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpResponse.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpResponse.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpSession.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpSession.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpServer.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpServer.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpsServer.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpsServer.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpsSession.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpsSession.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Router.h
+        ${CMAKE_CURRENT_LIST_DIR}/Router.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Middleware.h
+        ${CMAKE_CURRENT_LIST_DIR}/FileSender.h
+        ${CMAKE_CURRENT_LIST_DIR}/FileSender.cpp
+)
