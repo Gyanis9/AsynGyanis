@@ -46,9 +46,13 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 判断文本是否是一个可以安全加引号引用的标识符
-         * @details 允许出现双引号：那正是「列名里带引号、必须翻倍转义」的情形，
-         *          交给 quoteIdentifier() 处理比原样输出安全得多。
-         *          含运算符、括号、空格的文本会在上层被判为表达式，不会走到这里。
+         * @details 在裸标识符字节之外还放行两类字符：
+         *          - 双引号：那正是「列名里带引号、必须翻倍转义」的情形，
+         *            交给 quoteIdentifier() 处理比原样输出安全得多；
+         *          - 空格：`weird name` 这类列名在真实库里确实存在（被引用的标识符允许含空格），
+         *            而空格既不能出现在裸标识符里，也不会改变表达式结构——真正的表达式必然带
+         *            运算符、括号或逗号，那些字节会让本判定为假，从而走「表达式原样输出」的分支。
+         *          含运算符、括号、逗号等结构字符的文本因此仍被判为表达式，不会走到这里。
          * @param text 待判断的文本
          * @return true 可以直接加引号引用（空文本返回 false）
          */
@@ -61,7 +65,9 @@ namespace AsynGyanis::Database
 
             for (const char character: text)
             {
-                if (!isIdentifierByte(character) && character != '"')
+                // 双引号走「引用并翻倍」这条路径；空格同理，加上引号后它只是一个普通字符，
+                // 不会破坏语句结构
+                if (!isIdentifierByte(character) && character != '"' && character != ' ')
                 {
                     return false;
                 }
@@ -174,11 +180,12 @@ namespace AsynGyanis::Database
 
         if (!isIdentifierChain)
         {
-            // 含运算符、括号、空格等非标识符字节的文本按表达式原样输出：例如 COUNT(*)，
+            // 含运算符、括号、逗号等结构字符的文本按表达式原样输出：例如 COUNT(*)，
             // COALESCE(age, 0)，age + 1。对表达式整体加引号会把它降级成一个列名，
             // 直接改变语义；这里不做任何加工在安全上也是成立的——字段引用全部来自编译期常量
             // （Column() 的 columnName 参数或 asc()/desc() 的字符串字面量），不是外部输入，
             // 而数据值一律走参数绑定，因此不存在注入面。
+            // 只含标识符字节与空格的文本（如含空格的列名）不走这里，会被引用成 "weird name"
             return std::string(fieldText);
         }
 

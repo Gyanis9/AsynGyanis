@@ -1,0 +1,1401 @@
+/**
+ * @file TestMySqlIntegration.cpp
+ * @brief MySQL 真实服务端集成测试 —— 连接、参数化执行、ORM 端到端、事务与边界
+ * @details 与同目录的 TestMySqlConnection.cpp（不依赖服务端的失败语义）互补：本文件只在
+ *          真的能连上一个 MySQL 服务端时才跑断言，覆盖只有真实服务端才能验证的部分——
+ *          - 建连成功、isConnected()、serverVersion()、错误口令的中文失败原因；
+ *          - mysql_stmt_* 参数化执行的写与读：影响行数、列名与取值往返（中文 / 负数 / 浮点 /
+ *            NULL / 空串 / 内嵌 '\0' / 长文本）、含单引号与 "--" 的文本原样回读、
+ *            参数个数不匹配与容器类型参数被拒；
+ *          - ORM 端到端（SQL 由 MySqlDialect 生成）：insert / toList（WHERE + ORDER BY +
+ *            LIMIT + OFFSET）/ first / count / update / executeNonQuery / insertBatch，
+ *            以及反引号引用保留字与特殊字符标识符、多行 VALUES 确实能在真实服务端执行；
+ *          - Transaction 的提交可见、回滚不可见、析构自动回滚、异常穿越后只留已提交数据；
+ *          - 空结果集、长文本等边界。
+ *
+ * ## 口令绝不进仓库（本文件的第一条硬规矩）
+ * 连接参数一律从环境变量读取，本文件不出现任何明文口令：
+ * - ASYN_MYSQL_TEST_HOST      主机，默认 127.0.0.1
+ * - ASYN_MYSQL_TEST_PORT      端口，默认 3306
+ * - ASYN_MYSQL_TEST_USER      用户名，默认 root
+ * - ASYN_MYSQL_TEST_PASSWORD  口令，**没有默认值**；未设置时全部用例 GTEST_SKIP（不是失败）
+ * - ASYN_MYSQL_TEST_DATABASE  专用库名，默认 asyngyanis_test（由本文件 CREATE DATABASE IF NOT EXISTS 自建）
+ * 口令缺失即跳过，因此无服务端的 CI 与本地日常构建同样保持全绿；未编译 MySQL 驱动的桩
+ * 构建也走跳过路径（见 kMySqlDriverCompiled）。
+ *
+ * ## 数据隔离
+ * 用例只操作自己创建的专用库，且只碰自己建的表：每个用例使用独立表名，建表前先
+ * DROP TABLE IF EXISTS，收尾在 TearDown 里再 DROP TABLE IF EXISTS，跑完不留任何残留。
+ * 表名固定而非随机，是因为 TableSchema<T>::kTableName 必须是编译期常量；用例之间不共用
+ * 表名，因此并行运行（ctest -j）也不会互相干扰。
+ *
+ * ## 不写死 sleep
+ * 需要「另一条连接看到什么」的地方一律新建一条连接后立即查询：语句级别的自动提交会让每条
+ * SELECT 各自取一次一致性快照，结果确定，不需要任何等待。
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/DatabaseConnection.h"
+#include "Database/Common/DatabaseFactory.h"
+#include "Database/Common/DatabaseResult.h"
+#include "Database/Common/DatabaseValue.h"
+#include "Database/Dialect/MySqlDialect.h"
+#include "Database/MySql/MySqlConnection.h"
+#include "Database/Pool/ConnectionPool.h"
+#include "Database/Pool/PoolConfig.h"
+#include "Database/Pool/Transaction.h"
+#include "Database/Queryable/Column.h"
+#include "Database/Queryable/Expression.h"
+#include "Database/Queryable/Queryable.h"
+#include "Database/Queryable/TableSchema.h"
+
+#include <gtest/gtest.h>
+
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace AsynGyanis::Database
+{
+    namespace
+    {
+#ifdef DATABASE_HAS_MYSQL
+        /// 当前构建是否编译了真实的 libmysqlclient 驱动；桩构建里连不上任何服务端，整组跳过
+        constexpr bool kMySqlDriverCompiled = true;
+#else
+        /// 桩构建：与「未提供口令即跳过」一起构成本文件在任何环境下都只跳过不失败的第二道保险
+        constexpr bool kMySqlDriverCompiled = false;
+#endif
+
+        // ------------------------------------------------------------------------
+        // 环境变量名与默认值（口令恒无默认值）
+        // ------------------------------------------------------------------------
+
+        constexpr const char *kHostVariableName     = "ASYN_MYSQL_TEST_HOST";
+        constexpr const char *kPortVariableName     = "ASYN_MYSQL_TEST_PORT";
+        constexpr const char *kUserVariableName     = "ASYN_MYSQL_TEST_USER";
+        constexpr const char *kPasswordVariableName = "ASYN_MYSQL_TEST_PASSWORD";
+        constexpr const char *kDatabaseVariableName = "ASYN_MYSQL_TEST_DATABASE";
+
+        constexpr const char *kDefaultHost         = "127.0.0.1";
+        constexpr std::uint16_t kDefaultPort       = 3306U;
+        constexpr const char *kDefaultUserName     = "root";
+        constexpr const char *kDefaultDatabaseName = "asyngyanis_test";
+
+        // ------------------------------------------------------------------------
+        // 测试用表：每个用例一张独立表，互不共用
+        // ------------------------------------------------------------------------
+
+        /// 参数化插入用例的表
+        constexpr std::string_view kParameterInsertTableName = "Asyn_Mysql_ParamInsert";
+        constexpr std::string_view kParameterInsertColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+
+        /// 参数化取值往返用例的表（含 NULL 列、空串列与 TEXT 列）
+        constexpr std::string_view kParameterSelectTableName = "Asyn_Mysql_ParamSelect";
+        constexpr std::string_view kParameterSelectColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL, "
+            "`note` VARCHAR(191) NULL, `payload` TEXT NULL";
+
+        /// 注入证明用例的表
+        constexpr std::string_view kInjectionTableName = "Asyn_Mysql_Injection";
+        constexpr std::string_view kInjectionColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+
+        /// ORM CRUD 用例的表
+        constexpr std::string_view kAccountTableName = "Asyn_Mysql_Account";
+        constexpr std::string_view kAccountColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `balance` DOUBLE NOT NULL, "
+            "`note` VARCHAR(191) NULL, `active` TINYINT(1) NOT NULL";
+
+        /// ORM 批量插入分块用例的表（列数与分块换算直接相关，勿随意增减）
+        constexpr std::string_view kBatchTableName = "Asyn_Mysql_Batch";
+        constexpr std::string_view kBatchColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `score` DOUBLE NOT NULL, "
+            "`note` VARCHAR(191) NULL, `active` TINYINT(1) NOT NULL";
+
+        /// ORM 特殊标识符用例的表（表名含连字符，列名含保留字、空格与反引号）
+        constexpr std::string_view kQuotedTableName = "Asyn_Mysql_Quote-Table";
+        constexpr std::string_view kQuotedColumns =
+            "`id` BIGINT PRIMARY KEY, "
+            "`order` VARCHAR(191) NOT NULL, "
+            "`group` VARCHAR(191) NOT NULL, "
+            "`weird name` VARCHAR(191) NULL, "
+            "`tick``column` VARCHAR(191) NULL";
+
+        /// ORM 空结果集用例的表
+        constexpr std::string_view kProbeTableName = "Asyn_Mysql_Empty";
+        constexpr std::string_view kProbeColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+
+        /// 事务用例的四张表（提交可见 / 回滚不可见 / 析构自动回滚 / 异常穿越）
+        constexpr std::string_view kTransactionCommitTableName    = "Asyn_Mysql_Tx_Commit";
+        constexpr std::string_view kTransactionRollbackTableName  = "Asyn_Mysql_Tx_Rollback";
+        constexpr std::string_view kTransactionDestructorTableName = "Asyn_Mysql_Tx_Destructor";
+        constexpr std::string_view kTransactionExceptionTableName  = "Asyn_Mysql_Tx_Exception";
+        constexpr std::string_view kTransactionColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+
+        /**
+         * @brief 读取一个环境变量
+         * @details 口令只经由本函数进入测试，源码里不出现任何明文。std::getenv 返回的指针
+         *          在下一次改动环境前有效，这里立即拷贝成 std::string，不保留该指针。
+         * @param variableName 环境变量名
+         * @return std::string 变量值；未设置时为空串
+         */
+        [[nodiscard]] std::string readEnvironmentText(const char *variableName)
+        {
+            const char *rawValue = std::getenv(variableName);
+            return rawValue != nullptr ? std::string(rawValue) : std::string{};
+        }
+
+        /**
+         * @brief 读取文本型环境变量并在缺失时回落到默认值
+         * @param variableName 环境变量名
+         * @param fallback 未设置（或为空串）时使用的默认值
+         * @return std::string 生效取值
+         */
+        [[nodiscard]] std::string readEnvironmentTextOrDefault(const char *variableName, const std::string_view fallback)
+        {
+            std::string variableValue = readEnvironmentText(variableName);
+            // 空串与「未设置」在这里等价：两种情况都使用默认值，避免拼出一个空主机名
+            return variableValue.empty() ? std::string(fallback) : variableValue;
+        }
+
+        /**
+         * @brief 读取端口型环境变量
+         * @details 用 std::from_chars 而不是 std::stoi：后者靠异常报错且接受 "3306abc" 这类
+         *          带余文的输入。非法取值一律回落默认端口，不因为环境写错就让整组用例失败。
+         * @param variableName 环境变量名
+         * @param fallback 未设置或取值非法时使用的默认端口
+         * @return std::uint16_t 生效端口
+         */
+        [[nodiscard]] std::uint16_t readEnvironmentPortOrDefault(const char *variableName, const std::uint16_t fallback)
+        {
+            const std::string portText = readEnvironmentText(variableName);
+            if (portText.empty())
+            {
+                return fallback;
+            }
+
+            int parsedPort = 0;
+            const auto [remainderBegin, parseError] =
+                std::from_chars(portText.data(), portText.data() + portText.size(), parsedPort);
+
+            // 三种非法情形一律回落：解析失败、尾部有余文、超出 1..65535 的端口范围
+            if (parseError != std::errc{} || remainderBegin != portText.data() + portText.size() ||
+                parsedPort <= 0 || parsedPort > 65535)
+            {
+                return fallback;
+            }
+
+            return static_cast<std::uint16_t>(parsedPort);
+        }
+
+        /**
+         * @brief 判断文本是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
+         * @param text 待判定的文本
+         * @return true 至少有一个字节的最高位被置起（UTF-8 多字节序列的特征）
+         */
+        [[nodiscard]] bool containsLocalizedText(const std::string &text)
+        {
+            for (const char character: text)
+            {
+                if (static_cast<unsigned char>(character) >= 0x80U)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+    } // namespace
+
+    // ========================================================================
+    // 测试用数据结构
+    // ========================================================================
+
+    namespace
+    {
+        /**
+         * @brief 账号表结构体：覆盖整型、文本、浮点、可空列与布尔列
+         */
+        struct IntegrationAccountRow
+        {
+            std::int64_t               id;      ///< 主键
+            std::string                name;    ///< 户名（含中文与单引号）
+            double                     balance; ///< 余额（含负数）
+            std::optional<std::string> note;    ///< 备注：NULL → 空 optional，空串 → 有值的空串
+            bool                       active;  ///< 是否启用（TINYINT(1) 的 0/1）
+        };
+
+        /**
+         * @brief 批量插入表结构体：五列，用于把 65535 的参数上限换算成每批行数
+         */
+        struct IntegrationBatchRow
+        {
+            std::int64_t               id;     ///< 主键
+            std::string                name;   ///< 名称
+            double                     score;  ///< 分值
+            std::optional<std::string> note;   ///< 备注，可空
+            bool                       active; ///< 是否启用
+        };
+
+        /**
+         * @brief 特殊标识符表结构体：列名覆盖保留字、空格与反引号
+         */
+        struct IntegrationQuotedRow
+        {
+            std::int64_t id;           ///< 主键
+            std::string  order;        ///< 列名是保留字 order
+            std::string  group;        ///< 列名是保留字 group
+            std::string  spacedColumn; ///< 列名含空格（"weird name"）
+            std::string  tickColumn;   ///< 列名含反引号（"tick`column"），必须靠翻倍转义才能引用
+        };
+
+        /**
+         * @brief 空结果集探针表结构体
+         */
+        struct IntegrationProbeRow
+        {
+            std::int64_t id;   ///< 主键
+            std::string  name; ///< 名称
+        };
+
+        /**
+         * @brief 事务用例表结构体：只经由 Queryable(Transaction&) 使用
+         */
+        struct IntegrationTransactionRow
+        {
+            std::int64_t id;     ///< 主键
+            std::string  name;   ///< 名称
+            double       amount; ///< 金额
+        };
+
+        /**
+         * @brief 构造一行账号数据
+         * @param id 主键
+         * @param name 户名
+         * @param balance 余额
+         * @param note 备注，可为空
+         * @param active 是否启用
+         * @return IntegrationAccountRow 结构体
+         */
+        [[nodiscard]] IntegrationAccountRow makeAccountRow(const std::int64_t id,
+                                                           std::string name,
+                                                           const double balance,
+                                                           std::optional<std::string> note,
+                                                           const bool active)
+        {
+            return IntegrationAccountRow{
+                .id      = id,
+                .name    = std::move(name),
+                .balance = balance,
+                .note    = std::move(note),
+                .active  = active
+            };
+        }
+
+    } // namespace
+
+    // ========================================================================
+    // TableSchema 特化：把结构体注册到各自的表
+    // ========================================================================
+
+    template<>
+    struct Queryable::TableSchema<IntegrationAccountRow>
+    {
+        static constexpr std::string_view kTableName = kAccountTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationAccountRow::id, "id"),
+            Column(&IntegrationAccountRow::name, "name"),
+            Column(&IntegrationAccountRow::balance, "balance"),
+            Column(&IntegrationAccountRow::note, "note"),
+            Column(&IntegrationAccountRow::active, "active"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationBatchRow>
+    {
+        static constexpr std::string_view kTableName = kBatchTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationBatchRow::id, "id"),
+            Column(&IntegrationBatchRow::name, "name"),
+            Column(&IntegrationBatchRow::score, "score"),
+            Column(&IntegrationBatchRow::note, "note"),
+            Column(&IntegrationBatchRow::active, "active"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationQuotedRow>
+    {
+        static constexpr std::string_view kTableName = kQuotedTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationQuotedRow::id, "id"),
+            Column(&IntegrationQuotedRow::order, "order"),
+            Column(&IntegrationQuotedRow::group, "group"),
+            Column(&IntegrationQuotedRow::spacedColumn, "weird name"),
+            Column(&IntegrationQuotedRow::tickColumn, "tick`column"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationProbeRow>
+    {
+        static constexpr std::string_view kTableName = kProbeTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationProbeRow::id, "id"),
+            Column(&IntegrationProbeRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationTransactionRow>
+    {
+        // 表名只能是编译期常量，因此本结构体固定绑定到「提交可见」用例的表：
+        // 其余事务用例外加的表名各不相同，一律走 insertTransactionRow() 的原始参数化语句写入
+        static constexpr std::string_view kTableName = kTransactionCommitTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationTransactionRow::id, "id"),
+            Column(&IntegrationTransactionRow::name, "name"),
+            Column(&IntegrationTransactionRow::amount, "amount"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    // ========================================================================
+    // 夹具
+    // ========================================================================
+
+    namespace
+    {
+        using Queryable::asc;
+        using Queryable::Column;
+
+        /**
+         * @brief ORM 查询构建器模板的本地别名
+         * @details 这里刻意不用 `using Queryable::Queryable;`：该 using 声明会把类模板名
+         *          `Queryable` 注入匿名命名空间，而匿名命名空间的成员在 AsynGyanis::Database
+         *          里可见，于是与同名的 `AsynGyanis::Database::Queryable` 命名空间构成歧义
+         *          （C2872），此后每一处 `Queryable<T>` 都会编译失败。换一个别名即可绕开。
+         * @tparam RowType 表数据结构类型
+         */
+        template<typename RowType>
+        using OrmQuery = Queryable::Queryable<RowType>;
+
+        /**
+         * @brief MySQL 真实服务端集成测试夹具
+         *
+         * @details SetUp 只做两件事：从环境变量装载连接配置（缺口令即 GTEST_SKIP），
+         *          以及创建测试专用库。表由用例自己在用例体内按需创建（prepareTable），
+         *          由其记录表名并在 TearDown 里删除——这样即使断言中途失败也不会留下残留。
+         */
+        class MySqlIntegrationTest : public ::testing::Test
+        {
+        protected:
+            void SetUp() override
+            {
+                // 桩构建里没有任何客户端库可连：直接跳过，不让用例以「连不上」的名义失败
+                if (!kMySqlDriverCompiled)
+                {
+                    GTEST_SKIP() << "当前构建未编译 MySQL 驱动（未定义 DATABASE_HAS_MYSQL），"
+                                    "跳过真实服务端集成测试";
+                }
+
+                const std::string passwordText = readEnvironmentText(kPasswordVariableName);
+                if (passwordText.empty())
+                {
+                    // 口令是唯一的必需项：没有它就无法建立任何会话，本组用例整体跳过而不是失败，
+                    // 因此无服务端的 CI 与本地日常构建同样保持全绿
+                    GTEST_SKIP() << "未设置环境变量 " << kPasswordVariableName
+                                 << "，跳过真实 MySQL 集成测试（连接参数与环境变量名见文件头说明）";
+                }
+
+                m_configuration.host     = readEnvironmentTextOrDefault(kHostVariableName, kDefaultHost);
+                m_configuration.port     = readEnvironmentPortOrDefault(kPortVariableName, kDefaultPort);
+                m_configuration.userName = readEnvironmentTextOrDefault(kUserVariableName, kDefaultUserName);
+                m_configuration.password = passwordText;
+                m_configuration.database = readEnvironmentTextOrDefault(kDatabaseVariableName, kDefaultDatabaseName);
+
+                // 专用库由本文件自己创建；除它以外不触碰任何既有库表
+                if (!createTestDatabase())
+                {
+                    FAIL() << "无法创建测试专用库 " << m_configuration.database << "：" << m_lastSetupError;
+                }
+            }
+
+            void TearDown() override
+            {
+                // 建表失败或本用例不需要表时无事可做；IF EXISTS 让残留表（上次崩溃剩下）也能被清掉
+                if (!m_preparedTableName.empty())
+                {
+                    dropPreparedTable();
+                }
+            }
+
+            /**
+             * @brief 取得本用例的连接配置
+             * @return const ConnectionConfig& 从环境变量装载的配置
+             */
+            [[nodiscard]] const ConnectionConfig &configuration() const noexcept
+            {
+                return m_configuration;
+            }
+
+            /**
+             * @brief 用生产方言引用一个标识符（测试不自己拼反引号，顺带验证引用实现）
+             * @param identifier 待引用的标识符
+             * @return std::string 形如 `identifier` 的文本
+             */
+            [[nodiscard]] static std::string quote(const std::string_view identifier)
+            {
+                const MySqlDialect dialect;
+                return dialect.quoteIdentifier(identifier);
+            }
+
+            /**
+             * @brief 新建一条独立连接（不经过连接池）
+             * @return std::unique_ptr<MySqlConnection> 尚未 connect() 的连接
+             */
+            [[nodiscard]] std::unique_ptr<MySqlConnection> makeConnection() const
+            {
+                return std::make_unique<MySqlConnection>(m_configuration);
+            }
+
+            /**
+             * @brief 新建一个指向真实服务端的连接池
+             * @param maximumPoolSize 连接数上限
+             * @return std::unique_ptr<ConnectionPool> 连接池
+             */
+            [[nodiscard]] std::unique_ptr<ConnectionPool> makePool(const std::size_t maximumPoolSize) const
+            {
+                PoolConfig poolConfiguration;
+                poolConfiguration.maximumPoolSize = maximumPoolSize;
+
+                return std::make_unique<ConnectionPool>(
+                    [databaseConfiguration = m_configuration]() -> std::unique_ptr<DatabaseConnection>
+                    {
+                        std::unique_ptr<DatabaseConnection> connection =
+                            DatabaseFactory::createMySql(databaseConfiguration);
+                        // 连接池的工厂契约要求交出已经 connect() 完成的连接
+                        connection->connect();
+                        return connection;
+                    },
+                    poolConfiguration);
+            }
+
+            /**
+             * @brief 建立本用例专用的表
+             * @details 先 DROP TABLE IF EXISTS 再 CREATE TABLE，因此上次运行留下的残留表
+             *          （结构可能已不同）也会被清掉，本用例总是从一张空表开始。
+             * @param tableName 表名
+             * @param columnsDdl 建表语句括号内的列定义
+             * @return true 表已建好；false 失败，原因见 m_lastSetupError
+             */
+            [[nodiscard]] bool prepareTable(const std::string_view tableName, const std::string_view columnsDdl)
+            {
+                MySqlConnection connection(m_configuration);
+                if (!connection.connect())
+                {
+                    m_lastSetupError = connection.lastError();
+                    return false;
+                }
+
+                const std::string quotedTableName = quote(tableName);
+                if (connection.execute("DROP TABLE IF EXISTS " + quotedTableName) == nullptr)
+                {
+                    m_lastSetupError = connection.lastError();
+                    return false;
+                }
+
+                const std::string createStatement =
+                    "CREATE TABLE " + quotedTableName + " (" + std::string(columnsDdl) + ") CHARACTER SET utf8mb4";
+                if (connection.execute(createStatement) == nullptr)
+                {
+                    m_lastSetupError = connection.lastError();
+                    return false;
+                }
+
+                // 记下待清理的表名：TearDown 据此删除，用例中途失败也不会留下残留
+                m_preparedTableName = std::string(tableName);
+                return true;
+            }
+
+            /**
+             * @brief 统计一张表的行数
+             * @param connection 执行查询的连接
+             * @param tableName 表名
+             * @return std::int64_t 行数；查询失败时返回 -1（让断言直接暴露失败而不是误判成 0 行）
+             */
+            [[nodiscard]] static std::int64_t countRows(DatabaseConnection &connection, const std::string_view tableName)
+            {
+                const std::unique_ptr<DatabaseResult> result = connection.execute("SELECT COUNT(*) FROM " + quote(tableName));
+                if (result == nullptr || !result->next())
+                {
+                    return -1;
+                }
+
+                const DatabaseValue countValue = result->getValue(0);
+                const auto        *countedRows = std::get_if<std::int64_t>(&countValue);
+                return countedRows != nullptr ? *countedRows : -1;
+            }
+
+            /**
+             * @brief 在给定连接上按参数绑定插入一行事务用数据
+             * @param connection 执行语句的连接
+             * @param tableName 表名
+             * @param id 主键
+             * @param name 名称
+             * @param amount 金额
+             * @return true 语句执行成功且恰好改动一行
+             */
+            [[nodiscard]] static bool insertTransactionRow(DatabaseConnection &connection,
+                                                           const std::string_view tableName,
+                                                           const std::int64_t id,
+                                                           std::string name,
+                                                           const double amount)
+            {
+                const std::vector<DatabaseValue> parameters{id, std::move(name), amount};
+                const std::unique_ptr<DatabaseResult> result = connection.execute(
+                    "INSERT INTO " + quote(tableName) + " (`id`, `name`, `amount`) VALUES (?, ?, ?)", parameters);
+
+                return result != nullptr && result->affectedRowCount() == 1;
+            }
+
+            /**
+             * @brief 读取指定主键的行，返回其 name 列
+             * @param connection 执行查询的连接
+             * @param tableName 表名
+             * @param id 主键
+             * @return std::optional<std::string> 命中行的 name；无该行或执行失败时为空
+             */
+            [[nodiscard]] static std::optional<std::string> readTransactionRowName(DatabaseConnection &connection,
+                                                                                  const std::string_view tableName,
+                                                                                  const std::int64_t id)
+            {
+                const std::vector<DatabaseValue> parameters{id};
+                const std::unique_ptr<DatabaseResult> result = connection.execute(
+                    "SELECT `name` FROM " + quote(tableName) + " WHERE `id` = ?", parameters);
+                if (result == nullptr || !result->next())
+                {
+                    return std::nullopt;
+                }
+
+                const DatabaseValue nameValue = result->getValue(0);
+                const auto        *nameText  = std::get_if<std::string>(&nameValue);
+                return nameText != nullptr ? std::optional<std::string>(*nameText) : std::nullopt;
+            }
+
+            // 以下成员必须放在 protected：用例体位于派生自本夹具的测试类里，
+            // 私有成员对派生类不可见，断言就无法把建表失败的原因输出到失败信息中
+            ConnectionConfig m_configuration;     ///< 从环境变量装载的连接配置
+            std::string      m_preparedTableName; ///< 本用例建好的表名，供 TearDown 清理；空表示无需清理
+            std::string      m_lastSetupError;    ///< 建库/建表失败的原因，供断言输出
+
+        private:
+            /**
+             * @brief 创建测试专用库
+             * @details 建库必须用一条「不指定默认库」的连接：目标库此刻还不存在，
+             *          带着它去握手会在认证阶段就失败。IF NOT EXISTS 让重复执行也安全。
+             * @return true 库已存在或已建好；false 失败，原因见 m_lastSetupError
+             */
+            [[nodiscard]] bool createTestDatabase()
+            {
+                ConnectionConfig bootstrapConfiguration = m_configuration;
+                // 空库名 = 不断言任何默认库，这是 mysql_real_connect 的正规用法之一
+                bootstrapConfiguration.database.clear();
+
+                MySqlConnection connection(bootstrapConfiguration);
+                if (!connection.connect())
+                {
+                    m_lastSetupError = connection.lastError();
+                    return false;
+                }
+
+                const std::string createStatement = "CREATE DATABASE IF NOT EXISTS " + quote(m_configuration.database) +
+                                                    " CHARACTER SET utf8mb4";
+                if (connection.execute(createStatement) == nullptr)
+                {
+                    m_lastSetupError = connection.lastError();
+                    return false;
+                }
+
+                return true;
+            }
+
+            /**
+             * @brief 删除本用例建好的表，失败一律忽略（清理动作不该让用例结论变色）
+             */
+            void dropPreparedTable()
+            {
+                MySqlConnection connection(m_configuration);
+                if (!connection.connect())
+                {
+                    return;
+                }
+
+                static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(m_preparedTableName)));
+            }
+        };
+
+    } // namespace
+
+    // ========================================================================
+    // 连接
+    // ========================================================================
+
+    /**
+     * @brief 验证用环境变量里的连接参数能真正连上服务端并读到服务端版本
+     */
+    TEST_F(MySqlIntegrationTest, ConnectsWithEnvironmentConfigurationAndReportsServerVersion)
+    {
+        MySqlConnection connection(configuration());
+
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        EXPECT_TRUE(connection.isConnected());
+        EXPECT_TRUE(connection.lastError().empty());
+
+        // 服务端版本形如 "8.0.36" 或 "5.7.44-log"：非空且含数字是跨版本都成立的判据
+        const std::string serverVersion = connection.serverVersion();
+        EXPECT_FALSE(serverVersion.empty());
+        EXPECT_NE(serverVersion.find_first_of("0123456789"), std::string::npos) << serverVersion;
+
+        // 连接已建立时再次 connect() 必须是幂等的空操作（重复握手会丢掉会话状态）
+        EXPECT_TRUE(connection.connect());
+        EXPECT_EQ(connection.serverVersion(), serverVersion);
+
+        connection.disconnect();
+        EXPECT_FALSE(connection.isConnected());
+    }
+
+    /**
+     * @brief 验证错误口令连不上，且失败原因是面向使用者的中文
+     */
+    TEST_F(MySqlIntegrationTest, ConnectWithWrongPasswordFailsWithLocalizedReason)
+    {
+        ConnectionConfig wrongConfiguration = configuration();
+        // 在真实口令后追加一段固定后缀：口令本身恒从环境变量来，本文件不出现任何明文
+        wrongConfiguration.password += "-definitely-wrong-on-purpose";
+
+        MySqlConnection connection(wrongConfiguration);
+
+        EXPECT_FALSE(connection.connect());
+        EXPECT_FALSE(connection.isConnected());
+        EXPECT_EQ(connection.nativeHandle(), nullptr);
+
+        const std::string failureReason = connection.lastError();
+        EXPECT_FALSE(failureReason.empty());
+        // 中文文案 + 点明是 MySQL 驱动 + 带上客户端库原文与错误码
+        EXPECT_TRUE(containsLocalizedText(failureReason)) << failureReason;
+        EXPECT_NE(failureReason.find("MySQL"), std::string::npos) << failureReason;
+        EXPECT_NE(failureReason.find("错误码"), std::string::npos) << failureReason;
+    }
+
+    // ========================================================================
+    // 参数化执行（mysql_stmt_*）
+    // ========================================================================
+
+    /**
+     * @brief 验证参数化 INSERT 成功回执携带真实的影响行数
+     */
+    TEST_F(MySqlIntegrationTest, ParameterizedInsertReportsSingleAffectedRow)
+    {
+        ASSERT_TRUE(prepareTable(kParameterInsertTableName, kParameterInsertColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::string insertStatement = "INSERT INTO " + quote(kParameterInsertTableName) +
+                                            " (`id`, `name`, `amount`) VALUES (?, ?, ?)";
+        const std::vector<DatabaseValue> parameters{std::int64_t{1}, std::string("张三"), 1234.5};
+
+        const std::unique_ptr<DatabaseResult> insertResult = connection.execute(insertStatement, parameters);
+        ASSERT_NE(insertResult, nullptr) << connection.lastError();
+        // 写语句交出的是空回执：0 行 0 列，影响行数来自 mysql_stmt_affected_rows 的语句级快照
+        EXPECT_EQ(insertResult->affectedRowCount(), 1);
+        EXPECT_EQ(insertResult->rowCount(), 0U);
+        EXPECT_TRUE(insertResult->isEmpty());
+
+        // 用不带参数的路径独立复核：参数确实按顺序绑到了对应的列上
+        const std::unique_ptr<DatabaseResult> selectResult = connection.execute(
+            "SELECT `name`, `amount` FROM " + quote(kParameterInsertTableName) + " WHERE `id` = 1");
+        ASSERT_NE(selectResult, nullptr) << connection.lastError();
+        ASSERT_TRUE(selectResult->next());
+        EXPECT_EQ(std::get<std::string>(selectResult->getValue("name")), "张三");
+        EXPECT_DOUBLE_EQ(std::get<double>(selectResult->getValue("amount")), 1234.5);
+        EXPECT_FALSE(selectResult->next());
+    }
+
+    /**
+     * @brief 验证参数化 SELECT 的列名与各类取值都能原样往返，且 NULL 与空串不会混淆
+     */
+    TEST_F(MySqlIntegrationTest, ParameterizedSelectRoundTripsEveryValueKind)
+    {
+        ASSERT_TRUE(prepareTable(kParameterSelectTableName, kParameterSelectColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 长文本：刻意控制在 TEXT 的 65535 字节容量之内——越过容量时服务端会报
+        // "Data too long for column" 并整条拒绝，那属于服务端容量语义而不是驱动的取值缺陷，
+        // 因此这里只断言「容量内的长文本逐字节不丢」，不对截断行为做任何断言
+        std::string longText;
+        for (int index = 0; index < 3000; ++index)
+        {
+            longText += "中文";
+            longText += std::to_string(index);
+        }
+
+        // 内嵌 '\0'（"前" + '\0' + "后"，共 7 字节）：驱动按「指针 + 长度」绑定与取值，
+        // 因此 NUL 应当逐字节保留，与「空串」「NULL」三者互不相同
+        const std::string embeddedNulText("前\0后", 7);
+
+        const std::string insertStatement = "INSERT INTO " + quote(kParameterSelectTableName) +
+                                            " (`id`, `name`, `amount`, `note`, `payload`) VALUES (?, ?, ?, ?, ?)";
+
+        const std::vector<std::vector<DatabaseValue>> sampleRows{
+            // 第 1 行：note 是 SQL NULL，payload 是空串——两者必须可区分
+            {std::int64_t{1}, std::string("张三"), 1234.5, std::monostate{}, std::string("")},
+            // 第 2 行：负数、中文备注、内嵌 '\0'
+            {std::int64_t{2}, std::string("O'Brien"), -99.5, std::string("普通备注"), embeddedNulText},
+            // 第 3 行：零值、空串备注、长文本
+            {std::int64_t{3}, std::string("李四"), 0.0, std::string(""), longText}
+        };
+
+        for (const std::vector<DatabaseValue> &sampleRow: sampleRows)
+        {
+            const std::unique_ptr<DatabaseResult> insertResult = connection.execute(insertStatement, sampleRow);
+            ASSERT_NE(insertResult, nullptr) << connection.lastError();
+            EXPECT_EQ(insertResult->affectedRowCount(), 1);
+        }
+
+        const std::string selectStatement = "SELECT `id`, `name`, `amount`, `note`, `payload` FROM " +
+                                            quote(kParameterSelectTableName) + " WHERE `id` = ?";
+        const auto selectRowById = [&connection, &selectStatement](const std::int64_t identifier) -> std::unique_ptr<DatabaseResult>
+        {
+            return connection.execute(selectStatement, std::vector<DatabaseValue>{identifier});
+        };
+
+        // ---- 第 1 行：列名、中文、正常浮点、NULL 与空串的区分 ----
+        const std::unique_ptr<DatabaseResult> firstRow = selectRowById(1);
+        ASSERT_NE(firstRow, nullptr) << connection.lastError();
+        EXPECT_EQ(firstRow->columnCount(), 5U);
+        // 列名按 SELECT 列表原样交出，列序与列表一致
+        EXPECT_EQ(firstRow->columnNames(), (std::vector<std::string>{"id", "name", "amount", "note", "payload"}));
+        EXPECT_EQ(firstRow->columnIndex("payload").value_or(99U), 4U);
+
+        ASSERT_TRUE(firstRow->next());
+        EXPECT_EQ(std::get<std::int64_t>(firstRow->getValue("id")), 1);
+        EXPECT_EQ(std::get<std::string>(firstRow->getValue("name")), "张三");
+        EXPECT_DOUBLE_EQ(std::get<double>(firstRow->getValue("amount")), 1234.5);
+        // note 是 SQL NULL → monostate；payload 是「有值且为空」的空串 → std::string
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(firstRow->getValue("note")));
+        ASSERT_TRUE(std::holds_alternative<std::string>(firstRow->getValue("payload")));
+        EXPECT_TRUE(std::get<std::string>(firstRow->getValue("payload")).empty());
+        EXPECT_FALSE(firstRow->next());
+
+        // ---- 第 2 行：单引号文本、负数、中文备注、内嵌 '\0' ----
+        const std::unique_ptr<DatabaseResult> secondRow = selectRowById(2);
+        ASSERT_NE(secondRow, nullptr) << connection.lastError();
+        ASSERT_TRUE(secondRow->next());
+        EXPECT_EQ(std::get<std::string>(secondRow->getValue("name")), "O'Brien");
+        EXPECT_DOUBLE_EQ(std::get<double>(secondRow->getValue("amount")), -99.5);
+        EXPECT_EQ(std::get<std::string>(secondRow->getValue("note")), "普通备注");
+
+        // 内嵌 '\0' 逐字节保留：先比长度（截断一定改变长度），再比内容
+        const std::string readBackNulText = std::get<std::string>(secondRow->getValue("payload"));
+        EXPECT_EQ(readBackNulText.size(), embeddedNulText.size());
+        EXPECT_EQ(readBackNulText, embeddedNulText);
+
+        // ---- 第 3 行：零值、空串备注、长文本 ----
+        const std::unique_ptr<DatabaseResult> thirdRow = selectRowById(3);
+        ASSERT_NE(thirdRow, nullptr) << connection.lastError();
+        ASSERT_TRUE(thirdRow->next());
+        EXPECT_DOUBLE_EQ(std::get<double>(thirdRow->getValue("amount")), 0.0);
+        EXPECT_TRUE(std::get<std::string>(thirdRow->getValue("note")).empty());
+
+        const std::string readBackLongText = std::get<std::string>(thirdRow->getValue("payload"));
+        EXPECT_EQ(readBackLongText.size(), longText.size());
+        EXPECT_EQ(readBackLongText, longText);
+    }
+
+    /**
+     * @brief 验证含单引号与 "--" 的文本经参数绑定后原样回读，且表结构未被破坏
+     *
+     * @details 若取值是被拼进 SQL 文本而不是绑定送入，这段文本会提前闭合字符串字面量，
+     *          后半段则变成注释与新的语句：轻则插入失败，重则表被删掉。这里既断言文本原样
+     *          回读，也断言注入残留（DROP TABLE）没有生效。
+     */
+    TEST_F(MySqlIntegrationTest, ParameterizedTextWithQuotesAndCommentMarkersRoundTripsVerbatim)
+    {
+        ASSERT_TRUE(prepareTable(kInjectionTableName, kInjectionColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 恶意文本直接点名本用例的表，让「注入是否生效」可被观察
+        const std::string hostileText = "O'Brien -- DROP TABLE " + quote(kInjectionTableName) + "; --";
+        // 先自检恶意文本确实带齐了危险字符，否则本用例会变成一个空断言
+        EXPECT_NE(hostileText.find('\''), std::string::npos);
+        EXPECT_NE(hostileText.find("--"), std::string::npos);
+        EXPECT_NE(hostileText.find("DROP TABLE"), std::string::npos);
+
+        const std::vector<DatabaseValue> insertParameters{std::int64_t{1}, hostileText};
+        const std::unique_ptr<DatabaseResult> insertResult = connection.execute(
+            "INSERT INTO " + quote(kInjectionTableName) + " (`id`, `name`) VALUES (?, ?)", insertParameters);
+        ASSERT_NE(insertResult, nullptr) << connection.lastError();
+        ASSERT_EQ(insertResult->affectedRowCount(), 1);
+
+        // 按值查询：WHERE 的取值同样走绑定，能精确命中说明存进去的就是原文
+        const std::vector<DatabaseValue> selectParameters{hostileText};
+        const std::unique_ptr<DatabaseResult> selectResult = connection.execute(
+            "SELECT `name` FROM " + quote(kInjectionTableName) + " WHERE `name` = ?", selectParameters);
+        ASSERT_NE(selectResult, nullptr) << connection.lastError();
+        ASSERT_TRUE(selectResult->next());
+        EXPECT_EQ(std::get<std::string>(selectResult->getValue("name")), hostileText);
+        EXPECT_FALSE(selectResult->next());
+
+        // 表仍在、恰好一行：证明 "--" 没有注释掉后续内容，分号也没有开启新语句
+        EXPECT_EQ(countRows(connection, kInjectionTableName), 1);
+    }
+
+    /**
+     * @brief 验证参数个数与占位符个数不匹配（少传 / 多传）都会被拒绝且错误为中文
+     */
+    TEST_F(MySqlIntegrationTest, ParameterizedStatementRejectsMismatchedParameterCount)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // "SELECT ?" 恰好一个占位符且不需要任何表，把「个数不匹配」这一条单独隔离出来：
+        // 语句本身能 prepare 成功，失败必然来自参数个数校验
+        const std::unique_ptr<DatabaseResult> tooFewResult =
+            connection.execute("SELECT ?", std::span<const DatabaseValue>{});
+        EXPECT_EQ(tooFewResult, nullptr);
+        const std::string tooFewReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(tooFewReason)) << tooFewReason;
+        EXPECT_NE(tooFewReason.find("参数数量不匹配"), std::string::npos) << tooFewReason;
+        // 原因里要同时给出「需要几个」与「实际给了几个」，否则调用方无从定位
+        EXPECT_NE(tooFewReason.find("需要 1"), std::string::npos) << tooFewReason;
+        EXPECT_NE(tooFewReason.find("实际提供 0"), std::string::npos) << tooFewReason;
+
+        const std::vector<DatabaseValue> extraParameters{std::int64_t{1}, std::int64_t{2}};
+        const std::unique_ptr<DatabaseResult> tooManyResult = connection.execute("SELECT ?", extraParameters);
+        EXPECT_EQ(tooManyResult, nullptr);
+        const std::string tooManyReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(tooManyReason)) << tooManyReason;
+        EXPECT_NE(tooManyReason.find("参数数量不匹配"), std::string::npos) << tooManyReason;
+        EXPECT_NE(tooManyReason.find("实际提供 2"), std::string::npos) << tooManyReason;
+    }
+
+    /**
+     * @brief 验证容器类型参数被明确拒绝并给出中文原因
+     *
+     * @details DatabaseValue 允许承载 List / Hash（Redis 的返回形态），但把它们当成单个
+     *          标量参数绑定给 SQL 占位符没有正确语义：正确用法是展开成多个标量参数
+     *          （IN 列表由方言展开）。静默按 NULL 或空串执行会让调用方以为条件生效了。
+     */
+    TEST_F(MySqlIntegrationTest, ParameterizedStatementRejectsContainerParameter)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 列表：对应 Redis List 形态
+        const std::vector<DatabaseValue> listParameters{std::vector<std::string>{"甲", "乙"}};
+        const std::unique_ptr<DatabaseResult> listResult = connection.execute("SELECT ?", listParameters);
+        EXPECT_EQ(listResult, nullptr);
+        const std::string listReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(listReason)) << listReason;
+        EXPECT_NE(listReason.find("容器"), std::string::npos) << listReason;
+        EXPECT_NE(listReason.find("List"), std::string::npos) << listReason;
+
+        // 哈希：对应 Redis Hash 形态
+        const std::vector<DatabaseValue> hashParameters{
+            std::unordered_map<std::string, std::string>{{"键", "值"}}};
+        const std::unique_ptr<DatabaseResult> hashResult = connection.execute("SELECT ?", hashParameters);
+        EXPECT_EQ(hashResult, nullptr);
+        const std::string hashReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(hashReason)) << hashReason;
+        EXPECT_NE(hashReason.find("容器"), std::string::npos) << hashReason;
+        EXPECT_NE(hashReason.find("Hash"), std::string::npos) << hashReason;
+
+        // 容器参数被拒后连接仍可继续使用：校验发生在任何服务端交互之前
+        EXPECT_TRUE(connection.isConnected());
+        EXPECT_NE(connection.execute("SELECT 1"), nullptr) << connection.lastError();
+    }
+
+    // ========================================================================
+    // ORM 端到端（SQL 由 MySqlDialect 生成）
+    // ========================================================================
+
+    /**
+     * @brief 验证 ORM 的插入、条件查询、排序分页、单行读取、计数、更新与删除在真实 MySQL 上成立
+     */
+    TEST_F(MySqlIntegrationTest, OrmCrudRoundTripOverWhereOrderByPagingAndPrimaryKey)
+    {
+        ASSERT_TRUE(prepareTable(kAccountTableName, kAccountColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+
+        OrmQuery<IntegrationAccountRow> insertQuery(*pool);
+        ASSERT_EQ(1, insertQuery.insert(makeAccountRow(1, "张三", 1234.56, std::string("普通备注"), true)));
+        ASSERT_EQ(1, insertQuery.insert(makeAccountRow(2, "O'Brien", -99.5, std::nullopt, false)));
+        // 第三行的备注是空串：与第 2 行的 NULL 必须能区分开
+        ASSERT_EQ(1, insertQuery.insert(makeAccountRow(3, "李四", 0.0, std::string(""), true)));
+
+        // ---- toList：WHERE + ORDER BY + LIMIT + OFFSET（分页走 MySQL 的 "LIMIT ? OFFSET ?"）----
+        {
+            OrmQuery<IntegrationAccountRow> query(*pool);
+            const std::vector<IntegrationAccountRow> rows =
+                query.orderBy(asc("id")).limit(2).offset(1).toList();
+
+            ASSERT_EQ(rows.size(), 2U);
+            EXPECT_EQ(rows[0].id, 2);
+            EXPECT_EQ(rows[1].id, 3);
+            EXPECT_EQ(rows[0].name, "O'Brien");
+            EXPECT_DOUBLE_EQ(rows[0].balance, -99.5);
+            EXPECT_FALSE(rows[0].active);
+            // NULL → 空 optional；空串 → 有值的空 optional
+            EXPECT_FALSE(rows[0].note.has_value());
+            ASSERT_TRUE(rows[1].note.has_value());
+            EXPECT_TRUE(rows[1].note->empty());
+        }
+
+        // ---- WHERE 取子集 ----
+        {
+            OrmQuery<IntegrationAccountRow> query(*pool);
+            const std::vector<IntegrationAccountRow> rows =
+                query.where(Column(&IntegrationAccountRow::id, "id") >= std::int64_t{2})
+                     .orderBy(asc("id"))
+                     .toList();
+
+            ASSERT_EQ(rows.size(), 2U);
+            EXPECT_EQ(rows[0].id, 2);
+            EXPECT_EQ(rows[1].id, 3);
+        }
+
+        // ---- first：命中与不命中 ----
+        {
+            OrmQuery<IntegrationAccountRow> hitQuery(*pool);
+            const std::optional<IntegrationAccountRow> hit =
+                hitQuery.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{1}).first();
+
+            ASSERT_TRUE(hit.has_value());
+            EXPECT_EQ(hit->name, "张三");
+            EXPECT_DOUBLE_EQ(hit->balance, 1234.56);
+            ASSERT_TRUE(hit->note.has_value());
+            EXPECT_EQ(hit->note.value(), "普通备注");
+            EXPECT_TRUE(hit->active);
+
+            OrmQuery<IntegrationAccountRow> missQuery(*pool);
+            EXPECT_FALSE(missQuery.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{404}).first().has_value());
+        }
+
+        // ---- count：无条件与带条件 ----
+        {
+            OrmQuery<IntegrationAccountRow> countQuery(*pool);
+            EXPECT_EQ(countQuery.count(), 3);
+
+            OrmQuery<IntegrationAccountRow> negativeCountQuery(*pool);
+            EXPECT_EQ(negativeCountQuery.where(Column(&IntegrationAccountRow::balance, "balance") < 0.0).count(), 1);
+        }
+
+        // ---- update：按主键只改目标行 ----
+        {
+            OrmQuery<IntegrationAccountRow> updateQuery(*pool);
+            EXPECT_EQ(updateQuery.update(makeAccountRow(2, "王五", 888.25, std::string("已更新"), true)), 1);
+
+            OrmQuery<IntegrationAccountRow> readQuery(*pool);
+            const std::vector<IntegrationAccountRow> rows = readQuery.orderBy(asc("id")).toList();
+            ASSERT_EQ(rows.size(), 3U);
+            EXPECT_EQ(rows[1].id, 2);
+            EXPECT_EQ(rows[1].name, "王五");
+            EXPECT_DOUBLE_EQ(rows[1].balance, 888.25);
+            ASSERT_TRUE(rows[1].note.has_value());
+            EXPECT_EQ(rows[1].note.value(), "已更新");
+            EXPECT_TRUE(rows[1].active);
+            // 其它两行不受影响
+            EXPECT_EQ(rows[0].name, "张三");
+            EXPECT_EQ(rows[2].name, "李四");
+        }
+
+        // ---- executeNonQuery：带条件删除并回报受影响行数 ----
+        {
+            OrmQuery<IntegrationAccountRow> deleteQuery(*pool);
+            EXPECT_EQ(deleteQuery.where(Column(&IntegrationAccountRow::id, "id") >= std::int64_t{2}).executeNonQuery(), 2);
+
+            OrmQuery<IntegrationAccountRow> remainingQuery(*pool);
+            EXPECT_EQ(remainingQuery.count(), 1);
+
+            OrmQuery<IntegrationAccountRow> lastRowQuery(*pool);
+            const std::vector<IntegrationAccountRow> remainingRows = lastRowQuery.orderBy(asc("id")).toList();
+            ASSERT_EQ(remainingRows.size(), 1U);
+            EXPECT_EQ(remainingRows[0].id, 1);
+        }
+    }
+
+    /**
+     * @brief 验证 insertBatch 在行数超过方言参数上限时自动分块，且分块边界不丢不多
+     *
+     * @details MySQL 单条预处理语句的参数上限是 65535（协议层 num_params 字段只有 2 字节），
+     *          每行占用「列数」个参数，因此每批最多 65535 ÷ 列数 行。这里插入「每批行数 + 1」行，
+     *          让第二批恰好只剩一行——分块最常见的缺陷（最后一块上界算错）正落在这个边界上。
+     */
+    TEST_F(MySqlIntegrationTest, OrmBatchInsertChunksRowsBeyondDialectParameterLimit)
+    {
+        ASSERT_TRUE(prepareTable(kBatchTableName, kBatchColumns)) << m_lastSetupError;
+
+        // 每行的绑定参数个数就是列数，由 TableSchema 的列数在编译期给出；
+        // 该常量必须写在此处（特化声明之后），否则会先实例化空列的主模板而算出 0
+        constexpr std::size_t kBatchColumnCount =
+            std::tuple_size_v<std::remove_cvref_t<decltype(Queryable::TableSchema<IntegrationBatchRow>::kColumns)>>;
+
+        const MySqlDialect dialect;
+        const std::size_t rowsPerStatement = dialect.maximumStatementParameters() / kBatchColumnCount;
+        const std::size_t totalRowCount    = rowsPerStatement + 1U;
+        ASSERT_GE(rowsPerStatement, 2U);
+
+        std::vector<IntegrationBatchRow> rows;
+        rows.reserve(totalRowCount);
+        for (std::size_t rowIndex = 0; rowIndex < totalRowCount; ++rowIndex)
+        {
+            const std::int64_t identifier = static_cast<std::int64_t>(rowIndex) + 1;
+            rows.push_back(IntegrationBatchRow{
+                .id   = identifier,
+                .name = "批量行" + std::to_string(identifier),
+                .score = static_cast<double>(identifier),
+                // 偶数行不给备注（NULL）、奇数行给备注：让分块边界两侧的取值形态也不同
+                .note   = (identifier % 2 == 0) ? std::optional<std::string>{} : std::optional<std::string>{"奇数行备注"},
+                .active = identifier % 2 != 0
+            });
+        }
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+
+        OrmQuery<IntegrationBatchRow> batchQuery(*pool);
+        // 分块路径必须把所有块落进同一个事务，累计影响行数等于总行数
+        EXPECT_EQ(batchQuery.insertBatch(rows), static_cast<std::int64_t>(totalRowCount));
+
+        OrmQuery<IntegrationBatchRow> countQuery(*pool);
+        EXPECT_EQ(countQuery.count(), static_cast<std::int64_t>(totalRowCount));
+
+        const auto readBackRow = [&pool](const std::int64_t identifier) -> std::optional<IntegrationBatchRow>
+        {
+            OrmQuery<IntegrationBatchRow> query(*pool);
+            return query.where(Column(&IntegrationBatchRow::id, "id") == identifier).first();
+        };
+
+        // 第一块的首行：各列取值与写入一致
+        const std::optional<IntegrationBatchRow> headRow = readBackRow(1);
+        ASSERT_TRUE(headRow.has_value());
+        EXPECT_EQ(headRow->name, "批量行1");
+        EXPECT_DOUBLE_EQ(headRow->score, 1.0);
+        ASSERT_TRUE(headRow->note.has_value());
+        EXPECT_EQ(headRow->note.value(), "奇数行备注");
+        EXPECT_TRUE(headRow->active);
+
+        // 第一块的末行：恰好落在「每批行数」这个分块上界上，最常见缺陷是这里被算丢
+        const std::optional<IntegrationBatchRow> boundaryRow = readBackRow(static_cast<std::int64_t>(rowsPerStatement));
+        ASSERT_TRUE(boundaryRow.has_value());
+        EXPECT_EQ(boundaryRow->name, "批量行" + std::to_string(rowsPerStatement));
+
+        // 第二块的唯一一行：证明溢出到第二批的行确实被写进去了
+        const std::optional<IntegrationBatchRow> tailRow = readBackRow(static_cast<std::int64_t>(totalRowCount));
+        ASSERT_TRUE(tailRow.has_value());
+        EXPECT_EQ(tailRow->name, "批量行" + std::to_string(totalRowCount));
+        EXPECT_DOUBLE_EQ(tailRow->score, static_cast<double>(totalRowCount));
+        EXPECT_FALSE(tailRow->note.has_value());
+        EXPECT_FALSE(tailRow->active);
+    }
+
+    /**
+     * @brief 验证 MySqlDialect 生成的反引号引用、多行 VALUES 与 "LIMIT ? OFFSET ?" 在真实服务端可执行
+     *
+     * @details 表名含连字符，列名覆盖保留字（order / group）、空格与反引号：
+     *          只有把标识符正确加反引号（并把内部反引号翻倍）才能建表并被 ORM 读写。
+     *          若方言偷懒不加引用或转义写错，这里会直接收到服务端的语法错误。
+     */
+    TEST_F(MySqlIntegrationTest, OrmQuotedIdentifiersRemainExecutableOnRealServer)
+    {
+        ASSERT_TRUE(prepareTable(kQuotedTableName, kQuotedColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+
+        // ---- 单行插入：走 "INSERT INTO `表` (`列`…) VALUES (?, …)" ----
+        OrmQuery<IntegrationQuotedRow> insertQuery(*pool);
+        EXPECT_EQ(1, insertQuery.insert(IntegrationQuotedRow{
+                          .id           = 1,
+                          .order        = "保留字order",
+                          .group        = "保留字group",
+                          .spacedColumn = "空格列值",
+                          .tickColumn   = "反引号列值"
+                      }));
+
+        // ---- 多行 VALUES：走方言的 translateInsertBatch ----
+        const std::vector<IntegrationQuotedRow> batchRows{
+            IntegrationQuotedRow{.id = 2, .order = "第二行order", .group = "第二行group",
+                                 .spacedColumn = std::string("第二行空格"), .tickColumn = std::string("第二行反引号")},
+            IntegrationQuotedRow{.id = 3, .order = "第三行order", .group = "第三行group",
+                                 .spacedColumn = std::string("第三行空格"), .tickColumn = std::string("第三行反引号")}
+        };
+        EXPECT_EQ(2, insertQuery.insertBatch(batchRows));
+
+        // ---- WHERE 命中保留字列 + LIMIT ? OFFSET ? ----
+        {
+            OrmQuery<IntegrationQuotedRow> query(*pool);
+            const std::vector<IntegrationQuotedRow> rows =
+                query.where(Column(&IntegrationQuotedRow::order, "order") == "保留字order")
+                     .orderBy(asc("id"))
+                     .limit(1)
+                     .offset(0)
+                     .toList();
+
+            ASSERT_EQ(rows.size(), 1U);
+            EXPECT_EQ(rows[0].id, 1);
+            EXPECT_EQ(rows[0].group, "保留字group");
+            // 含空格的列名与含反引号的列名都被正确引用，取值能原样读回
+            EXPECT_EQ(rows[0].spacedColumn, "空格列值");
+            EXPECT_EQ(rows[0].tickColumn, "反引号列值");
+        }
+
+        // ---- 分页在同一批数据上取第二行：OFFSET 以绑定参数送出 ----
+        {
+            OrmQuery<IntegrationQuotedRow> query(*pool);
+            const std::vector<IntegrationQuotedRow> rows = query.orderBy(asc("id")).limit(1).offset(1).toList();
+
+            ASSERT_EQ(rows.size(), 1U);
+            EXPECT_EQ(rows[0].id, 2);
+            EXPECT_EQ(rows[0].tickColumn, "第二行反引号");
+        }
+
+        // ---- 计数、更新与删除同样要能穿过这些标识符 ----
+        {
+            OrmQuery<IntegrationQuotedRow> countQuery(*pool);
+            EXPECT_EQ(countQuery.count(), 3);
+
+            OrmQuery<IntegrationQuotedRow> updateQuery(*pool);
+            EXPECT_EQ(updateQuery.update(IntegrationQuotedRow{.id = 3, .order = "改后order", .group = "改后group",
+                                                             .spacedColumn = std::string("改后空格"),
+                                                             .tickColumn = std::string("改后反引号")}),
+                      1);
+
+            OrmQuery<IntegrationQuotedRow> updatedQuery(*pool);
+            const std::optional<IntegrationQuotedRow> updated =
+                updatedQuery.where(Column(&IntegrationQuotedRow::id, "id") == std::int64_t{3}).first();
+            ASSERT_TRUE(updated.has_value());
+            EXPECT_EQ(updated->order, "改后order");
+            EXPECT_EQ(updated->tickColumn, "改后反引号");
+
+            OrmQuery<IntegrationQuotedRow> deleteQuery(*pool);
+            // 上一段更新把第三行的 group 改成了 "改后group"，这里按当前取值删除才命中该行
+            EXPECT_EQ(deleteQuery.where(Column(&IntegrationQuotedRow::group, "group") == "改后group").executeNonQuery(), 1);
+
+            OrmQuery<IntegrationQuotedRow> remainingQuery(*pool);
+            EXPECT_EQ(remainingQuery.count(), 2);
+        }
+    }
+
+    /**
+     * @brief 验证空结果集上 toList() 为空、first() 为空、count() 为零
+     */
+    TEST_F(MySqlIntegrationTest, OrmEmptyResultSetYieldsEmptyListAndEmptyFirst)
+    {
+        ASSERT_TRUE(prepareTable(kProbeTableName, kProbeColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+
+        // 整张表为空
+        {
+            OrmQuery<IntegrationProbeRow> query(*pool);
+            EXPECT_TRUE(query.toList().empty());
+            EXPECT_FALSE(query.first().has_value());
+            EXPECT_EQ(query.count(), 0);
+        }
+
+        // 表里有数据但条件不命中
+        {
+            OrmQuery<IntegrationProbeRow> insertQuery(*pool);
+            ASSERT_EQ(1, insertQuery.insert(IntegrationProbeRow{.id = 1, .name = "唯一一行"}));
+        }
+
+        {
+            OrmQuery<IntegrationProbeRow> query(*pool);
+            const std::vector<IntegrationProbeRow> rows =
+                query.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{404}).toList();
+            EXPECT_TRUE(rows.empty());
+
+            OrmQuery<IntegrationProbeRow> firstQuery(*pool);
+            EXPECT_FALSE(firstQuery.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{404}).first().has_value());
+
+            OrmQuery<IntegrationProbeRow> countQuery(*pool);
+            EXPECT_EQ(countQuery.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{404}).count(), 0);
+
+            // 命中条件时三者都要给出数据，证明上面的「空」不是查询整体失败造成的
+            OrmQuery<IntegrationProbeRow> hitQuery(*pool);
+            EXPECT_EQ(hitQuery.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{1}).count(), 1);
+        }
+    }
+
+    // ========================================================================
+    // 事务
+    // ========================================================================
+
+    /**
+     * @brief 验证事务提交的行对另一条连接可见，提交前不可见
+     */
+    TEST_F(MySqlIntegrationTest, TransactionCommitIsVisibleToAnotherConnection)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionCommitTableName, kTransactionColumns)) << m_lastSetupError;
+
+        // 观察者是一条完全独立的连接：自动提交下每条 SELECT 各自取快照，
+        // 因此「提交前看不见 / 提交后看得见」是确定性结论，不需要任何等待
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 0);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        {
+            Transaction transaction(*pool);
+            EXPECT_TRUE(transaction.isActive());
+
+            // 走事务连接写入：Queryable(Transaction&) 保证语句与 START TRANSACTION 落在同一条连接上，
+            // 否则写语句会运行在自动提交模式，回滚只能回滚一个空事务
+            OrmQuery<IntegrationTransactionRow> transactionalQuery(transaction);
+            EXPECT_EQ(1, transactionalQuery.insert(IntegrationTransactionRow{.id = 1, .name = "事务提交", .amount = 12.5}));
+
+            // 提交之前：写者自己的连接能读到，另一条连接读不到
+            const std::optional<IntegrationTransactionRow> uncommittedRow =
+                transactionalQuery.where(Column(&IntegrationTransactionRow::id, "id") == std::int64_t{1}).first();
+            ASSERT_TRUE(uncommittedRow.has_value());
+            EXPECT_EQ(uncommittedRow->name, "事务提交");
+            EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 0);
+
+            ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+            EXPECT_FALSE(transaction.isActive());
+        }
+
+        // 提交之后：另一条连接立刻可见，且字段值完整
+        EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 1);
+        const std::optional<std::string> committedName =
+            readTransactionRowName(*observer, kTransactionCommitTableName, 1);
+        ASSERT_TRUE(committedName.has_value());
+        EXPECT_EQ(committedName.value(), "事务提交");
+    }
+
+    /**
+     * @brief 验证事务回滚后任何连接都看不到那一行
+     */
+    TEST_F(MySqlIntegrationTest, TransactionRollbackLeavesNoRowBehind)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionRollbackTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        {
+            Transaction transaction(*pool);
+
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionRollbackTableName, 1, "事务回滚", 3.5))
+                << transaction.connection().lastError();
+            // 事务内可见：证明这一行确实被写进去过，回滚要撤销的是真实存在的数据
+            EXPECT_EQ(countRows(transaction.connection(), kTransactionRollbackTableName), 1);
+
+            ASSERT_TRUE(transaction.rollback()) << transaction.lastError();
+            EXPECT_FALSE(transaction.isActive());
+            // 回滚是幂等的：事务已结束时再提交/回滚都是空操作，不会误发 COMMIT 把数据救回来
+            EXPECT_TRUE(transaction.commit());
+            EXPECT_TRUE(transaction.rollback());
+        }
+
+        // 换一条全新的连接复核：库表里没有任何残留
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionRollbackTableName), 0);
+    }
+
+    /**
+     * @brief 验证事务对象析构（未提交）时自动回滚
+     */
+    TEST_F(MySqlIntegrationTest, TransactionDestructorRollsBackUncommittedRows)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionDestructorTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        {
+            Transaction transaction(*pool);
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionDestructorTableName, 1, "析构未提交", 1.0))
+                << transaction.connection().lastError();
+            // 事务内可见，说明行已写入、只是没提交
+            EXPECT_EQ(countRows(transaction.connection(), kTransactionDestructorTableName), 1);
+            EXPECT_TRUE(transaction.isActive());
+
+            // 刻意不调用 commit()/rollback()：交给析构函数收尾
+        }
+
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionDestructorTableName), 0);
+    }
+
+    /**
+     * @brief 验证异常穿越事务作用域后，只留下事务之前已提交的数据
+     */
+    TEST_F(MySqlIntegrationTest, ExceptionUnwindingKeepsOnlyPreviouslyCommittedRows)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionExceptionTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+
+        // 第一步：先提交一行，作为「事务之前已落库」的既有数据
+        {
+            Transaction committedTransaction(*pool);
+            ASSERT_TRUE(insertTransactionRow(committedTransaction.connection(), kTransactionExceptionTableName, 1,
+                                             "已提交", 1.0))
+                << committedTransaction.connection().lastError();
+            ASSERT_TRUE(committedTransaction.commit()) << committedTransaction.lastError();
+        }
+
+        // 第二步：事务中途抛异常，异常直接穿越作用域，显式 rollback() 来不及执行
+        try
+        {
+            Transaction failingTransaction(*pool);
+            ASSERT_TRUE(insertTransactionRow(failingTransaction.connection(), kTransactionExceptionTableName, 2,
+                                             "异常未提交", 2.0))
+                << failingTransaction.connection().lastError();
+
+            throw std::runtime_error("模拟业务异常：事务应当被析构函数回滚");
+        }
+        catch (const std::runtime_error &)
+        {
+            // 异常已被事务对象在栈展开时处理（析构补一次 ROLLBACK），此处只负责继续断言
+        }
+
+        // 只剩第一步提交的那一行，且残留的确实是 id = 1
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionExceptionTableName), 1);
+        EXPECT_EQ(readTransactionRowName(*observer, kTransactionExceptionTableName, 1).value_or(""), "已提交");
+        EXPECT_FALSE(readTransactionRowName(*observer, kTransactionExceptionTableName, 2).has_value());
+    }
+
+} // namespace AsynGyanis::Database

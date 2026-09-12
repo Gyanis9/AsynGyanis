@@ -22,6 +22,7 @@ add_executable(TestDatabase
 
         MySql/TestMySqlConnection.cpp
         MySql/TestMySqlStatementResult.cpp
+        MySql/TestMySqlIntegration.cpp
 
         Redis/TestRedisConnection.cpp
         Redis/TestRedisResult.cpp
