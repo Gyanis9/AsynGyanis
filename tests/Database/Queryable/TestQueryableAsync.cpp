@@ -1,35 +1,48 @@
 /**
  * @file TestQueryableAsync.cpp
- * @brief 异步执行测试 —— 阻塞调用挪出事件循环、结果与同步版一致、异常按原样穿出
+ * @brief 异步执行测试 —— 阻塞调用挪出事件循环、读写结果与同步版一致、异常按原样穿出
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 三个层次：
- * - 结果一致性：同一份内存 SQLite 上，toListAsync / firstAsync / countAsync /
+ * @details 四个层次：
+ * - 读路径结果一致性：同一份内存 SQLite 上，toListAsync / firstAsync / countAsync /
  *   executeNonQueryAsync 的结果与同步版逐项相等；
+ * - 写路径结果一致性：insertAsync / insertBatchAsync / updateAsync 的受影响行数与同步版相等，
+ *   且「异步写 → 同步读」能读回刚写进去的那一行——读回是「数据真的落库」的权威证据；
+ *   批量插入另有两例：空集合不产生任何语句，以及「行数 × 列数」越过方言参数上限时的分块
+ *   （分块那条分支会在工作线程上临时开一个本地事务并提交）；
  * - 不阻塞调用线程：用一个被闩锁（std::latch）卡住的工作任务做确定性验证——
- *   提交后控制权立刻回到调用线程（耗时远小于任务被卡住的时长），
- *   且「任务是否完成」与「阻塞调用是否在别的线程上执行」都能被直接观测；
+ *   提交后控制权立刻回到调用线程（耗时判据），且「任务是否已经完成」「阻塞调用是否在别的线程上
+ *   执行」都能被直接观测；
  * - 异常路径：离线模式（std::logic_error）与 SQL 错误（std::runtime_error，含中文原因）
- *   都在协程被恢复处重新抛出，类型与消息与同步版一致。
+ *   都在协程被恢复处重新抛出，类型与消息与同步版一致；读写两条路径各覆盖一次。
  *
  * ## 协程帧的销毁时机（本文件最容易写错的地方）
  * 完成标记由驱动协程在事件循环线程上置位，而测试线程看到标记后就会继续断言并离开作用域。
  * 此时事件循环线程可能正处在 resume() 的收尾阶段（协程已执行完、尚未从 final_suspend 返回），
- * 若测试线程当场销毁协程帧就会与之竞态。因此本文件把驱动协程对象保存在夹具成员里，
- * 让它的销毁发生在「事件循环线程 join 之后」（见夹具的成员声明顺序）。
+ * 若测试线程当场销毁协程帧就会与之竞态。本文件不再自己承担这套纪律：
+ * 常驻的 TestSupport::EventLoopThread（见 DatabaseTestSupport.h）把「后台线程跑事件循环」
+ * 与「驱动协程帧活到循环线程结束之后」合并成一条绕不过去的实现——经它的 runToCompletion()
+ * 启动的帧由它持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
  *
  * 覆盖场景：
  * - AsyncQueryResultsMatchSyncVersions
- * - AsyncExecutorSubmitDoesNotBlockCallingThread
+ * - AsyncInsertWritesRowReadableBySyncQuery / AsyncUpdateWritesRowReadableBySyncQuery
+ * - AsyncInsertBatchWritesRowsEqualToSyncInsertBatch
+ * - AsyncInsertBatchChunkedPathSpansLocalTransaction
+ * - AsyncInsertBatchWithEmptyCollectionProducesNoStatement
+ * - AsyncWriteDoesNotBlockCallingThread / AsyncExecutorSubmitDoesNotBlockCallingThread
  * - AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
- * - AsyncSqlErrorSurfacesAsOriginalException / OfflineModeThrowsOnAsyncExecution
+ * - AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
+ * - OfflineModeThrowsOnAsyncExecution
  */
-#include "Core/EventLoop/EventLoop.h"
+#include "DatabaseTestSupport.h"
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
+#include "Database/Dialect/SqliteDialect.h"
 #include "Database/Pool/AsyncExecutor.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
@@ -104,12 +117,11 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsyncMissingTableRow>
 };
 
 // ========================================================================
-// 协程驱动辅助
+// 共用设施别名与夹具
 // ========================================================================
 
 namespace
 {
-    using AsynGyanis::Core::EventLoop;
     using AsynGyanis::Core::Task;
     using AsynGyanis::Database::AsyncExecutor;
     using AsynGyanis::Database::ConnectionConfig;
@@ -117,89 +129,22 @@ namespace
     using AsynGyanis::Database::DatabaseFactory;
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
+    using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
-
-    /// 轮询等待的上限：所有用例的正常耗时都在毫秒级，5 秒足够暴露「协程没被恢复」这类问题
-    constexpr std::chrono::milliseconds kWaitTimeout{5000};
-
-    /**
-     * @brief 轮询等待条件成立（避免固定 sleep 造成的偶发失败）
-     * @tparam Predicate 判定可调用对象
-     * @param predicate 判定函数
-     * @return true 条件在时限内成立
-     */
-    template<typename Predicate>
-    [[nodiscard]] bool waitForCondition(Predicate predicate)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-        while (!predicate())
-        {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
+    using AsynGyanis::Database::TestSupport::CompletedTask;
+    using AsynGyanis::Database::TestSupport::EventLoopThread;
+    using AsynGyanis::Database::TestSupport::waitForCondition;
 
     /**
-     * @brief 一次异步任务的观测结果
-     * @tparam ResultType 任务结果类型
-     */
-    template<typename ResultType>
-    struct CompletedTask
-    {
-        std::optional<ResultType> value;         ///< 任务返回值（成功时才有值）
-        std::exception_ptr        error;         ///< 任务抛出的异常（失败时非空）
-        bool                      finished = false; ///< 是否在时限内收到完成通知
-    };
-
-    /**
-     * @brief 驱动协程：co_await 目标任务，把结果或异常搬进调用方提供的变量
-     *
-     * @details 之所以需要这层驱动，是因为 Task<T> 只能被协程 co_await：
-     *          本协程先挂起在内层任务上，内层完成后（在事件循环线程上）恢复，
-     *          这里把结果写出去并最后置完成标记——标记由事件循环线程写入，
-     *          调用线程读取前必须做 acquire 语义的同步（见 std::atomic 内存序）。
-     *
-     * @tparam ResultType 内层任务的结果类型
-     * @param inner 待等待的任务（按值接收，帧内持有它的生命周期）
-     * @param value 出参：任务返回值
-     * @param error 出参：任务抛出的异常
-     * @param finished 出参：完成标记，写于所有其它出参之后
-     * @return Task<void> 驱动协程
-     */
-    template<typename ResultType>
-    Task<void> collectTask(Task<ResultType> inner,
-                           std::optional<ResultType> &value,
-                           std::exception_ptr &error,
-                           std::atomic<bool> &finished)
-    {
-        try
-        {
-            value.emplace(co_await std::move(inner));
-        }
-        catch (...)
-        {
-            // 任务异常在此收敛：驱动协程本身不向上抛，调用线程只需看 error 是否被写入
-            error = std::current_exception();
-        }
-
-        // release 语义：保证上面的写入对读取到本标记的线程可见
-        finished.store(true, std::memory_order_release);
-    }
-
-    /**
-     * @brief 建表迁移与异步查询共用的测试夹具
+     * @brief 建表迁移与异步读写共用的测试夹具
      *
      * @details 每个用例一份独立的内存库（池上限 1，保证复用同一条连接），
-     *          并在后台线程上跑一个事件循环用于投递协程恢复。
-     *          成员声明顺序即销毁顺序的逆序，末尾的驱动协程容器会晚于事件循环线程销毁，
-     *          因此协程帧的析构不会与正在收尾的 resume() 竞态。
+     *          并由常驻的 EventLoopThread 在后台线程上跑一个事件循环用于恢复协程。
+     *          协程帧的销毁纪律（帧必须活到循环线程结束之后）由该运行器承担，
+     *          见 DatabaseTestSupport.h 里 EventLoopThread 的类注释。
      */
     class QueryableAsyncTest : public ::testing::Test
     {
@@ -224,51 +169,20 @@ namespace
             std::string errorText;
             ASSERT_TRUE(SchemaMigrator::createTable<AsyncAccountRow>(*m_pool, true, &errorText)) << errorText;
 
-            // 事件循环跑在后台线程：协程的恢复动作必须由 loop 线程执行，本线程只负责等待
-            m_loopThread = std::jthread(
-                [this]()
-                {
-                    m_loop.run();
-                });
-            ASSERT_TRUE(waitForCondition([this]() { return m_loop.isRunning(); }));
+            // 事件循环必须真的跑起来：协程的恢复动作由 loop 线程执行，测试线程只负责等待
+            ASSERT_TRUE(m_loopRunner.waitUntilRunning()) << "后台事件循环未在时限内进入运行状态";
         }
 
-        void TearDown() override
-        {
-            // 先停事件循环：run() 返回后线程结束，jthread 析构时自动 join。
-            // 驱动协程的帧在 join 之后才销毁（成员声明顺序保证），不会与 resume() 收尾竞态
-            m_loop.stop();
-        }
+        // 不需要 TearDown：EventLoopThread 析构时先 stop() 再 join，
+        // 且它持有的驱动协程帧晚于 join 销毁（成员声明顺序见其类注释）
 
         /**
-         * @brief 在测试线程上启动一个异步任务并等到它完成
-         *
-         * @details 启动方式是 resume 驱动协程：内层任务会内联执行到「把阻塞任务交给执行器」
-         *          这一步就挂起，因此本方法在任务真正完成之前不会占用调用线程等待数据库，
-         *          而是让执行器与事件循环线程协作推进。
-         *
-         * @tparam ResultType 任务结果类型
-         * @param task 待执行的异步任务
-         * @return CompletedTask<ResultType> 结果、异常与完成情况
+         * @brief 取得后台事件循环（提交协程时作为完成回调的落点）
+         * @return AsynGyanis::Core::EventLoop& 后台线程上运行的事件循环
          */
-        template<typename ResultType>
-        [[nodiscard]] CompletedTask<ResultType> runToCompletion(Task<ResultType> task)
+        [[nodiscard]] AsynGyanis::Core::EventLoop &eventLoop() noexcept
         {
-            CompletedTask<ResultType> completed;
-            std::atomic<bool>         finishedFlag{false};
-
-            Task<void> driver = collectTask<ResultType>(std::move(task), completed.value, completed.error, finishedFlag);
-            // 内联启动：阻塞任务只做入队，控制权在这里立刻回到测试线程
-            driver.handle().resume();
-
-            completed.finished = waitForCondition([&finishedFlag]()
-            {
-                return finishedFlag.load(std::memory_order_acquire);
-            });
-
-            // 帧的销毁推迟到事件循环线程 join 之后（见夹具的成员声明顺序）
-            m_driverTasks.push_back(std::move(driver));
-            return completed;
+            return m_loopRunner.loop();
         }
 
         /**
@@ -285,17 +199,36 @@ namespace
                           }));
         }
 
+        /**
+         * @brief 用同步查询按主键读回一行，便于逐字段核对异步写的效果
+         * @param id 主键
+         * @return std::optional<AsyncAccountRow> 命中的行；无该行时为空
+         */
+        [[nodiscard]] std::optional<AsyncAccountRow> readRowBack(const std::int64_t id)
+        {
+            Queryable<AsyncAccountRow> readQuery(*m_pool);
+            return readQuery.where(Column(&AsyncAccountRow::id, "id") == id).first();
+        }
+
+        /**
+         * @brief 统计表内行数（同步路径）
+         * @return std::int64_t 当前行数
+         */
+        [[nodiscard]] std::int64_t countRows()
+        {
+            Queryable<AsyncAccountRow> countQuery(*m_pool);
+            return countQuery.count();
+        }
+
         std::unique_ptr<ConnectionPool>  m_pool;        ///< 用例独占的内存库连接池
         AsyncExecutor                    m_executor{2}; ///< 注入的异步执行器：顺带覆盖 useAsyncExecutor 路径
-        EventLoop                        m_loop;        ///< 后台事件循环，负责恢复协程
-        std::vector<Task<void>>          m_driverTasks; ///< 驱动协程：必须活过事件循环线程（销毁顺序见上）
-        std::jthread                     m_loopThread;  ///< 跑 m_loop 的后台线程，析构自动 join
+        EventLoopThread                  m_loopRunner;  ///< 后台事件循环 + 驱动协程帧的持有者（销毁纪律见其类注释）
     };
 
 } // namespace
 
 // ========================================================================
-// 结果一致性
+// 结果一致性（读路径）
 // ========================================================================
 
 /**
@@ -318,7 +251,7 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
                   .orderBy(asc("id"));
 
         const CompletedTask<std::vector<AsyncAccountRow>> completed =
-            runToCompletion(asyncQuery.toListAsync(m_loop));
+            m_loopRunner.runToCompletion(asyncQuery.toListAsync(eventLoop()));
 
         ASSERT_TRUE(completed.finished) << "异步任务未在时限内完成";
         ASSERT_EQ(completed.error, nullptr);
@@ -344,7 +277,7 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         asyncQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{2});
 
         const CompletedTask<std::optional<AsyncAccountRow>> completed =
-            runToCompletion(asyncQuery.firstAsync(m_loop));
+            m_loopRunner.runToCompletion(asyncQuery.firstAsync(eventLoop()));
 
         ASSERT_TRUE(completed.finished) << "异步任务未在时限内完成";
         ASSERT_EQ(completed.error, nullptr);
@@ -358,7 +291,7 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         Queryable<AsyncAccountRow> missingQuery(*m_pool);
         missingQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{999});
         const CompletedTask<std::optional<AsyncAccountRow>> missing =
-            runToCompletion(missingQuery.firstAsync(m_loop));
+            m_loopRunner.runToCompletion(missingQuery.firstAsync(eventLoop()));
 
         ASSERT_TRUE(missing.finished);
         ASSERT_EQ(missing.error, nullptr);
@@ -374,7 +307,8 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         Queryable<AsyncAccountRow> asyncQuery(*m_pool);
         asyncQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{2});
 
-        const CompletedTask<std::int64_t> completed = runToCompletion(asyncQuery.countAsync(m_loop));
+        const CompletedTask<std::int64_t> completed =
+            m_loopRunner.runToCompletion(asyncQuery.countAsync(eventLoop()));
 
         ASSERT_TRUE(completed.finished);
         ASSERT_EQ(completed.error, nullptr);
@@ -388,7 +322,8 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         Queryable<AsyncAccountRow> asyncDeleteQuery(*m_pool);
         asyncDeleteQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{3});
 
-        const CompletedTask<std::int64_t> deleted = runToCompletion(asyncDeleteQuery.executeNonQueryAsync(m_loop));
+        const CompletedTask<std::int64_t> deleted =
+            m_loopRunner.runToCompletion(asyncDeleteQuery.executeNonQueryAsync(eventLoop()));
 
         ASSERT_TRUE(deleted.finished);
         ASSERT_EQ(deleted.error, nullptr);
@@ -399,6 +334,301 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         Queryable<AsyncAccountRow> remainingQuery(*m_pool);
         EXPECT_EQ(remainingQuery.count(), 2);
     }
+}
+
+// ========================================================================
+// 结果一致性（写路径）
+// ========================================================================
+
+/**
+ * @brief 验证 insertAsync 的受影响行数与同步 insert 相同，且行真的落库（异步写 → 同步读）
+ *
+ * @details 钉住两件事：
+ *          - 受影响行数不受「在工作线程上执行」影响，与同一张表上的同步 insert 逐值相等；
+ *          - 写操作确实提交到了数据库——判据不是异步接口自己回报的 1，而是另起一条同步查询
+ *            按主键读回全部字段（含可空列的两个方向），否则「返回 1 却没写进去」也测不出来。
+ *          co_await 的线程归属：insertAsync 的「取连接 → 执行」在 m_executor 的工作线程上跑，
+ *          语句与参数在提交前就已定型；完成后协程在 m_loopRunner 的循环线程上被恢复。
+ */
+TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
+{
+    // ---- 异步插入一行（备注有值） ----
+    Queryable<AsyncAccountRow> asyncInsertQuery(*m_pool);
+    asyncInsertQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> inserted = m_loopRunner.runToCompletion(asyncInsertQuery.insertAsync(
+        AsyncAccountRow{.id = 1, .name = "异步写入", .note = std::string("首条")}, eventLoop()));
+
+    ASSERT_TRUE(inserted.finished) << "异步写入未在时限内完成";
+    ASSERT_EQ(inserted.error, nullptr);
+    ASSERT_TRUE(inserted.value.has_value());
+    EXPECT_EQ(inserted.value.value(), 1);
+
+    // ---- 同步插入一行作对照：受影响行数必须与异步版相同 ----
+    Queryable<AsyncAccountRow> syncInsertQuery(*m_pool);
+    const std::int64_t syncAffectedRows =
+        syncInsertQuery.insert(AsyncAccountRow{.id = 2, .name = "同步写入", .note = std::nullopt});
+    EXPECT_EQ(inserted.value.value(), syncAffectedRows);
+
+    // ---- 异步写入一行备注为 NULL：可空列的另一个方向也要能读回空 optional ----
+    Queryable<AsyncAccountRow> asyncNullNoteQuery(*m_pool);
+    asyncNullNoteQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> insertedNullNote = m_loopRunner.runToCompletion(
+        asyncNullNoteQuery.insertAsync(AsyncAccountRow{.id = 3, .name = "无备注", .note = std::nullopt}, eventLoop()));
+
+    ASSERT_TRUE(insertedNullNote.finished);
+    ASSERT_EQ(insertedNullNote.error, nullptr);
+    ASSERT_TRUE(insertedNullNote.value.has_value());
+    EXPECT_EQ(insertedNullNote.value.value(), 1);
+
+    // ---- 同步读回：行数、主键与逐字段取值都要与写入时一致 ----
+    EXPECT_EQ(countRows(), 3);
+
+    const std::optional<AsyncAccountRow> readBackFirst = readRowBack(1);
+    ASSERT_TRUE(readBackFirst.has_value());
+    EXPECT_EQ(readBackFirst->id, 1);
+    EXPECT_EQ(readBackFirst->name, "异步写入");
+    ASSERT_TRUE(readBackFirst->note.has_value());
+    EXPECT_EQ(readBackFirst->note.value(), "首条");
+
+    const std::optional<AsyncAccountRow> readBackThird = readRowBack(3);
+    ASSERT_TRUE(readBackThird.has_value());
+    EXPECT_EQ(readBackThird->id, 3);
+    EXPECT_EQ(readBackThird->name, "无备注");
+    // 写入时是 nullopt，读回必须仍是空 optional（NULL 不会被折成空串）
+    EXPECT_FALSE(readBackThird->note.has_value());
+}
+
+/**
+ * @brief 验证 updateAsync 的受影响行数与同步 update 相同，改后的值可被同步读回，主键不存在时为 0
+ *
+ * @details 钉住三件事：
+ *          - updateAsync 改的确实是已存在的那一行，且只改它（另一行逐字段不受影响）；
+ *          - 受影响行数与同步 update 逐值相等；
+ *          - 主键不命中时返回 0，并且表里没有任何一行被改动——「0」不能与「改了别的行」混淆。
+ *          可空备注被从「有值」改成 NULL，是同步读回时最容易被悄悄改写成空串的形态。
+ *          co_await 的线程归属：同 insertAsync，阻塞链路在 m_executor 的工作线程上，
+ *          恢复发生在 m_loopRunner 的循环线程上。
+ */
+TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
+{
+    // 先用同步插入铺两行基线：证明被改的是真实存在的行，且另一行应当纹丝不动
+    insertRow(1, "改前", std::string("改前备注"));
+    insertRow(2, "旁观者", std::nullopt);
+
+    // ---- 异步更新主键 1：备注从有值改成 NULL ----
+    Queryable<AsyncAccountRow> asyncUpdateQuery(*m_pool);
+    asyncUpdateQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> updated = m_loopRunner.runToCompletion(
+        asyncUpdateQuery.updateAsync(AsyncAccountRow{.id = 1, .name = "改后", .note = std::nullopt}, eventLoop()));
+
+    ASSERT_TRUE(updated.finished) << "异步更新未在时限内完成";
+    ASSERT_EQ(updated.error, nullptr);
+    ASSERT_TRUE(updated.value.has_value());
+    EXPECT_EQ(updated.value.value(), 1);
+
+    // ---- 同步更新另一行作对照：受影响行数必须与异步版相同 ----
+    Queryable<AsyncAccountRow> syncUpdateQuery(*m_pool);
+    const std::int64_t syncAffectedRows = syncUpdateQuery.update(
+        AsyncAccountRow{.id = 2, .name = "旁观者改后", .note = std::string("同步备注")});
+    EXPECT_EQ(updated.value.value(), syncAffectedRows);
+
+    // ---- 同步读回：逐字段核对，且未命中条件的那一行不受影响 ----
+    EXPECT_EQ(countRows(), 2);
+
+    const std::optional<AsyncAccountRow> readBackUpdated = readRowBack(1);
+    ASSERT_TRUE(readBackUpdated.has_value());
+    EXPECT_EQ(readBackUpdated->id, 1);
+    EXPECT_EQ(readBackUpdated->name, "改后");
+    EXPECT_FALSE(readBackUpdated->note.has_value());
+
+    const std::optional<AsyncAccountRow> readBackBystander = readRowBack(2);
+    ASSERT_TRUE(readBackBystander.has_value());
+    EXPECT_EQ(readBackBystander->name, "旁观者改后");
+    ASSERT_TRUE(readBackBystander->note.has_value());
+    EXPECT_EQ(readBackBystander->note.value(), "同步备注");
+
+    // ---- 主键不存在：返回 0，且没有任何行被改动 ----
+    Queryable<AsyncAccountRow> missingUpdateQuery(*m_pool);
+    missingUpdateQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> missing = m_loopRunner.runToCompletion(
+        missingUpdateQuery.updateAsync(AsyncAccountRow{.id = 999, .name = "不存在的行", .note = std::nullopt},
+                                       eventLoop()));
+
+    ASSERT_TRUE(missing.finished);
+    ASSERT_EQ(missing.error, nullptr);
+    ASSERT_TRUE(missing.value.has_value());
+    EXPECT_EQ(missing.value.value(), 0);
+    EXPECT_EQ(countRows(), 2);
+}
+
+// ========================================================================
+// 批量插入
+// ========================================================================
+
+/**
+ * @brief 验证 insertBatchAsync 与同步 insertBatch 结果一致，且每一行的各列都能原样读回
+ *
+ * @details 行数刻意小于「参数上限 ÷ 列数」，走的是一次生成多行 VALUES 的单语句分支
+ *          （不分块、不开本地事务），把批量路径与上一条用例的单行路径区分开。
+ *          对照方式：异步批量写入后先读回全部行，清空表再交给同步 insertBatch 写同一份数据，
+ *          两次读回的行必须逐字段相等——这比只比影响行数更能证明两条路径的一致性。
+ */
+TEST_F(QueryableAsyncTest, AsyncInsertBatchWritesRowsEqualToSyncInsertBatch)
+{
+    const std::vector<AsyncAccountRow> sampleRows{
+        AsyncAccountRow{.id = 1, .name = "批量甲", .note = std::string("有备注")},
+        AsyncAccountRow{.id = 2, .name = "批量乙", .note = std::nullopt},
+        AsyncAccountRow{.id = 3, .name = "批量丙", .note = std::string("")}
+    };
+
+    // ---- 异步批量写：只 co_await 一次，语句在工作线程上执行 ----
+    Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
+    asyncBatchQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> asyncInserted =
+        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(sampleRows, eventLoop()));
+
+    ASSERT_TRUE(asyncInserted.finished) << "异步批量插入未在时限内完成";
+    ASSERT_EQ(asyncInserted.error, nullptr);
+    ASSERT_TRUE(asyncInserted.value.has_value());
+    EXPECT_EQ(asyncInserted.value.value(), 3);
+
+    // 同步读回全部行（顺序显式指定，避免依赖引擎的返回顺序）
+    auto readAllRows = [this]()
+    {
+        Queryable<AsyncAccountRow> readQuery(*m_pool);
+        return readQuery.orderBy(asc("id")).toList();
+    };
+    const std::vector<AsyncAccountRow> asyncRows = readAllRows();
+    ASSERT_EQ(asyncRows.size(), sampleRows.size());
+    for (std::size_t index = 0; index < sampleRows.size(); ++index)
+    {
+        EXPECT_EQ(asyncRows[index].id, sampleRows[index].id);
+        EXPECT_EQ(asyncRows[index].name, sampleRows[index].name);
+        EXPECT_EQ(asyncRows[index].note, sampleRows[index].note);
+    }
+
+    // ---- 清空后交给同步 insertBatch 写同一份数据：结果必须一致 ----
+    Queryable<AsyncAccountRow> clearQuery(*m_pool);
+    // 查询树不带条件时生成的就是 "DELETE FROM 表"：本用例的表里只有刚写入的这一批，用于清空
+    EXPECT_EQ(clearQuery.executeNonQuery(), 3);
+
+    Queryable<AsyncAccountRow> syncBatchQuery(*m_pool);
+    EXPECT_EQ(syncBatchQuery.insertBatch(sampleRows), asyncInserted.value.value());
+
+    const std::vector<AsyncAccountRow> syncRows = readAllRows();
+    ASSERT_EQ(syncRows.size(), asyncRows.size());
+    for (std::size_t index = 0; index < syncRows.size(); ++index)
+    {
+        EXPECT_EQ(syncRows[index].id, asyncRows[index].id);
+        EXPECT_EQ(syncRows[index].name, asyncRows[index].name);
+        EXPECT_EQ(syncRows[index].note, asyncRows[index].note);
+    }
+}
+
+/**
+ * @brief 验证 insertBatchAsync 在行数 × 列数超过方言参数上限时自动分块，且全部块都在一个事务里
+ *
+ * @details SQLite 单条语句的参数个数上限是 999，本结构体恰好 3 列，因此每批最多 333 行。
+ *          这里插入 400 行（400 × 3 = 1200 > 999）：必然切成两块，于是走到
+ *          Queryable::insertBatchOn() 里「工作线程上临时开一个本地事务覆盖全部块，最后提交」
+ *          这条分支——它只有越过分块阈值才被执行得到，是本用例存在的首要理由。
+ *          分块最常见的缺陷是最后一块的上界算错（丢行或重复写），因此边界两侧的两行都要读回核对。
+ *          co_await 的线程归属：分块、本地事务的开启与提交、每一块的执行全部在 m_executor
+ *          的工作线程上完成；调用线程在提交后立刻继续，恢复仍发生在 m_loopRunner 的循环线程上。
+ */
+TEST_F(QueryableAsyncTest, AsyncInsertBatchChunkedPathSpansLocalTransaction)
+{
+    // 参数上限与列数都取自生产实现：不把 999 与 3 硬编码成两个可能过期的数字
+    constexpr std::size_t kColumnCount = 3; ///< AsyncAccountRow 的列数（id / name / note）
+    const std::size_t parameterLimit   = SqliteDialect::kMaximumStatementParameters;
+    const std::size_t rowsPerStatement = parameterLimit / kColumnCount;
+
+    const std::size_t totalRowCount = rowsPerStatement + 7U;
+    // 自检：本用例必须真的越过参数上限，否则它退化成一个普通批量用例，覆盖不到分块分支
+    ASSERT_GT(totalRowCount * kColumnCount, parameterLimit)
+        << "本用例要求行数 × 列数超过 SQLite 的参数上限，否则覆盖不到分块分支";
+
+    std::vector<AsyncAccountRow> chunkedRows;
+    chunkedRows.reserve(totalRowCount);
+    for (std::size_t rowIndex = 0; rowIndex < totalRowCount; ++rowIndex)
+    {
+        const std::int64_t identifier = static_cast<std::int64_t>(rowIndex) + 1;
+        chunkedRows.push_back(AsyncAccountRow{
+            .id   = identifier,
+            .name = "分块行" + std::to_string(identifier),
+            // 奇数行给备注、偶数行不给：让分块边界两侧行的取值形态也不同
+            .note = (identifier % 2 == 0) ? std::optional<std::string>{} : std::optional<std::string>{"奇数行备注"}
+        });
+    }
+
+    Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
+    asyncBatchQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> asyncInserted =
+        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(chunkedRows, eventLoop()));
+
+    ASSERT_TRUE(asyncInserted.finished) << "异步分块批量插入未在时限内完成";
+    ASSERT_EQ(asyncInserted.error, nullptr);
+    ASSERT_TRUE(asyncInserted.value.has_value());
+    // 两个块的影响行数之和等于总行数：多一块少一块都能在这里暴露
+    EXPECT_EQ(asyncInserted.value.value(), static_cast<std::int64_t>(totalRowCount));
+
+    // 同步 count() 核对行数：本地事务提交后数据必须全部可见
+    EXPECT_EQ(countRows(), static_cast<std::int64_t>(totalRowCount));
+
+    // 分块边界：第一块的最后一行与第二块的第一行，两侧都要在表里
+    const std::int64_t boundaryIdentifier = static_cast<std::int64_t>(rowsPerStatement);
+    const std::optional<AsyncAccountRow> lastOfFirstChunk = readRowBack(boundaryIdentifier);
+    ASSERT_TRUE(lastOfFirstChunk.has_value()) << "第一块的最后一行丢失，分块上界算错了";
+    EXPECT_EQ(lastOfFirstChunk->name, "分块行" + std::to_string(rowsPerStatement));
+
+    const std::optional<AsyncAccountRow> firstOfSecondChunk = readRowBack(boundaryIdentifier + 1);
+    ASSERT_TRUE(firstOfSecondChunk.has_value()) << "第二块的第一行丢失";
+    EXPECT_EQ(firstOfSecondChunk->name, "分块行" + std::to_string(rowsPerStatement + 1U));
+
+    // ---- 与同步路径对照：清空后把同一份数据交给同步 insertBatch，边界行取值必须一致 ----
+    Queryable<AsyncAccountRow> clearQuery(*m_pool);
+    EXPECT_EQ(clearQuery.executeNonQuery(), static_cast<std::int64_t>(totalRowCount));
+
+    Queryable<AsyncAccountRow> syncBatchQuery(*m_pool);
+    EXPECT_EQ(syncBatchQuery.insertBatch(chunkedRows), asyncInserted.value.value());
+    EXPECT_EQ(countRows(), static_cast<std::int64_t>(totalRowCount));
+
+    const std::optional<AsyncAccountRow> syncBoundaryRow = readRowBack(boundaryIdentifier);
+    ASSERT_TRUE(syncBoundaryRow.has_value());
+    EXPECT_EQ(syncBoundaryRow->name, lastOfFirstChunk->name);
+    EXPECT_EQ(syncBoundaryRow->note, lastOfFirstChunk->note);
+}
+
+/**
+ * @brief 验证 insertBatchAsync 收到空集合时返回 0，且不产生任何语句
+ *
+ * @details 「空集合直接返回 0」是 ORM 的既定契约：VALUES 后面必须至少有一组括号，
+ *          没有可写内容就没有语句。判据有两条：返回 0，以及调用后表里仍然是 0 行
+ *          （若实现把空集合拼成一条残缺的 INSERT，SQLite 会在执行时报语法错误，
+ *          这里也就不会得到 0）。
+ */
+TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionProducesNoStatement)
+{
+    const std::vector<AsyncAccountRow> noRows;
+
+    Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
+    asyncBatchQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> asyncInserted =
+        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(noRows, eventLoop()));
+
+    ASSERT_TRUE(asyncInserted.finished) << "空集合的异步批量插入也必须完成（不能挂起）";
+    ASSERT_EQ(asyncInserted.error, nullptr);
+    ASSERT_TRUE(asyncInserted.value.has_value());
+    EXPECT_EQ(asyncInserted.value.value(), 0);
+    // 同步读回仍然是一张空表：确实没有产生任何语句
+    EXPECT_EQ(countRows(), 0);
 }
 
 // ========================================================================
@@ -428,8 +658,8 @@ TEST_F(QueryableAsyncTest, AsyncExecutorSubmitDoesNotBlockCallingThread)
     std::exception_ptr           error;
     std::atomic<bool>            finishedFlag{false};
 
-    Task<void> driver = collectTask<int>(
-        blockingExecutor.submit<int>(m_loop,
+    Task<void> driver = AsynGyanis::Database::TestSupport::collectTask<int>(
+        blockingExecutor.submit<int>(eventLoop(),
                                      [&workStarted, &releaseWork, &workThreadIdentifier]() -> int
                                      {
                                          // 记录执行线程并宣告「已经开工」，然后卡在这里等测试放行
@@ -466,7 +696,92 @@ TEST_F(QueryableAsyncTest, AsyncExecutorSubmitDoesNotBlockCallingThread)
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), 42);
 
-    m_driverTasks.push_back(std::move(driver));
+    m_loopRunner.parkDriver(std::move(driver));
+}
+
+/**
+ * @brief 验证 insertAsync 提交后调用线程立刻拿回控制权，写语句只可能在别的工作线程上执行
+ *
+ * @details 不测量耗时，判据全是确定性的：先把专用执行器唯一的工作线程用闩锁卡住，
+ *          此时任何投给它的任务都不可能开始执行；再提交 insertAsync，于是三点可观测：
+ *          - 完成标记没有置位、结果还没有值（若实现把写操作内联在调用线程上执行，这里必然已置位）；
+ *          - 同步查询读回 0 行（数据确实还没落库，而不是「悄悄同步写完了」）；
+ *          - 放行工作线程后异步写才完成（受影响行数为 1），同步查询随后读到那一行。
+ *          闩锁一定会在断言之间被放行：本用例在放行之前不使用 ASSERT，只有 EXPECT，
+ *          因此不存在「断言失败提前返回、工作线程永远卡住」的悬挂路径。
+ */
+TEST_F(QueryableAsyncTest, AsyncWriteDoesNotBlockCallingThread)
+{
+    AsyncExecutor blockingExecutor(1);
+    ASSERT_EQ(blockingExecutor.workerCount(), 1U);
+
+    std::atomic<bool> workStarted{false};
+    std::latch        releaseWork{1};
+
+    // 占位任务：只为把唯一的工作线程卡住，本身不碰数据库
+    std::optional<int> blockerValue;
+    std::exception_ptr blockerError;
+    std::atomic<bool>  blockerFinished{false};
+
+    Task<void> blockerDriver = AsynGyanis::Database::TestSupport::collectTask<int>(
+        blockingExecutor.submit<int>(eventLoop(),
+                                     [&workStarted, &releaseWork]() -> int
+                                     {
+                                         workStarted.store(true, std::memory_order_release);
+                                         releaseWork.wait();
+                                         return 0;
+                                     }),
+        blockerValue, blockerError, blockerFinished);
+
+    blockerDriver.handle().resume();
+    EXPECT_TRUE(waitForCondition([&workStarted]()
+    {
+        return workStarted.load(std::memory_order_acquire);
+    })) << "占位任务迟迟没有开始，后续判据失去意义";
+
+    // 工作线程此刻被卡住：任何投给 blockingExecutor 的任务都还没有机会执行
+    Queryable<AsyncAccountRow> asyncInsertQuery(*m_pool);
+    asyncInsertQuery.useAsyncExecutor(blockingExecutor);
+
+    // 待写入的行必须是具名局部变量：insertAsync 的入参是引用，而 Task 惰性启动——
+    // 取值直到协程被 resume（= 提交点）那一刻才被读走，因此一个作为实参传入的临时对象
+    // 会在本语句末尾销毁，等到下一句 resume 时就已经是悬垂引用了
+    const AsyncAccountRow pendingRow{.id = 1, .name = "不阻塞", .note = std::nullopt};
+
+    std::optional<std::int64_t> insertedRows;
+    std::exception_ptr          insertError;
+    std::atomic<bool>           finishedFlag{false};
+
+    Task<void> insertDriver = AsynGyanis::Database::TestSupport::collectTask<std::int64_t>(
+        asyncInsertQuery.insertAsync(pendingRow, eventLoop()), insertedRows, insertError, finishedFlag);
+
+    // 内联启动：提交动作只入队，控制权立刻回到测试线程
+    insertDriver.handle().resume();
+
+    // 确定性判据一：写还没完成（若阻塞链路跑在调用线程上，这里已经完成）
+    EXPECT_FALSE(finishedFlag.load(std::memory_order_acquire));
+    // 确定性判据二：数据还没落库。同步查询在测试线程上直接执行，读到的就是物理现状；
+    // 此时异步任务尚未开始，因此这里不可能读到那一行
+    EXPECT_EQ(countRows(), 0);
+
+    // 放行工作线程：占位任务返回后，写语句才会在工作线程上真正执行
+    releaseWork.count_down();
+    // 帧交给运行器保管：即使下面的断言失败提前返回，帧的销毁也仍在循环线程 join 之后
+    m_loopRunner.parkDriver(std::move(blockerDriver));
+    m_loopRunner.parkDriver(std::move(insertDriver));
+
+    ASSERT_TRUE(waitForCondition([&finishedFlag]()
+    {
+        return finishedFlag.load(std::memory_order_acquire);
+    })) << "放行工作线程后异步写仍未在时限内完成";
+    ASSERT_EQ(insertError, nullptr);
+    ASSERT_TRUE(insertedRows.has_value());
+    EXPECT_EQ(insertedRows.value(), 1);
+
+    // 同步读回：异步写确实在别的工作线程上完成并落库
+    const std::optional<AsyncAccountRow> readBack = readRowBack(1);
+    ASSERT_TRUE(readBack.has_value());
+    EXPECT_EQ(readBack->name, "不阻塞");
 }
 
 // ========================================================================
@@ -518,7 +833,7 @@ TEST_F(QueryableAsyncTest, AsyncSqlErrorSurfacesAsOriginalException)
     Queryable<AsyncMissingTableRow> asyncQuery(*m_pool);
     asyncQuery.useAsyncExecutor(m_executor);
     const CompletedTask<std::vector<AsyncMissingTableRow>> completed =
-        runToCompletion(asyncQuery.toListAsync(m_loop));
+        m_loopRunner.runToCompletion(asyncQuery.toListAsync(eventLoop()));
 
     ASSERT_TRUE(completed.finished) << "异常路径也必须完成（否则协程会被永久挂起）";
     ASSERT_NE(completed.error, nullptr);
@@ -538,6 +853,75 @@ TEST_F(QueryableAsyncTest, AsyncSqlErrorSurfacesAsOriginalException)
 }
 
 /**
+ * @brief 验证异步写落在不存在的表上时，异常在 co_await 处按原类型与原消息重新抛出
+ *
+ * @details 写路径的异常比读路径更值得单独钉一次：语句是在调用线程上预先定型的，
+ *          真正的失败发生在工作线程上，中间要经过「工作线程 → 调度投递 → 协程恢复」三跳。
+ *          因此这里既比对异常类型（std::runtime_error），也逐字比对消息与同步版完全一致，
+ *          并覆盖单行写入与批量写入两个入口。消息里必须出现「语句执行失败」这个中文前缀，
+ *          证明抛出的是 ORM 的写失败原因而不是被某层包装过的新异常。
+ */
+TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
+{
+    // ---- 同步版先把单行写入的失败原因固定下来 ----
+    Queryable<AsyncMissingTableRow> syncQuery(*m_pool);
+    std::string syncInsertMessage;
+    try
+    {
+        static_cast<void>(syncQuery.insert(AsyncMissingTableRow{.id = 1}));
+        FAIL() << "表不存在时同步插入应当抛出 std::runtime_error";
+    }
+    catch (const std::runtime_error &exception)
+    {
+        syncInsertMessage = exception.what();
+    }
+    EXPECT_NE(syncInsertMessage.find("语句执行失败"), std::string::npos) << syncInsertMessage;
+
+    Queryable<AsyncMissingTableRow> asyncQuery(*m_pool);
+    asyncQuery.useAsyncExecutor(m_executor);
+
+    // ---- 异步单行写入：异常在恢复处重新抛出，类型与消息与同步版一致 ----
+    // co_await 的线程归属：语句在测试线程上生成并绑定，执行失败发生在 m_executor 的工作线程上，
+    // 异常随协程恢复在 m_loopRunner 的循环线程上被重新抛出，再被驱动协程收进 completed.error
+    const CompletedTask<std::int64_t> singleInsert =
+        m_loopRunner.runToCompletion(asyncQuery.insertAsync(AsyncMissingTableRow{.id = 1}, eventLoop()));
+
+    ASSERT_TRUE(singleInsert.finished) << "写失败也必须完成（否则协程会被永久挂起）";
+    ASSERT_NE(singleInsert.error, nullptr);
+    EXPECT_FALSE(singleInsert.value.has_value());
+
+    try
+    {
+        std::rethrow_exception(singleInsert.error);
+        FAIL() << "异步写入的异常应当在 co_await 处重新抛出";
+    }
+    catch (const std::runtime_error &exception)
+    {
+        EXPECT_EQ(std::string(exception.what()), syncInsertMessage);
+    }
+
+    // ---- 异步批量写入：同一条异常链路，入口不同（走 insertBatchOn 的执行分支）----
+    const std::vector<AsyncMissingTableRow> oneMissingRow{AsyncMissingTableRow{.id = 2}};
+    const CompletedTask<std::int64_t> batchInsert =
+        m_loopRunner.runToCompletion(asyncQuery.insertBatchAsync(oneMissingRow, eventLoop()));
+
+    ASSERT_TRUE(batchInsert.finished);
+    ASSERT_NE(batchInsert.error, nullptr);
+    EXPECT_FALSE(batchInsert.value.has_value());
+
+    try
+    {
+        std::rethrow_exception(batchInsert.error);
+        FAIL() << "异步批量写入的异常应当在 co_await 处重新抛出";
+    }
+    catch (const std::runtime_error &exception)
+    {
+        // 同步批量写入给出的一定是同一句话：失败发生在同一条语句上
+        EXPECT_EQ(std::string(exception.what()), syncInsertMessage);
+    }
+}
+
+/**
  * @brief 验证离线模式下异步执行器方法抛出逻辑错误（与同步版同一道前置校验）
  */
 TEST_F(QueryableAsyncTest, OfflineModeThrowsOnAsyncExecution)
@@ -545,7 +929,8 @@ TEST_F(QueryableAsyncTest, OfflineModeThrowsOnAsyncExecution)
     Queryable<AsyncAccountRow> offlineQuery;
 
     // Task 是惰性启动的：构造它不会执行任何代码，异常在协程真正被恢复时抛出
-    const CompletedTask<std::vector<AsyncAccountRow>> completed = runToCompletion(offlineQuery.toListAsync(m_loop));
+    const CompletedTask<std::vector<AsyncAccountRow>> completed =
+        m_loopRunner.runToCompletion(offlineQuery.toListAsync(eventLoop()));
 
     ASSERT_TRUE(completed.finished);
     ASSERT_NE(completed.error, nullptr);

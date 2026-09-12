@@ -10,6 +10,11 @@
  *          - ORM 端到端（SQL 由 MySqlDialect 生成）：insert / toList（WHERE + ORDER BY +
  *            LIMIT + OFFSET）/ first / count / update / executeNonQuery / insertBatch，
  *            以及反引号引用保留字与特殊字符标识符、多行 VALUES 确实能在真实服务端执行；
+ *          - ORM 异步链路（insertAsync / insertBatchAsync / toListAsync / countAsync /
+ *            updateAsync / executeNonQueryAsync）：在真实服务端上与同步版在同一张表上逐项对照，
+ *            并钉住「不存在的表」这条异常链路的类型与中文消息；
+ *            异步驱动与后台事件循环运行器来自 DatabaseTestSupport.h，协程帧的销毁纪律
+ *            见那里的 EventLoopThread 类注释；
  *          - Transaction 的提交可见、回滚不可见、析构自动回滚、异常穿越后只留已提交数据；
  *          - SchemaMigrator 建表（DDL 由 TableSchema 生成）后 ORM 读写、tableExists、dropTable；
  *          - 空结果集、长文本等边界。
@@ -39,6 +44,8 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+#include "DatabaseTestSupport.h"
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
@@ -61,6 +68,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -156,6 +164,19 @@ namespace AsynGyanis::Database
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
+
+        /// 异步读写链路用例的表（异步路径与同步路径在同一张表上对照）
+        constexpr std::string_view kAsyncChainTableName = "Asyn_Mysql_AsyncChain";
+        constexpr std::string_view kAsyncChainColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL";
+
+        /// 异步批量插入用例的表
+        constexpr std::string_view kAsyncBatchTableName = "Asyn_Mysql_AsyncBatch";
+        constexpr std::string_view kAsyncBatchColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL";
+
+        /// 异步错误路径用例的表名：本表刻意不创建，用于制造「表不存在」这条异常路径
+        constexpr std::string_view kAsyncMissingTableName = "Asyn_Mysql_AsyncMissing";
 
         /**
          * @brief 读取一个环境变量
@@ -333,6 +354,36 @@ namespace AsynGyanis::Database
             };
         }
 
+        /**
+         * @brief 异步读写链路用例的结构体：主键 + 文本 + 可空文本
+         * @details 三列足够覆盖异步路径要验证的东西（写入、查询、更新、删除、可空列映射），
+         *          类型映射的正确性已由同步用例覆盖，这里不再重复。
+         */
+        struct IntegrationAsyncRow
+        {
+            std::int64_t               id;   ///< 主键
+            std::string                name; ///< 名称
+            std::optional<std::string> note; ///< 备注，可空
+        };
+
+        /**
+         * @brief 异步批量插入用例的结构体：列定义与链路用例相同，但绑定到独立的表
+         */
+        struct IntegrationAsyncBatchRow
+        {
+            std::int64_t               id;   ///< 主键
+            std::string                name; ///< 名称
+            std::optional<std::string> note; ///< 备注，可空
+        };
+
+        /**
+         * @brief 异步错误路径用例的结构体：绑定到一张刻意不创建的表
+         */
+        struct IntegrationAsyncMissingRow
+        {
+            std::int64_t id; ///< 唯一一列
+        };
+
     } // namespace
 
     // ========================================================================
@@ -419,6 +470,41 @@ namespace AsynGyanis::Database
             Column(&IntegrationMigratedRow::balance,  "balance"),
             Column(&IntegrationMigratedRow::active,   "active"),
             Column(&IntegrationMigratedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationAsyncRow>
+    {
+        static constexpr std::string_view kTableName = kAsyncChainTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationAsyncRow::id,   "id"),
+            Column(&IntegrationAsyncRow::name, "name"),
+            Column(&IntegrationAsyncRow::note, "note"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationAsyncBatchRow>
+    {
+        static constexpr std::string_view kTableName = kAsyncBatchTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationAsyncBatchRow::id,   "id"),
+            Column(&IntegrationAsyncBatchRow::name, "name"),
+            Column(&IntegrationAsyncBatchRow::note, "note"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationAsyncMissingRow>
+    {
+        // 表名指向一张本文件从不创建的表：异步写失败这条链路靠它制造
+        static constexpr std::string_view kTableName = kAsyncMissingTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationAsyncMissingRow::id, "id"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -546,6 +632,35 @@ namespace AsynGyanis::Database
             }
 
             /**
+             * @brief 取得后台事件循环运行器，首次调用时才创建
+             *
+             * @details 运行器刻意放在 std::optional 里延迟创建，而不是直接作为夹具成员：
+             *          SetUp 在「未编译 MySQL 驱动」或「未设置口令」时会 GTEST_SKIP 并提前返回，
+             *          此时本对象仍是空 optional，析构函数无事可做——不会出现「线程/事件循环只构造了
+             *          一半」的踩空路径（构造即起线程的成员如果在跳过的用例里也一样要启停，
+             *          既白费线程也得在析构里承担额外风险）。真正要跑异步链路时再创建：
+             *          事件循环线程在 runToCompletion() 返回前一直活着，而本对象由夹具在
+             *          用例结束后析构（成员声明顺序见下），协程帧的销毁时机由 EventLoopThread
+             *          的内部约定保证（帧活到循环线程 join 之后）。
+             *
+             * @return TestSupport::EventLoopThread& 已启动且确认进入运行状态的事件循环运行器
+             */
+            [[nodiscard]] TestSupport::EventLoopThread &asyncLoop()
+            {
+                if (!m_asyncLoop.has_value())
+                {
+                    m_asyncLoop.emplace();
+                    if (!m_asyncLoop->waitUntilRunning())
+                    {
+                        // 循环没跑起来时提交的协程永远不会被恢复；显式记一笔失败，
+                        // 免得后面以「任务未在时限内完成」的表象掩盖真正的原因
+                        ADD_FAILURE() << "后台事件循环未在时限内进入运行状态";
+                    }
+                }
+                return m_asyncLoop.value();
+            }
+
+            /**
              * @brief 建立本用例专用的表
              * @details 先 DROP TABLE IF EXISTS 再 CREATE TABLE，因此上次运行留下的残留表
              *          （结构可能已不同）也会被清掉，本用例总是从一张空表开始。
@@ -652,6 +767,10 @@ namespace AsynGyanis::Database
             ConnectionConfig m_configuration;     ///< 从环境变量装载的连接配置
             std::string      m_preparedTableName; ///< 本用例建好的表名，供 TearDown 清理；空表示无需清理
             std::string      m_lastSetupError;    ///< 建库/建表失败的原因，供断言输出
+            // 后台事件循环运行器：只在用到异步 API 的用例里才创建（见 asyncLoop()），
+            // 因此被 GTEST_SKIP 的用例不会白起一个线程；它声明在最后，析构最先发生，
+            // 内部的驱动协程帧也随它一起销毁（晚于循环线程 join）
+            std::optional<TestSupport::EventLoopThread> m_asyncLoop;
 
         private:
             /**
@@ -1369,6 +1488,248 @@ namespace AsynGyanis::Database
             // 命中条件时三者都要给出数据，证明上面的「空」不是查询整体失败造成的
             OrmQuery<IntegrationProbeRow> hitQuery(*pool);
             EXPECT_EQ(hitQuery.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{1}).count(), 1);
+        }
+    }
+
+    // ========================================================================
+    // ORM 异步链路（门控：没有口令时整个夹具在 SetUp 里跳过）
+    // ========================================================================
+
+    /**
+     * @brief 验证真实服务端上的异步读写全链路与同步版在同一张表上逐项一致
+     *
+     * @details 覆盖 insertAsync → toListAsync → countAsync → updateAsync → executeNonQueryAsync：
+     *          每一步都与同一张表上的同步版本对照（受影响行数 / 行内容 / 计数 / 删除行数），
+     *          并且异步写之后都用**同步查询**读回——同步查询看到的就是服务端的真实数据，
+     *          这是「写确实提交上去了」的权威证据，而不是异步接口自己回报的一个数字。
+     *          执行器沿用进程级共享实例（不调用 useAsyncExecutor），顺带覆盖零配置的默认路径；
+     *          协程的恢复一律发生在后台事件循环线程上（见 DatabaseTestSupport.h 的 EventLoopThread）。
+     */
+    TEST_F(MySqlIntegrationTest, AsyncReadWriteChainMatchesSyncResults)
+    {
+        ASSERT_TRUE(prepareTable(kAsyncChainTableName, kAsyncChainColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool        = makePool(3);
+        TestSupport::EventLoopThread   &loopRunner  = asyncLoop();
+
+        // ---- insertAsync：异步写一行，随后同步写一行作对照 ----
+        {
+            OrmQuery<IntegrationAsyncRow> asyncInsertQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> inserted = loopRunner.runToCompletion(
+                asyncInsertQuery.insertAsync(IntegrationAsyncRow{.id = 1, .name = "异步写入", .note = std::string("首条")},
+                                             loopRunner.loop()));
+
+            ASSERT_TRUE(inserted.finished) << "异步写入未在时限内完成";
+            ASSERT_EQ(inserted.error, nullptr);
+            ASSERT_TRUE(inserted.value.has_value());
+            EXPECT_EQ(inserted.value.value(), 1);
+
+            OrmQuery<IntegrationAsyncRow> syncInsertQuery(*pool);
+            const std::int64_t syncAffectedRows =
+                syncInsertQuery.insert(IntegrationAsyncRow{.id = 2, .name = "同步写入", .note = std::nullopt});
+            EXPECT_EQ(inserted.value.value(), syncAffectedRows);
+        }
+
+        // ---- toListAsync：与同步 toList 逐行逐列比对 ----
+        {
+            OrmQuery<IntegrationAsyncRow> syncQuery(*pool);
+            const std::vector<IntegrationAsyncRow> syncRows = syncQuery.orderBy(asc("id")).toList();
+
+            OrmQuery<IntegrationAsyncRow> asyncQuery(*pool);
+            asyncQuery.orderBy(asc("id"));
+            const TestSupport::CompletedTask<std::vector<IntegrationAsyncRow>> listed =
+                loopRunner.runToCompletion(asyncQuery.toListAsync(loopRunner.loop()));
+
+            ASSERT_TRUE(listed.finished) << "异步查询未在时限内完成";
+            ASSERT_EQ(listed.error, nullptr);
+            ASSERT_TRUE(listed.value.has_value());
+            ASSERT_EQ(listed.value->size(), syncRows.size());
+            ASSERT_EQ(listed.value->size(), 2U);
+            for (std::size_t index = 0; index < syncRows.size(); ++index)
+            {
+                EXPECT_EQ((*listed.value)[index].id, syncRows[index].id);
+                EXPECT_EQ((*listed.value)[index].name, syncRows[index].name);
+                EXPECT_EQ((*listed.value)[index].note, syncRows[index].note);
+            }
+
+            // 异步写进去的那一行，被同步查询原样读到：字段与可空列的取值都对得上
+            EXPECT_EQ(syncRows[0].name, "异步写入");
+            ASSERT_TRUE(syncRows[0].note.has_value());
+            EXPECT_EQ(syncRows[0].note.value(), "首条");
+            // NULL 与空串在真实服务端上仍是两种形态：第 2 行的备注写的是 NULL
+            EXPECT_FALSE(syncRows[1].note.has_value());
+        }
+
+        // ---- countAsync：与同步 count 相等 ----
+        {
+            OrmQuery<IntegrationAsyncRow> syncCountQuery(*pool);
+            const std::int64_t syncCount = syncCountQuery.count();
+
+            OrmQuery<IntegrationAsyncRow> asyncCountQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> counted =
+                loopRunner.runToCompletion(asyncCountQuery.countAsync(loopRunner.loop()));
+
+            ASSERT_TRUE(counted.finished);
+            ASSERT_EQ(counted.error, nullptr);
+            ASSERT_TRUE(counted.value.has_value());
+            EXPECT_EQ(counted.value.value(), syncCount);
+            EXPECT_EQ(counted.value.value(), 2);
+        }
+
+        // ---- updateAsync：异步改第 1 行（备注改成 NULL），同步改第 2 行作对照 ----
+        {
+            OrmQuery<IntegrationAsyncRow> asyncUpdateQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> updated = loopRunner.runToCompletion(
+                asyncUpdateQuery.updateAsync(IntegrationAsyncRow{.id = 1, .name = "异步改后", .note = std::nullopt},
+                                             loopRunner.loop()));
+            ASSERT_TRUE(updated.finished);
+            ASSERT_EQ(updated.error, nullptr);
+            ASSERT_TRUE(updated.value.has_value());
+            EXPECT_EQ(updated.value.value(), 1);
+
+            OrmQuery<IntegrationAsyncRow> syncUpdateQuery(*pool);
+            const std::int64_t syncAffectedRows = syncUpdateQuery.update(
+                IntegrationAsyncRow{.id = 2, .name = "同步改后", .note = std::string("同步备注")});
+            EXPECT_EQ(updated.value.value(), syncAffectedRows);
+
+            // 同步读回：逐字段核对，并且第 1 行的备注从「有值」变成了 NULL
+            OrmQuery<IntegrationAsyncRow> readQuery(*pool);
+            const std::vector<IntegrationAsyncRow> rows = readQuery.orderBy(asc("id")).toList();
+            ASSERT_EQ(rows.size(), 2U);
+            EXPECT_EQ(rows[0].id, 1);
+            EXPECT_EQ(rows[0].name, "异步改后");
+            EXPECT_FALSE(rows[0].note.has_value());
+            EXPECT_EQ(rows[1].name, "同步改后");
+            ASSERT_TRUE(rows[1].note.has_value());
+            EXPECT_EQ(rows[1].note.value(), "同步备注");
+        }
+
+        // ---- executeNonQueryAsync 与 executeNonQuery：同一张表上按条件删除，行数对照 ----
+        {
+            OrmQuery<IntegrationAsyncRow> asyncDeleteQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> deleted = loopRunner.runToCompletion(
+                asyncDeleteQuery.where(Column(&IntegrationAsyncRow::id, "id") == std::int64_t{1})
+                                .executeNonQueryAsync(loopRunner.loop()));
+            ASSERT_TRUE(deleted.finished);
+            ASSERT_EQ(deleted.error, nullptr);
+            ASSERT_TRUE(deleted.value.has_value());
+            EXPECT_EQ(deleted.value.value(), 1);
+
+            OrmQuery<IntegrationAsyncRow> syncDeleteQuery(*pool);
+            const std::int64_t syncDeletedRows =
+                syncDeleteQuery.where(Column(&IntegrationAsyncRow::id, "id") == std::int64_t{2}).executeNonQuery();
+            EXPECT_EQ(deleted.value.value(), syncDeletedRows);
+
+            // 两条删除各命中一行，表最终被清空（异步写路径同样真的落到了服务端）
+            OrmQuery<IntegrationAsyncRow> remainingQuery(*pool);
+            EXPECT_EQ(remainingQuery.count(), 0);
+        }
+    }
+
+    /**
+     * @brief 验证 insertBatchAsync 在真实服务端上的行数与逐行内容都与同步 insertBatch 一致
+     *
+     * @details 行数远低于 MySQL 的参数上限（65535），因此走一次生成多行 VALUES 的单语句分支，
+     *          不与 SQLite 端的分块用例重复。对照方式：异步批量写完后同步读回全部行，
+     *          清空表再交给同步 insertBatch 写同一份数据，两次读回的行必须逐字段相等——
+     *          「多行 VALUES 在真实服务端能被接受」这件事本身也由这条用例钉住（空串与 NULL 并存）。
+     */
+    TEST_F(MySqlIntegrationTest, AsyncBatchInsertWritesRowsEqualToSyncInsertBatch)
+    {
+        ASSERT_TRUE(prepareTable(kAsyncBatchTableName, kAsyncBatchColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool       = makePool(3);
+        TestSupport::EventLoopThread   &loopRunner = asyncLoop();
+
+        const std::vector<IntegrationAsyncBatchRow> batchRows{
+            IntegrationAsyncBatchRow{.id = 1, .name = "异步批量甲", .note = std::string("有备注")},
+            IntegrationAsyncBatchRow{.id = 2, .name = "异步批量乙", .note = std::nullopt},
+            // 空串与 NULL 必须能被区分开：两者在服务端上是不同的取值
+            IntegrationAsyncBatchRow{.id = 3, .name = "异步批量丙", .note = std::string("")}
+        };
+
+        OrmQuery<IntegrationAsyncBatchRow> asyncBatchQuery(*pool);
+        const TestSupport::CompletedTask<std::int64_t> inserted =
+            loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(batchRows, loopRunner.loop()));
+
+        ASSERT_TRUE(inserted.finished) << "异步批量插入未在时限内完成";
+        ASSERT_EQ(inserted.error, nullptr);
+        ASSERT_TRUE(inserted.value.has_value());
+        EXPECT_EQ(inserted.value.value(), 3);
+
+        OrmQuery<IntegrationAsyncBatchRow> asyncReadQuery(*pool);
+        const std::vector<IntegrationAsyncBatchRow> asyncRows = asyncReadQuery.orderBy(asc("id")).toList();
+        ASSERT_EQ(asyncRows.size(), batchRows.size());
+        for (std::size_t index = 0; index < batchRows.size(); ++index)
+        {
+            EXPECT_EQ(asyncRows[index].id, batchRows[index].id);
+            EXPECT_EQ(asyncRows[index].name, batchRows[index].name);
+            EXPECT_EQ(asyncRows[index].note, batchRows[index].note);
+        }
+
+        // ---- 清空后交给同步 insertBatch 写同一份数据：行数与读回内容都必须一致 ----
+        OrmQuery<IntegrationAsyncBatchRow> clearQuery(*pool);
+        EXPECT_EQ(clearQuery.executeNonQuery(), static_cast<std::int64_t>(batchRows.size()));
+
+        OrmQuery<IntegrationAsyncBatchRow> syncBatchQuery(*pool);
+        EXPECT_EQ(syncBatchQuery.insertBatch(batchRows), inserted.value.value());
+
+        OrmQuery<IntegrationAsyncBatchRow> syncReadQuery(*pool);
+        const std::vector<IntegrationAsyncBatchRow> syncRows = syncReadQuery.orderBy(asc("id")).toList();
+        ASSERT_EQ(syncRows.size(), asyncRows.size());
+        for (std::size_t index = 0; index < syncRows.size(); ++index)
+        {
+            EXPECT_EQ(syncRows[index].id, asyncRows[index].id);
+            EXPECT_EQ(syncRows[index].name, asyncRows[index].name);
+            EXPECT_EQ(syncRows[index].note, asyncRows[index].note);
+        }
+    }
+
+    /**
+     * @brief 验证异步写落在不存在的表上时，异常按原类型与原中文消息从协程里穿出
+     *
+     * @details 与 SQLite 端的同名前缀用例互补：这里的失败来自真实服务端（表确实不存在），
+     *          中间要经过「工作线程 → 调度投递 → 协程恢复」三跳，因此消息必须与同步版一字不差，
+     *          否则就是把服务端的真实原因在某一层被包装或截断了。
+     */
+    TEST_F(MySqlIntegrationTest, AsyncWriteOnMissingTableSurfacesOriginalException)
+    {
+        // 本表刻意不创建：错误只能来自服务端的执行失败，而不是任何本地前置校验
+        std::unique_ptr<ConnectionPool> pool       = makePool(2);
+        TestSupport::EventLoopThread   &loopRunner = asyncLoop();
+
+        // 同步版先把失败原因固定下来
+        OrmQuery<IntegrationAsyncMissingRow> syncQuery(*pool);
+        std::string syncMessage;
+        try
+        {
+            static_cast<void>(syncQuery.insert(IntegrationAsyncMissingRow{.id = 1}));
+            FAIL() << "表不存在时同步插入应当抛出 std::runtime_error";
+        }
+        catch (const std::runtime_error &exception)
+        {
+            syncMessage = exception.what();
+        }
+        EXPECT_NE(syncMessage.find("语句执行失败"), std::string::npos) << syncMessage;
+        EXPECT_TRUE(containsLocalizedText(syncMessage)) << syncMessage;
+
+        OrmQuery<IntegrationAsyncMissingRow> asyncQuery(*pool);
+        const TestSupport::CompletedTask<std::int64_t> inserted = loopRunner.runToCompletion(
+            asyncQuery.insertAsync(IntegrationAsyncMissingRow{.id = 1}, loopRunner.loop()));
+
+        ASSERT_TRUE(inserted.finished) << "写失败也必须完成（否则协程会被永久挂起）";
+        ASSERT_NE(inserted.error, nullptr);
+        EXPECT_FALSE(inserted.value.has_value());
+
+        try
+        {
+            std::rethrow_exception(inserted.error);
+            FAIL() << "异步写入的异常应当在 co_await 处重新抛出";
+        }
+        catch (const std::runtime_error &exception)
+        {
+            // 类型与消息都与同步版相同：异常原样穿过工作线程与调度投递，没有被包装或降级
+            EXPECT_EQ(std::string(exception.what()), syncMessage);
         }
     }
 
