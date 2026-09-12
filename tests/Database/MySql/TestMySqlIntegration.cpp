@@ -11,6 +11,7 @@
  *            LIMIT + OFFSET）/ first / count / update / executeNonQuery / insertBatch，
  *            以及反引号引用保留字与特殊字符标识符、多行 VALUES 确实能在真实服务端执行；
  *          - Transaction 的提交可见、回滚不可见、析构自动回滚、异常穿越后只留已提交数据；
+ *          - SchemaMigrator 建表（DDL 由 TableSchema 生成）后 ORM 读写、tableExists、dropTable；
  *          - 空结果集、长文本等边界。
  *
  * ## 口令绝不进仓库（本文件的第一条硬规矩）
@@ -51,6 +52,7 @@
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/Queryable.h"
+#include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 
 #include <gtest/gtest.h>
@@ -151,6 +153,9 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTransactionExceptionTableName  = "Asyn_Mysql_Tx_Exception";
         constexpr std::string_view kTransactionColumns =
             "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+
+        /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
+        constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
 
         /**
          * @brief 读取一个环境变量
@@ -289,6 +294,22 @@ namespace AsynGyanis::Database
         };
 
         /**
+         * @brief 建表迁移用例的结构体：覆盖 SchemaMigrator 的全部类型映射分支
+         *
+         * @details 六列的成员类型分别对应 Int64 / Text / 可空 Text / Double / Bool / UInt64，
+         *          因此建表语句会同时用到 BIGINT、TEXT、DOUBLE、TINYINT(1) 与 BIGINT UNSIGNED。
+         */
+        struct IntegrationMigratedRow
+        {
+            std::int64_t               id;       ///< 主键（BIGINT NOT NULL PRIMARY KEY）
+            std::string                name;     ///< 户名（TEXT NOT NULL）
+            std::optional<std::string> note;     ///< 备注（TEXT，可空）
+            double                     balance;  ///< 余额（DOUBLE NOT NULL）
+            bool                       active;   ///< 是否启用（TINYINT(1) NOT NULL）
+            std::uint64_t              sequence; ///< 序号（BIGINT UNSIGNED NOT NULL）
+        };
+
+        /**
          * @brief 构造一行账号数据
          * @param id 主键
          * @param name 户名
@@ -385,6 +406,23 @@ namespace AsynGyanis::Database
         static constexpr std::string_view kPrimaryKey = "id";
     };
 
+    template<>
+    struct Queryable::TableSchema<IntegrationMigratedRow>
+    {
+        // 表名固定为 kMigratedTableName：SchemaMigrator 的表名只能来自编译期常量
+        static constexpr std::string_view kTableName = kMigratedTableName;
+        // 列名与成员一一对应，覆盖 SchemaMigrator 需要处理的全部类型映射分支
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationMigratedRow::id,       "id"),
+            Column(&IntegrationMigratedRow::name,     "name"),
+            Column(&IntegrationMigratedRow::note,     "note"),
+            Column(&IntegrationMigratedRow::balance,  "balance"),
+            Column(&IntegrationMigratedRow::active,   "active"),
+            Column(&IntegrationMigratedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
     // ========================================================================
     // 夹具
     // ========================================================================
@@ -393,6 +431,7 @@ namespace AsynGyanis::Database
     {
         using Queryable::asc;
         using Queryable::Column;
+        using Queryable::SchemaMigrator;
 
         /**
          * @brief ORM 查询构建器模板的本地别名
@@ -1215,6 +1254,81 @@ namespace AsynGyanis::Database
             OrmQuery<IntegrationQuotedRow> remainingQuery(*pool);
             EXPECT_EQ(remainingQuery.count(), 2);
         }
+    }
+
+    /**
+     * @brief 验证 SchemaMigrator 在真实服务端建表后能被 ORM 直接读写，并能查存在与删表
+     *
+     * @details 覆盖与 SQLite 端到端用例相同的链路，但走真实 MySQL：DDL 的物理类型名
+     *          （BIGINT / BIGINT UNSIGNED / DOUBLE / TINYINT(1) / TEXT）必须在本服务端被接受，
+     *          且建出来的表要能被 ORM 的绑定与行映射直接读写。表名独立，不与其它用例共用。
+     */
+    TEST_F(MySqlIntegrationTest, SchemaMigratorCreatesTableThenOrmRoundTripAndDrops)
+    {
+        // 记下待清理的表名：即使断言中途失败，TearDown 也会 DROP TABLE IF EXISTS 兜底
+        m_preparedTableName = std::string(kMigratedTableName);
+
+        std::string errorText;
+
+        // 先清掉上次运行可能留下的残留表：建表用例必须从「表不存在」这个前提出发
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText));
+        // 表确实不存在时 errorText 必须留空：它只承载「查询失败」这类原因
+        EXPECT_TRUE(errorText.empty()) << errorText;
+
+        // ---- 建表：DDL 由 SchemaMigrator 从 TableSchema 生成 ----
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        EXPECT_TRUE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText)) << errorText;
+
+        // ---- 写入两行：第一行有备注，第二行备注为 NULL（TEXT 列可空） ----
+        {
+            OrmQuery<IntegrationMigratedRow> insertQuery(*pool);
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "张三", .note = std::string("首条"),
+                                                                   .balance = 1234.5, .active = true, .sequence = 7U}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 2, .name = "Li Si", .note = std::nullopt,
+                                                                   .balance = -0.25, .active = false, .sequence = 8U}));
+        }
+
+        // ---- 读回：六列逐一核对，证明 DDL 的类型与可空性恰好匹配 ORM 的映射规则 ----
+        {
+            OrmQuery<IntegrationMigratedRow> query(*pool);
+            const std::vector<IntegrationMigratedRow> rows = query.orderBy(asc("id")).toList();
+
+            ASSERT_EQ(rows.size(), 2U);
+            EXPECT_EQ(rows[0].id, 1);
+            EXPECT_EQ(rows[0].name, "张三");
+            ASSERT_TRUE(rows[0].note.has_value());
+            EXPECT_EQ(rows[0].note.value(), "首条");
+            EXPECT_DOUBLE_EQ(rows[0].balance, 1234.5);
+            EXPECT_TRUE(rows[0].active);
+            EXPECT_EQ(rows[0].sequence, 7U);
+
+            EXPECT_EQ(rows[1].name, "Li Si");
+            EXPECT_FALSE(rows[1].note.has_value());
+            EXPECT_DOUBLE_EQ(rows[1].balance, -0.25);
+            EXPECT_FALSE(rows[1].active);
+            EXPECT_EQ(rows[1].sequence, 8U);
+        }
+
+        // ---- 重复建表（IF NOT EXISTS）幂等：返回 true，已写入的数据不受影响 ----
+        EXPECT_TRUE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool)) << errorText;
+        {
+            OrmQuery<IntegrationMigratedRow> countQuery(*pool);
+            EXPECT_EQ(countQuery.count(), 2);
+        }
+
+        // ---- 关掉 IF NOT EXISTS 后对已存在的表如实失败，并给出可读的中文原因 ----
+        errorText.clear();
+        EXPECT_FALSE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool, false, &errorText));
+        EXPECT_FALSE(errorText.empty());
+        EXPECT_NE(errorText.find("DDL 执行失败"), std::string::npos) << errorText;
+
+        // ---- 删表：表不存在了，且 errorText 仍为空（false 表示确实不存在而不是查询失败） ----
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText));
+        EXPECT_TRUE(errorText.empty()) << errorText;
     }
 
     /**
