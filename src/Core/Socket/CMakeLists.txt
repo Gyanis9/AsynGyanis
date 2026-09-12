@@ -2,6 +2,8 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/AsyncSocket.h
         ${CMAKE_CURRENT_LIST_DIR}/AsyncSocket.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/VectoredSendCursor.h
+        ${CMAKE_CURRENT_LIST_DIR}/VectoredSendCursor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/InetAddress.h
         ${CMAKE_CURRENT_LIST_DIR}/InetAddress.cpp
         ${CMAKE_CURRENT_LIST_DIR}/BufferPool.h

@@ -2,6 +2,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/Socket/InetAddress.h"
+#include "Core/Socket/VectoredSendCursor.h"
 #include "Base/Exception/SystemException.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
@@ -218,54 +219,25 @@ namespace AsynGyanis::Core
                                         "（Windows 的 WSASend 最多 16 段），请先把相邻小段合并后再发送");
         }
 
-        std::size_t totalLength = 0;
-        for (std::size_t index = 0; index < bufferCount; ++index)
-        {
-            totalLength += buffers[index].length;
-        }
+        // 游标负责「部分写之后从哪继续、跨段怎么推进」这段最容易出错的账目；
+        // 它单独成类并被用例直接覆盖——回环上很难自然触发部分写，可它一旦写错是静默的数据错位
+        detail::VectoredSendCursor cursor(buffers, bufferCount);
 
-        // 部分写之后从哪继续：cursorIndex 是尚未发完的那一段，cursorOffset 是段内已发出的字节数。
-        // 每次提交都把游标之后的段原样带上（不复制数据），因此一轮系统调用仍然是「一次提交多段」
-        std::size_t sentTotal    = 0;
-        std::size_t cursorIndex  = 0;
-        std::size_t cursorOffset = 0;
-
-        while (sentTotal < totalLength)
+        while (!cursor.isFinished())
         {
             Platform::Socket::WriteBuffer pending[Platform::Socket::kMaximumVectorCount]{};
-            std::size_t                    pendingCount = 0;
-            if (cursorOffset < buffers[cursorIndex].length)
+            const std::size_t pendingCount = cursor.snapshotPending(pending, Platform::Socket::kMaximumVectorCount);
+            if (pendingCount == 0)
             {
-                pending[pendingCount].data = static_cast<const char *>(buffers[cursorIndex].data) + cursorOffset;
-                pending[pendingCount].length = buffers[cursorIndex].length - cursorOffset;
-                ++pendingCount;
-            }
-            for (std::size_t index = cursorIndex + 1; index < bufferCount; ++index)
-            {
-                pending[pendingCount] = buffers[index];
-                ++pendingCount;
+                // 游标说没发完，却拼不出任何待发段：段数组内部不一致（长度之和与游标对不上），
+                // 继续下去只会空转，当场报错比静默死循环好
+                throw Base::SystemException("聚合发送失败：段数组长度与游标不一致，无法拼出待发段");
             }
 
             const ssize_t sentBytes = Platform::Socket::writeVectored(m_fileDescriptor, pending, pendingCount);
             if (sentBytes > 0)
             {
-                // 推进游标：可能一次跨过若干整段，也可能停在某一段中间
-                std::size_t remainingAdvance = static_cast<std::size_t>(sentBytes);
-                sentTotal += remainingAdvance;
-                while (remainingAdvance > 0 && cursorIndex < bufferCount)
-                {
-                    const std::size_t remainingInCurrent = buffers[cursorIndex].length - cursorOffset;
-                    if (remainingAdvance < remainingInCurrent)
-                    {
-                        cursorOffset += remainingAdvance;
-                        remainingAdvance = 0;
-                    } else
-                    {
-                        remainingAdvance -= remainingInCurrent;
-                        ++cursorIndex;
-                        cursorOffset = 0;
-                    }
-                }
+                cursor.advance(static_cast<std::size_t>(sentBytes));
                 continue;
             }
 
@@ -289,7 +261,7 @@ namespace AsynGyanis::Core
             }
             throw Base::SystemException("聚合发送数据失败");
         }
-        co_return static_cast<ssize_t>(sentTotal);
+        co_return static_cast<ssize_t>(cursor.sentLength());
     }
 
     void AsyncSocket::close()
