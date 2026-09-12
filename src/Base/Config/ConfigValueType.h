@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "Base/Parser/Value/ParserValueType.h"
+#include "Base/Format/Value/FormatValueType.h"
 
 #include <string>
 #include <string_view>
@@ -20,10 +20,10 @@ namespace AsynGyanis::Base
     /**
      * @brief 配置值类型的历史别名
      *
-     * @details 值模型已上收到 Parser（Base/Parser/Value/ParserValue.h），配置侧保留
+     * @details 值模型已上收到 Format（Base/Format/Value/FormatValue.h），配置侧保留
      *          原有名字以免既有代码与用例改名；两者是同一个类型，不存在第二份实现。
      */
-    using ConfigValueType = ParserValueType;
+    using ConfigValueType = FormatValueType;
 
     /**
      * @brief 判断文件路径是否为 YAML 配置文件后缀。

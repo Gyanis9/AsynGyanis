@@ -42,7 +42,7 @@
 
 ![依赖关系](asserts/依赖关系.png)
 
-- **Base** 无第三方依赖，自带日志、配置、异常与手搓 YAML/JSON 解析（`Base/Parser`）
+- **Base** 无第三方依赖，自带日志、配置、异常与手搓 YAML/JSON 解析（`Base/Format`）
 - **Core** 依赖 `Base` + `OpenSSL`，构建协程运行时 + epoll/wepoll 事件循环 + TLS 安全层
 - **Net** 依赖 `Core` + `llhttp`，提供 HTTP/HTTPS 服务端能力
 
@@ -325,7 +325,7 @@ AsynGyanis/
 | [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS 安全传输 |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | 单元测试 |
 
-YAML 与 JSON 解析由 `Base/Parser` 自研实现，不引入第三方解析库。
+YAML 与 JSON 解析由 `Base/Format` 自研实现，不引入第三方解析库。
 
 ## 编码规范
 

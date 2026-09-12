@@ -29,12 +29,19 @@ add_executable(TestBase
         Log/Sinks/TestRollingFileSink.cpp
         Log/Sinks/TestAsyncSink.cpp
 
-        Parser/TestParserPositionAndError.cpp
-        Parser/Value/TestParserValue.cpp
-        Parser/Value/TestValueAccessError.cpp
-        Parser/Json/TestJsonParser.cpp
-        Parser/Json/TestJsonWriter.cpp
-        Parser/Yaml/TestYamlParser.cpp
+        Format/TestTextPositionAndError.cpp
+        Format/Value/TestFormatValue.cpp
+        Format/Value/TestValueAccessError.cpp
+        Format/Json/TestJsonParser.cpp
+        Format/Json/TestJsonWriter.cpp
+        Format/Json/TestJsonPointer.cpp
+        Format/Json/TestJsonPatch.cpp
+        Format/Json/TestJsonStream.cpp
+        Format/Yaml/TestYamlParser.cpp
+        Format/Yaml/TestYamlScalars.cpp
+        Format/Yaml/TestYamlAnchors.cpp
+        Format/Yaml/TestYamlReader.cpp
+        Format/Yaml/TestYamlWriter.cpp
 )
 
 target_link_libraries(TestBase PRIVATE

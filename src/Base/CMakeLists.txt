@@ -4,7 +4,7 @@
 set_property(GLOBAL PROPERTY AsynGyanisBaseSources "")
 
 add_subdirectory(Exception)
-add_subdirectory(Parser)
+add_subdirectory(Format)
 add_subdirectory(Config)
 add_subdirectory(Log)
 
