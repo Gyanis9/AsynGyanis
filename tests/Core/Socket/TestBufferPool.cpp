@@ -15,6 +15,9 @@
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief 构造只登记配置不按需分配：bufferSize/bufferCount 原样可查
+     */
     TEST(BufferPool, ConstructionReportsConfiguredProperties)
     {
         const BufferPool pool(1024, 8);
@@ -23,6 +26,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(pool.bufferCount(), 8u);
     }
 
+    /**
+     * @brief 连续 acquire() 交出互不相同的有效索引：池容量内绝不重复发同一块
+     */
     TEST(BufferPool, AcquireReturnsDistinctValidIndices)
     {
         BufferPool pool(256, 4);
@@ -46,6 +52,9 @@ namespace AsynGyanis::Core
         EXPECT_NE(thirdIndex, fourthIndex);
     }
 
+    /**
+     * @brief 缓冲区耗尽后返回 -1 哨兵而不是 0——0 是合法索引，两者混同会让调用方把失败当成功
+     */
     TEST(BufferPool, AcquireReturnsMinusOneWhenExhausted)
     {
         BufferPool pool(64, 2);
@@ -56,6 +65,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(pool.acquire(), -1);
     }
 
+    /**
+     * @brief 释放后的索引回到空闲栈并可被再次 acquire()，容量在归还后恢复
+     */
     TEST(BufferPool, ReleaseAllowsReacquire)
     {
         BufferPool pool(128, 2);
@@ -124,6 +136,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(pool.acquire(), -1) << "对未占用索引调用 release() 不应让池凭空多出缓冲";
     }
 
+    /**
+     * @brief data() 交出的是整块可写内存：容量即 bufferSize，全块写入不越界
+     */
     TEST(BufferPool, DataReturnsWritablePointer)
     {
         BufferPool pool(1024, 4);
@@ -138,6 +153,9 @@ namespace AsynGyanis::Core
         std::memset(pointer, 0xAB, 1024);
     }
 
+    /**
+     * @brief 各缓冲区在内存上互不重叠：写满一块不会改动另一块的内容
+     */
     TEST(BufferPool, DataIsIsolatedBetweenBuffers)
     {
         BufferPool pool(1024, 4);
@@ -157,6 +175,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(secondPointer[0], 0x22);
     }
 
+    /**
+     * @brief 边界用例：bufferSize 为 0 仍可构造并按个数发索引，单个参数极端不使整个池不可用
+     */
     TEST(BufferPool, ZeroBufferSizeConstructionIsTolerated)
     {
         // 边界用例：缓冲区大小为 0 时不崩溃，仍可按个数分配索引

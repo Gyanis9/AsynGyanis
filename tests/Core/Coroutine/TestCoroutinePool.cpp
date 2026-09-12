@@ -20,6 +20,9 @@
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief instance() 是进程级单例：另一个线程取到的也是同一个池（协程帧跨线程换手，按线程拆池就无法回收）
+     */
     TEST(CoroutinePool, InstanceReturnsProcessWideSingleton)
     {
         CoroutinePool &first  = CoroutinePool::instance();
@@ -38,6 +41,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(fromWorker, &first);
     }
 
+    /**
+     * @brief 块大小以内的分配整块可写、可归还，且释放后同一请求还能再分配成功（帧内存可复用）
+     */
     TEST(CoroutinePool, AllocateWithinBlockSizeRoundTrips)
     {
         auto &pool = CoroutinePool::instance();
@@ -56,6 +62,9 @@ namespace AsynGyanis::Core
         pool.deallocate(reallocated, 128);
     }
 
+    /**
+     * @brief 超过块大小的请求回退到全局堆：仍然整段可写，归还也不报错（大协程帧不因池的块上限而不可用）
+     */
     TEST(CoroutinePool, AllocateLargerThanBlockSizeFallsBackToGlobalNew)
     {
         auto &pool = CoroutinePool::instance();
@@ -69,6 +78,9 @@ namespace AsynGyanis::Core
         pool.deallocate(pointer, largeSize);
     }
 
+    /**
+     * @brief 连续 100 次分配后再全部归还不会失败：覆盖跨块扩展与批量回收路径
+     */
     TEST(CoroutinePool, MultipleAllocationsAndDeallocationsSucceed)
     {
         auto &pool = CoroutinePool::instance();
@@ -87,6 +99,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief 进程级单例的块大小下界：至少 64 字节，保证放得下典型协程帧（不以 0 或极小值配置）
+     */
     TEST(CoroutinePool, BlockSizeMeetsMinimumUsableSize)
     {
         // 进程级单例按默认 256 字节块构造，至少应容纳典型协程帧
@@ -95,6 +110,9 @@ namespace AsynGyanis::Core
         EXPECT_GE(pool.blockSize(), 64u);
     }
 
+    /**
+     * @brief 跨线程归还的池内块必须回到池里（而非被当成外来指针交给全局 ::operator delete）：再分配能拿回同一地址
+     */
     TEST(CoroutinePool, CrossThreadDeallocationReturnsBlockToSamePool)
     {
         auto &pool = CoroutinePool::instance();
@@ -117,6 +135,9 @@ namespace AsynGyanis::Core
         pool.deallocate(reallocated, 96);
     }
 
+    /**
+     * @brief 并发分配不得重发同一块：四线程同时持有的所有块地址互不相同（用 latch 保证「同时持有」后再归还）
+     */
     TEST(CoroutinePool, ConcurrentAllocationHandsOutDistinctBlocks)
     {
         auto &pool = CoroutinePool::instance();
@@ -167,6 +188,10 @@ namespace AsynGyanis::Core
         EXPECT_EQ(uniquePointers.size(), collected.size());
     }
 
+    /**
+     * @brief 池到达块数上限后不崩溃也不静默失败：改由全局堆承担且 owns() 返回 false；归还后池内块仍可复用
+     * @details 旧实现在「空闲列表为空且 expand() 因到上限一块都不加」时仍对空 vector 调 back()，属越界访问
+     */
     TEST(CoroutinePool, AllocationBeyondBlockCeilingFallsBackToGlobalHeap)
     {
         auto &pool = CoroutinePool::instance();

@@ -15,6 +15,9 @@ namespace AsynGyanis::Core
 
     IoContext::~IoContext()
     {
+        // 先 stop()（它会 join 全部工作线程）再 finalize()：析构时可能仍有线程在执行
+        // Socket 操作，若先做 Socket::finalize() 回收底层库，正在跑的 socket 调用就会
+        // 落到已卸载的运行时上；线程全部退出后 socket 层才确定无人使用
         stop();
         Platform::Socket::finalize();
     }
@@ -59,6 +62,8 @@ namespace AsynGyanis::Core
 
     Scheduler &IoContext::mainScheduler() const
     {
+        // 固定取 0 号工作线程而非随机挑一个：调用方（如跨线程回调、定时器）需要知道
+        // 任务会落在哪个事件循环上，索引定型才能预期恢复它的线程
         return m_threadPool.scheduler(0);
     }
 

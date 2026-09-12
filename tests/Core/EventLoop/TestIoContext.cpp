@@ -58,6 +58,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief 构造按参数建好线程池但不启动线程：线程数原样可查
+     */
     TEST(IoContext, ConstructionCreatesConfiguredThreadPool)
     {
         IoContext context(2);
@@ -65,6 +68,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(context.threadPool().threadCount(), 2u);
     }
 
+    /**
+     * @brief threadPool() 返回的是内部那个池（同一对象）而不是副本，调用方才能借它投递任务
+     */
     TEST(IoContext, ThreadPoolAccessorReturnsConfiguredPool)
     {
         IoContext context(2);
@@ -73,6 +79,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(pool.threadCount(), 2u);
     }
 
+    /**
+     * @brief mainScheduler() 固定指向 0 号工作线程的调度器（地址相同），且初始无待办
+     */
     TEST(IoContext, MainSchedulerReturnsFirstWorkerScheduler)
     {
         IoContext context(2);
@@ -82,6 +91,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(&scheduler, &context.threadPool().scheduler(0));
     }
 
+    /**
+     * @brief 从未 run() 就 stop() 是安全的空操作：不会死锁、不抛异常（收尾路径可以无条件调用）
+     */
     TEST(IoContext, StopWithoutRunDoesNotDeadlock)
     {
         IoContext context(1);
@@ -90,6 +102,9 @@ namespace AsynGyanis::Core
         EXPECT_NO_THROW(context.stop());
     }
 
+    /**
+     * @brief run() 阻塞调用线程直到 stop() 被请求，之后工作线程能正常退出并 join
+     */
     TEST(IoContext, RunBlocksUntilStopIsRequested)
     {
         IoContext context(1);
@@ -111,6 +126,9 @@ namespace AsynGyanis::Core
         worker.join();
     }
 
+    /**
+     * @brief run() 之前投递到主调度器的任务不会丢：启动后被执行，且 run() 返回后仍可读到结果
+     */
     TEST(IoContext, TaskScheduledBeforeRunExecutesAfterRun)
     {
         IoContext context(1);
@@ -137,6 +155,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(value.load(), 99);
     }
 
+    /**
+     * @brief 默认构造的线程数等于 hardware_concurrency()，不写死某个小常数
+     */
     TEST(IoContext, DefaultConstructorUsesHardwareConcurrency)
     {
         IoContext context;

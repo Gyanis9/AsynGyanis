@@ -46,6 +46,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief 惰性启动：resume 之前不算完成，resume 到终结点后 result() 交出 co_return 的值
+     */
     TEST(Task, SimpleValueReturnIsAvailableAfterResume)
     {
         auto task = simpleValueTask();
@@ -59,6 +62,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(result, 42);
     }
 
+    /**
+     * @brief Task<void> 正常跑到终结点时 isReady() 为 true，且 result() 不抛异常
+     */
     TEST(Task, VoidTaskCompletesWithoutThrow)
     {
         auto task = simpleVoidTask();
@@ -71,6 +77,9 @@ namespace AsynGyanis::Core
         EXPECT_NO_THROW(task.handle().promise().result());
     }
 
+    /**
+     * @brief 协程体抛出的异常被 promise 捕获存下，在 result() 处按原类型重新抛出，不会丢失在协程帧里
+     */
     TEST(Task, ExceptionIsCapturedAndRethrownByResult)
     {
         auto task = throwingTask();
@@ -80,6 +89,9 @@ namespace AsynGyanis::Core
         EXPECT_THROW(task.handle().promise().result(), std::runtime_error);
     }
 
+    /**
+     * @brief 移动构造把句柄整体交给新对象：新对象持有的句柄与源原先持有的完全相同
+     */
     TEST(Task, MoveConstructionTransfersHandle)
     {
         auto first = simpleValueTask();
@@ -90,6 +102,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(second.handle(), originalHandle);
     }
 
+    /**
+     * @brief 移动赋值同样转移句柄所有权：目标接管新帧并销毁旧帧，不会出现两个 Task 共用一个帧
+     */
     TEST(Task, MoveAssignmentTransfersHandle)
     {
         auto first = simpleValueTask();
@@ -101,6 +116,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(second.handle(), originalHandle);
     }
 
+    /**
+     * @brief isReady() 以协程是否到达终结点为准：未 resume 过的惰性协程不算完成
+     */
     TEST(Task, IsReadyReturnsFalseBeforeResume)
     {
         // 惰性启动：协程创建后处于挂起状态，未恢复前未完成
@@ -109,6 +127,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(task.isReady());
     }
 
+    /**
+     * @brief 跑到终结点后 isReady() 翻转为 true，调用方据此决定「直接取结果」还是「继续等待」
+     */
     TEST(Task, IsReadyReturnsTrueAfterCompletion)
     {
         auto task = simpleValueTask();
@@ -117,6 +138,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(task.isReady());
     }
 
+    /**
+     * @brief await_resume() 本身就能取出协程结果，等待器接口可脱离 co_await 单独使用
+     */
     TEST(Task, AwaitResumeReturnsCoroutineValue)
     {
         auto task = simpleValueTask();
@@ -126,6 +150,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(value, 42);
     }
 
+    /**
+     * @brief await_ready() 与完成状态一致：未完成返回 false（需挂起等待），完成后返回 true（可直接取结果）
+     */
     TEST(Task, AwaitReadyReflectsDoneState)
     {
         auto task = simpleValueTask();
@@ -135,6 +162,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(task.await_ready());
     }
 
+    /**
+     * @brief 被移动走的 Task 句柄为空：源对象不再持有协程帧，其析构不会重复销毁
+     */
     TEST(Task, MovedFromTaskHasNullHandle)
     {
         auto first = simpleValueTask();

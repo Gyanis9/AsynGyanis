@@ -13,6 +13,9 @@
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief 新构造的 Cancelable 处于「未请求停止」态：对象存在本身不构成停止信号
+     */
     TEST(Cancelable, DefaultStateIsNotStopped)
     {
         const Cancelable cancelable;
@@ -20,6 +23,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(cancelable.isStopRequested());
     }
 
+    /**
+     * @brief requestStop() 的返回值是「本次调用是否完成状态翻转」：首次请求返回 true，且状态查询同步变为已停止
+     */
     TEST(Cancelable, RequestStopSetsStopRequestedFlag)
     {
         Cancelable cancelable;
@@ -28,6 +34,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(cancelable.isStopRequested());
     }
 
+    /**
+     * @brief stopToken() 交出的令牌与停止源共享状态：请求停止后，已发出的令牌同步可见（是共享而非快照）
+     */
     TEST(Cancelable, StopTokenReflectsStopState)
     {
         Cancelable cancelable;
@@ -40,6 +49,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(token.stop_requested());
     }
 
+    /**
+     * @brief 移动构造让停止状态跟随对象迁移：源上已置位的停止请求在新对象上仍然可见
+     */
     TEST(Cancelable, MoveConstructionPreservesStopState)
     {
         Cancelable source;
@@ -50,6 +62,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(target.isStopRequested());
     }
 
+    /**
+     * @brief 移动赋值同样带走停止状态，覆盖目标对象原有的「未停止」状态
+     */
     TEST(Cancelable, MoveAssignmentPreservesStopState)
     {
         Cancelable source;
@@ -61,6 +76,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(target.isStopRequested());
     }
 
+    /**
+     * @brief stopSource() 返回内部停止源的引用而非副本：调用方直接 request_stop() 也能反映到 isStopRequested()
+     */
     TEST(Cancelable, StopSourceReturnsModifiableReference)
     {
         Cancelable cancelable;
@@ -73,6 +91,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(cancelable.isStopRequested());
     }
 
+    /**
+     * @brief requestStop() 幂等：重复请求不会重复触发，第二次返回 false 且状态保持已停止
+     */
     TEST(Cancelable, RepeatedRequestStopIsIdempotent)
     {
         Cancelable cancelable;

@@ -16,6 +16,9 @@
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief 只持有事件循环即可构造定时器：构造过程不抛异常，也不向循环注册任何事件
+     */
     TEST(Timer, ConstructionSucceeds)
     {
         EventLoop loop;
@@ -26,6 +29,9 @@ namespace AsynGyanis::Core
         });
     }
 
+    /**
+     * @brief waitFor() 返回可构造的等待器，且未被 co_await 时不会向事件循环注册事件（不产生副作用）
+     */
     TEST(Timer, WaitForReturnsAwaiter)
     {
         EventLoop loop;

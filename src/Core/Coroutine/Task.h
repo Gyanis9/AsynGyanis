@@ -114,6 +114,8 @@ namespace AsynGyanis::Core
         Task(Task &&other) noexcept :
             m_handle(std::exchange(other.m_handle, nullptr))
         {
+            // 接管句柄的同时把源对象置空：协程帧只能被销毁一次，
+            // 源对象随后析构时若仍持有同一句柄，就会对同一帧重复 destroy
         }
 
         /**
@@ -123,10 +125,15 @@ namespace AsynGyanis::Core
          */
         Task &operator=(Task &&other) noexcept
         {
+            // 自赋值保护：*this 与 other 是同一对象时，交换会把同一个句柄写回自身，
+            // old 仍是这个要继续用的帧，随后 destroy 即销毁了活着的句柄，析构时再销毁一次
             if (this != &other)
             {
+                // 先取出旧句柄再接管新句柄：m_handle 被覆盖后旧帧就再无别的引用，
+                // 而协程帧不会自行释放，只能在这里补 destroy，否则未跑完的帧永久泄漏
                 const auto old = m_handle;
                 m_handle       = std::exchange(other.m_handle, nullptr);
+                // 判空后再销毁：句柄可能已被移动走，对空句柄调用 destroy 是未定义行为
                 if (old)
                     old.destroy();
             }
@@ -138,6 +145,9 @@ namespace AsynGyanis::Core
          */
         ~Task()
         {
+            // 判空是因为句柄可能已被移动走（移动构造/赋值会把源对象置空），
+            // 对空句柄调用 destroy 是未定义行为；非空时这里是协程帧的最后回收点：
+            // 帧若停在挂起点上被销毁，帧内尚未结束的局部对象会随帧正常析构
             if (m_handle)
                 m_handle.destroy();
         }
@@ -342,6 +352,8 @@ namespace AsynGyanis::Core
         Task(Task &&other) noexcept :
             m_handle(std::exchange(other.m_handle, nullptr))
         {
+            // 接管句柄的同时把源对象置空：协程帧只能被销毁一次，
+            // 源对象随后析构时若仍持有同一句柄，就会对同一帧重复 destroy
         }
 
         /**
@@ -351,10 +363,15 @@ namespace AsynGyanis::Core
          */
         Task &operator=(Task &&other) noexcept
         {
+            // 自赋值保护：*this 与 other 是同一对象时，交换会把同一个句柄写回自身，
+            // old 仍是这个要继续用的帧，随后 destroy 即销毁了活着的句柄，析构时再销毁一次
             if (this != &other)
             {
+                // 先取出旧句柄再接管新句柄：m_handle 被覆盖后旧帧就再无别的引用，
+                // 而协程帧不会自行释放，只能在这里补 destroy，否则未跑完的帧永久泄漏
                 const auto old = m_handle;
                 m_handle       = std::exchange(other.m_handle, nullptr);
+                // 判空后再销毁：句柄可能已被移动走，对空句柄调用 destroy 是未定义行为
                 if (old)
                     old.destroy();
             }
@@ -366,6 +383,9 @@ namespace AsynGyanis::Core
          */
         ~Task()
         {
+            // 判空是因为句柄可能已被移动走（移动构造/赋值会把源对象置空），
+            // 对空句柄调用 destroy 是未定义行为；非空时这里是协程帧的最后回收点：
+            // 帧若停在挂起点上被销毁，帧内尚未结束的局部对象会随帧正常析构
             if (m_handle)
                 m_handle.destroy();
         }

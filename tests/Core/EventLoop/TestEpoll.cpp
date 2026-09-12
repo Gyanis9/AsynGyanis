@@ -82,12 +82,18 @@ namespace AsynGyanis::Core
         };
     }
 
+    /**
+     * @brief 构造后立即持有可用的 epoll 句柄，而不是 kInvalidEpollHandle 占位
+     */
     TEST(Epoll, ConstructionAllocatesValidHandle)
     {
         Epoll epoll;
         ASSERT_NE(epoll.fileDescriptor(), Platform::kInvalidEpollHandle);
     }
 
+    /**
+     * @brief 移动构造把 epoll 句柄整体交给新对象，不重建底层实例
+     */
     TEST(Epoll, MoveConstructorTransfersHandle)
     {
         Epoll first;
@@ -98,6 +104,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(second.fileDescriptor(), originalHandle);
     }
 
+    /**
+     * @brief 移动赋值同样转移句柄：源被掏空、目标持有原句柄，不泄漏也不产生两个所有者
+     */
     TEST(Epoll, MoveAssignmentTransfersHandle)
     {
         Epoll first;
@@ -109,6 +118,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(second.fileDescriptor(), originalHandle);
     }
 
+    /**
+     * @brief 注册 EPOLLIN 后触发可读即上报事件，且事件带回注册时挂载的用户数据指针（调用方靠它定位上下文）
+     */
     TEST(Epoll, AddFileDescriptorDeliversReadableEvent)
     {
         Epoll epoll;
@@ -126,6 +138,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&sentinel));
     }
 
+    /**
+     * @brief 注销后不再投递事件：即使描述符已可读也不产生就绪项（避免等待器被已摘除的 fd 唤醒）
+     */
     TEST(Epoll, DelFileDescriptorStopsEventDelivery)
     {
         Epoll epoll;
@@ -142,6 +157,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(events.empty());
     }
 
+    /**
+     * @brief 无注册描述符时 wait() 在超时后返回空列表：既不死等也不报错
+     */
     TEST(Epoll, WaitTimeoutReturnsNoEvents)
     {
         Epoll epoll;
@@ -151,6 +169,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(events.empty());
     }
 
+    /**
+     * @brief modFileDescriptor() 真的替换了事件掩码：改为 EPOLLOUT 后按可写就绪，不再按可读
+     */
     TEST(Epoll, ModFileDescriptorChangesEventMask)
     {
         Epoll epoll;
@@ -167,6 +188,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(events[0].events & EPOLLOUT);
     }
 
+    /**
+     * @brief 多路注册时只上报真正就绪的那一个（用用户数据指针定位），未触发的描述符不产生误报
+     */
     TEST(Epoll, MultipleFileDescriptorsReportTriggeredOne)
     {
         Epoll epoll;

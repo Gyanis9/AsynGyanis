@@ -47,6 +47,9 @@ namespace AsynGyanis::Core
     // 继承关系
     // ============================================================================
 
+    /**
+     * @brief CoreException 同时站在两条继承链上：既能被框架基类 Base::Exception 捕获，也仍是标准库的 std::runtime_error
+     */
     TEST(CoreExceptionFamily, DerivesFromProjectBaseAndStandardRuntimeError)
     {
         // 这两条断言就是本次改造的验收点：Core 的运行期故障现在能被框架基类捕获
@@ -55,6 +58,10 @@ namespace AsynGyanis::Core
         static_assert(std::is_base_of_v<std::exception, CoreException>);
     }
 
+    /**
+     * @brief 用法错误（Base::InvalidArgumentException）刻意不在运行期故障链上
+     * @details 若并入，「可恢复故障」的捕获面 catch (const Base::Exception &) 会把调用方的 bug 一起吞掉
+     */
     TEST(CoreExceptionFamily, UsageErrorsStayOutsideTheRuntimeFailureChain)
     {
         // 参数非法这类用法错误走 std::invalid_argument 分支，刻意不并入运行期故障家族：
@@ -67,6 +74,9 @@ namespace AsynGyanis::Core
     // 捕获面
     // ============================================================================
 
+    /**
+     * @brief 一个 catch (const Base::Exception &) 即可兜住 Core 的运行期故障，且异常文本原样保留
+     */
     TEST(CoreExceptionFamily, OneCatchOfProjectBaseCoversCoreFailures)
     {
         const CoreException failure("创建 TLS 会话失败：SSL_new 返回空（上下文无效或内存不足）");
@@ -80,6 +90,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief CoreException 可分别按模块类型、框架基类、std::exception 捕获：替换裸标准异常后上游捕获面不缩水
+     */
     TEST(CoreExceptionFamily, CatchableAsModuleTypeAndStandardBase)
     {
         const CoreException failure("TLS 握手失败：对端证书不受信");
@@ -93,6 +106,9 @@ namespace AsynGyanis::Core
     // 消息与位置
     // ============================================================================
 
+    /**
+     * @brief 异常消息不加领域前缀、逐字保留调用点文本，并如实记录抛出位置（文件与行号）
+     */
     TEST(CoreExceptionFamily, MessageKeepsOriginalTextAndCarriesThrowSite)
     {
         // 消息不额外加领域前缀（调用点的文本已自带「创建 TLS 会话失败：」这类标签），

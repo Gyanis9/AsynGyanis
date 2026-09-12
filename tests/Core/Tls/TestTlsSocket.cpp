@@ -37,6 +37,9 @@ namespace AsynGyanis::Core
             std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
     }
 
+    /**
+     * @brief 构造后 fileDescriptor() 就是被包装的那个描述符，close() 由本对象负责收尾
+     */
     TEST(TlsSocket, ConstructionWrapsDescriptor)
     {
         EventLoop loop;
@@ -57,6 +60,9 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 移动构造把描述符整体交给新对象：新对象暴露的描述符等于原值，不重建连接
+     */
     TEST(TlsSocket, MoveConstructionTransfersDescriptor)
     {
         EventLoop loop;
@@ -80,6 +86,9 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 移动赋值同样转移描述符：不会出现两个 TlsSocket 管同一个 fd（也不会漏关旧的那一个）
+     */
     TEST(TlsSocket, MoveAssignmentTransfersDescriptor)
     {
         EventLoop loop;
@@ -111,6 +120,9 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(secondPeerDescriptor);
     }
 
+    /**
+     * @brief 重复 close() 幂等且安全：第二次不会重复释放底层资源，也不抛异常
+     */
     TEST(TlsSocket, DoubleCloseIsSafe)
     {
         EventLoop loop;
@@ -133,6 +145,10 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 「上下文建的 SSL + 描述符对」这条组合路径自洽：暴露的描述符与传入的一致
+     * @details 与 ConstructionWrapsDescriptor 的区别是本用例显式断言包装结果，覆盖 SSL 对象归属的完整链路
+     */
     TEST(TlsSocket, WrapsContextCreatedSslOverSocketPair)
     {
         EventLoop loop;
@@ -153,6 +169,10 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 拒绝面：对端在握手前关闭时握手必须以 CoreException 失败收场（可被 Base::Exception 统一捕获），而不是挂起等待
+     * @details 对端已关 → SSL_accept 立刻读到 EOF，不进 WANT_READ 分支，因此单次 resume 就能走到抛出点，不依赖时序
+     */
     TEST(TlsSocket, HandshakeAgainstClosedPeerFailsWithCoreException)
     {
         EventLoop  loop;

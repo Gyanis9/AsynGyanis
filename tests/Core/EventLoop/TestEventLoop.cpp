@@ -60,6 +60,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief 构造即备好有效的 epoll 句柄，且此时并不处于运行态（run() 之前不误报 running）
+     */
     TEST(EventLoop, ConstructionAllocatesValidEpoll)
     {
         EventLoop loop;
@@ -68,6 +71,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(loop.isRunning());
     }
 
+    /**
+     * @brief run()/stop() 的状态流转：进入循环后 isRunning() 为 true，stop() 并 join 后回到 false
+     */
     TEST(EventLoop, RunAndStopTransitionsRunningState)
     {
         EventLoop loop;
@@ -89,6 +95,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(loop.isRunning());
     }
 
+    /**
+     * @brief run() 之前就能拿到调度器（初始无待办）：允许先投递任务再启动循环
+     */
     TEST(EventLoop, SchedulerIsAccessibleBeforeRun)
     {
         EventLoop loop;
@@ -96,6 +105,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(loop.scheduler().hasWork());
     }
 
+    /**
+     * @brief wake() 能打断阻塞中的 epoll_wait：唤醒后 stop() 仍能正常退出，证明唤醒没有丢事件或卡住循环
+     */
     TEST(EventLoop, WakeInterruptsBlockingWait)
     {
         EventLoop loop;
@@ -118,6 +130,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(loop.isRunning());
     }
 
+    /**
+     * @brief 投递到循环调度器的协程能被 runOne() 取出并执行，副作用落到调用方可见的变量上
+     */
     TEST(EventLoop, SchedulerExecutesScheduledCoroutine)
     {
         EventLoop loop;
@@ -131,6 +146,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(value.load(), 42);
     }
 
+    /**
+     * @brief runAll() 把已投递的多个协程全部执行（每个各自的结果都落位），不会只跑第一个
+     */
     TEST(EventLoop, RunAllExecutesMultipleCoroutines)
     {
         EventLoop loop;
@@ -173,6 +191,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(results[2], 3);
     }
 
+    /**
+     * @brief 另一线程调用 stop() 能解除 run() 的阻塞并让工作线程 join 返回（stop() 线程安全）
+     */
     TEST(EventLoop, StopFromAnotherThreadExitsLoop)
     {
         EventLoop loop;
@@ -192,6 +213,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(loop.isRunning());
     }
 
+    /**
+     * @brief 重复 stop() 安全：多余的一次不抛异常、不影响退出（多路径收尾可叠加调用）
+     */
     TEST(EventLoop, DoubleStopIsSafe)
     {
         EventLoop loop;
@@ -210,6 +234,11 @@ namespace AsynGyanis::Core
         worker.join();
     }
 
+    /**
+     * @brief 停止请求是粘性的且实例不支持重启：先 stop() 再 run() 立刻返回，绝不吞掉那次请求
+     * @details 「先 stop 后 run」若被吞掉，工作线程会永远阻塞在 epoll_wait 上、join 随之卡死；
+     *          代价是同一实例无法重启（需要重新运行请新建实例），这是刻意保留的取舍
+     */
     TEST(EventLoop, StopBeforeRunIsStickyAndRunReturnsImmediately)
     {
         EventLoop loop;

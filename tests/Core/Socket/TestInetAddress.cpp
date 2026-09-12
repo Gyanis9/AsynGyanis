@@ -19,6 +19,9 @@
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief 默认构造得到的是 IPv4 通配地址 0.0.0.0:0，而不是未初始化的地址字段
+     */
     TEST(InetAddress, DefaultConstructionIsUnspecifiedIpv4Address)
     {
         const InetAddress address;
@@ -27,6 +30,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.port(), 0);
     }
 
+    /**
+     * @brief (port, ip) 参数序能正确解析 IPv4 文本，且 toString() 输出 ip:port
+     */
     TEST(InetAddress, PortThenIpConstructorParsesIpv4)
     {
         const InetAddress address(8080, "127.0.0.1");
@@ -36,6 +42,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.toString(), "127.0.0.1:8080");
     }
 
+    /**
+     * @brief (ip, port) 参数序同样可用：两种重载的解析结果一致，不因参数顺序不同而错位
+     */
     TEST(InetAddress, IpThenPortConstructorParsesIpv4)
     {
         const InetAddress address("192.168.1.1", 9090);
@@ -44,6 +53,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.port(), 9090);
     }
 
+    /**
+     * @brief localhost() 工厂固定给出回环地址 127.0.0.1：不走 DNS，不受本机 hosts 配置影响
+     */
     TEST(InetAddress, LocalhostFactoryReturnsLoopbackAddress)
     {
         const InetAddress address = InetAddress::localhost(3000);
@@ -52,6 +64,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.family(), AF_INET);
     }
 
+    /**
+     * @brief any() 工厂给出 0.0.0.0 通配地址：用于监听本机所有网卡
+     */
     TEST(InetAddress, AnyFactoryReturnsWildcardAddress)
     {
         const InetAddress address = InetAddress::any(4000);
@@ -60,6 +75,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.family(), AF_INET);
     }
 
+    /**
+     * @brief resolve() 能解析本机名，且只保证落到回环语义上（127.0.0.1 或 ::1 都算通过，不硬编 DNS 结果）
+     */
     TEST(InetAddress, ResolveLocalhostReturnsValidAddress)
     {
         const std::optional<InetAddress> address = InetAddress::resolve("localhost", 8080);
@@ -69,18 +87,27 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(address->ip() == "127.0.0.1" || address->ip() == "::1");
     }
 
+    /**
+     * @brief 拒绝面：空主机名解析失败返回 nullopt，而不是被当成通配地址 0.0.0.0 悄悄接受
+     */
     TEST(InetAddress, ResolveEmptyHostReturnsNullopt)
     {
         const std::optional<InetAddress> address = InetAddress::resolve("", 8080);
         EXPECT_FALSE(address.has_value());
     }
 
+    /**
+     * @brief toString() 的输出格式固定为 ip:port（调用方与日志都依赖这一格式）
+     */
     TEST(InetAddress, ToStringFormatsIpv4Address)
     {
         const InetAddress address("10.0.0.1", 1234);
         EXPECT_EQ(address.toString(), "10.0.0.1:1234");
     }
 
+    /**
+     * @brief 相等比较同时看 IP 与端口：只差端口或只差 IP 都不算相等
+     */
     TEST(InetAddress, EqualityOperatorsCompareIpAndPort)
     {
         const InetAddress sameFirst(8080, "127.0.0.1");
@@ -93,6 +120,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(sameFirst != differentIp);
     }
 
+    /**
+     * @brief 从 sockaddr_in 直接构造时原样采纳原始地址：族、端口、地址三段都对得上
+     */
     TEST(InetAddress, SockaddrInConstructorAdoptsRawAddress)
     {
         sockaddr_in rawAddress{};
@@ -106,6 +136,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.ip(), "10.20.30.40");
     }
 
+    /**
+     * @brief nativeAddress() 暴露底层 sockaddr 存储及对应长度，可直接交给系统调用
+     */
     TEST(InetAddress, NativeAddressExposesSockaddrStorage)
     {
         const InetAddress address(7777, "1.2.3.4");
@@ -113,6 +146,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.nativeAddressLength(), sizeof(sockaddr_in));
     }
 
+    /**
+     * @brief IPv6 文本按 AF_INET6 解析并能原样读回：族判定不是写死的 AF_INET
+     */
     TEST(InetAddress, Ipv6AddressRoundTripsThroughConstructor)
     {
         const InetAddress address(8080, "::1");
@@ -121,6 +157,10 @@ namespace AsynGyanis::Core
         EXPECT_EQ(address.port(), 8080);
     }
 
+    /**
+     * @brief 拒绝面：既非 IPv4 也非 IPv6 的文本必须抛非法参数异常并给出可操作文案，不留 0.0.0.0 半成品
+     * @details 半成品会让「解析失败」与「确实是 0.0.0.0」无法区分；主机名同样被拒（解析主机名是 resolve() 的职责）
+     */
     TEST(InetAddress, RejectsTextThatIsNeitherIpv4NorIpv6)
     {
         // 拒绝面：既不是点分十进制也不是冒号十六进制时必须抛错，而不是留下一个 0.0.0.0 的
@@ -142,6 +182,9 @@ namespace AsynGyanis::Core
         EXPECT_THROW(static_cast<void>(InetAddress("localhost", 80)), Base::InvalidArgumentException);
     }
 
+    /**
+     * @brief 拒绝面：含内嵌 NUL 的地址文本必须在进入 inet_pton 前失败，而不是被零终止语义静默截断成前半个合法 IP
+     */
     TEST(InetAddress, RejectsEmbeddedNulInsteadOfSilentlyTruncating)
     {
         // 底层 inet_pton 按零终止语义解析，若不拦下内嵌 NUL，

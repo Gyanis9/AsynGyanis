@@ -55,6 +55,10 @@ namespace AsynGyanis::Core
         }
     } // namespace
 
+    /**
+     * @brief 注册失败（同一 fd 已注册导致 EEXIST）时 await_suspend 必须抛出：协程以异常结束而不是永久挂起
+     * @details 修复前这里吞掉返回值，协程已挂起却再无事件能唤醒它，表现为静默卡死且没有任何错误线索
+     */
     TEST(EpollAwaiter, RegistrationFailureThrowsInsteadOfSuspendingForever)
     {
         Epoll epoll;
@@ -79,6 +83,9 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 事件到达恢复协程后自动注销该 fd：恢复后 MOD 失败即证明注册无残留，同一 fd 的下一次等待不会因 EEXIST 失败
+     */
     TEST(EpollAwaiter, ResumeDeregistersFileDescriptor)
     {
         Epoll epoll;
@@ -106,6 +113,9 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 协程帧在挂起状态下被销毁（异常展开/取消）时由等待器析构兜底注销：不留悬空注册，同一 fd 之后还能重新 ADD
+     */
     TEST(EpollAwaiter, DestroyingSuspendedFrameDeregistersFileDescriptor)
     {
         Epoll epoll;

@@ -33,6 +33,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief 本地投递的任务构成待办：runOne() 能取出并执行一次，副作用落到实处
+     */
     TEST(Scheduler, ScheduleAndRunOneExecutesTask)
     {
         Scheduler scheduler;
@@ -46,6 +49,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(counter.load(), 1);
     }
 
+    /**
+     * @brief runAll() 一次跑完队列里的全部任务（不止第一个），跑完 hasWork() 归 false
+     */
     TEST(Scheduler, RunAllProcessesAllScheduledTasks)
     {
         Scheduler scheduler;
@@ -65,6 +71,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.hasWork());
     }
 
+    /**
+     * @brief scheduleRemote() 可从其它线程投递：跨线程到达的任务最终由本调度器执行，不丢不裂
+     */
     TEST(Scheduler, ScheduleRemoteFromAnotherThreadExecutesTask)
     {
         Scheduler scheduler;
@@ -82,6 +91,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(counter.load(), 1);
     }
 
+    /**
+     * @brief 空调度器报「无工作」：事件循环据此改用无限阻塞而不是 0 超时空转
+     */
     TEST(Scheduler, HasWorkReturnsFalseWhenEmpty)
     {
         Scheduler scheduler;
@@ -89,6 +101,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.hasWork());
     }
 
+    /**
+     * @brief localQueueSize() 如实反映本地队列长度：投递后为 1，被取出执行后回到 0
+     */
     TEST(Scheduler, LocalQueueSizeReflectsPendingTasks)
     {
         Scheduler scheduler;
@@ -105,6 +120,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(scheduler.localQueueSize(), 0u);
     }
 
+    /**
+     * @brief 投递空句柄被静默忽略（不进任何队列）：空句柄不构成待办，也不该被当成有效任务执行
+     */
     TEST(Scheduler, ScheduleNullHandleIsIgnored)
     {
         Scheduler scheduler;
@@ -114,6 +132,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.hasWork());
     }
 
+    /**
+     * @brief 远端（跨线程）投递空句柄同样被忽略：runOne() 无任务可跑，返回 false
+     */
     TEST(Scheduler, ScheduleRemoteNullHandleIsIgnored)
     {
         Scheduler scheduler;
@@ -122,6 +143,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.runOne());
     }
 
+    /**
+     * @brief 队列为空时 runOne() 返回 false，调用方据此区分「没有跑到任务」与「跑到了但无副作用」
+     */
     TEST(Scheduler, RunOneReturnsFalseWhenEmpty)
     {
         Scheduler scheduler;
@@ -129,6 +153,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.runOne());
     }
 
+    /**
+     * @brief 工作窃取只针对全局（跨线程）队列：本地队列任务对窃取者不可见，窃取后源调度器仍能自行执行本地任务
+     */
     TEST(Scheduler, StealFromTakesOnlyGlobalQueueTasks)
     {
         Scheduler source;
@@ -157,6 +184,9 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(source.hasWork());
     }
 
+    /**
+     * @brief 多次跨线程投递的任务全部保留在全局队列：逐个 runOne() 都能取到，结束后队列清空
+     */
     TEST(Scheduler, MultipleScheduleRemoteCallsAreProcessed)
     {
         Scheduler scheduler;

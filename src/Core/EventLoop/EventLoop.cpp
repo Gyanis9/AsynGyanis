@@ -5,6 +5,8 @@ namespace AsynGyanis::Core
 {
     EventLoop::EventLoop()
     {
+        // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
+        // 「唤醒通知」与「协程句柄事件」，因此两者不能共用同一个用户数据槽
         m_scheduler.setWakeupNotifier(&m_wakeup);
         m_epoll.addFileDescriptor(m_wakeup.readDescriptor(), EPOLLIN, &m_wakeupSentinel);
     }
@@ -62,6 +64,10 @@ namespace AsynGyanis::Core
 
     void EventLoop::stop()
     {
+        // 必须先置位再唤醒：唤醒只负责让阻塞中的 epoll_wait 立刻返回并重读标志。
+        // 若顺序反过来，工作线程可能在标志写入前被唤醒并重新阻塞，而 stop() 不会再有
+        // 第二次唤醒，run() 便永远等不到停止请求；release 语义则保证这次写入
+        // 对随唤醒而恢复的线程可见，不会被重排到 notify 之后
         m_stopRequested.store(true, std::memory_order_release);
         wake();
     }
