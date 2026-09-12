@@ -91,5 +91,41 @@ namespace AsynGyanis::Platform
          * @return int 新连接描述符，失败返回 FileDescriptor::kInvalid
          */
         static int accept(int listenDescriptor, sockaddr *address, socklen_t *addressLength) noexcept;
+
+        /**
+         * @brief 开启地址复用（SO_REUSEADDR）
+         * @details 允许绑定到仍处于 TIME_WAIT 的地址，服务重启时不再偶发「地址已被占用」；
+         *          两个平台的语义一致，故监听套接字默认都该打开它。
+         * @param descriptor 目标套接字描述符
+         * @return true 设置成功；false 失败，可用 PlatformError::lastSocketErrorCode() 取原因
+         */
+        static bool setReuseAddress(int descriptor) noexcept;
+
+        /**
+         * @brief 开启端口复用（SO_REUSEPORT）
+         * @details Linux 3.9+ 支持，可让多个监听套接字分摊 accept 队列并各自独立绑定同端口；
+         *          Windows 没有该选项，此时返回 false，调用方按「不支持」降级而不必视为错误。
+         * @param descriptor 目标套接字描述符
+         * @return true 设置成功；false 平台不提供该选项或设置失败
+         */
+        static bool setReusePort(int descriptor) noexcept;
+
+        /**
+         * @brief 关闭 Nagle 算法（TCP_NODELAY）
+         * @details 低延迟协议（HTTP 小响应、RPC）必须关闭合批，否则小包会被攒到 ACK 才发出。
+         * @param descriptor 目标套接字描述符
+         * @return true 设置成功
+         */
+        static bool setNoDelay(int descriptor) noexcept;
+
+        /**
+         * @brief 设置 IPv6 套接字是否只接受 IPv6 连接（IPV6_V6ONLY）
+         * @details 双栈监听（isOnlyV6=false）才能同时接住 IPv4 映射地址；
+         *          非 IPv6 套接字调用本函数会失败，调用方应先判 family。
+         * @param descriptor 目标套接字描述符
+         * @param isOnlyV6 true 表示仅接受 IPv6，false 表示双栈
+         * @return true 设置成功
+         */
+        static bool setIpv6Only(int descriptor, bool isOnlyV6) noexcept;
     };
 } // namespace AsynGyanis::Platform

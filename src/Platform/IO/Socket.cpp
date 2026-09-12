@@ -40,6 +40,21 @@ namespace AsynGyanis::Platform
             static WinsockReferenceCount state;
             return state;
         }
+
+        /**
+         * @brief 设置一个 int 尺寸的套接字选项
+         * @param descriptor 目标套接字描述符
+         * @param optionLevel 选项层级，如 SOL_SOCKET / IPPROTO_TCP / IPPROTO_IPV6
+         * @param optionName 选项名
+         * @param optionValue 选项值
+         * @return true 设置成功
+         */
+        bool setIntegerOption(const int descriptor, const int optionLevel, const int optionName, const int optionValue) noexcept
+        {
+            // Windows 的值参数是 const char*，POSIX 是 const void*：
+            // 统一转成 const char* 对两边都成立，业务层因此不必再写平台分支
+            return ::setsockopt(descriptor, optionLevel, optionName, reinterpret_cast<const char *>(&optionValue), static_cast<socklen_t>(sizeof(optionValue))) == 0;
+        }
     }
 
     bool Socket::initialize() noexcept
@@ -88,5 +103,33 @@ namespace AsynGyanis::Platform
 #else
         return ::accept4(listenDescriptor, address, addressLength, SOCK_NONBLOCK | SOCK_CLOEXEC);
 #endif
+    }
+
+    bool Socket::setReuseAddress(const int descriptor) noexcept
+    {
+        return setIntegerOption(descriptor, SOL_SOCKET, SO_REUSEADDR, 1);
+    }
+
+    bool Socket::setReusePort(const int descriptor) noexcept
+    {
+#ifdef SO_REUSEPORT
+        // 用特性宏而不是操作系统宏判定：可用性取决于内核版本，不是取决于厂商
+        return setIntegerOption(descriptor, SOL_SOCKET, SO_REUSEPORT, 1);
+#else
+        // Windows 没有该选项，返回 false 让调用方按「不支持」降级而不是当作失败
+        (void) descriptor;
+        return false;
+#endif
+    }
+
+    bool Socket::setNoDelay(const int descriptor) noexcept
+    {
+        return setIntegerOption(descriptor, IPPROTO_TCP, TCP_NODELAY, 1);
+    }
+
+    bool Socket::setIpv6Only(const int descriptor, const bool isOnlyV6) noexcept
+    {
+        // 布尔值在两个平台上都按 int 尺寸传递，写成 0/1 避免 sizeof(bool) 歧义
+        return setIntegerOption(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, isOnlyV6 ? 1 : 0);
     }
 } // namespace AsynGyanis::Platform
