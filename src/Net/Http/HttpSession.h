@@ -125,9 +125,6 @@ namespace AsynGyanis::Net
          */
         inline constexpr std::size_t kMaximumReceiveBufferLength = kMaximumHeaderBlockLength + kInitialReceiveBufferLength;
 
-        /// 单次发送的分界阈值，单位字节：不超过它就直接交给一次 asyncSend，省掉一个内层协程帧
-        inline constexpr std::size_t kSmallResponseSendThreshold = 4ull * 1024;
-
         /**
          * @brief 一次报文定界的结论
          */
@@ -301,32 +298,39 @@ namespace AsynGyanis::Net
                 readOffset = 0;
             };
 
-            // 分批发完一段字节：asyncSend 允许部分写入，返回 0 或负值即连接不可用
-            const auto sendAll = [&socket](const std::string_view data) -> Core::Task<bool>
+            // 发出响应：把「头部块 + 正文」作为两段提交，正文因此不必先拷进头部块。
+            // 传输层支持聚合写（AsyncSocket）时是一次系统调用提交两段；TLS 记录层只接受
+            // 单块明文，退回两次顺序发送——两者都在数据语义上等价，差别只在是否多一次拷贝。
+            // 视图指向的数据活到本次 co_await 结束（响应对象活得更久，序列化结果活在这个
+            // 完整表达式里），因此引用捕获是安全的
+            const auto sendResponse = [&socket](const std::string_view head, const std::string_view body) -> Core::Task<bool>
             {
-                std::size_t sentLength = 0;
-                while (sentLength < data.size())
+                if constexpr (requires { socket.asyncSendVectored(nullptr, 0); })
                 {
-                    const ssize_t writeLength = co_await socket.asyncSend(
-                            data.data() + sentLength, data.size() - sentLength);
-                    if (writeLength <= 0)
+                    if (body.empty())
+                    {
+                        const ssize_t writeLength = co_await socket.asyncSend(head.data(), head.size());
+                        co_return writeLength > 0;
+                    }
+                    const Platform::Socket::WriteBuffer buffers[2] = {
+                            {head.data(), head.size()},
+                            {body.data(), body.size()},
+                    };
+                    const ssize_t writeLength = co_await socket.asyncSendVectored(buffers, 2);
+                    co_return writeLength > 0;
+                } else
+                {
+                    if (const ssize_t headLength = co_await socket.asyncSend(head.data(), head.size()); headLength <= 0)
                     {
                         co_return false;
                     }
-                    sentLength += static_cast<std::size_t>(writeLength);
+                    if (body.empty())
+                    {
+                        co_return true;
+                    }
+                    const ssize_t bodyLength = co_await socket.asyncSend(body.data(), body.size());
+                    co_return bodyLength > 0;
                 }
-                co_return true;
-            };
-
-            // 发出响应：小响应走单次发送，省掉一个内层协程帧
-            const auto sendResponse = [&sendAll, &socket](const std::string_view serializedResponse) -> Core::Task<bool>
-            {
-                if (serializedResponse.size() <= kSmallResponseSendThreshold)
-                {
-                    const ssize_t writeLength = co_await socket.asyncSend(serializedResponse.data(), serializedResponse.size());
-                    co_return writeLength > 0;
-                }
-                co_return co_await sendAll(serializedResponse);
             };
 
             // 读一次网络字节并追加到有效区末尾。返回 0 表示对端正常关闭，负值表示连接不可用
@@ -403,7 +407,7 @@ namespace AsynGyanis::Net
                         errorResponse.setHeader("connection", "close");
 
                         // 本分支直接结束会话，因此不再回填 keepAlive：发完这一句就收口
-                        co_await sendResponse(errorResponse.toString());
+                        co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
                         co_return;
                     }
 
@@ -416,7 +420,7 @@ namespace AsynGyanis::Net
                         writeFramingErrorResponse(headerTooLargeResponse, FrameOutcome::HeaderBlockTooLarge);
                         headerTooLargeResponse.setHeader("connection", "close");
 
-                        co_await sendResponse(headerTooLargeResponse.toString());
+                        co_await sendResponse(headerTooLargeResponse.serializeHead(), headerTooLargeResponse.body());
                         co_return;
                     }
 
@@ -469,7 +473,7 @@ namespace AsynGyanis::Net
                         errorResponse.setHeader("content-type", "text/plain");
                         errorResponse.setHeader("connection", "close");
 
-                        co_await sendResponse(errorResponse.toString());
+                        co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
                         co_return;
                     }
                     continue;
@@ -493,7 +497,7 @@ namespace AsynGyanis::Net
                     errorResponse.setHeader("content-type", "text/plain");
                     errorResponse.setHeader("connection", "close");
 
-                    co_await sendResponse(errorResponse.toString());
+                    co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
 
                     // 断开之前显式复位：把粘滞错误态与半成品请求一起清掉，
                     // 万一上层复用同一个解析器对象（例如把会话挪作他用），也不会读到脏请求
@@ -555,8 +559,10 @@ namespace AsynGyanis::Net
                     response.setHeader("connection", "keep-alive");
                 }
 
-                const std::string serializedResponse = response.toString();
-                if (!co_await sendResponse(serializedResponse))
+                // 头部序列化一次，正文留在响应对象里：两段一起提交，正文不必再拷一份。
+                // serializedHead 是具名局部，正文视图指向的 response 也活到本次调用之后
+                const std::string serializedHead = response.serializeHead();
+                if (!co_await sendResponse(serializedHead, response.body()))
                 {
                     co_return;
                 }

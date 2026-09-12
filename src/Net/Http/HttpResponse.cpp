@@ -343,12 +343,27 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::string HttpResponse::toString() const
+    bool HttpResponse::carriesNoContent() const noexcept
     {
-        // ---- 第一步：预估容量。顺序与第二步的输出顺序严格对应，估不准只是多一次扩容 ----
-        std::size_t reservedLength = kStatusLineReserveLength + kHeaderBlockTerminatorReserveLength + m_body.size();
-        bool hasContentTypeHeader = false;
-        bool hasContentLengthHeader = false;
+        // RFC 9110 §6.3：1xx、204、304 一律不含正文。这里按状态码在序列化层兜住，
+        // 不能只指望上游 Router 的 finalizeResponse 先把正文清空——业务直接
+        // setStatus(204) + setBody(...) 就会发出「没有 content-length 却带正文」的报文，
+        // keep-alive 上的下一帧边界随之错位
+        return m_status == 204 || m_status == 304 || (m_status >= 100 && m_status < 200);
+    }
+
+    bool HttpResponse::mustNotDeclareContentLength() const noexcept
+    {
+        // 204 与 1xx 响应不得带正文，自动补 content-length 会让收端把「接下来没有字节」
+        // 当成一条额外承诺；304 则被 RFC 7230 明确允许携带，故不排除
+        return m_status == 204 || (m_status >= 100 && m_status < 200);
+    }
+
+    std::size_t HttpResponse::headReserveLength() const
+    {
+        std::size_t reservedLength = kStatusLineReserveLength + kHeaderBlockTerminatorReserveLength;
+        bool        hasContentTypeHeader = false;
+        bool        hasContentLengthHeader = false;
         for (const HeaderField &field : m_headerFields)
         {
             reservedLength += field.name.size() + field.value.size() + kHeaderLineReserveLength;
@@ -366,15 +381,16 @@ namespace AsynGyanis::Net
         {
             reservedLength += kAutoContentTypeReserveLength;
         }
-        if (!hasContentLengthHeader)
+        if (!hasContentLengthHeader && !mustNotDeclareContentLength())
         {
             reservedLength += kAutoContentLengthReserveLength;
         }
+        return reservedLength;
+    }
 
-        std::string result;
-        result.reserve(reservedLength);
-
-        // ---- 第二步：状态行。版本取 setHttpVersion 传进来的值，与请求行版本保持一致 ----
+    void HttpResponse::appendHead(std::string &result) const
+    {
+        // ---- 状态行。版本取 setHttpVersion 传进来的值，与请求行版本保持一致 ----
         result.append(m_httpVersion);
         result.push_back(' ');
         appendDecimal(result, m_status);
@@ -382,48 +398,61 @@ namespace AsynGyanis::Net
         result.append(statusMessage(m_status));
         result.append(kCrLf);
 
-        // ---- 第三步：头部块。按权威记录的设置顺序逐条输出，不再遍历 unordered_map ----
+        // ---- 头部块。按权威记录的设置顺序逐条输出，不再遍历 unordered_map ----
         // 顺带解决了两件事：跨次运行顺序稳定；多条 Set-Cookie 各占一行且先设先发
+        bool hasContentTypeHeader  = false;
+        bool hasContentLengthHeader = false;
         for (const HeaderField &field : m_headerFields)
         {
+            if (field.name == kContentTypeHeaderName)
+            {
+                hasContentTypeHeader = true;
+            } else if (field.name == kContentLengthHeaderName)
+            {
+                hasContentLengthHeader = true;
+            }
+
             result.append(field.name);
             result.append(kHeaderNameValueSeparator);
             result.append(field.value);
             result.append(kCrLf);
         }
 
-        // ---- 第四步：补缺。调用方没写的两条由这里兜底，排在自设头部之后 ----
+        // ---- 补缺。调用方没写的两条由这里兜底，排在自设头部之后 ----
         if (!hasContentTypeHeader && !m_body.empty())
         {
             // 有正文却漏设媒体类型时按纯文本下发：不会被浏览器当脚本执行，是最安全的兜底
             result.append(kAutoContentTypeHeader);
         }
-        if (!hasContentLengthHeader)
+        if (!hasContentLengthHeader && !mustNotDeclareContentLength())
         {
-            // RFC 9110 §6.3：204 与 1xx 响应不得带正文，自动补 content-length 会让
-            // 收端把「接下来没有字节」当成一条额外承诺；304 则被 RFC 7230 明确允许携带，故不排除
-            const bool mustNotDeclareContentLength = m_status == 204 || (m_status >= 100 && m_status < 200);
-            if (!mustNotDeclareContentLength)
-            {
-                // content-length 必须是正文的真实字节数，收端据此判定报文边界，错一个字节整条连接就错位
-                result.append(kAutoContentLengthHeaderPrefix);
-                appendDecimal(result, m_body.size());
-                result.append(kCrLf);
-            }
+            // content-length 必须是正文的真实字节数，收端据此判定报文边界，错一个字节整条连接就错位
+            result.append(kAutoContentLengthHeaderPrefix);
+            appendDecimal(result, m_body.size());
+            result.append(kCrLf);
         }
 
         result.append(kCrLf);
+    }
 
-        // RFC 9110 §6.3：1xx、204、304 一律不含正文。这里按状态码在序列化层兜住，
-        // 不能只指望上游 Router 的 finalizeResponse 先把正文清空——业务直接
-        // setStatus(204) + setBody(...) 就会发出「没有 content-length 却带正文」的报文，
-        // keep-alive 上的下一帧边界随之错位
-        const bool responseCarriesNoContent = m_status == 204 || m_status == 304 || (m_status >= 100 && m_status < 200);
-        if (!responseCarriesNoContent)
+    std::string HttpResponse::serializeHead() const
+    {
+        std::string result;
+        result.reserve(headReserveLength());
+        appendHead(result);
+        return result;
+    }
+
+    std::string HttpResponse::toString() const
+    {
+        std::string result;
+        // 头部与正文一次预留到位：估不准只是多一次扩容，不影响正确性
+        result.reserve(headReserveLength() + (carriesNoContent() ? 0 : m_body.size()));
+        appendHead(result);
+        if (!carriesNoContent())
         {
             result.append(m_body);
         }
-
         return result;
     }
 

@@ -135,6 +135,19 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string toString() const;
 
         /**
+         * @brief 只序列化响应头部（状态行 + 头部块 + 空白行），不含正文
+         *
+         * @details 配合 body() 使用，可把「头部块 + 正文」作为两段交给聚合写一次提交，
+         *          省掉把正文拼进头部块的那次整体拷贝（大正文与文件响应最明显）。
+         *          补齐规则与 toString() 完全一致：正文非空且未设 content-type 时补
+         *          text/plain，未设 content-length 时按正文实际字节数补一条（1xx/204 不补）。
+         * @return 响应头部块字符串，长度不包含正文
+         * @note 与 toString() 拼接后的结果逐字节相同：toString() 就是「本函数 + 正文」，
+         *       差别只在于正文是否需要额外一份拷贝
+         */
+        [[nodiscard]] std::string serializeHead() const;
+
+        /**
          * @brief 创建一个 200 OK 响应。
          * @param body 响应正文
          * @return HttpResponse 对象，已带 content-type: text/plain
@@ -207,6 +220,32 @@ namespace AsynGyanis::Net
          * @return 指向首个同名条目的迭代器，未命中时等于 m_headerFields.end()
          */
         HeaderFieldList::iterator findHeaderField(const std::string &canonicalName);
+
+        /**
+         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
+         * @return true 表示序列化时不得输出正文
+         */
+        [[nodiscard]] bool carriesNoContent() const noexcept;
+
+        /**
+         * @brief 该状态码是否不得自动补 content-length
+         * @details 与 carriesNoContent() 刻意不同：304 不允许带正文，但明确允许携带
+         *          content-length（RFC 7230），因此只有 1xx 与 204 需要跳过自动补缺
+         * @return true 表示不补 content-length
+         */
+        [[nodiscard]] bool mustNotDeclareContentLength() const noexcept;
+
+        /**
+         * @brief 计算头部块（状态行 + 头部 + 空白行）的预留长度，不含正文
+         * @return std::size_t 预留字节数
+         */
+        [[nodiscard]] std::size_t headReserveLength() const;
+
+        /**
+         * @brief 把头部块追加到目标串
+         * @param result 目标串（调用方已按 headReserveLength 预留容量）
+         */
+        void appendHead(std::string &result) const;
 
         int m_status{200};                                     ///< HTTP 状态码，默认 200
         std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1

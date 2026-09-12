@@ -203,6 +203,95 @@ namespace AsynGyanis::Core
         }
     }
 
+    Task<ssize_t> AsyncSocket::asyncSendVectored(const Platform::Socket::WriteBuffer *const buffers, const std::size_t bufferCount) const
+    {
+        // 段数与空数组属于调用方契约：静默拆分会让「一次系统调用」的前提悄悄失效，
+        // 静默补齐零段则会让调用方以为数据发出去了，两者都必须当场失败
+        if (buffers == nullptr || bufferCount == 0)
+        {
+            throw Base::SystemException("聚合发送失败：段数组为空");
+        }
+        if (bufferCount > Platform::Socket::kMaximumVectorCount)
+        {
+            throw Base::SystemException("聚合发送失败：段数 " + std::to_string(bufferCount) + " 超过平台上限 " +
+                                        std::to_string(Platform::Socket::kMaximumVectorCount) +
+                                        "（Windows 的 WSASend 最多 16 段），请先把相邻小段合并后再发送");
+        }
+
+        std::size_t totalLength = 0;
+        for (std::size_t index = 0; index < bufferCount; ++index)
+        {
+            totalLength += buffers[index].length;
+        }
+
+        // 部分写之后从哪继续：cursorIndex 是尚未发完的那一段，cursorOffset 是段内已发出的字节数。
+        // 每次提交都把游标之后的段原样带上（不复制数据），因此一轮系统调用仍然是「一次提交多段」
+        std::size_t sentTotal    = 0;
+        std::size_t cursorIndex  = 0;
+        std::size_t cursorOffset = 0;
+
+        while (sentTotal < totalLength)
+        {
+            Platform::Socket::WriteBuffer pending[Platform::Socket::kMaximumVectorCount]{};
+            std::size_t                    pendingCount = 0;
+            if (cursorOffset < buffers[cursorIndex].length)
+            {
+                pending[pendingCount].data = static_cast<const char *>(buffers[cursorIndex].data) + cursorOffset;
+                pending[pendingCount].length = buffers[cursorIndex].length - cursorOffset;
+                ++pendingCount;
+            }
+            for (std::size_t index = cursorIndex + 1; index < bufferCount; ++index)
+            {
+                pending[pendingCount] = buffers[index];
+                ++pendingCount;
+            }
+
+            const ssize_t sentBytes = Platform::Socket::writeVectored(m_fileDescriptor, pending, pendingCount);
+            if (sentBytes > 0)
+            {
+                // 推进游标：可能一次跨过若干整段，也可能停在某一段中间
+                std::size_t remainingAdvance = static_cast<std::size_t>(sentBytes);
+                sentTotal += remainingAdvance;
+                while (remainingAdvance > 0 && cursorIndex < bufferCount)
+                {
+                    const std::size_t remainingInCurrent = buffers[cursorIndex].length - cursorOffset;
+                    if (remainingAdvance < remainingInCurrent)
+                    {
+                        cursorOffset += remainingAdvance;
+                        remainingAdvance = 0;
+                    } else
+                    {
+                        remainingAdvance -= remainingInCurrent;
+                        ++cursorIndex;
+                        cursorOffset = 0;
+                    }
+                }
+                continue;
+            }
+
+            // 与 asyncSend 一致：底层返回 0 说明对端已关闭，errno 未被设置，以 -1 作为可判定的返回值
+            if (sentBytes == 0)
+            {
+                co_return -1;
+            }
+
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            {
+                if (!co_await waitWritable())
+                {
+                    throw Base::SystemException("聚合发送失败：等待可写期间套接字被关闭");
+                }
+                continue;
+            }
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
+            {
+                continue;
+            }
+            throw Base::SystemException("聚合发送数据失败");
+        }
+        co_return static_cast<ssize_t>(sentTotal);
+    }
+
     void AsyncSocket::close()
     {
         if (m_fileDescriptor >= 0)

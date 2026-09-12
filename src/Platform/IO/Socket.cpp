@@ -3,6 +3,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <limits>
 #include <mutex>
 
 namespace AsynGyanis::Platform
@@ -139,5 +140,56 @@ namespace AsynGyanis::Platform
             return PlatformError::lastSocketErrorCode();
         }
         return pendingError;
+    }
+
+    ssize_t Socket::writeVectored(const int descriptor, const WriteBuffer *const buffers, const std::size_t bufferCount) noexcept
+    {
+        // 段数与长度先按平台上限校验：这两处超限都必须当场失败。
+        // 段数超限静默拆分会让「一次系统调用」的收益悄悄消失；单段长度被截断更糟——
+        // 线上字节流会缺一截，而返回值看起来一切正常
+        if (!FileDescriptor::isValid(descriptor) || buffers == nullptr || bufferCount == 0 || bufferCount > kMaximumVectorCount)
+        {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return -1;
+        }
+
+#if ASYN_PLATFORM_WIN32
+        WSABUF windowsBuffers[kMaximumVectorCount]{};
+        for (std::size_t index = 0; index < bufferCount; ++index)
+        {
+            if (!buffers[index].data && buffers[index].length != 0)
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+            if (buffers[index].length > static_cast<std::size_t>(std::numeric_limits<ULONG>::max()))
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+            windowsBuffers[index].buf = static_cast<char *>(const_cast<void *>(buffers[index].data));
+            windowsBuffers[index].len = static_cast<ULONG>(buffers[index].length);
+        }
+
+        DWORD sentLength = 0;
+        if (::WSASend(static_cast<SOCKET>(descriptor), windowsBuffers, static_cast<DWORD>(bufferCount), &sentLength, 0, nullptr, nullptr) == SOCKET_ERROR)
+        {
+            return -1;
+        }
+        return static_cast<ssize_t>(sentLength);
+#else
+        iovec vectors[kMaximumVectorCount]{};
+        for (std::size_t index = 0; index < bufferCount; ++index)
+        {
+            vectors[index].iov_base = const_cast<void *>(buffers[index].data);
+            vectors[index].iov_len  = buffers[index].length;
+        }
+
+        // 用 sendmsg 而不是 writev：只有它带 MSG_NOSIGNAL，对端已关闭时不会把进程打死
+        msghdr message{};
+        message.msg_iov    = vectors;
+        message.msg_iovlen = bufferCount;
+        return ::sendmsg(descriptor, &message, MSG_NOSIGNAL);
+#endif
     }
 } // namespace AsynGyanis::Platform

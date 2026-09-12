@@ -12,12 +12,16 @@
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
+#include "Platform/IO/FileDescriptor.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <coroutine>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <string_view>
 
 namespace AsynGyanis::Core
 {
@@ -240,5 +244,81 @@ namespace AsynGyanis::Core
 
         client.close();
         listener.close();
+    }
+
+    /**
+     * @brief 聚合发送把多段按顺序写成一个字节流，且短数据在回环上不挂起
+     *
+     * @details socketpair 造一条双向通道：一端包成 AsyncSocket 做聚合发送，另一端直接读。
+     *          用例不引入事件循环线程——小数据一次就写完，不会挂起，时序完全确定。
+     */
+    TEST(AsyncSocket, AsyncSendVectoredDeliversSegmentsInOrder)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        AsyncSocket sender(loop, localDescriptor);
+
+        const std::string_view first  = "GET /a HTTP/1.1\r\n";
+        const std::string_view second = "Host: localhost\r\n";
+        const std::string_view third  = "\r\nBODY";
+        const Platform::Socket::WriteBuffer buffers[3] = {
+                {first.data(), first.size()},
+                {second.data(), second.size()},
+                {third.data(), third.size()},
+        };
+        const std::size_t expectedLength = first.size() + second.size() + third.size();
+
+        Task<ssize_t> sending = sender.asyncSendVectored(buffers, 3);
+        sending.handle().resume();
+        ASSERT_TRUE(sending.isReady()) << "回环上的小数据不应挂起";
+        EXPECT_EQ(sending.handle().promise().result(), static_cast<ssize_t>(expectedLength));
+
+        // 读侧看到的必须是三段按序拼接的结果
+        std::string received(expectedLength, '\0');
+        std::size_t receivedLength = 0;
+        while (receivedLength < expectedLength)
+        {
+            const ssize_t readLength = Platform::FileDescriptor::read(
+                    peerDescriptor, received.data() + receivedLength, expectedLength - receivedLength);
+            ASSERT_GT(readLength, 0);
+            receivedLength += static_cast<std::size_t>(readLength);
+        }
+        EXPECT_EQ(received, std::string(first) + std::string(second) + std::string(third));
+
+        sender.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 段数为 0 或超过平台上限时当场抛错，而不是静默拆分或假装发出去
+     */
+    TEST(AsyncSocket, AsyncSendVectoredRejectsInvalidSegmentCount)
+    {
+        EventLoop   loop;
+        AsyncSocket socket(loop, -1); // 描述符无效不影响本用例：参数校验先于任何 I/O
+
+        const Platform::Socket::WriteBuffer single[1] = {{"x", 1}};
+
+        Task<ssize_t> emptyTask = socket.asyncSendVectored(nullptr, 0);
+        emptyTask.handle().resume();
+        ASSERT_TRUE(emptyTask.isReady());
+        EXPECT_THROW(emptyTask.handle().promise().result(), Base::SystemException);
+
+        constexpr std::size_t                                          kTooManyCount = Platform::Socket::kMaximumVectorCount + 1;
+        const std::array<Platform::Socket::WriteBuffer, kTooManyCount> tooManyBuffers{};
+        Task<ssize_t> tooManyTask = socket.asyncSendVectored(tooManyBuffers.data(), kTooManyCount);
+        tooManyTask.handle().resume();
+        ASSERT_TRUE(tooManyTask.isReady());
+        EXPECT_THROW(tooManyTask.handle().promise().result(), Base::SystemException);
+
+        Task<ssize_t> singleTask = socket.asyncSendVectored(single, 1);
+        singleTask.handle().resume();
+        ASSERT_TRUE(singleTask.isReady());
+        // 参数合法但描述符无效：以平台错误收场，而不是抛参数类异常
+        EXPECT_THROW(singleTask.handle().promise().result(), Base::SystemException);
     }
 } // namespace AsynGyanis::Core

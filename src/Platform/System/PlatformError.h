@@ -104,6 +104,14 @@ namespace AsynGyanis::Platform
 #endif
                 ; ///< 内存分配失败（Windows 上与 kNoBufferSpace 同值）
 
+        static constexpr int kInvalidArgument =
+#if ASYN_PLATFORM_WIN32
+                WSAEINVAL
+#else
+                EINVAL
+#endif
+                ; ///< 参数非法：调用方传了平台不接受的值（如超出平台上限的段数/长度）
+
         /**
          * @brief 读取最近一次 CRT/文件类系统调用的错误码
          * @return int 当前线程 errno 值

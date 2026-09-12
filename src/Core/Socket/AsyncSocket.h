@@ -17,6 +17,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/IoWatcher.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include <memory>
@@ -171,6 +172,20 @@ namespace AsynGyanis::Core
          * @throws Base::SystemException 发送失败（连接重置等），或 length 超过 INT_MAX
          */
         Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
+
+        /**
+         * @brief 聚合发送：一次系统调用提交多段数据，全部发完才返回
+         * @details 与 asyncSend 一样吸收「发送缓冲满」并挂起等待可写，区别在于把多段数据
+         *          合成一次提交（scatter/gather），省掉「头部块 + 正文」拼进同一块缓冲的那次
+         *          整体拷贝——正文越大越明显。部分写由内部游标推进，调用方不必关心。
+         * @param buffers 段数组，按序拼接即为要发送的字节流
+         * @param bufferCount 段数，必须落在 [1, Platform::Socket::kMaximumVectorCount] 内
+         * @return Task<ssize_t> — 全部发送完成时返回总字节数；返回 -1 表示对端已关闭（同 asyncSend）
+         * @note **每段的地址必须活到本次 co_await 恢复**，理由同 asyncSend
+         * @throws Base::SystemException 段数为 0 或超过平台上限（当场拒绝而不是静默拆分），
+         *         或发送失败（连接重置等）
+         */
+        Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const;
 
         /**
          * @brief 关闭 socket（先 shutdown 再 close，避免 TCP RST）

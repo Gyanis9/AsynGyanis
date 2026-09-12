@@ -25,6 +25,25 @@ namespace AsynGyanis::Platform
     {
     public:
         /**
+         * @brief 聚合写的一段数据
+         * @details 多段按数组顺序拼起来就是线上字节流；地址与长度都必须由调用方保证有效，
+         *          本层不持有也不复制数据。
+         */
+        struct WriteBuffer
+        {
+            const void *data;   ///< 段起始地址
+            std::size_t length; ///< 段字节数
+        };
+
+        /**
+         * @brief 单次聚合写的段数上限
+         * @details Windows 的 WSASend 上限为 16，Linux 的 writev 为 IOV_MAX（1024），
+         *          这里取两个平台的公共安全值。超出上限直接失败并置错误码，不静默拆分：
+         *          拆分会让「一次系统调用」这个前提悄悄失效，调用方无从察觉。
+         */
+        static constexpr std::size_t kMaximumVectorCount = 16;
+
+        /**
          * @brief Winsock 初始化引用的 RAII 守卫
          *
          * @details 构造时申请一次 initialize() 引用，析构时自动释放。适用于存在多条
@@ -136,5 +155,20 @@ namespace AsynGyanis::Platform
          * @return int 挂起的错误码，0 表示没有错误（连接已建立）
          */
         static int takePendingError(int descriptor) noexcept;
+
+        /**
+         * @brief 聚合写：一次系统调用提交多段数据（scatter/gather）
+         * @details 典型用途是「头部块 + 正文」这类本来要拼进同一块缓冲再发的数据，分段提交
+         *          可以省掉正文那次整体拷贝（大正文/文件响应最明显）。Linux 走 sendmsg
+         *          （带 MSG_NOSIGNAL，避免对端已关闭时触发 SIGPIPE），Windows 走 WSASend。
+         * @param descriptor 目标套接字描述符
+         * @param buffers 段数组，按序拼接即为要发送的字节流
+         * @param bufferCount 段数，必须落在 [1, kMaximumVectorCount] 内
+         * @return ssize_t 实际写入的字节数；非阻塞套接字在缓冲区满时返回 -1 并置
+         *         kWouldBlock（调用方应等可写后重试），对端已关闭按平台语义返回 0 或 -1；
+         *         参数非法时返回 -1 并置 kInvalidArgument
+         * @note 返回值为正但小于总长度是正常情形（部分写），调用方必须按游标推进剩余部分
+         */
+        static ssize_t writeVectored(int descriptor, const WriteBuffer *buffers, std::size_t bufferCount) noexcept;
     };
 } // namespace AsynGyanis::Platform

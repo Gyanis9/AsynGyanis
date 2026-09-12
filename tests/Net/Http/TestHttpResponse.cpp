@@ -358,6 +358,46 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(containsText(response.toString(), "content-length: 0\r\n"));
     }
 
+    /**
+     * @brief 304 允许携带 content-length：自动补缺规则必须只排除 1xx 与 204
+     *
+     * @details 这条与「不允许带正文」是两套判据：304 不许有正文，却明确允许声明长度。
+     *          两者混成一条会让 304 响应丢掉 content-length，收端对报文边界的判断随之失去依据。
+     */
+    TEST(HttpResponse, KeepsAutoContentLengthOnNotModifiedResponse)
+    {
+        HttpResponse response;
+        response.setStatus(304);
+
+        const std::string output = response.toString();
+        EXPECT_TRUE(containsText(output, "content-length: 0\r\n")) << "304 被误当成「不得声明长度」的一类";
+        EXPECT_EQ(output.ends_with("\r\n\r\n"), true) << "304 不该带上正文";
+    }
+
+    /**
+     * @brief serializeHead() 不含正文，且与 body() 拼接后和 toString() 逐字节相同
+     *
+     * @details 发送路径据此把「头部块 + 正文」作为两段一次提交，正文因而不必再拷一份。
+     *          用例用远大于头部的正文把这个前提钉死：头部串里不允许出现正文内容。
+     */
+    TEST(HttpResponse, SerializeHeadExcludesBodySoItCanBeSentSeparately)
+    {
+        const std::string largeBody(64u * 1024u, 'x');
+
+        HttpResponse response;
+        ASSERT_TRUE(response.setHeader("x-trace", "1"));
+        response.setBody(largeBody);
+
+        const std::string head = response.serializeHead();
+        EXPECT_LT(head.size(), largeBody.size()) << "头部串里混进了正文：分段发送省不掉拷贝";
+        EXPECT_FALSE(containsText(head, largeBody)) << "头部串里混进了正文：分段发送省不掉拷贝";
+        EXPECT_TRUE(containsText(head, "content-length: 65536\r\n"));
+        EXPECT_TRUE(head.ends_with("\r\n\r\n"));
+
+        // 两段拼接 == 整块序列化，逐字节相同：分段只是省拷贝，不改变线上字节流
+        EXPECT_EQ(head + std::string(response.body()), response.toString());
+    }
+
     TEST(HttpResponse, AddsTextPlainContentTypeOnlyWhenBodyIsPresent)
     {
         HttpResponse withBody;

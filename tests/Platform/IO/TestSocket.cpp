@@ -10,11 +10,13 @@
 #include "Platform/IO/Socket.h"
 
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/System/PlatformError.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <cstdint>
+#include <string_view>
 #include <thread>
 
 namespace AsynGyanis::Platform
@@ -201,5 +203,48 @@ namespace AsynGyanis::Platform
         FileDescriptor::close(accepted);
         FileDescriptor::close(client);
         FileDescriptor::close(listener);
+    }
+
+    /**
+     * @brief 聚合写把多段拼成一个字节流，并把非法参数当场挡下
+     *
+     * @details 分段提交的意义在于不必先把数据拼进同一块缓冲（省一次整体拷贝），
+     *          因此这里必须验证两件事：线上字节流与「按序拼接」逐字节一致；
+     *          段数/空数组这类越界参数当场失败而不是静默拆分或假装发出去。
+     */
+    TEST(Socket, WriteVectoredConcatenatesSegmentsAndRejectsInvalidArguments)
+    {
+        int readDescriptor  = -1;
+        int writeDescriptor = -1;
+        ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
+
+        const std::string_view first = "alpha";
+        const std::string_view empty = first.substr(1, 0); // 长度为 0 但指针非空，两个平台都接受
+        const std::string_view third = "beta";
+        const Socket::WriteBuffer buffers[3] = {
+                {first.data(), first.size()},
+                {empty.data(), empty.size()},
+                {third.data(), third.size()},
+        };
+
+        const ssize_t writtenLength = Socket::writeVectored(writeDescriptor, buffers, 3);
+        ASSERT_EQ(writtenLength, static_cast<ssize_t>(first.size() + third.size()));
+
+        char          received[16] = {};
+        const ssize_t readLength   = FileDescriptor::read(readDescriptor, received, sizeof(received));
+        ASSERT_EQ(readLength, writtenLength);
+        EXPECT_EQ(std::string_view(received, static_cast<std::size_t>(readLength)), "alphabeta");
+
+        // 非法参数：返回 -1 并置 kInvalidArgument，绝不静默拆分（拆分会让「一次系统调用」的收益
+        // 悄悄消失）也不静默补齐（补齐会让调用方以为数据发出去了）
+        EXPECT_EQ(Socket::writeVectored(writeDescriptor, nullptr, 1), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(Socket::writeVectored(writeDescriptor, buffers, 0), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(Socket::writeVectored(writeDescriptor, buffers, Socket::kMaximumVectorCount + 1), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+
+        FileDescriptor::close(readDescriptor);
+        FileDescriptor::close(writeDescriptor);
     }
 } // namespace AsynGyanis::Platform
