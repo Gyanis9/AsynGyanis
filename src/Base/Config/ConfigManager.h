@@ -94,6 +94,13 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 从目录加载 JSON/YAML 配置文件。
+         *
+         * @details 目录下的配置文件按**文件名升序**逐个装载，后装载的同名键覆盖先装载的
+         *          （例如 `settings.json` 会覆盖 `config.yaml`，因为 's' 排在 'c' 之后）。
+         *          这是本类唯一的优先级规则，靠**命名**表达「哪份是默认、哪份是覆盖」：
+         *          想让某个文件生效得更晚，就给它排序更靠后的名字。
+         *          这样调用方可以自行决定分层（部署默认 + 本地覆盖），本类不预设任何文件名。
+         *
          * @param configDirectory 配置目录。
          * @param recursive 是否递归扫描子目录。
          * @return ConfigLoadResult 加载结果。
@@ -244,34 +251,15 @@ namespace AsynGyanis::Base
         std::string getText(std::string_view key, const std::string &defaultValue = "") const;
 
         /**
-         * @brief 设置配置值并立即生效（原子替换内存快照）。
-         * @details 修改同时记入待持久化集合，调用 saveOverrides() 后写入用户覆盖层 settings.json。
+         * @brief 设置配置值并立即生效（原子替换内存快照）
+         * @details 只改内存，**不写回任何文件**：本类负责读配置，写配置是应用层的事
+         *          （它知道该写哪个文件、什么时候写、以及要不要问过运维）。
+         *          因此本方法的效果不跨进程，重启后回到文件里的取值。
          * @param key 配置键（点号路径，如 server.port）。
          * @param value 配置值。
-         * @return bool 成功返回 true。
+         * @return bool 成功返回 true；键为空返回 false。
          */
         bool setValue(std::string_view key, ConfigValue value);
-
-        /**
-         * @brief 把 setValue 累积的待保存修改合并进覆盖层 settings.json
-         *
-         * @details 只改覆盖层，不动部署默认文件（config.yaml / config.json 保持只读）：
-         *          覆盖层里既有的其它键原样保留，本次修改覆盖同名键，最后经原子写整份替换，
-         *          避免中断留下半截文件。存储为 JSON，类型原生自描述。
-         *
-         * @return true 修改已落盘，**或无待保存内容**（此时不触碰文件）
-         * @return false 尚无配置目录（未通过 loadFromDirectory/loadFiles 装载过），或写文件失败
-         * @note 保存成功后待保存集合中对应的键会被清空，因此重复调用是幂等的
-         */
-        bool saveOverrides();
-
-        /**
-         * @brief 设置配置值并立即持久化（setValue + saveOverrides 的组合）。
-         * @param key 配置键（点号路径）。
-         * @param value 配置值。
-         * @return bool 内存修改与持久化均成功返回 true。
-         */
-        bool setAndPersist(std::string_view key, ConfigValue value);
 
         /**
          * @brief 按 schema 校验当前配置快照。
@@ -371,8 +359,6 @@ namespace AsynGyanis::Base
 
         mutable std::shared_mutex m_reloadMutex; ///< 用于配置数据构建过程的读写锁，仅在修改时加写锁
 
-        mutable std::mutex m_overrideMutex;    ///< 保护待持久化覆盖集的互斥锁
-        ConfigKeyValueMap  m_pendingOverrides; ///< 待写入 settings.json 的修改集合（setValue 累积，saveOverrides 清空）
         std::mutex         m_writeMutex;       ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
         mutable std::mutex m_schemaMutex;      ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
         ConfigSchema       m_schema;           ///< 全局 schema（setSchema 注册，提交快照时自动校验）

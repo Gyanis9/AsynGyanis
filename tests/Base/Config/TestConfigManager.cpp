@@ -1,6 +1,6 @@
 /**
  * @file TestConfigManager.cpp
- * @brief ConfigManager 单元测试：目录与文件加载、类型安全访问、settings.json 用户覆盖层、
+ * @brief ConfigManager 单元测试：目录与文件加载、类型安全访问、同目录按文件名升序覆盖、
  *        schema 校验、热加载开关状态机与并发读取
  * @details 热加载的真实文件监听行为由 tests/Platform/TestFileWatcher.cpp 覆盖，
  *          本文件只断言开关与状态机，不依赖真实文件事件时序。
@@ -42,10 +42,10 @@ namespace AsynGyanis::Base
 {
     namespace
     {
-        /// 用户覆盖层文件名，由 saveOverrides() 落在配置目录下
+        /// 配置目录里的第二份配置文件；名字排在 config.yaml 之后，因此后装载、覆盖前者
         constexpr const char *kSettingsFileName = "settings.json";
 
-        /// 只读部署默认配置文件名，优先级低于 settings.json
+        /// 部署默认配置文件；同目录装载时排在 settings.json 之前，被后者覆盖——分层靠命名表达，库里没有特殊文件名
         constexpr const char *kDeployedConfigFileName = "config.yaml";
 
         /**
@@ -92,9 +92,8 @@ namespace AsynGyanis::Base
      * @brief ConfigManager 测试夹具
      *
      * @details ConfigManager 是进程级单例：每个用例全程持有 configTestMutex()，
-     *          进入与退出都关闭热加载并清空快照；退出时额外把待持久化覆盖排空到
-     *          本夹具的临时目录（clear() 不会重置覆盖集与已注册 schema），
-     *          防止跨用例状态泄漏。
+     *          进入与退出都关闭热加载并清空快照；clear() 不会重置已注册 schema，
+     *          因此退出时显式注销 schema，防止跨用例状态泄漏。
      */
     class ConfigManagerTest : public ::testing::Test
     {
@@ -112,12 +111,6 @@ namespace AsynGyanis::Base
             ConfigManager &configuration = ConfigManager::instance();
             configuration.disableHotReload();
             static_cast<void>(configuration.setSchema(ConfigSchema{}));
-
-            const std::filesystem::path drainDirectory = directory() / "pending-override-drain";
-            std::error_code             ignored;
-            std::filesystem::create_directories(drainDirectory, ignored);
-            static_cast<void>(configuration.loadFromDirectory(drainDirectory));
-            static_cast<void>(configuration.saveOverrides());
             configuration.clear();
 
             m_temporaryDirectory.reset();
@@ -158,16 +151,34 @@ namespace AsynGyanis::Base
             return filePath(relativePath);
         }
 
-        /// settings.json 是否已落盘
-        [[nodiscard]] bool settingsFileExists() const
+        /**
+         * @brief 记录临时目录内的文件清单与各自文本内容（按文件名升序）
+         * @details 用于断言「库不写盘」：调用前后取两次快照并整体比较，即可同时覆盖
+         *          「新增了文件」与「改写了已有文件」两种情况。
+         * @return std::vector<std::pair<std::string, std::string> > 相对路径与文件文本
+         */
+        [[nodiscard]] std::vector<std::pair<std::string, std::string> > directoryFileSnapshot() const
         {
-            return std::filesystem::exists(filePath(kSettingsFileName));
-        }
+            std::vector<std::pair<std::string, std::string> > snapshot;
 
-        /// settings.json 的文本内容
-        [[nodiscard]] std::string settingsFileText() const
-        {
-            return readFileText(filePath(kSettingsFileName));
+            std::error_code errorCode;
+            for (const auto &entry: std::filesystem::recursive_directory_iterator(directory(), errorCode))
+            {
+                if (errorCode)
+                {
+                    break;
+                }
+                if (!entry.is_regular_file(errorCode))
+                {
+                    continue;
+                }
+                // 目录本身是绝对路径，直接用词法相对化，不触发文件系统访问
+                const std::filesystem::path relative = entry.path().lexically_relative(directory());
+                snapshot.emplace_back(relative.generic_string(), readFileText(entry.path()));
+            }
+
+            std::ranges::sort(snapshot);
+            return snapshot;
         }
 
         /// 已加载文件列表中的文件名集合（升序，忽略目录前缀差异）
@@ -652,23 +663,18 @@ namespace AsynGyanis::Base
         EXPECT_EQ(configuration().getInt("plain", -1), 8080);
     }
 
-    TEST_F(ConfigManagerTest, SaveOverridesRecoversFromCorruptedSettingsFile)
+    TEST_F(ConfigManagerTest, LoadsOtherFilesWhenOneOverrideFileIsCorrupted)
     {
         writeFile(kDeployedConfigFileName, "app:\n  name: dashboard\n");
         writeFile(kSettingsFileName, "{ this is not valid json ");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
-        // 损坏的覆盖层文件会被点名，但其余配置照常提交
+        // 损坏的那份文件被点名进失败列表，但其余配置照常提交：单份文件坏掉不影响整目录装载
         EXPECT_FALSE(result.success);
         EXPECT_TRUE(anyEntryContains(result.errors, "解析错误："));
+        EXPECT_EQ(result.failedFiles.size(), 1U);
         EXPECT_EQ(configuration().getString("app.name", ""), "dashboard");
-
-        ASSERT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
-
-        const std::string saved = readFileText(filePath(kSettingsFileName));
-        EXPECT_TRUE(textContains(saved, "\"app.theme\": \"dark\"")) << saved;
-        EXPECT_FALSE(textContains(saved, "this is not valid json")) << saved;
     }
 
     TEST_F(ConfigManagerTest, LoadFilesCommitsPartialSuccessAndStillReportsFailure)
@@ -1044,7 +1050,7 @@ namespace AsynGyanis::Base
     }
 
     // ============================================================================
-    // setValue 与 settings.json 用户覆盖层
+    // setValue 的内存语义与「同目录按文件名升序覆盖」规则
     // ============================================================================
 
     TEST_F(ConfigManagerTest, SetValueAppliesImmediatelyToSnapshot)
@@ -1083,152 +1089,84 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(configuration().has(""));
     }
 
-    TEST_F(ConfigManagerTest, SetAndPersistWritesSettingsJsonIntoConfigDirectory)
+    TEST_F(ConfigManagerTest, SetValueDoesNotWriteAnyFile)
     {
         writeFile(kDeployedConfigFileName, "app:\n  theme: light\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        EXPECT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
+        // 先固化目录内文件清单与内容，setValue 之后再整体比对：库负责读配置，写配置是应用层的事
+        const std::vector<std::pair<std::string, std::string> > before = directoryFileSnapshot();
+        ASSERT_EQ(before.size(), 1U);
 
-        ASSERT_TRUE(settingsFileExists());
-        EXPECT_TRUE(textContains(settingsFileText(), "\"app.theme\""));
-        EXPECT_TRUE(textContains(settingsFileText(), "dark"));
-        EXPECT_TRUE(textContains(settingsFileText(), "\"dark\""));
+        EXPECT_TRUE(configuration().setValue("app.theme", ConfigValue(std::string("dark"))));
+        EXPECT_TRUE(configuration().setValue("app.added", ConfigValue(std::string("memory-only"))));
+
+        // 内存里立即生效，但磁盘上既没有新增文件，也没有内容变化的文件
         EXPECT_EQ(configuration().getString("app.theme", ""), "dark");
+        EXPECT_EQ(configuration().getString("app.added", ""), "memory-only");
+        EXPECT_EQ(directoryFileSnapshot(), before);
     }
 
-    TEST_F(ConfigManagerTest, SettingsJsonOverrideSurvivesFullReload)
+    TEST_F(ConfigManagerTest, LaterNamedFileOverridesEarlierOneInSameDirectory)
     {
         writeFile(kDeployedConfigFileName, "app:\n  theme: light\n  language: en\n");
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        ASSERT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
+        writeFile(kSettingsFileName, "{\"app\": {\"theme\": \"dark\"}}");
 
-        configuration().clear();
-        const ConfigLoadResult reloaded = configuration().loadFromDirectory(directory());
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
-        EXPECT_TRUE(reloaded.success);
+        ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+
+        // 优先级的唯一依据：装载顺序就是文件名升序，config.yaml 在前、settings.json 在后
+        const std::vector<std::string> loadedFiles = configuration().loadedFiles();
+        ASSERT_EQ(loadedFiles.size(), 2U);
+        EXPECT_TRUE(std::ranges::is_sorted(loadedFiles));
+        EXPECT_EQ(std::filesystem::path(loadedFiles[0]).filename().string(), kDeployedConfigFileName);
+        EXPECT_EQ(std::filesystem::path(loadedFiles[1]).filename().string(), kSettingsFileName);
+
+        // 后装载者拿下同名键；它没提到的键保留先装载文件里的取值
         EXPECT_EQ(configuration().getString("app.theme", ""), "dark");
         EXPECT_EQ(configuration().getString("app.language", ""), "en");
     }
 
-    TEST_F(ConfigManagerTest, SettingsJsonOverrideSurvivesReload)
+    TEST_F(ConfigManagerTest, FileValuesWinOverInMemorySetValueAfterReload)
     {
         writeFile(kDeployedConfigFileName, "app:\n  theme: light\n");
+        writeFile(kSettingsFileName, "{\"app\": {\"theme\": \"dark\"}}");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        ASSERT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
 
-        // 内存里先被 setValue 改回另一个值，reload 必须让 settings.json 重新获胜
+        // 内存里先改成第三个值；reload() 重新读文件，文件是唯一真源，取值必须回到 dark
         ASSERT_TRUE(configuration().setValue("app.theme", ConfigValue(std::string("navy"))));
+        ASSERT_EQ(configuration().getString("app.theme", ""), "navy");
 
         EXPECT_TRUE(configuration().reload().success);
         EXPECT_EQ(configuration().getString("app.theme", ""), "dark");
     }
 
-    TEST_F(ConfigManagerTest, SettingsJsonOverrideAppliesOnExplicitFileListLoad)
+    TEST_F(ConfigManagerTest, LaterNamedFileWinsAgainAfterClearAndReload)
     {
-        const std::filesystem::path deployedFile = writeFile(kDeployedConfigFileName, "app:\n  theme: light\n  language: en\n");
+        writeFile(kDeployedConfigFileName, "app:\n  theme: light\n  language: en\n");
+        writeFile(kSettingsFileName, "{\"app\": {\"theme\": \"dark\"}}");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        ASSERT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
 
         configuration().clear();
-        const ConfigLoadResult result = configuration().loadFiles({deployedFile, filePath(kSettingsFileName)});
+        const ConfigLoadResult reloaded = configuration().loadFromDirectory(directory());
 
-        EXPECT_TRUE(result.success);
+        EXPECT_TRUE(reloaded.success) << (reloaded.errors.empty() ? "" : reloaded.errors.front());
         EXPECT_EQ(configuration().getString("app.theme", ""), "dark");
         EXPECT_EQ(configuration().getString("app.language", ""), "en");
     }
 
-    TEST_F(ConfigManagerTest, PersistedScalarTypesSurviveRoundTrip)
+    TEST_F(ConfigManagerTest, LoadFilesAppliesLaterFileFromTheGivenList)
     {
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        const std::filesystem::path deployedFile = writeFile(kDeployedConfigFileName, "app:\n  theme: light\n  language: en\n");
+        const std::filesystem::path lateFile     = writeFile(kSettingsFileName, "{\"app\": {\"theme\": \"dark\"}}");
 
-        EXPECT_TRUE(configuration().setValue("app.port", ConfigValue(static_cast<std::int64_t>(8080))));
-        EXPECT_TRUE(configuration().setValue("app.ratio", ConfigValue(1.5)));
-        EXPECT_TRUE(configuration().setValue("app.enabled", ConfigValue(true)));
-        EXPECT_TRUE(configuration().setValue("app.name", ConfigValue(std::string("dashboard"))));
-        EXPECT_TRUE(configuration().setValue("app.blank", ConfigValue(nullptr)));
-        EXPECT_TRUE(configuration().saveOverrides());
+        // 显式文件列表按传入顺序合并，列表中靠后的文件拿下同名键
+        const ConfigLoadResult result = configuration().loadFiles({deployedFile, lateFile});
 
-        configuration().clear();
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        ASSERT_EQ(configuration().keys().size(), 5U);
-
-        EXPECT_EQ(configuration().getOptional("app.port")->type(), ConfigValueType::Int);
-        EXPECT_EQ(configuration().getInt("app.port", 0), 8080);
-        EXPECT_EQ(configuration().getOptional("app.ratio")->type(), ConfigValueType::Double);
-        EXPECT_DOUBLE_EQ(configuration().getDouble("app.ratio", 0.0), 1.5);
-        EXPECT_EQ(configuration().getOptional("app.enabled")->type(), ConfigValueType::Bool);
-        EXPECT_TRUE(configuration().getBool("app.enabled", false));
-        EXPECT_EQ(configuration().getOptional("app.name")->type(), ConfigValueType::String);
-        EXPECT_EQ(configuration().getString("app.name", ""), "dashboard");
-        EXPECT_EQ(configuration().getOptional("app.blank")->type(), ConfigValueType::Null);
-    }
-
-    TEST_F(ConfigManagerTest, SaveOverridesTwiceKeepsPreviouslyPersistedKeys)
-    {
-        writeFile(kDeployedConfigFileName, "app:\n  theme: light\n");
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-
-        EXPECT_TRUE(configuration().setAndPersist("app.theme", ConfigValue(std::string("dark"))));
-        EXPECT_TRUE(configuration().setAndPersist("ui.language", ConfigValue(std::string("zh"))));
-
-        const std::string persistedText = settingsFileText();
-        EXPECT_TRUE(textContains(persistedText, "\"app.theme\""));
-        EXPECT_TRUE(textContains(persistedText, "\"ui.language\""));
-
-        configuration().clear();
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        EXPECT_TRUE(result.success);
         EXPECT_EQ(configuration().getString("app.theme", ""), "dark");
-        EXPECT_EQ(configuration().getString("ui.language", ""), "zh");
-    }
-
-    TEST_F(ConfigManagerTest, SaveOverridesWithoutPendingChangesCreatesNoFile)
-    {
-        writeFile(kDeployedConfigFileName, "app:\n  theme: light\n");
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-
-        EXPECT_TRUE(configuration().saveOverrides());
-        EXPECT_FALSE(settingsFileExists());
-    }
-
-    TEST_F(ConfigManagerTest, SaveOverridesWithoutConfigDirectoryFailsAndKeepsValueInMemory)
-    {
-        EXPECT_TRUE(configuration().setValue("app.theme", ConfigValue(std::string("dark"))));
-
-        EXPECT_FALSE(configuration().saveOverrides());
-        EXPECT_FALSE(configuration().setAndPersist("ui.language", ConfigValue(std::string("zh"))));
-        EXPECT_FALSE(settingsFileExists());
-        EXPECT_EQ(configuration().getString("app.theme", ""), "dark");
-    }
-
-    TEST_F(ConfigManagerTest, PendingOverrideSurvivesClearAndIsWrittenAfterLoad)
-    {
-        EXPECT_TRUE(configuration().setValue("late.key", ConfigValue(std::string("late-value"))));
-
-        configuration().clear();
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-
-        EXPECT_TRUE(configuration().saveOverrides());
-        EXPECT_TRUE(settingsFileExists());
-        EXPECT_TRUE(textContains(settingsFileText(), "late.key"));
-
-        configuration().clear();
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        EXPECT_EQ(configuration().getString("late.key", ""), "late-value");
-    }
-
-    TEST_F(ConfigManagerTest, SaveOverridesPersistsNumericLikeQuotedStringAsJsonString)
-    {
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        EXPECT_TRUE(configuration().setAndPersist("access.pin", ConfigValue(std::string("12345"))));
-
-        const std::string persistedText = settingsFileText();
-        EXPECT_TRUE(textContains(persistedText, "\"12345\"")) << persistedText;
-
-        configuration().clear();
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-        EXPECT_EQ(configuration().getOptional("access.pin")->type(), ConfigValueType::String);
-        EXPECT_EQ(configuration().getString("access.pin", ""), "12345");
+        EXPECT_EQ(configuration().getString("app.language", ""), "en");
     }
 
     // ============================================================================

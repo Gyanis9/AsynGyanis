@@ -4,10 +4,8 @@
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
 #include "Base/Format/Json/JsonParser.h"
-#include "Base/Format/Json/JsonWriter.h"
 #include "Base/Format/FormatError.h"
 #include "Base/Format/Yaml/YamlParser.h"
-#include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include <algorithm>
 #include <array>
@@ -324,15 +322,9 @@ namespace AsynGyanis::Base
         const auto currentData = m_data.load(std::memory_order_acquire);
         const auto newData     = std::make_shared<ConfigData>(*currentData);
 
-        // 键字符串只构造一次：快照与待持久化集合共用同一份文本
-        const std::string ownedKey(key);
-        newData->values[ownedKey] = value;
+        newData->values[std::string(key)] = std::move(value);
         m_data.store(newData, std::memory_order_release);
 
-        {
-            const std::lock_guard lock(m_overrideMutex);
-            m_pendingOverrides[ownedKey] = std::move(value);
-        }
         return true;
     }
 
@@ -392,84 +384,7 @@ namespace AsynGyanis::Base
             return isJsonFile(filePath.string()) ? JsonParser::parse(text) : YamlParser::parse(text);
         }
 
-        /**
-         * @brief 把一份扁平文档解析成覆盖层键值表
-         * @details 解析失败或根节点不是对象时返回空表：覆盖层保存宁可丢弃损坏的旧内容，
-         *          也不让整次写盘失败并丢掉本次有效修改。
-         * @param text 文档文本
-         * @param filePath 文件路径，仅用于挑选解析器
-         * @return FormatValueObject 顶层键值表
-         */
-        [[nodiscard]] FormatValueObject parseFlatMembers(const std::string_view text, const std::filesystem::path &filePath)
-        {
-            try
-            {
-                FormatValue document = parseDocumentBySuffix(text, filePath);
-                if (const auto members = std::get_if<FormatValueObject>(&document.variant()); members != nullptr)
-                {
-                    return std::move(*members);
-                }
-            } catch (const FormatError &)
-            {
-            }
-            return {};
-        }
     } // namespace
-
-    bool ConfigManager::saveOverrides()
-    {
-        ConfigKeyValueMap pending;
-        {
-            const std::lock_guard lock(m_overrideMutex);
-            if (m_pendingOverrides.empty())
-            {
-                return true;
-            }
-            pending = m_pendingOverrides;
-        }
-
-        const auto currentData = m_data.load(std::memory_order_acquire);
-        if (currentData->configDirectory.empty())
-        {
-            return false;
-        }
-
-        const std::filesystem::path targetPath = currentData->configDirectory / "settings.json";
-
-        // 先把既有覆盖层内容读进来：覆盖层是累积的文件，本次只改其中若干个键，
-        // 其余键必须原样保留。损坏或根节点不是对象时按空表处理，不阻塞本次保存
-        FormatValueObject members;
-        if (const std::optional<std::string> existingText = readTextFile(targetPath); existingText.has_value())
-        {
-            members = parseFlatMembers(*existingText, targetPath);
-        }
-
-        // 本次修改最后写入，同名旧值以本次为准
-        for (const auto &[key, value]: pending)
-        {
-            members.insert_or_assign(key, value);
-        }
-
-        // 类型原生序列化：字符串带引号、整数与浮点裸写，缩进两空格便于人工编辑
-        const std::string json = JsonWriter::write(FormatValue(std::move(members)), true) + "\n";
-
-        // 断电安全：经原子写替换，避免中断留下半截 settings.json
-        std::string writeError;
-        if (!Platform::AtomicFileWriter::writeText(targetPath, json, {}, &writeError))
-        {
-            LOG_ERROR_FMT("保存用户设置失败：{}", writeError);
-            return false;
-        }
-
-        {
-            const std::lock_guard lock(m_overrideMutex);
-            for (const auto &key: pending | std::views::keys)
-            {
-                m_pendingOverrides.erase(key);
-            }
-        }
-        return true;
-    }
 
     bool ConfigManager::has(const std::string_view key) const noexcept
     {
@@ -529,15 +444,6 @@ namespace AsynGyanis::Base
         }
 
         return missing;
-    }
-
-    bool ConfigManager::setAndPersist(const std::string_view key, ConfigValue value)
-    {
-        if (!setValue(key, std::move(value)))
-        {
-            return false;
-        }
-        return saveOverrides();
     }
 
     ConfigValidationResult ConfigManager::validateSchema(const ConfigSchema &schema) const
