@@ -46,34 +46,6 @@ namespace AsynGyanis::Base
      *
      * 使用单例模式（Meyers' Singleton）确保全局唯一实例。
      * 加载失败时保留上一次的有效配置快照。
-     *
-     * 使用示例：
-     * @code
-     *   // 初始化
-     *   auto& configuration = ConfigManager::instance();
-     *   auto result = configuration.loadFromDirectory("./config");
-     *   if (!result) {
-     *       for (const auto& error : result.errors) {
-     *           LOG_ERROR(error);
-     *       }
-     *       return -1;
-     *   }
-     *
-     *   // 启用热加载
-     *   configuration.enableHotReload([](const ConfigLoadResult& reloadResult) {
-     *       LOG_INFO("Config reloaded, {} files", reloadResult.loadedFiles.size());
-     *   });
-     *
-     *   // 读取配置
-     *   auto port = configuration.get<int64_t>("server.port", 8080);
-     *   auto host = configuration.get<std::string>("server.host", "0.0.0.0");
-     *   auto debug = configuration.get<bool>("debug.enabled", false);
-     *
-     *   // 检查键是否存在
-     *   if (configuration.has("database.url")) {
-     *       auto url = configuration.get<std::string>("database.url");
-     *   }
-     * @endcode
      */
     class ConfigManager
     {

@@ -27,13 +27,11 @@ namespace AsynGyanis::Net
      *          另提供 ok()、notFound()、serverError() 等常用工厂方法。
      *          一个响应对象只服务一条请求：需要复用时先 reset()。
      *
-     * @note 头部存储模型（两者必须同步清空与更新）：
-     *       @li 权威记录 m_headerFields —— 按「设置顺序」保存每一条头部，
-     *           toString() 就按这个顺序逐条输出，因此报文头部顺序稳定可复现，
-     *           多条 Set-Cookie 也保持先后次序；
-     *       @li 单值视图 m_headers —— 名到值的映射，每个名字恰有一条，可重复头部保留首次值，
-     *           供既有的 headers() 接口使用；逐条取值请用 headerValues()；
-     *       @li 头部名一律转小写存储（HTTP 头部名大小写不敏感，RFC 9110 §5.1）。
+     * @note 头部存储模型（两份存储必须同步清空与更新）：
+     *       @li 权威记录 m_headerFields 按「设置顺序」保存每条头部，toString() 就按它逐条输出，
+     *           因此报文头部顺序稳定可复现，多条 Set-Cookie 也保持先后次序；
+     *       @li 单值视图 m_headers 是名到值的映射（可重复头部只留首条），供 headers()/getHeader()
+     *           使用，逐条取值请用 headerValues()；头部名一律转小写存储（RFC 9110 §5.1）。
      * @warning 头部值会被原样写入报文，调用方不得传入含 CR/LF 的内容，否则构成响应拆分注入。
      *          正文与状态码由本类自行序列化，不受此限。
      */

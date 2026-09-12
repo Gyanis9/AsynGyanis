@@ -2,7 +2,7 @@
  * @file Transaction.h
  * @brief RAII 事务 —— 构造即取连接并开启事务，析构未提交时自动回滚
  * @author Gyanis
- * @date 2026-09-17
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *

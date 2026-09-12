@@ -15,7 +15,7 @@ namespace AsynGyanis::Base
         // 「文件:行号」先写进栈上缓冲：嵌套 std::format 既要多跑一次格式化，又让每行
         // 多出一次堆分配（实测每行分配 2 次，其中一次就来自这段临时串）。
         // 调用共用的 tryFormatSourceLocationText：命中就直接以返回的视图参与外层格式化，
-        // 未命中（空视图）才回退到原来的分配路径。两条路径使用同一个 format_to_n 格式串
+        // 未命中（空视图）才回退到会分配的路径。两条路径使用同一个 format_to_n 格式串
         // "{}:{}"，所以文本内容与长度必然逐字节相同（含 {:<13} 用空格补齐到 13 列），
         // 差别仅在内存来源，让「命中」与「回退」对输出不可见
         std::array<char, kSourceLocationTextBufferSize> locationBuffer{};

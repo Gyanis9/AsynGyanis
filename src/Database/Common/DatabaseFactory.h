@@ -22,14 +22,6 @@ namespace AsynGyanis::Database
      *
      * @details 按类型或配置创建具体驱动实例，调用方只依赖 DatabaseConnection 接口。
      *          工厂只负责挑选驱动，不做连接：返回的连接仍需调用方 connect()。
-     *
-     * @code
-     *   auto connection = DatabaseFactory::create(ConnectionConfig::sqliteDefault());
-     *   if (connection->connect())
-     *   {
-     *       auto result = connection->execute("SELECT 1");
-     *   }
-     * @endcode
      */
     class DatabaseFactory
     {

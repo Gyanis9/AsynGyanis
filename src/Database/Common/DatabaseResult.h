@@ -24,15 +24,6 @@ namespace AsynGyanis::Database
      *          实例一律由 DatabaseConnection::execute() 以 unique_ptr 交出，
      *          因此本类既禁止拷贝也禁止移动：移动一个持有数据库句柄的多态基类子对象
      *          极易留下悬垂引用，而收益为零。
-     *
-     * 使用方式：
-     * @code
-     *   auto result = connection->execute("SELECT * FROM users");
-     *   while (result->next())
-     *   {
-     *       auto name = result->getValue("name");
-     *   }
-     * @endcode
      */
     class DatabaseResult
     {

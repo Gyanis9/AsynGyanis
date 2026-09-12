@@ -2,7 +2,7 @@
  * @file QueryNode.h
  * @brief 查询树节点 —— 纯数据结构，表达关系型查询的抽象语法树
  * @author Gyanis
- * @date 2026-09-15
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -89,22 +89,6 @@ namespace AsynGyanis::Database::Queryable
      *
      * @details 表示一个比较条件 left op right；right 为 FieldReference 时即列-列比较，
      *          children 承载 AND/OR/NOT 的子条件，inValues 为 IN/NOT IN 提供值列表。
-     *
-     * @code
-     *   // age >= 18
-     *   WhereCondition cond{
-     *       .left = FieldReference{"age"},
-     *       .op   = SqlOperator::Ge,
-     *       .right = ParameterValue{static_cast<int64_t>(18)}
-     *   };
-     *
-     *   // name IS NULL
-     *   WhereCondition cond{
-     *       .left = FieldReference{"name"},
-     *       .op   = SqlOperator::IsNull,
-     *       .right = ParameterValue{nullptr}
-     *   };
-     * @endcode
      */
     struct WhereCondition
     {
@@ -172,17 +156,6 @@ namespace AsynGyanis::Database::Queryable
      * @details 聚合了一个 SELECT 查询的全部组成部分，包括表名、列、条件、
      *          连接、分组、排序和分页信息。所有字段均为值语义，支持移动。
      *          方言层接收此节点并翻译为具体 SQL 方言。
-     *
-     * @code
-     *   QueryNode node;
-     *   node.tableName = "users";
-     *   node.selectColumns = {"id", "name", "age"};
-     *   node.whereConditions.push_back(WhereCondition{
-     *       .left = FieldReference{"age"},
-     *       .op   = SqlOperator::Ge,
-     *       .right = ParameterValue{static_cast<int64_t>(18)}
-     *   });
-     * @endcode
      */
     struct QueryNode
     {

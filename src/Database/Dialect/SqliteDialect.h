@@ -150,12 +150,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 渲染 SQLite 的分页子句（分页值内联，不占绑定参数）
          *
-         * @details 重写 StandardSqlDialect::appendLimitOffsetClause()：基类把 limit / offset
-         *          各写成一个占位符并压入绑定参数，SQLite 则把分页值一律内联成十进制文本
-         *          （只给 offset 时先补 " LIMIT -1"：SQLite 规定 OFFSET 必须紧跟 LIMIT，
-         *          而 "LIMIT -1" 是它表达「不限行数」的官方写法），本覆写因此不向 parameters
-         *          追加任何内容。内联在安全上成立：取值来自 QueryNode 的 std::size_t，强类型且
-         *          非外部文本，不存在注入面。
+         * @details 重写 StandardSqlDialect::appendLimitOffsetClause()：基类把 limit / offset 各写成
+         *          一个占位符压进 parameters，SQLite 则把分页值一律内联成十进制文本（只给 offset 时
+         *          先补 " LIMIT -1"——SQLite 规定 OFFSET 必须紧跟 LIMIT）。取值来自 QueryNode 的
+         *          std::size_t，强类型且非外部文本，内联不存在注入面。
          *
          * @param sqlText 输出缓冲区，分页片段追加到末尾
          * @param parameters 输出参数列表，本实现不向其追加元素

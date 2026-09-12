@@ -83,14 +83,12 @@ namespace AsynGyanis::Base
     {
         logger.clearSinks();
 
-        // 设置等级
         if (loggerConfiguration.contains("level"))
         {
             const auto levelString = loggerConfiguration["level"].as<std::string>();
             logger.setLevel(logLevelFromString(levelString));
         }
 
-        // 设置 Sinks
         if (loggerConfiguration.contains("sinks"))
         {
             for (const auto &sinksArray = loggerConfiguration["sinks"].as<ConfigArray>(); const auto &sinkConfiguration: sinksArray)

@@ -2,22 +2,13 @@
  * @file Expression.h
  * @brief 类型安全的表达式构建器 —— 提供流畅的链式语法构建 WhereCondition
  * @author Gyanis
- * @date 2026-09-15
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 用运算符重载与成员函数构建 WhereCondition：比较运算符（==、!=、<、<=、>、>=）、
  *          逻辑组合（&&、||、!）、LIKE / IN 与 IS NULL / IS NOT NULL；与 nullptr 比较会自动
  *          转为 IS NULL / IS NOT NULL 语义。
- * @code
- *   using namespace AsynGyanis::Database::Queryable;
- *
- *   auto cond1 = Column(&User::age, "age") >= 18;          // age >= 18
- *   auto cond2 = Column(&User::name, "name") == nullptr;    // name IS NULL
- *   auto cond3 = like(Column(&User::name, "name"), "%张%"); // name LIKE '%张%'
- *   auto cond4 = in(Column(&User::id, "id"), {1, 2, 3});    // id IN (1, 2, 3)
- *   auto combined = (cond1 && cond2) || cond3;              // (age >= 18 AND name IS NULL) OR name LIKE '%张%'
- * @endcode
  */
 #pragma once
 

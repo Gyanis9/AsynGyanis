@@ -2,7 +2,7 @@
  * @file Column.h
  * @brief 字段描述符 —— 编译期结合运行期的列元信息
  * @author Gyanis
- * @date 2026-09-15
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -25,12 +25,6 @@ namespace AsynGyanis::Database::Queryable
      *
      * @details 将 C++ 结构体成员与数据库列名绑定。
      *          通过 Column() 辅助函数创建实例，所有信息在编译期确定。
-     *
-     * @code
-     *   constexpr auto descriptor = Column(&User::name, "name");
-     *   // descriptor.columnName == "name"
-     *   // descriptor.memberPointer == &User::name
-     * @endcode
      */
     template<typename T, typename MemberType_>
     struct ColumnDescriptor
@@ -51,10 +45,6 @@ namespace AsynGyanis::Database::Queryable
      * @param memberPointer 成员指针，如 &User::name
      * @param columnName    数据库列名
      * @return consteval ColumnDescriptor<T, MemberType_> 编译期确定的字段描述符
-     *
-     * @code
-     *   constexpr auto col = Column(&User::name, "name");
-     * @endcode
      */
     template<typename T, typename MemberType_>
     consteval auto Column(MemberType_ T::*memberPointer, std::string_view columnName) noexcept -> ColumnDescriptor<T, MemberType_>

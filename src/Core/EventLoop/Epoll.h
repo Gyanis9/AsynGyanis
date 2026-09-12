@@ -31,7 +31,6 @@ namespace AsynGyanis::Core
      * 封装 Linux epoll 系统调用, 提供类型安全的文件描述符管理。
      * 内部使用 epoll_create1(EPOLL_CLOEXEC) 创建实例,
      * 通过 epoll_wait 等待事件, 通过 epoll_ctl 管理监听文件描述符。
-     *
      */
     class Epoll
     {

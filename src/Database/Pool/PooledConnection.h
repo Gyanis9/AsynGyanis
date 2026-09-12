@@ -25,20 +25,8 @@ namespace AsynGyanis::Database
     /**
      * @brief RAII 连接包装器
      *
-     * @details 析构时自动归还连接池；手工调用 release() 可提前归还。
-     *          归还后连接池会执行过期检查与健康检查，不健康的连接被丢弃。
-     *
-     *          性能法则：release() 或析构的公共路径应尽可能短，
-     *          核心运算密集型操作（健康检查、过期驱逐）移到后台线程。
-     *
-     * @code
-     *   PooledConnection pooled = connectionPool.acquire();
-     *   if (pooled)
-     *   {
-     *       auto result = pooled->execute("SELECT 1");
-     *   }
-     *   // 析构时自动归还
-     * @endcode
+     * @details 析构时自动归还连接池，手工调用 release() 可提前归还。公共路径（析构与 release）
+     *          应尽可能短，归还后的过期检查与健康检查这类重活留给后台线程，不健康的连接被丢弃。
      */
     class PooledConnection
     {

@@ -2,7 +2,7 @@
  * @file MySqlValueConversion.h
  * @brief MySQL 列文本值到 DatabaseValue 的类型映射（驱动内部共用，不对外暴露）
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *

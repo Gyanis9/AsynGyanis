@@ -32,12 +32,9 @@ namespace AsynGyanis::Base
     /**
      * @brief YAML 序列化选项
      *
-     * @details 默认值即「人类可读 + 严格 YAML 1.2 + 可原样解析回等价值」：
-     *          两空格缩进、块风格容器、多行字符串用字面块标量、形如 `true` 的字符串加引号。
-     *
-     *          与解析侧的取舍：所有开关的默认值都保证
-     *          `YamlParser::parse(YamlWriter::write(value)) == value`；
-     *          改动其中任何一项都可能产生**有损**输出，取舍理由见各字段说明。
+     * @details 默认值即「人类可读 + 严格 YAML 1.2 + 可原样解析回等价值」：两空格缩进、块风格
+     *          容器、多行字符串用字面块标量、形如 `true` 的字符串加引号。所有开关的默认值都保证
+     *          `parse(write(value)) == value`，改动其中任何一项都可能产生有损输出。
      */
     struct YamlWriteOptions
     {

@@ -51,7 +51,6 @@ namespace AsynGyanis::Database
             m_idleStack.clear();
         }
 
-        // 清空创建时间映射表
         {
             std::lock_guard ctLock(m_ctMapMutex);
             m_creationTimeMap.clear();
@@ -147,7 +146,6 @@ namespace AsynGyanis::Database
             entry.connection->disconnect();
             entry.connection.reset();
 
-            // 创建新连接替代
             entry.connection = createNewConnection();
             if (!entry.connection)
             {
@@ -413,7 +411,6 @@ namespace AsynGyanis::Database
 
         // 锁在 lock 析构时释放，entry 已移出空闲栈归本函数所有
 
-        // 检查是否过期
         if (isEntryExpired(entry))
         {
             // 过期连接直接关闭丢弃
@@ -459,7 +456,6 @@ namespace AsynGyanis::Database
                 return nullptr;
             }
 
-            // 记录创建时间
             {
                 std::lock_guard ctLock(m_ctMapMutex);
                 m_creationTimeMap[connection.get()] = std::chrono::steady_clock::now();
@@ -565,7 +561,6 @@ namespace AsynGyanis::Database
                                                                   std::lock_guard ctLock(m_ctMapMutex);
                                                                   m_creationTimeMap.erase(entry.connection.get());
                                                               }
-                                                              // 关闭连接
                                                               entry.connection->disconnect();
                                                               entry.connection.reset();
                                                               m_totalCreated.fetch_sub(1, std::memory_order_relaxed);

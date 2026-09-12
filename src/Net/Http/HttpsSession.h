@@ -52,12 +52,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 启动会话主协程：TLS 握手 → 保持活跃事务循环 → 关闭通道。
          *
-         * @details 重写 Core::Connection::start()。与基类默认实现（一个立即完成的空协程）的差异：
-         *          @li 多了一次握手，握手失败即关闭通道并直接返回，不进入任何 HTTP 事务；
-         *          @li 进事务循环前先在基类的取消源上注册停止回调，使 Core::Connection::close()
-         *              能真正掐断这条 TLS 通道——基类的占位套接字做不到这一点；
-         *          @li 存活谓词要看 TLS 描述符是否有效，使描述符被关掉后一定能结束循环；
-         *          @li 收尾统一调用基类 close()，让「自然结束」与「被强制关闭」走同一条清理路径。
+         * @details 重写 Core::Connection::start()：比基类的空协程多一次 TLS 握手（失败即关通道并
+         *          直接返回，不进任何 HTTP 事务）；进事务循环前先在基类取消源上注册停止回调，使
+         *          close() 真能掐断这条 TLS 通道；存活谓词看 TLS 描述符是否有效，收尾统一走基类 close()。
          *
          * @return Core::Task<> 协程任务，连接结束时完成
          * @throws 基类 close() 之外的异常不做处理，原样抛给 TcpServer::handleConnection()

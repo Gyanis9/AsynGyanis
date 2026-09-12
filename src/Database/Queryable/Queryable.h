@@ -2,7 +2,7 @@
  * @file Queryable.h
  * @brief 查询构建器 —— 类型安全的 ORM 查询入口，构建 QueryNode 查询树
  * @author Gyanis
- * @date 2026-09-15
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -140,11 +140,6 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param condition 通过列比较或逻辑组合构建的条件
          * @return Queryable& 自身引用，支持链式调用
-         *
-         * @code
-         *   query.where(Column(&User::age, "age") >= 18)
-         *        .where(Column(&User::name, "name") == "Alice");
-         * @endcode
          */
         Queryable &where(WhereCondition condition)
         {
@@ -708,14 +703,6 @@ namespace AsynGyanis::Database::Queryable
          *          参数占位符风格与方言一致，排查问题时可直接对照。
          *
          * @return std::string 生成的 SQL 文本
-         *
-         * @code
-         *   Queryable<User> query;
-         *   query.where(Column(&User::age, "age") >= 18)
-         *        .orderBy(asc("name"));
-         *   std::string sql = query.toSql();
-         *   // => "SELECT * FROM users WHERE age >= ? ORDER BY name ASC"
-         * @endcode
          */
         [[nodiscard]] std::string toSql() const
         {

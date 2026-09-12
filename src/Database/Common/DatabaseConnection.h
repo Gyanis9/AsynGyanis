@@ -22,21 +22,10 @@ namespace AsynGyanis::Database
     /**
      * @brief 数据库连接抽象基类
      *
-     * @details 定义连接的生命周期与操作接口，所有驱动（MySQL、Redis、SQLite）
-     *          都继承本类。调用方只依赖本接口，不需要知道底层引擎。
-     *
-     * 生命周期：构造 → connect() → execute() → disconnect() → 析构。
-     *          m_isConnected 是连接状态的唯一真值来源，派生类必须在
-     *          connect()/disconnect() 中同步维护它；isConnected() 可以在此基础上
-     *          再叠加一次活性探测（如 mysql_ping）。
-     *
-     * @code
-     *   auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault());
-     *   if (connection->connect())
-     *   {
-     *       auto result = connection->execute("SELECT 1");
-     *   }
-     * @endcode
+     * @details 所有驱动（MySQL、Redis、SQLite）都继承本类，调用方只依赖本接口。
+     *          生命周期：构造 → connect() → execute() → disconnect() → 析构。m_isConnected 是
+     *          连接状态的唯一真值来源，派生类必须在 connect()/disconnect() 里同步维护它；
+     *          isConnected() 可在此基础上再叠加一次活性探测（如 mysql_ping）。
      */
     class DatabaseConnection
     {

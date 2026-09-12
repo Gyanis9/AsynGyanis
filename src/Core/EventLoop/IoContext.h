@@ -21,12 +21,6 @@ namespace AsynGyanis::Core
      *
      * 组合 ThreadPool，提供 run()/stop() 接口。
      * 析构时自动停止所有 EventLoop。
-     *
-     * 使用示例：
-     * @code
-     *   Core::IoContext context(4);  // 4 个工作线程
-     *   context.run();               // 阻塞直到 stop() 被调用
-     * @endcode
      */
     class IoContext
     {

@@ -504,7 +504,6 @@ namespace AsynGyanis::Base
         ConfigLoadResult result;
         result.timestamp = std::chrono::steady_clock::now();
 
-        // 检查目录是否存在
         std::error_code errorCode;
         if (!std::filesystem::exists(configDirectory, errorCode))
         {

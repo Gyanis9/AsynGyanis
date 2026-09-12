@@ -2,7 +2,7 @@
  * @file DialectRegistry.h
  * @brief 方言注册表 —— 按数据库类型取得对应的 SQL 方言实现
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -25,11 +25,6 @@ namespace AsynGyanis::Database
      * @brief SQL 方言注册表
      *
      * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite 与 MySQL。
-     *
-     * @code
-     *   std::shared_ptr<SqlDialect> dialect = DialectRegistry::dialectFor(DatabaseType::Sqlite);
-     *   SqlStatement statement = dialect->translate(query);
-     * @endcode
      */
     class DialectRegistry
     {

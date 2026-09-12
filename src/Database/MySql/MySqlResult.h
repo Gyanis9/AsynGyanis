@@ -35,7 +35,6 @@ namespace AsynGyanis::Database
      * @note 与 SqliteResult 的差异：SQLite 的游标挂在连接上，连接必须先于结果集销毁；
      *       MySQL 的数据已由 mysql_store_result 完整复制进 MYSQL_RES 自有内存，本类不持有任何连接指针，
      *       因此结果集可以比连接对象活得更久（与 RedisResult 同语义）。
-     *
      */
     class MySqlResult : public DatabaseResult
     {

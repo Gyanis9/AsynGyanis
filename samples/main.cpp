@@ -27,8 +27,8 @@
 #include <string>
 #include <vector>
 
-// 示例程序以可读性为先：重构后各模块统一挂在 AsynGyanis 之下，
-// 这里引入根命名空间，正文继续写 Net::/Core::/Base:: 即可，不必逐处补全限定名
+// 示例程序以可读性为先：各模块统一挂在 AsynGyanis 之下，这里引入根命名空间，
+// 正文继续写 Net::/Core::/Base:: 即可，不必逐处补全限定名
 using namespace AsynGyanis;
 
 namespace
@@ -109,7 +109,6 @@ int main(int argc, char **argv)
     std::signal(SIGPIPE, SIG_IGN);
 #endif
 
-    // 初始化日志系统
     auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
     rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
     rootLogger.setLevel(Base::LogLevel::Debug);
