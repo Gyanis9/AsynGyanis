@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <latch>
 #include <mutex>
@@ -112,6 +113,10 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 跨线程归还的池内块必须回到池里（而非被当成外来指针交给全局 ::operator delete）：再分配能拿回同一地址
+     *
+     * @details 归还进的是**归还方所在线程**的本地缓存（缓存与块属于哪个线程无关），
+     *          该线程退出时缓存会被整体归还全局池，因此主线程随后能拿到同一地址。
+     *          若缓存没有在线程退出时归还，这个块就永久滞留在已结束的线程上，本用例会失败。
      */
     TEST(CoroutinePool, CrossThreadDeallocationReturnsBlockToSamePool)
     {
@@ -121,7 +126,8 @@ namespace AsynGyanis::Core
         ASSERT_NE(pointer, nullptr);
         EXPECT_TRUE(pool.owns(pointer));
 
-        // 在另一个线程回收：块必须回到同一个池的空闲列表，而不是被交给全局 ::operator delete
+        // 在另一个线程回收：块必须回到池里，而不是被交给全局 ::operator delete。
+        // 该线程只归还这一块、随即退出，退出时把缓存整体交还全局池
         std::thread worker(
                 [&pool, pointer]
                 {
@@ -129,10 +135,33 @@ namespace AsynGyanis::Core
                 });
         worker.join();
 
-        // 回收后必须能被重新分配，且拿回的还是那块池内存
-        void *const reallocated = pool.allocate(96);
-        EXPECT_EQ(reallocated, pointer);
-        pool.deallocate(reallocated, 96);
+        // 换一条**新线程**来重新分配：它的本地缓存是空的，因此必然从全局池取块。
+        // 归还线程把那一块最后压入，它正在全局链表的头部，必然落进第一批搬运里；
+        // 但「第一批里具体第几个被发出」取决于搬运时的头插顺序，所以断言写成
+        // 「取一批后这一块在其中」，而不是断言第一次分配就拿回它
+        constexpr size_t    kProbeCount = 128;
+        std::vector<void *> probedPointers;
+        probedPointers.reserve(kProbeCount);
+        std::thread verifier(
+                [&pool, &probedPointers]
+                {
+                    for (size_t probeIndex = 0; probeIndex < kProbeCount; ++probeIndex)
+                    {
+                        probedPointers.push_back(pool.allocate(96));
+                    }
+                });
+        verifier.join();
+
+        EXPECT_NE(std::find(probedPointers.begin(), probedPointers.end(), pointer), probedPointers.end())
+            << "跨线程归还的池内块没有回到池里：可能被当成外来指针交给了全局 ::operator delete，"
+               "或者在退出线程的缓存里被永久滞留";
+        EXPECT_TRUE(pool.owns(pointer));
+
+        // 归还探针取走的块：其中包含最初那一块
+        for (void *probedPointer: probedPointers)
+        {
+            pool.deallocate(probedPointer, 96);
+        }
     }
 
     /**
@@ -229,5 +258,75 @@ namespace AsynGyanis::Core
         void *reused = pool.allocate(64);
         EXPECT_TRUE(pool.owns(reused));
         pool.deallocate(reused, 64);
+    }
+
+    /**
+     * @brief 验证等量复用不触发扩容：一批块释放后再申请同样多，池不再向系统要内存
+     *
+     * @details 判据是 allocatedCount() 不变。先申请一大批并持有，把单例此前累积的空闲块
+     *          一并消耗掉，这样第二轮的供给只能来自第一轮释放的块——任何一块在归还路径上
+     *          丢失，第二轮都会因缺块而扩容、被这条断言抓住。
+     *          协程帧的分配与释放正走在这条路径上（每次 I/O 都会新建并销毁一个帧）。
+     */
+    TEST(CoroutinePool, SteadyStateReuseDoesNotGrowThePool)
+    {
+        auto &pool = CoroutinePool::instance();
+
+        constexpr size_t kBlockCount = 300;
+        std::vector<void *> pointers;
+        pointers.reserve(kBlockCount);
+
+        // 第一轮：持有全部块，顺手把单例里既有的空闲块也一并占用
+        for (size_t blockIndex = 0; blockIndex < kBlockCount; ++blockIndex)
+        {
+            pointers.push_back(pool.allocate(128));
+        }
+        for (void *pointer: pointers)
+        {
+            pool.deallocate(pointer, 128);
+        }
+
+        const size_t allocatedAfterFirstRound = pool.allocatedCount();
+
+        // 第二轮等量申请：供给来自上一轮释放的块，池不该再向系统要内存
+        pointers.clear();
+        for (size_t blockIndex = 0; blockIndex < kBlockCount; ++blockIndex)
+        {
+            pointers.push_back(pool.allocate(128));
+        }
+        EXPECT_EQ(pool.allocatedCount(), allocatedAfterFirstRound)
+            << "第二轮分配触发了扩容：说明有块在归还路径上丢失了";
+
+        for (void *pointer: pointers)
+        {
+            pool.deallocate(pointer, 128);
+        }
+    }
+
+    /**
+     * @brief 验证同一线程内释放后再申请拿回同一地址（后进先出），这是空闲块复用的基本契约
+     *
+     * @details 本地缓存与全局空闲链表都是栈式结构，先释放的最后被取出；
+     *          协程帧的「建了就用、用完就还」正依赖这条顺序拿到还在缓存里的热块。
+     */
+    TEST(CoroutinePool, AllocateAfterDeallocateReturnsTheSameBlockWithinAThread)
+    {
+        auto &pool = CoroutinePool::instance();
+
+        void *const first  = pool.allocate(144);
+        void *const second = pool.allocate(144);
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(second, nullptr);
+        EXPECT_NE(first, second);
+
+        // 后释放的先被取回
+        pool.deallocate(first, 144);
+        pool.deallocate(second, 144);
+
+        EXPECT_EQ(pool.allocate(144), second);
+        EXPECT_EQ(pool.allocate(144), first);
+
+        pool.deallocate(second, 144);
+        pool.deallocate(first, 144);
     }
 } // namespace AsynGyanis::Core
