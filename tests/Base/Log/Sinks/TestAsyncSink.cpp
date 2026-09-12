@@ -314,6 +314,77 @@ namespace AsynGyanis::Base
         EXPECT_EQ(sink.droppedEventCount(), 0u);
     }
 
+    TEST(AsyncSink, MinimumQueueSizeIsOne)
+    {
+        EXPECT_EQ(AsyncSink::kMinimumQueueSize, 1u);
+    }
+
+    TEST(AsyncSink, ZeroQueueSizeIsClampedToMinimumForBlockPolicy)
+    {
+        // 容量 0 曾让 Block 策略的等待谓词「size() < 0」永不成立，第二条事件即永久阻塞；
+        // 钳到 1 之后容量虽小，但事件仍必须全部落地
+        auto          events     = std::make_shared<RecordedEvents>();
+        auto          downstream = std::make_unique<RecordingSink>(events);
+        AsyncSink     sink(std::move(downstream), 0, AsyncSink::OverflowPolicy::Block);
+        constexpr int keventCount = 5;
+
+        for (int index = 0; index < keventCount; ++index)
+        {
+            sink.write(makeEvent(LogLevel::Info, "zero_queue_" + std::to_string(index)));
+        }
+        sink.flush();
+
+        EXPECT_EQ(sink.droppedEventCount(), 0u);
+        EXPECT_EQ(events->size(), static_cast<std::size_t>(keventCount));
+        EXPECT_TRUE(events->contains("zero_queue_4"));
+    }
+
+    TEST(AsyncSink, ZeroQueueSizeIsClampedToMinimumForDiscardingPolicies)
+    {
+        // Drop / DropOldest 在容量 0 时原先会对空队列 pop（未定义行为）且待落地计数回绕，
+        // 钳到 1 后不变量恢复：每条入队事件要么被转发、要么被计数丢弃
+        const std::vector<AsyncSink::OverflowPolicy> policies{
+                AsyncSink::OverflowPolicy::Drop,
+                AsyncSink::OverflowPolicy::DropOldest,
+        };
+        constexpr int keventCount = 20;
+
+        for (const AsyncSink::OverflowPolicy policy: policies)
+        {
+            auto      events     = std::make_shared<RecordedEvents>();
+            auto      downstream = std::make_unique<RecordingSink>(events);
+            AsyncSink sink(std::move(downstream), 0, policy);
+
+            for (int index = 0; index < keventCount; ++index)
+            {
+                sink.write(makeEvent(LogLevel::Info, "zero_discard_" + std::to_string(index)));
+            }
+            sink.flush();
+
+            EXPECT_EQ(events->size() + sink.droppedEventCount(), static_cast<std::size_t>(keventCount))
+                    << "policy " << static_cast<int>(policy);
+        }
+    }
+
+    TEST(AsyncSink, BlockPolicyCountsEventsDroppedAfterStop)
+    {
+        auto      events     = std::make_shared<RecordedEvents>();
+        auto      downstream = std::make_unique<RecordingSink>(events);
+        AsyncSink sink(std::move(downstream), 8, AsyncSink::OverflowPolicy::Block);
+
+        sink.write(makeEvent(LogLevel::Info, "accepted_before_stop"));
+        sink.stop();
+        EXPECT_EQ(sink.droppedEventCount(), 0u);
+
+        sink.write(makeEvent(LogLevel::Info, "dropped_after_stop_one"));
+        sink.write(makeEvent(LogLevel::Info, "dropped_after_stop_two"));
+
+        // 停止后事件既不入队也不落地，必须计入丢弃数，否则监控会少报丢失规模
+        EXPECT_EQ(sink.droppedEventCount(), 2u);
+        EXPECT_FALSE(events->contains("dropped_after_stop_one"));
+        EXPECT_FALSE(events->contains("dropped_after_stop_two"));
+    }
+
     TEST(AsyncSink, DestructorDrainsPendingEvents)
     {
         auto events = std::make_shared<RecordedEvents>();
@@ -547,6 +618,58 @@ namespace AsynGyanis::Base
 
         EXPECT_TRUE(m_events->contains(newestToken)) << "DropOldest 必须保留最新事件";
         EXPECT_FALSE(m_events->contains(midEarlyToken)) << "DropOldest 应丢弃较早的事件";
+    }
+
+    TEST_F(AsyncSinkWithBlockedDownstream, BlockedProducerCountsItsEventAsDroppedWhenStopped)
+    {
+        // 场景：容量 1，worker 卡在下游；队列里已有 1 条，生产者写第 3 条时阻塞在等待空间上。
+        // 此时停止必须唤醒它并把这条「等不到空间」的事件计入丢弃数（原实现静默丢弃、少报）
+        startAsyncSink(1, AsyncSink::OverflowPolicy::Block);
+
+        m_async->write(makeEvent(LogLevel::Info, "in_flight"));
+        ASSERT_TRUE(TestSupport::waitForCondition(
+                [this]
+                {
+                    return m_events->enteredCount.load(std::memory_order_acquire) >= 1U;
+                },
+                kWaitTimeoutMilliseconds));
+
+        m_async->write(makeEvent(LogLevel::Info, "queued"));
+
+        std::atomic<bool> producerReturned{false};
+        std::thread blockedProducer([this, &producerReturned]
+        {
+            m_async->write(makeEvent(LogLevel::Info, "waits_for_space"));
+            producerReturned.store(true, std::memory_order_release);
+        });
+
+        // worker 卡在下游时队列不会腾出空间，生产者不可能返回；
+        // 这段等待只是让「生产者已进入等待」成为常态，即便未进入，后续断言同样成立
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        EXPECT_FALSE(producerReturned.load(std::memory_order_acquire));
+
+        // 停止会阻塞到 worker 退出，而 worker 正卡在下游，因此由独立线程发起停止
+        std::thread stopper([this]
+        {
+            m_async->stop();
+        });
+
+        EXPECT_TRUE(TestSupport::waitForCondition(
+                [this]
+                {
+                    return m_async->droppedEventCount() >= 1u;
+                },
+                kWaitTimeoutMilliseconds))
+                << "停止时被唤醒的生产者事件未被计入丢弃数";
+
+        m_downstream->release();
+        stopper.join();
+        blockedProducer.join();
+
+        EXPECT_EQ(m_async->droppedEventCount(), 1u);
+        EXPECT_TRUE(m_events->contains("in_flight"));
+        EXPECT_TRUE(m_events->contains("queued"));
+        EXPECT_FALSE(m_events->contains("waits_for_space")) << "等不到空间的事件不得落地";
     }
 
     TEST_F(AsyncSinkWithBlockedDownstream, FlushWaitsUntilBlockedDownstreamDrains)

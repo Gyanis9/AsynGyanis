@@ -1000,6 +1000,50 @@ namespace AsynGyanis::Base
         }
     }
 
+    TEST_F(LoggerConfigLoaderTest, AsyncSinkClampsZeroQueueSizeAndReportsIt)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: async
+          queue_size: 0
+          overflow_policy: block
+          wrapped:
+            type: file
+            path: clamped_queue.log
+)");
+
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        // 配置边界必须给出可见中文诊断，说明非法取值与钳制结果
+        EXPECT_TRUE(contains(diagnostic, "queue_size=0")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "钳制")) << diagnostic;
+
+        // 钳到 1 后 Block 策略仍应完整投递；若仍按 0 处理，第二条日志会永久阻塞在这里
+        for (int index = 0; index < 8; ++index)
+        {
+            logAndFlush("root", LogLevel::Info, "clamped_" + std::to_string(index));
+        }
+
+        const bool delivered = TestSupport::waitForCondition(
+                [this]
+                {
+                    return contains(readTemporaryFile("clamped_queue.log"), "clamped_7");
+                },
+                10000);
+        EXPECT_TRUE(delivered) << readTemporaryFile("clamped_queue.log");
+    }
+
     TEST_F(LoggerConfigLoaderTest, AsyncSinkNestedInsideAsyncSinkDeliversEvents)
     {
         loadConfiguration(R"(logging:

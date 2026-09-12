@@ -12,10 +12,13 @@
 #include "Base/Log/Sinks/FileSink.h"
 #include "Base/Log/Sinks/LogSink.h"
 
+#include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 namespace AsynGyanis::Base
 {
@@ -74,6 +77,8 @@ namespace AsynGyanis::Base
     private:
         /**
          * @brief 根据策略判断并执行日志文件滚动
+         * @details 判据全部是内存计数/时间比较，不再每写一行就 flush + stat 真实文件大小：
+         *          按大小用累计写入字节数，按时间用缓存的下一个周期边界时刻。
          */
         void checkAndRoll();
 
@@ -90,6 +95,22 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::string generateTimestampSuffix() const;
 
         /**
+         * @brief 计算当前时间之后、下一个需要检查滚动的时间点
+         * @details 用本地时间的时分秒推算到下一个整点（Hourly）或整日（Daily），
+         *          因此正常写入路径上既不做本地时间转换也不做字符串格式化。
+         * @param timeValue 当前时间（time_t）
+         * @return std::time_t 严格晚于 timeValue 的下一个周期边界
+         */
+        [[nodiscard]] std::time_t nextPeriodBoundary(std::time_t timeValue) const noexcept;
+
+        /**
+         * @brief 重新打开活动文件并重置按大小的字节累计
+         * @details 新建活动文件后需要把累计值重置为「文件当前真实大小」——
+         *          追加模式下目标文件可能已存在（如进程重启），此时累计值必须从既有大小起算
+         */
+        void reopenActiveFile();
+
+        /**
          * @brief 清理超出保留上限的历史备份文件
          */
         void cleanupOldFiles() const;
@@ -102,6 +123,14 @@ namespace AsynGyanis::Base
 
         std::unique_ptr<FileSink> m_currentSink;   ///< 当前活动文件 Sink
         std::string               m_currentSuffix; ///< 当前时间后缀（按时间滚动时使用）
-        std::mutex                m_mutex;         ///< 保护滚动逻辑的互斥锁
+        std::mutex                m_mutex;         ///< 保护滚动逻辑与上述计数的互斥锁
+
+        /// 活动文件累计写入字节数（按大小滚动的判据）：
+        /// 用自增计数替代「每行 flush + file_size」两次系统调用
+        std::uintmax_t m_bytesInCurrentFile = 0;
+
+        /// 下一个需要检查滚动的时间点（按时间滚动的判据）：
+        /// 每行只做一次 time_t 比较，跨过边界才做本地时间转换与后缀格式化
+        std::time_t m_nextPeriodBoundary = 0;
     };
 } // namespace AsynGyanis::Base

@@ -12,12 +12,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <format>
 #include <memory>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -28,6 +30,21 @@ namespace AsynGyanis::Base
     {
         /// 按时间滚动时，同一周期备份名冲突的最大试探次数
         constexpr int kMaximumSuffixCollisions = 1000;
+
+        /// 一天的秒数，用于推算下一个整日边界
+        constexpr std::int64_t kSecondsPerDay = 24 * 60 * 60;
+
+        /// 一小时的秒数，用于推算下一个整点边界
+        constexpr std::int64_t kSecondsPerHour = 60 * 60;
+
+        /**
+         * @brief 清理时使用的备份条目：路径与预先读好的时间戳
+         */
+        struct BackupEntry
+        {
+            std::filesystem::path        path;      ///< 备份文件路径
+            std::filesystem::file_time_type writeTime; ///< 预先取好的最后写入时间
+        };
 
         /**
          * @brief 按大小滚动前把已有备份整体向后顺移一位，为空出 1 号位
@@ -59,12 +76,17 @@ namespace AsynGyanis::Base
                                      const size_t maximumBackupFiles) :
         m_baseFilename(std::move(baseFilename)), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes), m_maximumBackupFiles(maximumBackupFiles)
     {
-        std::filesystem::create_directories(m_directory);
+        // error_code 重载：目录创建失败时不让 std::filesystem_error 从构造路径逃逸，
+        // 随后的 FileSink 打开文件会失败并抛出带路径的中文异常，定位信息更准确
+        std::error_code directoryError;
+        std::filesystem::create_directories(m_directory, directoryError);
+
         if (m_policy == RollingPolicy::Daily || m_policy == RollingPolicy::Hourly)
         {
-            m_currentSuffix = generateTimestampSuffix();
+            m_currentSuffix      = generateTimestampSuffix();
+            m_nextPeriodBoundary = nextPeriodBoundary(std::time(nullptr));
         }
-        m_currentSink = std::make_unique<FileSink>(getCurrentFilename());
+        reopenActiveFile();
     }
 
     RollingFileSink::~RollingFileSink()
@@ -78,7 +100,9 @@ namespace AsynGyanis::Base
         checkAndRoll();
         if (m_currentSink)
         {
-            m_currentSink->write(event);
+            // 自行格式化（使用本 Sink 的 formatter）后交给活动文件落盘，并累计本行字节数：
+            // 这样按大小滚动的判据完全来自内存计数，无需每行 flush + file_size
+            m_bytesInCurrentFile += m_currentSink->writeLine(formatEvent(event));
         }
     }
 
@@ -96,28 +120,30 @@ namespace AsynGyanis::Base
         bool shouldRoll = false;
         if (m_policy == RollingPolicy::Daily || m_policy == RollingPolicy::Hourly)
         {
-            if (const std::string newSuffix = generateTimestampSuffix(); newSuffix != m_currentSuffix)
+            // 每行只做一次 time_t 比较；只有跨过周期边界才做本地时间转换与后缀格式化。
+            // 用后缀字符串是否变化作为二次判据：夏令时切换等情况下边界可能估算偏差一小时，
+            // 此时后缀不变即不滚动，并把边界推到下一个周期，自然收敛
+            if (const std::time_t now = std::time(nullptr); now >= m_nextPeriodBoundary)
             {
-                shouldRoll      = true;
-                m_currentSuffix = newSuffix;
+                m_nextPeriodBoundary = nextPeriodBoundary(now);
+                if (const std::string newSuffix = generateTimestampSuffix(); newSuffix != m_currentSuffix)
+                {
+                    shouldRoll      = true;
+                    m_currentSuffix = newSuffix;
+                }
             }
         }
-        if (m_policy == RollingPolicy::Size && m_currentSink)
+        if (m_policy == RollingPolicy::Size && m_currentSink && m_bytesInCurrentFile >= m_maximumSizeBytes)
         {
-            // 先将缓冲数据落盘，file_size 才能反映真实大小
-            m_currentSink->flush();
-            std::error_code errorCode;
-            if (const auto fileSize = std::filesystem::file_size(getCurrentFilename(), errorCode); !errorCode && fileSize >= m_maximumSizeBytes)
-            {
-                shouldRoll = true;
-            }
+            shouldRoll = true;
         }
         if (shouldRoll)
         {
             // 先关闭当前文件（Windows 不允许重命名打开中的文件）
             m_currentSink.reset();
             const auto currentPath = getCurrentFilename();
-            if (std::filesystem::exists(currentPath))
+            std::error_code existsError;
+            if (std::filesystem::exists(currentPath, existsError) && !existsError)
             {
                 const auto  dotPosition = m_baseFilename.rfind('.');
                 std::string namePart;
@@ -158,9 +184,21 @@ namespace AsynGyanis::Base
                     std::filesystem::resize_file(currentPath, 0, truncateError);
                 }
             }
-            m_currentSink = std::make_unique<FileSink>(currentPath);
+            reopenActiveFile();
             cleanupOldFiles();
         }
+    }
+
+    void RollingFileSink::reopenActiveFile()
+    {
+        const auto currentPath = getCurrentFilename();
+        m_currentSink          = std::make_unique<FileSink>(currentPath);
+
+        // 追加模式下目标文件可能已存在（同一周期的活动文件、进程重启后的续写），
+        // 累计字节数必须从真实大小起算，否则按大小滚动会推迟到超过阈值一倍以上
+        std::error_code   sizeError;
+        const std::uintmax_t existingSize = std::filesystem::file_size(currentPath, sizeError);
+        m_bytesInCurrentFile              = sizeError ? 0 : existingSize;
     }
 
     std::filesystem::path RollingFileSink::getCurrentFilename() const
@@ -191,13 +229,35 @@ namespace AsynGyanis::Base
         return std::format("{:04d}-{:02d}-{:02d}_{:02d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday, localTime.tm_hour);
     }
 
+    std::time_t RollingFileSink::nextPeriodBoundary(const std::time_t timeValue) const noexcept
+    {
+        const std::tm localTime         = AsynGyanis::Platform::PlatformTime::localTime(timeValue);
+        const bool    isDailyPolicy     = m_policy == RollingPolicy::Daily;
+        const std::int64_t periodSeconds = isDailyPolicy ? kSecondsPerDay : kSecondsPerHour;
+
+        // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
+        const std::int64_t elapsedSeconds = isDailyPolicy
+                                                ? static_cast<std::int64_t>(localTime.tm_hour) * kSecondsPerHour +
+                                                          localTime.tm_min * 60 + localTime.tm_sec
+                                                : static_cast<std::int64_t>(localTime.tm_min) * 60 + localTime.tm_sec;
+
+        // elapsedSeconds == 0 时结果恰为 timeValue + periodSeconds，因此边界恒严格晚于当前时刻，
+        // 同一周期内不会重复触发格式化
+        return timeValue + static_cast<std::time_t>(periodSeconds - elapsedSeconds);
+    }
+
     void RollingFileSink::cleanupOldFiles() const
     {
         // m_maximumBackupFiles == 0 表示不保留任何备份，备份列表仍需要构建并全部清理
-        std::vector<std::filesystem::path> backupFiles;
-        const auto                         dotPosition = m_baseFilename.rfind('.');
-        const std::string                  namePart    = (dotPosition != std::string::npos) ? m_baseFilename.substr(0, dotPosition) : m_baseFilename;
-        const std::string                  activeName  = getCurrentFilename().filename().string();
+        std::vector<BackupEntry> backupFiles;
+        const auto               dotPosition = m_baseFilename.rfind('.');
+        const std::string        namePart    = (dotPosition != std::string::npos) ? m_baseFilename.substr(0, dotPosition) : m_baseFilename;
+        const std::string        activeName  = getCurrentFilename().filename().string();
+
+        // 前缀只构造一次并转成 string_view 比较：原实现每遇到一个目录项就新建
+        // namePart + "." 这个临时字符串
+        const std::string      backupPrefix = namePart + ".";
+        const std::string_view backupPrefixView{backupPrefix};
 
         for (std::error_code errorCode; const auto &entry: std::filesystem::directory_iterator(m_directory, errorCode))
         {
@@ -205,23 +265,29 @@ namespace AsynGyanis::Base
             {
                 break;
             }
+            const std::string filename = entry.path().filename().string();
             // 仅匹配 "namePart." 前缀的备份文件，且排除当前活动文件
-            if (const auto filename = entry.path().filename().string(); filename != activeName && filename.rfind(namePart + ".", 0) == 0)
+            if (filename != activeName && std::string_view(filename).starts_with(backupPrefixView))
             {
-                backupFiles.push_back(entry.path());
+                // 时间戳在排序前一次性读好：比较器里再调 last_write_time 会在出错时抛异常，
+                // 而 std::ranges::sort 的比较器抛出是未定义行为
+                std::error_code                   timeError;
+                const auto                        writeTime = std::filesystem::last_write_time(entry.path(), timeError);
+                backupFiles.push_back(BackupEntry{entry.path(), timeError ? std::filesystem::file_time_type::min() : writeTime});
             }
         }
         if (backupFiles.size() > m_maximumBackupFiles)
         {
+            // 取不到时间戳的条目标记为 file_time_type::min()，排序时视为最旧、优先被清理
             std::ranges::sort(backupFiles,
-                              [](const auto &left, const auto &right)
+                              [](const BackupEntry &left, const BackupEntry &right)
                               {
-                                  return std::filesystem::last_write_time(left) > std::filesystem::last_write_time(right);
+                                  return left.writeTime > right.writeTime;
                               });
             for (size_t index = m_maximumBackupFiles; index < backupFiles.size(); ++index)
             {
                 std::error_code removeErrorCode;
-                std::filesystem::remove(backupFiles[index], removeErrorCode);
+                std::filesystem::remove(backupFiles[index].path, removeErrorCode);
             }
         }
     }

@@ -17,6 +17,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -134,6 +136,95 @@ namespace AsynGyanis::Base
         Logger &byName = LoggerRegistry::instance().getLogger("root");
 
         EXPECT_EQ(&root, &byName);
+    }
+
+    TEST_F(LoggerRegistryTest, CachedRootLoggerFollowsRegisterOverwrite)
+    {
+        // 先走一次缓存路径让缓存预热，再用 registerLogger 覆盖 root：
+        // 缓存必须在覆盖时失效并指向新实例，否则取到的是已被替换的旧对象
+        LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Error);
+
+        auto    replacement         = std::make_unique<Logger>("root");
+        Logger *replacementInstance = replacement.get();
+        replacement->setLevel(LogLevel::Debug);
+        LoggerRegistry::instance().registerLogger(std::move(replacement));
+
+        Logger &root = LoggerRegistry::instance().getRootLogger();
+        EXPECT_EQ(&root, replacementInstance);
+        EXPECT_EQ(root.getLevel(), LogLevel::Debug);
+    }
+
+    TEST_F(LoggerRegistryTest, CachedRootLoggerIsRebuiltAfterUnregister)
+    {
+        LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Fatal);
+
+        LoggerRegistry::instance().unregisterLogger("root");
+
+        Logger &rebuilt = LoggerRegistry::instance().getRootLogger();
+        EXPECT_EQ(&rebuilt, &LoggerRegistry::instance().getLogger("root"));
+        EXPECT_EQ(rebuilt.getLevel(), LogLevel::Trace);
+    }
+
+    TEST_F(LoggerRegistryTest, CachedRootLoggerIsRebuiltAfterClear)
+    {
+        LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Fatal);
+
+        LoggerRegistry::instance().clear();
+
+        Logger &rebuilt = LoggerRegistry::instance().getRootLogger();
+        EXPECT_EQ(rebuilt.name(), "root");
+        EXPECT_EQ(rebuilt.getLevel(), LogLevel::Trace);
+    }
+
+    TEST_F(LoggerRegistryTest, RootLoggerLookupStaysConsistentWhileOtherLoggersChurn)
+    {
+        LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Warn);
+
+        std::atomic<bool>        stopChurning{false};
+        std::atomic<int>         mismatches{0};
+        std::vector<std::thread> churners;
+        std::vector<std::thread> readers;
+
+        // 变更线程只增删「非 root」日志器：root 缓存持有强引用且不因其它名字的增删失效，
+        // 读取线程因此始终命中缓存，既不会取到被销毁的对象，也不会被写锁串行化
+        churners.emplace_back([&stopChurning]
+        {
+            int sequence = 0;
+            while (!stopChurning.load(std::memory_order_relaxed))
+            {
+                const std::string name = "churn_" + std::to_string(sequence++);
+                LoggerRegistry::instance().registerLogger(std::make_unique<Logger>(name));
+                LoggerRegistry::instance().unregisterLogger(name);
+            }
+        });
+        for (int index = 0; index < 3; ++index)
+        {
+            readers.emplace_back([&mismatches, &stopChurning]
+            {
+                while (!stopChurning.load(std::memory_order_relaxed))
+                {
+                    const Logger &root = LoggerRegistry::instance().getRootLogger();
+                    if (root.name() != "root" || root.getLevel() != LogLevel::Warn)
+                    {
+                        mismatches.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            });
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        stopChurning.store(true, std::memory_order_relaxed);
+        for (std::thread &churner: churners)
+        {
+            churner.join();
+        }
+        for (std::thread &reader: readers)
+        {
+            reader.join();
+        }
+
+        EXPECT_EQ(mismatches.load(), 0);
+        EXPECT_EQ(LoggerRegistry::instance().getRootLogger().name(), "root");
     }
 
     // ============================================================================
@@ -279,6 +370,45 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(LoggerRegistry::instance().loggerLevel("mutate_a"), LogLevel::Warn);
         EXPECT_EQ(LoggerRegistry::instance().loggerLevel("mutate_b"), LogLevel::Warn);
+    }
+
+    TEST_F(LoggerRegistryTest, ForEachLoggerAllowsReentrantRegistryAccess)
+    {
+        LoggerRegistry::instance().getLogger("reentrant_a");
+        LoggerRegistry::instance().getLogger("reentrant_b");
+
+        int visitedCount = 0;
+        // 回调内再次访问注册表：原实现在共享锁内调用回调，会因 shared_mutex 不可重入而自死锁
+        EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger([&visitedCount](Logger &logger)
+        {
+            ++visitedCount;
+            Logger &createdInCallback = LoggerRegistry::instance().getLogger("created_in_callback");
+            createdInCallback.setLevel(LogLevel::Warn);
+            logger.setLevel(LogLevel::Error);
+        }));
+
+        EXPECT_EQ(visitedCount, 2);
+        EXPECT_EQ(LoggerRegistry::instance().loggerLevel("reentrant_a"), LogLevel::Error);
+        EXPECT_EQ(LoggerRegistry::instance().loggerLevel("reentrant_b"), LogLevel::Error);
+        EXPECT_EQ(LoggerRegistry::instance().loggerLevel("created_in_callback"), LogLevel::Warn);
+    }
+
+    TEST_F(LoggerRegistryTest, ForEachLoggerSurvivesCallbackClearingTheRegistry)
+    {
+        LoggerRegistry::instance().getLogger("clear_victim_a");
+        LoggerRegistry::instance().getLogger("clear_victim_b");
+
+        // 最极端的重入：回调内清空注册表。快照持有强引用，因此遍历中的对象不会被销毁
+        int visitedCount = 0;
+        EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger([&visitedCount](Logger &logger)
+        {
+            ++visitedCount;
+            logger.setLevel(LogLevel::Fatal);
+            LoggerRegistry::instance().clear();
+        }));
+
+        EXPECT_EQ(visitedCount, 2);
+        EXPECT_TRUE(LoggerRegistry::instance().getLoggerNames().empty());
     }
 
     // ============================================================================

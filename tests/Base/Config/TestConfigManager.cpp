@@ -19,7 +19,7 @@
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
-#include "Base/Parser/Value/ValueAccessError.h"
+#include "Base/Format/Value/ValueAccessError.h"
 
 #include <gtest/gtest.h>
 
@@ -469,10 +469,10 @@ namespace AsynGyanis::Base
         writeFile("types.yaml",
                   "boolTrue: true\n"
                   "boolFalse: false\n"
-                  "boolYes: yes\n"
-                  "boolNo: no\n"
-                  "boolOn: on\n"
-                  "boolOff: off\n"
+                  "textYes: yes\n"
+                  "textNo: no\n"
+                  "textOn: on\n"
+                  "textOff: off\n"
                   "intPositive: 12345\n"
                   "intNegative: -9876\n"
                   "intZero: 0\n"
@@ -492,10 +492,11 @@ namespace AsynGyanis::Base
         const std::vector<std::pair<std::string, ConfigValueType> > expectedTypes = {
                 {"boolTrue", ConfigValueType::Bool},
                 {"boolFalse", ConfigValueType::Bool},
-                {"boolYes", ConfigValueType::Bool},
-                {"boolNo", ConfigValueType::Bool},
-                {"boolOn", ConfigValueType::Bool},
-                {"boolOff", ConfigValueType::Bool},
+                // YAML 1.2 核心 schema 只认 true/false，yes/no/on/off 一律是字符串
+                {"textYes", ConfigValueType::String},
+                {"textNo", ConfigValueType::String},
+                {"textOn", ConfigValueType::String},
+                {"textOff", ConfigValueType::String},
                 {"intPositive", ConfigValueType::Int},
                 {"intNegative", ConfigValueType::Int},
                 {"intZero", ConfigValueType::Int},
@@ -516,10 +517,12 @@ namespace AsynGyanis::Base
             EXPECT_EQ(value->type(), expectedType) << "key=" << key;
         }
 
-        EXPECT_TRUE(configuration().getBool("boolYes", false));
-        EXPECT_TRUE(configuration().getBool("boolOn", false));
-        EXPECT_FALSE(configuration().getBool("boolOff", true));
-        EXPECT_FALSE(configuration().getBool("boolNo", true));
+        EXPECT_EQ(configuration().getString("textYes", ""), "yes");
+        EXPECT_EQ(configuration().getString("textOn", ""), "on");
+        EXPECT_EQ(configuration().getString("textOff", ""), "off");
+        EXPECT_EQ(configuration().getString("textNo", ""), "no");
+        // 1.1 风格的布尔词不再是布尔，取 bool 会落回默认值
+        EXPECT_FALSE(configuration().getBool("textYes", false));
         EXPECT_FALSE(configuration().getBool("boolFalse", true));
         EXPECT_EQ(configuration().getInt("intNegative", 0), -9876);
         EXPECT_DOUBLE_EQ(configuration().getDouble("doublePlain", 0.0), 3.5);
@@ -1408,6 +1411,46 @@ namespace AsynGyanis::Base
     // ============================================================================
     // 并发读取
     // ============================================================================
+
+    TEST_F(ConfigManagerTest, ConcurrentWritersKeepEveryKeyTheySet)
+    {
+        writeFile("cfg.yaml", "counter: 0\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        constexpr int            kwriterCount    = 4;
+        constexpr int            kkeysPerWriter  = 25;
+        std::vector<std::thread> writers;
+        writers.reserve(kwriterCount);
+
+        // 每个写者写自己的一组键：setValue 是「复制快照—改键—发布」事务，
+        // 若写者之间不串行化，后发布者会把前一个写者刚写入的键整体覆盖掉
+        for (int writerIndex = 0; writerIndex < kwriterCount; ++writerIndex)
+        {
+            writers.emplace_back([writerIndex]
+            {
+                for (int inner = 0; inner < kkeysPerWriter; ++inner)
+                {
+                    const std::string key = "writer" + std::to_string(writerIndex) + ".key" + std::to_string(inner);
+                    ConfigManager::instance().setValue(key, ConfigValue(static_cast<std::int64_t>(inner)));
+                }
+            });
+        }
+        for (std::thread &writer: writers)
+        {
+            writer.join();
+        }
+
+        for (int writerIndex = 0; writerIndex < kwriterCount; ++writerIndex)
+        {
+            for (int inner = 0; inner < kkeysPerWriter; ++inner)
+            {
+                const std::string key = "writer" + std::to_string(writerIndex) + ".key" + std::to_string(inner);
+                EXPECT_TRUE(configuration().has(key)) << "并发写入丢失了键 " << key;
+            }
+        }
+        // 初始键也不能被写过程丢掉
+        EXPECT_EQ(configuration().getInt("counter", -1), 0);
+    }
 
     TEST_F(ConfigManagerTest, ConcurrentReadersObserveConsistentSnapshot)
     {

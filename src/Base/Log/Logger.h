@@ -64,6 +64,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 使用 std::format 格式化日志消息并记录
          * @details 格式串非法时不抛给业务方，而是降级为一条 Error 日志并带上格式串原文。
+         *          格式化结果直接移交给事件，避免再拷贝一次消息体。
          * @tparam Args 格式化参数类型
          * @param level 本次日志级别
          * @param location 源码位置信息
@@ -79,11 +80,11 @@ namespace AsynGyanis::Base
             }
             try
             {
-                log(level, std::vformat(formatString, std::make_format_args(arguments...)), location);
+                writeEvent(level, std::vformat(formatString, std::make_format_args(arguments...)), location);
             } catch (const std::format_error &exception)
             {
-                log(LogLevel::Error,
-                    std::format("日志格式化错误：{} [format='{}']", exception.what(), formatString), location);
+                writeEvent(LogLevel::Error,
+                           std::format("日志格式化错误：{} [format='{}']", exception.what(), formatString), location);
             }
         }
 
@@ -156,7 +157,18 @@ namespace AsynGyanis::Base
          */
         void writeToSinks(const LogEvent &event) const;
 
-        std::string                                       m_name;                           ///< 日志器名称
+        /**
+         * @brief 以「已持有消息体」的形式构造并分发日志事件
+         * @details 消息体按值接收并移入事件：std::vformat 的结果可以零拷贝交给事件，
+         *          这是 logFormat 与 log 共用的内部入口（公开的 log() 仍以 string_view 接收）。
+         * @param level 本次日志级别
+         * @param message 已格式化好的日志消息
+         * @param location 源码位置信息
+         */
+        void writeEvent(LogLevel level, std::string message, const SourceLocation &location) const;
+
+        /// 日志器名称：以共享常量字符串持有，事件构造时只复制指针不再拷贝文本
+        std::shared_ptr<const std::string>                m_name;
         std::atomic<LogLevel>                             m_level{LogLevel::Trace};         ///< 当前日志级别
         std::atomic<std::shared_ptr<const SinkSnapshot> > m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
         std::mutex                                        m_sinksWriteMutex;                ///< 仅用于串行化替换快照的写者，读者不会触碰

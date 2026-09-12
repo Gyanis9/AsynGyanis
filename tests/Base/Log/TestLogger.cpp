@@ -331,7 +331,7 @@ namespace AsynGyanis::Base
         const LogEvent event = m_ledger->events().front();
         EXPECT_EQ(event.message, "hello sink");
         EXPECT_EQ(event.level, LogLevel::Info);
-        EXPECT_EQ(event.loggerName, "dispatch");
+        EXPECT_EQ(event.loggerNameView(), "dispatch");
     }
 
     TEST_F(LoggerTest, LogFillsTimestampAndThreadId)
@@ -345,6 +345,37 @@ namespace AsynGyanis::Base
         const LogEvent event = m_ledger->events().front();
         EXPECT_FALSE(event.timestamp.empty());
         EXPECT_FALSE(event.threadId.empty());
+    }
+
+    TEST_F(LoggerTest, EventsShareTheLoggerNameInstance)
+    {
+        Logger logger("shared_name_logger");
+        logger.addSink(recordingSink());
+
+        logger.log(LogLevel::Info, "direct log");
+        logger.logFormat(LogLevel::Info, SourceLocation::current(), "formatted {}", 1);
+
+        ASSERT_EQ(m_ledger->eventCount(), 2u);
+        // 名字与 Logger 共享同一份常量字符串：每条日志不再各自分配/拷贝一个名字
+        for (const LogEvent &event: m_ledger->events())
+        {
+            ASSERT_NE(event.loggerName, nullptr);
+            EXPECT_EQ(event.loggerName.get(), &logger.name());
+            EXPECT_EQ(event.loggerNameView(), "shared_name_logger");
+        }
+    }
+
+    TEST_F(LoggerTest, LogFormatForwardsFormattedMessageWithoutExtraCopy)
+    {
+        Logger logger("fmt_forward");
+        logger.addSink(recordingSink());
+
+        logger.logFormat(LogLevel::Info, SourceLocation::current(), "user={} age={} ratio={:.2f}", "alice", 30, 0.5);
+
+        ASSERT_EQ(m_ledger->eventCount(), 1u);
+        // 格式化结果被移动进事件（而非再拷贝一次），内容与等级必须完整保留
+        EXPECT_EQ(m_ledger->events().front().message, "user=alice age=30 ratio=0.50");
+        EXPECT_EQ(m_ledger->events().front().level, LogLevel::Info);
     }
 
     TEST_F(LoggerTest, LogCarriesExplicitSourceLocation)
@@ -533,7 +564,7 @@ namespace AsynGyanis::Base
         ASSERT_EQ(m_ledger->eventCount(), 1u);
         const LogEvent event = m_ledger->events().front();
         EXPECT_EQ(event.level, LogLevel::Fatal);
-        EXPECT_EQ(event.loggerName, "fmt_meta");
+        EXPECT_EQ(event.loggerNameView(), "fmt_meta");
     }
 
     TEST_F(LoggerTest, InvalidFormatStringDegradesToSingleErrorEvent)

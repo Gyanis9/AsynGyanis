@@ -21,6 +21,7 @@
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
+#include "Platform/IO/Console.h"
 
 namespace AsynGyanis::Base
 {
@@ -287,6 +288,47 @@ namespace AsynGyanis::Base
         EXPECT_EQ(sink.getLevel(), LogLevel::Warn);
         EXPECT_FALSE(sink.shouldLog(LogLevel::Info));
         EXPECT_TRUE(sink.shouldLog(LogLevel::Error));
+    }
+
+    TEST(ConsoleSink, ColorDisabledOutputNeverContainsAnsiEscape)
+    {
+        ConsoleSink sink(false);
+
+        const ScopedConsoleCapture capture;
+        sink.write(makeEvent(LogLevel::Info, "plain_information"));
+        sink.write(makeEvent(LogLevel::Error, "plain_error"));
+        sink.flush();
+
+        EXPECT_EQ(capture.stdOut().find("\033["), std::string::npos) << capture.stdOut();
+        EXPECT_EQ(capture.stdErr().find("\033["), std::string::npos) << capture.stdErr();
+    }
+
+    TEST(ConsoleSink, ColorToggleSelectsFormatterUsedByWrite)
+    {
+        // 颜色开关（构造参数与运行期 setter）都经同一条 formatter 选择路径，
+        // 因此开启后是否出现 ANSI 序列只取决于终端能力；关闭后必须恒为纯文本
+        const bool ansiSupported = AsynGyanis::Platform::Console::supportsAnsiEscapeCodes();
+
+        ConsoleSink sink(false);
+        {
+            const ScopedConsoleCapture capture;
+            sink.setColorEnabled(true);
+            sink.write(makeEvent(LogLevel::Info, "toggled_on"));
+            sink.flush();
+
+            const std::string output = capture.stdOut();
+            EXPECT_TRUE(contains(output, "toggled_on")) << output;
+            EXPECT_EQ(output.find("\033[") != std::string::npos, ansiSupported) << output;
+        }
+        {
+            const ScopedConsoleCapture capture;
+            sink.setColorEnabled(false);
+            sink.write(makeEvent(LogLevel::Info, "toggled_off"));
+            sink.flush();
+
+            EXPECT_TRUE(contains(capture.stdOut(), "toggled_off")) << capture.stdOut();
+            EXPECT_EQ(capture.stdOut().find("\033["), std::string::npos) << capture.stdOut();
+        }
     }
 
     // ============================================================================

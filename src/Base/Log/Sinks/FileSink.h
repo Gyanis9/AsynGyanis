@@ -11,9 +11,11 @@
 
 #include "Base/Log/Sinks/LogSink.h"
 
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 
 namespace AsynGyanis::Base
 {
@@ -48,6 +50,16 @@ namespace AsynGyanis::Base
          * @param event 日志事件
          */
         void write(const LogEvent &event) override;
+
+        /**
+         * @brief 写入一行已完成格式化的文本
+         * @details 供需要自行掌握「本行字节数」的调用方（如按大小滚动的 RollingFileSink）
+         *          复用本 Sink 的落盘与加锁逻辑：RollingFileSink 用它完成字节累计，
+         *          从而不必每行都 flush 后 stat 一次真实文件大小。
+         * @param line 已格式化的单行文本（不含换行）
+         * @return std::size_t 实际写入的字节数（含换行符）；文件未打开时返回 0
+         */
+        std::size_t writeLine(std::string_view line);
 
         /**
          * @brief 刷新文件缓冲区

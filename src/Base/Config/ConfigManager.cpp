@@ -12,13 +12,16 @@
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
-#include "Base/Parser/Json/JsonParser.h"
-#include "Base/Parser/Json/JsonWriter.h"
-#include "Base/Parser/ParserError.h"
-#include "Base/Parser/Yaml/YamlParser.h"
+#include "Base/Format/Json/JsonParser.h"
+#include "Base/Format/Json/JsonWriter.h"
+#include "Base/Format/FormatError.h"
+#include "Base/Format/Yaml/YamlParser.h"
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -58,6 +61,26 @@ namespace AsynGyanis::Base
                 }
             }
             return commonDirectory;
+        }
+
+        /**
+         * @brief 把整数或浮点值写成十进制文本
+         * @details 用 std::to_chars 写进栈上缓冲再一次性构造字符串：既不做本地化，
+         *          也不像 std::to_string/std::ostringstream 那样依赖流状态或多次扩容。
+         * @tparam Number 算术类型
+         * @param value 待文本化的数值
+         * @return std::string 数值文本；极端情况下（缓冲区溢出）返回空串
+         */
+        template<typename Number>
+        [[nodiscard]] std::string numberToText(const Number value)
+        {
+            std::array<char, 32> buffer{};
+            const auto [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+            if (errorCode != std::errc())
+            {
+                return {};
+            }
+            return std::string(buffer.data(), static_cast<std::string::size_type>(out - buffer.data()));
         }
     } // namespace
 
@@ -161,7 +184,9 @@ namespace AsynGyanis::Base
                 return false;
             }
 
-            m_hotReloadCallback = std::move(callback);
+            // 回调以不可变快照发布：写侧是启动监听之前的本线程，读侧是后续的重载线程，
+            // release/acquire 保证重载线程一定能看到完整的 std::function 对象
+            m_hotReloadCallback.store(std::make_shared<const HotReloadCallback>(std::move(callback)), std::memory_order_release);
 
             m_fileWatcher->setDebounceInterval(debounceMilliseconds);
 
@@ -200,18 +225,15 @@ namespace AsynGyanis::Base
             return;
         }
 
-        // 等待所有活跃的重载线程完成，防止 use-after-free
+        // 等待所有活跃的重载线程完成，防止 use-after-free。
+        // 锁内只摘取句柄，join 放到锁外：join 可能等到一次完整 reload 结束，
+        // 持锁 join 会让文件监听线程后续的热加载检查全部排队等待
+        std::vector<std::unique_ptr<ReloadTask> > pendingTasks;
         {
-            std::lock_guard lock(m_reloadTasksMutex);
-            for (const auto &task: m_reloadTasks)
-            {
-                if (task && task->thread.joinable())
-                {
-                    task->thread.join();
-                }
-            }
-            m_reloadTasks.clear();
+            const std::lock_guard lock(m_reloadTasksMutex);
+            pendingTasks.swap(m_reloadTasks);
         }
+        pendingTasks.clear();
 
         if (m_fileWatcher)
         {
@@ -272,7 +294,9 @@ namespace AsynGyanis::Base
     std::string ConfigManager::getText(const std::string_view key, const std::string &defaultValue) const
     {
         const auto currentData = m_data.load(std::memory_order_acquire);
-        const auto iterator    = currentData->values.find(std::string(key));
+        // 直接以 string_view 查找：ConfigKeyValueMap 的透明哈希支持异构查找，
+        // 构造临时 std::string 只会白白多一次分配
+        const auto iterator = currentData->values.find(key);
         if (iterator == currentData->values.end())
         {
             return defaultValue;
@@ -284,15 +308,11 @@ namespace AsynGyanis::Base
             case ConfigValueType::String:
                 return value.asString();
             case ConfigValueType::Int:
-                return std::to_string(value.asInt());
+                return numberToText(value.asInt());
             case ConfigValueType::Bool:
                 return value.asBool() ? "true" : "false";
             case ConfigValueType::Double:
-            {
-                std::ostringstream stream;
-                stream << value.asDouble();
-                return stream.str();
-            }
+                return numberToText(value.asDouble());
             default:
                 return defaultValue;
         }
@@ -305,15 +325,23 @@ namespace AsynGyanis::Base
             return false;
         }
 
+        // 写侧串行化：本方法对快照执行「读取 → 复制 → 修改 → 发布」事务，
+        // 两个并发写者若同时基于同一份旧快照构造新快照，后发布者会丢掉先发布者的键。
+        // 这里只串行化写者之间；读者仍通过 atomic<shared_ptr> 无锁读取快照，不受影响
+        const std::lock_guard writeLock(m_writeMutex);
+
         // 复制当前快照并更新目标键，原子替换后立即对所有读者生效
-        const auto currentData            = m_data.load(std::memory_order_acquire);
-        const auto newData                = std::make_shared<ConfigData>(*currentData);
-        newData->values[std::string(key)] = value;
+        const auto currentData = m_data.load(std::memory_order_acquire);
+        const auto newData     = std::make_shared<ConfigData>(*currentData);
+
+        // 键字符串只构造一次：快照与待持久化集合共用同一份文本
+        std::string ownedKey(key);
+        newData->values[ownedKey] = value;
         m_data.store(newData, std::memory_order_release);
 
         {
             const std::lock_guard lock(m_overrideMutex);
-            m_pendingOverrides[std::string(key)] = std::move(value);
+            m_pendingOverrides[ownedKey] = std::move(value);
         }
         return true;
     }
@@ -334,7 +362,18 @@ namespace AsynGyanis::Base
             {
                 return std::nullopt;
             }
-            return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+            // 先按文件大小预留容量：istreambuf_iterator 逐字符追加会触发多次重新分配与搬移。
+            // 取不到大小（管道、特殊文件）时保持按需增长，不影响正确性
+            std::string   content;
+            std::error_code sizeError;
+            if (const std::uintmax_t fileSize = std::filesystem::file_size(filePath, sizeError); !sizeError)
+            {
+                content.reserve(static_cast<std::string::size_type>(fileSize));
+            }
+
+            content.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+            return content;
         }
 
         /**
@@ -357,10 +396,10 @@ namespace AsynGyanis::Base
          *          类型推断由解析器在读取时一次完成，配置侧不再二次判定。
          * @param text 文档文本
          * @param filePath 文件路径，仅用于挑选后缀
-         * @return ParserValue 文档根值
-         * @throws ParserError 语法非法或使用了不支持的 YAML 特性
+         * @return FormatValue 文档根值
+         * @throws FormatError 语法非法或使用了不支持的 YAML 特性
          */
-        [[nodiscard]] ParserValue parseDocumentBySuffix(const std::string_view text, const std::filesystem::path &filePath)
+        [[nodiscard]] FormatValue parseDocumentBySuffix(const std::string_view text, const std::filesystem::path &filePath)
         {
             return isJsonFile(filePath.string()) ? JsonParser::parse(text) : YamlParser::parse(text);
         }
@@ -371,18 +410,18 @@ namespace AsynGyanis::Base
          *          也不让整次写盘失败并丢掉本次有效修改。
          * @param text 文档文本
          * @param filePath 文件路径，仅用于挑选解析器
-         * @return ParserValueObject 顶层键值表
+         * @return FormatValueObject 顶层键值表
          */
-        [[nodiscard]] ParserValueObject parseFlatMembers(const std::string_view text, const std::filesystem::path &filePath)
+        [[nodiscard]] FormatValueObject parseFlatMembers(const std::string_view text, const std::filesystem::path &filePath)
         {
             try
             {
-                ParserValue document = parseDocumentBySuffix(text, filePath);
-                if (const auto members = std::get_if<ParserValueObject>(&document.variant()); members != nullptr)
+                FormatValue document = parseDocumentBySuffix(text, filePath);
+                if (const auto members = std::get_if<FormatValueObject>(&document.variant()); members != nullptr)
                 {
                     return std::move(*members);
                 }
-            } catch (const ParserError &)
+            } catch (const FormatError &)
             {
             }
             return {};
@@ -411,7 +450,7 @@ namespace AsynGyanis::Base
         const std::filesystem::path legacyPath = currentData->configDirectory / "ui.yaml";
 
         // 既有覆盖层内容先并入；损坏或根节点不是对象时按空表处理，不阻塞本次保存
-        ParserValueObject members;
+        FormatValueObject members;
         if (const std::optional<std::string> existingText = readTextFile(targetPath); existingText.has_value())
         {
             members = parseFlatMembers(*existingText, targetPath);
@@ -422,7 +461,7 @@ namespace AsynGyanis::Base
         {
             for (auto &[key, value]: parseFlatMembers(*legacyText, legacyPath))
             {
-                if (value.type() != ParserValueType::Object && value.type() != ParserValueType::Array)
+                if (value.type() != FormatValueType::Object && value.type() != FormatValueType::Array)
                 {
                     members.insert_or_assign(key, std::move(value));
                 }
@@ -439,7 +478,7 @@ namespace AsynGyanis::Base
         }
 
         // 类型原生序列化：字符串带引号、整数与浮点裸写，缩进两空格便于人工编辑
-        const std::string json = JsonWriter::write(ParserValue(std::move(members)), true) + "\n";
+        const std::string json = JsonWriter::write(FormatValue(std::move(members)), true) + "\n";
 
         // 断电安全：经原子写替换，避免中断留下半截 settings.json
         std::string writeError;
@@ -663,14 +702,15 @@ namespace AsynGyanis::Base
 
         try
         {
-            const ParserValue document = parseDocumentBySuffix(*text, filePath);
+            // 文档必须可改写：叶子值会被移出以便省掉一次深拷贝（文档本身是本次解析的临时产物）
+            FormatValue document = parseDocumentBySuffix(*text, filePath);
 
-            if (document.type() != ParserValueType::Object)
+            if (document.type() != FormatValueType::Object)
             {
                 // 沿用 YAML 习惯措辞：数组报 sequence，保持既有错误文案与用例一致
-                const std::string_view kindName = document.type() == ParserValueType::Array
+                const std::string_view kindName = document.type() == FormatValueType::Array
                                                       ? std::string_view{"sequence"}
-                                                      : document.type() == ParserValueType::Null
+                                                      : document.type() == FormatValueType::Null
                                                       ? std::string_view{"null"}
                                                       : std::string_view{typeName(document.type())};
 
@@ -678,8 +718,9 @@ namespace AsynGyanis::Base
                 return false;
             }
 
-            flattenValue(document, "", values);
-        } catch (const ParserError &exception)
+            std::string prefixBuffer;
+            flattenValue(document, prefixBuffer, values);
+        } catch (const FormatError &exception)
         {
             errors.push_back("解析错误：'" + filePath.string() + "'：" + exception.reason() + "（" +
                              exception.position().describe() + "）");
@@ -693,26 +734,39 @@ namespace AsynGyanis::Base
         return true;
     }
 
-    void ConfigManager::flattenValue(const ParserValue &node, const std::string &prefix, ConfigKeyValueMap &values)
+    void ConfigManager::flattenValue(FormatValue &node, std::string &prefixBuffer, ConfigKeyValueMap &values)
     {
-        if (!node.is<ParserValueObject>())
+        // 用可写 variant 取成员表：FormatValue 只暴露常量访问器，
+        // 而叶子值需要被移出节点（见下方 std::move），因此必须拿到可写引用
+        auto *members = std::get_if<FormatValueObject>(&node.variant());
+        if (members == nullptr)
         {
             return;
         }
 
-        for (const auto &[key, value]: node.asObject())
+        for (auto &[key, value]: *members)
         {
-            std::string fullKey = prefix.empty() ? key : std::format("{}.{}", prefix, key);
+            // 追加本层键后递归，返回时把缓冲回退到进入本层前的长度：
+            // 整棵子树共用同一个前缀缓冲，路径字符只写一次而不是每层重新拼一遍父前缀
+            const std::size_t prefixLength = prefixBuffer.size();
+            if (prefixLength != 0)
+            {
+                prefixBuffer.push_back('.');
+            }
+            prefixBuffer += key;
 
-            if (value.is<ParserValueObject>() && !value.asObject().empty())
+            const auto *nestedMembers = std::get_if<FormatValueObject>(&value.variant());
+            if (nestedMembers != nullptr && !nestedMembers->empty())
             {
                 // 非空嵌套对象：递归展开为点号路径
-                flattenValue(value, fullKey, values);
-                continue;
+                flattenValue(value, prefixBuffer, values);
+            } else
+            {
+                // 叶子（标量、数组、空对象）：类型已由解析器判定完毕，值直接移出文档
+                values.insert_or_assign(prefixBuffer, std::move(value));
             }
 
-            // 叶子（标量、数组、空对象）原样存入，类型已由解析器判定完毕
-            values.insert_or_assign(fullKey, value);
+            prefixBuffer.resize(prefixLength);
         }
     }
 
@@ -733,45 +787,58 @@ namespace AsynGyanis::Base
             return;
         }
 
-        std::lock_guard lock(m_reloadTasksMutex);
-
-        auto        task    = std::make_unique<ReloadTask>();
-        ReloadTask *rawTask = task.get();
-        task->thread        = std::jthread([this, rawTask]()
         {
-            if (!m_hotReloadEnabled.load(std::memory_order_acquire))
+            const std::lock_guard lock(m_reloadTasksMutex);
+
+            auto        task    = std::make_unique<ReloadTask>();
+            ReloadTask *rawTask = task.get();
+            task->thread        = std::jthread([this, rawTask]()
             {
+                if (!m_hotReloadEnabled.load(std::memory_order_acquire))
+                {
+                    m_reloadPending.store(false, std::memory_order_release);
+                    rawTask->finished.store(true, std::memory_order_release);
+                    return;
+                }
+                const auto result = doReload();
+
+                // 回调快照：本线程（重载工作线程）读到的是 enableHotReload 发布的那一份
+                if (const auto callback = m_hotReloadCallback.load(std::memory_order_acquire); callback && *callback)
+                {
+                    (*callback)(result);
+                }
+
                 m_reloadPending.store(false, std::memory_order_release);
                 rawTask->finished.store(true, std::memory_order_release);
-                return;
-            }
-            const auto result = doReload();
+            });
+            m_reloadTasks.push_back(std::move(task));
+        }
+        // 清理已完成任务并回收线程资源，防止任务列表无限增长。
+        // join 在锁外执行：持 m_reloadTasksMutex 期间 join 会把「一次长 reload 的等待」
+        // 变成对所有后续热加载检查的阻塞
+        collectFinishedReloadTasks();
+    }
 
-            if (m_hotReloadCallback)
-            {
-                m_hotReloadCallback(result);
-            }
-
-            m_reloadPending.store(false, std::memory_order_release);
-            rawTask->finished.store(true, std::memory_order_release);
-        });
-        m_reloadTasks.push_back(std::move(task));
-
-        // 清理已完成任务并回收线程资源，防止任务列表无限增长
-        for (auto iterator = m_reloadTasks.begin(); iterator != m_reloadTasks.end();)
+    void ConfigManager::collectFinishedReloadTasks()
+    {
+        std::vector<std::unique_ptr<ReloadTask> > finishedTasks;
         {
-            if ((*iterator)->finished.load(std::memory_order_acquire))
+            const std::lock_guard lock(m_reloadTasksMutex);
+            for (auto iterator = m_reloadTasks.begin(); iterator != m_reloadTasks.end();)
             {
-                if ((*iterator)->thread.joinable())
+                if ((*iterator)->finished.load(std::memory_order_acquire))
                 {
-                    (*iterator)->thread.join();
+                    // 锁内只摘取句柄：unique_ptr 移出后立即析构会在锁外 join
+                    finishedTasks.push_back(std::move(*iterator));
+                    iterator = m_reloadTasks.erase(iterator);
+                } else
+                {
+                    ++iterator;
                 }
-                iterator = m_reloadTasks.erase(iterator);
-            } else
-            {
-                ++iterator;
             }
         }
+        // 析构已结束任务的 jthread（此时线程必然已退出，join 立即返回）
+        finishedTasks.clear();
     }
 
     ConfigLoadResult ConfigManager::doReload()

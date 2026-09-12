@@ -17,7 +17,7 @@
 namespace AsynGyanis::Base
 {
     Logger::Logger(std::string name) :
-        m_name(std::move(name))
+        m_name(std::make_shared<const std::string>(std::move(name)))
     {
     }
 
@@ -28,18 +28,25 @@ namespace AsynGyanis::Base
 
     void Logger::log(const LogLevel level, const std::string_view message, const SourceLocation &location) const
     {
+        // 公开入口以 string_view 接收（调用方无需构造字符串），此处做唯一一次拷贝
+        writeEvent(level, std::string(message), location);
+    }
+
+    void Logger::writeEvent(const LogLevel level, std::string message, const SourceLocation &location) const
+    {
         if (!shouldLog(level))
         {
             return;
         }
 
+        // 名字与线程号都是共享/缓存值，事件构造只搬指针；消息体按值移入避免二次拷贝
         const LogEvent event{
                 level,
                 currentTimestamp(),
                 threadIdString(),
                 location,
                 m_name,
-                std::string(message)
+                std::move(message)
         };
 
         writeToSinks(event);
@@ -86,7 +93,7 @@ namespace AsynGyanis::Base
 
     const std::string &Logger::name() const
     {
-        return m_name;
+        return *m_name;
     }
 
     void Logger::flush() const

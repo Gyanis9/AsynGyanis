@@ -1,4 +1,4 @@
-# Base/Config —— 配置加载与热更新（值模型见 Base/Parser/Value）
+# Base/Config —— 配置加载与热更新（值模型见 Base/Format/Value）
 set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/ConfigValueType.h
         ${CMAKE_CURRENT_LIST_DIR}/ConfigValueType.cpp

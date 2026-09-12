@@ -44,7 +44,8 @@ namespace AsynGyanis::Base
         std::set<std::string> loggerNames;
         for (const auto &key: configuration.keys())
         {
-            if (key.rfind(loggerPrefix, 0) != 0)
+            // C++20 起用 starts_with 表达「前缀匹配」，语义比 rfind(..., 0) == 0 直白
+            if (!key.starts_with(loggerPrefix))
             {
                 continue;
             }
@@ -199,7 +200,18 @@ namespace AsynGyanis::Base
             if (!wrappedSink)
                 return nullptr;
 
-            const size_t      queueSize          = sinkConfiguration.get<int64_t>("queue_size").value_or(1024);
+            const int64_t configuredQueueSize = sinkConfiguration.get<int64_t>("queue_size").value_or(1024);
+            // 配置边界钳制：queue_size 为 0（或负数）会让 AsyncSink 的三种策略全部退化——
+            // Drop 丢弃全部事件、DropOldest 对空队列 pop（未定义行为）、Block 永久阻塞。
+            // 这里钳到 AsyncSink 声明的最小容量并给出可见诊断，AsyncSink 内部还有一次兜底钳制
+            size_t queueSize = static_cast<size_t>(configuredQueueSize);
+            if (configuredQueueSize < static_cast<int64_t>(AsyncSink::kMinimumQueueSize))
+            {
+                std::cerr << "LoggerConfig：async sink 的 queue_size=" << configuredQueueSize
+                          << " 非法（要求 >= " << AsyncSink::kMinimumQueueSize << "），已钳制为 "
+                          << AsyncSink::kMinimumQueueSize << '\n';
+                queueSize = AsyncSink::kMinimumQueueSize;
+            }
             const std::string overflowPolicyName = sinkConfiguration.get<std::string>("overflow_policy").value_or("block");
             // overflow_policy 支持 block / drop / drop_oldest 三种取值，非法值回退为 block
             auto              overflowPolicy     = AsyncSink::OverflowPolicy::Block;

@@ -185,7 +185,7 @@ namespace AsynGyanis::Base
         const LogEvent event = m_recordingSink->lastEvent();
         EXPECT_EQ(event.level, LogLevel::Info);
         EXPECT_EQ(event.message, "macro info message");
-        EXPECT_EQ(event.loggerName, "root");
+        EXPECT_EQ(event.loggerNameView(), "root");
         EXPECT_EQ(event.timestamp.size(), 23U);
         EXPECT_EQ(event.threadId, threadIdString());
 
@@ -252,7 +252,7 @@ namespace AsynGyanis::Base
         const LogEvent event = m_recordingSink->lastEvent();
         EXPECT_EQ(event.level, LogLevel::Warn);
         EXPECT_EQ(event.message, "user=alice age=30 ratio=0.50");
-        EXPECT_EQ(event.loggerName, "root");
+        EXPECT_EQ(event.loggerNameView(), "root");
     }
 
     TEST_F(LogMacros, ErrorFormatMacroKeepsOriginalLevel)
@@ -318,7 +318,7 @@ namespace AsynGyanis::Base
         ASSERT_EQ(targetEvents.size(), 2U);
         EXPECT_EQ(targetEvents[0].level, LogLevel::Debug);
         EXPECT_EQ(targetEvents[0].message, "explicit logger message");
-        EXPECT_EQ(targetEvents[0].loggerName, kTargetLoggerName);
+        EXPECT_EQ(targetEvents[0].loggerNameView(), kTargetLoggerName);
         EXPECT_EQ(targetEvents[1].level, LogLevel::Info);
         EXPECT_EQ(targetEvents[1].message, "explicit 1 two");
 

@@ -2,7 +2,7 @@
  * @file TestConfigValueType.cpp
  * @brief ConfigValueType 单元测试：类型枚举名称映射、配置文件后缀判定与键路径拆分
  * @author Gyanis
- * @date 2026-09-10
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -44,7 +44,8 @@ namespace AsynGyanis::Base
         };
 
         /// 超出枚举定义范围的值，用于驱动 typeName 的 default 分支
-        const std::vector<std::uint8_t> kOutOfRangeValues = {7, 8, 100, 128, 254, 255};
+        /// （7 已被 FormatValueType::UInt 占用，此处只能从 8 起取值）
+        const std::vector<std::uint8_t> kOutOfRangeValues = {8, 9, 100, 128, 254, 255};
 
         /// 带 YAML 后缀（含大小写混合）的路径样本
         const std::vector<std::string> kYamlPaths = {

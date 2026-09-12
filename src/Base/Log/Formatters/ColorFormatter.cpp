@@ -25,7 +25,7 @@ namespace AsynGyanis::Base
                            LogColor::colorForLevel(event.level),
                            logLevelToString(event.level),
                            LogColor::kReset,
-                           event.loggerName,
+                           event.loggerNameView(),
                            std::format("{}:{}", event.location.shortFileName(), event.location.line),
                            event.message);
 #else
@@ -34,7 +34,7 @@ namespace AsynGyanis::Base
                            LogColor::colorForLevel(event.level),
                            logLevelToString(event.level),
                            LogColor::kReset,
-                           event.loggerName,
+                           event.loggerNameView(),
                            event.message);
 #endif
     }

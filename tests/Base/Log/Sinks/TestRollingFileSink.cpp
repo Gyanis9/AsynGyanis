@@ -233,6 +233,37 @@ namespace AsynGyanis::Base
         EXPECT_LE(collectFilesMatching(temporaryDirectory.path(), R"(nobackup\.\d+\.log)").size(), 1u);
     }
 
+    TEST(RollingFileSink, CleanupRemovesOldestBackupsByWriteTime)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_OldestBackup");
+        const fs::path                        directory = temporaryDirectory.path();
+
+        // 活动文件预置内容已超过阈值：构造后的第一次写入即触发滚动，从而走到清理逻辑
+        ASSERT_TRUE(temporaryDirectory.writeFile("cap.log", std::string(256, 'x')));
+        ASSERT_TRUE(temporaryDirectory.writeFile("cap.1.log", "oldest_backup\n"));
+        ASSERT_TRUE(temporaryDirectory.writeFile("cap.2.log", "middle_backup\n"));
+
+        // 把两份备份的最后写入时间拉开，使「最旧」有唯一解：
+        // 排序必须在读好时间戳之后进行，比较器里再读时间戳出错时会抛异常（sort 比较器抛出是未定义行为）
+        const auto      baseTime = fs::file_time_type::clock::now();
+        std::error_code timeError;
+        fs::last_write_time(directory / "cap.1.log", baseTime - std::chrono::minutes(10), timeError);
+        ASSERT_FALSE(timeError);
+        fs::last_write_time(directory / "cap.2.log", baseTime - std::chrono::minutes(5), timeError);
+        ASSERT_FALSE(timeError);
+
+        RollingFileSink sink("cap.log", directory, RollingPolicy::Size, 128, 2);
+        sink.write(makeEvent(LogLevel::Info, "trigger_roll"));
+        sink.flush();
+
+        // 顺移后三份备份按时间从新到旧为 cap.1(本次滚动) → cap.3(原 cap.2) → cap.2(原 cap.1)，
+        // 上限 2 表示最旧的那份必须被删除
+        EXPECT_TRUE(fs::exists(directory / "cap.1.log"));
+        EXPECT_TRUE(fs::exists(directory / "cap.3.log"));
+        EXPECT_FALSE(fs::exists(directory / "cap.2.log")) << "清理应按最后写入时间删除最旧的备份";
+        EXPECT_EQ(collectFilesMatching(directory, R"(cap\.\d+\.log)").size(), 2u);
+    }
+
     // ============================================================================
     // 按时间滚动
     // ============================================================================

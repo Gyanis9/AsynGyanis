@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -150,6 +151,25 @@ namespace AsynGyanis::Base
 
         ASSERT_TRUE(fs::is_directory(logPath.parent_path()));
         EXPECT_TRUE(fs::is_regular_file(logPath));
+    }
+
+    TEST(FileSink, ConstructionReportsChineseErrorWhenParentDirectoryCannotBeCreated)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileSink_BadParent");
+        // 父路径被一个普通文件占住：create_directories 必然失败。
+        // 这里必须抛出带中文诊断的 runtime_error，而不是让 std::filesystem_error 直接逃逸
+        ASSERT_TRUE(temporaryDirectory.writeFile("blocker", "not a directory"));
+
+        try
+        {
+            FileSink sink(temporaryDirectory.path() / "blocker" / "app.log");
+            FAIL() << "父目录不可创建时应抛出异常";
+        } catch (const std::runtime_error &error)
+        {
+            const std::string message = error.what();
+            EXPECT_NE(message.find("无法打开日志文件"), std::string::npos) << message;
+            EXPECT_NE(message.find("创建目录失败"), std::string::npos) << message;
+        }
     }
 
     TEST(FileSink, Utf8FileNameIsAccepted)

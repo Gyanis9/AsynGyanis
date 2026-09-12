@@ -177,6 +177,33 @@ namespace AsynGyanis::Base
         }
     }
 
+    TEST(LogLevel, FromStringEmitsVisibleDiagnosticForUnknownLabels)
+    {
+        ::testing::internal::CaptureStderr();
+        const LogLevel fallback = logLevelFromString("INFOO");
+        const std::string diagnostic = ::testing::internal::GetCapturedStderr();
+
+        // 返回值仍是刻意容错后的 Info，但写错的配置必须留下可见痕迹
+        EXPECT_EQ(fallback, LogLevel::Info);
+        EXPECT_NE(diagnostic.find("INFOO"), std::string::npos) << diagnostic;
+        EXPECT_NE(diagnostic.find("无法识别"), std::string::npos) << diagnostic;
+        EXPECT_NE(diagnostic.find("TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF"), std::string::npos) << diagnostic;
+    }
+
+    TEST(LogLevel, FromStringStaysSilentForRecognizedLabels)
+    {
+        const std::vector<std::string_view> knownLabels = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF"};
+
+        ::testing::internal::CaptureStderr();
+        for (const std::string_view label: knownLabels)
+        {
+            static_cast<void>(logLevelFromString(label));
+        }
+        const std::string diagnostic = ::testing::internal::GetCapturedStderr();
+
+        EXPECT_TRUE(diagnostic.empty()) << diagnostic;
+    }
+
     TEST(LogLevel, FromStringAcceptsStringViewWithoutTrailingTerminator)
     {
         const std::string buffer("WARN\0EXTRA", 10);

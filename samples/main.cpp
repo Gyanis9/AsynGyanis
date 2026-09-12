@@ -128,7 +128,7 @@ int main(int argc, char **argv)
     }
 
     auto &   pool          = context.threadPool();
-    unsigned actualThreads = static_cast<unsigned>(pool.threadCount());
+    auto actualThreads = static_cast<unsigned>(pool.threadCount());
 
     LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads, std::thread::hardware_concurrency());
 

@@ -66,7 +66,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.level, LogLevel::Trace);
         EXPECT_TRUE(event.timestamp.empty());
         EXPECT_TRUE(event.threadId.empty());
-        EXPECT_TRUE(event.loggerName.empty());
+        EXPECT_TRUE(event.loggerNameView().empty());
         EXPECT_TRUE(event.message.empty());
         EXPECT_EQ(event.location.fileName, nullptr);
         EXPECT_EQ(event.location.line, 0);
@@ -81,7 +81,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.level, LogLevel::Error);
         EXPECT_EQ(event.timestamp, "2026-09-10 08:09:10.011");
         EXPECT_EQ(event.threadId, "9527");
-        EXPECT_EQ(event.loggerName, "appLogger");
+        EXPECT_EQ(event.loggerNameView(), "appLogger");
         EXPECT_EQ(event.message, "disk full");
         EXPECT_STREQ(event.location.fileName, "App.cpp");
         EXPECT_EQ(event.location.line, 77);
@@ -95,7 +95,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.level, LogLevel::Off);
         EXPECT_TRUE(event.timestamp.empty());
         EXPECT_TRUE(event.threadId.empty());
-        EXPECT_TRUE(event.loggerName.empty());
+        EXPECT_TRUE(event.loggerNameView().empty());
         EXPECT_TRUE(event.message.empty());
         EXPECT_EQ(event.location.fileName, nullptr);
     }
@@ -121,7 +121,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(copied.level, original.level);
         EXPECT_EQ(copied.timestamp, original.timestamp);
         EXPECT_EQ(copied.threadId, original.threadId);
-        EXPECT_EQ(copied.loggerName, original.loggerName);
+        EXPECT_EQ(copied.loggerNameView(), original.loggerNameView());
         EXPECT_EQ(copied.message, "copied message");
         EXPECT_EQ(copied.location.line, original.location.line);
         EXPECT_STREQ(copied.location.fileName, original.location.fileName);
@@ -142,7 +142,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(moved.level, LogLevel::Warn);
         EXPECT_EQ(moved.message, "moved message");
-        EXPECT_EQ(moved.loggerName, "eventLogger");
+        EXPECT_EQ(moved.loggerNameView(), "eventLogger");
         EXPECT_EQ(moved.timestamp, "2026-09-10 12:34:56.789");
         EXPECT_EQ(moved.threadId, "12345");
 

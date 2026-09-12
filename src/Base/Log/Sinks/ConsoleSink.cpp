@@ -24,14 +24,9 @@ namespace AsynGyanis::Base
         m_colorEnabled(enableColor)
     {
         AsynGyanis::Platform::Console::ensureUtf8Output();
-        // 控制台不支持 ANSI 序列时自动退回无颜色格式，避免输出乱码
-        if (enableColor && AsynGyanis::Platform::Console::supportsAnsiEscapeCodes())
-        {
-            setFormatter(std::make_unique<ColorFormatter>());
-        } else
-        {
-            setFormatter(std::make_unique<DefaultFormatter>());
-        }
+        // 与运行期切换共用同一条选择路径：构造只是「带初值」的一次切换，
+        // 避免两处各写一份 formatter 选择逻辑而逐渐漂移
+        applyFormatter();
     }
 
     void ConsoleSink::write(const LogEvent &event)
@@ -58,7 +53,14 @@ namespace AsynGyanis::Base
     {
         std::lock_guard lock(m_mutex);
         m_colorEnabled = enabled;
-        if (enabled && AsynGyanis::Platform::Console::supportsAnsiEscapeCodes())
+        applyFormatter();
+    }
+
+    void ConsoleSink::applyFormatter()
+    {
+        // 读取 m_colorEnabled 决定 formatter：这就是该字段的消费点。
+        // 终端不支持 ANSI 序列时即便请求了彩色也退回纯文本，避免输出乱码
+        if (m_colorEnabled && AsynGyanis::Platform::Console::supportsAnsiEscapeCodes())
         {
             setFormatter(std::make_unique<ColorFormatter>());
         } else

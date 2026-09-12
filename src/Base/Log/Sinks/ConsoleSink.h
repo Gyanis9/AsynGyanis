@@ -46,12 +46,21 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 动态切换控制台彩色输出能力
+         * @details 与构造函数走同一条 formatter 选择路径（applyFormatter），
+         *          因此配置里的 color 开关与运行期切换行为完全一致。
          * @param enabled 是否启用彩色输出
          */
         void setColorEnabled(bool enabled);
 
     private:
-        bool       m_colorEnabled; ///< 是否启用彩色输出
-        std::mutex m_mutex;        ///< 保护控制台输出的互斥锁
+        /**
+         * @brief 按当前颜色开关与终端能力选择 formatter
+         * @details 这是 m_colorEnabled 的唯一消费点：终端不支持 ANSI 序列时退回纯文本 formatter，
+         *          避免把转义序列打成乱码。调用方必须已持有 m_mutex。
+         */
+        void applyFormatter();
+
+        bool       m_colorEnabled; ///< 是否启用彩色输出（唯一真相源：构造与运行期切换都写它，applyFormatter 读它）
+        std::mutex m_mutex;        ///< 保护控制台输出与 formatter 切换的互斥锁
     };
 } // namespace AsynGyanis::Base

@@ -30,7 +30,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include "Base/Parser/Value/ParserValue.h"
+#include "Base/Format/Value/FormatValue.h"
 
 namespace AsynGyanis::Base
 {
@@ -118,6 +118,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 启用热加载（监听配置文件变更，自动重载）
+         * @details 回调在**重载工作线程**（不是文件监听线程、也不是调用方线程）中执行，
+         *          因此回调内可以安全地做耗时处理，但不应再回调用方持有的非线程安全状态。
+         *          回调以原子共享指针快照方式持有：写入发生在 enableHotReload（启动监听之前），
+         *          读取发生在重载线程，二者有明确的 acquire/release 同步。
          * @param callback 热加载完成后的回调函数
          * @param debounceMilliseconds 防抖间隔（毫秒），默认 500ms
          * @return bool 成功返回 true；重复调用返回 true；未加载目录或平台不支持返回 false
@@ -348,30 +352,41 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 热重载任务及其完成标记（用于回收线程资源）。
+         * @note 成员声明顺序即析构顺序的逆序：这里让 jthread 先于 finished 析构，
+         *       于是「join 等待线程退出」发生在 finished 被销毁之前——否则运行中的
+         *       线程会写已析构的 finished（虽为平凡析构，仍属生命周期错误）。
          */
         struct ReloadTask
         {
-            std::jthread      thread;          ///< 后台重载线程
             std::atomic<bool> finished{false}; ///< 任务是否已结束
+            std::jthread      thread;          ///< 后台重载线程（析构时自动 join）
         };
 
         std::atomic<std::shared_ptr<ConfigData> > m_data{std::make_shared<ConfigData>()}; ///< 当前有效的配置数据原子指针，支持无锁热替换
 
         mutable std::shared_mutex m_reloadMutex; ///< 用于配置数据构建过程的读写锁，仅在修改时加写锁
 
-        std::mutex        m_overrideMutex;    ///< 保护待持久化覆盖集的互斥锁
-        ConfigKeyValueMap m_pendingOverrides; ///< 待写入 settings.json 的修改集合（setValue 累积，saveOverrides 清空）
+        mutable std::mutex m_overrideMutex;    ///< 保护待持久化覆盖集的互斥锁
+        ConfigKeyValueMap m_pendingOverrides;  ///< 待写入 settings.json 的修改集合（setValue 累积，saveOverrides 清空）
+        std::mutex        m_writeMutex;        ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
 
         mutable std::mutex m_schemaMutex; ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
         ConfigSchema       m_schema;      ///< 全局 schema（setSchema 注册，提交快照时自动校验）
 
         // 热加载相关
-        std::unique_ptr<Platform::FileWatcher>    m_fileWatcher;             ///< 文件监控器（用于热加载）
-        HotReloadCallback                         m_hotReloadCallback;       ///< 热加载回调函数，配置文件变化时触发
+        std::unique_ptr<Platform::FileWatcher> m_fileWatcher;             ///< 文件监控器（用于热加载）
+        std::atomic<std::shared_ptr<const HotReloadCallback> > m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
         std::atomic<bool>                         m_hotReloadEnabled{false}; ///< 热加载功能是否启用（true 启用，false 关闭）
         std::atomic<bool>                         m_reloadPending{false};    ///< 是否有重载任务正在执行（节流）
-        std::mutex                                m_reloadTasksMutex;        ///< 保护 m_reloadTasks 的互斥锁
+        std::mutex                                m_reloadTasksMutex;        ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
         std::vector<std::unique_ptr<ReloadTask> > m_reloadTasks;             ///< 活跃的重载任务（用于析构前 join）
+
+        /**
+         * @brief 取出并回收已结束的重载任务
+         * @details 锁内只做「摘取」，锁外析构 unique_ptr（其析构会 join 线程）。
+         *          这样一次长 reload 阻塞 join 时不会连带挡住其它热加载检查。
+         */
+        void collectFinishedReloadTasks();
 
         /**
          * @brief 目录加载的内部实现，负责扫描、解析并原子替换配置快照。
@@ -392,13 +407,15 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 递归扁平化文档值，将嵌套键转换为点号路径。
-         * @details 只向下展开对象节点；数组与标量作为叶子值原样存入，
+         * @details 只向下展开对象节点；数组与标量作为叶子值存入，
          *          类型推断已在解析器内完成，此处不再二次判定。
-         * @param node 当前文档值节点（必须是对象）。
-         * @param prefix 键前缀。
-         * @param values 扁平化结果容器。
+         *          点号前缀用同一个缓冲「追加—递归—回溯」复用，避免每层重复拼接父前缀；
+         *          叶子值直接从文档中移出，省掉一次深拷贝。
+         * @param node 当前文档值节点（必须是对象），其叶子值会被移出，故必须是可改写的临时对象
+         * @param prefixBuffer 复用的点号前缀缓冲，进入时表示当前层前缀
+         * @param values 扁平化结果容器
          */
-        static void flattenValue(const ParserValue &node, const std::string &prefix, ConfigKeyValueMap &values);
+        static void flattenValue(FormatValue &node, std::string &prefixBuffer, ConfigKeyValueMap &values);
 
         /**
          * @brief 处理文件监听回调并触发后台重载。

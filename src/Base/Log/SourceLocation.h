@@ -9,7 +9,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <source_location>
+#include <string_view>
 
 namespace AsynGyanis::Base
 {
@@ -68,24 +70,21 @@ namespace AsynGyanis::Base
         /**
          * @brief 仅返回文件名部分（去掉目录前缀）
          * @details 同时识别 '/' 与 '\\' 两种分隔符，因此 Windows 与 Linux 的
-         *          编译器路径都能正确截断。
+         *          编译器路径都能正确截断。标注 constexpr 后，只要文件名在编译期已知，
+         *          截断结果就能在编译期算完（source_location 的文件名对每次调用点都是常量）；
+         *          实现在 string_view 上反向查找最后一个分隔符，短文件名的场景远比逐字符正向扫描快。
          * @return const char* 短文件名，位置为空时返回空字符串
          */
-        [[nodiscard]] const char *shortFileName() const noexcept
+        [[nodiscard]] constexpr const char *shortFileName() const noexcept
         {
             if (!fileName)
             {
                 return "";
             }
-            const char *lastSeparator = fileName;
-            for (const char *character = fileName; *character; ++character)
-            {
-                if (*character == '/' || *character == '\\')
-                {
-                    lastSeparator = character + 1;
-                }
-            }
-            return lastSeparator;
+
+            const std::string_view path{fileName};
+            const std::size_t      separatorPosition = path.find_last_of("/\\");
+            return separatorPosition == std::string_view::npos ? fileName : fileName + separatorPosition + 1;
         }
     };
 } // namespace AsynGyanis::Base

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <iostream>
 #include <string_view>
 
 // ============================================================================
@@ -70,6 +71,12 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 将字符串解析为日志等级（大小写敏感）
+     * @details 无法识别的取值回落到 LogLevel::Info 是刻意的容错——配置里写错一个等级
+     *          不应让进程起不来，也不应改变既有调用方的返回类型（本函数恒返回 LogLevel）。
+     *          但容错必须可见：未知取值会向 std::cerr 打一条中文诊断，与
+     *          LoggerConfigLoader 的其它配置诊断风格一致。这里刻意不经日志系统，
+     *          因为本函数可能在日志系统就绪之前（配置加载阶段）被调用，且日志本身
+     *          也依赖等级解析，走日志通道会形成递归。
      * @param levelString 等级字符串，如 "INFO"
      * @return LogLevel 解析结果，未知字符串回退为 LogLevel::Info
      */
@@ -89,6 +96,9 @@ namespace AsynGyanis::Base
             return LogLevel::Fatal;
         if (levelString == "OFF")
             return LogLevel::Off;
+
+        std::cerr << "日志等级：无法识别 '" << levelString
+                  << "'，已回落为 INFO（可用取值：TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF）" << '\n';
         return LogLevel::Info;
     }
 } // namespace AsynGyanis::Base

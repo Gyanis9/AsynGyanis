@@ -23,7 +23,7 @@ namespace AsynGyanis::Base
                            event.timestamp,
                            event.threadId,
                            logLevelToString(event.level),
-                           event.loggerName,
+                           event.loggerNameView(),
                            std::format("{}:{}", event.location.shortFileName(), event.location.line),
                            event.message);
 #else
@@ -31,7 +31,7 @@ namespace AsynGyanis::Base
         return std::format("{} [{:<5}] [{}] {}",
                            event.timestamp,
                            logLevelToString(event.level),
-                           event.loggerName,
+                           event.loggerNameView(),
                            event.message);
 #endif
     }
