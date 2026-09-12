@@ -9,6 +9,8 @@ add_executable(TestDatabase
 
         Pool/TestConnectionPool.cpp
 
+        Queryable/TestQueryable.cpp
+
         Sqlite/TestSqliteConnection.cpp
         Sqlite/TestSqliteResult.cpp
 
