@@ -8,6 +8,9 @@
  *            connect() 在超时内失败、句柄为空、错误文本为中文且点明 PostgreSQL；
  *          - 容器类型参数被拒（真实驱动专属：桩构建里参数化路径在「驱动缺失」处就返回了，
  *            根本走不到参数校验，该用例在桩构建下显式跳过）；
+ *          - 含 NUL 字节的文本参数被拒（同上属真实驱动专属）：PostgreSQL 的文本类型存不了 NUL，
+ *            驱动提前拦下并给出「改用 BYTEA + 十六进制文本」的可行出路，同时保证不含 NUL 的
+ *            文本（含十六进制写法本身、空串）照常放行；
  *          - 真实驱动专属且必须有服务端才能验证的部分（真实查询结果、影响行数、
  *            serverVersion() 取值、参数个数与 $n 不匹配的服务端报错）本文件不做断言，
  *            由 TestPostgresIntegration.cpp 在有服务端时覆盖。
@@ -327,6 +330,85 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
 
         // 全过程没有发生过任何连接，句柄始终为空
+        EXPECT_FALSE(connection.isConnected());
+        EXPECT_EQ(connection.nativeHandle(), nullptr);
+    }
+
+    TEST(PostgresConnection, TextParametersWithNulByteAreRejectedWithoutServerContact)
+    {
+        // 与容器判定同属纯本地校验，桩构建里参数化路径在「驱动缺失」处就返回，因此只对真实驱动成立
+        if (!kPostgresDriverCompiled)
+        {
+            GTEST_SKIP() << "当前构建未编译 PostgreSQL 驱动，参数校验路径不存在";
+        }
+
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+        ASSERT_FALSE(connection.isConnected());
+
+        // PostgreSQL 的文本类型在编码层面不允许 NUL，服务端只会以「invalid byte sequence」拒绝，
+        // 调用方很难从那种报文里定位到「某个字符串混进了 '\0'」，因此驱动提前拦下并给出替代做法
+        const std::vector<DatabaseValue> nulParameters{std::string("a\0b", 3)};
+        const std::unique_ptr<DatabaseResult> nulResult = connection.execute("SELECT $1", nulParameters);
+        EXPECT_EQ(nulResult, nullptr);
+
+        const std::string nulReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(nulReason)) << nulReason;
+        // 断言「NUL」与「BYTEA」两个稳定关键词：前者说明拦的是什么，后者给出可行出路
+        EXPECT_NE(nulReason.find("NUL"), std::string::npos) << nulReason;
+        EXPECT_NE(nulReason.find("BYTEA"), std::string::npos) << nulReason;
+
+        // 关键边界：不含 NUL 的文本（哪怕内容本身就是「十六进制文本」）必须照常放行，
+        // 否则会把「按 BYTEA 的十六进制写法送出」这条推荐做法也一起挡掉
+        const std::vector<DatabaseValue> hexTextParameters{std::string("\\x48656c6c6f")};
+        EXPECT_EQ(connection.execute("SELECT $1", hexTextParameters), nullptr);
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
+
+        // 边界再往前一步：空串（长度为 0）与「以 NUL 结尾的 C 字符串字面量」都不是本判定要拦的东西，
+        // 前者合法、后者在 std::string 构造时已被截断成不含 NUL 的文本
+        const std::vector<DatabaseValue> emptyTextParameters{std::string()};
+        EXPECT_EQ(connection.execute("SELECT $1", emptyTextParameters), nullptr);
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
+
+        const std::vector<DatabaseValue> cStringParameters{std::string("abc")};
+        EXPECT_EQ(connection.execute("SELECT $1", cStringParameters), nullptr);
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
+
+        // 同容器用例：全过程没有发生过任何连接
+        EXPECT_FALSE(connection.isConnected());
+        EXPECT_EQ(connection.nativeHandle(), nullptr);
+    }
+
+    TEST(PostgresConnection, CommandTextWithNulByteIsRejectedWithoutServerContact)
+    {
+        if (!kPostgresDriverCompiled)
+        {
+            GTEST_SKIP() << "当前构建未编译 PostgreSQL 驱动，本判定只在真实驱动里生效";
+        }
+
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+        ASSERT_FALSE(connection.isConnected());
+
+        // 命令文本内嵌 NUL 时，libpq 会把它当成字符串结尾：命令被静默截断成前半句，
+        // 而「前半句恰好合法」的情况不会报任何错，因此必须在本地拦下。
+        // 这里显式拼出 NUL，避免依赖「字面量长度参数写对」这种容易出错又看不出意图的写法
+        const std::string truncatedCommand = std::string("SELECT 1") + '\0' + "; DROP TABLE important";
+        EXPECT_EQ(connection.execute(truncatedCommand), nullptr);
+        const std::string plainReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(plainReason)) << plainReason;
+        EXPECT_NE(plainReason.find("NUL"), std::string::npos) << plainReason;
+
+        // 参数化重载走的是同一个 PQexecParams 命令文本参数，必须同样被拦
+        const std::vector<DatabaseValue> parameters{std::int64_t{1}};
+        EXPECT_EQ(connection.execute(truncatedCommand, parameters), nullptr);
+        const std::string parameterizedReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(parameterizedReason)) << parameterizedReason;
+        EXPECT_NE(parameterizedReason.find("NUL"), std::string::npos) << parameterizedReason;
+
+        // 两个重载的 NUL 判定都在连接判定之前，因此未连接时给出的是 NUL 而不是「未连接」；
+        // 反过来，不含 NUL 的命令仍应落到真正的「未连接」上，两条判定互不遮蔽
+        EXPECT_EQ(connection.execute("SELECT 1", parameters), nullptr);
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
+
         EXPECT_FALSE(connection.isConnected());
         EXPECT_EQ(connection.nativeHandle(), nullptr);
     }

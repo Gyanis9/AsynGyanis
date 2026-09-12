@@ -33,6 +33,14 @@
  * 本方言一律给标识符加双引号，因此表名/列名的大小写被原样保留；
  * 表存在性查询用 current_schema() 限定，与不带模式名执行 DML 时的解析规则一致。
  *
+ * ## 一个必须在送参数之前知道的引擎限制
+ * PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）**无法存储 NUL 字节**：
+ * 服务端会以「invalid byte sequence for encoding "UTF8": 0x00」之类报文拒绝整条语句。
+ * 因此含 '\0' 的 std::string 参数不能直接用于文本列（本驱动会在送出前本地拒绝并给出中文原因，
+ * 见 PostgresConnection::execute()）。需要承载任意二进制时应使用 BYTEA 列，
+ * 并把取值按十六进制文本（形如 \x48656c6c6f）作为普通参数送出——那是纯 ASCII、不含 NUL 的文本。
+ * 注意这是引擎的存储限制，不是本方言或 ORM 的取舍；同一段带 '\0' 的文本在 MySQL / SQLite 上是合法的。
+ *
  * ## 安全考量
  * 所有来自 C++ 侧的数据（比较值、IN 列表、分页值）都只以 $n 占位符出现，
  * 值本身通过 parameters 交给 PQexecParams 绑定，因此含单引号、"--"、分号的字符串

@@ -44,6 +44,26 @@
 
 namespace AsynGyanis::Database
 {
+    /**
+     * @brief 校验命令文本不含 NUL 字节
+     *
+     * @details libpq 的 PQexec / PQexecParams 只接受「零终止 C 字符串」形式的命令，
+     *          内嵌 NUL 会让命令被**静默截断**成前半句：多数情况服务端报语法错误，
+     *          但截出来的也可能是恰好合法的一条语句——那就成了「执行了半条 SQL 却不报错」，
+     *          比直接失败危险得多。因此在这里本地拦下并说明原因。
+     *
+     *          本函数不依赖 libpq，因此放在两个分支之外：真实驱动与报错桩共用同一份判定，
+     *          桩构建下的行为与真实构建保持一致。
+     *
+     * @param command 待执行的命令文本
+     * @return true 通过校验
+     * @return false 含 NUL 字节（调用方需把 lastError 置为中文原因后返回 nullptr）
+     */
+    [[nodiscard]] bool postgresCommandContainsNul(const std::string_view command)
+    {
+        return command.find('\0') != std::string_view::npos;
+    }
+
 #ifdef DATABASE_HAS_POSTGRES
 
     namespace
@@ -303,6 +323,15 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // 内嵌 NUL 会让 libpq 把命令截断成前半句（见 postgresCommandContainsNul 的说明），
+        // 同样放在连接状态之前：这是纯本地判定，且失败原因比「未连接」更值得优先报出来
+        if (postgresCommandContainsNul(command))
+        {
+            m_lastError = "数据库命令含 NUL 字节：libpq 按零终止 C 字符串解析命令，内嵌 NUL 会把命令"
+                          "静默截断成前半句（可能执行出一条不完整的语句而不报错），请先清理命令文本";
+            return nullptr;
+        }
+
         if (!isConnected())
         {
             m_lastError = "未连接到 PostgreSQL 数据库，命令未执行";
@@ -350,9 +379,41 @@ namespace AsynGyanis::Database
             textParameters.push_back(std::move(*convertedParameter));
         }
 
+        // NUL 字节同样是纯本地判定，因此与容器判定并列放在连接状态之前。
+        // PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）在编码层面就不允许 NUL：
+        // 服务端会以「invalid byte sequence for encoding "UTF8": 0x00」这类报文拒绝整条语句，
+        // 而调用方看到的只是一个与编码有关的报错，很难定位到「某个字符串里混进了 '\0'」。
+        // 这里提前拦下并说清替代做法，比让服务端报编码错误有用得多。
+        //
+        // 注意这不是本驱动的取舍：本驱动本来就用「指针 + 长度」送出参数，'\0' 不会被截断，
+        // 是服务端按类型拒绝。要做字节级二进制存储应使用 BYTEA 列，并按 PostgreSQL 的
+        // 十六进制文本格式（'\x…'，纯 ASCII、不含 NUL）作为普通文本参数送出。
+        for (std::size_t index = 0; index < parameters.size(); ++index)
+        {
+            const auto *textValue = std::get_if<std::string>(&parameters[index]);
+            if (textValue == nullptr || textValue->find('\0') == std::string::npos)
+            {
+                continue;
+            }
+
+            m_lastError = "参数化查询的文本参数不支持 NUL 字节（第 " + std::to_string(index + 1U) +
+                          " 个参数）：PostgreSQL 的文本类型（TEXT / VARCHAR 等）无法存储 NUL 字节。"
+                          "需要承载任意二进制请改用 BYTEA 列，并把取值按十六进制文本（形如 \\x48656c6c6f）"
+                          "作为普通参数送出；若该字符串只是意外含 NUL，请在调用方清理掉";
+            return nullptr;
+        }
+
         if (command.empty())
         {
             m_lastError = "数据库命令为空";
+            return nullptr;
+        }
+
+        // 与不带参数的重载同一条判定：PQexecParams 的命令文本同样是零终止 C 字符串
+        if (postgresCommandContainsNul(command))
+        {
+            m_lastError = "数据库命令含 NUL 字节：libpq 按零终止 C 字符串解析命令，内嵌 NUL 会把命令"
+                          "静默截断成前半句（可能执行出一条不完整的语句而不报错），请先清理命令文本";
             return nullptr;
         }
 
