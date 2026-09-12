@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <format>
 #include <string>
 #include <utility>
 #include <vector>
@@ -191,6 +192,57 @@ namespace AsynGyanis::Base
 
         EXPECT_TRUE(contains(output, kThreadId)) << output;
         EXPECT_TRUE(contains(output, std::string(kSourceFile) + ":" + std::to_string(kSourceLine))) << output;
+    }
+
+    TEST(ColorFormatter, DebugBuildPadsSourceLocationFieldToFixedWidth)
+    {
+        ColorFormatter formatter;
+
+        std::string paddedLocation = "a.cpp:1";
+        paddedLocation.resize(13, ' ');
+
+        const std::string output = formatter.format(
+                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                         SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
+
+        EXPECT_TRUE(contains(output, paddedLocation)) << output;
+    }
+
+    TEST(ColorFormatter, DebugBuildHandlesSourceLocationLongerThanStackBuffer)
+    {
+        // 与 DefaultFormatter 同形：共用 SourceLocationText 后，超长「文件:行号」走回退分支，
+        // 输出必须与短文件名一样完整呈现，且与消息之间仍只有一个分隔空格
+        ColorFormatter    formatter;
+        const std::string longFileName(80, 'c');
+
+        const std::string output = formatter.format(
+                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                         SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName,
+                         "padding long name"));
+
+        EXPECT_TRUE(contains(output, longFileName + ":1234567")) << output;
+        EXPECT_TRUE(contains(output, longFileName + ":1234567 padding long name")) << output;
+    }
+
+    TEST(ColorFormatter, DebugBuildMatchesReferenceLayoutOnStackBufferPath)
+    {
+        // 命中栈缓冲的路径必须与「直接用 std::format 独立拼出整行」的参考版式逐字节相同
+        ColorFormatter    formatter;
+        const std::string shortFileName = "hit_fixture.cpp";
+
+        const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
+                                                 kFixedTimestamp, kThreadId,
+                                                 LogColor::colorForLevel(LogLevel::Info),
+                                                 logLevelToString(LogLevel::Info), LogColor::kReset,
+                                                 kLoggerName,
+                                                 std::format("{}:{}", shortFileName, 42),
+                                                 "hit path");
+
+        const std::string output = formatter.format(
+                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                         SourceLocation(shortFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
+
+        EXPECT_EQ(output, expected) << output;
     }
 
 #else

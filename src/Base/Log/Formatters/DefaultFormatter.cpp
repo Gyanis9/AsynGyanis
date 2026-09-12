@@ -8,41 +8,31 @@
  */
 
 #include "Base/Log/Formatters/DefaultFormatter.h"
+#include "Base/Log/Formatters/SourceLocationText.h"
 #include "Base/Log/LogLevel.h"
 
 #include <array>
-#include <cstddef>
 #include <format>
 #include <string>
 #include <string_view>
 
 namespace AsynGyanis::Base
 {
-    namespace
-    {
-        /// 「文件:行号」栈上缓冲容量：足够容纳 50 余字符的文件名加 6 位行号，
-        /// 本项目所有源文件名去目录后都远小于该值，只有异常长的文件名才回退到堆分配
-        constexpr std::size_t kSourceLocationBufferSize = 64;
-    } // namespace
-
     std::string DefaultFormatter::format(const LogEvent &event)
     {
 #ifdef ASYN_DEBUG
         // 「文件:行号」先写进栈上缓冲：嵌套 std::format 既要多跑一次格式化，又让每行
         // 多出一次堆分配（实测每行分配 2 次，其中一次就来自这段临时串）。
-        // format_to_n 只往给定缓冲写、不分配，并返回「装下整段所需长度」：
-        // 装得下就直接以 string_view 参与外层格式化，装不下才回退到原来的分配路径。
-        // 两条路径共用同一套格式说明，输出逐字节一致（含 {:<13} 用空格补齐到 13 列）
-        std::array<char, kSourceLocationBufferSize> locationBuffer{};
-        const auto writtenLocation = std::format_to_n(locationBuffer.data(), kSourceLocationBufferSize, "{}:{}", event.location.shortFileName(),
-                                                      event.location.line);
-        const std::size_t locationSize = static_cast<std::size_t>(writtenLocation.size);
-        const std::string overflowLocation = locationSize > kSourceLocationBufferSize
+        // 调用共用的 tryFormatSourceLocationText：命中就直接以返回的视图参与外层格式化，
+        // 未命中（空视图）才回退到原来的分配路径。两条路径使用同一个 format_to_n 格式串
+        // "{}:{}"，所以文本内容与长度必然逐字节相同（含 {:<13} 用空格补齐到 13 列），
+        // 差别仅在内存来源，让「命中」与「回退」对输出不可见
+        std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
+        const std::string_view locationText = tryFormatSourceLocationText(event.location, locationBuffer);
+        const std::string overflowLocation = locationText.empty()
                                                  ? std::format("{}:{}", event.location.shortFileName(), event.location.line)
                                                  : std::string();
-        const std::string_view location = locationSize <= kSourceLocationBufferSize
-                                              ? std::string_view(locationBuffer.data(), locationSize)
-                                              : std::string_view(overflowLocation);
+        const std::string_view location = locationText.empty() ? std::string_view(overflowLocation) : locationText;
 
         return std::format("{} {} [{:<5}] [{}] {:<13} {}",
                            event.timestamp,

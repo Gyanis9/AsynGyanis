@@ -5,4 +5,5 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/DefaultFormatter.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ColorFormatter.h
         ${CMAKE_CURRENT_LIST_DIR}/ColorFormatter.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/SourceLocationText.h
 )

@@ -11,10 +11,15 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <format>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "Base/Log/Formatters/SourceLocationText.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -56,6 +61,54 @@ namespace AsynGyanis::Base
             return haystack.find(needle) != std::string::npos;
         }
     } // namespace
+
+    // ============================================================================
+    // 共用工具 SourceLocationText：两个格式化器 Debug 分支共同依赖的「文件:行号」生成
+    // ============================================================================
+
+    TEST(SourceLocationText, FitsExactlyWhenBufferMatchesRequiredLength)
+    {
+        const SourceLocation                            location("short_fixture.cpp", 42, kSourceFunction);
+        std::array<char, kSourceLocationTextBufferSize> buffer{};
+        const std::string_view                          expected = "short_fixture.cpp:42";
+
+        const std::string_view text = tryFormatSourceLocationText(location, std::span<char>(buffer).first(expected.size()));
+
+        EXPECT_EQ(text, expected);
+        // 命中时视图必须直接指向调用方缓冲，中间不产生任何临时串
+        EXPECT_EQ(text.data(), buffer.data());
+    }
+
+    TEST(SourceLocationText, ReturnsEmptyViewWhenBufferIsOneByteShort)
+    {
+        const SourceLocation                            location("short_fixture.cpp", 42, kSourceFunction);
+        std::array<char, kSourceLocationTextBufferSize> buffer{};
+        const std::string_view                          expected = "short_fixture.cpp:42";
+
+        // 缓冲比所需长度少 1 字节：必须整体判为未命中，而不是把半截文本交出去
+        const std::string_view text = tryFormatSourceLocationText(location, std::span<char>(buffer).first(expected.size() - 1));
+
+        EXPECT_TRUE(text.empty());
+    }
+
+    TEST(SourceLocationText, ReturnsEmptyViewWhenFileNameExceedsBuffer)
+    {
+        const std::string                               longFileName(2 * kSourceLocationTextBufferSize, 'n');
+        std::array<char, kSourceLocationTextBufferSize> buffer{};
+        const SourceLocation                            location(longFileName.c_str(), 1234567, kSourceFunction);
+
+        EXPECT_TRUE(tryFormatSourceLocationText(location, buffer).empty());
+    }
+
+    TEST(SourceLocationText, EmptyFileNameStillRendersLineNumber)
+    {
+        std::array<char, kSourceLocationTextBufferSize> buffer{};
+
+        // 空文件名不是未命中：文本仍需给出 ':' 与行号，因此恒不为空视图
+        EXPECT_EQ(tryFormatSourceLocationText(SourceLocation("", 7, kSourceFunction), buffer), ":7");
+        // 完全默认构造的位置（fileName 为空指针）同样只输出行号
+        EXPECT_EQ(tryFormatSourceLocationText(SourceLocation(), buffer), ":0");
+    }
 
     // ============================================================================
     // 通用版式
@@ -210,6 +263,33 @@ namespace AsynGyanis::Base
 
         EXPECT_TRUE(contains(output, longFileName + ":1234567")) << output;
         EXPECT_TRUE(contains(output, longFileName + ":1234567 padding long name")) << output;
+    }
+
+    TEST(DefaultFormatter, DebugBuildHitAndFallbackPathsMatchReferenceLayout)
+    {
+        // 命中栈缓冲（短文件名）与回退分配（超长文件名）两条路径，都必须与「直接用
+        // std::format 独立拼出整行」的参考版式逐字节相同，含 {:<13} 的右侧填充空格
+        DefaultFormatter formatter;
+
+        const auto referenceLine = [](const char *fileName, const int line, const std::string &message)
+        {
+            return std::format("{} {} [{:<5}] [{}] {:<13} {}",
+                               kFixedTimestamp, kThreadId, logLevelToString(LogLevel::Info),
+                               kLoggerName, std::format("{}:{}", fileName, line), message);
+        };
+
+        const std::string hitFileName = "hit_fixture.cpp";
+        const std::string fallbackFileName(80, 'n');
+
+        const std::string hitOutput = formatter.format(
+                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                         SourceLocation(hitFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
+        const std::string fallbackOutput = formatter.format(
+                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                         SourceLocation(fallbackFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "fallback path"));
+
+        EXPECT_EQ(hitOutput, referenceLine(hitFileName.c_str(), 42, "hit path")) << hitOutput;
+        EXPECT_EQ(fallbackOutput, referenceLine(fallbackFileName.c_str(), 1234567, "fallback path")) << fallbackOutput;
     }
 
 #else
