@@ -1,48 +1,103 @@
 /**
  * @file TcpAcceptor.cpp
- * @brief TCP 监听套接字，异步接受新连接
+ * @brief TCP 监听套接字实现：复用选项装配与边沿触发下的批量 accept
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "TcpAcceptor.h"
-#include "Base/Exception.h"
-#include "Core/EpollAwaiter.h"
-#include "Core/EventLoop.h"
-#include "Platform/SocketCompat.h"
+#include "Net/Tcp/TcpAcceptor.h"
 
-#include <cerrno>
+#include "Base/Exception/SystemException.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
+#include "Platform/System/PlatformError.h"
 
+#include <chrono>
+#include <system_error>
+#include <utility>
 
-namespace Net
+namespace AsynGyanis::Net
 {
+    namespace
+    {
+        /**
+         * @brief 内核资源紧张类错误的退避时长，单位毫秒
+         *
+         * @details 描述符或内核缓冲耗尽时监听描述符一直保持「可读」，用等待可读事件来退避
+         *          等价于忙等；只有按时间等待才能给上层腾出释放描述符的窗口。
+         *          5ms 是经验值：短到不会让排队连接明显堆积，长到足以让一次 fd 回收完成。
+         */
+        constexpr int kResourcePressureBackoffMs = 5;
+
+        /**
+         * @brief 没有待接受连接时的重试间隔，单位毫秒
+         *
+         * @details 这里不用 EpollAwaiter 死等监听描述符可读：那个等待器只支持单个 fd 且不带超时，
+         *          而「关闭监听描述符」在 Windows/wepoll 上并不保证唤醒挂在 epoll 上的协程，
+         *          一旦如此，stop() 之后 start() 永远收不了尾。改为按固定间隔轮询描述符，
+         *          用监听器空闲时约 20 次/秒的唤醒换取确定性的关闭语义；
+         *          50ms 远小于人类可感知的连接延迟，又不会让空闲监听器显著占用 CPU。
+         */
+        constexpr int kIdleAcceptPollIntervalMs = 50;
+
+        /**
+         * @brief 判断 socket 错误码是否属于「内核资源暂时不足、稍后重试即可恢复」一类
+         * @param socketErrorCode Platform::PlatformError::lastSocketErrorCode() 的返回值
+         * @return true 需要退避后继续接受连接
+         * @return false 不属于资源紧张类错误
+         */
+        bool isResourcePressureError(const int socketErrorCode) noexcept
+        {
+            // 四种语义都指向「连接本身没坏，是内核暂时给不出资源」：进程 fd 上限、
+            // 系统级 fd 表、网络缓冲空间与内存。它们在 Windows 上被 Platform 层映射到
+            // 对应的 WSA 错误码，故此处不再需要任何平台分支
+            return socketErrorCode == Platform::PlatformError::kTooManyOpenFiles
+                || socketErrorCode == Platform::PlatformError::kSystemFileTableFull
+                || socketErrorCode == Platform::PlatformError::kNoBufferSpace
+                || socketErrorCode == Platform::PlatformError::kOutOfMemory;
+        }
+    } // namespace
+
     TcpAcceptor::TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address) :
         m_loop(loop),
         m_listenSocket(Core::AsyncSocket::create(loop, address.family() == AF_INET6 ? AF_INET6 : AF_INET)),
-        m_address(address)
+        m_address(address),
+        m_backoffTimer(loop)
     {
+        // 协议族只按「是否 IPv6」二选一：其余地址族本框架暂不支持，落到 IPv4 更可预期。
+        // 创建即由 Core 置好非阻塞与 close-on-exec，本层不再重复设置。
+        // 退避定时器也在此刻建好：需要退避的场景多半是描述符耗尽，那时再去申请定时器描述符
+        // 只会连续失败，把「等一会儿再来」变成「直接报错停机」
     }
 
     bool TcpAcceptor::bind()
     {
-        const int     fileDescriptor = m_listenSocket.fileDescriptor();
-        constexpr int opt            = 1;
-        setsockopt(fileDescriptor, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
-        // SO_REUSEPORT 仅 Linux 3.9+ 支持，Windows 不支持此选项
-#ifdef SO_REUSEPORT
-        setsockopt(fileDescriptor, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char *>(&opt), sizeof(opt));
-#endif
+        const int listenDescriptor = m_listenSocket.fileDescriptor();
 
+        // 监听套接字统一开启地址复用：重启服务时上一代连接留下的 TIME_WAIT 会占住端口，
+        // 不开就会偶发「地址已被占用」。设置失败不必提前返回——真正的成败由 bind() 判定
+        [[maybe_unused]] const bool isReuseAddressSet = Platform::Socket::setReuseAddress(listenDescriptor);
+
+        // 端口复用只在 Linux 3.9+ 存在，Windows 上 Platform 层直接返回 false；
+        // 这里按「平台不支持即降级」处理，不作为绑定失败上抛
+        [[maybe_unused]] const bool isReusePortSet = Platform::Socket::setReusePort(listenDescriptor);
+
+        // IPv6 套接字的 V6ONLY 默认值各平台不一致：显式关掉，让一个端口同时接住
+        // IPv4 映射地址，避免调用方为两个协议各起一个监听器。非 IPv6 套接字调用必然失败，
+        // 故只在协议族匹配时设置；失败同样忽略（内核可能强制单栈，不影响 IPv6 自身监听）
         if (m_address.family() == AF_INET6)
         {
-            constexpr int         v6only = 0;
-            [[maybe_unused]] auto _      = m_listenSocket.setSockOpt(IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+            [[maybe_unused]] const bool isIpv6OnlySet = Platform::Socket::setIpv6Only(listenDescriptor, false);
         }
 
+        // 绑定失败时保持 m_bound 为 false：listen() 会据此拒绝，调用方换端口后可直接重试
         if (!m_listenSocket.bind(m_address))
+        {
             return false;
+        }
 
         m_bound = true;
         return true;
@@ -50,79 +105,125 @@ namespace Net
 
     bool TcpAcceptor::listen(const int backlog) const
     {
+        // 未绑定就监听属于用法错误：直接返回 false，不把语义含糊的内核 EINVAL 抛给调用方
         if (!m_bound)
+        {
             return false;
+        }
+
         return m_listenSocket.listen(backlog);
     }
 
     Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()
     {
+        // 暂存队列的连接其就绪事件已在上一次抽干时被消费，不会再产生新事件，
+        // 因此必须优先出队；若先去等 epoll 会把它们永久留在队列里
         if (!m_pending.empty())
         {
-            Core::AsyncSocket socket = std::move(m_pending.front());
+            Core::AsyncSocket pendingSocket = std::move(m_pending.front());
             m_pending.pop_front();
-            co_return socket;
-        }
-
-        const int listenFileDescriptor = m_listenSocket.fileDescriptor();
-        if (listenFileDescriptor < 0)
-        {
-            co_return std::nullopt;
+            // std::move 之后 pendingSocket 只负责把描述符所有权交给返回值，离开作用域时
+            // 其持有的已是无效描述符，不会重复关闭
+            co_return pendingSocket;
         }
 
         while (true)
         {
-            sockaddr_storage address{};
-            socklen_t        addressLength = sizeof(address);
-            const int        fileDescriptor = Platform::acceptSocket(listenFileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength);
-            if (fileDescriptor >= 0)
+            // 每轮重新取描述符并判定有效性：close() 或从未创建时按契约返回空值让服务器循环
+            // 正常收尾，不抛异常；同时避免沿用上一轮可能已被内核复用的编号
+            const int listenDescriptor = m_listenSocket.fileDescriptor();
+            if (!Platform::FileDescriptor::isValid(listenDescriptor))
             {
-                constexpr int opt = 1;
-                setsockopt(fileDescriptor, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
-                Core::AsyncSocket first(m_loop, fileDescriptor);
+                co_return std::nullopt;
+            }
 
+            sockaddr_storage peerAddress{};
+            socklen_t        peerAddressLength = static_cast<socklen_t>(sizeof(peerAddress));
+            // Platform 层已保证返回的描述符是非阻塞且不被子进程继承，本层无需二次设置
+            const int acceptedDescriptor = Platform::Socket::accept(listenDescriptor, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength);
+
+            if (Platform::FileDescriptor::isValid(acceptedDescriptor))
+            {
+                // 服务端连接一律关闭 Nagle：HTTP 与 RPC 的大量小包若被攒到 ACK 才发，
+                // 首字节延迟会被明显抬高；设置失败只影响性能，不丢弃连接
+                [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(acceptedDescriptor);
+
+                // 描述符所有权自此刻交给 AsyncSocket：后续任何提前返回都由它负责关闭
+                Core::AsyncSocket acceptedSocket(m_loop, acceptedDescriptor);
+
+                // 事件循环用边沿触发：只在「变为可读」的一刻给一次通知。若此处只收一条就返回，
+                // 监听队列里的其余连接不会再产生事件，会一直滞留到对端超时，所以必须一次抽干
                 while (true)
                 {
-                    sockaddr_storage extra{};
-                    socklen_t        extraLength         = sizeof(extra);
-                    const int        extraFileDescriptor = Platform::acceptSocket(listenFileDescriptor, reinterpret_cast<sockaddr *>(&extra), &extraLength);
-                    if (extraFileDescriptor >= 0)
+                    sockaddr_storage pendingAddress{};
+                    socklen_t        pendingAddressLength = static_cast<socklen_t>(sizeof(pendingAddress));
+                    const int        pendingDescriptor    = Platform::Socket::accept(listenDescriptor, reinterpret_cast<sockaddr *>(&pendingAddress), &pendingAddressLength);
+                    if (Platform::FileDescriptor::isValid(pendingDescriptor))
                     {
-                        setsockopt(extraFileDescriptor, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
-                        m_pending.emplace_back(m_loop, extraFileDescriptor);
+                        [[maybe_unused]] const bool isPendingNoDelaySet = Platform::Socket::setNoDelay(pendingDescriptor);
+                        m_pending.emplace_back(m_loop, pendingDescriptor);
                         continue;
                     }
-                    if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
+
+                    const int batchErrorCode = Platform::PlatformError::lastSocketErrorCode();
+                    // 队列已被抽空：结束本轮批量，把第一条连接交给调用方
+                    if (batchErrorCode == Platform::PlatformError::kWouldBlock)
+                    {
                         break;
-                    if (ASYN_ERRNO == ASYN_EINTR || ASYN_ERRNO == ASYN_ECONNABORTED)
+                    }
+                    // 被信号中断，或对端在握手完成后立刻断开（连接在队列里被本地中止）：
+                    // 这只影响当前这一条，监听套接字仍然可用，必须继续抽取而不是退出
+                    if (batchErrorCode == Platform::PlatformError::kInterrupted || batchErrorCode == Platform::PlatformError::kConnectionAborted)
+                    {
                         continue;
+                    }
+                    // 资源紧张或未知错误：手上已有一条可交付的连接，先交出去。
+                    // 下一轮 accept() 会走到外层退避分支，在这里忙等只会加剧资源不足
                     break;
                 }
 
-                co_return first;
+                co_return acceptedSocket;
             }
 
-            if (ASYN_ERRNO == ASYN_EAGAIN || ASYN_ERRNO == ASYN_EWOULDBLOCK)
+            const int socketErrorCode = Platform::PlatformError::lastSocketErrorCode();
+
+            // 暂无待接受连接：间隔一小段时间后重试。
+            // 不用 EpollAwaiter 死等可读事件的原因见 kIdleAcceptPollIntervalMs：
+            // 关闭监听描述符不一定能唤醒挂在该 fd 上的协程，轮询才能保证 stop() 有确定性收尾
+            if (socketErrorCode == Platform::PlatformError::kWouldBlock)
             {
-                co_await Core::EpollAwaiter(m_loop.epoll(), listenFileDescriptor, EPOLLIN);
-                continue;
-            }
-            if (ASYN_ERRNO == ASYN_EINTR || ASYN_ERRNO == ASYN_ECONNABORTED)
-                continue;
-            if (ASYN_ERRNO == ASYN_EMFILE || ASYN_ERRNO == ASYN_ENFILE || ASYN_ERRNO == ASYN_ENOBUFS || ASYN_ERRNO == ASYN_ENOMEM)
-            {
-                co_await Core::EpollAwaiter(m_loop.epoll(), listenFileDescriptor, EPOLLIN);
+                co_await m_backoffTimer.waitFor(std::chrono::milliseconds(kIdleAcceptPollIntervalMs));
                 continue;
             }
 
-            throw Base::SystemException("accept failed");
+            // 被信号中断，或对端在队列中被中止：重试即可，不算失败
+            if (socketErrorCode == Platform::PlatformError::kInterrupted || socketErrorCode == Platform::PlatformError::kConnectionAborted)
+            {
+                continue;
+            }
+
+            // 描述符/缓冲/内存暂时不够：见 kResourcePressureBackoffMs 的说明，这里按时间退避。
+            // 复用构造时预建的定时器而不是就地新建——此刻正是申请描述符会失败的时候；
+            // 等待用协程定时器而不是 sleep_for，否则同线程上的其余协程会被整段阻塞
+            if (isResourcePressureError(socketErrorCode))
+            {
+                co_await m_backoffTimer.waitFor(std::chrono::milliseconds(kResourcePressureBackoffMs));
+                continue;
+            }
+
+            // 落到这里的是无法靠重试恢复的终止性错误（例如监听描述符被外部关闭）。
+            // 错误码显式传入异常：Windows 上 socket 错误来自 WSAGetLastError，与 errno 不同源
+            throw Base::SystemException("TcpAcceptor::accept 接受新连接失败", std::error_code(socketErrorCode, std::system_category()));
         }
     }
 
     void TcpAcceptor::close()
     {
+        // 先关监听描述符再清暂存队列：清队列会逐个析构 AsyncSocket 并关闭各自连接，
+        // 反过来做则关闭期间新到达的连接仍可能被收进队列
         m_listenSocket.close();
         m_pending.clear();
+        // 复位绑定标记：描述符已失效，此后 listen() 必须被拒绝而不是拿旧状态蒙混过关
         m_bound = false;
     }
 
@@ -136,4 +237,4 @@ namespace Net
         return m_listenSocket.fileDescriptor();
     }
 
-}
+} // namespace AsynGyanis::Net
