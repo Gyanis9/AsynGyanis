@@ -85,48 +85,6 @@ namespace AsynGyanis::Core
         return ::listen(m_fileDescriptor, backlog) == 0;
     }
 
-    Task<AsyncSocket> AsyncSocket::asyncAccept() const
-    {
-        while (true)
-        {
-            sockaddr_storage address{};
-
-            socklen_t addressLength = sizeof(address);
-            if (const int fileDescriptor = Platform::Socket::accept(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength);
-                fileDescriptor >= 0)
-            {
-                // 新连接同样关闭 Nagle；设置失败只影响延迟，不丢弃这条连接
-                [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(fileDescriptor);
-                co_return AsyncSocket(m_loop, fileDescriptor);
-            }
-
-            // 暂无待接受连接：挂起等监听描述符可读。
-            // 原先这里把 kWouldBlock 比较写了两遍（另一处本意是别的错误码），收敛成一次判断
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
-            {
-                co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
-                continue;
-            }
-
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted ||
-                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kConnectionAborted)
-            {
-                continue;
-            }
-
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kTooManyOpenFiles ||
-                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kSystemFileTableFull ||
-                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kNoBufferSpace ||
-                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kOutOfMemory)
-            {
-                co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
-                continue;
-            }
-
-            throw Base::SystemException("接受新连接失败");
-        }
-    }
-
     Task<> AsyncSocket::asyncConnect(const sockaddr *const address, const socklen_t addressLength) const
     {
         if (const int result = ::connect(m_fileDescriptor, address, addressLength); result == 0)

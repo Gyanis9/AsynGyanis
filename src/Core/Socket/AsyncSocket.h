@@ -113,16 +113,6 @@ namespace AsynGyanis::Core
         bool listen(int backlog) const;
 
         /**
-         * @brief 异步接受新连接（协程式）
-         * @return Task<AsyncSocket> — co_await 后获得新的客户端 AsyncSocket 对象
-         *
-         * 内部循环调用 accept4()，当没有新连接时（EAGAIN）会通过 EpollAwaiter 挂起协程，
-         * 等待 EPOLLIN 事件触发后恢复。
-         * 接受的 socket 会自动设置 SOCK_NONBLOCK | SOCK_CLOEXEC 标志。
-         */
-        Task<AsyncSocket> asyncAccept() const;
-
-        /**
          * @brief 异步连接远端服务器（协程式）
          * @param address       远端地址的 sockaddr 指针
          * @param addressLength 地址结构的长度
