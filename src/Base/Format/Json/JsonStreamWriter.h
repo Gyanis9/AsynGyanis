@@ -34,8 +34,8 @@ namespace AsynGyanis::Base
      *          - `indentWidth`：0 为紧凑单行，正数为每层空格数，空容器恒为 `[]`/`{}`；
      *          - `ensureAscii`：非 ASCII 字符转 `\uXXXX`（补充平面用代理对）；
      *          - `maximumDepth`：容器深度守卫，超限抛 FormatError（kind 为 DepthExceeded）；
-     *          - `keyOrder`：**流式写出不参与重排**——写出顺序完全由调用顺序决定，
-     *            无法在只看到部分成员时决定整体顺序。要得到与 `KeyOrder::Sorted` 一致的结果，
+     *          - 对象键序：**流式写出不参与重排**——写出顺序完全由调用顺序决定，
+     *            无法在只看到部分成员时决定整体顺序。要得到与 DOM 写出逐字节一致的结果，
      *            调用方需按升序提供键（FormatValueObject 本身按键升序，因此从 DOM 顺序
      *            驱动事件时天然满足）。
      *

@@ -291,25 +291,22 @@ namespace AsynGyanis::Base
     }
 
     // ============================================================================
-    // JsonWriteOptions：keyOrder
+    // JsonWriteOptions：对象键序（由值模型决定，没有开关）
     // ============================================================================
 
-    TEST(JsonWriter, KeyOrderSortedAndAsIsAgreeUnderTheOrderedValueModel)
+    TEST(JsonWriter, ObjectKeysAreWrittenInAscendingOrder)
     {
         FormatValueObject members;
         members.emplace("zeta", FormatValue(std::int64_t(1)));
         members.emplace("alpha", FormatValue(std::int64_t(2)));
         const FormatValue value(std::move(members));
 
-        // 本组只验证键序：必须显式 indentWidth = 0 取紧凑输出，才能与 write(value) 的紧凑结果逐字节对照
+        // 紧凑重载与显式选项必须给出同一份文本：键序由容器（std::map）决定，选项里没有键序开关
         // （JsonWriteOptions 的默认 indentWidth 为 2，与 write(value, true) 的历史行为一致）
-        const std::string sorted = JsonWriter::write(value, JsonWriteOptions{.indentWidth = 0, .keyOrder = JsonWriteOptions::KeyOrder::Sorted});
-        const std::string asIs   = JsonWriter::write(value, JsonWriteOptions{.indentWidth = 0, .keyOrder = JsonWriteOptions::KeyOrder::AsIs});
+        const std::string compact = JsonWriter::write(value, JsonWriteOptions{.indentWidth = 0});
 
-        // FormatValueObject 是按键升序的 std::map：AsIs 的「当前迭代顺序」本身就是键升序
-        EXPECT_EQ(sorted, R"({"alpha":2,"zeta":1})");
-        EXPECT_EQ(asIs, sorted);
-        EXPECT_EQ(JsonWriter::write(value), sorted);
+        EXPECT_EQ(compact, R"({"alpha":2,"zeta":1})");
+        EXPECT_EQ(JsonWriter::write(value), compact);
     }
 
     // ============================================================================

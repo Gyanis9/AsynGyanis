@@ -302,9 +302,8 @@ namespace AsynGyanis::Base
                 const bool isIndented = options.indentWidth > 0;
                 output                += isIndented ? "{\n" : "{";
                 bool isFirstMember    = true;
-                // FormatValueObject 是按键升序的 std::map：Sorted 与 AsIs 在当前值模型下
-                // 输出完全一致（AsIs 表示「按容器当前迭代顺序输出」，天然就是键升序）；
-                // 二者保留为独立枚举，便于将来换成保序容器后 AsIs 立即具有区分度
+                // 对象键序没有开关：FormatValueObject 是按键升序的 std::map，
+                // 迭代顺序即输出顺序，且既有输出格式与用例都依赖它
                 for (const auto &[key, member]: members)
                 {
                     if (!isFirstMember)
