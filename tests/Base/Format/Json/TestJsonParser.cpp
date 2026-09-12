@@ -412,7 +412,7 @@ namespace AsynGyanis::Base
 
         const FormatValue value = JsonParser::parse(withBom);
 
-        ASSERT_TRUE(value.is<FormatValueObject>());
+        ASSERT_TRUE(value.isObject());
         EXPECT_EQ(value["a"].asInt(), 1);
     }
 
@@ -454,7 +454,7 @@ namespace AsynGyanis::Base
 
         // 正好等于上限（[1,2] 为 5 字节）：照常解析出完整文档，绝不截断成「半个文档」
         const FormatValue atLimit = JsonParser::parse("[1,2]", options);
-        ASSERT_TRUE(atLimit.is<FormatValueArray>());
+        ASSERT_TRUE(atLimit.isArray());
         EXPECT_EQ(atLimit.asArray().size(), 2U);
 
         // 超出一个字节（123456 为 6 字节）即整体拒绝，分类为 SizeExceeded 而非截断后照常解析

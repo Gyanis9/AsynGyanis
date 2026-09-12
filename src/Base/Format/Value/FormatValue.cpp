@@ -466,7 +466,7 @@ namespace AsynGyanis::Base
 
     bool FormatValue::contains(const std::string_view key) const noexcept
     {
-        if (!is<FormatValueObject>())
+        if (!isObject())
         {
             return false;
         }
@@ -487,7 +487,7 @@ namespace AsynGyanis::Base
 
     std::optional<std::reference_wrapper<const FormatValue> > FormatValue::get(const std::string_view key) const noexcept
     {
-        if (!is<FormatValueObject>())
+        if (!isObject())
         {
             return std::nullopt;
         }
@@ -701,15 +701,16 @@ namespace AsynGyanis::Base
 
     size_t FormatValue::size() const noexcept
     {
-        if (is<FormatValueArray>())
+        // 判定统一走便捷方法（与 is<T>() 等价，省去模板实参）
+        if (isArray())
         {
             return std::get<FormatValueArray>(m_value).size();
         }
-        if (is<FormatValueObject>())
+        if (isObject())
         {
             return std::get<FormatValueObject>(m_value).size();
         }
-        if (is<std::string>())
+        if (isString())
         {
             return std::get<std::string>(m_value).size();
         }

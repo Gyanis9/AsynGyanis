@@ -197,6 +197,21 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(longOutput, "a-much-longer-fixture-file-name.cpp:987654")) << longOutput;
     }
 
+    TEST(DefaultFormatter, DebugBuildHandlesSourceLocationLongerThanStackBuffer)
+    {
+        // 「文件:行号」超出实现内部的栈缓冲（64 字节）时走回退分支，
+        // 输出必须与短文件名一样完整呈现，且与消息之间仍只有一个分隔空格
+        DefaultFormatter  formatter;
+        const std::string longFileName(80, 'n');
+
+        const std::string output = formatter.format(
+                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                         SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "padding long name"));
+
+        EXPECT_TRUE(contains(output, longFileName + ":1234567")) << output;
+        EXPECT_TRUE(contains(output, longFileName + ":1234567 padding long name")) << output;
+    }
+
 #else
 
     TEST(DefaultFormatter, ReleaseBuildOmitsThreadIdAndSourceLocation)
