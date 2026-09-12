@@ -82,11 +82,18 @@ namespace AsynGyanis::Base
      *   - get&lt;T&gt;() / getXxx()：返回 std::optional，类型不匹配返回 std::nullopt
      *   - xxxView()：返回内部容器指针，零拷贝，非目标类型返回 nullptr
      *
+     * 类型判定命名（便捷方法，语义与 is&lt;T&gt;() 完全一致）：
+     *   - isNull()：仅 Null
+     *   - isBool()：仅 Bool
+     *   - isString()：仅 String
+     *   - isArray()：仅 Array
+     *   - isObject()：仅 Object
+     *   - isUInt()：仅 UInt
+     *
      * 数值判定命名（新增）：
      *   - isNumber()：Int、UInt 或 Double
      *   - isIntegralNumber()：Int 或 UInt
      *   - isFloatingNumber()：Double
-     *   - isUInt()：仅 UInt
      *
      * 数值取用规则（刻意不做全类型互通，避免精度陷阱）：
      *   - get&lt;std::uint64_t&gt;() / getUInt()：优先精确取 UInt；持有非负 Int 时可无损加宽取出
@@ -414,6 +421,33 @@ namespace AsynGyanis::Base
          * @return bool 持有 double 时返回 true。
          */
         [[nodiscard]] bool isFloatingNumber() const noexcept;
+
+        /**
+         * @brief 判断当前值是否为布尔值。
+         * @details 仅做类型判定，不做真假值转换：Int(0)、空字符串等假值都不是 Bool。
+         * @return bool 持有 bool 时返回 true。
+         */
+        [[nodiscard]] bool isBool() const noexcept;
+
+        /**
+         * @brief 判断当前值是否为字符串。
+         * @return bool 持有 std::string 时返回 true。
+         */
+        [[nodiscard]] bool isString() const noexcept;
+
+        /**
+         * @brief 判断当前值是否为数组。
+         * @details 与 is&lt;FormatValueArray&gt;() 等价，便于调用点省去显式模板参数。
+         * @return bool 持有 FormatValueArray 时返回 true。
+         */
+        [[nodiscard]] bool isArray() const noexcept;
+
+        /**
+         * @brief 判断当前值是否为对象。
+         * @details 与 is&lt;FormatValueObject&gt;() 等价，便于调用点省去显式模板参数。
+         * @return bool 持有 FormatValueObject 时返回 true。
+         */
+        [[nodiscard]] bool isObject() const noexcept;
 
         /**
          * @brief 判断值是否为空（Null、空字符串、空数组或空对象）。

@@ -71,8 +71,8 @@ namespace AsynGyanis::Base
 
         if (text.front() != '/')
         {
-            // RFC 6901 §3：ABNF 要求要么整体为空，要么以 '/' 开头
-            throw FormatError(FormatErrorKind::UnexpectedByte,
+            // RFC 6901 §3：ABNF 要求要么整体为空，要么以 '/' 开头；这属于指针语法非法
+            throw FormatError(FormatErrorKind::InvalidPointer,
                               "JSON Pointer 必须以 '/' 开头或为空串",
                               TextPosition{.lineNumber = 1, .columnNumber = 1, .offset = 0});
         }
@@ -143,7 +143,7 @@ namespace AsynGyanis::Base
             // RFC 6901 §3：escaped = "~" ( "0" / "1" )，孤立的 '~' 属于非法指针
             if (index + 1 >= token.size())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPointer,
                                   "JSON Pointer 中的 '~' 之后必须是 '0' 或 '1'",
                                   TextPosition{.lineNumber = 1,
                                                  .columnNumber = tokenOffsetInPointer + index + 1,
@@ -159,7 +159,7 @@ namespace AsynGyanis::Base
                 unescaped.push_back('/');
             } else
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPointer,
                                   std::format("JSON Pointer 中出现非法的转义序列：~{}", escapedCharacter),
                                   TextPosition{.lineNumber = 1,
                                                  .columnNumber = tokenOffsetInPointer + index + 1,
@@ -213,10 +213,10 @@ namespace AsynGyanis::Base
 
         for (const std::string &token: m_tokens)
         {
-            if (current->is<FormatValueObject>())
+            if (current->isObject())
             {
                 current = current->find(token);
-            } else if (current->is<FormatValueArray>())
+            } else if (current->isArray())
             {
                 const std::optional<std::size_t> index = parseArrayIndexToken(token);
                 // 非法下标（前导零、非数字）与 '-' 都不定位任何元素，按未命中处理（RFC 6901 §4）
@@ -255,8 +255,9 @@ namespace AsynGyanis::Base
         const FormatValue *resolved = evaluate(document);
         if (resolved == nullptr)
         {
-            // 不区分「父级缺失」「类型不符」「数组下标非法」，统一按路径未命中上报
-            throw FormatError(FormatErrorKind::UnexpectedByte,
+            // 指针语法本身已在 parse() 阶段校验通过，此处只可能是「语法合法但定位不到值」，
+            // 因此不区分「父级缺失」「类型不符」「数组下标非法」，统一上报 PatchTargetMissing
+            throw FormatError(FormatErrorKind::PatchTargetMissing,
                               "JSON Pointer 未指向任何值：" + toString(),
                               TextPosition{});
         }
@@ -269,10 +270,10 @@ namespace AsynGyanis::Base
 
         for (const std::string &token: m_tokens)
         {
-            if (current->is<FormatValueObject>())
+            if (current->isObject())
             {
                 current = current->find(token);
-            } else if (current->is<FormatValueArray>())
+            } else if (current->isArray())
             {
                 const std::optional<std::size_t> index = parseArrayIndexToken(token);
                 if (!index.has_value())

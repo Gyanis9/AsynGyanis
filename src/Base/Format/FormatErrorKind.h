@@ -37,6 +37,17 @@ namespace AsynGyanis::Base
      *          - 字符串内出现原始控制字符（U+0000..U+001F）→ ControlCharacter
      *          - 字符串内出现非法 UTF-8 字节序列 → InvalidUtf8
      *          - 转义中的代理项孤立或配对非法 → SurrogatePairError
+     *
+     *          分类与各格式的对应关系（JSON Pointer / JSON Patch 侧）：
+     *          这一族错误都是「语法合法但语义不成立」，与上面的字节级语法错误严格区分，
+     *          因此一律不再借用 UnexpectedByte：
+     *          - Pointer 文本本身不合法（缺前导 '/'、孤立 '~'、'~' 后非 0/1）→ InvalidPointer
+     *          - 补丁整体或某一项不成形（非数组、项非对象、缺 op/path/value/from、
+     *            字段类型不符、op 未知、数组下标文本非法、remove 根、
+     *            move 的 from 是 path 祖先）→ InvalidPatchOperation
+     *          - path/from 解析成功但定位不到值（目标不存在、父级不是容器、
+     *            add 下标大于元素个数、数组下标越界）→ PatchTargetMissing
+     *          - test 目标存在但比较不相等 → PatchTestFailed
      */
     enum class FormatErrorKind : std::uint8_t
     {
@@ -56,7 +67,11 @@ namespace AsynGyanis::Base
         SizeExceeded,          ///< 输入长度、字符串长度或容器元素数超出上限
         ControlCharacter,      ///< 字符串内出现原始控制字符
         InvalidUtf8,           ///< 字符串内出现非法 UTF-8 字节序列
-        SurrogatePairError     ///< \u 转义中的代理项非法（孤立或配对错误）
+        SurrogatePairError,    ///< \u 转义中的代理项非法（孤立或配对错误）
+        InvalidPointer,        ///< JSON Pointer 语法非法（缺前导 '/'、孤立 '~'、'~' 后非 0/1）
+        InvalidPatchOperation, ///< JSON Patch 结构或操作非法（非数组、项非对象、缺字段、op 未知、数组下标文本非法、remove 根、move 的 from 是祖先）
+        PatchTargetMissing,    ///< 补丁的 path/from 定位不到值（目标缺失、父级非容器、add 下标越界、数组下标越界）
+        PatchTestFailed        ///< test 操作目标存在但与给定值不相等
     };
 
     /**
@@ -104,6 +119,14 @@ namespace AsynGyanis::Base
                 return "invalid-utf8";
             case FormatErrorKind::SurrogatePairError:
                 return "surrogate-pair-error";
+            case FormatErrorKind::InvalidPointer:
+                return "invalid-pointer";
+            case FormatErrorKind::InvalidPatchOperation:
+                return "invalid-patch-operation";
+            case FormatErrorKind::PatchTargetMissing:
+                return "patch-target-missing";
+            case FormatErrorKind::PatchTestFailed:
+                return "patch-test-failed";
             default:
                 return "unknown";
         }

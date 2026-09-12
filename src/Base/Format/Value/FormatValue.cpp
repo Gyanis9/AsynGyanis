@@ -294,6 +294,27 @@ namespace AsynGyanis::Base
         return is<double>();
     }
 
+    bool FormatValue::isBool() const noexcept
+    {
+        // 与 is<bool>() 等价：只认变体里的 bool 备选
+        return is<bool>();
+    }
+
+    bool FormatValue::isString() const noexcept
+    {
+        return is<std::string>();
+    }
+
+    bool FormatValue::isArray() const noexcept
+    {
+        return is<FormatValueArray>();
+    }
+
+    bool FormatValue::isObject() const noexcept
+    {
+        return is<FormatValueObject>();
+    }
+
     bool FormatValue::empty() const noexcept
     {
         return std::visit([]<typename Alternative>(const Alternative &value) -> bool

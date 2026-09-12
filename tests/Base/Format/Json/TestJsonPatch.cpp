@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace AsynGyanis::Base
@@ -42,6 +43,31 @@ namespace AsynGyanis::Base
         FormatValue parse(const std::string &text)
         {
             return JsonParser::parse(text);
+        }
+
+        /**
+         * @brief 捕获一次调用抛出的 FormatError
+         * @details 与 TestJsonParser.cpp 的同名辅助保持一致，便于直接断言 kind()。
+         * @param action 待执行的调用
+         * @return FormatError 捕获到的错误；未抛出时返回带说明的占位错误
+         */
+        FormatError catchFormatError(const std::function<void()> &action)
+        {
+            try
+            {
+                action();
+            } catch (const FormatError &error)
+            {
+                return error;
+            }
+            catch (...)
+            {
+                ADD_FAILURE() << "预期抛出 FormatError，实际抛出了其他异常";
+                return FormatError("wrong exception type", TextPosition{});
+            }
+
+            ADD_FAILURE() << "预期抛出 FormatError，但调用成功";
+            return FormatError("no exception thrown", TextPosition{});
         }
     } // namespace
 
@@ -90,14 +116,14 @@ namespace AsynGyanis::Base
 
     TEST(JsonPatch, AddRejectsIndexGreaterThanElementCount)
     {
-        try
+        // 路径语法合法，只是目标位置不存在：属语义错误而非字节级错误
+        const FormatError error = catchFormatError([]
         {
             static_cast<void>(JsonPatch::apply(parse(R"({"a":[1,3]})"), parse(R"([{"op":"add","path":"/a/3","value":5}])")));
-            FAIL() << "下标大于元素个数应当抛出 FormatError";
-        } catch (const FormatError &error) {
-            EXPECT_EQ(error.kind(), FormatErrorKind::UnexpectedByte);
-            EXPECT_NE(std::string(error.what()).find("超出元素个数"), std::string::npos);
-        }
+        });
+
+        EXPECT_EQ(error.kind(), FormatErrorKind::PatchTargetMissing);
+        EXPECT_NE(std::string(error.what()).find("超出元素个数"), std::string::npos);
     }
 
     TEST(JsonPatch, AddRejectsLeadingZeroArrayIndex)
@@ -352,6 +378,73 @@ namespace AsynGyanis::Base
         EXPECT_THROW(static_cast<void>(JsonPatch::apply(parse(R"({"a":1})"), parse(R"([{"op":"remove","path":"a"}])"))), FormatError);
         // from 不是合法 JSON Pointer
         EXPECT_THROW(static_cast<void>(JsonPatch::apply(parse(R"({"a":1})"), parse(R"([{"op":"copy","from":"a","path":"/b"}])"))), FormatError);
+    }
+
+    TEST(JsonPatch, ClassifiesStructuralAndSemanticFailuresSeparately)
+    {
+        struct FailureSample
+        {
+            const char     *documentText; // 目标文档
+            const char     *patchText;    // 补丁
+            FormatErrorKind expectedKind; // 期望分类
+        };
+
+        // 四类错误的边界：结构/操作不成形 → InvalidPatchOperation；
+        // Pointer 文本不合法 → InvalidPointer；路径合法但值不存在 → PatchTargetMissing；
+        // test 比较不通过 → PatchTestFailed
+        const FailureSample samples[] = {
+                // 补丁整体与操作项不成形
+                {R"({"a":1})", R"({"op":"remove","path":"/a"})", FormatErrorKind::InvalidPatchOperation},
+                {R"({"a":1})", R"([1])", FormatErrorKind::InvalidPatchOperation},
+                // op 未知
+                {R"({"a":1})", R"([{"op":"rename","path":"/a"}])", FormatErrorKind::InvalidPatchOperation},
+                // 缺 op/path/value/from
+                {R"({"a":1})", R"([{"op":"remove"}])", FormatErrorKind::InvalidPatchOperation},
+                {R"({"a":1})", R"([{"op":"add","path":"/b"}])", FormatErrorKind::InvalidPatchOperation},
+                {R"({"a":1})", R"([{"op":"copy","path":"/b"}])", FormatErrorKind::InvalidPatchOperation},
+                // 字段类型不符
+                {R"({"a":1})", R"([{"op":"remove","path":1}])", FormatErrorKind::InvalidPatchOperation},
+                // 数组下标文本非法（前导零）
+                {R"({"a":[1,3]})", R"([{"op":"remove","path":"/a/01"}])", FormatErrorKind::InvalidPatchOperation},
+                // remove 文档根
+                {R"({"a":1})", R"([{"op":"remove","path":""}])", FormatErrorKind::InvalidPatchOperation},
+                // move 的 from 是 path 的祖先
+                {R"({"a":{"b":1}})", R"([{"op":"move","from":"/a","path":"/a/c"}])", FormatErrorKind::InvalidPatchOperation},
+                // Pointer 语法非法
+                {R"({"a":1})", R"([{"op":"remove","path":"a"}])", FormatErrorKind::InvalidPointer},
+                {R"({"a":1})", R"([{"op":"copy","from":"a","path":"/b"}])", FormatErrorKind::InvalidPointer},
+                {R"({"a":1})", R"([{"op":"remove","path":"/a~"}])", FormatErrorKind::InvalidPointer},
+                // 路径合法但目标不存在
+                {R"({"a":1})", R"([{"op":"remove","path":"/b"}])", FormatErrorKind::PatchTargetMissing},
+                {R"({"a":[1,3]})", R"([{"op":"add","path":"/a/3","value":5}])", FormatErrorKind::PatchTargetMissing},
+                {R"({"a":[1,3]})", R"([{"op":"remove","path":"/a/9"}])", FormatErrorKind::PatchTargetMissing},
+                {R"({"a":1})", R"([{"op":"replace","path":"/b","value":1}])", FormatErrorKind::PatchTargetMissing},
+                {R"({"a":1})", R"([{"op":"copy","from":"/nope","path":"/b"}])", FormatErrorKind::PatchTargetMissing},
+                {R"({"a":1})", R"([{"op":"test","path":"/nope","value":1}])", FormatErrorKind::PatchTargetMissing},
+                // 目标存在但 test 不通过
+                {R"({"a":1})", R"([{"op":"test","path":"/a","value":2}])", FormatErrorKind::PatchTestFailed},
+                {R"({"a":1})", R"([{"op":"test","path":"/a","value":"1"}])", FormatErrorKind::PatchTestFailed},
+        };
+
+        for (const FailureSample &sample: samples)
+        {
+            const FormatError error = catchFormatError([&sample]
+            {
+                static_cast<void>(JsonPatch::apply(parse(sample.documentText), parse(sample.patchText)));
+            });
+
+            EXPECT_EQ(error.kind(), sample.expectedKind) << "patch=" << sample.patchText;
+            // 结构与语义错误一律不得退回字节级分类，否则上层无法区分两类失败
+            EXPECT_NE(error.kind(), FormatErrorKind::UnexpectedByte) << "patch=" << sample.patchText;
+        }
+
+        // 语法错与语义错必须落在不同分类上
+        EXPECT_NE(FormatErrorKind::InvalidPointer, FormatErrorKind::PatchTargetMissing);
+        EXPECT_NE(FormatErrorKind::InvalidPatchOperation, FormatErrorKind::PatchTestFailed);
+        EXPECT_STREQ(errorKindName(FormatErrorKind::InvalidPatchOperation), "invalid-patch-operation");
+        EXPECT_STREQ(errorKindName(FormatErrorKind::PatchTargetMissing), "patch-target-missing");
+        EXPECT_STREQ(errorKindName(FormatErrorKind::PatchTestFailed), "patch-test-failed");
+        EXPECT_STREQ(errorKindName(FormatErrorKind::InvalidPointer), "invalid-pointer");
     }
 
     // ============================================================================

@@ -16,13 +16,13 @@ namespace AsynGyanis::Base
     FormatValue JsonMergePatch::apply(const FormatValue &target, const FormatValue &patch)
     {
         // RFC 7396 §2：补丁不是对象时结果是「整体替换」，直接返回补丁的副本
-        if (!patch.is<FormatValueObject>())
+        if (!patch.isObject())
         {
             return patch;
         }
 
         // RFC 7396 §2：补丁是对象而目标不是对象时，忽略目标原内容，按空对象继续合并
-        FormatValue result = target.is<FormatValueObject>() ? target : FormatValue(FormatValueObject{});
+        FormatValue result = target.isObject() ? target : FormatValue(FormatValueObject{});
 
         for (const auto &[name, member]: patch.asObject())
         {

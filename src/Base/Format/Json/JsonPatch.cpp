@@ -151,7 +151,7 @@ namespace AsynGyanis::Base
             const FormatValue *member = operation.find(memberName);
             if (member == nullptr)
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                   std::format("补丁第 {} 项缺少 '{}' 字段", operationIndex, memberName),
                                   TextPosition{});
             }
@@ -159,7 +159,7 @@ namespace AsynGyanis::Base
             const std::string *text = member->getStringView();
             if (text == nullptr)
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                   std::format("补丁第 {} 项的 '{}' 字段必须是字符串", operationIndex, memberName),
                                   TextPosition{});
             }
@@ -178,7 +178,7 @@ namespace AsynGyanis::Base
             const FormatValue *value = operation.find("value");
             if (value == nullptr)
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                   std::format("补丁第 {} 项缺少 'value' 字段", operationIndex),
                                   TextPosition{});
             }
@@ -198,13 +198,13 @@ namespace AsynGyanis::Base
             FormatValue *parent = location.parent.evaluateForWrite(document);
             if (parent == nullptr)
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTargetMissing,
                                   std::format("{} 操作的父级路径不存在：{}", operationName, location.parent.toString()),
                                   TextPosition{});
             }
-            if (!parent->is<FormatValueObject>() && !parent->is<FormatValueArray>())
+            if (!parent->isObject() && !parent->isArray())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTargetMissing,
                                   std::format("{} 操作的父级必须是对象或数组：{}", operationName, location.parent.toString()),
                                   TextPosition{});
             }
@@ -231,7 +231,7 @@ namespace AsynGyanis::Base
             if (token.empty() || token == "-" || leadingZero ||
                 errorCode != std::errc() || pointer != token.data() + token.size())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                   std::format("{} 操作的数组下标非法：{}", operationName, token),
                                   TextPosition{});
             }
@@ -260,7 +260,7 @@ namespace AsynGyanis::Base
             const PatchLocation location = splitPointer(path);
             FormatValue        &parent   = requireParentContainer(document, location, "add");
 
-            if (parent.is<FormatValueObject>())
+            if (parent.isObject())
             {
                 // RFC 6902 §4.1：成员不存在则新增、已存在则替换，两者是同一操作
                 parent.set(location.lastToken, std::move(value));
@@ -279,7 +279,7 @@ namespace AsynGyanis::Base
             // RFC 6902 §4.1：指定的下标不得大于数组元素个数；等于 size 即追加
             if (index > elements.size())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTargetMissing,
                                   std::format("add 操作的数组下标 {} 超出元素个数 {}", index, elements.size()),
                                   TextPosition{});
             }
@@ -298,7 +298,7 @@ namespace AsynGyanis::Base
             // 删除根会让文档失去根值，RFC 6902 未定义该情形；显式报错而不是静默置空
             if (path.empty())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                   "remove 操作不能删除文档根（如需清空请用 replace 指定 null）",
                                   TextPosition{});
             }
@@ -306,11 +306,11 @@ namespace AsynGyanis::Base
             const PatchLocation location = splitPointer(path);
             FormatValue        &parent   = requireParentContainer(document, location, "remove");
 
-            if (parent.is<FormatValueObject>())
+            if (parent.isObject())
             {
                 if (!parent.erase(location.lastToken))
                 {
-                    throw FormatError(FormatErrorKind::UnexpectedByte,
+                    throw FormatError(FormatErrorKind::PatchTargetMissing,
                                       std::format("remove 操作的目标不存在：{}", path.toString()),
                                       TextPosition{});
                 }
@@ -321,7 +321,7 @@ namespace AsynGyanis::Base
             // RFC 6902 §4.2：目标必须存在，因此下标必须严格小于元素个数
             if (index >= parent.size())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTargetMissing,
                                   std::format("remove 操作的数组下标 {} 越界（元素个数 {}）", index, parent.size()),
                                   TextPosition{});
             }
@@ -348,11 +348,11 @@ namespace AsynGyanis::Base
             const PatchLocation location = splitPointer(path);
             FormatValue        &parent   = requireParentContainer(document, location, "replace");
 
-            if (parent.is<FormatValueObject>())
+            if (parent.isObject())
             {
                 if (parent.find(location.lastToken) == nullptr)
                 {
-                    throw FormatError(FormatErrorKind::UnexpectedByte,
+                    throw FormatError(FormatErrorKind::PatchTargetMissing,
                                       std::format("replace 操作的目标不存在：{}", path.toString()),
                                       TextPosition{});
                 }
@@ -363,7 +363,7 @@ namespace AsynGyanis::Base
             const std::size_t index = requireArrayIndex(location, "replace");
             if (index >= parent.size())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTargetMissing,
                                   std::format("replace 操作的数组下标 {} 越界（元素个数 {}）", index, parent.size()),
                                   TextPosition{});
             }
@@ -382,13 +382,13 @@ namespace AsynGyanis::Base
             const FormatValue *target = path.evaluate(document);
             if (target == nullptr)
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTargetMissing,
                                   std::format("test 操作的目标不存在：{}", path.toString()),
                                   TextPosition{});
             }
             if (!JsonPatch::valuesEqual(*target, expected))
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::PatchTestFailed,
                                   std::format("test 操作失败：{} 处的值与给定值不相等", path.toString()),
                                   TextPosition{});
             }
@@ -405,9 +405,9 @@ namespace AsynGyanis::Base
         void applyOperation(FormatValue &document, const FormatValue &operation, const std::size_t operationIndex)
         {
             // RFC 6902 §3：补丁数组的每一项都必须是操作对象
-            if (!operation.is<FormatValueObject>())
+            if (!operation.isObject())
             {
-                throw FormatError(FormatErrorKind::UnexpectedByte,
+                throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                   std::format("补丁第 {} 项必须是对象", operationIndex),
                                   TextPosition{});
             }
@@ -445,7 +445,7 @@ namespace AsynGyanis::Base
                 // RFC 6902 §4.4：from 不得是 path 的真前缀（即不得把节点移入自己的后代）
                 if (operationName == "move" && from.isProperPrefixOf(path))
                 {
-                    throw FormatError(FormatErrorKind::UnexpectedByte,
+                    throw FormatError(FormatErrorKind::InvalidPatchOperation,
                                       std::format("move 操作的 from（{}）不能是 path（{}）的祖先", fromText, pathText),
                                       TextPosition{});
                 }
@@ -453,7 +453,7 @@ namespace AsynGyanis::Base
                 const FormatValue *source = from.evaluate(document);
                 if (source == nullptr)
                 {
-                    throw FormatError(FormatErrorKind::UnexpectedByte,
+                    throw FormatError(FormatErrorKind::PatchTargetMissing,
                                       std::format("{} 操作的 from 不存在：{}", operationName, fromText),
                                       TextPosition{});
                 }
@@ -469,7 +469,7 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            throw FormatError(FormatErrorKind::UnexpectedByte,
+            throw FormatError(FormatErrorKind::InvalidPatchOperation,
                               std::format("补丁第 {} 项出现未知操作：{}", operationIndex, operationName),
                               TextPosition{});
         }
@@ -478,9 +478,9 @@ namespace AsynGyanis::Base
     FormatValue JsonPatch::apply(const FormatValue &document, const FormatValue &patch)
     {
         // RFC 6902 §3：补丁文档必须是一个数组
-        if (!patch.is<FormatValueArray>())
+        if (!patch.isArray())
         {
-            throw FormatError(FormatErrorKind::UnexpectedByte,
+            throw FormatError(FormatErrorKind::InvalidPatchOperation,
                               "JSON Patch 必须是操作对象组成的数组",
                               TextPosition{});
         }

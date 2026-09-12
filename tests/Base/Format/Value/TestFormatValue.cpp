@@ -59,6 +59,26 @@ namespace AsynGyanis::Base
             object["port"] = FormatValue(kSampleInteger);
             return FormatValue(std::move(object));
         }
+
+        /**
+         * @brief 构造覆盖全部 8 个变体备选的样本值
+         * @details 用于类型判定方法的表驱动断言：每个备选恰好一个样本，
+         *          顺序与 FormatValueType 枚举一致。
+         * @return std::vector<FormatValue> 逐类型样本
+         */
+        std::vector<FormatValue> makeSamplesOfEveryType()
+        {
+            return {
+                    FormatValue(),
+                    FormatValue(true),
+                    FormatValue(kSampleInteger),
+                    FormatValue(std::uint64_t(7)),
+                    FormatValue(kSampleDouble),
+                    FormatValue(std::string("text")),
+                    makeSampleArray(),
+                    makeSampleObject(),
+            };
+        }
     } // namespace
 
     // ============================================================================
@@ -213,6 +233,54 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(FormatValue(false).isNull());
         EXPECT_FALSE(FormatValue(static_cast<std::int64_t>(0)).isNull());
         EXPECT_FALSE(FormatValue(0.0).isNull());
+        EXPECT_FALSE(FormatValue(std::string("")).isNull());
+        EXPECT_FALSE(FormatValue(FormatValueArray{}).isNull());
+        EXPECT_FALSE(FormatValue(FormatValueObject{}).isNull());
+    }
+
+    TEST(FormatValueTest, ScalarAndContainerPredicatesAcceptExactlyOneType)
+    {
+        // 表驱动：每个便捷判定方法只对一种类型返回 true，其余类型一律为假
+        struct PredicateExpectation
+        {
+            bool (*predicate)(const FormatValue &); // 待验证的判定方法
+            FormatValueType expectedType;           // 唯一应为真的类型
+        };
+
+        const PredicateExpectation expectations[] = {
+                {[](const FormatValue &value) { return value.isBool(); }, FormatValueType::Bool},
+                {[](const FormatValue &value) { return value.isString(); }, FormatValueType::String},
+                {[](const FormatValue &value) { return value.isArray(); }, FormatValueType::Array},
+                {[](const FormatValue &value) { return value.isObject(); }, FormatValueType::Object},
+        };
+
+        for (const FormatValue &value: makeSamplesOfEveryType())
+        {
+            for (const PredicateExpectation &expectation: expectations)
+            {
+                EXPECT_EQ(expectation.predicate(value), value.type() == expectation.expectedType)
+                        << "type=" << typeName(value.type());
+            }
+        }
+    }
+
+    TEST(FormatValueTest, ConveniencePredicatesMatchGenericIsAlternative)
+    {
+        // 便捷方法必须与 is<T>() 逐一等价，不允许出现独立语义
+        for (const FormatValue &value: makeSamplesOfEveryType())
+        {
+            EXPECT_EQ(value.isNull(), value.is<std::nullptr_t>()) << "type=" << typeName(value.type());
+            EXPECT_EQ(value.isBool(), value.is<bool>()) << "type=" << typeName(value.type());
+            EXPECT_EQ(value.isUInt(), value.is<std::uint64_t>()) << "type=" << typeName(value.type());
+            EXPECT_EQ(value.isString(), value.is<std::string>()) << "type=" << typeName(value.type());
+            EXPECT_EQ(value.isArray(), value.is<FormatValueArray>()) << "type=" << typeName(value.type());
+            EXPECT_EQ(value.isObject(), value.is<FormatValueObject>()) << "type=" << typeName(value.type());
+        }
+
+        // 假值语义不得干扰类型判定：空字符串/空数组/空对象都不是 Null
+        EXPECT_TRUE(FormatValue(std::string("")).isString());
+        EXPECT_TRUE(FormatValue(FormatValueArray{}).isArray());
+        EXPECT_TRUE(FormatValue(FormatValueObject{}).isObject());
         EXPECT_FALSE(FormatValue(std::string("")).isNull());
         EXPECT_FALSE(FormatValue(FormatValueArray{}).isNull());
         EXPECT_FALSE(FormatValue(FormatValueObject{}).isNull());

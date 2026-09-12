@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,31 @@ namespace AsynGyanis::Base
             }
             return joined;
         }
+
+        /**
+         * @brief 捕获一次调用抛出的 FormatError
+         * @details 与 TestJsonParser.cpp 的同名辅助保持一致，便于直接断言 kind()。
+         * @param action 待执行的调用
+         * @return FormatError 捕获到的错误；未抛出时返回带说明的占位错误
+         */
+        FormatError catchFormatError(const std::function<void()> &action)
+        {
+            try
+            {
+                action();
+            } catch (const FormatError &error)
+            {
+                return error;
+            }
+            catch (...)
+            {
+                ADD_FAILURE() << "预期抛出 FormatError，实际抛出了其他异常";
+                return FormatError("wrong exception type", TextPosition{});
+            }
+
+            ADD_FAILURE() << "预期抛出 FormatError，但调用成功";
+            return FormatError("no exception thrown", TextPosition{});
+        }
     } // namespace
 
     // ============================================================================
@@ -73,7 +99,7 @@ namespace AsynGyanis::Base
         const JsonPointer parsed = JsonPointer::parse("");
         EXPECT_EQ(parsed, defaultPointer);
         ASSERT_NE(parsed.evaluate(document), nullptr);
-        EXPECT_TRUE(parsed.evaluate(document)->is<FormatValueObject>());
+        EXPECT_TRUE(parsed.evaluate(document)->isObject());
     }
 
     TEST(JsonPointer, ParsesReferenceTokensInOrder)
@@ -118,13 +144,14 @@ namespace AsynGyanis::Base
 
     TEST(JsonPointer, RejectsPointerWithoutLeadingSlash)
     {
-        try
+        // 指针文本本身不合法，属于语法错误：分类必须是 InvalidPointer 而不是字节级错误
+        const FormatError error = catchFormatError([]
         {
             static_cast<void>(JsonPointer::parse("a/b"));
-            FAIL() << "缺少前导 '/' 的指针应当抛出 FormatError";
-        } catch (const FormatError &error) {
-            EXPECT_EQ(error.kind(), FormatErrorKind::UnexpectedByte);
-        }
+        });
+
+        EXPECT_EQ(error.kind(), FormatErrorKind::InvalidPointer);
+        EXPECT_NE(std::string(error.what()).find("必须以 '/' 开头"), std::string::npos);
     }
 
     TEST(JsonPointer, RejectsInvalidEscapeSequence)
@@ -135,14 +162,17 @@ namespace AsynGyanis::Base
         EXPECT_THROW(static_cast<void>(JsonPointer::parse("/a~2b")), FormatError);
 
         // 报错位置应落在非法的 '~' 上（列号从 1 起）
-        try
+        const FormatError error = catchFormatError([]
         {
             static_cast<void>(JsonPointer::parse("/ab~2c"));
-            FAIL() << "非法转义序列应当抛出 FormatError";
-        } catch (const FormatError &error) {
-            EXPECT_EQ(error.kind(), FormatErrorKind::UnexpectedByte);
-            EXPECT_EQ(error.position().columnNumber, 4U);
-        }
+        });
+
+        EXPECT_EQ(error.kind(), FormatErrorKind::InvalidPointer);
+        EXPECT_EQ(error.position().columnNumber, 4U);
+
+        // 孤立 '~' 与非 0/1 转义都属于同一类语法错误
+        EXPECT_EQ(catchFormatError([] { static_cast<void>(JsonPointer::parse("/a~")); }).kind(), FormatErrorKind::InvalidPointer);
+        EXPECT_EQ(catchFormatError([] { static_cast<void>(JsonPointer::parse("/a~2b")); }).kind(), FormatErrorKind::InvalidPointer);
     }
 
     // ============================================================================
@@ -184,7 +214,7 @@ namespace AsynGyanis::Base
 
         const FormatValue *member = emptyKey.evaluate(document);
         ASSERT_NE(member, nullptr);
-        EXPECT_TRUE(member->is<FormatValueObject>());
+        EXPECT_TRUE(member->isObject());
 
         // 空键下的普通成员：路径里出现连续两个 '/'
         const FormatValue *flag = JsonPointer::parse("//empty").evaluate(document);
@@ -199,14 +229,37 @@ namespace AsynGyanis::Base
         EXPECT_EQ(JsonPointer::parse("/a/b/3").evaluate(document), nullptr);
         EXPECT_FALSE(JsonPointer::parse("/a/b/3").tryEvaluate(document).has_value());
 
-        try
+        // 指针语法完全合法，只是定位不到值：属于语义错误 PatchTargetMissing
+        const FormatError error = catchFormatError([&document]
         {
             static_cast<void>(JsonPointer::parse("/a/b/3").resolve(document));
-            FAIL() << "越界下标在 resolve 中应当抛出 FormatError";
-        } catch (const FormatError &error) {
-            EXPECT_EQ(error.kind(), FormatErrorKind::UnexpectedByte);
-            EXPECT_NE(std::string(error.what()).find("JSON Pointer"), std::string::npos);
-        }
+        });
+
+        EXPECT_EQ(error.kind(), FormatErrorKind::PatchTargetMissing);
+        EXPECT_NE(std::string(error.what()).find("JSON Pointer"), std::string::npos);
+    }
+
+    TEST(JsonPointer, SeparatesSyntaxFailuresFromResolutionMisses)
+    {
+        const FormatValue document = makeDocument();
+
+        // 语法错：parse() 阶段即抛 InvalidPointer，与文档内容无关
+        EXPECT_EQ(catchFormatError([] { static_cast<void>(JsonPointer::parse("a")); }).kind(), FormatErrorKind::InvalidPointer);
+        EXPECT_EQ(catchFormatError([] { static_cast<void>(JsonPointer::parse("/a~3")); }).kind(), FormatErrorKind::InvalidPointer);
+
+        // 语义错：指针本身合法，resolve() 未命中抛 PatchTargetMissing
+        EXPECT_EQ(catchFormatError([&document] { static_cast<void>(JsonPointer::parse("/nope").resolve(document)); }).kind(),
+                  FormatErrorKind::PatchTargetMissing);
+        // 数组下标前导零在前端是「不定位任何元素」的求值失败，仍属语义错而非语法错
+        EXPECT_EQ(catchFormatError([&document] { static_cast<void>(JsonPointer::parse("/a/b/01").resolve(document)); }).kind(),
+                  FormatErrorKind::PatchTargetMissing);
+
+        // 两类错误的分类必须互不相同，且都不再借用字节级分类
+        EXPECT_NE(FormatErrorKind::InvalidPointer, FormatErrorKind::PatchTargetMissing);
+        EXPECT_NE(FormatErrorKind::InvalidPointer, FormatErrorKind::UnexpectedByte);
+        EXPECT_NE(FormatErrorKind::PatchTargetMissing, FormatErrorKind::UnexpectedByte);
+        EXPECT_STREQ(errorKindName(FormatErrorKind::InvalidPointer), "invalid-pointer");
+        EXPECT_STREQ(errorKindName(FormatErrorKind::PatchTargetMissing), "patch-target-missing");
     }
 
     TEST(JsonPointer, TreatsTypeMismatchAsMiss)
@@ -261,7 +314,7 @@ namespace AsynGyanis::Base
         // 少一层命中的是「承载 l10 的那个对象」，而不是最终的标量
         const FormatValue *wrapper = JsonPointer::parse("/l1/l2/l3/l4/l5/l6/l7/l8/l9").evaluate(document);
         ASSERT_NE(wrapper, nullptr);
-        EXPECT_TRUE(wrapper->is<FormatValueObject>());
+        EXPECT_TRUE(wrapper->isObject());
 
         // 标量之上继续取成员属于求值失败（RFC 6901 §4），因此再深一层即未命中
         EXPECT_EQ(JsonPointer::parse("/l1/l2/l3/l4/l5/l6/l7/l8/l9/l10/extra").evaluate(document), nullptr);
