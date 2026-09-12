@@ -95,7 +95,7 @@ namespace AsynGyanis::Core
     private:
         EventLoop &                   m_loop;    ///< 所属事件循环
         Platform::TimerFileDescriptor m_timer;   ///< 跨平台定时器文件描述符
-        IoWatcher                     m_watcher; ///< timerfd 的常驻 epoll 注册（只关注可读）
+        IoWatcher                     m_watcher; ///< timerfd 的常驻 epoll 注册（等待时武装可读）
     };
 
 }

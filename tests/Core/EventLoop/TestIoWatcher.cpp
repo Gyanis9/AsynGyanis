@@ -1,6 +1,6 @@
 /**
  * @file TestIoWatcher.cpp
- * @brief IoWatcher 单元测试：常驻注册、就绪缓存、关闭唤醒与等待者互斥
+ * @brief IoWatcher 单元测试：注册一次、关注位按需武装、就绪缓存、关闭唤醒与等待者互斥
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -11,10 +11,10 @@
  *          测试自己做同样的一步，因此时序完全确定，不依赖线程调度。
  *
  *          钉住的契约：
- *          1、描述符在构造时注册一次，之后每次等待都不再产生 epoll_ctl（这一点由
- *             「等待期间不再调用任何 epoll 控制接口」间接体现：用例只推进事件分发即可完成等待）；
- *          2、边沿到达时若没有协程在等，就绪会被**记下来**，下一次等待立即完成——边沿触发下
- *             不缓存就必然丢事件，等待者会一直睡下去；
+ *          1、描述符在构造时注册一次，等待时按方向武装关注位，等待结束（事件上报）即由内核
+ *             自动解除——因此空闲的注册对象不会让事件循环反复被唤醒（Windows 侧 wepoll 只有
+ *             水平触发，长期武装一个「总是就绪」的方向会让 epoll_wait 每次立刻返回）；
+ *          2、上报时就绪若没有协程在等，会被**记下来**，下一次等待立即完成且不再武装；
  *          3、销毁注册对象会唤醒仍挂着的等待者并以「未就绪」结束它的等待，等待方因此能收尾
  *             而不是永久挂起（关闭描述符本身不会唤醒 epoll 的等待者）；
  *          4、同一方向的第二个等待者当场抛错，而不是静默让其中一个永远等不到。
@@ -85,7 +85,7 @@ namespace AsynGyanis::Core
         EventLoop loop;
 
         // 负数描述符（占位、已关闭）不注册，也不抛异常：持有空描述符的对象因此可以统一处理
-        const IoWatcher watcher(loop, -1, EPOLLIN);
+        const IoWatcher watcher(loop, -1);
         EXPECT_FALSE(watcher.isValid());
 
         // 在这种对象上等待会立刻以「未就绪」结束，而不是挂起或抛异常
@@ -93,6 +93,37 @@ namespace AsynGyanis::Core
         waiting.handle().resume();
         ASSERT_TRUE(waiting.isReady());
         EXPECT_FALSE(waiting.handle().promise().result());
+    }
+
+    /**
+     * @brief 没有任何等待者时，注册对象不得让事件反复上报（水平触发下的空转防线）
+     *
+     * @details Windows 侧的 wepoll 没有边沿触发，关注位一旦长期武装，只要那个方向「为真」
+     *          （这里是「对端已写入数据」这种持续可读状态），每次 epoll_wait 都会立刻返回它。
+     *          本用例先造出这个持续为真的状态，再确认空闲的注册对象**不产生任何事件**——
+     *          若谁把关注位改回常驻武装，这里会立刻失败。
+     */
+    TEST(IoWatcher, IdleRegistrationKeepsProducingNoEvents)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+
+        // 对端写入后，localDescriptor 进入「持续可读」状态；构造时的一次性探测最多被消耗一次
+        makeReadable(peerDescriptor);
+        [[maybe_unused]] const std::size_t probeEventCount = dispatchOnce(loop, 0);
+
+        // 之后没有等待者，就一次事件都不该再有——有的话就是空转
+        EXPECT_EQ(dispatchOnce(loop, 0), 0U) << "空闲的注册对象仍在产生事件：事件循环会被反复空唤醒";
+        EXPECT_EQ(dispatchOnce(loop, 0), 0U) << "空闲的注册对象仍在产生事件：事件循环会被反复空唤醒";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
     }
 
     TEST(IoWatcher, WaitCompletesWhenEventIsDispatched)
@@ -103,14 +134,14 @@ namespace AsynGyanis::Core
         int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-        IoWatcher watcher(loop, localDescriptor, EPOLLIN);
+        IoWatcher watcher(loop, localDescriptor);
         ASSERT_TRUE(watcher.isValid());
 
         Task<WaitOutcome> waiting = waitReadableOnce(watcher);
         waiting.handle().resume();
         ASSERT_FALSE(waiting.isReady()) << "尚无数据时应当挂起等待";
 
-        // 每次等待都不再有 epoll_ctl：只需要让事件到达并分发，等待就完成了
+        // 等待期间关注位已武装：让事件到达并分发，等待就完成了
         makeReadable(peerDescriptor);
         ASSERT_GT(dispatchOnce(loop), 0U);
 
@@ -129,18 +160,25 @@ namespace AsynGyanis::Core
         int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-        IoWatcher watcher(loop, localDescriptor, EPOLLIN);
+        IoWatcher watcher(loop, localDescriptor);
         ASSERT_TRUE(watcher.isValid());
 
-        // 先让事件到达并分发——此刻没有协程在等，就绪必须被记下来。
-        // 边沿触发只报「从不可用变为可用」的那一刻，不缓存这个边沿就永远丢了
+        // 第一轮等待把关注位武装起来，随后在等待者已消失（协程帧被销毁）的情况下让事件到达：
+        // 这一份上报没人领，必须被记下来，否则等待方会一直睡下去
+        {
+            Task<WaitOutcome> abandoned = waitReadableOnce(watcher);
+            abandoned.handle().resume();
+            ASSERT_FALSE(abandoned.isReady());
+        }
+        ASSERT_TRUE(watcher.isValid());
+
         makeReadable(peerDescriptor);
         ASSERT_GT(dispatchOnce(loop), 0U);
 
-        // 之后才发起的等待应当立即完成（不再需要任何新事件）
+        // 之后才发起的等待应当立即完成（不再需要任何新事件，也不必重新武装）
         Task<WaitOutcome> waiting = waitReadableOnce(watcher);
         waiting.handle().resume();
-        ASSERT_TRUE(waiting.isReady()) << "缓存的就绪没有被下一次等待取走";
+        ASSERT_TRUE(waiting.isReady()) << "上报时就绪没有被下一次等待取走";
         EXPECT_TRUE(waiting.handle().promise().result());
 
         // 取走之后标记不再残留：再等一次会重新挂起（否则就绪标记会让等待空转）
@@ -160,7 +198,7 @@ namespace AsynGyanis::Core
         int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-        auto watcher = std::make_unique<IoWatcher>(loop, localDescriptor, EPOLLIN);
+        auto watcher = std::make_unique<IoWatcher>(loop, localDescriptor);
         ASSERT_TRUE(watcher->isValid());
 
         Task<WaitOutcome> waiting = waitReadableOnce(*watcher);
@@ -188,7 +226,7 @@ namespace AsynGyanis::Core
         int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
-        IoWatcher watcher(loop, localDescriptor, EPOLLIN);
+        IoWatcher watcher(loop, localDescriptor);
         ASSERT_TRUE(watcher.isValid());
 
         Task<WaitOutcome> first = waitReadableOnce(watcher);

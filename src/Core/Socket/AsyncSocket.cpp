@@ -20,10 +20,10 @@ namespace AsynGyanis::Core
         {
             setNonBlocking();
 
-            // 常驻注册：一次注册覆盖可读与可写两个方向，此后每次等待都不再产生 epoll_ctl。
-            // 两个方向都注册是必要的——只注册当前用的那个方向，另一个方向的边沿会在
-            // 没人关注时被错过；而边沿触发下错过一次就再也不会重报
-            m_watcher = std::make_unique<IoWatcher>(loop, m_fileDescriptor, EPOLLIN | EPOLLOUT);
+            // 常驻注册：注册一次覆盖整个描述符生命周期，此后每次等待都不再有 ADD/DEL 往返；
+            // 关注位由注册对象在等待期间按需武装（见 IoWatcher 的说明：Windows 侧 wepoll
+            // 只有水平触发，长期武装一个「几乎总是就绪」的方向会让事件循环空转）
+            m_watcher = std::make_unique<IoWatcher>(loop, m_fileDescriptor);
         }
     }
 

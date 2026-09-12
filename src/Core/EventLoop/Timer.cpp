@@ -39,7 +39,7 @@ namespace AsynGyanis::Core
     }
 
     Timer::Timer(EventLoop &loop) :
-        m_loop(loop), m_watcher(loop, m_timer.fileDescriptor(), EPOLLIN)
+        m_loop(loop), m_watcher(loop, m_timer.fileDescriptor())
     {
         if (m_timer.fileDescriptor() < 0)
         {

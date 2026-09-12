@@ -8,7 +8,7 @@
  * 封装了 create/bind/listen/connect/receive/send 等 socket 操作,
  * 所有 I/O 方法返回 Task<> 类型, 通过 co_await 实现异步等待。
  * 内部用常驻的 IoWatcher 处理 EAGAIN/EWOULDBLOCK：描述符在构造时注册一次，
- * 之后每次等待都不再产生 epoll_ctl（详见 IoWatcher 的说明）。
+ * 关注位在等待期间按需武装（详见 IoWatcher 的说明）。
  *
  * @copyright Copyright (c) 2026
  */
@@ -239,11 +239,11 @@ namespace AsynGyanis::Core
         int        m_fileDescriptor; ///< 底层 socket 文件描述符，-1 表示无效
 
         /**
-         * @brief 常驻 epoll 注册（可读 + 可写）
+         * @brief 常驻 epoll 注册（等待时按方向武装）
          * @details 堆分配而非直接持有：epoll 里记的是注册对象的**地址**，而本类是可移动的
          *          （移动后描述符跟着走）。直接持有成员会在移动时改变地址，让 epoll 里的
          *          用户数据悬空；堆对象随指针转移，地址始终不变。
-         *          同一时刻只有一个方向会被等待，两个方向共用一个注册对象。
+         *          可读与可写共用一个注册对象：同步只允许一个方向有等待者，方向由各等待器指定。
          */
         std::unique_ptr<IoWatcher> m_watcher;
     };

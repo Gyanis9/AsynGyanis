@@ -1,6 +1,6 @@
 /**
  * @file IoWatcher.h
- * @brief 常驻 epoll 注册：注册一次即可反复等待，等待本身不再产生 epoll_ctl
+ * @brief 常驻 epoll 注册：注册一次即可反复等待，关注位只在有等待者时武装
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -19,16 +19,28 @@ namespace AsynGyanis::Core
     /**
      * @brief 一个文件描述符的常驻 epoll 注册与等待入口
      *
-     * @details 与「每次等待都 ADD 再 DEL」的用法相比，本类把注册提到描述符的生命周期上：
-     *          构造时注册一次（EPOLLET + 关注的事件），析构时反注册一次。连接存活期间可以
-     *          无限次 `co_await` 其等待器，**每次等待不再有系统调用**——而按连接生命周期算，
-     *          旧的「等一次注册一次」做法在每个读写循环里都要付 2 次 epoll_ctl。
+     * @details 本类把「描述符属于本事件循环」与「现在关注哪些事件」分成两件事：
+     *          构造时注册一次（建立归属关系，并借此校验该描述符没有被另一个注册对象占用），
+     *          析构时反注册一次；**事件关注位则只在有协程等待期间武装**，并借 EPOLLONESHOT
+     *          让内核在一次上报后自动解除。连接存活期间因此可以无限次 `co_await` 其等待器，
+     *          而不需要「等一次注册一次」的 ADD/DEL 往返。
      *
-     * ## 就绪缓存（边沿触发下必需）
-     * 边沿只报「从不可用变为可用」的那一刻。事件到达时若没有协程在等，本类会把该方向的
-     * 就绪**记下来**，让下一次等待立即完成——否则那个边沿就永远丢了，等待者会一直睡下去。
-     * 一个就绪标记只会被一个等待者取走（要么当场交给等待者，要么留给下一次等待），
-     * 因此不会出现「标记残留导致空转重试」。
+     * ## 为什么关注位必须按需武装
+     * Windows 侧用的是 wepoll，它没有实现边沿触发（`ASYN_PLATFORM_WIN32` 下 EPOLLET 被定义为 0），
+     * 所有注册都是水平触发。水平触发下，凡是「长期为真」的关注位——可写的套接字、已到达却还没被
+     * 读走的数据、定时器里没被清掉的到期标记——都会让每一次 epoll_wait 立刻返回该事件。而持有该
+     * 关注位的注册对象当时可能根本没有等待者，于是事件循环空转：实测一条空闲连接就能在 2 秒内
+     * 产生 10.1 万次可写上报，把一个核吃满。按需武装让「内核在盯着什么」与「现在谁在等」始终一致，
+     * 没人等就不盯，空转因此不可能发生。
+     *
+     * ## 代价
+     * 每次真正发生的等待付一次 `epoll_ctl(MOD)`（武装新方向，或等待方向发生变化时改写关注位）；
+     * 若该方向已按当前需要武装着，则一次系统调用都不付。等待期间不再有别的 epoll 控制调用。
+     *
+     * ## 就绪缓存
+     * 「已武装后被上报、但此刻没有等待者」这一种情形（等待者恰在事件到达前被销毁）会把就绪
+     * **记下来**，留给下一次等待立即完成。除此之外就绪都由内核在每次武装时重新判定——
+     * 按需武装让「错过就绪」从一个会丢的边沿变成一次可重新查询的状态。
      *
      * ## 关闭会唤醒等待者
      * 析构时若仍有协程挂在等待器上，它会被投递到事件循环的调度队列（不是就地恢复——本对象
@@ -70,15 +82,15 @@ namespace AsynGyanis::Core
 
             /**
              * @brief 就绪则立即完成，不挂起
-             * @return true 该方向的就绪标记已在（边沿到达过），等待立即完成
+             * @return true 该方向的就绪标记已在（见就绪缓存），等待立即完成
              */
             [[nodiscard]] bool await_ready() noexcept;
 
             /**
-             * @brief 登记为本方向的等待者并挂起协程
+             * @brief 登记为本方向的等待者、武装关注位并挂起协程
              * @param handle 当前协程句柄，事件到达时由注册对象恢复
              * @return true 已登记，可以挂起
-             * @return false 注册已失效（描述符已关闭），不挂起、立即以「未就绪」结束等待
+             * @return false 注册已失效（描述符已关闭或武装失败），不挂起、立即以「未就绪」结束等待
              * @throws Base::LogicException 该方向已有另一个等待者
              */
             [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle);
@@ -117,11 +129,13 @@ namespace AsynGyanis::Core
          * @param loop 所属事件循环（提供 epoll 与调度队列）
          * @param fileDescriptor 目标文件描述符；为负数时得到一个「无效」的注册对象
          *        （等待一律以「未就绪」结束），便于持有空描述符的对象统一处理
-         * @param interests 关注的事件位（EPOLLIN / EPOLLOUT，内部会加上 EPOLLET）
          * @throws Base::SystemException 描述符有效但注册失败（通常意味着同一描述符已被
          *         另一个注册对象占用——这是用法错误，当场失败好过等到第一次等待时才暴露）
+         * @note 构造时只把「可读」作为一次性探测交给内核，写入方向一律等有人等时才武装：
+         *       可读要等真有数据才可能就绪，最多产生一次无害的探测事件；而可写几乎长期为真，
+         *       提前武装它只会在没人等待时交付一份陈旧的可写就绪
          */
-        IoWatcher(EventLoop &loop, int fileDescriptor, std::uint32_t interests);
+        IoWatcher(EventLoop &loop, int fileDescriptor);
 
         /**
          * @brief 析构：反注册，并把仍在等待的协程以「未就绪」唤醒
@@ -164,7 +178,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 处理来自事件循环的事件分发
          * @details 仅由 EventLoop 在分发 epoll 事件时调用。若该方向有等待者，就把就绪结果
-         *          交给它并恢复它；没有等待者则把就绪记下来留给下一次等待。
+         *          交给它并恢复它；没有等待者则把就绪记下来留给下一次等待。仍有人在等的
+         *          方向会在这里补一次武装（本次上报已消耗掉上一次的一次性关注）。
          * @param events epoll 报告的事件位（含错误与挂断位）
          * @note 恢复协程之后**不再访问任何成员**：被恢复的代码可能立刻销毁本对象
          *       （例如读到对端关闭后关闭连接），那之后访问成员就是释放后使用。
@@ -182,26 +197,42 @@ namespace AsynGyanis::Core
         };
 
         /**
-         * @brief 登记一个等待者
+         * @brief 登记一个等待者，并把它的关注位武装到位
          * @param event 事件位（EPOLLIN 或 EPOLLOUT）
          * @param handle 等待中的协程句柄
          * @param awaiter 对应等待器
          * @return true 登记成功，调用方应挂起
-         * @return false 注册已失效，调用方不应挂起（立即以「未就绪」结束等待）
+         * @return false 注册已失效或武装失败，调用方不应挂起（立即以「未就绪」结束等待）
          * @throws Base::LogicException 该方向已有等待者
          */
         [[nodiscard]] bool attachWaiter(std::uint32_t event, std::coroutine_handle<> handle, Awaiter &awaiter);
 
         /**
-         * @brief 摘除某个方向上的等待者登记（等待器析构时调用）
+         * @brief 把某个方向的等待者从登记槽摘下，并按结果通知它
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         * @param isReady 是否以「就绪」通知（false 表示按未就绪收尾）
+         * @return 需要恢复的协程句柄，无人等待时为空
+         */
+        [[nodiscard]] std::coroutine_handle<> takeWaiter(std::uint32_t event, bool isReady) noexcept;
+
+        /**
+         * @brief 摘除某个方向上的等待者登记（等待器析构、等待登记作废时调用）
          * @param event 事件位（EPOLLIN 或 EPOLLOUT）
          */
         void detachWaiter(std::uint32_t event) noexcept;
 
         /**
+         * @brief 把关注位武装到内核（按需）
+         * @param events 本次需要关注的事件位；为 0 时不改动内核状态
+         * @return true 已按需武装（含「本来就已经武装着」）
+         * @return false 武装失败（描述符已失效），调用方应按注册失效处理
+         */
+        [[nodiscard]] bool armEvents(std::uint32_t events) noexcept;
+
+        /**
          * @brief 取走某个方向的就绪标记
          * @param event 事件位（EPOLLIN 或 EPOLLOUT）
-         * @return true 该方向此前已就绪（边沿到达过且无人取走）
+         * @return true 该方向此前已就绪且无人取走
          */
         [[nodiscard]] bool consumeReady(std::uint32_t event) noexcept;
 
@@ -215,7 +246,8 @@ namespace AsynGyanis::Core
         EventLoop    *m_loop;            ///< 所属事件循环（非拥有）
         int           m_fileDescriptor;  ///< 被注册的文件描述符
         bool          m_isRegistered{false}; ///< 是否已成功注册到 epoll
-        std::uint32_t m_readyEvents{0};  ///< 已到达但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
+        std::uint32_t m_armedEvents{0};  ///< 当前在核心里武装着的事件位（EPOLLIN / EPOLLOUT）
+        std::uint32_t m_readyEvents{0};  ///< 已上报但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
         WaiterSlot    m_readWaiter;      ///< 读方向等待者
         WaiterSlot    m_writeWaiter;     ///< 写方向等待者
     };
