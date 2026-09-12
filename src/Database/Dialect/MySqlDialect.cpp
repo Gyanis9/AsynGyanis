@@ -2,7 +2,7 @@
  * @file MySqlDialect.cpp
  * @brief MySQL 方言实现 —— 查询树到参数化 SQL 的翻译
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -596,6 +596,40 @@ namespace AsynGyanis::Database
     std::string_view MySqlDialect::rollbackStatement() const noexcept
     {
         return "ROLLBACK";
+    }
+
+    std::string_view MySqlDialect::columnTypeName(const ColumnType type) const noexcept
+    {
+        // 映射依据见头文件：MySQL 的整数按位宽/符号分家，因此这里选的是与 C++ 类型位宽一致的成员
+        switch (type)
+        {
+            case ColumnType::Int64:  return "BIGINT";
+            case ColumnType::UInt64: return "BIGINT UNSIGNED";
+            case ColumnType::Double: return "DOUBLE";
+            case ColumnType::Bool:   return "TINYINT(1)";
+            case ColumnType::Text:   return "TEXT";
+            case ColumnType::Blob:   return "LONGBLOB";
+            default:
+                // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
+                // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，
+                // 让表能被建出来（值仍可通过绑定写出）而不是让整个过程崩掉
+                return "TEXT";
+        }
+    }
+
+    SqlStatement MySqlDialect::tableExistsStatement(const std::string_view tableName) const
+    {
+        SqlStatement statement;
+
+        // information_schema.tables 是全实例共享的元数据表，因此必须同时限定库名与表名：
+        // 只用 table_name 过滤会把别的库里的同名表也算进来，导致「表不存在却报告存在」。
+        // DATABASE() 取当前会话的默认库，正是本条连接操作的那个库
+        statement.sql = "SELECT COUNT(*) FROM information_schema.tables "
+                        "WHERE table_schema = DATABASE() AND table_name = ";
+        statement.sql += placeholder(statement.parameters.size());
+        statement.parameters.emplace_back(std::string(tableName));
+
+        return statement;
     }
 
     void MySqlDialect::appendCondition(std::string &sqlText,

@@ -2,7 +2,7 @@
  * @file TestSqliteDialect.cpp
  * @brief SQLite 方言翻译单元测试（不需要数据库连接）
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -20,9 +20,11 @@
  * - 参数顺序、数量、类型与 uint64 降级
  * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
  * - 事务控制语句文本与单条语句的参数上限
+ * - DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
  * - DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
  *   Redis 抛出中文异常
  */
+#include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
@@ -35,10 +37,12 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace
 {
+    using AsynGyanis::Database::ColumnType;
     using AsynGyanis::Database::DatabaseType;
     using AsynGyanis::Database::DatabaseValue;
     using AsynGyanis::Database::DialectRegistry;
@@ -1120,6 +1124,52 @@ TEST(SqliteDialectWrite, TransactionStatementsAndParameterLimit)
     // 上限来自 SQLITE_MAX_VARIABLE_NUMBER 的默认值，批量写入据此分块
     EXPECT_EQ(dialect.maximumStatementParameters(), SqliteDialect::kMaximumStatementParameters);
     EXPECT_EQ(dialect.maximumStatementParameters(), 999U);
+}
+
+// ========================================================================
+// DDL 支撑（类型名映射与表存在性元数据查询）
+// ========================================================================
+
+/**
+ * @brief 验证逻辑列类型被映射成 SQLite 的存储类名
+ */
+TEST(SqliteDialectDdl, ColumnTypeNamesMapToStorageClasses)
+{
+    const SqliteDialect dialect;
+
+    // 映射依据：SQLite 只有 INTEGER / REAL / TEXT / BLOB 四个可用存储类，
+    // 无符号整数与布尔都没有独立类型，只能落在 INTEGER 上（见 SqliteDialect 的说明）
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Int64), "INTEGER");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::UInt64), "INTEGER");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Double), "REAL");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Bool), "INTEGER");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Text), "TEXT");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Blob), "BLOB");
+
+    // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
+    EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");
+}
+
+/**
+ * @brief 验证表存在性查询查 sqlite_master，且表名以绑定参数送出
+ */
+TEST(SqliteDialectDdl, TableExistsStatementBindsTableName)
+{
+    const SqliteDialect dialect;
+
+    const SqlStatement statement = dialect.tableExistsStatement("users");
+
+    // 表清单来自当前库文件的 sqlite_master：type='table' 过滤掉索引/视图/触发器
+    EXPECT_EQ(statement.sql, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    ASSERT_TRUE(std::holds_alternative<std::string>(statement.parameters[0]));
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "users");
+
+    // 恶意表名只是普通文本：它落在参数里，不会改变语句结构，也不会多出占位符
+    const SqlStatement hostileStatement = dialect.tableExistsStatement("x'; DROP TABLE users; --");
+    EXPECT_EQ(hostileStatement.sql, statement.sql);
+    ASSERT_EQ(hostileStatement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::string>(hostileStatement.parameters[0]), "x'; DROP TABLE users; --");
 }
 
 // ========================================================================

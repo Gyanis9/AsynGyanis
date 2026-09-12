@@ -2,7 +2,7 @@
  * @file SqliteDialect.h
  * @brief SQLite 方言 —— 把查询树翻译成 SQLite 可执行的参数化 SQL
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -21,6 +21,9 @@
  *   行数由调用方按参数上限自行分块；
  * - 事务语句：开启用 "BEGIN IMMEDIATE"（立刻取写锁，避免多个连接都先取读锁、
  *   升级为写锁时撞上 SQLITE_BUSY 的经典死锁），提交用 "COMMIT"，回滚用 "ROLLBACK"；
+ * - DDL 支撑：columnTypeName() 把逻辑列类型映射到 SQLite 的存储类
+ *   （INTEGER / REAL / TEXT / BLOB，布尔与无符号整数都用 INTEGER 表达），
+ *   tableExistsStatement() 查 sqlite_master 统计同名表；
  * - 分页：LIMIT / OFFSET 直接内联十进制整数（取值来自强类型 size_t，不经外部文本）；
  *   OFFSET 单独出现时补 "LIMIT -1"，因为 SQLite 要求 OFFSET 必须跟在 LIMIT 之后；
  * - 表达式字段（如 COUNT(*)、COALESCE(age, 0)）原样输出，不加引号，
@@ -180,6 +183,38 @@ namespace AsynGyanis::Database
          * @return std::string_view 恒为 "ROLLBACK"
          */
         [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
+
+        /**
+         * @brief 把逻辑列类型翻译成 SQLite 的物理类型名
+         * @details 重写 SqlDialect::columnTypeName()：SQLite 只有 5 个存储类
+         *          （NULL / INTEGER / REAL / TEXT / BLOB），因此映射表很小：
+         *          - Int64 → INTEGER（SQLite 的 INTEGER 是变长整数，最多 8 字节有符号）；
+         *          - UInt64 → INTEGER：SQLite 根本没有无符号类型，只能退化为有符号 64 位，
+         *            即 0 .. 2^63-1 之外的无符号取值无法以此列型原样表达。
+         *            取舍：仍然用 INTEGER 而不是 TEXT。用 TEXT 会让排序、比较、索引全部退化为
+         *            字符串语义（"10" < "9"），代价比取值范围上限大得多；超出 int64 上限的值
+         *            由绑定期降级为十进制文本（见 convertParameter），因此更靠上的处理不需要改；
+         *          - Double → REAL（8 字节 IEEE 754，与 C++ 的 double 一一对应）；
+         *          - Bool → INTEGER：SQLite 没有布尔存储类，官方建议用整数 0/1 表达真假；
+         *          - Text → TEXT（按数据库编码存储，默认 UTF-8）；
+         *          - Blob → BLOB（按输入字节原样存储，不做任何转换）。
+         * @param type 逻辑列类型
+         * @return std::string_view 对应存储类名；未知取值回落到 "TEXT"（见基类约定）
+         */
+        [[nodiscard]] std::string_view columnTypeName(ColumnType type) const noexcept override;
+
+        /**
+         * @brief 生成 SQLite 的「表是否存在」查询
+         * @details 重写 SqlDialect::tableExistsStatement()：SQLite 的表清单存放在
+         *          sqlite_master（只读系统表）里，用 type='table' 过滤掉索引、视图与触发器，
+         *          再按 name 精确匹配目标表名。sqlite_master 只属于当前所连接的那个库文件，
+         *          所以不需要任何库名限定——这是嵌入式引擎与 MySQL 的主要差异。
+         *          name 列以参数绑定送入，表名里出现引号或分号都不会改变语句结构。
+         * @param tableName 待查询的表名
+         * @return SqlStatement "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?"
+         *         及其唯一绑定参数；结果为一行一列，0 表示不存在
+         */
+        [[nodiscard]] SqlStatement tableExistsStatement(std::string_view tableName) const override;
 
         /**
          * @brief 用双引号引用标识符并翻转义内部双引号

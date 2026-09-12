@@ -2,7 +2,7 @@
  * @file TestMySqlDialect.cpp
  * @brief MySQL 方言翻译单元测试（不需要数据库连接）
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -21,8 +21,10 @@
  * - 参数顺序、数量、类型与 uint64 降级
  * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
  * - 事务控制语句文本
+ * - DDL 支撑：逻辑列类型到 MySQL 物理类型名的映射、表存在性元数据语句（按当前库限定 + 表名绑定）
  * - DialectRegistry：MySQL 可取得且与 SQLite 是不同实例，Redis 抛出中文异常
  */
+#include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/Dialect/SqlDialect.h"
@@ -35,10 +37,12 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace
 {
+    using AsynGyanis::Database::ColumnType;
     using AsynGyanis::Database::DatabaseType;
     using AsynGyanis::Database::DatabaseValue;
     using AsynGyanis::Database::DialectRegistry;
@@ -1163,6 +1167,55 @@ TEST(MySqlDialectWrite, TransactionStatements)
     EXPECT_EQ(dialect.beginTransactionStatement(), "START TRANSACTION");
     EXPECT_EQ(dialect.commitStatement(), "COMMIT");
     EXPECT_EQ(dialect.rollbackStatement(), "ROLLBACK");
+}
+
+// ========================================================================
+// DDL 支撑（类型名映射与表存在性元数据查询）
+// ========================================================================
+
+/**
+ * @brief 验证逻辑列类型被映射成 MySQL 的物理类型名
+ */
+TEST(MySqlDialectDdl, ColumnTypeNamesFollowEngineWidths)
+{
+    const MySqlDialect dialect;
+
+    // 映射依据：MySQL 的整数按位宽与符号分家，这里一律选与 C++ 类型位宽对齐的成员；
+    // 布尔没有独立类型，用官方惯例的 TINYINT(1)
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Int64), "BIGINT");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::UInt64), "BIGINT UNSIGNED");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Double), "DOUBLE");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Bool), "TINYINT(1)");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Text), "TEXT");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Blob), "LONGBLOB");
+
+    // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
+    EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");
+}
+
+/**
+ * @brief 验证表存在性查询限定了当前库，且表名以绑定参数送出
+ */
+TEST(MySqlDialectDdl, TableExistsStatementScopesToCurrentDatabase)
+{
+    const MySqlDialect dialect;
+
+    const SqlStatement statement = dialect.tableExistsStatement("users");
+
+    // information_schema.tables 是全实例共享的：只用 table_name 过滤会把其它库的同名表也算进来，
+    // 因此必须同时用 DATABASE() 限定当前会话的默认库
+    EXPECT_EQ(statement.sql,
+              "SELECT COUNT(*) FROM information_schema.tables "
+              "WHERE table_schema = DATABASE() AND table_name = ?");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    ASSERT_TRUE(std::holds_alternative<std::string>(statement.parameters[0]));
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "users");
+
+    // 恶意表名只是普通文本：它落在参数里，不会改变语句结构，也不会多出占位符
+    const SqlStatement hostileStatement = dialect.tableExistsStatement("x`; DROP TABLE users; --");
+    EXPECT_EQ(hostileStatement.sql, statement.sql);
+    ASSERT_EQ(hostileStatement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::string>(hostileStatement.parameters[0]), "x`; DROP TABLE users; --");
 }
 
 // ========================================================================

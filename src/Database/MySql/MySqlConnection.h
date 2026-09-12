@@ -219,7 +219,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 开始一个事务
-         * @details 等价于 execute("START TRANSACTION")，是 MySQL 专有能力的便捷封装，不覆盖基类任何虚函数。
+         * @details 执行本方言（MySqlDialect）给出的开启语句 "START TRANSACTION"，是 MySQL 专有能力的
+         *          便捷封装，不覆盖基类任何虚函数。语句文本取自方言而非硬编码，
+         *          与 Transaction + 方言这条路径共用同一份语句来源，二者不会漂移。
          * @return true 事务已开启
          * @return false 未连接或语句被服务端拒绝，原因见 lastError()
          * @note 默认自动提交为 ON 时不需要显式开事务；本方法不会去改 autocommit 会话变量
@@ -228,7 +230,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 提交当前事务
-         * @details 等价于 execute("COMMIT")。
+         * @details 执行本方言给出的提交语句 "COMMIT"，语句文本同样以方言为唯一来源。
          * @return true 提交成功
          * @return false 没有活动事务或未连接，原因见 lastError()
          */
@@ -236,7 +238,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 回滚当前事务
-         * @details 等价于 execute("ROLLBACK")，与 commit() 一样属于事务控制便捷封装。
+         * @details 执行本方言给出的回滚语句 "ROLLBACK"，与 commit() 一样属于事务控制便捷封装，
+         *          语句文本同样以方言为唯一来源。
          * @return true 回滚成功
          * @return false 没有活动事务或未连接，原因见 lastError()
          */

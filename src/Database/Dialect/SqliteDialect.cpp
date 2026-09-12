@@ -2,7 +2,7 @@
  * @file SqliteDialect.cpp
  * @brief SQLite 方言实现 —— 查询树到参数化 SQL 的翻译
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -556,6 +556,39 @@ namespace AsynGyanis::Database
     std::string_view SqliteDialect::rollbackStatement() const noexcept
     {
         return "ROLLBACK";
+    }
+
+    std::string_view SqliteDialect::columnTypeName(const ColumnType type) const noexcept
+    {
+        // 映射依据见头文件：SQLite 只有 INTEGER / REAL / TEXT / BLOB 四个可用存储类，
+        // 布尔与无符号整数都没有独立类型，只能落在 INTEGER 上
+        switch (type)
+        {
+            case ColumnType::Int64:  return "INTEGER";
+            case ColumnType::UInt64: return "INTEGER";
+            case ColumnType::Double: return "REAL";
+            case ColumnType::Bool:   return "INTEGER";
+            case ColumnType::Text:   return "TEXT";
+            case ColumnType::Blob:   return "BLOB";
+            default:
+                // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
+                // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，
+                // 让表能被建出来（值仍可通过绑定写出）而不是让整个过程崩掉
+                return "TEXT";
+        }
+    }
+
+    SqlStatement SqliteDialect::tableExistsStatement(const std::string_view tableName) const
+    {
+        SqlStatement statement;
+
+        // sqlite_master 是当前库文件的只读元数据表：type='table' 过滤掉索引/视图/触发器，
+        // 再按 name 精确匹配。表名走占位符，含引号或分号的表名也只是普通文本
+        statement.sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ";
+        statement.sql += placeholder(statement.parameters.size());
+        statement.parameters.emplace_back(std::string(tableName));
+
+        return statement;
     }
 
     void SqliteDialect::appendCondition(std::string &sqlText,

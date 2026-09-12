@@ -2,7 +2,7 @@
  * @file SqlDialect.h
  * @brief SQL 方言抽象基类 —— 查询树 → 参数化 SQL 的翻译契约
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -11,12 +11,14 @@
  *          标识符引用字符、占位符写法、分页语法、布尔字面量等由各实现自行处理，
  *          上层的 ORM 执行器只依赖本抽象接口。
  *
- * ## 接口构成（本次演进新增写语句与事务语句）
+ * ## 接口构成（本次演进新增写语句、事务语句、类型名映射与元数据查询）
  * - 读：translate() 生成 SELECT；
  * - 写：translateInsert() / translateUpdate() / translateDelete() / translateInsertBatch()
  *   生成 INSERT / UPDATE / DELETE / 多行 INSERT；
  * - 事务：beginTransactionStatement() / commitStatement() / rollbackStatement()
  *   给出事务控制语句文本（各引擎语法不同，不能写死在事务对象里）；
+ * - DDL 支撑：columnTypeName() 把逻辑列类型翻译成物理类型名，
+ *   tableExistsStatement() 给出「这张表在不在」的元数据查询；
  * - 基础设施：quoteIdentifier() / placeholder() / supportsLimitOffset()。
  *
  * 写语句进入本层而不是留在 ORM 侧，是为了让「WHERE 条件怎么渲染、参数按什么顺序收集」
@@ -34,12 +36,16 @@
  * - 入参个数与列数/条件不匹配时实现必须抛 std::invalid_argument，绝不能生成半截语句；
  * - quoteIdentifier() 必须转义标识符内部的引用字符（双引号翻倍 / 反引号翻倍），
  *   否则含引号的列名会破坏语句结构；
- * - 同一个 dialect 实例可能被多个线程并发调用，实现必须无状态（本层不持有可变成员）。
+ * - 同一个 dialect 实例可能被多个线程并发调用，实现必须无状态（本层不持有可变成员）；
+ * - columnTypeName() 必须覆盖 ColumnType 的全部取值，且对未知取值也要返回一个可用的类型名
+ *   而不是抛异常：它是 noexcept 的类型名映射，调用点（建表语句生成）没有可回退的分支；
+ * - tableExistsStatement() 必须把表名作为绑定参数送出，不得拼进 SQL 文本。
  */
 #pragma once
 
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Queryable/QueryNode.h"
 
@@ -171,6 +177,35 @@ namespace AsynGyanis::Database
          * @return std::string_view 本方言的回滚语句，保证语句本身不含分号
          */
         [[nodiscard]] virtual std::string_view rollbackStatement() const noexcept = 0;
+
+        /**
+         * @brief 把一个逻辑列类型翻译成本引擎的物理类型名
+         *
+         * @details 建表迁移（SchemaMigrator）只按成员类型给出逻辑类型（ColumnType），
+         *          物理类型名由各引擎回答：SQLite 的存储类只有 5 个（INTEGER/REAL/TEXT/BLOB/NULL），
+         *          MySQL 的整数按位宽分家且有真正的无符号类型，布尔在两者中都不是独立物理类型。
+         *          这类「引擎知识」若写在 ORM 侧，每加一个方言就要改一次 ORM，因此放在本层。
+         *
+         * @param type 逻辑列类型
+         * @return std::string_view 该引擎可直接写进列定义的物理类型名（不含 NOT NULL 等约束），
+         *         例如 SQLite 的 "INTEGER"、MySQL 的 "BIGINT UNSIGNED"
+         * @note 本方法只做「类型名」翻译，不涉及取值编解码；值一律以 DatabaseValue 绑定给驱动
+         */
+        [[nodiscard]] virtual std::string_view columnTypeName(ColumnType type) const noexcept = 0;
+
+        /**
+         * @brief 生成「查询某张表是否存在」的元数据语句
+         *
+         * @details 各引擎的表清单来源完全不同：SQLite 查 sqlite_master，MySQL 查
+         *          information_schema（并且要按当前库名过滤，否则同名表在别的库里会被误判存在）。
+         *          这类元数据查询与事务语句同属「引擎知识」，因此同样由方言给出文本，
+         *          迁移工具只负责执行与解读结果。
+         *
+         * @param tableName 待查询的表名（未加引用字符的原始名字）
+         * @return SqlStatement 返回「一行一列」的计数语句：第一列是匹配该表名的行数
+         *         （0 表示不存在，大于 0 表示存在）；表名以占位符 + 绑定参数送出，不拼进 SQL 文本
+         */
+        [[nodiscard]] virtual SqlStatement tableExistsStatement(std::string_view tableName) const = 0;
 
         /**
          * @brief 引用一个标识符

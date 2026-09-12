@@ -17,6 +17,7 @@
 
 #include "Database/MySql/MySqlConnection.h"
 
+#include "Database/Dialect/MySqlDialect.h"
 #include "Database/MySql/MySqlResult.h"
 #include "Database/MySql/MySqlStatementResult.h"
 
@@ -862,19 +863,24 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::beginTransaction()
     {
+        // 语句文本取自方言而不是写死在这里：同一件事（开启事务）若有两份语句源，
+        // 就会随方言演进而漂移，与 Transaction 走方言的路径产生行为差异
+        const MySqlDialect dialect;
         // 事务语句没有返回列，execute() 非空即代表 START TRANSACTION 已被服务端接受
-        return execute("START TRANSACTION") != nullptr;
+        return execute(dialect.beginTransactionStatement()) != nullptr;
     }
 
     bool MySqlConnection::commit()
     {
-        return execute("COMMIT") != nullptr;
+        const MySqlDialect dialect;
+        return execute(dialect.commitStatement()) != nullptr;
     }
 
     bool MySqlConnection::rollback()
     {
+        const MySqlDialect dialect;
         // 没有活动事务时服务端会直接报错，这里如实返回 false，并由 lastError() 给出原因
-        return execute("ROLLBACK") != nullptr;
+        return execute(dialect.rollbackStatement()) != nullptr;
     }
 
 } // namespace AsynGyanis::Database

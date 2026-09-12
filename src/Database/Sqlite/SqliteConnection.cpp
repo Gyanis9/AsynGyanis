@@ -9,6 +9,7 @@
 
 #include "Database/Sqlite/SqliteConnection.h"
 
+#include "Database/Dialect/SqliteDialect.h"
 #include "Database/Sqlite/SqliteResult.h"
 
 #include <sqlite3.h>
@@ -270,19 +271,25 @@ namespace AsynGyanis::Database
 
     bool SqliteConnection::beginTransaction()
     {
+        // 语句文本取自方言而不是写死在这里：同一件事（开启事务）若有两份语句源，
+        // 就会随方言演进而漂移——方言给出的是 BEGIN IMMEDIATE（立刻取写锁），
+        // 硬编码的 "BEGIN TRANSACTION" 是 DEFERRED，写锁推迟到第一条写语句才取
+        const SqliteDialect dialect;
         // 事务语句本身没有返回列，execute() 非空即代表 BEGIN 已被 SQLite 接受
-        return execute("BEGIN TRANSACTION") != nullptr;
+        return execute(dialect.beginTransactionStatement()) != nullptr;
     }
 
     bool SqliteConnection::commit()
     {
-        return execute("COMMIT") != nullptr;
+        const SqliteDialect dialect;
+        return execute(dialect.commitStatement()) != nullptr;
     }
 
     bool SqliteConnection::rollback()
     {
+        const SqliteDialect dialect;
         // 没有活动事务时 SQLite 会在 step 阶段报错，这里如实返回 false 并由 lastError() 给出原因
-        return execute("ROLLBACK") != nullptr;
+        return execute(dialect.rollbackStatement()) != nullptr;
     }
 
     std::string SqliteConnection::serverVersion() const

@@ -2,7 +2,7 @@
  * @file MySqlDialect.h
  * @brief MySQL 方言 —— 把查询树翻译成 MySQL / MariaDB 可执行的参数化 SQL
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -19,7 +19,10 @@
  * - 事务：开启用 "START TRANSACTION"（不是 SQLite 的 "BEGIN IMMEDIATE"——
  *   MySQL 没有 IMMEDIATE 关键字，且 InnoDB 的行锁在第一条写语句时取，不存在
  *   SQLite 那种「读锁升级为写锁」的死锁模型）；
- * - 参数上限：65535（协议层硬上限，见 maximumStatementParameters()），不是 SQLite 的 999。
+ * - 参数上限：65535（协议层硬上限，见 maximumStatementParameters()），不是 SQLite 的 999；
+ * - DDL 支撑：类型名按位宽与符号分家（BIGINT / BIGINT UNSIGNED / DOUBLE / TINYINT(1) / TEXT / LONGBLOB），
+ *   布尔没有独立类型，用官方惯例的 TINYINT(1)；表清单来自全实例共享的 information_schema.tables，
+ *   因此必须用 DATABASE() 限定当前库（SQLite 查的是每个库文件私有的 sqlite_master）。
  *
  * ## 分页为何选 "LIMIT ? OFFSET ?"
  * - 关键字形式是标准 SQL 的写法，MySQL / MariaDB / PostgreSQL / SQLite 都接受；
@@ -202,6 +205,37 @@ namespace AsynGyanis::Database
          * @return std::string_view 恒为 "ROLLBACK"
          */
         [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
+
+        /**
+         * @brief 把逻辑列类型翻译成 MySQL 的物理类型名
+         * @details 重写 SqlDialect::columnTypeName()：MySQL 的整数按位宽与符号分家，
+         *          这里一律选与 C++ 类型位宽对齐的成员：
+         *          - Int64 → "BIGINT"（8 字节有符号，对应 C++ 的 std::int64_t）；
+         *          - UInt64 → "BIGINT UNSIGNED"（8 字节无符号，0 .. 2^64-1）；
+         *          - Double → "DOUBLE"（8 字节 IEEE 754；不用 FLOAT，它只有 4 字节且精度不足）；
+         *          - Bool → "TINYINT(1)"：MySQL 没有布尔类型，BOOL/BOOLEAN 只是 TINYINT(1) 的同义词，
+         *            而 TINYINT(1) 是官方保留的「是否型」惯例写法（8.0.19 起整数显示宽度被弃用，
+         *            唯独 TINYINT(1) 例外保留），客户端也据此识别布尔列；
+         *          - Text → "TEXT"（上限 65535 字节，按列字符集编码；utf8mb4 下约可放 16000 个字符）；
+         *          - Blob → "LONGBLOB"（上限 4 GiB，足以直接承接任意二进制载荷）。
+         * @param type 逻辑列类型
+         * @return std::string_view 对应物理类型名；未知取值回落到 "TEXT"（见基类约定）
+         */
+        [[nodiscard]] std::string_view columnTypeName(ColumnType type) const noexcept override;
+
+        /**
+         * @brief 生成 MySQL 的「表是否存在」查询
+         * @details 重写 SqlDialect::tableExistsStatement()：MySQL 没有 SQLite 那样的库内元数据表，
+         *          表清单在 information_schema.tables 里，而它是整个实例共享的：
+         *          只用 table_name 过滤会把其它库里的同名表也统计进来，导致「表其实不存在却报告存在」，
+         *          因此必须用 DATABASE() 同时限定当前会话的默认库。
+         *          table_name 以参数绑定送入，表名里的反引号或分号都不会改变语句结构。
+         * @param tableName 待查询的表名
+         * @return SqlStatement "SELECT COUNT(*) FROM information_schema.tables WHERE
+         *         table_schema = DATABASE() AND table_name = ?" 及其唯一绑定参数；
+         *         结果为一行一列，0 表示不存在
+         */
+        [[nodiscard]] SqlStatement tableExistsStatement(std::string_view tableName) const override;
 
         /**
          * @brief 用反引号引用标识符并翻转义内部反引号

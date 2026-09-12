@@ -21,6 +21,7 @@
  * - CountMatchesFilteredRows
  * - UpdateByPrimaryKeyChangesOnlyTargetRow
  * - ExecuteNonQueryDeletesMatchingRows
+ * - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
  * - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
  */
 #include "Database/Common/ConnectionConfig.h"
@@ -75,6 +76,20 @@ namespace
     struct TypeMismatchRow
     {
         std::string id; ///< accounts.id 是 INTEGER，映射到 std::string 应当失败
+    };
+
+    /**
+     * @brief 含空格标识符测试用结构体：表名与列名都带空格
+     *
+     * @details 含空格的标识符在真实库里确实存在（被引号包住的标识符允许含空格）。
+     *          空格既不能出现在裸标识符里，也不会改变表达式结构，因此方言必须把它
+     *          判为标识符并整段加引号；一旦漏引号，SQLite 会把它当成语法错误而整条语句失败。
+     */
+    struct SpacedIdentifierRow
+    {
+        std::int64_t               id;          ///< 主键
+        std::string                fullName;    ///< 列名含空格（"full name"）
+        std::optional<std::string> homeAddress; ///< 列名含空格且可空（"home address"）
     };
 
     /**
@@ -139,6 +154,19 @@ struct AsynGyanis::Database::Queryable::TableSchema<TypeMismatchRow>
     static constexpr std::string_view kTableName = "accounts";
     static constexpr auto kColumns = std::tuple{
         Column(&TypeMismatchRow::id, "id"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<SpacedIdentifierRow>
+{
+    // 表名与列名一律含空格：只有把标识符整段引用起来，SQLite 才会把它们当成名字而不是语法
+    static constexpr std::string_view kTableName = "spaced accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&SpacedIdentifierRow::id,          "id"),
+        Column(&SpacedIdentifierRow::fullName,    "full name"),
+        Column(&SpacedIdentifierRow::homeAddress, "home address"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -467,6 +495,76 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 
     ASSERT_EQ(remainingRows.size(), 1U);
     EXPECT_EQ(remainingRows[0].id, 1);
+}
+
+/**
+ * @brief 验证表名与列名含空格时 CREATE TABLE + ORM insert + toList 全链路可跑通
+ *
+ * @details 标识符引用实现（SqliteDialect::isQuotableIdentifier）放行了空格，
+ *          因此含空格的列名会被渲染成 "full name" 而不是被误判成表达式原样输出。
+ *          若退化成不加引号，SQLite 会把 `full name` 解析成语法错误，
+ *          甚至连建表那一步都会失败——所以这条用例同时覆盖 DDL 与 DML 两侧。
+ */
+TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
+{
+    // 建表：表名与列名整段加双引号，交给 SQLite 当作标识符而不是语法片段。
+    // 连接必须先取、用完立刻归还：本夹具的池上限为 1，持有连接期间 ORM 无法再取连接
+    {
+        PooledConnection connection = m_pool->acquire();
+        ASSERT_TRUE(connection);
+        const auto createResult = connection->execute(
+            "CREATE TABLE \"spaced accounts\" ("
+            "\"id\" INTEGER PRIMARY KEY, "
+            "\"full name\" TEXT NOT NULL, "
+            "\"home address\" TEXT)");
+        ASSERT_TRUE(createResult != nullptr) << connection->lastError();
+    }
+
+    // ORM 写：列名 "full name" / "home address" 必须被方言正确引用，否则 INSERT 语法错误
+    {
+        Queryable<SpacedIdentifierRow> insertQuery(*m_pool);
+        ASSERT_EQ(1, insertQuery.insert(SpacedIdentifierRow{1, "张三", std::string("北京 朝阳")}));
+        // 第二行的可空列给 NULL，验证含空格的列同样能绑定 NULL
+        ASSERT_EQ(1, insertQuery.insert(SpacedIdentifierRow{2, "Li Si", std::nullopt}));
+    }
+
+    // ORM 读：SELECT 列名逐个引用，映射回结构体时按列名查找下标
+    {
+        Queryable<SpacedIdentifierRow> query(*m_pool);
+        const std::vector<SpacedIdentifierRow> rows = query.orderBy(asc("id")).toList();
+
+        ASSERT_EQ(rows.size(), 2U);
+        EXPECT_EQ(rows[0].id, 1);
+        EXPECT_EQ(rows[0].fullName, "张三");
+        ASSERT_TRUE(rows[0].homeAddress.has_value());
+        EXPECT_EQ(rows[0].homeAddress.value(), "北京 朝阳");
+        EXPECT_EQ(rows[1].id, 2);
+        EXPECT_EQ(rows[1].fullName, "Li Si");
+        EXPECT_FALSE(rows[1].homeAddress.has_value());
+    }
+
+    // 含空格的列名用于 WHERE：条件渲染与 SELECT 列表共用同一套引用规则
+    {
+        Queryable<SpacedIdentifierRow> filteredQuery(*m_pool);
+        const std::optional<SpacedIdentifierRow> found =
+            filteredQuery.where(Column(&SpacedIdentifierRow::fullName, "full name") == std::string("Li Si")).first();
+
+        ASSERT_TRUE(found.has_value());
+        EXPECT_EQ(found->id, 2);
+        EXPECT_FALSE(found->homeAddress.has_value());
+    }
+
+    // 含空格的列名用于 UPDATE 的 SET 与主键定位，证明写语句方向同样引用正确
+    {
+        Queryable<SpacedIdentifierRow> updateQuery(*m_pool);
+        EXPECT_EQ(1, updateQuery.update(SpacedIdentifierRow{1, "张三", std::nullopt}));
+
+        Queryable<SpacedIdentifierRow> verifyQuery(*m_pool);
+        const std::optional<SpacedIdentifierRow> updated =
+            verifyQuery.where(Column(&SpacedIdentifierRow::id, "id") == std::int64_t{1}).first();
+        ASSERT_TRUE(updated.has_value());
+        EXPECT_FALSE(updated->homeAddress.has_value());
+    }
 }
 
 // ========================================================================
