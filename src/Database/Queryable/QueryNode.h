@@ -6,14 +6,9 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 定义查询树的全部节点类型。所有结构均为纯数据聚合体，不包含行为逻辑。
- *          这些数据被方言层（Phase 2）翻译成具体数据库的 SQL 字符串。
- *
- * ## 设计要点
- * - 全部使用值语义 + std::unique_ptr 管理，支持移动语义
- * - WhereCondition 同时支持列-值比较和列-列比较（通过 right 变体）
- * - FieldReference 支持列名字符串和表达式字符串两种形式
- * - 所有字段使用 m_ 前缀命名，函数参数使用 kPascalCase 常量
+ * @details 定义查询树的全部节点类型：纯数据聚合体，不含行为逻辑，由方言层翻译成具体 SQL。
+ *          全部使用值语义 + std::unique_ptr 管理，支持移动；WhereCondition 的 right 变体同时支持
+ *          列-值比较与列-列比较，FieldReference 既可承载列名也可承载表达式文本。
  */
 #pragma once
 
@@ -33,13 +28,7 @@ namespace AsynGyanis::Database::Queryable
     /**
      * @brief SQL 操作符枚举
      *
-     * @details 涵盖比较、逻辑、模式匹配与空值判断操作符。
-     *          枚举值按 SQL 语义分组：
-     *          - 比较：Eq, Neq, Gt, Ge, Lt, Le
-     *          - 集合：In, NotIn
-     *          - 空值：IsNull, IsNotNull
-     *          - 模式：Like
-     *          - 逻辑：And, Or, Not
+     * @details 涵盖比较、逻辑、模式匹配与空值判断四类操作符，各枚举值的语义见行尾注释。
      */
     enum class SqlOperator
     {
@@ -82,13 +71,8 @@ namespace AsynGyanis::Database::Queryable
     /**
      * @brief 参数值变体 —— 数据库查询参数的 C++ 表示
      *
-     * @details 支持 SQL 查询中常见的数据类型：
-     *          - std::nullptr_t 表示 SQL NULL
-     *          - bool 表示布尔值
-     *          - int64_t / uint64_t 表示整数
-     *          - double 表示浮点数
-     *          - std::string 表示字符串
-     *          - std::vector<std::uint8_t> 表示二进制载荷（用于按 BLOB / BINARY 列做条件查询）
+     * @details 各备选依次为 SQL NULL、布尔、有符号/无符号 64 位整数、浮点、字符串与二进制载荷
+     *          （后者用于按 BLOB / BINARY 列做条件查询）。
      *
      * @note 新增备选一律**追加在末尾**：既有备选的下标是已发布的契约，调整顺序会让按固定
      *       下标取值的调用点静默取错类型。
@@ -103,11 +87,8 @@ namespace AsynGyanis::Database::Queryable
     /**
      * @brief WHERE 子句条件节点
      *
-     * @details 表示一个比较条件：left op right。
-     *          - left 始终是字段引用（列名或表达式）
-     *          - op 是比较/逻辑操作符
-     *          - right 可以是参数值或另一字段引用（实现列-列比较）
-     *          - inValues 为 IN/NOT IN 操作提供值列表
+     * @details 表示一个比较条件 left op right；right 为 FieldReference 时即列-列比较，
+     *          children 承载 AND/OR/NOT 的子条件，inValues 为 IN/NOT IN 提供值列表。
      *
      * @code
      *   // age >= 18

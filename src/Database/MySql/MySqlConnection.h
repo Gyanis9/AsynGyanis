@@ -104,12 +104,11 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条 SQL 命令
-         * @details 重写 DatabaseConnection::execute()：与基类约定的差异与附加约束——
-         *          - 每次调用开头清空 m_lastError；命令文本按「指针 + 长度」交给 mysql_real_query，二进制安全；
-         *          - 命令为空或长度超出 unsigned long 上限时直接失败，不发送任何字节；
-         *          - 有返回列时把整份结果预读成 MySqlResult；无返回列的写语句返回非空的空回执
-         *           （rowCount() 为 0，affectedRowCount() 为本条语句实际改动的行数），调用方只判 nullptr 即可；
-         *          - 客户端报出连接级错误时顺手断开；一次只发一条语句（未启用 CLIENT_MULTI_STATEMENTS）。
+         * @details 重写 DatabaseConnection::execute()：每次调用开头清空 m_lastError；命令文本按
+         *          「指针 + 长度」交给 mysql_real_query（二进制安全），命令为空或长度超出 unsigned long
+         *          上限时直接失败、不发送任何字节；有返回列时把整份结果预读成 MySqlResult，无返回列的
+         *          写语句返回非空的空回执（调用方只判 nullptr 即可）；客户端报出连接级错误时顺手断开；
+         *          一次只发一条语句（未启用 CLIENT_MULTI_STATEMENTS）。
          * @param command SQL 文本，例如 "SELECT id, name FROM users"
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
@@ -118,11 +117,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行一条带占位符的 SQL 命令，参数按位置绑定
          * @details 重写 DatabaseConnection::execute()：与基类默认实现（直接报「暂不支持」）不同，
-         *          用预处理语句接口（mysql_stmt_*）真正绑定参数，取值绝不拼进 SQL 文本：
-         *          参数个数必须与占位符个数严格相等（少给参数会让条件静默变成永假 `WHERE id = NULL`）；
-         *          NULL 用 MYSQL_TYPE_NULL 表达（绑成空串会让 IS NULL 不再成立），容器类型明确拒绝；
-         *          结果经 mysql_stmt_store_result 预读成快照，不引用语句句柄，可活得比连接更久；
-         *          取值映射与文本协议路径一致（NULL→monostate、整数→int64_t、浮点→double、其余→std::string）。
+         *          用预处理语句接口（mysql_stmt_*）真正绑定参数，取值绝不拼进 SQL 文本。参数个数必须与
+         *          占位符个数严格相等（少给参数会让条件静默变成永假 `WHERE id = NULL`）；NULL 用
+         *          MYSQL_TYPE_NULL 表达（绑成空串会让 IS NULL 不再成立），容器类型明确拒绝；结果经
+         *          mysql_stmt_store_result 预读成快照，不引用语句句柄，可活得比连接更久。
          * @param command 带 "?" 占位符的 SQL 文本，例如 "SELECT id FROM users WHERE age >= ?"
          * @param parameters 按占位符出现顺序排列的绑定参数，个数必须等于占位符个数
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()

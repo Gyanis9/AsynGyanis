@@ -6,15 +6,9 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 这是连接池向调用方交出连接的唯一接口形态。调用方通过 PooledConnection
- *          访问底层 DatabaseConnection，析构函数自动将连接归还至 ConnectionPool。
- *
- *          实现要点：
- *          - 支持移动语义，禁止拷贝；移动后源对象 m_connection 与 m_pool 均为空，
- *            析构时不会重复归还。
- *          - 提供 release() 方法允许提前归还；double-release 由标志位保护，
- *            release() 调用后再次析构或再次 release() 均安全。
- *          - 上层（Queryable、事务）直接使用本类，因此接口在此冻结。
+ * @details 这是连接池向调用方交出连接的唯一接口形态。析构或 release() 时自动归还，移动后源对象
+ *          为空、不会重复归还，重复 release() 也安全（由标志位防护）。
+ *          上层（Queryable、事务）直接使用本类，因此接口在此冻结。
  */
 #pragma once
 

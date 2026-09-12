@@ -975,7 +975,7 @@ namespace AsynGyanis::Database::Queryable
 
             // 影响行数由结果集自己回答：DatabaseResult::affectedRowCount() 带默认实现
             // （不提供该信息的驱动返回 0），SQLite 覆盖它返回真实的 sqlite3_changes 快照。
-            // ORM 侧因此不再需要按 DatabaseType 向下转型，也不再依赖任何具体驱动
+            // ORM 侧因此不需要按 DatabaseType 向下转型，也不依赖任何具体驱动
             return result->affectedRowCount();
         }
 

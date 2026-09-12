@@ -6,14 +6,9 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 提供运算符重载和成员函数，使用户能以自然语法构建查询条件。
- *          核心功能包括：
- *          - 比较运算符：==, !=, <, <=, >, >=
- *          - 逻辑组合：&&（AND）, ||（OR）, !（NOT）
- *          - LIKE / IN 成员函数
- *          - 空值比较：IS NULL / IS NOT NULL
- *
- * ## 使用范例
+ * @details 用运算符重载与成员函数构建 WhereCondition：比较运算符（==、!=、<、<=、>、>=）、
+ *          逻辑组合（&&、||、!）、LIKE / IN 与 IS NULL / IS NOT NULL；与 nullptr 比较会自动
+ *          转为 IS NULL / IS NOT NULL 语义。
  * @code
  *   using namespace AsynGyanis::Database::Queryable;
  *

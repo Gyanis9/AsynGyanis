@@ -23,18 +23,10 @@ namespace AsynGyanis::Database
     /**
      * @brief SQLite 查询结果集
      *
-     * @details SQLite 用预编译语句（sqlite3_stmt）承载游标，因此结果集就是一条语句的封装：
-     *          构造时读取列数并（对只读语句）预扫描行数，next() 推进游标，
-     *          getValue() 把 SQLite 的存储类映射成 DatabaseValue，析构时 finalize 语句。
-     *
-     * 两种形态：
-     * - 查询结果：持有非空游标，可遍历行；
-     * - 写结果：构造时传入空游标（INSERT/UPDATE/DELETE/DDL 的成功回执），列数与行数均为 0，
-     *   但会快照连接级的影响行数与最近插入 rowid。
-     *
-     * 值映射规则：NULL→std::monostate、INTEGER→std::int64_t、REAL→double、
-     *            TEXT/BLOB→std::string（按字节长度拷贝，内嵌 '\0' 不丢失）。
-     * SQLite 没有独立的布尔存储类，0/1 的整数列一律映射成 std::int64_t，由调用方收窄。
+     * @details SQLite 用预编译语句（sqlite3_stmt）承载游标：构造时读取列数并对只读语句预扫描行数，
+     *          构造时传入空游标表示写语句（INSERT/UPDATE/DELETE/DDL）的成功回执——列数与行数均为 0，
+     *          但仍快照连接级的影响行数与最近插入 rowid。该快照必须落在构造这一刻，否则调用方之后在
+     *          本连接上再执行一条写语句，本对象读到的就是别人的计数。
      *
      * @warning 本类持有 sqlite3_stmt 的所有权（析构 finalize），同时持有 sqlite3 的非拥有指针；
      *          连接对象必须比结果集活得更久。基类已删除拷贝与移动，这里不再放开。

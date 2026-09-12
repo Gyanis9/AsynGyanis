@@ -119,13 +119,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取 MySQL 单条语句的参数个数上限
-         * @details 重写 SqlDialect::maximumStatementParameters()：返回常量 kMaximumStatementParameters。
-         *          取值依据是客户端/服务端协议本身：预处理语句的 COM_STMT_PREPARE 应答报文里，
-         *          「参数个数」字段只有 2 字节，因此 65535 是协议层能表达的上限，与 SQLite 那种
-         *          可被编译期宏调小的语言级限制不是一回事。协议之外还有一层实际约束：
-         *          每个占位符都会在语句文本里展开，整条 COM_STMT_PREPARE 报文必须能装进
-         *          max_allowed_packet（MySQL 8.0 默认 64 MiB），因此调用方在按本上限分块之外，
-         *          仍应控制单批的数据量，避免「参数个数没超、报文却超了」。
+         * @details 重写 SqlDialect::maximumStatementParameters()：返回 65535——COM_STMT_PREPARE 应答
+         *          报文里「参数个数」字段只有 2 字节，这是协议层能表达的上限（不同于 SQLite 那种
+         *          可被编译期宏调小的语言级限制）。另有实际约束：每个占位符都会在语句文本里展开，
+         *          整条报文必须装进 max_allowed_packet，因此调用方仍应控制单批的数据量。
          * @return std::size_t 恒为 kMaximumStatementParameters（65535）
          */
         [[nodiscard]] std::size_t maximumStatementParameters() const noexcept override;
@@ -159,17 +156,11 @@ namespace AsynGyanis::Database
         /**
          * @brief 渲染 MySQL 的分页子句（值走占位符，只给 OFFSET 时补出「不限行数」常量）
          *
-         * @details 重写 StandardSqlDialect::appendLimitOffsetClause()：基类的默认实现已经给出
-         *          " LIMIT " + 占位符 与 " OFFSET " + 占位符 的标准写法（先 LIMIT 后 OFFSET，
-         *          两者都没有则什么都不输出），与 MySQL 的关键字形式 "LIMIT ? OFFSET ?" 完全一致，
-         *          因此本覆写只在一种情形下先行补料：**只给了 offset 而没给 limit 时**，
-         *          先输出 " LIMIT " + kUnboundedRowLimitLiteral（无符号 64 位整数的上界，
-         *          官方文档给出的「不限行数」写法），随后才把余下部分交给基类默认实现。
-         *          MySQL 不允许 OFFSET 单独出现，也不能像 SQLite 那样写 "LIMIT -1"（负值判非法）。
-         *          补出的常量是编译期字面量，不引入注入面，也不占绑定参数，
-         *          因此占位符序号与参数下标的对应关系不受影响。
-         *          limit 与 offset 的占位符、以及「先取占位符序号、再压参数」的顺序
-         *          全部由基类默认实现保证，本覆写不重复实现，也不自行向 parameters 追加元素。
+         * @details 重写 StandardSqlDialect::appendLimitOffsetClause()：基类默认实现给出的
+         *          " LIMIT " + 占位符 与 " OFFSET " + 占位符 正是 MySQL 的关键字形式，本覆写只补一种
+         *          情形——**只给了 offset 而没给 limit 时**先输出 " LIMIT " + kUnboundedRowLimitLiteral
+         *          （MySQL 不允许 OFFSET 单独出现，也不接受 SQLite 的 "LIMIT -1"），其余交给基类。
+         *          该常量是编译期字面量，不占绑定参数，占位符序号与参数下标的对应关系不受影响。
          *
          * @param sqlText 输出缓冲区，分页片段追加到末尾
          * @param parameters 输出参数列表，分页值由基类默认实现按占位符出现顺序追加

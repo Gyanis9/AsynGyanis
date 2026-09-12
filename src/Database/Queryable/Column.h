@@ -6,13 +6,9 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 提供 ColumnDescriptor<T, MemberType> 结构体，用于描述数据库表的一个列。
- *          通过 Column() 辅助函数在编译期创建字段描述符，结合成员指针与列名。
- *
- * ## 设计要点
- * - ColumnDescriptor 是一个 C++20 聚合体，支持 designated initializers
- * - Column() 函数标记为 consteval，保证所有元信息在编译期确定
- * - 成员指针 MemberType T::* 可以在编译期传递并用于类型推导
+ * @details ColumnDescriptor<T, MemberType> 描述数据库表的一个列，由 Column() 辅助函数在编译期
+ *          结合成员指针与列名创建。该函数标记为 consteval、结构体是 C++20 聚合体（支持 designated
+ *          initializers），因此全部元信息在编译期确定，成员指针也可在编译期传递并参与类型推导。
  */
 #pragma once
 

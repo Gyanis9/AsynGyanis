@@ -64,15 +64,11 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 连接 Redis 服务并完成认证与键空间选择
-         * @details 重写 DatabaseConnection::connect()：与基类契约的差异与附加行为——
-         *          1) 已连接时直接返回 true，保持幂等（重复 redisConnectWithTimeout 会泄漏前一个上下文）；
-         *          2) 用 connectTimeout() 换算 timeval 交给 redisConnectWithTimeout，
-         *             该接口在失败时仍会返回带 err 的上下文，代码先摘取错误文本再释放，绝不泄漏也不读悬垂；
-         *          3) 建连成功后立即用 redisSetTimeout 把 queryTimeout() 应用到上下文（基类的两个超时在这里都真正生效）；
-         *          4) password 非空时发送二进制安全的 AUTH，认证失败直接断开并返回 false；
-         *          5) database 非空时先按十进制解析再 SELECT，解析失败或 SELECT 失败都判定为连接失败；
-         *          6) m_isConnected 只在全部步骤成功后置位，中间态不会被 isConnected() 读到。
-         *          桩构建（未编译 hiredis）下本方法直接返回 false，并在 lastError() 给出缺失驱动的提示。
+         * @details 重写 DatabaseConnection::connect()：已连接时直接返回 true 保持幂等（重复
+         *          redisConnectWithTimeout 会泄漏前一个上下文）；建连成功后用 redisSetTimeout 应用
+         *          queryTimeout()，两个超时因此都真正生效；password / database 非空时依次发送二进制
+         *          安全的 AUTH 与 SELECT，任一步失败即断开并返回 false；m_isConnected 只在全部步骤
+         *          成功后置位，中间态不会被 isConnected() 读到。桩构建下直接返回 false。
          * @return true 连接已建立（含认证与键空间选择）
          * @return false 任一环节失败，原因见 lastError()
          * @note host 为空视为配置错误，直接失败而不是交给 hiredis 报出难懂的底层错误
@@ -107,14 +103,11 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条 Redis 命令
-         * @details 重写 DatabaseConnection::execute()：与基类的差异与附加约束——
-         *          - 每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
-         *          - 入参是整行命令，本方法按 redis-cli 规则切词后走 argv 接口，
-         *            因此参数含空格必须加引号，文本中的 '%' 不再有格式串含义；
-         *          - 引号未闭合或整行没有有效参数时判定为命令不合法，直接失败且不发送任何字节；
-         *          - 服务端返回 error 回复时返回 nullptr（而不是一个 error 结果集），
-         *            原因带服务端原文写入 lastError()，与基类「失败返回 nullptr」的契约一致；
-         *          - 传输层失败会顺带断开连接，因为回复流已无法对齐。
+         * @details 重写 DatabaseConnection::execute()：每次调用开头清空 m_lastError，成功调用不会残留
+         *          上一轮的失败文本；入参是整行命令，按 redis-cli 规则切词后走 argv 接口，因此参数含空格
+         *          必须加引号、文本中的 '%' 不再有格式串含义；引号未闭合或整行无有效参数时判定为命令不合法，
+         *          直接失败且不发送任何字节；服务端 error 回复返回 nullptr（原文写入 lastError()），
+         *          传输层失败顺带断开连接，因为回复流已无法对齐。
          * @param command 命令文本，例如 "SET mykey myvalue"
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
@@ -143,8 +136,7 @@ namespace AsynGyanis::Database
          * @brief 登记一条管道命令（不立即发送）
          * @details 命令在此处切词并登记进缓冲区，真正的网络往返发生在 flushPipeline()。
          *          批量管道能把 N 次往返压成一次，是 Redis 上最重要的吞吐优化。
-         *          缓冲区非空即代表有命令待发，flush 之后一律为空，不另设「是否处于管道模式」这类标志——
-         *          缓冲区非空即代表有命令待发，flush 之后一律为空，语义完全由缓冲区表达。
+         *          不另设「是否处于管道模式」标志：缓冲区非空即代表有命令待发，flush 之后一律为空。
          * @param command 命令文本，切词规则与 execute() 一致
          * @return true 命令已登记
          * @return false 命令不合法（内容为空或引号未闭合），不会登记半个参数，原因见 lastError()
@@ -154,15 +146,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 一次性发送全部已登记的管道命令并读回回复
-         * @details 先把缓冲区里的命令逐条 append（此时才开始发送），再按已发出的条数读回复，
-         *          因此返回的顺序与登记顺序严格一致。
-         *          与 execute() 的错误约定不同：服务端 error 回复会被原样封装成 RedisResult 返回，
-         *          由调用方用 RedisResult::isError() 判定哪一条失败——连接级 lastError()
-         *          无法表达「N 条中的第几条」。
-         *          保证：返回的元素永不为 nullptr（空指针交给调用方解引用会直接崩溃）。
-         *          失败边界：append 或读回复途中出现传输层错误时，记录原因、丢弃未读回的命令并断开连接，
-         *          返回已经取到的前缀，元素数量因此可能少于登记的命令数；
-         *          无论成功与否，登记过的命令一律从缓冲区丢弃，不会被重放到新连接上。
+         * @details 先逐条 append（此时才开始发送），再按已发出的条数读回复，因此返回顺序与登记顺序严格
+         *          一致；返回的元素永不为 nullptr。服务端 error 回复被原样封装成 RedisResult 返回，由调用方
+         *          用 isError() 定位哪一条失败（连接级 lastError() 表达不了「N 条中的第几条」）。传输层错误时
+         *          记录原因、丢弃未读回的命令并断开连接，返回已取到的前缀，已登记的命令一律不重放到新连接。
          * @return std::vector<std::unique_ptr<DatabaseResult> > 与已发送命令一一对应（截断后）的结果集列表
          */
         [[nodiscard]] std::vector<std::unique_ptr<DatabaseResult> > flushPipeline();

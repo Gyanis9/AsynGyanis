@@ -6,14 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 二进制列（BLOB / BINARY）在 ORM 侧允许用两种等价的成员类型声明：
- *          - std::vector<std::uint8_t>
- *          - std::vector<std::byte>
- *          前者是线路字节与各 C API（sqlite3_bind_blob、MYSQL_BIND.buffer）通行的写法，
- *          后者是 C++17 起表示「原始内存」的惯用类型。两者语义相同、容量相同，只是在
- *          「按不按枚举类访问」上有区别，因此本头把「它们是同一种东西」这条规则收在一处：
- *          判定、规范化、还原各只有一份实现，RowMapper 与 Expression 都从这里取用，
- *          避免两处各写一套判断而慢慢漂移。
+ * @details 二进制列（BLOB / BINARY）在 ORM 侧允许两种等价成员类型：std::vector<std::uint8_t>
+ *          （线路字节与各 C API 的通行写法）与 std::vector<std::byte>（表示原始内存的惯用类型）。
+ *          本头把「两者是同一种东西」这条规则收在一处：判定、规范化、还原各一份实现，
+ *          RowMapper 与 Expression 都从这里取用，避免两处各写一套判断而慢慢漂移。
  *
  * @note 规范存储类型固定为 std::vector<std::uint8_t>：DatabaseValue 与 ParameterValue
  *       的备选都是它，因此 std::byte 成员在映射处做一次逐字节转换。转换是逐元素的

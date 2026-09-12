@@ -88,16 +88,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行带参数的数据库命令（参数按位置绑定）
          *
-         * @details 命令文本里用占位符（SQLite / MySQL 均为 "?"）标出取值位置，
-         *          取值由 parameters 按下标顺序提供，即 parameters[i] 绑定到第 i 个占位符。
-         *          参数以绑定方式送入数据库而不是拼进 SQL 文本，因此含单引号、"--"、分号的
-         *          字符串只会被当作普通数据，见 SqlStatement.h 的说明。
-         *
-         * 默认实现（基类提供，供尚未支持参数绑定的驱动继承）：
-         * 把 lastError() 置为中文提示「该驱动暂不支持参数化查询」并返回 nullptr。
-         * 这里刻意不退化调用不带参数的 execute()：那样占位符会全部按 NULL 执行，
-         * 调用方以为参数生效、实际语义完全不同，是最难排查的一类静默错误；
-         * 明确报错能让不支持的驱动在第一次调用时就暴露出来。
+         * @details 取值以绑定方式送入数据库而不是拼进 SQL 文本，因此含单引号、"--"、分号的字符串
+         *          只会被当作普通数据（见 SqlStatement.h）；parameters[i] 绑定到第 i 个占位符。
+         *          默认实现把 lastError() 置为中文提示并返回 nullptr，刻意不退化调用不带参数的
+         *          execute()：那样占位符会全部按 NULL 执行，是最难排查的一类静默错误。
          *
          * @param command    带占位符的命令文本
          * @param parameters 按占位符出现顺序排列的绑定参数
