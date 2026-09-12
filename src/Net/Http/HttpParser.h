@@ -1,9 +1,9 @@
 /**
  * @file HttpParser.h
- * @brief HTTP/1.1 请求报文增量解析器，封装 llhttp C 库
+ * @brief HTTP/1.1 请求报文增量解析器（手写状态机，无外部依赖）
  * @author Gyanis
  * @date 2026-09-12
- * @version 1.0.0
+ * @version 2.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
 
@@ -12,32 +12,36 @@
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/ParseStatus.h"
 
-#include <llhttp.h>
-
 #include <cstddef>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
     /**
-     * @brief HTTP/1.1 请求报文解析器，基于 llhttp 状态机
+     * @brief HTTP/1.1 请求报文解析器：手写增量状态机
      *
-     * @details 以增量方式解析请求：每次把新读到的字节交给 parse()，解析过程中通过
-     *          llhttp 回调把 URI、头部、正文逐段填进内部的 HttpRequest，完成后可经
-     *          request() 读出。两条报文之间必须调用 reset() 交还一个干净的请求对象
-     *          （HttpSession 的 keep-alive 循环已这么做）；解析器自身的暂存缓冲在
-     *          llhttp 的 on_message_begin 里就会归零，不依赖上层记得复位。
+     * @details 以增量方式解析请求：每次把新读到的字节交给 parse()，按「请求行 → 头部块 → 正文」
+     *          三段推进，解析结果先落在内部的暂存请求对象上，**只有一条报文收齐的那一刻**
+     *          才整体搬进对外可见的 request()。于是半成品阶段 request() 一定是空壳——
+     *          上层连「过程数据」都无从误用，比「可读但不许放行」更强。
      *
-     * @note 与 llhttp 的契约：回调类型是 C 函数指针，因此全部实现为 static 成员函数，
-     *       不捕获 this，宿主对象统一经 llhttp_t::data 取回；回调返回值非 0 会让
-     *       llhttp 立即中断本次解析，并把该返回值作为 llhttp_execute() 的结果交回调用方。
-     *       本解析器的回调只用到三种返回值：
-     *       @li 0 —— 继续解析；
-     *       @li HPE_USER —— 撞上资源上限，配合 llhttp_set_error_reason() 中断本次解析；
-     *       @li -1 —— 仅用于 on_message_begin 的流水线守卫（上一条还没 reset 就开了下一条），
-     *           此时完成标记已置位，parse() 仍按 Done 对外呈现，不会误报成解析错误。
-     *       不使用 llhttp_pause()，也不在回调里返回 HPE_PAUSED——llhttp 明确要求不要在回调里
-     *       调用 pause，而暂停在不同版本上的处理路径不一致，不适合当流控手段。
+     * ## 状态推进
+     * @li 请求行：`方法 SP 目标 SP HTTP/主.次`，三部分都按 token 规则严格校验；
+     * @li 头部块：每行 `名: 值`，名必须是 token（冒号前不得有空白），值的首尾 OWS 裁掉、
+     *     其余原样保留；空行表示头部块结束；
+     * @li 正文：按 Content-Length 收满即完成。没有 Content-Length 的报文在头部块结束时即完成，
+     *     多余的字节属于下一条报文，一个都不吃。
+     *
+     * 任何一步都可以在**任意字节边界**被切开：半行、半个 CRLF、正文中间都能续上。
+     * 已完成（或已失败）之后再喂数据不会改变既有结果：前者一字节不吃，后者维持粘滞错误。
+     *
+     * ## 与上层的关系
+     * 本解析器不认识「一条报文到哪里结束」之外的任何策略：分块请求体、头部过大这些判断
+     * 由 HttpSession 的定界器先行处理并回 431/413/411，能喂到这里的请求已经过它筛选。
+     * 解析器自己仍保留一份独立的资源上限（见下），两侧互不依赖——直接把解析器当库用的
+     * 调用方同样受保护。
      *
      * @warning 所有资源上限都是 DoS 防护：任何一项超限都会以 Error 结束本次解析，
      *          并用 isLimitExceeded() 标出「超限」这一子类，便于上层回 431/413 而不是 400。
@@ -47,20 +51,17 @@ namespace AsynGyanis::Net
     {
     public:
         /**
-         * @brief 构造解析器，初始化 llhttp 设置表并把回调挂到本对象上。
+         * @brief 构造解析器：全部状态为默认值，可直接开始解析。
          */
-        HttpParser();
+        HttpParser() = default;
 
         /**
-         * @brief 析构函数。
-         * @details 解析器与设置表都是按值持有的 POD，没有堆资源需要回收；
-         *          llhttp 不会反向调用 data，因此也不存在悬垂注册。
+         * @brief 析构函数：所有成员都是按值的标准容器，无额外资源需要回收。
          */
-        ~HttpParser();
+        ~HttpParser() = default;
 
-        // 禁拷贝也禁移动：llhttp 的设置表里登记了指向本对象的 data，
-        // 一旦复制或用移动构造出第二个实例，回调就会认到错误的宿主对象上，
-        // 这类错误只会在运行期以「改错对象」的形式暴露，代价远高于放弃值语义
+        // 禁拷贝也禁移动：解析器内部持有请求对象与暂存缓冲，复制一份没有任何使用场景，
+        // 而按值传递的错误用法会静默地把「解析到一半的状态」分叉成两份
         HttpParser(const HttpParser &)            = delete;
         HttpParser &operator=(const HttpParser &) = delete;
 
@@ -68,20 +69,15 @@ namespace AsynGyanis::Net
          * @brief 解析一段输入数据。
          *
          * @details 状态判定可推理，三步互斥且穷尽：
-         *          @li 先看完成标记：on_message_complete 触发过就返回 Done，且不再消耗任何字节
+         *          @li 先看是否已收齐：收齐就返回 Done，且不再消耗任何字节
          *              （多余字节属于流水线里的下一条报文，喂进已完成的解析器会破坏上一条结果）；
-         *          @li 再看 llhttp 返回码：HPE_OK 且未完成 → NeedMore，表示报文还没收齐；
-         *          @li 其余返回码 → Error，含报文非法与超限（回调主动返回 HPE_USER）两类，
-         *              后者由 isLimitExceeded() 区分。
-         *          完成与否只以 on_message_complete 为准：HPE_OK 仅代表「本段字节合法且状态机没走完」，
-         *          绝不代表解析结束；同一次调用里完成与错误同时出现时按完成处理并丢弃剩余字节。
+         *          @li 再看解析过程中是否失败：失败则返回 Error 且错误粘滞；
+         *          @li 否则返回 NeedMore，表示本段字节已全部消费但报文还没收齐。
          *
          * @param data   数据起始指针，调用方保证可读
          * @param length 数据长度，单位字节
          * @retval ParseStatus::Done 一条完整报文收齐，request() 的全部内容此刻才可读
-         * @retval ParseStatus::NeedMore 仍需更多数据；此时 request() 是半成品，
-         *                               method/uri/httpVersion 尚未填充（它们在完成回调里才定稿），
-         *                               已入库的头部与正文可读但随时可能被追加，不得当作最终结果
+         * @retval ParseStatus::NeedMore 仍需更多数据；此时 request() 一定是空壳（尚未搬运）
          * @retval ParseStatus::Error 解析失败，request() 只能视为不可信并丢弃；
          *                            解析器进入粘滞错误态，除非 reset()，后续调用仍返回 Error
          * @see ParseStatus, isLimitExceeded(), errorMessage()
@@ -90,14 +86,13 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 重置解析器状态，以便解析下一条消息。
-         * @details 清空请求对象与全部暂存缓冲、错误标记，并重新初始化 llhttp 状态机
-         *          ——只有重新初始化才能摆脱 llhttp 的错误粘滞。
+         * @details 清空请求对象、暂存请求与全部半成品缓冲、错误标记，回到「等待请求行」的初态。
          */
         void reset();
 
         /**
          * @brief 获取当前解析出的 HTTP 请求对象引用。
-         * @details 仅在 parse() 返回 Done 后内容完整可用。
+         * @details 仅在 parse() 返回 Done 后内容完整可用；NeedMore 阶段是空壳。
          * @return HttpRequest& 引用，生命周期跟随本解析器
          */
         HttpRequest &request();
@@ -119,59 +114,129 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 获取错误信息描述（若有）。
-         * @return 面向使用者的中文错误文本；无错误时为空串。
-         *         llhttp 自身的英文 reason 会被包进中文外壳一并给出
+         * @return 面向使用者的中文错误文本；无错误时为空串
          */
         [[nodiscard]] std::string errorMessage() const;
 
     private:
         /**
-         * @brief 从 llhttp 解析器实例取回宿主对象
-         * @param parser 触发回调的解析器实例
-         * @return 宿主解析器指针；构造与 reset() 都紧跟 llhttp_init 重新绑定过 data，故必非空
+         * @brief 解析所处阶段
          */
-        static HttpParser *ownerFrom(llhttp_t *parser) noexcept;
-
-        // 以下均为 llhttp 回调：签名受 C 函数指针约束，必须是 static 成员函数，返回非 0 即中断解析
-        static int onMessageBegin(llhttp_t *parser);                                 ///< 一条报文开始的回调，归零本条暂存
-        static int onUrl(llhttp_t *parser, const char *data, size_t length);         ///< URI 分片回调
-        static int onHeaderField(llhttp_t *parser, const char *data, size_t length); ///< 头部名分片回调
-        static int onHeaderValue(llhttp_t *parser, const char *data, size_t length); ///< 头部值分片回调
-        static int onHeaderValueComplete(llhttp_t *parser);                          ///< 头部值收尾回调，一条头部在此落库
-        static int onBody(llhttp_t *parser, const char *data, size_t length);        ///< 正文分片回调
-        static int onMessageComplete(llhttp_t *parser);                              ///< 报文完成回调，方法/URI/版本在此定稿
+        enum class Stage
+        {
+            RequestLine, ///< 正在收请求行
+            Headers,     ///< 正在收头部行
+            Body,        ///< 正在收正文
+            Complete,    ///< 本条已收齐：再喂数据一字节不吃
+            Failed       ///< 已失败：错误粘滞到 reset()
+        };
 
         /**
-         * @brief 清空单条报文的暂存：URI、头部名与值的缓冲，以及头部条数与总长计数
+         * @brief 取出一整行（以 CRLF 结尾）
+         * @details 交回的视图要么指向本次输入（行完整落在这一段里，零拷贝），
+         *          要么指向内部的半行暂存（行被切在两次调用之间）。视图在下一次
+         *          takeLine() 调用前有效——调用方必须当场解析完。
+         * @param data 输入起始指针
+         * @param length 输入长度
+         * @param consumed [in,out] 已消费字节数，取到整行时推进到该行之后
+         * @param line 输出参数：去掉 CRLF 的行内容
+         * @return true 取到一整行；false 表示本段输入凑不齐一行（剩余字节已并入半行暂存），
+         *         或本行的长度已越过该阶段的上限（此时已记录超限错误）
+         */
+        [[nodiscard]] bool takeLine(const char *data, std::size_t length, std::size_t &consumed, std::string_view &line);
+
+        /**
+         * @brief 按当前阶段校验一行（含尚未收尾的半行）的长度上限
+         * @details 兜住「一行永远不结束」的输入：没有它，一个超长的请求行或头部行
+         *          就能让解析器的暂存一直膨胀下去。
+         * @param length 待校验的行长度（半行含已暂存部分）
+         * @return true 未超限；false 已记录超限错误
+         */
+        [[nodiscard]] bool checkLineLength(std::size_t length);
+
+        /**
+         * @brief 解析请求行并填充暂存请求的方法与版本
+         * @param line 去掉 CRLF 的请求行
+         * @return true 合法
+         */
+        [[nodiscard]] bool parseRequestLine(std::string_view line);
+
+        /**
+         * @brief 解析一条头部行
+         * @param line 去掉 CRLF 的头部行；空行表示头部块结束
+         * @return true 合法
+         */
+        [[nodiscard]] bool parseHeaderLine(std::string_view line);
+
+        /**
+         * @brief 解析 Content-Length 的值，并处理重复出现
+         * @param value 已裁掉首尾 OWS 的值
+         * @return true 合法（重复但取值一致也判合法，与上层定界器的口径一致）
+         */
+        [[nodiscard]] bool parseContentLength(std::string_view value);
+
+        /**
+         * @brief 记录一次协议级非法（上层据此回 400）
+         * @param message 中文错误详情
+         */
+        void failProtocol(std::string message);
+
+        /**
+         * @brief 记录一次资源上限失败（上层据此回 431/413）
+         * @param message 中文错误详情，须含具体上限数值
+         */
+        void failLimit(std::string message);
+
+        /**
+         * @brief 头部块结束：按有无 Content-Length 决定直接完成还是转入正文阶段
+         */
+        void finishHeaderBlock();
+
+        /**
+         * @brief 移交：把暂存的解析结果交给对外请求对象，并把暂存清回可复用的初态
+         */
+        void commitMessage();
+
+        /**
+         * @brief 清空单条报文的暂存（容器只清内容、保留容量，供下一条报文复用）
          */
         void clearMessageScratch() noexcept;
 
         /**
-         * @brief 记录一次「资源上限」失败
-         * @param parser 当前解析器，用于向 llhttp 登记错误原因
-         * @param llhttpReason 交给 llhttp 的英文原因，必须是静态期生命周期的字面量
-         * @param detailMessage 面向使用者的中文详情（含上限数值）
+         * @brief 解析中的一条头部（名与值都按收到的原文暂存，提交时才移交出去）
          */
-        void recordResourceLimitExceeded(llhttp_t *parser, const char *llhttpReason, std::string detailMessage);
+        struct ParsedHeader
+        {
+            std::string name;  ///< 头部名原文（大小写保持，交给请求对象时归一化）
+            std::string value; ///< 头部值原文（首尾 OWS 已裁掉）
+        };
 
-        /**
-         * @brief 把 llhttp 的错误码翻译成使用者可读的中文记录
-         * @param executionResult llhttp_execute() 返回的错误码
-         */
-        void recordParseError(llhttp_errno_t executionResult);
+        Stage m_stage{Stage::RequestLine}; ///< 当前阶段
 
-        llhttp_t m_parser{};              ///< llhttp 解析器实例，按值持有，无堆资源
-        llhttp_settings_t m_settings{};   ///< llhttp 回调设置表，生命周期必须不短于解析器
-        HttpRequest m_currentRequest;     ///< 当前正在构建的 HTTP 请求
-        std::string m_currentUrl;         ///< 累积中的请求 URI，可能跨多次回调分片到达
-        std::string m_currentHeaderField; ///< 累积中的头部名，可能跨多次回调分片到达
-        std::string m_currentHeaderValue; ///< 累积中的头部值，可能跨多次回调分片到达
-        std::size_t m_headerFieldCount = 0;  ///< 本条报文已落库的头部条数
-        std::size_t m_headerBlockLength = 0; ///< 本条报文头部块的净字节数，只算名与值，不含 ": " 与 CRLF
-        bool m_hasError = false;          ///< 是否已发生解析错误
-        bool m_isComplete = false;        ///< 是否已收完整条报文，完成的唯一判据
-        bool m_isLimitExceeded = false;   ///< 错误是否由资源上限触发
-        std::string m_errorMessage;       ///< 面向使用者的中文错误描述
+        HttpRequest m_currentRequest; ///< 对外可见的请求对象，只在 Done 那一刻被填充
+
+        // 解析过程的暂存：全部在解析器内部，收齐那一刻才整体移交。容器跨报文复用
+        //（clear 保留容量），因此稳态下不产生额外分配
+        HttpMethod                m_method{HttpMethod::UNKNOWN}; ///< 请求方法
+        std::string               m_uri;                         ///< 请求目标
+        std::string               m_httpVersion;                 ///< 版本原文
+        std::vector<ParsedHeader> m_headers;                     ///< 已解析的头部，按到达顺序
+        std::string               m_body;                        ///< 已收正文
+
+        std::string m_pendingLine; ///< 尚未等到 CRLF 的半行（可能跨多次 parse()）
+
+        /// 半行暂存是否已作为视图交出去（交出去的视图用完之前不能清，收回之前不能拼）
+        bool m_isPendingLineHandedOut{false};
+
+        std::size_t m_contentLength{0};        ///< 本条报文的正文长度（Content-Length，缺省 0）
+        std::size_t m_receivedBodyLength{0};   ///< 已收正文字节数
+        std::size_t m_headerFieldCount{0};     ///< 已解析头部条数
+        std::size_t m_headerBlockLength{0};    ///< 头部块净字节数，只算名与值，不含 ": " 与 CRLF
+        bool        m_hasContentLength{false}; ///< 是否已见过 Content-Length（用于比对重复值）
+
+        bool        m_hasError{false};        ///< 是否已发生解析错误
+        bool        m_isLimitExceeded{false}; ///< 错误是否由资源上限触发
+        std::string m_errorMessage;           ///< 面向使用者的中文错误描述
 
         // 资源上限：全部按「正常流量远达不到、恶意流量立刻撞线」的口径取值，单位统一为字节。
         // 任何一项超限都走 Error + isLimitExceeded()，绝不静默截断后继续解析
@@ -181,5 +246,14 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kMaximumHeaderFieldValueLength = 8ull * 1024; ///< 单个头部值上限 8 KiB：与 URI 同档，覆盖超长 Cookie 头的现实用量
         static constexpr std::size_t kMaximumHeaderCount = 100;                    ///< 头部条数上限 100 条：浏览器实际请求不足 40 条，此值专防「海量空值头部」撑爆容器节点
         static constexpr std::size_t kMaximumHeaderBlockLength = 64ull * 1024;     ///< 头部块总长上限 64 KiB：名与值净字节之和，条数与单条之外的第三道闸，约合 8 个 8 KiB 接收缓冲区
+
+        /// 方法原文上限 32 B：llhttp 同档取值，通用方法最长 7 B（OPTIONS），留足自定义动词余地
+        static constexpr std::size_t kMaximumMethodLength = 32;
+
+        /// 请求行上限 = URI 上限 + 方法上限 + "HTTP/9.9" 与两个分隔空格，用于兜住「一行始终不结束」的输入
+        static constexpr std::size_t kMaximumRequestLineLength = kMaximumUriLength + kMaximumMethodLength + 16;
+
+        /// 头部行上限 = 名上限 + 值上限 + ": " 与 CRLF，同样用于兜住始终不结束的一行
+        static constexpr std::size_t kMaximumHeaderLineLength = kMaximumHeaderFieldNameLength + kMaximumHeaderFieldValueLength + 4;
     };
 } // namespace AsynGyanis::Net

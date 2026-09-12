@@ -1,6 +1,6 @@
 /**
  * @file ParseStatus.h
- * @brief HTTP 增量解析器单次 parse() 调用的结论枚举
+ * @brief HTTP 报文解析的单次调用结论
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -14,24 +14,18 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次 HttpParser::parse() 调用的结论状态
      *
-     * @details 三个取值由「llhttp 返回码 + 解析器自身标记」推出，互斥且穷尽，
-     *          判定顺序固定为「先查完成标记 → 再查返回码是否 HPE_OK → 其余一律判错」，
-     *          因此状态可推理：
-     *          @li Done —— llhttp 触发过 on_message_complete 回调，解析器把完成标记置为 true。
-     *                     这是唯一的完成证据，与返回码无关；置位后再喂数据仍直接返回 Done。
-     *          @li NeedMore —— llhttp 返回 HPE_OK 且未触发完成回调，表示报文头尾尚未收齐。
-     *                          HPE_OK 只代表「本段字节合法且状态机没走完」，绝不等于解析结束。
-     *          @li Error —— llhttp 返回任何非 HPE_OK 的错误码，包含两类来源：
-     *                       报文本身非法（llhttp 内部判定）与超出资源上限（本解析器在回调里
-     *                       主动返回 HPE_USER）。超限属于 Error 的一个子集，用
-     *                       HttpParser::isLimitExceeded() 进一步区分。
+     * @details 三个取值由解析器的阶段标记直接给出，互斥且穷尽，判定顺序固定为
+     *          「先看是否已收齐 → 再看是否已失败 → 其余为需要更多数据」，因此状态可推理：
+     *          @li Done —— 一条完整报文收齐（含按 Content-Length 收满正文）。这是唯一的完成证据，
+     *                      置位后再喂数据仍直接返回 Done，且一个字节都不消费。
+     *          @li NeedMore —— 本段输入已全部消费，但报文还没收齐。此时请求对象是空壳：
+     *                          解析结果先落在内部暂存上，收齐那一刻才整体搬运。
+     *          @li Error —— 报文非法，或超出解析器的资源上限。后者由
+     *                       HttpParser::isLimitExceeded() 进一步区分，便于上层回 431/413
+     *                       而不是笼统的 400。错误是粘滞的，除非 reset()，后续调用仍返回 Error。
      *
-     * @note 本枚举刻意没有「已暂停（Paused）」状态。llhttp 的 HPE_PAUSED 只有两个来源：
-     *       调用方执行 llhttp_pause()（llhttp 明确要求不要在回调里调用它），
-     *       或回调自行返回 HPE_PAUSED。本解析器两个都不用：从不暂停，
-     *       回调只用 0（继续）、HPE_USER（超限）与 -1（流水线守卫）三种返回值。
-     *       所以旧版本的 ParseStatus::Ok 是一个永远到不了的死状态，已删除；
-     *       未收齐的语义由 NeedMore 独立承担，两者不再共享含义。
+     * @note 本枚举刻意没有「已暂停（Paused）」状态：解析器不做流控，也不存在「解析到一半
+     *       交还调用方」的中间态；需要限速时由会话层决定读多少字节再喂。
      *
      * @see HttpParser::parse()
      */

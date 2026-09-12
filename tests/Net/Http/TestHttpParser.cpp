@@ -154,8 +154,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(partialRequest.method(), HttpMethod::UNKNOWN);
         EXPECT_TRUE(partialRequest.uri().empty());
         EXPECT_TRUE(partialRequest.httpVersion().empty());
-        // 已到达但尚未收尾的头部同样读不到：llhttp 要看到下一行的首字节才会发出
-        // on_header_value_complete，因此半成品阶段的请求对象整体是空的，
+        // 已到达但尚未收尾的头部同样读不到：解析结果先落在内部暂存上，只有一条报文收齐
+        // 才整体搬进对外对象，因此半成品阶段的请求对象整体是空的，
         // 上层连「过程数据」都无从误用——比「可读但不许放行」更强
         EXPECT_FALSE(partialRequest.getHeader("x-stage").has_value());
         EXPECT_FALSE(parser.hasError());
@@ -482,5 +482,102 @@ namespace AsynGyanis::Net
         const std::string normal = "GET /recovered HTTP/1.1\r\n\r\n";
         EXPECT_EQ(parser.parse(normal.data(), normal.size()), ParseStatus::Done);
         EXPECT_EQ(parser.request().uri(), "/recovered");
+    }
+
+    // ============================================================================
+    // 手写状态机的严格性：过时语法与「猜长度」一律拒绝，绝不宽容处理
+    // ============================================================================
+
+    /**
+     * @brief 折行（obs-fold）头部明确拒绝
+     *
+     * @details 以空白开头的续行已被 RFC 9112 判为过时。宽容拼接会让同一个头部名出现
+     *          两种解释（转发链两侧各按己方理解取值），是请求走私的经典入口。
+     */
+    TEST(HttpParser, RejectsObsoleteLineFolding)
+    {
+        HttpParser parser;
+
+        const std::string message = "GET /folded HTTP/1.1\r\nX-Note: first\r\n second\r\n\r\n";
+        EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+
+        EXPECT_TRUE(parser.hasError());
+        EXPECT_FALSE(parser.isLimitExceeded());
+        EXPECT_TRUE(containsText(parser.errorMessage(), "折行"));
+    }
+
+    /**
+     * @brief 行尾只认 CRLF：单独出现的 LF 不是行结束
+     */
+    TEST(HttpParser, RejectsBareLineFeedAsLineTerminator)
+    {
+        HttpParser parser;
+
+        const std::string message = "GET /bare-lf HTTP/1.1\nHost: example.test\n\n";
+        EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+
+        EXPECT_TRUE(parser.hasError());
+        EXPECT_FALSE(parser.isLimitExceeded());
+        EXPECT_TRUE(containsText(parser.errorMessage(), "CRLF"));
+    }
+
+    /**
+     * @brief 分块请求体判错，而不是猜一个长度继续解析
+     *
+     * @details 上层定界器会更早一步回 411；解析器自己同样不猜：不认识的正文编码下，
+     *          任何「读到下一个空行为止」的做法都只是把边界交给对端去定。
+     */
+    TEST(HttpParser, RejectsChunkedTransferEncodingInsteadOfGuessingLength)
+    {
+        HttpParser parser;
+
+        const std::string message = "POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+
+        EXPECT_TRUE(parser.hasError());
+        EXPECT_FALSE(parser.isLimitExceeded());
+        EXPECT_TRUE(containsText(parser.errorMessage(), "分块"));
+    }
+
+    /**
+     * @brief 重复的 Content-Length 只在取值一致时放行，取值不一致当场判错
+     *
+     * @details 取值不一致等于「同一份报文有两个长度解释」，收发两侧各自按己方理解切包
+     *          正是请求走私的温床。这一口径与 HttpSession 的定界器保持一致。
+     */
+    TEST(HttpParser, AcceptsIdenticalRepeatedContentLengthButRejectsConflictingOnes)
+    {
+        HttpParser identicalParser;
+        const std::string sameValue = "POST /dup HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
+        EXPECT_EQ(identicalParser.parse(sameValue.data(), sameValue.size()), ParseStatus::Done);
+        EXPECT_EQ(identicalParser.request().body(), "hello");
+
+        HttpParser        conflictingParser;
+        const std::string differentValue = "POST /dup HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello";
+        EXPECT_EQ(conflictingParser.parse(differentValue.data(), differentValue.size()), ParseStatus::Error);
+        EXPECT_FALSE(conflictingParser.isLimitExceeded());
+        EXPECT_TRUE(containsText(conflictingParser.errorMessage(), "Content-Length"));
+    }
+
+    /**
+     * @brief 请求行严格校验：目标里混进空格、版本位数不对都要判错
+     */
+    TEST(HttpParser, RejectsMalformedRequestLine)
+    {
+        static constexpr std::array<std::string_view, 5> kMalformedMessages{
+                "GET /two words HTTP/1.1\r\n\r\n", ///< 目标里混进空格
+                "GET  /x HTTP/1.1\r\n\r\n",        ///< 多一个分隔空格（目标以空格开头）
+                "GET /x HTTP/11\r\n\r\n",          ///< 版本缺少「主.次」结构
+                "GET /x HTTP/1.11\r\n\r\n",        ///< 版本次版本号位数超出
+                "GET /x HTTP/9.9\r\n\r\n",         ///< 主版本不是 0/1：那是另一套协议，不该按文本解析
+        };
+
+        for (const std::string_view message: kMalformedMessages)
+        {
+            HttpParser parser;
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error) << message;
+            EXPECT_TRUE(parser.hasError()) << message;
+            EXPECT_TRUE(containsText(parser.errorMessage(), "解析失败")) << message;
+        }
     }
 } // namespace AsynGyanis::Net

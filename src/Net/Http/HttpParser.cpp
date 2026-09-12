@@ -1,6 +1,8 @@
 #include "Net/Http/HttpParser.h"
 
-#include <array>
+#include <algorithm>
+#include <charconv>
+#include <cstring>
 #include <format>
 #include <string>
 #include <string_view>
@@ -8,75 +10,220 @@
 
 namespace AsynGyanis::Net
 {
-    HttpParser::HttpParser()
+    namespace
     {
-        // 设置表是 llhttp_init 的必填参数，且其生命周期必须不短于解析器：
-        // 这里把它按值存成成员，与解析器同生同死，不留悬垂设置的隐患
-        llhttp_settings_init(&m_settings);
+        /**
+         * @brief 判断字符是否为 RFC 9110 定义的 token 字符
+         * @param character 待判断字节
+         * @return true 表示可用作方法名或头部名（"!#$%&'*+-.^_`|~" 与字母数字）
+         */
+        bool isTokenCharacter(const unsigned char character) noexcept
+        {
+            if ((character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') ||
+                (character >= 'A' && character <= 'Z'))
+            {
+                return true;
+            }
+            constexpr std::string_view kExtraTokenCharacters = "!#$%&'*+-.^_`|~";
+            return kExtraTokenCharacters.find(static_cast<char>(character)) != std::string_view::npos;
+        }
 
-        // 回调类型是 C 函数指针，不能捕获 this，因此全部挂 static 成员函数，
-        // 宿主对象经下面构造末尾的 m_parser.data 取回
-        m_settings.on_message_begin         = onMessageBegin;
-        m_settings.on_url                   = onUrl;
-        m_settings.on_header_field          = onHeaderField;
-        m_settings.on_header_value          = onHeaderValue;
-        m_settings.on_header_value_complete = onHeaderValueComplete;
-        m_settings.on_body                  = onBody;
-        m_settings.on_message_complete      = onMessageComplete;
+        /**
+         * @brief 判断字符是否可以出现在请求目标里
+         * @details 只接受可见 ASCII：空格是请求行的分隔符，控制字符与 DEL 都不允许。
+         * @param character 待判断字节
+         * @return true 表示合法
+         */
+        bool isTargetCharacter(const unsigned char character) noexcept
+        {
+            return character >= 0x21 && character <= 0x7E;
+        }
 
-        llhttp_init(&m_parser, HTTP_REQUEST, &m_settings);
-        m_parser.data = this;
-    }
+        /**
+         * @brief 判断字符是否可以出现在头部值里
+         * @details 允许 HTAB、可见 ASCII 与 obs-text（0x80 以上，RFC 9110 允许接收）；
+         *          其余控制字符（含 DEL）一律拒绝——它们既无法出现在合法报文里，
+         *          又常被用来构造响应拆分之类的注入。
+         * @param character 待判断字节
+         * @return true 表示合法
+         */
+        bool isHeaderValueCharacter(const unsigned char character) noexcept
+        {
+            if (character == '\t' || (character >= 0x20 && character <= 0x7E) || character >= 0x80)
+            {
+                return true;
+            }
+            return false;
+        }
 
-    HttpParser::~HttpParser() = default;
+        /**
+         * @brief 判断字符是否为十进制数字
+         * @param character 待判断字节
+         * @return true 表示是 0-9
+         */
+        bool isDigit(const char character) noexcept
+        {
+            return character >= '0' && character <= '9';
+        }
 
-    ParseStatus HttpParser::parse(const char *data, const size_t length)
+        /**
+         * @brief 去掉首尾的可选空白（SP 与 HTAB）
+         * @param text 待裁剪文本
+         * @return std::string_view 裁剪后的视图
+         */
+        std::string_view trimOptionalWhitespace(const std::string_view text) noexcept
+        {
+            constexpr std::string_view kOptionalWhitespace = " \t";
+            const std::size_t          first = text.find_first_not_of(kOptionalWhitespace);
+            if (first == std::string_view::npos)
+            {
+                return {};
+            }
+            const std::size_t last = text.find_last_not_of(kOptionalWhitespace);
+            return text.substr(first, last - first + 1);
+        }
+
+        /**
+         * @brief ASCII 大小写不敏感比较
+         * @param left 左操作数
+         * @param right 右操作数
+         * @return true 表示忽略大小写后相等
+         */
+        bool equalsIgnoringCase(const std::string_view left, const std::string_view right) noexcept
+        {
+            if (left.size() != right.size())
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index < left.size(); ++index)
+            {
+                const auto leftCharacter  = static_cast<unsigned char>(left[index]);
+                const auto rightCharacter = static_cast<unsigned char>(right[index]);
+                // 只按 ASCII 折叠：locale 相关的 tolower 会让非 ASCII 字节产生平台差异
+                const auto normalize = [](const unsigned char value) -> unsigned char
+                {
+                    return value >= 'A' && value <= 'Z' ? static_cast<unsigned char>(value - 'A' + 'a') : value;
+                };
+                if (normalize(leftCharacter) != normalize(rightCharacter))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief 判断逗号分隔的列表里是否含指定 token
+         * @details 用于 Transfer-Encoding 这类列表值：只认整段匹配，避免 "xchunked"、
+         *          "chunked-fake" 被当作分块传输蒙混过关。
+         * @param listValue 列表值原文
+         * @param token 目标 token（小写）
+         * @return true 表示列表里确实有该 token
+         */
+        bool containsListToken(const std::string_view listValue, const std::string_view token) noexcept
+        {
+            std::size_t offset = 0;
+            while (offset <= listValue.size())
+            {
+                const std::size_t comma   = listValue.find(',', offset);
+                const std::size_t segment = comma == std::string_view::npos ? listValue.size() - offset : comma - offset;
+                if (equalsIgnoringCase(trimOptionalWhitespace(listValue.substr(offset, segment)), token))
+                {
+                    return true;
+                }
+                if (comma == std::string_view::npos)
+                {
+                    return false;
+                }
+                offset = comma + 1;
+            }
+            return false;
+        }
+    } // namespace
+
+    ParseStatus HttpParser::parse(const char *const data, const size_t length)
     {
-        // 已经收齐就一个字节都不再吃：这些字节属于流水线里的下一条报文，
-        // 喂进已完成的解析器会被当作新报文的开头，把上一条已定稿的结果改掉
-        if (m_isComplete)
+        // 已收齐：一字节都不再吃。这些字节属于流水线里的下一条报文，喂进已完成的解析器
+        // 会被当作新报文的开头，把上一条已定稿的结果改坏
+        if (m_stage == Stage::Complete)
         {
             return ParseStatus::Done;
         }
 
-        // 完成标记优先于本次返回码：极端情况下同一次调用里既触发了完成又撞上错误，
-        // 此时上一条报文是完整的，按 Done 交给上层。至于缓冲区里排在它后面的剩余字节，
-        // 本次调用一并不再消费也就此作废——本解析器不回报已消耗字节数，
-        // 流水线续读得靠上层自己留缓冲（见 onMessageBegin() 的守卫）
-        const llhttp_errno_t executionResult = llhttp_execute(&m_parser, data, length);
-
-        if (m_isComplete)
+        // 错误粘滞：非 reset() 不能恢复，调用方要么重置要么断开连接
+        if (m_stage == Stage::Failed)
         {
-            return ParseStatus::Done;
+            return ParseStatus::Error;
         }
 
-        // HPE_OK 只说明「本段字节合法、状态机还没走完」，不代表结束，因此落到 NeedMore
-        if (executionResult == HPE_OK)
+        std::size_t consumed = 0;
+        while (consumed < length && m_stage != Stage::Complete && m_stage != Stage::Failed)
         {
-            return ParseStatus::NeedMore;
+            if (m_stage == Stage::Body)
+            {
+                const std::size_t remainingBodyLength = m_contentLength - m_receivedBodyLength;
+                const std::size_t chunkLength         = std::min(remainingBodyLength, length - consumed);
+
+                // 正文按「已收 + 本次」的总量卡上限：单看 Content-Length 头不足以设防，
+                // 声明 1 字节然后狂发数据同样能撑爆内存
+                if (m_body.size() + chunkLength > kMaximumBodySize)
+                {
+                    failLimit(std::format("请求体超出上限 {} 字节", kMaximumBodySize));
+                    break;
+                }
+
+                m_body.append(data + consumed, chunkLength);
+                consumed += chunkLength;
+                m_receivedBodyLength += chunkLength;
+
+                if (m_receivedBodyLength == m_contentLength)
+                {
+                    commitMessage();
+                    m_stage = Stage::Complete;
+                }
+                continue;
+            }
+
+            // 请求行与头部行都按「整行」推进：行体跨两次输入时由 takeLine 拼接
+            std::string_view line;
+            if (!takeLine(data, length, consumed, line))
+            {
+                break;
+            }
+
+            if (m_stage == Stage::RequestLine)
+            {
+                if (!parseRequestLine(line))
+                {
+                    break;
+                }
+                m_stage = Stage::Headers;
+                continue;
+            }
+            if (!parseHeaderLine(line))
+            {
+                break;
+            }
         }
 
-        // 其余返回码一律判错。llhttp 的错误是粘滞的：非暂停类错误一旦出现，
-        // 在重新 llhttp_init 之前每次 execute 都会返回同一个错误码，
-        // 所以调用方拿到 Error 后要么 reset() 要么断开连接，不能继续喂数据
-        recordParseError(executionResult);
-        return ParseStatus::Error;
+        if (m_stage == Stage::Failed)
+        {
+            return ParseStatus::Error;
+        }
+        return m_stage == Stage::Complete ? ParseStatus::Done : ParseStatus::NeedMore;
     }
 
     void HttpParser::reset()
     {
         m_currentRequest.reset();
         clearMessageScratch();
-        m_hasError        = false;
-        m_isComplete      = false;
-        m_isLimitExceeded = false;
-        m_errorMessage.clear();
+        m_pendingLine.clear();
+        m_isPendingLineHandedOut = false;
 
-        // 用 llhttp_init 而不是 llhttp_reset：两者都能清掉粘滞错误，
-        // 而 init 会把整个结构清零，其中也包括用户数据指针 data，
-        // 所以必须紧接着重新绑定 this，否则回调里的宿主指针就成了空指针
-        llhttp_init(&m_parser, HTTP_REQUEST, &m_settings);
-        m_parser.data = this;
+        m_stage    = Stage::RequestLine;
+        m_hasError = false;
+        m_isLimitExceeded    = false;
+        m_errorMessage.clear();
     }
 
     HttpRequest &HttpParser::request()
@@ -99,261 +246,349 @@ namespace AsynGyanis::Net
         return m_errorMessage;
     }
 
+    bool HttpParser::takeLine(const char *const data, const std::size_t length, std::size_t &consumed, std::string_view &line)
+    {
+        // 上一次慢路径交出去的视图按契约已经用完（调用方当场解析完），暂存可以清掉；
+        // 而「还没等到 LF 的半行」必须留着继续拼，两者用一个标记区分
+        if (m_isPendingLineHandedOut)
+        {
+            m_pendingLine.clear();
+            m_isPendingLineHandedOut = false;
+        }
+
+        const char *const begin     = data + consumed;
+        const std::size_t available = length - consumed;
+        const void *const newline   = std::memchr(begin, '\n', available);
+
+        if (m_pendingLine.empty())
+        {
+            // 快路径：整行落在本段输入里，直接在输入上切视图，零拷贝
+            if (newline == nullptr)
+            {
+                // 本段凑不齐一行：整段并入暂存，等下一次调用继续拼。长度上限兜住
+                // 「一行永远不结束」的输入：没有它，一个超长的头部行就能把内存一直撑下去
+                if (!checkLineLength(available))
+                {
+                    return false;
+                }
+                m_pendingLine.assign(begin, available);
+                consumed = length;
+                return false;
+            }
+
+            const auto lineEnd = static_cast<const char *>(newline);
+            if (lineEnd == begin || lineEnd[-1] != '\r')
+            {
+                failProtocol("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
+                return false;
+            }
+
+            line = std::string_view(begin, static_cast<std::size_t>(lineEnd - begin) - 1);
+            consumed += static_cast<std::size_t>(lineEnd - begin) + 1;
+            return true;
+        }
+
+        // 慢路径：行体跨在上一次的暂存与本次输入之间，先把本次输入里直到 LF 的部分并进来
+        const std::size_t appendLength =
+                newline == nullptr ? available : static_cast<std::size_t>(static_cast<const char *>(newline) - begin) + 1;
+        if (!checkLineLength(m_pendingLine.size() + appendLength))
+        {
+            return false;
+        }
+        m_pendingLine.append(begin, appendLength);
+        consumed += appendLength;
+
+        if (newline == nullptr)
+        {
+            return false;
+        }
+
+        if (m_pendingLine.size() < 2 || m_pendingLine[m_pendingLine.size() - 2] != '\r')
+        {
+            failProtocol("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
+            return false;
+        }
+
+        // 视图指向暂存：调用方必须在下一次 takeLine() 之前解析完，本函数的开头会清掉它
+        line                     = std::string_view(m_pendingLine.data(), m_pendingLine.size() - 2);
+        m_isPendingLineHandedOut = true;
+        return true;
+    }
+
+    bool HttpParser::checkLineLength(const std::size_t length)
+    {
+        if (m_stage == Stage::RequestLine)
+        {
+            if (length > kMaximumRequestLineLength)
+            {
+                failLimit(std::format("请求行超出上限 {} 字节", kMaximumRequestLineLength));
+                return false;
+            }
+            return true;
+        }
+
+        if (length > kMaximumHeaderLineLength)
+        {
+            failLimit(std::format("头部行超出上限 {} 字节", kMaximumHeaderLineLength));
+            return false;
+        }
+        return true;
+    }
+
+    bool HttpParser::parseRequestLine(const std::string_view line)
+    {
+        // 三段由空格分隔，且目标里不允许再出现空格：用首个与末个空格切成三段后，
+        // 中间那段自然就是「不含空格的目标」
+        const std::size_t firstSpace = line.find(' ');
+        const std::size_t lastSpace  = line.rfind(' ');
+        if (firstSpace == std::string_view::npos || firstSpace == lastSpace)
+        {
+            failProtocol("HTTP 报文解析失败：请求行必须是「方法 目标 版本」三段，以空格分隔");
+            return false;
+        }
+
+        const std::string_view methodText  = line.substr(0, firstSpace);
+        const std::string_view targetText  = line.substr(firstSpace + 1, lastSpace - firstSpace - 1);
+        const std::string_view versionText = line.substr(lastSpace + 1);
+
+        if (methodText.empty() || methodText.size() > kMaximumMethodLength)
+        {
+            failProtocol(std::format("HTTP 报文解析失败：请求方法长度必须在 1 到 {} 字节之间", kMaximumMethodLength));
+            return false;
+        }
+        for (const char character: methodText)
+        {
+            if (!isTokenCharacter(static_cast<unsigned char>(character)))
+            {
+                failProtocol("HTTP 报文解析失败：请求方法只能由 token 字符组成");
+                return false;
+            }
+        }
+
+        if (targetText.empty())
+        {
+            failProtocol("HTTP 报文解析失败：请求目标不能为空");
+            return false;
+        }
+        if (targetText.size() > kMaximumUriLength)
+        {
+            failLimit(std::format("请求 URI 超出上限 {} 字节", kMaximumUriLength));
+            return false;
+        }
+        for (const char character: targetText)
+        {
+            if (!isTargetCharacter(static_cast<unsigned char>(character)))
+            {
+                failProtocol("HTTP 报文解析失败：请求目标含非法字符（空格与控制字符都不允许）");
+                return false;
+            }
+        }
+
+        // 版本：HTTP/主.次，主版本只认 0 与 1、次版本一位十进制数字。这条不是保守取值而是
+        // 协议事实：HTTP/2 及以上走完全不同的帧格式（二进制、不同握手），把它当 1.x 继续按
+        // 文本解析等于用错误的语法去猜边界，因此这里当场判错，而不是收下版本号再装作能处理
+        constexpr std::string_view kVersionPrefix = "HTTP/";
+        const bool                 isVersionWellFormed =
+                versionText.size() == kVersionPrefix.size() + 3 && versionText.starts_with(kVersionPrefix) &&
+                (versionText[5] == '0' || versionText[5] == '1') && versionText[6] == '.' && isDigit(versionText[7]);
+        if (!isVersionWellFormed)
+        {
+            failProtocol("HTTP 报文解析失败：版本必须是 HTTP/1.x 或 HTTP/0.x 的形式");
+            return false;
+        }
+
+        m_method = HttpRequest::methodFromString(methodText);
+        m_uri.assign(targetText);
+
+        // 版本按收到的原文保存：上层要按 1.0/0.9 判定保活策略，重新拼装反而可能丢掉差异
+        m_httpVersion.assign(versionText);
+        return true;
+    }
+
+    bool HttpParser::parseHeaderLine(const std::string_view line)
+    {
+        // 空行 = 头部块结束
+        if (line.empty())
+        {
+            finishHeaderBlock();
+            return m_stage != Stage::Failed;
+        }
+
+        // 折行（obs-fold）：RFC 9112 已把以空白开头的续行判为过时，这里明确拒绝而不是静默拼接，
+        // 否则同一个头部名可能被两个来源写出不同含义（请求走私的经典入口）
+        if (line.front() == ' ' || line.front() == '\t')
+        {
+            failProtocol("HTTP 报文解析失败：不支持折行（obs-fold）头部，请把值写在同一行");
+            return false;
+        }
+
+        const std::size_t colonPosition = line.find(':');
+        if (colonPosition == std::string_view::npos || colonPosition == 0)
+        {
+            failProtocol("HTTP 报文解析失败：头部行必须是「名: 值」的形式");
+            return false;
+        }
+
+        const std::string_view name = line.substr(0, colonPosition);
+        for (const char character: name)
+        {
+            // 冒号前若有空白也会落到这里：token 字符集不含 SP 与 HTAB
+            if (!isTokenCharacter(static_cast<unsigned char>(character)))
+            {
+                failProtocol("HTTP 报文解析失败：头部名只能由 token 字符组成（冒号前不得有空白）");
+                return false;
+            }
+        }
+        if (name.size() > kMaximumHeaderFieldNameLength)
+        {
+            failLimit(std::format("请求头部名超出上限 {} 字节", kMaximumHeaderFieldNameLength));
+            return false;
+        }
+
+        const std::string_view value = trimOptionalWhitespace(line.substr(colonPosition + 1));
+        if (value.size() > kMaximumHeaderFieldValueLength)
+        {
+            failLimit(std::format("请求头部值超出上限 {} 字节", kMaximumHeaderFieldValueLength));
+            return false;
+        }
+        for (const char character: value)
+        {
+            if (!isHeaderValueCharacter(static_cast<unsigned char>(character)))
+            {
+                failProtocol("HTTP 报文解析失败：头部值含非法控制字符");
+                return false;
+            }
+        }
+
+        // 头部块总长（名与值的净字节）与条数是两道独立的闸：单条名、单条值、条数各自合规，
+        // 架不住上百条头部叠出来的总量。两道判定都在落库之前，拒绝路径不留半成品
+        if (m_headerBlockLength + name.size() + value.size() > kMaximumHeaderBlockLength)
+        {
+            failLimit(std::format("请求头部总长超出上限 {} 字节", kMaximumHeaderBlockLength));
+            return false;
+        }
+        if (m_headerFieldCount >= kMaximumHeaderCount)
+        {
+            failLimit(std::format("请求头部条数超出上限 {} 条", kMaximumHeaderCount));
+            return false;
+        }
+
+        // Content-Length 决定正文边界；Transfer-Encoding 指到分块编码时本框架无法定界，
+        // 当场判错而不是猜一个长度继续（上层定界器也在更早一步拦下分块请求体）
+        if (equalsIgnoringCase(name, "content-length"))
+        {
+            if (!parseContentLength(value))
+            {
+                return false;
+            }
+        } else if (equalsIgnoringCase(name, "transfer-encoding") && containsListToken(value, "chunked"))
+        {
+            failProtocol("HTTP 报文解析失败：不支持分块请求体（Transfer-Encoding: chunked），请改用 Content-Length");
+            return false;
+        }
+
+        m_headerBlockLength += name.size() + value.size();
+        ++m_headerFieldCount;
+        m_headers.push_back(ParsedHeader{std::string(name), std::string(value)});
+        return true;
+    }
+
+    bool HttpParser::parseContentLength(const std::string_view value)
+    {
+        if (value.empty())
+        {
+            failProtocol("HTTP 报文解析失败：Content-Length 不能为空");
+            return false;
+        }
+
+        std::size_t          parsedLength = 0;
+        const char *const    begin        = value.data();
+        const char *const    end          = value.data() + value.size();
+        const std::from_chars_result parseResult = std::from_chars(begin, end, parsedLength);
+
+        // 只接受纯十进制数字：前导 '+'/'-'、空白、十六进制与任何非数字字符都会让 ptr 停在中间，
+        // 溢出则返回 result_out_of_range
+        if (parseResult.ec != std::errc{} || parseResult.ptr != end)
+        {
+            failProtocol("HTTP 报文解析失败：Content-Length 只能是十进制数字");
+            return false;
+        }
+
+        // 重复出现时只允许取值一致：不一致意味着「同一份报文有两个长度解释」，
+        // 收端各自按己方理解切包正是请求走私的温床。这一口径与上层定界器一致
+        if (m_hasContentLength && parsedLength != m_contentLength)
+        {
+            failProtocol("HTTP 报文解析失败：Content-Length 出现多个不一致的取值");
+            return false;
+        }
+
+        m_contentLength    = parsedLength;
+        m_hasContentLength = true;
+        return true;
+    }
+
+    void HttpParser::failProtocol(std::string message)
+    {
+        m_hasError        = true;
+        m_isLimitExceeded = false;
+        m_errorMessage    = std::move(message);
+        m_stage           = Stage::Failed;
+    }
+
+    void HttpParser::failLimit(std::string message)
+    {
+        m_hasError        = true;
+        m_isLimitExceeded = true;
+        m_errorMessage    = std::move(message);
+        m_stage           = Stage::Failed;
+    }
+
+    void HttpParser::finishHeaderBlock()
+    {
+        // 没有 Content-Length 的报文（GET/HEAD/DELETE 一类）在头部块结束时即完整，
+        // 上层定界器给出的边界与这里必须一致：多出来的字节归下一条报文
+        if (m_contentLength == 0)
+        {
+            commitMessage();
+            m_stage = Stage::Complete;
+            return;
+        }
+        m_stage = Stage::Body;
+    }
+
+    void HttpParser::commitMessage()
+    {
+        // 移交：先把上一条报文留下的内容整体清掉（取消源一并重建，避免继承上一条的取消状态），
+        // 再按解析结果逐项落进去。容器与串都按移动交付，不产生逐字节拷贝。
+        // 移交之前对外请求对象一直是空壳，因此半成品阶段的 request() 读不出任何东西
+        //（比「可读但不许放行」更强）
+        m_currentRequest.reset();
+        m_currentRequest.setMethod(m_method);
+        m_currentRequest.setUri(std::move(m_uri));
+        m_currentRequest.setHttpVersion(std::move(m_httpVersion));
+        for (ParsedHeader &header: m_headers)
+        {
+            m_currentRequest.addHeader(std::move(header.name), std::move(header.value));
+        }
+        m_currentRequest.setBody(std::move(m_body));
+
+        // 暂存清回初态供下一条报文复用：clear 保留容量，因此稳态下不再为它们分配内存
+        clearMessageScratch();
+    }
+
     void HttpParser::clearMessageScratch() noexcept
     {
-        m_currentUrl.clear();
-        m_currentHeaderField.clear();
-        m_currentHeaderValue.clear();
-        m_headerFieldCount  = 0;
-        m_headerBlockLength = 0;
-    }
+        m_method = HttpMethod::UNKNOWN;
+        m_uri.clear();
+        m_httpVersion.clear();
+        m_headers.clear();
+        m_body.clear();
 
-    HttpParser *HttpParser::ownerFrom(llhttp_t *parser) noexcept
-    {
-        // data 由构造与 reset() 在 llhttp_init 之后重新绑定，回调触发时必然有效；
-        // 这里只做 C 指针到宿主类型的转换，不做二次校验——校验失败也没有比崩溃更合适的处理
-        return static_cast<HttpParser *>(parser->data);
-    }
-
-    void HttpParser::recordResourceLimitExceeded(llhttp_t *parser, const char *const llhttpReason, std::string detailMessage)
-    {
-        m_isLimitExceeded = true;
-        m_hasError        = true;
-
-        // 中文详情带具体上限数值，是 errorMessage() 的实际出口
-        m_errorMessage = std::move(detailMessage);
-
-        // llhttp 只保存 reason 指针、不拷贝内容，所以传进去的必须是静态期生命周期的字面量；
-        // 上面那份中文详情绝不能以临时串 c_str() 的形式交给它，那会在 execute() 返回后变成悬垂指针
-        llhttp_set_error_reason(parser, llhttpReason);
-    }
-
-    void HttpParser::recordParseError(const llhttp_errno_t executionResult)
-    {
-        m_hasError = true;
-
-        // 超限路径已在回调里写好带数值的中文详情，不能被这里的通用文案覆盖
-        if (m_isLimitExceeded && !m_errorMessage.empty())
-        {
-            return;
-        }
-
-        // llhttp 的 reason 是英文原文且指向内部存储，立刻拷进 std::string 再包一层中文外壳，
-        // 指针本身不留存
-        if (m_parser.reason != nullptr && m_parser.reason[0] != '\0')
-        {
-            m_errorMessage = std::format("HTTP 报文解析失败：{}（错误码 {}）", m_parser.reason, llhttp_errno_name(executionResult));
-            return;
-        }
-
-        // 少数底层错误不会填 reason，留一条兜底文本，免得调用方只看到一个光秃秃的错误码
-        m_errorMessage = std::format("HTTP 报文解析失败，未给出原因（错误码 {}）", llhttp_errno_name(executionResult));
-    }
-
-    int HttpParser::onMessageBegin(llhttp_t *parser)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // 流水线守卫：完成标记已置位说明本对象已收齐一条报文，状态机却又开始解析下一条，
-        // 即上层还没来得及 reset()。此刻请求对象仍带着上一条的头部与正文，
-        // 再往里填就是把两条报文串成一条。返回 -1 让 llhttp 立刻中止本次 execute，
-        // 越界的剩余字节随之作废。这不会被误报成解析错误：parse() 先检查完成标记，
-        // 只要报文收过一条就直接返回 Done，压根走不到错误映射
-        if (owner->m_isComplete)
-        {
-            // 只登记 llhttp 侧的英文原因，本对象的中文错误文本保持不动；
-            // llhttp 只存指针不拷贝内容，所以这里必须传静态字面量
-            llhttp_set_error_reason(parser, "a new message started before the previous one was reset");
-            return -1;
-        }
-
-        // 新报文起始就把上一条留下的暂存与计数归零：与其依赖上层记得 reset()，
-        // 不如在协议给出的这个天然分界点上自清，这样才不会串数据
-        owner->clearMessageScratch();
-        return 0;
-    }
-
-    int HttpParser::onUrl(llhttp_t *parser, const char *data, const size_t length)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // URI 可能跨多次回调分片到达（分片边界由输入缓冲区决定），
-        // 所以上限按「已累积 + 本次」的总量判定；只卡单次长度会漏过由许多小片拼出的超长 URI
-        if (owner->m_currentUrl.size() + length > kMaximumUriLength)
-        {
-            owner->recordResourceLimitExceeded(parser, "request URI exceeds maximum allowed length",
-                                               std::format("请求 URI 超出上限 {} 字节", kMaximumUriLength));
-            // 返回 HPE_USER（非 0）让 llhttp 立刻停止解析，本段剩余字节不再被消费
-            return HPE_USER;
-        }
-
-        owner->m_currentUrl.append(data, length);
-        return 0;
-    }
-
-    int HttpParser::onHeaderField(llhttp_t *parser, const char *data, const size_t length)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // 头部名同样按总量卡上限。旧实现这里完全没有上限：
-        // 一条无限延长的头部名就能让 append 不停扩容，把整条连接的内存吃干净
-        if (owner->m_currentHeaderField.size() + length > kMaximumHeaderFieldNameLength)
-        {
-            owner->recordResourceLimitExceeded(parser, "request header field name exceeds maximum allowed length",
-                                               std::format("请求头部名超出上限 {} 字节", kMaximumHeaderFieldNameLength));
-            return HPE_USER;
-        }
-
-        // 头部块总长是第二道闸：单条名与值各自合规，架不住上百条头部叠出来的总量，
-        // 因此按「名 + 值」的净字节累计再判一次。判定放在落账之前，拒绝路径不留半成品
-        if (owner->m_headerBlockLength + length > kMaximumHeaderBlockLength)
-        {
-            owner->recordResourceLimitExceeded(parser, "request header block exceeds maximum allowed length",
-                                               std::format("请求头部总长超出上限 {} 字节", kMaximumHeaderBlockLength));
-            return HPE_USER;
-        }
-
-        owner->m_headerBlockLength += length;
-        owner->m_currentHeaderField.append(data, length);
-        return 0;
-    }
-
-    int HttpParser::onHeaderValue(llhttp_t *parser, const char *data, const size_t length)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // 头部值的上限判定与头部名同理：跨片累积后按总量卡，超限立刻中止而不是截断保存
-        if (owner->m_currentHeaderValue.size() + length > kMaximumHeaderFieldValueLength)
-        {
-            owner->recordResourceLimitExceeded(parser, "request header field value exceeds maximum allowed length",
-                                               std::format("请求头部值超出上限 {} 字节", kMaximumHeaderFieldValueLength));
-            return HPE_USER;
-        }
-
-        if (owner->m_headerBlockLength + length > kMaximumHeaderBlockLength)
-        {
-            owner->recordResourceLimitExceeded(parser, "request header block exceeds maximum allowed length",
-                                               std::format("请求头部总长超出上限 {} 字节", kMaximumHeaderBlockLength));
-            return HPE_USER;
-        }
-
-        owner->m_headerBlockLength += length;
-        owner->m_currentHeaderValue.append(data, length);
-
-        // 注意：这里不入库。值也可能被拆成多片，落库统一推迟到 on_header_value_complete，
-        // 否则一条被拆成两片的头部会生成两条错误记录
-        return 0;
-    }
-
-    int HttpParser::onHeaderValueComplete(llhttp_t *parser)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // 条数上限：每条头部都要在有序记录与单值视图里各占一份，
-        // 海量空值头部同样是内存放大，所以给一条与长度上限相互独立的硬上限
-        if (owner->m_headerFieldCount >= kMaximumHeaderCount)
-        {
-            owner->recordResourceLimitExceeded(parser, "request header count exceeds maximum allowed limit",
-                                               std::format("请求头部条数超出上限 {} 条", kMaximumHeaderCount));
-            return HPE_USER;
-        }
-
-        // 到这里才拿到一条完整头部：名与值都已收齐，交给请求对象决定合并还是逐条保存
-        //（可重复头部多条并存，普通头部按 ", " 合并，见 HttpRequest::addHeader）
-        // 两条暂存把所有权交出去，随后立刻 clear 回确定的空串状态供下一条复用
-        owner->m_currentRequest.addHeader(std::move(owner->m_currentHeaderField), std::move(owner->m_currentHeaderValue));
-        owner->m_currentHeaderField.clear();
-        owner->m_currentHeaderValue.clear();
-        ++owner->m_headerFieldCount;
-        return 0;
-    }
-
-    int HttpParser::onBody(llhttp_t *parser, const char *data, const size_t length)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // 正文按「已收 + 本次」的总量卡上限。正文是分片追加的，
-        // 单看 Content-Length 头不足以设防：声明 1 字节然后狂发数据同样能撑爆内存
-        if (owner->m_currentRequest.body().size() + length > kMaximumBodySize)
-        {
-            owner->recordResourceLimitExceeded(parser, "request body exceeds maximum allowed size",
-                                               std::format("请求体超出上限 {} 字节", kMaximumBodySize));
-            return HPE_USER;
-        }
-
-        owner->m_currentRequest.appendBody(data, length);
-        return 0;
-    }
-
-    int HttpParser::onMessageComplete(llhttp_t *parser)
-    {
-        HttpParser *const owner = ownerFrom(parser);
-
-        // 方法：llhttp 的 method 字段是 uint8_t，取值与 enum llhttp_method 一一对应。
-        // 这里只映射框架支持的 7 个方法，其余（CONNECT、TRACE、M-SEARCH 等）统一落到 UNKNOWN
-        HttpMethod currentMethod = HttpMethod::UNKNOWN;
-        switch (parser->method)
-        {
-            case HTTP_GET:
-                currentMethod = HttpMethod::GET;
-                break;
-            case HTTP_POST:
-                currentMethod = HttpMethod::POST;
-                break;
-            case HTTP_PUT:
-                currentMethod = HttpMethod::PUT;
-                break;
-            case HTTP_DELETE:
-                currentMethod = HttpMethod::DELETE;
-                break;
-            case HTTP_PATCH:
-                currentMethod = HttpMethod::PATCH;
-                break;
-            case HTTP_HEAD:
-                currentMethod = HttpMethod::HEAD;
-                break;
-            case HTTP_OPTIONS:
-                currentMethod = HttpMethod::OPTIONS;
-                break;
-            default:
-                currentMethod = HttpMethod::UNKNOWN;
-                break;
-        }
-
-        owner->m_currentRequest.setMethod(currentMethod);
-        owner->m_currentRequest.setUri(std::move(owner->m_currentUrl));
-
-        // 版本：两代主版本 × 四个次版本共 8 个组合按行主序摊平在静态表里查表，
-        // 省掉每条请求一次 std::format 的开销；表外版本退回拼接
-        static constexpr std::size_t kKnownMajorVersionCount = 2;
-        static constexpr std::size_t kKnownMinorVersionCount = 4;
-        static constexpr std::array<std::string_view, kKnownMajorVersionCount * kKnownMinorVersionCount> kHttpVersionTexts{
-                "HTTP/0.9", "HTTP/0.1", "HTTP/0.2", "HTTP/0.3",
-                "HTTP/1.0", "HTTP/1.1", "HTTP/1.2", "HTTP/1.3"};
-
-        // 显式抬到 unsigned int：uint8_t 实际是 unsigned char，
-        // 直接交给 std::format 在部分实现上会按字符而非数字处理
-        const unsigned int majorVersion = parser->http_major;
-        const unsigned int minorVersion = parser->http_minor;
-        if (majorVersion < kKnownMajorVersionCount && minorVersion < kKnownMinorVersionCount)
-        {
-            // string_view 转 std::string：8 字节走短字符串优化，不产生堆分配
-            owner->m_currentRequest.setHttpVersion(std::string(kHttpVersionTexts[majorVersion * kKnownMinorVersionCount + minorVersion]));
-        }
-        else
-        {
-            owner->m_currentRequest.setHttpVersion(std::format("HTTP/{}.{}", majorVersion, minorVersion));
-        }
-
-        // 完成标记是 parse() 判定 Done 的唯一依据：置位之后即便 llhttp 接着报错，
-        // parse() 也先按完成处理（完成判定优先于返回码）
-        owner->m_isComplete = true;
-
-        // 返回 0 表示让状态机继续消费剩余字节。这里不用「回调返回 HPE_PAUSED」来止步：
-        // 暂停在不同 llhttp 版本上的处理路径并不一致，拿它当流控手段风险过高。
-        // 客户端流水线带来的第二条报文由 onMessageBegin() 的守卫拦下，
-        // 不会把下一条的头部与正文混进这一条尚未复位的请求里
-        return 0;
+        m_contentLength      = 0;
+        m_receivedBodyLength = 0;
+        m_headerFieldCount   = 0;
+        m_headerBlockLength  = 0;
+        m_hasContentLength   = false;
     }
 
 } // namespace AsynGyanis::Net

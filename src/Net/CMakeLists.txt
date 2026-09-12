@@ -6,9 +6,7 @@
 # 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 # ============================================================================
 
-# HTTP 报文解析依赖 llhttp 的状态机
-find_package(llhttp REQUIRED)
-
+# HTTP 报文解析由 Http/HttpParser 自己实现（手写状态机），不再依赖外部解析库
 set_property(GLOBAL PROPERTY AsynGyanisNetSources "")
 
 add_subdirectory(Http)
@@ -23,7 +21,6 @@ add_library(Net STATIC
 # Net 建立在 Core 的事件循环与协程 I/O 之上；Platform 与 Base 由 Core 传递而来
 target_link_libraries(Net PUBLIC
         Core
-        llhttp::llhttp
 )
 
 target_include_directories(Net PUBLIC

@@ -14,9 +14,9 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP 请求方法
      *
-     * @details 只覆盖 idempotent/常用方法子集，与 llhttp 的 llhttp_method 一一对应，
-     *          映射发生在 HttpParser::onMessageComplete()。表外方法（CONNECT、TRACE、
-     *          M-SEARCH 等）一律落到 UNKNOWN。
+     * @details 只覆盖 idempotent/常用方法子集。报文里的方法原文由
+     *          HttpRequest::methodFromString() 映射（大小写敏感，方法本身就是区分大小写的
+     *          token），表外方法（CONNECT、TRACE、M-SEARCH 等）一律落到 UNKNOWN。
      *
      * @note 枚举名沿用 HTTP 规范里的方法原文（大写），不改成 PascalCase：
      *       一是这些标识符在报文行上就是全大写 token，改名反而更难对照；
