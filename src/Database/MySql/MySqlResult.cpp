@@ -190,8 +190,10 @@ namespace AsynGyanis::Database
         }
 
         // 列类型到 DatabaseValue 的映射与参数化执行路径共用 Detail::convertColumnText 一份实现：
-        // 列类型以 int 传递是为了不在该共享头的签名里暴露第三方枚举，转换规则见那里
-        return Detail::convertColumnText(static_cast<int>(currentField->type), rawValue, byteLength);
+        // 列类型以 int 传递是为了不在该共享头的签名里暴露第三方枚举；字符集号是必需的，
+        // 因为 BLOB 与 TEXT 在协议层共用同一个类型码，只有字符集能区分二者
+        return Detail::convertColumnText(static_cast<int>(currentField->type),
+                                         static_cast<unsigned int>(currentField->charsetnr), rawValue, byteLength);
     }
 
 #else // DATABASE_HAS_MYSQL —— 桩实现：没有客户端库，结果集退化成永远为空的只读对象

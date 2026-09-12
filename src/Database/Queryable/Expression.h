@@ -26,9 +26,11 @@
  */
 #pragma once
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/QueryNode.h"
 
+#include <cstddef>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -89,6 +91,18 @@ namespace AsynGyanis::Database::Queryable
         inline ParameterValue toParameterValue(std::string_view value)
         {
             return std::string(value);
+        }
+
+        // BinaryBytes → 二进制备选（规范拼法，直接移动）
+        inline ParameterValue toParameterValue(BinaryBytes value) noexcept
+        {
+            return std::move(value);
+        }
+
+        // std::vector<std::byte> → 二进制备选（等价拼法，经共享转换规范化成 BinaryBytes）
+        inline ParameterValue toParameterValue(const std::vector<std::byte> &value)
+        {
+            return AsynGyanis::Database::Detail::toBinaryBytes<std::vector<std::byte>>(value);
         }
 
         /**

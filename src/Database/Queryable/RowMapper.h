@@ -21,6 +21,10 @@
  * - bool ← bool 或 std::int64_t（SQLite 没有布尔存储类，0/1 的整数收窄成 bool）；
  * - 浮点 ← double 或 std::int64_t（只读语句可能把整数值回传成 INTEGER）；
  * - std::string ← std::string；
+ * - 二进制成员（std::vector<std::uint8_t> 或 std::vector<std::byte>）← Bytes
+ *   （std::vector<std::uint8_t>）。这一支**只认二进制备选**，遇到 std::string 一律报错：
+ *   二进制列产出文本、或文本列被声明成二进制成员，都说明列的声明与成员的声明不一致，
+ *   此时把文本当字节收下会掩盖 schema 漂移，报错才是可定位的行为；
  * - std::optional<U> ← NULL（monostate）映射成空 optional，其余情况递归按 U 转换。
  * 类型不符、列缺失、NULL 落到非 optional 成员，都会抛出带中文说明的 std::runtime_error，
  * 而不是给出一个字段静默为 0 的半成品对象。
@@ -39,6 +43,9 @@
  * 规则与读方向对称：整型统一按 int64_t 绑定，无符号整型超出 int64_t 时降级为十进制文本
  * （DatabaseValue 已冻结、没有无符号备选，详见实现处注释），optional 空值绑定为 SQL NULL。
  * 写下的这段十进制文本正好由读方向的整型文本支路解析回来，两个方向的取舍是配套的。
+ * 二进制成员（std::vector<std::uint8_t> 或 std::vector<std::byte>）转成二进制备选：
+ * 驱动正是靠这个备选去走 sqlite3_bind_blob / MYSQL_TYPE_BLOB，从而落成真正的 BLOB；
+ * 若把字节按文本绑定，MySQL 会按连接字符集重新解释载荷，非该字符集的字节可能被替换。
  *
  * ## 编译期约束
  * RowMappable<T> 要求 T 是可聚合初始化（默认构造）且已特化 TableSchema<T>（kColumns 非空）
@@ -46,6 +53,7 @@
  */
 #pragma once
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Queryable/Column.h"
@@ -93,14 +101,17 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 判定单个列类型是否被行映射支持
-         * @details 支持整型、bool、浮点、std::string，以及它们的 std::optional 包装（递归判定）。
+         * @details 支持整型、bool、浮点、std::string、二进制载荷（std::vector<std::uint8_t>
+         *          或 std::vector<std::byte>），以及它们的 std::optional 包装（递归判定）。
+         *          二进制的两种等价拼法由共享 trait 判定，规则只有一份实现。
          * @tparam MemberType 结构体成员类型
          */
         template<typename MemberType>
         struct IsSupportedColumnType
             : std::bool_constant<std::is_integral_v<MemberType> ||
                                  std::is_floating_point_v<MemberType> ||
-                                 std::is_same_v<MemberType, std::string>>
+                                 std::is_same_v<MemberType, std::string> ||
+                                 AsynGyanis::Database::Detail::IsBinaryBytes<MemberType>::value>
         {
         };
 
@@ -291,12 +302,26 @@ namespace AsynGyanis::Database::Queryable
                 }
                 throwColumnTypeError(columnName, "std::string", cellValue);
             }
+            else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
+            {
+                if (const auto *byteValue = std::get_if<BinaryBytes>(&cellValue))
+                {
+                    // 两种成员拼法由共享转换还原，保证「写进去什么、读回来什么」
+                    return AsynGyanis::Database::Detail::fromBinaryBytes<BareType>(*byteValue);
+                }
+
+                // 刻意不接受 std::string：列产出文本而成员声明为二进制，说明列的声明与成员的
+                // 声明已经不一致。把文本当字节收下能「跑通」，却让 schema 漂移一路静默传播，
+                // 直到某天按二进制语义解读一段其实是文本的数据才暴露
+                throwColumnTypeError(columnName, "二进制（Bytes）", cellValue);
+            }
             else
             {
                 // 不受支持的成员类型已被 allColumnTypesSupported() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
                 static_assert(kAlwaysFalse<MemberType>,
-                              "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string，"
+                              "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string、"
+                              "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                               "以及它们的 std::optional 包装");
                 return MemberType{};
             }
@@ -373,7 +398,9 @@ namespace AsynGyanis::Database::Queryable
         // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯
         static_assert(Detail::allColumnTypesSupported<T>(),
                       "RowMapper：TableSchema<T>::kColumns 中存在不支持的列类型。"
-                      "仅支持整型、bool、浮点、std::string，以及它们的 std::optional 包装");
+                      "仅支持整型、bool、浮点、std::string、二进制载荷"
+                      "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                      "以及它们的 std::optional 包装");
 
         T mappedRow{};
 
@@ -474,11 +501,21 @@ namespace AsynGyanis::Database::Queryable
             {
                 return DatabaseValue{std::in_place_type<std::string>, value};
             }
+            else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
+            {
+                // 用 in_place_type 显式指定二进制备选：它必须由「类型」表达出来，
+                // 驱动据此走 sqlite3_bind_blob / MYSQL_TYPE_BLOB；std::byte 成员在这里
+                // 被规范化成 uint8_t 序列，两种拼法落库后的字节完全一致
+                return DatabaseValue{std::in_place_type<BinaryBytes>,
+                                     AsynGyanis::Database::Detail::toBinaryBytes<BareType>(value)};
+            }
             else
             {
                 static_assert(kAlwaysFalse<MemberType>,
                               "RowMapper：不支持的成员类型，无法转换为绑定参数。"
-                              "仅支持整型、bool、浮点、std::string，以及它们的 std::optional 包装");
+                              "仅支持整型、bool、浮点、std::string、二进制载荷"
+                              "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                              "以及它们的 std::optional 包装");
                 return std::monostate{};
             }
         }

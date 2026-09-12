@@ -1,5 +1,6 @@
 #include "Database/Sqlite/SqliteConnection.h"
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Sqlite/SqliteResult.h"
 
@@ -20,9 +21,9 @@ namespace AsynGyanis::Database
         // sqlite3_prepare_v2 的语句长度参数是 int，超过该上限会被静默截断成半条语句
         constexpr size_t kMaximumCommandLength = static_cast<size_t>(std::numeric_limits<int>::max());
 
-        // sqlite3_bind_text 的长度形参同样是 int，超长文本参数会被静默截断，
-        // 因此与语句长度使用同一套上限判定
-        constexpr size_t kMaximumTextParameterLength = static_cast<size_t>(std::numeric_limits<int>::max());
+        // sqlite3_bind_text / sqlite3_bind_blob 的长度形参同样是 int，超长参数会被静默截断，
+        // 因此与语句长度使用同一套上限判定，文本与二进制共用
+        constexpr size_t kMaximumParameterLength = static_cast<size_t>(std::numeric_limits<int>::max());
     } // namespace
 
     SqliteConnection::SqliteConnection(const ConnectionConfig &configuration)
@@ -340,7 +341,7 @@ namespace AsynGyanis::Database
             else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
             {
                 // sqlite3_bind_text 的长度参数是 int，超长文本会被静默截断成半条数据，直接拒绝
-                if (textValue->size() > kMaximumTextParameterLength)
+                if (textValue->size() > kMaximumParameterLength)
                 {
                     m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
                                   std::to_string(textValue->size()) + " 字节，超出 SQLite 单参数上限";
@@ -352,6 +353,30 @@ namespace AsynGyanis::Database
                 // 数据库读到的会是调用方早已释放的缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失
                 bindResult = sqlite3_bind_text(statement, parameterIndex, textValue->data(),
                                                static_cast<int>(textValue->size()), SQLITE_TRANSIENT);
+            }
+            else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
+            {
+                // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断
+                if (byteValue->size() > kMaximumParameterLength)
+                {
+                    m_lastError = "第 " + std::to_string(index) + " 个二进制参数过长：" +
+                                  std::to_string(byteValue->size()) + " 字节，超出 SQLite 单参数上限";
+                    return false;
+                }
+
+                // 空载荷必须走 zeroblob：sqlite3_bind_blob 收到空指针会绑成 SQL NULL，而
+                // 「零长度 BLOB」与 NULL 是两件事。std::vector 在为空时 data() 可能返回空指针
+                // （这一点与 std::string 不同，后者即使为空也指向内部缓冲），因此不能侥幸
+                if (byteValue->empty())
+                {
+                    bindResult = sqlite3_bind_zeroblob(statement, parameterIndex, 0);
+                }
+                else
+                {
+                    // SQLITE_TRANSIENT 的理由与文本分支相同：语句可能晚于本函数返回才真正执行
+                    bindResult = sqlite3_bind_blob(statement, parameterIndex, byteValue->data(),
+                                                   static_cast<int>(byteValue->size()), SQLITE_TRANSIENT);
+                }
             }
             else
             {

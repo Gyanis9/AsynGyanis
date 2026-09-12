@@ -17,6 +17,8 @@
  *            见那里的 EventLoopThread 类注释；
  *          - Transaction 的提交可见、回滚不可见、析构自动回滚、异常穿越后只留已提交数据；
  *          - SchemaMigrator 建表（DDL 由 TableSchema 生成）后 ORM 读写、tableExists、dropTable；
+ *          - 二进制列：LONGBLOB 与 TEXT 同表共存，验证驱动靠列的字符集（而非类型码）区分两者，
+ *            含非 utf8mb4 合法序列的载荷与内嵌 NUL 逐字节往返，并可按二进制列做参数化条件查询；
  *          - 空结果集、长文本等边界。
  *
  * ## 口令绝不进仓库（本文件的第一条硬规矩）
@@ -46,6 +48,7 @@
 
 #include "DatabaseTestSupport.h"
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
@@ -165,6 +168,9 @@ namespace AsynGyanis::Database
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
+
+        /// 二进制列用例的表：同表内放一列 LONGBLOB 与一列 TEXT，用于验证字符集是二者在协议层的唯一区分
+        constexpr std::string_view kBinaryTableName = "Asyn_Mysql_Binary";
 
         /// 异步读写链路用例的表（异步路径与同步路径在同一张表上对照）
         constexpr std::string_view kAsyncChainTableName = "Asyn_Mysql_AsyncChain";
@@ -332,6 +338,19 @@ namespace AsynGyanis::Database
         };
 
         /**
+         * @brief 二进制列用例的结构体：一列二进制与一列文本同表共存
+         *
+         * @details 文本列的协议类型码与 BLOB 相同（都是 MYSQL_TYPE_BLOB），只有列的字符集不同，
+         *          因此「两列必须各自读成正确的类型」这一条断言同时验证了字符集判定的两个方向。
+         */
+        struct IntegrationBinaryRow
+        {
+            std::int64_t id;      ///< 主键（BIGINT NOT NULL PRIMARY KEY）
+            BinaryBytes  payload; ///< 二进制列（LONGBLOB NOT NULL）
+            std::string  label;   ///< 文本对照列（TEXT NOT NULL）：必须仍按文本读回
+        };
+
+        /**
          * @brief 构造一行账号数据
          * @param id 主键
          * @param name 户名
@@ -471,6 +490,18 @@ namespace AsynGyanis::Database
             Column(&IntegrationMigratedRow::balance,  "balance"),
             Column(&IntegrationMigratedRow::active,   "active"),
             Column(&IntegrationMigratedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationBinaryRow>
+    {
+        static constexpr std::string_view kTableName = kBinaryTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationBinaryRow::id,      "id"),
+            Column(&IntegrationBinaryRow::payload, "payload"),
+            Column(&IntegrationBinaryRow::label,   "label"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -1522,6 +1553,63 @@ namespace AsynGyanis::Database
         }
 
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+    }
+
+    /**
+     * @brief 验证二进制列在真实服务端上按 BLOB 存取，且同表的文本列不会被误判成二进制
+     *
+     * @details 这条用例验证的是只有真机才能暴露的一点：MySQL 在协议层**不区分** BLOB 与 TEXT
+     *          （两者的类型码都是 MYSQL_TYPE_BLOB），驱动只能靠列的字符集号（binary = 63）判断。
+     *          用例把 LONGBLOB 与 TEXT 放进同一张表，两列类型码相同、字符集不同：
+     *          若驱动只看类型码，label 会被读成字节、或 payload 被读成文本，两种错误都会在此暴露。
+     *
+     *          载荷刻意包含单独出现的 0xFF——它不是合法的 utf8mb4 序列。按文本类型绑定载荷时，
+     *          服务端会按连接字符集解释这串字节并替换掉非法部分，于是「写进去」与「读回来」
+     *          就不再是同一串字节；这正是二进制必须走 MYSQL_TYPE_BLOB 的原因。
+     */
+    TEST_F(MySqlIntegrationTest, BinaryColumnRoundTripsAsBlobWhileTextColumnStaysText)
+    {
+        m_preparedTableName = std::string(kBinaryTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationBinaryRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationBinaryRow>(*pool, true, &errorText)) << errorText;
+
+        // 0x00 是内嵌 NUL、0xFF 单独出现不是合法 utf8mb4 序列：两者都是「按文本搬运会坏」的形态
+        const BinaryBytes payload{0x00, 0x5C, 0xFF, 0x41, 0x00};
+
+        {
+            OrmQuery<IntegrationBinaryRow> insertQuery(*pool);
+            EXPECT_EQ(1, insertQuery.insert(IntegrationBinaryRow{.id = 1, .payload = payload, .label = "文本对照"}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationBinaryRow{.id = 2, .payload = BinaryBytes{}, .label = "zero"}));
+        }
+
+        {
+            OrmQuery<IntegrationBinaryRow> query(*pool);
+            const std::vector<IntegrationBinaryRow> rows = query.orderBy(asc("id")).toList();
+
+            ASSERT_EQ(rows.size(), 2U);
+            // 逐字节相等：任何按字符集做过的转换都会在这里露出差异
+            EXPECT_EQ(rows[0].payload, payload);
+            EXPECT_TRUE(rows[1].payload.empty());
+            // 文本列仍按文本读回——它与 payload 的类型码相同，只有字符集能把两者分开
+            EXPECT_EQ(rows[0].label, "文本对照");
+            EXPECT_EQ(rows[1].label, "zero");
+        }
+
+        // 按二进制列做条件查询：真机上验证 ParameterValue 的二进制支路（与写入路径是两套变体）
+        {
+            OrmQuery<IntegrationBinaryRow> query(*pool);
+            const std::vector<IntegrationBinaryRow> matched =
+                query.where(Column(&IntegrationBinaryRow::payload, "payload") == payload).toList();
+            ASSERT_EQ(matched.size(), 1U);
+            EXPECT_EQ(matched[0].id, 1);
+            EXPECT_EQ(matched[0].payload, payload);
+        }
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationBinaryRow>(*pool, true, &errorText)) << errorText;
     }
 
     /**

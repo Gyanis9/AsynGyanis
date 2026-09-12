@@ -8,6 +8,7 @@
 
 #include "Database/MySql/MySqlConnection.h"
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/MySql/MySqlResult.h"
 #include "Database/MySql/MySqlStatementResult.h"
@@ -64,9 +65,13 @@ namespace AsynGyanis::Database
         // 超过上限的命令会被静默截断成半条语句，宁可报错也不执行残缺命令
         constexpr size_t kMaximumCommandLength = static_cast<size_t>(std::numeric_limits<unsigned long>::max());
 
-        // 文本参数的绑定长度同样要交给 unsigned long 形参：超长文本会被静默截断成半条数据，
+        // 文本与二进制参数的绑定长度都要交给 unsigned long 形参：超长参数会被静默截断成半条数据，
         // 与命令文本共用同一个上限，取值出处相同（Windows 上 32 位，Linux/macOS 上 64 位）
-        constexpr size_t kMaximumTextParameterLength = static_cast<size_t>(std::numeric_limits<unsigned long>::max());
+        constexpr size_t kMaximumParameterLength = static_cast<size_t>(std::numeric_limits<unsigned long>::max());
+
+        // 零长度二进制载荷要交给 MYSQL_BIND 一个合法指针：buffer 为空指针时客户端库的行为
+        // 没有文档保证，因此指向这个静态字节，长度仍按 0 填写
+        constexpr std::uint8_t kEmptyBinaryPayloadByte = 0;
 
         /**
          * @brief 把毫秒超时换算成 MySQL 客户端选项需要的整秒
@@ -534,7 +539,7 @@ namespace AsynGyanis::Database
         // 并写进网络包。因此这些容器都声明在本函数体内，绑定与执行绝不被拆成两个函数。
         // 值初始化（vector 的默认构造）会把 MYSQL_BIND 的所有字段清零，省去逐个字段赋默认值
         std::vector<MYSQL_BIND>    bindings(parameters.size());
-        std::vector<unsigned long> textLengths(parameters.size(), 0UL);
+        std::vector<unsigned long> parameterLengths(parameters.size(), 0UL);
         std::vector<signed char>   tinyValues(parameters.size(), 0);
 
         for (std::size_t index = 0; index < parameters.size(); ++index)
@@ -581,18 +586,40 @@ namespace AsynGyanis::Database
             {
                 // 文本按「指针 + 长度」绑定，内嵌 '\0' 因此不丢。长度同时写进 buffer_length（缓冲区容量）
                 // 与 *length（客户端库实际采用的输入长度）；超长文本会被 unsigned long 形参静默截断，直接拒绝
-                if (textValue->size() > kMaximumTextParameterLength)
+                if (textValue->size() > kMaximumParameterLength)
                 {
                     m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
                                   std::to_string(textValue->size()) + " 字节，超出 MySQL 单参数上限";
                     return false;
                 }
 
-                textLengths[index]  = static_cast<unsigned long>(textValue->size());
+                parameterLengths[index]  = static_cast<unsigned long>(textValue->size());
                 binding.buffer_type = MYSQL_TYPE_STRING;
                 binding.buffer      = asBindBuffer(textValue->data());
-                binding.buffer_length = textLengths[index];
-                binding.length        = &textLengths[index];
+                binding.buffer_length = parameterLengths[index];
+                binding.length        = &parameterLengths[index];
+                continue;
+            }
+
+            if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
+            {
+                // 二进制必须走 MYSQL_TYPE_BLOB：若按 MYSQL_TYPE_STRING 下发，服务端会把载荷当作
+                // 连接字符集（本连接是 utf8mb4）下的字符串，非该字符集的字节序列可能被替换或直接
+                // 报错——写进去和读回来就不是同一串字节了。类型上是 BLOB，服务端便不再做字符集转换
+                if (byteValue->size() > kMaximumParameterLength)
+                {
+                    m_lastError = "第 " + std::to_string(index) + " 个二进制参数过长：" +
+                                  std::to_string(byteValue->size()) + " 字节，超出 MySQL 单参数上限";
+                    return false;
+                }
+
+                parameterLengths[index] = static_cast<unsigned long>(byteValue->size());
+                binding.buffer_type     = MYSQL_TYPE_BLOB;
+                // 空载荷指向静态字节而不是空指针：buffer 为空时客户端库行为无保证，
+                // 而长度为 0 已足够表达「零长度 BLOB」
+                binding.buffer        = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
+                binding.buffer_length = parameterLengths[index];
+                binding.length        = &parameterLengths[index];
                 continue;
             }
 
@@ -665,6 +692,9 @@ namespace AsynGyanis::Database
         std::vector<std::vector<char>> columnBuffers(columnCount);
         std::vector<unsigned long>     columnLengths(columnCount, 0UL);
         std::vector<int>               columnTypes(columnCount, 0);
+        // 字符集号是二进制列与文本列的唯一区分依据（两者在协议层共用同一个类型码），
+        // 因此必须与类型码一起缓存下来供逐列转换使用
+        std::vector<unsigned int>      columnCharacterSets(columnCount, 0U);
 
         // MYSQL_BIND 的 is_null 形参类型是 bool*，而 std::vector<bool> 是位压缩的、取不到元素地址，
         // 因此用 make_unique 动态分配一段定长 bool 数组（不是裸 new）
@@ -676,7 +706,8 @@ namespace AsynGyanis::Database
             const MYSQL_FIELD &field = fields[index];
             // 表达式列在部分客户端版本上可能没有名字，补空串占位，保证列名列表长度与列数严格对齐
             columnNames.emplace_back(field.name != nullptr ? field.name : "");
-            columnTypes[index] = static_cast<int>(field.type);
+            columnTypes[index]         = static_cast<int>(field.type);
+            columnCharacterSets[index] = static_cast<unsigned int>(field.charsetnr);
 
             // max_length 为 0 表示整列都是 NULL 或空串，此时取 1 字节只为拿到合法指针
             const unsigned long bufferBytes =
@@ -739,7 +770,11 @@ namespace AsynGyanis::Database
                     std::vector<char>   exactBuffer(static_cast<std::size_t>(actualLength));
 
                     MYSQL_BIND columnBinding{};
-                    columnBinding.buffer_type   = MYSQL_TYPE_STRING;
+                    // 补取也要按列的真实性质选类型：二进制列若按 MYSQL_TYPE_STRING 重取，
+                    // 客户端库会按字符集转换一次，拿回来的就不再是原始字节
+                    columnBinding.buffer_type = Detail::isBinaryColumn(columnTypes[index], columnCharacterSets[index])
+                                                    ? MYSQL_TYPE_BLOB
+                                                    : MYSQL_TYPE_STRING;
                     columnBinding.buffer        = exactBuffer.data();
                     columnBinding.buffer_length = actualLength;
                     columnBinding.length        = &columnLengths[index];
@@ -750,12 +785,14 @@ namespace AsynGyanis::Database
                         return nullptr;
                     }
 
-                    currentRow.push_back(Detail::convertColumnText(columnTypes[index], exactBuffer.data(),
+                    currentRow.push_back(Detail::convertColumnText(columnTypes[index], columnCharacterSets[index],
+                                                                   exactBuffer.data(),
                                                                    static_cast<std::size_t>(actualLength)));
                     continue;
                 }
 
-                currentRow.push_back(Detail::convertColumnText(columnTypes[index], columnBuffers[index].data(),
+                currentRow.push_back(Detail::convertColumnText(columnTypes[index], columnCharacterSets[index],
+                                                               columnBuffers[index].data(),
                                                                static_cast<std::size_t>(columnLengths[index])));
             }
 

@@ -1,5 +1,7 @@
 #include "Database/Sqlite/SqliteResult.h"
 
+#include "Database/Common/BinaryBytes.h"
+
 #include <sqlite3.h>
 
 #include <string>
@@ -285,15 +287,17 @@ namespace AsynGyanis::Database
 
             case SQLITE_BLOB:
             {
-                // BLOB 原样按字节搬进 std::string（DatabaseValue 的注释已约定 std::string 可含 '\0'），
-                // 不做十六进制转写——转写会翻倍体积并让调用方拿不到原始二进制
+                // BLOB 按原始字节搬进二进制备选：不做十六进制转写（那会翻倍体积并让调用方
+                // 拿不到原始二进制），也不再塞进 std::string——二进制与文本分开后，类型本身
+                // 就是绑定线索，写回时驱动才知道该用 sqlite3_bind_blob 而不是按文本绑定
                 const auto *rawBlob = static_cast<const unsigned char *>(sqlite3_column_blob(m_statement, index));
                 const int byteCount = sqlite3_column_bytes(m_statement, index);
                 if (rawBlob != nullptr && byteCount > 0)
                 {
-                    return std::string(reinterpret_cast<const char *>(rawBlob), static_cast<size_t>(byteCount));
+                    return BinaryBytes(rawBlob, rawBlob + static_cast<size_t>(byteCount));
                 }
-                return std::string{};
+                // 零长度 BLOB 与 NULL 是两回事：给出空序列而不是 monostate
+                return BinaryBytes{};
             }
 
             default:

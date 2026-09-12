@@ -3,7 +3,7 @@
  * @brief 数据库类型契约单元测试：类型名映射、统一值类型名映射与连接配置默认值
  * @details 覆盖 Common 层三个纯数据契约：
  *          - databaseTypeName：枚举 → 可读名称，越界取值退化成 "Unknown"；
- *          - databaseValueTypeName：DatabaseValue 七个备选 → 各自的类型名，映射由 std::visit 按实际类型给出；
+ *          - databaseValueTypeName：DatabaseValue 八个备选 → 各自的类型名，映射由 std::visit 按实际类型给出；
  *          - ConnectionConfig：默认构造全空，三个 *Default 工厂方法只填本驱动真正读取的字段。
  *          全部用例都不触碰任何驱动与网络，属于零依赖的纯函数断言。
  * @author Gyanis
@@ -12,6 +12,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/DatabaseValue.h"
@@ -64,6 +65,7 @@ namespace AsynGyanis::Database
                     {DatabaseValue{std::string("text")}, "String"},
                     {DatabaseValue{std::vector<std::string>{"first", "second"}}, "List"},
                     {DatabaseValue{hashValue}, "Hash"},
+                    {DatabaseValue{BinaryBytes{0x5C, 0x00, 0x41}}, "Bytes"},
             };
         }
     } // namespace
@@ -163,6 +165,16 @@ namespace AsynGyanis::Database
         const DatabaseValue hashValue{std::unordered_map<std::string, std::string>{}};
 
         EXPECT_STREQ(databaseValueTypeName(hashValue), "Hash");
+    }
+
+    TEST(DatabaseValue, NamesBinaryValueAsBytes)
+    {
+        // 零长二进制也要报 Bytes 而不是 Null：空 BLOB 与 SQL NULL 是两件事
+        const DatabaseValue byteValue{BinaryBytes{0x5C, 0x00, 0x41}};
+        const DatabaseValue emptyByteValue{BinaryBytes{}};
+
+        EXPECT_STREQ(databaseValueTypeName(byteValue), "Bytes");
+        EXPECT_STREQ(databaseValueTypeName(emptyByteValue), "Bytes");
     }
 
     TEST(DatabaseValue, KeepsNamesDistinctAcrossAllAlternatives)

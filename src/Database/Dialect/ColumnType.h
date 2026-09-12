@@ -13,9 +13,11 @@
  *          columnTypeName() 把它翻译成自己的物理类型名。
  *
  *          本枚举刻意只保留 ORM 当前能映射的成员类型所对应的几种逻辑类型：
- *          TableSchema<T> 支持整型、bool、浮点、std::string 与其 std::optional 包装，
+ *          TableSchema<T> 支持整型、bool、浮点、std::string、二进制载荷
+ *          （std::vector<std::uint8_t> / std::vector<std::byte>）与其 std::optional 包装，
  *          因此这里没有日期时间、定点小数等类型——等 ORM 支持了再往这里加，
  *          避免方言实现出一批永远无人使用的映射分支。
+ *          换言之本枚举的每个取值都有成员类型能产生它，没有「留给将来」的空位。
  *
  * @note 本枚举只是「类型名翻译」的输入，不参与值的编解码：值一律以 DatabaseValue
  *       绑定给驱动（见 RowMapper.h 的双向映射规则）。
@@ -37,7 +39,7 @@ namespace AsynGyanis::Database
         Double, ///< 双精度浮点（C++ 的 float 也走这里：引擎侧没有更窄的小数类型值得单列）
         Bool,   ///< 布尔（两个引擎都没有独立的布尔物理类型，用整数 0/1 表达）
         Text,   ///< 变长文本（C++ 的 std::string）
-        Blob    ///< 二进制大对象（当前 TableSchema 支持的成员类型不产生它，为后续扩展预留）
+        Blob    ///< 二进制大对象（C++ 的 std::vector<std::uint8_t> / std::vector<std::byte>，按原始字节存取，不做字符集解释）
     };
 
 } // namespace AsynGyanis::Database

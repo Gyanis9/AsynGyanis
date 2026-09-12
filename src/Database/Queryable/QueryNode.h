@@ -88,10 +88,13 @@ namespace AsynGyanis::Database::Queryable
      *          - int64_t / uint64_t 表示整数
      *          - double 表示浮点数
      *          - std::string 表示字符串
+     *          - std::vector<std::uint8_t> 表示二进制载荷（用于按 BLOB / BINARY 列做条件查询）
      *
+     * @note 新增备选一律**追加在末尾**：既有备选的下标是已发布的契约，调整顺序会让按固定
+     *       下标取值的调用点静默取错类型。
      * @note 不使用 std::to_underlying（C++23），枚举值通过 static_cast 转换。
      */
-    using ParameterValue = std::variant<std::nullptr_t, bool, int64_t, uint64_t, double, std::string>;
+    using ParameterValue = std::variant<std::nullptr_t, bool, int64_t, uint64_t, double, std::string, std::vector<std::uint8_t>>;
 
     // ========================================================================
     // WhereCondition

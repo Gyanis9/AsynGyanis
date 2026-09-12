@@ -22,17 +22,24 @@
  * - 拒绝面：浮点不能映射到整型成员，且错误文本说清期望与实际问题
  * - 往返：toDatabaseValue 把超出 int64 的无符号值降级为十进制文本，读方向能把这段文本
  *   原样解析回来（两个方向的取舍必须配套，否则「写得进、读不回」）
+ * - 二进制成员：std::vector<std::uint8_t> 与 std::vector<std::byte> 两种拼法必须完全等价
+ *   （写出同一串字节、读出同一串字节）；0x00..0xFF 全取值与内嵌 '\0' 往返无损；
+ *   零长载荷是「有值且为空」而非 NULL；optional 包装双向可用；
+ *   文本或整数落到二进制成员一律报错（列声明与成员声明不一致必须暴露，不能静默收下）
  */
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Queryable/RowMapper.h"
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Database::Queryable
 {
@@ -251,6 +258,132 @@ namespace AsynGyanis::Database::Queryable
         const DatabaseValue nullParameter = Detail::toDatabaseValue<std::optional<std::uint64_t>>(std::nullopt);
         ASSERT_TRUE(std::holds_alternative<std::monostate>(nullParameter));
         EXPECT_FALSE(Detail::convertDatabaseValue<std::optional<std::uint64_t>>(nullParameter, kColumnName).has_value());
+    }
+
+    // ------------------------------------------------------------------------
+    // 二进制成员：两种拼法等价
+    // ------------------------------------------------------------------------
+
+    /**
+     * @brief 验证两种二进制成员拼法写出的载荷逐字节相同
+     *
+     * @details std::vector<std::uint8_t> 与 std::vector<std::byte> 只是「按不按枚举类访问」
+     *          的区别，落库后必须是同一串字节；否则同一个值用不同拼法声明就会写出不同数据。
+     */
+    TEST(RowMapperBinary, BothMemberSpellingsProduceTheSameBytes)
+    {
+        const BinaryBytes            canonical{0x00, 0x5C, 0xFF};
+        const std::vector<std::byte> rawBytes{std::byte{0x00}, std::byte{0x5C}, std::byte{0xFF}};
+
+        const DatabaseValue fromCanonical = Detail::toDatabaseValue<BinaryBytes>(canonical);
+        const DatabaseValue fromRawBytes  = Detail::toDatabaseValue<std::vector<std::byte>>(rawBytes);
+
+        ASSERT_TRUE(std::holds_alternative<BinaryBytes>(fromCanonical)) << databaseValueTypeName(fromCanonical);
+        ASSERT_TRUE(std::holds_alternative<BinaryBytes>(fromRawBytes)) << databaseValueTypeName(fromRawBytes);
+        EXPECT_EQ(std::get<BinaryBytes>(fromCanonical), std::get<BinaryBytes>(fromRawBytes));
+        EXPECT_EQ(canonical, std::get<BinaryBytes>(fromRawBytes));
+    }
+
+    /**
+     * @brief 验证全部字节取值与内嵌 '\0' 在两种拼法下都往返无损
+     */
+    TEST(RowMapperBinary, RoundTripsEveryByteValueForBothSpellings)
+    {
+        BinaryBytes allByteValues;
+        allByteValues.reserve(256);
+        for (int byteValue = 0; byteValue < 256; ++byteValue)
+        {
+            allByteValues.push_back(static_cast<std::uint8_t>(byteValue));
+        }
+
+        const DatabaseValue payload = Detail::toDatabaseValue<BinaryBytes>(allByteValues);
+        EXPECT_EQ(allByteValues, Detail::convertDatabaseValue<BinaryBytes>(payload, kColumnName));
+
+        // std::byte 拼法读同一份载荷：逐元素转换必须无损，否则两种拼法就不等价
+        const std::vector<std::byte> rawSpelling =
+            Detail::convertDatabaseValue<std::vector<std::byte>>(payload, kColumnName);
+        ASSERT_EQ(rawSpelling.size(), allByteValues.size());
+        for (std::size_t index = 0; index < allByteValues.size(); ++index)
+        {
+            EXPECT_EQ(static_cast<std::uint8_t>(rawSpelling[index]), allByteValues[index])
+                << "第 " << index << " 个字节转换后不一致";
+        }
+    }
+
+    /**
+     * @brief 验证零长载荷是「有值且为空」，不会被当成 NULL
+     *
+     * @details 空 BLOB 与 SQL NULL 在数据库里是两件事，在映射层也必须保持这个区分：
+     *          只有 monostate 才该变成空 optional。
+     */
+    TEST(RowMapperBinary, EmptyPayloadIsNotConfusedWithNull)
+    {
+        const DatabaseValue emptyPayload = Detail::toDatabaseValue<BinaryBytes>(BinaryBytes{});
+        ASSERT_TRUE(std::holds_alternative<BinaryBytes>(emptyPayload)) << databaseValueTypeName(emptyPayload);
+        EXPECT_TRUE(std::get<BinaryBytes>(emptyPayload).empty());
+        EXPECT_TRUE(Detail::convertDatabaseValue<BinaryBytes>(emptyPayload, kColumnName).empty());
+
+        const DatabaseValue nullValue{std::monostate{}};
+        EXPECT_FALSE(Detail::convertDatabaseValue<std::optional<BinaryBytes>>(nullValue, kColumnName).has_value());
+        EXPECT_TRUE(Detail::convertDatabaseValue<std::optional<BinaryBytes>>(emptyPayload, kColumnName).has_value());
+    }
+
+    /**
+     * @brief 验证 optional 包装的二进制成员在两个方向上都可用
+     */
+    TEST(RowMapperBinary, OptionalWrappingIsSupportedInBothDirections)
+    {
+        const BinaryBytes payload{0x01, 0x02};
+
+        const DatabaseValue written =
+            Detail::toDatabaseValue<std::optional<BinaryBytes>>(std::optional<BinaryBytes>(payload));
+        ASSERT_TRUE(std::holds_alternative<BinaryBytes>(written)) << databaseValueTypeName(written);
+
+        const std::optional<BinaryBytes> readBack =
+            Detail::convertDatabaseValue<std::optional<BinaryBytes>>(written, kColumnName);
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_EQ(payload, readBack.value());
+
+        // 空 optional 绑定 NULL 而不是零长载荷
+        const DatabaseValue nullWritten = Detail::toDatabaseValue<std::optional<BinaryBytes>>(std::nullopt);
+        ASSERT_TRUE(std::holds_alternative<std::monostate>(nullWritten)) << databaseValueTypeName(nullWritten);
+    }
+
+    /**
+     * @brief 验证文本与整数都不会被当成二进制收下
+     */
+    TEST(RowMapperBinary, RejectsTextAndIntegerForBinaryMember)
+    {
+        // 列产出文本而成员声明为二进制，说明列的声明与成员的声明已经不一致。
+        // 收下它能让代码「跑通」，却把 schema 漂移一路藏到按二进制语义解读文本数据的那天
+        try
+        {
+            static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(textValue("not binary"), kColumnName));
+            FAIL() << "文本不应映射到二进制成员";
+        }
+        catch (const std::runtime_error &error)
+        {
+            const std::string message = error.what();
+            EXPECT_NE(message.find("big"), std::string::npos) << message;
+            EXPECT_NE(message.find("二进制"), std::string::npos) << message;
+        }
+
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(integerValue(7), kColumnName)),
+                     std::runtime_error);
+    }
+
+    /**
+     * @brief 验证二进制成员不会退化成文本备选
+     *
+     * @details 这一点与无符号整数不同：整型超出 int64 时可以降级为十进制文本（引擎给不出
+     *          足够宽的整数），但二进制没有这条退路——一旦退成文本，驱动就只能按连接字符集
+     *          绑定载荷，字节可能被替换。类型必须一路保持为二进制。
+     */
+    TEST(RowMapperBinary, DoesNotDegradeToTextAlternative)
+    {
+        const DatabaseValue payload = Detail::toDatabaseValue<BinaryBytes>(BinaryBytes{0xFF});
+        EXPECT_FALSE(std::holds_alternative<std::string>(payload)) << databaseValueTypeName(payload);
+        EXPECT_TRUE(std::holds_alternative<BinaryBytes>(payload)) << databaseValueTypeName(payload);
     }
 
 } // namespace AsynGyanis::Database::Queryable

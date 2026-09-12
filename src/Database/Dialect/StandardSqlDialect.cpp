@@ -690,6 +690,13 @@ namespace AsynGyanis::Database
                     }
                     return std::to_string(value);
                 }
+                else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
+                {
+                    // 二进制在两种 variant 里同名同类型，无需翻译。这里是唯一一个「类型本身就是
+                    // 绑定线索」的备选：驱动靠它决定走 sqlite3_bind_blob / MYSQL_TYPE_BLOB，
+                    // 而不是按文本绑定后由服务端按连接字符集重新解释载荷
+                    return DatabaseValue{value};
+                }
                 else
                 {
                     // bool / int64_t / double / std::string 在两种 variant 中同名同类型，直接构造即可

@@ -137,7 +137,9 @@ namespace AsynGyanis::Database::Queryable
             // 判定与 RowMapper 共用同一份 trait，因此「能建表」与「能读写」永远等价
             static_assert(Detail::allColumnTypesSupported<T>(),
                           "SchemaMigrator：TableSchema<T>::kColumns 中存在不支持的列类型。"
-                          "仅支持整型、bool、浮点、std::string，以及它们的 std::optional 包装");
+                          "仅支持整型、bool、浮点、std::string、二进制载荷"
+                          "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                          "以及它们的 std::optional 包装");
 
             const std::string_view tableName = TableSchema<T>::kTableName;
             if (tableName.empty())
@@ -343,9 +345,9 @@ namespace AsynGyanis::Database::Queryable
          * @brief 把成员类型映射成逻辑列类型
          *
          * @details 规则与 RowMapper 的取值映射一一对应：bool 先于整型判定（它是整型但不是 1/0 语义），
-         *          无符号整型单独成一类（SQLite 无无符号类型，MySQL 有），浮点一律 Double。
-         *          当前 TableSchema 支持的成员类型不产生 Blob：需要二进制列时先让 RowMapper
-         *          支持对应的成员类型（如 std::vector<std::uint8_t>），再在这里补一条映射。
+         *          无符号整型单独成一类（SQLite 无无符号类型，MySQL 有），浮点一律 Double，
+         *          二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>）一律 Blob。
+         *          因此 ColumnType 的每个取值都有成员类型能产生它，不存在只为将来预留的分支。
          *
          * @tparam ValueType 去掉 std::optional 包装后的成员类型
          * @return ColumnType 该成员对应的逻辑列类型
@@ -372,12 +374,19 @@ namespace AsynGyanis::Database::Queryable
             {
                 return ColumnType::Text;
             }
+            else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
+            {
+                // 两种成员拼法都落到 Blob：DDL 只关心「这一列是二进制」，
+                // 由 value_type 是 uint8_t 还是 std::byte 决定的差异在值映射处已经归一
+                return ColumnType::Blob;
+            }
             else
             {
                 // 不受支持的类型已被 createTableStatement() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
                 static_assert(Detail::kAlwaysFalse<ValueType>,
-                              "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string，"
+                              "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string、"
+                              "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                               "以及它们的 std::optional 包装");
                 return ColumnType::Text;
             }

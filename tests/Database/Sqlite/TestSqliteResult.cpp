@@ -11,8 +11,9 @@
  *          1、只有只读语句会被预扫描：rowCount() 对只读查询给出精确行数，对写语句与带副作用的
  *             语句（INSERT ... RETURNING）返回 0；isEmpty() 对只读结果集准确，对写回执恒为 true；
  *          2、列值必须 next() 之后读取：未 next()、游标耗尽、reset() 之后一律 std::monostate；
- *          3、存储类映射：NULL→monostate、INTEGER→int64_t、FLOAT→double、TEXT/BLOB→std::string
- *             （BLOB 原样按字节、内嵌 '\0' 不丢失，零长 TEXT/BLOB 是空串而不是 NULL；
+ *          3、存储类映射：NULL→monostate、INTEGER→int64_t、FLOAT→double、TEXT→std::string、
+ *             BLOB→BinaryBytes（二进制与文本分成两个备选，类型本身就是驱动侧的绑定线索；
+ *             BLOB 原样按字节、内嵌 '\0' 不丢失，零长 TEXT/BLOB 分别是空串与空序列而不是 NULL；
  *             声明为 DATE/NUMERIC 却存了非数值文本的列按 TEXT 存储类落到 std::string）；
  *          4、columnNames() 长度恒等于 columnCount()，表达式列的空名以空串占位，不丢下标；
  *          5、越界判定用无符号比较，SIZE_MAX 这类输入不得绕过边界；
@@ -32,6 +33,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseResult.h"
@@ -157,7 +159,7 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 安全取出文本或二进制列值
+         * @brief 安全取出文本列值
          * @param value 待判定的数据库值
          * @return std::optional<std::string> 类型不符时返回空值
          */
@@ -165,6 +167,17 @@ namespace AsynGyanis::Database
         {
             const auto *text = std::get_if<std::string>(&value);
             return text == nullptr ? std::nullopt : std::optional<std::string>(*text);
+        }
+
+        /**
+         * @brief 安全取出二进制列值
+         * @param value 待判定的数据库值
+         * @return std::optional<BinaryBytes> 类型不符时返回空值
+         */
+        std::optional<BinaryBytes> asBytes(const DatabaseValue &value)
+        {
+            const auto *bytes = std::get_if<BinaryBytes>(&value);
+            return bytes == nullptr ? std::nullopt : std::optional<BinaryBytes>(*bytes);
         }
     } // namespace
 
@@ -582,7 +595,8 @@ namespace AsynGyanis::Database
 
     TEST_F(SqliteUserQuery, EmptyTextAndEmptyBlobAreNotReportedAsNull)
     {
-        // 第 4 行的 name 是空串、payload 是零长 BLOB：两者都是「有值且值为空」，不能塌成 monostate
+        // 第 4 行的 name 是空串、payload 是零长 BLOB：两者都是「有值且值为空」，不能塌成 monostate。
+        // 空文本落到 String、零长二进制落到 Bytes，两条支路各自给出「空」而不是「没有值」
         const std::unique_ptr<DatabaseResult> result = query("SELECT name, payload FROM users WHERE id = 4");
         ASSERT_NE(result, nullptr);
         ASSERT_TRUE(result->next());
@@ -592,8 +606,8 @@ namespace AsynGyanis::Database
 
         ASSERT_TRUE(std::holds_alternative<std::string>(emptyName)) << databaseValueTypeName(emptyName);
         EXPECT_TRUE(std::get<std::string>(emptyName).empty());
-        ASSERT_TRUE(std::holds_alternative<std::string>(emptyPayload)) << databaseValueTypeName(emptyPayload);
-        EXPECT_TRUE(std::get<std::string>(emptyPayload).empty());
+        ASSERT_TRUE(std::holds_alternative<BinaryBytes>(emptyPayload)) << databaseValueTypeName(emptyPayload);
+        EXPECT_TRUE(std::get<BinaryBytes>(emptyPayload).empty());
     }
 
     TEST_F(SqliteUserQuery, BlobKeepsEmbeddedNullByte)
@@ -603,12 +617,26 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(result->next());
 
         // x'5c0041' 是 0x5C、0x00、0x41 三个字节：按长度拷贝才保得住中间那个 '\0'
-        const std::optional<std::string> payload = asText(result->getValue(std::size_t{0}));
+        const std::optional<BinaryBytes> payload = asBytes(result->getValue(std::size_t{0}));
         ASSERT_TRUE(payload.has_value()) << databaseValueTypeName(result->getValue(std::size_t{0}));
         ASSERT_EQ(payload->size(), 3u);
-        EXPECT_EQ(static_cast<unsigned char>((*payload)[0]), 0x5C);
-        EXPECT_EQ(static_cast<unsigned char>((*payload)[1]), 0x00);
-        EXPECT_EQ(static_cast<unsigned char>((*payload)[2]), 0x41);
+        EXPECT_EQ((*payload)[0], 0x5C);
+        EXPECT_EQ((*payload)[1], 0x00);
+        EXPECT_EQ((*payload)[2], 0x41);
+    }
+
+    TEST_F(SqliteUserQuery, TextColumnStillReadsAsStringNotBytes)
+    {
+        // 二进制现在是独立备选，但只有 BLOB 存储类才走它：TEXT 列必须仍是 std::string。
+        // 这条对照用例挡住「按列声明类型一刀切判成二进制」这类过度识别
+        const std::unique_ptr<DatabaseResult> result = query("SELECT name FROM users WHERE id = 2");
+        ASSERT_NE(result, nullptr);
+        ASSERT_TRUE(result->next());
+
+        const DatabaseValue name = result->getValue(std::size_t{0});
+        ASSERT_TRUE(std::holds_alternative<std::string>(name)) << databaseValueTypeName(name);
+        EXPECT_EQ(std::get<std::string>(name), "Bob");
+        EXPECT_FALSE(std::holds_alternative<BinaryBytes>(name)) << databaseValueTypeName(name);
     }
 
     TEST_F(SqliteUserQuery, BooleanFlagReadsAsIntegerNotBool)

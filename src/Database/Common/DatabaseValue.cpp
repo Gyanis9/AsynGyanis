@@ -37,6 +37,10 @@ namespace AsynGyanis::Database
                 {
                     return "List";
                 }
+                else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
+                {
+                    return "Bytes";
+                }
                 else
                 {
                     return "Hash";
