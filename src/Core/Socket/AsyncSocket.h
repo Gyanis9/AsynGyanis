@@ -5,9 +5,10 @@
  * @date 2026-09-11
  * @version 1.0.0
  *
- * 封装了 create/bind/listen/accept/connect/receive/send 等 socket 操作,
+ * 封装了 create/bind/listen/connect/receive/send 等 socket 操作,
  * 所有 I/O 方法返回 Task<> 类型, 通过 co_await 实现异步等待。
- * 内部使用 EpollAwaiter 处理 EAGAIN/EWOULDBLOCK 情况。
+ * 内部用常驻的 IoWatcher 处理 EAGAIN/EWOULDBLOCK：描述符在构造时注册一次，
+ * 之后每次等待都不再产生 epoll_ctl（详见 IoWatcher 的说明）。
  *
  * @copyright Copyright (c) 2026
  */
@@ -15,7 +16,10 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/IoWatcher.h"
 #include "Platform/Platform.h"
+
+#include <memory>
 
 namespace AsynGyanis::Core
 {
@@ -27,7 +31,7 @@ namespace AsynGyanis::Core
      *
      * 持有 EventLoop 引用和非阻塞文件描述符，提供协程式异步 I/O 方法。
      * 所有 async* 方法内部通过 while(true) 循环处理 EAGAIN,
-     * 在不可用状态时通过 EpollAwaiter 挂起协程等待文件描述符就绪。
+     * 在不可用状态时通过常驻注册的 IoWatcher 挂起协程等待文件描述符就绪。
      *
      * @note 支持移动语义，不可复制
      * @note close() 会先调用 shutdown(SHUT_RDWR) 再 close，避免 TCP RST 异常断开
@@ -119,7 +123,7 @@ namespace AsynGyanis::Core
          * @return Task<> — co_await 等待连接建立完成
          *
          * 使用非阻塞 connect()，如果立即成功则直接返回；如果返回 EINPROGRESS，
-         * 则通过 EpollAwaiter 挂起等待 EPOLLOUT 事件，连接完成后恢复。
+         * 则挂起等待 EPOLLOUT 事件，连接完成后恢复。
          * @note 必须在绑定本地地址（可选）之后调用
          */
         Task<> asyncConnect(const sockaddr *address, socklen_t addressLength) const;
@@ -212,8 +216,35 @@ namespace AsynGyanis::Core
          */
         InetAddress localAddress() const;
 
+        /**
+         * @brief 等待套接字可读（EPOLLIN）
+         * @details 低层就绪等待，供 I/O 循环与封装层（如 TlsSocket）使用：它复用本套接字
+         *          已经常驻注册的 epoll 注册对象，因此不额外产生 epoll_ctl，也不额外分配协程帧。
+         *          一般业务代码直接用 asyncReceive()/asyncSend() 即可。
+         * @return IoWatcher::Awaiter 等待器，可直接 co_await
+         * @throws Base::SystemException 套接字无效或已关闭
+         */
+        [[nodiscard]] IoWatcher::Awaiter waitReadable() const;
+
+        /**
+         * @brief 等待套接字可写（EPOLLOUT）
+         * @details 语义同 waitReadable()，方向为可写。
+         * @return IoWatcher::Awaiter 等待器，可直接 co_await
+         * @throws Base::SystemException 套接字无效或已关闭
+         */
+        [[nodiscard]] IoWatcher::Awaiter waitWritable() const;
+
     private:
         EventLoop &m_loop;           ///< 关联的事件循环，用于异步等待和事件注册
         int        m_fileDescriptor; ///< 底层 socket 文件描述符，-1 表示无效
+
+        /**
+         * @brief 常驻 epoll 注册（可读 + 可写）
+         * @details 堆分配而非直接持有：epoll 里记的是注册对象的**地址**，而本类是可移动的
+         *          （移动后描述符跟着走）。直接持有成员会在移动时改变地址，让 epoll 里的
+         *          用户数据悬空；堆对象随指针转移，地址始终不变。
+         *          同一时刻只有一个方向会被等待，两个方向共用一个注册对象。
+         */
+        std::unique_ptr<IoWatcher> m_watcher;
     };
 } // namespace AsynGyanis::Core

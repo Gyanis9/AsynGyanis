@@ -1,5 +1,5 @@
 #include "Core/Tls/TlsSocket.h"
-#include "Core/EventLoop/EpollAwaiter.h"
+#include "Core/EventLoop/IoWatcher.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Exception/CoreException.h"
 
@@ -41,9 +41,6 @@ namespace AsynGyanis::Core
             co_return;
         }
 
-        auto &    epoll          = m_loop->epoll();
-        const int fileDescriptor = m_socket.fileDescriptor();
-
         while (true)
         {
             const int ret = SSL_accept(m_ssl.get());
@@ -56,13 +53,19 @@ namespace AsynGyanis::Core
             const int error = SSL_get_error(m_ssl.get(), ret);
             if (error == SSL_ERROR_WANT_READ)
             {
-                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLIN);
+                if (!co_await m_socket.waitReadable())
+                {
+                    throw CoreException("TLS 握手失败：等待可读期间套接字被关闭");
+                }
                 continue;
             }
 
             if (error == SSL_ERROR_WANT_WRITE)
             {
-                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLOUT);
+                if (!co_await m_socket.waitWritable())
+                {
+                    throw CoreException("TLS 握手失败：等待可写期间套接字被关闭");
+                }
                 continue;
             }
 
@@ -77,9 +80,6 @@ namespace AsynGyanis::Core
 
     Task<ssize_t> TlsSocket::asyncReceive(void *const buffer, const size_t length) const
     {
-        auto &    epoll          = m_loop->epoll();
-        const int fileDescriptor = m_socket.fileDescriptor();
-
         if (length == 0)
         {
             co_return 0;
@@ -96,13 +96,19 @@ namespace AsynGyanis::Core
             const int error = SSL_get_error(m_ssl.get(), ret);
             if (error == SSL_ERROR_WANT_READ)
             {
-                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLIN);
+                if (!co_await m_socket.waitReadable())
+                {
+                    throw CoreException("TLS 握手失败：等待可读期间套接字被关闭");
+                }
                 continue;
             }
 
             if (error == SSL_ERROR_WANT_WRITE)
             {
-                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLOUT);
+                if (!co_await m_socket.waitWritable())
+                {
+                    throw CoreException("TLS 握手失败：等待可写期间套接字被关闭");
+                }
                 continue;
             }
 
@@ -120,9 +126,6 @@ namespace AsynGyanis::Core
 
     Task<ssize_t> TlsSocket::asyncSend(const void *const buffer, const size_t length) const
     {
-        auto &    epoll          = m_loop->epoll();
-        const int fileDescriptor = m_socket.fileDescriptor();
-
         if (length == 0)
         {
             co_return 0;
@@ -139,13 +142,19 @@ namespace AsynGyanis::Core
             const int error = SSL_get_error(m_ssl.get(), ret);
             if (error == SSL_ERROR_WANT_WRITE)
             {
-                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLOUT);
+                if (!co_await m_socket.waitWritable())
+                {
+                    throw CoreException("TLS 写入失败：等待可写期间套接字被关闭");
+                }
                 continue;
             }
 
             if (error == SSL_ERROR_WANT_READ)
             {
-                co_await EpollAwaiter(epoll, fileDescriptor, EPOLLIN);
+                if (!co_await m_socket.waitReadable())
+                {
+                    throw CoreException("TLS 读取失败：等待可读期间套接字被关闭");
+                }
                 continue;
             }
 

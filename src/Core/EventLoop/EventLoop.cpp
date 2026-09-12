@@ -1,12 +1,13 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Base/Exception/SystemException.h"
+#include "Core/EventLoop/IoWatcher.h"
 
 namespace AsynGyanis::Core
 {
     EventLoop::EventLoop()
     {
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
-        // 「唤醒通知」与「协程句柄事件」，因此两者不能共用同一个用户数据槽
+        //「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
         m_scheduler.setWakeupNotifier(&m_wakeup);
         m_epoll.addFileDescriptor(m_wakeup.readDescriptor(), EPOLLIN, &m_wakeupSentinel);
     }
@@ -51,8 +52,10 @@ namespace AsynGyanis::Core
 
                 if (ev.data.ptr)
                 {
-                    const auto handle = std::coroutine_handle<>::from_address(ev.data.ptr);
-                    m_scheduler.schedule(handle);
+                    // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
+                    // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
+                    //（它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）
+                    static_cast<IoWatcher *>(ev.data.ptr)->handleEvents(ev.events);
                 }
             }
 

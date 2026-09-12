@@ -5,7 +5,7 @@ add_executable(TestCore
         Exception/TestCoreException.cpp
 
         EventLoop/TestEpoll.cpp
-        EventLoop/TestEpollAwaiter.cpp
+        EventLoop/TestIoWatcher.cpp
         EventLoop/TestEventLoop.cpp
         EventLoop/TestIoContext.cpp
         EventLoop/TestTimer.cpp

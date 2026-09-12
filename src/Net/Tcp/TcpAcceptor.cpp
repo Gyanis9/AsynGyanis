@@ -24,17 +24,6 @@ namespace AsynGyanis::Net
         constexpr int kResourcePressureBackoffMs = 5;
 
         /**
-         * @brief 没有待接受连接时的重试间隔，单位毫秒
-         *
-         * @details 不用 EpollAwaiter 死等监听描述符可读：那个等待器无超时，而 wepoll 的
-         *          边缘触发在「EAGAIN 之后重新注册」之间会丢边沿（偶发错过新连接），
-         *          关闭监听描述符也不保证唤醒挂起的等待者（stop() 之后收不了尾）。
-         *          按固定间隔轮询同时覆盖这两点，代价是空闲监听器每 50ms 唤醒一次：
-         *          远低于人类可感知的连接延迟，也不会让空闲服务显著占用 CPU。
-         */
-        constexpr int kIdleAcceptPollIntervalMs = 50;
-
-        /**
          * @brief 判断 socket 错误码是否属于「内核资源暂时不足、稍后重试即可恢复」一类
          * @param socketErrorCode Platform::PlatformError::lastSocketErrorCode() 的返回值
          * @return true 需要退避后继续接受连接
@@ -178,14 +167,26 @@ namespace AsynGyanis::Net
 
             const int socketErrorCode = Platform::PlatformError::lastSocketErrorCode();
 
-            // 暂无待接受连接：间隔一小段时间后重试。
-            // 不用 EpollAwaiter 死等可读事件：wepoll 的边缘触发在「accept 返回 EAGAIN」到
-            // 「重新注册到 epoll」之间存在丢边沿的窗口，会偶发错过新连接；而关闭监听描述符
-            // 也不保证唤醒挂在 epoll 上的协程，会让 stop() 之后收不了尾。
-            // 轮询同时解决这两件事，代价是空闲监听器每 kIdleAcceptPollIntervalMs 唤醒一次
+            // 暂无待接受连接：等监听描述符可读，而不是按固定间隔轮询。
+            // 监听套接字是 AsyncSocket，它已经常驻注册在 epoll 上（一次注册、反复等待），
+            // 因此这里既不产生 epoll_ctl，也不会丢边沿——空闲监听器从此零唤醒，
+            // 新连接的接受延迟也不再受轮询周期限制
             if (socketErrorCode == Platform::PlatformError::kWouldBlock)
             {
-                co_await m_backoffTimer.waitFor(std::chrono::milliseconds(kIdleAcceptPollIntervalMs));
+                // 描述符已失效（close() 或从未创建）时按契约返回空值让服务器循环正常收尾。
+                // 这里不需要额外的同步：accept 协程与 close() 都在同一个事件循环线程上，
+                // 而本判断与下面的等待之间没有挂起点，close() 不可能插进来
+                if (!Platform::FileDescriptor::isValid(m_listenSocket.fileDescriptor()))
+                {
+                    co_return std::nullopt;
+                }
+
+                // 等待失败意味着描述符在等待期间被关闭（注册对象被销毁会唤醒等待者），
+                // 同样按契约返回空值——这正是「关闭监听描述符也能唤醒挂起的等待者」那条保证
+                if (!co_await m_listenSocket.waitReadable())
+                {
+                    co_return std::nullopt;
+                }
                 continue;
             }
 
@@ -219,8 +220,9 @@ namespace AsynGyanis::Net
         // 复位绑定标记：描述符已失效，此后 listen() 必须被拒绝而不是拿旧状态蒙混过关
         m_bound = false;
 
-        // 不需要额外唤醒等待者：接受轮按 kIdleAcceptPollIntervalMs 轮询，最迟一个周期内
-        // 就会重新读取到失效的描述符并返回空值，服务器因此能在确定的时间内完成收尾
+        // 正在等待新连接的 accept 协程会被自动唤醒：关闭监听套接字会销毁它的常驻注册对象，
+        // 而注册对象的析构会把仍挂着的等待者以「未就绪」唤醒。接受轮据此返回空值，
+        // 服务器因此立刻完成收尾，不必等下一个轮询周期
     }
 
     Core::InetAddress TcpAcceptor::localAddress() const

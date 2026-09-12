@@ -6,7 +6,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/IoContext.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Epoll.h
         ${CMAKE_CURRENT_LIST_DIR}/Epoll.cpp
-        ${CMAKE_CURRENT_LIST_DIR}/EpollAwaiter.h
+        ${CMAKE_CURRENT_LIST_DIR}/IoWatcher.h
+        ${CMAKE_CURRENT_LIST_DIR}/IoWatcher.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Timer.h
         ${CMAKE_CURRENT_LIST_DIR}/Timer.cpp
 )

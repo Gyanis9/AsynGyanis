@@ -217,14 +217,15 @@ namespace AsynGyanis::Core
         connectTask.handle().resume();
 
         // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者需要事件循环
-        // 推进一步，这里手动取事件并恢复（data.ptr 就是协程句柄地址）
+        // 推进一步。这里按 EventLoop::run() 的方式分发事件——data.ptr 挂载的是常驻注册对象
+        // 的地址（不再是协程句柄），由它决定恢复哪个等待者
         if (!connectTask.isReady())
         {
             for (const auto &event: loop.epoll().wait(2000))
             {
                 if (event.data.ptr != nullptr)
                 {
-                    std::coroutine_handle<>::from_address(event.data.ptr).resume();
+                    static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
                 }
             }
         }

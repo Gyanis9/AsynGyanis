@@ -1,6 +1,6 @@
 #include "Core/Socket/AsyncSocket.h"
-#include "Core/EventLoop/EpollAwaiter.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/IoWatcher.h"
 #include "Core/Socket/InetAddress.h"
 #include "Base/Exception/SystemException.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -19,6 +19,11 @@ namespace AsynGyanis::Core
         if (m_fileDescriptor >= 0)
         {
             setNonBlocking();
+
+            // 常驻注册：一次注册覆盖可读与可写两个方向，此后每次等待都不再产生 epoll_ctl。
+            // 两个方向都注册是必要的——只注册当前用的那个方向，另一个方向的边沿会在
+            // 没人关注时被错过；而边沿触发下错过一次就再也不会重报
+            m_watcher = std::make_unique<IoWatcher>(loop, m_fileDescriptor, EPOLLIN | EPOLLOUT);
         }
     }
 
@@ -28,7 +33,8 @@ namespace AsynGyanis::Core
     }
 
     AsyncSocket::AsyncSocket(AsyncSocket &&other) noexcept :
-        m_loop(other.m_loop), m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1))
+        m_loop(other.m_loop), m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)),
+        m_watcher(std::move(other.m_watcher))
     {
     }
 
@@ -38,6 +44,8 @@ namespace AsynGyanis::Core
         {
             close();
             m_fileDescriptor = std::exchange(other.m_fileDescriptor, -1);
+            // 注册对象随指针转移：它在堆上，epoll 里记的地址因此保持不变
+            m_watcher = std::move(other.m_watcher);
         }
         return *this;
     }
@@ -95,7 +103,11 @@ namespace AsynGyanis::Core
             throw Base::SystemException("发起连接失败");
         }
 
-        co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
+        // 非阻塞 connect 的完成由可写事件通知；等待失败（套接字被关闭）时不再重试
+        if (!co_await waitWritable())
+        {
+            throw Base::SystemException("等待连接完成期间套接字被关闭");
+        }
 
         // 非阻塞 connect 完成后靠 SO_ERROR 判定成败，该读取由 Platform 统一封装
         if (const int pendingError = Platform::Socket::takePendingError(m_fileDescriptor); pendingError != 0)
@@ -138,7 +150,11 @@ namespace AsynGyanis::Core
                 co_return 0;
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
-                co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
+                // 等待失败说明套接字已被关闭：继续重试只会拿到 EBADF，直接以错误结束
+                if (!co_await waitReadable())
+                {
+                    throw Base::SystemException("接收数据失败：等待可读期间套接字被关闭");
+                }
                 continue;
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
@@ -174,7 +190,11 @@ namespace AsynGyanis::Core
                 co_return -1;
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
-                co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
+                // 同 asyncReceive：等待失败即套接字已关闭，不再重试
+                if (!co_await waitWritable())
+                {
+                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭");
+                }
                 continue;
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
@@ -187,6 +207,11 @@ namespace AsynGyanis::Core
     {
         if (m_fileDescriptor >= 0)
         {
+            // 先销毁注册对象再关描述符：反注册在描述符仍然有效时执行才最稳妥，
+            // 而且它会唤醒仍挂在上面的等待协程——关闭描述符并不会唤醒 epoll 的等待者，
+            // 少了这一步，正在等待可读/可写的协程会永久挂起
+            m_watcher.reset();
+
             ::shutdown(m_fileDescriptor, SHUT_RDWR);
             Platform::FileDescriptor::close(m_fileDescriptor);
             m_fileDescriptor = -1;
@@ -196,6 +221,25 @@ namespace AsynGyanis::Core
     int AsyncSocket::fileDescriptor() const noexcept
     {
         return m_fileDescriptor;
+    }
+
+    IoWatcher::Awaiter AsyncSocket::waitReadable() const
+    {
+        // 没有注册对象意味着描述符无效或已被关闭：等待没有意义，直接抛出可定位的中文原因
+        if (m_watcher == nullptr)
+        {
+            throw Base::SystemException("等待套接字可读失败：套接字无效或已关闭");
+        }
+        return m_watcher->waitReadable();
+    }
+
+    IoWatcher::Awaiter AsyncSocket::waitWritable() const
+    {
+        if (m_watcher == nullptr)
+        {
+            throw Base::SystemException("等待套接字可写失败：套接字无效或已关闭");
+        }
+        return m_watcher->waitWritable();
     }
 
     void AsyncSocket::setNonBlocking() const

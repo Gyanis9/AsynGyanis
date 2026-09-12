@@ -9,31 +9,37 @@
 
 namespace AsynGyanis::Core
 {
-    Timer::Awaiter::Awaiter(Epoll &epoll, const int fileDescriptor) noexcept :
-        m_awaiter(epoll, fileDescriptor, EPOLLIN), m_fileDescriptor(fileDescriptor)
+    Timer::Awaiter::Awaiter(IoWatcher &watcher, const int fileDescriptor) noexcept :
+        m_awaiter(watcher.waitReadable()), m_fileDescriptor(fileDescriptor)
     {
     }
 
-    bool Timer::Awaiter::await_ready() const noexcept
+    bool Timer::Awaiter::await_ready() noexcept
     {
         return m_awaiter.await_ready();
     }
 
-    void Timer::Awaiter::await_suspend(const std::coroutine_handle<> handle) const noexcept
+    bool Timer::Awaiter::await_suspend(const std::coroutine_handle<> handle)
     {
-        m_awaiter.await_suspend(handle);
+        return m_awaiter.await_suspend(handle);
     }
 
-    void Timer::Awaiter::await_resume() const
+    void Timer::Awaiter::await_resume()
     {
-        uint64_t expirations = 0;
+        // 注册已失效（定时器被销毁）时没什么可读的，直接返回；等待方按「未超时」处理
+        if (!m_awaiter.await_resume())
+        {
+            return;
+        }
 
+        // 读走过期计数。这一步不是可选的：timerfd 的「可读」状态要靠读清掉，
+        // 只等不读会让它一直保持可读，而边沿触发不会再报第二次——下一次等待就再也等不到
+        uint64_t expirations = 0;
         [[maybe_unused]] auto _ = Platform::FileDescriptor::read(m_fileDescriptor, &expirations, sizeof(expirations));
-        m_awaiter.await_resume();
     }
 
     Timer::Timer(EventLoop &loop) :
-        m_loop(loop)
+        m_loop(loop), m_watcher(loop, m_timer.fileDescriptor(), EPOLLIN)
     {
         if (m_timer.fileDescriptor() < 0)
         {
@@ -43,16 +49,12 @@ namespace AsynGyanis::Core
         }
     }
 
-    Timer::~Timer()
-    {
-        // 先移除 epoll 注册，TimerFileDescriptor 析构会自动关闭文件描述符
-        m_loop.epoll().delFileDescriptor(m_timer.fileDescriptor());
-    }
+    Timer::~Timer() = default;
 
     Timer::Awaiter Timer::waitFor(const std::chrono::milliseconds duration)
     {
         m_timer.arm(duration);
-        return Awaiter(m_loop.epoll(), m_timer.fileDescriptor());
+        return Awaiter(m_watcher, m_timer.fileDescriptor());
     }
 
 }

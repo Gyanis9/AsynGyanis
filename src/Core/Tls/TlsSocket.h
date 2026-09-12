@@ -22,7 +22,7 @@ namespace AsynGyanis::Core
     /**
      * @brief TLS socket 包装类，提供异步 SSL 握手、加密读写接口。
      *
-     * 内部持有 SSL 对象和底层 AsyncSocket，通过 EpollAwaiter 处理非阻塞读/写事件。
+     * 内部持有 SSL 对象和底层 AsyncSocket，复用其常驻 epoll 注册处理非阻塞读/写事件。
      * 使用前必须调用 handshake() 完成 TLS 握手，之后方可使用 asyncReceive/asyncSend。
      */
     class TlsSocket
@@ -61,7 +61,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 执行 TLS 服务端握手（SSL_accept）。
          *
-         * 处理非阻塞状态下的 SSL_ERROR_WANT_READ / WANT_WRITE，通过 EpollAwaiter 等待 socket
+         * 处理非阻塞状态下的 SSL_ERROR_WANT_READ / WANT_WRITE，通过底层套接字的就绪等待
          * 可读/可写事件，直到握手完成或出错。该函数是一个协程任务，应使用 co_await 等待。
          *
          * @return Task<> 协程，握手完成后返回，若失败则抛出异常

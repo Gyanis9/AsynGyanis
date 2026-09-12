@@ -1,0 +1,223 @@
+/**
+ * @file IoWatcher.h
+ * @brief 常驻 epoll 注册：注册一次即可反复等待，等待本身不再产生 epoll_ctl
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include <coroutine>
+#include <cstdint>
+
+namespace AsynGyanis::Core
+{
+    class EventLoop;
+
+    /**
+     * @brief 一个文件描述符的常驻 epoll 注册与等待入口
+     *
+     * @details 与「每次等待都 ADD 再 DEL」的用法相比，本类把注册提到描述符的生命周期上：
+     *          构造时注册一次（EPOLLET + 关注的事件），析构时反注册一次。连接存活期间可以
+     *          无限次 `co_await` 其等待器，**每次等待不再有系统调用**——而按连接生命周期算，
+     *          旧的「等一次注册一次」做法在每个读写循环里都要付 2 次 epoll_ctl。
+     *
+     * ## 就绪缓存（边沿触发下必需）
+     * 边沿只报「从不可用变为可用」的那一刻。事件到达时若没有协程在等，本类会把该方向的
+     * 就绪**记下来**，让下一次等待立即完成——否则那个边沿就永远丢了，等待者会一直睡下去。
+     * 一个就绪标记只会被一个等待者取走（要么当场交给等待者，要么留给下一次等待），
+     * 因此不会出现「标记残留导致空转重试」。
+     *
+     * ## 关闭会唤醒等待者
+     * 析构时若仍有协程挂在等待器上，它会被投递到事件循环的调度队列（不是就地恢复——本对象
+     * 正在析构，就地恢复会让协程在析构未完成时回来访问成员），并以「未就绪」结束等待，
+     * 于是等待方可以立刻收尾而不是永久挂起。
+     *
+     * @note 线程约束：本类与其等待器都只在**所属事件循环线程**上使用。
+     *       等待/恢复两端都在该线程，因此内部状态不需要任何原子或锁。
+     * @note 一个方向同时只允许一个等待者：同一文件描述符的同一方向上并发等待会抛
+     *       `Base::LogicException`（这几乎总是「读协程起了两个」这类用法错误，
+     *       静默让某一个永远等不到比当场报错危险得多）。
+     */
+    class IoWatcher
+    {
+    public:
+        /**
+         * @brief 等待器：与其它 awaitable 一样直接 co_await
+         */
+        class Awaiter
+        {
+        public:
+            /**
+             * @brief 构造等待器
+             * @param watcher 目标注册对象
+             * @param event 关注的事件位（EPOLLIN 或 EPOLLOUT）
+             */
+            Awaiter(IoWatcher &watcher, std::uint32_t event) noexcept;
+
+            Awaiter(const Awaiter &) = delete;
+
+            Awaiter &operator=(const Awaiter &) = delete;
+
+            /**
+             * @brief 析构时把自己从注册对象上摘除
+             * @details 协程帧可能在等待期间被销毁（取消、异常展开）。此时等待器对象随帧一起
+             *          析构，必须顺手摘除注册，否则注册对象里会留下一个指向已释放等待器的悬空指针。
+             */
+            ~Awaiter();
+
+            /**
+             * @brief 就绪则立即完成，不挂起
+             * @return true 该方向的就绪标记已在（边沿到达过），等待立即完成
+             */
+            [[nodiscard]] bool await_ready() noexcept;
+
+            /**
+             * @brief 登记为本方向的等待者并挂起协程
+             * @param handle 当前协程句柄，事件到达时由注册对象恢复
+             * @return true 已登记，可以挂起
+             * @return false 注册已失效（描述符已关闭），不挂起、立即以「未就绪」结束等待
+             * @throws Base::LogicException 该方向已有另一个等待者
+             */
+            [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle);
+
+            /**
+             * @brief 取回等待结果
+             * @return true 事件已就绪（调用方应立刻重试系统调用）
+             * @return false 注册已失效（描述符已关闭），调用方应停止重试并收尾
+             */
+            [[nodiscard]] bool await_resume() const noexcept;
+
+        private:
+            friend class IoWatcher;
+
+            /**
+             * @brief 由注册对象标记本次等待已就绪
+             */
+            void markReady() noexcept;
+
+            /**
+             * @brief 由注册对象告知「你已不在我的登记槽里」
+             * @details 注册对象一旦把等待者从槽里取走（无论是为了恢复它，还是它自己在析构），
+             *          都必须调用本方法。否则等待器析构时会以为自己还挂在注册对象上，
+             *          去调用可能是**已被销毁**的注册对象——即释放后使用。
+             */
+            void markDetached() noexcept;
+
+            IoWatcher   *m_watcher;        ///< 目标注册对象（非拥有）
+            std::uint32_t m_event;         ///< 本次关注的事件位
+            bool         m_isAttached{false}; ///< 是否已登记到注册对象上
+            bool         m_isReady{false};    ///< 结果：事件是否就绪
+        };
+
+        /**
+         * @brief 构造并常驻注册一个文件描述符
+         * @param loop 所属事件循环（提供 epoll 与调度队列）
+         * @param fileDescriptor 目标文件描述符；为负数时得到一个「无效」的注册对象
+         *        （等待一律以「未就绪」结束），便于持有空描述符的对象统一处理
+         * @param interests 关注的事件位（EPOLLIN / EPOLLOUT，内部会加上 EPOLLET）
+         * @throws Base::SystemException 描述符有效但注册失败（通常意味着同一描述符已被
+         *         另一个注册对象占用——这是用法错误，当场失败好过等到第一次等待时才暴露）
+         */
+        IoWatcher(EventLoop &loop, int fileDescriptor, std::uint32_t interests);
+
+        /**
+         * @brief 析构：反注册，并把仍在等待的协程以「未就绪」唤醒
+         */
+        ~IoWatcher();
+
+        // 禁止拷贝与移动：注册时写进 epoll 的是本对象的地址，移动会让它失效
+        IoWatcher(const IoWatcher &) = delete;
+
+        IoWatcher &operator=(const IoWatcher &) = delete;
+
+        IoWatcher(IoWatcher &&) = delete;
+
+        IoWatcher &operator=(IoWatcher &&) = delete;
+
+        /**
+         * @brief 是否已成功注册
+         * @return true 已注册到 epoll，等待器可用
+         */
+        [[nodiscard]] bool isValid() const noexcept;
+
+        /**
+         * @brief 获取被注册的文件描述符
+         * @return int 文件描述符，无效时为负数
+         */
+        [[nodiscard]] int fileDescriptor() const noexcept;
+
+        /**
+         * @brief 等待该描述符可读（EPOLLIN）
+         * @return Awaiter 等待器；已就绪时 co_await 立即返回
+         */
+        [[nodiscard]] Awaiter waitReadable() noexcept;
+
+        /**
+         * @brief 等待该描述符可写（EPOLLOUT）
+         * @return Awaiter 等待器；已就绪时 co_await 立即返回
+         */
+        [[nodiscard]] Awaiter waitWritable() noexcept;
+
+        /**
+         * @brief 处理来自事件循环的事件分发
+         * @details 仅由 EventLoop 在分发 epoll 事件时调用。若该方向有等待者，就把就绪结果
+         *          交给它并恢复它；没有等待者则把就绪记下来留给下一次等待。
+         * @param events epoll 报告的事件位（含错误与挂断位）
+         * @note 恢复协程之后**不再访问任何成员**：被恢复的代码可能立刻销毁本对象
+         *       （例如读到对端关闭后关闭连接），那之后访问成员就是释放后使用。
+         */
+        void handleEvents(std::uint32_t events) noexcept;
+
+    private:
+        /**
+         * @brief 一个方向上的等待者登记
+         */
+        struct WaiterSlot
+        {
+            std::coroutine_handle<> handle{};      ///< 等待中的协程，空表示当前无人等待
+            Awaiter                *awaiter{nullptr}; ///< 对应的等待器，用于把结果写回它
+        };
+
+        /**
+         * @brief 登记一个等待者
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         * @param handle 等待中的协程句柄
+         * @param awaiter 对应等待器
+         * @return true 登记成功，调用方应挂起
+         * @return false 注册已失效，调用方不应挂起（立即以「未就绪」结束等待）
+         * @throws Base::LogicException 该方向已有等待者
+         */
+        [[nodiscard]] bool attachWaiter(std::uint32_t event, std::coroutine_handle<> handle, Awaiter &awaiter);
+
+        /**
+         * @brief 摘除某个方向上的等待者登记（等待器析构时调用）
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         */
+        void detachWaiter(std::uint32_t event) noexcept;
+
+        /**
+         * @brief 取走某个方向的就绪标记
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         * @return true 该方向此前已就绪（边沿到达过且无人取走）
+         */
+        [[nodiscard]] bool consumeReady(std::uint32_t event) noexcept;
+
+        /**
+         * @brief 取某个方向对应的等待者登记槽
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         * @return WaiterSlot& 该方向的登记槽
+         */
+        [[nodiscard]] WaiterSlot &slotFor(std::uint32_t event) noexcept;
+
+        EventLoop    *m_loop;            ///< 所属事件循环（非拥有）
+        int           m_fileDescriptor;  ///< 被注册的文件描述符
+        bool          m_isRegistered{false}; ///< 是否已成功注册到 epoll
+        std::uint32_t m_readyEvents{0};  ///< 已到达但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
+        WaiterSlot    m_readWaiter;      ///< 读方向等待者
+        WaiterSlot    m_writeWaiter;     ///< 写方向等待者
+    };
+
+} // namespace AsynGyanis::Core
