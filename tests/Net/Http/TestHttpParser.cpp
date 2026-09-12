@@ -580,4 +580,100 @@ namespace AsynGyanis::Net
             EXPECT_TRUE(containsText(parser.errorMessage(), "解析失败")) << message;
         }
     }
+
+    // ============================================================================
+    // 交出的边界与失败分类：会话据此省掉自己那一遍定界扫描
+    // ============================================================================
+
+    /**
+     * @brief Done 之后交回本条报文的长度，缓冲区里排在后面的字节属于下一条报文
+     */
+    TEST(HttpParser, ReportsConsumedLengthSoTheNextMessageBoundaryIsKnown)
+    {
+        HttpParser parser;
+
+        const std::string first  = "POST /first HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello";
+        const std::string second = "GET /second HTTP/1.1\r\n\r\n";
+
+        // 两条报文挤在同一次调用里：第一条的长度必须精确交回，第二条一个字节都不吃
+        const std::string pipelined = first + second;
+        ASSERT_EQ(parser.parse(pipelined.data(), pipelined.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.consumedByteCount(), first.size()) << "交回的消费量不是第一条报文的长度";
+        EXPECT_EQ(parser.request().uri(), "/first");
+        EXPECT_EQ(parser.request().body(), "hello");
+
+        // 剩下的字节正是下一条报文：reset 之后从那个位置重新喂，一条不差
+        parser.reset();
+        EXPECT_EQ(parser.parse(pipelined.data() + first.size(), second.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.consumedByteCount(), second.size());
+        EXPECT_EQ(parser.request().uri(), "/second");
+    }
+
+    /**
+     * @brief 分片喂入时按每次调用分别交回消费量
+     */
+    TEST(HttpParser, ReportsConsumedLengthForEachSlice)
+    {
+        HttpParser parser;
+
+        const std::string message    = "GET /sliced HTTP/1.1\r\nHost: x\r\n\r\n";
+        const std::size_t firstSlice = 7;
+
+        EXPECT_EQ(parser.parse(message.data(), firstSlice), ParseStatus::NeedMore);
+        EXPECT_EQ(parser.consumedByteCount(), firstSlice) << "NeedMore 时喂进去的字节应当全部被消费";
+
+        EXPECT_EQ(parser.parse(message.data() + firstSlice, message.size() - firstSlice), ParseStatus::Done);
+        EXPECT_EQ(parser.consumedByteCount(), message.size() - firstSlice);
+    }
+
+    /**
+     * @brief 失败的类别与会话的状态码一一对应，上层不必去匹配错误文案
+     */
+    TEST(HttpParser, ReportsTypedFailureKinds)
+    {
+        {
+            HttpParser        parser;
+            const std::string message = makeRequestTextWithHeaders({std::string(kHeaderNameLimitInBytes + 1, 'x') + ": v"});
+            ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::HeaderTooLarge);
+        }
+        {
+            HttpParser        parser;
+            const std::string message = "POST /huge HTTP/1.1\r\nContent-Length: 9000000000\r\n\r\n";
+            ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::BodyTooLarge);
+        }
+        {
+            HttpParser        parser;
+            const std::string message = "POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+            ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::ChunkedNotSupported);
+        }
+        {
+            HttpParser        parser;
+            const std::string message = "GET /x HTTP/9.9\r\n\r\n";
+            ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::Malformed);
+        }
+
+        EXPECT_EQ(HttpParser().errorKind(), HttpParseErrorKind::None);
+    }
+
+    /**
+     * @brief 声明的 Content-Length 超限时，正文字节一个都还没到就要判错
+     *
+     * @details 等到收满 8 MiB 才判，等于按对端的声明替它预留内存——声明一个天文数字就能把
+     *          缓冲区耗光。因此这条判定落在解析头部的那一刻。
+     */
+    TEST(HttpParser, DeclaredContentLengthAboveLimitIsRejectedBeforeBodyArrives)
+    {
+        HttpParser parser;
+
+        const std::string message = "POST /big HTTP/1.1\r\nContent-Length: 9000000000\r\n\r\n";
+        ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+
+        EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::BodyTooLarge);
+        EXPECT_TRUE(parser.isLimitExceeded());
+        EXPECT_TRUE(containsText(parser.errorMessage(), "上限"));
+    }
 } // namespace AsynGyanis::Net

@@ -1,6 +1,6 @@
 /**
  * @file HttpSession.h
- * @brief HTTP 会话：在单条 TCP 连接上做「定界—解析—路由—应答」的保持活跃循环
+ * @brief HTTP 会话：在单条 TCP 连接上做「解析—路由—应答」的保持活跃循环
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/Connection.h"
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -91,7 +93,7 @@ namespace AsynGyanis::Net
     private:
         Router &m_router;             ///< 路由器引用，用于分发请求
         HttpParser m_parser;          ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
-        std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收缓冲，容量按需在会话内增长
+        std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收窗口，首次读取时按固定大小分配
     };
 
     // ============================================================================
@@ -100,84 +102,18 @@ namespace AsynGyanis::Net
 
     namespace detail
     {
-        /// 接收缓冲初值，单位字节：8 KiB，与解析器「单行/单 URI 上限 8 KiB」同档，常规请求一次读取即可定界
-        inline constexpr std::size_t kInitialReceiveBufferLength = 8ull * 1024;
+        /// 接收窗口大小，单位字节：只用来接住「刚到的字节」，正文与跨读的半行都由解析器自己存，
+        /// 因此这一块固定大小就够——窗口永远是「开头一段未解析字节」，不需要按报文体量增长
+        inline constexpr std::size_t kReceiveWindowLength = 8ull * 1024;
 
         /**
-         * @brief 请求头部块（含结尾空行）允许的最大字节数，超限回 431
-         * @details 与 HttpParser 的头部块上限刻意同值：两处一旦不一致，较松的那处会先把超限字节
-         *          交给较紧的那处，表现为「本应 431 却成了 400」。解析器那份是私有常量，
-         *          改那里时必须同步改这里。
-         */
-        inline constexpr std::size_t kMaximumHeaderBlockLength = 64ull * 1024;
-
-        /**
-         * @brief 按 Content-Length 放行正文的上限，单位字节
-         * @details 与解析器侧的正文上限对齐（8 MiB）。定界器按声明值提前拦截，是为了根本不去收
-         *          这些字节；解析器那份是最后防线，管的是谎报长度的对端。
-         */
-        inline constexpr std::size_t kMaximumDeclaredBodyLength = 8ull * 1024 * 1024;
-
-        /**
-         * @brief 接收缓冲的硬上限，单位字节
-         * @details 头部块上限再加一个初值大小的读切片：正常路径上定界器会先一步给出 431，
-         *          这里只是兜住「定界器判定之前不再需要更多字节」的极端情形，避免无界增长。
-         */
-        inline constexpr std::size_t kMaximumReceiveBufferLength = kMaximumHeaderBlockLength + kInitialReceiveBufferLength;
-
-        /**
-         * @brief 一次报文定界的结论
-         */
-        enum class FrameOutcome
-        {
-            NeedMore,                   ///< 头部块还没收齐，需要继续读
-            Complete,                   ///< 已定界，messageLength 可用
-            HeaderBlockTooLarge,        ///< 头部块超出 kMaximumHeaderBlockLength → 431
-            ContentLengthTooLarge,      ///< Content-Length 声明值超出上限 → 413
-            ContentLengthInvalid,       ///< Content-Length 值非法、多值不一致，或与 chunked 并存 → 400
-            ChunkedBodyNotSupported     ///< Transfer-Encoding: chunked 的请求体 → 411 Length Required
-        };
-
-        /**
-         * @brief 定界结果：结论 + 头部块长度 + 整条报文长度
-         */
-        struct FramingResult
-        {
-            FrameOutcome outcome{FrameOutcome::NeedMore}; ///< 定界结论
-            std::size_t headerBlockLength{0};             ///< 头部块字节数，含结尾空行
-            std::size_t messageLength{0};                 ///< 整条报文（请求行 + 头部块 + 正文）字节数
-        };
-
-        /**
-         * @brief 在喂解析器之前算出「这一条报文到哪里结束」
-         *
-         * @details 为什么非有这一步不可：HttpParser 不回报已消耗的字节数，llhttp 一旦在同一次
-         *          调用里撞到下一条报文的开头，会把那个字节一并吞掉（解析器为此在 onMessageBegin
-         *          里设了流水线守卫），上层就再也不知道边界在哪、也就无法把剩余字节留给下一条请求。
-         *          因此由会话先算出边界，每次只喂「不超过本条报文结尾」的字节。
-         *
-         *          三种正文形态：
-         *          @li 无 Content-Length 且非分块 → 报文在头部块结尾处完成（GET/HEAD/DELETE 一类）；
-         *          @li 有 Content-Length → 头部块 + 声明长度；同一条报文里出现不一致的多个
-         *              Content-Length 判为非法（请求走私的经典入口），一致则按该值处理；
-         *          @li Transfer-Encoding: chunked → 回 411 Length Required。本框架不做分块请求体的
-         *              帧定界：要在不整包缓冲的前提下切出边界，就得把定界器写成可续走的增量状态机，
-         *              而解析器不回报消耗字节数这一前提让它无法与安全边界同时成立；
-         *          @li 同时带 Content-Length 与 chunked → 一律判非法（400）：两者对「报文到哪结束」
-         *              会给出不同答案，代理链上下游就此错位，正是 CL.TE / TE.CL 走私的形态。
-         *
-         * @param data   本条报文起点，指向接收缓冲中的有效区；length 为 0 时允许传空指针语义的地址
-         * @param length 本条报文起点之后已可读的字节数
-         * @return FramingResult 定界结果；除 NeedMore/Complete 外的结论都应回 4xx 后立即收口
-         */
-        FramingResult frameRequestMessage(const char *data, std::size_t length);
-
-        /**
-         * @brief 把定界失败结论翻译成要发的 4xx 响应（正文与原因短语全 ASCII）
+         * @brief 把解析失败类别翻译成要发的 4xx 响应（状态码与正文全 ASCII）
+         * @details 报文到哪里结束、哪里越界、哪里读不懂，都由 HttpParser 判定并给出类别，
+         *          会话只负责按类别选状态码——两处各判一次边界是过去式，那份重复已经删掉。
          * @param response 待填充的响应对象，进入本函数时应当是新构造的
-         * @param outcome 定界结论；Complete/NeedMore 不由本函数处理
+         * @param errorKind 解析器给出的失败类别
          */
-        void writeFramingErrorResponse(HttpResponse &response, FrameOutcome outcome);
+        void writeParseErrorResponse(HttpResponse &response, HttpParseErrorKind errorKind);
 
         /**
          * @brief 判断一组同名头部值里是否出现了某个 token（大小写不敏感，按逗号拆分）
@@ -270,33 +206,12 @@ namespace AsynGyanis::Net
                                        std::vector<char> &receiveBuffer,
                                        const std::function<bool()> &isAlive)
         {
-            // 有效数据恒为 [readOffset, usedLength)：交给解析器的字节就地前移游标（不搬内存），
-            // 需要腾出读空间或一条报文收尾时，才把剩余字节整体搬回缓冲区开头
-            std::size_t usedLength = 0;
-            std::size_t readOffset = 0;
-
-            // 本条报文的定界状态；未定界时 headerBlockLength/messageLength 均无意义
-            bool isMessageFramed = false;
-            std::size_t headerBlockLength = 0;
-            std::size_t messageLength = 0;
-            std::size_t fedLength = 0;
+            // 接收窗口里尚未交给解析器的字节数。窗口只用来「接住刚到的字节」：正文由解析器
+            // 边收边存，跨读的半行也由解析器自己拼，因此这里永远是「窗口开头的一段」，
+            // 解析器消费多少就把后面剩的挪到开头，不需要按报文体量扩容
+            std::size_t windowLength = 0;
 
             bool keepAlive = true;
-
-            // 前移有效区到缓冲区开头。注意 fedLength 不随之清零：它统计的是「本条报文已交给
-            // 解析器多少字节」，与内存位置无关，报文结束复位时由下面第二步之后的分支统一归零
-            const auto compactReceiveBuffer = [&readOffset, &receiveBuffer, &usedLength]()
-            {
-                if (readOffset == 0)
-                {
-                    return;
-                }
-                std::copy(receiveBuffer.begin() + static_cast<std::ptrdiff_t>(readOffset),
-                          receiveBuffer.begin() + static_cast<std::ptrdiff_t>(usedLength),
-                          receiveBuffer.begin());
-                usedLength -= readOffset;
-                readOffset = 0;
-            };
 
             // 发出响应：把「头部块 + 正文」作为两段提交，正文因此不必先拷进头部块。
             // 传输层支持聚合写（AsyncSocket）时是一次系统调用提交两段；TLS 记录层只接受
@@ -333,8 +248,8 @@ namespace AsynGyanis::Net
                 }
             };
 
-            // 读一次网络字节并追加到有效区末尾。返回 0 表示对端正常关闭，负值表示连接不可用
-            const auto readIntoBuffer = [&compactReceiveBuffer, &isAlive, &receiveBuffer, &socket, &usedLength](const std::size_t minimumExtraLength) -> Core::Task<ssize_t>
+            // 读一次网络字节到窗口剩余空间。返回 0 表示对端正常关闭，负值表示连接不可用
+            const auto readIntoWindow = [&isAlive, &receiveBuffer, &socket, &windowLength]() -> Core::Task<ssize_t>
             {
                 // 挂起前先复查存活：对端断开或被服务器强制关闭时不该再多读一次
                 if (!isAlive())
@@ -342,39 +257,17 @@ namespace AsynGyanis::Net
                     co_return -1;
                 }
 
-                // 先丢弃已经交给解析器的前段：不这么做，长正文会把缓冲区一路顶到整条报文的长度
-                compactReceiveBuffer();
-
-                const std::size_t requiredCapacity = usedLength + minimumExtraLength;
-                if (requiredCapacity > receiveBuffer.size())
+                // 窗口挡满时才需要读：调用点保证「窗口里没有未解析的字节」到这里来，
+                // 因此下面这两句是把窗口整体腾空，而不是在已有数据后面追加
+                if (receiveBuffer.size() == 0)
                 {
-                    // 几何增长：每次多要 8 KiB 会把「凑齐一个长头部」读成 O(n²) 次系统调用
-                    std::size_t desiredCapacity = receiveBuffer.size() == 0 ? kInitialReceiveBufferLength : receiveBuffer.size();
-                    while (desiredCapacity < requiredCapacity)
-                    {
-                        desiredCapacity *= 2;
-                    }
-                    // 硬上限兜底：定界器会在更早的位置给出 431，走到这里说明对端在灌无结尾的头部
-                    if (desiredCapacity > kMaximumReceiveBufferLength)
-                    {
-                        desiredCapacity = kMaximumReceiveBufferLength;
-                    }
-                    if (desiredCapacity <= usedLength)
-                    {
-                        co_return -1;
-                    }
-                    receiveBuffer.resize(desiredCapacity);
+                    receiveBuffer.resize(kReceiveWindowLength);
                 }
-
-                const std::size_t writableLength = receiveBuffer.size() - usedLength;
-                if (writableLength == 0)
-                {
-                    co_return -1;
-                }
+                windowLength = 0;
 
                 try
                 {
-                    co_return co_await socket.asyncReceive(receiveBuffer.data() + usedLength, writableLength);
+                    co_return co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
                 } catch (const std::exception &)
                 {
                     // 传输层读失败（对端 RST、描述符被 close() 关掉、TLS 记录错误）一律视为连接不可用：
@@ -385,117 +278,52 @@ namespace AsynGyanis::Net
 
             while (keepAlive && isAlive())
             {
-                // ---------------- 第一步：定界。头部块没收齐就不会往下走 ----------------
-                while (!isMessageFramed)
+                // ---------------- 第一步：把窗口里的字节交给解析器 ----------------
+                // 窗口空才去读：解析器在 NeedMore 时会把喂进去的字节全部消费掉，因此「窗口里还有
+                // 未解析字节」只可能出现在 Done 之后（剩下的属于下一条报文），此时应当先解析它
+                if (windowLength == 0)
                 {
-                    const FramingResult framing = frameRequestMessage(receiveBuffer.data() + readOffset, usedLength - readOffset);
-
-                    if (framing.outcome == FrameOutcome::Complete)
-                    {
-                        isMessageFramed   = true;
-                        headerBlockLength = framing.headerBlockLength;
-                        messageLength     = framing.messageLength;
-                        break;
-                    }
-
-                    // 超限与非法在此收口：回完 4xx 就断连，不给对端继续灌字节的机会。
-                    // 此时还没有可信的请求对象，协议版本只能按本服务器支持的 1.1 写
-                    if (framing.outcome != FrameOutcome::NeedMore)
-                    {
-                        HttpResponse errorResponse;
-                        writeFramingErrorResponse(errorResponse, framing.outcome);
-                        errorResponse.setHeader("connection", "close");
-
-                        // 本分支直接结束会话，因此不再回填 keepAlive：发完这一句就收口
-                        co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
-                        co_return;
-                    }
-
-                    // 已缓冲的字节数够到头部块上限却还没出现结尾空行：现在就收口。
-                    // 不抢先判一下的话，下一步的读会因为「缓冲区再也长不大」返回连接不可用，
-                    // 431 就退成了静默断连，客户端根本不知道是自己头部太长
-                    if (usedLength - readOffset >= kMaximumHeaderBlockLength)
-                    {
-                        HttpResponse headerTooLargeResponse;
-                        writeFramingErrorResponse(headerTooLargeResponse, FrameOutcome::HeaderBlockTooLarge);
-                        headerTooLargeResponse.setHeader("connection", "close");
-
-                        co_await sendResponse(headerTooLargeResponse.serializeHead(), headerTooLargeResponse.body());
-                        co_return;
-                    }
-
-                    const ssize_t receivedLength = co_await readIntoBuffer(kInitialReceiveBufferLength);
+                    const ssize_t receivedLength = co_await readIntoWindow();
                     if (receivedLength <= 0)
                     {
-                        // 对端正常关闭（0）或连接不可用（负值）：半截头部不值得回包，直接结束会话
+                        // 对端正常关闭（0）或连接不可用（负值）：半截报文不值得回包，直接结束会话
                         co_return;
                     }
-                    usedLength += static_cast<std::size_t>(receivedLength);
+                    windowLength = static_cast<std::size_t>(receivedLength);
                 }
 
-                // ---------------- 第二步：按「不超过报文结尾」的切片喂给解析器 ----------------
-                const std::size_t availableLength = usedLength - readOffset;
-                if (availableLength == 0)
+                const ParseStatus status = parser.parse(receiveBuffer.data(), windowLength);
+                const std::size_t consumedLength = parser.consumedByteCount();
+
+                // 契约：NeedMore 意味着本段输入已被全部消费。若一个字节都没消费却还要更多，
+                // 窗口就无法推进，这一轮会变成死循环——宁可当场报错，也不要静默转圈
+                if (status == ParseStatus::NeedMore && consumedLength == 0)
                 {
-                    // 缓冲区已被解析器吃空而报文还没结束：正文仍在路上，先去读
-                    const ssize_t receivedLength = co_await readIntoBuffer(kInitialReceiveBufferLength);
-                    if (receivedLength <= 0)
+                    throw Base::LogicException("HttpSession: 解析器未消费任何字节却要求更多输入，窗口无法推进");
+                }
+
+                // 已消费的前缀挪掉：Done 之后剩下的字节正是流水线里的下一条报文
+                if (consumedLength != 0)
+                {
+                    const std::size_t unconsumedLength = windowLength - consumedLength;
+                    if (unconsumedLength != 0)
                     {
-                        co_return;
+                        std::memmove(receiveBuffer.data(), receiveBuffer.data() + consumedLength, unconsumedLength);
                     }
-                    usedLength += static_cast<std::size_t>(receivedLength);
-                    continue;
+                    windowLength = unconsumedLength;
                 }
-
-                std::size_t sliceLength = messageLength - fedLength;
-                if (sliceLength > availableLength)
-                {
-                    sliceLength = availableLength;
-                }
-
-                const ParseStatus status = parser.parse(receiveBuffer.data() + readOffset, sliceLength);
-
-                // 交出去的字节一律按已消费处理：llhttp 返回 HPE_OK 的定义就是「输入已全部吃进状态机」，
-                // 而 Done/Error 之后的剩余字节由各分支处置，既不重算也不漏算
-                readOffset += sliceLength;
-                fedLength  += sliceLength;
 
                 if (status == ParseStatus::NeedMore)
                 {
-                    // 喂完了定界器认定的整条报文却还没完成，只能是两者对边界的判断不一致
-                    // （典型场景：客户端谎报 Content-Length 报小了）。此时留在缓冲区里的字节
-                    // 归属不明，绝不能再当下一条报文解析
-                    if (fedLength >= messageLength)
-                    {
-                        HttpResponse errorResponse;
-                        errorResponse.setStatus(400);
-                        errorResponse.setBody("Bad Request: Inconsistent Message Length");
-                        errorResponse.setHeader("content-type", "text/plain");
-                        errorResponse.setHeader("connection", "close");
-
-                        co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
-                        co_return;
-                    }
                     continue;
                 }
 
                 if (status == ParseStatus::Error)
                 {
-                    // 出错即结束会话（不 reset 后接着复用同一条连接）。超限与报文非法分开回：
-                    // 前者说明形态合法但体量越界（431/413），后者是根本读不懂（400）
+                    // 出错即结束会话（不 reset 后接着复用同一条连接）。状态码按解析器给出的
+                    // 失败类别映射：形态合法只是体量越界回 431/413，缺长度回 411，其余回 400
                     HttpResponse errorResponse;
-                    const bool isErrorInsideHeader = fedLength <= headerBlockLength;
-                    if (parser.isLimitExceeded())
-                    {
-                        errorResponse.setStatus(isErrorInsideHeader ? 431 : 413);
-                        errorResponse.setBody(isErrorInsideHeader ? "Request Header Fields Too Large" : "Payload Too Large");
-                    } else
-                    {
-                        errorResponse.setStatus(400);
-                        errorResponse.setBody("Bad Request");
-                    }
-                    errorResponse.setHeader("content-type", "text/plain");
-                    errorResponse.setHeader("connection", "close");
+                    writeParseErrorResponse(errorResponse, parser.errorKind());
 
                     co_await sendResponse(errorResponse.serializeHead(), errorResponse.body());
 
@@ -567,23 +395,10 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                // 定界长度与实际喂入长度不一致 = 客户端谎报了长度：多出来的字节归属不明，
-                // 应答已经发出，就此收口，不再冒险把它当成下一条报文的开头
-                if (fedLength != messageLength)
-                {
-                    co_return;
-                }
-
                 // ---------------- 第四步：为下一条报文复位 ----------------
-                // 复位顺序固定：先清解析器（连带把请求对象重置成干净壳子），再清定界游标，
-                // 最后压缩缓冲——此刻 [readOffset, usedLength) 里剩的正是一条流水线包进来的下一条报文
+                // 复位解析器（连带把请求对象重置成干净壳子）。窗口里若还有字节，那是流水线
+                // 包进来的下一条报文，下一轮循环直接接着解析
                 parser.reset();
-                isMessageFramed   = false;
-                headerBlockLength = 0;
-                messageLength     = 0;
-                fedLength         = 0;
-
-                compactReceiveBuffer();
             }
         }
     } // namespace detail

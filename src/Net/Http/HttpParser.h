@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Net/Http/HttpParseErrorKind.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/ParseStatus.h"
 
@@ -98,6 +99,18 @@ namespace AsynGyanis::Net
         HttpRequest &request();
 
         /**
+         * @brief 取回最近一次 parse() 调用实际消费的字节数
+         *
+         * @details 这是「报文到哪里结束」的唯一出处：Done 之后，喂进去的这段数据里前
+         *          consumedByteCount() 个字节属于本条报文，排在后面的字节属于流水线里的
+         *          下一条报文（本次调用一个都没吃，留给调用方自己留好）。调用方据此把缓冲区
+         *          的已消费前缀挪掉，下一轮接着解析剩下的。
+         * @return std::size_t 已消费字节数；调用失败或已完成之后再喂数据时为 0
+         * @see parse()
+         */
+        [[nodiscard]] std::size_t consumedByteCount() const;
+
+        /**
          * @brief 检查解析器是否处于错误状态。
          * @return true 表示发生过错误（含超出资源上限），false 表示无错误
          */
@@ -117,6 +130,13 @@ namespace AsynGyanis::Net
          * @return 面向使用者的中文错误文本；无错误时为空串
          */
         [[nodiscard]] std::string errorMessage() const;
+
+        /**
+         * @brief 获取本次失败的类别
+         * @details 上层据它决定回哪个状态码（400/431/413/411），不必去匹配错误文案
+         * @return HttpParseErrorKind 失败类别；未失败时为 None
+         */
+        [[nodiscard]] HttpParseErrorKind errorKind() const;
 
     private:
         /**
@@ -176,16 +196,35 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool parseContentLength(std::string_view value);
 
         /**
-         * @brief 记录一次协议级非法（上层据此回 400）
+         * @brief 记录一次协议级非法（Malformed，上层回 400）
          * @param message 中文错误详情
          */
-        void failProtocol(std::string message);
+        void failMalformed(std::string message);
 
         /**
-         * @brief 记录一次资源上限失败（上层据此回 431/413）
+         * @brief 记录一次头部超限（HeaderTooLarge，上层回 431）
          * @param message 中文错误详情，须含具体上限数值
          */
-        void failLimit(std::string message);
+        void failHeaderTooLarge(std::string message);
+
+        /**
+         * @brief 记录一次正文超限（BodyTooLarge，上层回 413）
+         * @param message 中文错误详情，须含具体上限数值
+         */
+        void failBodyTooLarge(std::string message);
+
+        /**
+         * @brief 记录一次「分块请求体不支持」（ChunkedNotSupported，上层回 411）
+         * @param message 中文错误详情
+         */
+        void failChunkedNotSupported(std::string message);
+
+        /**
+         * @brief 统一的失败记录：置粘滞错误态，并记下类别与中文详情
+         * @param errorKind 失败类别
+         * @param message 中文错误详情
+         */
+        void recordFailure(HttpParseErrorKind errorKind, std::string message);
 
         /**
          * @brief 头部块结束：按有无 Content-Length 决定直接完成还是转入正文阶段
@@ -235,8 +274,9 @@ namespace AsynGyanis::Net
         bool        m_hasContentLength{false}; ///< 是否已见过 Content-Length（用于比对重复值）
 
         bool        m_hasError{false};        ///< 是否已发生解析错误
-        bool        m_isLimitExceeded{false}; ///< 错误是否由资源上限触发
+        HttpParseErrorKind m_errorKind{HttpParseErrorKind::None}; ///< 失败类别（决定上层回哪个状态码）
         std::string m_errorMessage;           ///< 面向使用者的中文错误描述
+        std::size_t m_consumedByteCount{0};   ///< 最近一次 parse() 实际消费的字节数
 
         // 资源上限：全部按「正常流量远达不到、恶意流量立刻撞线」的口径取值，单位统一为字节。
         // 任何一项超限都走 Error + isLimitExceeded()，绝不静默截断后继续解析

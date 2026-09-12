@@ -24,8 +24,7 @@ namespace AsynGyanis::Net
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。基类那份仅承担「存活位 + 取消源」
         Core::Connection(Core::AsyncSocket(loop, kInvalidSocketDescriptor)),
         m_tlsSocket(std::move(tlsSocket)),
-        m_router(router),
-        m_receiveBuffer(detail::kInitialReceiveBufferLength)
+        m_router(router)
     {
     }
 

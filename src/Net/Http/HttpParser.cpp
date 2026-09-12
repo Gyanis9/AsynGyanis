@@ -147,12 +147,14 @@ namespace AsynGyanis::Net
         // 会被当作新报文的开头，把上一条已定稿的结果改坏
         if (m_stage == Stage::Complete)
         {
+            m_consumedByteCount = 0;
             return ParseStatus::Done;
         }
 
         // 错误粘滞：非 reset() 不能恢复，调用方要么重置要么断开连接
         if (m_stage == Stage::Failed)
         {
+            m_consumedByteCount = 0;
             return ParseStatus::Error;
         }
 
@@ -168,7 +170,7 @@ namespace AsynGyanis::Net
                 // 声明 1 字节然后狂发数据同样能撑爆内存
                 if (m_body.size() + chunkLength > kMaximumBodySize)
                 {
-                    failLimit(std::format("请求体超出上限 {} 字节", kMaximumBodySize));
+                    failBodyTooLarge(std::format("请求体超出上限 {} 字节", kMaximumBodySize));
                     break;
                 }
 
@@ -208,8 +210,10 @@ namespace AsynGyanis::Net
 
         if (m_stage == Stage::Failed)
         {
+            m_consumedByteCount = consumed;
             return ParseStatus::Error;
         }
+        m_consumedByteCount = consumed;
         return m_stage == Stage::Complete ? ParseStatus::Done : ParseStatus::NeedMore;
     }
 
@@ -222,8 +226,9 @@ namespace AsynGyanis::Net
 
         m_stage    = Stage::RequestLine;
         m_hasError = false;
-        m_isLimitExceeded    = false;
+        m_errorKind = HttpParseErrorKind::None;
         m_errorMessage.clear();
+        m_consumedByteCount = 0;
     }
 
     HttpRequest &HttpParser::request()
@@ -238,12 +243,24 @@ namespace AsynGyanis::Net
 
     bool HttpParser::isLimitExceeded() const
     {
-        return m_isLimitExceeded;
+        // 「超限」是失败类别的一个子集：头部越界（431）与正文越界（413）都算，
+        // 二者都说明报文形态合法、只是体量太大
+        return m_errorKind == HttpParseErrorKind::HeaderTooLarge || m_errorKind == HttpParseErrorKind::BodyTooLarge;
     }
 
     std::string HttpParser::errorMessage() const
     {
         return m_errorMessage;
+    }
+
+    HttpParseErrorKind HttpParser::errorKind() const
+    {
+        return m_errorKind;
+    }
+
+    std::size_t HttpParser::consumedByteCount() const
+    {
+        return m_consumedByteCount;
     }
 
     bool HttpParser::takeLine(const char *const data, const std::size_t length, std::size_t &consumed, std::string_view &line)
@@ -279,7 +296,7 @@ namespace AsynGyanis::Net
             const auto lineEnd = static_cast<const char *>(newline);
             if (lineEnd == begin || lineEnd[-1] != '\r')
             {
-                failProtocol("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
+                failMalformed("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
                 return false;
             }
 
@@ -305,7 +322,7 @@ namespace AsynGyanis::Net
 
         if (m_pendingLine.size() < 2 || m_pendingLine[m_pendingLine.size() - 2] != '\r')
         {
-            failProtocol("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
+            failMalformed("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
             return false;
         }
 
@@ -321,7 +338,7 @@ namespace AsynGyanis::Net
         {
             if (length > kMaximumRequestLineLength)
             {
-                failLimit(std::format("请求行超出上限 {} 字节", kMaximumRequestLineLength));
+                failHeaderTooLarge(std::format("请求行超出上限 {} 字节", kMaximumRequestLineLength));
                 return false;
             }
             return true;
@@ -329,7 +346,7 @@ namespace AsynGyanis::Net
 
         if (length > kMaximumHeaderLineLength)
         {
-            failLimit(std::format("头部行超出上限 {} 字节", kMaximumHeaderLineLength));
+            failHeaderTooLarge(std::format("头部行超出上限 {} 字节", kMaximumHeaderLineLength));
             return false;
         }
         return true;
@@ -343,7 +360,7 @@ namespace AsynGyanis::Net
         const std::size_t lastSpace  = line.rfind(' ');
         if (firstSpace == std::string_view::npos || firstSpace == lastSpace)
         {
-            failProtocol("HTTP 报文解析失败：请求行必须是「方法 目标 版本」三段，以空格分隔");
+            failMalformed("HTTP 报文解析失败：请求行必须是「方法 目标 版本」三段，以空格分隔");
             return false;
         }
 
@@ -353,33 +370,33 @@ namespace AsynGyanis::Net
 
         if (methodText.empty() || methodText.size() > kMaximumMethodLength)
         {
-            failProtocol(std::format("HTTP 报文解析失败：请求方法长度必须在 1 到 {} 字节之间", kMaximumMethodLength));
+            failMalformed(std::format("HTTP 报文解析失败：请求方法长度必须在 1 到 {} 字节之间", kMaximumMethodLength));
             return false;
         }
         for (const char character: methodText)
         {
             if (!isTokenCharacter(static_cast<unsigned char>(character)))
             {
-                failProtocol("HTTP 报文解析失败：请求方法只能由 token 字符组成");
+                failMalformed("HTTP 报文解析失败：请求方法只能由 token 字符组成");
                 return false;
             }
         }
 
         if (targetText.empty())
         {
-            failProtocol("HTTP 报文解析失败：请求目标不能为空");
+            failMalformed("HTTP 报文解析失败：请求目标不能为空");
             return false;
         }
         if (targetText.size() > kMaximumUriLength)
         {
-            failLimit(std::format("请求 URI 超出上限 {} 字节", kMaximumUriLength));
+            failHeaderTooLarge(std::format("请求 URI 超出上限 {} 字节", kMaximumUriLength));
             return false;
         }
         for (const char character: targetText)
         {
             if (!isTargetCharacter(static_cast<unsigned char>(character)))
             {
-                failProtocol("HTTP 报文解析失败：请求目标含非法字符（空格与控制字符都不允许）");
+                failMalformed("HTTP 报文解析失败：请求目标含非法字符（空格与控制字符都不允许）");
                 return false;
             }
         }
@@ -393,7 +410,7 @@ namespace AsynGyanis::Net
                 (versionText[5] == '0' || versionText[5] == '1') && versionText[6] == '.' && isDigit(versionText[7]);
         if (!isVersionWellFormed)
         {
-            failProtocol("HTTP 报文解析失败：版本必须是 HTTP/1.x 或 HTTP/0.x 的形式");
+            failMalformed("HTTP 报文解析失败：版本必须是 HTTP/1.x 或 HTTP/0.x 的形式");
             return false;
         }
 
@@ -418,14 +435,14 @@ namespace AsynGyanis::Net
         // 否则同一个头部名可能被两个来源写出不同含义（请求走私的经典入口）
         if (line.front() == ' ' || line.front() == '\t')
         {
-            failProtocol("HTTP 报文解析失败：不支持折行（obs-fold）头部，请把值写在同一行");
+            failMalformed("HTTP 报文解析失败：不支持折行（obs-fold）头部，请把值写在同一行");
             return false;
         }
 
         const std::size_t colonPosition = line.find(':');
         if (colonPosition == std::string_view::npos || colonPosition == 0)
         {
-            failProtocol("HTTP 报文解析失败：头部行必须是「名: 值」的形式");
+            failMalformed("HTTP 报文解析失败：头部行必须是「名: 值」的形式");
             return false;
         }
 
@@ -435,27 +452,27 @@ namespace AsynGyanis::Net
             // 冒号前若有空白也会落到这里：token 字符集不含 SP 与 HTAB
             if (!isTokenCharacter(static_cast<unsigned char>(character)))
             {
-                failProtocol("HTTP 报文解析失败：头部名只能由 token 字符组成（冒号前不得有空白）");
+                failMalformed("HTTP 报文解析失败：头部名只能由 token 字符组成（冒号前不得有空白）");
                 return false;
             }
         }
         if (name.size() > kMaximumHeaderFieldNameLength)
         {
-            failLimit(std::format("请求头部名超出上限 {} 字节", kMaximumHeaderFieldNameLength));
+            failHeaderTooLarge(std::format("请求头部名超出上限 {} 字节", kMaximumHeaderFieldNameLength));
             return false;
         }
 
         const std::string_view value = trimOptionalWhitespace(line.substr(colonPosition + 1));
         if (value.size() > kMaximumHeaderFieldValueLength)
         {
-            failLimit(std::format("请求头部值超出上限 {} 字节", kMaximumHeaderFieldValueLength));
+            failHeaderTooLarge(std::format("请求头部值超出上限 {} 字节", kMaximumHeaderFieldValueLength));
             return false;
         }
         for (const char character: value)
         {
             if (!isHeaderValueCharacter(static_cast<unsigned char>(character)))
             {
-                failProtocol("HTTP 报文解析失败：头部值含非法控制字符");
+                failMalformed("HTTP 报文解析失败：头部值含非法控制字符");
                 return false;
             }
         }
@@ -464,12 +481,12 @@ namespace AsynGyanis::Net
         // 架不住上百条头部叠出来的总量。两道判定都在落库之前，拒绝路径不留半成品
         if (m_headerBlockLength + name.size() + value.size() > kMaximumHeaderBlockLength)
         {
-            failLimit(std::format("请求头部总长超出上限 {} 字节", kMaximumHeaderBlockLength));
+            failHeaderTooLarge(std::format("请求头部总长超出上限 {} 字节", kMaximumHeaderBlockLength));
             return false;
         }
         if (m_headerFieldCount >= kMaximumHeaderCount)
         {
-            failLimit(std::format("请求头部条数超出上限 {} 条", kMaximumHeaderCount));
+            failHeaderTooLarge(std::format("请求头部条数超出上限 {} 条", kMaximumHeaderCount));
             return false;
         }
 
@@ -483,7 +500,7 @@ namespace AsynGyanis::Net
             }
         } else if (equalsIgnoringCase(name, "transfer-encoding") && containsListToken(value, "chunked"))
         {
-            failProtocol("HTTP 报文解析失败：不支持分块请求体（Transfer-Encoding: chunked），请改用 Content-Length");
+            failChunkedNotSupported("HTTP 报文解析失败：不支持分块请求体（Transfer-Encoding: chunked），请改用 Content-Length");
             return false;
         }
 
@@ -497,7 +514,7 @@ namespace AsynGyanis::Net
     {
         if (value.empty())
         {
-            failProtocol("HTTP 报文解析失败：Content-Length 不能为空");
+            failMalformed("HTTP 报文解析失败：Content-Length 不能为空");
             return false;
         }
 
@@ -510,7 +527,7 @@ namespace AsynGyanis::Net
         // 溢出则返回 result_out_of_range
         if (parseResult.ec != std::errc{} || parseResult.ptr != end)
         {
-            failProtocol("HTTP 报文解析失败：Content-Length 只能是十进制数字");
+            failMalformed("HTTP 报文解析失败：Content-Length 只能是十进制数字");
             return false;
         }
 
@@ -518,7 +535,15 @@ namespace AsynGyanis::Net
         // 收端各自按己方理解切包正是请求走私的温床。这一口径与上层定界器一致
         if (m_hasContentLength && parsedLength != m_contentLength)
         {
-            failProtocol("HTTP 报文解析失败：Content-Length 出现多个不一致的取值");
+            failMalformed("HTTP 报文解析失败：Content-Length 出现多个不一致的取值");
+            return false;
+        }
+
+        // 声明的长度本身就超限：现在判错，而不是等正文真的收满 8 MiB 才判——
+        // 那样等于按对端的声明替它预留内存，声明一个天文数字就能把缓冲区耗光
+        if (parsedLength > kMaximumBodySize)
+        {
+            failBodyTooLarge(std::format("请求体声明长度 {} 字节超出上限 {} 字节", parsedLength, kMaximumBodySize));
             return false;
         }
 
@@ -527,26 +552,38 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    void HttpParser::failProtocol(std::string message)
+    void HttpParser::failMalformed(std::string message)
     {
-        m_hasError        = true;
-        m_isLimitExceeded = false;
-        m_errorMessage    = std::move(message);
-        m_stage           = Stage::Failed;
+        recordFailure(HttpParseErrorKind::Malformed, std::move(message));
     }
 
-    void HttpParser::failLimit(std::string message)
+    void HttpParser::failHeaderTooLarge(std::string message)
     {
-        m_hasError        = true;
-        m_isLimitExceeded = true;
-        m_errorMessage    = std::move(message);
-        m_stage           = Stage::Failed;
+        recordFailure(HttpParseErrorKind::HeaderTooLarge, std::move(message));
+    }
+
+    void HttpParser::failBodyTooLarge(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::BodyTooLarge, std::move(message));
+    }
+
+    void HttpParser::failChunkedNotSupported(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::ChunkedNotSupported, std::move(message));
+    }
+
+    void HttpParser::recordFailure(const HttpParseErrorKind errorKind, std::string message)
+    {
+        m_hasError     = true;
+        m_errorKind    = errorKind;
+        m_errorMessage = std::move(message);
+        m_stage        = Stage::Failed;
     }
 
     void HttpParser::finishHeaderBlock()
     {
         // 没有 Content-Length 的报文（GET/HEAD/DELETE 一类）在头部块结束时即完整，
-        // 上层定界器给出的边界与这里必须一致：多出来的字节归下一条报文
+        // 排在后面的字节归下一条报文，解析器一个都不吃
         if (m_contentLength == 0)
         {
             commitMessage();
