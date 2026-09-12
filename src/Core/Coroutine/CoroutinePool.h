@@ -107,9 +107,20 @@ namespace AsynGyanis::Core
         [[nodiscard]] size_t allocatedCount() const noexcept;
 
     private:
+        // 规格分档：协程帧大小分布很宽（框架里实测从几十字节到 2 KB 以上），单一规格必然二选一地亏——
+        // 按小的定，大帧每次都要向全局分配器要内存；按大的定，小帧要占着大块、活跃连接一多就是成倍常驻内存。
+        // 两档把两侧都盖住，仍超过大档的极少数帧才回退全局堆
+        static constexpr size_t kDefaultBlockSize     = 256;   ///< 默认（小档）块大小：几十到两百字节的小帧用这一档，不浪费
+        static constexpr size_t kLargeBlockSize       = 2048;  ///< 大档块大小：框架里路由、会话这类帧实测 1.2–2.2 KB，小档装不下，落到全局堆就是每请求一次分配器调用
+        static constexpr size_t kTierCount            = 2;      ///< 规格档数：小档与大档各有自己的空闲链表、每线程缓存与内存段
+        static constexpr size_t kDefaultInitialBlocks = 128;   ///< 首次扩容的块数
+        static constexpr size_t kMaximumTotalBlocks   = 16384; ///< 块数上限（两档合计），小块规格下约 4MB
+        static constexpr size_t kLocalCacheCapacity   = 64;    ///< 每线程每档缓存上限
+        static constexpr size_t kMaximumChunkCount    = 64;    ///< 段数上限（两档合计；倍增扩容下 16384 块只需约 8 段）
+
         /**
          * @brief 构造内存池并预分配若干块
-         * @param blockSize 每个内存块的大小（字节）
+         * @param blockSize 小档块大小（字节），大档固定取 kLargeBlockSize
          * @param initialBlocks 启动时一次性切分的块数
          */
         explicit CoroutinePool(size_t blockSize, size_t initialBlocks);
@@ -121,26 +132,29 @@ namespace AsynGyanis::Core
         ~CoroutinePool();
 
         /**
-         * @brief 一段连续的申请内存，被切分为 blockCount 个 blockSize 大小的块
+         * @brief 一段连续的申请内存，被切分为 blockCount 个同规格的块
          */
         struct MemoryChunk
         {
             std::byte *data       = nullptr; ///< 内存段首地址
             size_t     blockCount = 0;       ///< 本段切分出的块数
+            size_t     blockSize  = 0;       ///< 本段每块的大小：归属判定按段自己的规格算边界，档位不同则规格不同
         };
 
         /**
-         * @brief 线程本地空闲块缓存
+         * @brief 线程本地空闲块缓存，按规格档各有一条链
          * @details 块用侵入式单链表串起来（空闲块的头部 8 字节存下一块地址），
          *          因此稳态下分配与归还只改几个指针，不取锁、不做原子操作。
+         * @note 两档必须分开成链：混在一条链上就会出现「大块的指针按小档发放」，
+         *       调用方按小档写入会立刻越界——这不是浪费，是内存踩踏。
          */
         struct ThreadCache
         {
-            void  *freeHead  = nullptr; ///< 本线程空闲链表头（空闲块首字节存 next）
-            size_t freeCount = 0;       ///< 链表长度
+            std::array<void *, kTierCount>   freeHeads{};  ///< 各档的空闲链表头（空闲块首字节存 next）
+            std::array<size_t, kTierCount>   freeCounts{}; ///< 各档链表长度
 
             /**
-             * @brief 线程退出时把缓存里剩余的块全部归还全局池
+             * @brief 线程退出时把缓存里剩余的块按档全部归还全局池
              * @details 不归还的话，这些块会永久滞留在已经结束的线程上，本池又从不缩小，
              *          等于被泄漏；归还只需要一次取锁。
              */
@@ -154,30 +168,41 @@ namespace AsynGyanis::Core
         [[nodiscard]] static ThreadCache &threadCache() noexcept;
 
         /**
-         * @brief 向池中追加若干块，并把它们放入全局空闲链表
+         * @brief 判断请求大小落在哪一档
+         * @param requiredSize 请求的字节数
+         * @return size_t 档位下标；超过最大档（kLargeBlockSize）时返回 kTierCount
+         */
+        [[nodiscard]] size_t tierForSize(size_t requiredSize) const noexcept;
+
+        /**
+         * @brief 向池中追加若干块，并把它们放入指定档的全局空闲链表
+         * @param tier 目标档位
          * @param count 期望新增的块数，超出上限时按剩余容量截断
          * @return size_t 实际追加的块数；已到 kMaximumTotalBlocks 上限或段数用尽时为 0
          * @note 调用方必须持有 m_mutex；返回 0 时调用方应改从全局堆分配
          */
-        size_t expand(size_t count);
+        size_t expand(size_t tier, size_t count);
 
         /**
-         * @brief 从全局空闲链表取一块，内部取锁
-         * @return void* 取到的块；全局链表为空时返回 nullptr
+         * @brief 从指定档的全局空闲链表取一块，内部取锁
+         * @param tier 目标档位
+         * @return void* 取到的块；该档全局链表为空时返回 nullptr
          */
-        [[nodiscard]] void *takeFromGlobal();
+        [[nodiscard]] void *takeFromGlobal(size_t tier);
 
         /**
-         * @brief 从全局池批量搬运若干块填充本线程缓存，内部取锁
+         * @brief 从全局池批量搬运若干块填充本线程缓存的指定档，内部取锁
+         * @param tier 目标档位
          * @param cache 目标线程缓存
          */
-        void refillLocalCache(ThreadCache &cache);
+        void refillLocalCache(size_t tier, ThreadCache &cache);
 
         /**
-         * @brief 把一块放回全局空闲链表，要求调用方已持有 m_mutex
+         * @brief 把一块放回指定档的全局空闲链表，要求调用方已持有 m_mutex
+         * @param tier 目标档位
          * @param block 待归还的池内块
          */
-        void returnToGlobalUnlocked(void *block) noexcept;
+        void returnToGlobalUnlocked(size_t tier, void *block) noexcept;
 
         /**
          * @brief 判断指针是否属于本池，无锁
@@ -186,19 +211,13 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isOwnedBlock(const void *pointer) const noexcept;
 
-        static constexpr size_t kDefaultBlockSize     = 256;   ///< 默认块大小，覆盖典型协程帧
-        static constexpr size_t kDefaultInitialBlocks = 128;   ///< 首次扩容的块数
-        static constexpr size_t kMaximumTotalBlocks   = 16384; ///< 块数上限，256B × 16384 = 4MB
-        static constexpr size_t kLocalCacheCapacity   = 64;    ///< 每线程缓存上限（64 × 256B = 16KB）
-        static constexpr size_t kMaximumChunkCount    = 64;    ///< 段数上限（倍增扩容下 16384 块只需约 8 段）
-
-        size_t                          m_blockSize;               ///< 每个固定块的大小（字节）
+        size_t                          m_blockSize;               ///< 小档块大小（构造参数；大档固定 kLargeBlockSize）
         std::array<MemoryChunk, kMaximumChunkCount> m_chunks{};    ///< 内存段描述：先写描述、再发布段数量，故可无锁读
         std::atomic<size_t>             m_chunkCount{0};           ///< 已发布的内存段数量（release 发布，acquire 读取）
-        std::atomic<size_t>             m_allocatedCount{0};       ///< 已切分的块总数（跨线程可读）
-        void                           *m_globalFreeHead = nullptr; ///< 全局空闲链表头（仅持锁访问）
-        size_t                          m_globalFreeCount = 0;     ///< 全局空闲链表长度
-        mutable std::mutex              m_mutex;                    ///< 只保护全局空闲链表与扩容
+        std::atomic<size_t>             m_allocatedCount{0};       ///< 已切分的块总数（两档合计，跨线程可读）
+        std::array<void *, kTierCount>  m_globalFreeHeads{};       ///< 各档全局空闲链表头（仅持锁访问）
+        std::array<size_t, kTierCount>  m_globalFreeCounts{};      ///< 各档全局空闲链表长度
+        mutable std::mutex              m_mutex;                   ///< 只保护全局空闲链表与扩容
     };
 
 } // namespace AsynGyanis::Core

@@ -10,7 +10,7 @@ namespace AsynGyanis::Core
     {
         // 启动时先备一批块：把「首次分配就扩容」这条冷路径提前到构造期
         const std::lock_guard lock(m_mutex);
-        expand(initialBlocks);
+        expand(0, initialBlocks);
     }
 
     CoroutinePool::~CoroutinePool()
@@ -39,49 +39,49 @@ namespace AsynGyanis::Core
 
     CoroutinePool::ThreadCache::~ThreadCache()
     {
-        if (freeHead == nullptr)
-        {
-            return;
-        }
-
         // 归还到全局池：不这么做的话这些块会滞留在已经结束的线程上再也拿不回来。
-        // 此处仍可安全调用 instance()：单例是「函数内静态指针 + 堆对象」，它本身从不析构
+        // 此处仍可安全调用 instance()：单例是「函数内静态指针 + 堆对象」，它本身从不析构。
+        // 按档分别归还——两档的块互不通用，混着还回去就是把大块的指针留给小档发放
         CoroutinePool &pool = instance();
         const std::lock_guard lock(pool.m_mutex);
-        while (freeHead != nullptr)
+        for (size_t tier = 0; tier < kTierCount; ++tier)
         {
-            void *const block = freeHead;
-            freeHead          = *static_cast<void **>(block);
-            pool.returnToGlobalUnlocked(block);
+            while (freeHeads[tier] != nullptr)
+            {
+                void *const block = freeHeads[tier];
+                freeHeads[tier]   = *static_cast<void **>(block);
+                pool.returnToGlobalUnlocked(tier, block);
+            }
+            freeCounts[tier] = 0;
         }
-        freeCount = 0;
     }
 
     void *CoroutinePool::allocate(const size_t requiredSize)
     {
-        // 超过块容量的请求交给全局堆：固定规格被大帧撑大会让后续所有分配跟着膨胀
-        if (requiredSize > m_blockSize)
+        // 超过最大档的请求交给全局堆：固定规格被大帧撑大会让后续所有分配跟着膨胀
+        const size_t tier = tierForSize(requiredSize);
+        if (tier >= kTierCount)
         {
             return ::operator new(requiredSize);
         }
 
         ThreadCache &cache = threadCache();
         // 本地缓存空才去碰全局池：稳态下（同一线程反复申请与释放）这一步不会发生
-        if (cache.freeHead == nullptr)
+        if (cache.freeHeads[tier] == nullptr)
         {
-            refillLocalCache(cache);
+            refillLocalCache(tier, cache);
         }
 
         // 池到达上限且本地缓存也没货时回退全局堆，保证 allocate() 永远能返回
-        if (cache.freeHead == nullptr)
+        if (cache.freeHeads[tier] == nullptr)
         {
             return ::operator new(requiredSize);
         }
 
         // 侵入式出栈：空闲块的头 8 字节存的正是下一块地址，取出后这段空间交还给使用者
-        void *const block = cache.freeHead;
-        cache.freeHead    = *static_cast<void **>(block);
-        --cache.freeCount;
+        void *const block     = cache.freeHeads[tier];
+        cache.freeHeads[tier] = *static_cast<void **>(block);
+        --cache.freeCounts[tier];
         return block;
     }
 
@@ -93,7 +93,8 @@ namespace AsynGyanis::Core
         }
 
         // 判定分支必须与 allocate() 完全一致，否则会把全局堆内存塞进空闲链表
-        if (requiredSize > m_blockSize)
+        const size_t tier = tierForSize(requiredSize);
+        if (tier >= kTierCount)
         {
             ::operator delete(pointer);
             return;
@@ -110,16 +111,27 @@ namespace AsynGyanis::Core
         ThreadCache &cache = threadCache();
         // 缓存满了就把多余的还给全局池：本线程的滞留量因此有上限，
         // 避免一个线程囤积大量空闲块而其他线程无块可用
-        if (cache.freeCount >= kLocalCacheCapacity)
+        if (cache.freeCounts[tier] >= kLocalCacheCapacity)
         {
             const std::lock_guard lock(m_mutex);
-            returnToGlobalUnlocked(pointer);
+            returnToGlobalUnlocked(tier, pointer);
             return;
         }
 
-        *static_cast<void **>(pointer) = cache.freeHead;
-        cache.freeHead                 = pointer;
-        ++cache.freeCount;
+        *static_cast<void **>(pointer) = cache.freeHeads[tier];
+        cache.freeHeads[tier]          = pointer;
+        ++cache.freeCounts[tier];
+    }
+
+    size_t CoroutinePool::tierForSize(const size_t requiredSize) const noexcept
+    {
+        // 小档之外一律进大档：档位判定在分配与回收两侧走同一份代码，因此不会串档。
+        // 超过大档的极少数帧（更大的会话帧、未来 HTTP/2 类实现）返回 kTierCount 交给全局堆
+        if (requiredSize <= m_blockSize)
+        {
+            return 0;
+        }
+        return requiredSize <= kLargeBlockSize ? 1 : kTierCount;
     }
 
     bool CoroutinePool::owns(const void *const pointer) const noexcept
@@ -137,7 +149,7 @@ namespace AsynGyanis::Core
         return m_allocatedCount.load(std::memory_order_relaxed);
     }
 
-    size_t CoroutinePool::expand(const size_t count)
+    size_t CoroutinePool::expand(const size_t tier, const size_t count)
     {
         // 上限保护：达到 kMaximumTotalBlocks 后不再扩张，返回 0 让调用方改走全局堆
         const size_t allocatedBlocks = m_allocatedCount.load(std::memory_order_relaxed);
@@ -153,53 +165,58 @@ namespace AsynGyanis::Core
         }
         const size_t newCount = std::min(count, kMaximumTotalBlocks - allocatedBlocks);
 
+        // 段内块规格由档位决定：小档段切 256 B 块、大档段切 2048 B 块，段描述里必须记下这一点——
+        // 归属判定要按「本段自己的块大小」算边界，用全池某一个规格去乘会把前一段的区间
+        // 越到后一段上（早期单规格实现没有这个问题，加档之后就有）
+        const size_t chunkBlockSize = tier == 0 ? m_blockSize : kLargeBlockSize;
+
         // 默认对齐即可满足协程帧要求：x64 上 ::operator new 的默认对齐为 16 字节，
         // 与 delete 的自然配对，避免带 align_val_t 分配却用不带对齐参数的释放
-        auto *const data = static_cast<std::byte *>(::operator new(m_blockSize * newCount));
+        auto *const data = static_cast<std::byte *>(::operator new(chunkBlockSize * newCount));
 
         // 顺序要紧：先写段描述、再以 release 发布段数量，最后才把块放进空闲链表。
         // 反过来会让别的线程先拿到块、却在释放时判定「不属于本池」而交给 ::operator delete，
         // 把池内存还给通用堆 —— 那是堆损坏
-        m_chunks[publishedChunks] = MemoryChunk{data, newCount};
+        m_chunks[publishedChunks] = MemoryChunk{data, newCount, chunkBlockSize};
         m_chunkCount.store(publishedChunks + 1, std::memory_order_release);
         m_allocatedCount.store(allocatedBlocks + newCount, std::memory_order_relaxed);
 
         for (size_t blockIndex = 0; blockIndex < newCount; ++blockIndex)
         {
-            returnToGlobalUnlocked(data + blockIndex * m_blockSize);
+            returnToGlobalUnlocked(tier, data + blockIndex * chunkBlockSize);
         }
         return newCount;
     }
 
-    void CoroutinePool::refillLocalCache(ThreadCache &cache)
+    void CoroutinePool::refillLocalCache(const size_t tier, ThreadCache &cache)
     {
         const std::lock_guard lock(m_mutex);
 
-        // 全局池为空时先扩容：按当前容量翻倍，摊薄连续分配时的扩容次数
-        if (m_globalFreeHead == nullptr)
+        // 该档的全局链表为空时先扩容：按当前容量翻倍，摊薄连续分配时的扩容次数
+        if (m_globalFreeHeads[tier] == nullptr)
         {
             const size_t allocatedBlocks = m_allocatedCount.load(std::memory_order_relaxed);
-            expand(allocatedBlocks > 0 ? allocatedBlocks : kDefaultInitialBlocks);
+            expand(tier, allocatedBlocks > 0 ? allocatedBlocks : kDefaultInitialBlocks);
         }
 
         // 一次性搬一批：把取锁频率摊薄到 1/kLocalCacheCapacity，而不是每次分配都取锁
-        while (cache.freeCount < kLocalCacheCapacity && m_globalFreeHead != nullptr)
+        while (cache.freeCounts[tier] < kLocalCacheCapacity && m_globalFreeHeads[tier] != nullptr)
         {
-            void *const block = m_globalFreeHead;
-            m_globalFreeHead  = *static_cast<void **>(block);
-            --m_globalFreeCount;
+            void *const block           = m_globalFreeHeads[tier];
+            m_globalFreeHeads[tier]     = *static_cast<void **>(block);
+            --m_globalFreeCounts[tier];
 
-            *static_cast<void **>(block) = cache.freeHead;
-            cache.freeHead               = block;
-            ++cache.freeCount;
+            *static_cast<void **>(block) = cache.freeHeads[tier];
+            cache.freeHeads[tier]        = block;
+            ++cache.freeCounts[tier];
         }
     }
 
-    void CoroutinePool::returnToGlobalUnlocked(void *const block) noexcept
+    void CoroutinePool::returnToGlobalUnlocked(const size_t tier, void *const block) noexcept
     {
-        *static_cast<void **>(block) = m_globalFreeHead;
-        m_globalFreeHead             = block;
-        ++m_globalFreeCount;
+        *static_cast<void **>(block) = m_globalFreeHeads[tier];
+        m_globalFreeHeads[tier]      = block;
+        ++m_globalFreeCounts[tier];
     }
 
     bool CoroutinePool::isOwnedBlock(const void *const pointer) const noexcept
@@ -210,9 +227,9 @@ namespace AsynGyanis::Core
         for (size_t chunkIndex = 0; chunkIndex < publishedChunks; ++chunkIndex)
         {
             const MemoryChunk &chunk = m_chunks[chunkIndex];
-            // 逐段用该段自身的块数计算边界：早期实现误用全池总块数，
-            // 会让前一段的判定区间越过自身末尾而错误认领后一段的指针
-            if (target >= chunk.data && target < chunk.data + chunk.blockCount * m_blockSize)
+            // 逐段用该段自身的块规格与块数计算边界：档位不同，段的块大小也不同，
+            // 拿全池统一的规格去算会让判定区间越界，错误认领相邻段的指针
+            if (target >= chunk.data && target < chunk.data + chunk.blockCount * chunk.blockSize)
             {
                 return true;
             }

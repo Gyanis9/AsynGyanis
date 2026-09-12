@@ -64,19 +64,48 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 超过块大小的请求回退到全局堆：仍然整段可写，归还也不报错（大协程帧不因池的块上限而不可用）
+     * @brief 小档装不下的帧由大档接手：仍然整段可写，且指针归属本池（不再是一次全局堆分配）
+     *
+     * @details 池按帧大小分两档：小档 256 B 装得下的小帧不浪费，大档 2048 B 接住框架里
+     *          路由、会话那类 1.2–2.2 KB 的帧。实测过：不分档时每请求有 5–7 个帧落到全局堆，
+     *          占每请求分配字节数的大头。
      */
-    TEST(CoroutinePool, AllocateLargerThanBlockSizeFallsBackToGlobalNew)
+    TEST(CoroutinePool, ServesOversizedFramesFromTheLargeTier)
     {
         auto &pool = CoroutinePool::instance();
 
-        // 超过块大小的请求应回退到全局 ::operator new 且仍可用
-        const size_t largeSize = pool.blockSize() * 2;
-        void *pointer = pool.allocate(largeSize);
+        // 两倍小档：小档装不下，应当由大档接手
+        const size_t oversized = pool.blockSize() * 2;
+        void        *pointer   = pool.allocate(oversized);
         ASSERT_NE(pointer, nullptr);
+        EXPECT_TRUE(pool.owns(pointer)) << "大档接手的帧仍应属于本池，否则每请求都要向全局分配器要内存";
 
-        std::memset(pointer, 0xEF, largeSize);
-        pool.deallocate(pointer, largeSize);
+        std::memset(pointer, 0xEF, oversized);
+        pool.deallocate(pointer, oversized);
+
+        // 归还之后同一档应当能再取到同一块（缓存复用），仍然可写
+        void *reused = pool.allocate(oversized);
+        ASSERT_NE(reused, nullptr);
+        EXPECT_TRUE(pool.owns(reused));
+        std::memset(reused, 0xEF, oversized);
+        pool.deallocate(reused, oversized);
+    }
+
+    /**
+     * @brief 两档都装不下的请求回退到全局堆：仍然整段可写，归还也不报错（超大帧不因池的规格而不可用）
+     */
+    TEST(CoroutinePool, AllocateAboveEveryTierFallsBackToGlobalNew)
+    {
+        auto &pool = CoroutinePool::instance();
+
+        // 十六倍小档（默认 4 KiB）：超过大档规格，只能向全局分配器要
+        const size_t hugeSize = pool.blockSize() * 16;
+        void        *pointer  = pool.allocate(hugeSize);
+        ASSERT_NE(pointer, nullptr);
+        EXPECT_FALSE(pool.owns(pointer)) << "超过最大档的帧应当来自全局堆";
+
+        std::memset(pointer, 0xEF, hugeSize);
+        pool.deallocate(pointer, hugeSize);
     }
 
     /**
