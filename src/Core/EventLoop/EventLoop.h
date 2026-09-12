@@ -10,6 +10,7 @@
 
 
 #include "Core/EventLoop/Epoll.h"
+#include "Core/EventLoop/TimerQueue.h"
 #include "Platform/IO/EventNotifier.h"
 #include "Core/Coroutine/Scheduler.h"
 
@@ -84,6 +85,12 @@ namespace AsynGyanis::Core
         [[nodiscard]] Scheduler &scheduler() noexcept;
 
         /**
+         * @brief 获取定时器队列（非常量引用）
+         * @return TimerQueue& 本循环唯一的定时器队列；Timer 只是它的轻量句柄
+         */
+        [[nodiscard]] TimerQueue &timerQueue() noexcept;
+
+        /**
          * @brief 检查事件循环是否正在运行
          * @return true 表示正处于 run() 循环中，false 表示已停止或尚未启动
          */
@@ -96,5 +103,8 @@ namespace AsynGyanis::Core
         int                     m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
         std::atomic<bool>       m_running;        ///< 循环是否正在运行中（原子标记）
         std::atomic<bool>       m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
+        /// 定时器队列。声明在最后 = 最先销毁：驱动协程与循环唯一的 timerfd 先于其余部件退出，
+        /// 收尾时不会再向调度器投递等待者
+        TimerQueue m_timerQueue;
     };
 }

@@ -46,19 +46,19 @@ namespace AsynGyanis::Net
         /**
          * @brief 构造监听器：创建监听套接字并预建退避定时器
          * @details 只创建资源，不绑定也不监听；调用方需显式依次调用 bind() 与 listen()。
-         *          退避用的定时器在此一次性建好，避免真正发生描述符耗尽时再去申请定时器而失败。
+         *          退避用的定时器在此一次性建好，避免真正发生描述符耗尽时再去做任何分配。
          * @param loop 关联的事件循环，负责 I/O 事件监控与协程唤醒
          * @param address 要监听的本地地址（IP 与端口）
-         * @throws Base::SystemException 监听套接字或定时器底层句柄创建失败
-         * @note 本对象会占用两个描述符：一个监听套接字、一个定时器
+         * @throws Base::SystemException 监听套接字创建失败
+         * @note 本对象只占用一个描述符（监听套接字）：定时器是循环级定时器队列的句柄，不额外占描述符
          */
         TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address);
 
         /**
-         * @brief 默认析构，随成员生命周期自动关闭监听套接字并回收定时器
+         * @brief 默认析构，随成员生命周期自动关闭监听套接字
          *
-         * @details 关闭监听套接字由 Core::AsyncSocket 的析构完成，定时器析构时会向事件循环
-         *          注销自己的描述符，因此事件循环必须比本对象存活得更久。
+         * @details 关闭监听套接字由 Core::AsyncSocket 的析构完成；定时器本身不持有描述符，
+         *          未到期的等待随事件循环一起收尾。事件循环仍必须比本对象活得久。
          */
         ~TcpAcceptor() = default;
 
@@ -96,7 +96,8 @@ namespace AsynGyanis::Net
          *          产生事件，因此本协程会把多余的连接存入 m_pending 供后续调用直接返回。
          *          可恢复错误全部在协程内部消化、不会抛给调用方：暂无待接受连接时挂起等待监听
          *          描述符可读；被信号中断或对端在队列中被中止时直接重试；描述符与内核缓冲耗尽时
-         *          用预先建好的 m_backoffTimer 定时退避（此刻已经申请不到新的定时器描述符）。
+         *          用预先建好的 m_backoffTimer 定时退避（此刻连新协程帧都可能申请不到，
+         *          预先建好的定时器只是往循环级队列里插一项，不再需要任何描述符）。
          * @return Core::Task<std::optional<Core::AsyncSocket>> 成功时返回已连接的套接字；
          *         监听套接字已 close() 或描述符失效时返回 std::nullopt，表示应结束接受循环
          * @throws Base::SystemException 出现无法靠重试恢复的终止性错误（如描述符被外部关闭），
@@ -129,7 +130,7 @@ namespace AsynGyanis::Net
         Core::EventLoop &             m_loop;    ///< 关联的事件循环，用于挂起与唤醒 accept 协程
         Core::AsyncSocket             m_listenSocket; ///< 非阻塞监听套接字，持有描述符所有权
         Core::InetAddress             m_address; ///< 构造时请求的本地地址
-        Core::Timer                   m_backoffTimer; ///< 资源紧张时的定时退避器；描述符耗尽时无法再新建定时器，故随对象一次性预分配
+        Core::Timer                   m_backoffTimer; ///< 资源紧张时的定时退避器；预先建好是为了不在错误处理路径上做任何分配（定时器只是循环级队列的句柄，不占描述符）
         std::deque<Core::AsyncSocket> m_pending; ///< 批量 accept 抽干监听队列时暂存的连接，下次 accept() 优先从这里取出
         bool                          m_bound{false}; ///< 是否已成功绑定，listen() 的前置条件
     };

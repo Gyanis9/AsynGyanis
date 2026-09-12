@@ -10,6 +10,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/IoWatcher.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Timer.h
         ${CMAKE_CURRENT_LIST_DIR}/Timer.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/TimerQueue.h
+        ${CMAKE_CURRENT_LIST_DIR}/TimerQueue.cpp
 )
 
 # wepoll（epoll 的 Windows 兼容实现，BSD-2-Clause 许可，见 wepoll.h 头部）已随仓库 vendored，

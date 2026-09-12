@@ -39,8 +39,8 @@ namespace AsynGyanis::Net
          * @brief 构造 TCP 服务器
          * @param loop 事件循环，用于 I/O 监控与协程调度
          * @param address 监听的本地地址（IP 与端口）
-         * @throws Base::SystemException 监听器创建监听套接字或预建退避定时器失败
-         * @note 事件循环必须比服务器活得久：监听器的定时器会在析构时向循环注销自己的描述符
+         * @throws Base::SystemException 监听器创建监听套接字失败
+         * @note 事件循环必须比服务器活得久：监听套接字与服务器上的定时等待都会用到它
          */
         TcpServer(Core::EventLoop &loop, const Core::InetAddress &address);
 

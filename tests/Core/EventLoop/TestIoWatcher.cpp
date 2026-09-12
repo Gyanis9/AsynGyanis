@@ -209,8 +209,9 @@ namespace AsynGyanis::Core
         // 否则它会永远等一个不可能再到来的事件
         watcher.reset();
 
-        // 唤醒是投递到调度队列的（本对象正在析构，不能就地恢复），因此推进一次调度
-        ASSERT_TRUE(loop.scheduler().runOne());
+        // 唤醒是投递到调度队列的（本对象正在析构，不能就地恢复）。
+        // 队列里通常还压着循环自带的常驻协程（定时器队列的驱动），因此推进到清空为止
+        loop.scheduler().runAll();
         ASSERT_TRUE(waiting.isReady());
         EXPECT_FALSE(waiting.handle().promise().result());
 

@@ -1,10 +1,12 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/IoWatcher.h"
+#include "Core/EventLoop/TimerQueue.h"
 
 namespace AsynGyanis::Core
 {
-    EventLoop::EventLoop()
+    EventLoop::EventLoop() :
+        m_timerQueue(*this)
     {
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
         //「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
@@ -88,6 +90,11 @@ namespace AsynGyanis::Core
     Scheduler &EventLoop::scheduler() noexcept
     {
         return m_scheduler;
+    }
+
+    TimerQueue &EventLoop::timerQueue() noexcept
+    {
+        return m_timerQueue;
     }
 
     bool EventLoop::isRunning() const noexcept
