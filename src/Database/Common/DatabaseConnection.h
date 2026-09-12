@@ -13,6 +13,7 @@
 #include "Database/Common/DatabaseType.h"
 
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -80,6 +81,39 @@ namespace AsynGyanis::Database
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
         [[nodiscard]] virtual std::unique_ptr<DatabaseResult> execute(std::string_view command) = 0;
+
+        /**
+         * @brief 执行带参数的数据库命令（参数按位置绑定）
+         *
+         * @details 命令文本里用占位符（SQLite / MySQL / PostgreSQL 均为 "?"）标出取值位置，
+         *          取值由 parameters 按下标顺序提供，即 parameters[i] 绑定到第 i 个占位符。
+         *          参数以绑定方式送入数据库而不是拼进 SQL 文本，因此含单引号、"--"、分号的
+         *          字符串只会被当作普通数据，见 SqlStatement.h 的说明。
+         *
+         * 默认实现（基类提供，供尚未支持参数绑定的驱动继承）：
+         * 把 lastError() 置为中文提示「该驱动暂不支持参数化查询」并返回 nullptr。
+         * 这里刻意不退化调用不带参数的 execute()：那样占位符会全部按 NULL 执行，
+         * 调用方以为参数生效、实际语义完全不同，是最难排查的一类静默错误；
+         * 明确报错能让不支持的驱动在第一次调用时就暴露出来。
+         *
+         * @param command    带占位符的命令文本
+         * @param parameters 按占位符出现顺序排列的绑定参数
+         * @return std::unique_ptr<DatabaseResult> 结果集；失败或驱动不支持时返回 nullptr，
+         *         原因见 lastError()
+         * @note 参数个数与占位符个数不一致时必须失败而不是按缺省值执行；
+         *       实现方应拒绝无法安全绑定的参数类型（如容器类型）并给出中文错误
+         */
+        [[nodiscard]] virtual std::unique_ptr<DatabaseResult> execute(std::string_view command,
+                                                                      std::span<const DatabaseValue> parameters)
+        {
+            // 两个入参都不使用：本实现只负责给出明确的中文错误，不执行任何命令
+            static_cast<void>(command);
+            static_cast<void>(parameters);
+
+            m_lastError = std::string("该驱动暂不支持参数化查询（") + databaseTypeName(databaseType()) +
+                          "）：请改用不带参数的 execute()，或为该驱动实现参数绑定";
+            return nullptr;
+        }
 
         /**
          * @brief 获取数据库类型

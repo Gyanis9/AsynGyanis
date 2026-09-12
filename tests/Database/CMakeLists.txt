@@ -9,7 +9,11 @@ add_executable(TestDatabase
 
         Pool/TestConnectionPool.cpp
 
+        Dialect/TestSqliteDialect.cpp
+
         Queryable/TestQueryable.cpp
+        Queryable/TestQueryableExecution.cpp
+        Queryable/TestParameterizedExecution.cpp
 
         Sqlite/TestSqliteConnection.cpp
         Sqlite/TestSqliteResult.cpp

@@ -1,0 +1,523 @@
+/**
+ * @file TestQueryableExecution.cpp
+ * @brief ORM 端到端集成测试 —— 内存 SQLite + 连接池 + 参数化执行 + 行映射
+ * @author Gyanis
+ * @date 2026-09-16
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ *
+ * @details 本条链路是本 Phase 的核心验收点：用内存 SQLite 建连接池，建表后
+ *          **完全通过 ORM** 完成插入、条件查询、排序、分页、计数、更新与删除，
+ *          并断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），
+ *          最后验证取值确实以绑定方式传入（含单引号与 "--" 的文本能原样查回，
+ *          且注入残留的表仍存在），证明没有拼接 SQL。
+ *
+ * 覆盖场景：
+ * - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
+ * - OrmInsertThenQueryWithWhereOrderAndLimit
+ * - HostileTextRoundTripsThroughParameterBinding
+ * - NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
+ * - FirstReturnsEmptyWhenNoRowMatches
+ * - CountMatchesFilteredRows
+ * - UpdateByPrimaryKeyChangesOnlyTargetRow
+ * - ExecuteNonQueryDeletesMatchingRows
+ * - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
+ */
+#include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/DatabaseFactory.h"
+#include "Database/Pool/ConnectionPool.h"
+#include "Database/Pool/PoolConfig.h"
+#include "Database/Pool/PooledConnection.h"
+#include "Database/Queryable/Column.h"
+#include "Database/Queryable/Expression.h"
+#include "Database/Queryable/Queryable.h"
+#include "Database/Queryable/TableSchema.h"
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// ========================================================================
+// 测试用数据结构
+// ========================================================================
+
+namespace
+{
+    /**
+     * @brief 账户表对应的结构体（字段顺序与建表语句一致，便于人工对照）
+     */
+    struct AccountRow
+    {
+        std::int64_t               id;      ///< 主键
+        std::string                name;    ///< 户名（含中文与特殊字符测试）
+        double                     balance; ///< 余额（含负数测试）
+        std::optional<std::string> note;    ///< 备注，可空（用于验证 NULL ↔ std::optional）
+        bool                       active;  ///< 是否启用（SQLite 用 INTEGER 的 0/1 存）
+    };
+
+    /**
+     * @brief 列缺失测试用结构体：声明了表里不存在的列
+     */
+    struct BrokenColumnRow
+    {
+        std::int64_t id;            ///< 存在
+        std::string  missingColumn; ///< accounts 表里没有这一列
+    };
+
+    /**
+     * @brief 类型不匹配测试用结构体：把 INTEGER 列映射成 std::string
+     */
+    struct TypeMismatchRow
+    {
+        std::string id; ///< accounts.id 是 INTEGER，映射到 std::string 应当失败
+    };
+
+    /**
+     * @brief 构造一行账户示例数据
+     * @param id 主键
+     * @param name 户名
+     * @param balance 余额
+     * @param note 备注，可为空
+     * @param active 是否启用
+     * @return AccountRow 结构体
+     */
+    [[nodiscard]] AccountRow makeRow(const std::int64_t id,
+                                     std::string name,
+                                     const double balance,
+                                     std::optional<std::string> note,
+                                     const bool active)
+    {
+        return AccountRow{
+            .id      = id,
+            .name    = std::move(name),
+            .balance = balance,
+            .note    = std::move(note),
+            .active  = active
+        };
+    }
+
+} // namespace
+
+// ========================================================================
+// TableSchema 特化
+// ========================================================================
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AccountRow>
+{
+    static constexpr std::string_view kTableName = "accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&AccountRow::id,   "id"),
+        Column(&AccountRow::name, "name"),
+        Column(&AccountRow::balance, "balance"),
+        Column(&AccountRow::note, "note"),
+        Column(&AccountRow::active, "active"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<BrokenColumnRow>
+{
+    // 故意复用 accounts 表：表存在、但结构体声明了一个表里没有的列
+    static constexpr std::string_view kTableName = "accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&BrokenColumnRow::id,            "id"),
+        Column(&BrokenColumnRow::missingColumn, "missing_column"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<TypeMismatchRow>
+{
+    static constexpr std::string_view kTableName = "accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&TypeMismatchRow::id, "id"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+// ========================================================================
+// 夹具
+// ========================================================================
+
+namespace
+{
+    using AsynGyanis::Database::ConnectionConfig;
+    using AsynGyanis::Database::ConnectionPool;
+    using AsynGyanis::Database::DatabaseFactory;
+    using AsynGyanis::Database::PoolConfig;
+    using AsynGyanis::Database::PooledConnection;
+    using AsynGyanis::Database::Queryable::asc;
+    using AsynGyanis::Database::Queryable::Column;
+    using AsynGyanis::Database::Queryable::desc;
+    using AsynGyanis::Database::Queryable::in;
+    using AsynGyanis::Database::Queryable::like;
+    using AsynGyanis::Database::Queryable::Queryable;
+
+    /**
+     * @brief ORM 端到端测试夹具
+     *
+     * @details 每个用例构造一份独立的内存库：SQLite 的 ":memory:" 数据库随连接生命周期存在，
+     *          因此把池上限压到 1，保证整个用例复用同一条连接（同一份内存库），
+     *          既避免多条连接各持一份内存库的错觉，也让用例之间完全隔离。
+     */
+    class QueryableExecutionTest : public ::testing::Test
+    {
+    protected:
+        void SetUp() override
+        {
+            PoolConfig poolConfiguration;
+            // 上限 1：内存库不跨连接共享，必须保证用例内只有一条连接
+            poolConfiguration.maximumPoolSize = 1;
+
+            m_pool = std::make_unique<ConnectionPool>(
+                []()
+                {
+                    auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
+                    // 连接池的工厂契约要求交出「已经 connect() 完成」的连接，池不会替调用方连接
+                    connection->connect();
+                    return connection;
+                },
+                poolConfiguration);
+
+            // 建表走原生 SQL：DDL 不由 ORM 生成，这一步只负责准备好被 ORM 操作的表
+            PooledConnection connection = m_pool->acquire();
+            ASSERT_TRUE(connection);
+            const auto createResult = connection->execute(
+                "CREATE TABLE accounts ("
+                "id INTEGER PRIMARY KEY, "
+                "name TEXT NOT NULL, "
+                "balance REAL, "
+                "note TEXT, "
+                "active INTEGER NOT NULL)");
+            ASSERT_TRUE(createResult != nullptr) << connection->lastError();
+        }
+
+        /**
+         * @brief 新建一个绑定本夹具连接池的 ORM 查询对象
+         * @return Queryable<AccountRow> 干净状态的查询对象（不复用条件）
+         */
+        [[nodiscard]] Queryable<AccountRow> newQuery() const
+        {
+            return Queryable<AccountRow>(*m_pool);
+        }
+
+        /**
+         * @brief 通过 ORM 插入三行固定数据（含 NULL 列、负数、中文、特殊字符）
+         */
+        void insertSampleRows()
+        {
+            Queryable<AccountRow> insertQuery = newQuery();
+            ASSERT_EQ(1, insertQuery.insert(makeRow(1, "张三", 1234.56, std::string("普通备注"), true)));
+            ASSERT_EQ(1, insertQuery.insert(makeRow(2, "O'Brien -- DROP TABLE accounts; --", -99.5, std::nullopt, false)));
+            ASSERT_EQ(1, insertQuery.insert(makeRow(3, "李四", 0.0, std::string("中文备注"), true)));
+        }
+
+        std::unique_ptr<ConnectionPool> m_pool; ///< 用例独占的连接池
+    };
+
+} // namespace
+
+// ========================================================================
+// 离线模式回归
+// ========================================================================
+
+/**
+ * @brief 验证默认构造的离线模式仍只做 SQL 生成，不触碰连接池
+ */
+TEST(QueryableOfflineMode, ToSqlStaysOfflineGenerator)
+{
+    const Queryable<AccountRow> offlineQuery;
+
+    // 既有契约：离线 toSql 仍生成近似 SQL（'*'、不加引号），不受方言层接入影响
+    EXPECT_EQ(offlineQuery.toSql(), "SELECT * FROM accounts");
+}
+
+/**
+ * @brief 验证离线模式调用执行器方法抛出逻辑错误
+ */
+TEST(QueryableOfflineMode, OfflineModeThrowsOnExecution)
+{
+    Queryable<AccountRow> offlineQuery;
+
+    EXPECT_THROW(static_cast<void>(offlineQuery.toList()), std::logic_error);
+    EXPECT_THROW(static_cast<void>(offlineQuery.first()), std::logic_error);
+    EXPECT_THROW(static_cast<void>(offlineQuery.count()), std::logic_error);
+    EXPECT_THROW(static_cast<void>(offlineQuery.executeNonQuery()), std::logic_error);
+    EXPECT_THROW(static_cast<void>(offlineQuery.insert(makeRow(9, "离线", 0.0, std::nullopt, true))), std::logic_error);
+}
+
+// ========================================================================
+// 插入 / 查询 / 映射
+// ========================================================================
+
+/**
+ * @brief 验证 ORM 插入后按 WHERE + ORDER BY + LIMIT 查询并正确映射各类型字段
+ */
+TEST_F(QueryableExecutionTest, OrmInsertThenQueryWithWhereOrderAndLimit)
+{
+    insertSampleRows();
+
+    // 升序全量查询：验证三种字段类型、中文与负数都能正确往返
+    {
+        Queryable<AccountRow> query = newQuery();
+        const std::vector<AccountRow> rows = query.orderBy(asc("id")).toList();
+
+        ASSERT_EQ(rows.size(), 3U);
+
+        EXPECT_EQ(rows[0].id, 1);
+        EXPECT_EQ(rows[0].name, "张三");
+        EXPECT_DOUBLE_EQ(rows[0].balance, 1234.56);
+        ASSERT_TRUE(rows[0].note.has_value());
+        EXPECT_EQ(rows[0].note.value(), "普通备注");
+        EXPECT_TRUE(rows[0].active);
+
+        // 第二行的备注是 NULL → std::optional 为空
+        EXPECT_EQ(rows[1].id, 2);
+        EXPECT_FALSE(rows[1].note.has_value());
+        EXPECT_DOUBLE_EQ(rows[1].balance, -99.5);
+        EXPECT_FALSE(rows[1].active);
+
+        EXPECT_EQ(rows[2].id, 3);
+        EXPECT_EQ(rows[2].name, "李四");
+        EXPECT_DOUBLE_EQ(rows[2].balance, 0.0);
+        EXPECT_TRUE(rows[2].active);
+    }
+
+    // 条件 + 降序 + 分页：id >= 1 共三行，降序取第一行应当是 id = 3
+    {
+        Queryable<AccountRow> query = newQuery();
+        const std::vector<AccountRow> rows =
+            query.where(Column(&AccountRow::id, "id") >= std::int64_t{1})
+                 .orderBy(desc("id"))
+                 .limit(1)
+                 .toList();
+
+        ASSERT_EQ(rows.size(), 1U);
+        EXPECT_EQ(rows[0].id, 3);
+        EXPECT_EQ(rows[0].note.value(), "中文备注");
+    }
+
+    // 复合逻辑条件 + IN + LIKE：验证递归条件与集合参数都能正确绑定
+    {
+        Queryable<AccountRow> query = newQuery();
+        const std::vector<AccountRow> rows =
+            query.where(in(Column(&AccountRow::id, "id"), std::vector<int>{1, 3})
+                        && like(Column(&AccountRow::name, "name"), "%张%"))
+                 .toList();
+
+        ASSERT_EQ(rows.size(), 1U);
+        EXPECT_EQ(rows[0].id, 1);
+    }
+}
+
+/**
+ * @brief 验证含单引号、"--" 与分号的文本能原样往返，且未影响表结构
+ *
+ * @details 若实现是拼接 SQL 而不是参数绑定，这段文本会提前闭合字符串字面量并把
+ *          后半段变成 SQL 注释/新语句：轻则插入失败，重则表被删掉。
+ *          这里既断言文本能原样查回，也断言注入残留（DROP TABLE）没有生效。
+ */
+TEST_F(QueryableExecutionTest, HostileTextRoundTripsThroughParameterBinding)
+{
+    insertSampleRows();
+
+    const std::string hostileName = "O'Brien -- DROP TABLE accounts; --";
+
+    // 按名精确查询：WHERE 的取值同样走绑定
+    {
+        Queryable<AccountRow> query = newQuery();
+        const std::optional<AccountRow> found = query.where(Column(&AccountRow::name, "name") == hostileName).first();
+
+        ASSERT_TRUE(found.has_value());
+        EXPECT_EQ(found->name, hostileName);
+        EXPECT_EQ(found->id, 2);
+    }
+
+    // 表还在、数据还是三行：证明 "--" 没有把后续内容注释掉、分号也没有开启新语句
+    {
+        Queryable<AccountRow> countQuery = newQuery();
+        EXPECT_EQ(countQuery.count(), 3);
+
+        // 备注里同样写入恶意文本，验证可空列上的绑定与回读
+        Queryable<AccountRow> updateQuery = newQuery();
+        const AccountRow updated = makeRow(2, hostileName, -99.5, std::string("x'); DROP TABLE accounts; --"), false);
+        EXPECT_EQ(updateQuery.update(updated), 1);
+    }
+
+    {
+        Queryable<AccountRow> query = newQuery();
+        const std::optional<AccountRow> found = query.where(Column(&AccountRow::id, "id") == std::int64_t{2}).first();
+
+        ASSERT_TRUE(found.has_value());
+        ASSERT_TRUE(found->note.has_value());
+        EXPECT_EQ(found->note.value(), "x'); DROP TABLE accounts; --");
+    }
+
+    {
+        Queryable<AccountRow> countQuery = newQuery();
+        EXPECT_EQ(countQuery.count(), 3);
+    }
+}
+
+/**
+ * @brief 验证空字符串与 SQL NULL 在往返后保持语义区分
+ */
+TEST_F(QueryableExecutionTest, EmptyStringStaysDistinctFromNull)
+{
+    Queryable<AccountRow> insertQuery = newQuery();
+    ASSERT_EQ(1, insertQuery.insert(makeRow(1, "空串备注", 1.0, std::string(""), true)));
+    ASSERT_EQ(1, insertQuery.insert(makeRow(2, "空备注", 2.0, std::nullopt, true)));
+
+    Queryable<AccountRow> query = newQuery();
+    const std::vector<AccountRow> rows = query.orderBy(asc("id")).toList();
+
+    ASSERT_EQ(rows.size(), 2U);
+    // 空串是「有值且为空」，NULL 是「没有值」，二者不能混为一谈
+    ASSERT_TRUE(rows[0].note.has_value());
+    EXPECT_TRUE(rows[0].note->empty());
+    EXPECT_FALSE(rows[1].note.has_value());
+}
+
+/**
+ * @brief 验证 first() 在无匹配行时返回空
+ */
+TEST_F(QueryableExecutionTest, FirstReturnsEmptyWhenNoRowMatches)
+{
+    insertSampleRows();
+
+    Queryable<AccountRow> query = newQuery();
+    const std::optional<AccountRow> missing = query.where(Column(&AccountRow::id, "id") == std::int64_t{999}).first();
+
+    EXPECT_FALSE(missing.has_value());
+}
+
+/**
+ * @brief 验证 count() 在无条件与带条件时的结果
+ */
+TEST_F(QueryableExecutionTest, CountMatchesFilteredRows)
+{
+    insertSampleRows();
+
+    {
+        Queryable<AccountRow> query = newQuery();
+        EXPECT_EQ(query.count(), 3);
+    }
+
+    {
+        Queryable<AccountRow> query = newQuery();
+        EXPECT_EQ(query.where(Column(&AccountRow::active, "active") == true).count(), 2);
+    }
+
+    {
+        Queryable<AccountRow> query = newQuery();
+        EXPECT_EQ(query.where(Column(&AccountRow::balance, "balance") < 0.0).count(), 1);
+    }
+}
+
+/**
+ * @brief 验证按主键更新只改动目标行
+ */
+TEST_F(QueryableExecutionTest, UpdateByPrimaryKeyChangesOnlyTargetRow)
+{
+    insertSampleRows();
+
+    Queryable<AccountRow> updateQuery = newQuery();
+    // 主键 2 的备注是 NULL，这里更新为有值；其余字段一并改写
+    EXPECT_EQ(updateQuery.update(makeRow(2, "王五", 888.25, std::string("已更新"), true)), 1);
+
+    Queryable<AccountRow> query = newQuery();
+    const std::vector<AccountRow> rows = query.orderBy(asc("id")).toList();
+
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[1].id, 2);
+    EXPECT_EQ(rows[1].name, "王五");
+    EXPECT_DOUBLE_EQ(rows[1].balance, 888.25);
+    ASSERT_TRUE(rows[1].note.has_value());
+    EXPECT_EQ(rows[1].note.value(), "已更新");
+    EXPECT_TRUE(rows[1].active);
+
+    // 其它行不受影响
+    EXPECT_EQ(rows[0].name, "张三");
+    EXPECT_EQ(rows[2].name, "李四");
+}
+
+/**
+ * @brief 验证 executeNonQuery() 按条件删除并回报受影响行数
+ */
+TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
+{
+    insertSampleRows();
+
+    {
+        Queryable<AccountRow> deleteQuery = newQuery();
+        const int deletedRows = deleteQuery.where(Column(&AccountRow::id, "id") >= std::int64_t{2}).executeNonQuery();
+        EXPECT_EQ(deletedRows, 2);
+    }
+
+    Queryable<AccountRow> query = newQuery();
+    const std::vector<AccountRow> remainingRows = query.toList();
+
+    ASSERT_EQ(remainingRows.size(), 1U);
+    EXPECT_EQ(remainingRows[0].id, 1);
+}
+
+// ========================================================================
+// 错误路径
+// ========================================================================
+
+/**
+ * @brief 验证结构体声明的列在结果集中缺失时给出可读的中文错误
+ */
+TEST_F(QueryableExecutionTest, MissingColumnThrowsReadableError)
+{
+    insertSampleRows();
+
+    Queryable<BrokenColumnRow> query(*m_pool);
+    // 只查询存在的 id 列，让 SELECT 本身能成功执行，从而走到行映射阶段
+    query.select({"id"});
+
+    try
+    {
+        static_cast<void>(query.toList());
+        FAIL() << "结构体声明了结果集中不存在的列，应当抛出异常";
+    }
+    catch (const std::runtime_error &exception)
+    {
+        const std::string message = exception.what();
+        EXPECT_NE(message.find("missing_column"), std::string::npos);
+        // 错误信息面向使用者，必须是中文
+        EXPECT_NE(message.find("行映射失败"), std::string::npos);
+    }
+}
+
+/**
+ * @brief 验证列类型与成员类型不匹配时给出可读的中文错误
+ */
+TEST_F(QueryableExecutionTest, TypeMismatchThrowsReadableError)
+{
+    insertSampleRows();
+
+    Queryable<TypeMismatchRow> query(*m_pool);
+
+    try
+    {
+        static_cast<void>(query.toList());
+        FAIL() << "INTEGER 列映射到 std::string 应当抛出异常";
+    }
+    catch (const std::runtime_error &exception)
+    {
+        const std::string message = exception.what();
+        EXPECT_NE(message.find("id"), std::string::npos);
+        EXPECT_NE(message.find("std::string"), std::string::npos);
+        // 提示里要给出「若可能为 NULL 请用 std::optional」这类可操作建议
+        EXPECT_NE(message.find("std::optional"), std::string::npos);
+    }
+}

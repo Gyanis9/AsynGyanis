@@ -148,6 +148,11 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool isConnected() const override;
 
+        // 引入基类的全部 execute 重载：本类声明了名为 execute 的成员，按 C++ 名字查找规则
+        // 会隐藏基类的同名重载，加上这一行后通过具体对象也能调用参数化版本。
+        // MySQL 尚未实现参数绑定，参数化版本由基类默认实现返回「暂不支持」的中文错误
+        using DatabaseConnection::execute;
+
         /**
          * @brief 执行一条 SQL 命令
          * @details 重写 DatabaseConnection::execute()：与基类约定的差异与附加约束——

@@ -23,6 +23,7 @@ add_subdirectory(Sqlite)
 add_subdirectory(MySql)
 add_subdirectory(Redis)
 add_subdirectory(Pool)
+add_subdirectory(Dialect)
 add_subdirectory(Queryable)
 
 get_property(DATABASE_SOURCES GLOBAL PROPERTY AsynGyanisDatabaseSources)

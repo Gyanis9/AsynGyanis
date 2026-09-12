@@ -1,0 +1,553 @@
+/**
+ * @file SqliteDialect.cpp
+ * @brief SQLite 方言实现 —— 查询树到参数化 SQL 的翻译
+ * @author Gyanis
+ * @date 2026-09-16
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#include "Database/Dialect/SqliteDialect.h"
+
+#include <limits>
+#include <string_view>
+#include <type_traits>
+#include <variant>
+#include <vector>
+
+namespace AsynGyanis::Database
+{
+    namespace
+    {
+        /// UTF-8 多字节序列的首字节与后续字节都 >= 0x80，用于把中文列名识别为合法标识符
+        constexpr unsigned char kUtf8ContinuationLowerBound = 0x80;
+
+        /**
+         * @brief 判断单个字节能否出现在不带引号的标识符里
+         * @param character 待判断的字节
+         * @return true 字母、数字、下划线，或 UTF-8 多字节序列的一部分
+         */
+        bool isIdentifierByte(const char character) noexcept
+        {
+            const unsigned char byte = static_cast<unsigned char>(character);
+
+            // 手写字符区间而不用 std::isalnum：后者受当前 locale 影响，
+            // 且要求参数可表示为 unsigned char（负数直接传给它是未定义行为）
+            const bool isAsciiLetter = (byte >= static_cast<unsigned char>('a') && byte <= static_cast<unsigned char>('z')) ||
+                                       (byte >= static_cast<unsigned char>('A') && byte <= static_cast<unsigned char>('Z'));
+            const bool isAsciiDigit = byte >= static_cast<unsigned char>('0') && byte <= static_cast<unsigned char>('9');
+
+            return isAsciiLetter || isAsciiDigit || byte == static_cast<unsigned char>('_') ||
+                   byte >= kUtf8ContinuationLowerBound;
+        }
+
+        /**
+         * @brief 判断文本是否是一个可以安全加引号引用的标识符
+         * @details 允许出现双引号：那正是「列名里带引号、必须翻倍转义」的情形，
+         *          交给 quoteIdentifier() 处理比原样输出安全得多。
+         *          含运算符、括号、空格的文本会在上层被判为表达式，不会走到这里。
+         * @param text 待判断的文本
+         * @return true 可以直接加引号引用（空文本返回 false）
+         */
+        bool isQuotableIdentifier(const std::string_view text) noexcept
+        {
+            if (text.empty())
+            {
+                return false;
+            }
+
+            for (const char character: text)
+            {
+                if (!isIdentifierByte(character) && character != '"')
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /**
+         * @brief 把限定名按 '.' 切成若干段
+         * @details 不处理引号内的点号：调用方传入的是列名或表达式文本，
+         *          已经加好引号的文本不需要再切分（会走表达式分支原样输出）。
+         * @param text 待切分的文本
+         * @return std::vector<std::string_view> 各段视图，无点号时只含整体一段
+         */
+        std::vector<std::string_view> splitQualifiedName(const std::string_view text)
+        {
+            std::vector<std::string_view> segments;
+            std::size_t                   segmentStart = 0;
+
+            // 每遇到一个点号就切出一段（空段保留，交给 isSimpleIdentifier 判定为非法 → 走表达式分支）
+            for (std::size_t index = 0; index < text.size(); ++index)
+            {
+                if (text[index] == '.')
+                {
+                    segments.push_back(text.substr(segmentStart, index - segmentStart));
+                    segmentStart = index + 1;
+                }
+            }
+            segments.push_back(text.substr(segmentStart));
+
+            return segments;
+        }
+
+    } // namespace
+
+    DatabaseType SqliteDialect::type() const noexcept
+    {
+        return DatabaseType::Sqlite;
+    }
+
+    std::string SqliteDialect::quoteIdentifier(const std::string_view identifier) const
+    {
+        std::string quotedText;
+        // 预分配：外层两个引号，加上最坏情况下每个字节都要翻倍
+        quotedText.reserve(identifier.size() * 2 + 2);
+
+        quotedText.push_back('"');
+        for (const char character: identifier)
+        {
+            // SQL 标准（SQLite 同样遵循）用「引号翻倍」表示标识符内部的引号：
+            // 反斜杠在 SQLite 里只是普通字符，用它转义既无效又会引入字面反斜杠
+            if (character == '"')
+            {
+                quotedText.push_back('"');
+            }
+            quotedText.push_back(character);
+        }
+        quotedText.push_back('"');
+
+        return quotedText;
+    }
+
+    std::string SqliteDialect::placeholder(const std::size_t index) const
+    {
+        // SQLite 的位置参数不区分类型、不区分序号，一律写作 '?'：
+        // 序号参数在这里被忽略，它由调用方（appendParameter）用来确定参数在数组中的位置。
+        // 保留 index 形参是为了让将来的 $1 风格方言能在不改动调用方代码的前提下用上它。
+        static_cast<void>(index);
+        return "?";
+    }
+
+    bool SqliteDialect::supportsLimitOffset() const noexcept
+    {
+        // SQLite 原生支持 "LIMIT n OFFSET m"，无需任何改写
+        return true;
+    }
+
+    std::string SqliteDialect::renderFieldReference(const std::string_view fieldText) const
+    {
+        // 单个通配符不是标识符：加引号会得到一个名为 "*" 的列，语义完全不同
+        if (fieldText == "*")
+        {
+            return "*";
+        }
+
+        const std::vector<std::string_view> segments = splitQualifiedName(fieldText);
+
+        // 只有每一段都是可引用的标识符（或通配符）时才按标识符渲染，否则整体视为表达式
+        bool isIdentifierChain = !segments.empty();
+        for (const std::string_view segment: segments)
+        {
+            if (segment == "*")
+            {
+                continue;
+            }
+            if (!isQuotableIdentifier(segment))
+            {
+                isIdentifierChain = false;
+                break;
+            }
+        }
+
+        if (!isIdentifierChain)
+        {
+            // 含运算符、括号、空格等非标识符字节的文本按表达式原样输出：例如 COUNT(*)，
+            // COALESCE(age, 0)，age + 1。对表达式整体加引号会把它降级成一个列名，
+            // 直接改变语义；这里不做任何加工在安全上也是成立的——字段引用全部来自编译期常量
+            // （Column() 的 columnName 参数或 asc()/desc() 的字符串字面量），不是外部输入，
+            // 而数据值一律走参数绑定，因此不存在注入面。
+            return std::string(fieldText);
+        }
+
+        std::string renderedText;
+        for (std::size_t index = 0; index < segments.size(); ++index)
+        {
+            if (index > 0)
+            {
+                renderedText.push_back('.');
+            }
+
+            if (segments[index] == "*")
+            {
+                // users.* 里的通配符同样不加引号
+                renderedText.push_back('*');
+            }
+            else
+            {
+                // 标识符一律加引号：既能容纳 order、group 这类保留字列名，也避免大小写折叠带来的歧义
+                renderedText += quoteIdentifier(segments[index]);
+            }
+        }
+
+        return renderedText;
+    }
+
+    SqlStatement SqliteDialect::translate(const Queryable::QueryNode &query) const
+    {
+        SqlStatement                statement;
+        std::string                &sqlText    = statement.sql;
+        std::vector<DatabaseValue> &parameters = statement.parameters;
+
+        // ---------- SELECT 列 ----------
+        sqlText += "SELECT ";
+        if (query.selectColumns.empty())
+        {
+            // 查询树没有指定列时退化为通配符。ORM 层（Queryable<T>）在需要按 TableSchema
+            // 的列序对齐结果时才显式展开列名，方言层不依赖任何模板参数，因此只能给出
+            // 语法上最通用、顺序由数据库决定的 '*'
+            sqlText += '*';
+        }
+        else
+        {
+            for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
+            {
+                if (index > 0)
+                {
+                    sqlText += ", ";
+                }
+                sqlText += renderFieldReference(query.selectColumns[index]);
+            }
+        }
+
+        // ---------- FROM ----------
+        sqlText += " FROM ";
+        sqlText += renderFieldReference(query.tableName);
+        if (!query.tableAlias.empty())
+        {
+            sqlText += " AS ";
+            sqlText += quoteIdentifier(query.tableAlias);
+        }
+
+        // ---------- JOIN ----------
+        for (const Queryable::JoinClause &joinClause: query.joins)
+        {
+            sqlText += ' ';
+            sqlText += joinTypeText(joinClause.type);
+            sqlText += " JOIN ";
+            sqlText += renderFieldReference(joinClause.tableName);
+            if (!joinClause.tableAlias.empty())
+            {
+                sqlText += " AS ";
+                sqlText += quoteIdentifier(joinClause.tableAlias);
+            }
+
+            // CROSS JOIN 按语义不接受 ON 子句，但查询树若显式填了条件就照写，
+            // 由数据库报错而不是在这里静默丢弃调用方的意图
+            if (!joinClause.conditions.empty())
+            {
+                sqlText += " ON ";
+                for (std::size_t index = 0; index < joinClause.conditions.size(); ++index)
+                {
+                    if (index > 0)
+                    {
+                        sqlText += " AND ";
+                    }
+                    appendCondition(sqlText, parameters, joinClause.conditions[index]);
+                }
+            }
+        }
+
+        // ---------- WHERE ----------
+        if (!query.whereConditions.empty())
+        {
+            sqlText += " WHERE ";
+            for (std::size_t index = 0; index < query.whereConditions.size(); ++index)
+            {
+                // 顶层多个条件按 ORM 的约定以 AND 连接（Queryable::where() 多次调用即「同时满足」）
+                if (index > 0)
+                {
+                    sqlText += " AND ";
+                }
+                appendCondition(sqlText, parameters, query.whereConditions[index]);
+            }
+        }
+
+        // ---------- GROUP BY ----------
+        if (!query.groupBy.empty())
+        {
+            sqlText += " GROUP BY ";
+            for (std::size_t index = 0; index < query.groupBy.size(); ++index)
+            {
+                if (index > 0)
+                {
+                    sqlText += ", ";
+                }
+                sqlText += renderFieldReference(query.groupBy[index].name);
+            }
+        }
+
+        // ---------- HAVING ----------
+        if (query.having.has_value())
+        {
+            sqlText += " HAVING ";
+            // HAVING 的条件参数跟在 WHERE 参数之后，顺序与它在 SQL 中的出现位置一致
+            appendCondition(sqlText, parameters, query.having.value());
+        }
+
+        // ---------- ORDER BY ----------
+        if (!query.orderBy.empty())
+        {
+            sqlText += " ORDER BY ";
+            for (std::size_t index = 0; index < query.orderBy.size(); ++index)
+            {
+                if (index > 0)
+                {
+                    sqlText += ", ";
+                }
+                sqlText += renderFieldReference(query.orderBy[index].field.name);
+                // 方向必须显式写出：默认升序虽然与 SQL 一致，但显式 "ASC" 让生成的 SQL 可读且稳定
+                sqlText += query.orderBy[index].descending ? " DESC" : " ASC";
+            }
+        }
+
+        // ---------- LIMIT / OFFSET ----------
+        if (query.limit.has_value())
+        {
+            // 分页值内联而不占占位符：它来自 QueryNode 的 std::size_t（强类型、非外部文本），
+            // 不存在注入面；内联还能让 SQLite 在编译期就知道行数上限，避免额外的绑定步骤
+            sqlText += " LIMIT ";
+            sqlText += std::to_string(query.limit.value());
+        }
+
+        if (query.offset.has_value())
+        {
+            if (!query.limit.has_value())
+            {
+                // SQLite 规定 OFFSET 必须紧跟在 LIMIT 之后，单独给 OFFSET 会被判语法错误；
+                // "LIMIT -1" 是 SQLite 表达「不限行数」的官方写法
+                sqlText += " LIMIT -1";
+            }
+            sqlText += " OFFSET ";
+            sqlText += std::to_string(query.offset.value());
+        }
+
+        return statement;
+    }
+
+    void SqliteDialect::appendCondition(std::string &sqlText,
+                                        std::vector<DatabaseValue> &parameters,
+                                        const Queryable::WhereCondition &condition) const
+    {
+        using Queryable::SqlOperator;
+
+        switch (condition.op)
+        {
+            case SqlOperator::And:
+            {
+                // 空 children 的 AND 按恒真处理：既不产出非法 SQL，也保持「空条件不限制结果」的语义
+                if (condition.children.empty())
+                {
+                    sqlText += "(1 = 1)";
+                    return;
+                }
+
+                // 括号不能省：父节点可能是 OR，去掉括号会改变结合性
+                sqlText += '(';
+                for (std::size_t index = 0; index < condition.children.size(); ++index)
+                {
+                    if (index > 0)
+                    {
+                        sqlText += " AND ";
+                    }
+                    appendCondition(sqlText, parameters, condition.children[index]);
+                }
+                sqlText += ')';
+                return;
+            }
+
+            case SqlOperator::Or:
+            {
+                // 空 children 的 OR 按恒假处理，与 AND 的恒真形成对偶
+                if (condition.children.empty())
+                {
+                    sqlText += "(1 = 0)";
+                    return;
+                }
+
+                sqlText += '(';
+                for (std::size_t index = 0; index < condition.children.size(); ++index)
+                {
+                    if (index > 0)
+                    {
+                        sqlText += " OR ";
+                    }
+                    appendCondition(sqlText, parameters, condition.children[index]);
+                }
+                sqlText += ')';
+                return;
+            }
+
+            case SqlOperator::Not:
+            {
+                if (condition.children.empty())
+                {
+                    // 没有子条件的 NOT 视为恒假（NOT 恒真），与旧实现的 (1 = 1) 语义一致
+                    sqlText += "NOT (1 = 1)";
+                    return;
+                }
+
+                // NOT 后面必须带括号：否则 "NOT a = ?" 在多数数据库里会被解析成 "(NOT a) = ?"
+                sqlText += "NOT (";
+                appendCondition(sqlText, parameters, condition.children[0]);
+                sqlText += ')';
+                return;
+            }
+
+            case SqlOperator::IsNull:
+            {
+                sqlText += renderFieldReference(condition.left.name);
+                // IS NULL 不接受右操作数，也绝不绑定参数：NULL 的比较必须用 IS 而不是 "= NULL"
+                sqlText += " IS NULL";
+                return;
+            }
+
+            case SqlOperator::IsNotNull:
+            {
+                sqlText += renderFieldReference(condition.left.name);
+                sqlText += " IS NOT NULL";
+                return;
+            }
+
+            case SqlOperator::In:
+            case SqlOperator::NotIn:
+            {
+                sqlText += renderFieldReference(condition.left.name);
+                sqlText += (condition.op == SqlOperator::In) ? " IN " : " NOT IN ";
+
+                if (condition.inValues.empty())
+                {
+                    // "IN ()" 是非法 SQL，不能生成；空集合在集合语义下「一个都不匹配」，
+                    // 因此 IN 换成恒假、NOT IN 换成恒真，等价、确定且不占用参数
+                    sqlText += (condition.op == SqlOperator::In) ? "(1 = 0)" : "(1 = 1)";
+                    return;
+                }
+
+                sqlText += '(';
+                for (std::size_t index = 0; index < condition.inValues.size(); ++index)
+                {
+                    if (index > 0)
+                    {
+                        sqlText += ", ";
+                    }
+                    // 集合元素逐个产出占位符并同步压参数，参数顺序与占位符位置严格一致
+                    appendParameter(sqlText, parameters, condition.inValues[index]);
+                }
+                sqlText += ')';
+                return;
+            }
+
+            default:
+                break;
+        }
+
+        // ---------- 叶子比较 ----------
+        sqlText += renderFieldReference(condition.left.name);
+        sqlText += ' ';
+        sqlText += comparisonOperatorText(condition.op);
+        sqlText += ' ';
+
+        // 右操作数既可能是参数值，也可能是另一个字段引用（列-列比较，如 "age" > "min_age"）
+        if (std::holds_alternative<Queryable::FieldReference>(condition.right))
+        {
+            // 列-列比较两侧都是标识符，不需要也不能绑定参数
+            sqlText += renderFieldReference(std::get<Queryable::FieldReference>(condition.right).name);
+        }
+        else
+        {
+            appendParameter(sqlText, parameters, std::get<Queryable::ParameterValue>(condition.right));
+        }
+    }
+
+    void SqliteDialect::appendParameter(std::string &sqlText,
+                                        std::vector<DatabaseValue> &parameters,
+                                        const Queryable::ParameterValue &parameter) const
+    {
+        // 占位符的序号就是「当前已收集的参数个数」，所以必须先取序号再压参数：
+        // 顺序颠倒会让序号比实际位置大 1，$1 风格方言上就会错位
+        sqlText += placeholder(parameters.size());
+        parameters.push_back(convertParameter(parameter));
+    }
+
+    DatabaseValue SqliteDialect::convertParameter(const Queryable::ParameterValue &parameter)
+    {
+        return std::visit(
+            [](const auto &value) -> DatabaseValue
+            {
+                using ValueType = std::decay_t<decltype(value)>;
+
+                if constexpr (std::is_same_v<ValueType, std::nullptr_t>)
+                {
+                    // ORM 用 nullptr 表达 SQL NULL，驱动层用 std::monostate 表达，二者语义相同
+                    return std::monostate{};
+                }
+                else if constexpr (std::is_same_v<ValueType, std::uint64_t>)
+                {
+                    // DatabaseValue 已冻结，没有无符号备选，这里做两步降级：
+                    // - 放得进 int64_t：转成有符号整数，保持整数比较语义，也让索引与算术可用；
+                    // - 超出 int64_t：转成十进制文本。宁可让比较按文本进行（而不是静默回绕成负数
+                    //   给出错误数值），也不引入第二套无符号类型；这类取值现实中只出现在
+                    //   哈希 ID、位掩码等场景，文本比较通常仍能得到正确结果
+                    if (value <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                    {
+                        return static_cast<std::int64_t>(value);
+                    }
+                    return std::to_string(value);
+                }
+                else
+                {
+                    // bool / int64_t / double / std::string 在两种 variant 中同名同类型，直接构造即可
+                    return DatabaseValue{value};
+                }
+            },
+            parameter);
+    }
+
+    std::string_view SqliteDialect::comparisonOperatorText(const Queryable::SqlOperator sqlOperator) noexcept
+    {
+        using Queryable::SqlOperator;
+
+        switch (sqlOperator)
+        {
+            case SqlOperator::Eq:    return "=";
+            case SqlOperator::Neq:   return "!=";
+            case SqlOperator::Gt:    return ">";
+            case SqlOperator::Ge:    return ">=";
+            case SqlOperator::Lt:    return "<";
+            case SqlOperator::Le:    return "<=";
+            case SqlOperator::Like:  return "LIKE";
+            case SqlOperator::In:    return "IN";
+            case SqlOperator::NotIn: return "NOT IN";
+            default:                 return "=";
+        }
+    }
+
+    std::string_view SqliteDialect::joinTypeText(const Queryable::JoinType joinType) noexcept
+    {
+        using Queryable::JoinType;
+
+        switch (joinType)
+        {
+            case JoinType::Inner: return "INNER";
+            case JoinType::Left:  return "LEFT";
+            // SQLite 3.39.0 起支持 RIGHT JOIN，更早的版本会在编译期直接报语法错误，
+            // 这里照写意图，让数据库给出明确错误而不是被上层悄悄改成 LEFT
+            case JoinType::Right: return "RIGHT";
+            case JoinType::Cross: return "CROSS";
+            default:              return "INNER";
+        }
+    }
+
+} // namespace AsynGyanis::Database

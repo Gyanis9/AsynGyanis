@@ -27,6 +27,10 @@ namespace AsynGyanis::Database
 
         // sqlite3_prepare_v2 的语句长度参数是 int，超过该上限会被静默截断成半条语句
         constexpr size_t kMaximumCommandLength = static_cast<size_t>(std::numeric_limits<int>::max());
+
+        // sqlite3_bind_text 的长度形参同样是 int，超长文本参数会被静默截断，
+        // 因此与语句长度使用同一套上限判定
+        constexpr size_t kMaximumTextParameterLength = static_cast<size_t>(std::numeric_limits<int>::max());
     } // namespace
 
     SqliteConnection::SqliteConnection(const ConnectionConfig &configuration)
@@ -129,6 +133,14 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseResult> SqliteConnection::execute(const std::string_view command)
     {
+        // 不带参数的路径等价于「参数列表为空」的参数化路径：共用同一份实现，
+        // 语句边界检查、错误处理、结果集构造三条行为完全一致，不会出现两套逻辑漂移
+        return execute(command, std::span<const DatabaseValue>{});
+    }
+
+    std::unique_ptr<DatabaseResult> SqliteConnection::execute(const std::string_view command,
+                                                              const std::span<const DatabaseValue> parameters)
+    {
         // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
         m_lastError.clear();
 
@@ -208,6 +220,17 @@ namespace AsynGyanis::Database
             // 走到这里说明剩余文本只有空白、注释或多余分号：首条语句依然有效，继续正常执行
         }
 
+        // 绑定参数必须发生在语句首次 step 之前（写语句的副作用就发生在 step 上），
+        // 也必须发生在语句边界检查之后：参数个数要与最终确认执行的那一条语句对齐。
+        // 绑定失败说明参数与占位符不匹配或类型无法映射，此时一条语句都不执行，
+        // 避免出现「SQL 执行了但参数全是 NULL」这种静默错误的中间态
+        if (!bindParameters(statement, parameters))
+        {
+            // finalize 会重置语句与连接的错误状态，因此错误文本已由 bindParameters 先行写好
+            sqlite3_finalize(statement);
+            return nullptr;
+        }
+
         // 带返回列 = 查询：把游标整体交给结果集，由 SqliteResult 负责推进与 finalize
         if (sqlite3_column_count(statement) > 0)
         {
@@ -273,6 +296,84 @@ namespace AsynGyanis::Database
     {
         // 未连接时没有「最近插入」可言，返回 0（SQLite 的 rowid 从 1 起，不会与 0 混淆）
         return m_database != nullptr ? sqlite3_last_insert_rowid(m_database) : 0;
+    }
+
+    bool SqliteConnection::bindParameters(sqlite3_stmt *statement, const std::span<const DatabaseValue> parameters)
+    {
+        // 参数个数必须与占位符个数严格相等：SQLite 对未绑定的占位符按 NULL 参与运算，
+        // 少给参数会让条件静默变成永假（WHERE "id" = NULL），几乎不可能从结果上反推原因，
+        // 因此这里宁可当场失败也不做任何「缺省补 NULL」的宽容处理
+        const int expectedParameterCount = sqlite3_bind_parameter_count(statement);
+        if (static_cast<std::size_t>(expectedParameterCount) != parameters.size())
+        {
+            m_lastError = "参数数量不匹配：SQL 需要 " + std::to_string(expectedParameterCount) +
+                          " 个参数，实际提供 " + std::to_string(parameters.size()) + " 个";
+            return false;
+        }
+
+        for (std::size_t index = 0; index < parameters.size(); ++index)
+        {
+            // SQLite 的绑定序号从 1 开始，C++ 下标从 0 开始，这里显式 +1 并保留转换意图
+            const int            parameterIndex = static_cast<int>(index) + 1;
+            const DatabaseValue &parameterValue = parameters[index];
+            int                  bindResult     = SQLITE_OK;
+
+            // 用 std::get_if 取指针而不是 std::get：类型不符时得到空指针并走 else 分支给出中文错误，
+            // 而 std::get 会抛 std::bad_variant_access，把「参数类型不对」变成难以处理的异常
+            if (std::holds_alternative<std::monostate>(parameterValue))
+            {
+                // NULL 必须用 sqlite3_bind_null 表达：绑成空字符串后 "IS NULL" 不再成立，
+                // 与调用方传空值的意图直接冲突
+                bindResult = sqlite3_bind_null(statement, parameterIndex);
+            }
+            else if (const auto *booleanValue = std::get_if<bool>(&parameterValue))
+            {
+                // SQLite 没有独立的布尔存储类，按官方建议用整数 0/1 表示真假
+                bindResult = sqlite3_bind_int(statement, parameterIndex, *booleanValue ? 1 : 0);
+            }
+            else if (const auto *integerValue = std::get_if<std::int64_t>(&parameterValue))
+            {
+                bindResult = sqlite3_bind_int64(statement, parameterIndex, *integerValue);
+            }
+            else if (const auto *realValue = std::get_if<double>(&parameterValue))
+            {
+                bindResult = sqlite3_bind_double(statement, parameterIndex, *realValue);
+            }
+            else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
+            {
+                // sqlite3_bind_text 的长度参数是 int，超长文本会被静默截断成半条数据，直接拒绝
+                if (textValue->size() > kMaximumTextParameterLength)
+                {
+                    m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
+                                  std::to_string(textValue->size()) + " 字节，超出 SQLite 单参数上限";
+                    return false;
+                }
+
+                // SQLITE_TRANSIENT 让 SQLite 立刻复制一份文本：语句的 step 可能晚于本函数返回
+                // （带返回列的语句要等调用方遍历结果集才真正执行），若用 SQLITE_STATIC，
+                // 数据库读到的会是调用方早已释放的缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失
+                bindResult = sqlite3_bind_text(statement, parameterIndex, textValue->data(),
+                                               static_cast<int>(textValue->size()), SQLITE_TRANSIENT);
+            }
+            else
+            {
+                // 容器的正确用法是展开成多个标量参数（如 IN 列表），而不是当成单个参数，
+                // 方言层已把 IN 集合展开，走到这里说明调用方传了非标量值
+                m_lastError = "参数化查询不支持容器类型的参数（第 " + std::to_string(index) + " 个参数，类型 " +
+                              std::string(databaseValueTypeName(parameterValue)) +
+                              "）：请把容器展开成多个标量参数后重试";
+                return false;
+            }
+
+            if (bindResult != SQLITE_OK)
+            {
+                // 先取错误文本再返回：绑定失败已让语句处于不可用状态，错误文本是唯一可用的线索
+                captureError("绑定第 " + std::to_string(index) + " 个参数失败");
+                return false;
+            }
+        }
+
+        return true;
     }
 
     void SqliteConnection::captureError(const std::string_view description)

@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -132,6 +133,35 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command) override;
 
+        // 引入基类的全部 execute 重载：本类声明了名为 execute 的成员，按 C++ 名字查找规则
+        // 会隐藏基类的同名重载，加上这一行后通过具体对象也能调用两个版本
+        using DatabaseConnection::execute;
+
+        /**
+         * @brief 执行一条带参数的 SQL 命令（按位置绑定）
+         * @details 重写 DatabaseConnection::execute()：与不带参数版本的唯一差异是先把
+         *          parameters 逐个绑定到语句占位符上再执行。绑定规则：
+         *          - std::monostate → sqlite3_bind_null（真正的 SQL NULL，而不是空串）；
+         *          - bool → sqlite3_bind_int 的 1/0（SQLite 没有布尔存储类）；
+         *          - std::int64_t → sqlite3_bind_int64；
+         *          - double → sqlite3_bind_double；
+         *          - std::string → sqlite3_bind_text，按字节长度传递且用 SQLITE_TRANSIENT 复制，
+         *            因为语句的 step 可能晚于本调用返回（结果集存活期间），不能引用调用方的缓冲区；
+         *          - 容器类型（List/Hash）无法映射成标量参数，直接失败并给出中文原因。
+         *          此外还会校验「占位符个数 == 参数个数」：SQLite 对未绑定的占位符按 NULL 处理，
+         *          少给参数会静默变成永假条件，因此宁可当场报错。
+         *          参数值一律以绑定方式送入，不拼进 SQL 文本，含单引号、"--"、分号的字符串
+         *          因此只是普通文本（见 SqlStatement.h 的说明）。
+         * @param command    带占位符的 SQL 文本，内部会复制为零终止串后交给 SQLite
+         * @param parameters 按占位符出现顺序排列的绑定参数，第 i 个元素绑定到第 i 个占位符
+         * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
+         * @note 传空 parameters 时与不带参数的 execute() 完全等价（两条路径共用同一实现）
+         * @warning 与不带参数版本一致：带返回列的写语句（INSERT ... RETURNING）真正的执行
+         *          发生在调用方第一次 SqliteResult::next()，只判非空而不遍历则写副作用不会发生
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command,
+                                                              std::span<const DatabaseValue> parameters) override;
+
         /**
          * @brief 获取数据库类型
          * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Sqlite，
@@ -189,6 +219,15 @@ namespace AsynGyanis::Database
         [[nodiscard]] sqlite3 *nativeHandle() const noexcept { return m_database; }
 
     private:
+        /**
+         * @brief 把参数按位置绑定到已编译的语句上
+         * @param statement 已 prepare 的语句句柄，绑定失败时由调用方负责 finalize
+         * @param parameters 待绑定的参数列表，第 i 个元素绑定到第 i 个占位符（SQLite 序号从 1 起）
+         * @return true 全部参数绑定成功
+         * @return false 参数个数不匹配、参数类型不受支持或底层绑定失败，原因见 lastError()
+         */
+        [[nodiscard]] bool bindParameters(sqlite3_stmt *statement, std::span<const DatabaseValue> parameters);
+
         /**
          * @brief 采集 SQLite 的错误文本与错误码并写入 m_lastError
          * @param description 面向使用者的中文动作说明，例如「编译 SQL 语句失败」
