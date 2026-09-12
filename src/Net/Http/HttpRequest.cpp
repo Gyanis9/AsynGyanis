@@ -342,9 +342,14 @@ namespace AsynGyanis::Net
         m_body.clear();
         m_params.clear();
 
-        // 取消源整个重建：旧对象可能已被超时中间件 request_stop()，
-        // 复用连接时若沿用旧源，下一条请求一进来就是「已取消」
-        m_cancelSource = std::stop_source{};
+        // 取消源：只有**被触发过**才重建。触发过的源会让下一条请求一进来就是「已取消」，
+        // 必须换掉；没触发过的直接沿用，省掉每请求一次停止状态的分配。
+        // 沿用是安全的：取消源只被本次请求的中间件与处理函数短暂引用（它们随请求结束一并析构），
+        // 因此复用等价于「换一个全新的源」——除非调用方把令牌留到了下一条请求（那是误用）
+        if (m_cancelSource.stop_requested())
+        {
+            m_cancelSource = std::stop_source{};
+        }
     }
 
     std::stop_token HttpRequest::cancelToken() const noexcept

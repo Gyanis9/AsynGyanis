@@ -268,6 +268,6 @@ namespace AsynGyanis::Net
         std::unordered_map<std::string, std::string> m_headers;    ///< 头部单值视图，供 headers()/getHeader() 使用
         std::string m_body;                                        ///< 消息正文
         std::unordered_map<std::string, std::string> m_params;     ///< 路由参数
-        mutable std::stop_source m_cancelSource;                   ///< 协作式取消源
+        mutable std::stop_source m_cancelSource;                   ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
     };
 } // namespace AsynGyanis::Net

@@ -151,14 +151,15 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 把「连接的停止请求」转发成「本次请求的协作式取消」
+         * @brief 把「连接的停止请求」转发成「当前请求的协作式取消」
          *
          * @details 取消机制有两处：Core::Connection 的 Cancelable 与 HttpRequest 自带的 stop_source。
          *          真值来源取前者（连接级、由服务器与运维路径驱动），后者只作为业务侧的读取出口：
          *          超时中间件调 request.requestCancel()，而连接被关停时由本对象把信号补进同一个出口，
          *          业务只需认 request.cancelToken() 一处。
-         * @note 生命周期必须严格覆盖「本次请求被路由到」这一段：析构即注销回调，
-         *       绝不允许活到解析器 reset() 之后，否则回调会写到下一条请求的取消源上。
+         * @note 按**连接**注册一次即可：回调指向解析器内部那个按连接复用的请求对象，
+         *       于是不必跟着每条报文反复注册与注销。若按请求注册，注册动作本身（停止回调节点）
+         *       就成了每请求一次的开销。
          */
         class ConnectionCancelForwarder
         {
@@ -212,6 +213,16 @@ namespace AsynGyanis::Net
             std::size_t windowLength = 0;
 
             bool keepAlive = true;
+
+            // 响应对象按连接复用（每轮开头 reset）：容器容量跨请求保留，
+            // 让「每条报文都重新长一遍头部容器」这笔开销消失
+            HttpResponse response;
+
+            // 连接被关停时把它转成本次请求的协作式取消：业务只认 request.cancelToken() 一处。
+            // 只注册一次、覆盖整条连接：回调指向解析器内部那个按连接复用的请求对象，
+            // 因此不必跟着每条报文走——那会让每个请求都付一次停止回调的注册开销。
+            // 对象在循环外构造，作用域覆盖整个 keep-alive 循环，析构即注销
+            ConnectionCancelForwarder cancelForwarder(cancelable, parser.request());
 
             // 发出响应：把「头部块 + 正文」作为两段提交，正文因此不必先拷进头部块。
             // 传输层支持聚合写（AsyncSocket）时是一次系统调用提交两段；TLS 记录层只接受
@@ -335,12 +346,11 @@ namespace AsynGyanis::Net
 
                 // ---------------- 第三步：路由与应答 ----------------
                 HttpRequest &request = parser.request();
-                HttpResponse response;
-                response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1
 
-                // 连接被关停时把它转成本次请求的协作式取消：业务只认 request.cancelToken() 一处
-                std::optional<ConnectionCancelForwarder> cancelForwarder;
-                cancelForwarder.emplace(cancelable, request);
+                // 响应对象按连接复用：容器容量跨请求保留，省掉每条报文重新分配一遍。
+                // 复用必须配一次复位，否则上一条报文的头部会跟着下一条发出去
+                response.reset();
+                response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1
 
                 std::exception_ptr handlerException = nullptr;
                 try
@@ -368,9 +378,8 @@ namespace AsynGyanis::Net
                     }
                 }
 
-                // 取消转发器在此注销：request 马上就要被下一条报文 reset() 复用，
-                // 回调绝不能活过这个界线
-                cancelForwarder.reset();
+                // 取消转发器不在这里注销：它按连接注册一次（见循环前），
+                // 回调指向解析器内部那个按连接复用的请求对象，跨请求依然指向正确目标
 
                 keepAlive = HttpSession::shouldKeepAlive(request, response);
 
