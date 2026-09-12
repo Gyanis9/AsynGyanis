@@ -10,6 +10,7 @@
 #include <coroutine>
 #include <exception>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 namespace AsynGyanis::Core
@@ -204,14 +205,24 @@ namespace AsynGyanis::Core
             }
 
             /**
-             * @brief 保存协程返回值（非 void 版本）。
+             * @brief 保存协程返回值（非 void 版本）
              * @tparam U 返回值类型（应可转换为 T）
              * @param value 返回值
+             * @note T 为 std::optional<U2> 时，`co_return std::nullopt` 会被 optional 的
+             *       nullopt_t 赋值重载解释成「清空容器」，读取侧随后解引用空 optional 会崩溃。
+             *       这里特判该情形，让它落成「有值的空 optional」，符合调用方的直觉语义。
              */
             template<typename U>
             void return_value(U &&value)
             {
-                m_value = std::forward<U>(value);
+                if constexpr (std::is_same_v<std::remove_cvref_t<U>, std::nullopt_t>)
+                {
+                    m_value = T{};
+                }
+                else
+                {
+                    m_value = std::forward<U>(value);
+                }
             }
 
             /**
