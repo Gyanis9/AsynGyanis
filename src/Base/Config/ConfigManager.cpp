@@ -435,31 +435,16 @@ namespace AsynGyanis::Base
         }
 
         const std::filesystem::path targetPath = currentData->configDirectory / "settings.json";
-        const std::filesystem::path legacyPath = currentData->configDirectory / "ui.yaml";
 
-        // 既有覆盖层内容先并入；损坏或根节点不是对象时按空表处理，不阻塞本次保存
+        // 先把既有覆盖层内容读进来：覆盖层是累积的文件，本次只改其中若干个键，
+        // 其余键必须原样保留。损坏或根节点不是对象时按空表处理，不阻塞本次保存
         FormatValueObject members;
         if (const std::optional<std::string> existingText = readTextFile(targetPath); existingText.has_value())
         {
             members = parseFlatMembers(*existingText, targetPath);
         }
 
-        // 历史 ui.yaml 覆盖残留：只并入标量项（扁平点号键），随后删除旧文件完成迁移
-        if (const std::optional<std::string> legacyText = readTextFile(legacyPath); legacyText.has_value())
-        {
-            for (auto &[key, value]: parseFlatMembers(*legacyText, legacyPath))
-            {
-                if (value.type() != FormatValueType::Object && value.type() != FormatValueType::Array)
-                {
-                    members.insert_or_assign(key, std::move(value));
-                }
-            }
-
-            std::error_code ignored;
-            std::filesystem::remove(legacyPath, ignored);
-        }
-
-        // 本次界面修改最后写入，同名旧值以本次为准
+        // 本次修改最后写入，同名旧值以本次为准
         for (const auto &[key, value]: pending)
         {
             members.insert_or_assign(key, value);
