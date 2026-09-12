@@ -13,8 +13,10 @@
 #include "Core/Socket/Connection.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
 
+#include <memory>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -45,9 +47,11 @@ namespace AsynGyanis::Net
          *             TLS 通道自己带着它所需的事件循环引用，不从本参数取
          * @param tlsSocket 已创建但尚未握手的 TlsSocket，所有权转移给本会话
          * @param router 全局路由器，用于分发 HTTP 请求；生命周期必须不短于本会话
+         * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          * @note 构造函数不做握手：握手是协程动作，放进构造函数就等于要求调用方在构造点 co_await
          */
-        HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router);
+        HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
+                     std::shared_ptr<const HttpServerLimits> limits = nullptr);
 
         /**
          * @brief 启动会话主协程：TLS 握手 → 保持活跃事务循环 → 关闭通道。
@@ -104,5 +108,6 @@ namespace AsynGyanis::Net
         Router &m_router;                 ///< 路由器引用，用于分发请求
         HttpParser m_parser;              ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
         std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收缓冲（存的是解密后的明文 HTTP 字节）
+        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
     };
 } // namespace AsynGyanis::Net

@@ -48,23 +48,32 @@ namespace AsynGyanis::Core
         return m_connections.size();
     }
 
+    std::vector<std::shared_ptr<Connection> > ConnectionManager::snapshot() const
+    {
+        std::shared_lock lock(m_mutex);
+
+        // 只做指针拷贝：让调用方拿到一份不会被后续增删改动的列表，遍历期间也由 shared_ptr
+        // 保证连接对象存活。锁在同一函数末尾释放，调用方遍历时本类不持锁
+        std::vector<std::shared_ptr<Connection> > connections;
+        connections.reserve(m_connections.size());
+        for (const auto &connection: m_connections | std::views::values)
+        {
+            connections.push_back(connection);
+        }
+        return connections;
+    }
+
     void ConnectionManager::shutdown()
     {
         // 标志必须先于快照置位：否则「取完快照、还没置位」这一小段里 add() 的新连接
         // 既不在快照中，也不会被 add() 就地收尾，成了漏网的一条
         m_isShuttingDown.store(true, std::memory_order_release);
 
-        std::vector<std::shared_ptr<Connection> > snapshot;
-        {
-            std::shared_lock lock(m_mutex);
-            snapshot.reserve(m_connections.size());
-            for (const auto &connection: m_connections | std::views::values)
-            {
-                snapshot.push_back(connection);
-            }
-        }
+        // 快照的取法与遍历语义都在 snapshot() 里，本函数只负责在锁外逐条收尾
+        const std::vector<std::shared_ptr<Connection> > connections = snapshot();
+
         // 锁外调用 close()，防止回调中的 remove() 死锁
-        for (auto &connection: snapshot)
+        for (const auto &connection: connections)
         {
             if (connection)
             {

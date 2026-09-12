@@ -13,6 +13,7 @@
 #include <memory>
 #include <shared_mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -57,6 +58,17 @@ namespace AsynGyanis::Core
          * @return 连接数量
          */
         [[nodiscard]] size_t activeCount() const;
+
+        /**
+         * @brief 复制一份当前活跃连接的指针快照，供调用方在锁外遍历与操作。
+         *
+         * @details 有意只返回快照而不提供「持锁回调」形式：close() 的收尾路径会反过来调用
+         *          remove()，在锁内执行会重入死锁。快照里的 shared_ptr 使被关闭的连接对象
+         *          在调用方遍历期间始终存活。
+         *
+         * @return std::vector<std::shared_ptr<Connection> > 取快照那一刻的活跃连接列表
+         */
+        [[nodiscard]] std::vector<std::shared_ptr<Connection> > snapshot() const;
 
         /**
          * @brief 关闭所有连接。

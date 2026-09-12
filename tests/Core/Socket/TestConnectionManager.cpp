@@ -19,6 +19,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -232,5 +233,44 @@ namespace AsynGyanis::Core
         const auto other = makeDummyConnection(loop);
         manager.remove(other.get()); // 不同的指针，不应影响已加入的连接
         EXPECT_EQ(manager.activeCount(), 1);
+    }
+
+    /**
+     * @brief 验证空管理器取快照得到空列表：清扫协程在空闲服务器上靠它安全地空转
+     */
+    TEST(ConnectionManager, SnapshotOfEmptyManagerIsEmpty)
+    {
+        ConnectionManager manager;
+
+        EXPECT_TRUE(manager.snapshot().empty());
+    }
+
+    /**
+     * @brief 验证快照是「取的那一刻」的独立副本：之后的增删改不动它，且原连接对象仍被持有
+     *
+     * @details 清扫协程要在锁外遍历快照并逐条关闭；若快照与内部集合共享同一份存储，
+     *          遍历中途的 remove() 会让迭代器失效。这里还顺带钉住「快照持有 shared_ptr」——
+     *          被移除的连接对象在快照析构前不会销毁，清除动作因此不会踩到已释放对象。
+     */
+    TEST(ConnectionManager, SnapshotIsIndependentCopyHoldingConnectionsAlive)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        const auto connection1 = makeDummyConnection(loop);
+        const auto connection2 = makeDummyConnection(loop);
+
+        manager.add(connection1);
+        manager.add(connection2);
+
+        std::vector<std::shared_ptr<Connection> > snapshot = manager.snapshot();
+        ASSERT_EQ(snapshot.size(), 2U);
+
+        const std::weak_ptr<Connection> firstConnectionRef = connection1;
+        manager.remove(connection1.get());
+
+        // 快照是副本：管理器里的增删不会改变它；被移除的连接仍由快照持有，对象依然存活
+        EXPECT_EQ(snapshot.size(), 2U);
+        EXPECT_EQ(manager.activeCount(), 1U);
+        EXPECT_FALSE(firstConnectionRef.expired()) << "快照没有持有连接对象：遍历期间该对象可能已销毁";
     }
 }

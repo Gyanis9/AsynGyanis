@@ -399,8 +399,10 @@ namespace AsynGyanis::Net
     } // namespace
 
     HttpServer::HttpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
-        TcpServer(loop, address)
+        TcpServer(loop, address),
+        m_limits(std::make_shared<const HttpServerLimits>())
     {
+        // 构造即给出一份默认限额：会话永远拿得到非空配置，不必在创建路径上判空
     }
 
     Router &HttpServer::router()
@@ -412,7 +414,7 @@ namespace AsynGyanis::Net
     {
         // 与基类契约的差异见头文件 Doxygen：这里只搬移 socket 与转交两个引用，
         // 不做握手、不查地址、不阻塞，因此既不抛异常也不可能返回空指针
-        return std::make_shared<HttpSession>(std::move(socket), m_router);
+        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits);
     }
 
     void HttpServer::staticFileDir(const std::string &directoryPath)
@@ -461,6 +463,18 @@ namespace AsynGyanis::Net
             return {};
         }
         return m_staticFileSettings->rootDirectory.string();
+    }
+
+    void HttpServer::setLimits(HttpServerLimits limits)
+    {
+        // 换一份新配置而不是改写原对象：会话按 shared_ptr 只读持有它，
+        // 就地修改会让在途会话读到半新半旧的组合
+        m_limits = std::make_shared<const HttpServerLimits>(limits);
+    }
+
+    HttpServerLimits HttpServer::limits() const
+    {
+        return *m_limits;
     }
 
 } // namespace AsynGyanis::Net

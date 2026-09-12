@@ -7,6 +7,7 @@ add_executable(TestNet
         Http/TestHttpResponse.cpp
         Http/TestHttpSession.cpp
         Http/TestHttpServer.cpp
+        Http/TestHttpServerLimits.cpp
         Http/TestRouter.cpp
         Http/TestMiddleware.cpp
         Http/TestFileSender.cpp

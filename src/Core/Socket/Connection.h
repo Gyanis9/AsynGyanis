@@ -13,6 +13,8 @@
 #include "Core/Coroutine/Task.h"
 
 #include <atomic>
+#include <chrono>
+#include <optional>
 #include <string>
 
 namespace AsynGyanis::Core
@@ -107,10 +109,39 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::string localAddress() const;
 
+        /**
+         * @brief 刷新空闲截止时间，把「多久没动静算超期」重新计时。
+         *
+         * @details 会话在相位切换时调用它：等待新请求首字节前刷空闲容忍度，读到字节后刷读超时，
+         *          发送响应前刷写超时。到点之后由服务器上的清扫协程负责关闭连接，
+         *          连接自身不做任何定时等待（帧在协程被挂起期间被销毁会让定时等待指向已释放内存）。
+         *
+         * @param timeout 容忍时长；非正数表示清除截止时间，即关闭本项超时保护
+         * @note 只有所属事件循环线程读写本状态（清扫协程也在该线程上），因此没有原子量
+         */
+        void refreshIdleDeadline(std::chrono::milliseconds timeout) noexcept;
+
+        /**
+         * @brief 清除空闲截止时间：此后 isIdleExpired() 一律返回 false
+         * @note 线程约束同 refreshIdleDeadline()：只在所属事件循环线程上调用
+         */
+        void clearIdleDeadline() noexcept;
+
+        /**
+         * @brief 判断连接是否已超过空闲截止时间
+         * @param now 判定用的当前时刻，由调用方取一次时钟后对同批连接复用，避免逐条取时产生偏差
+         * @return true 已设置截止时间且 now 不早于它
+         * @return false 没有截止时间（不受超时约束），或尚未到点
+         */
+        [[nodiscard]] bool isIdleExpired(std::chrono::steady_clock::time_point now) const noexcept;
+
     private:
         AsyncSocket       m_socket;      ///< 底层异步socket
         Cancelable        m_cancelable;  ///< 取消支持（stop_token）
         std::atomic<bool> m_alive{true}; ///< 连接存活标志，原子操作保证线程安全
+
+        /// 空闲截止时间；未设置表示这条连接不参与超时清扫。只由所属事件循环线程访问（见 refreshIdleDeadline()）
+        std::optional<std::chrono::steady_clock::time_point> m_idleDeadline;
     };
 
 } // namespace AsynGyanis::Core

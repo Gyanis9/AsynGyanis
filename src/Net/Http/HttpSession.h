@@ -14,13 +14,16 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/Connection.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -48,11 +51,14 @@ namespace AsynGyanis::Net
          * @brief 构造 HTTP 会话。
          * @param socket 已建立的异步 socket，所有权转移给基类 Core::Connection
          * @param router 全局路由器，用于分发请求；其生命周期必须不短于本会话
+         * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          *
          * @note 事件循环由 AsyncSocket 内部持有，会话不需要第二份引用，因此只收一个 socket
          *       （见 Core::Connection 的构造）。
+         * @note 配置按 shared_ptr 只读共享而不是按值拷一份：一份配置被本服务器所有会话共用，
+         *       换配置时整体换代（HttpServer::setLimits()），在途会话永远读到自己那份完整配置
          */
-        HttpSession(Core::AsyncSocket socket, Router &router);
+        HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr);
 
         /**
          * @brief 启动会话主协程：跑完整条保持活跃循环后关闭连接。
@@ -88,6 +94,7 @@ namespace AsynGyanis::Net
         Router &m_router;             ///< 路由器引用，用于分发请求
         HttpParser m_parser;          ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
         std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收窗口，首次读取时按固定大小分配
+        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
     };
 
     // ============================================================================
@@ -181,9 +188,9 @@ namespace AsynGyanis::Net
          * @note 出错就收口，不原地复位后接着用：解析器一旦 Error 就进入粘滞错误态，
          *       而此刻字节流的边界已不可信，继续复用的风险高于断开重连。
          *       需要回 4xx 告诉客户端原因的，发完再断。
-         * @note 读侧没有超时：半截头部/正文会让这条协程一直挂在 epoll 上。框架里定时器已经是
-         *       循环级队列的轻量句柄（不占描述符、构造无系统调用），做连接级空闲超时的门槛
-         *       只在「超时后如何收尾」这一策略上。
+         * @note 超时判定不在本协程里做（清扫协程关掉连接后本帧可能立刻销毁，挂起的定时等待会
+         *       指向已释放的帧）：这里只按相位把时限刷进 connection 的空闲截止时间，
+         *       到点关连接由 TcpServer 的清扫协程负责。
          *
          * @tparam Socket 传输层类型，需支持 asyncReceive/asyncSend
          * @param socket        传输层 socket 引用
@@ -192,6 +199,8 @@ namespace AsynGyanis::Net
          * @param parser        HTTP 增量解析器，由会话持有
          * @param receiveBuffer 跨次读取存续的接收缓冲，由会话持有
          * @param isAlive       连接存活谓词，每轮事务与每次挂起前检查
+         * @param connection    所属连接，用于按相位刷新空闲截止时间；其生命周期必须覆盖整个循环
+         * @param limits        连接级限额，取自 HttpServerLimits；0 字段表示关闭对应项保护
          */
         template<typename Socket>
         Core::Task<> httpKeepAliveLoop(Socket &socket,
@@ -199,7 +208,9 @@ namespace AsynGyanis::Net
                                        Router &router,
                                        HttpParser &parser,
                                        std::vector<char> &receiveBuffer,
-                                       const std::function<bool()> &isAlive)
+                                       const std::function<bool()> &isAlive,
+                                       Core::Connection &connection,
+                                       const HttpServerLimits &limits)
         {
             // 接收窗口里尚未交给解析器的字节数。窗口只用来「接住刚到的字节」：正文由解析器
             // 边收边存，跨读的半行也由解析器自己拼，因此这里永远是「窗口开头的一段」，
@@ -207,6 +218,14 @@ namespace AsynGyanis::Net
             std::size_t windowLength = 0;
 
             bool keepAlive = true;
+
+            // 本连接已服务的请求条数：达到 maximumRequestsPerConnection 后回完当前响应即收口，
+            // 避免同一客户端长期占着一条连接不放
+            std::size_t servedRequestCount = 0;
+
+            // 解析器里是否已攒着半条请求：读超时只在「本请求已经开始」之后才顶替空闲容忍度，
+            // 否则每轮等待都会把截止时间刷回更宽松的空闲值，读超时形同虚设
+            bool isRequestInProgress = false;
 
             // 响应对象按连接复用（每轮开头 reset）：容器容量跨请求保留，
             // 让「每条报文都重新长一遍头部容器」这笔开销消失
@@ -223,8 +242,13 @@ namespace AsynGyanis::Net
             // 单块明文，退回两次顺序发送——两者都在数据语义上等价，差别只在是否多一次拷贝。
             // 视图指向的数据活到本次 co_await 结束（响应对象活得更久，序列化结果活在这个
             // 完整表达式里），因此引用捕获是安全的
-            const auto sendResponse = [&socket](const std::string_view head, const std::string_view body) -> Core::Task<bool>
+            const auto sendResponse = [&socket, &connection, &limits](const std::string_view head, const std::string_view body) -> Core::Task<bool>
             {
+                // 发送前把截止时间刷成写超时：对端只连不读（慢消费者）时写侧会一直挂起，
+                // 超过容忍度就由清扫协程收口，而不是把连接永远挂在发送上。
+                // 时限为 0 时这里等于清除截止时间，连接退回「不受写超时约束」
+                connection.refreshIdleDeadline(limits.writeTimeout);
+
                 if constexpr (requires { socket.asyncSendVectored(nullptr, 0); })
                 {
                     if (body.empty())
@@ -288,6 +312,10 @@ namespace AsynGyanis::Net
                 // 未解析字节」只可能出现在 Done 之后（剩下的属于下一条报文），此时应当先解析它
                 if (windowLength == 0)
                 {
+                    // 相位决定用哪个时限：本请求已经开始（解析器里攒着半条报文）就按读超时约束，
+                    // 只有「等一条新请求的第一个字节」才用 keep-alive 空闲容忍度
+                    connection.refreshIdleDeadline(isRequestInProgress ? limits.readTimeout : limits.idleTimeout);
+
                     const ssize_t receivedLength = co_await readIntoWindow();
                     if (receivedLength <= 0)
                     {
@@ -295,6 +323,11 @@ namespace AsynGyanis::Net
                         co_return;
                     }
                     windowLength = static_cast<std::size_t>(receivedLength);
+                    isRequestInProgress = true;
+
+                    // 读到字节即重新计时：慢速攻击是把一条请求拆成很多次缓慢的写入，
+                    // 因此这一项约束的是「相邻两次成功读取」的间隔，而不是整条请求的读总时长
+                    connection.refreshIdleDeadline(limits.readTimeout);
                 }
 
                 const ParseStatus status = parser.parse(receiveBuffer.data(), windowLength);
@@ -375,7 +408,13 @@ namespace AsynGyanis::Net
                 // 取消转发器不在这里注销：它按连接注册一次（见循环前），
                 // 回调指向解析器内部那个按连接复用的请求对象，跨请求依然指向正确目标
 
-                keepAlive = HttpSession::shouldKeepAlive(request, response);
+                // 计数与上限：达到上限就让 keepAlive 变 false，从而走既有的
+                // 「补 Connection: close 并收口」逻辑，而不是另开一条收尾路径
+                ++servedRequestCount;
+                const bool isRequestLimitReached = limits.maximumRequestsPerConnection > 0 &&
+                                                   servedRequestCount >= limits.maximumRequestsPerConnection;
+
+                keepAlive = HttpSession::shouldKeepAlive(request, response) && !isRequestLimitReached;
 
                 const std::string &requestVersion = request.httpVersion();
                 const bool isHttp10OrOlder = requestVersion.starts_with("HTTP/1.0") || requestVersion.starts_with("HTTP/0.9");
@@ -398,10 +437,17 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
+                // 应答已发出，回到「等一条新请求」的相位：不刷新的话，下一次读之前
+                // 连接的截止时间还停在写超时上，对端的读空闲会比配置的空闲容忍度更早被收口
+                connection.refreshIdleDeadline(limits.idleTimeout);
+
                 // ---------------- 第四步：为下一条报文复位 ----------------
                 // 复位解析器（连带把请求对象重置成干净壳子）。窗口里若还有字节，那是流水线
                 // 包进来的下一条报文，下一轮循环直接接着解析
                 parser.reset();
+
+                // 本条报文已服务完毕：下一条从零开始，等它的第一个字节时重新按空闲容忍度计时
+                isRequestInProgress = false;
             }
         }
     } // namespace detail

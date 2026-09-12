@@ -12,7 +12,8 @@
 namespace AsynGyanis::Net
 {
     HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile) :
-        TcpServer(loop, address)
+        TcpServer(loop, address),
+        m_limits(std::make_shared<const HttpServerLimits>())
     {
         // 证书必须在进入接受循环之前就位：留着一个加载失败的上下文，
         // 表现是「端口开着、每条连接都握手失败」，比构造期直接抛异常更难排查
@@ -45,7 +46,18 @@ namespace AsynGyanis::Net
         // 描述符的所有权就此交给 TlsSocket（它是唯一所有者），socket 被移空只剩占位值；
         // 真正的 TLS 握手留给会话协程去做，这里绝不做任何网络动作
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router);
+        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router, m_limits);
+    }
+
+    void HttpsServer::setLimits(HttpServerLimits limits)
+    {
+        // 换一份新配置而不是改写原对象，理由同 HttpServer::setLimits()：会话按只读配置共享持有它
+        m_limits = std::make_shared<const HttpServerLimits>(limits);
+    }
+
+    HttpServerLimits HttpsServer::limits() const
+    {
+        return *m_limits;
     }
 
 } // namespace AsynGyanis::Net

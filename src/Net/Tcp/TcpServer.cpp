@@ -26,7 +26,7 @@ namespace AsynGyanis::Net
     } // namespace
 
     TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
-        m_loop(loop), m_acceptor(loop, address)
+        m_loop(loop), m_acceptor(loop, address), m_idleTimer(loop)
     {
         // 监听器与连接管理器都按引用持有同一个循环：连接的接受与处理必须在同一线程上串行，
         // 这也是本类不做任何容器加锁的前提
@@ -48,6 +48,15 @@ namespace AsynGyanis::Net
         m_running                        = true;
         // 下一轮清扫的触发条数：放在协程局部即可（只有本循环使用），无需提升为成员状态
         std::size_t nextCleanupThreshold = kFinishedTaskCleanupStride;
+
+        // 空闲清扫与接受循环并发跑在同一个循环上：连接的空闲截止时间由会话按相位刷新，
+        // 这里只负责到点收口。节拍非正数表示调用方关掉了这项保护，此时不投递协程——
+        // 投一个永远不干活的常驻任务没有意义
+        if (m_idleCheckInterval > std::chrono::milliseconds::zero())
+        {
+            m_idleSweepTask = idleSweepLoop();
+            m_loop.scheduler().schedule(m_idleSweepTask.handle());
+        }
 
         while (m_running)
         {
@@ -122,6 +131,13 @@ namespace AsynGyanis::Net
             }
         }
 
+        // 先等清扫协程退出：它按运行标志判断是否继续，最多一个节拍后自行结束。
+        // 放在连接收尾之前，收尾阶段就不再有并发的「超时关连接」动作
+        if (m_idleSweepTask.handle() != nullptr && !m_idleSweepTask.isReady())
+        {
+            co_await m_idleSweepTask;
+        }
+
         // 优雅关闭：等待每个连接协程自然结束。close() 已通过 ConnectionManager::shutdown()
         // 关闭全部连接描述符，会话会在下一次读写失败后退出，因此这里不会无限阻塞；
         // 若只调用 stop() 而不调用 close()，长轮询型会话可能长期不落终，调用方需自行保证收手顺序。
@@ -135,6 +151,53 @@ namespace AsynGyanis::Net
             }
         }
         m_connectionManager.waitAll();
+    }
+
+    Core::Task<> TcpServer::idleSweepLoop()
+    {
+        while (m_running)
+        {
+            try
+            {
+                co_await m_idleTimer.waitFor(m_idleCheckInterval);
+
+                // 醒来先复查运行标志：停止过程中不再由本协程关连接，收尾顺序交给 close() 那条路径
+                if (!m_running)
+                {
+                    co_return;
+                }
+
+                // 时钟只取一次：同一轮里的所有连接按同一个「现在」比较，避免逐条取时钟带来的偏差。
+                // 取快照而不持锁遍历：close() 会反过来触发 ConnectionManager::remove()
+                const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+                for (const std::shared_ptr<Core::Connection> &connection: m_connectionManager.snapshot())
+                {
+                    if (connection == nullptr || !connection->isIdleExpired(now))
+                    {
+                        continue;
+                    }
+
+                    // 日志带上对端地址与本轮的清扫节拍（实际超时 = 连接自己的时限 + 节拍，
+                    // 因此节拍就是这条日志能给出的误差上界），便于从日志定位是哪条连接、误差多大
+                    LOG_INFO_FMT("TcpServer: 连接空闲超过截止时间，正在关闭。对端 {}，清扫节拍 {}ms",
+                                 connection->remoteAddress(),
+                                 m_idleCheckInterval.count());
+
+                    // 先请求停止再关描述符，与 ConnectionManager::shutdown() 同一顺序：
+                    // 会话先看到取消信号，随后描述符被关会唤醒仍挂在 epoll 上的读写
+                    [[maybe_unused]] auto _ = connection->cancelable().requestStop();
+                    connection->close();
+                }
+            } catch (const std::exception &sweepException)
+            {
+                // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩。
+                // 单轮失败只丢这一轮：下一轮照常扫描，超期连接不会因为一次失败被永久漏掉
+                LOG_ERROR_FMT("TcpServer: 空闲清扫一轮失败，已跳过本轮。原因：{}", sweepException.what());
+            } catch (...)
+            {
+                LOG_ERROR_FMT("TcpServer: 空闲清扫一轮失败，已跳过本轮。原因：非标准库异常");
+            }
+        }
     }
 
     Core::Task<> TcpServer::handleConnection(std::shared_ptr<Core::Connection> connection)
@@ -170,6 +233,13 @@ namespace AsynGyanis::Net
     void TcpServer::setMaxConnections(const std::size_t maximumConnectionCount)
     {
         m_maxConnections = maximumConnectionCount;
+    }
+
+    void TcpServer::setIdleCheckInterval(const std::chrono::milliseconds interval)
+    {
+        // 非正数按「关闭清扫」处理，而不是当成一个立即到期的定时器：
+        // 后者会让清扫协程每个驱动周期醒来空转一轮，把空闲服务器变成忙等
+        m_idleCheckInterval = interval;
     }
 
     bool TcpServer::isRunning() const

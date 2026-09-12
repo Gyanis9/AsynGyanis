@@ -11,6 +11,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 
+#include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/TcpServer.h"
 
@@ -37,8 +38,9 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP 服务器类。
      *
-     * @details 继承 TcpServer：接受循环、连接计数与优雅关闭都由基类负责，本类只补三件事——
-     *          持有一张路由表、把每条新连接包成 HttpSession、以及可选的静态文件服务。
+     * @details 继承 TcpServer：接受循环、连接计数、空闲清扫与优雅关闭都由基类负责，本类只补四件事——
+     *          持有一张路由表、把每条新连接包成 HttpSession、可选的静态文件服务，以及连接级限额
+     *          （决定会话按什么相位刷新空闲截止时间、一条连接最多服务多少请求）。
      *
      * @note 用法：`server.router().get("/x", handler)` 注册业务路由，
      *       需要目录服务时再 `server.staticFileDir("./web")`；两者都必须在 start() 之前完成。
@@ -98,8 +100,28 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string staticFileDir() const;
 
+        /**
+         * @brief 设置连接级限额（空闲 / 读 / 写超时与单连接请求上限）。
+         *
+         * @details 语义是整体换代而不是就地改写：会话在创建时取走一份共享的只读配置，
+         *          已建立的连接因此不会读到半新半旧的组合；要改配置就换一份新的。
+         *
+         * @param limits 新的限额，取值 0 的字段表示关闭对应保护（见 HttpServerLimits）
+         * @note 必须在 start() 之前调用：它只影响此后的 createConnection()，
+         *       已经建立的会话继续用创建时那份配置
+         * @see HttpServerLimits, TcpServer::setIdleCheckInterval()
+         */
+        void setLimits(HttpServerLimits limits);
+
+        /**
+         * @brief 查询当前生效的连接级限额。
+         * @return HttpServerLimits 构造时的默认值，或最后一次 setLimits() 设定的值
+         */
+        [[nodiscard]] HttpServerLimits limits() const;
+
     private:
         Router m_router;                                ///< 路由器，存储路由表与处理函数
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
+        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
     };
 } // namespace AsynGyanis::Net

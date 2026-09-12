@@ -12,6 +12,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Tls/TlsContext.h"
 
+#include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/TcpServer.h"
 
@@ -69,8 +70,28 @@ namespace AsynGyanis::Net
          */
         std::shared_ptr<Core::Connection> createConnection(Core::AsyncSocket socket) override;
 
+        /**
+         * @brief 设置连接级限额（空闲 / 读 / 写超时与单连接请求上限）。
+         *
+         * @details 与 HttpServer::setLimits() 同一语义：整体换代而不是就地改写，
+         *          会话在创建时取走一份共享的只读配置。TLS 连接同样受空闲清扫约束
+         *          （清扫在 TcpServer 层，与传输层无关）。
+         *
+         * @param limits 新的限额，取值 0 的字段表示关闭对应保护（见 HttpServerLimits）
+         * @note 必须在 start() 之前调用；已经建立的会话继续用创建时那份配置
+         * @see HttpServerLimits, TcpServer::setIdleCheckInterval()
+         */
+        void setLimits(HttpServerLimits limits);
+
+        /**
+         * @brief 查询当前生效的连接级限额。
+         * @return HttpServerLimits 构造时的默认值，或最后一次 setLimits() 设定的值
+         */
+        [[nodiscard]] HttpServerLimits limits() const;
+
     private:
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
+        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
     };
 } // namespace AsynGyanis::Net

@@ -19,12 +19,15 @@ namespace AsynGyanis::Net
         constexpr int kInvalidSocketDescriptor = -1;
     } // namespace
 
-    HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router) :
+    HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
+                               std::shared_ptr<const HttpServerLimits> limits) :
         // 基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。基类那份仅承担「存活位 + 取消源」
         Core::Connection(Core::AsyncSocket(loop, kInvalidSocketDescriptor)),
         m_tlsSocket(std::move(tlsSocket)),
-        m_router(router)
+        m_router(router),
+        // 空配置按默认限额执行，与 HttpSession 保持同一套语义
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>())
     {
     }
 
@@ -101,7 +104,7 @@ namespace AsynGyanis::Net
         // 谓词额外要看描述符，保证「对端断开 → 读出错 → 通道被关」之后循环一定退出，
         // 而不是只依赖基类那个没人置位的存活标志
         co_await detail::httpKeepAliveLoop(
-                m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate);
+                m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits);
 
         LOG_DEBUG_FMT("HttpsSession: 事务循环结束，关闭 TLS 通道（描述符={}）", m_tlsSocket.fileDescriptor());
 

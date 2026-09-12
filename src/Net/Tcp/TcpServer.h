@@ -10,11 +10,13 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/ConnectionManager.h"
 #include "Net/Tcp/TcpAcceptor.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -26,8 +28,8 @@ namespace AsynGyanis::Net
      *
      * @details 组合一个 TcpAcceptor 用于接受新连接、一个 ConnectionManager 用于跟踪活跃连接。
      *          start() 是服务器主协程：接受连接后经 createConnection() 交给子类构造具体协议
-     *          会话，再把会话的协程任务挂到调度器上并发运行。stop()/close() 只置位与关闭
-     *          描述符，真正的收尾发生在 start() 退出前：等全部连接任务结束再回收。
+     *          会话、把会话协程挂上调度器并发运行，并另投一个空闲清扫协程按节拍关闭超期连接。
+     *          stop()/close() 只置位与关闭描述符，真正的收尾发生在 start() 退出前：等任务结束再回收。
      * @note 本类是抽象基类，必须重写 createConnection() 才能装载协议逻辑（见 HttpServer）。
      * @warning start() 与 stop() 必须在同一事件循环线程上调用；m_running 虽是原子量，
      *          但连接容器与协程调度都不做跨线程保护。
@@ -97,6 +99,19 @@ namespace AsynGyanis::Net
         void setMaxConnections(std::size_t maximumConnectionCount);
 
         /**
+         * @brief 设置空闲清扫节拍。
+         *
+         * @details 清扫协程按本间隔醒来，扫描连接管理器并把超过空闲截止时间（由会话自己刷新，
+         *          见 Core::Connection::refreshIdleDeadline()）的连接关掉。
+         *          最坏超时误差 = 本间隔 + 各连接自己的超时值：到期连接最多晚一个节拍被发现。
+         *
+         * @param interval 两次清扫之间的间隔；非正数表示关闭清扫（连接级超时随之失效）
+         * @note 必须在 start() 之前调用：清扫协程在 start() 时按当时的取值投递，
+         *       非正数时它根本不会被创建，之后再改这个值不会有清扫发生
+         */
+        void setIdleCheckInterval(std::chrono::milliseconds interval);
+
+        /**
          * @brief 查询服务器是否处于接受循环中
          * @return true start() 的循环活跃
          * @return false 已停止或尚未启动
@@ -132,8 +147,22 @@ namespace AsynGyanis::Net
          */
         Core::Task<> handleConnection(std::shared_ptr<Core::Connection> connection);
 
+        /**
+         * @brief 空闲清扫协程：按固定节拍关闭超过空闲截止时间的连接
+         * @details 异常绝不外抛（逃逸到调度器等于在事件循环线程上抛异常），单轮失败只丢一轮。
+         *          没有连接超过截止时间时它什么都不做，因此空闲服务器上的代价只是一次定时唤醒。
+         * @return Core::Task<> 协程，服务器停止后完成
+         */
+        Core::Task<> idleSweepLoop();
+
+        /// 空闲清扫的默认节拍（毫秒）：够密以免超时被成倍放大，又不会让空闲服务器频繁空转
+        static constexpr std::chrono::milliseconds kDefaultIdleCheckInterval{250};
+
         std::atomic<bool>              m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
         std::size_t                    m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
+        std::chrono::milliseconds      m_idleCheckInterval{kDefaultIdleCheckInterval}; ///< 空闲清扫节拍，非正数表示关闭清扫
+        Core::Timer                    m_idleTimer;         ///< 清扫协程的节拍器，构造需要事件循环引用
+        Core::Task<>                   m_idleSweepTask{nullptr}; ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）
         std::vector<Core::Task<void> > m_connectionTasks;   ///< 已启动的连接协程，持有其生命周期防止提前销毁
     };
 } // namespace AsynGyanis::Net
