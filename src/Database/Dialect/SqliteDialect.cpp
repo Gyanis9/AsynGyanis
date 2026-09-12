@@ -1,12 +1,3 @@
-/**
- * @file SqliteDialect.cpp
- * @brief SQLite 方言实现 —— 引擎知识部分（占位符 / 分页 / 事务 / 类型名 / 元数据 / 参数上限）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Dialect/SqliteDialect.h"
 
 #include <string>

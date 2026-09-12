@@ -1,12 +1,3 @@
-/**
- * @file DatabaseFactory.cpp
- * @brief 数据库连接工厂实现
- * @author Gyanis
- * @date 2026-09-11
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/MySql/MySqlConnection.h"
 #include "Database/Redis/RedisConnection.h"

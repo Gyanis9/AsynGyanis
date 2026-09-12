@@ -1,12 +1,3 @@
-/**
- * @file MySqlResult.cpp
- * @brief MySQL / MariaDB 查询结果集实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 // min / max 函数式宏会破坏 std::numeric_limits<T>::max() 等写法，必须在任何头之前挡住它们，
 // 理由与写法说明见 MySqlConnection.cpp 同一位置的中文注释
 #ifndef NOMINMAX

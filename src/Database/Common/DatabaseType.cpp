@@ -1,12 +1,3 @@
-/**
- * @file DatabaseType.cpp
- * @brief 数据库类型名称映射实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Common/DatabaseType.h"
 
 namespace AsynGyanis::Database

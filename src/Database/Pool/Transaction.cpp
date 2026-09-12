@@ -1,11 +1,3 @@
-/**
- * @file Transaction.cpp
- * @brief RAII 事务实现
- * @author Gyanis
- * @date 2026-09-17
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
 #include "Database/Pool/Transaction.h"
 
 #include "Database/Common/DatabaseResult.h"

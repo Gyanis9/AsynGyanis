@@ -1,12 +1,3 @@
-/**
- * @file HttpServer.cpp
- * @brief HTTP 服务器实现：会话装配与静态文件服务
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Http/HttpServer.h"
 
 #include "Base/Log/LogMacros.h"

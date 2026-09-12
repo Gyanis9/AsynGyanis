@@ -1,12 +1,3 @@
-/**
- * @file TcpAcceptor.cpp
- * @brief TCP 监听套接字实现：复用选项装配与边沿触发下的批量 accept
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Tcp/TcpAcceptor.h"
 
 #include "Base/Exception/SystemException.h"

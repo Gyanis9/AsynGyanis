@@ -1,12 +1,3 @@
-/**
- * @file ConnectionPool.cpp
- * @brief 连接池核心实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Pool/ConnectionPool.h"
 
 #include "Core/EventLoop/EventLoop.h"

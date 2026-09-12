@@ -1,12 +1,3 @@
-/**
- * @file RedisResult.cpp
- * @brief Redis 命令结果集实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Redis/RedisResult.h"
 
 #ifdef DATABASE_HAS_REDIS

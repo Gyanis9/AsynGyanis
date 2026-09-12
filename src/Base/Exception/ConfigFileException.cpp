@@ -1,12 +1,3 @@
-/**
- * @file ConfigFileException.cpp
- * @brief 配置文件读写失败异常
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Exception/ConfigFileException.h"
 
 #include <string>

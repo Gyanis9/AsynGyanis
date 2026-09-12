@@ -1,12 +1,3 @@
-/**
- * @file TcpServer.cpp
- * @brief TCP 服务器实现：接受循环、连接协程调度与优雅关闭
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Tcp/TcpServer.h"
 
 #include "Base/Exception/Exception.h"

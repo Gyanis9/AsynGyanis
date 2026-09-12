@@ -1,12 +1,3 @@
-/**
- * @file IoContext.cpp
- * @brief 异步运行时主入口实现：线程池启停与阻塞等待停止
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/EventLoop/IoContext.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"

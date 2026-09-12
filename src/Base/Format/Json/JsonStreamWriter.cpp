@@ -1,12 +1,3 @@
-/**
- * @file JsonStreamWriter.cpp
- * @brief JSON 流式写出：按事件顺序逐块拼装文本，与 DOM 版 JsonWriter 逐字节一致
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Json/JsonStreamWriter.h"
 
 #include "Base/Format/Json/JsonWriter.h"

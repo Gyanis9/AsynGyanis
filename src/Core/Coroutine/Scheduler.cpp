@@ -1,12 +1,3 @@
-/**
- * @file Scheduler.cpp
- * @brief 协程调度器实现：本地队列、全局队列与跨线程唤醒
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Coroutine/Scheduler.h"
 #include "Platform/IO/EventNotifier.h"
 

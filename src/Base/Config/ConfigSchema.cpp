@@ -1,12 +1,3 @@
-/**
- * @file ConfigSchema.cpp
- * @brief 配置 schema 约束条目定义与校验入口
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Config/ConfigSchema.h"
 
 #include <format>

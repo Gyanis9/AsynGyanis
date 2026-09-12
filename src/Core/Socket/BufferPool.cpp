@@ -1,12 +1,3 @@
-/**
- * @file BufferPool.cpp
- * @brief 固定大小字节缓冲池
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Socket/BufferPool.h"
 
 namespace AsynGyanis::Core

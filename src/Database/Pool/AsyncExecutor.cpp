@@ -1,12 +1,3 @@
-/**
- * @file AsyncExecutor.cpp
- * @brief 阻塞任务执行器实现 —— 工作线程循环与任务入队
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Pool/AsyncExecutor.h"
 
 #include <algorithm>

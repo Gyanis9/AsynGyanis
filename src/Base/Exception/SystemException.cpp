@@ -1,12 +1,3 @@
-/**
- * @file SystemException.cpp
- * @brief 系统调用失败异常的实现
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Exception/SystemException.h"
 
 #include <cerrno>

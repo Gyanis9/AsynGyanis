@@ -1,12 +1,3 @@
-/**
- * @file AsyncSocket.cpp
- * @brief 异步非阻塞 TCP socket 实现：边缘触发读写与协程式挂起
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/EventLoop/EpollAwaiter.h"
 #include "Core/EventLoop/EventLoop.h"

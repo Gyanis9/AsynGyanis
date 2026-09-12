@@ -1,12 +1,3 @@
-/**
- * @file ProcessInfo.cpp
- * @brief 进程级平台信息：可执行文件目录与环境变量读取
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Platform/System/ProcessInfo.h"
 #include "Platform/Platform.h"
 

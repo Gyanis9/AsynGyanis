@@ -1,12 +1,3 @@
-/**
- * @file TcpStream.cpp
- * @brief 带缓冲 TCP 字节流实现：缓冲区消费、按行读取与整块写入
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Tcp/TcpStream.h"
 
 #include "Base/Exception/Exception.h"

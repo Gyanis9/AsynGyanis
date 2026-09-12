@@ -1,11 +1,3 @@
-/**
- * @file PooledConnection.cpp
- * @brief RAII 连接包装器实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
 

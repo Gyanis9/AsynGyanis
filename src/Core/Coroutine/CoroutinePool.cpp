@@ -1,12 +1,3 @@
-/**
- * @file CoroutinePool.cpp
- * @brief 协程帧内存池实现：固定块切分、空闲列表回收与跨线程保护
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Coroutine/CoroutinePool.h"
 
 #include <algorithm>

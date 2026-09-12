@@ -1,12 +1,3 @@
-/**
- * @file HttpSession.cpp
- * @brief HTTP 会话实现：报文定界、保持活跃判定与事务循环的支撑逻辑
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Http/HttpSession.h"
 
 #include <cstddef>

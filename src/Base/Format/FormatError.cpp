@@ -1,12 +1,3 @@
-/**
- * @file FormatError.cpp
- * @brief 文本解析失败异常，携带出错位置
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/FormatError.h"
 
 #include <format>

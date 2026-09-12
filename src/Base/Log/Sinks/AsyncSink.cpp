@@ -1,12 +1,3 @@
-/**
- * @file AsyncSink.cpp
- * @brief 异步日志输出目标（队列 + 后台消费线程）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Log/Sinks/AsyncSink.h"
 
 #include <condition_variable>

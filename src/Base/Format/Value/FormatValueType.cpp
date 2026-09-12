@@ -1,12 +1,3 @@
-/**
- * @file FormatValueType.cpp
- * @brief 文档值的类型枚举与类型名映射
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Value/FormatValueType.h"
 
 namespace AsynGyanis::Base

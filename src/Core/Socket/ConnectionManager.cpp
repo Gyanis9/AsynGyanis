@@ -1,12 +1,3 @@
-/**
- * @file ConnectionManager.cpp
- * @brief 全局连接跟踪器，支持优雅关闭
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Socket/ConnectionManager.h"
 #include "Core/Socket/Connection.h"
 

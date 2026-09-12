@@ -1,12 +1,3 @@
-/**
- * @file YamlReader.cpp
- * @brief YAML 流式事件读取器实现：完整的 YAML 1.2 词法与块结构扫描器
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Yaml/YamlReader.h"
 
 #include "Base/Format/FormatError.h"

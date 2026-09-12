@@ -1,12 +1,3 @@
-/**
- * @file EventNotifier.cpp
- * @brief 跨平台事件通知器，用于从其他线程唤醒事件循环
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Platform/IO/EventNotifier.h"
 
 #include "Platform/IO/FileDescriptor.h"

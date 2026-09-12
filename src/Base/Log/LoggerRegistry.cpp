@@ -1,12 +1,3 @@
-/**
- * @file LoggerRegistry.cpp
- * @brief 全局日志器注册表（单例）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Log/LoggerRegistry.h"
 
 #include <memory>

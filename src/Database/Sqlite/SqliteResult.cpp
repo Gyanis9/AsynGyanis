@@ -1,12 +1,3 @@
-/**
- * @file SqliteResult.cpp
- * @brief SQLite 查询结果集实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Sqlite/SqliteResult.h"
 
 #include <sqlite3.h>

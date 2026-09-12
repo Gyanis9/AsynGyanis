@@ -1,12 +1,3 @@
-/**
- * @file JsonPointer.cpp
- * @brief JSON Pointer（RFC 6901）的解析、转义、求值与可写定位
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Json/JsonPointer.h"
 
 #include "Base/Format/FormatError.h"

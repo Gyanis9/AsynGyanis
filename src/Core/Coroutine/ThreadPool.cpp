@@ -1,12 +1,3 @@
-/**
- * @file ThreadPool.cpp
- * @brief 固定大小线程池实现：为每个 EventLoop 绑定一条工作线程
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Coroutine/ThreadPool.h"
 
 namespace AsynGyanis::Core

@@ -1,12 +1,3 @@
-/**
- * @file MySqlStatementResult.cpp
- * @brief MySQL 预处理语句结果集实现
- * @author Gyanis
- * @date 2026-09-16
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/MySql/MySqlStatementResult.h"
 
 #include <utility>

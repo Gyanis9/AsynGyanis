@@ -1,12 +1,3 @@
-/**
- * @file EventLoop.cpp
- * @brief 每线程事件循环实现：epoll 等待、唤醒与协程调度衔接
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/EventLoop/EventLoop.h"
 #include "Base/Exception/SystemException.h"
 

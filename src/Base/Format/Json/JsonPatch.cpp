@@ -1,12 +1,3 @@
-/**
- * @file JsonPatch.cpp
- * @brief JSON Patch（RFC 6902）：六种操作的解析、校验与原子应用
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Json/JsonPatch.h"
 
 #include "Base/Format/Json/JsonPointer.h"

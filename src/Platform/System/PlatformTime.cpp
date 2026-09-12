@@ -1,12 +1,3 @@
-/**
- * @file PlatformTime.cpp
- * @brief 跨平台本地时间转换
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Platform/System/PlatformTime.h"
 #include "Platform/Platform.h"
 

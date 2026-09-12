@@ -1,12 +1,3 @@
-/**
- * @file YamlParser.cpp
- * @brief 严格 YAML 1.2 解析器实现：消费扫描器事件并组装配置值模型
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Yaml/YamlParser.h"
 
 #include "Base/Format/FormatError.h"

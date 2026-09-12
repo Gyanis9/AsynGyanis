@@ -1,12 +1,3 @@
-/**
- * @file Router.cpp
- * @brief URL 路由器实现：两级匹配、方法仲裁与中间件串联
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Http/Router.h"
 
 #include <algorithm>

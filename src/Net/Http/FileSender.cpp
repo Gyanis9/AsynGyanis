@@ -1,12 +1,3 @@
-/**
- * @file FileSender.cpp
- * @brief 静态文件 MIME 查表实现：扩展名大小写不敏感映射
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Http/FileSender.h"
 
 #include <algorithm>

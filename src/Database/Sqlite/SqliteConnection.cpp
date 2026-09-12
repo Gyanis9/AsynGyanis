@@ -1,12 +1,3 @@
-/**
- * @file SqliteConnection.cpp
- * @brief SQLite 嵌入式数据库连接实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Sqlite/SqliteConnection.h"
 
 #include "Database/Dialect/SqliteDialect.h"

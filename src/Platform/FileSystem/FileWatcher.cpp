@@ -1,12 +1,3 @@
-/**
- * @file FileWatcher.cpp
- * @brief 文件变更监听器抽象接口与平台实现工厂
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Platform/FileSystem/FileWatcher.h"
 
 #if ASYN_PLATFORM_WIN32

@@ -1,12 +1,3 @@
-/**
- * @file DialectRegistry.cpp
- * @brief 方言注册表实现
- * @author Gyanis
- * @date 2026-09-16
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Dialect/DialectRegistry.h"
 
 #include "Database/Dialect/MySqlDialect.h"

@@ -1,12 +1,3 @@
-/**
- * @file FileDescriptor.cpp
- * @brief 文件描述符级跨平台原语（读写、关闭、非阻塞、描述符对）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Platform/IO/FileDescriptor.h"
 
 #include "Platform/IO/Socket.h"

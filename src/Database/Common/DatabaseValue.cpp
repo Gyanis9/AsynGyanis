@@ -1,12 +1,3 @@
-/**
- * @file DatabaseValue.cpp
- * @brief 数据库统一值的类型名映射实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Common/DatabaseValue.h"
 
 #include <type_traits>

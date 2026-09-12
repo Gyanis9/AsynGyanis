@@ -1,12 +1,3 @@
-/**
- * @file FormatValue.cpp
- * @brief 文档值类型封装，提供类型安全的访问接口、DOM 增删改查与遍历
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Value/FormatValue.h"
 #include "Base/Format/Value/ValueAccessError.h"
 

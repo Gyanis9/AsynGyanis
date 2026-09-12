@@ -1,12 +1,3 @@
-/**
- * @file Epoll.cpp
- * @brief 跨平台 epoll 实例的 RAII 封装（Linux epoll / Windows wepoll）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/EventLoop/Epoll.h"
 
 #include <cerrno>

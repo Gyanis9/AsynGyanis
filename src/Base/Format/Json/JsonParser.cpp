@@ -1,12 +1,3 @@
-/**
- * @file JsonParser.cpp
- * @brief 手写 JSON 解析器，产出配置值模型
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Json/JsonParser.h"
 #include "Base/Format/FormatError.h"
 #include "Base/Format/TextEscapes.h"

@@ -1,12 +1,3 @@
-/**
- * @file LogSink.cpp
- * @brief 日志输出目标抽象基类（等级过滤与格式化器持有）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 

@@ -1,12 +1,3 @@
-/**
- * @file InetAddress.cpp
- * @brief IPv4/IPv6 地址封装实现，含 DNS 解析与地址文本化
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Socket/InetAddress.h"
 #include "Base/Exception/SystemException.h"
 #include "Platform/IO/Socket.h"

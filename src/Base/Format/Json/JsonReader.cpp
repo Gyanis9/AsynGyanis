@@ -1,12 +1,3 @@
-/**
- * @file JsonReader.cpp
- * @brief JSON 流式（SAX）事件读取器：push 喂入 / pull 取事件，支持跨分片边界的 token
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Json/JsonReader.h"
 
 #include "Base/Format/FormatError.h"

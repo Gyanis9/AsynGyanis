@@ -1,12 +1,3 @@
-/**
- * @file ConfigParseException.cpp
- * @brief 配置文件解析失败异常
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Exception/ConfigParseException.h"
 
 #include <string>

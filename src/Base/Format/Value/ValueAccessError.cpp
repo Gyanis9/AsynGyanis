@@ -1,12 +1,3 @@
-/**
- * @file ValueAccessError.cpp
- * @brief 文档值访问失败异常：类型不匹配或成员不存在
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Value/ValueAccessError.h"
 
 #include <format>

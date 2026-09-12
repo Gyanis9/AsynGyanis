@@ -1,12 +1,3 @@
-/**
- * @file RollingFileSink.cpp
- * @brief 支持按大小或按时间滚动的文件日志输出目标
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Log/Sinks/RollingFileSink.h"
 #include "Platform/System/PlatformTime.h"
 

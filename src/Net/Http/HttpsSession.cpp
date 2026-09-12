@@ -1,12 +1,3 @@
-/**
- * @file HttpsSession.cpp
- * @brief HTTPS 会话实现：TLS 握手、强制关闭链路与共享事务循环的接入
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Http/HttpsSession.h"
 
 #include "Base/Log/LogMacros.h"

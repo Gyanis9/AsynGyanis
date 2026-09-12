@@ -1,12 +1,3 @@
-/**
- * @file ConfigValidationException.cpp
- * @brief 配置项校验失败异常
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Exception/ConfigValidationException.h"
 
 #include <string>

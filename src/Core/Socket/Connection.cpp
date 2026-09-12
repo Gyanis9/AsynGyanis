@@ -1,12 +1,3 @@
-/**
- * @file Connection.cpp
- * @brief TCP连接基类，支持协作取消
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/InetAddress.h"
 

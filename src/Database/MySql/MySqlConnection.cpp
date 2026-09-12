@@ -1,12 +1,3 @@
-/**
- * @file MySqlConnection.cpp
- * @brief MySQL / MariaDB 数据库连接实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 // windows.h 会把 min / max 定义成函数式宏（libmysqlclient 的头会间接包含它），
 // 让 std::numeric_limits<T>::max() 与 std::max/std::min 一律编译不过（C4003/C2589）。
 // 必须在任何头文件之前定义 NOMINMAX 才能挡住这对宏：放在文件最顶部是唯一与包含顺序无关的写法。

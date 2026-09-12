@@ -1,12 +1,3 @@
-/**
- * @file JsonMergePatch.cpp
- * @brief JSON Merge Patch（RFC 7396）的递归合并
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Base/Format/Json/JsonMergePatch.h"
 
 #include <utility>

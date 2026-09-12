@@ -1,12 +1,3 @@
-/**
- * @file TlsContext.cpp
- * @brief SSL_CTX RAII 包装器 — 管理 TLS 服务端上下文及每个连接的 SSL 对象创建
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Tls/TlsContext.h"
 #include "Base/Exception/SystemException.h"
 

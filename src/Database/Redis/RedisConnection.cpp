@@ -1,12 +1,3 @@
-/**
- * @file RedisConnection.cpp
- * @brief Redis 键值存储连接实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Redis/RedisConnection.h"
 
 #include "Database/Redis/RedisResult.h"

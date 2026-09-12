@@ -1,12 +1,3 @@
-/**
- * @file HttpsServer.cpp
- * @brief HTTPS 服务器实现：证书加载与 TLS 会话的派生
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Net/Http/HttpsServer.h"
 
 #include "Base/Exception/Exception.h"

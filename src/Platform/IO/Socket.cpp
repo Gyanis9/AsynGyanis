@@ -1,12 +1,3 @@
-/**
- * @file Socket.cpp
- * @brief Winsock 生命周期管理与 socket 级跨平台原语
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Platform/IO/Socket.h"
 
 #include "Platform/IO/FileDescriptor.h"

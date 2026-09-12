@@ -1,12 +1,3 @@
-/**
- * @file StandardSqlDialect.cpp
- * @brief 标准 SQL 方言基类实现 —— 查询树渲染与参数收集的唯一实现
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Database/Dialect/StandardSqlDialect.h"
 
 #include <limits>
