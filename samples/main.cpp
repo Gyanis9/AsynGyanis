@@ -1,26 +1,35 @@
 /**
  * @file main.cpp
  * @brief 多线程 HTTP/HTTPS 服务器示例 — 每线程一个 EventLoop + HttpServer/HttpsServer（SO_REUSEPORT）
- * @copyright Copyright (c) 2026
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
-#include "Base/LogCommon.h"
-#include "Base/Logger.h"
-#include "Base/LogSink.h"
-#include "Core/EventLoop.h"
-#include "Core/IoContext.h"
-#include "Core/InetAddress.h"
-#include "Core/Scheduler.h"
-#include "Core/Task.h"
-#include "Core/ThreadPool.h"
-#include "Net/HttpResponse.h"
-#include "Net/HttpServer.h"
-#include "Net/HttpsServer.h"
-#include "Net/Router.h"
+#include "Base/Log/LogMacros.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/ConsoleSink.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/Sinks/LogSink.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/IoContext.h"
+#include "Core/Socket/InetAddress.h"
+#include "Core/Coroutine/Scheduler.h"
+#include "Core/Coroutine/Task.h"
+#include "Core/Coroutine/ThreadPool.h"
+#include "Net/Http/HttpResponse.h"
+#include "Net/Http/HttpServer.h"
+#include "Net/Http/HttpsServer.h"
+#include "Net/Http/Router.h"
 
 #include <csignal>
 #include <memory>
 #include <string>
 #include <vector>
+
+// 示例程序以可读性为先：重构后各模块统一挂在 AsynGyanis 之下，
+// 这里引入根命名空间，正文继续写 Net::/Core::/Base:: 即可，不必逐处补全限定名
+using namespace AsynGyanis;
 
 namespace
 {
@@ -103,7 +112,7 @@ int main(int argc, char **argv)
     // 初始化日志系统
     auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
     rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
-    rootLogger.setLevel(Base::LogLevel::DEBUG);
+    rootLogger.setLevel(Base::LogLevel::Debug);
 
     const char *proto = useHttps ? "https" : "http";
     LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={}", proto, host, port, threads);

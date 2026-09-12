@@ -523,7 +523,18 @@ namespace AsynGyanis::Base
         const std::string newestToken   = std::format("oldest_{:03d}", keventCount - 1);
         const std::string midEarlyToken = std::format("oldest_{:03d}", keventCount / 2);
 
-        for (int index = 0; index < keventCount; ++index)
+        // 先写一条并等后台线程真正阻塞在下游里，再灌入其余事件。工作线程从启动到阻塞在下游
+        // 需要一点时间，若不等就写入，先到的几条会被正常转发，丢弃数达不到「容量 + 1」的预期，
+        // 高负载下就成了偶发失败（等待有明确上界，不会让用例挂住）
+        m_async->write(makeEvent(LogLevel::Info, std::format("oldest_{:03d}", 0)));
+        ASSERT_TRUE(TestSupport::waitForCondition(
+                [this]
+                {
+                    return m_events->enteredCount.load(std::memory_order_acquire) >= 1U;
+                },
+                kWaitTimeoutMilliseconds));
+
+        for (int index = 1; index < keventCount; ++index)
         {
             m_async->write(makeEvent(LogLevel::Info, std::format("oldest_{:03d}", index)));
         }

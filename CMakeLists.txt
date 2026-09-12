@@ -22,3 +22,7 @@ enable_testing()
 
 add_subdirectory(src)
 add_subdirectory(tests)
+
+# 示例程序纳入构建：它的 CMakeLists 早已就绪，但此前从未被加入，示例与库的 API 脱节
+# 因此长期无人发现。纳入后示例随常规构建一起编译，任何时候都是可用的
+add_subdirectory(samples)
