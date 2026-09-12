@@ -168,11 +168,13 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取影响行数
-         * @details 取构造时快照的 sqlite3_changes()，对写回执结果就是本条语句影响的行数；
-         *          对查询结果则是该连接上一条写语句的计数（SQLite 未提供语句级历史）。
-         * @return int 受影响行数
+         * @details 重写 DatabaseResult::affectedRowCount()：返回构造时快照的 sqlite3_changes()。
+         *          对写回执结果就是本条语句影响的行数；对查询结果则是该连接上一条写语句的计数
+         *          （SQLite 未提供语句级历史，只能读到连接级计数器，与基类「只读结果集返回 0」
+         *          的一般约定不同，这里如实返回快照值）。
+         * @return std::int64_t 受影响行数；构造时未持有连接句柄（只传了语句）时为 0
          */
-        [[nodiscard]] int affectedRowCount() const noexcept { return m_affectedRowCount; }
+        [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;
 
     private:
         /**
@@ -191,7 +193,7 @@ namespace AsynGyanis::Database
         sqlite3 *m_database{nullptr};          ///< 所属连接的句柄，只读引用，不接管生命周期
         size_t m_columnCount{0};               ///< 列数快照，0 表示这是没有游标的写回执
         size_t m_rowCount{0};                  ///< 预扫描得到的行数快照，未预扫描时为 0
-        int m_affectedRowCount{0};             ///< 构造时快照的连接级 sqlite3_changes
+        int m_affectedRowCount{0};             ///< 构造时快照的连接级 sqlite3_changes（int 是 SQLite API 的原生类型）
         std::int64_t m_lastInsertRowId{0};     ///< 构造时快照的连接级 sqlite3_last_insert_rowid
         bool m_hasCurrentRow{false};           ///< 游标当前是否停在有效行上，决定能否读取列值
         bool m_scanCompleted{false};           ///< 游标是否已走到末尾；SQLite 会对已 DONE 的语句再次 step 而重跑查询，必须显式记住耗尽

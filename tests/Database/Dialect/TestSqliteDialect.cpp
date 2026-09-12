@@ -18,6 +18,8 @@
  * - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
  * - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
  * - 参数顺序、数量、类型与 uint64 降级
+ * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
+ * - 事务控制语句文本与单条语句的参数上限
  * - DialectRegistry：SQLite 可取得，MySQL / Redis 抛出中文异常
  */
 #include "Database/Dialect/DialectRegistry.h"
@@ -844,6 +846,279 @@ TEST(SqliteDialectParameter, PlaceholderCountMatchesParameterCount)
     // JOIN 1 个 + WHERE 里 3 个 + HAVING 1 个 = 5 个
     EXPECT_EQ(countPlaceholders(statement.sql), 5U);
     EXPECT_EQ(statement.parameters.size(), countPlaceholders(statement.sql));
+}
+
+// ========================================================================
+// 写语句：INSERT / UPDATE / DELETE / 批量 INSERT
+// ========================================================================
+
+/**
+ * @brief 验证单行 INSERT 的列名引用、占位符顺序与参数绑定
+ */
+TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"id", "name", "note"};
+
+    const std::vector<DatabaseValue> values{
+        std::int64_t{7},
+        std::string("O'Brien -- 中文"),
+        std::monostate{}
+    };
+
+    const SqlStatement statement = dialect.translateInsert(node, values);
+
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\", \"note\") VALUES (?, ?, ?)");
+    ASSERT_EQ(statement.parameters.size(), values.size());
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 7);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[1]), "O'Brien -- 中文");
+    // NULL 必须以绑定参数的形式送出，而不是被拼成 SQL 文本里的 NULL 关键字
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(statement.parameters[2]));
+    // 任何取值都不得出现在 SQL 文本里
+    EXPECT_EQ(statement.sql.find("O'Brien"), std::string::npos);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+}
+
+/**
+ * @brief 验证列与取值个数不一致时抛异常，而不是生成写错列的语句
+ */
+TEST(SqliteDialectWrite, InsertRejectsColumnAndValueCountMismatch)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"id", "name"};
+
+    // 少给值
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})),
+                 std::invalid_argument);
+
+    // 多给值
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(
+                     node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})),
+                 std::invalid_argument);
+
+    // 没有任何待写列
+    QueryNode emptyColumnNode;
+    emptyColumnNode.tableName = "users";
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})),
+                 std::invalid_argument);
+}
+
+/**
+ * @brief 验证 UPDATE 的 SET 参数排在 WHERE 参数之前，且条件复用 SELECT 的渲染规则
+ */
+TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"name", "balance"};
+    node.whereConditions.push_back(
+        makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(42)}));
+
+    const std::vector<DatabaseValue> values{std::string("王五"), 888.25};
+
+    const SqlStatement statement = dialect.translateUpdate(node, values);
+
+    EXPECT_EQ(statement.sql, "UPDATE \"users\" SET \"name\" = ?, \"balance\" = ? WHERE \"id\" = ?");
+    ASSERT_EQ(statement.parameters.size(), 3U);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "王五");
+    EXPECT_DOUBLE_EQ(std::get<double>(statement.parameters[1]), 888.25);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[2]), 42);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+}
+
+/**
+ * @brief 验证带表别名的 UPDATE 与复合条件（IN + IS NULL）的参数顺序
+ */
+TEST(SqliteDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
+{
+    const SqliteDialect dialect;
+
+    // NOT (deleted_at IS NULL) 不占参数；IN 展开成两个占位符
+    WhereCondition notNull = makeComposite(
+        SqlOperator::Not, {makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})});
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.tableAlias    = "u";
+    node.selectColumns = {"name"};
+    node.whereConditions.push_back(
+        makeInCondition("id",
+                        SqlOperator::In,
+                        {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}));
+    node.whereConditions.push_back(std::move(notNull));
+
+    const std::vector<DatabaseValue> values{std::string("李四")};
+
+    const SqlStatement statement = dialect.translateUpdate(node, values);
+
+    EXPECT_EQ(statement.sql,
+              "UPDATE \"users\" AS \"u\" SET \"name\" = ? "
+              "WHERE \"id\" IN (?, ?) AND NOT (\"deleted_at\" IS NULL)");
+    ASSERT_EQ(statement.parameters.size(), 3U);
+    // 赋值参数在前，随后是两个 IN 集合元素，顺序与文本中占位符的先后一致
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "李四");
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 1);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[2]), 2);
+}
+
+/**
+ * @brief 验证没有 WHERE 条件的 UPDATE（整表更新）与空 WHERE 的 UPDATE
+ */
+TEST(SqliteDialectWrite, UpdateWithoutConditionOmitsWhereClause)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"active"};
+
+    const SqlStatement statement = dialect.translateUpdate(node, std::vector<DatabaseValue>{std::int64_t{1}});
+
+    // 无条件即整表更新，是 SQL 本身的语义，不额外补 "WHERE 1 = 1"
+    EXPECT_EQ(statement.sql, "UPDATE \"users\" SET \"active\" = ?");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 1);
+}
+
+/**
+ * @brief 验证 DELETE 的条件渲染与参数收集
+ */
+TEST(SqliteDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+    node.whereConditions.push_back(makeComposite(
+        SqlOperator::And,
+        {makeComparison("active", SqlOperator::Eq, ParameterValue{false}),
+         makeInCondition("id",
+                         SqlOperator::In,
+                         {ParameterValue{static_cast<std::int64_t>(3)}, ParameterValue{static_cast<std::int64_t>(4)}})}));
+
+    const SqlStatement statement = dialect.translateDelete(node);
+
+    EXPECT_EQ(statement.sql, "DELETE FROM \"users\" WHERE (\"active\" = ? AND \"id\" IN (?, ?))");
+    ASSERT_EQ(statement.parameters.size(), 3U);
+    EXPECT_TRUE(std::holds_alternative<bool>(statement.parameters[0]));
+    EXPECT_FALSE(std::get<bool>(statement.parameters[0]));
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 3);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[2]), 4);
+}
+
+/**
+ * @brief 验证无条件 DELETE 直接退化为整表删除，且带别名时别名一并写出
+ */
+TEST(SqliteDialectWrite, DeleteWithoutConditionAndWithAlias)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+
+    const SqlStatement wholeTable = dialect.translateDelete(node);
+    EXPECT_EQ(wholeTable.sql, "DELETE FROM \"users\"");
+    EXPECT_TRUE(wholeTable.parameters.empty());
+
+    // 别名存在时必须写出：WHERE 里以别名限定的列名只有别名在场才能被解析
+    QueryNode aliasedNode;
+    aliasedNode.tableName  = "users";
+    aliasedNode.tableAlias = "u";
+    aliasedNode.whereConditions.push_back(
+        makeComparison("u.id", SqlOperator::Gt, ParameterValue{static_cast<std::int64_t>(10)}));
+
+    const SqlStatement aliased = dialect.translateDelete(aliasedNode);
+    EXPECT_EQ(aliased.sql, "DELETE FROM \"users\" AS \"u\" WHERE \"u\".\"id\" > ?");
+    ASSERT_EQ(aliased.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::int64_t>(aliased.parameters[0]), 10);
+}
+
+/**
+ * @brief 验证批量 INSERT 生成多行 VALUES，参数按「行优先、行内按列序」排列
+ */
+TEST(SqliteDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "accounts";
+    node.selectColumns = {"id", "name", "note"};
+
+    const std::vector<std::vector<DatabaseValue>> rows{
+        {std::int64_t{1}, std::string("张三"), std::string("普通备注")},
+        {std::int64_t{2}, std::string("O'Brien -- DROP"), std::monostate{}},
+        {std::int64_t{3}, std::string("李四"), std::monostate{}}
+    };
+
+    const SqlStatement statement = dialect.translateInsertBatch(node, rows);
+
+    EXPECT_EQ(statement.sql,
+              "INSERT INTO \"accounts\" (\"id\", \"name\", \"note\") "
+              "VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)");
+
+    // 参数个数 = 行数 × 列数
+    ASSERT_EQ(statement.parameters.size(), 9U);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+
+    // 逐位校验：第 i 个占位符必须绑定第 i 个参数（行优先、行内按列序）
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 1);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[1]), "张三");
+    EXPECT_EQ(std::get<std::string>(statement.parameters[2]), "普通备注");
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[3]), 2);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[4]), "O'Brien -- DROP");
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(statement.parameters[5]));
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[6]), 3);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[7]), "李四");
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(statement.parameters[8]));
+}
+
+/**
+ * @brief 验证批量 INSERT 拒绝空行集合与行列数不符的输入
+ */
+TEST(SqliteDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "accounts";
+    node.selectColumns = {"id", "name"};
+
+    // 空行集合：SQL 里 "VALUES" 后面必须有至少一组括号，无法生成合法语句
+    EXPECT_THROW(static_cast<void>(
+                     dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})),
+                 std::invalid_argument);
+
+    // 某行少给一列：列与值错位会让数据写进错误的列，必须当场失败
+    const std::vector<std::vector<DatabaseValue>> mismatchedRows{
+        {std::int64_t{1}, std::string("张三")},
+        {std::int64_t{2}}
+    };
+    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)), std::invalid_argument);
+}
+
+/**
+ * @brief 验证事务控制语句文本与参数上限常量都由方言给出
+ */
+TEST(SqliteDialectWrite, TransactionStatementsAndParameterLimit)
+{
+    const SqliteDialect dialect;
+
+    // SQLite 用 IMMEDIATE 立刻取写锁，避免 DEFERRED 事务升级锁时的 SQLITE_BUSY
+    EXPECT_EQ(dialect.beginTransactionStatement(), "BEGIN IMMEDIATE");
+    EXPECT_EQ(dialect.commitStatement(), "COMMIT");
+    EXPECT_EQ(dialect.rollbackStatement(), "ROLLBACK");
+
+    // 上限来自 SQLITE_MAX_VARIABLE_NUMBER 的默认值，批量写入据此分块
+    EXPECT_EQ(dialect.maximumStatementParameters(), SqliteDialect::kMaximumStatementParameters);
+    EXPECT_EQ(dialect.maximumStatementParameters(), 999U);
 }
 
 // ========================================================================

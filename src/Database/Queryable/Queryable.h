@@ -7,11 +7,19 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details Queryable<T> 是 ORM 查询的门面类，提供流式接口构建查询树，
- *          并负责把查询树送到数据库执行。两条使用路径：
+ *          并负责把查询树送到数据库执行。三条使用路径：
  *          - 离线：默认构造，只用 toSql() 生成近似 SQL 文本，不接触连接池；
- *          - 在线：构造时绑定 ConnectionPool，执行器方法走
- *            「连接池 acquire() → 方言 translate() → execute(sql, 参数) → 行映射」这条链路。
- *          方言由池中连接的真实 DatabaseType 推导（也可在构造时显式指定）。
+ *          - 在线（连接池）：构造时绑定 ConnectionPool，执行器方法走
+ *            「连接池 acquire() → 方言 translate*() → execute(sql, 参数) → 行映射」这条链路；
+ *          - 在线（事务）：构造时绑定 Transaction，全部语句走事务持有的那一条连接，
+ *            从而与 BEGIN / COMMIT / ROLLBACK 处在同一个会话里。
+ *          方言由池中连接的真实 DatabaseType 推导（也可在构造时显式指定），
+ *          绑定事务时直接取事务连接的类型，无需再借出连接探测。
+ *
+ *          ORM 只负责「把结构体整理成列名 + 取值」，SQL 文本一律由方言生成：
+ *          条件渲染、参数收集顺序、写语句语法都只有方言层那一份实现，
+ *          因此本类不含任何拼接 SQL 的逻辑（旧实现里「翻译出 SELECT 再截取 WHERE 段」
+ *          的妥协已随方言接口演进一并删除）。
  *
  * ## 使用范例
  * @code
@@ -30,7 +38,15 @@
  *
  *   // 写入
  *   query.insert(user);
+ *   query.insertBatch(rows);              // 一次多行 VALUES，超上限自动分块
  *   query.where(...).executeNonQuery();   // 按条件删除
+ *
+ *   // 事务：绑定事务的查询与提交/回滚处在同一条连接上
+ *   Transaction transaction(pool);
+ *   Queryable<User> transactionalQuery(transaction);
+ *   transactionalQuery.insert(first);
+ *   transactionalQuery.insert(second);
+ *   transaction.commit();
  * @endcode
  */
 #pragma once
@@ -41,41 +57,26 @@
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
+#include "Database/Pool/Transaction.h"
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/QueryNode.h"
 #include "Database/Queryable/RowMapper.h"
 #include "Database/Queryable/TableSchema.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
-
-namespace AsynGyanis::Database
-{
-    namespace Queryable::Detail
-    {
-        /**
-         * @brief 取执行结果的影响行数
-         *
-         * @details DatabaseResult 基类不提供影响行数（该接口已冻结），只有具体驱动的结果集知道
-         *          自己改了多少行，因此这里按数据库类型做一次受控的向下转型。
-         *          定义在 Queryable.cpp 中，避免 ORM 的公开头文件依赖某个具体驱动。
-         *
-         * @param result 语句执行结果
-         * @param databaseType 执行该语句的连接所属的数据库类型
-         * @return int 影响行数；该驱动无法提供时返回 0（宁可不报也不误报）
-         */
-        [[nodiscard]] int affectedRowCountOf(const DatabaseResult &result, DatabaseType databaseType);
-    }
-}
 
 namespace AsynGyanis::Database::Queryable
 {
@@ -86,13 +87,14 @@ namespace AsynGyanis::Database::Queryable
      * @tparam T 表数据结构类型，需有对应的 TableSchema<T> 特化
      *
      * @details 提供流式接口构建类型安全的数据库查询。
-     *          三种构造方式：
+     *          四种构造方式：
      *          - 默认构造：离线模式，仅用于 SQL 生成和测试
      *          - 带连接池构造：在线模式，方言由池中连接的真实类型推导
      *          - 带连接池与数据库类型构造：在线模式，方言类型由调用方直接指定
+     *          - 带事务构造：在线模式，所有语句走事务持有的那一条连接
      *
-     * @note 执行器方法（toList/first/count/insert/update/executeNonQuery）必须在绑定连接池
-     *       的在线模式下调用，默认构造的离线模式调用它们会抛 std::logic_error。
+     * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）必须在
+     *       绑定连接池或事务的在线模式下调用，默认构造的离线模式调用它们会抛 std::logic_error。
      */
     template<typename T>
     class Queryable
@@ -138,6 +140,27 @@ namespace AsynGyanis::Database::Queryable
          */
         Queryable(ConnectionPool &pool, DatabaseType databaseType)
             : m_pool(&pool), m_databaseType(databaseType)
+        {
+            m_queryNode.tableName = std::string(TableSchema<T>::kTableName);
+        }
+
+        /**
+         * @brief 构造并绑定事务（在线模式，语句走事务连接）
+         *
+         * @details 与绑定连接池的区别只有一个，但它是事务正确性的根本：本对象的全部语句
+         *          都在事务持有的那条连接上执行，绝不各自从池里再取一条。
+         *          若每条语句各取一条连接，BEGIN 会落在一个连接上、写语句落在别的连接上，
+         *          那些写语句实际运行在自动提交模式下——回滚只能回滚一个空事务，
+         *          数据却已经在库里了，而且这种错误不会报任何错。
+         *
+         *          提交与回滚仍由调用方通过事务对象决定，本对象不代劳；
+         *          事务析构（未提交时自动回滚）之后再执行语句会由驱动报「无活动事务」类的错误。
+         *
+         * @param transaction 事务对象，其生命周期必须覆盖本对象的所有执行调用
+         * @note 方言类型直接取自事务连接，不需要像绑定连接池那样借出一条连接来探测
+         */
+        explicit Queryable(Transaction &transaction)
+            : m_transaction(&transaction)
         {
             m_queryNode.tableName = std::string(TableSchema<T>::kTableName);
         }
@@ -260,7 +283,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::vector<T> 查询结果列表，无匹配行时为空向量
          *
-         * @throws std::logic_error 当前为离线模式（无连接池）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
          * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败，原因见异常文本
          * @throws std::invalid_argument 该数据库类型尚无方言实现（如 MySQL / Redis）
          */
@@ -277,7 +300,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::optional<T> 第一行；没有任何匹配行时返回空
          *
-         * @throws std::logic_error 当前为离线模式（无连接池）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
          * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败
          * @throws std::invalid_argument 该数据库类型尚无方言实现
          */
@@ -306,7 +329,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @return std::int64_t 匹配的行数；结果为空或计数列为 NULL 时返回 0
          *
-         * @throws std::logic_error 当前为离线模式（无连接池）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
          * @throws std::runtime_error 取连接失败或 SQL 执行失败
          * @throws std::invalid_argument 该数据库类型尚无方言实现
          */
@@ -320,13 +343,13 @@ namespace AsynGyanis::Database::Queryable
             countingNode.limit.reset();
             countingNode.offset.reset();
 
-            const SqlStatement   statement  = requireDialect().translate(countingNode);
-            PooledConnection     connection = acquireConnection();
+            const SqlStatement statement = requireDialect().translate(countingNode);
+            ConnectionLease    lease     = acquireConnection();
             std::unique_ptr<DatabaseResult> result =
-                connection->execute(std::string_view{statement.sql}, statement.parameters);
+                lease.connection->execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 统计行数失败：" + connection->lastError());
+                throw std::runtime_error("Queryable: 统计行数失败：" + lease.connection->lastError());
             }
 
             // COUNT(*) 恒返回一行一列；游标推进失败说明语句没有产出任何行，按 0 计
@@ -348,61 +371,136 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 执行非查询操作：按当前查询树的 WHERE 条件删除数据
          *
-         * @details 生成并执行 "DELETE FROM 表 [WHERE 条件]"。条件部分复用方言的 WHERE 渲染
-         *          （递归展开逻辑条件、IN 集合与参数顺序的规则只在方言层实现一次），
-         *          因此参数同样以绑定方式送入，不会拼接进 SQL 文本。
+         * @details 生成并执行 "DELETE FROM 表 [WHERE 条件]"。SQL 文本完全由方言生成
+         *          （SqlDialect::translateDelete()），条件渲染、参数收集顺序与 SELECT / UPDATE
+         *          共用方言层的那一份实现，因此参数同样以绑定方式送入，不会拼接进 SQL 文本。
          *          INSERT / UPDATE 带赋值语义，无法由查询树表达，请改用 insert() / update()。
          *
-         * @return int 受影响的行数
+         * @return std::int64_t 受影响的行数；驱动不提供该信息时返回 0
          *
-         * @throws std::logic_error 当前为离线模式（无连接池）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
          * @throws std::runtime_error 取连接失败或语句执行失败
          * @throws std::invalid_argument 该数据库类型尚无方言实现
          * @warning 查询树不含任何条件时生成的语句是 "DELETE FROM 表"，会清空全表；
          *          需要限定范围请先调用 where()
          */
-        int executeNonQuery()
+        [[nodiscard]] std::int64_t executeNonQuery()
         {
             requireOnline("executeNonQuery()");
-            return executeStatement(buildDeleteStatement(resolvedQueryNode()));
+            return executeStatement(requireDialect().translateDelete(m_queryNode));
         }
 
         /**
          * @brief 按结构体字段插入一行
          *
-         * @details 按 TableSchema<T>::kColumns 的顺序生成
-         *          "INSERT INTO 表 (列…) VALUES (?, …)"，字段值全部以绑定参数传入。
-         *          std::optional 成员为空时绑定为 SQL NULL。
+         * @details 按 TableSchema<T>::kColumns 的顺序取出列名与取值，交给方言生成
+         *          "INSERT INTO 表 (列…) VALUES (?, …)"；字段值全部以绑定参数传入，
+         *          本类不拼接任何 SQL 文本。std::optional 成员为空时绑定为 SQL NULL。
          *
          * @param row 待插入的结构体（主键等字段由调用方填好，本方法不做自增处理）
-         * @return int 受影响的行数（成功插入一行时为 1）
+         * @return std::int64_t 受影响的行数（成功插入一行时为 1；驱动不提供该信息时为 0）
          *
-         * @throws std::logic_error 当前为离线模式（无连接池）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
          * @throws std::runtime_error 取连接失败或语句执行失败（如唯一约束冲突）
          * @throws std::invalid_argument 该数据库类型尚无方言实现
          */
-        int insert(const T &row)
+        [[nodiscard]] std::int64_t insert(const T &row)
         {
             requireOnline("insert()");
             return executeStatement(buildInsertStatement(row));
         }
 
         /**
+         * @brief 批量插入多行，一次生成多行 VALUES
+         *
+         * @details 走方言的 SqlDialect::translateInsertBatch()，把 rows 一次写成
+         *          "INSERT INTO 表 (列…) VALUES (?, …), (?, …), …"。
+         *          参数总数受引擎上限约束（SQLite 为 999），因此按「每行占用的参数个数 = 列数」
+         *          换算出每批行数并自动分块；分块后必须是同一个事务，
+         *          否则中途失败会留下「前几批已提交、后几批没写」的半成品，见实现处注释。
+         *
+         * @param rows 待插入的行集合，允许为空（空集合直接返回 0，不产生任何语句）
+         * @return std::int64_t 累计受影响的行数（正常等于 rows.size()；驱动不提供时为 0）
+         *
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败、事务开启失败或语句执行失败
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @note 已绑定事务时不会自行提交或回滚：分块共用事务的连接，提交与否由调用方决定
+         */
+        [[nodiscard]] std::int64_t insertBatch(std::span<const T> rows)
+        {
+            requireOnline("insertBatch()");
+
+            // 空集合不生成语句：SQL 里 "VALUES" 后面必须有至少一组括号，没有可写的内容就没有语句
+            if (rows.empty())
+            {
+                return 0;
+            }
+
+            const SqlDialect &dialect = requireDialect();
+
+            QueryNode batchNode = makeWriteQueryNode();
+            batchNode.selectColumns = allColumnNames();
+
+            // 每行占用的参数个数就是列数（列数不可能为 0，TableSchema 的列已在编译期校验过），
+            // 上限由方言给出：SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER 为 999，MySQL 则是 65535，
+            // 这类引擎参数属于方言知识，因此不写死在 ORM 侧
+            const std::size_t columnCount   = batchNode.selectColumns.size();
+            const std::size_t parameterLimit = dialect.maximumStatementParameters();
+            const std::size_t rowsPerStatement = std::max<std::size_t>(1, parameterLimit / columnCount);
+
+            if (rows.size() <= rowsPerStatement)
+            {
+                // 单条多行 INSERT 自身就是原子的，不需要额外开事务
+                std::vector<std::vector<DatabaseValue>> batchRows;
+                batchRows.reserve(rows.size());
+                for (const T &row: rows)
+                {
+                    batchRows.push_back(rowValuesOf(row));
+                }
+                return executeStatement(dialect.translateInsertBatch(batchNode, batchRows));
+            }
+
+            // 需要分块：让全部批次落在同一条连接、同一个事务里。
+            // 若每批各自从池里取连接，中途失败时已提交的批次无法回滚，
+            // 调用方拿到异常却留下半张表的数据，这比整体失败更难排查
+            if (m_transaction != nullptr)
+            {
+                // 已绑定事务：块之间共用事务连接，提交/回滚的决定权仍在调用方手里
+                return executeBatchOn(m_transaction->connection(), dialect, batchNode, rows, rowsPerStatement);
+            }
+
+            Transaction localTransaction(*m_pool);
+            const std::int64_t affectedRows =
+                executeBatchOn(localTransaction.connection(), dialect, batchNode, rows, rowsPerStatement);
+            // 全部批次写成功才提交；中途抛出异常时事务析构会回滚，已写入的批次一并撤销。
+            // 提交本身也可能失败（磁盘写满、锁冲突），如实抛错而不是吞掉返回值：
+            // 此时事务仍未结束，析构阶段还会再补一次 ROLLBACK
+            if (!localTransaction.commit())
+            {
+                throw std::runtime_error("Queryable: 批量插入提交失败：" + localTransaction.lastError());
+            }
+            return affectedRows;
+        }
+
+        /**
          * @brief 按结构体主键更新一行
          *
-         * @details 生成 "UPDATE 表 SET 非主键列 = ? WHERE 主键 = ?"：主键列不进 SET
-         *          （更新主键会破坏行标识），它的值改作 WHERE 条件；所有取值仍然走参数绑定。
+         * @details SET 的列与取值来自非主键列，WHERE 条件由主键列构成，两者一起交给方言生成
+         *          "UPDATE 表 SET 非主键列 = ?, … WHERE 主键 = ?"：主键列不进 SET
+         *          （更新主键会破坏行标识），它的值改作 WHERE 条件；所有取值仍然走参数绑定，
+         *          条件渲染与 SELECT / DELETE 共用方言层的那一份实现。
          *
          * @param row 待更新的结构体，主键字段用于定位目标行
-         * @return int 受影响的行数；0 表示没有匹配的行（无此主键）
+         * @return std::int64_t 受影响的行数；0 表示没有匹配的行（无此主键）
          *
-         * @throws std::logic_error 当前为离线模式（无连接池）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
          * @throws std::logic_error TableSchema<T>::kPrimaryKey 未在 kColumns 中声明，
          *         或表中只有主键列（没有可更新的列），无法生成 UPDATE
          * @throws std::runtime_error 取连接失败或语句执行失败
          * @throws std::invalid_argument 该数据库类型尚无方言实现
          */
-        int update(const T &row)
+        [[nodiscard]] std::int64_t update(const T &row)
         {
             requireOnline("update()");
             return executeStatement(buildUpdateStatement(row));
@@ -442,23 +540,37 @@ namespace AsynGyanis::Database::Queryable
         // ========================================================================
 
         /**
-         * @brief 校验当前处于在线模式（已绑定连接池）
+         * @brief 本次执行所用的连接租约
+         *
+         * @details 绑定事务时 pooled 为空、connection 指向事务持有的那条连接（所有权在事务手里，
+         *          本对象析构不会归还它）；绑定连接池时 pooled 持有借出的 RAII 包装，
+         *          租约析构即把连接还给池。两种情形对上层调用代码完全一致。
+         */
+        struct ConnectionLease
+        {
+            PooledConnection    pooled;                 ///< 池借出的连接；绑定事务时为空
+            DatabaseConnection *connection = nullptr;   ///< 本次真正使用的连接，恒非空
+        };
+
+        /**
+         * @brief 校验当前处于在线模式（已绑定连接池或事务）
          * @param operationName 调用方方法名，用于拼出可定位的错误文本
          * @throws std::logic_error 离线模式（默认构造）下调用执行器方法
          */
         void requireOnline(const std::string_view operationName) const
         {
-            if (m_pool != nullptr)
+            if (m_pool != nullptr || m_transaction != nullptr)
             {
                 return;
             }
-            throw std::logic_error("Queryable: " + std::string(operationName) + " 需要连接池，当前为离线模式");
+            throw std::logic_error("Queryable: " + std::string(operationName) + " 需要连接池或事务，当前为离线模式");
         }
 
         /**
          * @brief 取得本查询要使用的方言，首次调用时解析并缓存
-         * @details 方言类型优先用构造时显式指定的值；未指定时从池中借一条连接读取其真实
-         *          DatabaseType（池配置里没有类型信息，直接问连接最可靠），读完立刻归还。
+         * @details 方言类型优先用构造时显式指定的值；未指定时从实际要用的连接读取其真实
+         *          DatabaseType：绑定事务时直接问事务连接（零成本且必然准确），
+         *          绑定池时才借一条连接探测（池配置里没有类型信息，直接问连接最可靠），读完立刻归还。
          * @return const SqlDialect& 方言实例引用，生命周期由本对象缓存持有
          * @throws std::runtime_error 无法从池中取得连接以推导类型
          * @throws std::invalid_argument 该数据库类型尚无方言实现（MySQL / Redis）
@@ -474,6 +586,11 @@ namespace AsynGyanis::Database::Queryable
             if (m_databaseType.has_value())
             {
                 resolvedType = m_databaseType.value();
+            }
+            else if (m_transaction != nullptr)
+            {
+                // 事务已经握着一条确定的连接，直接问它即可，不需要再借出/归还一次
+                resolvedType = m_transaction->connection().databaseType();
             }
             else
             {
@@ -493,18 +610,31 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 从连接池取一条连接，取不到直接抛异常
-         * @return PooledConnection 有效连接，作用域结束时自动归还
+         * @brief 取得本次执行要用的连接租约
+         *
+         * @details 绑定事务时直接引用事务持有的那一条连接——这是事务正确性的根本：
+         *          若每个语句各自从池里取连接，BEGIN 落在 A 连接、写语句落在 B 连接，
+         *          那些写语句实际运行在自动提交模式下，回滚只能回滚一个空事务，
+         *          数据却已经落库，而且整个过程不会报任何错。
+         * @return ConnectionLease 连接租约；池连接在租约析构时自动归还，事务连接不归还
          * @throws std::runtime_error 池已达上限且等待超时，或连接工厂创建失败
          */
-        [[nodiscard]] PooledConnection acquireConnection()
+        [[nodiscard]] ConnectionLease acquireConnection()
         {
-            PooledConnection connection = m_pool->acquire();
-            if (!connection)
+            ConnectionLease lease;
+            if (m_transaction != nullptr)
+            {
+                lease.connection = std::addressof(m_transaction->connection());
+                return lease;
+            }
+
+            lease.pooled = m_pool->acquire();
+            if (!lease.pooled)
             {
                 throw std::runtime_error("Queryable: 从连接池获取连接失败，可能是池已达上限或连接创建失败");
             }
-            return connection;
+            lease.connection = lease.pooled.operator->();
+            return lease;
         }
 
         /**
@@ -520,12 +650,7 @@ namespace AsynGyanis::Database::Queryable
 
             if (resolvedNode.selectColumns.empty())
             {
-                std::apply(
-                    [&resolvedNode](const auto &...columnDescriptors)
-                    {
-                        (resolvedNode.selectColumns.emplace_back(columnDescriptors.columnName), ...);
-                    },
-                    TableSchema<T>::kColumns);
+                resolvedNode.selectColumns = allColumnNames();
             }
 
             return resolvedNode;
@@ -541,245 +666,275 @@ namespace AsynGyanis::Database::Queryable
         {
             const SqlStatement statement = requireDialect().translate(queryNode);
 
-            PooledConnection                connection = acquireConnection();
+            ConnectionLease lease = acquireConnection();
             std::unique_ptr<DatabaseResult> result =
-                connection->execute(std::string_view{statement.sql}, statement.parameters);
+                lease.connection->execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 查询执行失败：" + connection->lastError());
+                throw std::runtime_error("Queryable: 查询执行失败：" + lease.connection->lastError());
             }
 
-            // SQLite 的结果集持有连接句柄的非拥有指针，因此 connection 必须比 result 活得久：
-            // 二者在同一作用域内按声明逆序析构，result 先销毁，约束天然满足
+            // SQLite 的结果集持有连接句柄的非拥有指针，因此连接必须比 result 活得久：
+            // lease 在 result 之前声明、之后析构，二者按声明逆序销毁，约束天然满足；
+            // 绑定事务时连接由事务持有，寿命更是长于本次调用
             return mapResultRows<T>(*result);
         }
 
         /**
-         * @brief 执行一条写语句并返回受影响行数
+         * @brief 执行一条写语句并返回受影响行数（连接由内部按当前模式决定）
          * @param statement 待执行的参数化语句
-         * @return int 受影响行数
+         * @return std::int64_t 受影响行数；驱动不提供该信息时为 0
          * @throws std::runtime_error 取连接失败或语句执行失败
          */
-        int executeStatement(const SqlStatement &statement)
+        [[nodiscard]] std::int64_t executeStatement(const SqlStatement &statement)
         {
-            const SqlDialect &dialect = requireDialect();
+            ConnectionLease lease = acquireConnection();
+            return executeOn(*lease.connection, statement);
+        }
 
-            PooledConnection                connection = acquireConnection();
+        /**
+         * @brief 在指定连接上执行一条写语句并返回受影响行数
+         * @details 批量插入分块时必须让每一块都落在同一条连接上（否则事务覆盖不到全部块），
+         *          因此这里把「用哪条连接」显式参数化，供 executeStatement() 与本类内部
+         *          的批量执行共用同一份执行与取数逻辑。
+         * @param connection 目标连接，生命周期由调用方保证
+         * @param statement 待执行的参数化语句
+         * @return std::int64_t 受影响行数；驱动不提供该信息时为 0
+         * @throws std::runtime_error 语句执行失败，原因见连接的错误文本
+         */
+        [[nodiscard]] static std::int64_t executeOn(DatabaseConnection &connection, const SqlStatement &statement)
+        {
             std::unique_ptr<DatabaseResult> result =
-                connection->execute(std::string_view{statement.sql}, statement.parameters);
+                connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 语句执行失败：" + connection->lastError());
+                throw std::runtime_error("Queryable: 语句执行失败：" + connection.lastError());
             }
 
-            // 写语句的结果集不建立游标，影响行数由驱动构造结果集时快照；
-            // DatabaseResult 基类不暴露该信息（接口已冻结），交由 Queryable.cpp 中的辅助函数取回
-            return Detail::affectedRowCountOf(*result, dialect.type());
+            // 影响行数由结果集自己回答：DatabaseResult::affectedRowCount() 带默认实现
+            // （不提供该信息的驱动返回 0），SQLite 覆盖它返回真实的 sqlite3_changes 快照。
+            // ORM 侧因此不再需要按 DatabaseType 向下转型，也不再依赖任何具体驱动
+            return result->affectedRowCount();
         }
 
         /**
          * @brief 生成 INSERT 语句
-         * @details 表名与列名走方言的标识符引用、占位符走方言的 placeholder()，
-         *          ORM 侧不写死任何方言符号；字段值全部作为绑定参数。
+         * @details ORM 只负责把结构体整理成「列名 + 取值」两个等长的序列：列名放进查询树的
+         *          selectColumns，取值转成 DatabaseValue 后按同序排列，SQL 文本、标识符引用、
+         *          占位符写法全部由方言的 translateInsert() 决定，本类不拼任何 SQL 片段。
          * @param row 待插入的结构体
          * @return SqlStatement "INSERT INTO 表 (列…) VALUES (?, …)"
          */
         [[nodiscard]] SqlStatement buildInsertStatement(const T &row)
         {
-            const SqlDialect &dialect = requireDialect();
+            QueryNode insertNode    = makeWriteQueryNode();
+            insertNode.selectColumns = allColumnNames();
 
-            std::string                columnText;
-            std::string                placeholderText;
-            std::vector<DatabaseValue> parameters;
-
-            std::apply(
-                [&](const auto &...columnDescriptors)
-                {
-                    (appendInsertColumn(columnText, placeholderText, parameters, dialect, columnDescriptors, row), ...);
-                },
-                TableSchema<T>::kColumns);
-
-            SqlStatement statement;
-            statement.sql = "INSERT INTO " + dialect.quoteIdentifier(TableSchema<T>::kTableName) +
-                            " (" + columnText + ") VALUES (" + placeholderText + ")";
-            statement.parameters = std::move(parameters);
-            return statement;
+            // 取值向量是临时对象，但它活到整条表达式结束，方言在本次调用内完成读取，不存在悬垂
+            return requireDialect().translateInsert(insertNode, rowValuesOf(row));
         }
 
         /**
          * @brief 生成按主键更新一行的 UPDATE 语句
-         * @details SET 子句覆盖除主键外的全部列，WHERE 子句用主键定位；
-         *          主键值作为最后一个绑定参数，与它在 SQL 中最后出现的位置一致。
+         * @details SET 子句覆盖除主键外的全部列，WHERE 子句用主键定位，主键值同样以参数绑定送出。
+         *          条件渲染交回方言：ORM 只提供「SET 列 + 取值」与一条主键等值条件，
+         *          条件树的递归、IN 展开、参数顺序因此与 SELECT / DELETE 完全一致。
          * @param row 待更新的结构体
          * @return SqlStatement "UPDATE 表 SET 列 = ?, … WHERE 主键 = ?"
          * @throws std::logic_error 主键未在 kColumns 中声明，或表中只有主键列
          */
         [[nodiscard]] SqlStatement buildUpdateStatement(const T &row)
         {
-            const SqlDialect      &dialect        = requireDialect();
             const std::string_view primaryKeyName = TableSchema<T>::kPrimaryKey;
 
-            std::string                assignmentText;
-            std::vector<DatabaseValue> parameters;
-            DatabaseValue              primaryKeyValue;
-            bool                       primaryKeyFound = false;
+            std::vector<std::string>      assignmentColumns;
+            std::vector<DatabaseValue>    assignmentValues;
+            std::optional<WhereCondition> primaryKeyCondition;
 
             std::apply(
                 [&](const auto &...columnDescriptors)
                 {
-                    (appendUpdateColumn(assignmentText, parameters, dialect, columnDescriptors, row,
-                                        primaryKeyName, primaryKeyValue, primaryKeyFound), ...);
+                    (appendUpdateColumn(columnDescriptors, row, primaryKeyName, assignmentColumns,
+                                        assignmentValues, primaryKeyCondition), ...);
                 },
                 TableSchema<T>::kColumns);
 
-            if (!primaryKeyFound)
+            if (!primaryKeyCondition.has_value())
             {
                 throw std::logic_error("Queryable: 无法生成 UPDATE，TableSchema<" +
                                        std::string(TableSchema<T>::kTableName) + ">::kPrimaryKey（" +
                                        std::string(primaryKeyName) + "）未在 kColumns 中声明");
             }
 
-            if (assignmentText.empty())
+            if (assignmentColumns.empty())
             {
                 throw std::logic_error("Queryable: 无法生成 UPDATE，表 " +
                                        std::string(TableSchema<T>::kTableName) + " 只有主键列，没有可更新的列");
             }
 
-            SqlStatement statement;
-            statement.sql = "UPDATE " + dialect.quoteIdentifier(TableSchema<T>::kTableName) +
-                            " SET " + assignmentText +
-                            " WHERE " + dialect.quoteIdentifier(primaryKeyName) +
-                            " = " + dialect.placeholder(parameters.size());
+            QueryNode updateNode     = makeWriteQueryNode();
+            updateNode.selectColumns = std::move(assignmentColumns);
+            updateNode.whereConditions.push_back(std::move(primaryKeyCondition.value()));
 
-            // 主键参数最后压入：SET 里的占位符先出现，WHERE 的占位符最后出现
-            parameters.push_back(std::move(primaryKeyValue));
-            statement.parameters = std::move(parameters);
-            return statement;
+            // SET 参数在前、主键条件参数在后，与方言输出文本中占位符的先后顺序一致
+            return requireDialect().translateUpdate(updateNode, assignmentValues);
         }
 
         /**
-         * @brief 生成按查询树条件删除的 DELETE 语句
-         * @details 表名走方言引用；WHERE 子句复用方言对同一条件树的 SELECT 翻译结果并截取其
-         *          条件部分——递归逻辑条件、IN 展开、参数收集顺序的规则只在方言层实现一次，
-         *          ORM 侧不再维护第二套渲染器，两边也不会随方言演进而产生行为差异。
-         * @param queryNode 提供条件与表名的查询树
-         * @return SqlStatement "DELETE FROM 表 [WHERE 条件]"；无 WHERE 条件时省略该子句
-         * @throws std::logic_error 方言生成的前缀与预期不符（说明方言实现被改动）
+         * @brief 构建一个只在写方向使用的查询树
+         * @details 只填表名：写语句不涉及 JOIN / 排序 / 分页，也不应继承 m_queryNode 上
+         *          调用方为查询设置的条件（例如 query.where(...).insert(row) 里的条件
+         *          对 INSERT 毫无意义，带进写语句只会误导）。
+         * @return QueryNode 空的写查询树
          */
-        [[nodiscard]] SqlStatement buildDeleteStatement(const QueryNode &queryNode)
+        [[nodiscard]] static QueryNode makeWriteQueryNode()
         {
-            const SqlDialect &dialect = requireDialect();
-
-            // 别名一并带上：WHERE 里的限定列名（"u"."id"）只有别名存在时才能被解析
-            std::string deleteTarget = dialect.quoteIdentifier(queryNode.tableName);
-            std::string selectPrefix = "SELECT * FROM " + deleteTarget;
-            if (!queryNode.tableAlias.empty())
-            {
-                const std::string aliasText = " AS " + dialect.quoteIdentifier(queryNode.tableAlias);
-                deleteTarget += aliasText;
-                selectPrefix += aliasText;
-            }
-
-            SqlStatement statement;
-            statement.sql = "DELETE FROM " + deleteTarget;
-
-            if (queryNode.whereConditions.empty())
-            {
-                // 无条件即全表删除，行为与 SQL 语义一致；调用方已在方法声明处收到警告
-                return statement;
-            }
-
-            QueryNode conditionOnlyNode;
-            conditionOnlyNode.tableName       = queryNode.tableName;
-            conditionOnlyNode.tableAlias      = queryNode.tableAlias;
-            conditionOnlyNode.whereConditions = queryNode.whereConditions;
-
-            const SqlStatement conditionStatement = dialect.translate(conditionOnlyNode);
-
-            // 方言按固定顺序生成 SQL，翻译结果必然以该前缀开头；对不上说明方言实现被改动了，
-            // 此时宁可报错也不能把条件拼错的 SQL 交给数据库
-            if (conditionStatement.sql.rfind(selectPrefix, 0) != 0)
-            {
-                throw std::logic_error("Queryable: 方言生成的 SELECT 前缀与预期不一致，无法复用 WHERE 子句（实际：" +
-                                       conditionStatement.sql + "）");
-            }
-
-            statement.sql += conditionStatement.sql.substr(selectPrefix.size());
-            statement.parameters = conditionStatement.parameters;
-            return statement;
+            QueryNode writeNode;
+            writeNode.tableName = std::string(TableSchema<T>::kTableName);
+            return writeNode;
         }
 
         /**
-         * @brief 拼接 INSERT 的一列（列名 + 占位符 + 绑定参数）
+         * @brief 取 TableSchema<T> 声明的全部列名，顺序与 kColumns 一致
+         * @return std::vector<std::string> 列名列表
+         */
+        [[nodiscard]] static std::vector<std::string> allColumnNames()
+        {
+            std::vector<std::string> columnNames;
+
+            std::apply(
+                [&columnNames](const auto &...columnDescriptors)
+                {
+                    // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
+                    (columnNames.emplace_back(columnDescriptors.columnName), ...);
+                },
+                TableSchema<T>::kColumns);
+
+            return columnNames;
+        }
+
+        /**
+         * @brief 把一行的全部字段转成绑定参数，顺序与 kColumns 一致
+         * @param row 待转换的结构体
+         * @return std::vector<DatabaseValue> 与列名一一对应的取值列表
+         */
+        [[nodiscard]] static std::vector<DatabaseValue> rowValuesOf(const T &row)
+        {
+            std::vector<DatabaseValue> rowValues;
+
+            std::apply(
+                [&rowValues, &row](const auto &...columnDescriptors)
+                {
+                    // 成员值 → 绑定参数：optional 空值绑定为 SQL NULL，无符号超范围降级为十进制文本
+                    (rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptors.memberPointer))), ...);
+                },
+                TableSchema<T>::kColumns);
+
+            return rowValues;
+        }
+
+        /**
+         * @brief 在指定连接上按行数上限分块执行批量插入
+         * @details 每块生成一条多行 VALUES 语句，全部块都落在同一个 connection 上：
+         *          只有共用一条连接，调用方（或本类内部的本地事务）才能用一个事务覆盖全部块。
+         * @param connection 目标连接
+         * @param dialect 方言语义，提供 translateInsertBatch()
+         * @param batchNode 提供表名与待写列的查询树
+         * @param rows 待插入的全部行
+         * @param rowsPerStatement 每块最多容纳的行数（由方言的参数上限换算而来）
+         * @return std::int64_t 累计受影响行数
+         * @throws std::runtime_error 任意一块执行失败（此时整个事务由调用方回滚）
+         */
+        [[nodiscard]] static std::int64_t executeBatchOn(DatabaseConnection &connection,
+                                                        const SqlDialect &dialect,
+                                                        const QueryNode &batchNode,
+                                                        const std::span<const T> rows,
+                                                        const std::size_t rowsPerStatement)
+        {
+            std::int64_t totalAffectedRows = 0;
+
+            for (std::size_t firstRow = 0; firstRow < rows.size(); firstRow += rowsPerStatement)
+            {
+                // 最后一块可能不足一整批，因此每一块都要重新算上界，不能按固定步长假定满行
+                const std::size_t lastRow = std::min(firstRow + rowsPerStatement, rows.size());
+
+                std::vector<std::vector<DatabaseValue>> chunkRows;
+                chunkRows.reserve(lastRow - firstRow);
+                for (std::size_t rowIndex = firstRow; rowIndex < lastRow; ++rowIndex)
+                {
+                    chunkRows.push_back(rowValuesOf(rows[rowIndex]));
+                }
+
+                // 参数顺序为「行优先、行内按列序」，与方言生成的占位符顺序一一对应
+                totalAffectedRows += executeOn(connection, dialect.translateInsertBatch(batchNode, chunkRows));
+            }
+
+            return totalAffectedRows;
+        }
+
+        /**
+         * @brief 把 UPDATE 的一列拆进 SET 或 WHERE
          * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
-         * @param columnText 列名列表缓冲区，非空时先补分隔符
-         * @param placeholderText 占位符列表缓冲区，与 columnText 同步补分隔符
-         * @param parameters 绑定参数列表，按列顺序追加
-         * @param dialect 方言，提供标识符引用与占位符写法
          * @param columnDescriptor 列的元信息（列名 + 成员指针）
          * @param row 提供字段值的结构体
+         * @param primaryKeyName 主键列名，命中该列的成员不进 SET
+         * @param assignmentColumns 出参：进入 SET 的列名列表，按 kColumns 顺序
+         * @param assignmentValues 出参：与 assignmentColumns 同序的取值列表
+         * @param primaryKeyCondition 出参：主键等值条件；未找到主键列时保持空
          */
         template<typename ColumnDescriptorType>
-        static void appendInsertColumn(std::string &columnText,
-                                       std::string &placeholderText,
-                                       std::vector<DatabaseValue> &parameters,
-                                       const SqlDialect &dialect,
-                                       const ColumnDescriptorType &columnDescriptor,
-                                       const T &row)
-        {
-            // 用「缓冲区是否为空」判断是不是第一列：折叠表达式从左到右执行，
-            // 因此列名与占位符的分隔符总能同步补上
-            if (!columnText.empty())
-            {
-                columnText += ", ";
-                placeholderText += ", ";
-            }
-
-            columnText += dialect.quoteIdentifier(columnDescriptor.columnName);
-            placeholderText += dialect.placeholder(parameters.size());
-
-            // 成员值 → 绑定参数：optional 空值绑定为 SQL NULL，无符号超范围降级为十进制文本
-            parameters.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer)));
-        }
-
-        /**
-         * @brief 拼接 UPDATE 的一列（主键进 WHERE，其余进 SET）
-         * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
-         * @param assignmentText SET 子句缓冲区
-         * @param parameters 绑定参数列表，按 SET 列顺序追加
-         * @param dialect 方言，提供标识符引用与占位符写法
-         * @param columnDescriptor 列的元信息（列名 + 成员指针）
-         * @param row 提供字段值的结构体
-         * @param primaryKeyName 主键列名，命中该列的成员不进入 SET
-         * @param primaryKeyValue 出参：主键列的绑定参数
-         * @param primaryKeyFound 出参：是否找到主键列
-         */
-        template<typename ColumnDescriptorType>
-        static void appendUpdateColumn(std::string &assignmentText,
-                                       std::vector<DatabaseValue> &parameters,
-                                       const SqlDialect &dialect,
-                                       const ColumnDescriptorType &columnDescriptor,
+        static void appendUpdateColumn(const ColumnDescriptorType &columnDescriptor,
                                        const T &row,
-                                       std::string_view primaryKeyName,
-                                       DatabaseValue &primaryKeyValue,
-                                       bool &primaryKeyFound)
+                                       const std::string_view primaryKeyName,
+                                       std::vector<std::string> &assignmentColumns,
+                                       std::vector<DatabaseValue> &assignmentValues,
+                                       std::optional<WhereCondition> &primaryKeyCondition)
         {
-            // 主键列不进 SET：更新主键会破坏行标识（其它表的外键、上层缓存都指向旧值）
+            // 主键列不进 SET：更新主键会破坏行标识（其它表的外键、上层缓存都指向旧值）。
+            // 它的值改作 WHERE 条件，仍然是参数绑定而不是拼进 SQL 文本
             if (columnDescriptor.columnName == primaryKeyName)
             {
-                primaryKeyValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer));
-                primaryKeyFound = true;
+                primaryKeyCondition = WhereCondition{
+                    .left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
+                    .op    = SqlOperator::Eq,
+                    .right = makeParameterValue(row.*(columnDescriptor.memberPointer))
+                };
                 return;
             }
 
-            if (!assignmentText.empty())
+            assignmentColumns.emplace_back(columnDescriptor.columnName);
+            assignmentValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer)));
+        }
+
+        /**
+         * @brief 把结构体成员值转成查询树使用的参数值
+         * @details 写语句的条件（例如 UPDATE 的主键等值条件）要放进 QueryNode，而 QueryNode
+         *          的参数类型是 ParameterValue；本函数负责这最后一步转换，
+         *          标量部分直接复用 Expression.h 里既有的重载，保证 ORM 里「值 → ParameterValue」
+         *          只有一套规则。
+         * @tparam MemberType 成员类型（可为 std::optional 包装）
+         * @param value 成员值
+         * @return ParameterValue 条件可直接使用的参数值
+         */
+        template<typename MemberType>
+        [[nodiscard]] static ParameterValue makeParameterValue(const MemberType &value)
+        {
+            using BareType = std::remove_cvref_t<MemberType>;
+
+            if constexpr (Detail::IsOptional<BareType>::value)
             {
-                assignmentText += ", ";
+                // 空 optional 表达 SQL NULL：主键为 NULL 时条件退化为 "主键 = NULL"（恒不成立），
+                // 与 SQL 语义一致，不会误伤任何行，也不会静默匹配到别的行
+                if (!value.has_value())
+                {
+                    return nullptr;
+                }
+                return makeParameterValue(value.value());
             }
-            assignmentText += dialect.quoteIdentifier(columnDescriptor.columnName);
-            assignmentText += " = ";
-            assignmentText += dialect.placeholder(parameters.size());
-            parameters.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer)));
+            else
+            {
+                return Detail::toParameterValue(value);
+            }
         }
 
         // ========================================================================
@@ -1052,8 +1207,9 @@ namespace AsynGyanis::Database::Queryable
         // ========================================================================
 
         QueryNode                   m_queryNode;      ///< 查询树节点，存储所有查询构建信息
-        ConnectionPool             *m_pool = nullptr; ///< 数据库连接池指针，离线模式为 nullptr
-        std::optional<DatabaseType> m_databaseType;   ///< 构造时显式指定的数据库类型；未指定时从池中连接推导
+        ConnectionPool             *m_pool = nullptr; ///< 数据库连接池指针，离线模式或绑定事务时为 nullptr
+        Transaction                *m_transaction = nullptr; ///< 事务指针；非空时全部语句走事务持有的连接
+        std::optional<DatabaseType> m_databaseType;   ///< 构造时显式指定的数据库类型；未指定时从连接推导
         std::shared_ptr<SqlDialect> m_dialect;        ///< 缓存的方言实例，首次执行时解析并长期持有
     };
 

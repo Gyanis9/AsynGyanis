@@ -217,6 +217,13 @@ namespace AsynGyanis::Database
         return m_isEmpty;
     }
 
+    std::int64_t SqliteResult::affectedRowCount() const noexcept
+    {
+        // 把 SQLite 连接级计数器的 int 快照按驱动层统一的有符号 64 位宽度交出去；
+        // 这里只是类型加宽，不与连接交互，因此 noexcept 成立
+        return static_cast<std::int64_t>(m_affectedRowCount);
+    }
+
     void SqliteResult::countRows()
     {
         m_rowCount = 0;

@@ -3,8 +3,10 @@
  * @brief SqliteResult 单元测试：游标与预扫描语义、列元数据、存储类到 DatabaseValue 的映射与写回执快照
  * @details 结果集只能由 execute() 交出，因此本文件全部用例都跑在真实的内存库上：
  *          先建表灌样本数据，再经 execute() 取回结果集，零外部服务、零伪造内部状态。
- *          affectedRowCount() / lastInsertRowId() / nativeHandle() 只存在于 SqliteResult 上，
- *          用例统一经 dynamic_cast 取回派生类型——转换失败本身就是「驱动交出错类型」的缺陷。
+ *          lastInsertRowId() / nativeHandle() 只存在于 SqliteResult 上，
+ *          用例统一经 dynamic_cast 取回派生类型——转换失败本身就是「驱动交出错类型」的缺陷；
+ *          affectedRowCount() 已提升到 DatabaseResult 基类（带默认实现），本文件另有一条用例
+ *          刻意通过基类引用取值，钉住「不再需要向下转型」这一点。
  *          钉住的实现契约（重构时刻意定下的语义，破坏即视为回归）：
  *          1、只有只读语句会被预扫描：rowCount() 对只读查询给出精确行数，对写语句与带副作用的
  *             语句（INSERT ... RETURNING）返回 0；isEmpty() 对只读结果集准确，对写回执恒为 true；
@@ -112,7 +114,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 把 execute() 交出的基类结果集还原成 SQLite 派生类型
-         * @details affectedRowCount() / lastInsertRowId() / nativeHandle() 是 SQLite 专有接口，
+         * @details lastInsertRowId() / nativeHandle() 是 SQLite 专有接口，
          *          只能向下转换后读取；转换失败即「驱动交出错类型」，用例据此失败。
          * @param result execute() 交出的结果集
          * @return SqliteResult * 派生类型指针，转换失败时为空
@@ -759,6 +761,19 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asText(result->getValue("name")), std::optional<std::string>("Hank"));
         EXPECT_EQ(asInteger(result->getValue("id")), std::optional<std::int64_t>(connection().lastInsertRowId()));
         EXPECT_FALSE(result->next());
+    }
+
+    TEST_F(SqliteUserQuery, AffectedRowCountIsReachableThroughTheBaseInterface)
+    {
+        const std::unique_ptr<DatabaseResult> receipt =
+            executeRequired(connection(), "UPDATE users SET age = age + 1");
+        ASSERT_NE(receipt, nullptr);
+
+        // 影响行数现在由 DatabaseResult 基类提供虚接口，这里刻意通过基类引用取值：
+        // 旧实现必须按 DatabaseType 向下转型到 SqliteResult 才能拿到，其它驱动一律得 0
+        // 样本共四行，UPDATE 统计所有匹配并被写入的行，与值是否真的改变无关
+        const DatabaseResult &baseResult = *receipt;
+        EXPECT_EQ(baseResult.affectedRowCount(), 4);
     }
 
 } // namespace AsynGyanis::Database

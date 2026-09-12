@@ -124,6 +124,26 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] virtual std::string lastError() const { return m_lastError; }
 
+        /**
+         * @brief 最近一次写语句影响的行数
+         *
+         * @details 本方法带默认实现（返回 0），是本次接口演进的追加项：
+         *          以往只有具体驱动的结果集知道影响行数，上层不得不按 DatabaseType
+         *          向下转型才能取到它，其它驱动一律拿不到。放到基类后，
+         *          调用方只依赖 DatabaseResult 就能吃到该信息，未覆盖的驱动则保持 0。
+         *
+         *          语义约定：
+         *          - 写语句（INSERT/UPDATE/DELETE）返回本条语句实际改动的行数；
+         *          - 驱动不提供该信息（如 MySQL / Redis 驱动）返回 0，即「未知」，
+         *            不会用一个虚假的非零值冒充统计结果；
+         *          - 只读结果集返回 0，但具体驱动若只能读到连接级计数器（SQLite 即是如此，
+         *            引擎未提供语句级历史），可以返回该计数器并自行在注释中说明。
+         *
+         * @return std::int64_t 影响行数；0 表示未知、只读结果集或没有行被改动
+         * @note 本方法必须 noexcept：它是执行路径上的统计读取，不允许因取数失败而打断调用方
+         */
+        [[nodiscard]] virtual std::int64_t affectedRowCount() const noexcept { return 0; }
+
     protected:
         std::string m_lastError; ///< 最后一次错误信息
     };

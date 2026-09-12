@@ -10,6 +10,9 @@
 #include "Database/Dialect/SqliteDialect.h"
 
 #include <limits>
+#include <span>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <variant>
@@ -137,6 +140,13 @@ namespace AsynGyanis::Database
         return true;
     }
 
+    std::size_t SqliteDialect::maximumStatementParameters() const noexcept
+    {
+        // 常量 kMaximumStatementParameters 的取值来源见头文件说明：SQLITE_MAX_VARIABLE_NUMBER 的默认值。
+        // 按保守值分块，即使目标 SQLite 用了更小的自定义上限，也只是多分几批而不会失败
+        return kMaximumStatementParameters;
+    }
+
     std::string SqliteDialect::renderFieldReference(const std::string_view fieldText) const
     {
         // 单个通配符不是标识符：加引号会得到一个名为 "*" 的列，语义完全不同
@@ -195,6 +205,91 @@ namespace AsynGyanis::Database
         return renderedText;
     }
 
+    std::string SqliteDialect::renderTableReference(const Queryable::QueryNode &query) const
+    {
+        std::string tableReference = quoteIdentifier(query.tableName);
+        if (!query.tableAlias.empty())
+        {
+            // 别名同样加引号：不加引号的别名遇到保留字（order、group）会被当成关键字
+            tableReference += " AS ";
+            tableReference += quoteIdentifier(query.tableAlias);
+        }
+        return tableReference;
+    }
+
+    void SqliteDialect::appendWhereClause(std::string &sqlText,
+                                          std::vector<DatabaseValue> &parameters,
+                                          const Queryable::QueryNode &query) const
+    {
+        // 没有条件就整段不输出：SELECT 得到全表查询、DELETE 得到整表删除，
+        // 都是 SQL 本身的语义，不在这一层额外补 "WHERE 1 = 1" 之类的伪条件
+        if (query.whereConditions.empty())
+        {
+            return;
+        }
+
+        sqlText += " WHERE ";
+        for (std::size_t index = 0; index < query.whereConditions.size(); ++index)
+        {
+            // 顶层多个条件按 ORM 的约定以 AND 连接（Queryable::where() 多次调用即「同时满足」）
+            if (index > 0)
+            {
+                sqlText += " AND ";
+            }
+            appendCondition(sqlText, parameters, query.whereConditions[index]);
+        }
+    }
+
+    void SqliteDialect::appendColumnList(std::string &sqlText, const Queryable::QueryNode &query) const
+    {
+        for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            // 列名一律走 renderFieldReference()：与 SELECT 列表用同一套引用/表达式判定规则
+            sqlText += renderFieldReference(query.selectColumns[index]);
+        }
+    }
+
+    void SqliteDialect::appendValueRow(std::string &sqlText,
+                                       std::vector<DatabaseValue> &parameters,
+                                       const std::span<const DatabaseValue> rowValues) const
+    {
+        sqlText += '(';
+        for (std::size_t index = 0; index < rowValues.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            // 先取占位符序号再压参数：序号就是「当前已收集的参数个数」，
+            // 顺序颠倒会让 $1 风格方言上的序号整体偏移（见 appendParameter 的同类说明）
+            sqlText += placeholder(parameters.size());
+            parameters.push_back(rowValues[index]);
+        }
+        sqlText += ')';
+    }
+
+    void SqliteDialect::requireMatchingColumnCount(const Queryable::QueryNode &query, const std::size_t valueCount)
+    {
+        if (query.selectColumns.empty())
+        {
+            throw std::invalid_argument("SQLite 方言：待写列列表为空，无法生成写语句（表 " +
+                                        query.tableName + "）");
+        }
+
+        // 列与值对错位时生成的语句可能仍能执行，却会把值写进错误的列，
+        // 这种错误在业务层极难定位，因此必须在翻译阶段就拦住
+        if (valueCount != query.selectColumns.size())
+        {
+            throw std::invalid_argument("SQLite 方言：取值个数（" + std::to_string(valueCount) +
+                                        "）与待写列数（" + std::to_string(query.selectColumns.size()) +
+                                        "）不一致，无法生成写语句（表 " + query.tableName + "）");
+        }
+    }
+
     SqlStatement SqliteDialect::translate(const Queryable::QueryNode &query) const
     {
         SqlStatement                statement;
@@ -224,12 +319,8 @@ namespace AsynGyanis::Database
 
         // ---------- FROM ----------
         sqlText += " FROM ";
-        sqlText += renderFieldReference(query.tableName);
-        if (!query.tableAlias.empty())
-        {
-            sqlText += " AS ";
-            sqlText += quoteIdentifier(query.tableAlias);
-        }
+        // 表名与别名的引用方式在四个方向上必须一致，因此统一走 renderTableReference()
+        sqlText += renderTableReference(query);
 
         // ---------- JOIN ----------
         for (const Queryable::JoinClause &joinClause: query.joins)
@@ -261,19 +352,8 @@ namespace AsynGyanis::Database
         }
 
         // ---------- WHERE ----------
-        if (!query.whereConditions.empty())
-        {
-            sqlText += " WHERE ";
-            for (std::size_t index = 0; index < query.whereConditions.size(); ++index)
-            {
-                // 顶层多个条件按 ORM 的约定以 AND 连接（Queryable::where() 多次调用即「同时满足」）
-                if (index > 0)
-                {
-                    sqlText += " AND ";
-                }
-                appendCondition(sqlText, parameters, query.whereConditions[index]);
-            }
-        }
+        // 条件渲染与参数收集只有 appendWhereClause() 一份实现，UPDATE / DELETE 同样调用它
+        appendWhereClause(sqlText, parameters, query);
 
         // ---------- GROUP BY ----------
         if (!query.groupBy.empty())
@@ -335,6 +415,140 @@ namespace AsynGyanis::Database
         }
 
         return statement;
+    }
+
+    SqlStatement SqliteDialect::translateInsert(const Queryable::QueryNode &query,
+                                                const std::span<const DatabaseValue> values) const
+    {
+        requireMatchingColumnCount(query, values.size());
+
+        SqlStatement statement;
+        std::string &sqlText = statement.sql;
+
+        // INSERT 不接受表别名（"INSERT INTO 表 AS 别名" 是语法错误），因此这里只引用表名。
+        // 查询树在插入方向由 ORM 现造，本来就不带别名，此处显式忽略是防止误用
+        sqlText += "INSERT INTO ";
+        sqlText += quoteIdentifier(query.tableName);
+        sqlText += " (";
+        appendColumnList(sqlText, query);
+        sqlText += ") VALUES ";
+        // 单行插入就是「只有一行 VALUES」的批量插入，占位符与参数的收集规则完全一致
+        appendValueRow(sqlText, statement.parameters, values);
+
+        return statement;
+    }
+
+    SqlStatement SqliteDialect::translateUpdate(const Queryable::QueryNode &query,
+                                                const std::span<const DatabaseValue> values) const
+    {
+        requireMatchingColumnCount(query, values.size());
+
+        SqlStatement statement;
+        std::string &sqlText = statement.sql;
+        std::vector<DatabaseValue> &parameters = statement.parameters;
+
+        sqlText += "UPDATE ";
+        sqlText += renderTableReference(query);
+        sqlText += " SET ";
+
+        // SET 子句先于 WHERE 输出，赋值参数因此排在条件参数之前，
+        // 与文本里占位符的先后顺序严格一致（见 SqlStatement.h 的参数顺序契约）
+        for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            sqlText += renderFieldReference(query.selectColumns[index]);
+            sqlText += " = ";
+            sqlText += placeholder(parameters.size());
+            // 赋值取值由 ORM 以 DatabaseValue 形式给出，已经是驱动可直接绑定的形态，无需再转换
+            parameters.push_back(values[index]);
+        }
+
+        // WHERE 与 SELECT / DELETE 共用同一份渲染与参数收集实现
+        appendWhereClause(sqlText, parameters, query);
+
+        return statement;
+    }
+
+    SqlStatement SqliteDialect::translateDelete(const Queryable::QueryNode &query) const
+    {
+        SqlStatement statement;
+        std::string &sqlText = statement.sql;
+
+        sqlText += "DELETE FROM ";
+        // 别名一并带上：WHERE 里以别名限定的列名（"u"."id"）只有别名在场才能被解析
+        sqlText += renderTableReference(query);
+
+        // 无条件时 appendWhereClause() 不输出任何内容，SQL 退化为整表删除，与 SQL 语义一致
+        appendWhereClause(sqlText, statement.parameters, query);
+
+        return statement;
+    }
+
+    SqlStatement SqliteDialect::translateInsertBatch(const Queryable::QueryNode &query,
+                                                     const std::span<const std::vector<DatabaseValue>> rows) const
+    {
+        if (rows.empty())
+        {
+            // 零行插入没有合法写法（"VALUES" 后面必须有至少一组括号），
+            // 静默返回一句只能插 0 行的语句会让调用方以为写入了数据，因此直接失败
+            throw std::invalid_argument("SQLite 方言：批量插入的行集合为空，无法生成 INSERT 语句");
+        }
+
+        requireMatchingColumnCount(query, rows.front().size());
+
+        // 逐行校验：长度不一致的 VALUES 行会被引擎拒绝（"all VALUES must have the same number of terms"），
+        // 与其把错误留给数据库，不如在翻译阶段就指出调用方给的行与列数对不齐。
+        // 校验成本只是一次整数比较，相对拼接 SQL 文本可以忽略
+        for (const std::vector<DatabaseValue> &rowValues: rows)
+        {
+            requireMatchingColumnCount(query, rowValues.size());
+        }
+
+        SqlStatement statement;
+        std::string &sqlText = statement.sql;
+        std::vector<DatabaseValue> &parameters = statement.parameters;
+
+        // 参数总数 = 行数 × 列数，调用方可能只算了一遍列数，这里按最坏情况预留容量避免反复扩容
+        parameters.reserve(query.selectColumns.size() * rows.size());
+
+        sqlText += "INSERT INTO ";
+        sqlText += quoteIdentifier(query.tableName);
+        sqlText += " (";
+        appendColumnList(sqlText, query);
+        sqlText += ") VALUES ";
+
+        // 逐行展开 "(?, ?), (?, ?)"：SQLite 自 3.7.11 起支持多行 VALUES，
+        // 参数按「行优先、行内按列序」压入，与文本中占位符的先后完全对齐
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex)
+        {
+            if (rowIndex > 0)
+            {
+                sqlText += ", ";
+            }
+            appendValueRow(sqlText, parameters, rows[rowIndex]);
+        }
+
+        return statement;
+    }
+
+    std::string_view SqliteDialect::beginTransactionStatement() const noexcept
+    {
+        // IMMEDIATE 在 BEGIN 时就取写锁，避免 DEFERRED 事务在第一条写语句升级锁时撞上
+        // SQLITE_BUSY（这类失败无法靠重试化解，因为两个连接会互相持有读锁）
+        return "BEGIN IMMEDIATE";
+    }
+
+    std::string_view SqliteDialect::commitStatement() const noexcept
+    {
+        return "COMMIT";
+    }
+
+    std::string_view SqliteDialect::rollbackStatement() const noexcept
+    {
+        return "ROLLBACK";
     }
 
     void SqliteDialect::appendCondition(std::string &sqlText,

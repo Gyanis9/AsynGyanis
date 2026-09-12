@@ -14,6 +14,13 @@
  * - 占位符：一律 '?'，不区分类型；
  * - 参数：WHERE / HAVING / JOIN...ON 里的比较值、IN 列表按出现顺序收集，
  *   IS NULL / IS NOT NULL 不产生参数，列-列比较不产生参数；
+ * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 与 SELECT 共用同一套 WHERE 渲染
+ *   与参数收集规则（本实现把它们收敛到 appendWhereClause 等私有辅助函数里），
+ *   因此条件树的递归展开、IN 展开、参数顺序在四个方向上的行为必然一致；
+ * - 多行 VALUES：SQLite 自 3.7.11 起支持 "VALUES (…), (…)"，本实现直接使用该语法，
+ *   行数由调用方按参数上限自行分块；
+ * - 事务语句：开启用 "BEGIN IMMEDIATE"（立刻取写锁，避免多个连接都先取读锁、
+ *   升级为写锁时撞上 SQLITE_BUSY 的经典死锁），提交用 "COMMIT"，回滚用 "ROLLBACK"；
  * - 分页：LIMIT / OFFSET 直接内联十进制整数（取值来自强类型 size_t，不经外部文本）；
  *   OFFSET 单独出现时补 "LIMIT -1"，因为 SQLite 要求 OFFSET 必须跟在 LIMIT 之后；
  * - 表达式字段（如 COUNT(*)、COALESCE(age, 0)）原样输出，不加引号，
@@ -45,6 +52,7 @@
 #include "Database/Queryable/QueryNode.h"
 
 #include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -95,6 +103,83 @@ namespace AsynGyanis::Database
         [[nodiscard]] SqlStatement translate(const Queryable::QueryNode &query) const override;
 
         /**
+         * @brief 把单行插入翻译成 SQLite 的 INSERT
+         * @details 重写 SqlDialect::translateInsert()：生成
+         *          "INSERT INTO 表 (列…) VALUES (?, …)"。列名取自 query.selectColumns
+         *          并逐个加双引号引用，取值由 values 按同一顺序绑定；本实现不修改入参。
+         *          与基类契约一致，个数不符时抛 std::invalid_argument 而不是生成半截语句。
+         * @param query 提供表名与待写列的查询树
+         * @param values 待绑定的字段值，个数必须等于 query.selectColumns 的列数
+         * @return SqlStatement INSERT 文本与按列序排列的绑定参数
+         * @throws std::invalid_argument 列数为空，或 values 个数与列数不一致
+         */
+        [[nodiscard]] SqlStatement translateInsert(const Queryable::QueryNode &query,
+                                                   std::span<const DatabaseValue> values) const override;
+
+        /**
+         * @brief 把按条件更新翻译成 SQLite 的 UPDATE
+         * @details 重写 SqlDialect::translateUpdate()：生成
+         *          "UPDATE 表 SET 列 = ?, … [WHERE 条件]"。SET 的列与占位符按 selectColumns
+         *          顺序输出，随后整段 WHERE 交给与 SELECT 共用的 appendWhereClause()，
+         *          因此条件树的递归、IN 展开、参数收集顺序与本方言的 SELECT 完全一致；
+         *          SET 参数在前、条件参数在后，与文本中占位符的先后严格对应。
+         * @param query 提供表名、SET 列与 WHERE 条件的查询树
+         * @param values 赋给各 SET 列的取值，个数必须等于 query.selectColumns 的列数
+         * @return SqlStatement UPDATE 文本与按序排列的绑定参数
+         * @throws std::invalid_argument 列数为空，或 values 个数与列数不一致
+         */
+        [[nodiscard]] SqlStatement translateUpdate(const Queryable::QueryNode &query,
+                                                   std::span<const DatabaseValue> values) const override;
+
+        /**
+         * @brief 把按条件删除翻译成 SQLite 的 DELETE
+         * @details 重写 SqlDialect::translateDelete()：生成 "DELETE FROM 表 [WHERE 条件]"，
+         *          条件渲染复用 appendWhereClause()；无条件时整段 WHERE 被省略（整表删除）。
+         *          表别名存在时一并写出，因为 WHERE 里以别名限定的列名只有别名在场才能解析。
+         * @param query 提供表名与 WHERE 条件的查询树
+         * @return SqlStatement DELETE 文本与按序排列的绑定参数
+         */
+        [[nodiscard]] SqlStatement translateDelete(const Queryable::QueryNode &query) const override;
+
+        /**
+         * @brief 把多行插入翻译成 SQLite 的多行 VALUES 语句
+         * @details 重写 SqlDialect::translateInsertBatch()：生成
+         *          "INSERT INTO 表 (列…) VALUES (?, …), (?, …), …"，参数按「行优先、行内按列序」
+         *          展开。SQLite 从 3.7.11 起原生支持多行 VALUES，本实现直接使用；
+         *          参数总数是否超过 SQLITE_MAX_VARIABLE_NUMBER 由调用方负责分块。
+         * @param query 提供表名与待写列的查询树
+         * @param rows 待插入的行，每行的取值个数必须等于 query.selectColumns 的列数
+         * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
+         * @throws std::invalid_argument 列数为空、rows 为空，或某行取值个数与列数不一致
+         */
+        [[nodiscard]] SqlStatement translateInsertBatch(const Queryable::QueryNode &query,
+                                                        std::span<const std::vector<DatabaseValue>> rows) const override;
+
+        /**
+         * @brief 获取 SQLite 的开启事务语句
+         * @details 重写 SqlDialect::beginTransactionStatement()：返回 "BEGIN IMMEDIATE"。
+         *          不用裸 "BEGIN"（DEFERRED）：DEFERRED 事务在第一条写语句才尝试升级为写锁，
+         *          两个连接同时如此操作时必然有一方拿到 SQLITE_BUSY，且无法靠重试自动化解；
+         *          IMMEDIATE 在开启时就取写锁，失败立刻暴露在 BEGIN 这一步。
+         * @return std::string_view 恒为 "BEGIN IMMEDIATE"
+         */
+        [[nodiscard]] std::string_view beginTransactionStatement() const noexcept override;
+
+        /**
+         * @brief 获取 SQLite 的提交事务语句
+         * @details 重写 SqlDialect::commitStatement()：返回 "COMMIT"。
+         * @return std::string_view 恒为 "COMMIT"
+         */
+        [[nodiscard]] std::string_view commitStatement() const noexcept override;
+
+        /**
+         * @brief 获取 SQLite 的回滚事务语句
+         * @details 重写 SqlDialect::rollbackStatement()：返回 "ROLLBACK"。
+         * @return std::string_view 恒为 "ROLLBACK"
+         */
+        [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
+
+        /**
          * @brief 用双引号引用标识符并翻转义内部双引号
          * @details 重写 SqlDialect::quoteIdentifier()：SQLite 接受 SQL 标准的双引号形式，
          *          内部双引号按标准翻倍（"weird""name"）而不是用反斜杠转义
@@ -121,6 +206,20 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool supportsLimitOffset() const noexcept override;
 
+        /**
+         * @brief 获取 SQLite 单条语句的参数个数上限
+         * @details 重写 SqlDialect::maximumStatementParameters()：返回常量 kMaximumStatementParameters。
+         *          该值来自 SQLite 的编译期宏 SQLITE_MAX_VARIABLE_NUMBER，官方默认值是 999
+         *          （3.32 起该宏的默认上限被提高到 32766，但绝大多数发行版仍按 999 编译，
+         *          且 sqlite3_limit(SQLITE_LIMIT_VARIABLE_NUMBER) 可通过第三方构建调小，
+         *          因此按保守值 999 分块，宁可多分几批也不会被引擎拒绝）。
+         * @return std::size_t 恒为 kMaximumStatementParameters（999）
+         */
+        [[nodiscard]] std::size_t maximumStatementParameters() const noexcept override;
+
+        /// SQLite 单条语句的参数个数保守上限（= SQLITE_MAX_VARIABLE_NUMBER 的默认值 999）
+        static constexpr std::size_t kMaximumStatementParameters = 999;
+
     private:
         /**
          * @brief 渲染字段引用：纯标识符加引号，表达式原样输出
@@ -130,6 +229,58 @@ namespace AsynGyanis::Database
          * @return std::string 可直接写入 SQL 的字段片段
          */
         [[nodiscard]] std::string renderFieldReference(std::string_view fieldText) const;
+
+        /**
+         * @brief 渲染表引用：加引号的表名，附带可选的 "AS 别名"
+         * @details SELECT / INSERT / UPDATE / DELETE 四个方向共用，保证表名与别名的
+         *          引用方式在任何语句里都一致。
+         * @param query 提供 tableName 与 tableAlias 的查询树
+         * @return std::string "表名" 或 "表名 AS "别名""
+         */
+        [[nodiscard]] std::string renderTableReference(const Queryable::QueryNode &query) const;
+
+        /**
+         * @brief 渲染 " WHERE 条件..." 子句（无条件时什么都不输出）
+         * @details 这是本方言唯一的条件渲染入口，translate() / translateUpdate() /
+         *          translateDelete() 全部走它：AND/OR/NOT 递归展开 children、IN 展开多个
+         *          占位符、IS NULL 与列-列比较不占参数、每写一个占位符就同步压一个参数。
+         *          一份实现意味着三个方向的参数顺序与文本顺序不可能出现分歧。
+         * @param sqlText 输出缓冲区，" WHERE ..." 追加到末尾
+         * @param parameters 输出参数列表，条件产生的取值按占位符出现顺序追加
+         * @param query 提供 whereConditions 的查询树
+         */
+        void appendWhereClause(std::string &sqlText,
+                               std::vector<DatabaseValue> &parameters,
+                               const Queryable::QueryNode &query) const;
+
+        /**
+         * @brief 渲染 INSERT 的列名列表
+         * @details 形如 "\"id\", \"name\""，逐个走 quoteIdentifier()；
+         *          四个写方向共用同一份列名引用逻辑。
+         * @param sqlText 输出缓冲区，追加到末尾
+         * @param query 提供列名列表（selectColumns）的查询树
+         */
+        void appendColumnList(std::string &sqlText, const Queryable::QueryNode &query) const;
+
+        /**
+         * @brief 渲染一行 VALUES 的占位符并收集其参数
+         * @param sqlText 输出缓冲区，形如 "(?, ?)" 的片段追加到末尾
+         * @param parameters 输出参数列表，本行取值按列序追加
+         * @param rowValues 本行各列的取值
+         */
+        void appendValueRow(std::string &sqlText,
+                            std::vector<DatabaseValue> &parameters,
+                            std::span<const DatabaseValue> rowValues) const;
+
+        /**
+         * @brief 校验取值个数与待写列数一致
+         * @details 个数不符说明调用方把列与值对错了位，生成出来的语句即使能执行也会写错列，
+         *          因此在这里直接失败并给出中文原因，绝不生成半截语句。
+         * @param query 提供 selectColumns 的查询树
+         * @param valueCount 本次提供的取值个数
+         * @throws std::invalid_argument 列数为空，或 valueCount 与列数不一致
+         */
+        static void requireMatchingColumnCount(const Queryable::QueryNode &query, std::size_t valueCount);
 
         /**
          * @brief 递归渲染一个 WHERE / HAVING / ON 条件
