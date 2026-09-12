@@ -25,11 +25,12 @@ namespace AsynGyanis::Core
     {
     public:
         /**
-         * @brief 构造 TlsContext 对象，初始化 OpenSSL 库并创建 SSL_CTX 实例。
+         * @brief 构造 TlsContext 对象并创建 SSL_CTX 实例。
          *
-         * 内部调用 SSL_library_init()、OpenSSL_add_all_algorithms()、
-         * SSL_load_error_strings() 等初始化函数（通常只应调用一次，但多次调用也无妨）。
-         * 创建使用 TLS_server_method() 的 SSL_CTX。
+         * @details 不做显式的库初始化：OpenSSL 1.1 起 SSL 库会自动初始化，
+         *          SSL_library_init() / SSL_load_error_strings() 之类的旧接口已不再需要
+         *          （也不该在库代码里替使用者调用）。创建的 SSL_CTX 使用 TLS_server_method()。
+         * @throws Base::Exception SSL_CTX_new 失败
          */
         TlsContext();
 
@@ -54,7 +55,7 @@ namespace AsynGyanis::Core
          * @brief 为已建立的连接创建一个新的 SSL 对象。
          * @param fileDescriptor 已连接的 socket 文件描述符（用于 SSL_set_fd 设置底层描述符）
          * @return SSL 对象指针，所有权转移给调用者（通常由 TlsSocket 持有）；
-         *         失败返回 nullptr。
+         * @throws Base::Exception SSL_new 或 SSL_set_fd 失败（本方法不返回 nullptr）
          */
         SSL *createSSL(int fileDescriptor) const;
 

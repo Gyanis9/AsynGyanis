@@ -11,7 +11,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/Timer.cpp
 )
 
-# wepoll（epoll 的 Windows 兼容实现，zlib 许可）已随仓库 vendored，
+# wepoll（epoll 的 Windows 兼容实现，BSD-2-Clause 许可，见 wepoll.h 头部）已随仓库 vendored，
 # 不再构建期联网下载；仅在 Windows 上编译并供 Epoll 封装使用
 if (WIN32)
     add_library(wepoll STATIC

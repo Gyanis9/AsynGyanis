@@ -160,7 +160,7 @@ namespace AsynGyanis::Base
          * @param key 配置键。
          * @return T 配置值。
          * @throws ConfigKeyNotFoundException 键不存在
-         * @throws ConfigTypeException 类型不匹配
+         * @throws ValueAccessError 类型不匹配（由 FormatValue::as<T>() 抛出，异常里带键名与期望/实际类型）
          */
         template<typename T>
         T get(const std::string_view key) const
@@ -193,7 +193,7 @@ namespace AsynGyanis::Base
          * @param key 配置键。
          * @return T 配置值。
          * @throws ConfigKeyNotFoundException 键不存在
-         * @throws ConfigTypeException 类型不匹配
+         * @throws ValueAccessError 类型不匹配（由 FormatValue::as<T>() 抛出，异常里带键名与期望/实际类型）
          */
         template<typename T>
         T getRequired(const std::string_view key) const

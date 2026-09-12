@@ -25,7 +25,8 @@ namespace AsynGyanis::Core
      * @brief 协程返回类型。
      *
      * 惰性启动（initial_suspend → suspend_always），
-     * 完成后通过 FinalAwaiter 将协程句柄推入 Scheduler。
+     * 完成后 FinalAwaiter 把 continuation（等待该协程的一方）作为对称转移直接返回，
+     * 由协程机制就地恢复它——不经过调度器入队。
      *
      * @tparam T 协程返回值类型
      */
@@ -33,7 +34,7 @@ namespace AsynGyanis::Core
     class Task;
 
     // ============================================================================
-    // FinalAwaiter — 协程结束时将 continuation 推入调度器
+    // FinalAwaiter — 协程结束时以对称转移恢复 continuation
     // ============================================================================
 
     /**

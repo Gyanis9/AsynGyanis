@@ -119,10 +119,9 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseType type() const noexcept override;
 
         /**
-         * @brief 生成第 index 个参数占位符
+         * @brief 生成一个参数占位符
          * @details 重写 SqlDialect::placeholder()：MySQL 的位置参数（文本协议与
-         *          mysql_stmt_* 预处理接口）都写作 "?"，序号只用于按顺序收集参数。
-         * @param index 参数序号，从 0 开始
+         *          mysql_stmt_* 预处理接口）都写作 "?"。
          * @return std::string 恒为 "?"
          */
         [[nodiscard]] std::string placeholder() const override;

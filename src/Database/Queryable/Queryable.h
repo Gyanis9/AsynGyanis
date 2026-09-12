@@ -122,8 +122,9 @@ namespace AsynGyanis::Database::Queryable
          * @brief 默认构造（离线模式）
          *
          * @details 用于仅生成 SQL 或测试场景，不需要连接池。
-         *          表名从 TableSchema<T>::kTableName 自动获取。
-         *          若 TableSchema 未特化或 kTableName 为空，则表名需要在首次构建前通过 table() 设置。
+         *          表名与列名一律取自 TableSchema<T>（kTableName / kColumns），本类没有、
+         *          也不应有单独设置表名的入口——表结构只有一个真值来源，多一个入口就多一处
+         *          可能与 TableSchema 脱节的地方。
          */
         Queryable()
         {

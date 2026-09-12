@@ -68,6 +68,10 @@ namespace AsynGyanis::Platform
          * @brief 取消未决的到期设定
          * @details Linux 通过写入零值 itimerspec 解除，Windows 删除 TimerQueue 定时器并
          *          等待回调结束，保证返回后不再有任何到期通知。
+         * @warning **不得在到期回调所在的线程内调用本方法**：Windows 侧靠
+         *          DeleteTimerQueueTimer(..., INVALID_HANDLE_VALUE) 阻塞等待回调结束，
+         *          若从回调自身调用就会死锁（本类的中断回调只写通知端，不会这么做；
+         *          调用方从事件循环线程取消是安全的）。Linux 侧无此限制。
          */
         void cancel() noexcept;
 
