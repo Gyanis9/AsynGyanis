@@ -64,8 +64,11 @@ namespace AsynGyanis::Net
         // 引用成员 m_loop 一旦初始化就无法重新绑定，且 AsyncSocket 独占描述符所有权，
         // 因此拷贝与移动全部禁止：移动后的对象会留下一个指向旧循环的引用，语义无法自洽。
         TcpAcceptor(const TcpAcceptor &) = delete;
+
         TcpAcceptor &operator=(const TcpAcceptor &) = delete;
+
         TcpAcceptor(TcpAcceptor &&) = delete;
+
         TcpAcceptor &operator=(TcpAcceptor &&) = delete;
 
         /**
@@ -86,7 +89,7 @@ namespace AsynGyanis::Net
          * @return true 进入监听状态
          * @return false 尚未成功 bind()，或底层 listen 调用失败
          */
- bool listen(int backlog) const;
+        bool listen(int backlog) const;
 
         /**
          * @brief 异步接受一条新连接
@@ -101,7 +104,7 @@ namespace AsynGyanis::Net
          *           异常携带平台 socket 错误码与中文上下文
          * @note 该协程必须在创建本监听器的事件循环线程上恢复，否则引用循环会串错线程
          */
-        Core::Task<std::optional<Core::AsyncSocket>> accept();
+        Core::Task<std::optional<Core::AsyncSocket> > accept();
 
         /**
          * @brief 关闭监听套接字并丢弃暂存连接
@@ -124,11 +127,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] int fileDescriptor() const;
 
     private:
-        Core::EventLoop &             m_loop;    ///< 关联的事件循环，用于挂起与唤醒 accept 协程
+        Core::EventLoop &             m_loop;         ///< 关联的事件循环，用于挂起与唤醒 accept 协程
         Core::AsyncSocket             m_listenSocket; ///< 非阻塞监听套接字，持有描述符所有权
-        Core::InetAddress             m_address; ///< 构造时请求的本地地址
+        Core::InetAddress             m_address;      ///< 构造时请求的本地地址
         Core::Timer                   m_backoffTimer; ///< 资源紧张时的定时退避器；预先建好是为了不在错误处理路径上做任何分配（定时器只是循环级队列的句柄，不占描述符）
-        std::deque<Core::AsyncSocket> m_pending; ///< 批量 accept 抽干监听队列时暂存的连接，下次 accept() 优先从这里取出
+        std::deque<Core::AsyncSocket> m_pending;      ///< 批量 accept 抽干监听队列时暂存的连接，下次 accept() 优先从这里取出
         bool                          m_bound{false}; ///< 是否已成功绑定，listen() 的前置条件
     };
 } // namespace AsynGyanis::Net

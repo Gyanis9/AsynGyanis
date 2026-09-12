@@ -35,9 +35,9 @@ namespace AsynGyanis::Net
             // 系统级 fd 表、网络缓冲空间与内存。它们在 Windows 上被 Platform 层映射到
             // 对应的 WSA 错误码，故此处不再需要任何平台分支
             return socketErrorCode == Platform::PlatformError::kTooManyOpenFiles
-                || socketErrorCode == Platform::PlatformError::kSystemFileTableFull
-                || socketErrorCode == Platform::PlatformError::kNoBufferSpace
-                || socketErrorCode == Platform::PlatformError::kOutOfMemory;
+                   || socketErrorCode == Platform::PlatformError::kSystemFileTableFull
+                   || socketErrorCode == Platform::PlatformError::kNoBufferSpace
+                   || socketErrorCode == Platform::PlatformError::kOutOfMemory;
         }
     } // namespace
 
@@ -94,7 +94,7 @@ namespace AsynGyanis::Net
         return m_listenSocket.listen(backlog);
     }
 
-    Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()
+    Core::Task<std::optional<Core::AsyncSocket> > TcpAcceptor::accept()
     {
         // 暂存队列的连接其就绪事件已在上一次抽干时被消费，不会再产生新事件，
         // 因此必须优先出队；若先去等 epoll 会把它们永久留在队列里
@@ -118,9 +118,9 @@ namespace AsynGyanis::Net
             }
 
             sockaddr_storage peerAddress{};
-            socklen_t        peerAddressLength = static_cast<socklen_t>(sizeof(peerAddress));
+            socklen_t        peerAddressLength  = static_cast<socklen_t>(sizeof(peerAddress));
             // Platform 层已保证返回的描述符是非阻塞且不被子进程继承，本层无需二次设置
-            const int acceptedDescriptor = Platform::Socket::accept(listenDescriptor, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength);
+            const int        acceptedDescriptor = Platform::Socket::accept(listenDescriptor, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength);
 
             if (Platform::FileDescriptor::isValid(acceptedDescriptor))
             {

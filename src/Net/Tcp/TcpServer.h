@@ -45,8 +45,11 @@ namespace AsynGyanis::Net
         TcpServer(Core::EventLoop &loop, const Core::InetAddress &address);
 
         TcpServer(const TcpServer &) = delete;
+
         TcpServer &operator=(const TcpServer &) = delete;
+
         TcpServer(TcpServer &&) = delete;
+
         TcpServer &operator=(TcpServer &&) = delete;
 
         /**
@@ -115,9 +118,9 @@ namespace AsynGyanis::Net
         [[nodiscard]] virtual std::shared_ptr<Core::Connection> createConnection(Core::AsyncSocket socket) = 0;
 
     protected:
-        Core::EventLoop &           m_loop;              ///< 事件循环引用，用于调度连接协程
-        TcpAcceptor                 m_acceptor;          ///< 监听器，接受新连接并吸收可恢复错误
-        Core::ConnectionManager     m_connectionManager; ///< 连接管理器，跟踪并负责关闭所有活跃连接
+        Core::EventLoop &       m_loop;              ///< 事件循环引用，用于调度连接协程
+        TcpAcceptor             m_acceptor;          ///< 监听器，接受新连接并吸收可恢复错误
+        Core::ConnectionManager m_connectionManager; ///< 连接管理器，跟踪并负责关闭所有活跃连接
 
     private:
         /**
@@ -129,8 +132,8 @@ namespace AsynGyanis::Net
          */
         Core::Task<> handleConnection(std::shared_ptr<Core::Connection> connection);
 
-        std::atomic<bool>             m_running{false}; ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
-        std::size_t                   m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
-        std::vector<Core::Task<void>> m_connectionTasks;   ///< 已启动的连接协程，持有其生命周期防止提前销毁
+        std::atomic<bool>              m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
+        std::size_t                    m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
+        std::vector<Core::Task<void> > m_connectionTasks;   ///< 已启动的连接协程，持有其生命周期防止提前销毁
     };
 } // namespace AsynGyanis::Net

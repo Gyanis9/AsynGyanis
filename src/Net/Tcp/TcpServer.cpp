@@ -45,7 +45,7 @@ namespace AsynGyanis::Net
             throw Base::Exception("TcpServer: 进入监听状态失败，地址 " + m_acceptor.localAddress().toString());
         }
 
-        m_running = true;
+        m_running                        = true;
         // 下一轮清扫的触发条数：放在协程局部即可（只有本循环使用），无需提升为成员状态
         std::size_t nextCleanupThreshold = kFinishedTaskCleanupStride;
 
@@ -55,8 +55,7 @@ namespace AsynGyanis::Net
             try
             {
                 acceptedSocket = co_await m_acceptor.accept();
-            }
-            catch (const Base::SystemException &systemException)
+            } catch (const Base::SystemException &systemException)
             {
                 // 退避策略只有一个出处：TcpAcceptor::accept() 已经把「暂无数据」「被信号中断」
                 // 「连接被本地中止」以及「描述符/系统文件表/内核缓冲/内存耗尽」这些可恢复错误
@@ -86,8 +85,7 @@ namespace AsynGyanis::Net
             try
             {
                 connection = createConnection(std::move(acceptedSocket.value()));
-            }
-            catch (const std::exception &hookException)
+            } catch (const std::exception &hookException)
             {
                 // 子类的会话构造允许抛（例如 HTTPS 申请 SSL 对象失败）：那只是这一条连接的失败，
                 // 不该让整个服务器停摆。传入的套接字已随参数析构关闭，这里记录中文错误后继续接受
@@ -144,8 +142,7 @@ namespace AsynGyanis::Net
         try
         {
             co_await connection->start();
-        }
-        catch (...)
+        } catch (...)
         {
             // 会话协程的异常一律在此吞掉：它会作为独立协程被调度器恢复，
             // 逃逸出去等于在事件循环线程上抛异常，会把整个进程带崩。

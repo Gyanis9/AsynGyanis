@@ -46,6 +46,7 @@ namespace AsynGyanis::Net
         explicit TcpStream(Core::AsyncSocket socket);
 
         TcpStream(const TcpStream &) = delete;
+
         TcpStream &operator=(const TcpStream &) = delete;
 
         /**
@@ -139,8 +140,8 @@ namespace AsynGyanis::Net
          */
         Core::Task<> fillBuffer();
 
-        Core::AsyncSocket m_socket;      ///< 底层异步套接字，持有描述符所有权
-        std::vector<char> m_readBuffer;  ///< 读取缓冲区，容量为一次系统调用的上限，长度为本次实际收到的字节数
+        Core::AsyncSocket m_socket;       ///< 底层异步套接字，持有描述符所有权
+        std::vector<char> m_readBuffer;   ///< 读取缓冲区，容量为一次系统调用的上限，长度为本次实际收到的字节数
         std::size_t       m_readPosition; ///< m_readBuffer 中已被上层消费的位置，单位字节
     };
 } // namespace AsynGyanis::Net

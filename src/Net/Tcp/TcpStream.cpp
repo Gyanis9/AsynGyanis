@@ -59,7 +59,7 @@ namespace AsynGyanis::Net
 
     Core::Task<> TcpStream::readExact(void *const buffer, const std::size_t length)
     {
-        auto       *destination     = static_cast<char *>(buffer);
+        auto *      destination     = static_cast<char *>(buffer);
         std::size_t remainingLength = length;
 
         while (remainingLength > 0)
@@ -71,8 +71,8 @@ namespace AsynGyanis::Net
             {
                 throw Base::Exception("TcpStream::readExact 在读满所需字节前连接已关闭或发生错误");
             }
-            destination       += static_cast<std::size_t>(readBytes);
-            remainingLength   -= static_cast<std::size_t>(readBytes);
+            destination     += static_cast<std::size_t>(readBytes);
+            remainingLength -= static_cast<std::size_t>(readBytes);
         }
 
         co_return;
@@ -99,7 +99,7 @@ namespace AsynGyanis::Net
 
                 // 按字节扫描：memchr 由运行库针对字节匹配做过向量化优化，比逐元素查找更快
                 if (const auto *delimiterPointer = static_cast<const char *>(
-                        std::memchr(scanBegin, delimiter, static_cast<std::size_t>(scanEnd - scanBegin))))
+                    std::memchr(scanBegin, delimiter, static_cast<std::size_t>(scanEnd - scanBegin))))
                 {
                     const std::size_t chunkLength = static_cast<std::size_t>(delimiterPointer - scanBegin);
                     if (maximumSize > 0 && result.size() + chunkLength > maximumSize)
@@ -132,8 +132,7 @@ namespace AsynGyanis::Net
             try
             {
                 co_await fillBuffer();
-            }
-            catch (const Base::SystemException &)
+            } catch (const Base::SystemException &)
             {
                 // 补货失败说明连接已不可用：按「读到哪算哪」返回，让上层拿完整的前缀去解析，
                 // 原始错误码由 fillBuffer 的抛出点保留，不在这里改写
@@ -156,7 +155,7 @@ namespace AsynGyanis::Net
 
     Core::Task<> TcpStream::writeAll(const void *const buffer, const std::size_t length) const
     {
-        auto       *source          = static_cast<const char *>(buffer);
+        auto *      source          = static_cast<const char *>(buffer);
         std::size_t remainingLength = length;
 
         while (remainingLength > 0)
