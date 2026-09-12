@@ -601,8 +601,7 @@ namespace AsynGyanis::Base
             flattenValue(document, prefixBuffer, values);
         } catch (const FormatError &exception)
         {
-            errors.push_back("解析错误：'" + filePath.string() + "'：" + exception.reason() + "（" +
-                             exception.position().describe() + "）");
+            errors.push_back("解析错误：'" + filePath.string() + "'：" + exception.reason() + "（" + exception.position().describe() + "）");
             return false;
         } catch (const std::exception &exception)
         {
@@ -617,7 +616,7 @@ namespace AsynGyanis::Base
     {
         // 用可写 variant 取成员表：FormatValue 只暴露常量访问器，
         // 而叶子值需要被移出节点（见下方 std::move），因此必须拿到可写引用
-        auto *members = std::get_if<FormatValueObject>(&node.variant());
+        auto members = std::get_if<FormatValueObject>(&node.variant());
         if (members == nullptr)
         {
             return;
@@ -634,8 +633,8 @@ namespace AsynGyanis::Base
             }
             prefixBuffer += key;
 
-            const auto *nestedMembers = std::get_if<FormatValueObject>(&value.variant());
-            if (nestedMembers != nullptr && !nestedMembers->empty())
+            if (const auto nestedMembers = std::get_if<FormatValueObject>(&value.variant());
+                nestedMembers != nullptr && !nestedMembers->empty())
             {
                 // 非空嵌套对象：递归展开为点号路径
                 flattenValue(value, prefixBuffer, values);
