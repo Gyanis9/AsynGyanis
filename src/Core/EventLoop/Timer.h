@@ -65,6 +65,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 构造 Timer 对象。
          * @param loop 事件循环引用，用于注册 epoll 事件
+         * @throws Base::SystemException 创建定时器文件描述符失败（描述符无效），
+         *         异常文本带 errno 与其可读描述；这是启动期故障，不可重试
          */
         explicit Timer(EventLoop &loop);
 

@@ -1,7 +1,7 @@
 #include "Core/Tls/TlsSocket.h"
 #include "Core/EventLoop/EpollAwaiter.h"
 #include "Core/EventLoop/EventLoop.h"
-#include "Base/Exception/SystemException.h"
+#include "Core/Exception/CoreException.h"
 
 #include <openssl/err.h>
 
@@ -68,7 +68,10 @@ namespace AsynGyanis::Core
 
             char buffer[256];
             ERR_error_string_n(ERR_get_error(), buffer, sizeof(buffer));
-            throw Base::Exception(std::string("TLS handshake failed: ") + buffer);
+            // OpenSSL 的错误串本身是英文，但它是定位问题的唯一线索，因此保留并补上中文说明与常见原因
+            throw CoreException(std::string("TLS 握手失败：") + buffer +
+                                "（常见原因：对端证书不受信、协议版本不匹配、对端不是 TLS 服务，"
+                                "或对端在握手期间关闭了连接）");
         }
     }
 
@@ -110,7 +113,8 @@ namespace AsynGyanis::Core
 
             char errorBuffer[256];
             ERR_error_string_n(ERR_get_error(), errorBuffer, sizeof(errorBuffer));
-            throw Base::Exception(std::string("SSL_read failed: ") + errorBuffer);
+            throw CoreException(std::string("TLS 读取失败：") + errorBuffer +
+                                "（连接多半已被对端关闭或 TLS 会话已失效，应关闭该连接而不是重试）");
         }
     }
 
@@ -147,7 +151,8 @@ namespace AsynGyanis::Core
 
             char errorBuffer[256];
             ERR_error_string_n(ERR_get_error(), errorBuffer, sizeof(errorBuffer));
-            throw Base::Exception(std::string("SSL_write failed: ") + errorBuffer);
+            throw CoreException(std::string("TLS 写入失败：") + errorBuffer +
+                                "（连接多半已被对端关闭或 TLS 会话已失效，应关闭该连接而不是重试）");
         }
     }
 

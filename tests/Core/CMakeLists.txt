@@ -2,6 +2,8 @@ find_package(GTest REQUIRED)
 
 # 测试目录结构与 src/Core 的四个子目录逐级对应，全部链接进同一个 TestCore 可执行文件
 add_executable(TestCore
+        Exception/TestCoreException.cpp
+
         EventLoop/TestEpoll.cpp
         EventLoop/TestEventLoop.cpp
         EventLoop/TestIoContext.cpp

@@ -37,7 +37,9 @@ namespace AsynGyanis::Core
     {
         if (m_timer.fileDescriptor() < 0)
         {
-            throw Base::SystemException("TimerFileDescriptor creation failed");
+            // 定时器描述符建不起来说明本平台不支持该机制（Linux 上为 timerfd）：
+            // 这是不可恢复的启动期故障，带着 errno 抛出便于定位
+            throw Base::SystemException("创建定时器文件描述符失败");
         }
     }
 

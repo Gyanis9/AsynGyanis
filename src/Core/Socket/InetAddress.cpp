@@ -1,5 +1,5 @@
 #include "Core/Socket/InetAddress.h"
-#include "Base/Exception/SystemException.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Platform/IO/Socket.h"
 
 #include <cstring>
@@ -190,32 +190,44 @@ namespace AsynGyanis::Core
 
     void InetAddress::fromIpPort(const std::string_view ip, const uint16_t port)
     {
-        // Try IPv4 first
+        // inet_pton 只接受零终止 C 字符串，因此必须先落一份 std::string 副本；
+        // 但内嵌 NUL 会让它只解析到第一个 '\0' 为止、静默忽略后面的内容
+        //（例如 "1.2.3.4\0evil" 会被当成 1.2.3.4 接受），所以先显式拦下这类输入
+        const std::string ipText(ip);
+        if (ipText.find('\0') != std::string::npos)
+        {
+            throw Base::InvalidArgumentException("IP 地址文本含 NUL 字节：" 
+                                                 "底层 inet_pton 按零终止语义解析，内嵌 NUL 会让地址被静默截断成前半段。"
+                                                 "请在调用方清理掉 NUL，或改用其它方式构造地址");
+        }
+
+        // 先按 IPv4 试：点分十进制是配置里最常见的写法，命中即返回
         sockaddr_in sin{};
         sin.sin_family = AF_INET;
         sin.sin_port   = htons(port);
 
-        const std::string ipStr(ip);
-        if (inet_pton(AF_INET, ipStr.c_str(), &sin.sin_addr) == 1)
+        if (inet_pton(AF_INET, ipText.c_str(), &sin.sin_addr) == 1)
         {
             std::memcpy(&m_address, &sin, sizeof(sin));
             m_addressLength = sizeof(sin);
             return;
         }
 
-        // Try IPv6
+        // 再按 IPv6 试：写法与 IPv4 完全不重叠，因此两种都试一遍不会误判
         sockaddr_in6 sin6{};
         sin6.sin6_family = AF_INET6;
         sin6.sin6_port   = htons(port);
 
-        if (inet_pton(AF_INET6, ipStr.c_str(), &sin6.sin6_addr) == 1)
+        if (inet_pton(AF_INET6, ipText.c_str(), &sin6.sin6_addr) == 1)
         {
             std::memcpy(&m_address, &sin6, sizeof(sin6));
             m_addressLength = sizeof(sin6);
             return;
         }
 
-        throw Base::Exception("InetAddress: invalid IP address '" + ipStr + "'");
+        throw Base::InvalidArgumentException("IP 地址格式非法：'" + ipText +
+                                             "'（仅接受 IPv4 点分十进制如 192.168.1.1，"
+                                             "或 IPv6 冒号十六进制如 ::1；主机名请改用 resolve()）");
     }
 
 }

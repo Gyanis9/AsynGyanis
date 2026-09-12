@@ -36,6 +36,8 @@ namespace AsynGyanis::Core
          * @brief 使用端口和 IP 地址构造（IP 默认为 0.0.0.0）
          * @param port 端口号（主机字节序）
          * @param ip   IP 地址字符串（如 "192.168.1.1" 或 "::1"），默认为 "0.0.0.0"
+         * @throws Base::InvalidArgumentException IP 文本既不是合法的 IPv4 也不是合法的 IPv6，
+         *         或其中含 NUL 字节；**本构造函数不解析主机名**，需要主机名请改用 resolve()
          */
         explicit InetAddress(uint16_t port, std::string_view ip = "0.0.0.0");
 
@@ -43,6 +45,8 @@ namespace AsynGyanis::Core
          * @brief 使用 IP 地址和端口构造（参数顺序与上一个相反）
          * @param ip   IP 地址字符串
          * @param port 端口号（主机字节序）
+         * @throws Base::InvalidArgumentException IP 文本既不是合法的 IPv4 也不是合法的 IPv6，
+         *         或其中含 NUL 字节；**本构造函数不解析主机名**，需要主机名请改用 resolve()
          */
         InetAddress(std::string_view ip, uint16_t port);
 

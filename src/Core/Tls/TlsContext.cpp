@@ -1,5 +1,5 @@
 #include "Core/Tls/TlsContext.h"
-#include "Base/Exception/SystemException.h"
+#include "Core/Exception/CoreException.h"
 
 #include <openssl/ssl.h>
 
@@ -10,7 +10,10 @@ namespace AsynGyanis::Core
         m_context = SSL_CTX_new(TLS_server_method());
         if (!m_context)
         {
-            throw Base::Exception("TlsContext: SSL_CTX_new failed");
+            // SSL_CTX_new 只在内存不足或 OpenSSL 未被正确初始化时才返回空：
+            // 这是不可恢复的启动期故障，因此直接抛出让调用方尽早失败
+            throw CoreException("创建 TLS 上下文失败：SSL_CTX_new 返回空"
+                                "（通常是内存不足，或 OpenSSL 库未正确初始化）");
         }
 
         SSL_CTX_set_options(m_context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
@@ -52,12 +55,14 @@ namespace AsynGyanis::Core
         SSL *ssl = SSL_new(m_context);
         if (!ssl)
         {
-            throw Base::Exception("TlsContext: SSL_new failed");
+            throw CoreException("创建 TLS 会话失败：SSL_new 返回空（上下文无效或内存不足）");
         }
         if (SSL_set_fd(ssl, fileDescriptor) == 0)
         {
+            // 绑定失败时先释放刚创建的会话再抛出：否则这次失败的调用会漏掉一个 SSL 对象
             SSL_free(ssl);
-            throw Base::Exception("TlsContext: SSL_set_fd failed");
+            throw CoreException("把套接字绑定到 TLS 会话失败：SSL_set_fd 返回失败"
+                                "（文件描述符可能已关闭或不是套接字）");
         }
         return ssl;
     }

@@ -9,7 +9,10 @@
 
 #include "Core/Tls/TlsSocket.h"
 
+#include "Base/Exception/Exception.h"
+#include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Exception/CoreException.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Tls/TlsContext.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -149,4 +152,35 @@ namespace AsynGyanis::Core
         tlsSocket.close();
         Platform::FileDescriptor::close(peerDescriptor);
     }
-}
+
+    TEST(TlsSocket, HandshakeAgainstClosedPeerFailsWithCoreException)
+    {
+        EventLoop  loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+
+        // 对端在握手前就关闭：SSL_accept 会立刻读到 EOF 并失败，
+        // 不会进入 WANT_READ 分支挂起，因此单次 resume 就能走到抛出点（不依赖时序）
+        Platform::FileDescriptor::close(peerDescriptor);
+
+        Task<> handshakeTask = tlsSocket.handshake();
+        handshakeTask.handle().resume();
+        ASSERT_TRUE(handshakeTask.isReady()) << "握手应当已失败返回，而不是挂起等待";
+
+        // 握手失败必须落在 CoreException 上，且能被框架的异常基类统一捕获
+        auto &promise = handshakeTask.handle().promise();
+        EXPECT_THROW(promise.result(), CoreException);
+        EXPECT_THROW(promise.result(), Base::Exception);
+
+        tlsSocket.close();
+    }
+} // namespace AsynGyanis::Core

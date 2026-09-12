@@ -4,6 +4,7 @@ find_package(OpenSSL REQUIRED)
 # Core 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 set_property(GLOBAL PROPERTY AsynGyanisCoreSources "")
 
+add_subdirectory(Exception)
 add_subdirectory(EventLoop)
 add_subdirectory(Coroutine)
 add_subdirectory(Socket)

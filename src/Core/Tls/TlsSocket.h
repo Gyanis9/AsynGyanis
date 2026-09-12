@@ -65,6 +65,9 @@ namespace AsynGyanis::Core
          * 可读/可写事件，直到握手完成或出错。该函数是一个协程任务，应使用 co_await 等待。
          *
          * @return Task<> 协程，握手完成后返回，若失败则抛出异常
+         * @throws CoreException 握手失败（对端证书不受信、协议版本不匹配、对端不是 TLS 服务，
+         *         或对端在握手期间关闭连接）。异常在 co_await 处抛出；它派生自
+         *         Base::Exception，调用方应关闭该连接而不是重试
          */
         Task<> handshake();
 
@@ -73,6 +76,8 @@ namespace AsynGyanis::Core
          * @param buffer 接收缓冲区
          * @param length 缓冲区长度
          * @return Task<ssize_t> 协程，恢复时返回实际读取的字节数（0 表示连接关闭，负数表示错误）
+         * @throws CoreException TLS 会话已失效（对端异常关闭等）。对端**正常**关闭会返回 0
+         *         而不是抛异常，因此调用方看到的异常一律意味着会话不可再用
          */
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
@@ -81,6 +86,7 @@ namespace AsynGyanis::Core
          * @param buffer 发送缓冲区
          * @param length 缓冲区长度
          * @return Task<ssize_t> 协程，恢复时返回实际发送的字节数（负数表示错误）
+         * @throws CoreException TLS 会话已失效（对端异常关闭、连接被重置等）
          */
         Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
 
