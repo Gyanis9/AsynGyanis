@@ -5,6 +5,64 @@
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /// 服务端唯一对外提供的 ALPN 协议名（注意：选择回调要的是裸协议名，不带长度前缀）
+        constexpr unsigned char kHttp11ProtocolName[] = {'h', 't', 't', 'p', '/', '1', '.', '1'};
+
+        /// 显式排除弱算法：MD5/RC4/3DES/DES/导出级/匿名/PSK/SRP 一律不进服务端候选套件，
+        /// 与安全等级 2 形成双保险（等级策略可能随发行版配置变化，这份列表不会）
+        constexpr const char *kServerCipherList = "HIGH:!aNULL:!eNULL:!MD5:!RC4:!3DES:!DES:!EXPORT:!PSK:!SRP";
+
+        /**
+         * @brief ALPN 选择回调：客户端提了协议列表就固定选 http/1.1。
+         * @details 本框架只实现 HTTP/1.1（不做 HTTP/2），选它等于明确告知对端这一点；
+         *          客户端没提供 ALPN 时返回 NOACK 让握手继续，不因为对端没提就拒绝连接。
+         * @param outputProtocol 出参，被选中的协议名（裸名称，不带长度前缀）
+         * @param outputLength 出参，协议名字节数
+         * @param clientProtocols 客户端提供的协议列表（线上格式：长度字节 + 名称）
+         * @param clientProtocolsLength 客户端列表总字节数
+         * @return int SSL_TLSEXT_ERR_OK 选中 http/1.1；SSL_TLSEXT_ERR_NOACK 未提供列表
+         */
+        int selectAlpnProtocol(SSL *, const unsigned char **outputProtocol, unsigned char *outputLength,
+                               const unsigned char *clientProtocols, const unsigned int clientProtocolsLength, void *)
+        {
+            // 对端没提 ALPN：握手照常进行，双方都不使用 ALPN 协商结果
+            if (clientProtocols == nullptr || clientProtocolsLength == 0)
+            {
+                return SSL_TLSEXT_ERR_NOACK;
+            }
+
+            // 客户端列表是「单字节长度 + 协议名」的序列，只能在对方提供过的名字里挑：
+            // 选一个它没提过的协议名违反 RFC 7301，严格的客户端会直接拒绝这条连接
+            unsigned int offset = 0;
+            while (offset < clientProtocolsLength)
+            {
+                const unsigned int protocolLength = clientProtocols[offset];
+                ++offset;
+
+                // 长度前缀为 0 或越出列表尾部都说明列表被截断，按「没有可选项」处理
+                if (protocolLength == 0 || offset + protocolLength > clientProtocolsLength)
+                {
+                    break;
+                }
+
+                if (protocolLength == sizeof(kHttp11ProtocolName) &&
+                    std::memcmp(clientProtocols + offset, kHttp11ProtocolName, protocolLength) == 0)
+                {
+                    *outputProtocol = kHttp11ProtocolName;
+                    *outputLength = static_cast<unsigned char>(protocolLength);
+                    return SSL_TLSEXT_ERR_OK;
+                }
+                offset += protocolLength;
+            }
+
+            // 一条都不匹配（例如只提 h2）：明确回 no_application_protocol，
+            // 好过替对端选一个它根本没提供过的协议名
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+    } // namespace
+
     TlsContext::TlsContext()
     {
         m_context = SSL_CTX_new(TLS_server_method());
@@ -16,9 +74,37 @@ namespace AsynGyanis::Core
                                 "（通常是内存不足，或 OpenSSL 库未正确初始化）");
         }
 
-        SSL_CTX_set_options(m_context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
-        // 强制最低协议为 TLS 1.2，禁用已被废弃且不安全的 TLS 1.0/1.1
-        SSL_CTX_set_min_proto_version(m_context, TLS1_2_VERSION);
+        // 最低协议限定 TLS 1.2：RFC 8996 已把 TLS 1.0/1.1 列为废弃，
+        // 两者仍有已知攻击面（BEAST 等）与过时的算法组合，服务端不再接受
+        if (SSL_CTX_set_min_proto_version(m_context, TLS1_2_VERSION) == 0)
+        {
+            // 构造期抛异常不会走析构，先释放刚建的句柄再抛，否则漏掉一个 SSL_CTX
+            SSL_CTX_free(m_context);
+            m_context = nullptr;
+            throw CoreException("创建 TLS 上下文失败：无法把最低协议版本设为 TLS 1.2"
+                                "（OpenSSL 可能未启用该版本，请检查库的编译配置）");
+        }
+
+        // 关闭压缩：压缩会引入 CRIME 侧信道，服务端一律不协商压缩
+        SSL_CTX_set_options(m_context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
+
+        // 安全等级 2：拒绝 1024 位以下 RSA/DH 与 SHA-1 签名；本仓库夹具证书是
+        // 2048 位 RSA + SHA-256，实测可在等级 2 下完成握手，故不降到等级 1
+        SSL_CTX_set_security_level(m_context, 2);
+
+        // 安全等级只管强度阈值，弱算法类别另由套件列表显式排除
+        if (SSL_CTX_set_cipher_list(m_context, kServerCipherList) == 0)
+        {
+            // 同上：失败路径必须先释放句柄再抛，避免构造期漏资源
+            SSL_CTX_free(m_context);
+            m_context = nullptr;
+            throw CoreException("创建 TLS 上下文失败：套件列表 \"" + std::string(kServerCipherList) +
+                                "\" 没有匹配到任何可用套件（OpenSSL 可能被编译成不含高强度算法，请检查库的编译配置）");
+        }
+
+        // 注册 ALPN 选择回调：选择策略见 selectAlpnProtocol()
+        SSL_CTX_set_alpn_select_cb(m_context, selectAlpnProtocol, nullptr);
+
         SSL_CTX_set_mode(m_context, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     }
 
@@ -48,6 +134,44 @@ namespace AsynGyanis::Core
             return false;
         }
         return true;
+    }
+
+    bool TlsContext::loadClientCertificateAuthority(const std::string &caFile) const
+    {
+        // 先清空错误栈：返回 false 时调用方读到的原因必须是本次加载留下的，而不是上一次的残留
+        ERR_clear_error();
+
+        if (SSL_CTX_load_verify_locations(m_context, caFile.c_str(), nullptr) != 1)
+        {
+            // 加载失败不置位：此后 setClientCertificateRequired(true) 仍必须拒绝，
+            // 绝不出现「要求校验却没有 CA」这种配置
+            return false;
+        }
+
+        // CA 就绪才允许开启对端校验，这个标志就是 setClientCertificateRequired() 的判据
+        m_clientCertificateAuthorityLoaded = true;
+        return true;
+    }
+
+    void TlsContext::setClientCertificateRequired(const bool required) const
+    {
+        if (!required)
+        {
+            // 关闭校验：回到不要求、也不校验对端证书的默认模式，此时 CA 有没有加载都无所谓
+            SSL_CTX_set_verify(m_context, SSL_VERIFY_NONE, nullptr);
+            return;
+        }
+
+        // 要求校验却没有 CA：调用方用错了顺序，直接拒绝而不是放行一条必失败的配置
+        if (!m_clientCertificateAuthorityLoaded)
+        {
+            throw CoreException("启用客户端证书校验失败：尚未加载用于校验对端证书的 CA"
+                                "（请先用 loadClientCertificateAuthority() 加载 CA 文件，"
+                                "或改用 setClientCertificateRequired(false) 关闭该校验）");
+        }
+
+        // FAIL_IF_NO_PEER_CERT：对端不出示证书时立即终止握手，而不是退化成「可选校验」
+        SSL_CTX_set_verify(m_context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
     }
 
     SSL *TlsContext::createSSL(const int fileDescriptor) const

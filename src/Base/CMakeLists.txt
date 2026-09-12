@@ -19,7 +19,9 @@ target_link_libraries(Base PUBLIC
 )
 
 target_include_directories(Base PUBLIC
-        ${CMAKE_SOURCE_DIR}/src
+        # 构建期用仓库内的 src；安装后改用 <前缀>/include，两者都是各模块头文件的根
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_compile_features(Base PUBLIC cxx_std_20)

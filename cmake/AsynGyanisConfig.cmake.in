@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# 五个模块都是静态库，接口里留着外部依赖的目标名（OpenSSL::SSL、SQLite::SQLite3 等），
+# 这里逐个带出来，否则消费方会在链接期以「找不到目标或符号」失败。
+# 清单由各模块启用依赖时登记，因此只包含这个包真正编译进去的那些驱动。
+@ASYN_CONFIG_DEPENDENCIES@
+
+include("${CMAKE_CURRENT_LIST_DIR}/AsynGyanisTargets.cmake")
+
+check_required_components(AsynGyanis)

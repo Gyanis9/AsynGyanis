@@ -21,5 +21,10 @@ if (WIN32)
             ${CMAKE_CURRENT_LIST_DIR}/wepoll/wepoll.c
             ${CMAKE_CURRENT_LIST_DIR}/wepoll/wepoll.h
     )
-    target_include_directories(wepoll PUBLIC ${CMAKE_CURRENT_LIST_DIR}/wepoll)
+    # 头文件随 src 整体安装到 include/Core/EventLoop/wepoll，接口目录同步指向该处，
+    # 使安装后的 Epoll.h 仍能 "wepoll.h" 直接命中
+    target_include_directories(wepoll PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/wepoll>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/Core/EventLoop/wepoll>
+    )
 endif ()

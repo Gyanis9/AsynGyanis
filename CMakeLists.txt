@@ -10,6 +10,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 各模块用 CMAKE_INSTALL_INCLUDEDIR 描述安装后的头文件根目录，故在子目录之前引入
+include(GNUInstallDirs)
+
 # MSVC: 强制 UTF-8 源码编码，解决中文注释和字符串在 GBK 环境下编译失败的问题
 if(MSVC)
     add_compile_options(/utf-8)
@@ -93,3 +96,73 @@ add_subdirectory(tests)
 # 示例程序纳入构建：它的 CMakeLists 早已就绪，但此前从未被加入，示例与库的 API 脱节
 # 因此长期无人发现。纳入后示例随常规构建一起编译，任何时候都是可用的
 add_subdirectory(samples)
+
+# ============================================================================
+# 对外发布：安装规则与 CMake 包配置
+# ============================================================================
+# 五个模块库与公开头文件随安装落到 <前缀>/lib 与 <前缀>/include，并导出
+# AsynGyanis::Platform / Base / Core / Net / Database（Windows 上还有 AsynGyanis::wepoll），
+# 外部工程即可 find_package(AsynGyanis) 后直接链接，无需再自行拼 include 路径与依赖。
+# 关闭后只保留纯构建行为：make install / cmake --install 不再产出任何东西。
+option(ASYN_ENABLE_INSTALL "生成安装规则与 CMake 包配置，供外部工程 find_package 消费" ON)
+
+if(ASYN_ENABLE_INSTALL)
+    include(CMakePackageConfigHelpers)
+
+    install(TARGETS Platform Base Core Net Database
+            EXPORT AsynGyanisTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+
+    # wepoll 是 Core 在 Windows 上链接的 vendored 静态库，必须一并导出：
+    # 少了它，消费方链接 Core 时会缺 epoll_create/epoll_wait 等符号
+    if(TARGET wepoll)
+        install(TARGETS wepoll
+                EXPORT AsynGyanisTargets
+                ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
+    endif()
+
+    # 头文件保持 src 下的相对路径，安装后 "Core/Socket/AsyncSocket.h" 这类
+    # 库内既有写法仍可直接使用（vendored 的 wepoll.h 也随此规则一起落地）
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.h"
+    )
+
+    # 消费方同样需要的外部依赖：各模块启用依赖时把自己登记进 GLOBAL 属性
+    # （imported 目标只在创建它的目录及其子目录可见，根作用域 here 看不见，
+    #  所以不能在本文件里用 if(TARGET ...) 反查），这里统一转成 find_dependency
+    get_property(ASYN_PACKAGE_DEPENDENCIES GLOBAL PROPERTY AsynGyanisPackageDependencies)
+    set(ASYN_CONFIG_DEPENDENCIES "")
+    foreach(dependency_name IN LISTS ASYN_PACKAGE_DEPENDENCIES)
+        string(APPEND ASYN_CONFIG_DEPENDENCIES "find_dependency(${dependency_name})\n")
+    endforeach()
+
+    configure_package_config_file(
+            ${CMAKE_SOURCE_DIR}/cmake/AsynGyanisConfig.cmake.in
+            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfig.cmake
+            INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
+    )
+
+    # 版本号取自 project()，同一主版本内视为兼容
+    write_basic_package_version_file(
+            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfigVersion.cmake
+            VERSION ${PROJECT_VERSION}
+            COMPATIBILITY SameMajorVersion
+    )
+
+    install(EXPORT AsynGyanisTargets
+            FILE AsynGyanisTargets.cmake
+            NAMESPACE AsynGyanis::
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
+    )
+
+    install(FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfig.cmake
+            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfigVersion.cmake
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
+    )
+endif()
