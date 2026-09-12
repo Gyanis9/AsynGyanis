@@ -25,7 +25,7 @@
  *   因此必须用 DATABASE() 限定当前库（SQLite 查的是每个库文件私有的 sqlite_master）。
  *
  * ## 分页为何选 "LIMIT ? OFFSET ?"
- * - 关键字形式是标准 SQL 的写法，MySQL / MariaDB / PostgreSQL / SQLite 都接受；
+ * - 关键字形式是标准 SQL 的写法，MySQL / MariaDB / SQLite 都接受；
  *   而 "LIMIT 偏移量, 行数" 是 MySQL 专有语法，且两个操作数的顺序与关键字形式**相反**
  *   （先给偏移量再给行数），是分页翻页时的经典错误来源，因此不选它；
  * - 取值走占位符而不是内联十进制文本，使「SQL 文本里绝不出现数据」这条契约在本方言中
@@ -78,14 +78,14 @@ namespace AsynGyanis::Database
      *
      * @details 本类是 StandardSqlDialect 的实现，只覆写引擎知识，查询树渲染与参数收集一律继承。
      *          与姊妹方言的差异（逐项给出依据）：
-     *          - identifierQuoteCharacter() 返回反引号（SQLite 与 PostgreSQL 是双引号）；
+     *          - identifierQuoteCharacter() 返回反引号（SQLite 是双引号）；
      *          - dialectName() 返回 "MySQL"，用于拼出「MySQL 方言：…」这类中文错误文本；
      *          - appendLimitOffsetClause() 让 limit / offset 都占绑定参数（SQLite 内联十进制文本），
-     *            且只给 offset 时补出无符号 64 位上界常量作为「不限行数」（SQLite 用 "LIMIT -1"，
-     *            PostgreSQL 允许 OFFSET 单独出现、无需补任何常量）；
-     *          - placeholder() 返回 "?"（PostgreSQL 是 "$n"）；
+     *            且只给 offset 时补出无符号 64 位上界常量作为「不限行数」
+     *            （SQLite 用 "LIMIT -1" 补位）；
+     *          - placeholder() 返回 "?"；
      *          - beginTransactionStatement() 返回 "START TRANSACTION"
-     *            （SQLite 是 "BEGIN IMMEDIATE"、PostgreSQL 是 "BEGIN"）；
+     *            （SQLite 是 "BEGIN IMMEDIATE"）；
      *          - maximumStatementParameters() 返回 65535（SQLite 是 999）；
      *          - columnTypeName() / tableExistsStatement() 反映 MySQL 的位宽/符号分家与
      *            information_schema + DATABASE() 限定。
@@ -204,7 +204,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 取得 MySQL 的标识符引用字符
          * @details 重写 StandardSqlDialect::identifierQuoteCharacter()：MySQL 的官方引用符是
-         *          反引号，因此返回 '`'（SQLite 与 PostgreSQL 都是双引号）。
+         *          反引号，因此返回 '`'（SQLite 是双引号）。
          *          该字符同时驱动基类 quoteIdentifier() 的加引用与内部翻倍转义，
          *          以及 renderFieldReference() 的「是否是可引用标识符」判定，两处必须一致。
          * @return char 恒为反引号 '`'

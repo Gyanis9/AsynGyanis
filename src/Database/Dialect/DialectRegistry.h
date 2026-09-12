@@ -28,7 +28,7 @@ namespace AsynGyanis::Database
     /**
      * @brief SQL 方言注册表
      *
-     * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite、MySQL 与 PostgreSQL。
+     * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite 与 MySQL。
      *
      * @code
      *   std::shared_ptr<SqlDialect> dialect = DialectRegistry::dialectFor(DatabaseType::Sqlite);
@@ -47,7 +47,7 @@ namespace AsynGyanis::Database
          *
          * @param type 数据库类型
          * @return std::shared_ptr<SqlDialect> 该类型的方言实现，恒非空
-         * @throws std::invalid_argument 该类型尚未提供方言实现（PostgreSQL 等），
+         * @throws std::invalid_argument 该类型尚未提供方言实现（如 Oracle），
          *         或该类型不是 SQL 数据库（Redis），异常文本为中文提示
          */
         [[nodiscard]] static std::shared_ptr<SqlDialect> dialectFor(DatabaseType type);

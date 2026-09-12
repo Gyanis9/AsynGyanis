@@ -24,7 +24,7 @@ namespace AsynGyanis::Database
     {
         // MySQL 的位置参数不区分类型、不区分序号，一律写作 '?'（文本协议与 mysql_stmt_* 都是如此）：
         // 序号参数在这里被忽略，它由基类（appendParameter / appendValueRow）用来确定参数在数组中的位置。
-        // 保留 index 形参是为了让 $1 风格的 PostgreSQL 方言能在不改动调用方代码的前提下用上它
+        // 保留 index 形参是为了让将来需要显式序号风格的方言能在不改动调用方代码的前提下用上它
         static_cast<void>(index);
         return "?";
     }

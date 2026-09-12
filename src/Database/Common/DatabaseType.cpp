@@ -21,8 +21,6 @@ namespace AsynGyanis::Database
                 return "Redis";
             case DatabaseType::Sqlite:
                 return "Sqlite";
-            case DatabaseType::PostgreSql:
-                return "PostgreSql";
             default:
                 // 枚举值可能来自反序列化或越界转换，兜底返回可读名称而不是崩溃
                 return "Unknown";

@@ -56,22 +56,6 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 构造一份 PostgreSQL 默认配置
-         * @return ConnectionConfig 指向本机 5432 的 postgres/postgres 配置
-         * @note 默认库与默认用户名都取 "postgres"：那是 PostgreSQL 初始化集群时创建的
-         *       超级用户与同名维护库，任何一台刚装好的服务端上必然存在这两个名字
-         */
-        static ConnectionConfig postgresDefault()
-        {
-            ConnectionConfig configuration;
-            configuration.host     = "127.0.0.1";
-            configuration.port     = 5432;
-            configuration.userName = "postgres";
-            configuration.database = "postgres";
-            return configuration;
-        }
-
-        /**
          * @brief 构造一份 SQLite 配置
          * @param databasePath 数据库文件路径，传 ":memory:" 得到内存库
          * @return ConnectionConfig 仅填充 database 字段的配置

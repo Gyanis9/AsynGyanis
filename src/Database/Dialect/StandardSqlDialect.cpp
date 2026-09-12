@@ -129,7 +129,7 @@ namespace AsynGyanis::Database
 
     bool StandardSqlDialect::supportsLimitOffset() const noexcept
     {
-        // SQLite / MySQL / PostgreSQL 都原生支持关键字形式的分页，差异只在
+        // SQLite / MySQL 都原生支持关键字形式的分页，差异只在
         // 「OFFSET 能否单独出现」这类细节上，由 appendLimitOffsetClause() 各自处理
         return true;
     }
@@ -296,8 +296,8 @@ namespace AsynGyanis::Database
 
         if (query.offset.has_value())
         {
-            // OFFSET 单独出现是本实现的合法输入（PostgreSQL 允许 "OFFSET n" 不配 LIMIT），
-            // 引擎不允许这种写法的方言自行覆写本方法补出 LIMIT
+            // OFFSET 单独出现是本实现的合法输入；引擎不允许这种写法的方言
+            // （MySQL / SQLite）自行覆写本方法补出 LIMIT
             sqlText += " OFFSET ";
             sqlText += placeholder(parameters.size());
             parameters.push_back(pageNumberToDatabaseValue(query.offset.value()));

@@ -85,7 +85,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行带参数的数据库命令（参数按位置绑定）
          *
-         * @details 命令文本里用占位符（SQLite / MySQL / PostgreSQL 均为 "?"）标出取值位置，
+         * @details 命令文本里用占位符（SQLite / MySQL 均为 "?"）标出取值位置，
          *          取值由 parameters 按下标顺序提供，即 parameters[i] 绑定到第 i 个占位符。
          *          参数以绑定方式送入数据库而不是拼进 SQL 文本，因此含单引号、"--"、分号的
          *          字符串只会被当作普通数据，见 SqlStatement.h 的说明。

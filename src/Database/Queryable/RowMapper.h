@@ -15,8 +15,8 @@
  * 成员类型到 DatabaseValue 备选的转换规则：
  * - 整型（含 char/short/int/long long）← std::int64_t，**或**严格十进制文本；
  *   越界即报错而不是截断。接受文本那一支是必需而不是宽容：引擎存得下、
- *   却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED 上界 2^64-1、
- *   PostgreSQL 承接无符号 64 位的 NUMERIC(20) 都是如此），少了它就会出现
+ *   却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED 上界 2^64-1
+ *   即如此），少了它就会出现
  *   「写得进去、读不回来」——写方向恰好也把超出 int64 的无符号值降级成十进制文本；
  * - bool ← bool 或 std::int64_t（SQLite 没有布尔存储类，0/1 的整数收窄成 bool）；
  * - 浮点 ← double 或 std::int64_t（只读语句可能把整数值回传成 INTEGER）；
@@ -31,8 +31,8 @@
  * @warning SQLite 的列亲和性会把「装不下 int64 的十进制文本」转成 REAL，因此同一个
  *          UInt64 成员在 SQLite 上写进去、读回来会损失精度并因类型不符报错。
  *          这是引擎的存储能力边界（SQLite 只有 64 位有符号整数），不是本文件的缺陷；
- *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED 或
- *          PostgreSQL 的 NUMERIC(20)（见各方言的 columnTypeName()）。
+ *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED
+ *          （见 MySqlDialect::columnTypeName()）。
  *
  * ## 结构体 → 参数（写方向）
  * toDatabaseValue() 把单个成员值转成数据库统一值，供 INSERT / UPDATE 的绑定参数使用。
@@ -157,7 +157,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 把一段十进制整型文本严格解析成目标整型
          *
          * @details 引擎存得下、却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED
-         *          上界 2^64-1、PostgreSQL 承接无符号 64 位的 NUMERIC(20)），因此整型成员
+         *          上界 2^64-1），因此整型成员
          *          必须能读文本。解析用 std::from_chars：不跳前导空白、不接受余文、
          *          按 C locale 解析且不抛异常（std::stoll 三者都会放宽）。
          *          解析宽度按目标类型的符号性选：无符号成员要吃下 int64 之外的上界。
@@ -256,7 +256,7 @@ namespace AsynGyanis::Database::Queryable
                 }
 
                 // 十进制文本支路：引擎存得下、却给不出 int64 的整数只能以文本返回
-                // （MySQL 的 BIGINT UNSIGNED 上界、PostgreSQL 的 NUMERIC(20)）。
+                // （MySQL 的 BIGINT UNSIGNED 上界）。
                 // 少了这一支，写到库里的 2^63 以上取值就再也读不回来
                 if (const auto *textValue = std::get_if<std::string>(&cellValue))
                 {

@@ -2,8 +2,6 @@
 # openssl/gtest 服务 Platform/Base/Core；sqlite3/llhttp 服务 Database/Net 的必选驱动；
 # hiredis 与 libmysqlclient 分别是 Database 的 Redis / MySQL 驱动客户端
 # （libmysqlclient 缺失时 MySQL 驱动会退化为报错桩，不会中断 configure）
-# libpq 是 Database 的 PostgreSQL 驱动客户端：PostgreSQL 官方 C 客户端库。
-# 不走 libpqxx —— 那是 C++ 封装，会带上自己的异常层次，与本项目的错误处理约定冲突
 requirements:
   - "openssl/3.6.2"
   - "gtest/1.17.0"
@@ -11,4 +9,3 @@ requirements:
   - "llhttp/9.3.0"
   - "hiredis/1.3.0"
   - "libmysqlclient/8.1.0"
-  - "libpq/17.11"

@@ -28,7 +28,7 @@
  * 的 selectColumns 里，值按同一顺序放在 values 里），条件仍然走 QueryNode 的
  * whereConditions，由方言统一渲染。
  *
- * ## 实现约定（后续 MySQL / PostgreSQL 方言照此实现）
+ * ## 实现约定（各引擎方言照此实现）
  * - 任何 translate*() 都不得把字段值拼进 SQL 文本，只能产出占位符并在 parameters 里按序取值；
  * - 任何 translate*() 都不得修改传入的查询树（入参为 const 引用，实现必须是纯函数）；
  * - 任何 translate*() 产出的 parameters[i] 必须与 SQL 文本中第 i 个占位符一一对应，
@@ -210,7 +210,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 引用一个标识符
          *
-         * @details SQLite / PostgreSQL 等标准方言使用双引号，MySQL 使用反引号。
+         * @details SQLite 等标准方言使用双引号，MySQL 使用反引号。
          *          标识符内部与引用字符相同的字符必须翻转义（翻倍），
          *          例如 SQLite 下 quoteIdentifier("a\"b") 得到 "a""b"。
          *
@@ -222,9 +222,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 生成第 index 个参数占位符
          *
-         * @details 两种风格：SQLite 与 MySQL 的位置参数写作 "?"（序号被忽略，仅用于确定
-         *          参数在数组中的位置），PostgreSQL 的扩展查询协议要求 "$1" "$2" 这类
-         *          显式带序号的写法并因此真正使用本形参。
+         * @details SQLite 与 MySQL 的位置参数都写作 "?"：序号被忽略，仅用于确定参数在数组
+         *          中的位置。保留 index 形参是为了让将来需要显式序号风格的方言（如 Oracle 的 ":1"）
+         *          能在不改动调用方代码的前提下用上它。
          *
          * @param index 参数序号，从 0 开始，按占位符出现顺序递增
          * @return std::string 该位置的占位符文本
@@ -233,7 +233,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法
-         * @return true 支持（SQLite / MySQL / PostgreSQL）；false 需要各实现自行改写分页
+         * @return true 支持（SQLite / MySQL）；false 需要各实现自行改写分页
          */
         [[nodiscard]] virtual bool supportsLimitOffset() const noexcept = 0;
 

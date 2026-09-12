@@ -98,8 +98,8 @@ namespace
      * @brief 无符号 64 位列测试用结构体：覆盖 int64 之内与之外两段取值
      *
      * @details UInt64 是唯一在三个引擎上都「没有原生对应类型」的成员类型：
-     *          SQLite 只有 64 位有符号整数，PostgreSQL 得用 NUMERIC(20) 承接，
-     *          MySQL 有 BIGINT UNSIGNED 但它的上界超过 int64，驱动只能以文本返回。
+     *          SQLite 只有 64 位有符号整数，MySQL 有 BIGINT UNSIGNED 但它的上界
+     *          超过 int64，驱动只能以文本返回。
      *          这个结构体用于验证两侧边界：int64 能表达的取值必须无损往返，
      *          表达不了的取值必须**明确失败**而不是悄悄换个数值。
      */
@@ -629,8 +629,8 @@ TEST_F(QueryableExecutionTest, UnsignedColumnRoundTripsWithinInt64Range)
  *          按亲和性规则转成 REAL，于是这一列读回来时是浮点而不是整数。这是引擎的
  *          存储能力边界，ORM 的职责是**如实报错**——静默取整或回绕都会给出一个
  *          看起来正常、实际错误的数值，那比失败难查得多。
- *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED 或
- *          PostgreSQL 的 NUMERIC(20)，那两条真机路径由各自的集成用例覆盖。
+ *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED，
+ *          那条真机路径由 MySQL 集成用例覆盖。
  */
 TEST_F(QueryableExecutionTest, UnsignedValueBeyondInt64FailsLoudlyOnSqlite)
 {

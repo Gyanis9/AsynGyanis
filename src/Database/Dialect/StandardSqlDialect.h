@@ -14,7 +14,7 @@
  *
  * ## 为什么要有这一层
  * SQLite 与 MySQL 两个方言此前的实现有九成是逐字相同的：同一份 renderFieldReference、
- * 同一份 appendCondition、同一份 convertParameter。再照抄一份给 PostgreSQL，就会有三份
+ * 同一份 appendCondition、同一份 convertParameter。再照抄一份给第三个引擎，就会有三份
  * 需要同步修改的拷贝——条件渲染的规则一旦在某一份里被改动（例如空 IN 集合的处理），
  * 另外两份不会跟着变，而这类分歧只会在运行期以「某个引擎上少查出一行」的形式暴露。
  * 因此把共用部分上收为本类，各引擎只保留真正属于引擎知识的覆写：
@@ -36,7 +36,8 @@
  * 每产出一个占位符就立刻压入一个参数，占位符的序号取自「已收集的参数个数」，
  * 因此 parameters[i] 必定对应 SQL 文本里的第 i 个占位符。这个顺序由本层保证一次，
  * 子类无需（也不应）再关心参数收集，只需要正确实现 placeholder()：
- * 返回 "?" 的引擎可以忽略序号，返回 "$n" 的引擎（PostgreSQL）正是靠这个序号工作。
+ * 返回 "?" 的引擎可以忽略序号；将来若支持显式序号风格的方言（如 Oracle 的 ":1"），
+ * 它正是靠这个序号工作。
  */
 #pragma once
 
@@ -53,7 +54,7 @@
 namespace AsynGyanis::Database
 {
     /**
-     * @brief 标准 SQL 方言基类（SQLite / MySQL / PostgreSQL 的共用实现）
+     * @brief 标准 SQL 方言基类（SQLite / MySQL 的共用实现）
      *
      * @details 无状态实现，可被多线程并发调用。子类只需覆写引擎知识，
      *          查询树渲染与参数收集行为因此在校验层面天然一致。
@@ -150,7 +151,7 @@ namespace AsynGyanis::Database
          * @brief 用本引擎的引用字符引用标识符，并翻倍转义内部引用字符
          *
          * @details 重写 SqlDialect::quoteIdentifier()：引用字符由 identifierQuoteCharacter()
-         *          给出（SQLite / PostgreSQL 是双引号，MySQL 是反引号），
+         *          给出（SQLite 是双引号，MySQL 是反引号），
          *          内部同字符按 SQL 规则翻倍表示（"a""b" / `a``b`）。
          *          反斜杠不能作为转义字符：它在三种引擎里都是普通字符，
          *          用它既无效又会引入字面反斜杠。
@@ -163,7 +164,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法
          *
-         * @details 重写 SqlDialect::supportsLimitOffset()：SQLite / MySQL / PostgreSQL
+         * @details 重写 SqlDialect::supportsLimitOffset()：SQLite / MySQL
          *          都原生支持关键字形式的分页，因此恒为 true。差异只在
          *          「OFFSET 能否单独出现」这类细节上，由 appendLimitOffsetClause() 各自处理。
          *
@@ -174,7 +175,7 @@ namespace AsynGyanis::Database
     protected:
         /**
          * @brief 取得本引擎的标识符引用字符
-         * @return char 双引号（SQLite / PostgreSQL）或反引号（MySQL）
+         * @return char 双引号（SQLite）或反引号（MySQL）
          * @note 本字符同时用于 quoteIdentifier() 的加引用与 renderFieldReference() 的
          *       「是否是可引用标识符」判定，两处必须一致，否则含空格或引用符的列名会被误判
          */
@@ -182,7 +183,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 取得本方言的显示名，用于组成中文错误文本
-         * @return std::string_view 例如 "SQLite" / "MySQL" / "PostgreSQL"
+         * @return std::string_view 例如 "SQLite" / "MySQL"
          * @note 错误文本形如「SQLite 方言：待写列列表为空…」，保留引擎名是为了让
          *       多方言并存的调用方能立刻判断是哪一侧的输入有问题
          */
@@ -193,9 +194,9 @@ namespace AsynGyanis::Database
          *
          * @details 这是三个引擎差异最大的子句，默认实现为 SQL 标准的关键字形式：
          *          " LIMIT <占位符>" 与 " OFFSET <占位符>" 各自独立输出（先 LIMIT 后 OFFSET），
-         *          两者都不存在时什么都不输出。PostgreSQL 直接适用本默认实现
-         *          （它允许 OFFSET 单独出现）；MySQL 与 SQLite 各有一条引擎特有的限制，
-         *          因此分别覆写并在需要时调用本实现复用其余部分。
+         *          两者都不存在时什么都不输出。MySQL 覆写它只为补出「只给 offset」时要写的
+         *          不限行数常量，其余部分转交本实现复用；SQLite 的分页值走内联、且需要
+         *          "LIMIT -1" 补位，与默认实现差异较大，因此整段覆写。
          *
          * @param sqlText 输出缓冲区，分页片段追加到末尾
          * @param parameters 输出参数列表，分页值按占位符出现顺序追加

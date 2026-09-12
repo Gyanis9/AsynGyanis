@@ -10,7 +10,6 @@
 #include "Database/Dialect/DialectRegistry.h"
 
 #include "Database/Dialect/MySqlDialect.h"
-#include "Database/Dialect/PostgresDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
 
 #include <stdexcept>
@@ -39,15 +38,6 @@ namespace AsynGyanis::Database
                 return mySqlDialectInstance;
             }
 
-            case DatabaseType::PostgreSql:
-            {
-                // 与另两个分支同构：$n 占位符、BEGIN 事务、NUMERIC(20) 承接无符号 64 位，
-                // 这些差异全部封在 PostgresDialect 里，上层只认 DatabaseType
-                static const std::shared_ptr<SqlDialect> postgresDialectInstance =
-                    std::make_shared<PostgresDialect>();
-                return postgresDialectInstance;
-            }
-
             case DatabaseType::Redis:
                 throw std::invalid_argument(
                     "方言注册表：Redis 是键值存储，不参与 SQL 查询树翻译，请改用 RedisConnection 的命令接口");
@@ -63,7 +53,7 @@ namespace AsynGyanis::Database
     bool DialectRegistry::supports(const DatabaseType type) noexcept
     {
         // 与 dialectFor() 的分支保持一一对应：新增方言时两处必须同步修改
-        return type == DatabaseType::Sqlite || type == DatabaseType::MySql || type == DatabaseType::PostgreSql;
+        return type == DatabaseType::Sqlite || type == DatabaseType::MySql;
     }
 
 } // namespace AsynGyanis::Database

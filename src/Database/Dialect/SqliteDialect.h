@@ -24,7 +24,7 @@
  * - DDL 支撑：columnTypeName() 把逻辑列类型映射到 SQLite 的存储类
  *   （INTEGER / REAL / TEXT / BLOB，布尔与无符号整数都用 INTEGER 表达），
  *   tableExistsStatement() 查当前库文件私有的 sqlite_master 统计同名表，
- *   因此不需要任何库名限定（这是与 MySQL / PostgreSQL 的主要差异）；
+ *   因此不需要任何库名限定（这是与 MySQL 的主要差异）；
  * - 参数上限：999（SQLITE_MAX_VARIABLE_NUMBER 的默认值）。
  *
  * ## 参数收集顺序（继承基类，不在本类重复实现）
@@ -79,10 +79,10 @@ namespace AsynGyanis::Database
      *          - identifierQuoteCharacter() 返回双引号（MySQL 是反引号）；
      *          - dialectName() 返回 "SQLite"，用于拼出「SQLite 方言：…」这类中文错误文本；
      *          - appendLimitOffsetClause() 把分页值内联为十进制文本、不占绑定参数
-     *            （MySQL 与 PostgreSQL 都走占位符）；
-     *          - placeholder() 返回 "?"（PostgreSQL 是 "$n"）；
+     *            （MySQL 同样走占位符）；
+     *          - placeholder() 返回 "?"；
      *          - beginTransactionStatement() 返回 "BEGIN IMMEDIATE"
-     *            （MySQL 是 "START TRANSACTION"、PostgreSQL 是 "BEGIN"）；
+     *            （MySQL 是 "START TRANSACTION"）；
      *          - maximumStatementParameters() 返回 999（另两者是 65535）；
      *          - columnTypeName() / tableExistsStatement() 反映 SQLite 的存储类与 sqlite_master。
      *          除上述方法外本类不再提供任何成员：基类已给出这些行为的唯一实现。
@@ -171,7 +171,7 @@ namespace AsynGyanis::Database
          * @details 重写 SqlDialect::tableExistsStatement()：SQLite 的表清单存放在
          *          sqlite_master（只读系统表）里，用 type='table' 过滤掉索引、视图与触发器，
          *          再按 name 精确匹配目标表名。sqlite_master 只属于当前所连接的那个库文件，
-         *          所以不需要任何库名限定——这是嵌入式引擎与 MySQL / PostgreSQL 的主要差异。
+         *          所以不需要任何库名限定——这是嵌入式引擎与 MySQL 的主要差异。
          *          name 列以参数绑定送入，表名里出现引号或分号都不会改变语句结构。
          * @param tableName 待查询的表名
          * @return SqlStatement "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?"
@@ -197,7 +197,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 取得 SQLite 的标识符引用字符
          * @details 重写 StandardSqlDialect::identifierQuoteCharacter()：SQLite 接受 SQL 标准的
-         *          双引号形式，因此返回 '"'（与 PostgreSQL 相同，与 MySQL 的反引号不同）。
+         *          双引号形式，因此返回 '"'（与 MySQL 的反引号不同）。
          *          该字符同时驱动基类 quoteIdentifier() 的加引用与内部翻倍转义，
          *          以及 renderFieldReference() 的「是否是可引用标识符」判定，两处必须一致。
          * @return char 恒为双引号 '"'

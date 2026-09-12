@@ -34,7 +34,6 @@ namespace AsynGyanis::Database
                 DatabaseType::MySql,
                 DatabaseType::Redis,
                 DatabaseType::Sqlite,
-                DatabaseType::PostgreSql,
         };
 
         /// 合法枚举值与类型名的完整映射表，是 databaseTypeName 的唯一断言依据
@@ -42,13 +41,11 @@ namespace AsynGyanis::Database
                 {DatabaseType::MySql, "MySql"},
                 {DatabaseType::Redis, "Redis"},
                 {DatabaseType::Sqlite, "Sqlite"},
-                {DatabaseType::PostgreSql, "PostgreSql"},
         };
 
         /// 超出枚举定义范围的取值：枚举值可能来自反序列化或内存被写坏，用于驱动 default 分支
-        /// @note 3 曾是越界值，PostgreSql 追加到枚举末尾后它变为合法取值，因此本表从 4 起算；
-        ///       往后新增枚举成员时，这里的起点要同步跟着上移
-        const std::vector<int> kOutOfRangeDatabaseTypeValues = {4, 99, 127, 255, -1};
+        /// @note 起点必须等于枚举成员个数：新增成员后要把它上移，否则会把新成员当成越界值
+        const std::vector<int> kOutOfRangeDatabaseTypeValues = {3, 4, 99, 127, 255, -1};
 
         /**
          * @brief 构造覆盖全部七个备选的数据库值样本
