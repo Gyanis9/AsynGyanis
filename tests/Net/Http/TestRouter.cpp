@@ -200,7 +200,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.getHeader("allow").value_or(""), "GET");
     }
 
-    TEST(Router, SkipsMiddlewarePipelineForUnmatchedRoute)
+    TEST(Router, RunsMiddlewarePipelineForUnmatchedRoute)
     {
         Router router;
         std::atomic<int> middlewareCalls{0};
@@ -215,8 +215,11 @@ namespace AsynGyanis::Net
         HttpResponse response;
         routeRequest(router, request, response);
 
-        EXPECT_EQ(middlewareCalls.load(), 0);
-        EXPECT_FALSE(response.getHeader("x-middleware").has_value());
+        // 横切逻辑对未命中一视同仁：中间件必须执行，且它写下的头部不能被 404 的写入抹掉
+        EXPECT_EQ(middlewareCalls.load(), 1);
+        EXPECT_EQ(response.getHeader("x-middleware").value_or(""), "1");
+        EXPECT_EQ(response.status(), 404);
+        EXPECT_EQ(response.body(), "Not Found");
     }
 
     // ============================================================================

@@ -290,10 +290,12 @@ namespace AsynGyanis::Net
 
     void Router::writeNotFoundOrNotAllowed(const HttpRequest &request, HttpResponse &response, const bool isMethodNotAllowed, const std::string &allowedMethods)
     {
-        // 先整体重置再填：命中判定失败前，中间件（CORS、日志、限流）可能已经写过头部与正文，
-        // 只换状态码会把上一轮的痕迹一起发给客户端。响应对象重置后必须重新交代协议版本。
+        // 不重置响应：本函数现在由中间件管道的终点回调调用，而 CORS 与访问日志这类横切
+        // 中间件的头部正是在进入终点之前写下的，重置会把它们一起抹掉。响应对象在会话里
+        // 是每请求新建的局部量（见 httpKeepAliveLoop），不存在跨请求的残留需要清理。
+        // 协议版本仍显式交代一次：状态行必须跟随请求的版本
         const std::string requestVersion = request.httpVersion();
-        response.reset();
+        response.setHttpVersion(requestVersion);
 
         if (!isMethodNotAllowed)
         {
@@ -464,7 +466,22 @@ namespace AsynGyanis::Net
             }
         }
 
-        writeNotFoundOrNotAllowed(request, response, isMethodNotAllowed, allowedMethods);
+        // 未命中也走同一条中间件管道：CORS、访问日志、限流这类横切逻辑必须对 404/405 一视同仁，
+        // 否则跨域请求撞到 404 会退化成浏览器侧的 opaque 错误，日志里也看不到任何未命中的请求。
+        //
+        // 重置与写入分两步：先在这里清掉调用方可能残留的状态（本函数是公开 API，调用方可以
+        // 复用同一个 HttpResponse），再让中间件写头部，最后由终点补状态与 Allow。
+        // 若把重置放到终点里，中间件刚写下的 CORS 头会被一起抹掉
+        response.reset();
+
+        const TerminalHandler unmatchedTerminalHandler =
+                [this, &request, &response, isMethodNotAllowed, &allowedMethods]() -> Core::Task<void>
+        {
+            writeNotFoundOrNotAllowed(request, response, isMethodNotAllowed, allowedMethods);
+            co_return;
+        };
+
+        co_await m_pipeline.run(request, response, unmatchedTerminalHandler);
         finalizeResponse(request, response);
         co_return;
     }
