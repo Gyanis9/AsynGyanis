@@ -8,6 +8,7 @@ add_executable(TestDatabase
         Common/TestDatabaseFactory.cpp
 
         Pool/TestConnectionPool.cpp
+        Pool/TestConnectionPoolAsync.cpp
         Pool/TestTransaction.cpp
 
         Dialect/TestSqliteDialect.cpp

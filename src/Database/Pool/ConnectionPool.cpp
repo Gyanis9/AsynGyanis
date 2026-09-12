@@ -9,6 +9,8 @@
 
 #include "Database/Pool/ConnectionPool.h"
 
+#include "Core/EventLoop/EventLoop.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -65,7 +67,10 @@ namespace AsynGyanis::Database
         // 唤醒所有剩余的同步等待者，让它们拿到空连接
         m_cv.notify_all();
 
-        // 唤醒所有异步等待者：给它们空连接
+        // 唤醒所有异步等待者：给它们空连接。
+        // 这一次刻意「就地恢复」而不是投回各自的事件循环——池已经停摆，投递进循环的任务
+        // 很可能永远不会被执行（循环也可能正在停止），那会让等待的协程永久挂起；
+        // 就地恢复至少能让它们拿到空连接、继续走完自己的错误分支
         {
             std::lock_guard lock(m_asyncMutex);
             for (auto *waiter : m_asyncWaiters)
@@ -170,9 +175,9 @@ namespace AsynGyanis::Database
     // acquireAsync — 协程异步获取
     // ========================================================================
 
-    Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop & /*loop*/)
+    Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop &loop)
     {
-        AcquireAwaiter awaiter(this);
+        AcquireAwaiter awaiter(this, &loop);
         PooledConnection result = co_await awaiter;
         co_return std::move(result);
     }
@@ -193,8 +198,8 @@ namespace AsynGyanis::Database
 
     bool ConnectionPool::AcquireAwaiter::await_ready() noexcept
     {
-        // 尝试非阻塞获取
-        m_result = m_pool->tryAcquireInternal();
+        // 尝试非阻塞获取：空闲栈为空但未达上限时会新建，与同步 acquire() 的口径一致
+        m_result = m_pool->tryAcquireOrCreateInternal();
         return m_result != nullptr;
     }
 
@@ -203,7 +208,7 @@ namespace AsynGyanis::Database
         this->m_handle = handle;
 
         // 再试一次：在 await_ready 和 await_suspend 之间可能已有连接归还
-        m_result = m_pool->tryAcquireInternal();
+        m_result = m_pool->tryAcquireOrCreateInternal();
         if (m_result)
         {
             return false; // 获取到连接，不挂起
@@ -235,32 +240,41 @@ namespace AsynGyanis::Database
 
     PooledConnection ConnectionPool::tryAcquire() noexcept
     {
-        // 优先从空闲栈取
+        std::unique_ptr<DatabaseConnection> connection = tryAcquireOrCreateInternal();
+        if (!connection)
         {
-            std::unique_ptr<DatabaseConnection> connection = tryAcquireInternal();
-            if (connection)
-            {
-                m_activeCount.fetch_add(1);
-                return PooledConnection(std::move(connection), this);
-            }
+            return PooledConnection();
         }
 
-        // 未达上限则尝试创建
+        m_activeCount.fetch_add(1);
+        return PooledConnection(std::move(connection), this);
+    }
+
+    std::unique_ptr<DatabaseConnection> ConnectionPool::tryAcquireOrCreateInternal() noexcept
+    {
+        // 优先从空闲栈取（LIFO：最新归还的连接最可能还在热点缓存里）
+        if (std::unique_ptr<DatabaseConnection> connection = tryAcquireInternal(); connection)
         {
-            std::lock_guard lock(m_mutex);
-            if (m_totalCreated.load(std::memory_order_relaxed) < m_config.maximumPoolSize)
-            {
-                std::unique_ptr<DatabaseConnection> newConnection = createNewConnection();
-                if (newConnection)
-                {
-                    m_totalCreated.fetch_add(1, std::memory_order_relaxed);
-                    m_activeCount.fetch_add(1);
-                    return PooledConnection(std::move(newConnection), this);
-                }
-            }
+            return connection;
         }
 
-        return PooledConnection();
+        // 空闲栈为空：未达上限就新建一条，达上限才算「无可用连接」。
+        // 同步的 acquire() 与异步的 acquireAsync() 共用这一份判定——若异步路径只从空闲栈取，
+        // 一个刚建好的池上所有异步获取都会先挂起（尽管池完全有能力建连），
+        // 而同步获取却能立刻建连，两条路径给出相反的行为
+        std::lock_guard lock(m_mutex);
+        if (m_totalCreated.load(std::memory_order_relaxed) >= m_config.maximumPoolSize)
+        {
+            return nullptr;
+        }
+
+        std::unique_ptr<DatabaseConnection> newConnection = createNewConnection();
+        if (newConnection)
+        {
+            m_totalCreated.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        return newConnection;
     }
 
     // ========================================================================
@@ -597,8 +611,11 @@ namespace AsynGyanis::Database
         waiter->m_result = std::move(connection);
         waiter->m_inList = false;
 
-        // 恢复协程：连接所有权通过 await_resume 转给调用方
-        waiter->m_handle.resume();
+        // 把恢复动作投递回等待者所属的事件循环，而不是就地恢复：归还连接可能发生在
+        // 任意线程（工作线程、另一个事件循环），就地恢复会让协程的后续代码跑在那个线程上，
+        // 而调用方是按「回调都在自己的事件循环线程上」来写代码的。
+        // scheduleRemote 内部持锁入队并唤醒目标循环，因此不存在丢唤醒的窗口
+        waiter->m_completionLoop->scheduler().scheduleRemote(waiter->m_handle);
 
         return true;
     }

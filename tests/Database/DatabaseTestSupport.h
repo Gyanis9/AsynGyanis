@@ -317,6 +317,17 @@ namespace AsynGyanis::Database::TestSupport
         }
 
         /**
+         * @brief 取得后台循环线程的 id
+         * @details 用于断言「协程恢复发生在事件循环线程上」这类线程归属性质：
+         *          在驱动协程里记录 `std::this_thread::get_id()`，再与本方法比较即可。
+         * @return std::thread::id 循环线程 id；线程尚未启动时为空 id
+         */
+        [[nodiscard]] std::thread::id threadId() const noexcept
+        {
+            return m_thread.get_id();
+        }
+
+        /**
          * @brief 自旋等待事件循环进入运行状态
          * @details 线程刚启动时 run() 可能还没读到运行标志，此时提交的协程虽然不会丢
          *          （调度器会先入队），但断言「已经跑起来」会让用例结论依赖调度时序。

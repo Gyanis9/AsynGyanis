@@ -145,15 +145,20 @@ namespace AsynGyanis::Database
         /**
          * @brief 协程异步获取连接
          *
-         * @details 当没有可用连接时，当前协程被挂起到等待列表；
-         *          连接被归还时唤醒等待列表中的协程。
-         *          使用前需确保 useAsyncAcquire 配置已启用，且传入有效的 EventLoop。
+         * @details 有空闲连接（或未达上限）时立即返回，不涉及任何线程切换；
+         *          否则当前协程挂起到等待列表，待连接归还时由归还方把恢复动作
+         *          **投递回本方法给定的 EventLoop**（Scheduler::scheduleRemote），
+         *          因此协程恢复后的代码仍运行在该事件循环线程上——与异步数据库执行器的
+         *          约定一致：调用方不必担心自己的后续代码跑到别的线程上。
          *
-         * @param loop 事件循环引用，用于协程调度
+         * @param loop 恢复本协程用的事件循环；其 run() 必须正在运行（或即将运行），
+         *             且对象生命周期要覆盖到协程完成之后
          * @return Core::Task<PooledConnection> 协程任务，co_await 后获得连接
          *
-         * @note 调用方必须确保协程不被提前销毁（Task 析构）以免悬挂指针。
+         * @note 调用方必须确保协程不被提前销毁（Task 析构）以免悬挂指针；
          *       协程被提前销毁时自动从等待列表中移除。
+         * @note 池被 shutdown 时会以「空连接」唤醒全部等待者，且那一次**就地恢复**而不是
+         *       投回事件循环：池都停摆了，投递到循环里可能永远不被执行，那会让协程永久挂起。
          */
         Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop);
 
@@ -247,9 +252,10 @@ namespace AsynGyanis::Database
             /**
              * @brief 构造等待体
              * @param pool 所属连接池
+             * @param completionLoop 协程恢复时要回到的事件循环，由 acquireAsync() 的调用方给出
              */
-            explicit AcquireAwaiter(ConnectionPool *pool) noexcept
-                : m_pool(pool)
+            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop) noexcept
+                : m_pool(pool), m_completionLoop(completionLoop)
             {
             }
 
@@ -284,8 +290,9 @@ namespace AsynGyanis::Database
             friend class ConnectionPool;
 
         private:
-            std::coroutine_handle<>               m_handle{nullptr}; ///< 等待协程的句柄（await_suspend 时保存）
-            ConnectionPool                       *m_pool;            ///< 所属连接池
+            std::coroutine_handle<>               m_handle{nullptr};    ///< 等待协程的句柄（await_suspend 时保存）
+            ConnectionPool                       *m_pool;               ///< 所属连接池
+            Core::EventLoop                      *m_completionLoop;     ///< 恢复本协程的事件循环，恒非空
             std::unique_ptr<DatabaseConnection> m_result;    ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false}; ///< 是否已加入等待列表，用于析构时判断
         };
@@ -295,6 +302,15 @@ namespace AsynGyanis::Database
         // ========================================================================
         // 内部方法
         // ========================================================================
+
+        /**
+         * @brief 尝试取得一条可用连接：先取空闲栈，未达上限则新建（内部，不操作 activeCount）
+         *
+         * @details 同步 tryAcquire() 与异步等待体的快路径共用这一份判定，
+         *          避免两条路径对「池未满时能否立刻拿到连接」给出相反答案。
+         * @return std::unique_ptr<DatabaseConnection> 连接；空闲栈为空且已达上限时为空
+         */
+        std::unique_ptr<DatabaseConnection> tryAcquireOrCreateInternal() noexcept;
 
         /**
          * @brief 尝试从空闲栈弹出连接（内部，不操作 activeCount）

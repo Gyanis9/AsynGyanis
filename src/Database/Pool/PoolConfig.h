@@ -27,7 +27,6 @@ namespace AsynGyanis::Database
         std::size_t maximumLifetimeSeconds        = 1800;  ///< 连接最大存活时间（秒），连接从创建到销毁的总时长上限
         std::size_t healthCheckIntervalSeconds    = 60;    ///< 后台健康检查间隔（秒），周期性遍历空闲列表并驱逐过期连接
         std::size_t acquireTimeoutMilliseconds    = 5000;  ///< 阻塞获取连接的超时（毫秒），超时未取到返回空 PooledConnection
-        bool        useAsyncAcquire              = false; ///< 是否启用协程异步获取（需要 Core::EventLoop 环境），默认关闭
     };
 
 } // namespace AsynGyanis::Database
