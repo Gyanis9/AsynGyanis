@@ -35,11 +35,11 @@ namespace AsynGyanis::Net
         /**
          * @brief 没有待接受连接时的重试间隔，单位毫秒
          *
-         * @details 这里不用 EpollAwaiter 死等监听描述符可读：那个等待器只支持单个 fd 且不带超时，
-         *          而「关闭监听描述符」在 Windows/wepoll 上并不保证唤醒挂在 epoll 上的协程，
-         *          一旦如此，stop() 之后 start() 永远收不了尾。改为按固定间隔轮询描述符，
-         *          用监听器空闲时约 20 次/秒的唤醒换取确定性的关闭语义；
-         *          50ms 远小于人类可感知的连接延迟，又不会让空闲监听器显著占用 CPU。
+         * @details 不用 EpollAwaiter 死等监听描述符可读：那个等待器无超时，而 wepoll 的
+         *          边缘触发在「EAGAIN 之后重新注册」之间会丢边沿（偶发错过新连接），
+         *          关闭监听描述符也不保证唤醒挂起的等待者（stop() 之后收不了尾）。
+         *          按固定间隔轮询同时覆盖这两点，代价是空闲监听器每 50ms 唤醒一次：
+         *          远低于人类可感知的连接延迟，也不会让空闲服务显著占用 CPU。
          */
         constexpr int kIdleAcceptPollIntervalMs = 50;
 
@@ -188,8 +188,10 @@ namespace AsynGyanis::Net
             const int socketErrorCode = Platform::PlatformError::lastSocketErrorCode();
 
             // 暂无待接受连接：间隔一小段时间后重试。
-            // 不用 EpollAwaiter 死等可读事件的原因见 kIdleAcceptPollIntervalMs：
-            // 关闭监听描述符不一定能唤醒挂在该 fd 上的协程，轮询才能保证 stop() 有确定性收尾
+            // 不用 EpollAwaiter 死等可读事件：wepoll 的边缘触发在「accept 返回 EAGAIN」到
+            // 「重新注册到 epoll」之间存在丢边沿的窗口，会偶发错过新连接；而关闭监听描述符
+            // 也不保证唤醒挂在 epoll 上的协程，会让 stop() 之后收不了尾。
+            // 轮询同时解决这两件事，代价是空闲监听器每 kIdleAcceptPollIntervalMs 唤醒一次
             if (socketErrorCode == Platform::PlatformError::kWouldBlock)
             {
                 co_await m_backoffTimer.waitFor(std::chrono::milliseconds(kIdleAcceptPollIntervalMs));
@@ -225,6 +227,9 @@ namespace AsynGyanis::Net
         m_pending.clear();
         // 复位绑定标记：描述符已失效，此后 listen() 必须被拒绝而不是拿旧状态蒙混过关
         m_bound = false;
+
+        // 不需要额外唤醒等待者：接受轮按 kIdleAcceptPollIntervalMs 轮询，最迟一个周期内
+        // 就会重新读取到失效的描述符并返回空值，服务器因此能在确定的时间内完成收尾
     }
 
     Core::InetAddress TcpAcceptor::localAddress() const
