@@ -79,6 +79,27 @@ namespace AsynGyanis::Net
 
     Core::Task<> HttpsSession::start()
     {
+        /**
+         * @brief 退出时无条件收口的守卫
+         *
+         * @details 收尾只调基类 close()：它会 requestStop()，再由上面注册的停止回调去关
+         *          TLS 通道，于是「自然结束」与「被强制关闭」走同一条清理路径。
+         *          写成 RAII 是为了覆盖事务循环写侧抛异常的路径——原实现只在正常返回与
+         *          握手失败两处显式调用，异常穿过时连接会停留在存活状态。
+         */
+        struct TransportCloser
+        {
+            HttpsSession *session = nullptr; ///< 需要在退出时收口的会话
+
+            ~TransportCloser()
+            {
+                if (session != nullptr)
+                {
+                    session->close();
+                }
+            }
+        } closer{this};
+
         // 停止回调先于握手注册：握手期间被强制关闭也要能掐断通道，否则这条协程会一直挂在
         // epoll 上等一个再也不会来的握手事件。回调随本协程帧的结束而注销
         std::stop_callback<TlsTransportCloser> stopCallback(cancelable().stopToken(), TlsTransportCloser{this});
@@ -88,10 +109,10 @@ namespace AsynGyanis::Net
             co_await m_tlsSocket.handshake();
         } catch (const std::exception &handshakeException)
         {
-            // 握手失败没有可信的明文可回，也没有可读的请求：关掉通道直接结束会话。
-            // 走基类 close() 是为了让「存活位、停止请求、TLS 通道」三者一次收干净
+            // 握手失败没有可信的明文可回，也没有可读的请求：记日志后直接结束会话，
+            // 收口交给上面的 RAII 守卫（它会走基类 close()，让存活位、停止请求、
+            // TLS 通道三者一次收干净）
             LOG_ERROR_FMT("HttpsSession: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", m_tlsSocket.fileDescriptor(), handshakeException.what());
-            close();
             co_return;
         }
 
@@ -112,9 +133,7 @@ namespace AsynGyanis::Net
 
         LOG_DEBUG_FMT("HttpsSession: 事务循环结束，关闭 TLS 通道（描述符={}）", m_tlsSocket.fileDescriptor());
 
-        // 收尾只调基类 close()：它会 requestStop() 并由上面的停止回调去关 TLS 通道，
-        // 于是自然结束与被强制关闭走的是同一条清理路径
-        close();
+        // 不再在此处 close()：收口统一交给函数开头的 RAII 守卫
         co_return;
     }
 

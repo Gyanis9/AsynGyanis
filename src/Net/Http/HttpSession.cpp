@@ -159,6 +159,27 @@ namespace AsynGyanis::Net
 
     Core::Task<> HttpSession::start()
     {
+        /**
+         * @brief 退出时无条件收口的守卫
+         *
+         * @details 事务循环内部已经捕获了读侧异常，但写侧（发送响应）抛出的异常会穿过本函数。
+         *          若只在正常返回路径 close()，这条路径就会漏掉：连接仍被标记为存活、取消源
+         *          收不到停止请求、描述符要等对象析构才归还。协程帧销毁时会析构局部对象，
+         *          因此用 RAII 守卫覆盖全部退出路径；基类 close() 幂等，重复调用是空操作。
+         */
+        struct ConnectionCloser
+        {
+            HttpSession *session = nullptr; ///< 需要在退出时收口的会话
+
+            ~ConnectionCloser()
+            {
+                if (session != nullptr)
+                {
+                    session->close();
+                }
+            }
+        } closer{this};
+
         // 谓词提成命名局部：它要以 const std::function 引用的形式活过整个 co_await，
         // 直接传临时量就把正确性押在「挂起中的全表达式结束时才析构临时量」这条规则上，
         // 读代码的人不易一眼确认；放在本协程帧里则一目了然
@@ -171,8 +192,7 @@ namespace AsynGyanis::Net
         co_await detail::httpKeepAliveLoop(
                 socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate);
 
-        // 不论循环从哪条路径退出都要关连接：基类 close() 幂等，重复调用只是空操作
-        close();
+        // 不再在此处 close()：统一交给上面的守卫，正常路径与异常路径只有一处收口
         co_return;
     }
 
