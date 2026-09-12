@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -50,7 +51,11 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 释放指定索引的缓冲区。
-         * @param index 要释放的缓冲区索引（必须有效且处于占用状态）
+         * @param index 要释放的缓冲区索引
+         * @note **幂等**：越界索引、或该索引当前并未被占用（重复释放、释放从未取出的索引）时
+         *       什么都不做。分配器不靠「调用方必然成对使用」来自洽——重复释放若照旧入栈，
+         *       同一索引会在空闲栈里出现两次，之后 acquire() 会把同一块缓冲交给两个使用者，
+         *       双方互相覆写且不报任何错，属于最难定位的一类缺陷。
          */
         void release(int index);
 
@@ -74,11 +79,12 @@ namespace AsynGyanis::Core
         [[nodiscard]] size_t bufferCount() const noexcept;
 
     private:
-        size_t                 m_bufferSize;  ///< 每个缓冲区大小（字节）
-        size_t                 m_bufferCount; ///< 缓冲区个数
-        std::vector<std::byte> m_memory;      ///< 连续内存块，总大小为 bufferSize * bufferCount
-        std::vector<int>       m_freeList;    ///< 空闲缓冲区索引栈，O(1) 获取
-        size_t                 m_freeTop{0};  ///< 空闲栈顶位置
+        size_t                  m_bufferSize;   ///< 每个缓冲区大小（字节）
+        size_t                  m_bufferCount;  ///< 缓冲区个数
+        std::vector<std::byte>  m_memory;       ///< 连续内存块，总大小为 bufferSize * bufferCount
+        std::vector<int>        m_freeList;     ///< 空闲缓冲区索引栈，O(1) 获取
+        std::vector<std::uint8_t> m_isOccupied; ///< 每个索引的占用标记（1=已取出），用于让 release() 幂等
+        size_t                  m_freeTop{0};   ///< 空闲栈顶位置
     };
 
 } // namespace AsynGyanis::Core

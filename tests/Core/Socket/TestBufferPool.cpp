@@ -73,6 +73,57 @@ namespace AsynGyanis::Core
         EXPECT_GE(reacquiredIndex, 0);
     }
 
+    /**
+     * @brief 验证重复释放不会让同一块缓冲被交给两个使用者
+     *
+     * @details 分配器若把重复释放照旧压栈，同一索引会在空闲栈里出现两次，
+     *          之后两次 acquire() 会拿到同一个索引——两个使用者互相覆写同一块内存，
+     *          而且不报任何错。release() 因此必须是幂等的。
+     */
+    TEST(BufferPool, RepeatedReleaseDoesNotAliasTheSameBuffer)
+    {
+        BufferPool pool(64, 2);
+
+        const int firstIndex  = pool.acquire();
+        const int secondIndex = pool.acquire();
+        ASSERT_GE(firstIndex, 0);
+        ASSERT_GE(secondIndex, 0);
+        EXPECT_NE(firstIndex, secondIndex);
+
+        // 同一个索引连释放三次，只能让它回到空闲栈一次
+        pool.release(firstIndex);
+        pool.release(firstIndex);
+        pool.release(firstIndex);
+
+        const int reacquired = pool.acquire();
+        EXPECT_GE(reacquired, 0);
+        // 池已满（两个索引都被占用），再次 acquire 必须是「没有可用缓冲」
+        EXPECT_EQ(pool.acquire(), -1) << "重复释放让池凭空多出了缓冲，说明同一索引被压栈两次";
+    }
+
+    /**
+     * @brief 验证释放「从未取出的索引」不会凭空多出可用缓冲
+     */
+    TEST(BufferPool, ReleaseOfInvalidOrUnacquiredIndexIsIgnored)
+    {
+        BufferPool pool(64, 2);
+
+        // 只取出一个：另一个索引仍未被占用
+        const int acquiredIndex  = pool.acquire();
+        const int untouchedIndex = 1 - acquiredIndex; // 两个缓冲里没被取出的那个
+        ASSERT_GE(acquiredIndex, 0);
+
+        // 越界索引，以及那个「从没被取出」的索引，都不应改变可用缓冲数
+        pool.release(-1);
+        pool.release(2);
+        pool.release(untouchedIndex);
+
+        const int lastAvailable = pool.acquire();
+        EXPECT_GE(lastAvailable, 0) << "池里应仍剩一个未取出的缓冲";
+        EXPECT_NE(lastAvailable, acquiredIndex) << "不该把已占用的缓冲再发一次";
+        EXPECT_EQ(pool.acquire(), -1) << "对未占用索引调用 release() 不应让池凭空多出缓冲";
+    }
+
     TEST(BufferPool, DataReturnsWritablePointer)
     {
         BufferPool pool(1024, 4);
