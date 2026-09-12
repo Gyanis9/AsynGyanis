@@ -33,7 +33,9 @@ namespace AsynGyanis::Database
         constexpr std::uint16_t kUnknownPort = 46379;
 
         /// guessType 应当返回空值的端口样本：含未指定哨兵 0、他厂引擎端口与已知端口的邻近值
-        const std::vector<std::uint16_t> kUnrecognizedPorts = {0, 80, 1433, 3307, 5432, 6380, 27017, 65535};
+        /// （5432 自 PostgreSQL 接入起被识别成 PostgreSql，因此不再属于本样本，
+        ///   它的取值由 GuessTypeRecognizesPostgreSqlDefaultPort 单独钉住）
+        const std::vector<std::uint16_t> kUnrecognizedPorts = {0, 80, 1433, 3307, 6380, 27017, 65535};
 
         /**
          * @brief 判断文本是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
@@ -279,10 +281,19 @@ namespace AsynGyanis::Database
         EXPECT_EQ(*guessed, DatabaseType::Redis);
     }
 
+    TEST(DatabaseFactory, GuessTypeRecognizesPostgreSqlDefaultPort)
+    {
+        // 5432 在 PostgreSQL 驱动接入后成为第三个被识别的默认端口（枚举里已登记 PostgreSql）
+        const std::optional<DatabaseType> guessed = DatabaseFactory::guessType(5432);
+
+        ASSERT_TRUE(guessed.has_value());
+        EXPECT_EQ(*guessed, DatabaseType::PostgreSql);
+    }
+
     TEST(DatabaseFactory, GuessTypeReturnsEmptyForUnrecognizedPorts)
     {
-        // 只认已实现驱动的默认端口：5432 不再被猜成 PostgreSql（枚举里没有该项），
-        // 邻近端口 3307 / 6380 也不做「差一点就算」的模糊匹配
+        // 只认已实现驱动的默认端口：他厂引擎端口与已知端口的邻近值（3307 / 6380）都不做
+        // 「差一点就算」的模糊匹配，未指定哨兵 0 同样返回空值
         for (const std::uint16_t port: kUnrecognizedPorts)
         {
             EXPECT_FALSE(DatabaseFactory::guessType(port).has_value()) << port;

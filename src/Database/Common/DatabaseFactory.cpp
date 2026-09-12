@@ -9,6 +9,7 @@
 
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/MySql/MySqlConnection.h"
+#include "Database/Postgres/PostgresConnection.h"
 #include "Database/Redis/RedisConnection.h"
 #include "Database/Sqlite/SqliteConnection.h"
 
@@ -45,6 +46,8 @@ namespace AsynGyanis::Database
                 return createRedis(config);
             case DatabaseType::Sqlite:
                 return createSqlite(config);
+            case DatabaseType::PostgreSql:
+                return createPostgres(config);
         }
 
         // 枚举取值超出已知范围（反序列化出错或内存被写坏）时不给静默默认值
@@ -54,6 +57,11 @@ namespace AsynGyanis::Database
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createMySql(const ConnectionConfig &config)
     {
         return std::make_unique<MySqlConnection>(config);
+    }
+
+    std::unique_ptr<DatabaseConnection> DatabaseFactory::createPostgres(const ConnectionConfig &config)
+    {
+        return std::make_unique<PostgresConnection>(config);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createRedis(const ConnectionConfig &config)
@@ -73,6 +81,8 @@ namespace AsynGyanis::Database
         {
             case 3306:
                 return DatabaseType::MySql;
+            case 5432:
+                return DatabaseType::PostgreSql;
             case 6379:
                 return DatabaseType::Redis;
             default:

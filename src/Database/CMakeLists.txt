@@ -1,21 +1,22 @@
 # ============================================================================
-# Database 模块 — 统一数据库抽象层与三种驱动实现
+# Database 模块 — 统一数据库抽象层与四种驱动实现
 # ============================================================================
 # Common  定义 DatabaseConnection / DatabaseResult / ConnectionConfig / 工厂契约
 # Sqlite  嵌入式驱动，无需外部服务，故为必选依赖
-# MySql   与 Redis 依赖外部服务与第三方客户端库，按可选依赖处理：
+# MySql / PostgreSql / Redis 依赖外部服务与第三方客户端库，按可选依赖处理：
 #         Conan 能提供时编译真实驱动，缺失时编译返回明确错误的桩实现
 # ============================================================================
 
 find_package(SQLite3 REQUIRED)
 find_package(hiredis QUIET)
 
-# libmysqlclient 是可选依赖：Conan 缓存或系统里存在匹配本 profile 的包时编译真实驱动，
-# 探测不到就退化为「每个入口都给出中文错误」的桩实现。因此这里用 QUIET 探测 +
-# if(TARGET libmysqlclient::libmysqlclient) 判定，绝不写 find_package(... REQUIRED)：
+# libmysqlclient 与 libpq 都是可选依赖：Conan 缓存或系统里存在匹配本 profile 的包时
+# 编译真实驱动，探测不到就退化为「每个入口都给出中文错误」的桩实现。因此这里用 QUIET
+# 探测 + if(TARGET ...) 判定，绝不写 find_package(... REQUIRED)：
 # 缺一个可选驱动不该让整个工程的 configure 失败（旧的 OPTION 默认 OFF 写法让真实驱动
 # 从未被编译过，真实分支里的编译错误也就无从发现）
 option(DATABASE_WITH_MYSQL "编译 MySQL 驱动（需要可用的 libmysqlclient）" ON)
+option(DATABASE_WITH_POSTGRES "编译 PostgreSQL 驱动（需要可用的 libpq）" ON)
 
 # 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 set_property(GLOBAL PROPERTY AsynGyanisDatabaseSources "")
@@ -23,6 +24,7 @@ set_property(GLOBAL PROPERTY AsynGyanisDatabaseSources "")
 add_subdirectory(Common)
 add_subdirectory(Sqlite)
 add_subdirectory(MySql)
+add_subdirectory(Postgres)
 add_subdirectory(Redis)
 add_subdirectory(Pool)
 add_subdirectory(Dialect)
@@ -46,6 +48,11 @@ if(DATABASE_WITH_MYSQL)
     find_package(libmysqlclient QUIET)
 endif()
 
+if(DATABASE_WITH_POSTGRES)
+    # Conan 的 libpq 配方把 CMake 包名设为 PostgreSQL、目标名设为 PostgreSQL::PostgreSQL
+    find_package(PostgreSQL QUIET)
+endif()
+
 if(TARGET libmysqlclient::libmysqlclient)
     target_link_libraries(Database PUBLIC libmysqlclient::libmysqlclient)
     target_compile_definitions(Database PUBLIC DATABASE_HAS_MYSQL=1)
@@ -54,6 +61,16 @@ elseif(DATABASE_WITH_MYSQL)
     message(STATUS "Database: 未找到 libmysqlclient，MySQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
 else()
     message(STATUS "Database: MySQL 驱动未启用（-DDATABASE_WITH_MYSQL=ON 可开启），退化为报错桩")
+endif()
+
+if(TARGET PostgreSQL::PostgreSQL)
+    target_link_libraries(Database PUBLIC PostgreSQL::PostgreSQL)
+    target_compile_definitions(Database PUBLIC DATABASE_HAS_POSTGRES=1)
+    message(STATUS "Database: 启用 PostgreSQL 驱动（libpq）")
+elseif(DATABASE_WITH_POSTGRES)
+    message(STATUS "Database: 未找到 libpq，PostgreSQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
+else()
+    message(STATUS "Database: PostgreSQL 驱动未启用（-DDATABASE_WITH_POSTGRES=ON 可开启），退化为报错桩")
 endif()
 
 if(TARGET hiredis::hiredis)
