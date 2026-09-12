@@ -51,24 +51,25 @@ namespace AsynGyanis::Core
 
     AsyncSocket AsyncSocket::create(EventLoop &loop, const int domain, const int type)
     {
-#ifdef _WIN32
+#if ASYN_PLATFORM_WIN32
         const int fileDescriptor = ::socket(domain, type, 0);
 #else
         const int fileDescriptor = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 #endif
         if (fileDescriptor < 0)
         {
-            throw Base::SystemException("socket creation failed");
+            throw Base::SystemException("创建套接字失败");
         }
 
-#ifdef _WIN32
+#if ASYN_PLATFORM_WIN32
+        // Windows 没有 SOCK_NONBLOCK，只能在创建后补设非阻塞
         Platform::FileDescriptor::setNonBlocking(fileDescriptor);
 #endif
 
         if (type == SOCK_STREAM)
         {
-            constexpr int opt = 1;
-            setsockopt(fileDescriptor, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
+            // 流式套接字默认关掉 Nagle：框架承载的是小包请求/响应，攒包会明显抬高首字节延迟
+            [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(fileDescriptor);
         }
 
         return AsyncSocket(loop, fileDescriptor);
@@ -76,8 +77,8 @@ namespace AsynGyanis::Core
 
     bool AsyncSocket::bind(const sockaddr *const address, const socklen_t addressLength) const
     {
-        constexpr int opt = 1;
-        setsockopt(m_fileDescriptor, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&opt), sizeof(opt));
+        // 统一开启地址复用：服务重启时上一代连接的 TIME_WAIT 会占住端口
+        [[maybe_unused]] const bool isReuseAddressSet = Platform::Socket::setReuseAddress(m_fileDescriptor);
         return ::bind(m_fileDescriptor, address, addressLength) == 0;
     }
 
@@ -101,33 +102,35 @@ namespace AsynGyanis::Core
             if (const int fileDescriptor = Platform::Socket::accept(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength);
                 fileDescriptor >= 0)
             {
-                constexpr int opt = 1;
-                setsockopt(fileDescriptor, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&opt), sizeof(opt));
+                // 新连接同样关闭 Nagle；设置失败只影响延迟，不丢弃这条连接
+                [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(fileDescriptor);
                 co_return AsyncSocket(m_loop, fileDescriptor);
             }
 
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() ==
-                Platform::PlatformError::kWouldBlock)
+            // 暂无待接受连接：挂起等监听描述符可读。
+            // 原先这里把 kWouldBlock 比较写了两遍（另一处本意是别的错误码），收敛成一次判断
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
                 continue;
             }
 
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted || Platform::PlatformError::lastSocketErrorCode() ==
-                Platform::PlatformError::kConnectionAborted)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted ||
+                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kConnectionAborted)
             {
                 continue;
             }
 
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kTooManyOpenFiles || Platform::PlatformError::lastSocketErrorCode() ==
-                Platform::PlatformError::kSystemFileTableFull || Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kNoBufferSpace ||
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kTooManyOpenFiles ||
+                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kSystemFileTableFull ||
+                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kNoBufferSpace ||
                 Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kOutOfMemory)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
                 continue;
             }
 
-            throw Base::SystemException("accept failed");
+            throw Base::SystemException("接受新连接失败");
         }
     }
 
@@ -138,17 +141,15 @@ namespace AsynGyanis::Core
             co_return;
         } else if (Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kInProgress)
         {
-            throw Base::SystemException("connect failed");
+            throw Base::SystemException("发起连接失败");
         }
 
         co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
 
-        int       error  = 0;
-        socklen_t length = sizeof(error);
-        getsockopt(m_fileDescriptor, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&error), &length);
-        if (error != 0)
+        // 非阻塞 connect 完成后靠 SO_ERROR 判定成败，该读取由 Platform 统一封装
+        if (const int pendingError = Platform::Socket::takePendingError(m_fileDescriptor); pendingError != 0)
         {
-            throw Base::SystemException("connect failed", std::error_code(error, std::system_category()));
+            throw Base::SystemException("连接对端失败", std::error_code(pendingError, std::system_category()));
         }
         co_return;
     }
@@ -172,15 +173,14 @@ namespace AsynGyanis::Core
                 co_return n;
             if (n == 0)
                 co_return 0;
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() ==
-                Platform::PlatformError::kWouldBlock)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLIN);
                 continue;
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
                 continue;
-            throw Base::SystemException("recv failed");
+            throw Base::SystemException("接收数据失败");
         }
     }
 
@@ -198,15 +198,14 @@ namespace AsynGyanis::Core
                 co_return n;
             if (n == 0)
                 co_return -1; // 对端已关闭连接
-            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock || Platform::PlatformError::lastSocketErrorCode() ==
-                Platform::PlatformError::kWouldBlock)
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
                 continue;
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
                 continue;
-            throw Base::SystemException("send failed");
+            throw Base::SystemException("发送数据失败");
         }
     }
 
@@ -244,7 +243,7 @@ namespace AsynGyanis::Core
         socklen_t        addressLength = sizeof(address);
         if (getpeername(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
         {
-            throw Base::SystemException("getpeername failed");
+            throw Base::SystemException("获取对端地址失败");
         }
         return InetAddress(address, addressLength);
     }
@@ -255,7 +254,7 @@ namespace AsynGyanis::Core
         socklen_t        addressLength = sizeof(address);
         if (getsockname(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
         {
-            throw Base::SystemException("getsockname failed");
+            throw Base::SystemException("获取本地地址失败");
         }
         return InetAddress(address, addressLength);
     }

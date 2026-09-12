@@ -96,11 +96,21 @@ namespace AsynGyanis::Core
         bool bind(const InetAddress &address) const;
 
         /**
+         * @brief 监听队列的默认长度
+         *
+         * @details 不用平台的 SOMAXCONN：它的语义是「内核可自行放大队列」，会让连接洪泛时
+         *          失去背压；这里给一个明确的默认值，超出部分由内核按各平台策略丢包。
+         *          128 与 Linux 早期 somaxconn 的默认值一致，足够覆盖常规突发。
+         *          需要更深或更浅的队列时由调用方显式传参。
+         */
+        static constexpr int kDefaultListenBacklog = 128;
+
+        /**
          * @brief 开始监听 socket（用于服务端）
-         * @param backlog 连接等待队列的最大长度，默认使用 SOMAXCONN（系统允许的最大值）
+         * @param backlog 连接等待队列的最大长度，一般传 kDefaultListenBacklog
          * @return 成功返回 true，失败返回 false
          */
-        bool listen(int backlog = SOMAXCONN) const;
+        bool listen(int backlog) const;
 
         /**
          * @brief 异步接受新连接（协程式）

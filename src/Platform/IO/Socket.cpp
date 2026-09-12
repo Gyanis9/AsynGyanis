@@ -10,6 +10,7 @@
 #include "Platform/IO/Socket.h"
 
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/System/PlatformError.h"
 
 #include <mutex>
 
@@ -131,5 +132,21 @@ namespace AsynGyanis::Platform
     {
         // 布尔值在两个平台上都按 int 尺寸传递，写成 0/1 避免 sizeof(bool) 歧义
         return setIntegerOption(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, isOnlyV6 ? 1 : 0);
+    }
+
+    int Socket::takePendingError(const int descriptor) noexcept
+    {
+        int       pendingError = 0;
+        socklen_t optionLength = static_cast<socklen_t>(sizeof(pendingError));
+
+        // Windows 的值参数是 char*、POSIX 是 void*，统一转 char* 两边都能接受，
+        // 因此这里同样不需要平台分支
+        if (::getsockopt(descriptor, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&pendingError), &optionLength) != 0)
+        {
+            // 连 SO_ERROR 都读不到说明描述符已经失效：如实交回该错误，
+            // 而不是返回 0 让调用方误判为「连接已建立」
+            return PlatformError::lastSocketErrorCode();
+        }
+        return pendingError;
     }
 } // namespace AsynGyanis::Platform

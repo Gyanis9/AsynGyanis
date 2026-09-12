@@ -127,5 +127,14 @@ namespace AsynGyanis::Platform
          * @return true 设置成功
          */
         static bool setIpv6Only(int descriptor, bool isOnlyV6) noexcept;
+
+        /**
+         * @brief 取出并清除套接字上挂起的错误码（SO_ERROR）
+         * @details 非阻塞 connect 返回「进行中」之后，成败只能靠该选项判定；
+         *          读取动作本身会清除挂起的错误状态，因此一次连接只应调用一次。
+         * @param descriptor 目标套接字描述符
+         * @return int 挂起的错误码，0 表示没有错误（连接已建立）
+         */
+        static int takePendingError(int descriptor) noexcept;
     };
 } // namespace AsynGyanis::Platform

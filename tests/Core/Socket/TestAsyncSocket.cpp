@@ -96,7 +96,7 @@ namespace AsynGyanis::Core
         const InetAddress address = InetAddress::localhost(0);
 
         ASSERT_TRUE(asyncSocket.bind(address));
-        ASSERT_TRUE(asyncSocket.listen());
+        ASSERT_TRUE(asyncSocket.listen(AsyncSocket::kDefaultListenBacklog));
 
         asyncSocket.close();
     }
@@ -119,7 +119,7 @@ namespace AsynGyanis::Core
         const InetAddress address = InetAddress::localhost(0);
 
         ASSERT_TRUE(asyncSocket.bind(address));
-        ASSERT_TRUE(asyncSocket.listen());
+        ASSERT_TRUE(asyncSocket.listen(AsyncSocket::kDefaultListenBacklog));
 
         const InetAddress localAddress = asyncSocket.localAddress();
         EXPECT_NE(localAddress.port(), 0);
