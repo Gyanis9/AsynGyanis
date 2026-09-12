@@ -395,6 +395,29 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(request.getHeader("x-old").has_value());
     }
 
+    /**
+     * @brief 单值视图按需重建：先查询、再追加同名头部，第二次查询必须看到合并后的结果
+     *
+     * @details 视图是**惰性**的（首次查询才由权威记录建出，见 rebuildSingleValueView），
+     *          因此「查询 → 新增头部 → 再查询」这条时序必须把视图标脏并重建；
+     *          漏掉标脏会让第二次查询拿到旧的合并结果，而这类错误只在特定调用顺序下出现。
+     */
+    TEST(HttpRequest, RebuildsSingleValueViewAfterLaterHeaderArrives)
+    {
+        HttpRequest request;
+        request.addHeader("Cookie", "a=1");
+
+        // 第一次查询：视图此刻才建出来
+        EXPECT_EQ(request.getHeader("cookie").value_or(""), "a=1");
+        EXPECT_EQ(request.headers().size(), 1U);
+
+        request.addHeader("Cookie", "b=2");
+
+        // 第二次查询：必须看到 ", " 合并后的结果，而不是第一次查询时的快照
+        EXPECT_EQ(request.getHeader("cookie").value_or(""), "a=1, b=2");
+        EXPECT_EQ(request.headers().at("cookie"), "a=1, b=2");
+    }
+
     TEST(HttpRequest, ResetHandsOverFreshCancelSource)
     {
         HttpRequest request;

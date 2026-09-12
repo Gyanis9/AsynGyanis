@@ -238,6 +238,17 @@ namespace AsynGyanis::Net
         static std::string toCanonicalHeaderName(std::string_view name);
 
         /**
+         * @brief 按需重建单值视图
+         *
+         * @details 单值视图（名 → 合并后的值）只在真正被查询时才建：绝大多数请求路径
+         *          （路由、回显、静态文件之外的处理）从不读它，为它们维护一份哈希表
+         *          等于每请求白付若干次节点分配。合并规则只有这一处实现：
+         *          @li 普通头部同名多条 → 用 ", " 合并（RFC 7230 §3.2.2 的收件人规则）；
+         *          @li 可重复头部（set-cookie）→ 保留首条，其余靠 headerValues() 逐条取。
+         */
+        void rebuildSingleValueView() const;
+
+        /**
          * @brief 判断头部名是否允许在同一报文里出现多条
          * @param canonicalName 已归一化（小写）的头部名
          * @return true 表示该头部禁止合并，必须逐条保留
@@ -265,7 +276,8 @@ namespace AsynGyanis::Net
         std::string m_uri;                                         ///< 原始 URI，含查询串
         std::string m_httpVersion;                                 ///< HTTP 版本原文
         HeaderFieldList m_headerFields;                            ///< 头部权威记录，按线上到达顺序保存
-        std::unordered_map<std::string, std::string> m_headers;    ///< 头部单值视图，供 headers()/getHeader() 使用
+        mutable std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用：首次查询时才由权威记录建出
+        mutable bool m_isSingleValueViewStale{true};               ///< 单值视图是否已过期（新增头部或重置后置位，查询前重建）
         std::string m_body;                                        ///< 消息正文
         std::unordered_map<std::string, std::string> m_params;     ///< 路由参数
         mutable std::stop_source m_cancelSource;                   ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）

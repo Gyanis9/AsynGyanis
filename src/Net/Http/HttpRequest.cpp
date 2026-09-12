@@ -128,29 +128,45 @@ namespace AsynGyanis::Net
         // 就地改写比再造一个字符串省一次分配——解析器每条头部都会走这个函数
         lowercaseInPlace(key);
 
-        // 权威记录：线上每出现一条头部就原样留一档，可重复头部互不覆盖，顺序即到达顺序
+        // 权威记录：线上每出现一条头部就原样留一档，可重复头部互不覆盖，顺序即到达顺序。
+        // 单值视图不在这里维护：合并逻辑只有 rebuildSingleValueView() 一处实现，
+        // 等真有人查询时再一次性建出来（多数请求路径从不查询它）
         m_headerFields.push_back(HeaderField{.name = key, .value = std::move(value)});
-        const HeaderField &committedField = m_headerFields.back();
+        m_isSingleValueViewStale = true;
+    }
 
-        if (isRepeatableHeaderName(key))
+    void HttpRequest::rebuildSingleValueView() const
+    {
+        m_headers.clear();
+        for (const HeaderField &field: m_headerFields)
         {
-            // 单值视图只保留首条，其余靠 headerValues() 逐条取；
-            // try_emplace 而非 insert_or_assign，正是为了「后来的不覆盖首条」
-            m_headers.try_emplace(key, committedField.value);
-            return;
-        }
+            if (isRepeatableHeaderName(field.name))
+            {
+                // 单值视图只保留首条，其余靠 headerValues() 逐条取；
+                // try_emplace 而非 insert_or_assign，正是为了「后来的不覆盖首条」
+                m_headers.try_emplace(field.name, field.value);
+                continue;
+            }
 
-        // 普通头部同名再现时，按 RFC 7230 §3.2.2 的收件人规则以 ", " 合并到同一条，
-        // 视图里的条目位置与键都不变——旧实现在这里造 set-cookie_1 之类的伪键，已废除
-        if (const auto [iterator, isInserted] = m_headers.try_emplace(key, committedField.value); !isInserted)
-        {
-            iterator->second.append(kMergedHeaderSeparator);
-            iterator->second.append(committedField.value);
+            // 普通头部同名多条时，按 RFC 7230 §3.2.2 的收件人规则以 ", " 合并到同一条，
+            // 视图里的条目位置与键都不变——旧实现在这里造 set-cookie_1 之类的伪键，已废除
+            if (const auto [iterator, isInserted] = m_headers.try_emplace(field.name, field.value); !isInserted)
+            {
+                iterator->second.append(kMergedHeaderSeparator);
+                iterator->second.append(field.value);
+            }
         }
+        m_isSingleValueViewStale = false;
     }
 
     std::optional<std::string> HttpRequest::getHeader(const std::string &key) const
     {
+        // 查询前先把过期视图重建出来：新增头部会把视图标脏，这里一次性补齐
+        if (m_isSingleValueViewStale)
+        {
+            rebuildSingleValueView();
+        }
+
         // 查询侧走同一套归一化规则，保证写入与读取对键的认定一致
         if (const auto iterator = m_headers.find(toCanonicalHeaderName(key)); iterator != m_headers.end())
         {
@@ -178,6 +194,11 @@ namespace AsynGyanis::Net
 
     const std::unordered_map<std::string, std::string> &HttpRequest::headers() const
     {
+        // 同 getHeader：查询前先把过期视图重建出来
+        if (m_isSingleValueViewStale)
+        {
+            rebuildSingleValueView();
+        }
         return m_headers;
     }
 
@@ -339,6 +360,7 @@ namespace AsynGyanis::Net
         m_httpVersion.clear();
         m_headerFields.clear();
         m_headers.clear();
+        m_isSingleValueViewStale = true;
         m_body.clear();
         m_params.clear();
 
