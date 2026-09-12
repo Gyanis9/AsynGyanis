@@ -1,0 +1,62 @@
+# Windows CI：构建（Debug + AddressSanitizer）并跑全量用例。
+#
+# 为什么只有 Windows：本框架的操作系统底层封装目前只实现了 Windows 路径（EventLoop 用
+# vendored 的 wepoll），没有在 Linux 上构建或运行过，因此不在 CI 里假装支持。
+# 注意：本文件尚未在真实的 GitHub runner 上执行过（开发机没有 runner），其中的命令与
+# 本地验证时使用的完全一致（cmake --preset debug / --build / ctest）。
+
+name: Windows CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    env:
+      # Conan 的包缓存搬到仓库内，便于下面的 actions/cache 缓存它
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      # libmysqlclient 在 ConanCenter 上只有源码包，现场编译要十几分钟；CI 不需要真机
+      # MySQL（驱动有报错桩，集成用例本身也按环境变量跳过），因此跳过该依赖
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      # 让 cl.exe、ninja 等进入 PATH；windows-latest 上已预装 Visual Studio 与 Ninja
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 安装 Conan
+        run: pip install "conan>=2.25"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（Debug + sanitizers；Conan 依赖由 conan_provider.cmake 自动安装）
+        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF
+
+      # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
+      - name: 构建
+        run: cmake --build build/debug
+
+      - name: 全量用例
+        run: ctest --test-dir build/debug --output-on-failure
+
+      - name: 失败时上传用例日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs
+          path: build/debug/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
