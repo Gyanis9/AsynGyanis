@@ -8,7 +8,6 @@
  */
 #pragma once
 
-
 #include <stop_token>
 
 namespace AsynGyanis::Core
