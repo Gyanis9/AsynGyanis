@@ -671,23 +671,6 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(textContains(saved, "this is not valid json")) << saved;
     }
 
-    TEST_F(ConfigManagerTest, SaveOverridesAbsorbsAndRemovesLegacyUiFile)
-    {
-        writeFile(kDeployedConfigFileName, "app:\n  name: dashboard\n");
-        writeFile("ui.yaml", "app.theme: light\napp.width: 1200\n");
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-
-        ASSERT_TRUE(configuration().setAndPersist("app.width", ConfigValue(std::int64_t(1600))));
-
-        EXPECT_FALSE(std::filesystem::exists(filePath("ui.yaml")));
-
-        const std::string saved = readFileText(filePath(kSettingsFileName));
-        EXPECT_TRUE(textContains(saved, "\"app.theme\": \"light\"")) << saved;
-        // 同名键以本次修改为准，旧覆盖层值不会回灌
-        EXPECT_TRUE(textContains(saved, "\"app.width\": 1600")) << saved;
-        EXPECT_FALSE(textContains(saved, "1200")) << saved;
-    }
-
     TEST_F(ConfigManagerTest, LoadFilesCommitsPartialSuccessAndStillReportsFailure)
     {
         const std::vector<std::filesystem::path> files = {

@@ -14,6 +14,7 @@
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Format/Value/FormatValue.h"
 #include "Platform/FileSystem/FileWatcher.h"
 
 #include <atomic>
@@ -30,7 +31,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include "Base/Format/Value/FormatValue.h"
 
 namespace AsynGyanis::Base
 {
@@ -246,17 +246,22 @@ namespace AsynGyanis::Base
         /**
          * @brief 设置配置值并立即生效（原子替换内存快照）。
          * @details 修改同时记入待持久化集合，调用 saveOverrides() 后写入用户覆盖层 settings.json。
-         * @param key 配置键（点号路径，如 part_number.dose）。
+         * @param key 配置键（点号路径，如 server.port）。
          * @param value 配置值。
          * @return bool 成功返回 true。
          */
         bool setValue(std::string_view key, ConfigValue value);
 
         /**
-         * @brief 将自上次保存以来的修改写入配置目录下的 settings.json（用户覆盖层）。
-         * @details 与手工编辑等价的部署默认文件 config.yaml 保持只读；settings.json 键覆盖默认值，
-         *          历史 ui.yaml 覆盖残留会在保存时并入并删除。存储为 JSON，类型原生自描述。
-         * @return bool 成功返回 true；无配置目录或写文件失败返回 false。
+         * @brief 把 setValue 累积的待保存修改合并进覆盖层 settings.json
+         *
+         * @details 只改覆盖层，不动部署默认文件（config.yaml / config.json 保持只读）：
+         *          覆盖层里既有的其它键原样保留，本次修改覆盖同名键，最后经原子写整份替换，
+         *          避免中断留下半截文件。存储为 JSON，类型原生自描述。
+         *
+         * @return true 修改已落盘，**或无待保存内容**（此时不触碰文件）
+         * @return false 尚无配置目录（未通过 loadFromDirectory/loadFiles 装载过），或写文件失败
+         * @note 保存成功后待保存集合中对应的键会被清空，因此重复调用是幂等的
          */
         bool saveOverrides();
 
@@ -367,19 +372,18 @@ namespace AsynGyanis::Base
         mutable std::shared_mutex m_reloadMutex; ///< 用于配置数据构建过程的读写锁，仅在修改时加写锁
 
         mutable std::mutex m_overrideMutex;    ///< 保护待持久化覆盖集的互斥锁
-        ConfigKeyValueMap m_pendingOverrides;  ///< 待写入 settings.json 的修改集合（setValue 累积，saveOverrides 清空）
-        std::mutex        m_writeMutex;        ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
-
-        mutable std::mutex m_schemaMutex; ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
-        ConfigSchema       m_schema;      ///< 全局 schema（setSchema 注册，提交快照时自动校验）
+        ConfigKeyValueMap  m_pendingOverrides; ///< 待写入 settings.json 的修改集合（setValue 累积，saveOverrides 清空）
+        std::mutex         m_writeMutex;       ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
+        mutable std::mutex m_schemaMutex;      ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
+        ConfigSchema       m_schema;           ///< 全局 schema（setSchema 注册，提交快照时自动校验）
 
         // 热加载相关
-        std::unique_ptr<Platform::FileWatcher> m_fileWatcher;             ///< 文件监控器（用于热加载）
+        std::unique_ptr<Platform::FileWatcher>                 m_fileWatcher;                ///< 文件监控器（用于热加载）
         std::atomic<std::shared_ptr<const HotReloadCallback> > m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
-        std::atomic<bool>                         m_hotReloadEnabled{false}; ///< 热加载功能是否启用（true 启用，false 关闭）
-        std::atomic<bool>                         m_reloadPending{false};    ///< 是否有重载任务正在执行（节流）
-        std::mutex                                m_reloadTasksMutex;        ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
-        std::vector<std::unique_ptr<ReloadTask> > m_reloadTasks;             ///< 活跃的重载任务（用于析构前 join）
+        std::atomic<bool>                                      m_hotReloadEnabled{false};    ///< 热加载功能是否启用（true 启用，false 关闭）
+        std::atomic<bool>                                      m_reloadPending{false};       ///< 是否有重载任务正在执行（节流）
+        std::mutex                                             m_reloadTasksMutex;           ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
+        std::vector<std::unique_ptr<ReloadTask> >              m_reloadTasks;                ///< 活跃的重载任务（用于析构前 join）
 
         /**
          * @brief 取出并回收已结束的重载任务

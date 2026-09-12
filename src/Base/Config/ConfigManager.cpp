@@ -45,8 +45,7 @@ namespace AsynGyanis::Base
                 if (commonDirectory.empty())
                 {
                     commonDirectory = parentDirectory;
-                }
-                else if (commonDirectory != parentDirectory)
+                } else if (commonDirectory != parentDirectory)
                 {
                     return {};
                 }
@@ -66,12 +65,12 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::string numberToText(const Number value)
         {
             std::array<char, 32> buffer{};
-            const auto [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+            const auto           [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
             if (errorCode != std::errc())
             {
                 return {};
             }
-            return std::string(buffer.data(), static_cast<std::string::size_type>(out - buffer.data()));
+            return {buffer.data(), static_cast<std::string::size_type>(out - buffer.data())};
         }
     } // namespace
 
@@ -97,7 +96,7 @@ namespace AsynGyanis::Base
             return result;
         }
 
-        ConfigKeyValueMap values;
+        ConfigKeyValueMap                  values;
         std::vector<std::filesystem::path> loadedPaths;
         for (const auto &filePath: filePaths)
         {
@@ -287,7 +286,7 @@ namespace AsynGyanis::Base
         const auto currentData = m_data.load(std::memory_order_acquire);
         // 直接以 string_view 查找：ConfigKeyValueMap 的透明哈希支持异构查找，
         // 构造临时 std::string 只会白白多一次分配
-        const auto iterator = currentData->values.find(key);
+        const auto iterator    = currentData->values.find(key);
         if (iterator == currentData->values.end())
         {
             return defaultValue;
@@ -326,7 +325,7 @@ namespace AsynGyanis::Base
         const auto newData     = std::make_shared<ConfigData>(*currentData);
 
         // 键字符串只构造一次：快照与待持久化集合共用同一份文本
-        std::string ownedKey(key);
+        const std::string ownedKey(key);
         newData->values[ownedKey] = value;
         m_data.store(newData, std::memory_order_release);
 
@@ -339,8 +338,6 @@ namespace AsynGyanis::Base
 
     namespace
     {
-        // -------- 配置文档读取与用户覆盖层辅助 --------
-
         /**
          * @brief 读取文本文件全部内容
          * @param filePath 目标文件路径
@@ -356,7 +353,7 @@ namespace AsynGyanis::Base
 
             // 先按文件大小预留容量：istreambuf_iterator 逐字符追加会触发多次重新分配与搬移。
             // 取不到大小（管道、特殊文件）时保持按需增长，不影响正确性
-            std::string   content;
+            std::string     content;
             std::error_code sizeError;
             if (const std::uintmax_t fileSize = std::filesystem::file_size(filePath, sizeError); !sizeError)
             {
