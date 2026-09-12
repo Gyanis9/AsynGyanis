@@ -222,9 +222,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 生成第 index 个参数占位符
          *
-         * @details SQLite / MySQL / PostgreSQL 的位置参数都写作 "?"，
-         *          保留本接口是为了将来支持 $1 这类显式带序号的风格
-         *          （PostgreSQL 的 libpq 原生协议、Oracle 的 :1 等）。
+         * @details 两种风格：SQLite 与 MySQL 的位置参数写作 "?"（序号被忽略，仅用于确定
+         *          参数在数组中的位置），PostgreSQL 的扩展查询协议要求 "$1" "$2" 这类
+         *          显式带序号的写法并因此真正使用本形参。
          *
          * @param index 参数序号，从 0 开始，按占位符出现顺序递增
          * @return std::string 该位置的占位符文本

@@ -500,7 +500,7 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 /**
  * @brief 验证表名与列名含空格时 CREATE TABLE + ORM insert + toList 全链路可跑通
  *
- * @details 标识符引用实现（SqliteDialect::isQuotableIdentifier）放行了空格，
+ * @details 标识符引用实现（StandardSqlDialect 的可引用标识符判定）放行了空格，
  *          因此含空格的列名会被渲染成 "full name" 而不是被误判成表达式原样输出。
  *          若退化成不加引号，SQLite 会把 `full name` 解析成语法错误，
  *          甚至连建表那一步都会失败——所以这条用例同时覆盖 DDL 与 DML 两侧。
