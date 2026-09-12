@@ -70,12 +70,19 @@ namespace AsynGyanis::Net
         /**
          * @brief 停止接受新连接
          * @details 置位运行标志并关闭监听器；已建立的连接不受影响，继续跑到自然结束。
+         * @warning **必须由运行本服务器事件循环的那个线程调用**：本方法关闭的监听描述符
+         *          正被该循环上的 accept 协程使用（`AsyncSocket` 的文件描述符是普通 int，
+         *          不是原子量），从别的线程调用会与它竞争同一个句柄。
+         *          需要从外部线程发起停止时，请把动作投递到那个循环
+         *          （`EventLoop::scheduler().scheduleRemote()`），不要在外部线程直接调用。
          */
         void stop();
 
         /**
          * @brief 立即关闭服务器：停止接受并强制关闭全部已有连接
          * @details 在 stop() 之上追加 ConnectionManager::shutdown()，用于需要立刻释放资源的场合。
+         * @warning 线程约束同 stop()，而且更强：shutdown() 会逐个关闭**每条活跃连接**的套接字，
+         *          那些 Socket 正被各自的事件循环读写。同样只在拥有这些连接的线程上调用。
          */
         void close();
 

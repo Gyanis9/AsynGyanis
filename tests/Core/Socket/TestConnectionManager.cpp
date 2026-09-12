@@ -61,6 +61,9 @@ namespace AsynGyanis::Core
         }
     }
 
+    /**
+     * @brief 验证 add() 让活跃计数加一（计数是过载保护的判据，不能多算少算）
+     */
     TEST(ConnectionManager, AddIncrementsActiveCount)
     {
         EventLoop loop;
@@ -71,6 +74,12 @@ namespace AsynGyanis::Core
         EXPECT_EQ(manager.activeCount(), 1);
     }
 
+    /**
+     * @brief 验证按裸指针 remove() 能让活跃计数减一
+     *
+     * @details 管理器按裸指针索引（Connection 的属主是协程侧，管理器不共享所有权），
+     *          因此这条是计数能归零的前提。
+     */
     TEST(ConnectionManager, RemoveByPointerDecrementsActiveCount)
     {
         EventLoop loop;
@@ -84,6 +93,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(manager.activeCount(), 0);
     }
 
+    /**
+     * @brief 验证 remove(nullptr) 是空操作：清理路径可能在指针已失效时无脑调用
+     */
     TEST(ConnectionManager, RemoveNullPointerIsNoOp)
     {
         EventLoop loop;
@@ -93,6 +105,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(manager.activeCount(), 0);
     }
 
+    /**
+     * @brief 验证 add(nullptr) 被忽略而不是插入一个空条目（否则后续遍历会解空指针）
+     */
     TEST(ConnectionManager, AddNullPointerIsIgnored)
     {
         EventLoop loop;
@@ -102,6 +117,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(manager.activeCount(), 0);
     }
 
+    /**
+     * @brief 验证多连接独立记账：移除其中一个不影响其余连接
+     */
     TEST(ConnectionManager, TracksMultipleConnections)
     {
         EventLoop loop;
@@ -119,6 +137,12 @@ namespace AsynGyanis::Core
         EXPECT_EQ(manager.activeCount(), 2);
     }
 
+    /**
+     * @brief 验证 shutdown() 给每条已登记连接都发出停止请求
+     *
+     * @details 这是「优雅关闭」的核心：漏掉任何一条，那条连接就会继续跑，
+     *          收尾阶段等它退出会一直等不到。
+     */
     TEST(ConnectionManager, ShutdownRequestsStopOnAllConnections)
     {
         EventLoop loop;
@@ -135,6 +159,42 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(connection2->cancelable().isStopRequested());
     }
 
+    /**
+     * @brief 验证 shutdown() 之后挂上来的连接会被 add() 自己收尾
+     *
+     * @details shutdown() 只能遍历它调用那一刻的快照，晚到的连接不会被它看到；
+     *          若 add() 不做补偿，这条连接会永远留在活跃表里——既不会被关闭，
+     *          也会让 waitAll() 永远等不到集合变空。这条时序契约此前只有文档、没有用例。
+     */
+    TEST(ConnectionManager, AddAfterShutdownClosesNewcomerImmediately)
+    {
+        EventLoop loop;
+        ConnectionManager manager;
+        manager.shutdown();
+
+        // shutdown() 已开始：这条连接在加入的那一刻就必须被收尾，而不是留在表里等下一次关闭
+        const auto lateConnection = makeDummyConnection(loop);
+        manager.add(lateConnection);
+
+        EXPECT_TRUE(lateConnection->cancelable().isStopRequested()) << "晚到的连接没有收到停止请求";
+        EXPECT_FALSE(lateConnection->isAlive()) << "晚到的连接应当已被 close() 收尾";
+
+        // add() 只负责关闭，**不**代删表项：摘除由持有该连接的协程在收尾路径上调 remove()，
+        // 与正常关闭路径一致（谁拥有谁摘除），所以此刻它仍在活跃表里
+        EXPECT_EQ(manager.activeCount(), 1U);
+
+        // 属主收尾后名额释放：若不释放，过载保护会因这些连接永久拒绝新连接
+        manager.remove(lateConnection.get());
+        EXPECT_EQ(manager.activeCount(), 0U);
+    }
+
+    /**
+     * @brief 验证 waitAll() 阻塞到集合为空才返回
+     *
+     * @details 先断言「集合非空时等待线程必然未返回」（这一步不依赖调度时序，确定成立），
+     *          再移除连接并等到线程结束——把「会等待」与「能醒来」两半都钉住，
+     *          避免只测后者时阻塞实现退化成立即返回也照样通过。
+     */
     TEST(ConnectionManager, WaitAllReturnsOnceAllConnectionsRemoved)
     {
         EventLoop loop;
@@ -159,6 +219,9 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(finished.load());
     }
 
+    /**
+     * @brief 验证移除一个未登记的指针不会误伤已登记连接
+     */
     TEST(ConnectionManager, RemoveUnknownPointerIsNoOp)
     {
         EventLoop loop;
