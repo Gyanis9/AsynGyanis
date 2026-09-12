@@ -1,8 +1,9 @@
 /**
  * @file TestHttpResponse.cpp
- * @brief HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序与自动补齐
+ * @brief HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序、自动补齐（date/content-type/content-length）
+ *        与映射正文（整份与区间）的字节精确性
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -18,6 +19,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,6 +52,32 @@ namespace AsynGyanis::Net
         std::size_t positionOfText(const std::string &haystack, const std::string_view needle)
         {
             return haystack.find(needle);
+        }
+
+        /**
+         * @brief 摘掉报文里的自动 date 行，便于对其余部分做逐字节比对
+         *
+         * @details date 头取自当前时刻，断言里写不死；用例关心的是报文其余部分的字节形态，
+         *          因此先把这一行移除再比对。报文里没有 date 行时原样返回。
+         * @param message 完整报文文本
+         * @return 移除 date 行之后的文本
+         */
+        std::string withoutDateHeaderLine(const std::string &message)
+        {
+            const std::size_t datePosition = message.find("\r\ndate: ");
+            if (datePosition == std::string::npos)
+            {
+                return message;
+            }
+            const std::size_t lineStart = datePosition + 2;
+            const std::size_t lineEnd = message.find("\r\n", lineStart);
+            if (lineEnd == std::string::npos)
+            {
+                return message;
+            }
+            std::string stripped = message;
+            stripped.erase(lineStart, lineEnd + 2 - lineStart);
+            return stripped;
         }
 
         /**
@@ -122,8 +150,13 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.status(), 200);
         EXPECT_TRUE(response.body().empty());
         EXPECT_TRUE(response.headers().empty());
-        // 空正文仍要交代边界：整条报文只有状态行与一条自动补齐的 content-length
-        EXPECT_EQ(response.toString(), "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+
+        const std::string output = response.toString();
+        // 空正文仍要交代边界：状态行 + 自动补的 content-length + 自动补的 date
+        EXPECT_TRUE(containsText(output, "content-length: 0\r\n"));
+        EXPECT_TRUE(containsText(output, "\r\ndate: "));
+        // 摘掉取自当前时刻的 date 行后，其余部分逐字节恒定
+        EXPECT_EQ(withoutDateHeaderLine(output), "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
     }
 
     TEST(HttpResponse, WritesStandardReasonPhraseForKnownStatus)
@@ -394,15 +427,17 @@ namespace AsynGyanis::Net
         HttpResponse response;
         response.setStatus(204);
 
-        // 204 不带正文，自动补 content-length 等于对收端多做一个承诺
-        EXPECT_EQ(response.toString(), "HTTP/1.1 204 No Content\r\n\r\n");
+        // 204 不带正文，自动补 content-length 等于对收端多做一个承诺（date 仍应补上）
+        const std::string output = response.toString();
+        EXPECT_FALSE(containsText(output, "content-length"));
+        EXPECT_EQ(withoutDateHeaderLine(output), "HTTP/1.1 204 No Content\r\n\r\n");
     }
 
     TEST(HttpResponse, OmitsAutoContentLengthForInformationalResponses)
     {
         HttpResponse continueResponse;
         continueResponse.setStatus(100);
-        EXPECT_EQ(continueResponse.toString(), "HTTP/1.1 100 Continue\r\n\r\n");
+        EXPECT_EQ(withoutDateHeaderLine(continueResponse.toString()), "HTTP/1.1 100 Continue\r\n\r\n");
 
         HttpResponse switchingResponse;
         switchingResponse.setStatus(199);
@@ -499,6 +534,55 @@ namespace AsynGyanis::Net
         EXPECT_LT(positionOfText(output, "x-trace: 1\r\n"), positionOfText(output, "content-type: text/plain\r\n"));
         EXPECT_LT(positionOfText(output, "content-type: text/plain\r\n"), positionOfText(output, "content-length: 3\r\n"));
         EXPECT_EQ(output.substr(bodySeparator + 4), "abc");
+    }
+
+    /**
+     * @brief 未显式设 date 时按当前时刻补一条 IMF-fixdate，位置排在其它自动头部之后
+     */
+    TEST(HttpResponse, AddsCurrentDateHeaderWhenNotSetExplicitly)
+    {
+        HttpResponse response;
+        response.setBody("abc");
+
+        // 头部形态的断言要看 serializeHead()：toString() 后面还跟着正文，不以 GMT 收尾
+        const std::string serializedHead = response.serializeHead();
+        const std::size_t datePosition = positionOfText(serializedHead, "\r\ndate: ");
+
+        ASSERT_NE(datePosition, std::string::npos);
+        // date 值必须完整落在头部块内，并以 " GMT" 收尾（IMF-fixdate 固定 GMT 时区）
+        EXPECT_TRUE(serializedHead.ends_with(" GMT\r\n\r\n")) << "date 值不是 IMF-fixdate 形态";
+        // 与 content-type/content-length 一样，自动补出的 date 只在序列化时落笔
+        EXPECT_FALSE(response.getHeader("date").has_value());
+        EXPECT_LT(positionOfText(serializedHead, "content-length: 3\r\n"), datePosition);
+    }
+
+    /**
+     * @brief 调用方显式设过 date 时不覆盖、也不追加第二条
+     */
+    TEST(HttpResponse, KeepsExplicitDateHeaderUntouched)
+    {
+        HttpResponse response;
+        ASSERT_TRUE(response.setHeader("Date", "Sun, 06 Nov 1994 08:49:37 GMT"));
+
+        const std::string output = response.toString();
+        const std::size_t firstDatePosition = positionOfText(output, "date: Sun, 06 Nov 1994 08:49:37 GMT\r\n");
+
+        EXPECT_NE(firstDatePosition, std::string::npos);
+        EXPECT_EQ(response.headerValues("date").size(), 1U);
+        // 只此一条 date，不得再自动补一条
+        EXPECT_EQ(output.find("date: ", firstDatePosition + 1), std::string::npos);
+    }
+
+    /**
+     * @brief 同一响应多次序列化给出逐字一致的 date：分段发送不会把两段拼成两种日期
+     */
+    TEST(HttpResponse, ReusesSameAutoDateAcrossSerializations)
+    {
+        HttpResponse response;
+        response.setBody("stable");
+
+        EXPECT_EQ(response.serializeHead(), response.serializeHead());
+        EXPECT_EQ(withoutDateHeaderLine(response.serializeHead()), "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\n");
     }
 
     // ============================================================================
@@ -687,5 +771,67 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(response.body().empty());
         EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 0\r\n"));
+    }
+
+    /**
+     * @brief 映射正文的区间重载：body() 只暴露子区间，content-length 按区间长度补齐
+     */
+    TEST(HttpResponse, ServesMappedFileRangeAsBody)
+    {
+        const std::string content = "0123456789";
+        const TemporaryFile temporaryFile("MappedRange", content);
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setStatus(206);
+        response.setMappedBody(std::move(mappedFile), 2, 5);
+
+        // 子区间视图直接指向文件页：既不整份发出，也不为切片拷一份堆内存
+        EXPECT_EQ(response.body(), "23456");
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 5\r\n"));
+        EXPECT_EQ(response.toString(), response.serializeHead() + "23456");
+    }
+
+    /**
+     * @brief 区间长度为 0 是空正文，而不是「读到映射开头」
+     */
+    TEST(HttpResponse, MappedFileRangeTreatsZeroLengthAsEmptyBody)
+    {
+        const std::string content = "abcdef";
+        const TemporaryFile temporaryFile("MappedRangeEmpty", content);
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setMappedBody(std::move(mappedFile), 3, 0);
+
+        EXPECT_TRUE(response.body().empty());
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 0\r\n"));
+    }
+
+    /**
+     * @brief 区间越界必须报错而不是静默钳制：否则 content-length 会与实际字节数悄悄不一致
+     */
+    TEST(HttpResponse, RejectsMappedBodyRangeBeyondMapping)
+    {
+        const std::string content = "0123456789";
+        const TemporaryFile temporaryFile("MappedRangeOverflow", content);
+
+        HttpResponse response;
+
+        // offset 越界、以及 offset + length 越过末尾，两种都要拦住
+        EXPECT_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 10, 1), Base::InvalidArgumentException);
+        EXPECT_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 8, 3), Base::InvalidArgumentException);
+        // 用法错误据此可归入 std::invalid_argument 分支：调用方能一次捕获所有「自己用错了」
+        EXPECT_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 11, 0), std::invalid_argument);
+
+        // 恰好贴住边界不算越界：整段与零长度都要放行
+        EXPECT_NO_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 10, 0));
+        EXPECT_EQ(response.body(), "");
+        EXPECT_NO_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 0, 10));
+        EXPECT_EQ(response.body(), content);
     }
 } // namespace AsynGyanis::Net

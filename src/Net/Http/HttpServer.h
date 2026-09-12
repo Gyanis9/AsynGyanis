@@ -2,7 +2,7 @@
  * @file HttpServer.h
  * @brief HTTP 服务器：在 TcpServer 之上装配路由器、会话与静态文件服务
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -17,6 +17,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace AsynGyanis::Net
@@ -33,6 +34,7 @@ namespace AsynGyanis::Net
     {
         bool isEnabled{false};                ///< 是否启用静态文件服务；根目录规范化失败即为 false
         std::filesystem::path rootDirectory;  ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
+        std::optional<std::string> cacheControl; ///< 静态文件响应的 Cache-Control 值；空表示不发这条头
     };
 
     /**
@@ -81,9 +83,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置（或关闭）静态文件目录。
          *
-         * @details 语义是「配置当前值」，不是「追加一条路由」：首次调用注册一条 `any("*")` 兜底
-         *          路由，处理函数只读取本服务器的当前配置；之后再调用只更新配置，**不会**注册
-         *          第二条兜底路由，也不会出现「新目录不生效、旧目录仍在服务」的悬空状态。
+         * @details 语义是「配置当前值」，不是「追加一条路由」：首次配置（本方法或
+         *          setStaticFileCacheControl()）注册一条 `any("*")` 兜底路由，处理函数只读取
+         *          本服务器的当前配置；之后再调用只更新配置，**不会**注册第二条兜底路由，
+         *          也不会出现「新目录不生效、旧目录仍在服务」的悬空状态。
          *
          * @param directoryPath 静态文件的根目录路径，相对或绝对均可；传入空串表示关闭静态服务
          *
@@ -99,6 +102,23 @@ namespace AsynGyanis::Net
          * @return std::string 规范化后的绝对路径；未启用时返回空串
          */
         [[nodiscard]] std::string staticFileDir() const;
+
+        /**
+         * @brief 设置静态文件响应的 Cache-Control 头值
+         *
+         * @details 值随静态文件设置一起被每个静态响应（200/206/304）带上；传空 optional
+         *          表示不发这条头。它是一项真实生效的设置，不是只存不用的配置字段。
+         * @param cacheControl Cache-Control 值（如 "public, max-age=3600"）；空表示不发
+         * @note 值里含 CR/LF/NUL 时整条设置被拒并记中文告警（这些字符会让调用方提前结束
+         *       头部块，构成响应拆分），此时等同「不发这条头」
+         */
+        void setStaticFileCacheControl(std::optional<std::string> cacheControl);
+
+        /**
+         * @brief 查询当前配置的静态文件 Cache-Control 值。
+         * @return 已设置的值；未设置或从未配置过静态目录时为空 optional
+         */
+        [[nodiscard]] std::optional<std::string> staticFileCacheControl() const;
 
         /**
          * @brief 设置连接级限额（空闲 / 读 / 写超时与单连接请求上限）。
@@ -120,6 +140,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpServerLimits limits() const;
 
     private:
+        /**
+         * @brief 确保静态文件设置对象与 "*" 兜底路由已就绪（幂等）
+         * @details 设置对象与兜底路由必须同时建立：只建对象不建路由会让后续 staticFileDir()
+         *          误判「已注册过」而跳过注册，静态服务再也接不上请求
+         */
+        void ensureStaticFileSettings();
+
         Router m_router;                                ///< 路由器，存储路由表与处理函数
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享

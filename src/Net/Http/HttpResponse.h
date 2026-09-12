@@ -2,13 +2,14 @@
  * @file HttpResponse.h
  * @brief HTTP 响应构建器与序列化器
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
 
 #pragma once
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <cstddef>
@@ -117,6 +118,22 @@ namespace AsynGyanis::Net
         void setMappedBody(Platform::MemoryMappedFile mappedFile);
 
         /**
+         * @brief 用「内存映射文件里的一个区间」当正文，供 206 区间响应零拷贝引用
+         *
+         * @details 区间视图由 [offset, offset + length) 界定，body() 与序列化都只看到这一段，
+         *          发送时仍指向文件页，因此 206 不必为切片额外拷一份堆内存。
+         * @param mappedFile 已映射好的文件
+         * @param offset 区间起始偏移，单位字节
+         * @param length 区间长度，单位字节；0 表示空正文
+         * @throws Base::InvalidArgumentException 区间超出映射范围（offset 或 length 越界）。
+         *         越界属于调用方的用法错误，拒绝静默钳制——那会让 content-length 与实际
+         *         字节数悄悄不一致
+         * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
+         * @see Platform::MemoryMappedFile
+         */
+        void setMappedBody(Platform::MemoryMappedFile mappedFile, std::size_t offset, std::size_t length);
+
+        /**
          * @brief 获取响应正文。
          * @return 正文字符串视图，视图生命周期跟随本响应对象（映射正文时指向文件映射）
          */
@@ -132,8 +149,9 @@ namespace AsynGyanis::Net
          * @brief 将响应序列化为 HTTP 格式的字符串。
          *
          * @details 输出结构：状态行 + 头部块 + 空白行 + 正文，行分隔符一律 CRLF；头部块按设置顺序输出，
-         *          随后按需补两条自动头部：正文非空且未设 content-type 时补 text/plain，未设
-         *          content-length 时按正文实际字节数补一条。自动补出的头部为小写名，排在自设头部之后。
+         *          随后按需补三条自动头部：未设 date 时补一条当前时刻的 IMF-fixdate；正文非空且未设
+         *          content-type 时补 text/plain；未设 content-length 时按正文实际字节数补一条。
+         *          自动补出的头部为小写名，排在自设头部之后。
          * @return 完整的 HTTP 响应字符串
          * @note 返回串的长度即上线字节数，调用方直接整块发送即可
          */
@@ -249,6 +267,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view bodyView() const noexcept;
 
         /**
+         * @brief 取自动补出的 date 头部值，首次调用时按当前时刻生成并缓存
+         * @details 缓存保证同一响应的多次序列化给出逐字一致的 date：serializeHead() 与 toString()
+         *          若各自取一次 now()，跨秒的两次调用会产出不同的头部字节。
+         * @return 自动生成的 IMF-fixdate 文本
+         */
+        [[nodiscard]] std::string_view autoDateText() const;
+
+        /**
          * @brief 计算头部块（状态行 + 头部 + 空白行）的预留长度，不含正文
          * @return std::size_t 预留字节数
          */
@@ -266,5 +292,8 @@ namespace AsynGyanis::Net
         std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用
         std::string m_body;                                    ///< 响应正文（堆存储），与 m_mappedBody 互斥
         Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效
+        std::size_t m_mappedBodyOffset{0};                     ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
+        std::size_t m_mappedBodyLength{0};                     ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
+        mutable std::string m_autoDateValue;                   ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
 } // namespace AsynGyanis::Net

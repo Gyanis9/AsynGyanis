@@ -2,6 +2,8 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParseErrorKind.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpDate.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpDate.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpMethod.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerLimits.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParser.h

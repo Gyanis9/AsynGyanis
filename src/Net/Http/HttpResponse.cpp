@@ -1,9 +1,12 @@
 #include "Net/Http/HttpResponse.h"
 
+#include "Net/Http/HttpDate.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -41,17 +44,20 @@ namespace AsynGyanis::Net
 
         constexpr std::size_t kHeaderBlockTerminatorReserveLength = kCrLfLength;///< 头部块收尾的空白行
 
-        // 自动补出的两条头部：与下面的名字常量同处定义，改名字时不会漏改预留量
+        // 自动补出的头部：与下面的名字常量同处定义，改名字时不会漏改预留量
         constexpr std::string_view kContentTypeHeaderName = "content-type";     ///< 媒体类型头部名（小写形态）
         constexpr std::string_view kContentLengthHeaderName = "content-length"; ///< 正文长度头部名（小写形态）
+        constexpr std::string_view kDateHeaderName = "date";                    ///< 日期头部名（小写形态）
         constexpr std::string_view kAutoContentTypeHeader = "content-type: text/plain\r\n";      ///< 未设媒体类型且有正文时补出的整条头部
         constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";          ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
+        constexpr std::string_view kAutoDateHeaderPrefix = "date: ";                             ///< 未设日期时补出的头部名前缀（含冒号与空格）
 
         constexpr std::size_t kMaximumUnsignedDecimalTextLength = std::numeric_limits<std::uint64_t>::max_digits10; ///< 64 位无符号十进制最长 20 位；有符号 int 在 appendDecimal 里按 max_digits10 + 2（含负号位）同理推导
 
         constexpr std::size_t kAutoContentTypeReserveLength = kAutoContentTypeHeader.size();     ///< "content-type: text/plain\r\n" 的实际字节数 = 26
         constexpr std::size_t kAutoContentLengthReserveLength =
                 kAutoContentLengthHeaderPrefix.size() + kMaximumUnsignedDecimalTextLength + kCrLfLength; ///< 前缀 16 + 最多 20 位数字 + CRLF 2 = 38
+        constexpr std::size_t kAutoDateReserveLength = kAutoDateHeaderPrefix.size() + kHttpDateTextLength + kCrLfLength; ///< 前缀 6 + 定长 29 + CRLF 2 = 37
 
         // 允许在同一报文里出现多条、且不得合并的头部名单（已归一化为小写）。
         // 与请求侧保持同一份判定口径：RFC 6265 规定多条 Set-Cookie 各表达一个独立 cookie
@@ -253,6 +259,8 @@ namespace AsynGyanis::Net
     {
         // 两条正文存储互斥：换成堆正文之前先解除映射，否则 bodyView() 会继续读旧映射
         m_mappedBody = Platform::MemoryMappedFile{};
+        m_mappedBodyOffset = 0;
+        m_mappedBodyLength = 0;
 
         // string_view 不保证零终止也不拥有内存，落到成员前必须实体化一份
         m_body = std::string(body);
@@ -260,9 +268,30 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile)
     {
+        // 整份文件等价于 [0, 映射字节数) 这个区间。长度必须先在移动之前取好：
+        // 形参求值顺序未指定，边移动边取长度会读到已搬空的映射
+        const std::size_t mappedLength = mappedFile.bytes().size();
+        setMappedBody(std::move(mappedFile), 0, mappedLength);
+    }
+
+    void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile, const std::size_t offset, const std::size_t length)
+    {
+        const std::size_t availableLength = mappedFile.isValid() ? mappedFile.bytes().size() : 0;
+
+        // 越界属于调用方的用法错误（重试无用），归入 logic_error 分支；静默钳制会让
+        // content-length 与实际字节数悄悄不一致，那正是收端报文边界错位的源头
+        if (offset > availableLength || length > availableLength - offset)
+        {
+            throw Base::InvalidArgumentException("HttpResponse::setMappedBody：映射正文区间越界，offset=" + std::to_string(offset) +
+                                                 "，length=" + std::to_string(length) + "，映射字节数=" + std::to_string(availableLength) +
+                                                 "；请先按 MemoryMappedFile::bytes().size() 校验区间，或改用整份映射的重载");
+        }
+
         // 反向的互斥：映射正文接管后堆正文必须清空，避免 content-length 按残留字节数算错
         m_body.clear();
         m_mappedBody = std::move(mappedFile);
+        m_mappedBodyOffset = offset;
+        m_mappedBodyLength = length;
     }
 
     std::string_view HttpResponse::bodyView() const noexcept
@@ -270,15 +299,26 @@ namespace AsynGyanis::Net
         if (m_mappedBody.isValid())
         {
             const std::span<const std::byte> mappedBytes = m_mappedBody.bytes();
-            if (mappedBytes.empty())
+            if (mappedBytes.empty() || m_mappedBodyLength == 0)
             {
-                // 空文件映射不出可解引用的地址（data() 可能为空），
-                // 用空视图表示「正文 0 字节」，不构造 string_view(nullptr, 0)
+                // 空文件映射不出可解引用的地址（data() 可能为空），长度为 0 的区间同理，
+                // 两者都用空视图表示「正文 0 字节」，不构造 string_view(nullptr, 0)
                 return {};
             }
-            return std::string_view(reinterpret_cast<const char *>(mappedBytes.data()), mappedBytes.size());
+            // 区间合法性已由 setMappedBody 拦住，这里直接按 offset/length 取子视图
+            return std::string_view(reinterpret_cast<const char *>(mappedBytes.data() + m_mappedBodyOffset), m_mappedBodyLength);
         }
         return m_body;
+    }
+
+    std::string_view HttpResponse::autoDateText() const
+    {
+        // 只生成一次：同一响应多次序列化（serializeHead + toString）必须给出逐字一致的 date
+        if (m_autoDateValue.empty())
+        {
+            m_autoDateValue = formatHttpDate(std::chrono::system_clock::now());
+        }
+        return m_autoDateValue;
     }
 
     std::string_view HttpResponse::body() const
@@ -390,6 +430,7 @@ namespace AsynGyanis::Net
         std::size_t reservedLength = kStatusLineReserveLength + kHeaderBlockTerminatorReserveLength;
         bool        hasContentTypeHeader = false;
         bool        hasContentLengthHeader = false;
+        bool        hasDateHeader = false;
         for (const HeaderField &field : m_headerFields)
         {
             reservedLength += field.name.size() + field.value.size() + kHeaderLineReserveLength;
@@ -401,6 +442,9 @@ namespace AsynGyanis::Net
             } else if (field.name == kContentLengthHeaderName)
             {
                 hasContentLengthHeader = true;
+            } else if (field.name == kDateHeaderName)
+            {
+                hasDateHeader = true;
             }
         }
         if (!hasContentTypeHeader && !bodyView().empty())
@@ -410,6 +454,10 @@ namespace AsynGyanis::Net
         if (!hasContentLengthHeader && !mustNotDeclareContentLength())
         {
             reservedLength += kAutoContentLengthReserveLength;
+        }
+        if (!hasDateHeader)
+        {
+            reservedLength += kAutoDateReserveLength;
         }
         return reservedLength;
     }
@@ -428,6 +476,7 @@ namespace AsynGyanis::Net
         // 顺带解决了两件事：跨次运行顺序稳定；多条 Set-Cookie 各占一行且先设先发
         bool hasContentTypeHeader  = false;
         bool hasContentLengthHeader = false;
+        bool hasDateHeader = false;
         for (const HeaderField &field : m_headerFields)
         {
             if (field.name == kContentTypeHeaderName)
@@ -436,6 +485,9 @@ namespace AsynGyanis::Net
             } else if (field.name == kContentLengthHeaderName)
             {
                 hasContentLengthHeader = true;
+            } else if (field.name == kDateHeaderName)
+            {
+                hasDateHeader = true;
             }
 
             result.append(field.name);
@@ -444,7 +496,7 @@ namespace AsynGyanis::Net
             result.append(kCrLf);
         }
 
-        // ---- 补缺。调用方没写的两条由这里兜底，排在自设头部之后 ----
+        // ---- 补缺。调用方没写的几条由这里兜底，排在自设头部之后 ----
         const std::string_view responseBody = bodyView();
         if (!hasContentTypeHeader && !responseBody.empty())
         {
@@ -456,6 +508,13 @@ namespace AsynGyanis::Net
             // content-length 必须是正文的真实字节数，收端据此判定报文边界，错一个字节整条连接就错位
             result.append(kAutoContentLengthHeaderPrefix);
             appendDecimal(result, responseBody.size());
+            result.append(kCrLf);
+        }
+        if (!hasDateHeader)
+        {
+            // Date 是 RFC 9110 §6.6.1 要求源服务器在几乎所有响应上都给出的头部
+            result.append(kAutoDateHeaderPrefix);
+            result.append(autoDateText());
             result.append(kCrLf);
         }
 
@@ -525,6 +584,11 @@ namespace AsynGyanis::Net
         // 否则复用响应对象时上一轮的文件会继续当正文发出去
         m_body.clear();
         m_mappedBody = Platform::MemoryMappedFile{};
+        m_mappedBodyOffset = 0;
+        m_mappedBodyLength = 0;
+
+        // 自动 date 同样要清：否则复用响应时下一条报文会带上上一轮生成的日期
+        m_autoDateValue.clear();
     }
 
 } // namespace AsynGyanis::Net

@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 # 测试目录结构与 src/Net 逐级对应，全部链接进同一个 TestNet 可执行文件
 add_executable(TestNet
         Http/TestHttpParser.cpp
+        Http/TestHttpDate.cpp
         Http/TestHttpRequest.cpp
         Http/TestHttpResponse.cpp
         Http/TestHttpSession.cpp

@@ -1,8 +1,9 @@
 /**
  * @file TestHttpServer.cpp
- * @brief HttpServer 单元测试：静态目录配置的幂等语义、请求路径清洗的越权拦截与 HEAD 收尾
+ * @brief HttpServer 单元测试：静态目录配置的幂等语义、请求路径清洗的越权拦截、HEAD 收尾，
+ *        以及静态文件的条件请求（ETag / Last-Modified / 304）与单区间 Range（206/416）
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -33,6 +34,7 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -185,6 +187,27 @@ namespace AsynGyanis::Net
         HttpResponse serveRequest(HttpServer &server, const HttpMethod method, std::string uri)
         {
             HttpRequest request = makeRequest(method, std::move(uri));
+            HttpResponse response;
+            routeRequestSync(server.router(), request, response);
+            return response;
+        }
+
+        /**
+         * @brief 把带附加头部的请求打到服务器上跑一遍，返回已填充的响应
+         * @param server 被测服务器（用其 router()）
+         * @param method 请求方法
+         * @param uri 原始 URI
+         * @param headers 附加头部（名, 值）序列，用于构造条件请求与 Range 请求
+         * @return HttpResponse 路由写完的响应
+         */
+        HttpResponse serveRequestWithHeaders(HttpServer &server, const HttpMethod method, std::string uri,
+                                             const std::vector<std::pair<std::string, std::string>> &headers)
+        {
+            HttpRequest request = makeRequest(method, std::move(uri));
+            for (const auto &[headerName, headerText]: headers)
+            {
+                request.addHeader(headerName, headerText);
+            }
             HttpResponse response;
             routeRequestSync(server.router(), request, response);
             return response;
@@ -524,5 +547,332 @@ namespace AsynGyanis::Net
 
         const HttpResponse response = serveRequest(server, HttpMethod::GET, "/hello.txt");
         EXPECT_EQ(response.status(), 404);
+    }
+
+    // ============================================================================
+    // 静态文件的缓存语义：验证器、条件请求与 Range
+    // ============================================================================
+
+    /**
+     * @brief 200 响应必须带强 ETag、Last-Modified 与 accept-ranges
+     */
+    TEST(HttpServer, AdvertisesValidatorsAndRangeSupportOnStaticFile)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheValidators");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        ASSERT_EQ(response.status(), 200);
+        EXPECT_EQ(response.body(), kHelloFileContent);
+
+        // 强 ETag 带双引号，形如 "<size 十六进制>-<mtime 秒 十六进制>"
+        const std::string etag = headerValueOf(response, "etag");
+        ASSERT_GE(etag.size(), 5U);
+        EXPECT_EQ(etag.front(), '"');
+        EXPECT_EQ(etag.back(), '"');
+        EXPECT_NE(etag.find('-'), std::string::npos);
+        EXPECT_EQ(etag.find("W/"), std::string::npos) << "静态文件下发的是强 ETag";
+
+        // Last-Modified 必须是 IMF-fixdate 并以 GMT 收尾
+        const std::string lastModified = headerValueOf(response, "last-modified");
+        EXPECT_TRUE(lastModified.ends_with(" GMT")) << "last-modified：「" << lastModified << "」";
+        // 声明支持字节区间，客户端才敢发 Range
+        EXPECT_EQ(headerValueOf(response, "accept-ranges"), "bytes");
+        // 未配置时不发 Cache-Control
+        EXPECT_FALSE(response.getHeader("cache-control").has_value());
+    }
+
+    /**
+     * @brief If-None-Match 命中当前 ETag → 304、无正文，且不夹带表示本身的头部
+     */
+    TEST(HttpServer, AnswersNotModifiedWhenIfNoneMatchHitsEtag)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheEtag");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string etag = headerValueOf(baseline, "etag");
+        ASSERT_FALSE(etag.empty());
+
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-none-match", etag}});
+
+        EXPECT_EQ(response.status(), 304);
+        EXPECT_TRUE(response.body().empty()) << "304 不得携带正文";
+        EXPECT_EQ(headerValueOf(response, "etag"), etag);
+        EXPECT_FALSE(headerValueOf(response, "last-modified").empty());
+        // 304 只带验证器：不再下发表示本身的头部
+        EXPECT_FALSE(response.getHeader("content-type").has_value());
+        EXPECT_FALSE(response.getHeader("accept-ranges").has_value());
+    }
+
+    /**
+     * @brief If-None-Match 的值 "*" 对任何已有表示都应命中 → 304
+     */
+    TEST(HttpServer, AnswersNotModifiedForWildcardIfNoneMatch)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheWildcard");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-none-match", "*"}});
+
+        EXPECT_EQ(response.status(), 304);
+        EXPECT_TRUE(response.body().empty());
+    }
+
+    /**
+     * @brief If-Modified-Since 不早于 Last-Modified（整秒相等）→ 304
+     */
+    TEST(HttpServer, AnswersNotModifiedWhenIfModifiedSinceHitsLastModified)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheModifiedSince");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string lastModified = headerValueOf(baseline, "last-modified");
+        ASSERT_FALSE(lastModified.empty());
+
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-modified-since", lastModified}});
+
+        EXPECT_EQ(response.status(), 304);
+        EXPECT_TRUE(response.body().empty());
+    }
+
+    /**
+     * @brief If-Modified-Since 早于 Last-Modified（纪元零点）→ 200 全量
+     */
+    TEST(HttpServer, ServesFullBodyWhenIfModifiedSinceIsStale)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheStaleSince");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response =
+                serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-modified-since", "Thu, 01 Jan 1970 00:00:00 GMT"}});
+
+        EXPECT_EQ(response.status(), 200);
+        EXPECT_EQ(response.body(), kHelloFileContent);
+    }
+
+    /**
+     * @brief If-None-Match 在场且未命中时，按 RFC 9110 §13.1.3 忽略 If-Modified-Since
+     */
+    TEST(HttpServer, IfNoneMatchPresentSuppressesIfModifiedSince)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCachePrecedence");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string lastModified = headerValueOf(baseline, "last-modified");
+        ASSERT_FALSE(lastModified.empty());
+
+        const HttpResponse response = serveRequestWithHeaders(
+                server, HttpMethod::GET, "/hello.txt",
+                {{"if-none-match", "\"definitely-not-the-etag\""}, {"if-modified-since", lastModified}});
+
+        EXPECT_EQ(response.status(), 200) << "If-None-Match 在场时不该再看 If-Modified-Since";
+        EXPECT_EQ(response.body(), kHelloFileContent);
+    }
+
+    /**
+     * @brief bytes=start-end、bytes=start-、bytes=-suffix 三种形态都按 206 + 正确区间正文下发
+     */
+    TEST(HttpServer, ServesSingleByteRangeInThreeForms)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeForms");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const std::string content(kHelloFileContent);
+        const std::string totalText = std::to_string(content.size());
+
+        const HttpResponse closedRange = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4"}});
+        ASSERT_EQ(closedRange.status(), 206);
+        EXPECT_EQ(closedRange.body(), content.substr(0, 5)) << "区间正文必须逐字节等于切片";
+        EXPECT_EQ(headerValueOf(closedRange, "content-range"), "bytes 0-4/" + totalText);
+        EXPECT_EQ(headerValueOf(closedRange, "accept-ranges"), "bytes");
+
+        const HttpResponse openEnded = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=5-"}});
+        ASSERT_EQ(openEnded.status(), 206);
+        EXPECT_EQ(openEnded.body(), content.substr(5));
+        EXPECT_EQ(headerValueOf(openEnded, "content-range"), "bytes 5-21/" + totalText);
+
+        const HttpResponse suffix = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=-4"}});
+        ASSERT_EQ(suffix.status(), 206);
+        EXPECT_EQ(suffix.body(), content.substr(content.size() - 4));
+        EXPECT_EQ(headerValueOf(suffix, "content-range"), "bytes 18-21/" + totalText);
+    }
+
+    /**
+     * @brief end 超过末尾时截到 size-1，而不是判 416
+     */
+    TEST(HttpServer, ClampsRangeEndToRepresentationEnd)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeClamp");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const std::string content(kHelloFileContent);
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-9999"}});
+
+        ASSERT_EQ(response.status(), 206);
+        EXPECT_EQ(response.body(), content);
+        EXPECT_EQ(headerValueOf(response, "content-range"), "bytes 0-21/" + std::to_string(content.size()));
+    }
+
+    /**
+     * @brief 起点越界或后缀为 0 → 416，content-range 用星号占位总长度
+     */
+    TEST(HttpServer, AnswersRangeNotSatisfiableForOutOfBoundsRange)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeUnsatisfiable");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse beyondEnd = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=22-"}});
+        EXPECT_EQ(beyondEnd.status(), 416);
+        EXPECT_EQ(headerValueOf(beyondEnd, "content-range"), "bytes */22");
+        EXPECT_NE(beyondEnd.body(), kHelloFileContent) << "416 不得回完整表示";
+
+        const HttpResponse zeroSuffix = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=-0"}});
+        EXPECT_EQ(zeroSuffix.status(), 416);
+        EXPECT_EQ(headerValueOf(zeroSuffix, "content-range"), "bytes */22");
+    }
+
+    /**
+     * @brief 一条 Range 里出现多个区间时整条忽略：回 200 全量，不发 content-range
+     */
+    TEST(HttpServer, IgnoresMultipleRangesAndServesFullBody)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeMultiple");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4,6-9"}});
+
+        EXPECT_EQ(response.status(), 200);
+        EXPECT_EQ(response.body(), kHelloFileContent);
+        EXPECT_FALSE(response.getHeader("content-range").has_value());
+    }
+
+    /**
+     * @brief If-Range 与本资源验证器不一致时忽略 Range（回 200 全量），一致时才按 206 下发
+     */
+    TEST(HttpServer, AppliesRangeOnlyWhenIfRangeMatches)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeIfRange");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string etag = headerValueOf(baseline, "etag");
+        ASSERT_FALSE(etag.empty());
+
+        const HttpResponse mismatched = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
+                                                                {{"range", "bytes=0-4"}, {"if-range", "\"stale-etag\""}});
+        EXPECT_EQ(mismatched.status(), 200);
+        EXPECT_EQ(mismatched.body(), kHelloFileContent);
+        EXPECT_FALSE(mismatched.getHeader("content-range").has_value());
+
+        const HttpResponse matched = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
+                                                             {{"range", "bytes=0-4"}, {"if-range", etag}});
+        ASSERT_EQ(matched.status(), 206);
+        EXPECT_EQ(matched.body(), "hello");
+    }
+
+    /**
+     * @brief HEAD + Range：只报 206 的头部，content-length 为区间长度且无正文
+     */
+    TEST(HttpServer, AnswersHeadWithRangeHeadersAndWithoutBody)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeHead");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::HEAD, "/hello.txt", {{"range", "bytes=0-4"}});
+
+        ASSERT_EQ(response.status(), 206);
+        EXPECT_TRUE(response.body().empty());
+        EXPECT_EQ(headerValueOf(response, "content-length"), "5");
+        EXPECT_EQ(headerValueOf(response, "content-range"), "bytes 0-4/22");
+    }
+
+    /**
+     * @brief 配置的 Cache-Control 真的写进 200/206/304 响应；显式关闭后不再下发
+     */
+    TEST(HttpServer, EmitsConfiguredCacheControlOnStaticResponses)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheControl");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+        server.setStaticFileCacheControl(std::string("public, max-age=3600"));
+        ASSERT_TRUE(server.staticFileCacheControl().has_value());
+
+        const HttpResponse full = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        ASSERT_EQ(full.status(), 200);
+        EXPECT_EQ(headerValueOf(full, "cache-control"), "public, max-age=3600");
+
+        const HttpResponse ranged = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4"}});
+        ASSERT_EQ(ranged.status(), 206);
+        EXPECT_EQ(headerValueOf(ranged, "cache-control"), "public, max-age=3600");
+
+        const std::string etag = headerValueOf(full, "etag");
+        const HttpResponse notModified = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-none-match", etag}});
+        ASSERT_EQ(notModified.status(), 304);
+        EXPECT_EQ(headerValueOf(notModified, "cache-control"), "public, max-age=3600");
+
+        // 含 CR/LF 的值会被拒（响应拆分），此时等同「不发这条头」
+        server.setStaticFileCacheControl(std::string("public\r\nx-injected: 1"));
+        EXPECT_FALSE(server.staticFileCacheControl().has_value());
+        EXPECT_FALSE(serveRequest(server, HttpMethod::GET, "/hello.txt").getHeader("cache-control").has_value());
+
+        // 显式清空后也不再下发
+        server.setStaticFileCacheControl(std::string("no-store"));
+        server.setStaticFileCacheControl(std::nullopt);
+        EXPECT_FALSE(server.staticFileCacheControl().has_value());
+        EXPECT_FALSE(serveRequest(server, HttpMethod::GET, "/hello.txt").getHeader("cache-control").has_value());
     }
 } // namespace AsynGyanis::Net
