@@ -249,7 +249,7 @@ if (document.type() == AsynGyanis::Base::FormatValueType::Object)
 }
 ```
 
-解析失败抛 `FormatError`（带 `kind()` 分类与 `position()` 行列）；YAML 侧对应 `YamlParser::parse` / `parseAll` 与 `YamlWriter::write`；另有 JSON Pointer / Patch / Merge Patch 与流式读写，见 [`docs/Base/Format/`](docs/Base/Format/)。
+解析失败抛 `FormatError`（带 `kind()` 分类与 `position()` 行列）；YAML 侧对应 `YamlParser::parse` / `parseAll` 与 `YamlWriter::write`；另有 JSON Pointer / Patch / Merge Patch 与流式读写，接口与契约都写在 `src/Base/Format/` 各头文件的 Doxygen 里。
 
 ### 配置与日志
 
@@ -325,7 +325,6 @@ AsynGyanis/
 ├── conandata.yml           # 第三方依赖与版本
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
 ├── samples/                # echo_server（随构建编译，示例即被验证）
-├── docs/                   # API 文档（一个叶子源码目录一份，路径镜像 src）
 ├── asserts/                # 架构图（绘于重构前，待重绘）
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）
