@@ -128,13 +128,20 @@ namespace AsynGyanis::Net
             {
             }
 
-            ~EventLoopThread()
+            /// 停止循环并等待承载线程退出
+            /// @note 析构会自动调用；需要在销毁服务器之前先让循环停手时显式调用它
+            void join()
             {
                 m_loop.stop();
                 if (m_worker.joinable())
                 {
                     m_worker.join();
                 }
+            }
+
+            ~EventLoopThread()
+            {
+                join();
             }
 
             EventLoopThread(const EventLoopThread &) = delete;
@@ -320,8 +327,11 @@ namespace AsynGyanis::Net
 
             ~RunningServerFixture()
             {
-                // 先把「停止接受」的请求发出去，循环线程还活着，能正常走完收尾路径
-                m_server.stop();
+                // 顺序要紧：先让循环线程停手并退出，再收尾服务器。挂起的等待器（accept 的
+                // 事件注册、清扫协程的定时器登记）都活在循环内部的结构里，而收尾会销毁这些
+                // 协程帧；在循环仍在跑的时候从本线程销毁它们，等于跨线程改动那些无锁结构
+                m_loopThread.join();
+                m_server.close();
             }
 
             RunningServerFixture(const RunningServerFixture &) = delete;
