@@ -121,7 +121,7 @@ namespace AsynGyanis::Database
          * @param index 参数序号，从 0 开始
          * @return std::string 恒为 "?"
          */
-        [[nodiscard]] std::string placeholder(std::size_t index) const override;
+        [[nodiscard]] std::string placeholder() const override;
 
         /**
          * @brief 获取 SQLite 的开启事务语句

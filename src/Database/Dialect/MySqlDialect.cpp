@@ -20,12 +20,10 @@ namespace AsynGyanis::Database
         return DatabaseType::MySql;
     }
 
-    std::string MySqlDialect::placeholder(const std::size_t index) const
+    std::string MySqlDialect::placeholder() const
     {
-        // MySQL 的位置参数不区分类型、不区分序号，一律写作 '?'（文本协议与 mysql_stmt_* 都是如此）：
-        // 序号参数在这里被忽略，它由基类（appendParameter / appendValueRow）用来确定参数在数组中的位置。
-        // 保留 index 形参是为了让将来需要显式序号风格的方言能在不改动调用方代码的前提下用上它
-        static_cast<void>(index);
+        // MySQL 的位置参数不区分类型、不区分序号，一律写作 '?'（文本协议与 mysql_stmt_* 都是如此）；
+        // 参数与占位符的对应关系由「按出现顺序压入」保证，因此这里不需要知道序号
         return "?";
     }
 
@@ -94,7 +92,7 @@ namespace AsynGyanis::Database
         // DATABASE() 取当前会话的默认库，正是本条连接操作的那个库
         statement.sql = "SELECT COUNT(*) FROM information_schema.tables "
                         "WHERE table_schema = DATABASE() AND table_name = ";
-        statement.sql += placeholder(statement.parameters.size());
+        statement.sql += placeholder();
         statement.parameters.emplace_back(std::string(tableName));
 
         return statement;

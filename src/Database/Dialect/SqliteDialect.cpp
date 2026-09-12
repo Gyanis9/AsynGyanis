@@ -20,12 +20,10 @@ namespace AsynGyanis::Database
         return DatabaseType::Sqlite;
     }
 
-    std::string SqliteDialect::placeholder(const std::size_t index) const
+    std::string SqliteDialect::placeholder() const
     {
-        // SQLite 的位置参数不区分类型、不区分序号，一律写作 '?'：
-        // 序号参数在这里被忽略，它由基类（appendParameter / appendValueRow）用来确定参数在数组中的位置。
-        // 保留 index 形参是为了让将来需要显式序号风格的方言能在不改动调用方代码的前提下用上它
-        static_cast<void>(index);
+        // SQLite 的位置参数不区分类型、不区分序号，一律写作 '?'；
+        // 参数与占位符的对应关系由「按出现顺序压入」保证，因此这里不需要知道序号
         return "?";
     }
 
@@ -105,7 +103,7 @@ namespace AsynGyanis::Database
         // sqlite_master 是当前库文件的只读元数据表：type='table' 过滤掉索引/视图/触发器，
         // 再按 name 精确匹配。表名走占位符，含引号或分号的表名也只是普通文本
         statement.sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ";
-        statement.sql += placeholder(statement.parameters.size());
+        statement.sql += placeholder();
         statement.parameters.emplace_back(std::string(tableName));
 
         return statement;

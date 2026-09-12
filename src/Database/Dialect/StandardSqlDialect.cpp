@@ -254,9 +254,8 @@ namespace AsynGyanis::Database
             {
                 sqlText += ", ";
             }
-            // 先取占位符序号再压参数：序号就是「当前已收集的参数个数」，
-            // 顺序颠倒会让 $1 风格方言上的序号整体偏移（见 appendParameter 的同类说明）
-            sqlText += placeholder(parameters.size());
+            // 占位符与参数按同一顺序成对产出，两处顺序必须一致（见 appendParameter 的说明）
+            sqlText += placeholder();
             parameters.push_back(rowValues[index]);
         }
         sqlText += ')';
@@ -290,7 +289,7 @@ namespace AsynGyanis::Database
         {
             sqlText += " LIMIT ";
             // 先取序号再压参数，保证 parameters[i] 与第 i 个占位符严格对应
-            sqlText += placeholder(parameters.size());
+            sqlText += placeholder();
             parameters.push_back(pageNumberToDatabaseValue(query.limit.value()));
         }
 
@@ -299,7 +298,7 @@ namespace AsynGyanis::Database
             // OFFSET 单独出现是本实现的合法输入；引擎不允许这种写法的方言
             // （MySQL / SQLite）自行覆写本方法补出 LIMIT
             sqlText += " OFFSET ";
-            sqlText += placeholder(parameters.size());
+            sqlText += placeholder();
             parameters.push_back(pageNumberToDatabaseValue(query.offset.value()));
         }
     }
@@ -458,7 +457,7 @@ namespace AsynGyanis::Database
             }
             sqlText += renderFieldReference(query.selectColumns[index]);
             sqlText += " = ";
-            sqlText += placeholder(parameters.size());
+            sqlText += placeholder();
             // 赋值取值由 ORM 以 DatabaseValue 形式给出，已经是驱动可直接绑定的形态，无需再转换
             parameters.push_back(values[index]);
         }
@@ -670,9 +669,8 @@ namespace AsynGyanis::Database
                                              std::vector<DatabaseValue> &parameters,
                                              const Queryable::ParameterValue &parameter) const
     {
-        // 占位符的序号就是「当前已收集的参数个数」，所以必须先取序号再压参数：
-        // 顺序颠倒会让序号比实际位置大 1，$1 风格方言上就会错位
-        sqlText += placeholder(parameters.size());
+        // 先写占位符再压参数：两处顺序一致，SQL 文本里的第 i 个占位符就对应 parameters[i]
+        sqlText += placeholder();
         parameters.push_back(convertParameter(parameter));
     }
 

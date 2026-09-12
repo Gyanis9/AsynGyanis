@@ -186,15 +186,15 @@ TEST(MySqlDialectIdentifier, QuoteIdentifierDoublesEmbeddedBacktick)
 }
 
 /**
- * @brief 验证占位符文本恒为 '?'，与序号无关
+ * @brief 验证占位符文本恒为 '?'（接口不含序号信息）
  */
 TEST(MySqlDialectIdentifier, PlaceholderIsAlwaysQuestionMark)
 {
     const MySqlDialect dialect;
 
-    EXPECT_EQ(dialect.placeholder(0), "?");
-    EXPECT_EQ(dialect.placeholder(1), "?");
-    EXPECT_EQ(dialect.placeholder(65534), "?");
+    // 同一方言无论调用几次都返回同一个文本：参数与占位符的对应靠压入顺序，不靠序号
+    EXPECT_EQ(dialect.placeholder(), "?");
+    EXPECT_EQ(dialect.placeholder(), "?");
 }
 
 /**

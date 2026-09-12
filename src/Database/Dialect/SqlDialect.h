@@ -220,16 +220,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string quoteIdentifier(std::string_view identifier) const = 0;
 
         /**
-         * @brief 生成第 index 个参数占位符
+         * @brief 生成一个参数占位符
          *
-         * @details SQLite 与 MySQL 的位置参数都写作 "?"：序号被忽略，仅用于确定参数在数组
-         *          中的位置。保留 index 形参是为了让将来需要显式序号风格的方言（如 Oracle 的 ":1"）
-         *          能在不改动调用方代码的前提下用上它。
+         * @details 现有两个方言（SQLite / MySQL）的位置参数都写作 "?"，不含序号信息；
+         *          参数与占位符的对应关系由「按出现顺序依次压入 parameters」保证（见本文件
+         *          的参数顺序契约），因此本接口不需要知道自己是第几个参数。
+         *          将来若接入需要显式序号风格的引擎（如 Oracle 的 ":1"），
+         *          届时再连同调用点一起改签名——不留现在用不上的形参。
          *
-         * @param index 参数序号，从 0 开始，按占位符出现顺序递增
-         * @return std::string 该位置的占位符文本
+         * @return std::string 占位符文本，当前恒为 "?"
          */
-        [[nodiscard]] virtual std::string placeholder(std::size_t index) const = 0;
+        [[nodiscard]] virtual std::string placeholder() const = 0;
 
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法
