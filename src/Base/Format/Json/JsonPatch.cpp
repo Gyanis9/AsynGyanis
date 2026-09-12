@@ -5,8 +5,6 @@
 #include "Base/Format/Value/FormatValueType.h"
 
 #include <charconv>
-#include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -39,8 +37,8 @@ namespace AsynGyanis::Base
         {
             if (const std::optional<std::int64_t> signedInteger = value.get<std::int64_t>())
             {
-                const bool isNegative = *signedInteger < 0;
-                const std::uint64_t magnitude = isNegative
+                const bool          isNegative = *signedInteger < 0;
+                const std::uint64_t magnitude  = isNegative
                                                     ? ~static_cast<std::uint64_t>(*signedInteger) + 1ULL
                                                     : static_cast<std::uint64_t>(*signedInteger);
                 return IntegralMagnitude{.isNegative = isNegative, .magnitude = magnitude};
@@ -125,8 +123,7 @@ namespace AsynGyanis::Base
         {
             const std::vector<std::string> &tokens = pointer.tokens();
             std::vector<std::string>        parentTokens(tokens.begin(), tokens.end() - 1);
-            return PatchLocation{.parent    = JsonPointer(std::move(parentTokens)),
-                                 .lastToken = tokens.back()};
+            return PatchLocation{.parent = JsonPointer(std::move(parentTokens)), .lastToken = tokens.back()};
         }
 
         /**
@@ -142,17 +139,13 @@ namespace AsynGyanis::Base
             const FormatValue *member = operation.find(memberName);
             if (member == nullptr)
             {
-                throw FormatError(FormatErrorKind::InvalidPatchOperation,
-                                  std::format("补丁第 {} 项缺少 '{}' 字段", operationIndex, memberName),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::InvalidPatchOperation, std::format("补丁第 {} 项缺少 '{}' 字段", operationIndex, memberName), TextPosition{});
             }
 
             const std::string *text = member->getStringView();
             if (text == nullptr)
             {
-                throw FormatError(FormatErrorKind::InvalidPatchOperation,
-                                  std::format("补丁第 {} 项的 '{}' 字段必须是字符串", operationIndex, memberName),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::InvalidPatchOperation, std::format("补丁第 {} 项的 '{}' 字段必须是字符串", operationIndex, memberName), TextPosition{});
             }
             return *text;
         }
@@ -169,9 +162,7 @@ namespace AsynGyanis::Base
             const FormatValue *value = operation.find("value");
             if (value == nullptr)
             {
-                throw FormatError(FormatErrorKind::InvalidPatchOperation,
-                                  std::format("补丁第 {} 项缺少 'value' 字段", operationIndex),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::InvalidPatchOperation, std::format("补丁第 {} 项缺少 'value' 字段", operationIndex), TextPosition{});
             }
             return *value;
         }
@@ -189,15 +180,11 @@ namespace AsynGyanis::Base
             FormatValue *parent = location.parent.evaluateForWrite(document);
             if (parent == nullptr)
             {
-                throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                  std::format("{} 操作的父级路径不存在：{}", operationName, location.parent.toString()),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("{} 操作的父级路径不存在：{}", operationName, location.parent.toString()), TextPosition{});
             }
             if (!parent->isObject() && !parent->isArray())
             {
-                throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                  std::format("{} 操作的父级必须是对象或数组：{}", operationName, location.parent.toString()),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("{} 操作的父级必须是对象或数组：{}", operationName, location.parent.toString()), TextPosition{});
             }
             return *parent;
         }
@@ -216,15 +203,13 @@ namespace AsynGyanis::Base
             const std::string &token       = location.lastToken;
             const bool         leadingZero = token.size() > 1 && token.front() == '0';
 
-            std::size_t index = 0;
-            const auto [pointer, errorCode] = std::from_chars(token.data(), token.data() + token.size(), index);
+            std::size_t index                = 0;
+            const auto  [pointer, errorCode] = std::from_chars(token.data(), token.data() + token.size(), index);
 
             if (token.empty() || token == "-" || leadingZero ||
                 errorCode != std::errc() || pointer != token.data() + token.size())
             {
-                throw FormatError(FormatErrorKind::InvalidPatchOperation,
-                                  std::format("{} 操作的数组下标非法：{}", operationName, token),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::InvalidPatchOperation, std::format("{} 操作的数组下标非法：{}", operationName, token), TextPosition{});
             }
 
             return index;
@@ -249,7 +234,7 @@ namespace AsynGyanis::Base
             }
 
             const PatchLocation location = splitPointer(path);
-            FormatValue        &parent   = requireParentContainer(document, location, "add");
+            FormatValue &       parent   = requireParentContainer(document, location, "add");
 
             if (parent.isObject())
             {
@@ -270,9 +255,7 @@ namespace AsynGyanis::Base
             // RFC 6902 §4.1：指定的下标不得大于数组元素个数；等于 size 即追加
             if (index > elements.size())
             {
-                throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                  std::format("add 操作的数组下标 {} 超出元素个数 {}", index, elements.size()),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("add 操作的数组下标 {} 超出元素个数 {}", index, elements.size()), TextPosition{});
             }
             static_cast<void>(parent.insert(index, std::move(value)));
         }
@@ -289,21 +272,17 @@ namespace AsynGyanis::Base
             // 删除根会让文档失去根值，RFC 6902 未定义该情形；显式报错而不是静默置空
             if (path.empty())
             {
-                throw FormatError(FormatErrorKind::InvalidPatchOperation,
-                                  "remove 操作不能删除文档根（如需清空请用 replace 指定 null）",
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::InvalidPatchOperation, "remove 操作不能删除文档根（如需清空请用 replace 指定 null）", TextPosition{});
             }
 
             const PatchLocation location = splitPointer(path);
-            FormatValue        &parent   = requireParentContainer(document, location, "remove");
+            FormatValue &       parent   = requireParentContainer(document, location, "remove");
 
             if (parent.isObject())
             {
                 if (!parent.erase(location.lastToken))
                 {
-                    throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                      std::format("remove 操作的目标不存在：{}", path.toString()),
-                                      TextPosition{});
+                    throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("remove 操作的目标不存在：{}", path.toString()), TextPosition{});
                 }
                 return;
             }
@@ -312,9 +291,7 @@ namespace AsynGyanis::Base
             // RFC 6902 §4.2：目标必须存在，因此下标必须严格小于元素个数
             if (index >= parent.size())
             {
-                throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                  std::format("remove 操作的数组下标 {} 越界（元素个数 {}）", index, parent.size()),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("remove 操作的数组下标 {} 越界（元素个数 {}）", index, parent.size()), TextPosition{});
             }
             static_cast<void>(parent.erase(index));
         }
@@ -337,15 +314,13 @@ namespace AsynGyanis::Base
             }
 
             const PatchLocation location = splitPointer(path);
-            FormatValue        &parent   = requireParentContainer(document, location, "replace");
+            FormatValue &       parent   = requireParentContainer(document, location, "replace");
 
             if (parent.isObject())
             {
                 if (parent.find(location.lastToken) == nullptr)
                 {
-                    throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                      std::format("replace 操作的目标不存在：{}", path.toString()),
-                                      TextPosition{});
+                    throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("replace 操作的目标不存在：{}", path.toString()), TextPosition{});
                 }
                 parent.set(location.lastToken, std::move(value));
                 return;
@@ -354,9 +329,7 @@ namespace AsynGyanis::Base
             const std::size_t index = requireArrayIndex(location, "replace");
             if (index >= parent.size())
             {
-                throw FormatError(FormatErrorKind::PatchTargetMissing,
-                                  std::format("replace 操作的数组下标 {} 越界（元素个数 {}）", index, parent.size()),
-                                  TextPosition{});
+                throw FormatError(FormatErrorKind::PatchTargetMissing, std::format("replace 操作的数组下标 {} 越界（元素个数 {}）", index, parent.size()), TextPosition{});
             }
             parent[index] = std::move(value);
         }
@@ -478,8 +451,8 @@ namespace AsynGyanis::Base
 
         // 原子性：全部操作落在文档副本上，只有全部成功才返回；
         // 任一步抛异常时入参 document 与 patch 都不会被改动（RFC 6902 §5）
-        FormatValue                   working    = document;
-        const FormatValueArray       &operations = patch.asArray();
+        FormatValue             working    = document;
+        const FormatValueArray &operations = patch.asArray();
         for (std::size_t index = 0; index < operations.size(); ++index)
         {
             applyOperation(working, operations[index], index);

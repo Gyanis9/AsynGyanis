@@ -42,7 +42,7 @@ namespace AsynGyanis::Base
         std::size_t maximumAliasCount{10000};                       ///< 别名引用次数上限（防别名炸弹），0 表示不限制
         std::size_t maximumScalarLength{16ULL * 1024ULL * 1024ULL}; ///< 单个标量字节数上限（16 MiB），0 表示不限制
 
-        bool allowDuplicateKeys{false};        ///< 允许同一映射内出现重复键（后者覆盖前者）；默认关闭，重复键几乎总是笔误
-        bool rejectUnknownDirectives{false};   ///< 无法识别的保留指令（非 %YAML/%TAG，§6.8）按规范忽略并告警（false）还是直接报错（true）
+        bool allowDuplicateKeys{false};      ///< 允许同一映射内出现重复键（后者覆盖前者）；默认关闭，重复键几乎总是笔误
+        bool rejectUnknownDirectives{false}; ///< 无法识别的保留指令（非 %YAML/%TAG，§6.8）按规范忽略并告警（false）还是直接报错（true）
     };
 } // namespace AsynGyanis::Base

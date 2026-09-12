@@ -7,7 +7,6 @@
 
 #include <charconv>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <functional>
@@ -403,7 +402,7 @@ namespace AsynGyanis::Base
                 return false;
             }
 
-            for (const char character : text)
+            for (const char character: text)
             {
                 if (character != kLineBreak && isControlCharacter(character))
                 {
@@ -414,9 +413,9 @@ namespace AsynGyanis::Base
             std::size_t lineStart = 0;
             while (lineStart <= text.size())
             {
-                const std::size_t lineEnd = text.find(kLineBreak, lineStart);
-                const std::size_t stop    = lineEnd == std::string_view::npos ? text.size() : lineEnd;
-                const std::string_view line = text.substr(lineStart, stop - lineStart);
+                const std::size_t      lineEnd = text.find(kLineBreak, lineStart);
+                const std::size_t      stop    = lineEnd == std::string_view::npos ? text.size() : lineEnd;
+                const std::string_view line    = text.substr(lineStart, stop - lineStart);
                 if (!line.empty() && line.find_first_not_of(" \t") == std::string_view::npos)
                 {
                     return false; // 仅空白行会被扫描器按空行丢掉
@@ -478,7 +477,7 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] bool isSingleQuotable(const std::string_view text) noexcept
         {
-            for (const char character : text)
+            for (const char character: text)
             {
                 if (isControlCharacter(character))
                 {
@@ -626,7 +625,7 @@ namespace AsynGyanis::Base
                 {
                     const FormatValueArray &elements = value.asArray();
                     seed                             = mixHash(seed, elements.size());
-                    for (const FormatValue &element : elements)
+                    for (const FormatValue &element: elements)
                     {
                         seed = mixHash(seed, hashOfValue(element));
                     }
@@ -636,7 +635,7 @@ namespace AsynGyanis::Base
                 {
                     const FormatValueObject &members = value.asObject();
                     seed                             = mixHash(seed, members.size());
-                    for (const auto &[key, member] : members)
+                    for (const auto &[key, member]: members)
                     {
                         seed = mixHash(seed, std::hash<std::string_view>{}(key));
                         seed = mixHash(seed, hashOfValue(member));
@@ -774,7 +773,7 @@ namespace AsynGyanis::Base
              */
             void appendBlockMapping(const FormatValueObject &members, const std::size_t indent, const std::size_t containerDepth)
             {
-                for (const auto &[key, member] : members)
+                for (const auto &[key, member]: members)
                 {
                     appendIndent(indent);
                     appendKey(key, false);
@@ -801,7 +800,7 @@ namespace AsynGyanis::Base
              */
             void appendBlockSequence(const FormatValueArray &elements, const std::size_t indent, const std::size_t containerDepth)
             {
-                for (const FormatValue &element : elements)
+                for (const FormatValue &element: elements)
                 {
                     appendIndent(indent);
 
@@ -951,7 +950,7 @@ namespace AsynGyanis::Base
                 const FormatValueObject &members = value.asObject();
                 appendRaw("{");
                 bool isFirstMember = true;
-                for (const auto &[key, member] : members)
+                for (const auto &[key, member]: members)
                 {
                     if (!isFirstMember)
                     {
@@ -1179,7 +1178,7 @@ namespace AsynGyanis::Base
                 const std::size_t trailingBreaks = trailingLineBreakCount(text);
                 const std::size_t contentStep    = blockScalarIndentStep();
                 const bool        useFolded      = m_options.multiLineStyle == ScalarStylePolicy::Folded &&
-                                              foldedStyleIsLossless(text);
+                                       foldedStyleIsLossless(text);
 
                 appendRaw(useFolded ? ">" : "|");
                 const char indentIndicator = kIndentIndicatorDigits[contentStep - 1];
@@ -1201,9 +1200,8 @@ namespace AsynGyanis::Base
                 std::size_t lineStart = 0;
                 while (true)
                 {
-                    const std::size_t lineEnd = body.find(kLineBreak, lineStart);
-                    const std::string_view line =
-                        body.substr(lineStart, lineEnd == std::string_view::npos ? std::string_view::npos : lineEnd - lineStart);
+                    const std::size_t      lineEnd = body.find(kLineBreak, lineStart);
+                    const std::string_view line    = body.substr(lineStart, lineEnd == std::string_view::npos ? std::string_view::npos : lineEnd - lineStart);
 
                     // 空行不写缩进：写了也只是空白行，扫描器同样按空行处理，反而留下尾随空白
                     if (!line.empty())
@@ -1270,10 +1268,10 @@ namespace AsynGyanis::Base
                 std::size_t runStart = 0;
                 for (std::size_t index = 0; index < text.size(); ++index)
                 {
-                    const char        character   = text[index];
-                    const char *const shortEscape = shortEscapeFor(character);
+                    const char        character              = text[index];
+                    const char *const shortEscape            = shortEscapeFor(character);
                     // 注释引导 `#` 必须先于「成段拷贝」被拦下，否则整行会被截断
-                    const bool needsCommentHashEscape = character == '#' && index > 0 && isSpaceOrTab(text[index - 1]);
+                    const bool        needsCommentHashEscape = character == '#' && index > 0 && isSpaceOrTab(text[index - 1]);
                     if (shortEscape == nullptr && !isControlCharacter(character) && !needsCommentHashEscape)
                     {
                         continue;
@@ -1305,7 +1303,7 @@ namespace AsynGyanis::Base
                 static constexpr char kHexadecimalDigits[] = "0123456789abcdef";
 
                 const auto byte      = static_cast<unsigned char>(character);
-                char       escape[4] = {'\\', 'x', kHexadecimalDigits[(byte >> 4) & 0x0FU], kHexadecimalDigits[byte & 0x0FU]};
+                const char escape[4] = {'\\', 'x', kHexadecimalDigits[(byte >> 4) & 0x0FU], kHexadecimalDigits[byte & 0x0FU]};
                 appendRaw(std::string_view(escape, sizeof(escape)));
             }
 
@@ -1454,7 +1452,7 @@ namespace AsynGyanis::Base
                     {
                         return false;
                     }
-                    for (const FormatValue &element : elements)
+                    for (const FormatValue &element: elements)
                     {
                         if (isContainerValue(element))
                         {
@@ -1469,7 +1467,7 @@ namespace AsynGyanis::Base
                 {
                     return false;
                 }
-                for (const auto &[key, member] : members)
+                for (const auto &[key, member]: members)
                 {
                     static_cast<void>(key);
                     if (isContainerValue(member))
@@ -1604,13 +1602,13 @@ namespace AsynGyanis::Base
                 collectContainersInEmissionOrder(root, true, candidates);
 
                 std::map<std::size_t, std::vector<const FormatValue *> > buckets;
-                for (const FormatValue *candidate : candidates)
+                for (const FormatValue *candidate: candidates)
                 {
                     buckets[hashOfValue(*candidate)].push_back(candidate);
                 }
 
                 std::size_t nextIndex = 0;
-                for (const auto &[hash, bucket] : buckets)
+                for (const auto &[hash, bucket]: buckets)
                 {
                     if (bucket.size() < 2)
                     {
@@ -1655,8 +1653,7 @@ namespace AsynGyanis::Base
              * @param isRoot 是否为文档根
              * @param candidates 输出参数，按发射顺序追加候选节点地址
              */
-            void collectContainersInEmissionOrder(const FormatValue &value, const bool isRoot,
-                                                  std::vector<const FormatValue *> &candidates)
+            void collectContainersInEmissionOrder(const FormatValue &value, const bool isRoot, std::vector<const FormatValue *> &candidates)
             {
                 if (!isContainerValue(value))
                 {
@@ -1669,13 +1666,13 @@ namespace AsynGyanis::Base
 
                 if (value.type() == FormatValueType::Array)
                 {
-                    for (const FormatValue &element : value.asArray())
+                    for (const FormatValue &element: value.asArray())
                     {
                         collectContainersInEmissionOrder(element, false, candidates);
                     }
                     return;
                 }
-                for (const auto &[key, member] : value.asObject())
+                for (const auto &[key, member]: value.asObject())
                 {
                     static_cast<void>(key);
                     collectContainersInEmissionOrder(member, false, candidates);
@@ -1714,13 +1711,13 @@ namespace AsynGyanis::Base
 
                     if (current.value->type() == FormatValueType::Array)
                     {
-                        for (const FormatValue &element : current.value->asArray())
+                        for (const FormatValue &element: current.value->asArray())
                         {
                             pending.push_back(Pending{&element, childDepth});
                         }
                         continue;
                     }
-                    for (const auto &[key, member] : current.value->asObject())
+                    for (const auto &[key, member]: current.value->asObject())
                     {
                         static_cast<void>(key);
                         pending.push_back(Pending{&member, childDepth});
@@ -1767,8 +1764,8 @@ namespace AsynGyanis::Base
                         case FormatValueType::Array:
                         {
                             const FormatValueArray &elements = current->asArray();
-                            total += 2 + elements.size() * 4;
-                            for (const FormatValue &element : elements)
+                            total                            += 2 + elements.size() * 4;
+                            for (const FormatValue &element: elements)
                             {
                                 pending.push_back(&element);
                             }
@@ -1777,8 +1774,8 @@ namespace AsynGyanis::Base
                         case FormatValueType::Object:
                         {
                             const FormatValueObject &members = current->asObject();
-                            total += 2;
-                            for (const auto &[key, member] : members)
+                            total                            += 2;
+                            for (const auto &[key, member]: members)
                             {
                                 total += key.size() + 6;
                                 pending.push_back(&member);
@@ -1793,10 +1790,10 @@ namespace AsynGyanis::Base
                 return total;
             }
 
-            const YamlWriteOptions &m_options; ///< 序列化选项（引用外部对象，生命周期由调用方保证）
-            std::string             m_output;  ///< 输出缓冲
-            std::size_t             m_lineStart{0}; ///< 当前行在输出缓冲中的起始偏移，供折行列号判断
-            std::vector<AnchorEntry> m_anchors; ///< 重复子树的锚点条目，仅 reuseAnchors 时非空
+            const YamlWriteOptions & m_options;      ///< 序列化选项（引用外部对象，生命周期由调用方保证）
+            std::string              m_output;       ///< 输出缓冲
+            std::size_t              m_lineStart{0}; ///< 当前行在输出缓冲中的起始偏移，供折行列号判断
+            std::vector<AnchorEntry> m_anchors;      ///< 重复子树的锚点条目，仅 reuseAnchors 时非空
         };
     } // namespace
 

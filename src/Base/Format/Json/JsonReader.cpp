@@ -604,7 +604,7 @@ namespace AsynGyanis::Base
 
     JsonReader::ScanResult JsonReader::scanString(const std::size_t startIndex, std::string &decodedText, std::size_t &endIndex) const
     {
-        const char           quote       = m_buffer[startIndex];
+        const char         quote       = m_buffer[startIndex];
         const TextPosition stringStart = positionAt(startIndex);
 
         std::size_t index = startIndex + 1;
@@ -672,7 +672,7 @@ namespace AsynGyanis::Base
         {
             // TextEscapes 是 JSON 与 YAML 共用原语，不认识 JSON 的错误分类；
             // 这里按原因文本补上分类后重抛（与 JsonParser 同一做法）
-            const std::string    &reason = error.reason();
+            const std::string &   reason = error.reason();
             const FormatErrorKind kind   = reason.find("代理项") != std::string::npos
                                              ? FormatErrorKind::SurrogatePairError
                                              : FormatErrorKind::InvalidEscape;
@@ -685,7 +685,7 @@ namespace AsynGyanis::Base
 
     JsonReader::ScanResult JsonReader::scanNumber(const std::size_t startIndex, std::string &rawText, std::size_t &endIndex) const
     {
-        const std::string_view text(m_buffer.data() + startIndex, m_buffer.size() - startIndex);
+        const std::string_view  text(m_buffer.data() + startIndex, m_buffer.size() - startIndex);
         const NumberScanOutcome outcome = scanNumberToken(text, m_finished, positionAt(startIndex));
         if (!outcome.isComplete)
         {
@@ -719,8 +719,8 @@ namespace AsynGyanis::Base
                 throw FormatError(FormatErrorKind::InvalidKeyword, "关键字必须是 true、false、null 之一", keywordStart);
         }
 
-        const std::size_t available  = m_buffer.size() - startIndex;
-        const std::size_t comparable = std::min(available, candidate.size());
+        const std::size_t      available  = m_buffer.size() - startIndex;
+        const std::size_t      comparable = std::min(available, candidate.size());
         const std::string_view visible(m_buffer.data() + startIndex, comparable);
         if (visible != candidate.substr(0, comparable))
         {
@@ -810,7 +810,7 @@ namespace AsynGyanis::Base
         {
             TextPosition position = bodyStartPosition;
             position.columnNumber += failureIndex - bodyStart;
-            position.offset = failureIndex;
+            position.offset       = failureIndex;
             return position;
         };
 
@@ -886,9 +886,9 @@ namespace AsynGyanis::Base
 
     std::optional<JsonEvent> JsonReader::scanValueEvent()
     {
-        const std::size_t      index          = m_cursor;
-        const char             byte           = peekByte(index);
-        const TextPosition   valuePosition  = currentPosition();
+        const std::size_t  index         = m_cursor;
+        const char         byte          = peekByte(index);
+        const TextPosition valuePosition = currentPosition();
 
         // 容器开始：单字节即可判定，不存在「需要更多输入」的分支
         if (byte == '{' || byte == '[')
@@ -948,8 +948,8 @@ namespace AsynGyanis::Base
 
     std::optional<JsonEvent> JsonReader::scanKeyEvent()
     {
-        const std::size_t    index       = m_cursor;
-        const char           byte        = peekByte(index);
+        const std::size_t  index       = m_cursor;
+        const char         byte        = peekByte(index);
         const TextPosition keyPosition = currentPosition();
 
         if (byte != '"' && !(m_options.allowSingleQuotedStrings && byte == '\''))
@@ -983,8 +983,8 @@ namespace AsynGyanis::Base
 
         completeValueInParent(true);
         m_stack.push_back(ContainerFrame{
-                .isObject     = isObject,
-                .phase        = isObject ? ScanPhase::ObjectFirstKey : ScanPhase::ArrayFirst,
+                .isObject = isObject,
+                .phase = isObject ? ScanPhase::ObjectFirstKey : ScanPhase::ArrayFirst,
                 .elementCount = 0});
     }
 
@@ -1003,7 +1003,7 @@ namespace AsynGyanis::Base
         }
 
         const TextPosition endPosition = currentPosition();
-        const bool           isObject    = m_stack.back().isObject;
+        const bool         isObject    = m_stack.back().isObject;
         advanceTo(m_cursor + 1);
         m_stack.pop_back();
 

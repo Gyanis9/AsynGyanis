@@ -25,13 +25,13 @@ namespace AsynGyanis::Base
     {
         /// 核心 schema 各标签的完整文本：直接比较 string_view，
         /// 避免每次判断都拼接前缀（原实现每比较一次就要构造两个字符串）
-        constexpr std::string_view kCoreTagString = "tag:yaml.org,2002:str";
-        constexpr std::string_view kCoreTagNull   = "tag:yaml.org,2002:null";
-        constexpr std::string_view kCoreTagBool   = "tag:yaml.org,2002:bool";
-        constexpr std::string_view kCoreTagInt    = "tag:yaml.org,2002:int";
-        constexpr std::string_view kCoreTagFloat  = "tag:yaml.org,2002:float";
-        constexpr std::string_view kCoreTagBinary = "tag:yaml.org,2002:binary";
-        constexpr std::string_view kCoreTagMerge  = "tag:yaml.org,2002:merge";
+        constexpr std::string_view kCoreTagString   = "tag:yaml.org,2002:str";
+        constexpr std::string_view kCoreTagNull     = "tag:yaml.org,2002:null";
+        constexpr std::string_view kCoreTagBool     = "tag:yaml.org,2002:bool";
+        constexpr std::string_view kCoreTagInt      = "tag:yaml.org,2002:int";
+        constexpr std::string_view kCoreTagFloat    = "tag:yaml.org,2002:float";
+        constexpr std::string_view kCoreTagBinary   = "tag:yaml.org,2002:binary";
+        constexpr std::string_view kCoreTagMerge    = "tag:yaml.org,2002:merge";
         constexpr std::string_view kCoreTagSequence = "tag:yaml.org,2002:seq";
         constexpr std::string_view kCoreTagMapping  = "tag:yaml.org,2002:map";
 
@@ -52,8 +52,8 @@ namespace AsynGyanis::Base
         std::string decodeBase64(const std::string_view text, const TextPosition &position)
         {
             // 标准 Base64 字母表：A-Z a-z 0-9 + /，用查表避免逐个区间比较
-            int          table[256];
-            std::fill(std::begin(table), std::end(table), -1);
+            int table[256];
+            std::ranges::fill(table, -1);
             for (int index = 0; index < 26; ++index)
             {
                 table[static_cast<std::size_t>('A' + index)] = index;
@@ -73,7 +73,7 @@ namespace AsynGyanis::Base
             int           bitCount    = 0;
             std::size_t   paddingSeen = 0;
 
-            for (const char character : text)
+            for (const char character: text)
             {
                 if (character == ' ' || character == '\t' || character == '\n' || character == '\r')
                 {
@@ -96,7 +96,7 @@ namespace AsynGyanis::Base
                 }
 
                 accumulator = (accumulator << 6) | static_cast<std::uint32_t>(value);
-                bitCount += 6;
+                bitCount    += 6;
                 if (bitCount >= 8)
                 {
                     bitCount -= 8;
@@ -126,7 +126,7 @@ namespace AsynGyanis::Base
             }
 
             std::uint64_t value = 0;
-            for (const char character : digits)
+            for (const char character: digits)
             {
                 int digit = -1;
                 if (character >= '0' && character <= '9')
@@ -217,8 +217,8 @@ namespace AsynGyanis::Base
                 }
             }
 
-            const char  *begin = text.data() + index;
-            const char  *end   = text.data() + text.size();
+            const char *  begin     = text.data() + index;
+            const char *  end       = text.data() + text.size();
             std::uint64_t magnitude = 0;
             if (const auto [pointer, error] = std::from_chars(begin, end, magnitude); error == std::errc() && pointer == end)
             {
@@ -278,8 +278,9 @@ namespace AsynGyanis::Base
             const bool             isNegative   = text[0] == '-';
             if (unsignedText == ".inf" || unsignedText == ".Inf" || unsignedText == ".INF")
             {
-                result = FormatValue(isNegative ? -std::numeric_limits<double>::infinity()
-                                                : std::numeric_limits<double>::infinity());
+                result = FormatValue(isNegative
+                                         ? -std::numeric_limits<double>::infinity()
+                                         : std::numeric_limits<double>::infinity());
                 return true;
             }
             if (unsignedText == ".nan" || unsignedText == ".NaN" || unsignedText == ".NAN")
@@ -512,24 +513,24 @@ namespace AsynGyanis::Base
                     return key.asBool() ? "true" : "false";
                 case FormatValueType::Int:
                 {
-                    char buffer[32];
+                    char       buffer[32];
                     const auto [pointer, error] = std::to_chars(std::begin(buffer), std::end(buffer), key.asInt());
                     static_cast<void>(error);
-                    return std::string(buffer, pointer);
+                    return {buffer, pointer};
                 }
                 case FormatValueType::UInt:
                 {
-                    char buffer[32];
+                    char       buffer[32];
                     const auto [pointer, error] = std::to_chars(std::begin(buffer), std::end(buffer), key.asUInt());
                     static_cast<void>(error);
-                    return std::string(buffer, pointer);
+                    return {buffer, pointer};
                 }
                 case FormatValueType::Double:
                 {
-                    char buffer[64];
+                    char       buffer[64];
                     const auto [pointer, error] = std::to_chars(std::begin(buffer), std::end(buffer), key.asDouble());
                     static_cast<void>(error);
-                    return std::string(buffer, pointer);
+                    return {buffer, pointer};
                 }
                 default:
                     return {};
@@ -548,7 +549,7 @@ namespace AsynGyanis::Base
                 case FormatValueType::Array:
                 {
                     std::size_t total = 1;
-                    for (const FormatValue &element : value.asArray())
+                    for (const FormatValue &element: value.asArray())
                     {
                         total += countNodes(element);
                     }
@@ -557,7 +558,7 @@ namespace AsynGyanis::Base
                 case FormatValueType::Object:
                 {
                     std::size_t total = 1;
-                    for (const auto &[key, member] : value.asObject())
+                    for (const auto &[key, member]: value.asObject())
                     {
                         static_cast<void>(key);
                         total += countNodes(member);
@@ -625,7 +626,7 @@ namespace AsynGyanis::Base
                 bool                           hasPendingKey{false};     ///< 是否已读入键而等待值
                 bool                           pendingKeyIsMerge{false}; ///< 待值键是否为合并键 `<<`
                 std::string                    pendingKey;               ///< 待值键的规范文本
-                TextPosition                 pendingKeyPosition;       ///< 待值键的位置（重复键报错用）
+                TextPosition                   pendingKeyPosition;       ///< 待值键的位置（重复键报错用）
             };
 
             /**
@@ -667,7 +668,7 @@ namespace AsynGyanis::Base
                     case YamlEventType::Scalar:
                     {
                         const std::optional<std::string> anchor = consumeAnchor(event);
-                        FormatValue value = resolveScalar(event);
+                        FormatValue                      value  = resolveScalar(event);
                         attach(std::move(value), &event, event.position, anchor);
                         break;
                     }
@@ -732,8 +733,9 @@ namespace AsynGyanis::Base
                 Frame frame = std::move(m_frames.back());
                 m_frames.pop_back();
 
-                FormatValue value = frame.isMapping ? buildMapping(frame, event.position)
-                                                    : FormatValue(std::move(frame.elements));
+                FormatValue value = frame.isMapping
+                                        ? buildMapping(frame, event.position)
+                                        : FormatValue(std::move(frame.elements));
                 attach(std::move(value), nullptr, event.position, frame.anchor);
             }
 
@@ -744,7 +746,7 @@ namespace AsynGyanis::Base
              * @return FormatValue 组装好的对象
              * @throws FormatError 存在只有键没有值的悬挂条目
              */
-            FormatValue buildMapping(Frame &frame, const TextPosition &position)
+            FormatValue buildMapping(Frame &frame, const TextPosition &position) const
             {
                 if (frame.hasPendingKey)
                 {
@@ -753,15 +755,15 @@ namespace AsynGyanis::Base
 
                 FormatValueObject result;
                 // 合并源按出现顺序先入，emplace 保留先到者，因此靠前的合并源优先
-                for (const auto &source : frame.merges)
+                for (const auto &source: frame.merges)
                 {
-                    for (const auto &[key, member] : source)
+                    for (const auto &[key, member]: source)
                     {
                         result.emplace(key, member);
                     }
                 }
                 // 显式键最后写入，无论书写顺序都覆盖合并结果
-                for (auto &[key, member] : frame.members)
+                for (auto &[key, member]: frame.members)
                 {
                     result.insert_or_assign(key, std::move(member));
                 }
@@ -796,8 +798,7 @@ namespace AsynGyanis::Base
              * @param anchor 该节点登记的锚点名
              * @throws FormatError 集合键、重复键或合并键值非法
              */
-            void attach(FormatValue value, const YamlEvent *origin, const TextPosition &position,
-                        const std::optional<std::string> &anchor)
+            void attach(FormatValue value, const YamlEvent *origin, const TextPosition &position, const std::optional<std::string> &anchor)
             {
                 // 先登记锚点再移动值：FormatValue 是值语义，登记的是当时的深拷贝
                 if (anchor.has_value())
@@ -833,7 +834,7 @@ namespace AsynGyanis::Base
                         frame.pendingKey = canonicalKeyText(value);
                     }
                     frame.pendingKeyPosition = position;
-                    frame.hasPendingKey       = true;
+                    frame.hasPendingKey      = true;
                     return;
                 }
 
@@ -861,8 +862,8 @@ namespace AsynGyanis::Base
                     }
                 }
 
-                frame.hasPendingKey       = false;
-                frame.pendingKeyIsMerge   = false;
+                frame.hasPendingKey     = false;
+                frame.pendingKeyIsMerge = false;
                 frame.pendingKey.clear();
             }
 
@@ -898,8 +899,7 @@ namespace AsynGyanis::Base
              * @param merges 输出参数，合并源按顺序追加
              * @throws FormatError 值不是映射或映射序列
              */
-            void collectMergeSources(const FormatValue &value, const TextPosition &position,
-                                     std::vector<FormatValueObject> &merges)
+            void collectMergeSources(const FormatValue &value, const TextPosition &position, std::vector<FormatValueObject> &merges)
             {
                 if (value.type() == FormatValueType::Object)
                 {
@@ -909,7 +909,7 @@ namespace AsynGyanis::Base
                 }
                 if (value.type() == FormatValueType::Array)
                 {
-                    for (const FormatValue &element : value.asArray())
+                    for (const FormatValue &element: value.asArray())
                     {
                         if (element.type() != FormatValueType::Object)
                         {
@@ -993,12 +993,12 @@ namespace AsynGyanis::Base
                 return inferCoreSchema(event.text);
             }
 
-            const YamlParseOptions            &m_options;              ///< 解析选项
-            std::vector<Frame>                 m_frames;               ///< 未结束容器的栈
-            std::optional<FormatValue>          m_root;                 ///< 当前文档根值
-            std::map<std::string, FormatValue, std::less<> > m_anchors; ///< 当前文档的锚点表
-            std::optional<std::string>         m_pendingAnchor;        ///< 待绑定到下一个节点的锚点
-            std::size_t                        m_aliasExpansion{0};    ///< 别名/合并累计展开节点数
+            const YamlParseOptions &                         m_options;           ///< 解析选项
+            std::vector<Frame>                               m_frames;            ///< 未结束容器的栈
+            std::optional<FormatValue>                       m_root;              ///< 当前文档根值
+            std::map<std::string, FormatValue, std::less<> > m_anchors;           ///< 当前文档的锚点表
+            std::optional<std::string>                       m_pendingAnchor;     ///< 待绑定到下一个节点的锚点
+            std::size_t                                      m_aliasExpansion{0}; ///< 别名/合并累计展开节点数
         };
     } // namespace
 
@@ -1009,8 +1009,8 @@ namespace AsynGyanis::Base
 
     FormatValue YamlParser::parse(const std::string_view text, const YamlParseOptions &options)
     {
-        YamlReader reader(text, options);
-        YamlComposer composer(options);
+        YamlReader               reader(text, options);
+        YamlComposer             composer(options);
         std::vector<FormatValue> documents = composer.compose(reader);
 
         // 单文档语义：取首份文档；流中零文档（空输入/仅注释）时按规范是 null
@@ -1028,7 +1028,7 @@ namespace AsynGyanis::Base
 
     std::vector<FormatValue> YamlParser::parseAll(const std::string_view text, const YamlParseOptions &options)
     {
-        YamlReader reader(text, options);
+        YamlReader   reader(text, options);
         YamlComposer composer(options);
         return composer.compose(reader);
     }

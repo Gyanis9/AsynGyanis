@@ -69,9 +69,7 @@ namespace AsynGyanis::Base
         // 输入长度上限最先判定：后续扫描与解码都以「已通过长度检查」为前提
         if (m_options.maximumInputLength != 0 && m_text.size() > m_options.maximumInputLength)
         {
-            throw FormatError(FormatErrorKind::SizeExceeded,
-                              std::format("输入长度超出上限：{} 字节", m_options.maximumInputLength),
-                              currentPosition());
+            throw FormatError(FormatErrorKind::SizeExceeded, std::format("输入长度超出上限：{} 字节", m_options.maximumInputLength), currentPosition());
         }
 
         skipUtf8Bom();
@@ -151,9 +149,7 @@ namespace AsynGyanis::Base
                 {
                     throw FormatError(FormatErrorKind::UnterminatedContainer, "对象未闭合", currentPosition());
                 }
-                throw FormatError(FormatErrorKind::UnexpectedByte,
-                                  m_options.allowSingleQuotedStrings ? "对象键必须是字符串" : "对象键必须是双引号字符串",
-                                  currentPosition());
+                throw FormatError(FormatErrorKind::UnexpectedByte, m_options.allowSingleQuotedStrings ? "对象键必须是字符串" : "对象键必须是双引号字符串", currentPosition());
             }
 
             std::string keyName = parseStringText();
@@ -163,9 +159,7 @@ namespace AsynGyanis::Base
             // 元素数上限：在解析并分配下一个成员之前拒绝
             if (m_options.maximumContainerElements != 0 && members.size() >= m_options.maximumContainerElements)
             {
-                throw FormatError(FormatErrorKind::SizeExceeded,
-                                  std::format("对象成员数量超出上限：{}", m_options.maximumContainerElements),
-                                  currentPosition());
+                throw FormatError(FormatErrorKind::SizeExceeded, std::format("对象成员数量超出上限：{}", m_options.maximumContainerElements), currentPosition());
             }
 
             FormatValue value = parseValue(nestingDepth + 1);
@@ -174,8 +168,7 @@ namespace AsynGyanis::Base
             // 用一次 emplace 的返回值同时完成插入与查重：命中已有键时其键文本与新键完全相同，
             // 因此报错文案与逐字比较时代保持一致，但少了一次哈希查找。
             // 键文本此处已无其它用途，按右值交给 emplace 直接移入节点，长键因此省掉一次堆分配
-            const auto [insertedIterator, inserted] = members.emplace(std::move(keyName), std::move(value));
-            if (!inserted)
+            if (const auto [insertedIterator, inserted] = members.emplace(std::move(keyName), std::move(value)); !inserted)
             {
                 throw FormatError(FormatErrorKind::DuplicateKey, "对象存在重复键：" + insertedIterator->first, currentPosition());
             }
@@ -230,9 +223,7 @@ namespace AsynGyanis::Base
             // 元素数上限：在解析并分配下一个元素之前拒绝
             if (m_options.maximumContainerElements != 0 && elements.size() >= m_options.maximumContainerElements)
             {
-                throw FormatError(FormatErrorKind::SizeExceeded,
-                                  std::format("数组元素数量超出上限：{}", m_options.maximumContainerElements),
-                                  currentPosition());
+                throw FormatError(FormatErrorKind::SizeExceeded, std::format("数组元素数量超出上限：{}", m_options.maximumContainerElements), currentPosition());
             }
 
             elements.push_back(parseValue(nestingDepth + 1));
@@ -268,11 +259,11 @@ namespace AsynGyanis::Base
     std::string JsonParser::parseStringText()
     {
         // 调用方已确认起始引号合法，双引号恒合法、单引号仅在宽松模式下合法
-        const char           quote       = peekCurrent();
+        const char         quote       = peekCurrent();
         const TextPosition stringStart = currentPosition();
         advance(); // 消费起始引号
 
-        const std::size_t    bodyStart         = m_index;
+        const std::size_t  bodyStart         = m_index;
         const TextPosition bodyStartPosition = currentPosition();
 
         while (true)
@@ -314,9 +305,7 @@ namespace AsynGyanis::Base
         // 长度上限按原文（含转义序列）字节数计：在解码分配之前即可拒绝超限字符串
         if (m_options.maximumStringLength != 0 && bodyEnd - bodyStart > m_options.maximumStringLength)
         {
-            throw FormatError(FormatErrorKind::SizeExceeded,
-                              std::format("字符串长度超出上限：{} 字节", m_options.maximumStringLength),
-                              bodyStartPosition);
+            throw FormatError(FormatErrorKind::SizeExceeded, std::format("字符串长度超出上限：{} 字节", m_options.maximumStringLength), bodyStartPosition);
         }
 
         validateStringUtf8(bodyStart, bodyEnd, bodyStartPosition);
@@ -462,9 +451,7 @@ namespace AsynGyanis::Base
         // 关键字表改为静态存储的 string_view：FormatValue 不是字面类型，原先那张
         // {text, FormatValue} 局部表每次解析都要在栈上构造并析构 3 个变体，
         // 而三个关键字的文本长度不同、比较次数也被首字符分派压到一次
-        const std::string_view keywordText = leadCharacter == 't' ? std::string_view{"true"} :
-                                            leadCharacter == 'f' ? std::string_view{"false"} :
-                                                                   std::string_view{"null"};
+        const std::string_view keywordText = leadCharacter == 't' ? std::string_view{"true"} : leadCharacter == 'f' ? std::string_view{"false"} : std::string_view{"null"};
 
         if (m_text.substr(m_index, keywordText.size()) != keywordText)
         {
@@ -576,8 +563,8 @@ namespace AsynGyanis::Base
         const auto failurePosition = [bodyStart, &bodyStartPosition](const std::size_t failureIndex) noexcept
         {
             TextPosition position = bodyStartPosition;
-            position.columnNumber   += failureIndex - bodyStart;
-            position.offset         = failureIndex;
+            position.columnNumber += failureIndex - bodyStart;
+            position.offset       = failureIndex;
             return position;
         };
 

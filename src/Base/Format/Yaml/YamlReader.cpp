@@ -30,7 +30,7 @@ namespace AsynGyanis::Base
          * @param text 待统计文本
          * @return std::size_t 连续空格个数
          */
-        std::size_t countLeadingSpaces(std::string_view text) noexcept
+        std::size_t countLeadingSpaces(const std::string_view text) noexcept
         {
             const std::size_t position = text.find_first_not_of(' ');
             return position == std::string_view::npos ? text.size() : position;
@@ -41,7 +41,7 @@ namespace AsynGyanis::Base
          * @param text 待裁剪文本
          * @return std::string_view 裁剪后的视图
          */
-        std::string_view trimRight(std::string_view text) noexcept
+        std::string_view trimRight(const std::string_view text) noexcept
         {
             const std::size_t position = text.find_last_not_of(" \t");
             return position == std::string_view::npos ? std::string_view{} : text.substr(0, position + 1);
@@ -52,7 +52,7 @@ namespace AsynGyanis::Base
          * @param text 待裁剪文本
          * @return std::string_view 裁剪后的视图
          */
-        std::string_view trim(std::string_view text) noexcept
+        std::string_view trim(const std::string_view text) noexcept
         {
             const std::size_t begin = text.find_first_not_of(" \t");
             if (begin == std::string_view::npos)
@@ -68,7 +68,7 @@ namespace AsynGyanis::Base
          * @param raw 原始行
          * @return true 行内只有空格与制表符
          */
-        bool isBlankLine(std::string_view raw) noexcept
+        bool isBlankLine(const std::string_view raw) noexcept
         {
             return raw.find_first_not_of(" \t") == std::string_view::npos;
         }
@@ -78,7 +78,7 @@ namespace AsynGyanis::Base
          * @param content 去掉缩进后的正文
          * @return true 形如 `-`（行尾）或 `- ...`
          */
-        bool startsSequenceEntry(std::string_view content) noexcept
+        bool startsSequenceEntry(const std::string_view content) noexcept
         {
             return content == "-" || (content.size() > 1 && content.front() == '-' && content[1] == ' ');
         }
@@ -88,7 +88,7 @@ namespace AsynGyanis::Base
          * @param content 去掉缩进后的正文
          * @return true 形如 `?`（行尾）或 `? ...`
          */
-        bool startsExplicitKey(std::string_view content) noexcept
+        bool startsExplicitKey(const std::string_view content) noexcept
         {
             return content == "?" || (content.size() > 1 && content.front() == '?' && content[1] == ' ');
         }
@@ -98,7 +98,7 @@ namespace AsynGyanis::Base
          * @param content 已裁掉注释的正文
          * @return true 形如 `---` 或 `--- ...`
          */
-        bool isDocumentStartMarker(std::string_view content) noexcept
+        bool isDocumentStartMarker(const std::string_view content) noexcept
         {
             return content == "---" || (content.size() > 3 && content.substr(0, 3) == "---" && content[3] == ' ');
         }
@@ -108,7 +108,7 @@ namespace AsynGyanis::Base
          * @param content 已裁掉注释的正文
          * @return true 形如 `...` 或 `... ...`
          */
-        bool isDocumentEndMarker(std::string_view content) noexcept
+        bool isDocumentEndMarker(const std::string_view content) noexcept
         {
             return content == "..." || (content.size() > 3 && content.substr(0, 3) == "..." && content[3] == ' ');
         }
@@ -118,7 +118,7 @@ namespace AsynGyanis::Base
          * @param content 行正文（含可能的注释）
          * @return std::string_view 注释之前的正文
          */
-        std::string_view stripTrailingComment(std::string_view content) noexcept
+        std::string_view stripTrailingComment(const std::string_view content) noexcept
         {
             for (std::size_t index = 0; index < content.size(); ++index)
             {
@@ -171,11 +171,11 @@ namespace AsynGyanis::Base
          */
         struct Line
         {
-            std::string_view raw;      ///< 不含行尾换行的原始行
-            std::string_view content;  ///< 去掉前导缩进后的正文（可能含行尾注释）
-            std::size_t      indent{0};///< 前导空格数
-            std::size_t      number{1};///< 1 基行号
-            std::size_t      offset{0};///< 原始行在输入中的字节偏移
+            std::string_view raw;               ///< 不含行尾换行的原始行
+            std::string_view content;           ///< 去掉前导缩进后的正文（可能含行尾注释）
+            std::size_t      indent{0};         ///< 前导空格数
+            std::size_t      number{1};         ///< 1 基行号
+            std::size_t      offset{0};         ///< 原始行在输入中的字节偏移
             bool             structural{false}; ///< 是否参与结构（非空且非整行注释）
         };
 
@@ -220,21 +220,21 @@ namespace AsynGyanis::Base
     class YamlReaderImplementation
     {
     public:
-        std::string_view m_input;        ///< 输入视图（零拷贝或指向 m_ownedInput）
-        std::string      m_ownedInput;   ///< push 模式下的自有缓冲
-        YamlParseOptions m_options;      ///< 解析选项
-        bool             m_finished{false}; ///< push 模式是否已声明输入结束
-        bool             m_scanned{false};  ///< 是否已完成扫描
-        bool             m_consuming{false};///< 是否已开始取事件（此后禁止再 feed）
+        std::string_view m_input;            ///< 输入视图（零拷贝或指向 m_ownedInput）
+        std::string      m_ownedInput;       ///< push 模式下的自有缓冲
+        YamlParseOptions m_options;          ///< 解析选项
+        bool             m_finished{false};  ///< push 模式是否已声明输入结束
+        bool             m_scanned{false};   ///< 是否已完成扫描
+        bool             m_consuming{false}; ///< 是否已开始取事件（此后禁止再 feed）
 
-        std::vector<YamlEvent>   m_events;      ///< 扫描产生的事件序列
-        std::size_t              m_eventIndex{0};///< 下一个待取事件下标
-        std::vector<std::string> m_warnings;    ///< 非致命警告
+        std::vector<YamlEvent>   m_events;        ///< 扫描产生的事件序列
+        std::size_t              m_eventIndex{0}; ///< 下一个待取事件下标
+        std::vector<std::string> m_warnings;      ///< 非致命警告
 
-        std::vector<Line> m_lines;           ///< 拆分后的行
-        std::size_t       m_lineIndex{0};    ///< 当前行下标
-        std::size_t       m_depth{0};        ///< 当前节点嵌套深度
-        std::size_t       m_documentCount{0};///< 已扫描文档数
+        std::vector<Line> m_lines;            ///< 拆分后的行
+        std::size_t       m_lineIndex{0};     ///< 当前行下标
+        std::size_t       m_depth{0};         ///< 当前节点嵌套深度
+        std::size_t       m_documentCount{0}; ///< 已扫描文档数
 
         std::map<std::string, std::string, std::less<> > m_tagHandles; ///< `%TAG` 句柄表
 
@@ -263,6 +263,7 @@ namespace AsynGyanis::Base
             }
 
             DepthGuard(const DepthGuard &) = delete;
+
             DepthGuard &operator=(const DepthGuard &) = delete;
 
         private:
@@ -286,16 +287,16 @@ namespace AsynGyanis::Base
             {
                 throw FormatError(FormatErrorKind::SizeExceeded,
                                   std::format("输入长度 {} 字节超出上限 {}", m_input.size(), m_options.maximumInputLength),
-                                  TextPosition{1, 1, 0});
+                                  TextPosition{.lineNumber = 1, .columnNumber = 1, .offset = 0});
             }
 
             splitLines();
             m_tagHandles.emplace("!", "!");
             m_tagHandles.emplace("!!", std::string(kCoreTagPrefix));
 
-            emit(YamlEvent{.type = YamlEventType::StreamStart, .position = TextPosition{1, 1, 0}});
+            emit(YamlEvent{.type = YamlEventType::StreamStart, .position = TextPosition{.lineNumber = 1, .columnNumber = 1, .offset = 0}});
             scanStream();
-            emit(YamlEvent{.type = YamlEventType::StreamEnd, .position = TextPosition{1, 1, m_input.size()}});
+            emit(YamlEvent{.type = YamlEventType::StreamEnd, .position = TextPosition{.lineNumber = 1, .columnNumber = 1, .offset = m_input.size()}});
         }
 
     private:
@@ -351,7 +352,7 @@ namespace AsynGyanis::Base
                     {
                         throw FormatError(FormatErrorKind::UnexpectedByte,
                                           "缩进禁止使用制表符（YAML 1.2 §6.1）",
-                                          TextPosition{number, indent + 1, start + indent});
+                                          TextPosition{.lineNumber = number, .columnNumber = indent + 1, .offset = start + indent});
                     }
 
                     line.indent     = indent;
@@ -597,8 +598,8 @@ namespace AsynGyanis::Base
             bool rootParsed = false;
             if (m_lineIndex < m_lines.size())
             {
-                const Line             &line    = m_lines[m_lineIndex];
-                const std::string_view  content = stripTrailingComment(line.content);
+                const Line &           line    = m_lines[m_lineIndex];
+                const std::string_view content = stripTrailingComment(line.content);
                 if (isDocumentEndLine(line))
                 {
                     // 文档头之前直接出现 `...`：本份文档为空（null）
@@ -614,7 +615,7 @@ namespace AsynGyanis::Base
                         // `--- value`：根节点与 `---` 同行；保持当前行下标以便续行折叠
                         const std::string_view inlineRoot   = trim(content.substr(4));
                         const std::size_t      inlineColumn = line.indent + 4 + countLeadingSpaces(content.substr(4));
-                        NodeProperties         properties;
+                        const NodeProperties   properties;
                         parseNodeFromRemainder(inlineRoot, line, inlineColumn, 0, properties, true);
                         rootParsed = true;
                     } else
@@ -642,8 +643,8 @@ namespace AsynGyanis::Base
             skipTrivia();
             if (m_lineIndex < m_lines.size())
             {
-                const Line             &line    = m_lines[m_lineIndex];
-                const std::string_view  content = stripTrailingComment(line.content);
+                const Line &           line    = m_lines[m_lineIndex];
+                const std::string_view content = stripTrailingComment(line.content);
                 if (isDocumentEndLine(line))
                 {
                     if (content.size() > 3 && !trim(content.substr(4)).empty())
@@ -679,8 +680,8 @@ namespace AsynGyanis::Base
             const TextPosition     position  = positionOf(line, line.indent);
             const std::size_t      separator = content.find_first_of(" \t");
             // 指令名到行尾为止（无参数）或到首个空白为止；参数部分只取首个空白之后的剩余文本
-            const std::string_view name     = separator == std::string_view::npos ? content : content.substr(0, separator);
-            const std::string_view argument = separator == std::string_view::npos ? std::string_view{} : trim(content.substr(separator + 1));
+            const std::string_view name      = separator == std::string_view::npos ? content : content.substr(0, separator);
+            const std::string_view argument  = separator == std::string_view::npos ? std::string_view{} : trim(content.substr(separator + 1));
 
             if (name == "%YAML")
             {
@@ -782,8 +783,8 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            const Line             &line    = m_lines[m_lineIndex];
-            const std::string_view  content = stripTrailingComment(line.content);
+            const Line &           line    = m_lines[m_lineIndex];
+            const std::string_view content = stripTrailingComment(line.content);
 
             // 块节点同样可以带锚点/标签（如整行 `&a` 或 `!!str 5`），先取出属性
             NodeProperties   combined = properties;
@@ -924,12 +925,12 @@ namespace AsynGyanis::Base
          */
         void parseExplicitKeyEntry(const std::size_t indent, const Line &keyLine)
         {
-            const std::string_view content        = stripTrailingComment(keyLine.content);
-            const std::string_view afterIndicator = content.substr(1);
-            const std::string_view remainder      = trim(afterIndicator);
+            const std::string_view content         = stripTrailingComment(keyLine.content);
+            const std::string_view afterIndicator  = content.substr(1);
+            const std::string_view remainder       = trim(afterIndicator);
             const std::size_t      remainderColumn = keyLine.indent + 1 + countLeadingSpaces(afterIndicator);
 
-            NodeProperties keyProperties;
+            const NodeProperties keyProperties;
             if (remainder.empty())
             {
                 // 键本身是更深缩进的块节点
@@ -940,7 +941,7 @@ namespace AsynGyanis::Base
             {
                 // `? a: b`：键是与 `?` 同行的紧凑映射/序列，把该行改写成条目列上的块再解析，
                 // 这样键会被识别成集合节点（DOM 前端按约定拒绝集合键，而不是误当成裸标量）
-                const std::size_t itemColumn = keyLine.indent + 1 + countLeadingSpaces(afterIndicator);
+                const std::size_t itemColumn    = keyLine.indent + 1 + countLeadingSpaces(afterIndicator);
                 m_lines[m_lineIndex].content    = remainder;
                 m_lines[m_lineIndex].indent     = itemColumn;
                 m_lines[m_lineIndex].structural = true;
@@ -952,17 +953,17 @@ namespace AsynGyanis::Base
 
             // 随后的 `: ` 行给出值；键值之间允许空行与注释
             skipTrivia();
-            const Line      *separatorLine = nullptr;
+            const Line *     separatorLine = nullptr;
             std::string_view valueRemainder;
             std::size_t      valueColumn = 0;
 
             if (m_lineIndex < m_lines.size() && m_lines[m_lineIndex].indent == indent &&
                 !m_lines[m_lineIndex].content.empty() && m_lines[m_lineIndex].content.front() == ':')
             {
-                separatorLine = &m_lines[m_lineIndex];
+                separatorLine                     = &m_lines[m_lineIndex];
                 const std::string_view afterColon = separatorLine->content.substr(1);
-                valueRemainder = trim(afterColon);
-                valueColumn    = separatorLine->indent + 1 + countLeadingSpaces(afterColon);
+                valueRemainder                    = trim(afterColon);
+                valueColumn                       = separatorLine->indent + 1 + countLeadingSpaces(afterColon);
             }
 
             if (separatorLine == nullptr)
@@ -972,7 +973,7 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            NodeProperties valueProperties;
+            const NodeProperties valueProperties;
             if (valueRemainder.empty())
             {
                 // 值在 `:` 之后的块中：消费 `:` 行
@@ -995,11 +996,11 @@ namespace AsynGyanis::Base
          */
         void parseKeyNode(const std::string_view keyText, const Line &line, const std::size_t column)
         {
-            const TextPosition position = positionOf(line, column);
-            const char           lead     = keyText.front();
+            const TextPosition position       = positionOf(line, column);
+            const char         lead           = keyText.front();
             // 键始终位于当前行：解析过程可能推进行号（如流式键），此处保存以便还原，
             // 使调用方能继续在同一行上解析值
-            const std::size_t savedLineIndex = m_lineIndex;
+            const std::size_t  savedLineIndex = m_lineIndex;
 
             if (lead == '[' || lead == '{')
             {
@@ -1152,9 +1153,9 @@ namespace AsynGyanis::Base
          * @param properties 已有属性（通常为空）
          * @param allowZeroIndentSequence 属性之后若转块解析，是否允许零缩进序列
          */
-        void parseNodeFromRemainder(std::string_view remainder, const Line &line, const std::size_t column,
-                                    const std::size_t parentIndent, NodeProperties properties,
-                                    const bool allowZeroIndentSequence)
+        void parseNodeFromRemainder(const std::string_view remainder, const Line &      line, const std::size_t column,
+                                    const std::size_t      parentIndent, NodeProperties properties,
+                                    const bool             allowZeroIndentSequence)
         {
             std::string_view remaining;
             parseProperties(remainder, line, column, properties, remaining);
@@ -1179,8 +1180,7 @@ namespace AsynGyanis::Base
          * @param remaining 输出参数，去掉属性后的剩余正文
          * @throws FormatError 锚点名或标签格式非法
          */
-        void parseProperties(std::string_view text, const Line &line, const std::size_t column,
-                             NodeProperties &properties, std::string_view &remaining)
+        void parseProperties(const std::string_view text, const Line &line, const std::size_t column, NodeProperties &properties, std::string_view &remaining)
         {
             std::size_t cursor = 0;
             while (cursor < text.size())
@@ -1248,8 +1248,8 @@ namespace AsynGyanis::Base
             const std::size_t secondBang = token.find('!', 1);
             if (secondBang != std::string_view::npos)
             {
-                const std::string_view handle = token.substr(0, secondBang + 1);
-                const std::string_view suffix = token.substr(secondBang + 1);
+                const std::string_view handle   = token.substr(0, secondBang + 1);
+                const std::string_view suffix   = token.substr(secondBang + 1);
                 const auto             iterator = m_tagHandles.find(std::string(handle));
                 if (iterator == m_tagHandles.end())
                 {
@@ -1292,8 +1292,7 @@ namespace AsynGyanis::Base
          * @param properties 节点属性
          * @throws FormatError 语法非法
          */
-        void parseInlineNode(const std::string_view text, const Line &line, const std::size_t column,
-                             const std::size_t blockIndent, const NodeProperties &properties)
+        void parseInlineNode(const std::string_view text, const Line &line, const std::size_t column, const std::size_t blockIndent, const NodeProperties &properties)
         {
             if (text.empty())
             {
@@ -1364,10 +1363,9 @@ namespace AsynGyanis::Base
          * @param blockIndent 父块缩进，续行必须严格深于它才会并入标量
          * @param properties 节点属性
          */
-        void parsePlainScalar(const std::string_view firstText, const Line &line, const std::size_t column,
-                              const std::size_t blockIndent, const NodeProperties &properties)
+        void parsePlainScalar(const std::string_view firstText, const Line &line, const std::size_t column, const std::size_t blockIndent, const NodeProperties &properties)
         {
-            const TextPosition   position  = positionOf(line, column);
+            const TextPosition     position  = positionOf(line, column);
             const std::string_view firstLine = stripTrailingComment(firstText);
 
             // 单行裸标量占绝大多数：直接构造，不做任何折叠中间缓冲
@@ -1378,10 +1376,10 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            std::string       folded(trimRight(firstLine));
-            std::size_t       emptyRun  = 0;
-            std::size_t       nextIndex = m_lineIndex + 1;
-            bool              multiLine = false;
+            std::string folded(trimRight(firstLine));
+            std::size_t emptyRun  = 0;
+            std::size_t nextIndex = m_lineIndex + 1;
+            bool        multiLine = false;
 
             while (nextIndex < m_lines.size())
             {
@@ -1422,7 +1420,7 @@ namespace AsynGyanis::Base
                 {
                     folded.append(emptyRun, kLineBreak);
                 }
-                folded += trimRight(candidateContent);
+                folded    += trimRight(candidateContent);
                 emptyRun  = 0;
                 nextIndex = nextIndex + 1;
                 multiLine = true;
@@ -1450,10 +1448,9 @@ namespace AsynGyanis::Base
          * @param properties 节点属性
          * @throws FormatError 未闭合或转义非法
          */
-        void parseQuotedScalarFromView(const std::string_view text, const Line &line, const std::size_t column,
-                                       const NodeProperties &properties)
+        void parseQuotedScalarFromView(const std::string_view text, const Line &line, const std::size_t column, const NodeProperties &properties)
         {
-            const char           quote    = text.front();
+            const char         quote    = text.front();
             const TextPosition position = positionOf(line, column);
 
             // 先尝试单行闭合：绝大多数引号标量不跨行，可零折叠直接解码
@@ -1475,7 +1472,7 @@ namespace AsynGyanis::Base
             // 跨行：拼接后续原始行，再在拼接结果上寻找收尾引号并折叠
             std::string joined;
             joined.reserve(text.size() * 2);
-            joined += text.substr(1);
+            joined                   += text.substr(1);
             std::size_t currentIndex = m_lineIndex + 1;
             bool        closed       = false;
 
@@ -1830,10 +1827,9 @@ namespace AsynGyanis::Base
          * @param properties 节点属性
          * @throws FormatError 头部非法
          */
-        void parseBlockScalar(const std::string_view text, const Line &line, const std::size_t column,
-                              const NodeProperties &properties)
+        void parseBlockScalar(const std::string_view text, const Line &line, const std::size_t column, const NodeProperties &properties)
         {
-            const TextPosition    position = positionOf(line, column);
+            const TextPosition      position = positionOf(line, column);
             const BlockScalarHeader header   = parseBlockScalarHeader(text, position);
 
             // §8.1.1.1：内容缩进 = 父节点缩进 n + 缩进指示 m；未显式给出 m 时由首个
@@ -1870,11 +1866,10 @@ namespace AsynGyanis::Base
 
             while (nextIndex < m_lines.size())
             {
-                const Line &candidate = m_lines[nextIndex];
-                if (isBlankLine(candidate.raw))
+                if (const Line &candidate = m_lines[nextIndex]; isBlankLine(candidate.raw))
                 {
                     // 空行是内容的一部分：折叠时换算成换行，chomping 时计入尾部空行数
-                    contentLines.push_back({});
+                    contentLines.emplace_back();
                     moreIndented.push_back(false);
                 } else if (!indentationResolved || candidate.indent < contentIndent)
                 {
@@ -1980,9 +1975,9 @@ namespace AsynGyanis::Base
          * @return std::string 最终文本
          */
         [[nodiscard]] static std::string buildBlockScalarText(const std::vector<std::string_view> &contentLines,
-                                                              const std::vector<bool> &moreIndented,
-                                                              const BlockScalarHeader &header,
-                                                              const bool trailingLineBreakExists)
+                                                              const std::vector<bool> &            moreIndented,
+                                                              const BlockScalarHeader &            header,
+                                                              const bool                           trailingLineBreakExists)
         {
             // 尾部空行按 chomping 处理：strip/clip 丢弃，keep 每个空行换算成一个换行
             std::size_t trimmedCount = contentLines.size();
@@ -2027,7 +2022,7 @@ namespace AsynGyanis::Base
                     body.append(emptyRun + 1, kLineBreak);
                 }
 
-                body += content;
+                body                 += content;
                 emptyRun             = 0;
                 previousMoreIndented = moreIndented[index];
                 emittedText          = true;
@@ -2071,8 +2066,7 @@ namespace AsynGyanis::Base
          * @param properties 节点属性
          * @throws FormatError 容器未闭合或流式语法非法
          */
-        void parseFlowCollection(const std::string_view text, const Line &line, const std::size_t column,
-                                 const bool isSequence, const NodeProperties &properties)
+        void parseFlowCollection(const std::string_view text, const Line &line, const std::size_t column, const bool isSequence, const NodeProperties &properties)
         {
             const DepthGuard guard(m_depth);
             checkDepth();
@@ -2123,7 +2117,7 @@ namespace AsynGyanis::Base
          * @return std::string 归一化后的流式文本
          * @throws FormatError 容器未闭合
          */
-        [[nodiscard]] std::string collectFlowText(const std::size_t startOffset, std::size_t &endOffset, std::size_t &endLineIndex)
+        [[nodiscard]] std::string collectFlowText(const std::size_t startOffset, std::size_t &endOffset, std::size_t &endLineIndex) const
         {
             std::string result;
             result.reserve(64);
@@ -2219,7 +2213,7 @@ namespace AsynGyanis::Base
 
             throw FormatError(FormatErrorKind::UnterminatedContainer,
                               m_input[startOffset] == '[' ? "流式序列未闭合，应为 ']'" : "流式映射未闭合，应为 '}'",
-                              TextPosition{1, 1, startOffset});
+                              TextPosition{.lineNumber = 1, .columnNumber = 1, .offset = startOffset});
         }
 
         /**
@@ -2354,7 +2348,7 @@ namespace AsynGyanis::Base
             checkDepth();
             skipFlowSpaces(cursor);
 
-            const TextPosition position{cursor.line, cursor.column + cursor.index + 1, 0};
+            const TextPosition position{.lineNumber = cursor.line, .columnNumber = cursor.column + cursor.index + 1, .offset = 0};
 
             // 空条目（如 `[a, , b]`）按 null 处理
             if (cursor.index >= cursor.text.size() ||
@@ -2431,7 +2425,7 @@ namespace AsynGyanis::Base
                     throw FormatError(FormatErrorKind::UnterminatedString, "流式容器内引号标量未闭合", position);
                 }
                 const std::string_view body = cursor.text.substr(cursor.index + 1, closing - cursor.index - 1);
-                cursor.index = closing + 1;
+                cursor.index                = closing + 1;
                 if (quote == '\'')
                 {
                     emitScalar(decodeSingleQuotedSingleLine(body), YamlScalarStyle::SingleQuoted, properties, position);
@@ -2542,7 +2536,7 @@ namespace AsynGyanis::Base
 
     YamlReader &YamlReader::operator=(YamlReader &&other) noexcept = default;
 
-    void YamlReader::feed(const std::string_view chunk)
+    void YamlReader::feed(const std::string_view chunk) const
     {
         if (m_implementation->m_consuming)
         {
@@ -2562,7 +2556,7 @@ namespace AsynGyanis::Base
         m_implementation->m_input = m_implementation->m_ownedInput;
     }
 
-    void YamlReader::finish()
+    void YamlReader::finish() const
     {
         if (m_implementation->m_finished)
         {
@@ -2576,7 +2570,7 @@ namespace AsynGyanis::Base
         }
     }
 
-    void YamlReader::ensureScanned()
+    void YamlReader::ensureScanned() const
     {
         // push 模式下若调用方忘记 finish，这里补一次，避免静默得到空事件流
         if (!m_implementation->m_finished)
@@ -2588,13 +2582,13 @@ namespace AsynGyanis::Base
         m_implementation->run();
     }
 
-    bool YamlReader::hasNext()
+    bool YamlReader::hasNext() const
     {
         ensureScanned();
         return m_implementation->m_eventIndex < m_implementation->m_events.size();
     }
 
-    std::optional<YamlEvent> YamlReader::nextEvent()
+    std::optional<YamlEvent> YamlReader::nextEvent() const
     {
         ensureScanned();
         m_implementation->m_consuming = true;
@@ -2603,12 +2597,12 @@ namespace AsynGyanis::Base
             return std::nullopt;
         }
         // 事件只被取用一次，直接移动出缓存，避免字符串二次拷贝
-        return std::optional<YamlEvent>(std::move(m_implementation->m_events[m_implementation->m_eventIndex++]));
+        return {std::move(m_implementation->m_events[m_implementation->m_eventIndex++])};
     }
 
     std::vector<YamlEvent> YamlReader::readAll(const std::string_view text, const YamlParseOptions &options)
     {
-        YamlReader           reader(text, options);
+        YamlReader             reader(text, options);
         std::vector<YamlEvent> events;
         while (reader.hasNext())
         {
@@ -2625,7 +2619,7 @@ namespace AsynGyanis::Base
         return m_implementation->m_options;
     }
 
-    std::vector<std::string> &YamlReader::warnings()
+    std::vector<std::string> &YamlReader::warnings() const
     {
         // 即便尚未取事件也可能已产生警告，这里确保扫描已执行
         ensureScanned();

@@ -57,9 +57,9 @@ namespace AsynGyanis::Base
      */
     struct JsonEvent
     {
-        JsonEventType  type{JsonEventType::StreamEnd}; ///< 事件类型
-        std::string    text;                           ///< 文本载荷，含义随类型而定（见 JsonEventType）
-        TextPosition position;                       ///< 事件在输入中的起始位置
+        JsonEventType type{JsonEventType::StreamEnd}; ///< 事件类型
+        std::string   text;                           ///< 文本载荷，含义随类型而定（见 JsonEventType）
+        TextPosition  position;                       ///< 事件在输入中的起始位置
 
         /**
          * @brief 判断是否为容器开始事件
@@ -138,6 +138,7 @@ namespace AsynGyanis::Base
 
         // 读取器持有输入缓冲与扫描游标，拷贝会产生两份互不相干的流状态，语义不清晰，故禁止
         JsonReader(const JsonReader &) = delete;
+
         JsonReader &operator=(const JsonReader &) = delete;
 
         /**
@@ -213,16 +214,16 @@ namespace AsynGyanis::Base
          */
         enum class ScanPhase : std::uint8_t
         {
-            RootValue,        ///< 期待文档根值
-            RootEnd,          ///< 根值已完成，只允许空白（其后任何内容都是 TrailingContent）
-            ArrayFirst,       ///< 数组 '[' 之后：值或 ']'
-            ArrayElement,     ///< 数组 ',' 之后：值（宽松模式允许直接跟 ']'）
-            ArrayDelimiter,   ///< 数组元素之后：',' 或 ']'
-            ObjectFirstKey,   ///< 对象 '{' 之后：键或 '}'
-            ObjectKey,        ///< 对象 ',' 之后：键（宽松模式允许直接跟 '}'）
-            ObjectColon,      ///< 键之后：':'
-            ObjectValue,      ///< ':' 之后：值
-            ObjectDelimiter   ///< 成员值之后：',' 或 '}'
+            RootValue,      ///< 期待文档根值
+            RootEnd,        ///< 根值已完成，只允许空白（其后任何内容都是 TrailingContent）
+            ArrayFirst,     ///< 数组 '[' 之后：值或 ']'
+            ArrayElement,   ///< 数组 ',' 之后：值（宽松模式允许直接跟 ']'）
+            ArrayDelimiter, ///< 数组元素之后：',' 或 ']'
+            ObjectFirstKey, ///< 对象 '{' 之后：键或 '}'
+            ObjectKey,      ///< 对象 ',' 之后：键（宽松模式允许直接跟 '}'）
+            ObjectColon,    ///< 键之后：':'
+            ObjectValue,    ///< ':' 之后：值
+            ObjectDelimiter ///< 成员值之后：',' 或 '}'
         };
 
         /**
@@ -230,9 +231,9 @@ namespace AsynGyanis::Base
          */
         struct ContainerFrame
         {
-            bool      isObject{false};     ///< true 为对象、false 为数组
-            ScanPhase phase{ScanPhase::ArrayFirst}; ///< 当前阶段
-            std::size_t elementCount{0};   ///< 已确认的元素/成员个数（用于个数上限与尾逗号判定）
+            bool        isObject{false};              ///< true 为对象、false 为数组
+            ScanPhase   phase{ScanPhase::ArrayFirst}; ///< 当前阶段
+            std::size_t elementCount{0};              ///< 已确认的元素/成员个数（用于个数上限与尾逗号判定）
         };
 
         /**
@@ -393,17 +394,17 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] TextPosition positionAt(std::size_t index) const noexcept;
 
-        std::string       m_buffer;                    ///< 已喂入的输入缓冲（分片追加）
-        std::size_t       m_cursor{0};                 ///< 下一个待扫描字节，始终停在 token 起点
-        std::size_t       m_line{1};                   ///< 游标所在行号，从 1 起始
-        std::size_t       m_column{1};                 ///< 游标所在列号，从 1 起始
-        JsonParseOptions  m_options;                   ///< 解析选项快照
-        bool              m_finished{false};           ///< 是否已声明输入结束
-        bool              m_streamStarted{false};      ///< 是否已发出 StreamStart
-        bool              m_streamEnded{false};        ///< 是否已发出 StreamEnd
-        bool              m_bomResolved{false};        ///< 输入起始的 BOM 是否已判定完毕
-        ScanPhase         m_rootPhase{ScanPhase::RootValue}; ///< 根阶段（栈空时生效）
-        std::vector<ContainerFrame> m_stack;           ///< 未闭合容器栈，栈顶即当前容器
-        std::optional<JsonEvent>    m_pending;         ///< 单槽前瞻事件，供 hasNext() 探测而不消费
+        std::string                 m_buffer;                          ///< 已喂入的输入缓冲（分片追加）
+        std::size_t                 m_cursor{0};                       ///< 下一个待扫描字节，始终停在 token 起点
+        std::size_t                 m_line{1};                         ///< 游标所在行号，从 1 起始
+        std::size_t                 m_column{1};                       ///< 游标所在列号，从 1 起始
+        JsonParseOptions            m_options;                         ///< 解析选项快照
+        bool                        m_finished{false};                 ///< 是否已声明输入结束
+        bool                        m_streamStarted{false};            ///< 是否已发出 StreamStart
+        bool                        m_streamEnded{false};              ///< 是否已发出 StreamEnd
+        bool                        m_bomResolved{false};              ///< 输入起始的 BOM 是否已判定完毕
+        ScanPhase                   m_rootPhase{ScanPhase::RootValue}; ///< 根阶段（栈空时生效）
+        std::vector<ContainerFrame> m_stack;                           ///< 未闭合容器栈，栈顶即当前容器
+        std::optional<JsonEvent>    m_pending;                         ///< 单槽前瞻事件，供 hasNext() 探测而不消费
     };
 } // namespace AsynGyanis::Base

@@ -13,7 +13,6 @@
 #include "Base/Format/TextPosition.h"
 #include "Base/Format/Value/FormatValue.h"
 
-#include <cstddef>
 #include <string>
 #include <string_view>
 

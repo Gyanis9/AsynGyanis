@@ -4,7 +4,6 @@
 #include <charconv>
 #include <compare>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <utility>
 #include <variant>
@@ -21,8 +20,8 @@ namespace AsynGyanis::Base
          */
         std::string describeIndex(const std::size_t index)
         {
-            char       buffer[24];
-            const auto [pointer, errorCode] = std::to_chars(buffer, buffer + sizeof(buffer), index);
+            char        buffer[24];
+            const auto  [pointer, errorCode] = std::to_chars(buffer, buffer + sizeof(buffer), index);
             std::string description("[");
             if (errorCode == std::errc())
             {
@@ -503,7 +502,7 @@ namespace AsynGyanis::Base
 
     FormatValue &FormatValue::operator[](const size_t index)
     {
-        FormatValueArray &array = as<FormatValueArray>();
+        auto &array = as<FormatValueArray>();
         // 刻意不自动扩容：越界读取必然抛错，避免「读越界反而改结构」
         if (index >= array.size())
         {
@@ -557,7 +556,7 @@ namespace AsynGyanis::Base
     FormatValue &FormatValue::set(const std::string_view key, FormatValue value)
     {
         // 非对象直接抛类型不匹配：变更类接口从不隐式改造当前值的类型
-        FormatValueObject &members = as<FormatValueObject>();
+        auto &members = as<FormatValueObject>();
         return members.insert_or_assign(std::string(key), std::move(value)).first->second;
     }
 
@@ -596,7 +595,7 @@ namespace AsynGyanis::Base
 
     FormatValue &FormatValue::insert(const size_t index, FormatValue value)
     {
-        FormatValueArray &elements = as<FormatValueArray>();
+        auto &elements = as<FormatValueArray>();
         // index == size() 等价于尾插；超过则越界，不自动补齐空位
         if (index > elements.size())
         {

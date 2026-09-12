@@ -204,8 +204,7 @@ namespace AsynGyanis::Base
         return write(value, options);
     }
 
-    void JsonWriter::appendValue(std::string &           output, const FormatValue &value, const std::size_t indentationLevel,
-                                 const JsonWriteOptions &options)
+    void JsonWriter::appendValue(std::string &output, const FormatValue &value, const std::size_t indentationLevel, const JsonWriteOptions &options)
     {
         const FormatValueType valueType = value.type();
 

@@ -12,7 +12,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <type_traits>
 
 namespace AsynGyanis::Base
 {

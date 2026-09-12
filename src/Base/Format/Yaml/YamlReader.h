@@ -12,7 +12,6 @@
 #include "Base/Format/Yaml/YamlEvent.h"
 #include "Base/Format/Yaml/YamlParseOptions.h"
 
-#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -80,6 +79,7 @@ namespace AsynGyanis::Base
 
         // 读取器持有输入缓冲与扫描状态，拷贝会产生两份互不相干的游标，语义不清晰，故禁止
         YamlReader(const YamlReader &) = delete;
+
         YamlReader &operator=(const YamlReader &) = delete;
 
         /**
@@ -89,28 +89,28 @@ namespace AsynGyanis::Base
          * @param chunk 待追加的文本片段
          * @throws FormatError 已开始取事件后仍尝试喂入
          */
-        void feed(std::string_view chunk);
+        void feed(std::string_view chunk) const;
 
         /**
          * @brief 声明输入结束并触发事件生成
          * @details 幂等；未调用时 nextEvent() 返回空。
          * @throws FormatError 输入超出 maximumInputLength
          */
-        void finish();
+        void finish() const;
 
         /**
          * @brief 判断是否还有未取用的事件
          * @details 首次调用会触发扫描（必要时先补上隐式 finish）。
          * @return true 尚有事件可取
          */
-        [[nodiscard]] bool hasNext();
+        [[nodiscard]] bool hasNext() const;
 
         /**
          * @brief 取出下一条事件
          * @return std::optional<YamlEvent> 下一条事件；事件耗尽后返回空
          * @throws FormatError 扫描期发现语法错误（错误的 kind 与行列已写入异常）
          */
-        [[nodiscard]] std::optional<YamlEvent> nextEvent();
+        [[nodiscard]] std::optional<YamlEvent> nextEvent() const;
 
         /**
          * @brief 一次性读取全部事件
@@ -137,14 +137,14 @@ namespace AsynGyanis::Base
          * @return std::vector<std::string>& 警告文本列表，按出现顺序
          * @throws FormatError 扫描期发现语法错误
          */
-        std::vector<std::string> &warnings();
+        [[nodiscard]] std::vector<std::string> &warnings() const;
 
     private:
         /**
          * @brief 触发一次扫描并缓存事件（幂等）
          * @throws FormatError 语法非法或超出选项上限
          */
-        void ensureScanned();
+        void ensureScanned() const;
 
         std::unique_ptr<YamlReaderImplementation> m_implementation; ///< 扫描器实现（含输入缓冲与事件缓存）
     };

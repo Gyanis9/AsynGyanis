@@ -11,7 +11,6 @@
 
 #include "Base/Format/Json/JsonWriteOptions.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -76,6 +75,7 @@ namespace AsynGyanis::Base
 
         // 写出器持有输出的层级状态，拷贝会产生两份各自追加、彼此无关的文本，语义不清晰，故禁止
         JsonStreamWriter(const JsonStreamWriter &) = delete;
+
         JsonStreamWriter &operator=(const JsonStreamWriter &) = delete;
 
         /**
@@ -194,8 +194,8 @@ namespace AsynGyanis::Base
          */
         struct ContainerFrame
         {
-            bool        isObject{false};    ///< true 为对象、false 为数组
-            std::size_t elementCount{0};    ///< 已写出的元素/成员个数，用于决定是否先写分隔符
+            bool        isObject{false}; ///< true 为对象、false 为数组
+            std::size_t elementCount{0}; ///< 已写出的元素/成员个数，用于决定是否先写分隔符
         };
 
         /**
@@ -232,10 +232,10 @@ namespace AsynGyanis::Base
          */
         void endContainer(bool isObject);
 
-        JsonWriteOptions            m_options;                  ///< 序列化选项快照
-        std::string                 m_output;                   ///< 已拼装的输出文本
-        std::vector<ContainerFrame> m_stack;                    ///< 未闭合容器栈
+        JsonWriteOptions            m_options;                       ///< 序列化选项快照
+        std::string                 m_output;                        ///< 已拼装的输出文本
+        std::vector<ContainerFrame> m_stack;                         ///< 未闭合容器栈
         bool                        m_expectingValueAfterKey{false}; ///< 刚写出键，下一个写出必须是它的值
-        bool                        m_rootValueWritten{false};  ///< 根值是否已写出（防止拼出两段文档）
+        bool                        m_rootValueWritten{false};       ///< 根值是否已写出（防止拼出两段文档）
     };
 } // namespace AsynGyanis::Base

@@ -34,8 +34,8 @@ namespace AsynGyanis::Base
                 return std::nullopt;
             }
 
-            std::size_t value = 0;
-            const auto [pointer, errorCode] = std::from_chars(token.data(), token.data() + token.size(), value);
+            std::size_t value                = 0;
+            const auto  [pointer, errorCode] = std::from_chars(token.data(), token.data() + token.size(), value);
             // from_chars 对无符号目标天然拒绝 '-' 与 '+'，此处只需确认全量消费且未越界
             if (errorCode != std::errc() || pointer != token.data() + token.size())
             {
@@ -71,7 +71,7 @@ namespace AsynGyanis::Base
         std::size_t index = 1;
         while (true)
         {
-            const std::size_t slash = text.find('/', index);
+            const std::size_t      slash = text.find('/', index);
             const std::string_view token = slash == std::string_view::npos
                                                ? text.substr(index)
                                                : text.substr(index, slash - index);
@@ -137,8 +137,8 @@ namespace AsynGyanis::Base
                 throw FormatError(FormatErrorKind::InvalidPointer,
                                   "JSON Pointer 中的 '~' 之后必须是 '0' 或 '1'",
                                   TextPosition{.lineNumber = 1,
-                                                 .columnNumber = tokenOffsetInPointer + index + 1,
-                                                 .offset = tokenOffsetInPointer + index});
+                                               .columnNumber = tokenOffsetInPointer + index + 1,
+                                               .offset = tokenOffsetInPointer + index});
             }
 
             const char escapedCharacter = token[index + 1];
@@ -153,8 +153,8 @@ namespace AsynGyanis::Base
                 throw FormatError(FormatErrorKind::InvalidPointer,
                                   std::format("JSON Pointer 中出现非法的转义序列：~{}", escapedCharacter),
                                   TextPosition{.lineNumber = 1,
-                                                 .columnNumber = tokenOffsetInPointer + index + 1,
-                                                 .offset = tokenOffsetInPointer + index});
+                                               .columnNumber = tokenOffsetInPointer + index + 1,
+                                               .offset = tokenOffsetInPointer + index});
             }
 
             // 单趟读取 "~x" 两字符，等价于官方要求的「先还原 ~1 再还原 ~0」，

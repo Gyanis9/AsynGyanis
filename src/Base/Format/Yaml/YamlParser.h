@@ -12,7 +12,6 @@
 #include "Base/Format/Value/FormatValue.h"
 #include "Base/Format/Yaml/YamlParseOptions.h"
 
-#include <cstddef>
 #include <string_view>
 #include <vector>
 

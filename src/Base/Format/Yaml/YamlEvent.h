@@ -13,7 +13,6 @@
 
 #include <cstdint>
 #include <string>
-#include <string_view>
 
 namespace AsynGyanis::Base
 {
@@ -64,8 +63,8 @@ namespace AsynGyanis::Base
      */
     struct YamlEvent
     {
-        YamlEventType  type{YamlEventType::StreamEnd}; ///< 事件类型
-        YamlScalarStyle style{YamlScalarStyle::Plain}; ///< 标量风格；非 Scalar 事件无意义
+        YamlEventType   type{YamlEventType::StreamEnd}; ///< 事件类型
+        YamlScalarStyle style{YamlScalarStyle::Plain};  ///< 标量风格；非 Scalar 事件无意义
 
         std::string text; ///< 标量解码/折叠后的最终文本；非 Scalar 事件为空
 

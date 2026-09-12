@@ -112,20 +112,20 @@ namespace AsynGyanis::Base
     {
     public:
         using VariantType = std::variant<
-            std::nullptr_t,   ///< Null
-            bool,             ///< Bool
-            int64_t,          ///< Int
-            double,           ///< Double
-            std::string,      ///< String
-            FormatValueArray, ///< Array
-            FormatValueObject,///< Object
-            std::uint64_t     ///< UInt
+            std::nullptr_t,    ///< Null
+            bool,              ///< Bool
+            int64_t,           ///< Int
+            double,            ///< Double
+            std::string,       ///< String
+            FormatValueArray,  ///< Array
+            FormatValueObject, ///< Object
+            std::uint64_t      ///< UInt
         >;
 
-        using ArrayIterator      = FormatValueArray::iterator;             ///< 数组元素可写迭代器
-        using ArrayConstIterator = FormatValueArray::const_iterator;       ///< 数组元素只读迭代器
-        using MemberIterator     = FormatValueObject::iterator;            ///< 对象成员可写迭代器
-        using MemberConstIterator = FormatValueObject::const_iterator;     ///< 对象成员只读迭代器
+        using ArrayIterator       = FormatValueArray::iterator;        ///< 数组元素可写迭代器
+        using ArrayConstIterator  = FormatValueArray::const_iterator;  ///< 数组元素只读迭代器
+        using MemberIterator      = FormatValueObject::iterator;       ///< 对象成员可写迭代器
+        using MemberConstIterator = FormatValueObject::const_iterator; ///< 对象成员只读迭代器
 
         // 变体下标必须与 FormatValueType 枚举值一一对应，type() 依赖该映射
         static_assert(std::is_same_v<std::variant_alternative_t<0, VariantType>, std::nullptr_t>);

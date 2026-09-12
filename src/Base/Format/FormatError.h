@@ -73,8 +73,8 @@ namespace AsynGyanis::Base
         [[nodiscard]] FormatErrorKind kind() const noexcept;
 
     private:
-        TextPosition   m_position;               ///< 出错位置快照
-        std::string      m_reason;                 ///< 未拼接位置与基类前缀的错误原因
-        FormatErrorKind  m_kind{FormatErrorKind::None}; ///< 错误分类
+        TextPosition    m_position;                    ///< 出错位置快照
+        std::string     m_reason;                      ///< 未拼接位置与基类前缀的错误原因
+        FormatErrorKind m_kind{FormatErrorKind::None}; ///< 错误分类
     };
 } // namespace AsynGyanis::Base

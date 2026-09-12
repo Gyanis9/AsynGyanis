@@ -53,6 +53,7 @@ namespace AsynGyanis::Base
         // 键与字符串值共用 JsonWriter 的转义实现，确保与 DOM 写出逐字节一致
         m_output += JsonWriter::write(FormatValue(std::string(key)), m_options);
         m_output += m_options.indentWidth > 0 ? ": " : ":";
+
         m_expectingValueAfterKey = true;
     }
 
