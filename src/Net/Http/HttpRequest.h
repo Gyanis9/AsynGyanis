@@ -144,10 +144,12 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 从 URI 中提取路径部分（'?' 之前的内容，不含查询参数）。
-         * @return 路径字符串；URI 为空时返回空串
+         * @return 路径视图；URI 为空时返回空视图
          * @note 返回的是原始文本，未做百分号解码
+         * @note 返回**视图**而不是副本：它指向本对象持有的 URI，生命周期跟随本请求对象。
+         *       路由这类每请求都要看路径的地方因此不必再付一次字符串拷贝
          */
-        [[nodiscard]] std::string path() const;
+        [[nodiscard]] std::string_view path() const;
 
         /**
          * @brief 解析 URI 中的查询参数（'?' 之后的 key=value 串）。

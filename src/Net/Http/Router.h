@@ -259,7 +259,33 @@ namespace AsynGyanis::Net
         static void finalizeResponse(const HttpRequest &request, HttpResponse &response);
 
         /// 一级索引：字面路径 → 该路径上的方法绑定候选（通常 1~2 条，先到先得）
-        std::unordered_map<std::string, std::vector<ExactRoute>> m_exactRoutes;
+        /**
+         * @brief 字符串视图的透明哈希，让「按路径查精确路由」不必先把视图变成 std::string
+         *
+         * @details 请求路径以视图形式在路由内部流转（request.path() 返回视图），而 unordered_map
+         *          默认的哈希只认 key_type：没有 is_transparent，find(string_view) 会先构造一个
+         *          临时 std::string，等于把省下的那次路径串拷贝又原样还回去。等值比较也要换成
+         *          透明的 std::equal_to<>，两者缺一，异构查找就不成立。
+         */
+        struct TransparentStringHash
+        {
+            using is_transparent = void; ///< 开启 unordered_map 的异构查找
+
+            /**
+             * @brief 计算视图的哈希
+             * @param text 待哈希的视图
+             * @return std::size_t 哈希值（对同一文本与 std::hash<std::string> 一致）
+             */
+            [[nodiscard]] std::size_t operator()(const std::string_view text) const noexcept
+            {
+                return std::hash<std::string_view>{}(text);
+            }
+        };
+
+        /// 精确路由表：路径 → 该路径上的全部候选（哈希与相等比较都支持 string_view）
+        using ExactRouteTable = std::unordered_map<std::string, std::vector<ExactRoute>, TransparentStringHash, std::equal_to<>>;
+
+        ExactRouteTable m_exactRoutes; ///< 精确路由表（异构查找免去每请求一次路径串拷贝）
 
         /// 二级索引：参数化/通配路由列表，按注册顺序线性扫描，先注册者优先
         std::vector<PatternRoute> m_patternRoutes;

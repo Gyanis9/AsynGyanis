@@ -344,32 +344,45 @@ namespace AsynGyanis::Net
 
     Core::Task<> Router::route(HttpRequest &request, HttpResponse &response)
     {
-        const std::string requestPath = request.path();
+        // 路径取视图而不是副本：request.path() 返回指向请求对象的视图，路由这里只读不改，
+        // 每请求因此省掉一次路径串拷贝（精确路由的查找靠下面的透明哈希做到零分配）
+        const std::string_view requestPath = request.path();
         const HttpMethod  requestMethod = request.method();
 
         // 方法是否被本框架收录：未收录（CONNECT/TRACE/M-SEARCH 等）一律不进业务匹配。
         // 旧实现把 UNKNOWN 当通配方法用，于是任何畸形方法都能蹭到兜底路由上。
         const bool isRequestMethodRecognized = requestMethod != HttpMethod::UNKNOWN;
 
-        // 本条路径上允许的方法集合，用于路径命中而方法不合时生成 405 的 Allow 头
-        std::vector<HttpMethod> allowedMethodSet;
-        auto rememberAllowedMethod = [&](const HttpMethod routeMethod, const bool routeMatchesAnyMethod)
+        // 本条路径上允许的方法集合，用于路径命中而方法不合时生成 405 的 Allow 头。
+        // 用定长数组而不是 vector：收录的方法一共 7 个，any() 路由至多把它们全列一遍，
+        // 8 个位置足够——为它每请求分配一次堆内存不值当
+        constexpr std::size_t kMaximumAllowedMethodCount = kRecognizedMethodOrder.size() + 1;
+        std::array<HttpMethod, kMaximumAllowedMethodCount> allowedMethodSet{};
+        std::size_t allowedMethodCount = 0;
+        const auto  isMethodAllowed = [&allowedMethodSet, &allowedMethodCount](const HttpMethod method)
+        {
+            const auto end = allowedMethodSet.begin() + static_cast<std::ptrdiff_t>(allowedMethodCount);
+            return std::find(allowedMethodSet.begin(), end, method) != end;
+        };
+        const auto rememberAllowedMethod = [&](const HttpMethod routeMethod, const bool routeMatchesAnyMethod)
         {
             if (routeMatchesAnyMethod)
             {
                 // any() 路由等价于把全部收录方法都声明一遍
                 for (const HttpMethod recognizedMethod: kRecognizedMethodOrder)
                 {
-                    if (std::find(allowedMethodSet.begin(), allowedMethodSet.end(), recognizedMethod) == allowedMethodSet.end())
+                    if (!isMethodAllowed(recognizedMethod))
                     {
-                        allowedMethodSet.push_back(recognizedMethod);
+                        allowedMethodSet[allowedMethodCount] = recognizedMethod;
+                        ++allowedMethodCount;
                     }
                 }
                 return;
             }
-            if (std::find(allowedMethodSet.begin(), allowedMethodSet.end(), routeMethod) == allowedMethodSet.end())
+            if (!isMethodAllowed(routeMethod))
             {
-                allowedMethodSet.push_back(routeMethod);
+                allowedMethodSet[allowedMethodCount] = routeMethod;
+                ++allowedMethodCount;
             }
         };
 
@@ -438,14 +451,14 @@ namespace AsynGyanis::Net
         }
 
         // 路径压根没注册过 → 404；注册过但方法都不合 → 405 + Allow
-        const bool isMethodNotAllowed = !allowedMethodSet.empty();
+        const bool isMethodNotAllowed = allowedMethodCount != 0;
         std::string allowedMethods;
         if (isMethodNotAllowed)
         {
             // 按固定顺序输出，保证 Allow 头的字面量与注册顺序无关
             for (const HttpMethod recognizedMethod: kRecognizedMethodOrder)
             {
-                if (std::find(allowedMethodSet.begin(), allowedMethodSet.end(), recognizedMethod) == allowedMethodSet.end())
+                if (!isMethodAllowed(recognizedMethod))
                 {
                     continue;
                 }

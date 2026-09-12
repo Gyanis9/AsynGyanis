@@ -219,14 +219,16 @@ namespace AsynGyanis::Net
         return m_body;
     }
 
-    std::string HttpRequest::path() const
+    std::string_view HttpRequest::path() const
     {
-        // 路径与查询串以第一个 '?' 为界；'?' 之前一律算路径，即使里面还有 '?' 也不切开
-        if (const std::size_t queryPosition = m_uri.find('?'); queryPosition != std::string::npos)
+        // 路径与查询串以第一个 '?' 为界；'?' 之前一律算路径，即使里面还有 '?' 也不切开。
+        // 返回视图，指向本对象持有的 URI——调用方在请求对象存活期间内使用即可
+        const std::string_view uriView(m_uri);
+        if (const std::size_t queryPosition = uriView.find('?'); queryPosition != std::string_view::npos)
         {
-            return m_uri.substr(0, queryPosition);
+            return uriView.substr(0, queryPosition);
         }
-        return m_uri;
+        return uriView;
     }
 
     std::string HttpRequest::percentDecode(const std::string_view source)
