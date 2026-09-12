@@ -6,11 +6,14 @@
 //       WSASend 里发完（Windows 回环不制造部分写，此前实测过），构造不出确定性的「写阻塞」。
 //       机制（发送前按 writeTimeout 刷新截止时间）仍在实现里，端到端验证只能在真实网络上做。
 //   五. 拒绝面：清扫节拍设为 0 时，同一份空闲连接不再被超时收口。
+//   六. 优雅关闭（TcpServer::drain）：在途请求被等完才收口（客户端拿到完整响应），
+//      处理时间远超期限时则在期限附近返回并强关连接。
 // 用例全部走真实回环套接字（清扫协程在 TcpServer 内部），不依赖任何外部服务。
 
 #include "Net/Http/HttpServer.h"
 
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -42,6 +45,9 @@ namespace AsynGyanis::Net
 
         /// 客户端单次读取的切片大小
         constexpr std::size_t kClientChunkLength = 16 * 1024;
+
+        /// drain 期限用例允许的超期余量：一个轮询节拍（TcpServer 内部 50ms）加上线程唤醒与观测误差
+        constexpr std::chrono::milliseconds kDrainReturnSlack{500};
 
         /**
          * @brief 在超时上限内逐毫秒轮询等待条件成立
@@ -391,6 +397,17 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 慢路由选项：用例用它构造「处理中」的在途请求
+         * @details 处理函数只在第一次进入时置位 started 标记，用例先等到该标记再发起 drain，
+         *          才能保证 drain 那一刻这条连接确实处在「有在途工作」的状态。
+         */
+        struct SlowRouteOptions
+        {
+            std::chrono::milliseconds processingTime{0};      ///< 该路由的处理耗时；非正数表示不注册这条路由
+            std::atomic<bool>      *handlerStarted{nullptr};  ///< 处理函数进入时置位的标记，可空
+        };
+
+        /**
          * @brief 跑起一台真实 HttpServer 的夹具
          * @details 成员顺序即生命周期顺序：循环 → 结果槽 → 服务器 → 主协程任务 → 循环线程。
          *          析构体先让服务器收手（stop + 关闭全部连接），再按逆序 join 线程、销毁协程帧与服务器。
@@ -402,8 +419,10 @@ namespace AsynGyanis::Net
              * @brief 构造并启动服务器
              * @param limits 连接级限额
              * @param sweepInterval 空闲清扫节拍
+             * @param slowRoute 可选的慢路由（处理耗时与进入标记）
              */
-            RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval) :
+            RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
+                                     const SlowRouteOptions &slowRoute = {}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0)),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -418,6 +437,27 @@ namespace AsynGyanis::Net
                     response.setBody("served-hello");
                     co_return;
                 });
+
+                // 慢路由用定时等待模拟「处理中」：定时等待挂在事件循环上，因此 drain 与本请求都能照常推进，
+                // 处理耗时越长，越能分辨「等完在途请求」与「等满死期限」
+                if (slowRoute.processingTime > std::chrono::milliseconds::zero())
+                {
+                    Core::EventLoop &loop = m_loop;
+                    m_server.router().get("/slow",
+                                          [&loop, processingTime = slowRoute.processingTime, handlerStarted = slowRoute.handlerStarted](
+                                                  HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        // 先置位再等待：用例据此确认此刻连接已被标记为「有在途工作」
+                        if (handlerStarted != nullptr)
+                        {
+                            handlerStarted->store(true, std::memory_order_release);
+                        }
+                        Core::Timer processingTimer(loop);
+                        co_await processingTimer.waitFor(processingTime);
+                        response.setBody("served-slow");
+                        co_return;
+                    });
+                }
 
                 m_loopThread.schedule(m_serverTask);
             }
@@ -466,6 +506,27 @@ namespace AsynGyanis::Net
                         timeout);
             }
 
+            /**
+             * @brief 把 drain() 投到循环线程并等它跑完
+             * @details drain 只能在所属循环线程上运行：本方法按 scheduleRemote 投递，并把任务对象留在
+             *          成员里活到跑完（协程帧必须有人持有）。完成标记每次调用先清空，可重复调用。
+             * @param drainTimeout 交给 drain 的最长等待时长
+             * @param waitTimeout 本方法自身的等待上限
+             * @return true drain 在时限内完成
+             */
+            [[nodiscard]] bool drainServer(const std::chrono::milliseconds drainTimeout, const std::chrono::milliseconds waitTimeout)
+            {
+                m_drainFinished.store(false, std::memory_order_release);
+                m_drainTask = driveDrain(m_server, m_drainFinished, drainTimeout);
+                m_loopThread.schedule(m_drainTask);
+                return waitForCondition(
+                        [this]
+                        {
+                            return m_drainFinished.load(std::memory_order_acquire);
+                        },
+                        waitTimeout);
+            }
+
             /// 内核实际分配的监听端口
             [[nodiscard]] std::uint16_t listeningPort() const
             {
@@ -498,10 +559,26 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
+            /**
+             * @brief 把 drain() 包一层，跑完即置位完成标记
+             * @param server 被测服务器
+             * @param drainFinished 输出：drain 是否已返回
+             * @param drainTimeout 交给 drain 的最长等待时长
+             * @return Core::Task<> 协程，drain 返回后完成
+             */
+            static Core::Task<> driveDrain(TestHttpServer &server, std::atomic<bool> &drainFinished, const std::chrono::milliseconds drainTimeout)
+            {
+                co_await server.drain(drainTimeout);
+                drainFinished.store(true, std::memory_order_release);
+                co_return;
+            }
+
             Core::EventLoop    m_loop;       ///< 事件循环本体
             std::atomic<bool>  m_startThrew{false}; ///< start() 的退出方式，必须先于任务构造
             TestHttpServer     m_server;     ///< 被测服务器
             Core::Task<>       m_serverTask; ///< 由 driveStart 产生的主协程任务
+            std::atomic<bool>  m_drainFinished{false}; ///< drain 是否已返回，必须先于 drain 任务构造
+            Core::Task<>       m_drainTask{nullptr};  ///< 由 driveDrain 产生的 drain 协程任务
             EventLoopThread    m_loopThread; ///< 承载 run() 的线程，最后构造、最先析构
         };
 
@@ -657,5 +734,105 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{1000}))
                 << "清扫已按节拍 0 关闭，空闲连接却仍被收口";
         EXPECT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器在接受循环期间意外退出";
+    }
+
+    TEST(HttpServerLimits, DrainWaitsForInFlightRequestToFinish)
+    {
+        // 钉住：drain 会把在途请求等完——客户端拿到完整响应、连接随后关闭，且 drain 在期限之前返回
+        // （证明它等的不是死期限）。处理耗时 150ms 远小于下面 4s 的期限，两者区分得开
+        HttpServerLimits limits;
+        limits.idleTimeout  = std::chrono::seconds{10};
+        limits.readTimeout  = std::chrono::seconds{10};
+        limits.writeTimeout = std::chrono::seconds{10};
+
+        std::atomic<bool> handlerStarted{false};
+        SlowRouteOptions  slowRoute;
+        slowRoute.processingTime = std::chrono::milliseconds{150};
+        slowRoute.handlerStarted = &handlerStarted;
+
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{50}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
+
+        // 与 drain 对齐：必须等处理函数真的进入在途状态再发起优雅关闭，否则 drain 可能在请求被读入
+        // 之前就把这条还空闲的连接收掉，用例就不再是「等在途请求」了
+        ASSERT_TRUE(waitForCondition(
+                [&handlerStarted]
+                {
+                    return handlerStarted.load(std::memory_order_acquire);
+                },
+                kWaitTimeout)) << "慢路由未在时限内开始处理：上界 kWaitTimeout";
+
+        constexpr std::chrono::milliseconds drainTimeout{4000};
+        const auto                               drainStartTime = std::chrono::steady_clock::now();
+        ASSERT_TRUE(fixture.drainServer(drainTimeout, kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
+        const std::chrono::milliseconds drainElapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
+
+        // 在途请求被等完：完整响应到达客户端，连接随后才关闭
+        std::string receivedText;
+        EXPECT_TRUE(client.waitForText(receivedText, "served-slow", kWaitTimeout)) << "在途请求的响应没有发完";
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "drain 完成后连接仍未关闭";
+
+        // 耗时应覆盖处理时间（下界 100ms 留出对齐全过程的开销）且远小于期限：
+        // 前者证明它确实等在了在途请求上，后者证明它没有按死期限空等到期
+        EXPECT_GE(drainElapsed, std::chrono::milliseconds{100})
+                << "drain 没有等在在途请求上，耗时仅 " << drainElapsed.count() << "ms（处理耗时 150ms）";
+        EXPECT_LT(drainElapsed, drainTimeout) << "drain 等满了期限：在途请求没被识别为在途工作，耗时 " << drainElapsed.count() << "ms";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+    }
+
+    TEST(HttpServerLimits, DrainForcesCloseWhenDeadlineExpires)
+    {
+        // 钉住：处理时间远超期限时，drain 在期限附近返回并把连接强关——兜底分支真的会收手，
+        // 不会因为连接始终不清空而无限等下去
+        HttpServerLimits limits;
+        limits.idleTimeout  = std::chrono::seconds{10};
+        limits.readTimeout  = std::chrono::seconds{10};
+        limits.writeTimeout = std::chrono::seconds{10};
+
+        std::atomic<bool> handlerStarted{false};
+        SlowRouteOptions  slowRoute;
+        slowRoute.processingTime = std::chrono::milliseconds{1500};
+        slowRoute.handlerStarted = &handlerStarted;
+
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{50}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
+        ASSERT_TRUE(waitForCondition(
+                [&handlerStarted]
+                {
+                    return handlerStarted.load(std::memory_order_acquire);
+                },
+                kWaitTimeout)) << "慢路由未在时限内开始处理：上界 kWaitTimeout";
+
+        constexpr std::chrono::milliseconds drainTimeout{300};
+        const auto                               drainStartTime = std::chrono::steady_clock::now();
+        ASSERT_TRUE(fixture.drainServer(drainTimeout, kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
+        const std::chrono::milliseconds drainElapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
+
+        // 期限附近返回：下界是 drainTimeout（期限从协程自己开始跑起算，只会更晚），上界留一个节拍加唤醒误差
+        EXPECT_GE(drainElapsed, drainTimeout) << "drain 在期限之前就返回了，耗时 " << drainElapsed.count() << "ms";
+        EXPECT_LT(drainElapsed, drainTimeout + kDrainReturnSlack)
+                << "drain 远超期限才返回，耗时 " << drainElapsed.count() << "ms（期限 " << drainTimeout.count() << "ms）";
+
+        // 连接被强关，且未完成的响应不会被发出去
+        std::string receivedText;
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "期限到点后连接没有被强关";
+        EXPECT_EQ(receivedText.find("served-slow"), std::string::npos) << "处理未完成的响应不该出现在客户端";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 } // namespace AsynGyanis::Net

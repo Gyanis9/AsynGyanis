@@ -22,6 +22,8 @@
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Router.h"
 
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <memory>
 #include <string>
@@ -65,6 +67,38 @@ namespace
             response.setBody("OK");
             co_return;
         });
+    }
+
+    /// 优雅关闭的等待上限：给在途请求留出把响应发完的时间，超出后由 drain 内部强制收口
+    constexpr std::chrono::milliseconds kShutdownDrainTimeout{5000};
+
+    /**
+     * @brief 在服务器所属的循环线程上执行 stop()
+     * @details stop() 关闭的监听描述符正被该循环上的 accept 协程使用，只能在那个线程上调用；
+     *          它本身是同步动作，包成一个立即完成的协程是为了便于按 scheduleRemote 投递。
+     * @param server 目标服务器
+     * @return Core::Task<> 协程，调用 stop() 后立即完成
+     */
+    Core::Task<> stopServerTask(Net::TcpServer &server)
+    {
+        server.stop();
+        co_return;
+    }
+
+    /**
+     * @brief 投递给单个服务器的优雅关闭协程
+     * @details 跑完 drain() 后递减待完成计数，主线程据此判断所有服务器都已收手。
+     * @param server 目标服务器
+     * @param drainTimeout 交给 drain 的最长等待时长
+     * @param remainingDrainCount 输入输出：尚未完成的 drain 条数，完成一条减一
+     * @return Core::Task<> 协程，drain 返回后立即完成
+     */
+    Core::Task<> drainServerTask(Net::TcpServer &server, const std::chrono::milliseconds drainTimeout,
+                                 std::atomic<std::size_t> &remainingDrainCount)
+    {
+        co_await server.drain(drainTimeout);
+        remainingDrainCount.fetch_sub(1, std::memory_order_acq_rel);
+        co_return;
     }
 }
 
@@ -185,6 +219,35 @@ int main(int argc, char **argv)
     }
 
     LOG_INFO("Received shutdown signal, stopping server...");
+
+    // 关停分三步：停止接受新连接 → 等在途请求做完（超时兜底强关）→ 停运行时。
+    // 前两步都要在服务器所属的循环线程上执行（它们要动那个循环正在使用的监听器与套接字），
+    // 因此统一按 scheduleRemote 投递；任务对象必须留到跑完，由本向量持有到 main 结束
+    std::vector<Core::Task<>> shutdownTasks;
+    shutdownTasks.reserve(servers.size() * 2);
+
+    for (std::size_t index = 0; index < servers.size(); ++index)
+    {
+        Core::Task<> stopTask = stopServerTask(*servers[index]);
+        pool.eventLoop(index).scheduler().scheduleRemote(stopTask.handle());
+        shutdownTasks.push_back(std::move(stopTask));
+    }
+
+    // drain 自己在各自的循环线程上排队推进，主线程只等这个计数归零
+    std::atomic<std::size_t> remainingDrainCount{servers.size()};
+    for (std::size_t index = 0; index < servers.size(); ++index)
+    {
+        Core::Task<> drainTask = drainServerTask(*servers[index], kShutdownDrainTimeout, remainingDrainCount);
+        pool.eventLoop(index).scheduler().scheduleRemote(drainTask.handle());
+        shutdownTasks.push_back(std::move(drainTask));
+    }
+
+    LOG_INFO_FMT("Draining {} server instance(s), in-flight requests get up to {}ms...", servers.size(), kShutdownDrainTimeout.count());
+    while (remainingDrainCount.load(std::memory_order_acquire) > 0)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
     context.stop();
 
     LOG_INFO("Server stopped successfully");

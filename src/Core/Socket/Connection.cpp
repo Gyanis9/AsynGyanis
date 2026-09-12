@@ -12,6 +12,7 @@ namespace AsynGyanis::Core
         m_socket(std::move(other.m_socket)),
         m_cancelable(std::move(other.m_cancelable)),
         m_alive(other.m_alive.load(std::memory_order_acquire)),
+        m_busy(other.m_busy),
         m_idleDeadline(std::move(other.m_idleDeadline))
     {
     }
@@ -23,6 +24,7 @@ namespace AsynGyanis::Core
             m_socket       = std::move(other.m_socket);
             m_cancelable   = std::move(other.m_cancelable);
             m_idleDeadline = std::move(other.m_idleDeadline);
+            m_busy         = other.m_busy;
             m_alive.store(other.m_alive.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -89,6 +91,17 @@ namespace AsynGyanis::Core
     {
         // 没有截止时间的连接一律不判超期：非 HTTP 会话从未刷过它，不该被空闲清扫误伤
         return m_idleDeadline.has_value() && now >= *m_idleDeadline;
+    }
+
+    void Connection::setBusy(const bool busy) noexcept
+    {
+        // 只被所属事件循环线程写：不引入原子量，也不与 isAlive() 那类跨线程状态耦合
+        m_busy = busy;
+    }
+
+    bool Connection::isBusy() const noexcept
+    {
+        return m_busy;
     }
 
 }

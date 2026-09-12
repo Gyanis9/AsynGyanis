@@ -2,7 +2,7 @@
  * @file TcpServer.h
  * @brief TCP 服务器基类：组合 TcpAcceptor 与 ConnectionManager 的接受循环
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -92,6 +92,21 @@ namespace AsynGyanis::Net
         void close();
 
         /**
+         * @brief 优雅关闭：停止接受新连接，等在途请求做完，到期兜底强关
+         * @details 与 close() 的区别就在「等」：先 stop()，再按小间隔轮询连接管理器——没有在途工作
+         *          的连接立刻收掉，有在途请求的连接则留出把响应发完的时间；只有期限到了才用
+         *          ConnectionManager::shutdown() 强关剩余连接。等待期间在途请求仍被正常服务，
+         *          定时等待挂在事件循环上，因此本协程不会把循环阻塞住。
+         * @param drainTimeout 最长等待时长；非正数表示不等待，直接强关全部连接（等价于 close()）
+         * @return Core::Task<> 协程，连接已清空或期限到时完成
+         * @note 线程约束同 stop()：必须由运行本服务器事件循环的那个线程调用。本协程要遍历并关闭
+         *       各连接的套接字，还要挂定时等待，因此只能作为协程投递到那个循环
+         *       （EventLoop::scheduler().scheduleRemote()）后运行，不要在外部线程同步调用
+         * @see close(), stop()
+         */
+        Core::Task<> drain(std::chrono::milliseconds drainTimeout);
+
+        /**
          * @brief 设置最大并发连接数
          * @param maximumConnectionCount 允许同时存活的连接条数，0 表示不做限制
          * @note 必须在 start() 之前调用；循环期间修改虽能被读到，但已排队的连接不受新上限约束
@@ -158,10 +173,14 @@ namespace AsynGyanis::Net
         /// 空闲清扫的默认节拍（毫秒）：够密以免超时被成倍放大，又不会让空闲服务器频繁空转
         static constexpr std::chrono::milliseconds kDefaultIdleCheckInterval{250};
 
+        /// drain 的轮询间隔（毫秒）：决定它多久复查一次「连接是否已清空」，间隔越小收手越及时，
+        /// 代价是等待期间在事件循环上多几次空转唤醒
+        static constexpr std::chrono::milliseconds kDrainPollInterval{50};
+
         std::atomic<bool>              m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
         std::size_t                    m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
         std::chrono::milliseconds      m_idleCheckInterval{kDefaultIdleCheckInterval}; ///< 空闲清扫节拍，非正数表示关闭清扫
-        Core::Timer                    m_idleTimer;         ///< 清扫协程的节拍器，构造需要事件循环引用
+        Core::Timer                    m_idleTimer;         ///< 清扫协程与 drain 共用的节拍器；waitFor 每次返回独立等待器，两处并发等待互不干扰
         Core::Task<>                   m_idleSweepTask{nullptr}; ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）
         std::vector<Core::Task<void> > m_connectionTasks;   ///< 已启动的连接协程，持有其生命周期防止提前销毁
     };

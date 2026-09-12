@@ -230,6 +230,78 @@ namespace AsynGyanis::Net
         m_connectionManager.shutdown();
     }
 
+    Core::Task<> TcpServer::drain(const std::chrono::milliseconds drainTimeout)
+    {
+        try
+        {
+            // 第一步：停止接受新连接。沿用 stop() 的既有语义，已建立的连接不受影响，
+            // 正是这些连接要在本轮里被「等」出结果
+            stop();
+
+            // 非正数表示不等待：等价于 close()，直接强关全部连接，不做任何轮询
+            if (drainTimeout <= std::chrono::milliseconds::zero())
+            {
+                m_connectionManager.shutdown();
+                co_return;
+            }
+
+            const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + drainTimeout;
+
+            while (true)
+            {
+                // 没有在途工作的连接（空闲 keep-alive、只收到半条请求）自己不会结束，留着只会把期限
+                // 耗满：立刻请求停止并关掉，把等待额度全部留给真正在做事的连接。
+                // 取快照遍历：close() 会反过来触发 ConnectionManager::remove()，持锁遍历会死锁
+                for (const std::shared_ptr<Core::Connection> &connection: m_connectionManager.snapshot())
+                {
+                    if (connection == nullptr || connection->isBusy())
+                    {
+                        continue;
+                    }
+
+                    // 与 shutdown() 同一顺序：先请求停止再关描述符，会话先看到取消信号
+                    [[maybe_unused]] auto _ = connection->cancelable().requestStop();
+                    connection->close();
+                }
+
+                // 连接已清空即完成：此刻无事可等，也不必再走一遍强关
+                if (m_connectionManager.activeCount() == 0)
+                {
+                    co_return;
+                }
+
+                // 期限已到：跳出轮询，转入兜底强关
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    break;
+                }
+
+                // 轮询间隔决定本协程的响应粒度：越小越早发现连接清空，代价是等待期间多几次唤醒。
+                // 与清扫协程共用同一只 Timer 是安全的——waitFor 每次返回独立等待器，
+                // 各等待器在循环的定时器队列里各占一个登记项，两个协程并发等待互不干扰
+                co_await m_idleTimer.waitFor(kDrainPollInterval);
+            }
+
+            // 兜底：期限已到仍未结束的连接由 shutdown() 强关，它们的会话协程会在下一次读写失败后退出
+            const std::size_t remainingConnectionCount = m_connectionManager.activeCount();
+            LOG_INFO_FMT("TcpServer: 优雅关闭等待超时，已强制关闭剩余连接。等待时长 {}ms，剩余连接 {} 条",
+                         drainTimeout.count(), remainingConnectionCount);
+            m_connectionManager.shutdown();
+            co_return;
+        } catch (const std::exception &drainException)
+        {
+            // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩。
+            // 放弃等待但**仍强关剩余连接**：drain 的后置条件是「返回后不再有连接残留」，
+            // 把连接留给调用方的收尾路径会让它们悬到进程退出
+            LOG_ERROR_FMT("TcpServer: 优雅关闭过程失败，已放弃等待并强制关闭剩余连接。原因：{}", drainException.what());
+            m_connectionManager.shutdown();
+        } catch (...)
+        {
+            LOG_ERROR_FMT("TcpServer: 优雅关闭过程失败，已放弃等待并强制关闭剩余连接。原因：非标准库异常");
+            m_connectionManager.shutdown();
+        }
+    }
+
     void TcpServer::setMaxConnections(const std::size_t maximumConnectionCount)
     {
         m_maxConnections = maximumConnectionCount;

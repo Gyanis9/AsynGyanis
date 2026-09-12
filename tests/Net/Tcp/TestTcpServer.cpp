@@ -1,6 +1,6 @@
 /**
  * @file TestTcpServer.cpp
- * @brief TcpServer 单元测试：纯虚钩子、接受循环、连接丢弃与 ConnectionManager 参与的优雅关闭
+ * @brief TcpServer 单元测试：纯虚钩子、接受循环、连接丢弃与 ConnectionManager 参与的优雅关闭（stop/close/drain）
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -41,6 +41,9 @@ namespace AsynGyanis::Net
         /// 「断言某事不发生」时用的观察窗口，只用于证明协程确实还在等待
         constexpr std::chrono::milliseconds kNegativeCheckTimeout{200};
 
+        /// 「立刻完成」的判定上界：drain 的强关只涉及同线程内的几次唤醒，200ms 已是宽裕的上界
+        constexpr std::chrono::milliseconds kImmediateCompletionTimeout{200};
+
         /// 测试连接轮询停止请求的间隔：足够短，让优雅关闭的断言不必久等
         constexpr std::chrono::milliseconds kStopPollInterval{5};
 
@@ -65,6 +68,7 @@ namespace AsynGyanis::Net
             CreateConnectionMode mode{CreateConnectionMode::Normal}; ///< 钩子行为
             ConnectionKind kind{ConnectionKind::FinishImmediately};  ///< 连接类型
             std::size_t maxConnections{0};                           ///< 并发上限，0 表示不限制
+            bool markBusy{false};                                    ///< 连接是否自报「有在途工作」（用于分辨 drain 的等待与强关）
         };
 
         /// start() 协程的结束原因
@@ -162,10 +166,14 @@ namespace AsynGyanis::Net
              * @param loop 所属事件循环，用于建退避用的定时器
              * @param socket 已接受的套接字，所有权转交基类
              * @param stopObserved 观察到停止请求后置位的标记
+             * @param markBusy 是否自报「有在途工作」：置位后 drain 必须为它让路，只有强关路径能收掉它
              */
-            ObservingStopConnection(Core::EventLoop &loop, Core::AsyncSocket socket, std::atomic<bool> &stopObserved) :
+            ObservingStopConnection(Core::EventLoop &loop, Core::AsyncSocket socket, std::atomic<bool> &stopObserved,
+                                    const bool markBusy) :
                 Core::Connection(std::move(socket)), m_stopObserved(&stopObserved), m_timer(loop)
             {
+                // 协议层才会维护这个标记，测试连接直接置位，用来把「等」与「强关」两条路径区分开
+                setBusy(markBusy);
             }
 
             /**
@@ -241,7 +249,7 @@ namespace AsynGyanis::Net
 
                 if (m_options.kind == ConnectionKind::ObservesStopRequest)
                 {
-                    return std::make_shared<ObservingStopConnection>(m_loop, std::move(socket), *m_stopObserved);
+                    return std::make_shared<ObservingStopConnection>(m_loop, std::move(socket), *m_stopObserved, m_options.markBusy);
                 }
                 return std::make_shared<Core::Connection>(std::move(socket));
             }
@@ -352,6 +360,27 @@ namespace AsynGyanis::Net
                         timeout);
             }
 
+            /**
+             * @brief 把 drain() 投到循环线程并等它跑完
+             * @details drain 只能在所属循环线程上运行，因此按 scheduleRemote 投递；任务对象由成员持有到
+             *          结束，协程帧才不会被提前销毁。完成标记每次调用先清空，可重复调用。
+             * @param drainTimeout 交给 drain 的最长等待时长
+             * @param waitTimeout 本方法自身的等待上限
+             * @return true drain 在时限内完成
+             */
+            [[nodiscard]] bool drainServer(const std::chrono::milliseconds drainTimeout, const std::chrono::milliseconds waitTimeout)
+            {
+                m_drainFinished.store(false, std::memory_order_release);
+                m_drainTask = driveDrain(m_server, m_drainFinished, drainTimeout);
+                m_loopThread.schedule(m_drainTask);
+                return waitForCondition(
+                        [this]
+                        {
+                            return m_drainFinished.load(std::memory_order_acquire);
+                        },
+                        waitTimeout);
+            }
+
             [[nodiscard]] TestTcpServer &server() noexcept { return m_server; }
             [[nodiscard]] ServerOutcome &outcome() noexcept { return m_outcome; }
             [[nodiscard]] int listenDescriptor() const { return m_server.listenDescriptor(); }
@@ -382,11 +411,27 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
+            /**
+             * @brief 把 drain() 包一层，跑完即置位完成标记
+             * @param server 被测服务器
+             * @param drainFinished 输出：drain 是否已返回
+             * @param drainTimeout 交给 drain 的最长等待时长
+             * @return Core::Task<> 协程，drain 返回后完成
+             */
+            static Core::Task<> driveDrain(TestTcpServer &server, std::atomic<bool> &drainFinished, const std::chrono::milliseconds drainTimeout)
+            {
+                co_await server.drain(drainTimeout);
+                drainFinished.store(true, std::memory_order_release);
+                co_return;
+            }
+
             Core::EventLoop m_loop;        ///< 事件循环本体
             std::atomic<bool> m_stopObserved{false}; ///< 连接观察到停止请求的标记，必须先于服务器构造
             ServerOutcome   m_outcome;     ///< 主协程结果槽，必须先于任务构造
             TestTcpServer   m_server;      ///< 被测服务器
             Core::Task<>    m_serverTask;  ///< 由 driveStart 产生的主协程任务
+            std::atomic<bool> m_drainFinished{false}; ///< drain 是否已返回，必须先于 drain 任务构造
+            Core::Task<>    m_drainTask{nullptr};   ///< 由 driveDrain 产生的 drain 协程任务
             EventLoopThread m_loopThread;  ///< 承载 run() 的线程，最后构造、最先析构
         };
 
@@ -686,6 +731,80 @@ namespace AsynGyanis::Net
         fixture.server().stop();
         EXPECT_TRUE(fixture.awaitServerStopped(kWaitTimeout)) << "stop() 后 start() 未在时限内结束：上界 kWaitTimeout";
         EXPECT_EQ(fixture.outcome().failure, FailureKind::None) << "start() 把接受错误抛到了调度器之外";
+        EXPECT_FALSE(fixture.server().isRunning());
+    }
+
+    TEST(TcpServer, DrainClosesIdleConnectionWithoutWaitingForDeadline)
+    {
+        // 钉住：没有在途工作的连接在 drain 的第一轮就被收掉，因此 drain 远早于 drainTimeout 返回。
+        // 连接对象只轮询停止请求、从不读套接字，所以这里的「立刻」不依赖任何平台相关的关闭唤醒行为
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环客户端连接失败";
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().activeConnectionCount() >= 1u;
+                },
+                kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
+
+        // 期限给得远大于用例的等待上界：一旦 drain 真的按期限等，下面两条断言必然失败
+        constexpr std::chrono::milliseconds drainTimeout{8000};
+        const auto                               drainStartTime = std::chrono::steady_clock::now();
+        ASSERT_TRUE(fixture.drainServer(drainTimeout, kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
+        const std::chrono::milliseconds drainElapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
+
+        // 空闲连接被请求停止并关闭（而不是被留在那里等自己结束）
+        EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "drain 没有通知到空闲连接：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().activeConnectionCount() == 0u;
+                },
+                kWaitTimeout)) << "空闲连接收尾后未从管理器摘除：上界 kWaitTimeout";
+        EXPECT_LT(drainElapsed, drainTimeout) << "drain 等满了期限：空闲连接没有被立刻收掉，耗时 " << drainElapsed.count() << "ms";
+        EXPECT_FALSE(fixture.server().isRunning());
+    }
+
+    TEST(TcpServer, NonPositiveDrainTimeoutForceClosesBusyConnectionImmediately)
+    {
+        // 钉住：drainTimeout 非正数时 drain 不等任何连接——连自报「有在途工作」的连接也被立刻强关，
+        // 因此它等价于 close()。连接自报忙碌是关键前提：否则「没等」与「本来就空闲」分辨不开
+        ServerTestOptions options;
+        options.kind     = ConnectionKind::ObservesStopRequest;
+        options.markBusy = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环客户端连接失败";
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().activeConnectionCount() >= 1u;
+                },
+                kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
+
+        // 期限为 0：不等待，直接强关。上界取 kImmediateCompletionTimeout，超出即说明 drain 在等
+        ASSERT_TRUE(fixture.drainServer(std::chrono::milliseconds::zero(), kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().activeConnectionCount() == 0u;
+                },
+                kImmediateCompletionTimeout)) << "非正期限下忙碌连接没有被立刻强关：上界 kImmediateCompletionTimeout";
+        EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "强关没有通知到连接：上界 kWaitTimeout";
         EXPECT_FALSE(fixture.server().isRunning());
     }
 } // namespace AsynGyanis::Net

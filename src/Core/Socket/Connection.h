@@ -2,7 +2,7 @@
  * @file Connection.h
  * @brief TCP连接基类，支持协作取消
  * @author Gyanis
- * @date 2026-09-11
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
@@ -135,10 +135,29 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isIdleExpired(std::chrono::steady_clock::time_point now) const noexcept;
 
+        /**
+         * @brief 标记本连接当前是否有在途工作
+         * @details 由协议层维护：HTTP 会话在「已收到完整请求、开始处理」到「响应发完」之间置 true，
+         *          让 TcpServer::drain() 能区分「正在服务请求」与「空闲等下一个请求」的连接，
+         *          只等待前者做完。默认 false，即视为没有在途工作。
+         * @param busy true 表示有在途请求正在处理
+         * @note **非原子量**：只有所属事件循环线程读写（drain 协程同样跑在该线程上）
+         */
+        void setBusy(bool busy) noexcept;
+
+        /**
+         * @brief 查询本连接当前是否有在途工作
+         * @return true 有在途请求正在处理，优雅关闭必须等它做完
+         * @return false 没有在途工作（空闲 keep-alive、只收到半条请求）
+         * @note 线程约束同 setBusy()：只在所属事件循环线程上调用
+         */
+        [[nodiscard]] bool isBusy() const noexcept;
+
     private:
         AsyncSocket       m_socket;      ///< 底层异步socket
         Cancelable        m_cancelable;  ///< 取消支持（stop_token）
         std::atomic<bool> m_alive{true}; ///< 连接存活标志，原子操作保证线程安全
+        bool              m_busy{false}; ///< 是否有在途工作，由协议层维护（见 setBusy()）
 
         /// 空闲截止时间；未设置表示这条连接不参与超时清扫。只由所属事件循环线程访问（见 refreshIdleDeadline()）
         std::optional<std::chrono::steady_clock::time_point> m_idleDeadline;

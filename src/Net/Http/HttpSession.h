@@ -2,7 +2,7 @@
  * @file HttpSession.h
  * @brief HTTP 会话：在单条 TCP 连接上做「解析—路由—应答」的保持活跃循环
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -178,6 +178,42 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 在途工作标记的 RAII 守卫：构造置位、析构清除
+         *
+         * @details 协议层用 Core::Connection 的 busy 标记告诉 TcpServer::drain()「本连接正在处理请求」。
+         *          标记的存续期就是「处理中」这段作用域，因此用守卫而不是在每条出口上手工清除：
+         *          提前 co_return 与异常展开都会走到析构，不会留下永远忙碌的连接。
+         */
+        class BusyScope
+        {
+        public:
+            /**
+             * @brief 置位所属连接的在途工作标记
+             * @param connection 所属连接，其生命周期必须覆盖本守卫（两者同活在会话协程帧里）
+             */
+            explicit BusyScope(Core::Connection &connection) noexcept :
+                m_connection(&connection)
+            {
+                m_connection->setBusy(true);
+            }
+
+            /**
+             * @brief 析构时清除在途工作标记
+             */
+            ~BusyScope()
+            {
+                m_connection->setBusy(false);
+            }
+
+            BusyScope(const BusyScope &) = delete;
+
+            BusyScope &operator=(const BusyScope &) = delete;
+
+        private:
+            Core::Connection *m_connection{nullptr}; ///< 被标记的连接（非拥有，随帧存活）
+        };
+
+        /**
          * @brief 模板化的 HTTP 保持活跃事务循环。
          *
          * @details 承载全部 HTTP/1.1 协议逻辑：跨读取的缓冲管理、报文定界、增量解析、
@@ -199,7 +235,7 @@ namespace AsynGyanis::Net
          * @param parser        HTTP 增量解析器，由会话持有
          * @param receiveBuffer 跨次读取存续的接收缓冲，由会话持有
          * @param isAlive       连接存活谓词，每轮事务与每次挂起前检查
-         * @param connection    所属连接，用于按相位刷新空闲截止时间；其生命周期必须覆盖整个循环
+         * @param connection    所属连接，用于按相位刷新空闲截止时间并维护在途工作标记；其生命周期必须覆盖整个循环
          * @param limits        连接级限额，取自 HttpServerLimits；0 字段表示关闭对应项保护
          */
         template<typename Socket>
@@ -359,7 +395,8 @@ namespace AsynGyanis::Net
                 if (status == ParseStatus::Error)
                 {
                     // 出错即结束会话（不 reset 后接着复用同一条连接）。状态码按解析器给出的
-                    // 失败类别映射：形态合法只是体量越界回 431/413，缺长度回 411，其余回 400
+                    // 失败类别映射：形态合法只是体量越界回 431/413，缺长度回 411，其余回 400。
+                    // 这条路径有意不置 busy：报文没解析成功，没有在途业务要等，回完 4xx 即收口
                     HttpResponse errorResponse;
                     writeParseErrorResponse(errorResponse, parser.errorKind());
 
@@ -370,6 +407,11 @@ namespace AsynGyanis::Net
                     parser.reset();
                     co_return;
                 }
+
+                // 已收到完整请求：从这里到响应发完算「在途工作」，优雅关闭据此只等真正的在途请求，
+                // 而不是把空闲 keep-alive 连接也一并等满期限。任何提前 co_return 与异常展开
+                // 都会走到守卫析构，标记不会停留在「忙碌」上
+                const BusyScope busyScope(connection);
 
                 // ---------------- 第三步：路由与应答 ----------------
                 HttpRequest &request = parser.request();
