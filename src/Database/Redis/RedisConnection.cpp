@@ -24,7 +24,6 @@
 
 #endif // DATABASE_HAS_REDIS
 
-#include <cstddef>
 #include <memory>
 #include <string_view>
 
@@ -35,8 +34,8 @@ namespace AsynGyanis::Database
     namespace
     {
         // 用 constexpr 常量取代宏：单位换算的出处集中在此，类型安全且作用域受控
-        constexpr int kMillisecondsPerSecond = 1000;       ///< 1 秒等于 1000 毫秒
-        constexpr int kMicrosecondsPerMillisecond = 1000;  ///< 1 毫秒等于 1000 微秒
+        constexpr int kMillisecondsPerSecond      = 1000; ///< 1 秒等于 1000 毫秒
+        constexpr int kMicrosecondsPerMillisecond = 1000; ///< 1 毫秒等于 1000 微秒
 
         // redisCommandArgv / redisAppendCommandArgv 的 argc 是 int，超过该上限会被静默截断
         constexpr size_t kMaximumArgumentCount = static_cast<size_t>(std::numeric_limits<int>::max());
@@ -56,7 +55,7 @@ namespace AsynGyanis::Database
             {
                 return {};
             }
-            return std::string(sourceReply->str, sourceReply->len);
+            return {sourceReply->str, sourceReply->len};
         }
 
         /**
@@ -79,12 +78,12 @@ namespace AsynGyanis::Database
         /**
          * @brief 按 redis-cli 规则把整行命令切成参数数组
          * @param command 命令文本，例如 SET "my key" "a b"
-         * @return std::optional<std::vector<std::string>> 参数数组；没有有效参数或引号未闭合时返回空值
+         * @return std::optional<std::vector<std::string> > 参数数组；没有有效参数或引号未闭合时返回空值
          */
-        std::optional<std::vector<std::string>> splitCommandLine(const std::string_view command)
+        std::optional<std::vector<std::string> > splitCommandLine(const std::string_view command)
         {
             std::vector<std::string> arguments;
-            std::string currentArgument;
+            std::string              currentArgument;
 
             bool isInsideQuotes     = false; ///< 是否处于引号内：引号里的空白不参与切分
             bool hasCurrentArgument = false; ///< 是否已开始累积参数：区分「引号包住的空参数」与「还没有参数」
@@ -174,9 +173,7 @@ namespace AsynGyanis::Database
          * @param argumentPointers 出参：每个参数的首地址
          * @param argumentLengths 出参：每个参数的字节长度
          */
-        void buildArgumentViews(const std::vector<std::string> &argumentValues,
-                                std::vector<const char *> &argumentPointers,
-                                std::vector<size_t> &argumentLengths)
+        void buildArgumentViews(const std::vector<std::string> &argumentValues, std::vector<const char *> &argumentPointers, std::vector<size_t> &argumentLengths)
         {
             argumentPointers.clear();
             argumentLengths.clear();
@@ -185,7 +182,7 @@ namespace AsynGyanis::Database
 
             // 长度数组一并给出，Redis 的批量字符串按长度取值，'\0' 因此能安全穿过协议；
             // 指针指向 std::string 内部缓冲，所以参数表在本函数返回后到调用结束之间不能变
-            for (const std::string &argumentValue : argumentValues)
+            for (const std::string &argumentValue: argumentValues)
             {
                 argumentPointers.push_back(argumentValue.data());
                 argumentLengths.push_back(argumentValue.size());
@@ -223,7 +220,7 @@ namespace AsynGyanis::Database
         // 该接口只有内存分配失败才返回 nullptr，网络/拒绝连接类失败会返回带 err 的有效上下文，
         // 两条失败路径都必须先摘错误文本再释放上下文——顺序反了就是在读已释放内存
         const struct timeval connectionTimeout = makeTimeval(connectTimeout());
-        m_redisContext = redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), connectionTimeout);
+        m_redisContext                         = redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), connectionTimeout);
         if (m_redisContext == nullptr)
         {
             m_lastError = "创建 Redis 连接上下文失败：" + m_configuration.host + ":" + std::to_string(m_configuration.port) + " 无法访问，或内存分配失败";
@@ -262,8 +259,7 @@ namespace AsynGyanis::Database
             if (userName.empty())
             {
                 rawAuthenticationReply = redisCommand(m_redisContext, "AUTH %b", password.data(), password.size());
-            }
-            else
+            } else
             {
                 rawAuthenticationReply = redisCommand(m_redisContext, "AUTH %b %b",
                                                       userName.data(), userName.size(),
@@ -297,10 +293,10 @@ namespace AsynGyanis::Database
         {
             // 十进制解析：解析失败、留有余文（如 "3abc"）或负值都不猜测、不回退到 0 号库，
             // 静默回退会把命令写进错误的键空间，那比直接失败危险得多
-            int keySpaceIndex = 0;
-            const char *parseBegin    = m_configuration.database.data();
-            const char *parseEnd      = parseBegin + m_configuration.database.size();
-            const std::from_chars_result parseResult = std::from_chars(parseBegin, parseEnd, keySpaceIndex);
+            int                          keySpaceIndex = 0;
+            const char *                 parseBegin    = m_configuration.database.data();
+            const char *                 parseEnd      = parseBegin + m_configuration.database.size();
+            const std::from_chars_result parseResult   = std::from_chars(parseBegin, parseEnd, keySpaceIndex);
             if (parseResult.ec != std::errc() || parseResult.ptr != parseEnd || keySpaceIndex < 0)
             {
                 m_lastError = "Redis 键空间编号配置非法：" + m_configuration.database + "，必须是十进制非负整数";
@@ -309,7 +305,7 @@ namespace AsynGyanis::Database
             }
 
             const std::string keySpaceText = std::to_string(keySpaceIndex);
-            if (const std::vector<std::string> selectArguments{ "SELECT", keySpaceText };
+            if (const std::vector<std::string> selectArguments{"SELECT", keySpaceText};
                 executeArguments(selectArguments) == nullptr)
             {
                 // executeArguments 已把服务端原文或传输层原因写进 m_lastError，
@@ -369,7 +365,7 @@ namespace AsynGyanis::Database
 
         // 整行命令必须先切词再交给 argv 接口：直接交给格式化接口会连参数一起压成一个元素
         // （hiredis 的 %s 不认宽度说明符），服务端收到的是 "GET mykey" 这样一条非法命令
-        const std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
+        const std::optional<std::vector<std::string> > argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
             m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + std::string(command);
@@ -406,7 +402,7 @@ namespace AsynGyanis::Database
 
         // 切词提前到登记阶段：命令文本非法（引号未闭合、整行没有有效参数）当场反馈，
         // 不必等到 flush 时才发现「N 条里有一条是坏的」
-        std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
+        const std::optional<std::vector<std::string> > argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
             m_lastError = "Redis 管道命令不合法（内容为空或引号未闭合）：" + std::string(command);
@@ -418,11 +414,11 @@ namespace AsynGyanis::Database
         return true;
     }
 
-    std::vector<std::unique_ptr<DatabaseResult>> RedisConnection::flushPipeline()
+    std::vector<std::unique_ptr<DatabaseResult> > RedisConnection::flushPipeline()
     {
         m_lastError.clear();
 
-        std::vector<std::unique_ptr<DatabaseResult>> results;
+        std::vector<std::unique_ptr<DatabaseResult> > results;
         if (m_pipelineCommands.empty())
         {
             // 空管道不是错误，也不触碰连接状态：直接交出空列表
@@ -442,10 +438,10 @@ namespace AsynGyanis::Database
         // 第一阶段：把命令逐条 append 进 hiredis 的输出缓冲，到这一步才真正开始发送。
         // 用 argv 接口而不是把命令文本当格式串传进去，否则参数里的 '%' 同样会被解释成格式说明符
         size_t appendedCommandCount = 0;
-        for (const std::vector<std::string> &commandArguments : m_pipelineCommands)
+        for (const std::vector<std::string> &commandArguments: m_pipelineCommands)
         {
             std::vector<const char *> argumentPointers;
-            std::vector<size_t> argumentLengths;
+            std::vector<size_t>       argumentLengths;
             buildArgumentViews(commandArguments, argumentPointers, argumentLengths);
 
             if (redisAppendCommandArgv(m_redisContext, static_cast<int>(argumentPointers.size()),
@@ -517,7 +513,7 @@ namespace AsynGyanis::Database
         const std::string keySpaceText = std::to_string(index);
 
         // 走 executeCommand：非 error 回复才算成功（executeArguments 已把 error 转成 nullptr 与原因）
-        return executeCommand({ std::string_view("SELECT"), keySpaceText }) != nullptr;
+        return executeCommand({std::string_view("SELECT"), keySpaceText}) != nullptr;
     }
 
     void RedisConnection::captureError(const std::string_view description)
@@ -582,7 +578,7 @@ namespace AsynGyanis::Database
         }
 
         std::vector<const char *> argumentPointers;
-        std::vector<size_t> argumentLengths;
+        std::vector<size_t>       argumentLengths;
         buildArgumentViews(argumentValues, argumentPointers, argumentLengths);
 
         // 走 argv 接口而非格式化接口：参数内容里的 '%' 永远不会被解释成格式说明符，
@@ -667,7 +663,7 @@ namespace AsynGyanis::Database
         return false;
     }
 
-    std::vector<std::unique_ptr<DatabaseResult>> RedisConnection::flushPipeline()
+    std::vector<std::unique_ptr<DatabaseResult> > RedisConnection::flushPipeline()
     {
         m_lastError = kMissingDriverError;
         return {};
@@ -708,7 +704,7 @@ namespace AsynGyanis::Database
     {
         // RAII 收尾：析构阶段虚表已回到本类，直接调用 disconnect() 而不经虚接口，
         // 保证无论调用方是否显式断开都不会漏掉 redisFree
-        disconnect();
+        RedisConnection::disconnect();
     }
 
     DatabaseType RedisConnection::databaseType() const

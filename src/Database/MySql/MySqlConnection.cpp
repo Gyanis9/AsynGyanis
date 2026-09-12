@@ -41,8 +41,6 @@
 
 #endif // DATABASE_HAS_MYSQL
 
-#include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -88,7 +86,7 @@ namespace AsynGyanis::Database
 
             // 单位换算取向上取整：客户端选项只吃整秒，若向下取整，500 毫秒会被截成 0——
             // 而 0 的语义恰好相反（永不超时），一个「更短的超时」变成了「没有超时」
-            const unsigned int positiveMilliseconds = static_cast<unsigned int>(milliseconds);
+            const auto positiveMilliseconds = static_cast<unsigned int>(milliseconds);
             return (positiveMilliseconds + static_cast<unsigned int>(kMillisecondsPerSecond) - 1U) /
                    static_cast<unsigned int>(kMillisecondsPerSecond);
         }
@@ -324,15 +322,14 @@ namespace AsynGyanis::Database
         // 用带自定义释放器的 unique_ptr 罩住这段所有权真空：make_unique 若因内存分配失败抛异常，
         // MYSQL_RES 会由守卫释放，而不是像旧实现那样直接泄漏（旧代码把裸指针交给构造函数后再无兜底）
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedResult{rawResult};
-        std::unique_ptr<MySqlResult> result = std::make_unique<MySqlResult>(guardedResult.get());
+        auto                                       result = std::make_unique<MySqlResult>(guardedResult.get());
 
         // 构造成功，所有权正式移交结果集：此后再由 MySqlResult 的析构负责 mysql_free_result
         guardedResult.release();
         return result;
     }
 
-    std::unique_ptr<DatabaseResult> MySqlConnection::execute(const std::string_view command,
-                                                            const std::span<const DatabaseValue> parameters)
+    std::unique_ptr<DatabaseResult> MySqlConnection::execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
     {
         // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
         m_lastError.clear();
@@ -382,8 +379,8 @@ namespace AsynGyanis::Database
 
         // 打开「store_result 时顺带更新每列 max_length」这一属性：下面的取值缓冲区正是按 max_length
         // 分配的，正常路径上因此不会出现截断。该属性只影响元数据，必须在 execute 之前设置
-        const bool updateMaximumLength = true;
-        if (mysql_stmt_attr_set(rawStatement, STMT_ATTR_UPDATE_MAX_LENGTH, &updateMaximumLength) != 0)
+        constexpr bool kupdateMaximumLength = true;
+        if (mysql_stmt_attr_set(rawStatement, STMT_ATTR_UPDATE_MAX_LENGTH, &kupdateMaximumLength) != 0)
         {
             captureStatementError(rawStatement, "设置 MySQL 预处理语句属性失败");
             return nullptr;
@@ -439,7 +436,8 @@ namespace AsynGyanis::Database
 
         // 逐条下发，任一选项被拒就整体判失败——「超时静默不生效」正是旧实现的核心缺陷，
         // 宁可连不上也不留一条没有超时保护的会话
-        const auto applyOption = [this](const mysql_option option, const void *argumentValue, const std::string_view description) -> bool {
+        const auto applyOption = [this](const mysql_option option, const void *argumentValue, const std::string_view description) -> bool
+        {
             // mysql_options 返回非 0 只可能是「这个版本的客户端库不支持该选项」或参数指针为空，
             // 具体原因同样写在句柄的错误状态里，交给 captureError 摘取
             if (mysql_options(m_mysqlHandle, option, argumentValue) == 0)
@@ -486,8 +484,8 @@ namespace AsynGyanis::Database
         }
 
         const unsigned int errorNumber = mysql_errno(m_mysqlHandle);
-        const char *rawMessage         = mysql_error(m_mysqlHandle);
-        std::string serverMessage(rawMessage != nullptr ? rawMessage : "");
+        const char *       rawMessage  = mysql_error(m_mysqlHandle);
+        std::string        serverMessage(rawMessage != nullptr ? rawMessage : "");
         if (serverMessage.empty())
         {
             // 错误码非 0 但文本为空是客户端库的已知退化情形（例如某些选项被拒），给出可读兜底
@@ -509,8 +507,8 @@ namespace AsynGyanis::Database
 
         // 预处理语句的错误状态挂在语句句柄上：连接级 mysql_errno 此时读到的可能是上一条
         // 连接操作的陈旧错误，必须用 mysql_stmt_* 这一对接口
-        const unsigned int errorNumber  = mysql_stmt_errno(statement);
-        const char        *rawMessage   = mysql_stmt_error(statement);
+        const unsigned int errorNumber = mysql_stmt_errno(statement);
+        const char *       rawMessage  = mysql_stmt_error(statement);
         std::string        statementMessage(rawMessage != nullptr ? rawMessage : "");
         if (statementMessage.empty())
         {
@@ -527,8 +525,7 @@ namespace AsynGyanis::Database
         // 参数个数必须与占位符个数严格相等：MySQL 对未绑定的占位符按 NULL 参与运算，
         // 少给参数会让条件静默变成永假（WHERE id = NULL），几乎不可能从结果上反推原因，
         // 因此这里宁可当场失败也不做任何「缺省补 NULL」的宽容处理
-        const std::size_t expectedParameterCount = static_cast<std::size_t>(mysql_stmt_param_count(statement));
-        if (expectedParameterCount != parameters.size())
+        if (const auto expectedParameterCount = static_cast<std::size_t>(mysql_stmt_param_count(statement)); expectedParameterCount != parameters.size())
         {
             m_lastError = "参数数量不匹配：SQL 需要 " + std::to_string(expectedParameterCount) +
                           " 个参数，实际提供 " + std::to_string(parameters.size()) + " 个";
@@ -544,8 +541,8 @@ namespace AsynGyanis::Database
 
         for (std::size_t index = 0; index < parameters.size(); ++index)
         {
-            MYSQL_BIND           &binding        = bindings[index];
-            const DatabaseValue  &parameterValue = parameters[index];
+            MYSQL_BIND &         binding        = bindings[index];
+            const DatabaseValue &parameterValue = parameters[index];
 
             // 用 std::get_if 取指针而不是 std::get：类型不符时走到 else 分支给出中文错误，
             // 而 std::get 会抛 std::bad_variant_access，把「参数类型不对」变成难以处理的异常
@@ -593,11 +590,11 @@ namespace AsynGyanis::Database
                     return false;
                 }
 
-                parameterLengths[index]  = static_cast<unsigned long>(textValue->size());
-                binding.buffer_type = MYSQL_TYPE_STRING;
-                binding.buffer      = asBindBuffer(textValue->data());
-                binding.buffer_length = parameterLengths[index];
-                binding.length        = &parameterLengths[index];
+                parameterLengths[index] = static_cast<unsigned long>(textValue->size());
+                binding.buffer_type     = MYSQL_TYPE_STRING;
+                binding.buffer          = asBindBuffer(textValue->data());
+                binding.buffer_length   = parameterLengths[index];
+                binding.length          = &parameterLengths[index];
                 continue;
             }
 
@@ -617,9 +614,9 @@ namespace AsynGyanis::Database
                 binding.buffer_type     = MYSQL_TYPE_BLOB;
                 // 空载荷指向静态字节而不是空指针：buffer 为空时客户端库行为无保证，
                 // 而长度为 0 已足够表达「零长度 BLOB」
-                binding.buffer        = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
-                binding.buffer_length = parameterLengths[index];
-                binding.length        = &parameterLengths[index];
+                binding.buffer          = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
+                binding.buffer_length   = parameterLengths[index];
+                binding.length          = &parameterLengths[index];
                 continue;
             }
 
@@ -675,7 +672,7 @@ namespace AsynGyanis::Database
         }
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedMetadata{rawMetadata};
 
-        const std::size_t  columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
+        const auto         columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
         const MYSQL_FIELD *fields      = mysql_fetch_fields(rawMetadata);
         if (fields == nullptr && columnCount > 0)
         {
@@ -689,12 +686,12 @@ namespace AsynGyanis::Database
 
         // 取值缓冲按列分配：外层容器一次性定型，之后只改内层内容，
         // 因此各列缓冲区首地址在整个预读过程中保持稳定（绑定指针只在开始时取一次）
-        std::vector<std::vector<char>> columnBuffers(columnCount);
-        std::vector<unsigned long>     columnLengths(columnCount, 0UL);
-        std::vector<int>               columnTypes(columnCount, 0);
+        std::vector<std::vector<char> > columnBuffers(columnCount);
+        std::vector<unsigned long>      columnLengths(columnCount, 0UL);
+        std::vector<int>                columnTypes(columnCount, 0);
         // 字符集号是二进制列与文本列的唯一区分依据（两者在协议层共用同一个类型码），
         // 因此必须与类型码一起缓存下来供逐列转换使用
-        std::vector<unsigned int>      columnCharacterSets(columnCount, 0U);
+        std::vector<unsigned int>       columnCharacterSets(columnCount, 0U);
 
         // MYSQL_BIND 的 is_null 形参类型是 bool*，而 std::vector<bool> 是位压缩的、取不到元素地址，
         // 因此用 make_unique 动态分配一段定长 bool 数组（不是裸 new）
@@ -711,10 +708,10 @@ namespace AsynGyanis::Database
 
             // max_length 为 0 表示整列都是 NULL 或空串，此时取 1 字节只为拿到合法指针
             const unsigned long bufferBytes =
-                field.max_length > kMinimumColumnBufferBytes ? field.max_length : kMinimumColumnBufferBytes;
+                    field.max_length > kMinimumColumnBufferBytes ? field.max_length : kMinimumColumnBufferBytes;
             columnBuffers[index].assign(static_cast<std::size_t>(bufferBytes), '\0');
 
-            MYSQL_BIND &binding = resultBindings[index];
+            MYSQL_BIND &binding   = resultBindings[index];
             // 一律按字符串缓冲取值（MySQL 会把数值、日期等列转成文本写进缓冲区），再按列声明类型解析；
             // 这与文本协议路径「按 (指针, 长度) 拿字节 + 按列类型解析」完全同构，
             // 两条路径的取值映射因此不会出现分歧（列类型到 DatabaseValue 的规则见 MySqlValueConversion.h）
@@ -732,7 +729,7 @@ namespace AsynGyanis::Database
         }
 
         // 行数已由 store_result 全部取回，num_rows 是精确值，按它预留容量避免反复扩容
-        std::vector<std::vector<DatabaseValue>> rows;
+        std::vector<std::vector<DatabaseValue> > rows;
         rows.reserve(static_cast<std::size_t>(mysql_stmt_num_rows(statement)));
 
         while (true)
@@ -756,7 +753,7 @@ namespace AsynGyanis::Database
                 if (columnNullFlags[index])
                 {
                     // 列值为 SQL NULL：与「空串」「0」是三件不同的事，只有 NULL 才映射成 monostate
-                    currentRow.push_back(std::monostate{});
+                    currentRow.emplace_back(std::monostate{});
                     continue;
                 }
 
@@ -881,7 +878,7 @@ namespace AsynGyanis::Database
         // RAII 收尾：析构阶段虚表已回到本类，直接调用 disconnect() 而不经虚接口，
         // 保证无论调用方是否显式断开都不会漏掉 mysql_close。
         // 注意虚析构只能在类内首次声明处 = default，本函数是类外定义，必须给出函数体
-        disconnect();
+        MySqlConnection::disconnect();
     }
 
     DatabaseType MySqlConnection::databaseType() const

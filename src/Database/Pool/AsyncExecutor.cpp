@@ -9,8 +9,7 @@ namespace AsynGyanis::Database
         // 0 表示自动：按硬件并发度取，取不到（返回 0）时按 1 处理。
         // 无论如何都不允许 0 个线程：没有工作线程时提交的任务永远不会被执行，
         // 调用方会看到一个永远不完成的协程，这种错误几乎无法从现象上定位
-        const std::size_t resolvedWorkerCount =
-            workerCount == 0 ? std::max<std::size_t>(1, std::thread::hardware_concurrency()) : workerCount;
+        const std::size_t resolvedWorkerCount = workerCount == 0 ? std::max<std::size_t>(1, std::thread::hardware_concurrency()) : workerCount;
 
         m_workers.reserve(resolvedWorkerCount);
         for (std::size_t index = 0; index < resolvedWorkerCount; ++index)
@@ -18,10 +17,10 @@ namespace AsynGyanis::Database
             // 交给 jthread 一个带停止令牌的入口：停止请求由 jthread 在析构时发出，
             // 线程函数无需自己管理「何时退出」以外的任何同步
             m_workers.emplace_back(
-                [this](const std::stop_token stopToken)
-                {
-                    workerLoop(stopToken);
-                });
+                    [this](const std::stop_token &stopToken)
+                    {
+                        workerLoop(stopToken);
+                    });
         }
     }
 
@@ -62,7 +61,7 @@ namespace AsynGyanis::Database
         m_condition.notify_one();
     }
 
-    void AsyncExecutor::workerLoop(const std::stop_token stopToken)
+    void AsyncExecutor::workerLoop(const std::stop_token &stopToken)
     {
         while (true)
         {

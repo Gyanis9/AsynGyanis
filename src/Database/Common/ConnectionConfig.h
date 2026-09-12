@@ -23,11 +23,11 @@ namespace AsynGyanis::Database
      */
     struct ConnectionConfig
     {
-        std::string host;      ///< 主机地址；SQLite 忽略该字段
+        std::string   host;     ///< 主机地址；SQLite 忽略该字段
         std::uint16_t port = 0; ///< 端口号；0 表示未指定，SQLite 不使用端口
-        std::string userName;   ///< 用户名；SQLite 忽略
-        std::string password;   ///< 密码；SQLite 忽略
-        std::string database;   ///< 数据库名、Redis 键空间编号或 SQLite 文件路径
+        std::string   userName; ///< 用户名；SQLite 忽略
+        std::string   password; ///< 密码；SQLite 忽略
+        std::string   database; ///< 数据库名、Redis 键空间编号或 SQLite 文件路径
 
         /**
          * @brief 构造一份 MySQL 默认配置

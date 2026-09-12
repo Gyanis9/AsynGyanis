@@ -4,19 +4,14 @@
 
 namespace AsynGyanis::Database
 {
-    MySqlStatementResult::MySqlStatementResult(std::vector<std::string> columnNames,
-                                               std::vector<std::vector<DatabaseValue>> rows)
-        : m_columnNames(std::move(columnNames)), m_rows(std::move(rows))
+    MySqlStatementResult::MySqlStatementResult(std::vector<std::string> columnNames, std::vector<std::vector<DatabaseValue> > rows) :
+        m_columnNames(std::move(columnNames)), m_rows(std::move(rows))
     {
         // 行数据与列名在连接预读阶段就是按同一份列元数据产出的，这里不再做对齐修正：
         // 靠「悄悄补齐」掩盖列数不一致，只会把预读阶段的缺陷藏起来
     }
 
-    MySqlStatementResult::~MySqlStatementResult()
-    {
-        // 行数据由 std::vector 负责回收，析构无额外动作。
-        // 虚析构只能在类内首次声明处 = default，类外定义必须给出函数体而不是再写 = default
-    }
+    MySqlStatementResult::~MySqlStatementResult() = default;
 
     bool MySqlStatementResult::next()
     {

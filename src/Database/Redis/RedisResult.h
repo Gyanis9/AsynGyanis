@@ -12,7 +12,6 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Redis/RedisConnection.h" // 复用其中全局作用域的 redisReply 前置声明
 
-#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -80,10 +79,13 @@ namespace AsynGyanis::Database
 
         // 回复指针所有权唯一：拷贝会导致同一个 redisReply 被 freeReplyObject 两次；
         // 移动则让源对象析构时再次释放已经交给目标对象的回复。基类也已删除拷贝与移动。
-        RedisResult(const RedisResult &)            = delete;
+        RedisResult(const RedisResult &) = delete;
+
         RedisResult &operator=(const RedisResult &) = delete;
-        RedisResult(RedisResult &&)                 = delete;
-        RedisResult &operator=(RedisResult &&)      = delete;
+
+        RedisResult(RedisResult &&) = delete;
+
+        RedisResult &operator=(RedisResult &&) = delete;
 
         /**
          * @brief 将游标移动到下一行
@@ -197,14 +199,20 @@ namespace AsynGyanis::Database
          *          要解读数值请配合 nativeHandle() 自行包含 <hiredis/hiredis.h>。
          * @return int REDIS_REPLY_* 常量；0 表示没有回复（含未编译 hiredis 的桩构建）
          */
-        [[nodiscard]] int replyType() const noexcept { return m_replyType; }
+        [[nodiscard]] int replyType() const noexcept
+        {
+            return m_replyType;
+        }
 
         /**
          * @brief 获取底层 redisReply 指针，供需要直接遍历嵌套回复的高级场景使用
          * @warning 所有权仍属于本结果集，调用方不得 freeReplyObject，也不得在结果集销毁后继续使用
          * @return redisReply* 无回复时为 nullptr
          */
-        [[nodiscard]] const redisReply *nativeHandle() const noexcept { return m_replyPointer; }
+        [[nodiscard]] const redisReply *nativeHandle() const noexcept
+        {
+            return m_replyPointer;
+        }
 
     private:
         /**
@@ -219,9 +227,9 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue convertReply(const redisReply *sourceReply) const;
 
         redisReply *m_replyPointer{nullptr}; ///< hiredis 回复指针，非空时由本对象负责 freeReplyObject
-        int m_replyType{0};                  ///< 回复类型快照（REDIS_REPLY_* 常量原值），0 表示无回复
-        size_t m_columnCount{0};             ///< 列数快照，即回复的元素个数
-        bool m_hasReturnedRow{false};        ///< 唯一那一行是否已被 next() 交出，reset() 复位
+        int         m_replyType{0};          ///< 回复类型快照（REDIS_REPLY_* 常量原值），0 表示无回复
+        size_t      m_columnCount{0};        ///< 列数快照，即回复的元素个数
+        bool        m_hasReturnedRow{false}; ///< 唯一那一行是否已被 next() 交出，reset() 复位
     };
 
 } // namespace AsynGyanis::Database

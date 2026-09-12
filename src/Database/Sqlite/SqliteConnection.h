@@ -76,10 +76,13 @@ namespace AsynGyanis::Database
 
         // 连接独占 sqlite3 句柄的所有权：拷贝会出现两个对象 close 同一句柄，
         // 移动会让源对象析构时重复关闭，因此拷贝与移动一律禁止（基类同样已删除，这里显式写清意图）。
-        SqliteConnection(const SqliteConnection &)            = delete;
+        SqliteConnection(const SqliteConnection &) = delete;
+
         SqliteConnection &operator=(const SqliteConnection &) = delete;
-        SqliteConnection(SqliteConnection &&)                 = delete;
-        SqliteConnection &operator=(SqliteConnection &&)      = delete;
+
+        SqliteConnection(SqliteConnection &&) = delete;
+
+        SqliteConnection &operator=(SqliteConnection &&) = delete;
 
         /**
          * @brief 打开（或创建）SQLite 数据库文件
@@ -159,8 +162,7 @@ namespace AsynGyanis::Database
          * @warning 与不带参数版本一致：带返回列的写语句（INSERT ... RETURNING）真正的执行
          *          发生在调用方第一次 SqliteResult::next()，只判非空而不遍历则写副作用不会发生
          */
-        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command,
-                                                              std::span<const DatabaseValue> parameters) override;
+        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
          * @brief 获取数据库类型
@@ -221,7 +223,10 @@ namespace AsynGyanis::Database
          *          也不得在连接销毁后继续使用
          * @return sqlite3* 未连接时为 nullptr
          */
-        [[nodiscard]] sqlite3 *nativeHandle() const noexcept { return m_database; }
+        [[nodiscard]] sqlite3 *nativeHandle() const noexcept
+        {
+            return m_database;
+        }
 
     private:
         /**

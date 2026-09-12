@@ -60,7 +60,6 @@
 
 #include "Base/Exception/LogicException.h"
 #include "Database/Common/DatabaseResult.h"
-#include "Database/Common/DatabaseType.h"
 #include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
@@ -134,8 +133,7 @@ namespace AsynGyanis::Database::Queryable
          *         但在 kColumns 中找不到同名列（列名拼写不一致）
          */
         template<RowMappable T>
-        [[nodiscard]] static SqlStatement createTableStatement(const SqlDialect &dialect,
-                                                               const bool ifNotExists = true)
+        [[nodiscard]] static SqlStatement createTableStatement(const SqlDialect &dialect, const bool ifNotExists = true)
         {
             // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯；
             // 判定与 RowMapper 共用同一份 trait，因此「能建表」与「能读写」永远等价
@@ -150,20 +148,20 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 表名为空（主模板的默认值，或完全特化里被显式留空）时生成 "CREATE TABLE """ 毫无意义
                 throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                                           "请先特化 TableSchema 并填写表名");
+                        "请先特化 TableSchema 并填写表名");
             }
 
             bool        primaryKeyDeclared = false;
             std::string columnDefinitions;
 
             std::apply(
-                [&](const auto &...columnDescriptors)
-                {
-                    // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
-                    (appendColumnDefinition(columnDefinitions, primaryKeyDeclared, dialect,
-                                            columnDescriptors, TableSchema<T>::kPrimaryKey), ...);
-                },
-                TableSchema<T>::kColumns);
+                    [&](const auto &... columnDescriptors)
+                    {
+                        // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
+                        (appendColumnDefinition(columnDefinitions, primaryKeyDeclared, dialect,
+                                                columnDescriptors, TableSchema<T>::kPrimaryKey), ...);
+                    },
+                    TableSchema<T>::kColumns);
 
             if (!TableSchema<T>::kPrimaryKey.empty() && !primaryKeyDeclared)
             {
@@ -205,7 +203,7 @@ namespace AsynGyanis::Database::Queryable
             if (tableName.empty())
             {
                 throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                                           "请先特化 TableSchema 并填写表名");
+                        "请先特化 TableSchema 并填写表名");
             }
 
             SqlStatement statement;
@@ -231,9 +229,7 @@ namespace AsynGyanis::Database::Queryable
          * @throws Base::LogicException 表结构本身不合法（表名为空、主键列不存在），见 createTableStatement()
          */
         template<RowMappable T>
-        [[nodiscard]] static bool createTable(ConnectionPool &pool,
-                                             const bool ifNotExists = true,
-                                             std::string *errorText = nullptr)
+        [[nodiscard]] static bool createTable(ConnectionPool &pool, const bool ifNotExists = true, std::string *errorText = nullptr)
         {
             // 成功返回前先清空出参，避免调用方读到上一次调用的残留失败原因
             clearError(errorText);
@@ -261,9 +257,7 @@ namespace AsynGyanis::Database::Queryable
          * @throws Base::LogicException TableSchema<T>::kTableName 为空
          */
         template<RowMappable T>
-        [[nodiscard]] static bool dropTable(ConnectionPool &pool,
-                                            const bool ifExists = true,
-                                            std::string *errorText = nullptr)
+        [[nodiscard]] static bool dropTable(ConnectionPool &pool, const bool ifExists = true, std::string *errorText = nullptr)
         {
             // 成功返回前先清空出参，避免调用方读到上一次调用的残留失败原因
             clearError(errorText);
@@ -302,7 +296,7 @@ namespace AsynGyanis::Database::Queryable
             if (tableName.empty())
             {
                 throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                                           "请先特化 TableSchema 并填写表名");
+                        "请先特化 TableSchema 并填写表名");
             }
 
             const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
@@ -321,7 +315,7 @@ namespace AsynGyanis::Database::Queryable
             }
 
             std::unique_ptr<DatabaseResult> result =
-                connection->execute(std::string_view{statement.sql}, statement.parameters);
+                    connection->execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
                 writeError(errorText, "SchemaMigrator: 查询表是否存在失败：" + connection->lastError());
@@ -364,27 +358,22 @@ namespace AsynGyanis::Database::Queryable
             if constexpr (std::is_same_v<BareType, bool>)
             {
                 return ColumnType::Bool;
-            }
-            else if constexpr (std::is_integral_v<BareType>)
+            } else if constexpr (std::is_integral_v<BareType>)
             {
                 // 有符号/无符号分开：二者在 MySQL 上是不同的物理类型，取值范围也不一样
                 return std::is_unsigned_v<BareType> ? ColumnType::UInt64 : ColumnType::Int64;
-            }
-            else if constexpr (std::is_floating_point_v<BareType>)
+            } else if constexpr (std::is_floating_point_v<BareType>)
             {
                 return ColumnType::Double;
-            }
-            else if constexpr (std::is_same_v<BareType, std::string>)
+            } else if constexpr (std::is_same_v<BareType, std::string>)
             {
                 return ColumnType::Text;
-            }
-            else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
+            } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 // 两种成员拼法都落到 Blob：DDL 只关心「这一列是二进制」，
                 // 由 value_type 是 uint8_t 还是 std::byte 决定的差异在值映射处已经归一
                 return ColumnType::Blob;
-            }
-            else
+            } else
             {
                 // 不受支持的类型已被 createTableStatement() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
@@ -407,19 +396,19 @@ namespace AsynGyanis::Database::Queryable
          * @param primaryKeyName TableSchema<T>::kPrimaryKey
          */
         template<typename ColumnDescriptorType>
-        static void appendColumnDefinition(std::string &columnDefinitions,
-                                           bool &primaryKeyDeclared,
-                                           const SqlDialect &dialect,
+        static void appendColumnDefinition(std::string &               columnDefinitions,
+                                           bool &                      primaryKeyDeclared,
+                                           const SqlDialect &          dialect,
                                            const ColumnDescriptorType &columnDescriptor,
-                                           const std::string_view primaryKeyName)
+                                           const std::string_view      primaryKeyName)
         {
             using MemberType = typename ColumnDescriptorType::MemberType;
             using BareType   = std::remove_cv_t<MemberType>;
 
             // 可空规则：std::optional<X> 允许 NULL，其余一律 NOT NULL。
             // optional 只是可空标记而不是存储类型，去掉包装后的类型才是真正的列类型
-            constexpr bool isNullable = Detail::IsOptional<BareType>::value;
-            using ValueType = Detail::ColumnStorageTypeOf<BareType>;
+            constexpr bool kisNullable = Detail::IsOptional<BareType>::value;
+            using ValueType            = Detail::ColumnStorageTypeOf<BareType>;
 
             // 分隔符前置而不是后置：后置会在最后一列留下一个尾逗号，还得在拼接处再裁一次
             if (!columnDefinitions.empty())
@@ -432,7 +421,7 @@ namespace AsynGyanis::Database::Queryable
             columnDefinitions += ' ';
             columnDefinitions += dialect.columnTypeName(columnTypeOf<ValueType>());
 
-            if constexpr (!isNullable)
+            if constexpr (!kisNullable)
             {
                 columnDefinitions += " NOT NULL";
             }
@@ -441,7 +430,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 // PRIMARY KEY 写在约束的最后：类型与可空性在前，读起来与结构体声明顺序一致。
                 // 命中主键的列同时记入出参，供调用方判断 kPrimaryKey 是否落在 kColumns 里
-                columnDefinitions += " PRIMARY KEY";
+                columnDefinitions  += " PRIMARY KEY";
                 primaryKeyDeclared = true;
             }
         }
@@ -456,14 +445,13 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；失败时写入中文原因
          * @return std::shared_ptr<SqlDialect> 方言实例；失败时为空指针
          */
-        [[nodiscard]] static std::shared_ptr<SqlDialect> resolveDialect(ConnectionPool &pool,
-                                                                              std::string *errorText)
+        [[nodiscard]] static std::shared_ptr<SqlDialect> resolveDialect(ConnectionPool &pool, std::string *errorText)
         {
-            PooledConnection probeConnection = pool.acquire();
+            const PooledConnection probeConnection = pool.acquire();
             if (!probeConnection)
             {
                 writeError(errorText, "SchemaMigrator: 从连接池获取连接失败，无法推导数据库类型"
-                                      "（池已达上限或连接创建失败）");
+                           "（池已达上限或连接创建失败）");
                 return nullptr;
             }
 
@@ -471,8 +459,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 未实现的类型由注册表抛带中文提示的异常，这里转成返回值 + 原因文本
                 return DialectRegistry::dialectFor(probeConnection->databaseType());
-            }
-            catch (const std::exception &error)
+            } catch (const std::exception &error)
             {
                 writeError(errorText, std::string("SchemaMigrator: 该数据库类型尚无方言实现：") + error.what());
                 return nullptr;
@@ -488,11 +475,9 @@ namespace AsynGyanis::Database::Queryable
          * @return true 语句被引擎接受
          * @return false 取连接失败或语句执行失败，原因见 errorText
          */
-        [[nodiscard]] static bool executeStatement(ConnectionPool &pool,
-                                                         const SqlStatement &statement,
-                                                         std::string *errorText)
+        [[nodiscard]] static bool executeStatement(ConnectionPool &pool, const SqlStatement &statement, std::string *errorText)
         {
-            PooledConnection connection = pool.acquire();
+            const PooledConnection connection = pool.acquire();
             if (!connection)
             {
                 writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限或连接创建失败）");
@@ -500,8 +485,7 @@ namespace AsynGyanis::Database::Queryable
             }
 
             // 连接在语句执行完、结果集销毁之后才归还：结果集持有连接句柄的非拥有指针（见 SqliteConnection）
-            std::unique_ptr<DatabaseResult> result =
-                connection->execute(std::string_view{statement.sql}, statement.parameters);
+            const std::unique_ptr<DatabaseResult> result = connection->execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
                 writeError(errorText, "SchemaMigrator: DDL 执行失败：" + connection->lastError());

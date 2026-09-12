@@ -66,7 +66,6 @@
 
 #include "Database/Dialect/StandardSqlDialect.h"
 
-#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -108,7 +107,8 @@ namespace AsynGyanis::Database
         ~MySqlDialect() override = default;
 
         // 方言是纯翻译规则、不含状态，拷贝一份与共享同一实例等价（registry 用共享指针持有）
-        MySqlDialect(const MySqlDialect &)            = default;
+        MySqlDialect(const MySqlDialect &) = default;
+
         MySqlDialect &operator=(const MySqlDialect &) = default;
 
         /**
@@ -238,9 +238,7 @@ namespace AsynGyanis::Database
          * @param parameters 输出参数列表，分页值由基类默认实现按占位符出现顺序追加
          * @param query 提供 limit / offset 的查询树
          */
-        void appendLimitOffsetClause(std::string &sqlText,
-                                    std::vector<DatabaseValue> &parameters,
-                                    const Queryable::QueryNode &query) const override;
+        void appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const override;
     };
 
 } // namespace AsynGyanis::Database

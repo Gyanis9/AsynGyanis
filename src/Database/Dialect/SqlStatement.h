@@ -45,8 +45,8 @@ namespace AsynGyanis::Database
      */
     struct SqlStatement
     {
-        std::string                  sql;        ///< 带占位符的 SQL 文本
-        std::vector<DatabaseValue>   parameters; ///< 按占位符出现顺序排列的绑定参数
+        std::string                sql;        ///< 带占位符的 SQL 文本
+        std::vector<DatabaseValue> parameters; ///< 按占位符出现顺序排列的绑定参数
     };
 
 } // namespace AsynGyanis::Database

@@ -22,11 +22,11 @@ namespace AsynGyanis::Database
      */
     struct PoolConfig
     {
-        std::size_t maximumPoolSize              = 32;    ///< 连接数上限（含空闲与活跃），0 表示不允许创建任何连接
-        std::size_t idleTimeoutSeconds            = 300;   ///< 空闲连接超时（秒），超过该时长未使用的连接在归还时或定期检查时被关闭
-        std::size_t maximumLifetimeSeconds        = 1800;  ///< 连接最大存活时间（秒），连接从创建到销毁的总时长上限
-        std::size_t healthCheckIntervalSeconds    = 60;    ///< 后台健康检查间隔（秒），周期性遍历空闲列表并驱逐过期连接
-        std::size_t acquireTimeoutMilliseconds    = 5000;  ///< 阻塞获取连接的超时（毫秒），超时未取到返回空 PooledConnection
+        std::size_t maximumPoolSize            = 32;   ///< 连接数上限（含空闲与活跃），0 表示不允许创建任何连接
+        std::size_t idleTimeoutSeconds         = 300;  ///< 空闲连接超时（秒），超过该时长未使用的连接在归还时或定期检查时被关闭
+        std::size_t maximumLifetimeSeconds     = 1800; ///< 连接最大存活时间（秒），连接从创建到销毁的总时长上限
+        std::size_t healthCheckIntervalSeconds = 60;   ///< 后台健康检查间隔（秒），周期性遍历空闲列表并驱逐过期连接
+        std::size_t acquireTimeoutMilliseconds = 5000; ///< 阻塞获取连接的超时（毫秒），超时未取到返回空 PooledConnection
     };
 
 } // namespace AsynGyanis::Database

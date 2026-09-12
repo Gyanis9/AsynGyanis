@@ -10,7 +10,6 @@
 
 #include "Database/Common/DatabaseValue.h"
 
-#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -48,10 +47,13 @@ namespace AsynGyanis::Database
          */
         virtual ~DatabaseResult() = default;
 
-        DatabaseResult(const DatabaseResult &)            = delete;
+        DatabaseResult(const DatabaseResult &) = delete;
+
         DatabaseResult &operator=(const DatabaseResult &) = delete;
-        DatabaseResult(DatabaseResult &&)                 = delete;
-        DatabaseResult &operator=(DatabaseResult &&)      = delete;
+
+        DatabaseResult(DatabaseResult &&) = delete;
+
+        DatabaseResult &operator=(DatabaseResult &&) = delete;
 
         /**
          * @brief 将游标移动到下一行
@@ -122,7 +124,10 @@ namespace AsynGyanis::Database
          *          getValue/next 等 const 读取路径不得改写错误状态。
          * @return std::string 错误描述，无错误时为空串
          */
-        [[nodiscard]] virtual std::string lastError() const { return m_lastError; }
+        [[nodiscard]] virtual std::string lastError() const
+        {
+            return m_lastError;
+        }
 
         /**
          * @brief 最近一次写语句影响的行数
@@ -142,7 +147,10 @@ namespace AsynGyanis::Database
          * @return std::int64_t 影响行数；0 表示未知、只读结果集或没有行被改动
          * @note 本方法必须 noexcept：它是执行路径上的统计读取，不允许因取数失败而打断调用方
          */
-        [[nodiscard]] virtual std::int64_t affectedRowCount() const noexcept { return 0; }
+        [[nodiscard]] virtual std::int64_t affectedRowCount() const noexcept
+        {
+            return 0;
+        }
 
     protected:
         std::string m_lastError; ///< 最后一次错误信息

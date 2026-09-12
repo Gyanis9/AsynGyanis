@@ -54,7 +54,7 @@ namespace AsynGyanis::Database::Queryable
     struct TableSchema
     {
         /// 数据库表名，默认为空字符串
-        static constexpr std::string_view kTableName = "";
+        static constexpr std::string_view kTableName;
 
         /// 列信息元组，使用 Column() 函数列出的 ColumnDescriptor 元组
         static constexpr auto kColumns = std::tuple{};

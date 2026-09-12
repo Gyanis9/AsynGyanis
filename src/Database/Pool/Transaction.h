@@ -112,10 +112,13 @@ namespace AsynGyanis::Database
         // 事务同时独占「连接所有权」与「唯一的会话状态」，拷贝与移动都会让
         // 「谁负责提交/回滚、连接何时归还」变得含糊，还可能让两个对象操作同一事务；
         // 绑定事务的 Queryable 还保存着本对象的地址，移动会破坏该引用的有效性
-        Transaction(const Transaction &)            = delete;
+        Transaction(const Transaction &) = delete;
+
         Transaction &operator=(const Transaction &) = delete;
-        Transaction(Transaction &&)                 = delete;
-        Transaction &operator=(Transaction &&)      = delete;
+
+        Transaction(Transaction &&) = delete;
+
+        Transaction &operator=(Transaction &&) = delete;
 
         /**
          * @brief 提交事务
@@ -144,7 +147,10 @@ namespace AsynGyanis::Database
          * @brief 判断事务是否仍在进行
          * @return true 事务已开启且尚未提交/回滚成功
          */
-        [[nodiscard]] bool isActive() const noexcept { return m_isActive; }
+        [[nodiscard]] bool isActive() const noexcept
+        {
+            return m_isActive;
+        }
 
         /**
          * @brief 获取事务持有的连接
@@ -154,13 +160,16 @@ namespace AsynGyanis::Database
          * @return DatabaseConnection& 事务持有的连接
          * @throws Base::LogicException 对象未持有连接（构造失败后继续使用等，正常流程不可达）
          */
-        [[nodiscard]] DatabaseConnection &connection();
+        [[nodiscard]] DatabaseConnection &connection() const;
 
         /**
          * @brief 获取最后一次事务控制语句失败的原因
          * @return std::string 中文错误描述；无失败时为空串
          */
-        [[nodiscard]] std::string lastError() const { return m_lastError; }
+        [[nodiscard]] std::string lastError() const
+        {
+            return m_lastError;
+        }
 
     private:
         /**
@@ -173,10 +182,10 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool executeControlStatement(std::string_view statement);
 
-        PooledConnection            m_connection;        ///< 事务独占的连接，析构时归还池
-        std::shared_ptr<SqlDialect> m_dialect;           ///< 本连接的方言，构造时解析并缓存（提供事务语句文本）
-        bool                        m_isActive = false;  ///< 事务是否仍在进行，决定析构是否回滚
-        std::string                 m_lastError;         ///< 最后一次事务控制语句的失败原因
+        PooledConnection            m_connection;       ///< 事务独占的连接，析构时归还池
+        std::shared_ptr<SqlDialect> m_dialect;          ///< 本连接的方言，构造时解析并缓存（提供事务语句文本）
+        bool                        m_isActive = false; ///< 事务是否仍在进行，决定析构是否回滚
+        std::string                 m_lastError;        ///< 最后一次事务控制语句的失败原因
     };
 
 } // namespace AsynGyanis::Database

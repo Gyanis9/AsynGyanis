@@ -51,10 +51,13 @@ namespace AsynGyanis::Database
          */
         virtual ~DatabaseConnection() = default;
 
-        DatabaseConnection(const DatabaseConnection &)            = delete;
+        DatabaseConnection(const DatabaseConnection &) = delete;
+
         DatabaseConnection &operator=(const DatabaseConnection &) = delete;
-        DatabaseConnection(DatabaseConnection &&)                 = delete;
-        DatabaseConnection &operator=(DatabaseConnection &&)      = delete;
+
+        DatabaseConnection(DatabaseConnection &&) = delete;
+
+        DatabaseConnection &operator=(DatabaseConnection &&) = delete;
 
         /**
          * @brief 建立与数据库的连接
@@ -103,15 +106,13 @@ namespace AsynGyanis::Database
          * @note 参数个数与占位符个数不一致时必须失败而不是按缺省值执行；
          *       实现方应拒绝无法安全绑定的参数类型（如容器类型）并给出中文错误
          */
-        [[nodiscard]] virtual std::unique_ptr<DatabaseResult> execute(std::string_view command,
-                                                                      std::span<const DatabaseValue> parameters)
+        [[nodiscard]] virtual std::unique_ptr<DatabaseResult> execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
         {
             // 两个入参都不使用：本实现只负责给出明确的中文错误，不执行任何命令
             static_cast<void>(command);
             static_cast<void>(parameters);
 
-            m_lastError = std::string("该驱动暂不支持参数化查询（") + databaseTypeName(databaseType()) +
-                          "）：请改用不带参数的 execute()，或为该驱动实现参数绑定";
+            m_lastError = std::string("该驱动暂不支持参数化查询（") + databaseTypeName(databaseType()) + "）：请改用不带参数的 execute()，或为该驱动实现参数绑定";
             return nullptr;
         }
 
@@ -125,42 +126,60 @@ namespace AsynGyanis::Database
          * @brief 获取最后一次错误信息
          * @return std::string 错误描述，无错误时为空串
          */
-        [[nodiscard]] virtual std::string lastError() const { return m_lastError; }
+        [[nodiscard]] virtual std::string lastError() const
+        {
+            return m_lastError;
+        }
 
         /**
          * @brief 获取连接配置的只读引用
          * @return const ConnectionConfig& 当前配置
          */
-        [[nodiscard]] const ConnectionConfig &configuration() const noexcept { return m_configuration; }
+        [[nodiscard]] const ConnectionConfig &configuration() const noexcept
+        {
+            return m_configuration;
+        }
 
         /**
          * @brief 设置连接超时时间
          * @param milliseconds 超时毫秒数，必须在 connect() 之前设置才会生效
          * @note 派生类若在 connect() 内读取该值配置底层句柄，重连时需要再次调用
          */
-        void setConnectTimeout(int milliseconds) noexcept { m_connectTimeout = milliseconds; }
+        void setConnectTimeout(const int milliseconds) noexcept
+        {
+            m_connectTimeout = milliseconds;
+        }
 
         /**
          * @brief 设置单条命令的执行超时时间
          * @param milliseconds 超时毫秒数
          */
-        void setQueryTimeout(int milliseconds) noexcept { m_queryTimeout = milliseconds; }
+        void setQueryTimeout(const int milliseconds) noexcept
+        {
+            m_queryTimeout = milliseconds;
+        }
 
         /**
          * @brief 读取当前连接超时设置
          * @return int 超时毫秒数
          */
-        [[nodiscard]] int connectTimeout() const noexcept { return m_connectTimeout; }
+        [[nodiscard]] int connectTimeout() const noexcept
+        {
+            return m_connectTimeout;
+        }
 
         /**
          * @brief 读取当前命令执行超时设置
          * @return int 超时毫秒数
          */
-        [[nodiscard]] int queryTimeout() const noexcept { return m_queryTimeout; }
+        [[nodiscard]] int queryTimeout() const noexcept
+        {
+            return m_queryTimeout;
+        }
 
     protected:
-        ConnectionConfig m_configuration; ///< 连接配置
-        std::string      m_lastError;     ///< 最后一次错误信息
+        ConnectionConfig m_configuration;          ///< 连接配置
+        std::string      m_lastError;              ///< 最后一次错误信息
         int              m_connectTimeout = 5000;  ///< 连接超时毫秒数
         int              m_queryTimeout   = 30000; ///< 单条命令执行超时毫秒数
         bool             m_isConnected    = false; ///< 连接状态，由派生类同步维护

@@ -43,7 +43,6 @@
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Queryable/QueryNode.h"
 
-#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,7 +69,8 @@ namespace AsynGyanis::Database
          */
         ~StandardSqlDialect() override = default;
 
-        StandardSqlDialect(const StandardSqlDialect &)            = default;
+        StandardSqlDialect(const StandardSqlDialect &) = default;
+
         StandardSqlDialect &operator=(const StandardSqlDialect &) = default;
 
         /**
@@ -99,8 +99,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement INSERT 文本与按列序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
-        [[nodiscard]] SqlStatement translateInsert(const Queryable::QueryNode &query,
-                                                   std::span<const DatabaseValue> values) const override;
+        [[nodiscard]] SqlStatement translateInsert(const Queryable::QueryNode &query, std::span<const DatabaseValue> values) const override;
 
         /**
          * @brief 把按条件更新翻译成带占位符的 UPDATE
@@ -114,8 +113,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement UPDATE 文本与按序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
-        [[nodiscard]] SqlStatement translateUpdate(const Queryable::QueryNode &query,
-                                                   std::span<const DatabaseValue> values) const override;
+        [[nodiscard]] SqlStatement translateUpdate(const Queryable::QueryNode &query, std::span<const DatabaseValue> values) const override;
 
         /**
          * @brief 把按条件删除翻译成带占位符的 DELETE
@@ -142,8 +140,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空、rows 为空，或某行取值个数与列数不一致
          */
-        [[nodiscard]] SqlStatement translateInsertBatch(const Queryable::QueryNode &query,
-                                                        std::span<const std::vector<DatabaseValue>> rows) const override;
+        [[nodiscard]] SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue> > rows) const override;
 
         /**
          * @brief 用本引擎的引用字符引用标识符，并翻倍转义内部引用字符
@@ -201,9 +198,7 @@ namespace AsynGyanis::Database
          * @param query 提供 limit / offset 的查询树
          * @note 覆写方必须保持「先取占位符序号、再压参数」的顺序，否则 $n 方言的序号会整体偏移
          */
-        virtual void appendLimitOffsetClause(std::string &sqlText,
-                                            std::vector<DatabaseValue> &parameters,
-                                            const Queryable::QueryNode &query) const;
+        virtual void appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const;
 
         /**
          * @brief 渲染字段引用：纯标识符加引用字符，表达式原样输出
@@ -237,9 +232,7 @@ namespace AsynGyanis::Database
          * @param parameters 输出参数列表，条件产生的取值按占位符出现顺序追加
          * @param query 提供 whereConditions 的查询树
          */
-        void appendWhereClause(std::string &sqlText,
-                               std::vector<DatabaseValue> &parameters,
-                               const Queryable::QueryNode &query) const;
+        void appendWhereClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const;
 
         /**
          * @brief 渲染 INSERT 的列名列表
@@ -254,9 +247,7 @@ namespace AsynGyanis::Database
          * @param parameters 输出参数列表，本行取值按列序追加
          * @param rowValues 本行各列的取值
          */
-        void appendValueRow(std::string &sqlText,
-                            std::vector<DatabaseValue> &parameters,
-                            std::span<const DatabaseValue> rowValues) const;
+        void appendValueRow(std::string &sqlText, std::vector<DatabaseValue> &parameters, std::span<const DatabaseValue> rowValues) const;
 
         /**
          * @brief 校验取值个数与待写列数一致
@@ -276,9 +267,7 @@ namespace AsynGyanis::Database
          * @param parameters 输出参数列表，占位符对应的取值按序追加
          * @param condition 待渲染的条件节点
          */
-        void appendCondition(std::string &sqlText,
-                             std::vector<DatabaseValue> &parameters,
-                             const Queryable::WhereCondition &condition) const;
+        void appendCondition(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::WhereCondition &condition) const;
 
         /**
          * @brief 追加一个右操作数参数的占位符并收集其取值
@@ -286,9 +275,7 @@ namespace AsynGyanis::Database
          * @param parameters 输出参数列表，转换后的取值追加到末尾
          * @param parameter 待绑定的参数值
          */
-        void appendParameter(std::string &sqlText,
-                             std::vector<DatabaseValue> &parameters,
-                             const Queryable::ParameterValue &parameter) const;
+        void appendParameter(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::ParameterValue &parameter) const;
 
         /**
          * @brief 把 ORM 参数值转换成驱动层的统一值

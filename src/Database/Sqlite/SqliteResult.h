@@ -12,7 +12,6 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Sqlite/SqliteConnection.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -57,10 +56,13 @@ namespace AsynGyanis::Database
         ~SqliteResult() override;
 
         // 语句句柄所有权唯一，拷贝会导致双重 finalize；基类同样已删除拷贝与移动。
-        SqliteResult(const SqliteResult &)            = delete;
+        SqliteResult(const SqliteResult &) = delete;
+
         SqliteResult &operator=(const SqliteResult &) = delete;
-        SqliteResult(SqliteResult &&)                 = delete;
-        SqliteResult &operator=(SqliteResult &&)      = delete;
+
+        SqliteResult(SqliteResult &&) = delete;
+
+        SqliteResult &operator=(SqliteResult &&) = delete;
 
         /**
          * @brief 将游标推进到下一行
@@ -157,14 +159,20 @@ namespace AsynGyanis::Database
          * @warning 所有权仍属于本结果集，调用方不得 sqlite3_finalize，也不得在结果集销毁后使用
          * @return sqlite3_stmt* 写回执结果为 nullptr
          */
-        [[nodiscard]] sqlite3_stmt *nativeHandle() const noexcept { return m_statement; }
+        [[nodiscard]] sqlite3_stmt *nativeHandle() const noexcept
+        {
+            return m_statement;
+        }
 
         /**
          * @brief 获取最近一次插入操作生成的 rowid
          * @details SQLite 的该计数器是连接级状态，构造时快照，之后连接上的新写入不会反映到本对象。
          * @return std::int64_t rowid，从未插入过时为 0
          */
-        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept { return m_lastInsertRowId; }
+        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept
+        {
+            return m_lastInsertRowId;
+        }
 
         /**
          * @brief 获取影响行数
@@ -189,15 +197,15 @@ namespace AsynGyanis::Database
          */
         void countRows();
 
-        sqlite3_stmt *m_statement{nullptr};    ///< 预编译语句句柄，非空时由本对象负责 finalize
-        sqlite3 *m_database{nullptr};          ///< 所属连接的句柄，只读引用，不接管生命周期
-        size_t m_columnCount{0};               ///< 列数快照，0 表示这是没有游标的写回执
-        size_t m_rowCount{0};                  ///< 预扫描得到的行数快照，未预扫描时为 0
-        int m_affectedRowCount{0};             ///< 构造时快照的连接级 sqlite3_changes（int 是 SQLite API 的原生类型）
-        std::int64_t m_lastInsertRowId{0};     ///< 构造时快照的连接级 sqlite3_last_insert_rowid
-        bool m_hasCurrentRow{false};           ///< 游标当前是否停在有效行上，决定能否读取列值
-        bool m_scanCompleted{false};           ///< 游标是否已走到末尾；SQLite 会对已 DONE 的语句再次 step 而重跑查询，必须显式记住耗尽
-        bool m_isEmpty{true};                  ///< 结果集是否为空（写回执恒为 true）
+        sqlite3_stmt *m_statement{nullptr};   ///< 预编译语句句柄，非空时由本对象负责 finalize
+        sqlite3 *     m_database{nullptr};    ///< 所属连接的句柄，只读引用，不接管生命周期
+        size_t        m_columnCount{0};       ///< 列数快照，0 表示这是没有游标的写回执
+        size_t        m_rowCount{0};          ///< 预扫描得到的行数快照，未预扫描时为 0
+        int           m_affectedRowCount{0};  ///< 构造时快照的连接级 sqlite3_changes（int 是 SQLite API 的原生类型）
+        std::int64_t  m_lastInsertRowId{0};   ///< 构造时快照的连接级 sqlite3_last_insert_rowid
+        bool          m_hasCurrentRow{false}; ///< 游标当前是否停在有效行上，决定能否读取列值
+        bool          m_scanCompleted{false}; ///< 游标是否已走到末尾；SQLite 会对已 DONE 的语句再次 step 而重跑查询，必须显式记住耗尽
+        bool          m_isEmpty{true};        ///< 结果集是否为空（写回执恒为 true）
     };
 
 } // namespace AsynGyanis::Database

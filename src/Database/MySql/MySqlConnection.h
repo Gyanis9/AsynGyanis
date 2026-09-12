@@ -11,7 +11,6 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
-#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -112,10 +111,13 @@ namespace AsynGyanis::Database
         // 句柄所有权唯一：拷贝会让两个对象 mysql_close 同一个 MYSQL；
         // 移动会让源对象析构时再次 mysql_close（句柄已交给目标对象），
         // 因此拷贝与移动一律禁止（基类同样已删除，这里显式写清意图）。
-        MySqlConnection(const MySqlConnection &)            = delete;
+        MySqlConnection(const MySqlConnection &) = delete;
+
         MySqlConnection &operator=(const MySqlConnection &) = delete;
-        MySqlConnection(MySqlConnection &&)                 = delete;
-        MySqlConnection &operator=(MySqlConnection &&)      = delete;
+
+        MySqlConnection(MySqlConnection &&) = delete;
+
+        MySqlConnection &operator=(MySqlConnection &&) = delete;
 
         /**
          * @brief 连接 MySQL 服务
@@ -206,8 +208,7 @@ namespace AsynGyanis::Database
          * @note 缺少服务端时的可用性：未连接、参数个数不匹配、命令为空、容器类型参数
          *       这几条判定都发生在发起任何网络往返之前或之后立即返回，因此不需要服务端即可验证
          */
-        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command,
-                                                             std::span<const DatabaseValue> parameters) override;
+        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
          * @brief 获取数据库类型
@@ -259,7 +260,10 @@ namespace AsynGyanis::Database
          *          拿它去发命令会绕过本类的超时设置、错误处理与断链复位逻辑
          * @return MYSQL* 未连接（或桩构建）时为 nullptr
          */
-        [[nodiscard]] MYSQL *nativeHandle() const noexcept { return m_mysqlHandle; }
+        [[nodiscard]] MYSQL *nativeHandle() const noexcept
+        {
+            return m_mysqlHandle;
+        }
 
     private:
         /**

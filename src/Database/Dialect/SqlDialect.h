@@ -49,7 +49,6 @@
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Queryable/QueryNode.h"
 
-#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
@@ -106,8 +105,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement INSERT 文本与按列序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
-        [[nodiscard]] virtual SqlStatement translateInsert(const Queryable::QueryNode &query,
-                                                           std::span<const DatabaseValue> values) const = 0;
+        [[nodiscard]] virtual SqlStatement translateInsert(const Queryable::QueryNode &query, std::span<const DatabaseValue> values) const = 0;
 
         /**
          * @brief 把「按条件更新」翻译成带占位符的 UPDATE
@@ -123,8 +121,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement UPDATE 文本与按序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空，或 values 个数与列数不一致
          */
-        [[nodiscard]] virtual SqlStatement translateUpdate(const Queryable::QueryNode &query,
-                                                           std::span<const DatabaseValue> values) const = 0;
+        [[nodiscard]] virtual SqlStatement translateUpdate(const Queryable::QueryNode &query, std::span<const DatabaseValue> values) const = 0;
 
         /**
          * @brief 把「按条件删除」翻译成带占位符的 DELETE
@@ -152,8 +149,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空、rows 为空，或某行的取值个数与列数不一致
          */
-        [[nodiscard]] virtual SqlStatement translateInsertBatch(const Queryable::QueryNode &query,
-                                                                std::span<const std::vector<DatabaseValue>> rows) const = 0;
+        [[nodiscard]] virtual SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue> > rows) const = 0;
 
         /**
          * @brief 获取开启事务的语句文本

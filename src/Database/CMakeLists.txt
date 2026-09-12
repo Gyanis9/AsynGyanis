@@ -45,27 +45,27 @@ target_link_libraries(Database PUBLIC
 
 # 可选驱动只在启用时才探测客户端库，并用对应宏切换真实实现与报错桩。
 # QUIET + TARGET 判定：探测失败是预期路径（没装客户端库的机器），不打印红色告警也不中断
-if(DATABASE_WITH_MYSQL)
+if (DATABASE_WITH_MYSQL)
     find_package(libmysqlclient QUIET)
-endif()
+endif ()
 
-if(TARGET libmysqlclient::libmysqlclient)
+if (TARGET libmysqlclient::libmysqlclient)
     target_link_libraries(Database PUBLIC libmysqlclient::libmysqlclient)
     target_compile_definitions(Database PUBLIC DATABASE_HAS_MYSQL=1)
     message(STATUS "Database: 启用 MySQL 驱动（libmysqlclient）")
-elseif(DATABASE_WITH_MYSQL)
+elseif (DATABASE_WITH_MYSQL)
     message(STATUS "Database: 未找到 libmysqlclient，MySQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
-else()
+else ()
     message(STATUS "Database: MySQL 驱动未启用（-DDATABASE_WITH_MYSQL=ON 可开启），退化为报错桩")
-endif()
+endif ()
 
-if(TARGET hiredis::hiredis)
+if (TARGET hiredis::hiredis)
     target_link_libraries(Database PUBLIC hiredis::hiredis)
     target_compile_definitions(Database PUBLIC DATABASE_HAS_REDIS=1)
     message(STATUS "Database: 启用 Redis 驱动（hiredis）")
-else()
+else ()
     message(STATUS "Database: 未找到 hiredis，Redis 驱动退化为报错桩")
-endif()
+endif ()
 
 target_include_directories(Database PUBLIC
         ${CMAKE_SOURCE_DIR}/src

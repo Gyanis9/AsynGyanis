@@ -12,7 +12,6 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/MySql/MySqlConnection.h" // 复用其中全局作用域的 MYSQL / MYSQL_RES / MYSQL_ROW 前置声明
 
-#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -80,10 +79,13 @@ namespace AsynGyanis::Database
 
         // MYSQL_RES 所有权唯一：拷贝会让同一份结果被 mysql_free_result 两次；
         // 移动则让源对象析构时再次释放已经交给目标对象的句柄。基类同样已删除拷贝与移动。
-        MySqlResult(const MySqlResult &)            = delete;
+        MySqlResult(const MySqlResult &) = delete;
+
         MySqlResult &operator=(const MySqlResult &) = delete;
-        MySqlResult(MySqlResult &&)                 = delete;
-        MySqlResult &operator=(MySqlResult &&)      = delete;
+
+        MySqlResult(MySqlResult &&) = delete;
+
+        MySqlResult &operator=(MySqlResult &&) = delete;
 
         /**
          * @brief 将游标移动到下一行
@@ -211,10 +213,10 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] DatabaseValue convertValue(const char *rawValue, size_t byteLength, size_t index) const;
 
-        MYSQL_RES *m_result{nullptr};    ///< MySQL 预读结果集句柄，非空时由本对象负责 mysql_free_result
-        MYSQL_ROW m_currentRow{nullptr}; ///< 当前行的列指针数组，空表示游标未停在有效行上
-        size_t m_rowCount{0};            ///< 构造时快照的行数，写回执结果为 0
-        size_t m_columnCount{0};         ///< 构造时快照的列数，写回执结果为 0
+        MYSQL_RES *  m_result{nullptr};     ///< MySQL 预读结果集句柄，非空时由本对象负责 mysql_free_result
+        MYSQL_ROW    m_currentRow{nullptr}; ///< 当前行的列指针数组，空表示游标未停在有效行上
+        size_t       m_rowCount{0};         ///< 构造时快照的行数，写回执结果为 0
+        size_t       m_columnCount{0};      ///< 构造时快照的列数，写回执结果为 0
         std::int64_t m_affectedRowCount{0}; ///< 构造时快照的语句级影响行数，只读结果集与写回执之外恒为 0
     };
 

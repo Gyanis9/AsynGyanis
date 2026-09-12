@@ -1,5 +1,7 @@
 #include "Database/Dialect/StandardSqlDialect.h"
 
+#include <algorithm>
+
 #include "Base/Exception/InvalidArgumentException.h"
 
 #include <limits>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Database
          */
         bool isIdentifierByte(const char character) noexcept
         {
-            const unsigned char byte = static_cast<unsigned char>(character);
+            const auto byte = static_cast<unsigned char>(character);
 
             // 手写字符区间而不用 std::isalnum：后者受当前 locale 影响，
             // 且要求参数可表示为 unsigned char（负数直接传给它是未定义行为）
@@ -54,14 +56,14 @@ namespace AsynGyanis::Database
                 return false;
             }
 
-            for (const char character: text)
+            if (!std::ranges::all_of(text, [quoteCharacter](const char character)
             {
-                // 引用字符走「引用并翻倍」这条路径；空格同理，加上引用后它只是一个普通字符，
-                // 不会破坏语句结构
-                if (!isIdentifierByte(character) && character != quoteCharacter && character != ' ')
-                {
-                    return false;
-                }
+                return isIdentifierByte(character)
+                       || character == quoteCharacter
+                       || character == ' ';
+            }))
+            {
+                return false;
             }
 
             return true;
@@ -176,8 +178,7 @@ namespace AsynGyanis::Database
             {
                 // users.* 里的通配符同样不加引用
                 renderedText.push_back('*');
-            }
-            else
+            } else
             {
                 // 标识符一律加引用：既能容纳 order、group 这类保留字列名，也避免大小写折叠带来的歧义
                 renderedText += quoteIdentifier(segments[index]);
@@ -199,9 +200,7 @@ namespace AsynGyanis::Database
         return tableReference;
     }
 
-    void StandardSqlDialect::appendWhereClause(std::string &sqlText,
-                                              std::vector<DatabaseValue> &parameters,
-                                              const Queryable::QueryNode &query) const
+    void StandardSqlDialect::appendWhereClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
         // 没有条件就整段不输出：SELECT 得到全表查询、DELETE 得到整表删除，
         // 都是 SQL 本身的语义，不在这一层额外补 "WHERE 1 = 1" 之类的伪条件
@@ -235,9 +234,7 @@ namespace AsynGyanis::Database
         }
     }
 
-    void StandardSqlDialect::appendValueRow(std::string &sqlText,
-                                            std::vector<DatabaseValue> &parameters,
-                                            const std::span<const DatabaseValue> rowValues) const
+    void StandardSqlDialect::appendValueRow(std::string &sqlText, std::vector<DatabaseValue> &parameters, const std::span<const DatabaseValue> rowValues) const
     {
         sqlText += '(';
         for (std::size_t index = 0; index < rowValues.size(); ++index)
@@ -254,12 +251,11 @@ namespace AsynGyanis::Database
     }
 
     void StandardSqlDialect::requireMatchingColumnCount(const Queryable::QueryNode &query,
-                                                       const std::size_t valueCount) const
+                                                        const std::size_t           valueCount) const
     {
         if (query.selectColumns.empty())
         {
-            throw Base::InvalidArgumentException(std::string(dialectName()) +
-                                                " 方言：待写列列表为空，无法生成写语句（表 " + query.tableName + "）");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：待写列列表为空，无法生成写语句（表 " + query.tableName + "）");
         }
 
         // 列与值对错位时生成的语句可能仍能执行，却会把值写进错误的列，
@@ -267,14 +263,12 @@ namespace AsynGyanis::Database
         if (valueCount != query.selectColumns.size())
         {
             throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(valueCount) +
-                                                "）与待写列数（" + std::to_string(query.selectColumns.size()) +
-                                                "）不一致，无法生成写语句（表 " + query.tableName + "）");
+                                                 "）与待写列数（" + std::to_string(query.selectColumns.size()) +
+                                                 "）不一致，无法生成写语句（表 " + query.tableName + "）");
         }
     }
 
-    void StandardSqlDialect::appendLimitOffsetClause(std::string &sqlText,
-                                                    std::vector<DatabaseValue> &parameters,
-                                                    const Queryable::QueryNode &query) const
+    void StandardSqlDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
         // 两个分页值都不存在时不输出任何内容
         if (query.limit.has_value())
@@ -298,7 +292,7 @@ namespace AsynGyanis::Database
     SqlStatement StandardSqlDialect::translate(const Queryable::QueryNode &query) const
     {
         SqlStatement                statement;
-        std::string                &sqlText    = statement.sql;
+        std::string &               sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         // ---------- SELECT 列 ----------
@@ -309,8 +303,7 @@ namespace AsynGyanis::Database
             // 的列序对齐结果时才显式展开列名，方言层不依赖任何模板参数，因此只能给出
             // 语法上最通用、顺序由数据库决定的 '*'
             sqlText += '*';
-        }
-        else
+        } else
         {
             for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
             {
@@ -405,8 +398,7 @@ namespace AsynGyanis::Database
         return statement;
     }
 
-    SqlStatement StandardSqlDialect::translateInsert(const Queryable::QueryNode &query,
-                                                    const std::span<const DatabaseValue> values) const
+    SqlStatement StandardSqlDialect::translateInsert(const Queryable::QueryNode &query, const std::span<const DatabaseValue> values) const
     {
         requireMatchingColumnCount(query, values.size());
 
@@ -426,13 +418,12 @@ namespace AsynGyanis::Database
         return statement;
     }
 
-    SqlStatement StandardSqlDialect::translateUpdate(const Queryable::QueryNode &query,
-                                                    const std::span<const DatabaseValue> values) const
+    SqlStatement StandardSqlDialect::translateUpdate(const Queryable::QueryNode &query, const std::span<const DatabaseValue> values) const
     {
         requireMatchingColumnCount(query, values.size());
 
-        SqlStatement statement;
-        std::string &sqlText = statement.sql;
+        SqlStatement                statement;
+        std::string &               sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         sqlText += "UPDATE ";
@@ -475,15 +466,13 @@ namespace AsynGyanis::Database
         return statement;
     }
 
-    SqlStatement StandardSqlDialect::translateInsertBatch(const Queryable::QueryNode &query,
-                                                          const std::span<const std::vector<DatabaseValue>> rows) const
+    SqlStatement StandardSqlDialect::translateInsertBatch(const Queryable::QueryNode &query, const std::span<const std::vector<DatabaseValue> > rows) const
     {
         if (rows.empty())
         {
             // 零行插入没有合法写法（"VALUES" 后面必须有至少一组括号），
             // 静默返回一句只能插 0 行的语句会让调用方以为写入了数据，因此直接失败
-            throw Base::InvalidArgumentException(std::string(dialectName()) +
-                                                " 方言：批量插入的行集合为空，无法生成 INSERT 语句");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：批量插入的行集合为空，无法生成 INSERT 语句");
         }
 
         requireMatchingColumnCount(query, rows.front().size());
@@ -496,8 +485,8 @@ namespace AsynGyanis::Database
             requireMatchingColumnCount(query, rowValues.size());
         }
 
-        SqlStatement statement;
-        std::string &sqlText = statement.sql;
+        SqlStatement                statement;
+        std::string &               sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         // 参数总数 = 行数 × 列数，调用方可能只算了一遍列数，这里按最坏情况预留容量避免反复扩容
@@ -523,9 +512,7 @@ namespace AsynGyanis::Database
         return statement;
     }
 
-    void StandardSqlDialect::appendCondition(std::string &sqlText,
-                                             std::vector<DatabaseValue> &parameters,
-                                             const Queryable::WhereCondition &condition) const
+    void StandardSqlDialect::appendCondition(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::WhereCondition &condition) const
     {
         using Queryable::SqlOperator;
 
@@ -650,16 +637,13 @@ namespace AsynGyanis::Database
         {
             // 列-列比较两侧都是标识符，不需要也不能绑定参数
             sqlText += renderFieldReference(std::get<Queryable::FieldReference>(condition.right).name);
-        }
-        else
+        } else
         {
             appendParameter(sqlText, parameters, std::get<Queryable::ParameterValue>(condition.right));
         }
     }
 
-    void StandardSqlDialect::appendParameter(std::string &sqlText,
-                                             std::vector<DatabaseValue> &parameters,
-                                             const Queryable::ParameterValue &parameter) const
+    void StandardSqlDialect::appendParameter(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::ParameterValue &parameter) const
     {
         // 先写占位符再压参数：两处顺序一致，SQL 文本里的第 i 个占位符就对应 parameters[i]
         sqlText += placeholder();
@@ -669,42 +653,39 @@ namespace AsynGyanis::Database
     DatabaseValue StandardSqlDialect::convertParameter(const Queryable::ParameterValue &parameter)
     {
         return std::visit(
-            [](const auto &value) -> DatabaseValue
-            {
-                using ValueType = std::decay_t<decltype(value)>;
+                []<typename T0>(const T0 &value) -> DatabaseValue
+                {
+                    using ValueType = std::decay_t<T0>;
 
-                if constexpr (std::is_same_v<ValueType, std::nullptr_t>)
-                {
-                    // ORM 用 nullptr 表达 SQL NULL，驱动层用 std::monostate 表达，二者语义相同
-                    return std::monostate{};
-                }
-                else if constexpr (std::is_same_v<ValueType, std::uint64_t>)
-                {
-                    // DatabaseValue 已冻结，没有无符号备选，这里做两步降级：
-                    // - 放得进 int64_t：转成有符号整数，保持整数比较语义，也让索引与算术可用；
-                    // - 超出 int64_t：转成十进制文本。宁可让比较按文本进行（而不是静默回绕成负数
-                    //   给出错误数值），也不引入第二套无符号类型；这类取值现实中只出现在
-                    //   哈希 ID、位掩码等场景，文本比较通常仍能得到正确结果
-                    if (value <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                    if constexpr (std::is_same_v<ValueType, std::nullptr_t>)
                     {
-                        return static_cast<std::int64_t>(value);
+                        // ORM 用 nullptr 表达 SQL NULL，驱动层用 std::monostate 表达，二者语义相同
+                        return std::monostate{};
+                    } else if constexpr (std::is_same_v<ValueType, std::uint64_t>)
+                    {
+                        // DatabaseValue 已冻结，没有无符号备选，这里做两步降级：
+                        // - 放得进 int64_t：转成有符号整数，保持整数比较语义，也让索引与算术可用；
+                        // - 超出 int64_t：转成十进制文本。宁可让比较按文本进行（而不是静默回绕成负数
+                        //   给出错误数值），也不引入第二套无符号类型；这类取值现实中只出现在
+                        //   哈希 ID、位掩码等场景，文本比较通常仍能得到正确结果
+                        if (value <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                        {
+                            return static_cast<std::int64_t>(value);
+                        }
+                        return std::to_string(value);
+                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t> >)
+                    {
+                        // 二进制在两种 variant 里同名同类型，无需翻译。这里是唯一一个「类型本身就是
+                        // 绑定线索」的备选：驱动靠它决定走 sqlite3_bind_blob / MYSQL_TYPE_BLOB，
+                        // 而不是按文本绑定后由服务端按连接字符集重新解释载荷
+                        return DatabaseValue{value};
+                    } else
+                    {
+                        // bool / int64_t / double / std::string 在两种 variant 中同名同类型，直接构造即可
+                        return DatabaseValue{value};
                     }
-                    return std::to_string(value);
-                }
-                else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
-                {
-                    // 二进制在两种 variant 里同名同类型，无需翻译。这里是唯一一个「类型本身就是
-                    // 绑定线索」的备选：驱动靠它决定走 sqlite3_bind_blob / MYSQL_TYPE_BLOB，
-                    // 而不是按文本绑定后由服务端按连接字符集重新解释载荷
-                    return DatabaseValue{value};
-                }
-                else
-                {
-                    // bool / int64_t / double / std::string 在两种 variant 中同名同类型，直接构造即可
-                    return DatabaseValue{value};
-                }
-            },
-            parameter);
+                },
+                parameter);
     }
 
     DatabaseValue StandardSqlDialect::pageNumberToDatabaseValue(const std::size_t pageNumber)
@@ -725,16 +706,26 @@ namespace AsynGyanis::Database
 
         switch (sqlOperator)
         {
-            case SqlOperator::Eq:    return "=";
-            case SqlOperator::Neq:   return "!=";
-            case SqlOperator::Gt:    return ">";
-            case SqlOperator::Ge:    return ">=";
-            case SqlOperator::Lt:    return "<";
-            case SqlOperator::Le:    return "<=";
-            case SqlOperator::Like:  return "LIKE";
-            case SqlOperator::In:    return "IN";
-            case SqlOperator::NotIn: return "NOT IN";
-            default:                 return "=";
+            case SqlOperator::Eq:
+                return "=";
+            case SqlOperator::Neq:
+                return "!=";
+            case SqlOperator::Gt:
+                return ">";
+            case SqlOperator::Ge:
+                return ">=";
+            case SqlOperator::Lt:
+                return "<";
+            case SqlOperator::Le:
+                return "<=";
+            case SqlOperator::Like:
+                return "LIKE";
+            case SqlOperator::In:
+                return "IN";
+            case SqlOperator::NotIn:
+                return "NOT IN";
+            default:
+                return "=";
         }
     }
 
@@ -744,13 +735,18 @@ namespace AsynGyanis::Database
 
         switch (joinType)
         {
-            case JoinType::Inner: return "INNER";
-            case JoinType::Left:  return "LEFT";
+            case JoinType::Inner:
+                return "INNER";
+            case JoinType::Left:
+                return "LEFT";
             // RIGHT JOIN 在 SQLite 上是 3.39.0 起才支持，更早的版本会在编译期直接报语法错误，
             // 这里照写意图，让数据库给出明确错误而不是被上层悄悄改成 LEFT
-            case JoinType::Right: return "RIGHT";
-            case JoinType::Cross: return "CROSS";
-            default:              return "INNER";
+            case JoinType::Right:
+                return "RIGHT";
+            case JoinType::Cross:
+                return "CROSS";
+            default:
+                return "INNER";
         }
     }
 

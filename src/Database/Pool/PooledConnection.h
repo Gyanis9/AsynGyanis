@@ -19,10 +19,8 @@
 #pragma once
 
 #include "Database/Common/DatabaseConnection.h"
-#include "Database/Pool/PoolConfig.h"
 
 #include <memory>
-#include <utility>
 
 namespace AsynGyanis::Database
 {
@@ -69,7 +67,8 @@ namespace AsynGyanis::Database
         ~PooledConnection();
 
         // 禁止拷贝：每个连接同时只能有一个 RAII 包装持有
-        PooledConnection(const PooledConnection &)            = delete;
+        PooledConnection(const PooledConnection &) = delete;
+
         PooledConnection &operator=(const PooledConnection &) = delete;
 
         /**
@@ -89,14 +88,14 @@ namespace AsynGyanis::Database
          * @brief 通过箭头运算符访问底层连接
          * @return DatabaseConnection* 底层连接指针；不持有时返回 nullptr
          */
-        DatabaseConnection *operator->();
+        DatabaseConnection *operator->() const;
 
         /**
          * @brief 通过解引用运算符访问底层连接
          * @return DatabaseConnection& 底层连接引用
          * @warning 不持有时解引用导致未定义行为，调用前应检查 operator bool
          */
-        DatabaseConnection &operator*();
+        DatabaseConnection &operator*() const;
 
         /**
          * @brief 检查是否持有有效连接
@@ -121,8 +120,8 @@ namespace AsynGyanis::Database
          */
         void doReturnToPool();
 
-        std::unique_ptr<DatabaseConnection> m_connection; ///< 底层数据库连接的所有权
-        ConnectionPool                    *m_pool        = nullptr; ///< 归属的连接池，析构时据此归还
+        std::unique_ptr<DatabaseConnection> m_connection;     ///< 底层数据库连接的所有权
+        ConnectionPool *                    m_pool = nullptr; ///< 归属的连接池，析构时据此归还
     };
 
 } // namespace AsynGyanis::Database

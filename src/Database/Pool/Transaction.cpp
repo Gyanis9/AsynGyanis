@@ -18,7 +18,7 @@ namespace AsynGyanis::Database
         if (!m_connection)
         {
             throw ConnectionUnavailableException("数据库事务：无法从连接池获取连接（池已达上限且等待超时，"
-                                                 "或连接工厂创建失败），事务未开启");
+                    "或连接工厂创建失败），事务未开启");
         }
 
         // 事务控制语句的文本由方言提供：SQLite 用 BEGIN IMMEDIATE、MySQL 用 START TRANSACTION，
@@ -94,7 +94,7 @@ namespace AsynGyanis::Database
         return true;
     }
 
-    DatabaseConnection &Transaction::connection()
+    DatabaseConnection &Transaction::connection() const
     {
         // 正常流程下构造成功即持有连接，此分支仅为防御：把空指针解引用换成可定位的中文异常
         if (!m_connection)
@@ -112,8 +112,7 @@ namespace AsynGyanis::Database
 
         // BEGIN / COMMIT / ROLLBACK 都是无参数语句，走驱动的普通执行接口即可；
         // 它们本身没有返回列，返回非空结果集就代表语句已被引擎接受
-        const std::unique_ptr<DatabaseResult> result = m_connection->execute(statement);
-        if (result == nullptr)
+        if (const std::unique_ptr<DatabaseResult> result = m_connection->execute(statement); result == nullptr)
         {
             m_lastError = "数据库事务：" + std::string(statement) + " 执行失败：" + m_connection->lastError();
             return false;

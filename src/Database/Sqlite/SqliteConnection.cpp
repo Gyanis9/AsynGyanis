@@ -14,9 +14,9 @@ namespace AsynGyanis::Database
     namespace
     {
         // 用 constexpr 常量取代宏：类型安全、作用域受控，且不会污染全局命名空间
-        constexpr const char *kInMemoryDatabasePath = ":memory:";
-        constexpr const char *kWriteAheadLogPragma  = "PRAGMA journal_mode=WAL;";
-        constexpr const char *kForeignKeysPragma    = "PRAGMA foreign_keys=ON;";
+        constexpr auto kInMemoryDatabasePath = ":memory:";
+        constexpr auto kWriteAheadLogPragma  = "PRAGMA journal_mode=WAL;";
+        constexpr auto kForeignKeysPragma    = "PRAGMA foreign_keys=ON;";
 
         // sqlite3_prepare_v2 的语句长度参数是 int，超过该上限会被静默截断成半条语句
         constexpr size_t kMaximumCommandLength = static_cast<size_t>(std::numeric_limits<int>::max());
@@ -37,7 +37,7 @@ namespace AsynGyanis::Database
     {
         // RAII 收尾：析构阶段虚表已回到本类，直接调用 disconnect() 而不经虚接口，
         // 保证无论调用方是否显式断开都不会漏掉 sqlite3_close
-        disconnect();
+        SqliteConnection::disconnect();
     }
 
     bool SqliteConnection::connect()
@@ -131,8 +131,7 @@ namespace AsynGyanis::Database
         return execute(command, std::span<const DatabaseValue>{});
     }
 
-    std::unique_ptr<DatabaseResult> SqliteConnection::execute(const std::string_view command,
-                                                              const std::span<const DatabaseValue> parameters)
+    std::unique_ptr<DatabaseResult> SqliteConnection::execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
     {
         // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
         m_lastError.clear();
@@ -161,9 +160,9 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        sqlite3_stmt *statement      = nullptr;
-        const char   *unusedTail     = commandText.c_str();
-        const int     prepareResult  = sqlite3_prepare_v2(m_database, commandText.c_str(), static_cast<int>(commandText.size()), &statement, &unusedTail);
+        sqlite3_stmt *statement     = nullptr;
+        const char *  unusedTail    = commandText.c_str();
+        const int     prepareResult = sqlite3_prepare_v2(m_database, commandText.c_str(), static_cast<int>(commandText.size()), &statement, &unusedTail);
         if (prepareResult != SQLITE_OK)
         {
             // 编译失败时 SQLite 约定把 *ppStmt 置空，无需再 finalize
@@ -186,8 +185,8 @@ namespace AsynGyanis::Database
             const int     remainingLength   = static_cast<int>(commandText.c_str() + commandText.size() - unusedTail);
             sqlite3_stmt *trailingStatement = nullptr;
             // pTail 出参传 nullptr 是 SQLite 明确允许的：本次探测只关心「还有没有语句」，不需要剩余位置
-            const int trailingResult  = sqlite3_prepare_v2(m_database, unusedTail, remainingLength, &trailingStatement, nullptr);
-            const bool hasExtraStatement = (trailingResult == SQLITE_OK && trailingStatement != nullptr);
+            const int     trailingResult    = sqlite3_prepare_v2(m_database, unusedTail, remainingLength, &trailingStatement, nullptr);
+            const bool    hasExtraStatement = (trailingResult == SQLITE_OK && trailingStatement != nullptr);
 
             if (trailingStatement != nullptr)
             {
@@ -324,21 +323,17 @@ namespace AsynGyanis::Database
                 // NULL 必须用 sqlite3_bind_null 表达：绑成空字符串后 "IS NULL" 不再成立，
                 // 与调用方传空值的意图直接冲突
                 bindResult = sqlite3_bind_null(statement, parameterIndex);
-            }
-            else if (const auto *booleanValue = std::get_if<bool>(&parameterValue))
+            } else if (const auto *booleanValue = std::get_if<bool>(&parameterValue))
             {
                 // SQLite 没有独立的布尔存储类，按官方建议用整数 0/1 表示真假
                 bindResult = sqlite3_bind_int(statement, parameterIndex, *booleanValue ? 1 : 0);
-            }
-            else if (const auto *integerValue = std::get_if<std::int64_t>(&parameterValue))
+            } else if (const auto *integerValue = std::get_if<std::int64_t>(&parameterValue))
             {
                 bindResult = sqlite3_bind_int64(statement, parameterIndex, *integerValue);
-            }
-            else if (const auto *realValue = std::get_if<double>(&parameterValue))
+            } else if (const auto *realValue = std::get_if<double>(&parameterValue))
             {
                 bindResult = sqlite3_bind_double(statement, parameterIndex, *realValue);
-            }
-            else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
+            } else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
             {
                 // sqlite3_bind_text 的长度参数是 int，超长文本会被静默截断成半条数据，直接拒绝
                 if (textValue->size() > kMaximumParameterLength)
@@ -353,8 +348,7 @@ namespace AsynGyanis::Database
                 // 数据库读到的会是调用方早已释放的缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失
                 bindResult = sqlite3_bind_text(statement, parameterIndex, textValue->data(),
                                                static_cast<int>(textValue->size()), SQLITE_TRANSIENT);
-            }
-            else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
+            } else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
             {
                 // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断
                 if (byteValue->size() > kMaximumParameterLength)
@@ -370,15 +364,13 @@ namespace AsynGyanis::Database
                 if (byteValue->empty())
                 {
                     bindResult = sqlite3_bind_zeroblob(statement, parameterIndex, 0);
-                }
-                else
+                } else
                 {
                     // SQLITE_TRANSIENT 的理由与文本分支相同：语句可能晚于本函数返回才真正执行
                     bindResult = sqlite3_bind_blob(statement, parameterIndex, byteValue->data(),
                                                    static_cast<int>(byteValue->size()), SQLITE_TRANSIENT);
                 }
-            }
-            else
+            } else
             {
                 // 容器的正确用法是展开成多个标量参数（如 IN 列表），而不是当成单个参数，
                 // 方言层已把 IN 集合展开，走到这里说明调用方传了非标量值
@@ -403,7 +395,7 @@ namespace AsynGyanis::Database
     {
         // sqlite3_errmsg 的返回指针只在下一次使用同一连接的 API 之前有效，必须立刻拷进 std::string；
         // 句柄为空时（连接根本没建起来）不能调用它，改用不依赖句柄的全局 sqlite3_errstr
-        const int  errorCode   = (m_database != nullptr) ? sqlite3_errcode(m_database) : SQLITE_ERROR;
+        const int   errorCode  = (m_database != nullptr) ? sqlite3_errcode(m_database) : SQLITE_ERROR;
         const char *rawMessage = (m_database != nullptr) ? sqlite3_errmsg(m_database) : sqlite3_errstr(errorCode);
 
         std::string message(rawMessage != nullptr ? rawMessage : "未知错误");
@@ -421,9 +413,9 @@ namespace AsynGyanis::Database
         // sqlite3_exec 依赖零终止符，string_view 未必带，落一份副本再用
         const std::string statementText(pragmaText);
 
-        char *rawError = nullptr;
+        char *            rawError      = nullptr;
         // 错误出参由 SQLite 分配，官方约定必须由调用方 sqlite3_free 释放
-        const int         execResult   = sqlite3_exec(m_database, statementText.c_str(), nullptr, nullptr, &rawError);
+        const int         execResult    = sqlite3_exec(m_database, statementText.c_str(), nullptr, nullptr, &rawError);
         const std::string failureReason = (rawError != nullptr) ? rawError : "";
         sqlite3_free(rawError); // sqlite3_free(nullptr) 合法，无需判空
 

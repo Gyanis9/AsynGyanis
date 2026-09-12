@@ -102,10 +102,13 @@ namespace AsynGyanis::Database
         // 上下文所有权唯一：拷贝会出现两个对象 redisFree 同一个 redisContext；
         // 移动会让源对象析构时再次 redisFree（同样的句柄已交给目标对象），
         // 因此拷贝与移动一律禁止（基类同样已删除，这里显式写清意图）。
-        RedisConnection(const RedisConnection &)            = delete;
+        RedisConnection(const RedisConnection &) = delete;
+
         RedisConnection &operator=(const RedisConnection &) = delete;
-        RedisConnection(RedisConnection &&)                 = delete;
-        RedisConnection &operator=(RedisConnection &&)      = delete;
+
+        RedisConnection(RedisConnection &&) = delete;
+
+        RedisConnection &operator=(RedisConnection &&) = delete;
 
         /**
          * @brief 连接 Redis 服务并完成认证与键空间选择
@@ -208,9 +211,9 @@ namespace AsynGyanis::Database
          *          失败边界：append 或读回复途中出现传输层错误时，记录原因、丢弃未读回的命令并断开连接，
          *          返回已经取到的前缀，元素数量因此可能少于登记的命令数；
          *          无论成功与否，登记过的命令一律从缓冲区丢弃，不会被重放到新连接上。
-         * @return std::vector<std::unique_ptr<DatabaseResult>> 与已发送命令一一对应（截断后）的结果集列表
+         * @return std::vector<std::unique_ptr<DatabaseResult> > 与已发送命令一一对应（截断后）的结果集列表
          */
-        [[nodiscard]] std::vector<std::unique_ptr<DatabaseResult>> flushPipeline();
+        [[nodiscard]] std::vector<std::unique_ptr<DatabaseResult> > flushPipeline();
 
         /**
          * @brief 切换键空间（数据库编号）
@@ -229,7 +232,10 @@ namespace AsynGyanis::Database
          *          也不得在连接销毁后继续使用；拿它去发命令会绕过本类的错误与超时处理
          * @return redisContext* 未连接时为 nullptr；桩构建下恒为 nullptr
          */
-        [[nodiscard]] redisContext *nativeHandle() const noexcept { return m_redisContext; }
+        [[nodiscard]] redisContext *nativeHandle() const noexcept
+        {
+            return m_redisContext;
+        }
 
     private:
         /**
@@ -256,7 +262,7 @@ namespace AsynGyanis::Database
 
         // 之所以在登记时就切词而不是原样缓存命令文本：命令文本的合法性错误能在 pipelineCommand()
         // 当场反馈，不必等到 flush 时才发现「N 条里有一条引号没闭合」
-        std::vector<std::vector<std::string>> m_pipelineCommands; ///< 管道命令缓冲区，元素是已切词好的参数数组
+        std::vector<std::vector<std::string> > m_pipelineCommands; ///< 管道命令缓冲区，元素是已切词好的参数数组
     };
 
 } // namespace AsynGyanis::Database

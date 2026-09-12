@@ -75,19 +75,15 @@
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/Transaction.h"
-#include "Database/Queryable/Column.h"
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/QueryNode.h"
 #include "Database/Queryable/RowMapper.h"
 #include "Database/Queryable/TableSchema.h"
 
 #include <algorithm>
-#include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -149,8 +145,8 @@ namespace AsynGyanis::Database::Queryable
          * @note 只想构造、不立刻执行查询时不会产生任何数据库往返；
          *       推导类型会借出一条连接并立刻归还（不占用池容量），若池为空则创建一条新连接
          */
-        explicit Queryable(ConnectionPool &pool)
-            : m_pool(&pool)
+        explicit Queryable(ConnectionPool &pool) :
+            m_pool(&pool)
         {
             m_queryNode.tableName = std::string(TableSchema<T>::kTableName);
         }
@@ -165,8 +161,8 @@ namespace AsynGyanis::Database::Queryable
          * @param pool 数据库连接池
          * @param databaseType 池中连接的数据库类型，决定使用哪个 SqlDialect
          */
-        Queryable(ConnectionPool &pool, DatabaseType databaseType)
-            : m_pool(&pool), m_databaseType(databaseType)
+        Queryable(ConnectionPool &pool, DatabaseType databaseType) :
+            m_pool(&pool), m_databaseType(databaseType)
         {
             m_queryNode.tableName = std::string(TableSchema<T>::kTableName);
         }
@@ -186,8 +182,8 @@ namespace AsynGyanis::Database::Queryable
          * @param transaction 事务对象，其生命周期必须覆盖本对象的所有执行调用
          * @note 方言类型直接取自事务连接，不需要像绑定连接池那样借出一条连接来探测
          */
-        explicit Queryable(Transaction &transaction)
-            : m_transaction(&transaction)
+        explicit Queryable(Transaction &transaction) :
+            m_transaction(&transaction)
         {
             m_queryNode.tableName = std::string(TableSchema<T>::kTableName);
         }
@@ -289,7 +285,7 @@ namespace AsynGyanis::Database::Queryable
         {
             std::vector<FieldReference> fieldRefs;
             fieldRefs.reserve(fields.size());
-            for (auto &field : fields)
+            for (auto &field: fields)
             {
                 fieldRefs.push_back(FieldReference{.name = std::move(field)});
             }
@@ -355,7 +351,7 @@ namespace AsynGyanis::Database::Queryable
 
             QueryNode limitedNode = resolvedQueryNode();
             // 只取一行：LIMIT 1 让数据库侧提前停止扫描，比取回全部再取首元素高效得多
-            limitedNode.limit = 1U;
+            limitedNode.limit     = 1U;
 
             std::vector<T> rows = fetchRows(limitedNode);
             if (rows.empty())
@@ -382,7 +378,7 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("count()");
 
-            QueryNode countingNode   = resolvedQueryNode();
+            QueryNode countingNode     = resolvedQueryNode();
             countingNode.selectColumns = {"COUNT(*)"};
             countingNode.orderBy.clear();
             countingNode.limit.reset();
@@ -504,32 +500,32 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param completionLoop 恢复本协程用的事件循环；其 run() 必须正在运行（或即将运行），
          *        且对象生命周期要覆盖到任务完成之后，否则协程永远得不到恢复
-         * @return Core::Task<std::vector<T>> 惰性启动的协程，co_await 后得到结果行列表
+         * @return Core::Task<std::vector<T> > 惰性启动的协程，co_await 后得到结果行列表
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败；异常原样穿过工作线程
          *         与调度投递，在 co_await 处重新抛出（类型与消息都不变）
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note 提交动作只做入队，因此 co_await 之前的耗时与数据库无关；真正的等待发生在协程挂起之后
          */
-        [[nodiscard]] Core::Task<std::vector<T>> toListAsync(Core::EventLoop &completionLoop)
+        [[nodiscard]] Core::Task<std::vector<T> > toListAsync(Core::EventLoop &completionLoop)
         {
             requireOnline("toListAsync()");
 
             // 方言与查询树在提交前定型：二者都是值语义的纯数据，捕获进任务后工作线程
             // 不再触碰本对象，因此「查询构建器被并发使用」这类问题不会借异步路径被放大
-            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            std::shared_ptr<SqlDialect> dialect      = resolveDialect();
             QueryNode                   resolvedNode = resolvedQueryNode();
-            ConnectionPool             *pool = m_pool;
-            Transaction                *transaction = m_transaction;
+            ConnectionPool *            pool         = m_pool;
+            Transaction *               transaction  = m_transaction;
 
-            std::vector<T> rows = co_await asyncExecutor().submit<std::vector<T>>(
-                completionLoop,
-                [dialect, resolvedNode = std::move(resolvedNode), pool, transaction]() -> std::vector<T>
-                {
-                    // 整段阻塞链路在工作线程上执行：取连接、执行语句、逐行映射成结构体
-                    ConnectionLease lease = acquireConnection(pool, transaction);
-                    return fetchRowsOn(*lease.connection, *dialect, resolvedNode);
-                });
+            std::vector<T> rows = co_await asyncExecutor().submit<std::vector<T> >(
+                    completionLoop,
+                    [dialect, resolvedNode = std::move(resolvedNode), pool, transaction]() -> std::vector<T>
+                    {
+                        // 整段阻塞链路在工作线程上执行：取连接、执行语句、逐行映射成结构体
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        return fetchRowsOn(*lease.connection, *dialect, resolvedNode);
+                    });
 
             co_return rows;
         }
@@ -541,34 +537,34 @@ namespace AsynGyanis::Database::Queryable
          *          因此不会把整表读进内存。完成后的恢复时机与 toListAsync() 相同。
          *
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
-         * @return Core::Task<std::optional<T>> 惰性启动的协程；无匹配行时结果为空 optional
+         * @return Core::Task<std::optional<T> > 惰性启动的协程；无匹配行时结果为空 optional
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
-        [[nodiscard]] Core::Task<std::optional<T>> firstAsync(Core::EventLoop &completionLoop)
+        [[nodiscard]] Core::Task<std::optional<T> > firstAsync(Core::EventLoop &completionLoop)
         {
             requireOnline("firstAsync()");
 
-            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            std::shared_ptr<SqlDialect> dialect     = resolveDialect();
             QueryNode                   limitedNode = resolvedQueryNode();
             // 只取一行：让数据库侧提前停止扫描，与同步版 first() 的取舍一致
-            limitedNode.limit = 1U;
-            ConnectionPool  *pool = m_pool;
-            Transaction     *transaction = m_transaction;
+            limitedNode.limit                       = 1U;
+            ConnectionPool *pool                    = m_pool;
+            Transaction *   transaction             = m_transaction;
 
-            std::optional<T> firstRow = co_await asyncExecutor().submit<std::optional<T>>(
-                completionLoop,
-                [dialect, limitedNode = std::move(limitedNode), pool, transaction]() -> std::optional<T>
-                {
-                    ConnectionLease lease = acquireConnection(pool, transaction);
-                    std::vector<T>  rows = fetchRowsOn(*lease.connection, *dialect, limitedNode);
-                    if (rows.empty())
+            std::optional<T> firstRow = co_await asyncExecutor().submit<std::optional<T> >(
+                    completionLoop,
+                    [dialect, limitedNode = std::move(limitedNode), pool, transaction]() -> std::optional<T>
                     {
-                        return std::nullopt;
-                    }
-                    return std::optional<T>(std::move(rows.front()));
-                });
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        std::vector<T>  rows  = fetchRowsOn(*lease.connection, *dialect, limitedNode);
+                        if (rows.empty())
+                        {
+                            return std::nullopt;
+                        }
+                        return std::optional<T>(std::move(rows.front()));
+                    });
 
             co_return firstRow;
         }
@@ -589,22 +585,22 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("countAsync()");
 
-            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            std::shared_ptr<SqlDialect> dialect      = resolveDialect();
             QueryNode                   countingNode = resolvedQueryNode();
-            countingNode.selectColumns = {"COUNT(*)"};
+            countingNode.selectColumns               = {"COUNT(*)"};
             countingNode.orderBy.clear();
             countingNode.limit.reset();
             countingNode.offset.reset();
-            ConnectionPool *pool = m_pool;
-            Transaction    *transaction = m_transaction;
+            ConnectionPool *pool        = m_pool;
+            Transaction *   transaction = m_transaction;
 
             std::int64_t countedRows = co_await asyncExecutor().submit<std::int64_t>(
-                completionLoop,
-                [dialect, countingNode = std::move(countingNode), pool, transaction]() -> std::int64_t
-                {
-                    ConnectionLease lease = acquireConnection(pool, transaction);
-                    return countOn(*lease.connection, *dialect, countingNode);
-                });
+                    completionLoop,
+                    [dialect, countingNode = std::move(countingNode), pool, transaction]() -> std::int64_t
+                    {
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        return countOn(*lease.connection, *dialect, countingNode);
+                    });
 
             co_return countedRows;
         }
@@ -627,17 +623,17 @@ namespace AsynGyanis::Database::Queryable
             requireOnline("executeNonQueryAsync()");
 
             // 语句翻译是纯文本且不依赖连接，放在提交前做；参数已经收集在 statement 里
-            SqlStatement statement = resolveDialect()->translateDelete(m_queryNode);
-            ConnectionPool *pool = m_pool;
-            Transaction    *transaction = m_transaction;
+            SqlStatement    statement   = resolveDialect()->translateDelete(m_queryNode);
+            ConnectionPool *pool        = m_pool;
+            Transaction *   transaction = m_transaction;
 
             std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
-                completionLoop,
-                [statement = std::move(statement), pool, transaction]() -> std::int64_t
-                {
-                    ConnectionLease lease = acquireConnection(pool, transaction);
-                    return executeOn(*lease.connection, statement);
-                });
+                    completionLoop,
+                    [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                    {
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        return executeOn(*lease.connection, statement);
+                    });
 
             co_return affectedRows;
         }
@@ -666,17 +662,17 @@ namespace AsynGyanis::Database::Queryable
             requireOnline("insertAsync()");
 
             // 语句生成要读 row 并访问本对象的查询树，必须在提交前完成；之后按值捕获交给工作线程
-            SqlStatement statement = buildInsertStatement(row);
+            SqlStatement    statement   = buildInsertStatement(row);
             ConnectionPool *pool        = m_pool;
-            Transaction    *transaction = m_transaction;
+            Transaction *   transaction = m_transaction;
 
             std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
-                completionLoop,
-                [statement = std::move(statement), pool, transaction]() -> std::int64_t
-                {
-                    ConnectionLease lease = acquireConnection(pool, transaction);
-                    return executeOn(*lease.connection, statement);
-                });
+                    completionLoop,
+                    [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                    {
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        return executeOn(*lease.connection, statement);
+                    });
 
             co_return affectedRows;
         }
@@ -699,28 +695,27 @@ namespace AsynGyanis::Database::Queryable
          *       已销毁的容器。需要传已有容器时用 std::move 转交，避免多一次拷贝；
          *       传入 std::span 的调用方需自行构造 vector（这是让协程帧拥有数据的必要代价）
          */
-        [[nodiscard]] Core::Task<std::int64_t> insertBatchAsync(std::vector<T> rows,
-                                                                Core::EventLoop &completionLoop)
+        [[nodiscard]] Core::Task<std::int64_t> insertBatchAsync(std::vector<T> rows, Core::EventLoop &completionLoop)
         {
             requireOnline("insertBatchAsync()");
 
             // 方言解析可能借出连接探测类型，放在提交前（与其它异步方法一致）
-            std::shared_ptr<SqlDialect> dialect = resolveDialect();
-            ConnectionPool *pool        = m_pool;
-            Transaction    *transaction = m_transaction;
+            std::shared_ptr<SqlDialect> dialect     = resolveDialect();
+            ConnectionPool *            pool        = m_pool;
+            Transaction *               transaction = m_transaction;
 
             std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
-                completionLoop,
-                [dialect, rows = std::move(rows), pool, transaction]() -> std::int64_t
-                {
-                    // 空集合的判断放在任务内部而不是提交前：本方法只 co_await 一次，
-                    // 不需要依赖「协程会在未挂起的情况下直接完成」这种额外前提
-                    if (rows.empty())
+                    completionLoop,
+                    [dialect, rows = std::move(rows), pool, transaction]() -> std::int64_t
                     {
-                        return 0;
-                    }
-                    return insertBatchOn(pool, transaction, *dialect, rows);
-                });
+                        // 空集合的判断放在任务内部而不是提交前：本方法只 co_await 一次，
+                        // 不需要依赖「协程会在未挂起的情况下直接完成」这种额外前提
+                        if (rows.empty())
+                        {
+                            return 0;
+                        }
+                        return insertBatchOn(pool, transaction, *dialect, rows);
+                    });
 
             co_return affectedRows;
         }
@@ -744,17 +739,17 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("updateAsync()");
 
-            SqlStatement statement = buildUpdateStatement(row);
+            SqlStatement    statement   = buildUpdateStatement(row);
             ConnectionPool *pool        = m_pool;
-            Transaction    *transaction = m_transaction;
+            Transaction *   transaction = m_transaction;
 
             std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
-                completionLoop,
-                [statement = std::move(statement), pool, transaction]() -> std::int64_t
-                {
-                    ConnectionLease lease = acquireConnection(pool, transaction);
-                    return executeOn(*lease.connection, statement);
-                });
+                    completionLoop,
+                    [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                    {
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        return executeOn(*lease.connection, statement);
+                    });
 
             co_return affectedRows;
         }
@@ -801,8 +796,8 @@ namespace AsynGyanis::Database::Queryable
          */
         struct ConnectionLease
         {
-            PooledConnection    pooled;                 ///< 池借出的连接；绑定事务时为空
-            DatabaseConnection *connection = nullptr;   ///< 本次真正使用的连接，恒非空
+            PooledConnection    pooled;               ///< 池借出的连接；绑定事务时为空
+            DatabaseConnection *connection = nullptr; ///< 本次真正使用的连接，恒非空
         };
 
         /**
@@ -841,13 +836,11 @@ namespace AsynGyanis::Database::Queryable
             if (m_databaseType.has_value())
             {
                 resolvedType = m_databaseType.value();
-            }
-            else if (m_transaction != nullptr)
+            } else if (m_transaction != nullptr)
             {
                 // 事务已经握着一条确定的连接，直接问它即可，不需要再借出/归还一次
                 resolvedType = m_transaction->connection().databaseType();
-            }
-            else
+            } else
             {
                 // 借出即读、读完归还：RAII 包装在作用域结束时会自动把连接还给池，
                 // 因此这里不会额外占用池容量，也不会泄漏连接
@@ -883,7 +876,7 @@ namespace AsynGyanis::Database::Queryable
          *          工作线程，不会因为「每个查询各建一个执行器」而把线程数乘起来。
          * @return AsyncExecutor& 执行器引用
          */
-        [[nodiscard]] AsyncExecutor &asyncExecutor()
+        [[nodiscard]] AsyncExecutor &asyncExecutor() const
         {
             return m_asyncExecutor != nullptr ? *m_asyncExecutor : AsyncExecutor::shared();
         }
@@ -900,7 +893,7 @@ namespace AsynGyanis::Database::Queryable
          * @return ConnectionLease 连接租约；池连接在租约析构时自动归还，事务连接不归还
          * @throws DatabaseException 池已达上限且等待超时，或连接工厂创建失败
          */
-        [[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, Transaction *transaction)
+        [[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, const Transaction *transaction)
         {
             ConnectionLease lease;
             if (transaction != nullptr)
@@ -963,14 +956,11 @@ namespace AsynGyanis::Database::Queryable
          * @note SQLite 的结果集持有连接句柄的非拥有指针，因此 connection 必须比结果集活得久：
          *       这一点由调用方持有连接租约、且租约比本函数返回值活得更久来保证
          */
-        [[nodiscard]] static std::vector<T> fetchRowsOn(DatabaseConnection &connection,
-                                                       const SqlDialect &dialect,
-                                                       const QueryNode &queryNode)
+        [[nodiscard]] static std::vector<T> fetchRowsOn(DatabaseConnection &connection, const SqlDialect &dialect, const QueryNode &queryNode)
         {
-            const SqlStatement statement = dialect.translate(queryNode);
+            const auto [sql, parameters] = dialect.translate(queryNode);
 
-            std::unique_ptr<DatabaseResult> result =
-                connection.execute(std::string_view{statement.sql}, statement.parameters);
+            const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
             if (result == nullptr)
             {
                 throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError());
@@ -987,14 +977,11 @@ namespace AsynGyanis::Database::Queryable
          * @return std::int64_t 匹配行数；无结果行或计数列为 NULL 时为 0
          * @throws DatabaseException SQL 执行失败
          */
-        [[nodiscard]] static std::int64_t countOn(DatabaseConnection &connection,
-                                                 const SqlDialect &dialect,
-                                                 const QueryNode &countingNode)
+        [[nodiscard]] static std::int64_t countOn(DatabaseConnection &connection, const SqlDialect &dialect, const QueryNode &countingNode)
         {
-            const SqlStatement statement = dialect.translate(countingNode);
+            const auto [sql, parameters] = dialect.translate(countingNode);
 
-            std::unique_ptr<DatabaseResult> result =
-                connection.execute(std::string_view{statement.sql}, statement.parameters);
+            const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
             if (result == nullptr)
             {
                 throw QueryExecutionException("Queryable: 统计行数失败：" + connection.lastError());
@@ -1040,8 +1027,7 @@ namespace AsynGyanis::Database::Queryable
          */
         [[nodiscard]] static std::int64_t executeOn(DatabaseConnection &connection, const SqlStatement &statement)
         {
-            std::unique_ptr<DatabaseResult> result =
-                connection.execute(std::string_view{statement.sql}, statement.parameters);
+            const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
                 throw QueryExecutionException("Queryable: 语句执行失败：" + connection.lastError());
@@ -1063,7 +1049,7 @@ namespace AsynGyanis::Database::Queryable
          */
         [[nodiscard]] SqlStatement buildInsertStatement(const T &row)
         {
-            QueryNode insertNode    = makeWriteQueryNode();
+            QueryNode insertNode     = makeWriteQueryNode();
             insertNode.selectColumns = allColumnNames();
 
             // 取值向量是临时对象，但它活到整条表达式结束，方言在本次调用内完成读取，不存在悬垂
@@ -1088,12 +1074,12 @@ namespace AsynGyanis::Database::Queryable
             std::optional<WhereCondition> primaryKeyCondition;
 
             std::apply(
-                [&](const auto &...columnDescriptors)
-                {
-                    (appendUpdateColumn(columnDescriptors, row, primaryKeyName, assignmentColumns,
-                                        assignmentValues, primaryKeyCondition), ...);
-                },
-                TableSchema<T>::kColumns);
+                    [&](const auto &... columnDescriptors)
+                    {
+                        (appendUpdateColumn(columnDescriptors, row, primaryKeyName, assignmentColumns,
+                                            assignmentValues, primaryKeyCondition), ...);
+                    },
+                    TableSchema<T>::kColumns);
 
             if (!primaryKeyCondition.has_value())
             {
@@ -1139,12 +1125,12 @@ namespace AsynGyanis::Database::Queryable
             std::vector<std::string> columnNames;
 
             std::apply(
-                [&columnNames](const auto &...columnDescriptors)
-                {
-                    // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
-                    (columnNames.emplace_back(columnDescriptors.columnName), ...);
-                },
-                TableSchema<T>::kColumns);
+                    [&columnNames](const auto &... columnDescriptors)
+                    {
+                        // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
+                        (columnNames.emplace_back(columnDescriptors.columnName), ...);
+                    },
+                    TableSchema<T>::kColumns);
 
             return columnNames;
         }
@@ -1159,12 +1145,12 @@ namespace AsynGyanis::Database::Queryable
             std::vector<DatabaseValue> rowValues;
 
             std::apply(
-                [&rowValues, &row](const auto &...columnDescriptors)
-                {
-                    // 成员值 → 绑定参数：optional 空值绑定为 SQL NULL，无符号超范围降级为十进制文本
-                    (rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptors.memberPointer))), ...);
-                },
-                TableSchema<T>::kColumns);
+                    [&rowValues, &row](const auto &... columnDescriptors)
+                    {
+                        // 成员值 → 绑定参数：optional 空值绑定为 SQL NULL，无符号超范围降级为十进制文本
+                        (rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptors.memberPointer))), ...);
+                    },
+                    TableSchema<T>::kColumns);
 
             return rowValues;
         }
@@ -1188,12 +1174,9 @@ namespace AsynGyanis::Database::Queryable
          * @return std::int64_t 累计受影响行数
          * @throws DatabaseException 取连接失败、任意一块执行失败，或本地事务提交失败
          */
-        [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool,
-                                                       Transaction *transaction,
-                                                       const SqlDialect &dialect,
-                                                       const std::span<const T> rows)
+        [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool, const Transaction *transaction, const SqlDialect &dialect, const std::span<const T> rows)
         {
-            QueryNode batchNode = makeWriteQueryNode();
+            QueryNode batchNode     = makeWriteQueryNode();
             batchNode.selectColumns = allColumnNames();
 
             // 列数不可能为 0（TableSchema 的列已在编译期校验过），因此除法不会除零
@@ -1204,7 +1187,7 @@ namespace AsynGyanis::Database::Queryable
             if (rows.size() <= rowsPerStatement)
             {
                 // 单条多行 INSERT 自身就是原子的，不需要额外开事务
-                std::vector<std::vector<DatabaseValue>> batchRows;
+                std::vector<std::vector<DatabaseValue> > batchRows;
                 batchRows.reserve(rows.size());
                 for (const T &row: rows)
                 {
@@ -1221,9 +1204,9 @@ namespace AsynGyanis::Database::Queryable
                 return executeBatchOn(transaction->connection(), dialect, batchNode, rows, rowsPerStatement);
             }
 
-            Transaction localTransaction(*pool);
+            Transaction        localTransaction(*pool);
             const std::int64_t affectedRows =
-                executeBatchOn(localTransaction.connection(), dialect, batchNode, rows, rowsPerStatement);
+                    executeBatchOn(localTransaction.connection(), dialect, batchNode, rows, rowsPerStatement);
             // 全部批次写成功才提交；中途抛出异常时事务析构会回滚，已写入的批次一并撤销。
             // 提交本身也可能失败（磁盘写满、锁冲突），如实抛错而不是吞掉返回值：
             // 此时事务仍未结束，析构阶段还会再补一次 ROLLBACK
@@ -1246,11 +1229,11 @@ namespace AsynGyanis::Database::Queryable
          * @return std::int64_t 累计受影响行数
          * @throws DatabaseException 任意一块执行失败（此时整个事务由调用方回滚）
          */
-        [[nodiscard]] static std::int64_t executeBatchOn(DatabaseConnection &connection,
-                                                        const SqlDialect &dialect,
-                                                        const QueryNode &batchNode,
-                                                        const std::span<const T> rows,
-                                                        const std::size_t rowsPerStatement)
+        [[nodiscard]] static std::int64_t executeBatchOn(DatabaseConnection &     connection,
+                                                         const SqlDialect &       dialect,
+                                                         const QueryNode &        batchNode,
+                                                         const std::span<const T> rows,
+                                                         const std::size_t        rowsPerStatement)
         {
             std::int64_t totalAffectedRows = 0;
 
@@ -1259,7 +1242,7 @@ namespace AsynGyanis::Database::Queryable
                 // 最后一块可能不足一整批，因此每一块都要重新算上界，不能按固定步长假定满行
                 const std::size_t lastRow = std::min(firstRow + rowsPerStatement, rows.size());
 
-                std::vector<std::vector<DatabaseValue>> chunkRows;
+                std::vector<std::vector<DatabaseValue> > chunkRows;
                 chunkRows.reserve(lastRow - firstRow);
                 for (std::size_t rowIndex = firstRow; rowIndex < lastRow; ++rowIndex)
                 {
@@ -1284,11 +1267,11 @@ namespace AsynGyanis::Database::Queryable
          * @param primaryKeyCondition 出参：主键等值条件；未找到主键列时保持空
          */
         template<typename ColumnDescriptorType>
-        static void appendUpdateColumn(const ColumnDescriptorType &columnDescriptor,
-                                       const T &row,
-                                       const std::string_view primaryKeyName,
-                                       std::vector<std::string> &assignmentColumns,
-                                       std::vector<DatabaseValue> &assignmentValues,
+        static void appendUpdateColumn(const ColumnDescriptorType &   columnDescriptor,
+                                       const T &                      row,
+                                       const std::string_view         primaryKeyName,
+                                       std::vector<std::string> &     assignmentColumns,
+                                       std::vector<DatabaseValue> &   assignmentValues,
                                        std::optional<WhereCondition> &primaryKeyCondition)
         {
             // 主键列不进 SET：更新主键会破坏行标识（其它表的外键、上层缓存都指向旧值）。
@@ -1296,9 +1279,9 @@ namespace AsynGyanis::Database::Queryable
             if (columnDescriptor.columnName == primaryKeyName)
             {
                 primaryKeyCondition = WhereCondition{
-                    .left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
-                    .op    = SqlOperator::Eq,
-                    .right = makeParameterValue(row.*(columnDescriptor.memberPointer))
+                        .left = FieldReference{.name = std::string(columnDescriptor.columnName)},
+                        .op = SqlOperator::Eq,
+                        .right = makeParameterValue(row.*(columnDescriptor.memberPointer))
                 };
                 return;
             }
@@ -1331,8 +1314,7 @@ namespace AsynGyanis::Database::Queryable
                     return nullptr;
                 }
                 return makeParameterValue(value.value());
-            }
-            else
+            } else
             {
                 return Detail::toParameterValue(value);
             }
@@ -1354,13 +1336,13 @@ namespace AsynGyanis::Database::Queryable
             sql += "SELECT ";
             if (m_queryNode.selectColumns.empty())
             {
-                sql += "*";
-            }
-            else
+                sql += '*';
+            } else
             {
                 for (std::size_t i = 0; i < m_queryNode.selectColumns.size(); ++i)
                 {
-                    if (i > 0) sql += ", ";
+                    if (i > 0)
+                        sql += ", ";
                     sql += m_queryNode.selectColumns[i];
                 }
             }
@@ -1375,24 +1357,25 @@ namespace AsynGyanis::Database::Queryable
             }
 
             // JOIN 子句
-            for (const auto &joinClause : m_queryNode.joins)
+            for (const auto &[type, tableName, tableAlias, conditions]: m_queryNode.joins)
             {
-                sql += " ";
-                sql += joinTypeToString(joinClause.type);
+                sql += ' ';
+                sql += joinTypeToString(type);
                 sql += " JOIN ";
-                sql += joinClause.tableName;
-                if (!joinClause.tableAlias.empty())
+                sql += tableName;
+                if (!tableAlias.empty())
                 {
                     sql += " AS ";
-                    sql += joinClause.tableAlias;
+                    sql += tableAlias;
                 }
-                if (!joinClause.conditions.empty())
+                if (!conditions.empty())
                 {
                     sql += " ON ";
-                    for (std::size_t i = 0; i < joinClause.conditions.size(); ++i)
+                    for (std::size_t i = 0; i < conditions.size(); ++i)
                     {
-                        if (i > 0) sql += " AND ";
-                        sql += buildConditionString(joinClause.conditions[i]);
+                        if (i > 0)
+                            sql += " AND ";
+                        sql += buildConditionString(conditions[i]);
                     }
                 }
             }
@@ -1403,7 +1386,8 @@ namespace AsynGyanis::Database::Queryable
                 sql += " WHERE ";
                 for (std::size_t i = 0; i < m_queryNode.whereConditions.size(); ++i)
                 {
-                    if (i > 0) sql += " AND ";
+                    if (i > 0)
+                        sql += " AND ";
                     sql += buildConditionString(m_queryNode.whereConditions[i]);
                 }
             }
@@ -1414,7 +1398,8 @@ namespace AsynGyanis::Database::Queryable
                 sql += " GROUP BY ";
                 for (std::size_t i = 0; i < m_queryNode.groupBy.size(); ++i)
                 {
-                    if (i > 0) sql += ", ";
+                    if (i > 0)
+                        sql += ", ";
                     sql += fieldReferenceToString(m_queryNode.groupBy[i]);
                 }
             }
@@ -1432,7 +1417,8 @@ namespace AsynGyanis::Database::Queryable
                 sql += " ORDER BY ";
                 for (std::size_t i = 0; i < m_queryNode.orderBy.size(); ++i)
                 {
-                    if (i > 0) sql += ", ";
+                    if (i > 0)
+                        sql += ", ";
                     sql += orderByToString(m_queryNode.orderBy[i]);
                 }
             }
@@ -1471,10 +1457,11 @@ namespace AsynGyanis::Database::Queryable
                 std::string result = "(";
                 for (std::size_t i = 0; i < condition.children.size(); ++i)
                 {
-                    if (i > 0) result += " AND ";
+                    if (i > 0)
+                        result += " AND ";
                     result += buildConditionString(condition.children[i]);
                 }
-                result += ")";
+                result += ')';
                 return result;
             }
 
@@ -1487,10 +1474,11 @@ namespace AsynGyanis::Database::Queryable
                 std::string result = "(";
                 for (std::size_t i = 0; i < condition.children.size(); ++i)
                 {
-                    if (i > 0) result += " OR ";
+                    if (i > 0)
+                        result += " OR ";
                     result += buildConditionString(condition.children[i]);
                 }
-                result += ")";
+                result += ')';
                 return result;
             }
 
@@ -1506,9 +1494,9 @@ namespace AsynGyanis::Database::Queryable
             // 叶子节点：left op right
             std::string result;
             result += fieldReferenceToString(condition.left);
-            result += " ";
+            result += ' ';
             result += operatorToString(condition.op);
-            result += " ";
+            result += ' ';
 
             if (condition.op == SqlOperator::IsNull || condition.op == SqlOperator::IsNotNull)
             {
@@ -1521,60 +1509,77 @@ namespace AsynGyanis::Database::Queryable
                 if (condition.inValues.empty())
                 {
                     result += "(?)";
-                }
-                else
+                } else
                 {
-                    result += "(";
+                    result += '(';
                     for (std::size_t i = 0; i < condition.inValues.size(); ++i)
                     {
-                        if (i > 0) result += ", ";
-                        result += "?";
+                        if (i > 0)
+                            result += ", ";
+                        result += '?';
                     }
-                    result += ")";
+                    result += ')';
                 }
                 return result;
             }
 
-            result += "?";
+            result += '?';
             return result;
         }
 
         /**
          * @brief 将 SqlOperator 转为 SQL 操作符字符串
          */
-        [[nodiscard]] static std::string_view operatorToString(SqlOperator op)
+        [[nodiscard]] static std::string_view operatorToString(const SqlOperator op)
         {
             using namespace std::string_view_literals;
             switch (op)
             {
-                case SqlOperator::Eq:        return "="sv;
-                case SqlOperator::Neq:       return "!="sv;
-                case SqlOperator::Gt:        return ">"sv;
-                case SqlOperator::Ge:        return ">="sv;
-                case SqlOperator::Lt:        return "<"sv;
-                case SqlOperator::Le:        return "<="sv;
-                case SqlOperator::Like:      return "LIKE"sv;
-                case SqlOperator::In:        return "IN"sv;
-                case SqlOperator::NotIn:     return "NOT IN"sv;
-                case SqlOperator::IsNull:    return "IS NULL"sv;
-                case SqlOperator::IsNotNull: return "IS NOT NULL"sv;
-                default:                     return "="sv;
+                case SqlOperator::Eq:
+                    return "="sv;
+                case SqlOperator::Neq:
+                    return "!="sv;
+                case SqlOperator::Gt:
+                    return ">"sv;
+                case SqlOperator::Ge:
+                    return ">="sv;
+                case SqlOperator::Lt:
+                    return "<"sv;
+                case SqlOperator::Le:
+                    return "<="sv;
+                case SqlOperator::Like:
+                    return "LIKE"sv;
+                case SqlOperator::In:
+                    return "IN"sv;
+                case SqlOperator::NotIn:
+                    return "NOT IN"sv;
+                case SqlOperator::IsNull:
+                    return "IS NULL"sv;
+                case SqlOperator::IsNotNull:
+                    return "IS NOT NULL"sv;
+                default:
+                    return "="sv;
             }
         }
 
         /**
          * @brief 将 JoinType 转为 SQL 连接类型字符串
          */
-        [[nodiscard]] static std::string_view joinTypeToString(JoinType type)
+        [[nodiscard]] static std::string_view joinTypeToString(const JoinType type)
         {
             using namespace std::string_view_literals;
             switch (type)
             {
-                case JoinType::Inner: return "INNER"sv;
-                case JoinType::Left:  return "LEFT"sv;
-                case JoinType::Right: return "RIGHT"sv;
-                case JoinType::Cross: return "CROSS"sv;
-                default:              return "INNER"sv;
+                case JoinType::Inner:
+                    return "INNER"sv;
+                case JoinType::Left:
+                    return "LEFT"sv;
+                case JoinType::Right:
+                    return "RIGHT"sv;
+                case JoinType::Cross:
+                    return "CROSS"sv;
+                default:
+                    return "INNER"sv;
             }
         }
 
@@ -1595,8 +1600,7 @@ namespace AsynGyanis::Database::Queryable
             if (order.descending)
             {
                 result += " DESC";
-            }
-            else
+            } else
             {
                 result += " ASC";
             }
@@ -1607,12 +1611,12 @@ namespace AsynGyanis::Database::Queryable
         // 数据成员
         // ========================================================================
 
-        QueryNode                   m_queryNode;      ///< 查询树节点，存储所有查询构建信息
-        ConnectionPool             *m_pool = nullptr; ///< 数据库连接池指针，离线模式或绑定事务时为 nullptr
-        Transaction                *m_transaction = nullptr; ///< 事务指针；非空时全部语句走事务持有的连接
-        std::optional<DatabaseType> m_databaseType;   ///< 构造时显式指定的数据库类型；未指定时从连接推导
-        std::shared_ptr<SqlDialect> m_dialect;        ///< 缓存的方言实例，首次执行时解析并长期持有
-        AsyncExecutor              *m_asyncExecutor = nullptr; ///< 注入的异步执行器；为空时用进程级共享实例
+        QueryNode                   m_queryNode;               ///< 查询树节点，存储所有查询构建信息
+        ConnectionPool *            m_pool        = nullptr;   ///< 数据库连接池指针，离线模式或绑定事务时为 nullptr
+        Transaction *               m_transaction = nullptr;   ///< 事务指针；非空时全部语句走事务持有的连接
+        std::optional<DatabaseType> m_databaseType;            ///< 构造时显式指定的数据库类型；未指定时从连接推导
+        std::shared_ptr<SqlDialect> m_dialect;                 ///< 缓存的方言实例，首次执行时解析并长期持有
+        AsyncExecutor *             m_asyncExecutor = nullptr; ///< 注入的异步执行器；为空时用进程级共享实例
     };
 
 } // namespace AsynGyanis::Database::Queryable

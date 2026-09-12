@@ -113,8 +113,7 @@ namespace AsynGyanis::Database
          * @param factory 工厂回调，每次需要新连接时调用，返回已 connect() 的连接
          * @param config  连接池配置，使用默认值时可省略
          */
-        explicit ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory,
-                                PoolConfig config = PoolConfig{});
+        explicit ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory, const PoolConfig &config = PoolConfig{});
 
         /**
          * @brief 析构连接池
@@ -126,10 +125,13 @@ namespace AsynGyanis::Database
         ~ConnectionPool();
 
         // 连接池独占底层连接集合的所有权，禁止拷贝与移动
-        ConnectionPool(const ConnectionPool &)            = delete;
+        ConnectionPool(const ConnectionPool &) = delete;
+
         ConnectionPool &operator=(const ConnectionPool &) = delete;
-        ConnectionPool(ConnectionPool &&)                 = delete;
-        ConnectionPool &operator=(ConnectionPool &&)      = delete;
+
+        ConnectionPool(ConnectionPool &&) = delete;
+
+        ConnectionPool &operator=(ConnectionPool &&) = delete;
 
         /**
          * @brief 阻塞获取连接
@@ -225,9 +227,9 @@ namespace AsynGyanis::Database
          */
         struct IdleEntry
         {
-            std::unique_ptr<DatabaseConnection>         connection;   ///< 数据库连接
-            std::chrono::steady_clock::time_point        createdTime;  ///< 连接创建时刻
-            std::chrono::steady_clock::time_point        returnedTime; ///< 归还时刻（空闲超时的起始点）
+            std::unique_ptr<DatabaseConnection>   connection;   ///< 数据库连接
+            std::chrono::steady_clock::time_point createdTime;  ///< 连接创建时刻
+            std::chrono::steady_clock::time_point returnedTime; ///< 归还时刻（空闲超时的起始点）
         };
 
         /**
@@ -235,8 +237,8 @@ namespace AsynGyanis::Database
          */
         struct AsyncWaiter
         {
-            std::coroutine_handle<>                     handle;       ///< 等待协程的句柄
-            std::unique_ptr<DatabaseConnection>         result;       ///< 归还路径填充的连接
+            std::coroutine_handle<>             handle; ///< 等待协程的句柄
+            std::unique_ptr<DatabaseConnection> result; ///< 归还路径填充的连接
         };
 
         /**
@@ -254,8 +256,8 @@ namespace AsynGyanis::Database
              * @param pool 所属连接池
              * @param completionLoop 协程恢复时要回到的事件循环，由 acquireAsync() 的调用方给出
              */
-            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop) noexcept
-                : m_pool(pool), m_completionLoop(completionLoop)
+            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop) noexcept :
+                m_pool(pool), m_completionLoop(completionLoop)
             {
             }
 
@@ -264,7 +266,8 @@ namespace AsynGyanis::Database
              */
             ~AcquireAwaiter();
 
-            AcquireAwaiter(const AcquireAwaiter &)            = delete;
+            AcquireAwaiter(const AcquireAwaiter &) = delete;
+
             AcquireAwaiter &operator=(const AcquireAwaiter &) = delete;
 
             /**
@@ -290,11 +293,11 @@ namespace AsynGyanis::Database
             friend class ConnectionPool;
 
         private:
-            std::coroutine_handle<>               m_handle{nullptr};    ///< 等待协程的句柄（await_suspend 时保存）
-            ConnectionPool                       *m_pool;               ///< 所属连接池
-            Core::EventLoop                      *m_completionLoop;     ///< 恢复本协程的事件循环，恒非空
-            std::unique_ptr<DatabaseConnection> m_result;    ///< 获取到的连接（await_ready 或 notify 时设置）
-            bool                                m_inList{false}; ///< 是否已加入等待列表，用于析构时判断
+            std::coroutine_handle<>             m_handle{nullptr}; ///< 等待协程的句柄（await_suspend 时保存）
+            ConnectionPool *                    m_pool;            ///< 所属连接池
+            Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
+            std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
+            bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
         };
 
         friend class AcquireAwaiter;
@@ -342,7 +345,7 @@ namespace AsynGyanis::Database
          * @brief 后台线程主循环：定期清理过期空闲连接
          * @param stopToken 停止令牌
          */
-        void healthCheckLoop(std::stop_token stopToken);
+        void healthCheckLoop(const std::stop_token& stopToken);
 
         /**
          * @brief 尝试唤醒一个异步等待者
@@ -362,29 +365,29 @@ namespace AsynGyanis::Database
         // ========================================================================
 
         std::function<std::unique_ptr<DatabaseConnection>()> m_factory; ///< 连接工厂，每次调用的返回值应是已 connect() 的状态
-        PoolConfig                                          m_config;  ///< 连接池配置
+        PoolConfig                                           m_config;  ///< 连接池配置
 
         // ----- 空闲栈（受 m_mutex 保护） -----
-        std::vector<IdleEntry> m_idleStack;                             ///< LIFO 空闲连接栈
-        mutable std::mutex     m_mutex;                                 ///< 保护空闲栈及相关计数
-        std::condition_variable m_cv;                                   ///< 条件变量：通知等待者有空闲连接
+        std::vector<IdleEntry>  m_idleStack; ///< LIFO 空闲连接栈
+        mutable std::mutex      m_mutex;     ///< 保护空闲栈及相关计数
+        std::condition_variable m_cv;        ///< 条件变量：通知等待者有空闲连接
 
         // ----- 原子统计 -----
-        std::atomic<std::size_t> m_activeCount{0};                      ///< 已取出未归还的连接数
-        std::atomic<std::size_t> m_totalCreated{0};                     ///< 已创建的连接总数（含已被丢弃的）
-        std::atomic<std::size_t> m_syncWaitingCount{0};                 ///< 同步等待者数量
+        std::atomic<std::size_t> m_activeCount{0};      ///< 已取出未归还的连接数
+        std::atomic<std::size_t> m_totalCreated{0};     ///< 已创建的连接总数（含已被丢弃的）
+        std::atomic<std::size_t> m_syncWaitingCount{0}; ///< 同步等待者数量
 
         // ----- 异步等待列表（受 m_asyncMutex 保护） -----
-        mutable std::mutex                        m_asyncMutex;         ///< 保护异步等待列表
-        std::deque<AcquireAwaiter *>              m_asyncWaiters;       ///< 异步协程等待列表
+        mutable std::mutex           m_asyncMutex;   ///< 保护异步等待列表
+        std::deque<AcquireAwaiter *> m_asyncWaiters; ///< 异步协程等待列表
 
         // ----- 连接创建时间追踪 -----
         // 用于在 returnConnection 时获知连接的原始创建时间，以正确设置 IdleEntry::createdTime
-        mutable std::mutex                                                                   m_ctMapMutex;     ///< 保护创建时间映射表
-        std::unordered_map<DatabaseConnection *, std::chrono::steady_clock::time_point>       m_creationTimeMap; ///< 连接指针 → 创建时刻
+        mutable std::mutex                                                              m_ctMapMutex;      ///< 保护创建时间映射表
+        std::unordered_map<DatabaseConnection *, std::chrono::steady_clock::time_point> m_creationTimeMap; ///< 连接指针 → 创建时刻
 
         // ----- 后台线程 -----
-        std::jthread m_healthThread;                                    ///< 后台健康检查线程
+        std::jthread m_healthThread; ///< 后台健康检查线程
     };
 
 } // namespace AsynGyanis::Database

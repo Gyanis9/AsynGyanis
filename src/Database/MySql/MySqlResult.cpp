@@ -22,8 +22,6 @@
 
 #endif // DATABASE_HAS_MYSQL
 
-#include <cstddef>
-#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -32,8 +30,8 @@ namespace AsynGyanis::Database
 {
 #ifdef DATABASE_HAS_MYSQL
 
-    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, const std::int64_t affectedRowCount)
-        : m_result(ownedResult), m_affectedRowCount(affectedRowCount)
+    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, const std::int64_t affectedRowCount) :
+        m_result(ownedResult), m_affectedRowCount(affectedRowCount)
     {
         // 空句柄即「写操作的成功回执」：没有列也没有行，两个计数保持默认 0，isEmpty() 因此恒为 true
         if (m_result == nullptr)

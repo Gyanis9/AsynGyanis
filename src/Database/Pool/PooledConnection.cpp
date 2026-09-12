@@ -6,8 +6,8 @@
 namespace AsynGyanis::Database
 {
 
-    PooledConnection::PooledConnection(std::unique_ptr<DatabaseConnection> connection, ConnectionPool *pool) noexcept
-        : m_connection(std::move(connection))
+    PooledConnection::PooledConnection(std::unique_ptr<DatabaseConnection> connection, ConnectionPool *pool) noexcept :
+        m_connection(std::move(connection))
         , m_pool(pool)
     {
         // 构造函数不检查参数有效性：空连接 + 空池的组合是合法的「空包装」
@@ -19,8 +19,8 @@ namespace AsynGyanis::Database
         doReturnToPool();
     }
 
-    PooledConnection::PooledConnection(PooledConnection &&other) noexcept
-        : m_connection(std::exchange(other.m_connection, nullptr))
+    PooledConnection::PooledConnection(PooledConnection &&other) noexcept :
+        m_connection(std::exchange(other.m_connection, nullptr))
         , m_pool(std::exchange(other.m_pool, nullptr))
     {
         // 移动后源对象完全清空：m_connection 与 m_pool 均为空，
@@ -41,12 +41,12 @@ namespace AsynGyanis::Database
         return *this;
     }
 
-    DatabaseConnection *PooledConnection::operator->()
+    DatabaseConnection *PooledConnection::operator->() const
     {
         return m_connection.get();
     }
 
-    DatabaseConnection &PooledConnection::operator*()
+    DatabaseConnection &PooledConnection::operator*() const
     {
         return *m_connection;
     }

@@ -60,7 +60,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <coroutine>
-#include <cstddef>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -106,16 +105,22 @@ namespace AsynGyanis::Database
         ~AsyncExecutor();
 
         // 工作线程与队列都是独占资源，拷贝与移动会让「谁负责停止线程」变得含糊
-        AsyncExecutor(const AsyncExecutor &)            = delete;
+        AsyncExecutor(const AsyncExecutor &) = delete;
+
         AsyncExecutor &operator=(const AsyncExecutor &) = delete;
-        AsyncExecutor(AsyncExecutor &&)                 = delete;
-        AsyncExecutor &operator=(AsyncExecutor &&)      = delete;
+
+        AsyncExecutor(AsyncExecutor &&) = delete;
+
+        AsyncExecutor &operator=(AsyncExecutor &&) = delete;
 
         /**
          * @brief 获取实际启动的工作线程数
          * @return std::size_t 工作线程个数，恒大于 0
          */
-        [[nodiscard]] std::size_t workerCount() const noexcept { return m_workers.size(); }
+        [[nodiscard]] std::size_t workerCount() const noexcept
+        {
+            return m_workers.size();
+        }
 
         /**
          * @brief 获取当前排队等待执行的任务数（不含正在执行的那个）
@@ -176,11 +181,11 @@ namespace AsynGyanis::Database
         template<typename ResultType>
         struct SubmissionState
         {
-            std::function<ResultType()> work;        ///< 待执行的阻塞任务
-            std::optional<ResultType>   value;       ///< 任务返回值（成功后才有值）
-            std::exception_ptr          error;       ///< 任务抛出的异常（失败时非空）
-            std::coroutine_handle<>     continuation; ///< 等待结果的协程句柄
-            Core::EventLoop            *completionLoop{nullptr}; ///< 恢复该协程的事件循环
+            std::function<ResultType()> work;                    ///< 待执行的阻塞任务
+            std::optional<ResultType>   value;                   ///< 任务返回值（成功后才有值）
+            std::exception_ptr          error;                   ///< 任务抛出的异常（失败时非空）
+            std::coroutine_handle<>     continuation;            ///< 等待结果的协程句柄
+            Core::EventLoop *           completionLoop{nullptr}; ///< 恢复该协程的事件循环
         };
 
         /**
@@ -198,10 +203,8 @@ namespace AsynGyanis::Database
              * @param completionLoop 恢复协程用的事件循环
              * @param work 待执行的阻塞任务
              */
-            SubmissionAwaiter(AsyncExecutor &executor,
-                              Core::EventLoop &completionLoop,
-                              std::function<ResultType()> work)
-                : m_executor(&executor), m_state(std::make_shared<SubmissionState<ResultType>>())
+            SubmissionAwaiter(AsyncExecutor &executor, Core::EventLoop &completionLoop, std::function<ResultType()> work) :
+                m_executor(&executor), m_state(std::make_shared<SubmissionState<ResultType> >())
             {
                 // 任务与事件循环都放进堆状态：工作线程只会用到它们，不依赖协程帧的存活
                 m_state->work           = std::move(work);
@@ -212,7 +215,10 @@ namespace AsynGyanis::Database
              * @brief 恒不就地完成：阻塞任务绝不能在调用线程上执行，否则本类就失去了意义
              * @return false
              */
-            [[nodiscard]] bool await_ready() const noexcept { return false; }
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return false;
+            }
 
             /**
              * @brief 把任务投进队列并挂起当前协程
@@ -225,27 +231,26 @@ namespace AsynGyanis::Database
             void await_suspend(std::coroutine_handle<> continuation)
             {
                 // 复制一份 shared_ptr 进入队列：只要任务还在队列里或正在执行，堆状态就不会被销毁
-                std::shared_ptr<SubmissionState<ResultType>> state = m_state;
-                state->continuation = continuation;
+                std::shared_ptr<SubmissionState<ResultType> > state = m_state;
+                state->continuation                                 = continuation;
 
                 m_executor->enqueue(
-                    [state]()
-                    {
-                        try
+                        [state]()
                         {
-                            state->value = state->work();
-                        }
-                        catch (...)
-                        {
-                            // 异常在此暂存，恢复到事件循环线程后再原样抛出：
-                            // 工作线程上抛异常没有接收者，只会 terminate
-                            state->error = std::current_exception();
-                        }
+                            try
+                            {
+                                state->value = state->work();
+                            } catch (...)
+                            {
+                                // 异常在此暂存，恢复到事件循环线程后再原样抛出：
+                                // 工作线程上抛异常没有接收者，只会 terminate
+                                state->error = std::current_exception();
+                            }
 
-                        // 恢复动作投回事件循环线程（scheduleRemote 线程安全且自带唤醒），
-                        // 因此协程的后续代码与调用方对线程的假设保持一致
-                        state->completionLoop->scheduler().scheduleRemote(state->continuation);
-                    });
+                            // 恢复动作投回事件循环线程（scheduleRemote 线程安全且自带唤醒），
+                            // 因此协程的后续代码与调用方对线程的假设保持一致
+                            state->completionLoop->scheduler().scheduleRemote(state->continuation);
+                        });
             }
 
             /**
@@ -269,8 +274,8 @@ namespace AsynGyanis::Database
             friend class AsyncExecutor;
 
         private:
-            AsyncExecutor                          *m_executor; ///< 目标执行器，生命周期由调用方保证
-            std::shared_ptr<SubmissionState<ResultType>> m_state; ///< 与工作线程共享的任务状态
+            AsyncExecutor *                               m_executor; ///< 目标执行器，生命周期由调用方保证
+            std::shared_ptr<SubmissionState<ResultType> > m_state;    ///< 与工作线程共享的任务状态
         };
 
         /**
@@ -284,12 +289,12 @@ namespace AsynGyanis::Database
          * @brief 工作线程主循环
          * @param stopToken 停止令牌，由 std::jthread 在析构时请求停止
          */
-        void workerLoop(std::stop_token stopToken);
+        void workerLoop(const std::stop_token &stopToken);
 
-        std::mutex                            m_mutex;          ///< 保护任务队列
-        std::condition_variable               m_condition;      ///< 通知工作线程有新任务或收到停止请求
-        std::deque<std::function<void()>>     m_tasks;          ///< 待执行的阻塞任务（FIFO，先到先服务）
-        std::atomic<std::size_t>              m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
+        std::mutex                         m_mutex;           ///< 保护任务队列
+        std::condition_variable            m_condition;       ///< 通知工作线程有新任务或收到停止请求
+        std::deque<std::function<void()> > m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
+        std::atomic<std::size_t>           m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
 
         // m_workers 必须声明在最后：成员按声明逆序销毁，最后声明的先销毁，
         // jthread 析构会 join，从而保证线程都结束了才会轮到上面的互斥锁与条件变量被销毁

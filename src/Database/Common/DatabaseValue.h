@@ -47,7 +47,7 @@ namespace AsynGyanis::Database
         std::string,
         std::vector<std::string>,
         std::unordered_map<std::string, std::string>,
-        std::vector<std::uint8_t>>;
+        std::vector<std::uint8_t> >;
 
     /**
      * @brief 取得数据库值的类型名称，用于日志与断言

@@ -1,5 +1,4 @@
 #include "Database/Sqlite/SqliteResult.h"
-
 #include "Database/Common/BinaryBytes.h"
 
 #include <sqlite3.h>
@@ -8,8 +7,8 @@
 
 namespace AsynGyanis::Database
 {
-    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database)
-        : m_statement(statement), m_database(database)
+    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database) :
+        m_statement(statement), m_database(database)
     {
         // 影响行数与最近插入 rowid 都是 SQLite 的连接级计数器：必须在构造这一刻快照，
         // 否则调用方之后在本连接上再执行一条写语句，本对象读到的就是别人的计数
@@ -256,9 +255,8 @@ namespace AsynGyanis::Database
     DatabaseValue SqliteResult::convertValue(const int index) const
     {
         // 调用方（getValue 系列）已做过空句柄与越界检查，这里不再重复防御，保持单次判定
-        const int columnType = sqlite3_column_type(m_statement, index);
 
-        switch (columnType)
+        switch (sqlite3_column_type(m_statement, index))
         {
             case SQLITE_NULL:
                 // NULL 映射成 monostate 而不是空串或 0，调用方才能区分「没有值」与「值为 0/空」
@@ -275,8 +273,8 @@ namespace AsynGyanis::Database
             {
                 // sqlite3_column_text 返回 UTF-8 的 unsigned char*，且指针只在下一次 step/finalize 前有效，
                 // 必须按长度立刻拷进 std::string；列长度要在取到指针之后再问 sqlite3_column_bytes（官方约定该调用会固定前一次转换的结果）
-                const auto *rawText = reinterpret_cast<const char *>(sqlite3_column_text(m_statement, index));
-                const int byteCount = sqlite3_column_bytes(m_statement, index);
+                const auto *rawText   = reinterpret_cast<const char *>(sqlite3_column_text(m_statement, index));
+                const int   byteCount = sqlite3_column_bytes(m_statement, index);
                 if (rawText != nullptr && byteCount > 0)
                 {
                     return std::string(rawText, static_cast<size_t>(byteCount));
@@ -290,8 +288,8 @@ namespace AsynGyanis::Database
                 // BLOB 按原始字节搬进二进制备选：不做十六进制转写（那会翻倍体积并让调用方
                 // 拿不到原始二进制），也不再塞进 std::string——二进制与文本分开后，类型本身
                 // 就是绑定线索，写回时驱动才知道该用 sqlite3_bind_blob 而不是按文本绑定
-                const auto *rawBlob = static_cast<const unsigned char *>(sqlite3_column_blob(m_statement, index));
-                const int byteCount = sqlite3_column_bytes(m_statement, index);
+                const auto *rawBlob   = static_cast<const unsigned char *>(sqlite3_column_blob(m_statement, index));
+                const int   byteCount = sqlite3_column_bytes(m_statement, index);
                 if (rawBlob != nullptr && byteCount > 0)
                 {
                     return BinaryBytes(rawBlob, rawBlob + static_cast<size_t>(byteCount));

@@ -52,7 +52,6 @@ namespace AsynGyanis::Database
 
         /**
          * @brief std::vector<std::uint8_t> 的特化
-         * @tparam 无（固定类型）
          */
         template<>
         struct IsBinaryBytes<BinaryBytes> : std::true_type
@@ -61,10 +60,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief std::vector<std::byte> 的特化
-         * @tparam 无（固定类型）
          */
         template<>
-        struct IsBinaryBytes<std::vector<std::byte>> : std::true_type
+        struct IsBinaryBytes<std::vector<std::byte> > : std::true_type
         {
         };
 
@@ -89,8 +87,7 @@ namespace AsynGyanis::Database
             if constexpr (std::is_same_v<MemberType, BinaryBytes>)
             {
                 return value;
-            }
-            else
+            } else
             {
                 // 逐元素转换而不是整块 reinterpret_cast：std::byte 与 uint8_t 是不同类型，
                 // 按对象表示重新解释虽然在同一平台上等价，但属于未定义行为，且会随
@@ -118,8 +115,7 @@ namespace AsynGyanis::Database
             if constexpr (std::is_same_v<MemberType, BinaryBytes>)
             {
                 return bytes;
-            }
-            else
+            } else
             {
                 std::vector<std::byte> rawBytes;
                 rawBytes.reserve(bytes.size());

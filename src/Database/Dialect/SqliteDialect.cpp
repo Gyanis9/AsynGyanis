@@ -18,9 +18,7 @@ namespace AsynGyanis::Database
         return "?";
     }
 
-    void SqliteDialect::appendLimitOffsetClause(std::string &sqlText,
-                                                std::vector<DatabaseValue> &parameters,
-                                                const Queryable::QueryNode &query) const
+    void SqliteDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
         // 本方言的分页值一律内联，不占绑定参数，因此 parameters 不被使用；
         // 形参保留是为了与基类钩子签名一致（基类的默认实现会向它追加分页参数）
@@ -73,12 +71,18 @@ namespace AsynGyanis::Database
         // 布尔与无符号整数都没有独立类型，只能落在 INTEGER 上
         switch (type)
         {
-            case ColumnType::Int64:  return "INTEGER";
-            case ColumnType::UInt64: return "INTEGER";
-            case ColumnType::Double: return "REAL";
-            case ColumnType::Bool:   return "INTEGER";
-            case ColumnType::Text:   return "TEXT";
-            case ColumnType::Blob:   return "BLOB";
+            case ColumnType::Int64:
+                return "INTEGER";
+            case ColumnType::UInt64:
+                return "INTEGER";
+            case ColumnType::Double:
+                return "REAL";
+            case ColumnType::Bool:
+                return "INTEGER";
+            case ColumnType::Text:
+                return "TEXT";
+            case ColumnType::Blob:
+                return "BLOB";
             default:
                 // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
                 // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，

@@ -60,8 +60,8 @@ namespace AsynGyanis::Database::Detail
         // errno 只反映最后一次 C 库调用的结果、成功时不会自清：不清残留就可能把上一次的 ERANGE 当成本次的
         errno = 0;
 
-        char             *endPointer  = nullptr;
-        const long long   parsedValue = std::strtoll(numericText.c_str(), &endPointer, kDecimalNumberBase);
+        char *          endPointer  = nullptr;
+        const long long parsedValue = std::strtoll(numericText.c_str(), &endPointer, kDecimalNumberBase);
 
         // 三种失败各自判掉：没消费任何字符（不是数字文本）、数值溢出 long long（ERANGE）、尾部仍有余文（如 "12abc"）
         if (errno == ERANGE || endPointer == numericText.c_str() || *endPointer != '\0')
@@ -96,7 +96,7 @@ namespace AsynGyanis::Database::Detail
 
         errno = 0;
 
-        char        *endPointer  = nullptr;
+        char *       endPointer  = nullptr;
         const double parsedValue = std::strtod(numericText.c_str(), &endPointer);
 
         // strtod 的 ERANGE 同时涵盖上溢（HUGE_VAL）与下溢到 0，两者都说明这份数据落在 double 之外，
@@ -160,10 +160,7 @@ namespace AsynGyanis::Database::Detail
      * @param byteLength 列值字节长度，可为 0（空值，与 SQL NULL 是两件事）
      * @return DatabaseValue 映射后的值
      */
-    inline DatabaseValue convertColumnText(const int columnType,
-                                           const unsigned int characterSetNumber,
-                                           const char *rawValue,
-                                           const std::size_t byteLength)
+    inline DatabaseValue convertColumnText(const int columnType, const unsigned int characterSetNumber, const char *rawValue, const std::size_t byteLength)
     {
         // 二进制先判：它的类型码与 TEXT 重叠，必须靠字符集把两类分开，
         // 否则下面的 switch 一定把 BLOB 当文本交出去

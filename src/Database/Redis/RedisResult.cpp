@@ -5,7 +5,6 @@
 #include <hiredis/hiredis.h>
 #endif
 
-#include <cstdint>
 #include <optional>
 #include <string>
 #include <variant>
@@ -17,7 +16,7 @@ namespace AsynGyanis::Database
     {
         // Redis 的回复元素没有名字，列名只能按下标合成（value0、value1…）；
         // 用 constexpr 常量取代宏，改名或换前缀只需动这一处
-        constexpr const char *kSyntheticColumnNamePrefix = "value";
+        constexpr auto kSyntheticColumnNamePrefix = "value";
     } // namespace
 
 #ifdef DATABASE_HAS_REDIS
@@ -36,7 +35,7 @@ namespace AsynGyanis::Database
             {
                 return {};
             }
-            return std::string(sourceReply->str, sourceReply->len);
+            return {sourceReply->str, sourceReply->len};
         }
 
         /**
@@ -89,7 +88,8 @@ namespace AsynGyanis::Database
         }
     } // namespace
 
-    RedisResult::RedisResult(redisReply *const ownedReply) : m_replyPointer(ownedReply)
+    RedisResult::RedisResult(redisReply *const ownedReply) :
+        m_replyPointer(ownedReply)
     {
         // 空回复代表「什么都没有」：类型与列数保持默认值，isEmpty() 自然为 true，
         // 析构也不会对 nullptr 调用 freeReplyObject
@@ -105,8 +105,7 @@ namespace AsynGyanis::Database
         if (m_replyType == REDIS_REPLY_ARRAY)
         {
             m_columnCount = m_replyPointer->elements;
-        }
-        else if (m_replyType != REDIS_REPLY_NIL)
+        } else if (m_replyType != REDIS_REPLY_NIL)
         {
             m_columnCount = 1;
         }
@@ -197,7 +196,7 @@ namespace AsynGyanis::Database
                 // RESP3 扩展类型（DOUBLE / MAP / SET / ATTR / PUSH / VERB）：本驱动从不发送 HELLO 3，
                 // 正常路径走不到这里。真遇到时优先按原始文本取回（DOUBLE、VERB 有文本），
                 // 既保住信息，也让本文件不依赖各版本命名不一致的枚举常量；纯容器型只能回 monostate
-                return (sourceReply->str != nullptr) ? DatabaseValue{ copyReplyText(sourceReply) } : DatabaseValue{ std::monostate{} };
+                return (sourceReply->str != nullptr) ? DatabaseValue{copyReplyText(sourceReply)} : DatabaseValue{std::monostate{}};
             }
         }
     }
