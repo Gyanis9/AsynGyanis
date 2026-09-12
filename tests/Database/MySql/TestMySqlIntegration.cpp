@@ -69,6 +69,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -1448,6 +1449,79 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
         EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText));
         EXPECT_TRUE(errorText.empty()) << errorText;
+    }
+
+    /**
+     * @brief 验证 BIGINT UNSIGNED 列的完整取值域都能往返，含 int64 装不下的那一段
+     *
+     * @details 这条用例是「写得进、读不回来」缺口的真机证明：MySQL 的 BIGINT UNSIGNED
+     *          上界是 2^64-1，超出 int64，驱动只能把这类取值以十进制文本返回；而写方向
+     *          恰好也把超出 int64 的无符号值降级为十进制文本。两个方向的取舍必须配套，
+     *          少了读方向的文本支路，写进去的取值就再也拿不回来——而且不会报错，
+     *          只会让映射抛「类型不符」，本用例在修复前正是这样失败的。
+     *
+     *          四个取值刻意跨过 2^63 这条分界线：线下走 int64 支路，线上只能走文本支路。
+     *          表名与上一个用例相同（同一个 TableSchema），建表同样由 SchemaMigrator 完成，
+     *          因此这里也顺带验证了 DDL 给出的 BIGINT UNSIGNED 确实装得下上界。
+     */
+    TEST_F(MySqlIntegrationTest, UnsignedColumnRoundTripsAcrossInt64Boundary)
+    {
+        m_preparedTableName = std::string(kMigratedTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+
+        /// 2^63：int64 表示不了、BIGINT UNSIGNED 表示得了的第一个取值
+        constexpr std::uint64_t kTwoToTheSixtyThird   = 9223372036854775808ULL;
+        /// 2^64-1：BIGINT UNSIGNED 的上界，也是 uint64 的上界
+        constexpr std::uint64_t kMaximumUnsignedValue = std::numeric_limits<std::uint64_t>::max();
+        const auto              maximumSignedValue =
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        // ---- 写入四个代表性取值 ----
+        {
+            OrmQuery<IntegrationMigratedRow> insertQuery(*pool);
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "零", .note = std::nullopt,
+                                                                   .balance = 0.0, .active = true, .sequence = 0U}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 2, .name = "int64上界", .note = std::nullopt,
+                                                                   .balance = 0.0, .active = true,
+                                                                   .sequence = maximumSignedValue}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 3, .name = "2的63次方", .note = std::nullopt,
+                                                                   .balance = 0.0, .active = true,
+                                                                   .sequence = kTwoToTheSixtyThird}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 4, .name = "uint64上界", .note = std::nullopt,
+                                                                   .balance = 0.0, .active = true,
+                                                                   .sequence = kMaximumUnsignedValue}));
+        }
+
+        // ---- 读回：四个取值必须逐位相等，任何一个被降级成 double 都会在这里暴露 ----
+        {
+            OrmQuery<IntegrationMigratedRow> query(*pool);
+            const std::vector<IntegrationMigratedRow> rows = query.orderBy(asc("id")).toList();
+
+            ASSERT_EQ(rows.size(), 4U);
+            EXPECT_EQ(rows[0].sequence, 0U);
+            EXPECT_EQ(rows[1].sequence, maximumSignedValue);
+            EXPECT_EQ(rows[2].sequence, kTwoToTheSixtyThird);
+            EXPECT_EQ(rows[3].sequence, kMaximumUnsignedValue);
+        }
+
+        // ---- 服务端确实按无符号数值存：数值比较能命中，而文本比较不会 ——
+        // BIGINT UNSIGNED 上的 '>' 走数值语义，因此这条条件能命中 id=3/4 两行；
+        // 若取值被存成文本（例如列类型被误建为 TEXT），SQLite 那种字典序比较会给出不同结果
+        {
+            OrmQuery<IntegrationMigratedRow> query(*pool);
+            const std::int64_t aboveBoundaryCount =
+                query.where(Column(&IntegrationMigratedRow::sequence, "sequence") >
+                            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                     .count();
+            EXPECT_EQ(aboveBoundaryCount, 2);
+        }
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
     }
 
     /**

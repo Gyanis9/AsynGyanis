@@ -32,11 +32,13 @@
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/Queryable.h"
+#include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -90,6 +92,21 @@ namespace
         std::int64_t               id;          ///< 主键
         std::string                fullName;    ///< 列名含空格（"full name"）
         std::optional<std::string> homeAddress; ///< 列名含空格且可空（"home address"）
+    };
+
+    /**
+     * @brief 无符号 64 位列测试用结构体：覆盖 int64 之内与之外两段取值
+     *
+     * @details UInt64 是唯一在三个引擎上都「没有原生对应类型」的成员类型：
+     *          SQLite 只有 64 位有符号整数，PostgreSQL 得用 NUMERIC(20) 承接，
+     *          MySQL 有 BIGINT UNSIGNED 但它的上界超过 int64，驱动只能以文本返回。
+     *          这个结构体用于验证两侧边界：int64 能表达的取值必须无损往返，
+     *          表达不了的取值必须**明确失败**而不是悄悄换个数值。
+     */
+    struct UnsignedCounterRow
+    {
+        std::int64_t  id;       ///< 主键
+        std::uint64_t sequence; ///< 无符号 64 位计数，取值域 0 .. 2^64-1
     };
 
     /**
@@ -171,6 +188,17 @@ struct AsynGyanis::Database::Queryable::TableSchema<SpacedIdentifierRow>
     static constexpr std::string_view kPrimaryKey = "id";
 };
 
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<UnsignedCounterRow>
+{
+    static constexpr std::string_view kTableName = "unsigned counters";
+    static constexpr auto kColumns = std::tuple{
+        Column(&UnsignedCounterRow::id,       "id"),
+        Column(&UnsignedCounterRow::sequence, "sequence"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
 // ========================================================================
 // 夹具
 // ========================================================================
@@ -188,6 +216,7 @@ namespace
     using AsynGyanis::Database::Queryable::in;
     using AsynGyanis::Database::Queryable::like;
     using AsynGyanis::Database::Queryable::Queryable;
+    using AsynGyanis::Database::Queryable::SchemaMigrator;
 
     /**
      * @brief ORM 端到端测试夹具
@@ -564,6 +593,65 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
             verifyQuery.where(Column(&SpacedIdentifierRow::id, "id") == std::int64_t{1}).first();
         ASSERT_TRUE(updated.has_value());
         EXPECT_FALSE(updated->homeAddress.has_value());
+    }
+}
+
+/**
+ * @brief 验证 UInt64 列在 int64 能表达的范围内无损往返（表由 SchemaMigrator 建出）
+ *
+ * @details 走的是真实链路：建表类型由 SqliteDialect::columnTypeName() 给出（INTEGER），
+ *          插入时 RowMapper 把它按整数绑定，读回时走 int64 支路。两端边界都要覆盖：
+ *          0 与 INT64_MAX 分别对应 int64 支路的下界与上界，上界是最容易在别处被误写成
+ *          「有符号溢出」的位置。
+ */
+TEST_F(QueryableExecutionTest, UnsignedColumnRoundTripsWithinInt64Range)
+{
+    ASSERT_TRUE(SchemaMigrator::createTable<UnsignedCounterRow>(*m_pool));
+
+    const auto maximumSignedValue = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+    Queryable<UnsignedCounterRow> insertQuery(*m_pool);
+    ASSERT_EQ(1, insertQuery.insert(UnsignedCounterRow{.id = 1, .sequence = 0U}));
+    ASSERT_EQ(1, insertQuery.insert(UnsignedCounterRow{.id = 2, .sequence = maximumSignedValue}));
+
+    Queryable<UnsignedCounterRow> query(*m_pool);
+    const std::vector<UnsignedCounterRow> rows = query.orderBy(asc("id")).toList();
+
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].sequence, 0U);
+    EXPECT_EQ(rows[1].sequence, maximumSignedValue);
+}
+
+/**
+ * @brief 验证超出 int64 的 UInt64 取值在 SQLite 上明确失败，而不是悄悄换个数值
+ *
+ * @details SQLite 只有 64 位有符号整数：INTEGER 亲和性会把「装不下的十进制文本」
+ *          按亲和性规则转成 REAL，于是这一列读回来时是浮点而不是整数。这是引擎的
+ *          存储能力边界，ORM 的职责是**如实报错**——静默取整或回绕都会给出一个
+ *          看起来正常、实际错误的数值，那比失败难查得多。
+ *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED 或
+ *          PostgreSQL 的 NUMERIC(20)，那两条真机路径由各自的集成用例覆盖。
+ */
+TEST_F(QueryableExecutionTest, UnsignedValueBeyondInt64FailsLoudlyOnSqlite)
+{
+    ASSERT_TRUE(SchemaMigrator::createTable<UnsignedCounterRow>(*m_pool));
+
+    Queryable<UnsignedCounterRow> insertQuery(*m_pool);
+    // 写入本身会成功：绑定的是十进制文本，SQLite 接受它并按列亲和性转成 REAL
+    ASSERT_EQ(1, insertQuery.insert(
+                     UnsignedCounterRow{.id = 1, .sequence = std::numeric_limits<std::uint64_t>::max()}));
+
+    // 读回时列值已是浮点，与无符号整型成员类型不符：必须抛错，且原因指向该列
+    Queryable<UnsignedCounterRow> query(*m_pool);
+    try
+    {
+        static_cast<void>(query.toList());
+        FAIL() << "SQLite 存不下超过 int64 的 UInt64，读回本应抛异常";
+    } catch (const std::runtime_error &error)
+    {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("sequence"), std::string::npos) << message;
+        EXPECT_NE(message.find("无符号整型"), std::string::npos) << message;
     }
 }
 

@@ -13,7 +13,11 @@
  * 列的对应关系来自 TableSchema<T>::kColumns：按 tuple 顺序取出每列的 columnName，
  * 在结果集里按**列名**查找下标再读值，因此结果集的列顺序与结构体声明顺序无关。
  * 成员类型到 DatabaseValue 备选的转换规则：
- * - 整型（含 char/short/int/long long）← std::int64_t，越界即报错而不是截断；
+ * - 整型（含 char/short/int/long long）← std::int64_t，**或**严格十进制文本；
+ *   越界即报错而不是截断。接受文本那一支是必需而不是宽容：引擎存得下、
+ *   却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED 上界 2^64-1、
+ *   PostgreSQL 承接无符号 64 位的 NUMERIC(20) 都是如此），少了它就会出现
+ *   「写得进去、读不回来」——写方向恰好也把超出 int64 的无符号值降级成十进制文本；
  * - bool ← bool 或 std::int64_t（SQLite 没有布尔存储类，0/1 的整数收窄成 bool）；
  * - 浮点 ← double 或 std::int64_t（只读语句可能把整数值回传成 INTEGER）；
  * - std::string ← std::string；
@@ -21,10 +25,20 @@
  * 类型不符、列缺失、NULL 落到非 optional 成员，都会抛出带中文说明的 std::runtime_error，
  * 而不是给出一个字段静默为 0 的半成品对象。
  *
+ * @note 文本支路是**严格**解析：允许前导负号（目标为有符号时）与十进制数字，其余一概拒绝——
+ *       小数点、科学计数法、空白、多余字符、超出目标位宽的取值都报错。
+ *       宁可失败也不取整：把 "1.9" 读成 1 属于静默的数据变形。
+ * @warning SQLite 的列亲和性会把「装不下 int64 的十进制文本」转成 REAL，因此同一个
+ *          UInt64 成员在 SQLite 上写进去、读回来会损失精度并因类型不符报错。
+ *          这是引擎的存储能力边界（SQLite 只有 64 位有符号整数），不是本文件的缺陷；
+ *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED 或
+ *          PostgreSQL 的 NUMERIC(20)（见各方言的 columnTypeName()）。
+ *
  * ## 结构体 → 参数（写方向）
  * toDatabaseValue() 把单个成员值转成数据库统一值，供 INSERT / UPDATE 的绑定参数使用。
  * 规则与读方向对称：整型统一按 int64_t 绑定，无符号整型超出 int64_t 时降级为十进制文本
  * （DatabaseValue 已冻结、没有无符号备选，详见实现处注释），optional 空值绑定为 SQL NULL。
+ * 写下的这段十进制文本正好由读方向的整型文本支路解析回来，两个方向的取舍是配套的。
  *
  * ## 编译期约束
  * RowMappable<T> 要求 T 是可聚合初始化（默认构造）且已特化 TableSchema<T>（kColumns 非空）
@@ -37,6 +51,7 @@
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/TableSchema.h"
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -44,6 +59,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -138,6 +154,59 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 把一段十进制整型文本严格解析成目标整型
+         *
+         * @details 引擎存得下、却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED
+         *          上界 2^64-1、PostgreSQL 承接无符号 64 位的 NUMERIC(20)），因此整型成员
+         *          必须能读文本。解析用 std::from_chars：不跳前导空白、不接受余文、
+         *          按 C locale 解析且不抛异常（std::stoll 三者都会放宽）。
+         *          解析宽度按目标类型的符号性选：无符号成员要吃下 int64 之外的上界。
+         *
+         * @tparam FundamentalType 目标整型（已剥掉 optional / cv 限定）
+         * @param textValue 列值文本
+         * @param columnName 列名，仅用于错误信息
+         * @return FundamentalType 解析结果
+         * @throws std::runtime_error 文本不是纯十进制整数（含小数点、科学计数法、空白、多余字符，
+         *         或无符号成员收到负号），或取值超出目标整型的范围
+         */
+        template<typename FundamentalType>
+        [[nodiscard]] FundamentalType parseIntegerText(const std::string &textValue, const std::string_view columnName)
+        {
+            // 无符号目标按 uint64 解析，才能容纳 2^63 .. 2^64-1 这一段
+            using ParseType = std::conditional_t<std::is_unsigned_v<FundamentalType>, std::uint64_t, std::int64_t>;
+
+            ParseType parsedValue{};
+            const char *const         textBegin = textValue.data();
+            const char *const         textEnd   = textBegin + textValue.size();
+            const std::from_chars_result parseResult = std::from_chars(textBegin, textEnd, parsedValue);
+
+            // out_of_range 单独给文案：此时文本本身是合法整数，只是超出目标位宽
+            if (parseResult.ec == std::errc::result_out_of_range)
+            {
+                throw std::runtime_error("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
+                                         " 超出目标整型的取值范围");
+            }
+
+            // ptr != textEnd 表示尾部仍有余文（如 "12abc"）；无符号目标遇到负号也走这里
+            if (parseResult.ec != std::errc{} || parseResult.ptr != textEnd)
+            {
+                throw std::runtime_error(std::string("ORM 行映射失败：列 \"") + std::string(columnName) +
+                                         "\" 的文本 \"" + textValue +
+                                         (std::is_unsigned_v<FundamentalType> ? "\" 无法映射到无符号整型（只接受十进制数字，不接受负号、小数点或空格）"
+                                                                             : "\" 无法映射到整型（只接受可选的负号与十进制数字）"));
+            }
+
+            // 「放得下才有意义」：无符号成员收到负号会在上一步被拒，这里再兜一次位宽
+            if (!std::in_range<FundamentalType>(parsedValue))
+            {
+                throw std::runtime_error("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
+                                         " 超出目标整型的取值范围");
+            }
+
+            return static_cast<FundamentalType>(parsedValue);
+        }
+
+        /**
          * @brief 把一个单元格的值转换成目标成员类型
          * @tparam MemberType 目标成员类型（可为 std::optional 包装）
          * @param cellValue 结果集当前行的单元格值
@@ -185,8 +254,21 @@ namespace AsynGyanis::Database::Queryable
                     }
                     return static_cast<BareType>(*integerValue);
                 }
-                // 浮点给出整型列（如 MySQL 的 DECIMAL）不在当前支持范围，明确报错而不是取整
-                throwColumnTypeError(columnName, "整型（Int64）", cellValue);
+
+                // 十进制文本支路：引擎存得下、却给不出 int64 的整数只能以文本返回
+                // （MySQL 的 BIGINT UNSIGNED 上界、PostgreSQL 的 NUMERIC(20)）。
+                // 少了这一支，写到库里的 2^63 以上取值就再也读不回来
+                if (const auto *textValue = std::get_if<std::string>(&cellValue))
+                {
+                    return parseIntegerText<BareType>(*textValue, columnName);
+                }
+
+                // 浮点给出整型列（如 MySQL 的 DECIMAL、或 SQLite 把超大整数降级成 REAL）
+                // 不在当前支持范围，明确报错而不是取整：取整等于静默改变数值
+                throwColumnTypeError(columnName,
+                                     std::is_unsigned_v<BareType> ? "无符号整型（Int64 或十进制文本）"
+                                                                  : "整型（Int64 或十进制文本）",
+                                     cellValue);
             }
             else if constexpr (std::is_floating_point_v<BareType>)
             {
