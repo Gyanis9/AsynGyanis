@@ -1,11 +1,15 @@
 /**
  * @file EpollAwaiter.h
  * @brief 将文件描述符注册到边沿触发的 epoll 并挂起直到就绪的等待器（Awaitable）
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once
 
 
+#include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/Epoll.h"
 
 #include <coroutine>
@@ -74,10 +78,19 @@ namespace AsynGyanis::Core
         /**
          * @brief 挂起当前协程，并将 fd 注册到 epoll
          * @param handle 当前协程的句柄，将被保存到 epoll_event.data.ptr 中
+         * @throws Base::SystemException 注册失败（同一 fd 已被另一个等待器注册、或 fd 无效）。
+         *         **失败必须抛而不是静默挂起**：await_suspend 抛出时协程会在 co_await 处
+         *         被恢复并重抛该异常，调用方能就地处理；若在这里吞掉返回值，协程已经挂起
+         *         却再无任何事件能唤醒它——表现为整个连接静默卡死，且没有任何错误线索
          */
-        void await_suspend(std::coroutine_handle<> handle) const noexcept
+        void await_suspend(std::coroutine_handle<> handle) const
         {
-            m_epoll->addFileDescriptor(m_fileDescriptor, m_eventMask | EPOLLET, handle.address());
+            if (!m_epoll->addFileDescriptor(m_fileDescriptor, m_eventMask | EPOLLET, handle.address()))
+            {
+                throw Base::SystemException("把文件描述符注册到 epoll 失败"
+                                            "（该 fd 可能已被另一个等待器注册，或不是有效的描述符）");
+            }
+            // 注册成功才置位：失败路径上没有任何东西需要清理，析构函数据此不再尝试删除
             m_registered = true;
         }
 

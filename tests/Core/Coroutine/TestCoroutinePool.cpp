@@ -166,4 +166,43 @@ namespace AsynGyanis::Core
         const std::unordered_set<void *> uniquePointers(collected.begin(), collected.end());
         EXPECT_EQ(uniquePointers.size(), collected.size());
     }
+
+    TEST(CoroutinePool, AllocationBeyondBlockCeilingFallsBackToGlobalHeap)
+    {
+        auto &pool = CoroutinePool::instance();
+
+        // 池的块数上限是私有常量，这里不硬编码它：一路分配到出现「不属于本池」的块为止。
+        // 修复前这一步会崩——空闲列表为空且 expand() 因到达上限而一块都不加时，
+        // 旧实现仍对它调 back()，属于对空 vector 的越界访问
+        std::vector<void *> blocks;
+        void              *firstForeignBlock = nullptr;
+        constexpr size_t   kAllocationAttemptCeiling = 100000;
+
+        for (size_t attempt = 0; attempt < kAllocationAttemptCeiling && firstForeignBlock == nullptr; ++attempt)
+        {
+            void *block = pool.allocate(64);
+            ASSERT_NE(block, nullptr) << "第 " << attempt << " 次分配失败：池到达上限后必须改走全局堆";
+            blocks.push_back(block);
+
+            if (!pool.owns(block))
+            {
+                firstForeignBlock = block;
+            }
+        }
+
+        ASSERT_NE(firstForeignBlock, nullptr)
+            << "在 " << kAllocationAttemptCeiling << " 次分配内没有观察到池上限：上限常量是否被调大了？";
+
+        // 越过上限的块由全局堆承载，且 released 时也必须走全局堆释放路径
+        // （deallocate 靠 ownsUnlocked() 判定归属，因此判定分支与 allocate 天然一致）
+        for (void *block: blocks)
+        {
+            pool.deallocate(block, 64);
+        }
+
+        // 归还后池内块是可以复用的：再分配一次应当回到池里，而不是每次都新建
+        void *reused = pool.allocate(64);
+        EXPECT_TRUE(pool.owns(reused));
+        pool.deallocate(reused, 64);
+    }
 } // namespace AsynGyanis::Core

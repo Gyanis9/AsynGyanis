@@ -43,6 +43,15 @@ namespace AsynGyanis::Core
             expand(m_allocatedCount > 0 ? m_allocatedCount : kDefaultInitialBlocks);
         }
 
+        // 扩容可能一块都没加（已到 kMaximumTotalBlocks 上限），此时空闲列表仍为空。
+        // 这里必须走全局堆而不是继续取块：对空列表调 back() 是越界访问。
+        // deallocate() 对这种指针的判定天然一致——ownsUnlocked() 会说它不属于本池，
+        // 于是同样交还 ::operator delete，不会被塞进空闲列表
+        if (m_freeList.empty())
+        {
+            return ::operator new(requiredSize);
+        }
+
         void *pointer = m_freeList.back();
         m_freeList.pop_back();
         return pointer;
@@ -90,12 +99,12 @@ namespace AsynGyanis::Core
         return m_allocatedCount;
     }
 
-    void CoroutinePool::expand(const size_t count)
+    size_t CoroutinePool::expand(const size_t count)
     {
-        // 上限保护：达到 kMaximumTotalBlocks 后停止扩张，由全局堆承接后续需求
+        // 上限保护：达到 kMaximumTotalBlocks 后不再扩张，返回 0 让调用方改走全局堆
         if (m_allocatedCount >= kMaximumTotalBlocks)
         {
-            return;
+            return 0;
         }
         const size_t newCount = std::min(count, kMaximumTotalBlocks - m_allocatedCount);
 
@@ -109,6 +118,7 @@ namespace AsynGyanis::Core
             m_freeList.push_back(data + blockIndex * m_blockSize);
         }
         m_allocatedCount += newCount;
+        return newCount;
     }
 
     bool CoroutinePool::ownsUnlocked(const void *const pointer) const noexcept

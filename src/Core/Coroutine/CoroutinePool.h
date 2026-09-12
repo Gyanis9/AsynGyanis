@@ -49,6 +49,8 @@ namespace AsynGyanis::Core
          * @brief 从池中分配一块内存。
          * @details 请求大小不超过 blockSize 时从空闲列表取块（列表空则先扩容）；
          *          超过 blockSize 的大请求直接交给全局 ::operator new，避免撑大固定块规格。
+         *          池达到 kMaximumTotalBlocks 上限后不再扩容，此后的请求同样落到全局堆——
+         *          因此 allocate() 在任何情况下都能成功返回，不存在「池满了就取不到块」的状态。
          * @param requiredSize 请求的字节数
          * @return void* 指向分配内存的指针
          * @throws std::bad_alloc 底层内存分配失败
@@ -101,9 +103,10 @@ namespace AsynGyanis::Core
         /**
          * @brief 向池中追加若干块
          * @param count 期望新增的块数，超出上限时按剩余容量截断
-         * @note 调用方必须持有 m_mutex
+         * @return size_t 实际追加的块数；已到 kMaximumTotalBlocks 上限时为 0
+         * @note 调用方必须持有 m_mutex；返回 0 时调用方应改从全局堆分配
          */
-        void expand(size_t count);
+        size_t expand(size_t count);
 
         /**
          * @brief 判断指针是否属于本池，要求调用方已持有 m_mutex

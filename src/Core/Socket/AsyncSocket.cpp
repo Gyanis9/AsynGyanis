@@ -8,6 +8,8 @@
 #include "Platform/System/PlatformError.h"
 
 #include <cerrno>
+#include <limits>
+#include <string>
 
 namespace AsynGyanis::Core
 {
@@ -127,7 +129,7 @@ namespace AsynGyanis::Core
 
     Task<> AsyncSocket::asyncConnect(const sockaddr *const address, const socklen_t addressLength) const
     {
-        if (const int ret = ::connect(m_fileDescriptor, address, addressLength); ret == 0)
+        if (const int result = ::connect(m_fileDescriptor, address, addressLength); result == 0)
         {
             co_return;
         } else if (Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kInProgress)
@@ -145,8 +147,10 @@ namespace AsynGyanis::Core
         co_return;
     }
 
-    Task<> AsyncSocket::asyncConnect(const InetAddress &address) const
+    Task<> AsyncSocket::asyncConnect(const InetAddress address) const
     {
+        // 按值接收的理由见头文件：惰性协程到首次 resume 才读入参，按引用会悬垂。
+        // 这里把值转交给原生地址重载，地址长度在拷贝期间始终有效
         co_return co_await asyncConnect(address.nativeAddress(), address.nativeAddressLength());
     }
 
@@ -157,12 +161,22 @@ namespace AsynGyanis::Core
             co_return 0;
         }
 
+        // recv 的长度形参是 int（Windows 上就是 int），超限会被静默窄化成一个可疑的负数，
+        // 因此宁可当场失败也不让底层收到一个已被改写过的长度
+        if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
+        {
+            throw Base::SystemException("单次接收长度超过上限（" + std::to_string(length) +
+                                        " 字节 > INT_MAX）：底层 recv 的长度形参是 int，"
+                                        "超限会被静默窄化；请把数据分成多次接收");
+        }
+
         while (true)
         {
-            const ssize_t n = ::recv(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
-            if (n > 0)
-                co_return n;
-            if (n == 0)
+            const ssize_t receivedBytes =
+                    ::recv(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
+            if (receivedBytes > 0)
+                co_return receivedBytes;
+            if (receivedBytes == 0)
                 co_return 0;
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
@@ -182,13 +196,24 @@ namespace AsynGyanis::Core
             co_return 0;
         }
 
+        // 同 asyncReceive：先把会静默窄化的长度挡在底层 C API 之外
+        if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
+        {
+            throw Base::SystemException("单次发送长度超过上限（" + std::to_string(length) +
+                                        " 字节 > INT_MAX）：底层 send 的长度形参是 int，"
+                                        "超限会被静默窄化；请把数据分成多次发送");
+        }
+
         while (true)
         {
-            const ssize_t n = ::send(m_fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
-            if (n > 0)
-                co_return n;
-            if (n == 0)
-                co_return -1; // 对端已关闭连接
+            const ssize_t sentBytes =
+                    ::send(m_fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
+            if (sentBytes > 0)
+                co_return sentBytes;
+            // send 返回 0 说明对端已关闭：这条路径下 errno 未被设置，
+            // 因此以 -1 作为可判定的返回值，让调用方不必去读一个没有意义的 errno
+            if (sentBytes == 0)
+                co_return -1;
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
                 co_await EpollAwaiter(m_loop.epoll(), m_fileDescriptor, EPOLLOUT);
