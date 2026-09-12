@@ -9,6 +9,7 @@ add_executable(TestPlatform
         IO/TestTimerFileDescriptor.cpp
         IO/TestConsole.cpp
         IO/TestSocket.cpp
+        IO/TestMemoryMappedFile.cpp
 
         FileSystem/TestFileSystem.cpp
         FileSystem/TestAtomicFileWriter.cpp

@@ -8,6 +8,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/EventNotifier.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TimerFileDescriptor.h
         ${CMAKE_CURRENT_LIST_DIR}/TimerFileDescriptor.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/MemoryMappedFile.h
+        ${CMAKE_CURRENT_LIST_DIR}/MemoryMappedFile.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Console.h
         ${CMAKE_CURRENT_LIST_DIR}/Console.cpp
 )

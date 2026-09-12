@@ -4,10 +4,10 @@
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/HttpSession.h"
+#include "Platform/IO/MemoryMappedFile.h"
 
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -18,10 +18,10 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
-         * @brief 单个静态文件允许整体读入内存的上限，单位字节（64 MiB）
-         * @details 本框架没有零拷贝发送通道（FileSender 的 sendFile 因平台语义错误已删除），
-         *          正文只能整体进内存，因此必须设上限，否则一个大文件就能把进程拖爆。
-         *          需要服务更大文件时应先在 Platform 层补跨平台的 sendfile 封装。
+         * @brief 单个静态文件允许作为正文下发的上限，单位字节（64 MiB）
+         * @details 正文现在走内存映射（不经过堆缓冲），但整份文件仍要一次性上线：
+         *          对端读得慢时，这次发送会把整份文件挂在连接上，服务端没有分块续传的收尾策略，
+         *          因此必须设上限。需要服务更大文件时应先补跨平台 sendfile 封装（Platform 层）。
          */
         constexpr std::uintmax_t kMaximumStaticFileSize = 64ull * 1024 * 1024;
 
@@ -366,7 +366,7 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            // 内存保护：超限的大文件不读，也不给半截正文
+            // 内存保护：超限的大文件不映射，也不给半截正文
             if (fileSize > kMaximumStaticFileSize)
             {
                 response.setStatus(413);
@@ -387,20 +387,29 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            std::string body;
-            body.resize(static_cast<std::size_t>(fileSize));
-
-            // 以二进制打开：文本模式会在 Windows 上做 CRLF 转换，图片与压缩包会被改坏
-            if (std::ifstream file(candidatePath, std::ios::binary); !file.read(body.data(), static_cast<std::streamsize>(fileSize)))
+            // 映射整份文件当正文：不经过堆缓冲，发送时由聚合写直接引用文件页，
+            // 省掉「文件 → 堆正文」那次等量拷贝与分配。映射对象随响应存活，发送期间一定有效
+            Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(candidatePath);
+            if (!mappedFile.isValid())
             {
-                // 文件刚被并发删除或截断（TOCTOU 窗口）：读失败按服务端故障处理，不回半个文件
+                // 文件在 stat 之后被并发删除、改权限或占满句柄（TOCTOU 窗口）：按服务端故障处理，不回半个文件
                 response.setStatus(500);
                 response.setBody("Internal Server Error");
                 response.setHeader("content-type", "text/plain");
                 co_return;
             }
 
-            response.setBody(std::move(body));
+            // 映射长度才是正文的真实字节数（content-length 由它推导）。文件在 stat 与映射之间
+            // 被换成了更大的版本时，上面的上限判定已经过期，这里按新长度复查一次，避免绕过限制
+            if (mappedFile.bytes().size() > kMaximumStaticFileSize)
+            {
+                response.setStatus(413);
+                response.setBody("Payload Too Large");
+                response.setHeader("content-type", "text/plain");
+                co_return;
+            }
+
+            response.setMappedBody(std::move(mappedFile));
         }
     } // namespace
 

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Platform/IO/MemoryMappedFile.h"
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -106,12 +108,25 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置响应正文，覆盖已有内容。
          * @param body 正文字符串视图（内容会被复制存储）
+         * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
          */
         void setBody(std::string_view body);
 
         /**
+         * @brief 用「内存映射的文件」当正文：整份文件不复制进堆，直接以映射视图参与发送
+         *
+         * @details 静态文件响应的正文动辄几十 KiB 到几十 MiB，先读进堆再发等于白白多一次
+         *          等量拷贝与分配。映射之后正文就是文件页的视图，发送时直接引用（本响应
+         *          持有映射的所有权，因此映射在发送期间一定有效）。
+         * @param mappedFile 已映射好的文件；无效对象会被当作空正文
+         * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
+         * @see Platform::MemoryMappedFile
+         */
+        void setMappedBody(Platform::MemoryMappedFile mappedFile);
+
+        /**
          * @brief 获取响应正文。
-         * @return 正文字符串视图，视图生命周期跟随本响应对象
+         * @return 正文字符串视图，视图生命周期跟随本响应对象（映射正文时指向文件映射）
          */
         [[nodiscard]] std::string_view body() const;
 
@@ -236,6 +251,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool mustNotDeclareContentLength() const noexcept;
 
         /**
+         * @brief 取当前正文的视图，与正文的来源（堆串或文件映射）无关
+         * @return std::string_view 映射正文时指向文件页，堆正文时指向 m_body；无正文时为空视图
+         * @note 序列化、补 content-length、对外 body() 都经此一处取值，
+         *       只要两条正文存储的互斥不变式被 setBody/setMappedBody/reset 维持住，
+         *       调用方就看不到区别
+         */
+        [[nodiscard]] std::string_view bodyView() const noexcept;
+
+        /**
          * @brief 计算头部块（状态行 + 头部 + 空白行）的预留长度，不含正文
          * @return std::size_t 预留字节数
          */
@@ -251,6 +275,7 @@ namespace AsynGyanis::Net
         std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1
         HeaderFieldList m_headerFields;                        ///< 头部权威记录，按设置顺序保存，决定序列化顺序
         std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用
-        std::string m_body;                                    ///< 响应正文
+        std::string m_body;                                    ///< 响应正文（堆存储），与 m_mappedBody 互斥
+        Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效
     };
 } // namespace AsynGyanis::Net

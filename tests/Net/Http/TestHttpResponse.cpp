@@ -9,11 +9,18 @@
 
 #include "Net/Http/HttpResponse.h"
 
+#include "Platform/IO/MemoryMappedFile.h"
+
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -44,6 +51,64 @@ namespace AsynGyanis::Net
         {
             return haystack.find(needle);
         }
+
+        /**
+         * @brief 临时文件夹具：给「映射正文」的用例提供一份磁盘上的真实文件
+         *
+         * @details 文件内容按二进制写入（文本模式会在 Windows 上把换行翻译成 CRLF，
+         *          正文长度随之失真）；析构时递归删除整个临时目录，失败退出也能清理干净。
+         */
+        class TemporaryFile
+        {
+        public:
+            /**
+             * @brief 创建临时目录并写入待映射的文件（文件名为 body.bin）
+             * @param namePrefix 便于调试的用途前缀
+             * @param content 文件内容
+             */
+            TemporaryFile(const std::string &namePrefix, const std::string_view content)
+            {
+                static std::atomic<unsigned int> sequenceCounter{0};
+
+                const std::string salt = std::to_string(
+                                                 std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
+                                         std::to_string(sequenceCounter.fetch_add(1));
+                m_directory = std::filesystem::temp_directory_path() / ("AsynGyanis_HttpResponse_" + namePrefix + "_" + salt);
+
+                std::error_code error;
+                std::filesystem::create_directories(m_directory, error);
+                m_filePath = m_directory / "body.bin";
+
+                std::ofstream file(m_filePath, std::ios::out | std::ios::binary | std::ios::trunc);
+                if (file.is_open())
+                {
+                    file.write(content.data(), static_cast<std::streamsize>(content.size()));
+                }
+            }
+
+            ~TemporaryFile()
+            {
+                std::error_code error;
+                std::filesystem::remove_all(m_directory, error);
+            }
+
+            TemporaryFile(const TemporaryFile &) = delete;
+
+            TemporaryFile &operator=(const TemporaryFile &) = delete;
+
+            /**
+             * @brief 文件路径
+             * @return const std::filesystem::path& 映射用的文件绝对路径
+             */
+            [[nodiscard]] const std::filesystem::path &path() const noexcept
+            {
+                return m_filePath;
+            }
+
+        private:
+            std::filesystem::path m_directory; ///< 本次用例独占的临时目录
+            std::filesystem::path m_filePath;  ///< 目录内待映射的文件
+        };
     } // namespace
 
     // ============================================================================
@@ -502,5 +567,125 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(response.headerValues("set-cookie").empty());
         EXPECT_FALSE(response.getHeader("retry-after").has_value());
         EXPECT_TRUE(containsText(response.toString(), "HTTP/1.1 200 OK\r\n"));
+    }
+
+    // ============================================================================
+    // 映射正文（静态文件路径）
+    // ============================================================================
+
+    /**
+     * @brief 映射正文与堆正文在序列化上等价：内容逐字节一致，content-length 按映射长度补齐
+     */
+    TEST(HttpResponse, ServesMappedFileAsBodyWithByteAccurateContentLength)
+    {
+        // UTF-8 三字节字符混在 ASCII 里：映射长度若误按字符数计算，content-length 会当场失真
+        const std::string content = "mapped-body-" + std::string(kThreeByteUtf8Character);
+        const TemporaryFile temporaryFile("MappedBody", content);
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setStatus(200);
+        response.setMappedBody(std::move(mappedFile));
+
+        // 正文视图直接指向文件页，不经堆缓冲
+        EXPECT_EQ(response.body(), content);
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: " + std::to_string(content.size()) + "\r\n"));
+        // toString() 与「头部 + 正文」拼接逐字节相同：映射只改正文来源，不改报文形态
+        EXPECT_EQ(response.toString(), response.serializeHead() + content);
+    }
+
+    /**
+     * @brief 映射正文被 setBody 取代后不再参与序列化：两条正文存储互斥
+     */
+    TEST(HttpResponse, HeapBodyReplacesMappedBody)
+    {
+        const TemporaryFile temporaryFile("HeapReplaces", "file-content-that-must-disappear");
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setMappedBody(std::move(mappedFile));
+        response.setBody("stale");
+
+        EXPECT_EQ(response.body(), "stale");
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 5\r\n"));
+        EXPECT_EQ(response.toString().find("file-content"), std::string::npos);
+    }
+
+    /**
+     * @brief 映射正文被 setMappedBody 取代后不再参与序列化：反向的互斥同样成立
+     */
+    TEST(HttpResponse, MappedBodyReplacesHeapBody)
+    {
+        const std::string content = "mapped-takes-over";
+        const TemporaryFile temporaryFile("MappedReplaces", content);
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setBody("heap-body-that-must-disappear");
+        response.setMappedBody(std::move(mappedFile));
+
+        EXPECT_EQ(response.body(), content);
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: " + std::to_string(content.size()) + "\r\n"));
+        EXPECT_EQ(response.toString().find("heap-body"), std::string::npos);
+    }
+
+    /**
+     * @brief 复位清掉映射正文：复用响应对象时上一轮的文件不会跟着下一条报文发出去
+     */
+    TEST(HttpResponse, ResetClearsMappedBody)
+    {
+        const TemporaryFile temporaryFile("ResetMapped", "file-content-that-must-disappear");
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setMappedBody(std::move(mappedFile));
+        response.reset();
+
+        EXPECT_TRUE(response.body().empty());
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 0\r\n"));
+        EXPECT_EQ(response.toString().find("file-content"), std::string::npos);
+    }
+
+    /**
+     * @brief 空文件映射是「有效但零字节」：正文为空，响应仍给出 content-length: 0
+     */
+    TEST(HttpResponse, EmptyMappedFileCountsAsEmptyBody)
+    {
+        const TemporaryFile temporaryFile("EmptyMapped", "");
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setMappedBody(std::move(mappedFile));
+
+        EXPECT_TRUE(response.body().empty());
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 0\r\n"));
+    }
+
+    /**
+     * @brief 传入无效映射当正文：按空正文处理，不抛异常也不产出脏字节
+     */
+    TEST(HttpResponse, InvalidMappedFileCountsAsEmptyBody)
+    {
+        const TemporaryFile temporaryFile("InvalidMapped", "unused");
+        const std::filesystem::path missingPath = temporaryFile.path().parent_path() / "no-such-file.bin";
+
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(missingPath);
+        ASSERT_FALSE(mappedFile.isValid());
+
+        HttpResponse response;
+        response.setMappedBody(std::move(mappedFile));
+
+        EXPECT_TRUE(response.body().empty());
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 0\r\n"));
     }
 } // namespace AsynGyanis::Net

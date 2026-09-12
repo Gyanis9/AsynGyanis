@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -251,13 +252,39 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setBody(const std::string_view body)
     {
+        // 两条正文存储互斥：换成堆正文之前先解除映射，否则 bodyView() 会继续读旧映射
+        m_mappedBody = Platform::MemoryMappedFile{};
+
         // string_view 不保证零终止也不拥有内存，落到成员前必须实体化一份
         m_body = std::string(body);
     }
 
+    void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile)
+    {
+        // 反向的互斥：映射正文接管后堆正文必须清空，避免 content-length 按残留字节数算错
+        m_body.clear();
+        m_mappedBody = std::move(mappedFile);
+    }
+
+    std::string_view HttpResponse::bodyView() const noexcept
+    {
+        if (m_mappedBody.isValid())
+        {
+            const std::span<const std::byte> mappedBytes = m_mappedBody.bytes();
+            if (mappedBytes.empty())
+            {
+                // 空文件映射不出可解引用的地址（data() 可能为空），
+                // 用空视图表示「正文 0 字节」，不构造 string_view(nullptr, 0)
+                return {};
+            }
+            return std::string_view(reinterpret_cast<const char *>(mappedBytes.data()), mappedBytes.size());
+        }
+        return m_body;
+    }
+
     std::string_view HttpResponse::body() const
     {
-        return m_body;
+        return bodyView();
     }
 
     const char *HttpResponse::statusMessage(const int code)
@@ -377,7 +404,7 @@ namespace AsynGyanis::Net
                 hasContentLengthHeader = true;
             }
         }
-        if (!hasContentTypeHeader && !m_body.empty())
+        if (!hasContentTypeHeader && !bodyView().empty())
         {
             reservedLength += kAutoContentTypeReserveLength;
         }
@@ -419,7 +446,8 @@ namespace AsynGyanis::Net
         }
 
         // ---- 补缺。调用方没写的两条由这里兜底，排在自设头部之后 ----
-        if (!hasContentTypeHeader && !m_body.empty())
+        const std::string_view responseBody = bodyView();
+        if (!hasContentTypeHeader && !responseBody.empty())
         {
             // 有正文却漏设媒体类型时按纯文本下发：不会被浏览器当脚本执行，是最安全的兜底
             result.append(kAutoContentTypeHeader);
@@ -428,7 +456,7 @@ namespace AsynGyanis::Net
         {
             // content-length 必须是正文的真实字节数，收端据此判定报文边界，错一个字节整条连接就错位
             result.append(kAutoContentLengthHeaderPrefix);
-            appendDecimal(result, m_body.size());
+            appendDecimal(result, responseBody.size());
             result.append(kCrLf);
         }
 
@@ -445,13 +473,15 @@ namespace AsynGyanis::Net
 
     std::string HttpResponse::toString() const
     {
+        const std::string_view responseBody = bodyView();
+
         std::string result;
         // 头部与正文一次预留到位：估不准只是多一次扩容，不影响正确性
-        result.reserve(headReserveLength() + (carriesNoContent() ? 0 : m_body.size()));
+        result.reserve(headReserveLength() + (carriesNoContent() ? 0 : responseBody.size()));
         appendHead(result);
         if (!carriesNoContent())
         {
-            result.append(m_body);
+            result.append(responseBody);
         }
         return result;
     }
@@ -491,7 +521,11 @@ namespace AsynGyanis::Net
         // 两份存储一起清：只清一处会留下「视图里查得到、序列化里没有」的鬼条目
         m_headerFields.clear();
         m_headers.clear();
+
+        // 正文同样是两条存储：堆串清空之外映射也要解除，
+        // 否则复用响应对象时上一轮的文件会继续当正文发出去
         m_body.clear();
+        m_mappedBody = Platform::MemoryMappedFile{};
     }
 
 } // namespace AsynGyanis::Net
