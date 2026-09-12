@@ -16,6 +16,12 @@
  *          方言由池中连接的真实 DatabaseType 推导（也可在构造时显式指定），
  *          绑定事务时直接取事务连接的类型，无需再借出连接探测。
  *
+ *          异步路径：每个同步执行器都有一个同名 + Async 后缀的版本（toListAsync / firstAsync /
+ *          countAsync / executeNonQueryAsync）。它们语义完全一致，唯一差别是不阻塞调用线程：
+ *          方言解析与 SQL 生成仍在提交前完成（纯文本变换），「取连接 → 执行 → 行映射」这段
+ *          阻塞链路交给 AsyncExecutor 的工作线程，完成后由工作线程把协程句柄投回调用方给的
+ *          EventLoop（Scheduler::scheduleRemote），因此恢复与后续代码都发生在事件循环线程上。
+ *
  *          ORM 只负责「把结构体整理成列名 + 取值」，SQL 文本一律由方言生成：
  *          条件渲染、参数收集顺序、写语句语法都只有方言层那一份实现，
  *          因此本类不含任何拼接 SQL 的逻辑（旧实现里「翻译出 SELECT 再截取 WHERE 段」
@@ -47,14 +53,21 @@
  *   transactionalQuery.insert(first);
  *   transactionalQuery.insert(second);
  *   transaction.commit();
+ *
+ *   // 异步：阻塞链路在工作线程上执行，完成后回到 eventLoop 所在线程
+ *   Core::EventLoop eventLoop;
+ *   Queryable<User> asyncQuery(pool);
+ *   std::vector<User> users = co_await asyncQuery.where(Column(&User::age, "age") >= 18).toListAsync(eventLoop);
  * @endcode
  */
 #pragma once
 
+#include "Core/Coroutine/Task.h"
 #include "Database/Common/DatabaseType.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
+#include "Database/Pool/AsyncExecutor.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/Transaction.h"
@@ -93,8 +106,11 @@ namespace AsynGyanis::Database::Queryable
      *          - 带连接池与数据库类型构造：在线模式，方言类型由调用方直接指定
      *          - 带事务构造：在线模式，所有语句走事务持有的那一条连接
      *
-     * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）必须在
-     *       绑定连接池或事务的在线模式下调用，默认构造的离线模式调用它们会抛 std::logic_error。
+     * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）及其
+     *       异步版本（toListAsync/firstAsync/countAsync/executeNonQueryAsync）必须在绑定连接池
+     *       或事务的在线模式下调用，默认构造的离线模式调用它们会抛 std::logic_error。
+     * @note 本类不是线程安全的：异步方法只保证阻塞执行发生在工作线程上，调用方仍应避免在
+     *       同一个查询对象上并发地构建查询与发起执行。
      */
     template<typename T>
     class Queryable
@@ -270,6 +286,23 @@ namespace AsynGyanis::Database::Queryable
             return *this;
         }
 
+        /**
+         * @brief 指定异步执行器（阻塞任务的工作线程池）
+         *
+         * @details 只影响异步方法（toListAsync / firstAsync / countAsync / executeNonQueryAsync）：
+         *          未调用本方法时这些方法使用进程级共享的 AsyncExecutor::shared()，
+         *          需要控制工作线程数或让执行器与连接池成对管理时用本方法注入自己的实例。
+         *
+         * @param executor 异步执行器，本对象只保存指针，其生命周期必须覆盖所有异步调用
+         * @return Queryable& 自身引用，支持链式调用
+         * @note 同步方法不使用执行器，调用本方法不会改变它们的行为
+         */
+        Queryable &useAsyncExecutor(AsyncExecutor &executor)
+        {
+            m_asyncExecutor = &executor;
+            return *this;
+        }
+
         // ========================================================================
         // 执行器方法（在线模式）
         // ========================================================================
@@ -343,29 +376,9 @@ namespace AsynGyanis::Database::Queryable
             countingNode.limit.reset();
             countingNode.offset.reset();
 
-            const SqlStatement statement = requireDialect().translate(countingNode);
-            ConnectionLease    lease     = acquireConnection();
-            std::unique_ptr<DatabaseResult> result =
-                lease.connection->execute(std::string_view{statement.sql}, statement.parameters);
-            if (result == nullptr)
-            {
-                throw std::runtime_error("Queryable: 统计行数失败：" + lease.connection->lastError());
-            }
-
-            // COUNT(*) 恒返回一行一列；游标推进失败说明语句没有产出任何行，按 0 计
-            if (!result->next())
-            {
-                return 0;
-            }
-
-            const DatabaseValue countValue = result->getValue(0);
-            if (const auto *countedRows = std::get_if<std::int64_t>(&countValue))
-            {
-                return *countedRows;
-            }
-
-            // NULL（例如 GROUP BY 后没有任何分组）按 0 处理，语义上「没有行」与 0 行等价
-            return 0;
+            const SqlDialect &dialect = requireDialect();
+            ConnectionLease   lease   = acquireConnection(m_pool, m_transaction);
+            return countOn(*lease.connection, dialect, countingNode);
         }
 
         /**
@@ -507,6 +520,158 @@ namespace AsynGyanis::Database::Queryable
         }
 
         // ========================================================================
+        // 执行器方法（在线模式，异步：阻塞链路挪到 AsyncExecutor 的工作线程）
+        // ========================================================================
+
+        /**
+         * @brief 异步执行查询并返回所有结果行
+         *
+         * @details 与 toList() 语义完全一致，唯一差别是**不阻塞调用线程**：方言解析与 SQL 生成
+         *          在提交前完成（纯文本变换，不访问数据库），随后「取连接 → 执行 → 行映射」
+         *          整段阻塞链路交给 AsyncExecutor 的工作线程，任务完成后协程在 completionLoop
+         *          所在线程上恢复并交出结果。
+         *
+         * @param completionLoop 恢复本协程用的事件循环；其 run() 必须正在运行（或即将运行），
+         *        且对象生命周期要覆盖到任务完成之后，否则协程永远得不到恢复
+         * @return Core::Task<std::vector<T>> 惰性启动的协程，co_await 后得到结果行列表
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败；异常原样穿过工作线程
+         *         与调度投递，在 co_await 处重新抛出（类型与消息都不变）
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @note 提交动作只做入队，因此 co_await 之前的耗时与数据库无关；真正的等待发生在协程挂起之后
+         */
+        [[nodiscard]] Core::Task<std::vector<T>> toListAsync(Core::EventLoop &completionLoop)
+        {
+            requireOnline("toListAsync()");
+
+            // 方言与查询树在提交前定型：二者都是值语义的纯数据，捕获进任务后工作线程
+            // 不再触碰本对象，因此「查询构建器被并发使用」这类问题不会借异步路径被放大
+            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            QueryNode                   resolvedNode = resolvedQueryNode();
+            ConnectionPool             *pool = m_pool;
+            Transaction                *transaction = m_transaction;
+
+            std::vector<T> rows = co_await asyncExecutor().submit<std::vector<T>>(
+                completionLoop,
+                [dialect, resolvedNode = std::move(resolvedNode), pool, transaction]() -> std::vector<T>
+                {
+                    // 整段阻塞链路在工作线程上执行：取连接、执行语句、逐行映射成结构体
+                    ConnectionLease lease = acquireConnection(pool, transaction);
+                    return fetchRowsOn(*lease.connection, *dialect, resolvedNode);
+                });
+
+            co_return rows;
+        }
+
+        /**
+         * @brief 异步执行查询并返回第一行结果
+         *
+         * @details 与 first() 语义完全一致：先在查询树副本上把行数上限压到 1，再交给工作线程执行，
+         *          因此不会把整表读进内存。完成后的恢复时机与 toListAsync() 相同。
+         *
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::optional<T>> 惰性启动的协程；无匹配行时结果为空 optional
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         */
+        [[nodiscard]] Core::Task<std::optional<T>> firstAsync(Core::EventLoop &completionLoop)
+        {
+            requireOnline("firstAsync()");
+
+            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            QueryNode                   limitedNode = resolvedQueryNode();
+            // 只取一行：让数据库侧提前停止扫描，与同步版 first() 的取舍一致
+            limitedNode.limit = 1U;
+            ConnectionPool  *pool = m_pool;
+            Transaction     *transaction = m_transaction;
+
+            std::optional<T> firstRow = co_await asyncExecutor().submit<std::optional<T>>(
+                completionLoop,
+                [dialect, limitedNode = std::move(limitedNode), pool, transaction]() -> std::optional<T>
+                {
+                    ConnectionLease lease = acquireConnection(pool, transaction);
+                    std::vector<T>  rows = fetchRowsOn(*lease.connection, *dialect, limitedNode);
+                    if (rows.empty())
+                    {
+                        return std::nullopt;
+                    }
+                    return std::optional<T>(std::move(rows.front()));
+                });
+
+            co_return firstRow;
+        }
+
+        /**
+         * @brief 异步统计匹配行数
+         *
+         * @details 与 count() 语义完全一致：把 SELECT 列表换成 COUNT(*)、清掉 ORDER BY 与分页，
+         *          再由工作线程执行。完成后的恢复时机与 toListAsync() 相同。
+         *
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::int64_t> 惰性启动的协程；结果为空或计数列为 NULL 时为 0
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败或 SQL 执行失败
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         */
+        [[nodiscard]] Core::Task<std::int64_t> countAsync(Core::EventLoop &completionLoop)
+        {
+            requireOnline("countAsync()");
+
+            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            QueryNode                   countingNode = resolvedQueryNode();
+            countingNode.selectColumns = {"COUNT(*)"};
+            countingNode.orderBy.clear();
+            countingNode.limit.reset();
+            countingNode.offset.reset();
+            ConnectionPool *pool = m_pool;
+            Transaction    *transaction = m_transaction;
+
+            std::int64_t countedRows = co_await asyncExecutor().submit<std::int64_t>(
+                completionLoop,
+                [dialect, countingNode = std::move(countingNode), pool, transaction]() -> std::int64_t
+                {
+                    ConnectionLease lease = acquireConnection(pool, transaction);
+                    return countOn(*lease.connection, *dialect, countingNode);
+                });
+
+            co_return countedRows;
+        }
+
+        /**
+         * @brief 异步执行非查询操作：按当前查询树的 WHERE 条件删除数据
+         *
+         * @details 与 executeNonQuery() 语义完全一致：SQL 文本由方言生成（translateDelete），
+         *          语句与参数在提交前定型，执行交给工作线程。完成后的恢复时机与 toListAsync() 相同。
+         *
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（驱动不提供时为 0）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败或语句执行失败
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @warning 查询树不含任何条件时生成的语句是 "DELETE FROM 表"，会清空全表
+         */
+        [[nodiscard]] Core::Task<std::int64_t> executeNonQueryAsync(Core::EventLoop &completionLoop)
+        {
+            requireOnline("executeNonQueryAsync()");
+
+            // 语句翻译是纯文本且不依赖连接，放在提交前做；参数已经收集在 statement 里
+            SqlStatement statement = resolveDialect()->translateDelete(m_queryNode);
+            ConnectionPool *pool = m_pool;
+            Transaction    *transaction = m_transaction;
+
+            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+                completionLoop,
+                [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                {
+                    ConnectionLease lease = acquireConnection(pool, transaction);
+                    return executeOn(*lease.connection, statement);
+                });
+
+            co_return affectedRows;
+        }
+
+        // ========================================================================
         // SQL 生成
         // ========================================================================
 
@@ -567,19 +732,21 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 取得本查询要使用的方言，首次调用时解析并缓存
+         * @brief 取得本查询要使用的方言，首次调用时解析并缓存（返回共享指针）
          * @details 方言类型优先用构造时显式指定的值；未指定时从实际要用的连接读取其真实
          *          DatabaseType：绑定事务时直接问事务连接（零成本且必然准确），
          *          绑定池时才借一条连接探测（池配置里没有类型信息，直接问连接最可靠），读完立刻归还。
-         * @return const SqlDialect& 方言实例引用，生命周期由本对象缓存持有
+         *          返回共享指针而不是引用，是为了让异步路径能把方言**按值**捕获进工作线程的任务：
+         *          工作线程不得再触碰本对象，而引用无法脱离本对象的生命周期独立存在。
+         * @return std::shared_ptr<SqlDialect> 方言实例，恒非空
          * @throws std::runtime_error 无法从池中取得连接以推导类型
          * @throws std::invalid_argument 该数据库类型尚无方言实现（MySQL / Redis）
          */
-        [[nodiscard]] const SqlDialect &requireDialect()
+        [[nodiscard]] std::shared_ptr<SqlDialect> resolveDialect()
         {
             if (m_dialect != nullptr)
             {
-                return *m_dialect;
+                return m_dialect;
             }
 
             DatabaseType resolvedType = DatabaseType::Sqlite;
@@ -606,7 +773,31 @@ namespace AsynGyanis::Database::Queryable
 
             // 未实现的类型由注册表抛出带中文提示的异常，这里不吞掉，让调用方明确知道缺什么
             m_dialect = DialectRegistry::dialectFor(resolvedType);
-            return *m_dialect;
+            return m_dialect;
+        }
+
+        /**
+         * @brief 取得本查询要使用的方言引用
+         * @details 同步路径的便捷入口：内部就是 resolveDialect() 的解引用，
+         *          缓存的共享指针由本对象长期持有，引用在对象存活期间始终有效。
+         * @return const SqlDialect& 方言实例引用
+         * @throws std::runtime_error 无法从池中取得连接以推导类型
+         * @throws std::invalid_argument 该数据库类型尚无方言实现（MySQL / Redis）
+         */
+        [[nodiscard]] const SqlDialect &requireDialect()
+        {
+            return *resolveDialect();
+        }
+
+        /**
+         * @brief 取得本查询异步执行时要用的执行器
+         * @details 未注入时使用进程级共享实例：零配置即可用，且多个 Queryable 共享同一组
+         *          工作线程，不会因为「每个查询各建一个执行器」而把线程数乘起来。
+         * @return AsyncExecutor& 执行器引用
+         */
+        [[nodiscard]] AsyncExecutor &asyncExecutor()
+        {
+            return m_asyncExecutor != nullptr ? *m_asyncExecutor : AsyncExecutor::shared();
         }
 
         /**
@@ -616,19 +807,21 @@ namespace AsynGyanis::Database::Queryable
          *          若每个语句各自从池里取连接，BEGIN 落在 A 连接、写语句落在 B 连接，
          *          那些写语句实际运行在自动提交模式下，回滚只能回滚一个空事务，
          *          数据却已经落库，而且整个过程不会报任何错。
+         * @param pool 连接池，与 transaction 必须有一个非空（由 requireOnline() 保证）
+         * @param transaction 事务指针，非空时全部语句走事务连接
          * @return ConnectionLease 连接租约；池连接在租约析构时自动归还，事务连接不归还
          * @throws std::runtime_error 池已达上限且等待超时，或连接工厂创建失败
          */
-        [[nodiscard]] ConnectionLease acquireConnection()
+        [[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, Transaction *transaction)
         {
             ConnectionLease lease;
-            if (m_transaction != nullptr)
+            if (transaction != nullptr)
             {
-                lease.connection = std::addressof(m_transaction->connection());
+                lease.connection = std::addressof(transaction->connection());
                 return lease;
             }
 
-            lease.pooled = m_pool->acquire();
+            lease.pooled = pool->acquire();
             if (!lease.pooled)
             {
                 throw std::runtime_error("Queryable: 从连接池获取连接失败，可能是池已达上限或连接创建失败");
@@ -657,27 +850,82 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 执行一次 SELECT 并把结果映射成结构体列表
+         * @brief 执行一次 SELECT 并把结果映射成结构体列表（同步路径）
          * @param queryNode 已展开列的查询树
          * @return std::vector<T> 映射后的行列表
          * @throws std::runtime_error 取连接失败、SQL 执行失败或行映射失败
          */
         [[nodiscard]] std::vector<T> fetchRows(const QueryNode &queryNode)
         {
-            const SqlStatement statement = requireDialect().translate(queryNode);
+            const SqlDialect &dialect = requireDialect();
+            ConnectionLease   lease   = acquireConnection(m_pool, m_transaction);
+            // 连接在 result 之前声明、之后析构，二者按声明逆序销毁，因此连接必定比结果集活得久
+            return fetchRowsOn(*lease.connection, dialect, queryNode);
+        }
 
-            ConnectionLease lease = acquireConnection();
+        /**
+         * @brief 在指定连接上执行 SELECT 并映射结果（同步与异步路径共用）
+         * @details 与「用哪条连接、在哪个线程执行」无关：调用方负责提供一条可用的连接
+         *          （同步路径在调用线程上取，异步路径在工作线程上取），本函数只做翻译、执行与映射。
+         * @param connection 目标连接，必须在结果集存活期间保持有效
+         * @param dialect 方言，提供 translate()
+         * @param queryNode 已展开列的查询树
+         * @return std::vector<T> 映射后的行列表
+         * @throws std::runtime_error SQL 执行失败或行映射失败
+         * @note SQLite 的结果集持有连接句柄的非拥有指针，因此 connection 必须比结果集活得久：
+         *       这一点由调用方持有连接租约、且租约比本函数返回值活得更久来保证
+         */
+        [[nodiscard]] static std::vector<T> fetchRowsOn(DatabaseConnection &connection,
+                                                       const SqlDialect &dialect,
+                                                       const QueryNode &queryNode)
+        {
+            const SqlStatement statement = dialect.translate(queryNode);
+
             std::unique_ptr<DatabaseResult> result =
-                lease.connection->execute(std::string_view{statement.sql}, statement.parameters);
+                connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw std::runtime_error("Queryable: 查询执行失败：" + lease.connection->lastError());
+                throw std::runtime_error("Queryable: 查询执行失败：" + connection.lastError());
             }
 
-            // SQLite 的结果集持有连接句柄的非拥有指针，因此连接必须比 result 活得久：
-            // lease 在 result 之前声明、之后析构，二者按声明逆序销毁，约束天然满足；
-            // 绑定事务时连接由事务持有，寿命更是长于本次调用
             return mapResultRows<T>(*result);
+        }
+
+        /**
+         * @brief 在指定连接上执行 COUNT(*) 查询并解读结果（同步与异步路径共用）
+         * @param connection 目标连接
+         * @param dialect 方言，提供 translate()
+         * @param countingNode 已把 SELECT 改成 COUNT(*)、并清掉排序与分页的查询树
+         * @return std::int64_t 匹配行数；无结果行或计数列为 NULL 时为 0
+         * @throws std::runtime_error SQL 执行失败
+         */
+        [[nodiscard]] static std::int64_t countOn(DatabaseConnection &connection,
+                                                 const SqlDialect &dialect,
+                                                 const QueryNode &countingNode)
+        {
+            const SqlStatement statement = dialect.translate(countingNode);
+
+            std::unique_ptr<DatabaseResult> result =
+                connection.execute(std::string_view{statement.sql}, statement.parameters);
+            if (result == nullptr)
+            {
+                throw std::runtime_error("Queryable: 统计行数失败：" + connection.lastError());
+            }
+
+            // COUNT(*) 恒返回一行一列；游标推进失败说明语句没有产出任何行，按 0 计
+            if (!result->next())
+            {
+                return 0;
+            }
+
+            const DatabaseValue countValue = result->getValue(0);
+            if (const auto *countedRows = std::get_if<std::int64_t>(&countValue))
+            {
+                return *countedRows;
+            }
+
+            // NULL（例如 GROUP BY 后没有任何分组）按 0 处理，语义上「没有行」与 0 行等价
+            return 0;
         }
 
         /**
@@ -688,7 +936,7 @@ namespace AsynGyanis::Database::Queryable
          */
         [[nodiscard]] std::int64_t executeStatement(const SqlStatement &statement)
         {
-            ConnectionLease lease = acquireConnection();
+            ConnectionLease lease = acquireConnection(m_pool, m_transaction);
             return executeOn(*lease.connection, statement);
         }
 
@@ -1211,6 +1459,7 @@ namespace AsynGyanis::Database::Queryable
         Transaction                *m_transaction = nullptr; ///< 事务指针；非空时全部语句走事务持有的连接
         std::optional<DatabaseType> m_databaseType;   ///< 构造时显式指定的数据库类型；未指定时从连接推导
         std::shared_ptr<SqlDialect> m_dialect;        ///< 缓存的方言实例，首次执行时解析并长期持有
+        AsyncExecutor              *m_asyncExecutor = nullptr; ///< 注入的异步执行器；为空时用进程级共享实例
     };
 
 } // namespace AsynGyanis::Database::Queryable

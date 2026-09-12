@@ -17,6 +17,7 @@ add_executable(TestDatabase
         Queryable/TestQueryableExecution.cpp
         Queryable/TestParameterizedExecution.cpp
         Queryable/TestSchemaMigrator.cpp
+        Queryable/TestQueryableAsync.cpp
 
         Sqlite/TestSqliteConnection.cpp
         Sqlite/TestSqliteResult.cpp
