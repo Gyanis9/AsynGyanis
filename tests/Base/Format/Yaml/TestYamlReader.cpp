@@ -218,9 +218,71 @@ namespace AsynGyanis::Base
     {
         YamlReader reader("%FOO bar\n---\na: 1\n");
 
-        // 未知指令按 §6.3 忽略；扫描仍产出完整事件流并记录警告
+        // 未知指令按 §6.8 忽略；扫描仍产出完整事件流并记录警告
         EXPECT_TRUE(reader.hasNext());
         EXPECT_FALSE(reader.warnings().empty());
+    }
+
+    TEST(YamlReader, IgnoresReservedDirectiveWithoutParameter)
+    {
+        // §6.8 的 ns-reserved-directive ::= ns-directive-name ( s-separate-in-line ns-directive-parameter )*
+        // 允许零个参数：`%FOO` 是「无法识别的保留指令」而不是「指令缺少参数」，应忽略并告警
+        YamlReader reader("%FOO\n---\na: 1\n");
+        ASSERT_TRUE(reader.hasNext());
+
+        const std::vector<std::string> &warnings = reader.warnings();
+        ASSERT_EQ(warnings.size(), 1U);
+        EXPECT_NE(warnings.front().find("%FOO"), std::string::npos);
+
+        // 指令被忽略后文档内容照常解析
+        const std::vector<YamlEvent> events = YamlReader::readAll("%FOO\n---\na: 1\n");
+        EXPECT_EQ(countEvents(events, YamlEventType::DocumentStart), 1U);
+        EXPECT_NE(findScalar(events, [](const YamlEvent &event)
+                    {
+                        return event.text == "1";
+                    }),
+                  nullptr);
+    }
+
+    TEST(YamlReader, IgnoresReservedDirectiveWithMultipleParameters)
+    {
+        // 参数个数不受约束：多参数与零参数同属保留指令，一律忽略并告警（§6.8）
+        YamlReader reader("%FOO bar baz\n---\na: 1\n");
+        ASSERT_TRUE(reader.hasNext());
+
+        const std::vector<std::string> &warnings = reader.warnings();
+        ASSERT_EQ(warnings.size(), 1U);
+        EXPECT_NE(warnings.front().find("%FOO"), std::string::npos);
+    }
+
+    TEST(YamlReader, RejectsYamlDirectiveWithoutVersion)
+    {
+        // `%YAML` 有独立产生式（§6.8），必需版本号：缺参数仍是 InvalidKeyword，分类沿用现状
+        const FormatError error = catchFormatError([]
+        {
+            YamlReader reader("%YAML\n---\na: 1\n");
+            static_cast<void>(reader.hasNext());
+        });
+        EXPECT_EQ(error.kind(), FormatErrorKind::InvalidKeyword);
+    }
+
+    TEST(YamlReader, RejectsTagDirectiveWithoutHandleAndPrefix)
+    {
+        // `%TAG` 同样有独立产生式（§6.8），必需句柄与前缀
+        const FormatError emptyError = catchFormatError([]
+        {
+            YamlReader reader("%TAG\n---\na: 1\n");
+            static_cast<void>(reader.hasNext());
+        });
+        EXPECT_EQ(emptyError.kind(), FormatErrorKind::InvalidKeyword);
+
+        // 只写句柄、缺前缀仍非法
+        const FormatError handleOnlyError = catchFormatError([]
+        {
+            YamlReader reader("%TAG !e!\n---\na: 1\n");
+            static_cast<void>(reader.hasNext());
+        });
+        EXPECT_EQ(handleOnlyError.kind(), FormatErrorKind::InvalidKeyword);
     }
 
     TEST(YamlReader, RejectsUnknownDirectiveWhenConfigured)
@@ -231,6 +293,20 @@ namespace AsynGyanis::Base
         const FormatError error = catchFormatError([&options]
         {
             YamlReader reader("%FOO bar\n---\na: 1\n", options);
+            static_cast<void>(reader.hasNext());
+        });
+        EXPECT_EQ(error.kind(), FormatErrorKind::InvalidKeyword);
+    }
+
+    TEST(YamlReader, RejectsParameterlessReservedDirectiveWhenConfigured)
+    {
+        // rejectUnknownDirectives 为真时，零参数的保留指令同样直接报错（§6.8 的忽略行为被配置覆盖）
+        YamlParseOptions options;
+        options.rejectUnknownDirectives = true;
+
+        const FormatError error = catchFormatError([&options]
+        {
+            YamlReader reader("%FOO\n---\na: 1\n", options);
             static_cast<void>(reader.hasNext());
         });
         EXPECT_EQ(error.kind(), FormatErrorKind::InvalidKeyword);

@@ -131,8 +131,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 获取解析期收集的非致命警告
-         * @details 目前仅记录「未知指令被忽略」（YAML 1.2 §6.3 允许处理器忽略无法识别的指令）
-         *          与「未声明的 %TAG 句柄」两类情形。首次调用会触发扫描（扫描结果幂等）。
+         * @details 目前仅记录「保留指令被忽略」（YAML 1.2 §6.8 允许处理器忽略无法识别的指令，
+         *          其参数个数不受约束）与「未声明的 %TAG 句柄」两类情形；rejectUnknownDirectives
+         *          为真时改为直接报错，不产生警告。首次调用会触发扫描（扫描结果幂等）。
          * @return std::vector<std::string>& 警告文本列表，按出现顺序
          * @throws FormatError 扫描期发现语法错误
          */

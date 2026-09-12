@@ -792,20 +792,29 @@ namespace AsynGyanis::Base
         EXPECT_EQ(YamlWriter::write(FormatValue(std::string("alpha\n\nbeta\n")), folded), "|2\n  alpha\n\n  beta\n");
     }
 
-    TEST(YamlWriter, QuotesTextWhoseLinesLookLikeDocumentMarkers)
+    TEST(YamlWriter, KeepsMarkerLookingLinesInsideBlockScalars)
     {
-        // `---` / `...` / `%` 开头的行在扫描器眼里分别是文档边界与指令（§9.1.3、§6.2），
-        // 块标量一旦照写就会被当场截断，只能退回引号标量
-        const char *const samples[] = {"a\n---\n", "a\n...\n", "a\n%b\n", "a\n ---\n", "---\nb"};
+        // 文档标记 `---` / `...` 只在**列 0** 成立（§9.1.3）、指令只在文档头的**列 0** 成立（§6.8），
+        // 而块标量内容统一缩进 contentStep ≥ 1 列（§8.1.1.1），两者永不相遇：
+        // 这类文本照走块标量即可无损，不需要退回引号标量
+        const char *const samples[] = {"a\n---\n", "a\n...\n", "a\n%b\n", "a\n ---\n", "---\nb", "...\nb", "%a\nb\n"};
 
         for (const char *const sample : samples)
         {
             const FormatValue value{std::string(sample)};
             const std::string firstPass = YamlWriter::write(value);
 
+            // 内容里的 `---` / `...` / `%` 行缩进后只是块内容，输出选用块标量
+            EXPECT_EQ(firstPass.front(), '|') << sample << " -> " << firstPass;
+
             EXPECT_TRUE(YamlParser::parse(firstPass) == value) << sample << " -> " << firstPass;
             EXPECT_EQ(YamlWriter::write(YamlParser::parse(firstPass)), firstPass) << sample;
         }
+
+        // 最典型的一条：内容行恰为 `---`，缩进后仍是内容（§8.1.2 的 l-nb-literal-text），回读原文
+        const FormatValue markerLine(std::string("a\n---\n"));
+        EXPECT_EQ(YamlWriter::write(markerLine), "|2\n  a\n  ---\n");
+        EXPECT_TRUE(YamlParser::parse(YamlWriter::write(markerLine)) == markerLine);
     }
 
     TEST(YamlWriter, FoldsPlainScalarsInsideNestedPositions)

@@ -672,21 +672,22 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 解析一条指令行
+         * @details 指令名与参数分开处理：`%YAML` / `%TAG` 各有独立产生式（§6.8），参数必需，
+         *          缺失时由各自的校验函数报错；其余名字一律按 §6.8 的保留指令
+         *          `ns-reserved-directive ::= ns-directive-name ( s-separate-in-line ns-directive-parameter )*`
+         *          处理——**参数可以为零个或多个**，处理器应忽略并给出警告，而不是把它当成
+         *          格式错误（只有 rejectUnknownDirectives 为真时才升级为错误）。
          * @param line 指令所在行
-         * @throws FormatError 指令格式非法或版本不支持
+         * @throws FormatError 指令格式非法、版本不支持或配置为拒绝未知指令
          */
         void parseDirective(const Line &line)
         {
             const std::string_view content   = stripTrailingComment(line.content);
-            const TextPosition   position  = positionOf(line, line.indent);
+            const TextPosition     position  = positionOf(line, line.indent);
             const std::size_t      separator = content.find_first_of(" \t");
-            if (separator == std::string_view::npos)
-            {
-                throw FormatError(FormatErrorKind::InvalidKeyword, "指令缺少参数：" + std::string(content), position);
-            }
-
-            const std::string_view name     = content.substr(0, separator);
-            const std::string_view argument = trim(content.substr(separator + 1));
+            // 指令名到行尾为止（无参数）或到首个空白为止；参数部分只取首个空白之后的剩余文本
+            const std::string_view name     = separator == std::string_view::npos ? content : content.substr(0, separator);
+            const std::string_view argument = separator == std::string_view::npos ? std::string_view{} : trim(content.substr(separator + 1));
 
             if (name == "%YAML")
             {
@@ -699,12 +700,13 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            // YAML 1.2 §6.3：无法识别的指令应由处理器忽略（默认仅给出警告）
+            // YAML 1.2 §6.8：保留指令的参数个数不受约束，无法识别时应由处理器忽略；
+            // 默认只记录警告，rejectUnknownDirectives 为真时才按配置报错
             if (m_options.rejectUnknownDirectives)
             {
                 throw FormatError(FormatErrorKind::InvalidKeyword, "未知指令：" + std::string(name), position);
             }
-            m_warnings.push_back("已忽略未知指令 " + std::string(name) + "（第 " + std::to_string(line.number) + " 行）");
+            m_warnings.push_back("已忽略保留指令 " + std::string(name) + "（第 " + std::to_string(line.number) + " 行）");
         }
 
         /**

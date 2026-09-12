@@ -285,6 +285,10 @@ namespace AsynGyanis::Base
          * @details 与扫描器的判定逐条对齐（§9.1.3）：标记之后要么就是行尾，要么隔一个分隔空白。
          *          `---` 的首字符已由指示符表拦下，`...` 的首字符 `.` 却是普通字符，
          *          必须显式排除，否则整行会被当成文档结束标记而不是标量内容。
+         *
+         *          适用范围仅限**裸标量**（isPlainScalarSafe）：裸标量写在所在行的当前列上，
+         *          根位置即列 0，与「只在列 0 生效」的标记正面相撞。块标量则不需要这一判定——
+         *          其内容一律缩进 contentStep ≥ 1 列（§8.1.1.1），永远够不到列 0。
          * @param text 待判定文本
          * @return true 形如文档起始或结束标记
          */
@@ -300,18 +304,6 @@ namespace AsynGyanis::Base
                 return false;
             }
             return text.size() == 3 || isSpaceOrTab(text[3]);
-        }
-
-        /**
-         * @brief 判断文本是否形如指令行
-         * @details §6.2 规定 `%` 在行首是保留指示符，§9.1.3 的指令只在文档开头识别；
-         *          扫描器按「去掉缩进后的正文」判定，因此块标量里以 `%` 开头的行会被当成指令。
-         * @param text 待判定文本
-         * @return true 形如指令行
-         */
-        [[nodiscard]] bool isDirectiveLooking(const std::string_view text) noexcept
-        {
-            return !text.empty() && text.front() == '%';
         }
 
         /**
@@ -399,13 +391,17 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断文本能否用块标量无损表示
-         * @details 四类情形会让块标量失真，必须退回引号标量：
+         * @details 三类情形会让块标量失真，必须退回引号标量：
          *          - 以换行开场：chomping 只能按「有内容的末行」计数（§8.1.1.2 的 clip/keep 都以
          *            文本末行为前提），整段全为换行的文本无从表达，故一律保守退回引号标量；
          *          - 含制表符等控制字符：行首制表符会被判为非法缩进（§6.1 禁止 tab 缩进）；
-         *          - 存在仅由空格/制表符构成的行：这类行会被当作空行丢掉，内容随之中断；
-         *          - 某行去掉缩进后形如 `---` / `...` / `%`：扫描器按「去掉缩进后的正文」判文档
-         *            边界与指令（§9.1.3、§6.2），块标量会被当场截断。
+         *          - 存在仅由空格/制表符构成的行：这类行会被当作空行丢掉，内容随之中断。
+         *
+         *          这里**不需要**再逐行检查内容是否形如 `---` / `...` / `%`：文档标记只在**列 0**
+         *          成立（§9.1.3 的 c-document-start / c-document-end 不含缩进），指令只在文档头的
+         *          **列 0** 成立（§6.8），而块标量内容由 appendBlockScalarText 统一缩进
+         *          contentStep ≥ 1 列（§8.1.1.1）。内容行因此永远落在列 ≥ 1，扫描器一律按内容
+         *          （§8.1.2 的 l-nb-literal-text）读取，不可能被当成边界而截断块。
          * @param text 待判定文本，必须含换行
          * @return true 可以用 `|` 或 `>` 表示
          */
@@ -430,19 +426,9 @@ namespace AsynGyanis::Base
                 const std::size_t lineEnd = text.find(kLineBreak, lineStart);
                 const std::size_t stop    = lineEnd == std::string_view::npos ? text.size() : lineEnd;
                 const std::string_view line = text.substr(lineStart, stop - lineStart);
-                if (!line.empty())
+                if (!line.empty() && line.find_first_not_of(" \t") == std::string_view::npos)
                 {
-                    const std::size_t firstNonSpace = line.find_first_not_of(" \t");
-                    if (firstNonSpace == std::string_view::npos)
-                    {
-                        return false; // 仅空白行会被扫描器按空行丢掉
-                    }
-
-                    const std::string_view trimmed = line.substr(firstNonSpace);
-                    if (isDocumentMarkerLooking(trimmed) || isDirectiveLooking(trimmed))
-                    {
-                        return false; // 形如文档边界或指令的行会被扫描器截断块内容
-                    }
+                    return false; // 仅空白行会被扫描器按空行丢掉
                 }
                 if (lineEnd == std::string_view::npos)
                 {
