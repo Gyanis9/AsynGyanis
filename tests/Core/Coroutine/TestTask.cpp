@@ -44,6 +44,34 @@ namespace AsynGyanis::Core
             throw std::runtime_error("test error");
             co_return 0;
         }
+
+        /**
+         * @brief 手动放行的挂起点：把恢复权完全交给测试代码
+         * @details 用来制造「任务已启动、挂在内部等待上」这一中间状态——这正是
+         *          「co_await 一个已经在跑的任务」要面对的场景，定时器之类的真实等待点
+         *          无法在单测里精确控制放行时刻。
+         */
+        class ManualGate
+        {
+        public:
+            [[nodiscard]] bool await_ready() const noexcept { return false; }
+
+            void await_suspend(const std::coroutine_handle<> handle) noexcept { m_handle = handle; }
+
+            void await_resume() const noexcept {}
+
+            /// 放行：恢复挂在门上的协程（门未被等待时为空操作）
+            void open() const noexcept
+            {
+                if (m_handle)
+                {
+                    m_handle.resume();
+                }
+            }
+
+        private:
+            std::coroutine_handle<> m_handle{}; ///< 挂在门上的协程
+        };
     }
 
     /**
@@ -171,5 +199,73 @@ namespace AsynGyanis::Core
         Task<int> second(std::move(first));
 
         EXPECT_EQ(first.handle(), nullptr);
+    }
+
+    /**
+     * @brief co_await 一个已启动的任务是「等它结束」，不是「把它叫醒」
+     *
+     * @details 任务停在自身内部的等待上时，恢复它等于谎报「你等的那个操作完成了」：
+     *          等待方会立刻越过 co_await 继续执行，而任务里的子等待依旧悬着，随后
+     *          随帧析构一起被销毁。这里用一道手动门把这个差异钉死——等待方在子任务
+     *          真正放行之前，一步都不许前进。
+     */
+    TEST(Task, AwaitStartedTaskWaitsInsteadOfResumingIt)
+    {
+        ManualGate gate;
+        bool       isChildFinished = false;
+
+        auto child = [&gate, &isChildFinished]() -> Task<>
+        {
+            co_await gate;
+            isChildFinished = true;
+        }();
+
+        // 先把子任务启动到内部等待点上：从这一刻起它已经「在跑」
+        child.handle().resume();
+        ASSERT_FALSE(isChildFinished);
+        ASSERT_FALSE(child.isReady());
+
+        int parentProgress = 0;
+        auto parent        = [&child, &parentProgress]() -> Task<>
+        {
+            parentProgress = 1;
+            co_await child;
+            parentProgress = 2;
+        }();
+
+        parent.handle().resume();
+        EXPECT_EQ(parentProgress, 1) << "等待方越过 co_await 前进了：说明它把子任务的内部等待当成了已完成";
+        EXPECT_FALSE(isChildFinished) << "子任务被等待方从自己的等待点上叫醒了";
+
+        // 真正放行子任务：它跑到终结点后应当把等待方唤醒
+        gate.open();
+        EXPECT_TRUE(isChildFinished);
+        EXPECT_EQ(parentProgress, 2) << "子任务结束后没有把等待方唤醒";
+        EXPECT_TRUE(child.isReady());
+        EXPECT_TRUE(parent.isReady());
+    }
+
+    /**
+     * @brief co_await 一个惰性任务会就地启动它，而不是空等一个没人启动的协程
+     */
+    TEST(Task, AwaitLazyTaskStartsIt)
+    {
+        bool isChildFinished = false;
+
+        auto child = [&isChildFinished]() -> Task<>
+        {
+            isChildFinished = true;
+            co_return;
+        }();
+
+        auto parent = [&child]() -> Task<>
+        {
+            co_await child;
+        }();
+
+        parent.handle().resume();
+        EXPECT_TRUE(isChildFinished) << "co_await 没有启动惰性任务";
+        EXPECT_TRUE(child.isReady());
+        EXPECT_TRUE(parent.isReady());
     }
 } // namespace AsynGyanis::Core

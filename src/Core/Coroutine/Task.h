@@ -82,6 +82,43 @@ namespace AsynGyanis::Core
         }
     };
 
+    /**
+     * @brief 惰性协程的初始挂起点
+     *
+     * @details 除了「创建后立即挂起」之外，它还在协程体第一次真正跑起来时给 promise 打上
+     *          「已启动」标记。这个标记是 Task::await_suspend() 判断「该启动还是该等它结束」
+     *          的唯一依据：只靠协程句柄无法区分「停在初始挂起点的惰性协程」与「已经在跑、
+     *          只是挂在内部某个等待上的协程」，而两者要采取的动作正好相反。
+     */
+    struct InitialSuspendAwaiter
+    {
+        /**
+         * @brief 异步起点必须挂起（惰性启动）。
+         * @return false
+         */
+        [[nodiscard]] bool await_ready() const noexcept
+        {
+            return false;
+        }
+
+        /**
+         * @brief 挂起时无动作：协程由显式 resume 或对称转移启动。
+         */
+        void await_suspend(std::coroutine_handle<>) const noexcept
+        {
+        }
+
+        /**
+         * @brief 协程体开始执行，标记为已启动。
+         */
+        void await_resume() const noexcept
+        {
+            *m_isStarted = true;
+        }
+
+        bool *m_isStarted{nullptr}; ///< 指向 promise 中的「已启动」标记
+    };
+
     // ============================================================================
     // Task<T> 实现
     // ============================================================================
@@ -135,7 +172,9 @@ namespace AsynGyanis::Core
                 m_handle       = std::exchange(other.m_handle, nullptr);
                 // 判空后再销毁：句柄可能已被移动走，对空句柄调用 destroy 是未定义行为
                 if (old)
+                {
                     old.destroy();
+                }
             }
             return *this;
         }
@@ -149,7 +188,9 @@ namespace AsynGyanis::Core
             // 对空句柄调用 destroy 是未定义行为；非空时这里是协程帧的最后回收点：
             // 帧若停在挂起点上被销毁，帧内尚未结束的局部对象会随帧正常析构
             if (m_handle)
+            {
                 m_handle.destroy();
+            }
         }
 
         // ========================================================================
@@ -193,12 +234,12 @@ namespace AsynGyanis::Core
             }
 
             /**
-             * @brief 初始挂起点：协程创建后立即挂起（惰性启动）。
-             * @return std::suspend_always
+             * @brief 初始挂起点：协程创建后立即挂起（惰性启动），并在首次恢复时标记已启动。
+             * @return InitialSuspendAwaiter
              */
-            std::suspend_always initial_suspend() noexcept
+            InitialSuspendAwaiter initial_suspend() noexcept
             {
-                return {};
+                return InitialSuspendAwaiter{&m_isStarted};
             }
 
             /**
@@ -232,8 +273,7 @@ namespace AsynGyanis::Core
                 if constexpr (std::is_same_v<std::remove_cvref_t<U>, std::nullopt_t>)
                 {
                     m_value = T{};
-                }
-                else
+                } else
                 {
                     m_value = std::forward<U>(value);
                 }
@@ -254,6 +294,7 @@ namespace AsynGyanis::Core
             std::optional<T>        m_value;                 ///< 协程的返回值（若存在）
             std::exception_ptr      m_exception;             ///< 协程中发生的异常（若有）
             std::coroutine_handle<> m_continuation{nullptr}; ///< 等待该协程的父协程句柄
+            bool                    m_isStarted{false};       ///< 协程体是否已开始执行（初始挂起点被恢复过）
         };
 
         // ========================================================================
@@ -272,14 +313,25 @@ namespace AsynGyanis::Core
         }
 
         /**
-         * @brief 挂起当前协程，并将当前协程的 continuation 保存到被等待的 Task 中，
-         *        然后返回被等待的协程句柄以实现对称转移。
+         * @brief 挂起当前协程，并把 continuation 登记为「本任务结束后要恢复的协程」
+         * @details 两种情形必须分开处理：
+         *          - 任务还没跑过（惰性协程停在初始挂起点）：返回任务句柄，由协程机制就地启动它；
+         *          - 任务已经在跑、只是挂在内部某个等待上：**绝不能就地恢复它**。此刻恢复等于
+         *            把它内部那个等待当成已完成，任务里真正挂着的子协程会失去唯一的唤醒者
+         *            （实测过：外层任务被等待方提前「恢复」后一路跑到终点，随父帧析构的
+         *            子任务帧被就地销毁，子任务永远看不到自己的停止请求）。
+         *            这种情形只登记 continuation 后挂起，等任务真正到达终结点，由 FinalAwaiter
+         *            以对称转移恢复等待方。
          * @param continuation 等待当前协程的父协程句柄
-         * @return 需要恢复的协程句柄（即被等待的 Task 的内部协程）
+         * @return 需要恢复的协程句柄：未启动的任务返回自身句柄（启动它），已启动的返回 noop_coroutine
          */
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> continuation) noexcept
         {
             m_handle.promise().m_continuation = continuation;
+            if (m_handle.promise().m_isStarted)
+            {
+                return std::noop_coroutine();
+            }
             return m_handle;
         }
 
@@ -421,12 +473,12 @@ namespace AsynGyanis::Core
             }
 
             /**
-             * @brief 初始挂起点：协程创建后立即挂起。
-             * @return std::suspend_always
+             * @brief 初始挂起点：协程创建后立即挂起，并在首次恢复时标记已启动。
+             * @return InitialSuspendAwaiter
              */
-            std::suspend_always initial_suspend() noexcept
+            InitialSuspendAwaiter initial_suspend() noexcept
             {
-                return {};
+                return InitialSuspendAwaiter{&m_isStarted};
             }
 
             /**
@@ -465,6 +517,7 @@ namespace AsynGyanis::Core
 
             std::exception_ptr      m_exception;             ///< 协程中发生的异常（若有）
             std::coroutine_handle<> m_continuation{nullptr}; ///< 等待该协程的父协程句柄
+            bool                    m_isStarted{false};       ///< 协程体是否已开始执行（初始挂起点被恢复过）
         };
 
         /**
@@ -480,12 +533,18 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 挂起当前协程并保存 continuation，返回被等待的协程句柄。
+         * @details 语义与主模板一致，见 Task<T>::await_suspend()：未启动的任务就地启动，
+         *          已启动的任务只登记等待者后挂起（等它到达终结点再经 FinalAwaiter 转移回来）。
          * @param continuation 等待当前协程的父协程句柄
-         * @return 需要恢复的协程句柄
+         * @return 需要恢复的协程句柄：未启动的任务返回自身句柄（启动它），已启动的返回 noop_coroutine
          */
         std::coroutine_handle<> await_suspend(const std::coroutine_handle<> continuation) const noexcept
         {
             m_handle.promise().m_continuation = continuation;
+            if (m_handle.promise().m_isStarted)
+            {
+                return std::noop_coroutine();
+            }
             return m_handle;
         }
 
