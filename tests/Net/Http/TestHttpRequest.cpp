@@ -195,7 +195,7 @@ namespace AsynGyanis::Net
 
     TEST(HttpRequest, SplitsQueryOnAmpersandBeforeSplittingOnEquals)
     {
-        // 旧实现先找 '=' 再切 '&'，于是 "a&b=c" 被当成一个键；先按 '&' 分对才是对的
+        // 先按 '&' 分键值对再找 '='：反过来会把 "a&b=c" 当成一个键
         const std::unordered_map<std::string, std::string> parameters = makeRequestWithQuery("a&b=c").queryParams();
 
         ASSERT_EQ(parameters.size(), 2U);

@@ -6,25 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 与 TestRedisConnection.cpp 的分工：那边只断言「不需要服务端就能成立」的行为
- *          （登记、空管道、失败路径、句柄管理），这里覆盖必须连上真实 Redis 才能验证的部分：
- *          带口令的认证、命令参数的二进制安全往返、各类回复到 DatabaseValue 的映射、
- *          键空间选择与管道批量收发。
- *
- * ## 门控与环境变量
- * - `ASYN_REDIS_TEST_HOST`（默认 127.0.0.1）、`ASYN_REDIS_TEST_PORT`（默认 6379）
- * - `ASYN_REDIS_TEST_USER`：默认空。非空时走 Redis 6+ 的 ACL 两参数 AUTH；
- *   只配 requirepass 的服务端保持为空即可（驱动会发单参数 AUTH）
- * - `ASYN_REDIS_TEST_PASSWORD`：**没有默认值**；未设置时整组用例 GTEST_SKIP（不是失败），
- *   因此没有 Redis 的环境（CI、他人机器）仍然是绿的。
- *   **仓库任何文件都不得出现明文口令**，本地跑真机由临时脚本注入环境变量
- * - `ASYN_REDIS_TEST_DATABASE`：键空间编号，默认 **15**。刻意不用 0：
- *   0 是多数使用者的工作库，用例写入的键不该混进去；15 是常见的临时库约定
- *
- * ## 清理策略
- * 每个用例把自己写过的键登记进 m_createdKeys，TearDown 逐个 DEL 后断开连接。
- * **绝不使用 FLUSHDB**：那会连同使用者自己在该库里的数据一起删掉，
- * 用「删掉别人的数据」换取「自己不留残留」是绝对不能接受的方向。
+ * @details 与 TestRedisConnection.cpp 的分工：那边只断言「不需要服务端就能成立」的行为，这里覆盖必须连上真实
+ *          Redis 才能验证的部分（认证、命令参数的二进制安全往返、回复到 DatabaseValue 的映射、键空间与管道批量收发）。
+ *          门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令。键空间默认 **15**
+ *          （不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，并行安全；清理只 DEL 自己的键，不 FLUSHDB。
  *
  * 覆盖场景：
  * - ConnectsAndAnswersPing（含认证成功）
@@ -151,11 +136,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 全套用例跑完后核对临时键空间里没有本套件留下的键
          *
-         * @details 每个用例的 TearDown 已逐键删除，这里是**兜底检查**：
-         *          将来新增用例若忘了用 makeKey() 登记键名，就会在这里被抓住，
-         *          而不是悄悄在使用者的 15 号库里留垃圾。没有 Redis 环境时静默返回。
-         *          用 KEYS 是因为这是专用临时库、模式又限定到本套件前缀，
-         *          代价与误伤面都可接受（生产代码里当然不该用 KEYS）。
+         * @details 每个用例的 TearDown 已逐键删除，这里是**兜底检查**：将来新增用例若忘了用 makeKey() 登记键名，
+         *          就会在这里被抓住，而不是悄悄在使用者的 15 号库里留垃圾；没有 Redis 环境时静默返回。
+         *          用 KEYS 可接受，是因为这是专用临时库、模式又限定到本套件前缀（生产代码里当然不该用 KEYS）。
          */
         static void TearDownTestSuite()
         {

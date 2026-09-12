@@ -6,28 +6,11 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 本文件承担 ORM 的「值映射」职责，两个方向各一组接口：
- *
- * ## 结果集 → 结构体（读方向）
- * mapResultRow<T>() 把结果集当前行映射成一个 T，mapResultRows<T>() 遍历全部行。
- * 列的对应关系来自 TableSchema<T>::kColumns：按 tuple 顺序取出每列的 columnName，
- * 在结果集里按**列名**查找下标再读值，因此结果集的列顺序与结构体声明顺序无关。
- * 成员类型到 DatabaseValue 备选的转换规则：
- * - 整型（含 char/short/int/long long）← std::int64_t，**或**严格十进制文本；
- *   越界即报错而不是截断。接受文本那一支是必需而不是宽容：引擎存得下、
- *   却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED 上界 2^64-1
- *   即如此），少了它就会出现
- *   「写得进去、读不回来」——写方向恰好也把超出 int64 的无符号值降级成十进制文本；
- * - bool ← bool 或 std::int64_t（SQLite 没有布尔存储类，0/1 的整数收窄成 bool）；
- * - 浮点 ← double 或 std::int64_t（只读语句可能把整数值回传成 INTEGER）；
- * - std::string ← std::string；
- * - 二进制成员（std::vector<std::uint8_t> 或 std::vector<std::byte>）← Bytes
- *   （std::vector<std::uint8_t>）。这一支**只认二进制备选**，遇到 std::string 一律报错：
- *   二进制列产出文本、或文本列被声明成二进制成员，都说明列的声明与成员的声明不一致，
- *   此时把文本当字节收下会掩盖 schema 漂移，报错才是可定位的行为；
- * - std::optional<U> ← NULL（monostate）映射成空 optional，其余情况递归按 U 转换。
- * 类型不符、列缺失、NULL 落到非 optional 成员，都会抛出带中文说明的 RowMappingException，
- * 而不是给出一个字段静默为 0 的半成品对象。
+ * @details 本文件承担 ORM 的「值映射」职责。读方向按 TableSchema<T>::kColumns 的列名在结果集里查
+ *          下标取列再转成成员，因此与结果集的列顺序无关；整型接受 std::int64_t 或严格十进制文本
+ *          （引擎存得下却给不出 int64 的整数只能以文本返回），越界即报错而不是取整、截断；
+ *          类型不符、列缺失、NULL 落到非 optional 成员一律抛带中文说明的 RowMappingException，
+ *          而不是给出字段静默为 0 的半成品对象。
  *
  * @note 文本支路是**严格**解析：允许前导负号（目标为有符号时）与十进制数字，其余一概拒绝——
  *       小数点、科学计数法、空白、多余字符、超出目标位宽的取值都报错。
@@ -38,18 +21,12 @@
  *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED
  *          （见 MySqlDialect::columnTypeName()）。
  *
- * ## 结构体 → 参数（写方向）
- * toDatabaseValue() 把单个成员值转成数据库统一值，供 INSERT / UPDATE 的绑定参数使用。
- * 规则与读方向对称：整型统一按 int64_t 绑定，无符号整型超出 int64_t 时降级为十进制文本
- * （DatabaseValue 已冻结、没有无符号备选，详见实现处注释），optional 空值绑定为 SQL NULL。
- * 写下的这段十进制文本正好由读方向的整型文本支路解析回来，两个方向的取舍是配套的。
- * 二进制成员（std::vector<std::uint8_t> 或 std::vector<std::byte>）转成二进制备选：
- * 驱动正是靠这个备选去走 sqlite3_bind_blob / MYSQL_TYPE_BLOB，从而落成真正的 BLOB；
- * 若把字节按文本绑定，MySQL 会按连接字符集重新解释载荷，非该字符集的字节可能被替换。
+ * @note 写方向与读方向对称：整型统一按 int64_t 绑定，无符号整型超出 int64_t 时降级为十进制文本
+ *       （DatabaseValue 已冻结、没有无符号备选）；二进制成员转成二进制备选，驱动据此走
+ *       sqlite3_bind_blob / MYSQL_TYPE_BLOB 落成真正的 BLOB——按文本绑定会被 MySQL 按连接字符集
+ *       重新解释载荷。
  *
- * ## 编译期约束
- * RowMappable<T> 要求 T 是可聚合初始化（默认构造）且已特化 TableSchema<T>（kColumns 非空）
- * 的结构体；成员类型不受支持时由函数体内的 static_assert 给出中文编译错误。
+ * @note RowMappable<T> 要求 T 可聚合初始化且已特化 TableSchema<T>（kColumns 非空）；成员类型不受支持时由函数体内的 static_assert 给出中文编译错误。
  */
 #pragma once
 

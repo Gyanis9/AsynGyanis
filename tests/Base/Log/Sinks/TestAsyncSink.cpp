@@ -341,8 +341,8 @@ namespace AsynGyanis::Base
 
     TEST(AsyncSink, ZeroQueueSizeIsClampedToMinimumForDiscardingPolicies)
     {
-        // Drop / DropOldest 在容量 0 时原先会对空队列 pop（未定义行为）且待落地计数回绕，
-        // 钳到 1 后不变量恢复：每条入队事件要么被转发、要么被计数丢弃
+        // Drop / DropOldest 不等待消费：容量 0 会让丢弃路径在空队列上取值、使待落地计数回绕，
+        // 故钳到 1；钳后不变量为「每条入队事件要么被转发、要么被计数丢弃」
         const std::vector<AsyncSink::OverflowPolicy> policies{
                 AsyncSink::OverflowPolicy::Drop,
                 AsyncSink::OverflowPolicy::DropOldest,

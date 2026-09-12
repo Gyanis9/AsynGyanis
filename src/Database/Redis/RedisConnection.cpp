@@ -235,7 +235,7 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 建连成功后立刻把 queryTimeout() 应用到上下文（旧实现从未应用，命令可以无限阻塞），
+        // // 建连成功后立刻把 queryTimeout() 应用到上下文（不应用则命令可以无限阻塞），
         // 放在认证与 SELECT 之前，让这两步同样处在读写超时的保护之下
         if (!applyQueryTimeout())
         {
@@ -253,7 +253,7 @@ namespace AsynGyanis::Database
             std::string password = m_configuration.password;
 
             // 用 %b（指针 + 长度）而不是 %s：密码里出现 '%' 时不会被当成格式说明符去取并不存在的参数
-            // （旧实现的 "AUTH %s" 正是这个问题，越界读甚至直接崩溃），内嵌 '\0' 也能完整送出。
+            // // 而格式化接口会越界读甚至直接崩溃，内嵌 '\0' 也能完整送出。
             // userName 非空时走 Redis 6+ 的 ACL 两参数形式 AUTH userName password
             void *rawAuthenticationReply = nullptr;
             if (userName.empty())
@@ -288,7 +288,7 @@ namespace AsynGyanis::Database
         }
 
         // ConnectionConfig::database 对 Redis 的解释是键空间编号：非空就在建连后 SELECT，
-        // 否则这个配置字段会被静默忽略（旧实现完全不看它）
+        // // 否则这个配置字段会被静默忽略
         if (!m_configuration.database.empty())
         {
             // 十进制解析：解析失败、留有余文（如 "3abc"）或负值都不猜测、不回退到 0 号库，
@@ -486,7 +486,7 @@ namespace AsynGyanis::Database
             if (serverReply == nullptr)
             {
                 // hiredis 约定 REDIS_OK 时不会给出空回复；真遇到就是协议层异常。
-                // 这里宁可就地下班也不把 nullptr 塞进结果列表——旧实现正是这么把空指针交给调用方解引用的
+                // // 这里宁可就地放弃也不把 nullptr 塞进结果列表：空指针交给调用方解引用会直接崩溃
                 m_lastError = "读取 Redis 管道回复失败：服务端回复为空，仅取回 " + std::to_string(results.size()) + " / " + std::to_string(appendedCommandCount) + " 条回复";
                 disconnect();
                 return results;

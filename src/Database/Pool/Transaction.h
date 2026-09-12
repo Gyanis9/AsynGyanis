@@ -6,61 +6,14 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 连接池 + ORM 的标准三件套（连接、查询、事务）之一。本类把「一个事务」
- *          表达成一个栈对象：构造即从池里借出一条连接并执行方言给出的开启语句，
- *          析构时若仍未提交则自动回滚，连接随后归还池。
+ * @details 本类把「一个事务」表达成栈对象：构造即从池里借出一条连接并执行方言的开启事务语句，
+ *          析构时若仍未提交则自动回滚，连接随后归还池。事务不是独立的数据库句柄，而是某条连接上
+ *          的会话状态，因此必须由本对象一直持有那条连接（中途归还或每条语句各取一条都会让
+ *          BEGIN 落在 A 连接、写语句落在自动提交的 B 连接上：数据当场落库、回滚作用在空事务上）。
  *
- * ## 为什么事务对象必须持有连接（而不是每次执行时现取）
- * 事务不是数据库里的一个独立句柄，而是**某一条连接上的会话状态**：BEGIN 只在它被执行的那条
- * 连接上生效，提交与回滚同样只作用于那条连接。因此事务的正确性完全依赖「BEGIN、全部语句、
- * COMMIT/ROLLBACK 走同一条连接」：
- * - 若每条语句各自 pool.acquire() 一条连接，BEGIN 会落在 A 连接、INSERT 落在 B 连接，
- *   B 上的写语句运行在自动提交模式下当场落库；随后的 ROLLBACK 在 A 上回滚一个空事务，
- *   数据却已经写进库里——而且全程不报任何错，是极难定位的一类静默错误；
- * - 连接池对调用方是「借出/归还」的语义，同一时刻一条连接只能被一个持有者使用，
- *   所以事务期内必须一直握着这条连接，不能中途归还。
- * 因此本类在构造时就 acquire() 并持有 PooledConnection，直到对象析构才归还，
- * 期间无论执行多少条语句都复用同一条连接。
- *
- * ## 为什么析构要自动回滚
- * 事务最常见的收尾方式其实是「中途抛出异常」：C++ 里异常会跨过作用域直接跳走，
- * 显式 rollback() 往往来不及执行。若此时什么都不做，连接归还池时会带着一个未结束的事务，
- * 下一个使用者莫名其妙地落在别人的事务里；若反过来「未提交就提交」，则会把半成品数据写库。
- * 回滚是幂等的，且不会把未完成的中间状态留下，因此是唯一安全的默认动作：
- * - 已 commit() 成功的事务，m_isActive 为假，析构不会再发 ROLLBACK，已提交的工作不会被撤销；
- * - 已 rollback() 过的事务同理；
- * - 从未提交的事务，析构补一次 ROLLBACK，把整个事务的影响抹掉。
- *
- * ## 与连接池「归还连接」的关系
- * m_connection（PooledConnection）在析构函数体执行完之后才析构，因此顺序天然是
- * 「先回滚，再把连接还给池」。连接池在归还时会做健康检查：
- * - 回滚成功：连接是干净的，正常回到空闲栈，下次可以继续复用；
- * - 回滚失败：事务是否还在进行已不可知，此时本类会主动 disconnect() 断开该连接，
- *   池的 isConnected() 探活随即判定它不健康并丢弃它——宁可废掉一条连接，
- *   也不能把可能带着未结束事务的连接交给下一个使用者。
- *
- * ## 当前实现的边界
- * - 不支持嵌套事务（SAVEPOINT）：同一个连接上再次 BEGIN 会被引擎拒绝（SQLite 报
- *   "cannot start a transaction within a transaction"），本类如实把失败暴露成异常，
- *   不会静默把内层语句并入外层事务；
- * - 不支持跨线程共享：事务对象与被它保护的连接属于同一线程，本类不做任何加锁。
- *
- * @code
- *   ConnectionPool pool(...);
- *   try
- *   {
- *       Transaction transaction(pool);              // 取连接 + BEGIN
- *       Queryable<Account> account(pool);
- *       Queryable<Account> transactionalAccount(transaction);   // 走事务连接
- *       transactionalAccount.insert(first);
- *       transactionalAccount.insert(second);
- *       transaction.commit();                       // 提交后数据对所有连接可见
- *   }   // 中途抛异常时 transaction 析构自动 ROLLBACK
- *   catch (const std::exception &error)
- *   {
- *       // 事务已回滚，可以安全地重试或降级
- *   }
- * @endcode
+ * @note 析构必须自动回滚：异常会跨过作用域跳走，显式 rollback() 常常来不及执行，而未结束的事务
+ *       会污染下一个使用者。回滚是幂等的，已提交/已回滚的事务不会再发语句（m_isActive 为假）。
+ *       回滚失败时事务状态不可知，此时主动断开连接让池的探活丢弃它。不支持嵌套事务与跨线程共享。
  */
 #pragma once
 
@@ -126,7 +79,7 @@ namespace AsynGyanis::Database
          * @details 幂等：事务已经结束（已提交或已回滚）时直接返回 true，不重复发送 COMMIT。
          *          提交失败时事务仍被标记为活动，析构阶段还会尝试回滚，不会把失败静默成成功。
          *
-         * @return true 提交成功，或事务此前已经结束
+         * @return true 提交成功，或事务已经结束
          * @return false 提交失败（如连接已断开），原因见 lastError()
          */
         [[nodiscard]] bool commit();
@@ -138,7 +91,7 @@ namespace AsynGyanis::Database
          *          本方法会断开底层连接，让连接池在归还时丢弃它，避免把带着未结束事务的
          *          连接交给下一个使用者。
          *
-         * @return true 回滚成功，或事务此前已经结束
+         * @return true 回滚成功，或事务已经结束
          * @return false 回滚失败，原因见 lastError()
          */
         [[nodiscard]] bool rollback();

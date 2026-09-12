@@ -58,13 +58,11 @@ namespace AsynGyanis::Net
          * @brief 为一条新连接创建 TLS 加密的 HTTP 会话。
          *
          * @details 重写 TcpServer::createConnection()（基类纯虚钩子）。与基类契约的差异：
-         *          @li 基类只要求「接管 socket 或让它随参数析构关闭」，本实现在此之前还要
-         *              向 TLS 上下文申请一个 SSL 对象——申请失败时**抛异常**而不是返回空指针，
-         *              基类约定的处置是把这一条连接丢弃并记录中文错误，接受循环不受影响；
-         *          @li socket 的所有权先随 Core::TlsSocket 转移（TLS 通道是描述符的唯一所有者），
-         *              会话交给基类 Core::Connection 的是一条占位套接字，细节见 HttpsSession；
-         *          @li 与 HttpSession 不同，本函数不做任何网络动作，握手留在会话协程里做，
-         *              以免在事件循环线程上阻塞（基类明令禁止）。
+         *          @li 接管 socket 之前还要向 TLS 上下文申请 SSL 对象——申请失败时**抛异常**
+         *              而不是返回空指针，基类会把这一条连接丢弃并记录中文错误；
+         *          @li socket 的所有权随 Core::TlsSocket 转移（TLS 通道是描述符的唯一所有者），
+         *              会话交给基类的是一条占位套接字，细节见 HttpsSession；
+         *          @li 不做任何网络动作，握手留在会话协程里做，以免在事件循环线程上阻塞。
          *
          * @param socket 已 accept 且已设为非阻塞的套接字，所有权就此转移
          * @return std::shared_ptr<Core::Connection> 实际类型为 HttpsSession，永不为空

@@ -25,20 +25,11 @@ namespace AsynGyanis::Base
     /**
      * @brief YAML 流式事件读取器
      *
-     * @details 与 DOM 版 YamlParser 的关系：两者是**同一份扫描器之上的两个前端**。
-     *          YamlReader 完成全部词法与块结构识别（缩进、块标量、引号跨行、流式跨行、
-     *          指令、标签、锚点），并以 YamlEvent 序列暴露结果；YamlParser 只消费这些事件
-     *          组装 FormatValue。因此不存在「两套解析逻辑各自漂移」的问题，
-     *          新增语法特性只需改动扫描器一处，两个前端同时受益。
-     *
-     *          事件在首次取用（hasNext/nextEvent）时一次性生成并缓存，调用方按顺序取用；
-     *          这样既保证块结构所需的完整前瞻，又让事件数量只与文档规模成正比（不构建 DOM）。
-     *
-     *          两种输入方式：
-     *          - 构造时传入完整文本：零拷贝，读取器仅持有 string_view，调用方需保证
-     *            文本生命周期覆盖整个读取过程；
-     *          - 默认构造后反复 feed()：分片追加到内部缓冲，全部喂完后必须调用 finish()
-     *            声明输入结束；此时输入由读取器所有。
+     * @details 与 DOM 版 YamlParser 是**同一份扫描器之上的两个前端**：本类完成全部词法与块结构
+     *          识别并以 YamlEvent 序列暴露，YamlParser 只消费事件组装 FormatValue，故不存在两套
+     *          解析逻辑各自漂移；事件在首次取用时一次性生成并缓存，不构建 DOM。
+     *          pull 模式零拷贝持有 string_view，调用方须保证文本生命周期覆盖整个读取过程；push 模式
+     *          须在全部喂完后调用 finish()，此后输入归读取器所有。
      */
     class YamlReader
     {

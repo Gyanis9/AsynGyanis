@@ -27,15 +27,13 @@ namespace AsynGyanis::Net
      *          另提供 ok()、notFound()、serverError() 等常用工厂方法。
      *          一个响应对象只服务一条请求：需要复用时先 reset()。
      *
-     * @note 头部存储模型（本次重构修正）：
+     * @note 头部存储模型（两者必须同步清空与更新）：
      *       @li 权威记录 m_headerFields —— 按「设置顺序」保存每一条头部，
      *           toString() 就按这个顺序逐条输出，因此报文头部顺序稳定可复现，
-     *           多条 Set-Cookie 也保持先后次序（旧实现遍历 unordered_map，顺序跨次运行漂移）；
+     *           多条 Set-Cookie 也保持先后次序；
      *       @li 单值视图 m_headers —— 名到值的映射，每个名字恰有一条，可重复头部保留首次值，
      *           供既有的 headers() 接口使用；逐条取值请用 headerValues()；
-     *       @li 头部名一律转小写存储（HTTP 头部名大小写不敏感，RFC 9110 §5.1），
-     *           旧实现为容纳多条 Set-Cookie 而造的 "set-cookie_1" 伪键已彻底移除——
-     *           那不是合法头部名，会被原样发到线上。
+     *       @li 头部名一律转小写存储（HTTP 头部名大小写不敏感，RFC 9110 §5.1）。
      * @warning 头部值会被原样写入报文，调用方不得传入含 CR/LF 的内容，否则构成响应拆分注入。
      *          正文与状态码由本类自行序列化，不受此限。
      */
@@ -64,12 +62,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置一个 HTTP 头部字段。
          *
-         * @details 头部名转小写后入库。两类语义：
-         *          @li 普通头部：同名已存在则就地覆盖其值，条目位置保持在首次设置处，
-         *              顺序不因改写而改变；
-         *          @li 可重复头部（当前只有 set-cookie）：每次调用都新增一条独立头部，
-         *              序列化时逐条输出 "Set-Cookie: ..."，先设先发。
-         *          旧实现在第二条分支上写的是 set-cookie_1 这类带后缀的键名，属非法头部名，已修正。
+         * @details 头部名转小写后入库。普通头部同名即就地覆盖值、条目位置不变；
+         *          可重复头部（当前只有 set-cookie）每次调用新增一条独立头部，先设先发。
          * @param name  头部字段名（如 "Content-Type"），大小写不敏感
          * @param value 头部字段值（如 "text/html"）
          * @return true 已写入
@@ -139,11 +133,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 将响应序列化为 HTTP 格式的字符串。
          *
-         * @details 输出结构：状态行 + 头部块 + 空白行 + 正文，行分隔符一律 CRLF。
-         *          头部块按设置顺序逐条输出；随后按需补两条自动头部：
-         *          @li 正文非空且未设置 content-type → 补 "content-type: text/plain"；
-         *          @li 未设置 content-length → 按正文实际字节数补一条。
-         *          补出的自动头部统一为小写名，排在调用方自设头部之后。
+         * @details 输出结构：状态行 + 头部块 + 空白行 + 正文，行分隔符一律 CRLF；头部块按设置顺序输出，
+         *          随后按需补两条自动头部：正文非空且未设 content-type 时补 text/plain，未设
+         *          content-length 时按正文实际字节数补一条。自动补出的头部为小写名，排在自设头部之后。
          * @return 完整的 HTTP 响应字符串
          * @note 返回串的长度即上线字节数，调用方直接整块发送即可
          */
@@ -154,8 +146,7 @@ namespace AsynGyanis::Net
          *
          * @details 配合 body() 使用，可把「头部块 + 正文」作为两段交给聚合写一次提交，
          *          省掉把正文拼进头部块的那次整体拷贝（大正文与文件响应最明显）。
-         *          补齐规则与 toString() 完全一致：正文非空且未设 content-type 时补
-         *          text/plain，未设 content-length 时按正文实际字节数补一条（1xx/204 不补）。
+         *          补齐规则与 toString() 完全一致。
          * @return 响应头部块字符串，长度不包含正文
          * @note 与 toString() 拼接后的结果逐字节相同：toString() 就是「本函数 + 正文」，
          *       差别只在于正文是否需要额外一份拷贝

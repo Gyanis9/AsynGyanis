@@ -223,7 +223,7 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
-    // 方法判定：UNKNOWN 不再是通配
+    // 方法判定：UNKNOWN 不按通配处理
     // ============================================================================
 
     TEST(Router, RefusesUnrecognizedMethodEvenOnAnyMethodRoute)
@@ -400,7 +400,7 @@ namespace AsynGyanis::Net
         std::atomic<int> callCount{0};
         router.get("/static/*", textHandler("asset", &callCount));
 
-        // 旧实现按字符串前缀比较，于是 "/static" 能命中 "/staticevil"：目录穿越的入口
+        // 前缀匹配必须停在段边界，否则 "/static" 会命中 "/staticevil"：目录穿越的入口
         HttpRequest request = makeRequest(HttpMethod::GET, "/staticevil/secret");
         HttpResponse response;
         routeRequest(router, request, response);

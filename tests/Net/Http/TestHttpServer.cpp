@@ -51,11 +51,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 临时静态目录树夹具
          *
-         * @details 在系统临时目录下建出一棵最小站点树：
-         *          @li base/static/          —— 首选静态根目录，含子目录与多种扩展名
-         *          @li base/alternate/       —— 第二次配置指向的目录，用来验证幂等更新
-         *          @li base/leak.txt         —— 根目录之外的探针文件，穿越成功就会读到它
-         *          析构递归删除整个 base，用例失败退出也不留临时文件。
+         * @details 在系统临时目录下建出一棵最小站点树：首选静态根目录（含子目录与多种扩展名）、第二次配置指向的目录
+         *          （验证幂等更新）、以及根目录之外的探针文件（穿越成功就会被读到）。析构递归删除整个 base，用例失败退出也不留临时文件。
          */
         class TemporaryStaticTree
         {
@@ -248,7 +245,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(tree.isReady()) << "临时静态目录树创建失败，后续断言没有意义";
 
         // 回归防护：首次调用注册一条 "*" 兜底路由，之后再调只更新配置。
-        // 旧实现按值捕获目录字符串，第二次调用改不动已注册的路由，还会多塞一条 "*"，
+        // 目录字符串必须被共享持有：按值捕获会让第二次调用改不动已注册的路由，还会多塞一条 "*"，
         // 表现为「新目录不生效、旧目录仍在服务」
         server.staticFileDir(tree.staticRootText());
         server.staticFileDir(tree.alternateRootText());

@@ -1,16 +1,10 @@
 /**
  * @file TestMySqlConnection.cpp
  * @brief MySqlConnection 单元测试：真实驱动的离线失败语义与驱动无关的连接骨架
- * @details DATABASE_WITH_MYSQL 默认开启，因此 libmysqlclient 可用时编出的是真实驱动
- *          （CMake 定义 DATABASE_HAS_MYSQL），探测不到客户端库时才退化为报错桩。
- *          本文件因此只断言「不需要 MySQL 服务端就能成立」的行为，两种构建配置下同义：
- *          - 配置回显、超时往返、databaseType()、未连接时的各条失败路径、指向未监听端口的
- *            connect() 在超时内失败、句柄为空、错误文本为中文且点明 MySQL；
- *          - 真实驱动专属的部分（参数个数与占位符个数不匹配被拒、真实查询结果、影响行数、
- *            serverVersion() 取值）必须有可用的 MySQL 服务端才能验证，本文件不做断言，
- *            对应的判定逻辑由 TestMySqlStatementResult.cpp（结果集语义）与
- *            TestMySqlDialect.cpp（SQL 文本）在离线侧覆盖。
- *          异常文本一律只断言「非空 + 含关键子串 + 含本地化文案」，不硬编码整句中文。
+ * @details DATABASE_WITH_MYSQL 默认开启：libmysqlclient 可用时编出真实驱动（CMake 定义 DATABASE_HAS_MYSQL），探测不到
+ *          客户端库时才退化为报错桩。因此本文件只断言「不需要 MySQL 服务端就能成立」的行为，两种构建配置下同义（配置回显、
+ *          超时往返、未连接时的失败路径、指向未监听端口的 connect() 在超时内失败）；真实驱动专属的部分（参数个数不匹配、真实
+ *          查询结果、serverVersion()）需要可用的服务端，交由 TestMySqlStatementResult.cpp 与 TestMySqlDialect.cpp 在离线侧覆盖。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

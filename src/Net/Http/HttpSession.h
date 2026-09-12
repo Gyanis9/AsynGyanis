@@ -38,8 +38,7 @@ namespace AsynGyanis::Net
      *          detail::httpKeepAliveLoop()，与 HttpsSession 共用同一份实现，两者只差传输层类型。
      *
      * @note 接收缓冲**跨次读取存续**：一个 TCP 包里粘着两条请求时，第一条应答完剩下的字节留在
-     *       缓冲区里，下一轮先喂进解析器，不会像早先那样每次固定读到缓冲区开头、
-     *       把第二条请求静默丢掉。
+     *       缓冲区里，下一轮先喂进解析器；不留存就会每次从缓冲区开头重读，把第二条请求静默丢掉。
      * @see detail::httpKeepAliveLoop(), shouldKeepAlive()
      */
     class HttpSession : public Core::Connection
@@ -50,9 +49,8 @@ namespace AsynGyanis::Net
          * @param socket 已建立的异步 socket，所有权转移给基类 Core::Connection
          * @param router 全局路由器，用于分发请求；其生命周期必须不短于本会话
          *
-         * @note 早先的形参里还有一个 `Core::EventLoop &loop`，实现中从未使用：事件循环已由
-         *       AsyncSocket 内部持有，会话不需要第二份引用，故该参数已删除（见 Core::Connection
-         *       的构造：它只要一个 socket）。
+         * @note 事件循环由 AsyncSocket 内部持有，会话不需要第二份引用，因此只收一个 socket
+         *       （见 Core::Connection 的构造）。
          */
         HttpSession(Core::AsyncSocket socket, Router &router);
 
@@ -73,15 +71,11 @@ namespace AsynGyanis::Net
         /**
          * @brief 按 RFC 9112 §9 判定这条事务之后是否保持连接（Keep-Alive）。
          *
-         * @details 判定顺序固定，且**请求侧的显式 close 不可被响应头反转**：
-         *          @li 请求带 `Connection: close` → 一律断开（客户端明确指令，HTTP/1.1 与 1.0 同治）；
-         *          @li 响应带 `Connection: close` → 一律断开（服务器侧主动收口，例如中间件降级）；
-         *          @li 请求带 `Connection: keep-alive` → 保活；这条只对 HTTP/1.0 有实际意义，
-         *              因为 1.0 默认逐请求断连，而 1.1 默认本就保活；
-         *          @li 以上都没有时看版本：HTTP/1.1 及以上默认保活，HTTP/1.0 与无头部块的 HTTP/0.9 默认断开。
-         *          响应里的 `Connection: keep-alive` 不参与判定——早先实现把它放在最后一步读取，
-         *          于是「请求 close + 响应 keep-alive」会被反转成保活，已修正。
-         *          同名头部的多个值按逗号拆分后逐 token 比对（`Connection: keep-alive, X` 这类写法合法）。
+         * @details 判定顺序固定，且**请求侧的显式 close 不可被响应头反转**：请求或响应带
+         *          `Connection: close` → 一律断开；请求带 `Connection: keep-alive` → 保活（只对
+         *          HTTP/1.0 有实际意义，1.1 默认本就保活）；都没有时 1.1 及以上默认保活，
+         *          1.0 与 0.9 默认断开。响应的 `Connection: keep-alive` 不参与判定。
+         *          同名头部的多个值按逗号拆分后逐 token 比对（`Connection: keep-alive, X` 这种写法合法）。
          *
          * @param request  已完成解析的请求
          * @param response 即将发送的响应
@@ -108,8 +102,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把解析失败类别翻译成要发的 4xx 响应（状态码与正文全 ASCII）
-         * @details 报文到哪里结束、哪里越界、哪里读不懂，都由 HttpParser 判定并给出类别，
-         *          会话只负责按类别选状态码——两处各判一次边界是过去式，那份重复已经删掉。
+         * @details 边界判定（报文到哪里结束、哪里越界、哪里读不懂）全部由 HttpParser 负责并给出类别，
+         *          会话只按类别选状态码，不重复判一次边界。
          * @param response 待填充的响应对象，进入本函数时应当是新构造的
          * @param errorKind 解析器给出的失败类别
          */

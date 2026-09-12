@@ -6,59 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details Queryable<T> 是 ORM 查询的门面类，提供流式接口构建查询树，
- *          并负责把查询树送到数据库执行。三条使用路径：
- *          - 离线：默认构造，只用 toSql() 生成近似 SQL 文本，不接触连接池；
- *          - 在线（连接池）：构造时绑定 ConnectionPool，执行器方法走
- *            「连接池 acquire() → 方言 translate*() → execute(sql, 参数) → 行映射」这条链路；
- *          - 在线（事务）：构造时绑定 Transaction，全部语句走事务持有的那一条连接，
- *            从而与 BEGIN / COMMIT / ROLLBACK 处在同一个会话里。
- *          方言由池中连接的真实 DatabaseType 推导（也可在构造时显式指定），
- *          绑定事务时直接取事务连接的类型，无需再借出连接探测。
- *
- *          异步路径：每个同步执行器都有一个同名 + Async 后缀的版本（toListAsync / firstAsync /
- *          countAsync / insertAsync / insertBatchAsync / updateAsync / executeNonQueryAsync，
- *          即「读 + 写 + 删除」全部覆盖）。它们语义完全一致，唯一差别是不阻塞调用线程：
- *          方言解析与 SQL 生成仍在提交前完成（纯文本变换），「取连接 → 执行 → 行映射」这段
- *          阻塞链路交给 AsyncExecutor 的工作线程，完成后由工作线程把协程句柄投回调用方给的
- *          EventLoop（Scheduler::scheduleRemote），因此恢复与后续代码都发生在事件循环线程上。
- *
- *          ORM 只负责「把结构体整理成列名 + 取值」，SQL 文本一律由方言生成：
- *          条件渲染、参数收集顺序、写语句语法都只有方言层那一份实现，
- *          因此本类不含任何拼接 SQL 的逻辑（旧实现里「翻译出 SELECT 再截取 WHERE 段」
- *          的妥协已随方言接口演进一并删除）。
- *
- * ## 使用范例
- * @code
- *   // 离线 SQL 生成（测试用，无需连接池）
- *   Queryable<User> query;
- *   query.where(Column(&User::age, "age") >= 18)
- *        .orderBy(asc("name"))
- *        .limit(10);
- *   std::string sql = query.toSql();
- *   // => "SELECT * FROM users WHERE age >= ? ORDER BY name ASC LIMIT 10"
- *
- *   // 在线查询（需要连接池）
- *   ConnectionPool pool(...);
- *   Queryable<User> query(pool);
- *   auto users = query.where(Column(&User::age, "age") >= 18).toList();
- *
- *   // 写入
- *   query.insert(user);
- *   query.insertBatch(rows);              // 一次多行 VALUES，超上限自动分块
- *   query.where(...).executeNonQuery();   // 按条件删除
- *
- *   // 事务：绑定事务的查询与提交/回滚处在同一条连接上
- *   Transaction transaction(pool);
- *   Queryable<User> transactionalQuery(transaction);
- *   transactionalQuery.insert(first);
- *   transactionalQuery.insert(second);
- *   transaction.commit();
- *
- *   // 异步：阻塞链路在工作线程上执行，完成后回到 eventLoop 所在线程
- *   Core::EventLoop eventLoop;
- *   Queryable<User> asyncQuery(pool);
- *   std::vector<User> users = co_await asyncQuery.where(Column(&User::age, "age") >= 18).toListAsync(eventLoop);
+ * @details 三条使用路径：离线（默认构造，只用 toSql() 生成文本）、绑定连接池（借连接 → 方言
+ *          translate*() → execute(sql, 参数) → 行映射）、绑定事务（全部语句走事务持有的那一条连接，
+ *          与 BEGIN / COMMIT / ROLLBACK 同处一个会话）。SQL 文本一律由方言生成，本类不含任何拼接 SQL
+ *          的逻辑；每个同步执行器都有语义一致、仅把阻塞链路交给工作线程的 Async 版本。
  * @endcode
  */
 #pragma once
@@ -99,12 +50,8 @@ namespace AsynGyanis::Database::Queryable
      *
      * @tparam T 表数据结构类型，需有对应的 TableSchema<T> 特化
      *
-     * @details 提供流式接口构建类型安全的数据库查询。
-     *          四种构造方式：
-     *          - 默认构造：离线模式，仅用于 SQL 生成和测试
-     *          - 带连接池构造：在线模式，方言由池中连接的真实类型推导
-     *          - 带连接池与数据库类型构造：在线模式，方言类型由调用方直接指定
-     *          - 带事务构造：在线模式，所有语句走事务持有的那一条连接
+     * @details 提供流式接口构建类型安全的数据库查询；四种构造方式分别对应离线模式与
+     *          绑定连接池（可显式指定方言）、绑定事务三种在线模式。
      *
      * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）及其
      *       异步版本（toListAsync/firstAsync/countAsync/insertAsync/insertBatchAsync/
@@ -125,10 +72,8 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 默认构造（离线模式）
          *
-         * @details 用于仅生成 SQL 或测试场景，不需要连接池。
-         *          表名与列名一律取自 TableSchema<T>（kTableName / kColumns），本类没有、
-         *          也不应有单独设置表名的入口——表结构只有一个真值来源，多一个入口就多一处
-         *          可能与 TableSchema 脱节的地方。
+         * @details 用于仅生成 SQL 或测试场景。表名与列名一律取自 TableSchema<T>（kTableName / kColumns）：
+         *          表结构只有一个真值来源，本类刻意不提供单独设置表名的入口。
          */
         Queryable()
         {
@@ -154,9 +99,8 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 构造并绑定连接池与数据库类型（在线模式，显式指定方言）
          *
-         * @details 与上一个构造函数的区别：方言类型由调用方直接给出，不再从池中连接推导。
-         *          适用于希望避免「推导时借出连接」这一副作用，或连接工厂封装较复杂、
-         *          类型已知的场景。
+         * @details 方言类型由调用方直接给出，不从池中连接推导：适用于希望避免「推导时借出连接」
+         *          这一副作用，或连接工厂封装较复杂、类型已知的场景。
          *
          * @param pool 数据库连接池
          * @param databaseType 池中连接的数据库类型，决定使用哪个 SqlDialect
@@ -170,14 +114,10 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 构造并绑定事务（在线模式，语句走事务连接）
          *
-         * @details 与绑定连接池的区别只有一个，但它是事务正确性的根本：本对象的全部语句
-         *          都在事务持有的那条连接上执行，绝不各自从池里再取一条。
-         *          若每条语句各取一条连接，BEGIN 会落在一个连接上、写语句落在别的连接上，
-         *          那些写语句实际运行在自动提交模式下——回滚只能回滚一个空事务，
-         *          数据却已经在库里了，而且这种错误不会报任何错。
-         *
-         *          提交与回滚仍由调用方通过事务对象决定，本对象不代劳；
-         *          事务析构（未提交时自动回滚）之后再执行语句会由驱动报「无活动事务」类的错误。
+         * @details 与绑定连接池的唯一区别是本对象的全部语句都在事务持有的那条连接上执行，绝不各自
+         *          从池里再取一条：否则 BEGIN 落在一个连接上、写语句落在别的连接上，那些写语句实际运行在
+         *          自动提交模式下，回滚只能回滚一个空事务而数据已在库里，且不会报任何错。
+         *          提交与回滚仍由调用方通过事务对象决定，本对象不代劳。
          *
          * @param transaction 事务对象，其生命周期必须覆盖本对象的所有执行调用
          * @note 方言类型直接取自事务连接，不需要像绑定连接池那样借出一条连接来探测
@@ -1158,14 +1098,11 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 按方言的参数上限分块执行批量插入，必要时用本地事务覆盖全部块
          *
-         * @details 同步与异步两条路径的唯一实现（异步版本在工作线程上调用它），
-         *          因此分块规则与事务覆盖范围只有一份：
-         *          - 每行占用的参数个数就是列数，上限由方言回答（SQLite 默认 999、MySQL/PG 65535），
-         *            这类引擎参数属于方言知识，不写死在 ORM 侧；
+         * @details 同步与异步两条路径的唯一实现：
+         *          - 每行的参数个数就是列数，上限由方言的 maximumStatementParameters() 回答；
          *          - 不分块时单条多行 INSERT 自身就是原子的，不额外开事务；
-         *          - 需要分块时全部块必须落在同一条连接的同一个事务里：若每批各自从池里取连接，
-         *            中途失败时已提交的批次无法回滚，调用方拿到异常却留下半张表的数据，
-         *            这比整体失败更难排查。
+         *          - 需要分块时全部块必须落在同一条连接的同一个事务里：每批各自取连接会让中途失败时
+         *            已提交的批次无法回滚，调用方拿到异常却留下半张表的数据。
          *
          * @param pool 连接池，transaction 为空时由它取连接（并可能起一个本地事务）
          * @param transaction 已绑定的事务，非空时全部块共用它的连接且不自行提交或回滚

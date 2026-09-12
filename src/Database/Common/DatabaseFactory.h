@@ -77,7 +77,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 按默认端口推断数据库类型
          * @details 只认识本框架已实现的引擎默认端口：3306 → MySQL，6379 → Redis。
-         *          旧实现对任意未知端口都回退成 MySQL，会把 SQLite 之类误判成
+         *          对任意未知端口都回退成 MySQL 会把 SQLite 之类误判成
          *          永远连不上的 MySQL，故改为返回空值，由调用方显式决定类型。
          * @param port 端口号
          * @return std::optional<DatabaseType> 推断结果；无法判定时为空

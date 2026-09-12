@@ -6,13 +6,9 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 与其它 Queryable 用例不同，本文件**不经过数据库**：直接构造 DatabaseValue 调用
- *          值转换函数，因此能把每个类型的接受面与拒绝面逐条钉死，尤其是那些真机上
- *          难以稳定构造出来的形态（后端私自改写的列类型、越界文本、带余文的数字文本）。
- *
- *          本轮新增的整型「十进制文本」支路正是靠这里覆盖：引擎存得下、却给不出 int64 的
- *          整数只能以文本返回（如 MySQL 的 BIGINT UNSIGNED 上界），
- *          没有这一支就会出现「写得进去、读不回来」。真机侧另有集成用例（MySQL）验证同一件事。
+ * @details 与其它 Queryable 用例不同，本文件**不经过数据库**：直接构造 DatabaseValue 调用值转换函数，因此能把每个
+ *          类型的接受面与拒绝面逐条钉死，尤其是真机上难以稳定构造出来的形态（后端私自改写的列类型、越界文本、带余文的数字文本）。
+ *          整型「十进制文本」支路（引擎存得下、却给不出 int64 的取值只能以文本返回）也靠这里覆盖，真机侧由 MySQL 集成用例验证。
  *
  * 覆盖场景：
  * - 无符号成员：int64 支路的范围、文本支路的完整上界（2^63、2^64-1）、越界拒绝
@@ -392,10 +388,8 @@ namespace AsynGyanis::Database::Queryable
     /**
      * @brief 验证真实的映射失败能被框架异常基类捕获
      *
-     * @details 改造前这里抛的是裸 std::runtime_error：调用方即使只想「兜住框架的运行期故障」
-     *          也拿不到任何框架类型可捕，只能退化成 catch (std::exception)。现在它是
-     *          RowMappingException，上溯到 DatabaseException、Base::Exception 与
-     *          std::runtime_error 四层都成立——本条用例把这条链一次钉死。
+     * @details 映射失败抛的是 RowMappingException，上溯到 DatabaseException、Base::Exception 与 std::runtime_error
+     *          四层都成立——本条用例把这条链一次钉死，调用方才能用一条 catch (const Base::Exception &) 兜住运行期故障。
      */
     TEST(RowMapperException, MappingFailureIsCatchableThroughProjectAndModuleBases)
     {

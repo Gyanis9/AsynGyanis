@@ -34,9 +34,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 中间件函数类型。
      *
-     * @details 入参依次为请求、响应、以及「继续走下游」的 next 可调用对象。
-     *          中间件可以先做前置处理，再 `co_await next()` 进入下游，返回后做后置处理；
-     *          也可以不调用 next() 直接短路（限流、CORS 预检就是这么做的）。
+     * @details next 是「继续走下游」的入口：不调用它即短路，下游中间件与业务处理器都不再执行
+     *          （限流、CORS 预检就是这么做的）。
      *
      * @note next 只在本次中间件调用期间有效：它捕获的是管道内部的局部状态，
      *       中间件不得把它存起来留到别的请求里再调用，那是悬垂引用。
@@ -235,17 +234,11 @@ namespace AsynGyanis::Net
      * @details 前置什么都不做，只在 `co_await next()` 返回后记一条 Info 日志，
      *          因此业务短路响应（429、504）同样会被记录，方便压障。
      *
-     * @note 参数从早先的 `Base::Logger &` 改成 shared_ptr：中间件会被塞进类型擦除的
-     *       std::function 里长期存活，按引用捕获外部对象等于把生命周期交给调用方口头保证，
-     *       一旦对方传的是局部 logger 就是悬垂引用。
-     * @note 若日志器由 Base::LoggerRegistry 持有（注册表用 unique_ptr 保管），
-     *       可这样构造一个「不拥有、只借用」的共享指针，注册表单例的生命周期覆盖全进程：
-     *       @code
-     *       auto logger = std::shared_ptr<const Base::Logger>(
-     *               std::shared_ptr<const Base::Logger>{},
-     *               &Base::LoggerRegistry::instance().getLogger("http"));
-     *       @endcode
-     *       若将来会调用 unregisterLogger()/clear()，请改为调用方自己拥有的 shared_ptr。
+     * @note 参数按 shared_ptr 收取：中间件会被塞进类型擦除的 std::function 里长期存活，
+     *       按引用捕获外部对象等于把生命周期交给调用方口头保证，一旦对方传的是局部 logger 就是悬垂引用。
+     *       借用 Base::LoggerRegistry 持有的日志器时，可用「空 shared_ptr + 裸指针」构造一个不拥有的
+     *       共享指针（注册表单例的生命周期覆盖全进程）；若将来会 unregisterLogger()/clear()，
+     *       请改为调用方自己拥有的 shared_ptr。
      */
     inline MiddlewareFunc loggingMiddleware(std::shared_ptr<const Base::Logger> logger)
     {
@@ -284,12 +277,9 @@ namespace AsynGyanis::Net
      * @param policy 跨域策略，默认值为「允许任意来源、不携带凭据」
      * @return MiddlewareFunc 中间件函数
      *
-     * @details 两类请求两条路径：
-     *          @li 预检请求（OPTIONS 且带 Access-Control-Request-Method）：就地生成预检应答
-     *              （204 + 一组 access-control-* 头），**不进入业务路由**。
-     *              早先的实现把预检也丢给路由表匹配，结果是业务 handler 收到一个它根本不该处理的
-     *              OPTIONS 请求，要么 404 要么 405，浏览器侧表现为「CORS 一直不通」。
-     *          @li 实际请求：先给响应挂上允许来源的头，再放行下游。
+     * @details 预检请求（OPTIONS 且带 Access-Control-Request-Method）就地生成 204 预检应答，
+     *          **不进入业务路由**：业务 handler 收下一个它根本不该处理的 OPTIONS 只会回 404/405，
+     *          浏览器侧表现为「CORS 一直不通」。实际请求先挂上允许来源的头再放行下游。
      *
      * @warning 凭据与通配来源不能共存：`Access-Control-Allow-Origin: *` 与
      *          `Access-Control-Allow-Credentials: true` 的组合会被浏览器直接判为失败，
@@ -342,11 +332,9 @@ namespace AsynGyanis::Net
      * @param timeout 超时时长；非正值等价于「不启用超时」，只做透传
      * @return MiddlewareFunc 中间件函数
      *
-     * @details 真挂了一个定时任务：中间件把看门狗协程投递到调度器上，看门狗睡到截止时刻，
-     *          醒来后调用 HttpRequest::requestCancel() 并把「已超时」写进共享状态；
-     *          业务链返回时，中间件据这个标志把响应整体重置为 504 Gateway Timeout。
-     *          早先的实现只是 `co_await next()` 之后拿 steady_clock 补一个时间差，
-     *          既不取消任何东西也来不及影响本轮响应，是个纯记录型的假中间件，已废弃。
+     * @details 看门狗协程投递到调度器上睡到截止时刻，醒来调用 HttpRequest::requestCancel()
+     *          并把「已超时」写进共享状态；业务链返回时中间件据该标志把响应重置为 504。
+     *          只比实际耗时的写法既取消不了业务、也改不动本轮已经发出的响应。
      *
      * @warning 这是**协作式**超时。单线程协程模型里没有抢占：
      *          @li 业务 handler 必须周期性检查 `request.cancelToken().stop_requested()`
@@ -492,10 +480,9 @@ namespace AsynGyanis::Net
             {
                 const std::string &declaredText = contentLengthHeader.value();
 
-                // Content-Length 必须是纯十进制数字串（RFC 9110 §8.6）。旧实现走 std::stoull：
-                // "-1" 会绕进 unsigned long long 变成 ULLONG_MAX 而误判 413，
-                // "12abc" 则按前缀解析成 12 被直接放行——只有越界才抛异常，三类畸形口径不一致。
-                // 换成 from_chars 后判据统一：解析失败或有残留字符即视为报文不合法
+                // Content-Length 必须是纯十进制数字串（RFC 9110 §8.6）。不用 std::stoull：
+                // "-1" 会绕进 unsigned long long 变成 ULLONG_MAX，"12abc" 按前缀解析成 12，
+                // 只有越界才抛异常，三类畸形口径不一致。from_chars 判据统一：解析失败或有残留即不合法
                 unsigned long long declaredBodyLength = 0;
                 const std::from_chars_result parseResult = std::from_chars(declaredText.data(), declaredText.data() + declaredText.size(), declaredBodyLength);
 

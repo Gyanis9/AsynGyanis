@@ -149,7 +149,7 @@ namespace AsynGyanis::Net
             }
 
             // 普通头部同名多条时，按 RFC 7230 §3.2.2 的收件人规则以 ", " 合并到同一条，
-            // 视图里的条目位置与键都不变——旧实现在这里造 set-cookie_1 之类的伪键，已废除
+            // 视图里的条目位置与键都不变（可重复头部也不会派生出伪键）
             if (const auto [iterator, isInserted] = m_headers.try_emplace(field.name, field.value); !isInserted)
             {
                 iterator->second.append(kMergedHeaderSeparator);

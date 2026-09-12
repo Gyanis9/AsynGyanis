@@ -73,8 +73,7 @@ namespace AsynGyanis::Base
             return 0;
         }
         // 换行并入复用的行缓冲后整行只做一次 <<：流插入每次都要构造 sentry 并由文件
-        // 缓冲加锁，原先「正文 + 换行」两次插入就是两轮；复用成员缓冲让拼接不产生新分配。
-        // 实测（MSVC /O2，10 万行）快约 12%，落盘的字节流与多插入写法完全一致
+        // 缓冲加锁，合并后只有一轮；复用成员缓冲让拼接不产生新分配，落盘的字节流不变
         m_lineBuffer.assign(line);
         m_lineBuffer.push_back('\n');
         m_file << m_lineBuffer;

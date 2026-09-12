@@ -512,10 +512,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断某行是否为**列 0** 的指令行
-         * @details §6.8 的指令只出现在文档头且只在列 0；缩进过的 `%` 是普通内容，块标量里
-         *          的 `%` 行尤其必须按内容保留（§8.1.2），否则这些内容行会被交给指令解析：
-         *          保留指令（参数可为零个或多个，§6.8）会多出一条「已忽略」告警，
-         *          正文形如 `%YAML` / `%TAG` 而参数不合法时更会误报格式错误。
+         * @details §6.8 的指令只出现在文档头且只在列 0；缩进过的 `%` 是普通内容，块标量里的
+         *          `%` 行必须按内容保留（§8.1.2），否则会被交给指令解析而误报「已忽略」告警
+         *          或格式错误。
          * @param line 待判定行
          * @return true 该行是指令
          */
@@ -666,11 +665,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 解析一条指令行
-         * @details 指令名与参数分开处理：`%YAML` / `%TAG` 各有独立产生式（§6.8），参数必需，
-         *          缺失时由各自的校验函数报错；其余名字一律按 §6.8 的保留指令
-         *          `ns-reserved-directive ::= ns-directive-name ( s-separate-in-line ns-directive-parameter )*`
-         *          处理——**参数可以为零个或多个**，处理器应忽略并给出警告，而不是把它当成
-         *          格式错误（只有 rejectUnknownDirectives 为真时才升级为错误）。
+         * @details `%YAML` / `%TAG` 各有独立产生式（§6.8），参数必需，缺失时报错；其余名字按
+         *          §6.8 的 `ns-reserved-directive ::= ns-directive-name ( s-separate-in-line ns-directive-parameter )*`
+         *          处理——**参数可以为零个或多个**，应忽略并给出警告，只有 rejectUnknownDirectives
+         *          为真时才升级为错误。
          * @param line 指令所在行
          * @throws FormatError 指令格式非法、版本不支持或配置为拒绝未知指令
          */
@@ -915,10 +913,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 解析显式复杂键条目（`? key` 换行 `: value`，YAML 1.2 §8.2.2）
-         * @details 覆盖规范给出的三种写法：`? 节点` 换行 `: 节点`、`? a` 换行 `: b`、
-         *          以及与 `?` 同行的紧凑集合键 `? a: b`（后者会按 §8.2.2 的
-         *          `ns-l-compact-mapping` 被改写成条目列上的块节点，因而键是集合）。
-         *          键值之间允许空行、注释与块节点。
+         * @details 覆盖规范给出的三种写法：`? 节点` 换行 `: 节点`、`? a` 换行 `: b`，以及与 `?`
+         *          同行的紧凑集合键 `? a: b`（后者按 §8.2.2 的 `ns-l-compact-mapping` 改写为条目列
+         *          上的块节点，键是集合）；键值之间允许空行、注释与块节点。
          * @param indent 映射缩进
          * @param keyLine `?` 所在行
          * @throws FormatError 语法非法

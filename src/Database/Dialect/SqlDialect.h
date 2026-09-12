@@ -6,40 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 方言层把与具体数据库无关的查询树（QueryNode）翻译成某一种数据库能执行的
- *          参数化 SQL（SqlStatement）。所有 SQL 文本差异都被收敛到本层：
- *          标识符引用字符、占位符写法、分页语法、布尔字面量等由各实现自行处理，
- *          上层的 ORM 执行器只依赖本抽象接口。
- *
- * ## 接口构成（本次演进新增写语句、事务语句、类型名映射与元数据查询）
- * - 读：translate() 生成 SELECT；
- * - 写：translateInsert() / translateUpdate() / translateDelete() / translateInsertBatch()
- *   生成 INSERT / UPDATE / DELETE / 多行 INSERT；
- * - 事务：beginTransactionStatement() / commitStatement() / rollbackStatement()
- *   给出事务控制语句文本（各引擎语法不同，不能写死在事务对象里）；
- * - DDL 支撑：columnTypeName() 把逻辑列类型翻译成物理类型名，
- *   tableExistsStatement() 给出「这张表在不在」的元数据查询；
- * - 基础设施：quoteIdentifier() / placeholder() / supportsLimitOffset()。
- *
- * 写语句进入本层而不是留在 ORM 侧，是为了让「WHERE 条件怎么渲染、参数按什么顺序收集」
- * 只有一份实现：条件树可以递归嵌套、IN 集合要展开成多个占位符、IS NULL 不产生参数，
- * 这些规则一旦在 ORM 侧再写一遍，两边就会随着方言演进而产生行为差异。
- * 因此 ORM 只负责把「要写的列」和「要绑的值」整理好交给方言（列名放在 QueryNode
- * 的 selectColumns 里，值按同一顺序放在 values 里），条件仍然走 QueryNode 的
- * whereConditions，由方言统一渲染。
- *
- * ## 实现约定（各引擎方言照此实现）
- * - 任何 translate*() 都不得把字段值拼进 SQL 文本，只能产出占位符并在 parameters 里按序取值；
- * - 任何 translate*() 都不得修改传入的查询树（入参为 const 引用，实现必须是纯函数）；
- * - 任何 translate*() 产出的 parameters[i] 必须与 SQL 文本中第 i 个占位符一一对应，
- *   写语句里赋值参数在前、WHERE 条件参数在后，顺序与它们在文本中出现的先后一致；
- * - 入参个数与列数/条件不匹配时实现必须抛 Base::InvalidArgumentException，绝不能生成半截语句；
- * - quoteIdentifier() 必须转义标识符内部的引用字符（双引号翻倍 / 反引号翻倍），
- *   否则含引号的列名会破坏语句结构；
- * - 同一个 dialect 实例可能被多个线程并发调用，实现必须无状态（本层不持有可变成员）；
- * - columnTypeName() 必须覆盖 ColumnType 的全部取值，且对未知取值也要返回一个可用的类型名
- *   而不是抛异常：它是 noexcept 的类型名映射，调用点（建表语句生成）没有可回退的分支；
- * - tableExistsStatement() 必须把表名作为绑定参数送出，不得拼进 SQL 文本。
+ * @details 方言层把与具体数据库无关的查询树（QueryNode）翻译成本引擎能执行的参数化 SQL
+ *          （SqlStatement）：标识符引用、占位符写法、分页语法等文本差异全部收敛在本层，
+ *          上层 ORM 只依赖本抽象接口。实现必须无状态（同一实例可能被多线程并发调用），
+ *          且任何 translate*() 都不得修改传入的查询树、不得把取值拼进 SQL 文本。
  */
 #pragma once
 
@@ -218,11 +188,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 生成一个参数占位符
          *
-         * @details 现有两个方言（SQLite / MySQL）的位置参数都写作 "?"，不含序号信息；
-         *          参数与占位符的对应关系由「按出现顺序依次压入 parameters」保证（见本文件
-         *          的参数顺序契约），因此本接口不需要知道自己是第几个参数。
-         *          将来若接入需要显式序号风格的引擎（如 Oracle 的 ":1"），
-         *          届时再连同调用点一起改签名——不留现在用不上的形参。
+         * @details 现有两个方言的位置参数都写作 "?"，不含序号信息；参数与占位符的对应关系
+         *          由「按出现顺序依次压入 parameters」保证（见本文件的参数顺序契约），
+         *          因此本接口不需要知道自己是第几个参数。
          *
          * @return std::string 占位符文本，当前恒为 "?"
          */

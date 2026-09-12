@@ -22,7 +22,7 @@ namespace AsynGyanis::Net
      *       一是这些标识符在报文行上就是全大写 token，改名反而更难对照；
      *       二是 Router、HttpServer 与既有测试都按 HttpMethod::GET 形式书写，改名属于无收益的破坏性变更。
      * @note UNKNOWN 只表示「本框架未识别的方法」（如 CONNECT、TRACE、自定义动词），
-     *       Router 已不再把它当通配使用：未识别方法不匹配任何业务路由，一律 404/405。
+     *       Router 不把它当通配使用：未识别方法不匹配任何业务路由，一律 404/405。
      *       确实要对所有方法放行的路由请显式用 Router::any() 注册。
      */
     enum class HttpMethod

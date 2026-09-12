@@ -6,32 +6,15 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 参数化执行（mysql_stmt_*）走的是二进制协议，结果没法包成 MYSQL_RES，
- *          因此这条路径的结果集由本类承载：连接在 mysql_stmt_store_result() 之后把全部行读进
- *          std::vector，再把数据交给本类，语句本身随后就被 mysql_stmt_close 释放。
+ * @details 参数化执行（mysql_stmt_*）走的是二进制协议，结果没法包成 MYSQL_RES，因此连接在
+ *          mysql_stmt_store_result() 之后把全部行读进内存再交给本类，语句随即被 mysql_stmt_close
+ *          释放：结果集不引用任何句柄，可以比连接活得更久，代价是大结果集等额占内存
+ *          （需要流式读取的场景应改用游标型语句，本驱动不提供）。
  *
- * ## 为什么是「预读快照」而不是持有 MYSQL_STMT
- * - 与文本协议路径（MySqlResult 包 MYSQL_RES）保持同一份取舍：整份结果一次性复制进进程内存，
- *   结果集从此不引用任何句柄，可以比连接活得更久，遍历过程中也不再有任何网络往返；
- * - 代价是大结果集等额占内存，需要流式读取的场景应改用游标型语句（本驱动不提供）。
- *
- * ## 游标语义
- * - m_hasCurrentRow 为假时（构造后、reset() 后、遍历结束后）取值一律返回 std::monostate，
- *   与 MySqlResult「游标没停在有效行上就无值」的约定一致；
- * - isEmpty() 描述的是「结果集本身有没有行」，不随游标推进改变。
- *
- * @note 本类不覆盖 affectedRowCount()：查询结果集的影响行数按基类约定为 0，
- *       写语句的影响行数由 MySqlConnection 用 mysql_stmt_affected_rows() 取到后，
- *       交给 MySqlResult 的写回执形态承载。
- *
- * @code
- *   // 由 MySqlConnection::execute(sql, parameters) 内部产出，调用方只依赖 DatabaseResult 接口
- *   auto result = connection->execute("SELECT id, name FROM users WHERE age >= ?", parameters);
- *   while (result != nullptr && result->next())
- *   {
- *       const DatabaseValue name = result->getValue("name");
- *   }
- * @endcode
+ * @note 游标没停在有效行上（构造后、reset() 后、遍历结束后）时取值一律返回 std::monostate，
+ *       与 MySqlResult 的约定一致；isEmpty() 描述结果集本身有没有行，不随游标推进改变。
+ *       本类不覆盖 affectedRowCount()：写语句的影响行数由 MySqlConnection 用
+ *       mysql_stmt_affected_rows() 取到后交给 MySqlResult 的写回执形态承载。
  */
 #pragma once
 
@@ -58,9 +41,8 @@ namespace AsynGyanis::Database
     public:
         /**
          * @brief 用预读好的列名与行构造结果集
-         * @details 构造阶段不做任何 IO 与分配之外的检查：行的列数由连接在预读时保证
-         *          （逐列读取元数据、逐行按列序取值），因此调用方传进来的行与列名天然对齐。
-         *          为容忍列数不一致的输入（例如将来被别处复用），取值时仍做一次下标判界。
+         * @details 构造阶段不做检查：行的列数由连接在预读时保证（逐列读取元数据、
+         *          逐行按列序取值），因此传进来的行与列名天然对齐；取值时仍做一次下标判界。
          * @param columnNames 按列序排列的列名，长度即列数
          * @param rows 已按 (指针, 长度) 转换好的行数据，每行的元素个数应与列名个数一致
          */

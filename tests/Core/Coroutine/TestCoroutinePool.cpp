@@ -64,7 +64,7 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 小档装不下的帧由大档接手：仍然整段可写，且指针归属本池（不再是一次全局堆分配）
+     * @brief 小档装不下的帧由大档接手：仍然整段可写，且指针归属本池而不是一次性全局堆分配
      *
      * @details 池按帧大小分两档：小档 256 B 装得下的小帧不浪费，大档 2048 B 接住框架里
      *          路由、会话那类 1.2–2.2 KB 的帧。实测过：不分档时每请求有 5–7 个帧落到全局堆，
@@ -248,15 +248,13 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 池到达块数上限后不崩溃也不静默失败：改由全局堆承担且 owns() 返回 false；归还后池内块仍可复用
-     * @details 旧实现在「空闲列表为空且 expand() 因到上限一块都不加」时仍对空 vector 调 back()，属越界访问
+     * @details 池的块数上限是私有常量，用例不硬编码它，而是一路分配到出现「不属于本池」的块为止
      */
     TEST(CoroutinePool, AllocationBeyondBlockCeilingFallsBackToGlobalHeap)
     {
         auto &pool = CoroutinePool::instance();
 
-        // 池的块数上限是私有常量，这里不硬编码它：一路分配到出现「不属于本池」的块为止。
-        // 修复前这一步会崩——空闲列表为空且 expand() 因到达上限而一块都不加时，
-        // 旧实现仍对它调 back()，属于对空 vector 的越界访问
+        // 池的块数上限是私有常量，这里不硬编码它：一路分配到出现「不属于本池」的块为止
         std::vector<void *> blocks;
         void              *firstForeignBlock = nullptr;
         constexpr size_t   kAllocationAttemptCeiling = 100000;
@@ -292,8 +290,8 @@ namespace AsynGyanis::Core
     /**
      * @brief 验证等量复用不触发扩容：一批块释放后再申请同样多，池不再向系统要内存
      *
-     * @details 判据是 allocatedCount() 不变。先申请一大批并持有，把单例此前累积的空闲块
-     *          一并消耗掉，这样第二轮的供给只能来自第一轮释放的块——任何一块在归还路径上
+     * @details 判据是 allocatedCount() 不变。先申请一大批并持有，把单例中已累积的空闲块
+     *          一并消耗掉，于是第二轮的供给只能来自第一轮释放的块——任何一块在归还路径上
      *          丢失，第二轮都会因缺块而扩容、被这条断言抓住。
      *          协程帧的分配与释放正走在这条路径上（每次 I/O 都会新建并销毁一个帧）。
      */

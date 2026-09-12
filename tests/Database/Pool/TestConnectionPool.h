@@ -41,10 +41,8 @@ namespace AsynGyanis::Database::TestPoolSupport
     /**
      * @brief 打桩的数据库连接，用于测试连接池行为
      *
-     * @details 不连接任何真实数据库。提供以下可配置行为：
-     *          - m_healthOk：isConnected() 的返回值，可设为 false 模拟断连
-     *          - m_connectOk：connect() 的返回值
-     *          - 每个实例有唯一 ID，方便断言连接复用
+     * @details 不连接任何真实数据库：m_healthOk / m_connectOk 分别决定 isConnected() 与 connect() 的
+     *          返回值（可设 false 模拟断连），每个实例持有唯一 ID 以便断言连接复用。
      */
     class MockConnection : public DatabaseConnection
     {

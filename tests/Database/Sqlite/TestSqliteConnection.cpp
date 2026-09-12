@@ -1,21 +1,10 @@
 /**
  * @file TestSqliteConnection.cpp
  * @brief SqliteConnection 单元测试：真实 SQLite 驱动的建库、单语句执行契约、事务与连接级计数器
- * @details SQLite 是进程内引擎，本文件全部用例零外部服务：内存库走 ":memory:"，文件库走
- *          TestSupport::TemporaryDatabaseFile 生成的临时路径，用例结束即删除文件与同名 -wal/-shm/-journal 残留。
- *          钉住的实现契约（重构时刻意定下的语义，破坏即视为回归）：
- *          1、execute() 一次只执行一条语句：分号后还有可执行语句时整次调用失败，一条都不执行；
- *             尾部只剩空白、注释或多余分号不算额外语句；
- *          2、queryTimeout() 在 connect() 时映射成 sqlite3_busy_timeout，非正值映射为 0；
- *             该映射经 PRAGMA busy_timeout 直读验证，不做依赖时钟的等待断言；
- *          3、启动期两条 PRAGMA（WAL / 外键）失败不致命：内存库的 journal_mode 仍是 memory，
- *             文件库则确实切到 wal，两条 PRAGMA 都不该留下错误文本；
- *          4、lastInsertRowId() 是连接级计数器，只由 INSERT 刷新，与结果集快照互不影响；
- *          5、未连接时各入口一致失败并给出中文说明，serverVersion() 与 databaseType() 不依赖连接。
- *          确认无法安全覆盖、因此不做断言的行为：
- *          1、命令长度超过 INT_MAX 的拒绝分支——需要构造 2GB 字符串，代价与收益不成比例；
- *          2、sqlite3_close_v2 返回 SQLITE_MISUSE 的分支——只有在外部抢先关闭句柄时才会触发，
- *             属于本类文档明令禁止的用法，不为其制造非法状态。
+ * @details SQLite 是进程内引擎，全部用例零外部服务（内存库 ":memory:"，文件库用 TestSupport::TemporaryDatabaseFile
+ *          的临时路径，结束即连 -wal/-shm/-journal 残留一起删除）。钉住的契约：execute() 一次只执行一条语句（分号后
+ *          还有可执行语句就整次失败、一条都不执行）；queryTimeout() 走 sqlite3_busy_timeout 并经 PRAGMA 直读验证；
+ *          启动期两条 PRAGMA 失败不致命；刻意不测命令超 INT_MAX 与 SQLITE_MISUSE（外部抢先关句柄）两条分支。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -523,7 +512,7 @@ namespace AsynGyanis::Database
 
         const std::unique_ptr<DatabaseResult> result = connection().execute(script);
 
-        // 旧实现会执行前半段、静默丢掉后半段；现在必须整次调用失败
+        // 分号后仍有可执行语句就整次失败：执行前半段再静默丢掉后半段是不允许的
         EXPECT_EQ(result, nullptr);
         EXPECT_TRUE(containsLocalizedText(connection().lastError())) << connection().lastError();
         // 只校验「中文说明 + 提到语句」：额外语句编译失败与整次拒绝两条分支措辞不同，不该钉死

@@ -97,7 +97,7 @@ namespace AsynGyanis::Database
 
     std::optional<std::string> SqliteResult::columnName(const size_t index) const
     {
-        // 用缓存的无符号列数比较上界：旧实现把 index 强转成 int 再比较，
+        // 用缓存的无符号列数比较上界：不能把 index 强转成 int 再比较，
         // 传入 SIZE_MAX 时会回绕成 -1 从而绕过检查，导致越界调用 SQLite
         if (m_statement == nullptr || index >= m_columnCount)
         {
@@ -134,7 +134,7 @@ namespace AsynGyanis::Database
 
     DatabaseValue SqliteResult::getValue(const size_t index) const
     {
-        // 游标没停在有效行上时 SQLite 的列读取接口属于未定义行为（旧实现会读到上一次 step 的残值），
+        // // 游标没停在有效行上时 SQLite 的列读取接口属于未定义行为（会读到上一次 step 的残值），
         // 统一按「无值」返回 monostate，让调用方与读到 NULL 列的表现一致
         if (!m_hasCurrentRow)
         {

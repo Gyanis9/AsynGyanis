@@ -23,11 +23,9 @@ namespace AsynGyanis::Net
     /**
      * @brief 静态文件服务的当前配置
      *
-     * @details 单独成类型（而不是塞进 HttpServer 的私有成员）有两个原因：
-     *          @li 通配路由的处理函数要读这份配置，按值捕获一个共享的 settings 比捕获
-     *              `this` 更安全——处理函数可能在服务器之后才被销毁；
-     *          @li rootDirectory 存的是**规范化之后**的绝对路径，配置一次、每请求只读，
-     *              避免每次请求都去碰文件系统。
+     * @details 单独成类型（而不是塞进 HttpServer 的私有成员）是因为通配路由的处理函数要读它：
+     *          按值捕获一个共享的 settings 比捕获 `this` 更安全——处理函数可能在服务器之后才
+     *          被销毁。rootDirectory 存的是规范化后的绝对路径，配置一次、每请求只读。
      * @note 只在事件循环线程上读写：静态服务开关与目录的变更不会与在途请求交错。
      */
     struct StaticFileSettings
@@ -67,12 +65,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 为一条新连接创建 HTTP 会话对象。
          *
-         * @details 重写 TcpServer::createConnection()（基类为纯虚钩子，不重写无法实例化本类）。
-         *          与基类契约的差异：基类只规定「把 socket 移交给子类，返回 nullptr 视为子类缺陷」，
-         *          本实现的具体行为是——socket 的所有权随 HttpSession 转交 Core::Connection，
-         *          本函数不做任何握手或阻塞动作（基类明确禁止在事件循环线程上阻塞），
-         *          也不会抛异常：HttpSession 的构造只是搬移 socket 与复制两个引用。
-         *          返回值永不为空，因此基类里那条「丢弃连接」的分支在这里不会走到。
+         * @details 重写 TcpServer::createConnection()（基类为纯虚钩子）。与基类契约的差异：
+         *          socket 的所有权随 HttpSession 转交 Core::Connection；本函数不做任何握手或
+         *          阻塞动作（基类禁止在事件循环线程上阻塞），也不会抛异常，返回值永不为空，
+         *          因此基类「丢弃连接」的分支不会走到。
          *
          * @param socket 已 accept 且已设为非阻塞的套接字，所有权就此转移
          * @return std::shared_ptr<Core::Connection> 实际类型为 HttpSession
@@ -83,11 +79,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置（或关闭）静态文件目录。
          *
-         * @details 语义是「配置当前值」，不是「追加一条路由」：
-         *          @li 首次调用注册一条 `any("*")` 兜底路由，处理函数只读取本服务器的当前配置；
-         *          @li 之后再调用只更新配置，**不会**注册第二条兜底路由，也不会出现
-         *              「新目录不生效、旧目录仍在服务」的悬空状态（早先实现按值捕获目录字符串，
-         *              第二次调用改不动已注册的路由，还多塞一条通配路由，已修正）。
+         * @details 语义是「配置当前值」，不是「追加一条路由」：首次调用注册一条 `any("*")` 兜底
+         *          路由，处理函数只读取本服务器的当前配置；之后再调用只更新配置，**不会**注册
+         *          第二条兜底路由，也不会出现「新目录不生效、旧目录仍在服务」的悬空状态。
          *
          * @param directoryPath 静态文件的根目录路径，相对或绝对均可；传入空串表示关闭静态服务
          *

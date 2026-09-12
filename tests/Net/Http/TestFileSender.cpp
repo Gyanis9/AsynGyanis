@@ -33,10 +33,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 探测类型是否仍有名为 sendFile 的静态成员
-         * @details 零拷贝发送通道本轮已被整体删除（全仓库无消费者，且 Windows 分支的
-         *          TransmitFile 用法与错误码来源都是错的）。本特性探测把这个事实钉住：
-         *          谁再塞回一个 sendFile，用例就会立刻发现——它不该在没有跨平台
-         *          sendfile 封装的情况下回来。
+         * @details 零拷贝发送通道刻意不提供（全仓库无消费者，且 Windows 分支的 TransmitFile
+         *          用法与错误码来源都是错的），本特性探测把这个事实钉住：谁再塞回一个 sendFile，
+         *          用例就会立刻发现——它不该在没有跨平台 sendfile 封装的情况下回来。
          */
         template<typename Candidate, typename AlwaysVoid = std::void_t<>>
         struct HasSendFile : std::false_type

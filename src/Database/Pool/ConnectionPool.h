@@ -6,39 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 连接池核心实现，支持同步阻塞获取、非阻塞尝试获取、以及协程异步获取三种方式。
- *
- * ## 设计要点
- *
- * ### LIFO 空闲栈
- * 最新归还的连接最可能还在热点缓存中，减少冷启动。
- * 使用 std::vector 模拟栈，std::mutex 保护。
- * 热点池的单锁竞态可以接受：每个池实例绑一个数据库，单库的操作并行度不会高到使单锁成为瓶颈。
- *
- * ### 懒惰创建
- * acquire() 时若无空闲连接且 total < max 则新建，避免上线就建满。
- *
- * ### 超时与健康
- * acquire() 等待空闲连接最多 acquireTimeoutMs（用条件变量）；
- * 归还时检查连接是否过期（idleTimeoutSec / maxLifetimeSec），过期直接关闭不归还。
- * 后台 std::jthread 定期遍历空闲列表，驱逐超时连接（惰性 + 定期双重清理）。
- *
- * ### 健康检查
- * 在 acquire（从空闲栈取出时）做轻量探活（调用 isConnected()）。
- * 不健康则丢弃并从工厂重建。选择获取时做而非归还时做，是因为：
- * - 获取路径是调用方感知延迟的关键路径，此时探活可以确保调用方拿到的是可用连接；
- * - 归还路径应尽可能短以让后续等待者尽快拿到连接；
- * - 归还时连接刚被使用完，大概率还是健康的，探活收益低。
- *
- * ### 异步获取
- * acquireAsync 等不到空闲连接时把当前协程挂起到一个等待列表，
- * 有空闲时由归还路径唤醒。等待列表用 std::mutex + std::deque 保护，
- * 虽然含锁但操作频率低（仅在池空且并发协程等待时触发），安全且简单。
- * 协程被提前销毁时能从等待列表中自行移除。
- *
- * ### 性能意识
- * acquire / release 的公共路径尽可能短（第一次直接返回）。
- * 核心运算密集型操作（健康检查、过期驱逐）转移到后台线程。
+ * @details 管理一组 DatabaseConnection，提供阻塞获取、非阻塞尝试、协程异步获取三种方式。
+ *          空闲连接用 LIFO 栈（最新归还的最可能还在热点缓存）、懒惰创建、单锁保护；归还时做
+ *          空闲/存活期过期判定，后台 jthread 定期驱逐，探活放在获取路径上（调用方拿到的一定是
+ *          可用连接，归还路径保持最短）。
  *
  * ## 线程安全
  * 所有公有方法（包括 acquire、tryAcquire、release 路径）均为线程安全。
@@ -74,32 +45,8 @@ namespace AsynGyanis::Database
     /**
      * @brief 高性能线程安全连接池
      *
-     * @details 管理一组 DatabaseConnection 实例，提供三种获取方式：
-     *          - acquire()：阻塞等待，最多等 acquireTimeoutMs 毫秒；
-     *          - tryAcquire()：非阻塞，有则返回，无则返回空；
-     *          - acquireAsync()：协程异步，挂起等待，由归还路径唤醒。
-     *
-     *          连接生命周期由池管理，调用方通过 PooledConnection RAII 包装使用。
-     *
-     * @code
-     *   ConnectionPool pool(
-     *       []() { return DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault()); }
-     *   );
-     *
-     *   // 方式一：阻塞获取
-     *   PooledConnection connection = pool.acquire();
-     *   if (connection)
-     *   {
-     *       connection->execute("SELECT 1");
-     *   } // 析构自动归还
-     *
-     *   // 方式二：非阻塞尝试
-     *   PooledConnection maybe = pool.tryAcquire();
-     *
-     *   // 方式三：协程异步
-     *   // auto task = pool.acquireAsync(eventLoop);
-     *   // auto connection = co_await task;
-     * @endcode
+     * @details 连接生命周期由池管理，调用方通过 PooledConnection RAII 包装使用。
+     *          acquire() 阻塞至多 acquireTimeoutMs 毫秒，tryAcquire() 非阻塞，acquireAsync() 由归还路径唤醒。
      */
     class ConnectionPool
     {
@@ -147,11 +94,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 协程异步获取连接
          *
-         * @details 有空闲连接（或未达上限）时立即返回，不涉及任何线程切换；
-         *          否则当前协程挂起到等待列表，待连接归还时由归还方把恢复动作
-         *          **投递回本方法给定的 EventLoop**（Scheduler::scheduleRemote），
-         *          因此协程恢复后的代码仍运行在该事件循环线程上——与异步数据库执行器的
-         *          约定一致：调用方不必担心自己的后续代码跑到别的线程上。
+         * @details 有空闲连接（或未达上限）时立即返回，不涉及任何线程切换；否则当前协程挂起到
+         *          等待列表，待连接归还时由归还方把恢复动作**投递回本方法给定的 EventLoop**，
+         *          因此协程恢复后的代码仍运行在该事件循环线程上，与异步数据库执行器的约定一致。
          *
          * @param loop 恢复本协程用的事件循环；其 run() 必须正在运行（或即将运行），
          *             且对象生命周期要覆盖到协程完成之后

@@ -530,9 +530,7 @@ namespace AsynGyanis::Base
     {
         // 证明「0 = 不限制」的方式是**把限制调小**、而不是把输入调深：同一份 33 层的输入，
         // 在 maximumDepth = 32 时必须被拦、在 maximumDepth = 0 时必须通过，两个方向的差异
-        // 只来自配置。这样写还有一个实际原因：递归下降解析器每层吃一个栈帧，
-        // 原先用 400 层来「越过默认上限 256」证明该性质时，开了 AddressSanitizer 的构建
-        // 会因每帧额外开销而直接栈溢出——测试不该建立在几百层递归之上
+        // 只来自配置。递归下降解析器每层吃一个栈帧，几百层的输入在 AddressSanitizer 下会直接栈溢出
         const JsonParseOptions limitedOptions{.maximumDepth = 32};
 
         JsonParseOptions unlimitedOptions;

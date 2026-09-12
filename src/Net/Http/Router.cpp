@@ -350,7 +350,7 @@ namespace AsynGyanis::Net
         const HttpMethod  requestMethod = request.method();
 
         // 方法是否被本框架收录：未收录（CONNECT/TRACE/M-SEARCH 等）一律不进业务匹配。
-        // 旧实现把 UNKNOWN 当通配方法用，于是任何畸形方法都能蹭到兜底路由上。
+        // UNKNOWN 不参与通配匹配：放行它等于让任何畸形方法都能蹭到兜底路由上。
         const bool isRequestMethodRecognized = requestMethod != HttpMethod::UNKNOWN;
 
         // 本条路径上允许的方法集合，用于路径命中而方法不合时生成 405 的 Allow 头。
@@ -414,7 +414,7 @@ namespace AsynGyanis::Net
             for (const PatternRoute &route: m_patternRoutes)
             {
                 // 参数只在本条路由成立时才留下：每轮都换一个新的临时容器，
-                // 失败候选攒下的 ":id" 就此被整体丢弃（旧实现直接往 request 里写，会串台）
+                // 失败候选攒下的 ":id" 就此被整体丢弃，不会串到别的路由上
                 PathParameters candidateParameters;
                 if (!matchesPattern(route, requestPath, candidateParameters))
                 {

@@ -532,7 +532,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(configuration().getString("textOn", ""), "on");
         EXPECT_EQ(configuration().getString("textOff", ""), "off");
         EXPECT_EQ(configuration().getString("textNo", ""), "no");
-        // 1.1 风格的布尔词不再是布尔，取 bool 会落回默认值
+        // 1.1 风格的布尔词在 1.2 下不按布尔解析，取 bool 会落回默认值
         EXPECT_FALSE(configuration().getBool("textYes", false));
         EXPECT_FALSE(configuration().getBool("boolFalse", true));
         EXPECT_EQ(configuration().getInt("intNegative", 0), -9876);
@@ -728,7 +728,7 @@ namespace AsynGyanis::Base
         const std::filesystem::path configFile = writeFile("cfg.yaml", "watched: true\n");
         ASSERT_TRUE(configuration().loadFiles({configFile}).success);
 
-        // 此前 loadFiles 不设配置目录，导致热加载只能返回 false；修复后应可启用
+        // 只加载显式文件、未配置目录时同样可以启用：热加载开关不要求存在配置目录
         EXPECT_TRUE(configuration().enableHotReload());
         EXPECT_TRUE(configuration().isHotReloadEnabled());
 
@@ -1134,7 +1134,7 @@ namespace AsynGyanis::Base
         writeFile(kSettingsFileName, "{\"app\": {\"theme\": \"dark\"}}");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        // 内存里先改成第三个值；reload() 重新读文件，文件是唯一真源，取值必须回到 dark
+        // 内存里先置为第三个值；reload() 重新读文件，文件是唯一真源，取值必须回到 dark
         ASSERT_TRUE(configuration().setValue("app.theme", ConfigValue(std::string("navy"))));
         ASSERT_EQ(configuration().getString("app.theme", ""), "navy");
 

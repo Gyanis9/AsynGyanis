@@ -6,26 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 四个层次：
- * - 读路径结果一致性：同一份内存 SQLite 上，toListAsync / firstAsync / countAsync /
- *   executeNonQueryAsync 的结果与同步版逐项相等；
- * - 写路径结果一致性：insertAsync / insertBatchAsync / updateAsync 的受影响行数与同步版相等，
- *   且「异步写 → 同步读」能读回刚写进去的那一行——读回是「数据真的落库」的权威证据；
- *   批量插入另有两例：空集合不产生任何语句，以及「行数 × 列数」越过方言参数上限时的分块
- *   （分块那条分支会在工作线程上临时开一个本地事务并提交）；
- * - 不阻塞调用线程：用一个被闩锁（std::latch）卡住的工作任务做确定性验证——
- *   提交后控制权立刻回到调用线程（耗时判据），且「任务是否已经完成」「阻塞调用是否在别的线程上
- *   执行」都能被直接观测；
- * - 异常路径：离线模式（std::logic_error）与 SQL 错误（std::runtime_error，含中文原因）
- *   都在协程被恢复处重新抛出，类型与消息与同步版一致；读写两条路径各覆盖一次。
- *
- * ## 协程帧的销毁时机（本文件最容易写错的地方）
- * 完成标记由驱动协程在事件循环线程上置位，而测试线程看到标记后就会继续断言并离开作用域。
- * 此时事件循环线程可能正处在 resume() 的收尾阶段（协程已执行完、尚未从 final_suspend 返回），
- * 若测试线程当场销毁协程帧就会与之竞态。本文件不再自己承担这套纪律：
- * 常驻的 TestSupport::EventLoopThread（见 DatabaseTestSupport.h）把「后台线程跑事件循环」
- * 与「驱动协程帧活到循环线程结束之后」合并成一条绕不过去的实现——经它的 runToCompletion()
- * 启动的帧由它持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
+ * @details 四个层次：读路径与写路径的结果都与同步版逐项相等（异步写之后一律用**同步查询**读回，那是「数据真的落库」
+ *          的权威证据）；用闩锁卡住工作任务证明调用线程不被阻塞；异常在协程恢复处重新抛出，类型与消息与同步版一致。
+ *          协程帧的销毁时机是本文件最容易写错的地方：帧由常驻的 TestSupport::EventLoopThread 持有，其成员声明顺序保证
+ *          帧的销毁晚于 m_thread 的 join，因此本文件不再自己承担这套纪律。
  *
  * 覆盖场景：
  * - AsyncQueryResultsMatchSyncVersions
@@ -343,12 +327,10 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
 /**
  * @brief 验证 insertAsync 的受影响行数与同步 insert 相同，且行真的落库（异步写 → 同步读）
  *
- * @details 钉住两件事：
- *          - 受影响行数不受「在工作线程上执行」影响，与同一张表上的同步 insert 逐值相等；
- *          - 写操作确实提交到了数据库——判据不是异步接口自己回报的 1，而是另起一条同步查询
- *            按主键读回全部字段（含可空列的两个方向），否则「返回 1 却没写进去」也测不出来。
- *          co_await 的线程归属：insertAsync 的「取连接 → 执行」在 m_executor 的工作线程上跑，
- *          语句与参数在提交前就已定型；完成后协程在 m_loopRunner 的循环线程上被恢复。
+ * @details 钉住两件事：受影响行数与同一张表上的同步 insert 逐值相等；写确实提交到了数据库——判据不是异步接口
+ *          自己回报的 1，而是另起一条同步查询按主键读回全部字段（含可空列的两个方向），否则「返回 1 却没写进去」也测不出来。
+ *          co_await 的线程归属：insertAsync 的「取连接 → 执行」在 m_executor 的工作线程上跑（语句与参数在提交前就已定型），
+ *          完成后协程在 m_loopRunner 的循环线程上被恢复。
  */
 TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
 {
@@ -403,13 +385,10 @@ TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
 /**
  * @brief 验证 updateAsync 的受影响行数与同步 update 相同，改后的值可被同步读回，主键不存在时为 0
  *
- * @details 钉住三件事：
- *          - updateAsync 改的确实是已存在的那一行，且只改它（另一行逐字段不受影响）；
- *          - 受影响行数与同步 update 逐值相等；
- *          - 主键不命中时返回 0，并且表里没有任何一行被改动——「0」不能与「改了别的行」混淆。
- *          可空备注被从「有值」改成 NULL，是同步读回时最容易被悄悄改写成空串的形态。
- *          co_await 的线程归属：同 insertAsync，阻塞链路在 m_executor 的工作线程上，
- *          恢复发生在 m_loopRunner 的循环线程上。
+ * @details 钉住三件事：updateAsync 改的确实是已存在的那一行且只改它（另一行逐字段不受影响）；
+ *          受影响行数与同步 update 逐值相等；主键不命中时返回 0 且表里没有任何一行被改动——
+ *          「0」不能与「改了别的行」混淆。可空备注被从「有值」置为 NULL，是同步读回时最容易被
+ *          悄悄写成空串的形态。co_await 的线程归属与 insertAsync 相同。
  */
 TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
 {
@@ -417,7 +396,7 @@ TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
     insertRow(1, "改前", std::string("改前备注"));
     insertRow(2, "旁观者", std::nullopt);
 
-    // ---- 异步更新主键 1：备注从有值改成 NULL ----
+    // ---- 异步更新主键 1：备注置为 NULL ----
     Queryable<AsyncAccountRow> asyncUpdateQuery(*m_pool);
     asyncUpdateQuery.useAsyncExecutor(m_executor);
 
@@ -533,13 +512,10 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWritesRowsEqualToSyncInsertBatch)
 /**
  * @brief 验证 insertBatchAsync 在行数 × 列数超过方言参数上限时自动分块，且全部块都在一个事务里
  *
- * @details SQLite 单条语句的参数个数上限是 999，本结构体恰好 3 列，因此每批最多 333 行。
- *          这里插入 400 行（400 × 3 = 1200 > 999）：必然切成两块，于是走到
- *          Queryable::insertBatchOn() 里「工作线程上临时开一个本地事务覆盖全部块，最后提交」
- *          这条分支——它只有越过分块阈值才被执行得到，是本用例存在的首要理由。
- *          分块最常见的缺陷是最后一块的上界算错（丢行或重复写），因此边界两侧的两行都要读回核对。
- *          co_await 的线程归属：分块、本地事务的开启与提交、每一块的执行全部在 m_executor
- *          的工作线程上完成；调用线程在提交后立刻继续，恢复仍发生在 m_loopRunner 的循环线程上。
+ * @details SQLite 单条语句的参数个数上限是 999，本结构体恰好 3 列，因此每批最多 333 行。插入 400 行（400 × 3 = 1200 > 999）
+ *          必然切成两块，于是走到 Queryable::insertBatchOn() 里「工作线程上临时开一个本地事务覆盖全部块，最后提交」这条分支
+ *          ——它只有越过分块阈值才被执行得到，是本用例存在的首要理由。分块最常见的缺陷是最后一块的上界算错（丢行或重复写），
+ *          因此边界两侧的两行都要读回核对；分块、本地事务与每一块的执行都在 m_executor 的工作线程上完成。
  */
 TEST_F(QueryableAsyncTest, AsyncInsertBatchChunkedPathSpansLocalTransaction)
 {
@@ -638,11 +614,9 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionProducesNoStatemen
 /**
  * @brief 验证提交阻塞任务后调用线程立刻拿回控制权，且阻塞代码在别的线程上执行
  *
- * @details 用两个闩锁把工作线程卡住：workStarted 由工作任务在开始执行时打开，
- *          releaseWork 只在测试断言「控制权已返回」之后才打开。因此三点可被确定性观测：
- *          - 提交耗时远小于任务被卡住的时长（调用线程没有被阻塞）；
- *          - 任务确实已经在某个线程上开始执行（否则 try_wait_for 会超时）；
- *          - 该线程不是调用线程（阻塞代码没有跑在调用线程上）。
+ * @details 用两个闩锁把工作线程卡住：workStarted 由工作任务在开始执行时打开，releaseWork 只在测试断言「控制权已返回」
+ *          之后才打开。因此三点可被确定性观测：提交耗时远小于任务被卡住的时长（调用线程没有被阻塞）；任务确实已在某个线程上
+ *          开始执行（否则 try_wait_for 会超时）；该线程不是调用线程（阻塞代码没有跑在调用线程上）。
  */
 TEST_F(QueryableAsyncTest, AsyncExecutorSubmitDoesNotBlockCallingThread)
 {
@@ -702,13 +676,10 @@ TEST_F(QueryableAsyncTest, AsyncExecutorSubmitDoesNotBlockCallingThread)
 /**
  * @brief 验证 insertAsync 提交后调用线程立刻拿回控制权，写语句只可能在别的工作线程上执行
  *
- * @details 不测量耗时，判据全是确定性的：先把专用执行器唯一的工作线程用闩锁卡住，
- *          此时任何投给它的任务都不可能开始执行；再提交 insertAsync，于是三点可观测：
- *          - 完成标记没有置位、结果还没有值（若实现把写操作内联在调用线程上执行，这里必然已置位）；
- *          - 同步查询读回 0 行（数据确实还没落库，而不是「悄悄同步写完了」）；
- *          - 放行工作线程后异步写才完成（受影响行数为 1），同步查询随后读到那一行。
- *          闩锁一定会在断言之间被放行：本用例在放行之前不使用 ASSERT，只有 EXPECT，
- *          因此不存在「断言失败提前返回、工作线程永远卡住」的悬挂路径。
+ * @details 不测量耗时，判据全是确定性的：先把专用执行器唯一的工作线程用闩锁卡住，此时任何投给它的任务都不可能开始执行；
+ *          再提交 insertAsync，于是三点可观测：完成标记没有置位、结果还没有值（若实现把写操作内联在调用线程上执行，这里必然已置位）；
+ *          同步查询读回 0 行（数据确实还没落库）；放行工作线程后异步写才完成，同步查询随后读到那一行。
+ *          闩锁一定会在断言之间被放行：本用例在放行之前不使用 ASSERT，只有 EXPECT，不存在「断言失败提前返回、线程永远卡住」的悬挂路径。
  */
 TEST_F(QueryableAsyncTest, AsyncWriteDoesNotBlockCallingThread)
 {
@@ -855,11 +826,9 @@ TEST_F(QueryableAsyncTest, AsyncSqlErrorSurfacesAsOriginalException)
 /**
  * @brief 验证异步写落在不存在的表上时，异常在 co_await 处按原类型与原消息重新抛出
  *
- * @details 写路径的异常比读路径更值得单独钉一次：语句是在调用线程上预先定型的，
- *          真正的失败发生在工作线程上，中间要经过「工作线程 → 调度投递 → 协程恢复」三跳。
- *          因此这里既比对异常类型（std::runtime_error），也逐字比对消息与同步版完全一致，
- *          并覆盖单行写入与批量写入两个入口。消息里必须出现「语句执行失败」这个中文前缀，
- *          证明抛出的是 ORM 的写失败原因而不是被某层包装过的新异常。
+ * @details 写路径的异常比读路径更值得单独钉一次：语句在调用线程上预先定型，真正的失败发生在工作线程上，中间要经过
+ *          「工作线程 → 调度投递 → 协程恢复」三跳。因此这里既比对异常类型（std::runtime_error），也逐字比对消息与同步版完全一致，
+ *          并覆盖单行写入与批量写入两个入口；消息里必须出现「语句执行失败」这个中文前缀，证明抛出的是 ORM 的写失败原因。
  */
 TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
 {

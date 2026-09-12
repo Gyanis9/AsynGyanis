@@ -6,55 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details ORM 只管数据（SELECT/INSERT/UPDATE/DELETE），建表这件事此前只能手写原生 SQL；
- *          本类把「表结构」的唯一真值来源（TableSchema<T>）也用于 DDL，两个方向因此不会脱节：
- *          改了 kColumns 却忘了改手工建表语句，是 ORM 项目里最常见的环境不一致来源。
- *
- * ## 列定义规则（与 RowMapper 的映射规则严格对称）
- * 每一列渲染成「引用后的列名 + 类型名 [ + NOT NULL] [ + PRIMARY KEY]」，逐项依据：
- * - 列名：一律经 SqlDialect::quoteIdentifier() 引用，含空格、保留字、引号的列名都能落地；
- * - 类型名：由成员类型推出逻辑类型（ColumnType），再交给 SqlDialect::columnTypeName()
- *   换成目标引擎的物理类型名（各引擎的类型名差异见方言实现处的注释）；
- * - 可空：std::optional<X> → 不加约束（允许 NULL），X → NOT NULL。与 RowMapper 的读方向
- *   完全一致：NULL 只能落进 std::optional 成员，非 optional 成员遇到 NULL 会抛异常，
- *   所以「非 optional 列允许 NULL」在数据库侧就是一颗定时炸弹，这里直接禁止；
- * - 主键：列名等于 TableSchema<T>::kPrimaryKey 的列加 PRIMARY KEY。主键列若是非 optional
- *   成员，约束文本形如 `"id" BIGINT NOT NULL PRIMARY KEY`（PK 本身已隐含 NOT NULL，
- *   显式写出是为了让生成的 DDL 与结构体声明一一对应，读起来不需要脑补隐含规则）。
- *   若 kPrimaryKey 非空却在 kColumns 里找不到同名列，一律抛 Base::LogicException：
- *   那通常意味着列名拼写不一致，静默建出「没有主键的表」比直接失败危险得多。
- *
- * ## 为什么 createTableStatement() 需要方言参数
- * 类型名与标识符引用都是引擎知识（SQLite 的 INTEGER 与 MySQL 的 BIGINT 不是一回事），
- * 因此离线生成也必须先知道目标是哪个引擎。无参版本无法同时满足两个方言，
- * 所以这里显式要求传入 const SqlDialect&：离线断言文本时直接构造 SqliteDialect / MySqlDialect。
- *
- * ## 在线方法如何取得方言
- * 与 Queryable 一致：从池中借出一条连接读它的真实 DatabaseType，再向 DialectRegistry 要方言
- * （池配置里没有类型信息，直接问连接最可靠），读完立刻归还。方言类型不支持时不抛异常，
- * 而是返回 false 并把原因写进 errorText——本类的在线方法统一用「返回值 + 可选错误文本」报错。
- *
- * ## 失败语义
- * - 编译期错误（缺少 TableSchema 特化、成员类型不受支持）：static_assert，给出中文提示；
- * - 编程错误（kTableName 为空、kPrimaryKey 在 kColumns 中不存在）：抛 Base::LogicException；
- *   注意它**不属于**本模块的 DatabaseException 家族——那是给运行期故障用的，而这类错误是
- *   声明写错了，重试无意义，因此刻意留在 std::logic_error 这条标准分支上，
- *   不被 `catch (const Base::Exception &)` 吞掉；
- * - 运行期失败（取连接失败、方言不支持、DDL 被引擎拒绝）：返回 false，原因见 errorText（可选出参）。
- *
- * @code
- *   // 离线：只生成文本，不接触数据库
- *   const SqliteDialect dialect;
- *   SqlStatement statement = SchemaMigrator::createTableStatement<User>(dialect);
- *   // => CREATE TABLE IF NOT EXISTS "users" ("id" INTEGER NOT NULL PRIMARY KEY, "name" TEXT NOT NULL)
- *
- *   // 在线：建表 → 用 ORM 读写 → 查表是否存在 → 删表
- *   SchemaMigrator::createTable<User>(pool);
- *   Queryable<User> query(pool);
- *   query.insert(User{1, "张三", 18});
- *   SchemaMigrator::tableExists<User>(pool);   // => true
- *   SchemaMigrator::dropTable<User>(pool);
- * @endcode
+ * @details 把 TableSchema<T> 同时用于 DDL 与读写映射，两个方向不会脱节。列定义规则与 RowMapper
+ *          严格对称：std::optional<X> 允许 NULL，X 一律 NOT NULL（NULL 只能落进 optional 成员，
+ *          否则数据库侧就是一颗定时炸弹）；kPrimaryKey 在 kColumns 中找不到同名列时抛
+ *          Base::LogicException；在线方法失败返回 false，原因写进 errorText。
  */
 #pragma once
 

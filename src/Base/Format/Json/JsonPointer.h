@@ -23,22 +23,10 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON Pointer
      *
-     * @details 按 RFC 6901 实现「一个字符串定位一份 JSON 文档中的某个值」：
-     *          - 语法：`json-pointer = *( "/" reference-token )`，空串指向**整个文档**（§3）；
-     *          - 引用 token 的转义：`~1` 代表 `/`、`~0` 代表 `~`，反转义时必须
-     *            「先把 `~1` 还原成 `/`，再把 `~0` 还原成 `~`」，否则 `~01` 会被错解（§3、§4）；
-     *          - 求值：对象取成员、数组取下标；下标按 §4 校验（不允许前导零，
-     *            唯一合法的非纯数字 token 是代表「末尾之后」的 `-`）；
-     *          - 非容器（标量）上继续取成员属于「求值失败」而非错误，`evaluate()` 返回 nullptr（§4）。
-     *
-     * 三种求值入口，语义完全一致，差别只在失败时的表达方式：
-     *   - `evaluate()`：返回指针，未命中返回 nullptr，不抛异常（`noexcept`）；
-     *   - `tryEvaluate()`：返回 `std::optional<std::reference_wrapper<const FormatValue>>`；
-     *   - `resolve()`：未命中抛 `FormatError`，适合「路径必须存在」的调用点。
-     *
-     * 可写入口 `evaluateForWrite()` 供 JSON Patch 之类的就地修改场景使用：它返回可写节点，
-     * 但**不**负责父级定位；Patch 侧需要「父容器 + 末 token」才能完成插入/删除，
-     * 因此 JsonPatch 直接读取 tokens() 自行下钻到父级（见 JsonPatch.cpp 的注释）。
+     * @details 按 RFC 6901 实现：`json-pointer = *( "/" reference-token )`，空串指向**整个文档**
+     *          （§3、§5 首个示例）；引用 token 反转义必须「先把 `~1` 还原成 `/`，再把 `~0` 还原成 `~`」
+     *          （§3、§4），否则 `~01` 会被错解。数组下标不允许前导零，唯一合法的非纯数字 token 是
+     *          代表「末尾之后」的 `-`（§4）；在标量上继续取成员算「求值失败」而非错误（§4）。
      *
      * @note 本类不持有文档所有权，仅保存已反转义的 token 序列；求值结果的生命周期依附于传入的文档。
      */

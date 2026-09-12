@@ -27,62 +27,14 @@ namespace AsynGyanis::Database
     /**
      * @brief Redis 键值存储连接
      *
-     * @details 封装 hiredis C 库（RESP 协议），实现 DatabaseConnection 抽象接口。
-     *          支持单命令执行、参数化命令、管道（Pipeline）批量命令与键空间切换。
-     *
-     * ConnectionConfig 的四个字段在本驱动全部有效，不再有被静默忽略的项：
-     * - host / port：必填的连接地址，connect() 用 redisConnectWithTimeout 建立 TCP 连接；
-     * - password：非空时在建连后立刻发送 AUTH；userName 同时非空时发送两参数形式的
-     *   AUTH userName password（Redis 6+ 的 ACL 用户），只填 userName 会被服务端拒绝，
-     *   因此 password 为空时不会发出任何认证命令；
-     * - database：解释为键空间编号（十进制文本），非空时在建连与认证之后自动 SELECT。
-     *
-     * 超时策略：基类的 connectTimeout() 换算成 timeval 交给 redisConnectWithTimeout；
-     * queryTimeout() 在建连成功后用 redisSetTimeout 应用到同一个上下文，
-     * 因此 AUTH 与初始 SELECT 也在读写超时的保护之内。
-     *
-     * 命令发送一律走 hiredis 的 argv 接口（redisCommandArgv / redisAppendCommandArgv），
-     * 参数以「指针 + 长度」传递：命令文本里的 '%' 不会被当成格式串解析，
-     * 参数内嵌的 '\0' 也不会被截断。execute() 传入的整行命令由本类按 redis-cli 规则切词
-     * （空白分隔、支持单双引号与反斜杠转义），因为直接把整行交给格式化接口只会生成一个参数，
-     * 服务端收到的是 "GET mykey" 这样一条非法命令。
-     *
-     * 错误约定：
-     * - 单命令路径遵循基类契约——服务端回 error 或传输层失败时 execute()/executeCommand()
-     *   返回 nullptr，原因（含服务端原文）写入 lastError()；
-     * - 管道路径无法用连接级 lastError() 指明「N 条里哪一条失败」，因此服务端 error 回复会原样
-     *   封装成 RedisResult 交给调用方，由 RedisResult::isError() 逐条判定；
-     * - 未取得 hiredis 时（CMake 未定义 DATABASE_HAS_REDIS）本类编译为报错桩：
-     *   connect() 恒为 false，所有执行入口返回空结果并把「当前构建未编译 Redis 驱动」写入 lastError()。
-     *
-     * 生命周期：构造 → connect() → execute() / 管道 → disconnect() → 析构。
-     *          析构自动调用 disconnect()。本对象独占 redisContext，拷贝或移动后的源对象
-     *          析构时会重复 redisFree，因此一律禁止。
-     *          与 SqliteResult 不同，execute() 交出的 RedisResult 完全拥有自己的 redisReply，
-     *          不引用本连接的任何内存，因此结果集可以比连接对象活得更久。
+     * @details 可选编译：未取得 hiredis 时编译为报错桩（connect() 恒为 false、各执行入口把
+     *          「当前构建未编译 Redis 驱动」写入 lastError()）。命令一律走 hiredis 的 argv 接口，
+     *          参数按「指针 + 长度」传递，因此 '%' 不是格式串、内嵌 '\0' 不被截断；execute() 的整行
+     *          命令按 redis-cli 规则切词后送出。queryTimeout() 在建连后由 redisSetTimeout 应用到
+     *          上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内；交出的结果集拥有自己的 redisReply。
      *
      * @warning 管道命令登记后不立即发送，flushPipeline() 之前不会有任何网络往返；
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
-     *
-     * @code
-     *   auto connection = DatabaseFactory::createRedis(ConnectionConfig::redisDefault());
-     *   if (connection->connect())
-     *   {
-     *       auto result = connection->execute("GET mykey");
-     *       if (result != nullptr && result->next())
-     *       {
-     *           const DatabaseValue value = result->getValue(0);
-     *       }
-     *
-     *       connection->executeCommand({"SET", "counter", "1"});
-     *       connection->pipelineCommand("INCR counter");
-     *       connection->pipelineCommand("GET counter");
-     *       for (const auto &pipelined : connection->flushPipeline())
-     *       {
-     *           // 元素恒非空，服务端报错的那条用 isError() 判定
-     *       }
-     *   }
-     * @endcode
      */
     class RedisConnection : public DatabaseConnection
     {
@@ -171,7 +123,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 获取数据库类型
          * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Redis，
-         *          不依赖连接状态，桩构建下同样返回本类型（旧桩实现也是这个语义）。
+         *          不依赖连接状态，桩构建下同样返回本类型。
          * @return DatabaseType DatabaseType::Redis
          */
         [[nodiscard]] DatabaseType databaseType() const override;
@@ -191,7 +143,7 @@ namespace AsynGyanis::Database
          * @brief 登记一条管道命令（不立即发送）
          * @details 命令在此处切词并登记进缓冲区，真正的网络往返发生在 flushPipeline()。
          *          批量管道能把 N 次往返压成一次，是 Redis 上最重要的吞吐优化。
-         *          与旧实现的差异：本方法不再维护「是否处于管道模式」这类只写不读的标志——
+         *          缓冲区非空即代表有命令待发，flush 之后一律为空，不另设「是否处于管道模式」这类标志——
          *          缓冲区非空即代表有命令待发，flush 之后一律为空，语义完全由缓冲区表达。
          * @param command 命令文本，切词规则与 execute() 一致
          * @return true 命令已登记
@@ -207,7 +159,7 @@ namespace AsynGyanis::Database
          *          与 execute() 的错误约定不同：服务端 error 回复会被原样封装成 RedisResult 返回，
          *          由调用方用 RedisResult::isError() 判定哪一条失败——连接级 lastError()
          *          无法表达「N 条中的第几条」。
-         *          保证：返回的元素永不为 nullptr（旧实现会塞入 nullptr，调用方一解引用就崩）。
+         *          保证：返回的元素永不为 nullptr（空指针交给调用方解引用会直接崩溃）。
          *          失败边界：append 或读回复途中出现传输层错误时，记录原因、丢弃未读回的命令并断开连接，
          *          返回已经取到的前缀，元素数量因此可能少于登记的命令数；
          *          无论成功与否，登记过的命令一律从缓冲区丢弃，不会被重放到新连接上。

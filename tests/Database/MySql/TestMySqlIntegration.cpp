@@ -1,45 +1,10 @@
 /**
  * @file TestMySqlIntegration.cpp
  * @brief MySQL 真实服务端集成测试 —— 连接、参数化执行、ORM 端到端、事务与边界
- * @details 与同目录的 TestMySqlConnection.cpp（不依赖服务端的失败语义）互补：本文件只在
- *          真的能连上一个 MySQL 服务端时才跑断言，覆盖只有真实服务端才能验证的部分——
- *          - 建连成功、isConnected()、serverVersion()、错误口令的中文失败原因；
- *          - mysql_stmt_* 参数化执行的写与读：影响行数、列名与取值往返（中文 / 负数 / 浮点 /
- *            NULL / 空串 / 内嵌 '\0' / 长文本）、含单引号与 "--" 的文本原样回读、
- *            参数个数不匹配与容器类型参数被拒；
- *          - ORM 端到端（SQL 由 MySqlDialect 生成）：insert / toList（WHERE + ORDER BY +
- *            LIMIT + OFFSET）/ first / count / update / executeNonQuery / insertBatch，
- *            以及反引号引用保留字与特殊字符标识符、多行 VALUES 确实能在真实服务端执行；
- *          - ORM 异步链路（insertAsync / insertBatchAsync / toListAsync / countAsync /
- *            updateAsync / executeNonQueryAsync）：在真实服务端上与同步版在同一张表上逐项对照，
- *            并钉住「不存在的表」这条异常链路的类型与中文消息；
- *            异步驱动与后台事件循环运行器来自 DatabaseTestSupport.h，协程帧的销毁纪律
- *            见那里的 EventLoopThread 类注释；
- *          - Transaction 的提交可见、回滚不可见、析构自动回滚、异常穿越后只留已提交数据；
- *          - SchemaMigrator 建表（DDL 由 TableSchema 生成）后 ORM 读写、tableExists、dropTable；
- *          - 二进制列：LONGBLOB 与 TEXT 同表共存，验证驱动靠列的字符集（而非类型码）区分两者，
- *            含非 utf8mb4 合法序列的载荷与内嵌 NUL 逐字节往返，并可按二进制列做参数化条件查询；
- *          - 空结果集、长文本等边界。
- *
- * ## 口令绝不进仓库（本文件的第一条硬规矩）
- * 连接参数一律从环境变量读取，本文件不出现任何明文口令：
- * - ASYN_MYSQL_TEST_HOST      主机，默认 127.0.0.1
- * - ASYN_MYSQL_TEST_PORT      端口，默认 3306
- * - ASYN_MYSQL_TEST_USER      用户名，默认 root
- * - ASYN_MYSQL_TEST_PASSWORD  口令，**没有默认值**；未设置时全部用例 GTEST_SKIP（不是失败）
- * - ASYN_MYSQL_TEST_DATABASE  专用库名，默认 asyngyanis_test（由本文件 CREATE DATABASE IF NOT EXISTS 自建）
- * 口令缺失即跳过，因此无服务端的 CI 与本地日常构建同样保持全绿；未编译 MySQL 驱动的桩
- * 构建也走跳过路径（见 kMySqlDriverCompiled）。
- *
- * ## 数据隔离
- * 用例只操作自己创建的专用库，且只碰自己建的表：每个用例使用独立表名，建表前先
- * DROP TABLE IF EXISTS，收尾在 TearDown 里再 DROP TABLE IF EXISTS，跑完不留任何残留。
- * 表名固定而非随机，是因为 TableSchema<T>::kTableName 必须是编译期常量；用例之间不共用
- * 表名，因此并行运行（ctest -j）也不会互相干扰。
- *
- * ## 不写死 sleep
- * 需要「另一条连接看到什么」的地方一律新建一条连接后立即查询：语句级别的自动提交会让每条
- * SELECT 各自取一次一致性快照，结果确定，不需要任何等待。
+ * @details 与同目录的 TestMySqlConnection.cpp（不依赖服务端的失败语义）互补：只在真能连上 MySQL 服务端时才跑断言，
+ *          覆盖建连、预处理语句的参数化读写、ORM 同步与异步全链路、事务、迁移与二进制列这类只有真机才能验证的部分。
+ *          连接参数一律从环境变量读，口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值：未设置时整组 GTEST_SKIP，仓库零明文口令。
+ *          用例只碰自建专用库与自己建的表，表名用例间唯一——并行（ctest -j）安全靠资源名不重叠，不靠 TearDown 清理。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -666,14 +631,9 @@ namespace AsynGyanis::Database
             /**
              * @brief 取得后台事件循环运行器，首次调用时才创建
              *
-             * @details 运行器刻意放在 std::optional 里延迟创建，而不是直接作为夹具成员：
-             *          SetUp 在「未编译 MySQL 驱动」或「未设置口令」时会 GTEST_SKIP 并提前返回，
-             *          此时本对象仍是空 optional，析构函数无事可做——不会出现「线程/事件循环只构造了
-             *          一半」的踩空路径（构造即起线程的成员如果在跳过的用例里也一样要启停，
-             *          既白费线程也得在析构里承担额外风险）。真正要跑异步链路时再创建：
-             *          事件循环线程在 runToCompletion() 返回前一直活着，而本对象由夹具在
-             *          用例结束后析构（成员声明顺序见下），协程帧的销毁时机由 EventLoopThread
-             *          的内部约定保证（帧活到循环线程 join 之后）。
+             * @details 运行器刻意延迟创建（放在 std::optional 里）：SetUp 在未编译驱动或未设置口令时会 GTEST_SKIP 并提前返回，
+             *          直接做成夹具成员会让「构造即起线程」的对象在跳过的用例里也启停一轮。真正跑异步链路时才创建，
+             *          事件循环线程活到 runToCompletion() 返回之后，协程帧的销毁时机由 EventLoopThread 的内部约定保证。
              *
              * @return TestSupport::EventLoopThread& 已启动且确认进入运行状态的事件循环运行器
              */
@@ -1485,15 +1445,10 @@ namespace AsynGyanis::Database
     /**
      * @brief 验证 BIGINT UNSIGNED 列的完整取值域都能往返，含 int64 装不下的那一段
      *
-     * @details 这条用例是「写得进、读不回来」缺口的真机证明：MySQL 的 BIGINT UNSIGNED
-     *          上界是 2^64-1，超出 int64，驱动只能把这类取值以十进制文本返回；而写方向
-     *          恰好也把超出 int64 的无符号值降级为十进制文本。两个方向的取舍必须配套，
-     *          少了读方向的文本支路，写进去的取值就再也拿不回来——而且不会报错，
-     *          只会让映射抛「类型不符」，本用例在修复前正是这样失败的。
-     *
-     *          四个取值刻意跨过 2^63 这条分界线：线下走 int64 支路，线上只能走文本支路。
-     *          表名与上一个用例相同（同一个 TableSchema），建表同样由 SchemaMigrator 完成，
-     *          因此这里也顺带验证了 DDL 给出的 BIGINT UNSIGNED 确实装得下上界。
+     * @details MySQL 的 BIGINT UNSIGNED 上界是 2^64-1、超出 int64，驱动只能把这类取值以十进制文本返回；
+     *          写方向也把超出 int64 的无符号值降级为文本，两个方向必须配套——缺了读方向的文本支路，写进去就再也拿不回来，
+     *          而且不会报错、只会让映射抛「类型不符」。四个取值刻意跨过 2^63：线下走 int64 支路，线上只能走文本支路；
+     *          表名与上一个用例相同（同一 TableSchema），建表同样由 SchemaMigrator 完成。
      */
     TEST_F(MySqlIntegrationTest, UnsignedColumnRoundTripsAcrossInt64Boundary)
     {
@@ -1558,14 +1513,10 @@ namespace AsynGyanis::Database
     /**
      * @brief 验证二进制列在真实服务端上按 BLOB 存取，且同表的文本列不会被误判成二进制
      *
-     * @details 这条用例验证的是只有真机才能暴露的一点：MySQL 在协议层**不区分** BLOB 与 TEXT
-     *          （两者的类型码都是 MYSQL_TYPE_BLOB），驱动只能靠列的字符集号（binary = 63）判断。
-     *          用例把 LONGBLOB 与 TEXT 放进同一张表，两列类型码相同、字符集不同：
-     *          若驱动只看类型码，label 会被读成字节、或 payload 被读成文本，两种错误都会在此暴露。
-     *
-     *          载荷刻意包含单独出现的 0xFF——它不是合法的 utf8mb4 序列。按文本类型绑定载荷时，
-     *          服务端会按连接字符集解释这串字节并替换掉非法部分，于是「写进去」与「读回来」
-     *          就不再是同一串字节；这正是二进制必须走 MYSQL_TYPE_BLOB 的原因。
+     * @details MySQL 在协议层**不区分** BLOB 与 TEXT（两者的类型码都是 MYSQL_TYPE_BLOB），驱动只能靠列的字符集号
+     *          （binary = 63）判断。LONGBLOB 与 TEXT 同表时两列类型码相同、字符集不同：只看类型码，label 会被读成
+     *          字节、或 payload 被读成文本。载荷刻意含单独出现的 0xFF（不是合法的 utf8mb4 序列）：按文本绑定会被
+     *          服务端按连接字符集替换掉非法部分，写入与读回因此不是同一串字节。
      */
     TEST_F(MySqlIntegrationTest, BinaryColumnRoundTripsAsBlobWhileTextColumnStaysText)
     {
@@ -1660,12 +1611,9 @@ namespace AsynGyanis::Database
     /**
      * @brief 验证真实服务端上的异步读写全链路与同步版在同一张表上逐项一致
      *
-     * @details 覆盖 insertAsync → toListAsync → countAsync → updateAsync → executeNonQueryAsync：
-     *          每一步都与同一张表上的同步版本对照（受影响行数 / 行内容 / 计数 / 删除行数），
-     *          并且异步写之后都用**同步查询**读回——同步查询看到的就是服务端的真实数据，
-     *          这是「写确实提交上去了」的权威证据，而不是异步接口自己回报的一个数字。
-     *          执行器沿用进程级共享实例（不调用 useAsyncExecutor），顺带覆盖零配置的默认路径；
-     *          协程的恢复一律发生在后台事件循环线程上（见 DatabaseTestSupport.h 的 EventLoopThread）。
+     * @details 覆盖 insertAsync → toListAsync → countAsync → updateAsync → executeNonQueryAsync：每一步都与同一张表上的
+     *          同步版本对照，异步写之后一律用**同步查询**读回——同步查询看到的才是服务端的真实数据，这是「写确实提交上去了」
+     *          的权威证据。执行器沿用进程级共享实例（顺带覆盖零配置的默认路径），协程的恢复都发生在后台事件循环线程上。
      */
     TEST_F(MySqlIntegrationTest, AsyncReadWriteChainMatchesSyncResults)
     {
@@ -1738,7 +1686,7 @@ namespace AsynGyanis::Database
             EXPECT_EQ(counted.value.value(), 2);
         }
 
-        // ---- updateAsync：异步改第 1 行（备注改成 NULL），同步改第 2 行作对照 ----
+        // ---- updateAsync：异步改第 1 行（备注置为 NULL），同步改第 2 行作对照 ----
         {
             OrmQuery<IntegrationAsyncRow> asyncUpdateQuery(*pool);
             const TestSupport::CompletedTask<std::int64_t> updated = loopRunner.runToCompletion(

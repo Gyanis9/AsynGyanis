@@ -19,14 +19,9 @@ namespace AsynGyanis::Platform
      * @brief 平台错误码工具
      *
      * @details Linux 下系统调用与 socket 统一通过 errno 报告错误；Windows 下 socket 走
-     *          WSAGetLastError()，而 CRT/文件类调用依旧设置 errno，
-     *          因此两个访问器分别对应这两条路径（lastSocketErrorCode / lastErrorCode）。
-     *          本类把差异收敛成两组语义常量：
-     *          - 除下面显式标注者外，常量取自 socket 空间，必须与 lastSocketErrorCode() 配对比较
-     *            （这正是全部现有调用方的用法：AsyncSocket 与 TcpAcceptor 的资源紧张判定）；
-     *          - kInterrupted 在两套空间里都能用：POSIX 只认 errno 的 EINTR，
-     *            Windows 下 WSAEINTR 属于 socket 空间，系统空间的中断是另一个码，
-     *            现有系统空间调用点（inotify）只在 Linux 编译，因此不受影响。
+     *          WSAGetLastError()，而 CRT/文件类调用依旧设置 errno，因此分别用
+     *          lastSocketErrorCode() / lastErrorCode() 读取。除下面显式标注者外，常量取自 socket
+     *          空间，必须与 lastSocketErrorCode() 配对比较（kInterrupted 是唯一两套空间都成立的取值）。
      * @note Windows 的 socket 空间没有「内存不足」与「系统文件表满」的独立取值，
      *       因此 kOutOfMemory 与 kNoBufferSpace 同值、kSystemFileTableFull 与
      *       kTooManyOpenFiles 同值；判定时把它们整组写成 OR 即可，
@@ -95,9 +90,8 @@ namespace AsynGyanis::Platform
 
         static constexpr int kOutOfMemory =
 #if ASYN_PLATFORM_WIN32
-                // 原实现取 ERROR_NOT_ENOUGH_MEMORY（Win32 系统空间），而调用方一律拿
-                // WSAGetLastError() 的结果来比，永远匹配不上。socket 空间里内存不足就是
-                // WSAENOBUFS，与 kNoBufferSpace 同值——这是平台事实，不是笔误
+                // 调用方一律拿 WSAGetLastError() 的结果来比，故必须取 socket 空间的码；
+                // socket 空间里内存不足就是 WSAENOBUFS，与 kNoBufferSpace 同值——平台事实，不是笔误
                 WSAENOBUFS
 #else
                 ENOMEM

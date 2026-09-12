@@ -7,12 +7,9 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 这个文件盯住的是一条容易被忽略、却在真机上才会暴露的性质：**协程在哪个线程上恢复**。
- *          池满时 `acquireAsync()` 会把协程挂起，归还连接的一方再把恢复动作投递回
- *          `acquireAsync()` 给定的 `EventLoop`（`Scheduler::scheduleRemote`），
- *          因此恢复后的代码仍运行在那个事件循环线程上——调用方可以放心按
- *          「我的后续代码都在自己的循环线程上」来写。
+ *          池满时 `acquireAsync()` 挂起，归还连接的一方把恢复动作投递回 `acquireAsync()` 给定的 `EventLoop`
+ *          （`Scheduler::scheduleRemote`），因此恢复后的代码仍运行在那个事件循环线程上。
  *
- *          修复前该形参在实现里根本没用（写作 `/*loop*​/`），恢复点在归还连接的那个线程上；
  *          本文件就是防止它退化的那道闸：断言恢复线程 == 事件循环线程，且**不等于**调用线程。
  *
  * 覆盖场景：
@@ -97,7 +94,7 @@ namespace AsynGyanis::Database
         const std::thread::id callerThreadId = std::this_thread::get_id();
 
         // 池是空的但未达上限：应当与同步 acquire() 同口径——立刻建连返回，不经过挂起。
-        // 这条曾经不成立：异步路径只从空闲栈取，导致刚建好的池上所有异步获取都先挂起
+        // 池未满时必须直接新建连接：若只从空闲栈取，刚建好的池上所有异步获取都会先挂起
         ASSERT_EQ(counter.totalCreated.load(), 0) << "构造池时不应预创建连接";
 
         Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);

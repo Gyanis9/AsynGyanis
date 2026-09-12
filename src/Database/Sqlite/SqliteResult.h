@@ -94,7 +94,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 按列索引取列名
          * @details 重写 DatabaseResult::columnName()：用缓存的 size_t 列数做上界判断，
-         *          避免把无符号索引强转成 int 后回绕成负数（旧实现对 size_t(-1) 会越界访问 SQLite）。
+         *          避免把无符号索引强转成 int 后回绕成负数（回绕后的索引会读到别的列）。
          * @param index 列索引，从 0 开始
          * @return std::optional<std::string> 列名；无游标或索引越界返回空值
          */

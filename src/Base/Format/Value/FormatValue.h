@@ -142,9 +142,8 @@ namespace AsynGyanis::Base
          *
          * @details 供 range-for 直接遍历对象成员，元素为
          *          std::pair&lt;const std::string, FormatValue&gt;，可结构化绑定为
-         *          (const std::string &amp;, FormatValue &amp;)。视图不持有数据，仅引用
-         *          所属 FormatValue；当其不是对象时 begin() 与 end() 都是值初始化的
-         *          迭代器，比较相等即空范围，跨类型遍历不会触碰未构造的容器。
+         *          (const std::string &amp;, FormatValue &amp;)。视图不持有数据，仅引用所属
+         *          FormatValue；非对象时 begin() 与 end() 是相等的值初始化迭代器，即空范围。
          */
         class MemberRange
         {
@@ -362,11 +361,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 按值语义进行三路比较
-         * @details 类型不同时只比较类型序（变体下标，即 FormatValueType 枚举序），
-         *          绝不跨类型比较数值，因此不存在 int 与 double 混比的精度陷阱；
-         *          类型相同时递归比较内容：数组按元素字典序、对象按键再按值的字典序，
-         *          前缀完全等价时元素或成员少者更小（与 std::vector / std::map 一致）。
-         *          含 NaN 时返回 std::partial_ordering::unordered。
+         * @details 类型不同时只比较类型序（变体下标，即 FormatValueType 枚举序），绝不跨类型比较
+         *          数值，因此不存在 int 与 double 混比的精度陷阱；类型相同时按元素字典序、对象按键
+         *          再按值的字典序递归比较，前缀等价时少者更小（同 std::vector / std::map）。
          * @param other 待比较的文档值
          * @return std::partial_ordering 比较结果
          * @note 结果类型是 partial_ordering：含 NaN 的值不构成全序，不能直接用于
@@ -542,14 +539,10 @@ namespace AsynGyanis::Base
          * @brief 安全获取指定类型的值。
          * @tparam T 目标类型。
          * @return std::optional<std::decay_t<T>> 类型匹配时返回值，否则返回空。
-         * @details 本重载为兼容既有契约保留按值返回（std::string、数组、对象会被拷贝）；
-         *          需要零拷贝时用 getStringView()/getArrayView()/getObjectView()。
-         *          取用规则：
-         *          - 目标 uint64_t：精确取 UInt；持有非负 Int 时无损加宽取出
-         *          - 目标 int64_t：精确取 Int；持有不超过 INT64_MAX 的 UInt 时无损取出
-         *          - 其它整型（bool 除外）：仅从 Int 取并按既有语义窄化
-         *          - 浮点目标：仅从 Double 取
-         *          - 其它类型：仅当与底层变体存储类型一致时才可取
+         * @details 按值返回，字符串/数组/对象会被拷贝，零拷贝请用 getStringView()/getArrayView()/getObjectView()。
+         *          取用规则：uint64_t 精确取 UInt，非负 Int 无损加宽；int64_t 精确取 Int，不超
+         *          INT64_MAX 的 UInt 无损取出；其它整型仅从 Int 取并窄化；浮点仅从 Double 取；
+         *          其余类型仅当与底层变体存储类型一致时才可取。
          */
         template<typename T>
         [[nodiscard]] std::optional<std::decay_t<T> > get() const noexcept

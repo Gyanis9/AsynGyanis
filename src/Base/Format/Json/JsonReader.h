@@ -24,14 +24,10 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON 事件类型
      *
-     * @details 覆盖 RFC 8259 的全部结构：流边界（StreamStart/StreamEnd）、容器边界
-     *          （ObjectStart/ObjectEnd/ArrayStart/ArrayEnd）与标量（Key/String/Number/Bool/Null）。
-     *          事件类型一望即知地分成两类：
-     *          - `Key` 专用于对象成员名（不额外发 String 事件），消费方据此区分「键」与「字符串值」；
-     *          - `Number`/`Bool`/`Null` 只携带原文，类型判定留给消费方（DOM 前端会按
-     *            JsonParser 的规则把它解析成 Int/UInt/Double）。
-     *
-     *          消费方按「开始/结束」成对入栈即可重建文档结构，无需自行处理空白、分隔符与转义。
+     * @details 覆盖 RFC 8259 的全部结构：流边界、容器边界与标量。`Key` 专用于对象成员名（不额外发
+     *          String 事件），消费方据此区分「键」与「字符串值」；`Number`/`Bool`/`Null` 只携带原文，
+     *          类型判定留给消费方（DOM 前端按 JsonParser 的规则解析成 Int/UInt/Double）。消费方按
+     *          「开始/结束」成对入栈即可重建结构，无需自行处理空白、分隔符与转义。
      */
     enum class JsonEventType : std::uint8_t
     {
@@ -83,27 +79,11 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON 流式事件读取器
      *
-     * @details 与 DOM 版 JsonParser 的关系与取舍：
-     *          - JsonParser 一次性吃下完整文本并直接组装 FormatValue，写法简单、可随机访问结果，
-     *            适合配置文件这类「小、要反复按路径取值」的场景；
-     *          - JsonReader 只吐事件、不建 DOM，因此**内存占用与文档大小无关**（只与嵌套深度成正比），
-     *            可以边收网络分片边消费，适合大文档或流式管道；
-     *          - 两者共用同一套选项（JsonParseOptions）与同一套错误分类（FormatErrorKind），
-     *            但**不是同一份扫描器**：JsonParser 的递归下降实现依赖「全文可见」，
-     *            无法直接改造成可中断的增量扫描，因此 JsonReader 用可恢复状态机独立实现，
-     *            两边的语法规则、上限判定与宽松开关保持一致（见 .cpp 中逐条对照的注释）。
-     *
-     * 两种使用方式：
-     *          - pull：构造后直接 nextEvent()（内部输入由 feed() 逐步提供）；
-     *          - push：feed() 逐片喂入，喂完调用 finish()，其间可随时 nextEvent() 取事件。
-     *          `nextEvent()` 返回空 optional 表示「当前缓冲里没有完整事件」——既可能是
-     *          等待更多输入，也可能是流已结束，需结合 isFinished() 与 hasNext() 判断。
-     *
-     * 跨边界安全：token 扫描始终从 token 起点重新开始，只要当前缓冲不足以判定 token
-     *          是否结束就原样返回、不提交任何状态，因此任意切分方式（1 字节、3 字节、随机）
-     *          都会得到与一次性喂入完全一致的事件序列。代价是同一 token 被反复扫描，
-     *          极端情况下（长字符串按 1 字节喂）复杂度为 O(长度²)；实际网络分片通常为
-     *          KiB~MiB 量级，该代价可接受。
+     * @details 不建 DOM，内存占用只与嵌套深度成正比，可边收分片边消费。与 JsonParser 共用选项与错误
+     *          分类但不是同一份扫描器：递归下降依赖「全文可见」，故此处用可恢复状态机独立实现。
+     *          token 扫描总从 token 起点重扫、不足以判定就不提交状态，因此任何切分方式都得到与一次性
+     *          喂入一致的事件序列，代价是极端切分下为 O(长度²)；nextEvent() 返回空 optional 时需结合
+     *          isFinished()/hasNext() 区分「等待更多输入」与「流已结束」。
      *
      * @note 本读取器始终持有输入副本（分片追加需要），不提供零拷贝视图模式。
      */
@@ -303,8 +283,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 校验字符串正文中的 UTF-8 字节序列
          * @details 与 JsonParser 使用同一套 RFC 3629 规则（拒绝过长编码、越界码位、
-         *          UTF-8 形式的代理项与截断序列）；因 JsonParser 的校验是私有实现，
-         *          此处按同一规则独立实现，后续可上收为 TextEscapes 共用原语。
+         *          UTF-8 形式的代理项与截断序列）；因两处共用规则，改动须同步核对。
          * @param bodyStart 正文起始偏移
          * @param bodyEnd 正文结束偏移（不含）
          * @param bodyStartPosition 正文起点位置，用于按字节偏移换算列号

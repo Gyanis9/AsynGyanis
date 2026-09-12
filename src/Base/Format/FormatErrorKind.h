@@ -16,42 +16,14 @@ namespace AsynGyanis::Base
     /**
      * @brief 解析错误分类
      *
-     * @details 分类只描述「失败的性质」，不携带位置与文案；位置与文案仍由 FormatError
-     *          提供。这样调用方可以用 kind() 做分支（例如把超限类错误降级为警告、
-     *          把语法类错误直接判为配置非法），而不必匹配易变的中文错误文本。
-     *
-     *          分类与各格式的对应关系（JSON 侧）：
-     *          - 输入为空 → EmptyInput
-     *          - 非法起始字符、缺分隔符等「此处不应出现该字节」→ UnexpectedByte
-     *          - 字符串扫描到文档末尾仍未见收尾引号 → UnterminatedString
-     *          - 容器扫描到文档末尾仍未见收尾括号 → UnterminatedContainer
-     *          - 宽松模式下块注释未闭合 → UnterminatedComment
-     *          - 转义序列非法、\u 十六进制位数不足或字符非法 → InvalidEscape
-     *          - 数字语法非法（前导零、缺小数位、缺指数位）→ InvalidNumber
-     *          - 数字语法合法但超出可表示范围 → NumberOutOfRange
-     *          - true/false/null 拼写或后缀非法 → InvalidKeyword
-     *          - 对象内出现重复键 → DuplicateKey
-     *          - 文档根值结束后仍有非空白内容 → TrailingContent
-     *          - 嵌套层级超限 → DepthExceeded
-     *          - 输入长度、字符串长度或容器元素数超限 → SizeExceeded
-     *          - 字符串内出现原始控制字符（U+0000..U+001F）→ ControlCharacter
-     *          - 字符串内出现非法 UTF-8 字节序列 → InvalidUtf8
-     *          - 转义中的代理项孤立或配对非法 → SurrogatePairError
-     *
-     *          分类与各格式的对应关系（JSON Pointer / JSON Patch 侧）：
-     *          这一族错误都是「语法合法但语义不成立」，与上面的字节级语法错误严格区分，
-     *          因此一律不再借用 UnexpectedByte：
-     *          - Pointer 文本本身不合法（缺前导 '/'、孤立 '~'、'~' 后非 0/1）→ InvalidPointer
-     *          - 补丁整体或某一项不成形（非数组、项非对象、缺 op/path/value/from、
-     *            字段类型不符、op 未知、数组下标文本非法、remove 根、
-     *            move 的 from 是 path 祖先）→ InvalidPatchOperation
-     *          - path/from 解析成功但定位不到值（目标不存在、父级不是容器、
-     *            add 下标大于元素个数、数组下标越界）→ PatchTargetMissing
-     *          - test 目标存在但比较不相等 → PatchTestFailed
+     * @details 分类只描述「失败的性质」，不携带位置与文案（位置与文案由 FormatError 提供），
+     *          调用方可据 kind() 分支而不必匹配易变的中文错误文本；各分类的适用场景见下方
+     *          枚举值注释。其中 JSON Pointer / Patch 一族都是「语法合法但语义不成立」，
+     *          与字节级语法错误严格区分，因此一律不借用 UnexpectedByte。
      */
     enum class FormatErrorKind : std::uint8_t
     {
-        None,                  ///< 未分类：旧构造路径与跨格式共用原语（TextEscapes）抛出的错误
+        None,                  ///< 未分类：尚无分类的构造路径与跨格式共用原语（TextEscapes）抛出的错误
         EmptyInput,            ///< 输入为空或只有空白/BOM
         UnexpectedByte,        ///< 出现了语法不允许的字节（起始字符、分隔符、对象键位置等）
         UnterminatedString,    ///< 字符串未闭合

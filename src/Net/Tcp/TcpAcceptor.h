@@ -22,10 +22,9 @@ namespace AsynGyanis::Net
     /**
      * @brief 监听队列的默认长度，单位是「条已完成握手但尚未 accept 的连接」
      *
-     * @details 不直接采用系统的 SOMAXCONN：公开头文件里出现 OS 宏会把平台细节泄漏给所有
-     *          调用方；而且 Windows 把 SOMAXCONN 解释成「允许内核自行膨胀队列」，等于关掉
-     *          背压。128 与 Linux /proc/sys/net/core/somaxconn 的历史默认值一致，
-     *          足以吸收瞬时突发，又能让过载在可预期的深度上显式暴露。
+     * @details 不直接采用系统的 SOMAXCONN：公开头文件里出现 OS 宏会把平台细节泄漏给所有调用方；
+     *          而且 Windows 把它解释成「允许内核自行膨胀队列」，等于关掉背压。128 与 Linux
+     *          /proc/sys/net/core/somaxconn 的默认值一致，足以吸收瞬时突发又让过载显式暴露。
      * @note 需要更深或更浅的队列时，调用方直接给 listen(backlog) 传值，本常量只是默认档位。
      */
     inline constexpr int kDefaultListenBacklog = 128;
@@ -91,13 +90,11 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 异步接受一条新连接
-         * @details 先取走上一轮批量 accept 暂存的连接；队列为空时直接在监听描述符上收一条。
-         *          由于事件循环采用边沿触发，一次就绪必须把队列抽干，否则残留连接不会再次
-         *          产生事件，因此本协程会把多余的连接存入 m_pending 供后续调用直接返回。
-         *          可恢复错误全部在协程内部消化、不会抛给调用方：暂无待接受连接时挂起等待监听
-         *          描述符可读；被信号中断或对端在队列中被中止时直接重试；描述符与内核缓冲耗尽时
-         *          用预先建好的 m_backoffTimer 定时退避（此刻连新协程帧都可能申请不到，
-         *          预先建好的定时器只是往循环级队列里插一项，不再需要任何描述符）。
+         * @details 先取走上一轮批量 accept 暂存的连接，队列为空时直接在监听描述符上收一条。
+         *          事件循环是边沿触发，一次就绪必须把队列抽干，因此多余的连接存入 m_pending
+         *          供后续调用直接返回。可恢复错误全部在协程内部消化：暂无连接时挂起等待可读；
+         *          被信号中断或对端中止时直接重试；描述符与内核缓冲耗尽时用预先建好的
+         *          m_backoffTimer 退避（此时连新协程帧都可能申请不到）。
          * @return Core::Task<std::optional<Core::AsyncSocket>> 成功时返回已连接的套接字；
          *         监听套接字已 close() 或描述符失效时返回 std::nullopt，表示应结束接受循环
          * @throws Base::SystemException 出现无法靠重试恢复的终止性错误（如描述符被外部关闭），

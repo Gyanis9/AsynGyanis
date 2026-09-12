@@ -52,13 +52,10 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 获取当前线程 ID 的字符串表示（按线程缓存）
-     * @details 用 std::to_chars 把线程标识写成十进制并一次性构造字符串，相比
-     *          std::ostringstream 少一次感知区域构造与多次内部扩容，且每个线程只算一次，
-     *          热路径上仅仅是返回一个引用。
-     *          取值来源是 std::hash<std::thread::id>：MSVC 与 libstdc++ 都直接返回线程的
-     *          原生标识，因此文本与调试器看到的线程号一致；之所以不直接格式化
-     *          std::thread::id，是因为 MSVC 在 C++20 模式下未提供 formatter<thread::id>
-     *          （属 C++23 设施），而本项目禁用 C++23 设施。
+     * @details 取值来源是 std::hash<std::thread::id>：MSVC 与 libstdc++ 都直接返回线程的
+     *          原生标识，因此文本与调试器看到的线程号一致；不直接格式化 std::thread::id，
+     *          是因为 MSVC 在 C++20 模式下未提供 formatter<thread::id>（属 C++23 设施），
+     *          而本项目禁用 C++23 设施。每线程只算一次，热路径上只返回引用。
      * @return const std::string& 线程 ID 字符串引用
      */
     inline const std::string &threadIdString()

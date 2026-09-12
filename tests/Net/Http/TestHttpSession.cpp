@@ -541,8 +541,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpSession, RequestCloseIsNotReversedByResponseKeepAlive)
     {
-        // 回归防护：旧实现把「响应带 keep-alive」放在最后一步读取，于是
-        // 「请求 close + 响应 keep-alive」会被反转成保活。客户端的显式指令不可被反转
+        // 客户端指令优先：判定顺序若把「响应 keep-alive」放在最后，
+        // 「请求 close」就会被反转成保活，而客户端的显式指令不可被反转
         HttpRequest request;
         request.setHttpVersion("HTTP/1.1");
         request.addHeader("connection", "close");
@@ -636,7 +636,7 @@ namespace AsynGyanis::Net
         addPathEchoingRoute(fixture.router(), "/second");
 
         // 回归防护：一个包里粘着两条请求时，第一条应答完剩下的字节必须留在接收缓冲里，
-        // 下一轮先喂进解析器；旧实现每次固定读到缓冲区开头，会把第二条请求静默丢掉
+        // 下一轮先喂进解析器；每次都从缓冲区开头读会把第二条请求静默丢掉
         const std::string packet =
                 makeRequestText("GET /first HTTP/1.1", {"host: test"}) +
                 makeRequestText("GET /second HTTP/1.1", {"host: test"});

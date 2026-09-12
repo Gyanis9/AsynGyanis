@@ -448,9 +448,9 @@ namespace AsynGyanis::Base
     FormatValue JsonParser::parseLiteral(const char leadCharacter)
     {
         // 首字符已由 parseValue 限定为 t/f/n，据此唯一确定关键字文本。
-        // 关键字表改为静态存储的 string_view：FormatValue 不是字面类型，原先那张
-        // {text, FormatValue} 局部表每次解析都要在栈上构造并析构 3 个变体，
-        // 而三个关键字的文本长度不同、比较次数也被首字符分派压到一次
+        // 关键字文本用静态存储的 string_view：FormatValue 不是字面类型，局部
+        // {text, FormatValue} 表每次解析都要在栈上构造并析构 3 个变体；
+        // 首字符分派已把比较次数压到一次
         const std::string_view keywordText = leadCharacter == 't' ? std::string_view{"true"} : leadCharacter == 'f' ? std::string_view{"false"} : std::string_view{"null"};
 
         if (m_text.substr(m_index, keywordText.size()) != keywordText)

@@ -7,14 +7,9 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 全部用例都不触碰网络或 TLS：只构造异常对象并断言继承关系与捕获结果。
- *          钉住的契约：
- *          1、Core 的运行期故障（TLS 上下文/会话创建失败、握手失败、TLS 读写失败）
- *             统一派生自 CoreException，而它又派生自 Base::Exception，
- *             因此调用方能用一个 `catch (const Base::Exception &)` 网住整个框架的运行期故障
- *             ——这正是把散落的裸标准异常收成模块类型的目的；
- *          2、它同时仍是标准库的 std::runtime_error，按标准分类的上游处理器不受影响；
- *          3、用法错误（Base::InvalidArgumentException，如非法 IP 文本）**不在**本类的
- *             继承链上：那类问题是调用方的 bug，不该被「可恢复故障」的捕获面吞掉。
+ *          Core 的运行期故障统一派生自 CoreException（进而 Base::Exception），调用方能用一条
+ *          `catch (const Base::Exception &)` 网住全部；它同时仍是标准库的 std::runtime_error；
+ *          用法错误（Base::InvalidArgumentException）刻意不在本链上，不被「可恢复故障」的捕获面吞掉。
  */
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"

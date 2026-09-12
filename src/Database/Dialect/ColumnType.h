@@ -6,18 +6,11 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details DDL 生成（建表迁移）需要一个与具体数据库无关的类型词汇表：ORM 只知道
- *          「这一列是 64 位整数 / 双精度浮点 / 文本」，而各引擎的物理类型名差异很大
- *          （SQLite 只有 5 个存储类，MySQL 的整数类型按位宽分家，布尔在两者中都没有
- *          独立的物理类型）。因此把「逻辑类型」抽成本枚举，由各 SqlDialect 用
- *          columnTypeName() 把它翻译成自己的物理类型名。
- *
- *          本枚举刻意只保留 ORM 当前能映射的成员类型所对应的几种逻辑类型：
- *          TableSchema<T> 支持整型、bool、浮点、std::string、二进制载荷
- *          （std::vector<std::uint8_t> / std::vector<std::byte>）与其 std::optional 包装，
- *          因此这里没有日期时间、定点小数等类型——等 ORM 支持了再往这里加，
- *          避免方言实现出一批永远无人使用的映射分支。
- *          换言之本枚举的每个取值都有成员类型能产生它，没有「留给将来」的空位。
+ * @details ORM 只知道逻辑类型（64 位整数 / 浮点 / 文本…），而各引擎的物理类型名差异很大
+ *          （SQLite 只有 5 个存储类，MySQL 的整数按位宽分家），因此把「逻辑类型」抽成本枚举，
+ *          由各 SqlDialect 用 columnTypeName() 翻译成自己的物理类型名。
+ *          枚举只保留 ORM 当前能映射的成员类型所对应的取值，每个取值都有成员类型能产生它；
+ *          日期时间、定点小数等类型等 ORM 支持了再往这里追加。
  *
  * @note 本枚举只是「类型名翻译」的输入，不参与值的编解码：值一律以 DatabaseValue
  *       绑定给驱动（见 RowMapper.h 的双向映射规则）。

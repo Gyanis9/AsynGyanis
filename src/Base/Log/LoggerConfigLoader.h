@@ -25,28 +25,6 @@ namespace AsynGyanis::Base
      *
      * @details 从 ConfigManager 读取配置并初始化日志系统，支持配置多个日志器与 Sink。
      * @note 必须在单线程环境（通常是 main() 启动阶段）调用 loadFromConfig()。
-     *
-     * 配置示例 (YAML)：
-     * @code
-     * logging:
-     *   global_level: INFO
-     *   loggers:
-     *     root:
-     *       level: DEBUG
-     *       sinks:
-     *         - type: console
-     *           color: true
-     *         - type: file
-     *           path: logs/app.log
-     *     database:
-     *       level: INFO
-     *       sinks:
-     *         - type: async
-     *           queue_size: 2048
-     *           wrapped:
-     *             type: file
-     *             path: logs/db.log
-     * @endcode
      */
     class LoggerConfigLoader
     {

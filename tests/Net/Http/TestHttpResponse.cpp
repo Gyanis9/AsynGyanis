@@ -299,7 +299,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(firstPosition, std::string::npos);
         EXPECT_NE(secondPosition, std::string::npos);
         EXPECT_LT(firstPosition, secondPosition);
-        // 旧的 set-cookie_1 伪键会原样发到线上，已彻底移除
+        // set-cookie_1 这类伪键不得出现在输出里：它会原样发到线上
         EXPECT_FALSE(containsText(output, "set-cookie_1"));
         EXPECT_EQ(response.headers().count("set-cookie_1"), 0U);
     }

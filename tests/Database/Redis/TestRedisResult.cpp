@@ -1,21 +1,10 @@
 /**
  * @file TestRedisResult.cpp
  * @brief RedisResult 单元测试：退化单行游标语义、RESP 回复到统一值的映射与合成列名
- * @details RedisResult 唯一的公开构造入口就是接管一份 hiredis 交出的 redisReply（析构时 freeReplyObject），
- *          而本测试环境没有可用的 Redis 服务。为在不伪造结构体、不触碰内部状态的前提下覆盖这份契约，
- *          本文件用 hiredis 文档化的公开解析接口（redisReaderCreate / redisReaderFeed / redisReaderGetReply）
- *          把一段完整的 RESP 文本还原成真实回复：它与 socket 上收到的回复走完全相同的构造路径，
- *          所有权随后交给 RedisResult，由其按契约释放。因此全部用例都是零网络、零服务端的。
- *          未编译 hiredis（未定义 DATABASE_HAS_REDIS）时结果集退化成永远为空的对象，
- *          依赖回复的用例连同 hiredis 包含一起不参与编译；「无回复即空集」那组用例在两种构建下同义，无条件执行。
- *
- *          确认无法安全覆盖、因此不做断言的行为：
- *          1、顶层 nil 回复（$-1 与 *-1）的回复类型映射：不同 hiredis 版本分别给出 REDIS_REPLY_NIL 与
- *             零长度 REDIS_REPLY_STRING，钉死其一会让用例随依赖版本漂移；数组里的 nil 子元素在两种映射下
- *             都退化成空串占位，因此只覆盖后者；
- *          2、需要真实服务端的语义：RESP3 的双类型（DOUBLE / MAP / SET / BOOL 等，本驱动从不发送 HELLO 3）、
- *             flushPipeline() 与连接级 lastError() 的配合、以及「结果集比连接活得更久」这条生命周期承诺；
- *          3、convertReply() 是私有成员，只能经 getValue() 间接验证，不为其开任何后门。
+ * @details RedisResult 唯一的公开构造入口是接管一份 hiredis 交出的 redisReply（析构时 freeReplyObject），而本测试环境
+ *          没有可用的 Redis 服务。为不伪造结构体、不触碰内部状态，本文件用 hiredis 文档化的公开解析接口（redisReaderCreate /
+ *          redisReaderFeed / redisReaderGetReply）把一段完整的 RESP 文本还原成真实回复——与 socket 上收到的回复走相同的构造
+ *          路径，因此全部用例零网络、零服务端；未编译 hiredis 时结果集退化成永远为空的对象，convertReply() 只经 getValue() 间接验证。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

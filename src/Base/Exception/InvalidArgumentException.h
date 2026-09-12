@@ -18,15 +18,9 @@ namespace AsynGyanis::Base
     /**
      * @brief 参数/配置取值非法异常
      *
-     * @details 用于「调用方给出的值不合法」这一类失败：配置里没提供足以判定数据库类型的
-     *          信息、传入了本模块不支持的枚举取值、待写列清单为空导致语句无法生成。
-     *          与 LogicException 同属「用法错误」这一大类，区别在失败点是**具体的取值**
-     *          而不是对象状态：本类对应标准库 std::invalid_argument 的语义。
-     *
-     *          **派生自 std::invalid_argument**（它本身又派生自 std::logic_error），
-     *          因此按标准分类的上游处理器既能用 `catch (const std::invalid_argument &)`
-     *          精确命中本类，也能用 `catch (const std::logic_error &)` 把本类与
-     *          LogicException 一起网住。
+     * @details 用于「调用方给出的值不合法」这一类失败（配置里没有足以判定数据库类型的信息、传入了
+     *          本模块不支持的枚举取值、待写列清单为空导致语句无法生成），与 LogicException 同属
+     *          「用法错误」，区别在失败点是**具体的取值**而非对象状态；对应 std::invalid_argument。
      *
      * @note 本类与 LogicException 是**兄弟**而不是父子：两者各自继承标准库的两条分支，
      *       而 C++ 里无法让一个类同时以两条路径继承 std::logic_error（会形成菱形基类）。

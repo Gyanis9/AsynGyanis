@@ -16,7 +16,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 数据库连接配置
      *
-     * @details 只保留各驱动确实会读取的字段：原先的 poolSize 没有任何驱动消费，
+     * @details 只保留各驱动确实会读取的字段：poolSize 没有任何驱动消费，
      *          属于「写了没人用」的假配置，故移除；接入连接池时再随实现一起加入。
      *          超时不在这里配置，由 DatabaseConnection 的 setConnectTimeout /
      *          setQueryTimeout 管理，避免出现两处互相覆盖的真值来源。

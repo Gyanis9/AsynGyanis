@@ -6,18 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 两个层次：
- * - 离线：只用 createTableStatement() / dropTableStatement() 生成文本并逐字断言，
- *   覆盖类型映射（含两种等价的二进制成员拼法都落到 BLOB/LONGBLOB）、可空规则、主键、
- *   标识符引用（表名与列名都含空格）与 IF NOT EXISTS/IF EXISTS；
- * - 端到端（内存 SQLite）：SchemaMigrator 建表 → ORM 写入/读回 → tableExists → dropTable →
- *   tableExists 变假，并验证重复建表幂等、不带 IF NOT EXISTS 时对已存在表如实失败；
- *   另有二进制列的专项用例：用 typeof() 断言存储类确实是 blob（声明成 BLOB 但按文本绑定时
- *   存储类会是 text，只看 DDL 发现不了）、两种拼法逐字节往返、零长载荷与 NULL 可区分、
- *   以及按二进制列做参数化条件查询（走的是与写入不同的那套参数变体）。
- *
- * 真实 MySQL 服务端的同类验证放在 tests/Database/MySql/TestMySqlIntegration.cpp
- * （沿用既有的环境变量门控：未设置 ASYN_MYSQL_TEST_PASSWORD 即跳过）。
+ * @details 两个层次：离线只用 createTableStatement() / dropTableStatement() 生成文本并逐字断言（类型映射、可空规则、
+ *          主键、标识符引用、IF NOT EXISTS/IF EXISTS）；端到端（内存 SQLite）走建表 → ORM 读写 → tableExists → dropTable 全链路，
+ *          并验证重复建表幂等、不带 IF NOT EXISTS 时对已存在表如实失败。二进制列另有专项用例：用 typeof() 断言存储类确实是 blob
+ *          （声明成 BLOB 却按文本绑定会存成 text，只看 DDL 发现不了）、零长载荷与 NULL 可区分、按二进制列做参数化条件查询。
  */
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
@@ -482,9 +474,9 @@ TEST_F(SchemaMigratorSqliteTest, TableExistsIsFalseForUnknownTable)
 /**
  * @brief 验证成功返回的调用会清空出参，不会把上一次失败的原因留给调用方
  *
- * @details 该场景最早在真机 MySQL 用例上暴露：调用方复用同一个字符串跨多次调用时，
- *          若成功路径不清空出参，tableExists() 赖以区分「表不存在」与「查询失败」的判据
- *          就会失效——一次建表失败留下的原因会被误读成本次查询失败。
+ * @details 调用方复用同一个字符串跨多次调用时，若成功路径不清空出参，tableExists() 赖以
+ *          区分「表不存在」与「查询失败」的判据就会失效——一次建表失败留下的原因会被误读
+ *          成本次查询失败。
  */
 TEST_F(SchemaMigratorSqliteTest, SuccessfulCallClearsStaleErrorFromPreviousFailure)
 {

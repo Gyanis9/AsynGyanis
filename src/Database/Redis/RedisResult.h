@@ -22,42 +22,23 @@ namespace AsynGyanis::Database
     /**
      * @brief Redis 命令结果集
      *
-     * @details 持有 hiredis 交出的一个 redisReply（所有权归本对象，析构时 freeReplyObject），
-     *          并把 Redis 的返回类型映射到 DatabaseResult 的统一接口。
+     * @details 持有 hiredis 交出的一个 redisReply（所有权归本对象，析构时 freeReplyObject），把一条完整
+     *          回复看成「一行」、回复的元素个数看成「列数」：标量 1 行 1 列、数组 1 行 N 列、
+     *          nil 与空数组 0 行 0 列，故 rowCount() 恒为 1 或 0，isEmpty() 等价于 rowCount()==0。
      *
-     * 退化单行契约（本类全部游标语义的唯一真值来源）：
-     * Redis 一次命令回复是一份一次性、已完整读进内存的数据，不是服务端游标。
-     * 因此把「一条回复」看成「一行数据」，把「回复的元素个数」看成「列数」：
-     * - 标量回复（整数、批量字符串、状态、error）：1 行 1 列；
-     * - 数组回复（含 HMGET/KEYS/LRANGE 等）：1 行 N 列，第 i 列即第 i 个元素；
-     * - 空数组或 nil 回复：0 行 0 列，即空结果集。
-     * 由此得到各接口的自洽行为：
-     * - rowCount() 恒为 1 或 0（不会更多），isEmpty() 与 rowCount()==0 完全等价；
-     * - columnCount() == 元素个数，且恒有 rowCount() == 0 ⇔ columnCount() == 0；
-     * - next() 只在首次调用且结果非空时返回 true，第二次起恒为 false——
-     *   while (result->next()) 这个基类惯用法在此恰好只走一轮；
-     * - reset() 把游标放回这唯一一行之前，于是结果集可以重新遍历；
-     * - getValue(index) 取当前回复的第 index 个元素，与游标是否已推进无关（数据已在内存里）。
-     *
-     * @note 与 SqliteResult 的差异要说清：SQLite 的游标挂在服务端预编译语句上，
-     *       必须先 next() 才能读列值；Redis 没有这种约束，本类允许不调用 next() 直接取值，
-     *       next() 只是为了让统一的遍历写法成立，不 gate 任何数据可读性。
-     *
-     * 值映射规则（顶层元素）：
-     * REDIS_REPLY_STRING / STATUS / ERROR → std::string（按长度拷贝，内嵌 '\0' 不丢失）、
-     * REDIS_REPLY_INTEGER → std::int64_t、REDIS_REPLY_NIL 或未知类型 → std::monostate、
-     * REDIS_REPLY_ARRAY → std::vector<std::string>。
-     *
-     * 哈希类命令（HGETALL / HMGET 等）在 RESP2 下返回的是「字段、值」交替出现的扁平数组，
-     * 与普通的字符串数组在协议上无从区分，因此一律按上面的规则作为列表交出，
-     * 由调用方自行两两配对；本类不会把回复映射成 DatabaseValue 的哈希备选类型。
+     * @note 与 SQLite 驱动的差异（必须说清）：SQLite 的游标挂在服务端预编译语句上，必须先 next()
+     *       才能读列值；Redis 数据已在内存里，本类不 gate 任何数据可读性。
+     * @note 顶层元素映射：STRING / STATUS / ERROR → std::string（按长度拷贝，内嵌 '\0' 不丢失）、
+     *       INTEGER → std::int64_t、NIL 或未知类型 → std::monostate、ARRAY → std::vector<std::string>；
+     *       HGETALL / HMGET 在 RESP2 下是「字段、值」交替的扁平数组，与普通字符串数组在协议上无从区分，
+     *       因此一律按列表交出，由调用方自行两两配对，本类不映射成哈希备选类型。
      *
      * @warning Redis 没有列名概念，columnName()/columnNames() 只能给出按下标合成的名字
      *          （"value0"、"value1"…），它不承载任何语义，也不等于哈希字段名；
      *          稳定可靠的取值方式是按下标 getValue(index)。
      * @warning 数组转 std::vector<std::string> 是有损映射：DatabaseValue 的列表备选类型只有
      *          字符串一种，因此嵌套元素里的整数与浮点数一律按十进制文本保留（见 convertReply()），
-     *          不再像旧实现那样被静默丢弃。
+     *          不会被静默丢弃。
      */
     class RedisResult : public DatabaseResult
     {
@@ -78,7 +59,7 @@ namespace AsynGyanis::Database
         ~RedisResult() override;
 
         // 回复指针所有权唯一：拷贝会导致同一个 redisReply 被 freeReplyObject 两次；
-        // 移动则让源对象析构时再次释放已经交给目标对象的回复。基类也已删除拷贝与移动。
+        // 移动则让源对象析构时再次释放已经交给目标对象的回复。基类同样删除了拷贝与移动。
         RedisResult(const RedisResult &) = delete;
 
         RedisResult &operator=(const RedisResult &) = delete;
@@ -138,13 +119,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列索引读取值
-         * @details 重写 DatabaseResult::getValue()：取当前回复的第 index 个元素并映射成 DatabaseValue。
-         *          与 SQLite 驱动的关键差异：数据已在内存里，本方法不要求先调用 next()，
-         *          游标是否推进也不改变取值结果。
-         *          取值失败（索引越界、无回复、值为 nil、类型未知）一律返回 std::monostate，
-         *          并且绝不写入 m_lastError——那是 const 读取路径，基类不允许它改状态（旧实现在此
-         *          写 error 回复文本，既编不过也会污染错误状态）。服务端报错的原文可以从 lastError()
-         *          （构造时摘取）与 isError() 组合判定。
+         * @details 重写 DatabaseResult::getValue()：取回复的第 index 个元素并映射成 DatabaseValue，不要求先调用
+         *          next()，游标是否推进也不改变取值结果。取值失败（索引越界、无回复、nil、类型未知）一律返回
+         *          std::monostate 且绝不写入 m_lastError——这是 const 读取路径，基类不允许它改状态；
+         *          服务端报错原文可从 lastError()（构造时摘取）与 isError() 组合判定。
          * @param index 列索引，从 0 开始
          * @return DatabaseValue 列值；索引无效或该元素为 nil 时返回 std::monostate
          */
@@ -169,8 +147,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 重置游标到唯一那一行之前
-         * @details 重写 DatabaseResult::reset()：只复位「唯一一行是否已交出」标志，
-         *          使 next() 可以重新返回 true，从而支持二次遍历；
+         * @details 重写 DatabaseResult::reset()：只复位「唯一一行是否已交出」标志，使 next() 可以重新返回 true，
          *          因数据在内存中，本方法不影响任何已读出的值，也不释放回复。
          */
         void reset() override;
@@ -220,7 +197,7 @@ namespace AsynGyanis::Database
          * @details 纯函数：只读回复，不写 m_lastError，因此可以安全地在 const 取值路径上调用。
          *          嵌套数组的每个子元素都会被转成文本塞进 std::vector<std::string>
          *          （整数转十进制、浮点取服务端原始文本），这是列表备选类型只有字符串导致的有损映射，
-         *          但比旧实现「非字符串子元素直接丢弃」更能保住信息。
+         *          但比「非字符串子元素直接丢弃」更能保住信息。
          * @param sourceReply 待转换的回复节点，可为 nullptr
          * @return DatabaseValue 映射后的值；空节点、nil 或未知类型返回 std::monostate
          */

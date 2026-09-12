@@ -7,10 +7,9 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 异常文本的格式（"[异常] 消息 [文件:行 in 函数]"）是被用例钉住的契约
- *          （见 tests/Base/Exception/TestException.cpp），而异常体系有两条互不相干的
- *          继承链——派生自 std::runtime_error 的 Exception 与派生自 std::logic_error 的
- *          LogicException。两条链无法共享基类，因此把这段文本生成上收成自由函数，
- *          由两侧分别调用，避免格式串被抄成多份后各自漂移。
+ *          （见 tests/Base/Exception/TestException.cpp），而异常体系的两条继承链
+ *          （std::runtime_error 的 Exception 与 std::logic_error 的 LogicException）无法共享基类，
+ *          因此把这段文本生成上收成自由函数，避免格式串被抄成多份后各自漂移。
  *
  * @note 只对本模块内部可见：放在 Detail 命名空间下，不作为对外接口的一部分。
  */

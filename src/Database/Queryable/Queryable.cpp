@@ -1,7 +1,7 @@
 // Queryable<T> 为模板类，全部实现位于 Queryable.h。
 // 本文件只保留一个翻译单元锚点与编译期校验：
 // - 旧版这里的 Detail::affectedRowCountOf()（按 DatabaseType 向下转型取影响行数）
-//   已随 DatabaseResult::affectedRowCount() 的加入而删除，ORM 侧不再依赖任何具体驱动；
+//   //   ORM 侧不依赖任何具体驱动，影响行数由 DatabaseResult::affectedRowCount() 回答；
 // - 保留本编译单元可以尽早暴露「头文件被改坏导致无法编译」这类问题，
 //   也让叶子 CMakeLists 的源文件清单保持稳定。
 #include "Database/Queryable/Queryable.h"

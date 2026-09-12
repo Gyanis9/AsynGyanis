@@ -1,14 +1,10 @@
 /**
  * @file TestRedisConnection.cpp
  * @brief RedisConnection 单元测试：真实 hiredis 驱动在「无可用 Redis 服务」下的离线行为
- * @details 本构建已找到 hiredis（DATABASE_HAS_REDIS），因此被测对象是真实驱动而不是报错桩；
- *          但测试环境没有可用的 Redis 服务，所以本文件只覆盖离线可达的路径：
- *          未连接状态的初值、配置回显、超时设置往返、connect() 对未监听端口的有界失败、
- *          未连接时各执行入口返回 nullptr 并写中文原因、管道登记与丢弃、disconnect() 幂等。
- *          任何需要真实服务端的语义（AUTH、SELECT、切词后的命令回包、管道回复对齐）都不在此断言。
- *          超时统一设成百毫秒量级并用 steady_clock 判定上限，保证单条用例远小于 1 秒：
- *          回环地址上没有监听端口会立刻收到 RST，超时只是防止环境异常时挂死的保险。
- *          错误文案只断言「非空 + 含关键子串 + 含本地化文案」，不硬编码整句中文。
+ * @details 本构建已找到 hiredis（DATABASE_HAS_REDIS），被测对象是真实驱动而不是报错桩；但测试环境没有可用的 Redis
+ *          服务，因此只覆盖离线可达的路径：未连接状态的初值、配置回显、超时设置往返、connect() 对未监听端口的有界失败、
+ *          未连接时各执行入口返回 nullptr 并写中文原因、管道登记与丢弃、disconnect() 幂等；需要真实服务端的语义不在此断言。
+ *          超时设成百毫秒量级并用 steady_clock 判定上限（回环地址上没有监听端口会立刻收到 RST，超时只是防挂死的保险）。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

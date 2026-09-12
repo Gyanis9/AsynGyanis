@@ -30,34 +30,12 @@ namespace AsynGyanis::Database
      *
      * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口。SQLite 是进程内引擎，
      *          数据库就是一个文件（或 ":memory:" 代表的内存库），没有服务进程、没有网络往返，
-     *          因此 ConnectionConfig 中只有 database 字段会被读取，
-     *          host / port / userName / password 一律忽略。
-     *
-     * connect() 在打开句柄之后还会做两件配置：
-     * - 把基类的 queryTimeout() 映射成 sqlite3_busy_timeout，命令遇到表锁时最多等待该毫秒数；
-     * - 尝试启用 WAL 日志模式与外键约束。两条 PRAGMA 失败都不致命，原因只写入 lastError()。
-     *
-     * 生命周期：构造 → connect() → execute() / 事务 → disconnect() → 析构。
-     *          析构自动调用 disconnect()，因此按智能指针或栈对象使用都不会泄漏句柄。
-     *          本对象独占 sqlite3* 句柄，任何副本或移动后的源对象都会重复关闭同一句柄，故拷贝与移动一律禁止。
-     *
-     * 错误信息统一写入基类的 m_lastError，lastError() 沿用基类实现，本类不做重复覆写。
+     *          因此 ConnectionConfig 中只有 database 字段会被读取，其余字段一律忽略。
+     *          connect() 会把基类的 queryTimeout() 映射成 sqlite3_busy_timeout（表锁最多等待
+     *          该毫秒数），并尝试启用 WAL 与外键约束，两条 PRAGMA 失败只写入 lastError()。
      *
      * @warning execute() 交出的 SqliteResult 保存本连接句柄的非拥有指针，
      *          结果集必须严格早于连接对象销毁，否则游标会访问已释放的 sqlite3*。
-     *
-     * @code
-     *   auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault());
-     *   if (connection->connect())
-     *   {
-     *       connection->execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
-     *       auto result = connection->execute("SELECT id, name FROM users");
-     *       while (result != nullptr && result->next())
-     *       {
-     *           const DatabaseValue name = result->getValue("name");
-     *       }
-     *   }
-     * @endcode
      */
     class SqliteConnection : public DatabaseConnection
     {
@@ -120,13 +98,12 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条 SQL 命令
-         * @details 重写 DatabaseConnection::execute()：统一走 sqlite3_prepare_v2 + sqlite3_step，
-         *          不再区分查询与写语句的两套代码路径。与基类约定的差异：
-         *          - 每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
-         *          - 带返回列的语句把游标整体交给 SqliteResult（由结果集负责 finalize 与推进）；
-         *          - 无返回列的语句一步跑完，返回「执行成功但为空」的结果集，影响行数由结果集快照；
-         *          - 一次调用只接受一条语句：先让 SQLite 探测剩余文本，发现额外语句时整次调用直接失败，
-         *            一条都不执行，避免旧实现那种「前面的生效、后面的被静默丢掉」。
+         * @details 重写 DatabaseConnection::execute()：统一走 sqlite3_prepare_v2 + sqlite3_step。
+         *          每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
+         *          带返回列的语句把游标整体交给 SqliteResult（由结果集负责 finalize 与推进），
+         *          无返回列的语句一步跑完并返回「执行成功但为空」的结果集。
+         *          一次调用只接受一条语句：发现额外语句时整次调用直接失败，避免「前面的生效、
+         *          后面的被静默丢掉」这种半执行状态。
          * @param command SQL 文本，内部会复制为零终止串后交给 SQLite
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          * @warning 带返回列的写语句（INSERT/UPDATE/DELETE ... RETURNING，以及会回显值的 PRAGMA）
@@ -142,19 +119,11 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条带参数的 SQL 命令（按位置绑定）
-         * @details 重写 DatabaseConnection::execute()：与不带参数版本的唯一差异是先把
-         *          parameters 逐个绑定到语句占位符上再执行。绑定规则：
-         *          - std::monostate → sqlite3_bind_null（真正的 SQL NULL，而不是空串）；
-         *          - bool → sqlite3_bind_int 的 1/0（SQLite 没有布尔存储类）；
-         *          - std::int64_t → sqlite3_bind_int64；
-         *          - double → sqlite3_bind_double；
-         *          - std::string → sqlite3_bind_text，按字节长度传递且用 SQLITE_TRANSIENT 复制，
-         *            因为语句的 step 可能晚于本调用返回（结果集存活期间），不能引用调用方的缓冲区；
-         *          - 容器类型（List/Hash）无法映射成标量参数，直接失败并给出中文原因。
-         *          此外还会校验「占位符个数 == 参数个数」：SQLite 对未绑定的占位符按 NULL 处理，
-         *          少给参数会静默变成永假条件，因此宁可当场报错。
-         *          参数值一律以绑定方式送入，不拼进 SQL 文本，含单引号、"--"、分号的字符串
-         *          因此只是普通文本（见 SqlStatement.h 的说明）。
+         * @details 重写 DatabaseConnection::execute()：先把 parameters 逐个按位置绑定到占位符
+         *          再执行（std::monostate→SQL NULL、bool→0/1、字符串按字节长度并用 SQLITE_TRANSIENT
+         *          复制，因为 step 可能晚于本调用返回，不能引用调用方的缓冲区）。容器类型无法映射成
+         *          标量参数，直接失败。绑定前校验「占位符个数 == 参数个数」：SQLite 对未绑定的占位符
+         *          按 NULL 处理，少给参数会静默变成永假条件，宁可当场报错。
          * @param command    带占位符的 SQL 文本，内部会复制为零终止串后交给 SQLite
          * @param parameters 按占位符出现顺序排列的绑定参数，第 i 个元素绑定到第 i 个占位符
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
@@ -205,7 +174,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 获取数据库版本字符串
          * @details SQLite 没有服务端进程，因此返回的是链接进来的 SQLite 库版本；
-         *          sqlite3_libversion() 不依赖句柄，未连接时同样返回有效文本（旧实现在未连接时返回空串）。
+         *          sqlite3_libversion() 不依赖句柄，未连接时同样返回有效文本。
          * @return std::string 形如 "3.45.0" 的版本号
          */
         [[nodiscard]] std::string serverVersion() const;

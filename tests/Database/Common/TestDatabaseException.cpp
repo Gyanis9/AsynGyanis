@@ -6,16 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 全部用例都不触碰数据库：只构造异常对象并断言继承关系与捕获结果。
- *          钉住的契约：
- *          1、运行期故障家族（DatabaseException 及其三个子类）全部派生自 Base::Exception，
- *             因此调用方能用一个 `catch (const Base::Exception &)` 网住整个框架的可恢复故障——
- *             这正是本次把裸 std::runtime_error 换成模块类型的目的，改造前是做不到的；
- *          2、三个子类各自可精确捕获（三类失败的处置方式不同，见各自的类注释），
- *             且都能被根类型 DatabaseException 与标准库的 std::runtime_error 捕获；
- *          3、用法错误（Base::LogicException / Base::InvalidArgumentException）刻意**不在**
- *             本家族内：它们派生自 std::logic_error，不该被「可恢复故障」那一网吞掉，
- *             该边界由本文件与 tests/Base/Exception/TestException.cpp 两处共同钉住。
+ * @details 全部用例都不触碰数据库：只构造异常对象并断言继承关系与捕获结果，钉住三条契约——运行期故障家族
+ *          （DatabaseException 及其三个子类）全部派生自 Base::Exception，调用方能用一个 catch 网住整个框架的可恢复故障；
+ *          三个子类各自可精确捕获，且都能被根类型 DatabaseException 与标准库 std::runtime_error 捕获；用法错误（Base::LogicException /
+ *          Base::InvalidArgumentException）刻意不在本家族内，该边界由本文件与 tests/Base/Exception/TestException.cpp 共同钉住。
  */
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
@@ -54,8 +48,7 @@ namespace AsynGyanis::Database
 
     TEST(DatabaseExceptionFamily, EveryRuntimeFailureDerivesFromProjectExceptionBase)
     {
-        // 这四条静态断言就是本次改造的验收点：改造前它们全是裸 std::runtime_error，
-        // 调用方拿不到任何框架类型可捕
+        // 断言这四条都派生自框架异常基类：调用方才能用一条 catch 兜住框架的运行期故障
         static_assert(std::is_base_of_v<Base::Exception, DatabaseException>);
         static_assert(std::is_base_of_v<Base::Exception, ConnectionUnavailableException>);
         static_assert(std::is_base_of_v<Base::Exception, QueryExecutionException>);

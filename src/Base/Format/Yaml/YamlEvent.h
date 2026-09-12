@@ -34,7 +34,7 @@ namespace AsynGyanis::Base
         SequenceStart, ///< 序列开始：进入一个条目集合
         SequenceEnd,   ///< 序列结束
         Scalar,        ///< 标量：携带已解码文本、风格与显式标签
-        Alias,         ///< 别名：指向此前某个锚点
+        Alias,         ///< 别名：指向某个已声明的锚点
         Anchor         ///< 锚点声明：紧随其后的节点将绑定该锚点名
     };
 

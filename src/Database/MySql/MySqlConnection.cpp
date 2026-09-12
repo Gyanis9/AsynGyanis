@@ -320,7 +320,7 @@ namespace AsynGyanis::Database
         }
 
         // 用带自定义释放器的 unique_ptr 罩住这段所有权真空：make_unique 若因内存分配失败抛异常，
-        // MYSQL_RES 会由守卫释放，而不是像旧实现那样直接泄漏（旧代码把裸指针交给构造函数后再无兜底）
+        // MYSQL_RES 会由守卫释放，不会泄漏
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedResult{rawResult};
         auto                                       result = std::make_unique<MySqlResult>(guardedResult.get());
 
@@ -430,12 +430,11 @@ namespace AsynGyanis::Database
     {
         // 三个超时选项的参数类型都是 unsigned int、单位都是秒，与基类的毫秒语义差一个量纲。
         // 值必须放在本函数持有的局部变量里：mysql_options 在调用点就把值拷进句柄，
-        // 因此局部变量随本函数结束析构是安全的（旧实现传的是基类 int 成员的地址，单位与类型双双错位）
+        // 因此局部变量随本函数结束析构是安全的
         const unsigned int connectionTimeoutSeconds = toClientSeconds(connectTimeout());
         const unsigned int ioTimeoutSeconds         = toClientSeconds(queryTimeout());
 
-        // 逐条下发，任一选项被拒就整体判失败——「超时静默不生效」正是旧实现的核心缺陷，
-        // 宁可连不上也不留一条没有超时保护的会话
+        // 逐条下发，任一选项被拒就整体判失败：宁可连不上也不留一条没有超时保护的会话
         const auto applyOption = [this](const mysql_option option, const void *argumentValue, const std::string_view description) -> bool
         {
             // mysql_options 返回非 0 只可能是「这个版本的客户端库不支持该选项」或参数指针为空，
@@ -461,7 +460,7 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 写超时：旧实现漏掉了这一项，网络半断时发送命令可以一直卡在 socket write 上。
+        // 写超时：网络半断时发送命令会一直卡在 socket write 上，因此读与写都要设。
         // 读写共用 queryTimeout()：一条命令的预算本就该覆盖「发出去 + 读回来」整个来回
         if (!applyOption(MYSQL_OPT_WRITE_TIMEOUT, &ioTimeoutSeconds, "设置 MySQL 写超时"))
         {
@@ -804,8 +803,8 @@ namespace AsynGyanis::Database
 
     namespace
     {
-        // 桩构建的统一失败原因：旧桩让 connect() 静默返回、execute() 只回 nullptr 而不写原因，
-        // 调用方会把「什么都没做」当成成功，这里每个入口都把它写成看得见的错误
+        // 桩构建的统一失败原因：每个入口都把它写进 lastError()，
+        // 避免调用方把「什么都没做」当成成功
         constexpr const char *kMissingDriverError = "当前构建未编译 MySQL 驱动（缺少 libmysqlclient）";
     } // namespace
 

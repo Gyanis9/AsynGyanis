@@ -19,14 +19,10 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON 序列化器
      *
-     * @details 与 JsonParser 严格互逆：任何 parse 成功得到的 FormatValue 再 write 后
-     *          都能被重新 parse 回等价结果。浮点使用 std::to_chars 的最短往返表示，
-     *          不会出现 ostream 默认精度造成的数值截断；整数同样走 std::to_chars。
-     *
-     * 与既有格式的兼容性：
-     *   - write(value, bool) 重载保留，indented = true 时输出与该重载历史行为逐字节一致
-     *     （两空格缩进、键升序、3.0 保留小数点、非有限数输出 null、非 ASCII 原样透传）；
-     *   - write(value, options) 通过 JsonWriteOptions 控制缩进宽度、ASCII 转义、键序与深度守护。
+     * @details 与 JsonParser 严格互逆：parse 成功得到的 FormatValue 再 write 后仍可 parse 回等价结果。
+     *          浮点与整数都走 std::to_chars 的最短往返表示，不会出现 ostream 默认精度造成的数值截断。
+     *          write(value, bool) 是兼容重载，indented = true 时保持两空格缩进、键升序、3.0 保留
+     *          小数点、非有限数输出 null、非 ASCII 原样透传。
      *
      * @note 文本原样透传（ensureAscii = false）时不校验输入字符串的 UTF-8 合法性，
      *       非法字节会按原样写出；ensureAscii = true 时必须解码码位，此时遇到非法序列会抛

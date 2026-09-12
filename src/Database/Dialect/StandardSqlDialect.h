@@ -6,36 +6,12 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details SqlDialect 定义契约，本类给出「三种引擎写法完全一致的那部分」的唯实现：
- *          查询树的递归渲染（AND/OR/NOT、IN 展开、IS NULL、列-列比较）、
- *          SELECT 到 LIMIT/OFFSET 的子句书写顺序、写语句的 SET/WHERE 拼装、
- *          「写一个占位符就同步压一个参数」的参数顺序契约、以及 ORM 参数值到
- *          DatabaseValue 的降级转换。
- *
- * ## 为什么要有这一层
- * SQLite 与 MySQL 两个方言此前的实现有九成是逐字相同的：同一份 renderFieldReference、
- * 同一份 appendCondition、同一份 convertParameter。再照抄一份给第三个引擎，就会有三份
- * 需要同步修改的拷贝——条件渲染的规则一旦在某一份里被改动（例如空 IN 集合的处理），
- * 另外两份不会跟着变，而这类分歧只会在运行期以「某个引擎上少查出一行」的形式暴露。
- * 因此把共用部分上收为本类，各引擎只保留真正属于引擎知识的覆写：
- * 引用字符与转义、占位符写法、事务语句、分页写法、类型名映射、元数据查询、参数上限。
- *
- * ## 本类已经实现（子类不要重复实现）
- * - 全部 translate*()：SELECT / INSERT / UPDATE / DELETE / 多行 INSERT；
- * - quoteIdentifier()：按 identifierQuoteCharacter() 给出的引用字符加引用并翻倍转义；
- * - supportsLimitOffset()：恒为 true（本类覆盖的三个引擎都原生支持 "LIMIT … OFFSET …"）；
- * - 全部私有渲染辅助与参数转换（见 protected 区）。
- *
- * ## 子类必须实现（引擎知识）
- * - SqlDialect 的 type() / placeholder() / 事务三语句 / columnTypeName() /
- *   tableExistsStatement() / maximumStatementParameters()；
- * - 本类的 identifierQuoteCharacter() 与 dialectName()；
- * - 需要时覆写 appendLimitOffsetClause()（分页是三个引擎差异最大的子句，见其声明处说明）。
- *
- * ## 参数顺序契约（本层唯一的真值来源）
- * 每产出一个占位符就立刻压入一个参数，占位符的序号取自「已收集的参数个数」，
- * 因此 parameters[i] 必定对应 SQL 文本里的第 i 个占位符。这个顺序由本层保证一次，
- * 子类无需（也不应）再关心参数收集，只需要正确实现 placeholder()。
+ * @details 「三种引擎写法完全一致的那部分」的唯一实现：查询树的递归渲染（AND/OR/NOT、IN 展开、
+ *          IS NULL、列-列比较）、子句书写顺序、写语句的 SET/WHERE 拼装，以及 ORM 参数值到
+ *          DatabaseValue 的降级转换。子类只实现引擎知识：引用字符与转义、占位符写法、事务语句、
+ *          分页写法、类型名映射、元数据查询、参数上限。
+ *          本层唯一的参数顺序契约：每产出占位符就立刻压入参数，序号取自已收集的参数个数，
+ *          因此 parameters[i] 必定对应 SQL 文本里的第 i 个占位符。
  */
 #pragma once
 
@@ -76,9 +52,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 把查询树翻译成带占位符的 SQL 与绑定参数
          *
-         * @details 重写 SqlDialect::translate()：按 SELECT → FROM → JOIN → WHERE →
-         *          GROUP BY → HAVING → ORDER BY → 分页 的书写顺序拼接文本，每写入一个占位符
-         *          就同步压入一个参数。分页子句交给 appendLimitOffsetClause()，
+         * @details 重写 SqlDialect::translate()：按 SELECT → FROM → JOIN → WHERE → GROUP BY →
+         *          HAVING → ORDER BY → 分页 的书写顺序拼接文本；分页子句交给 appendLimitOffsetClause()，
          *          因此各引擎的分页差异不会影响其余子句。
          *
          * @param query 待翻译的查询树，本方法不修改它
@@ -90,9 +65,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 把单行插入翻译成带占位符的 INSERT
          *
-         * @details 重写 SqlDialect::translateInsert()：生成
-         *          "INSERT INTO 表 (列…) VALUES (…) [占位符由子类给出]"。列名取自
-         *          query.selectColumns 并逐个引用，取值由 values 按同一顺序绑定。
+         * @details 重写 SqlDialect::translateInsert()：列名取自 query.selectColumns 并逐个引用，
+         *          取值由 values 按同一顺序绑定。
          *
          * @param query 提供表名与待写列的查询树
          * @param values 待绑定的字段值，个数必须等于 query.selectColumns 的列数
@@ -104,9 +78,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 把按条件更新翻译成带占位符的 UPDATE
          *
-         * @details 重写 SqlDialect::translateUpdate()：生成
-         *          "UPDATE 表 SET 列 = 占位符, … [WHERE 条件]"。SET 参数在前、条件参数在后，
-         *          与文本中占位符的先后严格一致；WHERE 与 SELECT / DELETE 共用同一份渲染实现。
+         * @details 重写 SqlDialect::translateUpdate()：SET 参数在前、条件参数在后，与文本中占位符的
+         *          先后严格一致；WHERE 与 SELECT / DELETE 共用同一份渲染实现。
          *
          * @param query 提供表名、SET 列与 WHERE 条件的查询树
          * @param values 赋给各 SET 列的取值，个数必须等于 query.selectColumns 的列数
@@ -118,8 +91,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 把按条件删除翻译成带占位符的 DELETE
          *
-         * @details 重写 SqlDialect::translateDelete()：生成 "DELETE FROM 表 [WHERE 条件]"，
-         *          无条件时整段 WHERE 被省略（整表删除，与 SQL 语义一致）。
+         * @details 重写 SqlDialect::translateDelete()：无条件时整段 WHERE 被省略（整表删除，与 SQL 语义一致）。
          *          表别名一并带上，因为 WHERE 里以别名限定的列名只有别名在场才能被解析。
          *
          * @param query 提供表名与 WHERE 条件的查询树
@@ -130,9 +102,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 把多行插入翻译成一次多行 VALUES 的 INSERT
          *
-         * @details 重写 SqlDialect::translateInsertBatch()：生成
-         *          "INSERT INTO 表 (列…) VALUES (…), (…), …"，参数按「行优先、行内按列序」展开。
-         *          本类覆盖的三个引擎都原生支持多行 VALUES，因此无需子类改写；
+         * @details 重写 SqlDialect::translateInsertBatch()：参数按「行优先、行内按列序」展开；
          *          参数总数是否超过引擎上限由调用方按 maximumStatementParameters() 分块。
          *
          * @param query 提供表名与待写列的查询树
@@ -145,11 +115,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 用本引擎的引用字符引用标识符，并翻倍转义内部引用字符
          *
-         * @details 重写 SqlDialect::quoteIdentifier()：引用字符由 identifierQuoteCharacter()
-         *          给出（SQLite 是双引号，MySQL 是反引号），
-         *          内部同字符按 SQL 规则翻倍表示（"a""b" / `a``b`）。
-         *          反斜杠不能作为转义字符：它在三种引擎里都是普通字符，
-         *          用它既无效又会引入字面反斜杠。
+         * @details 重写 SqlDialect::quoteIdentifier()：引用字符由 identifierQuoteCharacter() 给出，
+         *          内部同字符按 SQL 规则翻倍表示（"a""b" / `a``b`）。反斜杠不能作为转义字符：
+         *          它在三种引擎里都是普通字符，用它既无效又会引入字面反斜杠。
          *
          * @param identifier 待引用的标识符，不含外层引用字符
          * @return std::string 已加引用字符并完成转义的文本
@@ -159,9 +127,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法
          *
-         * @details 重写 SqlDialect::supportsLimitOffset()：SQLite / MySQL
-         *          都原生支持关键字形式的分页，因此恒为 true。差异只在
-         *          「OFFSET 能否单独出现」这类细节上，由 appendLimitOffsetClause() 各自处理。
+         * @details 重写 SqlDialect::supportsLimitOffset()：SQLite / MySQL 都原生支持关键字形式的分页，
+         *          因此恒为 true；「OFFSET 能否单独出现」这类细节由 appendLimitOffsetClause() 各自处理。
          *
          * @return true 恒为 true
          */
@@ -187,11 +154,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 渲染分页子句并收集分页参数
          *
-         * @details 这是三个引擎差异最大的子句，默认实现为 SQL 标准的关键字形式：
-         *          " LIMIT <占位符>" 与 " OFFSET <占位符>" 各自独立输出（先 LIMIT 后 OFFSET），
-         *          两者都不存在时什么都不输出。MySQL 覆写它只为补出「只给 offset」时要写的
-         *          不限行数常量，其余部分转交本实现复用；SQLite 的分页值走内联、且需要
-         *          "LIMIT -1" 补位，与默认实现差异较大，因此整段覆写。
+         * @details 默认实现为 SQL 标准的关键字形式：" LIMIT <占位符>" 与 " OFFSET <占位符>" 各自
+         *          独立输出（先 LIMIT 后 OFFSET），两者都不存在时什么都不输出。MySQL 覆写只为补出
+         *          「只给 offset」时要写的不限行数常量；SQLite 的分页值走内联且需要 "LIMIT -1" 补位。
          *
          * @param sqlText 输出缓冲区，分页片段追加到末尾
          * @param parameters 输出参数列表，分页值按占位符出现顺序追加
@@ -203,12 +168,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 渲染字段引用：纯标识符加引用字符，表达式原样输出
          *
-         * @details 处理三种情形：单个标识符（加引用）、限定名（users.id → "users"."id"）、
-         *          含运算符/括号/逗号等结构字符的表达式（原样输出，例如 COUNT(*)）。
-         *          判定依据是「文本里有没有结构字符」而不是「有没有空格」：含空格的标识符
-         *          （如 full name 这种列名）仍是标识符，会被引用成 "full name"，不被误判为表达式。
-         *          表达式原样输出在安全上成立：字段引用全部来自编译期常量（Column() 的列名参数
-         *          或 asc()/desc() 的字符串字面量），不是外部输入，而数据值一律走参数绑定。
+         * @details 处理三种情形：单个标识符（加引用）、限定名（users.id → "users"."id"）、含结构
+         *          字符的表达式（原样输出，例如 COUNT(*)）。判定依据是「有无结构字符」而非「有无空格」，
+         *          因此含空格的列名仍是标识符。原样输出在安全上成立：字段引用全部来自编译期常量
+         *          （Column() 的列名参数或 asc()/desc() 的字面量），不是外部输入，数据值一律走参数绑定。
          *
          * @param fieldText 字段引用文本（列名或表达式）
          * @return std::string 可直接写入 SQL 的字段片段
@@ -226,8 +189,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 渲染 " WHERE 条件..." 子句（无条件时什么都不输出）
          * @details 本层唯一的条件渲染入口，translate() / translateUpdate() / translateDelete() 全走它：
-         *          AND/OR/NOT 递归展开 children、IN 展开多个占位符、IS NULL 与列-列比较不占参数、
-         *          每写一个占位符就同步压一个参数。一份实现意味着三个方向的参数顺序不可能出现分歧。
+         *          AND/OR/NOT 递归展开、IN 展开多个占位符、IS NULL 与列-列比较不占参数。
+         *          一份实现意味着三个方向的参数顺序不可能出现分歧。
          * @param sqlText 输出缓冲区，" WHERE ..." 追加到末尾
          * @param parameters 输出参数列表，条件产生的取值按占位符出现顺序追加
          * @param query 提供 whereConditions 的查询树

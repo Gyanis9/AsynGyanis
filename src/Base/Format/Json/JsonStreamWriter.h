@@ -21,28 +21,10 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON 流式写出器
      *
-     * @details 与 DOM 版 JsonWriter 的关系与取舍：
-     *          - JsonWriter 递归遍历 FormatValue 一次性产出完整文本，写法简单，适合已有 DOM 的场景；
-     *          - JsonStreamWriter 只按调用顺序拼装，**不持有 DOM**，因此可以把「读一半、写一半」
-     *            的管道接起来（JsonReader 出一个事件就写一个），内存占用与文档规模无关；
-     *          - 两者的标量格式（字符串转义、数字最短往返表示、非有限数写 null）完全共用
-     *            JsonWriter 的公开实现，容器标点与缩进规则也逐条对齐，因此「同一份结构，
-     *            一个走 DOM、一个走事件流」得到的结果**逐字节相同**（见 TestJsonStream.cpp 的交叉验证）。
-     *
-     * 复用 JsonWriteOptions：
-     *          - `indentWidth`：0 为紧凑单行，正数为每层空格数，空容器恒为 `[]`/`{}`；
-     *          - `ensureAscii`：非 ASCII 字符转 `\uXXXX`（补充平面用代理对）；
-     *          - `maximumDepth`：容器深度守卫，超限抛 FormatError（kind 为 DepthExceeded）；
-     *          - 对象键序：**流式写出不参与重排**——写出顺序完全由调用顺序决定，
-     *            无法在只看到部分成员时决定整体顺序。要得到与 DOM 写出逐字节一致的结果，
-     *            调用方需按升序提供键（FormatValueObject 本身按键升序，因此从 DOM 顺序
-     *            驱动事件时天然满足）。
-     *
-     * 使用约束：
-     *          - 每个值写出前必须处于合法位置：数组内、对象成员的值位置（紧跟 writeKey 之后）
-     *            或文档根（根值只能写一次）；
-     *          - 容器必须成对闭合，否则 endXxx() 会抛错；
-     *          - 抛错后缓冲区内容不再可信，请 reset() 后重来。
+     * @details 不持有 DOM，只按调用顺序拼装，可把「读一半、写一半」的管道接起来。标量格式与容器
+     *          标点逐条对齐 JsonWriter，故同一份结构经 DOM 或事件流写出逐字节相同；但流式写出
+     *          不重排键序，要逐字节一致需按升序提供键。写错位置、容器未成对闭合或根值写第二次
+     *          都会抛错，抛错后缓冲区内容不再可信，须 reset() 后重来。
      */
     class JsonStreamWriter
     {
@@ -143,8 +125,7 @@ namespace AsynGyanis::Base
          * @brief 写出一个数字原文
          * @details 供 JSON 流式读取器直接转发 Number 事件：原文先按
          *          「int64 → uint64 → double」解析成与 DOM 解析器相同的数值类型，
-         *          再按键入重载规范化写出。例如原文 `1e2` 会写出 `100.0`，
-         *          与 DOM 侧 Double(100.0) 的写出结果一致。
+         *          再按键入重载规范化写出，因此与 DOM 侧的写出结果一致。
          * @param rawNumber 数字原文（如 `-1.5e3`）
          * @throws FormatError 原文不是合法数字或超出可表示范围
          */

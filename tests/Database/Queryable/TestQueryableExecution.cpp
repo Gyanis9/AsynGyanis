@@ -7,10 +7,9 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 本条链路是本 Phase 的核心验收点：用内存 SQLite 建连接池，建表后
- *          **完全通过 ORM** 完成插入、条件查询、排序、分页、计数、更新与删除，
- *          并断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），
- *          最后验证取值确实以绑定方式传入（含单引号与 "--" 的文本能原样查回，
- *          且注入残留的表仍存在），证明没有拼接 SQL。
+ *          **完全通过 ORM** 完成插入、条件查询、排序、分页、计数、更新与删除，断言映射回的结构体
+ *          字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入
+ *          （含单引号与 "--" 的文本能原样查回、注入残留的表仍存在），证明没有拼接 SQL。
  *
  * 覆盖场景：
  * - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
@@ -97,11 +96,9 @@ namespace
     /**
      * @brief 无符号 64 位列测试用结构体：覆盖 int64 之内与之外两段取值
      *
-     * @details UInt64 是唯一在三个引擎上都「没有原生对应类型」的成员类型：
-     *          SQLite 只有 64 位有符号整数，MySQL 有 BIGINT UNSIGNED 但它的上界
-     *          超过 int64，驱动只能以文本返回。
-     *          这个结构体用于验证两侧边界：int64 能表达的取值必须无损往返，
-     *          表达不了的取值必须**明确失败**而不是悄悄换个数值。
+     * @details UInt64 是唯一在三个引擎上都「没有原生对应类型」的成员类型：SQLite 只有 64 位有符号整数，MySQL 有
+     *          BIGINT UNSIGNED 但它的上界超过 int64，驱动只能以文本返回。这个结构体用于验证两侧边界：int64 能表达的取值必须
+     *          无损往返，表达不了的取值必须**明确失败**而不是悄悄换个数值。
      */
     struct UnsignedCounterRow
     {
@@ -625,12 +622,9 @@ TEST_F(QueryableExecutionTest, UnsignedColumnRoundTripsWithinInt64Range)
 /**
  * @brief 验证超出 int64 的 UInt64 取值在 SQLite 上明确失败，而不是悄悄换个数值
  *
- * @details SQLite 只有 64 位有符号整数：INTEGER 亲和性会把「装不下的十进制文本」
- *          按亲和性规则转成 REAL，于是这一列读回来时是浮点而不是整数。这是引擎的
- *          存储能力边界，ORM 的职责是**如实报错**——静默取整或回绕都会给出一个
- *          看起来正常、实际错误的数值，那比失败难查得多。
- *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED，
- *          那条真机路径由 MySQL 集成用例覆盖。
+ * @details SQLite 只有 64 位有符号整数：INTEGER 亲和性会把「装不下的十进制文本」转成 REAL，于是这一列读回来是浮点
+ *          而不是整数。这是引擎的存储能力边界，ORM 的职责是**如实报错**——静默取整或回绕都会给出一个看起来正常、实际错误的
+ *          数值，那比失败难查得多。需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED，那条真机路径由 MySQL 集成用例覆盖。
  */
 TEST_F(QueryableExecutionTest, UnsignedValueBeyondInt64FailsLoudlyOnSqlite)
 {

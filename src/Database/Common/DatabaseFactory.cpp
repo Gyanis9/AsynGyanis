@@ -18,7 +18,7 @@ namespace AsynGyanis::Database
         }
 
         // SQLite 不需要端口：未指定端口但给出了库路径或 ":memory:" 时按嵌入式库处理。
-        // 旧实现在这里回退成 MySQL，导致 SQLite 配置永远连不上
+        // // 回退成 MySQL 会让 SQLite 之类的配置永远连不上
         if (config.port == 0 && !config.database.empty())
         {
             return createSqlite(config);

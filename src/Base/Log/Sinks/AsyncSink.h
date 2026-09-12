@@ -83,7 +83,7 @@ namespace AsynGyanis::Base
          * @brief 阻塞等待所有已受理事件落地后刷新下游 Sink
          * @details 重写 LogSink::flush()：等待条件为「待落地事件数为 0」而非「队列为空」，
          *          因此 worker 已从队列取出、仍在下游 write 中阻塞的事件同样被纳入等待范围；
-         *          等待结束后再转发 flush()，调用返回即代表此前的日志已交给下游刷新。
+         *          等待结束后再转发 flush()，调用返回即代表已受理的日志都已交给下游刷新。
          * @note 已停止（stop() 之后）时不再无限等待，避免 worker 退出后调用方挂死。
          */
         void flush() override;

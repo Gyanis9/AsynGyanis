@@ -203,7 +203,7 @@ namespace AsynGyanis::Database
 
             if (hasExtraStatement)
             {
-                // 旧实现在这里静默丢掉后半段语句，调用方误以为整段脚本都已生效
+                // // 静默丢掉后半段语句会让调用方误以为整段脚本都已生效
                 sqlite3_finalize(statement);
                 m_lastError = "一次调用只执行一条 SQL 语句，检测到额外语句，请拆成多次 execute() 调用";
                 return nullptr;
@@ -286,7 +286,7 @@ namespace AsynGyanis::Database
     std::string SqliteConnection::serverVersion() const
     {
         // SQLite 没有服务端进程，返回链接进来的库版本；sqlite3_libversion() 不依赖句柄，
-        // 未连接时同样有效（旧实现在未连接时返回空串，白白丢掉可用信息）
+        // // 未连接时同样有效，不因缺少句柄而白白丢掉可用信息
         return sqlite3_libversion();
     }
 

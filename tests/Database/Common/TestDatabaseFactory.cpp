@@ -185,7 +185,7 @@ namespace AsynGyanis::Database
 
     TEST(DatabaseFactory, CreateFromConfigFallsBackToSqliteWhenPortUnspecified)
     {
-        // SQLite 不需要端口：port 为 0 且给了库路径就按嵌入式库处理（旧实现在这里误回退成 MySQL）
+        // SQLite 不需要端口：port 为 0 且给了库路径就按嵌入式库处理（不能回退成 MySQL）
         const std::unique_ptr<DatabaseConnection> memoryConnection = DatabaseFactory::create(ConnectionConfig::sqliteDefault());
         const std::unique_ptr<DatabaseConnection> fileConnection = DatabaseFactory::create(ConnectionConfig::sqliteDefault("data/application.db"));
 
@@ -221,8 +221,8 @@ namespace AsynGyanis::Database
 
     TEST(DatabaseFactory, CreateFromConfigThrowsForUnknownPortEvenWithDatabase)
     {
-        // 旧实现对任意未知端口都回退成 MySQL，会把 SQLite 之类误判成永远连不上的 MySQL；
-        // 现在未知端口不再触发 SQLite 回退（回退要求 port == 0），必须抛出交由调用方显式指定
+        // 未知端口一律抛出、交由调用方显式指定驱动：回退成 MySQL 会把 SQLite 之类误判成永远连不上的 MySQL；
+        // SQLite 回退只在 port == 0 且给了库路径时成立
         ConnectionConfig configuration;
         configuration.port     = kUnknownPort;
         configuration.database = "analytics";

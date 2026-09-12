@@ -333,8 +333,8 @@ namespace AsynGyanis::Net
         LoopbackDescriptorPair descriptors;
         ASSERT_TRUE(descriptors.isValid()) << "全双工描述符对创建失败，无法在不占端口的前提下验证首次读取";
 
-        // 回归防护：旧实现预分配 4096 缓冲却把消费位置留在 0，首次 read 会把整块未初始化字节
-        // 当成有效数据交给调用方。这里对端只发了 5 个字节，返回长度必须是 5 而不是缓冲区容量
+        // 预分配缓冲区不等于已收到数据：对端只发了 5 个字节，返回长度必须是 5 而不是缓冲区容量，
+        // 否则会把整块未初始化字节当成有效数据交给调用方
         ASSERT_TRUE(writeToPeerFully(descriptors.peerSide(), "HELLO", kWaitTimeout));
 
         TcpStream stream(Core::AsyncSocket(loop, descriptors.takeStreamSide()));

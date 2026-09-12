@@ -137,7 +137,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlScalars, TreatsLeadingZeroAsDecimal)
     {
-        // 1.2 与 1.1 的关键差异：前导 0 不再是八进制
+        // 1.2 与 1.1 的关键差异：前导 0 不按八进制解析
         EXPECT_EQ(single("a: 0755\n", "a").asInt(), 755);
         EXPECT_EQ(single("a: 08\n", "a").asInt(), 8);
     }
@@ -179,7 +179,7 @@ namespace AsynGyanis::Base
 
     TEST(YamlScalars, TreatsYesInsideScalarTextAsPlainString)
     {
-        // `wow!!really` 曾经被旧实现对 `!!` 的粗筛误伤，现在必须原样是字符串
+        // `!!` 只在本标量以它开头时才是标签：出现在正文里必须原样保留为字符串
         EXPECT_EQ(single("a: wow!!really\n", "a").asString(), "wow!!really");
         EXPECT_EQ(single("a: a#b\n", "a").asString(), "a#b");
     }

@@ -19,21 +19,10 @@ namespace AsynGyanis::Base
     /**
      * @brief YAML 序列化器
      *
-     * @details 与 YamlParser 严格互逆：`YamlParser::parse(YamlWriter::write(value))`
-     *          必须得到与 value **相等**（FormatValue::operator==）的值，这是本类的第一目标，
-     *          其余格式美学（缩进、flow 风格、折行）都让位于它。
-     *
-     *          无损性由三组规则共同保证：
-     *          - 类型保真：null/bool/整数/浮点各自写成核心 schema（§10.2.1）中唯一的写法，
-     *            整数值的浮点补 `.0`，NaN 与无穷写成 `.nan` / `.inf` / `-.inf`，
-     *            形如 `true`、`123`、`null`、`~` 的**字符串**一律加引号（否则类型当场改变）；
-     *          - 文本保真：裸标量只在安全时使用（§7.3.3 的 `: ` 与 ` #` 禁区、YAML 指示符
-     *            首字符、首尾空白等一律排除），需要转义时优先单引号（只需 `''` 折叠），
-     *            含控制字符时改用双引号（`\xXX` / `\uXXXX`），含换行时优先块标量（§8.1）；
-     *          - 结构保真：块风格统一按「键行 + 更深缩进」展开，块标量显式给出缩进指示符，
-     *            chomping 按尾部换行个数三态落地——0 个用 `-`（strip）、1 个用默认的 clip、
-     *            多个用 `+`（keep）并只补 N-1 个空行，因为 keep 的「保留全部」里已经含有
-     *            正文末行自身的那个换行（§7.3.1、§8.1.1.2）。
+     * @details 与 YamlParser 严格互逆：`YamlParser::parse(YamlWriter::write(value))` 与 value 相等
+     *          （FormatValue::operator==）是第一目标，格式美学让位于它。类型只写核心 schema（§10.2.1）
+     *          中唯一的写法；裸标量只在无歧义时用（§7.3.3 的 `: ` 与 ` #` 禁区）；块标量显式给缩进
+     *          指示符，chomping 按尾部换行个数三态落地（§7.3.1、§8.1.1.2）。
      *
      * @note 输出是**单份文档**：多文档流请用 emitDocumentStart 拼装，或在外层自行加 `---`。
      * @note reuseAnchors 打开后，重复子树的第二处及以后写成别名 `*a1`；解析时别名按深拷贝

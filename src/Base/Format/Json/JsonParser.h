@@ -21,23 +21,10 @@ namespace AsynGyanis::Base
     /**
      * @brief JSON 解析器
      *
-     * @details 覆盖 RFC 8259 的常用子集：对象、数组、字符串（含 \\uXXXX 与代理对）、
-     *          数字、true/false/null。与 YAML 侧共用 TextEscapes 的转义实现，
-     *          解析结果直接落到 FormatValue，不引入第二套值类型。
-     *
-     *          默认（严格模式）明确拒绝：注释、单引号字符串、前导零、尾逗号、
-     *          `NaN`/`Infinity`、文档尾部的多余内容；对象内重复键同样视为错误
-     *          （配置场景下几乎总是笔误）。上述三类扩展语法可在 JsonParseOptions 中
-     *          逐个打开。
-     *
-     *          数值取舍（不凭空造数）：按 RFC 8259 §6 的语法扫描后，非负整数依次尝试
-     *          int64_t（得到 Int）→ uint64_t（得到 UInt）→ double（得到 Double）；
-     *          负整数依次尝试 int64_t → double。超出 double 可表示范围时按
-     *          FormatErrorKind::NumberOutOfRange 报错。
-     *
-     *          UTF-8 校验：字符串正文按 RFC 3629 校验字节序列（拒绝过长编码、截断序列、
-     *          以及以 UTF-8 编码的代理项）；U+007F（DEL）在 JSON 中合法（RFC 8259 §7
-     *          只禁止 U+0000..U+001F 的裸控制字符），因此原样保留而不报错。
+     * @details 覆盖 RFC 8259 常用子集，转义实现与 YAML 侧共用 TextEscapes，结果直接落到
+     *          FormatValue。数值按 RFC 8259 §6 语法扫描，整数优先落 int64/uint64，超出 double
+     *          可表示范围报 NumberOutOfRange；字符串正文按 RFC 3629 校验，U+007F 合法
+     *          （RFC 8259 §7 只禁止 U+0000..U+001F 的裸控制字符），原样保留。
      */
     class JsonParser
     {

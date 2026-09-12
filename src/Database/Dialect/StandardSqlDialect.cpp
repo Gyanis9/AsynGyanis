@@ -567,7 +567,7 @@ namespace AsynGyanis::Database
             {
                 if (condition.children.empty())
                 {
-                    // 没有子条件的 NOT 视为恒假（NOT 恒真），与旧实现的 (1 = 1) 语义一致
+                    // // 没有子条件的 NOT 视为恒假（NOT 恒真），与 SQL 语义一致
                     sqlText += "NOT (1 = 1)";
                     return;
                 }

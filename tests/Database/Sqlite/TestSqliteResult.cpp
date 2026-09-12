@@ -1,32 +1,10 @@
 /**
  * @file TestSqliteResult.cpp
  * @brief SqliteResult 单元测试：游标与预扫描语义、列元数据、存储类到 DatabaseValue 的映射与写回执快照
- * @details 结果集只能由 execute() 交出，因此本文件全部用例都跑在真实的内存库上：
- *          先建表灌样本数据，再经 execute() 取回结果集，零外部服务、零伪造内部状态。
- *          lastInsertRowId() / nativeHandle() 只存在于 SqliteResult 上，
- *          用例统一经 dynamic_cast 取回派生类型——转换失败本身就是「驱动交出错类型」的缺陷；
- *          affectedRowCount() 已提升到 DatabaseResult 基类（带默认实现），本文件另有一条用例
- *          刻意通过基类引用取值，钉住「不再需要向下转型」这一点。
- *          钉住的实现契约（重构时刻意定下的语义，破坏即视为回归）：
- *          1、只有只读语句会被预扫描：rowCount() 对只读查询给出精确行数，对写语句与带副作用的
- *             语句（INSERT ... RETURNING）返回 0；isEmpty() 对只读结果集准确，对写回执恒为 true；
- *          2、列值必须 next() 之后读取：未 next()、游标耗尽、reset() 之后一律 std::monostate；
- *          3、存储类映射：NULL→monostate、INTEGER→int64_t、FLOAT→double、TEXT→std::string、
- *             BLOB→BinaryBytes（二进制与文本分成两个备选，类型本身就是驱动侧的绑定线索；
- *             BLOB 原样按字节、内嵌 '\0' 不丢失，零长 TEXT/BLOB 分别是空串与空序列而不是 NULL；
- *             声明为 DATE/NUMERIC 却存了非数值文本的列按 TEXT 存储类落到 std::string）；
- *          4、columnNames() 长度恒等于 columnCount()，表达式列的空名以空串占位，不丢下标；
- *          5、越界判定用无符号比较，SIZE_MAX 这类输入不得绕过边界；
- *          6、next()/getValue() 等读取路径不改写 lastError()；reset() 属写路径，会先清掉历史错误。
- *          确认无法安全覆盖、因此不做断言的行为：
- *          1、未知存储类落到 default 分支返回 monostate——SQLite 现存取值只有上面五种，公开接口造不出来；
- *          2、语句在析构时被 finalize 这一事实无法从公开接口直接观测（没有语句计数器），
- *             本文件只验「遍历中途销毁结果集后连接照常可用」这一可观察面；
- *          3、sqlite3_reset 返回 SQLITE_BUSY 时 reset() 写入错误文本的分支——需要另一个连接正持有
- *             该语句读到的快照，构造成本高且依赖 WAL 检查点时机，属易碎用例；等锁失败的可观察面已由
- *             TestSqliteConnection.cpp 的排他锁用例覆盖，本文件不再重复制造；
- *          4、countRows() 中途出错的分支——只读语句在内存库里不会失败，无法稳定注入故障。
- *          依赖说明：INSERT ... RETURNING 需要 SQLite 3.35 及以上，本工程由 Conan 锁定 3.51.x。
+ * @details 结果集只能由 execute() 交出，因此全部用例跑在真实内存库上（建表灌样本、经 execute() 取回），零外部服务。
+ *          钉住的契约：只有只读语句会被预扫描（rowCount() 对只读查询精确、对写语句与 INSERT ... RETURNING 返回 0）；列值必须
+ *          next() 之后读取（未 next()、游标耗尽、reset() 后一律 std::monostate）；存储类映射 NULL→monostate、INTEGER→int64_t、
+ *          FLOAT→double、TEXT→std::string、BLOB→BinaryBytes（零长非 NULL）；越界用无符号比较；RETURNING 需 SQLite 3.35+。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -328,7 +306,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr);
         ASSERT_TRUE(result->next());
 
-        // 旧实现把 size_t 索引强转成 int 再比较，SIZE_MAX 会回绕成 -1 绕过边界检查
+        // 索引必须按无符号比较：强转成 int 会让SIZE_MAX 会回绕成 -1 绕过边界检查
         EXPECT_TRUE(isMissingValue(result->getValue(std::size_t{1})));
         EXPECT_TRUE(isMissingValue(result->getValue(std::numeric_limits<std::size_t>::max())));
         EXPECT_TRUE(isMissingValue(result->getValue("absentColumn")));
@@ -798,7 +776,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(receipt, nullptr);
 
         // 影响行数现在由 DatabaseResult 基类提供虚接口，这里刻意通过基类引用取值：
-        // 旧实现必须按 DatabaseType 向下转型到 SqliteResult 才能拿到，其它驱动一律得 0
+        // affectedRowCount() 在基类上即可取得，不必按 DatabaseType 向下转型，其它驱动一律得 0
         // 样本共四行，UPDATE 统计所有匹配并被写入的行，与值是否真的改变无关
         const DatabaseResult &baseResult = *receipt;
         EXPECT_EQ(baseResult.affectedRowCount(), 4);

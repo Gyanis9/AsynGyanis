@@ -164,7 +164,7 @@ namespace AsynGyanis::Core
      *
      * @details shutdown() 只能遍历它调用那一刻的快照，晚到的连接不会被它看到；
      *          若 add() 不做补偿，这条连接会永远留在活跃表里——既不会被关闭，
-     *          也会让 waitAll() 永远等不到集合变空。这条时序契约此前只有文档、没有用例。
+     *          也会让 waitAll() 永远等不到集合变空。
      */
     TEST(ConnectionManager, AddAfterShutdownClosesNewcomerImmediately)
     {

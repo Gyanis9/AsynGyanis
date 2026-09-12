@@ -1,11 +1,9 @@
 /**
  * @file TestDatabaseTypes.cpp
  * @brief 数据库类型契约单元测试：类型名映射、统一值类型名映射与连接配置默认值
- * @details 覆盖 Common 层三个纯数据契约：
- *          - databaseTypeName：枚举 → 可读名称，越界取值退化成 "Unknown"；
- *          - databaseValueTypeName：DatabaseValue 八个备选 → 各自的类型名，映射由 std::visit 按实际类型给出；
- *          - ConnectionConfig：默认构造全空，三个 *Default 工厂方法只填本驱动真正读取的字段。
- *          全部用例都不触碰任何驱动与网络，属于零依赖的纯函数断言。
+ * @details 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
+ *          databaseValueTypeName 给出 DatabaseValue 八个备选各自的类型名；ConnectionConfig 默认构造全空，三个 *Default 工厂
+ *          只填本驱动真正读取的字段。全部用例不触碰任何驱动与网络，属于零依赖的纯函数断言。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -207,7 +205,7 @@ namespace AsynGyanis::Database
     {
         const ConnectionConfig configuration;
 
-        // port 为 0 表示「未指定」，是工厂判定 SQLite 回退的依据，不能改成别的哨兵值
+        // port 为 0 表示「未指定」，是工厂判定 SQLite 回退的依据，不得换成别的哨兵值
         EXPECT_TRUE(configuration.host.empty());
         EXPECT_EQ(configuration.port, 0);
         EXPECT_TRUE(configuration.userName.empty());

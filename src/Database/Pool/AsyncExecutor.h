@@ -6,51 +6,13 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 数据库驱动（sqlite3 / libmysqlclient）的接口全是阻塞的：一次查询会占住调用线程
- *          直到服务端返回或超时。在服务器引擎里，事件循环线程一旦被占住，同一线程上所有
- *          连接的可读可写事件、定时器与已就绪协程都会一起停摆——这正是必须把阻塞调用
- *          挪出去的唯一原因。本类提供「固定线程数的工作线程 + 任务队列」，并把完成后的
- *          协程恢复投递回调用方指定的 EventLoop。
- *
- * ## 为什么不用 Core 既有的原语（读了 ThreadPool / IoContext / Scheduler 之后的结论）
- * - `Core::ThreadPool` 的每个线程都绑定了一个 EventLoop 并跑着 `EventLoop::run()`。往里塞
- *   「一个阻塞的数据库调用」只能以协程的形式投递，而那段协程会在该线程的 run() 里就地执行
- *   （协程在 runAll() 中被 resume），阻塞时长内这个线程的 epoll 等待、定时器与其它协程
- *   全部停摆——问题只是从「调用方的事件循环」搬到了「线程池的事件循环」，没有被解决；
- * - `Core::Scheduler::scheduleRemote()` 能把协程投到另一个 EventLoop 上运行，但它的语义是
- *   「在哪跑」而不是「跑多久不阻塞事件循环」；用它跑阻塞任务同样会占住目标线程；
- * - `Core::IoContext` 是应用级的运行时入口（持有 ThreadPool、run() 阻塞主线程），库代码
- *   不应假设它存在，更不该在内部启动它。
- * 因此需要一个「不绑定事件循环、只跑阻塞函数」的执行器：它就是本类。它与 Core 的关系是
- * 单向的——本类只借用 `EventLoop::scheduler().scheduleRemote()` 来恢复协程，Core 完全不知道
- * 本类的存在，两者不构成耦合。
- *
- * ## 完成回调如何恢复协程
- * 工作线程跑完任务后**不直接 resume 协程**：协程若在被调方的线程上继续执行，后续代码就会
- * 跑到工作线程上，调用方对线程的假设（例如「回调都在事件循环线程上」）立刻失效。
- * 因此这里统一走 `Scheduler::scheduleRemote(句柄)` 把恢复动作投回调用方给定的 EventLoop；
- * `scheduleRemote` 内部持锁入全局队列并通过 EventNotifier 唤醒目标循环，
- * 因此不需要再额外调用 `EventLoop::wake()`，也不会出现「任务入队时循环刚好判断完 hasWork()」
- * 这类丢唤醒的窗口。
- *
- * ## 生命周期
- * 工作线程用 `std::jthread` 管理：构造即全部启动，析构请求停止并等待退出（jthread 析构自动
- * join）。停止时**队列中已接收的任务会先跑完再退出**：直接丢弃它们会让等待结果的协程永远挂起
- * （协程帧还挂在事件循环的等待里，却再也没有人叫醒它）。
- * 本对象必须比所有借用它的协程活得久：协程挂起期间工作线程只持有一份堆上的共享状态
- * （见 SubmissionAwaiter），因此提前销毁 Task 不会让工作线程访问已释放的协程帧，
- * 但被销毁的协程永远不会被恢复（与 ConnectionPool::acquireAsync 的约定一致）。
- *
- * @code
- *   // 应用启动时创建一个（或用 AsyncExecutor::shared() 用进程级共享实例）
- *   AsyncExecutor executor(4);
- *
- *   Core::Task<int> task = executor.submit<int>(loop, []()
- *   {
- *       return expensiveBlockingCall();
- *   });
- *   int result = co_await task;   // 阻塞调用在工作线程上执行，恢复发生在 loop 所在线程
- * @endcode
+ * @details 数据库驱动（sqlite3 / libmysqlclient）的接口全是阻塞的，事件循环线程一旦被占住，
+ *          同一线程上所有连接的可读可写事件、定时器与已就绪协程都会一起停摆。本类提供「固定线程数的
+ *          工作线程 + 任务队列」，完成后统一走 Scheduler::scheduleRemote() 把协程恢复投回调用方指定的
+ *          EventLoop，因此调用方对线程的假设不会被工作线程破坏。
+ * @note 析构时队列中已接收的任务会先跑完再退出：直接丢弃会让等待结果的协程永远挂起。
+ *       本对象必须比所有借用它的协程活得久；提前销毁 Task 不会让工作线程访问已释放的协程帧，
+ *       但被销毁的协程永远不会被恢复。
  */
 #pragma once
 

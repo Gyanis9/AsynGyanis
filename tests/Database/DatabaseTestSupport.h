@@ -1,11 +1,10 @@
 /**
  * @file DatabaseTestSupport.h
  * @brief Database 单元测试辅助：临时数据库文件夹具、唯一路径生成与协程测试驱动
- * @details 协程部分（waitForCondition / CompletedTask / collectTask / EventLoopThread）
- *          属于 Database 异步 API 的公共测试设施：SQLite 与真实服务端的用例都要用
- *          「后台跑一个事件循环 + 驱动协程等结果」这同一套纪律，本文件是它唯一的落点。
- *          因此本头只依赖 Core/EventLoop/EventLoop.h、Core/Coroutine/Task.h 与标准库，
- *          不引入任何 Database 驱动头，不依赖具体被测数据库。
+ * @details 协程部分（waitForCondition / CompletedTask / collectTask / EventLoopThread）是
+ *          Database 异步 API 的公共测试设施，SQLite 与真实服务端的用例共用同一套纪律，
+ *          本文件是它唯一的落点；因此本头只依赖 Core/EventLoop/EventLoop.h、
+ *          Core/Coroutine/Task.h 与标准库，不引入任何 Database 驱动头。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -36,11 +35,9 @@ namespace AsynGyanis::Database::TestSupport
 {
     /**
      * @brief 生成一个进程内、跨进程都唯一的名字，用作临时数据库文件的主干
-     * @details 三重盐值缺一不可：
-     *          - steady_clock 读数隔开不同时刻创建的用例；
-     *          - 静态自增序号隔开同一纳秒读数内连续创建的用例（同进程内绝对不重名）；
-     *          - random_device 隔开并发运行的不同测试进程：gtest_discover_tests 会给每个用例单独起进程，
-     *            仅靠进程内序号无法避免两个进程同时算出同一个名字。
+     * @details 三重盐值缺一不可：steady_clock 读数隔开不同时刻创建的用例，静态自增序号隔开同一
+     *          纳秒内连续创建的用例，random_device 隔开并发运行的测试进程——gtest_discover_tests
+     *          会给每个用例单独起进程，仅靠进程内序号无法避免两个进程同时算出同一个名字。
      * @param namePrefix 便于定位问题的用途前缀，如 "SqliteConnect"
      * @return std::string 以 AsynGyanis_Database_ 开头的名字，不含目录、不含扩展名
      */
@@ -74,18 +71,10 @@ namespace AsynGyanis::Database::TestSupport
     /**
      * @brief 临时数据库文件夹具
      *
-     * @details 在系统临时目录下拼出一个进程内唯一的 *.db 路径，析构时删除该文件以及同名伴生文件
-     *          （WAL 的 -wal / -shm、回滚日志的 -journal），使每个用例既互不干扰也不留残留。
-     *          构造阶段刻意不做任何文件 IO：文件本体由被测的 connect() 创建，
-     *          「连接前文件不存在、连接后存在」本身就是一条要钉住的契约。
-     *
-     * 使用要求：数据库路径必须在本对象之后创建连接，并保证连接先于本对象析构，
-     *          否则 Windows 上文件仍被占用，删除会静默失败（POSIX 下能删掉但句柄未释放）。
-     *
-     * @code
-     *   TestSupport::TemporaryDatabaseFile databaseFile("SqlitePersistence");
-     *   ConnectionConfig configuration = ConnectionConfig::sqliteDefault(databaseFile.utf8Path());
-     * @endcode
+     * @details 在系统临时目录下拼出一个进程内唯一的 *.db 路径，析构时连同同名伴生文件
+     *          （WAL 的 -wal / -shm、回滚日志 -journal）一并删除。构造阶段刻意不做文件 IO：
+     *          文件本体由被测的 connect() 创建。使用要求：连接必须在本对象之后创建、先于本对象
+     *          析构，否则 Windows 上文件仍被占用，删除会静默失败（POSIX 下能删掉但句柄未释放）。
      */
     class TemporaryDatabaseFile
     {
@@ -253,26 +242,10 @@ namespace AsynGyanis::Database::TestSupport
     /**
      * @brief 后台事件循环运行器：构造即起线程跑 EventLoop::run()，析构先 stop() 再 join
      *
-     * @details 异步 API 的协程由调用线程 inline 启动、由事件循环线程恢复，因此每个用到它们的
-     *          用例都需要「一个正在运行的 EventLoop」与「一个把 Task 结果搬出来的驱动协程」。
-     *          本类把这两件事放在一起，并承担最容易被忽略的那条销毁纪律：
-     *
-     *          **协程帧必须活到事件循环线程结束之后。**
-     *          完成标记由驱动协程在事件循环线程上置位，等待方看到标记后立刻继续断言并离开作用域；
-     *          此时事件循环线程可能仍在 resume() 的收尾阶段（协程体已执行完、尚未从 final_suspend
-     *          返回）。若等待方当场销毁协程帧，就与这段收尾构成竞态（帧内存来自进程级
-     *          CoroutinePool，destroy 即把块归还池，可能马上被别的协程复用）。因此：
-     *          - 经 runToCompletion() 启动的驱动协程，帧一律留在 m_driverTasks 里；
-     *          - m_driverTasks 声明在 m_thread **之前**，而 C++ 按声明逆序析构，
-     *            于是运行器析构时 m_thread 先析构（析构函数体已先 m_loop.stop()，jthread 再 join），
-     *            m_driverTasks 后析构——帧的销毁必然发生在循环线程结束之后；
-     *          - 调用方若自己持有驱动协程对象（例如要在「任务尚未完成」时做断言），
-     *            必须把该对象声明在 EventLoopThread 之前（同样按逆序析构规则，它比运行器晚销毁），
-     *            或直接交给 parkDriver() 由运行器保管。
-     *
-     *          **析构顺序**：析构函数体先 m_loop.stop()，随后成员按逆序析构——
-     *          m_thread（join 循环线程）→ m_driverTasks（销毁协程帧）→ m_loop。
-     *          循环的停止与线程的退出之间不存在「循环已析构、线程还在跑」的踩空窗口。
+     * @details 异步 API 的协程由调用线程 inline 启动、由事件循环线程恢复，本类把「正在运行的
+     *          EventLoop」与「搬出 Task 结果的驱动协程」放在一起并承担销毁纪律：**协程帧必须活到
+     *          事件循环线程结束之后**——驱动协程帧一律留在 m_driverTasks，且它声明在 m_thread
+     *          **之前**，逆序析构保证帧销毁晚于循环线程结束；调用方自持的驱动协程对象须声明在本类之前。
      */
     class EventLoopThread
     {
@@ -345,12 +318,10 @@ namespace AsynGyanis::Database::TestSupport
         /**
          * @brief 启动一个任务并等到它完成
          *
-         * @details 启动方式是 resume 驱动协程：内层任务会内联执行到「把阻塞任务交给执行器」
-         *          这一步就挂起，因此本方法在任务真正完成之前不占用调用线程等待数据库，
-         *          而是让执行器与事件循环线程协作推进。
-         *          返回前已等到完成标记置位，而完成标记是驱动协程的**最后一次**写入
-         *          （此后它只走 final_suspend 收尾、不再触碰任何出参），因此这里按值把结果
-         *          搬出是安全的：帧本身仍留在 m_driverTasks 里活到 join 之后。
+         * @details 以 resume 驱动协程启动：内层任务内联执行到「把阻塞任务交给执行器」这一步
+         *          就挂起，因此调用线程不会被占住等待数据库，由执行器与循环线程协作推进。
+         *          完成标记是驱动协程的**最后一次**写入（此后只走 final_suspend 收尾、不再触碰
+         *          出参），故按值搬出结果安全；帧本身仍留在 m_driverTasks 里活到 join 之后。
          *
          * @tparam ResultType 任务结果类型
          * @param task 待执行的异步任务
