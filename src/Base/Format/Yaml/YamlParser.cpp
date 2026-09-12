@@ -505,15 +505,16 @@ namespace AsynGyanis::Base
          * @brief 把标量键转成规范文本
          * @details null → "null"，bool → "true"/"false"，整数 → 十进制文本，
          *          浮点 → 最短往返文本，字符串 → 原文。
-         * @param key 已解析的键值
+         * @param key 已解析的键值（可写：字符串键的文本直接移出节点，键节点随后即被丢弃，
+         *            因此这里省掉一次字符串拷贝，长键也就省掉一次堆分配）
          * @return std::string 规范键文本；键是集合时返回空串（由调用方报错）
          */
-        std::string canonicalKeyText(const FormatValue &key)
+        std::string canonicalKeyText(FormatValue &key)
         {
             switch (key.type())
             {
                 case FormatValueType::String:
-                    return key.asString();
+                    return std::move(key.as<std::string>());
                 case FormatValueType::Null:
                     return "null";
                 case FormatValueType::Bool:
@@ -851,13 +852,22 @@ namespace AsynGyanis::Base
                     collectMergeSources(value, position, frame.merges);
                 } else
                 {
-                    if (frame.members.contains(frame.pendingKey) && !m_options.allowDuplicateKeys)
+                    // 一次 try_emplace 同时完成插入与判重：命中已有键时它不会移动任何实参，
+                    // 因此报错文案可以取已存节点的键（与新键等价、文本逐字相同）；
+                    // 相比 contains + insert_or_assign 少一次红黑树查找，键也按右值直接移入节点
+                    const auto [memberIterator, inserted] =
+                            frame.members.try_emplace(std::move(frame.pendingKey), std::move(value));
+                    if (!inserted)
                     {
-                        throw FormatError(FormatErrorKind::DuplicateKey,
-                                          "重复的键：" + frame.pendingKey,
-                                          frame.pendingKeyPosition);
+                        if (!m_options.allowDuplicateKeys)
+                        {
+                            throw FormatError(FormatErrorKind::DuplicateKey,
+                                              "重复的键：" + memberIterator->first,
+                                              frame.pendingKeyPosition);
+                        }
+                        // 允许重复键时后到者覆盖先到者，与 insert_or_assign 的语义一致
+                        memberIterator->second = std::move(value);
                     }
-                    frame.members.insert_or_assign(frame.pendingKey, std::move(value));
                 }
 
                 frame.hasPendingKey       = false;

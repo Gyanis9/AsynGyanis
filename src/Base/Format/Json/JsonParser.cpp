@@ -165,7 +165,7 @@ namespace AsynGyanis::Base
                                   currentPosition());
             }
 
-            const std::string keyName = parseStringText();
+            std::string keyName = parseStringText();
             skipWhitespace();
             expect(':');
 
@@ -181,8 +181,9 @@ namespace AsynGyanis::Base
 
             // 配置场景下重复键几乎都是笔误，直接报错而不是静默覆盖。
             // 用一次 emplace 的返回值同时完成插入与查重：命中已有键时其键文本与新键完全相同，
-            // 因此报错文案与逐字比较时代保持一致，但少了一次哈希查找
-            const auto [insertedIterator, inserted] = members.emplace(keyName, std::move(value));
+            // 因此报错文案与逐字比较时代保持一致，但少了一次哈希查找。
+            // 键文本此处已无其它用途，按右值交给 emplace 直接移入节点，长键因此省掉一次堆分配
+            const auto [insertedIterator, inserted] = members.emplace(std::move(keyName), std::move(value));
             if (!inserted)
             {
                 throw FormatError(FormatErrorKind::DuplicateKey, "对象存在重复键：" + insertedIterator->first, currentPosition());
@@ -466,42 +467,42 @@ namespace AsynGyanis::Base
 
     FormatValue JsonParser::parseLiteral(const char leadCharacter)
     {
-        struct Keyword
+        // 首字符已由 parseValue 限定为 t/f/n，据此唯一确定关键字文本。
+        // 关键字表改为静态存储的 string_view：FormatValue 不是字面类型，原先那张
+        // {text, FormatValue} 局部表每次解析都要在栈上构造并析构 3 个变体，
+        // 而三个关键字的文本长度不同、比较次数也被首字符分派压到一次
+        const std::string_view keywordText = leadCharacter == 't' ? std::string_view{"true"} :
+                                            leadCharacter == 'f' ? std::string_view{"false"} :
+                                                                   std::string_view{"null"};
+
+        if (m_text.substr(m_index, keywordText.size()) != keywordText)
         {
-            std::string_view text;  ///< 字面量文本
-            FormatValue      value; ///< 对应的配置值
-        };
-
-        const Keyword keywords[] = {
-                Keyword{.text = "true", .value = FormatValue(true)},
-                Keyword{.text = "false", .value = FormatValue(false)},
-                Keyword{.text = "null", .value = FormatValue(nullptr)},
-        };
-
-        for (const auto &[text, value]: keywords)
-        {
-            if (leadCharacter != text.front() || m_text.substr(m_index, text.size()) != text)
-            {
-                continue;
-            }
-
-            // 关键字必须是完整词，truely 之类的后续字母属于非法输入
-            const char characterAfterKeyword = m_index + text.size() < m_text.size()
-                                                   ? m_text[m_index + text.size()]
-                                                   : '\0';
-            if (std::isalnum(static_cast<unsigned char>(characterAfterKeyword)) != 0)
-            {
-                throw FormatError(FormatErrorKind::InvalidKeyword, "关键字格式错误", currentPosition());
-            }
-
-            for (std::size_t offset = 0; offset < text.size(); ++offset)
-            {
-                advance();
-            }
-            return value;
+            throw FormatError(FormatErrorKind::InvalidKeyword, "关键字必须是 true、false、null 之一", currentPosition());
         }
 
-        throw FormatError(FormatErrorKind::InvalidKeyword, "关键字必须是 true、false、null 之一", currentPosition());
+        // 关键字必须是完整词，truely 之类的后续字母属于非法输入
+        const char characterAfterKeyword = m_index + keywordText.size() < m_text.size()
+                                               ? m_text[m_index + keywordText.size()]
+                                               : '\0';
+        if (std::isalnum(static_cast<unsigned char>(characterAfterKeyword)) != 0)
+        {
+            throw FormatError(FormatErrorKind::InvalidKeyword, "关键字格式错误", currentPosition());
+        }
+
+        for (std::size_t offset = 0; offset < keywordText.size(); ++offset)
+        {
+            advance();
+        }
+
+        switch (leadCharacter)
+        {
+            case 't':
+                return FormatValue(true);
+            case 'f':
+                return FormatValue(false);
+            default:
+                return FormatValue(nullptr);
+        }
     }
 
     void JsonParser::skipWhitespace()

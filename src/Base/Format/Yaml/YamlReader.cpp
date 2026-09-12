@@ -1687,6 +1687,14 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] static std::string decodeDoubleQuoted(const std::string_view body, const TextPosition &position)
         {
+            // 快路径：正文不含反斜杠时没有任何转义要处理，一次成段拷贝即可；
+            // 逐字符 push_back 的循环（含每次容量检查）是纯开销。
+            // 所有诊断都只可能由反斜杠序列触发，因此快路径不会漏报错误
+            if (body.find('\\') == std::string_view::npos)
+            {
+                return std::string(body);
+            }
+
             std::string result;
             result.reserve(body.size());
 

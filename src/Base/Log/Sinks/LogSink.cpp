@@ -15,6 +15,16 @@
 
 namespace AsynGyanis::Base
 {
+    namespace
+    {
+        /// 未设置格式化器时的回退实例。放在命名空间作用域并用 constinit 常量初始化，
+        /// 相比函数内 static：不再为每次调用生成线程安全初始化守卫（TSS 读 + 比较 + 分支，
+        /// 已用生成的汇编确认），也不需要在首次调用时注册 atexit。
+        /// 此处不能加 const：LogFormatter::format() 按接口契约是非 const 成员，
+        /// 而该对象无状态、运行期从不被修改，去掉 const 只影响静态检查
+        constinit DefaultFormatter kFallbackFormatter{};
+    } // namespace
+
     void LogSink::setLevel(const LogLevel level)
     {
         m_level.store(level, std::memory_order_release);
@@ -49,7 +59,6 @@ namespace AsynGyanis::Base
         {
             return formatter->format(event);
         }
-        static DefaultFormatter defaultFormatter;
-        return defaultFormatter.format(event);
+        return kFallbackFormatter.format(event);
     }
 } // namespace AsynGyanis::Base

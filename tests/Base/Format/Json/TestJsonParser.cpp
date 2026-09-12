@@ -565,6 +565,7 @@ namespace AsynGyanis::Base
                 {"1.", FormatErrorKind::InvalidNumber, "小数点"},
                 {"1e", FormatErrorKind::InvalidNumber, "指数"},
                 {"truely", FormatErrorKind::InvalidKeyword, "关键字格式错误"},
+                {"tru", FormatErrorKind::InvalidKeyword, "关键字必须"},
                 {R"({"a":1,"a":2})", FormatErrorKind::DuplicateKey, "对象存在重复键：a"},
                 {"1 2", FormatErrorKind::TrailingContent, "文档结束后"},
         };
