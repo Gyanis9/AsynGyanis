@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <atomic>
+
 namespace AsynGyanis::Platform
 {
     /**
@@ -58,17 +60,31 @@ namespace AsynGyanis::Platform
         /**
          * @brief 发送一次唤醒通知
          * @details 线程安全，可在任意线程调用；通知器无效时为空操作。
+         *
+         * **合并唤醒**：已经有一次「待处理」的唤醒时不再写描述符——唤醒的语义是
+         *          「目标循环该醒来看一眼队列」，多写一次不会多处理任何任务，
+         *          只是多一次系统调用。跨线程投递密集时（每个远程任务都会通知一次）
+         *          这个合并把 N 次 write 压成 1 次。
          */
         void notify() const noexcept;
 
         /**
          * @brief 读空唤醒数据，使描述符重新回到不可读状态
          * @details 在事件循环回调中调用；通知器无效时为空操作。
+         * @note 必须与 notify() 的合并标记配套：本方法**以「清除标记」作为排空完成的判据**，
+         *       而不是以「描述符读空」为准——两者交叉时（清除后又有生产者置位却因合并而
+         *       未写字节）只有前者能保证不丢唤醒。
          */
         void drain() const noexcept;
 
     private:
-        int m_readDescriptor{-1};  ///< 读端描述符（注册到事件循环）
-        int m_writeDescriptor{-1}; ///< 写端描述符（用于跨线程唤醒）
+        /**
+         * @brief 读空描述符里累积的唤醒字节
+         */
+        void flushDescriptor() const noexcept;
+
+        int                      m_readDescriptor{-1};  ///< 读端描述符（注册到事件循环）
+        int                      m_writeDescriptor{-1}; ///< 写端描述符（用于跨线程唤醒）
+        mutable std::atomic<bool> m_wakeupPending{false}; ///< 是否已有一次待处理的唤醒（合并多次 notify 的依据）
     };
 } // namespace AsynGyanis::Platform

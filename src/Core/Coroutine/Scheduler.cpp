@@ -80,12 +80,14 @@ namespace AsynGyanis::Core
             handle.resume();
         }
 
-        // 第二阶段：批量窃取全局队列，防止本地任务持续产生导致全局饥饿
+        // 第二阶段：批量窃取全局队列，防止本地任务持续产生导致全局饥饿。
+        // 批处理缓冲提到循环外：跨批次复用已申请的容量，避免每轮都做一次堆分配
+        std::vector<std::coroutine_handle<> > batch;
         while (true)
         {
-            std::vector<std::coroutine_handle<> > batch;
             {
                 std::lock_guard lock(m_globalMutex);
+                batch.clear();
                 batch.reserve(m_globalQueue.size());
                 while (!m_globalQueue.empty())
                 {
