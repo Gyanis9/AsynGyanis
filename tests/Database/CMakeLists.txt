@@ -12,6 +12,7 @@ add_executable(TestDatabase
 
         Dialect/TestSqliteDialect.cpp
         Dialect/TestMySqlDialect.cpp
+        Dialect/TestPostgresDialect.cpp
 
         Queryable/TestQueryable.cpp
         Queryable/TestQueryableExecution.cpp

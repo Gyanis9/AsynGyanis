@@ -11,10 +11,10 @@
  *          因此多次取用得到同一个对象（线程安全的 magic static，无需加锁）。
  *
  * ## 未实现的类型如何处理
- * PostgreSQL / Oracle 等类型目前没有方言实现（MySQL 已随 MySqlDialect 登记）。本注册表选择
- * 「抛中文异常」而不是返回空指针：返回空会让每个调用点都必须写判空分支，漏写一处就是
- * 解引用空指针崩溃；抛异常把错误收敛到一处，且异常文本能直接告诉使用者缺什么、怎么补。
- * 调用方若需要「先问有没有」而不想捕获异常，可用 supports() 预判。
+ * 尚未提供方言的类型（如 Oracle）在这里抛中文异常而不是返回空指针：返回空会让每个调用点
+ * 都必须写判空分支，漏写一处就是解引用空指针崩溃；抛异常把错误收敛到一处，
+ * 且异常文本能直接告诉使用者缺什么、怎么补。调用方若需要「先问有没有」而不想捕获异常，
+ * 可用 supports() 预判。
  */
 #pragma once
 
@@ -28,7 +28,7 @@ namespace AsynGyanis::Database
     /**
      * @brief SQL 方言注册表
      *
-     * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite 与 MySQL。
+     * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite、MySQL 与 PostgreSQL。
      *
      * @code
      *   std::shared_ptr<SqlDialect> dialect = DialectRegistry::dialectFor(DatabaseType::Sqlite);
