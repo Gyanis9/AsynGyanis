@@ -18,12 +18,19 @@ namespace AsynGyanis::Platform
     /**
      * @brief 平台错误码工具
      *
-     * @details Linux 下系统调用统一通过 errno 报告错误；Windows 下 socket 使用
-     *          WSAGetLastError()，其取值与 POSIX errno 不同（例如 WSAEWOULDBLOCK
-     *          为 10035）。本类把两侧的差异收敛为一组 POSIX 语义的常量与访问器，
-     *          调用方只需与本平台无关的语义值比较即可。
-     * @note 常量值在 Windows 上对应 socket 错误码，因此比较前请确认错误码来源
-     *       与访问器成对使用（lastSocketErrorCode 对 kWouldBlock 等）。
+     * @details Linux 下系统调用与 socket 统一通过 errno 报告错误；Windows 下 socket 走
+     *          WSAGetLastError()，而 CRT/文件类调用依旧设置 errno，
+     *          因此两个访问器分别对应这两条路径（lastSocketErrorCode / lastErrorCode）。
+     *          本类把差异收敛成两组语义常量：
+     *          - 除下面显式标注者外，常量取自 socket 空间，必须与 lastSocketErrorCode() 配对比较
+     *            （这正是全部现有调用方的用法：AsyncSocket 与 TcpAcceptor 的资源紧张判定）；
+     *          - kInterrupted 在两套空间里都能用：POSIX 只认 errno 的 EINTR，
+     *            Windows 下 WSAEINTR 属于 socket 空间，系统空间的中断是另一个码，
+     *            现有系统空间调用点（inotify）只在 Linux 编译，因此不受影响。
+     * @note Windows 的 socket 空间没有「内存不足」与「系统文件表满」的独立取值，
+     *       因此 kOutOfMemory 与 kNoBufferSpace 同值、kSystemFileTableFull 与
+     *       kTooManyOpenFiles 同值；判定时把它们整组写成 OR 即可，
+     *       不要假设两两不同。
      */
     class PlatformError
     {
@@ -34,7 +41,7 @@ namespace AsynGyanis::Platform
 #else
                 EINTR
 #endif
-                ; ///< 调用被信号中断，可安全重试
+                ; ///< 调用被中断，可安全重试（POSIX 与 Windows socket 空间均适用）
 
         static constexpr int kWouldBlock =
 #if ASYN_PLATFORM_WIN32
@@ -70,11 +77,13 @@ namespace AsynGyanis::Platform
 
         static constexpr int kSystemFileTableFull =
 #if ASYN_PLATFORM_WIN32
+                // Windows 的 socket 空间没有独立的「系统文件表满」，与 kTooManyOpenFiles 同值；
+                // Linux 上 ENFILE 与 EMFILE 是两回事，因此这个常量必须保留
                 WSAEMFILE
 #else
                 ENFILE
 #endif
-                ; ///< 系统级文件表已满
+                ; ///< 系统级文件表已满（Windows 上与 kTooManyOpenFiles 同值）
 
         static constexpr int kNoBufferSpace =
 #if ASYN_PLATFORM_WIN32
@@ -82,15 +91,18 @@ namespace AsynGyanis::Platform
 #else
                 ENOBUFS
 #endif
-                ; ///< 缓冲区内存不足
+                ; ///< 缓冲区/内存不足
 
         static constexpr int kOutOfMemory =
 #if ASYN_PLATFORM_WIN32
-                ERROR_NOT_ENOUGH_MEMORY
+                // 原实现取 ERROR_NOT_ENOUGH_MEMORY（Win32 系统空间），而调用方一律拿
+                // WSAGetLastError() 的结果来比，永远匹配不上。socket 空间里内存不足就是
+                // WSAENOBUFS，与 kNoBufferSpace 同值——这是平台事实，不是笔误
+                WSAENOBUFS
 #else
                 ENOMEM
 #endif
-                ; ///< 内存分配失败
+                ; ///< 内存分配失败（Windows 上与 kNoBufferSpace 同值）
 
         /**
          * @brief 读取最近一次 CRT/文件类系统调用的错误码
