@@ -22,6 +22,7 @@ add_subdirectory(Common)
 add_subdirectory(Sqlite)
 add_subdirectory(MySql)
 add_subdirectory(Redis)
+add_subdirectory(Pool)
 
 get_property(DATABASE_SOURCES GLOBAL PROPERTY AsynGyanisDatabaseSources)
 
@@ -31,6 +32,7 @@ add_library(Database STATIC
 
 target_link_libraries(Database PUBLIC
         Platform
+        Core
         SQLite::SQLite3
 )
 

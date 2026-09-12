@@ -7,6 +7,8 @@ add_executable(TestDatabase
         Common/TestDatabaseTypes.cpp
         Common/TestDatabaseFactory.cpp
 
+        Pool/TestConnectionPool.cpp
+
         Sqlite/TestSqliteConnection.cpp
         Sqlite/TestSqliteResult.cpp
 
