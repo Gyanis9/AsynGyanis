@@ -19,10 +19,16 @@ namespace AsynGyanis::Core
     class Connection;
 
     /**
-     * @brief 管理所有活跃的连接对象，提供线程安全添加/删除及优雅关闭功能。
+     * @brief 管理所有活跃的连接对象，提供添加/删除与优雅关闭功能。
      *
-     * 该类使用 shared_mutex 保护内部连接集合，支持并发读取和独占写入。
-     * 在关闭时可以主动通知所有连接停止，并等待所有连接退出。
+     * 内部连接集合由 shared_mutex 保护，因此**集合本身的**增删与遍历可以跨线程并发进行。
+     *
+     * @warning 「集合线程安全」不等于「关闭连接线程安全」：shutdown() 会在**调用者线程**上
+     *          逐个执行 connection->close()，而该连接的读写线程可能正在同一个底层套接字上
+     *          收发数据（AsyncSocket 的文件描述符是普通 int，不是原子量）。
+     *          因此从外部线程发起关闭时，约定是由连接所属的事件循环线程来收尾：
+     *          跨线程场景请把关闭动作投递到那个循环（EventLoop::scheduler().scheduleRemote()），
+     *          不要直接调用本类的 shutdown()。
      */
     class ConnectionManager
     {

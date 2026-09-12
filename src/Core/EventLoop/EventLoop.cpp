@@ -21,6 +21,11 @@ namespace AsynGyanis::Core
 
     void EventLoop::run()
     {
+        // 这里刻意**不**清除 m_stopRequested，即停止请求是粘性的：它一旦被置位，
+        // 之后每次 run() 都会立刻返回。原因不是忘了重置，而是这样才保证
+        // 「stop() 先于 run() 到达」不会被丢掉——start() 之后立刻 stop() 是常见写法，
+        // 若在 run() 开头清除标志，那次停止请求就会被吞掉，工作线程将永远阻塞在
+        // epoll_wait 上，join 随之卡死（实测过）。需要重新运行请新建 EventLoop 实例
         m_running.store(true, std::memory_order_release);
 
         while (true)

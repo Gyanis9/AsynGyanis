@@ -5,6 +5,9 @@
  * 管理 epoll 文件描述符的生命周期, 提供添加/修改/删除被监听文件描述符的接口。
  * 析构时自动关闭 epoll 文件描述符。支持移动语义, 禁止拷贝。
  *
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once
@@ -109,7 +112,7 @@ namespace AsynGyanis::Core
         void destroy();
 
         Platform::EpollHandle    m_fileDescriptor{Platform::kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: 文件描述符, Windows: HANDLE）
-        std::vector<epoll_event> m_events;                                        ///< 存储 wait() 返回的事件数组，容量为 kMaximumEventCount
+        std::vector<epoll_event> m_events;                                        ///< 存储 wait() 返回的事件数组，初始容量为 kMaximumEventCount；事件数接近上限时 wait() 会翻倍扩容
         static constexpr int     kMaximumEventCount = 1024;                       ///< 默认每次 wait 最多返回的事件数
     };
 }

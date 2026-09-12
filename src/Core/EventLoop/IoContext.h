@@ -1,6 +1,9 @@
 /**
  * @file IoContext.h
  * @brief 异步运行时主入口，持有 ThreadPool 并管理全局生命周期
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once

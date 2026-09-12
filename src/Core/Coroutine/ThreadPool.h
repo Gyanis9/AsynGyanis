@@ -1,6 +1,9 @@
 /**
  * @file ThreadPool.h
  * @brief 固定大小线程池，每个线程绑定一个 EventLoop
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once

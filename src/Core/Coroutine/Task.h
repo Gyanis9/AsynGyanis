@@ -1,6 +1,9 @@
 /**
  * @file Task.h
  * @brief 协程返回类型 Task<T>，定义 promise_type 并集成调度器
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once
@@ -93,10 +96,10 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 从协程句柄构造 Task 对象。
-         * @param h 协程句柄
+         * @param handle 协程句柄
          */
-        explicit Task(Handle h) :
-            m_handle(h)
+        explicit Task(const Handle handle) :
+            m_handle(handle)
         {
         }
 
@@ -250,6 +253,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 判断协程是否已经完成，若完成则无需挂起。
          * @return true 表示协程已完成，可直接获取结果；false 表示需要挂起等待
+         * @warning 移动后的 Task 句柄为空，此时调用本方法会解引用空句柄（未定义行为）；
+         *          只对仍然持有句柄的对象调用（`handle()` 非空可作判据）
          */
         bool await_ready() const noexcept
         {
@@ -284,6 +289,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 检查协程是否已经完成执行。
          * @return true 表示协程已完成；false 表示尚未完成
+         * @warning 移动后的 Task 句柄为空，此时调用本方法会解引用空句柄（未定义行为）；
+         *          只对仍然持有句柄的对象调用
          */
         [[nodiscard]] bool isReady() const noexcept
         {
@@ -317,10 +324,10 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 从协程句柄构造 Task<void> 对象。
-         * @param h 协程句柄
+         * @param handle 协程句柄
          */
-        explicit Task(const Handle h) :
-            m_handle(h)
+        explicit Task(const Handle handle) :
+            m_handle(handle)
         {
         }
 
@@ -443,6 +450,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 判断协程是否已经完成。
          * @return true 表示已完成；false 表示尚未完成
+         * @warning 移动后的 Task 句柄为空，此时调用本方法会解引用空句柄（未定义行为）；
+         *          只对仍然持有句柄的对象调用
          */
         bool await_ready() const noexcept
         {
@@ -471,6 +480,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 检查协程是否已经完成执行。
          * @return true 表示协程已完成；false 表示尚未完成
+         * @warning 移动后的 Task 句柄为空，此时调用本方法会解引用空句柄（未定义行为）；
+         *          只对仍然持有句柄的对象调用
          */
         [[nodiscard]] bool isReady() const noexcept
         {

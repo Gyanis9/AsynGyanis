@@ -1,6 +1,9 @@
 /**
  * @file Scheduler.h
  * @brief 协程调度器：线程本地多级就绪队列 + 工作窃取
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once
@@ -26,8 +29,9 @@ namespace AsynGyanis::Core
      *   用于存放本线程调用 schedule() 投递的任务，采用后进先出的栈式调度。
      * - 全局队列（m_globalQueue）：有互斥锁保护，用于跨线程投递任务
      *   （scheduleRemote 调用），采用先进先出的队列调度。
-     * - 工作窃取：空闲线程可以通过 stealFrom() 从其他 Scheduler 窃取任务，
-     *   实现负载均衡。
+     * - 工作窃取：本类**提供** stealFrom() 让空闲线程从其他 Scheduler 取任务。
+     *   @note 引擎内部当前**不会**自动窃取（EventLoop 与 ThreadPool 都没有调用它），
+     *         是否窃取、何时窃取由调用方自行驱动，因此这句话描述的是可用能力而非既有行为。
      *
      * @note 本类非线程安全，除 scheduleRemote() 和 stealFrom() 外，
      *       其他成员函数应由所属 EventLoop 线程调用。

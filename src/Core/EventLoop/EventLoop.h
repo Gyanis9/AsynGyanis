@@ -1,6 +1,9 @@
 /**
  * @file EventLoop.h
  * @brief 每线程事件循环 — 基于 epoll 驱动，协程调度核心
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once
@@ -18,7 +21,12 @@ namespace AsynGyanis::Core
      * @brief 事件循环类
      *
      * 封装 epoll 事件监控和协程调度器，运行在单一线程中。
-     * 支持跨线程唤醒、优雅停止与重启。每个线程通常拥有一个 EventLoop 实例。
+     * 支持跨线程唤醒与优雅停止。每个线程通常拥有一个 EventLoop 实例。
+     *
+     * @note **一个实例一个运行生命周期**：stop() 置下的停止请求是粘性的，
+     *       之后再调用 run() 都会立刻返回（不会阻塞、也不会重新开始跑）。
+     *       这个取舍是刻意的——它保证「先 stop() 后 run()」的时序不会丢失停止请求，
+     *       而 start() 之后立刻 stop() 正是常见写法。需要重新运行请新建 EventLoop 实例。
      */
     class EventLoop
     {

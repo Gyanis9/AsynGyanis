@@ -49,7 +49,7 @@ namespace AsynGyanis::Core
             return true;
         }
 
-        // 优先处理全局队列中的跨线程任务
+        // 本地队列已空（上面命中时会提前返回）：再处理全局队列中的跨线程任务
         std::coroutine_handle<> globalHandle = nullptr;
         {
             std::lock_guard lock(m_globalMutex);

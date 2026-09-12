@@ -1,6 +1,9 @@
 /**
  * @file Timer.h
  * @brief 可 co_await 的定时器（基于 timerfd + epoll）
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once

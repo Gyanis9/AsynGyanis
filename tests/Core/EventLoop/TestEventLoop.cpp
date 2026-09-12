@@ -209,4 +209,22 @@ namespace AsynGyanis::Core
         EXPECT_NO_THROW(loop.stop());
         worker.join();
     }
+
+    TEST(EventLoop, StopBeforeRunIsStickyAndRunReturnsImmediately)
+    {
+        EventLoop loop;
+
+        // 停止请求先于 run() 到达时必须被保留：start() 之后立刻 stop() 是常见写法，
+        // 它会走到「标志已置位、工作线程还没进入 run()」这个时序。若 run() 开头清除该标志，
+        // 这次停止请求就被吞掉，工作线程会永远阻塞在 epoll_wait 上、join 随之卡死
+        //（这不是假设：按「可重启」改法实现后，ThreadPool.DoubleStopIsSafe 实测挂死）
+        loop.stop();
+        EXPECT_NO_THROW(loop.run());
+        EXPECT_FALSE(loop.isRunning());
+
+        // 停止请求是粘性的，同一实例不支持重启：再次 run() 同样立刻返回。
+        // 这是为换取上面那条安全性质而刻意保留的取舍，需要重新运行请新建实例
+        EXPECT_NO_THROW(loop.run());
+        EXPECT_FALSE(loop.isRunning());
+    }
 } // namespace AsynGyanis::Core

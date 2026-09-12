@@ -1,6 +1,9 @@
 /**
  * @file Cancelable.h
  * @brief 基于 std::stop_token 的协作取消混入类
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
 #pragma once
