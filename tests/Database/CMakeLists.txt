@@ -11,6 +11,7 @@ add_executable(TestDatabase
         Pool/TestTransaction.cpp
 
         Dialect/TestSqliteDialect.cpp
+        Dialect/TestMySqlDialect.cpp
 
         Queryable/TestQueryable.cpp
         Queryable/TestQueryableExecution.cpp
@@ -20,6 +21,7 @@ add_executable(TestDatabase
         Sqlite/TestSqliteResult.cpp
 
         MySql/TestMySqlConnection.cpp
+        MySql/TestMySqlStatementResult.cpp
 
         Redis/TestRedisConnection.cpp
         Redis/TestRedisResult.cpp

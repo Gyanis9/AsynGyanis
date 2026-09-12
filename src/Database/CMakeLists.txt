@@ -10,10 +10,12 @@
 find_package(SQLite3 REQUIRED)
 find_package(hiredis QUIET)
 
-# libmysqlclient 在 Conan 缓存里只有源码包、没有匹配本 profile 的预编译二进制，
-# 自动探测会生成指向不存在头文件目录的配置，最终以「找不到 mysql/mysql.h」失败。
-# 因此 MySQL 驱动默认关闭，准备好客户端库后用 -DDATABASE_WITH_MYSQL=ON 显式开启
-option(DATABASE_WITH_MYSQL "编译 MySQL 驱动（需要可用的 libmysqlclient）" OFF)
+# libmysqlclient 是可选依赖：Conan 缓存或系统里存在匹配本 profile 的包时编译真实驱动，
+# 探测不到就退化为「每个入口都给出中文错误」的桩实现。因此这里用 QUIET 探测 +
+# if(TARGET libmysqlclient::libmysqlclient) 判定，绝不写 find_package(... REQUIRED)：
+# 缺一个可选驱动不该让整个工程的 configure 失败（旧的 OPTION 默认 OFF 写法让真实驱动
+# 从未被编译过，真实分支里的编译错误也就无从发现）
+option(DATABASE_WITH_MYSQL "编译 MySQL 驱动（需要可用的 libmysqlclient）" ON)
 
 # 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 set_property(GLOBAL PROPERTY AsynGyanisDatabaseSources "")
@@ -38,12 +40,18 @@ target_link_libraries(Database PUBLIC
         SQLite::SQLite3
 )
 
-# 可选驱动只在启用时才探测客户端库，并用对应宏切换真实实现与报错桩
+# 可选驱动只在启用时才探测客户端库，并用对应宏切换真实实现与报错桩。
+# QUIET + TARGET 判定：探测失败是预期路径（没装客户端库的机器），不打印红色告警也不中断
 if(DATABASE_WITH_MYSQL)
-    find_package(libmysqlclient REQUIRED)
+    find_package(libmysqlclient QUIET)
+endif()
+
+if(TARGET libmysqlclient::libmysqlclient)
     target_link_libraries(Database PUBLIC libmysqlclient::libmysqlclient)
     target_compile_definitions(Database PUBLIC DATABASE_HAS_MYSQL=1)
     message(STATUS "Database: 启用 MySQL 驱动（libmysqlclient）")
+elseif(DATABASE_WITH_MYSQL)
+    message(STATUS "Database: 未找到 libmysqlclient，MySQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
 else()
     message(STATUS "Database: MySQL 驱动未启用（-DDATABASE_WITH_MYSQL=ON 可开启），退化为报错桩")
 endif()

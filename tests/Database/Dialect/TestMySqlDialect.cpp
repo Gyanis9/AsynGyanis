@@ -1,32 +1,32 @@
 /**
- * @file TestSqliteDialect.cpp
- * @brief SQLite 方言翻译单元测试（不需要数据库连接）
+ * @file TestMySqlDialect.cpp
+ * @brief MySQL 方言翻译单元测试（不需要数据库连接）
  * @author Gyanis
  * @date 2026-09-16
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，
- *          不打开任何数据库文件，也不经过任何驱动。
+ *          不打开任何数据库文件，也不经过任何驱动。与 TestSqliteDialect.cpp 同口径覆盖，
+ *          差异点（反引号引用、分页占位符与无符号上界、START TRANSACTION）单独断言。
  *
  * 覆盖场景：
- * - 标识符引用与内部引号转义
- * - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
- * - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含引号列名）
+ * - 标识符反引号引用与内部反引号转义
+ * - 占位符文本、方言类型、LIMIT/OFFSET 支持能力、参数上限 65535
+ * - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含反引号列名）
  * - FROM 与表别名
  * - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
- * - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
+ * - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET（含只有 OFFSET 时补出无符号上界）
  * - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
  * - 参数顺序、数量、类型与 uint64 降级
  * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
- * - 事务控制语句文本与单条语句的参数上限
- * - DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
- *   Redis 抛出中文异常
+ * - 事务控制语句文本
+ * - DialectRegistry：MySQL 可取得且与 SQLite 是不同实例，Redis 抛出中文异常
  */
 #include "Database/Dialect/DialectRegistry.h"
+#include "Database/Dialect/MySqlDialect.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
-#include "Database/Dialect/SqliteDialect.h"
 #include "Database/Queryable/QueryNode.h"
 
 #include <gtest/gtest.h>
@@ -42,8 +42,8 @@ namespace
     using AsynGyanis::Database::DatabaseType;
     using AsynGyanis::Database::DatabaseValue;
     using AsynGyanis::Database::DialectRegistry;
+    using AsynGyanis::Database::MySqlDialect;
     using AsynGyanis::Database::SqlDialect;
-    using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::SqlStatement;
     using AsynGyanis::Database::Queryable::FieldReference;
     using AsynGyanis::Database::Queryable::JoinClause;
@@ -157,51 +157,55 @@ namespace
 // ========================================================================
 
 /**
- * @brief 验证标识符被双引号包裹，保留字同样安全
+ * @brief 验证标识符被反引号包裹，保留字同样安全
  */
-TEST(SqliteDialectIdentifier, QuoteIdentifierWrapsWithDoubleQuotes)
+TEST(MySqlDialectIdentifier, QuoteIdentifierWrapsWithBackticks)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
-    EXPECT_EQ(dialect.quoteIdentifier("name"), "\"name\"");
-    // order / group 是 SQL 保留字，加引号后可以安全作为列名使用
-    EXPECT_EQ(dialect.quoteIdentifier("order"), "\"order\"");
-    EXPECT_EQ(dialect.quoteIdentifier("group"), "\"group\"");
+    EXPECT_EQ(dialect.quoteIdentifier("name"), "`name`");
+    // order / group 是 SQL 保留字，加反引号后可以安全作为列名使用
+    EXPECT_EQ(dialect.quoteIdentifier("order"), "`order`");
+    EXPECT_EQ(dialect.quoteIdentifier("group"), "`group`");
 }
 
 /**
- * @brief 验证标识符内部的双引号被翻倍转义
+ * @brief 验证标识符内部的反引号被翻倍转义
  */
-TEST(SqliteDialectIdentifier, QuoteIdentifierDoublesEmbeddedQuote)
+TEST(MySqlDialectIdentifier, QuoteIdentifierDoublesEmbeddedBacktick)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
-    EXPECT_EQ(dialect.quoteIdentifier("weird\"name"), "\"weird\"\"name\"");
-    EXPECT_EQ(dialect.quoteIdentifier("a\"b\"c"), "\"a\"\"b\"\"c\"");
-    EXPECT_EQ(dialect.quoteIdentifier(""), "\"\"");
+    EXPECT_EQ(dialect.quoteIdentifier("weird`name"), "`weird``name`");
+    EXPECT_EQ(dialect.quoteIdentifier("a`b`c"), "`a``b``c`");
+    EXPECT_EQ(dialect.quoteIdentifier(""), "``");
 }
 
 /**
  * @brief 验证占位符文本恒为 '?'，与序号无关
  */
-TEST(SqliteDialectIdentifier, PlaceholderIsAlwaysQuestionMark)
+TEST(MySqlDialectIdentifier, PlaceholderIsAlwaysQuestionMark)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     EXPECT_EQ(dialect.placeholder(0), "?");
     EXPECT_EQ(dialect.placeholder(1), "?");
-    EXPECT_EQ(dialect.placeholder(42), "?");
+    EXPECT_EQ(dialect.placeholder(65534), "?");
 }
 
 /**
- * @brief 验证方言类型与分页能力声明
+ * @brief 验证方言类型、分页能力与参数上限
  */
-TEST(SqliteDialectIdentifier, DialectMetadata)
+TEST(MySqlDialectIdentifier, DialectMetadataAndParameterLimit)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
-    EXPECT_EQ(dialect.type(), DatabaseType::Sqlite);
+    EXPECT_EQ(dialect.type(), DatabaseType::MySql);
     EXPECT_TRUE(dialect.supportsLimitOffset());
+
+    // 上限来自预处理协议 2 字节的 num_params 字段，与 SQLite 的 999 是两回事
+    EXPECT_EQ(dialect.maximumStatementParameters(), MySqlDialect::kMaximumStatementParameters);
+    EXPECT_EQ(dialect.maximumStatementParameters(), 65535U);
 }
 
 // ========================================================================
@@ -211,25 +215,25 @@ TEST(SqliteDialectIdentifier, DialectMetadata)
 /**
  * @brief 验证 selectColumns 为空时退化为通配符
  */
-TEST(SqliteDialectSelect, EmptySelectColumnsFallsBackToWildcard)
+TEST(MySqlDialectSelect, EmptySelectColumnsFallsBackToWildcard)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\"");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users`");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
 /**
- * @brief 验证显式列按给定顺序加引号输出
+ * @brief 验证显式列按给定顺序加反引号输出
  */
-TEST(SqliteDialectSelect, ExplicitColumnsAreQuotedInOrder)
+TEST(MySqlDialectSelect, ExplicitColumnsAreQuotedInOrder)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -237,16 +241,16 @@ TEST(SqliteDialectSelect, ExplicitColumnsAreQuotedInOrder)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT \"id\", \"name\", \"age\" FROM \"users\"");
+    EXPECT_EQ(statement.sql, "SELECT `id`, `name`, `age` FROM `users`");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
 /**
  * @brief 验证表达式列原样输出而不被加引号
  */
-TEST(SqliteDialectSelect, ExpressionColumnIsPassedThrough)
+TEST(MySqlDialectSelect, ExpressionColumnIsPassedThrough)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -254,16 +258,16 @@ TEST(SqliteDialectSelect, ExpressionColumnIsPassedThrough)
 
     const SqlStatement statement = dialect.translate(node);
 
-    // 加引号会把函数调用降级成列名，因此必须原样输出
-    EXPECT_EQ(statement.sql, "SELECT COUNT(*), COALESCE(age, 0) FROM \"users\"");
+    // 加反引号会把函数调用降级成列名，因此必须原样输出
+    EXPECT_EQ(statement.sql, "SELECT COUNT(*), COALESCE(age, 0) FROM `users`");
 }
 
 /**
- * @brief 验证限定名逐段加引号，通配符段保持裸写
+ * @brief 验证限定名逐段加反引号，通配符段保持裸写
  */
-TEST(SqliteDialectSelect, QualifiedNameQuotesEachSegment)
+TEST(MySqlDialectSelect, QualifiedNameQuotesEachSegment)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -271,31 +275,31 @@ TEST(SqliteDialectSelect, QualifiedNameQuotesEachSegment)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT \"users\".\"id\", \"users\".* FROM \"users\"");
+    EXPECT_EQ(statement.sql, "SELECT `users`.`id`, `users`.* FROM `users`");
 }
 
 /**
- * @brief 验证含双引号的列名在翻译时被正确转义
+ * @brief 验证含反引号的列名在翻译时被正确转义
  */
-TEST(SqliteDialectSelect, ColumnNameWithQuoteIsEscaped)
+TEST(MySqlDialectSelect, ColumnNameWithBacktickIsEscaped)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
-    node.selectColumns = {"weird\"name"};
+    node.selectColumns = {"weird`name"};
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT \"weird\"\"name\" FROM \"users\"");
+    EXPECT_EQ(statement.sql, "SELECT `weird``name` FROM `users`");
 }
 
 /**
  * @brief 验证表别名被引用
  */
-TEST(SqliteDialectSelect, TableAliasIsQuoted)
+TEST(MySqlDialectSelect, TableAliasIsQuoted)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName  = "users";
@@ -303,7 +307,7 @@ TEST(SqliteDialectSelect, TableAliasIsQuoted)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" AS \"u\"");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` AS `u`");
 }
 
 // ========================================================================
@@ -313,9 +317,9 @@ TEST(SqliteDialectSelect, TableAliasIsQuoted)
 /**
  * @brief 验证单条件比较产生的 SQL 与参数
  */
-TEST(SqliteDialectWhere, SingleComparisonBindsParameter)
+TEST(MySqlDialectWhere, SingleComparisonBindsParameter)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -324,7 +328,7 @@ TEST(SqliteDialectWhere, SingleComparisonBindsParameter)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"age\" >= ?");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `age` >= ?");
     ASSERT_EQ(statement.parameters.size(), 1U);
     EXPECT_TRUE(std::holds_alternative<std::int64_t>(statement.parameters[0]));
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 18);
@@ -333,9 +337,9 @@ TEST(SqliteDialectWhere, SingleComparisonBindsParameter)
 /**
  * @brief 验证字符串参数按原文本绑定，不加引号拼接
  */
-TEST(SqliteDialectWhere, StringParameterIsBoundWithoutQuoting)
+TEST(MySqlDialectWhere, StringParameterIsBoundWithoutQuoting)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -345,7 +349,7 @@ TEST(SqliteDialectWhere, StringParameterIsBoundWithoutQuoting)
     const SqlStatement statement = dialect.translate(node);
 
     // SQL 文本里绝不出现用户数据，参数原样保留
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"name\" = ?");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `name` = ?");
     EXPECT_EQ(statement.sql.find("O'Brien"), std::string::npos);
     ASSERT_EQ(statement.parameters.size(), 1U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "O'Brien -- DROP");
@@ -354,9 +358,9 @@ TEST(SqliteDialectWhere, StringParameterIsBoundWithoutQuoting)
 /**
  * @brief 验证所有比较操作符的文本
  */
-TEST(SqliteDialectWhere, AllComparisonOperators)
+TEST(MySqlDialectWhere, AllComparisonOperators)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -368,20 +372,20 @@ TEST(SqliteDialectWhere, AllComparisonOperators)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_NE(statement.sql.find("\"age\" = ?"), std::string::npos);
-    EXPECT_NE(statement.sql.find("\"age\" != ?"), std::string::npos);
-    EXPECT_NE(statement.sql.find("\"age\" > ?"), std::string::npos);
-    EXPECT_NE(statement.sql.find("\"age\" < ?"), std::string::npos);
-    EXPECT_NE(statement.sql.find("\"age\" <= ?"), std::string::npos);
+    EXPECT_NE(statement.sql.find("`age` = ?"), std::string::npos);
+    EXPECT_NE(statement.sql.find("`age` != ?"), std::string::npos);
+    EXPECT_NE(statement.sql.find("`age` > ?"), std::string::npos);
+    EXPECT_NE(statement.sql.find("`age` < ?"), std::string::npos);
+    EXPECT_NE(statement.sql.find("`age` <= ?"), std::string::npos);
     EXPECT_EQ(statement.parameters.size(), 5U);
 }
 
 /**
  * @brief 验证 LIKE 条件
  */
-TEST(SqliteDialectWhere, LikeCondition)
+TEST(MySqlDialectWhere, LikeCondition)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -390,7 +394,7 @@ TEST(SqliteDialectWhere, LikeCondition)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"name\" LIKE ?");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `name` LIKE ?");
     ASSERT_EQ(statement.parameters.size(), 1U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "%张%");
 }
@@ -398,9 +402,9 @@ TEST(SqliteDialectWhere, LikeCondition)
 /**
  * @brief 验证 IS NULL / IS NOT NULL 不产生参数
  */
-TEST(SqliteDialectWhere, NullChecksProduceNoParameter)
+TEST(MySqlDialectWhere, NullChecksProduceNoParameter)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -412,7 +416,7 @@ TEST(SqliteDialectWhere, NullChecksProduceNoParameter)
     const SqlStatement statement = dialect.translate(node);
 
     EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" WHERE \"deleted_at\" IS NULL AND \"created_at\" IS NOT NULL");
+              "SELECT * FROM `users` WHERE `deleted_at` IS NULL AND `created_at` IS NOT NULL");
     // NULL 判断用 IS 而不是 "= NULL"，也不占用任何绑定参数
     EXPECT_TRUE(statement.parameters.empty());
 }
@@ -420,9 +424,9 @@ TEST(SqliteDialectWhere, NullChecksProduceNoParameter)
 /**
  * @brief 验证列-列比较不占用参数
  */
-TEST(SqliteDialectWhere, ColumnToColumnComparisonBindsNoParameter)
+TEST(MySqlDialectWhere, ColumnToColumnComparisonBindsNoParameter)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "trades";
@@ -430,7 +434,7 @@ TEST(SqliteDialectWhere, ColumnToColumnComparisonBindsNoParameter)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"trades\" WHERE \"close_price\" > \"open_price\"");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `trades` WHERE `close_price` > `open_price`");
     EXPECT_TRUE(statement.parameters.empty());
     EXPECT_EQ(countPlaceholders(statement.sql), 0U);
 }
@@ -442,9 +446,9 @@ TEST(SqliteDialectWhere, ColumnToColumnComparisonBindsNoParameter)
 /**
  * @brief 验证 IN 展开成多个占位符且参数顺序一致
  */
-TEST(SqliteDialectWhere, InConditionExpandsPlaceholdersInOrder)
+TEST(MySqlDialectWhere, InConditionExpandsPlaceholdersInOrder)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -456,7 +460,7 @@ TEST(SqliteDialectWhere, InConditionExpandsPlaceholdersInOrder)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"id\" IN (?, ?, ?)");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `id` IN (?, ?, ?)");
     ASSERT_EQ(statement.parameters.size(), 3U);
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 1);
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 2);
@@ -466,9 +470,9 @@ TEST(SqliteDialectWhere, InConditionExpandsPlaceholdersInOrder)
 /**
  * @brief 验证 NOT IN 与字符串集合
  */
-TEST(SqliteDialectWhere, NotInConditionWithStrings)
+TEST(MySqlDialectWhere, NotInConditionWithStrings)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -479,7 +483,7 @@ TEST(SqliteDialectWhere, NotInConditionWithStrings)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"name\" NOT IN (?, ?)");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `name` NOT IN (?, ?)");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "张三");
     EXPECT_EQ(std::get<std::string>(statement.parameters[1]), "李四");
@@ -488,9 +492,9 @@ TEST(SqliteDialectWhere, NotInConditionWithStrings)
 /**
  * @brief 验证空 IN 集合生成恒假常量而不是非法的 "IN ()"
  */
-TEST(SqliteDialectWhere, EmptyInSetBecomesConstantPredicate)
+TEST(MySqlDialectWhere, EmptyInSetBecomesConstantPredicate)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -499,7 +503,7 @@ TEST(SqliteDialectWhere, EmptyInSetBecomesConstantPredicate)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"id\" IN (1 = 0) AND \"id\" NOT IN (1 = 1)");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `id` IN (1 = 0) AND `id` NOT IN (1 = 1)");
     EXPECT_EQ(statement.sql.find("()"), std::string::npos);
     EXPECT_TRUE(statement.parameters.empty());
 }
@@ -507,9 +511,9 @@ TEST(SqliteDialectWhere, EmptyInSetBecomesConstantPredicate)
 /**
  * @brief 验证 AND 递归展开并加括号
  */
-TEST(SqliteDialectWhere, AndRecursionAddsParentheses)
+TEST(MySqlDialectWhere, AndRecursionAddsParentheses)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -520,7 +524,7 @@ TEST(SqliteDialectWhere, AndRecursionAddsParentheses)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE (\"age\" >= ? AND \"age\" <= ?)");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE (`age` >= ? AND `age` <= ?)");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 18);
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 60);
@@ -529,11 +533,11 @@ TEST(SqliteDialectWhere, AndRecursionAddsParentheses)
 /**
  * @brief 验证三层嵌套 AND/OR/NOT 的参数顺序严格按 SQL 出现顺序
  *
- * 期望：(("id" = ? AND "name" IS NOT NULL) OR NOT ("age" < ?))
+ * 期望：((`id` = ? AND `name` IS NOT NULL) OR NOT (`age` < ?))
  */
-TEST(SqliteDialectWhere, NestedLogicCollectsParametersInSqlOrder)
+TEST(MySqlDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     WhereCondition innerAnd = makeComposite(
         SqlOperator::And,
@@ -551,7 +555,7 @@ TEST(SqliteDialectWhere, NestedLogicCollectsParametersInSqlOrder)
     const SqlStatement statement = dialect.translate(node);
 
     EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" WHERE ((\"id\" = ? AND \"name\" IS NOT NULL) OR NOT (\"age\" < ?))");
+              "SELECT * FROM `users` WHERE ((`id` = ? AND `name` IS NOT NULL) OR NOT (`age` < ?))");
     ASSERT_EQ(statement.parameters.size(), 2U);
     // 第一个参数来自第一个占位符（id = ?），第二个来自 NOT 内的 age < ?
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 7);
@@ -561,9 +565,9 @@ TEST(SqliteDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 /**
  * @brief 验证空 children 的 AND / OR / NOT 退化为常量谓词
  */
-TEST(SqliteDialectWhere, EmptyCompositeBecomesConstantPredicate)
+TEST(MySqlDialectWhere, EmptyCompositeBecomesConstantPredicate)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -573,7 +577,7 @@ TEST(SqliteDialectWhere, EmptyCompositeBecomesConstantPredicate)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE (1 = 1) AND (1 = 0) AND NOT (1 = 1)");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE (1 = 1) AND (1 = 0) AND NOT (1 = 1)");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
@@ -584,9 +588,9 @@ TEST(SqliteDialectWhere, EmptyCompositeBecomesConstantPredicate)
 /**
  * @brief 验证排序方向显式输出且多字段按序拼接
  */
-TEST(SqliteDialectClauses, OrderByRendersDirections)
+TEST(MySqlDialectClauses, OrderByRendersDirections)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -595,15 +599,15 @@ TEST(SqliteDialectClauses, OrderByRendersDirections)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" ORDER BY \"name\" ASC, \"age\" DESC");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` ORDER BY `name` ASC, `age` DESC");
 }
 
 /**
  * @brief 验证 GROUP BY 与 HAVING 的参数顺序排在 WHERE 参数之后
  */
-TEST(SqliteDialectClauses, GroupByHavingParameterOrderFollowsSql)
+TEST(MySqlDialectClauses, GroupByHavingParameterOrderFollowsSql)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "orders";
@@ -616,19 +620,19 @@ TEST(SqliteDialectClauses, GroupByHavingParameterOrderFollowsSql)
     const SqlStatement statement = dialect.translate(node);
 
     EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"orders\" WHERE \"status\" = ? GROUP BY \"customer_id\" "
-              "HAVING \"total\" > ? ORDER BY \"customer_id\" ASC");
+              "SELECT * FROM `orders` WHERE `status` = ? GROUP BY `customer_id` "
+              "HAVING `total` > ? ORDER BY `customer_id` ASC");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "paid");
     EXPECT_DOUBLE_EQ(std::get<double>(statement.parameters[1]), 100.5);
 }
 
 /**
- * @brief 验证 LIMIT / OFFSET 内联为十进制整数
+ * @brief 验证 LIMIT / OFFSET 走占位符，参数顺序为「先 LIMIT 后 OFFSET」
  */
-TEST(SqliteDialectClauses, LimitAndOffsetAreInlined)
+TEST(MySqlDialectClauses, LimitAndOffsetAreBoundAsParameters)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -637,18 +641,38 @@ TEST(SqliteDialectClauses, LimitAndOffsetAreInlined)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" LIMIT 10 OFFSET 20");
-    // 分页值不占占位符，参数列表保持为空
-    EXPECT_TRUE(statement.parameters.empty());
-    EXPECT_EQ(countPlaceholders(statement.sql), 0U);
+    // 选关键字形式而不是 MySQL 专有的 "LIMIT 偏移量, 行数"：后者两个操作数顺序相反，极易写反
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` LIMIT ? OFFSET ?");
+    ASSERT_EQ(statement.parameters.size(), 2U);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 10);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 20);
 }
 
 /**
- * @brief 验证只有 OFFSET 时补出 "LIMIT -1"
+ * @brief 验证只有 LIMIT 时只占一个占位符
  */
-TEST(SqliteDialectClauses, OffsetWithoutLimitAddsLimitMinusOne)
+TEST(MySqlDialectClauses, LimitWithoutOffsetBindsOneParameter)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+    node.limit     = 7U;
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` LIMIT ?");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 7);
+}
+
+/**
+ * @brief 验证只有 OFFSET 时补出 MySQL 的「不限行数」常量（MySQL 不接受 LIMIT -1）
+ */
+TEST(MySqlDialectClauses, OffsetWithoutLimitUsesUnsignedUpperBoundLiteral)
+{
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -656,8 +680,30 @@ TEST(SqliteDialectClauses, OffsetWithoutLimitAddsLimitMinusOne)
 
     const SqlStatement statement = dialect.translate(node);
 
-    // SQLite 要求 OFFSET 必须跟在 LIMIT 之后，单独出现是语法错误
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" LIMIT -1 OFFSET 5");
+    // OFFSET 不能单独出现，官方给出的「不限行数」写法就是无符号 64 位整数的上界；
+    // 常量是编译期字面量，不占绑定参数，占位符个数仍等于参数个数
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` LIMIT 18446744073709551615 OFFSET ?");
+    EXPECT_EQ(MySqlDialect::kUnboundedRowLimitLiteral, "18446744073709551615");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 5);
+}
+
+/**
+ * @brief 验证既无 LIMIT 也无 OFFSET 时不产生分页子句与参数
+ */
+TEST(MySqlDialectClauses, NoPaginationProducesNoClause)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql.find("LIMIT"), std::string::npos);
+    EXPECT_EQ(statement.sql.find("OFFSET"), std::string::npos);
+    EXPECT_TRUE(statement.parameters.empty());
 }
 
 // ========================================================================
@@ -667,13 +713,13 @@ TEST(SqliteDialectClauses, OffsetWithoutLimitAddsLimitMinusOne)
 /**
  * @brief 验证 INNER JOIN 与 ON 条件
  */
-TEST(SqliteDialectJoin, InnerJoinWithOnCondition)
+TEST(MySqlDialectJoin, InnerJoinWithOnCondition)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     JoinClause joinClause;
-    joinClause.type      = JoinType::Inner;
-    joinClause.tableName = "orders";
+    joinClause.type       = JoinType::Inner;
+    joinClause.tableName  = "orders";
     joinClause.tableAlias = "o";
     joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
 
@@ -685,17 +731,17 @@ TEST(SqliteDialectJoin, InnerJoinWithOnCondition)
     const SqlStatement statement = dialect.translate(node);
 
     EXPECT_EQ(statement.sql,
-              "SELECT \"id\", \"name\" FROM \"users\" "
-              "INNER JOIN \"orders\" AS \"o\" ON \"id\" = \"user_id\"");
+              "SELECT `id`, `name` FROM `users` "
+              "INNER JOIN `orders` AS `o` ON `id` = `user_id`");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
 /**
  * @brief 验证 ON 条件中的参数与 WHERE 参数按出现顺序收集
  */
-TEST(SqliteDialectJoin, JoinOnParametersPrecedeWhereParameters)
+TEST(MySqlDialectJoin, JoinOnParametersPrecedeWhereParameters)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     JoinClause joinClause;
     joinClause.type      = JoinType::Left;
@@ -712,7 +758,7 @@ TEST(SqliteDialectJoin, JoinOnParametersPrecedeWhereParameters)
     const SqlStatement statement = dialect.translate(node);
 
     EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" LEFT JOIN \"orders\" ON \"status\" = ? WHERE \"age\" >= ?");
+              "SELECT * FROM `users` LEFT JOIN `orders` ON `status` = ? WHERE `age` >= ?");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "已支付");
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 18);
@@ -721,9 +767,9 @@ TEST(SqliteDialectJoin, JoinOnParametersPrecedeWhereParameters)
 /**
  * @brief 验证 RIGHT JOIN 与 CROSS JOIN 的关键字
  */
-TEST(SqliteDialectJoin, RightAndCrossJoinKeywords)
+TEST(MySqlDialectJoin, RightAndCrossJoinKeywords)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     JoinClause rightJoin;
     rightJoin.type      = JoinType::Right;
@@ -740,7 +786,7 @@ TEST(SqliteDialectJoin, RightAndCrossJoinKeywords)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql, "SELECT * FROM \"a\" RIGHT JOIN \"b\" CROSS JOIN \"c\"");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `a` RIGHT JOIN `b` CROSS JOIN `c`");
 }
 
 // ========================================================================
@@ -750,9 +796,9 @@ TEST(SqliteDialectJoin, RightAndCrossJoinKeywords)
 /**
  * @brief 验证各类参数值按备选转换到 DatabaseValue
  */
-TEST(SqliteDialectParameter, ParameterTypesAreConverted)
+TEST(MySqlDialectParameter, ParameterTypesAreConverted)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "mixed";
@@ -770,16 +816,16 @@ TEST(SqliteDialectParameter, ParameterTypesAreConverted)
     EXPECT_TRUE(std::get<bool>(statement.parameters[0]));
     EXPECT_TRUE(std::holds_alternative<double>(statement.parameters[1]));
     EXPECT_DOUBLE_EQ(std::get<double>(statement.parameters[1]), 1.5);
-    // nullptr 在驱动层用 monostate 表达
+    // nullptr 在驱动层用 monostate 表达，绑定为 MYSQL_TYPE_NULL
     EXPECT_TRUE(std::holds_alternative<std::monostate>(statement.parameters[2]));
 }
 
 /**
  * @brief 验证 uint64 放得进 int64 时按有符号整数绑定
  */
-TEST(SqliteDialectParameter, UnsignedParameterWithinInt64RangeBecomesInt64)
+TEST(MySqlDialectParameter, UnsignedParameterWithinInt64RangeBecomesInt64)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "counters";
@@ -796,9 +842,9 @@ TEST(SqliteDialectParameter, UnsignedParameterWithinInt64RangeBecomesInt64)
 /**
  * @brief 验证超出 int64 的 uint64 降级为十进制文本，而不是回绕成负数
  */
-TEST(SqliteDialectParameter, UnsignedParameterBeyondInt64RangeBecomesDecimalText)
+TEST(MySqlDialectParameter, UnsignedParameterBeyondInt64RangeBecomesDecimalText)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     // UINT64_MAX 转成 int64 会变成 -1，静默出错；这里必须走文本降级
     constexpr std::uint64_t kBeyondInt64 = 18446744073709551615ULL;
@@ -816,11 +862,11 @@ TEST(SqliteDialectParameter, UnsignedParameterBeyondInt64RangeBecomesDecimalText
 }
 
 /**
- * @brief 验证占位符个数与参数个数始终一致（综合场景）
+ * @brief 验证占位符个数与参数个数始终一致（综合场景，含分页参数）
  */
-TEST(SqliteDialectParameter, PlaceholderCountMatchesParameterCount)
+TEST(MySqlDialectParameter, PlaceholderCountMatchesParameterCount)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     JoinClause joinClause;
     joinClause.type      = JoinType::Inner;
@@ -841,11 +887,12 @@ TEST(SqliteDialectParameter, PlaceholderCountMatchesParameterCount)
          makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})}));
     node.having = makeComparison("total", SqlOperator::Gt, ParameterValue{0.0});
     node.limit  = 5U;
+    node.offset = 10U;
 
     const SqlStatement statement = dialect.translate(node);
 
-    // JOIN 1 个 + WHERE 里 3 个 + HAVING 1 个 = 5 个
-    EXPECT_EQ(countPlaceholders(statement.sql), 5U);
+    // JOIN 1 个 + WHERE 里 3 个 + HAVING 1 个 + 分页 2 个 = 7 个
+    EXPECT_EQ(countPlaceholders(statement.sql), 7U);
     EXPECT_EQ(statement.parameters.size(), countPlaceholders(statement.sql));
 }
 
@@ -854,11 +901,11 @@ TEST(SqliteDialectParameter, PlaceholderCountMatchesParameterCount)
 // ========================================================================
 
 /**
- * @brief 验证单行 INSERT 的列名引用、占位符顺序与参数绑定
+ * @brief 验证单行 INSERT 的列名反引号引用、占位符顺序与参数绑定
  */
-TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
+TEST(MySqlDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -872,7 +919,7 @@ TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
 
     const SqlStatement statement = dialect.translateInsert(node, values);
 
-    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\", \"note\") VALUES (?, ?, ?)");
+    EXPECT_EQ(statement.sql, "INSERT INTO `users` (`id`, `name`, `note`) VALUES (?, ?, ?)");
     ASSERT_EQ(statement.parameters.size(), values.size());
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 7);
     EXPECT_EQ(std::get<std::string>(statement.parameters[1]), "O'Brien -- 中文");
@@ -886,9 +933,9 @@ TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
 /**
  * @brief 验证列与取值个数不一致时抛异常，而不是生成写错列的语句
  */
-TEST(SqliteDialectWrite, InsertRejectsColumnAndValueCountMismatch)
+TEST(MySqlDialectWrite, InsertRejectsColumnAndValueCountMismatch)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -913,9 +960,9 @@ TEST(SqliteDialectWrite, InsertRejectsColumnAndValueCountMismatch)
 /**
  * @brief 验证 UPDATE 的 SET 参数排在 WHERE 参数之前，且条件复用 SELECT 的渲染规则
  */
-TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
+TEST(MySqlDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -927,7 +974,7 @@ TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
 
     const SqlStatement statement = dialect.translateUpdate(node, values);
 
-    EXPECT_EQ(statement.sql, "UPDATE \"users\" SET \"name\" = ?, \"balance\" = ? WHERE \"id\" = ?");
+    EXPECT_EQ(statement.sql, "UPDATE `users` SET `name` = ?, `balance` = ? WHERE `id` = ?");
     ASSERT_EQ(statement.parameters.size(), 3U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "王五");
     EXPECT_DOUBLE_EQ(std::get<double>(statement.parameters[1]), 888.25);
@@ -938,9 +985,9 @@ TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
 /**
  * @brief 验证带表别名的 UPDATE 与复合条件（IN + IS NULL）的参数顺序
  */
-TEST(SqliteDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
+TEST(MySqlDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     // NOT (deleted_at IS NULL) 不占参数；IN 展开成两个占位符
     WhereCondition notNull = makeComposite(
@@ -961,8 +1008,8 @@ TEST(SqliteDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
     const SqlStatement statement = dialect.translateUpdate(node, values);
 
     EXPECT_EQ(statement.sql,
-              "UPDATE \"users\" AS \"u\" SET \"name\" = ? "
-              "WHERE \"id\" IN (?, ?) AND NOT (\"deleted_at\" IS NULL)");
+              "UPDATE `users` AS `u` SET `name` = ? "
+              "WHERE `id` IN (?, ?) AND NOT (`deleted_at` IS NULL)");
     ASSERT_EQ(statement.parameters.size(), 3U);
     // 赋值参数在前，随后是两个 IN 集合元素，顺序与文本中占位符的先后一致
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "李四");
@@ -971,11 +1018,11 @@ TEST(SqliteDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
 }
 
 /**
- * @brief 验证没有 WHERE 条件的 UPDATE（整表更新）与空 WHERE 的 UPDATE
+ * @brief 验证没有 WHERE 条件的 UPDATE（整表更新）
  */
-TEST(SqliteDialectWrite, UpdateWithoutConditionOmitsWhereClause)
+TEST(MySqlDialectWrite, UpdateWithoutConditionOmitsWhereClause)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "users";
@@ -984,7 +1031,7 @@ TEST(SqliteDialectWrite, UpdateWithoutConditionOmitsWhereClause)
     const SqlStatement statement = dialect.translateUpdate(node, std::vector<DatabaseValue>{std::int64_t{1}});
 
     // 无条件即整表更新，是 SQL 本身的语义，不额外补 "WHERE 1 = 1"
-    EXPECT_EQ(statement.sql, "UPDATE \"users\" SET \"active\" = ?");
+    EXPECT_EQ(statement.sql, "UPDATE `users` SET `active` = ?");
     ASSERT_EQ(statement.parameters.size(), 1U);
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 1);
 }
@@ -992,9 +1039,9 @@ TEST(SqliteDialectWrite, UpdateWithoutConditionOmitsWhereClause)
 /**
  * @brief 验证 DELETE 的条件渲染与参数收集
  */
-TEST(SqliteDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
+TEST(MySqlDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
@@ -1007,7 +1054,7 @@ TEST(SqliteDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
 
     const SqlStatement statement = dialect.translateDelete(node);
 
-    EXPECT_EQ(statement.sql, "DELETE FROM \"users\" WHERE (\"active\" = ? AND \"id\" IN (?, ?))");
+    EXPECT_EQ(statement.sql, "DELETE FROM `users` WHERE (`active` = ? AND `id` IN (?, ?))");
     ASSERT_EQ(statement.parameters.size(), 3U);
     EXPECT_TRUE(std::holds_alternative<bool>(statement.parameters[0]));
     EXPECT_FALSE(std::get<bool>(statement.parameters[0]));
@@ -1018,15 +1065,15 @@ TEST(SqliteDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
 /**
  * @brief 验证无条件 DELETE 直接退化为整表删除，且带别名时别名一并写出
  */
-TEST(SqliteDialectWrite, DeleteWithoutConditionAndWithAlias)
+TEST(MySqlDialectWrite, DeleteWithoutConditionAndWithAlias)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName = "users";
 
     const SqlStatement wholeTable = dialect.translateDelete(node);
-    EXPECT_EQ(wholeTable.sql, "DELETE FROM \"users\"");
+    EXPECT_EQ(wholeTable.sql, "DELETE FROM `users`");
     EXPECT_TRUE(wholeTable.parameters.empty());
 
     // 别名存在时必须写出：WHERE 里以别名限定的列名只有别名在场才能被解析
@@ -1037,7 +1084,7 @@ TEST(SqliteDialectWrite, DeleteWithoutConditionAndWithAlias)
         makeComparison("u.id", SqlOperator::Gt, ParameterValue{static_cast<std::int64_t>(10)}));
 
     const SqlStatement aliased = dialect.translateDelete(aliasedNode);
-    EXPECT_EQ(aliased.sql, "DELETE FROM \"users\" AS \"u\" WHERE \"u\".\"id\" > ?");
+    EXPECT_EQ(aliased.sql, "DELETE FROM `users` AS `u` WHERE `u`.`id` > ?");
     ASSERT_EQ(aliased.parameters.size(), 1U);
     EXPECT_EQ(std::get<std::int64_t>(aliased.parameters[0]), 10);
 }
@@ -1045,9 +1092,9 @@ TEST(SqliteDialectWrite, DeleteWithoutConditionAndWithAlias)
 /**
  * @brief 验证批量 INSERT 生成多行 VALUES，参数按「行优先、行内按列序」排列
  */
-TEST(SqliteDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
+TEST(MySqlDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "accounts";
@@ -1062,7 +1109,7 @@ TEST(SqliteDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
     const SqlStatement statement = dialect.translateInsertBatch(node, rows);
 
     EXPECT_EQ(statement.sql,
-              "INSERT INTO \"accounts\" (\"id\", \"name\", \"note\") "
+              "INSERT INTO `accounts` (`id`, `name`, `note`) "
               "VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)");
 
     // 参数个数 = 行数 × 列数
@@ -1084,9 +1131,9 @@ TEST(SqliteDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
 /**
  * @brief 验证批量 INSERT 拒绝空行集合与行列数不符的输入
  */
-TEST(SqliteDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
+TEST(MySqlDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
     QueryNode node;
     node.tableName     = "accounts";
@@ -1106,20 +1153,16 @@ TEST(SqliteDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
 }
 
 /**
- * @brief 验证事务控制语句文本与参数上限常量都由方言给出
+ * @brief 验证事务控制语句文本由 MySQL 方言给出
  */
-TEST(SqliteDialectWrite, TransactionStatementsAndParameterLimit)
+TEST(MySqlDialectWrite, TransactionStatements)
 {
-    const SqliteDialect dialect;
+    const MySqlDialect dialect;
 
-    // SQLite 用 IMMEDIATE 立刻取写锁，避免 DEFERRED 事务升级锁时的 SQLITE_BUSY
-    EXPECT_EQ(dialect.beginTransactionStatement(), "BEGIN IMMEDIATE");
+    // MySQL 用 START TRANSACTION，没有 SQLite 的 IMMEDIATE 模式
+    EXPECT_EQ(dialect.beginTransactionStatement(), "START TRANSACTION");
     EXPECT_EQ(dialect.commitStatement(), "COMMIT");
     EXPECT_EQ(dialect.rollbackStatement(), "ROLLBACK");
-
-    // 上限来自 SQLITE_MAX_VARIABLE_NUMBER 的默认值，批量写入据此分块
-    EXPECT_EQ(dialect.maximumStatementParameters(), SqliteDialect::kMaximumStatementParameters);
-    EXPECT_EQ(dialect.maximumStatementParameters(), 999U);
 }
 
 // ========================================================================
@@ -1127,51 +1170,19 @@ TEST(SqliteDialectWrite, TransactionStatementsAndParameterLimit)
 // ========================================================================
 
 /**
- * @brief 验证 SQLite 方言可取得且类型正确，重复取得为同一实例
+ * @brief 验证 MySQL 方言可取得、类型正确、与 SQLite 是不同实例且重复取得为同一对象
  */
-TEST(DialectRegistryTest, SqliteDialectIsAvailable)
+TEST(DialectRegistryTest, MySqlDialectIsAvailable)
 {
-    const std::shared_ptr<SqlDialect> dialect = DialectRegistry::dialectFor(DatabaseType::Sqlite);
+    const std::shared_ptr<SqlDialect> dialect = DialectRegistry::dialectFor(DatabaseType::MySql);
 
     ASSERT_NE(dialect, nullptr);
-    EXPECT_EQ(dialect->type(), DatabaseType::Sqlite);
-    EXPECT_TRUE(DialectRegistry::supports(DatabaseType::Sqlite));
-
-    // 无状态方言由注册表共享，两次取得应得到同一对象
-    EXPECT_EQ(dialect.get(), DialectRegistry::dialectFor(DatabaseType::Sqlite).get());
-}
-
-/**
- * @brief 验证 MySQL 已有自己的方言实现，且与 SQLite 方言不是同一个实例
- */
-TEST(DialectRegistryTest, MySqlDialectIsDistinctFromSqliteDialect)
-{
-    // MySQL 方言的完整行为由 TestMySqlDialect.cpp 覆盖，这里只确认注册表分派到了另一个实现：
-    // 引用符与分页语法完全不同，若两者被混用会生成非法 SQL
+    EXPECT_EQ(dialect->type(), DatabaseType::MySql);
     EXPECT_TRUE(DialectRegistry::supports(DatabaseType::MySql));
 
-    const std::shared_ptr<SqlDialect> mySqlDialect = DialectRegistry::dialectFor(DatabaseType::MySql);
+    // 无状态方言由注册表共享，两次取得应得到同一对象
+    EXPECT_EQ(dialect.get(), DialectRegistry::dialectFor(DatabaseType::MySql).get());
 
-    ASSERT_NE(mySqlDialect, nullptr);
-    EXPECT_EQ(mySqlDialect->type(), DatabaseType::MySql);
-    EXPECT_NE(mySqlDialect.get(), DialectRegistry::dialectFor(DatabaseType::Sqlite).get());
-}
-
-/**
- * @brief 验证 Redis 不作为 SQL 方言注册
- */
-TEST(DialectRegistryTest, RedisDialectThrowsWithChineseMessage)
-{
-    EXPECT_FALSE(DialectRegistry::supports(DatabaseType::Redis));
-
-    try
-    {
-        static_cast<void>(DialectRegistry::dialectFor(DatabaseType::Redis));
-        FAIL() << "Redis 不是 SQL 数据库，应当抛出异常";
-    }
-    catch (const std::invalid_argument &exception)
-    {
-        const std::string message = exception.what();
-        EXPECT_NE(message.find("Redis"), std::string::npos);
-    }
+    // 与 SQLite 方言必须是两个不同实例：引用符与分页语法完全不同，混用会生成非法 SQL
+    EXPECT_NE(dialect.get(), DialectRegistry::dialectFor(DatabaseType::Sqlite).get());
 }

@@ -16,7 +16,8 @@
  * - SqliteParameterizedSelectReturnsRows
  * - SqliteRejectsParameterCountMismatch（少给 / 多给参数都失败）
  * - SqliteRejectsContainerParameter
- * - UnsupportedDriversRejectParameterizedExecute（MySQL / Redis 给中文错误而不是静默忽略）
+ * - UnsupportedDriversRejectParameterizedExecute（MySQL 已实现绑定：离线时以「未连接」拒绝；
+ *   Redis 尚无绑定实现：给中文错误而不是静默忽略）
  * - PooledConnectionForwardsParameterizedExecute（经池与基类指针的虚派发）
  */
 #include "Database/Common/ConnectionConfig.h"
@@ -216,23 +217,25 @@ TEST(ParameterizedExecution, SqliteRejectsContainerParameter)
 }
 
 /**
- * @brief 验证尚未支持参数绑定的驱动返回中文错误而不是静默忽略参数
+ * @brief 验证各驱动在无可用连接/无绑定实现时给出中文错误，而不是静默忽略参数
  */
 TEST(ParameterizedExecution, UnsupportedDriversRejectParameterizedExecute)
 {
-    MySqlConnection mySqlConnection(ConnectionConfig::mySqlDefault());
     const std::vector<DatabaseValue> parameters{std::int64_t{1}};
 
+    // MySQL 已实现参数绑定（预处理语句）：未连接时以「未连接」这条判定拒绝，绝不把参数丢掉。
+    // 参数个数与占位符个数是否匹配要在 prepare 之后才知道，需要可用的服务端才能验证
+    MySqlConnection mySqlConnection(ConnectionConfig::mySqlDefault());
     const auto mySqlResult = mySqlConnection.execute("SELECT ?", parameters);
     EXPECT_TRUE(mySqlResult == nullptr);
-    EXPECT_NE(mySqlConnection.lastError().find("暂不支持参数化查询"), std::string::npos);
-    // 提示里要带上驱动名，便于定位是哪个驱动缺实现
-    EXPECT_NE(mySqlConnection.lastError().find("MySql"), std::string::npos);
+    EXPECT_NE(mySqlConnection.lastError().find("MySQL"), std::string::npos) << mySqlConnection.lastError();
 
+    // Redis 仍无绑定实现：走基类默认实现，明确报「暂不支持参数化查询」并带上驱动名
     RedisConnection redisConnection(ConnectionConfig::redisDefault());
     const auto redisResult = redisConnection.execute("GET ?", parameters);
     EXPECT_TRUE(redisResult == nullptr);
     EXPECT_NE(redisConnection.lastError().find("暂不支持参数化查询"), std::string::npos);
+    EXPECT_NE(redisConnection.lastError().find("Redis"), std::string::npos);
 }
 
 // ========================================================================

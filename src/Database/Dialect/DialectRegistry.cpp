@@ -9,6 +9,7 @@
 
 #include "Database/Dialect/DialectRegistry.h"
 
+#include "Database/Dialect/MySqlDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
 
 #include <stdexcept>
@@ -30,10 +31,12 @@ namespace AsynGyanis::Database
             }
 
             case DatabaseType::MySql:
-                throw std::invalid_argument(
-                    "方言注册表：暂未提供 MySQL 方言实现。MySQL 的标识符引用符（反引号）与分页语法"
-                    "（OFFSET 必须与 LIMIT 同时出现）与 SQLite 不同，不能直接复用 SqliteDialect；"
-                    "请实现 MySqlDialect 后在本注册表登记");
+            {
+                // 与 SQLite 分支同构：反引号引用、START TRANSACTION 事务、LIMIT ? OFFSET ? 分页，
+                // 这些差异全部封在 MySqlDialect 里，上层只认 DatabaseType
+                static const std::shared_ptr<SqlDialect> mySqlDialectInstance = std::make_shared<MySqlDialect>();
+                return mySqlDialectInstance;
+            }
 
             case DatabaseType::Redis:
                 throw std::invalid_argument(
@@ -43,14 +46,14 @@ namespace AsynGyanis::Database
                 // 新增枚举值却忘了登记方言时走这里，异常文本带上数值便于定位
                 throw std::invalid_argument(
                     "方言注册表：不支持的数据库类型（枚举值 " +
-                    std::to_string(static_cast<int>(type)) + "）");
+                    std::to_string(static_cast<int>(type)) + "）：请为该类型实现 SqlDialect 后在本注册表登记");
         }
     }
 
     bool DialectRegistry::supports(const DatabaseType type) noexcept
     {
         // 与 dialectFor() 的分支保持一一对应：新增方言时两处必须同步修改
-        return type == DatabaseType::Sqlite;
+        return type == DatabaseType::Sqlite || type == DatabaseType::MySql;
     }
 
 } // namespace AsynGyanis::Database

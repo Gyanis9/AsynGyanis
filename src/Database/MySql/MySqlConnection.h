@@ -11,20 +11,26 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
 // MySQL C API 的全局 C 类型前置声明集中写在本头的全局作用域（全项目只此一处）：
 // 只有 .cpp 才包含 <mysql/mysql.h>，避免第三方 C 头顺着包含链传染给所有使用方。
 // MySqlResult.h 通过包含本头复用下面这几行声明，不得重复声明。
-// 别名与 mysql.h / mysql_com.h 中的 typedef 逐项同名同类型（同样的结构体标签、同样的目标类型），
-// 因此同一翻译单元里两次 typedef 到同一类型是合法的，不会与第三方头冲突。
-struct st_mysql;
-struct st_mysql_res;
+//
+// 声明形式必须与真实头文件完全一致：libmysqlclient 8.x 起连接句柄与结果集都是
+// 「结构体标签即类型名」（struct MYSQL / struct MYSQL_RES，与 mysql/client_plugin.h 里的
+// struct MYSQL; 同源），而不是 5.x 时代的 typedef struct st_mysql MYSQL。
+// 按旧写法声明 st_mysql 会让同一个名字在 .cpp 里被重定义成不同类型（C2371），
+// 进而让每个 mysql_* 调用的句柄形参都无法匹配（C2664）——这正是真实驱动此前从未编译过
+// 才得以隐藏的错误。此处只前置声明，不引入任何第三方头
+struct MYSQL;
+struct MYSQL_RES;
+struct MYSQL_STMT;
 
-using MYSQL     = st_mysql; ///< 连接句柄，对应 mysql.h 的 typedef struct st_mysql MYSQL
-using MYSQL_RES = st_mysql_res; ///< 结果集句柄，对应 mysql.h 的 typedef struct st_mysql_res MYSQL_RES
 using MYSQL_ROW = char **; ///< 一行数据，对应 mysql.h 的 typedef char **MYSQL_ROW：每列一个 char*，该列为 SQL NULL 时元素为空指针
 
 namespace AsynGyanis::Database
@@ -61,6 +67,9 @@ namespace AsynGyanis::Database
      *
      * 结果集：一律走 mysql_store_result 把整份数据预读进客户端内存，因此 execute() 交出的 MySqlResult
      *        不引用本连接的任何内存，可以比连接对象活得更久；代价是大结果集会等额占用内存。
+     *        参数化执行（mysql_stmt_* 二进制协议）同样预读：那里由 MySqlStatementResult 承载快照，
+     *        两条路径的结果集语义一致，调用方只依赖 DatabaseResult 接口。
+     *        写语句交出的空回执携带语句级影响行数（affectedRowCount()），只读结果集按约定返回 0。
      *
      * 生命周期：构造（不分配句柄、不做 IO）→ connect() → execute() / 事务 → disconnect() → 析构。
      *          析构自动调用 disconnect()。本对象独占 MYSQL 句柄，拷贝或移动后的源对象析构时会
@@ -149,8 +158,7 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool isConnected() const override;
 
         // 引入基类的全部 execute 重载：本类声明了名为 execute 的成员，按 C++ 名字查找规则
-        // 会隐藏基类的同名重载，加上这一行后通过具体对象也能调用参数化版本。
-        // MySQL 尚未实现参数绑定，参数化版本由基类默认实现返回「暂不支持」的中文错误
+        // 会隐藏基类的同名重载，加上这一行后通过具体对象也能调用全部版本
         using DatabaseConnection::execute;
 
         /**
@@ -160,7 +168,8 @@ namespace AsynGyanis::Database
          *          - 命令文本按「指针 + 长度」交给 mysql_real_query，本身二进制安全，不要求零终止；
          *          - 命令为空或长度超出 unsigned long 上限时直接失败，不发送任何字节；
          *          - 有返回列时把整份结果预读成 MySqlResult；无返回列的写语句返回「执行成功的空回执」
-         *           （非空指针，但 rowCount() 为 0），调用方只判 nullptr 即可区分失败与空结果；
+         *           （非空指针，但 rowCount() 为 0，affectedRowCount() 为本条语句实际改动的行数），
+         *           调用方只判 nullptr 即可区分失败与空结果；
          *          - 客户端报出连接级错误（CR_SERVER_GONE_ERROR / CR_SERVER_LOST）时顺手断开连接，
          *           因为该句柄已无法复用，重连即可；
          *          - 一次只发一条语句（未启用 CLIENT_MULTI_STATEMENTS），拼接的后续语句会被服务端判语法错误。
@@ -168,6 +177,37 @@ namespace AsynGyanis::Database
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command) override;
+
+        /**
+         * @brief 执行一条带占位符的 SQL 命令，参数按位置绑定
+         * @details 重写 DatabaseConnection::execute()：与基类默认实现（直接报「暂不支持」）不同，
+         *          本驱动用 MySQL 的**预处理语句接口**（mysql_stmt_*）真正绑定参数，
+         *          取值绝不拼进 SQL 文本，注入面因此彻底消失：
+         *          1) mysql_stmt_init + mysql_stmt_prepare 把语句文本编译成服务端预处理语句；
+         *          2) 参数个数必须与占位符个数严格相等，不等直接失败——MySQL 对未绑定的占位符
+         *             会按 NULL 参与运算，少给参数会让条件静默变成永假（`WHERE id = NULL`），
+         *             几乎不可能从结果上反推原因；
+         *          3) 逐参数按 DatabaseValue 的备选选择 MYSQL_BIND 的 buffer_type，
+         *             NULL 用 MYSQL_TYPE_NULL 表达（绑成空串会让 IS NULL 不再成立），
+         *             容器类型（List / Hash）明确拒绝并给出中文原因（正确用法是展开成多个标量参数）；
+         *          4) mysql_stmt_execute 之后：无返回列的写语句用 mysql_stmt_affected_rows 取影响行数，
+         *             交出一个 0 行 0 列的 MySqlResult 写回执；有返回列的查询先 mysql_stmt_store_result
+         *             把整份结果预读进客户端内存，再逐行转换成 MySqlStatementResult 快照
+         *             （结果集因此不引用语句句柄，可以比连接活得更久）；
+         *          5) 预处理语句句柄由本方法独占，所有返回路径（含失败路径）都保证 mysql_stmt_close。
+         *
+         * 与不带参数版本的差异：参数化路径走二进制协议，列值统一按字符串缓冲读取后
+         * 再按列声明类型解析，因此取值映射（NULL→monostate、整数→int64_t、浮点→double、
+         * DECIMAL 与其余类型→std::string）与文本协议路径完全一致，两条路径可互换使用。
+         *
+         * @param command 带 "?" 占位符的 SQL 文本，例如 "SELECT id FROM users WHERE age >= ?"
+         * @param parameters 按占位符出现顺序排列的绑定参数，个数必须等于占位符个数
+         * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
+         * @note 缺少服务端时的可用性：未连接、参数个数不匹配、命令为空、容器类型参数
+         *       这几条判定都发生在发起任何网络往返之前或之后立即返回，因此不需要服务端即可验证
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command,
+                                                             std::span<const DatabaseValue> parameters) override;
 
         /**
          * @brief 获取数据库类型
@@ -232,6 +272,42 @@ namespace AsynGyanis::Database
          * @return false 任一选项被拒（原因已写入 m_lastError），调用方应放弃本次连接而不是留下无超时会话
          */
         bool applyConnectionOptions();
+
+        /**
+         * @brief 采集预处理语句上的错误文本与错误码并写入 m_lastError
+         * @details mysql_stmt_* 的错误状态挂在语句句柄上而不是连接句柄上，
+         *          必须用 mysql_stmt_error / mysql_stmt_errno 取，用连接级接口会读到上一次
+         *          连接操作的陈旧错误。文本同样必须先拷贝再关语句（mysql_stmt_close 会释放该缓冲）。
+         * @param statement 出错的预处理语句句柄
+         * @param description 面向使用者的中文动作说明，例如「执行预处理语句失败」
+         */
+        void captureStatementError(MYSQL_STMT *statement, std::string_view description);
+
+        /**
+         * @brief 绑定参数并执行一条已预处理的语句
+         * @details 绑定缓冲区（参数个数、长度表、布尔与整数的落地位）都是本函数的局部变量，
+         *          生命周期只覆盖到 mysql_stmt_execute 返回为止——客户端库正是在 execute 内部
+         *          把这些缓冲区的内容写进网络包，因此局部存储是安全的，但也意味着
+         *          「绑定」与「执行」必须成对出现在同一个函数里，不能把绑定结果留到函数外使用。
+         *          执行失败时按连接级错误码判断链路是否已断（CR_SERVER_GONE_ERROR / CR_SERVER_LOST），
+         *          是则顺手 disconnect()，让后续调用一致地看到「未连接」。
+         * @param statement 已 prepare 成功的预处理语句句柄
+         * @param parameters 按占位符出现顺序排列的绑定参数
+         * @return true 参数个数匹配、绑定与执行都成功
+         * @return false 任一步失败，原因（含错误码）见 lastError()
+         */
+        bool bindAndExecuteStatement(MYSQL_STMT *statement, std::span<const DatabaseValue> parameters);
+
+        /**
+         * @brief 把已执行并 store_result 的预处理语句的全部行预读成结果集快照
+         * @details 先取一次列元数据（列名、声明类型、max_length），按每列的 max_length 分配取值缓冲区，
+         *          再用 mysql_stmt_fetch 逐行取回并转换成 DatabaseValue。任何一列都比 max_length 长时
+         *          （客户端库未按 STMT_ATTR_UPDATE_MAX_LENGTH 更新长度才会发生）按实际长度补取一次，
+         *          绝不把截断的数据交给调用方。
+         * @param statement 已 mysql_stmt_execute + mysql_stmt_store_result 成功的语句句柄
+         * @return std::unique_ptr<DatabaseResult> 结果集快照；失败返回 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> materializePreparedResult(MYSQL_STMT *statement);
 
         MYSQL *m_mysqlHandle{nullptr}; ///< MySQL C API 连接句柄，本对象独占所有权，未连接时为 nullptr
     };

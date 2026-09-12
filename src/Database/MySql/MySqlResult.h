@@ -36,7 +36,8 @@ namespace AsynGyanis::Database
      *          因此「有没有当前行」与「行指针是否为空」是同一件事，不需要额外的有效标志：
      *          next() 成功即指向当前行，走到末尾或 reset() 之后为空指针，此时取值一律回 std::monostate。
      *
-     * 值映射规则（文本协议下所有列都以字符串送达，按元数据声明的列类型解析）：
+     * 值映射规则（两条协议路径都把列值按「指针 + 长度」交出，再按元数据声明的列类型解析；
+     * 映射实现与参数化执行路径共用 MySqlValueConversion.h，两条路径因此不会出现取值分歧）：
      * SQL NULL→std::monostate、TINYINT/SHORT/LONG/LONGLONG/INT24/YEAR→std::int64_t、FLOAT/DOUBLE→double、
      * DECIMAL/NEWDECIMAL→十进制文本 std::string、日期时间与字符/二进制等其余类型→std::string
      * （一律按 (指针, 长度) 拷贝，内嵌 '\0' 与 BLOB 不会被截断）。
@@ -67,8 +68,10 @@ namespace AsynGyanis::Database
          *          传 nullptr 表示「写操作的空回执」，此时不建立游标，全部计数保持为 0。
          *          本构造函数不报告失败：数据已由客户端库完整读出，没有可摘取的服务端错误。
          * @param ownedResult MySQL C API 交出的 MYSQL_RES 指针，所有权移交本对象；可为 nullptr
+         * @param affectedRowCount 本条语句实际改动的行数，由连接在 mysql_affected_rows /
+         *                         mysql_stmt_affected_rows 之后传入；只读结果集按约定传 0
          */
-        explicit MySqlResult(MYSQL_RES *ownedResult);
+        explicit MySqlResult(MYSQL_RES *ownedResult, std::int64_t affectedRowCount = 0);
 
         /**
          * @brief 析构时释放所持有的 MYSQL_RES（行缓冲与列元数据一并回收）
@@ -185,6 +188,18 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool isEmpty() const override;
 
+        /**
+         * @brief 获取最近一次写语句实际改动的行数
+         * @details 重写 DatabaseResult::affectedRowCount()：返回连接在执行本条语句后立即快照下来的
+         *          mysql_affected_rows（无参数路径）或 mysql_stmt_affected_rows（参数化路径）取值。
+         *          这两个接口给出的都是「语句级」结果，必须在同一个连接/语句上、下一条命令之前读取，
+         *          因此由连接在构造本结果集时一次取好并传进来，本方法只做读取，天然满足 noexcept。
+         *          与基类约定一致：只读结果集（含写回执之外的一切查询）返回构造时的 0，
+         *          不把「返回了多少行」冒充成「改动了多少行」。
+         * @return std::int64_t 影响行数；只读结果集或驱动未提供时为 0
+         */
+        [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;
+
     private:
         /**
          * @brief 按列的声明类型把一段 (指针, 长度) 的原始字节转换成统一的 DatabaseValue
@@ -200,6 +215,7 @@ namespace AsynGyanis::Database
         MYSQL_ROW m_currentRow{nullptr}; ///< 当前行的列指针数组，空表示游标未停在有效行上
         size_t m_rowCount{0};            ///< 构造时快照的行数，写回执结果为 0
         size_t m_columnCount{0};         ///< 构造时快照的列数，写回执结果为 0
+        std::int64_t m_affectedRowCount{0}; ///< 构造时快照的语句级影响行数，只读结果集与写回执之外恒为 0
     };
 
 } // namespace AsynGyanis::Database

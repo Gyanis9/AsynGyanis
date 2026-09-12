@@ -7,16 +7,27 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+// min / max 函数式宏会破坏 std::numeric_limits<T>::max() 等写法，必须在任何头之前挡住它们，
+// 理由与写法说明见 MySqlConnection.cpp 同一位置的中文注释
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "Database/MySql/MySqlResult.h"
 
 #ifdef DATABASE_HAS_MYSQL
 
-// MySQL C API 头只在本实现文件里包含，前置声明见 MySqlConnection.h 的全局作用域
+// MySQL C API 头只在本实现文件里包含，前置声明见 MySqlConnection.h 的全局作用域。
+// 两种发行布局（顶层 mysql.h / mysql/ 子目录 mysql.h）的兼容写法必须与 MySqlConnection.cpp 保持一致，
+// 说明见该文件同一位置的中文注释
+#if __has_include(<mysql/mysql.h>)
 #include <mysql/mysql.h>
+#else
+#include <mysql.h>
+#endif
 
-#include <cerrno>
-#include <cstdlib>
-#include <limits>
+// 列值到 DatabaseValue 的类型映射与参数化执行路径共用一份实现，保证两条协议路径取值语义一致
+#include "Database/MySql/MySqlValueConversion.h"
 
 #endif // DATABASE_HAS_MYSQL
 
@@ -30,79 +41,8 @@ namespace AsynGyanis::Database
 {
 #ifdef DATABASE_HAS_MYSQL
 
-    namespace
-    {
-        // 用 constexpr 常量取代宏：进制与错误判定基准集中在此，类型安全且作用域受控
-        constexpr int kDecimalNumberBase = 10; ///< 服务端文本协议给出的整数列恒为十进制
-
-        /**
-         * @brief 把一段整数文本解析为 64 位有符号整数
-         * @param rawValue 列值首地址，调用方保证非空
-         * @param byteLength 列值字节长度
-         * @return std::optional<std::int64_t> 解析结果；非数字、有余文或超出范围时返回空值
-         */
-        std::optional<std::int64_t> parseIntegerText(const char *rawValue, const size_t byteLength)
-        {
-            // 行缓冲里相邻字段首尾相接，不保证每个字段都以 '\0' 收尾；落一份 std::string 副本
-            // 才有可靠的终止符，std::strtoll 的 endptr 判定也因此才成立（副本同时保住内嵌 '\0' 之后的字节）
-            const std::string numericText(rawValue, byteLength);
-
-            // errno 只反映最后一次 C 库调用的结果、成功时不会自清：不清残留就可能把上一次的 ERANGE 当成本次的
-            errno = 0;
-
-            char *endPointer = nullptr;
-            const long long parsedValue = std::strtoll(numericText.c_str(), &endPointer, kDecimalNumberBase);
-
-            // 三种失败各自判掉：没消费任何字符（不是数字文本）、数值溢出 long long（ERANGE）、尾部仍有余文（如 "12abc"）
-            if (errno == ERANGE || endPointer == numericText.c_str() || *endPointer != '\0')
-            {
-                return std::nullopt;
-            }
-
-            // long long 比 int64_t 更宽的平台（现实中没有，但标准允许）还要单独判一次收窄是否无损；
-            // 等宽时 ERANGE 已经覆盖了溢出情形，再写这个比较会触发「恒假比较」的编译器告警
-            if constexpr (sizeof(long long) > sizeof(std::int64_t))
-            {
-                if (parsedValue < static_cast<long long>(std::numeric_limits<std::int64_t>::min()) ||
-                    parsedValue > static_cast<long long>(std::numeric_limits<std::int64_t>::max()))
-                {
-                    return std::nullopt;
-                }
-            }
-
-            return static_cast<std::int64_t>(parsedValue);
-        }
-
-        /**
-         * @brief 把一段浮点文本解析为 double
-         * @param rawValue 列值首地址，调用方保证非空
-         * @param byteLength 列值字节长度
-         * @return std::optional<double> 解析结果；非数字、有余文或上/下溢时返回空值
-         */
-        std::optional<double> parseDoubleText(const char *rawValue, const size_t byteLength)
-        {
-            // 同 parseIntegerText：先拿到可靠的零终止符，endptr 判定才有意义
-            const std::string numericText(rawValue, byteLength);
-
-            errno = 0;
-
-            char *endPointer = nullptr;
-            const double parsedValue = std::strtod(numericText.c_str(), &endPointer);
-
-            // strtod 的 ERANGE 同时涵盖上溢（HUGE_VAL）与下溢到 0，两者都说明这份数据落在 double 之外，
-            // 一律判失败由调用方退回原始十进制文本，至少不凭空造数
-            if (errno == ERANGE || endPointer == numericText.c_str() || *endPointer != '\0')
-            {
-                return std::nullopt;
-            }
-
-            // 十进制点依赖进程的 C 数值环境：MySQL 协议文本恒用 '.'，若上层改过 LC_NUMERIC，
-            // 这里不会解析出错误数值，而是被上面的 endptr 判定挡成失败并退回文本
-            return parsedValue;
-        }
-    } // namespace
-
-    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult) : m_result(ownedResult)
+    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, const std::int64_t affectedRowCount)
+        : m_result(ownedResult), m_affectedRowCount(affectedRowCount)
     {
         // 空句柄即「写操作的成功回执」：没有列也没有行，两个计数保持默认 0，isEmpty() 因此恒为 true
         if (m_result == nullptr)
@@ -258,57 +198,17 @@ namespace AsynGyanis::Database
             return std::string(rawValue, byteLength);
         }
 
-        // 文本协议下所有列都以字符串送达（MySQL 只在预处理语句的二进制协议里给原始字节），
-        // 因此这里按声明类型决定「解析成什么」而不是「怎么取字节」——字节始终按 (指针, 长度) 拿
-        switch (currentField->type)
-        {
-            case MYSQL_TYPE_TINY:
-            case MYSQL_TYPE_SHORT:
-            case MYSQL_TYPE_LONG:
-            case MYSQL_TYPE_LONGLONG:
-            case MYSQL_TYPE_INT24:
-            case MYSQL_TYPE_YEAR:
-            {
-                if (const std::optional<std::int64_t> parsedValue = parseIntegerText(rawValue, byteLength); parsedValue.has_value())
-                {
-                    return *parsedValue;
-                }
-
-                // 解析失败或数值超出 int64（BIGINT UNSIGNED 的上界是 2^64-1）时按原始十进制文本交出：
-                // 钳到 LLONG_MAX 会凭空造出一个错误数值，返回 monostate 又等于直接丢数据
-                return std::string(rawValue, byteLength);
-            }
-
-            case MYSQL_TYPE_FLOAT:
-            case MYSQL_TYPE_DOUBLE:
-            {
-                if (const std::optional<double> parsedValue = parseDoubleText(rawValue, byteLength); parsedValue.has_value())
-                {
-                    return *parsedValue;
-                }
-
-                // 服务端的 NaN / Inf 文本由 strtod 正常识别，走到这里说明文本确实不是浮点数，退回原文
-                return std::string(rawValue, byteLength);
-            }
-
-            case MYSQL_TYPE_DECIMAL:
-            case MYSQL_TYPE_NEWDECIMAL:
-                // DECIMAL 是精确定小数（金额列的常规选择），转 double 会在末位丢精度且不可逆，
-                // 因此原样交出十进制文本，由调用方决定用字符串还是本地高精度类型承接
-                return std::string(rawValue, byteLength);
-
-            default:
-                // 日期时间、字符、二进制、BIT、SET、几何等其余类型在 DatabaseValue 里都只能用 std::string 承载：
-                // 按 (指针, 长度) 原样拷贝，TEXT/BLOB 内嵌的 '\0' 因此不丢，也不依赖零终止符
-                return std::string(rawValue, byteLength);
-        }
+        // 列类型到 DatabaseValue 的映射与参数化执行路径共用 Detail::convertColumnText 一份实现：
+        // 列类型以 int 传递是为了不在该共享头的签名里暴露第三方枚举，转换规则见那里
+        return Detail::convertColumnText(static_cast<int>(currentField->type), rawValue, byteLength);
     }
 
 #else // DATABASE_HAS_MYSQL —— 桩实现：没有客户端库，结果集退化成永远为空的只读对象
 
     // 桩构建里不可能有 MYSQL_RES，构造函数刻意不使用参数值（也就无需 mysql_free_result），
-    // 全部状态保持默认：0 行 0 列、isEmpty() 为 true
-    MySqlResult::MySqlResult(MYSQL_RES *)
+    // 全部状态保持默认：0 行 0 列、isEmpty() 为 true。影响行数同样按默认 0 处理——
+    // 桩下 connect() 必失败，任何写语句都执行不了，报出非零行数只会是假信息
+    MySqlResult::MySqlResult(MYSQL_RES *, const std::int64_t)
     {
     }
 
@@ -400,6 +300,13 @@ namespace AsynGyanis::Database
         // 预读结果的行数恒为精确值（写回执没有游标，行数也是 0），因此空与非空直接由行数判定，
         // 不再另存一份标志位——同一事实两处真值来源迟早会对不上
         return m_rowCount == 0;
+    }
+
+    std::int64_t MySqlResult::affectedRowCount() const noexcept
+    {
+        // 只把构造时快照的语句级影响行数交出去：本方法不触碰任何句柄，因此 noexcept 成立。
+        // 查询结果集构造时传的是 0，符合基类「只读结果集返回 0」的约定
+        return m_affectedRowCount;
     }
 
 } // namespace AsynGyanis::Database

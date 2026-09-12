@@ -1,14 +1,15 @@
 /**
  * @file TestMySqlConnection.cpp
- * @brief MySqlConnection 单元测试：MySQL 报错桩的失败语义与驱动无关的连接骨架
- * @details 本构建里 CMake 选项 DATABASE_WITH_MYSQL 默认 OFF，因此未定义 DATABASE_HAS_MYSQL，
- *          MySqlConnection 编出来的是「每个入口都把失败写清楚」的报错桩：
- *          connect() 恒为 false、execute() 恒为 nullptr、isConnected() 恒为 false，
- *          并把「当前构建未编译 MySQL 驱动」写进 lastError()。
- *          为了让本文件在 -DDATABASE_WITH_MYSQL=ON 时也不产生假失败：
- *          - 只依赖「未连接」这一前提的断言（配置回显、超时往返、未连接时的失败路径）无条件执行，
- *            真实驱动在构造阶段既不分配句柄也不做 IO，这些断言在两种构建下同义；
- *          - 只有「桩专属」的断言（connect 恒假、报错文案指向缺失驱动）在真实驱动构建下 GTEST_SKIP。
+ * @brief MySqlConnection 单元测试：真实驱动的离线失败语义与驱动无关的连接骨架
+ * @details DATABASE_WITH_MYSQL 默认开启，因此 libmysqlclient 可用时编出的是真实驱动
+ *          （CMake 定义 DATABASE_HAS_MYSQL），探测不到客户端库时才退化为报错桩。
+ *          本文件因此只断言「不需要 MySQL 服务端就能成立」的行为，两种构建配置下同义：
+ *          - 配置回显、超时往返、databaseType()、未连接时的各条失败路径、指向未监听端口的
+ *            connect() 在超时内失败、句柄为空、错误文本为中文且点明 MySQL；
+ *          - 真实驱动专属的部分（参数个数与占位符个数不匹配被拒、真实查询结果、影响行数、
+ *            serverVersion() 取值）必须有可用的 MySQL 服务端才能验证，本文件不做断言，
+ *            对应的判定逻辑由 TestMySqlStatementResult.cpp（结果集语义）与
+ *            TestMySqlDialect.cpp（SQL 文本）在离线侧覆盖。
  *          异常文本一律只断言「非空 + 含关键子串 + 含本地化文案」，不硬编码整句中文。
  * @author Gyanis
  * @date 2026-09-12
@@ -19,13 +20,16 @@
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
+#include "Database/Common/DatabaseValue.h"
 #include "Database/MySql/MySqlConnection.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Database
 {
@@ -35,7 +39,7 @@ namespace AsynGyanis::Database
         /// 当前构建是否编译了真实的 libmysqlclient 驱动
         constexpr bool kMySqlDriverCompiled = true;
 #else
-        /// 当前构建为报错桩：桩语义用例才会执行
+        /// 当前构建为报错桩：桩语义下的附加断言才会执行
         constexpr bool kMySqlDriverCompiled = false;
 #endif
 
@@ -44,6 +48,36 @@ namespace AsynGyanis::Database
 
         /// 基类 DatabaseConnection 声明的单条命令执行超时默认毫秒数
         constexpr int kDefaultQueryTimeoutMilliseconds = 30000;
+
+        /// 离线建连用例使用的连接超时毫秒数：够短不拖慢测试，又够长不被调度抖动误判
+        constexpr int kShortConnectTimeoutMilliseconds = 200;
+
+        /// 单条离线建连用例允许的最长耗时毫秒数，是「不挂死」的硬上界。
+        /// MySQL 客户端只接受整秒的 MYSQL_OPT_CONNECT_TIMEOUT（200 毫秒向上取整成 1 秒），
+        /// 而某些环境下回环的未监听端口不会立刻回 RST（SYN 被丢弃），一次尝试因此要等满该超时，
+        /// 这里给 1 秒的超时留出调度余量
+        constexpr long long kMaximumOfflineCallMilliseconds = 3000;
+
+        /**
+         * @brief 本机上一个确定没有监听的端口
+         * @details 取注册端口区间内、远离 MySQL(3306)/Redis(6379) 等常见服务，
+         *          且在 Linux(32768+) 与 Windows(49152+) 临时端口范围之下：
+         *          既不会被本机服务占用，也不会被系统当作源端口分配出去。
+         *          即使该端口上恰好有别的东西在监听，MySQL 握手也必然失败，用例结论不变
+         */
+        constexpr std::uint16_t kUnmonitoredPort = 16391;
+
+        /**
+         * @brief 构造一份指向本机未监听端口的离线配置
+         * @return ConnectionConfig host 为本机回环、port 为未监听端口
+         */
+        ConnectionConfig makeOfflineConfiguration()
+        {
+            ConnectionConfig configuration;
+            configuration.host = "127.0.0.1";
+            configuration.port = kUnmonitoredPort;
+            return configuration;
+        }
 
         /**
          * @brief 判断文本是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
@@ -162,11 +196,12 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.connect());
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
 
-        EXPECT_LT(elapsed.count(), 1000);
+        EXPECT_LT(elapsed.count(), kMaximumOfflineCallMilliseconds);
         EXPECT_FALSE(connection.isConnected());
         EXPECT_EQ(connection.nativeHandle(), nullptr);
         EXPECT_FALSE(connection.lastError().empty());
         EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
     }
 
     TEST(MySqlConnection, ExecuteWithoutConnectionReturnsNullResult)
@@ -176,6 +211,22 @@ namespace AsynGyanis::Database
         const std::unique_ptr<DatabaseResult> result = connection.execute("SELECT 1");
 
         // 基类契约：失败一律交回空指针，原因写进 lastError()，调用方只判空指针即可发现问题
+        EXPECT_EQ(result, nullptr);
+        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
+    }
+
+    TEST(MySqlConnection, ParameterizedExecuteWithoutConnectionReturnsNullResult)
+    {
+        MySqlConnection connection(ConnectionConfig::mySqlDefault());
+        const std::vector<DatabaseValue> parameters{std::int64_t{1}};
+
+        const std::unique_ptr<DatabaseResult> result = connection.execute("SELECT ?", parameters);
+
+        // 参数化路径同样必须在未连接时明确失败，而不是静默把参数丢掉或按 NULL 执行。
+        // 注意这里验证的是「未连接」这一条判定：参数个数与占位符个数是否匹配要在
+        // prepare 之后（需要服务端）才知道，属于服务端依赖路径
         EXPECT_EQ(result, nullptr);
         EXPECT_FALSE(connection.lastError().empty());
         EXPECT_TRUE(containsLocalizedText(connection.lastError()));
@@ -213,7 +264,8 @@ namespace AsynGyanis::Database
     {
         const MySqlConnection connection(ConnectionConfig::mySqlDefault());
 
-        // 与 SQLite 驱动不同：MySQL 的服务端版本必须持有已连接句柄才有值
+        // 与 SQLite 驱动不同：MySQL 的服务端版本必须持有已连接句柄才有值。
+        // 真实取值需要可用的服务端，本用例只断言未连接时的约定
         EXPECT_TRUE(connection.serverVersion().empty());
     }
 
@@ -229,71 +281,98 @@ namespace AsynGyanis::Database
     }
 
     // ------------------------------------------------------------------------
-    // 报错桩专属语义（未编译 libmysqlclient 时）
+    // 指向未监听端口的离线建连路径（真实驱动与报错桩都必须失败）
     // ------------------------------------------------------------------------
 
-    TEST(MySqlConnection, ConnectFailsWithMissingDriverReason)
+    TEST(MySqlConnection, ConnectToUnmonitoredLocalPortFailsWithinTimeout)
     {
-        if (kMySqlDriverCompiled)
+        MySqlConnection connection(makeOfflineConfiguration());
+        connection.setConnectTimeout(kShortConnectTimeoutMilliseconds);
+
+        // 回环上无人监听时立刻收到连接拒绝；超时设置只是环境异常时的上界保险
+        const auto startedAt = std::chrono::steady_clock::now();
+        EXPECT_FALSE(connection.connect());
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+
+        EXPECT_LT(elapsed.count(), kMaximumOfflineCallMilliseconds);
+        EXPECT_FALSE(connection.isConnected());
+        EXPECT_EQ(connection.nativeHandle(), nullptr);
+        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
+
+        // 失败路径必须先摘错误文本再释放句柄：走到这里句柄已置空，重复断开是安全的空操作
+        EXPECT_NO_THROW(connection.disconnect());
+        EXPECT_EQ(connection.nativeHandle(), nullptr);
+    }
+
+    TEST(MySqlConnection, ConnectFailureKeepsLocalizedReasonAndStaysDisconnected)
+    {
+        MySqlConnection connection(makeOfflineConfiguration());
+        connection.setConnectTimeout(kShortConnectTimeoutMilliseconds);
+
+        ASSERT_FALSE(connection.connect());
+        const std::string failureReason = connection.lastError();
+
+        // 面向使用者的文本一律中文，并点明是哪个驱动出的问题
+        EXPECT_TRUE(containsLocalizedText(failureReason)) << failureReason;
+        EXPECT_NE(failureReason.find("MySQL"), std::string::npos) << failureReason;
+
+        // 未编译客户端库时，原因文本必须明确指出「驱动缺失」而不是含糊的连不上；
+        // 编译了驱动时失败来自真实的建连调用，文本里带客户端库原文与错误码
+        if (!kMySqlDriverCompiled)
         {
-            GTEST_SKIP() << "当前构建已编译 MySQL 驱动，报错桩语义不适用";
+            EXPECT_NE(failureReason.find("驱动"), std::string::npos) << failureReason;
+        }
+        else
+        {
+            EXPECT_NE(failureReason.find("错误码"), std::string::npos) << failureReason;
         }
 
-        MySqlConnection connection(ConnectionConfig::mySqlDefault());
-
-        // 桩必须明确拒绝，绝不能让「什么都没做」被误当成连接成功
-        EXPECT_FALSE(connection.connect());
         EXPECT_FALSE(connection.isConnected());
         EXPECT_EQ(connection.nativeHandle(), nullptr);
     }
 
-    TEST(MySqlConnection, ConnectReportsChineseMissingDriverHint)
+    // ------------------------------------------------------------------------
+    // 反复建连/析构不泄漏、不崩溃
+    // ------------------------------------------------------------------------
+
+    TEST(MySqlConnection, RepeatedOfflineConnectAttemptsAreSafe)
     {
-        if (kMySqlDriverCompiled)
+        // 每次失败都必须把句柄释放干净：真实驱动会在失败路径上 mysql_close 并置空，
+        // 桩本就不分配句柄。反复走一遍用于发现「失败路径漏释放」这类缺陷。
+        // 轮数刻意压小：每次尝试都要等满 1 秒的建连超时（见 kMaximumOfflineCallMilliseconds 的说明）
+        for (int round = 0; round < 4; ++round)
         {
-            GTEST_SKIP() << "当前构建已编译 MySQL 驱动，报错桩语义不适用";
-        }
+            MySqlConnection connection(makeOfflineConfiguration());
+            connection.setConnectTimeout(kShortConnectTimeoutMilliseconds);
 
-        MySqlConnection connection(ConnectionConfig::mySqlDefault());
-        ASSERT_FALSE(connection.connect());
-
-        // 只断言关键子串：整句文案（含括号里的库名）可能随版本调整
-        const std::string reason = connection.lastError();
-        EXPECT_FALSE(reason.empty());
-        EXPECT_TRUE(containsLocalizedText(reason)) << reason;
-        EXPECT_NE(reason.find("MySQL"), std::string::npos) << reason;
-        EXPECT_NE(reason.find("驱动"), std::string::npos) << reason;
-    }
-
-    TEST(MySqlConnection, EveryExecuteRewritesMissingDriverReason)
-    {
-        if (kMySqlDriverCompiled)
-        {
-            GTEST_SKIP() << "当前构建已编译 MySQL 驱动，报错桩语义不适用";
-        }
-
-        MySqlConnection connection(ConnectionConfig::mySqlDefault());
-
-        // 空命令与正常命令在桩里没有区别：每次调用都重新给出「驱动缺失」，不静默 no-op
-        EXPECT_EQ(connection.execute(""), nullptr);
-        EXPECT_NE(connection.lastError().find("驱动"), std::string::npos) << connection.lastError();
-        EXPECT_EQ(connection.execute("SELECT 1"), nullptr);
-        EXPECT_NE(connection.lastError().find("驱动"), std::string::npos) << connection.lastError();
-    }
-
-    TEST(MySqlConnection, ConstructingAndDestroyingManyStubConnectionsIsSafe)
-    {
-        if (kMySqlDriverCompiled)
-        {
-            GTEST_SKIP() << "当前构建已编译 MySQL 驱动，桩的无资源生命周期不适用";
-        }
-
-        // 桩不分配任何句柄，反复构造 + connect + 析构不应留下资源，也不应抛异常
-        for (int round = 0; round < 32; ++round)
-        {
-            MySqlConnection connection(ConnectionConfig::mySqlDefault());
-            static_cast<void>(connection.connect());
+            EXPECT_FALSE(connection.connect());
             EXPECT_FALSE(connection.isConnected());
+            EXPECT_EQ(connection.nativeHandle(), nullptr);
+        }
+    }
+
+    TEST(MySqlConnection, EveryExecuteOverloadKeepsFailingWhileDisconnected)
+    {
+        MySqlConnection connection(ConnectionConfig::mySqlDefault());
+        const std::vector<DatabaseValue> parameters{std::int64_t{7}};
+
+        // 空命令、正常命令与参数化命令在未连接时都必须明确失败，每次调用都给出原因而非静默 no-op
+        EXPECT_EQ(connection.execute(""), nullptr);
+        const std::string emptyCommandReason = connection.lastError();
+        EXPECT_TRUE(containsLocalizedText(emptyCommandReason)) << emptyCommandReason;
+
+        EXPECT_EQ(connection.execute("SELECT 1"), nullptr);
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+
+        EXPECT_EQ(connection.execute("SELECT ?", parameters), nullptr);
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+
+        // 未编译驱动时三条路径都应点出「驱动缺失」这一根因
+        if (!kMySqlDriverCompiled)
+        {
+            EXPECT_NE(emptyCommandReason.find("驱动"), std::string::npos) << emptyCommandReason;
         }
     }
 
