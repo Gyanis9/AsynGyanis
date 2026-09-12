@@ -9,15 +9,14 @@
  * @details 这个文件盯住的是一条容易被忽略、却在真机上才会暴露的性质：**协程在哪个线程上恢复**。
  *          池满时 `acquireAsync()` 挂起，归还连接的一方把恢复动作投递回 `acquireAsync()` 给定的 `EventLoop`
  *          （`Scheduler::scheduleRemote`），因此恢复后的代码仍运行在那个事件循环线程上。
- *
  *          本文件就是防止它退化的那道闸：断言恢复线程 == 事件循环线程，且**不等于**调用线程。
- *
- * 覆盖场景：
- * - AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull（快路径：池未满时直接建连，不挂起）
- * - AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
- * - AcquireAsyncResumesOnGivenEventLoop（慢路径：隔线程归还后，恢复发生在循环线程上）
- * - DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
  */
+// 覆盖场景：
+// - AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull（快路径：池未满时直接建连，不挂起）
+// - AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
+// - AcquireAsyncResumesOnGivenEventLoop（慢路径：隔线程归还后，恢复发生在循环线程上）
+// - DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
+
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"

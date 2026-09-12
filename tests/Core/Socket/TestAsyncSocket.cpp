@@ -222,7 +222,7 @@ namespace AsynGyanis::Core
 
         // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者需要事件循环
         // 推进一步。这里按 EventLoop::run() 的方式分发事件——data.ptr 挂载的是常驻注册对象
-        // 的地址（不再是协程句柄），由它决定恢复哪个等待者
+        // 的地址（而非协程句柄），由它决定恢复哪个等待者
         if (!connectTask.isReady())
         {
             for (const auto &event: loop.epoll().wait(2000))

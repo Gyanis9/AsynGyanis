@@ -6,13 +6,16 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 覆盖以下场景：
- *          - AcquireReleaseReusesConnection：取一条，归还，再取，应得同一连接
- *          - AcquireBlocksThenSucceeds：容量1，另一线程等超时前归还，阻塞者应拿到
- *          - AcquireTimeout：容量0，超时内无法获取，返回空
- *          - ExcessLifetimeConnectionIsDiscarded：maxLifetimeSeconds=0，归还后丢弃，下次获取得到新连接
- *          - ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
+ * @details 用 TestConnectionPool.h 里的 MockConnection 驱动连接池，覆盖取用/归还复用、容量满时的阻塞与超时、
+ *          超寿命连接的丢弃、并发取还的统计自洽，全程不触碰真实数据库。
  */
+// 覆盖场景：
+// - AcquireReleaseReusesConnection：取一条，归还，再取，应得同一连接
+// - AcquireBlocksThenSucceeds：容量1，另一线程等超时前归还，阻塞者应拿到
+// - AcquireTimeout：容量0，超时内无法获取，返回空
+// - ExcessLifetimeConnectionIsDiscarded：maxLifetimeSeconds=0，归还后丢弃，下次获取得到新连接
+// - ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
+
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"

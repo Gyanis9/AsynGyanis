@@ -8,20 +8,19 @@
  *
  * @details 四个层次：读路径与写路径的结果都与同步版逐项相等（异步写之后一律用**同步查询**读回，那是「数据真的落库」
  *          的权威证据）；用闩锁卡住工作任务证明调用线程不被阻塞；异常在协程恢复处重新抛出，类型与消息与同步版一致。
- *          协程帧的销毁时机是本文件最容易写错的地方：帧由常驻的 TestSupport::EventLoopThread 持有，其成员声明顺序保证
- *          帧的销毁晚于 m_thread 的 join，因此本文件不再自己承担这套纪律。
- *
- * 覆盖场景：
- * - AsyncQueryResultsMatchSyncVersions
- * - AsyncInsertWritesRowReadableBySyncQuery / AsyncUpdateWritesRowReadableBySyncQuery
- * - AsyncInsertBatchWritesRowsEqualToSyncInsertBatch
- * - AsyncInsertBatchChunkedPathSpansLocalTransaction
- * - AsyncInsertBatchWithEmptyCollectionProducesNoStatement
- * - AsyncWriteDoesNotBlockCallingThread / AsyncExecutorSubmitDoesNotBlockCallingThread
- * - AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
- * - AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
- * - OfflineModeThrowsOnAsyncExecution
+ *          协程帧由常驻的 TestSupport::EventLoopThread 持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
  */
+// 覆盖场景：
+// - AsyncQueryResultsMatchSyncVersions
+// - AsyncInsertWritesRowReadableBySyncQuery / AsyncUpdateWritesRowReadableBySyncQuery
+// - AsyncInsertBatchWritesRowsEqualToSyncInsertBatch
+// - AsyncInsertBatchChunkedPathSpansLocalTransaction
+// - AsyncInsertBatchWithEmptyCollectionProducesNoStatement
+// - AsyncWriteDoesNotBlockCallingThread / AsyncExecutorSubmitDoesNotBlockCallingThread
+// - AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
+// - AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
+// - OfflineModeThrowsOnAsyncExecution
+
 #include "DatabaseTestSupport.h"
 
 #include "Database/Common/ConnectionConfig.h"

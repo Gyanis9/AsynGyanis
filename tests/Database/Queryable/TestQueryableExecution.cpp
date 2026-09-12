@@ -2,27 +2,26 @@
  * @file TestQueryableExecution.cpp
  * @brief ORM 端到端集成测试 —— 内存 SQLite + 连接池 + 参数化执行 + 行映射
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 本条链路是本 Phase 的核心验收点：用内存 SQLite 建连接池，建表后
- *          **完全通过 ORM** 完成插入、条件查询、排序、分页、计数、更新与删除，断言映射回的结构体
- *          字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入
+ * @details 本条链路用内存 SQLite 建连接池，建表后**完全通过 ORM** 完成插入、条件查询、排序、分页、计数、更新与删除，
+ *          断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入
  *          （含单引号与 "--" 的文本能原样查回、注入残留的表仍存在），证明没有拼接 SQL。
- *
- * 覆盖场景：
- * - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
- * - OrmInsertThenQueryWithWhereOrderAndLimit
- * - HostileTextRoundTripsThroughParameterBinding
- * - NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
- * - FirstReturnsEmptyWhenNoRowMatches
- * - CountMatchesFilteredRows
- * - UpdateByPrimaryKeyChangesOnlyTargetRow
- * - ExecuteNonQueryDeletesMatchingRows
- * - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
- * - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
  */
+// 覆盖场景：
+// - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
+// - OrmInsertThenQueryWithWhereOrderAndLimit
+// - HostileTextRoundTripsThroughParameterBinding
+// - NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
+// - FirstReturnsEmptyWhenNoRowMatches
+// - CountMatchesFilteredRows
+// - UpdateByPrimaryKeyChangesOnlyTargetRow
+// - ExecuteNonQueryDeletesMatchingRows
+// - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
+// - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Pool/ConnectionPool.h"

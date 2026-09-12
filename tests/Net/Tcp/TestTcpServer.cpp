@@ -171,7 +171,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 会话协程：等到连接被请求停止为止
              * @details 重写 Core::Connection::start()。基类默认实现是立即完成的空协程，
-             *          这里换成「长期在线」的形态，用来观察服务器的优雅关闭是否真的通知到了连接。
+             *          这里用「长期在线」的形态，用来观察服务器的优雅关闭是否真的通知到了连接。
              * @return Core::Task<> 协程，收到停止请求后完成
              */
             Core::Task<> start() override

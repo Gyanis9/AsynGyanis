@@ -8,22 +8,22 @@
  *
  * @details 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，
  *          不打开任何数据库文件，也不经过任何驱动。
- *
- * 覆盖场景：
- * - 标识符引用与内部引号转义
- * - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
- * - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含引号列名）
- * - FROM 与表别名
- * - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
- * - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
- * - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
- * - 参数顺序、数量、类型与 uint64 降级
- * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
- * - 事务控制语句文本与单条语句的参数上限
- * - DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
- * - DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
- *   Redis 抛出中文异常
  */
+// 覆盖场景：
+// - 标识符引用与内部引号转义
+// - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
+// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含引号列名）
+// - FROM 与表别名
+// - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
+// - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
+// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
+// - 参数顺序、数量、类型与 uint64 降级
+// - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
+// - 事务控制语句文本与单条语句的参数上限
+// - DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
+// - DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
+//   Redis 抛出中文异常
+
 #include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"

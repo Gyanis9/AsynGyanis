@@ -2,32 +2,32 @@
  * @file TestQueryable.cpp
  * @brief ORM 查询树核心子系统单元测试
  * @author Gyanis
- * @date 2026-09-15
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 测试 Queryable 子系统的全部公开 API，不涉及任何数据库 IO。
- *          所有测试在内存中完成，验证树结构正确性与 SQL 文本生成。
- *
- * 覆盖场景：
- * - ColumnDescriptorStoresCorrectMemberPointerAndName
- * - ColumnDescriptorWithExplicitPropertyName
- * - TableSchemaIsSpecializable
- * - TableSchemaWithDifferentPrimaryKey
- * - WhereConditionComparesColumnAndValue
- * - WhereConditionNullComparison
- * - QueryTreeAssemblesMultipleClauses
- * - BinaryOrderByExpression
- * - AndOrComposition
- * - InExpressionAcceptsContainer
- * - LikeExpression
- * - NotInExpression
- * - QueryNodeConvertsToSql
- * - QueryNodeConvertsToSqlWithAllClauses
- * - SelectColumnOverride
- * - LimitAndOffset
- * - GroupByAndHaving
+ * @details 覆盖 Queryable 的全部公开 API：列与表结构描述、条件与表达式组合、查询树到 SQL 文本的生成，
+ *          全程在内存中完成，不涉及任何数据库 IO。
  */
+// 覆盖场景：
+// - ColumnDescriptorStoresCorrectMemberPointerAndName
+// - ColumnDescriptorWithExplicitPropertyName
+// - TableSchemaIsSpecializable
+// - TableSchemaWithDifferentPrimaryKey
+// - WhereConditionComparesColumnAndValue
+// - WhereConditionNullComparison
+// - QueryTreeAssemblesMultipleClauses
+// - BinaryOrderByExpression
+// - AndOrComposition
+// - InExpressionAcceptsContainer
+// - LikeExpression
+// - NotInExpression
+// - QueryNodeConvertsToSql
+// - QueryNodeConvertsToSqlWithAllClauses
+// - SelectColumnOverride
+// - LimitAndOffset
+// - GroupByAndHaving
+
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/TableSchema.h"
 #include "Database/Queryable/QueryNode.h"

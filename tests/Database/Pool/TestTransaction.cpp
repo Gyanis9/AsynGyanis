@@ -2,25 +2,25 @@
  * @file TestTransaction.cpp
  * @brief 事务端到端测试 —— 内存/文件 SQLite + 连接池 + ORM 的事务语义
  * @author Gyanis
- * @date 2026-09-17
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 用真实 SQLite 钉住事务的三条核心语义：提交前别的连接看不到本次写入、提交后才可见；回滚后写入不可见
- *          （含析构自动回滚与异常穿越两条路径）；重复 commit / rollback 幂等且不会误撤销已提交的工作。另覆盖「事务持有连接」
- *          这一前提（池满时第二个事务拿不到连接）与批量插入的分块执行。
+ *          （含析构自动回滚与异常穿越两条路径）；重复 commit / rollback 幂等且不会误撤销已提交的工作。
+ *          另覆盖「事务持有连接」这一前提（池满时第二个事务拿不到连接）与批量插入的分块执行。
  *          用文件库而不是 ":memory:"：内存库不跨连接共享，只有一个连接时根本观察不到「提交前不可见」，事务语义无从验证。
- *
- * 覆盖场景：
- * - CommitMakesChangesVisibleToOtherConnections
- * - RollbackDiscardsChanges / DestructorRollsBackUncommittedWork
- * - ExceptionPathRollsBackAndKeepsDatabaseClean
- * - RepeatedCommitAndRollbackAreIdempotent
- * - CommitThenRollbackKeepsCommittedData
- * - TransactionHoldsItsConnectionUntilItEnds
- * - BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt
- * - BatchInsertOfEmptyRangeWritesNothing / BatchInsertRejectsDuplicatePrimaryKey
  */
+// 覆盖场景：
+// - CommitMakesChangesVisibleToOtherConnections
+// - RollbackDiscardsChanges / DestructorRollsBackUncommittedWork
+// - ExceptionPathRollsBackAndKeepsDatabaseClean
+// - RepeatedCommitAndRollbackAreIdempotent
+// - CommitThenRollbackKeepsCommittedData
+// - TransactionHoldsItsConnectionUntilItEnds
+// - BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt
+// - BatchInsertOfEmptyRangeWritesNothing / BatchInsertRejectsDuplicatePrimaryKey
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Dialect/SqlDialect.h"

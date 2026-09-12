@@ -5,7 +5,7 @@
  *          没有服务端的情况下直接构造并验证全部接口：列名/列序/取值映射、游标推进与复位、NULL 与空串的区分、越界判定。
  *          连接侧真正的「准备—绑定—执行—预读」链路需要可用的服务端，本文件不覆盖。
  * @author Gyanis
- * @date 2026-09-16
+ * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */

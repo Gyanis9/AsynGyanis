@@ -47,7 +47,7 @@ namespace AsynGyanis::Core
      */
     TEST(CoreExceptionFamily, DerivesFromProjectBaseAndStandardRuntimeError)
     {
-        // 这两条断言就是本次改造的验收点：Core 的运行期故障现在能被框架基类捕获
+        // 这两条断言钉住调用方实际可用的捕获面：Core 的运行期故障能被框架基类捕获，同时仍是标准库的运行期错误
         static_assert(std::is_base_of_v<Base::Exception, CoreException>);
         static_assert(std::is_base_of_v<std::runtime_error, CoreException>);
         static_assert(std::is_base_of_v<std::exception, CoreException>);

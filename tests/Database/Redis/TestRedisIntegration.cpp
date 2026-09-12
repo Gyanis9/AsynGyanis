@@ -6,24 +6,24 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 与 TestRedisConnection.cpp 的分工：那边只断言「不需要服务端就能成立」的行为，这里覆盖必须连上真实
- *          Redis 才能验证的部分（认证、命令参数的二进制安全往返、回复到 DatabaseValue 的映射、键空间与管道批量收发）。
- *          门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令。键空间默认 **15**
- *          （不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，并行安全；清理只 DEL 自己的键，不 FLUSHDB。
- *
- * 覆盖场景：
- * - ConnectsAndAnswersPing（含认证成功）
- * - ConnectWithWrongPasswordFailsWithLocalizedReason
- * - StatusAndIntegerRepliesMapToTheirTypes
- * - StringValuesRoundTripVerbatim（中文/引号/空格/换行/内嵌 '\0'）
- * - MultiArgumentCommandKeepsArgumentsSeparate（参数不被拼成一条命令）
- * - MissingKeyYieldsEmptyResult / EmptyArrayYieldsEmptyResult
- * - ArrayReplyExposesOneColumnPerElement
- * - CommandErrorFailsWithLocalizedReason（连接级：nullptr + 中文原因）
- * - PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
- * - ConfiguredKeyspaceIsSelectedOnConnect
- * - TextCommandPathSplitsArguments（execute() 的切词路径）
+ * @details 只覆盖必须连上真实 Redis 才能验证的部分：认证、命令参数的二进制安全往返、回复到 DatabaseValue 的映射、
+ *          键空间选择与管道批量收发（不需要服务端即可成立的行为归 TestRedisConnection.cpp 管）。
+ *          门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
+ *          键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
  */
+// 覆盖场景：
+// - ConnectsAndAnswersPing（含认证成功）
+// - ConnectWithWrongPasswordFailsWithLocalizedReason
+// - StatusAndIntegerRepliesMapToTheirTypes
+// - StringValuesRoundTripVerbatim（中文/引号/空格/换行/内嵌 '\0'）
+// - MultiArgumentCommandKeepsArgumentsSeparate（参数不被拼成一条命令）
+// - MissingKeyYieldsEmptyResult / EmptyArrayYieldsEmptyResult
+// - ArrayReplyExposesOneColumnPerElement
+// - CommandErrorFailsWithLocalizedReason（连接级：nullptr + 中文原因）
+// - PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
+// - ConfiguredKeyspaceIsSelectedOnConnect
+// - TextCommandPathSplitsArguments（execute() 的切词路径）
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"

@@ -6,24 +6,24 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，
- *          不打开任何数据库文件，也不经过任何驱动。与 TestSqliteDialect.cpp 同口径覆盖，
- *          差异点（反引号引用、分页占位符与无符号上界、START TRANSACTION）单独断言。
- *
- * 覆盖场景：
- * - 标识符反引号引用与内部反引号转义
- * - 占位符文本、方言类型、LIMIT/OFFSET 支持能力、参数上限 65535
- * - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含反引号列名）
- * - FROM 与表别名
- * - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
- * - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET（含只有 OFFSET 时补出无符号上界）
- * - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
- * - 参数顺序、数量、类型与 uint64 降级
- * - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
- * - 事务控制语句文本
- * - DDL 支撑：逻辑列类型到 MySQL 物理类型名的映射、表存在性元数据语句（按当前库限定 + 表名绑定）
- * - DialectRegistry：MySQL 可取得且与 SQLite 是不同实例，Redis 抛出中文异常
+ * @details 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，不打开任何数据库文件，也不经过任何驱动。
+ *          与 TestSqliteDialect.cpp 同口径覆盖，差异点（反引号引用、分页占位符与无符号上界、START TRANSACTION）
+ *          单独断言。
  */
+// 覆盖场景：
+// - 标识符反引号引用与内部反引号转义
+// - 占位符文本、方言类型、LIMIT/OFFSET 支持能力、参数上限 65535
+// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含反引号列名）
+// - FROM 与表别名
+// - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
+// - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET（含只有 OFFSET 时补出无符号上界）
+// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
+// - 参数顺序、数量、类型与 uint64 降级
+// - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
+// - 事务控制语句文本
+// - DDL 支撑：逻辑列类型到 MySQL 物理类型名的映射、表存在性元数据语句（按当前库限定 + 表名绑定）
+// - DialectRegistry：MySQL 可取得且与 SQLite 是不同实例，Redis 抛出中文异常
+
 #include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/MySqlDialect.h"
