@@ -17,7 +17,8 @@
  *          绑定事务时直接取事务连接的类型，无需再借出连接探测。
  *
  *          异步路径：每个同步执行器都有一个同名 + Async 后缀的版本（toListAsync / firstAsync /
- *          countAsync / executeNonQueryAsync）。它们语义完全一致，唯一差别是不阻塞调用线程：
+ *          countAsync / insertAsync / insertBatchAsync / updateAsync / executeNonQueryAsync，
+ *          即「读 + 写 + 删除」全部覆盖）。它们语义完全一致，唯一差别是不阻塞调用线程：
  *          方言解析与 SQL 生成仍在提交前完成（纯文本变换），「取连接 → 执行 → 行映射」这段
  *          阻塞链路交给 AsyncExecutor 的工作线程，完成后由工作线程把协程句柄投回调用方给的
  *          EventLoop（Scheduler::scheduleRemote），因此恢复与后续代码都发生在事件循环线程上。
@@ -107,8 +108,9 @@ namespace AsynGyanis::Database::Queryable
      *          - 带事务构造：在线模式，所有语句走事务持有的那一条连接
      *
      * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）及其
-     *       异步版本（toListAsync/firstAsync/countAsync/executeNonQueryAsync）必须在绑定连接池
-     *       或事务的在线模式下调用，默认构造的离线模式调用它们会抛 std::logic_error。
+     *       异步版本（toListAsync/firstAsync/countAsync/insertAsync/insertBatchAsync/
+     *       updateAsync/executeNonQueryAsync）必须在绑定连接池或事务的在线模式下调用，
+     *       默认构造的离线模式调用它们会抛 std::logic_error。
      * @note 本类不是线程安全的：异步方法只保证阻塞执行发生在工作线程上，调用方仍应避免在
      *       同一个查询对象上并发地构建查询与发起执行。
      */
@@ -289,7 +291,8 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 指定异步执行器（阻塞任务的工作线程池）
          *
-         * @details 只影响异步方法（toListAsync / firstAsync / countAsync / executeNonQueryAsync）：
+         * @details 只影响异步方法（toListAsync / firstAsync / countAsync / insertAsync /
+         *          insertBatchAsync / updateAsync / executeNonQueryAsync）：
          *          未调用本方法时这些方法使用进程级共享的 AsyncExecutor::shared()，
          *          需要控制工作线程数或让执行器与连接池成对管理时用本方法注入自己的实例。
          *
@@ -450,50 +453,9 @@ namespace AsynGyanis::Database::Queryable
                 return 0;
             }
 
-            const SqlDialect &dialect = requireDialect();
-
-            QueryNode batchNode = makeWriteQueryNode();
-            batchNode.selectColumns = allColumnNames();
-
-            // 每行占用的参数个数就是列数（列数不可能为 0，TableSchema 的列已在编译期校验过），
-            // 上限由方言给出：SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER 为 999，MySQL 则是 65535，
-            // 这类引擎参数属于方言知识，因此不写死在 ORM 侧
-            const std::size_t columnCount   = batchNode.selectColumns.size();
-            const std::size_t parameterLimit = dialect.maximumStatementParameters();
-            const std::size_t rowsPerStatement = std::max<std::size_t>(1, parameterLimit / columnCount);
-
-            if (rows.size() <= rowsPerStatement)
-            {
-                // 单条多行 INSERT 自身就是原子的，不需要额外开事务
-                std::vector<std::vector<DatabaseValue>> batchRows;
-                batchRows.reserve(rows.size());
-                for (const T &row: rows)
-                {
-                    batchRows.push_back(rowValuesOf(row));
-                }
-                return executeStatement(dialect.translateInsertBatch(batchNode, batchRows));
-            }
-
-            // 需要分块：让全部批次落在同一条连接、同一个事务里。
-            // 若每批各自从池里取连接，中途失败时已提交的批次无法回滚，
-            // 调用方拿到异常却留下半张表的数据，这比整体失败更难排查
-            if (m_transaction != nullptr)
-            {
-                // 已绑定事务：块之间共用事务连接，提交/回滚的决定权仍在调用方手里
-                return executeBatchOn(m_transaction->connection(), dialect, batchNode, rows, rowsPerStatement);
-            }
-
-            Transaction localTransaction(*m_pool);
-            const std::int64_t affectedRows =
-                executeBatchOn(localTransaction.connection(), dialect, batchNode, rows, rowsPerStatement);
-            // 全部批次写成功才提交；中途抛出异常时事务析构会回滚，已写入的批次一并撤销。
-            // 提交本身也可能失败（磁盘写满、锁冲突），如实抛错而不是吞掉返回值：
-            // 此时事务仍未结束，析构阶段还会再补一次 ROLLBACK
-            if (!localTransaction.commit())
-            {
-                throw std::runtime_error("Queryable: 批量插入提交失败：" + localTransaction.lastError());
-            }
-            return affectedRows;
+            // 分块判定与执行整体交给静态实现：异步版本在工作线程上调用同一份实现，
+            // 两条路径的每批行数换算与事务覆盖范围因此不可能出现分歧
+            return insertBatchOn(m_pool, m_transaction, requireDialect(), rows);
         }
 
         /**
@@ -658,6 +620,123 @@ namespace AsynGyanis::Database::Queryable
             // 语句翻译是纯文本且不依赖连接，放在提交前做；参数已经收集在 statement 里
             SqlStatement statement = resolveDialect()->translateDelete(m_queryNode);
             ConnectionPool *pool = m_pool;
+            Transaction    *transaction = m_transaction;
+
+            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+                completionLoop,
+                [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                {
+                    ConnectionLease lease = acquireConnection(pool, transaction);
+                    return executeOn(*lease.connection, statement);
+                });
+
+            co_return affectedRows;
+        }
+
+        /**
+         * @brief 异步插入一行
+         *
+         * @details 与 insert() 语义完全一致：语句与参数在提交前由方言定型（纯文本变换），
+         *          「取连接 → 执行」这段阻塞链路交给 AsyncExecutor 的工作线程，
+         *          完成后协程在 completionLoop 所在线程上恢复。
+         *
+         * @param row 待插入的结构体（主键等字段由调用方填好，本方法不做自增处理）
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（驱动不提供时为 0）
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败或语句执行失败（如唯一约束冲突）
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @note **row 按值接收**，与另几个异步方法的引用/视图入参刻意不同：本方法是惰性启动的
+         *       协程，函数体（包括把 row 的取值转成绑定参数）要到**首次 resume** 才执行，
+         *       若按引用接收，调用方写「先拿 Task 再 resume」就会让引用指向已销毁的临时对象，
+         *       而且不报错、只静默读到垃圾值。按值接收让协程帧自己持有一份副本，
+         *       传临时对象也安全（拷贝成本与后面必然发生的参数拷贝同量级）
+         */
+        [[nodiscard]] Core::Task<std::int64_t> insertAsync(T row, Core::EventLoop &completionLoop)
+        {
+            requireOnline("insertAsync()");
+
+            // 语句生成要读 row 并访问本对象的查询树，必须在提交前完成；之后按值捕获交给工作线程
+            SqlStatement statement = buildInsertStatement(row);
+            ConnectionPool *pool        = m_pool;
+            Transaction    *transaction = m_transaction;
+
+            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+                completionLoop,
+                [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                {
+                    ConnectionLease lease = acquireConnection(pool, transaction);
+                    return executeOn(*lease.connection, statement);
+                });
+
+            co_return affectedRows;
+        }
+
+        /**
+         * @brief 异步批量插入多行
+         *
+         * @details 与 insertBatch() 语义完全一致：分块、共连接、事务覆盖全部批次这些规则
+         *          由同步与异步共用的静态实现决定（见 insertBatchOn），本方法只负责把
+         *          「全部行」交给工作线程执行，因此不会阻塞调用线程。
+         *
+         * @param rows 待插入的行集合，允许为空（空集合直接得到 0，不产生任何语句）
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::int64_t> 惰性启动的协程；累计受影响行数
+         * @throws std::logic_error 当前为离线模式（无连接池也未绑定事务）
+         * @throws std::runtime_error 取连接失败、事务开启失败、语句执行失败或本地事务提交失败
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @note **rows 按值接收**（理由同 insertAsync）：惰性协程要到首次 resume 才读入参，
+         *       视图（span）不持有所指数据，按视图接收会让「先拿 Task 再 resume」静默读到
+         *       已销毁的容器。需要传已有容器时用 std::move 转交，避免多一次拷贝；
+         *       传入 std::span 的调用方需自行构造 vector（这是让协程帧拥有数据的必要代价）
+         */
+        [[nodiscard]] Core::Task<std::int64_t> insertBatchAsync(std::vector<T> rows,
+                                                                Core::EventLoop &completionLoop)
+        {
+            requireOnline("insertBatchAsync()");
+
+            // 方言解析可能借出连接探测类型，放在提交前（与其它异步方法一致）
+            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            ConnectionPool *pool        = m_pool;
+            Transaction    *transaction = m_transaction;
+
+            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+                completionLoop,
+                [dialect, rows = std::move(rows), pool, transaction]() -> std::int64_t
+                {
+                    // 空集合的判断放在任务内部而不是提交前：本方法只 co_await 一次，
+                    // 不需要依赖「协程会在未挂起的情况下直接完成」这种额外前提
+                    if (rows.empty())
+                    {
+                        return 0;
+                    }
+                    return insertBatchOn(pool, transaction, *dialect, rows);
+                });
+
+            co_return affectedRows;
+        }
+
+        /**
+         * @brief 异步按主键更新一行
+         *
+         * @details 与 update() 语义完全一致：SET 列与主键 WHERE 条件由方言生成，
+         *          语句与参数在提交前定型，执行交给工作线程。完成后的恢复时机与 toListAsync() 相同。
+         *
+         * @param row 待更新的结构体，主键字段用于定位目标行
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（0 表示没有匹配的行）
+         * @throws std::logic_error 当前为离线模式；或主键未在 kColumns 声明、表中只有主键列
+         * @throws std::runtime_error 取连接失败或语句执行失败
+         * @throws std::invalid_argument 该数据库类型尚无方言实现
+         * @note 主键缺失这类编程错误在**首次 resume** 时就会抛出（语句生成阶段），
+         *       不会变成工作线程上的异常；row 按值接收的理由见 insertAsync()
+         */
+        [[nodiscard]] Core::Task<std::int64_t> updateAsync(T row, Core::EventLoop &completionLoop)
+        {
+            requireOnline("updateAsync()");
+
+            SqlStatement statement = buildUpdateStatement(row);
+            ConnectionPool *pool        = m_pool;
             Transaction    *transaction = m_transaction;
 
             std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
@@ -1079,6 +1158,71 @@ namespace AsynGyanis::Database::Queryable
                 TableSchema<T>::kColumns);
 
             return rowValues;
+        }
+
+        /**
+         * @brief 按方言的参数上限分块执行批量插入，必要时用本地事务覆盖全部块
+         *
+         * @details 同步与异步两条路径的唯一实现（异步版本在工作线程上调用它），
+         *          因此分块规则与事务覆盖范围只有一份：
+         *          - 每行占用的参数个数就是列数，上限由方言回答（SQLite 默认 999、MySQL/PG 65535），
+         *            这类引擎参数属于方言知识，不写死在 ORM 侧；
+         *          - 不分块时单条多行 INSERT 自身就是原子的，不额外开事务；
+         *          - 需要分块时全部块必须落在同一条连接的同一个事务里：若每批各自从池里取连接，
+         *            中途失败时已提交的批次无法回滚，调用方拿到异常却留下半张表的数据，
+         *            这比整体失败更难排查。
+         *
+         * @param pool 连接池，transaction 为空时由它取连接（并可能起一个本地事务）
+         * @param transaction 已绑定的事务，非空时全部块共用它的连接且不自行提交或回滚
+         * @param dialect 目标方言，提供 maximumStatementParameters() 与 translateInsertBatch()
+         * @param rows 待插入的全部行（非空，空集合由调用方提前返回）
+         * @return std::int64_t 累计受影响行数
+         * @throws std::runtime_error 取连接失败、任意一块执行失败，或本地事务提交失败
+         */
+        [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool,
+                                                       Transaction *transaction,
+                                                       const SqlDialect &dialect,
+                                                       const std::span<const T> rows)
+        {
+            QueryNode batchNode = makeWriteQueryNode();
+            batchNode.selectColumns = allColumnNames();
+
+            // 列数不可能为 0（TableSchema 的列已在编译期校验过），因此除法不会除零
+            const std::size_t columnCount      = batchNode.selectColumns.size();
+            const std::size_t parameterLimit   = dialect.maximumStatementParameters();
+            const std::size_t rowsPerStatement = std::max<std::size_t>(1, parameterLimit / columnCount);
+
+            if (rows.size() <= rowsPerStatement)
+            {
+                // 单条多行 INSERT 自身就是原子的，不需要额外开事务
+                std::vector<std::vector<DatabaseValue>> batchRows;
+                batchRows.reserve(rows.size());
+                for (const T &row: rows)
+                {
+                    batchRows.push_back(rowValuesOf(row));
+                }
+
+                ConnectionLease lease = acquireConnection(pool, transaction);
+                return executeOn(*lease.connection, dialect.translateInsertBatch(batchNode, batchRows));
+            }
+
+            if (transaction != nullptr)
+            {
+                // 已绑定事务：块之间共用事务连接，提交/回滚的决定权仍在调用方手里
+                return executeBatchOn(transaction->connection(), dialect, batchNode, rows, rowsPerStatement);
+            }
+
+            Transaction localTransaction(*pool);
+            const std::int64_t affectedRows =
+                executeBatchOn(localTransaction.connection(), dialect, batchNode, rows, rowsPerStatement);
+            // 全部批次写成功才提交；中途抛出异常时事务析构会回滚，已写入的批次一并撤销。
+            // 提交本身也可能失败（磁盘写满、锁冲突），如实抛错而不是吞掉返回值：
+            // 此时事务仍未结束，析构阶段还会再补一次 ROLLBACK
+            if (!localTransaction.commit())
+            {
+                throw std::runtime_error("Queryable: 批量插入提交失败：" + localTransaction.lastError());
+            }
+            return affectedRows;
         }
 
         /**
