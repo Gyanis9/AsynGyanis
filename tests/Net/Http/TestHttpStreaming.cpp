@@ -11,6 +11,8 @@
 //       前者还必须把传输层失败折成 writeChunk 的 false 交给处理器（而不是以异常打穿它）；
 //   七. 卡住的写侧必须被放出来：客户端中途关闭（内核回 RST）与客户端只停读（只能靠写超时 + 清扫
 //       关连接）两种情况，停等可写的处理器协程都要在有限时间内被唤醒并收手（帧释放为判据）。
+//   八. 失败日志口径：一次传输失败只留一条日志（异常与非正返回值不得各记一条），本侧收口之后的
+//       再次写出返回 false 且不新增日志。
 //
 // 回环夹具（RunningHttpServerFixture / LoopbackClient）在 HttpTestSupport.h 中，与其它回环用例共用一份。
 
@@ -38,6 +40,9 @@ namespace AsynGyanis::Net
     {
         /// 客户端中途断开后的等待上限：写侧要等内核回 RST 或等写超时清扫，比一般等待更宽松
         constexpr std::chrono::milliseconds kDisconnectWaitTimeout{6000};
+
+        /// 发送失败日志的识别片段：只有失败路径会输出它，用它数「同一次失败记了几条」
+        constexpr std::string_view kResponseWriteFailureFragment = "响应写出失败";
 
         /**
          * @brief 在测试线程上同步驱动一次 writeChunk 并取出结果
@@ -598,5 +603,85 @@ namespace AsynGyanis::Net
         EXPECT_LT(writtenChunkCount.load(std::memory_order_relaxed), 64)
                 << "对端早已停止读取，写侧却宣称 64 段全部成功";
         EXPECT_FALSE(fixture.startThrew()) << "把写侧卡住的连接收口时把服务器主协程带崩了";
+    }
+
+    TEST(HttpStreaming, LogsExactlyOneEntryPerFailedResponseWriteAndStaysSilentAfterwards)
+    {
+        // 钉住发送失败的口径：一次传输失败只留一条日志（异常与非正返回值不得各记一条），
+        // 且本侧收口（连接被判死）之后的写出——业务重试与会话补终止块——一律短路返回 false
+        // 且不再新增日志：false 与「没有新日志」合起来才是「本侧已收口」的可判据。
+        // 失败用「对端带未读数据关闭 → 内核回 RST」真实构造，与上一条用例同一手法
+        HttpServerLimits limits;
+        limits.writeTimeout = std::chrono::milliseconds{200};
+
+        const HttpTestSupport::LogCapture logCapture;
+
+        std::atomic<bool> didHandlerObserveWriteFailure{false};
+        std::atomic<bool> didRetryReturnFalse{false};
+        std::atomic<int>  logCountAtFailure{-1};
+        std::atomic<int>  logCountAfterRetry{-1};
+
+        RunningHttpServerFixture fixture(
+                limits, std::chrono::milliseconds{50}, {},
+                [&logCapture, &didHandlerObserveWriteFailure, &didRetryReturnFalse, &logCountAtFailure, &logCountAfterRetry](
+                        Router &router, Core::EventLoop &)
+                {
+                    router.get("/abort-mid-stream",
+                               [&logCapture, &didHandlerObserveWriteFailure, &didRetryReturnFalse, &logCountAtFailure, &logCountAfterRetry](
+                                       HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.startChunkedResponse(200);
+
+                        // 一直写到对端不再可用为止：对端停读让发送缓冲填满，处理器随即停在等可写上，
+                        // RST 到达时正是这次挂起的写把失败交回来
+                        const std::string payload(64 * 1024, 'x');
+                        for (int round = 0; round < 64; ++round)
+                        {
+                            if (!co_await response.writeChunk(payload))
+                            {
+                                // 失败那一刻：同一次失败只应留下一条日志（异常一条 + 非正值一条就该是 2）
+                                logCountAtFailure.store(
+                                        static_cast<int>(logCapture.countContaining(kResponseWriteFailureFragment)),
+                                        std::memory_order_release);
+                                didHandlerObserveWriteFailure.store(true, std::memory_order_release);
+
+                                // 本侧已收口：再次发送仍以 false 返回，且不得新增日志
+                                const bool isRetryChunkWritten = co_await response.writeChunk("retry-after-failure");
+                                logCountAfterRetry.store(
+                                        static_cast<int>(logCapture.countContaining(kResponseWriteFailureFragment)),
+                                        std::memory_order_release);
+                                didRetryReturnFalse.store(!isRetryChunkWritten, std::memory_order_release);
+                                co_return;
+                            }
+                        }
+                        co_return;
+                    });
+                });
+
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /abort-mid-stream HTTP/1.1"), kWaitTimeout));
+
+        // 读到第一段正文（64 KiB 段的十六进制长度就是 10000）即说明流已经开始：此刻客户端接收
+        // 缓冲里还留着大量未读字节，直接关闭会让内核回 RST，而不是一条优雅的 EOF
+        std::string responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "10000\r\nx", kWaitTimeout)) << "第一段正文没发出来：" << responseText;
+        client.closeNow();
+
+        ASSERT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "会话在客户端断开后没有收口";
+        ASSERT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire)) << "处理器没有观察到 writeChunk 的 false";
+        EXPECT_EQ(logCountAtFailure.load(std::memory_order_acquire), 1)
+                << "同一次传输失败只应记一条日志，实际条数见上：异常路径与非正返回值路径各记一条就会是 2";
+        EXPECT_TRUE(didRetryReturnFalse.load(std::memory_order_acquire)) << "本侧收口之后的再次发送仍应返回 false";
+        EXPECT_EQ(logCountAfterRetry.load(std::memory_order_acquire), logCountAtFailure.load(std::memory_order_acquire))
+                << "本侧收口之后的短路返回不得新增日志";
+
+        // 会话收尾补终止块同样走这条已判死的连接，因此整条断开连接只留一条日志
+        EXPECT_EQ(logCapture.countContaining(kResponseWriteFailureFragment), 1u) << "会话收尾阶段把同一件事又记了一遍";
+        EXPECT_EQ(logCapture.countContaining("请停止继续写并收口连接"), 1u) << "唯一那条日志必须是可操作的中文文案";
+        EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
     }
 } // namespace AsynGyanis::Net

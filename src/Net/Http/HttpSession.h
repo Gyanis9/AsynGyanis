@@ -285,11 +285,17 @@ namespace AsynGyanis::Net
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
             // 回调按引用捕获 socket 与连接，两者都活到整条连接结束。
-            // 发送契约与 HTTP 侧一致：传输层失败折成 false 并记日志，不抛异常，业务拿到 false 后
-            // 必须停止继续发送（WebSocketPeer 随即把本侧标记为不可用）
+            // 发送契约与 HTTP 侧一致：false = 本帧未发出、连接不可再用、调用方应停止发送。两种来源——
+            // 本侧已收口（WebSocketPeer 判死之后的短路，不记日志，见下）与传输失败（本次记一条）；
+            // 一次失败只记一条日志（异常与非正返回值汇到同一处），不抛异常
             const auto sendFrameBytes = [&socket, &connection, &limits](const std::string_view frameBytes) -> Core::Task<bool>
             {
                 connection.refreshIdleDeadline(limits.writeTimeout);
+
+                // 本次发送的失败原因：空串表示还没失败。异常与非正返回值两条路径都不在这里直接记，
+                // 而是汇到下面同一处写出，保证「一次失败只记一条日志」
+                std::string failureReason;
+                bool isSucceeded = true;
                 try
                 {
                     // 一直写到整帧出门：asyncSend 允许部分写，而帧少一个字节对端就再也找不回边界
@@ -300,19 +306,32 @@ namespace AsynGyanis::Net
                                 co_await socket.asyncSend(frameBytes.data() + writtenLength, frameBytes.size() - writtenLength);
                         if (writeLength <= 0)
                         {
-                            co_return false;
+                            // 对端已在底层关闭（非正值而不是异常，见 AsyncSocket::asyncSend），
+                            // 同样属于传输失败：没有异常可带，原因在收尾处补一句通用的
+                            isSucceeded = false;
+                            break;
                         }
                         writtenLength += static_cast<std::size_t>(writeLength);
                     }
-                    co_return true;
                 } catch (const Base::Exception &exception)
                 {
                     // 传输层写失败（对端 RST、描述符被清扫协程关掉、等可写期间被关闭）一律视为连接
-                    // 不可用：字节流已断，这里没有可发给对端的东西。原因进日志，失败以布尔值交给业务
-                    LOG_ERROR_FMT("WebSocket 会话：帧写出失败，连接已不可用，此后不再尝试发送，请停止继续发送。原因：{}",
-                                  exception.what());
-                    co_return false;
+                    // 不可用：字节流已断，这里没有可发给对端的东西。原因只暂存，等收尾处记一次
+                    isSucceeded = false;
+                    failureReason = exception.what();
                 }
+
+                if (!isSucceeded)
+                {
+                    // 异常那条自带错误码与上下文，信息量更大，因此优先采用它
+                    if (failureReason.empty())
+                    {
+                        failureReason = "对端已关闭连接或连接不可用";
+                    }
+                    LOG_ERROR_FMT("WebSocket 会话：帧写出失败，连接已不可用，此后不再尝试发送，请停止继续发送。原因：{}",
+                                  failureReason);
+                }
+                co_return isSucceeded;
             };
 
             WebSocketPeer peer(sendFrameBytes, metrics);
@@ -421,10 +440,11 @@ namespace AsynGyanis::Net
          * @note 超时判定不在本协程里做（清扫协程关掉连接后本帧可能立刻销毁，挂起的定时等待会
          *       指向已释放的帧）：这里只按相位把时限刷进 connection 的空闲截止时间，
          *       到点关连接由 TcpServer 的清扫协程负责。
-         * @note 发送契约（sendResponse 及流式/握手两条写出路径共用）：传输层失败——对端关闭或复位、
-         *       描述符被关闭、等可写期间被关闭——一律折成 false 并记一条中文日志，不抛异常，调用方
-         *       拿到 false 后停止继续写并收口；序列化与用法错误（未进流式模式、未装配发送回调、
-         *       控制帧超长等）仍走框架的 logic_error 分支，不被本循环吞掉
+         * @note 发送契约（sendResponse 及流式/握手两条写出路径共用）：false = 本段未发出、连接不可
+         *       再用、调用方应停止继续写并收口。两种来源：本侧已收口（本循环一旦判定连接写不出去，
+         *       后续写出直接短路且不记日志——首个失败已记过原因）与传输失败（对端关闭或复位、描述符
+         *       被关闭、等可写期间被关闭，本次记一条）。一次失败只留一条日志，不抛异常；序列化与用法
+         *       错误（未进流式模式、未装配发送回调、控制帧超长等）仍走框架的 logic_error 分支
          *
          * @tparam Socket 传输层类型，需支持 asyncReceive/asyncSend
          * @param socket        传输层 socket 引用
@@ -477,6 +497,10 @@ namespace AsynGyanis::Net
             // 对象在循环外构造，作用域覆盖整个 keep-alive 循环，析构即注销
             ConnectionCancelForwarder cancelForwarder(cancelable, parser.request());
 
+            // 本条连接是否已被判定写不出去（一次传输失败之后即置位）。置位后所有写出都短路：
+            // 连接已不可再用，重试注定失败，短路既省一次系统调用，也让同一次连接故障只留下一条日志
+            bool isConnectionUnusable = false;
+
             // 发出响应：把「头部块 + 正文」作为两段提交，正文因此不必先拷进头部块。
             // 传输层支持聚合写（AsyncSocket）时是一次系统调用提交两段；TLS 记录层只接受
             // 单块明文，退回两次顺序发送——两者都在数据语义上等价，差别只在是否多一次拷贝。
@@ -484,16 +508,28 @@ namespace AsynGyanis::Net
             // 完整表达式里），因此引用捕获是安全的。
             //
             // 发送契约（本会话的全部写出路径共用：普通响应、流式正文段、101 握手应答、4xx 错误响应）：
-            // 传输层失败——对端正常关闭或复位、描述符被清扫协程关掉、等可写期间连接被关闭——一律
-            // 折成 false 并记一条中文日志，不抛异常，调用方拿到 false 后必须停止继续写并收口连接；
+            // false = 本段未发出、连接不可再用、调用方应停止继续写并收口。两种来源——本侧已收口
+            // （见上面的短路，此前必已记录过收口原因，不再记日志）与传输失败（对端正常关闭或复位、
+            // 描述符被清扫协程关掉、等可写期间连接被关闭，本次记一条）。一次失败只记一条日志，不抛异常；
             // 只有非传输层的异常（如内存不足）才继续外抛
-            const auto sendResponse = [&socket, &connection, &limits](const std::string_view head, const std::string_view body) -> Core::Task<bool>
+            const auto sendResponse = [&socket, &connection, &limits, &isConnectionUnusable](
+                                              const std::string_view head, const std::string_view body) -> Core::Task<bool>
             {
+                // 本侧已收口：不记日志——首个失败已经交代过原因，业务重试与流式收尾再各记一条
+                // 只会把同一件事刷成好几行
+                if (isConnectionUnusable)
+                {
+                    co_return false;
+                }
+
                 // 发送前把截止时间刷成写超时：对端只连不读（慢消费者）时写侧会一直挂起，
                 // 超过容忍度就由清扫协程收口，而不是把连接永远挂在发送上。
                 // 时限为 0 时这里等于清除截止时间，连接退回「不受写超时约束」
                 connection.refreshIdleDeadline(limits.writeTimeout);
 
+                // 本次发送的失败原因：空串表示还没失败。异常与非正返回值两条路径都不在这里直接记，
+                // 而是汇到下面同一处写出，保证「一次失败只记一条日志」
+                std::string failureReason;
                 bool isSucceeded = false;
                 try
                 {
@@ -521,17 +557,24 @@ namespace AsynGyanis::Net
                 } catch (const Base::Exception &exception)
                 {
                     // 字节流已断（对端 RST、描述符被清扫协程关掉、等可写期间被关闭）：这条响应
-                    // 的剩余段与终止块都不会再发出去，原因进日志，失败以布尔值交给调用方
-                    LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
-                                  exception.what());
-                    co_return false;
+                    // 的剩余段与终止块都不会再发出去。原因只暂存在这里，等收尾处连同结论一起记一次
+                    failureReason = exception.what();
                 }
 
-                // 对端关闭在底层是「非正返回值」而不是异常（见 AsyncSocket::asyncSend），
-                // 这条路径同样要留一条日志，否则响应没发出去在日志里毫无痕迹
                 if (!isSucceeded)
                 {
-                    LOG_ERROR_FMT("HttpSession: 响应未写出，对端已关闭连接或连接不可用，请停止继续写并收口连接");
+                    // 对端关闭在底层是「非正返回值」而不是异常（见 AsyncSocket::asyncSend），
+                    // 这条路径没有异常可带，补一句通用原因，让两种来源共用同一行日志。
+                    // 异常那条自带错误码与上下文，信息量更大，因此优先采用它
+                    if (failureReason.empty())
+                    {
+                        failureReason = "对端已关闭连接或连接不可用";
+                    }
+                    LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
+                                  failureReason);
+
+                    // 连接从此不再尝试写出：本侧收口
+                    isConnectionUnusable = true;
                 }
                 co_return isSucceeded;
             };
@@ -540,8 +583,9 @@ namespace AsynGyanis::Net
             // 因此 writeChunk 的每一段都是当场流出去的，不存在「先攒在内存里再整块发」的中间态；
             // 写之前的空闲截止时间刷新也在 sendResponse 里，流式期间的长写同样受写超时约束。
             // 回调引用本协程帧里的 socket 与连接，它们活到整条连接结束，故按连接装配一次即可。
-            // 传输层失败由 sendResponse 折成 false 并记日志，本回调因此不抛异常——这正是
-            // HttpResponse::writeChunk 文档里「返回 false 即连接不可用」得以成立的地方
+            // 传输层失败由 sendResponse 折成 false，本回调因此不抛异常——这正是
+            // HttpResponse::writeChunk 文档里「false 即本段未发出、连接不可再用」得以成立的地方；
+            // 连接被判死之后的短路（含本侧已收口）也由 sendResponse 一处承担，故这里不再重复记日志
             const auto sendChunkSegment = [&sendResponse](const std::string_view segment) -> Core::Task<bool>
             {
                 co_return co_await sendResponse(segment, std::string_view{});

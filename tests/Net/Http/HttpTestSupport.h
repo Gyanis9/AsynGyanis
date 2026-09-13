@@ -9,6 +9,10 @@
 
 #pragma once
 
+#include "Base/Log/LogEvent.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Net/Http/HttpServer.h"
 
 #include "Core/EventLoop/EventLoop.h"
@@ -32,6 +36,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -182,6 +188,109 @@ namespace AsynGyanis::Net
             }
             return statusLineCount;
         }
+
+        /**
+         * @brief 捕获根日志器输出的记录型 Sink（发送失败类用例据此断言日志条数）
+         *
+         * @details 会话跑在事件循环线程上，被测代码用 LOG_ERROR_FMT 这类宏走全局根日志器，因此本类
+         *          构造时把自己的 Sink 挂到根日志器上、析构时摘除，消息按到达顺序累积。
+         *          写入（事件循环线程）与读取（用例线程）跨线程，记录容器自带互斥量。
+         * @note 摘除用 clearSinks()：TestNet 不加载日志配置，根日志器上除本类挂的 Sink 外没有别的；
+         *       用例在本进程内独占运行（gtest 发现机制把每个用例当独立进程启动），无需跨进程协调
+         */
+        class LogCapture
+        {
+        public:
+            /**
+             * @brief 挂上记录型 Sink，此后根日志器的输出都进入本对象
+             */
+            LogCapture() :
+                m_records(std::make_shared<Records>())
+            {
+                // Sink 交给根日志器接管所有权；记录容器按 shared_ptr 共享，因此日志器稍后仍在写也安全
+                Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(m_records));
+            }
+
+            /**
+             * @brief 摘除自己的 Sink，停止捕获
+             */
+            ~LogCapture()
+            {
+                Base::LoggerRegistry::instance().getRootLogger().clearSinks();
+            }
+
+            LogCapture(const LogCapture &) = delete;
+
+            LogCapture &operator=(const LogCapture &) = delete;
+
+            /**
+             * @brief 统计已记录消息里包含指定子串的条数
+             * @param fragment 待查找的子串，如「响应写出失败」
+             * @return std::size_t 命中条数
+             */
+            [[nodiscard]] std::size_t countContaining(const std::string_view fragment) const
+            {
+                const std::lock_guard<std::mutex> recordLock(m_records->mutex);
+                std::size_t                       matchCount = 0;
+
+                for (const std::string &message: m_records->messages)
+                {
+                    if (message.find(fragment) != std::string::npos)
+                    {
+                        ++matchCount;
+                    }
+                }
+                return matchCount;
+            }
+
+        private:
+            /**
+             * @brief 全部已记录消息的共享容器（本对象与 Sink 各持一份引用）
+             */
+            struct Records
+            {
+                std::mutex               mutex;    ///< 保护 messages 的互斥量
+                std::vector<std::string> messages; ///< 已记录的日志消息正文，按到达顺序
+            };
+
+            /**
+             * @brief 把事件消息追加进共享容器的记录型 Sink
+             */
+            class RecordingSink final : public Base::LogSink
+            {
+            public:
+                /**
+                 * @brief 构造记录型 Sink
+                 * @param records 与用例共享的记录容器
+                 */
+                explicit RecordingSink(std::shared_ptr<Records> records) :
+                    m_records(std::move(records))
+                {
+                }
+
+                /**
+                 * @brief 记录一条日志事件的消息正文
+                 * @param event 日志事件
+                 */
+                void write(const Base::LogEvent &event) override
+                {
+                    const std::lock_guard<std::mutex> recordLock(m_records->mutex);
+                    m_records->messages.push_back(event.message);
+                }
+
+                /**
+                 * @brief 内容全在内存里，没有缓冲需要落盘，故为空实现
+                 */
+                void flush() override
+                {
+                }
+
+            private:
+                std::shared_ptr<Records> m_records; ///< 与用例共享的记录容器
+            };
+
+            std::shared_ptr<Records> m_records; ///< 记录容器（Sink 被日志器接管后仍由本对象持有）
+        };
 
         /**
          * @brief 一次非阻塞读取的结果

@@ -124,7 +124,9 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> WebSocketPeer::sendText(const std::string_view text)
     {
-        // 本侧已收口就不再发数据帧：RFC 6455 要求发起关闭之后不得再发任何数据
+        // 本侧已收口就不再发数据帧：RFC 6455 要求发起关闭之后不得再发任何数据。
+        // 短路返回不记日志——收口那一刻已记过原因（协议错误、业务异常、传输失败），
+        // 这里再记一条只会把同一件事刷成两行，调用方按 false 收手即可
         if (!m_isOpen)
         {
             co_return false;
@@ -134,6 +136,7 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> WebSocketPeer::sendBinary(const std::string_view payload)
     {
+        // 短路返回不记日志：理由同 sendText()
         if (!m_isOpen)
         {
             co_return false;
@@ -143,6 +146,7 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> WebSocketPeer::sendPing(const std::string_view payload)
     {
+        // 短路返回不记日志：理由同 sendText()
         if (!m_isOpen)
         {
             co_return false;
@@ -165,7 +169,8 @@ namespace AsynGyanis::Net
         }
 
         // 本侧已经发过 Close、或连接已不可用：不再补第二条（§5.5.1 只要求一次关闭握手），
-        // 也绝不把业务给的关闭原因当成一次新的关闭请求发出去
+        // 也绝不把业务给的关闭原因当成一次新的关闭请求发出去。
+        // 短路返回不记日志：本侧主动关闭属预期路径，传输失败则早已在收口那一刻记过原因
         if (!m_isOpen)
         {
             co_return false;
@@ -203,7 +208,8 @@ namespace AsynGyanis::Net
 
         if (!isSucceeded)
         {
-            // 写不出去即连接不可用：本侧随即收口，后续 send*() 一律返回 false、receive() 返回空
+            // 写不出去即连接不可用：本侧随即收口，后续 send*()/close() 一律短路返回 false 且不再记日志
+            // （本次失败的原因已由发送回调记下），receive() 返回空
             m_isOpen = false;
         }
         co_return isSucceeded;

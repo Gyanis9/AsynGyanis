@@ -4,6 +4,8 @@
 // 不引入任何 ws 客户端库，因此断言不会被被测实现「自证」。
 // 凡是要断言「解到连接关闭」的用例，都先等客户端读到 EOF，再做完整比对；渐进性断言只用子串。
 // 末节的统计用例同一条连接串起升级、消息与协议错误收口，并核对普通 HTTP 请求不污染 WebSocket 计数。
+// 发送失败类用例另在根日志器上挂记录型 Sink（HttpTestSupport::LogCapture），
+// 断言「一次失败只留一条日志」与「本侧收口的短路返回不记日志」两条口径。
 
 #include "HttpTestSupport.h"
 
@@ -42,6 +44,9 @@ namespace AsynGyanis::Net
 
         /// 对端复位后的等待上限：写侧要等内核回 RST 或等写超时清扫，比一般等待更宽松
         constexpr std::chrono::milliseconds kResetWaitTimeout{6000};
+
+        /// 帧写出失败日志的识别片段：只有失败路径会输出它，用它数「同一次失败记了几条」
+        constexpr std::string_view kFrameWriteFailureFragment = "帧写出失败";
 
         /// 升级路由的路径
         constexpr std::string_view kHandshakePath = "/ws";
@@ -755,6 +760,139 @@ namespace AsynGyanis::Net
                 << "对端已复位，业务的 sendText 没有返回 false：传输层失败以异常打穿了业务";
         EXPECT_LT(sentFrameCount.load(std::memory_order_relaxed), 64) << "对端已经复位，写侧却宣称 64 帧全部成功";
         EXPECT_FALSE(server->startThrew()) << "对端复位把服务器主协程带崩了";
+    }
+
+    /**
+     * @brief 钉住 WebSocket 侧的失败日志口径：一次传输失败只留一条日志，收口之后的发送不再新增日志
+     * @details 与 HTTP 流式侧同一条契约（见 HttpResponse::writeChunk）：false = 本帧未发出、连接不可
+     *          再用、调用方应停止发送，两种来源——本侧已收口（不新增日志）与传输失败（本次记一条）。
+     *          对端带未读数据关闭让内核回 RST，构造真实的传输失败；失败后再发数据帧与 Close 都被
+     *          短路返回 false，这两次都不得再记日志，因此整条断开的连接只应留下一条日志。
+     */
+    TEST(WebSocketSession, LogsExactlyOneEntryPerFailedFrameWriteAndStaysSilentAfterwards)
+    {
+        const HttpTestSupport::LogCapture logCapture;
+
+        std::atomic<bool> didBusinessObserveSendFailure{false};
+        std::atomic<bool> didRetryReturnFalse{false};
+        std::atomic<bool> isPeerClosedAfterFailure{false};
+        std::atomic<int>  logCountAtFailure{-1};
+        std::atomic<int>  logCountAfterRetry{-1};
+
+        const HttpTestSupport::RouteRegistrar registrar =
+                [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
+                 &logCountAfterRetry](Router &router, Core::EventLoop &)
+        {
+            router.any(std::string(kHandshakePath),
+                       [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
+                        &logCountAfterRetry](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.upgradeToWebSocket(
+                        [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
+                         &logCountAfterRetry](WebSocketPeer &peer) -> Core::Task<>
+                {
+                    // 一直写到对端不再可用为止：对端停读让发送缓冲填满，业务因此停在等可写上，
+                    // RST 到达时正是这次挂起的写把失败交回来
+                    const std::string payload(64 * 1024, 'w');
+                    for (int round = 0; round < 64; ++round)
+                    {
+                        if (!co_await peer.sendText(payload))
+                        {
+                            // 失败那一刻：同一次失败只应留下一条日志（异常一条 + 非正值一条就该是 2）
+                            logCountAtFailure.store(static_cast<int>(logCapture.countContaining(kFrameWriteFailureFragment)),
+                                                    std::memory_order_release);
+                            isPeerClosedAfterFailure.store(!peer.isOpen(), std::memory_order_release);
+                            didBusinessObserveSendFailure.store(true, std::memory_order_release);
+
+                            // 本侧已收口：数据帧与第二条 Close 都短路返回 false，且都不新增日志
+                            const bool isRetryFrameSent = co_await peer.sendText("retry-after-failure");
+                            const bool isSecondCloseSent = co_await peer.close();
+                            logCountAfterRetry.store(static_cast<int>(logCapture.countContaining(kFrameWriteFailureFragment)),
+                                                     std::memory_order_release);
+                            didRetryReturnFalse.store(!isRetryFrameSent && !isSecondCloseSent, std::memory_order_release);
+                            co_return;
+                        }
+                    }
+                    co_return;
+                });
+                co_return;
+            });
+        };
+
+        const std::unique_ptr<RunningHttpServerFixture> server = std::make_unique<RunningHttpServerFixture>(
+                HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+
+        // 握手与首批帧数据都先读到客户端：接收缓冲里留着一大截未读字节，随后的 close 才会让
+        // 内核回 RST（只收到 EOF 的话写侧拿不到错误事件）
+        std::string accumulated;
+        ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
+        ASSERT_TRUE(client.waitForText(accumulated, "Sec-WebSocket-Accept", kWaitTimeout)) << "握手没有完成：" << accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, expectedHandshakeResponseText().size() + 1024, kWaitTimeout))
+                << "握手之后没有读到帧数据，累计 " << accumulated.size() << " 字节";
+        client.closeNow();
+
+        ASSERT_TRUE(server->awaitConnectionsDrained(kResetWaitTimeout)) << "对端复位后 WebSocket 会话没有收口";
+        ASSERT_TRUE(didBusinessObserveSendFailure.load(std::memory_order_acquire)) << "业务没有观察到 sendText 的 false";
+        EXPECT_TRUE(isPeerClosedAfterFailure.load(std::memory_order_acquire))
+                << "传输失败之后本侧应被标记为不可用（此后 send*() 一律短路）";
+        EXPECT_EQ(logCountAtFailure.load(std::memory_order_acquire), 1)
+                << "同一次传输失败只应记一条日志，实际条数见上：异常路径与非正返回值路径各记一条就会是 2";
+        EXPECT_TRUE(didRetryReturnFalse.load(std::memory_order_acquire))
+                << "本侧收口之后的数据帧与 Close 都应短路返回 false，而不是抛异常或宣称成功";
+        EXPECT_EQ(logCountAfterRetry.load(std::memory_order_acquire), logCountAtFailure.load(std::memory_order_acquire))
+                << "本侧收口之后的短路返回不得新增日志";
+        // 会话收尾不会再补 Close（本侧已收口），因此整条断开的连接只留一条日志
+        EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 1u) << "会话收尾阶段把同一件事又记了一遍";
+        EXPECT_EQ(logCapture.countContaining("请停止继续发送"), 1u) << "唯一那条日志必须是可操作的中文文案";
+        EXPECT_FALSE(server->startThrew()) << "对端复位把服务器主协程带崩了";
+    }
+
+    // ============================================================================
+    // WebSocketPeer 契约：不经会话直接驱动，钉住「本侧已收口」的短路口径
+    // ============================================================================
+
+    /**
+     * @brief 钉住本侧收口后的短路口径：发送一律返回 false，且一条新日志都不产生
+     * @details 与「传输失败」相对的一侧：本侧已收口时不记日志（收口原因在那一刻已交代过），
+     *          因此调用方看到 false 且日志没有新增，就应当理解为「本侧已经收了」，而不是「又失败了一次」。
+     *          用假发送回调同步驱动，不依赖网络，断言的是纯契约而不是时序
+     */
+    TEST(WebSocketPeerContract, ReturnsFalseWithoutNewLogAfterLocalClose)
+    {
+        const HttpTestSupport::LogCapture logCapture;
+
+        int sentFrameCount = 0;
+        WebSocketPeer peer([&sentFrameCount](const std::string_view) -> Core::Task<bool>
+        {
+            ++sentFrameCount;
+            co_return true;
+        });
+
+        // 首次 close() 正常写出一条 Close 帧：本侧随即收口。这是预期路径，不是失败，不该记日志
+        Core::Task<bool> closeTask = peer.close();
+        closeTask.handle().resume();
+        EXPECT_TRUE(closeTask.await_resume());
+        EXPECT_FALSE(peer.isOpen());
+        EXPECT_EQ(sentFrameCount, 1);
+
+        // 本侧已收口：数据帧、Ping 与第二条 Close 都短路返回 false，且都不新增日志
+        Core::Task<bool> textTask = peer.sendText("after-local-close");
+        textTask.handle().resume();
+        EXPECT_FALSE(textTask.await_resume());
+        Core::Task<bool> pingTask = peer.sendPing();
+        pingTask.handle().resume();
+        EXPECT_FALSE(pingTask.await_resume());
+        Core::Task<bool> secondCloseTask = peer.close();
+        secondCloseTask.handle().resume();
+        EXPECT_FALSE(secondCloseTask.await_resume());
+
+        EXPECT_EQ(sentFrameCount, 1) << "本侧收口之后不得再写出任何帧";
+        EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 0u)
+                << "本侧已收口的短路返回不记日志：否则调用方会把同一件事看成两次失败";
     }
 
     // ============================================================================

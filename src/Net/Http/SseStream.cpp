@@ -83,7 +83,8 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> SseStream::sendComment(const std::string_view comment)
     {
-        // 连接已不可用：直接短路，此后连校验都不做 —— 对端收不到，报错只会误导调用方
+        // 连接已不可用：直接短路，此后连校验都不做 —— 对端收不到，报错只会误导调用方。
+        // 短路不记日志：原因已在 writeChunk 首次返回 false 那一刻记过
         if (!m_isOpen)
         {
             co_return false;
@@ -124,7 +125,7 @@ namespace AsynGyanis::Net
                                           const std::string_view eventId,
                                           const std::optional<std::chrono::milliseconds> retry)
     {
-        // 连接已不可用：直接短路，不写也不校验
+        // 连接已不可用：直接短路，不写也不校验，也不记日志（理由同 sendComment()）
         if (!m_isOpen)
         {
             co_return false;

@@ -54,7 +54,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 本流是否仍可发送
          * @return true 仍可发送
-         * @return false 连接已不可用（writeChunk 返回过 false），此后所有发送接口直接返回 false
+         * @return false 连接已不可用（writeChunk 返回过 false）：此后所有发送接口直接短路返回 false，
+         *         且不新增日志（收口原因已在 writeChunk 失败那一刻记过）
          */
         [[nodiscard]] bool isOpen() const noexcept;
 
@@ -64,7 +65,8 @@ namespace AsynGyanis::Net
          *          客户端不会把它投给业务回调。
          * @param comment 注释文本
          * @return true 已写出
-         * @return false 连接已不可用，本次未写出任何字节
+         * @return false 本帧未发出、连接不可再用、调用方应停止发送：两种来源与日志口径见
+         *         HttpResponse::writeChunk()（本侧已收口不新增日志，传输失败本次记一条）
          * @throws Base::LogicException 整帧超过 kMaximumFrameLength
          * @note comment 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读取入参
          */
@@ -79,7 +81,8 @@ namespace AsynGyanis::Net
          * @param eventId 事件标识，写进 `id:` 行；空串表示不带该字段
          * @param retry 重连建议间隔，写进 `retry:` 行；std::nullopt 表示不带该字段
          * @return true 已写出
-         * @return false 连接已不可用，本次未写出任何字节
+         * @return false 本帧未发出、连接不可再用、调用方应停止发送：两种来源与日志口径见
+         *         HttpResponse::writeChunk()（本侧已收口不新增日志，传输失败本次记一条）
          * @throws Base::LogicException eventName/eventId 含 CR、LF 或 NUL，或整帧超过 kMaximumFrameLength
          * @throws Base::InvalidArgumentException retry 为负数（用法错误，重试无用）
          * @note data/eventName/eventId 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
