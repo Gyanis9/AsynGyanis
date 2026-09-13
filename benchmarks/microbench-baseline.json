@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-13",
+  "machine": "Intel64 Family 6 Model 183 Stepping 1（20 逻辑核）",
+  "build": "Release（MSVC /O2 + LTO，无插桩）",
+  "target": "build/release/benchmarks/microbench/microbench.exe（随常规构建产出，无需单独开关）",
+  "note": [
+    "本文件是 benchmarks/microbench 的本机基线，只用于同机同构建下的前后对比，用法与 baseline.json 相同：",
+    "  python benchmarks/check-baseline.py --baseline benchmarks/microbench-baseline.json <微基准产出的 JSON>",
+    "每个数都是 3 次运行的中位数，与 check-baseline.py 的口径一致；微基准自己在用例内已做 5 轮取最快，",
+    "所以轮次间的离散只有几个百分点（见表里的 observedNanosecondsRange）——对比时可以把下限收紧到 0.8，",
+    "不必用服务端压测那份基线的 0.6（那边 Python 客户端的开销与后台负载占主导，噪声有 1.5~2 倍）。",
+    "被测输入的形态写在 microbench/main.cpp 顶部：同一份头部反复编解码（编解码器复用）、一条带 10 个头与",
+    "64 字节正文的 h1 请求、一帧 200 字节头块的 HEADERS。换输入形态结果会变，跨机器比之前先确认两边一致。"
+  ],
+  "benchmarks": {
+    "hpack-encode": {
+      "throughputPerSecond": 1322573,
+      "nanosecondsPerOperation": 756.1,
+      "observedNanosecondsRange": [
+        748.4,
+        759.9
+      ],
+      "runsMeasured": 3
+    },
+    "hpack-decode": {
+      "throughputPerSecond": 2564154,
+      "nanosecondsPerOperation": 390.0,
+      "observedNanosecondsRange": [
+        376.2,
+        403.9
+      ],
+      "runsMeasured": 3
+    },
+    "http1-parse-request": {
+      "throughputPerSecond": 945586,
+      "nanosecondsPerOperation": 1057.5,
+      "observedNanosecondsRange": [
+        1047.1,
+        1061.8
+      ],
+      "runsMeasured": 3
+    },
+    "http2-frame-decode": {
+      "throughputPerSecond": 14675958,
+      "nanosecondsPerOperation": 68.1,
+      "observedNanosecondsRange": [
+        65.9,
+        68.5
+      ],
+      "runsMeasured": 3
+    },
+    "http-date-format": {
+      "throughputPerSecond": 3832985,
+      "nanosecondsPerOperation": 260.9,
+      "observedNanosecondsRange": [
+        256.1,
+        262.6
+      ],
+      "runsMeasured": 3
+    },
+    "http-date-parse": {
+      "throughputPerSecond": 22955453,
+      "nanosecondsPerOperation": 43.6,
+      "observedNanosecondsRange": [
+        43.5,
+        44.1
+      ],
+      "runsMeasured": 3
+    },
+    "request-id-generate": {
+      "throughputPerSecond": 10980129,
+      "nanosecondsPerOperation": 91.1,
+      "observedNanosecondsRange": [
+        91.0,
+        92.3
+      ],
+      "runsMeasured": 3
+    }
+  }
+}
