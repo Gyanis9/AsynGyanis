@@ -37,6 +37,8 @@
 
 #include <stdlib.h>
 
+#include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 
@@ -133,11 +135,6 @@ typedef struct _OBJECT_ATTRIBUTES {
 #define FILE_OPEN 0x00000001UL
 #endif
 
-#define KEYEDEVENT_WAIT 0x00000001UL
-#define KEYEDEVENT_WAKE 0x00000002UL
-#define KEYEDEVENT_ALL_ACCESS \
-  (STANDARD_RIGHTS_REQUIRED | KEYEDEVENT_WAIT | KEYEDEVENT_WAKE)
-
 #define NT_NTDLL_IMPORT_LIST(X)           \
   X(NTSTATUS,                             \
     NTAPI,                                \
@@ -163,14 +160,6 @@ typedef struct _OBJECT_ATTRIBUTES {
                                           \
   X(NTSTATUS,                             \
     NTAPI,                                \
-    NtCreateKeyedEvent,                   \
-    (PHANDLE KeyedEventHandle,            \
-     ACCESS_MASK DesiredAccess,           \
-     POBJECT_ATTRIBUTES ObjectAttributes, \
-     ULONG Flags))                        \
-                                          \
-  X(NTSTATUS,                             \
-    NTAPI,                                \
     NtDeviceIoControlFile,                \
     (HANDLE FileHandle,                   \
      HANDLE Event,                        \
@@ -182,22 +171,6 @@ typedef struct _OBJECT_ATTRIBUTES {
      ULONG InputBufferLength,             \
      PVOID OutputBuffer,                  \
      ULONG OutputBufferLength))           \
-                                          \
-  X(NTSTATUS,                             \
-    NTAPI,                                \
-    NtReleaseKeyedEvent,                  \
-    (HANDLE KeyedEventHandle,             \
-     PVOID KeyValue,                      \
-     BOOLEAN Alertable,                   \
-     PLARGE_INTEGER Timeout))             \
-                                          \
-  X(NTSTATUS,                             \
-    NTAPI,                                \
-    NtWaitForKeyedEvent,                  \
-    (HANDLE KeyedEventHandle,             \
-     PVOID KeyValue,                      \
-     BOOLEAN Alertable,                   \
-     PLARGE_INTEGER Timeout))             \
                                           \
   X(ULONG, WINAPI, RtlNtStatusToDosError, (NTSTATUS Status))
 
@@ -397,34 +370,78 @@ WEPOLL_INTERNAL port_state_t* port_state_from_handle_tree_node(
 WEPOLL_INTERNAL ts_tree_node_t* port_state_to_handle_tree_node(
     port_state_t* port_state);
 
-/* The reflock is a special kind of lock that normally prevents a chunk of
- * memory from being freed, but does allow the chunk of memory to eventually be
- * released in a coordinated fashion.
- *
- * Under normal operation, threads increase and decrease the reference count,
- * which are wait-free operations.
- *
- * Exactly once during the reflock's lifecycle, a thread holding a reference to
- * the lock may "destroy" the lock; this operation blocks until all other
- * threads holding a reference to the lock have dereferenced it. After
- * "destroy" returns, the calling thread may assume that no other threads have
- * a reference to the lock.
- *
- * Attemmpting to lock or destroy a lock after reflock_unref_and_destroy() has
- * been called is invalid and results in undefined behavior. Therefore the user
- * should use another lock to guarantee that this can't happen.
- */
+/* 引用锁：把「这块内存不许被提前释放」与「销毁时等所有引用放完」合进一个原子字。
+   低 28 位是引用计数、高 4 位是销毁标记，等待与唤醒走 C++20 的 atomic::wait/notify
+   （标准库在 Windows 上用 WaitOnAddress 实现），原实现自备的 keyed event 因此整块删掉。
 
-typedef struct reflock {
-  volatile long state; /* 32-bit Interlocked APIs operate on `long` values. */
-} reflock_t;
+   协议：
+     - ref()：只在计数上加一，无等待；对已销毁的锁调用是用法错误，由断言兜住；
+     - unref()：减一；恰好减到「只剩销毁标记」时唤醒正在等的销毁者；
+     - unrefAndDestroy()：在同一个原子操作里放下自己那份引用并置上销毁标记，然后等其它引用放完
+       ——这一步是本类比 shared_ptr 多出来的：销毁者要确认没人还在用这块内存；
+     - 销毁完成后写入毒值，此后任何 ref/unref 都会被断言抓住。 */
+class RefLock
+{
+public:
+  /// 初始化为「零引用、未销毁」
+  void init() noexcept
+  {
+    m_state.store(0, std::memory_order_relaxed);
+  }
 
-WEPOLL_INTERNAL int reflock_global_init(void);
+  /// 增加一份引用
+  void ref() noexcept
+  {
+    const std::uint32_t state = m_state.fetch_add(kReferenceUnit, std::memory_order_acq_rel) + kReferenceUnit;
 
-WEPOLL_INTERNAL void reflock_init(reflock_t* reflock);
-WEPOLL_INTERNAL void reflock_ref(reflock_t* reflock);
-WEPOLL_INTERNAL void reflock_unref(reflock_t* reflock);
-WEPOLL_INTERNAL void reflock_unref_and_destroy(reflock_t* reflock);
+    /* 计数不得溢出，也不得在销毁之后再加引用（NDEBUG 下断言消失，故显式丢弃该值） */
+    static_cast<void>(state);
+    assert((state & kDestroyMask) == 0);
+  }
+
+  /// 释放一份引用；恰好是最后一份时唤醒等在那里的销毁者
+  void unref() noexcept
+  {
+    const std::uint32_t state = m_state.fetch_sub(kReferenceUnit, std::memory_order_acq_rel) - kReferenceUnit;
+
+    /* 计数不得下溢，也不得对已销毁的锁再释放 */
+    assert((state & kDestroyMask & ~kDestroyFlag) == 0);
+
+    if (state == kDestroyFlag)
+      m_state.notify_one();
+  }
+
+  /// 放下自己那份引用并置上销毁标记，然后等其它引用全部放完
+  void unrefAndDestroy() noexcept
+  {
+    /* fetch_add 返回的是加之前的值，而这里要判断加之后的状态，故自己补上增量 */
+    const std::uint32_t delta = kDestroyFlag - kReferenceUnit;
+    const std::uint32_t state = m_state.fetch_add(delta, std::memory_order_acq_rel) + delta;
+
+    /* 销毁只能发生一次，且必须由持有引用的那一方发起 */
+    assert((state & kDestroyMask) == kDestroyFlag);
+
+    /* 还有别的引用在外面就一直睡；醒来重读，虚假唤醒因此无害 */
+    std::uint32_t current = state;
+    while ((current & kReferenceMask) != 0)
+    {
+      m_state.wait(current, std::memory_order_relaxed);
+      current = m_state.load(std::memory_order_relaxed);
+    }
+
+    const std::uint32_t previous = m_state.exchange(kPoisonValue, std::memory_order_acq_rel);
+    assert(previous == kDestroyFlag);
+  }
+
+private:
+  static constexpr std::uint32_t kReferenceUnit = 0x00000001U; ///< 引用计数的单位增量
+  static constexpr std::uint32_t kReferenceMask = 0x0fffffffU; ///< 低 28 位：引用计数
+  static constexpr std::uint32_t kDestroyFlag   = 0x10000000U; ///< 第 28 位：已请求销毁
+  static constexpr std::uint32_t kDestroyMask   = 0xf0000000U; ///< 高 4 位：销毁标记区
+  static constexpr std::uint32_t kPoisonValue   = 0x300dead0U; ///< 销毁完成后写入的毒值
+
+  std::atomic<std::uint32_t> m_state{0}; ///< 计数与销毁标记打包在一个字里：等待与唤醒按它的地址工作
+};
 
 #include <stdbool.h>
 
@@ -459,7 +476,7 @@ typedef struct ts_tree {
 
 typedef struct ts_tree_node {
   tree_node_t tree_node;
-  reflock_t reflock;
+  RefLock reflock;
 } ts_tree_node_t;
 
 WEPOLL_INTERNAL void ts_tree_init(ts_tree_t* rtl);
@@ -780,7 +797,7 @@ static BOOL CALLBACK init__once_callback(INIT_ONCE* once,
 
   /* N.b. that initialization order matters here. */
   if (ws_global_init() < 0 || nt_global_init() < 0 ||
-      reflock_global_init() < 0 || epoll_global_init() < 0)
+      epoll_global_init() < 0)
     return FALSE;
 
   init__done = true;
@@ -1452,72 +1469,6 @@ bool queueIsEnqueued(const queue_node_t* node) {
   return node->previous != node;
 }
 
-static const long REFLOCK__REF          = (long) 0x00000001;
-static const long REFLOCK__REF_MASK     = (long) 0x0fffffff;
-static const long REFLOCK__DESTROY      = (long) 0x10000000;
-static const long REFLOCK__DESTROY_MASK = (long) 0xf0000000;
-static const long REFLOCK__POISON       = (long) 0x300dead0;
-
-static HANDLE reflock__keyed_event = NULL;
-
-int reflock_global_init(void) {
-  NTSTATUS status = NtCreateKeyedEvent(
-      &reflock__keyed_event, KEYEDEVENT_ALL_ACCESS, NULL, 0);
-  if (status != STATUS_SUCCESS)
-    return_set_error(-1, RtlNtStatusToDosError(status));
-  return 0;
-}
-
-void reflock_init(reflock_t* reflock) {
-  reflock->state = 0;
-}
-
-static void reflock__signal_event(void* address) {
-  NTSTATUS status =
-      NtReleaseKeyedEvent(reflock__keyed_event, address, FALSE, NULL);
-  if (status != STATUS_SUCCESS)
-    abort();
-}
-
-static void reflock__await_event(void* address) {
-  NTSTATUS status =
-      NtWaitForKeyedEvent(reflock__keyed_event, address, FALSE, NULL);
-  if (status != STATUS_SUCCESS)
-    abort();
-}
-
-void reflock_ref(reflock_t* reflock) {
-  long state = InterlockedAdd(&reflock->state, REFLOCK__REF);
-
-  /* Verify that the counter didn't overflow and the lock isn't destroyed. */
-  assert((state & REFLOCK__DESTROY_MASK) == 0);
-  unused_var(state);
-}
-
-void reflock_unref(reflock_t* reflock) {
-  long state = InterlockedAdd(&reflock->state, -REFLOCK__REF);
-
-  /* Verify that the lock was referenced and not already destroyed. */
-  assert((state & REFLOCK__DESTROY_MASK & ~REFLOCK__DESTROY) == 0);
-
-  if (state == REFLOCK__DESTROY)
-    reflock__signal_event(reflock);
-}
-
-void reflock_unref_and_destroy(reflock_t* reflock) {
-  long state =
-      InterlockedAdd(&reflock->state, REFLOCK__DESTROY - REFLOCK__REF);
-  long ref_count = state & REFLOCK__REF_MASK;
-
-  /* Verify that the lock was referenced and not already destroyed. */
-  assert((state & REFLOCK__DESTROY_MASK) == REFLOCK__DESTROY);
-
-  if (ref_count != 0)
-    reflock__await_event(reflock);
-
-  state = InterlockedExchange(&reflock->state, REFLOCK__POISON);
-  assert(state == REFLOCK__DESTROY);
-}
 
 static const uint32_t SOCK__KNOWN_EPOLL_EVENTS =
     EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM |
@@ -1843,7 +1794,7 @@ void ts_tree_init(ts_tree_t* ts_tree) {
 
 void ts_tree_node_init(ts_tree_node_t* node) {
   tree_node_init(&node->tree_node);
-  reflock_init(&node->reflock);
+  node->reflock.init();
 }
 
 int ts_tree_add(ts_tree_t* ts_tree, ts_tree_node_t* node, uintptr_t key) {
@@ -1873,7 +1824,7 @@ ts_tree_node_t* ts_tree_del_and_ref(ts_tree_t* ts_tree, uintptr_t key) {
   ts_tree_node = ts_tree__find_node(ts_tree, key);
   if (ts_tree_node != NULL) {
     tree_del(&ts_tree->tree, &ts_tree_node->tree_node);
-    reflock_ref(&ts_tree_node->reflock);
+    ts_tree_node->reflock.ref();
   }
 
   ReleaseSRWLockExclusive(&ts_tree->lock);
@@ -1888,7 +1839,7 @@ ts_tree_node_t* ts_tree_find_and_ref(ts_tree_t* ts_tree, uintptr_t key) {
 
   ts_tree_node = ts_tree__find_node(ts_tree, key);
   if (ts_tree_node != NULL)
-    reflock_ref(&ts_tree_node->reflock);
+    ts_tree_node->reflock.ref();
 
   ReleaseSRWLockShared(&ts_tree->lock);
 
@@ -1896,11 +1847,11 @@ ts_tree_node_t* ts_tree_find_and_ref(ts_tree_t* ts_tree, uintptr_t key) {
 }
 
 void ts_tree_node_unref(ts_tree_node_t* node) {
-  reflock_unref(&node->reflock);
+  node->reflock.unref();
 }
 
 void ts_tree_node_unref_and_destroy(ts_tree_node_t* node) {
-  reflock_unref_and_destroy(&node->reflock);
+  node->reflock.unrefAndDestroy();
 }
 
 void tree_init(tree_t* tree) {
