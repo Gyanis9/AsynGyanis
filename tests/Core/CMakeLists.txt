@@ -8,6 +8,7 @@ add_executable(TestCore
         EventLoop/TestIoWatcher.cpp
         EventLoop/TestEventLoop.cpp
         EventLoop/TestIoContext.cpp
+        EventLoop/TestConnectionDistributor.cpp
         EventLoop/TestTimer.cpp
 
         Coroutine/TestScheduler.cpp

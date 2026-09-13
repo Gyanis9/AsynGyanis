@@ -4,6 +4,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/EventLoop.cpp
         ${CMAKE_CURRENT_LIST_DIR}/IoContext.h
         ${CMAKE_CURRENT_LIST_DIR}/IoContext.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ConnectionDistributor.h
+        ${CMAKE_CURRENT_LIST_DIR}/ConnectionDistributor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Epoll.h
         ${CMAKE_CURRENT_LIST_DIR}/Epoll.cpp
         ${CMAKE_CURRENT_LIST_DIR}/IoWatcher.h

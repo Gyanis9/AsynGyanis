@@ -1,0 +1,91 @@
+/**
+ * @file ConnectionDistributor.h
+ * @brief 接收分发器：一个循环接受连接，轮流交给若干工作循环接手
+ * @author Gyanis
+ * @date 2026-09-13
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "Core/EventLoop/EventLoop.h"
+
+#include <cstddef>
+#include <functional>
+#include <vector>
+
+namespace AsynGyanis::Core
+{
+    /**
+     * @brief 把已接受的连接轮流交给若干工作循环的接收分发器
+     *
+     * @details 解决的是「一个监听器 + 多个工作循环」这一形态：内核分摊（SO_REUSEPORT）只在
+     *          Linux 上存在，Windows 没有等价物，因此需要一个用户态入口——接受循环拿到连接后
+     *          把描述符按轮转次序交给某个工作循环，由那个循环建对象、管生命周期。
+     *          与「一循环一监听器」相比，这条路径的连接建立与生命周期都发生在工作循环上，
+     *          接受循环只做 accept 与派发，因此**接受不是瓶颈也不会成为单点**。
+     * @note 轮转而不是「挑当前连接最少的」：后者要跨循环读各家的在途计数，既引入同步又要处理
+     *       读到的陈旧值；轮转不需要任何跨循环状态，长连接造成的偏差由「连接在被服务时才占资源」
+     *       这一事实兜住。需要更精细的负载感知时应当在工作循环上做（那里有连接数真值）。
+     * @note distribute() 只允许在**接受循环线程**上调用（内部游标不是原子的）；它可以被多次
+     *       投递到任意工作循环，投递本身是线程安全的（走 Scheduler::postRemote）。
+     * @note 工作循环若在回调执行前就退出，队列里的回调会被丢弃——因此描述符被包在
+     *       「没人接手就关闭」的句柄里一起投递，丢弃也不会漏描述符。
+     * @see Scheduler::postRemote()
+     */
+    class ConnectionDistributor
+    {
+    public:
+        /**
+         * @brief 工作循环接手一条连接的入口
+         * @param fileDescriptor 已接受的连接描述符，所有权随回调转移；接手方必须立即接管
+         */
+        using Adopter = std::function<void(int fileDescriptor)>;
+
+        ConnectionDistributor() = default;
+
+        ConnectionDistributor(const ConnectionDistributor &) = delete;
+
+        ConnectionDistributor &operator=(const ConnectionDistributor &) = delete;
+
+        /**
+         * @brief 登记一个工作循环及其接手动作
+         * @param loop 工作循环，必须比本分发器活得久
+         * @param adopter 接手动作，在 loop 所在线程上执行；空对象会被忽略
+         */
+        void addWorker(EventLoop &loop, Adopter adopter);
+
+        /**
+         * @brief 取已登记的工作循环数量
+         * @return std::size_t 数量；为 0 时 distribute() 一律返回 false
+         */
+        [[nodiscard]] std::size_t workerCount() const noexcept;
+
+        /**
+         * @brief 把一条已接受的连接交给下一个工作循环
+         * @param fileDescriptor 已接受的连接描述符
+         * @return true 已投递给某个工作循环，描述符所有权随之转移，调用方不得再碰它
+         * @return false 没有可用的工作循环（或描述符本身无效），描述符仍归调用方，需自行关闭
+         */
+        [[nodiscard]] bool distribute(int fileDescriptor) noexcept;
+
+        /**
+         * @brief 取累计派发成功的连接数（用于观测与用例断言）
+         * @return std::size_t 累计条数
+         */
+        [[nodiscard]] std::size_t distributedCount() const noexcept;
+
+    private:
+        /// 一个工作循环与它的接手动作
+        struct Worker
+        {
+            EventLoop *loop{nullptr}; ///< 目标循环（非拥有）
+            Adopter    adopter;       ///< 在该循环上执行一次，参数是连接描述符
+        };
+
+        std::vector<Worker> m_workers;           ///< 已登记的工作循环，轮转顺序即登记顺序
+        std::size_t         m_nextWorkerIndex{0}; ///< 下一次派发给哪个工作循环
+        std::size_t         m_distributedCount{0}; ///< 累计派发成功的连接数
+    };
+} // namespace AsynGyanis::Core
