@@ -87,3 +87,53 @@ jobs:
           name: ctest-logs-linux
           path: build/debug/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
+
+  # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑**并发相关**的
+  # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
+  # 投递（scheduleRemote / 全局队列 / TimerQueue 唤醒）此前只有注释级约定，这里是唯一的自动兜底。
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      # 复用 debug 预设（含 -g 与 Ninja），但把目录换成 build/tsan，并关掉 ASan、只留 TSan
+      - name: 配置（Debug + ThreadSanitizer）
+        run: cmake --preset debug -B build/tsan -DSANITIZE_THREADS=ON -DENABLE_SANITIZERS=OFF -DDATABASE_WITH_MYSQL=OFF
+
+      - name: 构建
+        run: cmake --build build/tsan
+
+      - name: 降低 ASLR 熵（稳定 Sanitizer）
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      - name: 并发相关用例集（TSan）
+        run: ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket"
+
+      - name: 失败时上传用例日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-tsan
+          path: build/tsan/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

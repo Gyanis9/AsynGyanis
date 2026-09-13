@@ -31,6 +31,12 @@ endif()
 # - 线程竞态检测（TSan）与 ASan 互斥、且 MSVC 不提供，需要在 Linux 侧单独配置构建。
 option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）" OFF)
 
+# 线程竞态检测（ThreadSanitizer）：与 ASan 互斥、MSVC 不提供，因此单列一个开关而不是塞进
+# ENABLE_SANITIZERS。事件循环、线程池与跨循环投递（scheduleRemote/全局队列/TimerQueue 唤醒）
+# 这些路径此前只有注释级约定，TSan 是唯一能自动兜住它们的工具；Linux CI 用本开关另起一个
+# 构建目录跑并发相关的用例集（见 .github/workflows/linux-ci.yml）。
+option(SANITIZE_THREADS "启用 ThreadSanitizer（仅 GCC/Clang；与 ENABLE_SANITIZERS 互斥）" OFF)
+
 # 把 ASan 运行时拷到可执行文件旁边。
 # MSVC 的 ASan 运行库不在系统 PATH 上（它随 Visual Studio 提供，位于 cl.exe 同目录），
 # 因此插桩出来的可执行文件若在「没有 vcvars 环境」的裸 shell 里直接运行，会以
@@ -83,6 +89,20 @@ if(ENABLE_SANITIZERS)
         add_link_options(-fsanitize=address,undefined)
         message(STATUS "Sanitizers: 已启用 AddressSanitizer + UndefinedBehaviorSanitizer")
     endif()
+endif()
+
+if(SANITIZE_THREADS)
+    if(MSVC)
+        message(FATAL_ERROR "SANITIZE_THREADS=ON 在 MSVC 上不可用：MSVC 不提供 ThreadSanitizer，请在 Linux（GCC/Clang）侧配置该构建")
+    endif()
+    if(ENABLE_SANITIZERS)
+        message(FATAL_ERROR "SANITIZE_THREADS 与 ENABLE_SANITIZERS 互斥：ASan 与 TSan 不能同时插桩，请只开一个")
+    endif()
+
+    # -fno-omit-frame-pointer：竞态报告里的调用栈才有意义；-g 让报告能指回源码行
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+    message(STATUS "Sanitizers: 已启用 ThreadSanitizer（线程竞态检测；与 ASan 互斥）")
 endif()
 
 # Debug 构建注入 ASYN_DEBUG：日志输出线程号与源码位置，Release 走精简格式
