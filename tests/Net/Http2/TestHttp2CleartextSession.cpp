@@ -16,6 +16,7 @@
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http2/Hpack.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 
 #include "HttpTestSupport.h"
 
@@ -370,6 +371,77 @@ namespace AsynGyanis::Net
                     (static_cast<std::uint8_t>(payload[0]) << 24) | (static_cast<std::uint8_t>(payload[1]) << 16) |
                     (static_cast<std::uint8_t>(payload[2]) << 8) | static_cast<std::uint8_t>(payload[3]));
             return rawValue & 0x7fffffffU;
+        }
+
+        /// RFC 6455 §1.3 的示例 key 与它对应的 Sec-WebSocket-Accept（规范原文给出的黄金值）
+        constexpr std::string_view kRfc6455SampleKey = "dGhlIHNhbXBsZSBub25jZQ==";
+        constexpr std::string_view kRfc6455SampleAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+
+        /**
+         * @brief 拼一条扩展 CONNECT 的请求头块（RFC 8441 §4）：五个伪头齐全，WebSocket 握手头随后
+         * @param path 请求路径（隧道的目标资源）
+         * @return std::string 头块字节
+         */
+        std::string makeWebSocketTunnelHeaderBlock(const std::string_view path)
+        {
+            std::string headerBlock;
+            headerBlock += hpackLiteralField(2, "CONNECT");
+            headerBlock += encodeHpackInteger(6, 7, 0x80); // :scheme: http
+            headerBlock += path == "/" ? encodeHpackInteger(4, 7, 0x80) : hpackLiteralField(4, path);
+            headerBlock += hpackLiteralField(1, "localhost");
+            headerBlock += hpackLiteralField(":protocol", "websocket");
+            // 普通头（必须排在伪头之后）：版本与 key 两项与 h1 的 101 握手完全一致
+            headerBlock += hpackLiteralField("sec-websocket-version", "13");
+            headerBlock += hpackLiteralField("sec-websocket-key", kRfc6455SampleKey);
+            return headerBlock;
+        }
+
+        /**
+         * @brief 拼一条客户端 WebSocket 帧（必须带掩码，RFC 6455 §5.3）：负载不超过 125 字节
+         * @param opCode 操作码（1 = 文本、8 = 关闭）
+         * @param payload 负载
+         * @return std::string 完整帧字节
+         */
+        std::string makeMaskedClientFrame(const std::uint8_t opCode, const std::string_view payload)
+        {
+            const std::array<std::uint8_t, 4> maskKey{0x12U, 0x34U, 0x56U, 0x78U};
+            std::string frameBytes;
+            frameBytes.push_back(static_cast<char>(0x80U | opCode));
+            frameBytes.push_back(static_cast<char>(0x80U | static_cast<std::uint8_t>(payload.size())));
+            for (const std::uint8_t maskByte: maskKey)
+            {
+                frameBytes.push_back(static_cast<char>(maskByte));
+            }
+            for (std::size_t index = 0; index < payload.size(); ++index)
+            {
+                frameBytes.push_back(static_cast<char>(static_cast<std::uint8_t>(payload[index]) ^ maskKey[index % 4U]));
+            }
+            return frameBytes;
+        }
+
+        /**
+         * @brief 解一条服务端 WebSocket 帧（服务端帧不带掩码）：返回操作码与负载
+         * @param frameBytes 帧字节
+         * @return std::pair<int, std::string> 操作码与负载；字节不足或长度字段用了扩展长度时返回 {-1, ""}
+         */
+        std::pair<int, std::string> parseServerFrame(const std::string_view frameBytes)
+        {
+            if (frameBytes.size() < 2U)
+            {
+                return {-1, {}};
+            }
+            const auto firstByte = static_cast<std::uint8_t>(frameBytes[0]);
+            const auto secondByte = static_cast<std::uint8_t>(frameBytes[1]);
+            if ((secondByte & 0x80U) != 0U)
+            {
+                return {-1, {}}; // 服务端不该掩码
+            }
+            const std::size_t payloadLength = secondByte & 0x7FU;
+            if (payloadLength > 125U || frameBytes.size() < 2U + payloadLength)
+            {
+                return {-1, {}}; // 本用例的负载都很短，扩展长度不该出现
+            }
+            return {static_cast<int>(firstByte & 0x0FU), std::string(frameBytes.substr(2U, payloadLength))};
         }
     } // namespace
 
@@ -800,6 +872,119 @@ namespace AsynGyanis::Net
         for (const Http2Frame &frame: frames)
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "正常并发不该触发收口";
+        }
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：RFC 8441 的扩展 CONNECT 把一条 h2c 流变成 WebSocket 隧道——200 + 规范黄金 accept 值、
+     *        文本帧原样回显（隧道内是 DATA 帧）、Close 之后本侧方向以 END_STREAM 收尾
+     * @details 客户端与 h1 的差别只有握手承载方式：没有 Upgrade/Connection 头，改用 :protocol=websocket；
+     *          服务端的应答是 200 而不是 101。accept 值用 RFC 6455 §1.3 的示例 key 对照规范原文的黄金值。
+     */
+    TEST(Http2CleartextSession, ServesWebSocketTunnelOverExtendedConnect)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
+        {
+            // 同一个处理器同时服务 h1 的 101 升级与 h2 的扩展 CONNECT：后者按 GET 参与路由（见 mapToHttpRequest）
+            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.upgradeToWebSocket([](WebSocketPeer &peer) -> Core::Task<>
+                {
+                    while (true)
+                    {
+                        const std::optional<WebSocketMessage> message = co_await peer.receive();
+                        if (!message.has_value())
+                        {
+                            co_return;
+                        }
+                        if (!co_await peer.sendText(message->payload))
+                        {
+                            co_return;
+                        }
+                    }
+                });
+                co_return;
+            });
+        }, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 扩展 CONNECT：伪头齐全（:protocol=websocket），并要求本侧不要在 200 之后收尾
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "扩展 CONNECT 没有得到应答";
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+            {
+                EXPECT_EQ(frame.header.flags & kHttp2FlagEndStream, 0) << "升级应答不能带 END_STREAM：这条流接下来要承载帧";
+            }
+        }
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "sec-websocket-accept"), kRfc6455SampleAccept)
+                << "accept 值必须是 RFC 6455 §1.3 的规范黄金值";
+
+        // 隧道里的文本帧：客户端发带掩码的帧（装在 DATA 帧里），服务端回不带掩码的同内容帧
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "hi-tunnel")}, 1U),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !responseDataPayload(receivedFrames, 1U).empty();
+                                     },
+                                     kWaitTimeout)) << "隧道里没有回显";
+        const std::pair<int, std::string> echoedFrame = parseServerFrame(responseDataPayload(frames, 1U));
+        EXPECT_EQ(echoedFrame.first, 1) << "回显的应当是文本帧";
+        EXPECT_EQ(echoedFrame.second, "hi-tunnel");
+
+        // 关闭握手：客户端发 Close，服务端回 Close 并把本侧方向以 END_STREAM 收尾
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x8U, "")}, 1U),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "Close 之后隧道没有收尾";
+        const std::string tunnelPayload = responseDataPayload(frames, 1U);
+        EXPECT_NE(tunnelPayload.find(static_cast<char>(0x88U)), std::string::npos)
+                << "服务端应当回一条 Close 帧（FIN + 操作码 8）";
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "隧道正常收尾不该把连接收掉";
         }
 
         client.closeNow();

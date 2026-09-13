@@ -177,6 +177,12 @@ namespace AsynGyanis::Net
                                                              "收到 {}：请改为 0（本端不推送）或 1（允许对端期待推送）",
                                                              m_configuration.enablePush));
         }
+        if (m_configuration.enableConnectProtocol > 1)
+        {
+            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 ENABLE_CONNECT_PROTOCOL 只能是 0 或 1（RFC 8441 §3），"
+                                                             "收到 {}：请改为 1（接受扩展 CONNECT）或 0（不接受）",
+                                                             m_configuration.enableConnectProtocol));
+        }
     }
 
     Http2ConnectionFeedStatus Http2Connection::feedBytes(const char *const data, const std::size_t length)
@@ -544,7 +550,8 @@ namespace AsynGyanis::Net
             {static_cast<std::uint16_t>(Http2SettingIdentifier::MaxConcurrentStreams), m_configuration.maximumConcurrentStreams},
             {static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize), m_configuration.initialWindowSize},
             {static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), m_configuration.maximumFrameSize},
-            {static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize), m_configuration.maximumHeaderListSize}};
+            {static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize), m_configuration.maximumHeaderListSize},
+            {static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol), m_configuration.enableConnectProtocol}};
         appendOutgoing(encodeHttp2SettingsFrame(payload));
         // 记下「有 1 个 SETTINGS 待确认」：对端的第一个 ACK 只能匹配它，第二个就是多余的。
         // 同时记下发帧时刻：上层按「该时刻 + 握手期限额」算 SETTINGS_TIMEOUT 的空闲截止时间
@@ -1106,6 +1113,7 @@ namespace AsynGyanis::Net
         bool hasSchemeField = false;
         bool hasPathField = false;
         bool hasAuthorityField = false;
+        bool hasProtocolField = false;
         for (const HpackHeaderField &field: headerFields)
         {
             // 头名必须全小写（§8.1.2）：HTTP/2 不允许大小写折叠，大写会让同一个头部出现两种写法
@@ -1171,9 +1179,20 @@ namespace AsynGyanis::Net
                     hasAuthorityField = true;
                     request.authority = field.value;
                 }
+                else if (field.name == ":protocol")
+                {
+                    if (hasProtocolField)
+                    {
+                        writeError(errorText, ":protocol 伪头出现了两次：RFC 8441 §4 要求它只出现一次");
+                        return false;
+                    }
+                    hasProtocolField = true;
+                    request.protocol = field.value;
+                }
                 else
                 {
-                    writeError(errorText, std::format("出现未知伪头 \"{}\"：RFC 7540 §8.1.2.1 只定义了 :method/:scheme/:path/:authority 四个",
+                    writeError(errorText, std::format("出现未知伪头 \"{}\"：RFC 7540 §8.1.2.1 只定义了 :method/:scheme/:path/:authority 四个"
+                                                     "（:protocol 见 RFC 8441）",
                                                       field.name));
                     return false;
                 }
@@ -1236,9 +1255,43 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // CONNECT 的伪头规则与其它方法不同（§8.3）：:scheme 与 :path 必须缺席，:authority 必须出现
+        // 带 :protocol 的请求只可能是 RFC 8441 的扩展 CONNECT：其它方法带它就是报文不合法
+        if (hasProtocolField)
+        {
+            if (request.method != "CONNECT")
+            {
+                writeError(errorText, std::format(":protocol 伪头出现在 {} 请求里：RFC 8441 §4 只把它定义给 CONNECT，"
+                                                 "请改用 CONNECT 或去掉该伪头",
+                                                 request.method));
+                return false;
+            }
+            if (!isTokenName(request.protocol))
+            {
+                writeError(errorText, std::format(":protocol 取值 \"{}\" 非法：RFC 8441 §4 要求它是一个协议名 token（本端支持 websocket）",
+                                                 request.protocol));
+                return false;
+            }
+        }
+
+        // CONNECT 的伪头规则与其它方法不同（§8.3），而带 :protocol 的扩展 CONNECT 又把它反过来（RFC 8441 §4）
         if (request.method == "CONNECT")
         {
+            if (hasProtocolField)
+            {
+                // 扩展 CONNECT：:scheme、:path、:authority 一个都不能少——它要的就是「这个 :path 上的隧道」
+                if (!hasSchemeField || !hasPathField)
+                {
+                    writeError(errorText, "带 :protocol 的 CONNECT 缺少 :scheme 或 :path：RFC 8441 §4 要求扩展 CONNECT 同时给出"
+                                         "这两个伪头（普通 CONNECT 恰好相反，要求省略它们）");
+                    return false;
+                }
+                if (!hasAuthorityField || request.authority.empty())
+                {
+                    writeError(errorText, "带 :protocol 的 CONNECT 缺少非空的 :authority：RFC 8441 §4 要求给出目标主机与端口");
+                    return false;
+                }
+                return true;
+            }
             if (hasSchemeField || hasPathField)
             {
                 writeError(errorText, "CONNECT 请求带了 :scheme 或 :path：RFC 7540 §8.3 要求 CONNECT 请求省略这两个伪头，"
@@ -1417,6 +1470,17 @@ namespace AsynGyanis::Net
                     break;
                 case Http2SettingIdentifier::MaxHeaderListSize:
                     // 对端限制的是本端发出的头列表：本片不做发送侧的头列表预算，只记账备查
+                    break;
+                case Http2SettingIdentifier::EnableConnectProtocol:
+                    // RFC 8441 §3：取值只能是 0 或 1，其它取值是连接错误
+                    if (setting.value > 1)
+                    {
+                        fail(Http2ErrorCode::ProtocolError,
+                             std::format("对端 SETTINGS 的 ENABLE_CONNECT_PROTOCOL 取值 {} 非法：RFC 8441 §3 只允许 0 或 1",
+                                         setting.value));
+                        return false;
+                    }
+                    // 对端限制的是本端发起的扩展 CONNECT：本端不发起，只记账备查
                     break;
                 default:
                     // 未知标识必须忽略（§6.5.2），但仍然记进账本，便于排查对端用了哪些扩展

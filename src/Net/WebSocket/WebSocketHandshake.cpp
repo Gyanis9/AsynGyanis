@@ -334,7 +334,29 @@ namespace AsynGyanis::Net
             return reject("WebSocket 握手要求 Connection 头包含 Upgrade，请补上 Connection: Upgrade");
         }
 
-        // 第 5 条：本实现只认版本 13
+        // 第 5、6 条（版本与 key）与 h2 的扩展 CONNECT 完全一致，出处收在 validateWebSocketKeyAndVersion() 里
+        std::string clientKey;
+        return validateWebSocketKeyAndVersion(request, clientKey, failureReason);
+    }
+
+    bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *const failureReason)
+    {
+        clientKey.clear();
+        if (failureReason != nullptr)
+        {
+            failureReason->clear();
+        }
+
+        const auto reject = [failureReason](std::string reason)
+        {
+            if (failureReason != nullptr)
+            {
+                *failureReason = std::move(reason);
+            }
+            return false;
+        };
+
+        // RFC 6455 §4.1：本实现只认版本 13
         const std::optional<std::string> versionValue = request.getHeader("sec-websocket-version");
         if (!versionValue.has_value())
         {
@@ -345,7 +367,7 @@ namespace AsynGyanis::Net
             return reject(std::format("WebSocket 只支持协议版本 13（RFC 6455），收到 Sec-WebSocket-Version: {}，请改用 13", *versionValue));
         }
 
-        // 第 6 条：key 必须是 base64 且解码后恰 16 字节
+        // RFC 6455 §4.1：key 必须是 base64 且解码后恰 16 字节
         const std::optional<std::string> keyValue = request.getHeader("sec-websocket-key");
         if (!keyValue.has_value())
         {
@@ -366,7 +388,7 @@ namespace AsynGyanis::Net
                                       decodedKey.size()));
         }
 
-        // 六条全部通过：此刻 request 已经可以按「升级请求」对待
+        clientKey = trimOptionalWhitespace(*keyValue);
         return true;
     }
 

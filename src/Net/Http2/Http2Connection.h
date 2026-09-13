@@ -113,6 +113,7 @@ namespace AsynGyanis::Net
         std::uint32_t initialWindowSize{kHttp2InitialWindowSizeByteCount}; ///< SETTINGS_INITIAL_WINDOW_SIZE（§6.5.2 初值 65535）：本端允许对端每条流先发的字节数
         std::uint32_t maximumFrameSize{kHttp2DefaultMaximumFrameSize};     ///< SETTINGS_MAX_FRAME_SIZE（§6.5.2 初值 16384，合法区间 [16384, 16777215]）：本端可接收的单帧负载上限
         std::uint32_t maximumHeaderListSize{16U * 1024U};   ///< SETTINGS_MAX_HEADER_LIST_SIZE（§6.5.2 初值不限）：本端策略上限，算式按 §6.5.2 的「名长 + 值长 + 32」
+        std::uint32_t enableConnectProtocol{1};             ///< SETTINGS_ENABLE_CONNECT_PROTOCOL（RFC 8441 §3）：1 表示本端接受带 :protocol 的扩展 CONNECT（WebSocket over h2）
         std::size_t maximumHeaderBlockByteCount{16U * 1024U}; ///< 本端策略：单个头块（HEADERS 与其 CONTINUATION 片段之和）的压缩后字节上限，防对端用无限 CONTINUATION 撑内存
         std::size_t maximumTotalConsumedByteCount{0};       ///< 本端策略：本连接累计消费字节上限，0 表示不限；开着时超过即按 ENHANCE_YOUR_CALM 收场
     };
@@ -141,6 +142,7 @@ namespace AsynGyanis::Net
         std::string authority;                      ///< :authority 原文；对端没带时为空
         std::vector<HpackHeaderField> headerFields; ///< 普通头部，按到达顺序，名已校验为小写
         bool hasBody{false};                        ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
+        std::string protocol;                        ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
     };
 
     /**

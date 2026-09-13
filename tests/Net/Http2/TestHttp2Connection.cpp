@@ -403,14 +403,15 @@ namespace AsynGyanis::Net
         Http2SettingsPayload initialSettings;
         std::string errorText;
         ASSERT_TRUE(parseHttp2SettingsPayload(frames[0], initialSettings, &errorText)) << errorText;
-        // 六项本端参数按 §6.5.2 的参数标识顺序逐项对照，取值来源是 Http2ConnectionConfiguration 的默认值
+        // 七项本端参数按 §6.5.2 的参数标识顺序逐项对照，取值来源是 Http2ConnectionConfiguration 的默认值
         const std::vector<std::pair<Http2SettingIdentifier, std::uint32_t>> expectedParameters = {
             {Http2SettingIdentifier::HeaderTableSize, static_cast<std::uint32_t>(kHpackDefaultDynamicTableSizeByteCount)},
             {Http2SettingIdentifier::EnablePush, 0U},
             {Http2SettingIdentifier::MaxConcurrentStreams, 100U},
             {Http2SettingIdentifier::InitialWindowSize, kHttp2InitialWindowSizeByteCount},
             {Http2SettingIdentifier::MaxFrameSize, kHttp2DefaultMaximumFrameSize},
-            {Http2SettingIdentifier::MaxHeaderListSize, 16U * 1024U}};
+            {Http2SettingIdentifier::MaxHeaderListSize, 16U * 1024U},
+            {Http2SettingIdentifier::EnableConnectProtocol, 1U}};
         ASSERT_EQ(initialSettings.parameters.size(), expectedParameters.size());
         for (std::size_t index = 0; index < expectedParameters.size(); ++index)
         {
@@ -1798,6 +1799,137 @@ namespace AsynGyanis::Net
         EXPECT_EQ(connection.takeRequests().size(), 1U);
         ASSERT_EQ(connection.sendResponseHeaders(3U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         EXPECT_EQ(connection.state(), Http2ConnectionState::Open) << "单流中止不该让连接进入关闭中或失败态";
+    }
+
+    /**
+     * @brief 钉住：本端初始 SETTINGS 里必须通告 ENABLE_CONNECT_PROTOCOL = 1（RFC 8441 §3）
+     * @details 客户端只有在看到这个参数之后才允许发扩展 CONNECT，因此它不能只在文档里支持
+     */
+    TEST(Http2Connection, AdvertisesExtendedConnectSupport)
+    {
+        Http2Connection connection;
+        ASSERT_EQ(feed(connection, std::string(kHttp2ConnectionPreface)), Http2ConnectionFeedStatus::NeedMore);
+
+        const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
+        const Http2Frame *settingsFrame = nullptr;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.type == Http2FrameType::Settings)
+            {
+                settingsFrame = &frame;
+                break;
+            }
+        }
+        ASSERT_NE(settingsFrame, nullptr) << "前奏收齐后必须先发本端 SETTINGS";
+
+        // SETTINGS 负载是 6 字节一组的「16 位标识 + 32 位取值」（§6.5）；这里手解，避免依赖被测实现
+        bool hasExtendedConnectSetting = false;
+        ASSERT_EQ(settingsFrame->payload.size() % 6U, 0U);
+        for (std::size_t offset = 0; offset + 6U <= settingsFrame->payload.size(); offset += 6U)
+        {
+            const auto identifier = static_cast<std::uint16_t>(
+                    (static_cast<std::uint8_t>(settingsFrame->payload[offset]) << 8) |
+                    static_cast<std::uint8_t>(settingsFrame->payload[offset + 1]));
+            const auto value = static_cast<std::uint32_t>(
+                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 2]) << 24) |
+                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 3]) << 16) |
+                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 4]) << 8) |
+                    static_cast<std::uint8_t>(settingsFrame->payload[offset + 5]));
+            if (identifier == static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol))
+            {
+                hasExtendedConnectSetting = true;
+                EXPECT_EQ(value, 1U) << "ENABLE_CONNECT_PROTOCOL 必须通告 1，否则对端不该发扩展 CONNECT";
+            }
+        }
+        EXPECT_TRUE(hasExtendedConnectSetting) << "初始 SETTINGS 里没有 ENABLE_CONNECT_PROTOCOL";
+        EXPECT_FALSE(connection.hasFailed());
+    }
+
+    /**
+     * @brief 钉住：带 :protocol=websocket 的扩展 CONNECT 能交到上层，且五个伪头各自到位（RFC 8441 §4）
+     */
+    TEST(Http2Connection, AcceptsExtendedConnectForWebSocketTunnel)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        // 扩展 CONNECT 的伪头集合与普通 CONNECT 相反：:scheme 与 :path 都必须出现
+        std::string headerBlock;
+        headerBlock += hpackLiteralField(2, "CONNECT");
+        headerBlock += hpackIndexedField(6);
+        headerBlock += hpackLiteralField(4, "/chat");
+        headerBlock += hpackLiteralField(1, "localhost");
+        headerBlock += hpackLiteralField(":protocol", "websocket");
+        headerBlock += hpackLiteralField("sec-websocket-version", "13");
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)),
+                  Http2ConnectionFeedStatus::NeedMore);
+
+        const std::vector<Http2Request> requests = connection.takeRequests();
+        ASSERT_EQ(requests.size(), 1U) << "扩展 CONNECT 必须作为一条请求交出，而不是被当成畸形报文拒掉";
+        EXPECT_EQ(requests[0].method, "CONNECT");
+        EXPECT_EQ(requests[0].protocol, "websocket");
+        EXPECT_EQ(requests[0].scheme, "http");
+        EXPECT_EQ(requests[0].path, "/chat");
+        EXPECT_EQ(requests[0].authority, "localhost");
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+    }
+
+    /**
+     * @brief 钉住：:protocol 只允许出现在 CONNECT 上，且扩展 CONNECT 的 :scheme/:path/:authority 一个都不能少
+     */
+    TEST(Http2Connection, RejectsMisplacedOrIncompleteProtocolPseudoHeader)
+    {
+        // GET 带 :protocol：RFC 8441 §4 只把它定义给 CONNECT
+        Http2Connection withGet;
+        completeHandshake(withGet);
+        std::string getBlock = makeMinimalGetRequestBlock() + hpackLiteralField(":protocol", "websocket");
+        ASSERT_EQ(feed(withGet, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, getBlock)),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(withGet.takeRequests().empty()) << "非 CONNECT 的 :protocol 不该交出请求";
+        EXPECT_NE(expectStreamRejected(withGet, 1U).find(":protocol"), std::string::npos);
+
+        // 扩展 CONNECT 缺 :path：普通 CONNECT 要求省略它，扩展 CONNECT 恰恰要求给出它
+        Http2Connection withoutPath;
+        completeHandshake(withoutPath);
+        std::string noPathBlock;
+        noPathBlock += hpackLiteralField(2, "CONNECT");
+        noPathBlock += hpackIndexedField(6);
+        noPathBlock += hpackLiteralField(1, "localhost");
+        noPathBlock += hpackLiteralField(":protocol", "websocket");
+        ASSERT_EQ(feed(withoutPath, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, noPathBlock)),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(withoutPath.takeRequests().empty());
+        EXPECT_NE(expectStreamRejected(withoutPath, 1U).find(":path"), std::string::npos);
+
+        // 值不是 token：协议名有语法要求，不能原样放过
+        Http2Connection withBadValue;
+        completeHandshake(withBadValue);
+        std::string badValueBlock;
+        badValueBlock += hpackLiteralField(2, "CONNECT");
+        badValueBlock += hpackIndexedField(6);
+        badValueBlock += hpackLiteralField(4, "/chat");
+        badValueBlock += hpackLiteralField(1, "localhost");
+        badValueBlock += hpackLiteralField(":protocol", "web socket");
+        ASSERT_EQ(feed(withBadValue, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, badValueBlock)),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(withBadValue.takeRequests().empty());
+        EXPECT_NE(expectStreamRejected(withBadValue, 1U).find(":protocol"), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住：对端 SETTINGS 里的 ENABLE_CONNECT_PROTOCOL 只允许 0/1，其它取值按连接错误收场（RFC 8441 §3）
+     */
+    TEST(Http2Connection, RejectsIllegalEnableConnectProtocolSetting)
+    {
+        Http2Connection connection;
+        ASSERT_EQ(feed(connection, std::string(kHttp2ConnectionPreface)), Http2ConnectionFeedStatus::NeedMore);
+        const std::string clientSettings =
+                encodeHttp2SettingsFrame(Http2SettingsPayload{
+                        .parameters = {{static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol), 2U}}});
+        EXPECT_EQ(feed(connection, clientSettings), Http2ConnectionFeedStatus::Failed);
+        EXPECT_TRUE(connection.hasFailed());
+        EXPECT_EQ(connection.errorCode(), Http2ErrorCode::ProtocolError);
+        EXPECT_NE(connection.errorMessage().find("ENABLE_CONNECT_PROTOCOL"), std::string::npos) << connection.errorMessage();
     }
 
     /**

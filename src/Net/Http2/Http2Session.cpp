@@ -5,6 +5,8 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpDate.h"
+#include "Net/WebSocket/WebSocketHandshake.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 
 #include <algorithm>
 #include <charconv>
@@ -34,6 +36,13 @@ namespace AsynGyanis::Net
 
         /// 无效描述符的取值：与 Core::AsyncSocket::close() 之后的 fileDescriptor() 一致
         constexpr int kInvalidSocketDescriptor = -1;
+
+        /// RFC 8441 里 WebSocket 隧道用的 :protocol 取值（扩展 CONNECT 的协议名 token）
+        constexpr std::string_view kWebSocketProtocolName = "websocket";
+
+        /// 扩展 CONNECT 的升级应答：状态码与应答头名（RFC 8441 §5 用 2xx 而不是 101）
+        constexpr std::uint32_t kWebSocketAcceptedStatusCode = 200U;
+        constexpr std::string_view kWebSocketAcceptHeaderName = "sec-websocket-accept";
 
         /// 响应头自动补齐规则要认出的三个头名（与 HttpResponse::appendHead() 同一套）
         constexpr std::string_view kContentTypeHeaderName = "content-type";
@@ -404,6 +413,14 @@ namespace AsynGyanis::Net
             pending.streamId = http2Request.streamId;
             // 头块带 END_STREAM 的请求没有正文，当场就是「收齐」状态
             pending.isRemoteEndStream = !http2Request.hasBody;
+            // RFC 8441 的扩展 CONNECT：隧道请求的后续处理与普通请求完全不同（200 + 流变隧道）
+            pending.isExtendedConnect = http2Request.protocol == kWebSocketProtocolName;
+            if (pending.isExtendedConnect)
+            {
+                // 扩展 CONNECT 没有「请求正文」这一回事：它一收齐就该交给路由，不能等对端的 END_STREAM——
+                // 对端在隧道收尾前根本不会发（它发来的是 WebSocket 帧，不是请求正文）
+                pending.isRemoteEndStream = true;
+            }
             pending.request = mapToHttpRequest(http2Request);
             m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
         }
@@ -591,10 +608,14 @@ namespace AsynGyanis::Net
             }
         }
 
-        // WebSocket 升级走的是 HTTP/1.1 的 101 切换协议；HTTP/2 上的等价机制是 RFC 8441 的扩展
-        // CONNECT，本片不做：明确回 501，不静默当成普通响应放过去
+        // WebSocket：h1 走 101 升级，h2 走 RFC 8441 的扩展 CONNECT（:protocol=websocket）——应答是 200，
+        // 随后这条流变成隧道；以 101 形态登记升级的请求在 h2 上没有对应机制，仍按 501 明确拒绝
         if (m_response.isWebSocketUpgradeRequested())
         {
+            if (pending.isExtendedConnect && !isStreamingStarted)
+            {
+                co_return co_await serveWebSocketTunnel(streamId, pending);
+            }
             if (isStreamingStarted)
             {
                 // 两种报文形态互斥：升级要发 101 并交出连接，而流式头部已经在对端手里，改不了
@@ -603,7 +624,7 @@ namespace AsynGyanis::Net
                               request.requestId(), request.uri());
             } else
             {
-                LOG_ERROR_FMT("Http2Session: HTTP/2 上不支持 WebSocket 升级（RFC 8441 的扩展 CONNECT 属于后续片），"
+                LOG_ERROR_FMT("Http2Session: 该请求不是带 :protocol=websocket 的扩展 CONNECT，HTTP/2 上没有 101 升级这一形态，"
                               "已回 501 并保持连接可用。request-id {}，路径 {}",
                               request.requestId(), request.uri());
                 m_response.reset();
@@ -665,12 +686,229 @@ namespace AsynGyanis::Net
         co_return RequestServeOutcome::Served;
     }
 
+    Core::Task<Http2Session::RequestServeOutcome> Http2Session::serveWebSocketTunnel(const std::uint32_t streamId,
+                                                                                    PendingRequest &pending)
+    {
+        HttpRequest &request = pending.request;
+        const std::chrono::steady_clock::time_point tunnelStartTime = std::chrono::steady_clock::now();
+
+        // 握手校验：h2 用扩展 CONNECT 代替 Upgrade 头，但版本与 key 两项与 h1 完全一致（同一份实现）
+        std::string clientKey;
+        std::string handshakeFailureReason;
+        if (!validateWebSocketKeyAndVersion(request, clientKey, &handshakeFailureReason))
+        {
+            LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}",
+                          request.requestId(), request.uri(), handshakeFailureReason);
+            m_response.reset();
+            m_response.setStatus(400);
+            m_response.setBody("Bad WebSocket Handshake");
+            static_cast<void>(m_response.setHeader("content-type", "text/plain; charset=utf-8"));
+            const RequestServeOutcome handshakeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, m_response, false));
+            co_return handshakeOutcome;
+        }
+
+        // 升级应答是 200 且**不带 END_STREAM**（RFC 8441 §5）：这条流接下来要承载帧，消息还没结束。
+        // 因此这里不能走 sendResponse()——它按「正文是否为空」决定 END_STREAM，会把隧道当场关掉
+        std::vector<HpackHeaderField> acceptFields;
+        acceptFields.push_back({.name = std::string(kWebSocketAcceptHeaderName), .value = computeWebSocketAcceptValue(clientKey)});
+        if (!request.requestId().empty())
+        {
+            acceptFields.push_back({.name = std::string(kRequestIdHeaderName), .value = std::string(request.requestId())});
+        }
+        std::string headersErrorText;
+        const Http2ResponseSendStatus headersStatus =
+                m_connection.sendResponseHeaders(streamId, kWebSocketAcceptedStatusCode, acceptFields, false, &headersErrorText);
+        if (headersStatus != Http2ResponseSendStatus::Sent)
+        {
+            if (headersStatus != Http2ResponseSendStatus::StreamNotWritable)
+            {
+                LOG_ERROR_FMT("Http2Session: 流 {} 的 WebSocket 升级应答未能排入待发字节，该流不会再有响应。原因：{}", streamId,
+                              headersErrorText);
+            }
+            co_return toRequestServeOutcome(headersStatus);
+        }
+        if (!co_await flushOutgoingBytes())
+        {
+            co_return RequestServeOutcome::ConnectionUnusable;
+        }
+        if (m_metrics != nullptr)
+        {
+            m_metrics->recordResponse(static_cast<int>(kWebSocketAcceptedStatusCode), std::chrono::steady_clock::now() - tunnelStartTime);
+            m_metrics->countWebSocketUpgrade();
+        }
+        LOG_DEBUG_FMT("Http2Session: 流 {} 已升级为 WebSocket 隧道（RFC 8441 扩展 CONNECT）。request-id {}，路径 {}", streamId,
+                      request.requestId(), request.uri());
+        noteServedRequest();
+
+        // 业务写出的帧发成这条流上的 DATA 帧；写失败（流被对端取消或连接不可用）即 false，与 h1 侧同口径
+        const auto sendFrameBytes = [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
+        {
+            std::string sendErrorText;
+            if (m_connection.sendResponseData(streamId, frameBytes, false, &sendErrorText) != Http2ResponseSendStatus::Sent)
+            {
+                co_return false;
+            }
+            co_return co_await flushOutgoingBytes();
+        };
+
+        WebSocketPeer peer(sendFrameBytes, m_metrics.get());
+
+        bool isBusinessFinished = false;
+        const auto runBusiness = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>
+        {
+            try
+            {
+                co_await businessHandler(businessPeer);
+            } catch (const std::exception &exception)
+            {
+                // 升级应答已经上线，此刻没有别的东西可回给对端：原因只能进日志
+                LOG_ERROR_FMT("Http2Session: WebSocket 隧道里的业务处理器抛出异常，已按连接不可用收口。原因：{}", exception.what());
+            } catch (...)
+            {
+                LOG_ERROR_FMT("Http2Session: WebSocket 隧道里的业务处理器抛出非标准异常（无 what() 描述）");
+            }
+            isBusinessFinished = true;
+        };
+
+        Core::Task<> businessTask = runBusiness(m_response.webSocketHandler(), peer);
+        businessTask.handle().resume();
+
+        // 对端可能在 200 到达之前就抢先发了帧（RFC 8441 允许它一收到 200 就发，但实现常提前发）：
+        // 这些字节已经在正文缓冲里，按到达顺序喂给解码器，一条都不丢
+        WebSocketFeedStatus feedStatus = WebSocketFeedStatus::Accepted;
+        if (!pending.request.body().empty())
+        {
+            feedStatus = peer.feedBytes(pending.request.body().data(), pending.request.body().size());
+        }
+
+        std::vector<char> receiveBuffer(kHttp2ReceiveWindowByteCount);
+        bool isRemoteEndStream = false;
+        while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && isAlive() && isTransportOpen()
+               && !isRemoteEndStream)
+        {
+            // 隧道阶段没有「半条报文」这一相位：帧与帧之间的间隔就是这条连接的空闲，与 h1 阶段同口径
+            refreshIdleDeadline(m_limits->idleTimeout);
+
+            ssize_t receivedLength = 0;
+            try
+            {
+                receivedLength = co_await transportReceive(receiveBuffer.data(), receiveBuffer.size());
+            } catch (const std::exception &)
+            {
+                break;
+            }
+            if (receivedLength <= 0)
+            {
+                break;
+            }
+            if (m_connection.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength)) == Http2ConnectionFeedStatus::Failed
+                || m_connection.hasFailed())
+            {
+                LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间连接层失败，已收口。原因：{}", m_connection.errorMessage());
+                break;
+            }
+            if (!co_await flushOutgoingBytes())
+            {
+                break;
+            }
+
+            for (const Http2ReceivedData &receivedData: m_connection.takeReceivedData())
+            {
+                if (receivedData.streamId != streamId)
+                {
+                    // 别的流的正文不属于隧道：连接层已把窗口还回去，这里直接丢弃
+                    continue;
+                }
+                if (!receivedData.data.empty())
+                {
+                    feedStatus = peer.feedBytes(receivedData.data.data(), receivedData.data.size());
+                }
+                if (receivedData.endStream)
+                {
+                    isRemoteEndStream = true;
+                }
+            }
+
+            absorbPendingRequests();
+            refuseRequestsDuringTunnel(streamId);
+        }
+
+        // 收尾与 h1 阶段同一判据：协议错误按具体码收口，否则主动发正常关闭帧（本侧已收口时不补发）
+        if (feedStatus == WebSocketFeedStatus::DecodeError)
+        {
+            const std::uint16_t errorCode = peer.decodeErrorCloseCode();
+            LOG_ERROR_FMT("Http2Session: WebSocket 隧道里对端违反 RFC 6455，按状态码 {} 收口。原因：{}", errorCode, peer.decodeErrorText());
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countWebSocketProtocolErrorClose();
+            }
+            if (peer.isOpen() && !peer.isWriteInFlight() && isTransportOpen())
+            {
+                [[maybe_unused]] const bool isErrorCloseSent = co_await peer.close(errorCode);
+            }
+        } else if (peer.isOpen() && !peer.isWriteInFlight() && isTransportOpen())
+        {
+            [[maybe_unused]] const bool isNormalCloseSent = co_await peer.close(kWebSocketNormalClosureCode);
+        }
+        peer.markClosed();
+
+        // 本侧方向到此结束：零长 DATA 带 END_STREAM（对端据此知道隧道的这一半关完了）
+        std::string endStreamErrorText;
+        const Http2ResponseSendStatus endStatus = m_connection.sendResponseData(streamId, std::string_view{}, true, &endStreamErrorText);
+        if (endStatus != Http2ResponseSendStatus::Sent && endStatus != Http2ResponseSendStatus::StreamNotWritable)
+        {
+            LOG_ERROR_FMT("Http2Session: 流 {} 的隧道末片未能排入待发字节。原因：{}", streamId, endStreamErrorText);
+        }
+        if (!co_await flushOutgoingBytes())
+        {
+            co_return RequestServeOutcome::ConnectionUnusable;
+        }
+        LOG_INFO_FMT("Http2Session: WebSocket 隧道已收尾（流 {}，存活 {}ms）。request-id {}，路径 {}", streamId,
+                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tunnelStartTime).count(),
+                     request.requestId(), request.uri());
+        co_return RequestServeOutcome::Served;
+    }
+
+    void Http2Session::refuseRequestsDuringTunnel(const std::uint32_t tunnelStreamId)
+    {
+        for (auto requestIterator = m_pendingRequests.begin(); requestIterator != m_pendingRequests.end();)
+        {
+            PendingRequest &pending = requestIterator->second;
+            if (pending.streamId == tunnelStreamId)
+            {
+                ++requestIterator;
+                continue;
+            }
+
+            // 本类只有一个驱动循环，隧道期间无法并发服务别的流：明确回 503（空正文），
+            // 而不是把请求晾到隧道结束——那对端只会看到它永远不返回
+            std::string errorText;
+            const Http2ResponseSendStatus sendStatus = m_connection.sendResponseHeaders(pending.streamId, 503U, {}, true, &errorText);
+            LOG_INFO_FMT("Http2Session: WebSocket 隧道（流 {}）期间收到流 {} 的请求，已回 503：一条连接上同时跑隧道与普通请求"
+                         "需要按流建执行体，本片不做，请对端另开连接",
+                         tunnelStreamId, pending.streamId);
+            if (sendStatus != Http2ResponseSendStatus::Sent)
+            {
+                LOG_DEBUG_FMT("Http2Session: 流 {} 的 503 未能排入待发字节。原因：{}", pending.streamId, errorText);
+            }
+            requestIterator = m_pendingRequests.erase(requestIterator);
+        }
+    }
+
     HttpRequest Http2Session::mapToHttpRequest(const Http2Request &http2Request)
     {
         HttpRequest request;
         // 方法原文经 methodFromString 映射：未收录的方法（CONNECT、TRACE、自定义动词）落到
-        // HttpMethod::UNKNOWN，路由器按既有规则回 404/405，绝不静默降级成某条业务路由
-        request.setMethod(HttpRequest::methodFromString(http2Request.method));
+        // HttpMethod::UNKNOWN，路由器按既有规则回 404/405，绝不静默降级成某条业务路由。
+        // 例外是 RFC 8441 的扩展 CONNECT：它是「这条 :path 上的 WebSocket 隧道」，语义与 GET 同路，
+        // 因此按 GET 交给路由——于是同一个 router.get(路径, 处理器) 同时服务 h1 的 101 升级与 h2 的隧道
+        if (http2Request.protocol == kWebSocketProtocolName)
+        {
+            request.setMethod(HttpMethod::GET);
+        } else
+        {
+            request.setMethod(HttpRequest::methodFromString(http2Request.method));
+        }
         // :path 与 :authority 分别对应 HttpRequest 的 uri 与 host；:scheme 在 HTTP/1.1 报文里
         // 没有对应位置（服务端已知自己在 TLS 上），因此有意不映射，也不伪造一个头部
         request.setUri(http2Request.path);

@@ -52,6 +52,22 @@ namespace AsynGyanis::Net
     [[nodiscard]] bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason);
 
     /**
+     * @brief 校验两种握手形态共用的两项：Sec-WebSocket-Version 恰为 13、Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64
+     *
+     * @details h1 的升级握手（RFC 6455 §4.1）与 h2 的扩展 CONNECT 隧道（RFC 8441 §5）在这一点上完全一致，
+     *          差别只在承载方式：前者靠 Upgrade/Connection 头，后者靠 :protocol=websocket。把这两项单独提出来，
+     *          同一条规范要求就只有一个出处，两处不会各自漂移。
+     * @param request 已解析完成的请求（h2 侧同样是已映射好的请求对象）
+     * @param clientKey 输出参数：通过校验的 key 原文（已去掉首尾空白），可直接交给 computeWebSocketAcceptValue()；
+     *        进入调用时先清空，仅成功时写入
+     * @param failureReason 失败原因出参；进入调用时先清空，仅失败时写入中文原因
+     * @return true 两项都通过，clientKey 可用
+     * @return false 原因见 failureReason
+     */
+    [[nodiscard]] bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey,
+                                                      std::string *failureReason);
+
+    /**
      * @brief 构建 101 Switching Protocols 的完整应答报文
      *
      * @details 报文依次是状态行、Upgrade、Connection、Sec-WebSocket-Accept 与结束空行，

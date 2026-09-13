@@ -195,6 +195,7 @@ namespace AsynGyanis::Net
             std::uint32_t streamId{0};     ///< 请求所属的流号，回响应时按它定位
             bool isRemoteEndStream{false}; ///< 对端是否已 END_STREAM：正文收齐，可以路由
             bool isBodyTooLarge{false};    ///< 正文超过 maximumBodySize：不再缓冲，回 413
+            bool isExtendedConnect{false}; ///< 该请求是 RFC 8441 的扩展 CONNECT（:protocol=websocket）：应答是 200 且这条流随后成为隧道
         };
 
         /**
@@ -265,6 +266,28 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<Http2ResponseSendStatus> sendResponse(std::uint32_t streamId, const HttpResponse &response,
                                                                       bool isHeadRequest);
+
+        /**
+         * @brief 在一条流上跑 WebSocket 隧道（RFC 8441 的扩展 CONNECT）
+         *
+         * @details 与 h1 侧 101 升级后的阶段同构，差别只在承载：h1 上字节来自套接字、升级应答是 101；
+         *          这里握手应答是一条**不带 END_STREAM 的 200**（RFC 8441 §5，h2 里没有 Upgrade 语义），
+         *          此后的字节全部装在 DATA 帧里（本流的负载喂给 WebSocket 解码器，业务写出的帧发成 DATA）。
+         *
+         * @param streamId 该扩展 CONNECT 所属的流
+         * @param pending 待服务的请求（其正文缓冲里可能已有对端在 200 之前抢先发来的帧）
+         * @return RequestServeOutcome Served（隧道已按 RFC 6455 收尾）或 ConnectionUnusable
+         * @note **隧道期间这条会话被它独占**：本类只有一个驱动循环，要同时服务同连接的其它流就得给每条流
+         *       各建一个执行体（不在本片范围）。因此隧道期间其它流的请求一律回 503 并记日志，而不是把它们
+         *       晾到隧道结束——那对端只会看到请求永不返回
+         */
+        [[nodiscard]] Core::Task<RequestServeOutcome> serveWebSocketTunnel(std::uint32_t streamId, PendingRequest &pending);
+
+        /**
+         * @brief 隧道期间把同连接上其它流的请求回 503（本类无法并发服务两条流）
+         * @param tunnelStreamId 正在跑隧道的那条流，跳过它
+         */
+        void refuseRequestsDuringTunnel(std::uint32_t tunnelStreamId);
 
         /**
          * @brief h2 版流式发送回调：把 HttpResponse::writeChunk() 交出的段落发成 HTTP/2 帧

@@ -244,7 +244,8 @@ namespace AsynGyanis::Net
         MaxConcurrentStreams = 0x3, ///< 本端允许的对端并发流上限，初值不限
         InitialWindowSize    = 0x4, ///< 流的初始流控窗口，初值 65535 字节
         MaxFrameSize         = 0x5, ///< 本端愿意接收的最大帧负载，初值 16384 字节
-        MaxHeaderListSize    = 0x6  ///< 本端愿意接收的头列表大小（§6.5.2 的算式），初值不限
+        MaxHeaderListSize    = 0x6, ///< 本端愿意接收的头列表大小（§6.5.2 的算式），初值不限
+        EnableConnectProtocol = 0x8 ///< 是否接受带 :protocol 的扩展 CONNECT（RFC 8441）：1 表示接受；取值只能是 0 或 1
     };
 
     /**
