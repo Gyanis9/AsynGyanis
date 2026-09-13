@@ -3,6 +3,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpDate.h"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <functional>
 #include <memory>
 #include <stop_token>
 #include <string>
@@ -29,6 +31,9 @@ namespace AsynGyanis::Net
 
         /// 映射给 HttpRequest 的协议版本原文：HTTP/2 报文里没有版本字段，用协议名补齐
         constexpr std::string_view kHttp2RequestVersion = "HTTP/2";
+
+        /// 无效描述符的取值：与 Core::AsyncSocket::close() 之后的 fileDescriptor() 一致
+        constexpr int kInvalidSocketDescriptor = -1;
 
         /// 响应头自动补齐规则要认出的三个头名（与 HttpResponse::appendHead() 同一套）
         constexpr std::string_view kContentTypeHeaderName = "content-type";
@@ -106,13 +111,33 @@ namespace AsynGyanis::Net
                                std::shared_ptr<HttpMetricsCollector> metrics,
                                std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
                                HttpParserLimits parserLimits) :
-        // 基类负责 TLS 通道的所有权与 HTTP/1.1 路径；本类只补一条 HTTP/2 循环，因此形参与基类逐项对应。
-        // 共享指针按值传两份（基类一份、本类一份）而不是移走：两边指向的是同一批对象，
-        // 不存在两份配置或两个采集端
-        HttpsSession(loop, std::move(tlsSocket), router, limits, metrics, requestIdGenerator, parserLimits),
+        // TLS 模式下基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
+        // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。与 HttpsSession 的做法一致
+        HttpSession(Core::AsyncSocket(loop, kInvalidSocketDescriptor), router, limits, metrics, requestIdGenerator, parserLimits),
+        // 回退路径的解析器按调用方给的解析上限构造（与 HttpsSession 同一口径），否则回退到 HTTP/1.1 时
+        // 头部/正文上限会退回默认值，该回的 431/413 就不出现了
+        m_parser(parserLimits),
         m_router(router),
         m_parserLimits(parserLimits),
-        // 基类的同名成员都是私有的：HTTP/2 循环要跨协程挂起使用这些装配，因此本类各持一份引用/共享指针
+        // 基类那条套接字是占位，本类要用到的装配各持一份引用/共享指针；共享指针按值传两份
+        // 而不是移走：两边指向的是同一批对象，不存在两份配置或两个采集端
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::move(metrics)),
+        m_requestIdGenerator(std::move(requestIdGenerator))
+    {
+        m_tlsSocket.emplace(std::move(tlsSocket));
+    }
+
+    Http2Session::Http2Session(Core::AsyncSocket socket, Router &router,
+                               std::shared_ptr<const HttpServerLimits> limits,
+                               std::shared_ptr<HttpMetricsCollector> metrics,
+                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
+                               HttpParserLimits parserLimits) :
+        // 明文模式：没有第二条通道，套接字直接交给基类持有，本类不留 TLS 通道（m_tlsSocket 保持空）
+        HttpSession(std::move(socket), router, limits, metrics, requestIdGenerator, parserLimits),
+        m_parser(parserLimits),
+        m_router(router),
+        m_parserLimits(parserLimits),
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
         m_metrics(std::move(metrics)),
         m_requestIdGenerator(std::move(requestIdGenerator))
@@ -132,35 +157,49 @@ namespace AsynGyanis::Net
             {
                 if (session != nullptr)
                 {
-                    // 基类重写后的 close()：先收 TLS 通道再复位存活位与取消源
+                    // 本类重写后的 close()：先收传输通道（TLS 或明文套接字）再复位存活位与取消源
                     session->close();
                 }
             }
         } closer{this};
 
+        // 明文会话（h2c 先验知识）：该端口上的协议由部署决定，没有可协商的余地，
+        // 直接进 HTTP/2 循环——对端若发的是 HTTP/1.1 报文，连接层会按前奏校验失败回 GOAWAY
+        if (!m_tlsSocket.has_value())
+        {
+            LOG_DEBUG_FMT("Http2Session: 明文连接按 h2c 先验知识进入 HTTP/2 循环（描述符={}）", transportFileDescriptor());
+            co_await runHttp2Loop();
+            co_return;
+        }
+
         try
         {
-            co_await tlsSocket().handshake();
+            co_await m_tlsSocket->handshake();
         } catch (const std::exception &handshakeException)
         {
             // 握手失败没有可信的明文可回：记日志后直接结束会话，收口交给上面的 RAII 守卫
-            LOG_ERROR_FMT("Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", tlsSocket().fileDescriptor(),
+            LOG_ERROR_FMT("Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", transportFileDescriptor(),
                           handshakeException.what());
             co_return;
         }
 
         // ALPN 分流点：结果产生于握手过程，因此只有这里读到的那一个值是可信的。
-        // 非 h2（http/1.1 或客户端没提 ALPN）原样交回基类的 HTTP/1.1 事务循环，行为与继承前一致
-        const std::string selectedProtocol = tlsSocket().selectedAlpnProtocol();
+        // 非 h2（http/1.1 或客户端没提 ALPN）按 HTTP/1.1 事务循环继续，与 HttpsSession 逐字一致
+        const std::string selectedProtocol = m_tlsSocket->selectedAlpnProtocol();
         if (selectedProtocol != kHttp2AlpnProtocolName)
         {
             LOG_DEBUG_FMT("Http2Session: ALPN 协商结果是「{}」，按 HTTP/1.1 会话继续（描述符={}）", selectedProtocol,
-                          tlsSocket().fileDescriptor());
-            co_await HttpsSession::start();
+                          transportFileDescriptor());
+            const std::function<bool()> alivePredicate = [this]()
+            {
+                return isAlive();
+            };
+            co_await detail::httpKeepAliveLoop(*m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate,
+                                              *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get());
             co_return;
         }
 
-        LOG_DEBUG_FMT("Http2Session: ALPN 协商出 h2，进入 HTTP/2 循环（描述符={}）", tlsSocket().fileDescriptor());
+        LOG_DEBUG_FMT("Http2Session: ALPN 协商出 h2，进入 HTTP/2 循环（描述符={}）", transportFileDescriptor());
         co_await runHttp2Loop();
         co_return;
     }
@@ -171,11 +210,62 @@ namespace AsynGyanis::Net
         // 清扫协程正是先调用本函数再关描述符，而会话自己的读协程要等描述符关闭才被唤醒，
         // 那时一个字节都写不出去。先把收口原因告知对端（尽力），再走基类收口。
         // 已经失败过说明 GOAWAY 带着真正的错误码发过一次了，这里不再补第二张通告
-        if (isTlsTransportOpen() && !m_connection.hasFailed() && isSettingsAcknowledgementExpired() && queueSettingsTimeoutGoAway())
+        if (isTransportOpen() && !m_connection.hasFailed() && isSettingsAcknowledgementExpired() && queueSettingsTimeoutGoAway())
         {
             writeOutgoingBytesBestEffort();
         }
-        HttpsSession::close();
+
+        // TLS 通道要先收：明文模式下它为空，等于直接走基类关闭真实套接字
+        if (m_tlsSocket.has_value())
+        {
+            m_tlsSocket->close();
+        }
+        HttpSession::close();
+    }
+
+    bool Http2Session::isAlive() const noexcept
+    {
+        return HttpSession::isAlive() && isTransportOpen();
+    }
+
+    std::string Http2Session::remoteAddress() const
+    {
+        // TLS 模式下基类那条套接字不持有描述符，地址只能向真实通道要（与 HttpsSession 同一理由）
+        return m_tlsSocket.has_value() ? m_tlsSocket->remoteAddress().toString() : HttpSession::remoteAddress();
+    }
+
+    std::string Http2Session::localAddress() const
+    {
+        return m_tlsSocket.has_value() ? m_tlsSocket->localAddress().toString() : HttpSession::localAddress();
+    }
+
+    bool Http2Session::isTransportOpen() const noexcept
+    {
+        return m_tlsSocket.has_value() ? m_tlsSocket->fileDescriptor() != kInvalidSocketDescriptor
+                                       : socket().fileDescriptor() != kInvalidSocketDescriptor;
+    }
+
+    int Http2Session::transportFileDescriptor() const noexcept
+    {
+        return m_tlsSocket.has_value() ? m_tlsSocket->fileDescriptor() : socket().fileDescriptor();
+    }
+
+    Core::Task<ssize_t> Http2Session::transportReceive(void *const buffer, const std::size_t length)
+    {
+        if (m_tlsSocket.has_value())
+        {
+            co_return co_await m_tlsSocket->asyncReceive(buffer, length);
+        }
+        co_return co_await socket().asyncReceive(buffer, length);
+    }
+
+    Core::Task<ssize_t> Http2Session::transportSend(const void *const buffer, const std::size_t length)
+    {
+        if (m_tlsSocket.has_value())
+        {
+            co_return co_await m_tlsSocket->asyncSend(buffer, length);
+        }
+        co_return co_await socket().asyncSend(buffer, length);
     }
 
     Core::Task<> Http2Session::runHttp2Loop()
@@ -193,7 +283,7 @@ namespace AsynGyanis::Net
                                                }
                                            });
 
-        while (isAlive() && isTlsTransportOpen())
+        while (isAlive() && isTransportOpen())
         {
             // 对端一直没 ACK 本端初始 SETTINGS：按 SETTINGS_TIMEOUT 收口（RFC 7540 §6.5.3 允许服务端
             // 以连接错误收口）。判定放在每轮读之前：对端若只发帧却不 ACK，到期后的第一轮就能收掉
@@ -224,7 +314,7 @@ namespace AsynGyanis::Net
             ssize_t receivedLength = 0;
             try
             {
-                receivedLength = co_await tlsSocket().asyncReceive(receiveBuffer.data(), receiveBuffer.size());
+                receivedLength = co_await transportReceive(receiveBuffer.data(), receiveBuffer.size());
             } catch (const std::exception &)
             {
                 // 传输层读失败（对端 RST、描述符被清扫协程关掉、TLS 记录错误）：字节流已断，只剩收尾
@@ -874,7 +964,7 @@ namespace AsynGyanis::Net
             while (writtenByteCount < outgoingBytes.size())
             {
                 const ssize_t writeLength =
-                        co_await tlsSocket().asyncSend(outgoingBytes.data() + writtenByteCount, outgoingBytes.size() - writtenByteCount);
+                        co_await transportSend(outgoingBytes.data() + writtenByteCount, outgoingBytes.size() - writtenByteCount);
                 if (writeLength <= 0)
                 {
                     // 对端已在底层关闭（非正值而不是异常）：同样属于传输失败，原因在收尾处补一句
@@ -964,7 +1054,7 @@ namespace AsynGyanis::Net
 
         // 手动推进一次发送协程（与 WebSocket 阶段显式推进业务协程同一手法）：SSL_write 在非阻塞
         // 套接字上要么整段接受、要么直接报告需要等待，因此常规情形下这一次 resume 就写完了
-        Core::Task<ssize_t> sendTask = tlsSocket().asyncSend(outgoingBytes.data(), outgoingBytes.size());
+        Core::Task<ssize_t> sendTask = transportSend(outgoingBytes.data(), outgoingBytes.size());
         sendTask.handle().resume();
         if (!sendTask.isReady())
         {

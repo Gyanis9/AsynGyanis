@@ -54,6 +54,11 @@ namespace AsynGyanis::Core
         return m_socket;
     }
 
+    const AsyncSocket &Connection::socket() const noexcept
+    {
+        return m_socket;
+    }
+
     Cancelable &Connection::cancelable() noexcept
     {
         return m_cancelable;

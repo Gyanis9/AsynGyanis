@@ -17,7 +17,7 @@
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
-#include "Net/Http/HttpsSession.h"
+#include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Connection.h"
 
@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,18 +35,24 @@ namespace AsynGyanis::Net
     inline constexpr std::string_view kHttp2AlpnProtocolName = "h2";
 
     /**
-     * @brief HTTP/2 会话类：一条 TLS 连接对应一个 Http2Session。
+     * @brief HTTP/2 会话类：一条连接对应一个 Http2Session，TLS 与明文两条传输都走它。
      *
-     * @details start() 先做 TLS 握手，再按 ALPN 协商结果选协议：协商出 h2 就跑本类新写的 HTTP/2
-     *          循环（前奏与 SETTINGS 协商、请求与正文、响应、接收方向流控），否则把连接原样交回
-     *          HttpsSession 的事务循环——两条路径共用同一份实现，只有协议循环不同。
+     * @details 两种构造方式决定传输与进入协议循环的方式：
+     *          - **TLS（ALPN 分流）**：start() 先做 TLS 握手，再按 ALPN 协商结果选协议；协商出 h2 就跑
+     *            本类的 HTTP/2 循环，否则把连接原样交回 HTTP/1.1 事务循环（与 HttpsSession 同一份实现）。
+     *          - **明文（h2c，先验知识）**：连接按 RFC 9113 §3.4 的前奏直接进入 HTTP/2 循环，不做探测、
+     *            不提供 HTTP/1.1 回退——端口上的协议由部署决定（见 HttpServer::setHttp2CleartextEnabled()）。
      *          HTTP/2 循环的驱动顺序是「读字节 → feedBytes() → 立刻写出（SETTINGS/ACK/WINDOW_UPDATE/
      *          GOAWAY）→ 取请求与正文 → 路由 → sendResponseHeaders()/sendResponseData() → 再写出」，
-     *          与连接层的文档约定一致。
+     *          与连接层的文档约定一致；协议循环与传输无关，只通过 isTransportOpen()/transportReceive()/
+     *          transportSend() 三处用到传输层。
      *
-     * @note 分流为什么不在 HttpsServer::createConnection() 里做：ALPN 结果产生于 TLS 握手过程，
+     * @note TLS 分流为什么不在 HttpsServer::createConnection() 里做：ALPN 结果产生于 TLS 握手过程，
      *       而 createConnection() 在握手之前被同步调用，此刻读到的必然是空串。服务器统一创建本类，
      *       由它在握手完成后按 TlsSocket::selectedAlpnProtocol() 选协议。
+     * @note 明文侧只支持先验知识（RFC 9113 §3.4）：不做前奏嗅探，也不做 RFC 9113 §3.2 已废弃的
+     *       HTTP/1.1 Upgrade 流程，因此同一个明文端口不混跑两种协议。要做混跑得先有嗅探（读进前 24 字节
+     *       再决定由哪条循环接管），那会让连接在协议未定之前处于「半读」状态，收益与代价不成比例。
      *
      * @note 请求正文按「收齐再路由」处理，与 HTTP/1.1 侧（解析器攒完整条报文才交业务）同口径：
      *       正文超过 HttpParserLimits::maximumBodySize 时停止缓冲并回 413；WebSocket 升级
@@ -62,15 +69,15 @@ namespace AsynGyanis::Net
      *       （h2 的多路复用语义，与 h1 侧「连接级失败」的处置不是一回事）；被取消的条数计入
      *       HttpServerStats::streamCancelledCount，既不算已应答也不算坏请求。
      *
-     * @see Http2Connection, HttpsSession, Core::TlsSocket
+     * @see Http2Connection, HttpSession, Core::TlsSocket
      */
-    class Http2Session final : public HttpsSession
+    class Http2Session final : public HttpSession
     {
     public:
         /**
-         * @brief 构造 HTTP/2 会话。
+         * @brief 构造 TLS 上的 HTTP/2 会话（ALPN 分流用）。
          * @param loop 事件循环，仅用于给基类造一条不持有描述符的占位套接字（与 HttpsSession 同）
-         * @param tlsSocket 已创建但尚未握手的 TlsSocket，所有权转移给基类
+         * @param tlsSocket 已创建但尚未握手的 TlsSocket，所有权转移给本会话
          * @param router 全局路由器，用于分发请求；生命周期必须不短于本会话
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          * @param metrics 统计采集端；传空指针表示本会话不采集统计
@@ -86,29 +93,66 @@ namespace AsynGyanis::Net
                      HttpParserLimits parserLimits = {});
 
         /**
-         * @brief 启动会话主协程：TLS 握手 → 按 ALPN 选协议 → 跑对应循环 → 关闭通道。
+         * @brief 构造明文连接上的 HTTP/2 会话（h2c 先验知识）。
          *
-         * @details 重写 HttpsSession::start()：第一步与基类相同（TLS 握手，失败即收口），差异在于
-         *          握手之后先读 ALPN——协商出 h2 就转入本类的 HTTP/2 循环，其余（http/1.1 或客户端
-         *          没提 ALPN）原样交回 HttpsSession::start()，因此 HTTP/1.1 行为与继承前逐字节一致。
+         * @details 套接字直接交给基类持有：明文传输没有第二份通道，不需要 TLS 那样的占位套接字。
+         *          本构造函数不做任何协议协商——调用方（HttpServer::createConnection()）已经在按
+         *          「这个端口只说 h2」创建会话，因此 start() 直接进 HTTP/2 循环。
+         * @param socket 已建立的异步套接字，所有权转移给基类
+         * @param router 全局路由器；其它参数含义同上一个构造函数
+         */
+        Http2Session(Core::AsyncSocket socket, Router &router,
+                     std::shared_ptr<const HttpServerLimits> limits = nullptr,
+                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
+                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                     HttpParserLimits parserLimits = {});
+
+        /**
+         * @brief 启动会话主协程：TLS 会话先握手并按 ALPN 选协议，明文会话直接进 HTTP/2 循环。
+         *
+         * @details 差异只在入口：TLS 会话第一步做握手（失败即收口），随后按 ALPN 协商出 h2 进本类的
+         *          HTTP/2 循环、否则按 HTTP/1.1 事务循环收尾；明文会话没有可选协议，直接进 HTTP/2 循环。
+         *          两条路径共用同一个 HTTP/2 循环，只有传输对象不同。
          *
          * @return Core::Task<> 协程任务，连接结束时完成
-         * @throws 基类 close() 之外的异常不做处理，原样抛给 TcpServer::handleConnection()
-         * @see HttpsSession::start(), runHttp2Loop()
+         * @throws close() 之外的异常不做处理，原样抛给 TcpServer::handleConnection()
+         * @see runHttp2Loop()
          */
         Core::Task<> start() override;
 
         /**
          * @brief 关闭会话：SETTINGS 迟迟未被 ACK 时先把 GOAWAY(SETTINGS_TIMEOUT) 尽力送出去再收口
          *
-         * @details 重写 HttpsSession::close()：清扫协程按空闲截止时间收口本连接时会先调用本函数，
-         *          此刻描述符还在——会话自己的读协程要等描述符关闭才被唤醒，那时一个字节都写不出去。
-         *          因此这里是「会话被关停」路径上唯一还能把收口原因告知对端的时刻；写出失败只记日志，
-         *          连接照常关闭（RFC 7540 §6.5.3 允许按 SETTINGS_TIMEOUT 收口）。
-         * @note 只在「本端 SETTINGS 仍待 ACK 且已过 HttpServerLimits::settingsAcknowledgementTimeout」
-         *       时才尝试；其余情形与基类行为逐字一致
+         * @details 重写 Core::Connection::close()：基类只会关自己那条套接字，而本类在 TLS 模式下
+         *          真实描述符归 TlsSocket 所有（基类那条是占位），必须先收 TLS 通道；明文模式下基类
+         *          那条就是真实套接字，直接走基类即可。
+         *
+         *          另外，清扫协程按空闲截止时间收口本连接时会先调用本函数，此刻描述符还在——会话自己的
+         *          读协程要等描述符关闭才被唤醒，那时一个字节都写不出去。因此这里是「会话被关停」路径上
+         *          唯一还能把收口原因告知对端的时刻：SETTINGS 仍待 ACK 且已过专项限额时先把 GOAWAY
+         *          (SETTINGS_TIMEOUT) 写出去（RFC 7540 §6.5.3 允许按该错误码收口），写出失败只记日志，
+         *          连接照常关闭。
          */
         void close() override;
+
+        /**
+         * @brief 会话是否仍然可用：基类存活位与传输通道都要健在
+         * @details 重写以覆盖 TLS 模式：描述符已关闭时（对端断开、清扫协程收口）必须立刻反映出来
+         * @return true 基类存活且当前传输通道的描述符有效
+         */
+        [[nodiscard]] bool isAlive() const noexcept override;
+
+        /**
+         * @brief 取对端地址：TLS 模式下必须问 TlsSocket，明文模式走基类
+         * @return std::string 形如 "127.0.0.1:54321" 的地址；取不到时返回空串
+         */
+        [[nodiscard]] std::string remoteAddress() const override;
+
+        /**
+         * @brief 取本端地址：理由同 remoteAddress()
+         * @return std::string 形如 "127.0.0.1:8080" 的地址；取不到时返回空串
+         */
+        [[nodiscard]] std::string localAddress() const override;
 
     private:
         /**
@@ -296,6 +340,42 @@ namespace AsynGyanis::Net
          *         ConnectionUnavailable 与 Rejected → ConnectionUnusable
          */
         [[nodiscard]] static RequestServeOutcome toRequestServeOutcome(Http2ResponseSendStatus sendStatus) noexcept;
+
+        /**
+         * @brief 当前传输通道是否还开着：TLS 会话看 TLS 描述符，明文会话看基类套接字
+         * @return true 描述符有效（TLS 模式下 SSL 对象仍在、底层描述符没被关掉）
+         */
+        [[nodiscard]] bool isTransportOpen() const noexcept;
+
+        /**
+         * @brief 取当前传输通道的描述符
+         * @return int 描述符；通道已关时返回 -1。只用于日志与端口判断
+         */
+        [[nodiscard]] int transportFileDescriptor() const noexcept;
+
+        /**
+         * @brief 从当前传输通道读一段字节
+         * @param buffer 接收缓冲
+         * @param length 缓冲长度
+         * @return Core::Task<ssize_t> 实际读到的字节数；0 表示对端正常关闭，负值表示连接不可用
+         */
+        [[nodiscard]] Core::Task<ssize_t> transportReceive(void *buffer, std::size_t length);
+
+        /**
+         * @brief 向当前传输通道写一段字节（允许部分写）
+         * @param buffer 待发数据，按「指针 + 长度」取，可含 NUL
+         * @param length 数据长度
+         * @return Core::Task<ssize_t> 实际写出的字节数
+         */
+        [[nodiscard]] Core::Task<ssize_t> transportSend(const void *buffer, std::size_t length);
+
+        /// TLS 通道；空表示本会话跑在明文连接上（h2c 先验知识），此时真实描述符归基类套接字所有
+        std::optional<Core::TlsSocket> m_tlsSocket;
+
+        /// HTTP/1.1 回退路径（TLS 上 ALPN 未协商出 h2 时）的解析器与接收窗口。
+        /// 基类的同名成员是私有的，且与 HttpsSession 同一做法：回退路径各持一份，两条路径不共用状态
+        HttpParser m_parser;
+        std::vector<char> m_receiveBuffer;
 
         Http2Connection m_connection;                 ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
         Router &m_router;                             ///< 路由器引用（与基类指向同一对象）

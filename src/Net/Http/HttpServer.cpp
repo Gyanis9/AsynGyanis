@@ -5,6 +5,7 @@
 #include "Net/Http/FileSender.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpSession.h"
+#include "Net/Http2/Http2Session.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <array>
@@ -857,8 +858,23 @@ namespace AsynGyanis::Net
     std::shared_ptr<Core::Connection> HttpServer::createConnection(Core::AsyncSocket socket)
     {
         // 与基类契约的差异见头文件 Doxygen：这里只搬移 socket 与转交几个引用，
-        // 不做握手、不查地址、不阻塞，因此既不抛异常也不可能返回空指针
+        // 不做握手、不查地址、不阻塞，因此既不抛异常也不可能返回空指针。
+        // h2c 打开时明文连接进 HTTP/2 会话：它按先验知识直接进 HTTP/2 循环，不做协议嗅探
+        if (m_isHttp2CleartextEnabled)
+        {
+            return std::make_shared<Http2Session>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
+        }
         return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
+    }
+
+    void HttpServer::setHttp2CleartextEnabled(const bool enabled) noexcept
+    {
+        m_isHttp2CleartextEnabled = enabled;
+    }
+
+    bool HttpServer::isHttp2CleartextEnabled() const noexcept
+    {
+        return m_isHttp2CleartextEnabled;
     }
 
     HttpServerStats HttpServer::stats() const

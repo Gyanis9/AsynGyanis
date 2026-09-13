@@ -540,6 +540,10 @@ namespace AsynGyanis::Net
          */
         using RouteRegistrar = std::function<void(Router &, Core::EventLoop &)>;
 
+        /// 服务器启动前的最后一道配置动作：拿到服务器本体，用于落定 setLimits() 之外的开关
+        /// （例如 setHttp2CleartextEnabled()）——这些开关同样必须在 start() 之前生效
+        using ServerConfigurator = std::function<void(TestHttpServer &)>;
+
         /**
          * @brief 跑起一台真实 HttpServer 的夹具
          * @details 成员顺序即生命周期顺序：循环 → 结果槽 → 服务器 → 主协程任务 → 循环线程。
@@ -555,10 +559,12 @@ namespace AsynGyanis::Net
              * @param slowRoute 可选的慢路由（处理耗时与进入标记）
              * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
              * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
+             * @param configureServer 可选的启动前配置动作（例如打开 h2c），同样在投递 start() 之前执行
              */
             RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
                                      const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {},
-                                     const HttpParserLimits &parserLimits = HttpParserLimits{}) :
+                                     const HttpParserLimits &parserLimits = HttpParserLimits{},
+                                     const ServerConfigurator &configureServer = {}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0)),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -600,6 +606,12 @@ namespace AsynGyanis::Net
                 if (registerRoutes)
                 {
                     registerRoutes(m_server.router(), m_loop);
+                }
+
+                // 启动前配置：与限额、路由同一时机，保证开关在第一个连接被接受之前就位
+                if (configureServer)
+                {
+                    configureServer(m_server);
                 }
 
                 m_loopThread.schedule(m_serverTask);

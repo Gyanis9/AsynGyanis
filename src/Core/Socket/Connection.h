@@ -92,6 +92,12 @@ namespace AsynGyanis::Core
         [[nodiscard]] AsyncSocket &socket() noexcept;
 
         /**
+         * @brief 获取底层异步 socket 的常量引用（只读查询用，例如取描述符判通道是否还开着）
+         * @return const AsyncSocket&
+         */
+        [[nodiscard]] const AsyncSocket &socket() const noexcept;
+
+        /**
          * @brief 获取取消支持对象的引用。
          * @return Cancelable&
          */

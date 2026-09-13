@@ -158,6 +158,26 @@ namespace AsynGyanis::Net
         void setParserLimits(HttpParserLimits limits);
 
         /**
+         * @brief 设置本服务器的明文连接是否按 HTTP/2（h2c，先验知识）服务。
+         *
+         * @details 打开后本服务器的明文连接一律进入 HTTP/2 会话：对端必须直接发 HTTP/2 连接前奏
+         *          （RFC 9113 §3.4 的先验知识），否则连接层按前奏校验失败回 GOAWAY。**不做前奏嗅探、
+         *          不做已废弃的 HTTP/1.1 Upgrade 流程**，因此打开本开关就等于「这个端口只说 h2」，
+         *          同一端口不再服务 HTTP/1.1。默认关闭，明文连接按 HTTP/1.1 服务。
+         *
+         * @param enabled true 表示明文连接按 h2c 服务
+         * @note 必须在 start() 之前调用：它只影响此后的 createConnection()
+         * @see Http2Session, kHttp2ConnectionPreface
+         */
+        void setHttp2CleartextEnabled(bool enabled) noexcept;
+
+        /**
+         * @brief 查询明文连接是否按 h2c 服务
+         * @return true 表示明文连接进入 HTTP/2 会话
+         */
+        [[nodiscard]] bool isHttp2CleartextEnabled() const noexcept;
+
+        /**
          * @brief 查询当前生效的解析器资源上限。
          * @return HttpParserLimits 构造时的默认值，或最后一次 setParserLimits() 设定的值
          */
@@ -188,6 +208,7 @@ namespace AsynGyanis::Net
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
+        bool m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };
