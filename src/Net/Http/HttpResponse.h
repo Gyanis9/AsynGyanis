@@ -157,8 +157,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 流式发送回调：把一段字节写到本响应所属的连接
          *
-         * @details 由会话在路由之前装配（HttpResponse 自己不认识 socket），返回值 false 表示
-         *          连接已不可用。回调是协程：写不下时它会挂起等待可写，而不是丢弃这段字节。
+         * @details 由会话在路由之前装配（HttpResponse 自己不认识 socket）。false 表示连接已不可用：
+         *          传输层失败（对端关闭或复位、描述符被关闭、等可写期间被关闭）由会话在回调内部折成
+         *          false 并记日志，不抛异常；回调是协程，写不下时会挂起等待可写而不是丢弃这段字节。
          */
         using ChunkSender = std::function<Core::Task<bool>(std::string_view)>;
 
@@ -192,9 +193,11 @@ namespace AsynGyanis::Net
          *          直接写连接，不在内存里攒整块正文；首段之前先把头部推出去。
          * @param data 本次写出的正文段，按「指针 + 长度」取，可以是任意字节
          * @return true 已写出（data 为空时同样为 true，表示无需写出）
-         * @return false 连接已不可用（对端关闭或写失败），调用方应停止继续写
-         * @throws Base::LogicException 当前不在流式模式（请先调用 startChunkedResponse()），
-         *         或响应对象未装配发送回调（只对会话交给处理器的响应对象有效）
+         * @return false 连接已不可用（对端关闭、对端复位、描述符被关闭、等可写期间被关闭）：
+         *         本段及其后的字节都没发出去，**调用方应停止继续写并收手**；该失败不抛异常，
+         *         会话已记下一条中文日志
+         * @throws Base::LogicException 用法错误，仍抛异常：当前不在流式模式（请先调用
+         *         startChunkedResponse()），或响应对象未装配发送回调（只对会话交给处理器的响应对象有效）
          * @note data 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
          * @note data 为空时不发送并直接返回 true：零长度块是终止块的语义（RFC 9112 §7.1），
          *       发一个空段既无信息又会被对端当成消息结束

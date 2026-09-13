@@ -38,6 +38,9 @@ namespace AsynGyanis::Net
         /// 空闲清扫节拍：与 HTTP 用例同档，保证超时收口类断言不会久等
         constexpr std::chrono::milliseconds kSweepInterval{50};
 
+        /// 对端复位后的等待上限：写侧要等内核回 RST 或等写超时清扫，比一般等待更宽松
+        constexpr std::chrono::milliseconds kResetWaitTimeout{6000};
+
         /// 升级路由的路径
         constexpr std::string_view kHandshakePath = "/ws";
 
@@ -678,5 +681,65 @@ namespace AsynGyanis::Net
         EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
         EXPECT_EQ(accumulated.size(), handshake.size() + expectedClose.size()) << "1007 之后不应再补第二条 Close";
         EXPECT_EQ(record->count(), 0U) << "非法文本帧不应交付业务";
+    }
+
+    /**
+     * @brief 钉住发送失败契约：对端带未读数据关闭（内核回 RST）后，业务的 sendText 必须返回 false
+     * @details 契约与 HTTP 流式侧一致：传输层失败（对端关闭/RST/描述符被关）折成布尔结果并记日志，
+     *          只有控制帧超长之类的用法错误才抛异常。业务在帧发送失败时置位标记并收手，主线程据此
+     *          断言它确实拿到了 false——异常若打穿业务，这个标记永远不会被置位。
+     */
+    TEST(WebSocketSession, ReturnsFalseWhenPeerResetsDuringSend)
+    {
+        std::atomic<bool> didBusinessObserveSendFailure{false};
+        std::atomic<int>  sentFrameCount{0};
+
+        const HttpTestSupport::RouteRegistrar registrar = [&didBusinessObserveSendFailure, &sentFrameCount](Router &router, Core::EventLoop &)
+        {
+            router.any(std::string(kHandshakePath),
+                       [&didBusinessObserveSendFailure, &sentFrameCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.upgradeToWebSocket([&didBusinessObserveSendFailure, &sentFrameCount](WebSocketPeer &peer) -> Core::Task<>
+                {
+                    // 一直写到对端不再可用为止：对端停读会让发送缓冲填满，业务因此停在等可写上，
+                    // RST 到达时正是这次挂起的写把失败交回来
+                    const std::string payload(64 * 1024, 'w');
+                    for (int round = 0; round < 64; ++round)
+                    {
+                        if (!co_await peer.sendText(payload))
+                        {
+                            // 传输层失败以 false 抵达：业务据此收手，并留下可核对的证据
+                            didBusinessObserveSendFailure.store(true, std::memory_order_release);
+                            co_return;
+                        }
+                        sentFrameCount.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    co_return;
+                });
+                co_return;
+            });
+        };
+
+        const std::unique_ptr<RunningHttpServerFixture> server = std::make_unique<RunningHttpServerFixture>(
+                HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+
+        // 握手与首批帧数据都先读到客户端：接收缓冲里留着一大截未读字节，随后的 close 才会让
+        // 内核回 RST（只收到 EOF 的话写侧拿不到错误事件）
+        std::string accumulated;
+        ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
+        ASSERT_TRUE(client.waitForText(accumulated, "Sec-WebSocket-Accept", kWaitTimeout)) << "握手没有完成：" << accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, expectedHandshakeResponseText().size() + 1024, kWaitTimeout))
+                << "握手之后没有读到帧数据，累计 " << accumulated.size() << " 字节";
+        client.closeNow();
+
+        EXPECT_TRUE(server->awaitConnectionsDrained(kResetWaitTimeout)) << "对端复位后 WebSocket 会话没有收口";
+        EXPECT_TRUE(didBusinessObserveSendFailure.load(std::memory_order_acquire))
+                << "对端已复位，业务的 sendText 没有返回 false：传输层失败以异常打穿了业务";
+        EXPECT_LT(sentFrameCount.load(std::memory_order_relaxed), 64) << "对端已经复位，写侧却宣称 64 帧全部成功";
+        EXPECT_FALSE(server->startThrew()) << "对端复位把服务器主协程带崩了";
     }
 } // namespace AsynGyanis::Net

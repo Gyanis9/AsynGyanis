@@ -88,9 +88,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 帧发送回调：把一整帧已编码的字节写到这条连接
          *
-         * @details 由会话在构造本对象时注入（装配风格与 HttpResponse::ChunkSender 一致），
-         *          返回值 false 表示连接已不可用。回调是协程：写不下时它会挂起等待可写，
-         *          而不是丢弃这段字节。
+         * @details 由会话在构造本对象时注入（装配风格与 HttpResponse::ChunkSender 一致）。false 表示
+         *          连接已不可用：传输层失败（对端关闭或复位、描述符被关闭、等可写期间被关闭）由会话在
+         *          回调内部折成 false 并记日志，不抛异常；回调是协程，写不下时会挂起等待可写。
          */
         using FrameSender = std::function<Core::Task<bool>(std::string_view)>;
 
@@ -128,7 +128,9 @@ namespace AsynGyanis::Net
          * @brief 发送一条文本消息
          * @param text 文本内容，按「指针 + 长度」取，UTF-8 合法性不在协议层校验
          * @return true 整帧已交给连接
-         * @return false 本侧已关闭或发送失败，连接不可再用
+         * @return false 本侧已关闭，或传输层失败（对端关闭、对端复位、描述符被关闭、等可写期间被
+         *         关闭）：**消息没有发出去，调用方应停止继续发送并收手**；该失败不抛异常，
+         *         会话已记下一条中文日志
          * @note text 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
          */
         Core::Task<bool> sendText(std::string_view text);
@@ -137,7 +139,8 @@ namespace AsynGyanis::Net
          * @brief 发送一条二进制消息
          * @param payload 负载字节，可含 NUL 与任意二进制
          * @return true 整帧已交给连接
-         * @return false 本侧已关闭或发送失败，连接不可再用
+         * @return false 本侧已关闭，或传输层失败（同 sendText()）：**消息没有发出去，调用方应停止
+         *         继续发送并收手**；该失败不抛异常
          * @note payload 的存活要求同 sendText()
          */
         Core::Task<bool> sendBinary(std::string_view payload);
@@ -146,8 +149,9 @@ namespace AsynGyanis::Net
          * @brief 发送一个 Ping 帧
          * @param payload 心跳负载，可为空；不得超过 125 字节（RFC 6455 §5.5）
          * @return true 整帧已交给连接
-         * @return false 本侧已关闭或发送失败，连接不可再用
-         * @throws Base::InvalidArgumentException 负载超过控制帧上限，编码层当场拒绝
+         * @return false 本侧已关闭，或传输层失败（同 sendText()）：**帧没有发出去，调用方应停止
+         *         继续发送并收手**；该失败不抛异常
+         * @throws Base::InvalidArgumentException 负载超过控制帧上限：用法错误仍抛异常，编码层当场拒绝
          */
         Core::Task<bool> sendPing(std::string_view payload = {});
 
@@ -160,8 +164,9 @@ namespace AsynGyanis::Net
          * @param code 关闭状态码，默认 1000（正常关闭）
          * @param reason 关闭原因文本，可为空；按「指针 + 长度」取
          * @return true Close 帧已交给连接
-         * @return false 连接已不可用（对端已断开或写失败）
-         * @throws Base::InvalidArgumentException 原因超过 123 字节
+         * @return false 本侧已发过 Close，或传输层失败（对端已断开或连接不可用）：本侧仍按已关闭
+         *         处理，调用方无需重试，也不应再调 send*()；该失败不抛异常
+         * @throws Base::InvalidArgumentException 原因超过 123 字节：用法错误仍抛异常
          * @note 调用后 isOpen() 即为 false：本侧已发起关闭，不再发送任何数据帧
          */
         Core::Task<bool> close(std::uint16_t code = kWebSocketNormalClosureCode, std::string_view reason = {});
@@ -256,8 +261,10 @@ namespace AsynGyanis::Net
          * @brief 编码并写出一帧（send*() 与关闭握手共用）
          * @param opCode 操作码
          * @param payload 负载，按「指针 + 长度」取
-         * @return true 整帧已写出；false 连接不可用或本侧已关闭
-         * @throws Base::InvalidArgumentException 编码层拒绝（控制帧超长、控制帧要求分片）
+         * @return true 整帧已写出
+         * @return false 本侧已关闭，或传输层失败（对端关闭、对端复位、描述符被关闭）：后者由发送
+         *         回调折成 false 并记日志，不抛异常，本层据此把本侧标记为不可用
+         * @throws Base::InvalidArgumentException 用法错误仍抛异常：编码层拒绝（控制帧超长、控制帧要求分片）
          */
         Core::Task<bool> sendFrame(WebSocketOpCode opCode, std::string_view payload);
 

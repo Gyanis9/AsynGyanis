@@ -188,14 +188,18 @@ namespace AsynGyanis::Core
         }
 
         // 恢复放在最后：被恢复的代码可能立刻销毁本对象（读到对端关闭后关闭连接），
-        // 那之后对成员的每一次访问都是释放后使用
-        if (resumableRead)
-        {
-            resumableRead.resume();
-        }
+        // 那之后对成员的每一次访问都是释放后使用。
+        //
+        // 写侧必须先于读侧：两侧的等待者可能属于不同的协程帧，而读侧的协议收口会把自己那条
+        // 协程链（含仍挂在写等待上的协程帧）一并销毁——先走读侧，写侧那个刚被取出的句柄就指向
+        // 已析构的帧，再 resume 是释放后使用
         if (resumableWrite)
         {
             resumableWrite.resume();
+        }
+        if (resumableRead)
+        {
+            resumableRead.resume();
         }
     }
 

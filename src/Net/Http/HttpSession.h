@@ -276,7 +276,9 @@ namespace AsynGyanis::Net
         {
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
-            // 回调按引用捕获 socket 与连接，两者都活到整条连接结束
+            // 回调按引用捕获 socket 与连接，两者都活到整条连接结束。
+            // 发送契约与 HTTP 侧一致：传输层失败折成 false 并记日志，不抛异常，业务拿到 false 后
+            // 必须停止继续发送（WebSocketPeer 随即把本侧标记为不可用）
             const auto sendFrameBytes = [&socket, &connection, &limits](const std::string_view frameBytes) -> Core::Task<bool>
             {
                 connection.refreshIdleDeadline(limits.writeTimeout);
@@ -295,10 +297,12 @@ namespace AsynGyanis::Net
                         writtenLength += static_cast<std::size_t>(writeLength);
                     }
                     co_return true;
-                } catch (const std::exception &)
+                } catch (const Base::Exception &exception)
                 {
-                    // 传输层写失败（对端 RST、描述符被清扫协程关掉）一律视为连接不可用：
-                    // 字节流已断，这里没有可发给对端的东西
+                    // 传输层写失败（对端 RST、描述符被清扫协程关掉、等可写期间被关闭）一律视为连接
+                    // 不可用：字节流已断，这里没有可发给对端的东西。原因进日志，失败以布尔值交给业务
+                    LOG_ERROR_FMT("WebSocket 会话：帧写出失败，连接已不可用，此后不再尝试发送，请停止继续发送。原因：{}",
+                                  exception.what());
                     co_return false;
                 }
             };
@@ -401,6 +405,10 @@ namespace AsynGyanis::Net
          * @note 超时判定不在本协程里做（清扫协程关掉连接后本帧可能立刻销毁，挂起的定时等待会
          *       指向已释放的帧）：这里只按相位把时限刷进 connection 的空闲截止时间，
          *       到点关连接由 TcpServer 的清扫协程负责。
+         * @note 发送契约（sendResponse 及流式/握手两条写出路径共用）：传输层失败——对端关闭或复位、
+         *       描述符被关闭、等可写期间被关闭——一律折成 false 并记一条中文日志，不抛异常，调用方
+         *       拿到 false 后停止继续写并收口；序列化与用法错误（未进流式模式、未装配发送回调、
+         *       控制帧超长等）仍走框架的 logic_error 分支，不被本循环吞掉
          *
          * @tparam Socket 传输层类型，需支持 asyncReceive/asyncSend
          * @param socket        传输层 socket 引用
@@ -456,7 +464,12 @@ namespace AsynGyanis::Net
             // 传输层支持聚合写（AsyncSocket）时是一次系统调用提交两段；TLS 记录层只接受
             // 单块明文，退回两次顺序发送——两者都在数据语义上等价，差别只在是否多一次拷贝。
             // 视图指向的数据活到本次 co_await 结束（响应对象活得更久，序列化结果活在这个
-            // 完整表达式里），因此引用捕获是安全的
+            // 完整表达式里），因此引用捕获是安全的。
+            //
+            // 发送契约（本会话的全部写出路径共用：普通响应、流式正文段、101 握手应答、4xx 错误响应）：
+            // 传输层失败——对端正常关闭或复位、描述符被清扫协程关掉、等可写期间连接被关闭——一律
+            // 折成 false 并记一条中文日志，不抛异常，调用方拿到 false 后必须停止继续写并收口连接；
+            // 只有非传输层的异常（如内存不足）才继续外抛
             const auto sendResponse = [&socket, &connection, &limits](const std::string_view head, const std::string_view body) -> Core::Task<bool>
             {
                 // 发送前把截止时间刷成写超时：对端只连不读（慢消费者）时写侧会一直挂起，
@@ -464,38 +477,54 @@ namespace AsynGyanis::Net
                 // 时限为 0 时这里等于清除截止时间，连接退回「不受写超时约束」
                 connection.refreshIdleDeadline(limits.writeTimeout);
 
-                if constexpr (requires { socket.asyncSendVectored(nullptr, 0); })
+                bool isSucceeded = false;
+                try
                 {
-                    if (body.empty())
+                    if constexpr (requires { socket.asyncSendVectored(nullptr, 0); })
                     {
-                        const ssize_t writeLength = co_await socket.asyncSend(head.data(), head.size());
-                        co_return writeLength > 0;
+                        if (body.empty())
+                        {
+                            isSucceeded = (co_await socket.asyncSend(head.data(), head.size())) > 0;
+                        } else
+                        {
+                            const Platform::Socket::WriteBuffer buffers[2] = {
+                                    {head.data(), head.size()},
+                                    {body.data(), body.size()},
+                            };
+                            isSucceeded = (co_await socket.asyncSendVectored(buffers, 2)) > 0;
+                        }
+                    } else
+                    {
+                        // TLS 只接受单块明文：头部与正文分两次顺序发送，头部没出门就不必再发正文
+                        if ((co_await socket.asyncSend(head.data(), head.size())) > 0)
+                        {
+                            isSucceeded = body.empty() || (co_await socket.asyncSend(body.data(), body.size())) > 0;
+                        }
                     }
-                    const Platform::Socket::WriteBuffer buffers[2] = {
-                            {head.data(), head.size()},
-                            {body.data(), body.size()},
-                    };
-                    const ssize_t writeLength = co_await socket.asyncSendVectored(buffers, 2);
-                    co_return writeLength > 0;
-                } else
+                } catch (const Base::Exception &exception)
                 {
-                    if (const ssize_t headLength = co_await socket.asyncSend(head.data(), head.size()); headLength <= 0)
-                    {
-                        co_return false;
-                    }
-                    if (body.empty())
-                    {
-                        co_return true;
-                    }
-                    const ssize_t bodyLength = co_await socket.asyncSend(body.data(), body.size());
-                    co_return bodyLength > 0;
+                    // 字节流已断（对端 RST、描述符被清扫协程关掉、等可写期间被关闭）：这条响应
+                    // 的剩余段与终止块都不会再发出去，原因进日志，失败以布尔值交给调用方
+                    LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
+                                  exception.what());
+                    co_return false;
                 }
+
+                // 对端关闭在底层是「非正返回值」而不是异常（见 AsyncSocket::asyncSend），
+                // 这条路径同样要留一条日志，否则响应没发出去在日志里毫无痕迹
+                if (!isSucceeded)
+                {
+                    LOG_ERROR_FMT("HttpSession: 响应未写出，对端已关闭连接或连接不可用，请停止继续写并收口连接");
+                }
+                co_return isSucceeded;
             };
 
             // 流式响应的发送回调：把一段字节直接写到这条连接。复用上面那条分段/聚合写路径，
             // 因此 writeChunk 的每一段都是当场流出去的，不存在「先攒在内存里再整块发」的中间态；
             // 写之前的空闲截止时间刷新也在 sendResponse 里，流式期间的长写同样受写超时约束。
-            // 回调引用本协程帧里的 socket 与连接，它们活到整条连接结束，故按连接装配一次即可
+            // 回调引用本协程帧里的 socket 与连接，它们活到整条连接结束，故按连接装配一次即可。
+            // 传输层失败由 sendResponse 折成 false 并记日志，本回调因此不抛异常——这正是
+            // HttpResponse::writeChunk 文档里「返回 false 即连接不可用」得以成立的地方
             const auto sendChunkSegment = [&sendResponse](const std::string_view segment) -> Core::Task<bool>
             {
                 co_return co_await sendResponse(segment, std::string_view{});

@@ -7,7 +7,8 @@
 //   四. 边写边到：处理器写出第一段后**等客户端读到它**才继续写，客户端因此必须在该处理器结束前
 //       拿到第一段与承载它的头部 —— 这是本功能的要点，必须实测；
 //   五. 消息边界：终止块之后同一条连接上的后续请求（含「一段都没写的流式响应」）照常应答；
-//   六. 半途断开与半途异常：客户端中途关闭、处理器写了一段后抛异常，两种都不得崩溃或挂死；
+//   六. 半途断开与半途异常：客户端中途关闭、处理器写了一段后抛异常，两种都不得崩溃或挂死，
+//       前者还必须把传输层失败折成 writeChunk 的 false 交给处理器（而不是以异常打穿它）；
 //   七. 卡住的写侧必须被放出来：客户端中途关闭（内核回 RST）与客户端只停读（只能靠写超时 + 清扫
 //       关连接）两种情况，停等可写的处理器协程都要在有限时间内被唤醒并收手（帧释放为判据）。
 //
@@ -405,6 +406,67 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(fixture.startThrew());
     }
 
+    TEST(HttpStreaming, ReturnsFalseInsteadOfThrowingWhenClientAbortsMidStream)
+    {
+        // 钉住发送失败契约：对端带未读数据关闭（内核回 RST）后，正在等可写的 writeChunk 必须以
+        // false 返回，而不是把传输层异常抛给处理器——文档让调用方按 `if (!co_await ...)` 收手，
+        // 契约就必须真的成立。处理器内断言「失败之后再写一段仍是 false」（异常打穿时执行不到
+        // 这两行），并置位标记让主线程确认它确实拿到了 false 而不是被异常带走
+        HttpServerLimits limits;
+        limits.writeTimeout = std::chrono::milliseconds{200};
+
+        std::atomic<bool> didHandlerObserveWriteFailure{false};
+        std::atomic<bool> isHandlerFrameAlive{false};
+
+        RunningHttpServerFixture fixture(
+                limits, std::chrono::milliseconds{50}, {},
+                [&didHandlerObserveWriteFailure, &isHandlerFrameAlive](Router &router, Core::EventLoop &)
+                {
+                    router.get("/abort-mid-stream",
+                               [&didHandlerObserveWriteFailure, &isHandlerFrameAlive](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
+                        response.startChunkedResponse(200);
+
+                        // 一直写到对端不再可用为止：对端停读让发送缓冲填满，处理器随即停在等可写上，
+                        // RST 到达时正是这次挂起的写把失败交回来
+                        const std::string payload(64 * 1024, 'x');
+                        for (int round = 0; round < 64; ++round)
+                        {
+                            if (!co_await response.writeChunk(payload))
+                            {
+                                // 连接已不可用：再写一段仍应是 false，绝不换成异常
+                                const bool isRetryChunkWritten = co_await response.writeChunk("retry-after-failure");
+                                EXPECT_FALSE(isRetryChunkWritten) << "连接已不可用，writeChunk 仍应返回 false 而不是抛异常";
+                                didHandlerObserveWriteFailure.store(true, std::memory_order_release);
+                                co_return;
+                            }
+                        }
+                        co_return;
+                    });
+                });
+
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /abort-mid-stream HTTP/1.1"), kWaitTimeout));
+
+        // 读到第一段正文（64 KiB 段的十六进制长度就是 10000）即说明流已经开始：此刻客户端接收
+        // 缓冲里还留着大量未读字节，直接关闭会让内核回 RST，而不是一条优雅的 EOF
+        std::string responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "10000\r\nx", kWaitTimeout)) << "第一段正文没发出来：" << responseText;
+        client.closeNow();
+
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire))
+                << "处理器没有被 writeChunk 的 false 唤醒：传输层失败以异常打穿了处理器，或写侧一直宣称成功";
+        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire))
+                << "会话都收口了，处理器协程仍挂在写等待上";
+        EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
+    }
+
     TEST(HttpStreaming, SurvivesClientDisconnectMidStream)
     {
         // 钉住半途断开：客户端读到第一段后关闭连接，写侧迟早失败，处理器据此收手、会话正常收尾，
@@ -415,31 +477,34 @@ namespace AsynGyanis::Net
         // 一、对端带未读数据关闭会让内核回 RST，epoll 上报错误事件，等可写的协程由该事件恢复；
         // 二、关闭描述符本身不会唤醒 epoll 等待者——唤醒由 IoWatcher 析构把等待者投回调度器完成
         //     （见 Core 侧 CloseWakesCoroutineBlockedOnSend 与本文件 ReleasesWriterParkedOnSweepClose）。
-        // 处理器最终以传输层异常而不是 writeChunk 返回 false 收场，因此「有没有收手」只能由
-        // 协程帧是否释放来判定，不能用处理器自己置的标记
+        // 两条路径都把传输层失败折成 writeChunk 的 false 交给处理器，因此「处理器观察到失败」
+        // 与「帧已释放」一起构成判据：前者由处理器自己置的标记证明，后者由存活探针证明
         HttpServerLimits limits;
         limits.writeTimeout = std::chrono::milliseconds{200};
 
         std::atomic<bool> isHandlerFrameAlive{false};
+        std::atomic<bool> didHandlerObserveWriteFailure{false};
         std::atomic<int>  writtenChunkCount{0};
 
         RunningHttpServerFixture fixture(
                 limits, std::chrono::milliseconds{50}, {},
-                [&isHandlerFrameAlive, &writtenChunkCount](Router &router, Core::EventLoop &)
+                [&isHandlerFrameAlive, &didHandlerObserveWriteFailure, &writtenChunkCount](Router &router, Core::EventLoop &)
                 {
-                    router.get("/endless", [&isHandlerFrameAlive, &writtenChunkCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    router.get("/endless",
+                               [&isHandlerFrameAlive, &didHandlerObserveWriteFailure, &writtenChunkCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
                     {
                         const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
                         response.startChunkedResponse(200);
 
-                        // 一直写到对端不再可用为止：断开的信号从 writeChunk 的返回值（对端已收口）
-                        // 或它抛出的传输层异常（写等待被关闭/事件失败）上来，处理器不做特殊处理。
+                        // 一直写到对端不再可用为止：断开的信号从 writeChunk 的返回值上来。
                         // 轮数上限只为兜住极端情况
                         const std::string payload(64 * 1024, 'x');
                         for (int round = 0; round < 64; ++round)
                         {
                             if (!co_await response.writeChunk(payload))
                             {
+                                // 传输层失败以 false 抵达：处理器据此收手，并留下可核对的证据
+                                didHandlerObserveWriteFailure.store(true, std::memory_order_release);
                                 break;
                             }
                             writtenChunkCount.fetch_add(1, std::memory_order_relaxed);
@@ -469,6 +534,8 @@ namespace AsynGyanis::Net
         // 会话必须收口（写超时 + 清扫兜底），且服务器主协程不得被带崩
         EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire))
+                << "对端已断开，处理器没有观察到 writeChunk 的 false（异常打穿或写侧一直宣称成功）";
         // 会话收口意味着处理器已被 await 完：此刻它必须已经离开等可写、帧已释放
         EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire))
                 << "会话都收口了，处理器协程仍挂在写等待上：帧与缓冲一直滞留，直到进程退出";
