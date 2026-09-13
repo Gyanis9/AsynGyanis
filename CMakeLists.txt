@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # 事件循环只有两个后端：Linux 的 epoll（src/Core/EventLoop/Epoll.cpp）与 Windows 的 vendored
-# wepoll（src/Core/EventLoop/wepoll）。其它系统在 Core 这一层就编译不过，而报出来的会是几百行
+# wepoll（src/Core/EventLoop/wepoll.h 与 Wepoll.cpp）。其它系统在 Core 这一层就编译不过，而报出来的会是几百行
 # 模板错误——与其让人去猜，不如在这里一句话说清「缺的是 kqueue 后端」以及补它的落点。
 # README 的「环境要求」也写了这一点，两处一致
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")

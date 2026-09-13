@@ -18,10 +18,11 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
 
 # wepoll（epoll 的 Windows 兼容实现，BSD-2-Clause 许可，见 wepoll.h 头部）已随仓库 vendored，
 # 不再构建期联网下载。它**编进 Core 库本身**、不单独导出目标：Windows 侧的事件通知是 Core 的
-# 实现细节，消费方只需链 AsynGyanis::Core，不必知道底下是谁在做
+# 实现细节，消费方只需链 AsynGyanis::Core，不必知道底下是谁在做。
+# wepoll.h 与 Wepoll.cpp 同目录：Epoll.h 用引号包含 "wepoll.h"，引号包含先从包含者所在目录找
 if (WIN32)
     set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
             ${CMAKE_CURRENT_LIST_DIR}/Wepoll.cpp
-            ${CMAKE_CURRENT_LIST_DIR}/wepoll/wepoll.h
+            ${CMAKE_CURRENT_LIST_DIR}/wepoll.h
     )
 endif ()
