@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -422,6 +423,14 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 附加路由注册动作
+         * @details 由用例提供、在投递 start() 之前执行一次，参数依次为路由器与承载它的事件循环
+         *          （处理函数需要内建定时器时用它）。用它注册的路由与内置路由同批落定，
+         *          因此不会出现「运行期改路由表」那种生效时机不可预期的状态。
+         */
+        using RouteRegistrar = std::function<void(Router &, Core::EventLoop &)>;
+
+        /**
          * @brief 跑起一台真实 HttpServer 的夹具
          * @details 成员顺序即生命周期顺序：循环 → 结果槽 → 服务器 → 主协程任务 → 循环线程。
          *          析构体先让服务器收手（stop + 关闭全部连接），再按逆序 join 线程、销毁协程帧与服务器。
@@ -434,9 +443,10 @@ namespace AsynGyanis::Net
              * @param limits 连接级限额
              * @param sweepInterval 空闲清扫节拍
              * @param slowRoute 可选的慢路由（处理耗时与进入标记）
+             * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
              */
             RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                     const SlowRouteOptions &slowRoute = {}) :
+                                     const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0)),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -471,6 +481,12 @@ namespace AsynGyanis::Net
                         response.setBody("served-slow");
                         co_return;
                     });
+                }
+
+                // 附加路由：与上面两条同批落定，仍然在 start() 之前
+                if (registerRoutes)
+                {
+                    registerRoutes(m_server.router(), m_loop);
                 }
 
                 m_loopThread.schedule(m_serverTask);

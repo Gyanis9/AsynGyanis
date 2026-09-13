@@ -314,6 +314,15 @@ namespace AsynGyanis::Net
     void Router::finalizeResponse(const HttpRequest &request, HttpResponse &response)
     {
         // RFC 9110 §10.6.4 / §15.3.3 / §15.4.5：HEAD、204、304 的响应都不能带正文。
+        //
+        // 流式响应不做任何正文收尾：它的正文由分块帧逐段写出、长度对路由层未知，既不补
+        // content-length 也不清整块正文（setBody() 在流式模式下会报错）。HEAD 上使用流式模式
+        // 属于调用方的误用，已在 HttpResponse::startChunkedResponse 的 @warning 里说明
+        if (response.isChunkedResponse())
+        {
+            return;
+        }
+
         if (request.method() == HttpMethod::HEAD)
         {
             // 先声明长度再剥正文：HEAD 的意义就是「不取正文地问一次 GET 会给多大」。

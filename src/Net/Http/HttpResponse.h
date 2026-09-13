@@ -10,9 +10,12 @@
 #pragma once
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/LogicException.h"
+#include "Core/Coroutine/Task.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,6 +38,11 @@ namespace AsynGyanis::Net
      *           使用，逐条取值请用 headerValues()；头部名一律转小写存储（RFC 9110 §5.1）。
      * @warning 头部值会被原样写入报文，调用方不得传入含 CR/LF 的内容，否则构成响应拆分注入。
      *          正文与状态码由本类自行序列化，不受此限。
+     *
+     * @note 流式模式（startChunkedResponse() + writeChunk()）与整块正文互斥：进入之后正文只能
+     *       逐段写出，头部按 transfer-encoding: chunked 序列化且不写 content-length。
+     *       头部不在 startChunkedResponse() 里发出（那是同步接口，发不出去字节），而是随首段正文
+     *       一起上线，因此状态码与头部必须在首次 writeChunk() 之前定稿。
      */
     class HttpResponse
     {
@@ -101,6 +109,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置响应正文，覆盖已有内容。
          * @param body 正文字符串视图（内容会被复制存储）
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
+         *         正文只能由 writeChunk() 逐段写出
          * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
          */
         void setBody(std::string_view body);
@@ -112,6 +122,8 @@ namespace AsynGyanis::Net
          *          等量拷贝与分配。映射之后正文就是文件页的视图，发送时直接引用（本响应
          *          持有映射的所有权，因此映射在发送期间一定有效）。
          * @param mappedFile 已映射好的文件；无效对象会被当作空正文
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
+         *         正文只能由 writeChunk() 逐段写出
          * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
          * @see Platform::MemoryMappedFile
          */
@@ -128,6 +140,8 @@ namespace AsynGyanis::Net
          * @throws Base::InvalidArgumentException 区间超出映射范围（offset 或 length 越界）。
          *         越界属于调用方的用法错误，拒绝静默钳制——那会让 content-length 与实际
          *         字节数悄悄不一致
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
+         *         正文只能由 writeChunk() 逐段写出
          * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
          * @see Platform::MemoryMappedFile
          */
@@ -138,6 +152,72 @@ namespace AsynGyanis::Net
          * @return 正文字符串视图，视图生命周期跟随本响应对象（映射正文时指向文件映射）
          */
         [[nodiscard]] std::string_view body() const;
+
+        /**
+         * @brief 流式发送回调：把一段字节写到本响应所属的连接
+         *
+         * @details 由会话在路由之前装配（HttpResponse 自己不认识 socket），返回值 false 表示
+         *          连接已不可用。回调是协程：写不下时它会挂起等待可写，而不是丢弃这段字节。
+         */
+        using ChunkSender = std::function<Core::Task<bool>(std::string_view)>;
+
+        /**
+         * @brief 装配流式发送回调（由会话在路由之前调用）
+         * @param chunkSender 发送回调；传空 std::function 表示清除装配
+         * @note 回调绑定的是**连接**而不是某一条报文，因此 reset() 不清理它；未装配时
+         *       writeChunk() 会直接报错，绝不把正文段悄悄丢掉
+         */
+        void setChunkSender(ChunkSender chunkSender);
+
+        /**
+         * @brief 进入流式响应模式：正文此后只能由 writeChunk() 逐段写出
+         *
+         * @details 头部按 transfer-encoding: chunked 序列化（RFC 9112 §6），不写 content-length；
+         *          先设下的 content-length 会被删掉（两者不得并存）。状态码与头部须在首次
+         *          writeChunk() 之前定稿：头部随首段正文一起上线，上线之后改不了。
+         * @param statusCode 响应状态码
+         * @throws Base::LogicException 状态码不允许携带正文（1xx、204、304，RFC 9110 §6.3）、
+         *         已经设过整块正文、或流式头部已经上线
+         * @warning 分块传输是 HTTP/1.1 的机制：在 HTTP/1.0 请求的响应上使用会产出对端无法解析的报文。
+         *          另按 RFC 9110 §9.3.2，HEAD 的响应不得带正文，其处理函数不应进入流式模式。
+         * @see writeChunk()
+         */
+        void startChunkedResponse(int statusCode);
+
+        /**
+         * @brief 把一段正文按 chunked 帧立即写出
+         *
+         * @details 帧格式为 `<十六进制的长度>\r\n<数据>\r\n`（RFC 9112 §7.1），经会话装配的回调
+         *          直接写连接，不在内存里攒整块正文；首段之前先把头部推出去。
+         * @param data 本次写出的正文段，按「指针 + 长度」取，可以是任意字节
+         * @return true 已写出（data 为空时同样为 true，表示无需写出）
+         * @return false 连接已不可用（对端关闭或写失败），调用方应停止继续写
+         * @throws Base::LogicException 当前不在流式模式（请先调用 startChunkedResponse()），
+         *         或响应对象未装配发送回调（只对会话交给处理器的响应对象有效）
+         * @note data 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
+         * @note data 为空时不发送并直接返回 true：零长度块是终止块的语义（RFC 9112 §7.1），
+         *       发一个空段既无信息又会被对端当成消息结束
+         * @note 每次写出之前会把连接的空闲截止时间按 HttpServerLimits::writeTimeout 刷新，
+         *       因此相邻两段之间超过该时限仍会被清扫协程当成慢消费者收口：长间隔的流（如 SSE
+         *       心跳）要在期限内补一段数据，或把 writeTimeout 配大、配 0（关闭该项保护）
+         * @see startChunkedResponse()
+         */
+        Core::Task<bool> writeChunk(std::string_view data);
+
+        /**
+         * @brief 本响应是否处于流式模式。
+         * @return true 已由 startChunkedResponse() 进入流式模式
+         */
+        [[nodiscard]] bool isChunkedResponse() const noexcept;
+
+        /**
+         * @brief 流式头部是否已随首段正文上线
+         *
+         * @details 会话据此判断收尾时该做什么：头部未上线还能整份重写（例如换成 500），
+         *          已上线则只能补终止块。
+         * @return true 状态行与头部已经在对端手里，此后只能写正文段与终止块
+         */
+        [[nodiscard]] bool hasSentChunkedHead() const noexcept;
 
         /**
          * @brief 设置 HTTP 协议版本（默认 "HTTP/1.1"），用于状态行序列化。
@@ -191,8 +271,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 重置响应对象到初始状态（状态码 200、版本 HTTP/1.1，清空头部和正文）。
-         * @details 两条头部存储一起清空，保持「视图与权威记录一致」的不变式；
-         *          复用响应对象时必须先调用本方法，否则上一轮的 Set-Cookie 会残留。
+         * @details 两条头部存储一起清空，保持「视图与权威记录一致」的不变式；流式模式标记
+         *          一并复位（否则下一条报文会被按分块定界）；发送回调刻意不清，它绑定连接
+         *          而不是本条报文。复用响应对象时必须先调用本方法，否则上一轮的 Set-Cookie 会残留。
          */
         void reset();
 
@@ -242,6 +323,19 @@ namespace AsynGyanis::Net
          * @return 指向首个同名条目的迭代器，未命中时等于 m_headerFields.end()
          */
         HeaderFieldList::iterator findHeaderField(const std::string &canonicalName);
+
+        /**
+         * @brief 从两份头部存储中删除指定名字的全部条目
+         * @param canonicalName 已归一化（小写）的头部名；不存在时为空操作
+         */
+        void removeHeaderField(const std::string &canonicalName);
+
+        /**
+         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
+         * @param statusCode 待判定的状态码
+         * @return true 表示该状态码的响应不得有正文，因此不能进入流式模式
+         */
+        [[nodiscard]] static bool isBodylessStatusCode(int statusCode) noexcept;
 
         /**
          * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
@@ -294,6 +388,9 @@ namespace AsynGyanis::Net
         Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效
         std::size_t m_mappedBodyOffset{0};                     ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
         std::size_t m_mappedBodyLength{0};                     ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
+        bool m_isChunked{false};                               ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
+        bool m_hasSentChunkedHead{false};                      ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
+        ChunkSender m_chunkSender;                             ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
         mutable std::string m_autoDateValue;                   ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
 } // namespace AsynGyanis::Net

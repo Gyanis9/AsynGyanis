@@ -129,6 +129,10 @@ namespace AsynGyanis::Net
         /// 因此这一块固定大小就够——窗口永远是「开头一段未解析字节」，不需要按报文体量增长
         inline constexpr std::size_t kReceiveWindowLength = 8ull * 1024;
 
+        /// 分块传输的终止块：零长度块加尾部空行，即「本条消息到此结束」（RFC 9112 §7.1）。
+        /// 它同时就是 keep-alive 的消息边界，因此流式响应写完不必断开连接
+        inline constexpr std::string_view kChunkedTerminator = "0\r\n\r\n";
+
         /**
          * @brief 把解析失败类别翻译成要发的 4xx 响应（状态码与正文全 ASCII）
          * @details 边界判定（报文到哪里结束、哪里越界、哪里读不懂）全部由 HttpParser 负责并给出类别，
@@ -340,6 +344,43 @@ namespace AsynGyanis::Net
                 }
             };
 
+            // 流式响应的发送回调：把一段字节直接写到这条连接。复用上面那条分段/聚合写路径，
+            // 因此 writeChunk 的每一段都是当场流出去的，不存在「先攒在内存里再整块发」的中间态；
+            // 写之前的空闲截止时间刷新也在 sendResponse 里，流式期间的长写同样受写超时约束。
+            // 回调引用本协程帧里的 socket 与连接，它们活到整条连接结束，故按连接装配一次即可
+            const auto sendChunkSegment = [&sendResponse](const std::string_view segment) -> Core::Task<bool>
+            {
+                co_return co_await sendResponse(segment, std::string_view{});
+            };
+
+            // 装配给按连接复用的响应对象：它绑定的是这条连接而不是某一条报文，因此装一次就够，
+            // reset() 也不会把它清掉（只清流式模式标记）。装配必然早于任何一次路由
+            response.setChunkSender(sendChunkSegment);
+
+            // 把异常的指针取成可读文本：流式响应中途失败时头部已经上线，改状态码已不可能，
+            // 日志是唯一能交代原因的地方
+            const auto describeException = [](const std::exception_ptr &exceptionPointer) -> std::string
+            {
+                if (!exceptionPointer)
+                {
+                    return {};
+                }
+
+                std::string description;
+                try
+                {
+                    std::rethrow_exception(exceptionPointer);
+                } catch (const std::exception &exception)
+                {
+                    description = exception.what();
+                } catch (...)
+                {
+                    // 非标准异常没有 what()：给一句中文占位，好过把它当成「没有异常」
+                    description = "非标准异常（无 what() 描述）";
+                }
+                return description;
+            };
+
             // 读一次网络字节到窗口剩余空间。返回 0 表示对端正常关闭，负值表示连接不可用
             const auto readIntoWindow = [&isAlive, &receiveBuffer, &socket, &windowLength]() -> Core::Task<ssize_t>
             {
@@ -481,21 +522,6 @@ namespace AsynGyanis::Net
                     handlerException = std::current_exception();
                 }
 
-                if (handlerException)
-                {
-                    // 业务异常必须整体重置响应再填 500：handler 可能已经写了一半头部与正文，
-                    // 只改状态码会把半成品连同错的 content-length 一起发出去
-                    const std::string requestVersion = request.httpVersion();
-                    response.reset();
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
-                    if (!requestVersion.empty())
-                    {
-                        response.setHttpVersion(requestVersion);
-                    }
-                }
-
                 // 取消转发器不在这里注销：它按连接注册一次（见循环前），
                 // 回调指向解析器内部那个按连接复用的请求对象，跨请求依然指向正确目标
 
@@ -505,54 +531,109 @@ namespace AsynGyanis::Net
                 const bool isRequestLimitReached = limits.maximumRequestsPerConnection > 0 &&
                                                    servedRequestCount >= limits.maximumRequestsPerConnection;
 
-                keepAlive = HttpSession::shouldKeepAlive(request, response) && !isRequestLimitReached;
-
-                const std::string &requestVersion = request.httpVersion();
-                const bool isHttp10OrOlder = requestVersion.starts_with("HTTP/1.0") || requestVersion.starts_with("HTTP/0.9");
-
-                // Connection 头按判定结果补齐：断连要显式告知，1.0 保活也要显式告知，
-                // 否则对端会按自己的默认值理解这条连接，出现「一端留着、一端关掉」的错位
-                if (!keepAlive)
-                {
-                    response.setHeader("connection", "close");
-                } else if (isHttp10OrOlder && !response.getHeader("connection").has_value())
-                {
-                    response.setHeader("connection", "keep-alive");
-                }
-
-                // 响应自动带本次请求的 request-id，与 date 同属「自动补齐」语义：调用方显式设过
-                // 就不覆盖（业务可能想把上游网关的 id 透传下去）。放在 500 改写之后，
-                // 保证异常路径上的响应同样能被日志检索对上
+                // 流式响应且头部已随首段正文上线（见 HttpResponse::writeChunk）：对端手里已经有
+                // 状态行与头部，此刻既改不了状态码、也补不了 Connection: close，收尾只剩补终止块
+                const bool isChunkedHeadSent = response.isChunkedResponse() && response.hasSentChunkedHead();
                 const std::string_view requestIdView = request.requestId();
-                if (!requestIdView.empty() && !response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+
+                if (isChunkedHeadSent)
                 {
-                    response.setHeader(std::string(kRequestIdHeaderName), std::string(requestIdView));
+                    // chunked 的 0\r\n\r\n 本身就是消息边界，连接因此按 RFC 9112 §7.1 照常可以复用：
+                    // 是否保活仍按 shouldKeepAlive() 判定（请求或业务显式写了 close 就收口），
+                    // 不因为是流式响应就强行声明 close —— 那会把「消息边界」与「连接存续」混为一谈。
+                    // 业务抛异常是唯一例外：正文只发了一半，复用这条连接会让下一条报文接在半成品之后
+                    keepAlive = !handlerException && HttpSession::shouldKeepAlive(request, response) && !isRequestLimitReached;
+
+                    if (handlerException)
+                    {
+                        // 头部已上线，任何「改 500」都是不可能的：对端已经按原状态码读到了状态行与
+                        // 前半段正文，这里只能补终止块让它的消息收完整，并把原因记进日志
+                        LOG_ERROR_FMT("HttpSession: 流式响应的业务处理中途抛出异常，头部已上线无法改写状态码，"
+                                      "已补终止块并收口连接。request-id {}，路径 {}，原因：{}",
+                                      requestIdView, request.uri(), describeException(handlerException));
+                    }
+
+                    // 头部已在 writeChunk 里上线，这里只补终止块，不再重复发头部
+                    if (!co_await sendChunkSegment(kChunkedTerminator))
+                    {
+                        // 终止块没发出去：本条消息对端收不全，不计状态码类与延迟
+                        co_return;
+                    }
+                } else
+                {
+                    // 版本号取一次：500 改写与 Connection 头判定都要按请求版本回填，不硬编码 1.1
+                    const std::string &requestVersion = request.httpVersion();
+
+                    if (handlerException)
+                    {
+                        // 业务异常必须整体重置响应再填 500：handler 可能已经写了一半头部与正文，
+                        // 只改状态码会把半成品连同错的 content-length 一起发出去。
+                        // 流式模式若尚未写出任何一段，同样落到这里——头部还没上线，改写是完全有效的
+                        response.reset();
+                        response.setStatus(500);
+                        response.setBody("Internal Server Error");
+                        response.setHeader("content-type", "text/plain");
+                        if (!requestVersion.empty())
+                        {
+                            response.setHttpVersion(requestVersion);
+                        }
+                    }
+
+                    keepAlive = HttpSession::shouldKeepAlive(request, response) && !isRequestLimitReached;
+
+                    const bool isHttp10OrOlder = requestVersion.starts_with("HTTP/1.0") || requestVersion.starts_with("HTTP/0.9");
+
+                    // Connection 头按判定结果补齐：断连要显式告知，1.0 保活也要显式告知，
+                    // 否则对端会按自己的默认值理解这条连接，出现「一端留着、一端关掉」的错位
+                    if (!keepAlive)
+                    {
+                        response.setHeader("connection", "close");
+                    } else if (isHttp10OrOlder && !response.getHeader("connection").has_value())
+                    {
+                        response.setHeader("connection", "keep-alive");
+                    }
+
+                    // 响应自动带本次请求的 request-id，与 date 同属「自动补齐」语义：调用方显式设过
+                    // 就不覆盖（业务可能想把上游网关的 id 透传下去）。放在 500 改写之后，
+                    // 保证异常路径上的响应同样能被日志检索对上
+                    if (!requestIdView.empty() && !response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+                    {
+                        response.setHeader(std::string(kRequestIdHeaderName), std::string(requestIdView));
+                    }
+
+                    // 头部序列化一次，跟随段一起提交（普通响应跟正文，流式响应跟终止块）：
+                    // serializedHead 是具名局部，跟随段视图指向的 response 也活到本次调用之后
+                    const std::string serializedHead = response.serializeHead();
+                    const std::string_view trailingSegment = response.isChunkedResponse() ? kChunkedTerminator
+                                                                                         : response.body();
+                    if (!co_await sendResponse(serializedHead, trailingSegment))
+                    {
+                        // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
+                        // 「对端没收到」的请求算成已应答
+                        co_return;
+                    }
                 }
 
-                // 头部序列化一次，正文留在响应对象里：两段一起提交，正文不必再拷一份。
-                // serializedHead 是具名局部，正文视图指向的 response 也活到本次调用之后
-                const std::string serializedHead = response.serializeHead();
-                if (!co_await sendResponse(serializedHead, response.body()))
+                // 响应已发出：状态码类与本次耗时（「收到完整请求」到「响应发完」）一起落账。
+                // 流式响应中途出异常时正文只发了一半，落账等于把半成品记成已应答（状态码也不是真实结果），
+                // 因此跳过——那条路径已经由上面的错误日志交代
+                const bool isTruncatedChunkedResponse = isChunkedHeadSent && static_cast<bool>(handlerException);
+                if (!isTruncatedChunkedResponse)
                 {
-                    // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
-                    // 「对端没收到」的请求算成已应答
-                    co_return;
-                }
+                    const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
+                    if (metrics != nullptr)
+                    {
+                        metrics->recordResponse(response.status(), requestElapsed);
+                    }
 
-                // 响应已发出：状态码类与本次耗时（「收到完整请求」到「响应发完」）一起落账
-                const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
-                if (metrics != nullptr)
-                {
-                    metrics->recordResponse(response.status(), requestElapsed);
-                }
-
-                // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的
-                // 处理记录因此能按同一个键对齐（排查线上问题时先要 id 再要日志）
-                if (!requestIdView.empty())
-                {
-                    LOG_INFO_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us",
-                                 requestIdView, request.uri(), response.status(),
-                                 std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+                    // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的
+                    // 处理记录因此能按同一个键对齐（排查线上问题时先要 id 再要日志）
+                    if (!requestIdView.empty())
+                    {
+                        LOG_INFO_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us",
+                                     requestIdView, request.uri(), response.status(),
+                                     std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+                    }
                 }
 
                 // 应答已发出，回到「等一条新请求」的相位：不刷新的话，下一次读之前

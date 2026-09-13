@@ -48,6 +48,9 @@ namespace AsynGyanis::Net
         constexpr std::string_view kContentTypeHeaderName = "content-type";     ///< 媒体类型头部名（小写形态）
         constexpr std::string_view kContentLengthHeaderName = "content-length"; ///< 正文长度头部名（小写形态）
         constexpr std::string_view kDateHeaderName = "date";                    ///< 日期头部名（小写形态）
+        constexpr std::string_view kTransferEncodingHeaderName = "transfer-encoding"; ///< 传输编码头部名（小写形态）
+        constexpr std::string_view kChunkedTransferEncodingValue = "chunked";   ///< 分块传输编码值：正文长度未知，边界由分块帧给出（RFC 9112 §6）
+        constexpr std::size_t kMaximumChunkLengthHexDigits = sizeof(std::size_t) * 2; ///< 分块长度行的十六进制位数上限（每字节 2 位）
         constexpr std::string_view kAutoContentTypeHeader = "content-type: text/plain\r\n";      ///< 未设媒体类型且有正文时补出的整条头部
         constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";          ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
         constexpr std::string_view kAutoDateHeaderPrefix = "date: ";                             ///< 未设日期时补出的头部名前缀（含冒号与空格）
@@ -186,6 +189,17 @@ namespace AsynGyanis::Net
                                     });
     }
 
+    void HttpResponse::removeHeaderField(const std::string &canonicalName)
+    {
+        // 两份存储必须一起删：只删权威记录会留下「查询查得到、序列化里没有」的鬼条目
+        const auto isSameName = [&canonicalName](const HeaderField &field)
+        {
+            return field.name == canonicalName;
+        };
+        m_headerFields.erase(std::ranges::remove_if(m_headerFields, isSameName).begin(), m_headerFields.end());
+        m_headers.erase(canonicalName);
+    }
+
     bool HttpResponse::setHeader(const std::string &name, const std::string &value)
     {
         // 头部名转小写后入库，判据也按小写形态给出
@@ -257,6 +271,15 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setBody(const std::string_view body)
     {
+        // 流式模式下正文由 writeChunk 逐段写出、长度对序列化层未知：再塞一份整块正文就是
+        // 两份互相矛盾的正文表述，明确报错而不是静默丢弃调用方给的内容
+        if (m_isChunked)
+        {
+            throw Base::LogicException("HttpResponse::setBody：本响应已进入流式模式，正文只能由 writeChunk() 逐段写出，"
+                                       "不能再设置整块正文；请去掉这次的 setBody()/setMappedBody() 调用，"
+                                       "或不要调用 startChunkedResponse() 而改用普通响应");
+        }
+
         // 两条正文存储互斥：换成堆正文之前先解除映射，否则 bodyView() 会继续读旧映射
         m_mappedBody = Platform::MemoryMappedFile{};
         m_mappedBodyOffset = 0;
@@ -276,6 +299,15 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile, const std::size_t offset, const std::size_t length)
     {
+        // 互斥判定放在最前：流式模式下的整块正文（无论来自堆还是映射）都不允许，
+        // 也不该让调用方以为「越界检查通过了就能设」
+        if (m_isChunked)
+        {
+            throw Base::LogicException("HttpResponse::setMappedBody：本响应已进入流式模式，正文只能由 writeChunk() 逐段写出，"
+                                       "不能再设置整块正文；请去掉这次的 setMappedBody() 调用，"
+                                       "或不要调用 startChunkedResponse() 而改用普通响应");
+        }
+
         const std::size_t availableLength = mappedFile.isValid() ? mappedFile.bytes().size() : 0;
 
         // 越界属于调用方的用法错误（重试无用），归入 logic_error 分支；静默钳制会让
@@ -324,6 +356,121 @@ namespace AsynGyanis::Net
     std::string_view HttpResponse::body() const
     {
         return bodyView();
+    }
+
+    void HttpResponse::setChunkSender(ChunkSender chunkSender)
+    {
+        // 装配即接管：回调的生命周期要求见声明处 @note，这里不做任何包装或校验
+        m_chunkSender = std::move(chunkSender);
+    }
+
+    bool HttpResponse::isChunkedResponse() const noexcept
+    {
+        return m_isChunked;
+    }
+
+    bool HttpResponse::hasSentChunkedHead() const noexcept
+    {
+        return m_hasSentChunkedHead;
+    }
+
+    void HttpResponse::startChunkedResponse(const int statusCode)
+    {
+        // 头部已经上线之后再进/改流式模式：对端已经按上一版状态行与头部读到了报文，
+        // 这里改什么都到不了它手上，静默接受只会让调用方以为改成功了
+        if (m_hasSentChunkedHead)
+        {
+            throw Base::LogicException("HttpResponse::startChunkedResponse：本次流式响应的头部已经写出，无法再改状态码；"
+                                       "请把 startChunkedResponse() 与头部设置都放到首次 writeChunk() 之前");
+        }
+
+        // 1xx、204、304 的响应按 RFC 9110 §6.3 不得携带正文，流式写出没有意义
+        if (isBodylessStatusCode(statusCode))
+        {
+            throw Base::LogicException("HttpResponse::startChunkedResponse：状态码 " + std::to_string(statusCode) +
+                                       " 的响应不允许携带正文，无法流式写出；请改用 200 等允许正文的状态码，"
+                                       "或改用不带正文的普通响应");
+        }
+
+        // 已经设过整块正文再来进流式模式：两份互相矛盾的正文表述，报错而不是把已设的正文悄悄丢掉
+        if (!bodyView().empty())
+        {
+            throw Base::LogicException("HttpResponse::startChunkedResponse：本响应已经设置过整块正文，与流式模式互斥；"
+                                       "请去掉 setBody()/setMappedBody() 调用，正文改用 writeChunk() 逐段写出");
+        }
+
+        m_status = statusCode;
+        m_isChunked = true;
+        m_hasSentChunkedHead = false;
+
+        // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：收端若按前者定界，
+        // 分块帧就会被当成正文，整条报文的边界随之错位。调用方先设下的那条一律删掉
+        removeHeaderField(std::string(kContentLengthHeaderName));
+
+        // 正文长度对发送方未知，消息边界改由分块帧界定（RFC 9112 §6）。
+        // 名与值都是本类自己给出的合法字面量，setHeader 不会拒收，返回值无需再判
+        setHeader(std::string(kTransferEncodingHeaderName), std::string(kChunkedTransferEncodingValue));
+    }
+
+    Core::Task<bool> HttpResponse::writeChunk(const std::string_view data)
+    {
+        // 两种用法错误都在这里拦下：没进流式模式、或没有连接可写（响应对象在会话之外构造）。
+        // 静默丢弃会让对端挂在一条永远收不满的响应上，因此一律当场报错
+        if (!m_isChunked)
+        {
+            throw Base::LogicException("HttpResponse::writeChunk：当前响应不在流式模式，无法写出正文段；"
+                                       "请先调用 startChunkedResponse(statusCode) 再逐段 co_await writeChunk(...)");
+        }
+        if (!m_chunkSender)
+        {
+            throw Base::LogicException("HttpResponse::writeChunk：响应对象没有装配发送回调，正文段无处可写；"
+                                       "本接口只对会话交给业务处理器的响应对象有效，请改回 setBody() 一次性给出正文");
+        }
+
+        // 空段不发：零长度块是终止块的语义（RFC 9112 §7.1），发出去等于告诉对端消息结束。
+        // 调用方按「没数据就空转一轮」的节奏循环时，不必自己判空
+        if (data.empty())
+        {
+            co_return true;
+        }
+
+        // 首段之前先把头部推出去：startChunkedResponse() 是同步接口，发不出去字节，只能把头部
+        // 懒发送到第一次真正写出的时候 —— 正是这一点让正文能边写边到，而不是攒到处理器结束
+        if (!m_hasSentChunkedHead)
+        {
+            const std::string serializedHead = serializeHead();
+            if (!co_await m_chunkSender(serializedHead))
+            {
+                co_return false;
+            }
+
+            // 头部已在对端手里：此后状态码与头部都改不了，即使接下来的数据段发送失败
+            m_hasSentChunkedHead = true;
+        }
+
+        // 帧 = <十六进制长度>\r\n<数据>\r\n。长度必须与数据逐字节相符，错一位对端就再也找不回
+        // 帧边界；to_chars 而非流式格式化，既不受 locale 影响也不抛异常
+        std::array<char, kMaximumChunkLengthHexDigits> lengthText{};
+        const auto [lengthEnd, lengthError] =
+                std::to_chars(lengthText.data(), lengthText.data() + lengthText.size(), data.size(), 16);
+        if (lengthError != std::errc())
+        {
+            // 缓冲按 size_t 的最长十六进制位数给足，正常平台走不到这里；真遇到了宁可失败，
+            // 也绝不发出一个长度不对的帧
+            throw Base::LogicException("HttpResponse::writeChunk：分块长度无法写成十六进制文本，本段数据未发出；"
+                                       "请检查本段长度是否超出平台可表示范围");
+        }
+
+        const std::size_t lengthTextLength = static_cast<std::size_t>(lengthEnd - lengthText.data());
+        std::string frame;
+        // 长度行 + 数据 + 收尾 CRLF 一次预留到位：每次 writeChunk 只分配这一块
+        frame.reserve(lengthTextLength + kCrLfLength + data.size() + kCrLfLength);
+        frame.append(lengthText.data(), lengthTextLength);
+        frame.append(kCrLf);
+        frame.append(data.data(), data.size());
+        frame.append(kCrLf);
+
+        co_return co_await m_chunkSender(frame);
     }
 
     const char *HttpResponse::statusMessage(const int code)
@@ -409,13 +556,18 @@ namespace AsynGyanis::Net
         }
     }
 
-    bool HttpResponse::carriesNoContent() const noexcept
+    bool HttpResponse::isBodylessStatusCode(const int statusCode) noexcept
     {
         // RFC 9110 §6.3：1xx、204、304 一律不含正文。这里按状态码在序列化层兜住，
         // 不能只指望上游 Router 的 finalizeResponse 先把正文清空——业务直接
         // setStatus(204) + setBody(...) 就会发出「没有 content-length 却带正文」的报文，
         // keep-alive 上的下一帧边界随之错位
-        return m_status == 204 || m_status == 304 || (m_status >= 100 && m_status < 200);
+        return statusCode == 204 || statusCode == 304 || (statusCode >= 100 && statusCode < 200);
+    }
+
+    bool HttpResponse::carriesNoContent() const noexcept
+    {
+        return isBodylessStatusCode(m_status);
     }
 
     bool HttpResponse::mustNotDeclareContentLength() const noexcept
@@ -451,7 +603,8 @@ namespace AsynGyanis::Net
         {
             reservedLength += kAutoContentTypeReserveLength;
         }
-        if (!hasContentLengthHeader && !mustNotDeclareContentLength())
+        // 流式响应不写 content-length（正文长度未知，边界由分块帧界定），这一段无需预留
+        if (!m_isChunked && !hasContentLengthHeader && !mustNotDeclareContentLength())
         {
             reservedLength += kAutoContentLengthReserveLength;
         }
@@ -490,6 +643,13 @@ namespace AsynGyanis::Net
                 hasDateHeader = true;
             }
 
+            // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：流式响应一律不输出这条，
+            // 既拦住调用方自己设的，也拦住 Router 为 HEAD 补的那条
+            if (m_isChunked && field.name == kContentLengthHeaderName)
+            {
+                continue;
+            }
+
             result.append(field.name);
             result.append(kHeaderNameValueSeparator);
             result.append(field.value);
@@ -503,7 +663,9 @@ namespace AsynGyanis::Net
             // 有正文却漏设媒体类型时按纯文本下发：不会被浏览器当脚本执行，是最安全的兜底
             result.append(kAutoContentTypeHeader);
         }
-        if (!hasContentLengthHeader && !mustNotDeclareContentLength())
+        // 流式响应由分块帧界定正文边界，content-length 与 transfer-encoding 不得并存
+        // （RFC 9112 §6.1），因此既不补也不输出自设的那条
+        if (!m_isChunked && !hasContentLengthHeader && !mustNotDeclareContentLength())
         {
             // content-length 必须是正文的真实字节数，收端据此判定报文边界，错一个字节整条连接就错位
             result.append(kAutoContentLengthHeaderPrefix);
@@ -589,6 +751,11 @@ namespace AsynGyanis::Net
 
         // 自动 date 同样要清：否则复用响应时下一条报文会带上上一轮生成的日期
         m_autoDateValue.clear();
+
+        // 流式模式标记一并复位：残留下去会让下一条报文也按分块定界，而对端等的是终止块。
+        // 发送回调刻意不动：它绑定的是连接，不是本条报文
+        m_isChunked = false;
+        m_hasSentChunkedHead = false;
     }
 
 } // namespace AsynGyanis::Net
