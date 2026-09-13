@@ -33,11 +33,10 @@ namespace AsynGyanis::Net
      *       而那个所有者必须是 Core::TlsSocket（它的析构要先 SSL_shutdown 再关描述符，
      *       顺序反了就把 TLS 会话票据连同描述符一起丢了）。因此传给基类的是一条**不持有描述符**的
      *       占位套接字（fileDescriptor() 为 -1）。
-     * @note 关闭与存活判定都已重写（见本类的 close() 与 isAlive()）：Core::Connection 把这两个
-     *       接口声明为虚函数，所以 ConnectionManager::shutdown() 经基类指针调用时，真正被关掉的
-     *       是 TLS 通道，而不是那个占位套接字。
-     * @warning 由此带来一条使用约束：不要在本对象上调用基类的 remoteAddress()/localAddress()——
-     *          占位套接字取不到地址，需要地址请从接受连接的那一层拿（TcpServer 的 accept 结果）。
+     * @note 凡是要看真实描述符的基类接口都已重写（见本类的 close()、isAlive()、
+     *       remoteAddress() 与 localAddress()）：Core::Connection 把它们声明为虚函数，
+     *       所以经基类指针调用时（ConnectionManager::shutdown()、TcpServer 的空闲清扫）
+     *       作用到的是 TLS 通道，而不是那个占位套接字。
      * @see HttpSession, Core::TlsSocket
      */
     class HttpsSession : public Core::Connection
@@ -108,6 +107,25 @@ namespace AsynGyanis::Net
          * @return true 基类存活位为真且 TLS 通道仍然打开
          */
         [[nodiscard]] bool isAlive() const noexcept override;
+
+        /**
+         * @brief 获取对端的 IP 地址与端口
+         * @details 重写 Core::Connection::remoteAddress()：基类实现读的是那条不持有描述符的
+         *          占位套接字，取地址必然失败（getpeername 返回「不是套接字」）。这里改问
+         *          TLS 通道，它是真实描述符的所有者。
+         * @return std::string 字符串格式 "ip:port"
+         * @throws Base::SystemException TLS 通道已关闭，底层套接字无法提供地址
+         */
+        [[nodiscard]] std::string remoteAddress() const override;
+
+        /**
+         * @brief 获取本端的 IP 地址与端口
+         * @details 重写 Core::Connection::localAddress()：理由同 remoteAddress()，
+         *          基类的占位套接字取不到任何地址。
+         * @return std::string 字符串格式 "ip:port"
+         * @throws Base::SystemException TLS 通道已关闭，底层套接字无法提供地址
+         */
+        [[nodiscard]] std::string localAddress() const override;
 
         /**
          * @brief 本连接被空闲清扫协程按超时关闭时上报到所属服务器的统计

@@ -1,10 +1,12 @@
 #include "Net/Http/HttpsSession.h"
 
 #include "Base/Log/LogMacros.h"
+#include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpSession.h"
 
 #include <exception>
 #include <stop_token>
+#include <string>
 #include <utility>
 
 namespace AsynGyanis::Net
@@ -59,6 +61,18 @@ namespace AsynGyanis::Net
     bool HttpsSession::isAlive() const noexcept
     {
         return Core::Connection::isAlive() && isTlsTransportOpen();
+    }
+
+    std::string HttpsSession::remoteAddress() const
+    {
+        // 基类那份套接字是个不持有描述符的占位对象，向它要地址只会得到「不是套接字」的错误；
+        // 真实描述符归 TlsSocket 所有，地址只能从它那里取
+        return m_tlsSocket.remoteAddress().toString();
+    }
+
+    std::string HttpsSession::localAddress() const
+    {
+        return m_tlsSocket.localAddress().toString();
     }
 
     Core::Task<> HttpsSession::start()

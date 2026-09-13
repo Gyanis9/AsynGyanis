@@ -2,6 +2,7 @@
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Exception/CoreException.h"
+#include "Core/Socket/InetAddress.h"
 
 #include <openssl/err.h>
 
@@ -174,6 +175,17 @@ namespace AsynGyanis::Core
     int TlsSocket::fileDescriptor() const noexcept
     {
         return m_socket.fileDescriptor();
+    }
+
+    InetAddress TlsSocket::remoteAddress() const
+    {
+        // 地址只存在于底层套接字上：SSL 对象不保存地址，也不需要在关闭后提供它
+        return m_socket.remoteAddress();
+    }
+
+    InetAddress TlsSocket::localAddress() const
+    {
+        return m_socket.localAddress();
     }
 
 }

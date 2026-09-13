@@ -1,8 +1,8 @@
 /**
  * @file TestTlsSocket.cpp
- * @brief TlsSocket 单元测试：构造、移动语义与安全关闭（使用仓库预生成证书）
+ * @brief TlsSocket 单元测试：构造、移动语义、安全关闭与地址查询（使用仓库预生成证书）
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -10,10 +10,12 @@
 #include "Core/Tls/TlsSocket.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Socket/AsyncSocket.h"
+#include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsContext.h"
 #include "Platform/IO/FileDescriptor.h"
 
@@ -166,6 +168,40 @@ namespace AsynGyanis::Core
         ASSERT_EQ(tlsSocket.fileDescriptor(), localDescriptor);
 
         tlsSocket.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 地址查询透传到被包装的套接字：两端都在回环上，且关闭后按契约抛出
+     * @details createPair 造的是 loopback TCP 描述符对，因此 getpeername/getsockname 有真实地址可读；
+     *          这一层不自己记地址，地址问不出来就说明通道已不可用，调用方据此判失败而不是拿空地址。
+     */
+    TEST(TlsSocket, ExposesUnderlyingSocketAddresses)
+    {
+        EventLoop  loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+
+        const InetAddress peerAddress = tlsSocket.remoteAddress();
+        const InetAddress ownAddress  = tlsSocket.localAddress();
+        EXPECT_EQ(peerAddress.ip(), "127.0.0.1") << "对端地址没有从被包装的套接字上读到";
+        EXPECT_EQ(ownAddress.ip(), "127.0.0.1") << "本端地址没有从被包装的套接字上读到";
+        EXPECT_NE(peerAddress.port(), 0) << "对端端口为 0：地址没有真正读出来";
+        EXPECT_NE(ownAddress.port(), 0) << "本端端口为 0：地址没有真正读出来";
+
+        // 拒绝面：描述符被关掉之后再问地址，只能失败（静默返回空地址会让调用方以为拿到了对端）
+        tlsSocket.close();
+        EXPECT_THROW(static_cast<void>(tlsSocket.remoteAddress()), Base::SystemException);
+
         Platform::FileDescriptor::close(peerDescriptor);
     }
 

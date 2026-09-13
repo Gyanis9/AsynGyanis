@@ -2,7 +2,7 @@
  * @file TlsSocket.h
  * @brief TLS socket 包装器 — SSL_read/SSL_write 与非阻塞 epoll 集成
  * @author Gyanis
- * @date 2026-09-11
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) 2026
  */
@@ -100,6 +100,20 @@ namespace AsynGyanis::Core
          * @return 文件描述符值
          */
         [[nodiscard]] int fileDescriptor() const noexcept;
+
+        /**
+         * @brief 获取对端的 IP 地址与端口。
+         * @return InetAddress 对端地址
+         * @throws Base::SystemException 底层套接字无法提供地址（通道已关闭等）
+         */
+        [[nodiscard]] InetAddress remoteAddress() const;
+
+        /**
+         * @brief 获取本端的 IP 地址与端口。
+         * @return InetAddress 本端地址
+         * @throws Base::SystemException 底层套接字无法提供地址（通道已关闭等）
+         */
+        [[nodiscard]] InetAddress localAddress() const;
 
     private:
         struct SslDeleter

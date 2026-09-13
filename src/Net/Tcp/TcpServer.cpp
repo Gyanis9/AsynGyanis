@@ -177,20 +177,34 @@ namespace AsynGyanis::Net
                         continue;
                     }
 
-                    // 日志带上对端地址与本轮的清扫节拍（实际超时 = 连接自己的时限 + 节拍，
-                    // 因此节拍就是这条日志能给出的误差上界），便于从日志定位是哪条连接、误差多大
-                    LOG_INFO_FMT("TcpServer: 连接空闲超过截止时间，正在关闭。对端 {}，清扫节拍 {}ms",
-                                 connection->remoteAddress(),
-                                 m_idleCheckInterval.count());
+                    // 每条连接单独兜异常：日志或收尾任一步抛了（例如某个会话子类取不到对端地址），
+                    // 只跳过这一条，不能把同轮其余超期连接一起漏掉——上一版正是这样漏关了整轮
+                    try
+                    {
+                        // 日志带上对端地址与本轮的清扫节拍（实际超时 = 连接自己的时限 + 节拍，
+                        // 因此节拍就是这条日志能给出的误差上界），便于从日志定位是哪条连接、误差多大
+                        LOG_INFO_FMT("TcpServer: 连接空闲超过截止时间，正在关闭。对端 {}，清扫节拍 {}ms",
+                                     connection->remoteAddress(),
+                                     m_idleCheckInterval.count());
 
-                    // 先请求停止再关描述符，与 ConnectionManager::shutdown() 同一顺序：
-                    // 会话先看到取消信号，随后描述符被关会唤醒仍挂在 epoll 上的读写
-                    [[maybe_unused]] auto _ = connection->cancelable().requestStop();
-                    connection->close();
+                        // 先请求停止再关描述符，与 ConnectionManager::shutdown() 同一顺序：
+                        // 会话先看到取消信号，随后描述符被关会唤醒仍挂在 epoll 上的读写
+                        [[maybe_unused]] auto _ = connection->cancelable().requestStop();
+                        connection->close();
 
-                    // 上报「本连接因超时被收口」：协议层据此累计自己的超时计数（默认实现为空操作）。
-                    // 放在 close() 之后调用，保证被计数的连接确实已经关掉
-                    connection->onIdleTimeoutClosed();
+                        // 上报「本连接因超时被收口」：协议层据此累计自己的超时计数（默认实现为空操作）。
+                        // 放在 close() 之后调用，保证被计数的连接确实已经关掉
+                        connection->onIdleTimeoutClosed();
+                    } catch (const std::exception &connectionException)
+                    {
+                        LOG_ERROR_FMT("TcpServer: 关闭空闲超期连接失败，已跳过该连接并继续本轮。原因：{}",
+                                      connectionException.what());
+                        continue;
+                    } catch (...)
+                    {
+                        LOG_ERROR_FMT("TcpServer: 关闭空闲超期连接失败，已跳过该连接并继续本轮。原因：非标准库异常");
+                        continue;
+                    }
                 }
             } catch (const std::exception &sweepException)
             {

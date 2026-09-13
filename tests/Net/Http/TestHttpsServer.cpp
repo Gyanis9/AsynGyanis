@@ -5,9 +5,6 @@
 //   四. 前缀隔离：HTTP 与 HTTPS 各自的 request-id 前缀不相等。
 // 夹具在本文件内自建（TestHttpsServer + TlsLoopbackClient），回环端口由内核分配，用例之间不共用端口。
 
-// 已知缺口：**HTTPS 侧没有空闲超时用例**——在 TLS 路径上按 "短 idleTimeout + 短清扫节拍" 构造时，
-//          服务器的 timeoutClosedCount 始终为 0、客户端也等不到关闭（HTTP 侧同一构造是稳定的）。
-//          该行为差异未查清，故不写用例充当覆盖；需要用 HTTPS 空闲超时保证时先查这条。
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/HttpServerStats.h"
 
@@ -233,6 +230,12 @@ namespace AsynGyanis::Net
                 return m_handshakeDone;
             }
 
+            /// 本端 TCP 端口：服务端在会话里看到的对端端口就是它
+            [[nodiscard]] std::uint16_t localPort() const
+            {
+                return queryBoundPort(m_descriptor);
+            }
+
             /**
              * @brief 把整段字节写出去
              * @param payload 待发字节
@@ -433,6 +436,12 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::size_t activeConnectionCount() const
             {
                 return m_connectionManager.activeCount();
+            }
+
+            /// 当前挂在连接管理器上的活跃连接（取快照，供用例按基类接口观察会话）
+            [[nodiscard]] std::vector<std::shared_ptr<Core::Connection> > activeConnections() const
+            {
+                return m_connectionManager.snapshot();
             }
         };
 
@@ -638,6 +647,61 @@ namespace AsynGyanis::Net
                 << "第 2 条 HTTPS 请求未得到完整响应";
 
         EXPECT_EQ(requestIdHeaderAt(receivedText, 1), clientRequestId) << "客户端自带的合法 request-id 没有被原样回显";
+    }
+
+    /**
+     * @brief 钉住：TLS 连接建立后一个字节都不发，服务端按 idleTimeout 收口并计入 timeoutClosedCount
+     *
+     * @details 与 HTTP 侧的 IdleKeepAliveConnectionIsClosedAfterIdleTimeout 同一构造：短 idleTimeout
+     *          配短清扫节拍，读/写超时故意设得很长，证明收口只可能来自空闲容忍度。容忍度之内先做一次
+     *          反向对照，排除「连上就被关」这种假通过。
+     */
+    TEST(HttpsServer, ClosesIdleConnectionAndCountsTimeout)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
+                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits;
+        limits.idleTimeout  = std::chrono::milliseconds{300};
+        limits.readTimeout  = std::chrono::seconds{10};
+        limits.writeTimeout = std::chrono::seconds{10};
+
+        RunningHttpsServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环：上界 kWaitTimeout";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsLoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        // 会话报出的对端地址必须来自真实描述符：清扫协程关闭超时连接前要靠它写日志，
+        // 取不到就会让整轮清扫中断（这正是本条用例钉住的失败路径）
+        const std::vector<std::shared_ptr<Core::Connection> > activeConnections = fixture.server().activeConnections();
+        ASSERT_EQ(activeConnections.size(), 1u) << "握手已完成，连接却不在连接管理器里";
+        EXPECT_EQ(activeConnections.front()->remoteAddress(), "127.0.0.1:" + std::to_string(client.localPort()))
+                << "HTTPS 会话没有报出真实对端地址：它去问了那条不持有描述符的占位套接字";
+
+        // 反向对照：空闲容忍度之内不该被提前收口（否则下面的断言可能只是「连上就被关」）
+        std::string receivedText;
+        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{100}))
+                << "TLS 连接在空闲容忍度之内就被关闭：说明截止时间被设成了立即到期";
+
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout))
+                << "空闲 TLS 连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 300ms + 清扫节拍 30ms）。"
+                   "此刻仍挂在连接管理器上的连接数 "
+                << fixture.server().activeConnectionCount();
+        EXPECT_TRUE(receivedText.empty()) << "服务端在空闲连接上发了不该发的字节";
+
+        // 上报与关闭必须同时发生：只关掉描述符而没有计入超时计数，说明清扫协程在收口链路上中途退出
+        EXPECT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().stats().timeoutClosedCount >= 1;
+                },
+                kWaitTimeout)) << "被超时收口的连接没有计入 timeoutClosedCount";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
     /**

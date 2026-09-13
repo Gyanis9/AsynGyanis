@@ -100,14 +100,19 @@ namespace AsynGyanis::Core
         /**
          * @brief 获取对端的IP地址和端口字符串。
          * @return 字符串格式 "ip:port"
+         * @throws Base::SystemException 底层套接字无法提供地址（描述符无效或已关闭）
+         * @note 取得的是底层套接字上的地址；派生类若把描述符交给自有传输层（例如 TLS），
+         *       必须重写本函数，否则取到的是那条不持有描述符的占位套接字的值
          */
-        [[nodiscard]] std::string remoteAddress() const;
+        [[nodiscard]] virtual std::string remoteAddress() const;
 
         /**
          * @brief 获取本地的IP地址和端口字符串。
          * @return 字符串格式 "ip:port"
+         * @throws Base::SystemException 底层套接字无法提供地址（描述符无效或已关闭）
+         * @note 同 remoteAddress()：持有自有传输层的派生类必须重写
          */
-        [[nodiscard]] std::string localAddress() const;
+        [[nodiscard]] virtual std::string localAddress() const;
 
         /**
          * @brief 刷新空闲截止时间，把「多久没动静算超期」重新计时。
