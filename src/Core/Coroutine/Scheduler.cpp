@@ -115,22 +115,6 @@ namespace AsynGyanis::Core
         }
     }
 
-    std::coroutine_handle<> Scheduler::stealFrom(Scheduler &other)
-    {
-        // 从其他 Scheduler 的全局队列窃取
-        {
-            std::lock_guard lock(other.m_globalMutex);
-            if (!other.m_globalQueue.empty())
-            {
-                const auto handle = other.m_globalQueue.front();
-                other.m_globalQueue.pop_front();
-                other.m_globalCount.fetch_sub(1, std::memory_order_relaxed);
-                return handle;
-            }
-        }
-
-        return nullptr;
-    }
 
     bool Scheduler::hasWork() const
     {

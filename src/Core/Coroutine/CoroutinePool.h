@@ -23,7 +23,7 @@ namespace AsynGyanis::Core
      * 请求大小不超过 blockSize 时不会走到通用堆分配器。
      *
      * @details 池是进程级单例而非线程局部：协程帧会在 EventLoop 线程之间迁移（scheduleRemote
-     *          投递、stealFrom 窃取、跨线程析构），按线程拆池会让归还方把块交给全局
+     *          投递、跨线程析构），按线程拆池会让归还方把块交给全局
      *          ::operator delete，形成无效释放并破坏堆。稳态下分配与归还只操作本线程的缓存链表，
      *          不取锁、不做原子操作；块归属按「内存段 + 段内偏移」判定，与分配线程无关。
      *

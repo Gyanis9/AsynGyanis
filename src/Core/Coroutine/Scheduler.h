@@ -29,12 +29,12 @@ namespace AsynGyanis::Core
      *   用于存放本线程调用 schedule() 投递的任务，采用后进先出的栈式调度。
      * - 全局队列（m_globalQueue）：有互斥锁保护，用于跨线程投递任务
      *   （scheduleRemote 调用），采用先进先出的队列调度。
-     * - 工作窃取：本类**提供** stealFrom() 让空闲线程从其他 Scheduler 取任务。
-     *   @note 引擎内部当前**不会**自动窃取（EventLoop 与 ThreadPool 都没有调用它），
-     *         是否窃取、何时窃取由调用方自行驱动，因此这句话描述的是可用能力而非既有行为。
+     * - **不做工作窃取**：全局队列里的任务恰恰是「必须回到这个循环上执行」的那些
+     *   （跨线程完成回调要 resume 在发起者循环、套接字与 TLS 通道按循环归属），
+     *   把它们偷到别的循环执行会破坏亲和性并引入数据竞争。跨循环的负载均衡发生在
+     *   接受层（每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
      *
-     * @note 本类非线程安全，除 scheduleRemote() 和 stealFrom() 外，
-     *       其他成员函数应由所属 EventLoop 线程调用。
+     * @note 本类非线程安全，除 scheduleRemote() 外，其他成员函数应由所属 EventLoop 线程调用。
      */
     class Scheduler
     {
@@ -89,19 +89,6 @@ namespace AsynGyanis::Core
          * 该函数通常用于事件循环在阻塞前彻底清空任务。
          */
         void runAll();
-
-        /**
-         * @brief 尝试从另一个 Scheduler 窃取任务（工作窃取）
-         *
-         * 空闲线程可以调用其他 Scheduler 的 stealFrom 来获得一个任务，
-         * 以平衡负载。此函数会锁定目标调度器的全局队列，并尝试从队首窃取。
-         * 窃取成功后，返回的协程句柄将由调用方执行。
-         *
-         * @param other 被窃取的目标调度器
-         * @return 窃取到的协程句柄，若无任务则返回空句柄
-         * @note 此函数可在任意线程调用，但通常仅应由空闲的 EventLoop 线程调用。
-         */
-        static std::coroutine_handle<> stealFrom(Scheduler &other);
 
         /**
          * @brief 查询是否有待处理的协程
