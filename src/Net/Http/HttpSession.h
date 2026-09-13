@@ -123,7 +123,12 @@ namespace AsynGyanis::Net
     private:
         Router &m_router;             ///< 路由器引用，用于分发请求
         HttpParser m_parser;          ///< HTTP 增量解析器（资源上限构造时固定），两条报文之间由会话显式 reset()
-        std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收窗口，首次读取时按固定大小分配
+
+        // 接收窗口每连接一份、随连接存续，只在首次读取时分配一次，之后整条连接复用；因此不接共享缓冲池：
+        // 池化能省下的只是「每条连接一次」的分配，而建连本身（accept/close）在 Release 基线里是 1.7k 连接/s
+        // 这个量级，省下的被它淹没。要改先量「短连接 churn 下分配器占多少 CPU」，别凭「高频分配该池化」的直觉。
+        std::vector<char> m_receiveBuffer;
+
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，与服务器共享；空指针表示不落定 request-id

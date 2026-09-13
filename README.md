@@ -14,14 +14,14 @@
 - **epoll / wepoll 边缘触发 I/O** — 统一事件循环；Linux 用 epoll，Windows 用 vendored 的 wepoll，两边语义一致
 - **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起与恢复；等待描述符就绪、定时到期、跨线程投递都是可等待对象
 - **每线程一个事件循环** — `IoContext` 持有 `ThreadPool`，每个工作线程绑定独立的 `EventLoop`
-- **工作窃取调度** — `Scheduler` 本地队列 + 全局队列，空闲线程窃取任务
+- **两级就绪队列调度** — `Scheduler` 本地队列 + 全局队列，跨线程投递按归属循环投递
 - **协作式取消与优雅启停** — `std::stop_token` 贯穿，`stop()` 后各线程收敛退出
 - **TLS** — 基于 OpenSSL 的非阻塞 `SSL_read` / `SSL_write` 与事件循环集成
-- **自研内存与缓冲** — 协程帧内存池、固定大小缓冲池
+- **自研内存与缓冲** — 协程帧内存池（`CoroutinePool`，重载 `operator new` 接入 `Task`）
 
 **网络（Net）**
 
-- **HTTP/1.1** — llhttp 增量解析、Keep-Alive 持久连接、分块编码
+- **HTTP/1.1** — 手写增量解析器（含资源上限与分块编码）、Keep-Alive 持久连接
 - **HTTPS** — TLS 握手 + HTTP over TLS
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点
@@ -294,8 +294,8 @@ LOG_INFO_FMT("listening on port {}", port);
 | 子目录 | 内容 |
 |--------|------|
 | `EventLoop/` | `IoContext`（运行时入口）、`EventLoop`、`Epoll`（wepoll 后端）、`EpollAwaiter`、`Timer` |
-| `Coroutine/` | `Task<T>`、`Scheduler`（本地队列 + 工作窃取）、`ThreadPool`、`CoroutinePool`、`Cancelable` |
-| `Socket/` | `AsyncSocket`、`InetAddress`、`BufferPool`、`Connection`、`ConnectionManager` |
+| `Coroutine/` | `Task<T>`、`Scheduler`（本地队列 + 全局队列）、`ThreadPool`、`CoroutinePool`、`Cancelable` |
+| `Socket/` | `AsyncSocket`、`VectoredSendCursor`、`InetAddress`、`Connection`、`ConnectionManager` |
 | `Tls/` | `TlsContext`、`TlsSocket` |
 
 ### Net — 网络应用层（`libNet.a`）
