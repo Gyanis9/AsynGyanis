@@ -108,6 +108,7 @@ int main(int argc, char **argv)
     uint16_t    port     = 8080;
     unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
     bool        useHttps = false;
+    bool        useHttp2Cleartext = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
 
@@ -121,6 +122,8 @@ int main(int argc, char **argv)
             threads = static_cast<unsigned>(std::stoi(argv[++i]));
         else if (arg == "--https")
             useHttps = true;
+        else if (arg == "--h2c")
+            useHttp2Cleartext = true;
         else if (arg == "--cert" && i + 1 < argc)
             certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
@@ -128,10 +131,18 @@ int main(int argc, char **argv)
         else if (arg == "--help")
         {
             LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
-            LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem]");
+            LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
             LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
+            LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
             return 0;
         }
+    }
+
+    // h2c 说的是明文连接；TLS 上的 h2 由 ALPN 协商决定，不需要（也不该）用这个开关
+    if (useHttps && useHttp2Cleartext)
+    {
+        LOG_ERROR("--h2c 只对明文端有意义：TLS 上的 h2 由 ALPN 协商，请去掉 --h2c");
+        return 1;
     }
 
     if (threads == 0)
@@ -194,6 +205,12 @@ int main(int argc, char **argv)
             auto  server = std::make_unique<Net::HttpServer>(loop, *address);
 
             setupRoutes(server->router());
+
+            // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
+            if (useHttp2Cleartext)
+            {
+                server->setHttp2CleartextEnabled(true);
+            }
 
             auto task = server->start();
             loop.scheduler().schedule(task.handle());

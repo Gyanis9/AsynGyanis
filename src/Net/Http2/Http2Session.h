@@ -65,6 +65,9 @@ namespace AsynGyanis::Net
      * @note 对端一直不回 ACK 本端 SETTINGS（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）时，握手期按
      *       HttpServerLimits::settingsAcknowledgementTimeout 约束空闲截止时间：清扫协程到点收口连接，
      *       会话在还能写字节时先尽力把 GOAWAY(SETTINGS_TIMEOUT) 送出去。
+     * @note 响应的写出时机：一轮里收齐的请求先全部服务完（各自把响应排进待发字节），随后**一次性写出**。
+     *       因此对端深流水线时，某条流的响应延迟会随排在它前面的流数增长——多路复用省的是连接数，
+     *       不减少单条请求的排队延迟（要压这一点就得每条响应各刷一次，代价是更多次写出）。
      * @note 对端用 RST_STREAM 取消某条流只影响这条流：响应发送据此只停该流，连接与其它流照旧工作
      *       （h2 的多路复用语义，与 h1 侧「连接级失败」的处置不是一回事）；被取消的条数计入
      *       HttpServerStats::streamCancelledCount，既不算已应答也不算坏请求。
