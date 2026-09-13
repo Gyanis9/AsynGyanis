@@ -499,6 +499,27 @@ namespace AsynGyanis::Net
             RunningHttpsServerFixture &operator=(const RunningHttpsServerFixture &) = delete;
 
             /// 被测服务器本体：观测性用例据此读取统计快照
+            /**
+             * @brief 在循环线程上执行一段动作，并等它做完
+             *
+             * @details 会话、套接字与连接管理器都归事件循环所有：从测试线程直接读它们的字段，就是在与
+             *          循环抢同一批句柄（IoWatcher 是无锁结构，空闲清扫还会随时收口连接）——TSan 的并发
+             *          用例集报的正是这类「用例从外部线程伸手进循环」。要在用例里碰这些对象就走这条路；
+             *          只读得到原子量或加锁快照的观测接口（见 server()）才可以跨线程直接读。
+             */
+            void runOnLoopAndWait(const std::function<void()> &action)
+            {
+                std::atomic<bool> isFinished{false};
+                m_loop.scheduler().postRemote(
+                        [&action, &isFinished]
+                        {
+                            action();
+                            isFinished.store(true, std::memory_order_release);
+                        });
+                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout))
+                        << "投递到循环线程的动作没有在时限内完成";
+            }
+
             [[nodiscard]] TestHttpsServer &server() noexcept
             {
                 return m_server;
@@ -681,10 +702,23 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
 
         // 会话报出的对端地址必须来自真实描述符：清扫协程关闭超时连接前要靠它写日志，
-        // 取不到就会让整轮清扫中断（这正是本条用例钉住的失败路径）
-        const std::vector<std::shared_ptr<Core::Connection> > activeConnections = fixture.server().activeConnections();
-        ASSERT_EQ(activeConnections.size(), 1u) << "握手已完成，连接却不在连接管理器里";
-        EXPECT_EQ(activeConnections.front()->remoteAddress(), "127.0.0.1:" + std::to_string(client.localPort()))
+        // 取不到就会让整轮清扫中断（这正是本条用例钉住的失败路径）。
+        // 取快照与读地址都投到循环线程上做：本条用例把空闲容忍度压到 300ms，清扫协程随时可能
+        // 把这条连接收掉，从测试线程直接读会话就是与循环抢同一个描述符
+        std::size_t activeConnectionCount = 0;
+        std::string reportedRemoteAddress;
+        fixture.runOnLoopAndWait(
+                [&fixture, &activeConnectionCount, &reportedRemoteAddress]
+                {
+                    const std::vector<std::shared_ptr<Core::Connection> > activeConnections = fixture.server().activeConnections();
+                    activeConnectionCount = activeConnections.size();
+                    if (!activeConnections.empty())
+                    {
+                        reportedRemoteAddress = activeConnections.front()->remoteAddress();
+                    }
+                });
+        ASSERT_EQ(activeConnectionCount, 1u) << "握手已完成，连接却不在连接管理器里";
+        EXPECT_EQ(reportedRemoteAddress, "127.0.0.1:" + std::to_string(client.localPort()))
                 << "HTTPS 会话没有报出真实对端地址：它去问了那条不持有描述符的占位套接字";
 
         // 反向对照：空闲容忍度之内不该被提前收口（否则下面的断言可能只是「连上就被关」）

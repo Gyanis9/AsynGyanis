@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <functional>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -395,6 +396,28 @@ namespace AsynGyanis::Net
             }
 
             [[nodiscard]] TestTcpServer &server() noexcept { return m_server; }
+
+            /**
+             * @brief 在循环线程上执行一段动作，并等它做完
+             *
+             * @details TcpServer::stop()/close() 的线程约束是「必须由运行本服务器事件循环的那个线程调用」：
+             *          它们关掉的是监听描述符与每条活跃连接的套接字，而那些 IoWatcher 正被该循环读写，
+             *          从外部线程直接调就是与循环抢同一批句柄（TSan 在并发用例集里报的正是这一处）。
+             *          文档给的正路是投递（scheduler().postRemote()）——用例从测试线程发起停止时走这条，
+             *          顺带把这条正路本身也测到了。
+             */
+            void runOnLoopAndWait(const std::function<void()> &action)
+            {
+                std::atomic<bool> isFinished{false};
+                m_loop.scheduler().postRemote(
+                        [&action, &isFinished]
+                        {
+                            action();
+                            isFinished.store(true, std::memory_order_release);
+                        });
+                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout))
+                        << "投递到循环线程的动作没有在时限内完成";
+            }
             [[nodiscard]] ServerOutcome &outcome() noexcept { return m_outcome; }
             [[nodiscard]] int listenDescriptor() const { return m_server.listenDescriptor(); }
 
@@ -692,7 +715,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fixture.server().createConnectionCalls(), 1u);
         EXPECT_EQ(fixture.server().activeConnectionCount(), 1u);
 
-        fixture.server().close();
+        fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
         EXPECT_TRUE(waitForCondition(
                 [&fixture]
@@ -735,7 +758,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fixture.server().createConnectionCalls(), 1u);
         EXPECT_EQ(options.perIpLimiter->activeCountFor("127.0.0.1"), 1u);
 
-        fixture.server().close();
+        fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
         // 连接结束后名额必须还回去：否则这个来源被永久锁在限额上，它再也连不进来
         EXPECT_TRUE(waitForCondition(
@@ -766,7 +789,7 @@ namespace AsynGyanis::Net
                 kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
 
         // close() = stop() + ConnectionManager::shutdown()：正在存活的连接会被请求停止并关掉描述符
-        fixture.server().close();
+        fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "shutdown 没通知到活跃连接：上界 kWaitTimeout";
         EXPECT_TRUE(waitForCondition(
                 [&fixture]
@@ -785,7 +808,7 @@ namespace AsynGyanis::Net
         // start() 随即走完「等待全部连接任务」的收尾并返回，且不把异常抛给调度器。
         // 时序说明：这一步依赖「关闭监听描述符能把挂在 epoll 上的协程唤醒」，
         // 在 Windows/wepoll 上最可能不稳，故留 2 秒上界，超时只判失败不挂用例。
-        fixture.server().stop();
+        fixture.runOnLoopAndWait([&fixture] { fixture.server().stop(); });
         EXPECT_TRUE(fixture.awaitServerStopped(kWaitTimeout)) << "stop() 后 start() 未在时限内结束：上界 kWaitTimeout";
         EXPECT_EQ(fixture.outcome().failure, FailureKind::None) << "start() 把接受错误抛到了调度器之外";
         EXPECT_FALSE(fixture.server().isRunning());
