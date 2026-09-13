@@ -62,6 +62,31 @@ namespace AsynGyanis::Net
                 return m_loop;
             }
 
+            /**
+             * @brief 在循环线程上执行一段动作，并等它做完
+             *
+             * @details 本文件的服务器与接受侧监听器都归各自的工作循环所有：构造会在该循环里注册描述符，
+             *          close() 会关掉监听并顺带清掉活跃连接——两者都只能在循环线程上做，否则就是与循环
+             *          抢同一批句柄（TSan 的并发用例集报的正是这一类）。线程约束见 TcpServer::stop()。
+             */
+            void runOnLoopAndWait(const std::function<void()> &action)
+            {
+                std::atomic<bool> isFinished{false};
+                m_loop.scheduler().postRemote(
+                        [&action, &isFinished]
+                        {
+                            action();
+                            isFinished.store(true, std::memory_order_release);
+                        });
+
+                const auto deadline = std::chrono::steady_clock::now() + kRequestTimeout;
+                while (!isFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+                EXPECT_TRUE(isFinished.load(std::memory_order_acquire)) << "投递到循环线程的动作没有在时限内完成";
+            }
+
             /// 停循环并等线程退出：销毁服务器之前必须先把循环停掉，否则会跨线程销毁循环内部结构
             void stopAndJoin()
             {
@@ -149,8 +174,12 @@ namespace AsynGyanis::Net
         WorkerLoop workerLoopA;
         WorkerLoop workerLoopB;
 
-        std::unique_ptr<HttpServer> serverA = makeWorkerServer(workerLoopA.loop(), "served-by-A");
-        std::unique_ptr<HttpServer> serverB = makeWorkerServer(workerLoopB.loop(), "served-by-B");
+        // 构造必须落在服务器所属的循环线程上：这一步会在循环里注册监听描述符的 IoWatcher
+        std::unique_ptr<HttpServer> serverA;
+        workerLoopA.runOnLoopAndWait([&workerLoopA, &serverA] { serverA = makeWorkerServer(workerLoopA.loop(), "served-by-A"); });
+
+        std::unique_ptr<HttpServer> serverB;
+        workerLoopB.runOnLoopAndWait([&workerLoopB, &serverB] { serverB = makeWorkerServer(workerLoopB.loop(), "served-by-B"); });
 
         auto distributor = std::make_shared<Core::ConnectionDistributor>();
         distributor->addWorker(workerLoopA.loop(),
@@ -164,9 +193,15 @@ namespace AsynGyanis::Net
                                    server->adoptConnection(fileDescriptor);
                                });
 
-        // 接受侧：一台只接受与派发的服务器，自己不建连接（它同样是 HttpServer，只是没人给它派连接）
-        PortObservableHttpServer acceptor(workerLoopA.loop(), Core::InetAddress::localhost(0));
-        Core::Task<>             acceptTask = acceptor.startAccepting(distributor);
+        // 接受侧：一台只接受与派发的服务器，自己不建连接（它同样是 HttpServer，只是没人给它派连接）。
+        // 它归循环 A，因此同样在 A 的线程上构造、在 A 的线程上收尾
+        std::unique_ptr<PortObservableHttpServer> acceptor;
+        workerLoopA.runOnLoopAndWait(
+                [&workerLoopA, &acceptor]
+                {
+                    acceptor = std::make_unique<PortObservableHttpServer>(workerLoopA.loop(), Core::InetAddress::localhost(0));
+                });
+        Core::Task<> acceptTask = acceptor->startAccepting(distributor);
 
         // 启动必须在服务器所属循环上：投过去之后由本用例持有任务帧直到结束
         workerLoopA.loop().scheduler().postRemote(
@@ -177,13 +212,13 @@ namespace AsynGyanis::Net
 
         // 等到接受循环真正跑起来（isRunning 为 true 说明 bind/listen 已成功）
         const auto readyDeadline = std::chrono::steady_clock::now() + kRequestTimeout;
-        while (!acceptor.isRunning() && std::chrono::steady_clock::now() < readyDeadline)
+        while (!acceptor->isRunning() && std::chrono::steady_clock::now() < readyDeadline)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
-        ASSERT_TRUE(acceptor.isRunning()) << "接受循环没有在时限内起来";
+        ASSERT_TRUE(acceptor->isRunning()) << "接受循环没有在时限内起来";
 
-        const std::uint16_t listeningPort = acceptor.boundPort();
+        const std::uint16_t listeningPort = acceptor->boundPort();
         ASSERT_NE(listeningPort, 0U);
 
         // 四条各用一条新连接：轮转顺序就是到达顺序，因此应当是 A、B、A、B
@@ -214,9 +249,16 @@ namespace AsynGyanis::Net
         EXPECT_EQ(servedByBCount, 2U) << "轮转没有把一半连接交给工作循环 B";
         EXPECT_EQ(distributor->distributedCount(), 4U) << "派发计数与实际连接数不符";
 
-        acceptor.close();
-        serverA->close();
-        serverB->close();
+        // 收尾顺序：先在各自循环上关掉服务器（A 上两台、B 上一台），再让循环停手退出。
+        // 从测试线程直接 close() 会与循环抢监听描述符与活跃连接的套接字
+        workerLoopA.runOnLoopAndWait(
+                [&acceptor, &serverA]
+                {
+                    acceptor->close();
+                    serverA->close();
+                });
+        workerLoopB.runOnLoopAndWait([&serverB] { serverB->close(); });
+
         workerLoopA.stopAndJoin();
         workerLoopB.stopAndJoin();
     }

@@ -295,7 +295,12 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 把协程投到事件循环上，并在超时上界内等它跑完
+         * @brief 把协程投到事件循环上跑完，收口后停掉循环，再把结果交给调用方
+         *
+         * @details 判据只用协程自己在循环线程上置位的原子标记——**不能**顺手读 Task::isReady()：
+         *          那是在外部线程读协程帧，与循环线程写同一块内存（TSan 的并发用例集报的正是它，
+         *          Windows 上因为时序凑巧看不出来）。收口之后本方法会停掉并 join 循环：任务帧紧接着
+         *          就会被调用方销毁，而销毁必须发生在循环线程停手之后，否则协程的收尾阶段仍在碰这块帧。
          * @param task         待执行的协程任务，所有权仍归调用方
          * @param finishedFlag 链路收口时由协程自己置位的原子标记
          * @return true 链路在时限内完成
@@ -304,15 +309,14 @@ namespace AsynGyanis::Net
         {
             m_loop.scheduler().scheduleRemote(task.handle());
 
-            const bool isCompleted = waitForCondition([&task, &finishedFlag]()
+            const bool isCompleted = waitForCondition([&finishedFlag]()
             {
-                return finishedFlag.load() && task.isReady();
+                return finishedFlag.load();
             });
-            if (!isCompleted)
-            {
-                // 已到超时上界却没收口：先把循环停干净，别让后台线程继续碰测试栈上的对象
-                stopLoop();
-            }
+
+            // 跑完与超时都停循环：前者是为了让调用方安全销毁任务帧，后者是为了别让后台线程
+            // 继续碰测试栈上的对象。stopLoop() 幂等，TearDown 再调一次无副作用
+            stopLoop();
             return isCompleted;
         }
 
