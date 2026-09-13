@@ -34,6 +34,7 @@ add_executable(TestNet
 
         Http2/TestHttp2Frame.cpp
         Http2/TestHpack.cpp
+        Http2/TestHttp2Connection.cpp
 )
 
 target_link_libraries(TestNet PRIVATE
