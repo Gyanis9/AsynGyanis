@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -53,6 +54,23 @@ namespace AsynGyanis::Database
 
         /// 本套件写入的全部键共用的前缀：便于人工排查，也避免与使用者的键名撞车
         constexpr std::string_view kKeyPrefix = "asyngyanis:test:";
+
+        /**
+         * @brief 本进程专用的键前缀：基础前缀 + 一次性随机后缀
+         *
+         * @details 每个用例都由 ctest 起独立进程；并行执行同一套件时，若所有进程只用 kKeyPrefix，
+         *          收尾扫描会看到别的进程正在使用的键并误报残留。加进程唯一后缀后各进程的键空间
+         *          互不可见，收尾扫描只覆盖自己；后缀在首次调用时生成，进程内恒定。
+         */
+        [[nodiscard]] std::string testKeyPrefix()
+        {
+            static const std::string prefix = []() -> std::string
+            {
+                std::random_device device;
+                return std::string(kKeyPrefix) + std::to_string(device()) + ":";
+            }();
+            return prefix;
+        }
 
         /// 键空间编号的默认值：见文件头「刻意不用 0」的说明
         constexpr std::string_view kDefaultTestKeyspace = "15";
@@ -138,7 +156,7 @@ namespace AsynGyanis::Database
          *
          * @details 每个用例的 TearDown 已逐键删除，这里是**兜底检查**：将来新增用例若忘了用 makeKey() 登记键名，
          *          就会在这里被抓住，而不是悄悄在使用者的 15 号库里留垃圾；没有 Redis 环境时静默返回。
-         *          用 KEYS 可接受，是因为这是专用临时库、模式又限定到本套件前缀（生产代码里当然不该用 KEYS）。
+         *          用 KEYS 可接受，是因为这是专用临时库、模式又限定到本进程前缀（生产代码里当然不该用 KEYS）。
          */
         static void TearDownTestSuite()
         {
@@ -160,7 +178,7 @@ namespace AsynGyanis::Database
             }
 
             const std::unique_ptr<DatabaseResult> leftoverKeys =
-                connection.executeCommand({"KEYS", std::string(kKeyPrefix) + "*"});
+                connection.executeCommand({"KEYS", testKeyPrefix() + "*"});
             if (leftoverKeys != nullptr && !leftoverKeys->isEmpty())
             {
                 std::string leftoverNames;
@@ -197,7 +215,7 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::string makeKey(const std::string_view suffix)
         {
-            std::string key = std::string(kKeyPrefix) + std::string(suffix);
+            std::string key = testKeyPrefix() + std::string(suffix);
             m_createdKeys.push_back(key);
             return key;
         }

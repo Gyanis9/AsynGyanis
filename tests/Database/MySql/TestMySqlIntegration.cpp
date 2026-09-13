@@ -134,6 +134,9 @@ namespace AsynGyanis::Database
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
 
+        /// 无符号取值域用例的表：与建表迁移用例分开，各用例各持一张物理表（并行执行时互不干扰）
+        constexpr std::string_view kUnsignedTableName = "Asyn_Mysql_Unsigned";
+
         /// 二进制列用例的表：同表内放一列 LONGBLOB 与一列 TEXT，用于验证字符集是二者在协议层的唯一区分
         constexpr std::string_view kBinaryTableName = "Asyn_Mysql_Binary";
 
@@ -303,6 +306,22 @@ namespace AsynGyanis::Database
         };
 
         /**
+         * @brief 无符号取值域用例的结构体：与建表迁移用例同构，但绑定独立的物理表
+         *
+         * @details SchemaMigrator 的表名只能来自编译期常量，两个用例共用同一结构体就等于共用同一张表：
+         *          并行执行时会互相删表、互相撞主键。拆成独立结构体后语义不变，只是各持一张表。
+         */
+        struct IntegrationUnsignedRow
+        {
+            std::int64_t               id;       ///< 主键（BIGINT NOT NULL PRIMARY KEY）
+            std::string                name;     ///< 名称（TEXT NOT NULL）
+            std::optional<std::string> note;     ///< 备注（TEXT，可空）
+            double                     balance;  ///< 余额（DOUBLE NOT NULL）
+            bool                       active;   ///< 是否启用（TINYINT(1) NOT NULL）
+            std::uint64_t              sequence; ///< 序号（BIGINT UNSIGNED NOT NULL）
+        };
+
+        /**
          * @brief 二进制列用例的结构体：一列二进制与一列文本同表共存
          *
          * @details 文本列的协议类型码与 BLOB 相同（都是 MYSQL_TYPE_BLOB），只有列的字符集不同，
@@ -455,6 +474,22 @@ namespace AsynGyanis::Database
             Column(&IntegrationMigratedRow::balance,  "balance"),
             Column(&IntegrationMigratedRow::active,   "active"),
             Column(&IntegrationMigratedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationUnsignedRow>
+    {
+        // 表名固定为 kUnsignedTableName：与建表迁移用例的表分开，并行执行时互不干扰
+        static constexpr std::string_view kTableName = kUnsignedTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationUnsignedRow::id,       "id"),
+            Column(&IntegrationUnsignedRow::name,     "name"),
+            Column(&IntegrationUnsignedRow::note,     "note"),
+            Column(&IntegrationUnsignedRow::balance,  "balance"),
+            Column(&IntegrationUnsignedRow::active,   "active"),
+            Column(&IntegrationUnsignedRow::sequence, "sequence"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -1448,17 +1483,18 @@ namespace AsynGyanis::Database
      * @details MySQL 的 BIGINT UNSIGNED 上界是 2^64-1、超出 int64，驱动只能把这类取值以十进制文本返回；
      *          写方向也把超出 int64 的无符号值降级为文本，两个方向必须配套——缺了读方向的文本支路，写进去就再也拿不回来，
      *          而且不会报错、只会让映射抛「类型不符」。四个取值刻意跨过 2^63：线下走 int64 支路，线上只能走文本支路；
-     *          表名与上一个用例相同（同一 TableSchema），建表同样由 SchemaMigrator 完成。
+     *          建表同样由 SchemaMigrator 完成，结构体与建表迁移用例同构但绑定独立表名：
+     *          两个用例各持自己的物理表，并行执行时不会互删对方正在使用的表。
      */
     TEST_F(MySqlIntegrationTest, UnsignedColumnRoundTripsAcrossInt64Boundary)
     {
-        m_preparedTableName = std::string(kMigratedTableName);
+        m_preparedTableName = std::string(kUnsignedTableName);
 
         std::string errorText;
-        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*makePool(1), true, &errorText)) << errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationUnsignedRow>(*makePool(1), true, &errorText)) << errorText;
 
         std::unique_ptr<ConnectionPool> pool = makePool(2);
-        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationUnsignedRow>(*pool, true, &errorText)) << errorText;
 
         /// 2^63：int64 表示不了、BIGINT UNSIGNED 表示得了的第一个取值
         constexpr std::uint64_t kTwoToTheSixtyThird   = 9223372036854775808ULL;
@@ -1469,24 +1505,24 @@ namespace AsynGyanis::Database
 
         // ---- 写入四个代表性取值 ----
         {
-            OrmQuery<IntegrationMigratedRow> insertQuery(*pool);
-            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "零", .note = std::nullopt,
+            OrmQuery<IntegrationUnsignedRow> insertQuery(*pool);
+            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 1, .name = "零", .note = std::nullopt,
                                                                    .balance = 0.0, .active = true, .sequence = 0U}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 2, .name = "int64上界", .note = std::nullopt,
+            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 2, .name = "int64上界", .note = std::nullopt,
                                                                    .balance = 0.0, .active = true,
                                                                    .sequence = maximumSignedValue}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 3, .name = "2的63次方", .note = std::nullopt,
+            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 3, .name = "2的63次方", .note = std::nullopt,
                                                                    .balance = 0.0, .active = true,
                                                                    .sequence = kTwoToTheSixtyThird}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 4, .name = "uint64上界", .note = std::nullopt,
+            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 4, .name = "uint64上界", .note = std::nullopt,
                                                                    .balance = 0.0, .active = true,
                                                                    .sequence = kMaximumUnsignedValue}));
         }
 
         // ---- 读回：四个取值必须逐位相等，任何一个被降级成 double 都会在这里暴露 ----
         {
-            OrmQuery<IntegrationMigratedRow> query(*pool);
-            const std::vector<IntegrationMigratedRow> rows = query.orderBy(asc("id")).toList();
+            OrmQuery<IntegrationUnsignedRow> query(*pool);
+            const std::vector<IntegrationUnsignedRow> rows = query.orderBy(asc("id")).toList();
 
             ASSERT_EQ(rows.size(), 4U);
             EXPECT_EQ(rows[0].sequence, 0U);
@@ -1499,15 +1535,15 @@ namespace AsynGyanis::Database
         // BIGINT UNSIGNED 上的 '>' 走数值语义，因此这条条件能命中 id=3/4 两行；
         // 若取值被存成文本（例如列类型被误建为 TEXT），SQLite 那种字典序比较会给出不同结果
         {
-            OrmQuery<IntegrationMigratedRow> query(*pool);
+            OrmQuery<IntegrationUnsignedRow> query(*pool);
             const std::int64_t aboveBoundaryCount =
-                query.where(Column(&IntegrationMigratedRow::sequence, "sequence") >
+                query.where(Column(&IntegrationUnsignedRow::sequence, "sequence") >
                             static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
                      .count();
             EXPECT_EQ(aboveBoundaryCount, 2);
         }
 
-        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationUnsignedRow>(*pool, true, &errorText)) << errorText;
     }
 
     /**
