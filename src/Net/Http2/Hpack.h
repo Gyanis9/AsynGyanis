@@ -662,10 +662,11 @@ namespace AsynGyanis::Net
          *          表示解码，任一表示出错即置粘滞错误态并返回 false；全部解完返回 true。
          *
          * @param headerBlock 完整头块的字节，按「指针 + 长度」取，可含 NUL 与任意二进制
-         * @param headerFields 输出参数：解出的头部，按到达顺序；进入调用时先清空
+         * @param headerFields 输出参数：解出的头部，按到达顺序；进入调用时先清空，**失败时也会被清空**
+         *        （解到一半的字段不留在这里，避免调用方漏掉「丢弃」这一步就把半截头块当成真的用）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
          * @return true 整个头块解完，headerFields 完整可用
-         * @return false 头块非法或超出上限：headerFields 只能视为不可信并丢弃，且解码器粘滞在
+         * @return false 头块非法或超出上限：headerFields 为空（已清空），且解码器粘滞在
          *         错误态直到 reset()，调用方应按 errorKind() 收场（COMPRESSION_ERROR 必须终止连接）
          * @see errorKind(), toHttp2ErrorCode()
          */

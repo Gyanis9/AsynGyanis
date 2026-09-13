@@ -508,6 +508,9 @@ namespace AsynGyanis::Net
         {
             if (!decodeRepresentation(headerBlock, consumed, headerFields))
             {
+                // 失败时清空输出：解到一半的字段绝不能留在调用方手里——漏掉「丢弃」这一步的调用方
+                // 会把半截头块当成真的用（宁可这里多清一次，也不留这种脚枪）
+                headerFields.clear();
                 writeError(errorText, m_errorMessage);
                 return false;
             }
