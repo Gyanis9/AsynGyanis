@@ -13,6 +13,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/ConnectionManager.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/Tcp/TcpAcceptor.h"
 
 #include <atomic>
@@ -114,6 +115,15 @@ namespace AsynGyanis::Net
         void setMaxConnections(std::size_t maximumConnectionCount);
 
         /**
+         * @brief 设置按来源 IP 的并发连接限额
+         * @param limiter 限额对象；**多个监听器（每循环一个）必须共享同一份**，否则单个来源的实际上限
+         *        会乘上监听器数量，限额等于失效。传空指针表示不作按 IP 的限制（默认）
+         * @note 必须在 start() 之前调用；检查时即时读取，与 setMaxConnections() 的语义一致
+         * @see PerIpConnectionLimiter
+         */
+        void setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter);
+
+        /**
          * @brief 设置空闲清扫节拍。
          *
          * @details 清扫协程按本间隔醒来，扫描连接管理器并把超过空闲截止时间（由会话自己刷新，
@@ -163,6 +173,19 @@ namespace AsynGyanis::Net
         Core::Task<> handleConnection(std::shared_ptr<Core::Connection> connection);
 
         /**
+         * @brief 处理单个连接的协程主体，同时持有该连接占用的按 IP 名额
+         * @details 名额凭据按值进入本协程帧；handleConnection() 一返回就显式归还，不等帧被回收——
+         *          已结束的连接协程帧要等到下一条连接触发清扫或服务器收尾时才销毁，归还挂在帧上会让
+         *          「占满自己名额后全部断开」的来源在当前连接数没到清扫阈值时连不进来。
+         *          帧销毁时的析构因此是空操作，两条路径合计只归还一次。
+         * @param connection 待处理的会话对象
+         * @param lease 该连接占用的按 IP 名额；未配置限额时是空壳凭据
+         * @return Core::Task<> 协程，与 handleConnection() 同时完成
+         */
+        Core::Task<> handleConnectionWithLease(std::shared_ptr<Core::Connection> connection,
+                                               PerIpConnectionLimiter::Lease lease);
+
+        /**
          * @brief 空闲清扫协程：按固定节拍关闭超过空闲截止时间的连接
          * @details 异常绝不外抛（逃逸到调度器等于在事件循环线程上抛异常），单轮失败只丢一轮。
          *          没有连接超过截止时间时它什么都不做，因此空闲服务器上的代价只是一次定时唤醒。
@@ -179,6 +202,7 @@ namespace AsynGyanis::Net
 
         std::atomic<bool>              m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
         std::size_t                    m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
+        std::shared_ptr<PerIpConnectionLimiter> m_perIpConnectionLimiter; ///< 按来源 IP 的并发限额；空指针表示不作该限制
         std::chrono::milliseconds      m_idleCheckInterval{kDefaultIdleCheckInterval}; ///< 空闲清扫节拍，非正数表示关闭清扫
         Core::Timer                    m_idleTimer;         ///< 清扫协程与 drain 共用的节拍器；waitFor 每次返回独立等待器，两处并发等待互不干扰
         Core::Task<>                   m_idleSweepTask{nullptr}; ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）

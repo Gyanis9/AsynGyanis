@@ -26,6 +26,7 @@ add_executable(TestNet
         Tcp/TestTcpStream.cpp
         Tcp/TestTcpAcceptor.cpp
         Tcp/TestTcpServer.cpp
+        Tcp/TestPerIpConnectionLimiter.cpp
 
         WebSocket/TestWebSocketHandshake.cpp
         WebSocket/TestWebSocketFrame.cpp

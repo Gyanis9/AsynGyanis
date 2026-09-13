@@ -16,6 +16,7 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -68,6 +69,7 @@ namespace AsynGyanis::Net
             CreateConnectionMode mode{CreateConnectionMode::Normal}; ///< 钩子行为
             ConnectionKind kind{ConnectionKind::FinishImmediately};  ///< 连接类型
             std::size_t maxConnections{0};                           ///< 并发上限，0 表示不限制
+            std::shared_ptr<PerIpConnectionLimiter> perIpLimiter{};  ///< 按来源 IP 的限额；空表示不作该限制
             bool markBusy{false};                                    ///< 连接是否自报「有在途工作」（用于分辨 drain 的等待与强关）
         };
 
@@ -226,6 +228,7 @@ namespace AsynGyanis::Net
             {
                 // 并发上限必须在 start() 之前定下，与基类的调用契约一致
                 setMaxConnections(options.maxConnections);
+                setPerIpConnectionLimiter(options.perIpLimiter);
             }
 
             /**
@@ -697,6 +700,50 @@ namespace AsynGyanis::Net
                     return fixture.server().activeConnectionCount() == 0u;
                 },
                 kWaitTimeout)) << "连接协程结束后未从管理器摘除：上界 kWaitTimeout";
+    }
+
+    TEST(TcpServer, PerIpLimitDropsExtraConnectionFromSameSource)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.perIpLimiter = std::make_shared<PerIpConnectionLimiter>(1);
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        // 两条连接都来自回环：对端地址相同、端口不同。限额的键取地址本身，所以它们算同一个来源
+        const LoopbackClient firstClient(listeningPort);
+        ASSERT_TRUE(firstClient.isValid());
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().activeConnectionCount() >= 1u;
+                },
+                kWaitTimeout)) << "首条连接未在时限内挂上管理器：上界 kWaitTimeout";
+
+        const LoopbackClient secondClient(listeningPort);
+        ASSERT_TRUE(secondClient.isValid());
+        // 同源的第二条：名额已满，应当连 createConnection 都不调用（上界之内没发生就当作不发生）
+        EXPECT_FALSE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 2u;
+                },
+                kNegativeCheckTimeout));
+        EXPECT_EQ(fixture.server().createConnectionCalls(), 1u);
+        EXPECT_EQ(options.perIpLimiter->activeCountFor("127.0.0.1"), 1u);
+
+        fixture.server().close();
+        EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
+        // 连接结束后名额必须还回去：否则这个来源被永久锁在限额上，它再也连不进来
+        EXPECT_TRUE(waitForCondition(
+                [&options]
+                {
+                    return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u;
+                },
+                kWaitTimeout)) << "连接结束后按 IP 的名额未归还：上界 kWaitTimeout";
     }
 
     TEST(TcpServer, CloseShutsDownActiveConnectionThroughConnectionManager)

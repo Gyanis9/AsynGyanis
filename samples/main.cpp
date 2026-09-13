@@ -21,6 +21,7 @@
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Router.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <atomic>
 #include <chrono>
@@ -107,6 +108,7 @@ int main(int argc, char **argv)
     std::string host     = "localhost";
     uint16_t    port     = 8080;
     unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
+    std::size_t maxConnectionsPerIp = 0; // 0 = 不限制单个来源的并发连接数
     bool        useHttps = false;
     bool        useHttp2Cleartext = false;
     std::string certificateFile = "cert.pem";
@@ -120,6 +122,8 @@ int main(int argc, char **argv)
             port = static_cast<uint16_t>(std::stoi(argv[++i]));
         else if (arg == "--threads" && i + 1 < argc)
             threads = static_cast<unsigned>(std::stoi(argv[++i]));
+        else if (arg == "--max-connections-per-ip" && i + 1 < argc)
+            maxConnectionsPerIp = static_cast<std::size_t>(std::stoull(argv[++i]));
         else if (arg == "--https")
             useHttps = true;
         else if (arg == "--h2c")
@@ -132,8 +136,10 @@ int main(int argc, char **argv)
         {
             LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
             LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
+            LOG_INFO("                  [--max-connections-per-ip N]");
             LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
             LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
+            LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
             return 0;
         }
     }
@@ -182,6 +188,16 @@ int main(int argc, char **argv)
     servers.reserve(actualThreads);
     acceptTasks.reserve(actualThreads);
 
+    // 按来源 IP 的限额只有一份、在所有监听器之间共享：内核按 SO_REUSEPORT 把新连接分给不同循环上的
+    // 监听器，若每个服务器各持一份计数，单个来源的实际上限会乘上监听器数量，限额等于失效。
+    // 未配置时留空指针，setPerIpConnectionLimiter(nullptr) 表示不作该限制
+    std::shared_ptr<Net::PerIpConnectionLimiter> perIpConnectionLimiter;
+    if (maxConnectionsPerIp > 0)
+    {
+        perIpConnectionLimiter = std::make_shared<Net::PerIpConnectionLimiter>(maxConnectionsPerIp);
+        LOG_INFO_FMT("Per-IP connection limit: {} (shared by all {} listener(s))", maxConnectionsPerIp, actualThreads);
+    }
+
     if (useHttps)
     {
         for (unsigned i = 0; i < actualThreads; ++i)
@@ -190,6 +206,7 @@ int main(int argc, char **argv)
             auto  server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
 
             setupRoutes(server->router());
+            server->setPerIpConnectionLimiter(perIpConnectionLimiter);
 
             auto task = server->start();
             loop.scheduler().schedule(task.handle());
@@ -205,6 +222,7 @@ int main(int argc, char **argv)
             auto  server = std::make_unique<Net::HttpServer>(loop, *address);
 
             setupRoutes(server->router());
+            server->setPerIpConnectionLimiter(perIpConnectionLimiter);
 
             // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
             if (useHttp2Cleartext)

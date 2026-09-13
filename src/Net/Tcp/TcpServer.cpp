@@ -90,6 +90,22 @@ namespace AsynGyanis::Net
                 continue;
             }
 
+            // 按来源 IP 记账：与全局上限互补——全局挡总量，这里挡「同一个来源开一堆连接」。
+            // 取名额排在建连之前，超限的连接连会话对象都不必构造；同样直接丢弃。
+            // 键取 ip() 而不是 toString()：后者带对端端口，每条连接的端口都不同，拿它当键等于按连接计数、
+            // 限额永远碰不到。这里读的是形参套接字的对端地址，不能先把它 move 走再读
+            PerIpConnectionLimiter::Lease perIpLease;
+            if (m_perIpConnectionLimiter != nullptr)
+            {
+                std::optional<PerIpConnectionLimiter::Lease> acquiredLease =
+                        m_perIpConnectionLimiter->tryAcquire(acceptedSocket->remoteAddress().ip());
+                if (!acquiredLease.has_value())
+                {
+                    continue;
+                }
+                perIpLease = std::move(acquiredLease).value();
+            }
+
             std::shared_ptr<Core::Connection> connection;
             try
             {
@@ -115,7 +131,7 @@ namespace AsynGyanis::Net
             m_connectionManager.add(connection);
             // 任务句柄必须存进 m_connectionTasks 才有人持有协程帧：局部 task 被移动进容器，
             // 之后每轮清扫只回收已完成的帧，未完成的由收尾阶段统一等待
-            Core::Task<void> connectionTask = handleConnection(std::move(connection));
+            Core::Task<void> connectionTask = handleConnectionWithLease(std::move(connection), std::move(perIpLease));
             m_loop.scheduler().schedule(connectionTask.handle());
             m_connectionTasks.push_back(std::move(connectionTask));
 
@@ -216,6 +232,18 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("TcpServer: 空闲清扫一轮失败，已跳过本轮。原因：非标准库异常");
             }
         }
+    }
+
+    Core::Task<> TcpServer::handleConnectionWithLease(std::shared_ptr<Core::Connection> connection,
+                                                     PerIpConnectionLimiter::Lease lease)
+    {
+        co_await handleConnection(std::move(connection));
+
+        // 会话结束就归还名额，而不是等这具协程帧被回收：已结束的连接协程帧要等到「下一条连接进来触发
+        // 清扫」或服务器收尾时才销毁，若把归还挂在帧上，一个来源把自己名额占满后即使全部断开也仍然
+        // 连不进来（下一条连接正是要触发清扫的那一条）——等于对该来源永久封锁。
+        // 显式置空后，帧销毁时的析构是空操作，两条路径合计只归还一次
+        lease = PerIpConnectionLimiter::Lease{};
     }
 
     Core::Task<> TcpServer::handleConnection(std::shared_ptr<Core::Connection> connection)
@@ -325,6 +353,11 @@ namespace AsynGyanis::Net
     void TcpServer::setMaxConnections(const std::size_t maximumConnectionCount)
     {
         m_maxConnections = maximumConnectionCount;
+    }
+
+    void TcpServer::setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter)
+    {
+        m_perIpConnectionLimiter = std::move(limiter);
     }
 
     void TcpServer::setIdleCheckInterval(const std::chrono::milliseconds interval)
