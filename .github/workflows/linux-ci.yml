@@ -1,0 +1,89 @@
+# Linux CI：构建（Debug + AddressSanitizer/UBSan）并跑全量用例，含 Redis 真机集成。
+#
+# 与 windows-ci.yml 分工：本工作流覆盖 GCC/Linux 侧——GCC 的 ASan 会检出 MSVC 不支持的
+# use-after-scope 与泄漏（测试代码的生命周期问题只有这一侧能兜住）；Redis 集成用例连真实服务。
+# MySQL 依赖仍跳过（ASYN_SKIP_MYSQL_DEPS）：libmysqlclient 的 ConanCenter 预编译包在 runner
+# 编译器版本变化时不保证可用，现场编译要十几分钟；MySQL 集成用例按环境变量跳过。
+# 注意：本文件尚未在真实的 GitHub runner 上执行过（开发机没有 runner），其中的命令与
+# 本地验证时使用的完全一致（cmake --preset debug / --build / ctest）。
+
+name: Linux CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      # Conan 的包缓存搬到仓库内，便于下面的 actions/cache 缓存它
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      # 跳过 MySQL 客户端依赖的理由见文件头
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      # ubuntu-latest 的 pip 受 PEP 668 限制不能直接装包，先建虚拟环境再进 PATH
+      - name: 安装 Conan
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（Debug + sanitizers；Conan 依赖由 conan_provider.cmake 自动安装）
+        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF
+
+      # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
+      - name: 构建
+        run: cmake --build build/debug
+
+      # GitHub 的 ubuntu runner 上 vm.mmap_rnd_bits=32 时 AddressSanitizer 有随机崩溃的
+      # 已知问题，调低 ASLR 熵规避；失败不阻塞（本地同为 32 且稳定，此处属保险）
+      - name: 降低 ASLR 熵（稳定 AddressSanitizer）
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      # Redis 集成用例需要真实服务与口令；口令运行时随机生成并加掩码，仓库零明文口令
+      - name: 启动 Redis（随机口令）
+        run: |
+          REDIS_PASSWORD="$(openssl rand -hex 16)"
+          echo "::add-mask::$REDIS_PASSWORD"
+          echo "REDIS_PASSWORD=$REDIS_PASSWORD" >> "$GITHUB_ENV"
+          docker run -d --name ci-redis -p 6379:6379 redis:7 redis-server --requirepass "$REDIS_PASSWORD"
+          for attempt in $(seq 1 30); do
+            if docker exec ci-redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Redis 未在 30 秒内就绪，容器日志：" >&2
+          docker logs ci-redis >&2
+          exit 1
+
+      - name: 全量用例（含 Redis 真机集成）
+        run: |
+          export ASYN_REDIS_TEST_HOST=127.0.0.1
+          export ASYN_REDIS_TEST_PASSWORD="$REDIS_PASSWORD"
+          ctest --test-dir build/debug --output-on-failure -j"$(nproc)"
+
+      - name: 失败时上传用例日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-linux
+          path: build/debug/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

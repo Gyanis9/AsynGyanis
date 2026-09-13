@@ -1,7 +1,7 @@
 # Windows CI：构建（Debug + AddressSanitizer）并跑全量用例。
 #
-# 为什么只有 Windows：本框架的操作系统底层封装目前只实现了 Windows 路径（EventLoop 用
-# vendored 的 wepoll），没有在 Linux 上构建或运行过，因此不在 CI 里假装支持。
+# 与 linux-ci.yml 分工：本工作流覆盖 MSVC + winsock/wepoll 路径；GCC/Linux 侧由 linux-ci.yml
+# 覆盖（GCC 的 ASan 额外检出 use-after-scope 与泄漏，MSVC 的 ASan 不支持这两类检测）。
 # 注意：本文件尚未在真实的 GitHub runner 上执行过（开发机没有 runner），其中的命令与
 # 本地验证时使用的完全一致（cmake --preset debug / --build / ctest）。
 
