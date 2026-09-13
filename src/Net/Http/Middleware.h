@@ -15,6 +15,7 @@
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/SourceLocation.h"
 
@@ -24,6 +25,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -418,8 +420,11 @@ namespace AsynGyanis::Net
      *
      * @note 计数器为「每个中间件实例一份」，进程内全局共享，非线程安全：
      *       它假定所有会话跑在同一个事件循环线程上。多循环/多进程部署请换用原子计数或外部存储。
-     * @warning 固定窗口存在「临界突发」现象（窗口切换的前后各放行一整批），
-     *          需要更平滑的限制请实现滑动窗口或令牌桶。
+     * @warning 固定窗口有两个坑：
+     *          @li **临界突发**：窗口切换的前后各放行一整批，瞬时速率可达配置值的两倍；
+     *          @li **额度按实例算**：本中间件注册到哪个服务器，额度就只属于那个服务器。多监听器
+     *             部署（每循环一个服务器）时若逐个注册，进程级的实际上限会乘上监听器数量。
+     *          要一个真正的全局上限，用下面基于共享令牌桶的 tokenBucketRateLimiterMiddleware()。
      */
     inline MiddlewareFunc rateLimiterMiddleware(const std::size_t maximumRequestCount, const std::chrono::milliseconds windowDuration)
     {
@@ -452,6 +457,142 @@ namespace AsynGyanis::Net
                 // Retry-After 按 RFC 9110 §10.2.3 是「秒」为单位的 delta-seconds，
                 // 窗口以毫秒配置时向上取整换算，避免亚秒窗口被截成 0 让客户端立刻重试
                 const auto retryAfterSeconds = (windowDuration.count() + 999) / 1000;
+                response.setHeader("retry-after", std::to_string(retryAfterSeconds));
+                co_return;
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief 令牌桶：按恒定速率补令牌，取不到即拒绝
+     *
+     * @details 与固定窗口的分工：固定窗口在窗口切换的前后各放行一整批（瞬时速率可达配置值的两倍），
+     *          令牌桶按经过的时间连续补令牌、超出容量的部分丢弃，长期速率精确等于配置值，
+     *          桶容量则决定能容忍多大的瞬时突发。
+     *
+     * @note 线程安全（一把互斥量护住桶状态）：会话可能跑在不同循环线程上。**要在所有监听器之间
+     *       共享同一实例**才能构成进程级的全局 RPS 上限——每个服务器各持一份的话，实际上限会乘上
+     *       监听器数量（与 PerIpConnectionLimiter 同一类坑）。
+     */
+    class TokenBucket
+    {
+    public:
+        /**
+         * @brief 构造令牌桶
+         * @param tokensPerSecond 补令牌速率（每秒多少个），必须为正
+         * @param burstCapacity 桶容量，即瞬时允许的突发量，必须 ≥ 1
+         * @throws Base::InvalidArgumentException 速率非正或容量小于 1
+         * @note 容量必须 ≥ 1：容量小于 1 的桶永远攒不满一个令牌，等于把所有请求都拒掉——
+         *       那是配置错误，不是「严格限流」，所以直接抛而不是静默全拒
+         */
+        TokenBucket(const double tokensPerSecond, const double burstCapacity) :
+            m_tokensPerSecond(tokensPerSecond), m_burstCapacity(burstCapacity), m_tokenCount(burstCapacity)
+        {
+            if (!(m_tokensPerSecond > 0.0))
+            {
+                throw Base::InvalidArgumentException("TokenBucket: 补令牌速率必须为正数");
+            }
+            if (!(m_burstCapacity >= 1.0))
+            {
+                throw Base::InvalidArgumentException("TokenBucket: 桶容量必须不小于 1，否则永远放行不了任何请求");
+            }
+        }
+
+        /**
+         * @brief 尝试取走一个令牌
+         * @return true 取到（放行）；false 桶里不足一个令牌（拒绝）
+         */
+        [[nodiscard]] bool tryAcquire()
+        {
+            std::lock_guard<std::mutex> guard(m_mutex);
+
+            // 先按经过的时间补令牌，再封顶到桶容量：不封顶的话，空闲一天攒下的令牌够放行一整天的流量，
+            // 限流形同虚设。补令牌只算经过的时间，因此长期平均速率恰为配置值
+            const auto nowTimePoint = std::chrono::steady_clock::now();
+            const double elapsedSeconds = std::chrono::duration<double>(nowTimePoint - m_lastRefillTimePoint).count();
+            m_tokenCount = std::min(m_burstCapacity, m_tokenCount + elapsedSeconds * m_tokensPerSecond);
+            m_lastRefillTimePoint = nowTimePoint;
+
+            if (m_tokenCount < 1.0)
+            {
+                return false;
+            }
+            m_tokenCount -= 1.0;
+            return true;
+        }
+
+        /**
+         * @brief 当前桶里的令牌数（观测用，不参与判定）
+         * @return double 令牌数，取值在 [0, 桶容量] 内
+         */
+        [[nodiscard]] double availableTokenCount() const
+        {
+            std::lock_guard<std::mutex> guard(m_mutex);
+            return m_tokenCount;
+        }
+
+        /**
+         * @brief 距离下一个令牌可用还有多久
+         * @return std::chrono::milliseconds 等待时长；桶里已有令牌时为 0
+         * @note 给 Retry-After 用：按「还差多少令牌 ÷ 补令牌速率」折算，不四舍五入成 0
+         */
+        [[nodiscard]] std::chrono::milliseconds timeUntilTokenAvailable() const
+        {
+            std::lock_guard<std::mutex> guard(m_mutex);
+            if (m_tokenCount >= 1.0)
+            {
+                return std::chrono::milliseconds::zero();
+            }
+
+            const double secondsUntilAvailable = (1.0 - m_tokenCount) / m_tokensPerSecond;
+            const auto millisecondsUntilAvailable =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(secondsUntilAvailable));
+            // 亚毫秒的等待向上取整到 1ms：返回 0 会让调用方以为「立刻就能重试」，反而制造空转
+            return std::max(millisecondsUntilAvailable, std::chrono::milliseconds{1});
+        }
+
+    private:
+        mutable std::mutex                    m_mutex;                ///< 保护下面几项；桶可能被多个循环线程同时取
+        double                                m_tokensPerSecond;      ///< 补令牌速率（个/秒）
+        double                                m_burstCapacity;        ///< 桶容量（瞬时突发上限）
+        double                                m_tokenCount;           ///< 当前令牌数
+        std::chrono::steady_clock::time_point m_lastRefillTimePoint{std::chrono::steady_clock::now()}; ///< 上次补令牌的时刻
+    };
+
+    /**
+     * @brief 创建基于共享令牌桶的速率限制中间件（超限回 429 Too Many Requests）
+     * @param bucket 令牌桶；**由调用方在所有监听器之间共享同一份**才能构成全局 RPS 上限
+     * @return MiddlewareFunc 中间件函数
+     * @throws Base::InvalidArgumentException bucket 为空指针
+     *
+     * @details 取不到令牌时直接回 429 并附 Retry-After，**不调用下游**：业务 handler 不会被唤醒。
+     *
+     * @note 空指针是用法错误而不是「不限制」：静默放行会让调用方以为限流生效，实际完全没有保护；
+     *       要「不限制」就不要注册本中间件。
+     * @see TokenBucket, rateLimiterMiddleware()
+     */
+    inline MiddlewareFunc tokenBucketRateLimiterMiddleware(std::shared_ptr<TokenBucket> bucket)
+    {
+        if (bucket == nullptr)
+        {
+            throw Base::InvalidArgumentException("tokenBucketRateLimiterMiddleware: 令牌桶不能为空指针；不需要限流就不要注册本中间件");
+        }
+
+        return [bucket = std::move(bucket)]([[maybe_unused]] HttpRequest &request, HttpResponse &response,
+                                           const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            if (!bucket->tryAcquire())
+            {
+                response.setStatus(429);
+                response.setBody("Too Many Requests");
+                response.setHeader("content-type", "text/plain");
+
+                // Retry-After 的单位是秒（RFC 9110 §10.2.3 的 delta-seconds），因此把毫秒向上取整到秒、
+                // 且不低于 1：报 0 等于告诉客户端「立刻重试」，那正是限流要避免的
+                const auto waitMilliseconds = bucket->timeUntilTokenAvailable().count();
+                const auto retryAfterSeconds = std::max<std::int64_t>(1, (waitMilliseconds + 999) / 1000);
                 response.setHeader("retry-after", std::to_string(retryAfterSeconds));
                 co_return;
             }

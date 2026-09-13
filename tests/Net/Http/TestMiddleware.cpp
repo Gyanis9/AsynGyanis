@@ -939,4 +939,129 @@ namespace AsynGyanis::Net
         runPipeline(secondPipeline, secondRequest, secondResponse, terminalWriting(secondResponse, "ok", &handlerCalls));
         EXPECT_EQ(secondResponse.status(), 429);
     }
+
+    // ============================================================================
+    // 令牌桶限流（tokenBucketRateLimiterMiddleware）
+    // ============================================================================
+
+    TEST(TokenBucket, AllowsBurstUpToCapacityThenRejects)
+    {
+        // 速率极小：本用例只关心「容量决定瞬时突发」，补令牌在这几毫秒里可以忽略
+        TokenBucket bucket(0.001, 3.0);
+
+        EXPECT_TRUE(bucket.tryAcquire());
+        EXPECT_TRUE(bucket.tryAcquire());
+        EXPECT_TRUE(bucket.tryAcquire());
+        EXPECT_FALSE(bucket.tryAcquire()) << "超出桶容量后应拒绝";
+        EXPECT_LT(bucket.availableTokenCount(), 1.0);
+    }
+
+    TEST(TokenBucket, RefillsOverTime)
+    {
+        // 速率取大一些，让「补到 1 个令牌」的等待时间远小于用例的等待窗口，避免卡在机器抖动上
+        TokenBucket bucket(50.0, 1.0);
+        EXPECT_TRUE(bucket.tryAcquire());
+        EXPECT_FALSE(bucket.tryAcquire()) << "刚取空就该拒绝";
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        EXPECT_TRUE(bucket.tryAcquire()) << "等待远超补一个令牌所需的时间后应当放行";
+    }
+
+    TEST(TokenBucket, ClampsAccumulatedTokensToCapacity)
+    {
+        // 速率 1000/s、容量 1：若空闲期间攒下的令牌不封顶，睡 50ms 后就能连续放行 50 次
+        TokenBucket bucket(1000.0, 1.0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        EXPECT_TRUE(bucket.tryAcquire());
+        EXPECT_FALSE(bucket.tryAcquire()) << "空闲攒下的令牌必须被封顶到桶容量";
+    }
+
+    TEST(TokenBucket, RejectsInvalidConfiguration)
+    {
+        // 速率非正无法补令牌；容量小于 1 永远攒不满一个令牌——两者都是配置错误，必须当场抛
+        EXPECT_THROW(TokenBucket(0.0, 1.0), Base::InvalidArgumentException);
+        EXPECT_THROW(TokenBucket(-1.0, 1.0), Base::InvalidArgumentException);
+        EXPECT_THROW(TokenBucket(1.0, 0.5), Base::InvalidArgumentException);
+    }
+
+    TEST(TokenBucket, ReportsWaitTimeUntilNextToken)
+    {
+        TokenBucket bucket(2.0, 1.0);
+        EXPECT_EQ(bucket.timeUntilTokenAvailable().count(), 0) << "桶里还有令牌时不必等待";
+
+        EXPECT_TRUE(bucket.tryAcquire());
+        // 速率 2/s ⇒ 补一个令牌要 500ms；允许实现细节带来的少量偏差，但必须是「几百毫秒」量级
+        const auto waitMilliseconds = bucket.timeUntilTokenAvailable().count();
+        EXPECT_GE(waitMilliseconds, 400);
+        EXPECT_LE(waitMilliseconds, 600);
+    }
+
+    TEST(TokenBucket, LimitsRequestsThroughSharedBucketAcrossPipelines)
+    {
+        // 两条管道共享同一个桶：这正是「进程级全局 RPS 上限」的用法——各持一份的话上限会翻倍。
+        // 速率为 1/s：两条紧接着的请求之间补不满一个令牌，因此第二次必然被拒
+        auto bucket = std::make_shared<TokenBucket>(1.0, 1.0);
+        MiddlewarePipeline firstPipeline;
+        firstPipeline.use(tokenBucketRateLimiterMiddleware(bucket));
+        MiddlewarePipeline secondPipeline;
+        secondPipeline.use(tokenBucketRateLimiterMiddleware(bucket));
+
+        std::atomic<int> handlerCalls{0};
+
+        HttpRequest firstRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpResponse firstResponse;
+        runPipeline(firstPipeline, firstRequest, firstResponse, terminalWriting(firstResponse, "ok", &handlerCalls));
+        EXPECT_EQ(firstResponse.status(), 200);
+
+        HttpRequest secondRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpResponse secondResponse;
+        runPipeline(secondPipeline, secondRequest, secondResponse, terminalWriting(secondResponse, "ok", &handlerCalls));
+        EXPECT_EQ(secondResponse.status(), 429);
+
+        // 超限时不得唤醒业务：短路发生在中间件里
+        EXPECT_EQ(handlerCalls.load(), 1);
+        // 速率 1/s ⇒ 下一个令牌要等 1 秒，Retry-After 就该报 1（而不是 0——那等于让客户端立刻重试）
+        EXPECT_EQ(secondResponse.getHeader("retry-after").value_or(""), "1");
+    }
+
+    TEST(TokenBucket, RejectsNullBucketAtFactoryTime)
+    {
+        // 空桶是用法错误，不是「不限制」：静默放行会让人以为限流生效
+        EXPECT_THROW(tokenBucketRateLimiterMiddleware(nullptr), Base::InvalidArgumentException);
+    }
+
+    TEST(TokenBucket, ConcurrentAcquireNeverExceedsCapacity)
+    {
+        // 速率取到几乎不补（0.001/s），让「成功次数」有一个可断言的确定值：
+        // 任何超出容量的成功都意味着桶状态在并发下被破坏
+        constexpr int kCapacity = 8;
+        constexpr int kThreadCount = 8;
+        constexpr int kAttemptsPerThread = 200;
+
+        TokenBucket bucket(0.001, static_cast<double>(kCapacity));
+
+        std::atomic<int> successCount{0};
+        std::vector<std::thread> workers;
+        workers.reserve(kThreadCount);
+        for (int index = 0; index < kThreadCount; ++index)
+        {
+            workers.emplace_back([&bucket, &successCount]
+                                 {
+                                     for (int attempt = 0; attempt < kAttemptsPerThread; ++attempt)
+                                     {
+                                         if (bucket.tryAcquire())
+                                         {
+                                             successCount.fetch_add(1, std::memory_order_relaxed);
+                                         }
+                                     }
+                                 });
+        }
+        for (std::thread &worker: workers)
+        {
+            worker.join();
+        }
+
+        EXPECT_EQ(successCount.load(), kCapacity) << "并发取令牌的成功次数必须恰好等于桶容量";
+    }
 } // namespace AsynGyanis::Net
