@@ -2,7 +2,7 @@
  * @file HttpsSession.h
  * @brief HTTPS 会话：先完成 TLS 握手，再在加密通道上跑与 HTTP 相同的事务循环
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -13,7 +13,9 @@
 #include "Core/Socket/Connection.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
 
 #include <memory>
@@ -48,10 +50,14 @@ namespace AsynGyanis::Net
          * @param tlsSocket 已创建但尚未握手的 TlsSocket，所有权转移给本会话
          * @param router 全局路由器，用于分发 HTTP 请求；生命周期必须不短于本会话
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
+         * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类与延迟直方图都不更新）
+         * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
          * @note 构造函数不做握手：握手是协程动作，放进构造函数就等于要求调用方在构造点 co_await
          */
         HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
-                     std::shared_ptr<const HttpServerLimits> limits = nullptr);
+                     std::shared_ptr<const HttpServerLimits> limits = nullptr,
+                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
+                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr);
 
         /**
          * @brief 启动会话主协程：TLS 握手 → 保持活跃事务循环 → 关闭通道。
@@ -103,11 +109,23 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool isAlive() const noexcept override;
 
+        /**
+         * @brief 本连接被空闲清扫协程按超时关闭时上报到所属服务器的统计
+         *
+         * @details 重写 Core::Connection::onIdleTimeoutClosed()：把这次收口累加进 timeoutClosedCount。
+         *          基类默认实现是空操作，这里的差异只多一次原子自增，不再写日志——清扫协程已经
+         *          记下了「哪条连接、超时误差多大」。
+         * @note 未持有统计对象时（例如只关心协议的调用方直接构造会话）什么都不做
+         */
+        void onIdleTimeoutClosed() noexcept override;
+
     private:
         Core::TlsSocket m_tlsSocket;      ///< TLS 通道，持有 SSL 对象与真实描述符
         Router &m_router;                 ///< 路由器引用，用于分发请求
         HttpParser m_parser;              ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
         std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收缓冲（存的是解密后的明文 HTTP 字节）
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
+        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，与服务器共享；空指针表示不落定 request-id
     };
 } // namespace AsynGyanis::Net

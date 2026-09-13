@@ -19,6 +19,7 @@ add_executable(TestNet
         Http/TestRouter.cpp
         Http/TestMiddleware.cpp
         Http/TestFileSender.cpp
+        Http/TestHttpsServer.cpp
 
         Tcp/TestTcpStream.cpp
         Tcp/TestTcpAcceptor.cpp
@@ -40,6 +41,11 @@ target_link_libraries(TestNet PRIVATE
 target_include_directories(TestNet PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
+)
+
+# HTTPS 端到端用例使用的仓库内证书目录（与 tests/Core/fixtures 同一份自签证书）
+target_compile_definitions(TestNet PRIVATE
+        TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/Core/fixtures"
 )
 
 target_compile_features(TestNet PRIVATE cxx_std_20)

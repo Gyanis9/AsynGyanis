@@ -413,7 +413,7 @@ namespace AsynGyanis::Net
          * @param limits        连接级限额，取自 HttpServerLimits；0 字段表示关闭对应项保护
          * @param metrics       统计采集端，可为空；为空时请求计数、状态码分类与延迟直方图都不更新
          * @param requestIdGenerator request-id 生成器，可为空；为空时不为请求落定 request-id，
-         *                          响应也不带 x-request-id（HTTPS 会话当前即走这条路）
+         *                          响应也不带 x-request-id
          */
         template<typename Socket>
         Core::Task<> httpKeepAliveLoop(Socket &socket,

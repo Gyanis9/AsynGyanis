@@ -20,14 +20,19 @@ namespace AsynGyanis::Net
     } // namespace
 
     HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
-                               std::shared_ptr<const HttpServerLimits> limits) :
+                               std::shared_ptr<const HttpServerLimits> limits,
+                               std::shared_ptr<HttpMetricsCollector> metrics,
+                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator) :
         // 基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。基类那份仅承担「存活位 + 取消源」
         Core::Connection(Core::AsyncSocket(loop, kInvalidSocketDescriptor)),
         m_tlsSocket(std::move(tlsSocket)),
         m_router(router),
         // 空配置按默认限额执行，与 HttpSession 保持同一套语义
-        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>())
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
+        // 统计对象与生成器允许为空：两种空值都表示「本会话不采集」，是明确的关闭语义，不补默认实例
+        m_metrics(std::move(metrics)),
+        m_requestIdGenerator(std::move(requestIdGenerator))
     {
     }
 
@@ -100,16 +105,28 @@ namespace AsynGyanis::Net
             return isAlive() && isTlsTransportOpen();
         };
 
-        // 与 HttpSession 共用同一份事务循环，此处只换了传输层对象与存活谓词：
+        // 与 HttpSession 共用同一份事务循环，此处只换了传输层对象与存活谓词；限额、统计采集端与
+        // request-id 生成器与 HTTP 侧同样一并转交，因此调度与计数口径两侧完全一致。
         // 谓词额外要看描述符，保证「对端断开 → 读出错 → 通道被关」之后循环一定退出，
         // 而不是只依赖基类那个没人置位的存活标志
         co_await detail::httpKeepAliveLoop(
-                m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits);
+                m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits,
+                m_metrics.get(), m_requestIdGenerator.get());
 
         LOG_DEBUG_FMT("HttpsSession: 事务循环结束，关闭 TLS 通道（描述符={}）", m_tlsSocket.fileDescriptor());
 
         // 不再在此处 close()：收口统一交给函数开头的 RAII 守卫
         co_return;
+    }
+
+    void HttpsSession::onIdleTimeoutClosed() noexcept
+    {
+        // 只累加计数：清扫协程已经把「哪条连接、误差多大」写进了日志，这里再写一条只会让它翻倍。
+        // 未持有统计对象时什么都不做——那表示调用方只关心协议本身
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countTimeoutClosedConnection();
+        }
     }
 
 } // namespace AsynGyanis::Net

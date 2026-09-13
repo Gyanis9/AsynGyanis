@@ -6,6 +6,7 @@
 
 #include <openssl/ssl.h>
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 
@@ -13,8 +14,13 @@ namespace AsynGyanis::Net
 {
     HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile) :
         TcpServer(loop, address),
-        m_limits(std::make_shared<const HttpServerLimits>())
+        m_limits(std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::make_shared<HttpMetricsCollector>()),
+        m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
+        // 限额、统计与 request-id 生成器都在此就绪：会话按 shared_ptr 共享持有它们，
+        // 采集是常开行为，且它们的生命周期一定覆盖所有会话，创建路径上不必判空
+
         // 证书必须在进入接受循环之前就位：留着一个加载失败的上下文，
         // 表现是「端口开着、每条连接都握手失败」，比构造期直接抛异常更难排查
         if (!m_tlsContext.loadCertificate(certificateFile, keyFile))
@@ -46,7 +52,7 @@ namespace AsynGyanis::Net
         // 描述符的所有权就此交给 TlsSocket（它是唯一所有者），socket 被移空只剩占位值；
         // 真正的 TLS 握手留给会话协程去做，这里绝不做任何网络动作
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router, m_limits);
+        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator);
     }
 
     void HttpsServer::setLimits(HttpServerLimits limits)
@@ -58,6 +64,16 @@ namespace AsynGyanis::Net
     HttpServerLimits HttpsServer::limits() const
     {
         return *m_limits;
+    }
+
+    HttpServerStats HttpsServer::stats() const
+    {
+        HttpServerStats snapshot = m_metrics->snapshot();
+
+        // 活跃连接数与 HttpServer 同源：现读连接管理器，避免另设一份计数与它漂移。
+        // size_t 到 uint64_t 是加宽转换，32 位平台上也不会丢信息
+        snapshot.activeConnectionCount = static_cast<std::uint64_t>(m_connectionManager.activeCount());
+        return snapshot;
     }
 
 } // namespace AsynGyanis::Net

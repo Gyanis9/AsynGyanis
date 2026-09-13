@@ -2,7 +2,7 @@
  * @file HttpsServer.h
  * @brief HTTPS 服务器：持有 TlsContext，为每条连接派生 TLS 包装的 HttpsSession
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -12,7 +12,9 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Tls/TlsContext.h"
 
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/TcpServer.h"
 
@@ -89,9 +91,24 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] HttpServerLimits limits() const;
 
+        /**
+         * @brief 取本服务器的统计快照
+         *
+         * @details 与 HttpServer::stats() 同一口径：各字段分别原子读取，快照不是严格同一瞬间的
+         *          一致切面；活跃连接数在取快照这一刻从连接管理器读取，与其它字段同为近似同时刻的值。
+         *
+         * @return HttpServerStats 统计快照；尚未处理任何请求时各计数为零
+         * @note 可从任意线程调用（计数是原子量、活跃连接数由连接管理器加锁读取），
+         *       运维线程或测试线程可直接采样，不必把动作投递到事件循环
+         * @see HttpServerStats, HttpMetricsCollector, HttpServer::stats()
+         */
+        [[nodiscard]] HttpServerStats stats() const;
+
     private:
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
+        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };
 } // namespace AsynGyanis::Net
