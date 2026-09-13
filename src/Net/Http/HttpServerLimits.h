@@ -23,6 +23,9 @@ namespace AsynGyanis::Net
      *          client_body_timeout 一致：约束相邻两次成功读取之间的间隔，而非整条请求的读总时长。
      * @note 会话按 shared_ptr 只读共享一份配置；要改配置请走 HttpServer::setLimits()，
      *       它整体换代而不是就地改写，避免在途会话读到半新半旧的组合。
+     * @note 本结构只管时间与请求条数，单条报文的内存占用由 HttpParserLimits 负责（两者独立生效：
+     *       把某一项设为 0 只关掉它自己那道保护，不会牵连另一半）。
+     * @see HttpParserLimits, HttpServer::setLimits(), HttpServer::setParserLimits()
      */
     struct HttpServerLimits
     {

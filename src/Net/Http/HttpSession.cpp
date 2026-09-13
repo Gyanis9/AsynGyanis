@@ -71,9 +71,12 @@ namespace AsynGyanis::Net
 
     HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
                              std::shared_ptr<HttpMetricsCollector> metrics,
-                             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator) :
+                             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
+                             HttpParserLimits parserLimits) :
         Core::Connection(std::move(socket)),
         m_router(router),
+        // 解析器上限按值交给解析器并在构造时固定：本连接此后每条报文都按同一份尺子定界
+        m_parser(parserLimits),
         // 空配置按默认限额执行：让只关心协议的调用方不必显式传一份配置，会话内也不必到处判空
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
         // 统计对象与生成器允许为空：这两种空值都表示「本会话不采集」，是明确的关闭语义，

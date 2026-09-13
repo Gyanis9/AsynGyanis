@@ -52,7 +52,7 @@ namespace AsynGyanis::Net
         // 描述符的所有权就此交给 TlsSocket（它是唯一所有者），socket 被移空只剩占位值；
         // 真正的 TLS 握手留给会话协程去做，这里绝不做任何网络动作
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator);
+        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
     }
 
     void HttpsServer::setLimits(HttpServerLimits limits)
@@ -64,6 +64,17 @@ namespace AsynGyanis::Net
     HttpServerLimits HttpsServer::limits() const
     {
         return *m_limits;
+    }
+
+    void HttpsServer::setParserLimits(HttpParserLimits limits)
+    {
+        // 按值保存，理由同 HttpServer::setParserLimits()：解析器在会话构造时取走一份副本，之后没有读者
+        m_parserLimits = limits;
+    }
+
+    HttpParserLimits HttpsServer::parserLimits() const
+    {
+        return m_parserLimits;
     }
 
     HttpServerStats HttpsServer::stats() const

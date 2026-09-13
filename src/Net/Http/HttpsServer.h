@@ -13,6 +13,7 @@
 #include "Core/Tls/TlsContext.h"
 
 #include "Net/Http/HttpRequestId.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
@@ -92,6 +93,24 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpServerLimits limits() const;
 
         /**
+         * @brief 设置解析器资源上限（请求行 / 头部 / 正文 / 分块行）。
+         *
+         * @details 与 HttpServer::setParserLimits() 同一语义：连接级限额管时间与请求条数，
+         *          本项管单条报文的内存占用，两者独立生效、互不覆盖；限额按值交给此后新建的会话。
+         *
+         * @param limits 新的解析上限，取值 0 的字段表示关闭对应保护（见 HttpParserLimits）
+         * @note 必须在 start() 之前调用；已经建立的会话继续用创建时那份配置
+         * @see HttpParserLimits, setLimits(), HttpServer::setParserLimits()
+         */
+        void setParserLimits(HttpParserLimits limits);
+
+        /**
+         * @brief 查询当前生效的解析器资源上限。
+         * @return HttpParserLimits 构造时的默认值，或最后一次 setParserLimits() 设定的值
+         */
+        [[nodiscard]] HttpParserLimits parserLimits() const;
+
+        /**
          * @brief 取本服务器的统计快照
          *
          * @details 与 HttpServer::stats() 同一口径：各字段分别原子读取，快照不是严格同一瞬间的
@@ -108,6 +127,7 @@ namespace AsynGyanis::Net
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
+        HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };

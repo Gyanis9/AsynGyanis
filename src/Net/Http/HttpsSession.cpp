@@ -24,12 +24,15 @@ namespace AsynGyanis::Net
     HttpsSession::HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
                                std::shared_ptr<const HttpServerLimits> limits,
                                std::shared_ptr<HttpMetricsCollector> metrics,
-                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator) :
+                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
+                               HttpParserLimits parserLimits) :
         // 基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。基类那份仅承担「存活位 + 取消源」
         Core::Connection(Core::AsyncSocket(loop, kInvalidSocketDescriptor)),
         m_tlsSocket(std::move(tlsSocket)),
         m_router(router),
+        // 解析器上限按值交给解析器并在构造时固定，与 HTTP 侧完全同一套语义
+        m_parser(parserLimits),
         // 空配置按默认限额执行，与 HttpSession 保持同一套语义
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
         // 统计对象与生成器允许为空：两种空值都表示「本会话不采集」，是明确的关闭语义，不补默认实例

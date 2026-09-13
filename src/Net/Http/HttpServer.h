@@ -12,6 +12,7 @@
 #include "Core/EventLoop/EventLoop.h"
 
 #include "Net/Http/HttpRequestId.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
@@ -44,8 +45,9 @@ namespace AsynGyanis::Net
      * @brief HTTP 服务器类。
      *
      * @details 继承 TcpServer：接受循环、连接计数、空闲清扫与优雅关闭都由基类负责，本类只补四件事——
-     *          持有一张路由表、把每条新连接包成 HttpSession、可选的静态文件服务，以及连接级限额
-     *          （决定会话按什么相位刷新空闲截止时间、一条连接最多服务多少请求）。
+     *          持有一张路由表、把每条新连接包成 HttpSession、可选的静态文件服务，以及两套限额：
+     *          连接级限额（决定会话按什么相位刷新空闲截止时间、一条连接最多服务多少请求）与
+     *          解析上限（单个会话的解析器按它为单条报文设内存闸门）。
      *
      * @note 用法：`server.router().get("/x", handler)` 注册业务路由，
      *       需要目录服务时再 `server.staticFileDir("./web")`；两者都必须在 start() 之前完成。
@@ -143,6 +145,25 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpServerLimits limits() const;
 
         /**
+         * @brief 设置解析器资源上限（请求行 / 头部 / 正文 / 分块行）。
+         *
+         * @details 与连接级限额的分工：setLimits() 管时间与请求条数（超时、单连接请求上限），
+         *          本方法管单条报文的内存占用，两者独立生效、互不覆盖。
+         *
+         * @param limits 新的解析上限，取值 0 的字段表示关闭对应保护（见 HttpParserLimits）
+         * @note 必须在 start() 之前调用：限额按值交给此后 createConnection() 新建的会话，
+         *       已经建立的会话继续用它构造时那份
+         * @see HttpParserLimits, setLimits(), HttpParser
+         */
+        void setParserLimits(HttpParserLimits limits);
+
+        /**
+         * @brief 查询当前生效的解析器资源上限。
+         * @return HttpParserLimits 构造时的默认值，或最后一次 setParserLimits() 设定的值
+         */
+        [[nodiscard]] HttpParserLimits parserLimits() const;
+
+        /**
          * @brief 取本服务器的统计快照
          *
          * @details 各字段分别原子读取，因此快照不是严格同一瞬间的一致切面（跨字段求和可能与某次
@@ -166,6 +187,7 @@ namespace AsynGyanis::Net
         Router m_router;                                ///< 路由器，存储路由表与处理函数
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
+        HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };

@@ -13,6 +13,7 @@
 #include "Core/Socket/Connection.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
@@ -51,12 +52,15 @@ namespace AsynGyanis::Net
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类与延迟直方图都不更新）
          * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
+         * @param parserLimits 解析器资源上限；默认取 HttpParserLimits 的缺省字段。它按值交给本会话的
+         *        解析器并在构造时固定，因此只影响此后新建的会话（见 HttpParserLimits 的 @note）
          * @note 构造函数不做握手：握手是协程动作，放进构造函数就等于要求调用方在构造点 co_await
          */
         HttpsSession(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
                      std::shared_ptr<const HttpServerLimits> limits = nullptr,
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr);
+                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                     HttpParserLimits parserLimits = {});
 
         /**
          * @brief 启动会话主协程：TLS 握手 → 保持活跃事务循环 → 关闭通道。
@@ -140,7 +144,7 @@ namespace AsynGyanis::Net
     private:
         Core::TlsSocket m_tlsSocket;      ///< TLS 通道，持有 SSL 对象与真实描述符
         Router &m_router;                 ///< 路由器引用，用于分发请求
-        HttpParser m_parser;              ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
+        HttpParser m_parser;              ///< HTTP 增量解析器（资源上限构造时固定），两条报文之间由会话显式 reset()
         std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收缓冲（存的是解密后的明文 HTTP 字节）
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集

@@ -858,7 +858,7 @@ namespace AsynGyanis::Net
     {
         // 与基类契约的差异见头文件 Doxygen：这里只搬移 socket 与转交几个引用，
         // 不做握手、不查地址、不阻塞，因此既不抛异常也不可能返回空指针
-        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator);
+        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
     }
 
     HttpServerStats HttpServer::stats() const
@@ -962,6 +962,18 @@ namespace AsynGyanis::Net
     HttpServerLimits HttpServer::limits() const
     {
         return *m_limits;
+    }
+
+    void HttpServer::setParserLimits(HttpParserLimits limits)
+    {
+        // 按值保存而不是共享指针：解析上限只在会话构造那一刻被解析器取走一份副本，
+        // 之后没有读者，因此不需要「整体换代」那套共享只读机制
+        m_parserLimits = limits;
+    }
+
+    HttpParserLimits HttpServer::parserLimits() const
+    {
+        return m_parserLimits;
     }
 
 } // namespace AsynGyanis::Net

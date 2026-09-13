@@ -15,6 +15,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
@@ -444,9 +445,11 @@ namespace AsynGyanis::Net
              * @param sweepInterval 空闲清扫节拍
              * @param slowRoute 可选的慢路由（处理耗时与进入标记）
              * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
+             * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
              */
             RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                     const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {}) :
+                                     const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {},
+                                     const HttpParserLimits &parserLimits = HttpParserLimits{}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0)),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -455,6 +458,7 @@ namespace AsynGyanis::Net
                 // 限额、清扫节拍与路由都必须在投递 start() 之前落定：清扫协程按 start() 那一刻的
                 // 节拍投递，之后再改不会有清扫发生；路由同理，运行期改表生效时机不可预期
                 m_server.setLimits(limits);
+                m_server.setParserLimits(parserLimits);
                 m_server.setIdleCheckInterval(sweepInterval);
                 m_server.router().get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                 {

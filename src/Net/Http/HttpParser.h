@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Net/Http/HttpParseErrorKind.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/ParseStatus.h"
 
@@ -30,7 +31,8 @@ namespace AsynGyanis::Net
      *
      * @warning 所有资源上限都是 DoS 防护：任何一项超限都会以 Error 结束本次解析，并用
      *          isLimitExceeded() 标出「超限」这一子类，便于上层回 431/413 而不是 400；
-     *          上限是策略而非协议要求，取值依据见各常量的行尾注释。
+     *          上限是策略而非协议要求，默认取值与「0 表示关闭该项保护」的语义见 HttpParserLimits，
+     *          本类在构造时按值固定一份，运行期不可更换。
      * @warning 定界头的组合从严：Transfer-Encoding 与 Content-Length 并存、取值不是唯一的 chunked
      *          一律判错（RFC 9112 §6.3），不接受 gzip 等其它传输编码，也不悄悄按 identity 处理。
      */
@@ -38,9 +40,11 @@ namespace AsynGyanis::Net
     {
     public:
         /**
-         * @brief 构造解析器：全部状态为默认值，可直接开始解析。
+         * @brief 构造解析器：取一份资源上限配置，其余状态为默认值，可直接开始解析。
+         * @param limits 资源上限配置；默认值即 HttpParserLimits 的缺省字段。配置按值拷入，构造之后
+         *        本解析器一直用它，没有中途更换的入口（见 HttpParserLimits 的 @note）
          */
-        HttpParser() = default;
+        explicit HttpParser(HttpParserLimits limits = {});
 
         /**
          * @brief 析构函数：所有成员都是按值的标准容器，无额外资源需要回收。
@@ -171,11 +175,18 @@ namespace AsynGyanis::Net
         /**
          * @brief 按当前阶段校验一行（含尚未收尾的半行）的长度上限
          * @details 兜住「一行永远不结束」的输入：没有它，一个超长的请求行或头部行
-         *          就能让解析器的暂存一直膨胀下去。
+         *          就能让解析器的暂存一直膨胀下去。对应上限为 0 表示该项保护已关闭，本函数直接放行。
          * @param length 待校验的行长度（半行含已暂存部分）
          * @return true 未超限；false 已记录超限错误
          */
         [[nodiscard]] bool checkLineLength(std::size_t length);
+
+        /**
+         * @brief 推导「一行头部」整行的长度上限
+         * @details 名与值两项各有一道上限，整行还得有第三道闸才拦得住「名与值都合规但拼起来超长」的行。
+         * @return std::size_t 整行上限（名上限 + 值上限 + ": " 与 CRLF）；0 表示不设上限
+         */
+        [[nodiscard]] std::size_t headerLineLengthLimit() const noexcept;
 
         /**
          * @brief 解析请求行并填充暂存请求的方法与版本
@@ -311,25 +322,11 @@ namespace AsynGyanis::Net
         std::string m_errorMessage;           ///< 面向使用者的中文错误描述
         std::size_t m_consumedByteCount{0};   ///< 最近一次 parse() 实际消费的字节数
 
-        // 资源上限：全部按「正常流量远达不到、恶意流量立刻撞线」的口径取值，单位统一为字节。
-        // 任何一项超限都走 Error + isLimitExceeded()，绝不静默截断后继续解析
-        static constexpr std::size_t kMaximumBodySize = 8ull * 1024 * 1024;        ///< 请求体上限 8 MiB：够上传小文件，不够拖垮内存，与限流中间件的默认档位一致
-        static constexpr std::size_t kMaximumUriLength = 8ull * 1024;              ///< 请求 URI 上限 8 KiB：对齐 nginx large_client_header_buffers 的单行 8 KiB，浏览器实际 URI 远低于此
-        static constexpr std::size_t kMaximumHeaderFieldNameLength = 256;          ///< 单个头部名上限 256 B：标准头部名最长不过数十 B，留足私有前缀（x-amz- 等）后仍宽裕
-        static constexpr std::size_t kMaximumHeaderFieldValueLength = 8ull * 1024; ///< 单个头部值上限 8 KiB：与 URI 同档，覆盖超长 Cookie 头的现实用量
-        static constexpr std::size_t kMaximumHeaderCount = 100;                    ///< 头部条数上限 100 条：浏览器实际请求不足 40 条，此值专防「海量空值头部」撑爆容器节点
-        static constexpr std::size_t kMaximumHeaderBlockLength = 64ull * 1024;     ///< 头部块总长上限 64 KiB：名与值净字节之和，条数与单条之外的第三道闸，约合 8 个 8 KiB 接收缓冲区
-
-        /// 方法原文上限 32 B：llhttp 同档取值，通用方法最长 7 B（OPTIONS），留足自定义动词余地
+        /// 方法原文上限 32 B：llhttp 同档取值，通用方法最长 7 B（OPTIONS），留足自定义动词余地。
+        /// 它是协议语法约束而不是按部署调整的内存闸门，因此不放进 HttpParserLimits
         static constexpr std::size_t kMaximumMethodLength = 32;
 
-        /// 块大小行上限 1 KiB：块扩展由客户端自定义（正常只发十六进制数字与短 ext），此值用于兜住「一行始终不结束」的输入
-        static constexpr std::size_t kMaximumChunkSizeLineLength = 1024;
-
-        /// 请求行上限 = URI 上限 + 方法上限 + "HTTP/9.9" 与两个分隔空格，用于兜住「一行始终不结束」的输入
-        static constexpr std::size_t kMaximumRequestLineLength = kMaximumUriLength + kMaximumMethodLength + 16;
-
-        /// 头部行上限 = 名上限 + 值上限 + ": " 与 CRLF，同样用于兜住始终不结束的一行
-        static constexpr std::size_t kMaximumHeaderLineLength = kMaximumHeaderFieldNameLength + kMaximumHeaderFieldValueLength + 4;
+        /// 构造时按值落定的资源上限，收字节与定界时逐项消费；没有中途更换的入口
+        HttpParserLimits m_limits{};
     };
 } // namespace AsynGyanis::Net

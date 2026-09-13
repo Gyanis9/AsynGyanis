@@ -5,6 +5,7 @@ add_executable(TestNet
         Http/HttpTestSupport.h
 
         Http/TestHttpParser.cpp
+        Http/TestHttpParserLimits.cpp
         Http/TestHttpParserChunked.cpp
         Http/TestHttpParserFuzzSmoke.cpp
         Http/TestHttpDate.cpp
@@ -15,6 +16,7 @@ add_executable(TestNet
         Http/TestSseStream.cpp
         Http/TestHttpServer.cpp
         Http/TestHttpServerLimits.cpp
+        Http/TestHttpServerParserLimits.cpp
         Http/TestHttpObservability.cpp
         Http/TestRouter.cpp
         Http/TestMiddleware.cpp

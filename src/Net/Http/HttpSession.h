@@ -15,6 +15,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/Connection.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
@@ -61,6 +62,8 @@ namespace AsynGyanis::Net
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类与延迟直方图都不更新）
          * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
+         * @param parserLimits 解析器资源上限；默认取 HttpParserLimits 的缺省字段。它按值交给本会话的
+         *        解析器并在构造时固定，因此只影响此后新建的会话（见 HttpParserLimits 的 @note）
          *
          * @note 事件循环由 AsyncSocket 内部持有，会话不需要第二份引用，因此只收一个 socket
          *       （见 Core::Connection 的构造）。
@@ -69,10 +72,12 @@ namespace AsynGyanis::Net
          * @note 统计对象与生成器同样按 shared_ptr 共享：它们由服务器持有，会话只是借用来上报，
          *       因此会话比服务器活得久时也不会写到已释放对象上；计数器内部全是原子量，
          *       多线程上的会话并发上报同一个服务器是安全的
+         * @note 解析器上限与连接级限额分属两套：后者管时间与请求条数，前者管单条报文的内存占用
          */
         HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr,
                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                    std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr);
+                    std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                    HttpParserLimits parserLimits = {});
 
         /**
          * @brief 启动会话主协程：跑完整条保持活跃循环后关闭连接。
@@ -116,7 +121,7 @@ namespace AsynGyanis::Net
 
     private:
         Router &m_router;             ///< 路由器引用，用于分发请求
-        HttpParser m_parser;          ///< HTTP 增量解析器，两条报文之间由会话显式 reset()
+        HttpParser m_parser;          ///< HTTP 增量解析器（资源上限构造时固定），两条报文之间由会话显式 reset()
         std::vector<char> m_receiveBuffer; ///< 跨次读取存续的接收窗口，首次读取时按固定大小分配
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集

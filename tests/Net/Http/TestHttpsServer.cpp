@@ -11,6 +11,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
@@ -458,9 +459,11 @@ namespace AsynGyanis::Net
              * @param limits 连接级限额
              * @param sweepInterval 空闲清扫节拍
              * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
+             * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
              */
             RunningHttpsServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                      const RouteRegistrar &registerRoutes = {}) :
+                                      const RouteRegistrar &registerRoutes = {},
+                                      const HttpParserLimits &parserLimits = HttpParserLimits{}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0), kTestCertificatePath.string(), kTestKeyPath.string()),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -468,6 +471,7 @@ namespace AsynGyanis::Net
             {
                 // 限额、清扫节拍与路由都必须在投递 start() 之前落定，与 HTTP 夹具同一约束
                 m_server.setLimits(limits);
+                m_server.setParserLimits(parserLimits);
                 m_server.setIdleCheckInterval(sweepInterval);
                 m_server.router().get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                 {
@@ -748,5 +752,52 @@ namespace AsynGyanis::Net
 
         EXPECT_NE(httpRequestId.substr(0, kRequestIdPrefixLength), httpsRequestId.substr(0, kRequestIdPrefixLength))
                 << "HTTP 与 HTTPS 用了同一个 request-id 前缀：「" << httpRequestId << "」与「" << httpsRequestId << "」";
+    }
+
+    /**
+     * @brief 钉住：HTTPS 侧的解析上限与 HTTP 侧对称——头部值超限回 431 而不是 400，未超限的请求照常被服务
+     */
+    TEST(HttpsServer, Answers431WhenParserHeaderLimitIsSmall)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
+                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumHeaderFieldValueLength = 32;
+
+        // 连接级限额保持缺省（超时都很长），本用例只观察解析上限
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, parserLimits);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环：上界 kWaitTimeout";
+        EXPECT_EQ(fixture.server().parserLimits().maximumHeaderFieldValueLength, 32u) << "落定的解析上限与传入值不符";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        // 越界的那一条：单个头部值 64 字节 > 32，必须回 431（形态合法、体量越界），不能退化成 400
+        {
+            TlsLoopbackClient client(listeningPort);
+            ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+            const std::string request = makeRequestText("GET /hello HTTP/1.1", {"x-blob: " + std::string(64, 'a')});
+            ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "越界 HTTPS 请求未能写入";
+
+            std::string receivedText;
+            ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "Request Header Fields Too Large", 1, kWaitTimeout))
+                    << "越界头部未在时限内被判 431：上界 kWaitTimeout";
+            EXPECT_NE(receivedText.find("HTTP/1.1 431"), std::string::npos) << receivedText;
+            EXPECT_EQ(receivedText.find("HTTP/1.1 400"), std::string::npos) << "越界被当成了协议级非法：" << receivedText;
+            EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "回完 431 没有收口";
+        }
+
+        // 同一台服务器上的下一条连接：未越界的请求照样拿到 200
+        {
+            TlsLoopbackClient normalClient(listeningPort);
+            ASSERT_TRUE(normalClient.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+            ASSERT_TRUE(normalClient.sendText(helloRequestText(), kWaitTimeout)) << "正常 HTTPS 请求未能写入";
+
+            std::string receivedText;
+            ASSERT_TRUE(normalClient.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout))
+                    << "同一台服务器上未超限的请求未被正常服务：" << receivedText;
+            EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << receivedText;
+        }
     }
 } // namespace AsynGyanis::Net
