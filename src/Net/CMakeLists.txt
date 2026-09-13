@@ -22,10 +22,16 @@ add_library(Net STATIC
         ${NET_SOURCES}
 )
 
+# 响应压缩用 zlib（gzip 容器，RFC 1952）；依赖由 Conan 提供，本地缓存里已有
+find_package(ZLIB REQUIRED)
+
 # Net 建立在 Core 的事件循环与协程 I/O 之上；Platform 与 Base 由 Core 传递而来
 target_link_libraries(Net PUBLIC
         Core
 )
+
+# PRIVATE 就够了：zlib 只出现在 Gzip.cpp 里；静态库会把这份依赖以 LINK_ONLY 传给最终可执行文件
+target_link_libraries(Net PRIVATE ZLIB::ZLIB)
 
 target_include_directories(Net PUBLIC
         # 构建期用仓库内的 src；安装后改用 <前缀>/include，两者都是各模块头文件的根
