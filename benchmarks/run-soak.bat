@@ -2,9 +2,12 @@
 rem ============================================================================
 rem 进程外压测：启动示例服务器 → 跑 benchmarks/soak.py → 收工。
 rem 用法：benchmarks\run-soak.bat <端口> [工作线程数] [压测脚本附加参数...]
-rem 前提：先构建过 Debug（build\debug\samples\echo_server.exe 存在）。
-rem 注意：Debug 构建带 AddressSanitizer，测出的吞吐只用于同类构建的回归对比，
-rem       不是框架的性能上限；绝对数字要用 Release 构建另测。
+rem 前提：先构建过对应构建类型的 echo_server。
+rem 构建类型：默认 debug（build\debug）；设 ASYN_SOAK_BUILD=release 换成 build\release。
+rem        Debug 带 AddressSanitizer，吞吐只用于同类构建的回归对比，不是性能上限；
+rem        与 benchmarks/baseline.json 比对必须用 release，那份基线就是 Release 下测的。
+rem 门禁用法：... run-soak.bat 18080 4 --json-out build\soak.json
+rem        然后 python benchmarks\check-baseline.py build\soak.json
 rem ============================================================================
 setlocal
 
@@ -12,11 +15,12 @@ set SERVER_PORT=%~1
 if "%SERVER_PORT%"=="" set SERVER_PORT=18080
 set SERVER_THREADS=%~2
 if "%SERVER_THREADS%"=="" set SERVER_THREADS=4
+if "%ASYN_SOAK_BUILD%"=="" set ASYN_SOAK_BUILD=debug
 
 set REPOSITORY_ROOT=%~dp0..
-set SERVER_PATH=%REPOSITORY_ROOT%\build\debug\samples\echo_server.exe
+set SERVER_PATH=%REPOSITORY_ROOT%\build\%ASYN_SOAK_BUILD%\samples\echo_server.exe
 if not exist "%SERVER_PATH%" (
-    echo 找不到 %SERVER_PATH%，请先构建 Debug 目标 echo_server。
+    echo 找不到 %SERVER_PATH%，请先构建 %ASYN_SOAK_BUILD% 目标 echo_server。
     exit /b 1
 )
 

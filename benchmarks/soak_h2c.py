@@ -2,21 +2,26 @@
 
 用法：
     python benchmarks/soak_h2c.py --port 18080 [--host 127.0.0.1] [--requests N]
-                                  [--connections C] [--pipeline P] [--path /bench]
+                                  [--connections C] [--pipeline P] [--path /bench] [--json-out <结果文件>]
 
 服务端要求：`echo_server --h2c`（明文连接按先验知识说 h2；TLS 上的 h2 由 ALPN 协商，与本脚本无关）。
+`--json-out` 把本次结果写成 JSON（结构见 benchmarks/baseline.json 的 note 字段），供 check-baseline.py 比对。
 本脚本自带一个最小 h2 客户端：不依赖任何第三方库，直接拼帧——前言 + SETTINGS、请求头块用 HPACK
 静态表索引（:method GET / :scheme http / :path），响应只按「DATA + END_STREAM」判定完成，
 并核对头块里出现过 :status 200 的表示（静态表索引 8）。
 
 **本脚本首先是不变式用例，其次才是负载生成器**——它自己的吞吐/延迟数字受限于单线程 Python 客户端
 （一次 sendall 一帧、串行解析），只适合同构建下的横向对比，不能当作引擎的 h2 性能结论。已实测的
-（2026-09-13，本机 Windows / MSVC / Debug+ASan / `--threads 4`，仅供回归对比）：
-    · 单条往返（--pipeline 1）：p50 ≈ 1.6ms，约 600 请求/s —— 这个数字基本由 Python 客户端的
-      一次收发开销决定，`--threads` 从 1 换到 4 没有变化即为佐证；
-    · 32 条一批（--pipeline 32）：p50 ≈ 41ms（32 × 单条服务耗时），因为服务端**先把一轮里收齐的请求
-      全部服务完、再一次性写出**，所以单条延迟随排在前面的流数增长（多路复用省连接数，不省排队延迟）；
-    · 累计 3400+ 条请求零失败：无 GOAWAY/RST_STREAM、每条流都收到 END_STREAM 且状态 200、连接活到最后。
+（2026-09-13，本机 Windows / MSVC / `--threads 4`，多次取中位数，仅供回归对比）：
+    · Release（无插桩、开 LTO，多次取中位数）：单条往返（--pipeline 1）10,692 请求/s、p50 58us；
+      32 条一批（--pipeline 32，2 连接）56,884 请求/s、p50 735us。
+    · Debug+ASan：单条往返约 600 请求/s、p50 ≈ 1.6ms；32 条一批 p50 ≈ 41ms。
+    · 这台机器的会话间离散很大：同一份 Release 代码在较空闲的会话里，上面两项分别测到过 23.6k 与 69.4k
+      请求/s（约 2 倍），所以 benchmarks/baseline.json 的吞吐下限放到了 0.6 倍——它抓的是量级回归。
+    · 单条往返的绝对数字基本由 Python 客户端的一次收发开销决定（`--threads` 1→4 无变化即为佐证）；
+      32 条一批时单条延迟随排在前面的流数增长，因为服务端**先把一轮里收齐的请求全部服务完再一次性写出**
+      ——多路复用省连接数，不省排队延迟。
+    · 两种构建下都累计 3400+ 条请求零失败：无 GOAWAY/RST_STREAM、每条流都收到 END_STREAM 且状态 200。
 
 本脚本覆盖的**不变式**（任一违反即计入失败并以非零码退出）：
     1. 全程不得出现 GOAWAY / RST_STREAM：出现即说明服务端提前收口或拒了某条流；
@@ -27,6 +32,7 @@
 """
 
 import argparse
+import json
 import socket
 import statistics
 import struct
@@ -210,6 +216,7 @@ def main() -> int:
     parser.add_argument("--connections", type=int, default=1, help="连接数（每条连接各自独立完成前奏与 SETTINGS）")
     parser.add_argument("--pipeline", type=int, default=32, help="一次连续发出多少条请求再等响应（体现多路复用）")
     parser.add_argument("--path", default="/bench", help="请求路径")
+    parser.add_argument("--json-out", default="", help="把本次结果写成 JSON，供 check-baseline.py 比对")
     arguments = parser.parse_args()
 
     if arguments.requests > 900:
@@ -254,16 +261,41 @@ def main() -> int:
             failures.append(f"连接 {index + 1}：{len(bad_status)} 条响应的状态不是 200（流号示例 {bad_status[:3]}）")
 
     total_requests = arguments.connections * expected_per_connection
-    print(f"  用时 {elapsed:.2f}s，吞吐 {total_requests / elapsed if elapsed > 0 else 0:.0f} 请求/s")
+    throughput = total_requests / elapsed if elapsed > 0 else 0.0
+    print(f"  用时 {elapsed:.2f}s，吞吐 {throughput:.0f} 请求/s")
+    measurement = {
+        "connections": arguments.connections,
+        "pipeline": arguments.pipeline,
+        "requests": total_requests,
+        "throughputPerSecond": throughput,
+        "throughputUnit": "请求/s",
+    }
     if all_latencies:
         all_latencies.sort()
-        print(f"  延迟 p50 {statistics.median(all_latencies):.2f}ms，"
-              f"p95 {all_latencies[int(len(all_latencies) * 0.95)]:.2f}ms，"
+        p50Milliseconds = statistics.median(all_latencies)
+        p95Milliseconds = all_latencies[int(len(all_latencies) * 0.95)]
+        print(f"  延迟 p50 {p50Milliseconds:.2f}ms，p95 {p95Milliseconds:.2f}ms，"
               f"max {all_latencies[-1]:.2f}ms（样本 {len(all_latencies)}）")
+        measurement["p50Microseconds"] = p50Milliseconds * 1000.0
+        measurement["p95Microseconds"] = p95Milliseconds * 1000.0
+        measurement["maximumMicroseconds"] = all_latencies[-1] * 1000.0
 
     print(f"== 汇总：失败项 {len(failures)} 条 ==")
     for failure in failures:
         print(f"  FAIL: {failure}")
+
+    if arguments.json_out:
+        document = {
+            "benchmark": "http2-h2c",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "target": f"{arguments.host}:{arguments.port}",
+            "failures": len(failures),
+            "measurements": {f"http2-h2c-pipeline{arguments.pipeline}": measurement},
+        }
+        with open(arguments.json_out, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, ensure_ascii=False, indent=2)
+        print(f"  结果已写入 {arguments.json_out}")
+
     if failures:
         return 1
     print("  OK: 全部不变式成立 —— 无 GOAWAY/RST_STREAM、每条流都收到完整响应且状态 200、连接活到最后")

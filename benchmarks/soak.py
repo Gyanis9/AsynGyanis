@@ -3,16 +3,29 @@
 用法：
     python benchmarks/soak.py --port 18080 [--host 127.0.0.1] [--pid <服务进程号>]
                               [--keepalive-rounds N] [--churn-connections N] [--idle-connections N]
+                              [--json-out <结果文件>]
 
 `--pid` 给出服务进程号才会采样句柄与内存（Windows 上用 ctypes 直接问内核，不需要额外工具）。
+`--json-out` 把本次结果写成 JSON（结构见 benchmarks/baseline.json 的 note 字段），供 check-baseline.py 比对。
 
-参考基线（2026-09-13，本机 Windows / MSVC / Debug+ASan / 4 工作线程，仅供回归对比，不是性能上限）：
-    Debug+ASan 下保持连接约 7.7k 请求/s，p50 ≈ 0.97ms、p95 ≈ 1.2ms；短连接约 1k 连接/s；
-    22.4 万请求零失败、句柄数不漂移。Release 构建的真实吞吐需要另行测（本脚本不做构建）。
+参考基线（2026-09-13，本机 Windows / MSVC / 4 工作线程，仅供回归对比，不是性能上限）：
+    Release（无插桩、开 LTO，各 4 次取中位数）：保持连接 30,305 请求/s、p50 242us、p95 435us，
+    短连接 1,764 连接/s；同一份代码的离散范围分别是 24.8k~30.8k 与 1.3k~2.1k，换一次会话还能差近 2 倍。
+    Debug+ASan：保持连接约 7.7k 请求/s、p50 ≈ 0.97ms、p95 ≈ 1.2ms，短连接约 1k 连接/s。
+    两者都是 22.4 万级请求零失败、句柄数不漂移。本脚本只发压不做构建，换构建类型请自行换可执行文件。
+
+    注意保持连接那一路的 p50 主要不是单次服务耗时，而是排队延迟：8 线程 × 8 连接共 64 条并发连接压在
+    4 个工作线程上，单条请求要排在同循环的其它连接之后（8 个客户端线程自己还在争 GIL）。所以这个数
+    适合看「同一台机器上的前后变化」，不适合当单次请求延迟的绝对值。
+
+    「门禁」的用法：改动前在同一台机器上跑出基线 JSON，改动后重跑并跑 check-baseline.py 比对——
+    跨机器比较没有意义（CPU 频率、电源策略、后台负载都会盖过代码差异）。benchmarks/baseline.json
+    就是这份参考基线的机器可读版本。
 """
 
 import argparse
 import ctypes
+import json
 import socket
 import statistics
 import sys
@@ -106,19 +119,28 @@ class Statistics:
         self.errors += 1
         self.errorKinds[kind] = self.errorKinds.get(kind, 0) + 1
 
-    def report(self) -> int:
+    def summary(self) -> dict:
+        """把本路结果压成 JSON 友好的字典（门禁比对只认其中的吞吐与分位）。"""
+        result = {"ok": self.ok, "errors": self.errors, "errorKinds": dict(self.errorKinds)}
+        if self.latencies:
+            ordered = sorted(self.latencies)
+            result["p50Microseconds"] = ordered[len(ordered) // 2] * 1e6
+            result["p95Microseconds"] = ordered[int(len(ordered) * 0.95)] * 1e6
+            result["maximumMicroseconds"] = ordered[-1] * 1e6
+        return result
+
+    def report(self) -> None:
         line = f"[{self.name}] 成功 {self.ok}，失败 {self.errors}"
         if self.errorKinds:
             line += f"，失败分类 {self.errorKinds}"
-        if self.latencies:
-            ordered = sorted(self.latencies)
+        jsonSummary = self.summary()
+        if "p50Microseconds" in jsonSummary:
             line += (
-                f"，耗时 us: p50={ordered[len(ordered) // 2] * 1e6:.0f}"
-                f" p95={ordered[int(len(ordered) * 0.95)] * 1e6:.0f}"
-                f" max={ordered[-1] * 1e6:.0f}"
+                f"，耗时 us: p50={jsonSummary['p50Microseconds']:.0f}"
+                f" p95={jsonSummary['p95Microseconds']:.0f}"
+                f" max={jsonSummary['maximumMicroseconds']:.0f}"
             )
         print(line)
-        return self.errors
 
 
 def readResponse(connection: socket.socket, buffer: bytes, headOnly: bool = False):
@@ -199,8 +221,8 @@ def runProtocolChecks(host: str, port: int) -> int:
     return failures
 
 
-def runKeepAliveLoad(host: str, port: int, threadCount: int, connectionCount: int, requestCount: int) -> int:
-    """保持连接负载：每线程若干连接，每条连接上串行压满 requestCount 条。"""
+def runKeepAliveLoad(host: str, port: int, threadCount: int, connectionCount: int, requestCount: int):
+    """保持连接负载：每线程若干连接，每条连接上串行压满 requestCount 条。返回 (失败数, 结果字典)。"""
     print(f"== 阶段二：保持连接负载（{threadCount} 线程 × {connectionCount} 连接 × {requestCount} 请求）==")
     statistics = Statistics("keep-alive")
     lock = threading.Lock()
@@ -239,12 +261,17 @@ def runKeepAliveLoad(host: str, port: int, threadCount: int, connectionCount: in
         thread.join()
     elapsed = time.perf_counter() - begin
 
-    print(f"  用时 {elapsed:.2f}s，吞吐 {statistics.ok / elapsed:.0f} 请求/s")
-    return statistics.report()
+    throughput = statistics.ok / elapsed if elapsed > 0 else 0.0
+    print(f"  用时 {elapsed:.2f}s，吞吐 {throughput:.0f} 请求/s")
+    statistics.report()
+    summary = statistics.summary()
+    summary["throughputPerSecond"] = throughput
+    summary["throughputUnit"] = "请求/s"
+    return statistics.errors, summary
 
 
-def runChurnLoad(host: str, port: int, threadCount: int, connectionCount: int) -> int:
-    """短连接 churn：一条请求一条连接，压 accept/close 路径。"""
+def runChurnLoad(host: str, port: int, threadCount: int, connectionCount: int):
+    """短连接 churn：一条请求一条连接，压 accept/close 路径。返回 (失败数, 结果字典)。"""
     print(f"== 阶段三：短连接 churn（{threadCount} 线程 × {connectionCount} 次连接）==")
     statistics = Statistics("churn")
     lock = threading.Lock()
@@ -273,8 +300,13 @@ def runChurnLoad(host: str, port: int, threadCount: int, connectionCount: int) -
         thread.join()
     elapsed = time.perf_counter() - begin
 
-    print(f"  用时 {elapsed:.2f}s，吞吐 {statistics.ok / elapsed:.0f} 连接/s")
-    return statistics.report()
+    throughput = statistics.ok / elapsed if elapsed > 0 else 0.0
+    print(f"  用时 {elapsed:.2f}s，吞吐 {throughput:.0f} 连接/s")
+    statistics.report()
+    summary = statistics.summary()
+    summary["throughputPerSecond"] = throughput
+    summary["throughputUnit"] = "连接/s"
+    return statistics.errors, summary
 
 
 def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: float) -> int:
@@ -317,6 +349,7 @@ def main() -> int:
     parser.add_argument("--churn-connections", type=int, default=500)
     parser.add_argument("--idle-connections", type=int, default=200)
     parser.add_argument("--idle-seconds", type=float, default=5.0)
+    parser.add_argument("--json-out", default="", help="把本次结果写成 JSON，供 check-baseline.py 比对")
     arguments = parser.parse_args()
 
     monitor = ServerMonitor(arguments.pid) if arguments.pid else None
@@ -326,11 +359,21 @@ def main() -> int:
         monitor.start()
 
     failures = 0
+    measurements = {}
+
     failures += runProtocolChecks(arguments.host, arguments.port)
-    failures += runKeepAliveLoad(arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
-    failures += runChurnLoad(arguments.host, arguments.port, 8, arguments.churn_connections)
+    keepAliveFailures, keepAliveSummary = runKeepAliveLoad(
+            arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
+    failures += keepAliveFailures
+    measurements["http1-keepalive"] = keepAliveSummary
+
+    churnFailures, churnSummary = runChurnLoad(arguments.host, arguments.port, 8, arguments.churn_connections)
+    failures += churnFailures
+    measurements["http1-churn"] = churnSummary
+
     failures += runIdleConnections(arguments.host, arguments.port, arguments.idle_connections, arguments.idle_seconds)
 
+    processSamples = {}
     if monitor is not None:
         monitor.stop()
         time.sleep(1.5)
@@ -341,8 +384,29 @@ def main() -> int:
                   f"工作集 {first[2] // 1024} → {last[2] // 1024} KiB")
             print(f"  峰值句柄 {max(sample[0] for sample in monitor.samples)}，"
                   f"峰值工作集 {max(sample[2] for sample in monitor.samples) // 1024} KiB")
+            processSamples = {
+                "handleCountFirst": first[0],
+                "handleCountLast": last[0],
+                "handleCountPeak": max(sample[0] for sample in monitor.samples),
+                "workingSetFirstKib": first[2] // 1024,
+                "workingSetLastKib": last[2] // 1024,
+            }
 
     print(f"== 汇总：失败项 {failures} 条 ==")
+
+    if arguments.json_out:
+        document = {
+            "benchmark": "http1",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "target": f"{arguments.host}:{arguments.port}",
+            "failures": failures,
+            "measurements": measurements,
+            "processSamples": processSamples,
+        }
+        with open(arguments.json_out, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, ensure_ascii=False, indent=2)
+        print(f"  结果已写入 {arguments.json_out}")
+
     return 1 if failures else 0
 
 
