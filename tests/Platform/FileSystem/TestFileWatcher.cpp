@@ -297,10 +297,13 @@ namespace AsynGyanis::Platform
     {
         TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Destructor");
         {
+            // recorder 必须先于 watcher 声明：作用域退出时按声明逆序销毁，watcher 先析构
+            // （停线程并等它退出），回调不可能再触碰 recorder；反过来写则是 recorder 先
+            // 销毁，watcher 线程的最后一次回调会写进已析构的对象（LeakSanitizer 报泄漏）
+            FileWatchRecorder recorder;
+
             const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
             ASSERT_NE(watcher, nullptr);
-
-            FileWatchRecorder recorder;
             watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
             {
                 recorder.record(filePath, changeType);
