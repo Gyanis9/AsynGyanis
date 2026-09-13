@@ -23,8 +23,10 @@
 
 #include <openssl/ssl.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 namespace AsynGyanis::Core
 {
@@ -173,8 +175,10 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 地址查询透传到被包装的套接字：两端都在回环上，且关闭后按契约抛出
-     * @details createPair 造的是 loopback TCP 描述符对，因此 getpeername/getsockname 有真实地址可读；
-     *          这一层不自己记地址，地址问不出来就说明通道已不可用，调用方据此判失败而不是拿空地址。
+     * @details 不用 createPair：它只在 Windows 上造 loopback TCP，在 Linux/macOS 上产出的是
+     *          AF_UNIX 描述符对（没有 IP 地址）。这里改用「回环监听 → 连接」两步建一条带真实
+     *          地址的 TCP 通道，两端地址语义与 Windows 侧对等；这一层不自己记地址，地址问不出来
+     *          就说明通道已不可用，调用方据此判失败而不是拿空地址。
      */
     TEST(TlsSocket, ExposesUnderlyingSocketAddresses)
     {
@@ -182,14 +186,40 @@ namespace AsynGyanis::Core
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-        int localDescriptor = -1;
-        int peerDescriptor = -1;
-        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+        // 监听侧绑到回环的临时端口（端口 0 由内核分配）。内核在三次握手完成后会把连接
+        // 放进 backlog，因此这里不需要调用 accept() 就能让连接建立成功
+        AsyncSocket listener = AsyncSocket::create(loop);
+        ASSERT_TRUE(listener.bind(InetAddress(static_cast<std::uint16_t>(0), "127.0.0.1")));
+        ASSERT_TRUE(listener.listen(1));
 
-        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        const std::uint16_t listeningPort = listener.localAddress().port();
+        ASSERT_GT(listeningPort, 0);
+
+        AsyncSocket client      = AsyncSocket::create(loop);
+        Task<>      connectTask = client.asyncConnect(InetAddress("127.0.0.1", listeningPort));
+        connectTask.handle().resume();
+
+        // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者需要事件循环
+        // 推进一步。这里按 EventLoop::run() 的方式分发事件——data.ptr 挂载的是常驻注册对象
+        // 的地址（而非协程句柄），由它决定恢复哪个等待者
+        if (!connectTask.isReady())
+        {
+            for (const auto &event: loop.epoll().wait(2000))
+            {
+                if (event.data.ptr != nullptr)
+                {
+                    static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
+                }
+            }
+        }
+
+        ASSERT_TRUE(connectTask.isReady()) << "连接未在预期内完成";
+        EXPECT_NO_THROW(connectTask.handle().promise().result());
+
+        SSL *ssl = tlsContext.createSSL(client.fileDescriptor());
         ASSERT_NE(ssl, nullptr);
 
-        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+        TlsSocket tlsSocket(ssl, loop, std::move(client));
 
         const InetAddress peerAddress = tlsSocket.remoteAddress();
         const InetAddress ownAddress  = tlsSocket.localAddress();
@@ -202,7 +232,7 @@ namespace AsynGyanis::Core
         tlsSocket.close();
         EXPECT_THROW(static_cast<void>(tlsSocket.remoteAddress()), Base::SystemException);
 
-        Platform::FileDescriptor::close(peerDescriptor);
+        listener.close();
     }
 
     /**
