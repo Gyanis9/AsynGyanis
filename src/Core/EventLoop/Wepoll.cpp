@@ -37,6 +37,9 @@
 
 #include <stdlib.h>
 
+#include <map>
+#include <memory>
+
 #define WEPOLL_INTERNAL static
 #define WEPOLL_INTERNAL_VAR static
 
@@ -429,20 +432,16 @@ WEPOLL_INTERNAL void reflock_unref_and_destroy(reflock_t* reflock);
  * of the API functions has at most one failure mode. It is up to the caller to
  * set an appropriate error code when necessary. */
 
-typedef struct tree tree_t;
 typedef struct tree_node tree_node_t;
 
-typedef struct tree {
-  tree_node_t* root;
-} tree_t;
-
 typedef struct tree_node {
-  tree_node_t* left;
-  tree_node_t* right;
-  tree_node_t* parent;
-  uintptr_t key;
-  bool red;
+  uintptr_t key; /* 节点只留键：树的形状信息改由标准容器保管 */
 } tree_node_t;
+
+/* 键 → 节点。原先是一棵手写的红黑树（插入、删除、旋转、重平衡近 200 行），而调用方只用到
+ * 「按键插入、按键查找、按键删除」三件事，因此交给标准库的有序表：std::map 同样按键有序，
+ * 且节点地址稳定（再平衡不会让节点搬家），下面用 container_of 从节点取回宿主结构照旧成立。 */
+typedef std::map<uintptr_t, tree_node_t*> tree_t;
 
 WEPOLL_INTERNAL void tree_init(tree_t* tree);
 WEPOLL_INTERNAL void tree_node_init(tree_node_t* node);
@@ -999,6 +998,8 @@ static port_state_t* port__alloc(void) {
 
 static void port__free(port_state_t* port) {
   assert(port != NULL);
+  /* 与 port__new 里的 construct_at 配对：标准容器必须先析构再释放其存储 */
+  std::destroy_at(&port->sock_tree);
   free(port);
 }
 
@@ -1026,7 +1027,9 @@ port_state_t* port_new(HANDLE* iocp_handle_out) {
   memset(port_state, 0, sizeof *port_state);
 
   port_state->iocp_handle = iocp_handle;
-  tree_init(&port_state->sock_tree);
+  /* sock_tree 是标准容器：memeset 清零的存储里还没有对象，必须显式构造（销毁见 port__free）。
+     其余成员都是平凡类型，清零即等于初始化。 */
+  std::construct_at(&port_state->sock_tree);
   queue_init(&port_state->sock_update_queue);
   queue_init(&port_state->sock_deleted_queue);
   queue_init(&port_state->poll_group_queue);
@@ -1897,217 +1900,35 @@ void ts_tree_node_unref_and_destroy(ts_tree_node_t* node) {
 }
 
 void tree_init(tree_t* tree) {
-  memset(tree, 0, sizeof *tree);
+  /* 只用于生命周期已经开始的对象（静态的 epoll__handle_tree）；malloc 存储上的那份由
+     port__new 直接 construct_at，不能用这里的赋值。 */
+  *tree = tree_t{};
 }
 
 void tree_node_init(tree_node_t* node) {
-  memset(node, 0, sizeof *node);
+  node->key = 0;
 }
-
-#define TREE__ROTATE(cis, trans)   \
-  tree_node_t* p = node;           \
-  tree_node_t* q = node->trans;    \
-  tree_node_t* parent = p->parent; \
-                                   \
-  if (parent) {                    \
-    if (parent->left == p)         \
-      parent->left = q;            \
-    else                           \
-      parent->right = q;           \
-  } else {                         \
-    tree->root = q;                \
-  }                                \
-                                   \
-  q->parent = parent;              \
-  p->parent = q;                   \
-  p->trans = q->cis;               \
-  if (p->trans)                    \
-    p->trans->parent = p;          \
-  q->cis = p;
-
-static inline void tree__rotate_left(tree_t* tree, tree_node_t* node) {
-  TREE__ROTATE(left, right)
-}
-
-static inline void tree__rotate_right(tree_t* tree, tree_node_t* node) {
-  TREE__ROTATE(right, left)
-}
-
-#define TREE__INSERT_OR_DESCEND(side) \
-  if (parent->side) {                 \
-    parent = parent->side;            \
-  } else {                            \
-    parent->side = node;              \
-    break;                            \
-  }
-
-#define TREE__REBALANCE_AFTER_INSERT(cis, trans) \
-  tree_node_t* grandparent = parent->parent;     \
-  tree_node_t* uncle = grandparent->trans;       \
-                                                 \
-  if (uncle && uncle->red) {                     \
-    parent->red = uncle->red = false;            \
-    grandparent->red = true;                     \
-    node = grandparent;                          \
-  } else {                                       \
-    if (node == parent->trans) {                 \
-      tree__rotate_##cis(tree, parent);          \
-      node = parent;                             \
-      parent = node->parent;                     \
-    }                                            \
-    parent->red = false;                         \
-    grandparent->red = true;                     \
-    tree__rotate_##trans(tree, grandparent);     \
-  }
 
 int tree_add(tree_t* tree, tree_node_t* node, uintptr_t key) {
-  tree_node_t* parent;
-
-  parent = tree->root;
-  if (parent) {
-    for (;;) {
-      if (key < parent->key) {
-        TREE__INSERT_OR_DESCEND(left)
-      } else if (key > parent->key) {
-        TREE__INSERT_OR_DESCEND(right)
-      } else {
-        return -1;
-      }
-    }
-  } else {
-    tree->root = node;
-  }
-
   node->key = key;
-  node->left = node->right = NULL;
-  node->parent = parent;
-  node->red = true;
 
-  for (; parent && parent->red; parent = node->parent) {
-    if (parent == parent->parent->left) {
-      TREE__REBALANCE_AFTER_INSERT(left, right)
-    } else {
-      TREE__REBALANCE_AFTER_INSERT(right, left)
-    }
-  }
-  tree->root->red = false;
-
-  return 0;
+  /* 同一个键重复插入是调用方的错误：返回 -1 让它按 EEXIST 报出去（与手写树同样的约定） */
+  return tree->emplace(key, node).second ? 0 : -1;
 }
 
-#define TREE__REBALANCE_AFTER_REMOVE(cis, trans)   \
-  tree_node_t* sibling = parent->trans;            \
-                                                   \
-  if (sibling->red) {                              \
-    sibling->red = false;                          \
-    parent->red = true;                            \
-    tree__rotate_##cis(tree, parent);              \
-    sibling = parent->trans;                       \
-  }                                                \
-  if ((sibling->left && sibling->left->red) ||     \
-      (sibling->right && sibling->right->red)) {   \
-    if (!sibling->trans || !sibling->trans->red) { \
-      sibling->cis->red = false;                   \
-      sibling->red = true;                         \
-      tree__rotate_##trans(tree, sibling);         \
-      sibling = parent->trans;                     \
-    }                                              \
-    sibling->red = parent->red;                    \
-    parent->red = sibling->trans->red = false;     \
-    tree__rotate_##cis(tree, parent);              \
-    node = tree->root;                             \
-    break;                                         \
-  }                                                \
-  sibling->red = true;
-
 void tree_del(tree_t* tree, tree_node_t* node) {
-  tree_node_t* parent = node->parent;
-  tree_node_t* left = node->left;
-  tree_node_t* right = node->right;
-  tree_node_t* next;
-  bool red;
-
-  if (!left) {
-    next = right;
-  } else if (!right) {
-    next = left;
-  } else {
-    next = right;
-    while (next->left)
-      next = next->left;
-  }
-
-  if (parent) {
-    if (parent->left == node)
-      parent->left = next;
-    else
-      parent->right = next;
-  } else {
-    tree->root = next;
-  }
-
-  if (left && right) {
-    red = next->red;
-    next->red = node->red;
-    next->left = left;
-    left->parent = next;
-    if (next != right) {
-      parent = next->parent;
-      next->parent = node->parent;
-      node = next->right;
-      parent->left = node;
-      next->right = right;
-      right->parent = next;
-    } else {
-      next->parent = parent;
-      parent = next;
-      node = next->right;
-    }
-  } else {
-    red = node->red;
-    node = next;
-  }
-
-  if (node)
-    node->parent = parent;
-  if (red)
-    return;
-  if (node && node->red) {
-    node->red = false;
-    return;
-  }
-
-  do {
-    if (node == tree->root)
-      break;
-    if (node == parent->left) {
-      TREE__REBALANCE_AFTER_REMOVE(left, right)
-    } else {
-      TREE__REBALANCE_AFTER_REMOVE(right, left)
-    }
-    node = parent;
-    parent = parent->parent;
-  } while (!node->red);
-
-  if (node)
-    node->red = false;
+  tree->erase(node->key);
 }
 
 tree_node_t* tree_find(const tree_t* tree, uintptr_t key) {
-  tree_node_t* node = tree->root;
-  while (node) {
-    if (key < node->key)
-      node = node->left;
-    else if (key > node->key)
-      node = node->right;
-    else
-      return node;
-  }
-  return NULL;
+  const auto iterator = tree->find(key);
+  return iterator == tree->end() ? NULL : iterator->second;
 }
 
 tree_node_t* tree_root(const tree_t* tree) {
-  return tree->root;
+  /* 只给 port_delete 的「逐个摘除直到空」用：给最小键的那个节点即可，
+     原实现给的是红黑树的根（同样是「随便一个」，摘除顺序本就不可依赖） */
+  return tree->empty() ? NULL : tree->begin()->second;
 }
 
 #ifndef SIO_BSP_HANDLE_POLL
