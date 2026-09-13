@@ -1,9 +1,11 @@
 #include "Net/Http/HttpServer.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http2/Http2Session.h"
 #include "Platform/IO/MemoryMappedFile.h"
@@ -885,6 +887,47 @@ namespace AsynGyanis::Net
         // 因此每次取快照都现读一次。size_t 到 uint64_t 是加宽转换，32 位平台上也不会丢信息
         snapshot.activeConnectionCount = static_cast<std::uint64_t>(m_connectionManager.activeCount());
         return snapshot;
+    }
+
+    void HttpServer::enableMetricsEndpoint(const std::string_view path, const std::string_view metricNamePrefix)
+    {
+        // 路径形状先拦下来：不以 / 开头的路径永远匹配不到任何请求，静默注册等于给人一个
+        // 「明明调了却没有端点」的假象，而调用方很难自己看出来
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpServer: 指标端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
+        const std::string metricPrefix(metricNamePrefix);
+        m_router.get(std::string(path),
+                     [this, metricPrefix](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         // 每次抓取现取一次快照：计数是原子的，不必把动作投递到事件循环
+                         response.setStatus(200);
+                         response.setHeader("content-type", std::string(kPrometheusTextContentType));
+                         response.setBody(formatPrometheusMetrics(stats(), metricPrefix));
+                         co_return;
+                     });
+    }
+
+    void HttpServer::enableHealthEndpoint(const std::string_view path)
+    {
+        // 与指标端点同样的形状校验，理由同上
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpServer: 健康检查端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        m_router.get(std::string(path),
+                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         // 应答固定且无依赖：能走到这里就说明事件循环在转、连接还能被服务（存活性）
+                         response.setStatus(200);
+                         response.setHeader("content-type", "application/json");
+                         response.setBody(kHealthCheckResponseBody);
+                         co_return;
+                     });
     }
 
     void HttpServer::ensureStaticFileSettings()

@@ -61,6 +61,10 @@ namespace AsynGyanis::Net
         /// 延迟直方图的累计条数，下标与 kHttpLatencyUpperBoundMilliseconds 对应；末档为溢出档
         std::array<std::uint64_t, kHttpLatencyBucketCount> latencyBucketCounts{};
 
+        /// 已应答请求的耗时之和，单位微秒。与 latencyBucketCounts 同源、同一次计入：
+        /// 只有分档计数时采集侧能算分位却算不出均值，导出成 Prometheus 直方图时也就缺一条 `_sum`
+        std::uint64_t totalLatencyMicroseconds{0};
+
         /// ---- WebSocket（101 升级之后的那条连接）的累计计数，与上面几组并列、口径互不覆盖 ----
         std::uint64_t webSocketUpgradeCount{0};            ///< 升级成功的连接数（101 已发出）
         std::uint64_t webSocketMessageCount{0};            ///< 收到的数据消息条数：分片重组后的一条算一次，控制帧不计
@@ -143,6 +147,9 @@ namespace AsynGyanis::Net
 
             // 延迟照记：即便状态码不在 1xx~5xx 内，这次请求的耗时也是真实发生过的
             m_latencyBucketCounts[latencyBucketIndex(elapsed)].fetch_add(1, std::memory_order_relaxed);
+            m_totalLatencyMicroseconds.fetch_add(
+                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()),
+                    std::memory_order_relaxed);
         }
 
         /// WebSocket 各项计数与上面几组同档：都用放宽内存序，只做累加，读侧不依赖字段间的先后次序
@@ -223,6 +230,7 @@ namespace AsynGyanis::Net
             {
                 stats.latencyBucketCounts[index] = m_latencyBucketCounts[index].load(std::memory_order_relaxed);
             }
+            stats.totalLatencyMicroseconds = m_totalLatencyMicroseconds.load(std::memory_order_relaxed);
             return stats;
         }
 
@@ -282,6 +290,8 @@ namespace AsynGyanis::Net
 
         /// 延迟直方图的累计条数；元素默认值初始化（C++20 起 std::atomic 的默认构造即置零）
         std::array<std::atomic<std::uint64_t>, kHttpLatencyBucketCount> m_latencyBucketCounts{};
+
+        std::atomic<std::uint64_t> m_totalLatencyMicroseconds{0}; ///< 累计耗时之和，单位微秒（给直方图补 _sum）
 
         std::atomic<std::uint64_t> m_webSocketUpgradeCount{0};            ///< 累计升级成功的连接数
         std::atomic<std::uint64_t> m_webSocketMessageCount{0};            ///< 累计收到的数据消息条数

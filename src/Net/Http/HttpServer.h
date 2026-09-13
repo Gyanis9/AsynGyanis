@@ -196,6 +196,35 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] HttpServerStats stats() const;
 
+        /**
+         * @brief 在本服务器上注册指标导出端点（Prometheus 文本格式）
+         *
+         * @details 指标内容见 HttpMetricsEndpoint.h：计数器、状态码分类、耗时直方图、WebSocket 与
+         *          HTTP/2 的专项计数，都是本服务器实例自己的口径。
+         *
+         * @param path 端点路径，必须以 `/` 开头；默认 `/metrics`
+         * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
+         * @note **端点默认不开**（不调用本方法就没有任何暴露面）：本框架不做鉴权，公网可达的
+         *       /metrics 等于把内部负载与错误率公开出去。它是一条普通路由，会经过中间件，因此
+         *       要鉴权就在路由器上挂中间件，或把端点限制在内网/交给反向代理屏蔽
+         * @note 必须在 start() 之前调用：路由表在收到请求时读取，开机后再注册会让早到的请求拿不到
+         * @see HttpMetricsEndpoint.h, enableHealthEndpoint(), stats()
+         */
+        void enableMetricsEndpoint(std::string_view path = "/metrics", std::string_view metricNamePrefix = "asyn_http");
+
+        /**
+         * @brief 在本服务器上注册健康检查端点
+         *
+         * @details 应答固定为 200 + `{"status":"ok"}`。它测的是**存活性**：这个响应由事件循环里的
+         *          会话协程生成，能答出来就说明循环在转、连接还能被服务。它不表示「依赖都健康」
+         *          （本框架不掌握下游依赖），也不区分「正在 drain」——那需要暴露停机期状态，留作细化项。
+         *
+         * @param path 端点路径，必须以 `/` 开头；默认 `/healthz`
+         * @note 与指标端点同样默认不开，是否需要以及暴露给谁由部署方决定
+         * @see enableMetricsEndpoint(), kHealthCheckResponseBody
+         */
+        void enableHealthEndpoint(std::string_view path = "/healthz");
+
     private:
         /**
          * @brief 确保静态文件设置对象与 "*" 兜底路由已就绪（幂等）

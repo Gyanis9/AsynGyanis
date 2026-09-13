@@ -111,6 +111,7 @@ int main(int argc, char **argv)
     std::size_t maxConnectionsPerIp = 0; // 0 = 不限制单个来源的并发连接数
     bool        useHttps = false;
     bool        useHttp2Cleartext = false;
+    bool        exposeMetrics = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
 
@@ -128,6 +129,8 @@ int main(int argc, char **argv)
             useHttps = true;
         else if (arg == "--h2c")
             useHttp2Cleartext = true;
+        else if (arg == "--metrics")
+            exposeMetrics = true;
         else if (arg == "--cert" && i + 1 < argc)
             certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
@@ -136,10 +139,12 @@ int main(int argc, char **argv)
         {
             LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
             LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
-            LOG_INFO("                  [--max-connections-per-ip N]");
+            LOG_INFO("                  [--max-connections-per-ip N] [--metrics]");
             LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
             LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
             LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
+            LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
+            LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
             return 0;
         }
     }
@@ -228,6 +233,13 @@ int main(int argc, char **argv)
             if (useHttp2Cleartext)
             {
                 server->setHttp2CleartextEnabled(true);
+            }
+
+            // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
+            if (exposeMetrics)
+            {
+                server->enableMetricsEndpoint();
+                server->enableHealthEndpoint();
             }
 
             auto task = server->start();
