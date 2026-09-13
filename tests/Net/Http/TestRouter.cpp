@@ -1,8 +1,8 @@
 /**
  * @file TestRouter.cpp
- * @brief Router 单元测试：两级匹配优先级、方法与 404/405 判定、参数提交与响应收尾
+ * @brief Router 单元测试：两级匹配优先级、方法与 404/405 判定、HEAD 复用 GET、参数提交与响应收尾
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -184,7 +184,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.getHeader("allow").value_or(""), "GET, POST");
     }
 
-    TEST(Router, DoesNotAnswerHeadRequestWithGetRouteOnly)
+    TEST(Router, ReusesGetRouteForHeadRequestOnExactPath)
     {
         Router router;
         std::atomic<int> callCount{0};
@@ -194,10 +194,86 @@ namespace AsynGyanis::Net
         HttpResponse response;
         routeRequest(router, request, response);
 
-        // 不做 GET→HEAD 的隐式映射：没显式注册 HEAD 就是 405
+        // RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD，没有显式注册 head() 时按 GET 复用。
+        // 正文保留到会话发送前才抑制，头部因此能与同一路径的 GET 逐字节一致
+        EXPECT_EQ(callCount.load(), 1);
+        EXPECT_EQ(response.status(), 200);
+        EXPECT_EQ(response.body(), "body");
+        EXPECT_FALSE(response.getHeader("allow").has_value());
+        EXPECT_NE(response.serializeHead().find("content-length: 4"), std::string::npos);
+    }
+
+    TEST(Router, ReusesGetPatternRouteAndCommitsItsParameterForHeadRequest)
+    {
+        Router router;
+        std::atomic<int> callCount{0};
+        router.get("/user/:id", [&callCount](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+        {
+            callCount.fetch_add(1);
+            response.setBody("user-" + request.param("id").value_or(""));
+            co_return;
+        });
+
+        HttpRequest request = makeRequest(HttpMethod::HEAD, "/user/42");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        // 模式路由同样复用："id" 必须与走 GET 时一样被收集并提交给请求
+        EXPECT_EQ(callCount.load(), 1);
+        EXPECT_EQ(response.body(), "user-42");
+    }
+
+    TEST(Router, PrefersExplicitHeadRouteOverGetRouteOnSamePath)
+    {
+        Router router;
+        std::atomic<int> getCalls{0};
+        std::atomic<int> headCalls{0};
+        // 故意先注册 GET：显式 head() 优先是「方法命中」而非「注册先后」的结果
+        router.get("/probe", textHandler("from-get", &getCalls));
+        router.head("/probe", textHandler("from-head", &headCalls));
+
+        HttpRequest request = makeRequest(HttpMethod::HEAD, "/probe");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(headCalls.load(), 1);
+        EXPECT_EQ(getCalls.load(), 0);
+        EXPECT_EQ(response.body(), "from-head");
+    }
+
+    TEST(Router, KeepsExactGetRouteAheadOfPatternGetRouteForHeadRequest)
+    {
+        Router router;
+        std::atomic<int> patternCalls{0};
+        std::atomic<int> exactCalls{0};
+        // 模式路由先注册：按 GET 复用 HEAD 时也必须遵守「精确路径永远优先于模式路径」
+        router.get("/a/*", textHandler("pattern", &patternCalls));
+        router.get("/a/b", textHandler("exact", &exactCalls));
+
+        HttpRequest request = makeRequest(HttpMethod::HEAD, "/a/b");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(exactCalls.load(), 1);
+        EXPECT_EQ(patternCalls.load(), 0);
+        EXPECT_EQ(response.body(), "exact");
+    }
+
+    TEST(Router, Reports405ForHeadRequestOnPostOnlyPath)
+    {
+        Router router;
+        std::atomic<int> callCount{0};
+        router.post("/submit", textHandler("created", &callCount));
+
+        HttpRequest request = makeRequest(HttpMethod::HEAD, "/submit");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        // 路径上没有 GET 也没有 HEAD，复用 GET 无从谈起：仍是 405。Allow 只列显式注册的方法，
+        // 不把「靠 GET 隐式可用」的 HEAD 补进去
         EXPECT_EQ(callCount.load(), 0);
         EXPECT_EQ(response.status(), 405);
-        EXPECT_EQ(response.getHeader("allow").value_or(""), "GET");
+        EXPECT_EQ(response.getHeader("allow").value_or(""), "POST");
     }
 
     TEST(Router, RunsMiddlewarePipelineForUnmatchedRoute)
@@ -526,10 +602,10 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
-    // 响应收尾：HEAD / 204 / 304
+    // 响应收尾：HEAD 正文交发送路径 / 204 / 304
     // ============================================================================
 
-    TEST(Router, StripsBodyFromHeadResponseButDeclaresContentLength)
+    TEST(Router, LeavesHeadResponseBodyForSessionToSuppress)
     {
         Router router;
         router.head("/document", textHandler("1234567"));
@@ -538,9 +614,10 @@ namespace AsynGyanis::Net
         HttpResponse response;
         routeRequest(router, request, response);
 
-        // HEAD 的意义就是「不取正文地问一次多大」：先声明长度再剥正文
-        EXPECT_EQ(response.getHeader("content-length").value_or(""), "7");
-        EXPECT_TRUE(response.body().empty());
+        // 正文刻意不在路由层剥：头部要按完整正文序列化，才能与同一路径的 GET 逐字节一致。
+        // 「不取正文地问一次 GET 会给多大」也仍成立——content-length 由序列化层按正文真实长度补齐
+        EXPECT_EQ(response.body(), "1234567");
+        EXPECT_NE(response.serializeHead().find("content-length: 7"), std::string::npos);
     }
 
     TEST(Router, KeepsContentLengthDeclaredByHeadHandler)
@@ -557,8 +634,9 @@ namespace AsynGyanis::Net
         HttpResponse response;
         routeRequest(router, request, response);
 
+        // 处理函数自己声明的 content-length 不被覆盖：静态文件服务正是靠它省掉读一遍文件
         EXPECT_EQ(response.getHeader("content-length").value_or(""), "999");
-        EXPECT_TRUE(response.body().empty());
+        EXPECT_EQ(response.body(), "ignored");
     }
 
     TEST(Router, ClearsBodyForNoContentResponse)

@@ -27,8 +27,9 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     struct TableSchema
     {
-        /// 数据库表名，默认为空字符串
-        static constexpr std::string_view kTableName;
+        /// 数据库表名，默认为空字符串：未特化的类型拿到的就是它，ORM 侧会按空表名报错
+        /// （见 SchemaMigrator 的校验），而不是在编译期把「忘了特化」拦下来
+        static constexpr std::string_view kTableName = "";
 
         /// 列信息元组，使用 Column() 函数列出的 ColumnDescriptor 元组
         static constexpr auto kColumns = std::tuple{};

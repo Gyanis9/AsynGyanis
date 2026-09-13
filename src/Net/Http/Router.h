@@ -2,7 +2,7 @@
  * @file Router.h
  * @brief URL 路由器，按 HTTP 方法与路径模式分发请求并串联中间件
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -51,7 +51,11 @@ namespace AsynGyanis::Net
      *
      * @note **方法与 405/404 的判定**
      *       @li 请求方法命中某条路由且该路由允许此方法 → 执行；
-     *       @li 路径命中但方法不被任何候选路由允许 → 405，并给出 Allow 头列出允许的方法；
+     *       @li HEAD 复用 GET（RFC 9110 §9.1）：显式 head() 与 any() 都没命中时，按 GET 的匹配
+     *           路径（精确表与模式路由，优先级与 GET 完全一致）执行它的处理器。因此「只注册了
+     *           get()」的路径收到 HEAD 会得到 200 而不是 405；
+     *       @li 路径命中但方法不被任何候选路由允许 → 405，并给出 Allow 头列出**显式注册**的方法
+     *           （隐式可用的 HEAD 不进 Allow）；
      *       @li 路径根本没有命中 → 404；
      *       @li HttpMethod::UNKNOWN（CONNECT、TRACE、M-SEARCH 等未收录方法）**不参与业务匹配**，
      *           连 any() 注册的通配方法路由也不会放行它，只按上面两条产出 404/405。
@@ -77,6 +81,7 @@ namespace AsynGyanis::Net
          * @param path 路径模式：字面路径、":name" 参数段，或以 '*' 结尾的前缀通配
          * @param handler 处理函数，所有权转移给路由器
          * @note 同 (方法, 路径) 重复注册为就地替换；与既有路由的先后关系见类注释的优先级规则
+         * @note 该路径上的 HEAD 请求在没有显式 head() 注册时由本处理函数应答（RFC 9110 §9.1）
          */
         void get(const std::string &path, Handler handler);
 
@@ -113,8 +118,8 @@ namespace AsynGyanis::Net
          * @brief 注册 HEAD 路由。
          * @param path 路径模式
          * @param handler 处理函数，所有权转移给路由器
-         * @note 命中的 HEAD 请求会照常执行 handler，但路由层在收尾时按 RFC 9110 §10.6.4 剥掉正文；
-         *       未注册 HEAD 而只有 GET 的路径不会自动应答 HEAD（不做隐式映射，避免语义上的意外）
+         * @note 显式注册的 HEAD 路由优先于 GET：同一条路径上既注册了 head() 也有 get() 时，
+         *       按优先级规则先命中的那条先被选中，注册了 head() 就一定不会走到 GET 复用上
          */
         void head(const std::string &path, Handler handler);
 
@@ -151,8 +156,11 @@ namespace AsynGyanis::Net
          * @return Core::Task<> 协程任务，处理链结束后返回
          *
          * @details 本函数保证「一定写完响应」：要么由业务 handler 写，要么由这里写 404/405，
-         *          因此调用方（会话循环）不需要再判断响应是否被填过。
+         *          因此调用方（会话循环）不需要再判断响应是否被填过。HEAD 请求在显式 head()、
+         *          any() 与 GET 都没命中时会按 GET 再匹配一遍（RFC 9110 §9.1）。
          * @note 写入 response 前会先 reset()：前面中间件已经落下的头部不会残留到错误响应里
+         * @note HEAD 响应的正文不在本函数里剥：头部必须按完整正文序列化才能与 GET 逐字节一致，
+         *       剥正文由会话的发送路径负责
          */
         Core::Task<> route(HttpRequest &request, HttpResponse &response);
 
@@ -250,9 +258,12 @@ namespace AsynGyanis::Net
         static void writeNotFoundOrNotAllowed(const HttpRequest &request, HttpResponse &response, bool isMethodNotAllowed, const std::string &allowedMethods);
 
         /**
-         * @brief 路由后的响应收尾：按 HTTP 语义对 HEAD/204/304 清空正文
+         * @brief 路由后的响应收尾：按 HTTP 语义对 204/304 清空正文
+         * @param response 响应对象；204 与 304 的正文在此被清空
+         * @note HEAD 的正文刻意保留：会话要按完整正文序列化头部才能拿到与 GET 一致的一份头部，
+         *       剥正文由发送路径负责（见 detail::httpKeepAliveLoop）
          */
-        static void finalizeResponse(const HttpRequest &request, HttpResponse &response);
+        static void finalizeResponse(HttpResponse &response);
 
         /// 一级索引：字面路径 → 该路径上的方法绑定候选（通常 1~2 条，先到先得）
         /**

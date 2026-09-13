@@ -683,7 +683,7 @@ namespace AsynGyanis::Net
             }
 
             // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：流式响应一律不输出这条，
-            // 既拦住调用方自己设的，也拦住 Router 为 HEAD 补的那条
+            // 既拦住调用方自己设的，也拦住序列化层按正文长度自动补的那条
             if (m_isChunked && field.name == kContentLengthHeaderName)
             {
                 continue;

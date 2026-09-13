@@ -311,28 +311,19 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Router::finalizeResponse(const HttpRequest &request, HttpResponse &response)
+    void Router::finalizeResponse(HttpResponse &response)
     {
-        // RFC 9110 §10.6.4 / §15.3.3 / §15.4.5：HEAD、204、304 的响应都不能带正文。
+        // RFC 9110 §15.3.3 / §15.4.5：204 与 304 的响应都不能带正文。
+        //
+        // HEAD 刻意不在这里处理：它的正文要留到序列化时才用得上——会话按完整正文序列化头部，
+        // 才能得到与同一路径 GET 逐字节一致的一份头部（含自动补齐的 content-length 与
+        // content-type），随后在发送时把正文换成空（见 detail::httpKeepAliveLoop）。
         //
         // 流式响应不做任何正文收尾：它的正文由分块帧逐段写出、长度对路由层未知，既不补
         // content-length 也不清整块正文（setBody() 在流式模式下会报错）。HEAD 上使用流式模式
         // 属于调用方的误用，已在 HttpResponse::startChunkedResponse 的 @warning 里说明
         if (response.isChunkedResponse())
         {
-            return;
-        }
-
-        if (request.method() == HttpMethod::HEAD)
-        {
-            // 先声明长度再剥正文：HEAD 的意义就是「不取正文地问一次 GET 会给多大」。
-            // 处理函数自己已经写了 content-length（静态文件服务对 HEAD 就是这么省的）时不覆盖它，
-            // 否则按即将剥掉的正文长度补一条，效果等同于响应序列化的自动补齐。
-            if (!response.getHeader("content-length").has_value())
-            {
-                response.setHeader("content-length", std::to_string(response.body().size()));
-            }
-            response.setBody(std::string_view{});
             return;
         }
 
@@ -401,25 +392,27 @@ namespace AsynGyanis::Net
         const Handler *selectedHandler = nullptr;
         PathParameters selectedParameters;
 
-        // ---- 一级：字面路径索引。命中即完成本层候选收集 ----
-        if (const auto exactIterator = m_exactRoutes.find(requestPath); exactIterator != m_exactRoutes.end())
+        // 按指定方法跑一遍两级匹配，命中即选中并返回 true。抽成 lambda 是为了让 HEAD 复用 GET 时
+        // 能原样再跑一遍：优先级、参数收集与 Allow 记录因此天然与首次完全一致，不会两处漂移
+        const auto selectHandlerForMethod = [&](const HttpMethod matchMethod) -> bool
         {
-            for (const ExactRoute &candidate: exactIterator->second)
+            // ---- 一级：字面路径索引。命中即完成本层候选收集 ----
+            if (const auto exactIterator = m_exactRoutes.find(requestPath); exactIterator != m_exactRoutes.end())
             {
-                rememberAllowedMethod(candidate.method, candidate.isAnyMethod);
-
-                // 先到先得：同一路径上的多个条目按注册顺序取第一个放行本方法的
-                if (selectedHandler == nullptr && isRequestMethodRecognized &&
-                    (candidate.isAnyMethod || candidate.method == requestMethod))
+                for (const ExactRoute &candidate: exactIterator->second)
                 {
-                    selectedHandler = &candidate.handler;
+                    rememberAllowedMethod(candidate.method, candidate.isAnyMethod);
+
+                    // 先到先得：同一路径上的多个条目按注册顺序取第一个放行本方法的
+                    if (isRequestMethodRecognized && (candidate.isAnyMethod || candidate.method == matchMethod))
+                    {
+                        selectedHandler = &candidate.handler;
+                        return true;
+                    }
                 }
             }
-        }
 
-        // ---- 二级：模式路由线性扫描。仅在一级没选中处理函数时才继续，规则同样是先到先得 ----
-        if (selectedHandler == nullptr)
-        {
+            // ---- 二级：模式路由线性扫描。仅在一级没选中处理函数时才继续，规则同样是先到先得 ----
             for (const PatternRoute &route: m_patternRoutes)
             {
                 // 参数只在本条路由成立时才留下：每轮都换一个新的临时容器，
@@ -432,14 +425,27 @@ namespace AsynGyanis::Net
 
                 rememberAllowedMethod(route.method, route.isAnyMethod);
 
-                if (isRequestMethodRecognized && (route.isAnyMethod || route.method == requestMethod))
+                if (isRequestMethodRecognized && (route.isAnyMethod || route.method == matchMethod))
                 {
-                    selectedHandler   = &route.handler;
+                    selectedHandler    = &route.handler;
                     selectedParameters = std::move(candidateParameters);
-                    break;
+                    return true;
                 }
                 // 路径命中而方法不合：记下事实，扫完全部候选再决定 405，Allow 也才凑得齐
             }
+            return false;
+        };
+
+        // 第一遍按请求方法本身匹配。未收录方法是唯一不放行的例外：UNKNOWN 不能蹭上 any()
+        // 路由，这条判据由 selectHandlerForMethod 内部的 isRequestMethodRecognized 把关
+        static_cast<void>(selectHandlerForMethod(requestMethod));
+
+        // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）：显式注册的 head()、
+        // any() 与 GET 路由都没命中时，按 GET 再匹配一遍并执行它的处理器。两者语义上只差
+        // 「响应不带正文」，因此匹配与优先级规则必须与 GET 完全一致——照搬同一段匹配逻辑即可
+        if (requestMethod == HttpMethod::HEAD && selectedHandler == nullptr)
+        {
+            static_cast<void>(selectHandlerForMethod(HttpMethod::GET));
         }
 
         if (selectedHandler != nullptr)
@@ -455,7 +461,7 @@ namespace AsynGyanis::Net
 
             // 中间件与 handler 的异常一律向上传播，由会话统一重置成 500，路由器不吞也不翻译
             co_await m_pipeline.run(request, response, terminalHandler);
-            finalizeResponse(request, response);
+            finalizeResponse(response);
             co_return;
         }
 
@@ -495,7 +501,7 @@ namespace AsynGyanis::Net
         };
 
         co_await m_pipeline.run(request, response, unmatchedTerminalHandler);
-        finalizeResponse(request, response);
+        finalizeResponse(response);
         co_return;
     }
 

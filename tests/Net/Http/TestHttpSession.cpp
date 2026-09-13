@@ -1,6 +1,7 @@
 /**
  * @file TestHttpSession.cpp
- * @brief HttpSession 单元测试：保持活跃判定、跨次读取的缓冲与流水线残留、定界超限应答与取消转发
+ * @brief HttpSession 单元测试：保持活跃判定、跨次读取的缓冲与流水线残留、定界超限应答、
+ *        HEAD 只发头部（与 GET 逐字节一致），以及取消转发
  * @author Gyanis
  * @date 2026-09-13
  * @version 1.0.0
@@ -216,28 +217,33 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 等待对端关闭连接
+         * @brief 读干净描述符直到对端关闭，把读到的字节累计下来
          * @details 非阻塞读返回 0 才算「对端已 FIN」，返回 -1 只是暂时没数据，两者必须分开。
+         *          「读到 EOF」是这里最确定的「响应已经结束」信号：此后客户端缓冲里不会再
+         *          冒出新字节，据此断言「某段文本之后什么都没有」才是确定的，而不是靠等待。
          * @param descriptor 测试自己持有的那一端
+         * @param received 输入输出：累计读到的字节（EOF 之前到达的字节全在这里）
          * @param timeout 等待上限
          * @return true 在时限内观察到对端关闭
          */
-        bool waitForPeerClosed(const int descriptor, const std::chrono::milliseconds timeout)
+        bool readUntilPeerClosed(const int descriptor, std::string &received, const std::chrono::milliseconds timeout)
         {
             const auto deadline = std::chrono::steady_clock::now() + timeout;
-            std::array<char, kPeerChunkLength> drainStorage{};
+            std::array<char, kPeerChunkLength> chunkStorage{};
 
             while (std::chrono::steady_clock::now() < deadline)
             {
-                const ssize_t readLength = Platform::FileDescriptor::read(descriptor, drainStorage.data(), drainStorage.size());
+                const ssize_t readLength = Platform::FileDescriptor::read(descriptor, chunkStorage.data(), chunkStorage.size());
+                if (readLength > 0)
+                {
+                    received.append(chunkStorage.data(), static_cast<std::size_t>(readLength));
+                    continue;
+                }
                 if (readLength == 0)
                 {
                     return true;
                 }
-                if (readLength < 0)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             return false;
         }
@@ -950,7 +956,9 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(fixture.awaitFinished(kWaitTimeout)) << "1.0 事务结束后会话未收口：上界 kWaitTimeout";
         // 会话收口即关闭它那一端：测试端随后必然读到 EOF（返回 0），而不是「暂时没数据」
-        EXPECT_TRUE(waitForPeerClosed(fixture.peerDescriptor(), kWaitTimeout)) << "会话退出后描述符没有关掉：上界 kWaitTimeout";
+        std::string drainedText;
+        EXPECT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), drainedText, kWaitTimeout))
+                << "会话退出后描述符没有关掉：上界 kWaitTimeout";
     }
 
     TEST(HttpSession, EchoesKeepAliveHeaderForHttp10Request)
@@ -971,5 +979,133 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(fixture.isFinished()) << "1.0 显式保活的连接被提前收口";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
+    // ============================================================================
+    // HEAD：复用 GET 的处理器，头部逐字节一致但不发正文
+    // ============================================================================
+
+    TEST(HttpSession, ReusesGetHandlerForHeadRequestWithIdenticalHeadAndNoBody)
+    {
+        // RFC 9110 §9.1：只注册了 get() 的路径也必须应答 HEAD。头部要与 GET 逐字节一致，
+        // 正文一个字节都不发。请求一律带 connection: close：会话答完即收口，
+        // 「读到 EOF」因此是本用例手里最确定的「响应已经结束」信号
+        const auto registerDocumentRoute = [](Router &router)
+        {
+            router.get("/document", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                // date 由用例钉死：默认由序列化层按当前时刻生成，两次请求跨秒会让
+                // 「逐字节一致」偶发失败，而那与被测契约无关
+                response.setHeader("date", "Mon, 01 Jan 2024 00:00:00 GMT");
+                response.setBody("1234567");
+                co_return;
+            });
+        };
+
+        std::string getResponseText;
+        {
+            HttpSessionFixture getFixture;
+            ASSERT_TRUE(getFixture.isValid()) << "全双工描述符对创建失败";
+            registerDocumentRoute(getFixture.router());
+            ASSERT_TRUE(getFixture.writeRequest(makeRequestText("GET /document HTTP/1.1", {"host: test", "connection: close"})));
+            getFixture.start();
+            ASSERT_TRUE(readUntilPeerClosed(getFixture.peerDescriptor(), getResponseText, kWaitTimeout))
+                    << "GET 请求未在时限内收口：上界 kWaitTimeout";
+        }
+
+        std::string headResponseText;
+        {
+            HttpSessionFixture headFixture;
+            ASSERT_TRUE(headFixture.isValid()) << "全双工描述符对创建失败";
+            registerDocumentRoute(headFixture.router());
+            ASSERT_TRUE(headFixture.writeRequest(makeRequestText("HEAD /document HTTP/1.1", {"host: test", "connection: close"})));
+            headFixture.start();
+            ASSERT_TRUE(readUntilPeerClosed(headFixture.peerDescriptor(), headResponseText, kWaitTimeout))
+                    << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
+        }
+
+        const std::size_t headTerminatorPosition = getResponseText.find("\r\n\r\n");
+        ASSERT_NE(headTerminatorPosition, std::string::npos) << "GET 响应里没有头部块终止空行";
+        const std::string getHead = getResponseText.substr(0, headTerminatorPosition + 4);
+        ASSERT_EQ(getResponseText.size(), getHead.size() + 7U) << "GET 响应应当是头部加 7 字节正文";
+        EXPECT_NE(getHead.find("content-length: 7"), std::string::npos) << getHead;
+
+        // HEAD 回的正是同一份头部（状态行、content-length 与其余头部逐字节相同）
+        EXPECT_EQ(headResponseText, getHead) << "HEAD 的头部与 GET 不一致：" << headResponseText;
+        // 逐字节相等已经涵盖一切，这里把状态行与 content-length 再各钉一次：失败信息更好读
+        EXPECT_TRUE(headResponseText.starts_with("HTTP/1.1 200 OK\r\n")) << headResponseText;
+        EXPECT_NE(headResponseText.find("content-length: 7"), std::string::npos) << headResponseText;
+        // 且没有正文：响应字节数正好等于头部长度，末尾就是头部块终止空行
+        EXPECT_EQ(headResponseText.size(), getHead.size())
+                << "HEAD 响应多出了正文字节：" << headResponseText.substr(getHead.size());
+        EXPECT_TRUE(headResponseText.ends_with("\r\n\r\n")) << headResponseText;
+    }
+
+    TEST(HttpSession, RunsExplicitlyRegisteredHeadHandlerInsteadOfGetHandler)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid()) << "全双工描述符对创建失败";
+
+        // 两个处理器给出不同长度的正文：线上出现哪条 content-length，就是谁被选中
+        fixture.router().get("/probe", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+        {
+            response.setBody("from-get-handler");
+            co_return;
+        });
+        fixture.router().head("/probe", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+        {
+            response.setBody("head");
+            co_return;
+        });
+
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("HEAD /probe HTTP/1.1", {"host: test", "connection: close"})));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout))
+                << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
+
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 200")) << responseText;
+        EXPECT_NE(responseText.find("content-length: 4"), std::string::npos)
+                << "显式注册的 head() 没有优先于 GET 复用：" << responseText;
+        EXPECT_EQ(responseText.find("content-length: 16"), std::string::npos) << "被选中的是 GET 处理器：" << responseText;
+        EXPECT_EQ(responseText.find("from-get-handler"), std::string::npos) << "GET 处理器被跑到：" << responseText;
+
+        const std::size_t headTerminatorPosition = responseText.find("\r\n\r\n");
+        ASSERT_NE(headTerminatorPosition, std::string::npos);
+        EXPECT_EQ(responseText.size(), headTerminatorPosition + 4) << "HEAD 响应多出了正文字节";
+    }
+
+    TEST(HttpSession, Reports405WithAllowWithoutHeadForHeadRequestOnPostOnlyPath)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid()) << "全双工描述符对创建失败";
+
+        fixture.router().post("/submit", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+        {
+            response.setBody("created");
+            co_return;
+        });
+
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("HEAD /submit HTTP/1.1", {"host: test", "connection: close"})));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout))
+                << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
+
+        // 路径上没有 GET 也没有 HEAD：复用 GET 无从谈起，405 与 Allow 都照旧，
+        // 隐式可用的 HEAD 不进 Allow
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 405")) << responseText;
+        constexpr std::string_view allowHeaderName = "allow: ";
+        const std::size_t allowPosition = responseText.find(allowHeaderName);
+        ASSERT_NE(allowPosition, std::string::npos) << responseText;
+        const std::size_t allowEnd = responseText.find("\r\n", allowPosition);
+        ASSERT_NE(allowEnd, std::string::npos) << responseText;
+        EXPECT_EQ(responseText.substr(allowPosition + allowHeaderName.size(), allowEnd - allowPosition - allowHeaderName.size()), "POST");
+
+        const std::size_t headTerminatorPosition = responseText.find("\r\n\r\n");
+        ASSERT_NE(headTerminatorPosition, std::string::npos);
+        EXPECT_EQ(responseText.size(), headTerminatorPosition + 4) << "405 的正文也不该发给 HEAD";
     }
 } // namespace AsynGyanis::Net

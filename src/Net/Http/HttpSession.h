@@ -802,11 +802,18 @@ namespace AsynGyanis::Net
                         response.setHeader(std::string(kRequestIdHeaderName), std::string(requestIdView));
                     }
 
+                    // HEAD 只发头部，一个正文字节都不发：正文视图在发送前换成空，而头部仍按
+                    // 完整正文序列化，因此响应头部与同一路径 GET 的头部逐字节一致（含
+                    // content-length，RFC 9110 §9.1）。抑制放在这里而不是响应层：响应层只有
+                    // 「按状态码判定无正文」这一套语义，与 HEAD 的方法语义不是一回事
+                    const std::string_view responseBody =
+                            request.method() == HttpMethod::HEAD ? std::string_view{} : response.body();
+
                     // 头部序列化一次，跟随段一起提交（普通响应跟正文，流式响应跟终止块）：
                     // serializedHead 是具名局部，跟随段视图指向的 response 也活到本次调用之后
                     const std::string serializedHead = response.serializeHead();
                     const std::string_view trailingSegment = response.isChunkedResponse() ? kChunkedTerminator
-                                                                                         : response.body();
+                                                                                         : responseBody;
                     if (!co_await sendResponse(serializedHead, trailingSegment))
                     {
                         // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
