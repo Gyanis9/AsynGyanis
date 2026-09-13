@@ -847,28 +847,31 @@ WEPOLL_INTERNAL HANDLE
     poll_group_get_afd_helper_handle(poll_group_t* poll_group);
 
 typedef struct queue_node {
-  queue_node_t* prev;
+  queue_node_t* previous;
   queue_node_t* next;
 } queue_node_t;
 
+/* 带哨兵头的侵入式双向链表：节点内联在持有者里（不进堆），因此「从节点摘除」是 O(1)、
+   队列本身一次分配都不用做。本文件的两处用法都吃这个代价——每轮 epoll_wait 之后有成百上千
+   个 socket 要在这几张表之间挪动。改用 std::list 会让每个节点多一次分配，还得把迭代器塞回
+   节点才能保住同样的摘除代价，得不偿失。 */
 typedef struct queue {
-  queue_node_t head;
+  queue_node_t head; /* 哨兵：head.next 是首元素、head.previous 是尾元素；空表时两者都指回 head */
 } queue_t;
 
-WEPOLL_INTERNAL void queue_init(queue_t* queue);
-WEPOLL_INTERNAL void queue_node_init(queue_node_t* node);
+WEPOLL_INTERNAL void queueInit(queue_t* queue);
+WEPOLL_INTERNAL void queueNodeInit(queue_node_t* node);
 
-WEPOLL_INTERNAL queue_node_t* queue_first(const queue_t* queue);
-WEPOLL_INTERNAL queue_node_t* queue_last(const queue_t* queue);
+WEPOLL_INTERNAL queue_node_t* queueFirst(const queue_t* queue);
+WEPOLL_INTERNAL queue_node_t* queueLast(const queue_t* queue);
 
-WEPOLL_INTERNAL void queue_prepend(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queue_append(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queue_move_to_start(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queue_move_to_end(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queue_remove(queue_node_t* node);
+WEPOLL_INTERNAL void queueAppend(queue_t* queue, queue_node_t* node);
+WEPOLL_INTERNAL void queueMoveToStart(queue_t* queue, queue_node_t* node);
+WEPOLL_INTERNAL void queueMoveToEnd(queue_t* queue, queue_node_t* node);
+WEPOLL_INTERNAL void queueRemove(queue_node_t* node);
 
-WEPOLL_INTERNAL bool queue_is_empty(const queue_t* queue);
-WEPOLL_INTERNAL bool queue_is_enqueued(const queue_node_t* node);
+WEPOLL_INTERNAL bool queueIsEmpty(const queue_t* queue);
+WEPOLL_INTERNAL bool queueIsEnqueued(const queue_node_t* node);
 
 static const size_t POLL_GROUP__MAX_GROUP_SIZE = 32;
 
@@ -889,7 +892,7 @@ static poll_group_t* poll_group__new(port_state_t* port_state) {
 
   memset(poll_group, 0, sizeof *poll_group);
 
-  queue_node_init(&poll_group->queue_node);
+  queueNodeInit(&poll_group->queue_node);
   poll_group->port_state = port_state;
 
   if (afd_create_helper_handle(iocp_handle, &poll_group->afd_helper_handle) <
@@ -898,7 +901,7 @@ static poll_group_t* poll_group__new(port_state_t* port_state) {
     return NULL;
   }
 
-  queue_append(poll_group_queue, &poll_group->queue_node);
+  queueAppend(poll_group_queue, &poll_group->queue_node);
 
   return poll_group;
 }
@@ -906,7 +909,7 @@ static poll_group_t* poll_group__new(port_state_t* port_state) {
 void poll_group_delete(poll_group_t* poll_group) {
   assert(poll_group->group_size == 0);
   CloseHandle(poll_group->afd_helper_handle);
-  queue_remove(&poll_group->queue_node);
+  queueRemove(&poll_group->queue_node);
   free(poll_group);
 }
 
@@ -921,9 +924,9 @@ HANDLE poll_group_get_afd_helper_handle(poll_group_t* poll_group) {
 poll_group_t* poll_group_acquire(port_state_t* port_state) {
   queue_t* poll_group_queue = port_get_poll_group_queue(port_state);
   poll_group_t* poll_group =
-      !queue_is_empty(poll_group_queue)
+      !queueIsEmpty(poll_group_queue)
           ? container_of(
-                queue_last(poll_group_queue), poll_group_t, queue_node)
+                queueLast(poll_group_queue), poll_group_t, queue_node)
           : NULL;
 
   if (poll_group == NULL ||
@@ -933,7 +936,7 @@ poll_group_t* poll_group_acquire(port_state_t* port_state) {
     return NULL;
 
   if (++poll_group->group_size == POLL_GROUP__MAX_GROUP_SIZE)
-    queue_move_to_start(poll_group_queue, &poll_group->queue_node);
+    queueMoveToStart(poll_group_queue, &poll_group->queue_node);
 
   return poll_group;
 }
@@ -945,7 +948,7 @@ void poll_group_release(poll_group_t* poll_group) {
   poll_group->group_size--;
   assert(poll_group->group_size < POLL_GROUP__MAX_GROUP_SIZE);
 
-  queue_move_to_end(poll_group_queue, &poll_group->queue_node);
+  queueMoveToEnd(poll_group_queue, &poll_group->queue_node);
 
   /* Poll groups are currently only freed when the epoll port is closed. */
 }
@@ -1030,9 +1033,9 @@ port_state_t* port_new(HANDLE* iocp_handle_out) {
   /* sock_tree 是标准容器：memeset 清零的存储里还没有对象，必须显式构造（销毁见 port__free）。
      其余成员都是平凡类型，清零即等于初始化。 */
   std::construct_at(&port_state->sock_tree);
-  queue_init(&port_state->sock_update_queue);
-  queue_init(&port_state->sock_deleted_queue);
-  queue_init(&port_state->poll_group_queue);
+  queueInit(&port_state->sock_update_queue);
+  queueInit(&port_state->sock_deleted_queue);
+  queueInit(&port_state->poll_group_queue);
   ts_tree_node_init(&port_state->handle_tree_node);
   InitializeCriticalSection(&port_state->lock);
 
@@ -1077,17 +1080,17 @@ int port_delete(port_state_t* port_state) {
     sock_force_delete(port_state, sock_state);
   }
 
-  while ((queue_node = queue_first(&port_state->sock_deleted_queue)) != NULL) {
+  while ((queue_node = queueFirst(&port_state->sock_deleted_queue)) != NULL) {
     sock_state_t* sock_state = sock_state_from_queue_node(queue_node);
     sock_force_delete(port_state, sock_state);
   }
 
-  while ((queue_node = queue_first(&port_state->poll_group_queue)) != NULL) {
+  while ((queue_node = queueFirst(&port_state->poll_group_queue)) != NULL) {
     poll_group_t* poll_group = poll_group_from_queue_node(queue_node);
     poll_group_delete(poll_group);
   }
 
-  assert(queue_is_empty(&port_state->sock_update_queue));
+  assert(queueIsEmpty(&port_state->sock_update_queue));
 
   DeleteCriticalSection(&port_state->lock);
 
@@ -1101,8 +1104,8 @@ static int port__update_events(port_state_t* port_state) {
 
   /* Walk the queue, submitting new poll requests for every socket that needs
    * it. */
-  while (!queue_is_empty(sock_update_queue)) {
-    queue_node_t* queue_node = queue_first(sock_update_queue);
+  while (!queueIsEmpty(sock_update_queue)) {
+    queue_node_t* queue_node = queueFirst(sock_update_queue);
     sock_state_t* sock_state = sock_state_from_queue_node(queue_node);
 
     if (sock_update(port_state, sock_state) < 0)
@@ -1342,34 +1345,34 @@ sock_state_t* port_find_socket(port_state_t* port_state, SOCKET socket) {
 
 void port_request_socket_update(port_state_t* port_state,
                                 sock_state_t* sock_state) {
-  if (queue_is_enqueued(sock_state_to_queue_node(sock_state)))
+  if (queueIsEnqueued(sock_state_to_queue_node(sock_state)))
     return;
-  queue_append(&port_state->sock_update_queue,
+  queueAppend(&port_state->sock_update_queue,
                sock_state_to_queue_node(sock_state));
 }
 
 void port_cancel_socket_update(port_state_t* port_state,
                                sock_state_t* sock_state) {
   unused_var(port_state);
-  if (!queue_is_enqueued(sock_state_to_queue_node(sock_state)))
+  if (!queueIsEnqueued(sock_state_to_queue_node(sock_state)))
     return;
-  queue_remove(sock_state_to_queue_node(sock_state));
+  queueRemove(sock_state_to_queue_node(sock_state));
 }
 
 void port_add_deleted_socket(port_state_t* port_state,
                              sock_state_t* sock_state) {
-  if (queue_is_enqueued(sock_state_to_queue_node(sock_state)))
+  if (queueIsEnqueued(sock_state_to_queue_node(sock_state)))
     return;
-  queue_append(&port_state->sock_deleted_queue,
+  queueAppend(&port_state->sock_deleted_queue,
                sock_state_to_queue_node(sock_state));
 }
 
 void port_remove_deleted_socket(port_state_t* port_state,
                                 sock_state_t* sock_state) {
   unused_var(port_state);
-  if (!queue_is_enqueued(sock_state_to_queue_node(sock_state)))
+  if (!queueIsEnqueued(sock_state_to_queue_node(sock_state)))
     return;
-  queue_remove(sock_state_to_queue_node(sock_state));
+  queueRemove(sock_state_to_queue_node(sock_state));
 }
 
 HANDLE port_get_iocp_handle(port_state_t* port_state) {
@@ -1389,63 +1392,64 @@ ts_tree_node_t* port_state_to_handle_tree_node(port_state_t* port_state) {
   return &port_state->handle_tree_node;
 }
 
-void queue_init(queue_t* queue) {
-  queue_node_init(&queue->head);
+void queueInit(queue_t* queue) {
+  queueNodeInit(&queue->head);
 }
 
-void queue_node_init(queue_node_t* node) {
-  node->prev = node;
-  node->next = node;
+void queueNodeInit(queue_node_t* node) {
+  /* 自指即「不在任何表里」：入队与摘除都靠这条不变式判断，因此不需要额外的标记位 */
+  node->previous = node;
+  node->next     = node;
 }
 
-static inline void queue__detach_node(queue_node_t* node) {
-  node->prev->next = node->next;
-  node->next->prev = node->prev;
+/* 把节点从它当前所在的表里摘下来，不动它自己的 previous/next 指向。
+   remove 与两个 move_* 共用，改动这里要同时顾到「被摘的可能是首元素或尾元素」。 */
+static inline void queueDetachNode(queue_node_t* node) {
+  node->previous->next = node->next;
+  node->next->previous = node->previous;
 }
 
-queue_node_t* queue_first(const queue_t* queue) {
-  return !queue_is_empty(queue) ? queue->head.next : NULL;
+queue_node_t* queueFirst(const queue_t* queue) {
+  return !queueIsEmpty(queue) ? queue->head.next : nullptr;
 }
 
-queue_node_t* queue_last(const queue_t* queue) {
-  return !queue_is_empty(queue) ? queue->head.prev : NULL;
+queue_node_t* queueLast(const queue_t* queue) {
+  return !queueIsEmpty(queue) ? queue->head.previous : nullptr;
 }
 
-void queue_prepend(queue_t* queue, queue_node_t* node) {
-  node->next = queue->head.next;
-  node->prev = &queue->head;
-  node->next->prev = node;
-  queue->head.next = node;
+void queueAppend(queue_t* queue, queue_node_t* node) {
+  node->next             = &queue->head;
+  node->previous         = queue->head.previous;
+  node->previous->next   = node;
+  queue->head.previous   = node;
 }
 
-void queue_append(queue_t* queue, queue_node_t* node) {
-  node->next = &queue->head;
-  node->prev = queue->head.prev;
-  node->prev->next = node;
-  queue->head.prev = node;
+void queueMoveToStart(queue_t* queue, queue_node_t* node) {
+  queueDetachNode(node);
+
+  /* 插到哨兵之后即队首（这里不再单列一个 prepend：只有这一处用它） */
+  node->next           = queue->head.next;
+  node->previous       = &queue->head;
+  node->next->previous = node;
+  queue->head.next     = node;
 }
 
-void queue_move_to_start(queue_t* queue, queue_node_t* node) {
-  queue__detach_node(node);
-  queue_prepend(queue, node);
+void queueMoveToEnd(queue_t* queue, queue_node_t* node) {
+  queueDetachNode(node);
+  queueAppend(queue, node);
 }
 
-void queue_move_to_end(queue_t* queue, queue_node_t* node) {
-  queue__detach_node(node);
-  queue_append(queue, node);
+void queueRemove(queue_node_t* node) {
+  queueDetachNode(node);
+  queueNodeInit(node);
 }
 
-void queue_remove(queue_node_t* node) {
-  queue__detach_node(node);
-  queue_node_init(node);
+bool queueIsEmpty(const queue_t* queue) {
+  return !queueIsEnqueued(&queue->head);
 }
 
-bool queue_is_empty(const queue_t* queue) {
-  return !queue_is_enqueued(&queue->head);
-}
-
-bool queue_is_enqueued(const queue_node_t* node) {
-  return node->prev != node;
+bool queueIsEnqueued(const queue_node_t* node) {
+  return node->previous != node;
 }
 
 static const long REFLOCK__REF          = (long) 0x00000001;
@@ -1588,7 +1592,7 @@ sock_state_t* sock_new(port_state_t* port_state, SOCKET socket) {
   sock_state->poll_group = poll_group;
 
   tree_node_init(&sock_state->tree_node);
-  queue_node_init(&sock_state->queue_node);
+  queueNodeInit(&sock_state->queue_node);
 
   if (port_register_socket(port_state, sock_state, socket) < 0)
     goto err2;
