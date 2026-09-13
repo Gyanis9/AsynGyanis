@@ -50,7 +50,8 @@ namespace AsynGyanis::Net
          * @param tlsSocket 已创建但尚未握手的 TlsSocket，所有权转移给本会话
          * @param router 全局路由器，用于分发 HTTP 请求；生命周期必须不短于本会话
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
-         * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类与延迟直方图都不更新）
+         * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类、延迟直方图
+         *        与 WebSocket 各项计数都不更新）
          * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
          * @param parserLimits 解析器资源上限；默认取 HttpParserLimits 的缺省字段。它按值交给本会话的
          *        解析器并在构造时固定，因此只影响此后新建的会话（见 HttpParserLimits 的 @note）

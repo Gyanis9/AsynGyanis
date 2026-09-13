@@ -24,6 +24,8 @@
 
 namespace AsynGyanis::Net
 {
+    class HttpMetricsCollector;
+
     class WebSocketPeer;
 
     /**
@@ -95,10 +97,12 @@ namespace AsynGyanis::Net
         using FrameSender = std::function<Core::Task<bool>(std::string_view)>;
 
         /**
-         * @brief 构造对端对象并注入发送路径
+         * @brief 构造对端对象并注入发送路径与统计采集端
          * @param frameSender 发送回调，由会话装配；本对象没有「未装配」状态，必须给出可用的回调
+         * @param metrics 统计采集端；传空指针表示本对象不上报 WebSocket 各项计数。它由服务器持有、
+         *        按 shared_ptr 共享，本对象只借用，因此比它活得久也不会写到已释放对象上
          */
-        explicit WebSocketPeer(FrameSender frameSender);
+        explicit WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *metrics = nullptr);
 
         /**
          * @brief 析构函数：成员都是按值的标准容器，无额外资源需要回收。
@@ -281,11 +285,16 @@ namespace AsynGyanis::Net
         Core::Task<> echoCloseFrame(std::string_view payload);
 
         FrameSender m_frameSender;                   ///< 发送路径，由会话注入
+        HttpMetricsCollector *m_metrics{nullptr};    ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
         WebSocketFrameDecoder m_decoder;             ///< 帧解码器：掩码校验、分片重组都在它内部完成
         std::deque<WebSocketFrame> m_incomingFrames; ///< 已解出、等待业务取走的帧（FIFO）
         std::coroutine_handle<> m_deliveryWaiter{};  ///< 业务正挂在 receive() 上的句柄，空表示无人等待
         bool m_isOpen{true};                         ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
         bool m_isWriteInFlight{false};               ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
         std::string m_payloadErrorMessage;           ///< 文本负载非法的中文原因（含违规字节位置）；空表示最近一次失败不是负载非法
+
+        /// 本次关闭是对端 Close 的应答：一次对端发起的关闭只记在对端一侧，
+        /// 回帧不再重复记成本侧发起。粘性标记——对端关闭后本对象即收口，不存在需要复位的下一轮
+        bool m_isEchoingPeerClose{false};
     };
 } // namespace AsynGyanis::Net

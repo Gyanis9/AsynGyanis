@@ -528,9 +528,11 @@ namespace AsynGyanis::Net
     {
         if (m_stage == Stage::RequestLine)
         {
-            if (exceedsLimit(length, m_limits.maximumRequestLineLength))
+            // 整行上限由 URI 上限推出（URI + 方法名与版本串的固定余量）：放宽 URI 时这道闸门自动跟随
+            const std::size_t requestLineLimit = m_limits.requestLineLengthLimit();
+            if (exceedsLimit(length, requestLineLimit))
             {
-                failHeaderTooLarge(std::format("请求行超出上限 {} 字节", m_limits.maximumRequestLineLength));
+                failHeaderTooLarge(std::format("请求行超出上限 {} 字节", requestLineLimit));
                 return false;
             }
             return true;

@@ -37,6 +37,10 @@ namespace AsynGyanis::Net
      * @note 请求计数口径：totalRequestCount 只统计**已收齐**的请求，解析失败的条数单独进
      *       badRequestCount；状态码类计数同样只对应已发出的响应，故 status1xxCount 至
      *       status5xxCount 之和在稳态下等于 totalRequestCount（发送失败的应答不计入）。
+     * @note 升级到 WebSocket 的连接是上述口径的例外：升级请求计入 totalRequestCount 与
+     *       webSocketUpgradeCount，但 101 由握手模块逐字节生成、不走 HttpResponse 序列化，
+     *       故不进状态码类计数；101 之后的帧错误另进 webSocketProtocolErrorCloseCount，
+     *       不并入 badRequestCount（后者的口径是 HTTP 报文解析失败，回的是 4xx）。
      * @see HttpMetricsCollector, HttpServer::stats()
      */
     struct HttpServerStats
@@ -54,9 +58,17 @@ namespace AsynGyanis::Net
         /// 延迟直方图的累计条数，下标与 kHttpLatencyUpperBoundMilliseconds 对应；末档为溢出档
         std::array<std::uint64_t, kHttpLatencyBucketCount> latencyBucketCounts{};
 
+        /// ---- WebSocket（101 升级之后的那条连接）的累计计数，与上面几组并列、口径互不覆盖 ----
+        std::uint64_t webSocketUpgradeCount{0};            ///< 升级成功的连接数（101 已发出）
+        std::uint64_t webSocketMessageCount{0};            ///< 收到的数据消息条数：分片重组后的一条算一次，控制帧不计
+        std::uint64_t webSocketProtocolErrorCloseCount{0}; ///< 因对端违反 RFC 6455 而收口的次数：1002/1007/1009 合并为一类，具体码见日志
+        std::uint64_t webSocketPeerCloseCount{0};          ///< 对端发起关闭握手的次数（收到对端 Close 帧）
+        std::uint64_t webSocketServerCloseCount{0};        ///< 本侧发起关闭握手的次数：正常收尾与协议错误收口都算，回应对端 Close 的回帧不算；按发起计，不看该帧是否写出成功
+
         /**
          * @brief 取延迟直方图的样本总数
-         * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未发出」的条数
+         * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未落账」的
+         *         条数，其中既有响应未发出的，也有升级到 WebSocket 的（101 不经 recordResponse 落账）
          */
         [[nodiscard]] std::uint64_t latencySampleCount() const noexcept
         {
@@ -70,7 +82,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 统计采集端：三组累计计数、状态码分类与延迟直方图
+     * @brief 统计采集端：HTTP 与 WebSocket 的累计计数、状态码分类与延迟直方图
      *
      * @details 与快照放在同一文件：字段集合、档位常量与采集口径必须同步演进，分开写会让
      *          「加了字段却忘了采集」这类漂移难以察觉。
@@ -127,6 +139,48 @@ namespace AsynGyanis::Net
             m_latencyBucketCounts[latencyBucketIndex(elapsed)].fetch_add(1, std::memory_order_relaxed);
         }
 
+        /// WebSocket 各项计数与上面几组同档：都用放宽内存序，只做累加，读侧不依赖字段间的先后次序
+
+        /**
+         * @brief 记一条升级成功的连接（101 已发出）
+         */
+        void countWebSocketUpgrade() noexcept
+        {
+            m_webSocketUpgradeCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 记一条收到的数据消息（分片重组后的一条算一次）
+         */
+        void countWebSocketMessage() noexcept
+        {
+            m_webSocketMessageCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 记一次因对端违反 RFC 6455 而收口的连接（关闭码 1002/1007/1009 合并为一类）
+         */
+        void countWebSocketProtocolErrorClose() noexcept
+        {
+            m_webSocketProtocolErrorCloseCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 记一次由对端发起关闭握手的连接
+         */
+        void countWebSocketPeerClose() noexcept
+        {
+            m_webSocketPeerCloseCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 记一次由本侧发起关闭握手的连接
+         */
+        void countWebSocketServerClose() noexcept
+        {
+            m_webSocketServerCloseCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
         /**
          * @brief 取当前计数的快照
          * @return HttpServerStats 各字段分别原子读取的结果；activeConnectionCount 留给调用方填充
@@ -142,6 +196,12 @@ namespace AsynGyanis::Net
             stats.status3xxCount     = m_status3xxCount.load(std::memory_order_relaxed);
             stats.status4xxCount     = m_status4xxCount.load(std::memory_order_relaxed);
             stats.status5xxCount     = m_status5xxCount.load(std::memory_order_relaxed);
+
+            stats.webSocketUpgradeCount            = m_webSocketUpgradeCount.load(std::memory_order_relaxed);
+            stats.webSocketMessageCount            = m_webSocketMessageCount.load(std::memory_order_relaxed);
+            stats.webSocketProtocolErrorCloseCount = m_webSocketProtocolErrorCloseCount.load(std::memory_order_relaxed);
+            stats.webSocketPeerCloseCount          = m_webSocketPeerCloseCount.load(std::memory_order_relaxed);
+            stats.webSocketServerCloseCount        = m_webSocketServerCloseCount.load(std::memory_order_relaxed);
 
             for (std::size_t index = 0; index < kHttpLatencyBucketCount; ++index)
             {
@@ -206,6 +266,12 @@ namespace AsynGyanis::Net
 
         /// 延迟直方图的累计条数；元素默认值初始化（C++20 起 std::atomic 的默认构造即置零）
         std::array<std::atomic<std::uint64_t>, kHttpLatencyBucketCount> m_latencyBucketCounts{};
+
+        std::atomic<std::uint64_t> m_webSocketUpgradeCount{0};            ///< 累计升级成功的连接数
+        std::atomic<std::uint64_t> m_webSocketMessageCount{0};            ///< 累计收到的数据消息条数
+        std::atomic<std::uint64_t> m_webSocketProtocolErrorCloseCount{0}; ///< 累计因协议错误收口的连接数
+        std::atomic<std::uint64_t> m_webSocketPeerCloseCount{0};          ///< 累计由对端发起关闭握手的连接数
+        std::atomic<std::uint64_t> m_webSocketServerCloseCount{0};        ///< 累计由本侧发起关闭握手的连接数
     };
 
 } // namespace AsynGyanis::Net

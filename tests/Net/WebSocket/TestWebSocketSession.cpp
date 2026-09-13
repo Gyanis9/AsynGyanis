@@ -3,10 +3,12 @@
 // 客户端一律手写字节：升级请求、掩码帧与期望的服务端帧都在本文件里按协议拼出，
 // 不引入任何 ws 客户端库，因此断言不会被被测实现「自证」。
 // 凡是要断言「解到连接关闭」的用例，都先等客户端读到 EOF，再做完整比对；渐进性断言只用子串。
+// 末节的统计用例同一条连接串起升级、消息与协议错误收口，并核对普通 HTTP 请求不污染 WebSocket 计数。
 
 #include "HttpTestSupport.h"
 
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Net/WebSocket/WebSocketPeer.h"
@@ -512,6 +514,18 @@ namespace AsynGyanis::Net
         EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
         EXPECT_EQ(accumulated.size(), handshake.size() + expectedClose.size()) << "状态码 echo 之后不应再补第二条 Close";
         EXPECT_EQ(record->count(), 0U) << "Close 是控制帧，不应交付业务";
+
+        // 关闭的两侧各计各的：对端发起的这次关闭记在对端一侧，本侧那条回帧不得再记成本侧发起
+        ASSERT_TRUE(HttpTestSupport::waitForCondition(
+                [&server]
+                {
+                    return server->server().stats().webSocketPeerCloseCount >= 1;
+                },
+                kWaitTimeout)) << "对端发起的关闭握手没有计数";
+        const HttpServerStats closeStats = server->server().stats();
+        EXPECT_EQ(closeStats.webSocketPeerCloseCount, 1u) << "一次对端 Close 只该计一次";
+        EXPECT_EQ(closeStats.webSocketServerCloseCount, 0u) << "回应对端 Close 的回帧被重复记成了本侧发起关闭";
+        EXPECT_EQ(closeStats.webSocketProtocolErrorCloseCount, 0u) << "正常关闭握手不是协议错误收口";
     }
 
     // ============================================================================
@@ -741,5 +755,91 @@ namespace AsynGyanis::Net
                 << "对端已复位，业务的 sendText 没有返回 false：传输层失败以异常打穿了业务";
         EXPECT_LT(sentFrameCount.load(std::memory_order_relaxed), 64) << "对端已经复位，写侧却宣称 64 帧全部成功";
         EXPECT_FALSE(server->startThrew()) << "对端复位把服务器主协程带崩了";
+    }
+
+    // ============================================================================
+    // 服务器统计：升级、消息与两侧关闭各计各的
+    // ============================================================================
+
+    /**
+     * @brief 钉住 WebSocket 侧各项计数：一次升级、两条文本消息、一条非法帧各落在哪个字段上
+     * @details 计数点分布在会话阶段与对端对象上（见 HttpServerStats 各字段的说明），这里用一条真实
+     *          连接把它们串起来核对。末尾另起一条普通 HTTP 连接做对照：它只动请求与状态码计数，
+     *          WebSocket 各项必须纹丝不动——否则「观测升级比例」这类结论会被普通流量污染。
+     */
+    TEST(WebSocketSession, ReportsUpgradeMessagesAndClosuresInServerStats)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::uint16_t port = server->listeningPort();
+        ASSERT_NE(port, 0);
+
+        const std::size_t handshakeLength = expectedHandshakeResponseText().size();
+        const std::size_t firstEchoLength = serverFrameBytes(0x1, "one").size();
+
+        LoopbackClient client(port);
+        ASSERT_TRUE(client.isValid());
+
+        // 升级请求与第一条文本帧挤在同一段里发出：升级与首条消息的计数都要落账
+        std::string accumulated;
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, "one"), kWaitTimeout));
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshakeLength + firstEchoLength, kWaitTimeout))
+                << "握手或第一条回显没有到达，累计 " << accumulated.size() << " 字节";
+
+        // 第二条文本消息：消息计数应随之到 2，且两条都已交付业务
+        ASSERT_TRUE(client.sendText(maskedClientFrame(0x1, "two"), kWaitTimeout));
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshakeLength + firstEchoLength + serverFrameBytes(0x1, "two").size(),
+                                    kWaitTimeout))
+                << "第二条回显没有到达，累计 " << accumulated.size() << " 字节";
+        ASSERT_EQ(record->count(), 2U) << "两条文本消息都应交付业务";
+
+        // 未掩码帧（RFC 6455 §5.1 要求客户端必须掩码）：服务端按 1002 收口并断开
+        ASSERT_TRUE(client.sendText(std::string("\x81\x05", 2) + "hello", kWaitTimeout));
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "协议错误后服务端应断开连接";
+
+        // 收口计数在 101 与回显之后才落账，按条件轮询而不是立刻断言
+        ASSERT_TRUE(HttpTestSupport::waitForCondition(
+                [&server]
+                {
+                    return server->server().stats().webSocketProtocolErrorCloseCount >= 1;
+                },
+                kWaitTimeout)) << "协议错误收口未在时限内计数";
+
+        const HttpServerStats stats = server->server().stats();
+        EXPECT_EQ(stats.webSocketUpgradeCount, 1u) << "101 已发出却不算升级成功";
+        EXPECT_EQ(stats.webSocketMessageCount, 2u) << "只该记两条数据消息：分片重组后的一条算一次，控制帧不计";
+        EXPECT_EQ(stats.webSocketProtocolErrorCloseCount, 1u) << "未掩码帧没有被记成协议错误收口";
+        EXPECT_EQ(stats.webSocketPeerCloseCount, 0u) << "对端没有发 Close 帧，不该记成对端发起关闭";
+        EXPECT_EQ(stats.webSocketServerCloseCount, 1u) << "本侧发出 1002 收口，应记一次本侧发起关闭";
+        EXPECT_EQ(stats.badRequestCount, 0u) << "WS 帧解码失败回的是 Close 帧而不是 4xx，不该并入报文解析失败";
+        EXPECT_EQ(stats.totalRequestCount, 1u) << "这条连接上只有升级请求被解析收齐";
+
+        // 对照：普通 HTTP 请求只增加请求与状态码计数，WebSocket 各项保持不变
+        LoopbackClient httpClient(port);
+        ASSERT_TRUE(httpClient.isValid());
+        ASSERT_TRUE(httpClient.sendText(HttpTestSupport::helloRequestText(), kWaitTimeout));
+        std::string httpResponseText;
+        ASSERT_TRUE(httpClient.waitForText(httpResponseText, "served-hello", kWaitTimeout)) << "普通请求未被正常服务";
+        ASSERT_TRUE(HttpTestSupport::waitForCondition(
+                [&server]
+                {
+                    return server->server().stats().totalRequestCount >= 2;
+                },
+                kWaitTimeout)) << "普通请求未计入请求条数";
+
+        const HttpServerStats statsAfterHttpRequest = server->server().stats();
+        EXPECT_EQ(statsAfterHttpRequest.totalRequestCount, 2u) << "普通请求没有计入请求条数";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketUpgradeCount, stats.webSocketUpgradeCount)
+                << "普通 HTTP 请求被记成了 WebSocket 升级";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketMessageCount, stats.webSocketMessageCount)
+                << "普通 HTTP 请求被记成了 WebSocket 消息";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketProtocolErrorCloseCount, stats.webSocketProtocolErrorCloseCount)
+                << "普通 HTTP 请求被记成了 WebSocket 协议错误收口";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketPeerCloseCount, stats.webSocketPeerCloseCount)
+                << "普通 HTTP 请求被记成了对端发起关闭";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketServerCloseCount, stats.webSocketServerCloseCount)
+                << "普通 HTTP 请求被记成了本侧发起关闭";
     }
 } // namespace AsynGyanis::Net

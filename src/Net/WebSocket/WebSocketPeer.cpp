@@ -1,5 +1,6 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include "Net/Http/HttpServerStats.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
 
 #include <cstdint>
@@ -14,10 +15,12 @@ namespace AsynGyanis::Net
         constexpr std::size_t kCloseCodeByteLength = 2;
     } // namespace
 
-    WebSocketPeer::WebSocketPeer(FrameSender frameSender) :
-        m_frameSender(std::move(frameSender))
+    WebSocketPeer::WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *const metrics) :
+        m_frameSender(std::move(frameSender)),
+        m_metrics(metrics)
     {
-        // 发送路径在构造时注入：本对象没有「未装配」状态，省掉每次 send*() 里的判空分支
+        // 发送路径在构造时注入：本对象没有「未装配」状态，省掉每次 send*() 里的判空分支。
+        // 采集端可空：空表示只跑协议不上报统计，因此每个上报点都判一次空
     }
 
     bool WebSocketPeer::isOpen() const noexcept
@@ -104,7 +107,12 @@ namespace AsynGyanis::Net
             }
             if (frame->opCode == WebSocketOpCode::Close)
             {
-                // 关闭握手（RFC 6455 §5.5.1）：回一条同状态码的 Close，并让后续 receive() 一律返回空
+                // 对端发起关闭握手（RFC 6455 §5.5.1）：计入对端一侧，回一条同状态码的 Close 后终止交付
+                //（那条回帧不再计入本侧发起，否则一次对端关闭会被算成两笔）
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countWebSocketPeerClose();
+                }
                 co_await echoCloseFrame(frame->payload);
                 co_return std::nullopt;
             }
@@ -167,6 +175,12 @@ namespace AsynGyanis::Net
         // 否则它会去等一条永远不会再来的消息
         m_isOpen = false;
 
+        // 本侧先发起关闭才计数：应答对端 Close 的那条回帧归在对端一侧（见 receive() 的 Close 分支）
+        if (m_metrics != nullptr && !m_isEchoingPeerClose)
+        {
+            m_metrics->countWebSocketServerClose();
+        }
+
         std::string payload;
         payload.reserve(kCloseCodeByteLength + reason.size());
         // 负载 = 2 字节大端状态码 + 原因（RFC 6455 §5.7.1）
@@ -208,6 +222,8 @@ namespace AsynGyanis::Net
         }
 
         // 回帧即收口。结果不看：对端往往已经断开，这条回帧写不出去也不影响收尾
+        // 先立标记再回帧：本次关闭来自对端，计数归它那一侧，close() 据此不再记一次本侧发起
+        m_isEchoingPeerClose = true;
         [[maybe_unused]] const bool isCloseSent = co_await close(closeCode);
         co_return;
     }
@@ -275,6 +291,14 @@ namespace AsynGyanis::Net
                         // 非法负载不交付业务：返回 DecodeError 让会话发 1007 并收口
                         return WebSocketFeedStatus::DecodeError;
                     }
+                }
+
+                // 一条完整的数据消息算一次：解码层已完成分片重组，故这里既是「重组后的那条」。
+                // 控制帧（Ping/Pong/Close）同样走到这一步排队，因此按操作码过滤，不计入消息数
+                if (m_metrics != nullptr &&
+                    (frame.opCode == WebSocketOpCode::Text || frame.opCode == WebSocketOpCode::Binary))
+                {
+                    m_metrics->countWebSocketMessage();
                 }
 
                 enqueueFrame(std::move(frame));

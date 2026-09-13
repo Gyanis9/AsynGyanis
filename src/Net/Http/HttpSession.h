@@ -60,7 +60,8 @@ namespace AsynGyanis::Net
          * @param socket 已建立的异步 socket，所有权转移给基类 Core::Connection
          * @param router 全局路由器，用于分发请求；其生命周期必须不短于本会话
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
-         * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类与延迟直方图都不更新）
+         * @param metrics 统计采集端；传空指针表示本会话不采集统计（请求计数、状态码分类、延迟直方图
+         *        与 WebSocket 各项计数都不更新）
          * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
          * @param parserLimits 解析器资源上限；默认取 HttpParserLimits 的缺省字段。它按值交给本会话的
          *        解析器并在构造时固定，因此只影响此后新建的会话（见 HttpParserLimits 的 @note）
@@ -266,6 +267,7 @@ namespace AsynGyanis::Net
          * @param socket 传输层 socket 引用，其生命周期覆盖整个阶段
          * @param connection 所属连接，用于刷新空闲截止时间与查询存活；其生命周期覆盖整个阶段
          * @param limits 连接级限额，取自 HttpServerLimits
+         * @param metrics 统计采集端，可为空；为空时本条连接不更新 WebSocket 各项计数
          * @param handler 业务处理器；按值接收（惰性协程的入参必须由协程帧自己持有）
          * @param receiveBuffer 会话的接收窗口，本阶段按窗口长度整块读取
          * @param pendingLength 升级请求之后窗口里剩余的字节数：客户端可能在 101 之前就把第一帧
@@ -275,6 +277,7 @@ namespace AsynGyanis::Net
         Core::Task<> webSocketSessionStage(Socket &socket,
                                            Core::Connection &connection,
                                            const HttpServerLimits &limits,
+                                           HttpMetricsCollector *metrics,
                                            WebSocketHandler handler,
                                            std::vector<char> &receiveBuffer,
                                            std::size_t pendingLength)
@@ -312,7 +315,7 @@ namespace AsynGyanis::Net
                 }
             };
 
-            WebSocketPeer peer(sendFrameBytes);
+            WebSocketPeer peer(sendFrameBytes, metrics);
 
             bool isBusinessFinished = false;
 
@@ -380,6 +383,14 @@ namespace AsynGyanis::Net
                 // 不能合成一个码。具体是哪一类由 WebSocketPeer 按失败来源给出，会话只负责发出与收口
                 const std::uint16_t errorCode = peer.decodeErrorCloseCode();
                 LOG_ERROR_FMT("WebSocket 会话：对端违反 RFC 6455，按状态码 {} 关闭连接，原因：{}", errorCode, peer.decodeErrorText());
+
+                // 协议错误收口单独计数：三个关闭码合并为一类（都是对端违反 RFC 6455 造成的收口），
+                // 具体是哪一个已在上面那条日志里，细分三档对监控没有增量信息
+                if (metrics != nullptr)
+                {
+                    metrics->countWebSocketProtocolErrorClose();
+                }
+
                 if (peer.isOpen() && !peer.isWriteInFlight())
                 {
                     [[maybe_unused]] const bool isErrorCloseSent = co_await peer.close(errorCode);
@@ -424,7 +435,8 @@ namespace AsynGyanis::Net
          * @param isAlive       连接存活谓词，每轮事务与每次挂起前检查
          * @param connection    所属连接，用于按相位刷新空闲截止时间并维护在途工作标记；其生命周期必须覆盖整个循环
          * @param limits        连接级限额，取自 HttpServerLimits；0 字段表示关闭对应项保护
-         * @param metrics       统计采集端，可为空；为空时请求计数、状态码分类与延迟直方图都不更新
+         * @param metrics       统计采集端，可为空；为空时请求计数、状态码分类、延迟直方图与
+         *                      WebSocket 各项计数都不更新
          * @param requestIdGenerator request-id 生成器，可为空；为空时不为请求落定 request-id，
          *                          响应也不带 x-request-id
          */
@@ -752,12 +764,18 @@ namespace AsynGyanis::Net
 
                     LOG_INFO_FMT("HttpSession: 连接已升级到 WebSocket。request-id {}，路径 {}", request.requestId(), request.uri());
 
+                    // 升级计数以 101 写出成功为准：写不出去的那条路径在上面已经收口，不算升级成功
+                    if (metrics != nullptr)
+                    {
+                        metrics->countWebSocketUpgrade();
+                    }
+
                     // 此后不再回到 HTTP keep-alive：一条连接要么 HTTP 要么 WebSocket。
                     // windowLength 是 101 之前就到达的剩余字节（升级请求之后的那一部分），
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
-                    co_return co_await detail::webSocketSessionStage(socket, connection, limits, response.webSocketHandler(),
-                                                                     receiveBuffer, windowLength);
+                    co_return co_await detail::webSocketSessionStage(socket, connection, limits, metrics,
+                                                                     response.webSocketHandler(), receiveBuffer, windowLength);
                 }
 
                 // 计数与上限：达到上限就让 keepAlive 变 false，从而走既有的

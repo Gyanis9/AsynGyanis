@@ -323,7 +323,8 @@ namespace AsynGyanis::Net
         std::size_t m_consumedByteCount{0};   ///< 最近一次 parse() 实际消费的字节数
 
         /// 方法原文上限 32 B：llhttp 同档取值，通用方法最长 7 B（OPTIONS），留足自定义动词余地。
-        /// 它是协议语法约束而不是按部署调整的内存闸门，因此不放进 HttpParserLimits
+        /// 它是协议语法约束而不是按部署调整的内存闸门，因此不放进 HttpParserLimits；
+        /// kRequestLineFixedOverheadBytes 以它为下限，改本值要同步那一处，否则合法的最长方法会撞整行上限
         static constexpr std::size_t kMaximumMethodLength = 32;
 
         /// 构造时按值落定的资源上限，收字节与定界时逐项消费；没有中途更换的入口
