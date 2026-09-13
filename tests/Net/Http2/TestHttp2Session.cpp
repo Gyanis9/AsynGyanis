@@ -1,6 +1,6 @@
 // TestHttp2Session.cpp —— HTTP/2 会话的端到端测试（真实 TLS 回环 + 真实 h2 帧）
 //
-// 覆盖五块：
+// 覆盖七块：
 //   1) 端到端服务：客户端（OpenSSL，ALPN 提 h2）握手 → 交换 SETTINGS → 发前奏 → GET → 200 与正文，
 //      第二条请求验证连接复用与 request-id 回显；
 //   2) 接收方向流控：超过初始窗口的 POST 必须靠服务端 WINDOW_UPDATE 才能发完（连接级与流级都要）；
@@ -8,6 +8,10 @@
 //   4) ALPN 分流：只提 http/1.1 的客户端仍走 HTTP/1.1 会话（普通 GET 得 200）；
 //   5) 拒绝面：错误前奏回 GOAWAY 并收口、未收录方法不落进业务路由（405）、正文超限回 413、
 //      WebSocket 升级回 501。
+//   6) 流式响应：startChunkedResponse()/writeChunk()（SseStream 建在它之上）在 h2 上发成 HEADERS + 若干
+//      DATA 帧、末片带 END_STREAM，头部一律剥掉连接特定头（RFC 9113 §8.2.2）且不写 content-length；
+//      首段必须在处理器结束之前到达客户端（渐进性）；
+//   7) 单连接请求上限：达到 maximumRequestsPerConnection 时发 GOAWAY（NO_ERROR）并在无在途请求后收口。
 // 夹具在本文件内自建（TestHttp2Server + TlsHttp2LoopbackClient），端口由内核分配，用例之间不共用端口。
 // 客户端的帧解码复用生产解码器（Http2FrameDecoder），响应的头块复用生产解码器（HpackDecoder）解回，
 // 因此「服务端吐出的字节」始终由第二份实现对照。
@@ -17,6 +21,7 @@
 #include "Net/Http2/Http2Session.h"
 
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequest.h"
@@ -24,6 +29,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/SseStream.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
@@ -201,22 +207,33 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 从帧负载里读一个 4 字节大端无符号数
+         * @param payload 帧负载
+         * @param offset 起始偏移，单位字节
+         * @return std::uint32_t 读到的取值；负载不足 4 字节时返回 0（帧层的长度校验已保证不会发生）
+         */
+        std::uint32_t readBigEndianUint32(const std::string_view payload, const std::size_t offset)
+        {
+            if (offset + 4 > payload.size())
+            {
+                return 0;
+            }
+            std::uint32_t value = 0;
+            for (std::size_t byteIndex = 0; byteIndex < 4; ++byteIndex)
+            {
+                value = (value << 8) | static_cast<unsigned char>(payload[offset + byteIndex]);
+            }
+            return value;
+        }
+
+        /**
          * @brief 取 WINDOW_UPDATE 帧的窗口增量
-         * @param payload 帧负载（4 字节大端）
+         * @param payload 帧负载（4 字节大端，最高位是保留的 R）
          * @return std::uint32_t 增量；负载不足 4 字节时返回 0
          */
         std::uint32_t readWindowUpdateIncrement(const std::string_view payload)
         {
-            if (payload.size() < 4)
-            {
-                return 0;
-            }
-            std::uint32_t increment = 0;
-            for (std::size_t byteIndex = 0; byteIndex < 4; ++byteIndex)
-            {
-                increment = (increment << 8) | static_cast<unsigned char>(payload[byteIndex]);
-            }
-            return increment & 0x7FFFFFFFU;
+            return readBigEndianUint32(payload, 0) & 0x7FFFFFFFU;
         }
 
         /**
@@ -226,16 +243,17 @@ namespace AsynGyanis::Net
          */
         Http2ErrorCode readGoAwayErrorCode(const std::string_view payload)
         {
-            if (payload.size() < 8)
-            {
-                return Http2ErrorCode::NoError;
-            }
-            std::uint32_t errorCode = 0;
-            for (std::size_t byteIndex = 4; byteIndex < 8; ++byteIndex)
-            {
-                errorCode = (errorCode << 8) | static_cast<unsigned char>(payload[byteIndex]);
-            }
-            return static_cast<Http2ErrorCode>(errorCode);
+            return static_cast<Http2ErrorCode>(readBigEndianUint32(payload, 4));
+        }
+
+        /**
+         * @brief 取 RST_STREAM 帧里的错误码
+         * @param payload RST_STREAM 负载（固定 4 字节错误码）
+         * @return Http2ErrorCode 错误码；负载不足 4 字节时返回 NoError
+         */
+        Http2ErrorCode readRstStreamErrorCode(const std::string_view payload)
+        {
+            return static_cast<Http2ErrorCode>(readBigEndianUint32(payload, 0));
         }
 
         /**
@@ -423,6 +441,26 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 取一条流上收到的全部 DATA 帧，按到达顺序
+         * @param frames 已收到的帧
+         * @param streamId 流号
+         * @return std::vector<const TestFrame *> 该流的 DATA 帧指针（指向 frames 内部的元素）
+         * @note 返回的指针在下一次向 frames 追加帧之后可能失效（容器扩容），用例只在当轮读取
+         */
+        std::vector<const TestFrame *> dataFramesOfStream(const std::vector<TestFrame> &frames, const std::uint32_t streamId)
+        {
+            std::vector<const TestFrame *> dataFrames;
+            for (const TestFrame &frame: frames)
+            {
+                if (frame.type == Http2FrameType::Data && frame.streamId == streamId)
+                {
+                    dataFrames.push_back(&frame);
+                }
+            }
+            return dataFrames;
+        }
+
+        /**
          * @brief 判断一条流上是否已经收到带 END_STREAM 的帧（响应到此结束）
          * @param frames 已收到的帧
          * @param streamId 流号
@@ -514,9 +552,11 @@ namespace AsynGyanis::Net
              * @param limits 连接级限额
              * @param sweepInterval 空闲清扫节拍
              * @param parserLimits 解析上限，HTTP/2 路径只用其中的 maximumBodySize
+             * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
              */
             RunningHttp2ServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                      const HttpParserLimits &parserLimits = HttpParserLimits{}) :
+                                      const HttpParserLimits &parserLimits = {},
+                                      const std::function<void(Router &, Core::EventLoop &)> &registerRoutes = {}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0), kTestCertificatePath.string(), kTestKeyPath.string()),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -561,6 +601,12 @@ namespace AsynGyanis::Net
                     });
                     co_return;
                 });
+
+                // 附加路由：与上面几条同批落定，仍然在 start() 之前
+                if (registerRoutes)
+                {
+                    registerRoutes(router, m_loop);
+                }
 
                 m_loopThread.schedule(m_serverTask);
             }
@@ -1635,5 +1681,433 @@ namespace AsynGyanis::Net
                 },
                 kWaitTimeout)) << "被超时收口的 h2 连接没有计入 timeoutClosedCount";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+    }
+
+    /**
+     * @brief 钉住：h2 上的流式响应——startChunkedResponse() + 三次 writeChunk() 发成 HEADERS（不带
+     *        END_STREAM）+ 三个 DATA 帧（末片带 END_STREAM），头部里没有 transfer-encoding /
+     *        connection / content-length；同一条连接上「一段都没写」的空流式响应也能收尾
+     */
+    TEST(Http2Session, StreamsChunkedResponseAsOrderedDataFrames)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                [](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/stream",
+                               [&loop](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.startChunkedResponse(200);
+                        response.setHeader("content-type", "text/event-stream");
+
+                        // 段间空一小会儿：分段是真被发出去的，而不是在内存里攒成一份整块正文
+                        Core::Timer gapTimer(loop);
+                        for (const std::string_view part: {"first-part", "second-part", "third-part"})
+                        {
+                            co_await gapTimer.waitFor(std::chrono::milliseconds(5));
+                            if (!co_await response.writeChunk(part))
+                            {
+                                co_return;
+                            }
+                        }
+                        co_return;
+                    });
+                    // 只声明进入流式模式、一段都不写：收尾由会话补出头部与末片
+                    router.get("/empty-stream", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.startChunkedResponse(200);
+                        co_return;
+                    });
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 第一条：三段正文的流式响应
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/stream"), true), kWaitTimeout))
+                << "流式请求未能写入";
+        // 时序纪律：先等到 END_STREAM 这个信号，再对整条响应做完整比对
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "流式响应没有在时限内收完";
+
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> streamHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(streamHeaders, ":status"), "200") << "流式响应的状态码不是 200";
+        EXPECT_EQ(findHeaderValue(streamHeaders, "content-type"), "text/event-stream") << "业务设的头部没有被保留";
+        EXPECT_EQ(findHeaderValue(streamHeaders, "transfer-encoding"), "")
+                << "HTTP/2 响应里不得出现 transfer-encoding（RFC 9113 §8.2.2 禁止连接特定头）";
+        EXPECT_EQ(findHeaderValue(streamHeaders, "connection"), "") << "HTTP/2 响应里不得出现 connection";
+        EXPECT_EQ(findHeaderValue(streamHeaders, "content-length"), "")
+                << "流式响应的正文长度由 DATA 帧给出，不得写 content-length（RFC 9113 §8.1.2.6）";
+
+        // 三个正文段各占一个 DATA 帧、按序到达，会话收尾再补一个零长 DATA 帧带 END_STREAM（允许零长，§6.1）
+        const std::vector<const TestFrame *> streamDataFrames = dataFramesOfStream(frames, 1U);
+        ASSERT_EQ(streamDataFrames.size(), 4U)
+                << "三段正文加收尾末片应当是 4 个 DATA 帧，实际收到 " << streamDataFrames.size() << " 帧";
+        EXPECT_EQ(streamDataFrames[0]->payload, "first-part") << "第 1 个 DATA 帧的负载不符";
+        EXPECT_EQ(streamDataFrames[1]->payload, "second-part") << "第 2 个 DATA 帧的负载不符";
+        EXPECT_EQ(streamDataFrames[2]->payload, "third-part") << "第 3 个 DATA 帧的负载不符";
+        EXPECT_TRUE(streamDataFrames[3]->payload.empty()) << "末片允许零长（只带 END_STREAM）";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "first-partsecond-partthird-part") << "重组后的正文与三段拼接不一致";
+        EXPECT_EQ((streamDataFrames[0]->flags & kHttp2FlagEndStream), 0U) << "中间段落不得带 END_STREAM";
+        EXPECT_EQ((streamDataFrames[1]->flags & kHttp2FlagEndStream), 0U) << "中间段落不得带 END_STREAM";
+        EXPECT_EQ((streamDataFrames[2]->flags & kHttp2FlagEndStream), 0U) << "正文段不得带 END_STREAM";
+        EXPECT_NE((streamDataFrames[3]->flags & kHttp2FlagEndStream), 0U) << "END_STREAM 必须落在末片 DATA 上";
+
+        // 第二条：同一条连接上的空流式响应（头部与 END_STREAM 一起发出，没有 DATA 帧）
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/empty-stream"), true), kWaitTimeout))
+                << "空流式请求未能写入";
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 3U);
+                                     },
+                                     kWaitTimeout)) << "空流式响应没有在时限内收尾";
+        const std::vector<HpackHeaderField> emptyHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 3U));
+        EXPECT_EQ(findHeaderValue(emptyHeaders, ":status"), "200") << "空流式响应的状态码不是 200";
+        EXPECT_TRUE(dataFramesOfStream(frames, 3U).empty()) << "一段正文都没写的流式响应不该产生 DATA 帧";
+        EXPECT_EQ(responseDataPayload(frames, 3U), "") << "空流式响应没有正文字节";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住「边写边到」：处理器写完第一段后卡在「等客户端读到它」上，客户端因此只能在处理器
+     *        尚未结束时读到第一段与承载它的头部——框架若把正文攒到处理器结束才发，这个等待必然超时
+     */
+    TEST(Http2Session, FirstDataFrameReachesClientBeforeHandlerFinishes)
+    {
+        std::atomic<bool> clientObservedFirstChunk{false};
+        std::atomic<bool> handlerFinished{false};
+
+        RunningHttp2ServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                [&clientObservedFirstChunk, &handlerFinished](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/early",
+                               [&loop, &clientObservedFirstChunk, &handlerFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.startChunkedResponse(200);
+                        response.setHeader("content-type", "text/event-stream");
+                        if (!co_await response.writeChunk("first-part"))
+                        {
+                            handlerFinished.store(true, std::memory_order_release);
+                            co_return;
+                        }
+
+                        // 第一段没被对端读到就不往下写。轮询上限 2 秒（远大于客户端读第一段的期望耗时）
+                        // 保证实现有问题时用例干净失败，而不是把测试线程挂死
+                        Core::Timer waitTimer(loop);
+                        for (int pollRound = 0; pollRound < 2000 && !clientObservedFirstChunk.load(std::memory_order_acquire);
+                             ++pollRound)
+                        {
+                            co_await waitTimer.waitFor(std::chrono::milliseconds(1));
+                        }
+
+                        co_await response.writeChunk("second-part");
+                        handlerFinished.store(true, std::memory_order_release);
+                        co_return;
+                    });
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/early"), true), kWaitTimeout));
+
+        // 渐进性断言只用子串：此刻还没收到末片，不能对整条响应做完整比对
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return responseDataPayload(receivedFrames, 1U).find("first-part") != std::string::npos;
+                                     },
+                                     kWaitTimeout))
+                << "处理器结束之前没能读到第一段（正文被攒到处理器结束才发）";
+        EXPECT_FALSE(handlerFinished.load(std::memory_order_acquire))
+                << "读到第一段时处理器已经结束，无法证明正文是边写边到的";
+        // 第一段到达时，承载它的头部也必须已经到达：HEADERS 必须排在 DATA 之前
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> earlyHeaders =
+                decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(earlyHeaders, ":status"), "200") << "第一段到达时头部还没有解码出 :status";
+        EXPECT_EQ(responseDataPayload(frames, 1U).find("second-part"), std::string::npos)
+                << "读到第一段时不该已经出现第二段";
+
+        // 放行处理器：它接着写第二段，会话再补末片把消息收完整
+        clientObservedFirstChunk.store(true, std::memory_order_release);
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "第二段与末片未在时限内到达";
+        EXPECT_TRUE(handlerFinished.load(std::memory_order_acquire)) << "末片到达时处理器仍未结束";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "first-partsecond-part") << "两段拼起来应当等于完整正文";
+
+        const std::vector<const TestFrame *> dataFrames = dataFramesOfStream(frames, 1U);
+        ASSERT_EQ(dataFrames.size(), 3U) << "两个正文段加一个末片应当正好三个 DATA 帧，实际 " << dataFrames.size() << " 帧";
+        EXPECT_EQ(dataFrames[0]->payload, "first-part");
+        EXPECT_EQ(dataFrames[1]->payload, "second-part");
+        EXPECT_TRUE(dataFrames[2]->payload.empty()) << "末片允许零长（只带 END_STREAM）";
+        EXPECT_NE((dataFrames[2]->flags & kHttp2FlagEndStream), 0U) << "END_STREAM 必须落在末片 DATA 上";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：SseStream 零改动即可在 h2 上工作——两条事件发成两段 DATA 帧，负载是
+     *        `data: ...` 的 SSE 线格式，帧序与事件顺序一致，头部带 text/event-stream 且无分块头
+     */
+    TEST(Http2Session, StreamsSseEventsWithoutSseStreamChanges)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    // 业务侧与 HTTP/1.1 上完全一致：构造 SseStream、逐条 sendEvent
+                    router.get("/events", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        SseStream events(response);
+                        if (!co_await events.sendEvent("first-event"))
+                        {
+                            co_return;
+                        }
+                        co_await events.sendEvent("second-event");
+                        co_return;
+                    });
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/events"), true), kWaitTimeout))
+                << "SSE 请求未能写入";
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "SSE 流没有在时限内收尾";
+
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> sseHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(sseHeaders, ":status"), "200");
+        EXPECT_EQ(findHeaderValue(sseHeaders, "content-type"), "text/event-stream")
+                << "SseStream 设的媒体类型没有被保留";
+        EXPECT_EQ(findHeaderValue(sseHeaders, "transfer-encoding"), "")
+                << "HTTP/2 上 SSE 同样不得带 transfer-encoding（RFC 9113 §8.2.2）";
+
+        // 两段 `data: ...` 按事件顺序发出，且各占一个 DATA 帧（帧负载就是 SSE 文本，不含 h1 分块帧头）
+        const std::vector<const TestFrame *> eventFrames = dataFramesOfStream(frames, 1U);
+        ASSERT_EQ(eventFrames.size(), 3U) << "两条事件加一个末片应当正好三个 DATA 帧，实际 " << eventFrames.size() << " 帧";
+        EXPECT_EQ(eventFrames[0]->payload, "data: first-event\n\n") << "第一条事件的帧负载不符";
+        EXPECT_EQ(eventFrames[1]->payload, "data: second-event\n\n") << "第二条事件的帧负载不符";
+        EXPECT_NE((eventFrames[2]->flags & kHttp2FlagEndStream), 0U) << "END_STREAM 必须落在末片 DATA 上";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "data: first-event\n\ndata: second-event\n\n")
+                << "两段 SSE 事件的顺序或内容不符";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：HTTP/1.1 专属的连接特定响应头一律被剥掉（RFC 9113 §8.2.2），其余头部原样保留——
+     *        业务按 h1 习惯设下的 connection / keep-alive / transfer-encoding / upgrade / proxy-connection
+     *        不会到达客户端
+     */
+    TEST(Http2Session, StripsHttp11ConnectionSpecificHeadersFromResponse)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/h1-headers", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        // 这五条按 h1 习惯都合法（会话甚至会自己补 connection），在 h2 里则一律非法
+                        response.setHeader("connection", "keep-alive");
+                        response.setHeader("keep-alive", "timeout=5");
+                        response.setHeader("transfer-encoding", "chunked");
+                        response.setHeader("upgrade", "h2c");
+                        response.setHeader("proxy-connection", "keep-alive");
+                        // 同一条响应里的普通自定义头：剥离只针对连接特定头，它必须原样到达
+                        response.setHeader("x-kept-header", "kept-value");
+                        response.setBody("stripped");
+                        co_return;
+                    });
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/h1-headers"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "响应没有在时限内收完";
+
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> headers = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(headers, ":status"), "200");
+        for (const std::string &forbiddenHeaderName: {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection"})
+        {
+            EXPECT_EQ(findHeaderValue(headers, forbiddenHeaderName), "")
+                    << "HTTP/2 响应里不得出现连接特定头「" << forbiddenHeaderName << "」（RFC 9113 §8.2.2）";
+        }
+        EXPECT_EQ(findHeaderValue(headers, "x-kept-header"), "kept-value") << "剥离只针对连接特定头，普通自定义头必须保留";
+        EXPECT_EQ(findHeaderValue(headers, "content-length"), std::to_string(std::string_view("stripped").size()))
+                << "非流式响应仍按正文长度补 content-length";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "stripped") << "正文与路由返回值不一致";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：达到 HttpServerLimits::maximumRequestsPerConnection 时 h2 侧用 GOAWAY 收口
+     *        （h2 没有连接级 close 头可用，RFC 9113 §8.2.2），错误码是 NO_ERROR（正常收尾而非故障），
+     *        且第二条请求不会被静默丢弃（要么在通告的流号之内被服务完，要么被 RST_STREAM 明确拒绝）
+     */
+    TEST(Http2Session, SendsGoAwayWhenRequestLimitIsReached)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits = makeLongTimeoutLimits();
+        limits.maximumRequestsPerConnection = 1;
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 连发两条（一次写出，乱序响应在同一连接上）：上限是 1，因此第二条只能落在 GOAWAY 通告之后
+        std::string twoRequests = makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true);
+        twoRequests += makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true);
+        ASSERT_TRUE(client.sendBytes(twoRequests, kWaitTimeout)) << "两条请求未能写入";
+
+        // 时序纪律：先等 GOAWAY 与第一条响应这两个信号到齐，再做断言
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1 && hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "达到单连接请求上限后没有收到 GOAWAY";
+        const TestFrame *const goAwayFrame = findFrame(frames, Http2FrameType::GoAway);
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(goAwayFrame->streamId, 0U) << "GOAWAY 必须是连接级帧（流号 0）";
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::NoError)
+                << "请求上限属正常收尾，GOAWAY 的错误码应当是 NO_ERROR";
+
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> firstHeaders =
+                decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(firstHeaders, ":status"), "200") << "上限内的第一条请求没有被正常服务";
+        EXPECT_EQ(findHeaderValue(firstHeaders, "connection"), "") << "h2 收尾通告只走 GOAWAY，不得出现 connection 头";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "served-hello");
+
+        // 第二条：要么已被受理（在 GOAWAY 通告的流号之内），要么被明确拒绝——不允许既无响应也无拒绝
+        if (!hasEndStream(frames, 3U))
+        {
+            ASSERT_TRUE(client.pumpUntil(frames,
+                                         [](const std::vector<TestFrame> &receivedFrames)
+                                         {
+                                             return findFrame(receivedFrames, Http2FrameType::RstStream) != nullptr;
+                                         },
+                                         kWaitTimeout)) << "第二条请求既没有响应也没有 RST_STREAM：被静默丢弃了";
+            const TestFrame *const resetFrame = findFrame(frames, Http2FrameType::RstStream);
+            ASSERT_NE(resetFrame, nullptr);
+            EXPECT_EQ(resetFrame->streamId, 3U) << "被拒绝的应当是第二条请求的流";
+            EXPECT_EQ(readRstStreamErrorCode(resetFrame->payload), Http2ErrorCode::RefusedStream)
+                    << "GOAWAY 之后的新流应当被回 REFUSED_STREAM（RFC 7540 §6.8）";
+        } else
+        {
+            EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello") << "通告之前的第二条请求没有被服务完";
+        }
+
+        // 收尾通告之后服务端在无在途请求时收口（与 h1 侧「回完当前响应即收口」同一口径）
+        EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "GOAWAY 之后连接没有收口";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
     }
 } // namespace AsynGyanis::Net

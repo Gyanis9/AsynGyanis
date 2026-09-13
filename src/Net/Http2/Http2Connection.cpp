@@ -141,7 +141,7 @@ namespace AsynGyanis::Net
                 case Http2ConnectionState::Open:
                     return "正常收发";
                 case Http2ConnectionState::Closing:
-                    return "对端已 GOAWAY";
+                    return "关闭中（已发或已收 GOAWAY）";
                 case Http2ConnectionState::Failed:
                     return "已失败";
             }
@@ -284,6 +284,42 @@ namespace AsynGyanis::Net
         // 流已终止时只还连接级窗口：对已终止流的流级 WINDOW_UPDATE 会被对端按 §5.1 忽略
         StreamRecord *const stream = findStream(streamId);
         creditStreamReceiveWindow(stream, byteCount);
+        return true;
+    }
+
+    bool Http2Connection::sendGoAway(const std::string_view reason, std::string *const errorText)
+    {
+        clearError(errorText);
+        // 失败态的 GOAWAY 已经带过真正的错误码：再补一条 NO_ERROR 会让对端把故障当正常收尾
+        if (m_state == Http2ConnectionState::Failed)
+        {
+            writeError(errorText, "连接已进入失败态：本端已经按 errorCode() 发过 GOAWAY，收尾通告不再发；请直接收口连接");
+            return false;
+        }
+        // 协商完成前对端还没有解释 GOAWAY 的前提（前奏与 SETTINGS 都没到），此刻发没有意义
+        if (m_state == Http2ConnectionState::AwaitingPreface || m_state == Http2ConnectionState::AwaitingSettings)
+        {
+            writeError(errorText, std::format("连接尚未完成 HTTP/2 协商（当前状态是「{}」）：请等收到对端 SETTINGS 之后再发收尾通告",
+                                              http2ConnectionStateName(m_state)));
+            return false;
+        }
+        // 已经在关闭中：重复通告不会改写已经告知对端的 last-stream-id，只会让对端多收一帧
+        if (m_state == Http2ConnectionState::Closing)
+        {
+            writeError(errorText, "连接已经在关闭中（本端已发过收尾通告，或已收到对端 GOAWAY）："
+                                  "重复调用不会改写已通告的 last-stream-id，请直接收口连接");
+            return false;
+        }
+
+        // 收尾通告带上已处理的最大流号与 NO_ERROR（§6.8）：对端据此知道该号之前的流仍会被处理完，
+        // 之后的新流没有生效，可以放心在新连接上重试
+        Http2GoAwayPayload payload;
+        payload.lastStreamId = m_highestPeerStreamId;
+        payload.errorCode = Http2ErrorCode::NoError;
+        payload.debugData = std::string(reason);
+        appendOutgoing(encodeHttp2GoAwayFrame(payload));
+        // 转 Closing：此后新流一律回 REFUSED_STREAM，既有流照旧收发（与收到对端 GOAWAY 同一状态）
+        m_state = Http2ConnectionState::Closing;
         return true;
     }
 
@@ -640,10 +676,11 @@ namespace AsynGyanis::Net
                                  streamId, m_highestPeerStreamId));
                 return false;
             }
-            // 收到 GOAWAY 之后不再受理新流（§6.8）：明确回 REFUSED_STREAM，让对端知道这条流没有被处理
+            // 连接进入关闭中之后不再受理新流（§6.8）：明确回 REFUSED_STREAM，让对端知道这条流没有被处理
             if (m_state == Http2ConnectionState::Closing)
             {
-                refuseNewStream(streamId, std::format("流 {} 是收到对端 GOAWAY 之后新开的流（RFC 7540 §6.8：GOAWAY 之后不得再开新流）",
+                refuseNewStream(streamId, std::format("流 {} 是连接进入关闭中之后新开的流（本端已发收尾 GOAWAY 或已收到对端 GOAWAY，"
+                                                      "RFC 7540 §6.8：GOAWAY 之后不得再开新流）",
                                                       streamId));
                 return beginHeaderBlock(streamId, HeaderBlockPurpose::Discard, payload.endStream, payload.headerBlockFragment,
                                         payload.endHeaders);

@@ -48,12 +48,13 @@ namespace AsynGyanis::Net
      *       由它在握手完成后按 TlsSocket::selectedAlpnProtocol() 选协议。
      *
      * @note 请求正文按「收齐再路由」处理，与 HTTP/1.1 侧（解析器攒完整条报文才交业务）同口径：
-     *       正文超过 HttpParserLimits::maximumBodySize 时停止缓冲并回 413。流式响应
-     *       （HttpResponse::startChunkedResponse()）是 HTTP/1.1 的机制，本片不支持，业务在 h2 上
-     *       使用它会按业务异常收口（回 500 并记日志）；WebSocket 升级（RFC 8441 的扩展 CONNECT）
-     *       同样不在本片，登记了升级的响应回 501。
-     * @note 本片不强制 HttpServerLimits::maximumRequestsPerConnection：HTTP/2 里正确的收口方式是
-     *       先发 GOAWAY 再等既有流做完（后续片），本片只保证空闲/读写超时与统计口径与 HTTP 侧一致。
+     *       正文超过 HttpParserLimits::maximumBodySize 时停止缓冲并回 413；WebSocket 升级
+     *       （RFC 8441 的扩展 CONNECT）不在本片，登记了升级的响应回 501。
+     * @note 流式响应（HttpResponse::startChunkedResponse()）在 h2 上照常可用：头部（不含
+     *       transfer-encoding 等连接特定头，RFC 9113 §8.2.2）随首段正文上线，此后每段 writeChunk
+     *       各发一个 DATA 帧，会话收尾补末片 DATA（END_STREAM）。SseStream 因此零改动即可工作。
+     * @note HttpServerLimits::maximumRequestsPerConnection 由本类收口：达到上限即发 GOAWAY
+     *       （h2 没有连接级的 close 头可用），既有流继续做完，本侧无在途请求后收口连接。
      *
      * @see Http2Connection, HttpsSession, Core::TlsSocket
      */
@@ -136,6 +137,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<bool> serveOneRequest(PendingRequest &pending);
 
         /**
+         * @brief 记下一条已服务的请求，达到单连接上限时发 GOAWAY 收尾通告
+         * @details 上限取自 HttpServerLimits::maximumRequestsPerConnection（0 表示不限）。h2 没有
+         *          h1 那种连接级 close 头可用（RFC 9113 §8.2.2 禁止），「不再受理请求」只能由
+         *          GOAWAY 表达；通告只在首次触发时发一条，收口由主循环在无在途请求后进行。
+         */
+        void noteServedRequest();
+
+        /**
          * @brief 把连接层交出的请求映射成 HttpRequest
          * @param http2Request 连接层交出的请求（伪头各自成字段）
          * @return HttpRequest 按 HTTP/1.1 语义填好的请求对象
@@ -144,8 +153,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把 HttpResponse 的头列表整理成 HTTP/2 可发的形式
-         * @details 丢掉连接特定头（§8.1.2.2 禁止）、逐条保留可重复头，并按 HttpResponse::appendHead()
-         *          的同一套规则补齐缺省的内容类型、长度与日期。
+         * @details 丢掉连接特定头（RFC 9113 §8.2.2 禁止）、逐条保留可重复头，并按 HttpResponse::appendHead()
+         *          的同一套规则补齐缺省的内容类型、长度与日期。流式响应例外：正文长度由 DATA 帧决定，
+         *          因此既不自动补 content-length，也会丢掉业务后设的那条。
          * @param response 业务填好的响应
          * @return std::vector<HpackHeaderField> 可直接交给 sendResponseHeaders() 的头列表
          */
@@ -160,6 +170,50 @@ namespace AsynGyanis::Net
          * @return false 响应未能排入（用法错误），原因已记日志
          */
         [[nodiscard]] Core::Task<bool> sendResponse(std::uint32_t streamId, const HttpResponse &response, bool isHeadRequest);
+
+        /**
+         * @brief h2 版流式发送回调：把 HttpResponse::writeChunk() 交出的段落发成 HTTP/2 帧
+         *
+         * @details 首个段落是 writeChunk 推上来的 HTTP/1.1 头部文本（HttpResponse 按 h1 语义序列化），
+         *          在 h2 上只当「头部该上线了」的信号：真正发出的头块按响应对象现取，不带 END_STREAM；
+         *          其余段落是 h1 分块帧，剥出负载后作为 DATA 帧发出（不带 END_STREAM）。
+         * @param streamId 本段落所属的流号
+         * @param segment writeChunk 交出的段落字节
+         * @return true 本段已排入待发字节（窗口不足时留在发送队列里，等对端 WINDOW_UPDATE 续发）
+         * @return false 本段未发出、连接不可再用，调用方（业务）应停止继续写
+         * @throws Base::LogicException 分块帧布局与 writeChunk 的文档不符（本段未发出，绝不把帧头当正文）
+         */
+        [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, std::string_view segment);
+
+        /**
+         * @brief 流式响应收尾：给这条流补上 END_STREAM
+         *
+         * @details 头部已随首段上线时补一个零长 DATA 帧带 END_STREAM（RFC 9113 §6.1 允许零长），
+         *          与 h1 侧补 `0\r\n\r\n` 终止块同一个位置；一段正文都没写时头部与 END_STREAM 一起发。
+         *          收尾帧立刻写出，对端因此不必等到下一轮读循环才看到消息结尾。
+         * @param streamId 目标流号
+         * @return true 收尾帧已写出
+         * @return false 收尾帧未能发出（连接已不可用），调用方应停止循环
+         */
+        [[nodiscard]] Core::Task<bool> finishStreamingResponse(std::uint32_t streamId);
+
+        /**
+         * @brief 把响应状态码收口成可上线的取值
+         * @param responseStatus HttpResponse::setStatus() 存下的取值（该接口不校验取值范围）
+         * @param streamId 目标流号，只用于日志
+         * @return std::uint32_t 可交给 sendResponseHeaders() 的状态码：越界时记一条日志后回 500
+         */
+        [[nodiscard]] static std::uint32_t normalizeWireStatusCode(int responseStatus, std::uint32_t streamId);
+
+        /**
+         * @brief 从 HttpResponse::writeChunk() 交出的分块帧里取出正文负载
+         * @details 帧格式由 writeChunk 的文档给出：`<十六进制长度>\r\n<数据>\r\n`（RFC 9112 §7.1）。
+         *          长度前缀是负载长度的唯一权威来源，因此负载里出现 CRLF 也不会被误当边界。
+         * @param chunkFrame 完整分块帧
+         * @return std::string_view 指向 chunkFrame 内部的负载视图
+         * @throws Base::LogicException 帧布局与文档不符（长度行非法或字节数与长度前缀不符）
+         */
+        [[nodiscard]] static std::string_view chunkFramePayload(std::string_view chunkFrame);
 
         /**
          * @brief 把连接层的待发字节全部写到 TLS 通道上
@@ -178,6 +232,8 @@ namespace AsynGyanis::Net
         /// 头块已收齐的请求：按流号（对端流号严格递增，因此遍历顺序就是请求的到达顺序）
         std::map<std::uint32_t, PendingRequest> m_pendingRequests;
         HttpResponse m_response;                      ///< 响应对象按连接复用，每条请求发送前 reset()
+        std::size_t m_servedRequestCount{0};          ///< 本连接已服务的请求条数（单连接上限的判据）
+        bool m_isGoAwaySent{false};                   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
         HttpRequest *m_servingRequest{nullptr};       ///< 正在路由的请求（连接关停时对它转成协作式取消）
         bool m_isConnectionUnusable{false};           ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
     };

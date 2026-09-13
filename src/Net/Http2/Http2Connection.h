@@ -64,7 +64,7 @@ namespace AsynGyanis::Net
         AwaitingPreface,   ///< 还在收 24 字节前奏，此刻不解释任何帧
         AwaitingSettings,  ///< 前奏已收齐、初始 SETTINGS 已发出，等对端自己的 SETTINGS
         Open,              ///< 协商完成：新流、正文、响应都可处理
-        Closing,           ///< 已收到对端 GOAWAY：不再受理新流，既有流继续收发
+        Closing,           ///< 关闭中：本端已发收尾 GOAWAY 或已收到对端 GOAWAY，不再受理新流，既有流继续收发
         Failed             ///< 违反协议或突破本端上限：粘滞错误态，按 errorCode() 收场
     };
 
@@ -240,6 +240,20 @@ namespace AsynGyanis::Net
          *       WINDOW_UPDATE 会被对端按 §5.1 忽略，发了也没有意义
          */
         [[nodiscard]] bool creditReceivedData(std::uint32_t streamId, std::size_t byteCount, std::string *errorText = nullptr);
+
+        /**
+         * @brief 本端发起收尾：发一个 NO_ERROR 的 GOAWAY，通告此后不再受理新流
+         *
+         * @details 通告里带的是本端已处理的最大对端流号（§6.8）：该号之前的流本端照旧做完，之后新开的
+         *          流一律回 RST_STREAM REFUSED_STREAM，对端据此可以放心在新连接上重试。
+         *          本层不因这次通告关闭连接，也不等待既有流——收口时机由调用方决定。
+         * @param reason 中文原因，写进 GOAWAY 的调试数据，供对端排查
+         * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+         * @return true 已把 GOAWAY 排进待发字节，连接转入 Closing
+         * @return false 没有写入任何字节：连接尚未完成协商（还在等前奏或对端 SETTINGS）、已经在关闭中、
+         *         或已进入失败态（连接错误的 GOAWAY 已经发过一次），原因写在 errorText 里
+         */
+        [[nodiscard]] bool sendGoAway(std::string_view reason, std::string *errorText = nullptr);
 
         /**
          * @brief 在某条流上发响应头
