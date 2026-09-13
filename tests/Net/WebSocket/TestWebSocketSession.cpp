@@ -1014,9 +1014,17 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendText(request + maskedClientFrame(0x1, kCompressedHelloPayload, true, true), kWaitTimeout));
 
+        // 101 的长度是确定的：基础报文里插入一行扩展声明。据此算出回帧从哪里开始，
+        // 然后**只等字节到齐、不看时序**——回帧要等服务端收帧、解压、再写回，Windows 上常与 101
+        // 挤在同一个 TCP 段里，Linux 上则分两段到（本用例最初按「读到 101 就该有回帧」断言，Linux 上必红）
+        std::string expectedHandshake = expectedHandshakeResponseText();
+        expectedHandshake.insert(expectedHandshake.size() - 2, std::string(kPerMessageDeflateResponseLine));
+
         std::string accumulated;
-        ASSERT_TRUE(client.waitForText(accumulated, kPerMessageDeflateResponseLine, kWaitTimeout))
-                << "101 里没有回扩展协商结论：" << accumulated;
+        const std::size_t frameOffset = expectedHandshake.size();
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U, kWaitTimeout))
+                << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, frameOffset), expectedHandshake) << "101 与期望逐字节不符";
 
         // 业务必须收到解压后的原文：压缩负载由 Python zlib 独立算出，解错就说明解压链路是坏的
         const auto recordDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
@@ -1029,11 +1037,12 @@ namespace AsynGyanis::Net
         EXPECT_EQ(messages.front().opCode, WebSocketOpCode::Text);
         EXPECT_EQ(messages.front().payload, "hello") << "解压结果不是原文";
 
-        // 回帧：握手之后紧跟一个服务端帧（无掩码）。用例负载很短，长度只可能落在 7 位档
-        const std::size_t frameOffset = accumulated.find("\r\n\r\n") + 4;
-        ASSERT_LT(frameOffset, accumulated.size()) << "没有收到回帧：" << accumulated;
+        // 回帧长度就写在第二个字节里（用例负载很短，必然落在 7 位档）：等到整帧到齐再断言
+        const auto expectedPayloadLength = static_cast<std::size_t>(static_cast<std::uint8_t>(accumulated[frameOffset + 1U]));
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U + expectedPayloadLength, kWaitTimeout))
+                << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
+        ASSERT_EQ(accumulated.size(), frameOffset + 2U + expectedPayloadLength) << "除 101 与一条回帧外不应有别的字节";
         const std::string_view frameBytes(accumulated.data() + frameOffset, accumulated.size() - frameOffset);
-        ASSERT_GE(frameBytes.size(), 2U) << "回帧不完整：" << accumulated;
 
         const auto firstByte = static_cast<std::uint8_t>(frameBytes[0]);
         EXPECT_EQ(firstByte & 0x80U, 0x80U) << "数据帧的 FIN 位必须为 1";
