@@ -35,15 +35,27 @@ namespace AsynGyanis::Base::TestSupport
         {
             static std::atomic<unsigned int> sequenceCounter{0};
 
-            const std::string salt = std::to_string(
-                                             std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
-                                     std::to_string(sequenceCounter.fetch_add(1));
-
-            m_path = std::filesystem::temp_directory_path() /
-                     ("AsynGyanis_Base_" + namePrefix + "_" + salt);
-
+            // 目录名必须**跨进程**唯一：ctest 会把每个用例作为独立进程并行拉起，而 steady_clock 的读数
+            // 是全系统共享的、序号计数器又是每个进程各自从 0 开始，两者相加仍可能撞名（撞名时两个进程
+            // 会共用同一个目录，先结束的那个 remove_all 会把另一个的用例文件删掉）。因此以
+            // create_directories 是否**真的新建了目录**为准，撞了就换个盐重试——不依赖时钟精度
             std::error_code error;
-            std::filesystem::create_directories(m_path, error);
+            while (true)
+            {
+                const std::string salt = std::to_string(
+                                                 std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
+                                         std::to_string(sequenceCounter.fetch_add(1));
+                m_path = std::filesystem::temp_directory_path() / ("AsynGyanis_Base_" + namePrefix + "_" + salt);
+                if (std::filesystem::create_directories(m_path, error))
+                {
+                    break;
+                }
+                if (error)
+                {
+                    // 真出错（权限等）不再重试：保持原语义，让用例自己去失败并暴露环境问题
+                    break;
+                }
+            }
         }
 
         /**
