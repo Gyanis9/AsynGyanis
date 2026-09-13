@@ -10,6 +10,7 @@
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Logger.h"
+#include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/Sinks/LogSink.h"
 #include "Base/Config/ConfigManager.h"
 #include "Base/Exception/Exception.h"
@@ -109,12 +110,6 @@ namespace
 
 int main(int argc, char **argv)
 {
-    // 日志先于一切就绪：--help 的用法说明、参数/配置错误的原因都从这里出去。
-    // 放到后面会让这些早于装配完成的输出落进没有 sink 的根记录器，直接消失
-    auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
-    rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
-    rootLogger.setLevel(Base::LogLevel::Debug);
-
     std::string host     = "localhost";
     uint16_t    port     = 8080;
     unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
@@ -122,6 +117,8 @@ int main(int argc, char **argv)
     bool        useHttps = false;
     bool        useHttp2Cleartext = false;
     bool        exposeMetrics = false;
+    bool        logJson = false; // 日志按 JSON Lines 输出，供采集端解析
+    bool        showUsage = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
     std::string configFile;
@@ -142,6 +139,8 @@ int main(int argc, char **argv)
             useHttp2Cleartext = true;
         else if (arg == "--metrics")
             exposeMetrics = true;
+        else if (arg == "--log-json")
+            logJson = true;
         else if (arg == "--cert" && i + 1 < argc)
             certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
@@ -150,18 +149,38 @@ int main(int argc, char **argv)
             configFile = argv[++i];
         else if (arg == "--help")
         {
-            LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
-            LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
-            LOG_INFO("                  [--max-connections-per-ip N] [--metrics] [--config <文件>]");
-            LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
-            LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
-            LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
-            LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
-            LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
-            LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
-            LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
-            return 0;
+            // 只记下意图、就地不输出：用法说明要走日志器，而日志器取决于 --log-json，此刻还没装配
+            showUsage = true;
+            break;
         }
+    }
+
+    // 日志先于其余装配就绪：用法说明、参数与配置错误的原因都从这里出去。装配得太晚，
+    // 这些早于就绪的输出会落进没有 sink 的根记录器，一条都留不下
+    auto &rootLogger  = Base::LoggerRegistry::instance().getRootLogger();
+    auto  consoleSink = std::make_unique<Base::ConsoleSink>();
+    if (logJson)
+    {
+        // 格式化与落地是两件事：换掉格式化器就能让控制台吐 JSON Lines，Sink 本身不动
+        consoleSink->setFormatter(std::make_unique<Base::JsonFormatter>());
+    }
+    rootLogger.addSink(std::move(consoleSink));
+    rootLogger.setLevel(Base::LogLevel::Debug);
+
+    if (showUsage)
+    {
+        LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
+        LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
+        LOG_INFO("                  [--max-connections-per-ip N] [--metrics] [--config <文件>]");
+        LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
+        LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
+        LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
+        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
+        LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
+        LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
+        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
+        LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
+        return 0;
     }
 
     // 配置优先级：命令行 > 配置文件 > 内置默认值。文件是「这台服务的常态配置」，

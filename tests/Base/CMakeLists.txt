@@ -21,6 +21,7 @@ add_executable(TestBase
         Log/TestLoggerConfigLoader.cpp
 
         Log/Formatters/TestDefaultFormatter.cpp
+        Log/Formatters/TestJsonFormatter.cpp
         Log/Formatters/TestColorFormatter.cpp
 
         Log/Sinks/TestLogSink.cpp
