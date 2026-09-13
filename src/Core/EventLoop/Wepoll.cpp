@@ -241,9 +241,8 @@ int afdCreateHelperHandle(HANDLE iocpHandle,
   IO_STATUS_BLOCK iosb;
   NTSTATUS status;
 
-  /* By opening \Device\Afd without specifying any extended attributes, we'll
-   * get a handle that lets us talk to the AFD driver, but that doesn't have an
-   * associated endpoint (so it's not a socket). */
+  /* 打开 \Device\Afd 时不带任何扩展属性：拿到的句柄只能与 AFD 驱动对话，
+   * 它没有绑定的端点，因此不是一个套接字。 */
   status = NtCreateFile(&afdHelperHandle,
                         SYNCHRONIZE,
                         &afdHelperAttributes,
@@ -276,7 +275,7 @@ int afdPoll(HANDLE afdHelperHandle,
              IO_STATUS_BLOCK* ioStatusBlock) {
   NTSTATUS status;
 
-  /* Blocking operation is not supported. */
+  /* 不支持无限等待：Timeout 为负值一律按非法参数拒绝。 */
   assert(ioStatusBlock != nullptr);
 
   ioStatusBlock->Status = STATUS_PENDING;
@@ -304,16 +303,15 @@ int afdCancelPoll(HANDLE afdHelperHandle,
   NTSTATUS cancelStatus;
   IO_STATUS_BLOCK cancelIoStatusBlock;
 
-  /* If the poll operation has already completed or has been cancelled earlier,
-   * there's nothing left for us to do. */
+  /* 这次轮询若已完成或此前已被撤销，就没有什么要做的了。 */
   if (ioStatusBlock->Status != STATUS_PENDING)
     return 0;
 
   cancelStatus =
       NtCancelIoFileEx(afdHelperHandle, ioStatusBlock, &cancelIoStatusBlock);
 
-  /* NtCancelIoFileEx() may return STATUS_NOT_FOUND if the operation completed
-   * just before calling NtCancelIoFileEx(). This is not an error. */
+  /* 操作恰好在 NtCancelIoFileEx() 之前完成时，它会返回 STATUS_NOT_FOUND，
+   * 这不算错误。 */
   if (cancelStatus == STATUS_SUCCESS || cancelStatus == STATUS_NOT_FOUND)
     return 0;
   else
@@ -444,9 +442,8 @@ private:
 
 #include <stdbool.h>
 
-/* N.b.: the tree functions do not set errno or LastError when they fail. Each
- * of the API functions has at most one failure mode. It is up to the caller to
- * set an appropriate error code when necessary. */
+/* 注意：树函数失败时不设置 errno 与 LastError。每个对外接口最多只有一种失败
+ * 模式，需要时由调用方自己设置恰当的错误码。 */
 
 struct TreeNode;
 
@@ -514,7 +511,7 @@ static HANDLE epollCreate(void) {
 
   treeNode = portStateToHandleTreeNode(portState);
   if (tsTreeAdd(&epollHandleTree, treeNode, reinterpret_cast<uintptr_t>(ephnd)) < 0) {
-    /* This should never happen. */
+    /* 同一句柄不可能已经在表里：真到了这里说明句柄复用或表被破坏。 */
     portDelete(portState);
     RETURN_SET_ERROR(nullptr, ERROR_ALREADY_EXISTS);
   }
@@ -571,8 +568,7 @@ int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event* ev) {
   treeNode = tsTreeFindAndRef(&epollHandleTree, reinterpret_cast<uintptr_t>(ephnd));
   if (treeNode == nullptr) {
     errorSetWindowsError(ERROR_INVALID_PARAMETER);
-    /* On Linux, in the case of epoll_ctl(), EBADF takes priority over other
-     * errors. Wepoll mimics this behavior. */
+    /* Linux 的 epoll_ctl() 里 EBADF 优先于其它错误，这里照此行为实现。 */
     errorCheckHandle(ephnd);
     errorCheckHandle(reinterpret_cast<HANDLE>(sock));
     return -1;
@@ -755,8 +751,8 @@ void errorSetWindowsError(DWORD error) {
 int errorCheckHandle(HANDLE handle) {
   DWORD flags;
 
-  /* GetHandleInformation() succeeds when passed INVALID_HANDLE_VALUE, so check
-   * for this condition explicitly. */
+  /* GetHandleInformation() 对 INVALID_HANDLE_VALUE 也会返回成功，因此要单独
+   * 判掉这种情况。 */
   if (handle == INVALID_HANDLE_VALUE)
     RETURN_SET_ERROR(-1, ERROR_INVALID_HANDLE);
 
@@ -775,7 +771,7 @@ int errorCheckHandle(HANDLE handle) {
 
 #define UNUSED_VAR(v) ((void) (v))
 
-/* Polyfill `inline` for older versions of msvc (up to Visual Studio 2013) */
+/* 为老版本 MSVC（直到 Visual Studio 2013）垫上 `inline` 关键字。 */
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #define inline __inline
 #endif
@@ -793,7 +789,7 @@ static BOOL CALLBACK onceCallback(INIT_ONCE* once,
   UNUSED_VAR(parameter);
   UNUSED_VAR(context);
 
-  /* N.b. that initialization order matters here. */
+  /* 注意：这里的初始化顺序不能颠倒。 */
   if (wsGlobalInit() < 0 || ntGlobalInit() < 0 ||
       epollGlobalInit() < 0)
     return FALSE;
@@ -805,20 +801,16 @@ static BOOL CALLBACK onceCallback(INIT_ONCE* once,
 int ensureInitialized(void) {
   if (!initializationDone &&
       !InitOnceExecuteOnce(&onceControl, onceCallback, nullptr, nullptr))
-    /* `InitOnceExecuteOnce()` itself is infallible, and it doesn't set any
-     * error code when the once-callback returns FALSE. We return -1 here to
-     * indicate that global initialization failed; the failing ensureInitialized function is
-     * resposible for setting `errno` and calling `SetLastError()`. */
+    /* `InitOnceExecuteOnce()` 本身不会失败，回调返回 FALSE 时它也不设置错误码；
+     * 这里返回 -1 表示全局初始化失败，errno 与 SetLastError() 由那个失败的初始化
+     * 函数负责设置。 */
     return -1;
 
   return 0;
 }
 
-/* Set up a workaround for the following problem:
- *   FARPROC addr = GetProcAddress(...);
- *   MY_FUNC func = (MY_FUNC) addr;          <-- GCC 8 warning/error.
- *   MY_FUNC func = (MY_FUNC) (void*) addr;  <-- MSVC  warning/error.
- * To compile cleanly with either compiler, do casts with this "bridge" type:
+/* 绕开一个两难：FARPROC 直接转成函数指针，GCC 8 会报警告甚至报错；先转 void*
+ * 再转，MSVC 又不接受。要让两种编译器都干净编过，就用下面的「桥」类型中转：
  *   MY_FUNC func = (MY_FUNC) (NtFunctionPointerCast) addr; */
 #ifdef __GNUC__
 typedef void* NtFunctionPointerCast;
@@ -965,7 +957,7 @@ void pollGroupRelease(PollGroup* pollGroup) {
 
   queueMoveToEnd(pollGroupQueue, &pollGroup->queueNode);
 
-  /* Poll groups are currently only freed when the epoll port is closed. */
+  /* 轮询组目前只在 epoll 端口关闭时才释放。 */
 }
 
 WEPOLL_INTERNAL SockState* sockNew(PortState* portState,
@@ -1079,7 +1071,7 @@ int portDelete(PortState* portState) {
   TreeNode* treeNode;
   QueueNode* queueNode;
 
-  /* At this point the IOCP port should have been closed. */
+  /* 走到这里时 IOCP 端口应当已经关闭。 */
   assert(portState->iocpHandle == nullptr);
 
   while ((treeNode = treeRoot(&portState->sockTree)) != nullptr) {
@@ -1109,8 +1101,7 @@ int portDelete(PortState* portState) {
 static int portUpdateEvents(PortState* portState) {
   Queue* sockUpdateQueue = &portState->sockUpdateQueue;
 
-  /* Walk the queue, submitting new poll requests for every socket that needs
-   * it. */
+  /* 遍历队列，为每个需要它的套接字下新的轮询请求。 */
   while (!queueIsEmpty(sockUpdateQueue)) {
     QueueNode* queueNode = queueFirst(sockUpdateQueue);
     SockState* sockState = sockStateFromQueueNode(queueNode);
@@ -1118,7 +1109,7 @@ static int portUpdateEvents(PortState* portState) {
     if (sockUpdate(portState, sockState) < 0)
       return -1;
 
-    /* sockUpdate() removes the socket from the update queue. */
+    /* sockUpdate() 会把套接字从更新队列里摘掉。 */
   }
 
   return 0;
@@ -1191,13 +1182,11 @@ int portWait(PortState* portState,
   DWORD completionTimeout;
   int result;
 
-  /* Check whether `maxevents` is in range. */
   if (maxevents <= 0)
     RETURN_SET_ERROR(-1, ERROR_INVALID_PARAMETER);
 
-  /* Decide whether the IOCP completion list can live on the stack, or allocate
-   * memory for it on the heap. The heap allocation is nothrow on purpose: if it
-   * fails, fall back to the stack array instead of failing the whole wait. */
+  /* 决定完成包列表放栈上还是堆上。堆分配故意用 nothrow：失败就退回栈数组，
+   * 而不是让整个 wait 失败。 */
   if (static_cast<std::size_t>(maxevents) > ARRAY_COUNT(stackIocpEvents)) {
     heapIocpEvents.reset(
         new (std::nothrow) OVERLAPPED_ENTRY[static_cast<std::size_t>(maxevents)]);
@@ -1208,8 +1197,8 @@ int portWait(PortState* portState,
       maxevents = static_cast<int>(ARRAY_COUNT(stackIocpEvents));
   }
 
-  /* Compute the timeout for GetQueuedCompletionStatus, and the wait end
-   * time, if the user specified a timeout other than zero or infinite. */
+  /* 用户给出的超时既不是 0 也不是无限时，算出本次 GetQueuedCompletionStatus
+   * 的超时值与等待截止时刻。 */
   if (timeout > 0) {
     due = GetTickCount64() + static_cast<std::uint64_t>(timeout);
     completionTimeout = static_cast<DWORD>(timeout);
@@ -1221,29 +1210,27 @@ int portWait(PortState* portState,
 
   EnterCriticalSection(&portState->lock);
 
-  /* Dequeue completion packets until either at least one interesting event
-   * has been discovered, or the timeout is reached. */
+  /* 反复取出完成包，直到发现至少一个用户关心的事件或超时为止。 */
   for (;;) {
     uint64_t now;
 
     result = portPoll(
         portState, events, iocpEvents, static_cast<DWORD>(maxevents), completionTimeout);
     if (result < 0 || result > 0)
-      break; /* Result, error, or time-out. */
+      break; /* 有结果、出错或超时 */
 
     if (timeout < 0)
-      continue; /* When timeout is negative, never time out. */
+      continue; /* 超时为负表示无限等待，不检查截止时刻 */
 
-    /* Update time. */
     now = GetTickCount64();
 
-    /* Do not allow the due time to be in the past. */
+    /* 截止时刻不允许落在过去。 */
     if (now >= due) {
       SetLastError(WAIT_TIMEOUT);
       break;
     }
 
-    /* Recompute time-out argument for GetQueuedCompletionStatus. */
+    /* 重算传给 GetQueuedCompletionStatus 的剩余超时。 */
     completionTimeout = static_cast<DWORD>(due - now);
   }
 
@@ -1559,16 +1546,13 @@ static int sockDeleteInternal(PortState* portState,
     sockState->deletePending = true;
   }
 
-  /* If the poll request still needs to complete, the sockState object can't
-   * be free()d yet. `sockFeedEvent()` or `portClose()` will take care
-   * of this later. */
+  /* 轮询请求还没回来时，sockState 不能就地 free：交给 sockFeedEvent() 或
+   * portClose() 稍后收尾。 */
   if (force || sockState->pollStatus == SockPollStatus::Idle) {
-    /* Free the sockState now. */
     portRemoveDeletedSocket(portState, sockState);
     pollGroupRelease(sockState->pollGroup);
     sockFree(sockState);
   } else {
-    /* Free the socket later. */
     portAddDeletedSocket(portState, sockState);
   }
 
@@ -1586,9 +1570,8 @@ void sockForceDelete(PortState* portState, SockState* sockState) {
 int sockSetEvent(PortState* portState,
                    SockState* sockState,
                    const struct epoll_event* ev) {
-  /* EPOLLERR and EPOLLHUP are always reported, even when not requested by the
-   * caller. However they are disabled after a event has been reported for a
-   * socket for which the EPOLLONESHOT flag as set. */
+  /* EPOLLERR 与 EPOLLHUP 始终上报，即使用户没有订阅；但带 EPOLLONESHOT 的
+   * 套接字报过一次事件后，这两个也会被停掉。 */
   uint32_t events = ev->events | EPOLLERR | EPOLLHUP;
 
   sockState->userEvents = events;
@@ -1601,8 +1584,8 @@ int sockSetEvent(PortState* portState,
 }
 
 static inline DWORD sockEpollEventsToAfdEvents(uint32_t epollEvents) {
-  /* Always monitor for AFD_POLL_LOCAL_CLOSE, which is triggered when the
-   * socket is closed with closesocket() or CloseHandle(). */
+  /* 始终监听 AFD_POLL_LOCAL_CLOSE：套接字被 closesocket() 或 CloseHandle()
+   * 关掉时触发它。 */
   DWORD afdEvents = AFD_POLL_LOCAL_CLOSE;
 
   if (epollEvents & (EPOLLIN | EPOLLRDNORM))
@@ -1635,7 +1618,7 @@ static inline uint32_t sockAfdEventsToEpollEvents(DWORD afdEvents) {
   if (afdEvents & AFD_POLL_ABORT)
     epollEvents |= EPOLLHUP;
   if (afdEvents & AFD_POLL_CONNECT_FAIL)
-    /* Linux reports all these events after connect() has failed. */
+    /* connect() 失败后，Linux 会把这几个事件一起报上来。 */
     epollEvents |=
         EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDNORM | EPOLLWRNORM | EPOLLRDHUP;
 
@@ -1648,25 +1631,20 @@ int sockUpdate(PortState* portState, SockState* sockState) {
   if ((sockState->pollStatus == SockPollStatus::Pending) &&
       (sockState->userEvents & SOCK__KNOWN_EPOLL_EVENTS &
        ~sockState->pendingEvents) == 0) {
-    /* All the events the user is interested in are already being monitored by
-     * the pending poll operation. It might spuriously complete because of an
-     * event that we're no longer interested in; when that happens we'll submit
-     * a new poll operation with the updated event mask. */
+    /* 用户关心的事件都已由挂起的那次轮询覆盖。它可能因为一个已不再关心的事件
+     * 提前完成，届时会按更新后的掩码重新下发。 */
 
   } else if (sockState->pollStatus == SockPollStatus::Pending) {
-    /* A poll operation is already pending, but it's not monitoring for all the
-     * events that the user is interested in. Therefore, cancel the pending
-     * poll operation; when we receive it's completion package, a new poll
-     * operation will be submitted with the correct event mask. */
+    /* 已有轮询在挂起，但它没覆盖用户关心的全部事件：先撤销这次轮询，等它的
+     * 完成包回来再按正确的掩码重新下发。 */
     if (sockCancelPoll(sockState) < 0)
       return -1;
 
   } else if (sockState->pollStatus == SockPollStatus::Cancelled) {
-    /* The poll operation has already been cancelled, we're still waiting for
-     * it to return. For now, there's nothing that needs to be done. */
+    /* 轮询已被撤销，还在等它返回，此时无需做什么。 */
 
   } else if (sockState->pollStatus == SockPollStatus::Idle) {
-    /* No poll operation is pending; start one. */
+    /* 没有挂起的轮询，发起一次。 */
     sockState->pollInfo.Exclusive = FALSE;
     sockState->pollInfo.NumberOfHandles = 1;
     sockState->pollInfo.Timeout.QuadPart = INT64_MAX;
@@ -1680,23 +1658,23 @@ int sockUpdate(PortState* portState, SockState* sockState) {
                  &sockState->ioStatusBlock) < 0) {
       switch (GetLastError()) {
         case ERROR_IO_PENDING:
-          /* Overlapped poll operation in progress; this is expected. */
+          /* 重叠轮询正在进行，属预期情况。 */
           break;
         case ERROR_INVALID_HANDLE:
-          /* Socket closed; it'll be dropped from the epoll set. */
+          /* 套接字已关闭，会从 epoll 集合里移除。 */
           return sockDeleteInternal(portState, sockState, false);
         default:
-          /* Other errors are propagated to the caller. */
+          /* 其它错误原样交给调用方。 */
           RETURN_MAP_ERROR(-1);
       }
     }
 
-    /* The poll request was successfully submitted. */
+    /* 轮询请求已成功下发。 */
     sockState->pollStatus = SockPollStatus::Pending;
     sockState->pendingEvents = sockState->userEvents;
 
   } else {
-    /* Unreachable. */
+    /* 不可达。 */
     assert(false);
   }
 
@@ -1716,41 +1694,41 @@ int sockFeedEvent(PortState* portState,
   sockState->pendingEvents = 0;
 
   if (sockState->deletePending) {
-    /* Socket has been deleted earlier and can now be freed. */
+    /* 套接字此前已被删除，现在可以释放了。 */
     return sockDeleteInternal(portState, sockState, false);
 
   } else if (ioStatusBlock->Status == STATUS_CANCELLED) {
-    /* The poll request was cancelled by CancelIoEx. */
+    /* 轮询请求被 CancelIoEx 撤销。 */
 
   } else if (!NT_SUCCESS(ioStatusBlock->Status)) {
-    /* The overlapped request itself failed in an unexpected way. */
+    /* 重叠请求本身以意外方式失败。 */
     epollEvents = EPOLLERR;
 
   } else if (pollInfo->NumberOfHandles < 1) {
-    /* This poll operation succeeded but didn't report any socket events. */
+    /* 这次轮询成功返回，但没有报告任何套接字事件。 */
 
   } else if (pollInfo->Handles[0].Events & AFD_POLL_LOCAL_CLOSE) {
-    /* The poll operation reported that the socket was closed. */
+    /* 轮询报告套接字已关闭。 */
     return sockDeleteInternal(portState, sockState, false);
 
   } else {
-    /* Events related to our socket were reported. */
+    /* 上报了与本套接字相关的事件。 */
     epollEvents =
         sockAfdEventsToEpollEvents(pollInfo->Handles[0].Events);
   }
 
-  /* Requeue the socket so a new poll request will be submitted. */
+  /* 重新入队，下一轮会为它下发新的轮询请求。 */
   portRequestSocketUpdate(portState, sockState);
 
-  /* Filter out events that the user didn't ask for. */
+  /* 滤掉用户没有订阅的事件。 */
   epollEvents &= sockState->userEvents;
 
-  /* Return if there are no epoll events to report. */
+  /* 没有可上报的 epoll 事件就直接返回。 */
   if (epollEvents == 0)
     return 0;
 
-  /* If the the socket has the EPOLLONESHOT flag set, unmonitor all events,
-   * even EPOLLERR and EPOLLHUP. But always keep looking for closed sockets. */
+  /* 带 EPOLLONESHOT 的套接字要把所有事件都停掉监听，EPOLLERR 与 EPOLLHUP
+   * 也不例外；但「套接字已关闭」始终继续监听。 */
   if (sockState->userEvents & EPOLLONESHOT)
     sockState->userEvents = 0;
 
@@ -1924,14 +1902,10 @@ SOCKET wsGetBaseSocket(SOCKET socket) {
     if (error == WSAENOTSOCK)
       RETURN_SET_ERROR(INVALID_SOCKET, error);
 
-    /* Even though Microsoft documentation clearly states that LSPs should
-     * never intercept the `SIO_BASE_HANDLE` ioctl [1], Komodia based LSPs do
-     * so anyway, breaking it, with the apparent intention of preventing LSP
-     * bypass [2]. Fortunately they don't handle `SIO_BSP_HANDLE_POLL`, which
-     * we can use to obtain the socket associated with the next protocol chain
-     * entry. If this succeeds, loop around and call `SIO_BASE_HANDLE` again
-     * with the retrieved BSP socket to be sure that we actually got all the
-     * way to the base.
+    /* 微软文档明确要求 LSP 不得拦截 `SIO_BASE_HANDLE` ioctl [1]，但基于
+     * Komodia 的 LSP 照拦不误并把它弄坏，目的显然是防止绕过 LSP [2]。所幸它们
+     * 没处理 `SIO_BSP_HANDLE_POLL`，我们借此拿到协议链下一层对应的套接字；拿到就
+     * 回到循环再问一次 `SIO_BASE_HANDLE`，直到确认已经走到最底层。
      *  [1] https://docs.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls
      *  [2] https://www.komodia.com/newwiki/index.php?title=Komodia%27s_Redirector_bug_fixes#Version_2.2.2.6
      */
