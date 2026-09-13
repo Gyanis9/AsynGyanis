@@ -4,6 +4,10 @@
 # 覆盖（GCC 的 ASan 额外检出 use-after-scope 与泄漏，MSVC 的 ASan 不支持这两类检测）。
 # 注意：本文件尚未在真实的 GitHub runner 上执行过（开发机没有 runner），其中的命令与
 # 本地验证时使用的完全一致（cmake --preset debug / --build / ctest）。
+# 本地已核对（2026-09-13）：两个工作流的 YAML 可解析；本文件引用的 debug 预设、conan_provider.cmake、
+# ASYN_SKIP_MYSQL_DEPS 与 -DDATABASE_WITH_MYSQL=OFF 都真实存在；configure → build → ctest 这条
+# 序列已在全新构建目录里从零跑通（2139 例全绿、零告警）。剩下只有「真机 runner 环境差异」这一项
+# 本地无法覆盖，需要一次 push 或手动 workflow_dispatch 才能验证。
 
 name: Windows CI
 
