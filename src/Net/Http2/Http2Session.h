@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
      *
      * @details 两种构造方式决定传输与进入协议循环的方式：
      *          - **TLS（ALPN 分流）**：start() 先做 TLS 握手，再按 ALPN 协商结果选协议；协商出 h2 就跑
-     *            本类的 HTTP/2 循环，否则把连接原样交回 HTTP/1.1 事务循环（与 HttpsSession 同一份实现）。
+     *            本类的 HTTP/2 循环，否则把连接原样交回 HTTP/1.1 事务循环（与明文侧同一份实现）。
      *          - **明文（h2c，先验知识）**：连接按 RFC 9113 §3.4 的前奏直接进入 HTTP/2 循环，不做探测、
      *            不提供 HTTP/1.1 回退——端口上的协议由部署决定（见 HttpServer::setHttp2CleartextEnabled()）。
      *          HTTP/2 循环的驱动顺序是「读字节 → feedBytes() → 立刻写出（SETTINGS/ACK/WINDOW_UPDATE/
@@ -80,7 +80,7 @@ namespace AsynGyanis::Net
     public:
         /**
          * @brief 构造 TLS 上的 HTTP/2 会话（ALPN 分流用）。
-         * @param loop 事件循环，仅用于给基类造一条不持有描述符的占位套接字（与 HttpsSession 同）
+         * @param loop 事件循环，仅用于给基类造一条不持有描述符的占位套接字
          * @param tlsSocket 已创建但尚未握手的 TlsSocket，所有权转移给本会话
          * @param router 全局路由器，用于分发请求；生命周期必须不短于本会话
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
@@ -423,7 +423,7 @@ namespace AsynGyanis::Net
         std::optional<Core::TlsSocket> m_tlsSocket;
 
         /// HTTP/1.1 回退路径（TLS 上 ALPN 未协商出 h2 时）的解析器与接收窗口。
-        /// 基类的同名成员是私有的，且与 HttpsSession 同一做法：回退路径各持一份，两条路径不共用状态
+        /// 基类的同名成员是私有的，因此回退路径各持一份，两条路径不共用状态
         HttpParser m_parser;
         std::vector<char> m_receiveBuffer;
 

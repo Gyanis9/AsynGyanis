@@ -1,6 +1,6 @@
 /**
  * @file HttpsServer.h
- * @brief HTTPS 服务器：持有 TlsContext，为每条连接派生 TLS 包装的 HttpsSession
+ * @brief HTTPS 服务器：持有 TlsContext，为每条连接派生 TLS 包装的 Http2Session
  * @author Gyanis
  * @date 2026-09-13
  * @version 1.0.0
@@ -30,13 +30,13 @@ namespace AsynGyanis::Net
      *
      * @details 与 HttpServer 的分工一致：接受循环与连接生命周期由 TcpServer 负责，
      *          本类额外持有一个 TLS 上下文，并在 createConnection() 里为每条新连接
-     *          申请一个 SSL 对象、包成 Core::TlsSocket，再交给 HttpsSession。
+     *          申请一个 SSL 对象、包成 Core::TlsSocket，再交给 Http2Session。
      *
      * @note 证书在构造时就加载完毕：加载失败直接抛异常，不会留下一个「看似在监听、
      *       每条连接都握手失败」的服务器。
      * @warning 一个 SSL_CTX 被本服务器的所有连接共享，OpenSSL 保证 SSL 对象可并发使用；
      *          会话本身仍全部跑在同一个事件循环线程上。
-     * @see HttpsSession, Core::TlsContext, HttpServer
+     * @see Http2Session, Core::TlsContext, HttpServer
      */
     class HttpsServer : public TcpServer
     {
@@ -69,7 +69,7 @@ namespace AsynGyanis::Net
          *
          * @details ALPN 分流：ALPN 协商结果产生于握手过程，本函数在握手之前被调用，因此这里不按
          *          「读到的 ALPN」选类（那必然读到空串），统一创建 Http2Session —— 它继承
-         *          HttpsSession 的全部传输层与 HTTP/1.1 路径，在握手完成后按协商结果选协议：
+         *          除 HTTP/2 循环外还承载 TLS 传输与 HTTP/1.1 路径，在握手完成后按协商结果选协议：
          *          h2 走 HTTP/2 循环，其余交回 HTTP/1.1 循环。明文 h2c（前奏直发）不在本片。
          *
          * @param socket 已 accept 且已设为非阻塞的套接字，所有权就此转移

@@ -2,7 +2,6 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
-#include "Net/Http/HttpsSession.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http2/Http2Session.h"
 
@@ -56,8 +55,8 @@ namespace AsynGyanis::Net
         //
         // ALPN 分流：ALPN 协商结果产生于握手过程，而本函数在握手之前被同步调用，此刻读到的必然
         // 是空串（见 TlsSocket::selectedAlpnProtocol()）。因此这里统一创建 Http2Session —— 它继承
-        // HttpsSession 的全部传输层与 HTTP/1.1 路径，由它在握手完成后按协商结果选协议：
-        // 协商出 h2 就跑 HTTP/2 循环，否则（http/1.1 或客户端没提 ALPN）原样交回 HttpsSession。
+        // TLS 传输与 HTTP/1.1 路径都由它承载，由它在握手完成后按协商结果选协议：
+        // 协商出 h2 就跑 HTTP/2 循环，否则（http/1.1 或客户端没提 ALPN）走同一份 HTTP/1.1 事务循环。
         // 明文 h2c（前奏直发、无 ALPN）不在本片：那条路径上没有任何 ALPN 可读，连接按 HTTP/1.1 处理
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
         return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,

@@ -29,8 +29,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/HttpServer.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpsServer.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpsServer.cpp
-        ${CMAKE_CURRENT_LIST_DIR}/HttpsSession.h
-        ${CMAKE_CURRENT_LIST_DIR}/HttpsSession.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Router.h
         ${CMAKE_CURRENT_LIST_DIR}/Router.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Middleware.h

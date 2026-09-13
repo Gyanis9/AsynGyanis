@@ -122,9 +122,9 @@ namespace AsynGyanis::Net
                                HttpParserLimits parserLimits,
                                std::shared_ptr<HttpMemoryBudget> memoryBudget) :
         // TLS 模式下基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
-        // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。与 HttpsSession 的做法一致
+        // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）
         HttpSession(Core::AsyncSocket(loop, kInvalidSocketDescriptor), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
-        // 回退路径的解析器按调用方给的解析上限构造（与 HttpsSession 同一口径），否则回退到 HTTP/1.1 时
+        // 回退路径的解析器按调用方给的解析上限构造，否则回退到 HTTP/1.1 时
         // 头部/正文上限会退回默认值，该回的 431/413 就不出现了
         m_parser(parserLimits),
         m_router(router),
@@ -160,7 +160,7 @@ namespace AsynGyanis::Net
     Core::Task<> Http2Session::start()
     {
         /**
-         * @brief 退出时无条件收口的守卫：与 HttpsSession 的同一做法，覆盖协程内抛异常的路径
+         * @brief 退出时无条件收口的守卫：覆盖协程内抛异常的路径
          */
         struct TransportCloser
         {
@@ -197,7 +197,7 @@ namespace AsynGyanis::Net
         }
 
         // ALPN 分流点：结果产生于握手过程，因此只有这里读到的那一个值是可信的。
-        // 非 h2（http/1.1 或客户端没提 ALPN）按 HTTP/1.1 事务循环继续，与 HttpsSession 逐字一致
+        // 非 h2（http/1.1 或客户端没提 ALPN）按 HTTP/1.1 事务循环继续，与明文侧共用同一份实现
         const std::string selectedProtocol = m_tlsSocket->selectedAlpnProtocol();
         if (selectedProtocol != kHttp2AlpnProtocolName)
         {
@@ -243,7 +243,7 @@ namespace AsynGyanis::Net
 
     std::string Http2Session::remoteAddress() const
     {
-        // TLS 模式下基类那条套接字不持有描述符，地址只能向真实通道要（与 HttpsSession 同一理由）
+        // TLS 模式下基类那条套接字不持有描述符，地址只能向真实通道要
         return m_tlsSocket.has_value() ? m_tlsSocket->remoteAddress().toString() : HttpSession::remoteAddress();
     }
 
