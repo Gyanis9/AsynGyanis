@@ -310,14 +310,23 @@ def runChurnLoad(host: str, port: int, threadCount: int, connectionCount: int):
 
 
 def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: float) -> int:
-    """空闲连接驻留：开一批连接不发数据，验证服务器的空闲超时与句柄回落。"""
+    """空闲连接驻留：开一批连接不发数据，验证服务器的空闲超时与句柄回落。
+
+    本阶段是「服务端还在不在接受连接」的判据：连接被拒、探针拿不到 200，都算失败项返回，
+    而不是抛出异常把整轮压测崩在 traceback 上——那种失败恰恰是最需要被记成故障的现象。
+    """
     print(f"== 阶段四：空闲连接驻留（{connectionCount} 条，静置 {holdSeconds:.0f}s）==")
+    failures = 0
     connections = []
-    try:
-        for _ in range(connectionCount):
+    for _ in range(connectionCount):
+        try:
             connections.append(socket.create_connection((host, port), timeout=5))
-    except OSError as exception:
-        print(f"  建立第 {len(connections) + 1} 条连接失败：{type(exception).__name__}: {exception}")
+        except OSError as exception:
+            # 在监听却接不住连接（backlog 灌满时 Windows 直接回 WSAECONNREFUSED）说明服务端已经卡住，
+            # 继续灌更多连接只会掩盖现场：记一笔失败就停手，让上面那行报出断在第几条
+            failures += 1
+            print(f"  建立第 {len(connections) + 1} 条连接失败：{type(exception).__name__}: {exception}")
+            break
     print(f"  已建立 {len(connections)} 条空闲连接，静置中")
 
     time.sleep(holdSeconds)
@@ -332,12 +341,23 @@ def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: 
         connection.close()
     print(f"  静置后被服务端收口 {closedByServer} 条（服务器配了空闲超时才会 > 0）")
 
-    # 空闲期间仍应能正常服务新请求
-    probe = socket.create_connection((host, port), timeout=5)
-    body, _ = requestOnce(probe, b"", b"/bench", host=host)
-    probe.close()
-    print(f"  空闲期间的并发请求：{'正常' if body else '异常'}")
-    return 0 if body else 1
+    # 空闲期间仍应能正常服务新请求：探针失败与空正文同样是「服务端卡住」的判据
+    try:
+        probe = socket.create_connection((host, port), timeout=5)
+        try:
+            body, _ = requestOnce(probe, b"", b"/bench", host=host)
+        finally:
+            probe.close()
+    except (OSError, ConnectionError, ValueError) as exception:
+        print(f"  空闲期间的并发请求失败：{type(exception).__name__}: {exception}")
+        body = b""
+
+    if body:
+        print("  空闲期间的并发请求：正常")
+    else:
+        failures += 1
+        print("  空闲期间的并发请求：异常（服务端在监听但没能完成这条请求）")
+    return failures
 
 
 def main() -> int:
