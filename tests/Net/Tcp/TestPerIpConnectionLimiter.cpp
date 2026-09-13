@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <barrier>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -137,13 +138,18 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 多线程并发取名额：任一时刻的占用数不得越过上限，收尾后必须回到 0
+     * @brief 多线程并发抢名额：同一时刻的在用数不得越过上限，且每轮的争夺都真实重叠
+     *
+     * @details 重叠必须由**构造**保证，不能靠调度运气：早先的写法是「取到就立刻还」，在 4 核 runner
+     *          （还叠加 ASan 与 ctest 并行）上各线程可能完全串行跑，于是「必然有人被拒」这条断言
+     *          变成掷骰子，Linux CI 上红过一次。现在每轮所有线程都在栅栏处等到齐了才归还，
+     *          8 个线程抢 4 个名额因此必然同时在场：每轮恰好 4 个被拒、峰值恰好触到上限。
      */
     TEST(PerIpConnectionLimiter, ConcurrentAcquireNeverExceedsLimit)
     {
         constexpr std::size_t kLimit = 4;
         constexpr int kThreadCount = 8;
-        constexpr int kRoundsPerThread = 400;
+        constexpr int kRoundsPerThread = 50;
 
         PerIpConnectionLimiter limiter(kLimit);
 
@@ -151,27 +157,40 @@ namespace AsynGyanis::Net
         std::atomic<std::size_t> peakHeld{0};
         std::atomic<int> rejectedCount{0};
 
-        const auto worker = [&limiter, &currentlyHeld, &peakHeld, &rejectedCount]
+        // 每轮两道栅栏：第一道保证「抢到的人一直握着、所有人都已尝试过」，
+        // 第二道保证「上一轮全部归还完，下一轮才开抢」——两道合起来，每轮都是干净的 8 抢 4
+        std::barrier roundGate(kThreadCount);
+
+        const auto worker = [&limiter, &currentlyHeld, &peakHeld, &rejectedCount, &roundGate]
         {
             for (int round = 0; round < kRoundsPerThread; ++round)
             {
                 std::optional<PerIpConnectionLimiter::Lease> lease = limiter.tryAcquire(kFirstSource);
-                if (!lease.has_value())
+                if (lease.has_value())
+                {
+                    // 占用数在「取到之后、归还之前」这段窗口里递增：峰值就是上限不变式的观测点
+                    const std::size_t heldNow = currentlyHeld.fetch_add(1, std::memory_order_acq_rel) + 1;
+                    std::size_t observedPeak = peakHeld.load(std::memory_order_relaxed);
+                    while (observedPeak < heldNow && !peakHeld.compare_exchange_weak(observedPeak, heldNow, std::memory_order_relaxed))
+                    {
+                        // compare_exchange 失败时 observedPeak 已被刷新，循环继续比较即可
+                    }
+                } else
                 {
                     rejectedCount.fetch_add(1, std::memory_order_relaxed);
-                    continue;
                 }
 
-                // 占用数在「取到之后、归还之前」这段窗口里递增：峰值就是上限不变式的观测点
-                const std::size_t heldNow = currentlyHeld.fetch_add(1, std::memory_order_acq_rel) + 1;
-                std::size_t observedPeak = peakHeld.load(std::memory_order_relaxed);
-                while (observedPeak < heldNow && !peakHeld.compare_exchange_weak(observedPeak, heldNow, std::memory_order_relaxed))
+                // 第一道栅栏：本轮所有人尝试完之前不归还，重叠由构造保证
+                roundGate.arrive_and_wait();
+
+                if (lease.has_value())
                 {
-                    // compare_exchange 失败时 observedPeak 已被刷新，循环继续比较即可
+                    currentlyHeld.fetch_sub(1, std::memory_order_acq_rel);
+                    lease.reset();
                 }
 
-                currentlyHeld.fetch_sub(1, std::memory_order_acq_rel);
-                lease.reset();
+                // 第二道栅栏：等所有人归还干净，免得下一轮有人抢到刚归还的名额、把「每轮恰好 4 个被拒」打散
+                roundGate.arrive_and_wait();
             }
         };
 
@@ -187,9 +206,10 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_LE(peakHeld.load(), kLimit) << "同时占用的名额数越过了上限：计数表在并发下被破坏";
+        EXPECT_EQ(peakHeld.load(), kLimit) << "8 个线程同时在场抢 4 个名额，峰值必然触到上限（没触到说明重叠没构造出来）";
         EXPECT_EQ(limiter.activeCountFor(kFirstSource), 0u) << "所有凭据析构后计数必须归零";
-        // 上限只有 4、线程有 8，必然有被拒的——否则说明 tryAcquire 从不拒绝，上面的断言就失去意义
-        EXPECT_GT(rejectedCount.load(), 0);
+        EXPECT_EQ(rejectedCount.load(), (kThreadCount - static_cast<int>(kLimit)) * kRoundsPerThread)
+                << "每轮 8 抢 4，必然恰好 4 个线程被拒";
     }
 
 } // namespace AsynGyanis::Net
