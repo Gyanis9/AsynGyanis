@@ -350,6 +350,19 @@ namespace AsynGyanis::Net
                     (static_cast<std::uint8_t>(payload[6]) << 8) | static_cast<std::uint8_t>(payload[7]));
             return static_cast<Http2ErrorCode>(rawValue);
         }
+
+        /// GOAWAY 帧里带的最后流号：负载前 4 字节，最高位保留（RFC 9113 §6.8）
+        std::uint32_t readGoAwayLastStreamId(const std::string &payload)
+        {
+            if (payload.size() < 4U)
+            {
+                return 0U;
+            }
+            const auto rawValue = static_cast<std::uint32_t>(
+                    (static_cast<std::uint8_t>(payload[0]) << 24) | (static_cast<std::uint8_t>(payload[1]) << 16) |
+                    (static_cast<std::uint8_t>(payload[2]) << 8) | static_cast<std::uint8_t>(payload[3]));
+            return rawValue & 0x7fffffffU;
+        }
     } // namespace
 
     /**
@@ -561,6 +574,77 @@ namespace AsynGyanis::Net
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：优雅关停时 h2 对端收到的是收尾 GOAWAY（NO_ERROR + 已处理的最后流号），
+     *        而不是一个裸的 TCP 关闭——对端据此知道哪些请求已经生效、新流没有生效
+     * @details 服务器在「关停没有在途工作的连接」那一步先给协议层一次写字节的机会
+     *          （`Core::Connection::onGracefulShutdownRequested()`），HTTP/2 会话借此发出 GOAWAY。
+     *          本端已经服务过流 1，因此 last-stream-id 应当是 1。
+     */
+    TEST(Http2CleartextSession, SendsGoAwayBeforeGracefulShutdown)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 先服务一条完整请求：关停通告里的 last-stream-id 才有可断言的取值（应当是 1）
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "请求没有在时限内被服务";
+
+        // 关停：连接此时没有在途工作，属于「优雅收口」那一路
+        ASSERT_TRUE(fixture.drainServer(std::chrono::milliseconds{1000}, kWaitTimeout)) << "drain 没有在时限内完成";
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.type == Http2FrameType::GoAway)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "关停时没有收到收尾 GOAWAY";
+
+        const Http2Frame *goAwayFrame = nullptr;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.type == Http2FrameType::GoAway)
+            {
+                goAwayFrame = &frame;
+                break;
+            }
+        }
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::NoError) << "优雅关停的收尾通告带 NO_ERROR";
+        EXPECT_EQ(readGoAwayLastStreamId(goAwayFrame->payload), 1U) << "已处理的最后流号是 1：对端据此知道它不必重试这条请求";
+        EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
         EXPECT_FALSE(fixture.startThrew());
     }
 } // namespace AsynGyanis::Net

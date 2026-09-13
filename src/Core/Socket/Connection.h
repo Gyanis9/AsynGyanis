@@ -177,6 +177,21 @@ namespace AsynGyanis::Core
         {
         }
 
+        /**
+         * @brief 服务器要优雅收口本连接时的钩子（在 close() **之前**调用）
+         *
+         * @details 服务器决定结束这条连接时（优雅关闭里那些没有在途工作的连接）先调用它，默认空实现。
+         *          与 onIdleTimeoutClosed() 的关键差别是**调用时机**：本钩子在通道仍然可用时调用，
+         *          实现因此能借最后一次机会把收口原因告诉对端——例如 HTTP/2 发一个收尾 GOAWAY，
+         *          对端据此知道哪些请求已经生效、新流没有生效，不必盲目重试；而
+         *          onIdleTimeoutClosed() 在 close() 之后调用，那时一个字节也写不出去。
+         * @note 由服务器在所属事件循环线程上调用，必须无异常（异常会穿透收尾路径被记成「关闭连接失败」）；
+         *       实现里的写出只能是**尽力而为**：这条路径不为等可写而挂起，写不出去就放弃
+         */
+        virtual void onGracefulShutdownRequested()
+        {
+        }
+
     private:
         AsyncSocket       m_socket;      ///< 底层异步socket
         Cancelable        m_cancelable;  ///< 取消支持（stop_token）

@@ -277,7 +277,9 @@ namespace AsynGyanis::Net
                         continue;
                     }
 
-                    // 与 shutdown() 同一顺序：先请求停止再关描述符，会话先看到取消信号
+                    // 先给协议层最后一次「告诉对端」的机会（HTTP/2 在这里发收尾 GOAWAY），
+                    // 再按 shutdown() 的同一顺序请求停止、关描述符——顺序反了就写不出任何字节
+                    connection->onGracefulShutdownRequested();
                     [[maybe_unused]] auto _ = connection->cancelable().requestStop();
                     connection->close();
                 }

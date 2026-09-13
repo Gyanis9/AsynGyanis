@@ -154,6 +154,22 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string localAddress() const override;
 
+        /**
+         * @brief 服务器要优雅收口本连接时，发一条收尾 GOAWAY 告诉对端「不再受理新流」
+         *
+         * @details 重写 Core::Connection::onGracefulShutdownRequested()：服务器（TcpServer::drain()）
+         *          决定结束没有在途工作的连接时、在 close() 之前调用本函数，此刻通道还可用——这是
+         *          那个时点唯一能写字节的机会。对端因此拿到的是一条带 last-stream-id 的收尾通告，
+         *          而不是一个裸的 TCP 关闭：它据此知道哪些请求已经生效、新流没有生效，不必盲目重试
+         *          （RFC 9113 §6.8；本实现直接发**最终**形态的 GOAWAY，不走「先发 2^31-1 再发最终值」
+         *          的两段式——本连接随后就关，没有中间状态要给对端留缓冲）。
+         *
+         * @note 已经发过收尾通告（达到单连接请求上限）或连接已失败/未完成协商时什么都不做：
+         *       sendGoAway() 会拒绝，理由已由它的错误出参给出
+         * @note 写出是尽力而为：这条路径不等待可写，写不出去只记一条告警，连接照常关闭
+         */
+        void onGracefulShutdownRequested() override;
+
     private:
         /**
          * @brief 一条请求的服务结论

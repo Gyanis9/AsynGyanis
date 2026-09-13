@@ -239,6 +239,25 @@ namespace AsynGyanis::Net
         return m_tlsSocket.has_value() ? m_tlsSocket->localAddress().toString() : HttpSession::localAddress();
     }
 
+    void Http2Session::onGracefulShutdownRequested()
+    {
+        // 通道已经不可用就不必尝试了：调用方紧接着会 close()，写出去也没人收
+        if (!isTransportOpen())
+        {
+            return;
+        }
+
+        std::string errorText;
+        if (!m_connection.sendGoAway("服务器正在优雅关停：本连接不再受理新流，已通告流号之前的请求照常处理完", &errorText))
+        {
+            // 已经发过收尾通告（达到单连接请求上限）或连接未完成协商/已失败：不是故障，不记日志
+            return;
+        }
+
+        // 尽力送出：描述符还在，这正是「关停路径上唯一还能写字节」的时刻（close() 紧随其后）
+        writeOutgoingBytesBestEffort();
+    }
+
     bool Http2Session::isTransportOpen() const noexcept
     {
         return m_tlsSocket.has_value() ? m_tlsSocket->fileDescriptor() != kInvalidSocketDescriptor
