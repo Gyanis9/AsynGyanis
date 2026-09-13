@@ -1,6 +1,11 @@
 @echo off
-rem 热路径微基准：跑起来后与基准文件逐项比对，超阈值即非零退出。
-rem 用法与口径见微基准源码头部；参数只接受构建类型一个值，默认发布构建。
+rem ============================================================================
+rem Hot-path microbenchmark: run it, then compare against the recorded baseline;
+rem a threshold violation exits non-zero.
+rem See the microbench source header for usage and measurement rules; the only
+rem argument is the build type, release by default.
+rem ----------------------------------------------------------------------------
+rem NOTE: keep this file ASCII-only; see the note in run-soak.bat for the reason.
 rem ============================================================================
 setlocal
 
@@ -10,24 +15,25 @@ if "%ASYN_BENCH_BUILD%"=="" set ASYN_BENCH_BUILD=release
 set REPOSITORY_ROOT=%~dp0..
 set BENCH_PATH=%REPOSITORY_ROOT%\build\%ASYN_BENCH_BUILD%\benchmarks\microbench\microbench.exe
 if not exist "%BENCH_PATH%" (
-    echo 找不到 %BENCH_PATH%，请先构建 %ASYN_BENCH_BUILD% 目标的 microbench。
+    echo Cannot find %BENCH_PATH% - build the microbench target of %ASYN_BENCH_BUILD% first.
     exit /b 1
 )
 
 set RESULT_PATH=%REPOSITORY_ROOT%\build\microbench-%ASYN_BENCH_BUILD%.json
 "%BENCH_PATH%" --json-out "%RESULT_PATH%"
 if errorlevel 1 (
-    echo 微基准自检失败：有用例没有走到成功路径，先看上面的输出。
+    echo Microbenchmark self-check failed: some case did not take its success path.
     exit /b 1
 )
 
 if /i not "%ASYN_BENCH_BUILD%"=="release" (
     echo.
-    echo 非 release 构建，跳过基线比对。
+    echo Non-release build, skipping the baseline comparison.
     exit /b 0
 )
 
-rem 微基准的轮内离散只有几个百分点（用例内已做 5 轮取最快），下限比压测那份严
+rem Within-run spread is only a few percent (each case already takes the best of 5
+rem rounds), so the lower bound is tighter than the soak one
 python "%REPOSITORY_ROOT%\benchmarks\check-baseline.py" ^
     --baseline "%REPOSITORY_ROOT%\benchmarks\microbench-baseline.json" ^
     --minimum-throughput-ratio 0.8 ^
