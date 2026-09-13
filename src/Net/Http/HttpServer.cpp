@@ -866,7 +866,8 @@ namespace AsynGyanis::Net
         // h2c 打开时明文连接进 HTTP/2 会话：它按先验知识直接进 HTTP/2 循环，不做协议嗅探
         if (m_isHttp2CleartextEnabled)
         {
-            return std::make_shared<Http2Session>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
+            return std::make_shared<Http2Session>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
+                                                 m_memoryBudget);
         }
         return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
                                              m_memoryBudget);

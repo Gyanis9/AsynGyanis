@@ -832,6 +832,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：全局在途正文预算用尽时这条流回 503（而非 413），流结束后额度归还
+     * @details 单条报文上限不设，越界只能来自全局预算：这样就把「多流共享一份账」这条口径单独钉住
+     */
+    TEST(Http2CleartextSession, Answers503WhenInflightBodyBudgetIsExhausted)
+    {
+        // 预算只够 16 字节，而下面这条 POST 有 64 字节正文
+        auto budget = std::make_shared<HttpMemoryBudget>(16);
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{},
+                                         [budget](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                             server.setMemoryBudget(budget);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 越预算的 POST：头块与正文都不收尾（正文还会继续变多，本端已判定不再需要）
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false);
+        requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(64U, 'x')}, 1U);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.type == Http2FrameType::Headers && frame.header.streamId == 1U)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "超出全局预算的请求没有收到应答";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "503")
+                << "全局预算用尽应当是 503（本端没余量），不是 413（对端报文越界）";
+
+        // 额度随流的记录一起归还：轮询等一小会儿，因为「客户端读到 503」与「记录被摘掉」之间没有严格顺序
+        const auto quotaDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (budget->reservedByteCount() != 0 && std::chrono::steady_clock::now() < quotaDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "流结束后额度仍未归还";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：一条明文连接上并发两条流各自拿到属于自己的响应——多路复用不因传输是明文而失效
      * @details 两条请求同批写出（对端流号 1 与 3），响应允许乱序到达，但**正文与请求必须一一对应**：
      *          串流（把 A 的正文发给 B）是这类实现最容易犯又最难察觉的错误

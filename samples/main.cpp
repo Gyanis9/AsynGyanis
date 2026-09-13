@@ -182,7 +182,7 @@ int main(int argc, char **argv)
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
         LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
-        LOG_INFO("            超出的请求回 503，仅 HTTP 端可用（HTTPS 端暂未接入该预算）");
+        LOG_INFO("            超出的请求回 503，明文与 HTTPS 两端都生效");
         LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
         LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
         return 0;
@@ -229,14 +229,6 @@ int main(int argc, char **argv)
     if (exposeMetrics)
     {
         configuration.exposeMetrics = true;
-    }
-
-    // --max-inflight-body 当前只接在明文 HTTP 端：HTTPS 侧的会话链（HttpsSession/Http2Session）
-    // 还没有接这份预算，静默忽略等于给人一个「开了但其实没生效」的假象，因此直接拒绝这种组合
-    if (useHttps && maxInflightBodyBytes > 0)
-    {
-        LOG_ERROR("--max-inflight-body 当前只对明文 HTTP 端生效，请去掉 --https 或改用限流/连接数限制");
-        return 1;
     }
 
     // h2c 说的是明文连接；TLS 上的 h2 由 ALPN 协商决定，不需要（也不该）用这个开关
@@ -318,6 +310,7 @@ int main(int argc, char **argv)
             server->setMaxConnections(configuration.maximumConnections);
             server->setLimits(configuration.limits);
             server->setParserLimits(configuration.parserLimits);
+            server->setMemoryBudget(inflightBodyBudget);
             if (rateLimitBucket != nullptr)
             {
                 server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));

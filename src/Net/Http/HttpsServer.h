@@ -12,6 +12,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Tls/TlsContext.h"
 
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
@@ -111,6 +112,14 @@ namespace AsynGyanis::Net
         void setParserLimits(HttpParserLimits limits);
 
         /**
+         * @brief 设置本服务器的在途正文字节预算
+         * @param memoryBudget 预算对象，空指针表示不做该限制；语义与 HttpServer::setMemoryBudget() 一致
+         * @note 同样必须在 start() 之前调用：会话在构造时取走这一份共享指针
+         * @see HttpServer::setMemoryBudget(), HttpMemoryBudget
+         */
+        void setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget);
+
+        /**
          * @brief 查询当前生效的解析器资源上限。
          * @return HttpParserLimits 构造时的默认值，或最后一次 setParserLimits() 设定的值
          */
@@ -149,6 +158,7 @@ namespace AsynGyanis::Net
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
+        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };

@@ -3,6 +3,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
 #include "Net/Http/HttpsSession.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http2/Http2Session.h"
 
 #include <openssl/ssl.h>
@@ -59,7 +60,8 @@ namespace AsynGyanis::Net
         // 协商出 h2 就跑 HTTP/2 循环，否则（http/1.1 或客户端没提 ALPN）原样交回 HttpsSession。
         // 明文 h2c（前奏直发、无 ALPN）不在本片：那条路径上没有任何 ALPN 可读，连接按 HTTP/1.1 处理
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
+        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
+                                              m_memoryBudget);
     }
 
     void HttpsServer::setLimits(HttpServerLimits limits)
@@ -71,6 +73,12 @@ namespace AsynGyanis::Net
     HttpServerLimits HttpsServer::limits() const
     {
         return *m_limits;
+    }
+
+    void HttpsServer::setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget)
+    {
+        // 理由同 HttpServer::setMemoryBudget()：预算跨连接共用一份账，按共享指针存
+        m_memoryBudget = std::move(memoryBudget);
     }
 
     void HttpsServer::setParserLimits(HttpParserLimits limits)

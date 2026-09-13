@@ -119,10 +119,11 @@ namespace AsynGyanis::Net
                                std::shared_ptr<const HttpServerLimits> limits,
                                std::shared_ptr<HttpMetricsCollector> metrics,
                                std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
-                               HttpParserLimits parserLimits) :
+                               HttpParserLimits parserLimits,
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget) :
         // TLS 模式下基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）。与 HttpsSession 的做法一致
-        HttpSession(Core::AsyncSocket(loop, kInvalidSocketDescriptor), router, limits, metrics, requestIdGenerator, parserLimits),
+        HttpSession(Core::AsyncSocket(loop, kInvalidSocketDescriptor), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
         // 回退路径的解析器按调用方给的解析上限构造（与 HttpsSession 同一口径），否则回退到 HTTP/1.1 时
         // 头部/正文上限会退回默认值，该回的 431/413 就不出现了
         m_parser(parserLimits),
@@ -132,7 +133,8 @@ namespace AsynGyanis::Net
         // 而不是移走：两边指向的是同一批对象，不存在两份配置或两个采集端
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
         m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator))
+        m_requestIdGenerator(std::move(requestIdGenerator)),
+        m_memoryBudget(std::move(memoryBudget))
     {
         m_tlsSocket.emplace(std::move(tlsSocket));
     }
@@ -141,15 +143,17 @@ namespace AsynGyanis::Net
                                std::shared_ptr<const HttpServerLimits> limits,
                                std::shared_ptr<HttpMetricsCollector> metrics,
                                std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
-                               HttpParserLimits parserLimits) :
+                               HttpParserLimits parserLimits,
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget) :
         // 明文模式：没有第二条通道，套接字直接交给基类持有，本类不留 TLS 通道（m_tlsSocket 保持空）
-        HttpSession(std::move(socket), router, limits, metrics, requestIdGenerator, parserLimits),
+        HttpSession(std::move(socket), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
         m_parser(parserLimits),
         m_router(router),
         m_parserLimits(parserLimits),
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
         m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator))
+        m_requestIdGenerator(std::move(requestIdGenerator)),
+        m_memoryBudget(std::move(memoryBudget))
     {
     }
 
@@ -410,6 +414,8 @@ namespace AsynGyanis::Net
         for (Http2Request &http2Request: m_connection.takeRequests())
         {
             PendingRequest pending;
+            // 本条流的正文额度从这里开始记：记录被摘掉时由 Reservation 自己归还
+            pending.bodyBudget.reset(m_memoryBudget.get());
             pending.streamId = http2Request.streamId;
             // 头块带 END_STREAM 的请求没有正文，当场就是「收齐」状态
             pending.isRemoteEndStream = !http2Request.hasBody;
@@ -465,7 +471,15 @@ namespace AsynGyanis::Net
                         pending.isBodyTooLarge = true;
                     }
                 }
-                if (!pending.isBodyTooLarge)
+                // 全局在途正文预算：与 HTTP/1.1 侧同一口径，只是记账挂在每条流上。
+                // 同样必须在收的过程中判——等 END_STREAM 再判，内存已经占住了
+                if (!pending.isBodyTooLarge && !pending.isBudgetExceeded && !pending.bodyBudget.growTo(bodyByteCount))
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答",
+                                  receivedData.streamId, m_memoryBudget->reservedByteCount());
+                    pending.isBudgetExceeded = true;
+                }
+                if (!pending.isBodyTooLarge && !pending.isBudgetExceeded)
                 {
                     pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
                 }
@@ -493,7 +507,7 @@ namespace AsynGyanis::Net
         {
             PendingRequest &pending = requestIterator->second;
             // 正文还没收齐的请求继续攒着：它后面的请求可以照常服务（HTTP/2 允许响应乱序）
-            if (!pending.isRemoteEndStream && !pending.isBodyTooLarge)
+            if (!pending.isRemoteEndStream && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
             {
                 ++requestIterator;
                 continue;
@@ -594,6 +608,32 @@ namespace AsynGyanis::Net
                 }
             }
             co_return tooLargeOutcome;
+        }
+
+        if (pending.isBudgetExceeded)
+        {
+            // 全局预算用尽不是对端的错，因此不计入 badRequestCount：只是本端此刻没余量。
+            // 同样请对端中止这条流的正文发送——剩余字节本端一律不要再收
+            HttpResponse overloadedResponse;
+            overloadedResponse.setStatus(503);
+            overloadedResponse.setBody("服务繁忙，请稍后重试");
+            static_cast<void>(overloadedResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(overloadedResponse.setHeader("retry-after", "1"));
+            const Http2ResponseSendStatus overloadedSendStatus = co_await sendResponse(streamId, overloadedResponse, isHeadRequest);
+            const RequestServeOutcome overloadedOutcome = toRequestServeOutcome(overloadedSendStatus);
+            if (overloadedOutcome == RequestServeOutcome::StreamCancelled)
+            {
+                noteStreamCancelled();
+            }
+            if (overloadedOutcome == RequestServeOutcome::Served)
+            {
+                std::string abortErrorText;
+                if (!m_connection.abortStream(streamId, "全局在途正文预算已用尽，响应（503）已发出，本端不再需要剩余正文", &abortErrorText))
+                {
+                    LOG_DEBUG_FMT("Http2Session: 流 {} 因预算用尽收口后未能请求对端中止发送。原因：{}", streamId, abortErrorText);
+                }
+            }
+            co_return overloadedOutcome;
         }
 
         // 与 HTTP/1.1 侧同口径：收齐的请求才计数，耗时从「请求收齐」算到「响应排入待发字节」

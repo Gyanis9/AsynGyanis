@@ -17,6 +17,7 @@
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Connection.h"
@@ -93,7 +94,8 @@ namespace AsynGyanis::Net
                      std::shared_ptr<const HttpServerLimits> limits = nullptr,
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                     HttpParserLimits parserLimits = {});
+                     HttpParserLimits parserLimits = {},
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
 
         /**
          * @brief 构造明文连接上的 HTTP/2 会话（h2c 先验知识）。
@@ -108,7 +110,8 @@ namespace AsynGyanis::Net
                      std::shared_ptr<const HttpServerLimits> limits = nullptr,
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                     HttpParserLimits parserLimits = {});
+                     HttpParserLimits parserLimits = {},
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
 
         /**
          * @brief 启动会话主协程：TLS 会话先握手并按 ALPN 选协议，明文会话直接进 HTTP/2 循环。
@@ -195,8 +198,12 @@ namespace AsynGyanis::Net
             std::uint32_t streamId{0};     ///< 请求所属的流号，回响应时按它定位
             bool isRemoteEndStream{false}; ///< 对端是否已 END_STREAM：正文收齐，可以路由
             bool isBodyTooLarge{false};    ///< 正文超过 maximumBodySize：不再缓冲，回 413
+            bool isBudgetExceeded{false};  ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
             bool isExtendedConnect{false}; ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
             bool isWebSocketTunnel{false}; ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
+
+            /// 本条流占用的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
+            HttpMemoryBudget::Reservation bodyBudget;
         };
 
         /**
@@ -426,6 +433,7 @@ namespace AsynGyanis::Net
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端；空指针表示不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器；空指针表示不落定
+        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务器共享；空指针表示不受该预算约束
 
         /// 头块已收齐的请求：按流号（对端流号严格递增，因此遍历顺序就是请求的到达顺序）
         std::map<std::uint32_t, PendingRequest> m_pendingRequests;

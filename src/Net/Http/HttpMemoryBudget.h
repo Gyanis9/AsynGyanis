@@ -68,6 +68,111 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::size_t maximumTotalBytes() const noexcept;
 
+        /**
+         * @brief 一次占用会话：构造时绑定预算，补预留用 growTo()，析构时自动归还
+         *
+         * @details 正文在内存里的存在期就是额度的计费区间，因此把「持有」与「归还」绑在一个对象上：
+         *          请求结束、连接收口、异常展开都只需要让这个对象析构，不必在每个出口上手工释放。
+         *          HTTP/1.1 上与会话一一对应；HTTP/2 上每条流一个（挂在待服务记录上），
+         *          记录被摘掉即归还，多路复用下的总量自然等于各流之和。
+         * @note 默认构造出一个「未绑定预算」的空会话，一切操作都是空操作；绑定用 reset()
+         */
+        class Reservation
+        {
+        public:
+            /// 构造一个未绑定预算的空会话
+            Reservation() noexcept = default;
+
+            /**
+             * @brief 构造并绑定一份预算
+             * @param budget 共享预算，空指针表示不做限制
+             */
+            explicit Reservation(HttpMemoryBudget *budget) noexcept :
+                m_budget(budget)
+            {
+            }
+
+            /// 析构时归还全部已占额度
+            ~Reservation()
+            {
+                releaseAll();
+            }
+
+            Reservation(const Reservation &) = delete;
+
+            Reservation &operator=(const Reservation &) = delete;
+
+            /**
+             * @brief 移交占用（源对象交出额度，不再负责归还）
+             * @details 待服务记录随容器移动时必须能跟着走：额度属于「哪条流的正文」，
+             *          移动后由新的持有者归还；被移动走的对象变成空会话，析构时无事可做
+             */
+            Reservation(Reservation &&other) noexcept :
+                m_budget(other.m_budget), m_reservedBytes(other.m_reservedBytes)
+            {
+                other.m_budget        = nullptr;
+                other.m_reservedBytes = 0;
+            }
+
+            /// 移交占用：先归还本对象已占的额度，再接管源对象的
+            Reservation &operator=(Reservation &&other) noexcept
+            {
+                if (this != &other)
+                {
+                    releaseAll();
+                    m_budget              = other.m_budget;
+                    m_reservedBytes       = other.m_reservedBytes;
+                    other.m_budget        = nullptr;
+                    other.m_reservedBytes = 0;
+                }
+                return *this;
+            }
+
+            /**
+             * @brief 重新绑定预算（先归还旧账）
+             * @param budget 新的共享预算，空指针表示此后不做限制
+             */
+            void reset(HttpMemoryBudget *budget) noexcept
+            {
+                releaseAll();
+                m_budget = budget;
+            }
+
+            /**
+             * @brief 把已占额度补到指定字节数
+             * @param totalBytes 需要占用的总字节数（已含此前预留的部分）
+             * @return true 已满足（含未绑定预算、无需增加两种情况）
+             * @return false 增量超出全局剩余额度，本次调用未占用任何额度，调用方应当收口
+             */
+            [[nodiscard]] bool growTo(const std::size_t totalBytes) noexcept
+            {
+                if (m_budget == nullptr || totalBytes <= m_reservedBytes)
+                {
+                    return true;
+                }
+                if (!m_budget->tryReserve(totalBytes - m_reservedBytes))
+                {
+                    return false;
+                }
+                m_reservedBytes = totalBytes;
+                return true;
+            }
+
+            /// 归还全部已占额度
+            void releaseAll() noexcept
+            {
+                if (m_budget != nullptr && m_reservedBytes != 0)
+                {
+                    m_budget->release(m_reservedBytes);
+                }
+                m_reservedBytes = 0;
+            }
+
+        private:
+            HttpMemoryBudget *m_budget{nullptr};  ///< 共享预算（非拥有），空指针表示未绑定
+            std::size_t       m_reservedBytes{0}; ///< 当前已占的字节数
+        };
+
     private:
         const std::size_t        m_maximumTotalBytes; ///< 上限字节数，0 表示不限制
         std::atomic<std::size_t> m_reservedBytes{0};  ///< 已预留总量，跨线程原子累加
