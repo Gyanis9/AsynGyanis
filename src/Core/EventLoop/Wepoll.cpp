@@ -41,6 +41,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <new>
 
 #define WEPOLL_INTERNAL static
 #define WEPOLL_INTERNAL_VAR static
@@ -257,19 +258,17 @@ int afd_create_helper_handle(HANDLE iocp_handle,
   if (status != STATUS_SUCCESS)
     return_set_error(-1, RtlNtStatusToDosError(status));
 
-  if (CreateIoCompletionPort(afd_helper_handle, iocp_handle, 0, 0) == NULL)
-    goto error;
-
-  if (!SetFileCompletionNotificationModes(afd_helper_handle,
-                                          FILE_SKIP_SET_EVENT_ON_HANDLE))
-    goto error;
+  /* 句柄已经拿到：这两步任一步失败都要先关掉它再报错。短路求值保证第二步只在第一步
+     成功时才执行，报出来的仍是真正失败那一步的错误码 */
+  if (CreateIoCompletionPort(afd_helper_handle, iocp_handle, 0, 0) == NULL ||
+      !SetFileCompletionNotificationModes(afd_helper_handle,
+                                          FILE_SKIP_SET_EVENT_ON_HANDLE)) {
+    CloseHandle(afd_helper_handle);
+    return_map_error(-1);
+  }
 
   *afd_helper_handle_out = afd_helper_handle;
   return 0;
-
-error:
-  CloseHandle(afd_helper_handle);
-  return_map_error(-1);
 }
 
 int afd_poll(HANDLE afd_helper_handle,
@@ -547,7 +546,10 @@ int epoll_close(HANDLE ephnd) {
   tree_node = ts_tree_del_and_ref(&epoll__handle_tree, (uintptr_t) ephnd);
   if (tree_node == NULL) {
     err_set_win_error(ERROR_INVALID_PARAMETER);
-    goto err;
+
+    /* 与其它入口同一口径：句柄自身的错误优先于「表里找不到」 */
+    err_check_handle(ephnd);
+    return -1;
   }
 
   port_state = port_state_from_handle_tree_node(tree_node);
@@ -556,10 +558,6 @@ int epoll_close(HANDLE ephnd) {
   ts_tree_node_unref_and_destroy(tree_node);
 
   return port_delete(port_state);
-
-err:
-  err_check_handle(ephnd);
-  return -1;
 }
 
 int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event* ev) {
@@ -573,7 +571,11 @@ int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event* ev) {
   tree_node = ts_tree_find_and_ref(&epoll__handle_tree, (uintptr_t) ephnd);
   if (tree_node == NULL) {
     err_set_win_error(ERROR_INVALID_PARAMETER);
-    goto err;
+    /* On Linux, in the case of epoll_ctl(), EBADF takes priority over other
+     * errors. Wepoll mimics this behavior. */
+    err_check_handle(ephnd);
+    err_check_handle((HANDLE) sock);
+    return -1;
   }
 
   port_state = port_state_from_handle_tree_node(tree_node);
@@ -581,17 +583,14 @@ int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event* ev) {
 
   ts_tree_node_unref(tree_node);
 
-  if (r < 0)
-    goto err;
+  if (r < 0) {
+    /* 与上面同一口径：两行重复换来一个没有跳转的单一出口 */
+    err_check_handle(ephnd);
+    err_check_handle((HANDLE) sock);
+    return -1;
+  }
 
   return 0;
-
-err:
-  /* On Linux, in the case of epoll_ctl(), EBADF takes priority over other
-   * errors. Wepoll mimics this behavior. */
-  err_check_handle(ephnd);
-  err_check_handle((HANDLE) sock);
-  return -1;
 }
 
 int epoll_wait(HANDLE ephnd,
@@ -611,7 +610,8 @@ int epoll_wait(HANDLE ephnd,
   tree_node = ts_tree_find_and_ref(&epoll__handle_tree, (uintptr_t) ephnd);
   if (tree_node == NULL) {
     err_set_win_error(ERROR_INVALID_PARAMETER);
-    goto err;
+    err_check_handle(ephnd);
+    return -1;
   }
 
   port_state = port_state_from_handle_tree_node(tree_node);
@@ -619,14 +619,12 @@ int epoll_wait(HANDLE ephnd,
 
   ts_tree_node_unref(tree_node);
 
-  if (num_events < 0)
-    goto err;
+  if (num_events < 0) {
+    err_check_handle(ephnd);
+    return -1;
+  }
 
   return num_events;
-
-err:
-  err_check_handle(ephnd);
-  return -1;
 }
 
 #include <errno.h>
@@ -903,18 +901,18 @@ static poll_group_t* poll_group__new(port_state_t* port_state) {
   HANDLE iocp_handle = port_get_iocp_handle(port_state);
   queue_t* poll_group_queue = port_get_poll_group_queue(port_state);
 
-  poll_group_t* poll_group = static_cast<poll_group_t*>(malloc(sizeof *poll_group));
+  /* nothrow 版本：失败返回空指针，与「失败即返回 NULL + 设 LastError」的约定一致。
+     值初始化把各成员清零，队列节点仍要显式初始化成自指的哨兵 */
+  poll_group_t* poll_group = new (std::nothrow) poll_group_t{};
   if (poll_group == NULL)
     return_set_error(NULL, ERROR_NOT_ENOUGH_MEMORY);
-
-  memset(poll_group, 0, sizeof *poll_group);
 
   queueNodeInit(&poll_group->queue_node);
   poll_group->port_state = port_state;
 
   if (afd_create_helper_handle(iocp_handle, &poll_group->afd_helper_handle) <
       0) {
-    free(poll_group);
+    delete poll_group;
     return NULL;
   }
 
@@ -927,7 +925,7 @@ void poll_group_delete(poll_group_t* poll_group) {
   assert(poll_group->group_size == 0);
   CloseHandle(poll_group->afd_helper_handle);
   queueRemove(&poll_group->queue_node);
-  free(poll_group);
+  delete poll_group;
 }
 
 poll_group_t* poll_group_from_queue_node(queue_node_t* queue_node) {
@@ -1009,7 +1007,8 @@ typedef struct port_state {
 } port_state_t;
 
 static port_state_t* port__alloc(void) {
-  port_state_t* port_state = static_cast<port_state_t*>(malloc(sizeof *port_state));
+  /* 值初始化：平凡成员清零，sock_tree 与引用锁各自构造好——不再需要 memset 之后再补构造 */
+  port_state_t* port_state = new (std::nothrow) port_state_t{};
   if (port_state == NULL)
     return_set_error(NULL, ERROR_NOT_ENOUGH_MEMORY);
 
@@ -1018,9 +1017,8 @@ static port_state_t* port__alloc(void) {
 
 static void port__free(port_state_t* port) {
   assert(port != NULL);
-  /* 与 port__new 里的 construct_at 配对：标准容器必须先析构再释放其存储 */
-  std::destroy_at(&port->sock_tree);
-  free(port);
+  /* 与 new 配对：容器成员由析构自动收尾 */
+  delete port;
 }
 
 static HANDLE port__create_iocp(void) {
@@ -1038,18 +1036,15 @@ port_state_t* port_new(HANDLE* iocp_handle_out) {
 
   port_state = port__alloc();
   if (port_state == NULL)
-    goto err1;
+    return NULL;
 
   iocp_handle = port__create_iocp();
-  if (iocp_handle == NULL)
-    goto err2;
-
-  memset(port_state, 0, sizeof *port_state);
+  if (iocp_handle == NULL) {
+    port__free(port_state);
+    return NULL;
+  }
 
   port_state->iocp_handle = iocp_handle;
-  /* sock_tree 是标准容器：memeset 清零的存储里还没有对象，必须显式构造（销毁见 port__free）。
-     其余成员都是平凡类型，清零即等于初始化。 */
-  std::construct_at(&port_state->sock_tree);
   queueInit(&port_state->sock_update_queue);
   queueInit(&port_state->sock_deleted_queue);
   queueInit(&port_state->poll_group_queue);
@@ -1058,11 +1053,6 @@ port_state_t* port_new(HANDLE* iocp_handle_out) {
 
   *iocp_handle_out = iocp_handle;
   return port_state;
-
-err2:
-  port__free(port_state);
-err1:
-  return NULL;
 }
 
 static int port__close_iocp(port_state_t* port_state) {
@@ -1194,7 +1184,9 @@ int port_wait(port_state_t* port_state,
               int maxevents,
               int timeout) {
   OVERLAPPED_ENTRY stack_iocp_events[PORT__MAX_ON_STACK_COMPLETIONS];
-  OVERLAPPED_ENTRY* iocp_events;
+  OVERLAPPED_ENTRY* iocp_events = stack_iocp_events;
+  /* 只有 maxevents 很大时才上堆：改用 unique_ptr 后所有返回路径都自动归还，不必再手工 free */
+  std::unique_ptr<OVERLAPPED_ENTRY[]> heap_iocp_events;
   uint64_t due = 0;
   DWORD gqcs_timeout;
   int result;
@@ -1204,13 +1196,16 @@ int port_wait(port_state_t* port_state,
     return_set_error(-1, ERROR_INVALID_PARAMETER);
 
   /* Decide whether the IOCP completion list can live on the stack, or allocate
-   * memory for it on the heap. */
-  if ((size_t) maxevents <= array_count(stack_iocp_events)) {
-    iocp_events = stack_iocp_events;
-  } else if ((iocp_events = static_cast<OVERLAPPED_ENTRY*>(
-                      malloc((size_t) maxevents * sizeof *iocp_events))) == NULL) {
-    iocp_events = stack_iocp_events;
-    maxevents = array_count(stack_iocp_events);
+   * memory for it on the heap. The heap allocation is nothrow on purpose: if it
+   * fails, fall back to the stack array instead of failing the whole wait. */
+  if (static_cast<std::size_t>(maxevents) > array_count(stack_iocp_events)) {
+    heap_iocp_events.reset(
+        new (std::nothrow) OVERLAPPED_ENTRY[static_cast<std::size_t>(maxevents)]);
+
+    if (heap_iocp_events != nullptr)
+      iocp_events = heap_iocp_events.get();
+    else
+      maxevents = static_cast<int>(array_count(stack_iocp_events));
   }
 
   /* Compute the timeout for GetQueuedCompletionStatus, and the wait end
@@ -1255,9 +1250,6 @@ int port_wait(port_state_t* port_state,
   port__update_events_if_polling(port_state);
 
   LeaveCriticalSection(&port_state->lock);
-
-  if (iocp_events != stack_iocp_events)
-    free(iocp_events);
 
   if (result >= 0)
     return result;
@@ -1495,14 +1487,14 @@ typedef struct sock_state {
 } sock_state_t;
 
 static inline sock_state_t* sock__alloc(void) {
-  sock_state_t* sock_state = static_cast<sock_state_t*>(malloc(sizeof *sock_state));
+  sock_state_t* sock_state = new (std::nothrow) sock_state_t{};
   if (sock_state == NULL)
     return_set_error(NULL, ERROR_NOT_ENOUGH_MEMORY);
   return sock_state;
 }
 
 static inline void sock__free(sock_state_t* sock_state) {
-  free(sock_state);
+  delete sock_state;
 }
 
 static int sock__cancel_poll(sock_state_t* sock_state) {
@@ -1534,10 +1526,10 @@ sock_state_t* sock_new(port_state_t* port_state, SOCKET socket) {
     return NULL;
 
   sock_state = sock__alloc();
-  if (sock_state == NULL)
-    goto err1;
-
-  memset(sock_state, 0, sizeof *sock_state);
+  if (sock_state == NULL) {
+    poll_group_release(poll_group);
+    return NULL;
+  }
 
   sock_state->base_socket = base_socket;
   sock_state->poll_group = poll_group;
@@ -1545,17 +1537,13 @@ sock_state_t* sock_new(port_state_t* port_state, SOCKET socket) {
   tree_node_init(&sock_state->tree_node);
   queueNodeInit(&sock_state->queue_node);
 
-  if (port_register_socket(port_state, sock_state, socket) < 0)
-    goto err2;
+  if (port_register_socket(port_state, sock_state, socket) < 0) {
+    sock__free(sock_state);
+    poll_group_release(poll_group);
+    return NULL;
+  }
 
   return sock_state;
-
-err2:
-  sock__free(sock_state);
-err1:
-  poll_group_release(poll_group);
-
-  return NULL;
 }
 
 static int sock__delete(port_state_t* port_state,
