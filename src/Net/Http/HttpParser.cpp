@@ -113,31 +113,139 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 判断逗号分隔的列表里是否含指定 token
-         * @details 用于 Transfer-Encoding 这类列表值：只认整段匹配，避免 "xchunked"、
-         *          "chunked-fake" 被当作分块传输蒙混过关。
-         * @param listValue 列表值原文
-         * @param token 目标 token（小写）
-         * @return true 表示列表里确实有该 token
+         * @brief 把十六进制位转成数值
+         * @param character 待转换字节
+         * @return int 0-15；不是十六进制位时为 -1
          */
-        bool containsListToken(const std::string_view listValue, const std::string_view token) noexcept
+        int hexadecimalDigitValue(const char character) noexcept
         {
-            std::size_t offset = 0;
-            while (offset <= listValue.size())
+            if (character >= '0' && character <= '9')
             {
-                const std::size_t comma   = listValue.find(',', offset);
-                const std::size_t segment = comma == std::string_view::npos ? listValue.size() - offset : comma - offset;
-                if (equalsIgnoringCase(trimOptionalWhitespace(listValue.substr(offset, segment)), token))
+                return character - '0';
+            }
+            if (character >= 'a' && character <= 'f')
+            {
+                return character - 'a' + 10;
+            }
+            if (character >= 'A' && character <= 'F')
+            {
+                return character - 'A' + 10;
+            }
+            return -1;
+        }
+
+        /**
+         * @brief 判断 Transfer-Encoding 的取值是否恰好是唯一的 chunked
+         * @details RFC 9112 §6.1 要求 chunked 必须位于编码链末尾；本框架只实现它，因此取值里出现
+         *          gzip 之类其它编码、或 chunked 重复出现，都判非法，绝不悄悄按 identity 处理。
+         * @param listValue 各条 Transfer-Encoding 取值按到达顺序以 ", " 连接后的原文
+         * @return true 仅有一个取值且忽略大小写等于 "chunked"
+         */
+        bool isSingleChunkedEncoding(const std::string_view listValue) noexcept
+        {
+            return equalsIgnoringCase(trimOptionalWhitespace(listValue), "chunked");
+        }
+
+        /**
+         * @brief 校验块扩展（chunk-ext）的语法
+         * @details 按 RFC 9112 §7.1.1：扩展是若干「;名字[=值]」段，名字必须是 token，值可以是 token
+         *          或带引号字符串；本框架只校验语法，不解释扩展的语义。
+         * @param text 从第一个 ';' 起的扩展原文
+         * @return true 语法合法
+         */
+        bool areChunkExtensionsWellFormed(const std::string_view text) noexcept
+        {
+            const auto skipOptionalWhitespace = [&text](std::size_t &position) noexcept
+            {
+                while (position < text.size() && (text[position] == ' ' || text[position] == '\t'))
                 {
-                    return true;
+                    ++position;
                 }
-                if (comma == std::string_view::npos)
+            };
+
+            std::size_t offset = 0;
+            while (offset < text.size())
+            {
+                // 每段都以 ';' 开头：段与段之间只允许 BWS，多出来的字节一律判非法
+                if (text[offset] != ';')
                 {
                     return false;
                 }
-                offset = comma + 1;
+                ++offset;
+                skipOptionalWhitespace(offset);
+
+                // 扩展名必须是至少一个 token 字符
+                const std::size_t nameBegin = offset;
+                while (offset < text.size() && isTokenCharacter(static_cast<unsigned char>(text[offset])))
+                {
+                    ++offset;
+                }
+                if (offset == nameBegin)
+                {
+                    return false;
+                }
+                skipOptionalWhitespace(offset);
+
+                if (offset < text.size() && text[offset] == '=')
+                {
+                    ++offset;
+                    skipOptionalWhitespace(offset);
+                    if (offset < text.size() && text[offset] == '"')
+                    {
+                        // 带引号字符串：内部允许 qdtext（HTAB、可见 ASCII、obs-text）与反斜杠转义
+                        ++offset;
+                        bool isClosed = false;
+                        while (offset < text.size())
+                        {
+                            const unsigned char character = static_cast<unsigned char>(text[offset]);
+                            if (character == '"')
+                            {
+                                ++offset;
+                                isClosed = true;
+                                break;
+                            }
+                            if (character == '\\')
+                            {
+                                // 引号对：反斜杠之后必须还有一个可打印字节，且不能是裸控制字符
+                                if (offset + 1 >= text.size())
+                                {
+                                    return false;
+                                }
+                                const unsigned char escaped = static_cast<unsigned char>(text[offset + 1]);
+                                if (escaped < 0x20 && escaped != '\t')
+                                {
+                                    return false;
+                                }
+                                offset += 2;
+                                continue;
+                            }
+                            if (character == '\t' || (character >= 0x20 && character <= 0x7E) || character >= 0x80)
+                            {
+                                ++offset;
+                                continue;
+                            }
+                            return false;
+                        }
+                        if (!isClosed)
+                        {
+                            return false;
+                        }
+                    } else
+                    {
+                        const std::size_t valueBegin = offset;
+                        while (offset < text.size() && isTokenCharacter(static_cast<unsigned char>(text[offset])))
+                        {
+                            ++offset;
+                        }
+                        if (offset == valueBegin)
+                        {
+                            return false;
+                        }
+                    }
+                    skipOptionalWhitespace(offset);
+                }
             }
-            return false;
+            return true;
         }
     } // namespace
 
@@ -186,7 +294,54 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            // 请求行与头部行都按「整行」推进：行体跨两次输入时由 takeLine 拼接
+            if (m_stage == Stage::ChunkData)
+            {
+                // 块数据按字节数整段搬：内容可能含任意字节（含 CR/LF），因此只按长度拷、不扫描
+                const std::size_t chunkLength = std::min(m_chunkRemainingBytes, length - consumed);
+
+                // 上限按「解码后」的正文字节数判定：编码后的体积不能用来代替它
+                if (m_body.size() + chunkLength > kMaximumBodySize)
+                {
+                    failBodyTooLarge(std::format("分块解码后的请求体超出上限 {} 字节", kMaximumBodySize));
+                    break;
+                }
+
+                m_body.append(data + consumed, chunkLength);
+                consumed += chunkLength;
+                m_receivedBodyLength += chunkLength;
+                m_chunkRemainingBytes -= chunkLength;
+
+                // 本块收满：接着必须是一个 CRLF，改由 ChunkDataTerminator 逐字节核对
+                if (m_chunkRemainingBytes == 0)
+                {
+                    m_stage                    = Stage::ChunkDataTerminator;
+                    m_chunkTerminatorBytesSeen = 0;
+                }
+                continue;
+            }
+
+            if (m_stage == Stage::ChunkDataTerminator)
+            {
+                // 逐字节核对 CRLF：切在 CR 与 LF 之间时靠已收字节数续上，不需要另做暂存
+                const char expectedCharacter = m_chunkTerminatorBytesSeen == 0 ? '\r' : '\n';
+                if (data[consumed] != expectedCharacter)
+                {
+                    failMalformed("HTTP 报文解析失败：分块的块数据之后必须是 CRLF，请在块数据与下一个块大小之间补齐");
+                    break;
+                }
+                ++consumed;
+                ++m_chunkTerminatorBytesSeen;
+
+                if (m_chunkTerminatorBytesSeen == 2)
+                {
+                    m_chunkTerminatorBytesSeen = 0;
+                    m_stage                    = Stage::ChunkSize;
+                }
+                continue;
+            }
+
+            // 行导向阶段（请求行、头部行、块大小行、trailer 行）都按「整行」推进：
+            // 行体跨两次输入时由 takeLine 拼接
             std::string_view line;
             if (!takeLine(data, length, consumed, line))
             {
@@ -202,7 +357,24 @@ namespace AsynGyanis::Net
                 m_stage = Stage::Headers;
                 continue;
             }
-            if (!parseHeaderLine(line))
+            if (m_stage == Stage::Headers)
+            {
+                if (!parseHeaderLine(line))
+                {
+                    break;
+                }
+                continue;
+            }
+            if (m_stage == Stage::ChunkSize)
+            {
+                if (!parseChunkSizeLine(line))
+                {
+                    break;
+                }
+                continue;
+            }
+            // 只剩 Trailer：空行会在这里收尾整条报文，成功后阶段变为 Complete、循环随即退出
+            if (!parseTrailerLine(line))
             {
                 break;
             }
@@ -344,6 +516,17 @@ namespace AsynGyanis::Net
             return true;
         }
 
+        if (m_stage == Stage::ChunkSize)
+        {
+            // 块大小行属于正文的帧结构而不是头部，超限按正文过大判定（上层回 413）
+            if (length > kMaximumChunkSizeLineLength)
+            {
+                failBodyTooLarge(std::format("分块块大小行超出上限 {} 字节", kMaximumChunkSizeLineLength));
+                return false;
+            }
+            return true;
+        }
+
         if (length > kMaximumHeaderLineLength)
         {
             failHeaderTooLarge(std::format("头部行超出上限 {} 字节", kMaximumHeaderLineLength));
@@ -422,15 +605,9 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    bool HttpParser::parseHeaderLine(const std::string_view line)
+    bool HttpParser::parseFieldLine(const std::string_view line, const std::string_view fieldContextLabel,
+                                    std::string_view &name, std::string_view &value)
     {
-        // 空行 = 头部块结束
-        if (line.empty())
-        {
-            finishHeaderBlock();
-            return m_stage != Stage::Failed;
-        }
-
         // 折行（obs-fold）：RFC 9112 已把以空白开头的续行判为过时，这里明确拒绝而不是静默拼接，
         // 否则同一个头部名可能被两个来源写出不同含义（请求走私的经典入口）
         if (line.front() == ' ' || line.front() == '\t')
@@ -442,72 +619,178 @@ namespace AsynGyanis::Net
         const std::size_t colonPosition = line.find(':');
         if (colonPosition == std::string_view::npos || colonPosition == 0)
         {
-            failMalformed("HTTP 报文解析失败：头部行必须是「名: 值」的形式");
+            failMalformed(std::format("HTTP 报文解析失败：{}行必须是「名: 值」的形式", fieldContextLabel));
             return false;
         }
 
-        const std::string_view name = line.substr(0, colonPosition);
-        for (const char character: name)
+        const std::string_view fieldName = line.substr(0, colonPosition);
+        for (const char character: fieldName)
         {
             // 冒号前若有空白也会落到这里：token 字符集不含 SP 与 HTAB
             if (!isTokenCharacter(static_cast<unsigned char>(character)))
             {
-                failMalformed("HTTP 报文解析失败：头部名只能由 token 字符组成（冒号前不得有空白）");
+                failMalformed(std::format("HTTP 报文解析失败：{}名只能由 token 字符组成（冒号前不得有空白）", fieldContextLabel));
                 return false;
             }
         }
-        if (name.size() > kMaximumHeaderFieldNameLength)
+        if (fieldName.size() > kMaximumHeaderFieldNameLength)
         {
-            failHeaderTooLarge(std::format("请求头部名超出上限 {} 字节", kMaximumHeaderFieldNameLength));
+            failHeaderTooLarge(std::format("{}名超出上限 {} 字节", fieldContextLabel, kMaximumHeaderFieldNameLength));
             return false;
         }
 
-        const std::string_view value = trimOptionalWhitespace(line.substr(colonPosition + 1));
-        if (value.size() > kMaximumHeaderFieldValueLength)
+        const std::string_view fieldValue = trimOptionalWhitespace(line.substr(colonPosition + 1));
+        if (fieldValue.size() > kMaximumHeaderFieldValueLength)
         {
-            failHeaderTooLarge(std::format("请求头部值超出上限 {} 字节", kMaximumHeaderFieldValueLength));
+            failHeaderTooLarge(std::format("{}值超出上限 {} 字节", fieldContextLabel, kMaximumHeaderFieldValueLength));
             return false;
         }
-        for (const char character: value)
+        for (const char character: fieldValue)
         {
             if (!isHeaderValueCharacter(static_cast<unsigned char>(character)))
             {
-                failMalformed("HTTP 报文解析失败：头部值含非法控制字符");
+                failMalformed(std::format("HTTP 报文解析失败：{}值含非法控制字符", fieldContextLabel));
                 return false;
             }
         }
 
         // 头部块总长（名与值的净字节）与条数是两道独立的闸：单条名、单条值、条数各自合规，
         // 架不住上百条头部叠出来的总量。两道判定都在落库之前，拒绝路径不留半成品
-        if (m_headerBlockLength + name.size() + value.size() > kMaximumHeaderBlockLength)
+        if (m_headerBlockLength + fieldName.size() + fieldValue.size() > kMaximumHeaderBlockLength)
         {
-            failHeaderTooLarge(std::format("请求头部总长超出上限 {} 字节", kMaximumHeaderBlockLength));
+            failHeaderTooLarge(std::format("{}总长超出上限 {} 字节", fieldContextLabel, kMaximumHeaderBlockLength));
             return false;
         }
         if (m_headerFieldCount >= kMaximumHeaderCount)
         {
-            failHeaderTooLarge(std::format("请求头部条数超出上限 {} 条", kMaximumHeaderCount));
+            failHeaderTooLarge(std::format("{}条数超出上限 {} 条", fieldContextLabel, kMaximumHeaderCount));
             return false;
         }
 
-        // Content-Length 决定正文边界；Transfer-Encoding 指到分块编码时本框架无法定界，
-        // 当场判错而不是猜一个长度继续（上层定界器也在更早一步拦下分块请求体）
+        m_headerBlockLength += fieldName.size() + fieldValue.size();
+        ++m_headerFieldCount;
+
+        name  = fieldName;
+        value = fieldValue;
+        return true;
+    }
+
+    bool HttpParser::parseHeaderLine(const std::string_view line)
+    {
+        // 空行 = 头部块结束
+        if (line.empty())
+        {
+            finishHeaderBlock();
+            return m_stage != Stage::Failed;
+        }
+
+        std::string_view name;
+        std::string_view value;
+        if (!parseFieldLine(line, "请求头部", name, value))
+        {
+            return false;
+        }
+
+        // 两个定界头都要落到暂存上：Content-Length 决定长度，Transfer-Encoding 的取值要攒到
+        // 头部块结束才能判「是否唯一的 chunked、有没有和它并列的其它编码」
         if (equalsIgnoringCase(name, "content-length"))
         {
             if (!parseContentLength(value))
             {
                 return false;
             }
-        } else if (equalsIgnoringCase(name, "transfer-encoding") && containsListToken(value, "chunked"))
+        } else if (equalsIgnoringCase(name, "transfer-encoding") && !appendTransferEncodingValue(value))
         {
-            failChunkedNotSupported("HTTP 报文解析失败：不支持分块请求体（Transfer-Encoding: chunked），请改用 Content-Length");
             return false;
         }
 
-        m_headerBlockLength += name.size() + value.size();
-        ++m_headerFieldCount;
         m_headers.push_back(ParsedHeader{std::string(name), std::string(value)});
         return true;
+    }
+
+    bool HttpParser::appendTransferEncodingValue(const std::string_view value)
+    {
+        if (value.empty())
+        {
+            failMalformed("HTTP 报文解析失败：Transfer-Encoding 的取值不能为空，请写 Transfer-Encoding: chunked");
+            return false;
+        }
+
+        // 多条 Transfer-Encoding 按到达顺序拼成一份列表：要看到全部取值才能判 chunked 是否唯一
+        if (m_hasTransferEncoding)
+        {
+            m_transferEncodingValue.append(", ");
+        }
+        m_transferEncodingValue.append(value);
+        m_hasTransferEncoding = true;
+        return true;
+    }
+
+    bool HttpParser::parseChunkSizeLine(const std::string_view line)
+    {
+        // 块扩展从第一个分号起：大小部分只到今天之前的那一段
+        const std::size_t      semicolonPosition = line.find(';');
+        const std::string_view sizeText          = line.substr(0, semicolonPosition);
+
+        if (sizeText.empty())
+        {
+            failMalformed("HTTP 报文解析失败：分块块大小必须至少有一位十六进制数字");
+            return false;
+        }
+
+        std::size_t chunkSize = 0;
+        for (const char character: sizeText)
+        {
+            // 十六进制位手工转值：std::stoul 会抛异常，而本解析器对外的契约是「增量、无异常」
+            const int digitValue = hexadecimalDigitValue(character);
+            if (digitValue < 0)
+            {
+                failMalformed("HTTP 报文解析失败：分块块大小只能由十六进制数字组成，请检查块大小行");
+                return false;
+            }
+
+            // 上限判定放在移位之前：既不让 size_t 静默回绕，也让超大块当场判错而不是等正文到齐
+            if (chunkSize > kMaximumBodySize >> 4U)
+            {
+                failBodyTooLarge(std::format("分块单块大小超出上限 {} 字节", kMaximumBodySize));
+                return false;
+            }
+            chunkSize = (chunkSize << 4U) | static_cast<std::size_t>(digitValue);
+        }
+        if (chunkSize > kMaximumBodySize)
+        {
+            failBodyTooLarge(std::format("分块单块大小超出上限 {} 字节", kMaximumBodySize));
+            return false;
+        }
+
+        // 扩展只校验语法、不解释语义：它不参与块边界计算，因此忽略内容而不忽略它的合法性
+        if (semicolonPosition != std::string_view::npos && !areChunkExtensionsWellFormed(line.substr(semicolonPosition)))
+        {
+            failMalformed("HTTP 报文解析失败：分块块扩展语法非法，每一段应为「;名字」或「;名字=值」且名字由 token 字符组成");
+            return false;
+        }
+
+        m_chunkRemainingBytes = chunkSize;
+        // 零长度块是终止块：它之后只剩 trailer 段（若干字段行加一个空行）
+        m_stage = chunkSize == 0 ? Stage::Trailer : Stage::ChunkData;
+        return true;
+    }
+
+    bool HttpParser::parseTrailerLine(const std::string_view line)
+    {
+        // 空行 = trailer 段结束：解码后的正文与头部此刻才整体移交给对外请求对象
+        if (line.empty())
+        {
+            commitMessage();
+            m_stage = Stage::Complete;
+            return true;
+        }
+
+        std::string_view trailerName;
+        std::string_view trailerValue;
+        // 语法与各项上限照头部行判，但解析结果有意丢弃：trailer 里出现 content-length 之类会与
+        // 已解析头部形成两种解释，上层读到哪个都可能被对端利用（请求走私面）
+        return parseFieldLine(line, "trailer 头部", trailerName, trailerValue);
     }
 
     bool HttpParser::parseContentLength(const std::string_view value)
@@ -567,11 +850,6 @@ namespace AsynGyanis::Net
         recordFailure(HttpParseErrorKind::BodyTooLarge, std::move(message));
     }
 
-    void HttpParser::failChunkedNotSupported(std::string message)
-    {
-        recordFailure(HttpParseErrorKind::ChunkedNotSupported, std::move(message));
-    }
-
     void HttpParser::recordFailure(const HttpParseErrorKind errorKind, std::string message)
     {
         m_hasError     = true;
@@ -582,7 +860,29 @@ namespace AsynGyanis::Net
 
     void HttpParser::finishHeaderBlock()
     {
-        // 没有 Content-Length 的报文（GET/HEAD/DELETE 一类）在头部块结束时即完整，
+        // 分块请求体：先把「一条报文两个长度解释」的组合拒掉，再要求 Transfer-Encoding 只声明 chunked
+        if (m_hasTransferEncoding)
+        {
+            // RFC 9112 §6.3：Transfer-Encoding 与 Content-Length 并存时收端必须拒绝（或只认一条并
+            // 视另一条为错误），这里选拒绝——两侧各按己方理解切包正是请求走私的经典面
+            if (m_hasContentLength)
+            {
+                failMalformed("HTTP 报文解析失败：Content-Length 与 Transfer-Encoding 不能同时出现，请只保留其中一个");
+                return;
+            }
+            // 只实现 chunked：取值里出现 gzip 之类其它编码、或 chunked 重复出现都判错，
+            // 绝不悄悄按 identity 处理（那等于按对端没声明的边界切包）
+            if (!isSingleChunkedEncoding(m_transferEncodingValue))
+            {
+                failMalformed("HTTP 报文解析失败：Transfer-Encoding 只接受唯一的 chunked（不接受 gzip 等其它编码，"
+                              "chunked 也不能与其它编码并列），请改写为 Transfer-Encoding: chunked 或改用 Content-Length");
+                return;
+            }
+            m_stage = Stage::ChunkSize;
+            return;
+        }
+
+        // 没有正文定界头的报文（GET/HEAD/DELETE 一类）在头部块结束时即完整，
         // 排在后面的字节归下一条报文，解析器一个都不吃
         if (m_contentLength == 0)
         {
@@ -626,6 +926,13 @@ namespace AsynGyanis::Net
         m_headerFieldCount   = 0;
         m_headerBlockLength  = 0;
         m_hasContentLength   = false;
+
+        // 分块解码的进度必须与正文一起清空：跨报文复用同一个解析器对象时，残留的
+        // 「当前块剩余字节」会把下一条报文的正文按上一条的块边界切开
+        m_hasTransferEncoding      = false;
+        m_transferEncodingValue.clear();
+        m_chunkRemainingBytes      = 0;
+        m_chunkTerminatorBytesSeen = 0;
     }
 
 } // namespace AsynGyanis::Net

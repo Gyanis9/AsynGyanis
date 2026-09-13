@@ -2,7 +2,7 @@
  * @file HttpParser.h
  * @brief HTTP/1.1 请求报文增量解析器（手写状态机，无外部依赖）
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 2.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -23,14 +23,16 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP/1.1 请求报文解析器：手写增量状态机
      *
-     * @details 按「请求行 → 头部块 → 正文」三段推进，请求行与头部行都按 token 规则严格校验；
-     *          正文按 Content-Length 收满即完成，没有它的报文在头部块结束时即完成、多余字节一字节
-     *          不吃。任何字节边界都能切开续上；解析结果只在报文收齐那一刻整体搬进 request()，
-     *          因此半成品阶段 request() 一定是空壳；已完成或已失败后再喂数据不改既有结果。
+     * @details 按「请求行 → 头部块 → 正文」三段推进，请求行与头部行都按 token 规则严格校验。正文由
+     *          Content-Length 或 Transfer-Encoding: chunked 定界：分块按 RFC 9112 §7.1 增量解码，
+     *          trailer 段只校验语法与上限、不并入请求头部；两者都没有的报文在头部块结束时即完成。
+     *          任何字节边界都能切开续上，解析结果只在报文收齐那一刻整体搬进 request()。
      *
      * @warning 所有资源上限都是 DoS 防护：任何一项超限都会以 Error 结束本次解析，并用
      *          isLimitExceeded() 标出「超限」这一子类，便于上层回 431/413 而不是 400；
      *          上限是策略而非协议要求，取值依据见各常量的行尾注释。
+     * @warning 定界头的组合从严：Transfer-Encoding 与 Content-Length 并存、取值不是唯一的 chunked
+     *          一律判错（RFC 9112 §6.3），不接受 gzip 等其它传输编码，也不悄悄按 identity 处理。
      */
     class HttpParser
     {
@@ -117,7 +119,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 获取本次失败的类别
-         * @details 上层据它决定回哪个状态码（400/431/413/411），不必去匹配错误文案
+         * @details 上层据它决定回哪个状态码（400/431/413），不必去匹配错误文案
          * @return HttpParseErrorKind 失败类别；未失败时为 None
          */
         [[nodiscard]] HttpParseErrorKind errorKind() const;
@@ -128,11 +130,15 @@ namespace AsynGyanis::Net
          */
         enum class Stage
         {
-            RequestLine, ///< 正在收请求行
-            Headers,     ///< 正在收头部行
-            Body,        ///< 正在收正文
-            Complete,    ///< 本条已收齐：再喂数据一字节不吃
-            Failed       ///< 已失败：错误粘滞到 reset()
+            RequestLine,         ///< 正在收请求行
+            Headers,             ///< 正在收头部行
+            Body,                ///< 正在收 Content-Length 定界的正文
+            Complete,            ///< 本条已收齐：再喂数据一字节不吃
+            Failed,              ///< 已失败：错误粘滞到 reset()
+            ChunkSize,           ///< 正在收分块块大小行（含块扩展），以 CRLF 结尾
+            ChunkData,           ///< 正在收分块块数据
+            ChunkDataTerminator, ///< 正在收块数据之后的 CRLF
+            Trailer              ///< 正在收 trailer 段，空行表示整条报文收齐
         };
 
         /**
@@ -148,6 +154,19 @@ namespace AsynGyanis::Net
          *         或本行的长度已越过该阶段的上限（此时已记录超限错误）
          */
         [[nodiscard]] bool takeLine(const char *data, std::size_t length, std::size_t &consumed, std::string_view &line);
+
+        /**
+         * @brief 按「名: 值」语法校验一行字段并切出名字与值
+         * @details 头部行与 trailer 行共用这一份校验：折行、冒号位置、名与值的字符集、
+         *          单条长度以及累计条数与总长上限都在这里判，两者不各写一份而漂移。
+         * @param line 去掉 CRLF 的字段行，调用方保证非空
+         * @param fieldContextLabel 出错文案里的字段归属（如「请求头部」「trailer 头部」）
+         * @param name 输出参数：字段名原文，返回 true 时有效
+         * @param value 输出参数：已裁掉首尾 OWS 的字段值，返回 true 时有效
+         * @return true 合法
+         */
+        [[nodiscard]] bool parseFieldLine(std::string_view line, std::string_view fieldContextLabel,
+                                          std::string_view &name, std::string_view &value);
 
         /**
          * @brief 按当前阶段校验一行（含尚未收尾的半行）的长度上限
@@ -180,6 +199,31 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool parseContentLength(std::string_view value);
 
         /**
+         * @brief 累积一条 Transfer-Encoding 取值，供头部块结束时统一裁决
+         * @param value 已裁掉首尾 OWS 的取值
+         * @return true 合法（取值非空）
+         */
+        [[nodiscard]] bool appendTransferEncodingValue(std::string_view value);
+
+        /**
+         * @brief 解析分块块大小行：十六进制大小加可选的块扩展
+         * @details 按 RFC 9112 §7.1.1 校验：大小至少一位十六进制数字、必须带 CRLF（由取行阶段保证），
+         *          扩展只校验语法不解释语义；解析出的零是终止块，随后的字节进入 trailer 段。
+         * @param line 去掉 CRLF 的块大小行
+         * @return true 合法
+         */
+        [[nodiscard]] bool parseChunkSizeLine(std::string_view line);
+
+        /**
+         * @brief 校验一条 trailer 行并按需收尾整条报文
+         * @details 语法与上限同头部行；内容有意不并入请求头部，避免 trailer 里的 content-length
+         *          之类与已解析头部形成两种解释（请求走私面），RFC 9112 §7.1.2 允许收端忽略 trailer。
+         * @param line 去掉 CRLF 的 trailer 行；空行表示 trailer 段结束、报文收齐
+         * @return true 合法
+         */
+        [[nodiscard]] bool parseTrailerLine(std::string_view line);
+
+        /**
          * @brief 记录一次协议级非法（Malformed，上层回 400）
          * @param message 中文错误详情
          */
@@ -198,12 +242,6 @@ namespace AsynGyanis::Net
         void failBodyTooLarge(std::string message);
 
         /**
-         * @brief 记录一次「分块请求体不支持」（ChunkedNotSupported，上层回 411）
-         * @param message 中文错误详情
-         */
-        void failChunkedNotSupported(std::string message);
-
-        /**
          * @brief 统一的失败记录：置粘滞错误态，并记下类别与中文详情
          * @param errorKind 失败类别
          * @param message 中文错误详情
@@ -211,7 +249,9 @@ namespace AsynGyanis::Net
         void recordFailure(HttpParseErrorKind errorKind, std::string message);
 
         /**
-         * @brief 头部块结束：按有无 Content-Length 决定直接完成还是转入正文阶段
+         * @brief 头部块结束：裁决定界头并决定直接完成还是转入正文阶段
+         * @details Transfer-Encoding 与 Content-Length 并存判错、非唯一的 chunked 判错，其余情况按
+         *          「有 Content-Length 收定长正文 / 有 chunked 进分块解码 / 都没有即完成」三选一。
          */
         void finishHeaderBlock();
 
@@ -252,10 +292,19 @@ namespace AsynGyanis::Net
         bool m_isPendingLineHandedOut{false};
 
         std::size_t m_contentLength{0};        ///< 本条报文的正文长度（Content-Length，缺省 0）
-        std::size_t m_receivedBodyLength{0};   ///< 已收正文字节数
+        std::size_t m_receivedBodyLength{0};   ///< 已收正文字节数（分块时指解码后的字节数）
         std::size_t m_headerFieldCount{0};     ///< 已解析头部条数
         std::size_t m_headerBlockLength{0};    ///< 头部块净字节数，只算名与值，不含 ": " 与 CRLF
         bool        m_hasContentLength{false}; ///< 是否已见过 Content-Length（用于比对重复值）
+
+        /// 是否已见过 Transfer-Encoding：与 Content-Length 互斥，两者并存当场判错
+        bool m_hasTransferEncoding{false};
+
+        /// 各条 Transfer-Encoding 取值原文，按到达顺序以 ", " 连接，头部块结束时统一裁决
+        std::string m_transferEncodingValue;
+
+        std::size_t m_chunkRemainingBytes{0};      ///< 当前分块尚未收到的块数据字节数
+        std::size_t m_chunkTerminatorBytesSeen{0}; ///< 块数据之后已收到的 CRLF 字节数（0 或 1）
 
         bool        m_hasError{false};        ///< 是否已发生解析错误
         HttpParseErrorKind m_errorKind{HttpParseErrorKind::None}; ///< 失败类别（决定上层回哪个状态码）
@@ -273,6 +322,9 @@ namespace AsynGyanis::Net
 
         /// 方法原文上限 32 B：llhttp 同档取值，通用方法最长 7 B（OPTIONS），留足自定义动词余地
         static constexpr std::size_t kMaximumMethodLength = 32;
+
+        /// 块大小行上限 1 KiB：块扩展由客户端自定义（正常只发十六进制数字与短 ext），此值用于兜住「一行始终不结束」的输入
+        static constexpr std::size_t kMaximumChunkSizeLineLength = 1024;
 
         /// 请求行上限 = URI 上限 + 方法上限 + "HTTP/9.9" 与两个分隔空格，用于兜住「一行始终不结束」的输入
         static constexpr std::size_t kMaximumRequestLineLength = kMaximumUriLength + kMaximumMethodLength + 16;

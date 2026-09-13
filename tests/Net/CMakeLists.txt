@@ -5,6 +5,7 @@ add_executable(TestNet
         Http/HttpTestSupport.h
 
         Http/TestHttpParser.cpp
+        Http/TestHttpParserChunked.cpp
         Http/TestHttpParserFuzzSmoke.cpp
         Http/TestHttpDate.cpp
         Http/TestHttpRequest.cpp

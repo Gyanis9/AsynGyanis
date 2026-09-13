@@ -2,7 +2,7 @@
  * @file TestHttpSession.cpp
  * @brief HttpSession 单元测试：保持活跃判定、跨次读取的缓冲与流水线残留、定界超限应答与取消转发
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -801,23 +801,57 @@ namespace AsynGyanis::Net
         EXPECT_EQ(countStatusLines(responseText), 1u);
     }
 
-    TEST(HttpSession, Returns411ForChunkedRequestBody)
+    /**
+     * @brief 分块请求体被解码后交给路由，正文是解码后的字节而不是编码后的原始形态
+     */
+    TEST(HttpSession, PassesDecodedChunkedBodyToRoute)
     {
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
-        addPathEchoingRoute(fixture.router(), "/stream");
 
-        // 本框架不做分块请求体的帧定界：按 411 Length Required 收口，而不是猜边界
-        const std::string request = makeRequestText("POST /stream HTTP/1.1", {"host: test", "transfer-encoding: chunked"});
+        // 路由把收到的正文原样回写：断言的是「解码后的字节进了 request.body()」。
+        // body() 是 string_view，拼串前显式转成 string（string_view 没有 operator+）
+        fixture.router().post("/stream", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+        {
+            response.setBody("received-" + std::string(request.body()));
+            co_return;
+        });
+
+        const std::string request =
+                makeRequestText("POST /stream HTTP/1.1", {"host: test", "transfer-encoding: chunked"}) +
+                "5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: v\r\n\r\n";
         ASSERT_TRUE(fixture.writeRequest(request));
         fixture.start();
 
         std::string responseText;
-        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "分块请求体未在时限内被判 411：上界 kWaitTimeout";
-        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 411"));
-        EXPECT_NE(responseText.find("Length Required"), std::string::npos);
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "分块请求体未在时限内被处理：上界 kWaitTimeout";
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 200"));
+        EXPECT_NE(responseText.find("received-hello world"), std::string::npos);
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
+    /**
+     * @brief Content-Length 与 Transfer-Encoding 并存时按请求走私面拒绝，回 400
+     */
+    TEST(HttpSession, Returns400WhenContentLengthAndTransferEncodingCoexist)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        addPathEchoingRoute(fixture.router(), "/smuggle");
+
+        // 同一份报文有两个正文边界解释：会话按解析器给出的 Malformed 回 400 并收口
+        const std::string request =
+                makeRequestText("POST /smuggle HTTP/1.1", {"host: test", "content-length: 5", "transfer-encoding: chunked"}) +
+                "5\r\nhello\r\n0\r\n\r\n";
+        ASSERT_TRUE(fixture.writeRequest(request));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "CL 与 TE 并存未在时限内被判 400：上界 kWaitTimeout";
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 400"));
+        EXPECT_NE(responseText.find("Bad Request"), std::string::npos);
+        EXPECT_TRUE(fixture.awaitFinished(kWaitTimeout));
     }
 
     TEST(HttpSession, Returns500AfterResettingResponseWhenHandlerThrows)

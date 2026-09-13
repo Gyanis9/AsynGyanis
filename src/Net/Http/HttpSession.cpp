@@ -207,14 +207,9 @@ namespace AsynGyanis::Net
                     response.setBody("Request Header Fields Too Large");
                     break;
                 case HttpParseErrorKind::BodyTooLarge:
-                    // 413：形态合法但体量越界（声明值与实收字节数都在此列）
+                    // 413：形态合法但体量越界（声明的长度、分块块大小与解码后的实收字节数都在此列）
                     response.setStatus(413);
                     response.setBody("Payload Too Large");
-                    break;
-                case HttpParseErrorKind::ChunkedNotSupported:
-                    // 411 Length Required：RFC 9110 §15.5.8，服务器拒绝处理缺少 Content-Length 的请求
-                    response.setStatus(411);
-                    response.setBody("Length Required");
                     break;
                 case HttpParseErrorKind::Malformed:
                 case HttpParseErrorKind::None:

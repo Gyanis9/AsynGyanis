@@ -422,7 +422,7 @@ namespace AsynGyanis::Net
                 if (status == ParseStatus::Error)
                 {
                     // 出错即结束会话（不 reset 后接着复用同一条连接）。状态码按解析器给出的
-                    // 失败类别映射：形态合法只是体量越界回 431/413，缺长度回 411，其余回 400。
+                    // 失败类别映射：形态合法只是体量越界回 431/413，其余回 400。
                     // 这条路径有意不置 busy：报文没解析成功，没有在途业务要等，回完 4xx 即收口
                     HttpResponse errorResponse;
                     writeParseErrorResponse(errorResponse, parser.errorKind());

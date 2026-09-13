@@ -2,7 +2,7 @@
  * @file TestHttpParser.cpp
  * @brief HttpParser 单元测试：增量解析、报文定界、头部存储模型与资源上限
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
@@ -522,24 +522,6 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 分块请求体判错，而不是猜一个长度继续解析
-     *
-     * @details 上层定界器会更早一步回 411；解析器自己同样不猜：不认识的正文编码下，
-     *          任何「读到下一个空行为止」的做法都只是把边界交给对端去定。
-     */
-    TEST(HttpParser, RejectsChunkedTransferEncodingInsteadOfGuessingLength)
-    {
-        HttpParser parser;
-
-        const std::string message = "POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
-        EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
-
-        EXPECT_TRUE(parser.hasError());
-        EXPECT_FALSE(parser.isLimitExceeded());
-        EXPECT_TRUE(containsText(parser.errorMessage(), "分块"));
-    }
-
-    /**
      * @brief 重复的 Content-Length 只在取值一致时放行，取值不一致当场判错
      *
      * @details 取值不一致等于「同一份报文有两个长度解释」，收发两侧各自按己方理解切包
@@ -644,10 +626,12 @@ namespace AsynGyanis::Net
             EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::BodyTooLarge);
         }
         {
+            // Transfer-Encoding 取值不是 chunked：按协议级非法处理（400），不能悄悄按 identity 收下。
+            // 分块请求体本身的解码与拒绝面另见 TestHttpParserChunked.cpp
             HttpParser        parser;
-            const std::string message = "POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+            const std::string message = "POST /chunked HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n";
             ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
-            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::ChunkedNotSupported);
+            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::Malformed);
         }
         {
             HttpParser        parser;
