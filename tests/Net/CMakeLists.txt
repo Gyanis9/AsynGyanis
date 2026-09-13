@@ -12,6 +12,7 @@ add_executable(TestNet
         Http/TestHttpResponse.cpp
         Http/TestHttpSession.cpp
         Http/TestHttpStreaming.cpp
+        Http/TestSseStream.cpp
         Http/TestHttpServer.cpp
         Http/TestHttpServerLimits.cpp
         Http/TestHttpObservability.cpp
