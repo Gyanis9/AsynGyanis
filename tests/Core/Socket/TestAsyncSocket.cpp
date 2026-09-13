@@ -1,23 +1,30 @@
 /**
  * @file TestAsyncSocket.cpp
- * @brief AsyncSocket 单元测试：创建、移动语义、bind/listen 生命周期与地址查询
+ * @brief AsyncSocket 单元测试：创建、移动语义、bind/listen 生命周期、地址查询与关闭唤醒
  * @author Gyanis
- * @date 2026-09-12
+ * @date 2026-09-13
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
+ *
+ * @details 关闭唤醒那几条用例不引入事件循环线程：与 TestIoWatcher 同一手法，
+ *          事件分发与调度推进由测试自己在同一线程上完成，时序因此完全确定。
  */
 
 #include "Core/Socket/AsyncSocket.h"
 
+#include "Base/Exception/Exception.h"
 #include "Base/Exception/SystemException.h"
+#include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/System/PlatformError.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <coroutine>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -25,6 +32,69 @@
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /// 每轮发送的负载长度：对端不读时，两侧缓冲加起来远小于这里一轮的量
+        constexpr std::size_t kBlockingSendChunkLength = 64 * 1024;
+
+        /// 触发「等可写」的轮数上限：跑满说明本机没有构造出写阻塞，而不是实现出错
+        constexpr int kBlockingSendRoundLimit = 4096;
+
+        /**
+         * @brief 写阻塞用例的观测结果
+         */
+        struct SendObservation
+        {
+            bool isFailureObserved       = false; ///< asyncSend 是否如实报告了「套接字已不可用」
+            bool isClosedFailureObserved = false; ///< 失败原因是否为「等待可写期间套接字被关闭」
+            int  observedErrorCode       = 0;     ///< 异常携带的原生错误号（必须取自 socket 空间）
+            int  completedRoundCount     = 0;     ///< 失败之前完整提交出去的轮数
+        };
+
+        /**
+         * @brief 一直发送到内核发送缓冲写满为止
+         * @details asyncSend 在首次成功提交后即返回，因此要靠外层循环逐步填满缓冲，
+         *          最后一次才会落在内部的「等可写」上。返回时若协程尚未结束，
+         *          就说明它正挂在那里——这正是本组用例要构造的状态
+         * @param socket 目标套接字
+         * @param payload 每轮发送的负载，必须在本次 co_await 恢复之前一直有效
+         * @param observation 观测结果出参
+         */
+        Task<> sendUntilBlocked(AsyncSocket &socket, const std::string &payload, SendObservation &observation)
+        {
+            for (int round = 0; round < kBlockingSendRoundLimit; ++round)
+            {
+                try
+                {
+                    const ssize_t sentBytes = co_await socket.asyncSend(payload.data(), payload.size());
+                    // -1 是对端已关闭那条路径的约定返回值（见 asyncSend 的说明），这里同样算观察到失败
+                    if (sentBytes <= 0)
+                    {
+                        observation.completedRoundCount = round;
+                        observation.isFailureObserved  = true;
+                        co_return;
+                    }
+                } catch (const Base::SystemException &exception)
+                {
+                    // 等待可写期间套接字被关闭：await_resume 交回「未就绪」，asyncSend 据此抛错。
+                    // 原因与错误号都记下来：用例据此确认「被关闭」与「事件就绪」可区分，
+                    // 且错误号取自 socket 空间（winsock 失败不写 errno，读 errno 只会拿到陈旧值）
+                    observation.completedRoundCount = round;
+                    observation.isFailureObserved  = true;
+                    observation.isClosedFailureObserved =
+                            std::string_view(exception.what()).find("等待可写期间套接字被关闭") != std::string_view::npos;
+                    observation.observedErrorCode = exception.nativeError();
+                    co_return;
+                } catch (const Base::Exception &)
+                {
+                    observation.completedRoundCount = round;
+                    observation.isFailureObserved  = true;
+                    co_return;
+                }
+            }
+        }
+    } // namespace
+
     /**
      * @brief 验证 create() 直接交出可用的描述符（失败要在这里暴露，而不是拖到第一次收发）
      */
@@ -320,5 +390,57 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(singleTask.isReady());
         // 参数合法但描述符无效：以平台错误收场，而不是抛参数类异常
         EXPECT_THROW(singleTask.handle().promise().result(), Base::SystemException);
+    }
+
+    /**
+     * @brief 关闭套接字必须唤醒正卡在「等可写」上的协程，并让它观察到「已关闭」而不是「就绪」
+     *
+     * @details 钉住收尾语义对**写方向**同样成立：对端不读，发送缓冲被填满后协程落在
+     *          co_await asyncSend(...) 内部的「等可写」上；随后在同一个事件循环线程上关闭该
+     *          套接字（清扫协程正是这么做的）。关闭必须把挂起的协程摘下来投回调度器并以
+     *          「未就绪」唤醒它——关闭描述符本身不会让内核唤醒它，少了这一步，
+     *          这帧协程连同它持有的连接与缓冲会一直滞留到进程退出。
+     */
+    TEST(AsyncSocket, CloseWakesCoroutineBlockedOnSend)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        AsyncSocket sender(loop, localDescriptor);
+        // 想方设法把发送缓冲压到最小，让填满所需的字节数不要太大（内核会自行上调到一个下限）
+        int sendBufferLength = 4096;
+        [[maybe_unused]] const bool isSendBufferSet =
+                sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength));
+
+        // 对端全程不读：payload 与观测结果都必须活到协程恢复之后
+        const std::string payload(kBlockingSendChunkLength, 'x');
+        SendObservation   observation;
+
+        Task<> sending = sendUntilBlocked(sender, payload, observation);
+        sending.handle().resume();
+        ASSERT_FALSE(sending.isReady()) << "对端不读，发送却没有落到「等可写」上：本机构造不出该场景";
+
+        // 与清扫协程同一做法：在事件循环线程上关闭套接字
+        sender.close();
+
+        // 唤醒是投递到调度队列的（注册对象正在析构，不能就地恢复）
+        loop.scheduler().runAll();
+
+        EXPECT_TRUE(sending.isReady()) << "关闭套接字之后，卡在等可写上的协程仍未被唤醒";
+        EXPECT_TRUE(observation.isFailureObserved)
+                << "协程虽然被唤醒，却把「套接字已关闭」当成了一次就绪：await_resume 没有交回失败";
+        EXPECT_TRUE(observation.isClosedFailureObserved)
+                << "被唤醒后拿到的是「发送失败」而不是「等待可写期间套接字被关闭」："
+                   "等待结果无法区分「被关闭」与「事件就绪」";
+        // 错误号必须来自 socket 空间：按 errno 构造只会带上一个与本次失败无关的陈旧值
+        EXPECT_EQ(observation.observedErrorCode, Platform::PlatformError::kConnectionAborted)
+                << "异常携带的错误号不是 socket 空间的「本端中止连接」：多半又去读了 errno";
+        EXPECT_LT(observation.completedRoundCount, kBlockingSendRoundLimit)
+                << "对端从未读过，写侧却宣称把负载全部提交成功了";
+
+        Platform::FileDescriptor::close(peerDescriptor);
     }
 } // namespace AsynGyanis::Core

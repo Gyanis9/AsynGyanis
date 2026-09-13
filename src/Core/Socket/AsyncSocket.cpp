@@ -11,9 +11,37 @@
 #include <cerrno>
 #include <limits>
 #include <string>
+#include <system_error>
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 取最近一次 socket 系统调用的失败码
+         * @details winsock 失败**不写 errno**，而 SystemException 的隐式错误码构造函数读的正是 errno，
+         *          于是文本里带的是与本次失败无关的陈旧值（实测发送失败报成「[112] There is not
+         *          enough space on the disk」），真正的失败码反而看不到：socket 调用失败必须显式传码。
+         * @return std::error_code socket 空间的错误码（描述文本由 std::system_category 提供）
+         */
+        std::error_code lastSocketError()
+        {
+            // 读取时机必须在失败之后、其它可能覆盖它的调用之前
+            return {Platform::PlatformError::lastSocketErrorCode(), std::system_category()};
+        }
+
+        /**
+         * @brief 本端套接字被关闭时用于收尾等待者的错误码
+         * @details 这类失败由框架自己合成，没有底层系统调用可读：映射成本端中止连接，
+         *          比让 SystemException 去读一个不存在的 errno 更能说明发生了什么
+         * @return std::error_code 本端中止连接的错误码
+         */
+        std::error_code localSocketClosedError()
+        {
+            return {Platform::PlatformError::kConnectionAborted, std::system_category()};
+        }
+    } // namespace
+
     AsyncSocket::AsyncSocket(EventLoop &loop, const int fileDescriptor) :
         m_loop(loop), m_fileDescriptor(fileDescriptor)
     {
@@ -60,7 +88,7 @@ namespace AsynGyanis::Core
 #endif
         if (fileDescriptor < 0)
         {
-            throw Base::SystemException("创建套接字失败");
+            throw Base::SystemException("创建套接字失败", lastSocketError());
         }
 
 #if ASYN_PLATFORM_WIN32
@@ -101,13 +129,13 @@ namespace AsynGyanis::Core
             co_return;
         } else if (Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kInProgress)
         {
-            throw Base::SystemException("发起连接失败");
+            throw Base::SystemException("发起连接失败", lastSocketError());
         }
 
         // 非阻塞 connect 的完成由可写事件通知；等待失败（套接字被关闭）时不再重试
         if (!co_await waitWritable())
         {
-            throw Base::SystemException("等待连接完成期间套接字被关闭");
+            throw Base::SystemException("等待连接完成期间套接字被关闭", localSocketClosedError());
         }
 
         // 非阻塞 connect 完成后靠 SO_ERROR 判定成败，该读取由 Platform 统一封装
@@ -154,13 +182,13 @@ namespace AsynGyanis::Core
                 // 等待失败说明套接字已被关闭：继续重试只会拿到 EBADF，直接以错误结束
                 if (!co_await waitReadable())
                 {
-                    throw Base::SystemException("接收数据失败：等待可读期间套接字被关闭");
+                    throw Base::SystemException("接收数据失败：等待可读期间套接字被关闭", localSocketClosedError());
                 }
                 continue;
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
                 continue;
-            throw Base::SystemException("接收数据失败");
+            throw Base::SystemException("接收数据失败", lastSocketError());
         }
     }
 
@@ -194,13 +222,13 @@ namespace AsynGyanis::Core
                 // 同 asyncReceive：等待失败即套接字已关闭，不再重试
                 if (!co_await waitWritable())
                 {
-                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭");
+                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭", localSocketClosedError());
                 }
                 continue;
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
                 continue;
-            throw Base::SystemException("发送数据失败");
+            throw Base::SystemException("发送数据失败", lastSocketError());
         }
     }
 
@@ -251,7 +279,7 @@ namespace AsynGyanis::Core
             {
                 if (!co_await waitWritable())
                 {
-                    throw Base::SystemException("聚合发送失败：等待可写期间套接字被关闭");
+                    throw Base::SystemException("聚合发送失败：等待可写期间套接字被关闭", localSocketClosedError());
                 }
                 continue;
             }
@@ -259,7 +287,7 @@ namespace AsynGyanis::Core
             {
                 continue;
             }
-            throw Base::SystemException("聚合发送数据失败");
+            throw Base::SystemException("聚合发送数据失败", lastSocketError());
         }
         co_return static_cast<ssize_t>(cursor.sentLength());
     }

@@ -154,7 +154,7 @@ namespace AsynGyanis::Core
          *       违约（例如把临时缓冲传进来后立刻离开作用域）会让恢复后的 recv 写入已释放内存，
          *       且不报错、表现为随机数据损坏
          * @throws Base::SystemException 接收失败（连接重置等），或 length 超过 INT_MAX；
-         *         异常文本带 errno 与其可读描述
+         *         异常文本带平台 socket 错误码与其可读描述（winsock 失败不写 errno，不要按 errno 判读）
          */
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
