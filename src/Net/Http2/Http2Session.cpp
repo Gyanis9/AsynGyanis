@@ -526,6 +526,17 @@ namespace AsynGyanis::Net
             {
                 noteStreamCancelled();
             }
+            if (tooLargeOutcome == RequestServeOutcome::Served)
+            {
+                // 413 已经完整发出：按 RFC 9113 §8.1 请对端无错地中止这条请求的正文发送。
+                // 不中止的话本端会把剩下的字节全部收下再丢掉——对端可能有几百 MB 要传（纯白耗带宽）
+                std::string abortErrorText;
+                if (!m_connection.abortStream(streamId, "请求正文超过上限，响应（413）已发出，本端不再需要剩余正文", &abortErrorText))
+                {
+                    // 拿不到流（例如对端恰好同时收尾了）不影响已排入的 413：只记一条调试日志
+                    LOG_DEBUG_FMT("Http2Session: 流 {} 的正文超限后未能请求对端中止发送。原因：{}", streamId, abortErrorText);
+                }
+            }
             co_return tooLargeOutcome;
         }
 

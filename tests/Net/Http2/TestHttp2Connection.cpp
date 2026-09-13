@@ -1745,6 +1745,62 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：发完完整响应后可以请对端中止请求正文——RST_STREAM(NO_ERROR) 只终止这条流，
+     *        连接照旧可用，且在途补发的 DATA 被忽略而不会把连接判死
+     */
+    TEST(Http2Connection, RequestsPeerToAbortStreamAfterEarlyResponse)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+
+        // 先发出完整响应（413）：正文超限时就是这样「先应答、再请对端别传了」
+        std::string errorText = "脏数据";
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 413U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        ASSERT_TRUE(connection.abortStream(1U, "响应已发出，不再需要剩余正文", &errorText)) << errorText;
+        const std::vector<Http2Frame> abortFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(abortFrames.size(), 1U) << "中止只发一条 RST_STREAM";
+        EXPECT_EQ(abortFrames[0].header.type, Http2FrameType::RstStream);
+        EXPECT_EQ(abortFrames[0].header.streamId, 1U);
+        EXPECT_EQ(abortFrames[0].header.flags, 0) << "RST_STREAM 不带标志";
+
+        // 错误码必须是 NO_ERROR：RFC 9113 §8.1 的「请对端无错地中止发送」，不是把这条流判成出错
+        Http2RstStreamPayload payload;
+        std::string parseErrorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(abortFrames[0], payload, &parseErrorText)) << parseErrorText;
+        EXPECT_EQ(payload.errorCode, Http2ErrorCode::NoError);
+
+        Http2StreamState streamState{};
+        ASSERT_TRUE(connection.tryGetStreamState(1U, streamState));
+        EXPECT_EQ(streamState, Http2StreamState::Closed);
+        EXPECT_FALSE(connection.hasFailed()) << "中止单流不该把连接判死";
+
+        // 对端在收到 RST_STREAM 之前补发的 DATA：忽略、不判错，也不能再交给上层（流已终止）
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, "late")), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.takeReceivedData().empty()) << "已终止流的正文不该再交给上层";
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        // 已经终止的流与不存在的流都拒绝中止，且不写任何字节
+        static_cast<void>(connection.takeOutgoingBytes());
+        EXPECT_FALSE(connection.abortStream(1U, "重复中止", &errorText));
+        EXPECT_FALSE(errorText.empty()) << "失败必须给出可排查的中文原因";
+        EXPECT_FALSE(connection.abortStream(99U, "不存在的流", &errorText));
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "被拒的调用不得写入任何字节";
+
+        // 连接照旧可用：另一条流的信息性请求能正常应答
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
+                                             makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.takeRequests().size(), 1U);
+        ASSERT_EQ(connection.sendResponseHeaders(3U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.state(), Http2ConnectionState::Open) << "单流中止不该让连接进入关闭中或失败态";
+    }
+
+    /**
      * @brief 钉住：同一段字节逐字节喂与一次性喂，交出的请求、正文与待发字节完全一致
      */
     TEST(Http2Connection, ByteByByteFeedingMatchesSingleFeed)

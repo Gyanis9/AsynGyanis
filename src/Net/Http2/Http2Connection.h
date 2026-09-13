@@ -286,6 +286,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool failConnection(Http2ErrorCode errorCode, std::string_view reason, std::string *errorText = nullptr);
 
         /**
+         * @brief 请对端无错地中止某条流的发送：发 RST_STREAM(NO_ERROR) 并终止该流
+         *
+         * @details 用于「响应已经完整发出、不再需要请求正文」的情形——最典型的是请求正文超限后的 413：
+         *          RFC 9113 §8.1 明确允许服务端在发完完整响应后，用一个 NO_ERROR 的 RST_STREAM
+         *          请对端中止发送请求正文，本端因此不必把剩余的字节白收一遍再丢掉。与 failStream()
+         *          的区别只在错误码与语义：那条路是「这条流出错了」，本条是「这条流不需要了」。
+         * @param streamId 目标流号
+         * @param reason 中文原因，只写进 lastStreamErrorMessage() 供排查（不发给对端）
+         * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+         * @return true 已把 RST_STREAM 排进待发字节并终止该流
+         * @return false 没有写入任何字节：连接状态不允许收发、流不在账本里或已经终止
+         */
+        [[nodiscard]] bool abortStream(std::uint32_t streamId, std::string_view reason, std::string *errorText = nullptr);
+
+        /**
          * @brief 本端初始 SETTINGS 是否还没被对端 ACK
          * @details 对端在约定时限内一直不回 ACK 属连接错误（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）；
          *          上层据此把连接的空闲截止时间切到握手期专项限额，超时即收口。

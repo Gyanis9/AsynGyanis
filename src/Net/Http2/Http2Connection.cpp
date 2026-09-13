@@ -324,6 +324,29 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    bool Http2Connection::abortStream(const std::uint32_t streamId, const std::string_view reason, std::string *const errorText)
+    {
+        clearError(errorText);
+        if (m_state != Http2ConnectionState::Open && m_state != Http2ConnectionState::Closing)
+        {
+            writeError(errorText, std::format("连接当前状态是「{}」，不接受流操作：必须先收齐客户端前奏与对端 SETTINGS，且连接没有失败",
+                                              http2ConnectionStateName(m_state)));
+            return false;
+        }
+
+        StreamRecord *const stream = findActiveStream(streamId);
+        if (stream == nullptr)
+        {
+            writeError(errorText, std::format("流 {} 不在账本里或已经终止：只有对端开过、还没收尾的流才谈得上中止", streamId));
+            return false;
+        }
+
+        // NO_ERROR：RFC 9113 §8.1 允许服务端在发完完整响应后这样请对端中止请求正文（不是「出错」，
+        // 而是「这条流不再需要了」），因此走同一个「终止单流」的收口路径
+        failStream(*stream, Http2ErrorCode::NoError, std::string(reason));
+        return true;
+    }
+
     bool Http2Connection::failConnection(const Http2ErrorCode errorCode, const std::string_view reason, std::string *const errorText)
     {
         clearError(errorText);

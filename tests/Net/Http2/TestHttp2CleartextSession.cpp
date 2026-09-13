@@ -318,10 +318,18 @@ namespace AsynGyanis::Net
             return body;
         }
 
-        /// 取该流上响应头里某个头的值；没有该头时返回空串
-        std::string findResponseHeaderValue(const std::vector<Http2Frame> &frames, const std::uint32_t streamId, const std::string_view name)
+        /**
+         * @brief 取该流上响应头里某个头的值；没有该头、或头块解不开时返回空串
+         * @param decoder 逐条响应按到达顺序复用的解码器：服务端的 HPACK 编码器会引用前一条响应
+         *        建立起来的动态表，换一个全新的解码器就解不开第二条响应（索引无人认得）
+         * @param frames 已解出的帧
+         * @param streamId 目标流号
+         * @param name 头名
+         * @return std::string 头值；取不到时为空串
+         */
+        std::string findResponseHeaderValue(HpackDecoder &decoder, const std::vector<Http2Frame> &frames, const std::uint32_t streamId,
+                                           const std::string_view name)
         {
-            HpackDecoder decoder;
             std::vector<HpackHeaderField> headerFields;
             std::string errorText;
             if (!decoder.decode(responseHeaderBlock(frames, streamId), headerFields, &errorText))
@@ -406,7 +414,8 @@ namespace AsynGyanis::Net
                                      },
                                      kWaitTimeout)) << "没有在时限内拿到流 1 的完整响应";
 
-        EXPECT_EQ(findResponseHeaderValue(frames, 1U, ":status"), "200");
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 1U), "served-hello");
         for (const Http2Frame &frame: frames)
         {
@@ -569,7 +578,8 @@ namespace AsynGyanis::Net
                                          return hasEndStream(receivedFrames, 1U);
                                      },
                                      kWaitTimeout)) << "以尾部头块收尾的请求没有被路由（正文收齐没有被识别）";
-        EXPECT_EQ(findResponseHeaderValue(frames, 1U, ":status"), "200");
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 1U), requestBody) << "回显的正文与原请求不一致：正文没有被完整收齐";
 
         client.closeNow();
@@ -645,6 +655,94 @@ namespace AsynGyanis::Net
         EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::NoError) << "优雅关停的收尾通告带 NO_ERROR";
         EXPECT_EQ(readGoAwayLastStreamId(goAwayFrame->payload), 1U) << "已处理的最后流号是 1：对端据此知道它不必重试这条请求";
         EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：正文超过上限时回 413 并**请对端中止上传**（RST_STREAM(NO_ERROR)），
+     *        而不是把剩余字节白收一遍；连接与后续请求照常工作
+     */
+    TEST(Http2CleartextSession, AbortsOversizedUploadAfterAnswering413)
+    {
+        // 正文上限设得很小：一条 64 字节的 POST 必然越界
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 16;
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, parserLimits, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 超限的 POST：请求头不收尾、正文不收尾（对端还有更多要传）
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false);
+        requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(64U, 'x')}, 1U);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        // 413 与 RST_STREAM(NO_ERROR) 都要出现：前者是应答，后者是「别再传了」（RFC 9113 §8.1）
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         bool hasTooLarge = false;
+                                         bool hasAbort = false;
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             hasTooLarge = hasTooLarge || frame.header.type == Http2FrameType::Headers;
+                                             hasAbort = hasAbort || frame.header.type == Http2FrameType::RstStream;
+                                         }
+                                         return hasTooLarge && hasAbort;
+                                     },
+                                     kWaitTimeout)) << "超限上传没有收到 413 与中止请求的 RST_STREAM";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "413");
+        Http2ErrorCode abortErrorCode = Http2ErrorCode::ProtocolError;
+        bool hasAbortFrame = false;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.type == Http2FrameType::RstStream && frame.header.streamId == 1U)
+            {
+                Http2RstStreamPayload payload;
+                std::string parseErrorText;
+                ASSERT_TRUE(parseHttp2RstStreamPayload(frame, payload, &parseErrorText)) << parseErrorText;
+                abortErrorCode = payload.errorCode;
+                hasAbortFrame = true;
+            }
+        }
+        ASSERT_TRUE(hasAbortFrame) << "流 1 上没有中止请求的 RST_STREAM";
+        EXPECT_EQ(abortErrorCode, Http2ErrorCode::NoError)
+                << "请对端中止发送用的是 NO_ERROR（§8.1），不是把这条流判成出错";
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "中止单流不该把连接收掉";
+        }
+
+        // 连接照常工作：越界请求之后的另一条请求仍得到 200
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 3U);
+                                     },
+                                     kWaitTimeout)) << "越界上传之后连接不再可用";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello");
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }
 } // namespace AsynGyanis::Net
