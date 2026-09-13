@@ -48,6 +48,20 @@ namespace AsynGyanis::Net
          */
         TcpServer(Core::EventLoop &loop, const Core::InetAddress &address);
 
+        /**
+         * @brief 用「已经在监听中的套接字」构造服务器：不 bind、不 listen，直接开始接受连接
+         *
+         * @details 零停机重启的第二半：上一代进程把监听套接字交出来（或由 supervisor 持有），
+         *          新一代接手它继续服务，端口全程不关，因此不存在「新进程还没起来、旧进程已经不接」的
+         *          空窗。`start()` / `startAccepting()` 与按地址构造时完全一样。
+         * @param loop 事件循环，要求与按地址构造时相同
+         * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符，所有权随之转移
+         *        （服务器收口时会关掉它）
+         * @throws Base::InvalidArgumentException 描述符无效
+         * @see TcpAcceptor::TcpAcceptor(Core::EventLoop &, int)
+         */
+        TcpServer(Core::EventLoop &loop, int adoptedListeningDescriptor);
+
         TcpServer(const TcpServer &) = delete;
 
         TcpServer &operator=(const TcpServer &) = delete;

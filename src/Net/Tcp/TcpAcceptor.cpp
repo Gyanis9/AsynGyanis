@@ -1,5 +1,6 @@
 #include "Net/Tcp/TcpAcceptor.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -39,6 +40,21 @@ namespace AsynGyanis::Net
                    || socketErrorCode == Platform::PlatformError::kNoBufferSpace
                    || socketErrorCode == Platform::PlatformError::kOutOfMemory;
         }
+        /**
+         * @brief 校验接手用的描述符，无效即报中文可行动原因
+         * @param adoptedDescriptor 调用方交来的监听套接字描述符
+         * @return int 原样返回的描述符，便于直接用在初始化列表里
+         */
+        [[nodiscard]] int requireValidAdoptedDescriptor(const int adoptedDescriptor)
+        {
+            if (!Platform::FileDescriptor::isValid(adoptedDescriptor))
+            {
+                throw Base::InvalidArgumentException(
+                        "TcpAcceptor: 接手的监听套接字描述符无效。它必须是已经在监听中的套接字"
+                        "（由 socket activation 或父进程传递而来），请检查传给构造函数的值");
+            }
+            return adoptedDescriptor;
+        }
     } // namespace
 
     TcpAcceptor::TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address) :
@@ -53,8 +69,31 @@ namespace AsynGyanis::Net
         // 只会连续失败，把「等一会儿再来」变成「直接报错停机」
     }
 
+    TcpAcceptor::TcpAcceptor(Core::EventLoop &loop, const int adoptedListeningDescriptor) :
+        m_loop(loop),
+        // 校验放在 AsyncSocket 之前：无效描述符是用法错误，先报成中文原因，而不是让底层 socket
+        // 调用抛一个看不出所以然的系统错误
+        m_listenSocket(loop, requireValidAdoptedDescriptor(adoptedListeningDescriptor)),
+        // 地址只能问内核：接手方并不知道上一代绑的是哪个地址，而日志与 listeningPort() 都要报真值
+        m_address(m_listenSocket.localAddress()),
+        m_backoffTimer(loop),
+        // 已经在监听就说明已经绑定：bind()/listen() 的短路口径依赖这个标记。
+        // 漏了它会去重新绑定一个已经绑好的套接字，必然失败
+        m_bound(true),
+        m_isAdopted(true)
+    {
+        // 非阻塞由 AsyncSocket 的该构造函数设置（继承来的监听套接字通常是阻塞的）
+    }
+
     bool TcpAcceptor::bind()
     {
+        // 接手的套接字已经在监听中：bind() 的后置条件此刻成立，直接返回成功。
+        // 与 m_bound 一起判断，是为了让 close() 之后的同一个对象不再声称自己处于监听状态
+        if (m_isAdopted && m_bound)
+        {
+            return true;
+        }
+
         const int listenDescriptor = m_listenSocket.fileDescriptor();
 
         // 监听套接字统一开启地址复用：重启服务时上一代连接留下的 TIME_WAIT 会占住端口，
@@ -89,6 +128,12 @@ namespace AsynGyanis::Net
         if (!m_bound)
         {
             return false;
+        }
+
+        // 接手的套接字已经在监听中，理由同 bind()：后置条件成立，且绝不能重新 listen
+        if (m_isAdopted)
+        {
+            return true;
         }
 
         return m_listenSocket.listen(backlog);

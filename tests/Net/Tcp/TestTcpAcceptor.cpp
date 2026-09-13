@@ -10,6 +10,7 @@
 #include "Net/Tcp/TcpAcceptor.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncSocket.h"
@@ -305,6 +306,41 @@ namespace AsynGyanis::Net
             std::uint16_t                   m_localPort{0};                                   ///< 本端源端口
         };
 
+        /**
+         * @brief 造一个由「外部」持有的监听套接字：模拟 socket activation 或上一代进程交出的那一个
+         * @details 用例自己按平台调用 bind + listen——不能借 TcpAcceptor 来造，否则被测对象既造
+         *          又接手，就测不出「接手」这件事本身
+         * @param boundPort 输出：内核实际分配的端口（bind 到 0 由内核挑）
+         * @return int 处于监听状态的描述符；失败返回 kInvalid
+         */
+        int createExternalListeningSocket(std::uint16_t &boundPort)
+        {
+            const int descriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!Platform::FileDescriptor::isValid(descriptor))
+            {
+                return Platform::FileDescriptor::kInvalid;
+            }
+
+            const int reuseAddressOption = 1;
+            [[maybe_unused]] const int reuseResult =
+                    ::setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&reuseAddressOption),
+                                 static_cast<socklen_t>(sizeof(reuseAddressOption)));
+
+            sockaddr_in address{};
+            address.sin_family      = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port        = 0;
+            if (::bind(descriptor, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0
+                || ::listen(descriptor, kDefaultListenBacklog) != 0)
+            {
+                Platform::FileDescriptor::close(descriptor);
+                return Platform::FileDescriptor::kInvalid;
+            }
+
+            boundPort = queryBoundAddress(descriptor).port();
+            return descriptor;
+        }
+
         /// 把若干端口排序后返回，用于「按集合而非顺序」比对
         std::vector<std::uint16_t> sortedPorts(const std::vector<std::uint16_t> &ports)
         {
@@ -580,6 +616,53 @@ namespace AsynGyanis::Net
             EXPECT_TRUE(outcome.isCompletedCleanly()) << "可恢复错误被当成终止性错误抛出";
             EXPECT_EQ(outcome.acceptedSockets.size(), 1u);
         }
+    }
+
+    /**
+     * @brief 钉住零停机重启的接手侧：接手一个外部已经在监听的套接字，并在它上面接受连接
+     * @details 接手路径的三件事缺一不可——不重新绑定（端口全程不关）、报出内核真正绑定的地址、
+     *          真的能在这条监听队列上收连接。任一处错都会让「新旧进程接力」变成「端口空窗」。
+     */
+    TEST(TcpAcceptor, AdoptsExternallyListeningSocketAndAcceptsOnIt)
+    {
+        // 本用例自己按平台调用造套接字，因此先保证 Winsock 已初始化（LoopbackClient 也是这样做的）
+        Platform::Socket::Initialization socketInitialization;
+
+        std::uint16_t externalPort = 0;
+        const int     externalDescriptor = createExternalListeningSocket(externalPort);
+        ASSERT_TRUE(Platform::FileDescriptor::isValid(externalDescriptor));
+        ASSERT_NE(externalPort, 0);
+
+        Core::EventLoop loop;
+        // 描述符所有权随构造转移给监听器，用例不再自己关它
+        TcpAcceptor acceptor(loop, externalDescriptor);
+
+        // 套接字已经在监听中：这两个前置条件的后置条件此刻都成立，因此都该直接成功
+        EXPECT_TRUE(acceptor.bind());
+        EXPECT_TRUE(acceptor.listen(kDefaultListenBacklog));
+        EXPECT_EQ(acceptor.localAddress().port(), externalPort) << "接手后必须报出内核真正绑定的端口";
+        EXPECT_EQ(acceptor.fileDescriptor(), externalDescriptor) << "接手应当接管同一个套接字，而不是另开一个";
+
+        AcceptOutcome outcome;
+        Core::Task<> driverTask = driveAccept(acceptor, outcome, 1);
+        EventLoopThread loopThread(loop);
+        loopThread.schedule(driverTask);
+
+        const LoopbackClient client(externalPort);
+        ASSERT_TRUE(client.isValid());
+        EXPECT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "接手之后 accept 未被唤醒：等待上界 kWaitTimeout";
+        EXPECT_TRUE(outcome.isCompletedCleanly()) << "接手路径上的 accept 抛了异常";
+        EXPECT_EQ(outcome.acceptedSockets.size(), 1u);
+    }
+
+    /**
+     * @brief 钉住接手无效描述符是用法错误：当场给中文原因，而不是让底层 socket 报含糊的系统错误
+     */
+    TEST(TcpAcceptor, RejectsInvalidAdoptedDescriptor)
+    {
+        Core::EventLoop loop;
+        EXPECT_THROW(static_cast<void>(TcpAcceptor(loop, Platform::FileDescriptor::kInvalid)), Base::InvalidArgumentException);
     }
 
     TEST(TcpAcceptor, RebindAfterCloseSucceedsOnFreshInstance)

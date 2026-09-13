@@ -26,6 +26,12 @@ namespace AsynGyanis::Net
         // 这也是本类不做任何容器加锁的前提
     }
 
+    TcpServer::TcpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor) :
+        m_loop(loop), m_acceptor(loop, adoptedListeningDescriptor), m_idleTimer(loop)
+    {
+        // 监听器接手了外部交来的套接字，其余与按地址构造时一致
+    }
+
     Core::Task<> TcpServer::start()
     {
         co_await runAcceptLoop(nullptr);

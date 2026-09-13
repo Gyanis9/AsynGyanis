@@ -66,6 +66,15 @@ namespace AsynGyanis::Net
         HttpServer(Core::EventLoop &loop, const Core::InetAddress &address);
 
         /**
+         * @brief 用「已经在监听中的套接字」构造 HTTP 服务器：零停机重启的接手侧
+         * @param loop 事件循环，要求与按地址构造时相同
+         * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符，所有权随之转移
+         * @throws Base::InvalidArgumentException 描述符无效
+         * @see TcpServer::TcpServer(Core::EventLoop &, int)
+         */
+        HttpServer(Core::EventLoop &loop, int adoptedListeningDescriptor);
+
+        /**
          * @brief 获取路由器的引用，用于注册路由处理函数与中间件。
          * @return Router& 路由器对象，生命周期跟随本服务器
          * @note 必须在 start() 之前完成注册；运行期间改路由表虽不会崩，但生效时机不可预期

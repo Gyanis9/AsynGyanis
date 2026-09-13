@@ -13,6 +13,21 @@
 
 namespace AsynGyanis::Net
 {
+    HttpsServer::HttpsServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const std::string &certificateFile,
+                             const std::string &keyFile) :
+        TcpServer(loop, adoptedListeningDescriptor),
+        m_limits(std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::make_shared<HttpMetricsCollector>()),
+        m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
+    {
+        // 证书必须在进入接受循环之前就位，理由见按地址构造的那一处：留着一个加载失败的上下文，
+        // 表现是「端口开着、每条连接都握手失败」，比构造期直接抛异常更难排查
+        if (!m_tlsContext.loadCertificate(certificateFile, keyFile))
+        {
+            throw Base::Exception("HttpsServer: 证书或私钥加载失败（certificate=" + certificateFile + ", key=" + keyFile + "）");
+        }
+    }
+
     HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile) :
         TcpServer(loop, address),
         m_limits(std::make_shared<const HttpServerLimits>()),

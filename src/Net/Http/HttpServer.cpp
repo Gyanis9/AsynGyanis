@@ -854,6 +854,15 @@ namespace AsynGyanis::Net
         // 会话按 shared_ptr 共享持有，因此生命周期一定覆盖所有会话
     }
 
+    HttpServer::HttpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor) :
+        TcpServer(loop, adoptedListeningDescriptor),
+        m_limits(std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::make_shared<HttpMetricsCollector>()),
+        m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
+    {
+        // 默认限额、统计与 request-id 生成器同样构造即就绪，理由见按地址构造的那一处
+    }
+
     Router &HttpServer::router()
     {
         return m_router;

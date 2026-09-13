@@ -54,6 +54,23 @@ namespace AsynGyanis::Net
         TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address);
 
         /**
+         * @brief 接手一个**已经在监听中**的套接字：不新建、不 bind、不 listen
+         *
+         * @details 零停机重启靠这条路径：监听套接字由 supervisor 持有（Linux 的 socket activation、
+         *          Windows 上由服务管理器把已继承的句柄传进来），进程只负责接手它并开始接受连接。
+         *          接手后 bind()/listen() 都直接返回成功——它们的后置条件（套接字已绑定、已在监听）
+         *          此刻已经成立，且绝不能重新绑定，否则上一代仍在接受的连接会被丢掉。
+         *          本地地址从内核取（getsockname），因此 listeningPort() 报的是真值而不是调用方猜的值。
+         * @param loop 关联的事件循环，要求与按地址构造时相同（必须比本对象活得久）
+         * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符；描述符**所有权随之转移**，
+         *        本对象析构或 close() 会关掉它——对旧进程来说这正是它该做的事（关闭自己那一份、
+         *        不再接受新连接，等在途请求 drain 完再退出）
+         * @throws Base::InvalidArgumentException 描述符无效（用法错误，不交给底层报含糊的系统错误）
+         * @note 描述符会被置为非阻塞：继承来的监听套接字通常是阻塞的，不改会把事件循环卡在 accept 上
+         */
+        TcpAcceptor(Core::EventLoop &loop, int adoptedListeningDescriptor);
+
+        /**
          * @brief 默认析构，随成员生命周期自动关闭监听套接字
          *
          * @details 关闭监听套接字由 Core::AsyncSocket 的析构完成；定时器本身不持有描述符，
@@ -133,5 +150,6 @@ namespace AsynGyanis::Net
         Core::Timer                   m_backoffTimer; ///< 资源紧张时的定时退避器；预先建好是为了不在错误处理路径上做任何分配（定时器只是循环级队列的句柄，不占描述符）
         std::deque<Core::AsyncSocket> m_pending;      ///< 批量 accept 抽干监听队列时暂存的连接，下次 accept() 优先从这里取出
         bool                          m_bound{false}; ///< 是否已成功绑定，listen() 的前置条件
+        bool                          m_isAdopted{false}; ///< 是否由「接手已在监听的套接字」构造而来
     };
 } // namespace AsynGyanis::Net
