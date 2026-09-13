@@ -61,6 +61,20 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 拼一个「带增量索引的字面量」，名字与值都是字面量（RFC 7541 §6.2.1 的名字索引 0）
+         * @param name 头名
+         * @param value 头值
+         * @return std::string 编码结果
+         */
+        std::string hpackLiteralField(const std::string_view name, const std::string_view value)
+        {
+            std::string bytes = encodeHpackInteger(0, 6, 0x40);
+            appendHpackString(bytes, name);
+            appendHpackString(bytes, value);
+            return bytes;
+        }
+
+        /**
          * @brief 拼一个 GET 请求头块（:method GET、:scheme http、:path、:authority）
          * @param path 请求路径
          * @return std::string 头块字节。索引取自 RFC 7541 Appendix A：2 是 :method: GET、
@@ -89,6 +103,34 @@ namespace AsynGyanis::Net
                                                                 .endHeaders = true,
                                                                 .headerBlockFragment = headerBlock},
                                            streamId);
+        }
+
+        /**
+         * @brief 拼一个 POST 请求头块（:method POST、:scheme http、:path、:authority）
+         * @param path 请求路径
+         * @return std::string 头块字节。索引取自 RFC 7541 Appendix A：3 是 :method: POST、6 是 :scheme: http
+         */
+        std::string makePostRequestHeaderBlock(const std::string_view path)
+        {
+            std::string headerBlock;
+            headerBlock += encodeHpackInteger(3, 7, 0x80);
+            headerBlock += encodeHpackInteger(6, 7, 0x80);
+            headerBlock += hpackLiteralField(4, path);
+            headerBlock += hpackLiteralField(1, "localhost");
+            return headerBlock;
+        }
+
+        /**
+         * @brief 拼一个只带普通头、并以上面收尾的尾部头块帧（RFC 9113 §8.1）
+         * @param streamId 流号
+         * @return std::string 完整帧字节
+         */
+        std::string makeTrailersFrame(const std::uint32_t streamId)
+        {
+            // 尾部头块里不得出现伪头（:method 之类），因此用一个普通头；它同时是 END_STREAM 的载体
+            return encodeHttp2HeadersFrame(
+                    Http2HeadersPayload{.endStream = true, .endHeaders = true, .headerBlockFragment = hpackLiteralField("x-trailer", "done")},
+                    streamId);
         }
 
         /// 一条明文 h2 客户端：只负责「发字节、把收到的字节解成帧」
@@ -459,6 +501,65 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.waitForText(responseText, "HTTP/1.", kWaitTimeout)) << "关闭 h2c 时没有按 HTTP/1.1 应答：已收到 "
                                                                               << responseText.size() << " 字节";
         EXPECT_FALSE(responseText.empty());
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：正文以**尾部头块**收尾的请求（不带 END_STREAM 的 DATA + 带 END_STREAM 的 trailers）
+     *        会被正常路由并回响应——尾部头块也是消息结尾（RFC 9113 §8.1）
+     * @details 会话只按 `Http2ReceivedData::endStream` 判定「正文收齐」，不读流状态；连接层若在
+     *          尾部头块分支只把流置成 half-closed (remote) 而不产出收尾片段，这条请求就永远等不到
+     *          收齐、不会进路由（客户端只能等到超时）。本用例的响应必须在时限内出现。
+     */
+    TEST(Http2CleartextSession, ServesRequestWhoseBodyEndsWithTrailers)
+    {
+        const std::string_view requestBody = "trailed-body";
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [requestBody](Router &router, Core::EventLoop &)
+        {
+            router.post("/echo", [requestBody](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            {
+                // 回显正文：只有正文真被收齐了，回显才等于原样
+                static_cast<void>(requestBody);
+                response.setBody(request.body());
+                co_return;
+            });
+        }, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 三段一气的请求：请求头（不收尾）→ 正文（不收尾）→ 尾部头块（收尾）
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false);
+        requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(requestBody)}, 1U);
+        requestBytes += makeTrailersFrame(1U);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "以尾部头块收尾的请求没有被路由（正文收齐没有被识别）";
+        EXPECT_EQ(findResponseHeaderValue(frames, 1U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), requestBody) << "回显的正文与原请求不一致：正文没有被完整收齐";
+
+        client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }

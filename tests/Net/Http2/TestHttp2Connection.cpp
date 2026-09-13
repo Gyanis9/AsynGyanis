@@ -1469,7 +1469,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：尾部头块只校验语法、不交出字段，END_STREAM 照常半关对端方向（§8.1）
+     * @brief 钉住：尾部头块只校验语法、不交出字段；END_STREAM 照常半关对端方向，并交出一条零长收尾片段（§8.1）
      */
     TEST(Http2Connection, ValidatesTrailerHeaderBlocksWithoutDeliveringThem)
     {
@@ -1479,13 +1479,20 @@ namespace AsynGyanis::Net
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
-        // 合法的尾部头块：字段有意丢弃（与 HttpParser 对分块 trailer 的既有处置一致），但流要按 END_STREAM 半关
+        // 合法的尾部头块：字段有意丢弃（与 HttpParser 对分块 trailer 的既有处置一致），但流要按 END_STREAM 半关。
+        // 交出的那一条是**零长**的收尾信号：上层只按 Http2ReceivedData::endStream 判定正文收齐，
+        // 少了它，以尾部头块收尾的请求永远等不到收齐、不会进路由
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
                                             hpackLiteralField("x-checksum", "42"))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
         EXPECT_TRUE(connection.takeRequests().empty()) << "尾部头块不是新请求";
-        EXPECT_TRUE(connection.takeReceivedData().empty());
+        const std::vector<Http2ReceivedData> trailerData = connection.takeReceivedData();
+        ASSERT_EQ(trailerData.size(), 1U) << "收尾信号必须交给上层：以尾部头块收尾的请求靠它才知道正文收齐了";
+        EXPECT_EQ(trailerData[0].streamId, 1U);
+        EXPECT_TRUE(trailerData[0].data.empty()) << "交出的只有收尾信号，尾部头块的字段一个都不在里面";
+        EXPECT_TRUE(trailerData[0].endStream);
+        EXPECT_EQ(trailerData[0].flowControlByteCount, 0U);
         Http2StreamState streamState{};
         ASSERT_TRUE(connection.tryGetStreamState(1U, streamState));
         EXPECT_EQ(streamState, Http2StreamState::HalfClosedRemote);
@@ -1689,6 +1696,52 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(errorText.empty());
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::SettingsTimeout) << "第一个原因才是根因，不得改写";
         EXPECT_TRUE(connection.takeOutgoingBytes().empty());
+    }
+
+    /**
+     * @brief 钉住：以尾部头块收尾的正文会让上层看到一条零长、endStream 为 true 的片段
+     * @details 上层（会话）只按 `Http2ReceivedData::endStream` 判定「正文收齐」，不读流状态；
+     *          连接层若在尾部头块分支只把流置成 half-closed (remote) 而不产出这条收尾片段，
+     *          这条请求会一直等不到收齐、永远不路由（客户端只能等到超时）
+     */
+    TEST(Http2Connection, ReportsBodyCompletionWhenTrailersEndTheStream)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        // POST 头块不带 END_STREAM：这条流还在等正文
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(connection.takeRequests().size(), 1U);
+        EXPECT_TRUE(connection.takeReceivedData().empty()) << "还没收到正文";
+
+        // 正文片段不带 END_STREAM：上层按它攒正文，但此刻还不知道正文收齐了
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, "part")), Http2ConnectionFeedStatus::NeedMore);
+        std::vector<Http2ReceivedData> receivedData = connection.takeReceivedData();
+        ASSERT_EQ(receivedData.size(), 1U);
+        EXPECT_EQ(receivedData[0].streamId, 1U);
+        EXPECT_EQ(receivedData[0].data, "part");
+        EXPECT_FALSE(receivedData[0].endStream) << "本片没有 END_STREAM：正文还没收齐";
+
+        // 尾部头块带 END_STREAM（§8.1）：正文到此为止，必须让上层看到收尾
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                             hpackLiteralField("x-trailer", "done"))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        receivedData = connection.takeReceivedData();
+        ASSERT_EQ(receivedData.size(), 1U) << "尾部头块必须带出一条收尾片段，否则上层永远等不到正文收齐";
+        EXPECT_EQ(receivedData[0].streamId, 1U);
+        EXPECT_TRUE(receivedData[0].data.empty()) << "收尾片段是零长的：尾部头块本身不是正文";
+        EXPECT_TRUE(receivedData[0].endStream);
+        EXPECT_EQ(receivedData[0].flowControlByteCount, 0U) << "零长片段不占流控窗口，不会让对端的窗口被多还";
+
+        Http2StreamState streamState{};
+        ASSERT_TRUE(connection.tryGetStreamState(1U, streamState));
+        EXPECT_EQ(streamState, Http2StreamState::HalfClosedRemote) << "对端方向收尾，本端方向还开着";
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        // 本端照旧能在这条流上回响应：尾部头块只结束了对端方向
+        std::string errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
     }
 
     /**

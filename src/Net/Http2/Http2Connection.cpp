@@ -1038,10 +1038,18 @@ namespace AsynGyanis::Net
                            std::format("流 {} 的尾部头块不合规：{}", streamId, errorText));
                 return true;
             }
-            // 尾部头块的字段有意不交给任何人：与 HttpParser 对分块 trailer 的既有处置一致（只校验语法与上限）
+            // 尾部头块的字段有意不交给任何人：与 HttpParser 对分块 trailer 的既有处置一致（只校验语法与上限）。
+            // 但它可能携带 END_STREAM（§8.1：服务端要接受以尾部头块收尾的请求），此时必须让上层看到
+            // 「这条流的正文收齐了」——上层只按 Http2ReceivedData::endStream 判定收齐，不读流状态，
+            // 少这一条零长片段，这条请求会一直等不到收齐、永远不路由
             if (endStream)
             {
                 noteRemoteEndStream(*stream);
+                // 零长片段：不占流控窗口（creditReceivedData() 对 0 直接放过），只用来传达收尾
+                m_pendingReceivedData.push_back(Http2ReceivedData{.streamId = streamId,
+                                                                  .data = {},
+                                                                  .endStream = true,
+                                                                  .flowControlByteCount = 0});
             }
             return true;
         }
