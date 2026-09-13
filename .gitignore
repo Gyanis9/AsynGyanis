@@ -1,4 +1,9 @@
 /.idea/
 /build/
+
+# Conan 的 test_package 会在自己目录下生成构建目录与 CMakeUserPresets.json，
+# 它们是本机产物（路径里带着本机 Conan 缓存位置），不该进仓库
+/packaging/conan/test_package/build/
+/packaging/conan/test_package/CMakeUserPresets.json
 /bin/
 __pycache__/

@@ -111,15 +111,26 @@ add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 enable_testing()
 
 add_subdirectory(src)
-add_subdirectory(tests)
 
-# 示例程序纳入构建：它的 CMakeLists 早已就绪，但此前从未被加入，示例与库的 API 脱节
-# 因此长期无人发现。纳入后示例随常规构建一起编译，任何时候都是可用的
-add_subdirectory(samples)
+# 两个开发者开关：默认全开（本地开发与 CI 都要它们），只有把本仓库打成对外分发包时才关。
+# tests 需要 GTest、微基准与示例是纯粹的开发者产物，消费方不该为它们付出配置与构建代价。
+# 关掉之后库本身与安装规则完全不受影响，因此这两个开关不改变任何对外行为。
+option(ASYN_BUILD_TESTS "构建测试与热路径微基准" ON)
+option(ASYN_BUILD_SAMPLES "构建示例程序" ON)
 
-# 热路径微基准（HPACK 编解码、h1 解析器、h2 帧解码、HTTP 日期、request-id 生成）。
-# 同样纳入常规构建：它量的是库的热路径，一旦不编译就会在库接口变化时悄悄失效。
-add_subdirectory(benchmarks/microbench)
+if(ASYN_BUILD_TESTS)
+    add_subdirectory(tests)
+
+    # 热路径微基准（HPACK 编解码、h1 解析器、h2 帧解码、HTTP 日期、request-id 生成）。
+    # 与测试同开关：它量的是库的热路径，一旦不编译就会在库接口变化时悄悄失效。
+    add_subdirectory(benchmarks/microbench)
+endif()
+
+if(ASYN_BUILD_SAMPLES)
+    # 示例程序纳入构建：它的 CMakeLists 早已就绪，但此前从未被加入，示例与库的 API 脱节
+    # 因此长期无人发现。纳入后示例随常规构建一起编译，任何时候都是可用的
+    add_subdirectory(samples)
+endif()
 
 # ============================================================================
 # 对外发布：安装规则与 CMake 包配置
