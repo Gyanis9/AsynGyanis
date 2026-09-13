@@ -77,7 +77,7 @@
 #pragma warning(pop)
 #endif
 
-WEPOLL_INTERNAL int nt_global_init(void);
+WEPOLL_INTERNAL int ntGlobalInit(void);
 
 typedef LONG NTSTATUS;
 typedef NTSTATUS* PNTSTATUS;
@@ -175,8 +175,8 @@ typedef struct _OBJECT_ATTRIBUTES {
                                           \
   X(ULONG, WINAPI, RtlNtStatusToDosError, (NTSTATUS Status))
 
-#define X(return_type, attributes, name, parameters) \
-  WEPOLL_INTERNAL_VAR return_type(attributes* name) parameters = nullptr;
+#define X(returnType, attributes, name, parameters) \
+  WEPOLL_INTERNAL_VAR returnType(attributes* name) parameters = nullptr;
 NT_NTDLL_IMPORT_LIST(X)
 #undef X
 
@@ -202,51 +202,51 @@ typedef struct _AFD_POLL_INFO {
   AFD_POLL_HANDLE_INFO Handles[1];
 } AFD_POLL_INFO, *PAFD_POLL_INFO;
 
-WEPOLL_INTERNAL int afd_create_helper_handle(HANDLE iocp_handle,
-                                             HANDLE* afd_helper_handle_out);
+WEPOLL_INTERNAL int afdCreateHelperHandle(HANDLE iocpHandle,
+                                             HANDLE* afdHelperHandleOut);
 
-WEPOLL_INTERNAL int afd_poll(HANDLE afd_helper_handle,
-                             AFD_POLL_INFO* poll_info,
-                             IO_STATUS_BLOCK* io_status_block);
-WEPOLL_INTERNAL int afd_cancel_poll(HANDLE afd_helper_handle,
-                                    IO_STATUS_BLOCK* io_status_block);
+WEPOLL_INTERNAL int afdPoll(HANDLE afdHelperHandle,
+                             AFD_POLL_INFO* pollInfo,
+                             IO_STATUS_BLOCK* ioStatusBlock);
+WEPOLL_INTERNAL int afdCancelPoll(HANDLE afdHelperHandle,
+                                    IO_STATUS_BLOCK* ioStatusBlock);
 
-#define return_map_error(value) \
+#define RETURN_MAP_ERROR(value) \
   do {                          \
-    err_map_win_error();        \
+    errorMapWindowsError();        \
     return (value);             \
   } while (0)
 
-#define return_set_error(value, error) \
+#define RETURN_SET_ERROR(value, error) \
   do {                                 \
-    err_set_win_error(error);          \
+    errorSetWindowsError(error);          \
     return (value);                    \
   } while (0)
 
-WEPOLL_INTERNAL void err_map_win_error(void);
-WEPOLL_INTERNAL void err_set_win_error(DWORD error);
-WEPOLL_INTERNAL int err_check_handle(HANDLE handle);
+WEPOLL_INTERNAL void errorMapWindowsError(void);
+WEPOLL_INTERNAL void errorSetWindowsError(DWORD error);
+WEPOLL_INTERNAL int errorCheckHandle(HANDLE handle);
 
 #define IOCTL_AFD_POLL 0x00012024
 
-static UNICODE_STRING afd__helper_name =
+static UNICODE_STRING afdHelperName =
     RTL_CONSTANT_STRING(L"\\Device\\Afd\\Wepoll");
 
-static OBJECT_ATTRIBUTES afd__helper_attributes =
-    RTL_CONSTANT_OBJECT_ATTRIBUTES(&afd__helper_name, 0);
+static OBJECT_ATTRIBUTES afdHelperAttributes =
+    RTL_CONSTANT_OBJECT_ATTRIBUTES(&afdHelperName, 0);
 
-int afd_create_helper_handle(HANDLE iocp_handle,
-                             HANDLE* afd_helper_handle_out) {
-  HANDLE afd_helper_handle;
+int afdCreateHelperHandle(HANDLE iocpHandle,
+                             HANDLE* afdHelperHandleOut) {
+  HANDLE afdHelperHandle;
   IO_STATUS_BLOCK iosb;
   NTSTATUS status;
 
   /* By opening \Device\Afd without specifying any extended attributes, we'll
    * get a handle that lets us talk to the AFD driver, but that doesn't have an
    * associated endpoint (so it's not a socket). */
-  status = NtCreateFile(&afd_helper_handle,
+  status = NtCreateFile(&afdHelperHandle,
                         SYNCHRONIZE,
-                        &afd__helper_attributes,
+                        &afdHelperAttributes,
                         &iosb,
                         nullptr,
                         0,
@@ -256,118 +256,118 @@ int afd_create_helper_handle(HANDLE iocp_handle,
                         nullptr,
                         0);
   if (status != STATUS_SUCCESS)
-    return_set_error(-1, RtlNtStatusToDosError(status));
+    RETURN_SET_ERROR(-1, RtlNtStatusToDosError(status));
 
   /* 句柄已经拿到：这两步任一步失败都要先关掉它再报错。短路求值保证第二步只在第一步
      成功时才执行，报出来的仍是真正失败那一步的错误码 */
-  if (CreateIoCompletionPort(afd_helper_handle, iocp_handle, 0, 0) == nullptr ||
-      !SetFileCompletionNotificationModes(afd_helper_handle,
+  if (CreateIoCompletionPort(afdHelperHandle, iocpHandle, 0, 0) == nullptr ||
+      !SetFileCompletionNotificationModes(afdHelperHandle,
                                           FILE_SKIP_SET_EVENT_ON_HANDLE)) {
-    CloseHandle(afd_helper_handle);
-    return_map_error(-1);
+    CloseHandle(afdHelperHandle);
+    RETURN_MAP_ERROR(-1);
   }
 
-  *afd_helper_handle_out = afd_helper_handle;
+  *afdHelperHandleOut = afdHelperHandle;
   return 0;
 }
 
-int afd_poll(HANDLE afd_helper_handle,
-             AFD_POLL_INFO* poll_info,
-             IO_STATUS_BLOCK* io_status_block) {
+int afdPoll(HANDLE afdHelperHandle,
+             AFD_POLL_INFO* pollInfo,
+             IO_STATUS_BLOCK* ioStatusBlock) {
   NTSTATUS status;
 
   /* Blocking operation is not supported. */
-  assert(io_status_block != nullptr);
+  assert(ioStatusBlock != nullptr);
 
-  io_status_block->Status = STATUS_PENDING;
-  status = NtDeviceIoControlFile(afd_helper_handle,
+  ioStatusBlock->Status = STATUS_PENDING;
+  status = NtDeviceIoControlFile(afdHelperHandle,
                                  nullptr,
                                  nullptr,
-                                 io_status_block,
-                                 io_status_block,
+                                 ioStatusBlock,
+                                 ioStatusBlock,
                                  IOCTL_AFD_POLL,
-                                 poll_info,
-                                 sizeof *poll_info,
-                                 poll_info,
-                                 sizeof *poll_info);
+                                 pollInfo,
+                                 sizeof *pollInfo,
+                                 pollInfo,
+                                 sizeof *pollInfo);
 
   if (status == STATUS_SUCCESS)
     return 0;
   else if (status == STATUS_PENDING)
-    return_set_error(-1, ERROR_IO_PENDING);
+    RETURN_SET_ERROR(-1, ERROR_IO_PENDING);
   else
-    return_set_error(-1, RtlNtStatusToDosError(status));
+    RETURN_SET_ERROR(-1, RtlNtStatusToDosError(status));
 }
 
-int afd_cancel_poll(HANDLE afd_helper_handle,
-                    IO_STATUS_BLOCK* io_status_block) {
-  NTSTATUS cancel_status;
-  IO_STATUS_BLOCK cancel_iosb;
+int afdCancelPoll(HANDLE afdHelperHandle,
+                    IO_STATUS_BLOCK* ioStatusBlock) {
+  NTSTATUS cancelStatus;
+  IO_STATUS_BLOCK cancelIoStatusBlock;
 
   /* If the poll operation has already completed or has been cancelled earlier,
    * there's nothing left for us to do. */
-  if (io_status_block->Status != STATUS_PENDING)
+  if (ioStatusBlock->Status != STATUS_PENDING)
     return 0;
 
-  cancel_status =
-      NtCancelIoFileEx(afd_helper_handle, io_status_block, &cancel_iosb);
+  cancelStatus =
+      NtCancelIoFileEx(afdHelperHandle, ioStatusBlock, &cancelIoStatusBlock);
 
   /* NtCancelIoFileEx() may return STATUS_NOT_FOUND if the operation completed
    * just before calling NtCancelIoFileEx(). This is not an error. */
-  if (cancel_status == STATUS_SUCCESS || cancel_status == STATUS_NOT_FOUND)
+  if (cancelStatus == STATUS_SUCCESS || cancelStatus == STATUS_NOT_FOUND)
     return 0;
   else
-    return_set_error(-1, RtlNtStatusToDosError(cancel_status));
+    RETURN_SET_ERROR(-1, RtlNtStatusToDosError(cancelStatus));
 }
 
-WEPOLL_INTERNAL int epoll_global_init(void);
+WEPOLL_INTERNAL int epollGlobalInit(void);
 
-WEPOLL_INTERNAL int init(void);
+WEPOLL_INTERNAL int ensureInitialized(void);
 
-typedef struct port_state port_state_t;
-typedef struct queue queue_t;
-typedef struct sock_state sock_state_t;
-typedef struct ts_tree_node ts_tree_node_t;
+struct PortState;
+struct Queue;
+struct SockState;
+struct TsTreeNode;
 
-WEPOLL_INTERNAL port_state_t* port_new(HANDLE* iocp_handle_out);
-WEPOLL_INTERNAL int port_close(port_state_t* port_state);
-WEPOLL_INTERNAL int port_delete(port_state_t* port_state);
+WEPOLL_INTERNAL PortState* portNew(HANDLE* iocpHandleOut);
+WEPOLL_INTERNAL int portClose(PortState* portState);
+WEPOLL_INTERNAL int portDelete(PortState* portState);
 
-WEPOLL_INTERNAL int port_wait(port_state_t* port_state,
+WEPOLL_INTERNAL int portWait(PortState* portState,
                               struct epoll_event* events,
                               int maxevents,
                               int timeout);
 
-WEPOLL_INTERNAL int port_ctl(port_state_t* port_state,
+WEPOLL_INTERNAL int portCtl(PortState* portState,
                              int op,
                              SOCKET sock,
                              struct epoll_event* ev);
 
-WEPOLL_INTERNAL int port_register_socket(port_state_t* port_state,
-                                         sock_state_t* sock_state,
+WEPOLL_INTERNAL int portRegisterSocket(PortState* portState,
+                                         SockState* sockState,
                                          SOCKET socket);
-WEPOLL_INTERNAL void port_unregister_socket(port_state_t* port_state,
-                                            sock_state_t* sock_state);
-WEPOLL_INTERNAL sock_state_t* port_find_socket(port_state_t* port_state,
+WEPOLL_INTERNAL void portUnregisterSocket(PortState* portState,
+                                            SockState* sockState);
+WEPOLL_INTERNAL SockState* portFindSocket(PortState* portState,
                                                SOCKET socket);
 
-WEPOLL_INTERNAL void port_request_socket_update(port_state_t* port_state,
-                                                sock_state_t* sock_state);
-WEPOLL_INTERNAL void port_cancel_socket_update(port_state_t* port_state,
-                                               sock_state_t* sock_state);
+WEPOLL_INTERNAL void portRequestSocketUpdate(PortState* portState,
+                                                SockState* sockState);
+WEPOLL_INTERNAL void portCancelSocketUpdate(PortState* portState,
+                                               SockState* sockState);
 
-WEPOLL_INTERNAL void port_add_deleted_socket(port_state_t* port_state,
-                                             sock_state_t* sock_state);
-WEPOLL_INTERNAL void port_remove_deleted_socket(port_state_t* port_state,
-                                                sock_state_t* sock_state);
+WEPOLL_INTERNAL void portAddDeletedSocket(PortState* portState,
+                                             SockState* sockState);
+WEPOLL_INTERNAL void portRemoveDeletedSocket(PortState* portState,
+                                                SockState* sockState);
 
-WEPOLL_INTERNAL HANDLE port_get_iocp_handle(port_state_t* port_state);
-WEPOLL_INTERNAL queue_t* port_get_poll_group_queue(port_state_t* port_state);
+WEPOLL_INTERNAL HANDLE portGetIocpHandle(PortState* portState);
+WEPOLL_INTERNAL Queue* portGetPollGroupQueue(PortState* portState);
 
-WEPOLL_INTERNAL port_state_t* port_state_from_handle_tree_node(
-    ts_tree_node_t* tree_node);
-WEPOLL_INTERNAL ts_tree_node_t* port_state_to_handle_tree_node(
-    port_state_t* port_state);
+WEPOLL_INTERNAL PortState* portStateFromHandleTreeNode(
+    TsTreeNode* treeNode);
+WEPOLL_INTERNAL TsTreeNode* portStateToHandleTreeNode(
+    PortState* portState);
 
 /* 引用锁：把「这块内存不许被提前释放」与「销毁时等所有引用放完」合进一个原子字。
    低 28 位是引用计数、高 4 位是销毁标记，等待与唤醒走 C++20 的 atomic::wait/notify
@@ -383,7 +383,7 @@ class RefLock
 {
 public:
   /// 初始化为「零引用、未销毁」
-  void init() noexcept
+  void ensureInitialized() noexcept
   {
     m_state.store(0, std::memory_order_relaxed);
   }
@@ -448,75 +448,75 @@ private:
  * of the API functions has at most one failure mode. It is up to the caller to
  * set an appropriate error code when necessary. */
 
-typedef struct tree_node tree_node_t;
+struct TreeNode;
 
-typedef struct tree_node {
+struct TreeNode {
   uintptr_t key; /* 节点只留键：树的形状信息改由标准容器保管 */
-} tree_node_t;
+};
 
 /* 键 → 节点。原先是一棵手写的红黑树（插入、删除、旋转、重平衡近 200 行），而调用方只用到
  * 「按键插入、按键查找、按键删除」三件事，因此交给标准库的有序表：std::map 同样按键有序，
- * 且节点地址稳定（再平衡不会让节点搬家），下面用 container_of 从节点取回宿主结构照旧成立。 */
-typedef std::map<uintptr_t, tree_node_t*> tree_t;
+ * 且节点地址稳定（再平衡不会让节点搬家），下面用 CONTAINER_OF 从节点取回宿主结构照旧成立。 */
+typedef std::map<uintptr_t, TreeNode*> Tree;
 
-WEPOLL_INTERNAL void tree_init(tree_t* tree);
-WEPOLL_INTERNAL void tree_node_init(tree_node_t* node);
+WEPOLL_INTERNAL void treeInit(Tree* tree);
+WEPOLL_INTERNAL void treeNodeInit(TreeNode* node);
 
-WEPOLL_INTERNAL int tree_add(tree_t* tree, tree_node_t* node, uintptr_t key);
-WEPOLL_INTERNAL void tree_del(tree_t* tree, tree_node_t* node);
+WEPOLL_INTERNAL int treeAdd(Tree* tree, TreeNode* node, uintptr_t key);
+WEPOLL_INTERNAL void treeDel(Tree* tree, TreeNode* node);
 
-WEPOLL_INTERNAL tree_node_t* tree_find(const tree_t* tree, uintptr_t key);
-WEPOLL_INTERNAL tree_node_t* tree_root(const tree_t* tree);
+WEPOLL_INTERNAL TreeNode* treeFind(const Tree* tree, uintptr_t key);
+WEPOLL_INTERNAL TreeNode* treeRoot(const Tree* tree);
 
-typedef struct ts_tree {
-  tree_t tree;
+struct TsTree {
+  Tree tree;
   SRWLOCK lock;
-} ts_tree_t;
+};
 
-typedef struct ts_tree_node {
-  tree_node_t tree_node;
+struct TsTreeNode {
+  TreeNode treeNode;
   RefLock reflock;
-} ts_tree_node_t;
+};
 
-WEPOLL_INTERNAL void ts_tree_init(ts_tree_t* rtl);
-WEPOLL_INTERNAL void ts_tree_node_init(ts_tree_node_t* node);
+WEPOLL_INTERNAL void tsTreeInit(TsTree* rtl);
+WEPOLL_INTERNAL void tsTreeNodeInit(TsTreeNode* node);
 
-WEPOLL_INTERNAL int ts_tree_add(ts_tree_t* ts_tree,
-                                ts_tree_node_t* node,
+WEPOLL_INTERNAL int tsTreeAdd(TsTree* tsTree,
+                                TsTreeNode* node,
                                 uintptr_t key);
 
-WEPOLL_INTERNAL ts_tree_node_t* ts_tree_del_and_ref(ts_tree_t* ts_tree,
+WEPOLL_INTERNAL TsTreeNode* tsTreeDelAndRef(TsTree* tsTree,
                                                     uintptr_t key);
-WEPOLL_INTERNAL ts_tree_node_t* ts_tree_find_and_ref(ts_tree_t* ts_tree,
+WEPOLL_INTERNAL TsTreeNode* tsTreeFindAndRef(TsTree* tsTree,
                                                      uintptr_t key);
 
-WEPOLL_INTERNAL void ts_tree_node_unref(ts_tree_node_t* node);
-WEPOLL_INTERNAL void ts_tree_node_unref_and_destroy(ts_tree_node_t* node);
+WEPOLL_INTERNAL void tsTreeNodeUnref(TsTreeNode* node);
+WEPOLL_INTERNAL void tsTreeNodeUnrefAndDestroy(TsTreeNode* node);
 
-static ts_tree_t epoll__handle_tree;
+static TsTree epollHandleTree;
 
-int epoll_global_init(void) {
-  ts_tree_init(&epoll__handle_tree);
+int epollGlobalInit(void) {
+  tsTreeInit(&epollHandleTree);
   return 0;
 }
 
-static HANDLE epoll__create(void) {
-  port_state_t* port_state;
+static HANDLE epollCreate(void) {
+  PortState* portState;
   HANDLE ephnd;
-  ts_tree_node_t* tree_node;
+  TsTreeNode* treeNode;
 
-  if (init() < 0)
+  if (ensureInitialized() < 0)
     return nullptr;
 
-  port_state = port_new(&ephnd);
-  if (port_state == nullptr)
+  portState = portNew(&ephnd);
+  if (portState == nullptr)
     return nullptr;
 
-  tree_node = port_state_to_handle_tree_node(port_state);
-  if (ts_tree_add(&epoll__handle_tree, tree_node, reinterpret_cast<uintptr_t>(ephnd)) < 0) {
+  treeNode = portStateToHandleTreeNode(portState);
+  if (tsTreeAdd(&epollHandleTree, treeNode, reinterpret_cast<uintptr_t>(ephnd)) < 0) {
     /* This should never happen. */
-    port_delete(port_state);
-    return_set_error(nullptr, ERROR_ALREADY_EXISTS);
+    portDelete(portState);
+    RETURN_SET_ERROR(nullptr, ERROR_ALREADY_EXISTS);
   }
 
   return ephnd;
@@ -524,69 +524,69 @@ static HANDLE epoll__create(void) {
 
 HANDLE epoll_create(int size) {
   if (size <= 0)
-    return_set_error(nullptr, ERROR_INVALID_PARAMETER);
+    RETURN_SET_ERROR(nullptr, ERROR_INVALID_PARAMETER);
 
-  return epoll__create();
+  return epollCreate();
 }
 
 HANDLE epoll_create1(int flags) {
   if (flags != 0)
-    return_set_error(nullptr, ERROR_INVALID_PARAMETER);
+    RETURN_SET_ERROR(nullptr, ERROR_INVALID_PARAMETER);
 
-  return epoll__create();
+  return epollCreate();
 }
 
 int epoll_close(HANDLE ephnd) {
-  ts_tree_node_t* tree_node;
-  port_state_t* port_state;
+  TsTreeNode* treeNode;
+  PortState* portState;
 
-  if (init() < 0)
+  if (ensureInitialized() < 0)
     return -1;
 
-  tree_node = ts_tree_del_and_ref(&epoll__handle_tree, reinterpret_cast<uintptr_t>(ephnd));
-  if (tree_node == nullptr) {
-    err_set_win_error(ERROR_INVALID_PARAMETER);
+  treeNode = tsTreeDelAndRef(&epollHandleTree, reinterpret_cast<uintptr_t>(ephnd));
+  if (treeNode == nullptr) {
+    errorSetWindowsError(ERROR_INVALID_PARAMETER);
 
     /* 与其它入口同一口径：句柄自身的错误优先于「表里找不到」 */
-    err_check_handle(ephnd);
+    errorCheckHandle(ephnd);
     return -1;
   }
 
-  port_state = port_state_from_handle_tree_node(tree_node);
-  port_close(port_state);
+  portState = portStateFromHandleTreeNode(treeNode);
+  portClose(portState);
 
-  ts_tree_node_unref_and_destroy(tree_node);
+  tsTreeNodeUnrefAndDestroy(treeNode);
 
-  return port_delete(port_state);
+  return portDelete(portState);
 }
 
 int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event* ev) {
-  ts_tree_node_t* tree_node;
-  port_state_t* port_state;
+  TsTreeNode* treeNode;
+  PortState* portState;
   int r;
 
-  if (init() < 0)
+  if (ensureInitialized() < 0)
     return -1;
 
-  tree_node = ts_tree_find_and_ref(&epoll__handle_tree, reinterpret_cast<uintptr_t>(ephnd));
-  if (tree_node == nullptr) {
-    err_set_win_error(ERROR_INVALID_PARAMETER);
+  treeNode = tsTreeFindAndRef(&epollHandleTree, reinterpret_cast<uintptr_t>(ephnd));
+  if (treeNode == nullptr) {
+    errorSetWindowsError(ERROR_INVALID_PARAMETER);
     /* On Linux, in the case of epoll_ctl(), EBADF takes priority over other
      * errors. Wepoll mimics this behavior. */
-    err_check_handle(ephnd);
-    err_check_handle(reinterpret_cast<HANDLE>(sock));
+    errorCheckHandle(ephnd);
+    errorCheckHandle(reinterpret_cast<HANDLE>(sock));
     return -1;
   }
 
-  port_state = port_state_from_handle_tree_node(tree_node);
-  r = port_ctl(port_state, op, sock, ev);
+  portState = portStateFromHandleTreeNode(treeNode);
+  r = portCtl(portState, op, sock, ev);
 
-  ts_tree_node_unref(tree_node);
+  tsTreeNodeUnref(treeNode);
 
   if (r < 0) {
     /* 与上面同一口径：两行重复换来一个没有跳转的单一出口 */
-    err_check_handle(ephnd);
-    err_check_handle(reinterpret_cast<HANDLE>(sock));
+    errorCheckHandle(ephnd);
+    errorCheckHandle(reinterpret_cast<HANDLE>(sock));
     return -1;
   }
 
@@ -597,34 +597,34 @@ int epoll_wait(HANDLE ephnd,
                struct epoll_event* events,
                int maxevents,
                int timeout) {
-  ts_tree_node_t* tree_node;
-  port_state_t* port_state;
-  int num_events;
+  TsTreeNode* treeNode;
+  PortState* portState;
+  int eventCount;
 
   if (maxevents <= 0)
-    return_set_error(-1, ERROR_INVALID_PARAMETER);
+    RETURN_SET_ERROR(-1, ERROR_INVALID_PARAMETER);
 
-  if (init() < 0)
+  if (ensureInitialized() < 0)
     return -1;
 
-  tree_node = ts_tree_find_and_ref(&epoll__handle_tree, reinterpret_cast<uintptr_t>(ephnd));
-  if (tree_node == nullptr) {
-    err_set_win_error(ERROR_INVALID_PARAMETER);
-    err_check_handle(ephnd);
-    return -1;
-  }
-
-  port_state = port_state_from_handle_tree_node(tree_node);
-  num_events = port_wait(port_state, events, maxevents, timeout);
-
-  ts_tree_node_unref(tree_node);
-
-  if (num_events < 0) {
-    err_check_handle(ephnd);
+  treeNode = tsTreeFindAndRef(&epollHandleTree, reinterpret_cast<uintptr_t>(ephnd));
+  if (treeNode == nullptr) {
+    errorSetWindowsError(ERROR_INVALID_PARAMETER);
+    errorCheckHandle(ephnd);
     return -1;
   }
 
-  return num_events;
+  portState = portStateFromHandleTreeNode(treeNode);
+  eventCount = portWait(portState, events, maxevents, timeout);
+
+  tsTreeNodeUnref(treeNode);
+
+  if (eventCount < 0) {
+    errorCheckHandle(ephnd);
+    return -1;
+  }
+
+  return eventCount;
 }
 
 #include <errno.h>
@@ -732,82 +732,82 @@ int epoll_wait(HANDLE ephnd,
   X(WSASYSNOTREADY, ENETDOWN)                \
   X(WSAVERNOTSUPPORTED, ENOSYS)
 
-static errno_t err__map_win_error_to_errno(DWORD error) {
+static errno_t errorMapWindowsErrorToErrno(DWORD error) {
   switch (error) {
-#define X(error_sym, errno_sym) \
-  case error_sym:               \
-    return errno_sym;
+#define X(errorSymbol, errnoSymbol) \
+  case errorSymbol:               \
+    return errnoSymbol;
     ERR__ERRNO_MAPPINGS(X)
 #undef X
   }
   return EINVAL;
 }
 
-void err_map_win_error(void) {
-  errno = err__map_win_error_to_errno(GetLastError());
+void errorMapWindowsError(void) {
+  errno = errorMapWindowsErrorToErrno(GetLastError());
 }
 
-void err_set_win_error(DWORD error) {
+void errorSetWindowsError(DWORD error) {
   SetLastError(error);
-  errno = err__map_win_error_to_errno(error);
+  errno = errorMapWindowsErrorToErrno(error);
 }
 
-int err_check_handle(HANDLE handle) {
+int errorCheckHandle(HANDLE handle) {
   DWORD flags;
 
   /* GetHandleInformation() succeeds when passed INVALID_HANDLE_VALUE, so check
    * for this condition explicitly. */
   if (handle == INVALID_HANDLE_VALUE)
-    return_set_error(-1, ERROR_INVALID_HANDLE);
+    RETURN_SET_ERROR(-1, ERROR_INVALID_HANDLE);
 
   if (!GetHandleInformation(handle, &flags))
-    return_map_error(-1);
+    RETURN_MAP_ERROR(-1);
 
   return 0;
 }
 
 #include <stddef.h>
 
-#define array_count(a) (sizeof(a) / (sizeof((a)[0])))
+#define ARRAY_COUNT(a) (sizeof(a) / (sizeof((a)[0])))
 
-#define container_of(ptr, type, member) \
+#define CONTAINER_OF(ptr, type, member) \
   ((type*) ((uintptr_t) (ptr) - offsetof(type, member)))
 
-#define unused_var(v) ((void) (v))
+#define UNUSED_VAR(v) ((void) (v))
 
 /* Polyfill `inline` for older versions of msvc (up to Visual Studio 2013) */
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #define inline __inline
 #endif
 
-WEPOLL_INTERNAL int ws_global_init(void);
-WEPOLL_INTERNAL SOCKET ws_get_base_socket(SOCKET socket);
+WEPOLL_INTERNAL int wsGlobalInit(void);
+WEPOLL_INTERNAL SOCKET wsGetBaseSocket(SOCKET socket);
 
-static bool init__done = false;
-static INIT_ONCE init__once = INIT_ONCE_STATIC_INIT;
+static bool initializationDone = false;
+static INIT_ONCE onceControl = INIT_ONCE_STATIC_INIT;
 
-static BOOL CALLBACK init__once_callback(INIT_ONCE* once,
+static BOOL CALLBACK onceCallback(INIT_ONCE* once,
                                          void* parameter,
                                          void** context) {
-  unused_var(once);
-  unused_var(parameter);
-  unused_var(context);
+  UNUSED_VAR(once);
+  UNUSED_VAR(parameter);
+  UNUSED_VAR(context);
 
   /* N.b. that initialization order matters here. */
-  if (ws_global_init() < 0 || nt_global_init() < 0 ||
-      epoll_global_init() < 0)
+  if (wsGlobalInit() < 0 || ntGlobalInit() < 0 ||
+      epollGlobalInit() < 0)
     return FALSE;
 
-  init__done = true;
+  initializationDone = true;
   return TRUE;
 }
 
-int init(void) {
-  if (!init__done &&
-      !InitOnceExecuteOnce(&init__once, init__once_callback, nullptr, nullptr))
+int ensureInitialized(void) {
+  if (!initializationDone &&
+      !InitOnceExecuteOnce(&onceControl, onceCallback, nullptr, nullptr))
     /* `InitOnceExecuteOnce()` itself is infallible, and it doesn't set any
      * error code when the once-callback returns FALSE. We return -1 here to
-     * indicate that global initialization failed; the failing init function is
+     * indicate that global initialization failed; the failing ensureInitialized function is
      * resposible for setting `errno` and calling `SetLastError()`. */
     return -1;
 
@@ -819,26 +819,26 @@ int init(void) {
  *   MY_FUNC func = (MY_FUNC) addr;          <-- GCC 8 warning/error.
  *   MY_FUNC func = (MY_FUNC) (void*) addr;  <-- MSVC  warning/error.
  * To compile cleanly with either compiler, do casts with this "bridge" type:
- *   MY_FUNC func = (MY_FUNC) (nt__fn_ptr_cast_t) addr; */
+ *   MY_FUNC func = (MY_FUNC) (NtFunctionPointerCast) addr; */
 #ifdef __GNUC__
-typedef void* nt__fn_ptr_cast_t;
+typedef void* NtFunctionPointerCast;
 #else
-typedef FARPROC nt__fn_ptr_cast_t;
+typedef FARPROC NtFunctionPointerCast;
 #endif
 
-int nt_global_init(void) {
+int ntGlobalInit(void) {
   HMODULE ntdll;
-  FARPROC fn_ptr;
+  FARPROC functionPointer;
 
   ntdll = GetModuleHandleW(L"ntdll.dll");
   if (ntdll == nullptr)
     return -1;
 
-#define X(return_type, attributes, name, parameters) \
-  fn_ptr = GetProcAddress(ntdll, #name);             \
-  if (fn_ptr == nullptr)                                \
+#define X(returnType, attributes, name, parameters) \
+  functionPointer = GetProcAddress(ntdll, #name);             \
+  if (functionPointer == nullptr)                                \
     return -1;                                       \
-  name = (return_type(attributes*) parameters)(nt__fn_ptr_cast_t) fn_ptr;
+  name = (returnType(attributes*) parameters)(NtFunctionPointerCast) functionPointer;
   NT_NTDLL_IMPORT_LIST(X)
 #undef X
 
@@ -847,387 +847,387 @@ int nt_global_init(void) {
 
 #include <string.h>
 
-typedef struct poll_group poll_group_t;
+struct PollGroup;
 
-typedef struct queue_node queue_node_t;
+struct QueueNode;
 
-WEPOLL_INTERNAL poll_group_t* poll_group_acquire(port_state_t* port);
-WEPOLL_INTERNAL void poll_group_release(poll_group_t* poll_group);
+WEPOLL_INTERNAL PollGroup* pollGroupAcquire(PortState* port);
+WEPOLL_INTERNAL void pollGroupRelease(PollGroup* pollGroup);
 
-WEPOLL_INTERNAL void poll_group_delete(poll_group_t* poll_group);
+WEPOLL_INTERNAL void pollGroupDelete(PollGroup* pollGroup);
 
-WEPOLL_INTERNAL poll_group_t* poll_group_from_queue_node(
-    queue_node_t* queue_node);
+WEPOLL_INTERNAL PollGroup* pollGroupFromQueueNode(
+    QueueNode* queueNode);
 WEPOLL_INTERNAL HANDLE
-    poll_group_get_afd_helper_handle(poll_group_t* poll_group);
+    pollGroupGetAfdHelperHandle(PollGroup* pollGroup);
 
-typedef struct queue_node {
-  queue_node_t* previous;
-  queue_node_t* next;
-} queue_node_t;
+struct QueueNode {
+  QueueNode* previous;
+  QueueNode* next;
+};
 
 /* 带哨兵头的侵入式双向链表：节点内联在持有者里（不进堆），因此「从节点摘除」是 O(1)、
    队列本身一次分配都不用做。本文件的两处用法都吃这个代价——每轮 epoll_wait 之后有成百上千
    个 socket 要在这几张表之间挪动。改用 std::list 会让每个节点多一次分配，还得把迭代器塞回
    节点才能保住同样的摘除代价，得不偿失。 */
-typedef struct queue {
-  queue_node_t head; /* 哨兵：head.next 是首元素、head.previous 是尾元素；空表时两者都指回 head */
-} queue_t;
+struct Queue {
+  QueueNode head; /* 哨兵：head.next 是首元素、head.previous 是尾元素；空表时两者都指回 head */
+};
 
-WEPOLL_INTERNAL void queueInit(queue_t* queue);
-WEPOLL_INTERNAL void queueNodeInit(queue_node_t* node);
+WEPOLL_INTERNAL void queueInit(Queue* queue);
+WEPOLL_INTERNAL void queueNodeInit(QueueNode* node);
 
-WEPOLL_INTERNAL queue_node_t* queueFirst(const queue_t* queue);
-WEPOLL_INTERNAL queue_node_t* queueLast(const queue_t* queue);
+WEPOLL_INTERNAL QueueNode* queueFirst(const Queue* queue);
+WEPOLL_INTERNAL QueueNode* queueLast(const Queue* queue);
 
-WEPOLL_INTERNAL void queueAppend(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queueMoveToStart(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queueMoveToEnd(queue_t* queue, queue_node_t* node);
-WEPOLL_INTERNAL void queueRemove(queue_node_t* node);
+WEPOLL_INTERNAL void queueAppend(Queue* queue, QueueNode* node);
+WEPOLL_INTERNAL void queueMoveToStart(Queue* queue, QueueNode* node);
+WEPOLL_INTERNAL void queueMoveToEnd(Queue* queue, QueueNode* node);
+WEPOLL_INTERNAL void queueRemove(QueueNode* node);
 
-WEPOLL_INTERNAL bool queueIsEmpty(const queue_t* queue);
-WEPOLL_INTERNAL bool queueIsEnqueued(const queue_node_t* node);
+WEPOLL_INTERNAL bool queueIsEmpty(const Queue* queue);
+WEPOLL_INTERNAL bool queueIsEnqueued(const QueueNode* node);
 
 static const size_t POLL_GROUP__MAX_GROUP_SIZE = 32;
 
-typedef struct poll_group {
-  port_state_t* port_state;
-  queue_node_t queue_node;
-  HANDLE afd_helper_handle;
-  size_t group_size;
-} poll_group_t;
+struct PollGroup {
+  PortState* portState;
+  QueueNode queueNode;
+  HANDLE afdHelperHandle;
+  size_t groupSize;
+};
 
-static poll_group_t* poll_group__new(port_state_t* port_state) {
-  HANDLE iocp_handle = port_get_iocp_handle(port_state);
-  queue_t* poll_group_queue = port_get_poll_group_queue(port_state);
+static PollGroup* pollGroupNew(PortState* portState) {
+  HANDLE iocpHandle = portGetIocpHandle(portState);
+  Queue* pollGroupQueue = portGetPollGroupQueue(portState);
 
   /* nothrow 版本：失败返回空指针，与「失败即返回 NULL + 设 LastError」的约定一致。
      值初始化把各成员清零，队列节点仍要显式初始化成自指的哨兵 */
-  poll_group_t* poll_group = new (std::nothrow) poll_group_t{};
-  if (poll_group == nullptr)
-    return_set_error(nullptr, ERROR_NOT_ENOUGH_MEMORY);
+  PollGroup* pollGroup = new (std::nothrow) PollGroup{};
+  if (pollGroup == nullptr)
+    RETURN_SET_ERROR(nullptr, ERROR_NOT_ENOUGH_MEMORY);
 
-  queueNodeInit(&poll_group->queue_node);
-  poll_group->port_state = port_state;
+  queueNodeInit(&pollGroup->queueNode);
+  pollGroup->portState = portState;
 
-  if (afd_create_helper_handle(iocp_handle, &poll_group->afd_helper_handle) <
+  if (afdCreateHelperHandle(iocpHandle, &pollGroup->afdHelperHandle) <
       0) {
-    delete poll_group;
+    delete pollGroup;
     return nullptr;
   }
 
-  queueAppend(poll_group_queue, &poll_group->queue_node);
+  queueAppend(pollGroupQueue, &pollGroup->queueNode);
 
-  return poll_group;
+  return pollGroup;
 }
 
-void poll_group_delete(poll_group_t* poll_group) {
-  assert(poll_group->group_size == 0);
-  CloseHandle(poll_group->afd_helper_handle);
-  queueRemove(&poll_group->queue_node);
-  delete poll_group;
+void pollGroupDelete(PollGroup* pollGroup) {
+  assert(pollGroup->groupSize == 0);
+  CloseHandle(pollGroup->afdHelperHandle);
+  queueRemove(&pollGroup->queueNode);
+  delete pollGroup;
 }
 
-poll_group_t* poll_group_from_queue_node(queue_node_t* queue_node) {
-  return container_of(queue_node, poll_group_t, queue_node);
+PollGroup* pollGroupFromQueueNode(QueueNode* queueNode) {
+  return CONTAINER_OF(queueNode, PollGroup, queueNode);
 }
 
-HANDLE poll_group_get_afd_helper_handle(poll_group_t* poll_group) {
-  return poll_group->afd_helper_handle;
+HANDLE pollGroupGetAfdHelperHandle(PollGroup* pollGroup) {
+  return pollGroup->afdHelperHandle;
 }
 
-poll_group_t* poll_group_acquire(port_state_t* port_state) {
-  queue_t* poll_group_queue = port_get_poll_group_queue(port_state);
-  poll_group_t* poll_group =
-      !queueIsEmpty(poll_group_queue)
-          ? container_of(
-                queueLast(poll_group_queue), poll_group_t, queue_node)
+PollGroup* pollGroupAcquire(PortState* portState) {
+  Queue* pollGroupQueue = portGetPollGroupQueue(portState);
+  PollGroup* pollGroup =
+      !queueIsEmpty(pollGroupQueue)
+          ? CONTAINER_OF(
+                queueLast(pollGroupQueue), PollGroup, queueNode)
           : nullptr;
 
-  if (poll_group == nullptr ||
-      poll_group->group_size >= POLL_GROUP__MAX_GROUP_SIZE)
-    poll_group = poll_group__new(port_state);
-  if (poll_group == nullptr)
+  if (pollGroup == nullptr ||
+      pollGroup->groupSize >= POLL_GROUP__MAX_GROUP_SIZE)
+    pollGroup = pollGroupNew(portState);
+  if (pollGroup == nullptr)
     return nullptr;
 
-  if (++poll_group->group_size == POLL_GROUP__MAX_GROUP_SIZE)
-    queueMoveToStart(poll_group_queue, &poll_group->queue_node);
+  if (++pollGroup->groupSize == POLL_GROUP__MAX_GROUP_SIZE)
+    queueMoveToStart(pollGroupQueue, &pollGroup->queueNode);
 
-  return poll_group;
+  return pollGroup;
 }
 
-void poll_group_release(poll_group_t* poll_group) {
-  port_state_t* port_state = poll_group->port_state;
-  queue_t* poll_group_queue = port_get_poll_group_queue(port_state);
+void pollGroupRelease(PollGroup* pollGroup) {
+  PortState* portState = pollGroup->portState;
+  Queue* pollGroupQueue = portGetPollGroupQueue(portState);
 
-  poll_group->group_size--;
-  assert(poll_group->group_size < POLL_GROUP__MAX_GROUP_SIZE);
+  pollGroup->groupSize--;
+  assert(pollGroup->groupSize < POLL_GROUP__MAX_GROUP_SIZE);
 
-  queueMoveToEnd(poll_group_queue, &poll_group->queue_node);
+  queueMoveToEnd(pollGroupQueue, &pollGroup->queueNode);
 
   /* Poll groups are currently only freed when the epoll port is closed. */
 }
 
-WEPOLL_INTERNAL sock_state_t* sock_new(port_state_t* port_state,
+WEPOLL_INTERNAL SockState* sockNew(PortState* portState,
                                        SOCKET socket);
-WEPOLL_INTERNAL void sock_delete(port_state_t* port_state,
-                                 sock_state_t* sock_state);
-WEPOLL_INTERNAL void sock_force_delete(port_state_t* port_state,
-                                       sock_state_t* sock_state);
+WEPOLL_INTERNAL void sockDelete(PortState* portState,
+                                 SockState* sockState);
+WEPOLL_INTERNAL void sockForceDelete(PortState* portState,
+                                       SockState* sockState);
 
-WEPOLL_INTERNAL int sock_set_event(port_state_t* port_state,
-                                   sock_state_t* sock_state,
+WEPOLL_INTERNAL int sockSetEvent(PortState* portState,
+                                   SockState* sockState,
                                    const struct epoll_event* ev);
 
-WEPOLL_INTERNAL int sock_update(port_state_t* port_state,
-                                sock_state_t* sock_state);
-WEPOLL_INTERNAL int sock_feed_event(port_state_t* port_state,
-                                    IO_STATUS_BLOCK* io_status_block,
+WEPOLL_INTERNAL int sockUpdate(PortState* portState,
+                                SockState* sockState);
+WEPOLL_INTERNAL int sockFeedEvent(PortState* portState,
+                                    IO_STATUS_BLOCK* ioStatusBlock,
                                     struct epoll_event* ev);
 
-WEPOLL_INTERNAL sock_state_t* sock_state_from_queue_node(
-    queue_node_t* queue_node);
-WEPOLL_INTERNAL queue_node_t* sock_state_to_queue_node(
-    sock_state_t* sock_state);
-WEPOLL_INTERNAL sock_state_t* sock_state_from_tree_node(
-    tree_node_t* tree_node);
-WEPOLL_INTERNAL tree_node_t* sock_state_to_tree_node(sock_state_t* sock_state);
+WEPOLL_INTERNAL SockState* sockStateFromQueueNode(
+    QueueNode* queueNode);
+WEPOLL_INTERNAL QueueNode* sockStateToQueueNode(
+    SockState* sockState);
+WEPOLL_INTERNAL SockState* sockStateFromTreeNode(
+    TreeNode* treeNode);
+WEPOLL_INTERNAL TreeNode* sockStateToTreeNode(SockState* sockState);
 
 #define PORT__MAX_ON_STACK_COMPLETIONS 256
 
-typedef struct port_state {
-  HANDLE iocp_handle;
-  tree_t sock_tree;
-  queue_t sock_update_queue;
-  queue_t sock_deleted_queue;
-  queue_t poll_group_queue;
-  ts_tree_node_t handle_tree_node;
+struct PortState {
+  HANDLE iocpHandle;
+  Tree sockTree;
+  Queue sockUpdateQueue;
+  Queue sockDeletedQueue;
+  Queue pollGroupQueue;
+  TsTreeNode handleTreeNode;
   CRITICAL_SECTION lock;
-  size_t active_poll_count;
-} port_state_t;
+  size_t activePollCount;
+};
 
-static port_state_t* port__alloc(void) {
-  /* 值初始化：平凡成员清零，sock_tree 与引用锁各自构造好——不再需要 memset 之后再补构造 */
-  port_state_t* port_state = new (std::nothrow) port_state_t{};
-  if (port_state == nullptr)
-    return_set_error(nullptr, ERROR_NOT_ENOUGH_MEMORY);
+static PortState* portAlloc(void) {
+  /* 值初始化：平凡成员清零，sockTree 与引用锁各自构造好——不再需要 memset 之后再补构造 */
+  PortState* portState = new (std::nothrow) PortState{};
+  if (portState == nullptr)
+    RETURN_SET_ERROR(nullptr, ERROR_NOT_ENOUGH_MEMORY);
 
-  return port_state;
+  return portState;
 }
 
-static void port__free(port_state_t* port) {
+static void portFree(PortState* port) {
   assert(port != nullptr);
   /* 与 new 配对：容器成员由析构自动收尾 */
   delete port;
 }
 
-static HANDLE port__create_iocp(void) {
-  HANDLE iocp_handle =
+static HANDLE portCreateIocp(void) {
+  HANDLE iocpHandle =
       CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
-  if (iocp_handle == nullptr)
-    return_map_error(nullptr);
+  if (iocpHandle == nullptr)
+    RETURN_MAP_ERROR(nullptr);
 
-  return iocp_handle;
+  return iocpHandle;
 }
 
-port_state_t* port_new(HANDLE* iocp_handle_out) {
-  port_state_t* port_state;
-  HANDLE iocp_handle;
+PortState* portNew(HANDLE* iocpHandleOut) {
+  PortState* portState;
+  HANDLE iocpHandle;
 
-  port_state = port__alloc();
-  if (port_state == nullptr)
+  portState = portAlloc();
+  if (portState == nullptr)
     return nullptr;
 
-  iocp_handle = port__create_iocp();
-  if (iocp_handle == nullptr) {
-    port__free(port_state);
+  iocpHandle = portCreateIocp();
+  if (iocpHandle == nullptr) {
+    portFree(portState);
     return nullptr;
   }
 
-  port_state->iocp_handle = iocp_handle;
-  queueInit(&port_state->sock_update_queue);
-  queueInit(&port_state->sock_deleted_queue);
-  queueInit(&port_state->poll_group_queue);
-  ts_tree_node_init(&port_state->handle_tree_node);
-  InitializeCriticalSection(&port_state->lock);
+  portState->iocpHandle = iocpHandle;
+  queueInit(&portState->sockUpdateQueue);
+  queueInit(&portState->sockDeletedQueue);
+  queueInit(&portState->pollGroupQueue);
+  tsTreeNodeInit(&portState->handleTreeNode);
+  InitializeCriticalSection(&portState->lock);
 
-  *iocp_handle_out = iocp_handle;
-  return port_state;
+  *iocpHandleOut = iocpHandle;
+  return portState;
 }
 
-static int port__close_iocp(port_state_t* port_state) {
-  HANDLE iocp_handle = port_state->iocp_handle;
-  port_state->iocp_handle = nullptr;
+static int portCloseIocp(PortState* portState) {
+  HANDLE iocpHandle = portState->iocpHandle;
+  portState->iocpHandle = nullptr;
 
-  if (!CloseHandle(iocp_handle))
-    return_map_error(-1);
+  if (!CloseHandle(iocpHandle))
+    RETURN_MAP_ERROR(-1);
 
   return 0;
 }
 
-int port_close(port_state_t* port_state) {
+int portClose(PortState* portState) {
   int result;
 
-  EnterCriticalSection(&port_state->lock);
-  result = port__close_iocp(port_state);
-  LeaveCriticalSection(&port_state->lock);
+  EnterCriticalSection(&portState->lock);
+  result = portCloseIocp(portState);
+  LeaveCriticalSection(&portState->lock);
 
   return result;
 }
 
-int port_delete(port_state_t* port_state) {
-  tree_node_t* tree_node;
-  queue_node_t* queue_node;
+int portDelete(PortState* portState) {
+  TreeNode* treeNode;
+  QueueNode* queueNode;
 
   /* At this point the IOCP port should have been closed. */
-  assert(port_state->iocp_handle == nullptr);
+  assert(portState->iocpHandle == nullptr);
 
-  while ((tree_node = tree_root(&port_state->sock_tree)) != nullptr) {
-    sock_state_t* sock_state = sock_state_from_tree_node(tree_node);
-    sock_force_delete(port_state, sock_state);
+  while ((treeNode = treeRoot(&portState->sockTree)) != nullptr) {
+    SockState* sockState = sockStateFromTreeNode(treeNode);
+    sockForceDelete(portState, sockState);
   }
 
-  while ((queue_node = queueFirst(&port_state->sock_deleted_queue)) != nullptr) {
-    sock_state_t* sock_state = sock_state_from_queue_node(queue_node);
-    sock_force_delete(port_state, sock_state);
+  while ((queueNode = queueFirst(&portState->sockDeletedQueue)) != nullptr) {
+    SockState* sockState = sockStateFromQueueNode(queueNode);
+    sockForceDelete(portState, sockState);
   }
 
-  while ((queue_node = queueFirst(&port_state->poll_group_queue)) != nullptr) {
-    poll_group_t* poll_group = poll_group_from_queue_node(queue_node);
-    poll_group_delete(poll_group);
+  while ((queueNode = queueFirst(&portState->pollGroupQueue)) != nullptr) {
+    PollGroup* pollGroup = pollGroupFromQueueNode(queueNode);
+    pollGroupDelete(pollGroup);
   }
 
-  assert(queueIsEmpty(&port_state->sock_update_queue));
+  assert(queueIsEmpty(&portState->sockUpdateQueue));
 
-  DeleteCriticalSection(&port_state->lock);
+  DeleteCriticalSection(&portState->lock);
 
-  port__free(port_state);
+  portFree(portState);
 
   return 0;
 }
 
-static int port__update_events(port_state_t* port_state) {
-  queue_t* sock_update_queue = &port_state->sock_update_queue;
+static int portUpdateEvents(PortState* portState) {
+  Queue* sockUpdateQueue = &portState->sockUpdateQueue;
 
   /* Walk the queue, submitting new poll requests for every socket that needs
    * it. */
-  while (!queueIsEmpty(sock_update_queue)) {
-    queue_node_t* queue_node = queueFirst(sock_update_queue);
-    sock_state_t* sock_state = sock_state_from_queue_node(queue_node);
+  while (!queueIsEmpty(sockUpdateQueue)) {
+    QueueNode* queueNode = queueFirst(sockUpdateQueue);
+    SockState* sockState = sockStateFromQueueNode(queueNode);
 
-    if (sock_update(port_state, sock_state) < 0)
+    if (sockUpdate(portState, sockState) < 0)
       return -1;
 
-    /* sock_update() removes the socket from the update queue. */
+    /* sockUpdate() removes the socket from the update queue. */
   }
 
   return 0;
 }
 
-static void port__update_events_if_polling(port_state_t* port_state) {
-  if (port_state->active_poll_count > 0)
-    port__update_events(port_state);
+static void portUpdateEventsIfPolling(PortState* portState) {
+  if (portState->activePollCount > 0)
+    portUpdateEvents(portState);
 }
 
-static int port__feed_events(port_state_t* port_state,
-                             struct epoll_event* epoll_events,
-                             OVERLAPPED_ENTRY* iocp_events,
-                             DWORD iocp_event_count) {
-  int epoll_event_count = 0;
+static int portFeedEvents(PortState* portState,
+                             struct epoll_event* epollEvents,
+                             OVERLAPPED_ENTRY* iocpEvents,
+                             DWORD iocpEventCount) {
+  int epollEventCount = 0;
   DWORD i;
 
-  for (i = 0; i < iocp_event_count; i++) {
-    IO_STATUS_BLOCK* io_status_block =
-        (IO_STATUS_BLOCK*) iocp_events[i].lpOverlapped;
-    struct epoll_event* ev = &epoll_events[epoll_event_count];
+  for (i = 0; i < iocpEventCount; i++) {
+    IO_STATUS_BLOCK* ioStatusBlock =
+        (IO_STATUS_BLOCK*) iocpEvents[i].lpOverlapped;
+    struct epoll_event* ev = &epollEvents[epollEventCount];
 
-    epoll_event_count += sock_feed_event(port_state, io_status_block, ev);
+    epollEventCount += sockFeedEvent(portState, ioStatusBlock, ev);
   }
 
-  return epoll_event_count;
+  return epollEventCount;
 }
 
-static int port__poll(port_state_t* port_state,
-                      struct epoll_event* epoll_events,
-                      OVERLAPPED_ENTRY* iocp_events,
+static int portPoll(PortState* portState,
+                      struct epoll_event* epollEvents,
+                      OVERLAPPED_ENTRY* iocpEvents,
                       DWORD maxevents,
                       DWORD timeout) {
-  DWORD completion_count;
+  DWORD completionCount;
 
-  if (port__update_events(port_state) < 0)
+  if (portUpdateEvents(portState) < 0)
     return -1;
 
-  port_state->active_poll_count++;
+  portState->activePollCount++;
 
-  LeaveCriticalSection(&port_state->lock);
+  LeaveCriticalSection(&portState->lock);
 
-  BOOL r = GetQueuedCompletionStatusEx(port_state->iocp_handle,
-                                       iocp_events,
+  BOOL r = GetQueuedCompletionStatusEx(portState->iocpHandle,
+                                       iocpEvents,
                                        maxevents,
-                                       &completion_count,
+                                       &completionCount,
                                        timeout,
                                        FALSE);
 
-  EnterCriticalSection(&port_state->lock);
+  EnterCriticalSection(&portState->lock);
 
-  port_state->active_poll_count--;
+  portState->activePollCount--;
 
   if (!r)
-    return_map_error(-1);
+    RETURN_MAP_ERROR(-1);
 
-  return port__feed_events(
-      port_state, epoll_events, iocp_events, completion_count);
+  return portFeedEvents(
+      portState, epollEvents, iocpEvents, completionCount);
 }
 
-int port_wait(port_state_t* port_state,
+int portWait(PortState* portState,
               struct epoll_event* events,
               int maxevents,
               int timeout) {
-  OVERLAPPED_ENTRY stack_iocp_events[PORT__MAX_ON_STACK_COMPLETIONS];
-  OVERLAPPED_ENTRY* iocp_events = stack_iocp_events;
+  OVERLAPPED_ENTRY stackIocpEvents[PORT__MAX_ON_STACK_COMPLETIONS];
+  OVERLAPPED_ENTRY* iocpEvents = stackIocpEvents;
   /* 只有 maxevents 很大时才上堆：改用 unique_ptr 后所有返回路径都自动归还，不必再手工 free */
-  std::unique_ptr<OVERLAPPED_ENTRY[]> heap_iocp_events;
+  std::unique_ptr<OVERLAPPED_ENTRY[]> heapIocpEvents;
   uint64_t due = 0;
-  DWORD gqcs_timeout;
+  DWORD completionTimeout;
   int result;
 
   /* Check whether `maxevents` is in range. */
   if (maxevents <= 0)
-    return_set_error(-1, ERROR_INVALID_PARAMETER);
+    RETURN_SET_ERROR(-1, ERROR_INVALID_PARAMETER);
 
   /* Decide whether the IOCP completion list can live on the stack, or allocate
    * memory for it on the heap. The heap allocation is nothrow on purpose: if it
    * fails, fall back to the stack array instead of failing the whole wait. */
-  if (static_cast<std::size_t>(maxevents) > array_count(stack_iocp_events)) {
-    heap_iocp_events.reset(
+  if (static_cast<std::size_t>(maxevents) > ARRAY_COUNT(stackIocpEvents)) {
+    heapIocpEvents.reset(
         new (std::nothrow) OVERLAPPED_ENTRY[static_cast<std::size_t>(maxevents)]);
 
-    if (heap_iocp_events != nullptr)
-      iocp_events = heap_iocp_events.get();
+    if (heapIocpEvents != nullptr)
+      iocpEvents = heapIocpEvents.get();
     else
-      maxevents = static_cast<int>(array_count(stack_iocp_events));
+      maxevents = static_cast<int>(ARRAY_COUNT(stackIocpEvents));
   }
 
   /* Compute the timeout for GetQueuedCompletionStatus, and the wait end
    * time, if the user specified a timeout other than zero or infinite. */
   if (timeout > 0) {
     due = GetTickCount64() + static_cast<std::uint64_t>(timeout);
-    gqcs_timeout = static_cast<DWORD>(timeout);
+    completionTimeout = static_cast<DWORD>(timeout);
   } else if (timeout == 0) {
-    gqcs_timeout = 0;
+    completionTimeout = 0;
   } else {
-    gqcs_timeout = INFINITE;
+    completionTimeout = INFINITE;
   }
 
-  EnterCriticalSection(&port_state->lock);
+  EnterCriticalSection(&portState->lock);
 
   /* Dequeue completion packets until either at least one interesting event
    * has been discovered, or the timeout is reached. */
   for (;;) {
     uint64_t now;
 
-    result = port__poll(
-        port_state, events, iocp_events, static_cast<DWORD>(maxevents), gqcs_timeout);
+    result = portPoll(
+        portState, events, iocpEvents, static_cast<DWORD>(maxevents), completionTimeout);
     if (result < 0 || result > 0)
       break; /* Result, error, or time-out. */
 
@@ -1244,12 +1244,12 @@ int port_wait(port_state_t* port_state,
     }
 
     /* Recompute time-out argument for GetQueuedCompletionStatus. */
-    gqcs_timeout = static_cast<DWORD>(due - now);
+    completionTimeout = static_cast<DWORD>(due - now);
   }
 
-  port__update_events_if_polling(port_state);
+  portUpdateEventsIfPolling(portState);
 
-  LeaveCriticalSection(&port_state->lock);
+  LeaveCriticalSection(&portState->lock);
 
   if (result >= 0)
     return result;
@@ -1259,181 +1259,181 @@ int port_wait(port_state_t* port_state,
     return -1;
 }
 
-static int port__ctl_add(port_state_t* port_state,
+static int portCtlAdd(PortState* portState,
                          SOCKET sock,
                          struct epoll_event* ev) {
-  sock_state_t* sock_state = sock_new(port_state, sock);
-  if (sock_state == nullptr)
+  SockState* sockState = sockNew(portState, sock);
+  if (sockState == nullptr)
     return -1;
 
-  if (sock_set_event(port_state, sock_state, ev) < 0) {
-    sock_delete(port_state, sock_state);
+  if (sockSetEvent(portState, sockState, ev) < 0) {
+    sockDelete(portState, sockState);
     return -1;
   }
 
-  port__update_events_if_polling(port_state);
+  portUpdateEventsIfPolling(portState);
 
   return 0;
 }
 
-static int port__ctl_mod(port_state_t* port_state,
+static int portCtlMod(PortState* portState,
                          SOCKET sock,
                          struct epoll_event* ev) {
-  sock_state_t* sock_state = port_find_socket(port_state, sock);
-  if (sock_state == nullptr)
+  SockState* sockState = portFindSocket(portState, sock);
+  if (sockState == nullptr)
     return -1;
 
-  if (sock_set_event(port_state, sock_state, ev) < 0)
+  if (sockSetEvent(portState, sockState, ev) < 0)
     return -1;
 
-  port__update_events_if_polling(port_state);
+  portUpdateEventsIfPolling(portState);
 
   return 0;
 }
 
-static int port__ctl_del(port_state_t* port_state, SOCKET sock) {
-  sock_state_t* sock_state = port_find_socket(port_state, sock);
-  if (sock_state == nullptr)
+static int portCtlDel(PortState* portState, SOCKET sock) {
+  SockState* sockState = portFindSocket(portState, sock);
+  if (sockState == nullptr)
     return -1;
 
-  sock_delete(port_state, sock_state);
+  sockDelete(portState, sockState);
 
   return 0;
 }
 
-static int port__ctl_op(port_state_t* port_state,
+static int portCtlOp(PortState* portState,
                         int op,
                         SOCKET sock,
                         struct epoll_event* ev) {
   switch (op) {
     case EPOLL_CTL_ADD:
-      return port__ctl_add(port_state, sock, ev);
+      return portCtlAdd(portState, sock, ev);
     case EPOLL_CTL_MOD:
-      return port__ctl_mod(port_state, sock, ev);
+      return portCtlMod(portState, sock, ev);
     case EPOLL_CTL_DEL:
-      return port__ctl_del(port_state, sock);
+      return portCtlDel(portState, sock);
     default:
-      return_set_error(-1, ERROR_INVALID_PARAMETER);
+      RETURN_SET_ERROR(-1, ERROR_INVALID_PARAMETER);
   }
 }
 
-int port_ctl(port_state_t* port_state,
+int portCtl(PortState* portState,
              int op,
              SOCKET sock,
              struct epoll_event* ev) {
   int result;
 
-  EnterCriticalSection(&port_state->lock);
-  result = port__ctl_op(port_state, op, sock, ev);
-  LeaveCriticalSection(&port_state->lock);
+  EnterCriticalSection(&portState->lock);
+  result = portCtlOp(portState, op, sock, ev);
+  LeaveCriticalSection(&portState->lock);
 
   return result;
 }
 
-int port_register_socket(port_state_t* port_state,
-                         sock_state_t* sock_state,
+int portRegisterSocket(PortState* portState,
+                         SockState* sockState,
                          SOCKET socket) {
-  if (tree_add(&port_state->sock_tree,
-               sock_state_to_tree_node(sock_state),
+  if (treeAdd(&portState->sockTree,
+               sockStateToTreeNode(sockState),
                socket) < 0)
-    return_set_error(-1, ERROR_ALREADY_EXISTS);
+    RETURN_SET_ERROR(-1, ERROR_ALREADY_EXISTS);
   return 0;
 }
 
-void port_unregister_socket(port_state_t* port_state,
-                            sock_state_t* sock_state) {
-  tree_del(&port_state->sock_tree, sock_state_to_tree_node(sock_state));
+void portUnregisterSocket(PortState* portState,
+                            SockState* sockState) {
+  treeDel(&portState->sockTree, sockStateToTreeNode(sockState));
 }
 
-sock_state_t* port_find_socket(port_state_t* port_state, SOCKET socket) {
-  tree_node_t* tree_node = tree_find(&port_state->sock_tree, socket);
-  if (tree_node == nullptr)
-    return_set_error(nullptr, ERROR_NOT_FOUND);
-  return sock_state_from_tree_node(tree_node);
+SockState* portFindSocket(PortState* portState, SOCKET socket) {
+  TreeNode* treeNode = treeFind(&portState->sockTree, socket);
+  if (treeNode == nullptr)
+    RETURN_SET_ERROR(nullptr, ERROR_NOT_FOUND);
+  return sockStateFromTreeNode(treeNode);
 }
 
-void port_request_socket_update(port_state_t* port_state,
-                                sock_state_t* sock_state) {
-  if (queueIsEnqueued(sock_state_to_queue_node(sock_state)))
+void portRequestSocketUpdate(PortState* portState,
+                                SockState* sockState) {
+  if (queueIsEnqueued(sockStateToQueueNode(sockState)))
     return;
-  queueAppend(&port_state->sock_update_queue,
-               sock_state_to_queue_node(sock_state));
+  queueAppend(&portState->sockUpdateQueue,
+               sockStateToQueueNode(sockState));
 }
 
-void port_cancel_socket_update(port_state_t* port_state,
-                               sock_state_t* sock_state) {
-  unused_var(port_state);
-  if (!queueIsEnqueued(sock_state_to_queue_node(sock_state)))
+void portCancelSocketUpdate(PortState* portState,
+                               SockState* sockState) {
+  UNUSED_VAR(portState);
+  if (!queueIsEnqueued(sockStateToQueueNode(sockState)))
     return;
-  queueRemove(sock_state_to_queue_node(sock_state));
+  queueRemove(sockStateToQueueNode(sockState));
 }
 
-void port_add_deleted_socket(port_state_t* port_state,
-                             sock_state_t* sock_state) {
-  if (queueIsEnqueued(sock_state_to_queue_node(sock_state)))
+void portAddDeletedSocket(PortState* portState,
+                             SockState* sockState) {
+  if (queueIsEnqueued(sockStateToQueueNode(sockState)))
     return;
-  queueAppend(&port_state->sock_deleted_queue,
-               sock_state_to_queue_node(sock_state));
+  queueAppend(&portState->sockDeletedQueue,
+               sockStateToQueueNode(sockState));
 }
 
-void port_remove_deleted_socket(port_state_t* port_state,
-                                sock_state_t* sock_state) {
-  unused_var(port_state);
-  if (!queueIsEnqueued(sock_state_to_queue_node(sock_state)))
+void portRemoveDeletedSocket(PortState* portState,
+                                SockState* sockState) {
+  UNUSED_VAR(portState);
+  if (!queueIsEnqueued(sockStateToQueueNode(sockState)))
     return;
-  queueRemove(sock_state_to_queue_node(sock_state));
+  queueRemove(sockStateToQueueNode(sockState));
 }
 
-HANDLE port_get_iocp_handle(port_state_t* port_state) {
-  assert(port_state->iocp_handle != nullptr);
-  return port_state->iocp_handle;
+HANDLE portGetIocpHandle(PortState* portState) {
+  assert(portState->iocpHandle != nullptr);
+  return portState->iocpHandle;
 }
 
-queue_t* port_get_poll_group_queue(port_state_t* port_state) {
-  return &port_state->poll_group_queue;
+Queue* portGetPollGroupQueue(PortState* portState) {
+  return &portState->pollGroupQueue;
 }
 
-port_state_t* port_state_from_handle_tree_node(ts_tree_node_t* tree_node) {
-  return container_of(tree_node, port_state_t, handle_tree_node);
+PortState* portStateFromHandleTreeNode(TsTreeNode* treeNode) {
+  return CONTAINER_OF(treeNode, PortState, handleTreeNode);
 }
 
-ts_tree_node_t* port_state_to_handle_tree_node(port_state_t* port_state) {
-  return &port_state->handle_tree_node;
+TsTreeNode* portStateToHandleTreeNode(PortState* portState) {
+  return &portState->handleTreeNode;
 }
 
-void queueInit(queue_t* queue) {
+void queueInit(Queue* queue) {
   queueNodeInit(&queue->head);
 }
 
-void queueNodeInit(queue_node_t* node) {
+void queueNodeInit(QueueNode* node) {
   /* 自指即「不在任何表里」：入队与摘除都靠这条不变式判断，因此不需要额外的标记位 */
   node->previous = node;
   node->next     = node;
 }
 
 /* 把节点从它当前所在的表里摘下来，不动它自己的 previous/next 指向。
-   remove 与两个 move_* 共用，改动这里要同时顾到「被摘的可能是首元素或尾元素」。 */
-static inline void queueDetachNode(queue_node_t* node) {
+   queueRemove 与两个 queueMove 共用，改动这里要同时顾到「被摘的可能是首元素或尾元素」。 */
+static inline void queueDetachNode(QueueNode* node) {
   node->previous->next = node->next;
   node->next->previous = node->previous;
 }
 
-queue_node_t* queueFirst(const queue_t* queue) {
+QueueNode* queueFirst(const Queue* queue) {
   return !queueIsEmpty(queue) ? queue->head.next : nullptr;
 }
 
-queue_node_t* queueLast(const queue_t* queue) {
+QueueNode* queueLast(const Queue* queue) {
   return !queueIsEmpty(queue) ? queue->head.previous : nullptr;
 }
 
-void queueAppend(queue_t* queue, queue_node_t* node) {
+void queueAppend(Queue* queue, QueueNode* node) {
   node->next             = &queue->head;
   node->previous         = queue->head.previous;
   node->previous->next   = node;
   queue->head.previous   = node;
 }
 
-void queueMoveToStart(queue_t* queue, queue_node_t* node) {
+void queueMoveToStart(Queue* queue, QueueNode* node) {
   queueDetachNode(node);
 
   /* 插到哨兵之后即队首（这里不再单列一个 prepend：只有这一处用它） */
@@ -1443,21 +1443,21 @@ void queueMoveToStart(queue_t* queue, queue_node_t* node) {
   queue->head.next     = node;
 }
 
-void queueMoveToEnd(queue_t* queue, queue_node_t* node) {
+void queueMoveToEnd(Queue* queue, QueueNode* node) {
   queueDetachNode(node);
   queueAppend(queue, node);
 }
 
-void queueRemove(queue_node_t* node) {
+void queueRemove(QueueNode* node) {
   queueDetachNode(node);
   queueNodeInit(node);
 }
 
-bool queueIsEmpty(const queue_t* queue) {
+bool queueIsEmpty(const Queue* queue) {
   return !queueIsEnqueued(&queue->head);
 }
 
-bool queueIsEnqueued(const queue_node_t* node) {
+bool queueIsEnqueued(const QueueNode* node) {
   return node->previous != node;
 }
 
@@ -1466,410 +1466,410 @@ static const uint32_t SOCK__KNOWN_EPOLL_EVENTS =
     EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM |
     EPOLLRDBAND | EPOLLWRNORM | EPOLLWRBAND | EPOLLMSG | EPOLLRDHUP;
 
-typedef enum sock__poll_status {
-  SOCK__POLL_IDLE = 0,
-  SOCK__POLL_PENDING,
-  SOCK__POLL_CANCELLED
-} sock__poll_status_t;
+enum class SockPollStatus {
+  Idle = 0,   ///< 尚未下发轮询请求
+  Pending,    ///< 已下发 AFD 轮询，等待完成
+  Cancelled   ///< 已请求撤销，等待回收
+};
 
-typedef struct sock_state {
-  IO_STATUS_BLOCK io_status_block;
-  AFD_POLL_INFO poll_info;
-  queue_node_t queue_node;
-  tree_node_t tree_node;
-  poll_group_t* poll_group;
-  SOCKET base_socket;
-  epoll_data_t user_data;
-  uint32_t user_events;
-  uint32_t pending_events;
-  sock__poll_status_t poll_status;
-  bool delete_pending;
-} sock_state_t;
+struct SockState {
+  IO_STATUS_BLOCK ioStatusBlock;
+  AFD_POLL_INFO pollInfo;
+  QueueNode queueNode;
+  TreeNode treeNode;
+  PollGroup* pollGroup;
+  SOCKET baseSocket;
+  epoll_data_t userData;
+  uint32_t userEvents;
+  uint32_t pendingEvents;
+  SockPollStatus pollStatus;
+  bool deletePending;
+};
 
-static inline sock_state_t* sock__alloc(void) {
-  sock_state_t* sock_state = new (std::nothrow) sock_state_t{};
-  if (sock_state == nullptr)
-    return_set_error(nullptr, ERROR_NOT_ENOUGH_MEMORY);
-  return sock_state;
+static inline SockState* sockAlloc(void) {
+  SockState* sockState = new (std::nothrow) SockState{};
+  if (sockState == nullptr)
+    RETURN_SET_ERROR(nullptr, ERROR_NOT_ENOUGH_MEMORY);
+  return sockState;
 }
 
-static inline void sock__free(sock_state_t* sock_state) {
-  delete sock_state;
+static inline void sockFree(SockState* sockState) {
+  delete sockState;
 }
 
-static int sock__cancel_poll(sock_state_t* sock_state) {
-  assert(sock_state->poll_status == SOCK__POLL_PENDING);
+static int sockCancelPoll(SockState* sockState) {
+  assert(sockState->pollStatus == SockPollStatus::Pending);
 
-  if (afd_cancel_poll(poll_group_get_afd_helper_handle(sock_state->poll_group),
-                      &sock_state->io_status_block) < 0)
+  if (afdCancelPoll(pollGroupGetAfdHelperHandle(sockState->pollGroup),
+                      &sockState->ioStatusBlock) < 0)
     return -1;
 
-  sock_state->poll_status = SOCK__POLL_CANCELLED;
-  sock_state->pending_events = 0;
+  sockState->pollStatus = SockPollStatus::Cancelled;
+  sockState->pendingEvents = 0;
   return 0;
 }
 
-sock_state_t* sock_new(port_state_t* port_state, SOCKET socket) {
-  SOCKET base_socket;
-  poll_group_t* poll_group;
-  sock_state_t* sock_state;
+SockState* sockNew(PortState* portState, SOCKET socket) {
+  SOCKET baseSocket;
+  PollGroup* pollGroup;
+  SockState* sockState;
 
   if (socket == 0 || socket == INVALID_SOCKET)
-    return_set_error(nullptr, ERROR_INVALID_HANDLE);
+    RETURN_SET_ERROR(nullptr, ERROR_INVALID_HANDLE);
 
-  base_socket = ws_get_base_socket(socket);
-  if (base_socket == INVALID_SOCKET)
+  baseSocket = wsGetBaseSocket(socket);
+  if (baseSocket == INVALID_SOCKET)
     return nullptr;
 
-  poll_group = poll_group_acquire(port_state);
-  if (poll_group == nullptr)
+  pollGroup = pollGroupAcquire(portState);
+  if (pollGroup == nullptr)
     return nullptr;
 
-  sock_state = sock__alloc();
-  if (sock_state == nullptr) {
-    poll_group_release(poll_group);
-    return nullptr;
-  }
-
-  sock_state->base_socket = base_socket;
-  sock_state->poll_group = poll_group;
-
-  tree_node_init(&sock_state->tree_node);
-  queueNodeInit(&sock_state->queue_node);
-
-  if (port_register_socket(port_state, sock_state, socket) < 0) {
-    sock__free(sock_state);
-    poll_group_release(poll_group);
+  sockState = sockAlloc();
+  if (sockState == nullptr) {
+    pollGroupRelease(pollGroup);
     return nullptr;
   }
 
-  return sock_state;
+  sockState->baseSocket = baseSocket;
+  sockState->pollGroup = pollGroup;
+
+  treeNodeInit(&sockState->treeNode);
+  queueNodeInit(&sockState->queueNode);
+
+  if (portRegisterSocket(portState, sockState, socket) < 0) {
+    sockFree(sockState);
+    pollGroupRelease(pollGroup);
+    return nullptr;
+  }
+
+  return sockState;
 }
 
-static int sock__delete(port_state_t* port_state,
-                        sock_state_t* sock_state,
+static int sockDeleteInternal(PortState* portState,
+                        SockState* sockState,
                         bool force) {
-  if (!sock_state->delete_pending) {
-    if (sock_state->poll_status == SOCK__POLL_PENDING)
-      sock__cancel_poll(sock_state);
+  if (!sockState->deletePending) {
+    if (sockState->pollStatus == SockPollStatus::Pending)
+      sockCancelPoll(sockState);
 
-    port_cancel_socket_update(port_state, sock_state);
-    port_unregister_socket(port_state, sock_state);
+    portCancelSocketUpdate(portState, sockState);
+    portUnregisterSocket(portState, sockState);
 
-    sock_state->delete_pending = true;
+    sockState->deletePending = true;
   }
 
-  /* If the poll request still needs to complete, the sock_state object can't
-   * be free()d yet. `sock_feed_event()` or `port_close()` will take care
+  /* If the poll request still needs to complete, the sockState object can't
+   * be free()d yet. `sockFeedEvent()` or `portClose()` will take care
    * of this later. */
-  if (force || sock_state->poll_status == SOCK__POLL_IDLE) {
-    /* Free the sock_state now. */
-    port_remove_deleted_socket(port_state, sock_state);
-    poll_group_release(sock_state->poll_group);
-    sock__free(sock_state);
+  if (force || sockState->pollStatus == SockPollStatus::Idle) {
+    /* Free the sockState now. */
+    portRemoveDeletedSocket(portState, sockState);
+    pollGroupRelease(sockState->pollGroup);
+    sockFree(sockState);
   } else {
     /* Free the socket later. */
-    port_add_deleted_socket(port_state, sock_state);
+    portAddDeletedSocket(portState, sockState);
   }
 
   return 0;
 }
 
-void sock_delete(port_state_t* port_state, sock_state_t* sock_state) {
-  sock__delete(port_state, sock_state, false);
+void sockDelete(PortState* portState, SockState* sockState) {
+  sockDeleteInternal(portState, sockState, false);
 }
 
-void sock_force_delete(port_state_t* port_state, sock_state_t* sock_state) {
-  sock__delete(port_state, sock_state, true);
+void sockForceDelete(PortState* portState, SockState* sockState) {
+  sockDeleteInternal(portState, sockState, true);
 }
 
-int sock_set_event(port_state_t* port_state,
-                   sock_state_t* sock_state,
+int sockSetEvent(PortState* portState,
+                   SockState* sockState,
                    const struct epoll_event* ev) {
   /* EPOLLERR and EPOLLHUP are always reported, even when not requested by the
    * caller. However they are disabled after a event has been reported for a
    * socket for which the EPOLLONESHOT flag as set. */
   uint32_t events = ev->events | EPOLLERR | EPOLLHUP;
 
-  sock_state->user_events = events;
-  sock_state->user_data = ev->data;
+  sockState->userEvents = events;
+  sockState->userData = ev->data;
 
-  if ((events & SOCK__KNOWN_EPOLL_EVENTS & ~sock_state->pending_events) != 0)
-    port_request_socket_update(port_state, sock_state);
+  if ((events & SOCK__KNOWN_EPOLL_EVENTS & ~sockState->pendingEvents) != 0)
+    portRequestSocketUpdate(portState, sockState);
 
   return 0;
 }
 
-static inline DWORD sock__epoll_events_to_afd_events(uint32_t epoll_events) {
+static inline DWORD sockEpollEventsToAfdEvents(uint32_t epollEvents) {
   /* Always monitor for AFD_POLL_LOCAL_CLOSE, which is triggered when the
    * socket is closed with closesocket() or CloseHandle(). */
-  DWORD afd_events = AFD_POLL_LOCAL_CLOSE;
+  DWORD afdEvents = AFD_POLL_LOCAL_CLOSE;
 
-  if (epoll_events & (EPOLLIN | EPOLLRDNORM))
-    afd_events |= AFD_POLL_RECEIVE | AFD_POLL_ACCEPT;
-  if (epoll_events & (EPOLLPRI | EPOLLRDBAND))
-    afd_events |= AFD_POLL_RECEIVE_EXPEDITED;
-  if (epoll_events & (EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND))
-    afd_events |= AFD_POLL_SEND;
-  if (epoll_events & (EPOLLIN | EPOLLRDNORM | EPOLLRDHUP))
-    afd_events |= AFD_POLL_DISCONNECT;
-  if (epoll_events & EPOLLHUP)
-    afd_events |= AFD_POLL_ABORT;
-  if (epoll_events & EPOLLERR)
-    afd_events |= AFD_POLL_CONNECT_FAIL;
+  if (epollEvents & (EPOLLIN | EPOLLRDNORM))
+    afdEvents |= AFD_POLL_RECEIVE | AFD_POLL_ACCEPT;
+  if (epollEvents & (EPOLLPRI | EPOLLRDBAND))
+    afdEvents |= AFD_POLL_RECEIVE_EXPEDITED;
+  if (epollEvents & (EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND))
+    afdEvents |= AFD_POLL_SEND;
+  if (epollEvents & (EPOLLIN | EPOLLRDNORM | EPOLLRDHUP))
+    afdEvents |= AFD_POLL_DISCONNECT;
+  if (epollEvents & EPOLLHUP)
+    afdEvents |= AFD_POLL_ABORT;
+  if (epollEvents & EPOLLERR)
+    afdEvents |= AFD_POLL_CONNECT_FAIL;
 
-  return afd_events;
+  return afdEvents;
 }
 
-static inline uint32_t sock__afd_events_to_epoll_events(DWORD afd_events) {
-  uint32_t epoll_events = 0;
+static inline uint32_t sockAfdEventsToEpollEvents(DWORD afdEvents) {
+  uint32_t epollEvents = 0;
 
-  if (afd_events & (AFD_POLL_RECEIVE | AFD_POLL_ACCEPT))
-    epoll_events |= EPOLLIN | EPOLLRDNORM;
-  if (afd_events & AFD_POLL_RECEIVE_EXPEDITED)
-    epoll_events |= EPOLLPRI | EPOLLRDBAND;
-  if (afd_events & AFD_POLL_SEND)
-    epoll_events |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
-  if (afd_events & AFD_POLL_DISCONNECT)
-    epoll_events |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
-  if (afd_events & AFD_POLL_ABORT)
-    epoll_events |= EPOLLHUP;
-  if (afd_events & AFD_POLL_CONNECT_FAIL)
+  if (afdEvents & (AFD_POLL_RECEIVE | AFD_POLL_ACCEPT))
+    epollEvents |= EPOLLIN | EPOLLRDNORM;
+  if (afdEvents & AFD_POLL_RECEIVE_EXPEDITED)
+    epollEvents |= EPOLLPRI | EPOLLRDBAND;
+  if (afdEvents & AFD_POLL_SEND)
+    epollEvents |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
+  if (afdEvents & AFD_POLL_DISCONNECT)
+    epollEvents |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
+  if (afdEvents & AFD_POLL_ABORT)
+    epollEvents |= EPOLLHUP;
+  if (afdEvents & AFD_POLL_CONNECT_FAIL)
     /* Linux reports all these events after connect() has failed. */
-    epoll_events |=
+    epollEvents |=
         EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDNORM | EPOLLWRNORM | EPOLLRDHUP;
 
-  return epoll_events;
+  return epollEvents;
 }
 
-int sock_update(port_state_t* port_state, sock_state_t* sock_state) {
-  assert(!sock_state->delete_pending);
+int sockUpdate(PortState* portState, SockState* sockState) {
+  assert(!sockState->deletePending);
 
-  if ((sock_state->poll_status == SOCK__POLL_PENDING) &&
-      (sock_state->user_events & SOCK__KNOWN_EPOLL_EVENTS &
-       ~sock_state->pending_events) == 0) {
+  if ((sockState->pollStatus == SockPollStatus::Pending) &&
+      (sockState->userEvents & SOCK__KNOWN_EPOLL_EVENTS &
+       ~sockState->pendingEvents) == 0) {
     /* All the events the user is interested in are already being monitored by
      * the pending poll operation. It might spuriously complete because of an
      * event that we're no longer interested in; when that happens we'll submit
      * a new poll operation with the updated event mask. */
 
-  } else if (sock_state->poll_status == SOCK__POLL_PENDING) {
+  } else if (sockState->pollStatus == SockPollStatus::Pending) {
     /* A poll operation is already pending, but it's not monitoring for all the
      * events that the user is interested in. Therefore, cancel the pending
      * poll operation; when we receive it's completion package, a new poll
      * operation will be submitted with the correct event mask. */
-    if (sock__cancel_poll(sock_state) < 0)
+    if (sockCancelPoll(sockState) < 0)
       return -1;
 
-  } else if (sock_state->poll_status == SOCK__POLL_CANCELLED) {
+  } else if (sockState->pollStatus == SockPollStatus::Cancelled) {
     /* The poll operation has already been cancelled, we're still waiting for
      * it to return. For now, there's nothing that needs to be done. */
 
-  } else if (sock_state->poll_status == SOCK__POLL_IDLE) {
+  } else if (sockState->pollStatus == SockPollStatus::Idle) {
     /* No poll operation is pending; start one. */
-    sock_state->poll_info.Exclusive = FALSE;
-    sock_state->poll_info.NumberOfHandles = 1;
-    sock_state->poll_info.Timeout.QuadPart = INT64_MAX;
-    sock_state->poll_info.Handles[0].Handle = reinterpret_cast<HANDLE>(sock_state->base_socket);
-    sock_state->poll_info.Handles[0].Status = 0;
-    sock_state->poll_info.Handles[0].Events =
-        sock__epoll_events_to_afd_events(sock_state->user_events);
+    sockState->pollInfo.Exclusive = FALSE;
+    sockState->pollInfo.NumberOfHandles = 1;
+    sockState->pollInfo.Timeout.QuadPart = INT64_MAX;
+    sockState->pollInfo.Handles[0].Handle = reinterpret_cast<HANDLE>(sockState->baseSocket);
+    sockState->pollInfo.Handles[0].Status = 0;
+    sockState->pollInfo.Handles[0].Events =
+        sockEpollEventsToAfdEvents(sockState->userEvents);
 
-    if (afd_poll(poll_group_get_afd_helper_handle(sock_state->poll_group),
-                 &sock_state->poll_info,
-                 &sock_state->io_status_block) < 0) {
+    if (afdPoll(pollGroupGetAfdHelperHandle(sockState->pollGroup),
+                 &sockState->pollInfo,
+                 &sockState->ioStatusBlock) < 0) {
       switch (GetLastError()) {
         case ERROR_IO_PENDING:
           /* Overlapped poll operation in progress; this is expected. */
           break;
         case ERROR_INVALID_HANDLE:
           /* Socket closed; it'll be dropped from the epoll set. */
-          return sock__delete(port_state, sock_state, false);
+          return sockDeleteInternal(portState, sockState, false);
         default:
           /* Other errors are propagated to the caller. */
-          return_map_error(-1);
+          RETURN_MAP_ERROR(-1);
       }
     }
 
     /* The poll request was successfully submitted. */
-    sock_state->poll_status = SOCK__POLL_PENDING;
-    sock_state->pending_events = sock_state->user_events;
+    sockState->pollStatus = SockPollStatus::Pending;
+    sockState->pendingEvents = sockState->userEvents;
 
   } else {
     /* Unreachable. */
     assert(false);
   }
 
-  port_cancel_socket_update(port_state, sock_state);
+  portCancelSocketUpdate(portState, sockState);
   return 0;
 }
 
-int sock_feed_event(port_state_t* port_state,
-                    IO_STATUS_BLOCK* io_status_block,
+int sockFeedEvent(PortState* portState,
+                    IO_STATUS_BLOCK* ioStatusBlock,
                     struct epoll_event* ev) {
-  sock_state_t* sock_state =
-      container_of(io_status_block, sock_state_t, io_status_block);
-  AFD_POLL_INFO* poll_info = &sock_state->poll_info;
-  uint32_t epoll_events = 0;
+  SockState* sockState =
+      CONTAINER_OF(ioStatusBlock, SockState, ioStatusBlock);
+  AFD_POLL_INFO* pollInfo = &sockState->pollInfo;
+  uint32_t epollEvents = 0;
 
-  sock_state->poll_status = SOCK__POLL_IDLE;
-  sock_state->pending_events = 0;
+  sockState->pollStatus = SockPollStatus::Idle;
+  sockState->pendingEvents = 0;
 
-  if (sock_state->delete_pending) {
+  if (sockState->deletePending) {
     /* Socket has been deleted earlier and can now be freed. */
-    return sock__delete(port_state, sock_state, false);
+    return sockDeleteInternal(portState, sockState, false);
 
-  } else if (io_status_block->Status == STATUS_CANCELLED) {
+  } else if (ioStatusBlock->Status == STATUS_CANCELLED) {
     /* The poll request was cancelled by CancelIoEx. */
 
-  } else if (!NT_SUCCESS(io_status_block->Status)) {
+  } else if (!NT_SUCCESS(ioStatusBlock->Status)) {
     /* The overlapped request itself failed in an unexpected way. */
-    epoll_events = EPOLLERR;
+    epollEvents = EPOLLERR;
 
-  } else if (poll_info->NumberOfHandles < 1) {
+  } else if (pollInfo->NumberOfHandles < 1) {
     /* This poll operation succeeded but didn't report any socket events. */
 
-  } else if (poll_info->Handles[0].Events & AFD_POLL_LOCAL_CLOSE) {
+  } else if (pollInfo->Handles[0].Events & AFD_POLL_LOCAL_CLOSE) {
     /* The poll operation reported that the socket was closed. */
-    return sock__delete(port_state, sock_state, false);
+    return sockDeleteInternal(portState, sockState, false);
 
   } else {
     /* Events related to our socket were reported. */
-    epoll_events =
-        sock__afd_events_to_epoll_events(poll_info->Handles[0].Events);
+    epollEvents =
+        sockAfdEventsToEpollEvents(pollInfo->Handles[0].Events);
   }
 
   /* Requeue the socket so a new poll request will be submitted. */
-  port_request_socket_update(port_state, sock_state);
+  portRequestSocketUpdate(portState, sockState);
 
   /* Filter out events that the user didn't ask for. */
-  epoll_events &= sock_state->user_events;
+  epollEvents &= sockState->userEvents;
 
   /* Return if there are no epoll events to report. */
-  if (epoll_events == 0)
+  if (epollEvents == 0)
     return 0;
 
   /* If the the socket has the EPOLLONESHOT flag set, unmonitor all events,
    * even EPOLLERR and EPOLLHUP. But always keep looking for closed sockets. */
-  if (sock_state->user_events & EPOLLONESHOT)
-    sock_state->user_events = 0;
+  if (sockState->userEvents & EPOLLONESHOT)
+    sockState->userEvents = 0;
 
-  ev->data = sock_state->user_data;
-  ev->events = epoll_events;
+  ev->data = sockState->userData;
+  ev->events = epollEvents;
   return 1;
 }
 
-sock_state_t* sock_state_from_queue_node(queue_node_t* queue_node) {
-  return container_of(queue_node, sock_state_t, queue_node);
+SockState* sockStateFromQueueNode(QueueNode* queueNode) {
+  return CONTAINER_OF(queueNode, SockState, queueNode);
 }
 
-queue_node_t* sock_state_to_queue_node(sock_state_t* sock_state) {
-  return &sock_state->queue_node;
+QueueNode* sockStateToQueueNode(SockState* sockState) {
+  return &sockState->queueNode;
 }
 
-sock_state_t* sock_state_from_tree_node(tree_node_t* tree_node) {
-  return container_of(tree_node, sock_state_t, tree_node);
+SockState* sockStateFromTreeNode(TreeNode* treeNode) {
+  return CONTAINER_OF(treeNode, SockState, treeNode);
 }
 
-tree_node_t* sock_state_to_tree_node(sock_state_t* sock_state) {
-  return &sock_state->tree_node;
+TreeNode* sockStateToTreeNode(SockState* sockState) {
+  return &sockState->treeNode;
 }
 
-void ts_tree_init(ts_tree_t* ts_tree) {
-  tree_init(&ts_tree->tree);
-  InitializeSRWLock(&ts_tree->lock);
+void tsTreeInit(TsTree* tsTree) {
+  treeInit(&tsTree->tree);
+  InitializeSRWLock(&tsTree->lock);
 }
 
-void ts_tree_node_init(ts_tree_node_t* node) {
-  tree_node_init(&node->tree_node);
-  node->reflock.init();
+void tsTreeNodeInit(TsTreeNode* node) {
+  treeNodeInit(&node->treeNode);
+  node->reflock.ensureInitialized();
 }
 
-int ts_tree_add(ts_tree_t* ts_tree, ts_tree_node_t* node, uintptr_t key) {
+int tsTreeAdd(TsTree* tsTree, TsTreeNode* node, uintptr_t key) {
   int r;
 
-  AcquireSRWLockExclusive(&ts_tree->lock);
-  r = tree_add(&ts_tree->tree, &node->tree_node, key);
-  ReleaseSRWLockExclusive(&ts_tree->lock);
+  AcquireSRWLockExclusive(&tsTree->lock);
+  r = treeAdd(&tsTree->tree, &node->treeNode, key);
+  ReleaseSRWLockExclusive(&tsTree->lock);
 
   return r;
 }
 
-static inline ts_tree_node_t* ts_tree__find_node(ts_tree_t* ts_tree,
+static inline TsTreeNode* tsTreeFindNode(TsTree* tsTree,
                                                  uintptr_t key) {
-  tree_node_t* tree_node = tree_find(&ts_tree->tree, key);
-  if (tree_node == nullptr)
+  TreeNode* treeNode = treeFind(&tsTree->tree, key);
+  if (treeNode == nullptr)
     return nullptr;
 
-  return container_of(tree_node, ts_tree_node_t, tree_node);
+  return CONTAINER_OF(treeNode, TsTreeNode, treeNode);
 }
 
-ts_tree_node_t* ts_tree_del_and_ref(ts_tree_t* ts_tree, uintptr_t key) {
-  ts_tree_node_t* ts_tree_node;
+TsTreeNode* tsTreeDelAndRef(TsTree* tsTree, uintptr_t key) {
+  TsTreeNode* tsTreeNode;
 
-  AcquireSRWLockExclusive(&ts_tree->lock);
+  AcquireSRWLockExclusive(&tsTree->lock);
 
-  ts_tree_node = ts_tree__find_node(ts_tree, key);
-  if (ts_tree_node != nullptr) {
-    tree_del(&ts_tree->tree, &ts_tree_node->tree_node);
-    ts_tree_node->reflock.ref();
+  tsTreeNode = tsTreeFindNode(tsTree, key);
+  if (tsTreeNode != nullptr) {
+    treeDel(&tsTree->tree, &tsTreeNode->treeNode);
+    tsTreeNode->reflock.ref();
   }
 
-  ReleaseSRWLockExclusive(&ts_tree->lock);
+  ReleaseSRWLockExclusive(&tsTree->lock);
 
-  return ts_tree_node;
+  return tsTreeNode;
 }
 
-ts_tree_node_t* ts_tree_find_and_ref(ts_tree_t* ts_tree, uintptr_t key) {
-  ts_tree_node_t* ts_tree_node;
+TsTreeNode* tsTreeFindAndRef(TsTree* tsTree, uintptr_t key) {
+  TsTreeNode* tsTreeNode;
 
-  AcquireSRWLockShared(&ts_tree->lock);
+  AcquireSRWLockShared(&tsTree->lock);
 
-  ts_tree_node = ts_tree__find_node(ts_tree, key);
-  if (ts_tree_node != nullptr)
-    ts_tree_node->reflock.ref();
+  tsTreeNode = tsTreeFindNode(tsTree, key);
+  if (tsTreeNode != nullptr)
+    tsTreeNode->reflock.ref();
 
-  ReleaseSRWLockShared(&ts_tree->lock);
+  ReleaseSRWLockShared(&tsTree->lock);
 
-  return ts_tree_node;
+  return tsTreeNode;
 }
 
-void ts_tree_node_unref(ts_tree_node_t* node) {
+void tsTreeNodeUnref(TsTreeNode* node) {
   node->reflock.unref();
 }
 
-void ts_tree_node_unref_and_destroy(ts_tree_node_t* node) {
+void tsTreeNodeUnrefAndDestroy(TsTreeNode* node) {
   node->reflock.unrefAndDestroy();
 }
 
-void tree_init(tree_t* tree) {
-  /* 只用于生命周期已经开始的对象（静态的 epoll__handle_tree）；malloc 存储上的那份由
-     port__new 直接 construct_at，不能用这里的赋值。 */
-  *tree = tree_t{};
+void treeInit(Tree* tree) {
+  /* 只用于生命周期已经开始的对象（静态的 epollHandleTree）；malloc 存储上的那份由
+     portNew 直接 construct_at，不能用这里的赋值。 */
+  *tree = Tree{};
 }
 
-void tree_node_init(tree_node_t* node) {
+void treeNodeInit(TreeNode* node) {
   node->key = 0;
 }
 
-int tree_add(tree_t* tree, tree_node_t* node, uintptr_t key) {
+int treeAdd(Tree* tree, TreeNode* node, uintptr_t key) {
   node->key = key;
 
   /* 同一个键重复插入是调用方的错误：返回 -1 让它按 EEXIST 报出去（与手写树同样的约定） */
   return tree->emplace(key, node).second ? 0 : -1;
 }
 
-void tree_del(tree_t* tree, tree_node_t* node) {
+void treeDel(Tree* tree, TreeNode* node) {
   tree->erase(node->key);
 }
 
-tree_node_t* tree_find(const tree_t* tree, uintptr_t key) {
+TreeNode* treeFind(const Tree* tree, uintptr_t key) {
   const auto iterator = tree->find(key);
   return iterator == tree->end() ? nullptr : iterator->second;
 }
 
-tree_node_t* tree_root(const tree_t* tree) {
-  /* 只给 port_delete 的「逐个摘除直到空」用：给最小键的那个节点即可，
+TreeNode* treeRoot(const Tree* tree) {
+  /* 只给 portDelete 的「逐个摘除直到空」用：给最小键的那个节点即可，
      原实现给的是红黑树的根（同样是「随便一个」，摘除顺序本就不可依赖） */
   return tree->empty() ? nullptr : tree->begin()->second;
 }
@@ -1882,47 +1882,47 @@ tree_node_t* tree_root(const tree_t* tree) {
 #define SIO_BASE_HANDLE 0x48000022
 #endif
 
-int ws_global_init(void) {
+int wsGlobalInit(void) {
   int r;
-  WSADATA wsa_data;
+  WSADATA wsaData;
 
-  r = WSAStartup(MAKEWORD(2, 2), &wsa_data);
+  r = WSAStartup(MAKEWORD(2, 2), &wsaData);
   if (r != 0)
-    return_set_error(-1, static_cast<DWORD>(r));
+    RETURN_SET_ERROR(-1, static_cast<DWORD>(r));
 
   return 0;
 }
 
-static inline SOCKET ws__ioctl_get_bsp_socket(SOCKET socket, DWORD ioctl) {
-  SOCKET bsp_socket;
+static inline SOCKET wsIoctlGetBspSocket(SOCKET socket, DWORD ioctl) {
+  SOCKET bspSocket;
   DWORD bytes;
 
   if (WSAIoctl(socket,
                ioctl,
                nullptr,
                0,
-               &bsp_socket,
-               sizeof bsp_socket,
+               &bspSocket,
+               sizeof bspSocket,
                &bytes,
                nullptr,
                nullptr) != SOCKET_ERROR)
-    return bsp_socket;
+    return bspSocket;
   else
     return INVALID_SOCKET;
 }
 
-SOCKET ws_get_base_socket(SOCKET socket) {
-  SOCKET base_socket;
+SOCKET wsGetBaseSocket(SOCKET socket) {
+  SOCKET baseSocket;
   DWORD error;
 
   for (;;) {
-    base_socket = ws__ioctl_get_bsp_socket(socket, SIO_BASE_HANDLE);
-    if (base_socket != INVALID_SOCKET)
-      return base_socket;
+    baseSocket = wsIoctlGetBspSocket(socket, SIO_BASE_HANDLE);
+    if (baseSocket != INVALID_SOCKET)
+      return baseSocket;
 
     error = GetLastError();
     if (error == WSAENOTSOCK)
-      return_set_error(INVALID_SOCKET, error);
+      RETURN_SET_ERROR(INVALID_SOCKET, error);
 
     /* Even though Microsoft documentation clearly states that LSPs should
      * never intercept the `SIO_BASE_HANDLE` ioctl [1], Komodia based LSPs do
@@ -1936,10 +1936,10 @@ SOCKET ws_get_base_socket(SOCKET socket) {
      *  [2] https://www.komodia.com/newwiki/index.php?title=Komodia%27s_Redirector_bug_fixes#Version_2.2.2.6
      */
 
-    base_socket = ws__ioctl_get_bsp_socket(socket, SIO_BSP_HANDLE_POLL);
-    if (base_socket != INVALID_SOCKET && base_socket != socket)
-      socket = base_socket;
+    baseSocket = wsIoctlGetBspSocket(socket, SIO_BSP_HANDLE_POLL);
+    if (baseSocket != INVALID_SOCKET && baseSocket != socket)
+      socket = baseSocket;
     else
-      return_set_error(INVALID_SOCKET, error);
+      RETURN_SET_ERROR(INVALID_SOCKET, error);
   }
 }
