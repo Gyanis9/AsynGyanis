@@ -31,6 +31,9 @@ add_executable(TestNet
         WebSocket/TestWebSocketFrame.cpp
         WebSocket/TestWebSocketSession.cpp
         WebSocket/TestWebSocketUtf8.cpp
+
+        Http2/TestHttp2Frame.cpp
+        Http2/TestHpack.cpp
 )
 
 target_link_libraries(TestNet PRIVATE
