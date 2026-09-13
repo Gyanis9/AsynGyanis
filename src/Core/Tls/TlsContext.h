@@ -10,6 +10,7 @@
 
 #include <openssl/err.h>
 
+#include <mutex>
 #include <string>
 
 namespace AsynGyanis::Core
@@ -30,6 +31,9 @@ namespace AsynGyanis::Core
      *          SIGPIPE 打死进程；忽略后写失败以 EPIPE 返回，由现有错误路径处理。
      * @note 一个 SSL_CTX 被同一服务器进程内的所有连接共享，因此上述配置是全局生效的：
      *       改动只影响之后创建的 SSL 对象，已建立的连接不受影响。
+     * @note 证书可以在不中断服务的前提下换代：reloadCertificate() 会用同一套加固配置新建一个
+     *       SSL_CTX 并整台换掉，已建立的连接仍绑在旧上下文上（OpenSSL 的引用计数保证旧上下文
+     *       在最后一个引用消失前不会被释放），因此续期不再需要重启进程。
      */
     class TlsContext
     {
@@ -105,10 +109,58 @@ namespace AsynGyanis::Core
          * @brief 获取底层的 SSL_CTX 原生句柄。
          * @return SSL_CTX* 指针
          */
-        [[nodiscard]] SSL_CTX *nativeHandle() const noexcept;
+        [[nodiscard]] SSL_CTX *nativeHandle() const;
+
+        /**
+         * @brief 用上次 loadCertificate() 记下的路径重新加载证书与私钥，成功则整台换用新上下文。
+         *
+         * @details 续期的标准流程是「新证书覆盖到原路径」——ACM 客户端与 certbot 都这么做，路径不变；
+         *          因此本方法不带参数，直接复用上次记住的路径，避免调用方传错路径而悄悄换掉身份
+         *          （那属于重新配置，请用 loadCertificate() 并自行安排写窗口）。
+         *
+         *          实现上是**先在新上下文上把整台配置重建完，成功之后才换**：新上下文同样经过构造期
+         *          那套加固（最低版本、套件、ALPN、压缩开关），并且复现已加载的 CA 与对端校验开关——
+         *          漏掉后者会让一次续期悄悄把 mTLS 关掉。任一步失败都返回 false 且**不碰旧上下文**，
+         *          正在服务的连接与后续新连接都继续按旧证书走，不会因为一次轮换失败而掉线。
+         *
+         * @return true 新证书已生效（此后新建的连接用它）；false 没有可轮换的证书（尚未 loadCertificate()）
+         *         或新证书加载失败，此时旧证书原样继续服务
+         * @note 已建立的连接不受影响：它们各自的 SSL 对象持有旧上下文的引用，OpenSSL 在最后一个引用
+         *       消失前不会释放它，因此握手中的连接与已通连的续传都照旧
+         * @note 线程安全：与 createSSL() 互斥。换代的粒度是「整台上下文」，不做就地改写——
+         *       OpenSSL 不允许在其它线程正用它创建 SSL 时改同一个 SSL_CTX
+         * @see loadCertificate(), HttpsServer::reloadCertificate()
+         */
+        bool reloadCertificate();
 
     private:
+        /**
+         * @brief 新建一个 SSL_CTX 并施加全部安全加固（构造与热轮换共用同一份，避免两处配置各自漂移）
+         * @return SSL_CTX* 已加固的上下文，所有权归调用方
+         * @throws CoreException 创建失败或加固项无法生效（调用方负责先释放已建的句柄）
+         */
+        [[nodiscard]] static SSL_CTX *createHardenedContext();
+
+        /**
+         * @brief 把证书与私钥装进指定上下文并校验两者配对
+         * @param context 目标上下文
+         * @param certificateFile 证书文件路径（PEM）
+         * @param keyFile 私钥文件路径（PEM）
+         * @return true 装好且配对；false 任一环节失败（原因留在 OpenSSL 错误栈里）
+         */
+        [[nodiscard]] static bool installCertificate(SSL_CTX *context, const std::string &certificateFile,
+                                                    const std::string &keyFile);
+
         SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
-        mutable bool m_clientCertificateAuthorityLoaded{false}; ///< 是否已成功加载校验对端证书的 CA（const 方法需写入，故为 mutable）
+        mutable std::mutex m_contextMutex; ///< 保护 m_context 的读取与整台换代（createSSL/reload 互斥）
+
+        // 下面四项记录「当前生效的配置」，供 reloadCertificate() 在新上下文上原样复现。
+        // 加载类接口都是 const（它们改的是 SSL_CTX 内容而不是本对象的身份），因此这几项为 mutable
+        mutable std::string m_certificateFile; ///< 上次成功加载的证书路径；空表示还没加载过，reloadCertificate() 据此判断
+        mutable std::string m_keyFile;         ///< 上次成功加载的私钥路径
+        mutable std::string m_clientCertificateAuthorityFile; ///< 已加载的校验 CA 路径；换代时要复现，空表示没加载过
+
+        mutable bool m_clientCertificateRequired{false};        ///< 是否要求并校验对端证书（换代时同样要复现）
+        mutable bool m_clientCertificateAuthorityLoaded{false}; ///< 是否已成功加载校验对端证书的 CA
     };
 } // namespace AsynGyanis::Core

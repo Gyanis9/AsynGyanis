@@ -22,6 +22,13 @@
 #include <memory>
 #include <string>
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <functional>
+#include <string_view>
+#include <thread>
+
 namespace AsynGyanis::Core
 {
     namespace
@@ -668,5 +675,246 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(outcome.serverCompleted) << "服务端替客户端选了一个它没提供过的协议名";
         EXPECT_FALSE(outcome.clientCompleted) << "客户端接受了从未提供过的协议名";
         EXPECT_NE(outcome.clientAlpn, "http/1.1") << "协商结果不该是客户端没提过的 http/1.1";
+    }
+    // ============================================================================
+    // 证书热轮换（TlsContext::reloadCertificate）
+    // ============================================================================
+
+    namespace
+    {
+        /// 临时文件名里的自增序号：同一进程内多次调用也不撞名
+        std::atomic<unsigned> g_temporaryFileSequence{0};
+
+        /**
+         * @brief 造一个唯一的临时文件路径
+         * @param tag 用途标签，便于在临时目录里辨认
+         * @return std::filesystem::path 唯一的文件路径
+         * @note 名字里必须带「唯一」的成分：用例是并行跑的，两个用例撞名就会互相覆盖文件
+         *       （本仓库吃过这类亏），因此时间戳、线程号、自增序号三者都放进去
+         */
+        [[nodiscard]] std::filesystem::path makeUniqueTemporaryPath(const std::string_view tag)
+        {
+            const auto ticks        = std::chrono::steady_clock::now().time_since_epoch().count();
+            const auto threadHash   = std::hash<std::thread::id>{}(std::this_thread::get_id());
+            const unsigned sequence = g_temporaryFileSequence.fetch_add(1);
+            return std::filesystem::temp_directory_path() /
+                   ("asyngyanis_" + std::string(tag) + "_" + std::to_string(ticks) + "_" + std::to_string(threadHash) + "_" +
+                    std::to_string(sequence) + ".pem");
+        }
+
+        /**
+         * @brief 取上下文将要出示的证书的序列号（十六进制文本）
+         * @param context 目标上下文
+         * @return std::string 序列号；上下文里还没有证书时为空串
+         * @note 读的是 SSL_CTX_get0_certificate()：新建 SSL 时会被装上去的就是这张证书，
+         *       因此它变了就等于「新连接的握手换用另一张证书」
+         */
+        [[nodiscard]] std::string presentedCertificateSerialNumber(SSL_CTX *context)
+        {
+            X509 *certificate = SSL_CTX_get0_certificate(context);
+            if (certificate == nullptr)
+            {
+                return {};
+            }
+
+            const std::unique_ptr<BIGNUM, decltype(&BN_free)> serialNumber(
+                ASN1_INTEGER_to_BN(X509_get_serialNumber(certificate), nullptr), &BN_free);
+            if (!serialNumber)
+            {
+                return {};
+            }
+
+            char *hexText = BN_bn2hex(serialNumber.get());
+            std::string result(hexText != nullptr ? hexText : "");
+            OPENSSL_free(hexText);
+            return result;
+        }
+
+        /**
+         * @brief 用给定私钥另造一张自签证书并写成 PEM
+         * @param keyFile 既有私钥路径（复用夹具私钥：不同 OpenSSL 版本生成密钥对的接口不一致，没必要碰）
+         * @param outputFile 证书输出路径
+         * @param serialNumber 序列号，用来与夹具证书区分
+         * @return bool 写成功
+         */
+        bool writeSelfSignedCertificate(const std::filesystem::path &keyFile, const std::filesystem::path &outputFile,
+                                        const long serialNumber)
+        {
+            const std::unique_ptr<FILE, decltype(&std::fclose)> keyStream(std::fopen(keyFile.string().c_str(), "rb"), &std::fclose);
+            if (!keyStream)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> privateKey(
+                PEM_read_PrivateKey(keyStream.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free);
+            if (!privateKey)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), &X509_free);
+            if (!certificate)
+            {
+                return false;
+            }
+
+            // 版本号 2 对应 X.509 v3（OpenSSL 的版本号从 0 起算）
+            X509_set_version(certificate.get(), 2);
+            ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), serialNumber);
+            X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0);
+            X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 24L * 60L * 60L);
+
+            if (X509_set_pubkey(certificate.get(), privateKey.get()) != 1)
+            {
+                return false;
+            }
+
+            X509_NAME *subjectName           = X509_get_subject_name(certificate.get());
+            const unsigned char commonName[] = "asyngyanis-reload";
+            if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC, commonName, -1, -1, 0) != 1)
+            {
+                return false;
+            }
+            // 自签：签发者就是自己
+            X509_set_issuer_name(certificate.get(), subjectName);
+
+            if (X509_sign(certificate.get(), privateKey.get(), EVP_sha256()) == 0)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<FILE, decltype(&std::fclose)> certificateStream(std::fopen(outputFile.string().c_str(), "wb"),
+                                                                                  &std::fclose);
+            if (!certificateStream)
+            {
+                return false;
+            }
+            return PEM_write_X509(certificateStream.get(), certificate.get()) == 1;
+        }
+
+        /// 把仓库夹具证书复制到指定路径（模拟「证书就部署在这个路径上」的形态）
+        bool copyFixtureCertificate(const std::filesystem::path &destination)
+        {
+            std::error_code errorCode;
+            std::filesystem::copy_file(kTestCertificatePath, destination, std::filesystem::copy_options::overwrite_existing, errorCode);
+            return !errorCode;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：路径上的证书被换掉后 reloadCertificate() 换代成功，且出示的证书真的换了
+     */
+    TEST(TlsContext, ReloadCertificateSwapsThePresentedCertificate)
+    {
+        const std::filesystem::path certificatePath = makeUniqueTemporaryPath("reload_cert");
+        ASSERT_TRUE(copyFixtureCertificate(certificatePath));
+
+        TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
+
+        SSL_CTX *const previousContext = context.nativeHandle();
+        ASSERT_NE(previousContext, nullptr);
+        const std::string previousSerialNumber = presentedCertificateSerialNumber(previousContext);
+        ASSERT_FALSE(previousSerialNumber.empty()) << "夹具证书应能读出序列号";
+
+        // 换代的语义要覆盖「在途连接」：先造一个绑定在旧上下文上的 SSL，稍后验证它没被牵连
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+        SSL *const inFlightSsl = context.createSSL(localDescriptor);
+
+        // 覆盖到原路径：这正是 ACME 客户端/续期脚本的行为（路径不变，内容换新）
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, certificatePath, 0x5EEDL));
+
+        EXPECT_TRUE(context.reloadCertificate()) << "路径上已是合法的新证书，轮换应当成功；OpenSSL 错误：" << lastOpenSslErrorText();
+
+        // 换代而不是就地改：上下文必须换人，否则并发创建 SSL 时等于边改边用同一个 SSL_CTX
+        EXPECT_NE(context.nativeHandle(), previousContext);
+        EXPECT_NE(presentedCertificateSerialNumber(context.nativeHandle()), previousSerialNumber)
+            << "换过之后出示的证书序列号应当变化";
+
+        // 在途连接仍绑在旧上下文上（它的 SSL 持有旧上下文的引用），因此握手中与已通连的连接不受影响。
+        // 紧接着的 SSL_free 会走到旧上下文上：若实现把旧上下文提前释放了，ASan 会在这里直接报出来
+        EXPECT_EQ(SSL_get_SSL_CTX(inFlightSsl), previousContext);
+        SSL_free(inFlightSsl);
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+        std::error_code errorCode;
+        std::filesystem::remove(certificatePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：新证书坏了就整体失败，旧证书继续服务（不能因为一次轮换失败而掉线）
+     */
+    TEST(TlsContext, ReloadCertificateKeepsServingOldCertificateWhenNewOneIsBroken)
+    {
+        const std::filesystem::path certificatePath = makeUniqueTemporaryPath("broken_cert");
+        ASSERT_TRUE(copyFixtureCertificate(certificatePath));
+
+        TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
+
+        SSL_CTX *const previousContext         = context.nativeHandle();
+        const std::string previousSerialNumber = presentedCertificateSerialNumber(previousContext);
+
+        // 往证书路径写垃圾：模拟「续期只写了一半」「文件传坏」
+        {
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(certificatePath.string().c_str(), "wb"), &std::fclose);
+            ASSERT_TRUE(stream != nullptr);
+            // 判据用 fwrite 的返回值：fputs 只承诺「非负」，MSVC 下成功也返回 0
+            const char brokenCertificateText[] = "-----BEGIN CERTIFICATE-----\nnot a certificate\n";
+            ASSERT_EQ(std::fwrite(brokenCertificateText, 1, sizeof(brokenCertificateText) - 1, stream.get()),
+                      sizeof(brokenCertificateText) - 1);
+        }
+
+        EXPECT_FALSE(context.reloadCertificate()) << "加载不了的新证书必须让本次轮换整体失败";
+        // 关键：失败不碰旧上下文——指针与证书都没变，正在服务的连接完全不受影响
+        EXPECT_EQ(context.nativeHandle(), previousContext);
+        EXPECT_EQ(presentedCertificateSerialNumber(context.nativeHandle()), previousSerialNumber);
+
+        std::error_code errorCode;
+        std::filesystem::remove(certificatePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：从未加载过证书时轮换直接失败，而不是把上下文换成空壳
+     */
+    TEST(TlsContext, ReloadCertificateFailsBeforeAnyCertificateWasLoaded)
+    {
+        TlsContext context;
+
+        EXPECT_FALSE(context.reloadCertificate());
+        EXPECT_NE(context.nativeHandle(), nullptr) << "失败的轮换不该破坏原有上下文";
+    }
+
+    /**
+     * @brief 钉住：轮换必须复现 mTLS 配置——不能因为续期把对端证书校验悄悄关掉
+     */
+    TEST(TlsContext, ReloadCertificatePreservesClientCertificateVerification)
+    {
+        const std::filesystem::path certificatePath = makeUniqueTemporaryPath("mtls_cert");
+        ASSERT_TRUE(copyFixtureCertificate(certificatePath));
+
+        TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
+        // 自签证书本身就是可信锚点，拿它当校验对端证书的 CA 用
+        ASSERT_TRUE(context.loadClientCertificateAuthority(kTestCertificatePath.string()));
+        context.setClientCertificateRequired(true);
+
+        const int verifyModeBeforeReload = SSL_CTX_get_verify_mode(context.nativeHandle());
+        ASSERT_NE(verifyModeBeforeReload & SSL_VERIFY_PEER, 0);
+
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, certificatePath, 0x5EEEL));
+        ASSERT_TRUE(context.reloadCertificate());
+
+        // 复现到位：新上下文同样要求并校验对端证书，而不是退回「不校验」的默认模式
+        const int verifyModeAfterReload = SSL_CTX_get_verify_mode(context.nativeHandle());
+        EXPECT_NE(verifyModeAfterReload & SSL_VERIFY_PEER, 0) << "轮换后丢失了对端证书校验要求";
+        EXPECT_NE(verifyModeAfterReload & SSL_VERIFY_FAIL_IF_NO_PEER_CERT, 0) << "轮换后退化成了「对端可不带证书」";
+
+        std::error_code errorCode;
+        std::filesystem::remove(certificatePath, errorCode);
     }
 }

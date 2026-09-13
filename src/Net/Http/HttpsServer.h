@@ -129,6 +129,21 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] HttpServerStats stats() const;
 
+        /**
+         * @brief 用当前证书路径重新加载证书与私钥，新连接立即改用新证书（热轮换）。
+         *
+         * @details 续期流程：ACM 客户端/certbot 把新证书覆盖到原路径 → 调用本方法。已建立的连接
+         *          不受影响（各自持有旧上下文，见 Core::TlsContext::reloadCertificate()）。
+         *          实现上先在新上下文把加固与 mTLS 配置整套重建、成功之后才换，因此**失败不会
+         *          影响正在服务的旧证书**。
+         *
+         * @return true 新证书已生效；false 本次没换（新证书加载失败，或本服务器从未加载过证书），
+         *         此时旧证书继续服务，调用方应记日志并稍后重试
+         * @note 线程安全：与「为新连接创建 SSL」互斥；可从运维线程直接调用，不必投递到事件循环
+         * @see Core::TlsContext::reloadCertificate()
+         */
+        bool reloadCertificate();
+
     private:
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
