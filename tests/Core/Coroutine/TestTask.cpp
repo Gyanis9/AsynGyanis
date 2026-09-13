@@ -214,11 +214,14 @@ namespace AsynGyanis::Core
         ManualGate gate;
         bool       isChildFinished = false;
 
-        auto child = [&gate, &isChildFinished]() -> Task<>
+        // 惰性 Task 的协程帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用，
+        // 否则「构造后立即调用的临时闭包」在语句结束即销毁，恢复协程时读到的捕获已是死对象
+        auto childBody = [&gate, &isChildFinished]() -> Task<>
         {
             co_await gate;
             isChildFinished = true;
-        }();
+        };
+        auto child = childBody();
 
         // 先把子任务启动到内部等待点上：从这一刻起它已经「在跑」
         child.handle().resume();
@@ -226,12 +229,13 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(child.isReady());
 
         int parentProgress = 0;
-        auto parent        = [&child, &parentProgress]() -> Task<>
+        auto parentBody    = [&child, &parentProgress]() -> Task<>
         {
             parentProgress = 1;
             co_await child;
             parentProgress = 2;
-        }();
+        };
+        auto parent = parentBody();
 
         parent.handle().resume();
         EXPECT_EQ(parentProgress, 1) << "等待方越过 co_await 前进了：说明它把子任务的内部等待当成了已完成";
@@ -252,16 +256,18 @@ namespace AsynGyanis::Core
     {
         bool isChildFinished = false;
 
-        auto child = [&isChildFinished]() -> Task<>
+        auto childBody = [&isChildFinished]() -> Task<>
         {
             isChildFinished = true;
             co_return;
-        }();
+        };
+        auto child = childBody();
 
-        auto parent = [&child]() -> Task<>
+        auto parentBody = [&child]() -> Task<>
         {
             co_await child;
-        }();
+        };
+        auto parent = parentBody();
 
         parent.handle().resume();
         EXPECT_TRUE(isChildFinished) << "co_await 没有启动惰性任务";

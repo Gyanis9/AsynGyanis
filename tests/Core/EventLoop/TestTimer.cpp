@@ -96,11 +96,14 @@ namespace AsynGyanis::Core
         Timer     timer(loop);
 
         bool isExpired = false;
-        auto waiting   = [&timer, &isExpired]() -> Task<>
+        // 惰性 Task 的协程帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用，
+        // 否则「构造后立即调用的临时闭包」在语句结束即销毁，恢复协程时读到的捕获已是死对象
+        auto waitingBody = [&timer, &isExpired]() -> Task<>
         {
             co_await timer.waitFor(std::chrono::milliseconds(5));
             isExpired = true;
-        }();
+        };
+        auto waiting = waitingBody();
         waiting.handle().resume();
 
         ASSERT_FALSE(isExpired) << "定时器未到期就完成了";
@@ -117,12 +120,13 @@ namespace AsynGyanis::Core
         EventLoop loop;
         Timer     timer(loop);
 
-        bool isExpired = false;
-        auto waiting   = [&timer, &isExpired]() -> Task<>
+        bool isExpired   = false;
+        auto waitingBody = [&timer, &isExpired]() -> Task<>
         {
             co_await timer.waitFor(std::chrono::milliseconds::zero());
             isExpired = true;
-        }();
+        };
+        auto waiting = waitingBody();
         waiting.handle().resume();
 
         ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "零时长定时器没有在时限内到期";
@@ -139,18 +143,20 @@ namespace AsynGyanis::Core
         std::vector<int> firedOrder;
 
         // 先登记 30ms 的，再登记 5ms 的：后者更早到期，队列必须改武装到更早的时刻
-        auto later = [&timer, &firedOrder]() -> Task<>
+        auto laterBody = [&timer, &firedOrder]() -> Task<>
         {
             co_await timer.waitFor(std::chrono::milliseconds(30));
             firedOrder.push_back(1);
-        }();
+        };
+        auto later = laterBody();
         later.handle().resume();
 
-        auto earlier = [&timer, &firedOrder]() -> Task<>
+        auto earlierBody = [&timer, &firedOrder]() -> Task<>
         {
             co_await timer.waitFor(std::chrono::milliseconds(5));
             firedOrder.push_back(2);
-        }();
+        };
+        auto earlier = earlierBody();
         earlier.handle().resume();
 
         ASSERT_TRUE(advanceUntil(loop, [&firedOrder] { return firedOrder.size() >= 2U; }, kWaitTimeout)) << "两个定时器没有都在时限内到期";
@@ -168,10 +174,11 @@ namespace AsynGyanis::Core
         Timer     timer(loop);
 
         {
-            auto cancelled = [&timer]() -> Task<>
+            auto cancelledBody = [&timer]() -> Task<>
             {
                 co_await timer.waitFor(std::chrono::milliseconds(50));
-            }();
+            };
+            auto cancelled = cancelledBody();
             cancelled.handle().resume();
             ASSERT_EQ(loop.timerQueue().pendingCount(), 1U);
         }
@@ -179,12 +186,13 @@ namespace AsynGyanis::Core
         // 帧销毁即取消：队列里不再有这一项（它是最近的截止时间，取消后武装要跟着回退）
         EXPECT_EQ(loop.timerQueue().pendingCount(), 0U);
 
-        bool isExpired = false;
-        auto waiting   = [&timer, &isExpired]() -> Task<>
+        bool isExpired   = false;
+        auto waitingBody = [&timer, &isExpired]() -> Task<>
         {
             co_await timer.waitFor(std::chrono::milliseconds(5));
             isExpired = true;
-        }();
+        };
+        auto waiting = waitingBody();
         waiting.handle().resume();
 
         ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "取消一个等待后，其他定时器没有正常到期";

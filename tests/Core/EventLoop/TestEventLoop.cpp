@@ -156,25 +156,29 @@ namespace AsynGyanis::Core
         int results[3]{};
         std::vector<Task<void>> tasks;
 
-        // 三个协程各自记录执行结果
-        auto first = [&]() -> Task<void>
+        // 三个协程各自记录执行结果。惰性 Task 的协程帧记住的是闭包对象的地址：闭包必须
+        // 先落到具名变量上再调用，临时闭包在语句结束即销毁，恢复协程时读到的捕获已是死对象
+        auto firstBody = [&]() -> Task<void>
         {
             ++executionCount;
             results[0] = 1;
             co_return;
-        }();
-        auto second = [&]() -> Task<void>
+        };
+        auto secondBody = [&]() -> Task<void>
         {
             ++executionCount;
             results[1] = 2;
             co_return;
-        }();
-        auto third = [&]() -> Task<void>
+        };
+        auto thirdBody = [&]() -> Task<void>
         {
             ++executionCount;
             results[2] = 3;
             co_return;
-        }();
+        };
+        auto first  = firstBody();
+        auto second = secondBody();
+        auto third  = thirdBody();
 
         loop.scheduler().schedule(first.handle());
         loop.scheduler().schedule(second.handle());
