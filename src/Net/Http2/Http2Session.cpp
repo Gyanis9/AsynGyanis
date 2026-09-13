@@ -414,7 +414,8 @@ namespace AsynGyanis::Net
             // 头块带 END_STREAM 的请求没有正文，当场就是「收齐」状态
             pending.isRemoteEndStream = !http2Request.hasBody;
             // RFC 8441 的扩展 CONNECT：隧道请求的后续处理与普通请求完全不同（200 + 流变隧道）
-            pending.isExtendedConnect = http2Request.protocol == kWebSocketProtocolName;
+            pending.isExtendedConnect = !http2Request.protocol.empty();
+            pending.isWebSocketTunnel = http2Request.protocol == kWebSocketProtocolName;
             if (pending.isExtendedConnect)
             {
                 // 扩展 CONNECT 没有「请求正文」这一回事：它一收齐就该交给路由，不能等对端的 END_STREAM——
@@ -525,6 +526,26 @@ namespace AsynGyanis::Net
         // 响应层的「无正文」语义只由状态码决定，与请求方法无关
         const bool isHeadRequest = request.method() == HttpMethod::HEAD;
 
+        // RFC 8441 §4 的协议协商：本端只认 :protocol=websocket。其它取值属于「扩展 CONNECT 说的协议本端
+        // 没实现」，明确回 501——不能把它当成一条未知方法的普通请求交给路由，那会回 404/405，语义不对
+        if (pending.isExtendedConnect && !pending.isWebSocketTunnel)
+        {
+            LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 :protocol 本端未实现（只支持 websocket），已回 501 并保持连接可用。"
+                          "request-id {}，路径 {}",
+                          request.requestId(), request.uri());
+            HttpResponse unsupportedResponse;
+            unsupportedResponse.setStatus(501);
+            unsupportedResponse.setBody("CONNECT Protocol Not Implemented");
+            static_cast<void>(unsupportedResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            const RequestServeOutcome unsupportedOutcome =
+                    toRequestServeOutcome(co_await sendResponse(streamId, unsupportedResponse, isHeadRequest));
+            if (unsupportedOutcome == RequestServeOutcome::StreamCancelled)
+            {
+                noteStreamCancelled();
+            }
+            co_return unsupportedOutcome;
+        }
+
         if (pending.isBodyTooLarge)
         {
             // 体量越界按 HTTP/1.1 侧同一口径处置：只计入 badRequestCount，不计入已处理的请求条数
@@ -612,7 +633,7 @@ namespace AsynGyanis::Net
         // 随后这条流变成隧道；以 101 形态登记升级的请求在 h2 上没有对应机制，仍按 501 明确拒绝
         if (m_response.isWebSocketUpgradeRequested())
         {
-            if (pending.isExtendedConnect && !isStreamingStarted)
+            if (pending.isWebSocketTunnel && !isStreamingStarted)
             {
                 co_return co_await serveWebSocketTunnel(streamId, pending);
             }
