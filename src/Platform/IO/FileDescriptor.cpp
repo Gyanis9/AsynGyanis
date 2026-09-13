@@ -135,7 +135,8 @@ namespace AsynGyanis::Platform
         }
         return true;
 #else
-        const int descriptors[2] = {-1, -1};
+        // socketpair 会向该数组写入两个描述符
+        int descriptors[2] = {-1, -1};
         if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, descriptors) != 0)
         {
             return false;

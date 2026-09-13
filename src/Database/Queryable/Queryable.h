@@ -453,7 +453,9 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *            pool         = m_pool;
             Transaction *               transaction  = m_transaction;
 
-            std::vector<T> rows = co_await asyncExecutor().submit<std::vector<T> >(
+            // 类模板内经由成员函数返回值访问成员模板时，GCC 要求名字前写 template 关键字，
+            // 否则 '<' 会被当成小于号解析；MSVC 接受缺省写法，这里按最严的编译器来写
+            std::vector<T> rows = co_await asyncExecutor().template submit<std::vector<T> >(
                     completionLoop,
                     [dialect, resolvedNode = std::move(resolvedNode), pool, transaction]() -> std::vector<T>
                     {
@@ -488,7 +490,7 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *pool                    = m_pool;
             Transaction *   transaction             = m_transaction;
 
-            std::optional<T> firstRow = co_await asyncExecutor().submit<std::optional<T> >(
+            std::optional<T> firstRow = co_await asyncExecutor().template submit<std::optional<T> >(
                     completionLoop,
                     [dialect, limitedNode = std::move(limitedNode), pool, transaction]() -> std::optional<T>
                     {
@@ -529,7 +531,7 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *pool        = m_pool;
             Transaction *   transaction = m_transaction;
 
-            std::int64_t countedRows = co_await asyncExecutor().submit<std::int64_t>(
+            std::int64_t countedRows = co_await asyncExecutor().template submit<std::int64_t>(
                     completionLoop,
                     [dialect, countingNode = std::move(countingNode), pool, transaction]() -> std::int64_t
                     {
@@ -562,7 +564,7 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *pool        = m_pool;
             Transaction *   transaction = m_transaction;
 
-            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+            std::int64_t affectedRows = co_await asyncExecutor().template submit<std::int64_t>(
                     completionLoop,
                     [statement = std::move(statement), pool, transaction]() -> std::int64_t
                     {
@@ -601,7 +603,7 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *pool        = m_pool;
             Transaction *   transaction = m_transaction;
 
-            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+            std::int64_t affectedRows = co_await asyncExecutor().template submit<std::int64_t>(
                     completionLoop,
                     [statement = std::move(statement), pool, transaction]() -> std::int64_t
                     {
@@ -639,7 +641,7 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *            pool        = m_pool;
             Transaction *               transaction = m_transaction;
 
-            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+            std::int64_t affectedRows = co_await asyncExecutor().template submit<std::int64_t>(
                     completionLoop,
                     [dialect, rows = std::move(rows), pool, transaction]() -> std::int64_t
                     {
@@ -678,7 +680,7 @@ namespace AsynGyanis::Database::Queryable
             ConnectionPool *pool        = m_pool;
             Transaction *   transaction = m_transaction;
 
-            std::int64_t affectedRows = co_await asyncExecutor().submit<std::int64_t>(
+            std::int64_t affectedRows = co_await asyncExecutor().template submit<std::int64_t>(
                     completionLoop,
                     [statement = std::move(statement), pool, transaction]() -> std::int64_t
                     {

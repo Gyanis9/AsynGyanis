@@ -5,6 +5,7 @@
 #include "Base/Format/Value/FormatValueType.h"
 
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <format>
 #include <optional>
