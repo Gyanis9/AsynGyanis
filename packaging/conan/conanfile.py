@@ -12,7 +12,7 @@
 
 消费方在 conanfile 里 requires("asyngyanis/1.0.0")，用 CMakeDeps + CMakeToolchain 生成器，
 然后 find_package(AsynGyanis) 并按目标取用：AsynGyanis::Platform / Base / Core / Net / Database
-（Windows 上还有 AsynGyanis::wepoll）。各组件之间的依赖关系由本文件的 cpp_info.components
+。各组件之间的依赖关系由本文件的 cpp_info.components
 如实声明，因此只需链顶层用到的那个目标。
 
 与仓库根 conanfile.py 的分工：那份是**开发用**配方（application 角色，只负责为本地构建与 CI
@@ -85,7 +85,7 @@ class AsynGyanisLibrary(ConanFile):
     def build(self):
         cmake = CMake(self)
         cmake.configure()
-        # 只构建 install 目标：它依赖五个模块库与 Windows 上的 wepoll，其余什么都不碰
+        # 只构建 install 目标：它依赖五个模块库，其余什么都不碰
         cmake.build(target="install")
 
     def package_info(self):
@@ -125,14 +125,6 @@ class AsynGyanisLibrary(ConanFile):
         database.set_property("cmake_target_name", "AsynGyanis::Database")
         if self.options.with_mysql:
             database.requires.append("libmysqlclient::libmysqlclient")
-
-        # wepoll 是 Core 在 Windows 上链接的 vendored 静态库，安装规则会一并导出，
-        # 因此这里也要声明，否则消费方链 Core 时会缺 epoll_* 符号
-        if self.settings.os == "Windows":
-            wepoll = self.cpp_info.components["wepoll"]
-            wepoll.libs = ["wepoll"]
-            core.requires.append("wepoll")
-            wepoll.set_property("cmake_target_name", "AsynGyanis::wepoll")
 
         # 公开头文件是 UTF-8（含中文注释），而 MSVC 默认按系统代码页解码源码：在 GBK 环境里
         # 会把注释字节吃进下一行，报出「找不到标识符」这类假语法错误。库在 CMake 里把它作为

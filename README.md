@@ -351,7 +351,8 @@ AsynGyanis/
 | [libmysqlclient](https://dev.mysql.com/doc/c-api/) | 8.1.0 | MySQL 客户端 |
 
 - YAML 与 JSON 由 `Base/Format` 自研实现，不引入第三方解析库。
-- [wepoll](https://github.com/piscisaureus/wepoll) 已 **vendored** 进 `src/Core/EventLoop/wepoll/`（随仓库分发，不在构建期联网下载）。
+- [wepoll](https://github.com/piscisaureus/wepoll) 已 **vendored** 进 `src/Core/EventLoop/wepoll/`（随仓库分发，
+  不在构建期联网下载），并直接编进 `Core` 库——它是 Windows 侧事件通知的实现细节，不单独导出目标。
 - SQLite3 为必选；hiredis 与 libmysqlclient 为**可选**：探测不到时对应驱动退化为报错桩，不会让配置阶段失败。
 
 ## 测试与验证

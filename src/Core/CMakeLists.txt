@@ -32,9 +32,14 @@ if(TARGET jemalloc::jemalloc)
     set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies jemalloc)
 endif()
 
-# wepoll 目标在 EventLoop/CMakeLists.txt 中按平台定义
+# Epoll.h 在 Windows 上用引号包含 "wepoll.h"：引号包含先从包含者所在目录找，
+# 而 vendored 头在 wepoll/ 子目录里，所以要把该目录挂到 Core 的接口上
+# （安装后对应 include/Core/EventLoop/wepoll）
 if(WIN32)
-    target_link_libraries(Core PUBLIC wepoll)
+    target_include_directories(Core PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/EventLoop/wepoll>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/Core/EventLoop/wepoll>
+    )
 endif()
 
 target_include_directories(Core PUBLIC

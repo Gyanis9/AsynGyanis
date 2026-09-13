@@ -147,7 +147,7 @@ endif()
 # 对外发布：安装规则与 CMake 包配置
 # ============================================================================
 # 五个模块库与公开头文件随安装落到 <前缀>/lib 与 <前缀>/include，并导出
-# AsynGyanis::Platform / Base / Core / Net / Database（Windows 上还有 AsynGyanis::wepoll），
+# AsynGyanis::Platform / Base / Core / Net / Database，
 # 外部工程即可 find_package(AsynGyanis) 后直接链接，无需再自行拼 include 路径与依赖。
 # 关闭后只保留纯构建行为：make install / cmake --install 不再产出任何东西。
 option(ASYN_ENABLE_INSTALL "生成安装规则与 CMake 包配置，供外部工程 find_package 消费" ON)
@@ -162,17 +162,8 @@ if(ASYN_ENABLE_INSTALL)
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 
-    # wepoll 是 Core 在 Windows 上链接的 vendored 静态库，必须一并导出：
-    # 少了它，消费方链接 Core 时会缺 epoll_create/epoll_wait 等符号
-    if(TARGET wepoll)
-        install(TARGETS wepoll
-                EXPORT AsynGyanisTargets
-                ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        )
-    endif()
-
     # 头文件保持 src 下的相对路径，安装后 "Core/Socket/AsyncSocket.h" 这类
-    # 库内既有写法仍可直接使用（vendored 的 wepoll.h 也随此规则一起落地）
+    # 库内既有写法仍可直接使用（vendored 的 wepoll.h 也随此规则一起落地，供 Epoll.h 引用）
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
             FILES_MATCHING PATTERN "*.h"
