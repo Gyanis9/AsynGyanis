@@ -3,6 +3,9 @@
 
 #include <openssl/ssl.h>
 
+#include <csignal>
+#include <cstring>
+
 namespace AsynGyanis::Core
 {
     namespace
@@ -65,6 +68,15 @@ namespace AsynGyanis::Core
 
     TlsContext::TlsContext()
     {
+#ifndef _WIN32
+        // OpenSSL 内部的 read()/write() 绕不开 MSG_NOSIGNAL：向已关闭的对端写数据
+        // （握手失败发 alert、SSL_shutdown 发 close_notify）在 Linux 上会触发 SIGPIPE，
+        // 默认动作是直接打死整个进程。忽略该信号后，写失败改以 EPIPE 错误码返回，
+        // 交给既有错误路径处理——这也是服务器程序的标准做法（nginx、libuv 同样忽略）。
+        // 该设置是进程级且幂等的：重复构造 TlsContext 没有额外影响
+        std::signal(SIGPIPE, SIG_IGN);
+#endif
+
         m_context = SSL_CTX_new(TLS_server_method());
         if (!m_context)
         {

@@ -24,6 +24,9 @@ namespace AsynGyanis::Core
      * @details 构造即完成安全加固：最低 TLS 1.2、关闭压缩、安全等级 2 与显式排除弱套件、
      *          ALPN 只提供 http/1.1。需要 mTLS 时再调用 loadClientCertificateAuthority()
      *          与 setClientCertificateRequired()，两者都必须早于 createSSL()。
+     *          非 Windows 平台还会在构造时忽略 SIGPIPE：OpenSSL 内部的写入不走 MSG_NOSIGNAL
+     *          路径，对端已关闭时（握手失败发 alert、SSL_shutdown 发 close_notify）默认会触发
+     *          SIGPIPE 打死进程；忽略后写失败以 EPIPE 返回，由现有错误路径处理。
      * @note 一个 SSL_CTX 被同一服务器进程内的所有连接共享，因此上述配置是全局生效的：
      *       改动只影响之后创建的 SSL 对象，已建立的连接不受影响。
      */
