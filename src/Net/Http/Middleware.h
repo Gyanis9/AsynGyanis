@@ -12,6 +12,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Net/Http/Gzip.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 
@@ -646,6 +647,266 @@ namespace AsynGyanis::Net
             }
 
             co_await next();
+        };
+    }
+
+    namespace detail
+    {
+        /**
+         * @brief 判断 Accept-Encoding 是否接受 gzip（含 q 值语义）
+         * @details 既要认出 `gzip`，也要认出 `*`（通配）与 `gzip;q=0`（明确拒绝）。q=0 是**拒绝**而不是
+         *          「优先级最低」：按 RFC 9110 §12.5.3 必须当作不可接受，发压缩正文等于违反协商。
+         * @param acceptEncoding Accept-Encoding 头部的值，缺头时传空串
+         * @return true 可以使用 gzip
+         */
+        [[nodiscard]] inline bool acceptsGzipEncoding(const std::string_view acceptEncoding)
+        {
+            std::size_t offset = 0;
+            bool        wildcardAccepted = false;
+
+            while (offset < acceptEncoding.size())
+            {
+                const std::size_t commaPosition = acceptEncoding.find(',', offset);
+                const std::size_t entryEnd      = commaPosition == std::string_view::npos ? acceptEncoding.size() : commaPosition;
+
+                std::string_view entry = acceptEncoding.substr(offset, entryEnd - offset);
+                offset                 = entryEnd + 1;
+
+                // 拆出编码名与参数（形如 gzip;q=0.5）
+                const std::size_t semicolonPosition = entry.find(';');
+                std::string_view  encodingName      = entry.substr(0, semicolonPosition);
+                const std::string_view parameters   = semicolonPosition == std::string_view::npos ? std::string_view{}
+                                                                                                   : entry.substr(semicolonPosition + 1);
+
+                // 去掉首尾空白：头部里 "gzip ; q=0" 这种写法同样合法
+                while (!encodingName.empty() && (encodingName.front() == ' ' || encodingName.front() == '\t'))
+                {
+                    encodingName.remove_prefix(1);
+                }
+                while (!encodingName.empty() && (encodingName.back() == ' ' || encodingName.back() == '\t'))
+                {
+                    encodingName.remove_suffix(1);
+                }
+
+                bool       isRejected = false;
+                std::size_t parameterOffset = 0;
+                while (parameterOffset < parameters.size())
+                {
+                    const std::size_t nextSeparator = parameters.find(';', parameterOffset);
+                    const std::size_t parameterEnd =
+                            nextSeparator == std::string_view::npos ? parameters.size() : nextSeparator;
+                    const std::string_view parameter = parameters.substr(parameterOffset, parameterEnd - parameterOffset);
+                    parameterOffset                  = parameterEnd + 1;
+
+                    if (parameter.size() >= 2 && (parameter[0] == 'q' || parameter[0] == 'Q') && parameter[1] == '=')
+                    {
+                        const std::string_view quality = parameter.substr(2);
+                        // q=0 与 q=0.0、q=0.000 都是拒绝；只判「值是否全为 0 与小数点」足够，不必真解析
+                        bool isZeroQuality = !quality.empty();
+                        for (const char character: quality)
+                        {
+                            if (character != '0' && character != '.')
+                            {
+                                isZeroQuality = false;
+                                break;
+                            }
+                        }
+                        isRejected = isRejected || isZeroQuality;
+                    }
+                }
+
+                if (encodingName == "*")
+                {
+                    wildcardAccepted = !isRejected;
+                    continue;
+                }
+
+                // 编码名按 token 语义大小写不敏感（RFC 9110 §12.5.3）
+                const bool isGzipName = encodingName.size() == 4 && (encodingName[0] == 'g' || encodingName[0] == 'G') &&
+                                        (encodingName[1] == 'z' || encodingName[1] == 'Z') && (encodingName[2] == 'i' || encodingName[2] == 'I') &&
+                                        (encodingName[3] == 'p' || encodingName[3] == 'P');
+                if (isGzipName)
+                {
+                    return !isRejected;
+                }
+            }
+
+            return wildcardAccepted;
+        }
+
+        /**
+         * @brief 判断内容类型是否属于「已经压过、再压没用」的一类
+         * @param contentType Content-Type 头部的值（含可能的 charset 参数）
+         * @return true 不值得压缩
+         */
+        [[nodiscard]] inline bool isIncompressibleContentType(const std::string_view contentType)
+        {
+            // 只比前缀，参数（;charset=...）不参与比较；媒体类型大小写不敏感
+            constexpr std::string_view kIncompressiblePrefixes[] = {"image/", "video/", "audio/", "font/",
+                                                                    "application/zip", "application/gzip", "application/x-gzip",
+                                                                    "application/x-7z-compressed", "application/x-rar-compressed"};
+            for (const std::string_view prefix: kIncompressiblePrefixes)
+            {
+                if (contentType.size() < prefix.size())
+                {
+                    continue;
+                }
+
+                bool isSamePrefix = true;
+                for (std::size_t index = 0; index < prefix.size(); ++index)
+                {
+                    const char actual   = contentType[index];
+                    const char expected = prefix[index];
+                    const char lowered  = (actual >= 'A' && actual <= 'Z') ? static_cast<char>(actual - 'A' + 'a') : actual;
+                    if (lowered != expected)
+                    {
+                        isSamePrefix = false;
+                        break;
+                    }
+                }
+                if (isSamePrefix)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 把 Vary 补上 accept-encoding（已含则不重复）
+         * @details 压缩后的表示与 Accept-Encoding 有关，缓存必须按它分桶，否则会把压缩副本发给
+         *          不接受压缩的客户端（反之亦然）
+         * @param response 响应
+         */
+        inline void appendVaryAcceptEncoding(HttpResponse &response)
+        {
+            const std::optional<std::string> existingVary = response.getHeader("vary");
+            if (!existingVary.has_value())
+            {
+                response.setHeader("vary", "accept-encoding");
+                return;
+            }
+
+            // 已有 Vary：逐 token 找 accept-encoding，大小写不敏感
+            std::string_view remaining = *existingVary;
+            while (!remaining.empty())
+            {
+                const std::size_t commaPosition = remaining.find(',');
+                std::string_view  token         = remaining.substr(0, commaPosition);
+                remaining = commaPosition == std::string_view::npos ? std::string_view{} : remaining.substr(commaPosition + 1);
+
+                while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
+                {
+                    token.remove_prefix(1);
+                }
+                while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
+                {
+                    token.remove_suffix(1);
+                }
+
+                if (token.size() == 15)
+                {
+                    bool isAcceptEncoding = true;
+                    constexpr std::string_view kAcceptEncoding = "accept-encoding";
+                    for (std::size_t index = 0; index < kAcceptEncoding.size(); ++index)
+                    {
+                        const char actual  = token[index];
+                        const char lowered = (actual >= 'A' && actual <= 'Z') ? static_cast<char>(actual - 'A' + 'a') : actual;
+                        if (lowered != kAcceptEncoding[index])
+                        {
+                            isAcceptEncoding = false;
+                            break;
+                        }
+                    }
+                    if (isAcceptEncoding)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            response.setHeader("vary", *existingVary + ", accept-encoding");
+        }
+    } // namespace detail
+
+    /**
+     * @brief gzip 响应压缩中间件
+     *
+     * @details 在业务处理完之后判断并压缩响应正文。**必须放在路由处理的洋葱层里**（中间件本来如此），
+     *          因此它对所有路由都生效，包括静态文件——静态文件原本走 mmap 零拷贝，命中压缩时会被
+     *          换成内存正文：这是「省带宽」换「多一次拷贝 + 一次压缩」的取舍，阈值（默认 1 KiB）
+     *          就是那道闸；不命中压缩时零拷贝路径原样保留。
+     * @param minimumBodySize 正文达到该字节数才压缩，默认 1024；小正文压缩后往往更大，白烧 CPU
+     * @param level 压缩级别 1..9，默认 6
+     * @return MiddlewareFunc 中间件
+     * @note 不压缩的情形（都会原样发正文）：对端不接受 gzip（含 `gzip;q=0`）、响应已带
+     *       content-encoding、流式响应、无正文的状态码、区间响应（206/content-range）、
+     *       正文小于阈值、内容类型属于已压缩媒体
+     * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
+     *       h1 与 h2 共用同一份响应序列化，因此两条路径都生效
+     * @see Gzip.h, HttpResponse::setBody()
+     */
+    inline MiddlewareFunc compressionMiddleware(const std::size_t minimumBodySize = 1024, const int level = kDefaultGzipLevel)
+    {
+        return [minimumBodySize, level](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            co_await next();
+
+            // 已经声明过编码（业务自己压的，或上游中间件压的）：再压一层对端解不开
+            if (response.getHeader("content-encoding").has_value())
+            {
+                co_return;
+            }
+
+            // 流式响应逐段写出、长度对序列化层未知，压不了整块；无正文的状态码没有可压的内容
+            if (response.isChunkedResponse() || response.carriesNoContent())
+            {
+                co_return;
+            }
+
+            // 区间响应：正文只是某个区间的一段字节，压缩它会让对端的区间语义错乱（206 必带 content-range）
+            if (response.getHeader("content-range").has_value())
+            {
+                co_return;
+            }
+
+            if (!detail::acceptsGzipEncoding(request.getHeader("accept-encoding").value_or(std::string{})))
+            {
+                co_return;
+            }
+
+            const std::string_view body = response.body();
+            if (body.size() < minimumBodySize)
+            {
+                co_return;
+            }
+
+            if (const std::optional<std::string> contentType = response.getHeader("content-type");
+                contentType.has_value() && detail::isIncompressibleContentType(*contentType))
+            {
+                co_return;
+            }
+
+            const std::optional<std::string> compressed = gzipCompress(body, level);
+            if (!compressed.has_value())
+            {
+                // 压缩失败（内存不足）不是错误响应：照原样发未压缩正文，别让对端拿到半截数据
+                co_return;
+            }
+
+            // 正文表示变了：强 ETag 必须降级为弱校验器（RFC 9110 §8.8.1），否则缓存会把
+            // 压缩副本与未压缩副本当成同一份表示
+            if (const std::optional<std::string> entityTag = response.getHeader("etag");
+                entityTag.has_value() && !entityTag->starts_with("W/"))
+            {
+                response.setHeader("etag", "W/" + *entityTag);
+            }
+
+            detail::appendVaryAcceptEncoding(response);
+            response.setHeader("content-encoding", "gzip");
+            // content-length 由序列化层按新正体重算；mappedBody 会被 setBody 一并解除
+            response.setBody(*compressed);
+            co_return;
         };
     }
 

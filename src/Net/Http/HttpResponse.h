@@ -313,6 +313,19 @@ namespace AsynGyanis::Net
          */
         void reset();
 
+        /**
+         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
+         * @param statusCode 待判定的状态码
+         * @return true 表示该状态码的响应不得有正文，因此不能进入流式模式
+         */
+        [[nodiscard]] static bool isBodylessStatusCode(int statusCode) noexcept;
+
+        /**
+         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
+         * @return true 表示序列化时不得输出正文
+         */
+        [[nodiscard]] bool carriesNoContent() const noexcept;
+
     private:
         /**
          * @brief 单条头部字段的权威记录
@@ -365,19 +378,6 @@ namespace AsynGyanis::Net
          * @param canonicalName 已归一化（小写）的头部名；不存在时为空操作
          */
         void removeHeaderField(const std::string &canonicalName);
-
-        /**
-         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
-         * @param statusCode 待判定的状态码
-         * @return true 表示该状态码的响应不得有正文，因此不能进入流式模式
-         */
-        [[nodiscard]] static bool isBodylessStatusCode(int statusCode) noexcept;
-
-        /**
-         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
-         * @return true 表示序列化时不得输出正文
-         */
-        [[nodiscard]] bool carriesNoContent() const noexcept;
 
         /**
          * @brief 该状态码是否不得自动补 content-length

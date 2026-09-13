@@ -17,6 +17,7 @@ add_executable(TestNet
         Http/TestHttpServer.cpp
         Http/TestHttpServerLimits.cpp
         Http/TestGzip.cpp
+        Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp
         Http/TestHttpMemoryBudget.cpp
         Http/TestHttpServerConfig.cpp
