@@ -374,6 +374,45 @@ namespace AsynGyanis::Net
         return m_hasSentChunkedHead;
     }
 
+    void HttpResponse::upgradeToWebSocket(WebSocketHandler handler)
+    {
+        // 与流式模式互斥：升级应答由握手模块逐字节生成，与「头部 + 分块正文」是两条互斥的报文形态，
+        // 同时成立会让「这条响应到底怎么上线」变得不确定
+        if (m_isChunked)
+        {
+            throw Base::LogicException("HttpResponse::upgradeToWebSocket：本响应已进入流式模式，无法再登记 WebSocket 升级；"
+                                       "请去掉 startChunkedResponse()/writeChunk() 调用，升级应答由会话按握手结果发出");
+        }
+
+        // 与整块正文互斥：理由同上——正文会被序列化进响应，而升级应答里没有正文的位置
+        if (!bodyView().empty())
+        {
+            throw Base::LogicException("HttpResponse::upgradeToWebSocket：本响应已经设置过整块正文，与 WebSocket 升级互斥；"
+                                       "请去掉 setBody()/setMappedBody() 调用，升级应答由会话按握手结果发出");
+        }
+
+        // 空处理器是用法错误：会话会在升级成功后调用它，而空 std::function 抛的是 bad_function_call，
+        // 既不是本框架的异常，也指不出是哪一处漏了装配
+        if (!handler)
+        {
+            throw Base::InvalidArgumentException("HttpResponse::upgradeToWebSocket：升级处理器为空，连接升级后没有可运行的处理逻辑；"
+                                                 "请传入形如 std::function<Core::Task<>(WebSocketPeer &)> 的处理器");
+        }
+
+        m_webSocketHandler = std::move(handler);
+        m_isWebSocketUpgradeRequested = true;
+    }
+
+    bool HttpResponse::isWebSocketUpgradeRequested() const noexcept
+    {
+        return m_isWebSocketUpgradeRequested;
+    }
+
+    const WebSocketHandler &HttpResponse::webSocketHandler() const noexcept
+    {
+        return m_webSocketHandler;
+    }
+
     void HttpResponse::startChunkedResponse(const int statusCode)
     {
         // 头部已经上线之后再进/改流式模式：对端已经按上一版状态行与头部读到了报文，
@@ -756,6 +795,10 @@ namespace AsynGyanis::Net
         // 发送回调刻意不动：它绑定的是连接，不是本条报文
         m_isChunked = false;
         m_hasSentChunkedHead = false;
+
+        // 升级意图与处理器一起清：留在复用对象上会把下一条报文也拖进升级分支
+        m_webSocketHandler = WebSocketHandler{};
+        m_isWebSocketUpgradeRequested = false;
     }
 
 } // namespace AsynGyanis::Net

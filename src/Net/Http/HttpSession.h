@@ -19,10 +19,14 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/WebSocket/WebSocketHandshake.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 
 #include <algorithm>
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <functional>
@@ -238,6 +242,150 @@ namespace AsynGyanis::Net
         private:
             Core::Connection *m_connection{nullptr}; ///< 被标记的连接（非拥有，随帧存活）
         };
+
+        /**
+         * @brief WebSocket 阶段：101 之后在这条连接上跑业务处理器，直到任一侧收口
+         *
+         * @details 本阶段是升级分支的全部实现：读字节 → 喂解码器（分片重组、掩码与 RSV 校验都在
+         *          解码层）→ 由 WebSocketPeer 交给业务 → 按 RFC 6455 §5.5.1 收尾。业务协程不 co_await
+         *          而是显式推进，因此这条连接上任何时刻都只有一个协程在跑：会话在业务挂回 receive()
+         *          时拿回控制权，业务返回（正常或抛异常）时置位标记，下一轮循环据此进入收尾。
+         *
+         * @note 一条连接要么 HTTP 要么 WebSocket：本阶段返回后调用方直接结束会话，不再回到
+         *       keep-alive 事务循环。
+         * @note 收尾时机：业务在会话等读期间返回时，会话要等这条连接下一次可读、对端关闭或
+         *       空闲清扫（idleTimeout）到期才会收口——会话协程此刻挂在 socket 的读等待上，
+         *       而跨协程恢复一个挂在 IO 上的协程会破坏它内部的挂起链，因此不做这种唤醒。
+         *
+         * @tparam Socket 传输层类型，需支持 asyncReceive/asyncSend
+         * @param socket 传输层 socket 引用，其生命周期覆盖整个阶段
+         * @param connection 所属连接，用于刷新空闲截止时间与查询存活；其生命周期覆盖整个阶段
+         * @param limits 连接级限额，取自 HttpServerLimits
+         * @param handler 业务处理器；按值接收（惰性协程的入参必须由协程帧自己持有）
+         * @param receiveBuffer 会话的接收窗口，本阶段按窗口长度整块读取
+         * @param pendingLength 升级请求之后窗口里剩余的字节数：客户端可能在 101 之前就把第一帧
+         *        发了过来，这些字节必须先喂给解码器
+         */
+        template<typename Socket>
+        Core::Task<> webSocketSessionStage(Socket &socket,
+                                           Core::Connection &connection,
+                                           const HttpServerLimits &limits,
+                                           WebSocketHandler handler,
+                                           std::vector<char> &receiveBuffer,
+                                           std::size_t pendingLength)
+        {
+            // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
+            // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
+            // 回调按引用捕获 socket 与连接，两者都活到整条连接结束
+            const auto sendFrameBytes = [&socket, &connection, &limits](const std::string_view frameBytes) -> Core::Task<bool>
+            {
+                connection.refreshIdleDeadline(limits.writeTimeout);
+                try
+                {
+                    // 一直写到整帧出门：asyncSend 允许部分写，而帧少一个字节对端就再也找不回边界
+                    std::size_t writtenLength = 0;
+                    while (writtenLength < frameBytes.size())
+                    {
+                        const ssize_t writeLength =
+                                co_await socket.asyncSend(frameBytes.data() + writtenLength, frameBytes.size() - writtenLength);
+                        if (writeLength <= 0)
+                        {
+                            co_return false;
+                        }
+                        writtenLength += static_cast<std::size_t>(writeLength);
+                    }
+                    co_return true;
+                } catch (const std::exception &)
+                {
+                    // 传输层写失败（对端 RST、描述符被清扫协程关掉）一律视为连接不可用：
+                    // 字节流已断，这里没有可发给对端的东西
+                    co_return false;
+                }
+            };
+
+            WebSocketPeer peer(sendFrameBytes);
+
+            bool isBusinessFinished = false;
+
+            // 业务协程的包装：返回（正常或抛异常）之后置位标记。闭包按引用捕获上面那个局部，
+            // 而业务协程帧的存活期短于本阶段，因此引用始终有效
+            const auto runBusiness = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>
+            {
+                try
+                {
+                    co_await businessHandler(businessPeer);
+                } catch (const std::exception &exception)
+                {
+                    // 101 已经上线，此刻没有任何可以回给对端的东西：原因只能进日志
+                    LOG_ERROR_FMT("WebSocket 会话：业务处理器抛出异常，已按连接不可用收口，原因：{}", exception.what());
+                } catch (...)
+                {
+                    LOG_ERROR_FMT("WebSocket 会话：业务处理器抛出非标准异常（无 what() 描述），已按连接不可用收口");
+                }
+                isBusinessFinished = true;
+            };
+
+            // 启动业务：跑到首次 receive() 或首个 send*() 挂起为止（返回则标记已结束）
+            Core::Task<> businessTask = runBusiness(std::move(handler), peer);
+            businessTask.handle().resume();
+
+            // 客户端可能在 101 之后立刻发帧：窗口里剩下的字节先喂给解码器，别把它丢了
+            WebSocketFeedStatus feedStatus = WebSocketFeedStatus::Accepted;
+            if (pendingLength > 0)
+            {
+                feedStatus = peer.feedBytes(receiveBuffer.data(), pendingLength);
+            }
+
+            // 读循环：读 → 喂解码器 → 交给业务。等下一段字节前按空闲容忍度计时，依据是
+            // HttpServerLimits::idleTimeout 的语义「两次能收到字节之间的容忍时长」——WebSocket
+            // 阶段没有「半条报文」这一相位，帧与帧之间的间隔就是这条连接的空闲
+            while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && connection.isAlive())
+            {
+                connection.refreshIdleDeadline(limits.idleTimeout);
+
+                ssize_t receivedLength = 0;
+                try
+                {
+                    receivedLength = co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
+                } catch (const std::exception &)
+                {
+                    // 传输层读失败（对端 RST、描述符被清扫协程关掉）：字节流已断，按收口处理
+                    break;
+                }
+                if (receivedLength <= 0)
+                {
+                    // 0 是对端正常关闭，负值是连接不可用，两者都只剩收尾
+                    break;
+                }
+
+                // 一段字节一次喂完：解码器内部按帧推进，产出即排队交给业务
+                feedStatus = peer.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength));
+            }
+
+            // 收尾（RFC 6455 §5.5.1）：任一侧收口都要结束会话，本侧尚未发起关闭且没有在途写时补一条
+            // Close。业务仍有帧在写时不插这一条——两条写路径的字节会在连接上互相穿插，此刻直接结束
+            // 会话（§7.1.7 允许服务端不等关闭握手就断开 TCP）
+            if (feedStatus == WebSocketFeedStatus::DecodeError)
+            {
+                // 帧格式违规回 1002、体量越界回 1009：两类失败对端的处置不同，不能合成一个码
+                const std::uint16_t errorCode =
+                        peer.isDecodeLimitExceeded() ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
+                LOG_ERROR_FMT("WebSocket 会话：对端违反 RFC 6455，按状态码 {} 关闭连接，原因：{}", errorCode, peer.decodeErrorText());
+                if (peer.isOpen() && !peer.isWriteInFlight())
+                {
+                    [[maybe_unused]] const bool isErrorCloseSent = co_await peer.close(errorCode);
+                }
+            } else if (peer.isOpen() && !peer.isWriteInFlight())
+            {
+                // 业务返回、对端关闭或读超时：本侧主动发起正常关闭
+                [[maybe_unused]] const bool isNormalCloseSent = co_await peer.close(kWebSocketNormalClosureCode);
+            }
+
+            // 标记收口：此后 peer 不再交付消息、send*() 一律返回 false。挂起中的业务协程不唤醒，
+            // 它的帧随本协程一起销毁（会话已经结束，让它继续跑没有意义）
+            peer.markClosed();
+            co_return;
+        }
 
         /**
          * @brief 模板化的 HTTP 保持活跃事务循环。
@@ -524,6 +672,59 @@ namespace AsynGyanis::Net
 
                 // 取消转发器不在这里注销：它按连接注册一次（见循环前），
                 // 回调指向解析器内部那个按连接复用的请求对象，跨请求依然指向正确目标
+
+                // ---------------- 升级分支：把这条连接交给 WebSocket 处理器 ----------------
+                // 业务抛异常时这次升级没有完成（可能只登记了一半），按普通 500 收口：reset() 会把
+                // 升级意图一并清掉，因此下面只在业务正常返回时才认这个标记
+                if (handlerException == nullptr && response.isWebSocketUpgradeRequested())
+                {
+                    std::string upgradeFailureReason;
+                    if (!isWebSocketUpgradeRequest(request, &upgradeFailureReason))
+                    {
+                        // 登记了升级但请求并不构成合法握手：回 400 让对端知道原因，随后按 close 收口。
+                        // 中文原因同时进正文与日志——正文对端未必有人看，日志才是排查入口
+                        LOG_ERROR_FMT("HttpSession: WebSocket 升级请求不合法，已回 400 并收口连接。request-id {}，路径 {}，原因：{}",
+                                      request.requestId(), request.uri(), upgradeFailureReason);
+                        if (metrics != nullptr)
+                        {
+                            metrics->countBadRequest();
+                        }
+
+                        response.reset();
+                        response.setStatus(400);
+                        response.setBody(upgradeFailureReason);
+                        response.setHeader("content-type", "text/plain; charset=utf-8");
+                        response.setHeader("connection", "close");
+                        [[maybe_unused]] const bool isRejectionSent = co_await sendResponse(response.serializeHead(), response.body());
+                        co_return;
+                    }
+
+                    // 校验已保证这条头部存在；真取不到只可能是请求对象在校验之后被改动，
+                    // 此时宁可收口，也不发一条 Accept 值算错的 101
+                    const std::optional<std::string> clientKey = request.getHeader("sec-websocket-key");
+                    if (!clientKey.has_value())
+                    {
+                        co_return;
+                    }
+
+                    // 101 报文由握手模块逐字节生成，这里原样写出：不走 HttpResponse 的序列化，
+                    // 否则会被补上 date / content-length，而切换协议的应答里没有这两条的位置
+                    const std::string handshakeResponse = buildHandshakeResponse(*clientKey);
+                    if (!co_await sendResponse(handshakeResponse, std::string_view{}))
+                    {
+                        // 101 没发出去：对端拿不到 Sec-WebSocket-Accept，这条连接不能再当 WebSocket 用
+                        co_return;
+                    }
+
+                    LOG_INFO_FMT("HttpSession: 连接已升级到 WebSocket。request-id {}，路径 {}", request.requestId(), request.uri());
+
+                    // 此后不再回到 HTTP keep-alive：一条连接要么 HTTP 要么 WebSocket。
+                    // windowLength 是 101 之前就到达的剩余字节（升级请求之后的那一部分），
+                    // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
+                    // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
+                    co_return co_await detail::webSocketSessionStage(socket, connection, limits, response.webSocketHandler(),
+                                                                     receiveBuffer, windowLength);
+                }
 
                 // 计数与上限：达到上限就让 keepAlive 变 false，从而走既有的
                 // 「补 Connection: close 并收口」逻辑，而不是另开一条收尾路径

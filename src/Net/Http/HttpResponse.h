@@ -12,6 +12,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <cstddef>
@@ -220,6 +221,35 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool hasSentChunkedHead() const noexcept;
 
         /**
+         * @brief 登记「本次请求要把这条连接升级成 WebSocket」（RFC 6455 §4）
+         *
+         * @details 只登记意图，不做任何 IO：会话在此后的循环里校验升级请求、把 101 报文原样写出，
+         *          然后把连接交给该处理器。处理器一直运行到它返回或连接收口，期间会话不再回到
+         *          HTTP 事务循环——一条连接要么是 HTTP，要么是 WebSocket。
+         * @param handler 升级成功后的业务处理器，所有权转移给本响应
+         * @throws Base::InvalidArgumentException handler 为空
+         * @throws Base::LogicException 已设过整块正文或已进入流式模式：升级应答由握手模块逐字节生成，
+         *         与 HttpResponse 的正文/分块序列化互斥
+         * @note 校验可能失败（请求并不构成合法握手），此时会话回 400 而不会调用处理器
+         * @note reset() 会连同处理器一起清掉：复用的响应对象不会把升级意图带到下一条报文
+         * @see isWebSocketUpgradeRequested(), webSocketHandler()
+         */
+        void upgradeToWebSocket(WebSocketHandler handler);
+
+        /**
+         * @brief 本次响应是否登记了 WebSocket 升级。
+         * @return true 已由 upgradeToWebSocket() 登记，会话应尝试升级而不是按响应序列化应答
+         */
+        [[nodiscard]] bool isWebSocketUpgradeRequested() const noexcept;
+
+        /**
+         * @brief 取已登记的升级处理器。
+         * @return 处理器的常引用；未登记时为空 std::function
+         * @note 引用跟随本响应的生命周期；会话在升级成功后才取用它
+         */
+        [[nodiscard]] const WebSocketHandler &webSocketHandler() const noexcept;
+
+        /**
          * @brief 设置 HTTP 协议版本（默认 "HTTP/1.1"），用于状态行序列化。
          * @param version 版本字符串，按原文写入状态行开头
          */
@@ -271,9 +301,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 重置响应对象到初始状态（状态码 200、版本 HTTP/1.1，清空头部和正文）。
-         * @details 两条头部存储一起清空，保持「视图与权威记录一致」的不变式；流式模式标记
-         *          一并复位（否则下一条报文会被按分块定界）；发送回调刻意不清，它绑定连接
-         *          而不是本条报文。复用响应对象时必须先调用本方法，否则上一轮的 Set-Cookie 会残留。
+         * @details 两条头部存储一起清空，保持「视图与权威记录一致」的不变式；流式模式标记与
+         *          WebSocket 升级意图一并复位（否则下一条报文会被按分块定界、或被当成升级请求）；
+         *          发送回调刻意不清，它绑定连接而不是本条报文。复用响应对象时必须先调用本方法，
+         *          否则上一轮的 Set-Cookie 会残留。
          */
         void reset();
 
@@ -391,6 +422,8 @@ namespace AsynGyanis::Net
         bool m_isChunked{false};                               ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
         bool m_hasSentChunkedHead{false};                      ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
         ChunkSender m_chunkSender;                             ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
+        WebSocketHandler m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
+        bool m_isWebSocketUpgradeRequested{false};              ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
         mutable std::string m_autoDateValue;                   ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
 } // namespace AsynGyanis::Net
