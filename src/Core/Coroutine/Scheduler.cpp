@@ -38,8 +38,47 @@ namespace AsynGyanis::Core
         }
     }
 
+    void Scheduler::postRemote(std::function<void()> callable)
+    {
+        if (!callable)
+        {
+            return;
+        }
+        {
+            std::lock_guard lock(m_globalMutex);
+            m_remoteCallables.push_back(std::move(callable));
+            m_remoteCallableCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (m_wakeup)
+        {
+            // 与 scheduleRemote() 同一套保证：唤醒失败也不会丢，目标线程下次从 epoll_wait 醒来时照样处理
+            m_wakeup->notify();
+        }
+    }
+
     bool Scheduler::runOne()
     {
+        // 跨线程投递的普通代码优先跑：它们多是「把刚接下的连接装进本循环」这类前置动作，
+        // 先做掉能让紧随其后的读写立刻有对象可服务
+        {
+            std::function<void()> callable;
+            {
+                std::lock_guard lock(m_globalMutex);
+                if (!m_remoteCallables.empty())
+                {
+                    callable = std::move(m_remoteCallables.front());
+                    m_remoteCallables.pop_front();
+                    m_remoteCallableCount.fetch_sub(1, std::memory_order_relaxed);
+                }
+            }
+            if (callable)
+            {
+                callable();
+                return true;
+            }
+        }
+
         // 处理本地队列
         if (!m_localQueue.empty())
         {
@@ -83,6 +122,7 @@ namespace AsynGyanis::Core
         // 第二阶段：批量窃取全局队列，防止本地任务持续产生导致全局饥饿。
         // 批处理缓冲提到循环外：跨批次复用已申请的容量，避免每轮都做一次堆分配
         std::vector<std::coroutine_handle<> > batch;
+        std::deque<std::function<void()> >    callableBatch;
         while (true)
         {
             {
@@ -95,10 +135,20 @@ namespace AsynGyanis::Core
                     m_globalQueue.pop_front();
                 }
                 m_globalCount.store(0, std::memory_order_relaxed);
+
+                // 回调与协程各自成批取出再执行：执行期间可能又有新投递，下一轮循环会接着处理
+                callableBatch.swap(m_remoteCallables);
+                m_remoteCallableCount.store(0, std::memory_order_relaxed);
             }
 
-            if (batch.empty())
+            if (batch.empty() && callableBatch.empty())
                 break;
+
+            for (const auto &callable: callableBatch)
+            {
+                callable();
+            }
+            callableBatch.clear();
 
             for (const auto &handle: batch)
             {
@@ -122,7 +172,7 @@ namespace AsynGyanis::Core
         {
             return true;
         }
-        return m_globalCount.load(std::memory_order_relaxed) > 0;
+        return m_globalCount.load(std::memory_order_relaxed) > 0 || m_remoteCallableCount.load(std::memory_order_relaxed) > 0;
     }
 
     size_t Scheduler::localQueueSize() const

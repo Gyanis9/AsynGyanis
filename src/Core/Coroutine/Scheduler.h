@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <coroutine>
+#include <functional>
 #include <deque>
 #include <mutex>
 #include <vector>
@@ -72,6 +73,21 @@ namespace AsynGyanis::Core
         void scheduleRemote(std::coroutine_handle<> handle);
 
         /**
+         * @brief 跨线程投递一段普通代码：在**目标循环**上执行一次（线程安全）
+         *
+         * @details scheduleRemote() 只能投递协程句柄，而「跨循环移交」这类动作（把刚接受的连接交给
+         *          另一个循环接手）需要一个「在那边跑一小段代码」的入口，且这段代码不属于任何协程帧：
+         *          它必须在新主人所在的线程上创建连接对象、把它挂进那边的在途表。本方法就是那个入口，
+         *          语义与 scheduleRemote() 完全一致——线程安全、FIFO、顺带唤醒可能阻塞中的目标循环。
+         * @param callable 待执行的可调用对象；空对象（未绑定任何函数）会被忽略
+         * @note 与协程一样，**异常会向目标循环传播**（和 resume() 抛出的效果相同），因此投递方
+         *       应保证自己不抛：需要兜住的错误在可调用对象内部处理
+         * @note 目标循环若在轮到它之前就退出了，队列里尚未执行的对象会被丢弃——持有系统资源
+         *       （套接字描述符等）的投递方应当把它包在 RAII 句柄里，让丢弃也能归还资源
+         */
+        void postRemote(std::function<void()> callable);
+
+        /**
          * @brief 执行一个就绪协程
          *
          * 执行策略：
@@ -107,8 +123,10 @@ namespace AsynGyanis::Core
     private:
         std::vector<std::coroutine_handle<> > m_localQueue;      ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
         std::deque<std::coroutine_handle<> >  m_globalQueue;     ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
-        std::mutex                            m_globalMutex;     ///< 保护全局队列的互斥锁
+        std::deque<std::function<void()> >    m_remoteCallables; ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
+        std::mutex                            m_globalMutex;     ///< 保护全局队列与跨线程回调队列的互斥锁
         std::atomic<size_t>                   m_globalCount{0};  ///< 全局队列长度（原子变量，用于快速判空）
+        std::atomic<size_t>                   m_remoteCallableCount{0}; ///< 跨线程回调条数（同上，用于快速判空）
         Platform::EventNotifier *             m_wakeup{nullptr}; ///< 唤醒器指针，nullptr 表示未启用唤醒
     };
 }

@@ -177,4 +177,105 @@ namespace AsynGyanis::Core
         EXPECT_EQ(counter.load(), 5);
         EXPECT_FALSE(scheduler.hasWork());
     }
+    /**
+     * @brief postRemote() 投递的代码在目标循环线程上执行，而不是投递线程上
+     */
+    TEST(Scheduler, PostRemoteRunsCallableOnTheLoopThread)
+    {
+        Scheduler       scheduler;
+        std::thread::id executedOn;
+        std::thread::id posterThreadId;
+
+        std::thread remote([&scheduler, &executedOn, &posterThreadId]()
+        {
+            posterThreadId = std::this_thread::get_id();
+            scheduler.postRemote([&executedOn]()
+            {
+                executedOn = std::this_thread::get_id();
+            });
+        });
+        remote.join();
+
+        ASSERT_TRUE(scheduler.runOne());
+        // 关键断言是两条：跑在目标循环（本线程）而不是投递线程上，跨循环移交才有意义
+        EXPECT_EQ(executedOn, std::this_thread::get_id()) << "回调没有跑在目标循环线程上";
+        EXPECT_NE(executedOn, posterThreadId) << "回调跑在了投递线程上";
+    }
+
+    /**
+     * @brief 多条回调按投递顺序（FIFO）执行
+     */
+    TEST(Scheduler, PostRemoteKeepsFifoOrder)
+    {
+        Scheduler       scheduler;
+        std::vector<int> executedOrder;
+
+        for (int index = 0; index < 3; ++index)
+        {
+            scheduler.postRemote([&executedOrder, index]()
+            {
+                executedOrder.push_back(index);
+            });
+        }
+
+        for (int round = 0; round < 3; ++round)
+        {
+            ASSERT_TRUE(scheduler.runOne());
+        }
+        EXPECT_EQ(executedOrder, (std::vector<int>{0, 1, 2}));
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
+    /**
+     * @brief 空的回调对象被忽略：不会占位，也不会让 runOne() 空转
+     */
+    TEST(Scheduler, PostRemoteEmptyCallableIsIgnored)
+    {
+        Scheduler scheduler;
+        scheduler.postRemote({});
+
+        EXPECT_FALSE(scheduler.hasWork());
+        EXPECT_FALSE(scheduler.runOne());
+    }
+
+    /**
+     * @brief 待执行的回调计入待办：hasWork() 能看见它
+     */
+    TEST(Scheduler, HasWorkSeesPendingRemoteCallables)
+    {
+        Scheduler scheduler;
+        std::thread remote([&scheduler]()
+        {
+            scheduler.postRemote([]()
+            {
+            });
+        });
+        remote.join();
+
+        EXPECT_TRUE(scheduler.hasWork());
+        ASSERT_TRUE(scheduler.runOne());
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
+    /**
+     * @brief runAll() 会把积压的回调一次跑完
+     */
+    TEST(Scheduler, RunAllDrainsRemoteCallables)
+    {
+        Scheduler        scheduler;
+        std::atomic<int> counter{0};
+
+        for (int index = 0; index < 4; ++index)
+        {
+            scheduler.postRemote([&counter]()
+            {
+                counter.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+
+        scheduler.runAll();
+        EXPECT_EQ(counter.load(), 4);
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
 } // namespace AsynGyanis::Core
