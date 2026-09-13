@@ -3,9 +3,11 @@
 // 覆盖三块：RFC 6455 §5.7 示例帧的黄金字节（编码器产出、解码器解开）、编码器与解码器的正常
 // 往返与三档长度边界、以及拒绝面（未掩码、RSV 非 0、未定义操作码、控制帧越界与分片、孤立继续帧、
 // 单帧与消息超限、非最短长度编码）。另有用例钉住「逐字节切分等价」「错误态粘滞且不消费字节」
-// 两条契约。用例都是纯计算，不起网络、不依赖任何外部服务。
+// 两条契约，以及「文本负载的 UTF-8 校验不在帧层做」这一职责边界（非法字节原样交给会话层）。
+// 用例都是纯计算，不起网络、不依赖任何外部服务。
 
 #include "Net/WebSocket/WebSocketFrame.h"
+#include "Net/WebSocket/WebSocketUtf8.h"
 
 #include <gtest/gtest.h>
 
@@ -500,17 +502,23 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 文本帧的负载不在帧层做 UTF-8 校验：非法字节原样交付，校验留给上层
+     * @brief 钉住帧层的职责边界：文本负载的 UTF-8 合法性不在帧层判，非法字节原样交给会话层
+     * @details RFC 6455 §5.6 要求文本消息的负载是合法 UTF-8，但帧层的契约只是「按帧格式原样交付
+     *          已重组的消息」；校验发生在会话层交付业务之前，不合法即回 1007（见
+     *          WebSocketPeer::feedBytes() 与 TestWebSocketSession 的 1007 用例）。这里钉住两点：
+     *          帧层不得静默替换或截断非法字节，且交出去的这段字节确实会被上层的校验判为非法。
      */
-    TEST(WebSocketFrame, TextPayloadIsNotValidatedAsUtf8AtFrameLayer)
+    TEST(WebSocketFrame, HandsInvalidUtf8TextPayloadToSessionLayerUnchanged)
     {
-        // 0xFF 0xFE 不是合法的 UTF-8 序列；帧层只保证帧格式，文本语义由会话层负责
+        // 0xFF 0xFE 不是合法的 UTF-8 序列：帧层只保证帧格式，文本语义由上层负责
         const std::string invalidUtf8Payload = makeBytes({0xff, 0xfe});
         WebSocketFrameDecoder decoder;
 
         const WebSocketFrame frame = feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Text, invalidUtf8Payload));
 
         EXPECT_EQ(frame.payload, invalidUtf8Payload) << "帧层必须原样交付，不得静默替换或截断";
+        EXPECT_FALSE(isValidWebSocketUtf8(frame.payload)) << "这段字节必须被上层的校验判为非法，否则 1007 收口不会被触发";
+        EXPECT_EQ(findInvalidWebSocketUtf8ByteOffset(frame.payload), 0U) << "违规位置由帧层交出的原样字节算得，起点是第 0 字节";
     }
 
     // ============================================================================

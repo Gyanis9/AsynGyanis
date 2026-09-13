@@ -1,5 +1,7 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include "Net/WebSocket/WebSocketUtf8.h"
+
 #include <cstdint>
 #include <format>
 #include <utility>
@@ -28,14 +30,22 @@ namespace AsynGyanis::Net
         return m_isWriteInFlight;
     }
 
-    bool WebSocketPeer::isDecodeLimitExceeded() const noexcept
+    std::uint16_t WebSocketPeer::decodeErrorCloseCode() const noexcept
     {
-        return m_decoder.isLimitExceeded();
+        // 负载非法的原因在本层（会话侧），此刻解码器并没有失败，因此先判它
+        if (!m_payloadErrorMessage.empty())
+        {
+            return kWebSocketInvalidPayloadDataCode;
+        }
+
+        // 解码器的失败里只有「超限」需要与协议违规分开：超限是体量问题，格式本身合法
+        return m_decoder.isLimitExceeded() ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
     }
 
     std::string WebSocketPeer::decodeErrorText() const
     {
-        return m_decoder.errorMessage();
+        // 负载非法的原因不在解码器里，两者取其一即为「最近一次失败」的完整描述
+        return m_payloadErrorMessage.empty() ? m_decoder.errorMessage() : m_payloadErrorMessage;
     }
 
     WebSocketPeer::DeliveryAwaiter::DeliveryAwaiter(WebSocketPeer &peer) noexcept :
@@ -229,6 +239,10 @@ namespace AsynGyanis::Net
             return WebSocketFeedStatus::Accepted;
         }
 
+        // 进入本次调用先清空上一次的负载错误：decodeErrorText() 与 decodeErrorCloseCode()
+        // 读到的是「最近一次失败」，留着旧原因会把本次结论误导成上一次的
+        m_payloadErrorMessage.clear();
+
         std::size_t offset = 0;
         while (offset < length)
         {
@@ -237,13 +251,33 @@ namespace AsynGyanis::Net
 
             if (status == WebSocketDecodeStatus::Error)
             {
-                // 原因与「是否超限」都留在解码器里，供会话决定回 1002 还是 1009
+                // 原因与「是否超限」都留在解码器里，供会话按 decodeErrorCloseCode() 选状态码
                 return WebSocketFeedStatus::DecodeError;
             }
             if (status == WebSocketDecodeStatus::Frame)
             {
                 // 取走即清标记，解码器才能继续消费后面的字节（剩下的字节属于下一帧）
-                enqueueFrame(m_decoder.takeFrame());
+                WebSocketFrame frame = m_decoder.takeFrame();
+
+                // 文本负载必须是合法 UTF-8（RFC 6455 §5.6，编码规则见 RFC 3629），校验点是
+                // 「交给业务之前」的最后一步。解码层交付的是已重组的完整消息，因此按整条消息
+                // 一次校验即可，不需要跨分片或跨帧的增量校验状态
+                if (frame.opCode == WebSocketOpCode::Text)
+                {
+                    const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(frame.payload);
+                    if (invalidByteOffset != std::string_view::npos)
+                    {
+                        m_payloadErrorMessage =
+                                std::format("文本帧负载不是合法 UTF-8（RFC 6455 §5.6 要求文本负载为 UTF-8，编码规则见 RFC 3629）："
+                                            "第 {} 个字节起违规，常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；"
+                                            "请按 UTF-8 重新编码这段文本后重发",
+                                            invalidByteOffset);
+                        // 非法负载不交付业务：返回 DecodeError 让会话发 1007 并收口
+                        return WebSocketFeedStatus::DecodeError;
+                    }
+                }
+
+                enqueueFrame(std::move(frame));
                 continue;
             }
 

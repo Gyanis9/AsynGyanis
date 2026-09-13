@@ -332,6 +332,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住合法多字节文本不被 UTF-8 校验误伤：三字节与四字节字符原样回显
+     * @details 校验必须放行所有合法序列，而不是只放行 ASCII；这里用一个 3 字节字符加一个 4 字节
+     *          字符（后者超出 BMP）作为负载，回显逐字节相同才算通过。
+     */
+    TEST(WebSocketSession, EchoesValidMultibyteUtf8Text)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        // 负载 = 「汉字」U+6C49 U+5B57（各 3 字节）+ U+1F600（4 字节）
+        const std::string text = std::string("\xE6\xB1\x89\xE5\xAD\x97", 6) + std::string("\xF0\x9F\x98\x80", 4);
+        const std::string handshake = expectedHandshakeResponseText();
+        const std::string expectedEcho = serverFrameBytes(0x1, text);
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, text), kWaitTimeout));
+
+        std::string accumulated;
+        const std::size_t expectedLength = handshake.size() + expectedEcho.size();
+        ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedEcho.size()), expectedEcho);
+
+        const std::vector<WebSocketMessage> messages = record->snapshot();
+        ASSERT_EQ(messages.size(), 1U) << "合法多字节文本必须交付业务，而不是被判成非法";
+        EXPECT_EQ(messages.front().opCode, WebSocketOpCode::Text);
+        EXPECT_EQ(messages.front().payload, text);
+    }
+
+    /**
+     * @brief 钉住校验只落在文本帧上：二进制帧携带非法 UTF-8 字节也必须原样交付
+     * @details RFC 6455 §5.6 的 UTF-8 约束只针对文本消息；把校验张冠李戴到 Binary 上，二进制
+     *          协议（图片、protobuf 这类负载）就会因为某个字节像非法序列而被无辜断连。
+     */
+    TEST(WebSocketSession, DoesNotValidateBinaryPayloadAsUtf8)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        // 0xFF 0xFE 0x80 里 0x80 是孤立续字节，作为文本必然非法，作为二进制负载则完全正常
+        const std::string payload = std::string("\xFF\xFE\x80", 3);
+        const std::string handshake = expectedHandshakeResponseText();
+        const std::string expectedEcho = serverFrameBytes(0x2, payload);
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x2, payload), kWaitTimeout));
+
+        std::string accumulated;
+        const std::size_t expectedLength = handshake.size() + expectedEcho.size();
+        ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedEcho.size()), expectedEcho);
+
+        const std::vector<WebSocketMessage> messages = record->snapshot();
+        ASSERT_EQ(messages.size(), 1U) << "二进制负载不参与 UTF-8 校验，必须交付业务";
+        EXPECT_EQ(messages.front().opCode, WebSocketOpCode::Binary);
+        EXPECT_EQ(messages.front().payload, payload);
+    }
+
+    /**
      * @brief 钉住分片重组：客户端发两个分片，服务端只交付一条完整消息（重组在解码层完成）
      */
     TEST(WebSocketSession, ReassemblesFragmentedMessageIntoOneDelivery)
@@ -361,6 +425,39 @@ namespace AsynGyanis::Net
         ASSERT_EQ(messages.size(), 1U) << "分片应重组成一条消息，而不是逐片交给业务";
         EXPECT_EQ(messages.front().opCode, WebSocketOpCode::Text) << "操作码取消息首帧，而不是继续帧";
         EXPECT_EQ(messages.front().payload, "Hello");
+    }
+
+    /**
+     * @brief 钉住 UTF-8 校验按重组后的整条消息做：被分片切开的字符不得被判成截断序列
+     * @details 三字节字符 U+4E16 被切成「E4 B8」+「96」两片，前一片单独看就是截断的序列。
+     *          逐分片校验会把它判非法并回 1007，只有按重组后的整条消息（解码层已重组完整、只交付
+     *          一条消息）校验才放行——本用例正是这条契约的判据。
+     */
+    TEST(WebSocketSession, AcceptsUtf8CharacterSplitAcrossFragments)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string firstFragment = maskedClientFrame(0x1, std::string("\xE4\xB8", 2), false);
+        const std::string secondFragment = maskedClientFrame(0x0, std::string("\x96", 1), true);
+
+        const std::string handshake = expectedHandshakeResponseText();
+        const std::string expectedEcho = serverFrameBytes(0x1, std::string("\xE4\xB8\x96", 3));
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + firstFragment + secondFragment, kWaitTimeout));
+
+        std::string accumulated;
+        const std::size_t expectedLength = handshake.size() + expectedEcho.size();
+        ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "被切开的字符不得被判成非法负载而回 1007";
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedEcho.size()), expectedEcho);
+
+        const std::vector<WebSocketMessage> messages = record->snapshot();
+        ASSERT_EQ(messages.size(), 1U);
+        EXPECT_EQ(messages.front().payload, std::string("\xE4\xB8\x96", 3));
     }
 
     /**
@@ -549,5 +646,37 @@ namespace AsynGyanis::Net
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
         EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
         EXPECT_EQ(record->count(), 0U) << "非法帧不应交付业务";
+    }
+
+    /**
+     * @brief 钉住非法文本负载的收口（RFC 6455 §5.6）：负载不是合法 UTF-8 时按 1007 关闭并断开
+     * @details 负载取「合法前缀 "ok" + 截断的 3 字节序列」，违规字节不在开头，因此日志里的位置必须
+     *          指向它而不是笼统说「不合法」。先等客户端读到 EOF 再完整比对：服务端只应发出 101 与
+     *          一条 Close(1007)，非法文本不得交付业务。
+     */
+    TEST(WebSocketSession, ClosesWithInvalidPayloadDataWhenTextPayloadIsNotUtf8)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string handshake = expectedHandshakeResponseText();
+        // 关闭帧负载 = 2 字节大端状态码 1007 = 0x03EF
+        const std::string expectedClose = serverFrameBytes(0x8, "\x03\xEF");
+
+        // 合法前缀 "ok" 之后是截断的 3 字节序列 E4 B8（三字节字符少最后一个字节）
+        const std::string invalidPayload = std::string("ok", 2) + std::string("\xE4\xB8", 2);
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, invalidPayload), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "非法 UTF-8 文本帧应导致服务端关闭连接";
+        ASSERT_GE(accumulated.size(), handshake.size() + expectedClose.size()) << "累计收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
+        EXPECT_EQ(accumulated.size(), handshake.size() + expectedClose.size()) << "1007 之后不应再补第二条 Close";
+        EXPECT_EQ(record->count(), 0U) << "非法文本帧不应交付业务";
     }
 } // namespace AsynGyanis::Net

@@ -40,6 +40,9 @@ namespace AsynGyanis::Net
     /// 协议错误状态码：帧格式违规（掩码缺失、RSV 非 0、未定义操作码等）
     inline constexpr std::uint16_t kWebSocketProtocolErrorCode = 1002;
 
+    /// 负载数据非法状态码：文本帧负载不是合法 UTF-8（RFC 6455 §7.4.1）
+    inline constexpr std::uint16_t kWebSocketInvalidPayloadDataCode = 1007;
+
     /// 消息过大状态码：单帧或重组后的消息超出解码层上限
     inline constexpr std::uint16_t kWebSocketMessageTooBigCode = 1009;
 
@@ -52,7 +55,7 @@ namespace AsynGyanis::Net
     struct WebSocketMessage
     {
         WebSocketOpCode opCode{WebSocketOpCode::Text}; ///< 消息类型：Text 或 Binary
-        std::string     payload;                       ///< 消息负载，可含 NUL 与任意二进制字节
+        std::string     payload;                       ///< 消息负载：Text 已校验为合法 UTF-8，Binary 为任意字节（两者都可含 NUL）
     };
 
     /**
@@ -68,7 +71,11 @@ namespace AsynGyanis::Net
      * @brief 一条已升级连接的对端对象：业务的收发句柄，同时持有帧解码器与发送路径
      *
      * @details 会话在回完 101 之后构造本对象并交给业务处理器：解出的帧先在此排队、由 receive()
-     *          取走，发出的帧经会话注入的回调直接写这条连接。分片重组、掩码与 RSV 校验都在解码层完成。
+     *          取走，发出的帧经会话注入的回调直接写这条连接。分片重组、掩码与 RSV 校验都在解码层完成；
+     *          文本帧负载的 UTF-8 校验（RFC 6455 §5.6）在此层完成，即「交给业务之前」这一步。
+     *
+     * @note 文本负载一旦判为非法就不再交付业务：feedBytes() 当场返回 DecodeError，由会话发出
+     *       1007（invalid frame payload data）并收口，`WebSocketMessage` 因此不会带非法文本。
      *
      * @note 线程约束：全部方法都只在所属事件循环线程上调用，内部状态不加锁。
      * @warning 会话收尾（读到 EOF、解码失败、业务返回）会把本对象标记为关闭：此后 send*() 一律
@@ -169,11 +176,13 @@ namespace AsynGyanis::Net
          * @brief 会话侧：把一段网络字节喂进解码器
          *
          * @details 本段字节一定被全部消费：解码器产出一帧就取走并排队，剩下的字节接着解，
-         *          因此调用方不必按 consumedByteCount() 记账，喂完整段即可。
+         *          因此调用方不必按 consumedByteCount() 记账，喂完整段即可。文本帧在这一步按整条
+         *          消息校验 UTF-8（RFC 6455 §5.6）：消息在交付前已由解码层重组完整，故不需要跨分片增量校验。
          * @param data 数据起始指针，调用方保证可读
          * @param length 数据长度，单位字节
          * @return WebSocketFeedStatus::Accepted 本段已处理完
-         * @return WebSocketFeedStatus::DecodeError 对端违反 RFC 6455，调用方应发 Close 并收口
+         * @return WebSocketFeedStatus::DecodeError 对端违反 RFC 6455——帧解码失败，或文本负载不是
+         *         合法 UTF-8；调用方应按 decodeErrorCloseCode() 发 Close 并收口
          * @note 已收口的连接不再解码：对端在 Close 之后发来的帧一律丢弃
          */
         WebSocketFeedStatus feedBytes(const char *data, std::size_t length);
@@ -194,11 +203,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isWriteInFlight() const noexcept;
 
         /**
-         * @brief 会话侧：最近一次解码失败是否由资源上限触发
-         * @details 与 feedBytes() 的 DecodeError 联用可把失败分成两类：超限回 1009，其余回 1002。
-         * @return true 失败由单帧上限或消息总上限造成
+         * @brief 会话侧：把最近一次 feedBytes() 的 DecodeError 映射成要发的关闭状态码
+         * @details 三类失败对端的处置不同，不能合并：文本负载非法回 1007（数据有问题但格式没违规）、
+         *          体量越界回 1009（可改用分片重试）、其余协议违规回 1002（RFC 6455 §7.4.1）。
+         * @return std::uint16_t 关闭状态码：1007 / 1009 / 1002
+         * @note 未发生过 DecodeError 时返回值无意义，调用方应按 WebSocketFeedStatus 判定
          */
-        [[nodiscard]] bool isDecodeLimitExceeded() const noexcept;
+        [[nodiscard]] std::uint16_t decodeErrorCloseCode() const noexcept;
 
         /**
          * @brief 会话侧：最近一次解码失败的中文原因
@@ -268,5 +279,6 @@ namespace AsynGyanis::Net
         std::coroutine_handle<> m_deliveryWaiter{};  ///< 业务正挂在 receive() 上的句柄，空表示无人等待
         bool m_isOpen{true};                         ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
         bool m_isWriteInFlight{false};               ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
+        std::string m_payloadErrorMessage;           ///< 文本负载非法的中文原因（含违规字节位置）；空表示最近一次失败不是负载非法
     };
 } // namespace AsynGyanis::Net

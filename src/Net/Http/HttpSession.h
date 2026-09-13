@@ -367,9 +367,9 @@ namespace AsynGyanis::Net
             // 会话（§7.1.7 允许服务端不等关闭握手就断开 TCP）
             if (feedStatus == WebSocketFeedStatus::DecodeError)
             {
-                // 帧格式违规回 1002、体量越界回 1009：两类失败对端的处置不同，不能合成一个码
-                const std::uint16_t errorCode =
-                        peer.isDecodeLimitExceeded() ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
+                // 帧格式违规回 1002、文本负载非法回 1007、体量越界回 1009：三类失败对端的处置不同，
+                // 不能合成一个码。具体是哪一类由 WebSocketPeer 按失败来源给出，会话只负责发出与收口
+                const std::uint16_t errorCode = peer.decodeErrorCloseCode();
                 LOG_ERROR_FMT("WebSocket 会话：对端违反 RFC 6455，按状态码 {} 关闭连接，原因：{}", errorCode, peer.decodeErrorText());
                 if (peer.isOpen() && !peer.isWriteInFlight())
                 {
