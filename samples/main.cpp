@@ -175,7 +175,8 @@ int main(int argc, char **argv)
         consoleSink->setFormatter(std::make_unique<Base::JsonFormatter>());
     }
     rootLogger.addSink(std::move(consoleSink));
-    rootLogger.setLevel(Base::LogLevel::Debug);
+    // 默认 Info：Debug 下每请求一行日志会把吞吐压出可见的损失，需要细看时再自己调低
+    rootLogger.setLevel(Base::LogLevel::Info);
 
     if (showUsage)
     {

@@ -995,12 +995,13 @@ namespace AsynGyanis::Net
                     }
 
                     // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的
-                    // 处理记录因此能按同一个键对齐（排查线上问题时先要 id 再要日志）
+                    // 处理记录因此能按同一个键对齐。定为 Debug 是因为它落在每请求的热路径上：默认
+                    // 级别下落这一行会让日志量随吞吐线性增长，需要按 id 对齐时再调低级别
                     if (!requestIdView.empty())
                     {
-                        LOG_INFO_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us",
-                                     requestIdView, request.uri(), response.status(),
-                                     std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+                        LOG_DEBUG_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us",
+                                      requestIdView, request.uri(), response.status(),
+                                      std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
                     }
                 }
 

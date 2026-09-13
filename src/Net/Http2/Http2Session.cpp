@@ -754,11 +754,11 @@ namespace AsynGyanis::Net
         }
 
         // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的处理记录
-        // 因此能按同一个键对齐（口径与 HTTP/1.1 侧一致）
+        // 因此能按同一个键对齐。与 HTTP/1.1 侧同口径，同样定为 Debug：它也在每请求热路径上
         if (!request.requestId().empty() && !isTruncatedStreamingResponse)
         {
-            LOG_INFO_FMT("Http2Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(),
-                         request.uri(), statusCode, std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+            LOG_DEBUG_FMT("Http2Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(),
+                          request.uri(), statusCode, std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
         }
 
         // 单连接请求上限的判定放在最后：本条响应已经排入待发字节，收尾通告排在它之后
