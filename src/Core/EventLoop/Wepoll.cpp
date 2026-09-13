@@ -49,20 +49,26 @@
 namespace AsynGyanis::Core
 {
 
-    /** @brief 从 ntdll 解析本实现用到的 NT 函数指针 */
+    /**
+     * @brief 从 ntdll 解析本实现用到的 NT 函数指针
+     * @return 0 成功；-1 失败（模块或函数缺失）
+     */
     WEPOLL_INTERNAL int ntGlobalInit();
 
     using NTSTATUS  = LONG;
     using PNTSTATUS = NTSTATUS *;
 
-    /**
-     * @brief 判断 NTSTATUS 是否表示成功
-     * @param status 待判定的状态码
-     * @return true 成功（NT 约定：非负即成功）
-     */
-    inline constexpr bool ntSuccess(const NTSTATUS status) noexcept
+    namespace
     {
-        return status >= 0;
+        /**
+         * @brief 判断 NTSTATUS 是否表示成功
+         * @param status 待判定的状态码
+         * @return true 成功（NT 约定：非负即成功）
+         */
+        constexpr bool ntSuccess(const NTSTATUS status) noexcept
+        {
+            return status >= 0;
+        }
     }
 
     // 下面这些与 SDK 头（ntdef.h / winnt.h）同名的常量只能用宏 + #ifndef 守卫：
@@ -83,32 +89,41 @@ namespace AsynGyanis::Core
 #define STATUS_NOT_FOUND ((NTSTATUS) 0xC0000225L)
 #endif
 
-    typedef struct _IO_STATUS_BLOCK
+    namespace
     {
-        NTSTATUS  Status;
-        ULONG_PTR Information;
-    } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
+        typedef struct _IO_STATUS_BLOCK // NOLINT(*-reserved-identifier)
+        {
+            NTSTATUS  Status;
+            ULONG_PTR Information;
+        } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
+    }
 
     typedef VOID (NTAPI *PIO_APC_ROUTINE)(PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock, ULONG Reserved);
 
-    typedef struct _UNICODE_STRING
+    namespace
     {
-        USHORT Length;
-        USHORT MaximumLength;
-        PWSTR  Buffer;
-    } UNICODE_STRING, *PUNICODE_STRING;
+        typedef struct _UNICODE_STRING // NOLINT(*-reserved-identifier)
+        {
+            USHORT Length;
+            USHORT MaximumLength;
+            PWSTR  Buffer;
+        } UNICODE_STRING, *PUNICODE_STRING;
+    }
 
 #define RTL_CONSTANT_STRING(s) {sizeof(s) - sizeof((s)[0]), sizeof(s), const_cast<PWSTR>(s)}
 
-    typedef struct _OBJECT_ATTRIBUTES
+    namespace
     {
-        ULONG           Length;
-        HANDLE          RootDirectory;
-        PUNICODE_STRING ObjectName;
-        ULONG           Attributes;
-        PVOID           SecurityDescriptor;
-        PVOID           SecurityQualityOfService;
-    } OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
+        typedef struct _OBJECT_ATTRIBUTES // NOLINT(*-reserved-identifier)
+        {
+            ULONG           Length;
+            HANDLE          RootDirectory;
+            PUNICODE_STRING ObjectName;
+            ULONG           Attributes;
+            PVOID           SecurityDescriptor;
+            PVOID           SecurityQualityOfService;
+        } OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
+    }
 
 #define RTL_CONSTANT_OBJECT_ATTRIBUTES(ObjectName, Attributes) {sizeof(OBJECT_ATTRIBUTES), nullptr, ObjectName, Attributes, nullptr, nullptr}
 
@@ -135,43 +150,70 @@ namespace AsynGyanis::Core
 
     // AFD 驱动的事件位：ntddafd.h 是驱动侧私有接口、不在 SDK 里，取值必须逐位对齐，
     // 名字因此照抄那边的常量而不是本工程的常量命名
-    static constexpr std::uint32_t AFD_POLL_RECEIVE           = 0x0001;
-    static constexpr std::uint32_t AFD_POLL_RECEIVE_EXPEDITED = 0x0002;
-    static constexpr std::uint32_t AFD_POLL_SEND              = 0x0004;
-    static constexpr std::uint32_t AFD_POLL_DISCONNECT        = 0x0008;
-    static constexpr std::uint32_t AFD_POLL_ABORT             = 0x0010;
-    static constexpr std::uint32_t AFD_POLL_LOCAL_CLOSE       = 0x0020;
-    static constexpr std::uint32_t AFD_POLL_ACCEPT            = 0x0080;
-    static constexpr std::uint32_t AFD_POLL_CONNECT_FAIL      = 0x0100;
+    static constexpr std::uint32_t AFD_POLL_RECEIVE           = 0x0001; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_RECEIVE_EXPEDITED = 0x0002; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_SEND              = 0x0004; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_DISCONNECT        = 0x0008; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_ABORT             = 0x0010; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_LOCAL_CLOSE       = 0x0020; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_ACCEPT            = 0x0080; // NOLINT(*-identifier-naming)
+    static constexpr std::uint32_t AFD_POLL_CONNECT_FAIL      = 0x0100; // NOLINT(*-identifier-naming)
 
-    typedef struct _AFD_POLL_HANDLE_INFO
+    namespace
     {
-        HANDLE   Handle;
-        ULONG    Events;
-        NTSTATUS Status;
-    } AFD_POLL_HANDLE_INFO, *PAFD_POLL_HANDLE_INFO;
+        typedef struct _AFD_POLL_HANDLE_INFO // NOLINT(*-reserved-identifier)
+        {
+            HANDLE   Handle;
+            ULONG    Events;
+            NTSTATUS Status;
+        } AFD_POLL_HANDLE_INFO, *PAFD_POLL_HANDLE_INFO;
+    }
 
-    typedef struct _AFD_POLL_INFO
+    namespace
     {
-        LARGE_INTEGER        Timeout;
-        ULONG                NumberOfHandles;
-        ULONG                Exclusive;
-        AFD_POLL_HANDLE_INFO Handles[1];
-    } AFD_POLL_INFO, *PAFD_POLL_INFO;
+        typedef struct _AFD_POLL_INFO // NOLINT(*-reserved-identifier)
+        {
+            LARGE_INTEGER        Timeout;
+            ULONG                NumberOfHandles;
+            ULONG                Exclusive;
+            AFD_POLL_HANDLE_INFO Handles[1];
+        } AFD_POLL_INFO, *PAFD_POLL_INFO;
+    }
 
-    /** @brief 打开 AFD 设备的辅助句柄，并把它与 IOCP 端口关联起来 */
+    /**
+     * @brief 打开 AFD 设备的辅助句柄，并把它与 IOCP 端口关联起来
+     * @param iocpHandle 目标 IOCP 完成端口
+     * @param afdHelperHandleOut 输出参数：新建的 AFD 辅助句柄
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL int afdCreateHelperHandle(HANDLE iocpHandle, HANDLE *afdHelperHandleOut);
 
-    /** @brief 向 AFD 下发一次异步轮询请求 */
+    /**
+     * @brief 向 AFD 下发一次异步轮询请求
+     * @param afdHelperHandle AFD 辅助句柄
+     * @param pollInfo 轮询请求：关注的句柄、事件位与超时
+     * @param ioStatusBlock 承载本次请求状态的块，指向内嵌在套接字状态里的那一份
+     * @return 0 成功下发；-1 失败，其中错误码为 ERROR_IO_PENDING 时表示请求已挂起、结果稍后经完成包回
+     */
     WEPOLL_INTERNAL int afdPoll(HANDLE afdHelperHandle, AFD_POLL_INFO *pollInfo, IO_STATUS_BLOCK *ioStatusBlock);
 
-    /** @brief 撤销尚未完成的 AFD 轮询请求 */
+    /**
+     * @brief 撤销尚未完成的 AFD 轮询请求
+     * @param afdHelperHandle AFD 辅助句柄
+     * @param ioStatusBlock 与下发时同一个状态块
+     * @return 0 成功，含「已经完成或已被撤销、无需处理」；-1 失败（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL int afdCancelPoll(HANDLE afdHelperHandle, IO_STATUS_BLOCK *ioStatusBlock);
 
-    /** @brief 读取当前 LastError，按映射表设置 errno */
+    /**
+     * @brief 读取当前 LastError，按映射表设置 errno
+     */
     WEPOLL_INTERNAL void errorMapWindowsError();
 
-    /** @brief 按给定错误码同时设置 LastError 与 errno */
+    /**
+     * @brief 按给定错误码同时设置 LastError 与 errno
+     * @param error Win32 错误码
+     */
     WEPOLL_INTERNAL void errorSetWindowsError(DWORD error);
 
     /**
@@ -181,7 +223,7 @@ namespace AsynGyanis::Core
      * @return ValueType 原样交回 failureValue
      */
     template<typename ValueType>
-    [[nodiscard]] ValueType failWithLastWindowsError(const ValueType failureValue)
+    [[nodiscard]] static ValueType failWithLastWindowsError(const ValueType failureValue)
     {
         errorMapWindowsError();
         return failureValue;
@@ -195,17 +237,21 @@ namespace AsynGyanis::Core
      * @return ValueType 原样交回 failureValue
      */
     template<typename ValueType>
-    [[nodiscard]] ValueType failWithWindowsError(const ValueType failureValue, const DWORD error)
+    [[nodiscard]] static ValueType failWithWindowsError(const ValueType failureValue, const DWORD error)
     {
         errorSetWindowsError(error);
         return failureValue;
     }
 
-    /** @brief 校验句柄是否有效，无效则按 ERROR_INVALID_HANDLE 收口 */
+    /**
+     * @brief 校验句柄是否有效，无效则按 ERROR_INVALID_HANDLE 收口
+     * @param handle 待校验的句柄
+     * @return 0 有效；-1 无效（errno 与 LastError 已设置）
+     */
     WEPOLL_INTERNAL int errorCheckHandle(HANDLE handle);
 
     /// AFD 轮询的 ioctl 码，同样取自驱动侧私有接口
-    static constexpr std::uint32_t IOCTL_AFD_POLL = 0x00012024;
+    static constexpr std::uint32_t IOCTL_AFD_POLL = 0x00012024; // NOLINT(*-identifier-naming)
 
     static UNICODE_STRING afdHelperName = RTL_CONSTANT_STRING(L"\\Device\\Afd\\Wepoll");
 
@@ -272,10 +318,16 @@ namespace AsynGyanis::Core
             return failWithWindowsError(-1, RtlNtStatusToDosError(cancelStatus));
     }
 
-    /** @brief 初始化 epoll 层的全局句柄表 */
+    /**
+     * @brief 初始化 epoll 层的全局句柄表
+     * @return 0 成功；-1 失败
+     */
     WEPOLL_INTERNAL int epollGlobalInit();
 
-    /** @brief 保证全局初始化已完成，重复调用只做一次 */
+    /**
+     * @brief 保证全局初始化已完成，重复调用只做一次
+     * @return 0 成功；-1 失败（WinSock 初始化或 NT 函数解析失败）
+     */
     WEPOLL_INTERNAL int ensureInitialized();
 
     struct PortState;
@@ -283,130 +335,216 @@ namespace AsynGyanis::Core
     struct SockState;
     struct TsTreeNode;
 
-    /** @brief 新建端口状态：IOCP 端口、套接字表与队列、句柄树节点一次就位 */
+    /**
+     * @brief 新建端口状态：IOCP 端口、套接字表与队列、句柄树节点一次就位
+     * @param iocpHandleOut 输出参数：新建的 IOCP 完成端口句柄
+     * @return 成功返回端口状态；失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL PortState *portNew(HANDLE *iocpHandleOut);
 
-    /** @brief 关闭端口：注销全部套接字并释放资源 */
+    /**
+     * @brief 关闭端口：注销全部套接字并释放资源
+     * @param portState 目标端口状态
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL int portClose(PortState *portState);
 
-    /** @brief 关闭并释放端口，同时从全局句柄树摘除 */
+    /**
+     * @brief 关闭并释放端口，同时从全局句柄树摘除
+     * @param portState 目标端口状态
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL int portDelete(PortState *portState);
 
-    /** @brief epoll_wait 的实现：取事件并算出等待超时 */
+    /**
+     * @brief epoll_wait 的实现：取事件并算出等待超时
+     * @param portState 目标端口状态
+     * @param events 输出缓冲区，就绪事件被写进这里
+     * @param maxevents events 的容量，也是本次最多返回的事件数
+     * @param timeout 超时毫秒数：-1 无限等待、0 立即返回、正值最多等这么久
+     * @return 就绪事件条数；0 表示超时；-1 表示失败
+     */
     WEPOLL_INTERNAL int portWait(PortState *portState, struct epoll_event *events, int maxevents, int timeout);
 
-    /** @brief epoll_ctl 的实现：校验参数后按操作码分派 */
+    /**
+     * @brief epoll_ctl 的实现：校验参数后按操作码分派
+     * @param portState 目标端口状态
+     * @param op EPOLL_CTL_ADD / EPOLL_CTL_MOD / EPOLL_CTL_DEL
+     * @param sock 目标套接字
+     * @param ev ADD 与 MOD 时给出事件掩码与用户数据
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL int portCtl(PortState *portState, int op, SOCKET sock, struct epoll_event *ev);
 
-    /** @brief 把套接字插进端口的套接字表 */
+    /**
+     * @brief 把套接字插进端口的套接字表
+     * @param portState 目标端口状态
+     * @param sockState 待登记的套接字状态
+     * @param socket 该套接字的句柄，作为表的键
+     * @return 0 成功；-1 失败（键已存在）
+     */
     WEPOLL_INTERNAL int portRegisterSocket(PortState *portState, SockState *sockState, SOCKET socket);
 
-    /** @brief 把套接字从端口的套接字表里摘掉 */
+    /**
+     * @brief 把套接字从端口的套接字表里摘掉
+     * @param portState 目标端口状态
+     * @param sockState 待摘除的套接字状态
+     */
     WEPOLL_INTERNAL void portUnregisterSocket(PortState *portState, SockState *sockState);
 
-    /** @brief 按套接字句柄查出对应的套接字状态 */
+    /**
+     * @brief 按套接字句柄查出对应的套接字状态
+     * @param portState 目标端口状态
+     * @param socket 目标套接字句柄
+     * @return 找到返回套接字状态；表中没有则返回空指针
+     */
     WEPOLL_INTERNAL SockState *portFindSocket(PortState *portState, SOCKET socket);
 
-    /** @brief 把套接字挂进待更新队列 */
+    /**
+     * @brief 把套接字挂进待更新队列
+     * @param portState 目标端口状态
+     * @param sockState 待更新的套接字状态
+     */
     WEPOLL_INTERNAL void portRequestSocketUpdate(PortState *portState, SockState *sockState);
 
-    /** @brief 把套接字从待更新队列移到待删除队列 */
+    /**
+     * @brief 把套接字从待更新队列移到待删除队列
+     * @param portState 目标端口状态
+     * @param sockState 待移出的套接字状态
+     */
     WEPOLL_INTERNAL void portCancelSocketUpdate(PortState *portState, SockState *sockState);
 
-    /** @brief 把套接字挂进待删除队列（延后释放） */
+    /**
+     * @brief 把套接字挂进待删除队列（延后释放）
+     * @param portState 目标端口状态
+     * @param sockState 待释放的套接字状态
+     */
     WEPOLL_INTERNAL void portAddDeletedSocket(PortState *portState, SockState *sockState);
 
-    /** @brief 把套接字从待删除队列摘掉 */
+    /**
+     * @brief 把套接字从待删除队列摘掉
+     * @param portState 目标端口状态
+     * @param sockState 待摘除的套接字状态
+     */
     WEPOLL_INTERNAL void portRemoveDeletedSocket(PortState *portState, SockState *sockState);
 
-    /** @brief 取端口的 IOCP 句柄 */
+    /**
+     * @brief 取端口的 IOCP 句柄
+     * @param portState 目标端口状态
+     * @return IOCP 完成端口句柄
+     */
     WEPOLL_INTERNAL HANDLE portGetIocpHandle(PortState *portState);
 
-    /** @brief 取端口的轮询组队列 */
+    /**
+     * @brief 取端口的轮询组队列
+     * @param portState 目标端口状态
+     * @return 该端口的轮询组队列
+     */
     WEPOLL_INTERNAL Queue *portGetPollGroupQueue(PortState *portState);
 
-    /** @brief 从句柄树节点取回所属的端口状态 */
+    /**
+     * @brief 从句柄树节点取回所属的端口状态
+     * @param treeNode 句柄树里的节点
+     * @return 该节点所属的端口状态
+     */
     WEPOLL_INTERNAL PortState *portStateFromHandleTreeNode(TsTreeNode *treeNode);
 
-    /** @brief 取端口状态里用于句柄表的树节点 */
+    /**
+     * @brief 取端口状态里用于句柄表的树节点
+     * @param portState 目标端口状态
+     * @return 内嵌在该状态里的树节点
+     */
     WEPOLL_INTERNAL TsTreeNode *portStateToHandleTreeNode(PortState *portState);
 
-    /**
-     * @brief 引用锁：把「这块内存不许被提前释放」与「销毁时等所有引用放完」合进一个原子字
-     * @details 低 28 位是引用计数、高 4 位是销毁标记，等待与唤醒走 C++20 的 atomic::wait/notify （标准库在 Windows 上用 WaitOnAddress 实现），原实现自备的 keyed event 因此整块删掉
-     * 协议： - ref()：只在计数上加一，无等待；对已销毁的锁调用是用法错误，由断言兜住； - unref()：减一；恰好减到「只剩销毁标记」时唤醒正在等的销毁者； -
-     * unrefAndDestroy()：在同一个原子操作里放下自己那份引用并置上销毁标记，然后等其它引用放完 ——这一步是本类比 shared_ptr 多出来的：销毁者要确认没人还在用这块内存； -
-     * 销毁完成后写入毒值，此后任何 ref/unref 都会被断言抓住
-     */
-    class RefLock
+    namespace
     {
-    public:
-        /// 初始化为「零引用、未销毁」
-        void reset() noexcept
+        /**
+         * @brief 引用锁：把「这块内存不许被提前释放」与「销毁时等所有引用放完」合进一个原子字
+         * @details 低 28 位是引用计数、高 4 位是销毁标记；等待与唤醒走 C++20 的 atomic::wait/notify
+         *          （Windows 上由标准库用 WaitOnAddress 实现），原实现自备的 keyed event 因此整块删掉。
+         *          用法：持有者先 reset()，用前 ref()、用完 unref()；销毁方调 unrefAndDestroy()——它
+         *          放下自己那份引用的同时置上销毁标记，并等到其它引用放完才返回。
+         */
+        class RefLock
         {
-            m_state.store(0, std::memory_order_relaxed);
-        }
-
-        /// 增加一份引用
-        void ref() noexcept
-        {
-            const std::uint32_t state = m_state.fetch_add(kReferenceUnit, std::memory_order_acq_rel) + kReferenceUnit;
-
-            // 计数不得溢出，也不得在销毁之后再加引用（NDEBUG 下断言消失，故显式丢弃该值）
-            static_cast<void>(state);
-            assert((state & kDestroyMask) == 0);
-        }
-
-        /// 释放一份引用；恰好是最后一份时唤醒等在那里的销毁者
-        void unref() noexcept
-        {
-            const std::uint32_t state = m_state.fetch_sub(kReferenceUnit, std::memory_order_acq_rel) - kReferenceUnit;
-
-            // 计数不得下溢，也不得对已销毁的锁再释放
-            assert((state & kDestroyMask & ~kDestroyFlag) == 0);
-
-            if (state == kDestroyFlag)
-                m_state.notify_one();
-        }
-
-        /// 放下自己那份引用并置上销毁标记，然后等其它引用全部放完
-        void unrefAndDestroy() noexcept
-        {
-            // fetch_add 返回的是加之前的值，而这里要判断加之后的状态，故自己补上增量
-            const std::uint32_t delta = kDestroyFlag - kReferenceUnit;
-            const std::uint32_t state = m_state.fetch_add(delta, std::memory_order_acq_rel) + delta;
-
-            // 销毁只能发生一次，且必须由持有引用的那一方发起
-            assert((state & kDestroyMask) == kDestroyFlag);
-
-            // 还有别的引用在外面就一直睡；醒来重读，虚假唤醒因此无害
-            std::uint32_t current = state;
-            while ((current & kReferenceMask) != 0)
+        public:
+            /**
+             * @brief 把锁复位成「零引用、未销毁」
+             */
+            void reset() noexcept
             {
-                m_state.wait(current, std::memory_order_relaxed);
-                current = m_state.load(std::memory_order_relaxed);
+                m_state.store(0, std::memory_order_relaxed);
             }
 
-            const std::uint32_t previous = m_state.exchange(kPoisonValue, std::memory_order_acq_rel);
-            assert(previous == kDestroyFlag);
-        }
+            /**
+             * @brief 增加一份引用
+             * @note 对已销毁的锁调用是用法错误，由断言兜住（NDEBUG 下断言消失，故显式丢弃比较结果）
+             */
+            void ref() noexcept
+            {
+                const std::uint32_t state = m_state.fetch_add(kReferenceUnit, std::memory_order_acq_rel) + kReferenceUnit;
 
-    private:
-        static constexpr std::uint32_t kReferenceUnit = 0x00000001U; ///< 引用计数的单位增量
-        static constexpr std::uint32_t kReferenceMask = 0x0fffffffU; ///< 低 28 位：引用计数
-        static constexpr std::uint32_t kDestroyFlag   = 0x10000000U; ///< 第 28 位：已请求销毁
-        static constexpr std::uint32_t kDestroyMask   = 0xf0000000U; ///< 高 4 位：销毁标记区
-        static constexpr std::uint32_t kPoisonValue   = 0x300dead0U; ///< 销毁完成后写入的毒值
+                static_cast<void>(state);
+                assert((state & kDestroyMask) == 0);
+            }
 
-        std::atomic<std::uint32_t> m_state{0}; ///< 计数与销毁标记打包在一个字里：等待与唤醒按它的地址工作
-    };
+            /**
+             * @brief 释放一份引用；恰好是最后一份时唤醒等在那里的销毁者
+             * @note 计数下溢或对已销毁的锁再释放都是用法错误，由断言兜住
+             */
+            void unref() noexcept
+            {
+                const std::uint32_t state = m_state.fetch_sub(kReferenceUnit, std::memory_order_acq_rel) - kReferenceUnit;
+
+                assert((state & kDestroyMask & ~kDestroyFlag) == 0);
+
+                if (state == kDestroyFlag)
+                    m_state.notify_one();
+            }
+
+            /**
+             * @brief 放下自己那份引用并置上销毁标记，然后等其它引用全部放完
+             * @note 销毁只能发生一次，且必须由持有引用的那一方发起；返回时锁里已写入毒值
+             */
+            void unrefAndDestroy() noexcept
+            {
+                // fetch_add 返回的是加之前的值，而这里要判断加之后的状态，故自己补上增量
+                constexpr std::uint32_t kdelta = kDestroyFlag - kReferenceUnit;
+                const std::uint32_t     state  = m_state.fetch_add(kdelta, std::memory_order_acq_rel) + kdelta;
+
+                assert((state & kDestroyMask) == kDestroyFlag);
+
+                // 还有别的引用在外面就一直睡；醒来重读，虚假唤醒因此无害
+                std::uint32_t current = state;
+                while ((current & kReferenceMask) != 0)
+                {
+                    m_state.wait(current, std::memory_order_relaxed);
+                    current = m_state.load(std::memory_order_relaxed);
+                }
+
+                const std::uint32_t previous = m_state.exchange(kPoisonValue, std::memory_order_acq_rel);
+                assert(previous == kDestroyFlag);
+            }
+
+        private:
+            static constexpr std::uint32_t kReferenceUnit = 0x00000001U; ///< 引用计数的单位增量
+            static constexpr std::uint32_t kReferenceMask = 0x0fffffffU; ///< 低 28 位：引用计数
+            static constexpr std::uint32_t kDestroyFlag   = 0x10000000U; ///< 第 28 位：已请求销毁
+            static constexpr std::uint32_t kDestroyMask   = 0xf0000000U; ///< 高 4 位：销毁标记区
+            static constexpr std::uint32_t kPoisonValue   = 0x300dead0U; ///< 销毁完成后写入的毒值
+
+            std::atomic<std::uint32_t> m_state{0}; ///< 计数与销毁标记打包在一个字里：等待与唤醒按它的地址工作
+        };
+    }
 
     // 注意：树函数失败时不设置 errno 与 LastError。每个对外接口最多只有一种失败
     // 模式，需要时由调用方自己设置恰当的错误码。
 
     struct TreeNode;
 
-    /** @brief 树节点：只留键，形状信息交给标准容器保管 */
+    /**
+     * @brief 树节点：只留键，形状信息交给标准容器保管
+     */
     struct TreeNode
     {
         uintptr_t m_key; ///< 节点只留键：树的形状信息改由标准容器保管
@@ -417,57 +555,119 @@ namespace AsynGyanis::Core
     // 且节点地址稳定（再平衡不会让节点搬家），下面用 CONTAINER_OF 从节点取回宿主结构照旧成立。
     using Tree = std::map<uintptr_t, TreeNode *>;
 
-    /** @brief 初始化「键 → 节点」表（只用于生命周期已经开始的对象） */
+    /**
+     * @brief 初始化「键 → 节点」表
+     * @param tree 待初始化的表
+     * @note 只用于生命周期已经开始的对象（静态的那一份）；malloc 存储上的那份由构造直接初始化
+     */
     WEPOLL_INTERNAL void treeInit(Tree *tree);
 
-    /** @brief 初始化树的节点 */
+    /**
+     * @brief 初始化树的节点
+     * @param node 待初始化的节点
+     */
     WEPOLL_INTERNAL void treeNodeInit(TreeNode *node);
 
-    /** @brief 按键插入节点，键重复返回 -1 */
+    /**
+     * @brief 按键插入节点
+     * @param tree 目标表
+     * @param node 待插入的节点
+     * @param key 键
+     * @return 0 成功；-1 表示键已存在
+     */
     WEPOLL_INTERNAL int treeAdd(Tree *tree, TreeNode *node, uintptr_t key);
 
-    /** @brief 按键删除节点 */
+    /**
+     * @brief 按键删除节点
+     * @param tree 目标表
+     * @param node 待删除的节点，其键取自 node->m_key
+     */
     WEPOLL_INTERNAL void treeDel(Tree *tree, TreeNode *node);
 
-    /** @brief 按键查找节点 */
+    /**
+     * @brief 按键查找节点
+     * @param tree 目标表
+     * @param key 键
+     * @return 找到返回节点；没有则返回空指针
+     */
     WEPOLL_INTERNAL TreeNode *treeFind(const Tree *tree, uintptr_t key);
 
-    /** @brief 取最小键的节点，供「逐个摘除直到空」使用 */
+    /**
+     * @brief 取最小键的节点，供「逐个摘除直到空」使用
+     * @param tree 目标表
+     * @return 最小键的节点；空表返回空指针
+     */
     WEPOLL_INTERNAL TreeNode *treeRoot(const Tree *tree);
 
-    /** @brief 带锁的句柄表：键是 epoll 实例句柄 */
-    struct TsTree
+    namespace
     {
-        Tree    m_tree;
-        SRWLOCK m_lock;
-    };
+        /**
+         * @brief 带锁的句柄表：键是 epoll 实例句柄
+         */
+        struct TsTree
+        {
+            Tree    m_tree;
+            SRWLOCK m_lock{};
+        };
+    }
 
-    /** @brief 带引用锁的树节点 */
+    /**
+     * @brief 带引用锁的树节点
+     */
     struct TsTreeNode
     {
         TreeNode m_treeNode;
         RefLock  m_reflock;
     };
 
-    /** @brief 初始化带锁的句柄树 */
+    /**
+     * @brief 初始化带锁的句柄树
+     * @param rtl 待初始化的句柄树
+     */
     WEPOLL_INTERNAL void tsTreeInit(TsTree *rtl);
 
-    /** @brief 初始化带引用锁的树节点 */
+    /**
+     * @brief 初始化带引用锁的树节点
+     * @param node 待初始化的节点
+     */
     WEPOLL_INTERNAL void tsTreeNodeInit(TsTreeNode *node);
 
-    /** @brief 加锁插入节点，键重复按已存在处理 */
+    /**
+     * @brief 加锁插入节点
+     * @param tsTree 目标句柄树
+     * @param node 待插入的节点
+     * @param key 键
+     * @return 0 成功；-1 表示键已存在
+     */
     WEPOLL_INTERNAL int tsTreeAdd(TsTree *tsTree, TsTreeNode *node, uintptr_t key);
 
-    /** @brief 摘除节点并对它持一份引用 */
+    /**
+     * @brief 摘除节点并对它持一份引用
+     * @param tsTree 目标句柄树
+     * @param key 键
+     * @return 被摘除的节点（已持一份引用）；键不存在返回空指针
+     */
     WEPOLL_INTERNAL TsTreeNode *tsTreeDelAndRef(TsTree *tsTree, uintptr_t key);
 
-    /** @brief 查节点并对它持一份引用，找不到返回空 */
+    /**
+     * @brief 查节点并对它持一份引用
+     * @param tsTree 目标句柄树
+     * @param key 键
+     * @return 命中的节点（已持一份引用）；找不到返回空指针
+     */
     WEPOLL_INTERNAL TsTreeNode *tsTreeFindAndRef(TsTree *tsTree, uintptr_t key);
 
-    /** @brief 放下一份节点引用 */
+    /**
+     * @brief 放下一份节点引用
+     * @param node 目标节点
+     */
     WEPOLL_INTERNAL void tsTreeNodeUnref(TsTreeNode *node);
 
-    /** @brief 放下最后一份引用时销毁节点 */
+    /**
+     * @brief 放下最后一份引用时销毁节点
+     * @param node 目标节点
+     * @note 只有持有引用的那一方能调；销毁后再碰这个节点是用法错误
+     */
     WEPOLL_INTERNAL void tsTreeNodeUnrefAndDestroy(TsTreeNode *node);
 
     static TsTree epollHandleTree;
@@ -478,7 +678,10 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 创建一个 epoll 实例并登记进全局句柄表 */
+    /**
+     * @brief 创建一个 epoll 实例并登记进全局句柄表
+     * @return 成功返回实例句柄；失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     static HANDLE epollCreate()
     {
         PortState * portState;
@@ -505,7 +708,7 @@ namespace AsynGyanis::Core
 
     extern "C"
     {
-    /** @brief 创建 epoll 实例 */
+    // 下面五个是 wepoll.h 声明的 C 入口点，参数与返回值的完整说明写在头文件那份声明处，此处不再重复
     HANDLE epoll_create(int size)
     {
         if (size <= 0)
@@ -514,7 +717,6 @@ namespace AsynGyanis::Core
         return epollCreate();
     }
 
-    /** @brief 创建 epoll 实例（只接受 flags 为 0） */
     HANDLE epoll_create1(int flags)
     {
         if (flags != 0)
@@ -523,7 +725,6 @@ namespace AsynGyanis::Core
         return epollCreate();
     }
 
-    /** @brief 关闭 epoll 实例并注销它上面登记的套接字 */
     int epoll_close(HANDLE ephnd)
     {
         TsTreeNode *treeNode;
@@ -550,7 +751,6 @@ namespace AsynGyanis::Core
         return portDelete(portState);
     }
 
-    /** @brief 在实例上注册、修改或注销一个套接字 */
     int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event *ev)
     {
         TsTreeNode *treeNode;
@@ -586,7 +786,6 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 等一批就绪事件 */
     int epoll_wait(HANDLE ephnd, struct epoll_event *events, int maxevents, int timeout)
     {
         TsTreeNode *treeNode;
@@ -725,7 +924,11 @@ namespace AsynGyanis::Core
     X(WSASYSNOTREADY, ENETDOWN)                                                                                                                                                    \
     X(WSAVERNOTSUPPORTED, ENOSYS)
 
-    /** @brief 把 Win32 错误码映射成 errno */
+    /**
+     * @brief 把 Win32 错误码映射成 errno
+     * @param error Win32 错误码
+     * @return 对应的 errno 值；映射表里没有的返回 EINVAL
+     */
     static errno_t errorMapWindowsErrorToErrno(DWORD error)
     {
         switch (error)
@@ -770,16 +973,30 @@ namespace AsynGyanis::Core
     // UBSan 风险不划算。参数依次是：成员地址、宿主类型、成员名。
 #define CONTAINER_OF(pointer, hostType, memberName) ((hostType *) ((uintptr_t) (pointer) - offsetof(hostType, memberName)))
 
-    /** @brief 初始化 WinSock（只做一次） */
+    /**
+     * @brief 初始化 WinSock
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     * @note 只做一次，重复调用直接返回上次的结果
+     */
     WEPOLL_INTERNAL int wsGlobalInit();
 
-    /** @brief 取套接字最底层的句柄，供 AFD 轮询使用 */
+    /**
+     * @brief 取套接字最底层的句柄，供 AFD 轮询使用
+     * @param socket 目标套接字
+     * @return 最底层的套接字句柄；失败返回 INVALID_SOCKET
+     */
     WEPOLL_INTERNAL SOCKET wsGetBaseSocket(SOCKET socket);
 
     static bool      initializationDone = false;
     static INIT_ONCE onceControl        = INIT_ONCE_STATIC_INIT;
 
-    /** @brief INIT_ONCE 的一次性回调：按顺序完成三块全局初始化 */
+    /**
+     * @brief INIT_ONCE 的一次性回调：按顺序完成三块全局初始化
+     * @param once 控制块，未使用
+     * @param parameter 回调参数，未使用
+     * @param context 输出上下文，未使用
+     * @return TRUE 三块初始化全部成功；FALSE 失败（调用方据此返回 -1）
+     */
     static BOOL CALLBACK onceCallback([[maybe_unused]] INIT_ONCE *once, [[maybe_unused]] void *parameter, [[maybe_unused]] void **context)
     {
 
@@ -835,81 +1052,147 @@ namespace AsynGyanis::Core
 
     struct QueueNode;
 
-    /** @brief 组还有容量就复用并取一份引用，否则新建一组 */
+    /**
+     * @brief 组还有容量就复用并取一份引用，否则新建一组
+     * @param port 目标端口状态
+     * @return 可用的轮询组；新建失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL PollGroup *pollGroupAcquire(PortState *port);
 
-    /** @brief 归还一份引用，用量归零后把组移到队尾 */
+    /**
+     * @brief 归还一份引用，用量归零后把组移到队尾
+     * @param pollGroup 目标轮询组
+     * @note 移动到队尾是为了让「最近归还的组」靠后，尽快被复用
+     */
     WEPOLL_INTERNAL void pollGroupRelease(PollGroup *pollGroup);
 
-    /** @brief 删除轮询组（只在端口关闭时调用） */
+    /**
+     * @brief 删除轮询组
+     * @param pollGroup 目标轮询组
+     * @note 只在端口关闭时调用
+     */
     WEPOLL_INTERNAL void pollGroupDelete(PollGroup *pollGroup);
 
-    /** @brief 从队列节点取回所属的轮询组 */
+    /**
+     * @brief 从队列节点取回所属的轮询组
+     * @param queueNode 轮询组队列里的节点
+     * @return 该节点所属的轮询组
+     */
     WEPOLL_INTERNAL PollGroup *pollGroupFromQueueNode(QueueNode *queueNode);
 
-    WEPOLL_INTERNAL HANDLE
-    /** @brief 取轮询组复用的 AFD 辅助句柄 */
-    pollGroupGetAfdHelperHandle(PollGroup *pollGroup);
+    /**
+     * @brief 取轮询组复用的 AFD 辅助句柄
+     * @param pollGroup 目标轮询组
+     * @return 该组创建时建立的 AFD 辅助句柄
+     */
+    WEPOLL_INTERNAL HANDLE pollGroupGetAfdHelperHandle(PollGroup *pollGroup);
 
-    /** @brief 侵入式双向链表节点：内联在持有者里，不进堆 */
+    /**
+     * @brief 侵入式双向链表节点：内联在持有者里，不进堆
+     */
     struct QueueNode
     {
-        QueueNode *m_previous;
-        QueueNode *m_next;
+        QueueNode *m_previous; ///< 前一个节点
+        QueueNode *m_next;     ///< 后一个节点
     };
 
     /**
-     * @brief 带哨兵头的侵入式双向链表：节点内联在持有者里（不进堆），因此「从节点摘除」是 O(1)、
-     * @details 队列本身一次分配都不用做。本文件的两处用法都吃这个代价——每轮 epoll_wait 之后有成百上千 个 socket 要在这几张表之间挪动。改用 std::list
-     * 会让每个节点多一次分配，还得把迭代器塞回 节点才能保住同样的摘除代价，得不偿失
+     * @brief 带哨兵头的侵入式双向链表：节点内联在持有者里，摘除是 O(1) 且队列自身不分配
+     * @details 每轮 epoll_wait 之后有成百上千个套接字要在这几张表之间挪动；换成 std::list 会让每个
+     *          节点多一次分配，还得把迭代器塞回节点才能保住同样的摘除代价，得不偿失。
      */
     struct Queue
     {
         QueueNode m_head; ///< 哨兵：m_head.m_next 是首元素、m_head.m_previous 是尾元素；空表时两者都指回 m_head
     };
 
-    /** @brief 初始化带哨兵头的空队列 */
+    /**
+     * @brief 初始化带哨兵头的空队列
+     * @param queue 待初始化的队列
+     */
     WEPOLL_INTERNAL void queueInit(Queue *queue);
 
-    /** @brief 把节点初始化成「不在任何表里」 */
+    /**
+     * @brief 把节点初始化成「不在任何表里」
+     * @param node 待初始化的节点
+     */
     WEPOLL_INTERNAL void queueNodeInit(QueueNode *node);
 
-    /** @brief 取队首节点，空表返回空指针 */
+    /**
+     * @brief 取队首节点
+     * @param queue 目标队列
+     * @return 队首节点；空表返回空指针
+     */
     WEPOLL_INTERNAL QueueNode *queueFirst(const Queue *queue);
 
-    /** @brief 取队尾节点 */
+    /**
+     * @brief 取队尾节点
+     * @param queue 目标队列
+     * @return 队尾节点；空表时按哨兵语义返回哨兵本身
+     */
     WEPOLL_INTERNAL QueueNode *queueLast(const Queue *queue);
 
-    /** @brief 把节点追加到队尾 */
+    /**
+     * @brief 把节点追加到队尾
+     * @param queue 目标队列
+     * @param node 待追加的节点
+     */
     WEPOLL_INTERNAL void queueAppend(Queue *queue, QueueNode *node);
 
-    /** @brief 把节点移到队首 */
+    /**
+     * @brief 把节点移到队首
+     * @param queue 目标队列
+     * @param node 已在表中的节点
+     */
     WEPOLL_INTERNAL void queueMoveToStart(Queue *queue, QueueNode *node);
 
-    /** @brief 把节点移到队尾 */
+    /**
+     * @brief 把节点移到队尾
+     * @param queue 目标队列
+     * @param node 已在表中的节点
+     */
     WEPOLL_INTERNAL void queueMoveToEnd(Queue *queue, QueueNode *node);
 
-    /** @brief 把节点从它所在的表里摘掉 */
+    /**
+     * @brief 把节点从它所在的表里摘掉
+     * @param node 已在表中的节点
+     */
     WEPOLL_INTERNAL void queueRemove(QueueNode *node);
 
-    /** @brief 队列是否为空 */
+    /**
+     * @brief 队列是否为空
+     * @param queue 目标队列
+     * @return true 队列里没有元素
+     */
     WEPOLL_INTERNAL bool queueIsEmpty(const Queue *queue);
 
-    /** @brief 节点是否在某个表里（自指即不在） */
+    /**
+     * @brief 节点是否在某个表里（自指即不在）
+     * @param node 目标节点
+     * @return true 节点当前挂在某张表上
+     */
     WEPOLL_INTERNAL bool queueIsEnqueued(const QueueNode *node);
 
+    /// 一个轮询组最多摊入多少个套接字；到顶后再来的套接字新开一组
     static constexpr std::size_t kMaximumPollGroupSize = 32;
 
-    /** @brief 共享同一个 AFD 辅助句柄的一组套接字 */
+    /**
+     * @brief 共享同一个 AFD 辅助句柄的一组套接字
+     */
     struct PollGroup
     {
-        PortState *m_portState;
-        QueueNode  m_queueNode;
-        HANDLE     m_afdHelperHandle;
-        size_t     m_groupSize;
+        PortState *m_portState;       ///< 所属端口状态
+        QueueNode  m_queueNode;       ///< 挂在端口的轮询组队列上
+        HANDLE     m_afdHelperHandle; ///< 本组复用的 AFD 辅助句柄
+        size_t     m_groupSize;       ///< 已摊入的套接字个数
     };
 
-    /** @brief 新建轮询组并挂到端口的轮询组队列尾 */
+    /**
+     * @brief 新建轮询组并挂到端口的轮询组队列尾
+     * @param portState 目标端口状态
+     * @return 新建的轮询组；失败返回空指针（错误码已写进 errno 与 LastError）
+     * @note 组内复用的 AFD 辅助句柄在这里建立，失败时整组回收
+     */
     static PollGroup *pollGroupNew(PortState *portState)
     {
         HANDLE iocpHandle     = portGetIocpHandle(portState);
@@ -982,64 +1265,121 @@ namespace AsynGyanis::Core
         // 轮询组目前只在 epoll 端口关闭时才释放。
     }
 
-    /** @brief 新建套接字状态并登记进端口的套接字表 */
+    /**
+     * @brief 新建套接字状态并登记进端口的套接字表
+     * @param portState 目标端口状态
+     * @param socket 目标套接字句柄，作为表的键
+     * @return 新建的套接字状态；失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL SockState *sockNew(PortState *portState, SOCKET socket);
 
-    /** @brief 删除套接字状态，等在途轮询收尾后再释放 */
+    /**
+     * @brief 删除套接字状态，等在途轮询收尾后再释放
+     * @param portState 目标端口状态
+     * @param sockState 目标套接字状态
+     */
     WEPOLL_INTERNAL void sockDelete(PortState *portState, SockState *sockState);
 
-    /** @brief 强制删除套接字状态，不等在途轮询 */
+    /**
+     * @brief 强制删除套接字状态，不等在途轮询
+     * @param portState 目标端口状态
+     * @param sockState 目标套接字状态
+     * @note 只在端口关闭时调用：此时在途请求的结果不会再有人处理
+     */
     WEPOLL_INTERNAL void sockForceDelete(PortState *portState, SockState *sockState);
 
-    /** @brief 记下用户关注的事件，必要时请求重新下发 */
+    /**
+     * @brief 记下用户关注的事件，必要时请求重新下发
+     * @param portState 目标端口状态
+     * @param sockState 目标套接字状态
+     * @param ev 新的事件掩码与用户数据
+     * @return 0 成功；-1 失败
+     */
     WEPOLL_INTERNAL int sockSetEvent(PortState *portState, SockState *sockState, const struct epoll_event *ev);
 
-    /** @brief 把一个套接字最新的关注事件下发给 AFD */
+    /**
+     * @brief 把一个套接字最新的关注事件下发给 AFD
+     * @param portState 目标端口状态
+     * @param sockState 目标套接字状态
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     WEPOLL_INTERNAL int sockUpdate(PortState *portState, SockState *sockState);
 
-    /** @brief 处理一条套接字完成包：翻译成 epoll 事件并回填用户数据 */
+    /**
+     * @brief 处理一条套接字完成包：翻译成 epoll 事件并回填用户数据
+     * @param portState 目标端口状态
+     * @param ioStatusBlock 该套接字完成包里的状态块
+     * @param ev 输出参数：翻译出来的 epoll 事件
+     * @return 本次产出的 epoll 事件条数；0 表示这条完成包不产出用户可见事件；-1 失败
+     */
     WEPOLL_INTERNAL int sockFeedEvent(PortState *portState, IO_STATUS_BLOCK *ioStatusBlock, struct epoll_event *ev);
 
-    /** @brief 从队列节点取回所属的套接字状态 */
+    /**
+     * @brief 从队列节点取回所属的套接字状态
+     * @param queueNode 端口队列里的节点
+     * @return 该节点所属的套接字状态
+     */
     WEPOLL_INTERNAL SockState *sockStateFromQueueNode(QueueNode *queueNode);
 
-    /** @brief 取套接字状态里的队列节点 */
+    /**
+     * @brief 取套接字状态里的队列节点
+     * @param sockState 目标套接字状态
+     * @return 内嵌在该状态里的队列节点
+     */
     WEPOLL_INTERNAL QueueNode *sockStateToQueueNode(SockState *sockState);
 
-    /** @brief 从树节点取回所属的套接字状态 */
+    /**
+     * @brief 从树节点取回所属的套接字状态
+     * @param treeNode 端口套接字表里的节点
+     * @return 该节点所属的套接字状态
+     */
     WEPOLL_INTERNAL SockState *sockStateFromTreeNode(TreeNode *treeNode);
 
-    /** @brief 取套接字状态里的树节点 */
+    /**
+     * @brief 取套接字状态里的树节点
+     * @param sockState 目标套接字状态
+     * @return 内嵌在该状态里的树节点
+     */
     WEPOLL_INTERNAL TreeNode *sockStateToTreeNode(SockState *sockState);
 
     /// 完成包列表放在栈上时的上限：超过它才值得上堆
     static constexpr std::size_t kMaximumOnStackCompletions = 256;
 
-    /** @brief 一个 epoll 实例的全部状态 */
+    /**
+     * @brief 一个 epoll 实例的全部状态
+     * @details 套接字表与三张队列都以侵入式节点内联在各自的宿主结构里；m_lock 保护端口自身的字段与
+     *          这几张表的增删，进入等待前必须放下它。
+     */
     struct PortState
     {
-        HANDLE           m_iocpHandle;
-        Tree             m_sockTree;
-        Queue            m_sockUpdateQueue;
-        Queue            m_sockDeletedQueue;
-        Queue            m_pollGroupQueue;
-        TsTreeNode       m_handleTreeNode;
-        CRITICAL_SECTION m_lock;
-        size_t           m_activePollCount;
+        HANDLE           m_iocpHandle;        ///< 本实例的 IOCP 完成端口
+        Tree             m_sockTree;          ///< 套接字句柄 → 套接字状态
+        Queue            m_sockUpdateQueue;   ///< 待把关注事件下发给 AFD 的套接字
+        Queue            m_sockDeletedQueue;  ///< 已删除但轮询尚未收尾、暂时不能释放的套接字
+        Queue            m_pollGroupQueue;    ///< 本实例的轮询组
+        TsTreeNode       m_handleTreeNode;    ///< 挂在全局句柄表上的节点
+        CRITICAL_SECTION m_lock;              ///< 保护本结构字段与上述几张表
+        size_t           m_activePollCount;   ///< 在途 AFD 轮询请求数，用于决定何时可以停机
     };
 
-    /** @brief 分配并值初始化端口状态 */
+    /**
+     * @brief 分配并值初始化端口状态
+     * @return 成功返回新状态；失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     static PortState *portAlloc()
     {
         // 值初始化：平凡成员清零，sockTree 与引用锁各自构造好——不再需要 memset 之后再补构造
-        auto *portState = new(std::nothrow) PortState{};
+        auto *portState = new (std::nothrow) PortState{};
         if (portState == nullptr)
             return failWithWindowsError(nullptr, ERROR_NOT_ENOUGH_MEMORY);
 
         return portState;
     }
 
-    /** @brief 释放端口状态 */
+    /**
+     * @brief 释放端口状态
+     * @param port 目标端口状态
+     */
     static void portFree(PortState *port)
     {
         assert(port != nullptr);
@@ -1047,7 +1387,10 @@ namespace AsynGyanis::Core
         delete port;
     }
 
-    /** @brief 创建 IOCP 完成端口 */
+    /**
+     * @brief 创建 IOCP 完成端口
+     * @return 成功返回端口句柄；失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     static HANDLE portCreateIocp()
     {
         HANDLE iocpHandle = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
@@ -1084,7 +1427,11 @@ namespace AsynGyanis::Core
         return portState;
     }
 
-    /** @brief 关掉底层的 IOCP 句柄 */
+    /**
+     * @brief 关掉底层的 IOCP 句柄
+     * @param portState 目标端口状态
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     static int portCloseIocp(PortState *portState)
     {
         HANDLE iocpHandle       = portState->m_iocpHandle;
@@ -1142,7 +1489,12 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 把所有待更新的套接字事件下发给 AFD */
+    /**
+     * @brief 把所有待更新的套接字事件下发给 AFD
+     * @param portState 目标端口状态
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     * @note 进入本函数前必须已持有端口的锁
+     */
     static int portUpdateEvents(PortState *portState)
     {
         Queue *sockUpdateQueue = &portState->m_sockUpdateQueue;
@@ -1162,14 +1514,25 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 仅在端口处于轮询状态时下发待更新事件 */
+    /**
+     * @brief 仅在端口处于轮询状态时下发待更新事件
+     * @param portState 目标端口状态
+     * @note 没有在途轮询时下发没有意义：下一次等待开始前会统一下发一遍
+     */
     static void portUpdateEventsIfPolling(PortState *portState)
     {
         if (portState->m_activePollCount > 0)
             portUpdateEvents(portState);
     }
 
-    /** @brief 把一批 IOCP 完成包翻译成 epoll 事件 */
+    /**
+     * @brief 把一批 IOCP 完成包翻译成 epoll 事件
+     * @param portState 目标端口状态
+     * @param epollEvents 输出缓冲区，就绪事件被写进这里
+     * @param iocpEvents 本次取到的完成包数组
+     * @param iocpEventCount 完成包条数
+     * @return 写入 epollEvents 的事件条数；-1 失败
+     */
     static int portFeedEvents(PortState *portState, struct epoll_event *epollEvents, OVERLAPPED_ENTRY *iocpEvents, DWORD iocpEventCount)
     {
         int epollEventCount = 0;
@@ -1185,7 +1548,15 @@ namespace AsynGyanis::Core
         return epollEventCount;
     }
 
-    /** @brief 从 IOCP 取一批完成包并逐个翻译成事件 */
+    /**
+     * @brief 从 IOCP 取一批完成包并逐个翻译成事件
+     * @param portState 目标端口状态
+     * @param epollEvents 输出缓冲区，就绪事件被写进这里
+     * @param iocpEvents 复用给本函数写入完成包的数组
+     * @param maxevents epollEvents 的容量，也是本次最多取回的完成包数
+     * @param timeout 等待完成包的毫秒数
+     * @return 本次产出的事件条数；0 表示超时；-1 失败
+     */
     static int portPoll(PortState *portState, struct epoll_event *epollEvents, OVERLAPPED_ENTRY *iocpEvents, DWORD maxevents, DWORD timeout)
     {
         DWORD completionCount;
@@ -1287,7 +1658,13 @@ namespace AsynGyanis::Core
             return -1;
     }
 
-    /** @brief 处理 EPOLL_CTL_ADD：登记套接字并装配首次轮询 */
+    /**
+     * @brief 处理 EPOLL_CTL_ADD：登记套接字并装配首次轮询
+     * @param portState 目标端口状态
+     * @param sock 目标套接字
+     * @param ev 关注的事件掩码与用户数据
+     * @return 0 成功；-1 失败（错误码已写进 errno 与 LastError）
+     */
     static int portCtlAdd(PortState *portState, SOCKET sock, struct epoll_event *ev)
     {
         SockState *sockState = sockNew(portState, sock);
@@ -1305,7 +1682,13 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 处理 EPOLL_CTL_MOD：更新关注事件并按需重新装配 */
+    /**
+     * @brief 处理 EPOLL_CTL_MOD：更新关注事件并按需重新装配
+     * @param portState 目标端口状态
+     * @param sock 目标套接字
+     * @param ev 新的事件掩码与用户数据
+     * @return 0 成功；-1 失败（套接字未登记等）
+     */
     static int portCtlMod(PortState *portState, SOCKET sock, struct epoll_event *ev)
     {
         SockState *sockState = portFindSocket(portState, sock);
@@ -1320,7 +1703,12 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 处理 EPOLL_CTL_DEL：注销套接字 */
+    /**
+     * @brief 处理 EPOLL_CTL_DEL：注销套接字
+     * @param portState 目标端口状态
+     * @param sock 目标套接字
+     * @return 0 成功；-1 失败（套接字未登记）
+     */
     static int portCtlDel(PortState *portState, SOCKET sock)
     {
         SockState *sockState = portFindSocket(portState, sock);
@@ -1332,7 +1720,14 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 按操作码把请求分派到增删改三个实现 */
+    /**
+     * @brief 按操作码把请求分派到增删改三个实现
+     * @param portState 目标端口状态
+     * @param op EPOLL_CTL_ADD / EPOLL_CTL_MOD / EPOLL_CTL_DEL
+     * @param sock 目标套接字
+     * @param ev ADD 与 MOD 时给出事件掩码与用户数据
+     * @return 0 成功；-1 失败（操作码未知、套接字未登记等）
+     */
     static int portCtlOp(PortState *portState, int op, SOCKET sock, struct epoll_event *ev)
     {
         switch (op)
@@ -1512,23 +1907,30 @@ namespace AsynGyanis::Core
         Cancelled ///< 已请求撤销，等待回收
     };
 
-    /** @brief 一个已注册套接字的状态 */
+    /**
+     * @brief 一个已注册套接字的状态
+     * @details 队列节点与树节点都内联在这里，登记与摘除因此不额外分配；m_pollInfo 与 m_ioStatusBlock 是
+     *          同一次 AFD 轮询请求与它完成包的回填目标，必须成对使用。
+     */
     struct SockState
     {
-        IO_STATUS_BLOCK m_ioStatusBlock;
-        AFD_POLL_INFO   m_pollInfo;
-        QueueNode       m_queueNode;
-        TreeNode        m_treeNode;
-        PollGroup *     m_pollGroup;
-        SOCKET          m_baseSocket;
-        epoll_data_t    m_userData;
-        uint32_t        m_userEvents;
-        uint32_t        m_pendingEvents;
-        SockPollStatus  m_pollStatus;
-        bool            m_deletePending;
+        IO_STATUS_BLOCK m_ioStatusBlock; ///< 在途 AFD 轮询的状态块，完成包回填到这里
+        AFD_POLL_INFO   m_pollInfo;      ///< 下发给 AFD 的轮询请求：关注的句柄与事件位
+        QueueNode       m_queueNode;     ///< 挂在更新队列、待删除队列或轮询组队列上
+        TreeNode        m_treeNode;      ///< 挂在所属端口的套接字表上
+        PollGroup *     m_pollGroup;     ///< 本套接字所属的轮询组，复用它的 AFD 辅助句柄
+        SOCKET          m_baseSocket;    ///< 最底层的套接字句柄（在 LSP 之下）
+        epoll_data_t    m_userData;      ///< 用户在 epoll_ctl 时登记的数据
+        uint32_t        m_userEvents;    ///< 用户订阅的事件掩码
+        uint32_t        m_pendingEvents; ///< 已经下发给 AFD 的事件掩码
+        SockPollStatus  m_pollStatus;    ///< 在途轮询的状态
+        bool            m_deletePending; ///< 已请求删除，等轮询收尾后释放
     };
 
-    /** @brief 分配并值初始化套接字状态 */
+    /**
+     * @brief 分配并值初始化套接字状态
+     * @return 新状态；失败返回空指针（错误码已写进 errno 与 LastError）
+     */
     static inline SockState *sockAlloc()
     {
         SockState *sockState = new(std::nothrow) SockState{};
@@ -1537,13 +1939,20 @@ namespace AsynGyanis::Core
         return sockState;
     }
 
-    /** @brief 释放套接字状态 */
+    /**
+     * @brief 释放套接字状态
+     * @param sockState 目标套接字状态
+     */
     static inline void sockFree(SockState *sockState)
     {
         delete sockState;
     }
 
-    /** @brief 撤销套接字上尚未完成的 AFD 轮询 */
+    /**
+     * @brief 撤销套接字上尚未完成的 AFD 轮询
+     * @param sockState 目标套接字状态
+     * @return 0 成功（含「本来就没有在途轮询」）；-1 失败
+     */
     static int sockCancelPoll(SockState *sockState)
     {
         assert(sockState->m_pollStatus == SockPollStatus::Pending);
@@ -1596,7 +2005,13 @@ namespace AsynGyanis::Core
         return sockState;
     }
 
-    /** @brief 删除套接字状态的公共实现：按轮询状态决定立即还是延后释放 */
+    /**
+     * @brief 删除套接字状态的公共实现：按轮询状态决定立即还是延后释放
+     * @param portState 目标端口状态
+     * @param sockState 目标套接字状态
+     * @param force true 不等在途轮询、就地释放；false 有在途轮询时挂进待删除队列，等完成包回来再释放
+     * @return 0 成功
+     */
     static int sockDeleteInternal(PortState *portState, SockState *sockState, bool force)
     {
         if (!sockState->m_deletePending)
@@ -1650,7 +2065,11 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 把 epoll 事件掩码翻译成 AFD 轮询位 */
+    /**
+     * @brief 把 epoll 事件掩码翻译成 AFD 轮询位
+     * @param epollEvents epoll 事件掩码（EPOLLIN 等按位取或）
+     * @return 对应的 AFD_POLL_* 位；始终带上 AFD_POLL_LOCAL_CLOSE
+     */
     static inline DWORD sockEpollEventsToAfdEvents(uint32_t epollEvents)
     {
         // 始终监听 AFD_POLL_LOCAL_CLOSE：套接字被 closesocket() 或 CloseHandle()
@@ -1673,7 +2092,11 @@ namespace AsynGyanis::Core
         return afdEvents;
     }
 
-    /** @brief 把 AFD 回报的事件位翻译回 epoll 事件 */
+    /**
+     * @brief 把 AFD 回报的事件位翻译回 epoll 事件
+     * @param afdEvents AFD 回报的事件位
+     * @return 对应的 epoll 事件掩码字
+     */
     static inline uint32_t sockAfdEventsToEpollEvents(DWORD afdEvents)
     {
         uint32_t epollEvents = 0;
@@ -1856,7 +2279,13 @@ namespace AsynGyanis::Core
         return r;
     }
 
-    /** @brief 加锁按键查节点 */
+    /**
+     * @brief 加锁按键查节点
+     * @param tsTree 目标句柄树
+     * @param key 键
+     * @return 命中的节点；找不到返回空指针
+     * @note 与 tsTreeFindAndRef 的区别是这里不取引用，调用方须自己保证节点不被并发销毁
+     */
     static inline TsTreeNode *tsTreeFindNode(TsTree *tsTree, uintptr_t key)
     {
         TreeNode *treeNode = treeFind(&tsTree->m_tree, key);
@@ -1967,7 +2396,12 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    /** @brief 沿协议链取一层 BSP 套接字，绕过破坏 SIO_BASE_HANDLE 的 LSP */
+    /**
+     * @brief 沿协议链取一层 BSP 套接字，绕过破坏 SIO_BASE_HANDLE 的 LSP
+     * @param socket 当前这一层的套接字
+     * @param ioctl 要问的 ioctl 码（SIO_BASE_HANDLE 或 SIO_BSP_HANDLE_POLL）
+     * @return 取到的下一层套接字；失败返回 INVALID_SOCKET
+     */
     static inline SOCKET wsIoctlGetBspSocket(SOCKET socket, DWORD ioctl)
     {
         SOCKET bspSocket;
