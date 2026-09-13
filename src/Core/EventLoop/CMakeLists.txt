@@ -21,7 +21,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
 # 实现细节，消费方只需链 AsynGyanis::Core，不必知道底下是谁在做
 if (WIN32)
     set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
-            ${CMAKE_CURRENT_LIST_DIR}/wepoll/wepoll.c
+            ${CMAKE_CURRENT_LIST_DIR}/Wepoll.cpp
             ${CMAKE_CURRENT_LIST_DIR}/wepoll/wepoll.h
     )
 endif ()

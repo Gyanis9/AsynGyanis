@@ -29,81 +29,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define WEPOLL_EXPORT
-
-#include <stdint.h>
-
-enum EPOLL_EVENTS {
-  EPOLLIN      = (int) (1U <<  0),
-  EPOLLPRI     = (int) (1U <<  1),
-  EPOLLOUT     = (int) (1U <<  2),
-  EPOLLERR     = (int) (1U <<  3),
-  EPOLLHUP     = (int) (1U <<  4),
-  EPOLLRDNORM  = (int) (1U <<  6),
-  EPOLLRDBAND  = (int) (1U <<  7),
-  EPOLLWRNORM  = (int) (1U <<  8),
-  EPOLLWRBAND  = (int) (1U <<  9),
-  EPOLLMSG     = (int) (1U << 10), /* Never reported. */
-  EPOLLRDHUP   = (int) (1U << 13),
-  EPOLLONESHOT = (int) (1U << 31)
-};
-
-#define EPOLLIN      (1U <<  0)
-#define EPOLLPRI     (1U <<  1)
-#define EPOLLOUT     (1U <<  2)
-#define EPOLLERR     (1U <<  3)
-#define EPOLLHUP     (1U <<  4)
-#define EPOLLRDNORM  (1U <<  6)
-#define EPOLLRDBAND  (1U <<  7)
-#define EPOLLWRNORM  (1U <<  8)
-#define EPOLLWRBAND  (1U <<  9)
-#define EPOLLMSG     (1U << 10)
-#define EPOLLRDHUP   (1U << 13)
-#define EPOLLONESHOT (1U << 31)
-
-#define EPOLL_CTL_ADD 1
-#define EPOLL_CTL_MOD 2
-#define EPOLL_CTL_DEL 3
-
-typedef void* HANDLE;
-typedef uintptr_t SOCKET;
-
-typedef union epoll_data {
-  void* ptr;
-  int fd;
-  uint32_t u32;
-  uint64_t u64;
-  SOCKET sock; /* Windows specific */
-  HANDLE hnd;  /* Windows specific */
-} epoll_data_t;
-
-struct epoll_event {
-  uint32_t events;   /* Epoll events and flags */
-  epoll_data_t data; /* User data variable */
-};
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-WEPOLL_EXPORT HANDLE epoll_create(int size);
-WEPOLL_EXPORT HANDLE epoll_create1(int flags);
-
-WEPOLL_EXPORT int epoll_close(HANDLE ephnd);
-
-WEPOLL_EXPORT int epoll_ctl(HANDLE ephnd,
-                            int op,
-                            SOCKET sock,
-                            struct epoll_event* event);
-
-WEPOLL_EXPORT int epoll_wait(HANDLE ephnd,
-                             struct epoll_event* events,
-                             int maxevents,
-                             int timeout);
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
+/* 接口只有一处出处：wepoll.h 是冻结的第三方接口（含 BSD-2-Clause 许可），
+ * 本文件实现它。头里的声明在 extern "C" 内，因此下面四个入口点的定义自动保持 C 链接。 */
+#include "wepoll.h"
 
 #include <assert.h>
 
@@ -184,7 +112,7 @@ typedef struct _UNICODE_STRING {
 } UNICODE_STRING, *PUNICODE_STRING;
 
 #define RTL_CONSTANT_STRING(s) \
-  { sizeof(s) - sizeof((s)[0]), sizeof(s), s }
+  { sizeof(s) - sizeof((s)[0]), sizeof(s), const_cast<PWSTR>(s) }
 
 typedef struct _OBJECT_ATTRIBUTES {
   ULONG Length;
@@ -271,7 +199,7 @@ typedef struct _OBJECT_ATTRIBUTES {
   X(ULONG, WINAPI, RtlNtStatusToDosError, (NTSTATUS Status))
 
 #define X(return_type, attributes, name, parameters) \
-  WEPOLL_INTERNAL_VAR return_type(attributes* name) parameters;
+  WEPOLL_INTERNAL_VAR return_type(attributes* name) parameters = NULL;
 NT_NTDLL_IMPORT_LIST(X)
 #undef X
 
@@ -884,11 +812,6 @@ typedef void* nt__fn_ptr_cast_t;
 typedef FARPROC nt__fn_ptr_cast_t;
 #endif
 
-#define X(return_type, attributes, name, parameters) \
-  WEPOLL_INTERNAL return_type(attributes* name) parameters = NULL;
-NT_NTDLL_IMPORT_LIST(X)
-#undef X
-
 int nt_global_init(void) {
   HMODULE ntdll;
   FARPROC fn_ptr;
@@ -961,7 +884,7 @@ static poll_group_t* poll_group__new(port_state_t* port_state) {
   HANDLE iocp_handle = port_get_iocp_handle(port_state);
   queue_t* poll_group_queue = port_get_poll_group_queue(port_state);
 
-  poll_group_t* poll_group = malloc(sizeof *poll_group);
+  poll_group_t* poll_group = static_cast<poll_group_t*>(malloc(sizeof *poll_group));
   if (poll_group == NULL)
     return_set_error(NULL, ERROR_NOT_ENOUGH_MEMORY);
 
@@ -1067,7 +990,7 @@ typedef struct port_state {
 } port_state_t;
 
 static port_state_t* port__alloc(void) {
-  port_state_t* port_state = malloc(sizeof *port_state);
+  port_state_t* port_state = static_cast<port_state_t*>(malloc(sizeof *port_state));
   if (port_state == NULL)
     return_set_error(NULL, ERROR_NOT_ENOUGH_MEMORY);
 
@@ -1261,8 +1184,8 @@ int port_wait(port_state_t* port_state,
    * memory for it on the heap. */
   if ((size_t) maxevents <= array_count(stack_iocp_events)) {
     iocp_events = stack_iocp_events;
-  } else if ((iocp_events =
-                  malloc((size_t) maxevents * sizeof *iocp_events)) == NULL) {
+  } else if ((iocp_events = static_cast<OVERLAPPED_ENTRY*>(
+                      malloc((size_t) maxevents * sizeof *iocp_events))) == NULL) {
     iocp_events = stack_iocp_events;
     maxevents = array_count(stack_iocp_events);
   }
@@ -1614,7 +1537,7 @@ typedef struct sock_state {
 } sock_state_t;
 
 static inline sock_state_t* sock__alloc(void) {
-  sock_state_t* sock_state = malloc(sizeof *sock_state);
+  sock_state_t* sock_state = static_cast<sock_state_t*>(malloc(sizeof *sock_state));
   if (sock_state == NULL)
     return_set_error(NULL, ERROR_NOT_ENOUGH_MEMORY);
   return sock_state;
