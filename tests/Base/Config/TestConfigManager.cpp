@@ -1414,4 +1414,82 @@ namespace AsynGyanis::Base
         EXPECT_EQ(mismatches.load(), 0);
         EXPECT_EQ(configuration().getInt("counter", -1), 42);
     }
+
+    // ============================================================================
+    // 段落还原（扁平点分键 → 嵌套对象）
+    // ============================================================================
+
+    TEST_F(ConfigManagerTest, GetSectionRebuildsNestedObjectFromFlatKeys)
+    {
+        writeFile("server.yaml",
+                  "server:\n"
+                  "  maximum_connections: 8\n"
+                  "  expose_metrics: true\n"
+                  "  limits:\n"
+                  "    idle_timeout_ms: 1500\n"
+                  "    read_timeout_ms: 2000\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        const ConfigValue section = configuration().getSection("server");
+        ASSERT_TRUE(section.isObject());
+
+        // 直接子键与嵌套子对象都要在：还原的正是 flattenValue() 拆掉的那一层结构
+        ASSERT_NE(section.find("maximum_connections"), nullptr);
+        EXPECT_EQ(section.find("maximum_connections")->asInt(), 8);
+        EXPECT_TRUE(section.find("expose_metrics")->asBool());
+
+        const ConfigValue *limits = section.find("limits");
+        ASSERT_NE(limits, nullptr);
+        ASSERT_TRUE(limits->isObject());
+        EXPECT_EQ(limits->find("idle_timeout_ms")->asInt(), 1500);
+        EXPECT_EQ(limits->find("read_timeout_ms")->asInt(), 2000);
+
+        // 段名本身不是键，取值里不该出现这两层的外壳
+        EXPECT_EQ(section.find("server"), nullptr);
+        EXPECT_EQ(section.find("maximum_connections.limits"), nullptr);
+    }
+
+    TEST_F(ConfigManagerTest, GetSectionReturnsEmptyObjectWhenSectionIsAbsent)
+    {
+        writeFile("app.yaml", "application:\n  name: demo\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 缺段不是错误：消费方（如 HTTP 服务器配置读取器）据此走默认值
+        const ConfigValue section = configuration().getSection("server");
+        ASSERT_TRUE(section.isObject());
+        EXPECT_TRUE(section.asObject().empty());
+    }
+
+    TEST_F(ConfigManagerTest, GetSectionIgnoresKeysThatMerelyShareTheNamePrefix)
+    {
+        writeFile("app.yaml",
+                  "server_side:\n"
+                  "  port: 1\n"
+                  "serverSide:\n"
+                  "  port: 2\n"
+                  "server:\n"
+                  "  port: 3\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 只有 server.port 属于这一段：前缀比较必须带上分隔符，否则同名前缀的段会被误捞
+        const ConfigValue section = configuration().getSection("server");
+        ASSERT_TRUE(section.isObject());
+        ASSERT_EQ(section.asObject().size(), 1U);
+        EXPECT_EQ(section.find("port")->asInt(), 3);
+    }
+
+    TEST_F(ConfigManagerTest, GetSectionReturnsDetachedCopySurvivingLaterReload)
+    {
+        writeFile("first.yaml", "server:\n  maximum_connections: 8\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        const ConfigValue beforeReload = configuration().getSection("server");
+
+        writeFile("second.yaml", "server:\n  maximum_connections: 99\n");
+        const std::filesystem::path secondFile = filePath("second.yaml");
+        ASSERT_TRUE(configuration().loadFiles({secondFile}).success);
+
+        // 取走的是副本：热重载换代快照后，先前那一份仍是当时的取值
+        EXPECT_EQ(beforeReload.find("maximum_connections")->asInt(), 8);
+        EXPECT_EQ(configuration().getSection("server").find("maximum_connections")->asInt(), 99);
+    }
 } // namespace AsynGyanis::Base

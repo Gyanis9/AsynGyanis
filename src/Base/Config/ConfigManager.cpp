@@ -70,6 +70,46 @@ namespace AsynGyanis::Base
             }
             return {buffer.data(), static_cast<std::string::size_type>(out - buffer.data())};
         }
+
+        /// 还原嵌套对象时的一条「剩余点分路径 → 取值」记录
+        struct SectionEntry
+        {
+            std::string_view   remainingPath; ///< 剥掉段前缀后剩下的点分路径
+            const FormatValue *value;         ///< 该键的取值，指向调用方持有的快照
+        };
+
+        /**
+         * @brief 把「剩余点分路径 → 取值」重新聚成嵌套对象
+         * @details 与 flattenValue() 互为逆运算：首段相同的路径归到同一个子对象下再递归，
+         *          剩余路径里没有点号的即为叶子。路径视图指向前一层容器里的字符串，而前一层
+         *          容器在整层递归期间一直存活，故视图始终有效。
+         * @param entries 本层的全部条目
+         * @return FormatValueObject 本层对象
+         */
+        [[nodiscard]] FormatValueObject buildNestedObject(const std::vector<SectionEntry> &entries)
+        {
+            FormatValueObject object;
+
+            // 用有序 map 归组：分组顺序本身不影响语义，但稳定的子对象键序让结果可断言、可阅读
+            std::map<std::string_view, std::vector<SectionEntry> > childGroups;
+            for (const SectionEntry &entry: entries)
+            {
+                const std::size_t separator = entry.remainingPath.find('.');
+                if (separator == std::string_view::npos)
+                {
+                    object.insert_or_assign(std::string(entry.remainingPath), *entry.value);
+                    continue;
+                }
+                childGroups[entry.remainingPath.substr(0, separator)].push_back(
+                        SectionEntry{entry.remainingPath.substr(separator + 1), entry.value});
+            }
+
+            for (const auto &[name, children]: childGroups)
+            {
+                object.insert_or_assign(std::string(name), FormatValue(buildNestedObject(children)));
+            }
+            return object;
+        }
     } // namespace
 
     ConfigManager &ConfigManager::instance() noexcept
@@ -410,6 +450,33 @@ namespace AsynGyanis::Base
     {
         const auto currentData = m_data.load(std::memory_order_acquire);
         return currentData->values;
+    }
+
+    ConfigValue ConfigManager::getSection(const std::string_view sectionPrefix) const
+    {
+        const auto currentData = m_data.load(std::memory_order_acquire);
+
+        std::string prefix(sectionPrefix);
+        // 末尾必须带上分隔符：否则 "server" 会把 "serverSide.x" 这类同前缀段也捞进来
+        prefix.push_back('.');
+
+        std::vector<SectionEntry> entries;
+        for (const auto &[key, value]: currentData->values)
+        {
+            if (!key.starts_with(prefix))
+            {
+                continue;
+            }
+            // 视图指向快照里的键，本次调用期间 currentData 一直持有，视图始终有效
+            entries.push_back(SectionEntry{std::string_view(key).substr(prefix.size()), &value});
+        }
+
+        // 一段都没配属于正常情形：返回空对象让消费方走默认值，而不是抛异常
+        if (entries.empty())
+        {
+            return ConfigValue(FormatValueObject{});
+        }
+        return ConfigValue(buildNestedObject(entries));
     }
 
     std::vector<std::string> ConfigManager::loadedFiles() const

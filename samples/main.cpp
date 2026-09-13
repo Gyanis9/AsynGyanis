@@ -11,6 +11,8 @@
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/Sinks/LogSink.h"
+#include "Base/Config/ConfigManager.h"
+#include "Base/Exception/Exception.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Socket/InetAddress.h"
@@ -19,7 +21,9 @@
 #include "Core/Coroutine/ThreadPool.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
+#include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/HttpsServer.h"
+#include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
@@ -105,6 +109,12 @@ namespace
 
 int main(int argc, char **argv)
 {
+    // 日志先于一切就绪：--help 的用法说明、参数/配置错误的原因都从这里出去。
+    // 放到后面会让这些早于装配完成的输出落进没有 sink 的根记录器，直接消失
+    auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
+    rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
+    rootLogger.setLevel(Base::LogLevel::Debug);
+
     std::string host     = "localhost";
     uint16_t    port     = 8080;
     unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
@@ -114,6 +124,7 @@ int main(int argc, char **argv)
     bool        exposeMetrics = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
+    std::string configFile;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -135,18 +146,65 @@ int main(int argc, char **argv)
             certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
             keyFile = argv[++i];
+        else if (arg == "--config" && i + 1 < argc)
+            configFile = argv[++i];
         else if (arg == "--help")
         {
             LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
             LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
-            LOG_INFO("                  [--max-connections-per-ip N] [--metrics]");
+            LOG_INFO("                  [--max-connections-per-ip N] [--metrics] [--config <文件>]");
             LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
             LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
             LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
             LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
             LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
+            LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
+            LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
             return 0;
         }
+    }
+
+    // 配置优先级：命令行 > 配置文件 > 内置默认值。文件是「这台服务的常态配置」，
+    // 命令行是「这一次运行的临时改动」，临时改动优先
+    Net::HttpServerConfiguration configuration;
+    if (!configFile.empty())
+    {
+        // 整块都在 try 里：读文件、取段、校验任何一步失败都只让这次启动失败并说明原因。
+        // 配置错误不该把进程直接 abort 掉——那连一条可读的原因都留不下
+        try
+        {
+            if (!Base::ConfigManager::instance().loadFiles({configFile}).success)
+            {
+                LOG_ERROR_FMT("读取配置文件失败，服务未启动。路径：{}", configFile);
+                return 1;
+            }
+
+            // ConfigManager 内部按键的点分路径扁平存放，get() 取不到任何中间层节点，
+            // getSection() 才把 server 段还原成嵌套对象。读取器要的是「以 server 为根的文档」，
+            // 这里补上段名这一层外壳：它只认文档结构，不关心配置来自文件还是内存
+            Base::ConfigObject document;
+            document.emplace(std::string(Net::kHttpServerConfigSection),
+                             Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
+            configuration = Net::readHttpServerConfiguration(Base::ConfigValue(std::move(document)));
+        } catch (const std::exception &configurationException)
+        {
+            LOG_ERROR_FMT("配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
+            return 1;
+        }
+        LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}",
+                     configFile, configuration.maximumConnections, configuration.maximumConnectionsPerIp,
+                     configuration.requestsPerSecond, configuration.rateLimitBurstCapacity,
+                     configuration.exposeMetrics ? "开" : "关");
+    }
+
+    // 命令行覆盖：显式给出的开关优先于文件里的同名项
+    if (maxConnectionsPerIp > 0)
+    {
+        configuration.maximumConnectionsPerIp = maxConnectionsPerIp;
+    }
+    if (exposeMetrics)
+    {
+        configuration.exposeMetrics = true;
     }
 
     // h2c 说的是明文连接；TLS 上的 h2 由 ALPN 协商决定，不需要（也不该）用这个开关
@@ -164,10 +222,6 @@ int main(int argc, char **argv)
 #ifndef _WIN32
     std::signal(SIGPIPE, SIG_IGN);
 #endif
-
-    auto &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
-    rootLogger.addSink(std::make_unique<Base::ConsoleSink>());
-    rootLogger.setLevel(Base::LogLevel::Debug);
 
     const char *proto = useHttps ? "https" : "http";
     LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={}", proto, host, port, threads);
@@ -197,10 +251,19 @@ int main(int argc, char **argv)
     // 监听器，若每个服务器各持一份计数，单个来源的实际上限会乘上监听器数量，限额等于失效。
     // 未配置时留空指针，setPerIpConnectionLimiter(nullptr) 表示不作该限制
     std::shared_ptr<Net::PerIpConnectionLimiter> perIpConnectionLimiter;
-    if (maxConnectionsPerIp > 0)
+    if (configuration.maximumConnectionsPerIp > 0)
     {
-        perIpConnectionLimiter = std::make_shared<Net::PerIpConnectionLimiter>(maxConnectionsPerIp);
-        LOG_INFO_FMT("Per-IP connection limit: {} (shared by all {} listener(s))", maxConnectionsPerIp, actualThreads);
+        perIpConnectionLimiter = std::make_shared<Net::PerIpConnectionLimiter>(configuration.maximumConnectionsPerIp);
+        LOG_INFO_FMT("单来源并发上限 {}（所有 {} 个监听器共享同一份计数）", configuration.maximumConnectionsPerIp, actualThreads);
+    }
+
+    // 限流桶同样只有一份：它要的正是「进程级全局 RPS 上限」，各持一份等于上限乘以监听器数
+    std::shared_ptr<Net::TokenBucket> rateLimitBucket;
+    if (configuration.requestsPerSecond > 0.0)
+    {
+        rateLimitBucket = std::make_shared<Net::TokenBucket>(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
+        LOG_INFO_FMT("全局限流 {} 请求/s（桶容量 {}，所有监听器共享同一个桶）", configuration.requestsPerSecond,
+                     configuration.rateLimitBurstCapacity);
     }
 
     if (useHttps)
@@ -212,6 +275,13 @@ int main(int argc, char **argv)
 
             setupRoutes(server->router());
             server->setPerIpConnectionLimiter(perIpConnectionLimiter);
+            server->setMaxConnections(configuration.maximumConnections);
+            server->setLimits(configuration.limits);
+            server->setParserLimits(configuration.parserLimits);
+            if (rateLimitBucket != nullptr)
+            {
+                server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+            }
 
             auto task = server->start();
             loop.scheduler().schedule(task.handle());
@@ -228,6 +298,13 @@ int main(int argc, char **argv)
 
             setupRoutes(server->router());
             server->setPerIpConnectionLimiter(perIpConnectionLimiter);
+            server->setMaxConnections(configuration.maximumConnections);
+            server->setLimits(configuration.limits);
+            server->setParserLimits(configuration.parserLimits);
+            if (rateLimitBucket != nullptr)
+            {
+                server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+            }
 
             // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
             if (useHttp2Cleartext)
@@ -236,7 +313,7 @@ int main(int argc, char **argv)
             }
 
             // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
-            if (exposeMetrics)
+            if (configuration.exposeMetrics)
             {
                 server->enableMetricsEndpoint();
                 server->enableHealthEndpoint();

@@ -268,6 +268,19 @@ namespace AsynGyanis::Base
         [[nodiscard]] ConfigKeyValueMap dump() const;
 
         /**
+         * @brief 取出某一段配置并还原成嵌套对象。
+         * @details 内部按键的点号路径扁平存放（见 dump()），本方法把 sectionPrefix 下所有键的
+         *          剩余路径重新聚成嵌套对象，供只认文档结构的消费方（如
+         *          Net::readHttpServerConfiguration）直接使用。段名本身不是键（get("server")
+         *          只会抛「键不存在」），要拿到整段取值只有这一条路径。
+         * @param sectionPrefix 段名，如 "server"
+         * @return ConfigValue **该段自身**的对象副本（结果里不含段名这一层，即返回值的键是
+         *         "port" 而不是 "server.port"）；没有任何键落在该段时返回空对象，消费方可
+         *         据此走默认值。返回的是脱离快照的副本，热重载不会改写已取走的这一份
+         */
+        [[nodiscard]] ConfigValue getSection(std::string_view sectionPrefix) const;
+
+        /**
          * @brief 获取当前已加载文件列表。
          * @return std::vector<std::string> 文件路径列表。
          */
