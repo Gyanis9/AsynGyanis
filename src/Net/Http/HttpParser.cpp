@@ -738,6 +738,10 @@ namespace AsynGyanis::Net
         } else if (equalsIgnoringCase(name, "transfer-encoding") && !appendTransferEncodingValue(value))
         {
             return false;
+        } else if (equalsIgnoringCase(name, "expect"))
+        {
+            // 只记「对端在等 100」这一件事：头部收齐、正文未收时由 takeContinueRequest() 一次性交给上层
+            m_hasContinueExpectation = isContinueExpected(value);
         }
 
         m_headers.push_back(ParsedHeader{std::string(name), std::string(value)});
@@ -950,6 +954,26 @@ namespace AsynGyanis::Net
         clearMessageScratch();
     }
 
+    bool HttpParser::takeContinueRequest() noexcept
+    {
+        if (!m_hasContinueExpectation || m_hasTakenContinue)
+        {
+            return false;
+        }
+
+        // 「正文还没收完」的四种阶段：定长正文、分块的大小行/块数据/块尾 CRLF。
+        // Trailer 阶段正文已经收完（对端不再等本端表态），Complete/Failed 同理
+        const bool isRequestBodyPending = m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData
+                                          || m_stage == Stage::ChunkDataTerminator;
+        if (!isRequestBodyPending)
+        {
+            return false;
+        }
+
+        m_hasTakenContinue = true;
+        return true;
+    }
+
     void HttpParser::clearMessageScratch() noexcept
     {
         m_method = HttpMethod::UNKNOWN;
@@ -963,6 +987,11 @@ namespace AsynGyanis::Net
         m_headerFieldCount   = 0;
         m_headerBlockLength  = 0;
         m_hasContentLength   = false;
+
+        // 100-continue 的两项也随报文一起清：跨报文复用解析器时，上一条的「等 100」不能让
+        // 下一条报文被多回一个 100
+        m_hasContinueExpectation = false;
+        m_hasTakenContinue       = false;
 
         // 分块解码的进度必须与正文一起清空：跨报文复用同一个解析器对象时，残留的
         // 「当前块剩余字节」会把下一条报文的正文按上一条的块边界切开

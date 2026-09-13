@@ -274,10 +274,18 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        /// 取该流上 HEADERS + 后续 CONTINUATION 拼出的响应头块（响应头很小，通常一帧到底）
-        std::string responseHeaderBlock(const std::vector<Http2Frame> &frames, const std::uint32_t streamId)
+        /**
+         * @brief 取该流上第 blockIndex 个头块（HEADERS + 其后续 CONTINUATION 拼起来）
+         * @param frames 已解出的帧
+         * @param streamId 目标流号
+         * @param blockIndex 第几个头块，从 0 起；一条流上可能有多个（例如先 100 再 200）
+         * @return std::string 头块字节；不足那么多个时返回空串
+         */
+        std::string responseHeaderBlock(const std::vector<Http2Frame> &frames, const std::uint32_t streamId,
+                                        const std::size_t blockIndex = 0)
         {
             std::string headerBlock;
+            std::size_t blockCount = 0;
             bool isCollecting = false;
             for (const Http2Frame &frame: frames)
             {
@@ -287,10 +295,15 @@ namespace AsynGyanis::Net
                 }
                 if (frame.header.type == Http2FrameType::Headers)
                 {
-                    isCollecting = true;
+                    isCollecting = blockCount == blockIndex;
                 }
                 if (!isCollecting)
                 {
+                    // 还没轮到目标头块：数到它为止（每个头块以 END_HEADERS 收尾）
+                    if (frame.header.type == Http2FrameType::Headers && (frame.header.flags & kHttp2FlagEndHeaders) != 0)
+                    {
+                        ++blockCount;
+                    }
                     continue;
                 }
                 if (frame.header.type == Http2FrameType::Headers || frame.header.type == Http2FrameType::Continuation)
@@ -329,11 +342,11 @@ namespace AsynGyanis::Net
          * @return std::string 头值；取不到时为空串
          */
         std::string findResponseHeaderValue(HpackDecoder &decoder, const std::vector<Http2Frame> &frames, const std::uint32_t streamId,
-                                           const std::string_view name)
+                                           const std::string_view name, const std::size_t blockIndex = 0)
         {
             std::vector<HpackHeaderField> headerFields;
             std::string errorText;
-            if (!decoder.decode(responseHeaderBlock(frames, streamId), headerFields, &errorText))
+            if (!decoder.decode(responseHeaderBlock(frames, streamId, blockIndex), headerFields, &errorText))
             {
                 return {};
             }
@@ -1157,6 +1170,87 @@ namespace AsynGyanis::Net
                                          return hasEndStream(receivedFrames, 1U);
                                      },
                                      kWaitTimeout)) << "隧道没有按 Close 收尾";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：h2 上对端声明 Expect: 100-continue 时，本端在收到正文之前先发一个 100 的 HEADERS
+     * @details 与 h1 同一条规范（RFC 9110 §10.1.1），只是承载换成 HEADERS（:status 100）且不带 END_STREAM；
+     *          客户端据此才肯发正文，否则要等自己的超时
+     */
+    TEST(Http2CleartextSession, AnswersContinueBeforeTheBodyArrives)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
+        {
+            router.post("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            {
+                response.setBody("received-" + std::to_string(request.body().size()));
+                co_return;
+            });
+        }, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 请求头带 expect，正文（DATA）留到看到 100 之后再发
+        std::string headerBlock = makePostRequestHeaderBlock("/upload");
+        headerBlock += hpackLiteralField("content-length", "5");
+        headerBlock += hpackLiteralField("expect", "100-continue");
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到 100（响应头）";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 0), "100")
+                << "先到的应当是 100，而不是最终状态码";
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+            {
+                EXPECT_EQ(frame.header.flags & kHttp2FlagEndStream, 0) << "100 不能带 END_STREAM：正文还没到";
+                break;
+            }
+        }
+
+        // 补上正文：本端照常路由并以 200 + 回显正文收尾
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = "12345"}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "补正文之后没有拿到最终响应";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 1), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "received-5");
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";

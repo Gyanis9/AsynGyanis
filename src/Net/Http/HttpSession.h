@@ -695,6 +695,17 @@ namespace AsynGyanis::Net
 
                 if (status == ParseStatus::NeedMore)
                 {
+                    // RFC 9110 §10.1.1：对端声明了 Expect: 100-continue 时可能在头部之后停下等本端表态。
+                    // 解析器把「头部已收齐、正文待收」合成一次性信号交出来，这里立刻回 100（每条报文一次），
+                    // 否则对端要白等到自己的超时（curl 是 1 秒）才肯发正文
+                    if (parser.takeContinueRequest())
+                    {
+                        static constexpr std::string_view kContinueResponse = "HTTP/1.1 100 Continue\r\n\r\n";
+                        if (!co_await sendResponse(kContinueResponse, {}))
+                        {
+                            co_return;
+                        }
+                    }
                     continue;
                 }
 

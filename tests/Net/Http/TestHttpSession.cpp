@@ -697,6 +697,38 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
 
+    /**
+     * @brief 钉住：对端声明 Expect: 100-continue 时，本端在**读到正文之前**先回 100（RFC 9110 §10.1.1）
+     * @details 客户端（curl 等）会在头部之后停下等这个 100；本端若等正文才应答，对端只能白等到自己的
+     *          超时（curl 默认 1 秒）再发正文——这条用例把「100 先于正文」钉成契约
+     */
+    TEST(HttpSession, AnswersContinueBeforeTheBodyArrives)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        fixture.router().post("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+        {
+            response.setBody("received-" + std::to_string(request.body().size()));
+            co_return;
+        });
+
+        // 只发头部（含 expect），正文留到看到 100 之后再发——这正是真实客户端的行为
+        ASSERT_TRUE(fixture.writeRequest(
+                "POST /upload HTTP/1.1\r\nhost: test\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n"));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "没有在读到正文之前回 100：上界 kWaitTimeout";
+        EXPECT_NE(responseText.find("100 Continue"), std::string::npos) << responseText;
+
+        // 补上正文：本端随后照常路由并应答
+        ASSERT_TRUE(fixture.writeRequest("12345"));
+        EXPECT_TRUE(awaitResponseLines(fixture, responseText, 2, kWaitTimeout)) << "补正文之后没有拿到最终应答";
+        EXPECT_NE(responseText.find("received-5"), std::string::npos) << responseText;
+
+        EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
     TEST(HttpSession, AnswersTwoRoundsOnOneKeptAliveConnection)
     {
         HttpSessionFixture fixture;

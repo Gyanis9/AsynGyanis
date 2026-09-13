@@ -22,6 +22,17 @@
 namespace AsynGyanis::Net
 {
     /**
+     * @brief 判定 Expect 头部是否在等 `100-continue`（RFC 9110 §10.1.1）
+     *
+     * @details 取值是逗号分隔的 token 列表（大小写不敏感），因此 `100-Continue`、`100-continue, foo`
+     *          都算命中。h1 的解析器与 h2 的会话共用这一份判定：同一条规范语义只留一个出处，
+     *          两处不会各自漂移。
+     * @param expectHeaderValue Expect 头部的值；对端没给这个头时传空串
+     * @return true 对端声明了 100-continue：本端应在读正文之前先回一个 100（或不等正文就回最终状态）
+     */
+    [[nodiscard]] bool isContinueExpected(std::string_view expectHeaderValue) noexcept;
+
+    /**
      * @brief HTTP 请求数据对象
      *
      * @details 存储解析后的 HTTP 请求内容：方法、URI、版本、头部、正文与路由参数。

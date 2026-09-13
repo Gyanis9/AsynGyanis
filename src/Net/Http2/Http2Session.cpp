@@ -423,7 +423,25 @@ namespace AsynGyanis::Net
                 pending.isRemoteEndStream = true;
             }
             pending.request = mapToHttpRequest(http2Request);
+            // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
+            // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串
+            const bool isContinueRequested =
+                    http2Request.hasBody && isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
             m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
+
+            // RFC 9110 §10.1.1 在 h2 上的等价物：对端声明了 Expect: 100-continue 且还有正文要发时，
+            // 先回一个 100 的 HEADERS（不带 END_STREAM），免得对端等到自己的超时才发正文
+            if (isContinueRequested)
+            {
+                std::string continueErrorText;
+                const Http2ResponseSendStatus continueStatus =
+                        m_connection.sendResponseHeaders(http2Request.streamId, 100U, {}, false, &continueErrorText);
+                if (continueStatus != Http2ResponseSendStatus::Sent)
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的 100 Continue 未能排入待发字节。原因：{}", http2Request.streamId,
+                                  continueErrorText);
+                }
+            }
         }
     }
 

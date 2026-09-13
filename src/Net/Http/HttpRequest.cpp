@@ -8,6 +8,50 @@
 
 namespace AsynGyanis::Net
 {
+    bool isContinueExpected(const std::string_view expectHeaderValue) noexcept
+    {
+        // RFC 9110 §10.1.1 只定义了一个期望值 100-continue；取值是逗号分隔的 token 列表，大小写不敏感
+        constexpr std::string_view kContinueToken = "100-continue";
+        std::size_t tokenStart = 0;
+        while (tokenStart <= expectHeaderValue.size())
+        {
+            const std::size_t commaIndex = expectHeaderValue.find(',', tokenStart);
+            const std::size_t tokenEnd = commaIndex == std::string_view::npos ? expectHeaderValue.size() : commaIndex;
+            std::string_view token = expectHeaderValue.substr(tokenStart, tokenEnd - tokenStart);
+            // 逐个 token 去掉首尾空白（OWS 只可能是 SP / HTAB）
+            while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
+            {
+                token.remove_prefix(1);
+            }
+            while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
+            {
+                token.remove_suffix(1);
+            }
+            if (token.size() == kContinueToken.size())
+            {
+                bool isMatched = true;
+                for (std::size_t index = 0; index < token.size(); ++index)
+                {
+                    if (std::tolower(static_cast<unsigned char>(token[index])) != kContinueToken[index])
+                    {
+                        isMatched = false;
+                        break;
+                    }
+                }
+                if (isMatched)
+                {
+                    return true;
+                }
+            }
+            if (commaIndex == std::string_view::npos)
+            {
+                break;
+            }
+            tokenStart = commaIndex + 1;
+        }
+        return false;
+    }
+
     namespace
     {
         // 同名普通头部合并时的分隔符，与 RFC 7230 §3.2.2 给出的字段值列表形式一致

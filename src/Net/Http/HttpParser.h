@@ -116,6 +116,19 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isLimitExceeded() const;
 
         /**
+         * @brief 取走「本端现在该回一个 100 Continue 了」这一次信号（同一条报文只给一次）
+         *
+         * @details 用于实现 RFC 9110 §10.1.1 的 `Expect: 100-continue`：对端可能在头部之后就停下等
+         *          本端表态，而解析器此时仍返回 NeedMore（正文还没到）。本方法把「头部已收齐、
+         *          正文待收、且对端声明了 100-continue、且这条报文还没被取过」四件事合起来判一次，
+         *          取过即置位，因此调用方（会话）不必自己记「这条报文回过 100 没有」。
+         * @return true 本次调用是这条报文的第一次、且当前正处在该回 100 的时机
+         * @note 只有走到「头部区收齐且正文未收齐」这一阶段才可能返回 true；报文收齐后、失败态、
+         *       reset() 之后一律 false
+         */
+        [[nodiscard]] bool takeContinueRequest() noexcept;
+
+        /**
          * @brief 获取错误信息描述（若有）。
          * @return 面向使用者的中文错误文本；无错误时为空串
          */
@@ -307,6 +320,12 @@ namespace AsynGyanis::Net
         std::size_t m_headerFieldCount{0};     ///< 已解析头部条数
         std::size_t m_headerBlockLength{0};    ///< 头部块净字节数，只算名与值，不含 ": " 与 CRLF
         bool        m_hasContentLength{false}; ///< 是否已见过 Content-Length（用于比对重复值）
+
+        /// 对端是否声明了 Expect: 100-continue（RFC 9110 §10.1.1）：头部收齐、正文待收时该回一个 100
+        bool m_hasContinueExpectation{false};
+
+        /// 本条报文的这个 100 是否已经交给上层（同一条报文只给一次，见 takeContinueRequest()）
+        bool m_hasTakenContinue{false};
 
         /// 是否已见过 Transfer-Encoding：与 Content-Length 互斥，两者并存当场判错
         bool m_hasTransferEncoding{false};
