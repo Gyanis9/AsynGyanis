@@ -29,6 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 发布版本号一致性：CMake 的 project(VERSION)、CHANGELOG 最新发布段、最新标签必须一致。
+      # 单跑一条命令、不依赖构建，放在最前面，好让版本漂移在几分钟的构建之前就暴露出来
+      - name: 校验发布版本号（CMake / CHANGELOG / 标签）
+        run: |
+          git fetch --tags --force --quiet
+          python3 scripts/check-release-version.py
+
       - name: 缓存 Conan 依赖
         uses: actions/cache@v4
         with:
