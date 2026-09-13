@@ -25,16 +25,20 @@ namespace AsynGyanis::Base
         std::lock_guard lock(m_mutex);
         std::string     formatted = formatEvent(event);
         // 换行并入同一缓冲后整行只做一次 <<：流插入每次都要构造 sentry（锁一次流缓冲，
-        // 并冲刷被 tie 的流，std::cerr 还恒为 unitbuf），合并后只有一轮加锁与一轮刷新，
-        // 唯一一次插入在行末结束，cerr 的 sentry 析构仍在整行写完后刷新，刷新时机与
-        // 逐字节输出都不变。std::format 结果串的容量通常大于长度，追加换行基本不产生新分配
+        // 并冲刷被 tie 的流），合并后只有一轮加锁与一轮刷新，逐字节输出不变。
+        // std::format 结果串的容量通常大于长度，追加换行基本不产生新分配
         formatted.push_back('\n');
         if (event.level >= LogLevel::Warn)
         {
+            // std::cerr 恒为 unitbuf：整行写出即落地，无需额外刷新
             std::cerr << formatted;
         } else
         {
+            // 每条刷新：重定向到文件或管道时 std::cout 是全缓冲，不刷就 tail 不到实时内容，
+            // 异常退出还会把尾部留在缓冲里丢掉（实测 +1 µs/行，Release /O2）；
+            // 换来的是「write() 返回时这一行已经落地」
             std::cout << formatted;
+            std::cout.flush();
         }
     }
 

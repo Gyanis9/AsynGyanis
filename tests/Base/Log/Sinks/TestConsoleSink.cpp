@@ -1,6 +1,6 @@
 /**
  * @file TestConsoleSink.cpp
- * @brief ConsoleSink 单元测试：控制台写入安全性、等级到流的分流与彩色开关切换
+ * @brief ConsoleSink 单元测试：控制台写入安全性、等级到流的分流、写出即刷新与彩色开关切换
  * @author Gyanis
  * @date 2026-09-10
  * @version 1.0.0
@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <iostream>
+#include <streambuf>
 #include <string>
 #include <thread>
 #include <utility>
@@ -117,6 +119,94 @@ namespace AsynGyanis::Base
             mutable bool        m_finished{false}; ///< 捕获是否已归还
             mutable std::string m_stdOut;          ///< 捕获到的标准输出
             mutable std::string m_stdErr;          ///< 捕获到的标准错误
+        };
+
+        /**
+         * @brief 只统计刷新次数的流缓冲
+         *
+         * @details `std::flush` 走 `rdbuf()->pubsync()`，因此把标准流临时挂到本缓冲上就能观测
+         *          「write() 返回前是否真的刷过」；写出的字节一概丢弃，用例只关心刷新时机。
+         */
+        class SyncCountingBuffer : public std::streambuf
+        {
+        public:
+            /**
+             * @brief 已发生的刷新次数
+             * @return std::size_t 次数
+             */
+            [[nodiscard]] std::size_t syncCount() const noexcept
+            {
+                return m_syncCount;
+            }
+
+        protected:
+            /**
+             * @brief 重写 std::streambuf::sync()：只记账
+             * @return int 0 表示成功
+             */
+            int sync() override
+            {
+                ++m_syncCount;
+                return 0;
+            }
+
+            /**
+             * @brief 重写 std::streambuf::xsputn()：吞掉字节并报告已写出
+             * @param characters 待写缓冲（不使用）
+             * @param count 字节数
+             * @return std::streamsize 已写出的字节数
+             */
+            std::streamsize xsputn(const char *characters, const std::streamsize count) override
+            {
+                static_cast<void>(characters);
+                return count;
+            }
+
+            /**
+             * @brief 重写 std::streambuf::overflow()：吞掉单个字节
+             * @param character 待写字符
+             * @return int 原样返回表示成功
+             */
+            int overflow(const int character) override
+            {
+                return character;
+            }
+
+        private:
+            std::size_t m_syncCount{0}; ///< 累计刷新次数
+        };
+
+        /**
+         * @brief 把某个标准流临时改挂到给定缓冲，析构时还原原缓冲
+         */
+        class ScopedStreamRedirect
+        {
+        public:
+            /**
+             * @brief 改挂流缓冲
+             * @param stream 目标标准流（std::cout 或 std::cerr）
+             * @param buffer 临时缓冲，须活过本对象
+             */
+            ScopedStreamRedirect(std::ostream &stream, std::streambuf *buffer) :
+                m_stream(stream), m_original(stream.rdbuf(buffer))
+            {
+            }
+
+            /**
+             * @brief 析构时还原原缓冲，避免影响其它用例
+             */
+            ~ScopedStreamRedirect()
+            {
+                m_stream.rdbuf(m_original);
+            }
+
+            ScopedStreamRedirect(const ScopedStreamRedirect &) = delete;
+
+            ScopedStreamRedirect &operator=(const ScopedStreamRedirect &) = delete;
+
+        private:
+            std::ostream   &m_stream;   ///< 被改挂的标准流
+            std::streambuf *m_original; ///< 原缓冲，析构时还原
         };
 
         /**
@@ -240,6 +330,36 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(capture.stdErr(), "route_fatal")) << capture.stdErr();
         EXPECT_TRUE(capture.stdOut().empty()) << capture.stdOut();
         EXPECT_EQ(capture.stdErrLineCount(), 3u);
+    }
+
+    // ============================================================================
+    // 写出即刷新
+    // ============================================================================
+
+    TEST(ConsoleSink, WriteFlushesBelowWarnLevelsBeforeReturning)
+    {
+        // 钉住：低于 Warn 的等级写 std::cout，且 write() 返回时这一行已经刷出。重定向到文件或
+        // 管道时 std::cout 是全缓冲，不刷就 tail 不到实时内容，进程异常退出还会把尾部丢掉
+        SyncCountingBuffer   buffer;
+        ScopedStreamRedirect redirect(std::cout, &buffer);
+        ConsoleSink          sink(false);
+
+        sink.write(makeEvent(LogLevel::Info, "flush_on_write"));
+
+        EXPECT_EQ(buffer.syncCount(), 1u) << "Info 级别的记录没有在 write() 内刷新";
+    }
+
+    TEST(ConsoleSink, WriteFlushesWarnLevelsBeforeReturning)
+    {
+        // Warn 及以上走 std::cerr，它恒为 unitbuf、整行写出即落地；与上一条合起来构成
+        // 「write() 返回时该行已落地」这条契约的两条实现路径
+        SyncCountingBuffer   buffer;
+        ScopedStreamRedirect redirect(std::cerr, &buffer);
+        ConsoleSink          sink(false);
+
+        sink.write(makeEvent(LogLevel::Error, "flush_on_write"));
+
+        EXPECT_EQ(buffer.syncCount(), 1u) << "Error 级别的记录没有在 write() 内刷新";
     }
 
     // ============================================================================
