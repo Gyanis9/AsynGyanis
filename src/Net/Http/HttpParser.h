@@ -101,6 +101,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t consumedByteCount() const;
 
         /**
+         * @brief 取本条请求目前已攒下的正文字节数
+         *
+         * @details 正文是**边收边攒**的（见 parse() 的正文阶段），收齐之前调用方看不到它：
+         *          request() 要等 Done 才拿到正文。全局内存预算必须在收的过程中就判，否则等
+         *          看见时内存已经占住了，因此这里单开一个「当前攒了多少」的读数。
+         *          分块传输按解码后的字节数计，与 maximumBodySize 的口径一致。
+         * @return std::size_t 已攒下的正文字节数；Done 之后正文已移交 request()，此处回到 0
+         */
+        [[nodiscard]] std::size_t bufferedBodyByteCount() const noexcept;
+
+        /**
          * @brief 检查解析器是否处于错误状态。
          * @return true 表示发生过错误（含超出资源上限），false 表示无错误
          */

@@ -72,7 +72,8 @@ namespace AsynGyanis::Net
     HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
                              std::shared_ptr<HttpMetricsCollector> metrics,
                              std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
-                             HttpParserLimits parserLimits) :
+                             HttpParserLimits parserLimits,
+                             std::shared_ptr<HttpMemoryBudget> memoryBudget) :
         Core::Connection(std::move(socket)),
         m_router(router),
         // 解析器上限按值交给解析器并在构造时固定：本连接此后每条报文都按同一份尺子定界
@@ -82,7 +83,8 @@ namespace AsynGyanis::Net
         // 统计对象与生成器允许为空：这两种空值都表示「本会话不采集」，是明确的关闭语义，
         // 而不是待填补的缺省——因此不在构造里补一份新的，否则统计会散进没人读的对象里
         m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator))
+        m_requestIdGenerator(std::move(requestIdGenerator)),
+        m_memoryBudget(std::move(memoryBudget))
     {
         // 接收窗口不在这里分配：真正开始读之前它一直是空的，第一次读时按固定大小一次性分配
     }
@@ -122,7 +124,7 @@ namespace AsynGyanis::Net
         // 事务循环与 HTTPS 共用同一份模板实现，差别只在传输层对象、「连接是否存活」的谓词、
         // 限额配置与可选的采集端；把 *this 传进去是为了让循环按相位刷新本连接的空闲截止时间
         co_await detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate,
-                                          *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get());
+                                          *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get(), m_memoryBudget.get());
 
         // 不再在此处 close()：统一交给上面的守卫，正常路径与异常路径只有一处收口
         co_return;

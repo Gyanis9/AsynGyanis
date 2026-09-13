@@ -455,6 +455,11 @@ namespace AsynGyanis::Net
         return m_consumedByteCount;
     }
 
+    std::size_t HttpParser::bufferedBodyByteCount() const noexcept
+    {
+        return m_body.size();
+    }
+
     bool HttpParser::takeLine(const char *const data, const std::size_t length, std::size_t &consumed, std::string_view &line)
     {
         // 上一次慢路径交出去的视图按契约已经用完（调用方当场解析完），暂存可以清掉；

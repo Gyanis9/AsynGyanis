@@ -118,6 +118,7 @@ int main(int argc, char **argv)
     bool        useHttp2Cleartext = false;
     bool        exposeMetrics = false;
     bool        logJson = false; // 日志按 JSON Lines 输出，供采集端解析
+    std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
     bool        showUsage = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
@@ -141,6 +142,8 @@ int main(int argc, char **argv)
             exposeMetrics = true;
         else if (arg == "--log-json")
             logJson = true;
+        else if (arg == "--max-inflight-body" && i + 1 < argc)
+            maxInflightBodyBytes = static_cast<std::size_t>(std::stoull(argv[++i]));
         else if (arg == "--cert" && i + 1 < argc)
             certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
@@ -178,6 +181,8 @@ int main(int argc, char **argv)
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
+        LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
+        LOG_INFO("            超出的请求回 503，仅 HTTP 端可用（HTTPS 端暂未接入该预算）");
         LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
         LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
         return 0;
@@ -224,6 +229,14 @@ int main(int argc, char **argv)
     if (exposeMetrics)
     {
         configuration.exposeMetrics = true;
+    }
+
+    // --max-inflight-body 当前只接在明文 HTTP 端：HTTPS 侧的会话链（HttpsSession/Http2Session）
+    // 还没有接这份预算，静默忽略等于给人一个「开了但其实没生效」的假象，因此直接拒绝这种组合
+    if (useHttps && maxInflightBodyBytes > 0)
+    {
+        LOG_ERROR("--max-inflight-body 当前只对明文 HTTP 端生效，请去掉 --https 或改用限流/连接数限制");
+        return 1;
     }
 
     // h2c 说的是明文连接；TLS 上的 h2 由 ALPN 协商决定，不需要（也不该）用这个开关
@@ -285,6 +298,14 @@ int main(int argc, char **argv)
                      configuration.rateLimitBurstCapacity);
     }
 
+    // 在途正文预算同样只有一份：它要的是「整个进程的正文占用上限」，各监听器各持一份等于上限乘以监听器数
+    std::shared_ptr<Net::HttpMemoryBudget> inflightBodyBudget;
+    if (maxInflightBodyBytes > 0)
+    {
+        inflightBodyBudget = std::make_shared<Net::HttpMemoryBudget>(maxInflightBodyBytes);
+        LOG_INFO_FMT("在途正文总量上限 {} 字节（所有 {} 个监听器共享同一份账）", maxInflightBodyBytes, actualThreads);
+    }
+
     if (useHttps)
     {
         for (unsigned i = 0; i < actualThreads; ++i)
@@ -324,6 +345,9 @@ int main(int argc, char **argv)
             {
                 server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
             }
+
+            // 在途正文预算按整段「收正文 → 应答写完」记账，因此是服务器级配置而非连接级
+            server->setMemoryBudget(inflightBodyBudget);
 
             // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
             if (useHttp2Cleartext)

@@ -11,6 +11,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
@@ -225,6 +226,21 @@ namespace AsynGyanis::Net
          */
         void enableHealthEndpoint(std::string_view path = "/healthz");
 
+        /**
+         * @brief 设置本服务器的在途正文字节预算
+         *
+         * @details 单条报文的上限（`HttpParserLimits::maximumBodySize`）挡不住「很多条连接各压着一条大
+         *          正文」：清点总量需要一个跨连接的账，这就是本方法传进来的对象。超预算的新请求
+         *          回 503 并收口，把剩余额度留给已经收下正文的连接。
+         *
+         * @param memoryBudget 预算对象，空指针表示不做该限制
+         * @note 同一台服务器上的所有连接共用传进来的这一份账；多个监听器（多线程）之间也要共享
+         *       同一份，否则上限会随监听器数量成倍放大——与按 IP 限额同理
+         * @note 必须在 start() 之前调用：会话在构造时取走指针，运行期不再回看服务器
+         * @see HttpMemoryBudget
+         */
+        void setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget);
+
     private:
         /**
          * @brief 确保静态文件设置对象与 "*" 兜底路由已就绪（幂等）
@@ -240,5 +256,6 @@ namespace AsynGyanis::Net
         bool m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
+        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
     };
 } // namespace AsynGyanis::Net

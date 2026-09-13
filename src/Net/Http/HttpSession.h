@@ -14,6 +14,7 @@
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/Connection.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequestId.h"
@@ -78,7 +79,8 @@ namespace AsynGyanis::Net
         HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr,
                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                    HttpParserLimits parserLimits = {});
+                    HttpParserLimits parserLimits = {},
+                    std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
 
         /**
          * @brief 启动会话主协程：跑完整条保持活跃循环后关闭连接。
@@ -132,6 +134,7 @@ namespace AsynGyanis::Net
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，与服务器共享；空指针表示不落定 request-id
+        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务器及同服务器上的其它连接共享；空指针表示不受该预算约束
     };
 
     // ============================================================================
@@ -147,6 +150,78 @@ namespace AsynGyanis::Net
         /// 分块传输的终止块：零长度块加尾部空行，即「本条消息到此结束」（RFC 9112 §7.1）。
         /// 它同时就是 keep-alive 的消息边界，因此流式响应写完不必断开连接
         inline constexpr std::string_view kChunkedTerminator = "0\r\n\r\n";
+
+        /**
+         * @brief 本条连接当前占用的全局正文额度：只增不减地跟着正文累积，请求应答完再一次性归还
+         *
+         * @details 正文在内存里的存在期是「从开始收到应答写完」，因此额度也必须覆盖这一段：
+         *          收的过程中按增量补预留（`growTo()`），请求应答完成由调用方 `releaseAll()`，
+         *          而异常退出、提前 co_return、连接被强行关闭这些路径统一由析构兜底——
+         *          额度留在一个已经没人管的连接上，会把预算永久吃掉一块。
+         * @note 归还时点取「应答完成」而不是「解析器腾空正文」：解析器为复用会持有上一份正文到
+         *       下一条报文解析为止，那段区间不再计入（最多每条连接一份），换来的是不必把账
+         *       埋进解析器的生命周期里。真正要防的「很多条连接同时压着大正文」全部落在计费区间内。
+         */
+        class BodyBudgetReservation
+        {
+        public:
+            /**
+             * @brief 绑定一份全局预算
+             * @param budget 共享预算，空指针表示本服务器没有配预算（此后一切操作都是空操作）
+             */
+            explicit BodyBudgetReservation(HttpMemoryBudget *budget) noexcept :
+                m_budget(budget)
+            {
+            }
+
+            /**
+             * @brief 析构时归还尚未归还的额度
+             */
+            ~BodyBudgetReservation()
+            {
+                releaseAll();
+            }
+
+            BodyBudgetReservation(const BodyBudgetReservation &) = delete;
+
+            BodyBudgetReservation &operator=(const BodyBudgetReservation &) = delete;
+
+            /**
+             * @brief 把本连接的额度补到指定字节数
+             * @param totalBytes 需要占用的总字节数（已含此前预留的部分）
+             * @return true 已满足（含无预算、无需增加两种情况）
+             * @return false 增量超出全局剩余额度，本次调用未占用任何额度，调用方应当收口
+             */
+            [[nodiscard]] bool growTo(const std::size_t totalBytes) noexcept
+            {
+                if (m_budget == nullptr || totalBytes <= m_reservedBytes)
+                {
+                    return true;
+                }
+                if (!m_budget->tryReserve(totalBytes - m_reservedBytes))
+                {
+                    return false;
+                }
+                m_reservedBytes = totalBytes;
+                return true;
+            }
+
+            /**
+             * @brief 归还全部已占额度
+             */
+            void releaseAll() noexcept
+            {
+                if (m_budget != nullptr && m_reservedBytes != 0)
+                {
+                    m_budget->release(m_reservedBytes);
+                }
+                m_reservedBytes = 0;
+            }
+
+        private:
+            HttpMemoryBudget *m_budget{nullptr};   ///< 共享预算（非拥有），空指针表示无预算
+            std::size_t       m_reservedBytes{0};  ///< 本连接当前已占的字节数
+        };
 
         /**
          * @brief 把解析失败类别翻译成要发的 4xx 响应（状态码与正文全 ASCII）
@@ -475,7 +550,8 @@ namespace AsynGyanis::Net
                                        Core::Connection &connection,
                                        const HttpServerLimits &limits,
                                        HttpMetricsCollector *metrics = nullptr,
-                                       const HttpRequestIdGenerator *requestIdGenerator = nullptr)
+                                       const HttpRequestIdGenerator *requestIdGenerator = nullptr,
+                                       HttpMemoryBudget *memoryBudget = nullptr)
         {
             // 接收窗口里尚未交给解析器的字节数。窗口只用来「接住刚到的字节」：正文由解析器
             // 边收边存，跨读的半行也由解析器自己拼，因此这里永远是「窗口开头的一段」，
@@ -495,6 +571,9 @@ namespace AsynGyanis::Net
             // 响应对象按连接复用（每轮开头 reset）：容器容量跨请求保留，
             // 让「每条报文都重新长一遍头部容器」这笔开销消失
             HttpResponse response;
+
+            // 本连接占用的全局正文额度：收正文时逐次补，应答完归还，异常退出由它自己的析构兜底
+            BodyBudgetReservation bodyBudget(memoryBudget);
 
             // 连接被关停时把它转成本次请求的协作式取消：业务只认 request.cancelToken() 一处。
             // 只注册一次、覆盖整条连接：回调指向解析器内部那个按连接复用的请求对象，
@@ -682,6 +761,23 @@ namespace AsynGyanis::Net
 
                 // 契约：NeedMore 意味着本段输入已被全部消费。若一个字节都没消费却还要更多，
                 // 窗口就无法推进，这一轮会变成死循环——宁可当场报错，也不要静默转圈
+                // 全局在途正文预算：正文是一点点攒起来的，等收齐（Done）再判就晚了——那时内存
+                // 已经占住。这里每收一轮就按增量补预留，超预算立刻回 503 收口，
+                // 把剩余额度留给已经收下正文的那些连接
+                if (!bodyBudget.growTo(parser.bufferedBodyByteCount()))
+                {
+                    LOG_ERROR_FMT("HttpSession: 在途正文字节超出全局预算（已占 {} 字节），已回 503 并收口连接",
+                                  memoryBudget->reservedByteCount());
+
+                    response.reset();
+                    response.setStatus(503);
+                    response.setHeader("content-type", "text/plain; charset=utf-8");
+                    response.setHeader("retry-after", "1");
+                    response.setBody("服务繁忙，请稍后重试");
+                    co_await sendResponse(response.serializeHead(), response.body());
+                    co_return;
+                }
+
                 if (status == ParseStatus::NeedMore && consumedLength == 0)
                 {
                     throw Base::LogicException("HttpSession: 解析器未消费任何字节却要求更多输入，窗口无法推进");
@@ -741,6 +837,17 @@ namespace AsynGyanis::Net
                 // 而不是把空闲 keep-alive 连接也一并等满期限。任何提前 co_return 与异常展开
                 // 都会走到守卫析构，标记不会停留在「忙碌」上
                 const BusyScope busyScope(connection);
+
+                // 应答期间正文仍在内存里，回完这一轮才归还额度；异常与提前退出由函数级守卫兜底
+                struct BodyBudgetReleaseOnExit
+                {
+                    BodyBudgetReservation *reservation = nullptr; ///< 本连接占用的额度
+
+                    ~BodyBudgetReleaseOnExit()
+                    {
+                        reservation->releaseAll();
+                    }
+                } releaseBodyBudgetOnExit{&bodyBudget};
 
                 // 统计口径以「收到完整请求」为界：耗时从这里算到响应发完，条数在这里累加；
                 // 时钟取一次、本轮复用，避免起止两点各取一次时钟引入偏差

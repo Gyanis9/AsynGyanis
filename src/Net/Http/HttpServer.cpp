@@ -1,5 +1,7 @@
 #include "Net/Http/HttpServer.h"
 
+#include "Net/Http/HttpMemoryBudget.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
@@ -866,7 +868,8 @@ namespace AsynGyanis::Net
         {
             return std::make_shared<Http2Session>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
         }
-        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
+        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
+                                             m_memoryBudget);
     }
 
     void HttpServer::setHttp2CleartextEnabled(const bool enabled) noexcept
@@ -1021,6 +1024,12 @@ namespace AsynGyanis::Net
     HttpServerLimits HttpServer::limits() const
     {
         return *m_limits;
+    }
+
+    void HttpServer::setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget)
+    {
+        // 共享指针按值存：预算跨连接、跨监听器共用一份账，持有者什么时候撒手都不影响在途会话
+        m_memoryBudget = std::move(memoryBudget);
     }
 
     void HttpServer::setParserLimits(HttpParserLimits limits)
