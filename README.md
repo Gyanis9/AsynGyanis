@@ -25,6 +25,8 @@
 - **HTTPS** — TLS 握手 + HTTP over TLS
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点
+- **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
+  `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
 - **静态文件服务** — `staticFileDir()` 一行接入
 
 **数据（Database）**
@@ -111,11 +113,13 @@ ctest --test-dir build/debug --output-on-failure
 
 ## 运行示例
 
-`samples/echo_server` 随构建一起编译（每线程一个监听 socket）：
+`samples/echo_server` 随构建一起编译（默认每线程一个监听 socket）：
 
 ```bash
 ./build/debug/samples/echo_server --port 8080 --threads 4                 # HTTP
 ./build/debug/samples/echo_server --https --cert cert.pem --key key.pem   # HTTPS
+# 一个监听器 + N 个工作循环，靠用户态分发而非 SO_REUSEPORT（Windows 多线程请用这个）
+./build/debug/samples/echo_server --port 8080 --threads 4 --dispatch-accept
 ./build/debug/samples/echo_server --help                                  # 全部参数
 ```
 

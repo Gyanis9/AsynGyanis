@@ -15,6 +15,7 @@
 #include "Base/Config/ConfigManager.h"
 #include "Base/Exception/Exception.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Coroutine/Scheduler.h"
@@ -118,6 +119,7 @@ int main(int argc, char **argv)
     bool        useHttp2Cleartext = false;
     bool        exposeMetrics = false;
     bool        logJson = false; // 日志按 JSON Lines 输出，供采集端解析
+    bool        dispatchAccept = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
     std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
     bool        showUsage = false;
     std::string certificateFile = "cert.pem";
@@ -142,6 +144,8 @@ int main(int argc, char **argv)
             exposeMetrics = true;
         else if (arg == "--log-json")
             logJson = true;
+        else if (arg == "--dispatch-accept")
+            dispatchAccept = true;
         else if (arg == "--max-inflight-body" && i + 1 < argc)
             maxInflightBodyBytes = static_cast<std::size_t>(std::stoull(argv[++i]));
         else if (arg == "--cert" && i + 1 < argc)
@@ -181,6 +185,9 @@ int main(int argc, char **argv)
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
+        LOG_INFO("  --dispatch-accept 一个监听器 + N 个工作循环：连接由接受循环轮转交给工作循环服务；");
+        LOG_INFO("            不依赖 SO_REUSEPORT，因此 Windows 上开多线程也要用它（否则每个线程各绑一次同端口，");
+        LOG_INFO("            内核不会分摊，全部连接都压在其中一条监听器上）");
         LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
         LOG_INFO("            超出的请求回 503，明文与 HTTPS 两端都生效");
         LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
@@ -298,68 +305,109 @@ int main(int argc, char **argv)
         LOG_INFO_FMT("在途正文总量上限 {} 字节（所有 {} 个监听器共享同一份账）", maxInflightBodyBytes, actualThreads);
     }
 
-    if (useHttps)
+    // 按 --https 决定造哪种协议的服务器；返回基类指针，两条路径共用一套构造逻辑
+    const auto buildHttpServer = [&](Core::EventLoop &loop)
     {
+        auto server = std::make_unique<Net::HttpServer>(loop, *address);
+        setupRoutes(server->router());
+        server->setPerIpConnectionLimiter(perIpConnectionLimiter);
+        server->setMaxConnections(configuration.maximumConnections);
+        server->setLimits(configuration.limits);
+        server->setParserLimits(configuration.parserLimits);
+        server->setMemoryBudget(inflightBodyBudget);
+        if (rateLimitBucket != nullptr)
+        {
+            server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+        }
+
+        // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
+        if (useHttp2Cleartext)
+        {
+            server->setHttp2CleartextEnabled(true);
+        }
+
+        // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
+        if (configuration.exposeMetrics)
+        {
+            server->enableMetricsEndpoint();
+            server->enableHealthEndpoint();
+        }
+        return server;
+    };
+
+    const auto buildHttpsServer = [&](Core::EventLoop &loop)
+    {
+        auto server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
+        setupRoutes(server->router());
+        server->setPerIpConnectionLimiter(perIpConnectionLimiter);
+        server->setMaxConnections(configuration.maximumConnections);
+        server->setLimits(configuration.limits);
+        server->setParserLimits(configuration.parserLimits);
+        server->setMemoryBudget(inflightBodyBudget);
+        if (rateLimitBucket != nullptr)
+        {
+            server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+        }
+        return server;
+    };
+
+    const auto buildServer = [&](Core::EventLoop &loop) -> std::unique_ptr<Net::TcpServer>
+    {
+        return useHttps ? std::unique_ptr<Net::TcpServer>(buildHttpsServer(loop))
+                        : std::unique_ptr<Net::TcpServer>(buildHttpServer(loop));
+    };
+
+    // 每台服务器所属的循环下标：收尾要按「它自己的循环」投递停止/排水任务。分发模式下最后一台
+    // （只接受与派发的那台）与前面的工作循环不同循环，按下标猜会把任务投到别的线程上
+    std::vector<unsigned> serverLoopIndexes;
+    serverLoopIndexes.reserve(actualThreads + 1);
+
+    if (dispatchAccept)
+    {
+        // 接受分发：接受循环只接受与派发，连接对象与协议工作全落在工作循环上
+        auto distributor = std::make_shared<Core::ConnectionDistributor>();
         for (unsigned i = 0; i < actualThreads; ++i)
         {
-            auto &loop   = pool.eventLoop(i);
-            auto  server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
-
-            setupRoutes(server->router());
-            server->setPerIpConnectionLimiter(perIpConnectionLimiter);
-            server->setMaxConnections(configuration.maximumConnections);
-            server->setLimits(configuration.limits);
-            server->setParserLimits(configuration.parserLimits);
-            server->setMemoryBudget(inflightBodyBudget);
-            if (rateLimitBucket != nullptr)
-            {
-                server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
-            }
-
-            auto task = server->start();
-            loop.scheduler().schedule(task.handle());
-            acceptTasks.push_back(std::move(task));
-
-            servers.push_back(std::move(server));
+            std::unique_ptr<Net::TcpServer> worker = buildServer(pool.eventLoop(i));
+            Net::TcpServer *rawWorker = worker.get();
+            distributor->addWorker(pool.eventLoop(i),
+                                   [rawWorker](const int fileDescriptor)
+                                   {
+                                       rawWorker->adoptConnection(fileDescriptor);
+                                   });
+            servers.push_back(std::move(worker));
+            serverLoopIndexes.push_back(i);
         }
+
+        // 只接受的那一台：自己从不建连接，因此不需要协议侧配置，但要占用同一个监听地址
+        std::unique_ptr<Net::TcpServer> acceptor = buildServer(pool.eventLoop(0));
+        Core::Task<> acceptTask = acceptor->startAccepting(distributor);
+        pool.eventLoop(0).scheduler().schedule(acceptTask.handle());
+        acceptTasks.push_back(std::move(acceptTask));
+        servers.push_back(std::move(acceptor));
+        serverLoopIndexes.push_back(0);
+
+        LOG_INFO_FMT("Accept dispatch enabled: 1 acceptor + {} worker loop(s)", actualThreads);
     } else
     {
+#ifdef _WIN32
+        // Windows 没有 SO_REUSEPORT：多线程时每个线程各绑一次同端口，谁来收连接由系统决定（不可预期），
+        // 多数连接会压在其中一条监听器上。这里明说，免得把「多线程没提速」当成别的问题去查
+        if (actualThreads > 1)
+        {
+            LOG_WARN_FMT("Windows 上没有 SO_REUSEPORT：{} 个监听器绑同一端口，连接不会在内核层分摊；"
+                         "要多核扩展请加 --dispatch-accept",
+                         actualThreads);
+        }
+#endif
         for (unsigned i = 0; i < actualThreads; ++i)
         {
-            auto &loop   = pool.eventLoop(i);
-            auto  server = std::make_unique<Net::HttpServer>(loop, *address);
-
-            setupRoutes(server->router());
-            server->setPerIpConnectionLimiter(perIpConnectionLimiter);
-            server->setMaxConnections(configuration.maximumConnections);
-            server->setLimits(configuration.limits);
-            server->setParserLimits(configuration.parserLimits);
-            if (rateLimitBucket != nullptr)
-            {
-                server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
-            }
-
-            // 在途正文预算按整段「收正文 → 应答写完」记账，因此是服务器级配置而非连接级
-            server->setMemoryBudget(inflightBodyBudget);
-
-            // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
-            if (useHttp2Cleartext)
-            {
-                server->setHttp2CleartextEnabled(true);
-            }
-
-            // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
-            if (configuration.exposeMetrics)
-            {
-                server->enableMetricsEndpoint();
-                server->enableHealthEndpoint();
-            }
-
-            auto task = server->start();
-            loop.scheduler().schedule(task.handle());
+            std::unique_ptr<Net::TcpServer> server = buildServer(pool.eventLoop(i));
+            Core::Task<> task = server->start();
+            pool.eventLoop(i).scheduler().schedule(task.handle());
             acceptTasks.push_back(std::move(task));
-
             servers.push_back(std::move(server));
+            serverLoopIndexes.push_back(i);
         }
     }
 
@@ -389,7 +437,7 @@ int main(int argc, char **argv)
     for (std::size_t index = 0; index < servers.size(); ++index)
     {
         Core::Task<> stopTask = stopServerTask(*servers[index]);
-        pool.eventLoop(index).scheduler().scheduleRemote(stopTask.handle());
+        pool.eventLoop(serverLoopIndexes[index]).scheduler().scheduleRemote(stopTask.handle());
         shutdownTasks.push_back(std::move(stopTask));
     }
 
@@ -398,7 +446,7 @@ int main(int argc, char **argv)
     for (std::size_t index = 0; index < servers.size(); ++index)
     {
         Core::Task<> drainTask = drainServerTask(*servers[index], kShutdownDrainTimeout, remainingDrainCount);
-        pool.eventLoop(index).scheduler().scheduleRemote(drainTask.handle());
+        pool.eventLoop(serverLoopIndexes[index]).scheduler().scheduleRemote(drainTask.handle());
         shutdownTasks.push_back(std::move(drainTask));
     }
 
