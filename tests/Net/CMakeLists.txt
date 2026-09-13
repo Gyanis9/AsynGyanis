@@ -23,6 +23,9 @@ add_executable(TestNet
         Tcp/TestTcpStream.cpp
         Tcp/TestTcpAcceptor.cpp
         Tcp/TestTcpServer.cpp
+
+        WebSocket/TestWebSocketHandshake.cpp
+        WebSocket/TestWebSocketFrame.cpp
 )
 
 target_link_libraries(TestNet PRIVATE

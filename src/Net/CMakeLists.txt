@@ -3,6 +3,7 @@
 # ============================================================================
 # Http  报文解析、请求/响应对象、会话与服务器、路由与中间件、静态文件 MIME
 # Tcp   传输层骨架：监听套接字、带缓冲字节流、服务器基类
+# WebSocket  RFC 6455 握手计算/校验与帧编解码（协议机制，尚未接入会话）
 # 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 # ============================================================================
 
@@ -11,6 +12,7 @@ set_property(GLOBAL PROPERTY AsynGyanisNetSources "")
 
 add_subdirectory(Http)
 add_subdirectory(Tcp)
+add_subdirectory(WebSocket)
 
 get_property(NET_SOURCES GLOBAL PROPERTY AsynGyanisNetSources)
 
