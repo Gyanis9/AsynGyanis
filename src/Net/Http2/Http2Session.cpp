@@ -852,6 +852,12 @@ namespace AsynGyanis::Net
 
             absorbPendingRequests();
             refuseRequestsDuringTunnel(streamId);
+            // 503 是本轮中段才排进待发字节的，必须立刻写出：本轮开头那次写出已经在它之前发生，
+            // 若等下一段字节到达才发，被拒的对端会一直等到空闲超时（它正等着这条响应）
+            if (!co_await flushOutgoingBytes())
+            {
+                break;
+            }
         }
 
         // 收尾与 h1 阶段同一判据：协议错误按具体码收口，否则主动发正常关闭帧（本侧已收口时不补发）

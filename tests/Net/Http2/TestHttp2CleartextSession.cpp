@@ -1061,4 +1061,105 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }
+
+    /**
+     * @brief 钉住：隧道期间同连接其它流的请求回 503（本类的单驱动循环无法并发服务两条流），
+     *        且隧道本身照旧收尾
+     * @details 这是扩容隧道那条已知取舍的可观测契约：宁可明确拒绝，也不把请求晾到隧道结束
+     */
+    TEST(Http2CleartextSession, RefusesConcurrentRequestsWhileTunnelIsOpen)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
+        {
+            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.upgradeToWebSocket([](WebSocketPeer &peer) -> Core::Task<>
+                {
+                    while (true)
+                    {
+                        const std::optional<WebSocketMessage> message = co_await peer.receive();
+                        if (!message.has_value())
+                        {
+                            co_return;
+                        }
+                        if (!co_await peer.sendText(message->payload))
+                        {
+                            co_return;
+                        }
+                    }
+                });
+                co_return;
+            });
+        }, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 先立起隧道（流 1），再用流 3 发一条普通请求
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "隧道没有建立";
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 3U);
+                                     },
+                                     kWaitTimeout)) << "隧道期间的另一条流没有得到应答";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "503")
+                << "隧道期间其它流应当被明确拒绝，而不是晾着";
+
+        // 隧道本身不受影响：仍能收发帧，并在 Close 之后正常收尾
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "still-alive")}, 1U),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !responseDataPayload(receivedFrames, 1U).empty();
+                                     },
+                                     kWaitTimeout)) << "隧道在拒绝其它流之后失效了";
+        const std::pair<int, std::string> echoedFrame = parseServerFrame(responseDataPayload(frames, 1U));
+        EXPECT_EQ(echoedFrame.second, "still-alive");
+
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x8U, "")}, 1U),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "隧道没有按 Close 收尾";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
 } // namespace AsynGyanis::Net
