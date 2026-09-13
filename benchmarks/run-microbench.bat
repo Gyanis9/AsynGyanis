@@ -19,7 +19,9 @@ if not exist "%BENCH_PATH%" (
     exit /b 1
 )
 
-set RESULT_PATH=%REPOSITORY_ROOT%\build\microbench-%ASYN_BENCH_BUILD%.json
+rem The result JSON is a transient run artifact, so it goes to %TEMP% as well: build\
+rem only holds the debug/release build trees (see run-soak.bat for the same reasoning)
+set RESULT_PATH=%TEMP%\asyn-microbench-%ASYN_BENCH_BUILD%.json
 "%BENCH_PATH%" --json-out "%RESULT_PATH%"
 if errorlevel 1 (
     echo Microbenchmark self-check failed: some case did not take its success path.
