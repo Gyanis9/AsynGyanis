@@ -203,6 +203,17 @@ namespace AsynGyanis::Core
         [[nodiscard]] int fileDescriptor() const noexcept;
 
         /**
+         * @brief 交出描述符所有权（不搬事件注册）
+         *
+         * @details 用于把一条刚接受的连接转交给别的循环：调用方拿走描述符后必须立即接管，
+         *          本对象此后不再关闭它，也不再认为自己持有连接。
+         * @note **只允许在描述符尚未注册事件时调用**（刚 accept、还没读过写过的套接字正是这种状态）：
+         *       事件注册只存在于本对象的等待器里，跨循环搬不走，已注册的连接不能用这个方法移交。
+         * @return int 交出的描述符；本对象随即变为无效（fileDescriptor() 返回 -1），析构不再关闭它
+         */
+        [[nodiscard]] int releaseFileDescriptor() noexcept;
+
+        /**
          * @brief 设置 O_NONBLOCK 标志（通常创建时已设置，此处保留以备重新设置）
          */
         void setNonBlocking() const;

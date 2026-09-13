@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/ConnectionManager.h"
@@ -83,6 +84,32 @@ namespace AsynGyanis::Net
          *          （`EventLoop::scheduler().scheduleRemote()`），不要在外部线程直接调用。
          */
         void stop();
+
+        /**
+         * @brief 只接受、不在本循环建连接的接受循环：每条连接交给分发器指定的工作循环
+         *
+         * @details 解决 Windows 没有 SO_REUSEPORT 时的多核扩展：本循环只做 accept 与派发，
+         *          连接对象与生命周期都落在工作循环上。与 start() 共用同一份接受循环实现，
+         *          差别只在「拿到连接之后交给谁」。
+         * @param distributor 接收分发器，必须已经登记了至少一个工作循环
+         * @throws Base::Exception 绑定/监听失败，或分发器为空、没有任何工作循环
+         *         （配置错误要当场拦住：跑起来才发现没人接手，连接会一条条被丢掉）
+         * @note 与 start() 同样必须在服务器所属循环上启动；stop()/drain() 语义不变
+         * @see adoptConnection(), Core::ConnectionDistributor
+         */
+        Core::Task<> startAccepting(std::shared_ptr<Core::ConnectionDistributor> distributor);
+
+        /**
+         * @brief 接手一条由别的循环接受的连接
+         *
+         * @details 工作循环侧的入口：由分发器在自己的循环上调用（见 ConnectionDistributor::Adopter）。
+         *          过载与按来源 IP 的限额在这里判，与接受路径同一套逻辑——限额的判据是本服务器
+         *          此刻的在途连接数，只有接手方最清楚。
+         * @param fileDescriptor 已接受的连接描述符，本方法一进入就接管它的所有权
+         * @return true 已接手并起服务；false 本服务器此刻不收（过载或该来源超限），描述符已关闭
+         * @note 必须在本服务器所属循环上调用；连接建立后与 start() 接受的连接走完全相同的路径
+         */
+        bool adoptConnection(int fileDescriptor);
 
         /**
          * @brief 立即关闭服务器：停止接受并强制关闭全部已有连接
@@ -193,8 +220,26 @@ namespace AsynGyanis::Net
          */
         Core::Task<> idleSweepLoop();
 
+        /**
+         * @brief 接受循环的唯一实现：绑定、监听、接受，再按「交给谁」分两路
+         * @param distributor 空指针表示在本循环建连接（一循环一监听器的经典形态）；
+         *        非空表示只接受并把描述符交给它派出去
+         * @return Core::Task<> 协程，停止并收尾完成后结束
+         */
+        Core::Task<> runAcceptLoop(std::shared_ptr<Core::ConnectionDistributor> distributor);
+
+        /**
+         * @brief 接受/接手一条连接后的共同收尾：限额判定、建会话、起服务协程、回收已完成的帧
+         * @param socket 已建立的连接套接字，所有权转移
+         */
+        void takeOverConnection(Core::AsyncSocket socket);
+
         /// 空闲清扫的默认节拍（毫秒）：够密以免超时被成倍放大，又不会让空闲服务器频繁空转
         static constexpr std::chrono::milliseconds kDefaultIdleCheckInterval{250};
+
+        /// 已结束连接协程的清扫间隔，单位是「新连接条数」：每收一条就全表扫描是 O(n) 开销，
+        /// 按这个步长摊销，最多多占这么多条已完成任务的帧，千级并发下可忽略
+        static constexpr std::size_t kFinishedTaskCleanupStride = 64;
 
         /// drain 的轮询间隔（毫秒）：决定它多久复查一次「连接是否已清空」，间隔越小收手越及时，
         /// 代价是等待期间在事件循环上多几次空转唤醒
@@ -207,5 +252,7 @@ namespace AsynGyanis::Net
         Core::Timer                    m_idleTimer;         ///< 清扫协程与 drain 共用的节拍器；waitFor 每次返回独立等待器，两处并发等待互不干扰
         Core::Task<>                   m_idleSweepTask{nullptr}; ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）
         std::vector<Core::Task<void> > m_connectionTasks;   ///< 已启动的连接协程，持有其生命周期防止提前销毁
+        /// 下一次回收已完成连接协程的触发条数：接受循环与接手路径共用，故提升为成员
+        std::size_t m_nextTaskCleanupThreshold{kFinishedTaskCleanupStride};
     };
 } // namespace AsynGyanis::Net

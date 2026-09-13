@@ -1,5 +1,7 @@
 #include "Net/Tcp/TcpServer.h"
 
+#include "Platform/IO/FileDescriptor.h"
+
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
@@ -15,14 +17,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /**
-         * @brief 已结束连接协程的清扫间隔，单位是「新连接条数」
-         *
-         * @details m_connectionTasks 里只完成未回收的任务会占用内存，但每收一条连接就全表
-         *          扫描是 O(n) 开销。按 64 条一轮摊销，最多多占 64 个已完成任务帧，
-         *          在千级并发下即可忽略。
-         */
-        constexpr std::size_t kFinishedTaskCleanupStride = 64;
     } // namespace
 
     TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
@@ -33,6 +27,23 @@ namespace AsynGyanis::Net
     }
 
     Core::Task<> TcpServer::start()
+    {
+        co_await runAcceptLoop(nullptr);
+    }
+
+    Core::Task<> TcpServer::startAccepting(std::shared_ptr<Core::ConnectionDistributor> distributor)
+    {
+        // 配置错误当场拦住：没有工作循环的接受循环会把每一条连接都接进来又丢掉，
+        // 跑起来才发现的话，症状是「服务在监听但没人能连上」，很难查
+        if (distributor == nullptr || distributor->workerCount() == 0)
+        {
+            throw Base::Exception("TcpServer: 接受分发需要至少一个已登记的工作循环，请先给分发器 addWorker()");
+        }
+
+        co_await runAcceptLoop(std::move(distributor));
+    }
+
+    Core::Task<> TcpServer::runAcceptLoop(std::shared_ptr<Core::ConnectionDistributor> distributor)
     {
         // 面向使用者的错误文本带上监听地址，便于从日志直接定位端口冲突
         if (!m_acceptor.bind())
@@ -45,9 +56,7 @@ namespace AsynGyanis::Net
             throw Base::Exception("TcpServer: 进入监听状态失败，地址 " + m_acceptor.localAddress().toString());
         }
 
-        m_running                        = true;
-        // 下一轮清扫的触发条数：放在协程局部即可（只有本循环使用），无需提升为成员状态
-        std::size_t nextCleanupThreshold = kFinishedTaskCleanupStride;
+        m_running = true;
 
         // 空闲清扫与接受循环并发跑在同一个循环上：连接的空闲截止时间由会话按相位刷新，
         // 这里只负责到点收口。节拍非正数表示调用方关掉了这项保护，此时不投递协程——
@@ -83,68 +92,20 @@ namespace AsynGyanis::Net
                 break;
             }
 
-            // 过载保护：并发达到上限时直接丢弃这条新连接（局部对象析构即关闭描述符）。
-            // 选择立即拒绝而不是暂存等待，是为了不把已握手的连接压在服务器手里占对端资源
-            if (m_maxConnections > 0 && m_connectionManager.activeCount() >= m_maxConnections)
+            // 分发模式：本循环只负责接受，连接交给登记进来的工作循环接手。
+            // 没人接手（工作循环都没了）说明配置或生命周期出了问题：关掉这条连接并记一条，
+            // 不静默丢弃——症状同样是「在监听但连不上」，没有日志就无从下手
+            if (distributor != nullptr)
             {
-                continue;
-            }
-
-            // 按来源 IP 记账：与全局上限互补——全局挡总量，这里挡「同一个来源开一堆连接」。
-            // 取名额排在建连之前，超限的连接连会话对象都不必构造；同样直接丢弃。
-            // 键取 ip() 而不是 toString()：后者带对端端口，每条连接的端口都不同，拿它当键等于按连接计数、
-            // 限额永远碰不到。这里读的是形参套接字的对端地址，不能先把它 move 走再读
-            PerIpConnectionLimiter::Lease perIpLease;
-            if (m_perIpConnectionLimiter != nullptr)
-            {
-                std::optional<PerIpConnectionLimiter::Lease> acquiredLease =
-                        m_perIpConnectionLimiter->tryAcquire(acceptedSocket->remoteAddress().ip());
-                if (!acquiredLease.has_value())
+                if (!distributor->distribute(acceptedSocket->releaseFileDescriptor()))
                 {
-                    continue;
+                    LOG_ERROR_FMT("TcpServer: 没有可用的工作循环，已丢弃一条新连接，监听地址 {}",
+                                  m_acceptor.localAddress().toString());
                 }
-                perIpLease = std::move(acquiredLease).value();
-            }
-
-            std::shared_ptr<Core::Connection> connection;
-            try
-            {
-                connection = createConnection(std::move(acceptedSocket.value()));
-            } catch (const std::exception &hookException)
-            {
-                // 子类的会话构造允许抛（例如 HTTPS 申请 SSL 对象失败）：那只是这一条连接的失败，
-                // 不该让整个服务器停摆。传入的套接字已随参数析构关闭，这里记录中文错误后继续接受
-                LOG_ERROR_FMT("TcpServer: 创建连接对象失败，已丢弃一条新连接，监听地址 {}。原因：{}",
-                              m_acceptor.localAddress().toString(), hookException.what());
                 continue;
             }
 
-            // createConnection 是纯虚钩子，返回空指针属于子类缺陷。
-            // 传入的套接字已随参数析构关闭，这里只记录中文错误并丢弃本轮，
-            // 绝不让空连接进入连接管理器（否则 remove(nullptr) 与协程解引用都会出问题）
-            if (connection == nullptr)
-            {
-                LOG_ERROR_FMT("TcpServer: createConnection 未返回连接对象，已丢弃一条新连接，监听地址 {}", m_acceptor.localAddress().toString());
-                continue;
-            }
-
-            m_connectionManager.add(connection);
-            // 任务句柄必须存进 m_connectionTasks 才有人持有协程帧：局部 task 被移动进容器，
-            // 之后每轮清扫只回收已完成的帧，未完成的由收尾阶段统一等待
-            Core::Task<void> connectionTask = handleConnectionWithLease(std::move(connection), std::move(perIpLease));
-            m_loop.scheduler().schedule(connectionTask.handle());
-            m_connectionTasks.push_back(std::move(connectionTask));
-
-            // 到达阈值才清扫：把 O(n) 的全表扫描摊到每 64 条连接一次，并把阈值推到「当前长度 + 一轮」
-            if (m_connectionTasks.size() > nextCleanupThreshold)
-            {
-                std::erase_if(m_connectionTasks,
-                              [](const Core::Task<void> &finishedTask)
-                              {
-                                  return finishedTask.isReady();
-                              });
-                nextCleanupThreshold = std::max<std::size_t>(kFinishedTaskCleanupStride, m_connectionTasks.size() + kFinishedTaskCleanupStride);
-            }
+            takeOverConnection(std::move(acceptedSocket.value()));
         }
 
         // 先等清扫协程退出：它按运行标志判断是否继续，最多一个节拍后自行结束。
@@ -167,6 +128,86 @@ namespace AsynGyanis::Net
             }
         }
         m_connectionManager.waitAll();
+    }
+
+    void TcpServer::takeOverConnection(Core::AsyncSocket socket)
+    {
+        // 过载保护：并发达到上限时直接丢弃这条连接（局部对象析构即关闭描述符）。
+        // 选择立即拒绝而不是暂存等待，是为了不把已握手的连接压在服务器手里占对端资源
+        if (m_maxConnections > 0 && m_connectionManager.activeCount() >= m_maxConnections)
+        {
+            return;
+        }
+
+        // 按来源 IP 记账：与全局上限互补——全局挡总量，这里挡「同一个来源开一堆连接」。
+        // 取名额排在建连之前，超限的连接连会话对象都不必构造；同样直接丢弃。
+        // 键取 ip() 而不是 toString()：后者带对端端口，每条连接的端口都不同，拿它当键等于按连接计数、
+        // 限额永远碰不到
+        PerIpConnectionLimiter::Lease perIpLease;
+        if (m_perIpConnectionLimiter != nullptr)
+        {
+            std::optional<PerIpConnectionLimiter::Lease> acquiredLease =
+                    m_perIpConnectionLimiter->tryAcquire(socket.remoteAddress().ip());
+            if (!acquiredLease.has_value())
+            {
+                return;
+            }
+            perIpLease = std::move(acquiredLease).value();
+        }
+
+        std::shared_ptr<Core::Connection> connection;
+        try
+        {
+            connection = createConnection(std::move(socket));
+        } catch (const std::exception &hookException)
+        {
+            // 子类的会话构造允许抛（例如申请 SSL 对象失败）：那只是这一条连接的失败，
+            // 不该让整个服务器停摆。传入的套接字已随参数析构关闭，这里记录中文错误后继续
+            LOG_ERROR_FMT("TcpServer: 创建连接对象失败，已丢弃一条新连接，监听地址 {}。原因：{}",
+                          m_acceptor.localAddress().toString(), hookException.what());
+            return;
+        }
+
+        // createConnection 是纯虚钩子，返回空指针属于子类缺陷。
+        // 传入的套接字已随参数析构关闭，这里只记录中文错误并丢弃本轮，
+        // 绝不让空连接进入连接管理器（否则 remove(nullptr) 与协程解引用都会出问题）
+        if (connection == nullptr)
+        {
+            LOG_ERROR_FMT("TcpServer: createConnection 未返回连接对象，已丢弃一条新连接，监听地址 {}", m_acceptor.localAddress().toString());
+            return;
+        }
+
+        m_connectionManager.add(connection);
+        // 任务句柄必须存进 m_connectionTasks 才有人持有协程帧：局部 task 被移动进容器，
+        // 之后每轮清扫只回收已完成的帧，未完成的由收尾阶段统一等待
+        Core::Task<void> connectionTask = handleConnectionWithLease(std::move(connection), std::move(perIpLease));
+        m_loop.scheduler().schedule(connectionTask.handle());
+        m_connectionTasks.push_back(std::move(connectionTask));
+
+        // 到达阈值才清扫：把 O(n) 的全表扫描摊到每 64 条连接一次，并把阈值推到「当前长度 + 一轮」
+        if (m_connectionTasks.size() > m_nextTaskCleanupThreshold)
+        {
+            std::erase_if(m_connectionTasks,
+                          [](const Core::Task<void> &finishedTask)
+                          {
+                              return finishedTask.isReady();
+                          });
+            m_nextTaskCleanupThreshold = std::max<std::size_t>(kFinishedTaskCleanupStride,
+                                                              m_connectionTasks.size() + kFinishedTaskCleanupStride);
+        }
+    }
+
+    bool TcpServer::adoptConnection(const int fileDescriptor)
+    {
+        if (!Platform::FileDescriptor::isValid(fileDescriptor))
+        {
+            return false;
+        }
+
+        // 从描述符重新造一条绑在本循环上的套接字：接受循环那条套接字属于它的循环，
+        // 拿过来用会让事件注册落错地方。所有权在这里就接管，后面任何一条 ! 分支都会关掉它
+        takeOverConnection(Core::AsyncSocket(m_loop, fileDescriptor));
+        return true;
     }
 
     Core::Task<> TcpServer::idleSweepLoop()

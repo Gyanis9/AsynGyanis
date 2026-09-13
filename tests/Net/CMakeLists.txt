@@ -16,6 +16,7 @@ add_executable(TestNet
         Http/TestSseStream.cpp
         Http/TestHttpServer.cpp
         Http/TestHttpServerLimits.cpp
+        Http/TestHttpAcceptDispatch.cpp
         Http/TestHttpMemoryBudget.cpp
         Http/TestHttpServerConfig.cpp
         Http/TestHttpServerParserLimits.cpp

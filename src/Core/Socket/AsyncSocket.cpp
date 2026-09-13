@@ -292,6 +292,16 @@ namespace AsynGyanis::Core
         co_return static_cast<ssize_t>(cursor.sentLength());
     }
 
+    int AsyncSocket::releaseFileDescriptor() noexcept
+    {
+        // 注册对象必须已经清空：它绑定的是本对象的循环，跟着描述符搬过去只会指向错误的循环
+        m_watcher.reset();
+
+        const int releasedFileDescriptor = m_fileDescriptor;
+        m_fileDescriptor                 = -1;
+        return releasedFileDescriptor;
+    }
+
     void AsyncSocket::close()
     {
         if (m_fileDescriptor >= 0)
