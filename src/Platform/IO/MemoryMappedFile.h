@@ -89,6 +89,7 @@ namespace AsynGyanis::Platform
         void             *m_base{nullptr};   ///< 映射视图基址
         std::size_t       m_length{0};       ///< 文件字节数
         std::error_code   m_lastError{};     ///< 打开失败的原因（成功时为空）
+        bool              m_isValid{false};  ///< 是否成功打开（含空文件）：默认构造、打开失败、已关闭或已被移动走均为 false
 
 #if ASYN_PLATFORM_WIN32
         void *m_mappingHandle{nullptr}; ///< 文件映射对象句柄
