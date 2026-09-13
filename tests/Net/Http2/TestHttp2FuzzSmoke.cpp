@@ -37,6 +37,9 @@ namespace AsynGyanis::Net
         /// 连接层变异轮次（每轮喂一帧，轮数按「帧数 × 变异」覆盖）
         constexpr int kConnectionMutationRoundCount = 600;
 
+        /// 连接层健康路径轮次：远多于变异轮次，用来把「正常收发」的路径也走厚
+        constexpr int kHealthyFeedRoundCount = 2000;
+
         /// HPACK 往返轮次与随机块轮次
         constexpr int kHpackRoundTripRoundCount = 400;
         constexpr int kHpackRandomBlockRoundCount = 400;
@@ -206,21 +209,24 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：喂入变异帧后，连接层吐出的字节永远是整数条合法帧
+     * @brief 钉住：喂入单字节变异帧后，连接层吐出的字节仍是整数条合法帧
+     * @details 每轮用**全新连接**：变异帧几乎总会被连接层当场判错并进入粘滞失败态，复用同一条连接会让
+     *          第一轮之后的所有轮次都退化成「失败态下再喂一次」——看起来跑了很多轮其实只覆盖了一轮
      */
-    TEST(Http2FuzzSmoke, ConnectionEmitsOnlyWellFormedFrames)
+    TEST(Http2FuzzSmoke, ConnectionEmitsOnlyWellFormedFramesAfterMutatedInput)
     {
         const std::vector<std::string> corpus = makeValidFrameCorpus();
         DeterministicRandom random(0xc0ffeeU);
-
-        Http2Connection connection;
-        ASSERT_EQ(connection.feedBytes(kHttp2ConnectionPreface.data(), kHttp2ConnectionPreface.size()), Http2ConnectionFeedStatus::NeedMore);
-        const std::string clientSettings = encodeHttp2SettingsFrame(Http2SettingsPayload{});
-        ASSERT_EQ(connection.feedBytes(clientSettings.data(), clientSettings.size()), Http2ConnectionFeedStatus::NeedMore);
-        expectOutgoingBytesAreWellFormed(connection, -1);
+        int healthyRoundCount = 0;
 
         for (int roundIndex = 0; roundIndex < kConnectionMutationRoundCount; ++roundIndex)
         {
+            Http2Connection connection;
+            ASSERT_EQ(connection.feedBytes(kHttp2ConnectionPreface.data(), kHttp2ConnectionPreface.size()), Http2ConnectionFeedStatus::NeedMore);
+            const std::string clientSettings = encodeHttp2SettingsFrame(Http2SettingsPayload{});
+            ASSERT_EQ(connection.feedBytes(clientSettings.data(), clientSettings.size()), Http2ConnectionFeedStatus::NeedMore);
+            expectOutgoingBytesAreWellFormed(connection, roundIndex);
+
             std::string mutatedFrame = corpus[random.nextBelow(corpus.size())];
             const std::size_t mutationCount = 1U + random.nextBelow(4U);
             for (std::size_t mutation = 0; mutation < mutationCount; ++mutation)
@@ -229,12 +235,13 @@ namespace AsynGyanis::Net
                 mutatedFrame[position] = static_cast<char>(mutatedFrame[position] ^ (1 << random.nextBelow(8U)));
             }
 
-            // 随机切分成 1..3 段喂入：连接层必须只回 NeedMore 或 Failed
+            // 随机切分成若干段喂入：连接层必须只回 NeedMore 或 Failed
             std::size_t offset = 0;
+            Http2ConnectionFeedStatus feedStatus = Http2ConnectionFeedStatus::NeedMore;
             while (offset < mutatedFrame.size())
             {
                 const std::size_t chunkLength = std::min<std::size_t>(1U + random.nextBelow(mutatedFrame.size()), mutatedFrame.size() - offset);
-                const Http2ConnectionFeedStatus feedStatus = connection.feedBytes(mutatedFrame.data() + offset, chunkLength);
+                feedStatus = connection.feedBytes(mutatedFrame.data() + offset, chunkLength);
                 offset += chunkLength;
                 expectOutgoingBytesAreWellFormed(connection, roundIndex);
                 if (feedStatus == Http2ConnectionFeedStatus::Failed)
@@ -243,14 +250,84 @@ namespace AsynGyanis::Net
                 }
             }
 
-            if (connection.hasFailed())
+            if (feedStatus == Http2ConnectionFeedStatus::Failed)
             {
                 // 失败态是粘滞的：此后不再解释任何字节，也不会再产出
+                EXPECT_TRUE(connection.hasFailed());
                 EXPECT_EQ(connection.feedBytes(mutatedFrame.data(), mutatedFrame.size()), Http2ConnectionFeedStatus::Failed);
                 expectOutgoingBytesAreWellFormed(connection, roundIndex);
-                break;
+                continue;
             }
+            ++healthyRoundCount;
         }
+        EXPECT_GT(healthyRoundCount, 0) << "全是失败态说明变异过重，本用例连「存活路径的产出」都覆盖不到";
+    }
+
+    /**
+     * @brief 钉住：连续喂入大量合法请求与连接级帧时，连接始终存活、请求都能答上、产出始终合法
+     * @details 与上一条互补：那条只保证「畸形输入不产出畸形帧」，这条保证「正常收发路径在长流上不退化」
+     */
+    TEST(Http2FuzzSmoke, ConnectionStaysHealthyWhileFeedingValidFrames)
+    {
+        DeterministicRandom random(0x13572468U);
+        Http2Connection connection;
+        ASSERT_EQ(connection.feedBytes(kHttp2ConnectionPreface.data(), kHttp2ConnectionPreface.size()), Http2ConnectionFeedStatus::NeedMore);
+        const std::string clientSettings = encodeHttp2SettingsFrame(Http2SettingsPayload{});
+        ASSERT_EQ(connection.feedBytes(clientSettings.data(), clientSettings.size()), Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        // SETTINGS 的 ACK 只允许回一次（§6.5.3：多余的 ACK 是连接错误，连接层确实会判错），
+        // 因此在这里一次性用掉，后面的连接级帧只发可重复的那些
+        const std::string settingsAck = encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true});
+        ASSERT_EQ(connection.feedBytes(settingsAck.data(), settingsAck.size()), Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        // 请求头块用生产编码器生成：顺带把「编码 → 解码 → 校验」这条链路也走厚
+        HpackEncoder encoder;
+        const std::vector<HpackHeaderField> requestHeaderFields = {
+                {.name = ":method", .value = "GET"},
+                {.name = ":scheme", .value = "http"},
+                {.name = ":path", .value = "/"},
+                {.name = ":authority", .value = "localhost"}};
+
+        std::uint32_t nextStreamId = 1;
+        int servedRequestCount = 0;
+        for (int roundIndex = 0; roundIndex < kHealthyFeedRoundCount; ++roundIndex)
+        {
+            if (random.nextBelow(2U) == 0U)
+            {
+                // 一条完整请求：头块带 END_STREAM（无正文）
+                const std::string frameBytes = encodeHttp2HeadersFrame(
+                        Http2HeadersPayload{.endStream = true,
+                                            .endHeaders = true,
+                                            .headerBlockFragment = encoder.encode(requestHeaderFields)},
+                        nextStreamId);
+                ASSERT_EQ(connection.feedBytes(frameBytes.data(), frameBytes.size()), Http2ConnectionFeedStatus::NeedMore)
+                        << "第 " << roundIndex << " 轮：合法请求把连接喂失败了——" << connection.errorMessage();
+                for (const Http2Request &request: connection.takeRequests())
+                {
+                    std::string errorText;
+                    ASSERT_EQ(connection.sendResponseHeaders(request.streamId, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent)
+                            << "第 " << roundIndex << " 轮：合法请求答不上——" << errorText;
+                    ++servedRequestCount;
+                }
+                nextStreamId += 2U;
+                continue;
+            }
+
+            // 连接级帧：PING（要求回 ACK）与连接级 WINDOW_UPDATE，两者都可以反复出现
+            const std::string frameBytes = random.nextBelow(2U) == 0U
+                                                   ? encodeHttp2PingFrame(Http2PingPayload{})
+                                                   : encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 1024U}, 0U);
+            ASSERT_EQ(connection.feedBytes(frameBytes.data(), frameBytes.size()), Http2ConnectionFeedStatus::NeedMore)
+                    << "第 " << roundIndex << " 轮：合法的连接级帧把连接喂失败了——" << connection.errorMessage();
+
+            ASSERT_FALSE(connection.hasFailed()) << "第 " << roundIndex << " 轮：健康路径不该进失败态——" << connection.errorMessage();
+            expectOutgoingBytesAreWellFormed(connection, roundIndex);
+        }
+
+        EXPECT_GT(servedRequestCount, kHealthyFeedRoundCount / 4) << "请求轮次远少于预期：馈入序列可能没走成";
+        EXPECT_EQ(connection.state(), Http2ConnectionState::Open) << "连喂这么多轮之后连接仍应处于可用状态";
     }
 
     /**
