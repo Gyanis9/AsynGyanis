@@ -55,7 +55,10 @@ namespace AsynGyanis::Core
      */
     WEPOLL_INTERNAL int ntGlobalInit();
 
-    using NTSTATUS  = LONG;
+    /// NT 的状态码类型：沿用 SDK 的名字与宽度，判成功见 ntSuccess
+    using NTSTATUS = LONG;
+
+    /// NT 状态码的指针形式
     using PNTSTATUS = NTSTATUS *;
 
     namespace
@@ -91,46 +94,75 @@ namespace AsynGyanis::Core
 
     namespace
     {
+        /**
+         * @brief IO_STATUS_BLOCK：NT 异步请求的状态块
+         * @details 打开 AFD 设备与下发 AFD 轮询都要经 NT 系统调用，而这两个结构只出现在 WDK 头里，
+         *          因此这里按 NT 内部布局自带一份；字段顺序与宽度必须与系统保持一致。
+         */
         typedef struct _IO_STATUS_BLOCK // NOLINT(*-reserved-identifier)
         {
-            NTSTATUS  Status;
-            ULONG_PTR Information;
+            NTSTATUS  Status;      ///< 请求状态：STATUS_PENDING 表示尚未完成
+            ULONG_PTR Information; ///< 与请求相关的附加信息（轮询完成时是事件位）
         } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
     }
 
+    /// 异步过程的回调原型：NtDeviceIoControlFile 要一个这样的形参，wepoll 永远传空
     typedef VOID (NTAPI *PIO_APC_ROUTINE)(PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock, ULONG Reserved);
 
-    namespace
-    {
-        typedef struct _UNICODE_STRING // NOLINT(*-reserved-identifier)
-        {
-            USHORT Length;
-            USHORT MaximumLength;
-            PWSTR  Buffer;
-        } UNICODE_STRING, *PUNICODE_STRING;
-    }
-
+    /**
+     * @brief 把宽字符串字面量装配成 UNICODE_STRING
+     * @param s 宽字符串字面量（必须是数组而不是指针，长度靠 sizeof 推导）
+     * @note Buffer 是非 const 的 PWSTR 而字面量是只读的：NT 侧不会写它，故这里 const_cast 掉
+     */
 #define RTL_CONSTANT_STRING(s) {sizeof(s) - sizeof((s)[0]), sizeof(s), const_cast<PWSTR>(s)}
 
     namespace
     {
+        /**
+         * @brief UNICODE_STRING：NT 的带长度字符串
+         * @details 与 IO_STATUS_BLOCK 同理，只在 WDK 头里有；这里用于向 NtCreateFile 交代设备路径。
+         */
+        typedef struct _UNICODE_STRING // NOLINT(*-reserved-identifier)
+        {
+            USHORT Length;        ///< 当前长度（字节，不含结尾的空字符）
+            USHORT MaximumLength; ///< 缓冲区总长（字节）
+            PWSTR  Buffer;        ///< 字符缓冲区，不保证零终止
+        } UNICODE_STRING, *PUNICODE_STRING;
+    }
+
+    namespace
+    {
+        /**
+         * @brief OBJECT_ATTRIBUTES：NT 打开对象时交代的名字与属性
+         * @details 与 IO_STATUS_BLOCK 同理只在 WDK 头里有；这里用来指定要打开的 AFD 设备名。
+         */
         typedef struct _OBJECT_ATTRIBUTES // NOLINT(*-reserved-identifier)
         {
-            ULONG           Length;
-            HANDLE          RootDirectory;
-            PUNICODE_STRING ObjectName;
-            ULONG           Attributes;
-            PVOID           SecurityDescriptor;
-            PVOID           SecurityQualityOfService;
+            ULONG           Length;                   ///< 本结构的大小，NT 用来校验版本
+            HANDLE          RootDirectory;            ///< 相对打开的根目录，空表示用绝对对象名
+            PUNICODE_STRING ObjectName;               ///< 目标对象名，这里指向 AFD 设备名
+            ULONG           Attributes;               ///< OBJ_* 属性位，这里传 0
+            PVOID           SecurityDescriptor;       ///< 安全描述符，可为空
+            PVOID           SecurityQualityOfService; ///< 服务质量，可为空
         } OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
     }
 
+    /**
+     * @brief 把设备路径与属性位装配成 OBJECT_ATTRIBUTES
+     * @param ObjectName 指向 UNICODE_STRING 设备名
+     * @param Attributes OBJ_* 属性位
+     */
 #define RTL_CONSTANT_OBJECT_ATTRIBUTES(ObjectName, Attributes) {sizeof(OBJECT_ATTRIBUTES), nullptr, ObjectName, Attributes, nullptr, nullptr}
 
 #ifndef FILE_OPEN
 #define FILE_OPEN 0x00000001UL
 #endif
 
+/**
+ * @brief 要转发的 ntdll 函数清单
+ * @details 一份清单两处展开：下面按 X 生成函数指针变量，ntGlobalInit() 里再逐个 GetProcAddress。
+ *          这些函数不在 SDK 的公开头里，签名照文档抄写。
+ */
 #define NT_NTDLL_IMPORT_LIST(X)                                                                                                                                                    \
     X(NTSTATUS, NTAPI, NtCancelIoFileEx, (HANDLE FileHandle, PIO_STATUS_BLOCK IoRequestToCancel, PIO_STATUS_BLOCK IoStatusBlock))                                                  \
                                                                                                                                                                                    \
@@ -144,12 +176,13 @@ namespace AsynGyanis::Core
                                                                                                                                                                                    \
     X(ULONG, WINAPI, RtlNtStatusToDosError, (NTSTATUS Status))
 
+/// 由上面的清单展开出函数指针变量（初值空，ntGlobalInit 里逐个解析）
 #define X(returnType, attributes, name, parameters) WEPOLL_INTERNAL_VAR returnType(attributes *name) parameters = nullptr;
     NT_NTDLL_IMPORT_LIST(X)
 #undef X
 
     // AFD 驱动的事件位：ntddafd.h 是驱动侧私有接口、不在 SDK 里，取值必须逐位对齐，
-    // 名字因此照抄那边的常量而不是本工程的常量命名
+    // 名字因此照抄那边的常量，而不是套用本工程的常量命名
     static constexpr std::uint32_t AFD_POLL_RECEIVE           = 0x0001; // NOLINT(*-identifier-naming)
     static constexpr std::uint32_t AFD_POLL_RECEIVE_EXPEDITED = 0x0002; // NOLINT(*-identifier-naming)
     static constexpr std::uint32_t AFD_POLL_SEND              = 0x0004; // NOLINT(*-identifier-naming)
@@ -161,22 +194,29 @@ namespace AsynGyanis::Core
 
     namespace
     {
+        /**
+         * @brief AFD_POLL_HANDLE_INFO：轮询请求里「一个句柄 + 关注的事件位」
+         */
         typedef struct _AFD_POLL_HANDLE_INFO // NOLINT(*-reserved-identifier)
         {
-            HANDLE   Handle;
-            ULONG    Events;
-            NTSTATUS Status;
+            HANDLE   Handle; ///< 被轮询的句柄
+            ULONG    Events; ///< 关注的事件位（AFD_POLL_* 按位取或）
+            NTSTATUS Status; ///< 该句柄上最近一次轮询的结果状态
         } AFD_POLL_HANDLE_INFO, *PAFD_POLL_HANDLE_INFO;
     }
 
     namespace
     {
+        /**
+         * @brief AFD_POLL_INFO：一次 AFD 轮询请求
+         * @details Handles 是变长数组，wepoll 每条套接字只放一个句柄，故这里按 1 声明。
+         */
         typedef struct _AFD_POLL_INFO // NOLINT(*-reserved-identifier)
         {
-            LARGE_INTEGER        Timeout;
-            ULONG                NumberOfHandles;
-            ULONG                Exclusive;
-            AFD_POLL_HANDLE_INFO Handles[1];
+            LARGE_INTEGER        Timeout;         ///< 轮询超时（相对时间，负值表示无限等待）
+            ULONG                NumberOfHandles; ///< Handles 里的有效条数
+            ULONG                Exclusive;       ///< 是否独占轮询
+            AFD_POLL_HANDLE_INFO Handles[1];      ///< 被轮询的句柄数组
         } AFD_POLL_INFO, *PAFD_POLL_INFO;
     }
 
@@ -253,8 +293,10 @@ namespace AsynGyanis::Core
     /// AFD 轮询的 ioctl 码，同样取自驱动侧私有接口
     static constexpr std::uint32_t IOCTL_AFD_POLL = 0x00012024; // NOLINT(*-identifier-naming)
 
+    /// AFD 设备名；它的用处就在下一行的对象属性里——两行一起构成 NtCreateFile 的入参
     static UNICODE_STRING afdHelperName = RTL_CONSTANT_STRING(L"\\Device\\Afd\\Wepoll");
 
+    /// 打开 AFD 设备时交代的对象属性：名字取自上一行
     static OBJECT_ATTRIBUTES afdHelperAttributes = RTL_CONSTANT_OBJECT_ATTRIBUTES(&afdHelperName, 0);
 
     int afdCreateHelperHandle(HANDLE iocpHandle, HANDLE *afdHelperHandleOut)
@@ -550,7 +592,8 @@ namespace AsynGyanis::Core
         uintptr_t m_key; ///< 节点只留键：树的形状信息改由标准容器保管
     };
 
-    // 键 → 节点。原先是一棵手写的红黑树（插入、删除、旋转、重平衡近 200 行），而调用方只用到
+    /// 键 → 节点：本文件里两张表（端口的套接字表、全局句柄表）都用它
+    // 原先是一棵手写的红黑树（插入、删除、旋转、重平衡近 200 行），而调用方只用到
     // 「按键插入、按键查找、按键删除」三件事，因此交给标准库的有序表：std::map 同样按键有序，
     // 且节点地址稳定（再平衡不会让节点搬家），下面用 CONTAINER_OF 从节点取回宿主结构照旧成立。
     using Tree = std::map<uintptr_t, TreeNode *>;
@@ -670,6 +713,7 @@ namespace AsynGyanis::Core
      */
     WEPOLL_INTERNAL void tsTreeNodeUnrefAndDestroy(TsTreeNode *node);
 
+    /// 全局句柄表：epoll 实例句柄 → 端口状态（带锁与引用计数，见 TsTree）
     static TsTree epollHandleTree;
 
     int epollGlobalInit()
@@ -987,8 +1031,11 @@ namespace AsynGyanis::Core
      */
     WEPOLL_INTERNAL SOCKET wsGetBaseSocket(SOCKET socket);
 
-    static bool      initializationDone = false;
-    static INIT_ONCE onceControl        = INIT_ONCE_STATIC_INIT;
+    /// 全局初始化是否已完成：由 onceCallback 写、ensureInitialized 读
+    static bool initializationDone = false;
+
+    /// INIT_ONCE 控制块：保证三块全局初始化只跑一次
+    static INIT_ONCE onceControl = INIT_ONCE_STATIC_INIT;
 
     /**
      * @brief INIT_ONCE 的一次性回调：按顺序完成三块全局初始化
@@ -1019,9 +1066,11 @@ namespace AsynGyanis::Core
         return 0;
     }
 
-    // 绕开一个两难：FARPROC 直接转成函数指针，GCC 8 会报警告甚至报错；先转 void*
-    // 再转，MSVC 又不接受。要让两种编译器都干净编过，就用下面的「桥」类型中转：
-    // MY_FUNC func = (MY_FUNC) (NtFunctionPointerCast) addr;
+    /**
+     * @brief 取函数指针时的中转类型：绕开两套编译器在 FARPROC 转换上的分歧
+     * @details FARPROC 直接转成函数指针 GCC 8 会报警告甚至报错，先转 void* 再转 MSVC 又不接受；
+     *          本文件统一借这个「桥」类型中转：`MY_FUNC func = (MY_FUNC) (NtFunctionPointerCast) addr;`
+     */
 #ifdef __GNUC__
     using NtFunctionPointerCast = void *;
 #else
@@ -1352,14 +1401,14 @@ namespace AsynGyanis::Core
      */
     struct PortState
     {
-        HANDLE           m_iocpHandle;        ///< 本实例的 IOCP 完成端口
-        Tree             m_sockTree;          ///< 套接字句柄 → 套接字状态
-        Queue            m_sockUpdateQueue;   ///< 待把关注事件下发给 AFD 的套接字
-        Queue            m_sockDeletedQueue;  ///< 已删除但轮询尚未收尾、暂时不能释放的套接字
-        Queue            m_pollGroupQueue;    ///< 本实例的轮询组
-        TsTreeNode       m_handleTreeNode;    ///< 挂在全局句柄表上的节点
-        CRITICAL_SECTION m_lock;              ///< 保护本结构字段与上述几张表
-        size_t           m_activePollCount;   ///< 在途 AFD 轮询请求数，用于决定何时可以停机
+        HANDLE           m_iocpHandle;       ///< 本实例的 IOCP 完成端口
+        Tree             m_sockTree;         ///< 套接字句柄 → 套接字状态
+        Queue            m_sockUpdateQueue;  ///< 待把关注事件下发给 AFD 的套接字
+        Queue            m_sockDeletedQueue; ///< 已删除但轮询尚未收尾、暂时不能释放的套接字
+        Queue            m_pollGroupQueue;   ///< 本实例的轮询组
+        TsTreeNode       m_handleTreeNode;   ///< 挂在全局句柄表上的节点
+        CRITICAL_SECTION m_lock;             ///< 保护本结构字段与上述几张表
+        size_t           m_activePollCount;  ///< 在途 AFD 轮询请求数，用于决定何时可以停机
     };
 
     /**
@@ -1369,7 +1418,7 @@ namespace AsynGyanis::Core
     static PortState *portAlloc()
     {
         // 值初始化：平凡成员清零，sockTree 与引用锁各自构造好——不再需要 memset 之后再补构造
-        auto *portState = new (std::nothrow) PortState{};
+        auto *portState = new(std::nothrow) PortState{};
         if (portState == nullptr)
             return failWithWindowsError(nullptr, ERROR_NOT_ENOUGH_MEMORY);
 
@@ -1897,9 +1946,13 @@ namespace AsynGyanis::Core
     }
 
 
+    /// 用户感兴趣的事件全集：只有它里面的位才需要下发给 AFD 轮询
     static constexpr std::uint32_t kKnownEpollEvents =
             EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM | EPOLLRDBAND | EPOLLWRNORM | EPOLLWRBAND | EPOLLMSG | EPOLLRDHUP;
 
+    /**
+     * @brief 套接字上在途 AFD 轮询的状态
+     */
     enum class SockPollStatus
     {
         Idle = 0, ///< 尚未下发轮询请求
