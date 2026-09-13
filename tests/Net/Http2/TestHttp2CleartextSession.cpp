@@ -745,4 +745,65 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }
+
+    /**
+     * @brief 钉住：一条明文连接上并发两条流各自拿到属于自己的响应——多路复用不因传输是明文而失效
+     * @details 两条请求同批写出（对端流号 1 与 3），响应允许乱序到达，但**正文与请求必须一一对应**：
+     *          串流（把 A 的正文发给 B）是这类实现最容易犯又最难察觉的错误
+     */
+    TEST(Http2CleartextSession, ServesTwoConcurrentStreamsOverOneConnection)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
+        {
+            router.get("/world", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.setBody("served-world");
+                co_return;
+            });
+        }, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 两条并发请求一次写出：流 1 要 /hello，流 3 要 /world
+        std::string requestBytes = makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true);
+        requestBytes += makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/world"), true);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U) && hasEndStream(receivedFrames, 3U);
+                                     },
+                                     kWaitTimeout)) << "两条并发流没有都在时限内收完";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "served-hello") << "流 1 的正文串了";
+        EXPECT_EQ(responseDataPayload(frames, 3U), "served-world") << "流 3 的正文串了";
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "正常并发不该触发收口";
+        }
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
 } // namespace AsynGyanis::Net
