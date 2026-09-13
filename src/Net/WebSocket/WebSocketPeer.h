@@ -185,16 +185,27 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isOpen() const noexcept;
 
         /**
+         * @brief 会话侧：打开/关闭 permessage-deflate（RFC 7692）
+         *
+         * @details 打开后 sendText()/sendBinary() 自动压缩负载并置 RSV1，收到的压缩消息自动解压；
+         *          控制帧从不参与压缩（§6.1）。**必须在喂入任何字节之前调用**：解码器已开始工作时
+         *          改这个开关，会让同一条消息的前后判断不一致。
+         * @param enabled 是否已就该扩展与对端达成一致
+         */
+        void setPerMessageDeflateEnabled(bool enabled) noexcept;
+
+        /**
          * @brief 会话侧：把一段网络字节喂进解码器
          *
          * @details 本段字节一定被全部消费：解码器产出一帧就取走并排队，剩下的字节接着解，
-         *          因此调用方不必按 consumedByteCount() 记账，喂完整段即可。文本帧在这一步按整条
-         *          消息校验 UTF-8（RFC 6455 §5.6）：消息在交付前已由解码层重组完整，故不需要跨分片增量校验。
+         *          因此调用方不必按 consumedByteCount() 记账，喂完整段即可。协商过 permessage-deflate 时，
+         *          置了 RSV1 的消息先解压再交付（RFC 7692 §7.2.2）。文本帧在这一步按整条消息校验 UTF-8
+         *          （RFC 6455 §5.6）：消息在交付前已由解码层重组完整，故不需要跨分片增量校验。
          * @param data 数据起始指针，调用方保证可读
          * @param length 数据长度，单位字节
          * @return WebSocketFeedStatus::Accepted 本段已处理完
-         * @return WebSocketFeedStatus::DecodeError 对端违反 RFC 6455——帧解码失败，或文本负载不是
-         *         合法 UTF-8；调用方应按 decodeErrorCloseCode() 发 Close 并收口
+         * @return WebSocketFeedStatus::DecodeError 对端违反 RFC 6455——帧解码失败、文本负载不是
+         *         合法 UTF-8，或压缩消息解不开；调用方应按 decodeErrorCloseCode() 发 Close 并收口
          * @note 已收口的连接不再解码：对端在 Close 之后发来的帧一律丢弃
          */
         WebSocketFeedStatus feedBytes(const char *data, std::size_t length);
@@ -216,8 +227,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 会话侧：把最近一次 feedBytes() 的 DecodeError 映射成要发的关闭状态码
-         * @details 三类失败对端的处置不同，不能合并：文本负载非法回 1007（数据有问题但格式没违规）、
-         *          体量越界回 1009（可改用分片重试）、其余协议违规回 1002（RFC 6455 §7.4.1）。
+         * @details 各失败对端的处置不同，不能合并：文本负载非法回 1007（数据有问题但格式没违规）、
+         *          体量越界回 1009（可改用分片重试）、压缩消息解不开回 1002（RFC 7692 §7.2.2 要求
+         *          直接失败连接）、其余协议违规回 1002（RFC 6455 §7.4.1）。
          * @return std::uint16_t 关闭状态码：1007 / 1009 / 1002
          * @note 未发生过 DecodeError 时返回值无意义，调用方应按 WebSocketFeedStatus 判定
          */
@@ -294,7 +306,9 @@ namespace AsynGyanis::Net
         std::coroutine_handle<> m_deliveryWaiter{};  ///< 业务正挂在 receive() 上的句柄，空表示无人等待
         bool m_isOpen{true};                         ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
         bool m_isWriteInFlight{false};               ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
-        std::string m_payloadErrorMessage;           ///< 文本负载非法的中文原因（含违规字节位置）；空表示最近一次失败不是负载非法
+        std::string m_payloadErrorMessage;           ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
+        std::uint16_t m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
+        bool m_isPerMessageDeflateEnabled{false};    ///< 是否已协商 permessage-deflate：决定收发两侧是否压缩
 
         /// 本次关闭是对端 Close 的应答：一次对端发起的关闭只记在对端一侧，
         /// 回帧不再重复记成本侧发起。粘性标记——对端关闭后本对象即收口，不存在需要复位的下一轮

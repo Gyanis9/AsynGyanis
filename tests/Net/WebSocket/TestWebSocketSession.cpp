@@ -12,6 +12,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
@@ -103,14 +104,17 @@ namespace AsynGyanis::Net
          * @param opCodeValue 操作码原始取值（0x1 Text、0x0 Continuation、0x8 Close、0x9 Ping）
          * @param payload 负载
          * @param isFinal 是否消息末帧
+         * @param isCompressed 是否置 RSV1（permessage-deflate 的压缩标记）；用例用它构造压缩消息
          * @return std::string 线上字节
          * @note 长度一律用 7 位档：用例负载都短于 126 字节。本函数有意不复用被测编码器，
          *       否则编码器出错时服务端与客户端会一起错，测试就失去判据
          */
-        std::string maskedClientFrame(const std::uint8_t opCodeValue, const std::string_view payload, const bool isFinal = true)
+        std::string maskedClientFrame(const std::uint8_t opCodeValue, const std::string_view payload, const bool isFinal = true,
+                                      const bool isCompressed = false)
         {
             std::string frame;
-            frame.push_back(static_cast<char>(static_cast<std::uint8_t>(opCodeValue | (isFinal ? 0x80U : 0x00U))));
+            frame.push_back(static_cast<char>(
+                    static_cast<std::uint8_t>(opCodeValue | (isFinal ? 0x80U : 0x00U) | (isCompressed ? 0x40U : 0x00U))));
             frame.push_back(static_cast<char>(static_cast<std::uint8_t>(0x80U | payload.size())));
             for (const std::uint8_t maskByte: kClientMaskKey)
             {
@@ -980,4 +984,95 @@ namespace AsynGyanis::Net
         EXPECT_EQ(statsAfterHttpRequest.webSocketServerCloseCount, stats.webSocketServerCloseCount)
                 << "普通 HTTP 请求被记成了本侧发起关闭";
     }
+    /// 客户端提供 permessage-deflate 的请求头（写法照常见客户端的提供方式，带一个本端会忽略的参数）
+    constexpr std::string_view kPerMessageDeflateOfferHeader =
+            "sec-websocket-extensions: permessage-deflate; client_max_window_bits\r\n";
+
+    /// 由 Python zlib 独立算出的 "hello" 压缩负载（裸 deflate + Z_SYNC_FLUSH，去掉尾部 00 00 FF FF）
+    constexpr std::string_view kCompressedHelloPayload = "\xCA\x48\xCD\xC9\xC9\x07\x00";
+
+    /// 服务端在接受协商后必须回的扩展取值（本端选定的两条 no_context_takeover）
+    constexpr std::string_view kPerMessageDeflateResponseLine =
+            "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n";
+
+    /**
+     * @brief 钉住 permessage-deflate 端到端：协商成功 → 服务端解对端的压缩帧、自己也按压缩回帧
+     * @details 对端发的是 Python zlib 独立算出的压缩负载（不是本端编码器的产物），因此「服务端解压正确」
+     *          这条结论不依赖被测实现；服务端的回帧则钉住 RSV1 置位、线上不留四字节空块尾、且能解回原文。
+     */
+    TEST(WebSocketSession, CompressesMessagesAfterNegotiatingPerMessageDeflate)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        // 扩展提供头插在结束空行之前：升级请求与压缩的首帧一次写出，走「101 之前就到达的字节」这条路径
+        std::string request = upgradeRequestText();
+        request.insert(request.size() - 2, std::string(kPerMessageDeflateOfferHeader));
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(request + maskedClientFrame(0x1, kCompressedHelloPayload, true, true), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForText(accumulated, kPerMessageDeflateResponseLine, kWaitTimeout))
+                << "101 里没有回扩展协商结论：" << accumulated;
+
+        // 业务必须收到解压后的原文：压缩负载由 Python zlib 独立算出，解错就说明解压链路是坏的
+        const auto recordDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (record->count() == 0 && std::chrono::steady_clock::now() < recordDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const std::vector<WebSocketMessage> messages = record->snapshot();
+        ASSERT_EQ(messages.size(), 1U) << "压缩消息没有解压后交付业务";
+        EXPECT_EQ(messages.front().opCode, WebSocketOpCode::Text);
+        EXPECT_EQ(messages.front().payload, "hello") << "解压结果不是原文";
+
+        // 回帧：握手之后紧跟一个服务端帧（无掩码）。用例负载很短，长度只可能落在 7 位档
+        const std::size_t frameOffset = accumulated.find("\r\n\r\n") + 4;
+        ASSERT_LT(frameOffset, accumulated.size()) << "没有收到回帧：" << accumulated;
+        const std::string_view frameBytes(accumulated.data() + frameOffset, accumulated.size() - frameOffset);
+        ASSERT_GE(frameBytes.size(), 2U) << "回帧不完整：" << accumulated;
+
+        const auto firstByte = static_cast<std::uint8_t>(frameBytes[0]);
+        EXPECT_EQ(firstByte & 0x80U, 0x80U) << "数据帧的 FIN 位必须为 1";
+        EXPECT_EQ(firstByte & 0x40U, 0x40U) << "协商之后服务端回帧必须置 RSV1（RFC 7692 §6）";
+        EXPECT_EQ(firstByte & 0x0FU, 0x01U) << "操作码应当是 Text";
+
+        const auto payloadLength = static_cast<std::size_t>(static_cast<std::uint8_t>(frameBytes[1]));
+        ASSERT_EQ(frameBytes.size(), 2U + payloadLength) << "回帧长度与长度域不一致：" << accumulated;
+        const std::string_view wirePayload = frameBytes.substr(2);
+        EXPECT_FALSE(wirePayload.ends_with(std::string("\x00\x00\xFF\xFF", 4)))
+                << "四字节空块尾不该出现在线上负载里（RFC 7692 §7.2.1）";
+
+        const std::optional<std::string> inflated = inflateWebSocketMessage(wirePayload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+        ASSERT_TRUE(inflated.has_value()) << "服务端的回帧解不开";
+        EXPECT_EQ(*inflated, "hello");
+
+        client.closeNow();
+        EXPECT_TRUE(server->awaitConnectionsDrained(kWaitTimeout));
+    }
+
+    /**
+     * @brief 钉住对端不提供扩展时服务端不声明扩展、也不压缩回帧（回归：协商开关不能被默认打开）
+     */
+    TEST(WebSocketSession, KeepsFramesPlainWhenClientDoesNotOfferDeflate)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, "hello"), kWaitTimeout));
+
+        const std::string handshake = expectedHandshakeResponseText();
+        const std::string expectedEcho = serverFrameBytes(0x1, "hello");
+        std::string accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + expectedEcho.size(), kWaitTimeout));
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "未提供扩展时 101 不得多出扩展头";
+        EXPECT_EQ(accumulated.substr(handshake.size()), expectedEcho) << "未协商就不该压缩回帧";
+    }
+
 } // namespace AsynGyanis::Net

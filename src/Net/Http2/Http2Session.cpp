@@ -5,6 +5,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpDate.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
@@ -790,6 +791,17 @@ namespace AsynGyanis::Net
         // 因此这里不能走 sendResponse()——它按「正文是否为空」决定 END_STREAM，会把隧道当场关掉
         std::vector<HpackHeaderField> acceptFields;
         acceptFields.push_back({.name = std::string(kWebSocketAcceptHeaderName), .value = computeWebSocketAcceptValue(clientKey)});
+
+        // 扩展协商（RFC 7692 §7.1）：与 h1 侧同一份协商实现，接受时把结论一并写进应答头，
+        // 本端随后按同一结论收发压缩帧——回给对端的那一行与本端的收发口径必须是同一个来源
+        const std::optional<std::string> extensionsHeader = request.getHeader(std::string(kWebSocketExtensionsHeaderName));
+        const PerMessageDeflateNegotiation deflateNegotiation =
+                negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
+        if (!deflateNegotiation.responseValue.empty())
+        {
+            acceptFields.push_back(
+                    {.name = std::string(kWebSocketExtensionsHeaderName), .value = deflateNegotiation.responseValue});
+        }
         if (!request.requestId().empty())
         {
             acceptFields.push_back({.name = std::string(kRequestIdHeaderName), .value = std::string(request.requestId())});
@@ -831,6 +843,7 @@ namespace AsynGyanis::Net
         };
 
         WebSocketPeer peer(sendFrameBytes, m_metrics.get());
+        peer.setPerMessageDeflateEnabled(deflateNegotiation.accepted);
 
         bool isBusinessFinished = false;
         const auto runBusiness = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>

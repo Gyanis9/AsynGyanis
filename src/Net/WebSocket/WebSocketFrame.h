@@ -54,6 +54,7 @@ namespace AsynGyanis::Net
     {
         WebSocketOpCode opCode{WebSocketOpCode::Text}; ///< 操作码；解码器只交出数据消息与完整控制帧，不会是 Continuation
         bool isFinal{true};                            ///< 是否消息末帧；解码器重组后才交付，因此恒为 true
+        bool isCompressed{false};                      ///< 负载是否按 permessage-deflate 压缩过（RFC 7692）；控制帧恒为 false
         std::string payload;                           ///< 负载：Text 为文本，Binary 为任意字节，控制帧不超过 125 字节
     };
 
@@ -68,12 +69,15 @@ namespace AsynGyanis::Net
      * @param opCode 操作码
      * @param payload 负载字节，按「指针 + 长度」取，可以含 NUL 与任意二进制
      * @param isFinal 是否末帧；数据帧分片时后续片段要传 false 并改用 Continuation
+     * @param isCompressed 负载是否已按 permessage-deflate 压缩（RFC 7692）：置位即写出 RSV1。
+     *        只有协商过该扩展时才可传 true，且只能用在数据消息的首帧上
      * @return std::string 完整帧字节（首字节 + 长度 + 无掩码负载），可直接写入连接
      * @throws Base::InvalidArgumentException 用法错误：控制帧负载超 125 字节、控制帧要求分片
-     *         （isFinal 为 false），或 opCode 不是 RFC 6455 定义过的取值
+     *         （isFinal 为 false）、opCode 不是 RFC 6455 定义过的取值，或要求压缩的不是数据消息首帧
      * @note 文本帧负载的 UTF-8 合法性不在本层校验：编码器只保证帧格式，内容语义由上层负责
      */
-    [[nodiscard]] std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true);
+    [[nodiscard]] std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true,
+                                                   bool isCompressed = false);
 
     /**
      * @brief 一次 WebSocketFrameDecoder::parse() 调用的结论状态
@@ -99,7 +103,8 @@ namespace AsynGyanis::Net
      *
      * @note 服务端收到的帧必须带掩码（RFC 6455 §5.1），未掩码一律判错：掩码是这条连接上防止
      *       中间设施按 HTTP 报文缓存并重放帧内容的唯一防线。掩码按 4 字节循环异或解除。
-     * @note 本实现不协商任何扩展，因此 RSV1/RSV2/RSV3 任一置位即判错。
+     * @note RSV 位的口径：RSV2/RSV3 一律必须为 0；RSV1 只有在协商过 permessage-deflate
+     *       （见 setPerMessageDeflateEnabled()）且出现在数据消息首帧上时才允许。
      * @note 从严之处：RFC 6455 §5.4 允许控制帧插在分片消息中间，本实现拒绝——消息既然在此重组，
      *       放行插帧就会让「取帧顺序」与「消息到达顺序」不再是同一件事。
      *
@@ -119,6 +124,18 @@ namespace AsynGyanis::Net
          * @brief 构造解码器：全部状态为初态，可直接开始解码。
          */
         WebSocketFrameDecoder() = default;
+
+        /**
+         * @brief 打开/关闭 permessage-deflate 支持（默认关闭）
+         *
+         * @details 关闭时 RSV1 与 RSV2/RSV3 一样即判错——「没协商就不得使用扩展」是 RFC 6455 §5.2
+         *          的硬要求，放行会让本端接受一条自己解不开的消息。打开后 RSV1 只允许出现在
+         *          数据消息的首帧上：控制帧与继续帧带 RSV1 依然判错。
+         * @param enabled 是否已就该扩展达成一致
+         * @note 必须在喂入任何字节之前设置：解码器已开始工作时改这个开关会让同一条消息的前后
+         *       判断不一致
+         */
+        void setPerMessageDeflateEnabled(bool enabled) noexcept;
 
         /**
          * @brief 析构函数：成员都是按值的标准容器，无额外资源需要回收。
@@ -259,6 +276,8 @@ namespace AsynGyanis::Net
         std::string m_payloadBuffer;
 
         bool m_isFragmentedMessageInProgress{false};   ///< 是否正处在一条分片消息中间
+        bool m_isPerMessageDeflateEnabled{false};      ///< 是否已协商 permessage-deflate（决定 RSV1 是否合法）
+        bool m_isCurrentMessageCompressed{false};      ///< 当前这条消息的首帧是否置了 RSV1；消息交付时随帧交出并复位
         std::uint8_t m_fragmentedMessageOpCodeValue{0};///< 分片消息首帧的操作码，重组后作为整条消息的操作码
         WebSocketFrame m_pendingFrame;                 ///< 已产出待取走的帧
         bool m_hasPendingFrame{false};                 ///< 是否已有产出待取走

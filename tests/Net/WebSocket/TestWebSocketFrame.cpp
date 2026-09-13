@@ -880,4 +880,147 @@ namespace AsynGyanis::Net
             EXPECT_TRUE(containsText(message, "Text/Binary")) << "报错要写清替代做法";
         }
     }
+        /// RSV1 位：permessage-deflate 用它声明本条消息被压缩过（RFC 7692 §6）
+        constexpr std::uint8_t kRsv1Bit = 0x40U;
+
+        /// RSV2 位：本实现永远拒绝——RFC 7692 只让出了 RSV1
+        constexpr std::uint8_t kRsv2Bit = 0x20U;
+
+        /// 由 Python zlib 独立算出的 "hello" 压缩负载（裸 deflate + Z_SYNC_FLUSH，去掉尾部 00 00 FF FF）
+        constexpr std::string_view kCompressedHelloPayload = "\xCA\x48\xCD\xC9\xC9\x07\x00";
+
+        /**
+         * @brief 拼一条置了 RSV1 的客户端数据帧
+         * @details 先按普通帧拼好再置位首字节的 RSV1：不复用被测编码器，编码器出错时断言不会跟着错
+         * @param opCode 操作码
+         * @param payload 负载
+         * @param isFinal 是否末帧
+         * @return std::string 客户端帧字节
+         */
+        std::string makeMaskedCompressedFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal = true)
+        {
+            std::string frame = makeMaskedClientFrame(opCode, payload, isFinal);
+            frame[0] = static_cast<char>(static_cast<std::uint8_t>(frame[0]) | kRsv1Bit);
+            return frame;
+        }
+
+    // ============================================================================
+    // permessage-deflate（RFC 7692）：RSV1 的编码与解码口径
+    // ============================================================================
+
+    /**
+     * @brief 钉住编码器只在被要求压缩时置 RSV1，且只改首字节那一位
+     */
+    TEST(WebSocketFrame, EncoderSetsRsv1OnlyWhenCompressing)
+    {
+        const std::string plainFrame = encodeWebSocketFrame(WebSocketOpCode::Text, "hello");
+        ASSERT_FALSE(plainFrame.empty());
+        EXPECT_EQ(static_cast<std::uint8_t>(plainFrame[0]) & kRsv1Bit, 0U) << "未要求压缩的帧不得置 RSV1";
+
+        const std::string compressedFrame = encodeWebSocketFrame(WebSocketOpCode::Text, "hello", true, true);
+        EXPECT_EQ(static_cast<std::uint8_t>(compressedFrame[0]) & kRsv1Bit, kRsv1Bit) << "被要求压缩就必须置 RSV1";
+        EXPECT_EQ(static_cast<std::uint8_t>(compressedFrame[0]) & 0x0FU, 0x01U) << "置 RSV1 不该动操作码";
+        // 首字节之外逐字节相同：压缩只改那一位，负载由调用方给什么就发什么
+        EXPECT_EQ(compressedFrame.substr(1), plainFrame.substr(1));
+    }
+
+    /**
+     * @brief 钉住编码器拒绝把压缩标记写到控制帧与继续帧上（RFC 7692 §6.1）
+     */
+    TEST(WebSocketFrame, EncoderRejectsCompressionOnControlFrameAndContinuation)
+    {
+        try
+        {
+            static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Ping, "p", true, true));
+            ADD_FAILURE() << "控制帧不得压缩，编码器应当场拒绝";
+        } catch (const Base::InvalidArgumentException &exception)
+        {
+            EXPECT_TRUE(containsText(exception.what(), "RSV1")) << "原因要指出违规的是 RSV1，实际：" << exception.what();
+        }
+
+        try
+        {
+            static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Continuation, "c", true, true));
+            ADD_FAILURE() << "继续帧不是消息首帧，不得置 RSV1";
+        } catch (const Base::InvalidArgumentException &exception)
+        {
+            EXPECT_TRUE(containsText(exception.what(), "RSV1")) << "原因要指出违规的是 RSV1，实际：" << exception.what();
+        }
+    }
+
+    /**
+     * @brief 钉住没协商就使用扩展必须判错（RFC 6455 §5.2）
+     */
+    TEST(WebSocketFrame, DecoderRejectsRsv1WithoutNegotiation)
+    {
+        WebSocketFrameDecoder decoder;
+        const std::string reason = feedAndExpectError(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, "hello"));
+        EXPECT_TRUE(containsText(reason, "permessage-deflate")) << "原因要指出缺的是这项扩展协商，实际：" << reason;
+    }
+
+    /**
+     * @brief 钉住协商之后 RSV1 被接受，且压缩标记随帧交给上层
+     */
+    TEST(WebSocketFrame, DecoderAcceptsRsv1AfterNegotiation)
+    {
+        WebSocketFrameDecoder decoder;
+        decoder.setPerMessageDeflateEnabled(true);
+
+        // 协商之后收到的未压缩帧照常交付，压缩标记必须是 false —— 不能一律当成压缩消息
+        const WebSocketFrame plainFrame = feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Text, "plain"));
+        expectFrameEquals(plainFrame, WebSocketOpCode::Text, "plain");
+        EXPECT_FALSE(plainFrame.isCompressed);
+
+        const WebSocketFrame compressedFrame =
+                feedAndTakeFrame(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, kCompressedHelloPayload));
+        expectFrameEquals(compressedFrame, WebSocketOpCode::Text, kCompressedHelloPayload);
+        EXPECT_TRUE(compressedFrame.isCompressed) << "置了 RSV1 的消息必须带压缩标记交给上层去解压";
+    }
+
+    /**
+     * @brief 钉住 RSV1 只属于数据消息首帧：协商之后控制帧与继续帧置 RSV1 依然判错
+     */
+    TEST(WebSocketFrame, DecoderRejectsRsv1OnControlFrameAndContinuation)
+    {
+        WebSocketFrameDecoder controlDecoder;
+        controlDecoder.setPerMessageDeflateEnabled(true);
+        const std::string controlReason = feedAndExpectError(controlDecoder, makeMaskedCompressedFrame(WebSocketOpCode::Close, ""));
+        EXPECT_TRUE(containsText(controlReason, "控制帧")) << controlReason;
+
+        WebSocketFrameDecoder continuationDecoder;
+        continuationDecoder.setPerMessageDeflateEnabled(true);
+        ASSERT_EQ(feed(continuationDecoder, makeMaskedClientFrame(WebSocketOpCode::Text, "he", false)), WebSocketDecodeStatus::NeedMore);
+        const std::string continuationReason =
+                feedAndExpectError(continuationDecoder, makeMaskedCompressedFrame(WebSocketOpCode::Continuation, "llo"));
+        EXPECT_TRUE(containsText(continuationReason, "继续帧")) << continuationReason;
+    }
+
+    /**
+     * @brief 钉住分片消息的压缩标记取自首帧，后续分片不带 RSV1 也改变不了结论
+     */
+    TEST(WebSocketFrame, DecoderKeepsCompressionFlagAcrossFragments)
+    {
+        WebSocketFrameDecoder decoder;
+        decoder.setPerMessageDeflateEnabled(true);
+
+        ASSERT_EQ(feed(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, "AAA", false)), WebSocketDecodeStatus::NeedMore);
+        const WebSocketFrame frame = feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Continuation, "BBB"));
+        expectFrameEquals(frame, WebSocketOpCode::Text, "AAABBB");
+        EXPECT_TRUE(frame.isCompressed) << "压缩标记写在首帧上，重组出来的整条消息仍然是压缩消息";
+    }
+
+    /**
+     * @brief 钉住 RSV2 与协商无关：即使协商过 permessage-deflate 也一律判错（RFC 7692 只让出了 RSV1）
+     */
+    TEST(WebSocketFrame, DecoderRejectsRsv2EvenAfterNegotiation)
+    {
+        WebSocketFrameDecoder decoder;
+        decoder.setPerMessageDeflateEnabled(true);
+
+        std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
+        frame[0] = static_cast<char>(static_cast<std::uint8_t>(frame[0]) | kRsv2Bit);
+        const std::string reason = feedAndExpectError(decoder, frame);
+        EXPECT_TRUE(containsText(reason, "RSV2")) << reason;
+    }
+
 } // namespace AsynGyanis::Net

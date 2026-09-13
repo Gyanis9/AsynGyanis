@@ -355,4 +355,30 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(containsText(response, "Sec-WebSocket-Accept: " + std::string(kSecondAcceptValue) + "\r\n"));
     }
+    /**
+     * @brief 钉住未协商扩展时不写 Sec-WebSocket-Extensions
+     * @details 声明一个对端没用过的扩展会让它按压缩发帧、而本端按明文读，线上必然错位
+     */
+    TEST(WebSocketHandshake, OmitsExtensionsHeaderWhenNotNegotiated)
+    {
+        const std::string response = buildHandshakeResponse(kRfcExampleClientKey);
+        EXPECT_EQ(response.find("Sec-WebSocket-Extensions"), std::string::npos) << "没协商就不该声明扩展，实际：" << response;
+    }
+
+    /**
+     * @brief 钉住协商成功时把结论逐字写进 101，且不影响 Accept 值与结束空行
+     */
+    TEST(WebSocketHandshake, WritesExtensionsHeaderWhenNegotiated)
+    {
+        constexpr std::string_view kNegotiatedValue = "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
+
+        const std::string response = buildHandshakeResponse(kRfcExampleClientKey, kNegotiatedValue);
+        const std::string expectedLine = std::string("Sec-WebSocket-Extensions: ") + std::string(kNegotiatedValue) + "\r\n";
+        ASSERT_NE(response.find(expectedLine), std::string::npos) << "协商结论必须逐字出现在 101 里，实际：" << response;
+        EXPECT_EQ(response.find("Sec-WebSocket-Extensions"), response.rfind("Sec-WebSocket-Extensions"))
+                << "扩展只能声明一次";
+        EXPECT_NE(response.find("Sec-WebSocket-Accept: "), std::string::npos) << "扩展头不能挤掉 Accept：" << response;
+        EXPECT_TRUE(response.ends_with("\r\n\r\n")) << "结束空行不能被扩展头挤掉：" << response;
+    }
+
 } // namespace AsynGyanis::Net

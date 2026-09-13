@@ -1,6 +1,7 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include "Net/Http/HttpServerStats.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
 
 #include <cstdint>
@@ -35,14 +36,22 @@ namespace AsynGyanis::Net
 
     std::uint16_t WebSocketPeer::decodeErrorCloseCode() const noexcept
     {
-        // 负载非法的原因在本层（会话侧），此刻解码器并没有失败，因此先判它
+        // 负载层的失败在本层（会话侧），此刻解码器并没有失败，因此先判它：具体回 1007 还是 1002
+        // 由记下这条原因的那一处决定（文本非法 1007、压缩解不开 1002）
         if (!m_payloadErrorMessage.empty())
         {
-            return kWebSocketInvalidPayloadDataCode;
+            return m_payloadErrorCloseCode;
         }
 
         // 解码器的失败里只有「超限」需要与协议违规分开：超限是体量问题，格式本身合法
         return m_decoder.isLimitExceeded() ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
+    }
+
+    void WebSocketPeer::setPerMessageDeflateEnabled(const bool enabled) noexcept
+    {
+        // 收发两侧一起开关：只开一半会让本端按压缩发、按明文收（或反之），线上必然对不上
+        m_isPerMessageDeflateEnabled = enabled;
+        m_decoder.setPerMessageDeflateEnabled(enabled);
     }
 
     std::string WebSocketPeer::decodeErrorText() const
@@ -198,8 +207,18 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> WebSocketPeer::sendFrame(const WebSocketOpCode opCode, const std::string_view payload)
     {
+        // 压缩只对数据消息生效（控制帧从不压缩，RFC 7692 §6.1）；压不动就原样发——
+        // 压缩是带宽优化，而发一条对端解不开的帧比不压严重得多
+        const bool isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
+        std::optional<std::string> compressedPayload;
+        if (m_isPerMessageDeflateEnabled && isDataMessage)
+        {
+            compressedPayload = deflateWebSocketMessage(payload);
+        }
+        const std::string_view payloadToSend = compressedPayload.has_value() ? std::string_view(*compressedPayload) : payload;
+
         // 编码结果按值持有：它是本次 co_await 期间发送回调所读字节的唯一来源
-        const std::string frameBytes = encodeWebSocketFrame(opCode, payload);
+        const std::string frameBytes = encodeWebSocketFrame(opCode, payloadToSend, true, compressedPayload.has_value());
 
         // 置位「有一帧在写」：会话收尾据此避免把自己的 Close 插进这次写里（两条写路径的字节会互相穿插）
         m_isWriteInFlight = true;
@@ -264,6 +283,7 @@ namespace AsynGyanis::Net
         // 进入本次调用先清空上一次的负载错误：decodeErrorText() 与 decodeErrorCloseCode()
         // 读到的是「最近一次失败」，留着旧原因会把本次结论误导成上一次的
         m_payloadErrorMessage.clear();
+        m_payloadErrorCloseCode = kWebSocketInvalidPayloadDataCode;
 
         std::size_t offset = 0;
         while (offset < length)
@@ -281,6 +301,23 @@ namespace AsynGyanis::Net
                 // 取走即清标记，解码器才能继续消费后面的字节（剩下的字节属于下一帧）
                 WebSocketFrame frame = m_decoder.takeFrame();
 
+                // 压缩消息先解压再交付（RFC 7692 §7.2.2）：解不开的连接按协议错误收口——
+                // 字节流本端解不了，留在连接上只会越走越偏
+                if (frame.isCompressed)
+                {
+                    std::optional<std::string> inflatedPayload =
+                            inflateWebSocketMessage(frame.payload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+                    if (!inflatedPayload.has_value())
+                    {
+                        m_payloadErrorMessage = std::format("压缩消息解压失败，或解压结果超过上限 {} 字节（RFC 7692 §7.2.2）："
+                                                            "请检查对端的压缩实现，或改用未压缩帧发送",
+                                                            WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+                        m_payloadErrorCloseCode = kWebSocketProtocolErrorCode;
+                        return WebSocketFeedStatus::DecodeError;
+                    }
+                    frame.payload = std::move(*inflatedPayload);
+                }
+
                 // 文本负载必须是合法 UTF-8（RFC 6455 §5.6，编码规则见 RFC 3629），校验点是
                 // 「交给业务之前」的最后一步。解码层交付的是已重组的完整消息，因此按整条消息
                 // 一次校验即可，不需要跨分片或跨帧的增量校验状态
@@ -294,6 +331,7 @@ namespace AsynGyanis::Net
                                             "第 {} 个字节起违规，常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；"
                                             "请按 UTF-8 重新编码这段文本后重发",
                                             invalidByteOffset);
+                        m_payloadErrorCloseCode = kWebSocketInvalidPayloadDataCode;
                         // 非法负载不交付业务：返回 DecodeError 让会话发 1007 并收口
                         return WebSocketFeedStatus::DecodeError;
                     }

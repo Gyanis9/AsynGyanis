@@ -66,4 +66,8 @@ namespace AsynGyanis::Net
 
     /// 每条消息的默认压缩级别：与 HTTP 响应压缩取同一档（zlib 的 6）
     inline constexpr int kWebSocketDeflateLevel = 6;
+
+    /// 扩展所在的头部名（RFC 7692 §7.1）：h1 的请求/响应头与 h2 的头字段名都是它，
+    /// 因此协商的读入口与写出口共用同一个出处
+    inline constexpr std::string_view kWebSocketExtensionsHeaderName = "sec-websocket-extensions";
 } // namespace AsynGyanis::Net

@@ -73,11 +73,13 @@ namespace AsynGyanis::Net
      * @details 报文依次是状态行、Upgrade、Connection、Sec-WebSocket-Accept 与结束空行，
      *          行分隔符一律 CRLF，可直接整块写入连接。
      * @param clientKey 已通过 isWebSocketUpgradeRequest() 校验的 Sec-WebSocket-Key 值
+     * @param extensionsResponseValue 回给对端的 Sec-WebSocket-Extensions 取值（见
+     *        negotiatePerMessageDeflate()）；为空表示不启用任何扩展，此时不写该头部
      * @return std::string 完整的 101 报文，逐字节为
      *         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
      *         "Sec-WebSocket-Accept: <值>\r\n\r\n"
-     * @note 本实现不协商任何子协议与扩展：报文里不含 Sec-WebSocket-Protocol 与
-     *       Sec-WebSocket-Extensions，因此后续数据帧的 RSV1/RSV2/RSV3 必须全为 0
+     * @note 本实现不协商任何子协议：报文里不含 Sec-WebSocket-Protocol。扩展只在
+     *       extensionsResponseValue 非空时写一行 Sec-WebSocket-Extensions
      */
-    [[nodiscard]] std::string buildHandshakeResponse(std::string_view clientKey);
+    [[nodiscard]] std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue = {});
 } // namespace AsynGyanis::Net

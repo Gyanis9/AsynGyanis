@@ -65,7 +65,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    std::string encodeWebSocketFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal)
+    std::string encodeWebSocketFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal, const bool isCompressed)
     {
         const auto opCodeValue = static_cast<std::uint8_t>(opCode);
         if (!isKnownOpCodeValue(opCodeValue))
@@ -94,8 +94,17 @@ namespace AsynGyanis::Net
         // 预留首字节、最长 10 字节的长度域与负载，避免拼接过程中反复扩容
         frame.reserve(10 + payload.size());
 
-        // 首字节布局：FIN(1) RSV1 RSV2 RSV3 操作码(4)；RSV 三位恒为 0，因为本实现不协商任何扩展
-        frame.push_back(static_cast<char>(opCodeValue | (isFinal ? 0x80U : 0x00U)));
+        // 首字节布局：FIN(1) RSV1 RSV2 RSV3 操作码(4)。RSV1 只属于「压缩过的数据消息首帧」
+        // （RFC 7692 §6）：控制帧从不压缩，继续帧也不是首帧。
+        // 这里当场拒绝而不是发出去让对端断连——本地失败比线上失败好查得多
+        if (isCompressed && (isControlFrame || opCodeValue == 0x0U))
+        {
+            throw Base::InvalidArgumentException(isControlFrame ? "控制帧不得压缩（RFC 7692 §6.1）：RSV1 只能出现在数据消息的首帧上"
+                                                                : "继续帧不得置 RSV1（RFC 7692 §6.1）：压缩标记只写在数据消息的首帧上");
+        }
+
+        // RSV1（0x40）只在负载确实被压缩时置位；RSV2/RSV3 永远为 0
+        frame.push_back(static_cast<char>(opCodeValue | (isFinal ? 0x80U : 0x00U) | (isCompressed ? 0x40U : 0x00U)));
 
         // 长度按 7 / 16 / 64 位三档编码，服务端发出的帧一律不置掩码位（RFC 6455 §5.1），
         // 因此第二个字节的最高位恒为 0
@@ -265,6 +274,7 @@ namespace AsynGyanis::Net
         clearFrameScratch();
         m_payloadBuffer.clear();
         m_isFragmentedMessageInProgress = false;
+        m_isCurrentMessageCompressed = false;
         m_fragmentedMessageOpCodeValue = 0;
         m_pendingFrame = WebSocketFrame{};
         m_hasPendingFrame = false;
@@ -290,6 +300,11 @@ namespace AsynGyanis::Net
         return m_errorMessage;
     }
 
+    void WebSocketFrameDecoder::setPerMessageDeflateEnabled(const bool enabled) noexcept
+    {
+        m_isPerMessageDeflateEnabled = enabled;
+    }
+
     bool WebSocketFrameDecoder::acceptFirstByte(const std::uint8_t firstByte)
     {
         // 首字节布局（RFC 6455 §5.2）：FIN(1) RSV1 RSV2 RSV3 操作码(4)
@@ -297,12 +312,20 @@ namespace AsynGyanis::Net
         const auto reservedBits = static_cast<std::uint8_t>(firstByte & 0x70U);
         const auto opCodeValue = static_cast<std::uint8_t>(firstByte & 0x0FU);
 
-        // 本实现不协商任何扩展：RSV 位只允许全 0，任一位为 1 都说明对端在用没协商过的扩展
-        if (reservedBits != 0)
+        // RSV 位口径（RFC 6455 §5.2 + RFC 7692 §6）：RSV2/RSV3 必须为 0；RSV1 只在协商过
+        // permessage-deflate 且出现在数据消息首帧上时才合法——没协商就使用扩展必须判错，
+        // 否则本端会接受一条自己解不开的消息
+        const bool isCompressed = (reservedBits & 0x40U) != 0;
+        const auto otherReservedBits = static_cast<std::uint8_t>(reservedBits & 0x30U);
+        if (otherReservedBits != 0)
         {
-            recordFailure(false, std::format("RSV1/RSV2/RSV3 必须全为 0（本实现不协商任何扩展，RFC 6455 §5.2），"
-                                             "收到 RSV 位为 0x{:02X} 的帧",
-                                             reservedBits));
+            recordFailure(false, std::format("RSV2/RSV3 必须为 0（RFC 6455 §5.2），收到 RSV 位为 0x{:02X} 的帧", reservedBits));
+            return false;
+        }
+        if (isCompressed && !m_isPerMessageDeflateEnabled)
+        {
+            recordFailure(false, "收到置了 RSV1 的帧，但本连接没有协商 permessage-deflate："
+                                 "未协商就使用扩展（RFC 7692 §6），请去掉 RSV1 或先完成扩展协商");
             return false;
         }
 
@@ -315,6 +338,13 @@ namespace AsynGyanis::Net
         }
 
         const bool isControlFrame = isControlOpCodeValue(opCodeValue);
+
+        if (isCompressed && (isControlFrame || opCodeValue == 0x0U))
+        {
+            recordFailure(false, isControlFrame ? "控制帧不得压缩（RFC 7692 §6.1）：RSV1 只能出现在数据消息的首帧上"
+                                               : "继续帧不得置 RSV1（RFC 7692 §6.1）：压缩标记只写在数据消息的首帧上");
+            return false;
+        }
 
         // 控制帧必须自成一体：插在分片消息中间会让「取帧顺序」与「消息到达顺序」不再是同一件事
         if (isControlFrame && m_isFragmentedMessageInProgress)
@@ -357,6 +387,8 @@ namespace AsynGyanis::Net
             m_payloadBuffer.clear();
             m_fragmentedMessageOpCodeValue = opCodeValue;
             m_isFragmentedMessageInProgress = !isFinal;
+            // 压缩标记只认消息首帧的 RSV1：后面的分片不带 RSV1，也改变不了本条消息的结论
+            m_isCurrentMessageCompressed = isCompressed;
         }
 
         m_isFinal = isFinal;
@@ -486,6 +518,7 @@ namespace AsynGyanis::Net
         m_pendingFrame.opCode = isControlFrame ? static_cast<WebSocketOpCode>(m_opCodeValue)
                                                : static_cast<WebSocketOpCode>(isMessageEnd ? m_fragmentedMessageOpCodeValue : m_opCodeValue);
         m_pendingFrame.isFinal = true;
+        m_pendingFrame.isCompressed = !isControlFrame && m_isCurrentMessageCompressed;
         m_pendingFrame.payload = std::move(m_payloadBuffer);
         // 移动之后源串的状态未指定：显式清空，让容量留着供下一帧复用
         m_payloadBuffer.clear();
@@ -493,6 +526,7 @@ namespace AsynGyanis::Net
 
         // 消息到此收尾（未分片的数据帧与分片消息的末帧都走这里），下一帧要么开新消息，要么是控制帧
         m_isFragmentedMessageInProgress = false;
+        m_isCurrentMessageCompressed = false;
         clearFrameScratch();
         m_stage = Stage::FirstByte;
     }

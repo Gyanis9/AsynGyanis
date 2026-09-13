@@ -21,6 +21,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
@@ -281,6 +282,8 @@ namespace AsynGyanis::Net
          * @param receiveBuffer 会话的接收窗口，本阶段按窗口长度整块读取
          * @param pendingLength 升级请求之后窗口里剩余的字节数：客户端可能在 101 之前就把第一帧
          *        发了过来，这些字节必须先喂给解码器
+         * @param isPerMessageDeflateEnabled 本次升级是否协商了 permessage-deflate（RFC 7692）：打开后
+         *       本阶段的收发按压缩走。取值必须与 101 里回给对端的那一行一致，否则对端按明文解压缩帧
          */
         template<typename Socket>
         Core::Task<> webSocketSessionStage(Socket &socket,
@@ -289,7 +292,8 @@ namespace AsynGyanis::Net
                                            HttpMetricsCollector *metrics,
                                            WebSocketHandler handler,
                                            std::vector<char> &receiveBuffer,
-                                           std::size_t pendingLength)
+                                           std::size_t pendingLength,
+                                           bool isPerMessageDeflateEnabled)
         {
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
@@ -344,6 +348,7 @@ namespace AsynGyanis::Net
             };
 
             WebSocketPeer peer(sendFrameBytes, metrics);
+            peer.setPerMessageDeflateEnabled(isPerMessageDeflateEnabled);
 
             bool isBusinessFinished = false;
 
@@ -849,9 +854,15 @@ namespace AsynGyanis::Net
                         co_return;
                     }
 
+                    // 扩展协商（RFC 7692 §7.1）：对端提供了 permessage-deflate 就接受，并在 101 里回一条
+                    // 只含本端选定参数的 Sec-WebSocket-Extensions。协商结论同时决定后续数据帧能否用 RSV1
+                    const std::optional<std::string> extensionsHeader = request.getHeader(std::string(kWebSocketExtensionsHeaderName));
+                    const PerMessageDeflateNegotiation deflateNegotiation =
+                            negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
+
                     // 101 报文由握手模块逐字节生成，这里原样写出：不走 HttpResponse 的序列化，
                     // 否则会被补上 date / content-length，而切换协议的应答里没有这两条的位置
-                    const std::string handshakeResponse = buildHandshakeResponse(*clientKey);
+                    const std::string handshakeResponse = buildHandshakeResponse(*clientKey, deflateNegotiation.responseValue);
                     if (!co_await sendResponse(handshakeResponse, std::string_view{}))
                     {
                         // 101 没发出去：对端拿不到 Sec-WebSocket-Accept，这条连接不能再当 WebSocket 用
@@ -871,7 +882,8 @@ namespace AsynGyanis::Net
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
                     co_return co_await detail::webSocketSessionStage(socket, connection, limits, metrics,
-                                                                     response.webSocketHandler(), receiveBuffer, windowLength);
+                                                                     response.webSocketHandler(), receiveBuffer, windowLength,
+                                                                     deflateNegotiation.accepted);
                 }
 
                 // 计数与上限：达到上限就让 keepAlive 变 false，从而走既有的

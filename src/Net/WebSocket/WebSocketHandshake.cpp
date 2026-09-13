@@ -392,7 +392,7 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    std::string buildHandshakeResponse(const std::string_view clientKey)
+    std::string buildHandshakeResponse(const std::string_view clientKey, const std::string_view extensionsResponseValue)
     {
         // 逐字节拼出 101 报文：状态行 + 三条头部 + 结束空行，行分隔符一律 CRLF。
         // 头部名用与 HttpResponse 序列化一致的常规大小写（RFC 9110 §5.1 规定大小写不敏感）
@@ -403,6 +403,14 @@ namespace AsynGyanis::Net
         response.append("Sec-WebSocket-Accept: ");
         response.append(computeWebSocketAcceptValue(clientKey));
         response.append("\r\n");
+
+        // 扩展只在**协商成功**时写：对端没提、或提了但本端不接受，都不能声明一个它没用过的扩展
+        if (!extensionsResponseValue.empty())
+        {
+            response.append("Sec-WebSocket-Extensions: ");
+            response.append(extensionsResponseValue);
+            response.append("\r\n");
+        }
 
         // 结束空行：没有它，对端会把后续的帧字节当成头部继续读
         response.append("\r\n");
