@@ -8,10 +8,11 @@
 //   3) 流状态与并发：奇数且严格递增的流号、并发上限回 REFUSED_STREAM、RST 与双向 END_STREAM 两种终止
 //      各自的「忽略 / 判错」处置、GOAWAY 之后拒收新流（§5.1、§5.1.1、§5.1.2、§6.8）；
 //   4) 响应发送：:status 排在最前（编码字节里对应静态表索引 8）、DATA 末片带 END_STREAM、
-//      按对端 MAX_FRAME_SIZE 分片；
+//      按对端 MAX_FRAME_SIZE 分片；发送入口按结论区分「该流已被对端取消/终止」与「连接不可用」；
 //   5) 发送方向流控：窗口不足不出帧、WINDOW_UPDATE 与 SETTINGS_INITIAL_WINDOW_SIZE 续发、
 //      连接级与流级窗口取小、窗口溢出判 FLOW_CONTROL_ERROR（§5.2、§6.9）；
-//   6) 契约面：失败入口不写字节、错误出参可操作、逐字节喂入与一次性喂入结果一致。
+//   6) 契约面：失败入口不写字节、错误出参可操作、逐字节喂入与一次性喂入结果一致；
+//   7) 握手期状态：SETTINGS 待 ACK 可查询（含发帧时刻）、failConnection() 按指定错误码收口。
 // 请求方向的头部字节有一部分直接取自规范：RFC 7541 C.3.1/C.4.1 的两个请求头块 dump 用作「黄金字节」，
 // 其余请求头块由用例按静态表索引手工拼出（片段与取值都标了出处）。用例不起网络、不依赖外部服务。
 //
@@ -21,6 +22,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -855,9 +857,10 @@ namespace AsynGyanis::Net
         ASSERT_EQ(connection.takeRequests().size(), 1U);
 
         std::string errorText;
-        ASSERT_TRUE(connection.sendResponseHeaders(1U, 200U, {{"content-type", "text/plain"}}, false, &errorText)) << errorText;
-        ASSERT_TRUE(connection.sendResponseData(1U, "Hello, ", false, &errorText)) << errorText;
-        ASSERT_TRUE(connection.sendResponseData(1U, "world!", true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {{"content-type", "text/plain"}}, false, &errorText),
+                  Http2ResponseSendStatus::Sent) << errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, "Hello, ", false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, "world!", true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
 
         const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 3U) << "响应头 + 两片正文";
@@ -902,7 +905,7 @@ namespace AsynGyanis::Net
         // 24000 字节 > 16384：必须切成两帧，末片带 END_STREAM
         const std::string body(24000U, 'x');
         std::string errorText;
-        ASSERT_TRUE(connection.sendResponseData(1U, body, true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, body, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 2U);
         EXPECT_EQ(frames[0].payload.size(), static_cast<std::size_t>(kHttp2DefaultMaximumFrameSize));
@@ -926,7 +929,8 @@ namespace AsynGyanis::Net
         // 一条 20000 字节的响应头值：编码后必然超过 16384 的单帧上限
         const std::string bigValue(20000U, 'v');
         std::string errorText;
-        ASSERT_TRUE(connection.sendResponseHeaders(1U, 200U, {{"x-big", bigValue}}, false, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", bigValue}}, false, &errorText), Http2ResponseSendStatus::Sent)
+                << errorText;
         const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 2U) << "头块放不进一帧时必须续 CONTINUATION";
         EXPECT_EQ(frames[0].header.type, Http2FrameType::Headers);
@@ -963,7 +967,7 @@ namespace AsynGyanis::Net
         static_cast<void>(connection.takeRequests());
 
         std::string errorText;
-        ASSERT_TRUE(connection.sendResponseData(1U, std::string(30U, 'a'), true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, std::string(30U, 'a'), true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 1U) << "只有 10 字节的名额，第二帧不该出现";
         EXPECT_EQ(frames[0].payload.size(), 10U);
@@ -1017,7 +1021,7 @@ namespace AsynGyanis::Net
         // 70000 字节 > 连接级窗口的 65535：先发满窗口，剩下的排队
         const std::string body(70000U, 'b');
         std::string errorText;
-        ASSERT_TRUE(connection.sendResponseData(1U, body, true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, body, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         std::size_t sentByteCount = 0;
         for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
         {
@@ -1288,7 +1292,7 @@ namespace AsynGyanis::Net
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
         std::string errorText;
-        ASSERT_TRUE(connection.sendResponseHeaders(1U, 204U, {}, true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 204U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         static_cast<void>(connection.takeOutgoingBytes());
 
         // §5.1「closed」段：这两类帧必须忽略（对端可能还没看到 END_STREAM/RST_STREAM）
@@ -1456,7 +1460,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(payload.errorCode, Http2ErrorCode::RefusedStream);
 
         // 既有流还能收尾：GOAWAY 之前的流做完就行
-        ASSERT_TRUE(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         const std::vector<Http2Frame> responseFrames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(responseFrames.size(), 1U);
         EXPECT_EQ(responseFrames[0].header.type, Http2FrameType::Headers);
@@ -1500,7 +1504,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：响应入口的失败路径不写任何字节，错误文案可操作；成功后重复发送同样被拒
+     * @brief 钉住：响应入口按结论区分「这条流不可写」与「连接不可用」，失败路径不写任何字节，错误文案可操作
      */
     TEST(Http2Connection, ResponseEntryRejectsUnknownStreamAndIllegalHeaderFields)
     {
@@ -1508,35 +1512,182 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
         std::string errorText = "脏数据";
 
-        // 流不在账本里：连一个字节都不许写出去
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText));
+        // 流不在账本里：这是「该流已不可写响应」，连接本身照旧可用——调用方据此只停这条流
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::StreamNotWritable);
         EXPECT_FALSE(errorText.empty()) << "失败必须给出可排查的中文原因";
-        EXPECT_FALSE(connection.sendResponseData(1U, "x", false, &errorText));
+        EXPECT_EQ(connection.sendResponseData(1U, "x", false, &errorText), Http2ResponseSendStatus::StreamNotWritable);
+        EXPECT_FALSE(connection.hasFailed()) << "流级结论不得把连接判死";
 
-        // 还没完成 SETTINGS 协商的连接同样拒绝响应
+        // 还没完成 SETTINGS 协商的连接整条不可用
         Http2Connection notNegotiated;
-        EXPECT_FALSE(notNegotiated.sendResponseHeaders(1U, 200U, {}, true, &errorText));
+        EXPECT_EQ(notNegotiated.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::ConnectionUnavailable);
+        EXPECT_NE(errorText.find("SETTINGS"), std::string::npos) << errorText;
 
         ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
-        // 状态码越界、头名与头值不合规：全部在入口拦下
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 42U, {}, true, &errorText));
+        // 状态码越界、头名与头值不合规：全部在入口拦下，结论是用法错误 Rejected
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 42U, {}, true, &errorText), Http2ResponseSendStatus::Rejected);
         EXPECT_NE(errorText.find("状态码"), std::string::npos) << errorText;
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 1000U, {}, true, &errorText));
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 200U, {{"X-Test", "1"}}, true, &errorText));
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 200U, {{"connection", "keep-alive"}}, true, &errorText));
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 200U, {{"x-test", "a\rb"}}, true, &errorText));
-        EXPECT_FALSE(connection.sendResponseHeaders(1U, 200U, {{":status", "200"}}, true, &errorText));
-        EXPECT_FALSE(connection.sendResponseData(9U, "x", false, &errorText));
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 1000U, {}, true, &errorText), Http2ResponseSendStatus::Rejected);
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"X-Test", "1"}}, true, &errorText), Http2ResponseSendStatus::Rejected);
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"connection", "keep-alive"}}, true, &errorText),
+                  Http2ResponseSendStatus::Rejected);
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-test", "a\rb"}}, true, &errorText), Http2ResponseSendStatus::Rejected);
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{":status", "200"}}, true, &errorText), Http2ResponseSendStatus::Rejected);
+        EXPECT_EQ(connection.sendResponseData(9U, "x", false, &errorText), Http2ResponseSendStatus::StreamNotWritable);
         EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "失败路径不得写入任何字节";
 
         // 正常发出响应之后，本端已经 END_STREAM：不允许再补正文
-        ASSERT_TRUE(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText)) << errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         static_cast<void>(connection.takeOutgoingBytes());
-        EXPECT_FALSE(connection.sendResponseData(1U, "x", false, &errorText));
+        EXPECT_EQ(connection.sendResponseData(1U, "x", false, &errorText), Http2ResponseSendStatus::Rejected);
         EXPECT_FALSE(errorText.empty());
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty());
+    }
+
+    /**
+     * @brief 钉住：对端 RST_STREAM 掉一条流后，发往该流的响应结论是 StreamNotWritable 且连接可以继续
+     *        ——同连接上另一条流照旧收响应，连接不进入失败态
+     */
+    TEST(Http2Connection, ReportsStreamNotWritableWhenPeerResetsTheStream)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        // 两条并发流：流 1 请求头不带 END_STREAM（还在等正文），流 3 是完整请求
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
+                                            makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.takeRequests().size(), 2U);
+
+        // 对端取消流 1（CANcel，§5.4.2）：该流被终止，账本里随即不可写
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(static_cast<std::uint32_t>(Http2ErrorCode::Cancel)))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        Http2StreamState resetStreamState{};
+        ASSERT_TRUE(connection.tryGetStreamState(1U, resetStreamState));
+        EXPECT_EQ(resetStreamState, Http2StreamState::Closed);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        // 头与正文都给出 StreamNotWritable：调用方据此只停这条流，而不是收口整条连接
+        std::string errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {}, false, &errorText), Http2ResponseSendStatus::StreamNotWritable);
+        EXPECT_EQ(connection.sendResponseData(1U, "x", true, &errorText), Http2ResponseSendStatus::StreamNotWritable);
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "被取消的流上不得写出任何响应字节";
+
+        // 连接照旧可用：流 3 的响应正常排出，连接不失败、也不转关闭中
+        ASSERT_EQ(connection.sendResponseHeaders(3U, 200U, {}, false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.sendResponseData(3U, "still-served", true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_FALSE(connection.hasFailed());
+        EXPECT_EQ(connection.state(), Http2ConnectionState::Open) << "一条流被取消不该让连接进入关闭中或失败态";
+        const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_GE(frames.size(), 2U);
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_EQ(frame.header.streamId, 3U) << "被取消的流上不该出现任何响应帧";
+        }
+    }
+
+    /**
+     * @brief 钉住：对端 RST_STREAM 掉一条还有正文在发送队列里的流时，队列随之丢弃——连接窗口
+     *        后来变大也放不出那些字节（该流的发送窗口当时仍为正，正是能把它放出来的条件）
+     */
+    TEST(Http2Connection, DiscardsQueuedResponseDataWhenPeerResetsTheStream)
+    {
+        Http2Connection connection;
+        // 对端把流级初值调到 100000（大于连接级窗口 65535）：先被连接窗口卡住，队列里还剩正文，
+        // 而该流的发送窗口仍为正——「连接窗口后来变大」因此能把残留数据放出来，正好用来钉住丢弃
+        completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 100000U)});
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                            makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+
+        // 70000 字节 > 连接级窗口的 65535：先发满窗口，剩下的 4465 字节排队
+        const std::string body(70000U, 'q');
+        std::string errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, body, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        std::size_t sentByteCount = 0;
+        for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
+        {
+            EXPECT_EQ(frame.header.type, Http2FrameType::Data);
+            sentByteCount += frame.payload.size();
+        }
+        EXPECT_EQ(sentByteCount, static_cast<std::size_t>(kHttp2InitialWindowSizeByteCount)) << "一次最多只能送出连接级窗口的大小";
+
+        // 对端取消这条流：队列里剩下的 4465 字节（以及待发的 END_STREAM）随终止一并丢弃
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U,
+                                             makeBigEndian32(static_cast<std::uint32_t>(Http2ErrorCode::Cancel)))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "被取消的流的待发数据不得再上线";
+        Http2StreamState resetStreamState{};
+        ASSERT_TRUE(connection.tryGetStreamState(1U, resetStreamState));
+        EXPECT_EQ(resetStreamState, Http2StreamState::Closed);
+
+        // 连接级窗口变大：账本里那条已终止的流不该把丢弃的字节放出来（它的流级窗口当时仍为正）
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBigEndian32(4096U))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "连接窗口变大之后，被取消流上的残留数据不得被放出来";
+
+        // 该流本身也再不可写，连接照旧可用
+        EXPECT_EQ(connection.sendResponseData(1U, "x", true, &errorText), Http2ResponseSendStatus::StreamNotWritable);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+    }
+
+    /**
+     * @brief 钉住：SETTINGS 待 ACK 状态可查询、发帧时刻被记下，收到 ACK 后状态清除
+     */
+    TEST(Http2Connection, ReportsSettingsAwaitingAcknowledgementUntilThePeerAcknowledges)
+    {
+        Http2Connection connection;
+        EXPECT_FALSE(connection.hasSettingsAwaitingAcknowledgement()) << "前奏还没到齐，本端还没发出 SETTINGS";
+
+        // 前奏收齐即发初始 SETTINGS：此后状态为「待 ACK」，发帧时刻必须是刚刚
+        const std::chrono::steady_clock::time_point beforePrefaceTime = std::chrono::steady_clock::now();
+        EXPECT_EQ(feed(connection, std::string(kHttp2ConnectionPreface)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.hasSettingsAwaitingAcknowledgement());
+        EXPECT_GE(connection.lastSettingsSentTime(), beforePrefaceTime) << "发帧时刻必须落在前奏收齐之后";
+        EXPECT_LE(connection.lastSettingsSentTime(), std::chrono::steady_clock::now());
+        EXPECT_FALSE(connection.takeOutgoingBytes().empty()) << "此刻待发字节里应当是初始 SETTINGS";
+
+        // 对端自己的 SETTINGS 到齐也不等于 ACK 到了：状态保持
+        EXPECT_EQ(feed(connection, makeSettingsFrame({})), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.hasSettingsAwaitingAcknowledgement()) << "收到对端 SETTINGS 不代表本端 SETTINGS 被 ACK";
+
+        // 收到 ACK 即清除
+        EXPECT_EQ(feed(connection, makeSettingsAckFrame()), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasSettingsAwaitingAcknowledgement());
+    }
+
+    /**
+     * @brief 钉住：failConnection() 以指定错误码把 GOAWAY 排进待发字节并转入失败态；NO_ERROR 与重复调用被拒
+     */
+    TEST(Http2Connection, FailsConnectionWithRequestedErrorCode)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        std::string errorText = "脏数据";
+
+        // NO_ERROR 是收尾通告的码：failConnection() 必须拒绝，让调用方走 sendGoAway()
+        EXPECT_FALSE(connection.failConnection(Http2ErrorCode::NoError, "正常收尾走 sendGoAway()", &errorText));
+        EXPECT_NE(errorText.find("sendGoAway"), std::string::npos) << errorText;
+        EXPECT_FALSE(connection.hasFailed());
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "被拒的调用不得写入任何字节";
+
+        // 指定错误码：GOAWAY 带上它，连接转入粘滞失败态
+        ASSERT_TRUE(connection.failConnection(Http2ErrorCode::SettingsTimeout, "对端没有 ACK 本端 SETTINGS", &errorText)) << errorText;
+        EXPECT_TRUE(connection.hasFailed());
+        EXPECT_EQ(connection.errorCode(), Http2ErrorCode::SettingsTimeout);
+        EXPECT_NE(connection.errorMessage().find("ACK"), std::string::npos) << connection.errorMessage();
+        EXPECT_EQ(takeGoAwayErrorCode(connection.takeOutgoingBytes()), Http2ErrorCode::SettingsTimeout);
+
+        // 失败态粘滞：GOAWAY 只发一次，重复调用被拒
+        EXPECT_FALSE(connection.failConnection(Http2ErrorCode::ProtocolError, "再来一次", &errorText));
+        EXPECT_FALSE(errorText.empty());
+        EXPECT_EQ(connection.errorCode(), Http2ErrorCode::SettingsTimeout) << "第一个原因才是根因，不得改写";
         EXPECT_TRUE(connection.takeOutgoingBytes().empty());
     }
 

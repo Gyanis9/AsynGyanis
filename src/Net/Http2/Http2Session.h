@@ -55,6 +55,12 @@ namespace AsynGyanis::Net
      *       各发一个 DATA 帧，会话收尾补末片 DATA（END_STREAM）。SseStream 因此零改动即可工作。
      * @note HttpServerLimits::maximumRequestsPerConnection 由本类收口：达到上限即发 GOAWAY
      *       （h2 没有连接级的 close 头可用），既有流继续做完，本侧无在途请求后收口连接。
+     * @note 对端一直不回 ACK 本端 SETTINGS（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）时，握手期按
+     *       HttpServerLimits::settingsAcknowledgementTimeout 约束空闲截止时间：清扫协程到点收口连接，
+     *       会话在还能写字节时先尽力把 GOAWAY(SETTINGS_TIMEOUT) 送出去。
+     * @note 对端用 RST_STREAM 取消某条流只影响这条流：响应发送据此只停该流，连接与其它流照旧工作
+     *       （h2 的多路复用语义，与 h1 侧「连接级失败」的处置不是一回事）；被取消的条数计入
+     *       HttpServerStats::streamCancelledCount，既不算已应答也不算坏请求。
      *
      * @see Http2Connection, HttpsSession, Core::TlsSocket
      */
@@ -92,7 +98,31 @@ namespace AsynGyanis::Net
          */
         Core::Task<> start() override;
 
+        /**
+         * @brief 关闭会话：SETTINGS 迟迟未被 ACK 时先把 GOAWAY(SETTINGS_TIMEOUT) 尽力送出去再收口
+         *
+         * @details 重写 HttpsSession::close()：清扫协程按空闲截止时间收口本连接时会先调用本函数，
+         *          此刻描述符还在——会话自己的读协程要等描述符关闭才被唤醒，那时一个字节都写不出去。
+         *          因此这里是「会话被关停」路径上唯一还能把收口原因告知对端的时刻；写出失败只记日志，
+         *          连接照常关闭（RFC 7540 §6.5.3 允许按 SETTINGS_TIMEOUT 收口）。
+         * @note 只在「本端 SETTINGS 仍待 ACK 且已过 HttpServerLimits::settingsAcknowledgementTimeout」
+         *       时才尝试；其余情形与基类行为逐字一致
+         */
+        void close() override;
+
     private:
+        /**
+         * @brief 一条请求的服务结论
+         *
+         * @note 新增取值一律追加在末尾。
+         */
+        enum class RequestServeOutcome
+        {
+            Served,            ///< 响应已排入待发字节
+            StreamCancelled,   ///< 对端已取消这条流：本条不再有响应，连接继续服务其它流
+            ConnectionUnusable ///< 连接不可再用（连接层失败、写出失败，或本条响应因用法错误无法应答）：调用方应停止循环
+        };
+
         /**
          * @brief 一条头块已收齐的请求：正文随 DATA 片段追加，收齐后（或超限后）交给路由
          */
@@ -131,10 +161,11 @@ namespace AsynGyanis::Net
         /**
          * @brief 服务一条请求：统计、request-id、路由、错误改写与响应发送
          * @param pending 待服务的请求（正文已收齐或已超限）
-         * @return true 响应已排入待发字节
-         * @return false 响应写出失败（连接已不可用）
+         * @return RequestServeOutcome 服务结论：排入待发字节 / 对端已取消这条流 / 连接不可再用
+         * @note 对端取消是它的正当权利（RFC 9113 §8.1 的 RST_STREAM CANCEL），只停这一条流；
+         *       连接不可用与用法错误才让调用方停止循环，两者都已由各自的发送入口记过原因
          */
-        [[nodiscard]] Core::Task<bool> serveOneRequest(PendingRequest &pending);
+        [[nodiscard]] Core::Task<RequestServeOutcome> serveOneRequest(PendingRequest &pending);
 
         /**
          * @brief 记下一条已服务的请求，达到单连接上限时发 GOAWAY 收尾通告
@@ -166,10 +197,11 @@ namespace AsynGyanis::Net
          * @param streamId 目标流号
          * @param response 业务填好的响应
          * @param isHeadRequest 请求方法是否是 HEAD：置位时只发头，正文一个字节都不发
-         * @return true 响应头与正文都已排入待发字节（可能还在等窗口）
-         * @return false 响应未能排入（用法错误），原因已记日志
+         * @return Http2ResponseSendStatus 响应头与正文的发送结论：Sent 已排入待发字节（可能还在等窗口），
+         *         StreamNotWritable 对端已取消或收尾了这条流，其余取值表示连接不可用或本响应无法应答
          */
-        [[nodiscard]] Core::Task<bool> sendResponse(std::uint32_t streamId, const HttpResponse &response, bool isHeadRequest);
+        [[nodiscard]] Core::Task<Http2ResponseSendStatus> sendResponse(std::uint32_t streamId, const HttpResponse &response,
+                                                                      bool isHeadRequest);
 
         /**
          * @brief h2 版流式发送回调：把 HttpResponse::writeChunk() 交出的段落发成 HTTP/2 帧
@@ -180,7 +212,8 @@ namespace AsynGyanis::Net
          * @param streamId 本段落所属的流号
          * @param segment writeChunk 交出的段落字节
          * @return true 本段已排入待发字节（窗口不足时留在发送队列里，等对端 WINDOW_UPDATE 续发）
-         * @return false 本段未发出、连接不可再用，调用方（业务）应停止继续写
+         * @return false 本段未发出、业务应停止继续写：对端已取消这条流（连接继续服务其它流），
+         *         或连接已不可用——两种原因的日志分别由本方法与 serveOneRequest() 记出
          * @throws Base::LogicException 分块帧布局与 writeChunk 的文档不符（本段未发出，绝不把帧头当正文）
          */
         [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, std::string_view segment);
@@ -192,10 +225,10 @@ namespace AsynGyanis::Net
          *          与 h1 侧补 `0\r\n\r\n` 终止块同一个位置；一段正文都没写时头部与 END_STREAM 一起发。
          *          收尾帧立刻写出，对端因此不必等到下一轮读循环才看到消息结尾。
          * @param streamId 目标流号
-         * @return true 收尾帧已写出
-         * @return false 收尾帧未能发出（连接已不可用），调用方应停止循环
+         * @return Http2ResponseSendStatus 收尾帧的发送结论；StreamNotWritable 表示对端已取消这条流
+         *         （连接继续服务其它流），其余非 Sent 取值表示连接不可用或本响应无法应答
          */
-        [[nodiscard]] Core::Task<bool> finishStreamingResponse(std::uint32_t streamId);
+        [[nodiscard]] Core::Task<Http2ResponseSendStatus> finishStreamingResponse(std::uint32_t streamId);
 
         /**
          * @brief 把响应状态码收口成可上线的取值
@@ -221,6 +254,48 @@ namespace AsynGyanis::Net
          * @return false 传输失败，连接已不可用，调用方应停止循环
          */
         [[nodiscard]] Core::Task<bool> flushOutgoingBytes();
+
+        /**
+         * @brief 判「本端 SETTINGS 仍未被 ACK 且已过 HttpServerLimits::settingsAcknowledgementTimeout」
+         * @details 期限从连接层记下的发帧时刻起算（不是从此刻重新计满）：不 ACK 却持续发帧的对端
+         *          否则能把截止时间一轮轮往后推，SETTINGS_TIMEOUT 形同虚设。
+         * @return true 该专项限额生效、SETTINGS 仍待 ACK，且已过期
+         * @return false 限额为 0（不设这项保护）、SETTINGS 已被 ACK，或还没到期
+         */
+        [[nodiscard]] bool isSettingsAcknowledgementExpired() const noexcept;
+
+        /**
+         * @brief 取 SETTINGS 待 ACK 期间该刷给空闲截止时间的剩余时长
+         * @return std::chrono::milliseconds 从「发帧时刻 + 专项限额」算出的剩余时长，下限 1 毫秒；
+         *         该项保护为 0 或 SETTINGS 已被 ACK 时返回 0（「不适用」，调用方按常规相位时限刷新）；
+         *         已经过期时为最小正数，让清扫协程在下一拍收口——refreshIdleDeadline(0) 是
+         *         「清除截止时间」，不能用它表达「已超时」
+         */
+        [[nodiscard]] std::chrono::milliseconds settingsAcknowledgementIdleBudget() const noexcept;
+
+        /**
+         * @brief 把 GOAWAY(SETTINGS_TIMEOUT) 排进连接层的待发字节并记日志
+         * @return true 已排进待发字节（连接层转入失败态），调用方应把它写出去
+         * @return false 没有排入：连接层已失败过（GOAWAY 只发一次），原因已记日志
+         */
+        [[nodiscard]] bool queueSettingsTimeoutGoAway();
+
+        /**
+         * @brief 尽力把连接层的待发字节写出去（不挂起）
+         *
+         * @details 只在 close() 里用：此刻连接已经注定关闭，而会话协程还挂在读等待上。发送写成
+         *          异步挂起就放弃剩余字节——挂起的帧随本函数返回销毁，等待器会自行从注册对象摘除；
+         *          为一条 GOAWAY 把清扫协程拖住，代价高过对端少收一条收口通告。
+         */
+        void writeOutgoingBytesBestEffort();
+
+        /**
+         * @brief 把连接层的响应发送结论折叠成会话的服务结论
+         * @param sendStatus 连接层给出的响应发送结论
+         * @return RequestServeOutcome Sent → Served，StreamNotWritable → StreamCancelled，
+         *         ConnectionUnavailable 与 Rejected → ConnectionUnusable
+         */
+        [[nodiscard]] static RequestServeOutcome toRequestServeOutcome(Http2ResponseSendStatus sendStatus) noexcept;
 
         Http2Connection m_connection;                 ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
         Router &m_router;                             ///< 路由器引用（与基类指向同一对象）

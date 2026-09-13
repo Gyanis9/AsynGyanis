@@ -12,6 +12,7 @@
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -79,6 +80,21 @@ namespace AsynGyanis::Net
     {
         NeedMore, ///< 本段字节已消费完：可以继续读网络字节后再次喂入（不代表没有产出）
         Failed    ///< 连接进入粘滞失败态：写出 takeOutgoingBytes() 后按 errorCode() 收场
+    };
+
+    /**
+     * @brief 一次响应发送（响应头或响应正文）的结论
+     *
+     * @details 响应发送的失败分两类，调用方要采取的处置完全不同：该流已被对端取消或关闭（停掉这一条流、
+     *          连接继续服务其它流）与连接不可用（写出待发字节后收口整条连接）。用法错误单列，见 Rejected。
+     * @note 新增取值一律追加在末尾。
+     */
+    enum class Http2ResponseSendStatus
+    {
+        Sent,                  ///< 已排入待发字节或该流的发送队列（窗口不足时留在队列里，等对端 WINDOW_UPDATE 后由本层续发）
+        StreamNotWritable,     ///< 该流已不可写响应：不在账本里、已终止（对端 RST_STREAM 或双向 END_STREAM）；本条流不再需要响应，连接继续服务其它流
+        ConnectionUnavailable, ///< 连接尚未完成协商或已失败：整条连接不可再用，调用方应写出待发字节后收口
+        Rejected               ///< 本次调用参数或时序不合规（状态码越界、头名非法、已安排 END_STREAM 后又追加正文）：本条流因用法错误无法应答
     };
 
     /**
@@ -256,6 +272,37 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool sendGoAway(std::string_view reason, std::string *errorText = nullptr);
 
         /**
+         * @brief 本端主动按连接错误收口：把带 errorCode 的 GOAWAY 排进待发字节并转入失败态
+         *
+         * @details 用于本端判定连接不能继续的情形（例如对端在约定时限内没有 ACK 本端 SETTINGS，
+         *          RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）。与收尾通告 sendGoAway() 的区别在错误码与
+         *          连接去向：本方法带非 NO_ERROR 的错误码，并把连接置为粘滞失败态（此后不再解释字节）。
+         * @param errorCode 要回给对端的错误码；不能取 NoError（§7 的 NO_ERROR 属收尾通告，请改用 sendGoAway()）
+         * @param reason 中文原因，同时是 GOAWAY 的调试数据
+         * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+         * @return true 已把 GOAWAY 排进待发字节，连接转入 Failed
+         * @return false 没有写入任何字节：errorCode 是 NoError，或连接已经失败过（GOAWAY 只发一次）
+         */
+        [[nodiscard]] bool failConnection(Http2ErrorCode errorCode, std::string_view reason, std::string *errorText = nullptr);
+
+        /**
+         * @brief 本端初始 SETTINGS 是否还没被对端 ACK
+         * @details 对端在约定时限内一直不回 ACK 属连接错误（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）；
+         *          上层据此把连接的空闲截止时间切到握手期专项限额，超时即收口。
+         * @return true 本端已发出 SETTINGS 且还没收到它的 ACK
+         * @return false 初始 SETTINGS 还没发（未收齐前奏），或已经被 ACK
+         */
+        [[nodiscard]] bool hasSettingsAwaitingAcknowledgement() const noexcept;
+
+        /**
+         * @brief 取最近一次发出 SETTINGS 的时刻
+         * @return std::chrono::steady_clock::time_point 发 SETTINGS 的时刻；从没发过时返回默认时刻
+         *         （steady_clock 的起点，对任何「现在」都为过去），供上层算 SETTINGS 超时
+         * @note 用 steady_clock 而非系统时钟：超时判定不能因为系统时间被改写而提前或滞后
+         */
+        [[nodiscard]] std::chrono::steady_clock::time_point lastSettingsSentTime() const noexcept;
+
+        /**
          * @brief 在某条流上发响应头
          *
          * @details 头列表按「:status 在最前（§8.1.2.1 伪头必须先于普通头部）+ 调用方给的字段」交给
@@ -266,13 +313,15 @@ namespace AsynGyanis::Net
          * @param headerFields 除 :status 外的响应头，名必须全小写且不含连接特定头（§8.1.2）
          * @param endStream 响应是否到此结束（无正文）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
-         * @return true 已把响应头排入待发字节（窗口不影响头块，HEADERS 不受流控）
-         * @return false 用法错误，没有写入任何字节：流不在账本里、本端已在该流上发过 END_STREAM、连接
-         *         尚未协商完成或已失败、状态码越界、头名不合规（错误原因写在 errorText 里）
+         * @return Http2ResponseSendStatus Sent 已排入待发字节（窗口不影响头块，HEADERS 不受流控）；
+         *         StreamNotWritable 该流已被对端取消或已终止（停掉这条流即可，连接继续）；
+         *         ConnectionUnavailable 连接尚未协商完成或已失败；Rejected 状态码或头名不合规
+         * @note 返回非 Sent 时不写入任何字节；调用方按返回值决定是只停这条流还是收口整条连接，
+         *       不要只看 errorText（原因文本只供日志与排查）
          */
-        [[nodiscard]] bool sendResponseHeaders(std::uint32_t streamId, std::uint32_t statusCode,
-                                               const std::vector<HpackHeaderField> &headerFields, bool endStream,
-                                               std::string *errorText = nullptr);
+        [[nodiscard]] Http2ResponseSendStatus sendResponseHeaders(std::uint32_t streamId, std::uint32_t statusCode,
+                                                                  const std::vector<HpackHeaderField> &headerFields, bool endStream,
+                                                                  std::string *errorText = nullptr);
 
         /**
          * @brief 在某条流上发响应正文
@@ -285,12 +334,13 @@ namespace AsynGyanis::Net
          * @param data 正文片段，按「指针 + 长度」取，可含 NUL 与任意二进制
          * @param endStream 本片之后本端不再发正文（本片可能因窗口不足尚未出帧）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
-         * @return true 已排入待发字节或发送队列（可能一帧都没出，需等 WINDOW_UPDATE）
-         * @return false 用法错误，没有改动任何状态：流不在账本里、本端已在该流上发过 END_STREAM、连接
-         *         尚未协商完成或已失败（错误原因写在 errorText 里）
+         * @return Http2ResponseSendStatus Sent 已排入待发字节或发送队列（可能一帧都没出，需等 WINDOW_UPDATE）；
+         *         StreamNotWritable 该流已被对端取消或已终止（停掉这条流即可，连接继续）；
+         *         ConnectionUnavailable 连接尚未协商完成或已失败；Rejected 本端已收尾或已安排 END_STREAM
+         * @note 返回非 Sent 时不改动任何状态；调用方按返回值决定是只停这条流还是收口整条连接
          */
-        [[nodiscard]] bool sendResponseData(std::uint32_t streamId, std::string_view data, bool endStream,
-                                            std::string *errorText = nullptr);
+        [[nodiscard]] Http2ResponseSendStatus sendResponseData(std::uint32_t streamId, std::string_view data, bool endStream,
+                                                               std::string *errorText = nullptr);
 
         /**
          * @brief 取当前连接状态
@@ -655,6 +705,7 @@ namespace AsynGyanis::Net
         Http2ConnectionState m_state{Http2ConnectionState::AwaitingPreface}; ///< 连接状态
         std::size_t m_prefaceByteCount{0};                            ///< 已收到的前奏字节数
         std::size_t m_outstandingSettingsCount{0};                    ///< 本端已发出、还没被 ACK 的 SETTINGS 数（ACK 只允许匹配一次）
+        std::chrono::steady_clock::time_point m_lastSettingsSentTime{}; ///< 最近一次发出 SETTINGS 的时刻，供上层算 SETTINGS_TIMEOUT
         Http2ErrorCode m_errorCode{Http2ErrorCode::NoError};          ///< 连接级失败的错误码（也是 GOAWAY 里带上的码）
         std::string m_errorMessage;                                   ///< 连接级失败的中文原因
         std::string m_lastStreamErrorMessage;                         ///< 最近一次流级错误的中文原因

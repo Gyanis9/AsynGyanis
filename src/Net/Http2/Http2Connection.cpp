@@ -1,6 +1,7 @@
 #include "Net/Http2/Http2Connection.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -323,16 +324,48 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    bool Http2Connection::sendResponseHeaders(const std::uint32_t streamId, const std::uint32_t statusCode,
-                                              const std::vector<HpackHeaderField> &headerFields, const bool endStream,
-                                              std::string *const errorText)
+    bool Http2Connection::failConnection(const Http2ErrorCode errorCode, const std::string_view reason, std::string *const errorText)
+    {
+        clearError(errorText);
+        // NO_ERROR 是收尾通告的码：走 sendGoAway()，它通告 last-stream-id 并转入关闭中，语义完全不同
+        if (errorCode == Http2ErrorCode::NoError)
+        {
+            writeError(errorText, "连接错误码不能是 NO_ERROR：正常收尾请改用 sendGoAway()（它通告 last-stream-id 并转入关闭中）");
+            return false;
+        }
+        // 失败态已经带过一次真正的错误码：再补一条只会让对端把故障当成别的故障
+        if (m_state == Http2ConnectionState::Failed)
+        {
+            writeError(errorText, std::format("连接已进入失败态（{}）：GOAWAY 已经按 errorCode() 发过一次，不再重复发；请直接收口连接",
+                                              m_errorMessage));
+            return false;
+        }
+
+        // 复用连接级失败的统一记账：置粘滞失败态并把带该错误码的 GOAWAY 排进待发字节（§6.8）
+        fail(errorCode, std::string(reason));
+        return true;
+    }
+
+    bool Http2Connection::hasSettingsAwaitingAcknowledgement() const noexcept
+    {
+        return m_outstandingSettingsCount > 0;
+    }
+
+    std::chrono::steady_clock::time_point Http2Connection::lastSettingsSentTime() const noexcept
+    {
+        return m_lastSettingsSentTime;
+    }
+
+    Http2ResponseSendStatus Http2Connection::sendResponseHeaders(const std::uint32_t streamId, const std::uint32_t statusCode,
+                                                                 const std::vector<HpackHeaderField> &headerFields, const bool endStream,
+                                                                 std::string *const errorText)
     {
         clearError(errorText);
         if (m_state != Http2ConnectionState::Open && m_state != Http2ConnectionState::Closing)
         {
             writeError(errorText, std::format("连接当前状态是「{}」，不接受响应：必须先收齐客户端前奏与对端 SETTINGS，且连接没有失败",
                                              http2ConnectionStateName(m_state)));
-            return false;
+            return Http2ResponseSendStatus::ConnectionUnavailable;
         }
 
         StreamRecord *const stream = findActiveStream(streamId);
@@ -341,23 +374,23 @@ namespace AsynGyanis::Net
             writeError(errorText, std::format("流 {} 不在账本里或已经终止：只有对端开过、还没收尾的流才能回响应，"
                                              "请用 takeRequests() 交出的 streamId，或另开新流",
                                              streamId));
-            return false;
+            return Http2ResponseSendStatus::StreamNotWritable;
         }
         if (stream->state == Http2StreamState::HalfClosedLocal)
         {
             writeError(errorText, std::format("流 {} 上本端已经发过 END_STREAM：一条流只能有一个响应，请另开新流", streamId));
-            return false;
+            return Http2ResponseSendStatus::Rejected;
         }
         if (statusCode < 100 || statusCode > 999)
         {
             writeError(errorText, std::format("响应状态码 {} 越界：HTTP 状态码是 100..999 的三位数字，请给出合法取值", statusCode));
-            return false;
+            return Http2ResponseSendStatus::Rejected;
         }
         for (const HpackHeaderField &field: headerFields)
         {
             if (!acceptResponseHeaderField(field.name, field.value, errorText))
             {
-                return false;
+                return Http2ResponseSendStatus::Rejected;
             }
         }
 
@@ -373,37 +406,37 @@ namespace AsynGyanis::Net
             // 响应头就带 END_STREAM：本端方向到此为止（无正文）
             noteLocalEndStream(*stream);
         }
-        return true;
+        return Http2ResponseSendStatus::Sent;
     }
 
-    bool Http2Connection::sendResponseData(const std::uint32_t streamId, const std::string_view data, const bool endStream,
-                                           std::string *const errorText)
+    Http2ResponseSendStatus Http2Connection::sendResponseData(const std::uint32_t streamId, const std::string_view data,
+                                                              const bool endStream, std::string *const errorText)
     {
         clearError(errorText);
         if (m_state != Http2ConnectionState::Open && m_state != Http2ConnectionState::Closing)
         {
             writeError(errorText, std::format("连接当前状态是「{}」，不接受响应：必须先收齐客户端前奏与对端 SETTINGS，且连接没有失败",
                                              http2ConnectionStateName(m_state)));
-            return false;
+            return Http2ResponseSendStatus::ConnectionUnavailable;
         }
 
         StreamRecord *const stream = findActiveStream(streamId);
         if (stream == nullptr)
         {
             writeError(errorText, std::format("流 {} 不在账本里或已经终止：只有对端开过、还没收尾的流才能发正文", streamId));
-            return false;
+            return Http2ResponseSendStatus::StreamNotWritable;
         }
         if (stream->state == Http2StreamState::HalfClosedLocal)
         {
             writeError(errorText, std::format("流 {} 上本端已经发过 END_STREAM：不能再发正文，请另开新流", streamId));
-            return false;
+            return Http2ResponseSendStatus::Rejected;
         }
         if (stream->isEndStreamPending)
         {
             writeError(errorText, std::format("流 {} 上已经安排了 END_STREAM（可能还在等窗口）：本片之后只能由对端收尾，"
                                              "请不要再追加正文",
                                              streamId));
-            return false;
+            return Http2ResponseSendStatus::Rejected;
         }
 
         // 正文先进队列再按窗口尽量出帧：窗口不足的部分留在这里，等对端 WINDOW_UPDATE 进来后由 feedBytes() 续发
@@ -413,7 +446,7 @@ namespace AsynGyanis::Net
             stream->isEndStreamPending = true;
         }
         pumpSendQueue(*stream);
-        return true;
+        return Http2ResponseSendStatus::Sent;
     }
 
     Http2ConnectionState Http2Connection::state() const noexcept
@@ -490,8 +523,10 @@ namespace AsynGyanis::Net
             {static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), m_configuration.maximumFrameSize},
             {static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize), m_configuration.maximumHeaderListSize}};
         appendOutgoing(encodeHttp2SettingsFrame(payload));
-        // 记下「有 1 个 SETTINGS 待确认」：对端的第一个 ACK 只能匹配它，第二个就是多余的
+        // 记下「有 1 个 SETTINGS 待确认」：对端的第一个 ACK 只能匹配它，第二个就是多余的。
+        // 同时记下发帧时刻：上层按「该时刻 + 握手期限额」算 SETTINGS_TIMEOUT 的空闲截止时间
         m_outstandingSettingsCount = 1;
+        m_lastSettingsSentTime = std::chrono::steady_clock::now();
     }
 
     bool Http2Connection::handleFrame(Http2Frame frame)

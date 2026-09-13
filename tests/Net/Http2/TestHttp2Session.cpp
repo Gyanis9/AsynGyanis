@@ -11,7 +11,11 @@
 //   6) 流式响应：startChunkedResponse()/writeChunk()（SseStream 建在它之上）在 h2 上发成 HEADERS + 若干
 //      DATA 帧、末片带 END_STREAM，头部一律剥掉连接特定头（RFC 9113 §8.2.2）且不写 content-length；
 //      首段必须在处理器结束之前到达客户端（渐进性）；
-//   7) 单连接请求上限：达到 maximumRequestsPerConnection 时发 GOAWAY（NO_ERROR）并在无在途请求后收口。
+//   7) 单连接请求上限：达到 maximumRequestsPerConnection 时发 GOAWAY（NO_ERROR）并在无在途请求后收口；
+//   8) SETTINGS ACK 超时：对端永不 ACK 时按 settingsAcknowledgementTimeout 收口（GOAWAY 错误码
+//      SETTINGS_TIMEOUT = 0x4、连接随后关闭、计入 timeoutClosedCount）；该项限额为 0 时不设保护；
+//   9) 单流取消：客户端 RST_STREAM 掉一条流只影响它自己——同连接的并发流与后续请求照旧被服务，
+//      被取消的条数单独计入 HttpServerStats::streamCancelledCount。
 // 夹具在本文件内自建（TestHttp2Server + TlsHttp2LoopbackClient），端口由内核分配，用例之间不共用端口。
 // 客户端的帧解码复用生产解码器（Http2FrameDecoder），响应的头块复用生产解码器（HpackDecoder）解回，
 // 因此「服务端吐出的字节」始终由第二份实现对照。
@@ -81,7 +85,7 @@ namespace AsynGyanis::Net
         constexpr std::size_t kGeneratedRequestIdSeparatorIndex = 4;
 
         /**
-         * @brief 观测性/超时用例共用的限额：超时三项都设得很长
+         * @brief 观测性/超时用例共用的限额：超时四项都设得很长
          * @return HttpServerLimits 关掉超时保护的配置
          */
         HttpServerLimits makeLongTimeoutLimits()
@@ -90,6 +94,7 @@ namespace AsynGyanis::Net
             limits.idleTimeout  = std::chrono::seconds{10};
             limits.readTimeout  = std::chrono::seconds{10};
             limits.writeTimeout = std::chrono::seconds{10};
+            limits.settingsAcknowledgementTimeout = std::chrono::seconds{10};
             return limits;
         }
 
@@ -363,6 +368,17 @@ namespace AsynGyanis::Net
         std::string makeSettingsAckFrame()
         {
             return encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true});
+        }
+
+        /**
+         * @brief 拼一个 RST_STREAM 帧
+         * @param streamId 目标流号
+         * @param errorCode 复位错误码（对端取消用 CANCEL）
+         * @return std::string 完整帧字节
+         */
+        std::string makeRstStreamFrame(const std::uint32_t streamId, const Http2ErrorCode errorCode)
+        {
+            return encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = errorCode}, streamId);
         }
 
         /**
@@ -1662,7 +1678,8 @@ namespace AsynGyanis::Net
         TlsHttp2LoopbackClient client(listeningPort, "h2");
         ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
 
-        // 前奏与 SETTINGS 完成协商，此后一个请求都不发：连接停在空闲相位
+        // 前奏与 SETTINGS 完成协商（含 ACK：ACK 过才能进入业务空闲相位，否则约束本连接的是
+        // 握手期专项限额，不是 idleTimeout），此后一个请求都不发：连接停在空闲相位
         std::vector<TestFrame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
         ASSERT_TRUE(client.pumpUntil(frames,
@@ -1671,6 +1688,7 @@ namespace AsynGyanis::Net
                                          return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
                                      },
                                      kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
 
         EXPECT_TRUE(client.waitForClosure(kWaitTimeout))
                 << "空闲 h2 连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 300ms + 清扫节拍 30ms）";
@@ -2107,6 +2125,191 @@ namespace AsynGyanis::Net
 
         // 收尾通告之后服务端在无在途请求时收口（与 h1 侧「回完当前响应即收口」同一口径）
         EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "GOAWAY 之后连接没有收口";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：对端永不 ACK 本端 SETTINGS 时按 SETTINGS_TIMEOUT 收口——客户端在超时 + 清扫节拍内
+     *        收到 GOAWAY（错误码 0x4），连接随后关闭，收口计入 timeoutClosedCount
+     */
+    TEST(Http2Session, SendsSettingsTimeoutGoAwayWhenPeerNeverAcknowledges)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits = makeLongTimeoutLimits();
+        limits.settingsAcknowledgementTimeout = std::chrono::milliseconds{200};
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        // 只发前奏与自己的 SETTINGS：此后一个字节都不回，尤其不回服务端初始 SETTINGS 的 ACK
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+
+        // 时序纪律：先等到 GOAWAY 这个信号，再比对它的错误码——上界是「超时 200ms + 清扫节拍 30ms」
+        // 之外还留了 kWaitTimeout 的余量
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1;
+                                     },
+                                     kWaitTimeout)) << "对端没有 ACK 本端 SETTINGS 时没有在时限内收到 GOAWAY";
+        const TestFrame *const goAwayFrame = findFrame(frames, Http2FrameType::GoAway);
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(goAwayFrame->streamId, 0U) << "GOAWAY 必须是连接级帧（流号 0）";
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::SettingsTimeout)
+                << "GOAWAY 的错误码应当是 SETTINGS_TIMEOUT（0x4）";
+
+        EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().stats().timeoutClosedCount >= 1;
+                },
+                kWaitTimeout)) << "被 SETTINGS 超时收口的连接没有计入 timeoutClosedCount";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：settingsAcknowledgementTimeout 取 0 表示不设这项保护——对端同样不回 ACK，但不发
+     *        GOAWAY、连接也不被 SETTINGS 超时收口，照常服务请求
+     */
+    TEST(Http2Session, KeepsConnectionWhenSettingsTimeoutProtectionIsOff)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits = makeLongTimeoutLimits();
+        limits.settingsAcknowledgementTimeout = std::chrono::milliseconds{0};
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+
+        // 400ms 的观察窗：远大于对照用例设的 200ms，窗口内出现 GOAWAY 就说明保护没被关掉
+        const bool hasSeenGoAwayWithinWindow =
+                client.pumpUntil(frames,
+                                 [](const std::vector<TestFrame> &receivedFrames)
+                                 {
+                                     return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1;
+                                 },
+                                 std::chrono::milliseconds{400});
+        EXPECT_FALSE(hasSeenGoAwayWithinWindow) << "该项限额为 0 时不得按 SETTINGS_TIMEOUT 收口";
+
+        // 连接照常可用：不 ACK 的客户端发来的请求仍被正常服务
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "限额为 0 的连接没有继续服务请求";
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> responseHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(responseHeaders, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "served-hello");
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+    }
+
+    /**
+     * @brief 钉住：客户端 RST_STREAM 取消一条流只影响它自己——同连接上并发的另一条流照旧拿到完整
+     *        响应，连接不关闭（客户端随后还能发第三条并得到 200），被取消的那条不计成协议错误
+     *
+     * @details 构造形态是「请求与 RST_STREAM 同批到达」：会话在服务某条流期间不读字节（驱动顺序是
+     *          「读 → 喂 → 服务 → 再写出」），RST 若不在同一段字节里，就只会等这一轮服务结束才被看到。
+     *          流 1 的响应因此落在「流已被对端取消」这条结论上，正是本用例要钉住的处置。
+     */
+    TEST(Http2Session, KeepsServingOtherStreamsWhenPeerResetsOneStream)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 两条并发流：流 1 请求大响应并同批被取消，流 3 是正常请求
+        std::string requestBatch = makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/large"), true);
+        requestBatch += makeRstStreamFrame(1U, Http2ErrorCode::Cancel);
+        requestBatch += makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true);
+        ASSERT_TRUE(client.sendBytes(requestBatch, kWaitTimeout)) << "两条并发请求未能写入";
+
+        // 时序纪律：先等流 3 的完整响应——它蕴含「流 1 的取消已被处理且连接仍在服务」，再逐项比对
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 3U);
+                                     },
+                                     kWaitTimeout)) << "同连接上的另一条流没有在时限内拿到完整响应（取消一条流不该影响其它流）";
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> thirdStreamHeaders =
+                decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 3U));
+        EXPECT_EQ(findHeaderValue(thirdStreamHeaders, ":status"), "200") << "并发流没有被正常服务";
+        EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello") << "并发流的响应正文不完整";
+        EXPECT_FALSE(hasEndStream(frames, 1U)) << "被取消的流不该再收到任何响应";
+        EXPECT_EQ(countFrames(frames, Http2FrameType::GoAway), 0U) << "取消一条流不该让连接进入收尾";
+        EXPECT_EQ(countFrames(frames, Http2FrameType::RstStream), 0U) << "本端不该为对端的取消回敬 RST_STREAM";
+        for (const TestFrame &frame: frames)
+        {
+            EXPECT_NE(frame.streamId, 1U) << "被取消的流上不该出现任何响应帧（待发数据已丢弃）";
+        }
+
+        // 连接未关闭：第三条请求（流 5）照常拿到 200 与完整正文
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(5U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout))
+                << "取消一条流之后连接不再可用";
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 5U);
+                                     },
+                                     kWaitTimeout)) << "取消一条流之后同连接的第三条请求没有响应";
+        const std::vector<HpackHeaderField> fifthStreamHeaders =
+                decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 5U));
+        EXPECT_EQ(findHeaderValue(fifthStreamHeaders, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 5U), "served-hello");
+
+        // 统计口径：被取消的那条不算已应答（两条 200 计进 2xx），也不是协议错误（badRequestCount 为 0），
+        // 而是单独计进「单流取消」这一类
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().stats().totalRequestCount >= 3 && fixture.server().stats().streamCancelledCount >= 1;
+                },
+                kWaitTimeout)) << "统计没有在时限内记下三条请求与一次单流取消";
+        const HttpServerStats stats = fixture.server().stats();
+        EXPECT_EQ(stats.status2xxCount, 2u) << "被取消的响应不得计入状态码分类";
+        EXPECT_EQ(stats.badRequestCount, 0u) << "对端取消是它的正当权利（RFC 9113 §8.1），不是协议错误";
+        EXPECT_EQ(stats.streamCancelledCount, 1u) << "被取消的那条流应单独计入「单流取消」这一类";
+
+        client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
         EXPECT_FALSE(fixture.startThrew());
     }
