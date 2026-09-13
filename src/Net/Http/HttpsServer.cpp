@@ -3,6 +3,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
 #include "Net/Http/HttpsSession.h"
+#include "Net/Http2/Http2Session.h"
 
 #include <openssl/ssl.h>
 
@@ -50,9 +51,15 @@ namespace AsynGyanis::Net
         }
 
         // 描述符的所有权就此交给 TlsSocket（它是唯一所有者），socket 被移空只剩占位值；
-        // 真正的 TLS 握手留给会话协程去做，这里绝不做任何网络动作
+        // 真正的 TLS 握手留给会话协程去做，这里绝不做任何网络动作。
+        //
+        // ALPN 分流：ALPN 协商结果产生于握手过程，而本函数在握手之前被同步调用，此刻读到的必然
+        // 是空串（见 TlsSocket::selectedAlpnProtocol()）。因此这里统一创建 Http2Session —— 它继承
+        // HttpsSession 的全部传输层与 HTTP/1.1 路径，由它在握手完成后按协商结果选协议：
+        // 协商出 h2 就跑 HTTP/2 循环，否则（http/1.1 或客户端没提 ALPN）原样交回 HttpsSession。
+        // 明文 h2c（前奏直发、无 ALPN）不在本片：那条路径上没有任何 ALPN 可读，连接按 HTTP/1.1 处理
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<HttpsSession>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
+        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits);
     }
 
     void HttpsServer::setLimits(HttpServerLimits limits)

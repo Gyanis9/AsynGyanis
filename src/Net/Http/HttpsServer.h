@@ -66,10 +66,16 @@ namespace AsynGyanis::Net
          *          socket 所有权随 Core::TlsSocket 转移，会话交给基类的是一条占位套接字；此处不做
          *          任何网络动作，握手留在会话协程里做，以免在事件循环线程上阻塞。
          *
+         * @details ALPN 分流：ALPN 协商结果产生于握手过程，本函数在握手之前被调用，因此这里不按
+         *          「读到的 ALPN」选类（那必然读到空串），统一创建 Http2Session —— 它继承
+         *          HttpsSession 的全部传输层与 HTTP/1.1 路径，在握手完成后按协商结果选协议：
+         *          h2 走 HTTP/2 循环，其余交回 HTTP/1.1 循环。明文 h2c（前奏直发）不在本片。
+         *
          * @param socket 已 accept 且已设为非阻塞的套接字，所有权就此转移
-         * @return std::shared_ptr<Core::Connection> 实际类型为 HttpsSession，永不为空
+         * @return std::shared_ptr<Core::Connection> 实际类型为 Http2Session（内含 HTTP/2 与
+         *         HTTP/1.1 两条路径），永不为空
          * @throws Base::Exception SSL 对象申请失败（此时 socket 随形参析构被关闭）
-         * @see TcpServer::createConnection(), HttpsSession, Core::TlsContext::createSSL()
+         * @see TcpServer::createConnection(), Http2Session, Http2Session::start(), Core::TlsContext::createSSL()
          */
         std::shared_ptr<Core::Connection> createConnection(Core::AsyncSocket socket) override;
 

@@ -22,7 +22,8 @@ namespace AsynGyanis::Core
      * 适用于服务端 TLS 连接的上下文管理。
      *
      * @details 构造即完成安全加固：最低 TLS 1.2、关闭压缩、安全等级 2 与显式排除弱套件、
-     *          ALPN 只提供 http/1.1。需要 mTLS 时再调用 loadClientCertificateAuthority()
+     *          ALPN 支持 h2 与 http/1.1（只能从客户端提供过的名字里挑，偏好 h2）。
+     *          需要 mTLS 时再调用 loadClientCertificateAuthority()
      *          与 setClientCertificateRequired()，两者都必须早于 createSSL()。
      *          非 Windows 平台还会在构造时忽略 SIGPIPE：OpenSSL 内部的写入不走 MSG_NOSIGNAL
      *          路径，对端已关闭时（握手失败发 alert、SSL_shutdown 发 close_notify）默认会触发

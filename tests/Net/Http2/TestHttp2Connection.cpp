@@ -1046,6 +1046,122 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：消费掉对端正文后按量回 WINDOW_UPDATE（连接级与流级各一条），没到阈值就先攒着
+     */
+    TEST(Http2Connection, CreditsConsumedDataWithWindowUpdates)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+
+        // 三片共 32868 字节：单帧不超过 16384，总量超过半个窗口（32767）但不越接收窗口，不该判错
+        const std::string firstChunk(16384U, 'a');
+        const std::string secondChunk(16384U, 'b');
+        const std::string thirdChunk(100U, 'c');
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, firstChunk)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, secondChunk)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, thirdChunk)),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        const std::vector<Http2ReceivedData> receivedData = connection.takeReceivedData();
+        ASSERT_EQ(receivedData.size(), 3U);
+        EXPECT_EQ(receivedData[0].data, firstChunk);
+        EXPECT_EQ(receivedData[0].flowControlByteCount, firstChunk.size()) << "流控账要按帧负载原长记";
+        EXPECT_TRUE(receivedData[2].endStream);
+
+        std::string errorText;
+        // 第一片消费完还没到半个窗口：按阈值策略先攒着，一个字节都不发
+        ASSERT_TRUE(connection.creditReceivedData(1U, receivedData[0].flowControlByteCount, &errorText)) << errorText;
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "没到半个窗口的消费量不该逐帧回敬 WINDOW_UPDATE";
+
+        // 第二片消费完累计 32768 >= 32767：连接级与流级各回一条，增量就是累计消费量
+        ASSERT_TRUE(connection.creditReceivedData(1U, receivedData[1].flowControlByteCount, &errorText)) << errorText;
+        const std::vector<Http2Frame> updateFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(updateFrames.size(), 2U) << "连接级与流级窗口都要还";
+        EXPECT_EQ(updateFrames[0].header.streamId, 0U) << "先还连接级窗口";
+        EXPECT_EQ(updateFrames[1].header.streamId, 1U) << "再还流级窗口";
+        for (const Http2Frame &frame: updateFrames)
+        {
+            EXPECT_EQ(frame.header.type, Http2FrameType::WindowUpdate);
+            Http2WindowUpdatePayload payload;
+            std::string parseErrorText;
+            ASSERT_TRUE(parseHttp2WindowUpdatePayload(frame, payload, &parseErrorText)) << parseErrorText;
+            EXPECT_EQ(payload.windowSizeIncrement, firstChunk.size() + secondChunk.size()) << "增量应当等于这一段累计消费量";
+        }
+
+        // 第三片（100 字节）消费掉：没到下一轮阈值，仍然不发帧
+        ASSERT_TRUE(connection.creditReceivedData(1U, receivedData[2].flowControlByteCount, &errorText)) << errorText;
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty());
+
+        // 契约面：连接失败之后不再受理消费回报
+        Http2Connection failedConnection;
+        completeHandshake(failedConnection);
+        ASSERT_EQ(feed(failedConnection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 2U,
+                                                  makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::Failed);
+        static_cast<void>(failedConnection.takeOutgoingBytes());
+        EXPECT_FALSE(failedConnection.creditReceivedData(2U, 16U, &errorText));
+        EXPECT_FALSE(errorText.empty()) << "失败必须给出中文原因";
+        EXPECT_TRUE(failedConnection.creditReceivedData(2U, 0U, &errorText)) << "零字节消费是空操作，不算失败";
+    }
+
+    /**
+     * @brief 钉住：对端发出的 DATA 突破接收窗口时判连接错误 FLOW_CONTROL_ERROR（§6.9.1）
+     */
+    TEST(Http2Connection, RejectsDataBeyondTheReceiveWindow)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+
+        // 帧层单帧上限是 16384，因此用 4 片凑出 65536 > 65535：最后一片必然把窗口扣成负数
+        const std::string chunk(16384U, 'x');
+        for (int frameIndex = 0; frameIndex < 3; ++frameIndex)
+        {
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)), Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_FALSE(connection.hasFailed()) << "前 3 片应当合法：" << connection.errorMessage();
+        }
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)), Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(connection.errorCode(), Http2ErrorCode::FlowControlError);
+        EXPECT_NE(connection.errorMessage().find("接收窗口"), std::string::npos) << connection.errorMessage();
+        EXPECT_EQ(takeGoAwayErrorCode(connection.takeOutgoingBytes()), Http2ErrorCode::FlowControlError);
+    }
+
+    /**
+     * @brief 钉住：已终止流上被忽略的在途 DATA 也要把连接级窗口还回去（否则连接窗口会被慢慢吃掉）
+     */
+    TEST(Http2Connection, ReturnsConnectionWindowForIgnoredDataOnTerminatedStreams)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        // 本端因为请求头不合规 RST 掉流 1：其后到达的 DATA 属于对端的在途数据，按 §5.1 忽略
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                            hpackIndexedField(2) + hpackIndexedField(6))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(takeRstStreamFrames(connection).size(), 1U);
+
+        // 攒够半个连接窗口（32767）的忽略数据：连接级窗口必须因此回一次 WINDOW_UPDATE
+        const std::string chunk(16384U, 'y');
+        for (int frameIndex = 0; frameIndex < 3; ++frameIndex)
+        {
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)), Http2ConnectionFeedStatus::NeedMore);
+        }
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+        EXPECT_TRUE(connection.takeReceivedData().empty()) << "已终止的流不再交出正文";
+
+        const std::vector<Http2Frame> updateFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(updateFrames.size(), 1U) << "被丢弃的正文消费在连接级窗口上，应当回一条 WINDOW_UPDATE";
+        EXPECT_EQ(updateFrames[0].header.type, Http2FrameType::WindowUpdate);
+        EXPECT_EQ(updateFrames[0].header.streamId, 0U) << "流已终止：只还连接级窗口，不发流级帧";
+    }
+
+    /**
      * @brief 钉住：窗口增益导致窗口超过 2^31-1 时判 FLOW_CONTROL_ERROR（§6.9.1）
      */
     TEST(Http2Connection, RejectsWindowUpdateThatOverflowsTheWindow)

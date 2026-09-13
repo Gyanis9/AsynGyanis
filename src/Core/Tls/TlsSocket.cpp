@@ -177,6 +177,27 @@ namespace AsynGyanis::Core
         return m_socket.fileDescriptor();
     }
 
+    std::string TlsSocket::selectedAlpnProtocol() const
+    {
+        // SSL 对象已经释放（close() 之后）：通道都没了，不存在协商结果
+        if (!m_ssl)
+        {
+            return {};
+        }
+
+        const unsigned char *protocolName = nullptr;
+        unsigned int protocolNameLength = 0;
+        SSL_get0_alpn_selected(m_ssl.get(), &protocolName, &protocolNameLength);
+        if (protocolName == nullptr || protocolNameLength == 0)
+        {
+            return {};
+        }
+
+        // 按「指针 + 长度」构造：协议名里可能出现的字节都由 RFC 7301 限定，但长度感知的写法与
+        // 本仓库其它二进制安全接口保持一致，不依赖零终止
+        return std::string(reinterpret_cast<const char *>(protocolName), protocolNameLength);
+    }
+
     InetAddress TlsSocket::remoteAddress() const
     {
         // 地址只存在于底层套接字上：SSL 对象不保存地址，也不需要在关闭后提供它

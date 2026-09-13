@@ -54,6 +54,12 @@ namespace AsynGyanis::Net
         return m_tlsSocket.fileDescriptor() != kInvalidSocketDescriptor;
     }
 
+    Core::TlsSocket &HttpsSession::tlsSocket() noexcept
+    {
+        // 按引用交出：所有权与收尾责任仍留在本类（见声明处的生命周期约束）
+        return m_tlsSocket;
+    }
+
     void HttpsSession::close()
     {
         // 先收 TLS 通道再走基类：SSL_shutdown 需要底层描述符仍然有效

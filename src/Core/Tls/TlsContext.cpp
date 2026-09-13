@@ -10,22 +10,40 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 服务端唯一对外提供的 ALPN 协议名（注意：选择回调要的是裸协议名，不带长度前缀）
+        /// 服务端对外提供的 ALPN 协议名（注意：选择回调要的是裸协议名，不带长度前缀）
+        constexpr unsigned char kHttp2ProtocolName[] = {'h', '2'};
         constexpr unsigned char kHttp11ProtocolName[] = {'h', 't', 't', 'p', '/', '1', '.', '1'};
+
+        /**
+         * @brief 一条 ALPN 偏好：本端支持的一个协议名
+         */
+        struct AlpnPreference
+        {
+            const unsigned char *protocolName;     ///< 协议名（裸名称，不带长度前缀）
+            unsigned int protocolNameLength;       ///< 协议名字节数
+        };
+
+        /// 本端偏好顺序：h2 在前、http/1.1 在后（选择策略的唯一出处，新增协议按偏好插进这个表即可）
+        constexpr AlpnPreference kAlpnPreferences[] = {
+            {kHttp2ProtocolName, static_cast<unsigned int>(sizeof(kHttp2ProtocolName))},
+            {kHttp11ProtocolName, static_cast<unsigned int>(sizeof(kHttp11ProtocolName))},
+        };
 
         /// 显式排除弱算法：MD5/RC4/3DES/DES/导出级/匿名/PSK/SRP 一律不进服务端候选套件，
         /// 与安全等级 2 形成双保险（等级策略可能随发行版配置变化，这份列表不会）
         constexpr const char *kServerCipherList = "HIGH:!aNULL:!eNULL:!MD5:!RC4:!3DES:!DES:!EXPORT:!PSK:!SRP";
 
         /**
-         * @brief ALPN 选择回调：客户端提了协议列表就固定选 http/1.1。
-         * @details 本框架只实现 HTTP/1.1（不做 HTTP/2），选它等于明确告知对端这一点；
+         * @brief ALPN 选择回调：在客户端提供的列表里按本端偏好选出协议名
+         * @details 偏好顺序见 kAlpnPreferences（h2 优先、其次 http/1.1）。只能选客户端**提供过**的名字
+         *          （RFC 7301 §3.2）：替对端选一个它没提过的名字会被严格的客户端直接拒绝。
          *          客户端没提供 ALPN 时返回 NOACK 让握手继续，不因为对端没提就拒绝连接。
          * @param outputProtocol 出参，被选中的协议名（裸名称，不带长度前缀）
          * @param outputLength 出参，协议名字节数
          * @param clientProtocols 客户端提供的协议列表（线上格式：长度字节 + 名称）
          * @param clientProtocolsLength 客户端列表总字节数
-         * @return int SSL_TLSEXT_ERR_OK 选中 http/1.1；SSL_TLSEXT_ERR_NOACK 未提供列表
+         * @return int SSL_TLSEXT_ERR_OK 选中了客户端提供过的协议名；SSL_TLSEXT_ERR_NOACK 未提供列表；
+         *         SSL_TLSEXT_ERR_ALERT_FATAL 列表里没有本端支持的协议
          */
         int selectAlpnProtocol(SSL *, const unsigned char **outputProtocol, unsigned char *outputLength,
                                const unsigned char *clientProtocols, const unsigned int clientProtocolsLength, void *)
@@ -36,31 +54,34 @@ namespace AsynGyanis::Core
                 return SSL_TLSEXT_ERR_NOACK;
             }
 
-            // 客户端列表是「单字节长度 + 协议名」的序列，只能在对方提供过的名字里挑：
-            // 选一个它没提过的协议名违反 RFC 7301，严格的客户端会直接拒绝这条连接
-            unsigned int offset = 0;
-            while (offset < clientProtocolsLength)
+            // 外层按本端偏好、内层扫客户端列表：客户端列表是「单字节长度 + 协议名」的序列，
+            // 同一条协议提几次都不改变它是否被支持，因此偏好顺序完全由本端这张表决定
+            for (const AlpnPreference &preference: kAlpnPreferences)
             {
-                const unsigned int protocolLength = clientProtocols[offset];
-                ++offset;
-
-                // 长度前缀为 0 或越出列表尾部都说明列表被截断，按「没有可选项」处理
-                if (protocolLength == 0 || offset + protocolLength > clientProtocolsLength)
+                unsigned int offset = 0;
+                while (offset < clientProtocolsLength)
                 {
-                    break;
-                }
+                    const unsigned int protocolLength = clientProtocols[offset];
+                    ++offset;
 
-                if (protocolLength == sizeof(kHttp11ProtocolName) &&
-                    std::memcmp(clientProtocols + offset, kHttp11ProtocolName, protocolLength) == 0)
-                {
-                    *outputProtocol = kHttp11ProtocolName;
-                    *outputLength = static_cast<unsigned char>(protocolLength);
-                    return SSL_TLSEXT_ERR_OK;
+                    // 长度前缀为 0 或越出列表尾部都说明列表被截断，按「没有可选项」处理
+                    if (protocolLength == 0 || offset + protocolLength > clientProtocolsLength)
+                    {
+                        break;
+                    }
+
+                    if (protocolLength == preference.protocolNameLength &&
+                        std::memcmp(clientProtocols + offset, preference.protocolName, protocolLength) == 0)
+                    {
+                        *outputProtocol = preference.protocolName;
+                        *outputLength = static_cast<unsigned char>(protocolLength);
+                        return SSL_TLSEXT_ERR_OK;
+                    }
+                    offset += protocolLength;
                 }
-                offset += protocolLength;
             }
 
-            // 一条都不匹配（例如只提 h2）：明确回 no_application_protocol，
+            // 一条都不匹配（例如只提 http/1.0）：明确回 no_application_protocol，
             // 好过替对端选一个它根本没提供过的协议名
             return SSL_TLSEXT_ERR_ALERT_FATAL;
         }

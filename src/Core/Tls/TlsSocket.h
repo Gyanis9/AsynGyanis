@@ -14,6 +14,7 @@
 #include <openssl/ssl.h>
 
 #include <memory>
+#include <string>
 
 namespace AsynGyanis::Core
 {
@@ -100,6 +101,16 @@ namespace AsynGyanis::Core
          * @return 文件描述符值
          */
         [[nodiscard]] int fileDescriptor() const noexcept;
+
+        /**
+         * @brief 取 ALPN 协商结果
+         * @details 走 SSL_get0_alpn_selected：客户端没提 ALPN、或列表里没有双方都支持的协议名时，
+         *          结果为空串（此时双方按不使用 ALPN 处理，不代表握手失败）。
+         * @return std::string 协商出的协议名，如 "h2"、"http/1.1"；未协商时为空串
+         * @note **必须在握手完成之后调用**：ALPN 结果产生于握手过程，握手之前读到的一律是空串，
+         *       调用方若在握手前分流会永远看到「未协商」
+         */
+        [[nodiscard]] std::string selectedAlpnProtocol() const;
 
         /**
          * @brief 获取对端的 IP 地址与端口。

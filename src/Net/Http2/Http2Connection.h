@@ -135,6 +135,7 @@ namespace AsynGyanis::Net
         std::uint32_t streamId{0}; ///< 数据所属的流号
         std::string data;          ///< 应用数据；空串表示零长 DATA 帧（§6.1 允许，常见于带 END_STREAM 的收尾帧）
         bool endStream{false};     ///< 对端在这片数据上置了 END_STREAM：该流的对端方向到此为止
+        std::size_t flowControlByteCount{0}; ///< 本片占用的流控字节数：DATA 帧负载原长（含 padding，§6.9.1 要求 padding 也计入）
     };
 
     /**
@@ -144,6 +145,7 @@ namespace AsynGyanis::Net
      *          写出 → takeRequests()/takeReceivedData() 交给业务 → 业务调 sendResponse*() → 再
      *          takeOutgoingBytes()」驱动：本层既不阻塞也不 co_await，窗口不足的数据留在发送队列里，
      *          收到 WINDOW_UPDATE 后由本层在同一入口内续发，上层只需在每次入口调用后再取一次字节。
+     *          接收方向则由上层回报消费量（creditReceivedData()），窗口更新帧由本层排进待发字节。
      *
      * @note 流状态判定表（RFC 7540 §5.1、§5.1.1）：从未开启（idle）的流只接受 HEADERS 与 PRIORITY，
      *       其余帧（DATA/WINDOW_UPDATE/RST_STREAM/CONTINUATION）判连接错误 PROTOCOL_ERROR；新流号必须
@@ -157,8 +159,10 @@ namespace AsynGyanis::Net
      *
      * @warning 连接进入失败态后不再消费任何字节：调用方必须写出 takeOutgoingBytes() 里的 GOAWAY（错误码
      *          即 errorCode()）后收场，继续喂字节只会一直得到 Failed。
-     * @warning 本片不做接收方向流控（不发 WINDOW_UPDATE）：对端发满 65535 字节正文后会自行停下，接线层
-     *          要在消费正文后补窗口更新。也不解释尾部头块内容、不建优先级树、不实现服务端推送。
+     * @warning 接收方向流控由调用方驱动：takeReceivedData() 交出正文后，调用方必须对每片调用
+     *          creditReceivedData()（按 flowControlByteCount 报量），否则对端的发送窗口耗尽后会
+     *          停在半途等窗口，大请求永远收不完。本层不做尾部头块的内容解释、不建优先级树、
+     *          不实现服务端推送；超过窗口的 DATA 按 §6.9.1 判连接错误 FLOW_CONTROL_ERROR。
      */
     class Http2Connection
     {
@@ -214,8 +218,28 @@ namespace AsynGyanis::Net
          * @brief 取走已收到的正文片段
          * @return std::vector<Http2ReceivedData> 按到达顺序排列的片段；没有新片段时为空
          * @note 取走即清空。零长 DATA 帧同样会出现（可能只为了带 END_STREAM）
+         * @note 取走只是「交付」，不代表消费：调用方处理完每片之后必须调 creditReceivedData()
+         *       把窗口还回去，见该方法的说明
          */
         [[nodiscard]] std::vector<Http2ReceivedData> takeReceivedData();
+
+        /**
+         * @brief 报告已消费的对端正文，按量把接收窗口还回去
+         *
+         * @details 调用方消费掉 takeReceivedData() 交出的片段后调用它（每片一次），本层据此把连接级
+         *          与流级接收窗口补回（RFC 7540 §6.9.1），窗口因此不会随请求体量单调耗尽。
+         *          为了不逐帧回敬，累计未还的字节达到该窗口初始值的一半才发一次 WINDOW_UPDATE。
+         *
+         * @param streamId 正文所属的流号，取自 Http2ReceivedData::streamId
+         * @param byteCount 本次消费的字节数，取 Http2ReceivedData::flowControlByteCount（含 padding）
+         * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+         * @return true 已记入接收窗口（可能还没到发 WINDOW_UPDATE 的阈值）
+         * @return false 用法错误，没有改动任何状态：连接已失败或已进入失败态前不可用，或
+         *         byteCount 超过窗口上限 2^31-1（原因写在 errorText 里）
+         * @note 该流已经终止（对端 RST 或双向 END_STREAM）时只还连接级窗口：对已终止流的流级
+         *       WINDOW_UPDATE 会被对端按 §5.1 忽略，发了也没有意义
+         */
+        [[nodiscard]] bool creditReceivedData(std::uint32_t streamId, std::size_t byteCount, std::string *errorText = nullptr);
 
         /**
          * @brief 在某条流上发响应头
@@ -330,6 +354,8 @@ namespace AsynGyanis::Net
             std::int64_t sendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端可发送的流级窗口，可为负（§6.9.2 要求允许并等 WINDOW_UPDATE 救回来）
             std::string pendingData;                                          ///< 窗口不足时排队的正文
             bool isEndStreamPending{false};                                   ///< 队列排空后是否还要补一个 END_STREAM
+            std::int64_t receiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的流级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
+            std::size_t pendingReceiveCreditByteCount{0};                     ///< 已消费、还没用 WINDOW_UPDATE 还回去的字节数
         };
 
         /**
@@ -525,6 +551,27 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool increaseStreamSendWindow(StreamRecord &stream, std::uint32_t increment);
 
         /**
+         * @brief 把消费掉的字节还给连接级接收窗口，够阈值就发一个 WINDOW_UPDATE
+         * @param byteCount 本次消费的字节数
+         */
+        void creditConnectionReceiveWindow(std::size_t byteCount);
+
+        /**
+         * @brief 把消费掉的字节还给某条流的接收窗口，够阈值就发一个 WINDOW_UPDATE
+         * @param stream 目标流；传空指针或已终止的流时只记账，不发流级帧
+         * @param byteCount 本次消费的字节数
+         */
+        void creditStreamReceiveWindow(StreamRecord *stream, std::size_t byteCount);
+
+        /**
+         * @brief 判累计未还的字节够不够发一次 WINDOW_UPDATE
+         * @param pendingByteCount 该窗口上累计未还的字节数
+         * @param advertisedWindowByteCount 该窗口对本端通告的初始值
+         * @return true 达到阈值，应当发一次 WINDOW_UPDATE
+         */
+        [[nodiscard]] static bool isReceiveCreditWorthFlushing(std::size_t pendingByteCount, std::uint32_t advertisedWindowByteCount) noexcept;
+
+        /**
          * @brief 尽量把一条流的待发正文按窗口与分片上限发出去
          * @param stream 目标流；队列排空且有待发的 END_STREAM 时补一个零长 DATA 帧收尾
          */
@@ -613,6 +660,8 @@ namespace AsynGyanis::Net
         std::size_t m_openStreamCount{0};                             ///< Open 与两个半关状态的流数（并发上限的判据）
         std::uint32_t m_highestPeerStreamId{0};                       ///< 对端已用过的最大流号：判「严格递增」与 GOAWAY 的 last-stream-id
         std::int64_t m_connectionSendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 连接级发送窗口（只受 WINDOW_UPDATE 影响，§6.9.2）
+        std::int64_t m_connectionReceiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的连接级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
+        std::size_t m_pendingConnectionReceiveCreditByteCount{0};     ///< 已消费、还没用 WINDOW_UPDATE 还回去的连接级字节数
         std::map<std::uint16_t, std::uint32_t> m_peerSettings;        ///< 对端 SETTINGS 记账（标识 → 取值，重复出现以来值为准）
         bool m_hasPeerGoAway{false};                                  ///< 是否已收到对端 GOAWAY
         Http2GoAwayPayload m_peerGoAway{};                            ///< 对端 GOAWAY 的负载

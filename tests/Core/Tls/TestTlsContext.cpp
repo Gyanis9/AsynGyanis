@@ -589,14 +589,11 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 客户端只提供 h2 时不得以 http/1.1 完成握手
-     *
-     * @details 钉住的是可观测行为：这种连接不能协商成功、也不能出现 http/1.1 的协商结果。
-     *          注意它**不能区分**两种实现——「服务端扫描列表后拒选」与「服务端乱选、
-     *          客户端自己拒绝」都会让两端完不成握手，故选择规则本身靠代码评审与
-     *          "客户端提供 http/1.1 时能协商成功"那条用例共同守住。
+     * @brief 客户端只提供 h2 时协商结果就是 h2（本框架已支持 HTTP/2）
+     * @details 钉住两点：h2 属于本端支持的协议，且选择只在客户端提供过的名字里进行。
+     *          协商失败（例如只提 http/1.0）的情形由 AlpnRejectsClientOfferingOnlyUnsupportedProtocols 覆盖。
      */
-    TEST(TlsContext, AlpnRejectsClientThatOnlyOffersH2)
+    TEST(TlsContext, AlpnNegotiatesH2WhenClientOnlyOffersH2)
     {
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
@@ -608,6 +605,64 @@ namespace AsynGyanis::Core
         const unsigned char h2OnlyAlpn[] = {2, 'h', '2'};
         const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false,
                                                               h2OnlyAlpn, static_cast<unsigned int>(sizeof(h2OnlyAlpn)));
+
+        ASSERT_FALSE(outcome.setupFailed);
+        ASSERT_TRUE(outcome.alpnListAccepted) << "客户端未能登记 ALPN 列表";
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
+        EXPECT_EQ(outcome.serverAlpn, "h2");
+        EXPECT_EQ(outcome.clientAlpn, "h2");
+    }
+
+    /**
+     * @brief 客户端把 h2 与 http/1.1 都提出来时优先选 h2，且与客户端的排列顺序无关
+     * @details 钉住偏好顺序：本端按 h2 → http/1.1 的次序挑，不是「客户端先提谁就选谁」。
+     */
+    TEST(TlsContext, AlpnPrefersH2WhenClientOffersBoth)
+    {
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        // 两种排列各跑一次：h2 在前与 http/1.1 在前都必须选出 h2
+        const std::vector<std::vector<unsigned char>> alpnLists = {
+            {2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'},
+            {8, 'h', 't', 't', 'p', '/', '1', '.', '1', 2, 'h', '2'},
+        };
+        for (const std::vector<unsigned char> &alpnList: alpnLists)
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+
+            const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false,
+                                                                  alpnList.data(), static_cast<unsigned int>(alpnList.size()));
+
+            ASSERT_FALSE(outcome.setupFailed);
+            ASSERT_TRUE(outcome.alpnListAccepted) << "客户端未能登记 ALPN 列表";
+            EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+            EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
+            EXPECT_EQ(outcome.serverAlpn, "h2") << "两个协议都提时必须优先 h2";
+            EXPECT_EQ(outcome.clientAlpn, "h2");
+        }
+    }
+
+    /**
+     * @brief 客户端只提本端不支持的协议（http/1.0）时协商失败，且失败原因是没得选
+     *
+     * @details 钉住「只能选客户端提供过的名字」的另一半：一个都不匹配时必须回
+     *          no_application_protocol 终止握手，而不是替对端选一个它没提过的协议名。
+     */
+    TEST(TlsContext, AlpnRejectsClientOfferingOnlyUnsupportedProtocols)
+    {
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        // 线格式是「长度前缀 + 协议名」：这里只提供 http/1.0，本端不支持
+        const unsigned char http10OnlyAlpn[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '0'};
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false,
+                                                              http10OnlyAlpn, static_cast<unsigned int>(sizeof(http10OnlyAlpn)));
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_FALSE(outcome.serverCompleted) << "服务端替客户端选了一个它没提供过的协议名";

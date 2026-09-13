@@ -259,6 +259,34 @@ namespace AsynGyanis::Net
         return std::exchange(m_pendingReceivedData, std::vector<Http2ReceivedData>{});
     }
 
+    bool Http2Connection::creditReceivedData(const std::uint32_t streamId, const std::size_t byteCount, std::string *const errorText)
+    {
+        clearError(errorText);
+        // 零长 DATA 帧不占窗口，没什么可还
+        if (byteCount == 0)
+        {
+            return true;
+        }
+        if (m_state == Http2ConnectionState::Failed)
+        {
+            writeError(errorText, std::format("连接已失败（{}）：不再补发 WINDOW_UPDATE，请按 errorCode() 终止连接", m_errorMessage));
+            return false;
+        }
+        // 窗口增量的线上字段是 31 位（§6.9.1）：超过它只能是调用方报错了数量，宁可拒绝也不静默截断
+        if (byteCount > kHttp2MaximumWindowSizeByteCount)
+        {
+            writeError(errorText, std::format("本次消费字节数 {} 超过窗口上限 2^31-1：请按 Http2ReceivedData::flowControlByteCount 逐片报量",
+                                             byteCount));
+            return false;
+        }
+
+        creditConnectionReceiveWindow(byteCount);
+        // 流已终止时只还连接级窗口：对已终止流的流级 WINDOW_UPDATE 会被对端按 §5.1 忽略
+        StreamRecord *const stream = findStream(streamId);
+        creditStreamReceiveWindow(stream, byteCount);
+        return true;
+    }
+
     bool Http2Connection::sendResponseHeaders(const std::uint32_t streamId, const std::uint32_t statusCode,
                                               const std::vector<HpackHeaderField> &headerFields, const bool endStream,
                                               std::string *const errorText)
@@ -513,6 +541,19 @@ namespace AsynGyanis::Net
             return false;
         }
 
+        // 流控记账（RFC 7540 §6.9.1）：DATA 帧的**整段负载**都占窗口——含帧层剥掉的 padding，
+        // 也含随后会被忽略或判错的那些帧。对端已经按自己的账扣过一次，本端不记就是漏账
+        const std::int64_t frameByteCount = static_cast<std::int64_t>(frame.header.payloadLength);
+        m_connectionReceiveWindowByteCount -= frameByteCount;
+        if (m_connectionReceiveWindowByteCount < 0)
+        {
+            fail(Http2ErrorCode::FlowControlError,
+                 std::format("连接级接收窗口被突破：对端在本端通告的窗口只剩 {} 字节时又发出了 {} 字节的 DATA（RFC 7540 §6.9.1），"
+                             "请检查对端的窗口记账",
+                             m_connectionReceiveWindowByteCount + frameByteCount, frameByteCount));
+            return false;
+        }
+
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
@@ -522,10 +563,25 @@ namespace AsynGyanis::Net
                              streamId, m_highestPeerStreamId));
             return false;
         }
+        if (stream->state != Http2StreamState::Closed)
+        {
+            // 流级窗口同样按整段负载扣：负数说明对端突破了本端通告的 SETTINGS_INITIAL_WINDOW_SIZE
+            stream->receiveWindowByteCount -= frameByteCount;
+            if (stream->receiveWindowByteCount < 0)
+            {
+                fail(Http2ErrorCode::FlowControlError,
+                     std::format("流 {} 的接收窗口被突破：对端在窗口只剩 {} 字节时又发出了 {} 字节的 DATA（RFC 7540 §6.9.1）",
+                                 streamId, stream->receiveWindowByteCount + frameByteCount, frameByteCount));
+                return false;
+            }
+        }
         if (stream->state == Http2StreamState::Closed)
         {
             if (isIgnorableFrameOnTerminatedStream(*stream, Http2FrameType::Data))
             {
+                // 这片数据不会再交给上层（流已终止），就当它已被消费：把连接级窗口还回去，
+                // 否则对端在终止流上补发的在途 DATA 会永久吃掉连接窗口
+                creditConnectionReceiveWindow(static_cast<std::size_t>(frameByteCount));
                 return true;
             }
             fail(Http2ErrorCode::StreamClosed,
@@ -546,6 +602,8 @@ namespace AsynGyanis::Net
         receivedData.streamId = streamId;
         receivedData.data = std::move(payload.data);
         receivedData.endStream = payload.endStream;
+        // 交付时带上整段负载的字节数：上层按它报消费量，窗口账才不会漏掉 padding
+        receivedData.flowControlByteCount = static_cast<std::size_t>(frameByteCount);
         m_pendingReceivedData.push_back(std::move(receivedData));
         if (payload.endStream)
         {
@@ -1273,6 +1331,8 @@ namespace AsynGyanis::Net
         stream.state = Http2StreamState::Open;
         // 流级发送窗口的初值取对端通告的 SETTINGS_INITIAL_WINDOW_SIZE（§6.9.2），不是本端通告的那个
         stream.sendWindowByteCount = peerInitialWindowSize();
+        // 流级接收窗口的初值取**本端**通告的 SETTINGS_INITIAL_WINDOW_SIZE：对端按它扣，本端按它判超发
+        stream.receiveWindowByteCount = static_cast<std::int64_t>(m_configuration.initialWindowSize);
         m_streams[streamId] = std::move(stream);
         ++m_openStreamCount;
         // 记下已用过的最大流号：后续新流必须严格大于它（§5.1.1）
@@ -1400,6 +1460,50 @@ namespace AsynGyanis::Net
         }
         stream.sendWindowByteCount += static_cast<std::int64_t>(increment);
         return true;
+    }
+
+    void Http2Connection::creditConnectionReceiveWindow(const std::size_t byteCount)
+    {
+        m_pendingConnectionReceiveCreditByteCount += byteCount;
+        // 不够阈值就先攒着：逐帧回敬 WINDOW_UPDATE 会让小分片的请求多出一倍控制帧
+        if (!isReceiveCreditWorthFlushing(m_pendingConnectionReceiveCreditByteCount, kHttp2InitialWindowSizeByteCount))
+        {
+            return;
+        }
+
+        const std::size_t creditByteCount = std::exchange(m_pendingConnectionReceiveCreditByteCount, std::size_t{0});
+        // 连接级窗口的初值恒为 65535，与 SETTINGS_INITIAL_WINDOW_SIZE 无关（§6.9.2）
+        m_connectionReceiveWindowByteCount += static_cast<std::int64_t>(creditByteCount);
+        appendOutgoing(encodeHttp2WindowUpdateFrame(
+                Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(creditByteCount)}, 0U));
+    }
+
+    void Http2Connection::creditStreamReceiveWindow(StreamRecord *const stream, const std::size_t byteCount)
+    {
+        // 流已经终止或压根不在账本里：流级窗口连同记录一起作废，只当没有这条窗口
+        if (stream == nullptr || stream->state == Http2StreamState::Closed)
+        {
+            return;
+        }
+
+        stream->pendingReceiveCreditByteCount += byteCount;
+        if (!isReceiveCreditWorthFlushing(stream->pendingReceiveCreditByteCount, m_configuration.initialWindowSize))
+        {
+            return;
+        }
+
+        const std::size_t creditByteCount = std::exchange(stream->pendingReceiveCreditByteCount, std::size_t{0});
+        stream->receiveWindowByteCount += static_cast<std::int64_t>(creditByteCount);
+        appendOutgoing(encodeHttp2WindowUpdateFrame(
+                Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(creditByteCount)}, stream->streamId));
+    }
+
+    bool Http2Connection::isReceiveCreditWorthFlushing(const std::size_t pendingByteCount,
+                                                       const std::uint32_t advertisedWindowByteCount) noexcept
+    {
+        // 阈值取该窗口初始值的一半：攒够半个窗口发一次，既不会逐帧回敬，也不会让对端停在半途
+        const std::size_t thresholdByteCount = std::max<std::size_t>(1U, advertisedWindowByteCount / 2U);
+        return pendingByteCount >= thresholdByteCount;
     }
 
     void Http2Connection::pumpSendQueue(StreamRecord &stream)

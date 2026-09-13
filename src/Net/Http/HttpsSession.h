@@ -142,6 +142,20 @@ namespace AsynGyanis::Net
          */
         void onIdleTimeoutClosed() noexcept override;
 
+    protected:
+        /**
+         * @brief 取本会话的 TLS 通道，供子类在同一通道上跑自己的协议循环
+         *
+         * @details 描述符与 SSL 对象的所有权仍然只属于本类成员：子类拿到的是一份**借用**。
+         *          典型用法是子类握手后按 ALPN 选协议，非本类协议的那一支仍交回本类的 start()。
+         *
+         * @return Core::TlsSocket& 通道引用，随本对象存活
+         * @note 可执行的生命周期约束：引用只在会话对象存活期间有效；子类不得移走它、不得单独
+         *       调用它的 close()（收尾统一走 closeTlsTransport() 或 close()），
+         *       否则描述符会被关两次
+         */
+        [[nodiscard]] Core::TlsSocket &tlsSocket() noexcept;
+
     private:
         Core::TlsSocket m_tlsSocket;      ///< TLS 通道，持有 SSL 对象与真实描述符
         Router &m_router;                 ///< 路由器引用，用于分发请求

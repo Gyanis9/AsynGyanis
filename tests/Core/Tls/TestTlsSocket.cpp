@@ -150,6 +150,30 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 未握手时 ALPN 协商结果为空串：调用方据此知道「此刻读到的空结果不代表没协商」
+     * @details 与 h2 分流直接相关：会话必须等握手完成之后再读这个值，握手前读到的一律是空串。
+     */
+    TEST(TlsSocket, SelectedAlpnProtocolIsEmptyBeforeHandshake)
+    {
+        EventLoop loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+        EXPECT_TRUE(tlsSocket.selectedAlpnProtocol().empty()) << "握手尚未发生，不该有 ALPN 协商结果";
+
+        tlsSocket.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
      * @brief 「上下文建的 SSL + 描述符对」这条组合路径自洽：暴露的描述符与传入的一致
      * @details 与 ConstructionWrapsDescriptor 的区别是本用例显式断言包装结果，覆盖 SSL 对象归属的完整链路
      */
