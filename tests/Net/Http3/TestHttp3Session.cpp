@@ -27,6 +27,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -50,6 +51,9 @@ namespace AsynGyanis::Net
 
         /// SETTINGS 帧的帧类型（RFC 9114 §7.2.4）
         constexpr std::uint8_t kSettingsFrameType = 0x04;
+
+        /// 请求的 :scheme 取值：h3 只跑在 TLS 上（放在静态存储期，供伪头构造引用）
+        constexpr const char *kRequestScheme = "https";
 
         /// 记下会话交给出口的一段流数据
         struct CapturedStreamData
@@ -156,15 +160,7 @@ namespace AsynGyanis::Net
              */
             std::vector<CapturedStreamData> submitRequest(const std::string &method, const std::string &path, const std::string &authority)
             {
-                // 伪头的名字是编译期常量、取值来自参数，逐条按名字长度给出 namelen
-                const auto makeHeaderField = [](const char *const name, const std::string &value)
-                {
-                    return nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name), reinterpret_cast<const std::uint8_t *>(value.data()),
-                                      std::strlen(name), value.size(), NGHTTP3_NV_FLAG_NONE};
-                };
-                const std::string scheme = "https";
-                const std::vector<nghttp3_nv> headerFields{makeHeaderField(":method", method), makeHeaderField(":scheme", scheme),
-                                                           makeHeaderField(":authority", authority), makeHeaderField(":path", path)};
+                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
 
                 if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), nullptr, nullptr) !=
                     0)
@@ -172,6 +168,59 @@ namespace AsynGyanis::Net
                     return {};
                 }
                 return takeOutgoingBytes();
+            }
+
+            /**
+             * @brief 提交一条带正文的请求：正文由数据读取回调按批给出
+             * @param method 方法原文
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @param body 正文
+             * @param chunkByteCount 每次回调给出的字节数（分批到达就是这样造出来的）
+             * @return true 请求已提交（字节要靠 takeNextWriteStep() 逐步取出）
+             */
+            bool submitRequestWithBody(const std::string &method, const std::string &path, const std::string &authority, std::string body,
+                                       const std::size_t chunkByteCount)
+            {
+                m_requestBody           = std::move(body);
+                m_requestBodyOffset     = 0;
+                m_requestChunkByteCount = chunkByteCount;
+
+                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
+                nghttp3_data_reader           dataReader{};
+                dataReader.read_data = readRequestBody;
+                return nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), &dataReader,
+                                                   this) == 0;
+            }
+
+            /**
+             * @brief 只取一次写出的字节：把请求分步送到服务端，模拟正文随时间到达
+             * @return CapturedStreamData 本次写出的片段；没有待发字节时 streamId 为 -1
+             */
+            CapturedStreamData takeNextWriteStep()
+            {
+                CapturedStreamData step;
+                step.streamId = -1;
+
+                nghttp3_vec vectors[8]{};
+                std::int64_t      streamId = -1;
+                int               isFinal  = 0;
+                const nghttp3_ssize vectorCount = nghttp3_conn_writev_stream(m_connection, &streamId, &isFinal, vectors, 8);
+                if (vectorCount <= 0 || streamId == -1)
+                {
+                    return step;
+                }
+
+                std::size_t totalLength = 0;
+                for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
+                {
+                    step.bytes.insert(step.bytes.end(), vectors[vectorIndex].base, vectors[vectorIndex].base + vectors[vectorIndex].len);
+                    totalLength += vectors[vectorIndex].len;
+                }
+                step.streamId    = streamId;
+                step.isEndStream = isFinal != 0;
+                nghttp3_conn_add_write_offset(m_connection, streamId, totalLength);
+                return step;
             }
 
             /// 把服务端回的字节喂进来解出响应
@@ -253,6 +302,28 @@ namespace AsynGyanis::Net
             static int onEndStream(nghttp3_conn *, std::int64_t, void *userData, void *);
             static int onStreamClose(nghttp3_conn *, std::int64_t, std::uint64_t, void *userData, void *);
             static void onRandom(std::uint8_t *destination, std::size_t destinationLength);
+            static nghttp3_ssize readRequestBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount, std::uint32_t *flags,
+                                                void *connectionUserData, void *streamUserData);
+
+            /**
+             * @brief 造出请求的四个伪头
+             * @param method 方法原文
+             * @param path 路径
+             * @param authority 权威主机
+             * @return std::vector<nghttp3_nv> 伪头数组（名字是常量、取值来自参数，逐条给出 namelen）
+             */
+            static std::vector<nghttp3_nv> makePseudoHeaders(std::string_view method, std::string_view path, std::string_view authority)
+            {
+                const auto makeHeaderField = [](const char *const name, const std::string_view value)
+                {
+                    return nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name), reinterpret_cast<const std::uint8_t *>(value.data()),
+                                      std::strlen(name), value.size(), NGHTTP3_NV_FLAG_NONE};
+                };
+                // 取值一律以视图给出：nghttp3_nv 只存指针，而 :scheme 用常量、其余指向调用方的实参，
+                // 三者的寿命都覆盖到提交那一刻（曾经把它做成函数内的局部 std::string，返回即悬空）
+                return {makeHeaderField(":method", method), makeHeaderField(":scheme", kRequestScheme),
+                        makeHeaderField(":authority", authority), makeHeaderField(":path", path)};
+            }
 
             static nghttp3_callbacks makeCallbacks() noexcept
             {
@@ -268,6 +339,9 @@ namespace AsynGyanis::Net
             nghttp3_conn    *m_connection{nullptr};   ///< 客户端连接
             DecodedResponse  m_response;              ///< 解出来的响应
             nghttp3_tstamp   m_timestamp{1};          ///< read_stream2 的时间戳（单调递增即可）
+            std::string      m_requestBody;           ///< 待发的请求正文
+            std::size_t      m_requestBodyOffset{0};  ///< 正文已交给 nghttp3 的字节数
+            std::size_t      m_requestChunkByteCount{0}; ///< 每次回调给出的正文批大小
         };
 
         int Http3ClientPeer::onReceiveHeader(nghttp3_conn *, std::int64_t, std::int32_t, nghttp3_rcbuf *name, nghttp3_rcbuf *value, std::uint8_t,
@@ -316,6 +390,27 @@ namespace AsynGyanis::Net
         int Http3ClientPeer::onStreamClose(nghttp3_conn *, std::int64_t, std::uint64_t, void *, void *)
         {
             return 0;
+        }
+
+        nghttp3_ssize Http3ClientPeer::readRequestBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, const std::size_t vectorCount,
+                                                      std::uint32_t *flags, void *, void *streamUserData)
+        {
+            auto *peer = static_cast<Http3ClientPeer *>(streamUserData);
+            if (peer == nullptr || vectorCount == 0 || peer->m_requestBodyOffset >= peer->m_requestBody.size())
+            {
+                *flags = NGHTTP3_DATA_FLAG_EOF;
+                return 0;
+            }
+
+            const std::size_t remainingByteCount = peer->m_requestBody.size() - peer->m_requestBodyOffset;
+            const std::size_t chunkByteCount =
+                    (peer->m_requestChunkByteCount < remainingByteCount) ? peer->m_requestChunkByteCount : remainingByteCount;
+            vectors[0].base = reinterpret_cast<std::uint8_t *>(peer->m_requestBody.data() + peer->m_requestBodyOffset);
+            vectors[0].len  = chunkByteCount;
+            peer->m_requestBodyOffset += chunkByteCount;
+            // 只有这一批就是最后一批时才收尾，否则后面还有正文
+            *flags = (peer->m_requestBodyOffset >= peer->m_requestBody.size()) ? NGHTTP3_DATA_FLAG_EOF : NGHTTP3_DATA_FLAG_NONE;
+            return 1;
         }
 
         void Http3ClientPeer::onRandom(std::uint8_t *destination, const std::size_t destinationLength)
@@ -561,10 +656,12 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 命中流式正文路由时 h3 必须明确失败：那条路由要的正文流本端还没接上
-     * @details 挡这一下是为了让处理器根本不被调用——否则它一取 bodyStream() 就是空指针
+     * @brief 流式正文路由在 h3 上真的边收边读：处理器在正文收齐之前就拿到了前几批
+     * @details 断言分两步下：先把请求分步送到服务端，只送到「头部 + 第一批」时就要求处理器已经
+     *          进去且读到了第一批（这是「不等整份正文」的直接证据）；再把余下的送完，要求它读到
+     *          全部字节、按批交付，并且响应是 200。
      */
-    TEST(Http3Session, Answers500WhenTheMatchedRouteReadsStreamingRequestBody)
+    TEST(Http3Session, StreamsRequestBodyToTheHandlerBeforeTheBodyIsComplete)
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
@@ -576,34 +673,70 @@ namespace AsynGyanis::Net
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                              });
 
-        bool   isHandlerInvoked = false;
+        constexpr std::size_t    kChunkByteCount = 4;
+        const std::string        body            = "abcdefghijkl"; // 共 3 批
+        std::vector<std::size_t> observedChunkByteCounts;
+        bool                     isHandlerEntered = false;
+
         Router router;
         router.postStreaming("/upload",
-                             [&isHandlerInvoked](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             [&observedChunkByteCounts, &isHandlerEntered](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                              {
-                                 isHandlerInvoked = true;
+                                 isHandlerEntered = true;
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                     observedChunkByteCounts.push_back(request.bodyStream()->chunk().size());
+                                 }
                                  response.setStatus(200);
+                                 response.setBody("uploaded");
                                  co_return;
                              });
         session.attachRouter(router);
 
         Http3ClientPeer peer;
         ASSERT_TRUE(peer.isUsable());
-        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("POST", "/upload", "example.com");
-        ASSERT_FALSE(requestChunks.empty());
-        for (const CapturedStreamData &chunk: requestChunks)
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", body, kChunkByteCount));
+
+        // 只送到「处理器拿到第一批」为止：此刻正文还远没收齐，处理器却已经进去了
+        bool isFirstChunkObserved = false;
+        for (std::size_t stepIndex = 0; stepIndex < 16 && !isFirstChunkObserved; ++stepIndex)
         {
-            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+            isFirstChunkObserved = isHandlerEntered && !observedChunkByteCounts.empty();
+        }
+        EXPECT_TRUE(isFirstChunkObserved) << "正文收齐之前处理器没拿到第一批：这条路径不是边收边读";
+        ASSERT_FALSE(observedChunkByteCounts.empty());
+        EXPECT_LT(observedChunkByteCounts.front(), body.size()) << "第一批就是整份正文：说明还是整段收全之后才派的发";
+
+        // 把余下的送完（含收尾），处理器应当读到全部正文
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
         }
 
-        Core::Task<> pumpTask = session.pump();
-        resumeUntilReady(pumpTask);
+        std::size_t totalObservedByteCount = 0;
+        for (const std::size_t chunkByteCount: observedChunkByteCounts)
+        {
+            totalObservedByteCount += chunkByteCount;
+        }
+        EXPECT_EQ(totalObservedByteCount, body.size()) << "处理器读到的正文总量与发出去的不一致";
+        EXPECT_GE(observedChunkByteCounts.size(), 2U) << "正文没有按批交付：边收边读没有真正成立";
 
         for (const CapturedStreamData &chunk: sentStreamData)
         {
             peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
         }
-        EXPECT_EQ(peer.response().status, 500) << "流式正文路由在 h3 上还没接上，应当明确回 500";
-        EXPECT_FALSE(isHandlerInvoked) << "流式正文路由的处理器不该被调用（它一取 bodyStream() 就是空指针）";
+        EXPECT_EQ(peer.response().status, 200) << "流式正文路由应当正常服务，而不是回错";
+        EXPECT_EQ(peer.response().body, "uploaded") << "处理器的响应没有回到客户端";
     }
 } // namespace AsynGyanis::Net

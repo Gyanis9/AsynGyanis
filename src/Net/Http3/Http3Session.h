@@ -10,14 +10,19 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
+#include "Net/Http/HttpStreamBody.h"
 
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -149,6 +154,13 @@ namespace AsynGyanis::Net
          */
         void dropRequest(std::int64_t streamId);
 
+        /**
+         * @brief 头收齐时判一下：命中流式正文路由就提前派发（正文边收边交，不等整份收齐）
+         * @param streamId 流号
+         * @note 由 .cpp 里的 end_headers 回调转交：那时方法/路径已可判，正文还在路上
+         */
+        void beginStreamingRequestIfMatched(std::int64_t streamId);
+
     private:
         /// 一次 flush 最多搬多少段：防止待发字节很多时在一条连接上转太久
         static constexpr std::size_t kMaximumWritesPerFlush = 64;
@@ -166,9 +178,94 @@ namespace AsynGyanis::Net
             std::string method;     ///< :method 原文
             std::string path;       ///< :path 原文
             std::string authority;  ///< :authority 原文
-            std::string body;       ///< 正文（本切片一次性收全）
+            std::string body;       ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
             bool        hasHostHeader{false}; ///< 对端是否显式给了 host 头
         };
+
+        /**
+         * @brief 一条流式请求的本地状态：本流的正文来源、读取器，以及它自己的派发协程
+         */
+        struct StreamingRequest
+        {
+            HttpStreamBody          body;         ///< 本流正文（HttpBodySource，兼「消费才还窗口」）
+            HttpRequestBody         reader;       ///< 交付给 request.bodyStream()
+            HttpRequest             request;      ///< 头部收齐时填好的请求
+            std::optional<Core::Task<>> serveTask; ///< 本流自己的派发协程（等正文时挂起）
+            std::coroutine_handle<> bodyWaiter{}; ///< 正在等正文的协程（本流最多一个）
+            bool isServeStarted{false};           ///< 派发协程是否已经起过
+            bool isServeFinished{false};          ///< 派发协程已跑完（记录可随流关闭一起摘掉）
+            bool isStreamClosed{false};           ///< 承载侧的流已关闭（此后不会再有 DATA 到达）
+            bool hasPendingWake{false};           ///< 有新正文/收尾/断开，等回到安全点再唤醒
+        };
+
+        /**
+         * @brief 等某条流的下一次正文到达（或收尾、断开）
+         * @details h3 的正文由承载推来，泵没有「主动去读一批」这种动作可做，只能挂起等；到达时
+         *          只置标记，回到不进 nghttp3 回调的位置再由 wakeStreamingRequests() 唤醒
+         */
+        class BodyWaitAwaiter
+        {
+        public:
+            /**
+             * @brief 绑定要等的那条流
+             * @param streamingRequest 目标流；为空时视为无进展（调用方回头自己判断）
+             */
+            explicit BodyWaitAwaiter(StreamingRequest *streamingRequest) noexcept : m_streamingRequest(streamingRequest) {}
+
+            /// 已收尾或已断开时不必挂起：调用方回头就能得到结论
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return m_streamingRequest == nullptr || m_streamingRequest->body.isComplete() || m_streamingRequest->body.isBroken();
+            }
+
+            /// 记下等待者（本流的处理器是单条协程，因此至多一个）
+            void await_suspend(const std::coroutine_handle<> waiter) const noexcept
+            {
+                m_streamingRequest->bodyWaiter = waiter;
+            }
+
+            static void await_resume() noexcept {}
+
+        private:
+            StreamingRequest *m_streamingRequest{nullptr}; ///< 目标流（非拥有；活在 m_streamingRequests 里）
+        };
+
+        /**
+         * @brief 起一条流式请求的派发协程
+         * @param streamId 流号
+         * @param streamingRequest 该流的状态
+         * @return Core::Task<> 路由与响应回写完成
+         */
+        [[nodiscard]] Core::Task<> serveStreamingRequest(std::int64_t streamId, StreamingRequest &streamingRequest);
+
+        /**
+         * @brief 造一个「等下一批正文」的泵
+         * @param streamId 流号
+         * @return HttpRequestBody::Pump 泵
+         */
+        [[nodiscard]] HttpRequestBody::Pump makeBodyPump(std::int64_t streamId);
+
+        /**
+         * @brief 记下「这条流有新进展」，等回到安全点再唤醒
+         * @param streamId 流号
+         * @note 不在 nghttp3 的回调里直接唤醒：处理器会调用 nghttp3 提交响应，回调期间重入库是未定义行为
+         */
+        void noteBodyProgress(std::int64_t streamId) noexcept;
+
+        /**
+         * @brief 在不进 nghttp3 回调的位置唤醒各条流：起还没起过的派发协程，或叫醒等正文的那个
+         */
+        void wakeStreamingRequests();
+
+        /// 把已经跑完的派发协程随记录一起摘掉
+        void reapFinishedStreamingRequests();
+
+        /**
+         * @brief 按 h3 的规矩给响应定稿：尚未实现的形态（流式响应、WebSocket 升级）改成明确失败
+         * @param streamId 流号
+         * @param response 业务填好的响应，就地修改
+         */
+        void finalizeResponseForHttp3(std::int64_t streamId, HttpResponse &response);
 
         /**
          * @brief 把攒下的头与正文整理成 HttpRequest 并排队
@@ -199,6 +296,9 @@ namespace AsynGyanis::Net
         bool                      m_isBroken{false};     ///< 是否已作废
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
+        /// 流式请求的本地状态：键是流号。用 unique_ptr 持有是为了地址稳定——里面存着等待者的
+        /// 协程句柄，而记录本身会被移进移出（头收齐那一刻从 m_incomingRequests 转过来）
+        std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;
         /// 已收全、等待派发的请求（按收全先后）
         std::deque<std::pair<std::int64_t, HttpRequest>> m_readyRequests;
         /// 待发响应的正文：std::map 的节点地址稳定，nghttp3 借走的指针不会因为它增删而失效

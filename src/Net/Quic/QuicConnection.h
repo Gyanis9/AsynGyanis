@@ -170,6 +170,15 @@ namespace AsynGyanis::Net
          */
         void queueStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream);
 
+        /**
+         * @brief 是否攒下了还没刷出去的字节
+         * @return true 表示有待发字节等着 flush
+         * @note 收报文那条路会顺手 flush，但业务协程可能在**收报文路径之外**写下响应（例如先 await
+         *       了一个定时器或一次磁盘写）：那时没人替它刷，响应会一直躺在待发队列里等某个 ngtcp2
+         *       定时器把它想起来。服务端的定时循环据此补一刀
+         */
+        [[nodiscard]] bool needsFlush() const noexcept;
+
         // ---- 以下几项只供本文件里的 ngtcp2 回调取用（回调是自由函数，需要这条窄通道）----
 
         /// 把流数据交给应用层
@@ -237,5 +246,6 @@ namespace AsynGyanis::Net
         bool m_isClosed{false}; ///< 本地判定的收口标志（空闲超时、致命写失败这类路径）
         bool m_isFlushing{false}; ///< 是否已有 flush 在写这条连接（收报文与定时器两条协程都会驱动它）
         bool m_hasFlushRequest{false}; ///< flush 进行中又有人要求写：让在跑的那一轮末再转一圈
+        bool m_needsFlush{false}; ///< 攒下了还没刷出去的字节（服务端的定时循环据此补一刀）
     };
 } // namespace AsynGyanis::Net

@@ -458,6 +458,12 @@ namespace AsynGyanis::Net
         PendingStreamData &pending = m_pendingStreamData[streamId];
         pending.bytes.append(reinterpret_cast<const char *>(data.data()), data.size());
         pending.isEndStream = pending.isEndStream || endStream;
+        m_needsFlush       = true;
+    }
+
+    bool QuicConnection::needsFlush() const noexcept
+    {
+        return m_needsFlush;
     }
 
     Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> datagram)
@@ -529,6 +535,8 @@ namespace AsynGyanis::Net
             bool &m_isFlushing; ///< 被看管的标记
         };
         const FlushScope flushScope(m_isFlushing);
+        // 本轮会把当前攒下的都取走：标记在这里清掉，之后再有人排队会重新置起来
+        m_needsFlush = false;
 
         std::vector<std::uint8_t> packetBuffer(Platform::DatagramSocket::kMaximumDatagramBytes);
         for (std::size_t packetIndex = 0; packetIndex < kMaximumPacketsPerFlush; ++packetIndex)

@@ -57,9 +57,13 @@ namespace AsynGyanis::Net
             return 0;
         }
 
-        /// 一个头块结束：本类在 end_stream（请求收全）时才派发，中间不做动作
-        int endHeadersCallback(nghttp3_conn *, std::int64_t, int, void *, void *) noexcept
+        /// 一个头块结束：头已收齐，方法/路径此刻可判——命中流式正文路由就在这里派发
+        int endHeadersCallback(nghttp3_conn *, const std::int64_t streamId, int, void *const connectionUserData, void *) noexcept
         {
+            if (auto *session = static_cast<Http3Session *>(connectionUserData); session != nullptr)
+            {
+                session->beginStreamingRequestIfMatched(streamId);
+            }
             return 0;
         }
 
@@ -268,6 +272,9 @@ namespace AsynGyanis::Net
             m_crediter(streamId, static_cast<std::size_t>(consumedLength));
         }
 
+        // 此刻已经在 nghttp3 的回调之外了：等正文的处理器可以安全唤醒（它们醒来会回头调 nghttp3）
+        wakeStreamingRequests();
+
         // 对端的数据可能解锁了本端待发的东西（比如 QPACK 动态表更新后头块才能编码）
         flushPendingStreamData();
     }
@@ -340,34 +347,16 @@ namespace AsynGyanis::Net
             HttpResponse response;
             if (m_router != nullptr)
             {
-                // 流式正文路由要求 request.bodyStream() 已装上、按到达批次边收边读；h3 这条路径的正文是
-                // 整段收全的，还没有那个正文流，处理器一旦 bodyStream()->readNext() 就会踩空。
-                // 用路由自己的口径先问一句，踩空改成明确失败
-                if (m_router->hasStreamingRoute(request.method(), request.uri()))
-                {
-                    LOG_ERROR_FMT("Http3Session: 流 {} 命中的是流式正文路由，HTTP/3 尚未接上正文流，已回 500", streamId);
-                    response.setStatus(500);
-                    response.setBody("HTTP/3 暂不支持流式请求正文");
-                } else
-                {
-                    // 与 h1/h2 同一套路由与处理器：业务不需要知道自己在哪条协议上跑
-                    co_await m_router->route(request, response);
-                }
+                // 与 h1/h2 同一套路由与处理器：业务不需要知道自己在哪条协议上跑。
+                // 流式正文路由不在这里派发——它们在头收齐时就转给了 m_streamingRequests
+                co_await m_router->route(request, response);
             } else
             {
                 LOG_WARN_FMT("Http3Session: 流 {} 上的请求没有接上路由器，回 503", streamId);
                 response.setStatus(503);
                 response.setBody("HTTP/3 会话尚未接上路由器");
             }
-            // 流式响应（分块/SSE）与 WebSocket 升级在 h3 上还没有实现。与其把一份错的响应发出去，
-            // 不如明确回 500 并留一条日志——静默给错比明确失败难查得多
-            if (response.isChunkedResponse() || response.isWebSocketUpgradeRequested())
-            {
-                LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求流式响应或 WebSocket 升级，HTTP/3 尚未支持，已改回 500", streamId);
-                response.reset();
-                response.setStatus(500);
-                response.setBody("HTTP/3 暂不支持流式响应与 WebSocket 升级");
-            }
+            finalizeResponseForHttp3(streamId, response);
             submitResponse(streamId, response);
         }
 
@@ -407,10 +396,19 @@ namespace AsynGyanis::Net
 
     void Http3Session::addRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> data)
     {
+        if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
+        {
+            // 流式：字节进本流自己的缓冲，**窗口在字节被处理器取走时才还**（消费回调已绑好）。
+            // 这里顺手还掉就等于「到达即归还」，背压随之失效——那正是流式路径要保住的东西
+            found->second->body.append(std::string_view(reinterpret_cast<const char *>(data.data()), data.size()), data.size(), false);
+            return;
+        }
+
         IncomingRequest &incoming = m_incomingRequests[streamId];
         incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
 
-        // DATA 帧的字节不在 read_stream2 的消费计数里，接收额度要在这里单独还
+        // 非流式：正文整段收在请求对象里，本端等于立刻消费掉了，因此到达即归还接收额度
+        // （DATA 帧的字节不在 read_stream2 的消费计数里，要在这里单独还）
         if (m_crediter && !data.empty())
         {
             m_crediter(streamId, data.size());
@@ -419,13 +417,30 @@ namespace AsynGyanis::Net
 
     void Http3Session::finishRequest(const std::int64_t streamId)
     {
+        if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
+        {
+            // 流式：正文到此为止。这次空追加只带「收尾」一个信息，等正文的处理器随后就能看到终点
+            found->second->body.append({}, 0, true);
+            return;
+        }
         enqueueRequest(streamId);
     }
 
     void Http3Session::dropRequest(const std::int64_t streamId)
     {
-        m_incomingRequests.erase(streamId);
         m_outgoingBodies.erase(streamId);
+        m_incomingRequests.erase(streamId);
+
+        const auto found = m_streamingRequests.find(streamId);
+        if (found == m_streamingRequests.end())
+        {
+            return;
+        }
+
+        // 流没了：等正文的处理器要立刻看到终止（markBroken 会触发到达通知），而不是永远挂着。
+        // 记录先留着——它的派发协程可能还在跑，跑完由 reapFinishedStreamingRequests() 连同记录摘掉
+        found->second->isStreamClosed = true;
+        found->second->body.markBroken();
     }
 
     void Http3Session::enqueueRequest(const std::int64_t streamId)
@@ -453,6 +468,164 @@ namespace AsynGyanis::Net
         }
 
         m_readyRequests.emplace_back(streamId, std::move(request));
+    }
+
+    void Http3Session::beginStreamingRequestIfMatched(const std::int64_t streamId)
+    {
+        const auto found = m_incomingRequests.find(streamId);
+        if (found == m_incomingRequests.end() || m_router == nullptr || m_isBroken)
+        {
+            return;
+        }
+
+        // 判定要用的东西先取出来：判定通过后这份记录就要从 m_incomingRequests 里搬走
+        IncomingRequest   &incoming        = found->second;
+        const std::string  methodText      = incoming.method;
+        const std::string  pathText        = incoming.path;
+        const std::string  authorityText   = incoming.authority;
+        const bool         hasHostHeader   = incoming.hasHostHeader;
+        const HttpMethod   method          = HttpRequest::methodFromString(methodText);
+        const std::string  uri             = pathText.empty() ? std::string("/") : pathText;
+
+        // 头已收齐，方法/路径此刻可判：命中的是流式正文路由就提前派发——正文边收边交，
+        // 业务不必等整份正文；其余路由照旧等 end_stream
+        if (!m_router->hasStreamingRoute(method, uri))
+        {
+            return;
+        }
+
+        auto streamingRequest     = std::make_unique<StreamingRequest>();
+        streamingRequest->request = std::move(incoming.request);
+        streamingRequest->request.setMethod(method);
+        streamingRequest->request.setUri(uri);
+        streamingRequest->request.setHttpVersion(std::string(kHttp3RequestVersion));
+        // :authority 补齐 host 头，与 h1/h2 读 host 的口径一致
+        if (!authorityText.empty() && !hasHostHeader)
+        {
+            streamingRequest->request.addHeader("host", authorityText);
+        }
+        m_incomingRequests.erase(found);
+
+        StreamingRequest &created = *streamingRequest;
+        m_streamingRequests.emplace(streamId, std::move(streamingRequest));
+
+        // 消费即还窗口：由 HttpStreamBody 在字节被处理器取走之后回调进来（到达时还就等于没有背压）
+        created.body.reset([this, streamId](const std::size_t consumedFlowControlByteCount)
+                           {
+                               if (m_crediter && consumedFlowControlByteCount != 0)
+                               {
+                                   m_crediter(streamId, consumedFlowControlByteCount);
+                               }
+                           });
+        created.body.setBodyArrivedHandler([this, streamId] { noteBodyProgress(streamId); });
+        created.reader.attach(created.body, makeBodyPump(streamId));
+        created.request.setBodyStream(&created.reader);
+
+        // 协程本身是惰性的，构造它不会执行任何一行；**但不在这里 resume**：此刻还在 nghttp3 的
+        // 回调里，处理器一上来就可能提交响应，而回调期间重入库是未定义行为。只置标记，
+        // 回到安全点由 wakeStreamingRequests() 起
+        created.serveTask.emplace(serveStreamingRequest(streamId, created));
+        created.hasPendingWake = true;
+
+        LOG_DEBUG_FMT("Http3Session: 流 {} 命中的是流式正文路由，已在头部收齐时派发", streamId);
+    }
+
+    Core::Task<> Http3Session::serveStreamingRequest(const std::int64_t streamId, StreamingRequest &streamingRequest)
+    {
+        HttpResponse response;
+        co_await m_router->route(streamingRequest.request, response);
+        finalizeResponseForHttp3(streamId, response);
+        submitResponse(streamId, response);
+        streamingRequest.isServeFinished = true;
+        co_return;
+    }
+
+    HttpRequestBody::Pump Http3Session::makeBodyPump(const std::int64_t streamId)
+    {
+        return [this, streamId]() -> Core::Task<bool>
+        {
+            const auto found = m_streamingRequests.find(streamId);
+            if (found == m_streamingRequests.end())
+            {
+                // 这条流的状态已经没了：按终止处理，处理器不会拿到半份正文
+                co_return false;
+            }
+
+            // h3 的正文由承载推来：泵的职责是「等到下一批到达（或收尾、断开）」，而不是像 h1/h2
+            // 那样主动去读一批。等待者由到达通知在安全点唤醒
+            co_await BodyWaitAwaiter(found->second.get());
+            co_return true;
+        };
+    }
+
+    void Http3Session::noteBodyProgress(const std::int64_t streamId) noexcept
+    {
+        if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
+        {
+            found->second->hasPendingWake = true;
+        }
+    }
+
+    void Http3Session::wakeStreamingRequests()
+    {
+        // 先按流号收集再逐条唤醒：唤醒之后处理器会继续跑，它可能提交响应甚至收尾，
+        // 直接遍历容器会在中途被改动
+        std::vector<std::int64_t> pendingStreamIds;
+        for (const auto &entry: m_streamingRequests)
+        {
+            if (entry.second->hasPendingWake)
+            {
+                pendingStreamIds.push_back(entry.first);
+            }
+        }
+
+        for (const std::int64_t streamId: pendingStreamIds)
+        {
+            const auto found = m_streamingRequests.find(streamId);
+            if (found == m_streamingRequests.end())
+            {
+                continue;
+            }
+
+            StreamingRequest &request = *found->second;
+            request.hasPendingWake    = false;
+
+            if (!request.isServeStarted)
+            {
+                request.isServeStarted = true;
+                request.serveTask->handle().resume();
+                continue;
+            }
+
+            // 等正文的那个：取出句柄再唤醒。处理器跑完可能把自己从表里摘掉，唤醒之后不再碰 request
+            if (const std::coroutine_handle<> waiter = std::exchange(request.bodyWaiter, {}); waiter != nullptr)
+            {
+                waiter.resume();
+            }
+        }
+
+        reapFinishedStreamingRequests();
+    }
+
+    void Http3Session::reapFinishedStreamingRequests()
+    {
+        // 两个条件都要满足才摘：派发协程跑完**且**承载侧的流已关闭。handler 先跑完而流还开着时
+        // 不能摘——那之后还会有 DATA 到达，记录没了就会被当成非流式请求又建出一份来
+        std::erase_if(m_streamingRequests,
+                      [](const auto &entry) { return entry.second->isServeFinished && entry.second->isStreamClosed; });
+    }
+
+    void Http3Session::finalizeResponseForHttp3(const std::int64_t streamId, HttpResponse &response)
+    {
+        // 流式响应（分块/SSE）与 WebSocket 升级在 h3 上还没有实现。与其把一份错的响应发出去，
+        // 不如明确回 500 并留一条日志——静默给错比明确失败难查得多
+        if (response.isChunkedResponse() || response.isWebSocketUpgradeRequested())
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求流式响应或 WebSocket 升级，HTTP/3 尚未支持，已改回 500", streamId);
+            response.reset();
+            response.setStatus(500);
+            response.setBody("HTTP/3 暂不支持流式响应与 WebSocket 升级");
+        }
     }
 
     void Http3Session::submitResponse(const std::int64_t streamId, const HttpResponse &response)

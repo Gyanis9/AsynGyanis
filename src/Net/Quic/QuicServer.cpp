@@ -387,6 +387,12 @@ namespace AsynGyanis::Net
             const auto now = std::chrono::steady_clock::now();
             for (auto &connectionEntry: m_connections)
             {
+                // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
+                // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它等某个 ngtcp2 定时器
+                if (connectionEntry.second->needsFlush())
+                {
+                    co_await connectionEntry.second->flush();
+                }
                 if (connectionEntry.second->nextExpiry() <= now)
                 {
                     co_await connectionEntry.second->handleExpiry();
