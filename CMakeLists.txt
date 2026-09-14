@@ -140,6 +140,21 @@ add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 
 enable_testing()
 
+# 第三方源码在业务模块之前进来：模块链接它的目标时目标必须已经存在（见 third_party/CMakeLists.txt）
+#
+# ngtcp2 的 CMake 用 FindOpenSSL 的时代变量做「OpenSSL 有没有 QUIC 接口」的探针
+# （读 OPENSSL_INCLUDE_DIR / OPENSSL_LIBRARIES），而 Conan 的 OpenSSL 是 config 包：只提供
+# OpenSSL::SSL / OpenSSL::Crypto 两个导入目标，那两个变量是空的 → 探针在链接期丢库，得到
+# LNK2019「无法解析的外部符号 SSL_set_quic_tls_cbs」（实测：符号就在 ssl.h 里，头文件搜得到，
+# 只是没连上库），于是 ngtcp2 误判「本机 OpenSSL 不支持 QUIC」并 FATAL_ERROR 中止配置。
+# 这里把两个变量从导入目标补齐，让探针得到真实结论——不改第三方源码，也不写死任何路径
+if(TARGET OpenSSL::SSL AND NOT OPENSSL_LIBRARIES)
+    get_target_property(ASYN_OPENSSL_INCLUDE_DIR OpenSSL::SSL INTERFACE_INCLUDE_DIRECTORIES)
+    set(OPENSSL_INCLUDE_DIR "${ASYN_OPENSSL_INCLUDE_DIR}" CACHE PATH "由 OpenSSL::SSL 导入目标补齐，供第三方探针使用" FORCE)
+    set(OPENSSL_LIBRARIES OpenSSL::SSL OpenSSL::Crypto CACHE STRING "由 OpenSSL 导入目标补齐，供第三方探针使用" FORCE)
+endif()
+add_subdirectory(third_party)
+
 add_subdirectory(src)
 
 # 两个开发者开关：默认全开（本地开发与 CI 都要它们），只有把本仓库打成对外分发包时才关。
