@@ -1,5 +1,7 @@
 # Core/Socket —— 异步套接字、地址与连接管理
 set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
+        ${CMAKE_CURRENT_LIST_DIR}/AsyncResolver.h
+        ${CMAKE_CURRENT_LIST_DIR}/AsyncResolver.cpp
         ${CMAKE_CURRENT_LIST_DIR}/AsyncSocket.h
         ${CMAKE_CURRENT_LIST_DIR}/AsyncSocket.cpp
         ${CMAKE_CURRENT_LIST_DIR}/VectoredSendCursor.h
