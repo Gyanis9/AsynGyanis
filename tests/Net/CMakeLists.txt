@@ -63,11 +63,15 @@ find_package(ZLIB REQUIRED)
 find_package(zstd REQUIRED)
 find_package(brotli REQUIRED)
 
+# HTTP/3 用例要直接用 nghttp3 的客户端侧当对端（Net 对 nghttp3 是私有链接、头文件不外泄），因此这里也重新找一次
+find_package(nghttp3 REQUIRED)
+
 target_link_libraries(TestNet PRIVATE
         Net
         ZLIB::ZLIB
         zstd::libzstd
         brotli::brotli
+        nghttp3::nghttp3
         GTest::gtest
         GTest::gtest_main
 )
