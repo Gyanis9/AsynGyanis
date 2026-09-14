@@ -237,22 +237,22 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：延迟接受的平台约定——Windows 无该选项（返回 false），Linux 支持
+     * @note 探针必须是真实的 TCP 套接字：createPair() 在 Linux 上给的是 AF_UNIX 的 socketpair，
+     *       它没有 TCP 层选项，用它探测会得到「平台不支持」的假阴性
      */
     TEST(SocketTuning, DeferAcceptFollowsPlatformSupport)
     {
-        int localDescriptor  = Platform::FileDescriptor::kInvalid;
-        int remoteDescriptor = Platform::FileDescriptor::kInvalid;
-        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, remoteDescriptor));
+        Core::EventLoop     loop;
+        Core::AsyncSocket   probeSocket = Core::AsyncSocket::create(loop);
+        const int           probeDescriptor = probeSocket.fileDescriptor();
+        ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
 
 #if ASYN_PLATFORM_WIN32
         // Windows 没有 TCP_DEFER_ACCEPT：按「平台不支持」返回 false，调用方据此处降级
-        EXPECT_FALSE(Platform::Socket::setDeferAccept(localDescriptor, 1));
+        EXPECT_FALSE(Platform::Socket::setDeferAccept(probeDescriptor, 1));
 #else
-        EXPECT_TRUE(Platform::Socket::setDeferAccept(localDescriptor, 1));
+        EXPECT_TRUE(Platform::Socket::setDeferAccept(probeDescriptor, 1));
 #endif
-
-        Platform::FileDescriptor::close(localDescriptor);
-        Platform::FileDescriptor::close(remoteDescriptor);
     }
 
     /**
