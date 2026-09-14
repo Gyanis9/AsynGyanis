@@ -673,6 +673,10 @@ namespace AsynGyanis::Net
             }
 
             std::error_code statusError;
+            // 元数据（类型/大小/修改时间）每请求现读，共 2~3 次 stat 系统调用，且随后 mmap 的文件
+            // 首触还会产生缺页——都发生在事件循环线程上。这是静态文件服务的固有代价（nginx 同形态），
+            // 消除它需要一层「路径 → 元数据」缓存并配失效策略（交给 file watcher 或 TTL），
+            // 在实测表明它成为瓶颈之前不做：缓存失效写错会把「文件更新后仍旧 ETag」变成真缺陷
             if (!std::filesystem::is_regular_file(candidatePath, statusError) || statusError)
             {
                 // 不存在、是目录、是设备文件，或 stat 失败：一律 404，避免把目录结构泄露给探测者
