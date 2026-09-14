@@ -18,6 +18,7 @@ add_executable(TestCore
         Coroutine/TestThreadPool.cpp
 
         Socket/TestAsyncSocket.cpp
+        Socket/TestAsyncResolver.cpp
         Socket/TestVectoredSendCursor.cpp
         Socket/TestInetAddress.cpp
         Socket/TestConnection.cpp

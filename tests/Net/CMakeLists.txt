@@ -34,6 +34,7 @@ add_executable(TestNet
         Http/TestHttpsServer.cpp
 
         Tcp/TestTcpStream.cpp
+        Tcp/TestTcpClient.cpp
         Tcp/TestTcpAcceptor.cpp
         Tcp/TestSocketTuning.cpp
         Tcp/TestTcpServer.cpp
