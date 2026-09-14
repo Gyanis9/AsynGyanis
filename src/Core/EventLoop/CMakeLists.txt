@@ -28,6 +28,12 @@ if (WIN32)
             ${CMAKE_CURRENT_LIST_DIR}/Wepoll.cpp
             ${CMAKE_CURRENT_LIST_DIR}/wepoll.h
     )
+elseif (ASYN_WITH_IO_URING)
+    # io_uring 后端（替代 epoll）：需要内核 5.6+，因此是显式开关而不是默认
+    set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
+            ${CMAKE_CURRENT_LIST_DIR}/Uring.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/Uring.h
+    )
 else ()
     set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
             ${CMAKE_CURRENT_LIST_DIR}/Epoll.cpp

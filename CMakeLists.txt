@@ -58,6 +58,15 @@ if(ASYN_WITH_MIMALLOC AND (ENABLE_SANITIZERS OR SANITIZE_THREADS))
                         "（例如 -DENABLE_SANITIZERS=OFF -DSANITIZE_THREADS=OFF）")
 endif()
 
+# 可选事件后端：Linux 上用 io_uring 替换 epoll（需要内核 5.6+）。
+# 默认关闭：epoll 是各发行版都能用的基线，io_uring 在受限容器（seccomp 拦截 io_uring_setup）
+# 里会直接启动失败，因此由部署方按环境显式选择。开启后 Epoll.h 以 using Epoll = Uring
+# 指过去，EventLoop / IoWatcher / AsyncSocket 的接口与语义不变。
+option(ASYN_WITH_IO_URING "Linux 事件后端改用 io_uring（需要内核 5.6+；Windows 无效）" OFF)
+if(ASYN_WITH_IO_URING AND WIN32)
+    message(FATAL_ERROR "ASYN_WITH_IO_URING 只对 Linux 有效：Windows 侧的事件后端是完成端口（Iocp）")
+endif()
+
 # 把 ASan 运行时拷到可执行文件旁边。
 # MSVC 的 ASan 运行库不在系统 PATH 上（它随 Visual Studio 提供，位于 cl.exe 同目录），
 # 因此插桩出来的可执行文件若在「没有 vcvars 环境」的裸 shell 里直接运行，会以

@@ -43,3 +43,9 @@ target_include_directories(Core PUBLIC
 )
 
 target_compile_features(Core PUBLIC cxx_std_20)
+
+if(ASYN_WITH_IO_URING)
+    # 事件后端换成 io_uring 后，Epoll.h（公共头）与 Core 源码都按该宏走 using Epoll = Uring，
+    # 因此定义必须是 PUBLIC：消费方编到 IoWatcher.h 等头文件时也要看到同一套声明
+    target_compile_definitions(Core PUBLIC ASYN_WITH_IO_URING=1)
+endif()

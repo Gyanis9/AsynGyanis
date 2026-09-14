@@ -36,6 +36,21 @@ namespace AsynGyanis::Core
     using Epoll = Iocp;
 } // namespace AsynGyanis::Core
 
+#elif defined(ASYN_WITH_IO_URING)
+
+#include "Core/EventLoop/Uring.h"
+
+namespace AsynGyanis::Core
+{
+    /**
+     * @brief 开启 ASYN_WITH_IO_URING 时的 Linux 后端：io_uring
+     *
+     * @details 成员集合与 epoll 实现一致（add/mod/del/rearm/wait/fileDescriptor），
+     *          因此 EventLoop / IoWatcher 不需要任何分支；由构建开关选用（默认走 epoll）。
+     */
+    using Epoll = Uring;
+} // namespace AsynGyanis::Core
+
 #else
 
 namespace AsynGyanis::Core
