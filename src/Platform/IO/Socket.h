@@ -11,6 +11,8 @@
 
 #include "Platform/Platform.h"
 
+#include <cstdint>
+
 namespace AsynGyanis::Platform
 {
     /**
@@ -200,5 +202,37 @@ namespace AsynGyanis::Platform
          * @note 返回值为正但小于总长度是正常情形（部分写），调用方必须按游标推进剩余部分
          */
         static ssize_t writeVectored(int descriptor, const WriteBuffer *buffers, std::size_t bufferCount) noexcept;
+
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 单次零拷贝发送的长度上限
+         * @details Linux 内核单次 sendfile 最多搬运 MAX_RW_COUNT（约 2 GiB 减一页），超限直接
+         *          EINVAL 而不是部分写入，因此本层在调用前先钳制到这个安全值；调用方按返回的
+         *          字节数推进偏移即可，不必关心这个平台上限。
+         */
+        static constexpr std::size_t kMaximumSendFileChunk = 0x7ffff000;
+
+        /**
+         * @brief 零拷贝发送：把文件的一段直接写进套接字（Linux sendfile）
+         * @details 正文不经过用户态缓冲：内核把文件页缓存直接推给协议栈，省掉整份文件的
+         *          用户态拷贝与映射首触缺页，静态文件响应走这条路径最划算。前提是正文能给出
+         *          一个打开的文件描述符（如 MemoryMappedFile::nativeFileDescriptor()）。
+         * @param socketDescriptor 目标套接字描述符（须为非阻塞）
+         * @param fileDescriptor 源文件描述符（须为普通文件）
+         * @param offset 从文件的第几个字节开始发送
+         * @param length 期望发送的字节数，内部按 kMaximumSendFileChunk 钳制
+         * @return ssize_t 实际写入的字节数；非阻塞套接字在缓冲区满时返回 -1 并置 kWouldBlock
+         *         （调用方应等可写后按新偏移重试）；参数非法时返回 -1 并置 kInvalidArgument；
+         *         该文件系统不支持零拷贝发送时返回 -1 并置系统错误码
+         * @note 只发起一次系统调用，部分写由调用方按「offset 加上返回值」推进。源文件的读写
+         *       偏移不受影响（本层显式传偏移指针，不动描述符自身的偏移），同一个文件可被多条
+         *       响应并发发送
+         * @note SIGPIPE 由 Socket::initialize() 在初始化时忽略，本函数不必带 MSG_NOSIGNAL
+         *       这类标志（sendfile 也没有对应标志）
+         * @note 只有 Linux 提供：Windows 没有等价原语（TransmitFile 的语义与返回值约定都不同，
+         *       接入要等 IOCP 事件后端的决定落地），故不声明，调用方按平台条件编译选用
+         */
+        static ssize_t sendFileChunk(int socketDescriptor, int fileDescriptor, std::uint64_t offset, std::size_t length) noexcept;
+#endif
     };
 } // namespace AsynGyanis::Platform

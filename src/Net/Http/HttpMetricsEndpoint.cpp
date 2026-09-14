@@ -111,6 +111,11 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "http2_stream_cancelled_total"),
                       "被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数", stats.streamCancelledCount);
 
+        // 发送路径：零拷贝发送只在 Linux 的明文 HTTP/1.1 上发生，其余平台恒为 0，
+        // 因此它同时是「静态文件快路径是否在生效」的探针
+        appendCounter(out, makeMetricName(metricNamePrefix, "zerocopy_sends_total"),
+                      "正文经内核零拷贝（sendfile）直接发出的响应条数（仅 Linux 会增长）", stats.zeroCopySendCount);
+
         return out;
     }
 

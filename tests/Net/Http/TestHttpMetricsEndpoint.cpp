@@ -115,6 +115,7 @@ namespace AsynGyanis::Net
             stats.webSocketPeerCloseCount          = 9;
             stats.webSocketServerCloseCount        = 10;
             stats.streamCancelledCount             = 12;
+            stats.zeroCopySendCount                = 13;
             return stats;
         }
     } // namespace
@@ -136,6 +137,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("asyn_http_websocket_peer_closes_total 9\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_websocket_server_closes_total 10\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_http2_stream_cancelled_total 12\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_zerocopy_sends_total 13\n"), std::string::npos);
 
         // 活跃连接数是瞬时量，必须是 gauge——报成 counter 采集侧会去算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_active_connections gauge\nasyn_http_active_connections 2\n"), std::string::npos);

@@ -80,6 +80,16 @@ namespace AsynGyanis::Platform
          */
         [[nodiscard]] std::error_code lastError() const noexcept;
 
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 取底层文件描述符（零拷贝发送路径使用）
+         * @details 映射建立之后描述符刻意不关：sendfile 这类零拷贝发送需要它把文件的一段
+         *          直接交给内核搬运，句柄因此与映射同生命周期，随对象析构一起释放。
+         * @return int 文件描述符；无效对象（默认构造、打开失败、已关闭、已被移动走）返回 -1
+         */
+        [[nodiscard]] int nativeFileDescriptor() const noexcept;
+#endif
+
     private:
         /**
          * @brief 解除映射并关闭全部句柄（幂等）
@@ -94,6 +104,8 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
         void *m_mappingHandle{nullptr}; ///< 文件映射对象句柄
         void *m_fileHandle{nullptr};    ///< 文件句柄
+#else
+        int m_fileDescriptor{-1}; ///< 文件描述符，映射期间保持打开供零拷贝发送取用；-1 表示无
 #endif
     };
 } // namespace AsynGyanis::Platform

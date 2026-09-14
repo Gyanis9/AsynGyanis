@@ -153,6 +153,14 @@ namespace AsynGyanis::Net
         /// 它同时就是 keep-alive 的消息边界，因此流式响应写完不必断开连接
         inline constexpr std::string_view kChunkedTerminator = "0\r\n\r\n";
 
+#if !ASYN_PLATFORM_WIN32
+        /// 走零拷贝发送（sendfile）的最小正文长度，单位字节
+        /// @details 零拷贝比聚合写多一次系统调用（头部要单独发一次，正文不能跟它拼成一次提交），
+        ///          因此正文很小时是净亏；超过这个量级之后，省下的整份正文拷贝与映射首触缺页
+        ///          才盖过那次调用开销。阈值取「明显划算」的一档，避免在分界附近来回摇摆
+        inline constexpr std::size_t kZeroCopySendMinimumBytes = 64ull * 1024;
+#endif
+
 
         /**
          * @brief 把解析失败类别翻译成要发的 4xx 响应（状态码与正文全 ASCII）
@@ -525,6 +533,22 @@ namespace AsynGyanis::Net
             // 连接已不可再用，重试注定失败，短路既省一次系统调用，也让同一次连接故障只留下一条日志
             bool isConnectionUnusable = false;
 
+            // 一次失败只留一条日志：普通分段写与零拷贝发送两条路径共用这段收口逻辑。
+            // 失败原因优先采用异常自带的那条（错误码与上下文更全），没有异常可带时补一句通用的：
+            // 对端关闭在底层是「非正返回值」而不是异常（见 AsyncSocket::asyncSend）
+            const auto recordSendFailure = [&isConnectionUnusable](std::string failureReason)
+            {
+                if (failureReason.empty())
+                {
+                    failureReason = "对端已关闭连接或连接不可用";
+                }
+                LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
+                              failureReason);
+
+                // 连接从此不再尝试写出：本侧收口
+                isConnectionUnusable = true;
+            };
+
             // 发出响应：把「头部块 + 正文」作为两段提交，正文因此不必先拷进头部块。
             // 传输层支持聚合写（AsyncSocket）时是一次系统调用提交两段；TLS 记录层只接受
             // 单块明文，退回两次顺序发送——两者都在数据语义上等价，差别只在是否多一次拷贝。
@@ -536,7 +560,7 @@ namespace AsynGyanis::Net
             // （见上面的短路，此前必已记录过收口原因，不再记日志）与传输失败（对端正常关闭或复位、
             // 描述符被清扫协程关掉、等可写期间连接被关闭，本次记一条）。一次失败只记一条日志，不抛异常；
             // 只有非传输层的异常（如内存不足）才继续外抛
-            const auto sendResponse = [&socket, &connection, &limits, &isConnectionUnusable](
+            const auto sendResponse = [&socket, &connection, &limits, &isConnectionUnusable, &recordSendFailure](
                                               const std::string_view head, const std::string_view body) -> Core::Task<bool>
             {
                 // 本侧已收口：不记日志——首个失败已经交代过原因，业务重试与流式收尾再各记一条
@@ -587,21 +611,72 @@ namespace AsynGyanis::Net
 
                 if (!isSucceeded)
                 {
-                    // 对端关闭在底层是「非正返回值」而不是异常（见 AsyncSocket::asyncSend），
-                    // 这条路径没有异常可带，补一句通用原因，让两种来源共用同一行日志。
-                    // 异常那条自带错误码与上下文，信息量更大，因此优先采用它
-                    if (failureReason.empty())
-                    {
-                        failureReason = "对端已关闭连接或连接不可用";
-                    }
-                    LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
-                                  failureReason);
-
-                    // 连接从此不再尝试写出：本侧收口
-                    isConnectionUnusable = true;
+                    recordSendFailure(std::move(failureReason));
                 }
                 co_return isSucceeded;
             };
+
+#if !ASYN_PLATFORM_WIN32
+            // 零拷贝发送（sendfile）：头部仍走普通写出（含写超时刷新与失败收口），正文交给内核
+            // 从文件页缓存直接推给协议栈，不经过用户态视图——省掉整份正文的拷贝与映射首触缺页。
+            // 失败契约与 sendResponse 完全一致：false = 本段未发出、连接不可再用、调用方应停止
+            // 继续写并收口；本侧已收口则短路且不记日志（首个失败已交代过原因）
+            const auto sendResponseWithZeroCopyBody = [&socket, &connection, &limits, &isConnectionUnusable, &recordSendFailure](
+                                                              const std::string_view head,
+                                                              const HttpResponse::ZeroCopyBody zeroCopyBody) -> Core::Task<bool>
+            {
+                if (isConnectionUnusable)
+                {
+                    co_return false;
+                }
+
+                // 发送前把截止时间刷成写超时：与 sendResponse 同源，慢消费者同样在这里被收口
+                connection.refreshIdleDeadline(limits.writeTimeout);
+
+                std::string failureReason;
+                bool        isSucceeded = false;
+
+                // TLS 记录层没有零拷贝发送（不在这条连接的能力集里）：能力探测在编译期落空，
+                // 调用方只在探测通过时才会走到这里，本分支因此不会被选到
+                if constexpr (requires { socket.asyncSendFile(0, std::uint64_t{}, std::size_t{}); })
+                {
+                    try
+                    {
+                        // 头部必须整块出门：asyncSend 允许部分写（内核按缓冲区余量截断返回值），
+                        // 少一个字节，后面的正文就会和缺口错位，因此按已写长度续发到齐
+                        // ——与 WebSocket 帧的写法一致
+                        std::size_t writtenHeadLength = 0;
+                        while (writtenHeadLength < head.size())
+                        {
+                            const ssize_t headWriteLength =
+                                    co_await socket.asyncSend(head.data() + writtenHeadLength, head.size() - writtenHeadLength);
+                            if (headWriteLength <= 0)
+                            {
+                                break;
+                            }
+                            writtenHeadLength += static_cast<std::size_t>(headWriteLength);
+                        }
+
+                        if (writtenHeadLength == head.size())
+                        {
+                            isSucceeded = (co_await socket.asyncSendFile(zeroCopyBody.fileDescriptor, zeroCopyBody.offset,
+                                                                         zeroCopyBody.length)) > 0;
+                        }
+                    } catch (const Base::Exception &exception)
+                    {
+                        // 传输层失败（对端关闭或复位、描述符被关闭、文件被截断）：原因暂存，
+                        // 与普通路径汇到同一处记录
+                        failureReason = exception.what();
+                    }
+                }
+
+                if (!isSucceeded)
+                {
+                    recordSendFailure(std::move(failureReason));
+                }
+                co_return isSucceeded;
+            };
+#endif
 
             // 流式响应的发送回调：把一段字节直接写到这条连接。复用上面那条分段/聚合写路径，
             // 因此 writeChunk 的每一段都是当场流出去的，不存在「先攒在内存里再整块发」的中间态；
@@ -816,20 +891,59 @@ namespace AsynGyanis::Net
                     // 完整正文序列化，因此响应头部与同一路径 GET 的头部逐字节一致（含
                     // content-length，RFC 9110 §9.1）。抑制放在这里而不是响应层：响应层只有
                     // 「按状态码判定无正文」这一套语义，与 HEAD 的方法语义不是一回事
-                    const std::string_view responseBody =
-                            request.method() == HttpMethod::HEAD ? std::string_view{} : response.body();
+                    // （正文视图在下面两条发送分支里各自按此抑制取值）
 
                     // 头部序列化一次，跟随段一起提交（普通响应跟正文，流式响应跟终止块）：
                     // serializedHead 是具名局部，跟随段视图指向的 response 也活到本次调用之后
                     const std::string serializedHead = response.serializeHead();
-                    const std::string_view trailingSegment = response.isChunkedResponse() ? kChunkedTerminator
-                                                                                         : responseBody;
-                    if (!co_await sendResponse(serializedHead, trailingSegment))
+
+                    // 本条响应是否已经发出（零拷贝分支发出后不再走普通分段写）
+                    bool isResponseSent = false;
+
+#if !ASYN_PLATFORM_WIN32
+                    // 静态文件等「整块正文来自文件映射」的响应走零拷贝发送：正文交给内核搬运，
+                    // 不经用户态视图。三个条件缺一不可——传输层支持（TLS 没有该能力，探测在
+                    // 编译期落空）、正文确实可零拷贝（堆正文与压缩后的正文都没有文件描述符）、
+                    // 正文足够大（见 kZeroCopySendMinimumBytes）。HEAD 的正文一个字节都不发，
+                    // 直接按普通路径走，避免白白多一次 sendfile 的系统调用
+                    if constexpr (requires { socket.asyncSendFile(0, std::uint64_t{}, std::size_t{}); })
                     {
-                        // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
-                        // 「对端没收到」的请求算成已应答
-                        co_return false;
+                        const std::optional<HttpResponse::ZeroCopyBody> zeroCopyBody =
+                                request.method() == HttpMethod::HEAD ? std::nullopt : response.zeroCopyBody();
+                        if (zeroCopyBody.has_value() && zeroCopyBody->length >= kZeroCopySendMinimumBytes)
+                        {
+                            if (!co_await sendResponseWithZeroCopyBody(serializedHead, *zeroCopyBody))
+                            {
+                                // 与普通路径同约定：发送失败即收口，失败原因已由收口逻辑记过一条
+                                co_return false;
+                            }
+                            if (metrics != nullptr)
+                            {
+                                metrics->countZeroCopySend();
+                            }
+                            isResponseSent = true;
+                        }
                     }
+#endif
+
+                    if (!isResponseSent)
+                    {
+                        const std::string_view responseBody =
+                                request.method() == HttpMethod::HEAD ? std::string_view{} : response.body();
+                        const std::string_view trailingSegment = response.isChunkedResponse() ? kChunkedTerminator
+                                                                                             : responseBody;
+                        if (!co_await sendResponse(serializedHead, trailingSegment))
+                        {
+                            // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
+                            // 「对端没收到」的请求算成已应答
+                            co_return false;
+                        }
+                    }
+
+                    // 正文（含文件映射与它持有的文件句柄）在发出之后就不需要了：空闲的
+                    // keep-alive 连接会一直持有响应对象到下一次派发才复位，提前归还文件资源，
+                    // 让它们的占用只覆盖真正的发送期间
+                    response.releaseMappedBody();
                 }
 
                 // 响应已发出：状态码类与本次耗时（「收到完整请求」到「响应发完」）一起落账。

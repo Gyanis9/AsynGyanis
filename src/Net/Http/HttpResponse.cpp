@@ -281,9 +281,7 @@ namespace AsynGyanis::Net
         }
 
         // 两条正文存储互斥：换成堆正文之前先解除映射，否则 bodyView() 会继续读旧映射
-        m_mappedBody = Platform::MemoryMappedFile{};
-        m_mappedBodyOffset = 0;
-        m_mappedBodyLength = 0;
+        releaseMappedBody();
 
         // string_view 不保证零终止也不拥有内存，落到成员前必须实体化一份
         m_body = std::string(body);
@@ -324,6 +322,28 @@ namespace AsynGyanis::Net
         m_mappedBody = std::move(mappedFile);
         m_mappedBodyOffset = offset;
         m_mappedBodyLength = length;
+    }
+
+#if !ASYN_PLATFORM_WIN32
+    std::optional<HttpResponse::ZeroCopyBody> HttpResponse::zeroCopyBody() const noexcept
+    {
+        // 只有「有效映射 + 非空区间」才给得出可发送的描述：堆正文、空文件、流式响应
+        // 都没有文件可交给内核搬运，一律以空值表示走普通发送路径
+        if (!m_mappedBody.isValid() || m_mappedBodyLength == 0)
+        {
+            return std::nullopt;
+        }
+        return ZeroCopyBody{m_mappedBody.nativeFileDescriptor(), m_mappedBodyOffset, m_mappedBodyLength};
+    }
+#endif
+
+    void HttpResponse::releaseMappedBody() noexcept
+    {
+        // 只释放映射正文，不碰状态码与头部：会话在响应发出后调用，此时正文已不再需要，
+        // 提前归还映射与文件句柄能避免空闲的 keep-alive 连接长期占着它们
+        m_mappedBody = Platform::MemoryMappedFile{};
+        m_mappedBodyOffset = 0;
+        m_mappedBodyLength = 0;
     }
 
     std::string_view HttpResponse::bodyView() const noexcept
@@ -784,9 +804,7 @@ namespace AsynGyanis::Net
         // 正文同样是两条存储：堆串清空之外映射也要解除，
         // 否则复用响应对象时上一轮的文件会继续当正文发出去
         m_body.clear();
-        m_mappedBody = Platform::MemoryMappedFile{};
-        m_mappedBodyOffset = 0;
-        m_mappedBodyLength = 0;
+        releaseMappedBody();
 
         // 自动 date 同样要清：否则复用响应时下一条报文会带上上一轮生成的日期
         m_autoDateValue.clear();

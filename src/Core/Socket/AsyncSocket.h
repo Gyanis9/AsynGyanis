@@ -187,6 +187,24 @@ namespace AsynGyanis::Core
          */
         Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const;
 
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 异步零拷贝发送：把文件的一段直接推给套接字（Linux sendfile）
+         * @details 与 asyncSendVectored 同语义：内部吸收「发送缓冲满」并挂起等待可写，
+         *          全部发完才返回。正文不经过用户态缓冲——内核把文件页缓存直接推给协议栈，
+         *          省掉整份文件的拷贝与首触缺页，静态文件响应走这条路径最划算。
+         * @param fileDescriptor 源文件描述符（须为普通文件，如 MemoryMappedFile::nativeFileDescriptor()）
+         * @param offset 从文件的第几个字节开始发送（不动描述符自身的读写偏移）
+         * @param length 待发送的字节数
+         * @return Task<ssize_t> — 全部发送完成时返回总字节数；返回 -1 表示对端已关闭（同 asyncSend）
+         * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层不参与（本方法不在 TlsSocket 上），
+         *       Windows 没有等价原语，调用方按平台与传输层能力条件编译选用
+         * @throws Base::SystemException 源文件描述符非法、待发字节数为 0，或发送失败
+         *         （连接重置、对端在发送期间关闭等）
+         */
+        Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const;
+#endif
+
         /**
          * @brief 关闭 socket（先 shutdown 再 close，避免 TCP RST）
          *

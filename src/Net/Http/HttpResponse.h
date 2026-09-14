@@ -155,6 +155,35 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view body() const;
 
         /**
+         * @brief 释放映射正文（解除映射并关闭其持有的文件句柄），头部与状态码不受影响
+         * @details 正文在响应发出之后就不再需要，而空闲的 keep-alive 连接会一直持有响应对象
+         *          直到下一条报文派发时才复位：静态文件响应因此可能长时间占着映射与句柄。
+         *          会话在发送完成后调用本方法提前归还，占用的文件资源只覆盖真正的发送期间。
+         * @note 调用后 bodyView() 变为空视图；reset() 与 setBody() 也会做同样的释放
+         */
+        void releaseMappedBody() noexcept;
+
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 映射正文的零拷贝发送描述：文件描述符 + 文件内区间
+         */
+        struct ZeroCopyBody
+        {
+            int         fileDescriptor{-1}; ///< 承载正文的文件描述符；-1 表示本响应没有可零拷贝发送的正文
+            std::size_t offset{0};          ///< 区间在文件中的起始偏移，单位字节
+            std::size_t length{0};          ///< 区间字节数
+        };
+
+        /**
+         * @brief 取映射正文的零拷贝发送描述（sendfile 用）
+         * @return std::optional<ZeroCopyBody> 有映射正文且长度非零时给出描述；堆正文、空正文、
+         *         流式响应都返回空，调用方据此退回普通发送路径
+         * @note 只给描述、不转移所有权：文件描述符随本对象存活，调用方须在响应对象存活期间使用
+         */
+        [[nodiscard]] std::optional<ZeroCopyBody> zeroCopyBody() const noexcept;
+#endif
+
+        /**
          * @brief 流式发送回调：把一段字节写到本响应所属的连接
          *
          * @details 由会话在路由之前装配（HttpResponse 自己不认识 socket）。false = 本段未发出、连接不可

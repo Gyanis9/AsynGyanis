@@ -38,6 +38,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -520,6 +521,132 @@ namespace AsynGyanis::Net
             Platform::Socket::Initialization m_socketInitialization; ///< 保证 Winsock 在本对象存活期间保持初始化
             int                              m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 客户端描述符
         };
+
+        /**
+         * @brief 一条完整响应：头部块与正文分开
+         */
+        struct ParsedResponse
+        {
+            std::string headers; ///< 含状态行与各头部行（不含结尾空行）
+            std::string body;    ///< 正文原始字节
+        };
+
+        /**
+         * @brief 从头部块里取 content-length
+         * @param headers 头部块
+         * @return std::size_t 长度；缺失或非法时为 0
+         */
+        inline std::size_t parseContentLength(const std::string_view headers)
+        {
+            std::string lowered(headers);
+            for (char &character: lowered)
+            {
+                if (character >= 'A' && character <= 'Z')
+                {
+                    character = static_cast<char>(character - 'A' + 'a');
+                }
+            }
+
+            const std::size_t position = lowered.find("content-length: ");
+            if (position == std::string::npos)
+            {
+                return 0;
+            }
+
+            std::size_t value = 0;
+            for (std::size_t index = position + std::string_view("content-length: ").size(); index < lowered.size(); ++index)
+            {
+                const char character = lowered[index];
+                if (character < '0' || character > '9')
+                {
+                    break;
+                }
+                value = value * 10 + static_cast<std::size_t>(character - '0');
+            }
+            return value;
+        }
+
+        /**
+         * @brief 发一条请求并读回完整响应（按 content-length 读满正文）
+         * @details 一次调用就是一条独立连接：建连、发请求、读满、析构关闭。正文按头部声明的
+         *          content-length 收齐才返回，因此文件与压缩正文这类大正文同样适用；
+         *          分块响应（chunked）不收 content-length，本方法会读不齐而返回空值。
+         * @param port 监听端口
+         * @param requestText 请求报文
+         * @param timeout 建连、发送与读取共用的等待上限
+         * @return std::optional<ParsedResponse> 解析结果；读不全时为空
+         */
+        inline std::optional<ParsedResponse> sendAndReadResponse(const std::uint16_t port, const std::string &requestText,
+                                                                 const std::chrono::milliseconds timeout = kWaitTimeout)
+        {
+            LoopbackClient client(port);
+            if (!client.isValid())
+            {
+                return std::nullopt;
+            }
+            if (!client.sendText(requestText, timeout))
+            {
+                return std::nullopt;
+            }
+
+            std::string accumulated;
+            const auto  deadline = std::chrono::steady_clock::now() + timeout;
+
+            // 第一步：等头部块收尾
+            while (accumulated.find("\r\n\r\n") == std::string::npos && std::chrono::steady_clock::now() < deadline)
+            {
+                if (client.readOnce(accumulated) == ReadOutcome::PeerClosed)
+                {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+
+            const std::size_t headerEnd = accumulated.find("\r\n\r\n");
+            if (headerEnd == std::string::npos)
+            {
+                return std::nullopt;
+            }
+
+            // 第二步：从 content-length 算出正文长度，读满为止
+            const std::size_t contentLength = parseContentLength(accumulated.substr(0, headerEnd));
+            const std::size_t expectedTotal = headerEnd + 4 + contentLength;
+            while (accumulated.size() < expectedTotal && std::chrono::steady_clock::now() < deadline)
+            {
+                if (client.readOnce(accumulated) == ReadOutcome::PeerClosed)
+                {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            if (accumulated.size() < expectedTotal)
+            {
+                return std::nullopt;
+            }
+
+            ParsedResponse parsed;
+            parsed.headers = accumulated.substr(0, headerEnd);
+            parsed.body    = accumulated.substr(headerEnd + 4, contentLength);
+            return parsed;
+        }
+
+        /// 头部块里是否出现某个（大小写不敏感的）头部行
+        inline bool hasHeaderLine(const std::string_view headers, const std::string_view expectedLine)
+        {
+            std::string loweredHeaders(headers);
+            std::string loweredLine(expectedLine);
+            for (std::string *text: {&loweredHeaders, &loweredLine})
+            {
+                for (char &character: *text)
+                {
+                    if (character >= 'A' && character <= 'Z')
+                    {
+                        character = static_cast<char>(character - 'A' + 'a');
+                    }
+                }
+            }
+            return loweredHeaders.find(loweredLine) != std::string::npos;
+        }
 
         /**
          * @brief 慢路由选项：用例用它构造「处理中」的在途请求

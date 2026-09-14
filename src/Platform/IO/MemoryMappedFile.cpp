@@ -88,24 +88,28 @@ namespace AsynGyanis::Platform
         }
         if (fileStatus.st_size <= 0)
         {
-            ::close(fileDescriptor);
-            mappedFile.m_isValid = true;
+            // 空文件：不需要映射，得到「有效但字节数为 0」的对象，调用方不必特判。
+            // 描述符与其它情形一样留着，释放时机由 close() 统一负责
+            mappedFile.m_fileDescriptor = fileDescriptor;
+            mappedFile.m_isValid        = true;
             return mappedFile;
         }
 
         const auto mappedLength = static_cast<std::size_t>(fileStatus.st_size);
         void *const mappedBase  = ::mmap(nullptr, mappedLength, PROT_READ, MAP_PRIVATE, fileDescriptor, 0);
-        // 映射建立之后描述符就可以关掉：映射自己持有对文件页的引用
-        ::close(fileDescriptor);
         if (mappedBase == MAP_FAILED)
         {
             mappedFile.m_lastError = std::error_code(errno, std::system_category());
+            ::close(fileDescriptor);
             return mappedFile;
         }
 
-        mappedFile.m_base    = mappedBase;
-        mappedFile.m_length  = mappedLength;
-        mappedFile.m_isValid = true;
+        // 映射建立后描述符刻意不关：sendfile 等零拷贝发送要拿它把文件的一段直接交给内核搬运，
+        // 关掉就只剩聚合写这条要过用户态的路径了。句柄与映射同生命周期，close() 一起释放
+        mappedFile.m_base           = mappedBase;
+        mappedFile.m_length         = mappedLength;
+        mappedFile.m_fileDescriptor = fileDescriptor;
+        mappedFile.m_isValid        = true;
 #endif
 
         return mappedFile;
@@ -121,6 +125,8 @@ namespace AsynGyanis::Platform
         m_lastError(other.m_lastError), m_isValid(std::exchange(other.m_isValid, false))
 #if ASYN_PLATFORM_WIN32
         , m_mappingHandle(std::exchange(other.m_mappingHandle, nullptr)), m_fileHandle(std::exchange(other.m_fileHandle, nullptr))
+#else
+        , m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1))
 #endif
     {
     }
@@ -137,6 +143,8 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
             m_mappingHandle = std::exchange(other.m_mappingHandle, nullptr);
             m_fileHandle    = std::exchange(other.m_fileHandle, nullptr);
+#else
+            m_fileDescriptor = std::exchange(other.m_fileDescriptor, -1);
 #endif
         }
         return *this;
@@ -165,6 +173,13 @@ namespace AsynGyanis::Platform
         return m_lastError;
     }
 
+#if !ASYN_PLATFORM_WIN32
+    int MemoryMappedFile::nativeFileDescriptor() const noexcept
+    {
+        return m_fileDescriptor;
+    }
+#endif
+
     void MemoryMappedFile::close() noexcept
     {
 #if ASYN_PLATFORM_WIN32
@@ -188,6 +203,11 @@ namespace AsynGyanis::Platform
         {
             ::munmap(m_base, m_length);
             m_base = nullptr;
+        }
+        if (m_fileDescriptor >= 0)
+        {
+            ::close(m_fileDescriptor);
+            m_fileDescriptor = -1;
         }
 #endif
         m_length  = 0;

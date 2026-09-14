@@ -292,6 +292,63 @@ namespace AsynGyanis::Core
         co_return static_cast<ssize_t>(cursor.sentLength());
     }
 
+#if !ASYN_PLATFORM_WIN32
+    Task<ssize_t> AsyncSocket::asyncSendFile(const int fileDescriptor, const std::uint64_t offset, const std::size_t length) const
+    {
+        // 源描述符与长度属于调用方契约，交给底层会被折成同一个 kInvalidArgument，
+        // 在这里当场报错能把「哪一侧的参数不对」说清楚
+        if (fileDescriptor < 0)
+        {
+            throw Base::SystemException("零拷贝发送失败：源文件描述符无效（" + std::to_string(fileDescriptor) +
+                                        "），请先把文件打开再交给本方法");
+        }
+        if (length == 0)
+        {
+            throw Base::SystemException("零拷贝发送失败：待发字节数为 0，本方法只用于发送文件正文，"
+                                        "空正文请直接跳过发送");
+        }
+
+        std::uint64_t currentOffset   = offset;
+        std::size_t   remainingLength = length;
+
+        while (remainingLength != 0)
+        {
+            const ssize_t sentBytes = Platform::Socket::sendFileChunk(m_fileDescriptor, fileDescriptor, currentOffset, remainingLength);
+            if (sentBytes > 0)
+            {
+                currentOffset += static_cast<std::uint64_t>(sentBytes);
+                remainingLength -= static_cast<std::size_t>(sentBytes);
+                continue;
+            }
+
+            if (sentBytes == 0)
+            {
+                // sendfile 只在「已到文件末尾」时返回 0（本循环的待发字节数恒大于 0），
+                // 与 send/sendmsg 返回 0 表示对端关闭不是一回事：文件在发送期间被截断了。
+                // 按发送失败处理并给出准确原因，而不是复用「对端已关闭」那句会误导排查的文案
+                throw Base::SystemException("零拷贝发送失败：源文件在发送期间被截断，偏移 " + std::to_string(currentOffset) +
+                                            " 已越过文件末尾（文件不应在服务期间被改写，请检查静态目录的写入方）");
+            }
+
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            {
+                // 同 asyncSend：等待失败即套接字已关闭，不再重试
+                if (!co_await waitWritable())
+                {
+                    throw Base::SystemException("零拷贝发送失败：等待可写期间套接字被关闭", localSocketClosedError());
+                }
+                continue;
+            }
+            if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
+            {
+                continue;
+            }
+            throw Base::SystemException("零拷贝发送失败", lastSocketError());
+        }
+        co_return static_cast<ssize_t>(length);
+    }
+#endif
+
     int AsyncSocket::releaseFileDescriptor() noexcept
     {
         // 注册对象必须已经清空：它绑定的是本对象的循环，跟着描述符搬过去只会指向错误的循环

@@ -6,6 +6,11 @@
 #include <limits>
 #include <mutex>
 
+#if !ASYN_PLATFORM_WIN32
+#include <csignal>
+#include <sys/sendfile.h>
+#endif
+
 namespace AsynGyanis::Platform
 {
     namespace
@@ -67,6 +72,12 @@ namespace AsynGyanis::Platform
         ++state.initializeCount;
         return true;
 #else
+        // Linux 侧没有需要启动的全局子系统，但有一个进程级设置要在这里落地：忽略 SIGPIPE。
+        // 本层所有发送都带 MSG_NOSIGNAL，唯独 sendfile 没有对应的 per-call 标志——向已关闭的
+        // 对端发文件会以默认动作打死整个进程。忽略之后写失败改以 EPIPE 返回，交给既有的
+        // 发送失败路径处理（与 TlsContext 对 OpenSSL 内部写入的处理同源，那边是另一条
+        // 绕不开的信号来源）。signal() 幂等，重复调用没有额外影响
+        std::signal(SIGPIPE, SIG_IGN);
         return true;
 #endif
     }
@@ -227,4 +238,23 @@ namespace AsynGyanis::Platform
         return ::sendmsg(descriptor, &message, MSG_NOSIGNAL);
 #endif
     }
+
+#if !ASYN_PLATFORM_WIN32
+    ssize_t Socket::sendFileChunk(const int socketDescriptor, const int fileDescriptor, const std::uint64_t offset, const std::size_t length) noexcept
+    {
+        if (!FileDescriptor::isValid(socketDescriptor) || !FileDescriptor::isValid(fileDescriptor) || length == 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return -1;
+        }
+
+        // 超限会让内核直接 EINVAL 而不是部分写入，先钳制到安全上限；调用方按返回值推进偏移
+        const std::size_t clampedLength = length > kMaximumSendFileChunk ? kMaximumSendFileChunk : length;
+
+        // 显式传偏移指针：传空指针会让 sendfile 改用并推进描述符自身的文件偏移，而同一个
+        // 文件可能被多条响应并发发送，动共享偏移会让它们读到彼此的位置
+        off_t sendOffset = static_cast<off_t>(offset);
+        return ::sendfile(socketDescriptor, fileDescriptor, &sendOffset, clampedLength);
+    }
+#endif
 } // namespace AsynGyanis::Platform

@@ -75,6 +75,9 @@ namespace AsynGyanis::Net
         /// ---- HTTP/2 专有计数：单流取消不改连接状态，故与连接级的各组计数并列、口径互不覆盖 ----
         std::uint64_t streamCancelledCount{0}; ///< 请求已收齐、但对端用 RST_STREAM 取消了该流，本端因此未发响应的条数
 
+        /// ---- 发送路径计数：正文经内核零拷贝（sendfile）直接发出的响应条数，仅 Linux 上恒可能非零 ----
+        std::uint64_t zeroCopySendCount{0}; ///< 正文走零拷贝发送的响应条数；运维据此确认静态文件的快路径是否在生效
+
         /**
          * @brief 取延迟直方图的样本总数
          * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未落账」的
@@ -204,6 +207,16 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 记一条正文走零拷贝发送的响应
+         * @note 只有 Linux 的明文 HTTP/1.1 会话会产生该计数：TLS 与 Windows 都没有可用的
+         *       零拷贝原语，正文仍走用户态缓冲
+         */
+        void countZeroCopySend() noexcept
+        {
+            m_zeroCopySendCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
          * @brief 取当前计数的快照
          * @return HttpServerStats 各字段分别原子读取的结果；activeConnectionCount 留给调用方填充
          */
@@ -225,6 +238,7 @@ namespace AsynGyanis::Net
             stats.webSocketPeerCloseCount          = m_webSocketPeerCloseCount.load(std::memory_order_relaxed);
             stats.webSocketServerCloseCount        = m_webSocketServerCloseCount.load(std::memory_order_relaxed);
             stats.streamCancelledCount             = m_streamCancelledCount.load(std::memory_order_relaxed);
+            stats.zeroCopySendCount                = m_zeroCopySendCount.load(std::memory_order_relaxed);
 
             for (std::size_t index = 0; index < kHttpLatencyBucketCount; ++index)
             {
@@ -300,6 +314,7 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_webSocketServerCloseCount{0};        ///< 累计由本侧发起关闭握手的连接数
 
         std::atomic<std::uint64_t> m_streamCancelledCount{0}; ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
+        std::atomic<std::uint64_t> m_zeroCopySendCount{0};    ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
     };
 
 } // namespace AsynGyanis::Net
