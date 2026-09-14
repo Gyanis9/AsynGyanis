@@ -112,9 +112,10 @@ namespace AsynGyanis::Net
             /**
              * @brief 起一条真正的回环 UDP 套接字并与服务端地址建立 ngtcp2 客户端连接
              * @param serverAddress 服务端 UDP 地址
+             * @param applicationProtocols 本端要提的 ALPN 列表（线格式）；默认提 h3
              * @return true 初始化完成（此时握手尚未开始，要靠 pumpOnce() 推进）
              */
-            bool initialize(const Platform::SocketAddress &serverAddress)
+            bool initialize(const Platform::SocketAddress &serverAddress, const std::span<const unsigned char> applicationProtocols = kHttp3Alpn)
             {
                 m_serverAddress = serverAddress;
                 m_socket        = Platform::DatagramSocket::bindTo(makeLoopbackAddress(0));
@@ -141,7 +142,7 @@ namespace AsynGyanis::Net
                     return false;
                 }
                 SSL_set_connect_state(m_ssl);
-                if (SSL_set_alpn_protos(m_ssl, kHttp3Alpn, sizeof(kHttp3Alpn)) != 0)
+                if (SSL_set_alpn_protos(m_ssl, applicationProtocols.data(), static_cast<unsigned int>(applicationProtocols.size())) != 0)
                 {
                     return false;
                 }
@@ -600,5 +601,33 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); }))
                 << "乱码报文之后服务端不再接受合法握手";
         EXPECT_EQ(server.server().connectionCount(), 1U) << "乱码报文不该建出连接";
+    }
+
+    /**
+     * @brief 提非 h3 的 ALPN 必须被拒：握手完不成，且服务端照常服务下一位
+     * @details 服务端的 ALPN 回调按约定是致命告警而非退让——放行别的协议会让后续按 h3 解析的字节流对不上，
+     *          所以这里既钉「这次协商不成」，也钉「服务端没被这次拒绝带坏」。
+     */
+    TEST(QuicServer, RejectsClientWithoutHttp3Alpn)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        RunningQuicServer server;
+        ASSERT_NE(server.listeningPort(), 0);
+
+        static constexpr unsigned char kWrongApplicationProtocols[] = {2, 'h', '2'};
+        QuicTestClient                wrongProtocolClient;
+        ASSERT_TRUE(wrongProtocolClient.initialize(makeServerAddress(server.listeningPort()), kWrongApplicationProtocols));
+
+        EXPECT_FALSE(pumpUntil(wrongProtocolClient, [&wrongProtocolClient] { return wrongProtocolClient.isHandshakeCompleted(); }))
+                << "服务端不该接受非 h3 的 ALPN 协商";
+        EXPECT_TRUE(wrongProtocolClient.selectedApplicationProtocol().empty()) << "没协商成的客户端不该拿到协议名";
+
+        // 服务端不受影响：随后来的合法客户端照常握手并协商出 h3
+        QuicTestClient client;
+        ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+        ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); }))
+                << "ALPN 被拒之后服务端不再接受合法握手";
+        EXPECT_STREQ(client.selectedApplicationProtocol().c_str(), "h3") << "协商出的 ALPN 不是 h3";
     }
 } // namespace AsynGyanis::Net
