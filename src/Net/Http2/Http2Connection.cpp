@@ -1,5 +1,7 @@
 #include "Net/Http2/Http2Connection.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -107,23 +109,6 @@ namespace AsynGyanis::Net
                 }
             }
             return true;
-        }
-
-        /**
-         * @brief 判断头名是否是连接特定头
-         * @param name 头名（判定前已确保小写）
-         * @return true 表示是连接特定头
-         */
-        bool isConnectionSpecificHeaderName(const std::string_view name) noexcept
-        {
-            for (const std::string_view candidate: kConnectionSpecificHeaderNames)
-            {
-                if (name == candidate)
-                {
-                    return true;
-                }
-            }
-            return false;
         }
 
         /**

@@ -612,9 +612,11 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 处理器要求流式响应时，h3 侧必须明确失败，而不是把一份错的响应发出去
+     * @brief h3 上的流式响应（startChunkedResponse + writeChunk）逐块送到客户端
+     * @details 顺带钉住两条：流式响应不带 content-length（长度此刻还不知道），以及各块都真的到了
+     *          客户端手里
      */
-    TEST(Http3Session, Answers500WhenHandlerAsksForAStreamingResponse)
+    TEST(Http3Session, StreamsChunkedResponseToTheClient)
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
@@ -630,8 +632,13 @@ namespace AsynGyanis::Net
         router.get("/stream",
                    [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                    {
-                       // 分块响应（流式）在 h3 上尚未实现
                        response.startChunkedResponse(200);
+                       response.setHeader("content-type", "text/event-stream");
+                       if (!co_await response.writeChunk("data: one\n\n"))
+                       {
+                           co_return;
+                       }
+                       static_cast<void>(co_await response.writeChunk("data: two\n\n"));
                        co_return;
                    });
         session.attachRouter(router);
@@ -652,7 +659,13 @@ namespace AsynGyanis::Net
         {
             peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
         }
-        EXPECT_EQ(peer.response().status, 500) << "流式响应在 h3 上没实现，应当明确回 500，而不是发出错的响应";
+        EXPECT_EQ(peer.response().status, 200) << "流式响应的状态码没有送到";
+        EXPECT_EQ(peer.response().body, "data: one\n\ndata: two\n\n") << "流式响应的各块没有完整到达客户端";
+        EXPECT_TRUE(peer.response().isComplete) << "流式响应没有收尾";
+        const auto contentTypeHeader = peer.response().headers.find("content-type");
+        ASSERT_NE(contentTypeHeader, peer.response().headers.end());
+        EXPECT_EQ(contentTypeHeader->second, "text/event-stream");
+        EXPECT_EQ(peer.response().headers.count("content-length"), 0U) << "流式响应的长度此刻还不知道，不该带 content-length";
     }
 
     /**

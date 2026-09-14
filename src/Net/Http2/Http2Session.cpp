@@ -1,3 +1,5 @@
+#include "Net/Http/HttpChunkFrame.h"
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http2/Http2Session.h"
 
 #include "Base/Exception/Exception.h"
@@ -86,21 +88,6 @@ namespace AsynGyanis::Net
                 description = "非标准异常（无 what() 描述）";
             }
             return description;
-        }
-
-        /**
-         * @brief 判断响应头名是否是 HTTP/2 禁止的连接特定头
-         * @details 与连接层的同名判定同源（RFC 9113 §8.2.2，即 RFC 7540 §8.1.2.2）：连接层是最终
-         *          把关者，这里先一步把它们丢掉，否则整条响应会被连接层拒绝、对端一个字节都收不到。
-         * @param name 头名（已由 HttpResponse 归一化为小写）
-         * @return true 表示这是连接特定头，不能出现在 HTTP/2 报文里
-         */
-        bool isConnectionSpecificHeaderName(const std::string_view name) noexcept
-        {
-            constexpr std::string_view kForbiddenHeaderNames[] = {"connection", "keep-alive", "proxy-connection",
-                                                                  "transfer-encoding", "upgrade"};
-            return std::find(std::begin(kForbiddenHeaderNames), std::end(kForbiddenHeaderNames), name) !=
-                   std::end(kForbiddenHeaderNames);
         }
 
         /**
@@ -1377,36 +1364,9 @@ namespace AsynGyanis::Net
 
     std::string_view Http2Session::chunkFramePayload(const std::string_view chunkFrame)
     {
-        // 长度行到第一个 CRLF 为止，位数不会超过一个 size_t 的十六进制位数
-        const std::size_t lengthLineEndIndex = chunkFrame.find(kCrLf);
-        if (lengthLineEndIndex == std::string_view::npos || lengthLineEndIndex == 0 ||
-            lengthLineEndIndex > kChunkLengthLineMaximumLength)
-        {
-            throw Base::LogicException("Http2Session: writeChunk 交出的分块帧没有合法的长度行（应为「<十六进制字节数>\\r\\n」），"
-                                       "本段未发出；请检查 HttpResponse::writeChunk() 的实现与其文档是否一致");
-        }
-
-        // 长度前缀是负载长度的唯一权威来源：正文里出现 CRLF 也不影响边界判定
-        std::size_t payloadLength = 0;
-        const auto [parseEnd, parseError] =
-                std::from_chars(chunkFrame.data(), chunkFrame.data() + lengthLineEndIndex, payloadLength, 16);
-        if (parseError != std::errc() || parseEnd != chunkFrame.data() + lengthLineEndIndex)
-        {
-            throw Base::LogicException("Http2Session: 分块帧的长度行不是合法的十六进制字节数（「" +
-                                       std::string(chunkFrame.substr(0, lengthLineEndIndex)) + "」），本段未发出；"
-                                       "请检查 HttpResponse::writeChunk() 的实现与其文档是否一致");
-        }
-
-        // 长度行 + 负载 + 结尾 CRLF 必须恰好用满整段字节：多一个字节或少一个都说明帧布局与文档不符，
-        // 此时宁可当场报错，也绝不把帧头或残缺的负载当成正文发出去
-        if (chunkFrame.size() != lengthLineEndIndex + kCrLfLength + payloadLength + kCrLfLength ||
-            chunkFrame.compare(chunkFrame.size() - kCrLfLength, kCrLfLength, kCrLf) != 0)
-        {
-            throw Base::LogicException(std::format("Http2Session: 分块帧的实际长度 {} 字节与长度行声明的 {} 字节不一致，本段未发出；"
-                                                   "请检查 HttpResponse::writeChunk() 的实现与其文档是否一致",
-                                                   chunkFrame.size(), payloadLength));
-        }
-        return chunkFrame.substr(lengthLineEndIndex + kCrLfLength, payloadLength);
+        // 剥离逻辑已上收到 Net/Http/HttpChunkFrame：h2 与 h3 面对的是同一份 h1 分块帧，
+        // 各自实现一遍只会让两边的边界判定慢慢走偏。这里保留一个转发的成员函数，叫法不变
+        return Net::chunkFramePayload(chunkFrame);
     }
 
     Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, const std::string_view segment)
