@@ -592,15 +592,13 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t> garbage(1200, 0x5a); // 长得像 Initial 的随机字节，长头里的版本与标识都不合法
         ASSERT_GT(garbageSocket.send(makeServerAddress(server.listeningPort()), garbage.data(), garbage.size()), 0);
 
-        // 给服务端一点时间处理这条乱码
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-        EXPECT_EQ(server.server().connectionCount(), 0U) << "乱码报文不该建出连接";
-
-        // 服务端仍能正常服务：随后来的合法客户端照常握手
+        // 服务端仍能正常服务：随后来的合法客户端照常握手。
+        // 「乱码没建出连接」不用定时等待去赌——等这条合法连接真握上手，连接数恰好是 1，
+        // 乱码若被当成了新连接，这里就会读到 2
         QuicTestClient client;
         ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
         ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); }))
                 << "乱码报文之后服务端不再接受合法握手";
-        EXPECT_EQ(server.server().connectionCount(), 1U);
+        EXPECT_EQ(server.server().connectionCount(), 1U) << "乱码报文不该建出连接";
     }
 } // namespace AsynGyanis::Net
