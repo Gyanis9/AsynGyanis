@@ -583,17 +583,17 @@ namespace AsynGyanis::Net
                 {
                     if constexpr (requires { socket.asyncSendVectored(nullptr, 0); })
                     {
-                        if (body.empty())
-                        {
-                            isSucceeded = (co_await socket.asyncSend(head.data(), head.size())) > 0;
-                        } else
-                        {
-                            const Platform::Socket::WriteBuffer buffers[2] = {
-                                    {head.data(), head.size()},
-                                    {body.data(), body.size()},
-                            };
-                            isSucceeded = (co_await socket.asyncSendVectored(buffers, 2)) > 0;
-                        }
+                        // 两种情形都走聚合写：它内部按游标推进到全部发出为止，而单缓冲的 asyncSend
+                        // 只发一次就返回（底层 send 按缓冲区余量截断）。头部少一个字节，对端解析
+                        // 从此错位——发送缓冲接近满时（上一条大响应还在向慢客户端排空）这是必然，
+                        // 不是理论风险。TLS 分支不适用该结论：SSL_write 默认整块成功才返回
+                        const Platform::Socket::WriteBuffer buffers[2] = {
+                                {head.data(), head.size()},
+                                {body.data(), body.size()},
+                        };
+                        // 无正文时只提交头部一段：长度为 0 的段没有任何意义，少传一段就少一处待验证的组合
+                        const std::size_t segmentCount = body.empty() ? 1 : 2;
+                        isSucceeded = (co_await socket.asyncSendVectored(buffers, segmentCount)) > 0;
                     } else
                     {
                         // TLS 只接受单块明文：头部与正文分两次顺序发送，头部没出门就不必再发正文
