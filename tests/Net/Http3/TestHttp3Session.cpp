@@ -20,6 +20,7 @@
 
 #include <nghttp3/nghttp3.h>
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -223,6 +224,33 @@ namespace AsynGyanis::Net
                 return step;
             }
 
+            /**
+             * @brief 提交一条扩展 CONNECT（RFC 9220）请求，并把 WebSocket 帧当作请求数据随后发出
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @param webSocketFrames 隧道建立后要发的 WebSocket 帧字节
+             * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含请求头与随后的帧）
+             * @note 必须带数据读取回调而不是 nullptr：后者意味着「请求到此结束」，而对端之后还要在
+             *       同一条流上发 WebSocket 帧，那时服务端会把 DATA 判成 H3_FRAME_UNEXPECTED
+             */
+            std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority,
+                                                                 std::string webSocketFrames)
+            {
+                m_requestBody           = std::move(webSocketFrames);
+                m_requestBodyOffset     = 0;
+                m_requestChunkByteCount = m_requestBody.size();
+
+                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
+                nghttp3_data_reader           dataReader{};
+                dataReader.read_data = readRequestBody;
+                if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), &dataReader,
+                                                this) != 0)
+                {
+                    return {};
+                }
+                return takeOutgoingBytes();
+            }
+
             /// 把服务端回的字节喂进来解出响应
             void receive(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
             {
@@ -312,7 +340,8 @@ namespace AsynGyanis::Net
              * @param authority 权威主机
              * @return std::vector<nghttp3_nv> 伪头数组（名字是常量、取值来自参数，逐条给出 namelen）
              */
-            static std::vector<nghttp3_nv> makePseudoHeaders(std::string_view method, std::string_view path, std::string_view authority)
+            static std::vector<nghttp3_nv> makePseudoHeaders(std::string_view method, std::string_view path, std::string_view authority,
+                                                            std::string_view protocol = {})
             {
                 const auto makeHeaderField = [](const char *const name, const std::string_view value)
                 {
@@ -321,8 +350,14 @@ namespace AsynGyanis::Net
                 };
                 // 取值一律以视图给出：nghttp3_nv 只存指针，而 :scheme 用常量、其余指向调用方的实参，
                 // 三者的寿命都覆盖到提交那一刻（曾经把它做成函数内的局部 std::string，返回即悬空）
-                return {makeHeaderField(":method", method), makeHeaderField(":scheme", kRequestScheme),
-                        makeHeaderField(":authority", authority), makeHeaderField(":path", path)};
+                std::vector<nghttp3_nv> headerFields{makeHeaderField(":method", method), makeHeaderField(":scheme", kRequestScheme),
+                                                     makeHeaderField(":authority", authority), makeHeaderField(":path", path)};
+                if (!protocol.empty())
+                {
+                    // 扩展 CONNECT 用（RFC 9220）：伪头必须排在普通头之前，追加在末尾即可
+                    headerFields.push_back(makeHeaderField(":protocol", protocol));
+                }
+                return headerFields;
             }
 
             static nghttp3_callbacks makeCallbacks() noexcept
@@ -751,5 +786,93 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(peer.response().status, 200) << "流式正文路由应当正常服务，而不是回错";
         EXPECT_EQ(peer.response().body, "uploaded") << "处理器的响应没有回到客户端";
+    }
+    /**
+     * @brief h3 上跑 WebSocket：扩展 CONNECT（RFC 9220）建隧道，帧在流上原样收发
+     * @details 隧道建立之后这条流上跑的就是 WebSocket 帧本身（不是 h3 正文），因此这里手工造一个带
+     *          掩码的文本帧喂进去，断言业务把同样的负载回显回来——回显帧由服务端发出，不带掩码，
+     *          负载逐字节可比
+     */
+    TEST(Http3Session, TunnelsWebSocketOverExtendedConnect)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   // 隧道不做任何 h3 编解码：收到一条就原样回一条
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       if (!co_await peer.sendText(message->payload))
+                                       {
+                                           co_return;
+                                       }
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable());
+        // 隧道建立后要发的帧：带掩码的文本帧（客户端帧必须带掩码，RFC 6455 §5.3）
+        const std::string                 payload = "hello";
+        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
+        std::vector<std::uint8_t>         webSocketFrame{0x81U, static_cast<std::uint8_t>(0x80U | payload.size())};
+        webSocketFrame.insert(webSocketFrame.end(), mask.begin(), mask.end());
+        for (std::size_t payloadIndex = 0; payloadIndex < payload.size(); ++payloadIndex)
+        {
+            webSocketFrame.push_back(static_cast<std::uint8_t>(payload[payloadIndex]) ^ mask[payloadIndex % mask.size()]);
+        }
+        const std::string webSocketFrameText(reinterpret_cast<const char *>(webSocketFrame.data()), webSocketFrame.size());
+
+        const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", webSocketFrameText);
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        std::size_t fedServerChunkCount = 0;
+        for (; fedServerChunkCount < sentStreamData.size(); ++fedServerChunkCount)
+        {
+            const CapturedStreamData &written = sentStreamData[fedServerChunkCount];
+            if (written.streamId == kFirstRequestStreamId)
+            {
+                peer.receive(written.streamId, written.bytes, written.isEndStream);
+            }
+        }
+        ASSERT_EQ(peer.response().status, 200) << "隧道没有以 2xx 应答（RFC 9220 里没有 101）";
+
+        // 回显：服务端写出的字节喂给客户端，它解出的 DATA 负载就是回显的 WebSocket 帧
+        for (; fedServerChunkCount < sentStreamData.size(); ++fedServerChunkCount)
+        {
+            const CapturedStreamData &written = sentStreamData[fedServerChunkCount];
+            if (written.streamId == kFirstRequestStreamId)
+            {
+                peer.receive(written.streamId, written.bytes, written.isEndStream);
+            }
+        }
+
+        const std::string_view echoedFrame = peer.response().body;
+        ASSERT_GE(echoedFrame.size(), 2U + payload.size()) << "隧道里没有回显帧：业务没收到帧，或出向帧没发出去";
+        EXPECT_EQ(static_cast<std::uint8_t>(echoedFrame[0]), 0x81U) << "回显的不是文本帧";
+        EXPECT_EQ(static_cast<std::size_t>(static_cast<std::uint8_t>(echoedFrame[1])), payload.size()) << "回显帧的长度不对";
+        EXPECT_EQ(echoedFrame.substr(2, payload.size()), payload) << "回显的负载与发出去的不一致";
     }
 } // namespace AsynGyanis::Net

@@ -176,21 +176,29 @@ namespace AsynGyanis::Net
                 return 0;
             }
 
-            // 上一批已经交出去并被传输层接走：这段前缀再没人读
+            // 没有可交的字节。两种情形的收尾标记不同：
+            //   有终点的正文（流式响应）：EOF 会把发送侧关掉，而正文还没写完——因此这条路上
+            //     缓冲一空就被 block_stream 挡住（见 blockStreamingResponseIfDrained），不该走到这里；
+            //   没有终点的正文（WebSocket 隧道）：EOF 加 NO_END_STREAM 正好表达「这次没有，但流不结束」
             if (state->deliveredByteCount >= state->bytes.size())
             {
                 state->bytes.clear();
                 state->deliveredByteCount = 0;
-                // 没有可交的字节：写完就是收尾；没写完说明库里在我们该挡住的时候又来要了
-                // （没写完时缓冲一空就会被 block_stream 挡住，见 blockStreamingResponseIfDrained）
-                *flags = NGHTTP3_DATA_FLAG_EOF;
+                *flags = state->isUnboundedBody ? (NGHTTP3_DATA_FLAG_EOF | NGHTTP3_DATA_FLAG_NO_END_STREAM) : NGHTTP3_DATA_FLAG_EOF;
                 return 0;
             }
 
             vectors[0].base = reinterpret_cast<std::uint8_t *>(state->bytes.data() + state->deliveredByteCount);
             vectors[0].len  = state->bytes.size() - state->deliveredByteCount;
             state->deliveredByteCount = state->bytes.size();
-            *flags = state->isFinished ? NGHTTP3_DATA_FLAG_EOF : NGHTTP3_DATA_FLAG_NONE;
+            if (state->isFinished)
+            {
+                *flags = NGHTTP3_DATA_FLAG_EOF;
+            } else
+            {
+                // 隧道不能在这里顺手把发送侧关掉，否则第一帧之后就再也发不出东西
+                *flags = state->isUnboundedBody ? NGHTTP3_DATA_FLAG_NO_END_STREAM : NGHTTP3_DATA_FLAG_NONE;
+            }
             return 1;
         }
 
@@ -230,6 +238,9 @@ namespace AsynGyanis::Net
 
         nghttp3_settings settings;
         nghttp3_settings_default(&settings);
+        // RFC 9220 的扩展 CONNECT（WebSocket 隧道）：不开这一项，nghttp3 会把带 :protocol 的
+        // CONNECT 请求判成非法，隧道根本建立不起来
+        settings.enable_connect_protocol = 1;
 
         const nghttp3_callbacks callbacks = makeCallbacks();
         if (nghttp3_conn_server_new(&m_connection, &callbacks, &settings, nullptr, this) != 0)
@@ -308,8 +319,10 @@ namespace AsynGyanis::Net
             m_crediter(streamId, static_cast<std::size_t>(consumedLength));
         }
 
-        // 此刻已经在 nghttp3 的回调之外了：等正文的处理器可以安全唤醒（它们醒来会回头调 nghttp3）
+        // 此刻已经在 nghttp3 的回调之外了：等正文的处理器可以安全唤醒（它们醒来会回头调 nghttp3），
+        // 隧道里攒下的帧也在这里交给对端对象
         wakeStreamingRequests();
+        wakeWebSocketTunnels();
 
         // 对端的数据可能解锁了本端待发的东西（比如 QPACK 动态表更新后头块才能编码）
         flushPendingStreamData();
@@ -388,10 +401,20 @@ namespace AsynGyanis::Net
             HttpResponse response;
             if (m_router != nullptr)
             {
-                // 与 h1/h2 同一套路由与处理器：业务不需要知道自己在哪条协议上跑。
-                // 流式正文路由不在这里派发——它们在头收齐时就转给了 m_streamingRequests
-                attachChunkSender(streamId, response);
+                // 隧道流上跑的是 WebSocket 帧而不是正文段，因此不装流式发送口
+                const bool isTunnelStream = m_pendingTunnelStreams.contains(streamId);
+                if (!isTunnelStream)
+                {
+                    attachChunkSender(streamId, response);
+                }
                 co_await m_router->route(request, response);
+
+                if (isTunnelStream)
+                {
+                    m_pendingTunnelStreams.erase(streamId);
+                    co_await serveWebSocketTunnel(streamId, response);
+                    continue;
+                }
             } else
             {
                 LOG_WARN_FMT("Http3Session: 流 {} 上的请求没有接上路由器，回 503", streamId);
@@ -432,6 +455,12 @@ namespace AsynGyanis::Net
             incoming.authority = std::move(value);
             return;
         }
+        if (name == ":protocol")
+        {
+            // RFC 9220 的扩展 CONNECT 靠它说明这条流要跑什么协议（websocket）
+            incoming.protocol = std::move(value);
+            return;
+        }
         if (name == ":scheme")
         {
             // 服务端已知自己在 TLS 上，与 h2 侧口径一致：不映射、也不伪造一条头部
@@ -446,6 +475,24 @@ namespace AsynGyanis::Net
 
     void Http3Session::addRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> data)
     {
+        if (m_pendingTunnelStreams.contains(streamId))
+        {
+            // 隧道流已派发但还没建起来（建隧道在 pump() 里）：帧先攒着，建好后一次性交给对端对象。
+            // 漏了这条，字节会落到下面「非流式」的分支里，凭空又建出一份请求记录来
+            m_pendingTunnelBytes[streamId].append(reinterpret_cast<const char *>(data.data()), data.size());
+            return;
+        }
+
+        if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
+        {
+            // CONNECT 隧道：对端发来的是 WebSocket 帧本身（RFC 9220 §4）。**不在这里直接喂**：喂进去
+            // 会让业务协程立刻跑起来，它回头就调 nghttp3 发帧，而此刻还在 nghttp3 的回调里
+            // （重入是未定义行为）。攒起来，回到安全点由 wakeWebSocketTunnels() 喂
+            tunnel->second->pendingIncomingBytes.append(reinterpret_cast<const char *>(data.data()), data.size());
+            tunnel->second->hasPendingFeed = true;
+            return;
+        }
+
         if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
         {
             // 流式：字节进本流自己的缓冲，**窗口在字节被处理器取走时才还**（消费回调已绑好）。
@@ -467,6 +514,13 @@ namespace AsynGyanis::Net
 
     void Http3Session::finishRequest(const std::int64_t streamId)
     {
+        // 隧道流（含待建的）不看 FIN：隧道建立之后对端发的是 WebSocket 帧，它的收尾由帧层的
+        // Close 与承载侧的流关闭决定，CONNECT 流的 END_STREAM 在这里不改变隧道状态
+        if (m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId))
+        {
+            return;
+        }
+
         if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
         {
             // 流式：正文到此为止。这次空追加只带「收尾」一个信息，等正文的处理器随后就能看到终点
@@ -481,6 +535,15 @@ namespace AsynGyanis::Net
         m_outgoingBodies.erase(streamId);
         m_incomingRequests.erase(streamId);
         m_streamingResponses.erase(streamId);
+
+        if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
+        {
+            // 隧道：承载侧的流没了，对端对象随之关闭。记录先留着——业务协程可能还挂着，
+            // 跑完由 reapFinishedTunnels() 一起摘掉
+            tunnel->second->isStreamClosed = true;
+            tunnel->second->peer->markClosed();
+            return;
+        }
 
         const auto found = m_streamingRequests.find(streamId);
         if (found == m_streamingRequests.end())
@@ -501,14 +564,25 @@ namespace AsynGyanis::Net
         {
             return;
         }
+        // 同一条流只派发一次：头收齐时已经派发过的，end_stream 再来一次就什么都不做
+        if (m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId) ||
+            m_streamingRequests.contains(streamId))
+        {
+            return;
+        }
 
         IncomingRequest incoming = std::move(found->second);
         m_incomingRequests.erase(found);
 
+        // RFC 9220 的扩展 CONNECT：`:method = CONNECT` 且 `:protocol = websocket`。它与 h1 的 Upgrade
+        // 同义，因此按 GET 交给路由——同一个 router.get(路径, 处理器) 既能服务 h1 的 101 升级，
+        // 也能服务 h3 上的隧道（与 h2 侧同一口径）
+        const bool isWebSocketTunnelRequest = incoming.method == "CONNECT" && incoming.protocol == "websocket";
+
         HttpRequest request = std::move(incoming.request);
         // 方法原文经 methodFromString 映射：未收录的方法落到 UNKNOWN，路由器按既有规则回 404/405，
         // 绝不静默降级成某条业务路由
-        request.setMethod(HttpRequest::methodFromString(incoming.method));
+        request.setMethod(isWebSocketTunnelRequest ? HttpMethod::GET : HttpRequest::methodFromString(incoming.method));
         request.setUri(incoming.path.empty() ? std::string("/") : incoming.path);
         request.setHttpVersion(std::string(kHttp3RequestVersion));
         request.setBody(std::move(incoming.body));
@@ -519,12 +593,18 @@ namespace AsynGyanis::Net
         }
 
         m_readyRequests.emplace_back(streamId, std::move(request));
+        if (isWebSocketTunnelRequest)
+        {
+            m_pendingTunnelStreams.insert(streamId);
+        }
     }
 
     void Http3Session::beginStreamingRequestIfMatched(const std::int64_t streamId)
     {
         const auto found = m_incomingRequests.find(streamId);
-        if (found == m_incomingRequests.end() || m_router == nullptr || m_isBroken)
+        // 这条流已经派发过（隧道记录在案）就不再派发：重复派发会让同一条流上出现两份响应，
+        // 后一份还会把 nghttp3 的 stream_user_data 从隧道状态改成别的，读回调随即读错对象
+        if (found == m_incomingRequests.end() || m_router == nullptr || m_isBroken || m_pendingTunnelStreams.contains(streamId))
         {
             return;
         }
@@ -534,12 +614,21 @@ namespace AsynGyanis::Net
         const std::string  methodText      = incoming.method;
         const std::string  pathText        = incoming.path;
         const std::string  authorityText   = incoming.authority;
+        const std::string  protocolText    = incoming.protocol;
         const bool         hasHostHeader   = incoming.hasHostHeader;
         const HttpMethod   method          = HttpRequest::methodFromString(methodText);
         const std::string  uri             = pathText.empty() ? std::string("/") : pathText;
 
-        // 头已收齐，方法/路径此刻可判：命中的是流式正文路由就提前派发——正文边收边交，
-        // 业务不必等整份正文；其余路由照旧等 end_stream
+        // 扩展 CONNECT（RFC 9220）要在**头收齐时**就派发：隧道建立之后对端才会在同一
+        // 条流上发 WebSocket 帧，等 end_stream 就等于永远等不到（对方不会结束这条流）
+        if (methodText == "CONNECT" && protocolText == "websocket")
+        {
+            enqueueRequest(streamId);
+            LOG_DEBUG_FMT("Http3Session: 流 {} 是扩展 CONNECT（websocket），已在头部收齐时派发", streamId);
+            return;
+        }
+
+        // 流式正文路由同理：正文边收边交，业务不必等整份正文；其余路由照旧等 end_stream
         if (!m_router->hasStreamingRoute(method, uri))
         {
             return;
@@ -664,6 +753,171 @@ namespace AsynGyanis::Net
         }
 
         reapFinishedStreamingRequests();
+        reapFinishedTunnels();
+    }
+
+    void Http3Session::reapFinishedTunnels()
+    {
+        // 业务跑完且流已关闭才摘：业务协程还挂着时销毁记录会连它的协程帧一起毁掉
+        std::erase_if(m_webSocketTunnels,
+                      [](const auto &entry) { return entry.second->isBusinessFinished && entry.second->isStreamClosed; });
+    }
+
+    void Http3Session::wakeWebSocketTunnels()
+    {
+        // 先按流号收集再逐条喂：喂进去会让业务协程跑起来，它可能在半路把隧道收口，直接遍历会被改动
+        std::vector<std::int64_t> pendingStreamIds;
+        for (const auto &entry: m_webSocketTunnels)
+        {
+            if (entry.second->hasPendingFeed)
+            {
+                pendingStreamIds.push_back(entry.first);
+            }
+        }
+
+        for (const std::int64_t streamId: pendingStreamIds)
+        {
+            const auto found = m_webSocketTunnels.find(streamId);
+            if (found == m_webSocketTunnels.end())
+            {
+                continue;
+            }
+
+            WebSocketTunnel &tunnel = *found->second;
+            tunnel.hasPendingFeed    = false;
+            std::string incomingBytes = std::move(tunnel.pendingIncomingBytes);
+            tunnel.pendingIncomingBytes.clear();
+            if (incomingBytes.empty())
+            {
+                continue;
+            }
+
+            const WebSocketFeedStatus feedStatus = tunnel.peer->feedBytes(incomingBytes.data(), incomingBytes.size());
+            if (feedStatus == WebSocketFeedStatus::DecodeError)
+            {
+                LOG_WARN_FMT("Http3Session: 流 {} 上的 WebSocket 帧解不开（{}），按 {} 收口隧道", streamId, tunnel.peer->decodeErrorText(),
+                             tunnel.peer->decodeErrorCloseCode());
+                closeTunnel(streamId);
+            }
+        }
+
+        reapFinishedTunnels();
+    }
+
+    Core::Task<> Http3Session::serveWebSocketTunnel(const std::int64_t streamId, HttpResponse &response)
+    {
+        if (!response.isWebSocketUpgradeRequested())
+        {
+            // 业务没登记升级：这条流不是隧道，按普通响应回（RFC 9220 也允许服务端不升级）
+            finalizeResponseForHttp3(streamId, response);
+            submitResponse(streamId, response);
+            co_return;
+        }
+
+        // h3 里没有 101：RFC 9220 规定隧道以 2xx 应答，此后这条流上跑的就是 WebSocket 帧本身
+        response.setStatus(200);
+
+        // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧由数据读取回调按需拉走
+        StreamingResponse &state = streamingResponseFor(streamId);
+        if (!submitStreamingResponseHead(streamId, state, response, /*isUnboundedBody=*/true))
+        {
+            co_return;
+        }
+
+        auto tunnel     = std::make_unique<WebSocketTunnel>();
+        tunnel->handler = response.webSocketHandler();
+        tunnel->peer    = std::make_unique<WebSocketPeer>(
+                [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
+                { co_return co_await sendTunnelBytes(streamId, frameBytes); });
+
+        WebSocketTunnel &created = *tunnel;
+        m_webSocketTunnels.emplace(streamId, std::move(tunnel));
+
+        // 隧道建立之前就跟到的帧字节（同一批字节里 DATA 紧跟在请求头后面）：交给这条隧道
+        if (const auto pending = m_pendingTunnelBytes.find(streamId); pending != m_pendingTunnelBytes.end())
+        {
+            created.pendingIncomingBytes = std::move(pending->second);
+            created.hasPendingFeed      = !created.pendingIncomingBytes.empty();
+            m_pendingTunnelBytes.erase(pending);
+        }
+
+        // 应答已经排进待发字节，此刻起业务：与 h2 侧同一时机（业务一上来就能收到对端抢发的帧）
+        created.businessTask.emplace(runTunnelBusiness(streamId));
+        created.businessTask->handle().resume();
+
+        // 攒下的帧此刻才喂（上面那次 resume 让业务挂在 receive() 上，这里喂进去正好唤醒它）
+        wakeWebSocketTunnels();
+        co_return;
+    }
+
+    Core::Task<> Http3Session::runTunnelBusiness(const std::int64_t streamId)
+    {
+        const auto found = m_webSocketTunnels.find(streamId);
+        if (found == m_webSocketTunnels.end())
+        {
+            co_return;
+        }
+
+        WebSocketTunnel &tunnel = *found->second;
+        try
+        {
+            co_await tunnel.handler(*(tunnel.peer));
+        } catch (const std::exception &exception)
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 的 WebSocket 业务处理器抛出异常，已按连接不可用收口。原因：{}", streamId, exception.what());
+        } catch (...)
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 的 WebSocket 业务处理器抛出非标准异常（无 what() 描述）", streamId);
+        }
+
+        if (const auto stillThere = m_webSocketTunnels.find(streamId); stillThere != m_webSocketTunnels.end())
+        {
+            stillThere->second->isBusinessFinished = true;
+            closeTunnel(streamId);
+        }
+        co_return;
+    }
+
+    Core::Task<bool> Http3Session::sendTunnelBytes(const std::int64_t streamId, const std::string_view frameBytes)
+    {
+        const auto found = m_webSocketTunnels.find(streamId);
+        if (found == m_webSocketTunnels.end())
+        {
+            co_return false; // 隧道已经收口，调用方应停止写入
+        }
+
+        StreamingResponse &state = streamingResponseFor(streamId);
+        state.bytes.append(frameBytes);
+        // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空
+        while (state.bytes.size() - state.deliveredByteCount > kStreamingResponseBufferByteCount)
+        {
+            co_await ResponseSpaceAwaiter(&state);
+        }
+
+        // 有新正文了：让库里再来取（读回调上次报的是 EOF|NO_END_STREAM，得唤一声它才会重来），
+        // 然后立刻把攒下的发出去
+        static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
+        flushPendingStreamData();
+        co_return true;
+    }
+
+    void Http3Session::closeTunnel(const std::int64_t streamId)
+    {
+        const auto found = m_webSocketTunnels.find(streamId);
+        if (found == m_webSocketTunnels.end())
+        {
+            return;
+        }
+
+        found->second->peer->markClosed();
+
+        // 出向到此为止：标记写完并唤一次，库会把余下的取走并在最后关掉发送侧
+        if (const auto state = m_streamingResponses.find(streamId); state != m_streamingResponses.end())
+        {
+            state->second->isFinished = true;
+            static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
+            flushPendingStreamData();
+        }
     }
 
     void Http3Session::reapFinishedStreamingRequests()
@@ -676,14 +930,15 @@ namespace AsynGyanis::Net
 
     void Http3Session::finalizeResponseForHttp3(const std::int64_t streamId, HttpResponse &response)
     {
-        // WebSocket 升级（RFC 9220 扩展 CONNECT）在 h3 上还没有实现。与其把一份错的响应发出去，
-        // 不如明确回 500 并留一条日志——静默给错比明确失败难查得多
+        // 升级只能走 RFC 9220 的扩展 CONNECT（:method=CONNECT + :protocol=websocket）：普通请求上
+        // 登记升级会产出一条既不是 101 也不是隧道的响应，对端无从处理，因此明确回 500 并留下日志
         if (response.isWebSocketUpgradeRequested())
         {
-            LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求 WebSocket 升级，HTTP/3 尚未支持，已改回 500", streamId);
+            LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求 WebSocket 升级，但这条流不是扩展 CONNECT（RFC 9220），已改回 500",
+                          streamId);
             response.reset();
             response.setStatus(500);
-            response.setBody("HTTP/3 暂不支持 WebSocket 升级");
+            response.setBody("HTTP/3 上的 WebSocket 升级需要扩展 CONNECT 请求（RFC 9220）");
         }
     }
 
@@ -719,7 +974,8 @@ namespace AsynGyanis::Net
         return *entry;
     }
 
-    bool Http3Session::submitStreamingResponseHead(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response)
+    bool Http3Session::submitStreamingResponseHead(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response,
+                                                   const bool isUnboundedBody)
     {
         std::vector<std::string> names;
         std::vector<std::string> values;
@@ -765,7 +1021,8 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        state.isHeadSent = true;
+        state.isHeadSent      = true;
+        state.isUnboundedBody = isUnboundedBody;
         return true;
     }
 

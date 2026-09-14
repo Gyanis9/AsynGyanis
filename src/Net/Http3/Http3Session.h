@@ -14,6 +14,7 @@
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpStreamBody.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 
 #include <coroutine>
 #include <cstddef>
@@ -23,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -78,6 +80,7 @@ namespace AsynGyanis::Net
             std::size_t             deliveredByteCount{0}; ///< 已交给 nghttp3 的字节数（前缀可丢）
             bool                    isHeadSent{false};     ///< 响应头是否已提交
             bool                    isFinished{false};     ///< 处理器已写完（正文到此为止）
+            bool                    isUnboundedBody{false}; ///< 正文没有终点（WebSocket 隧道）：暂时没数据也不关流
             std::coroutine_handle<> spaceWaiter{};         ///< 生产者等缓冲排空时挂在这里
         };
 
@@ -191,6 +194,7 @@ namespace AsynGyanis::Net
             std::string method;     ///< :method 原文
             std::string path;       ///< :path 原文
             std::string authority;  ///< :authority 原文
+            std::string protocol;   ///< :protocol 原文（RFC 9220 扩展 CONNECT 用；普通请求为空）
             std::string body;       ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
             bool        hasHostHeader{false}; ///< 对端是否显式给了 host 头
         };
@@ -324,9 +328,13 @@ namespace AsynGyanis::Net
          * @param streamId 流号
          * @param state 该流的状态
          * @param response 业务填好的响应（取状态码与头部）
+         * @param isUnboundedBody true 表示正文没有终点（WebSocket 隧道：只要隧道开着就还可能出字节），
+         *        提交后立刻把这条流挡住，等真有字节时再解挡——库里「要数据却给不出」是断言级错误，
+         *        而给不出时置 EOF 又会把发送侧提前关掉
          * @return true 提交成功
          */
-        bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response);
+        bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response,
+                                         bool isUnboundedBody = false);
 
         /**
          * @brief 写一段流式响应正文（ChunkSender 的实现）
@@ -362,6 +370,62 @@ namespace AsynGyanis::Net
 
         /// 丢掉已经跑完的派发协程随记录一起摘掉
         void reapFinishedStreamingRequests();
+
+        /**
+         * @brief 一条 WebSocket 隧道（RFC 9220 扩展 CONNECT）
+         * @details 应答 200 之后，这条 h3 流上跑的就不再是 h3 报文，而是 WebSocket 帧本身：入向字节
+         *          交给对端对象解码，出向帧作为同一条流上的 DATA 发出去。出向复用流式响应那套
+         *          「按需拉 + 没数据时挡流」的机制，因此隧道不会把内存堆起来
+         */
+        struct WebSocketTunnel
+        {
+            WebSocketHandler                handler;              ///< 业务处理器
+            std::unique_ptr<WebSocketPeer>  peer;                 ///< 对端对象（帧的收发都经它）
+            std::optional<Core::Task<>>     businessTask;         ///< 业务处理器所在的协程
+            std::string                     pendingIncomingBytes; ///< 已收下、等安全点再交给对端对象的入向字节
+            bool                            hasPendingFeed{false};     ///< 有待喂给对端对象的字节
+            bool                            isBusinessFinished{false}; ///< 业务已返回
+            bool                            isStreamClosed{false};     ///< 承载侧的流已关闭
+        };
+
+        /**
+         * @brief 建立 WebSocket 隧道：应答 200（不结束流）并把业务处理器跑起来
+         * @param streamId 流号
+         * @param response 业务填好的响应（其中的升级登记给出处理器）
+         * @return Core::Task<> 建立完成
+         */
+        [[nodiscard]] Core::Task<> serveWebSocketTunnel(std::int64_t streamId, HttpResponse &response);
+
+        /**
+         * @brief 隧道里的业务协程：跑处理器，返回后收尾
+         * @param streamId 流号
+         * @return Core::Task<> 业务结束
+         */
+        [[nodiscard]] Core::Task<> runTunnelBusiness(std::int64_t streamId);
+
+        /**
+         * @brief 把隧道里的一段出向字节（WebSocket 帧）发出去
+         * @param streamId 流号
+         * @param frameBytes 帧字节
+         * @return Core::Task<bool> 是否已收下（缓冲满时挂起等排空）
+         */
+        [[nodiscard]] Core::Task<bool> sendTunnelBytes(std::int64_t streamId, std::string_view frameBytes);
+
+        /**
+         * @brief 收尾一条隧道：结束出向、把对端对象标记为关闭
+         * @param streamId 流号
+         */
+        void closeTunnel(std::int64_t streamId);
+
+        /// 把已经跑完的业务协程随记录一起摘掉（业务跑完且流已关闭）
+        void reapFinishedTunnels();
+
+        /**
+         * @brief 在安全点把攒下的入向字节交给各条隧道的对端对象
+         * @note 不能在 nghttp3 的回调里喂：喂进去会让业务协程立刻跑起来，它回头就调 nghttp3 发帧，
+         *       而回调期间重入库是未定义行为
+         */
+        void wakeWebSocketTunnels();
 
         /**
          * @brief 按 h3 的规矩给响应定稿：尚未实现的形态（WebSocket 升级）改成明确失败
@@ -404,6 +468,12 @@ namespace AsynGyanis::Net
         std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;
         /// 流式写出响应的状态：键是流号。正文缓冲要让 nghttp3 借指针，因此同样用 unique_ptr 保地址稳定
         std::map<std::int64_t, std::unique_ptr<StreamingResponse>> m_streamingResponses;
+        /// 等派发的隧道流：扩展 CONNECT（:method=CONNECT + :protocol=websocket）的那些
+        std::set<std::int64_t> m_pendingTunnelStreams;
+        /// 隧道建立之前先到达的帧字节：隧道是在 pump() 里建的，而帧可能在同一批字节里就跟到了
+        std::map<std::int64_t, std::string> m_pendingTunnelBytes;
+        /// 已建立的 WebSocket 隧道：键是流号。这些流上的 DATA 是 WebSocket 帧，不是 h3 请求正文
+        std::map<std::int64_t, std::unique_ptr<WebSocketTunnel>> m_webSocketTunnels;
         /// 已收全、等待派发的请求（按收全先后）
         std::deque<std::pair<std::int64_t, HttpRequest>> m_readyRequests;
         /// 待发响应的正文：std::map 的节点地址稳定，nghttp3 借走的指针不会因为它增删而失效
