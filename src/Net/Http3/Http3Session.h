@@ -420,9 +420,11 @@ namespace AsynGyanis::Net
         void wakeWebSocketTunnels();
 
         /**
-         * @brief 按 h3 的规矩给响应定稿：尚未实现的形态（WebSocket 升级）改成明确失败
+         * @brief 按 h3 的规矩给响应定稿：普通请求上登记的 WebSocket 升级改成明确失败
          * @param streamId 流号
          * @param response 业务填好的响应，就地修改
+         * @details h3 的升级只有扩展 CONNECT（RFC 9220）一条路，且由 serveWebSocketTunnel() 单独
+         *          处理；走到本函数的都是普通请求，此刻登记升级是对端接不住的形态，只能回 500
          */
         void finalizeResponseForHttp3(std::int64_t streamId, HttpResponse &response);
 
