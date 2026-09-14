@@ -18,6 +18,7 @@ add_executable(TestPlatform
 
         System/TestPlatformError.cpp
         System/TestPlatformTime.cpp
+        System/TestProcess.cpp
         System/TestProcessInfo.cpp
         System/TestTextEncoding.cpp
 )
