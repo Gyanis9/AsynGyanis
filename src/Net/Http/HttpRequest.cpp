@@ -263,6 +263,16 @@ namespace AsynGyanis::Net
         return m_body;
     }
 
+    HttpRequestBody *HttpRequest::bodyStream() const noexcept
+    {
+        return m_bodyStream;
+    }
+
+    void HttpRequest::setBodyStream(HttpRequestBody *bodyStream) noexcept
+    {
+        m_bodyStream = bodyStream;
+    }
+
     void HttpRequest::setRequestId(std::string requestId)
     {
         // 入参按值接收后移动接管：调用方（会话）交出的就是它自己那份，不必再拷一次

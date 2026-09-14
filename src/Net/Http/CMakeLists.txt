@@ -21,6 +21,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/HttpParser.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpRequest.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpRequest.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpRequestBody.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpRequestBody.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpResponse.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpResponse.cpp
         ${CMAKE_CURRENT_LIST_DIR}/SseStream.h

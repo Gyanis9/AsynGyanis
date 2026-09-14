@@ -460,6 +460,64 @@ namespace AsynGyanis::Net
         return m_body.size();
     }
 
+    bool HttpParser::isComplete() const noexcept
+    {
+        return m_stage == Stage::Complete;
+    }
+
+    bool HttpParser::isHeaderBlockComplete() const noexcept
+    {
+        // 与 takeContinueRequest() 的「正文待收」同一组阶段，另加 trailer：
+        // 头部块收齐之后、整条报文收齐之前的所有中间态
+        return m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData
+               || m_stage == Stage::ChunkDataTerminator || m_stage == Stage::Trailer;
+    }
+
+    std::string_view HttpParser::uri() const noexcept
+    {
+        return m_uri;
+    }
+
+    HttpMethod HttpParser::method() const noexcept
+    {
+        return m_method;
+    }
+
+    bool HttpParser::commitHeadersForStreaming()
+    {
+        if (!isHeaderBlockComplete())
+        {
+            return false;
+        }
+        if (m_headersCommitted)
+        {
+            return true;
+        }
+
+        // 与 commitMessage() 的头部段同一遍搬运；区别只在正文仍留在解析器内部，
+        // 由调用方经 bufferedBodyView()/discardBufferedBody() 边收边取
+        m_currentRequest.reset();
+        m_currentRequest.setMethod(m_method);
+        m_currentRequest.setUri(std::move(m_uri));
+        m_currentRequest.setHttpVersion(std::move(m_httpVersion));
+        for (ParsedHeader &header: m_headers)
+        {
+            m_currentRequest.addHeader(std::move(header.name), std::move(header.value));
+        }
+        m_headersCommitted = true;
+        return true;
+    }
+
+    std::string_view HttpParser::bufferedBodyView() const noexcept
+    {
+        return m_body;
+    }
+
+    void HttpParser::discardBufferedBody() noexcept
+    {
+        m_body.clear();
+    }
+
     bool HttpParser::takeLine(const char *const data, const std::size_t length, std::size_t &consumed, std::string_view &line)
     {
         // 上一次慢路径交出去的视图按契约已经用完（调用方当场解析完），暂存可以清掉；
@@ -945,13 +1003,19 @@ namespace AsynGyanis::Net
         // 再按解析结果逐项落进去。容器与串都按移动交付，不产生逐字节拷贝。
         // 移交之前对外请求对象一直是空壳，因此半成品阶段的 request() 读不出任何东西
         //（比「可读但不许放行」更强）
-        m_currentRequest.reset();
-        m_currentRequest.setMethod(m_method);
-        m_currentRequest.setUri(std::move(m_uri));
-        m_currentRequest.setHttpVersion(std::move(m_httpVersion));
-        for (ParsedHeader &header: m_headers)
+        //
+        // 流式派发已用 commitHeadersForStreaming() 提前提交过头部时不再重复搬运：
+        // 头部已在 request() 里就位，这里只补尚未被取走的正文（已流式交付的部分不在其中）
+        if (!m_headersCommitted)
         {
-            m_currentRequest.addHeader(std::move(header.name), std::move(header.value));
+            m_currentRequest.reset();
+            m_currentRequest.setMethod(m_method);
+            m_currentRequest.setUri(std::move(m_uri));
+            m_currentRequest.setHttpVersion(std::move(m_httpVersion));
+            for (ParsedHeader &header: m_headers)
+            {
+                m_currentRequest.addHeader(std::move(header.name), std::move(header.value));
+            }
         }
         m_currentRequest.setBody(std::move(m_body));
 
@@ -1004,6 +1068,9 @@ namespace AsynGyanis::Net
         m_transferEncodingValue.clear();
         m_chunkRemainingBytes      = 0;
         m_chunkTerminatorBytesSeen = 0;
+
+        // 提前提交标记随报文复位：下一条报文重新走「空壳到 Done」的正常契约
+        m_headersCommitted = false;
     }
 
 } // namespace AsynGyanis::Net

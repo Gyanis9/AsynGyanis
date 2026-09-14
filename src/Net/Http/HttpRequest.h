@@ -32,6 +32,8 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] bool isContinueExpected(std::string_view expectHeaderValue) noexcept;
 
+    class HttpRequestBody;
+
     /**
      * @brief HTTP 请求数据对象
      *
@@ -147,6 +149,28 @@ namespace AsynGyanis::Net
          * @return 正文内容的 string_view，视图生命周期跟随本请求对象
          */
         [[nodiscard]] std::string_view body() const;
+
+        /**
+         * @brief 获取本请求的正文流（普通与流式派发都可读）
+         *
+         * @details 会话在连接建立时装配一次，因此对 h1 的每一条请求都非空。两种派发下的行为：
+         *          @li 普通路由在请求收齐后派发：流把已缓冲的全部正文作为一段交出、随后 EOF；
+         *              此时 body() 同样给出全量正文（两者等价，流是为统一写法提供的）；
+         *          @li 流式路由（Router::postStreaming()/putStreaming() 注册）在头部收齐即派发：
+         *              正文边收边交、且处理器不拉取时连接不再读入（背压）；此时 body() 只含
+         *              「已收但尚未经流交付」的残余字节，正文的权威来源是流。
+         *
+         * @return HttpRequestBody* 正文流指针；h2 会话与直接构造的请求对象上可能为空，取用前判空
+         * @see HttpRequestBody, Router::postStreaming()
+         */
+        [[nodiscard]] HttpRequestBody *bodyStream() const noexcept;
+
+        /**
+         * @brief 装配正文流（会话内部使用，按连接调用一次）
+         * @param bodyStream 正文流对象；生命周期由会话保证覆盖整条连接（跨请求复用同一对象）
+         * @note 指针不参与 reset()：它属于连接而不是单条报文，解析器复位不应把它清掉
+         */
+        void setBodyStream(HttpRequestBody *bodyStream) noexcept;
 
         /**
          * @brief 设置本次请求的 request-id
@@ -295,6 +319,7 @@ namespace AsynGyanis::Net
         mutable std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用：首次查询时才由权威记录建出
         mutable bool m_isSingleValueViewStale{true};               ///< 单值视图是否已过期（新增头部或重置后置位，查询前重建）
         std::string m_body;                                        ///< 消息正文
+        HttpRequestBody *m_bodyStream{nullptr};                    ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
         std::string m_requestId;                                   ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
         std::unordered_map<std::string, std::string> m_params;     ///< 路由参数
         mutable std::stop_source m_cancelSource;                   ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）

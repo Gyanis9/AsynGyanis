@@ -112,6 +112,59 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t bufferedBodyByteCount() const noexcept;
 
         /**
+         * @brief 检查报文是否已收齐
+         * @return true 处于 Complete 阶段（Done 之后到 reset() 之前）
+         */
+        [[nodiscard]] bool isComplete() const noexcept;
+
+        /**
+         * @brief 检查头部块是否已收齐、正文是否仍在收取（流式派发的触发条件）
+         * @details 为「边收边处理」提供派发时机：头部块收齐而正文尚未收完的阶段
+         *          （定长正文、分块大小行/块数据/块尾、trailer）返回 true。
+         *          报文已收齐、失败态、reset() 之后一律 false。
+         * @return true 头部已收齐且正文尚未收完
+         * @see commitHeadersForStreaming(), Router::postStreaming()
+         */
+        [[nodiscard]] bool isHeaderBlockComplete() const noexcept;
+
+        /**
+         * @brief 流式派发判定用的方法与 URI 读数（解析进度读数，不触发提交）
+         * @details 请求行解析完成后即可读。提交之前 request() 仍是空壳，因此派发判定
+         *          经这里取方法与本 URI，避免为所有请求提前破坏「空壳到 Done」的契约。
+         * @return std::string_view URI 原文视图；请求行尚未解析时为空视图
+         */
+        [[nodiscard]] std::string_view uri() const noexcept;
+
+        /**
+         * @brief 流式派发判定用的方法读数
+         * @return HttpMethod 已解析的方法；请求行尚未解析时为 UNKNOWN
+         */
+        [[nodiscard]] HttpMethod method() const noexcept;
+
+        /**
+         * @brief 把已解析的头部提前提交给 request()（流式派发用）
+         * @details 与主流程「Done 才移交」契约的显式例外：仅当调用方判定该请求走流式路由
+         *          时调用。正文仍留在解析器内部，由调用方经 bufferedBodyView()/discardBufferedBody()
+         *          边收边取；此后 commitMessage() 只补正文、不重复搬运头部。
+         * @return true 完成提交（或此前已提交）；false 当前不在「头部已收齐、正文未收完」阶段
+         */
+        bool commitHeadersForStreaming();
+
+        /**
+         * @brief 取解析器内部当前攒下的正文视图（流式消费用）
+         * @details 视图只到下一次 parse()/discardBufferedBody()/commitMessage()/reset() 之前有效；
+         *          收齐后正文已随 commitMessage 移交 request()，此处为空。
+         * @return std::string_view 当前已攒下的正文字节
+         */
+        [[nodiscard]] std::string_view bufferedBodyView() const noexcept;
+
+        /**
+         * @brief 丢弃内部已攒下的正文字节（只清内容、保留容量供后续复用）
+         * @details 流式消费交付一段后调用：与 bufferedBodyView() 的视图生命周期配套。
+         */
+        void discardBufferedBody() noexcept;
+
+        /**
          * @brief 检查解析器是否处于错误状态。
          * @return true 表示发生过错误（含超出资源上限），false 表示无错误
          */
@@ -340,6 +393,9 @@ namespace AsynGyanis::Net
 
         /// 是否已见过 Transfer-Encoding：与 Content-Length 互斥，两者并存当场判错
         bool m_hasTransferEncoding{false};
+
+        /// 头部是否已被流式派发提前提交（见 commitHeadersForStreaming()；随报文在 clearMessageScratch 里复位）
+        bool m_headersCommitted{false};
 
         /// 各条 Transfer-Encoding 取值原文，按到达顺序以 ", " 连接，头部块结束时统一裁决
         std::string m_transferEncodingValue;

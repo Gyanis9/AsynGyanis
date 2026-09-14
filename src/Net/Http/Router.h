@@ -100,6 +100,34 @@ namespace AsynGyanis::Net
         void put(const std::string &path, Handler handler);
 
         /**
+         * @brief 注册「流式正文」POST 路由：头部收齐即派发，正文经 HttpRequest::bodyStream() 边收边读
+         *
+         * @details 与 post() 的处理器类型相同，区别只在**派发时机**与正文交付方式：
+         *          @li 普通路由等整条请求（含正文）收齐后才派发，正文经 body() 一次性读取；
+         *          @li 流式路由在头部收齐、正文仍在收取时就派发，处理器用
+         *              `co_await request.bodyStream()->readNext()` 按到达批次取正文——
+         *              不调用时连接不再读入，慢业务因此天然形成背压，大上传也不会在内存里
+         *              整块驻留（缓冲上界是一批网络字节，而非正文全长）。
+         *
+         * @param path 路径模式
+         * @param handler 处理函数；读正文请用 `request.bodyStream()`，不要依赖 body()
+         * @note 追加语义：处理器返回时若正文仍未读完，会话会把剩余字节排空后复用连接；
+         *       排空失败或正文中途解析出错则收口连接（不按可复用处理）
+         * @note 与 WebSocket 升级不兼容：流式路由里登记升级会被按 500 拒绝
+         * @note 中间件对两类路由都生效；横切逻辑若需要看正文，请同样经 bodyStream() 读
+         * @see HttpRequestBody, HttpRequest::bodyStream()
+         */
+        void postStreaming(const std::string &path, Handler handler);
+
+        /**
+         * @brief 注册「流式正文」PUT 路由，语义同 postStreaming()
+         * @param path 路径模式
+         * @param handler 处理函数
+         * @see postStreaming()
+         */
+        void putStreaming(const std::string &path, Handler handler);
+
+        /**
          * @brief 注册 DELETE 路由。
          * @param path 路径模式
          * @param handler 处理函数，所有权转移给路由器
@@ -164,6 +192,21 @@ namespace AsynGyanis::Net
          */
         Core::Task<> route(HttpRequest &request, HttpResponse &response);
 
+        /**
+         * @brief 查询「按给定方法与 URI 命中的路由是不是流式注册的」
+         *
+         * @details 供会话在头部收齐、正文未收完时判定派发时机：命中的路由是流式注册的，
+         *          就提前派发（正文经 HttpRequestBody 边收边读）；否则等整条请求收齐再走
+         *          route()。匹配规则与 route() 完全一致（精确优先、先到先得、UNKNOWN 不放行），
+         *          只是不执行任何处理函数、也不产出 404/405。
+         *
+         * @param method 请求方法
+         * @param uri 请求 URI 原文（本函数内部按 route() 同一口径截取路径部分）
+         * @return true 命中且该条路由为流式注册；路径未命中或命中的是普通路由时为 false
+         * @see postStreaming(), putStreaming()
+         */
+        [[nodiscard]] bool hasStreamingRoute(HttpMethod method, std::string_view uri) const;
+
     private:
         /// 路由参数的临时收集容器：整条路由命中后才一次性提交给请求
         using PathParameters = std::unordered_map<std::string, std::string>;
@@ -180,7 +223,8 @@ namespace AsynGyanis::Net
              * @param routePattern 注册时给出的路径模式原文，所有权转移给本条目
              * @param routeHandler 处理函数，所有权转移给本条目
              */
-            PatternRoute(HttpMethod routeMethod, bool matchAnyMethod, std::string routePattern, Handler routeHandler);
+            PatternRoute(HttpMethod routeMethod, bool matchAnyMethod, std::string routePattern, Handler routeHandler,
+                         bool isStreaming = false);
 
             /**
              * @brief 把路径模式拆成段：普通段原样、":name" 段以 ':' 前缀保留，通配形态记入 isWildcard 与 wildcardPrefix
@@ -194,6 +238,7 @@ namespace AsynGyanis::Net
             std::vector<std::string> segments;  ///< 预解析的逐段模式，已去掉分隔用的 '/'
             std::string wildcardPrefix;         ///< 通配路由的目录前缀（含结尾 '/'），非通配路由为空
             bool        isWildcard{false};      ///< 是否以 '*' 结尾的前缀通配路由
+            bool        streaming{false};       ///< 是否流式正文路由（见 postStreaming()）
             Handler     handler;                ///< 业务处理函数，路由期间只按引用使用，不拷贝
         };
 
@@ -204,6 +249,7 @@ namespace AsynGyanis::Net
         {
             HttpMethod method{HttpMethod::GET}; ///< 绑定的方法；isAnyMethod 为 true 时不参与判定
             bool       isAnyMethod{false};      ///< 是否为 any() 注册的任意方法条目
+            bool       streaming{false};        ///< 是否流式正文路由（见 postStreaming()）
             Handler    handler;                 ///< 业务处理函数
         };
 
@@ -238,8 +284,17 @@ namespace AsynGyanis::Net
          * @param isAnyMethod 是否为任意方法路由
          * @param path 路径模式
          * @param handler 处理函数
+         * @param streaming 是否流式正文路由（见 postStreaming()）
          */
-        void addRoute(HttpMethod method, bool isAnyMethod, const std::string &path, Handler handler);
+        void addRoute(HttpMethod method, bool isAnyMethod, const std::string &path, Handler handler, bool streaming = false);
+
+        /**
+         * @brief 按与方法匹配同一套规则，判断命中的路由是否为流式注册
+         * @param matchMethod 参与匹配的方法（HEAD 复用 GET 时调用方传 GET）
+         * @param requestPath 请求路径（已截去查询串）
+         * @return true 命中且该条路由为流式注册
+         */
+        [[nodiscard]] bool matchedRouteIsStreaming(HttpMethod matchMethod, std::string_view requestPath) const;
 
         /**
          * @brief 一次性提交匹配到的路由参数（先到先得规则在这里落地）

@@ -30,8 +30,10 @@ namespace AsynGyanis::Net
     // PatternRoute
     // ============================================================================
 
-    Router::PatternRoute::PatternRoute(const HttpMethod routeMethod, const bool matchAnyMethod, std::string routePattern, Handler routeHandler) :
-        method(routeMethod), isAnyMethod(matchAnyMethod), pattern(std::move(routePattern)), handler(std::move(routeHandler))
+    Router::PatternRoute::PatternRoute(const HttpMethod routeMethod, const bool matchAnyMethod, std::string routePattern,
+                                       Handler routeHandler, const bool isStreaming) :
+        method(routeMethod), isAnyMethod(matchAnyMethod), pattern(std::move(routePattern)), streaming(isStreaming),
+        handler(std::move(routeHandler))
     {
         // 预解析放在构造里：模式在路由生命周期内不变，没必要每请求再拆一遍
         precomputeSegments(pattern);
@@ -105,6 +107,16 @@ namespace AsynGyanis::Net
         addRoute(HttpMethod::PUT, false, path, std::move(handler));
     }
 
+    void Router::postStreaming(const std::string &path, Handler handler)
+    {
+        addRoute(HttpMethod::POST, false, path, std::move(handler), true);
+    }
+
+    void Router::putStreaming(const std::string &path, Handler handler)
+    {
+        addRoute(HttpMethod::PUT, false, path, std::move(handler), true);
+    }
+
     void Router::del(const std::string &path, Handler handler)
     {
         addRoute(HttpMethod::DELETE, false, path, std::move(handler));
@@ -168,7 +180,8 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    void Router::addRoute(const HttpMethod method, const bool isAnyMethod, const std::string &path, Handler handler)
+    void Router::addRoute(const HttpMethod method, const bool isAnyMethod, const std::string &path, Handler handler,
+                          const bool streaming)
     {
         // 空路径按根路径处理：注册 "" 的人本意就是「访问站点根」，留着一个永远匹配不上的键只会让人困惑
         const std::string normalizedPath = path.empty() ? std::string("/") : path;
@@ -184,11 +197,12 @@ namespace AsynGyanis::Net
                 const bool isSameBinding = candidate.isAnyMethod == isAnyMethod && (isAnyMethod || candidate.method == method);
                 if (isSameBinding)
                 {
-                    candidate.handler = std::move(handler);
+                    candidate.handler   = std::move(handler);
+                    candidate.streaming = streaming;
                     return;
                 }
             }
-            candidates.push_back(ExactRoute{method, isAnyMethod, std::move(handler)});
+            candidates.push_back(ExactRoute{method, isAnyMethod, streaming, std::move(handler)});
             return;
         }
 
@@ -198,11 +212,12 @@ namespace AsynGyanis::Net
             const bool isSameBinding = existingRoute.isAnyMethod == isAnyMethod && (isAnyMethod || existingRoute.method == method);
             if (isSameBinding && existingRoute.pattern == normalizedPath)
             {
-                existingRoute.handler = std::move(handler);
+                existingRoute.handler   = std::move(handler);
+                existingRoute.streaming = streaming;
                 return;
             }
         }
-        m_patternRoutes.emplace_back(method, isAnyMethod, normalizedPath, std::move(handler));
+        m_patternRoutes.emplace_back(method, isAnyMethod, normalizedPath, std::move(handler), streaming);
     }
 
     // ============================================================================
@@ -503,6 +518,57 @@ namespace AsynGyanis::Net
         co_await m_pipeline.run(request, response, unmatchedTerminalHandler);
         finalizeResponse(response);
         co_return;
+    }
+
+    // ============================================================================
+    // 流式派发判定
+    // ============================================================================
+
+    bool Router::matchedRouteIsStreaming(const HttpMethod matchMethod, const std::string_view requestPath) const
+    {
+        // 与 route() 的匹配保持同一优先级：精确索引 → 模式列表，两侧都是先到先得。
+        // 这里只需回答「命中的那条是不是流式注册」，因此不收集参数、不记 Allow
+        if (const auto exactIterator = m_exactRoutes.find(requestPath); exactIterator != m_exactRoutes.end())
+        {
+            for (const ExactRoute &candidate: exactIterator->second)
+            {
+                if (candidate.isAnyMethod || candidate.method == matchMethod)
+                {
+                    return candidate.streaming;
+                }
+            }
+        }
+
+        for (const PatternRoute &route: m_patternRoutes)
+        {
+            PathParameters discardedParameters;
+            if (!matchesPattern(route, requestPath, discardedParameters))
+            {
+                continue;
+            }
+            if (route.isAnyMethod || route.method == matchMethod)
+            {
+                return route.streaming;
+            }
+        }
+        return false;
+    }
+
+    bool Router::hasStreamingRoute(const HttpMethod method, const std::string_view uri) const
+    {
+        // 未收录方法不参与业务匹配（与 route() 的识别性判定一致），流式判定同理
+        if (method == HttpMethod::UNKNOWN)
+        {
+            return false;
+        }
+
+        // 路径截取与 HttpRequest::path() 同一口径：第一个 '?' 之前算路径
+        const std::size_t queryPosition = uri.find('?');
+        const std::string_view requestPath = queryPosition == std::string_view::npos ? uri : uri.substr(0, queryPosition);
+
+        // HEAD 复用 GET 的兜底不需要镜像：本类只提供 postStreaming()/putStreaming() 两种
+        // 流式注册，HEAD 请求在方法层就与它们不相干
+        return matchedRouteIsStreaming(method, requestPath);
     }
 
 } // namespace AsynGyanis::Net
