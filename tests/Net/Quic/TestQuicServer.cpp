@@ -101,6 +101,13 @@ namespace AsynGyanis::Net
                 {
                     SSL_free(m_ssl);
                 }
+                // 上下文也要放：它是 initialize() 里新建的，漏了每跑一条用例就漏一份
+                // （Windows 的 ASan 不带泄漏检测，这条是 Linux 门禁第一次跑这些用例时抓出来的）
+                if (m_sslContext != nullptr)
+                {
+                    SSL_CTX_free(m_sslContext);
+                    m_sslContext = nullptr;
+                }
             }
 
             QuicTestClient(const QuicTestClient &) = delete;
