@@ -430,7 +430,7 @@ namespace AsynGyanis::Net
     {
         // 业务不再读了：把还挂着的正文按已消费处理。这一步顺带归还接收窗口——不还的话那些字节
         // 一直占着对端的发送窗口，而它们永远不会再被交付给任何人
-        Http2StreamBody &streamBody = pending.streamBody;
+        HttpStreamBody &streamBody = pending.streamBody;
         streamBody.consumePending();
 
         // 对端已收尾：这条流的接收侧自然结束，没有「还在发」的对端需要中止。
@@ -514,10 +514,10 @@ namespace AsynGyanis::Net
             PendingRequest &pending = requestIterator->second;
 
             // 流式路由：正文进那条流自己的缓冲，业务按到达批次取走；窗口在**被消费**时才还
-            // （见 Http2StreamBody），因此这里不调 creditReceivedData——那正是背压的落点
+            // （见 HttpStreamBody），因此这里不调 creditReceivedData——那正是背压的落点
             if (pending.isStreamingBody)
             {
-                Http2StreamBody &streamBody = pending.streamBody;
+                HttpStreamBody &streamBody = pending.streamBody;
                 if (m_parserLimits.maximumBodySize != 0
                     && streamBody.totalReceivedByteCount() + receivedData.data.size() > m_parserLimits.maximumBodySize)
                 {
@@ -784,7 +784,7 @@ namespace AsynGyanis::Net
             pending.streamBody.setConsumeHandler(
                     [this, streamId](const std::size_t consumedFlowControlByteCount)
                     {
-                        // 消费即还窗口：由 Http2StreamBody 在字节被交付后回调进来
+                        // 消费即还窗口：由 HttpStreamBody 在字节被交付后回调进来
                         std::string creditErrorText;
                         if (!m_connection.creditReceivedData(streamId, consumedFlowControlByteCount, &creditErrorText))
                         {
@@ -793,7 +793,7 @@ namespace AsynGyanis::Net
                         }
                     });
 
-            Http2StreamBody &streamBody       = pending.streamBody;
+            HttpStreamBody &streamBody       = pending.streamBody;
             const auto       pumpStreamingBody = [this, streamId, &streamBody]() -> Core::Task<bool>
             {
                 // 收请求正文期间按读超时约束相邻两次成功读取的间隔（与主循环「有在途请求」那一档同口径）

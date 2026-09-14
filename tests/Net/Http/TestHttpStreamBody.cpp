@@ -1,13 +1,13 @@
 /**
- * @file TestHttp2StreamBody.cpp
- * @brief Http2StreamBody 单元测试：交付语义与「消费才归还接收窗口」的记账
+ * @file TestHttpStreamBody.cpp
+ * @brief HttpStreamBody 单元测试：交付语义与「消费才归还接收窗口」的记账
  * @author Gyanis
  * @date 2026-09-14
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
 
-#include "Net/Http2/Http2StreamBody.h"
+#include "Net/Http/HttpStreamBody.h"
 
 #include <gtest/gtest.h>
 
@@ -27,7 +27,7 @@ namespace AsynGyanis::Net
             std::vector<std::size_t> reports; ///< 每次回调的入参（流控字节数）
 
             /// 造一个绑定到本记录的回调
-            [[nodiscard]] Http2StreamBody::ConsumeHandler makeHandler()
+            [[nodiscard]] HttpStreamBody::ConsumeHandler makeHandler()
             {
                 return [this](const std::size_t consumedByteCount)
                 {
@@ -40,10 +40,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 追加不归还窗口，交付之后才归还——背压记账的核心契约
      */
-    TEST(Http2StreamBody, CreditsOnlyAfterDelivery)
+    TEST(HttpStreamBody, CreditsOnlyAfterDelivery)
     {
         ConsumeRecord      record;
-        Http2StreamBody    body;
+        HttpStreamBody    body;
         constexpr std::size_t kChunkBytes = 1000;
         body.reset(record.makeHandler());
 
@@ -67,10 +67,10 @@ namespace AsynGyanis::Net
      * @brief 归还的量按 DATA 帧负载原长（含 padding）报，而不是按应用数据长度
      * @details padding 也占对端的发送窗口（RFC 9113 §6.9.1）：只按应用数据报量会让窗口被 padding 一点点吃掉
      */
-    TEST(Http2StreamBody, CreditsFlowControlByteCountIncludingPadding)
+    TEST(HttpStreamBody, CreditsFlowControlByteCountIncludingPadding)
     {
         ConsumeRecord   record;
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset(record.makeHandler());
 
         // 应用数据 100 字节，而该帧占用 150 个流控字节（50 字节 padding）
@@ -84,10 +84,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 零长 DATA 帧（常见于只带 END_STREAM 的收尾帧）同样要归还它占用的流控字节
      */
-    TEST(Http2StreamBody, CreditsZeroLengthFrameWithPadding)
+    TEST(HttpStreamBody, CreditsZeroLengthFrameWithPadding)
     {
         ConsumeRecord   record;
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset(record.makeHandler());
 
         body.append({}, 8, true);
@@ -101,10 +101,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次交付覆盖「两次追加」的全部字节：按到达批次攒起来一起交，归还量是两者之和
      */
-    TEST(Http2StreamBody, DeliversAndCreditsAccumulatedBytes)
+    TEST(HttpStreamBody, DeliversAndCreditsAccumulatedBytes)
     {
         ConsumeRecord   record;
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset(record.makeHandler());
 
         body.append(std::string(300, 'a'), 300, false);
@@ -122,10 +122,10 @@ namespace AsynGyanis::Net
     /**
      * @brief consumePending()：业务不再读时把挂着的正文按已消费归还窗口（收尾路径依赖它）
      */
-    TEST(Http2StreamBody, ConsumePendingCreditsEverythingOutstanding)
+    TEST(HttpStreamBody, ConsumePendingCreditsEverythingOutstanding)
     {
         ConsumeRecord   record;
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset(record.makeHandler());
 
         body.append(std::string(4096, 'a'), 4096, false);
@@ -139,10 +139,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 越界标记：既终止流，也让会话据此回 413
      */
-    TEST(Http2StreamBody, BodyTooLargeMarksBrokenAndIsReported)
+    TEST(HttpStreamBody, BodyTooLargeMarksBrokenAndIsReported)
     {
         ConsumeRecord   record;
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset(record.makeHandler());
 
         body.append(std::string(16, 'a'), 16, false);
@@ -155,9 +155,9 @@ namespace AsynGyanis::Net
     /**
      * @brief 对端取消：终止流但不改「越界」标记
      */
-    TEST(Http2StreamBody, BrokenIsReportedWithoutTooLargeFlag)
+    TEST(HttpStreamBody, BrokenIsReportedWithoutTooLargeFlag)
     {
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset({});
 
         body.markBroken();
@@ -169,11 +169,11 @@ namespace AsynGyanis::Net
     /**
      * @brief reset() 换流时清空内容与全部标记，并替换消费回调
      */
-    TEST(Http2StreamBody, ResetClearsContentAndMarkers)
+    TEST(HttpStreamBody, ResetClearsContentAndMarkers)
     {
         ConsumeRecord   firstRecord;
         ConsumeRecord   secondRecord;
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset(firstRecord.makeHandler());
 
         body.append(std::string(64, 'a'), 64, true);
@@ -198,9 +198,9 @@ namespace AsynGyanis::Net
     /**
      * @brief 没有消费回调时丢弃字节不该崩——回调是可选装配
      */
-    TEST(Http2StreamBody, DiscardWithoutConsumeHandlerIsSafe)
+    TEST(HttpStreamBody, DiscardWithoutConsumeHandlerIsSafe)
     {
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset({});
 
         body.append(std::string(32, 'a'), 32, false);
@@ -212,9 +212,9 @@ namespace AsynGyanis::Net
     /**
      * @brief 正文不经请求对象中转：收齐后没有「残余」可交（completedBody 恒为空）
      */
-    TEST(Http2StreamBody, CompletedBodyIsAlwaysEmpty)
+    TEST(HttpStreamBody, CompletedBodyIsAlwaysEmpty)
     {
-        Http2StreamBody body;
+        HttpStreamBody body;
         body.reset({});
 
         body.append(std::string(16, 'a'), 16, true);

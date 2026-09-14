@@ -22,8 +22,8 @@
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/HttpStreamBody.h"
 #include "Net/Http2/Http2Connection.h"
-#include "Net/Http2/Http2StreamBody.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -211,7 +211,7 @@ namespace AsynGyanis::Net
 
             /// 流式路由专用的正文缓冲（来源）。按流各持一份而不是全连接共用一份：同一条连接上
             /// 可以同时有多条流在收正文，共用一份会让后来者的 DATA 覆盖前者的未读正文
-            Http2StreamBody streamBody;
+            HttpStreamBody streamBody;
         };
 
         /**

@@ -1762,7 +1762,7 @@ namespace AsynGyanis::Net
      * @note 前半段（握着不放时没有 WINDOW_UPDATE）单独看不是强断言：吸收本身也受处理器拉取驱动，
      *       「到达即归还」的退化实现同样可能凑不满窗口更新的阈值而通过。真正有判别力的是后半段——
      *       若归还根本不存在，「没有归还就发不出去」会让步进卡在超时上；窗口记账本身则由
-     *       Http2StreamBody 的单元用例逐条钉住（见 TestHttp2StreamBody）
+     *       HttpStreamBody 的单元用例逐条钉住（见 TestHttpStreamBody）
      */
     TEST(Http2CleartextSession, CreditsReceiveWindowOnlyAfterTheHandlerConsumes)
     {
