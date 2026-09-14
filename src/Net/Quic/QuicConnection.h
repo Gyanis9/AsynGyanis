@@ -49,11 +49,13 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 收到流数据时的回调
+         * @param connection 数据所属的连接（回调可能要在这条连接上开流或回写）
          * @param streamId QUIC 流号
          * @param data 本段数据
          * @param isEndStream 对端在本段之后收尾
          */
-        using StreamDataHandler = std::function<void(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream)>;
+        using StreamDataHandler = std::function<void(QuicConnection &connection, std::int64_t streamId, std::span<const std::uint8_t> data,
+                                                     bool isEndStream)>;
 
         /**
          * @brief 连接配置（服务端级共享的那几项）
@@ -109,6 +111,15 @@ namespace AsynGyanis::Net
          * @return std::int64_t 新流号；连接已收口或开流失败时为 -1
          */
         [[nodiscard]] std::int64_t openUnidirectionalStream();
+
+        /**
+         * @brief 归还接收额度：把应用已经消费掉的字节数写回流量控制窗口
+         * @param streamId 流号（必须是对端发起的流）
+         * @param consumedByteCount 本次消费掉的字节数
+         * @note 流级与连接级两本账都要还。漏还的后果很隐蔽：对端此后被流控卡住，而本端看不出任何
+         *       异常——只是「数据不再来了」，正文一大就必现
+         */
+        void extendReceiveWindow(std::int64_t streamId, std::size_t consumedByteCount);
 
         /**
          * @brief 把一条收到的报文交给本连接处理，并把由此产生的待发字节写出去

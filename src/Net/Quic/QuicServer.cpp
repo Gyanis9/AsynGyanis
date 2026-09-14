@@ -5,6 +5,7 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
+#include "Net/Http/Router.h"
 
 #include <algorithm>
 #include <cstring>
@@ -106,7 +107,8 @@ namespace AsynGyanis::Net
     QuicServer::~QuicServer()
     {
         // 连接先于 SSL_CTX 销毁：连接析构里还要用上下文里的会话对象。
-        // 别名索引持有的是裸指针，先清它再清拥有者
+        // HTTP/3 会话内部指向各自的连接，别名索引持有的是裸指针——两者都要先于连接表清掉
+        m_http3Sessions.clear();
         m_connectionsByAliasConnectionId.clear();
         m_connections.clear();
         if (m_tlsContext != nullptr)
@@ -185,6 +187,52 @@ namespace AsynGyanis::Net
         m_streamDataHandler = std::move(handler);
     }
 
+    void QuicServer::setRouter(Router &router) noexcept
+    {
+        m_router = &router;
+    }
+
+    Http3Session &QuicServer::http3SessionFor(QuicConnection &connection)
+    {
+        if (Http3Session *const existing = findHttp3Session(&connection); existing != nullptr)
+        {
+            return *existing;
+        }
+
+        // 会话的三个口子都绑到这条连接上：开单向流、写流数据、归还接收额度。
+        // 这里捕获裸指针而不是引用，是为了让「会话指向哪条连接」在代码里显式可见
+        QuicConnection *const rawConnection = &connection;
+        auto                  session       = std::make_unique<Http3Session>(
+                [rawConnection] { return rawConnection->openUnidirectionalStream(); },
+                [rawConnection](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                { rawConnection->queueStreamData(streamId, data, isEndStream); },
+                [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
+                { rawConnection->extendReceiveWindow(streamId, consumedByteCount); });
+        if (m_router != nullptr)
+        {
+            session->attachRouter(*m_router);
+        }
+
+        Http3Session &createdSession = *session;
+        m_http3Sessions.emplace(rawConnection, std::move(session));
+        return createdSession;
+    }
+
+    Http3Session *QuicServer::findHttp3Session(const QuicConnection *const connection) noexcept
+    {
+        const auto existing = m_http3Sessions.find(connection);
+        return existing != m_http3Sessions.end() ? existing->second.get() : nullptr;
+    }
+
+    Core::Task<> QuicServer::pumpHttp3For(QuicConnection &connection)
+    {
+        if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
+        {
+            co_await session->pump();
+        }
+        co_return;
+    }
+
     std::size_t QuicServer::connectionCount() const noexcept
     {
         return m_connections.size();
@@ -214,6 +262,7 @@ namespace AsynGyanis::Net
         {
             co_await existing->second->handleDatagram(peerAddress, datagram);
             registerConnectionIds(*existing->second);
+            co_await pumpHttp3For(*existing->second);
             co_return;
         }
 
@@ -227,6 +276,7 @@ namespace AsynGyanis::Net
             QuicConnection *matchedConnection = byAliasConnectionId->second;
             co_await matchedConnection->handleDatagram(peerAddress, datagram);
             registerConnectionIds(*matchedConnection);
+            co_await pumpHttp3For(*matchedConnection);
             co_return;
         }
 
@@ -241,7 +291,20 @@ namespace AsynGyanis::Net
         connectionConfiguration.tlsContext           = m_tlsContext;
         connectionConfiguration.statelessResetSecret = m_statelessResetSecret;
         connectionConfiguration.idleTimeout          = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
-        connectionConfiguration.onStreamData         = m_streamDataHandler;
+        // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
+        connectionConfiguration.onStreamData         = [this](QuicConnection &connection, const std::int64_t streamId,
+                                                     const std::span<const std::uint8_t> data, const bool isEndStream)
+        {
+            if (m_router != nullptr)
+            {
+                http3SessionFor(connection).onStreamData(streamId, data, isEndStream);
+                return;
+            }
+            if (m_streamDataHandler)
+            {
+                m_streamDataHandler(connection, streamId, data, isEndStream);
+            }
+        };
         connectionConfiguration.sendDatagram         = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data,
                                                           const std::size_t length) -> Core::Task<bool>
         {
@@ -265,6 +328,7 @@ namespace AsynGyanis::Net
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
         co_await rawConnection->handleDatagram(peerAddress, datagram);
         registerConnectionIds(*rawConnection);
+        co_await pumpHttp3For(*rawConnection);
     }
 
     void QuicServer::registerConnectionIds(const QuicConnection &connection)
@@ -282,8 +346,10 @@ namespace AsynGyanis::Net
             if (iterator->second->isClosed())
             {
                 LOG_DEBUG_FMT("QuicServer: 连接已收口并从路由表摘除（剩 {} 条）", m_connections.size() - 1);
-                // 两张表都要摘：别名索引存的是裸指针，漏了它会把已销毁的连接留在表里（悬空指针）
+                // 三张表都要摘：别名索引存的是裸指针，HTTP/3 会话内部又指回这条连接——
+                // 漏掉任何一处，都会把已销毁的连接留在表里（悬空指针）
                 const QuicConnection *closedConnection = iterator->second.get();
+                m_http3Sessions.erase(closedConnection);
                 std::erase_if(m_connectionsByAliasConnectionId,
                               [closedConnection](const auto &entry) { return entry.second == closedConnection; });
                 iterator = m_connections.erase(iterator);

@@ -14,6 +14,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
 
 #include <atomic>
@@ -29,6 +30,8 @@
 
 namespace AsynGyanis::Net
 {
+    class Router;
+
     /**
      * @brief QUIC 服务端：绑定一条 UDP 端口，把报文按连接标识分派给各自的连接
      *
@@ -79,10 +82,19 @@ namespace AsynGyanis::Net
         void stop() noexcept;
 
         /**
-         * @brief 设置收到流数据时的处理回调（HTTP/3 层接在这里）
-         * @param handler 回调；本切片里默认做回显，用来打通传输
+         * @brief 设置收到流数据时的直通回调（只在没接 HTTP/3 路由器时生效）
+         * @param handler 回调
          */
         void setStreamDataHandler(QuicConnection::StreamDataHandler handler);
+
+        /**
+         * @brief 把 HTTP/3 接到既有路由器上
+         * @param router 路由器；**必须活得比服务端久**（本类只存指针）
+         * @note 接上之后，每条连接在收到第一条流数据时自动建立 HTTP/3 会话：控制流与两条 QPACK 流
+         *       由本类替它开出来，h3 请求按既有路由与处理器派发——业务代码与 h1/h2 是同一份。
+         *       不接路由器时服务端只做传输层，流数据交给 setStreamDataHandler() 的直通出口
+         */
+        void setRouter(Router &router) noexcept;
 
         /**
          * @brief 当前在线连接数
@@ -134,6 +146,28 @@ namespace AsynGyanis::Net
          */
         void registerConnectionIds(const QuicConnection &connection);
 
+        /**
+         * @brief 取（必要时创建）某条连接上的 HTTP/3 会话
+         * @param connection 目标连接
+         * @return Http3Session& 该连接的会话
+         * @note 懒建：h3 的流量必然在握手之后，第一条流数据到达时建正好；提前建反而要额外记握手状态
+         */
+        Http3Session &http3SessionFor(QuicConnection &connection);
+
+        /**
+         * @brief 找出某条连接上的 HTTP/3 会话
+         * @param connection 目标连接
+         * @return Http3Session* 会话；该连接还没有会话时为空
+         */
+        [[nodiscard]] Http3Session *findHttp3Session(const QuicConnection *connection) noexcept;
+
+        /**
+         * @brief 驱动某条连接上的 HTTP/3 会话：派发排队的请求并把响应写出去
+         * @param connection 目标连接
+         * @return Core::Task<> 驱动完成（该连接没有会话时立即返回）
+         */
+        [[nodiscard]] Core::Task<> pumpHttp3For(QuicConnection &connection);
+
         Core::EventLoop     &m_eventLoop;           ///< 所属事件循环
         Configuration        m_configuration;      ///< 服务端配置
         SSL_CTX             *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
@@ -145,6 +179,12 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t> m_statelessResetSecret; ///< 无状态重置令牌的服务端级密钥
         Platform::SocketAddress   m_localSocketAddress;   ///< 本端地址（建连接时要进 ngtcp2 的 path）
         QuicConnection::StreamDataHandler m_streamDataHandler; ///< 流数据回调（缺省为空，即收到流数据不回应）
+
+        Router *m_router{nullptr}; ///< 路由器（不持有；接上之后每条连接才会有 HTTP/3 会话）
+
+        /// 每条连接上的 HTTP/3 会话：键是连接，会话的开流/写出/归还额度的口子都指向那条连接。
+        /// 会话必须在连接被摘除时一起销毁（它内部存的是指向该连接的引用）
+        std::map<const QuicConnection *, std::unique_ptr<Http3Session>> m_http3Sessions;
 
         /// 连接标识 → 连接。键是本端生成的 SCID（对端的 DCID）
         std::map<std::string, std::unique_ptr<QuicConnection>, std::less<>> m_connections;

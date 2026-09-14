@@ -557,7 +557,7 @@ namespace AsynGyanis::Net
 
         // 回调在服务端循环线程上跑：跨线程共享的观测数据用锁保护
         server.server().setStreamDataHandler(
-                [&hasReceivedStreamData, &receivedPayload, &observationMutex](const std::int64_t /*streamId*/,
+                [&hasReceivedStreamData, &receivedPayload, &observationMutex](QuicConnection & /*connection*/, const std::int64_t /*streamId*/,
                                                                              const std::span<const std::uint8_t> data,
                                                                              const bool /*isEndStream*/)
                 {

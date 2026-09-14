@@ -377,6 +377,21 @@ namespace AsynGyanis::Net
         return streamId;
     }
 
+    void QuicConnection::extendReceiveWindow(const std::int64_t streamId, const std::size_t consumedByteCount)
+    {
+        if (m_connection == nullptr || consumedByteCount == 0)
+        {
+            return;
+        }
+
+        // 流级与连接级两本账都要还：只还流级的话，连接级窗口迟早也会被耗光而无人察觉
+        if (ngtcp2_conn_extend_max_stream_offset(m_connection, streamId, consumedByteCount) != 0)
+        {
+            LOG_DEBUG_FMT("QuicConnection: 流 {} 的接收额度归还被拒（本端发起的单向流无需归还），已跳过", streamId);
+        }
+        ngtcp2_conn_extend_max_offset(m_connection, consumedByteCount);
+    }
+
     const std::vector<std::uint8_t> &QuicConnection::statelessResetSecret() const noexcept
     {
         return m_configuration.statelessResetSecret;
@@ -386,7 +401,7 @@ namespace AsynGyanis::Net
     {
         if (m_configuration.onStreamData)
         {
-            m_configuration.onStreamData(streamId, data, isEndStream);
+            m_configuration.onStreamData(*this, streamId, data, isEndStream);
         }
     }
 
