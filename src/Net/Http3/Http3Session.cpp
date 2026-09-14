@@ -340,8 +340,19 @@ namespace AsynGyanis::Net
             HttpResponse response;
             if (m_router != nullptr)
             {
-                // 与 h1/h2 同一套路由与处理器：业务不需要知道自己在哪条协议上跑
-                co_await m_router->route(request, response);
+                // 流式正文路由要求 request.bodyStream() 已装上、按到达批次边收边读；h3 这条路径的正文是
+                // 整段收全的，还没有那个正文流，处理器一旦 bodyStream()->readNext() 就会踩空。
+                // 用路由自己的口径先问一句，踩空改成明确失败
+                if (m_router->hasStreamingRoute(request.method(), request.uri()))
+                {
+                    LOG_ERROR_FMT("Http3Session: 流 {} 命中的是流式正文路由，HTTP/3 尚未接上正文流，已回 500", streamId);
+                    response.setStatus(500);
+                    response.setBody("HTTP/3 暂不支持流式请求正文");
+                } else
+                {
+                    // 与 h1/h2 同一套路由与处理器：业务不需要知道自己在哪条协议上跑
+                    co_await m_router->route(request, response);
+                }
             } else
             {
                 LOG_WARN_FMT("Http3Session: 流 {} 上的请求没有接上路由器，回 503", streamId);

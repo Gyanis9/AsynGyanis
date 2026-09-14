@@ -559,4 +559,51 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(peer.response().status, 500) << "流式响应在 h3 上没实现，应当明确回 500，而不是发出错的响应";
     }
+
+    /**
+     * @brief 命中流式正文路由时 h3 必须明确失败：那条路由要的正文流本端还没接上
+     * @details 挡这一下是为了让处理器根本不被调用——否则它一取 bodyStream() 就是空指针
+     */
+    TEST(Http3Session, Answers500WhenTheMatchedRouteReadsStreamingRequestBody)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        bool   isHandlerInvoked = false;
+        Router router;
+        router.postStreaming("/upload",
+                             [&isHandlerInvoked](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerInvoked = true;
+                                 response.setStatus(200);
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable());
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("POST", "/upload", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 500) << "流式正文路由在 h3 上还没接上，应当明确回 500";
+        EXPECT_FALSE(isHandlerInvoked) << "流式正文路由的处理器不该被调用（它一取 bodyStream() 就是空指针）";
+    }
 } // namespace AsynGyanis::Net
