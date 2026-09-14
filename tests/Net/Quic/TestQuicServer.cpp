@@ -427,11 +427,16 @@ namespace AsynGyanis::Net
         class RunningQuicServer
         {
         public:
-            RunningQuicServer()
+            /**
+             * @brief 起一台回环上的服务端
+             * @param idleTimeout 空闲/握手超时；考「超时收口」的用例把它调小，免得干等默认的 30 秒
+             */
+            explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30})
             {
                 QuicServer::Configuration configuration;
                 configuration.certificateFile = certificatePath();
                 configuration.privateKeyFile  = privateKeyPath();
+                configuration.idleTimeout     = idleTimeout;
 
                 m_server = std::make_unique<QuicServer>(m_loop, configuration);
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
@@ -629,5 +634,38 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); }))
                 << "ALPN 被拒之后服务端不再接受合法握手";
         EXPECT_STREQ(client.selectedApplicationProtocol().c_str(), "h3") << "协商出的 ALPN 不是 h3";
+    }
+
+    /**
+     * @brief 只发出首个 Initial 就消失的客户端：握手超时后服务端必须把这条连接收口
+     * @details 失败面用例。对端半路消失时连接若一直留在路由表里，既占着连接上限，也让「在线连接数」
+     *          永远不可信。超时调到 1 秒，否则要干等默认的 30 秒。
+     */
+    TEST(QuicServer, ReapsConnectionWhoseHandshakeNeverCompletes)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        RunningQuicServer server{std::chrono::seconds{1}};
+        ASSERT_NE(server.listeningPort(), 0);
+
+        QuicTestClient client;
+        ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+        // 只推一步：首个 Initial 发出去、服务端据此建起连接，此后客户端装死不再推进
+        client.pumpOnce();
+
+        // 先等这条连接真的建起来——否则下面那个「计数为 0」可能只是服务端还没处理那个 Initial
+        const auto appearedDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (server.server().connectionCount() == 0 && std::chrono::steady_clock::now() < appearedDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        ASSERT_EQ(server.server().connectionCount(), 1U) << "首个 Initial 没有建出连接";
+
+        const auto reapedDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (server.server().connectionCount() != 0 && std::chrono::steady_clock::now() < reapedDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        EXPECT_EQ(server.server().connectionCount(), 0U) << "握手没完成的连接没有在超时后被收口";
     }
 } // namespace AsynGyanis::Net
