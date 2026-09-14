@@ -102,6 +102,24 @@ ctest --test-dir build/debug --output-on-failure
 
 **关于 Debug 预设的 AddressSanitizer**：`debug` 预设开启 `ENABLE_SANITIZERS`，MSVC 下为 `/fsanitize=address`（GCC/Clang 上额外带 UBSan）。构建时会把 ASan 运行库拷到可执行文件旁，因此测试可脱离 VS 环境直接运行；容器注解因与未插桩的 gtest 存在 ABI 标记冲突而关闭（原因与出路写在根 `CMakeLists.txt` 注释里）。**ASan 会显著抬高每帧栈开销**，写深递归用例时要按这个预算来。
 
+### 作为依赖使用（find_package）
+
+安装后（`cmake --install build/release --prefix <前缀>`，或直接用 Conan 包）外部工程即可消费：
+
+```cmake
+find_package(AsynGyanis REQUIRED)                    # 请求全部五个模块
+find_package(AsynGyanis COMPONENTS Net REQUIRED)     # 只要 Net：自动带出 Core/Base/Platform 及其外部依赖
+
+target_link_libraries(app PRIVATE AsynGyanis::Net)
+```
+
+请求部分组件时，包配置只为**被请求组件及其传递依赖组件**拉取外部依赖——只要 `Base` 就不会去找 OpenSSL/zlib。
+每个组件的外部依赖清单由各模块在配置期自行登记（`AsynGyanisPackageDependencies_<组件>`），因此不会与实际情况漂移；
+组件名写错会被 `check_required_components` 当场挡下。
+
+Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费方链接后**运行需要 ASan 运行库 DLL**；
+不想带这些依赖就用 `release` 预设产出的包。
+
 ### 真机用例（数据库）
 
 依赖真实服务端的用例一律**环境变量门控**，口令无默认值、缺失即整组 `GTEST_SKIP`（不是失败），因此没有服务端的机器上仍然全绿：
