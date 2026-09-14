@@ -1754,4 +1754,152 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }
+
+    /**
+     * @brief 钉住：接收窗口只在「业务消费」之后归还——慢消费者期间不归还，放行后凭归还才发得出窗口之外的字節
+     * @details 客户端在这里是**遵守窗口的**：先只发用一个初始窗口的量，处理器握着首段不放时窗口不该变大；
+     *          放行后服务端随消费归还窗口，客户端收到 WINDOW_UPDATE 才发最后一段。
+     * @note 前半段（握着不放时没有 WINDOW_UPDATE）单独看不是强断言：吸收本身也受处理器拉取驱动，
+     *       「到达即归还」的退化实现同样可能凑不满窗口更新的阈值而通过。真正有判别力的是后半段——
+     *       若归还根本不存在，「没有归还就发不出去」会让步进卡在超时上；窗口记账本身则由
+     *       Http2StreamBody 的单元用例逐条钉住（见 TestHttp2StreamBody）
+     */
+    TEST(Http2CleartextSession, CreditsReceiveWindowOnlyAfterTheHandlerConsumes)
+    {
+        // 正文总量取「一个初始窗口 + 一段」：超出的那一段只有在服务端归还窗口之后才发得出去
+        constexpr std::size_t kWindowBytes      = kHttp2InitialWindowSizeByteCount;
+        constexpr std::size_t kWireFrameBytes   = 16383;
+        constexpr std::size_t kWireFrameCount   = kWindowBytes / kWireFrameBytes;
+        constexpr std::size_t kBeyondWindowBytes = 4096;
+        constexpr auto        kAbsenceCheckWindow = std::chrono::milliseconds{300};
+
+        std::atomic<bool>        hasHeldFirstBatch{false};
+        std::atomic<bool>        isHandlerReleased{false};
+        std::atomic<std::size_t> observedTotalBytes{0};
+
+        const auto registerRoutes = [&hasHeldFirstBatch, &isHandlerReleased, &observedTotalBytes](Router &router, Core::EventLoop &)
+        {
+            router.postStreaming("/stream", [&hasHeldFirstBatch, &isHandlerReleased, &observedTotalBytes](
+                                                        HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            {
+                HttpRequestBody *stream = request.bodyStream();
+                if (stream == nullptr)
+                {
+                    response.setBody("no-stream");
+                    co_return;
+                }
+
+                std::size_t totalBytes = 0;
+                bool        isFirst    = true;
+                while (co_await stream->readNext())
+                {
+                    if (isFirst)
+                    {
+                        // 慢消费者：上一段还没被消费（读取器要到下一次 readNext 才丢弃它并归还窗口），
+                        // 处理器就在这里停住——服务端此刻不该归还任何接收窗口
+                        hasHeldFirstBatch.store(true, std::memory_order_release);
+                        isFirst = false;
+                        while (!isHandlerReleased.load(std::memory_order_acquire))
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                        }
+                    }
+                    totalBytes += stream->chunk().size();
+                }
+                observedTotalBytes.store(totalBytes, std::memory_order_release);
+                response.setBody("bytes=" + std::to_string(totalBytes));
+                co_return;
+            });
+        };
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
+                                        [](TestHttpServer &server)
+                                        {
+                                            server.setHttp2CleartextEnabled(true);
+                                        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 先发满初始窗口（连接级与流级初值都是 65535，因此这些字节一个都不越界），超出窗口的那段留到放行之后
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false);
+        for (std::size_t frameIndex = 0; frameIndex < kWireFrameCount; ++frameIndex)
+        {
+            requestBytes += encodeHttp2DataFrame(
+                    Http2DataPayload{.endStream = false, .data = std::string(kWireFrameBytes, static_cast<char>('a' + frameIndex))}, 1U);
+        }
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        ASSERT_TRUE(waitForFlag(hasHeldFirstBatch, kWaitTimeout)) << "处理器没有拿到首段就停下了：流式派发没有发生";
+
+        // 反面：处理器停着没消费，服务端就不该归还窗口
+        const auto absenceDeadline = std::chrono::steady_clock::now() + kAbsenceCheckWindow;
+        while (std::chrono::steady_clock::now() < absenceDeadline)
+        {
+            static_cast<void>(client.pumpUntil(frames,
+                                               [](const std::vector<Http2Frame> &)
+                                               {
+                                                   return false;
+                                               },
+                                               std::chrono::milliseconds{50}));
+        }
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::WindowUpdate)
+                    << "业务还没消费，服务端就归还了接收窗口：背压没有落在消费上";
+        }
+
+        // 正面：放行后随消费归还窗口；客户端等到归还才发超出窗口的那一段
+        isHandlerReleased.store(true, std::memory_order_release);
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.type == Http2FrameType::WindowUpdate)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "消费之后也没有归还接收窗口：对端的窗口会被一路耗尽，超出窗口的正文永远发不出来";
+
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true,
+                                                                          .data = std::string(kBeyondWindowBytes, 'z')},
+                                                         1U),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "放行之后没有拿到最终响应";
+
+        const std::size_t expectedBodyBytes = kWireFrameCount * kWireFrameBytes + kBeyondWindowBytes;
+        HpackDecoder      responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "bytes=" + std::to_string(expectedBodyBytes));
+        EXPECT_EQ(observedTotalBytes.load(std::memory_order_acquire), expectedBodyBytes);
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "按窗口规矩发送的对端不该被收口";
+        }
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
 } // namespace AsynGyanis::Net
