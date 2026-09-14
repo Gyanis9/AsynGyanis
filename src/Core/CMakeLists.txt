@@ -26,10 +26,14 @@ target_link_libraries(Core PUBLIC
         OpenSSL::Crypto
 )
 
-if(TARGET jemalloc::jemalloc)
-    target_link_libraries(Core PUBLIC jemalloc::jemalloc)
-    # 启用后可执行文件多一层分配器依赖，消费方同样要能找到它
-    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Core jemalloc)
+if(ASYN_WITH_MIMALLOC)
+    # 全局分配器接管整个进程的 malloc/free（分配器随 Core 进入最终可执行文件）：
+    # 由 Conan 提供，Windows/Linux 都可用；开关与 sanitizer 的互斥在顶层 CMakeLists 已拦住。
+    # 注意目标是 ConanCenter 配方声明的无命名空间名 mimalloc-static（实机核对过生成产物）
+    find_package(mimalloc REQUIRED)
+    target_link_libraries(Core PUBLIC mimalloc-static)
+    # 启用后消费方同样要能找到分配器目标
+    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Core mimalloc)
 endif()
 
 target_include_directories(Core PUBLIC

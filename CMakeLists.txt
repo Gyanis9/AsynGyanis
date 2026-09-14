@@ -48,6 +48,16 @@ option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）
 # 构建目录跑并发相关的用例集（见 .github/workflows/linux-ci.yml）。
 option(SANITIZE_THREADS "启用 ThreadSanitizer（仅 GCC/Clang；与 ENABLE_SANITIZERS 互斥）" OFF)
 
+# 可选全局分配器：mimalloc（跨平台；jemalloc 在 Windows 上长期无人维护，mimalloc 是这里唯一现实的选择）。
+# 默认关闭：接管整个进程的 malloc/free 属于部署决策（调试器、其它库的分配统计都会受影响）。
+# 与 sanitizer 互斥——mimalloc 会遮蔽 ASan/TSan 的分配拦截，二者同开等于把内存检查静默废掉，
+# 因此在这里当场拦住而不是等链接出一堆难解的错误
+option(ASYN_WITH_MIMALLOC "链接 mimalloc 作为全局分配器（生产构建用；与 sanitizer 互斥）" OFF)
+if(ASYN_WITH_MIMALLOC AND (ENABLE_SANITIZERS OR SANITIZE_THREADS))
+    message(FATAL_ERROR "ASYN_WITH_MIMALLOC 与 sanitizer 互斥：mimalloc 会遮蔽分配拦截，请只开一个"
+                        "（例如 -DENABLE_SANITIZERS=OFF -DSANITIZE_THREADS=OFF）")
+endif()
+
 # 把 ASan 运行时拷到可执行文件旁边。
 # MSVC 的 ASan 运行库不在系统 PATH 上（它随 Visual Studio 提供，位于 cl.exe 同目录），
 # 因此插桩出来的可执行文件若在「没有 vcvars 环境」的裸 shell 里直接运行，会以
