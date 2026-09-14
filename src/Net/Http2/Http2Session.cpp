@@ -305,7 +305,8 @@ namespace AsynGyanis::Net
 
     Core::Task<> Http2Session::runHttp2Loop()
     {
-        std::vector<char> receiveBuffer(kHttp2ReceiveWindowByteCount);
+        // 接收缓冲提到成员上：流式正文的泵与主循环交替驱动同一条连接，缓冲必须共用一份
+        m_http2ReceiveBuffer.resize(kHttp2ReceiveWindowByteCount);
 
         // 连接被关停时把停止请求转成当前在途请求的协作式取消：业务只认 request.cancelToken() 一处，
         // 与 HTTP/1.1 侧的 ConnectionCancelForwarder 同一约定。回调随本协程帧存活，析构即注销
@@ -346,45 +347,12 @@ namespace AsynGyanis::Net
                 refreshIdleDeadline(isRequestInProgress ? m_limits->readTimeout : m_limits->idleTimeout);
             }
 
-            ssize_t receivedLength = 0;
-            try
-            {
-                receivedLength = co_await transportReceive(receiveBuffer.data(), receiveBuffer.size());
-            } catch (const std::exception &)
-            {
-                // 传输层读失败（对端 RST、描述符被清扫协程关掉、TLS 记录错误）：字节流已断，只剩收尾
-                break;
-            }
-            if (receivedLength <= 0)
-            {
-                // 0 是对端正常关闭，负值是连接不可用，两者都只剩收尾
-                break;
-            }
-            refreshIdleDeadline(m_limits->readTimeout);
-
             // 驱动顺序：喂字节（协议失败时 GOAWAY 已排进待发）→ 立刻写出（初始 SETTINGS、ACK、
             // WINDOW_UPDATE、RST_STREAM、GOAWAY）→ 取请求与正文 → 路由 → 再写出响应。
             // 流式响应是这条顺序里的例外：它的头部与每个正文段在路由期间就当场写出（见
             // sendStreamingSegment()），否则「边写边到」会退化成「攒到处理器结束再发」
-            const Http2ConnectionFeedStatus feedStatus =
-                    m_connection.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength));
-            if (!co_await flushOutgoingBytes())
+            if (!co_await driveConnectionOnce())
             {
-                break;
-            }
-
-            absorbPendingRequests();
-            absorbReceivedData();
-
-            if (feedStatus == Http2ConnectionFeedStatus::Failed || m_connection.hasFailed())
-            {
-                // 状态机已把带 errorCode() 的 GOAWAY 排进待发字节，上面那次写出已经把它送出去
-                if (m_metrics != nullptr)
-                {
-                    m_metrics->countBadRequest();
-                }
-                LOG_ERROR_FMT("Http2Session: HTTP/2 连接层失败，已按错误码 {} 发 GOAWAY 并收口。原因：{}",
-                              http2ErrorCodeName(m_connection.errorCode()), m_connection.errorMessage());
                 break;
             }
 
@@ -412,6 +380,78 @@ namespace AsynGyanis::Net
         co_return;
     }
 
+    Core::Task<bool> Http2Session::driveConnectionOnce()
+    {
+        // 读之前的时限由调用方定，这里不动：主循环按相位（SETTINGS 待 ACK / 有在途请求 / 纯空闲）
+        // 选不同的容忍度，流式正文的泵则在收请求期间按读超时——在此处一律刷成读超时会把
+        // 空闲超时与 SETTINGS 超时这两道闸无声地拆掉
+
+        ssize_t receivedLength = 0;
+        try
+        {
+            receivedLength = co_await transportReceive(m_http2ReceiveBuffer.data(), m_http2ReceiveBuffer.size());
+        } catch (const std::exception &)
+        {
+            // 传输层读失败（对端 RST、描述符被清扫协程关掉、TLS 记录错误）：字节流已断，只剩收尾
+            co_return false;
+        }
+        if (receivedLength <= 0)
+        {
+            // 0 是对端正常关闭，负值是连接不可用，两者都只剩收尾
+            co_return false;
+        }
+        refreshIdleDeadline(m_limits->readTimeout);
+
+        const Http2ConnectionFeedStatus feedStatus =
+                m_connection.feedBytes(m_http2ReceiveBuffer.data(), static_cast<std::size_t>(receivedLength));
+        if (!co_await flushOutgoingBytes())
+        {
+            co_return false;
+        }
+
+        absorbPendingRequests();
+        absorbReceivedData();
+
+        if (feedStatus == Http2ConnectionFeedStatus::Failed || m_connection.hasFailed())
+        {
+            // 状态机已把带 errorCode() 的 GOAWAY 排进待发字节，上面那次写出已经把它送出去
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countBadRequest();
+            }
+            LOG_ERROR_FMT("Http2Session: HTTP/2 连接层失败，已按错误码 {} 发 GOAWAY 并收口。原因：{}",
+                          http2ErrorCodeName(m_connection.errorCode()), m_connection.errorMessage());
+            co_return false;
+        }
+        co_return true;
+    }
+
+    void Http2Session::finishStreamingRequestBody(PendingRequest &pending, const bool isBodyTooLarge)
+    {
+        // 业务不再读了：把还挂着的正文按已消费处理。这一步顺带归还接收窗口——不还的话那些字节
+        // 一直占着对端的发送窗口，而它们永远不会再被交付给任何人
+        Http2StreamBody &streamBody = pending.streamBody;
+        streamBody.consumePending();
+
+        // 对端已收尾：这条流的接收侧自然结束，没有「还在发」的对端需要中止。
+        // 对端已取消（RST_STREAM）时同理——流都不在了，再发 RST 也到不了对端手里
+        if (streamBody.isComplete() || (streamBody.isBroken() && !isBodyTooLarge))
+        {
+            return;
+        }
+
+        // 对端可能还在发剩下的正文，而本端已经不需要了：按 RFC 9113 §8.1 请它停下（NO_ERROR 不是
+        // 「出错」，而是「这条流不再需要了」）。不收下再丢掉，省的是对端可能还有几百 MB 的带宽
+        std::string abortErrorText;
+        if (!m_connection.abortStream(pending.streamId,
+                                      isBodyTooLarge ? "请求正文超过上限，响应已发出，本端不再需要剩余正文"
+                                                     : "业务未读完请求正文，本端不再需要剩余字节",
+                                      &abortErrorText))
+        {
+            LOG_DEBUG_FMT("Http2Session: 流 {} 的流式正文收尾时未能请求对端中止发送。原因：{}", pending.streamId, abortErrorText);
+        }
+    }
+
     void Http2Session::absorbPendingRequests()
     {
         for (Http2Request &http2Request: m_connection.takeRequests())
@@ -432,6 +472,10 @@ namespace AsynGyanis::Net
                 pending.isRemoteEndStream = true;
             }
             pending.request = mapToHttpRequest(http2Request);
+            // 流式路由：头部收齐即可派发，正文边收边交给业务，不必等 END_STREAM（与 h1 侧同一判据）。
+            // 扩展 CONNECT 排除在外——它的「正文」是隧道里的帧，走隧道那条完全不同的路径
+            pending.isStreamingBody = !pending.isExtendedConnect
+                                      && m_router.hasStreamingRoute(pending.request.method(), pending.request.uri());
             // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
             // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串
             const bool isContinueRequested =
@@ -468,6 +512,46 @@ namespace AsynGyanis::Net
         if (requestIterator != m_pendingRequests.end())
         {
             PendingRequest &pending = requestIterator->second;
+
+            // 流式路由：正文进那条流自己的缓冲，业务按到达批次取走；窗口在**被消费**时才还
+            // （见 Http2StreamBody），因此这里不调 creditReceivedData——那正是背压的落点
+            if (pending.isStreamingBody)
+            {
+                Http2StreamBody &streamBody = pending.streamBody;
+                if (m_parserLimits.maximumBodySize != 0
+                    && streamBody.totalReceivedByteCount() + receivedData.data.size() > m_parserLimits.maximumBodySize)
+                {
+                    // 与 h1 侧同一口径：体量越界就不再收，响应在服务阶段按 413 发出。
+                    // 此后到达的 DATA 一律丢弃，但窗口照还——不还的话对端会卡在自己耗尽的窗口上
+                    if (!streamBody.isBodyTooLarge())
+                    {
+                        LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止流式接收并按 413 应答",
+                                      receivedData.streamId, m_parserLimits.maximumBodySize);
+                        streamBody.markBodyTooLarge();
+                    }
+                }
+                else
+                {
+                    streamBody.append(receivedData.data, receivedData.flowControlByteCount, receivedData.endStream);
+                }
+
+                // 越界标记之后到达的字节直接丢弃，但本片占用的窗口仍要还回去
+                if (streamBody.isBodyTooLarge())
+                {
+                    std::string discardErrorText;
+                    if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &discardErrorText))
+                    {
+                        LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
+                                      receivedData.flowControlByteCount, discardErrorText);
+                    }
+                }
+                if (receivedData.endStream)
+                {
+                    pending.isRemoteEndStream = true;
+                }
+                return;
+            }
+
             const std::size_t bodyByteCount = pending.request.body().size() + receivedData.data.size();
             if (m_parserLimits.maximumBodySize != 0 && bodyByteCount > m_parserLimits.maximumBodySize)
             {
@@ -514,7 +598,11 @@ namespace AsynGyanis::Net
         for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end();)
         {
             PendingRequest &pending = it->second;
-            if (!pending.isRemoteEndStream && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
+            // 流式正文的请求在头部收齐那一刻就可以服务：正文由业务边收边读，不等 END_STREAM。
+            // 其余请求要等正文收齐（或已判超限/超预算）
+            const bool isReadyToServe = pending.isStreamingBody || pending.isRemoteEndStream || pending.isBodyTooLarge
+                                        || pending.isBudgetExceeded;
+            if (!isReadyToServe)
             {
                 ++it;
                 continue;
@@ -688,6 +776,51 @@ namespace AsynGyanis::Net
                     co_return co_await sendStreamingSegment(streamId, segment);
                 });
 
+        // 流式正文：来源是本流自己的正文缓冲，业务经 request.bodyStream() 边收边读。泵每推进一步
+        // 就驱动一次连接（与主循环同一条路径），业务不拉就不驱动——背压的落点，也是「处理器拉一次、
+        // 网络上才读一次」在 h2 上的等价物
+        if (pending.isStreamingBody)
+        {
+            pending.streamBody.setConsumeHandler(
+                    [this, streamId](const std::size_t consumedFlowControlByteCount)
+                    {
+                        // 消费即还窗口：由 Http2StreamBody 在字节被交付后回调进来
+                        std::string creditErrorText;
+                        if (!m_connection.creditReceivedData(streamId, consumedFlowControlByteCount, &creditErrorText))
+                        {
+                            LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", streamId,
+                                          consumedFlowControlByteCount, creditErrorText);
+                        }
+                    });
+
+            Http2StreamBody &streamBody       = pending.streamBody;
+            const auto       pumpStreamingBody = [this, streamId, &streamBody]() -> Core::Task<bool>
+            {
+                // 收请求正文期间按读超时约束相邻两次成功读取的间隔（与主循环「有在途请求」那一档同口径）
+                refreshIdleDeadline(m_limits->readTimeout);
+
+                if (!co_await driveConnectionOnce())
+                {
+                    // 连接已不可用：让业务立刻看到流终止，不必再等下文
+                    streamBody.markBroken();
+                    co_return false;
+                }
+
+                // 对端把这条流收掉了（RST_STREAM）而正文还没收齐：同样只能终止——不再有字节会到
+                if (!streamBody.isComplete() && !streamBody.isBroken())
+                {
+                    Http2StreamState streamState{};
+                    if (!m_connection.tryGetStreamState(streamId, streamState) || streamState == Http2StreamState::Closed)
+                    {
+                        streamBody.markBroken();
+                    }
+                }
+                co_return !streamBody.isBroken();
+            };
+            request.setBodyStream(&m_bodyStream);
+            m_bodyStream.attach(pending.streamBody, pumpStreamingBody);
+        }
+
         std::exception_ptr handlerException = nullptr;
         try
         {
@@ -701,6 +834,21 @@ namespace AsynGyanis::Net
         // 流式头部是否已经随首段正文上线：上线之后状态码与头部都改不了，异常路径也只能补末片收尾
         // （判据见 HttpResponse::hasSentChunkedHead() 的文档，与 h1 侧同一条）
         const bool isStreamingStarted = m_response.isChunkedResponse() && m_response.hasSentChunkedHead();
+
+        // 流式正文：业务读完（或提前返回）之后收尾这条流的接收侧。体量越界要在这里改写响应——
+        // 头部还没上线才能改，已上线就只剩日志（与上面那条 413 分支同一判据）
+        const bool isStreamBodyTooLarge = pending.isStreamingBody && pending.streamBody.isBodyTooLarge();
+        if (pending.isStreamingBody && isStreamBodyTooLarge && !isStreamingStarted)
+        {
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countBadRequest();
+            }
+            m_response.reset();
+            m_response.setStatus(413);
+            m_response.setBody("Payload Too Large");
+            static_cast<void>(m_response.setHeader("content-type", "text/plain; charset=utf-8"));
+        }
 
         if (handlerException != nullptr)
         {
@@ -773,6 +921,13 @@ namespace AsynGyanis::Net
                 noteStreamCancelled();
             }
             co_return serveOutcome;
+        }
+
+        // 流式正文的接收侧收尾必须排在响应之后：RST_STREAM 与响应排在同一条待发字节流里，
+        // 先中止就会让对端先看到 RST，响应反而到不了（见 finishStreamingRequestBody 的说明）
+        if (pending.isStreamingBody)
+        {
+            finishStreamingRequestBody(pending, isStreamBodyTooLarge);
         }
 
         const int statusCode = m_response.status();

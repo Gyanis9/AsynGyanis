@@ -19,9 +19,11 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpMemoryBudget.h"
+#include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Connection.h"
+#include "Net/Http2/Http2StreamBody.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -202,9 +204,14 @@ namespace AsynGyanis::Net
             bool isBudgetExceeded{false};  ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
             bool isExtendedConnect{false}; ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
             bool isWebSocketTunnel{false}; ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
+            bool isStreamingBody{false};   ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
 
-            /// 本条流占用的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
+            /// 本条流的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
             HttpMemoryBudget::Reservation bodyBudget;
+
+            /// 流式路由专用的正文缓冲（来源）。按流各持一份而不是全连接共用一份：同一条连接上
+            /// 可以同时有多条流在收正文，共用一份会让后来者的 DATA 覆盖前者的未读正文
+            Http2StreamBody streamBody;
         };
 
         /**
@@ -406,6 +413,30 @@ namespace AsynGyanis::Net
         void writeOutgoingBytesBestEffort();
 
         /**
+         * @brief 读一批网络字节并让连接层消化：主循环与流式正文的泵共用这一推进
+         *
+         * @details 一步做完「刷新读时限 → 读传输 → 喂连接层 → 写出待发字节 → 吸收请求与正文」。
+         *          抽出来是为了让流式正文的泵与主循环走同一条路径：处理器拉正文时驱动连接，
+         *          与主循环每轮所做的事必须完全一致，否则窗口、状态机与待发字节会分叉。
+         * @return true 连接仍可用；false 读失败、对端关闭或协议失败（GOAWAY 已尽力写出），调用方应停止
+         */
+        [[nodiscard]] Core::Task<bool> driveConnectionOnce();
+
+        /**
+         * @brief 收尾一条流式正文的流：把还挂着的正文按已消费处理，并对端未收尾时中止这条流
+         *
+         * @details 业务可能在正文读完之前就返回（它有权这样做）。此时不能把流晾着：未交付的字节
+         *          要归还接收窗口，而对端若还在发，本端已经不需要了——按 RFC 9113 §8.1 用
+         *          RST_STREAM(NO_ERROR) 请它停下，省掉把剩余字节全部收下再丢掉的带宽浪费。
+         *
+         * @warning 只能在响应已排入待发字节之后调用：RST_STREAM 与响应排在同一条待发字节流里，
+         *          先中止就会让对端先看到 RST，响应反而到不了。
+         * @param pending 该流对应的待服务记录（正文来源与流号都从它取）
+         * @param isBodyTooLarge 是否因正文越过上限而收尾：是则中止原因写体量越界
+         */
+        void finishStreamingRequestBody(PendingRequest &pending, bool isBodyTooLarge);
+
+        /**
          * @brief 把连接层的响应发送结论折叠成会话的服务结论
          * @param sendStatus 连接层给出的响应发送结论
          * @return RequestServeOutcome Sent → Served，StreamNotWritable → StreamCancelled，
@@ -457,6 +488,14 @@ namespace AsynGyanis::Net
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端；空指针表示不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器；空指针表示不落定
         std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务器共享；空指针表示不受该预算约束
+
+        /// h2 主循环的接收缓冲：提到成员上是因为流式正文的泵也要用它——泵与主循环交替驱动
+        /// 同一条连接，各持一份会让「谁读到什么」变得不可推理
+        std::vector<char> m_http2ReceiveBuffer;
+
+        /// 流式请求正文的读取器：按连接一个（同一条连接上的请求是串行服务的，见 serveOneRequest），
+        /// 每次服务前重新装配到「那条流自己的正文缓冲」上
+        HttpRequestBody m_bodyStream;
 
         /// 头块已收齐的请求：按流号（对端流号严格递增，因此遍历顺序就是请求的到达顺序）
         std::map<std::uint32_t, PendingRequest> m_pendingRequests;
