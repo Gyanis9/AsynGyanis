@@ -25,6 +25,7 @@
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerConfig.h"
+#include "Net/Quic/QuicServer.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
@@ -129,6 +130,7 @@ int main(int argc, char **argv)
     std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
     std::size_t workerProcessCount = 1;   // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
     bool        isWorkerProcess = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
+    bool        useHttp3 = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
     bool        showUsage = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
@@ -148,6 +150,8 @@ int main(int argc, char **argv)
             useHttps = true;
         else if (arg == "--h2c")
             useHttp2Cleartext = true;
+        else if (arg == "--h3")
+            useHttp3 = true;
         else if (arg == "--metrics")
             exposeMetrics = true;
         else if (arg == "--log-json")
@@ -192,10 +196,11 @@ int main(int argc, char **argv)
     if (showUsage)
     {
         LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
-        LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c]");
+        LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3]");
         LOG_INFO("                  [--max-connections-per-ip N] [--metrics] [--config <文件>]");
         LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
+        LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）");
         LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
@@ -288,6 +293,13 @@ int main(int argc, char **argv)
     if (useHttps && useHttp2Cleartext)
     {
         LOG_ERROR("--h2c 只对明文端有意义：TLS 上的 h2 由 ALPN 协商，请去掉 --h2c");
+        return 1;
+    }
+
+    // QUIC 自带 TLS：没有证书就起不了 h3，与其起一个永远握不上手的监听器，不如在启动期直接说清
+    if (useHttp3 && !useHttps)
+    {
+        LOG_ERROR("--h3 需要证书：QUIC 自带 TLS，请与 --https 一起用（--cert/--key）");
         return 1;
     }
 
@@ -469,6 +481,38 @@ int main(int argc, char **argv)
 
     LOG_INFO_FMT("{} {}Server instances created, all accept tasks scheduled", actualThreads, useHttps ? "Https" : "Http");
 
+    // HTTP/3 与 h1/h2 共存：它走 UDP，与上面的 TCP 端用同一个端口号互不干扰。
+    // 只起一台而不做多监听器分发：QuicServer 内部已经按连接标识把报文分派到各自的连接，
+    // 再叠一层 SO_REUSEPORT 只会把同一条连接的报文散到互不相识的监听器上
+    Net::Router                      http3Router;
+    std::unique_ptr<Net::QuicServer> http3Server;
+    std::optional<Core::Task<>>      http3ListenTask;
+    if (useHttp3)
+    {
+        setupRoutes(http3Router);
+        if (compressResponses)
+        {
+            http3Router.addMiddleware(Net::compressionMiddleware());
+        }
+
+        Net::QuicServer::Configuration http3Configuration;
+        http3Configuration.certificateFile = certificateFile;
+        http3Configuration.privateKeyFile  = keyFile;
+
+        try
+        {
+            http3Server = std::make_unique<Net::QuicServer>(pool.eventLoop(0), http3Configuration);
+            http3Server->setRouter(http3Router);
+            http3ListenTask.emplace(http3Server->listen(*address));
+            pool.eventLoop(0).scheduler().schedule(http3ListenTask->handle());
+        } catch (const Base::Exception &http3Exception)
+        {
+            LOG_ERROR_FMT("HTTP/3 服务端起不来，已退出。原因：{}", http3Exception.what());
+            return 1;
+        }
+        LOG_INFO_FMT("HTTP/3 已在同一个端口号的 UDP 上监听（udp/{}）", port);
+    }
+
     pool.start();
 
     LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + address->toString());
@@ -510,6 +554,13 @@ int main(int argc, char **argv)
     while (remainingDrainCount.load(std::memory_order_acquire) > 0)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // HTTP/3 的收尾：stop() 只置停止标记，真正的连接收尾交给随之而来的循环停止与对象析构
+    if (http3Server != nullptr)
+    {
+        LOG_INFO("Stopping HTTP/3 server...");
+        http3Server->stop();
     }
 
     context.stop();
