@@ -1,0 +1,147 @@
+#include "Core/Socket/AsyncUdpSocket.h"
+
+#include "Base/Exception/SystemException.h"
+#include "Platform/System/PlatformError.h"
+
+#include <string>
+#include <utility>
+
+namespace AsynGyanis::Core
+{
+    AsyncUdpSocket::AsyncUdpSocket(EventLoop &loop, Platform::DatagramSocket socket) :
+        m_loop(&loop), m_socket(std::move(socket))
+    {
+    }
+
+    AsyncUdpSocket::AsyncUdpSocket(AsyncUdpSocket &&other) noexcept :
+        m_loop(other.m_loop), m_socket(std::move(other.m_socket)), m_watcher(std::move(other.m_watcher))
+    {
+    }
+
+    AsyncUdpSocket &AsyncUdpSocket::operator=(AsyncUdpSocket &&other) noexcept
+    {
+        if (this != &other)
+        {
+            m_loop    = other.m_loop;
+            m_socket  = std::move(other.m_socket);
+            m_watcher = std::move(other.m_watcher);
+        }
+        return *this;
+    }
+
+    bool AsyncUdpSocket::isValid() const noexcept
+    {
+        return m_socket.isValid();
+    }
+
+    int AsyncUdpSocket::fileDescriptor() const noexcept
+    {
+        return m_socket.fileDescriptor();
+    }
+
+    Platform::SocketAddress AsyncUdpSocket::localAddress() const noexcept
+    {
+        return m_socket.localAddress();
+    }
+
+    IoWatcher *AsyncUdpSocket::ensureWatcher() const
+    {
+        if (m_watcher == nullptr && m_socket.isValid() && m_loop != nullptr)
+        {
+            // 与流式套接字同一手法：注册一次常驻，关注位在等待期间按需武装。
+            // 挂在 const 方法上是因为「等就绪」不改动套接字本身，等待器自己管理登记状态
+            m_watcher = std::make_unique<IoWatcher>(*m_loop, m_socket.fileDescriptor());
+        }
+        return m_watcher.get();
+    }
+
+    IoWatcher::Awaiter AsyncUdpSocket::waitReadable() const
+    {
+        // 与 AsyncSocket 同一条：拿不到注册对象说明描述符无效或已被关闭，等待没有意义，
+        // 抛出可定位的中文原因，而不是让调用方在这里静默挂起
+        IoWatcher *const watcher = ensureWatcher();
+        if (watcher == nullptr)
+        {
+            throw Base::SystemException("等待数据报套接字可读失败：套接字无效或已关闭");
+        }
+        return watcher->waitReadable();
+    }
+
+    IoWatcher::Awaiter AsyncUdpSocket::waitWritable() const
+    {
+        IoWatcher *const watcher = ensureWatcher();
+        if (watcher == nullptr)
+        {
+            throw Base::SystemException("等待数据报套接字可写失败：套接字无效或已关闭");
+        }
+        return watcher->waitWritable();
+    }
+
+    Task<ssize_t> AsyncUdpSocket::asyncReceiveFrom(void *const buffer, const std::size_t capacity,
+                                                  Platform::SocketAddress &peerAddress)
+    {
+        while (true)
+        {
+            const ssize_t receivedByteCount = m_socket.receive(buffer, capacity, peerAddress);
+            if (receivedByteCount >= 0)
+            {
+                // 0 是合法的空报文（对端确实发了一条零长数据报），不能当成「没收到」处理
+                co_return receivedByteCount;
+            }
+
+            const int errorCode = Platform::PlatformError::lastSocketErrorCode();
+            if (errorCode == Platform::PlatformError::kWouldBlock)
+            {
+                // 同 AsyncSocket：等待失败即套接字已关闭，用 -1 交给调用方收手
+                if (!co_await waitReadable())
+                {
+                    co_return -1;
+                }
+                continue;
+            }
+            if (errorCode == Platform::PlatformError::kInterrupted)
+            {
+                continue;
+            }
+            throw Base::SystemException("数据报接收失败：" + Platform::PlatformError::message(errorCode) +
+                                "（对端不可达一类错误在报文层面上不改变本端状态，但这里按硬失败上报，"
+                                "以免把「收不到」静默成「没有报文」）");
+        }
+    }
+
+    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress &peerAddress, const void *const buffer,
+                                              const std::size_t length)
+    {
+        while (true)
+        {
+            const ssize_t sentByteCount = m_socket.send(peerAddress, buffer, length);
+            if (sentByteCount >= 0)
+            {
+                // 数据报不会部分写出：返回长度即整条已交给内核。真出现短写说明平台语义与预期不符，
+                // 当场报出来比让上层以为「发出去了」安全
+                if (static_cast<std::size_t>(sentByteCount) != length)
+                {
+                    throw Base::SystemException("数据报发送失败：内核只接下了 " + std::to_string(sentByteCount) + " / " +
+                                        std::to_string(length) + " 字节，数据报不该部分写出（请检查底层实现）");
+                }
+                co_return sentByteCount;
+            }
+
+            const int errorCode = Platform::PlatformError::lastSocketErrorCode();
+            if (errorCode == Platform::PlatformError::kWouldBlock)
+            {
+                // 发送缓冲暂时放不下：等可写后整条重发（数据报不会被内核切开，重发是唯一的续法）
+                if (!co_await waitWritable())
+                {
+                    co_return -1;
+                }
+                continue;
+            }
+            if (errorCode == Platform::PlatformError::kInterrupted)
+            {
+                continue;
+            }
+            throw Base::SystemException("数据报发送失败：" + Platform::PlatformError::message(errorCode));
+        }
+    }
+} // namespace AsynGyanis::Core

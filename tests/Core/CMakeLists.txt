@@ -20,6 +20,7 @@ add_executable(TestCore
         Process/TestWorkerSupervisor.cpp
 
         Socket/TestAsyncSocket.cpp
+        Socket/TestAsyncUdpSocket.cpp
         Socket/TestAsyncResolver.cpp
         Socket/TestVectoredSendCursor.cpp
         Socket/TestInetAddress.cpp
