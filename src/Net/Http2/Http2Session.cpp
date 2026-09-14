@@ -486,18 +486,6 @@ namespace AsynGyanis::Net
                 {
                     pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
                 }
-                // 隧道流的 DATA 还要送入流缓冲（供隧道协程读取，而非直接读 transport）
-                if (pending.isWebSocketTunnel)
-                {
-                    auto &buffer = m_streamRecvBuffers[receivedData.streamId];
-                    buffer.insert(buffer.end(), receivedData.data.begin(), receivedData.data.end());
-                    // 恢复隧道协程，让它处理这批数据
-                    auto coroIt = m_streamCoroutines.find(receivedData.streamId);
-                    if (coroIt != m_streamCoroutines.end() && !coroIt->second.done())
-                    {
-                        coroIt->second.resume();
-                    }
-                }
                 if (receivedData.endStream)
                 {
                     pending.isRemoteEndStream = true;
@@ -517,6 +505,7 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> Http2Session::servePendingRequests()
     {
+        // 第一轮：先服务非隧道请求（快的，不会阻塞循环）
         for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end();)
         {
             PendingRequest &pending = it->second;
@@ -526,28 +515,12 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            const std::uint32_t streamId = pending.streamId;
-
-            // 隧道请求在独立任务中执行，主循环继续服务其它请求
             if (pending.isWebSocketTunnel)
             {
-                if (m_streamCoroutines.contains(streamId))
-                {
-                    ++it;
-                    continue;
-                }
-                Core::Task<void> task = [this, &pending, streamId]() -> Core::Task<void>
-                {
-                    co_return co_await serveOneRequest(pending);
-                }();
-                m_streamCoroutines[streamId] = task.handle();
-                task.handle().resume();
-                // 任务自行管理生命周期（包括从 m_pendingRequests 摘掉记录）
-                it = m_pendingRequests.erase(it);
+                ++it;
                 continue;
             }
 
-            // 普通请求：顺序服务
             setBusy(true);
             m_servingRequest = &pending.request;
             const RequestServeOutcome serveOutcome = co_await serveOneRequest(pending);
@@ -561,13 +534,27 @@ namespace AsynGyanis::Net
             }
         }
 
-        // 清理已完成的隧道任务
-        for (auto it = m_streamCoroutines.begin(); it != m_streamCoroutines.end();)
+        // 第二轮：服务隧道请求（它会阻塞，但其它请求已先行应答）
+        for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ++it)
         {
-            if (it->second.done())
-                m_streamCoroutines.erase(it++);
-            else
-                ++it;
+            PendingRequest &pending = it->second;
+            if (!pending.isWebSocketTunnel)
+            {
+                // 第一轮漏掉的不应该还有非隧道请求，但保留了保护
+                continue;
+            }
+            setBusy(true);
+            m_servingRequest = &pending.request;
+            const RequestServeOutcome serveOutcome = co_await serveOneRequest(pending);
+            m_servingRequest = nullptr;
+            setBusy(false);
+            m_pendingRequests.erase(it);
+            if (serveOutcome == RequestServeOutcome::ConnectionUnusable)
+            {
+                co_return false;
+            }
+            // 隧道只有一个，不用继续循环
+            break;
         }
         co_return true;
     }
@@ -918,26 +905,60 @@ namespace AsynGyanis::Net
         while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && isAlive() && isTransportOpen()
                && !isRemoteEndStream)
         {
+            // 隧道阶段没有「半条报文」这一相位：帧与帧之间的间隔就是这条连接的空闲，与 h1 阶段同口径
             refreshIdleDeadline(m_limits->idleTimeout);
 
-            // 从本流接收缓冲读取（主循环在 absorbReceivedData 中放入 DATA 载荷）
-            auto &recvBuf = m_streamRecvBuffers[streamId];
-            if (recvBuf.empty())
+            ssize_t receivedLength = 0;
+            try
             {
-                // 没数据：把本协程句柄注册到 m_streamCoroutines，让出执行权，
-                // 等 absorbReceivedData 有数据时恢复
-                struct SchedYield {
-                    Core::Scheduler &sched;
-                    bool await_ready() noexcept { return false; }
-                    void await_suspend(std::coroutine_handle<> h) noexcept { sched.schedule(h); }
-                };
-                co_await SchedYield{m_scheduler};
-                continue;
+                receivedLength = co_await transportReceive(receiveBuffer.data(), receiveBuffer.size());
+            } catch (const std::exception &)
+            {
+                break;
             }
-            feedStatus = peer.feedBytes(recvBuf.data(), recvBuf.size());
-            recvBuf.clear();
+            if (receivedLength <= 0)
+            {
+                break;
+            }
+            if (m_connection.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength)) == Http2ConnectionFeedStatus::Failed
+                || m_connection.hasFailed())
+            {
+                LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间连接层失败，已收口。原因：{}", m_connection.errorMessage());
+                break;
+            }
+            if (!co_await flushOutgoingBytes())
+            {
+                break;
+            }
 
-            // 隧道写出的帧（sendResponseData 排队的 DATA）写进传输层
+            for (const Http2ReceivedData &receivedData: m_connection.takeReceivedData())
+            {
+                if (receivedData.streamId == streamId)
+                {
+                    if (!receivedData.data.empty())
+                    {
+                        feedStatus = peer.feedBytes(receivedData.data.data(), receivedData.data.size());
+                    }
+                    if (receivedData.endStream)
+                    {
+                        isRemoteEndStream = true;
+                    }
+                }
+                // 隧道期间读循环由本协程驱动，absorbReceivedData() 的「消费即还窗口」在这里也得做：
+                // 不还的话连接级接收窗口会随隧道流量单调耗尽，对端发到一半停住等一个永不出现的
+                // WINDOW_UPDATE。别的流的正文虽然直接丢弃（其请求已被 503 拒绝），窗口一样要还
+                std::string creditErrorText;
+                if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &creditErrorText))
+                {
+                    LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
+                                  receivedData.flowControlByteCount, creditErrorText);
+                }
+            }
+
+            absorbPendingRequests();
+            refuseRequestsDuringTunnel(streamId);
+            // 503 是本轮中段才排进待发字节的，必须立刻写出：本轮开头那次写出已经在它之前发生，
+            // 若等下一段字节到达才发，被拒的对端会一直等到空闲超时（它正等着这条响应）
             if (!co_await flushOutgoingBytes())
             {
                 break;

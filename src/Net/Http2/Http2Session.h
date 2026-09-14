@@ -226,6 +226,11 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把正文已收齐（或已超限）的请求逐条交给路由并发送响应
+         *
+         * @details 分两轮：先服务全部非隧道请求（各自把响应排入待发字节），再服务隧道请求——
+         *          **隧道会一直跑到收尾**（它自己驱动这条连接的读写），因此它必须是最后一件事，
+         *          排在它后面的请求没有机会被服务。这一轮的次序保证「隧道请求与非隧道请求同批到达时，
+         *          普通请求先拿到响应，而不是被隧道挡住」。
          * @return true 全部已服务的响应都排入待发字节
          * @return false 写出失败（连接已不可用），调用方应停止循环
          */
@@ -289,6 +294,10 @@ namespace AsynGyanis::Net
          * @note **隧道期间这条会话被它独占**：本类只有一个驱动循环，要同时服务同连接的其它流就得给每条流
          *       各建一个执行体（不在本片范围）。因此隧道期间其它流的请求一律回 503 并记日志，而不是把它们
          *       晾到隧道结束——那对端只会看到请求永不返回
+         * @note 隧道在服务阶段**内联跑完**（由 servePendingRequests() 直接 co_await）：读循环与写循环
+         *       都在本协程里，主循环在隧道存续期间不再拿回执行权。因此隧道期间本协程就是这条连接的驱动者：
+         *       自己读传输字节、喂连接层、把本流的 DATA 交给解码器、归还接收窗口，并调用
+         *       refuseRequestsDuringTunnel() 完成主循环本该做的拒绝
          */
         [[nodiscard]] Core::Task<RequestServeOutcome> serveWebSocketTunnel(std::uint32_t streamId, PendingRequest &pending);
 
@@ -444,10 +453,5 @@ namespace AsynGyanis::Net
         bool m_isGoAwaySent{false};                   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
         HttpRequest *m_servingRequest{nullptr};       ///< 正在路由的请求（连接关停时对它转成协作式取消）
         bool m_isConnectionUnusable{false};           ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
-
-        /// 隧道流的 DATA 接收缓冲：主循环在 absorbReceivedData 中填入，隧道协程从中读取
-        std::map<std::uint32_t, std::vector<char>> m_streamRecvBuffers;
-        /// 隧道协程句柄，数据到达时由 absorbReceivedData 恢复
-        std::map<std::uint32_t, std::coroutine_handle<>> m_streamCoroutines;
     };
 } // namespace AsynGyanis::Net

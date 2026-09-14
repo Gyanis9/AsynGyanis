@@ -433,6 +433,32 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 拼一条带掩码的客户端帧，负载用 16 位扩展长度（RFC 6455 §5.2）
+         * @param opCode 操作码
+         * @param payload 负载，长度需落在 (125, 65535] 内
+         * @return std::string 完整帧字节。makeMaskedClientFrame() 只支持 7 位长度（≤125 字节），
+         *         要往隧道里灌超过一个接收窗口的流量得用这条
+         */
+        std::string makeExtendedMaskedClientFrame(const std::uint8_t opCode, const std::string_view payload)
+        {
+            const std::array<std::uint8_t, 4> maskKey{0x12U, 0x34U, 0x56U, 0x78U};
+            std::string frameBytes;
+            frameBytes.push_back(static_cast<char>(0x80U | opCode));
+            frameBytes.push_back(static_cast<char>(0x80U | 126U));
+            frameBytes.push_back(static_cast<char>(static_cast<std::uint8_t>(payload.size() >> 8U)));
+            frameBytes.push_back(static_cast<char>(static_cast<std::uint8_t>(payload.size() & 0xFFU)));
+            for (const std::uint8_t maskByte: maskKey)
+            {
+                frameBytes.push_back(static_cast<char>(maskByte));
+            }
+            for (std::size_t index = 0; index < payload.size(); ++index)
+            {
+                frameBytes.push_back(static_cast<char>(static_cast<std::uint8_t>(payload[index]) ^ maskKey[index % 4U]));
+            }
+            return frameBytes;
+        }
+
+        /**
          * @brief 解一条服务端 WebSocket 帧（服务端帧不带掩码）：返回操作码与负载
          * @param frameBytes 帧字节
          * @return std::pair<int, std::string> 操作码与负载；字节不足或长度字段用了扩展长度时返回 {-1, ""}
@@ -1234,6 +1260,116 @@ namespace AsynGyanis::Net
                                          return hasEndStream(receivedFrames, 1U);
                                      },
                                      kWaitTimeout)) << "隧道没有按 Close 收尾";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：隧道期间本端照常归还接收窗口——累计流量超过初始窗口 65535 也不会被自己的流控账卡住
+     * @details 隧道由会话协程自己驱动读循环，「消费即还窗口」这条连接层契约在那条路径上同样成立。
+     *          漏掉它时对端发到第 65535 字节之后就会撞上本端通告的窗口，连接层按 RFC 7540 §6.9.1
+     *          以 FLOW_CONTROL_ERROR 收口——隧道看着能用，一上量就断。
+     *          客户端逐片等回显再发下一片，因此本用例不会把「对端超发」当成失败原因。
+     */
+    TEST(Http2CleartextSession, CreditsReceiveWindowWhileTunnelIsOpen)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
+        {
+            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.upgradeToWebSocket([](WebSocketPeer &peer) -> Core::Task<>
+                {
+                    while (true)
+                    {
+                        const std::optional<WebSocketMessage> message = co_await peer.receive();
+                        if (!message.has_value())
+                        {
+                            co_return;
+                        }
+                        if (!co_await peer.sendText(message->payload))
+                        {
+                            co_return;
+                        }
+                    }
+                });
+                co_return;
+            });
+        }, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "隧道没有建立";
+
+        // 每片 16000 字节（一条 DATA 帧装一条完整的文本帧），共 80000 字节：明显超过初始窗口 65535。
+        // 逐片等回显再发下一片，客户端因此始终按本端通告的窗口行事
+        constexpr std::size_t kChunkPayloadByteCount = 16000;
+        constexpr std::size_t kChunkCount = 5;
+        for (std::size_t chunkIndex = 0; chunkIndex < kChunkCount; ++chunkIndex)
+        {
+            const std::string payload(kChunkPayloadByteCount, static_cast<char>('a' + static_cast<int>(chunkIndex)));
+            ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false,
+                                                                              .data = makeExtendedMaskedClientFrame(0x1U, payload)},
+                                                             1U),
+                                         kWaitTimeout));
+            // 回显帧不带掩码、负载超过 125 字节时用 16 位扩展长度：帧头 4 字节 + 负载
+            constexpr std::size_t kEchoFrameByteCount = kChunkPayloadByteCount + 4U;
+            const std::size_t expectedEchoByteCount = (chunkIndex + 1U) * kEchoFrameByteCount;
+            ASSERT_TRUE(client.pumpUntil(frames,
+                                         [expectedEchoByteCount](const std::vector<Http2Frame> &receivedFrames)
+                                         {
+                                             return responseDataPayload(receivedFrames, 1U).size() >= expectedEchoByteCount;
+                                         },
+                                         kWaitTimeout))
+                    << "第 " << chunkIndex + 1U << " 片没有被回显（累计应收 " << expectedEchoByteCount << " 字节）：隧道多半已被流控收口";
+
+            // 客户端也得按收下的字节回窗口：回显占的是服务端的发送窗口（连接级与流级初值都是 65535），
+            // 不回的话第 5 片回显根本发不出来，失败原因就与本用例要考的「服务端收」那一侧无关了
+            const std::string windowUpdates =
+                    encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(kEchoFrameByteCount)}, 0U) +
+                    encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(kEchoFrameByteCount)}, 1U);
+            ASSERT_TRUE(client.sendBytes(windowUpdates, kWaitTimeout));
+        }
+
+        bool hasGoAway = false;
+        bool hasWindowUpdate = false;
+        for (const Http2Frame &frame: frames)
+        {
+            hasGoAway = hasGoAway || frame.header.type == Http2FrameType::GoAway;
+            hasWindowUpdate = hasWindowUpdate || frame.header.type == Http2FrameType::WindowUpdate;
+        }
+        EXPECT_FALSE(hasGoAway) << "按窗口规矩发送的对端不该被收口";
+        EXPECT_TRUE(hasWindowUpdate) << "消费了 80000 字节却没有回过一次 WINDOW_UPDATE：隧道路径没有归还接收窗口";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
