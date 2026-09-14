@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/HttpParserLimits.h"
@@ -106,7 +107,7 @@ namespace AsynGyanis::Net
          * @param socket 已建立的异步套接字，所有权转移给基类
          * @param router 全局路由器；其它参数含义同上一个构造函数
          */
-        Http2Session(Core::AsyncSocket socket, Router &router,
+        Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
                      std::shared_ptr<const HttpServerLimits> limits = nullptr,
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
@@ -428,6 +429,7 @@ namespace AsynGyanis::Net
         std::vector<char> m_receiveBuffer;
 
         Http2Connection m_connection;                 ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
+        Core::Scheduler &m_scheduler;                     ///< 本会话所在事件循环的调度器
         Router &m_router;                             ///< 路由器引用（与基类指向同一对象）
         HttpParserLimits m_parserLimits{};            ///< HTTP/2 路径只用 maximumBodySize，其余字段不适用
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
@@ -442,5 +444,10 @@ namespace AsynGyanis::Net
         bool m_isGoAwaySent{false};                   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
         HttpRequest *m_servingRequest{nullptr};       ///< 正在路由的请求（连接关停时对它转成协作式取消）
         bool m_isConnectionUnusable{false};           ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
+
+        /// 隧道流的 DATA 接收缓冲：主循环在 absorbReceivedData 中填入，隧道协程从中读取
+        std::map<std::uint32_t, std::vector<char>> m_streamRecvBuffers;
+        /// 隧道协程句柄，数据到达时由 absorbReceivedData 恢复
+        std::map<std::uint32_t, std::coroutine_handle<>> m_streamCoroutines;
     };
 } // namespace AsynGyanis::Net
