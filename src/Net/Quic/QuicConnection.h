@@ -102,6 +102,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::vector<std::string> sourceConnectionIds() const;
 
         /**
+         * @brief 开一条本端发起的单向流并返回流号
+         * @details HTTP/3 的控制流与两条 QPACK 流都是本端发起的单向流，而 ngtcp2 在应用层往一条
+         *          本端发起的流上写数据之前必须先把它开出来（否则写接口按 STREAM_NOT_FOUND 拒掉）。
+         *          协议层不碰 ngtcp2，因此这里露一个窄口子给它。
+         * @return std::int64_t 新流号；连接已收口或开流失败时为 -1
+         */
+        [[nodiscard]] std::int64_t openUnidirectionalStream();
+
+        /**
          * @brief 把一条收到的报文交给本连接处理，并把由此产生的待发字节写出去
          * @param peerAddress 来源地址
          * @param datagram 报文净字节

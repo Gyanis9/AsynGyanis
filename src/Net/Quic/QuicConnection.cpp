@@ -360,6 +360,23 @@ namespace AsynGyanis::Net
         return connectionIds;
     }
 
+    std::int64_t QuicConnection::openUnidirectionalStream()
+    {
+        if (m_connection == nullptr || m_isClosed)
+        {
+            return -1;
+        }
+
+        std::int64_t streamId = -1;
+        if (ngtcp2_conn_open_uni_stream(m_connection, &streamId, nullptr) != 0)
+        {
+            // 开不出来意味着这条连接上建不起 HTTP/3 的控制流与 QPACK 流，协议层只能降级不用
+            LOG_WARN("QuicConnection: 打开本端单向流失败，HTTP/3 的控制流与 QPACK 流无法建立");
+            return -1;
+        }
+        return streamId;
+    }
+
     const std::vector<std::uint8_t> &QuicConnection::statelessResetSecret() const noexcept
     {
         return m_configuration.statelessResetSecret;

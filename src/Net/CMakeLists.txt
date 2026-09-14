@@ -16,6 +16,7 @@ add_subdirectory(Tcp)
 add_subdirectory(WebSocket)
 add_subdirectory(Http2)
 add_subdirectory(Quic)
+add_subdirectory(Http3)
 
 get_property(NET_SOURCES GLOBAL PROPERTY AsynGyanisNetSources)
 
@@ -52,6 +53,11 @@ target_link_libraries(Net PRIVATE ZLIB::ZLIB zstd::libzstd brotli::brotli)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(Net PUBLIC ngtcp2_static ngtcp2_crypto_ossl_static OpenSSL::SSL OpenSSL::Crypto)
 target_compile_definitions(Net PUBLIC NGTCP2_STATICLIB)
+
+# HTTP/3 协议层（Http3Session）用 nghttp3 做帧与 QPACK。这里用 PRIVATE：Http3Session.h 只前置声明了
+# `nghttp3_conn`，类型细节全留在 .cpp 里，消费方因此不必被迫 find_package 它，导出包也少一处 find_dependency
+find_package(nghttp3 REQUIRED)
+target_link_libraries(Net PRIVATE nghttp3::nghttp3)
 
 target_include_directories(Net PUBLIC
         # 构建期用仓库内的 src；安装后改用 <前缀>/include，两者都是各模块头文件的根
