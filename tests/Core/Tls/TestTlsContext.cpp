@@ -16,9 +16,13 @@
 #include <gtest/gtest.h>
 
 #include <openssl/err.h>
+#include <openssl/ocsp.h>
 #include <openssl/ssl.h>
+#include <openssl/tls1.h>
 
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -62,6 +66,10 @@ namespace AsynGyanis::Core
             std::string serverAlpn;                         ///< 服务端视角的 ALPN 协商结果
             std::string clientAlpn;                         ///< 客户端视角的 ALPN 协商结果
             long        serverVerifyResult{0};              ///< 服务端对客户端证书的校验结果（X509_V_OK 为 0）
+            std::string stapledOcspResponse;                ///< 客户端请求并收到的 OCSP 装订响应（未装订时为空串）
+            bool        sessionApplied{false};              ///< SSL_set_session 登记成功（仅带会话重连时有意义）
+            bool        clientReused{false};                ///< 客户端视角本次握手命中了会话恢复
+            bool        serverReused{false};                ///< 服务端视角本次握手命中了会话恢复
         };
 
         /// SSL 对象释放器，供 unique_ptr 在断言提前返回时也不泄漏
@@ -89,19 +97,73 @@ namespace AsynGyanis::Core
         }
 
         /**
-         * @brief 在单进程内用一对内存 BIO 驱动服务端与客户端完成一次握手。
+         * @brief 交替推进服务端与客户端到终态，并把过程快照写进 outcome
          * @details 内存 BIO 对的写端不阻塞，因此两端各调一次 SSL_accept/SSL_connect 交替推进即可：
          *          返回 WANT_READ 只表示还在等对端产出数据，无需套接字与事件循环，也不受时序影响。
+         * @param serverSsl 服务端 SSL 对象
+         * @param clientSsl 客户端 SSL 对象
+         * @param outcome 出参，写入两端的完成状态与错误文本
+         */
+        void driveBothToTerminal(SSL *serverSsl, SSL *clientSsl, HandshakeOutcome &outcome)
+        {
+            bool serverTerminal = false;
+            bool clientTerminal = false;
+            for (int round = 0; round < kMaximumHandshakeRounds && !(serverTerminal && clientTerminal); ++round)
+            {
+                if (!serverTerminal)
+                {
+                    const int result = SSL_accept(serverSsl);
+                    if (result == 1)
+                    {
+                        outcome.serverCompleted = true;
+                        serverTerminal          = true;
+                    }
+                    else if (const int error = SSL_get_error(serverSsl, result);
+                             error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
+                    {
+                        // 非「等对端数据」的错误即为终态失败：记下原因，清栈以免污染后续断言
+                        outcome.serverErrorText = lastOpenSslErrorText();
+                        ERR_clear_error();
+                        serverTerminal = true;
+                    }
+                }
+
+                if (!clientTerminal)
+                {
+                    const int result = SSL_connect(clientSsl);
+                    if (result == 1)
+                    {
+                        outcome.clientCompleted = true;
+                        clientTerminal          = true;
+                    }
+                    else if (const int error = SSL_get_error(clientSsl, result);
+                             error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
+                    {
+                        outcome.clientErrorText   = lastOpenSslErrorText();
+                        outcome.clientErrorReason = ERR_GET_REASON(ERR_peek_last_error());
+                        ERR_clear_error();
+                        clientTerminal = true;
+                    }
+                }
+            }
+        }
+
+        /**
+         * @brief 在单进程内用一对内存 BIO 驱动服务端与客户端完成一次握手。
          * @param serverContext 服务端上下文，通常是被测 TlsContext 的 nativeHandle()
          * @param clientContext 客户端上下文，协议版本与安全等级由调用方按场景设定
          * @param clientOffersAlpn true 时客户端登记 http/1.1，false 时完全不提供 ALPN
          * @param clientPresentsCertificate true 时客户端用仓库夹具证书/私钥作为客户端证书
+         * @param clientAlpnWireFormat ALPN 线格式字节
+         * @param clientAlpnWireFormatLength ALPN 线格式字节数
+         * @param clientRequestsOcspStatus true 时客户端在 ClientHello 里请求 OCSP 状态（status_request）
          * @return HandshakeOutcome 两端的完成情况、错误文本与协商结果
          */
         HandshakeOutcome runInProcessHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext,
                                               const bool clientOffersAlpn, const bool clientPresentsCertificate,
                                               const unsigned char *clientAlpnWireFormat = kHttp11AlpnWireFormat,
-                                              const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat))
+                                              const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat),
+                                              const bool clientRequestsOcspStatus = false)
         {
             HandshakeOutcome outcome;
 
@@ -144,45 +206,23 @@ namespace AsynGyanis::Core
                 // 记下装载结果：夹具缺失时让用例以「客户端根本没证书」失败，而不是伪装成服务端拒绝
                 outcome.clientCertificateInstalled = certificateResult == 1 && keyResult == 1;
             }
-
-            bool serverTerminal = false;
-            bool clientTerminal = false;
-            for (int round = 0; round < kMaximumHandshakeRounds && !(serverTerminal && clientTerminal); ++round)
+            if (clientRequestsOcspStatus)
             {
-                if (!serverTerminal)
-                {
-                    const int result = SSL_accept(serverSsl.get());
-                    if (result == 1)
-                    {
-                        outcome.serverCompleted = true;
-                        serverTerminal          = true;
-                    }
-                    else if (const int error = SSL_get_error(serverSsl.get(), result);
-                             error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
-                    {
-                        // 非「等对端数据」的错误即为终态失败：记下原因，清栈以免污染后续断言
-                        outcome.serverErrorText = lastOpenSslErrorText();
-                        ERR_clear_error();
-                        serverTerminal = true;
-                    }
-                }
+                // 请求 OCSP 状态：服务端应在 status_request 扩展的回应中携带装订响应
+                SSL_set_tlsext_status_type(clientSsl.get(), TLSEXT_STATUSTYPE_ocsp);
+            }
 
-                if (!clientTerminal)
+            driveBothToTerminal(serverSsl.get(), clientSsl.get(), outcome);
+
+            if (clientRequestsOcspStatus)
+            {
+                // 取回装订响应：未装订时 OpenSSL 返回 -1，此时保持空串与「未收到」同义
+                unsigned char *stapledResponse = nullptr;
+                const long     stapledLength   = SSL_get_tlsext_status_ocsp_resp(clientSsl.get(), &stapledResponse);
+                if (stapledLength > 0 && stapledResponse != nullptr)
                 {
-                    const int result = SSL_connect(clientSsl.get());
-                    if (result == 1)
-                    {
-                        outcome.clientCompleted = true;
-                        clientTerminal          = true;
-                    }
-                    else if (const int error = SSL_get_error(clientSsl.get(), result);
-                             error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
-                    {
-                        outcome.clientErrorText   = lastOpenSslErrorText();
-                        outcome.clientErrorReason = ERR_GET_REASON(ERR_peek_last_error());
-                        ERR_clear_error();
-                        clientTerminal = true;
-                    }
+                    outcome.stapledOcspResponse.assign(reinterpret_cast<const char *>(stapledResponse),
+                                                       static_cast<std::size_t>(stapledLength));
                 }
             }
 
@@ -915,6 +955,631 @@ namespace AsynGyanis::Core
         EXPECT_NE(verifyModeAfterReload & SSL_VERIFY_FAIL_IF_NO_PEER_CERT, 0) << "轮换后退化成了「对端可不带证书」";
 
         std::error_code errorCode;
+        std::filesystem::remove(certificatePath, errorCode);
+    }
+
+    // ============================================================================
+    // 会话恢复（session tickets / 内部缓存）
+    // ============================================================================
+
+    namespace
+    {
+        /// 会话恢复的一次尝试：同一客户端上下文跑两次握手，第二次携带第一次的会话
+        struct ResumptionOutcome
+        {
+            HandshakeOutcome first;                        ///< 第一次（全量）握手
+            HandshakeOutcome second;                       ///< 第二次（携带会话重连）握手
+            bool             firstSessionResumable{false}; ///< 第一次握手后客户端取到了可恢复会话
+            bool             firstSetupFailed{false};      ///< 第一次握手的环境失败（BIO/SSL 创建）
+            bool             secondSetupFailed{false};     ///< 第二次握手的环境失败
+        };
+
+        /// 一次握手的结果：快照 + 可选的客户端会话（新引用，析构自动释放）
+        struct HandshakeWithSession
+        {
+            HandshakeOutcome outcome;                 ///< 握手快照
+            bool             setupFailed{false};      ///< BIO 对或 SSL 对象创建失败
+            bool             sessionResumable{false}; ///< 客户端取到了可恢复会话
+            std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> session{nullptr, &SSL_SESSION_free}; ///< 客户端会话
+        };
+
+        /**
+         * @brief 完成一次内存 BIO 握手，并在结束后取回客户端侧的可恢复会话
+         * @details TLS 1.3 的 NewSessionTicket 在握手完成之后才到达，必须再读一轮让客户端把它
+         *          处理掉，SSL_get1_session 拿到的会话才可恢复；BIO 写端不阻塞，读到 WANT_READ
+         *          即表示待处理的记录已收齐。
+         * @param serverContext 服务端上下文
+         * @param clientContext 客户端上下文
+         * @param clientPresentsCertificate 客户端是否出示证书（mTLS 场景）
+         * @param sessionToResume 第二次握手时携带的会话；nullptr 表示全量握手
+         * @return HandshakeWithSession 快照与会话；会话只在可恢复时非空
+         */
+        HandshakeWithSession completeHandshakeWithSession(SSL_CTX *serverContext, SSL_CTX *clientContext,
+                                                          const bool clientPresentsCertificate,
+                                                          SSL_SESSION *sessionToResume = nullptr)
+        {
+            HandshakeWithSession result;
+
+            BIO *clientBio = nullptr;
+            BIO *serverBio = nullptr;
+            if (BIO_new_bio_pair(&clientBio, 0, &serverBio, 0) != 1)
+            {
+                result.setupFailed = true;
+                return result;
+            }
+
+            const std::unique_ptr<SSL, SslDeleter> serverSsl(SSL_new(serverContext));
+            const std::unique_ptr<SSL, SslDeleter> clientSsl(SSL_new(clientContext));
+            if (serverSsl == nullptr || clientSsl == nullptr)
+            {
+                BIO_free(clientBio);
+                BIO_free(serverBio);
+                result.setupFailed = true;
+                return result;
+            }
+
+            SSL_set_bio(serverSsl.get(), serverBio, serverBio);
+            SSL_set_bio(clientSsl.get(), clientBio, clientBio);
+
+            if (clientPresentsCertificate)
+            {
+                SSL_use_certificate_file(clientSsl.get(), kTestCertificatePath.string().c_str(), SSL_FILETYPE_PEM);
+                SSL_use_PrivateKey_file(clientSsl.get(), kTestKeyPath.string().c_str(), SSL_FILETYPE_PEM);
+            }
+            if (sessionToResume != nullptr)
+            {
+                // 只是登记候选会话：命不命中由握手本身决定，没命中就退回一次全量握手
+                result.outcome.sessionApplied = SSL_set_session(clientSsl.get(), sessionToResume) == 1;
+            }
+
+            driveBothToTerminal(serverSsl.get(), clientSsl.get(), result.outcome);
+
+            // 恢复判定两端各看一次：只信一侧可能把「服务端发了票据但客户端没用上」误判成恢复
+            result.outcome.clientReused = SSL_session_reused(clientSsl.get()) == 1;
+            result.outcome.serverReused = SSL_session_reused(serverSsl.get()) == 1;
+            result.outcome.protocolVersion = SSL_get_version(serverSsl.get());
+
+            if (result.outcome.clientCompleted)
+            {
+                // 读一轮处理握手后的 NewSessionTicket；非应用数据被 SSL_read 就地消费，最后以 WANT_READ 收尾
+                char      ignoredByte = 0;
+                const int readResult  = SSL_read(clientSsl.get(), &ignoredByte, 1);
+                (void) readResult;
+                ERR_clear_error();
+
+                // 礼仪式关闭：SSL_free 会把「未发过 close_notify」的连接当坏会话，顺手把其当前
+                // 会话标记成不可恢复（ssl_clear_bad_session）。对「导出会话供下次连接复用」的用法，
+                // 必须在销毁前发一次 close_notify——这也是真实客户端复用会话的标准姿势
+                SSL_shutdown(clientSsl.get());
+                ERR_clear_error();
+
+                SSL_SESSION *session = SSL_get1_session(clientSsl.get());
+                result.sessionResumable = session != nullptr && SSL_SESSION_is_resumable(session) == 1;
+                if (!result.sessionResumable && session != nullptr)
+                {
+                    SSL_SESSION_free(session);
+                    session = nullptr;
+                }
+                result.session.reset(session);
+            }
+            return result;
+        }
+
+        /**
+         * @brief 同一客户端上下文连跑两次握手：第一次取会话，第二次带上会话验证恢复命中
+         * @param serverContext 服务端上下文
+         * @param clientContext 客户端上下文
+         * @param clientPresentsCertificate 客户端是否出示证书（mTLS 场景）
+         * @return ResumptionOutcome 两次握手的快照与恢复命中情况
+         */
+        ResumptionOutcome runResumptionHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext,
+                                                 const bool clientPresentsCertificate)
+        {
+            ResumptionOutcome result;
+
+            HandshakeWithSession first = completeHandshakeWithSession(serverContext, clientContext, clientPresentsCertificate);
+            result.first                = first.outcome;
+            result.firstSetupFailed     = first.setupFailed;
+            result.firstSessionResumable = first.sessionResumable;
+            if (first.setupFailed || !first.sessionResumable)
+            {
+                return result; // 第二次无从进行：调用方先按第一次的断言定位
+            }
+
+            HandshakeWithSession second = completeHandshakeWithSession(serverContext, clientContext, clientPresentsCertificate,
+                                                                       first.session.get());
+            result.second            = second.outcome;
+            result.secondSetupFailed = second.setupFailed;
+            return result;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：TLS 1.3 下第二次连接携带会话票据即命中恢复（两端视角都验证）
+     */
+    TEST(TlsContext, SessionResumptionHitsOnTls13)
+    {
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        // 不限定版本：加固服务端与默认客户端会协商到 TLS 1.3（下面用前置断言钉住这一前提）
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const ResumptionOutcome outcome = runResumptionHandshake(tlsContext.nativeHandle(), clientContext.get(), false);
+
+        ASSERT_FALSE(outcome.firstSetupFailed);
+        ASSERT_TRUE(outcome.first.serverCompleted) << outcome.first.serverErrorText;
+        ASSERT_TRUE(outcome.first.clientCompleted) << outcome.first.clientErrorText;
+        ASSERT_EQ(outcome.first.protocolVersion, "TLSv1.3") << "本用例的前提是协商到 TLS 1.3";
+        ASSERT_TRUE(outcome.firstSessionResumable) << "握手后客户端没有取到可恢复的会话票据";
+
+        ASSERT_FALSE(outcome.secondSetupFailed);
+        EXPECT_TRUE(outcome.second.sessionApplied) << "SSL_set_session 登记失败";
+        ASSERT_TRUE(outcome.second.serverCompleted) << outcome.second.serverErrorText;
+        ASSERT_TRUE(outcome.second.clientCompleted) << outcome.second.clientErrorText;
+        EXPECT_TRUE(outcome.second.clientReused) << "第二次握手客户端视角没有命中恢复";
+        EXPECT_TRUE(outcome.second.serverReused) << "第二次握手服务端视角没有命中恢复";
+    }
+
+    /**
+     * @brief 钉住：TLS 1.2 下会话恢复（票据/内部缓存）同样命中
+     */
+    TEST(TlsContext, SessionResumptionHitsOnTls12)
+    {
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+        ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+
+        const ResumptionOutcome outcome = runResumptionHandshake(tlsContext.nativeHandle(), clientContext.get(), false);
+
+        ASSERT_FALSE(outcome.firstSetupFailed);
+        ASSERT_TRUE(outcome.first.serverCompleted) << outcome.first.serverErrorText;
+        ASSERT_TRUE(outcome.first.clientCompleted) << outcome.first.clientErrorText;
+        ASSERT_EQ(outcome.first.protocolVersion, "TLSv1.2");
+        ASSERT_TRUE(outcome.firstSessionResumable) << "握手后客户端没有取到可恢复的会话";
+
+        ASSERT_FALSE(outcome.secondSetupFailed);
+        EXPECT_TRUE(outcome.second.sessionApplied) << "SSL_set_session 登记失败";
+        ASSERT_TRUE(outcome.second.serverCompleted) << outcome.second.serverErrorText;
+        ASSERT_TRUE(outcome.second.clientCompleted) << outcome.second.clientErrorText;
+        EXPECT_TRUE(outcome.second.clientReused) << "第二次握手客户端视角没有命中恢复";
+        EXPECT_TRUE(outcome.second.serverReused) << "第二次握手服务端视角没有命中恢复";
+    }
+
+    /**
+     * @brief 钉住：要求客户端证书的部署同样能恢复会话
+     * @details OpenSSL 在启用对端校验（SSL_VERIFY_PEER）且未设置 session id context 时会拒绝
+     *          TLS 1.2 的会话恢复；本用例的 reused 断言就是那条设置的判据——去掉它即变红
+     *          （客户端会静默退回一次全量握手，两端 reused 均为假）。
+     */
+    TEST(TlsContext, SessionResumptionHitsWithRequiredClientCertificate)
+    {
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
+        tlsContext.setClientCertificateRequired(true);
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+        ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+
+        const ResumptionOutcome outcome = runResumptionHandshake(tlsContext.nativeHandle(), clientContext.get(), true);
+
+        ASSERT_FALSE(outcome.firstSetupFailed);
+        ASSERT_TRUE(outcome.first.serverCompleted) << outcome.first.serverErrorText;
+        ASSERT_TRUE(outcome.first.clientCompleted) << outcome.first.clientErrorText;
+        ASSERT_TRUE(outcome.firstSessionResumable) << "握手后客户端没有取到可恢复的会话";
+
+        ASSERT_FALSE(outcome.secondSetupFailed);
+        EXPECT_TRUE(outcome.second.sessionApplied) << "SSL_set_session 登记失败";
+        ASSERT_TRUE(outcome.second.serverCompleted) << outcome.second.serverErrorText;
+        ASSERT_TRUE(outcome.second.clientCompleted) << outcome.second.clientErrorText;
+        EXPECT_TRUE(outcome.second.clientReused) << "mTLS 部署下第二次握手没有命中恢复（客户端视角）";
+        EXPECT_TRUE(outcome.second.serverReused) << "mTLS 部署下第二次握手没有命中恢复（服务端视角）";
+    }
+
+    // ============================================================================
+    // OCSP 装订（stapling）
+    // ============================================================================
+
+    namespace
+    {
+        /// 载入仓库夹具证书（OCSP 用例的签发者）
+        std::unique_ptr<X509, decltype(&X509_free)> loadFixtureCertificate()
+        {
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(kTestCertificatePath.string().c_str(), "rb"), &std::fclose);
+            if (!stream)
+            {
+                return {nullptr, &X509_free};
+            }
+            return {PEM_read_X509(stream.get(), nullptr, nullptr, nullptr), &X509_free};
+        }
+
+        /// 载入仓库夹具私钥（复用为叶证书密钥与签名密钥，避免另生成密钥的版本差异）
+        std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> loadFixturePrivateKey()
+        {
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(kTestKeyPath.string().c_str(), "rb"), &std::fclose);
+            if (!stream)
+            {
+                return {nullptr, &EVP_PKEY_free};
+            }
+            return {PEM_read_PrivateKey(stream.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free};
+        }
+
+        /// 载入任意 PEM 证书文件
+        std::unique_ptr<X509, decltype(&X509_free)> loadCertificateFrom(const std::filesystem::path &file)
+        {
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(file.string().c_str(), "rb"), &std::fclose);
+            if (!stream)
+            {
+                return {nullptr, &X509_free};
+            }
+            return {PEM_read_X509(stream.get(), nullptr, nullptr, nullptr), &X509_free};
+        }
+
+        /**
+         * @brief 造一张由夹具证书签发的叶证书并写成 PEM
+         * @details 装订用例必须避开自签名的叶证书：OpenSSL 3.x 对自签名叶证书直接跳过 OCSP 装订
+         *          （策略），而仓库夹具是自签的。这里复用夹具私钥、把 subject 换成叶名字、issuer
+         *          指向夹具证书，得到一张「subject ≠ issuer」的叶证书。
+         * @param outputFile 叶证书输出路径
+         * @param serialNumber 序列号（换证用例靠它区分新旧）
+         * @return bool 写成功
+         */
+        bool writeCaSignedLeafCertificate(const std::filesystem::path &outputFile, const long serialNumber)
+        {
+            const auto issuerCertificate = loadFixtureCertificate();
+            const auto issuerKey         = loadFixturePrivateKey();
+            if (!issuerCertificate || !issuerKey)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<X509, decltype(&X509_free)> leaf(X509_new(), &X509_free);
+            if (!leaf)
+            {
+                return false;
+            }
+
+            // 版本号 2 对应 X.509 v3（OpenSSL 的版本号从 0 起算）
+            X509_set_version(leaf.get(), 2);
+            ASN1_INTEGER_set(X509_get_serialNumber(leaf.get()), serialNumber);
+            X509_gmtime_adj(X509_getm_notBefore(leaf.get()), 0);
+            X509_gmtime_adj(X509_getm_notAfter(leaf.get()), 24L * 60L * 60L);
+
+            if (X509_set_pubkey(leaf.get(), issuerKey.get()) != 1)
+            {
+                return false;
+            }
+
+            X509_NAME *subjectName           = X509_get_subject_name(leaf.get());
+            const unsigned char commonName[] = "asyngyanis-leaf";
+            if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC, commonName, -1, -1, 0) != 1)
+            {
+                return false;
+            }
+            // 非自签的关键：issuer 是夹具证书，而不是叶证书自己
+            if (X509_set_issuer_name(leaf.get(), X509_get_subject_name(issuerCertificate.get())) != 1)
+            {
+                return false;
+            }
+            if (X509_sign(leaf.get(), issuerKey.get(), EVP_sha256()) == 0)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(outputFile.string().c_str(), "wb"), &std::fclose);
+            if (!stream)
+            {
+                return false;
+            }
+            return PEM_write_X509(stream.get(), leaf.get()) == 1;
+        }
+
+        /**
+         * @brief 造一份与给定叶证书匹配的 OCSP 响应（DER 字节）
+         * @details 服务端装订前会按「序列号 + 签发者名哈希」把响应与叶证书对上（OpenSSL 3.x），
+         *          因此用例必须造真实匹配的响应；服务端不验签，但这里照样签名保持结构真实。
+         * @param leafCertificate 叶证书
+         * @param issuerCertificate 签发者证书
+         * @param issuerKey 签发者私钥
+         * @return std::string DER 字节；任一步失败返回空串
+         */
+        std::string makeMatchingOcspResponseDer(X509 *leafCertificate, X509 *issuerCertificate, EVP_PKEY *issuerKey)
+        {
+            const std::unique_ptr<OCSP_BASICRESP, decltype(&OCSP_BASICRESP_free)> basic(
+                    OCSP_BASICRESP_new(), &OCSP_BASICRESP_free);
+            const std::unique_ptr<OCSP_CERTID, decltype(&OCSP_CERTID_free)> certificateId(
+                    OCSP_cert_to_id(EVP_sha1(), leafCertificate, issuerCertificate), &OCSP_CERTID_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> thisUpdate(
+                    ASN1_TIME_set(nullptr, std::time(nullptr)), &ASN1_TIME_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> nextUpdate(
+                    ASN1_TIME_adj(nullptr, std::time(nullptr), 0, 3600), &ASN1_TIME_free);
+            if (!basic || !certificateId || !thisUpdate || !nextUpdate)
+            {
+                return {};
+            }
+
+            if (OCSP_basic_add1_status(basic.get(), certificateId.get(), V_OCSP_CERTSTATUS_GOOD, 0, nullptr,
+                                       thisUpdate.get(), nextUpdate.get()) == nullptr)
+            {
+                return {};
+            }
+            if (OCSP_basic_sign(basic.get(), issuerCertificate, issuerKey, EVP_sha256(), nullptr, 0) != 1)
+            {
+                return {};
+            }
+
+            // OCSP_response_create 会把 basic 打包复制进响应，basic 的所有权仍在调用方
+            const std::unique_ptr<OCSP_RESPONSE, decltype(&OCSP_RESPONSE_free)> response(
+                    OCSP_response_create(OCSP_RESPONSE_STATUS_SUCCESSFUL, basic.get()), &OCSP_RESPONSE_free);
+            if (!response)
+            {
+                return {};
+            }
+
+            unsigned char *der = nullptr;
+            const int      derLength = i2d_OCSP_RESPONSE(response.get(), &der);
+            if (derLength <= 0 || der == nullptr)
+            {
+                return {};
+            }
+            std::string bytes(reinterpret_cast<const char *>(der), static_cast<std::size_t>(derLength));
+            OPENSSL_free(der);
+            return bytes;
+        }
+
+        /// 把字节串写到指定路径（覆盖已有内容）；写失败返回 false
+        bool overwriteBytes(const std::filesystem::path &path, const std::string &bytes)
+        {
+            std::ofstream stream(path, std::ios::out | std::ios::binary | std::ios::trunc);
+            if (!stream)
+            {
+                return false;
+            }
+            stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+            return static_cast<bool>(stream);
+        }
+
+        /**
+         * @brief 把字节串写进唯一命名的临时文件（二进制）
+         * @param tag 用途标签，便于在临时目录里辨认
+         * @param bytes 文件内容
+         * @return std::filesystem::path 文件路径；写失败返回空路径
+         */
+        std::filesystem::path writeTemporaryBytes(const std::string_view tag, const std::string &bytes)
+        {
+            const std::filesystem::path path = makeUniqueTemporaryPath(tag).replace_extension(".der");
+            if (!overwriteBytes(path, bytes))
+            {
+                return {};
+            }
+            return path;
+        }
+
+        /// 一套装订测试材料：非自签叶证书与与之匹配的 OCSP 响应
+        struct StaplingTestMaterial
+        {
+            std::filesystem::path leafCertificatePath; ///< 叶证书 PEM（非自签）
+            std::filesystem::path responsePath;        ///< 匹配响应的 DER 文件
+            std::string           responseBytes;       ///< 匹配响应的字节
+        };
+
+        /**
+         * @brief 造一套装订测试材料（叶证书 + 与之匹配的 OCSP 响应文件）
+         * @param tag 临时文件用途标签
+         * @param serialNumber 叶证书序列号
+         * @return StaplingTestMaterial 材料；任一步失败时路径为空
+         */
+        StaplingTestMaterial makeStaplingTestMaterial(const std::string_view tag, const long serialNumber)
+        {
+            StaplingTestMaterial material;
+            material.leafCertificatePath = makeUniqueTemporaryPath(tag).replace_extension(".pem");
+            if (!writeCaSignedLeafCertificate(material.leafCertificatePath, serialNumber))
+            {
+                return material;
+            }
+
+            const auto leaf      = loadCertificateFrom(material.leafCertificatePath);
+            const auto issuer    = loadFixtureCertificate();
+            const auto issuerKey = loadFixturePrivateKey();
+            if (!leaf || !issuer || !issuerKey)
+            {
+                return material;
+            }
+
+            material.responseBytes = makeMatchingOcspResponseDer(leaf.get(), issuer.get(), issuerKey.get());
+            if (material.responseBytes.empty())
+            {
+                return material;
+            }
+            material.responsePath = writeTemporaryBytes(tag, material.responseBytes);
+            return material;
+        }
+
+        /// 请求 OCSP 状态跑一次 TLS 1.2 握手（OCSP 用例的公共形态）
+        HandshakeOutcome runHandshakeRequestingOcspStatus(SSL_CTX *serverContext)
+        {
+            SslContextPointer clientContext = createClientContext();
+            if (clientContext == nullptr)
+            {
+                HandshakeOutcome failed;
+                failed.setupFailed = true;
+                return failed;
+            }
+            SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION);
+            return runInProcessHandshake(serverContext, clientContext.get(), false, false,
+                                         kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat), true);
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：加载的 OCSP 响应在客户端请求时被原样装订
+     * @details 用非自签的叶证书（夹具 CA 签发）：OpenSSL 3.x 对自签名叶证书跳过装订
+     */
+    TEST(TlsContext, OcspStaplingDeliversLoadedResponse)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("ocsp_ok", 197L);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(tlsContext.loadOcspResponse(material.responsePath.string()));
+
+        const HandshakeOutcome outcome = runHandshakeRequestingOcspStatus(tlsContext.nativeHandle());
+
+        ASSERT_FALSE(outcome.setupFailed);
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
+        EXPECT_EQ(outcome.stapledOcspResponse, material.responseBytes) << "装订响应与加载的字节不一致";
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：客户端没有请求 OCSP 状态时服务端不装订
+     */
+    TEST(TlsContext, OcspStaplingIsSkippedWithoutClientRequest)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("ocsp_noreq", 198L);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(tlsContext.loadOcspResponse(material.responsePath.string()));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+        ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+
+        // 不请求 status_request：装订数据在上下文中，但不应随响应下发
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+
+        ASSERT_FALSE(outcome.setupFailed);
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
+        EXPECT_TRUE(outcome.stapledOcspResponse.empty()) << "没被请求却下发了装订响应";
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：未加载响应时客户端请求也不导致失败，只是不装订（NOACK 路径）
+     */
+    TEST(TlsContext, OcspStaplingIsSkippedWhenNothingLoaded)
+    {
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        const HandshakeOutcome outcome = runHandshakeRequestingOcspStatus(tlsContext.nativeHandle());
+
+        ASSERT_FALSE(outcome.setupFailed);
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
+        EXPECT_TRUE(outcome.stapledOcspResponse.empty()) << "没有加载响应却装订了内容";
+    }
+
+    /**
+     * @brief 拒绝面：路径不存在、内容为空或不是合法 DER 都返回 false
+     */
+    TEST(TlsContext, LoadOcspResponseRejectsMissingEmptyOrGarbageFile)
+    {
+        const TlsContext tlsContext;
+        EXPECT_FALSE(tlsContext.loadOcspResponse("/nonexistent/ocsp.der"));
+
+        const std::filesystem::path emptyPath = writeTemporaryBytes("ocsp_empty", std::string{});
+        ASSERT_FALSE(emptyPath.empty());
+        EXPECT_FALSE(tlsContext.loadOcspResponse(emptyPath.string()));
+
+        // 加载即做 DER 解析校验：坏文件在配置阶段就被挡掉，而不是服务期间静默不装订
+        const std::filesystem::path garbagePath = writeTemporaryBytes("ocsp_garbage", "this is not a DER OCSP response");
+        ASSERT_FALSE(garbagePath.empty());
+        EXPECT_FALSE(tlsContext.loadOcspResponse(garbagePath.string()));
+
+        std::error_code errorCode;
+        std::filesystem::remove(emptyPath, errorCode);
+        std::filesystem::remove(garbagePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：证书热轮换后装订照旧（换代按原路径重读响应文件）
+     * @details 续期的真实形态是证书与响应一起更新：新叶证书有新序列号，响应必须随之匹配。
+     *          若实现沿用旧字节而不重读，旧响应与新证书对不上，装订会缺席——本用例即变红。
+     */
+    TEST(TlsContext, ReloadCertificateKeepsOcspStapling)
+    {
+        StaplingTestMaterial material = makeStaplingTestMaterial("ocsp_reload", 0xC6L);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(context.loadOcspResponse(material.responsePath.string()));
+
+        // 证书与响应一起更新到原路径
+        ASSERT_TRUE(writeCaSignedLeafCertificate(material.leafCertificatePath, 0xC7L));
+        const auto newLeaf   = loadCertificateFrom(material.leafCertificatePath);
+        const auto issuer    = loadFixtureCertificate();
+        const auto issuerKey = loadFixturePrivateKey();
+        ASSERT_TRUE(newLeaf && issuer && issuerKey);
+        const std::string newResponseBytes = makeMatchingOcspResponseDer(newLeaf.get(), issuer.get(), issuerKey.get());
+        ASSERT_FALSE(newResponseBytes.empty());
+        ASSERT_TRUE(overwriteBytes(material.responsePath, newResponseBytes));
+
+        ASSERT_TRUE(context.reloadCertificate());
+
+        const HandshakeOutcome outcome = runHandshakeRequestingOcspStatus(context.nativeHandle());
+
+        ASSERT_FALSE(outcome.setupFailed);
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
+        EXPECT_EQ(outcome.stapledOcspResponse, newResponseBytes) << "轮换后的上下文没有按原路径重读最新响应";
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：轮换时 OCSP 文件不可读 → 本次轮换整体失败，旧上下文继续服务
+     */
+    TEST(TlsContext, ReloadCertificateFailsWhenOcspFileDisappeared)
+    {
+        const std::filesystem::path certificatePath = makeUniqueTemporaryPath("ocsp_gone_cert");
+        ASSERT_TRUE(copyFixtureCertificate(certificatePath));
+
+        // 响应只需是合法 DER（本用例只验证「重读失败让轮换整体失败」）；用夹具自签证书自配一份
+        const auto issuer    = loadFixtureCertificate();
+        const auto issuerKey = loadFixturePrivateKey();
+        ASSERT_TRUE(issuer && issuerKey);
+        const std::string responseBytes = makeMatchingOcspResponseDer(issuer.get(), issuer.get(), issuerKey.get());
+        ASSERT_FALSE(responseBytes.empty());
+        const std::filesystem::path responsePath = writeTemporaryBytes("ocsp_gone", responseBytes);
+        ASSERT_FALSE(responsePath.empty());
+
+        TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(context.loadOcspResponse(responsePath.string()));
+
+        SSL_CTX *const    previousContext = context.nativeHandle();
+        const std::string previousSerialNumber = presentedCertificateSerialNumber(previousContext);
+
+        // 证书换新、但响应文件被清掉：重读失败必须让整次轮换失败，而不是悄悄装订一份过期响应
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, certificatePath, 0x5EED3L));
+        std::error_code errorCode;
+        std::filesystem::remove(responsePath, errorCode);
+
+        EXPECT_FALSE(context.reloadCertificate()) << "OCSP 响应已不可读，轮换应当整体失败";
+        EXPECT_EQ(context.nativeHandle(), previousContext);
+        EXPECT_EQ(presentedCertificateSerialNumber(context.nativeHandle()), previousSerialNumber);
+
         std::filesystem::remove(certificatePath, errorCode);
     }
 }

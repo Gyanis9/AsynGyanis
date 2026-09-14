@@ -166,6 +166,19 @@ namespace AsynGyanis::Net
          */
         bool reloadCertificate();
 
+        /**
+         * @brief 加载 OCSP 响应文件（DER 格式），此后 TLS 握手按客户端请求装订（stapling）。
+         *
+         * @details 与 reloadCertificate() 同为「路径即身份」的运维形态：此后每次证书热轮换
+         *          都会按原路径重读响应、与证书一起换代；完整语义见 Core::TlsContext::loadOcspResponse()。
+         *
+         * @param ocspResponseFile OCSP 响应文件路径（DER；通常由 ACME 客户端随证书一并产出）
+         * @return true 响应已生效；false 文件不可读或内容为空，此时保持原状态不装订
+         * @note 可在服务运行中调用；已建立的连接不受影响
+         * @see Core::TlsContext::loadOcspResponse()
+         */
+        bool loadOcspResponse(const std::string &ocspResponseFile);
+
     private:
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享

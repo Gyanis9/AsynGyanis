@@ -31,6 +31,9 @@ namespace AsynGyanis::Core
      *          SIGPIPE 打死进程；忽略后写失败以 EPIPE 返回，由现有错误路径处理。
      * @note 一个 SSL_CTX 被同一服务器进程内的所有连接共享，因此上述配置是全局生效的：
      *       改动只影响之后创建的 SSL 对象，已建立的连接不受影响。
+     * @note 会话恢复按 OpenSSL 默认即开启（TLS 1.3 会话票据、TLS 1.2 票据与内部缓存）；
+     *       构造时另固定 session id context，使「要求客户端证书」的部署也能恢复会话。
+     *       票据密钥随上下文生成：reloadCertificate() 换代后旧票据无法恢复，客户端自动退回全量握手。
      * @note 证书可以在不中断服务的前提下换代：reloadCertificate() 会用同一套加固配置新建一个
      *       SSL_CTX 并整台换掉，已建立的连接仍绑在旧上下文上（OpenSSL 的引用计数保证旧上下文
      *       在最后一个引用消失前不会被释放），因此续期不再需要重启进程。
@@ -119,9 +122,9 @@ namespace AsynGyanis::Core
          *          （那属于重新配置，请用 loadCertificate() 并自行安排写窗口）。
          *
          *          实现上是**先在新上下文上把整台配置重建完，成功之后才换**：新上下文同样经过构造期
-         *          那套加固（最低版本、套件、ALPN、压缩开关），并且复现已加载的 CA 与对端校验开关——
-         *          漏掉后者会让一次续期悄悄把 mTLS 关掉。任一步失败都返回 false 且**不碰旧上下文**，
-         *          正在服务的连接与后续新连接都继续按旧证书走，不会因为一次轮换失败而掉线。
+         *          那套加固（最低版本、套件、ALPN、压缩开关），并且复现已加载的 CA、对端校验开关
+         *          与 OCSP 响应（按原路径重读）——漏掉对端校验会让一次续期悄悄把 mTLS 关掉。任一步
+         *          失败都返回 false 且**不碰旧上下文**，正在服务的连接与后续新连接都继续按旧配置走
          *
          * @return true 新证书已生效（此后新建的连接用它）；false 没有可轮换的证书（尚未 loadCertificate()）
          *         或新证书加载失败，此时旧证书原样继续服务
@@ -132,6 +135,21 @@ namespace AsynGyanis::Core
          * @see loadCertificate(), HttpsServer::reloadCertificate()
          */
         bool reloadCertificate();
+
+        /**
+         * @brief 加载 OCSP 响应文件（DER 格式），此后握手按客户端请求装订（stapling）。
+         * @details 与证书同为「路径即身份」的续期形态：reloadCertificate() 会按原路径重读，
+         *          与证书一起换；文件缺失、为空、读取失败或不是合法 DER 编码都返回 false，
+         *          且不做任何变更。
+         * @param ocspResponseFile OCSP 响应文件路径（DER；通常由 ACME 客户端随证书一并产出）
+         * @return true 响应已生效，此后新建的 SSL 会按需装订
+         * @return false 文件不可读、内容为空或不是合法 DER 编码
+         * @note 可在服务运行中调用：数据按上下文存储、读取侧无锁，已建立的连接不受影响
+         * @note OpenSSL 3.x 只对非自签名的叶证书装订，并按响应中的序列号与签发者名哈希匹配当前
+         *       证书；自签名部署下不会装订，这是 OpenSSL 的策略而非本类能绕过的
+         * @see reloadCertificate()
+         */
+        bool loadOcspResponse(const std::string &ocspResponseFile) const;
 
     private:
         /**
@@ -159,6 +177,7 @@ namespace AsynGyanis::Core
         mutable std::string m_certificateFile; ///< 上次成功加载的证书路径；空表示还没加载过，reloadCertificate() 据此判断
         mutable std::string m_keyFile;         ///< 上次成功加载的私钥路径
         mutable std::string m_clientCertificateAuthorityFile; ///< 已加载的校验 CA 路径；换代时要复现，空表示没加载过
+        mutable std::string m_ocspResponseFile; ///< 已加载的 OCSP 响应路径；换代时按此重读，空表示没加载过
 
         mutable bool m_clientCertificateRequired{false};        ///< 是否要求并校验对端证书（换代时同样要复现）
         mutable bool m_clientCertificateAuthorityLoaded{false}; ///< 是否已成功加载校验对端证书的 CA

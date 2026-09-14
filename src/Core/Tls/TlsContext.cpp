@@ -1,10 +1,15 @@
 #include "Core/Tls/TlsContext.h"
 #include "Core/Exception/CoreException.h"
 
+#include <openssl/ocsp.h>
 #include <openssl/ssl.h>
 
+#include <atomic>
 #include <csignal>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <memory>
 
 namespace AsynGyanis::Core
 {
@@ -85,6 +90,128 @@ namespace AsynGyanis::Core
             // 好过替对端选一个它根本没提供过的协议名
             return SSL_TLSEXT_ERR_ALERT_FATAL;
         }
+
+        /**
+         * @brief 按上下文存放的 OCSP 装订数据
+         * @details 用 SSL_CTX 的 ex_data 而不是 TlsContext 成员存放：回调在握手线程上运行，
+         *          解引用一个可能已析构的 TlsContext 会悬垂；持有者的生死跟随 SSL_CTX 本身。
+         *          bytes 用原子 shared_ptr 快照，使 loadOcspResponse() 可在服务运行中安全替换。
+         */
+        struct StapledOcspResponse
+        {
+            std::atomic<std::shared_ptr<const std::string>> bytes{std::shared_ptr<const std::string>{}};
+        };
+
+        /**
+         * @brief 取装订数据的 ex_data 下标（首次调用时注册，释放回调负责 delete 持有者）
+         * @return int 下标；注册失败返回 -1，调用方据此跳过装订能力
+         */
+        int stapledResponseExDataIndex()
+        {
+            static const int index = SSL_CTX_get_ex_new_index(
+                    0, nullptr, nullptr, nullptr,
+                    [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
+                    {
+                        delete static_cast<StapledOcspResponse *>(pointer);
+                    });
+            return index;
+        }
+
+        /**
+         * @brief 读取整个文件为字节串
+         * @param filePath 文件路径（二进制读取）
+         * @param output 出参，文件内容
+         * @return true 读取成功且文件非空
+         */
+        bool readFileBytes(const std::string &filePath, std::string &output)
+        {
+            std::ifstream stream(filePath, std::ios::in | std::ios::binary);
+            if (!stream)
+            {
+                return false;
+            }
+
+            output.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+            return !output.empty();
+        }
+
+        /**
+         * @brief 把一份 OCSP 响应挂到指定上下文（后一次调用覆盖前一次）
+         * @param context 目标上下文
+         * @param bytes 响应字节（DER）
+         */
+        void attachOcspResponse(SSL_CTX *context, std::string bytes)
+        {
+            const int index = stapledResponseExDataIndex();
+            if (index < 0)
+            {
+                return;
+            }
+
+            auto *holder = static_cast<StapledOcspResponse *>(SSL_CTX_get_ex_data(context, index));
+            if (holder == nullptr)
+            {
+                holder = new StapledOcspResponse();
+                if (SSL_CTX_set_ex_data(context, index, holder) != 1)
+                {
+                    delete holder;
+                    return;
+                }
+            }
+            holder->bytes.store(std::make_shared<const std::string>(std::move(bytes)), std::memory_order_release);
+        }
+
+        /**
+         * @brief OCSP 装订回调：客户端请求 status_request 时把本上下文带的响应交给 OpenSSL
+         * @details 未配置响应（或配置后为空）时回 NOACK：握手照常、只是不装订——这正是
+         *          「证书没有配套 OCSP 信息」的部署应得的行为。
+         * @param ssl 当前握手对象
+         * @return int SSL_TLSEXT_ERR_OK 已装订；SSL_TLSEXT_ERR_NOACK 无响应可装订
+         */
+        int stapleOcspResponse(SSL *ssl, void *)
+        {
+            SSL_CTX *context = SSL_get_SSL_CTX(ssl);
+            if (context == nullptr)
+            {
+                return SSL_TLSEXT_ERR_NOACK;
+            }
+
+            const auto *holder = static_cast<const StapledOcspResponse *>(
+                    SSL_CTX_get_ex_data(context, stapledResponseExDataIndex()));
+            if (holder == nullptr)
+            {
+                return SSL_TLSEXT_ERR_NOACK;
+            }
+
+            const std::shared_ptr<const std::string> snapshot = holder->bytes.load(std::memory_order_acquire);
+            if (!snapshot || snapshot->empty())
+            {
+                return SSL_TLSEXT_ERR_NOACK;
+            }
+
+            // OpenSSL 3.x 的装订判定只看本 SSL 上的 OCSP_RESPONSE 对象栈（resp_ex）：旧的裸字节
+            // 接口不再驱动它，因此这里把 DER 解析成对象再放进去；解析失败按「无响应」处理
+            const unsigned char *cursor   = reinterpret_cast<const unsigned char *>(snapshot->data());
+            OCSP_RESPONSE       *response = d2i_OCSP_RESPONSE(nullptr, &cursor, static_cast<long>(snapshot->size()));
+            if (response == nullptr)
+            {
+                ERR_clear_error();
+                return SSL_TLSEXT_ERR_NOACK;
+            }
+
+            STACK_OF(OCSP_RESPONSE) *responses = sk_OCSP_RESPONSE_new_null();
+            if (responses == nullptr || sk_OCSP_RESPONSE_push(responses, response) == 0)
+            {
+                OCSP_RESPONSE_free(response);
+                sk_OCSP_RESPONSE_free(responses);
+                ERR_clear_error();
+                return SSL_TLSEXT_ERR_NOACK;
+            }
+
+            // set0 语义：SSL 接管整个对象栈（替换时连旧栈一起释放），此后不要再引用 responses
+            SSL_set0_tlsext_status_ocsp_resp_ex(ssl, responses);
+            return SSL_TLSEXT_ERR_OK;
+        }
     } // namespace
 
     TlsContext::TlsContext()
@@ -140,6 +267,19 @@ namespace AsynGyanis::Core
 
         // 注册 ALPN 选择回调：选择策略见 selectAlpnProtocol()
         SSL_CTX_set_alpn_select_cb(context, selectAlpnProtocol, nullptr);
+
+        // session id context：把「会话属于哪个应用」固定进恢复票据与缓存。OpenSSL 在启用
+        // 客户端证书校验（SSL_VERIFY_PEER）时要求已设置它，否则会话恢复会被拒绝；非 mTLS
+        // 部署也借此避免与同进程其它 TLS 用途串会话。10 字节，远低于 OpenSSL 的 32 字节上限
+        static const unsigned char kSessionIdContext[] = {'A', 's', 'y', 'n', 'G', 'y', 'a', 'n', 'i', 's'};
+        if (SSL_CTX_set_session_id_context(context, kSessionIdContext, sizeof(kSessionIdContext)) != 1)
+        {
+            SSL_CTX_free(context);
+            throw CoreException("创建 TLS 上下文失败：无法设置 session id context（长度超出 OpenSSL 上限）");
+        }
+
+        // OCSP 装订：客户端在 ClientHello 里请求 status_request 时按需回应；未配置响应则不装订
+        SSL_CTX_set_tlsext_status_cb(context, stapleOcspResponse);
 
         SSL_CTX_set_mode(context, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
         return context;
@@ -235,6 +375,19 @@ namespace AsynGyanis::Core
             }
         }
 
+        // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径**重读**而不是沿用旧字节；
+        // 重读失败与证书加载失败同语义——本次轮换整体失败，旧上下文继续服务
+        if (!m_ocspResponseFile.empty())
+        {
+            std::string responseBytes;
+            if (!readFileBytes(m_ocspResponseFile, responseBytes))
+            {
+                SSL_CTX_free(newContext);
+                return false;
+            }
+            attachOcspResponse(newContext, std::move(responseBytes));
+        }
+
         SSL_CTX *previousContext = m_context;
         m_context                = newContext;
 
@@ -308,6 +461,33 @@ namespace AsynGyanis::Core
                                 "（文件描述符可能已关闭或不是套接字）");
         }
         return ssl;
+    }
+
+    bool TlsContext::loadOcspResponse(const std::string &ocspResponseFile) const
+    {
+        // 先读文件再进锁：读盘不持锁，避免把文件 IO 拖进与 createSSL() 争用的关键区
+        std::string responseBytes;
+        if (!readFileBytes(ocspResponseFile, responseBytes))
+        {
+            return false;
+        }
+
+        // 装订侧只认可解析的 DER（见回调里的说明）：在加载时就把坏文件挡掉，
+        // 好过服务期间每次握手都解析失败、装订悄悄缺席
+        const unsigned char *cursor = reinterpret_cast<const unsigned char *>(responseBytes.data());
+        OCSP_RESPONSE       *probe  = d2i_OCSP_RESPONSE(nullptr, &cursor, static_cast<long>(responseBytes.size()));
+        if (probe == nullptr)
+        {
+            ERR_clear_error();
+            return false;
+        }
+        OCSP_RESPONSE_free(probe);
+
+        std::lock_guard<std::mutex> guard(m_contextMutex);
+        attachOcspResponse(m_context, std::move(responseBytes));
+        // 记住路径：reloadCertificate() 按它重读，保证响应与证书一起换新
+        m_ocspResponseFile = ocspResponseFile;
+        return true;
     }
 
     SSL_CTX *TlsContext::nativeHandle() const
