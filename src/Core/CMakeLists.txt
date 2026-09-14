@@ -11,6 +11,7 @@ add_subdirectory(Exception)
 add_subdirectory(EventLoop)
 add_subdirectory(Coroutine)
 add_subdirectory(Socket)
+add_subdirectory(Process)
 add_subdirectory(Tls)
 
 get_property(CORE_SOURCES GLOBAL PROPERTY AsynGyanisCoreSources)

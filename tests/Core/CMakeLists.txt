@@ -17,6 +17,8 @@ add_executable(TestCore
         Coroutine/TestCancelable.cpp
         Coroutine/TestThreadPool.cpp
 
+        Process/TestWorkerSupervisor.cpp
+
         Socket/TestAsyncSocket.cpp
         Socket/TestAsyncResolver.cpp
         Socket/TestVectoredSendCursor.cpp

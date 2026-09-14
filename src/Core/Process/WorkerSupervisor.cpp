@@ -1,0 +1,282 @@
+#include "Core/Process/WorkerSupervisor.h"
+
+#include "Base/Log/LogMacros.h"
+#include "Core/Exception/CoreException.h"
+#include "Platform/Platform.h"
+#include "Platform/System/PlatformError.h"
+
+#include <optional>
+#include <thread>
+#include <utility>
+
+#if !ASYN_PLATFORM_WIN32
+#include <csignal>
+#endif
+
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// 等待 worker 退出时的轮询间隔：比 pollInterval 细，让收尾尽量贴着 shutdownTimeout 收干净
+        constexpr std::chrono::milliseconds kReapPollInterval{20};
+
+        /// 停止请求的原子必须无锁，否则不能在信号处理函数里置位
+        static_assert(std::atomic<bool>::is_always_lock_free, "WorkerSupervisor::requestStop() 要求无锁原子才能在信号处理函数里调用");
+
+#if !ASYN_PLATFORM_WIN32
+        /// 当前正在运行的编排器：信号处理函数只拿得到这一个入口，因此用文件级指针登记
+        /// （同一进程同时只该有一个 master，多份编排器注册后装的就只剩最后一个）
+        WorkerSupervisor *volatile g_runningSupervisor = nullptr;
+
+        /**
+         * @brief 停止信号的处理函数：只置原子标记，退出流程留给 run() 的循环
+         * @param signalNumber 信号号（未使用）
+         */
+        void handleStopSignal(int signalNumber) noexcept
+        {
+            static_cast<void>(signalNumber);
+            if (g_runningSupervisor != nullptr)
+            {
+                g_runningSupervisor->requestStop();
+            }
+        }
+#endif
+    } // namespace
+
+    WorkerSupervisor::WorkerSupervisor(Configuration configuration) :
+        m_configuration(std::move(configuration))
+    {
+        if (m_configuration.executablePath.empty())
+        {
+            throw CoreException("多进程编排无法启动：可执行文件路径为空。请在配置里给出服务器可执行文件的路径");
+        }
+        if (m_configuration.workerCount < 2)
+        {
+            throw CoreException("多进程编排要求 worker 数至少为 2（当前 " + std::to_string(m_configuration.workerCount) +
+                                "）。只想跑单进程时不要构造 WorkerSupervisor，直接启动服务器即可");
+        }
+        if (m_configuration.pollInterval <= std::chrono::milliseconds::zero() || m_configuration.shutdownTimeout <= std::chrono::milliseconds::zero())
+        {
+            throw CoreException("多进程编排的轮询间隔与收尾期限都必须大于 0，否则循环会空转或收尾没有期限");
+        }
+#if ASYN_PLATFORM_WIN32
+        throw CoreException("Windows 不支持多进程 worker 模型：端口共享依赖 SO_REUSEPORT，而 Windows 没有等价物。"
+                            "请把 workers 设为 1（单进程 + 多工作循环），或改在 Linux 上部署");
+#endif
+
+        m_workers.resize(m_configuration.workerCount);
+    }
+
+    WorkerSupervisor::~WorkerSupervisor()
+    {
+        // 兜底：run() 里抛异常（或调用方中途销毁）时不留孤儿进程占着端口。
+        // 正常路径下 run() 已经把所有 worker 送走，这里不会真的杀谁
+        for (Worker &worker: m_workers)
+        {
+            if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
+            {
+                static_cast<void>(Platform::Process::forceTermination(worker.handle));
+            }
+        }
+    }
+
+    void WorkerSupervisor::run()
+    {
+#if !ASYN_PLATFORM_WIN32
+        // 信号处理只置标记：真正的收尾在下面的循环里做，那里才能安全地分配、日志、等进程
+        g_runningSupervisor = this;
+        void (*previousTerminateHandler)(int) = std::signal(SIGTERM, handleStopSignal);
+        void (*previousInterruptHandler)(int) = std::signal(SIGINT, handleStopSignal);
+#endif
+
+        LOG_INFO_FMT("WorkerSupervisor: 开始编排 {} 个 worker，可执行文件 {}", m_configuration.workerCount, m_configuration.executablePath);
+
+        while (!m_isStopRequested.load(std::memory_order_acquire))
+        {
+            // 每一轮把每个槽位看一遍：没在跑的补上、已退出的收尸并决定要不要补
+            for (std::size_t workerIndex = 0; workerIndex < m_workers.size(); ++workerIndex)
+            {
+                Worker &worker = m_workers[workerIndex];
+                if (worker.isGivenUp)
+                {
+                    continue;
+                }
+
+                if (!worker.handle.isValid())
+                {
+                    // 补位前先退避：崩溃循环里不留一段满速重启的窗口
+                    std::this_thread::sleep_for(m_configuration.restartBackoff);
+                    if (m_isStopRequested.load(std::memory_order_acquire))
+                    {
+                        break;
+                    }
+                    static_cast<void>(startWorker(worker, workerIndex));
+                    continue;
+                }
+
+                if (!Platform::Process::isRunning(worker.handle))
+                {
+                    static_cast<void>(reapWorker(worker, workerIndex));
+                }
+            }
+
+            // 全部槽位都放弃了就不再空转：日志已经交代过原因，交给调用方决定怎么处理。
+            // 每轮重新数一遍（而不是累加计数）：同一个槽位连续失败只算它自己那一份
+            std::size_t givenUpWorkerCount = 0;
+            for (const Worker &worker: m_workers)
+            {
+                if (worker.isGivenUp)
+                {
+                    ++givenUpWorkerCount;
+                }
+            }
+            if (givenUpWorkerCount >= m_workers.size())
+            {
+                LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）",
+                              givenUpWorkerCount);
+                break;
+            }
+
+            std::this_thread::sleep_for(m_configuration.pollInterval);
+        }
+
+        stopAllWorkers();
+
+#if !ASYN_PLATFORM_WIN32
+        std::signal(SIGTERM, previousTerminateHandler);
+        std::signal(SIGINT, previousInterruptHandler);
+        g_runningSupervisor = nullptr;
+#endif
+        LOG_INFO_FMT("WorkerSupervisor: 编排结束");
+    }
+
+    void WorkerSupervisor::requestStop() noexcept
+    {
+        m_isStopRequested.store(true, std::memory_order_release);
+    }
+
+    std::size_t WorkerSupervisor::runningWorkerCount() const noexcept
+    {
+        std::size_t runningCount = 0;
+        for (const Worker &worker: m_workers)
+        {
+            if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
+            {
+                ++runningCount;
+            }
+        }
+        return runningCount;
+    }
+
+    bool WorkerSupervisor::startWorker(Worker &worker, const std::size_t workerIndex)
+    {
+        Platform::Process::LaunchOptions launchOptions;
+        launchOptions.executablePath = m_configuration.executablePath;
+        launchOptions.arguments      = m_configuration.workerArguments;
+
+        worker.handle    = Platform::Process::spawn(launchOptions);
+        worker.startTime = std::chrono::steady_clock::now();
+        if (!worker.handle.isValid())
+        {
+            // 起不来不重试：把该槽位按「起来就崩」记一次，连续到上限就放弃，免得把日志刷满
+            ++worker.crashCount;
+            LOG_ERROR_FMT("WorkerSupervisor: worker {} 起不来（平台错误码 {}），这是连续第 {} 次。路径 {}", workerIndex,
+                          Platform::PlatformError::lastErrorCode(), worker.crashCount, m_configuration.executablePath);
+            if (worker.crashCount >= m_configuration.crashLoopLimit)
+            {
+                worker.isGivenUp = true;
+                LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次起不来，放弃补它", workerIndex, worker.crashCount);
+            }
+            return false;
+        }
+
+        LOG_INFO_FMT("WorkerSupervisor: worker {} 已启动，进程号 {}", workerIndex, worker.handle.processId());
+        return true;
+    }
+
+    bool WorkerSupervisor::reapWorker(Worker &worker, const std::size_t workerIndex)
+    {
+        const std::optional<int> exitCode = Platform::Process::pollExitCode(worker.handle);
+        const bool               isFastExit = std::chrono::steady_clock::now() - worker.startTime < m_configuration.crashLoopWindow;
+        LOG_INFO_FMT("WorkerSupervisor: worker {} 已退出（进程号 {}，退出码 {}，存活 {} 毫秒）{}", workerIndex, worker.handle.processId(),
+                     exitCode.value_or(-1),
+                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - worker.startTime).count(),
+                     isFastExit ? "，按「起来就崩」记一次" : "");
+        worker.handle.close();
+
+        if (isFastExit)
+        {
+            ++worker.crashCount;
+            if (worker.crashCount >= m_configuration.crashLoopLimit)
+            {
+                worker.isGivenUp = true;
+                LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次存活不足 {} 毫秒就退出，放弃补它（请检查它的启动日志）",
+                              workerIndex, worker.crashCount, m_configuration.crashLoopWindow.count());
+                return true;
+            }
+            return false;
+        }
+
+        // 稳定跑过一段时间的 worker 退出：清掉崩溃计数，正常补一个新的
+        worker.crashCount = 0;
+        return false;
+    }
+
+    void WorkerSupervisor::stopAllWorkers()
+    {
+        std::size_t runningCount = 0;
+        for (Worker &worker: m_workers)
+        {
+            if (!worker.handle.isValid())
+            {
+                continue;
+            }
+            // 请求体面退出：worker 自己会走 stop()/drain() 把在途请求做完
+            if (Platform::Process::requestTermination(worker.handle))
+            {
+                ++runningCount;
+                continue;
+            }
+            // 平台不支持（Windows）或请求发不出去时直接强杀，避免收尾卡在这里
+            static_cast<void>(Platform::Process::forceTermination(worker.handle));
+        }
+
+        if (runningCount != 0)
+        {
+            LOG_INFO_FMT("WorkerSupervisor: 已请求 {} 个 worker 体面退出，最多等 {} 毫秒", runningCount, m_configuration.shutdownTimeout.count());
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + m_configuration.shutdownTimeout;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            std::size_t aliveCount = 0;
+            for (Worker &worker: m_workers)
+            {
+                if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
+                {
+                    ++aliveCount;
+                }
+            }
+            if (aliveCount == 0)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(kReapPollInterval);
+        }
+
+        // 期限到了还在的一律强杀：收尾不能没有尽期，否则一次卡住的退出会让 master 永远关不掉
+        for (Worker &worker: m_workers)
+        {
+            if (!worker.handle.isValid())
+            {
+                continue;
+            }
+            if (Platform::Process::isRunning(worker.handle))
+            {
+                LOG_ERROR_FMT("WorkerSupervisor: worker 进程号 {} 在收尾期限内没有退出，已强杀", worker.handle.processId());
+                static_cast<void>(Platform::Process::forceTermination(worker.handle));
+            }
+            worker.handle.close();
+        }
+    }
+} // namespace AsynGyanis::Core
