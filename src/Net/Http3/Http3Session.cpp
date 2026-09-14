@@ -348,6 +348,15 @@ namespace AsynGyanis::Net
                 response.setStatus(503);
                 response.setBody("HTTP/3 会话尚未接上路由器");
             }
+            // 流式响应（分块/SSE）与 WebSocket 升级在 h3 上还没有实现。与其把一份错的响应发出去，
+            // 不如明确回 500 并留一条日志——静默给错比明确失败难查得多
+            if (response.isChunkedResponse() || response.isWebSocketUpgradeRequested())
+            {
+                LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求流式响应或 WebSocket 升级，HTTP/3 尚未支持，已改回 500", streamId);
+                response.reset();
+                response.setStatus(500);
+                response.setBody("HTTP/3 暂不支持流式响应与 WebSocket 升级");
+            }
             submitResponse(streamId, response);
         }
 

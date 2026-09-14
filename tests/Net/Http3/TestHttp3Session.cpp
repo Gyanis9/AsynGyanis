@@ -515,4 +515,48 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(creditedByteCount, payload.size()) << "请求正文的字节没有被归还给接收窗口";
     }
+
+    /**
+     * @brief 处理器要求流式响应时，h3 侧必须明确失败，而不是把一份错的响应发出去
+     */
+    TEST(Http3Session, Answers500WhenHandlerAsksForAStreamingResponse)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        Router router;
+        router.get("/stream",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       // 分块响应（流式）在 h3 上尚未实现
+                       response.startChunkedResponse(200);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable());
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/stream", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 500) << "流式响应在 h3 上没实现，应当明确回 500，而不是发出错的响应";
+    }
 } // namespace AsynGyanis::Net
