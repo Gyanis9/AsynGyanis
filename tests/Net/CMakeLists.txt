@@ -17,6 +17,7 @@ add_executable(TestNet
         Http/TestSseStream.cpp
         Http/TestHttpServer.cpp
         Http/TestHttpStaticFileTransfer.cpp
+        Http/TestHttpClient.cpp
         Http/TestHttpServerLimits.cpp
         Http/TestGzip.cpp
         Http/TestCompressionCodecs.cpp

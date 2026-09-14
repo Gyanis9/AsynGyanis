@@ -40,4 +40,9 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Middleware.h
         ${CMAKE_CURRENT_LIST_DIR}/FileSender.h
         ${CMAKE_CURRENT_LIST_DIR}/FileSender.cpp
+        # HTTP 客户端（出站）
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpResponseParser.h
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpResponseParser.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.h
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.cpp
 )
