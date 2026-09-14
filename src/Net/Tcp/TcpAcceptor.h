@@ -111,13 +111,14 @@ namespace AsynGyanis::Net
         /**
          * @brief 监听与接受套接字的调参项
          * @details 各项 0 表示保持系统默认、不下发对应的 setsockopt。缓冲区上限同时作用于
-         *          监听套接字与每条接受到的连接；延迟接受只对监听套接字有意义。
+         *          监听套接字与每条接受到的连接；延迟接受与 TFO 只对监听套接字有意义。
          */
         struct SocketTuning
         {
-            int receiveBufferBytes{0}; ///< SO_RCVBUF 上限（字节），0 = 系统默认
-            int sendBufferBytes{0};    ///< SO_SNDBUF 上限（字节），0 = 系统默认
-            int deferAcceptSeconds{0}; ///< TCP_DEFER_ACCEPT 等待秒数（仅 Linux），0 = 关闭
+            int receiveBufferBytes{0};    ///< SO_RCVBUF 上限（字节），0 = 系统默认
+            int sendBufferBytes{0};       ///< SO_SNDBUF 上限（字节），0 = 系统默认
+            int deferAcceptSeconds{0};    ///< TCP_DEFER_ACCEPT 等待秒数（仅 Linux），0 = 关闭
+            int fastOpenQueueLength{0};   ///< TFO 队列长度（Windows/Linux），0 = 关闭
         };
 
         /**

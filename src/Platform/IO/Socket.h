@@ -170,6 +170,24 @@ namespace AsynGyanis::Platform
         static bool setDeferAccept(int descriptor, int seconds) noexcept;
 
         /**
+         * @brief 在监听套接字上开启 TCP Fast Open（TFO）
+         * @details TFO 允许客户端在三次握手完成之前就携带数据（RFC 7413）：客户端把首个数据段
+         *          放进 SYN，服务端验证 cookie 后即可连同握手应答一起交付给应用层，省掉一个 RTT。
+         *          内核在服务端只接受携带有效 TFO cookie 的连接，普通连接不受影响，因此开启本项
+         *          对既有客户端是透明的。
+         * @param descriptor 目标监听套接字描述符
+         * @param queueLength 允许同时处于「TFO 未完成握手」状态的连接数上限；0 表示关闭 TFO。
+         *        负值没有对应语义，直接拒绝
+         * @return true 设置成功；false 取值非法、平台不提供该选项（内核或 SDK 头里没有
+         *         TCP_FASTOPEN）或设置失败
+         * @note Windows 与 Linux 都提供该套接字选项，但两侧对「读回值」的约定不同：
+         *       Linux 原样回读入参，Windows 只回读 1/0（是否开启），因此读回校验不能按入参比对
+         * @note 开启只是「允许」：服务端是否真正接受 TFO 由系统开关（Linux 的
+         *       net.ipv4.tcp_fastopen 服务端位）决定，两处都就位时才生效
+         */
+        static bool setFastOpen(int descriptor, int queueLength) noexcept;
+
+        /**
          * @brief 设置 IPv6 套接字是否只接受 IPv6 连接（IPV6_V6ONLY）
          * @details 双栈监听（isOnlyV6=false）才能同时接住 IPv4 映射地址；
          *          非 IPv6 套接字调用本函数会失败，调用方应先判 family。

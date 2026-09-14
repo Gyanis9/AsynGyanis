@@ -166,6 +166,23 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    bool Socket::setFastOpen(const int descriptor, const int queueLength) noexcept
+    {
+#ifdef TCP_FASTOPEN
+        // 负值没有「允许 TFO 的等待队列长度」这一语义：直接拒绝，不把含糊取值交给内核
+        if (queueLength < 0)
+        {
+            return false;
+        }
+        return setIntegerOption(descriptor, IPPROTO_TCP, TCP_FASTOPEN, queueLength);
+#else
+        // 头文件里没有该选项（老内核头 / 老 SDK）：按「平台不支持」返回 false 由调用方降级
+        (void) descriptor;
+        (void) queueLength;
+        return false;
+#endif
+    }
+
     bool Socket::setIpv6Only(const int descriptor, const bool isOnlyV6) noexcept
     {
         // 布尔值在两个平台上都按 int 尺寸传递，写成 0/1 避免 sizeof(bool) 歧义

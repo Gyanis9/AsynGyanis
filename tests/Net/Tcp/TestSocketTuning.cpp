@@ -83,6 +83,26 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 查询 TFO 开关的读回值
+         * @details 不能复用 queryIntegerOption()：它把缓冲区初始化成 -1 以便识别读取失败，
+         *          而 Windows 的 getsockopt(TCP_FASTOPEN) 只写回 1 字节布尔值（0x01），
+         *          落在预置的 0xFFFFFFFF 上就成了 0xFFFFFF01（-255）这种看似失败的假象。
+         *          这里零初始化缓冲区，读回值只按「是否为正」判定。
+         * @param descriptor 目标套接字描述符
+         * @return int 选项值（Windows 为 0/1，Linux 为队列长度）；读取失败返回 -1
+         */
+        int queryFastOpenValue(const int descriptor)
+        {
+            int       optionValue  = 0;
+            socklen_t optionLength = static_cast<socklen_t>(sizeof(optionValue));
+            if (::getsockopt(descriptor, IPPROTO_TCP, TCP_FASTOPEN, reinterpret_cast<char *>(&optionValue), &optionLength) != 0)
+            {
+                return -1;
+            }
+            return optionValue;
+        }
+
+        /**
          * @brief 查询监听描述符上由内核实际分配的本地地址（端口 0 场景拿真实端口）
          * @param descriptor 监听描述符
          * @return Core::InetAddress 成功时为实际地址，失败时为空地址
@@ -300,5 +320,48 @@ namespace AsynGyanis::Net
         const int acceptedDescriptor = outcome.acceptedSockets.front().fileDescriptor();
         EXPECT_GE(queryIntegerOption(acceptedDescriptor, SOL_SOCKET, SO_RCVBUF), kBufferSizeBytes);
         EXPECT_GE(queryIntegerOption(acceptedDescriptor, SOL_SOCKET, SO_SNDBUF), kBufferSizeBytes);
+    }
+
+    /**
+     * @brief 钉住：TFO 的平台约定——Windows 与 Linux 都提供 TCP_FASTOPEN 套接字选项，负值被拒
+     * @note 探针必须是真实的 TCP 监听套接字：socketpair 在 Linux 上是 AF_UNIX，没有 TCP 层选项；
+     *       两侧对读回值的约定不同（Linux 回读入参、Windows 只回读 1/0），因此只断言读回为正
+     */
+    TEST(SocketTuning, FastOpenIsAcceptedOnListeningSocket)
+    {
+        Core::EventLoop   loop;
+        Core::AsyncSocket probeSocket = Core::AsyncSocket::create(loop);
+        const int         probeDescriptor = probeSocket.fileDescriptor();
+        ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
+
+        const Core::InetAddress loopbackAddress = Core::InetAddress::localhost(0);
+        ASSERT_TRUE(probeSocket.bind(loopbackAddress.nativeAddress(), loopbackAddress.nativeAddressLength()));
+        ASSERT_TRUE(probeSocket.listen(kDefaultListenBacklog));
+
+        // 负值没有「TFO 队列长度」这一语义：直接拒绝，不交给内核
+        EXPECT_FALSE(Platform::Socket::setFastOpen(probeDescriptor, -1));
+
+        // 两侧都提供该选项；读回值按平台各自的约定（Linux 为入参、Windows 为 1/0）
+        ASSERT_TRUE(Platform::Socket::setFastOpen(probeDescriptor, 32)) << "两个平台都提供 TCP_FASTOPEN 套接字选项";
+        EXPECT_GT(queryFastOpenValue(probeDescriptor), 0);
+    }
+
+    /**
+     * @brief 钉住：监听器把 TFO 队列长度下发到监听套接字
+     */
+    TEST(SocketTuning, AcceptorAppliesFastOpenToListeningSocket)
+    {
+        Core::EventLoop           loop;
+        TcpAcceptor               acceptor(loop, Core::InetAddress::localhost(0));
+        TcpAcceptor::SocketTuning tuning;
+        tuning.fastOpenQueueLength = 32;
+        acceptor.setSocketTuning(tuning);
+        EXPECT_EQ(acceptor.socketTuning().fastOpenQueueLength, 32);
+
+        ASSERT_TRUE(acceptor.bind());
+        ASSERT_TRUE(acceptor.listen(kDefaultListenBacklog));
+
+        EXPECT_GT(queryFastOpenValue(acceptor.fileDescriptor()), 0)
+                << "TFO 队列长度没有下发到监听套接字";
     }
 } // namespace AsynGyanis::Net

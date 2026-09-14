@@ -150,6 +150,13 @@ namespace AsynGyanis::Net
             [[maybe_unused]] const bool isDeferAcceptSet =
                     Platform::Socket::setDeferAccept(listenDescriptor, m_tuning.deferAcceptSeconds);
         }
+        if (m_tuning.fastOpenQueueLength > 0)
+        {
+            // TFO 同样只对监听套接字有意义；内核与服务端开关两处都就位时才真正接受 TFO 连接，
+            // 设置失败（老内核头没有该选项）按「不支持即降级」处理，不影响监听本身
+            [[maybe_unused]] const bool isFastOpenSet =
+                    Platform::Socket::setFastOpen(listenDescriptor, m_tuning.fastOpenQueueLength);
+        }
 
         // 接手的套接字已经在监听中，理由同 bind()：后置条件成立，且绝不能重新 listen
         if (m_isAdopted)
