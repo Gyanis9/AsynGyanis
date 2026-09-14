@@ -16,6 +16,20 @@
 namespace AsynGyanis::Platform
 {
     /**
+     * @brief 一对套接字地址：本体与长度
+     *
+     * @details 长度随地址族变化，因此两者必须一起传递，不能各自单独存。数据报路径尤其需要它：
+     *          同一条数据报套接字要面对任意多个对端，收发都得把「这一条是对谁/来自谁」带上。
+     * @note 与 Core::InetAddress 的分工：本类型是平台层的裸结构，只负责在系统调用之间搬运；
+     *       IP 文本化、端口访问、解析等便利操作在 Core 层做。
+     */
+    struct SocketAddress
+    {
+        sockaddr_storage storage{}; ///< 地址本体（放得下 IPv4/IPv6）
+        socklen_t        length{0}; ///< 实际长度；0 表示未设置
+    };
+
+    /**
      * @brief socket 层跨平台工具
      *
      * @details Windows 上任何 socket API 调用前必须完成 WSAStartup，Linux 上

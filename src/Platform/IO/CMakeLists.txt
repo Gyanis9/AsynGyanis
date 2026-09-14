@@ -3,6 +3,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/FileDescriptor.h
         ${CMAKE_CURRENT_LIST_DIR}/FileDescriptor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Socket.h
+        ${CMAKE_CURRENT_LIST_DIR}/DatagramSocket.h
+        ${CMAKE_CURRENT_LIST_DIR}/DatagramSocket.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Socket.cpp
         ${CMAKE_CURRENT_LIST_DIR}/EventNotifier.h
         ${CMAKE_CURRENT_LIST_DIR}/EventNotifier.cpp
