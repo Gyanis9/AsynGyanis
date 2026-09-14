@@ -4,6 +4,7 @@
 #include "Platform/IO/DatagramSocket.h"
 
 #include <cstring>
+#include <utility>
 
 #include <ngtcp2/ngtcp2_crypto.h>
 #include <ngtcp2/ngtcp2_crypto_ossl.h>
@@ -13,9 +14,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 本端连接标识长度：够随机，又不会把报文头撑大
-        constexpr std::size_t kConnectionIdLength = 18;
-
         /// 一次 flush 里最多写出多少条报文：防止窗口充裕时在一条连接上转太久
         constexpr std::size_t kMaximumPacketsPerFlush = 64;
 
@@ -71,12 +69,15 @@ namespace AsynGyanis::Net
             }
             ngtcp2_cid_init(cid, randomConnectionId.data(), randomConnectionId.size());
 
-            const QuicConnection *self = fromNative(userData);
+            QuicConnection *const self = fromNative(userData);
             if (ngtcp2_crypto_generate_stateless_reset_token(token->data, self->statelessResetSecret().data(),
                                                              self->statelessResetSecret().size(), cid) != 0)
             {
                 return NGTCP2_ERR_CALLBACK_FAILURE;
             }
+
+            // 签发的这一刻就告诉路由表：对端随时可能改用这个标识来寻址本端，迟一步的报文就整包丢了
+            self->notifyConnectionIdIssued(std::span<const std::uint8_t>(cid->data, cid->datalen));
             return 0;
         }
 
@@ -91,9 +92,11 @@ namespace AsynGyanis::Net
             return 0;
         }
 
-        /// 流数据被确认送达：发送侧进度由本类的写循环自己记，这里只需报成功
-        int acknowledgedStreamDataCallback(ngtcp2_conn *, const std::int64_t, const std::uint64_t, const std::uint64_t, void *, void *) noexcept
+        /// 流数据被对端确认：待发条目据此释放（ngtcp2 重传还要再读这些字节，只有确认了才能丢）
+        int acknowledgedStreamDataCallback(ngtcp2_conn *, const std::int64_t streamId, const std::uint64_t offset, const std::uint64_t dataLength,
+                                           void *const userData, void *) noexcept
         {
+            fromNative(userData)->acknowledgePendingStreamData(streamId, offset, dataLength);
             return 0;
         }
 
@@ -188,7 +191,7 @@ namespace AsynGyanis::Net
         connection->m_localAddress = localAddress;
 
         // 本端连接标识由本端生成：对端之后用报文里的目的连接标识指向它
-        std::vector<std::uint8_t> sourceConnectionIdBytes(kConnectionIdLength);
+        std::vector<std::uint8_t> sourceConnectionIdBytes(QuicConnection::kSourceConnectionIdLength);
         if (RAND_bytes(sourceConnectionIdBytes.data(), static_cast<int>(sourceConnectionIdBytes.size())) != 1)
         {
             LOG_ERROR("QuicConnection: 生成连接标识失败（随机数不可用），连接未建立");
@@ -405,9 +408,39 @@ namespace AsynGyanis::Net
         }
     }
 
+    void QuicConnection::notifyConnectionIdIssued(const std::span<const std::uint8_t> connectionId)
+    {
+        if (m_configuration.onConnectionIdIssued)
+        {
+            m_configuration.onConnectionIdIssued(*this, connectionId);
+        }
+    }
+
     void QuicConnection::dropPendingStreamData(const std::int64_t streamId)
     {
         m_pendingStreamData.erase(streamId);
+    }
+
+    void QuicConnection::acknowledgePendingStreamData(const std::int64_t streamId, const std::uint64_t offset, const std::uint64_t dataLength)
+    {
+        const auto pendingEntry = m_pendingStreamData.find(streamId);
+        if (pendingEntry == m_pendingStreamData.end())
+        {
+            return;
+        }
+
+        PendingStreamData &pending            = pendingEntry->second;
+        const std::size_t  acknowledgedEnd    = static_cast<std::size_t>(offset + dataLength);
+        if (acknowledgedEnd > pending.ackedOffset)
+        {
+            pending.ackedOffset = acknowledgedEnd;
+        }
+
+        // 全部确认之后这些字节再没人会读（重传只用未确认的那部分），这时才释放
+        if (pending.ackedOffset >= pending.bytes.size())
+        {
+            m_pendingStreamData.erase(pendingEntry);
+        }
     }
 
     void QuicConnection::selectedApplicationProtocol(const unsigned char *&protocol, unsigned int &protocolLength) const noexcept
@@ -449,8 +482,16 @@ namespace AsynGyanis::Net
                                                     currentTimestamp());
             result != 0)
         {
-            // 读失败多为对端违规或握手期的临时问题：记一条日志，待发字节（通常是 CONNECTION_CLOSE）由 flush 送出去
-            LOG_WARN_FMT("QuicConnection: 报文处理失败（ngtcp2 错误 {}），连接将按协议收口", ngtcp2_strerror(result));
+            if (result == NGTCP2_ERR_DRAINING)
+            {
+                // 对端已经发过 CONNECTION_CLOSE：排空期里再读什么都会得到这个错误，属正常收尾而非故障
+                m_isClosed = true;
+                LOG_DEBUG("QuicConnection: 对端已关闭连接，本端随之收口");
+            } else
+            {
+                // 读失败多为对端违规或握手期的临时问题：记一条日志，待发字节（通常是 CONNECTION_CLOSE）由 flush 送出去
+                LOG_WARN_FMT("QuicConnection: 报文处理失败（ngtcp2 错误 {}），连接将按协议收口", ngtcp2_strerror(result));
+            }
         }
         co_await flush();
     }
@@ -462,9 +503,40 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        // 同一条连接会被两条协程驱动 flush：收报文那条与定时器那条。两次 flush 交错时，一次会在
+        // 另一条挂在「等可写/等发送」期间改掉待发表（发完就 erase），恢复后的那条再用先前取走的
+        // 指针去写，读到的就是已释放的缓冲（实测：Linux ASan 抓到 ngtcp2 编码 STREAM 帧时 UAF）。
+        // 因此这里不许并发进：放一个「还要再写」的请求，让在跑的那一轮末再转一圈即可
+        if (m_isFlushing)
+        {
+            m_hasFlushRequest = true;
+            co_return;
+        }
+
+        // 本函数里早退的 co_return 有好几处，用作用域卫兵保证无论从哪条路退出都会复位标记
+        struct FlushScope
+        {
+            explicit FlushScope(bool &isFlushing) : m_isFlushing(isFlushing)
+            {
+                m_isFlushing = true;
+            }
+
+            ~FlushScope()
+            {
+                m_isFlushing = false;
+            }
+
+            bool &m_isFlushing; ///< 被看管的标记
+        };
+        const FlushScope flushScope(m_isFlushing);
+
         std::vector<std::uint8_t> packetBuffer(Platform::DatagramSocket::kMaximumDatagramBytes);
         for (std::size_t packetIndex = 0; packetIndex < kMaximumPacketsPerFlush; ++packetIndex)
         {
+            // 本轮要发的都从当前待发表里现取，所以先把「再写一轮」的请求清掉；它在本轮等发送期间
+            // 若又被置起，本轮末尾会据此再转一圈
+            const bool wasRequested = std::exchange(m_hasFlushRequest, false);
+
             // 一次只带一条流的数据：ngtcp2 的写接口按流给数据；没有流数据可带时用流号 -1 写控制帧
             ngtcp2_vec   dataVector{};
             ngtcp2_vec  *dataVectors     = nullptr;
@@ -504,23 +576,34 @@ namespace AsynGyanis::Net
                 {
                     continue;
                 }
+                if (writtenLength == NGTCP2_ERR_DRAINING)
+                {
+                    // 对端已关闭连接：排空期里写不出东西是正常收尾，不必报成故障
+                    m_isClosed = true;
+                    co_return;
+                }
                 m_isClosed = true;
                 LOG_WARN_FMT("QuicConnection: 写出失败（ngtcp2 错误 {}），连接收口", ngtcp2_strerror(writtenLength));
                 co_return;
             }
             if (writtenLength == 0)
             {
-                // 没有待发字节：本轮 flush 结束
+                // 没有待发字节：本轮 flush 结束——除非等发送期间又有人要求写，那就再转一圈
+                if (wasRequested)
+                {
+                    continue;
+                }
                 co_return;
             }
 
             if (streamId != -1 && writtenStreamDataLength > 0)
             {
-                m_pendingStreamData[streamId].offset += static_cast<std::size_t>(writtenStreamDataLength);
-                if (m_pendingStreamData[streamId].offset >= m_pendingStreamData[streamId].bytes.size() &&
-                    !m_pendingStreamData[streamId].isEndStream)
+                // 只推进「已交出」的水位，**不在这里释放**：ngtcp2 没拷贝这些字节，丢包重传时还会按
+                // 同样的偏移再读一遍，交出去就释放等于让它在重传时读已释放内存。释放只发生在
+                // acknowledgePendingStreamData（对端确认）与 dropPendingStreamData（流关闭）里
+                if (const auto pendingEntry = m_pendingStreamData.find(streamId); pendingEntry != m_pendingStreamData.end())
                 {
-                    m_pendingStreamData.erase(streamId);
+                    pendingEntry->second.offset += static_cast<std::size_t>(writtenStreamDataLength);
                 }
             }
 

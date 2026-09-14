@@ -43,6 +43,11 @@ namespace AsynGyanis::Net
     class QuicConnection
     {
     public:
+        /// 本端连接标识的长度。对端报文里的目的连接标识就是这个长度——而 **Short 头报文不携带**
+        /// **DCID 长度**，解这种报文时必须把本长度告诉 ngtcp2，否则它会按别的长度去截，
+        /// 解出来的「目的连接标识」里混进包号字段，永远命不中路由表（实测：1-RTT 起所有报文整包丢）
+        static constexpr std::size_t kSourceConnectionIdLength = 18;
+
         /// 发送一条报文的出口：由服务端提供（内部就是 AsyncUdpSocket::asyncSendTo）
         using DatagramSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, const std::uint8_t *data,
                                                               std::size_t length)>;
@@ -65,6 +70,10 @@ namespace AsynGyanis::Net
             SSL_CTX                   *tlsContext{nullptr};  ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
             DatagramSender             sendDatagram;         ///< 报文出口
             StreamDataHandler          onStreamData;         ///< 流数据回调（HTTP/3 层接在这里）
+            /// 本端签发新连接标识（NEW_CONNECTION_ID）时的通知：服务端的路由表要在这一刻就认下它。
+            /// 只靠「处理完报文再同步一遍」会漏掉定时器驱动的 flush 里签发的标识，对端随后改用
+            /// 该标识寻址时，报文会因命不中任何键被整包丢掉（实测：客户端的请求就是这样丢的）
+            std::function<void(QuicConnection &connection, std::span<const std::uint8_t> connectionId)> onConnectionIdIssued;
             std::vector<std::uint8_t>  statelessResetSecret; ///< 无状态重置令牌的密钥（服务端级固定）
             std::chrono::milliseconds  idleTimeout{30000};   ///< 空闲超时
         };
@@ -166,8 +175,23 @@ namespace AsynGyanis::Net
         /// 把流数据交给应用层
         void deliverStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
 
+        /**
+         * @brief 把「本端刚签发了一个连接标识」告诉配置里的通知方
+         * @param connectionId 新签发的连接标识字节
+         */
+        void notifyConnectionIdIssued(std::span<const std::uint8_t> connectionId);
+
         /// 丢掉某条流尚未发完的排队数据（流被重置或收尾时）
         void dropPendingStreamData(std::int64_t streamId);
+
+        /**
+         * @brief 记下某条流的待发数据被对端确认了多少，全确认了就释放这条条目
+         * @param streamId 流号
+         * @param offset 本次确认覆盖的起始偏移
+         * @param dataLength 本次确认的字节数
+         * @note 释放只能发生在这里（或流关闭时）：ngtcp2 重传时会再读一遍未确认的字节
+         */
+        void acknowledgePendingStreamData(std::int64_t streamId, std::uint64_t offset, std::uint64_t dataLength);
 
         /// 无状态重置令牌的密钥（服务端级）
         [[nodiscard]] const std::vector<std::uint8_t> &statelessResetSecret() const noexcept;
@@ -182,12 +206,19 @@ namespace AsynGyanis::Net
          */
         explicit QuicConnection(Configuration configuration);
 
-        /// 待发送的流数据：ngtcp2 只借走指针，因此在真正写出之前数据必须留在本对象里
+        /**
+         * @brief 待发送的流数据
+         *
+         * @note ngtcp2 并**不拷贝**交给它的流数据：它只记下这段字节的位置，丢包重传时会再读一遍。
+         *       因此这段字节必须一直活到对端确认收到为止，不能一交出去就释放——早了就是重传时读
+         *       已释放内存（实测：Linux ASan 抓到 ngtcp2 编码 STREAM 帧时 UAF，31 字节的待发缓冲）。
+         */
         struct PendingStreamData
         {
-            std::string bytes;                ///< 待发字节
-            std::size_t offset{0};            ///< 已交给 ngtcp2 的字节数
-            bool        isEndStream{false};   ///< 发完是否收尾
+            std::string bytes;            ///< 待发字节
+            std::size_t offset{0};        ///< 已交给 ngtcp2 的字节数（它内部的重传仍要用这些字节）
+            std::size_t ackedOffset{0};   ///< 已被对端确认的字节数：到多少才能释放多少
+            bool        isEndStream{false}; ///< 发完是否收尾
         };
 
         Configuration                  m_configuration;      ///< 连接配置
@@ -204,5 +235,7 @@ namespace AsynGyanis::Net
         ngtcp2_crypto_conn_ref         m_cryptoConnectionReference{};
         std::map<std::int64_t, PendingStreamData> m_pendingStreamData; ///< 待发流数据
         bool m_isClosed{false}; ///< 本地判定的收口标志（空闲超时、致命写失败这类路径）
+        bool m_isFlushing{false}; ///< 是否已有 flush 在写这条连接（收报文与定时器两条协程都会驱动它）
+        bool m_hasFlushRequest{false}; ///< flush 进行中又有人要求写：让在跑的那一轮末再转一圈
     };
 } // namespace AsynGyanis::Net

@@ -229,6 +229,10 @@ namespace AsynGyanis::Net
         if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
         {
             co_await session->pump();
+            // 业务刚写下的响应此刻才排进连接的待发队列，必须再刷一次才会出网：
+            // handleDatagram 里那次 flush 发生在业务之前（SETTINGS 那批因此出得去，
+            // 而响应留在队列里等下一次定时器把它想起来——实测客户端就是干等超时）
+            co_await connection.flush();
         }
         co_return;
     }
@@ -250,9 +254,13 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉
+        // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉。
+        // 最后一个参数是 **Short 头报文的 DCID 长度**：Short 头不携带这个长度，必须告诉解码器本端
+        // 自己的连接标识有多长。传 NGTCP2_MAX_CIDLEN 会让它把包号的头两字节也当成标识的一部分，
+        // 从 1-RTT 起每条报文都命不中路由表（实测：握手全通、之后客户端所有报文整包被丢）
         ngtcp2_version_cid versionAndConnectionIds{};
-        if (ngtcp2_pkt_decode_version_cid(&versionAndConnectionIds, datagram.data(), datagram.size(), NGTCP2_MAX_CIDLEN) != 0)
+        if (ngtcp2_pkt_decode_version_cid(&versionAndConnectionIds, datagram.data(), datagram.size(),
+                                         QuicConnection::kSourceConnectionIdLength) != 0)
         {
             co_return;
         }
@@ -304,6 +312,13 @@ namespace AsynGyanis::Net
             {
                 m_streamDataHandler(connection, streamId, data, isEndStream);
             }
+        };
+        connectionConfiguration.onConnectionIdIssued  = [this](QuicConnection &connection, const std::span<const std::uint8_t> connectionId)
+        {
+            // 标识一签发就进路由表：对端随时可能改用它寻址本端。只靠「处理完报文再同步一遍」会漏掉
+            // 定时器驱动的 flush 里签发的那些，对端随后用它们发的报文会被整包丢掉
+            m_connectionsByAliasConnectionId.insert_or_assign(
+                    std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()), &connection);
         };
         connectionConfiguration.sendDatagram         = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data,
                                                           const std::size_t length) -> Core::Task<bool>
