@@ -11,6 +11,7 @@
 
 #include "Net/Http/HttpParseErrorKind.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpBodySource.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/ParseStatus.h"
 
@@ -35,8 +36,10 @@ namespace AsynGyanis::Net
      *          本类在构造时按值固定一份，运行期不可更换。
      * @warning 定界头的组合从严：Transfer-Encoding 与 Content-Length 并存、取值不是唯一的 chunked
      *          一律判错（RFC 9112 §6.3），不接受 gzip 等其它传输编码，也不悄悄按 identity 处理。
+     * @note 本类同时是 HTTP/1.1 的 HttpBodySource：正文就落在它自己的缓冲里，读取器（HttpRequestBody）
+     *       因此不必认识解析器，与 HTTP/2 上「每条流的正文缓冲」共用同一套读取语义
      */
-    class HttpParser
+    class HttpParser : public HttpBodySource
     {
     public:
         /**
@@ -115,7 +118,7 @@ namespace AsynGyanis::Net
          * @brief 检查报文是否已收齐
          * @return true 处于 Complete 阶段（Done 之后到 reset() 之前）
          */
-        [[nodiscard]] bool isComplete() const noexcept;
+        [[nodiscard]] bool isComplete() const noexcept override;
 
         /**
          * @brief 检查头部块是否已收齐、正文是否仍在收取（流式派发的触发条件）
@@ -156,19 +159,34 @@ namespace AsynGyanis::Net
          *          收齐后正文已随 commitMessage 移交 request()，此处为空。
          * @return std::string_view 当前已攒下的正文字节
          */
-        [[nodiscard]] std::string_view bufferedBodyView() const noexcept;
+        [[nodiscard]] std::string_view bufferedBodyView() const noexcept override;
 
         /**
          * @brief 丢弃内部已攒下的正文字节（只清内容、保留容量供后续复用）
          * @details 流式消费交付一段后调用：与 bufferedBodyView() 的视图生命周期配套。
          */
-        void discardBufferedBody() noexcept;
+        void discardBufferedBody() noexcept override;
 
         /**
          * @brief 检查解析器是否处于错误状态。
          * @return true 表示发生过错误（含超出资源上限），false 表示无错误
          */
         [[nodiscard]] bool hasError() const;
+
+        /**
+         * @brief 正文源是否已坏掉（HttpBodySource 的实现）
+         * @details 与 hasError() 同义：解析失败即本连接上的正文读不下去
+         * @return true 表示正文只能终止
+         */
+        [[nodiscard]] bool isBroken() override;
+
+        /**
+         * @brief 收齐后移交到请求对象的那份正文（HttpBodySource 的实现）
+         * @details 普通（非流式）路由的读取器靠它一次性交付全量正文：收齐那一刻正文已随
+         *          commitMessage() 搬进 request()，此处即那份内容
+         * @return std::string_view 已收齐的正文；未收齐或正文为空时为空视图
+         */
+        [[nodiscard]] std::string_view completedBody() override;
 
         /**
          * @brief 检查本次错误是否由资源上限触发。

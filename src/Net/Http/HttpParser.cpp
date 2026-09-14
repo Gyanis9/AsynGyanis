@@ -433,6 +433,18 @@ namespace AsynGyanis::Net
         return m_hasError;
     }
 
+    bool HttpParser::isBroken()
+    {
+        return m_hasError;
+    }
+
+    std::string_view HttpParser::completedBody()
+    {
+        // 收齐那一刻正文已随 commitMessage() 搬进请求对象：这里交出的就是那份内容。
+        // 未收齐时请求对象里没有正文，返回空视图即可（读取器只在 isComplete() 为真时问它）
+        return m_currentRequest.body();
+    }
+
     bool HttpParser::isLimitExceeded() const
     {
         // 「超限」是失败类别的一个子集：头部越界（431）与正文越界（413）都算，
