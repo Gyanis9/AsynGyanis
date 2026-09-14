@@ -15,13 +15,28 @@
 
 #include "Platform/Platform.h"
 
-#ifdef _WIN32
-#include "wepoll.h"
-#endif
-
 #include <cstdint>
 #include <span>
 #include <vector>
+
+#if ASYN_PLATFORM_WIN32
+
+#include "Core/EventLoop/Iocp.h"
+
+namespace AsynGyanis::Core
+{
+    /**
+     * @brief Windows 上的 Epoll 就是完成端口后端
+     *
+     * @details 成员集合与 Linux 实现一致（add/mod/del/rearm/wait/fileDescriptor），
+     *          因此 EventLoop / IoWatcher / EpollAwaiter 不需要任何平台分支；
+     *          另有 Windows 专属的 Iocp::takeAcceptedSocket()——AcceptEx 接入的连接
+     *          只能由它取走，见 TcpAcceptor 的接受路径。
+     */
+    using Epoll = Iocp;
+} // namespace AsynGyanis::Core
+
+#else
 
 namespace AsynGyanis::Core
 {
@@ -114,4 +129,6 @@ namespace AsynGyanis::Core
         std::vector<epoll_event> m_events;                                        ///< 存储 wait() 返回的事件数组，初始容量为 kMaximumEventCount；事件数接近上限时 wait() 会翻倍扩容
         static constexpr int     kMaximumEventCount = 1024;                       ///< 默认每次 wait 最多返回的事件数
     };
-}
+} // namespace AsynGyanis::Core
+
+#endif

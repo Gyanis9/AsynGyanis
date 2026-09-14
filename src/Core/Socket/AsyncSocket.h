@@ -7,8 +7,8 @@
  *
  * 封装了 create/bind/listen/connect/receive/send 等 socket 操作,
  * 所有 I/O 方法返回 Task<> 类型, 通过 co_await 实现异步等待。
- * 内部用常驻的 IoWatcher 处理 EAGAIN/EWOULDBLOCK：描述符在构造时注册一次，
- * 关注位在等待期间按需武装（详见 IoWatcher 的说明）。
+ * 内部用常驻的 IoWatcher 处理 EAGAIN/EWOULDBLOCK：注册推迟到**第一次等待**时才发生
+ * （见 ensureWatcher()），关注位在等待期间按需武装（详见 IoWatcher 的说明）。
  *
  * @copyright Copyright (c) 2026
  */
@@ -21,6 +21,7 @@
 #include "Platform/Platform.h"
 
 #include <memory>
+#include <optional>
 
 namespace AsynGyanis::Core
 {
@@ -187,6 +188,20 @@ namespace AsynGyanis::Core
          */
         Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const;
 
+#if ASYN_PLATFORM_WIN32
+        /**
+         * @brief 取走监听描述符上由完成端口后端接入的连接（仅 Windows）
+         *
+         * @details Windows 的接受路径由 AcceptEx 完成：连接到达时它已经被摘下并接入后端的
+         *          接受套接字，`::accept()` 看不到它，只能由这里取走。调用方（TcpAcceptor）
+         *          的用法是「先取，取不到就 waitReadable() 等一次，再取」。
+         * @return 已接入连接的描述符（所有权归调用方）；std::nullopt 表示当前没有待取的连接
+         * @note 只对监听描述符有意义；非监听描述符或未注册的描述符一律返回 std::nullopt
+         */
+        [[nodiscard]] std::optional<int> takeAcceptedConnection();
+
+#endif
+
 #if !ASYN_PLATFORM_WIN32
         /**
          * @brief 异步零拷贝发送：把文件的一段直接推给套接字（Linux sendfile）
@@ -283,12 +298,29 @@ namespace AsynGyanis::Core
         int        m_fileDescriptor; ///< 底层 socket 文件描述符，-1 表示无效
 
         /**
-         * @brief 常驻 epoll 注册（等待时按方向武装）
+         * @brief 按需创建常驻注册对象（第一次等待时调用）
+         *
+         * @details 注册推迟到第一次等待才做，有两个必须的理由：
+         *          - **接受分发**：连接在监听循环上被接受、随即把描述符移交给工作循环。
+         *            epoll 允许同一个描述符出现在多个实例里，而 Windows 的完成端口**绑过一次就
+         *            换不了端口**——在监听循环上注册过的描述符，到工作循环里再也注册不上。
+         *            不在构造时注册，移交时才不会带上错误的归属。
+         *          - 只是收发系统调用就完成的套接字（多数短连接、以及被移交的那些）不必为
+         *            「可能永远用不到的注册」付一次系统调用。
+         *
+         * @return IoWatcher* 注册对象；描述符无效或已关闭时为空指针
+         * @throws Base::SystemException 注册失败（同一描述符已被另一个注册对象占用、描述符非法）
+         */
+        [[nodiscard]] IoWatcher *ensureWatcher() const;
+
+        /**
+         * @brief 常驻 epoll 注册（等待时按方向武装），第一次等待时创建
          * @details 堆分配而非直接持有：epoll 里记的是注册对象的**地址**，而本类是可移动的
          *          （移动后描述符跟着走）。直接持有成员会在移动时改变地址，让 epoll 里的
          *          用户数据悬空；堆对象随指针转移，地址始终不变。
          *          可读与可写共用一个注册对象：同步只允许一个方向有等待者，方向由各等待器指定。
+         *          `mutable`：等待方法本身是 const，但「第一次等待」要把注册对象建出来
          */
-        std::unique_ptr<IoWatcher> m_watcher;
+        mutable std::unique_ptr<IoWatcher> m_watcher;
     };
 } // namespace AsynGyanis::Core

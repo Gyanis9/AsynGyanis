@@ -17,6 +17,12 @@
 
 ### 变更
 
+- **Windows 事件后端换成完成端口（IOCP）**：`Epoll` 在 Windows 上改为 `using Epoll = Iocp`，事件由完成
+  通知翻译而来（读方向 1 字节 `MSG_PEEK` 探针、写方向零字节 `WSASend`、监听描述符用 `AcceptEx`）；
+  `IoWatcher` / `EventLoop` / `AsyncSocket` 的接口与语义都不变，Linux 侧仍是 epoll。wepoll 不再参与轮询，
+  只保留 `epoll_event` 与事件位定义（要回到旧实现，把 `Epoll.h` 的平台分支与 Core 的平台源列表对调即可）。
+  随之而来的一条语义变化：**接受分发的连接在移交前不注册**（完成端口绑过一次就换不了属主），
+  `AsyncSocket` 的注册因此推迟到第一次等待——对使用者不可见，但自定义循环与套接字装配方式时要知道。
 - **wepoll 并入 `Core` 库，不再单独导出目标**：`AsynGyanis::wepoll` 从 `find_package` 导出的目标集里消失，
   `epoll_*` 符号现在就在 `AsynGyanis::Core` 里。Windows 侧的事件通知是 Core 的实现细节，不该出现在对外接口上。
   迁移：此前显式链过 `AsynGyanis::wepoll` 的工程删掉那一行即可，其余无需改动。

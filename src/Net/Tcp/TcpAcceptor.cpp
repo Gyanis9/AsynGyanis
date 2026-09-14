@@ -208,6 +208,26 @@ namespace AsynGyanis::Net
                 co_return std::nullopt;
             }
 
+#if ASYN_PLATFORM_WIN32
+            // Windows（IOCP）：连接由后端的 AcceptEx 在完成通知里接入，::accept 看不到它，
+            // 只能从后端取走。一次完成对应一条连接，因此这里没有 Linux 侧「一次抽干监听队列」
+            // 那一段——队列里还有几条，后端就会再完成几次
+            if (const std::optional<int> acceptedFromCompletion = m_listenSocket.takeAcceptedConnection();
+                acceptedFromCompletion.has_value())
+            {
+                [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(*acceptedFromCompletion);
+                applyAcceptedSocketTuning(*acceptedFromCompletion);
+                co_return Core::AsyncSocket(m_loop, *acceptedFromCompletion);
+            }
+
+            // 手上没有已接入的连接：等一次可读（AcceptEx 完成时上报），等不到说明描述符已失效，
+            // 按契约返回空值让服务器循环正常收尾
+            if (!co_await m_listenSocket.waitReadable())
+            {
+                co_return std::nullopt;
+            }
+            continue;
+#else
             sockaddr_storage peerAddress{};
             socklen_t        peerAddressLength  = static_cast<socklen_t>(sizeof(peerAddress));
             // Platform 层已保证返回的描述符是非阻塞且不被子进程继承，本层无需二次设置
@@ -301,6 +321,7 @@ namespace AsynGyanis::Net
             // 落到这里的是无法靠重试恢复的终止性错误（例如监听描述符被外部关闭）。
             // 错误码显式传入异常：Windows 上 socket 错误来自 WSAGetLastError，与 errno 不同源
             throw Base::SystemException("TcpAcceptor::accept 接受新连接失败", std::error_code(socketErrorCode, std::system_category()));
+#endif
         }
     }
 

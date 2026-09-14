@@ -47,13 +47,21 @@ namespace AsynGyanis::Core
     {
         if (m_fileDescriptor >= 0)
         {
+            // 只补上非阻塞：注册（IoWatcher）推迟到第一次等待，见 ensureWatcher() 的说明
             setNonBlocking();
+        }
+    }
 
-            // 常驻注册：注册一次覆盖整个描述符生命周期，此后每次等待都不再有 ADD/DEL 往返；
+    IoWatcher *AsyncSocket::ensureWatcher() const
+    {
+        if (m_watcher == nullptr && m_fileDescriptor >= 0)
+        {
+            // 注册一次覆盖整个描述符生命周期，此后每次等待都不再有 ADD/DEL 往返；
             // 关注位由注册对象在等待期间按需武装（见 IoWatcher 的说明：Windows 侧 wepoll
             // 只有水平触发，长期武装一个「几乎总是就绪」的方向会让事件循环空转）
-            m_watcher = std::make_unique<IoWatcher>(loop, m_fileDescriptor);
+            m_watcher = std::make_unique<IoWatcher>(m_loop, m_fileDescriptor);
         }
+        return m_watcher.get();
     }
 
     AsyncSocket::~AsyncSocket()
@@ -292,6 +300,19 @@ namespace AsynGyanis::Core
         co_return static_cast<ssize_t>(cursor.sentLength());
     }
 
+#if ASYN_PLATFORM_WIN32
+    std::optional<int> AsyncSocket::takeAcceptedConnection()
+    {
+        // AcceptEx 完成时连接已经接入后端自己的接受套接字，::accept() 看不到它，只能问后端要
+        int acceptedDescriptor = -1;
+        if (!m_loop.epoll().takeAcceptedSocket(m_fileDescriptor, &acceptedDescriptor))
+        {
+            return std::nullopt;
+        }
+        return acceptedDescriptor;
+    }
+#endif
+
 #if !ASYN_PLATFORM_WIN32
     Task<ssize_t> AsyncSocket::asyncSendFile(const int fileDescriptor, const std::uint64_t offset, const std::size_t length) const
     {
@@ -381,21 +402,25 @@ namespace AsynGyanis::Core
 
     IoWatcher::Awaiter AsyncSocket::waitReadable() const
     {
-        // 没有注册对象意味着描述符无效或已被关闭：等待没有意义，直接抛出可定位的中文原因
-        if (m_watcher == nullptr)
+        // 注册推迟到这一次等待（见 ensureWatcher()）；拿不到注册对象意味着描述符无效或已被关闭，
+        // 等待没有意义，直接抛出可定位的中文原因
+        IoWatcher *const watcher = ensureWatcher();
+        if (watcher == nullptr)
         {
             throw Base::SystemException("等待套接字可读失败：套接字无效或已关闭");
         }
-        return m_watcher->waitReadable();
+        return watcher->waitReadable();
     }
 
     IoWatcher::Awaiter AsyncSocket::waitWritable() const
     {
-        if (m_watcher == nullptr)
+        // 注册推迟到这一次等待，理由同 waitReadable()
+        IoWatcher *const watcher = ensureWatcher();
+        if (watcher == nullptr)
         {
             throw Base::SystemException("等待套接字可写失败：套接字无效或已关闭");
         }
-        return m_watcher->waitWritable();
+        return watcher->waitWritable();
     }
 
     void AsyncSocket::setNonBlocking() const

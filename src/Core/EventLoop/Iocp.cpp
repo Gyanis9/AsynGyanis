@@ -1,0 +1,652 @@
+#include "Core/EventLoop/Iocp.h"
+
+#include "Base/Exception/SystemException.h"
+
+#include <algorithm>
+#include <cstring>
+#include <format>
+
+namespace AsynGyanis::Core
+{
+    namespace
+    {
+        /// AcceptEx 的本地/对端地址缓冲：两端各预留 sockaddr_in6 加 16 字节（Microsoft 文档给出的算法）
+        constexpr std::size_t kAcceptAddressBufferByteCount = 2 * (sizeof(sockaddr_in6) + 16);
+
+        /// 把 int 描述符还原成 HANDLE（CancelIoEx 等接受 HANDLE 的接口用）
+        HANDLE toHandle(const SOCKET socketHandle) noexcept
+        {
+            return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(socketHandle));
+        }
+
+        /**
+         * @brief 取 AcceptEx 的函数指针
+         * @param probeSocket 任意有效的套接字（Winsock 按 GUID 问一次即可，进程内缓存）
+         * @return LPFN_ACCEPTEX 函数指针；本机不支持时为 nullptr
+         */
+        LPFN_ACCEPTEX resolveAcceptExFunction(const SOCKET probeSocket) noexcept
+        {
+            static const LPFN_ACCEPTEX function = [probeSocket]() -> LPFN_ACCEPTEX
+            {
+                GUID         extensionGuid = WSAID_ACCEPTEX;
+                LPFN_ACCEPTEX pointer      = nullptr;
+                DWORD        returnedByteCount = 0;
+                if (::WSAIoctl(probeSocket, SIO_GET_EXTENSION_FUNCTION_POINTER, &extensionGuid, sizeof(extensionGuid), &pointer,
+                               sizeof(pointer), &returnedByteCount, nullptr, nullptr) != 0)
+                {
+                    return nullptr;
+                }
+                return pointer;
+            }();
+            return function;
+        }
+    } // namespace
+
+    struct Iocp::ProbeContext
+    {
+        OVERLAPPED    overlapped{};               ///< 必须是第一个成员：完成通知给出的就是它的地址
+        SocketState  *owner{nullptr};             ///< 所属的套接字状态
+        std::uint32_t direction{0};               ///< EPOLLIN（读/AcceptEx 探针）或 EPOLLOUT（写探针）
+    };
+
+    struct Iocp::SocketState
+    {
+        SOCKET        socketHandle{INVALID_SOCKET};   ///< 被注册的套接字
+        void         *userData{nullptr};              ///< 上报事件时写进 epoll_event.data.ptr
+        std::uint32_t registeredEvents{0};            ///< 最近一次登记的关注位（含 EPOLLONESHOT 与否）
+        ProbeContext  readProbe{};                    ///< 读方向（监听描述符上是 AcceptEx）
+        ProbeContext  writeProbe{};                   ///< 写方向
+        char          readBuffer[1]{};                ///< 1 字节 MSG_PEEK 探针缓冲：只读不取，内容无用
+        bool          hasReadProbe{false};            ///< 读探针是否已在途
+        bool          hasWriteProbe{false};           ///< 写探针是否已在途
+        bool          isListening{false};             ///< 该套接字是否处于监听态（决定读探针用 AcceptEx）
+        bool          isDeleted{false};               ///< 已注销但仍有完成通知在队，见 m_graveyard
+        std::uint32_t failedDirections{0};            ///< 上一次投递失败的方向位（等下一次 wait() 重试）
+        bool          isArmRetryQueued{false};        ///< 是否已排进待重试表（避免重复入表）
+        SOCKET        pendingAcceptSocket{INVALID_SOCKET}; ///< AcceptEx 正在使用的接受套接字
+        SOCKET        acceptedSocket{INVALID_SOCKET};      ///< 已接入、等 takeAcceptedSocket() 取走
+        bool          hasAcceptedSocket{false};            ///< acceptedSocket 是否有效
+        char          acceptAddressBuffer[kAcceptAddressBufferByteCount]{}; ///< AcceptEx 的地址输出缓冲
+
+        /// 是否还有探针没等到完成通知
+        [[nodiscard]] bool hasProbeInFlight() const noexcept
+        {
+            return hasReadProbe || hasWriteProbe;
+        }
+
+        /// 初始化探针的固定字段
+        void initProbes(void *const watcherData) noexcept
+        {
+            readProbe.owner     = this;
+            readProbe.direction = EPOLLIN;
+            writeProbe.owner     = this;
+            writeProbe.direction = EPOLLOUT;
+            userData            = watcherData;
+        }
+    };
+
+    Iocp::Iocp()
+    {
+        // 第一个参数传 INVALID_HANDLE_VALUE 表示「只创建完成端口、不关联任何文件」
+        m_iocp = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
+        if (m_iocp == nullptr)
+        {
+            throw Base::SystemException("创建完成端口失败（CreateIoCompletionPort）");
+        }
+        m_entries.resize(kMaximumEventCount);
+        m_results.reserve(kMaximumEventCount);
+    }
+
+    Iocp::~Iocp()
+    {
+        destroy();
+    }
+
+    Iocp::Iocp(Iocp &&other) noexcept :
+        m_iocp(other.m_iocp),
+        m_entries(std::move(other.m_entries)),
+        m_results(std::move(other.m_results)),
+        m_sockets(std::move(other.m_sockets)),
+        m_graveyard(std::move(other.m_graveyard)),
+        m_pendingRearm(std::move(other.m_pendingRearm))
+    {
+        other.m_iocp = nullptr;
+    }
+
+    Iocp &Iocp::operator=(Iocp &&other) noexcept
+    {
+        if (this != &other)
+        {
+            destroy();
+            m_iocp         = other.m_iocp;
+            m_entries      = std::move(other.m_entries);
+            m_results      = std::move(other.m_results);
+            m_sockets      = std::move(other.m_sockets);
+            m_graveyard    = std::move(other.m_graveyard);
+            m_pendingRearm = std::move(other.m_pendingRearm);
+            other.m_iocp   = nullptr;
+        }
+        return *this;
+    }
+
+    void Iocp::destroy()
+    {
+        // 先取消在途探针再关端口：端口一关，队列里的完成通知就再没人取，
+        // 其 OVERLAPPED 所在的状态随即可安全释放
+        for (auto &[fileDescriptor, state]: m_sockets)
+        {
+            static_cast<void>(fileDescriptor);
+            cancelProbes(*state);
+        }
+        for (SocketState *state: m_graveyard)
+        {
+            cancelProbes(*state);
+        }
+        if (m_iocp != nullptr)
+        {
+            ::CloseHandle(m_iocp);
+            m_iocp = nullptr;
+        }
+        for (auto &[fileDescriptor, state]: m_sockets)
+        {
+            static_cast<void>(fileDescriptor);
+            closeAcceptedSockets(*state);
+            delete state;
+        }
+        m_sockets.clear();
+        for (SocketState *state: m_graveyard)
+        {
+            closeAcceptedSockets(*state);
+            delete state;
+        }
+        m_graveyard.clear();
+        m_pendingRearm.clear();
+        m_pendingArmRetry.clear();
+    }
+
+    Platform::EpollHandle Iocp::fileDescriptor() const noexcept
+    {
+        return m_iocp;
+    }
+
+    bool Iocp::addFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
+    {
+        if (m_sockets.contains(fileDescriptor))
+        {
+            // 同一描述符重复注册：调用方多半是把两个注册对象套在了同一个描述符上
+            return false;
+        }
+
+        auto *state         = new SocketState();
+        state->socketHandle = static_cast<SOCKET>(fileDescriptor);
+        state->initProbes(userData);
+
+        // 监听态决定读探针的形态：AcceptEx 还是 MSG_PEEK 的 WSARecv
+        int  acceptConnection = 0;
+        int  optionLength     = static_cast<int>(sizeof(acceptConnection));
+        state->isListening =
+                ::getsockopt(state->socketHandle, SOL_SOCKET, SO_ACCEPTCONN, reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 &&
+                acceptConnection != 0;
+
+        if (::CreateIoCompletionPort(toHandle(state->socketHandle), m_iocp, reinterpret_cast<ULONG_PTR>(state), 0) == nullptr)
+        {
+            // 描述符无效或已属于另一个完成端口
+            delete state;
+            return false;
+        }
+
+        state->registeredEvents = events;
+        m_sockets.emplace(fileDescriptor, state);
+
+        // 初始关注位立刻武装一次，与 IoWatcher 构造时把 EPOLLIN 交给内核同一语义。
+        // 投递失败不当成注册失败：连接还没建立、监听描述符暂时拿不到接受套接字都会失败，
+        // 上层真正等待时会经 modFileDescriptor() 再武装一次
+        if ((events & EPOLLIN) != 0)
+        {
+            static_cast<void>(armProbe(*state, EPOLLIN, nullptr));
+        }
+        if ((events & EPOLLOUT) != 0)
+        {
+            static_cast<void>(armProbe(*state, EPOLLOUT, nullptr));
+        }
+        return true;
+    }
+
+    bool Iocp::modFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
+    {
+        const auto iterator = m_sockets.find(fileDescriptor);
+        if (iterator == m_sockets.end())
+        {
+            return false;
+        }
+
+        SocketState &state   = *iterator->second;
+        state.userData       = userData;
+        state.registeredEvents = events;
+
+        if ((events & EPOLLIN) != 0)
+        {
+            static_cast<void>(armProbe(state, EPOLLIN, nullptr));
+        }
+        if ((events & EPOLLOUT) != 0)
+        {
+            static_cast<void>(armProbe(state, EPOLLOUT, nullptr));
+        }
+        return true;
+    }
+
+    bool Iocp::rearmFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
+    {
+        // 完成端口没有「重新装配」这一步：每个探针天然是一次性的，语义与 mod 相同
+        return modFileDescriptor(fileDescriptor, events, userData);
+    }
+
+    bool Iocp::delFileDescriptor(const int fileDescriptor)
+    {
+        const auto iterator = m_sockets.find(fileDescriptor);
+        if (iterator == m_sockets.end())
+        {
+            return false;
+        }
+
+        SocketState &state = *iterator->second;
+        m_sockets.erase(iterator);
+        // 此刻可能已经有一条完成通知被取出来、排进了待重武装表，或者还在待重投表里：
+        // 注销必须把它们一起摘掉，否则下一轮 wait() 会摸到已释放的状态
+        std::erase(m_pendingRearm, &state);
+        std::erase(m_pendingArmRetry, &state);
+
+        cancelProbes(state);
+        if (state.hasProbeInFlight())
+        {
+            // 取消是异步的：完成通知仍会到达，状态必须活到那时再释放，
+            // 否则 wait() 翻译那条通知时会写到已释放内存上
+            state.isDeleted = true;
+            m_graveyard.push_back(&state);
+            return true;
+        }
+
+        closeAcceptedSockets(state);
+        delete &state;
+        return true;
+    }
+
+    bool Iocp::takeAcceptedSocket(const int listenerFileDescriptor, int *const acceptedFileDescriptor)
+    {
+        const auto iterator = m_sockets.find(listenerFileDescriptor);
+        if (iterator == m_sockets.end())
+        {
+            return false;
+        }
+
+        SocketState &state = *iterator->second;
+        if (!state.hasAcceptedSocket)
+        {
+            return false;
+        }
+
+        *acceptedFileDescriptor = static_cast<int>(state.acceptedSocket);
+        state.acceptedSocket    = INVALID_SOCKET;
+        state.hasAcceptedSocket = false;
+        return true;
+    }
+
+    bool Iocp::armProbe(SocketState &state, const std::uint32_t direction, std::string *const errorText)
+    {
+        if (direction == EPOLLIN)
+        {
+            if (state.hasReadProbe)
+            {
+                return true;
+            }
+            // 监听态要在这里现查而不是注册时查一次：IoWatcher 在 AsyncSocket 构造时就注册了，
+            // 那时 listen() 还没被调用，SO_ACCEPTCONN 必然是 0（实测：因此把监听描述符当成
+            // 普通套接字投了 WSARecv，得到 10057 且再没有任何完成通知，接受路径整个卡死）
+            if (!state.isListening)
+            {
+                int acceptConnection = 0;
+                int optionLength     = static_cast<int>(sizeof(acceptConnection));
+                state.isListening = ::getsockopt(state.socketHandle, SOL_SOCKET, SO_ACCEPTCONN,
+                                                 reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 &&
+                                    acceptConnection != 0;
+            }
+            if (state.isListening)
+            {
+                // AcceptEx 投递失败（还没 listen()、拿不到接受套接字等）：记下来等下一次 wait() 重试
+                if (!armAcceptProbe(state, errorText))
+                {
+            noteArmFailure(state, EPOLLIN);
+                    return false;
+                }
+                return true;
+            }
+
+            // 还没连上的套接字不能投读探针：客户端套接字在 connect 完成之前、监听描述符在 listen()
+            // 之前，WSARecv 有时当场失败、有时挂起成一个永远不会完成的请求——后者会让监听描述符
+            // 带着一个假探针，此后再也等不到 AcceptEx（实测：同一进程里第一条连接正常、之后的
+            // 监听全都接不进连接）。连没连上用 getpeername 判，不通过就记成待重试
+            sockaddr_storage peerAddress{};
+            int              peerAddressLength = static_cast<int>(sizeof(peerAddress));
+            if (::getpeername(state.socketHandle, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength) != 0)
+            {
+                noteArmFailure(state, EPOLLIN);
+                return false;
+            }
+
+            std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
+            WSABUF readBuffer{};
+            readBuffer.buf = state.readBuffer;
+            readBuffer.len = sizeof(state.readBuffer);
+            DWORD receiveFlags = MSG_PEEK;
+            const int result   = ::WSARecv(state.socketHandle, &readBuffer, 1, nullptr, &receiveFlags, &state.readProbe.overlapped, nullptr);
+            if (result == 0 || (result == SOCKET_ERROR && ::WSAGetLastError() == WSA_IO_PENDING))
+            {
+                state.hasReadProbe = true;
+                state.failedDirections &= ~EPOLLIN;
+                return true;
+            }
+            noteArmFailure(state, EPOLLIN);
+            if (errorText != nullptr)
+            {
+                *errorText = std::format("投递可读探针失败（WSARecv 错误码 {}）", ::WSAGetLastError());
+            }
+            return false;
+        }
+
+        if (state.hasWriteProbe)
+        {
+            return true;
+        }
+
+        // 零字节发送：套接字可写时立刻完成，发送缓冲占满时挂到可写为止。
+        // 它不向连接里写任何字节，因此不会污染字节流
+        std::memset(&state.writeProbe.overlapped, 0, sizeof(OVERLAPPED));
+        WSABUF emptyBuffer{};
+        const int result = ::WSASend(state.socketHandle, &emptyBuffer, 1, nullptr, 0, &state.writeProbe.overlapped, nullptr);
+        if (result == 0 || (result == SOCKET_ERROR && ::WSAGetLastError() == WSA_IO_PENDING))
+        {
+            state.hasWriteProbe = true;
+            state.failedDirections &= ~EPOLLOUT;
+            return true;
+        }
+        noteArmFailure(state, EPOLLOUT);
+        if (errorText != nullptr)
+        {
+            *errorText = std::format("投递可写探针失败（WSASend 错误码 {}）", ::WSAGetLastError());
+        }
+        return false;
+    }
+
+    bool Iocp::armAcceptProbe(SocketState &state, std::string *const errorText)
+    {
+        // 已经有一条在途的 AcceptEx，或已经接入一条还没被取走：都不需要再投
+        if (state.pendingAcceptSocket != INVALID_SOCKET || state.hasAcceptedSocket)
+        {
+            state.failedDirections &= ~EPOLLIN;
+            return true;
+        }
+
+        const LPFN_ACCEPTEX acceptFunction = resolveAcceptExFunction(state.socketHandle);
+        if (acceptFunction == nullptr)
+        {
+            noteArmFailure(state, EPOLLIN);
+            if (errorText != nullptr)
+            {
+                *errorText = "本机不支持 AcceptEx（按 WSAID_ACCEPTEX 取函数指针失败）";
+            }
+            return false;
+        }
+
+        // 接受套接字必须与监听套接字同地址族，且带 WSA_FLAG_OVERLAPPED
+        sockaddr_storage listenerAddress{};
+        int              addressLength = static_cast<int>(sizeof(listenerAddress));
+        if (::getsockname(state.socketHandle, reinterpret_cast<sockaddr *>(&listenerAddress), &addressLength) != 0)
+        {
+            if (errorText != nullptr)
+            {
+                *errorText = std::format("取监听地址失败（getsockname 错误码 {}）", ::WSAGetLastError());
+            }
+            return false;
+        }
+
+        const SOCKET acceptSocket = ::WSASocket(
+                static_cast<int>(listenerAddress.ss_family), SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+        if (acceptSocket == INVALID_SOCKET)
+        {
+            if (errorText != nullptr)
+            {
+                *errorText = std::format("创建接受套接字失败（WSASocket 错误码 {}）", ::WSAGetLastError());
+            }
+            return false;
+        }
+
+        std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
+        DWORD      receivedByteCount = 0;
+        const auto addressUnitByteCount = static_cast<DWORD>(kAcceptAddressBufferByteCount / 2);
+        const BOOL isAccepted =
+                acceptFunction(state.socketHandle, acceptSocket, state.acceptAddressBuffer, 0, addressUnitByteCount, addressUnitByteCount,
+                               &receivedByteCount, &state.readProbe.overlapped);
+        if (isAccepted == FALSE && ::WSAGetLastError() != ERROR_IO_PENDING)
+        {
+            const int socketError = ::WSAGetLastError();
+            ::closesocket(acceptSocket);
+            if (errorText != nullptr)
+            {
+                *errorText = std::format("投递 AcceptEx 探针失败（错误码 {}）", socketError);
+            }
+            return false;
+        }
+
+        state.pendingAcceptSocket = acceptSocket;
+        state.hasReadProbe        = true;
+        state.failedDirections &= ~EPOLLIN;
+        return true;
+    }
+
+    void Iocp::noteArmFailure(SocketState &state, const std::uint32_t direction)
+    {
+        state.failedDirections |= direction;
+        if (!state.isArmRetryQueued)
+        {
+            state.isArmRetryQueued = true;
+            m_pendingArmRetry.push_back(&state);
+        }
+    }
+
+    void Iocp::retryFailedArms()
+    {
+        // 先把待重投表换出来再遍历：armProbe 失败时会往同一张表里再入表，
+        // 边遍历边插入会让迭代器失效（扩容后接着读的是已释放内存——实测表现为对同一个
+        // 描述符反复投递同一个失败方向，事件循环整轮空转）
+        std::vector<SocketState *> pending;
+        pending.swap(m_pendingArmRetry);
+
+        // 逐条重试上一次投递失败的方向：注册成功但当时武装不上（监听描述符还没 listen()、
+        // 套接字还没连上）是常态，失败必须在下一轮补上，否则那些描述符永远不会有完成通知
+        for (SocketState *state: pending)
+        {
+            state->isArmRetryQueued = false;
+            const std::uint32_t failedDirections = state->failedDirections;
+            if ((failedDirections & EPOLLIN) != 0 && (state->registeredEvents & EPOLLIN) != 0)
+            {
+                static_cast<void>(armProbe(*state, EPOLLIN, nullptr));
+            }
+            if ((failedDirections & EPOLLOUT) != 0 && (state->registeredEvents & EPOLLOUT) != 0)
+            {
+                static_cast<void>(armProbe(*state, EPOLLOUT, nullptr));
+            }
+        }
+        // 这里**不能**清表：本轮重投又失败的方向已经由 noteArmFailure 重新入表，
+        // 清掉它们等于「只重投一次」，之后那个描述符再也不会被武装——实测后果是监听描述符
+        // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接
+    }
+
+    std::span<epoll_event> Iocp::wait(const int timeoutMs)
+    {
+        // 补投上一次失败的探针：注册成功但当时武装不上（监听描述符还没 listen() 等）的方向
+        // 必须在阻塞之前补上，否则这一睡就再也没有完成通知能把循环叫醒
+        retryFailedArms();
+
+        // 水平触发的关注由这里重新武装：上一次上报的数据此刻已经被上层消费掉，
+        // 与 epoll_wait 每次重新取一次就绪状态等价（若先武装再交付，会被自己刚看到的数据
+        // 立刻再触发一次，白白多绕一圈）
+        rearmLevelTriggered();
+
+        const ULONG timeout = timeoutMs < 0 ? INFINITE : static_cast<ULONG>(timeoutMs);
+        DWORD       entryCount = 0;
+        if (::GetQueuedCompletionStatusEx(m_iocp, m_entries.data(), static_cast<ULONG>(m_entries.size()), &entryCount, timeout, FALSE) == FALSE)
+        {
+            const DWORD errorCode = ::GetLastError();
+            if (errorCode == WAIT_TIMEOUT || errorCode == WAIT_IO_COMPLETION)
+            {
+                return {};
+            }
+            throw Base::SystemException("等待完成端口失败（GetQueuedCompletionStatusEx）");
+        }
+
+        m_results.clear();
+        for (DWORD index = 0; index < entryCount; ++index)
+        {
+            translateCompletion(m_entries[index]);
+        }
+        return {m_results.data(), m_results.size()};
+    }
+
+    void Iocp::translateCompletion(const OVERLAPPED_ENTRY &entry)
+    {
+        if (entry.lpOverlapped == nullptr)
+        {
+            // 本后端不投 PostQueuedCompletionStatus，出现这种条目说明完成端口被别的代码共用
+            return;
+        }
+
+        auto         *context   = reinterpret_cast<ProbeContext *>(entry.lpOverlapped);
+        SocketState  &state     = *context->owner;
+        const std::uint32_t direction = context->direction;
+        // 失败的完成（对端复位、取消、AcceptEx 出错）在 OVERLAPPED::Internal 上带负的状态码
+        const bool isFailed = static_cast<LONG_PTR>(context->overlapped.Internal) < 0;
+
+        if (direction == EPOLLIN)
+        {
+            state.hasReadProbe = false;
+        } else
+        {
+            state.hasWriteProbe = false;
+        }
+
+        if (isFailed || (state.isListening && direction == EPOLLIN))
+        {
+        }
+        if (isFailed || (state.isListening && direction == EPOLLIN))
+        {
+        }
+
+        if (state.isListening && direction == EPOLLIN && !isFailed && state.pendingAcceptSocket != INVALID_SOCKET)
+        {
+            // AcceptEx 成功：把接受套接字与监听套接字关联起来，此后它就是一条正常的已连接套接字
+            const SOCKET acceptSocket = state.pendingAcceptSocket;
+            static_cast<void>(::setsockopt(acceptSocket, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+                                           reinterpret_cast<const char *>(&state.socketHandle), sizeof(state.socketHandle)));
+            state.pendingAcceptSocket = INVALID_SOCKET;
+            state.acceptedSocket      = acceptSocket;
+            state.hasAcceptedSocket   = true;
+        }
+
+        if (state.isDeleted)
+        {
+            // 注销时取消的在途探针：通知只用来清账，不再上报
+            releaseIfDrained(state);
+            return;
+        }
+
+        if ((state.registeredEvents & EPOLLONESHOT) == 0)
+        {
+            m_pendingRearm.push_back(&state);
+        }
+
+        epoll_event event{};
+        event.data.ptr = state.userData;
+        event.events   = direction;
+        if (isFailed)
+        {
+            // 与 epoll 一致：错误与挂断同时算作可读与可写，让上层自己去拿真实错误
+            event.events |= EPOLLERR | EPOLLHUP;
+        }
+
+        // 同一个注册对象的两个方向可能在同一批完成通知里各来一条：**必须合并成一条 epoll_event**，
+        // 这正是 epoll 给事件的方式（一个 epoll_event 带多个事件位）。分成两条时，上层处理第一条
+        // 就可能把该注册对象销毁（读侧收到 EOF 就关连接是常态），第二条随后写到已释放内存上——
+        // ASan 实测：IoWatcher::handleEvents 里往 m_armedEvents 写入时 heap-use-after-free
+        for (epoll_event &existingEvent: m_results)
+        {
+            if (existingEvent.data.ptr == event.data.ptr)
+            {
+                existingEvent.events |= event.events;
+                return;
+            }
+        }
+        m_results.push_back(event);
+    }
+
+    void Iocp::cancelProbes(SocketState &state) noexcept
+    {
+        if (state.hasReadProbe)
+        {
+        }
+        if (state.hasWriteProbe)
+        {
+        }
+    }
+
+    void Iocp::closeAcceptedSockets(SocketState &state) noexcept
+    {
+        if (state.pendingAcceptSocket != INVALID_SOCKET)
+        {
+            ::closesocket(state.pendingAcceptSocket);
+            state.pendingAcceptSocket = INVALID_SOCKET;
+        }
+        if (state.acceptedSocket != INVALID_SOCKET)
+        {
+            ::closesocket(state.acceptedSocket);
+            state.acceptedSocket = INVALID_SOCKET;
+        }
+        state.hasAcceptedSocket = false;
+    }
+
+    void Iocp::releaseIfDrained(SocketState &state)
+    {
+        if (state.hasProbeInFlight())
+        {
+            return;
+        }
+        std::erase(m_graveyard, &state);
+        closeAcceptedSockets(state);
+        delete &state;
+    }
+
+    void Iocp::rearmLevelTriggered()
+    {
+        // 同 retryFailedArms()：先换出来再遍历，armProbe 的失败路径会往待重投表里插入，
+        // 边遍历边插入就是迭代器失效
+        std::vector<SocketState *> pending;
+        pending.swap(m_pendingRearm);
+
+        for (SocketState *state: pending)
+        {
+            if ((state->registeredEvents & EPOLLONESHOT) != 0)
+            {
+                // 期间已改成一次性关注：下一次关注由 modFileDescriptor() 武装
+                continue;
+            }
+            if ((state->registeredEvents & EPOLLIN) != 0)
+            {
+                static_cast<void>(armProbe(*state, EPOLLIN, nullptr));
+            }
+            if ((state->registeredEvents & EPOLLOUT) != 0)
+            {
+                static_cast<void>(armProbe(*state, EPOLLOUT, nullptr));
+            }
+        }
+        m_pendingRearm.clear();
+    }
+} // namespace AsynGyanis::Core
