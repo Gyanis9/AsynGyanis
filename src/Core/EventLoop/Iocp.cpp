@@ -60,6 +60,10 @@ namespace AsynGyanis::Core
         bool          hasReadProbe{false};            ///< 读探针是否已在途
         bool          hasWriteProbe{false};           ///< 写探针是否已在途
         bool          isListening{false};             ///< 该套接字是否处于监听态（决定读探针用 AcceptEx）
+
+        /// 是否数据报套接字（SOCK_DGRAM）：-1 未知、0 否、1 是。数据报无连接，read 探针的
+        /// 「先确认已连上」守卫对它必然不成立，而 WSARecv 在无连接 UDP 上本就合法
+        int isDatagramSocket{-1};
         bool          isDeleted{false};               ///< 已注销但仍有完成通知在队，见 m_graveyard
         std::uint32_t failedDirections{0};            ///< 上一次投递失败的方向位（等下一次 wait() 重试）
         bool          isArmRetryQueued{false};        ///< 是否已排进待重试表（避免重复入表）
@@ -321,16 +325,34 @@ namespace AsynGyanis::Core
                 return true;
             }
 
+            // 套接字类型现查一次并记住：数据报套接字是下面那条「先确认已连上」守卫的例外
+            if (state.isDatagramSocket < 0)
+            {
+                int socketType   = 0;
+                int optionLength = static_cast<int>(sizeof(socketType));
+                state.isDatagramSocket =
+                        ::getsockopt(state.socketHandle, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&socketType), &optionLength) == 0 &&
+                                        socketType == SOCK_DGRAM
+                                ? 1
+                                : 0;
+            }
+
             // 还没连上的套接字不能投读探针：客户端套接字在 connect 完成之前、监听描述符在 listen()
             // 之前，WSARecv 有时当场失败、有时挂起成一个永远不会完成的请求——后者会让监听描述符
             // 带着一个假探针，此后再也等不到 AcceptEx（实测：同一进程里第一条连接正常、之后的
-            // 监听全都接不进连接）。连没连上用 getpeername 判，不通过就记成待重试
-            sockaddr_storage peerAddress{};
-            int              peerAddressLength = static_cast<int>(sizeof(peerAddress));
-            if (::getpeername(state.socketHandle, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength) != 0)
+            // 监听全都接不进连接）。连没连上用 getpeername 判，不通过就记成待重试。
+            // 数据报套接字不受这条限制：UDP 无连接，getpeername 必然失败，而 WSARecv 在无连接 UDP 上
+            // 是合法的——它会在任意一条报文到达时完成，正是要的就绪信号（少了这条豁免，数据报的
+            // 可读等待在 Windows 上永远不会被唤醒）
+            if (state.isDatagramSocket == 0)
             {
-                noteArmFailure(state, EPOLLIN);
-                return false;
+                sockaddr_storage peerAddress{};
+                int              peerAddressLength = static_cast<int>(sizeof(peerAddress));
+                if (::getpeername(state.socketHandle, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength) != 0)
+                {
+                    noteArmFailure(state, EPOLLIN);
+                    return false;
+                }
             }
 
             std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
