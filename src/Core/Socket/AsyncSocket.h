@@ -211,11 +211,12 @@ namespace AsynGyanis::Core
          * @param fileDescriptor 源文件描述符（须为普通文件，如 MemoryMappedFile::nativeFileDescriptor()）
          * @param offset 从文件的第几个字节开始发送（不动描述符自身的读写偏移）
          * @param length 待发送的字节数
-         * @return Task<ssize_t> — 全部发送完成时返回总字节数；返回 -1 表示对端已关闭（同 asyncSend）
-         * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层不参与（本方法不在 TlsSocket 上），
-         *       Windows 没有等价原语，调用方按平台与传输层能力条件编译选用
+         * @return Task<ssize_t> 全部发送完成时返回总字节数；不会返回部分长度或 -1，失败一律抛异常
+         * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层没有零拷贝发送能力，本方法也不在
+         *       TlsSocket 上，调用方用 requires 探测该能力后再选路径（见 HttpSession 的零拷贝分支）；
+         *       Windows 没有可用的等价原语，原因见 Platform::Socket::sendFileChunk 的说明
          * @throws Base::SystemException 源文件描述符非法、待发字节数为 0，或发送失败
-         *         （连接重置、对端在发送期间关闭等）
+         *         （连接重置、对端在发送期间关闭、源文件在发送期间被截断等）
          */
         Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const;
 #endif

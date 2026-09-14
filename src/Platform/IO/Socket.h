@@ -245,10 +245,16 @@ namespace AsynGyanis::Platform
          * @note 只发起一次系统调用，部分写由调用方按「offset 加上返回值」推进。源文件的读写
          *       偏移不受影响（本层显式传偏移指针，不动描述符自身的偏移），同一个文件可被多条
          *       响应并发发送
+         * @note 返回 0 表示源侧已到文件末尾（调用方传的 length 恒大于 0），即文件在发送期间被
+         *       截断：与返回 -1 的「可重试」语义完全不同，调用方必须分开处理，否则续发循环会
+         *       按 kWouldBlock 原地空转成死循环
          * @note SIGPIPE 由 Socket::initialize() 在初始化时忽略，本函数不必带 MSG_NOSIGNAL
          *       这类标志（sendfile 也没有对应标志）
-         * @note 只有 Linux 提供：Windows 没有等价原语（TransmitFile 的语义与返回值约定都不同，
-         *       接入要等 IOCP 事件后端的决定落地），故不声明，调用方按平台条件编译选用
+         * @note 只有 Linux 提供：Windows 的 TransmitFile 在本引擎里不可用——实测（非阻塞套接字、
+         *       对端只读 8 MiB 文件）首次调用就把线程阻塞住，直到对端把数据收完；且它一次调用
+         *       只推进 32768 字节后仍返回成功、文件指针不再前进，进度无法反推。要用它必须走
+         *       重叠 I/O 并把完成事件接到完成端口上，而那需要 IOCP 后端支持用户发起的异步操作。
+         *       在此之前 Windows 静态文件仍走聚合写（非阻塞、正确，只是多一次用户态拷贝）
          */
         static ssize_t sendFileChunk(int socketDescriptor, int fileDescriptor, std::uint64_t offset, std::size_t length) noexcept;
 #endif

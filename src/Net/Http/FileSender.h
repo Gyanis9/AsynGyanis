@@ -20,9 +20,6 @@ namespace AsynGyanis::Net
      *          delete，调用方只能以 FileSender::contentTypeForFile() 的形式使用。
      *          之所以写成类而不是命名空间里的自由函数：现有调用方（HttpServer 的静态路由）
      *          已按「类名限定」的形式书写，改成自由函数会连带改动其他模块负责的代码。
-     * @note 若以后需要零拷贝发送，应先在 Platform 层补出跨平台的 sendfile 封装：Windows 的
-     *       TransmitFile 自己推进文件指针、返回后的偏移语义不受调用方控制，错误码要取
-     *       WSAGetLastError 而非 errno，按「按块递减剩余长度」的循环使用会双重出错。
      */
     class FileSender
     {

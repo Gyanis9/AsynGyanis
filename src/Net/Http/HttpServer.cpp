@@ -33,7 +33,8 @@ namespace AsynGyanis::Net
          * @brief 单个静态文件允许作为正文下发的上限，单位字节（64 MiB）
          * @details 正文走内存映射（不经过堆缓冲），但整份文件仍要一次性上线：
          *          对端读得慢时，这次发送会把整份文件挂在连接上，服务端没有分块续传的收尾策略，
-         *          因此必须设上限。需要服务更大文件时应先补跨平台 sendfile 封装（Platform 层）。
+         *          因此必须设上限。正文在 Linux 上已由内核零拷贝搬运，但慢消费者期间这份映射
+         *          仍旧一直挂着；需要服务更大文件时得先做出分块续传的收尾策略。
          */
         constexpr std::uintmax_t kMaximumStaticFileSize = 64ull * 1024 * 1024;
 
