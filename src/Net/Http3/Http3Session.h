@@ -76,12 +76,15 @@ namespace AsynGyanis::Net
          */
         struct StreamingResponse
         {
-            std::string             bytes;                 ///< 已收下、尚未交给 nghttp3 的正文
-            std::size_t             deliveredByteCount{0}; ///< 已交给 nghttp3 的字节数（前缀可丢）
-            bool                    isHeadSent{false};     ///< 响应头是否已提交
-            bool                    isFinished{false};     ///< 处理器已写完（正文到此为止）
-            bool                    isUnboundedBody{false}; ///< 正文没有终点（WebSocket 隧道）：暂时没数据也不关流
-            std::coroutine_handle<> spaceWaiter{};         ///< 生产者等缓冲排空时挂在这里
+            /// 尚未交付完的正文分片。**一片一块内存**：nghttp3 会把没写完的 vec 留到下一次写再取，
+            /// 用一整块会重新分配的缓冲会让交出去的指针失效（实测：第二次追加后首片内容整体被搬走，
+            /// 线上发出去的是新缓冲的簿记字节）
+            std::deque<std::string> chunks;
+            std::size_t             headOffset{0};        ///< 头一片里已经交给 nghttp3 的字节数
+            std::size_t             pendingByteCount{0};  ///< 还挂在手上（未交付完）的字节总数
+            bool                    isHeadSent{false};    ///< 响应头是否已提交
+            bool                    isFinished{false};    ///< 处理器已写完（正文到此为止）
+            std::coroutine_handle<> spaceWaiter{};        ///< 生产者等缓冲排空时挂在这里
         };
 
         /**
@@ -292,8 +295,7 @@ namespace AsynGyanis::Net
             /// 已经退到上界以内（或状态没了）就不必挂起
             [[nodiscard]] bool await_ready() const noexcept
             {
-                return m_streamingResponse == nullptr || m_streamingResponse->bytes.size() - m_streamingResponse->deliveredByteCount <=
-                                                                 kStreamingResponseBufferByteCount;
+                return m_streamingResponse == nullptr || m_streamingResponse->pendingByteCount <= kStreamingResponseBufferByteCount;
             }
 
             /// 记下等待者（本流的响应只有一个生产者）
@@ -328,13 +330,9 @@ namespace AsynGyanis::Net
          * @param streamId 流号
          * @param state 该流的状态
          * @param response 业务填好的响应（取状态码与头部）
-         * @param isUnboundedBody true 表示正文没有终点（WebSocket 隧道：只要隧道开着就还可能出字节），
-         *        提交后立刻把这条流挡住，等真有字节时再解挡——库里「要数据却给不出」是断言级错误，
-         *        而给不出时置 EOF 又会把发送侧提前关掉
          * @return true 提交成功
          */
-        bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response,
-                                         bool isUnboundedBody = false);
+        bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response);
 
         /**
          * @brief 写一段流式响应正文（ChunkSender 的实现）
@@ -355,18 +353,12 @@ namespace AsynGyanis::Net
         void finishStreamingResponse(std::int64_t streamId, HttpResponse &response);
 
         /**
-         * @brief 交给 nghttp3 的字节又排空了一部分：唤醒等空间的生产者
+         * @brief 交给 nghttp3 的字节又排空了一部分：压掉已交付的前缀，并唤醒等空间的生产者
          * @param streamId 流号
+         * @note 缓冲只在**这里**压：读回调里压会改掉已经交出去、库里还没拷走的 vec
+         *       （libstdc++ 的 clear() 会把首字节写成 '\0'，实测交出去的负载首字节就是这样丢的）
          */
         void noteStreamingResponseDrained(std::int64_t streamId);
-
-        /**
-         * @brief 缓冲已排空且还没写完时把这条流挡住
-         * @param streamId 流号
-         * @details 库里「要数据却一个向量都给不出」是断言级错误（0 个向量必须带 EOF），因此没数据时
-         *          必须先把它挡住；下一块到达时再解挡并 resume_stream
-         */
-        void blockStreamingResponseIfDrained(std::int64_t streamId);
 
         /// 丢掉已经跑完的派发协程随记录一起摘掉
         void reapFinishedStreamingRequests();

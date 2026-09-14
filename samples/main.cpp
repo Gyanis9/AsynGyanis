@@ -30,6 +30,7 @@
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/System/ProcessInfo.h"
 
 #include <atomic>
@@ -78,6 +79,38 @@ namespace
             response.setStatus(200);
             response.setHeader("Content-Type", "text/plain");
             response.setBody("OK");
+            co_return;
+        });
+
+        // 流式响应（SSE）验收用：分两段写出，客户端逐段收到就说明分块路径真的通
+        router.get("/sse", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+        {
+            response.startChunkedResponse(200);
+            response.setHeader("Content-Type", "text/event-stream");
+            if (!co_await response.writeChunk("data: one\n\n"))
+            {
+                co_return;
+            }
+            static_cast<void>(co_await response.writeChunk("data: two\n\n"));
+            co_return;
+        });
+
+        // WebSocket 验收用：h1 的 Upgrade 与 h3 的扩展 CONNECT（RFC 9220）都走这条路由，
+        // 收到一条就原样回一条——回显本身就把「帧进得来、也出得去」两件事一起验了
+        router.get("/ws", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+        {
+            response.upgradeToWebSocket(
+                    [](Net::WebSocketPeer &peer) -> Core::Task<>
+                    {
+                        while (const auto message = co_await peer.receive())
+                        {
+                            if (!co_await peer.sendText(message->payload))
+                            {
+                                co_return;
+                            }
+                        }
+                        co_return;
+                    });
             co_return;
         });
     }

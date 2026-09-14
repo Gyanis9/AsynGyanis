@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <map>
 #include <span>
@@ -228,26 +229,38 @@ namespace AsynGyanis::Net
              * @brief 提交一条扩展 CONNECT（RFC 9220）请求，并把 WebSocket 帧当作请求数据随后发出
              * @param path 路径（:path）
              * @param authority 权威主机（:authority）
-             * @param webSocketFrames 隧道建立后要发的 WebSocket 帧字节
+             * @param firstWebSocketFrame 隧道建立后要发的第一条 WebSocket 帧字节
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含请求头与随后的帧）
              * @note 必须带数据读取回调而不是 nullptr：后者意味着「请求到此结束」，而对端之后还要在
-             *       同一条流上发 WebSocket 帧，那时服务端会把 DATA 判成 H3_FRAME_UNEXPECTED
+             *       同一条流上发 WebSocket 帧，那时服务端会把 DATA 判成 H3_FRAME_UNEXPECTED。
+             *       回调给出最后一条帧之后报「暂时没有」而不是 EOF——隧道到对端关流为止都开着
              */
             std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority,
-                                                                 std::string webSocketFrames)
+                                                                 std::string firstWebSocketFrame)
             {
-                m_requestBody           = std::move(webSocketFrames);
-                m_requestBodyOffset     = 0;
-                m_requestChunkByteCount = m_requestBody.size();
+                m_tunnelFrames.push_back(std::move(firstWebSocketFrame));
 
                 const std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
                 nghttp3_data_reader           dataReader{};
-                dataReader.read_data = readRequestBody;
+                dataReader.read_data = readTunnelBody;
                 if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), &dataReader,
                                                 this) != 0)
                 {
                     return {};
                 }
+                return takeOutgoingBytes();
+            }
+
+            /**
+             * @brief 在已建立的隧道上再发一条 WebSocket 帧（同一条流上的后续 DATA）
+             * @param webSocketFrame 帧字节
+             * @return std::vector<CapturedStreamData> 按流号分好的待发字节
+             */
+            std::vector<CapturedStreamData> sendWebSocketFrame(std::string webSocketFrame)
+            {
+                m_tunnelFrames.push_back(std::move(webSocketFrame));
+                // 上一批交完之后读回调报的是「暂时没有」，库里正等着这一声才会再来取
+                static_cast<void>(nghttp3_conn_resume_stream(m_connection, kFirstRequestStreamId));
                 return takeOutgoingBytes();
             }
 
@@ -332,6 +345,8 @@ namespace AsynGyanis::Net
             static void onRandom(std::uint8_t *destination, std::size_t destinationLength);
             static nghttp3_ssize readRequestBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount, std::uint32_t *flags,
                                                 void *connectionUserData, void *streamUserData);
+            static nghttp3_ssize readTunnelBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount, std::uint32_t *flags,
+                                               void *connectionUserData, void *streamUserData);
 
             /**
              * @brief 造出请求的四个伪头
@@ -377,6 +392,11 @@ namespace AsynGyanis::Net
             std::string      m_requestBody;           ///< 待发的请求正文
             std::size_t      m_requestBodyOffset{0};  ///< 正文已交给 nghttp3 的字节数
             std::size_t      m_requestChunkByteCount{0}; ///< 每次回调给出的正文批大小
+
+            /// 隧道待发的 WebSocket 帧：一条一条交出去，隧道流到对端关流为止都不收尾
+            std::deque<std::string> m_tunnelFrames;
+            /// 已经交给 nghttp3 的那条帧：库里只借指针，交出去的这条得活到下一次回调
+            std::string m_inFlightTunnelFrame;
         };
 
         int Http3ClientPeer::onReceiveHeader(nghttp3_conn *, std::int64_t, std::int32_t, nghttp3_rcbuf *name, nghttp3_rcbuf *value, std::uint8_t,
@@ -445,6 +465,31 @@ namespace AsynGyanis::Net
             peer->m_requestBodyOffset += chunkByteCount;
             // 只有这一批就是最后一批时才收尾，否则后面还有正文
             *flags = (peer->m_requestBodyOffset >= peer->m_requestBody.size()) ? NGHTTP3_DATA_FLAG_EOF : NGHTTP3_DATA_FLAG_NONE;
+            return 1;
+        }
+
+        nghttp3_ssize Http3ClientPeer::readTunnelBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, const std::size_t vectorCount,
+                                                     std::uint32_t *flags, void *connectionUserData, void *)
+        {
+            auto *peer = static_cast<Http3ClientPeer *>(connectionUserData);
+            if (peer == nullptr || vectorCount == 0)
+            {
+                *flags = NGHTTP3_DATA_FLAG_EOF;
+                return 0;
+            }
+            if (peer->m_tunnelFrames.empty())
+            {
+                // 隧道还开着、这一批没帧可发：报「暂时没有」而不是 EOF——EOF 会把发送侧关掉，
+                // 而隧道要一直开着，之后 sendWebSocketFrame() 会唤醒这里再来取
+                return NGHTTP3_ERR_WOULDBLOCK;
+            }
+
+            // 库里只借走指针，所以这条帧要挪到成员里活到下一次回调（队列里那份随即销毁）
+            peer->m_inFlightTunnelFrame = std::move(peer->m_tunnelFrames.front());
+            peer->m_tunnelFrames.pop_front();
+            vectors[0].base = reinterpret_cast<std::uint8_t *>(peer->m_inFlightTunnelFrame.data());
+            vectors[0].len  = peer->m_inFlightTunnelFrame.size();
+            *flags          = NGHTTP3_DATA_FLAG_NONE;
             return 1;
         }
 
@@ -831,13 +876,18 @@ namespace AsynGyanis::Net
         // 隧道建立后要发的帧：带掩码的文本帧（客户端帧必须带掩码，RFC 6455 §5.3）
         const std::string                 payload = "hello";
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
-        std::vector<std::uint8_t>         webSocketFrame{0x81U, static_cast<std::uint8_t>(0x80U | payload.size())};
-        webSocketFrame.insert(webSocketFrame.end(), mask.begin(), mask.end());
-        for (std::size_t payloadIndex = 0; payloadIndex < payload.size(); ++payloadIndex)
+        const auto                        makeMaskedTextFrame = [](const std::string_view textPayload, const std::array<std::uint8_t, 4> &maskBytes)
         {
-            webSocketFrame.push_back(static_cast<std::uint8_t>(payload[payloadIndex]) ^ mask[payloadIndex % mask.size()]);
-        }
-        const std::string webSocketFrameText(reinterpret_cast<const char *>(webSocketFrame.data()), webSocketFrame.size());
+            std::vector<std::uint8_t> frame{0x81U, static_cast<std::uint8_t>(0x80U | textPayload.size())};
+            frame.insert(frame.end(), maskBytes.begin(), maskBytes.end());
+            for (std::size_t payloadIndex = 0; payloadIndex < textPayload.size(); ++payloadIndex)
+            {
+                frame.push_back(static_cast<std::uint8_t>(textPayload[payloadIndex]) ^ maskBytes[payloadIndex % maskBytes.size()]);
+            }
+            return frame;
+        };
+        const std::vector<std::uint8_t> firstFrameBytes = makeMaskedTextFrame(payload, mask);
+        const std::string               webSocketFrameText(firstFrameBytes.begin(), firstFrameBytes.end());
 
         const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", webSocketFrameText);
         ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
@@ -874,5 +924,29 @@ namespace AsynGyanis::Net
         EXPECT_EQ(static_cast<std::uint8_t>(echoedFrame[0]), 0x81U) << "回显的不是文本帧";
         EXPECT_EQ(static_cast<std::size_t>(static_cast<std::uint8_t>(echoedFrame[1])), payload.size()) << "回显帧的长度不对";
         EXPECT_EQ(echoedFrame.substr(2, payload.size()), payload) << "回显的负载与发出去的不一致";
+
+        // 第二条帧：首条交付完时出向队列已空、库正等着新数据，这一条能不能出去取决于新数据到达时
+        // 有没有把库叫回来（读回调报过「暂时没有」之后，只有 resume_stream 才会再叫它来取）
+        const std::string               secondPayload = "world!";
+        const std::size_t               sentCountBeforeSecond = sentStreamData.size();
+        const std::vector<std::uint8_t> secondFrameBytes = makeMaskedTextFrame(secondPayload, mask);
+        for (const CapturedStreamData &chunk: peer.sendWebSocketFrame(std::string(secondFrameBytes.begin(), secondFrameBytes.end())))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        for (std::size_t writtenIndex = sentCountBeforeSecond; writtenIndex < sentStreamData.size(); ++writtenIndex)
+        {
+            const CapturedStreamData &written = sentStreamData[writtenIndex];
+            if (written.streamId == kFirstRequestStreamId)
+            {
+                peer.receive(written.streamId, written.bytes, written.isEndStream);
+            }
+        }
+
+        const std::string_view bothEchoes = peer.response().body;
+        ASSERT_EQ(bothEchoes.size(), (2U + payload.size()) + (2U + secondPayload.size()))
+                << "第二条帧没有回显：首条交付完之后的出向帧没发出去";
+        EXPECT_EQ(bothEchoes.substr(2U + payload.size() + 2U, secondPayload.size()), secondPayload)
+                << "第二帧的回显负载与发出去的不一致";
     }
 } // namespace AsynGyanis::Net

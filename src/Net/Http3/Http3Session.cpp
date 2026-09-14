@@ -162,11 +162,11 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 流式响应的正文读取回调
-         * @details 从会话持有的缓冲里取；取不到就分两种情形：还没写完让 nghttp3 等下一次
-         *          resume_stream，写完则收尾。上一批交出去的字节经 add_write_offset 落到传输层之后
-         *          前缀就丢掉，因此缓冲不会随响应时长无限增长。
+         * @details 从会话持有的分片队列里取一片交出去；交出去的整片要等传输层接走之后才会丢
+         *          （见 noteStreamingResponseDrained），因此缓冲不随响应时长无限增长。
+         *          这里只交付队列头一片：nghttp3 把没写完的 vec 留在自己的 outq 里，下一次写会接着取。
          */
-        nghttp3_ssize readStreamingResponseBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, const std::size_t vectorCount,
+        nghttp3_ssize readStreamingResponseBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount,
                                                std::uint32_t *flags, void *, void *streamUserData) noexcept
         {
             auto *state = static_cast<Http3Session::StreamingResponse *>(streamUserData);
@@ -176,29 +176,27 @@ namespace AsynGyanis::Net
                 return 0;
             }
 
-            // 没有可交的字节。两种情形的收尾标记不同：
-            //   有终点的正文（流式响应）：EOF 会把发送侧关掉，而正文还没写完——因此这条路上
-            //     缓冲一空就被 block_stream 挡住（见 blockStreamingResponseIfDrained），不该走到这里；
-            //   没有终点的正文（WebSocket 隧道）：EOF 加 NO_END_STREAM 正好表达「这次没有，但流不结束」
-            if (state->deliveredByteCount >= state->bytes.size())
+            if (state->chunks.empty() || state->headOffset >= state->chunks.front().size())
             {
-                state->bytes.clear();
-                state->deliveredByteCount = 0;
-                *flags = state->isUnboundedBody ? (NGHTTP3_DATA_FLAG_EOF | NGHTTP3_DATA_FLAG_NO_END_STREAM) : NGHTTP3_DATA_FLAG_EOF;
-                return 0;
+                if (state->isFinished)
+                {
+                    // 写完了也没数据了：报 EOF 收尾（不带 NO_END_STREAM 才会真关掉发送侧）
+                    *flags = NGHTTP3_DATA_FLAG_EOF;
+                    return 0;
+                }
+
+                // 还没写完、这一批又没数据可交：报「暂时没有」。必须用 WOULDBLOCK——库里会保住这次
+                // 数据请求、等 resume_stream 再叫；改报 EOF 则会被当成「正文已写完」，数据请求也被消费掉，
+                // 之后的块再也发不出去（实测：隧道第二条帧、SSE 第二段都会卡死在首段之后）
+                return NGHTTP3_ERR_WOULDBLOCK;
             }
 
-            vectors[0].base = reinterpret_cast<std::uint8_t *>(state->bytes.data() + state->deliveredByteCount);
-            vectors[0].len  = state->bytes.size() - state->deliveredByteCount;
-            state->deliveredByteCount = state->bytes.size();
-            if (state->isFinished)
-            {
-                *flags = NGHTTP3_DATA_FLAG_EOF;
-            } else
-            {
-                // 隧道不能在这里顺手把发送侧关掉，否则第一帧之后就再也发不出东西
-                *flags = state->isUnboundedBody ? NGHTTP3_DATA_FLAG_NO_END_STREAM : NGHTTP3_DATA_FLAG_NONE;
-            }
+            const std::string &headChunk = state->chunks.front();
+            vectors[0].base              = reinterpret_cast<std::uint8_t *>(const_cast<char *>(headChunk.data()) + state->headOffset);
+            vectors[0].len               = headChunk.size() - state->headOffset;
+            state->headOffset            = headChunk.size();
+            // 最后一片且已写完：这一批就是正文末尾，报 EOF 收尾
+            *flags = state->isFinished && state->chunks.size() == 1 ? NGHTTP3_DATA_FLAG_EOF : NGHTTP3_DATA_FLAG_NONE;
             return 1;
         }
 
@@ -819,7 +817,7 @@ namespace AsynGyanis::Net
 
         // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧由数据读取回调按需拉走
         StreamingResponse &state = streamingResponseFor(streamId);
-        if (!submitStreamingResponseHead(streamId, state, response, /*isUnboundedBody=*/true))
+        if (!submitStreamingResponseHead(streamId, state, response))
         {
             co_return;
         }
@@ -887,9 +885,13 @@ namespace AsynGyanis::Net
         }
 
         StreamingResponse &state = streamingResponseFor(streamId);
-        state.bytes.append(frameBytes);
+        if (!frameBytes.empty())
+        {
+            state.chunks.emplace_back(frameBytes);
+            state.pendingByteCount += state.chunks.back().size();
+        }
         // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空
-        while (state.bytes.size() - state.deliveredByteCount > kStreamingResponseBufferByteCount)
+        while (state.pendingByteCount > kStreamingResponseBufferByteCount)
         {
             co_await ResponseSpaceAwaiter(&state);
         }
@@ -974,8 +976,7 @@ namespace AsynGyanis::Net
         return *entry;
     }
 
-    bool Http3Session::submitStreamingResponseHead(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response,
-                                                   const bool isUnboundedBody)
+    bool Http3Session::submitStreamingResponseHead(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response)
     {
         std::vector<std::string> names;
         std::vector<std::string> values;
@@ -1021,8 +1022,7 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        state.isHeadSent      = true;
-        state.isUnboundedBody = isUnboundedBody;
+        state.isHeadSent = true;
         return true;
     }
 
@@ -1041,22 +1041,22 @@ namespace AsynGyanis::Net
             co_return true;
         }
 
-        // 其余段落是 h1 分块帧成帧的正文（RFC 9112 §7.1）：h3 里没有分块帧这一层，
-        // 只把帧里的负载收下，随后发成 DATA
-        state.bytes.append(chunkFramePayload(chunk));
+        // 其余段落是 h1 分块帧成帧的正文（RFC 9112 §7.1）：h3 里没有分块帧这一层，只把帧里的负载收下。
+        // 一片一块内存，追加不搬动已经交给 nghttp3 的字节（它会把没写完的 vec 留到下一次写再取）
+        const std::string_view payload = chunkFramePayload(chunk);
+        if (!payload.empty())
+        {
+            state.chunks.emplace_back(payload);
+            state.pendingByteCount += state.chunks.back().size();
+        }
         // 有界缓冲：生产者跑得比网络快就挂起等排空，而不是把内存堆到把进程拖垮
-        while (state.bytes.size() - state.deliveredByteCount > kStreamingResponseBufferByteCount)
+        while (state.pendingByteCount > kStreamingResponseBufferByteCount)
         {
             co_await ResponseSpaceAwaiter(&state);
         }
 
-        // 有新正文了：先解挡（缓冲空过就被挡上了），再立刻刷一次让 nghttp3 把新数据取走。
-        // 解挡即「这条流又能写了」，剩下的交给紧接着的 flushPendingStreamData
-        if (nghttp3_conn_unblock_stream(m_connection, streamId) != 0)
-        {
-            LOG_WARN_FMT("Http3Session: 流 {} 的流式响应解不了挡（nghttp3 找不到该流），调用方应停止写入", streamId);
-            co_return false;
-        }
+        // 有新数据了：唤一声让库里再来取（读回调上次报的是 WOULDBLOCK，库在等这一声），随后立刻发出去
+        static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
         flushPendingStreamData();
         co_return true;
     }
@@ -1070,13 +1070,8 @@ namespace AsynGyanis::Net
         }
 
         state.isFinished = true;
-        // 收尾前先解挡：缓冲空过就被挡上了，不解挡 nghttp3 不会来取最后一批
-        if (nghttp3_conn_unblock_stream(m_connection, streamId) != 0)
-        {
-            LOG_WARN_FMT("Http3Session: 流 {} 的流式响应收尾时解不了挡（nghttp3 找不到该流）", streamId);
-            return;
-        }
-        // 缓冲要留到流关闭：nghttp3 借走的是它的指针，收尾之后还可能被重传读一次
+        // 收尾：唤一声让库把余下的取走、最后关掉发送侧（读回调此时会报 EOF）
+        static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
         flushPendingStreamData();
     }
 
@@ -1089,29 +1084,27 @@ namespace AsynGyanis::Net
         }
 
         StreamingResponse &state = *found->second;
+
+        // 整片交付完的才可以丢：这次 add_write_offset 说明传输层已经把读回调交出去的那段字节接走
+        // （QuicConnection 自己留着重传用的副本），nghttp3 不会再借这块内存。半片的留着，
+        // 下一次读回调从 headOffset 往后接着取。在读回调里丢会改掉还没被拷走的 vec，因此只在这里丢
+        while (!state.chunks.empty() && state.headOffset >= state.chunks.front().size())
+        {
+            state.pendingByteCount -= state.chunks.front().size();
+            state.chunks.pop_front();
+            state.headOffset = 0;
+        }
+
+        // 队列里还有分片：库里此刻正等着（读回调报过 WOULDBLOCK），唤一声它才会接着来取
+        if (!state.chunks.empty())
+        {
+            static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
+        }
+
         if (const std::coroutine_handle<> waiter = std::exchange(state.spaceWaiter, {}); waiter != nullptr)
         {
             waiter.resume();
         }
-
-        // 缓冲排空且还没写完时把这条流挡住：库里「要数据却给不出」是断言级错误
-        blockStreamingResponseIfDrained(streamId);
-    }
-
-    void Http3Session::blockStreamingResponseIfDrained(const std::int64_t streamId)
-    {
-        const auto found = m_streamingResponses.find(streamId);
-        if (found == m_streamingResponses.end())
-        {
-            return;
-        }
-
-        const StreamingResponse &state = *found->second;
-        if (state.isFinished || state.bytes.size() > state.deliveredByteCount)
-        {
-            return; // 写完的不必挡；还有没交出去的也不必挡
-        }
-        nghttp3_conn_block_stream(m_connection, streamId);
     }
 
     void Http3Session::submitResponse(const std::int64_t streamId, const HttpResponse &response)
