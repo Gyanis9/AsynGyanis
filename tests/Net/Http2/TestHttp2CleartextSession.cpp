@@ -1166,11 +1166,11 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：隧道期间同连接其它流的请求回 503（本类的单驱动循环无法并发服务两条流），
-     *        且隧道本身照旧收尾
-     * @details 这是扩容隧道那条已知取舍的可观测契约：宁可明确拒绝，也不把请求晾到隧道结束
+     * @brief 钉住：隧道期间同连接其它流上的普通请求照常服务（200 + 正文），隧道本身不受影响
+     * @details 隧道内联驱动这条连接时，驱动者职责由隧道协程承担：它自己读字节、喂正文，
+     *          并把其它流上已收齐的请求就地服务掉——对端因此能在隧道存续期间复用同一条连接
      */
-    TEST(Http2CleartextSession, RefusesConcurrentRequestsWhileTunnelIsOpen)
+    TEST(Http2CleartextSession, ServesConcurrentStreamsWhileTunnelIsOpen)
     {
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
         {
@@ -1237,8 +1237,9 @@ namespace AsynGyanis::Net
                                      kWaitTimeout)) << "隧道期间的另一条流没有得到应答";
 
         HpackDecoder responseDecoder;
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "503")
-                << "隧道期间其它流应当被明确拒绝，而不是晾着";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200")
+                << "隧道期间其它流应当照常服务，而不是被拒绝";
+        EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello") << "其它流的正文串了";
 
         // 隧道本身不受影响：仍能收发帧，并在 Close 之后正常收尾
         ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "still-alive")}, 1U),
@@ -1248,7 +1249,7 @@ namespace AsynGyanis::Net
                                      {
                                          return !responseDataPayload(receivedFrames, 1U).empty();
                                      },
-                                     kWaitTimeout)) << "隧道在拒绝其它流之后失效了";
+                                     kWaitTimeout)) << "隧道在服务其它流之后失效了";
         const std::pair<int, std::string> echoedFrame = parseServerFrame(responseDataPayload(frames, 1U));
         EXPECT_EQ(echoedFrame.second, "still-alive");
 

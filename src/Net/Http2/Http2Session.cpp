@@ -458,48 +458,53 @@ namespace AsynGyanis::Net
     {
         for (const Http2ReceivedData &receivedData: m_connection.takeReceivedData())
         {
-            const auto requestIterator = m_pendingRequests.find(receivedData.streamId);
-            if (requestIterator != m_pendingRequests.end())
-            {
-                PendingRequest &pending = requestIterator->second;
-                const std::size_t bodyByteCount = pending.request.body().size() + receivedData.data.size();
-                if (m_parserLimits.maximumBodySize != 0 && bodyByteCount > m_parserLimits.maximumBodySize)
-                {
-                    // 与 HTTP/1.1 侧同口径：体量越界的请求回 413。这里只标记与记日志，
-                    // 响应在服务阶段统一发出；此后到达的 DATA 一律丢弃（但仍要还窗口）
-                    if (!pending.isBodyTooLarge)
-                    {
-                        LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答",
-                                      receivedData.streamId, m_parserLimits.maximumBodySize);
-                        pending.isBodyTooLarge = true;
-                    }
-                }
-                // 全局在途正文预算：与 HTTP/1.1 侧同一口径，只是记账挂在每条流上。
-                // 同样必须在收的过程中判——等 END_STREAM 再判，内存已经占住了
-                if (!pending.isBodyTooLarge && !pending.isBudgetExceeded && !pending.bodyBudget.growTo(bodyByteCount))
-                {
-                    LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答",
-                                  receivedData.streamId, m_memoryBudget->reservedByteCount());
-                    pending.isBudgetExceeded = true;
-                }
-                if (!pending.isBodyTooLarge && !pending.isBudgetExceeded)
-                {
-                    pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
-                }
-                if (receivedData.endStream)
-                {
-                    pending.isRemoteEndStream = true;
-                }
-            }
+            absorbOneReceivedData(receivedData);
+        }
+    }
 
-            // 消费即还窗口：按帧负载原长（含 padding）报量，否则对端的发送窗口会一路耗尽、
-            // 大请求停在半途等本端的 WINDOW_UPDATE
-            std::string errorText;
-            if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &errorText))
+    void Http2Session::absorbOneReceivedData(const Http2ReceivedData &receivedData)
+    {
+        const auto requestIterator = m_pendingRequests.find(receivedData.streamId);
+        if (requestIterator != m_pendingRequests.end())
+        {
+            PendingRequest &pending = requestIterator->second;
+            const std::size_t bodyByteCount = pending.request.body().size() + receivedData.data.size();
+            if (m_parserLimits.maximumBodySize != 0 && bodyByteCount > m_parserLimits.maximumBodySize)
             {
-                LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
-                              receivedData.flowControlByteCount, errorText);
+                // 与 HTTP/1.1 侧同口径：体量越界的请求回 413。这里只标记与记日志，
+                // 响应在服务阶段统一发出；此后到达的 DATA 一律丢弃（但仍要还窗口）
+                if (!pending.isBodyTooLarge)
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答",
+                                  receivedData.streamId, m_parserLimits.maximumBodySize);
+                    pending.isBodyTooLarge = true;
+                }
             }
+            // 全局在途正文预算：与 HTTP/1.1 侧同一口径，只是记账挂在每条流上。
+            // 同样必须在收的过程中判——等 END_STREAM 再判，内存已经占住了
+            if (!pending.isBodyTooLarge && !pending.isBudgetExceeded && !pending.bodyBudget.growTo(bodyByteCount))
+            {
+                LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答",
+                              receivedData.streamId, m_memoryBudget->reservedByteCount());
+                pending.isBudgetExceeded = true;
+            }
+            if (!pending.isBodyTooLarge && !pending.isBudgetExceeded)
+            {
+                pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
+            }
+            if (receivedData.endStream)
+            {
+                pending.isRemoteEndStream = true;
+            }
+        }
+
+        // 消费即还窗口：按帧负载原长（含 padding）报量，否则对端的发送窗口会一路耗尽、
+        // 大请求停在半途等本端的 WINDOW_UPDATE
+        std::string errorText;
+        if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &errorText))
+        {
+            LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
+                          receivedData.flowControlByteCount, errorText);
         }
     }
 
@@ -943,22 +948,27 @@ namespace AsynGyanis::Net
                     {
                         isRemoteEndStream = true;
                     }
+                    // 隧道自己的载荷不进请求体，但窗口照还：不还的话连接级接收窗口会随隧道流量
+                    // 单调耗尽，对端发到一半停住等一个永不出现的 WINDOW_UPDATE
+                    std::string creditErrorText;
+                    if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &creditErrorText))
+                    {
+                        LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
+                                      receivedData.flowControlByteCount, creditErrorText);
+                    }
+                    continue;
                 }
-                // 隧道期间读循环由本协程驱动，absorbReceivedData() 的「消费即还窗口」在这里也得做：
-                // 不还的话连接级接收窗口会随隧道流量单调耗尽，对端发到一半停住等一个永不出现的
-                // WINDOW_UPDATE。别的流的正文虽然直接丢弃（其请求已被 503 拒绝），窗口一样要还
-                std::string creditErrorText;
-                if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &creditErrorText))
-                {
-                    LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
-                                  receivedData.flowControlByteCount, creditErrorText);
-                }
+                // 其它流的正文：按与主循环完全相同的口径累积与还窗口——隧道期间它们同样要被服务
+                absorbOneReceivedData(receivedData);
             }
 
             absorbPendingRequests();
-            refuseRequestsDuringTunnel(streamId);
-            // 503 是本轮中段才排进待发字节的，必须立刻写出：本轮开头那次写出已经在它之前发生，
-            // 若等下一段字节到达才发，被拒的对端会一直等到空闲超时（它正等着这条响应）
+            // 隧道期间本协程即这条连接的驱动者：其它流上已收齐的请求就地服务掉，
+            // 而不是把它们晾到隧道结束（第二条隧道仍按 503 拒绝，见该函数注释）
+            if (!co_await serveOtherStreamsDuringTunnel(streamId))
+            {
+                break;
+            }
             if (!co_await flushOutgoingBytes())
             {
                 break;
@@ -1001,7 +1011,7 @@ namespace AsynGyanis::Net
         co_return RequestServeOutcome::Served;
     }
 
-    void Http2Session::refuseRequestsDuringTunnel(const std::uint32_t tunnelStreamId)
+    Core::Task<bool> Http2Session::serveOtherStreamsDuringTunnel(const std::uint32_t tunnelStreamId)
     {
         for (auto requestIterator = m_pendingRequests.begin(); requestIterator != m_pendingRequests.end();)
         {
@@ -1012,19 +1022,45 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            // 本类只有一个驱动循环，隧道期间无法并发服务别的流：明确回 503（空正文），
-            // 而不是把请求晾到隧道结束——那对端只会看到它永远不返回
-            std::string errorText;
-            const Http2ResponseSendStatus sendStatus = m_connection.sendResponseHeaders(pending.streamId, 503U, {}, true, &errorText);
-            LOG_INFO_FMT("Http2Session: WebSocket 隧道（流 {}）期间收到流 {} 的请求，已回 503：一条连接上同时跑隧道与普通请求"
-                         "需要按流建执行体，本片不做，请对端另开连接",
-                         tunnelStreamId, pending.streamId);
-            if (sendStatus != Http2ResponseSendStatus::Sent)
+            // 第二条隧道不在本片范围：一条连接上同时跑两条隧道要嵌套驱动循环，
+            // 明确回 503 而不是把它晾着
+            if (pending.isWebSocketTunnel)
             {
-                LOG_DEBUG_FMT("Http2Session: 流 {} 的 503 未能排入待发字节。原因：{}", pending.streamId, errorText);
+                std::string errorText;
+                const Http2ResponseSendStatus sendStatus = m_connection.sendResponseHeaders(pending.streamId, 503U, {}, true, &errorText);
+                LOG_INFO_FMT("Http2Session: WebSocket 隧道（流 {}）期间收到流 {} 的扩展 CONNECT，已回 503：一条连接上"
+                             "同时跑两条隧道需要嵌套驱动循环，本片不做，请对端另开连接",
+                             tunnelStreamId, pending.streamId);
+                if (sendStatus != Http2ResponseSendStatus::Sent)
+                {
+                    LOG_DEBUG_FMT("Http2Session: 流 {} 的 503 未能排入待发字节。原因：{}", pending.streamId, errorText);
+                }
+                requestIterator = m_pendingRequests.erase(requestIterator);
+                continue;
             }
+
+            // 正文还没收齐的流继续等：本协程的下一轮读会把剩余 DATA 攒进来
+            if (!pending.isRemoteEndStream && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
+            {
+                ++requestIterator;
+                continue;
+            }
+
+            // 就地服务：响应排进待发字节，由隧道循环本轮的写出送到对端
+            HttpRequest *const previousServingRequest = m_servingRequest;
+            setBusy(true);
+            m_servingRequest = &pending.request;
+            const RequestServeOutcome serveOutcome = co_await serveOneRequest(pending);
+            m_servingRequest = previousServingRequest;
+            setBusy(false);
+
             requestIterator = m_pendingRequests.erase(requestIterator);
+            if (serveOutcome == RequestServeOutcome::ConnectionUnusable)
+            {
+                co_return false;
+            }
         }
+        co_return true;
     }
 
     HttpRequest Http2Session::mapToHttpRequest(const Http2Request &http2Request)

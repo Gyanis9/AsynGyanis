@@ -225,6 +225,14 @@ namespace AsynGyanis::Net
         void absorbReceivedData();
 
         /**
+         * @brief 处理单条接收正文：按上限与预算判定后追加进对应请求，并归还接收窗口
+         * @details 抽成单条形式是为隧道路径复用：隧道期间读循环由隧道协程驱动，
+         *          同连接其它流的正文要按与主循环完全相同的口径累积与还窗口
+         * @param receivedData 连接层交出的一条接收数据
+         */
+        void absorbOneReceivedData(const Http2ReceivedData &receivedData);
+
+        /**
          * @brief 把正文已收齐（或已超限）的请求逐条交给路由并发送响应
          *
          * @details 分两轮：先服务全部非隧道请求（各自把响应排入待发字节），再服务隧道请求——
@@ -291,21 +299,25 @@ namespace AsynGyanis::Net
          * @param streamId 该扩展 CONNECT 所属的流
          * @param pending 待服务的请求（其正文缓冲里可能已有对端在 200 之前抢先发来的帧）
          * @return RequestServeOutcome Served（隧道已按 RFC 6455 收尾）或 ConnectionUnusable
-         * @note **隧道期间这条会话被它独占**：本类只有一个驱动循环，要同时服务同连接的其它流就得给每条流
-         *       各建一个执行体（不在本片范围）。因此隧道期间其它流的请求一律回 503 并记日志，而不是把它们
-         *       晾到隧道结束——那对端只会看到请求永不返回
+         * @note 隧道期间本协程就是这条连接的驱动者，因此**同连接的其它流照常服务**（见
+         *       serveOtherStreamsDuringTunnel()）：普通请求就地 co_await 服务掉，第二条隧道仍回 503
          * @note 隧道在服务阶段**内联跑完**（由 servePendingRequests() 直接 co_await）：读循环与写循环
          *       都在本协程里，主循环在隧道存续期间不再拿回执行权。因此隧道期间本协程就是这条连接的驱动者：
          *       自己读传输字节、喂连接层、把本流的 DATA 交给解码器、归还接收窗口，并调用
-         *       refuseRequestsDuringTunnel() 完成主循环本该做的拒绝
+         *       serveOtherStreamsDuringTunnel() 就地服务同连接其它流上已收齐的请求
          */
         [[nodiscard]] Core::Task<RequestServeOutcome> serveWebSocketTunnel(std::uint32_t streamId, PendingRequest &pending);
 
         /**
-         * @brief 隧道期间把同连接上其它流的请求回 503（本类无法并发服务两条流）
+         * @brief 隧道期间就地服务同连接其它流上已收齐的请求（隧道协程即本连接的驱动者）
+         * @details 隧道内联驱动期间，驱动者职责（喂正文、还窗口、服务请求）都由隧道协程承担：
+         *          这里把「正文已收齐」的普通请求逐条 co_await 服务掉，响应随即随本轮写出上线。
+         *          正文没收齐的流留在表里，等本协程的下一轮读继续攒。
          * @param tunnelStreamId 正在跑隧道的那条流，跳过它
+         * @return true 全部就绪请求已服务完；false 连接已不可用，调用方应停止隧道循环
+         * @note 第二条隧道仍回 503：一条连接上同时跑两条隧道需要嵌套驱动循环，不在本片范围
          */
-        void refuseRequestsDuringTunnel(std::uint32_t tunnelStreamId);
+        [[nodiscard]] Core::Task<bool> serveOtherStreamsDuringTunnel(std::uint32_t tunnelStreamId);
 
         /**
          * @brief h2 版流式发送回调：把 HttpResponse::writeChunk() 交出的段落发成 HTTP/2 帧
