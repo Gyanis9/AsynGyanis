@@ -25,6 +25,11 @@ add_library(Net STATIC
 # 响应压缩用 zlib（gzip 容器，RFC 1952）；依赖由 Conan 提供，本地缓存里已有
 find_package(ZLIB REQUIRED)
 
+# 登记随包导出的外部依赖（按组件记）：静态库把 PRIVATE 链接的 zlib 以 $<LINK_ONLY:...>
+# 传给最终可执行文件，消费方因此同样要能找到 ZLIB::ZLIB——漏登记会在消费方 generate 阶段
+# 就以「目标未定义」失败，而不是等到链接期
+set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Net ZLIB)
+
 # Net 建立在 Core 的事件循环与协程 I/O 之上；Platform 与 Base 由 Core 传递而来
 target_link_libraries(Net PUBLIC
         Core

@@ -24,8 +24,8 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# 登记随包导出的外部依赖：消费方链接本模块时也要能找到 Threads::Threads
-set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies Threads)
+# 登记随包导出的外部依赖（按组件记）：消费方链接本模块时也要能找到 Threads::Threads
+set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Platform Threads)
 
 target_link_libraries(Platform PUBLIC
         Threads::Threads

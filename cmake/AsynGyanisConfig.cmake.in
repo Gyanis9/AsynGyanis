@@ -2,10 +2,37 @@
 
 include(CMakeFindDependencyMacro)
 
-# 五个模块都是静态库，接口里留着外部依赖的目标名（OpenSSL::SSL、SQLite::SQLite3 等），
-# 这里逐个带出来，否则消费方会在链接期以「找不到目标或符号」失败。
-# 清单由各模块启用依赖时登记，因此只包含这个包真正编译进去的那些驱动。
-@ASYN_CONFIG_DEPENDENCIES@
+# 五个模块都是静态库，接口里留着外部依赖的目标名（OpenSSL::SSL、ZLIB::ZLIB 等），
+# 这里带出**被请求组件及其传递依赖组件**真正需要的那些：只要 Base 的消费方不必去找 OpenSSL。
+# 每个组件的外部依赖清单由各模块 configure 期按组件登记（见顶层 CMakeLists 的组件依赖图），
+# 因此这里不会出现「清单里漏了某个模块的依赖」这类漂移（例如 Net 私有链接的 zlib）。
+@ASYN_CONFIG_COMPONENT_DEPENDENCIES@
+
+# 本机 CMake 的 install(EXPORT) 不支持 COMPONENTS，组件归属在这里声明：
+# 已知组件一律标记为可用，check_required_components 因此仍能挡住写错的组件名
+set(AsynGyanis_Platform_FOUND TRUE)
+set(AsynGyanis_Base_FOUND TRUE)
+set(AsynGyanis_Core_FOUND TRUE)
+set(AsynGyanis_Net_FOUND TRUE)
+set(AsynGyanis_Database_FOUND TRUE)
+
+# 未指定组件时按全量处理：find_package(AsynGyanis) 的旧用法行为不变
+if(AsynGyanis_FIND_COMPONENTS)
+    set(_asyn_required_dependencies "")
+    foreach(_asyn_component IN LISTS AsynGyanis_FIND_COMPONENTS)
+        if(DEFINED AsynGyanis_${_asyn_component}_DEPENDENCIES)
+            list(APPEND _asyn_required_dependencies ${AsynGyanis_${_asyn_component}_DEPENDENCIES})
+        endif()
+    endforeach()
+else()
+    set(_asyn_required_dependencies @ASYN_CONFIG_ALL_DEPENDENCIES@)
+endif()
+list(REMOVE_DUPLICATES _asyn_required_dependencies)
+
+foreach(_asyn_dependency IN LISTS _asyn_required_dependencies)
+    find_dependency(${_asyn_dependency})
+endforeach()
+unset(_asyn_required_dependencies)
 
 include("${CMAKE_CURRENT_LIST_DIR}/AsynGyanisTargets.cmake")
 

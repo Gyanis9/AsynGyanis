@@ -146,17 +146,40 @@ endif()
 # ============================================================================
 # 对外发布：安装规则与 CMake 包配置
 # ============================================================================
-# 五个模块库与公开头文件随安装落到 <前缀>/lib 与 <前缀>/include，并导出
-# AsynGyanis::Platform / Base / Core / Net / Database，
-# 外部工程即可 find_package(AsynGyanis) 后直接链接，无需再自行拼 include 路径与依赖。
+# 五个模块库与公开头文件随安装落到 <前缀>/lib 与 <前缀>/include，并按组件导出
+# AsynGyanis::Platform / Base / Core / Net / Database：外部工程 find_package(AsynGyanis) 后
+# 可直接链接；只请求部分组件（COMPONENTS）时，包配置只为被请求的组件及其传递依赖组件
+# 拉取外部依赖（见下面的组件依赖图）。
 # 关闭后只保留纯构建行为：make install / cmake --install 不再产出任何东西。
 option(ASYN_ENABLE_INSTALL "生成安装规则与 CMake 包配置，供外部工程 find_package 消费" ON)
 
 if(ASYN_ENABLE_INSTALL)
     include(CMakePackageConfigHelpers)
 
-    install(TARGETS Platform Base Core Net Database
-            EXPORT AsynGyanisTargets
+    # 每个模块单独一条 install(TARGETS) 并标注自己的组件名（COMPONENT 是安装期组件；
+    # 本机 CMake 的 install(TARGETS/EXPORT) 不支持复数 COMPONENTS，组件门控因此在
+    # 包配置模板里按请求的组件自行判定）
+    install(TARGETS Platform EXPORT AsynGyanisTargets COMPONENT Platform
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(TARGETS Base EXPORT AsynGyanisTargets COMPONENT Base
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(TARGETS Core EXPORT AsynGyanisTargets COMPONENT Core
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(TARGETS Net EXPORT AsynGyanisTargets COMPONENT Net
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(TARGETS Database EXPORT AsynGyanisTargets COMPONENT Database
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
             LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -169,14 +192,52 @@ if(ASYN_ENABLE_INSTALL)
             FILES_MATCHING PATTERN "*.h"
     )
 
-    # 消费方同样需要的外部依赖：各模块启用依赖时把自己登记进 GLOBAL 属性
-    # （imported 目标只在创建它的目录及其子目录可见，根作用域 here 看不见，
-    #  所以不能在本文件里用 if(TARGET ...) 反查），这里统一转成 find_dependency
-    get_property(ASYN_PACKAGE_DEPENDENCIES GLOBAL PROPERTY AsynGyanisPackageDependencies)
-    set(ASYN_CONFIG_DEPENDENCIES "")
-    foreach(dependency_name IN LISTS ASYN_PACKAGE_DEPENDENCIES)
-        string(APPEND ASYN_CONFIG_DEPENDENCIES "find_dependency(${dependency_name})\n")
+    # 组件依赖图（谁链接谁）；外部依赖清单不在这里重复——各模块启用依赖时已按组件登记进
+    # GLOBAL 属性（imported 目标只在创建它的目录及其子目录可见，根作用域 here 看不见，
+    # 所以不能在本文件里用 if(TARGET ...) 反查）
+    set(ASYN_PACKAGE_COMPONENTS Platform Base Core Net Database)
+    set(ASYN_COMPONENT_REQUIRES_Base Platform)
+    set(ASYN_COMPONENT_REQUIRES_Core Base)
+    set(ASYN_COMPONENT_REQUIRES_Net Core)
+    set(ASYN_COMPONENT_REQUIRES_Database Core)
+
+    # 为每个组件求出「本身 + 传递依赖组件」的外部依赖并集：只要 Base 的消费方不该去找 OpenSSL
+    set(ASYN_CONFIG_COMPONENT_DEPENDENCIES "")
+    set(ASYN_CONFIG_ALL_DEPENDENCIES "")
+    foreach(component IN LISTS ASYN_PACKAGE_COMPONENTS)
+        set(pendingComponents "${component};${ASYN_COMPONENT_REQUIRES_${component}}")
+        set(visitedComponents "")
+        set(componentDependencies "")
+        while(pendingComponents)
+            list(POP_FRONT pendingComponents currentComponent)
+            if(currentComponent IN_LIST visitedComponents)
+                continue()
+            endif()
+            list(APPEND visitedComponents "${currentComponent}")
+            get_property(currentDependencies GLOBAL PROPERTY AsynGyanisPackageDependencies_${currentComponent})
+            list(APPEND componentDependencies ${currentDependencies})
+            list(APPEND pendingComponents ${ASYN_COMPONENT_REQUIRES_${currentComponent}})
+        endwhile()
+        list(REMOVE_DUPLICATES componentDependencies)
+        string(APPEND ASYN_CONFIG_COMPONENT_DEPENDENCIES "set(AsynGyanis_${component}_DEPENDENCIES ${componentDependencies})\n")
+        list(APPEND ASYN_CONFIG_ALL_DEPENDENCIES ${componentDependencies})
     endforeach()
+    list(REMOVE_DUPLICATES ASYN_CONFIG_ALL_DEPENDENCIES)
+    # 全量清单在模板里当字面量用（未请求组件时走这条，保持 find_package(AsynGyanis) 的旧行为）
+    string(REPLACE ";" " " ASYN_CONFIG_ALL_DEPENDENCIES "${ASYN_CONFIG_ALL_DEPENDENCIES}")
+
+    # 容器注解开关是 ABI 契约（原因见上面的 sanitizers 段）：Debug+MSVC 下库以这三条编译，
+    # 消费方不带就会在链接期以 LNK2038（annotate_string/vector/optional 值不匹配）失败。
+    # 因此随导出接口按 Debug 配置带出；非 Debug 构建的对象本来就没有这些标记
+    if(MSVC AND ENABLE_SANITIZERS)
+        foreach(asyn_module Platform Base Core Net Database)
+            target_compile_definitions(${asyn_module} INTERFACE
+                    $<$<CONFIG:Debug>:_DISABLE_VECTOR_ANNOTATION>
+                    $<$<CONFIG:Debug>:_DISABLE_STRING_ANNOTATION>
+                    $<$<CONFIG:Debug>:_DISABLE_OPTIONAL_ANNOTATION>
+            )
+        endforeach()
+    endif()
 
     configure_package_config_file(
             ${CMAKE_SOURCE_DIR}/cmake/AsynGyanisConfig.cmake.in

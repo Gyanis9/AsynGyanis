@@ -10,8 +10,8 @@
 find_package(SQLite3 REQUIRED)
 find_package(hiredis QUIET)
 
-# 登记随包导出的外部依赖：消费方链接 Database 时也要能找到 SQLite::SQLite3
-set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies SQLite3)
+# 登记随包导出的外部依赖（按组件记）：消费方链接 Database 时也要能找到 SQLite::SQLite3
+set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database SQLite3)
 
 # libmysqlclient 是可选依赖：Conan 缓存或系统里存在匹配本 profile 的包时编译真实驱动，
 # 探测不到就退化为「每个入口都给出中文错误」的桩实现。因此这里用 QUIET 探测 +
@@ -55,7 +55,7 @@ endif ()
 if (TARGET libmysqlclient::libmysqlclient)
     target_link_libraries(Database PUBLIC libmysqlclient::libmysqlclient)
     target_compile_definitions(Database PUBLIC DATABASE_HAS_MYSQL=1)
-    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies libmysqlclient)
+    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database libmysqlclient)
     message(STATUS "Database: 启用 MySQL 驱动（libmysqlclient）")
 elseif (DATABASE_WITH_MYSQL)
     message(STATUS "Database: 未找到 libmysqlclient，MySQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
@@ -66,7 +66,7 @@ endif ()
 if (TARGET hiredis::hiredis)
     target_link_libraries(Database PUBLIC hiredis::hiredis)
     target_compile_definitions(Database PUBLIC DATABASE_HAS_REDIS=1)
-    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies hiredis)
+    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database hiredis)
     message(STATUS "Database: 启用 Redis 驱动（hiredis）")
 else ()
     message(STATUS "Database: 未找到 hiredis，Redis 驱动退化为报错桩")
