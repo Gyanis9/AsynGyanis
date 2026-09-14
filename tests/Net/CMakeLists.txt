@@ -21,6 +21,7 @@ add_executable(TestNet
         Http/TestHttpServerLimits.cpp
         Http/TestGzip.cpp
         Http/TestCompressionCodecs.cpp
+        Quic/TestQuicServer.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp

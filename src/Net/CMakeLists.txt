@@ -15,6 +15,7 @@ add_subdirectory(Http)
 add_subdirectory(Tcp)
 add_subdirectory(WebSocket)
 add_subdirectory(Http2)
+add_subdirectory(Quic)
 
 get_property(NET_SOURCES GLOBAL PROPERTY AsynGyanisNetSources)
 
@@ -42,6 +43,15 @@ target_link_libraries(Net PUBLIC
 # PRIVATE 就够了：压缩库只出现在 Gzip.cpp / Compression.cpp 里；静态库会把这份依赖
 # 以 LINK_ONLY 传给最终可执行文件（消费方的可见性由上面的清单登记保证）
 target_link_libraries(Net PRIVATE ZLIB::ZLIB zstd::libzstd brotli::brotli)
+
+# QUIC 传输层：ngtcp2 随仓库构建（third_party 在 src 之前进来），其 OpenSSL 胶水随 ngtcp2_static 带出。
+# 这里自己 find_package 一次：OpenSSL 目前是靠 Core 带进来的，显式声明过依赖关系才不会随模块顺序改变而失效。
+# 用 PUBLIC 而不是 PRIVATE：QuicConnection.h 直接暴露 ngtcp2 类型（ngtcp2_conn、path 等），
+# 消费方（测试、样本）也要拿到 ngtcp2/OpenSSL 的头路径；NGTCP2_STATICLIB 同理必须公开——
+# 漏了它，消费方按 dllimport 声明，链接期满屏 __imp_ngtcp2_* 未解析
+find_package(OpenSSL REQUIRED)
+target_link_libraries(Net PUBLIC ngtcp2_static ngtcp2_crypto_ossl_static OpenSSL::SSL OpenSSL::Crypto)
+target_compile_definitions(Net PUBLIC NGTCP2_STATICLIB)
 
 target_include_directories(Net PUBLIC
         # 构建期用仓库内的 src；安装后改用 <前缀>/include，两者都是各模块头文件的根
