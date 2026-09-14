@@ -208,7 +208,8 @@ int main(int argc, char **argv)
         LOG_INFO("            超出的请求回 503，明文与 HTTPS 两端都生效");
         LOG_INFO("  --workers N 用 N 个 worker 进程服务同一个端口（默认 1 = 单进程）：");
         LOG_INFO("            master 只做编排不服务，各 worker 靠 SO_REUSEPORT 分别监听同一端口，");
-        LOG_INFO("            SIGTERM/SIGINT 会让 worker 各自体面退出；本机实测只在 Linux 可用");
+        LOG_INFO("            SIGTERM/SIGINT 会让 worker 各自体面退出；");
+        LOG_INFO("            注意进程间不共享状态：单来源限额、限流上限与指标计数都是每进程一份");
         LOG_INFO("  --worker 内部开关：由 master 传给 worker，用户不必手写");
         LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
         LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
