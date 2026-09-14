@@ -4,7 +4,8 @@
 #include <cstdlib>
 #include <vector>
 
-#if ASYN_PLATFORM_LINUX
+// 非 Windows 的平台都从 unistd.h 取 getpid/readlink（不止 Linux 用得到这两个）
+#if !ASYN_PLATFORM_WIN32
 #include <unistd.h>
 #endif
 
@@ -51,6 +52,17 @@ namespace AsynGyanis::Platform
             return std::nullopt;
         }
         return std::string(rawValue);
+#endif
+    }
+
+    long ProcessInfo::currentProcessId() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // GetCurrentProcessId 不失败，直接返回
+        return static_cast<long>(::GetCurrentProcessId());
+#else
+        // getpid 在 POSIX 上不失败（永远返回有效进程号）
+        return static_cast<long>(::getpid());
 #endif
     }
 } // namespace AsynGyanis::Platform

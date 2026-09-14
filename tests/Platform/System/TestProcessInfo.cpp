@@ -55,4 +55,16 @@ namespace AsynGyanis::Platform
     {
         EXPECT_NO_THROW(ProcessInfo::environmentVariable(""));
     }
+
+    /**
+     * @brief 当前进程号：非零且两次取值一致（同一次运行里它不该变）
+     */
+    TEST(ProcessInfo, CurrentProcessIdIsStableAndNonZero)
+    {
+        const long firstProcessId  = ProcessInfo::currentProcessId();
+        const long secondProcessId = ProcessInfo::currentProcessId();
+
+        EXPECT_GT(firstProcessId, 0L) << "当前进程号应为正数";
+        EXPECT_EQ(firstProcessId, secondProcessId) << "同一次运行里进程号不该变";
+    }
 } // namespace AsynGyanis::Platform

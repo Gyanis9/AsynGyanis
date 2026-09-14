@@ -37,5 +37,13 @@ namespace AsynGyanis::Platform
          * @return std::optional<std::string> 变量存在时返回其值，未定义时返回 std::nullopt
          */
         static std::optional<std::string> environmentVariable(const std::string &variableName);
+
+        /**
+         * @brief 取当前进程的进程号
+         * @details 日志与诊断要能区分「哪个进程写的」：多进程 worker 模型下同一份配置会跑出多个进程，
+         *          没有进程号就只能靠时间顺序猜。
+         * @return long 进程号；平台调用失败时返回 0（调用方按「不知道」处理，不要当成合法进程号）
+         */
+        static long currentProcessId() noexcept;
     };
 } // namespace AsynGyanis::Platform
