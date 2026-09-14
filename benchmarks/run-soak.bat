@@ -23,6 +23,24 @@ set SERVER_THREADS=%~2
 if "%SERVER_THREADS%"=="" set SERVER_THREADS=4
 if "%ASYN_SOAK_BUILD%"=="" set ASYN_SOAK_BUILD=debug
 
+rem Rate-limit mode: start the server with a small token bucket so soak.py can prove
+rem that 429 + retry-after actually happen. Load stages are skipped in that mode: with a
+rem 2 req/s bucket they would all be rejected by the limiter itself.
+set RATE_LIMIT_ARGS=
+set SOAK_EXTRA_ARGS=
+if "%ASYN_SOAK_RATE_LIMIT%"=="1" (
+    rem Inside a parenthesized block cmd expands %VAR% at parse time, so only variables set
+    rem before the block (TEMP, SERVER_PORT) may be referenced here; the two variables set
+    rem below are read after the block, where expansion is correct.
+    > "%TEMP%\asyn-soak-ratelimit-%SERVER_PORT%.yaml" echo server:
+    >> "%TEMP%\asyn-soak-ratelimit-%SERVER_PORT%.yaml" echo   rate_limit:
+    >> "%TEMP%\asyn-soak-ratelimit-%SERVER_PORT%.yaml" echo     requests_per_second: 2
+    >> "%TEMP%\asyn-soak-ratelimit-%SERVER_PORT%.yaml" echo     burst_capacity: 2
+    set RATE_LIMIT_ARGS=--config "%TEMP%\asyn-soak-ratelimit-%SERVER_PORT%.yaml"
+    set SOAK_EXTRA_ARGS=--skip-load-stages --rate-limit-burst 20
+    echo Rate limit mode: %TEMP%\asyn-soak-ratelimit-%SERVER_PORT%.yaml (2 requests/s, burst 2)
+)
+
 set REPOSITORY_ROOT=%~dp0..
 set SERVER_PATH=%REPOSITORY_ROOT%\build\%ASYN_SOAK_BUILD%\samples\echo_server.exe
 if not exist "%SERVER_PATH%" (
@@ -33,9 +51,9 @@ if not exist "%SERVER_PATH%" (
 rem The server's output must land in a file: a minimized console window is gone the
 rem moment the process is killed, and then a crash during the soak leaves no evidence
 set SERVER_LOG=%TEMP%\asyn-soak-server-%SERVER_PORT%.log
-echo Starting %SERVER_PATH% --port %SERVER_PORT% --threads %SERVER_THREADS%
+echo Starting %SERVER_PATH% --port %SERVER_PORT% --threads %SERVER_THREADS% %RATE_LIMIT_ARGS%
 echo Server log: %SERVER_LOG%
-start "AsynGyanis soak server" /MIN cmd /c ""%SERVER_PATH%" --port %SERVER_PORT% --threads %SERVER_THREADS% > "%SERVER_LOG%" 2>&1"
+start "AsynGyanis soak server" /MIN cmd /c ""%SERVER_PATH%" --port %SERVER_PORT% --threads %SERVER_THREADS% %RATE_LIMIT_ARGS% > "%SERVER_LOG%" 2>&1"
 
 rem Wait for the server process: up to 30 seconds, one try per second
 set SERVER_PID=
@@ -51,7 +69,7 @@ if not defined SERVER_PID (
 )
 echo Server pid %SERVER_PID%
 
-python "%REPOSITORY_ROOT%\benchmarks\soak.py" --port %SERVER_PORT% --pid %SERVER_PID% %3 %4 %5 %6 %7 %8 %9
+python "%REPOSITORY_ROOT%\benchmarks\soak.py" --port %SERVER_PORT% --pid %SERVER_PID% %SOAK_EXTRA_ARGS% %3 %4 %5 %6 %7 %8 %9
 set SOAK_EXIT_CODE=%ERRORLEVEL%
 
 rem Failures are usually the server's fault: show what it printed before it went away

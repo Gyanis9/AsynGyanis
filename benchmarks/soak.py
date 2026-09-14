@@ -360,6 +360,154 @@ def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: 
     return failures
 
 
+def runSlowClientResilience(host: str, port: int, connectionCount: int, holdSeconds: float) -> int:
+    """慢客户端（slowloris 式）：只发半截请求头就挂住，服务端必须照常服务其他连接。
+
+    慢连接发一小段请求头后停住；挂住期间用一条正常连接连做 20 次请求并要求全部成功——
+    这正是「慢客户端不影响正常服务」的判据。保持 holdSeconds 后统计被服务端收口的慢连接数
+    （默认读超时 60s，短期保持内收口为 0 属正常，只作观测不作断言）。
+    所有失败（建连失败、正常请求未完成）一律计入返回值，不抛 traceback。
+    """
+    print(f"== 阶段：慢客户端（{connectionCount} 条半截请求，挂住 {holdSeconds:.1f}s）==")
+    failures = 0
+    slowConnections = []
+    for _ in range(connectionCount):
+        try:
+            connection = socket.create_connection((host, port), timeout=5)
+            connection.sendall(b"GET /bench HTTP/1.1\r\nHost: slow\r\nX-Partial: hang")
+            slowConnections.append(connection)
+        except OSError as exception:
+            failures += 1
+            print(f"  慢连接建立失败：{type(exception).__name__}: {exception}")
+
+    servedCount = 0
+    probeFailure = None
+    started = time.perf_counter()
+    try:
+        with socket.create_connection((host, port), timeout=5) as normal:
+            buffer = b""
+            for _ in range(20):
+                body, buffer = requestOnce(normal, buffer, b"/bench", host=host)
+                servedCount += 1 if body == b"OK" else 0
+    except (OSError, ConnectionError, ValueError) as exception:
+        probeFailure = exception
+    elapsed = time.perf_counter() - started
+    if probeFailure is not None:
+        print(f"  慢连接挂住期间正常请求中断：{type(probeFailure).__name__}: {probeFailure}")
+    missedCount = 20 - servedCount
+    failures += missedCount
+    print(f"  慢连接挂住期间正常请求：成功 {servedCount}/20，用时 {elapsed * 1000:.1f} ms，"
+          f"未完成 {missedCount} 条计入失败")
+
+    time.sleep(holdSeconds)
+    reclaimedCount = 0
+    for connection in slowConnections:
+        connection.settimeout(0.3)
+        try:
+            # 有返回（应答字节或 EOF）都说明服务端已对这条连接动作过
+            connection.recv(128)
+            reclaimedCount += 1
+        except socket.timeout:
+            pass  # 仍在读超时之内：属正常，不记失败
+        except OSError:
+            reclaimedCount += 1
+        finally:
+            connection.close()
+    print(f"  挂住期内被服务端收口的慢连接：{reclaimedCount}/{len(slowConnections)}"
+          f"（默认读超时 60s，短期内为 0 属正常）")
+    return failures
+
+
+def runConnectionSweep(host: str, port: int, levels) -> tuple:
+    """连接数扫描：按并发档位建立 keep-alive 连接并各做一次请求，全部必须成功。
+
+    每个档位先把该档连接全部建好、再逐条发请求，用来观察「并发连接数」维度下有没有
+    建连失败或请求失败；返回值是失败项条数与各档位测量值（供 JSON 落盘比对）。
+    """
+    print("== 阶段：连接数扫描 " + "/".join(str(level) for level in levels) + " ==")
+    failures = 0
+    summary = {}
+    for level in levels:
+        started = time.perf_counter()
+        connections = []
+        levelFailures = 0
+        for _ in range(level):
+            try:
+                connections.append(socket.create_connection((host, port), timeout=5))
+            except OSError as exception:
+                levelFailures += 1
+                print(f"  并发 {level}：建连失败 {type(exception).__name__}: {exception}")
+        for connection in connections:
+            try:
+                requestOnce(connection, b"", b"/bench", host=host)
+            except (OSError, ConnectionError, ValueError) as exception:
+                levelFailures += 1
+                print(f"  并发 {level}：请求失败 {type(exception).__name__}: {exception}")
+            finally:
+                connection.close()
+        elapsed = time.perf_counter() - started
+        failures += levelFailures
+        summary[f"connections-{level}"] = {
+            "requested": level,
+            "established": len(connections),
+            "failures": levelFailures,
+            "elapsedMilliseconds": round(elapsed * 1000.0, 2),
+        }
+        print(f"  并发 {level}：失败 {levelFailures} 条，建连+请求用时 {elapsed * 1000:.1f} ms")
+    return failures, summary
+
+
+def runRateLimitCheck(host: str, port: int, burstRequests: int) -> int:
+    """限流触发：连发 burstRequests 条请求，必须出现 429（带 retry-after），随后恢复放行。
+
+    前提是被测服务按小速率启动（run-soak.bat 的 ASYN_SOAK_RATE_LIMIT=1 模式会写入
+    速率 2/s、容量 2 的配置）。一条 429 都没有说明限流没生效——计为失败而不是跳过：
+    静默跳过会让限流回归无人发现。限流窗口过后轮询等待放行，超时同样计失败。
+    """
+    print(f"== 阶段：限流触发（连发 {burstRequests} 条）==")
+    failures = 0
+    limitedCount = 0
+    acceptedCount = 0
+    with socket.create_connection((host, port), timeout=5) as connection:
+        buffer = b""
+        for _ in range(burstRequests):
+            connection.sendall(b"GET /bench HTTP/1.1\r\nHost: rate\r\n\r\n")
+            status, headers, _, buffer = readResponse(connection, buffer)
+            if status == 429:
+                limitedCount += 1
+                if b"retry-after" not in headers:
+                    failures += 1
+                    print("  429 响应缺少 retry-after")
+            elif status == 200:
+                acceptedCount += 1
+            else:
+                failures += 1
+                print(f"  非预期状态码 {status}")
+
+    if limitedCount == 0:
+        failures += 1
+        print("  一条 429 都没有：被测服务未启用限流（本阶段需以 ASYN_SOAK_RATE_LIMIT=1 启动服务端）")
+    else:
+        print(f"  429 {limitedCount}/{burstRequests}，放行 {acceptedCount} 条")
+
+    deadline = time.perf_counter() + 10.0
+    recovered = False
+    while time.perf_counter() < deadline:
+        with socket.create_connection((host, port), timeout=5) as probe:
+            probe.sendall(b"GET /bench HTTP/1.1\r\nHost: rate\r\n\r\n")
+            status, _, _, _ = readResponse(probe, b"")
+            if status == 200:
+                recovered = True
+                break
+        time.sleep(0.2)
+    if recovered:
+        print("  限流窗口过后已恢复放行")
+    else:
+        failures += 1
+        print("  10s 内始终被限流：恢复放行未发生")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="HTTP 服务器进程外压测")
     parser.add_argument("--host", default="127.0.0.1")
@@ -369,6 +517,15 @@ def main() -> int:
     parser.add_argument("--churn-connections", type=int, default=500)
     parser.add_argument("--idle-connections", type=int, default=200)
     parser.add_argument("--idle-seconds", type=float, default=5.0)
+    parser.add_argument("--slow-connections", type=int, default=64,
+                        help="慢客户端阶段建立的半截请求连接数（0 = 跳过）")
+    parser.add_argument("--slow-hold-seconds", type=float, default=3.0, help="慢连接挂住时长（秒）")
+    parser.add_argument("--connection-sweep", type=int, nargs="+", default=[1, 10, 50, 100],
+                        help="连接数扫描的并发档位（空格分隔，如 --connection-sweep 1 10 50；cmd 会把逗号当分隔符）")
+    parser.add_argument("--rate-limit-burst", type=int, default=0,
+                        help="限流阶段的连发条数；0 = 跳过（该阶段要求服务端已启用限流）")
+    parser.add_argument("--skip-load-stages", action="store_true",
+                        help="只跑限流阶段：限流开启时负载阶段（协议检查/吞吐/空闲/慢客户端）会被限流自身干扰")
     parser.add_argument("--json-out", default="", help="把本次结果写成 JSON，供 check-baseline.py 比对")
     arguments = parser.parse_args()
 
@@ -381,17 +538,35 @@ def main() -> int:
     failures = 0
     measurements = {}
 
-    failures += runProtocolChecks(arguments.host, arguments.port)
-    keepAliveFailures, keepAliveSummary = runKeepAliveLoad(
-            arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
-    failures += keepAliveFailures
-    measurements["http1-keepalive"] = keepAliveSummary
+    if not arguments.skip_load_stages:
+        failures += runProtocolChecks(arguments.host, arguments.port)
+        keepAliveFailures, keepAliveSummary = runKeepAliveLoad(
+                arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
+        failures += keepAliveFailures
+        measurements["http1-keepalive"] = keepAliveSummary
 
-    churnFailures, churnSummary = runChurnLoad(arguments.host, arguments.port, 8, arguments.churn_connections)
-    failures += churnFailures
-    measurements["http1-churn"] = churnSummary
+        churnFailures, churnSummary = runChurnLoad(arguments.host, arguments.port, 8, arguments.churn_connections)
+        failures += churnFailures
+        measurements["http1-churn"] = churnSummary
 
-    failures += runIdleConnections(arguments.host, arguments.port, arguments.idle_connections, arguments.idle_seconds)
+        failures += runIdleConnections(arguments.host, arguments.port, arguments.idle_connections, arguments.idle_seconds)
+
+        if arguments.slow_connections > 0:
+            failures += runSlowClientResilience(
+                    arguments.host, arguments.port, arguments.slow_connections, arguments.slow_hold_seconds)
+
+        sweepLevels = arguments.connection_sweep
+        if sweepLevels:
+            sweepFailures, sweepSummary = runConnectionSweep(arguments.host, arguments.port, sweepLevels)
+            failures += sweepFailures
+            measurements["connection-sweep"] = sweepSummary
+    else:
+        print("== 负载阶段已跳过（--skip-load-stages：限流开启时这些探针会被限流本身干扰）==")
+
+    if arguments.rate_limit_burst > 0:
+        failures += runRateLimitCheck(arguments.host, arguments.port, arguments.rate_limit_burst)
+    else:
+        print("== 阶段：限流触发（未启用：传 --rate-limit-burst N，并以启用限流的服务端配合）==")
 
     processSamples = {}
     if monitor is not None:
