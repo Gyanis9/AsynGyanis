@@ -138,6 +138,36 @@ namespace AsynGyanis::Platform
         static bool setNoDelay(int descriptor) noexcept;
 
         /**
+         * @brief 设置发送缓冲上限（SO_SNDBUF）
+         * @details 上限偏小会限制单连接的带宽时延积（高延迟链路上吞吐下降），偏大则在高并发下
+         *          按连接放大内存占用。取值只是上限提示：内核会按自身策略取整（Linux 的实际值
+         *          约为请求值的两倍，以 getsockopt 读数为准）。
+         * @param descriptor 目标套接字描述符
+         * @param byteCount 期望的字节数，必须为正
+         * @return true 设置成功；false 取值非正或系统拒绝
+         */
+        static bool setSendBufferSize(int descriptor, int byteCount) noexcept;
+
+        /**
+         * @brief 设置接收缓冲上限（SO_RCVBUF），语义同 setSendBufferSize()
+         * @param descriptor 目标套接字描述符
+         * @param byteCount 期望的字节数，必须为正
+         * @return true 设置成功；false 取值非正或系统拒绝
+         */
+        static bool setReceiveBufferSize(int descriptor, int byteCount) noexcept;
+
+        /**
+         * @brief 开启延迟接受（TCP_DEFER_ACCEPT，仅 Linux）
+         * @details 内核等到连接上出现数据（或超过给定秒数）才把连接放进 accept 队列，
+         *          用于过滤「连上就静默」的空连接并减少事件循环唤醒；Windows 没有该选项，
+         *          返回 false，调用方按「不支持」降级而不是当作失败（与 setReusePort() 同惯例）。
+         * @param descriptor 目标监听套接字描述符
+         * @param seconds 最长等待秒数；0 表示关闭
+         * @return true 设置成功；false 平台不提供该选项或设置失败
+         */
+        static bool setDeferAccept(int descriptor, int seconds) noexcept;
+
+        /**
          * @brief 设置 IPv6 套接字是否只接受 IPv6 连接（IPV6_V6ONLY）
          * @details 双栈监听（isOnlyV6=false）才能同时接住 IPv4 映射地址；
          *          非 IPv6 套接字调用本函数会失败，调用方应先判 family。

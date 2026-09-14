@@ -120,6 +120,41 @@ namespace AsynGyanis::Platform
         return setIntegerOption(descriptor, IPPROTO_TCP, TCP_NODELAY, 1);
     }
 
+    bool Socket::setSendBufferSize(const int descriptor, const int byteCount) noexcept
+    {
+        if (byteCount <= 0)
+        {
+            // 非正值没有「按上限扩容」的语义，直接拒绝而不是把含糊的取值交给内核
+            return false;
+        }
+        return setIntegerOption(descriptor, SOL_SOCKET, SO_SNDBUF, byteCount);
+    }
+
+    bool Socket::setReceiveBufferSize(const int descriptor, const int byteCount) noexcept
+    {
+        if (byteCount <= 0)
+        {
+            return false;
+        }
+        return setIntegerOption(descriptor, SOL_SOCKET, SO_RCVBUF, byteCount);
+    }
+
+    bool Socket::setDeferAccept(const int descriptor, const int seconds) noexcept
+    {
+#ifdef TCP_DEFER_ACCEPT
+        if (seconds < 0)
+        {
+            return false;
+        }
+        return setIntegerOption(descriptor, IPPROTO_TCP, TCP_DEFER_ACCEPT, seconds);
+#else
+        // Windows 没有该选项，返回 false 让调用方按「不支持」降级而不是当作失败
+        (void) descriptor;
+        (void) seconds;
+        return false;
+#endif
+    }
+
     bool Socket::setIpv6Only(const int descriptor, const bool isOnlyV6) noexcept
     {
         // 布尔值在两个平台上都按 int 尺寸传递，写成 0/1 避免 sizeof(bool) 歧义

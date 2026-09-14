@@ -109,6 +109,33 @@ namespace AsynGyanis::Net
         bool listen(int backlog) const;
 
         /**
+         * @brief 监听与接受套接字的调参项
+         * @details 各项 0 表示保持系统默认、不下发对应的 setsockopt。缓冲区上限同时作用于
+         *          监听套接字与每条接受到的连接；延迟接受只对监听套接字有意义。
+         */
+        struct SocketTuning
+        {
+            int receiveBufferBytes{0}; ///< SO_RCVBUF 上限（字节），0 = 系统默认
+            int sendBufferBytes{0};    ///< SO_SNDBUF 上限（字节），0 = 系统默认
+            int deferAcceptSeconds{0}; ///< TCP_DEFER_ACCEPT 等待秒数（仅 Linux），0 = 关闭
+        };
+
+        /**
+         * @brief 设置套接字调参，须在 bind()/listen() 之前调用
+         * @details 监听套接字的缓冲区在 listen() 时统一下发（接受到的连接可继承），每条接受到的
+         *          连接另按同一取值显式设置一遍以保证跨平台一致；延迟接受在 Windows 上被 Platform
+         *          层按「不支持」降级（返回 false），不影响监听本身。
+         * @param tuning 调参项，见 SocketTuning
+         */
+        void setSocketTuning(const SocketTuning &tuning) noexcept;
+
+        /**
+         * @brief 查询当前的套接字调参
+         * @return SocketTuning 当前取值
+         */
+        [[nodiscard]] const SocketTuning &socketTuning() const noexcept;
+
+        /**
          * @brief 异步接受一条新连接
          * @details 先取走上一轮批量 accept 暂存的连接，队列为空时直接在监听描述符上收一条。
          *          事件循环是边沿触发，一次就绪必须把队列抽干，因此多余的连接存入 m_pending
@@ -144,6 +171,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] int fileDescriptor() const;
 
     private:
+        /**
+         * @brief 把调参项里「按连接生效」的部分应用到一条新接受的连接
+         * @details 缓冲区上限与监听套接字同值；设置失败只影响性能，不丢连接
+         * @param descriptor 新接受的连接描述符
+         */
+        void applyAcceptedSocketTuning(int descriptor) const noexcept;
+
         Core::EventLoop &             m_loop;         ///< 关联的事件循环，用于挂起与唤醒 accept 协程
         Core::AsyncSocket             m_listenSocket; ///< 非阻塞监听套接字，持有描述符所有权
         Core::InetAddress             m_address;      ///< 构造时请求的本地地址
@@ -151,5 +185,6 @@ namespace AsynGyanis::Net
         std::deque<Core::AsyncSocket> m_pending;      ///< 批量 accept 抽干监听队列时暂存的连接，下次 accept() 优先从这里取出
         bool                          m_bound{false}; ///< 是否已成功绑定，listen() 的前置条件
         bool                          m_isAdopted{false}; ///< 是否由「接手已在监听的套接字」构造而来
+        SocketTuning                  m_tuning{};    ///< 套接字调参，listen() 与 accept() 时下发；0 项不下发
     };
 } // namespace AsynGyanis::Net

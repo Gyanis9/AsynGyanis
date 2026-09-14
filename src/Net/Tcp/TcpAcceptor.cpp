@@ -130,6 +130,27 @@ namespace AsynGyanis::Net
             return false;
         }
 
+        const int listenDescriptor = m_listenSocket.fileDescriptor();
+
+        // 监听套接字的调参在这里统一下发（bind() 之后、listen() 之前）：缓冲区上限对新接受的
+        // 连接可由内核继承，延迟接受则必须在 listen 之前设置；设置失败只影响性能，不中止监听
+        if (m_tuning.receiveBufferBytes > 0)
+        {
+            [[maybe_unused]] const bool isReceiveBufferSet =
+                    Platform::Socket::setReceiveBufferSize(listenDescriptor, m_tuning.receiveBufferBytes);
+        }
+        if (m_tuning.sendBufferBytes > 0)
+        {
+            [[maybe_unused]] const bool isSendBufferSet =
+                    Platform::Socket::setSendBufferSize(listenDescriptor, m_tuning.sendBufferBytes);
+        }
+        if (m_tuning.deferAcceptSeconds > 0)
+        {
+            // 平台不支持（Windows）时返回 false：按「不支持即降级」处理，不是监听失败
+            [[maybe_unused]] const bool isDeferAcceptSet =
+                    Platform::Socket::setDeferAccept(listenDescriptor, m_tuning.deferAcceptSeconds);
+        }
+
         // 接手的套接字已经在监听中，理由同 bind()：后置条件成立，且绝不能重新 listen
         if (m_isAdopted)
         {
@@ -137,6 +158,31 @@ namespace AsynGyanis::Net
         }
 
         return m_listenSocket.listen(backlog);
+    }
+
+    void TcpAcceptor::setSocketTuning(const SocketTuning &tuning) noexcept
+    {
+        m_tuning = tuning;
+    }
+
+    const TcpAcceptor::SocketTuning &TcpAcceptor::socketTuning() const noexcept
+    {
+        return m_tuning;
+    }
+
+    void TcpAcceptor::applyAcceptedSocketTuning(const int descriptor) const noexcept
+    {
+        // 缓冲区上限与监听套接字同值：部分平台不保证继承，显式再设一遍保证跨平台一致；
+        // 设置失败只影响性能，不丢弃连接（与 TCP_NODELAY 同一口径）
+        if (m_tuning.receiveBufferBytes > 0)
+        {
+            [[maybe_unused]] const bool isReceiveBufferSet =
+                    Platform::Socket::setReceiveBufferSize(descriptor, m_tuning.receiveBufferBytes);
+        }
+        if (m_tuning.sendBufferBytes > 0)
+        {
+            [[maybe_unused]] const bool isSendBufferSet = Platform::Socket::setSendBufferSize(descriptor, m_tuning.sendBufferBytes);
+        }
     }
 
     Core::Task<std::optional<Core::AsyncSocket> > TcpAcceptor::accept()
@@ -172,6 +218,7 @@ namespace AsynGyanis::Net
                 // 服务端连接一律关闭 Nagle：HTTP 与 RPC 的大量小包若被攒到 ACK 才发，
                 // 首字节延迟会被明显抬高；设置失败只影响性能，不丢弃连接
                 [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(acceptedDescriptor);
+                applyAcceptedSocketTuning(acceptedDescriptor);
 
                 // 描述符所有权自此刻交给 AsyncSocket：后续任何提前返回都由它负责关闭
                 Core::AsyncSocket acceptedSocket(m_loop, acceptedDescriptor);
@@ -186,6 +233,7 @@ namespace AsynGyanis::Net
                     if (Platform::FileDescriptor::isValid(pendingDescriptor))
                     {
                         [[maybe_unused]] const bool isPendingNoDelaySet = Platform::Socket::setNoDelay(pendingDescriptor);
+                        applyAcceptedSocketTuning(pendingDescriptor);
                         m_pending.emplace_back(m_loop, pendingDescriptor);
                         continue;
                     }

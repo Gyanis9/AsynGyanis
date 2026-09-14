@@ -33,6 +33,7 @@ add_executable(TestNet
 
         Tcp/TestTcpStream.cpp
         Tcp/TestTcpAcceptor.cpp
+        Tcp/TestSocketTuning.cpp
         Tcp/TestTcpServer.cpp
         Tcp/TestPerIpConnectionLimiter.cpp
 

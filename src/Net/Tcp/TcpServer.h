@@ -165,6 +165,15 @@ namespace AsynGyanis::Net
         void setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter);
 
         /**
+         * @brief 设置监听与接受套接字的调参（缓冲区上限、Linux 的延迟接受）
+         * @details 转发给内部 TcpAcceptor：缓冲区上限对监听套接字与每条接受到的连接都生效，
+         *          延迟接受仅 Linux 支持（Windows 按「不支持」降级，不影响监听）。
+         * @param tuning 调参项，见 TcpAcceptor::SocketTuning；各项 0 表示保持系统默认
+         * @note 必须在 start()/startAccepting() 之前调用：绑定与监听发生在那一刻
+         */
+        void setSocketTuning(const TcpAcceptor::SocketTuning &tuning);
+
+        /**
          * @brief 设置空闲清扫节拍。
          *
          * @details 清扫协程按本间隔醒来，扫描连接管理器并把超过空闲截止时间（由会话自己刷新，
