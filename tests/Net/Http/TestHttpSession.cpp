@@ -1126,8 +1126,8 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout))
                 << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
 
-        // 路径上没有 GET 也没有 HEAD：复用 GET 无从谈起，405 与 Allow 都照旧，
-        // 隐式可用的 HEAD 不进 Allow
+        // 路径上只有 POST：HEAD 复用 GET 无从谈起，Allow 如实列出 POST
+        // （GET 存在时才会按 RFC 9110 §9.1/§15.5.7 补上隐含可用的 HEAD）
         EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 405")) << responseText;
         constexpr std::string_view allowHeaderName = "allow: ";
         const std::size_t allowPosition = responseText.find(allowHeaderName);

@@ -482,6 +482,16 @@ namespace AsynGyanis::Net
 
         // 路径压根没注册过 → 404；注册过但方法都不合 → 405 + Allow
         const bool isMethodNotAllowed = allowedMethodCount != 0;
+
+        // RFC 9110 §9.1 + §15.5.7：本框架按 GET 复用 HEAD（见上面的匹配逻辑），因此路径支持 GET 时
+        // 资源实际也支持 HEAD，Allow 必须一并列出——只回显显式注册的方法会让客户端以为 HEAD 不可用，
+        // 与「HEAD 命中 GET 处理器」的实际行为自相矛盾。输出顺序由下面的固定序保证（GET 在 HEAD 前）
+        if (isMethodAllowed(HttpMethod::GET) && !isMethodAllowed(HttpMethod::HEAD))
+        {
+            allowedMethodSet[allowedMethodCount] = HttpMethod::HEAD;
+            ++allowedMethodCount;
+        }
+
         std::string allowedMethods;
         if (isMethodNotAllowed)
         {
