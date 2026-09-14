@@ -25,18 +25,23 @@ add_library(Net STATIC
 # 响应压缩用 zlib（gzip 容器，RFC 1952）；依赖由 Conan 提供，本地缓存里已有
 find_package(ZLIB REQUIRED)
 
-# 登记随包导出的外部依赖（按组件记）：静态库把 PRIVATE 链接的 zlib 以 $<LINK_ONLY:...>
-# 传给最终可执行文件，消费方因此同样要能找到 ZLIB::ZLIB——漏登记会在消费方 generate 阶段
+# 压缩的另外两种算法：zstd（RFC 8878）与 brotli（RFC 7932）
+find_package(zstd REQUIRED)
+find_package(brotli REQUIRED)
+
+# 登记随包导出的外部依赖（按组件记）：静态库把 PRIVATE 链接的压缩库以 $<LINK_ONLY:...>
+# 传给最终可执行文件，消费方因此同样要能找到这些目标——漏登记会在消费方 generate 阶段
 # 就以「目标未定义」失败，而不是等到链接期
-set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Net ZLIB)
+set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Net ZLIB zstd brotli)
 
 # Net 建立在 Core 的事件循环与协程 I/O 之上；Platform 与 Base 由 Core 传递而来
 target_link_libraries(Net PUBLIC
         Core
 )
 
-# PRIVATE 就够了：zlib 只出现在 Gzip.cpp 里；静态库会把这份依赖以 LINK_ONLY 传给最终可执行文件
-target_link_libraries(Net PRIVATE ZLIB::ZLIB)
+# PRIVATE 就够了：压缩库只出现在 Gzip.cpp / Compression.cpp 里；静态库会把这份依赖
+# 以 LINK_ONLY 传给最终可执行文件（消费方的可见性由上面的清单登记保证）
+target_link_libraries(Net PRIVATE ZLIB::ZLIB zstd::libzstd brotli::brotli)
 
 target_include_directories(Net PUBLIC
         # 构建期用仓库内的 src；安装后改用 <前缀>/include，两者都是各模块头文件的根

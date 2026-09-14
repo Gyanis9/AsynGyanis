@@ -12,6 +12,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Net/Http/Compression.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -652,14 +653,35 @@ namespace AsynGyanis::Net
 
     namespace detail
     {
+        /// ASCII 大小写不敏感比较（HTTP token 语义，RFC 9110 §12.5.3）
+        [[nodiscard]] inline bool equalsIgnoringCaseAscii(const std::string_view left, const std::string_view right)
+        {
+            if (left.size() != right.size())
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index < left.size(); ++index)
+            {
+                const char character = left[index];
+                const char lowered   = (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
+                if (lowered != right[index])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         /**
-         * @brief 判断 Accept-Encoding 是否接受 gzip（含 q 值语义）
-         * @details 既要认出 `gzip`，也要认出 `*`（通配）与 `gzip;q=0`（明确拒绝）。q=0 是**拒绝**而不是
-         *          「优先级最低」：按 RFC 9110 §12.5.3 必须当作不可接受，发压缩正文等于违反协商。
+         * @brief 判断 Accept-Encoding 是否接受某个编码（含 q 值语义）
+         * @details 既要认出目标编码名（大小写不敏感），也要认出 `*`（通配）与 `gzip;q=0`（明确拒绝）。
+         *          q=0 是**拒绝**而不是「优先级最低」：按 RFC 9110 §12.5.3 必须当作不可接受，
+         *          发该编码的正文等于违反协商。
          * @param acceptEncoding Accept-Encoding 头部的值，缺头时传空串
-         * @return true 可以使用 gzip
+         * @param targetEncoding 待判定的编码名（小写，如 "gzip"/"br"/"zstd"）
+         * @return true 可以使用该编码
          */
-        [[nodiscard]] inline bool acceptsGzipEncoding(const std::string_view acceptEncoding)
+        [[nodiscard]] inline bool acceptsEncoding(const std::string_view acceptEncoding, const std::string_view targetEncoding)
         {
             std::size_t offset = 0;
             bool        wildcardAccepted = false;
@@ -722,10 +744,7 @@ namespace AsynGyanis::Net
                 }
 
                 // 编码名按 token 语义大小写不敏感（RFC 9110 §12.5.3）
-                const bool isGzipName = encodingName.size() == 4 && (encodingName[0] == 'g' || encodingName[0] == 'G') &&
-                                        (encodingName[1] == 'z' || encodingName[1] == 'Z') && (encodingName[2] == 'i' || encodingName[2] == 'I') &&
-                                        (encodingName[3] == 'p' || encodingName[3] == 'P');
-                if (isGzipName)
+                if (equalsIgnoringCaseAscii(encodingName, targetEncoding))
                 {
                     return !isRejected;
                 }
@@ -827,28 +846,46 @@ namespace AsynGyanis::Net
 
             response.setHeader("vary", *existingVary + ", accept-encoding");
         }
+
+        /// 压缩算法偏好顺序（对端都接受时按此挑选）：zstd 压缩率与速度综合最好、brotli 次之
+        /// （静态内容尤佳）、gzip 兜底兼容。加算法按偏好插进这张表即可
+        inline constexpr std::string_view kCompressionPreference[] = {"zstd", "br", "gzip"};
     } // namespace detail
 
     /**
-     * @brief gzip 响应压缩中间件
+     * @brief 响应压缩选项
+     * @details 三种算法各有自己的档位语义：gzip 级别 1..9（zlib 的 6 是折中）、brotli 质量 0..11
+     *          （6 与 gzip 6 同档）、zstd 级别 1..22（3 是库自身的平衡点）。越界由各压缩构件夹取
+     */
+    struct CompressionOptions
+    {
+        std::size_t minimumBodySize = 1024;                  ///< 正文达到该字节数才压缩；小正文压缩后往往更大，白烧 CPU
+        int         gzipLevel       = kDefaultGzipLevel;     ///< gzip 压缩级别，1..9
+        int         brotliQuality   = kDefaultBrotliQuality; ///< brotli 压缩质量，0..11
+        int         zstdLevel       = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
+    };
+
+    /**
+     * @brief 响应压缩中间件（zstd / brotli / gzip）
      *
      * @details 在业务处理完之后判断并压缩响应正文。**必须放在路由处理的洋葱层里**（中间件本来如此），
      *          因此它对所有路由都生效，包括静态文件——静态文件原本走 mmap 零拷贝，命中压缩时会被
      *          换成内存正文：这是「省带宽」换「多一次拷贝 + 一次压缩」的取舍，阈值（默认 1 KiB）
      *          就是那道闸；不命中压缩时零拷贝路径原样保留。
-     * @param minimumBodySize 正文达到该字节数才压缩，默认 1024；小正文压缩后往往更大，白烧 CPU
-     * @param level 压缩级别 1..9，默认 6
+     *          对端同时接受多种编码时按固定偏好挑选：**zstd > br > gzip**（zstd 压缩率与速度的
+     *          综合最好，brotli 次之、静态内容尤佳，gzip 兜底兼容）；不支持按 q 值重排优先级。
+     * @param options 压缩选项（阈值与各算法档位），见 CompressionOptions
      * @return MiddlewareFunc 中间件
-     * @note 不压缩的情形（都会原样发正文）：对端不接受 gzip（含 `gzip;q=0`）、响应已带
-     *       content-encoding、流式响应、无正文的状态码、区间响应（206/content-range）、
+     * @note 不压缩的情形（都会原样发正文）：对端不接受任何受支持的编码（含 `gzip;q=0` 这类明确拒绝）、
+     *       响应已带 content-encoding、流式响应、无正文的状态码、区间响应（206/content-range）、
      *       正文小于阈值、内容类型属于已压缩媒体
      * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
      *       h1 与 h2 共用同一份响应序列化，因此两条路径都生效
-     * @see Gzip.h, HttpResponse::setBody()
+     * @see Gzip.h, Compression.h, HttpResponse::setBody()
      */
-    inline MiddlewareFunc compressionMiddleware(const std::size_t minimumBodySize = 1024, const int level = kDefaultGzipLevel)
+    inline MiddlewareFunc compressionMiddleware(const CompressionOptions options = {})
     {
-        return [minimumBodySize, level](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [options](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             co_await next();
 
@@ -870,13 +907,25 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            if (!detail::acceptsGzipEncoding(request.getHeader("accept-encoding").value_or(std::string{})))
+            // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
+            // q=0 视为明确拒绝，`*` 视为接受（语义见 detail::acceptsEncoding）
+            const std::string acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
+            std::string_view  selectedEncoding;
+            for (const std::string_view candidate: detail::kCompressionPreference)
+            {
+                if (detail::acceptsEncoding(acceptEncodingHeader, candidate))
+                {
+                    selectedEncoding = candidate;
+                    break;
+                }
+            }
+            if (selectedEncoding.empty())
             {
                 co_return;
             }
 
             const std::string_view body = response.body();
-            if (body.size() < minimumBodySize)
+            if (body.size() < options.minimumBodySize)
             {
                 co_return;
             }
@@ -887,7 +936,17 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            const std::optional<std::string> compressed = gzipCompress(body, level);
+            std::optional<std::string> compressed;
+            if (selectedEncoding == "zstd")
+            {
+                compressed = zstdCompress(body, options.zstdLevel);
+            } else if (selectedEncoding == "br")
+            {
+                compressed = brotliCompress(body, options.brotliQuality);
+            } else
+            {
+                compressed = gzipCompress(body, options.gzipLevel);
+            }
             if (!compressed.has_value())
             {
                 // 压缩失败（内存不足）不是错误响应：照原样发未压缩正文，别让对端拿到半截数据
@@ -903,7 +962,7 @@ namespace AsynGyanis::Net
             }
 
             detail::appendVaryAcceptEncoding(response);
-            response.setHeader("content-encoding", "gzip");
+            response.setHeader("content-encoding", std::string(selectedEncoding));
             // content-length 由序列化层按新正体重算；mappedBody 会被 setBody 一并解除
             response.setBody(*compressed);
             co_return;

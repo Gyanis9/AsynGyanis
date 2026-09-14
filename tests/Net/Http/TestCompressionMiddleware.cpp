@@ -18,7 +18,9 @@
 
 #include <gtest/gtest.h>
 
+#include <brotli/decode.h>
 #include <zlib.h>
+#include <zstd.h>
 
 #include <chrono>
 #include <cstddef>
@@ -256,13 +258,49 @@ namespace AsynGyanis::Net
 
             const ServerConfigurator configureServer = [minimumBodySize](TestHttpServer &server)
             {
-                server.router().addMiddleware(compressionMiddleware(minimumBodySize));
+                server.router().addMiddleware(compressionMiddleware({.minimumBodySize = minimumBodySize}));
             };
 
             auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
                                                                        registerRoutes, HttpParserLimits{}, configureServer);
             EXPECT_TRUE(fixture->awaitRunning(kCompressionTestTimeout));
             return fixture;
+        }
+
+        /**
+         * @brief 解开 zstd 帧（用例侧的自检工具）
+         * @param input zstd 字节
+         * @param expectedSize 原始长度（调用方已知）
+         * @return std::optional<std::string> 原始内容；解不开或长度不符时为空
+         */
+        std::optional<std::string> unzstd(const std::string_view input, const std::size_t expectedSize)
+        {
+            std::string output(expectedSize, '\0');
+            const std::size_t writtenLength = ZSTD_decompress(output.data(), output.size(), input.data(), input.size());
+            if (ZSTD_isError(writtenLength) != 0 || writtenLength != expectedSize)
+            {
+                return std::nullopt;
+            }
+            return output;
+        }
+
+        /**
+         * @brief 解开 brotli 流（用例侧的自检工具）
+         * @param input brotli 字节
+         * @param expectedSize 原始长度（调用方已知）
+         * @return std::optional<std::string> 原始内容；解不开或长度不符时为空
+         */
+        std::optional<std::string> unbrotli(const std::string_view input, const std::size_t expectedSize)
+        {
+            std::string output(expectedSize, '\0');
+            std::size_t decodedLength = output.size();
+            if (BrotliDecoderDecompress(input.size(), reinterpret_cast<const std::uint8_t *>(input.data()), &decodedLength,
+                                        reinterpret_cast<std::uint8_t *>(output.data())) != BROTLI_DECODER_RESULT_SUCCESS ||
+                decodedLength != expectedSize)
+            {
+                return std::nullopt;
+            }
+            return output;
         }
     } // namespace
 
@@ -378,5 +416,58 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "前置条件不成立：这条响应没被压缩";
         EXPECT_TRUE(hasHeaderLine(response->headers, "etag: W/\"strong-validator\"")) << "压缩后 ETag 没有降级为弱校验器：\n" << response->headers;
+    }
+
+    /**
+     * @brief 对端同时接受三种编码时按偏好选 zstd（压缩率与速度综合最好）
+     */
+    TEST(CompressionMiddleware, PrefersZstdWhenClientAdvertisesAllCodecs)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+
+        const std::optional<ParsedResponse> response = sendAndReadResponse(
+                fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, deflate, br, zstd"}));
+        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+
+        ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: zstd")) << "偏好顺序没有选 zstd：\n" << response->headers;
+        EXPECT_TRUE(hasHeaderLine(response->headers, "vary: accept-encoding"));
+
+        const std::optional<std::string> restored = unzstd(response->body, kLargeBody.size());
+        ASSERT_TRUE(restored.has_value()) << "zstd 压出来的正文解不开";
+        EXPECT_EQ(*restored, kLargeBody);
+    }
+
+    /**
+     * @brief zstd 被 q=0 明确拒绝时退到下一个偏好（brotli）
+     */
+    TEST(CompressionMiddleware, FallsBackToBrotliWhenZstdIsRejected)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+
+        const std::optional<ParsedResponse> response = sendAndReadResponse(
+                fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, br, zstd;q=0"}));
+        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+
+        ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: br")) << "zstd 被拒后没有退到 brotli：\n" << response->headers;
+        const std::optional<std::string> restored = unbrotli(response->body, kLargeBody.size());
+        ASSERT_TRUE(restored.has_value()) << "brotli 压出来的正文解不开";
+        EXPECT_EQ(*restored, kLargeBody);
+    }
+
+    /**
+     * @brief 通配（*）视为全部接受，同样按偏好选 zstd
+     */
+    TEST(CompressionMiddleware, WildcardSelectsPreferredCodec)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+
+        const std::optional<ParsedResponse> response =
+                sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: *"}));
+        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+
+        ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: zstd")) << response->headers;
+        const std::optional<std::string> restored = unzstd(response->body, kLargeBody.size());
+        ASSERT_TRUE(restored.has_value()) << "zstd 压出来的正文解不开";
+        EXPECT_EQ(*restored, kLargeBody);
     }
 } // namespace AsynGyanis::Net

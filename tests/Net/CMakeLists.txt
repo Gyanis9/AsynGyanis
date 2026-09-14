@@ -18,6 +18,7 @@ add_executable(TestNet
         Http/TestHttpServer.cpp
         Http/TestHttpServerLimits.cpp
         Http/TestGzip.cpp
+        Http/TestCompressionCodecs.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp
@@ -50,8 +51,17 @@ add_executable(TestNet
         Http2/TestHttp2FuzzSmoke.cpp
 )
 
+# 压缩用例直接调用三种库的解码器做往返自检：目标由 src/Net 里 find_package 得到，
+# 但 imported 目标只在创建它的目录及其子目录可见（tests 是兄弟目录），这里重新找一次即可
+find_package(ZLIB REQUIRED)
+find_package(zstd REQUIRED)
+find_package(brotli REQUIRED)
+
 target_link_libraries(TestNet PRIVATE
         Net
+        ZLIB::ZLIB
+        zstd::libzstd
+        brotli::brotli
         GTest::gtest
         GTest::gtest_main
 )

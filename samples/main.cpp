@@ -120,7 +120,7 @@ int main(int argc, char **argv)
     bool        exposeMetrics = false;
     bool        logJson = false; // 日志按 JSON Lines 输出，供采集端解析
     bool        dispatchAccept = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
-    bool        compressResponses = false; // 按 Accept-Encoding 协商 gzip 压缩响应
+    bool        compressResponses = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
     std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
     bool        showUsage = false;
     std::string certificateFile = "cert.pem";
@@ -192,7 +192,7 @@ int main(int argc, char **argv)
         LOG_INFO("  --dispatch-accept 一个监听器 + N 个工作循环：连接由接受循环轮转交给工作循环服务；");
         LOG_INFO("            不依赖 SO_REUSEPORT，因此 Windows 上开多线程也要用它（否则每个线程各绑一次同端口，");
         LOG_INFO("            内核不会分摊，全部连接都压在其中一条监听器上）");
-        LOG_INFO("  --compress 按 Accept-Encoding 协商 gzip 压缩响应正文（默认 1 KiB 起压，静态文件也适用）");
+        LOG_INFO("  --compress 按 Accept-Encoding 协商压缩响应正文（zstd/br/gzip 按偏好选择，默认 1 KiB 起压，静态文件也适用）");
         LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
         LOG_INFO("            超出的请求回 503，明文与 HTTPS 两端都生效");
         LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
