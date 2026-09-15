@@ -21,16 +21,18 @@ namespace AsynGyanis::Platform
 
     void FileWatcher::setDebounceInterval(const std::chrono::milliseconds interval) noexcept
     {
-        m_debounceInterval = interval;
+        // 原子写：监听线程可能正同时在读它（见成员声明处的线程约定）
+        m_debounceIntervalMilliseconds.store(interval.count(), std::memory_order_relaxed);
     }
 
     bool FileWatcher::shouldDispatchChange(const std::string &filePath)
     {
         const auto currentTime = std::chrono::steady_clock::now();
+        const auto debounceInterval = std::chrono::milliseconds(m_debounceIntervalMilliseconds.load(std::memory_order_relaxed));
 
         if (const auto lastIterator = m_lastEventTime.find(filePath); lastIterator != m_lastEventTime.end())
         {
-            if (currentTime - lastIterator->second < m_debounceInterval)
+            if (currentTime - lastIterator->second < debounceInterval)
             {
                 return false;
             }
@@ -43,7 +45,7 @@ namespace AsynGyanis::Platform
             // 已过防抖窗口的路径再来事件本就该立即触发，丢弃其记录不改变行为
             for (auto iterator = m_lastEventTime.begin(); iterator != m_lastEventTime.end();)
             {
-                if (currentTime - iterator->second >= m_debounceInterval)
+                if (currentTime - iterator->second >= debounceInterval)
                 {
                     iterator = m_lastEventTime.erase(iterator);
                 } else

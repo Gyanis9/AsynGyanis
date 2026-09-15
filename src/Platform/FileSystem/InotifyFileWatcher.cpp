@@ -76,6 +76,12 @@ namespace AsynGyanis::Platform
         {
             std::lock_guard lock(m_watchMutex);
 
+            // 递归根要记住：之后新建的子目录靠这份清单补挂监视（否则新目录里的变更永久丢失）
+            if (recursive)
+            {
+                m_recursiveRoots.insert(absolutePath);
+            }
+
             if (m_pathToWatchDescriptor.contains(absolutePath))
             {
                 return true;
@@ -194,8 +200,11 @@ namespace AsynGyanis::Platform
             const auto *event = reinterpret_cast<const inotify_event *>(&buffer[offset]);
             offset += sizeof(inotify_event) + event->len;
 
-            if (event->len == 0)
+            // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
+            // 对每个受监视的根各派发一次「已修改」让消费方重新扫描，绝不静默停在旧状态
+            if (event->wd == -1)
             {
+                dispatchOverflowRescan();
                 continue;
             }
 
@@ -203,6 +212,7 @@ namespace AsynGyanis::Platform
             FileChangeCallback callbackSnapshot;
             std::string        changedPath;
             FileChangeType     changeType = FileChangeType::Modified;
+            bool               shouldWatchNewDirectory = false;
 
             {
                 std::shared_lock lock(m_watchMutex);
@@ -214,18 +224,27 @@ namespace AsynGyanis::Platform
                 }
 
                 const std::string &watchedPath = watchIterator->second;
-                const bool needsSeparator = !watchedPath.empty() && watchedPath.back() != '/';
-                // event->name 是柔性数组，event->len 含结尾 NUL 与对齐填充，故按实际字符串长度取
-                const std::size_t nameLength = std::strlen(event->name);
+                // 监视单个文件时内核不给名字（event->len 恒为 0），变更的就是被监视的那个文件本身；
+                // 监视目录时 event->name 才是目录内的条目名
+                const std::size_t nameLength = event->len == 0 ? 0 : std::strlen(event->name);
 
-                // 一次预留到位，避免「赋值 + 两次追加」引发的逐步扩容
-                changedPath.reserve(watchedPath.size() + (needsSeparator ? 1U : 0U) + nameLength);
-                changedPath.append(watchedPath);
-                if (needsSeparator)
+                if (nameLength == 0)
                 {
-                    changedPath.push_back('/');
+                    changedPath = watchedPath;
+                } else
+                {
+                    const bool        needsSeparator = !watchedPath.empty() && watchedPath.back() != '/';
+                    const std::size_t nameOffset     = watchedPath.size() + (needsSeparator ? 1U : 0U);
+
+                    // 一次预留到位，避免「赋值 + 两次追加」引发的逐步扩容
+                    changedPath.reserve(nameOffset + nameLength);
+                    changedPath.append(watchedPath);
+                    if (needsSeparator)
+                    {
+                        changedPath.push_back('/');
+                    }
+                    changedPath.append(event->name, nameLength);
                 }
-                changedPath.append(event->name, nameLength);
 
                 if (!shouldDispatchChange(changedPath))
                 {
@@ -234,21 +253,59 @@ namespace AsynGyanis::Platform
 
                 callbackSnapshot = m_callback;
 
-                if ((event->mask & IN_CLOSE_WRITE) != 0)
-                {
-                    changeType = FileChangeType::Modified;
-                } else if ((event->mask & IN_MOVED_TO) != 0)
+                if ((event->mask & (IN_CREATE | IN_MOVED_TO)) != 0)
                 {
                     changeType = FileChangeType::Created;
-                } else if ((event->mask & (IN_DELETE_SELF | IN_MOVE_SELF)) != 0)
+                } else if ((event->mask & (IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF)) != 0)
                 {
                     changeType = FileChangeType::Deleted;
+                }
+
+                // 递归根之下新出现的目录要在锁外补挂监视：新子目录里的变更否则永远不会上报
+                shouldWatchNewDirectory =
+                        changeType == FileChangeType::Created &&
+                        std::ranges::any_of(m_recursiveRoots,
+                                            [&watchedPath](const std::string &root)
+                                            {
+                                                return watchedPath.size() >= root.size() && watchedPath.compare(0, root.size(), root) == 0;
+                                            });
+            }
+
+            if (shouldWatchNewDirectory)
+            {
+                std::error_code directoryError;
+                if (std::filesystem::is_directory(changedPath, directoryError) && !directoryError)
+                {
+                    // 锁外补挂：addWatch 要拿写锁，持锁递归注册会自死锁
+                    static_cast<void>(addWatch(changedPath, true));
                 }
             }
 
             if (callbackSnapshot)
             {
                 callbackSnapshot(changedPath, changeType);
+            }
+        }
+    }
+
+    void InotifyFileWatcher::dispatchOverflowRescan()
+    {
+        // 快照照抄一份回调与路径再派发：回调里增删监听路径是常见写法，持锁派发会自死锁
+        std::vector<std::pair<FileChangeCallback, std::string> > notifications;
+        {
+            std::shared_lock lock(m_watchMutex);
+            notifications.reserve(m_watchDescriptors.size());
+            for (const auto &entry: m_watchDescriptors)
+            {
+                notifications.emplace_back(m_callback, entry.second);
+            }
+        }
+
+        for (const auto &[callback, watchedPath]: notifications)
+        {
+            if (callback)
+            {
+                callback(watchedPath, FileChangeType::Modified);
             }
         }
     }

@@ -298,6 +298,12 @@ namespace AsynGyanis::Platform
         DWORD bytesTransferred = 0;
         if (!::GetOverlappedResult(entry.directoryHandle, &entry.overlapped, &bytesTransferred, FALSE))
         {
+            // 缓冲区溢出（变更过快过多，通知被内核丢弃）时 Windows 报 ERROR_NOTIFY_ENUM_DIR：
+            // 派发一次「已修改」让消费方重新扫描该目录，而不是静默漏掉这一批变更
+            if (::GetLastError() == ERROR_NOTIFY_ENUM_DIR)
+            {
+                events.emplace_back(entry.path, FileChangeType::Modified);
+            }
             return;
         }
 

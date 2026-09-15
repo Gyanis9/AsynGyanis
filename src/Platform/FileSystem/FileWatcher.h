@@ -11,6 +11,7 @@
 
 #include "Platform/Platform.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -115,6 +116,7 @@ namespace AsynGyanis::Platform
          * @brief 设置同一文件连续事件的防抖间隔
          * @details 由基类统一实现，两侧平台实现共用同一份防抖状态。
          * @param interval 防抖间隔，间隔内的重复事件被丢弃；非正值表示不防抖
+         * @note 可在监听运行期间调用：间隔用原子量存取，不受「防抖表只归监听线程」那条约定限制
          */
         void setDebounceInterval(std::chrono::milliseconds interval) noexcept;
 
@@ -135,7 +137,9 @@ namespace AsynGyanis::Platform
          */
         [[nodiscard]] bool shouldDispatchChange(const std::string &filePath);
 
-        std::chrono::milliseconds                                              m_debounceInterval{100}; ///< 防抖间隔毫秒数
+        /// 防抖间隔（毫秒）。用原子量存取：setDebounceInterval() 允许在监听运行期间调用，
+        /// 而读它的监听线程与写它的调用线程之间没有任何锁（防抖表本身只归监听线程）
+        std::atomic<std::int64_t> m_debounceIntervalMilliseconds{100};
         std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_lastEventTime;         ///< 各路径上次触发的事件时间
 
     private:

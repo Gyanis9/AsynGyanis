@@ -23,6 +23,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace AsynGyanis::Platform
 {
@@ -114,16 +115,27 @@ namespace AsynGyanis::Platform
          */
         void processEvents();
 
+        /**
+         * @brief 事件队列溢出后的兜底：对每个受监视的根各派发一次「已修改」
+         * @details 内核丢事件时无法知道丢了哪些路径（IN_Q_OVERFLOW 不带路径），
+         *          消费方需要一次重新扫描的信号；条数等于注册的监视数，有界
+         */
+        void dispatchOverflowRescan();
+
         int                                  m_inotifyFileDescriptor{-1}; ///< inotify 文件描述符
         std::unordered_map<int, std::string> m_watchDescriptors;          ///< 监视描述符到监听路径的映射
         std::unordered_map<std::string, int> m_pathToWatchDescriptor;     ///< 监听路径到监视描述符的映射
+        std::unordered_set<std::string>      m_recursiveRoots;            ///< 以递归方式注册过的根：新子目录要补挂监视
 
         FileChangeCallback        m_callback;         ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;       ///< 保护监听映射与回调的读写锁
         std::jthread              m_watchThread;      ///< 事件读取线程，析构时自动 join
         std::atomic<bool>         m_isRunning{false}; ///< 监听线程是否正在运行
 
-        static constexpr std::size_t   kEventBufferBytes = 4096;                                                         ///< 单次读取的事件缓冲区字节数
-        static constexpr std::uint32_t kWatchEventMask   = IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF; ///< 注册的事件掩码
+        static constexpr std::size_t kEventBufferBytes = 4096; ///< 单次读取的事件缓冲区字节数
+        /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除/移出（删除），
+        /// 以及监视目标自身被删除或移动——监视单个文件时只会有最后一类事件，且不带名字
+        static constexpr std::uint32_t kWatchEventMask =
+                IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
     };
 } // namespace AsynGyanis::Platform
