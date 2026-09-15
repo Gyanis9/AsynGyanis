@@ -160,10 +160,10 @@ namespace AsynGyanis::Net
             chunkSize = value;
             return true;
         }
-        /// 1xx / 204 / 304 一律没有正文（RFC 9112 §6.1）
+        /// 204 / 304 一律没有正文（RFC 9112 §6.1）；1xx 另有分支处理（它是过渡响应，后面还有真正的响应）
         bool statusHasNoBody(const int statusCode) noexcept
         {
-            return (statusCode >= 100 && statusCode < 200) || statusCode == 204 || statusCode == 304;
+            return statusCode == 204 || statusCode == 304;
         }
     } // namespace
 
@@ -242,6 +242,17 @@ namespace AsynGyanis::Net
                         // 两者并存一律拒绝：挑一个信正是响应走私的入口
                         m_stage = Stage::Failed;
                         return startSize - data.size();
+                    }
+                    if (m_result.statusCode >= 100 && m_result.statusCode < 200)
+                    {
+                        // 1xx 是过渡响应（100 Continue、103 Early Hints）：它只是最终响应之前的一声招呼，
+                        // 当成最终响应收尾会让调用方拿着 103 当结果、真正的响应被整条丢掉。
+                        // 清掉本轮的状态与头部，回到状态行接着解析后面那一条
+                        m_result.statusCode = 0;
+                        m_result.reasonPhrase.clear();
+                        m_result.headers.clear();
+                        m_stage = Stage::StatusLine;
+                        break;
                     }
                     if (statusHasNoBody(m_result.statusCode))
                     {

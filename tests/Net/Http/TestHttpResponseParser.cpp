@@ -172,7 +172,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住无正文状态码：1xx / 204 / 304 即便带 Content-Length 也立即完成、不等待正文
+     * @brief 钉住无正文状态码：204 / 304 即便带 Content-Length 也立即完成、不等待正文
      */
     TEST(HttpResponseParser, CompletesNoBodyStatusWithoutWaiting)
     {
@@ -184,6 +184,43 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(feedAll(noContent, "HTTP/1.1 204 No Content\r\n\r\n"));
         EXPECT_TRUE(noContent.result().body.empty());
     }
+
+    /**
+     * @brief 钉住过渡响应（1xx）的跳过语义：103 之后必须继续解析最终响应，不能拿着 103 当结果
+     * @details RFC 9110 §15.2：1xx 只是最终响应之前的一声招呼，可能带自己的头部（Early Hints 就靠它
+     *          捎带预加载提示）。此前的实现把它当「无正文的最终响应」当场收尾，真正的响应被整条丢弃。
+     */
+    TEST(HttpResponseParser, SkipsInterimResponseAndDeliversFinalOne)
+    {
+        HttpResponseParser parser;
+        const std::string message = "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        EXPECT_TRUE(feedAll(parser, message));
+        EXPECT_EQ(parser.result().statusCode, 200);
+        EXPECT_EQ(parser.result().body, "ok");
+
+        // 过渡响应的头部不得混进最终结果：上面那条 Link 属于 103
+        for (const auto &[name, value]: parser.result().headers)
+        {
+            EXPECT_NE(name, "Link") << "过渡响应的头部被当成了最终响应的头部";
+        }
+    }
+
+    /**
+     * @brief 钉住过渡响应的跨馈送分段：1xx 与最终响应分两次喂入结果一致
+     */
+    TEST(HttpResponseParser, SkipsInterimResponseAcrossFeedBoundaries)
+    {
+        HttpResponseParser parser;
+        parser.feed("HTTP/1.1 100 Continue\r\n\r\n");
+        EXPECT_FALSE(parser.isComplete());
+        EXPECT_FALSE(parser.hasFailed());
+
+        EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"));
+        EXPECT_EQ(parser.result().statusCode, 200);
+        EXPECT_EQ(parser.result().body, "hello");
+    }
+
 
     /**
      * @brief 钉住不完整正文的失败面：chunked 未收尾时连接关闭 → 失败，而不是产出一条半截响应
