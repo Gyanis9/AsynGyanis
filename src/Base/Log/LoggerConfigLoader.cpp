@@ -199,7 +199,15 @@ namespace AsynGyanis::Base
             else
                 policy = RollingPolicy::Size;
 
-            const size_t maximumSizeBytes   = configValueAt<int64_t>(sinkConfiguration, "max_size_mb").value_or(10) * 1024 * 1024;
+            const int64_t configuredMaximumSizeMb = configValueAt<int64_t>(sinkConfiguration, "max_size_mb").value_or(10);
+            // 边界钳制：0（或负数）会让「已写字节 >= 上限」恒真，退化成每写一行就滚动一次——
+            // 每次滚动都要重开文件并整目录扫描备份，日志系统会反过来把进程拖垮。这里钳到 1 MB 并给出诊断
+            if (configuredMaximumSizeMb < 1)
+            {
+                std::cerr << "LoggerConfig：rolling sink 的 max_size_mb=" << configuredMaximumSizeMb
+                        << " 非法（要求 >= 1），已钳制为 1" << '\n';
+            }
+            const size_t maximumSizeBytes   = static_cast<size_t>(configuredMaximumSizeMb < 1 ? 1 : configuredMaximumSizeMb) * 1024 * 1024;
             const size_t maximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
 
             sink = std::make_unique<RollingFileSink>(baseOptional.value(), directory, policy, maximumSizeBytes, maximumBackupCount);
@@ -227,7 +235,9 @@ namespace AsynGyanis::Base
                 queueSize = AsyncSink::kMinimumQueueSize;
             }
             const std::string overflowPolicyName = configValueAt<std::string>(sinkConfiguration, "overflow_policy").value_or("block");
-            // overflow_policy 支持 block / drop / drop_oldest 三种取值，非法值回退为 block
+            // overflow_policy 支持 block / drop / drop_oldest 三种取值，非法值回退为 block。
+            // 回退是明示的（std::cerr 诊断）：静默回退会让「想写 drop 却拼错」的配置在高负载下
+            // 阻塞调用线程，而运维以为它在丢日志
             auto              overflowPolicy     = AsyncSink::OverflowPolicy::Block;
             if (overflowPolicyName == "drop")
             {
@@ -235,6 +245,10 @@ namespace AsynGyanis::Base
             } else if (overflowPolicyName == "drop_oldest")
             {
                 overflowPolicy = AsyncSink::OverflowPolicy::DropOldest;
+            } else if (overflowPolicyName != "block")
+            {
+                std::cerr << "LoggerConfig：async sink 的 overflow_policy='" << overflowPolicyName
+                        << "' 非法（只支持 block / drop / drop_oldest），已按 block 处理" << '\n';
             }
 
             sink = std::make_unique<AsyncSink>(std::move(wrappedSink), queueSize, overflowPolicy);

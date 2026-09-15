@@ -8,6 +8,11 @@
 
 namespace AsynGyanis::Base
 {
+    namespace
+    {
+        /// Block 策略单次等待队列空间的上限：下游卡死时按丢弃处置，不无限期阻塞调用线程
+        constexpr std::chrono::milliseconds kMaximumBlockWaitMilliseconds{200};
+    } // namespace
     AsyncSink::AsyncSink(std::unique_ptr<LogSink> wrappedSink, const size_t queueSize, const OverflowPolicy policy) :
         m_wrappedSink(std::move(wrappedSink))
         // 容量兜底钳制：0 容量不是「不限量」而是三种策略各自的错误语义——Drop 全丢、
@@ -68,13 +73,16 @@ namespace AsynGyanis::Base
             ++m_pendingCount;
         } else
         {
-            m_queueCondition.wait(lock, [this]
+            // Block：等队列腾出空间。**等待有上界**——下游 sink 卡住（慢盘、网络盘失联）时
+            // 队列再也不会腾位，而调用方可能就是事件循环线程本身，无限期等它等于把整个循环停摆。
+            // 超时与「因停止而结束」同一条处置：计入丢弃数，让运维能从 droppedEventCount() 看到代价
+            const bool hasSpace = m_queueCondition.wait_for(lock, kMaximumBlockWaitMilliseconds, [this]
             {
                 return m_queue.size() < m_maximumQueueSize || m_stopToken.stop_requested();
             });
-            if (m_stopToken.stop_requested())
+            if (!hasSpace || m_stopToken.stop_requested())
             {
-                // 等待因停止而结束时事件不会入队，与其它策略一样计入丢弃数
+                // 事件不会入队，与其它策略一样计入丢弃数
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }

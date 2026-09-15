@@ -129,6 +129,12 @@ namespace AsynGyanis::Base
         mutable std::shared_mutex                                    m_mutex{};    ///< 保护 m_loggers 的读写锁
         std::unordered_map<std::string, std::shared_ptr<Logger> >    m_loggers{};  ///< 日志器名称到 Logger 实例的映射表（共享所有权，便于快照延长生命周期）
 
+        /// 已注销/被替换日志器的退休表：注销不销毁对象，只是移到这里。
+        /// getLogger() 返回的是裸引用，使用它的调用方（LOG_* 宏）可能正跨过注销点继续用；
+        /// 就地销毁会让那些引用悬垂。日志器数量少、注册/注销罕见，保留到进程退出是可接受的
+        /// 代价（对象仍可达，LeakSanitizer 不会报告）
+        std::vector<std::shared_ptr<Logger> > m_retiredLoggers{};
+
         /// 根日志器缓存：所有增删日志器的入口都会将其置空，读取时无锁命中缓存。
         /// 这里保存的是 shared_ptr 强引用而非裸指针——若只缓存裸指针，缓存加载与解引用之间
         /// 并发的 clear()/unregisterLogger() 可能已把对象销毁（原缺陷即为此类 use-after-free）

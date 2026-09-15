@@ -86,6 +86,11 @@ namespace AsynGyanis::Base
             // 覆盖会替换旧 root，先置空缓存再替换，避免他人在窗口内继续使用旧实例
             m_cachedRootLogger.store(nullptr, std::memory_order_release);
         }
+        // 同名替换：旧对象移入退休表而不是就地销毁——正在使用它的裸引用（LOG_* 宏）可能跨过这一刻
+        if (const auto existing = m_loggers.find(registeredLogger->name()); existing != m_loggers.end())
+        {
+            m_retiredLoggers.push_back(std::move(existing->second));
+        }
         m_loggers[registeredLogger->name()] = registeredLogger;
 
         if (isRootLogger)
@@ -103,7 +108,12 @@ namespace AsynGyanis::Base
         {
             m_cachedRootLogger.store(nullptr, std::memory_order_release);
         }
-        m_loggers.erase(name);
+        // 摘出而非销毁：getLogger() 给出的是裸引用，使用中的调用方可能还没走完
+        if (const auto existing = m_loggers.find(name); existing != m_loggers.end())
+        {
+            m_retiredLoggers.push_back(std::move(existing->second));
+            m_loggers.erase(existing);
+        }
     }
 
     std::vector<std::string> LoggerRegistry::getLoggerNames() const
@@ -122,6 +132,11 @@ namespace AsynGyanis::Base
     {
         std::unique_lock lock(m_mutex);
         m_cachedRootLogger.store(nullptr, std::memory_order_release);
+        // 与 unregisterLogger 同一处置：全部移入退休表，不就地销毁使用中的对象
+        for (auto &entry: m_loggers)
+        {
+            m_retiredLoggers.push_back(std::move(entry.second));
+        }
         m_loggers.clear();
     }
 

@@ -245,6 +245,7 @@ namespace AsynGyanis::Base
         std::vector<BackupEntry> backupFiles;
         const auto               dotPosition = m_baseFilename.rfind('.');
         const std::string        namePart    = (dotPosition != std::string::npos) ? m_baseFilename.substr(0, dotPosition) : m_baseFilename;
+        const std::string        extensionPart = (dotPosition != std::string::npos) ? m_baseFilename.substr(dotPosition) : std::string{};
         const std::string        activeName  = getCurrentFilename().filename().string();
 
         // 前缀只构造一次并转成 string_view 比较：原实现每遇到一个目录项就新建
@@ -259,8 +260,23 @@ namespace AsynGyanis::Base
                 break;
             }
             const std::string filename = entry.path().filename().string();
-            // 仅匹配 "namePart." 前缀的备份文件，且排除当前活动文件
-            if (filename != activeName && std::string_view(filename).starts_with(backupPrefixView))
+            // 备份名只有两种形态：`name.N.ext`（大小策略的序号备份）与 `name.<时间戳>[.N].ext`
+            // （周期策略）。因此除了前缀与后缀，中间那段必须是纯数字与点——只按前缀匹配会把
+            // app.audit.log 这类同前缀的无关文件也扫进删除区间，那是数据丢失
+            const bool hasBackupPrefix = filename != activeName && std::string_view(filename).starts_with(backupPrefixView) &&
+                                         std::string_view(filename).ends_with(extensionPart);
+            if (!hasBackupPrefix)
+            {
+                continue;
+            }
+            const std::string_view middlePart{filename.data() + backupPrefixView.size(),
+                                              filename.size() - backupPrefixView.size() - extensionPart.size()};
+            const bool isBackupName = !middlePart.empty() &&
+                                      std::ranges::all_of(middlePart, [](const char character)
+                                      {
+                                          return (character >= '0' && character <= '9') || character == '.';
+                                      });
+            if (isBackupName)
             {
                 // 时间戳在排序前一次性读好：比较器里再调 last_write_time 会在出错时抛异常，
                 // 而 std::ranges::sort 的比较器抛出是未定义行为
