@@ -172,8 +172,16 @@ namespace AsynGyanis::Core
         /**
          * @brief 取消一个状态上的全部在途探针
          * @param state 目标状态
+         * @note 取消是异步的：完成通知仍会入队，由它的回收路径收尾
          */
         static void cancelProbes(SocketState &state) noexcept;
+
+        /**
+         * @brief 把在途探针的完成通知收完（仅用于析构：关端口与释放状态之前）
+         * @details 内核在操作完成时仍会写 OVERLAPPED 里的状态码；通知不排空就
+         *          释放状态等于让它写已释放内存。收齐或等待超时即返回。
+         */
+        void drainCompletions() noexcept;
 
         /**
          * @brief 关闭一个状态持有的接受套接字（在途的与已接入的）
@@ -207,9 +215,14 @@ namespace AsynGyanis::Core
 
         static constexpr int kMaximumEventCount = 1024; ///< 单次 wait() 最多取出的完成通知数
 
+        static constexpr std::uint32_t kDrainTimeoutMilliseconds = 1000; ///< 排空完成通知的单次等待上限（毫秒）
+
         Platform::EpollHandle          m_iocp{nullptr};     ///< 完成端口句柄
         std::vector<OVERLAPPED_ENTRY>  m_entries;           ///< 单次取出的完成通知
         std::vector<epoll_event>       m_results;           ///< 翻译结果（wait() 的返回值指向它）
+        /// 同一批完成通知的合并索引：data.ptr → m_results 下标。与 m_results 同生命周期
+        /// （每轮 wait() 一起清空），把两个方向的完成合并成一条 epoll_event 时不必线性扫
+        std::unordered_map<void *, std::size_t> m_resultIndexByUserData;
         std::unordered_map<int, SocketState *> m_sockets;      ///< 活动注册表：描述符 → 状态
         std::vector<SocketState *>     m_graveyard;         ///< 已注销但仍有完成通知在队的状态
         std::vector<SocketState *>     m_pendingRearm;      ///< 需要重新武装的水平触发状态

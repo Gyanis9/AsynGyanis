@@ -70,7 +70,9 @@ namespace AsynGyanis::Core
         SOCKET        pendingAcceptSocket{INVALID_SOCKET}; ///< AcceptEx 正在使用的接受套接字
         SOCKET        acceptedSocket{INVALID_SOCKET};      ///< 已接入、等 takeAcceptedSocket() 取走
         bool          hasAcceptedSocket{false};            ///< acceptedSocket 是否有效
-        char          acceptAddressBuffer[kAcceptAddressBufferByteCount]{}; ///< AcceptEx 的地址输出缓冲
+        /// AcceptEx 的地址输出缓冲（约 112 字节）：只有监听套接字用得上，
+        /// 因此首次投递 AcceptEx 时才分配——普通连接不为它付出常驻内存
+        std::unique_ptr<char[]> acceptAddressBuffer;
 
         /// 是否还有探针没等到完成通知
         [[nodiscard]] bool hasProbeInFlight() const noexcept
@@ -112,7 +114,8 @@ namespace AsynGyanis::Core
         m_results(std::move(other.m_results)),
         m_sockets(std::move(other.m_sockets)),
         m_graveyard(std::move(other.m_graveyard)),
-        m_pendingRearm(std::move(other.m_pendingRearm))
+        m_pendingRearm(std::move(other.m_pendingRearm)),
+        m_pendingArmRetry(std::move(other.m_pendingArmRetry))
     {
         other.m_iocp = nullptr;
     }
@@ -125,18 +128,19 @@ namespace AsynGyanis::Core
             m_iocp         = other.m_iocp;
             m_entries      = std::move(other.m_entries);
             m_results      = std::move(other.m_results);
-            m_sockets      = std::move(other.m_sockets);
-            m_graveyard    = std::move(other.m_graveyard);
-            m_pendingRearm = std::move(other.m_pendingRearm);
-            other.m_iocp   = nullptr;
+            m_sockets         = std::move(other.m_sockets);
+            m_graveyard       = std::move(other.m_graveyard);
+            m_pendingRearm    = std::move(other.m_pendingRearm);
+            m_pendingArmRetry = std::move(other.m_pendingArmRetry);
+            other.m_iocp      = nullptr;
         }
         return *this;
     }
 
     void Iocp::destroy()
     {
-        // 先取消在途探针再关端口：端口一关，队列里的完成通知就再没人取，
-        // 其 OVERLAPPED 所在的状态随即可安全释放
+        // 先取消在途探针：CancelIoEx 只发起取消，每条探针仍会以 ERROR_OPERATION_ABORTED
+        // 完成并入队；完成时内核还要写 OVERLAPPED 里的状态码，因此通知必须收完
         for (auto &[fileDescriptor, state]: m_sockets)
         {
             static_cast<void>(fileDescriptor);
@@ -146,6 +150,11 @@ namespace AsynGyanis::Core
         {
             cancelProbes(*state);
         }
+
+        // 排空完成队列再释放状态：不排空就 delete，取消才完成的探针会把状态码
+        // 写进已释放的 OVERLAPPED
+        drainCompletions();
+
         if (m_iocp != nullptr)
         {
             ::CloseHandle(m_iocp);
@@ -431,7 +440,8 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        const SOCKET acceptSocket = ::WSASocket(
+        // 用宽字符版（WSASocketW）：窄字符版在 /W4 下按已弃用 API 报 C4996，而这里本就没有字符串参数
+        const SOCKET acceptSocket = ::WSASocketW(
                 static_cast<int>(listenerAddress.ss_family), SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
         if (acceptSocket == INVALID_SOCKET)
         {
@@ -442,11 +452,17 @@ namespace AsynGyanis::Core
             return false;
         }
 
+        // 地址缓冲只在监听套接字上分配一次：AcceptEx 每次都要它，而普通连接永远用不到
+        if (state.acceptAddressBuffer == nullptr)
+        {
+            state.acceptAddressBuffer = std::make_unique<char[]>(kAcceptAddressBufferByteCount);
+        }
+
         std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
         DWORD      receivedByteCount = 0;
         const auto addressUnitByteCount = static_cast<DWORD>(kAcceptAddressBufferByteCount / 2);
         const BOOL isAccepted =
-                acceptFunction(state.socketHandle, acceptSocket, state.acceptAddressBuffer, 0, addressUnitByteCount, addressUnitByteCount,
+                acceptFunction(state.socketHandle, acceptSocket, state.acceptAddressBuffer.get(), 0, addressUnitByteCount, addressUnitByteCount,
                                &receivedByteCount, &state.readProbe.overlapped);
         if (isAccepted == FALSE && ::WSAGetLastError() != ERROR_IO_PENDING)
         {
@@ -527,6 +543,7 @@ namespace AsynGyanis::Core
         }
 
         m_results.clear();
+        m_resultIndexByUserData.clear();
         for (DWORD index = 0; index < entryCount; ++index)
         {
             translateCompletion(m_entries[index]);
@@ -556,22 +573,25 @@ namespace AsynGyanis::Core
             state.hasWriteProbe = false;
         }
 
-        if (isFailed || (state.isListening && direction == EPOLLIN))
+        if (state.isListening && direction == EPOLLIN && state.pendingAcceptSocket != INVALID_SOCKET)
         {
-        }
-        if (isFailed || (state.isListening && direction == EPOLLIN))
-        {
-        }
-
-        if (state.isListening && direction == EPOLLIN && !isFailed && state.pendingAcceptSocket != INVALID_SOCKET)
-        {
-            // AcceptEx 成功：把接受套接字与监听套接字关联起来，此后它就是一条正常的已连接套接字
-            const SOCKET acceptSocket = state.pendingAcceptSocket;
-            static_cast<void>(::setsockopt(acceptSocket, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
-                                           reinterpret_cast<const char *>(&state.socketHandle), sizeof(state.socketHandle)));
-            state.pendingAcceptSocket = INVALID_SOCKET;
-            state.acceptedSocket      = acceptSocket;
-            state.hasAcceptedSocket   = true;
+            if (isFailed)
+            {
+                // AcceptEx 以失败完成（对端没等接入就断开、描述符已失效）：接受套接字没有用了，
+                // 必须关掉并清空——留着它，下一次武装会被 armAcceptProbe 开头的
+                // 「已有一条在途的 AcceptEx」挡住，该监听器此后再也不投递接受操作
+                ::closesocket(state.pendingAcceptSocket);
+                state.pendingAcceptSocket = INVALID_SOCKET;
+            } else
+            {
+                // AcceptEx 成功：把接受套接字与监听套接字关联起来，此后它就是一条正常的已连接套接字
+                const SOCKET acceptSocket = state.pendingAcceptSocket;
+                static_cast<void>(::setsockopt(acceptSocket, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+                                               reinterpret_cast<const char *>(&state.socketHandle), sizeof(state.socketHandle)));
+                state.pendingAcceptSocket = INVALID_SOCKET;
+                state.acceptedSocket      = acceptSocket;
+                state.hasAcceptedSocket   = true;
+            }
         }
 
         if (state.isDeleted)
@@ -598,25 +618,80 @@ namespace AsynGyanis::Core
         // 同一个注册对象的两个方向可能在同一批完成通知里各来一条：**必须合并成一条 epoll_event**，
         // 这正是 epoll 给事件的方式（一个 epoll_event 带多个事件位）。分成两条时，上层处理第一条
         // 就可能把该注册对象销毁（读侧收到 EOF 就关连接是常态），第二条随后写到已释放内存上——
-        // ASan 实测：IoWatcher::handleEvents 里往 m_armedEvents 写入时 heap-use-after-free
-        for (epoll_event &existingEvent: m_results)
+        // ASan 实测：IoWatcher::handleEvents 里往 m_armedEvents 写入时 heap-use-after-free。
+        // 合并走「用户数据 → 结果下标」的索引表：事件上限 1024 时线性查重最坏是 O(n²)，
+        // 这是每轮 wait() 的热路径
+        if (const auto existing = m_resultIndexByUserData.find(event.data.ptr); existing != m_resultIndexByUserData.end())
         {
-            if (existingEvent.data.ptr == event.data.ptr)
-            {
-                existingEvent.events |= event.events;
-                return;
-            }
+            m_results[existing->second].events |= event.events;
+            return;
         }
+        m_resultIndexByUserData.emplace(event.data.ptr, m_results.size());
         m_results.push_back(event);
     }
 
     void Iocp::cancelProbes(SocketState &state) noexcept
     {
+        // CancelIoEx 只发起取消：探针随后仍会以 ERROR_OPERATION_ABORTED 完成并入队，
+        // 由它的完成通知走正常回收路径（墓碑表 / 排空）。已经完成的探针返回
+        // ERROR_NOT_FOUND——它的通知早已在路上或已取出，无需处理
         if (state.hasReadProbe)
         {
+            static_cast<void>(::CancelIoEx(toHandle(state.socketHandle), &state.readProbe.overlapped));
         }
         if (state.hasWriteProbe)
         {
+            static_cast<void>(::CancelIoEx(toHandle(state.socketHandle), &state.writeProbe.overlapped));
+        }
+    }
+
+    void Iocp::drainCompletions() noexcept
+    {
+        // 排空阶段同样维护合并索引：translateCompletion 会往 m_results 里写，
+        // 索引表不跟着清就与结果集对不上（析构路径只关心通知被取走，内容不再使用）
+        m_results.clear();
+        m_resultIndexByUserData.clear();
+
+        for (;;)
+        {
+            // 还有在途探针才值得继续收：一条完成通知清掉一个方向，收齐即退出
+            bool hasProbeInFlight = false;
+            for (const auto &[fileDescriptor, state]: m_sockets)
+            {
+                static_cast<void>(fileDescriptor);
+                if (state->hasProbeInFlight())
+                {
+                    hasProbeInFlight = true;
+                    break;
+                }
+            }
+            if (!hasProbeInFlight)
+            {
+                for (const SocketState *state: m_graveyard)
+                {
+                    if (state->hasProbeInFlight())
+                    {
+                        hasProbeInFlight = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasProbeInFlight)
+            {
+                return;
+            }
+
+            DWORD entryCount = 0;
+            // 取消本应立即完成；真收不齐（驱动异常）也不能让析构无限等下去
+            if (::GetQueuedCompletionStatusEx(m_iocp, m_entries.data(), static_cast<ULONG>(m_entries.size()), &entryCount,
+                                              kDrainTimeoutMilliseconds, FALSE) == FALSE)
+            {
+                return;
+            }
+            for (DWORD index = 0; index < entryCount; ++index)
+            {
+                translateCompletion(m_entries[index]);
+            }
         }
     }
 
