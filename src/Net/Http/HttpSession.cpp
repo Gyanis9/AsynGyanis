@@ -1,5 +1,7 @@
 #include "Net/Http/HttpSession.h"
 
+#include "Net/Http/Middleware.h"
+
 #include <cstddef>
 #include <limits>
 #include <string>
@@ -142,8 +144,12 @@ namespace AsynGyanis::Net
 
     bool HttpSession::shouldKeepAlive(const HttpRequest &request, const HttpResponse &response)
     {
+        // 请求侧的 Connection 只取一次：下面两条判定都从这一份快照上做，
+        // 每请求少一次 vector<string> 与逐条拷贝（keep-alive 是热路径）
+        const std::vector<std::string> requestConnectionValues = request.headerValues("connection");
+
         // ---- 第 1 优先级：请求显式 close。客户端的明确指令不可被任何一侧的响应头反转 ----
-        if (detail::headerValueListContainsToken(request.headerValues("connection"), "close"))
+        if (detail::headerValueListContainsToken(requestConnectionValues, "close"))
         {
             return false;
         }
@@ -155,7 +161,7 @@ namespace AsynGyanis::Net
         }
 
         // ---- 第 3 优先级：请求显式 keep-alive。对 HTTP/1.0 是「要求保活」，对 1.1 只是重申默认 ----
-        if (detail::headerValueListContainsToken(request.headerValues("connection"), "keep-alive"))
+        if (detail::headerValueListContainsToken(requestConnectionValues, "keep-alive"))
         {
             return true;
         }
@@ -186,7 +192,7 @@ namespace AsynGyanis::Net
                     const std::size_t commaPosition = remainder.find(',');
                     const std::string_view currentToken = trimHeaderWhitespace(remainder.substr(0, commaPosition));
 
-                    if (currentToken.size() == expectedToken.size() && asciiToLowerCopy(currentToken) == expectedToken)
+                    if (equalsIgnoringCaseAscii(currentToken, expectedToken))
                     {
                         return true;
                     }

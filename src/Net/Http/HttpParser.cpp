@@ -567,7 +567,14 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            line = std::string_view(begin, static_cast<std::size_t>(lineEnd - begin) - 1);
+            // 整行落在本段输入里同样要过长度闸门：漏掉它，块大小行等阶段的限额会形同虚设
+            const std::size_t lineByteCount = static_cast<std::size_t>(lineEnd - begin) - 1;
+            if (!checkLineLength(lineByteCount))
+            {
+                return false;
+            }
+
+            line = std::string_view(begin, lineByteCount);
             consumed += static_cast<std::size_t>(lineEnd - begin) + 1;
             return true;
         }

@@ -717,8 +717,18 @@ namespace AsynGyanis::Net
                     const std::size_t nextSeparator = parameters.find(';', parameterOffset);
                     const std::size_t parameterEnd =
                             nextSeparator == std::string_view::npos ? parameters.size() : nextSeparator;
-                    const std::string_view parameter = parameters.substr(parameterOffset, parameterEnd - parameterOffset);
+                    std::string_view parameter = parameters.substr(parameterOffset, parameterEnd - parameterOffset);
                     parameterOffset                  = parameterEnd + 1;
+
+                    // 参数自身也要去空白："gzip ; q=0" 里 q 之前有空格，不裁掉就认不出这次拒绝
+                    while (!parameter.empty() && (parameter.front() == ' ' || parameter.front() == '\t'))
+                    {
+                        parameter.remove_prefix(1);
+                    }
+                    while (!parameter.empty() && (parameter.back() == ' ' || parameter.back() == '\t'))
+                    {
+                        parameter.remove_suffix(1);
+                    }
 
                     if (parameter.size() >= 2 && (parameter[0] == 'q' || parameter[0] == 'Q') && parameter[1] == '=')
                     {
