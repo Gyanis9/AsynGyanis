@@ -126,6 +126,12 @@ namespace AsynGyanis::Base
          */
         LoggerRegistry() = default;
 
+        /// 成对更新根日志器缓存：强引用 + 热路径裸指针（实现见 .cpp）
+        void storeCachedRootLogger(const std::shared_ptr<Logger> &logger) noexcept;
+
+        /// 成对失效根日志器缓存（实现见 .cpp）
+        void clearCachedRootLogger() noexcept;
+
         mutable std::shared_mutex                                    m_mutex{};    ///< 保护 m_loggers 的读写锁
         std::unordered_map<std::string, std::shared_ptr<Logger> >    m_loggers{};  ///< 日志器名称到 Logger 实例的映射表（共享所有权，便于快照延长生命周期）
 
@@ -135,9 +141,18 @@ namespace AsynGyanis::Base
         /// 代价（对象仍可达，LeakSanitizer 不会报告）
         std::vector<std::shared_ptr<Logger> > m_retiredLoggers{};
 
+        /// 根日志器的热路径缓存（裸指针）：每条 LOG_* 宏都先读它，命中时只需一次原子读。
+        /// 用裸指针而不是 shared_ptr 的原子量，是因为后者的 load 在 MSVC/libstdc++ 上要走内部
+        /// 自旋锁，而这条路径每次日志调用都会被走到。
+        /// **安全前提是本类的退休约定**：任何被替换/注销/清理的日志器都移入 m_retiredLoggers
+        /// 而不是销毁，因此这里拿到的指针在注册表存活期内一直有效；要改那条约定，得先把这里
+        /// 改回强引用缓存（见下一行）
+        std::atomic<Logger *> m_cachedRootLoggerPointer{nullptr};
+
         /// 根日志器缓存：所有增删日志器的入口都会将其置空，读取时无锁命中缓存。
         /// 这里保存的是 shared_ptr 强引用而非裸指针——若只缓存裸指针，缓存加载与解引用之间
-        /// 并发的 clear()/unregisterLogger() 可能已把对象销毁（原缺陷即为此类 use-after-free）
+        /// 并发的 clear()/unregisterLogger() 可能已把对象销毁（原缺陷即为此类 use-after-free）。
+        /// 与 m_cachedRootLoggerPointer 成对更新：这份强引用保证对象在缓存命中期间不会被销毁
         std::atomic<std::shared_ptr<Logger> > m_cachedRootLogger{nullptr};
     };
 } // namespace AsynGyanis::Base

@@ -15,6 +15,20 @@ namespace AsynGyanis::Base
         return instance;
     }
 
+    void LoggerRegistry::storeCachedRootLogger(const std::shared_ptr<Logger> &logger) noexcept
+    {
+        // 两个缓存成对更新：强引用先落（对象的所有权先到位），裸指针后发布（热路径只读它）
+        m_cachedRootLogger.store(logger, std::memory_order_release);
+        m_cachedRootLoggerPointer.store(logger.get(), std::memory_order_release);
+    }
+
+    void LoggerRegistry::clearCachedRootLogger() noexcept
+    {
+        // 与发布顺序相反：先断裸指针让新读者走慢路径，再放掉强引用
+        m_cachedRootLoggerPointer.store(nullptr, std::memory_order_release);
+        m_cachedRootLogger.store(nullptr, std::memory_order_release);
+    }
+
     Logger &LoggerRegistry::getLogger(const std::string &name)
     {
         {
@@ -27,7 +41,7 @@ namespace AsynGyanis::Base
             {
                 if (name == kRootLoggerName)
                 {
-                    m_cachedRootLogger.store(iterator->second, std::memory_order_release);
+                    storeCachedRootLogger(iterator->second);
                 }
                 return *iterator->second;
             }
@@ -40,7 +54,7 @@ namespace AsynGyanis::Base
         {
             if (name == kRootLoggerName)
             {
-                m_cachedRootLogger.store(iterator->second, std::memory_order_release);
+                storeCachedRootLogger(iterator->second);
             }
             return *iterator->second;
         }
@@ -50,7 +64,7 @@ namespace AsynGyanis::Base
         if (name == kRootLoggerName)
         {
             // 缓存与 map 共享同一份所有权：缓存命中期间 root 不会被析构
-            m_cachedRootLogger.store(logger, std::memory_order_release);
+            storeCachedRootLogger(logger);
         }
         m_loggers.emplace(name, std::move(logger));
         return reference;
@@ -58,10 +72,10 @@ namespace AsynGyanis::Base
 
     Logger &LoggerRegistry::getRootLogger()
     {
-        // 每条 LOG_* 宏都走这里，命中缓存时完全不加锁。
-        // 缓存持有强引用：即使加载与解引用之间发生 clear()/unregisterLogger()，
-        // 只要本函数已取得 shared_ptr，被指向的 Logger 在此期间就不会被销毁
-        if (const auto cachedLogger = m_cachedRootLogger.load(std::memory_order_acquire))
+        // 每条 LOG_* 宏都走这里：命中缓存时只有一次原子读，不加锁、也不碰 shared_ptr
+        //（atomic<shared_ptr> 的 load 在 MSVC/libstdc++ 上要走内部自旋锁）。
+        // 指针的生命期由本类的退休约定保证：被替换/注销/清理的日志器都移入退休表而不是销毁
+        if (Logger *const cachedLogger = m_cachedRootLoggerPointer.load(std::memory_order_acquire))
         {
             return *cachedLogger;
         }
@@ -84,7 +98,7 @@ namespace AsynGyanis::Base
         if (isRootLogger)
         {
             // 覆盖会替换旧 root，先置空缓存再替换，避免他人在窗口内继续使用旧实例
-            m_cachedRootLogger.store(nullptr, std::memory_order_release);
+            clearCachedRootLogger();
         }
         // 同名替换：旧对象移入退休表而不是就地销毁——正在使用它的裸引用（LOG_* 宏）可能跨过这一刻
         if (const auto existing = m_loggers.find(registeredLogger->name()); existing != m_loggers.end())
@@ -95,7 +109,7 @@ namespace AsynGyanis::Base
 
         if (isRootLogger)
         {
-            m_cachedRootLogger.store(std::move(registeredLogger), std::memory_order_release);
+            storeCachedRootLogger(registeredLogger);
         }
     }
 
@@ -106,7 +120,7 @@ namespace AsynGyanis::Base
         // 先失效缓存再擦除，避免缓存继续指向已被移除的 root
         if (name == kRootLoggerName)
         {
-            m_cachedRootLogger.store(nullptr, std::memory_order_release);
+            clearCachedRootLogger();
         }
         // 摘出而非销毁：getLogger() 给出的是裸引用，使用中的调用方可能还没走完
         if (const auto existing = m_loggers.find(name); existing != m_loggers.end())
@@ -131,7 +145,7 @@ namespace AsynGyanis::Base
     void LoggerRegistry::clear()
     {
         std::unique_lock lock(m_mutex);
-        m_cachedRootLogger.store(nullptr, std::memory_order_release);
+        clearCachedRootLogger();
         // 与 unregisterLogger 同一处置：全部移入退休表，不就地销毁使用中的对象
         for (auto &entry: m_loggers)
         {
