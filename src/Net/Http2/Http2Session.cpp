@@ -751,6 +751,35 @@ namespace AsynGyanis::Net
         }
         const std::chrono::steady_clock::time_point requestReceivedTime = std::chrono::steady_clock::now();
 
+        // content-length 与实收正文必须一致（RFC 9113 §8.1.1 引用 RFC 9110 §8.6）：不一致按报文错误
+        // 回 400，绝不把「声明一个长度、实收另一个长度」的正文交给业务——那正是走私的收益所在
+        if (!pending.isStreamingBody)
+        {
+            const std::vector<std::string> declaredLengths = request.headerValues("content-length");
+            std::size_t                    declaredLength  = 0;
+            if (!declaredLengths.empty() && parseContentLengthValue(declaredLengths.front(), declaredLength) &&
+                request.body().size() != declaredLength)
+            {
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countBadRequest();
+                }
+                LOG_ERROR_FMT("Http2Session: 流 {} 的 content-length 声明 {} 字节、实收 {} 字节，已按 400 收口",
+                              streamId, declaredLength, request.body().size());
+                HttpResponse mismatchResponse;
+                mismatchResponse.setStatus(400);
+                mismatchResponse.setBody("Content-Length mismatch");
+                static_cast<void>(mismatchResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+                const RequestServeOutcome mismatchOutcome =
+                        toRequestServeOutcome(co_await sendResponse(streamId, mismatchResponse, isHeadRequest));
+                if (mismatchOutcome == RequestServeOutcome::StreamCancelled)
+                {
+                    noteStreamCancelled();
+                }
+                co_return mismatchOutcome;
+            }
+        }
+
         // 响应对象按连接复用：容器容量跨请求保留，复用必须配一次复位
         m_response.reset();
 

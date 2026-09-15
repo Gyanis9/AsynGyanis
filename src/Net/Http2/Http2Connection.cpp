@@ -1099,6 +1099,8 @@ namespace AsynGyanis::Net
         bool hasPathField = false;
         bool hasAuthorityField = false;
         bool hasProtocolField = false;
+        bool hasContentLengthField = false;
+        std::size_t contentLengthValue = 0;
         for (const HpackHeaderField &field: headerFields)
         {
             // 头名必须全小写（§8.1.2）：HTTP/2 不允许大小写折叠，大写会让同一个头部出现两种写法
@@ -1219,6 +1221,22 @@ namespace AsynGyanis::Net
                                                  "又是注入的经典入口，请让对端改用百分号编码",
                                                  field.name));
                 return false;
+            }
+            // content-length 与 h1 侧同一口径：取值必须是单个十进制数字，重复出现必须完全一致。
+            // 长度有歧义时中间设备与业务可能各按一种读法理解正文边界，正是请求走私的形态
+            if (field.name == "content-length")
+            {
+                std::size_t declaredLength = 0;
+                if (!parseContentLengthValue(field.value, declaredLength) ||
+                    (hasContentLengthField && declaredLength != contentLengthValue))
+                {
+                    writeError(errorText, std::format("请求头 content-length 的取值 \"{}\" 非法或前后冲突：RFC 9110 §8.6 要求它是"
+                                                     "单个十进制数字，重复出现时必须完全一致",
+                                                     field.value));
+                    return false;
+                }
+                hasContentLengthField = true;
+                contentLengthValue    = declaredLength;
             }
             request.headerFields.push_back(field);
         }

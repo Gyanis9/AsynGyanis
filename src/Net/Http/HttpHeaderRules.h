@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -27,4 +28,18 @@ namespace AsynGyanis::Net
      * @return true 该字段必须剥离
      */
     [[nodiscard]] bool isConnectionSpecificHeaderName(std::string_view name) noexcept;
+
+    /**
+     * @brief 严格解析 Content-Length 的取值（RFC 9110 §8.6）
+     *
+     * @details 只接受纯十进制数字：带后缀的「12abc」、带符号、带空格的数字一律拒绝——
+     *          长度有歧义时「按哪个数读正文」会因实现而异，正是请求走私的入口。
+     *          h1/h2 两侧共用这一份判定，避免两条承载对同一份头给出不同结论。
+     *
+     * @param text 字段值（允许带首尾 OWS，函数内部裁剪）
+     * @param length 输出参数：解析出的长度（仅成功时写入）
+     * @return true 取值合法
+     * @return false 取值非法（空串、含非数字字符、超出 19 位十进制）
+     */
+    [[nodiscard]] bool parseContentLengthValue(std::string_view text, std::size_t &length) noexcept;
 } // namespace AsynGyanis::Net
