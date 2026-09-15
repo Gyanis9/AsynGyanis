@@ -14,6 +14,7 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <atomic>
 #include <memory>
 
 namespace AsynGyanis::Database
@@ -104,6 +105,10 @@ namespace AsynGyanis::Database
 
         std::unique_ptr<DatabaseConnection> m_connection;     ///< 底层数据库连接的所有权
         ConnectionPool *                    m_pool = nullptr; ///< 归属的连接池，析构时据此归还
+
+        /// 池存活令牌（与池共享）：池已析构时归还路径据此直接关闭连接。
+        /// 池的析构不可逆，因此这里只读不写，也不需要与 m_pool 一起判空后再用
+        std::shared_ptr<std::atomic<bool>> m_poolLiveness;
     };
 
 } // namespace AsynGyanis::Database

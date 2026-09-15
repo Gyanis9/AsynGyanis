@@ -239,6 +239,9 @@ namespace AsynGyanis::Database
             Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
             std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
+            /// 等待截止时刻（await_suspend 时按 acquireTimeoutMilliseconds 定下）：
+            /// 与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒
+            std::chrono::steady_clock::time_point m_deadline{};
         };
 
         friend class AcquireAwaiter;
@@ -301,12 +304,31 @@ namespace AsynGyanis::Database
          */
         void removeAsyncWaiter(AcquireAwaiter *waiter) noexcept;
 
+        /**
+         * @brief 唤醒已到截止时刻的异步等待者（以「空连接」收尾）
+         * @details 由后台线程按秒节拍调用，语义与同步 acquire() 的超时一致；
+         *          恢复投回各自的事件循环，不就地恢复（本函数不在那些循环的线程上）
+         */
+        void expireTimedOutWaiters() noexcept;
+
+        /**
+         * @brief 取「池存活」令牌的副本（供 PooledConnection 归还时判定池是否还在）
+         * @return std::shared_ptr<std::atomic<bool>> 与池共享的存活标志；池析构前会先置 false
+         * @note 归还路径只看令牌、不取消引用池指针：池已析构时令牌的共享块仍存活，读它是安全的
+         */
+        [[nodiscard]] std::shared_ptr<std::atomic<bool>> livenessToken() const noexcept;
+
+        friend class PooledConnection;
+
         // ========================================================================
         // 数据成员
         // ========================================================================
 
         std::function<std::unique_ptr<DatabaseConnection>()> m_factory; ///< 连接工厂，每次调用的返回值应是已 connect() 的状态
         PoolConfig                                           m_config;  ///< 连接池配置
+
+        /// 池存活标志：析构一开始就置 false，与之共享的 PooledConnection 归还时据此直接关闭连接
+        std::shared_ptr<std::atomic<bool>> m_isAlive{std::make_shared<std::atomic<bool>>(true)};
 
         // ----- 空闲栈（受 m_mutex 保护） -----
         std::vector<IdleEntry>  m_idleStack; ///< LIFO 空闲连接栈

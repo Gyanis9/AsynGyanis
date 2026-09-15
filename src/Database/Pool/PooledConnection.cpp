@@ -10,7 +10,12 @@ namespace AsynGyanis::Database
         m_connection(std::move(connection))
         , m_pool(pool)
     {
-        // 构造函数不检查参数有效性：空连接 + 空池的组合是合法的「空包装」
+        // 构造时取一份池存活令牌：池析构之后归还路径据此直接关闭连接，
+        // 而不是回头调用已释放的池（构造函数不检查参数有效性：空连接 + 空池是合法的「空包装」）
+        if (m_pool != nullptr)
+        {
+            m_poolLiveness = m_pool->livenessToken();
+        }
     }
 
     PooledConnection::~PooledConnection()
@@ -22,6 +27,7 @@ namespace AsynGyanis::Database
     PooledConnection::PooledConnection(PooledConnection &&other) noexcept :
         m_connection(std::exchange(other.m_connection, nullptr))
         , m_pool(std::exchange(other.m_pool, nullptr))
+        , m_poolLiveness(std::move(other.m_poolLiveness))
     {
         // 移动后源对象完全清空：m_connection 与 m_pool 均为空，
         // 源对象析构时不会触发归还操作
@@ -35,8 +41,9 @@ namespace AsynGyanis::Database
             doReturnToPool();
 
             // 转移所有权
-            m_connection = std::exchange(other.m_connection, nullptr);
-            m_pool       = std::exchange(other.m_pool, nullptr);
+            m_connection   = std::exchange(other.m_connection, nullptr);
+            m_pool         = std::exchange(other.m_pool, nullptr);
+            m_poolLiveness = std::move(other.m_poolLiveness);
         }
         return *this;
     }
@@ -70,17 +77,20 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // 将连接归还至池：回调 ConnectionPool 的归还方法
-        // 注意：m_pool 在构造时设置，当 PooledConnection 被默认构造时不持有池指针，
-        // 此时 m_pool 为 nullptr，则直接丢弃连接（不归还）
-        if (m_pool != nullptr)
+        // 将连接归还至池；池已析构时按文档承诺直接把连接关掉。
+        // 判据只看存活令牌：池析构后其指针本身已经是悬垂值，取消引用它是释放后使用
+        const bool isPoolAlive = m_pool != nullptr && m_poolLiveness != nullptr &&
+                                 m_poolLiveness->load(std::memory_order_acquire);
+        if (isPoolAlive)
         {
             m_pool->returnConnection(std::move(m_connection));
         }
 
-        // 清空所有状态，防止重复归还
+        // 清空所有状态，防止重复归还。连接已被移走（或池已析构）时，
+        // 这里析构 unique_ptr 即关闭底层连接
         m_connection = nullptr;
         m_pool       = nullptr;
+        m_poolLiveness.reset();
     }
 
 } // namespace AsynGyanis::Database

@@ -25,6 +25,10 @@ namespace AsynGyanis::Database
 
     ConnectionPool::~ConnectionPool()
     {
+        // 第一件事就把存活令牌置假：此刻起任何归还路径都不再回头调本对象，
+        // 而是按文档承诺直接把连接关掉（池已析构就不能再被取消引用）
+        m_isAlive->store(false, std::memory_order_release);
+
         // 请求后台线程停止并等待其退出
         m_healthThread.request_stop();
         if (m_healthThread.joinable())
@@ -62,17 +66,29 @@ namespace AsynGyanis::Database
         // 唤醒所有异步等待者：给它们空连接。
         // 这一次刻意「就地恢复」而不是投回各自的事件循环——池已经停摆，投递进循环的任务
         // 很可能永远不会被执行（循环也可能正在停止），那会让等待的协程永久挂起；
-        // 就地恢复至少能让它们拿到空连接、继续走完自己的错误分支
+        // 就地恢复至少能让它们拿到空连接、继续走完自己的错误分支。
+        // **恢复必须在锁外做**：协程恢复后可能立刻再触池（重试 acquire、归还连接），
+        // 那些路径都要拿 m_asyncMutex，持锁恢复就是同线程二次加锁的自死锁
+        std::vector<AcquireAwaiter *> abandonedWaiters;
         {
             std::lock_guard lock(m_asyncMutex);
-            for (auto *waiter: m_asyncWaiters)
+            abandonedWaiters.assign(m_asyncWaiters.begin(), m_asyncWaiters.end());
+            m_asyncWaiters.clear();
+            for (AcquireAwaiter *waiter: abandonedWaiters)
             {
                 waiter->m_result = nullptr;
                 waiter->m_inList = false;
-                waiter->m_handle.resume();
             }
-            m_asyncWaiters.clear();
         }
+        for (AcquireAwaiter *waiter: abandonedWaiters)
+        {
+            waiter->m_handle.resume();
+        }
+    }
+
+    std::shared_ptr<std::atomic<bool>> ConnectionPool::livenessToken() const noexcept
+    {
+        return m_isAlive;
     }
 
     // ========================================================================
@@ -92,20 +108,12 @@ namespace AsynGyanis::Database
         }
 
         // ---- 第二段：尝试创建新连接 ----
-        // 未达上限则懒惰创建（避免上线就建满）
+        // 未达上限则懒惰创建（避免上线就建满）。建连（工厂 + connect）在锁外跑：
+        // 一次秒级的 TCP 握手不该把所有取出、统计与后台驱逐一起堵在 m_mutex 上
+        if (std::unique_ptr<DatabaseConnection> connection = tryAcquireOrCreateInternal())
         {
-            std::lock_guard lock(m_mutex);
-            // 使用 relaxed 语义：此处不要求严格的跨线程可见性，
-            // 多创建一两个连接的代价远低于漏建连接导致的等待
-            if (m_totalCreated.load(std::memory_order_relaxed) < m_config.maximumPoolSize)
-            {
-                if (std::unique_ptr<DatabaseConnection> newConnection = createNewConnection())
-                {
-                    m_totalCreated.fetch_add(1, std::memory_order_relaxed);
-                    m_activeCount.fetch_add(1);
-                    return PooledConnection(std::move(newConnection), this);
-                }
-            }
+            m_activeCount.fetch_add(1);
+            return PooledConnection(std::move(connection), this);
         }
 
         // ---- 第三段：等待路径 ----
@@ -203,12 +211,23 @@ namespace AsynGyanis::Database
             return false; // 获取到连接，不挂起
         }
 
-        // 仍无可用连接：加入等待列表
+        // 仍无可用连接：加入等待列表。**这次判定必须与入表同锁**：唤醒方（归还路径）拿的
+        // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
+        // notifyAsyncWaiter 判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
+            m_result = m_pool->tryAcquireOrCreateInternal();
+            if (m_result)
+            {
+                return false;
+            }
             m_pool->m_asyncWaiters.push_back(this);
             m_inList = true;
         }
+
+        // 定下等待截止时刻：与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒。
+        // 只在入表时定一次，不随每次尝试刷新——否则反复失败的重试会把超时无限顺延
+        m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_pool->m_config.acquireTimeoutMilliseconds);
 
         return true; // 挂起，等待归还路径唤醒
     }
@@ -250,17 +269,24 @@ namespace AsynGyanis::Database
         // 空闲栈为空：未达上限就新建一条，达上限才算「无可用连接」。
         // 同步的 acquire() 与异步的 acquireAsync() 共用这一份判定——若异步路径只从空闲栈取，
         // 一个刚建好的池上所有异步获取都会先挂起（尽管池完全有能力建连），
-        // 而同步获取却能立刻建连，两条路径给出相反的行为
-        std::lock_guard lock(m_mutex);
-        if (m_totalCreated.load(std::memory_order_relaxed) >= m_config.maximumPoolSize)
+        // 而同步获取却能立刻建连，两条路径给出相反的行为。
+        // **建连不在锁内**：工厂要跑 TCP 握手或开文件（秒级），持着 m_mutex 会让所有取出、
+        // 统计与后台驱逐一起排队；先用「占位」把额度定下来，再放锁执行建连
         {
-            return nullptr;
+            std::lock_guard lock(m_mutex);
+            if (m_totalCreated.load(std::memory_order_relaxed) >= m_config.maximumPoolSize)
+            {
+                return nullptr;
+            }
+            // 先占位再加锁外建连，否则两个线程会同时看到「未达上限」而各建一条，突破上限
+            m_totalCreated.fetch_add(1, std::memory_order_relaxed);
         }
 
         std::unique_ptr<DatabaseConnection> newConnection = createNewConnection();
-        if (newConnection)
+        if (!newConnection)
         {
-            m_totalCreated.fetch_add(1, std::memory_order_relaxed);
+            // 建连失败：把占位还回去，否则空闲额度会被永久占住
+            m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
         }
 
         return newConnection;
@@ -540,6 +566,10 @@ namespace AsynGyanis::Database
                 const auto chunk = std::min(static_cast<int64_t>(kSleepChunkMs), remainingMs);
                 std::this_thread::sleep_for(std::chrono::milliseconds(chunk));
                 remainingMs -= chunk;
+
+                // 每秒一次：把等到截止时刻的异步等待者以「空连接」唤醒。
+                // 放在这里而不是等下一个健康检查周期，是为了让异步超时的粒度与同步一致（秒级以内）
+                expireTimedOutWaiters();
             }
 
             if (stopToken.stop_requested())
@@ -548,31 +578,37 @@ namespace AsynGyanis::Database
             }
 
             // ---- 遍历空闲栈，驱逐过期连接 ----
-            std::lock_guard lock(m_mutex);
-
-            // 使用 erase-remove_if 惯用法移除过期连接
-            auto removeBegin = std::ranges::remove_if(m_idleStack,
-                                                      [this](IdleEntry &entry) -> bool
-                                                      {
-                                                          if (isEntryExpired(entry))
-                                                          {
-                                                              // 从创建时间映射表中移除
-                                                              {
-                                                                  std::lock_guard ctLock(m_ctMapMutex);
-                                                                  m_creationTimeMap.erase(entry.connection.get());
-                                                              }
-                                                              entry.connection->disconnect();
-                                                              entry.connection.reset();
-                                                              m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
-                                                              return true; // 标记移除
-                                                          }
-                                                          return false;
-                                                      }).begin();
-
-            if (removeBegin != m_idleStack.end())
+            // 锁内只做「摘出与计数」；disconnect 可能走网络/系统调用，必须留到锁外，
+            // 否则一次慢断开会让所有取出路径一起等在这把锁上
+            std::vector<std::unique_ptr<DatabaseConnection>> expiredConnections;
             {
-                m_idleStack.erase(removeBegin, m_idleStack.end());
+                std::lock_guard lock(m_mutex);
+
+                // 使用 erase-remove_if 惯用法移除过期连接
+                auto removeBegin = std::ranges::remove_if(m_idleStack,
+                                                          [this, &expiredConnections](IdleEntry &entry) -> bool
+                                                          {
+                                                              if (isEntryExpired(entry))
+                                                              {
+                                                                  // 从创建时间映射表中移除
+                                                                  {
+                                                                      std::lock_guard ctLock(m_ctMapMutex);
+                                                                      m_creationTimeMap.erase(entry.connection.get());
+                                                                  }
+                                                                  expiredConnections.push_back(std::move(entry.connection));
+                                                                  m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+                                                                  return true; // 标记移除
+                                                              }
+                                                              return false;
+                                                          }).begin();
+
+                if (removeBegin != m_idleStack.end())
+                {
+                    m_idleStack.erase(removeBegin, m_idleStack.end());
+                }
             }
+            // 锁外断开：析构 unique_ptr 即关闭底层连接
+            expiredConnections.clear();
         }
     }
 
@@ -611,6 +647,37 @@ namespace AsynGyanis::Database
         {
             m_asyncWaiters.erase(it);
             waiter->m_inList = false;
+        }
+    }
+
+    void ConnectionPool::expireTimedOutWaiters() noexcept
+    {
+        const auto                    now = std::chrono::steady_clock::now();
+        std::vector<AcquireAwaiter *> timedOutWaiters;
+        {
+            std::lock_guard lock(m_asyncMutex);
+            std::erase_if(m_asyncWaiters,
+                          [&timedOutWaiters, now](AcquireAwaiter *const waiter)
+                          {
+                              // 尚未到点的留着；到点的摘出列表，结果保持空（等价的「超时返回空」）
+                              if (waiter->m_deadline > now)
+                              {
+                                  return false;
+                              }
+                              timedOutWaiters.push_back(waiter);
+                              return true;
+                          });
+            for (AcquireAwaiter *const waiter: timedOutWaiters)
+            {
+                waiter->m_inList = false;
+            }
+        }
+
+        // 恢复投回各自的事件循环：本函数跑在后台线程上，就地恢复会把协程的后续代码
+        // 跑到这个线程上，而调用方是按「回调都在自己的事件循环线程上」写代码的
+        for (AcquireAwaiter *const waiter: timedOutWaiters)
+        {
+            waiter->m_completionLoop->scheduler().scheduleRemote(waiter->m_handle);
         }
     }
 
