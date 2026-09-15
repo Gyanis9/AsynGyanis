@@ -56,8 +56,10 @@ jobs:
         run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF
 
       # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
+      # `-- -k 0`：一次编译完所有目标，把全部告警一次收齐——逐个文件报错时，
+      # 修一轮要等一整轮 CI，收集式失败才能一轮改完
       - name: 构建
-        run: cmake --build build/debug
+        run: cmake --build build/debug -- -k 0
 
       # GitHub 的 ubuntu runner 上 vm.mmap_rnd_bits=32 时 AddressSanitizer 有随机崩溃的
       # 已知问题，调低 ASLR 熵规避；失败不阻塞（本地同为 32 且稳定，此处属保险）
