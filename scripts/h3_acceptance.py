@@ -120,7 +120,16 @@ def make_masked_text_frame(text):
     payload = text.encode()
     mask = b"\x11\x22\x33\x44"
     masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-    return bytes([0x81, 0x80 | len(payload)]) + mask + masked
+    # 长度按 RFC 6455 §5.2 分三档编码：126 与 127 是「后面还跟着扩展长度」的哨兵，
+    # 不能当成实际长度直接写进 7 位字段（那样超过 125 字节的负载会发出畸形帧）
+    length = len(payload)
+    if length <= 125:
+        header = bytes([0x81, 0x80 | length])
+    elif length <= 0xFFFF:
+        header = bytes([0x81, 0x80 | 126]) + length.to_bytes(2, "big")
+    else:
+        header = bytes([0x81, 0x80 | 127]) + length.to_bytes(8, "big")
+    return header + mask + masked
 
 
 def make_quic_configuration():
@@ -173,7 +182,7 @@ def run_websocket_mode(host, port, path, text):
         return 1
 
     print(f"status={client.status} headers={client.headers} 回显 {len(client.body)} 字节")
-    if client.status != 200:
+    if not 200 <= client.status < 300:
         print(f"隧道没有以 2xx 建立：实得 {client.status}", file=sys.stderr)
         return 1
     if bytes(client.body) != expected_echo:
