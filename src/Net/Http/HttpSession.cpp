@@ -54,21 +54,6 @@ namespace AsynGyanis::Net
             return text.substr(beginPosition, endPosition - beginPosition);
         }
 
-        /**
-         * @brief 把视图按 ASCII 小写复制到 std::string（用于比较头部名与值）
-         * @param text 原始视图
-         * @return std::string 小写化的副本
-         */
-        std::string asciiToLowerCopy(std::string_view text)
-        {
-            std::string result;
-            result.reserve(text.size());
-            for (const char character : text)
-            {
-                result.push_back(asciiToLower(character));
-            }
-            return result;
-        }
     } // namespace
 
     HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
