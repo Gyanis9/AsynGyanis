@@ -173,13 +173,23 @@ namespace AsynGyanis::Core
     void TimerQueue::dispatchExpired()
     {
         const auto now = std::chrono::steady_clock::now();
+
+        // 本批到期的等待器按截止时间先后收进来，最后**反序**投递给调度器：
+        // 调度器的本地队列是 LIFO（见 Scheduler 的说明），正序投递会让「更晚截止」的先跑——
+        // 同一批里有两个以上到期定时器时，唤醒顺序就与截止时间相反（CI 上实测到过）
+        std::vector<Awaiter *> expiredAwaiters;
         while (!m_heap.empty() && m_heap.front()->m_deadline <= now)
         {
             Awaiter *const awaiter = m_heap.front();
             std::pop_heap(m_heap.begin(), m_heap.end(), &TimerQueue::isLaterThan);
             m_heap.pop_back();
             awaiter->m_isQueued = false;
+            expiredAwaiters.push_back(awaiter);
+        }
 
+        for (auto iterator = expiredAwaiters.rbegin(); iterator != expiredAwaiters.rend(); ++iterator)
+        {
+            Awaiter *const awaiter = *iterator;
             if (awaiter->m_handle)
             {
                 // 投回调度器而不是就地恢复：本协程还在推进队列，就地恢复会让别的协程在
@@ -187,6 +197,7 @@ namespace AsynGyanis::Core
                 m_loop.scheduler().schedule(std::exchange(awaiter->m_handle, nullptr));
             }
         }
+
         rearm();
     }
 

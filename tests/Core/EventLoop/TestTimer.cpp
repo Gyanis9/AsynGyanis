@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <thread>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -162,6 +163,45 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(advanceUntil(loop, [&firedOrder] { return firedOrder.size() >= 2U; }, kWaitTimeout)) << "两个定时器没有都在时限内到期";
         ASSERT_EQ(firedOrder.size(), 2U);
         EXPECT_EQ(firedOrder[0], 2) << "更早截止的定时器没有先到期：队列没有为更早的登记时间改武装";
+        EXPECT_EQ(firedOrder[1], 1);
+    }
+
+    /**
+     * @brief 同一批里到期的多个定时器仍按截止时间先后唤醒（到期时刻都已经过去的情形）
+     * @details 与上一条的区别在于时序：先让两个定时器都已过期，再推进循环——一次分发里
+     *          会同时捞出两个等待器。此时唤醒顺序只能由「投递给调度器的顺序」决定，
+     *          而调度器的本地队列是 LIFO：正序投递会让更晚截止的先跑（CI 上实测到过）。
+     *          用例刻意不等内核按各自截止时间分两次唤醒，因此钉住的正是这条批量路径。
+     */
+    TEST(Timer, BatchExpiredTimersFireInDeadlineOrder)
+    {
+        EventLoop loop;
+        Timer     timer(loop);
+
+        std::vector<int> firedOrder;
+
+        auto laterBody = [&timer, &firedOrder]() -> Task<>
+        {
+            co_await timer.waitFor(std::chrono::milliseconds(40));
+            firedOrder.push_back(1);
+        };
+        auto later = laterBody();
+        later.handle().resume();
+
+        auto earlierBody = [&timer, &firedOrder]() -> Task<>
+        {
+            co_await timer.waitFor(std::chrono::milliseconds(10));
+            firedOrder.push_back(2);
+        };
+        auto earlier = earlierBody();
+        earlier.handle().resume();
+
+        // 两个截止时刻都过去之后再推进循环：这一次分发同时捞出两个等待器
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+        ASSERT_TRUE(advanceUntil(loop, [&firedOrder] { return firedOrder.size() >= 2U; }, kWaitTimeout)) << "两个定时器没有都在时限内到期";
+        ASSERT_EQ(firedOrder.size(), 2U);
+        EXPECT_EQ(firedOrder[0], 2) << "同批到期时更早截止的定时器没有先跑：投递顺序与调度器的 LIFO 相反";
         EXPECT_EQ(firedOrder[1], 1);
     }
 
