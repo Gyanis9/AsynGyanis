@@ -25,9 +25,10 @@ namespace AsynGyanis::Database
 
     ConnectionPool::~ConnectionPool()
     {
-        // 第一件事就把存活令牌置假：此刻起任何归还路径都不再回头调本对象，
-        // 而是按文档承诺直接把连接关掉（池已析构就不能再被取消引用）
-        m_isAlive->store(false, std::memory_order_release);
+        // 第一件事就持令牌锁并置假：此刻起归还路径要么已经持锁进来（本析构会等它走完），
+        // 要么看到「池已停摆」直接关掉连接——池已析构就不能再被取消引用
+        const std::lock_guard livenessLock(m_liveness->mutex);
+        m_liveness->isAlive = false;
 
         // 请求后台线程停止并等待其退出
         m_healthThread.request_stop();
@@ -86,9 +87,9 @@ namespace AsynGyanis::Database
         }
     }
 
-    std::shared_ptr<std::atomic<bool>> ConnectionPool::livenessToken() const noexcept
+    std::shared_ptr<PoolLiveness> ConnectionPool::livenessToken() const noexcept
     {
-        return m_isAlive;
+        return m_liveness;
     }
 
     // ========================================================================

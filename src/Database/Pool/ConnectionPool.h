@@ -14,6 +14,7 @@
 #pragma once
 
 #include "Database/Pool/PoolConfig.h"
+#include "Database/Pool/PoolLiveness.h"
 #include "Database/Pool/PooledConnection.h"
 #include "Core/Coroutine/Task.h"
 
@@ -312,11 +313,10 @@ namespace AsynGyanis::Database
         void expireTimedOutWaiters() noexcept;
 
         /**
-         * @brief 取「池存活」令牌的副本（供 PooledConnection 归还时判定池是否还在）
-         * @return std::shared_ptr<std::atomic<bool>> 与池共享的存活标志；池析构前会先置 false
-         * @note 归还路径只看令牌、不取消引用池指针：池已析构时令牌的共享块仍存活，读它是安全的
+         * @brief 取存活令牌的副本（供 PooledConnection 归还时判活）
+         * @return std::shared_ptr<PoolLiveness> 与池共享的令牌；池析构前会先置假
          */
-        [[nodiscard]] std::shared_ptr<std::atomic<bool>> livenessToken() const noexcept;
+        [[nodiscard]] std::shared_ptr<PoolLiveness> livenessToken() const noexcept;
 
         friend class PooledConnection;
 
@@ -327,8 +327,8 @@ namespace AsynGyanis::Database
         std::function<std::unique_ptr<DatabaseConnection>()> m_factory; ///< 连接工厂，每次调用的返回值应是已 connect() 的状态
         PoolConfig                                           m_config;  ///< 连接池配置
 
-        /// 池存活标志：析构一开始就置 false，与之共享的 PooledConnection 归还时据此直接关闭连接
-        std::shared_ptr<std::atomic<bool>> m_isAlive{std::make_shared<std::atomic<bool>>(true)};
+        /// 池存活令牌：析构一开始就置假并持锁到收尾结束，与之共享的 PooledConnection 归还时据此决定
+        std::shared_ptr<PoolLiveness> m_liveness{std::make_shared<PoolLiveness>()};
 
         // ----- 空闲栈（受 m_mutex 保护） -----
         std::vector<IdleEntry>  m_idleStack; ///< LIFO 空闲连接栈

@@ -77,13 +77,16 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // 将连接归还至池；池已析构时按文档承诺直接把连接关掉。
-        // 判据只看存活令牌：池析构后其指针本身已经是悬垂值，取消引用它是释放后使用
-        const bool isPoolAlive = m_pool != nullptr && m_poolLiveness != nullptr &&
-                                 m_poolLiveness->load(std::memory_order_acquire);
-        if (isPoolAlive)
+        // 将连接归还至池；池已（或正在）析构时按文档承诺直接把连接关掉。
+        // 判活与调用都在令牌锁内完成：池的析构会一直持有这把锁，两者因此不会交错——
+        // 只判一个原子量的话，并发销毁时判活刚通过、调用就踩空
+        if (m_pool != nullptr && m_poolLiveness != nullptr)
         {
-            m_pool->returnConnection(std::move(m_connection));
+            const std::lock_guard livenessLock(m_poolLiveness->mutex);
+            if (m_poolLiveness->isAlive)
+            {
+                m_pool->returnConnection(std::move(m_connection));
+            }
         }
 
         // 清空所有状态，防止重复归还。连接已被移走（或池已析构）时，
