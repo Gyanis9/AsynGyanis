@@ -1,8 +1,10 @@
 #include "Core/Socket/AsyncResolver.h"
 
+#include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/Socket.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <thread>
@@ -17,8 +19,18 @@ namespace AsynGyanis::Core
          */
         struct ResolveState
         {
-            std::coroutine_handle<>   callerHandle; ///< 等待结果的协程句柄
-            std::vector<InetAddress>  addresses;    ///< 解析结果
+            std::coroutine_handle<>  callerHandle;             ///< 等待结果的协程句柄
+            std::atomic<bool>        isCallerAbandoned{false}; ///< 协程帧是否已被销毁（取消、收口）
+            std::vector<InetAddress> addresses;                ///< 解析结果
+
+            /// 唤醒等待方：协程帧已被销毁时跳过——resume 一个已释放的帧是释放后使用
+            void wakeCaller() const noexcept
+            {
+                if (!isCallerAbandoned.load(std::memory_order_acquire))
+                {
+                    callerHandle.resume();
+                }
+            }
         };
 
         /**
@@ -31,7 +43,7 @@ namespace AsynGyanis::Core
             const Platform::Socket::Initialization winsock;
             if (!winsock.isValid())
             {
-                targetLoop->scheduler().postRemote([state] { state->callerHandle.resume(); });
+                targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
                 return;
             }
 
@@ -46,7 +58,7 @@ namespace AsynGyanis::Core
             if (getaddrinfo(host.c_str(), portString.c_str(), &hints, &result) != 0)
             {
                 // 解析失败：返回空列表
-                targetLoop->scheduler().postRemote([state] { state->callerHandle.resume(); });
+                targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
                 return;
             }
 
@@ -70,7 +82,7 @@ namespace AsynGyanis::Core
             freeaddrinfo(result);
 
             // 结果已就绪，唤醒等待的协程
-            targetLoop->scheduler().postRemote([state] { state->callerHandle.resume(); });
+            targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
         }
     } // namespace
 
@@ -95,14 +107,31 @@ namespace AsynGyanis::Core
 
             bool await_ready() const noexcept { return false; }
 
-            void await_suspend(const std::coroutine_handle<> handle) noexcept
+            bool await_suspend(const std::coroutine_handle<> handle) noexcept
             {
                 state->callerHandle = handle;
-                std::thread worker(blockingResolve, std::move(host), port, &targetLoop, state);
-                worker.detach();
+                // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
+                // 结果保持空列表，按文档的「空列表表示解析失败」收尾
+                try
+                {
+                    std::thread worker(blockingResolve, std::move(host), port, &targetLoop, state);
+                    worker.detach();
+                } catch (...)
+                {
+                    LOG_WARN("AsyncResolver: 启动解析线程失败（资源耗尽），本次解析按失败返回空地址列表");
+                    return false;
+                }
+                return true;
             }
 
             void await_resume() const noexcept {}
+
+            ~ResolveAwaiter()
+            {
+                // 本等待器随协程帧一起析构：帧没了就再也不能被唤醒，
+                // 标上标记，让后台线程投回的唤醒跳过 resume（那是释放后使用）
+                state->isCallerAbandoned.store(true, std::memory_order_release);
+            }
         };
 
         co_await ResolveAwaiter{loop, std::string(host), port, state};
