@@ -148,6 +148,27 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 拼一个带 64 位长度域的掩码二进制帧（RFC 6455 §5.2 的 127 档）
+         * @param payloadLength 负载字节数
+         * @return std::string 线上字节
+         * @note 交付队列上界是 16 MiB，远超 7 位档能表达的长度，量级用例必须走 127 档。
+         *       负载全零、掩码键也全零（掩码运算退化为恒等），因此不必为 1 MiB 负载逐字节异或
+         */
+        std::string maskedBinaryFrameWith64BitLength(const std::size_t payloadLength)
+        {
+            std::string frame;
+            frame.push_back(static_cast<char>(0x82U)); // FIN + Binary
+            frame.push_back(static_cast<char>(0xFFU)); // MASK 位 + 127 档长度
+            for (int shift = 56; shift >= 0; shift -= 8)
+            {
+                frame.push_back(static_cast<char>(static_cast<std::uint64_t>(payloadLength) >> shift & 0xFFU));
+            }
+            frame.append(4, '\0'); // 掩码键全零
+            frame.append(payloadLength, '\0');
+            return frame;
+        }
+
+        /**
          * @brief 拼一个服务端方向的帧（不带掩码）
          * @param opCodeValue 操作码原始取值
          * @param payload 负载
@@ -960,6 +981,106 @@ namespace AsynGyanis::Net
         EXPECT_EQ(sentFrameCount, 1) << "本侧收口之后不得再写出任何帧";
         EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 0u)
                 << "本侧已收口的短路返回不记日志：否则调用方会把同一件事看成两次失败";
+    }
+
+    /**
+     * @brief 钉住 close() 的用法错误面：不可上线的状态码与超长原因当场抛异常，且一条帧都不写出
+     * @details 这两类都是调用方的用法错误，把坏帧发出去只会让对端按协议错误收口。
+     *          边界取两侧：123 字节原因可以发，124 字节越界；3000-4999 段可以发，1016 段不行。
+     */
+    TEST(WebSocketPeerContract, RejectsUnsendableCloseCodeAndOverlongReason)
+    {
+        int sentFrameCount = 0;
+        WebSocketPeer peer([&sentFrameCount](const std::string_view) -> Core::Task<bool>
+        {
+            ++sentFrameCount;
+            co_return true;
+        });
+
+        // 1005/1006/1015 是保留哨兵值，1016-2999 段未经注册（RFC 6455 §7.4.1/§7.4.2）
+        constexpr std::uint16_t kUnsendableCloseCodes[]{1005, 1006, 1015, 1016, 2999};
+        for (const std::uint16_t illegalCode: kUnsendableCloseCodes)
+        {
+            Core::Task<bool> illegalTask = peer.close(illegalCode);
+            illegalTask.handle().resume();
+            EXPECT_THROW(illegalTask.await_resume(), Base::InvalidArgumentException)
+                    << "状态码 " << illegalCode << " 不允许出现在线上";
+            EXPECT_TRUE(peer.isOpen()) << "被拒的调用不得改变连接状态";
+        }
+
+        // 控制帧整体 125 字节，扣掉 2 字节状态码：原因上限 123 字节。
+        // close() 是惰性协程，入参要到任务被 resume 之后才读，因此原因必须活过 resume（不能给临时对象）
+        const std::string overlongReason(124, 'x');
+        Core::Task<bool> overlongTask = peer.close(kWebSocketNormalClosureCode, overlongReason);
+        overlongTask.handle().resume();
+        EXPECT_THROW(overlongTask.await_resume(), Base::InvalidArgumentException);
+
+        EXPECT_EQ(sentFrameCount, 0) << "被拒的调用一条帧都不该写出";
+
+        // 边界内：3000-4999 段可用，123 字节原因可发，两条都正常落到线上
+        const std::string maximumReason(123, 'x');
+        Core::Task<bool> maxReasonTask = peer.close(3000, maximumReason);
+        maxReasonTask.handle().resume();
+        EXPECT_TRUE(maxReasonTask.await_resume());
+        EXPECT_EQ(sentFrameCount, 1);
+    }
+
+    /**
+     * @brief 钉住对端非法 Close 的对答：状态码不可上线时按 1002 回敬，而不是原样送回
+     * @details 原样送回会把一次非法关闭当成正常关闭放过去（RFC 6455 §7.4.1）。
+     */
+    TEST(WebSocketPeerContract, AnswersProtocolErrorToPeerCloseWithIllegalCode)
+    {
+        std::vector<std::string> writtenFrames;
+        WebSocketPeer peer([&writtenFrames](const std::string_view frameBytes) -> Core::Task<bool>
+        {
+            writtenFrames.emplace_back(frameBytes);
+            co_return true;
+        });
+
+        // 1005 = 0x03ED：这个码本身就不允许出现在线上，对端拿它收口属协议错误
+        const std::string closeFrame = maskedClientFrame(0x8, std::string("\x03\xED", 2));
+        ASSERT_EQ(peer.feedBytes(closeFrame.data(), closeFrame.size()), WebSocketFeedStatus::Accepted);
+
+        Core::Task<std::optional<WebSocketMessage>> receiveTask = peer.receive();
+        receiveTask.handle().resume();
+        EXPECT_FALSE(receiveTask.await_resume().has_value()) << "对端关闭之后 receive() 必须返回空";
+
+        ASSERT_EQ(writtenFrames.size(), 1u) << "应答对端 Close 只回一条帧";
+        const std::string &reply = writtenFrames.front();
+        ASSERT_GE(reply.size(), 4u) << "回帧至少要有帧头与 2 字节状态码";
+        EXPECT_EQ(static_cast<unsigned char>(reply[0]), 0x88U) << "回帧必须是 Close（FIN + 0x8）";
+        EXPECT_EQ(static_cast<unsigned char>(reply[1]), 2U) << "带状态码的 Close 负载恒为 2 字节";
+        const auto replyCode = static_cast<std::uint16_t>(static_cast<std::uint16_t>(static_cast<unsigned char>(reply[2])) << 8 |
+                                                         static_cast<unsigned char>(reply[3]));
+        EXPECT_EQ(replyCode, kWebSocketProtocolErrorCode) << "非法状态码必须按 1002 回敬，不得原样送回 1005";
+    }
+
+    /**
+     * @brief 钉住待交付积压的上界：业务消费速度跟不上时按 1008 收口，而不是无界吃内存
+     * @details 上界是 16 MiB（单帧上限 1 MiB、消息上限 8 MiB，故用 1 MiB 的二进制消息凑量）。
+     *          第 16 条之后积压恰好等于上界（判据是「大于」），第 17 条才越界。
+     *          收口而不是丢帧：丢了会让业务看到一条缺帧的流，比直接断开更难排查。
+     */
+    TEST(WebSocketPeerContract, ClosesWithPolicyViolationWhenDeliveryQueueExceedsBound)
+    {
+        constexpr std::size_t kMessageBytes = 1024 * 1024;
+        const std::string frame = maskedBinaryFrameWith64BitLength(kMessageBytes);
+
+        WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
+
+        // 一条都不取走：全部堆在待交付队列里
+        for (std::size_t index = 0; index < kWebSocketMaximumQueuedPayloadByteCount / kMessageBytes; ++index)
+        {
+            ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted)
+                    << "第 " << index + 1 << " 条消息仍在积压上界之内";
+        }
+
+        EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError)
+                << "越过积压上界必须当场判错，不得静默丢帧";
+        EXPECT_EQ(peer.decodeErrorCloseCode(), kWebSocketPolicyViolationCode);
+        EXPECT_NE(peer.decodeErrorText().find("积压"), std::string::npos)
+                << "原因要指出是积压超限，实得：" << peer.decodeErrorText();
     }
 
     // ============================================================================

@@ -179,7 +179,11 @@ namespace AsynGyanis::Net
          * @return false 本帧未发出、连接不可再用：两种来源与日志口径同 sendText()，而已发过 Close 属
          *         正常收口，未必有单独日志。本侧仍按已关闭处理，调用方无需重试，也不应再调 send*()；
          *         该失败不抛异常
-         * @throws Base::InvalidArgumentException 原因超过 123 字节：用法错误仍抛异常
+         * @throws Base::InvalidArgumentException 用法错误仍抛异常：原因超过 123 字节；或状态码不允许
+         *         出现在线上（1005/1006/1015 是保留哨兵值，1016–2999 段未经注册，见 RFC 6455
+         *         §7.4.1/§7.4.2）——发出去对端只能按协议错误收口，可用的取值是 1000–1003、
+         *         1007–1014 与 3000–4999。本方法是惰性协程，校验与抛出都发生在返回的任务被驱动时
+         * @note reason 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
          * @note 调用后 isOpen() 即为 false：本侧已发起关闭，不再发送任何数据帧
          */
         Core::Task<bool> close(std::uint16_t code = kWebSocketNormalClosureCode, std::string_view reason = {});
