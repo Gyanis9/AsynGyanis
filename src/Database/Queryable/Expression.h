@@ -61,10 +61,11 @@ namespace AsynGyanis::Database::Queryable
             return value;
         }
 
-        // std::string 移动存储
+        // std::string 移动存储（按值入参返回时本就是隐式移动，显式 std::move 会被
+        // GCC 的 -Wredundant-move 拦下）
         inline ParameterValue toParameterValue(std::string value) noexcept
         {
-            return std::move(value);
+            return value;
         }
 
         // const char* → std::string
@@ -79,10 +80,10 @@ namespace AsynGyanis::Database::Queryable
             return std::string(value);
         }
 
-        // BinaryBytes → 二进制备选（规范拼法，直接移动）
+        // BinaryBytes → 二进制备选（规范拼法，直接返回即隐式移动）
         inline ParameterValue toParameterValue(BinaryBytes value) noexcept
         {
-            return std::move(value);
+            return value;
         }
 
         // std::vector<std::byte> → 二进制备选（等价拼法，经共享转换规范化成 BinaryBytes）
