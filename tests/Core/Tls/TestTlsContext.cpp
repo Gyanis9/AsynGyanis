@@ -771,6 +771,27 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief 打开一个 std::FILE*（OpenSSL 的 PEM 读写接口收 FILE*，用不了流式接口）
+         * @param filePath 文件路径
+         * @param mode fopen 模式串
+         * @return FILE* 失败返回 nullptr
+         * @note MSVC 在 /W4 下把 fopen 判为弃用（C4996），Windows 侧改用 fopen_s
+         */
+        FILE *openFileStream(const std::filesystem::path &filePath, const char *mode) noexcept
+        {
+#if ASYN_PLATFORM_WIN32
+            FILE *fileStream = nullptr;
+            if (::fopen_s(&fileStream, filePath.string().c_str(), mode) != 0)
+            {
+                return nullptr;
+            }
+            return fileStream;
+#else
+            return ::fopen(filePath.string().c_str(), mode);
+#endif
+        }
+
+        /**
          * @brief 用给定私钥另造一张自签证书并写成 PEM
          * @param keyFile 既有私钥路径（复用夹具私钥：不同 OpenSSL 版本生成密钥对的接口不一致，没必要碰）
          * @param outputFile 证书输出路径
@@ -780,7 +801,7 @@ namespace AsynGyanis::Core
         bool writeSelfSignedCertificate(const std::filesystem::path &keyFile, const std::filesystem::path &outputFile,
                                         const long serialNumber)
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> keyStream(std::fopen(keyFile.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, decltype(&std::fclose)> keyStream(openFileStream(keyFile.string().c_str(), "rb"), &std::fclose);
             if (!keyStream)
             {
                 return false;
@@ -824,7 +845,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<FILE, decltype(&std::fclose)> certificateStream(std::fopen(outputFile.string().c_str(), "wb"),
+            const std::unique_ptr<FILE, decltype(&std::fclose)> certificateStream(openFileStream(outputFile.string().c_str(), "wb"),
                                                                                   &std::fclose);
             if (!certificateStream)
             {
@@ -901,7 +922,7 @@ namespace AsynGyanis::Core
 
         // 往证书路径写垃圾：模拟「续期只写了一半」「文件传坏」
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(certificatePath.string().c_str(), "wb"), &std::fclose);
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(certificatePath.string().c_str(), "wb"), &std::fclose);
             ASSERT_TRUE(stream != nullptr);
             // 判据用 fwrite 的返回值：fputs 只承诺「非负」，MSVC 下成功也返回 0
             const char brokenCertificateText[] = "-----BEGIN CERTIFICATE-----\nnot a certificate\n";
@@ -1191,7 +1212,7 @@ namespace AsynGyanis::Core
         /// 载入仓库夹具证书（OCSP 用例的签发者）
         std::unique_ptr<X509, decltype(&X509_free)> loadFixtureCertificate()
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(kTestCertificatePath.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(kTestCertificatePath.string().c_str(), "rb"), &std::fclose);
             if (!stream)
             {
                 return {nullptr, &X509_free};
@@ -1202,7 +1223,7 @@ namespace AsynGyanis::Core
         /// 载入仓库夹具私钥（复用为叶证书密钥与签名密钥，避免另生成密钥的版本差异）
         std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> loadFixturePrivateKey()
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(kTestKeyPath.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(kTestKeyPath.string().c_str(), "rb"), &std::fclose);
             if (!stream)
             {
                 return {nullptr, &EVP_PKEY_free};
@@ -1213,7 +1234,7 @@ namespace AsynGyanis::Core
         /// 载入任意 PEM 证书文件
         std::unique_ptr<X509, decltype(&X509_free)> loadCertificateFrom(const std::filesystem::path &file)
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(file.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(file.string().c_str(), "rb"), &std::fclose);
             if (!stream)
             {
                 return {nullptr, &X509_free};
@@ -1272,7 +1293,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(std::fopen(outputFile.string().c_str(), "wb"), &std::fclose);
+            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(outputFile.string().c_str(), "wb"), &std::fclose);
             if (!stream)
             {
                 return false;

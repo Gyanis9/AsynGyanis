@@ -811,8 +811,8 @@ TEST_F(QueryableAsyncTest, AsyncSqlErrorSurfacesAsOriginalException)
 
     try
     {
+        // 说明同上一处：rethrow_exception 必然抛出，后面不可能有可达语句
         std::rethrow_exception(completed.error);
-        FAIL() << "异步任务的异常应当在 co_await 处重新抛出";
     }
     catch (const std::runtime_error &exception)
     {
@@ -860,8 +860,9 @@ TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
 
     try
     {
+        // rethrow_exception 是 [[noreturn]]：它必然抛出，后面写 FAIL() 只会被判成不可达代码。
+        // 若抛出的类型与下面的 catch 不符，异常会继续外传，gtest 同样把这条测试判失败
         std::rethrow_exception(singleInsert.error);
-        FAIL() << "异步写入的异常应当在 co_await 处重新抛出";
     }
     catch (const std::runtime_error &exception)
     {
@@ -879,8 +880,8 @@ TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
 
     try
     {
+        // 说明同上一处：rethrow_exception 必然抛出，后面不可能有可达语句
         std::rethrow_exception(batchInsert.error);
-        FAIL() << "异步批量写入的异常应当在 co_await 处重新抛出";
     }
     catch (const std::runtime_error &exception)
     {
@@ -905,8 +906,8 @@ TEST_F(QueryableAsyncTest, OfflineModeThrowsOnAsyncExecution)
 
     try
     {
+        // 说明同上一处：rethrow_exception 必然抛出，后面不可能有可达语句
         std::rethrow_exception(completed.error);
-        FAIL() << "离线模式下的异步查询应当抛出 std::logic_error";
     }
     catch (const std::logic_error &exception)
     {

@@ -178,6 +178,39 @@ if(ASYN_BUILD_SAMPLES)
 endif()
 
 # ============================================================================
+# 告警门禁：零编译器告警是提交硬判据
+# ============================================================================
+# CI 的注释一直写着「构建失败与告警都会让这一步红」，但此前**没有任何告警开关**——Linux 侧只开
+# 了 GCC 默认那几条，未初始化、未使用、窄化这类常见缺陷根本不会被拦下。这里把门禁真正接上。
+#
+# 只加在**本仓库自己的目标**上：third_party/ 下的 vendored 源码（ngtcp2/nghttp3/wepoll 等）不参与，
+# 它们的告警不是我们要修的，也不能靠改它们的代码消掉；而全局 add_compile_options 会一并命中它们，
+# 再在第三方目录里用 /W0 覆盖又会触发 MSVC 的 D9025（/WX 下直接变成错误）——因此按目标逐个开启。
+function(asyn_enable_strict_warnings target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE /W4 /WX)
+    else()
+        target_compile_options(${target_name} PRIVATE -Wall -Wextra -Werror)
+    endif()
+endfunction()
+
+set(asynStrictWarningTargets Platform Base Core Net Database)
+
+if(ASYN_BUILD_TESTS)
+    list(APPEND asynStrictWarningTargets TestPlatform TestBase TestCore TestNet TestDatabase microbench)
+endif()
+
+if(ASYN_BUILD_SAMPLES)
+    list(APPEND asynStrictWarningTargets echo_server)
+endif()
+
+foreach(asynWarningTarget IN LISTS asynStrictWarningTargets)
+    if(TARGET ${asynWarningTarget})
+        asyn_enable_strict_warnings(${asynWarningTarget})
+    endif()
+endforeach()
+
+# ============================================================================
 # 对外发布：安装规则与 CMake 包配置
 # ============================================================================
 # 五个模块库与公开头文件随安装落到 <前缀>/lib 与 <前缀>/include，并按组件导出

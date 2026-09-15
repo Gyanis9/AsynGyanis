@@ -15,11 +15,13 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Platform/Platform.h"
 
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -33,6 +35,31 @@
 
 namespace AsynGyanis::Database::TestSupport
 {
+    /**
+     * @brief 读一个环境变量并拷贝成 std::string
+     * @details MSVC 在 /W4 下把 std::getenv 判为弃用（C4996），Windows 侧改用 _dupenv_s；
+     *          两种实现的返回值都立即拷贝，调用方不保留任何指向环境块的指针
+     * @param variableName 环境变量名
+     * @return std::string 取值；未设置时为空串
+     */
+    inline std::string readEnvironmentVariableText(const char *variableName)
+    {
+#if ASYN_PLATFORM_WIN32
+        char  *rawValue   = nullptr;
+        size_t valueCapacity = 0;
+        if (::_dupenv_s(&rawValue, &valueCapacity, variableName) != 0 || rawValue == nullptr)
+        {
+            return {};
+        }
+        std::string variableValue(rawValue);
+        std::free(rawValue);
+        return variableValue;
+#else
+        const char *rawValue = std::getenv(variableName);
+        return rawValue != nullptr ? std::string(rawValue) : std::string{};
+#endif
+    }
+
     /**
      * @brief 生成一个进程内、跨进程都唯一的名字，用作临时数据库文件的主干
      * @details 三重盐值缺一不可：steady_clock 读数隔开不同时刻创建的用例，静态自增序号隔开同一

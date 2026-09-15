@@ -90,7 +90,10 @@ namespace AsynGyanis::Core
     AsyncSocket AsyncSocket::create(EventLoop &loop, const int domain, const int type)
     {
 #if ASYN_PLATFORM_WIN32
-        const int fileDescriptor = ::socket(domain, type, 0);
+        // Windows 的 SOCKET 是无符号句柄类型：显式窄化成 int 是既有的描述符约定（全仓按 int 传递），
+        // 失败值 INVALID_SOCKET 恰好变成 -1，与下面的有效性判定对齐
+        const SOCKET socketHandle = ::socket(domain, type, 0);
+        const int    fileDescriptor = static_cast<int>(socketHandle);
 #else
         const int fileDescriptor = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 #endif

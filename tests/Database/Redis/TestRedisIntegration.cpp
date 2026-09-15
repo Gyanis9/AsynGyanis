@@ -29,6 +29,8 @@
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Redis/RedisConnection.h"
 
+#include "DatabaseTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -83,8 +85,8 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::string readEnvironment(const char *variableName, const std::string_view defaultValue)
         {
-            const char *rawValue = std::getenv(variableName);
-            return rawValue == nullptr ? std::string(defaultValue) : std::string(rawValue);
+            const std::string variableValue = TestSupport::readEnvironmentVariableText(variableName);
+            return variableValue.empty() ? std::string(defaultValue) : variableValue;
         }
 
         /**
@@ -123,8 +125,8 @@ namespace AsynGyanis::Database
             }
 
             // 口令没有默认值：缺失即整组跳过，绝不在仓库里放一个「貌似能用」的口令
-            const char *password = std::getenv("ASYN_REDIS_TEST_PASSWORD");
-            if (password == nullptr)
+            const std::string password = TestSupport::readEnvironmentVariableText("ASYN_REDIS_TEST_PASSWORD");
+            if (password.empty())
             {
                 GTEST_SKIP() << "未设置 ASYN_REDIS_TEST_PASSWORD，跳过 Redis 真机用例";
             }
@@ -165,8 +167,8 @@ namespace AsynGyanis::Database
                 return;
             }
 
-            const char *password = std::getenv("ASYN_REDIS_TEST_PASSWORD");
-            if (password == nullptr)
+            const std::string password = TestSupport::readEnvironmentVariableText("ASYN_REDIS_TEST_PASSWORD");
+            if (password.empty())
             {
                 return;
             }

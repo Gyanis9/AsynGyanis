@@ -155,15 +155,14 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 读取一个环境变量
-         * @details 口令只经由本函数进入测试，源码里不出现任何明文。std::getenv 返回的指针
-         *          在下一次改动环境前有效，这里立即拷贝成 std::string，不保留该指针。
+         * @details 口令只经由本函数进入测试，源码里不出现任何明文。底层实现按平台取环境变量
+         *          并立即拷贝成 std::string（MSVC /W4 下 std::getenv 是弃用告警）
          * @param variableName 环境变量名
          * @return std::string 变量值；未设置时为空串
          */
         [[nodiscard]] std::string readEnvironmentText(const char *variableName)
         {
-            const char *rawValue = std::getenv(variableName);
-            return rawValue != nullptr ? std::string(rawValue) : std::string{};
+            return TestSupport::readEnvironmentVariableText(variableName);
         }
 
         /**
@@ -1869,8 +1868,9 @@ namespace AsynGyanis::Database
 
         try
         {
+            // rethrow_exception 是 [[noreturn]]：后面写 FAIL() 只会被判成不可达代码（/W4 C4702）。
+            // 若抛出的类型与下面的 catch 不符，异常会继续外传，gtest 同样把这条测试判失败
             std::rethrow_exception(inserted.error);
-            FAIL() << "异步写入的异常应当在 co_await 处重新抛出";
         }
         catch (const std::runtime_error &exception)
         {

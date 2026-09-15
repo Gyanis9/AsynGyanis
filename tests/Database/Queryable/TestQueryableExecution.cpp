@@ -511,7 +511,8 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 
     {
         Queryable<AccountRow> deleteQuery = newQuery();
-        const int deletedRows = deleteQuery.where(Column(&AccountRow::id, "id") >= std::int64_t{2}).executeNonQuery();
+        // executeNonQuery 返回 int64_t：接成 int 会在 /W4 下报可能丢数据的转换
+        const std::int64_t deletedRows = deleteQuery.where(Column(&AccountRow::id, "id") >= std::int64_t{2}).executeNonQuery();
         EXPECT_EQ(deletedRows, 2);
     }
 
