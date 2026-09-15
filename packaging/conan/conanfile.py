@@ -33,6 +33,11 @@ from conan.tools.files import copy
 # Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis
 BASE_REQUIREMENTS = ["zlib/1.3.1", "openssl/3.6.2", "sqlite3/3.51.3", "hiredis/1.3.0"]
 
+# Base 的原生格式接口：JSON 头文件直接出现在公开头（ConfigValue.h）里，消费方需要它的包含目录；
+# YAML 库只在实现里使用，但 Base 是静态库，它的符号要由消费方在链接时一并向库解析
+JSON_REQUIREMENT = "nlohmann_json/3.12.0"
+YAML_REQUIREMENT = "yaml-cpp/0.9.0"
+
 # MySQL 驱动是可选依赖：ConanCenter 上只有源码包，装它要现场编译十几分钟。
 # 不开这个选项时库照常构建，MySQL 驱动退化为报错桩（-DDATABASE_WITH_MYSQL=OFF）
 MYSQL_REQUIREMENT = "libmysqlclient/8.1.0"
@@ -65,6 +70,8 @@ class AsynGyanisLibrary(ConanFile):
     def requirements(self):
         for requirement in BASE_REQUIREMENTS:
             self.requires(requirement)
+        self.requires(JSON_REQUIREMENT, transitive_headers=True)
+        self.requires(YAML_REQUIREMENT, transitive_libs=True)
         if self.options.with_mysql:
             self.requires(MYSQL_REQUIREMENT)
 
@@ -106,7 +113,7 @@ class AsynGyanisLibrary(ConanFile):
 
         base = self.cpp_info.components["base"]
         base.libs = ["Base"]
-        base.requires = ["platform"]
+        base.requires = ["platform", "nlohmann_json::nlohmann_json", "yaml-cpp::yaml-cpp"]
         base.set_property("cmake_target_name", "AsynGyanis::Base")
 
         core = self.cpp_info.components["core"]
