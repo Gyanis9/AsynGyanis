@@ -1,6 +1,7 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Platform/IO/EventNotifier.h"
 
+#include <exception>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -144,15 +145,31 @@ namespace AsynGyanis::Core
             if (batch.empty() && callableBatch.empty())
                 break;
 
+            // 单个回调/协程抛出不能把整批剩下的丢掉：先都跑完（只记住第一个异常），
+            // 末尾再把异常传播出去。直接让异常穿透循环的话，未执行的投递会被静默销毁、
+            // 那些协程帧永远不会被恢复（调用方按「投了就一定会跑」写代码）
+            std::exception_ptr firstException;
             for (const auto &callable: callableBatch)
             {
-                callable();
+                try
+                {
+                    callable();
+                } catch (...)
+                {
+                    firstException = firstException ? firstException : std::current_exception();
+                }
             }
             callableBatch.clear();
 
             for (const auto &handle: batch)
             {
-                handle.resume();
+                try
+                {
+                    handle.resume();
+                } catch (...)
+                {
+                    firstException = firstException ? firstException : std::current_exception();
+                }
             }
 
             // 批量处理期间可能重新产生本地任务，再次排空
@@ -160,7 +177,19 @@ namespace AsynGyanis::Core
             {
                 const auto handle = m_localQueue.back();
                 m_localQueue.pop_back();
-                handle.resume();
+                try
+                {
+                    handle.resume();
+                } catch (...)
+                {
+                    firstException = firstException ? firstException : std::current_exception();
+                }
+            }
+
+            // 全部跑完之后再传播：异常语义不变（仍向目标循环抛出），但没有任何一条投递被丢掉
+            if (firstException)
+            {
+                std::rethrow_exception(firstException);
             }
         }
     }
