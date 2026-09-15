@@ -1527,6 +1527,54 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：content-length 与实收正文字节数不一致时回 400，绝不把这条正文交给业务
+     * @details RFC 9113 §8.1.1 引用 RFC 9110 §8.6——「声明一个长度、实收另一个长度」正是请求走私的
+     *          收益所在。/echo 路由会把收到的正文长度回显出来，所以一旦校验缺失，本用例会看到 200 与 "3"。
+     */
+    TEST(Http2Session, RejectsBodyLengthMismatchWith400)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 声明 5 字节、实收 3 字节
+        std::string headerBlock = makePostRequestHeaderBlock("/echo");
+        headerBlock += hpackLiteralField("content-length", "5");
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, false), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeDataFrame(1U, "abc", true), kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "长度不符的请求没有在时限内收到响应";
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> responseHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
+        EXPECT_EQ(findHeaderValue(responseHeaders, ":status"), "400") << "content-length 与实收正文不符必须回 400";
+        EXPECT_NE(responseDataPayload(frames, 1U), "3") << "长度不符的正文绝不能交给业务";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+    }
+
+    /**
      * @brief 钉住：HTTP/2 上登记了 WebSocket 升级的响应回 501（等价机制是 RFC 8441 的扩展 CONNECT，本片不做）
      */
     TEST(Http2Session, Answers501WhenWebSocketUpgradeIsRequested)

@@ -805,6 +805,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住请求头 content-length 的取值口径：非十进制取值、重复且冲突都按流错误拒绝
+     * @details 与 h1 侧同一口径（RFC 9110 §8.6）：长度有歧义时中间设备与业务可能各按一种读法理解
+     *          正文边界，正是请求走私的形态。这是**流**错误而不是连接错误：RST_STREAM 这条流，
+     *          连接继续服务其它流。
+     */
+    TEST(Http2Connection, RejectsMalformedAndConflictingRequestContentLength)
+    {
+        const auto expectStreamRejected = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)),
+                      Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_TRUE(connection.takeRequests().empty()) << "长度有歧义的请求不得交给业务";
+
+            const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+            ASSERT_EQ(resetFrames.size(), 1U) << "应当中止这条流";
+            Http2RstStreamPayload payload;
+            std::string errorText;
+            ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
+            EXPECT_EQ(payload.errorCode, Http2ErrorCode::ProtocolError);
+            EXPECT_FALSE(connection.hasFailed()) << "流错误不该终止连接：" << connection.errorMessage();
+        };
+
+        // 取值不是十进制数字
+        expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("content-length", "5x"));
+
+        // 重复出现且前后冲突（5 与 6）
+        expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("content-length", "5") +
+                             hpackLiteralField("content-length", "6"));
+    }
+
+    /**
      * @brief 钉住：正文按 DATA 帧逐片交出，末片的 END_STREAM 把对端方向半关
      */
     TEST(Http2Connection, DeliversReceivedBodyDataAsSeparateEvents)
