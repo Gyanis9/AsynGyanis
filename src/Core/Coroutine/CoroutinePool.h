@@ -170,13 +170,6 @@ namespace AsynGyanis::Core
         size_t expand(size_t tier, size_t count);
 
         /**
-         * @brief 从指定档的全局空闲链表取一块，内部取锁
-         * @param tier 目标档位
-         * @return void* 取到的块；该档全局链表为空时返回 nullptr
-         */
-        [[nodiscard]] void *takeFromGlobal(size_t tier);
-
-        /**
          * @brief 从全局池批量搬运若干块填充本线程缓存的指定档，内部取锁
          * @param tier 目标档位
          * @param cache 目标线程缓存
