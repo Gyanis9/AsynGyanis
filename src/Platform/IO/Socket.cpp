@@ -101,7 +101,15 @@ namespace AsynGyanis::Platform
         const auto fileDescriptor = ::accept(listenDescriptor, address, addressLength);
         if (static_cast<int>(fileDescriptor) >= 0)
         {
-            FileDescriptor::setNonBlocking(static_cast<int>(fileDescriptor));
+            // 置非阻塞失败不能静默放过：返回的阻塞套接字会被当作非阻塞套接字注册进事件循环，
+            // 之后任何 send/recv 都可能把循环线程停住，而调用方无从察觉。失败即关闭并返回无效值
+            if (!FileDescriptor::setNonBlocking(static_cast<int>(fileDescriptor)))
+            {
+                const int failureCode = PlatformError::lastSocketErrorCode();
+                ::closesocket(fileDescriptor);
+                PlatformError::setLastErrorCode(failureCode);
+                return FileDescriptor::kInvalid;
+            }
         }
         return static_cast<int>(fileDescriptor);
 #else

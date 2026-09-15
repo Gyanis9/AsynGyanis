@@ -21,7 +21,11 @@ namespace AsynGyanis::Platform
 
 #if ASYN_PLATFORM_WIN32
         // 文件类 Win32 API 的错误来自 GetLastError，与 socket 的 WSAGetLastError、CRT 的 errno 都不同源
-        HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        // 共享模式放宽到 READ|WRITE|DELETE：映射存活期间别的进程（含本进程的静态文件热更新）
+        // 仍然可以重命名/删除被映射的文件。默认的 FILE_SHARE_READ 会把 rename 挡在共享冲突上，
+        // 而 Linux 侧 mmap 之后重命名不受影响，两边行为必须一致
+        HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                          nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (fileHandle == INVALID_HANDLE_VALUE)
         {
             mappedFile.m_lastError = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
@@ -152,9 +156,9 @@ namespace AsynGyanis::Platform
 
     bool MemoryMappedFile::isValid() const noexcept
     {
-        // 用显式状态位，而不是从 m_base/m_length/m_lastError 的组合推断：Linux 侧空文件不保留
-        // 任何句柄，其形成的「无基址 + 零长度 + 无错误码」与「默认构造 / 关闭后 / 被移动走」
-        // 完全相同，推断写法会把后三者误判成「有效但为空」，上层（如 HttpResponse::bodyView）
+        // 用显式状态位，而不是从 m_base/m_length/m_lastError 的组合推断：空文件在两个平台都是
+        // 「保留了句柄但没有基址、长度为 0」，与「默认构造 / 关闭后 / 被移动走」在那些字段上
+        // 完全一致，推断写法会把后三者误判成「有效但为空」，上层（如 HttpResponse::bodyView）
         // 据此对堆正文误走映射分支、发出空正文
         return m_isValid;
     }

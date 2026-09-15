@@ -127,6 +127,15 @@ namespace AsynGyanis::Platform
                            reinterpret_cast<sockaddr *>(&peerAddress.storage), &peerAddress.length));
         if (receivedByteCount < 0)
         {
+#if ASYN_PLATFORM_WIN32
+            // Windows 在报文大于缓冲时返回 WSAEMSGSIZE，缓冲里是截断后的数据。按文档承诺的
+            // 「多出的字节被丢弃、返回值即容量」交付，与 Linux 的 recvfrom 语义对齐；
+            // 当作硬错误会把一条本可读的报文连同语义一起丢掉
+            if (PlatformError::lastSocketErrorCode() == WSAEMSGSIZE)
+            {
+                return static_cast<ssize_t>(receiveCapacity);
+            }
+#endif
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
             peerAddress = SocketAddress{};
             return -1;

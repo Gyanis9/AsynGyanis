@@ -173,8 +173,36 @@ namespace AsynGyanis::Platform
             commandLine += quoteArgument(argument);
         }
 
-        STARTUPINFOW        startupInfo{};
-        startupInfo.cb = sizeof(startupInfo);
+        // 句柄继承收窄到「只带三个标准句柄」：bInheritHandles=TRUE 会把父进程所有可继承句柄
+        // 复制进子进程（Winsock 套接字默认就是可继承的），监听/连接套接字因此会被子进程
+        // 一直持有，父进程退出后端口也不释放。STARTUPINFOEX 的句柄清单是唯一能限定继承集合的机制
+        const HANDLE standardHandles[] = {::GetStdHandle(STD_INPUT_HANDLE), ::GetStdHandle(STD_OUTPUT_HANDLE),
+                                          ::GetStdHandle(STD_ERROR_HANDLE)};
+
+        // 属性清单要先问出大小（首次调用必以 ERROR_INSUFFICIENT_BUFFER 失败），再按该大小分配。
+        // 缓冲用 uint64_t 数组而非字节数组：清单要求按指针宽度对齐
+        SIZE_T attributeListSize = 0;
+        static_cast<void>(::InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeListSize));
+        std::vector<std::uint64_t> attributeListStorage((attributeListSize + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t));
+        auto *attributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeListStorage.data());
+        if (attributeListSize == 0 || ::InitializeProcThreadAttributeList(attributeList, 1, 0, &attributeListSize) == 0)
+        {
+            PlatformError::setLastErrorCode(static_cast<int>(::GetLastError()));
+            return Handle{};
+        }
+
+        STARTUPINFOEXW startupInfo{};
+        startupInfo.StartupInfo.cb   = sizeof(startupInfo);
+        startupInfo.lpAttributeList  = attributeList;
+        if (::UpdateProcThreadAttribute(attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, const_cast<HANDLE *>(standardHandles),
+                                        sizeof(standardHandles), nullptr, nullptr) == 0)
+        {
+            const int failureCode = static_cast<int>(::GetLastError());
+            ::DeleteProcThreadAttributeList(attributeList);
+            PlatformError::setLastErrorCode(failureCode);
+            return Handle{};
+        }
+
         PROCESS_INFORMATION processInformation{};
         std::wstring        wideCommandLine = TextEncoding::toWideString(commandLine);
 
@@ -184,10 +212,14 @@ namespace AsynGyanis::Platform
         // 含空格的完整路径因此不会被拆成两段。
         // 只传命令行串（不带独占的所有权保证）不影响子进程按路径映射映像；lpCommandLine 需要可写缓冲，
         // 这里给一份自己的副本
-        if (::CreateProcessW(nullptr, wideCommandLine.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startupInfo,
-                             &processInformation) == 0)
+        const BOOL isCreated = ::CreateProcessW(nullptr, wideCommandLine.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT,
+                                                nullptr, nullptr, &startupInfo.StartupInfo, &processInformation);
+        const int  creationErrorCode = isCreated != 0 ? 0 : static_cast<int>(::GetLastError());
+        // 属性清单只在 CreateProcessW 调用期间被读取，调用返回即可释放
+        ::DeleteProcThreadAttributeList(attributeList);
+        if (isCreated == 0)
         {
-            PlatformError::setLastErrorCode(static_cast<int>(::GetLastError()));
+            PlatformError::setLastErrorCode(creationErrorCode);
             return Handle{};
         }
 
