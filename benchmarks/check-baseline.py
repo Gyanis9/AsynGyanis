@@ -72,7 +72,10 @@ def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> l
 
     expectedThroughput = expected.get("throughputPerSecond")
     throughputSamples = samples.get("throughputPerSecond")
-    if expectedThroughput and throughputSamples:
+    if expectedThroughput and not throughputSamples:
+        print(f"     [FAIL] 基线要求判定吞吐，实测里没有 throughputPerSecond")
+        violations.append(f"{name}：基线要求判定吞吐，实测里没有 throughputPerSecond 样本")
+    elif expectedThroughput and throughputSamples:
         actualThroughput = median(throughputSamples)
         minimum = expectedThroughput * arguments.minimum_throughput_ratio
         passed = actualThroughput >= minimum
@@ -87,7 +90,11 @@ def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> l
                                    ("p95Microseconds", arguments.maximum_p95_ratio, "p95")):
         expectedValue = expected.get(key)
         latencySamples = samples.get(key)
-        if not expectedValue or not latencySamples:
+        if not expectedValue:
+            continue
+        if not latencySamples:
+            print(f"     [FAIL] 基线要求判定 {label}，实测里没有 {key}")
+            violations.append(f"{name}：基线要求判定 {label}，实测里没有 {key} 样本")
             continue
         actualValue = median(latencySamples)
         maximum = expectedValue * ratioLimit
