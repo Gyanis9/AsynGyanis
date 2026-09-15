@@ -201,6 +201,14 @@ namespace AsynGyanis::Platform
             const auto *event = reinterpret_cast<const inotify_event *>(&buffer[offset]);
             offset += sizeof(inotify_event) + event->len;
 
+            // IN_IGNORED：watch 被移除后内核必补的一条。它的掩码不参与本端的事件分类，
+            // 却会落到下面「len == 0 → 监视目标本身」的分支上被当成一次「已修改」派发出去——
+            // 删除之后再来一条假修改，会诱导热加载去重扫一个已经不存在的路径
+            if ((event->mask & IN_IGNORED) != 0)
+            {
+                continue;
+            }
+
             // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
             // 对每个受监视的根各派发一次「已修改」让消费方重新扫描，绝不静默停在旧状态
             if (event->wd == -1)
@@ -262,13 +270,22 @@ namespace AsynGyanis::Platform
                     changeType = FileChangeType::Deleted;
                 }
 
-                // 递归根之下新出现的目录要在锁外补挂监视：新子目录里的变更否则永远不会上报
+                // 递归根之下新出现的目录要在锁外补挂监视：新子目录里的变更否则永远不会上报。
+                // 前缀比较必须落在路径分隔符边界上——纯前缀匹配会把「/data」当成「/database」的根，
+                // 给监视范围外的目录补挂监视（并把它们记进递归根集合，范围越滚越大）
                 shouldWatchNewDirectory =
                         changeType == FileChangeType::Created &&
                         std::ranges::any_of(m_recursiveRoots,
                                             [&watchedPath](const std::string &root)
                                             {
-                                                return watchedPath.size() >= root.size() && watchedPath.compare(0, root.size(), root) == 0;
+                                                if (watchedPath.size() < root.size() || watchedPath.compare(0, root.size(), root) != 0)
+                                                {
+                                                    return false;
+                                                }
+                                                // 完全相同，或下一个字符就是分隔符，才算「在根之下」
+                                                return watchedPath.size() == root.size() ||
+                                                       watchedPath[root.size()] == '/' ||
+                                                       (!root.empty() && root.back() == '/');
                                             });
             }
 
