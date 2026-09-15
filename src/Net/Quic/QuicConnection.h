@@ -234,6 +234,10 @@ namespace AsynGyanis::Net
             std::size_t offset{0};        ///< 已交给 ngtcp2 的字节数（它内部的重传仍要用这些字节）
             std::size_t ackedOffset{0};   ///< 已被对端确认的字节数：到多少才能释放多少
             bool        isEndStream{false}; ///< 发完是否收尾
+            /// 收尾标志是否已经交给 ngtcp2：随最后一段数据发出（或经由零字节写）之后置位。
+            /// 光看「还有没有待发数据」判不出这件事——数据发完但尚未确认时条目还在表里，
+            /// 收尾只差一步的状态必须与「还没收尾」区分开
+            bool        isFinSent{false};
         };
 
         Configuration                  m_configuration;      ///< 连接配置

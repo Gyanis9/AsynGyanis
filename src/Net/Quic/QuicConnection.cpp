@@ -564,10 +564,10 @@ namespace AsynGyanis::Net
             {
                 PendingStreamData &pending = pendingEntry.second;
                 const bool hasUnsentData = pending.offset < pending.bytes.size();
-                // 「零字节 + 收尾」也要选出来：nghttp3 在正文写完时只报收尾、不带数据，
-                // 漏掉它 END_STREAM 就永远发不出去（对端等不到流结束，只能等空闲超时）
-                const bool isFinOnly = !hasUnsentData && pending.isEndStream && pending.bytes.empty();
-                if (!hasUnsentData && !isFinOnly)
+                // 「收尾还没有交给 ngtcp2」也要选出来：nghttp3 在正文写完时只报收尾、不带数据，
+                // 而这种收尾可能单独到达（字节早已发完、条目还在等确认），
+                // 只按「还有字节要发」挑流会让 END_STREAM 永远发不出去（对端只能等空闲超时）
+                if (!hasUnsentData && !(pending.isEndStream && !pending.isFinSent))
                 {
                     continue;
                 }
@@ -583,7 +583,7 @@ namespace AsynGyanis::Net
                 {
                     flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
                 }
-                selectedFinOnlyEntry = isFinOnly;
+                selectedFinOnlyEntry = !hasUnsentData;
                 break;
             }
 
@@ -634,7 +634,15 @@ namespace AsynGyanis::Net
                 // acknowledgePendingStreamData（对端确认）与 dropPendingStreamData（流关闭）里
                 if (const auto pendingEntry = m_pendingStreamData.find(streamId); pendingEntry != m_pendingStreamData.end())
                 {
-                    pendingEntry->second.offset += static_cast<std::size_t>(writtenStreamDataLength);
+                    PendingStreamData &pending = pendingEntry->second;
+                    pending.offset += static_cast<std::size_t>(writtenStreamDataLength);
+                    // 这一次把剩下的字节全写完了，说明随段带的收尾也已被 ngtcp2 收下
+                    // （它只在「给的数据全部写完」时才把 FIN 置进帧）：记下来，
+                    // 免得后续再为同一条流反复投一次只带收尾的写
+                    if (pending.isEndStream && pending.offset >= pending.bytes.size())
+                    {
+                        pending.isFinSent = true;
+                    }
                 }
             }
 
