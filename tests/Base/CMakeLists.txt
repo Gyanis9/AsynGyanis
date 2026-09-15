@@ -5,6 +5,7 @@ find_package(GTest REQUIRED)
 add_executable(TestBase
         BaseTestSupport.h
 
+        Config/TestConfigValue.cpp
         Config/TestConfigValueType.cpp
         Config/TestConfigSchema.cpp
         Config/TestConfigManager.cpp
@@ -29,20 +30,6 @@ add_executable(TestBase
         Log/Sinks/TestFileSink.cpp
         Log/Sinks/TestRollingFileSink.cpp
         Log/Sinks/TestAsyncSink.cpp
-
-        Format/TestTextPositionAndError.cpp
-        Format/Value/TestFormatValue.cpp
-        Format/Value/TestValueAccessError.cpp
-        Format/Json/TestJsonParser.cpp
-        Format/Json/TestJsonWriter.cpp
-        Format/Json/TestJsonPointer.cpp
-        Format/Json/TestJsonPatch.cpp
-        Format/Json/TestJsonStream.cpp
-        Format/Yaml/TestYamlParser.cpp
-        Format/Yaml/TestYamlScalars.cpp
-        Format/Yaml/TestYamlAnchors.cpp
-        Format/Yaml/TestYamlReader.cpp
-        Format/Yaml/TestYamlWriter.cpp
 )
 
 target_link_libraries(TestBase PRIVATE

@@ -2,14 +2,14 @@
  * @file ConfigValueType.h
  * @brief 配置模块的值类型别名与配置文件后缀、键路径等通用工具
  * @author Gyanis
- * @date 2026-09-11
+ * @date 2026-09-15
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  */
 
 #pragma once
 
-#include "Base/Format/Value/FormatValueType.h"
+#include "Base/Config/ConfigValue.h"
 
 #include <string>
 #include <string_view>
@@ -18,12 +18,20 @@
 namespace AsynGyanis::Base
 {
     /**
-     * @brief 配置值类型的历史别名
+     * @brief 配置值类型枚举
      *
-     * @details 值模型已上收到 Format（Base/Format/Value/FormatValue.h），配置侧保留
-     *          原有名字以免既有代码与用例改名；两者是同一个类型，不存在第二份实现。
+     * @details 即 nlohmann_json 的原生 value_t（null / boolean / number_integer / number_unsigned /
+     *          number_float / string / array / object / binary / discarded）。原生 JSON 把非负整数
+     *          放进 number_unsigned、负整数放进 number_integer，因此比较整数类型时两者要一并考虑。
      */
-    using ConfigValueType = FormatValueType;
+    using ConfigValueType = ConfigValue::value_t;
+
+    /**
+     * @brief 将配置值类型枚举转换为可读字符串。
+     * @param type 配置值类型枚举。
+     * @return const char* 类型名称（null/bool/int/uint/double/string/array/object/binary/discarded），未知取值返回 "unknown"。
+     */
+    [[nodiscard]] const char *typeName(ConfigValueType type) noexcept;
 
     /**
      * @brief 判断文件路径是否为 YAML 配置文件后缀。

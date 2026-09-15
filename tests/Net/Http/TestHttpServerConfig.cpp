@@ -34,8 +34,8 @@ namespace AsynGyanis::Net
             return Base::ConfigValue(std::move(root));
         }
 
-        // 下面几个小工厂只是为了让用例里的树好读：FormatValue 的整型/浮点构造是 explicit 的，
-        // 直接写 Base::ConfigValue(1) 会在 int/int64_t/uint64_t/double 之间产生歧义
+        // 下面几个小工厂只是为了让用例里的树好读：把「这个键该是整数 / 浮点 / 布尔 / 字符串 / 对象」
+        // 显式写出来，读用例时不必回头数类型
         [[nodiscard]] Base::ConfigValue integer(const std::int64_t value)
         {
             return Base::ConfigValue(value);

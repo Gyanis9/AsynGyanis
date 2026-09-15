@@ -11,7 +11,6 @@
 #include "Base/Exception/ConfigFileException.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigParseException.h"
-#include "Base/Format/Value/ValueAccessError.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
@@ -357,10 +356,6 @@ namespace AsynGyanis::Base
                 },
                 []
                 {
-                    return std::unique_ptr<std::exception>(std::make_unique<ValueAccessError>("k", "e", "a"));
-                },
-                []
-                {
                     return std::unique_ptr<std::exception>(std::make_unique<ConfigValidationException>("k", "r"));
                 },
         };
@@ -419,7 +414,7 @@ namespace AsynGyanis::Base
         {
             try
             {
-                throw ValueAccessError("k", "int", "string");
+                throw ConfigValidationException("k", "类型不匹配：期望 int，实际 string");
             } catch (const Exception &exception)
             {
                 EXPECT_TRUE(contains(std::string(exception.what()), "类型不匹配"));

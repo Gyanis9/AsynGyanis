@@ -14,7 +14,7 @@
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
-#include "Base/Format/Value/FormatValue.h"
+#include "Base/Exception/ConfigValidationException.h"
 #include "Platform/FileSystem/FileWatcher.h"
 
 #include <atomic>
@@ -135,16 +135,25 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 获取指定类型的配置值，键不存在或类型不匹配时抛出异常。
-         * @tparam T 目标类型。
+         * @tparam T 目标类型（bool、整型、浮点、std::string、ConfigArray、ConfigObject）。
          * @param key 配置键。
          * @return T 配置值。
          * @throws ConfigKeyNotFoundException 键不存在
-         * @throws ValueAccessError 类型不匹配（由 FormatValue::as<T>() 抛出，异常里带键名与期望/实际类型）
+         * @throws ConfigValidationException 类型不匹配（消息里带键名、期望与实际类型）
          */
         template<typename T>
         T get(const std::string_view key) const
         {
-            return get(key).template as<T>();
+            using ValueType = std::decay_t<T>;
+
+            const ConfigValue value = get(key);
+            if (auto converted = configValueAs<ValueType>(value))
+            {
+                return std::move(*converted);
+            }
+            throw ConfigValidationException(std::string(key),
+                                            std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() +
+                                            "，实际 " + typeName(value.type()));
         }
 
         /**
@@ -152,6 +161,8 @@ namespace AsynGyanis::Base
          * @param key 配置键
          * @param defaultValue 默认值（键不存在或类型不匹配时返回）
          * @return 配置值或默认值
+         * @note 取值遵循严格口径（见 configValueAs）：不做取整、回绕与跨类型转换，
+         *       类型对不上按「未配置」处理而不抛出。
          */
         template<typename T>
         T get(const std::string_view key, T &&defaultValue) const noexcept
@@ -162,8 +173,11 @@ namespace AsynGyanis::Base
                 return std::forward<T>(defaultValue);
             }
 
-            auto typed = optionalValue->get<std::decay_t<T> >();
-            return typed.value_or(std::forward<T>(defaultValue));
+            if (auto converted = configValueAs<std::decay_t<T> >(*optionalValue))
+            {
+                return std::move(*converted);
+            }
+            return std::forward<T>(defaultValue);
         }
 
         /**
@@ -172,7 +186,7 @@ namespace AsynGyanis::Base
          * @param key 配置键。
          * @return T 配置值。
          * @throws ConfigKeyNotFoundException 键不存在
-         * @throws ValueAccessError 类型不匹配（由 FormatValue::as<T>() 抛出，异常里带键名与期望/实际类型）
+         * @throws ConfigValidationException 类型不匹配（消息里带键名、期望与实际类型）
          */
         template<typename T>
         T getRequired(const std::string_view key) const
@@ -383,14 +397,14 @@ namespace AsynGyanis::Base
         /**
          * @brief 递归扁平化文档值，将嵌套键转换为点号路径。
          * @details 只向下展开对象节点；数组与标量作为叶子值存入，
-         *          类型推断已在解析器内完成，此处不再二次判定。
+         *          类型判定已在解析阶段完成，此处不再二次判定。
          *          点号前缀用同一个缓冲「追加—递归—回溯」复用，避免每层重复拼接父前缀；
          *          叶子值直接从文档中移出，省掉一次深拷贝。
          * @param node 当前文档值节点（必须是对象），其叶子值会被移出，故必须是可改写的临时对象
          * @param prefixBuffer 复用的点号前缀缓冲，进入时表示当前层前缀
          * @param values 扁平化结果容器
          */
-        static void flattenValue(FormatValue &node, std::string &prefixBuffer, ConfigKeyValueMap &values);
+        static void flattenValue(ConfigValue &node, std::string &prefixBuffer, ConfigKeyValueMap &values);
 
         /**
          * @brief 处理文件监听回调并触发后台重载。

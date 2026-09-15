@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -80,7 +82,7 @@ namespace AsynGyanis::Net
         void rejectUnknownKeys(const Base::ConfigValue &node, const std::string_view *keys, const std::size_t keyCount,
                                const std::string &pathPrefix)
         {
-            for (const auto &[memberName, memberValue]: node.asObject())
+            for (const auto &[memberName, memberValue]: node.items())
             {
                 const bool isAccepted = std::any_of(keys, keys + keyCount,
                                                     [&memberName](const std::string_view accepted)
@@ -104,23 +106,40 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::uint64_t requireNonNegativeInteger(const Base::ConfigValue &value, const std::string &key)
         {
-            if (!value.isIntegralNumber())
+            if (!value.is_number_integer() && !value.is_number_unsigned())
             {
                 throw Base::ConfigValidationException(key, "必须是整数（不能写成字符串或小数）");
             }
 
-            // 有符号与无符号要分开取：asInt() 遇到 UInt 会抛，asUInt() 遇到 Int 也会抛，
-            // 而配置解析器把小整数存成哪种类型不由我们决定
-            if (value.is<std::int64_t>())
+            // 原生解析把非负整数放进 number_unsigned、负整数放进 number_integer，
+            // 两种都要认，且按各自的实际类型取值，不做跨类型转换
+            if (value.is_number_integer())
             {
-                const std::int64_t signedValue = value.asInt();
+                const std::int64_t signedValue = value.get<std::int64_t>();
                 if (signedValue < 0)
                 {
                     throw Base::ConfigValidationException(key, "不能是负数");
                 }
                 return static_cast<std::uint64_t>(signedValue);
             }
-            return value.asUInt();
+            return value.get<std::uint64_t>();
+        }
+
+        /**
+         * @brief 把非负整数毫秒换算成时长
+         * @param milliseconds 毫秒数（已确保非负）
+         * @param key 键路径，用于错误信息
+         * @return std::chrono::milliseconds 时长
+         * @throws Base::ConfigValidationException 超出毫秒时长的可表示范围
+         */
+        [[nodiscard]] std::chrono::milliseconds toMilliseconds(const std::uint64_t milliseconds, const std::string &key)
+        {
+            // 时长的底层是有符号 64 位：超过上限的无符号取值会静默变负，宁可在这里拒绝
+            if (milliseconds > static_cast<std::uint64_t>(std::numeric_limits<std::chrono::milliseconds::rep>::max()))
+            {
+                throw Base::ConfigValidationException(key, "超出可表示的毫秒上限");
+            }
+            return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(milliseconds));
         }
 
         /**
@@ -132,12 +151,17 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] double requireNonNegativeNumber(const Base::ConfigValue &value, const std::string &key)
         {
-            if (!value.isNumber())
+            if (!value.is_number())
             {
                 throw Base::ConfigValidationException(key, "必须是数值");
             }
 
-            const double number = value.isFloatingNumber() ? value.asDouble() : static_cast<double>(requireNonNegativeInteger(value, key));
+            const double number = value.is_number_float() ? value.get<double>() : static_cast<double>(requireNonNegativeInteger(value, key));
+            // NaN 与无穷大连「是负数」都比不出来：放行会让限流配置静默失效
+            if (!std::isfinite(number))
+            {
+                throw Base::ConfigValidationException(key, "必须是有限数值（NaN 与无穷大没有合法解释）");
+            }
             if (number < 0.0)
             {
                 throw Base::ConfigValidationException(key, "不能是负数");
@@ -156,16 +180,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key,
                                                                  const std::string &pathPrefix)
         {
-            const Base::ConfigValue *child = node.find(key);
-            if (child == nullptr)
+            if (!node.contains(key))
             {
                 return nullptr;
             }
-            if (!child->isObject())
+            const Base::ConfigValue &child = node.at(key);
+            if (!child.is_object())
             {
                 throw Base::ConfigValidationException(pathPrefix + "." + std::string(key), "必须是一个对象");
             }
-            return child;
+            return &child;
         }
 
         /// 读 limits 子段（连接级限额：超时与单连接请求数）
@@ -175,27 +199,31 @@ namespace AsynGyanis::Net
             rejectUnknownKeys(node, kLimitsKeys.data(), kLimitsKeys.size(), sectionPath);
 
             // 超时统一按毫秒整数配置；0 表示关闭该项保护（与结构体自身的语义一致）
-            if (const Base::ConfigValue *value = node.find("idle_timeout_ms"))
+            if (node.contains("idle_timeout_ms"))
             {
-                limits.idleTimeout = std::chrono::milliseconds(requireNonNegativeInteger(*value, sectionPath + ".idle_timeout_ms"));
+                limits.idleTimeout = toMilliseconds(requireNonNegativeInteger(node.at("idle_timeout_ms"), sectionPath + ".idle_timeout_ms"),
+                                                    sectionPath + ".idle_timeout_ms");
             }
-            if (const Base::ConfigValue *value = node.find("read_timeout_ms"))
+            if (node.contains("read_timeout_ms"))
             {
-                limits.readTimeout = std::chrono::milliseconds(requireNonNegativeInteger(*value, sectionPath + ".read_timeout_ms"));
+                limits.readTimeout = toMilliseconds(requireNonNegativeInteger(node.at("read_timeout_ms"), sectionPath + ".read_timeout_ms"),
+                                                    sectionPath + ".read_timeout_ms");
             }
-            if (const Base::ConfigValue *value = node.find("write_timeout_ms"))
+            if (node.contains("write_timeout_ms"))
             {
-                limits.writeTimeout = std::chrono::milliseconds(requireNonNegativeInteger(*value, sectionPath + ".write_timeout_ms"));
+                limits.writeTimeout = toMilliseconds(requireNonNegativeInteger(node.at("write_timeout_ms"), sectionPath + ".write_timeout_ms"),
+                                                     sectionPath + ".write_timeout_ms");
             }
-            if (const Base::ConfigValue *value = node.find("settings_acknowledgement_timeout_ms"))
+            if (node.contains("settings_acknowledgement_timeout_ms"))
             {
                 limits.settingsAcknowledgementTimeout =
-                        std::chrono::milliseconds(requireNonNegativeInteger(*value, sectionPath + ".settings_acknowledgement_timeout_ms"));
+                        toMilliseconds(requireNonNegativeInteger(node.at("settings_acknowledgement_timeout_ms"), sectionPath + ".settings_acknowledgement_timeout_ms"),
+                                       sectionPath + ".settings_acknowledgement_timeout_ms");
             }
-            if (const Base::ConfigValue *value = node.find("maximum_requests_per_connection"))
+            if (node.contains("maximum_requests_per_connection"))
             {
                 limits.maximumRequestsPerConnection =
-                        static_cast<std::size_t>(requireNonNegativeInteger(*value, sectionPath + ".maximum_requests_per_connection"));
+                        static_cast<std::size_t>(requireNonNegativeInteger(node.at("maximum_requests_per_connection"), sectionPath + ".maximum_requests_per_connection"));
             }
         }
 
@@ -207,11 +235,12 @@ namespace AsynGyanis::Net
 
             for (const ParserLimitBinding &binding: kParserLimitBindings)
             {
-                if (const Base::ConfigValue *value = node.find(binding.name))
+                if (!node.contains(binding.name))
                 {
-                    parserLimits.*binding.member = static_cast<std::size_t>(
-                            requireNonNegativeInteger(*value, sectionPath + "." + std::string(binding.name)));
+                    continue;
                 }
+                parserLimits.*binding.member = static_cast<std::size_t>(
+                        requireNonNegativeInteger(node.at(binding.name), sectionPath + "." + std::string(binding.name)));
             }
         }
 
@@ -221,13 +250,13 @@ namespace AsynGyanis::Net
             const std::string sectionPath = std::string(kHttpServerConfigSection) + ".rate_limit";
             rejectUnknownKeys(node, kRateLimitKeys.data(), kRateLimitKeys.size(), sectionPath);
 
-            if (const Base::ConfigValue *value = node.find("requests_per_second"))
+            if (node.contains("requests_per_second"))
             {
-                requestsPerSecond = requireNonNegativeNumber(*value, sectionPath + ".requests_per_second");
+                requestsPerSecond = requireNonNegativeNumber(node.at("requests_per_second"), sectionPath + ".requests_per_second");
             }
-            if (const Base::ConfigValue *value = node.find("burst_capacity"))
+            if (node.contains("burst_capacity"))
             {
-                burstCapacity = requireNonNegativeNumber(*value, sectionPath + ".burst_capacity");
+                burstCapacity = requireNonNegativeNumber(node.at("burst_capacity"), sectionPath + ".burst_capacity");
             }
         }
     } // namespace
@@ -237,48 +266,54 @@ namespace AsynGyanis::Net
         HttpServerConfiguration configuration;
 
         // 整段缺失即「全用默认值」：不必为了不改任何限额而写一个空的 server 段
-        const Base::ConfigValue *section = configurationRoot.find(kHttpServerConfigSection);
-        if (section == nullptr || section->isNull())
+        if (!configurationRoot.contains(kHttpServerConfigSection))
         {
             return configuration;
         }
-        if (!section->isObject())
+        const Base::ConfigValue &section = configurationRoot.at(kHttpServerConfigSection);
+        if (section.is_null())
+        {
+            return configuration;
+        }
+        if (!section.is_object())
         {
             throw Base::ConfigValidationException(std::string(kHttpServerConfigSection), "必须是一个对象");
         }
 
         const std::string sectionPath(kHttpServerConfigSection);
-        rejectUnknownKeys(*section, kServerKeys.data(), kServerKeys.size(), sectionPath);
+        rejectUnknownKeys(section, kServerKeys.data(), kServerKeys.size(), sectionPath);
 
-        if (const Base::ConfigValue *value = section->find("maximum_connections"))
+        if (section.contains("maximum_connections"))
         {
-            configuration.maximumConnections = static_cast<std::size_t>(requireNonNegativeInteger(*value, sectionPath + ".maximum_connections"));
+            configuration.maximumConnections =
+                    static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections"), sectionPath + ".maximum_connections"));
         }
-        if (const Base::ConfigValue *value = section->find("maximum_connections_per_ip"))
+        if (section.contains("maximum_connections_per_ip"))
         {
             configuration.maximumConnectionsPerIp =
-                    static_cast<std::size_t>(requireNonNegativeInteger(*value, sectionPath + ".maximum_connections_per_ip"));
+                    static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections_per_ip"), sectionPath + ".maximum_connections_per_ip"));
         }
-        if (const Base::ConfigValue *value = section->find("expose_metrics"))
+        if (section.contains("expose_metrics"))
         {
-            if (!value->isBool())
+            const Base::ConfigValue &value = section.at("expose_metrics");
+            if (!value.is_boolean())
             {
                 throw Base::ConfigValidationException(sectionPath + ".expose_metrics", "必须是 true 或 false");
             }
-            configuration.exposeMetrics = value->asBool();
+            configuration.exposeMetrics = value.get<bool>();
         }
         // 有意不暴露空闲清扫节拍：它是超时误差的唯一来源（最坏误差 = 节拍 + 各连接自己的超时），
         // 手调它只会把超时语义调坏；需要更细的节拍应当在代码里改而不是配置里拧
 
-        if (const Base::ConfigValue *limitsNode = findOptionalObject(*section, "limits", sectionPath))
+        if (const Base::ConfigValue *limitsNode = findOptionalObject(section, "limits", sectionPath))
         {
             readLimitsSection(*limitsNode, configuration.limits);
         }
-        if (const Base::ConfigValue *parserNode = findOptionalObject(*section, "parser_limits", sectionPath))
+        if (const Base::ConfigValue *parserNode = findOptionalObject(section, "parser_limits", sectionPath))
         {
             readParserLimitsSection(*parserNode, configuration.parserLimits);
         }
-        if (const Base::ConfigValue *rateNode = findOptionalObject(*section, "rate_limit", sectionPath))
+        if (const Base::ConfigValue *rateNode = findOptionalObject(section, "rate_limit", sectionPath))
         {
             readRateLimitSection(*rateNode, configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
         }

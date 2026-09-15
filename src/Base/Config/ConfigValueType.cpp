@@ -2,6 +2,37 @@
 
 namespace AsynGyanis::Base
 {
+    const char *typeName(const ConfigValueType type) noexcept
+    {
+        // 以 type() 的返回值调用，因此二进制（binary）与丢弃（discarded）分支实际到不了，
+        // 但仍逐一列出：枚举取值一旦进入配置快照，错误文案必须能说清它是什么
+        switch (type)
+        {
+            case ConfigValueType::null:
+                return "null";
+            case ConfigValueType::boolean:
+                return "bool";
+            case ConfigValueType::number_integer:
+                return "int";
+            case ConfigValueType::number_unsigned:
+                return "uint";
+            case ConfigValueType::number_float:
+                return "double";
+            case ConfigValueType::string:
+                return "string";
+            case ConfigValueType::array:
+                return "array";
+            case ConfigValueType::object:
+                return "object";
+            case ConfigValueType::binary:
+                return "binary";
+            case ConfigValueType::discarded:
+                return "discarded";
+            default:
+                return "unknown";
+        }
+    }
+
     namespace
     {
         /**

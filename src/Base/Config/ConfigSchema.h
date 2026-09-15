@@ -27,10 +27,10 @@ namespace AsynGyanis::Base
     struct ConfigSchemaEntry
     {
         std::string                    key;             ///< 配置键
-        std::optional<ConfigValueType> expectedType;    ///< 期望类型，空表示不限制
+        std::optional<ConfigValueType> expectedType;    ///< 期望类型，空表示不限制；整数族（number_integer 与 number_unsigned）互通，见 runSchemaValidation
         bool                           required{false}; ///< 是否为必需键
-        std::optional<double>          minimum;         ///< 数值下限（仅对 Int/Double 生效）
-        std::optional<double>          maximum;         ///< 数值上限（仅对 Int/Double 生效）
+        std::optional<double>          minimum;         ///< 数值下限（仅对整数与浮点生效）
+        std::optional<double>          maximum;         ///< 数值上限（仅对整数与浮点生效）
     };
 
     /// 配置 schema：约束条目列表
@@ -40,6 +40,8 @@ namespace AsynGyanis::Base
      * @brief 对指定配置字典执行 schema 全部约束（存在性/类型/数值范围）。
      * @details 供热重载提交路径与 setSchema/validateSchema 共用的纯函数，
      *          不修改传入字典，也不产生日志。
+     *          类型约束把整数视为一族：原生解析把非负整数放进 number_unsigned，
+     *          因此期望 number_integer 的约束同样接受 number_unsigned，反之亦然。
      * @param values 扁平化配置字典。
      * @param schema 约束条目列表。
      * @return ConfigValidationResult 校验结果。

@@ -98,7 +98,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, SchemaIsAVectorOfEntries)
     {
         ConfigSchema schema;
-        schema.push_back(ConfigSchemaEntry{"first", ConfigValueType::Int, true, std::nullopt, std::nullopt});
+        schema.push_back(ConfigSchemaEntry{"first", ConfigValueType::number_integer, true, std::nullopt, std::nullopt});
         schema.push_back(ConfigSchemaEntry{"second", std::nullopt, false, 0.0, 10.0});
 
         EXPECT_EQ(schema.size(), 2U);
@@ -132,18 +132,49 @@ namespace AsynGyanis::Base
         });
 
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"app.debug", ConfigValueType::Bool, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"server.port", ConfigValueType::Int, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"server.ratio", ConfigValueType::Double, false, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"server.host", ConfigValueType::String, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"server.list", ConfigValueType::Array, false, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"server.blank", ConfigValueType::Null, false, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"app.debug", ConfigValueType::boolean, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"server.port", ConfigValueType::number_integer, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"server.ratio", ConfigValueType::number_float, false, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"server.host", ConfigValueType::string, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"server.list", ConfigValueType::array, false, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"server.blank", ConfigValueType::null, false, std::nullopt, std::nullopt},
         };
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
         EXPECT_TRUE(result.valid);
         EXPECT_TRUE(result.errors.empty());
+    }
+
+    TEST(ConfigSchemaTest, IntegerConstraintAcceptsBothIntegerKinds)
+    {
+        // 原生解析把非负整数放进 number_unsigned、负整数放进 number_integer：
+        // 声明整型约束必须同时接受两者，否则「port: 8080」这类最常见的配置会被误判为类型不符
+        const ConfigKeyValueMap values = makeValues({
+                {"server.port", ConfigValue(std::uint64_t{8080})},
+                {"server.limit", ConfigValue(std::int64_t{-5})},
+        });
+        const ConfigSchema schema = {
+                ConfigSchemaEntry{"server.port", ConfigValueType::number_integer, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"server.limit", ConfigValueType::number_unsigned, true, std::nullopt, std::nullopt},
+        };
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_TRUE(result.valid) << (result.errors.empty() ? "" : result.errors.front());
+        EXPECT_TRUE(result.errors.empty());
+    }
+
+    TEST(ConfigSchemaTest, RangeConstraintsApplyToUnsignedValues)
+    {
+        // 区间检查覆盖无符号整数这一支：漏掉它会让非负整数的越界配置逃过校验
+        const ConfigKeyValueMap values = makeValues({{"port", ConfigValue(std::uint64_t{70000})}});
+        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::number_integer, true, 1.0, 65535.0}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_FALSE(result.valid);
+        EXPECT_TRUE(hasErrorContaining(result, "高于上限"));
     }
 
     TEST(ConfigSchemaTest, EntryWithoutExpectedTypeAcceptsAnyStoredType)
@@ -157,7 +188,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, MissingKeyIsIgnoredWhenNotRequired)
     {
         const ConfigKeyValueMap values = makeValues({{"present", ConfigValue(static_cast<std::int64_t>(1))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"absent", ConfigValueType::Int, false, 0.0, 10.0}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"absent", ConfigValueType::number_integer, false, 0.0, 10.0}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -168,7 +199,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, NumericValueExactlyOnBothLimitsPasses)
     {
         const ConfigKeyValueMap values = makeValues({{"port", ConfigValue(static_cast<std::int64_t>(100))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::Int, true, 1.0, 100.0}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::number_integer, true, 1.0, 100.0}};
 
         EXPECT_TRUE(runSchemaValidation(values, schema).valid);
     }
@@ -180,8 +211,8 @@ namespace AsynGyanis::Base
                 {"ratio", ConfigValue(2.5)},
         });
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"count", ConfigValueType::Int, true, 0.0, 100.0},
-                ConfigSchemaEntry{"ratio", ConfigValueType::Double, true, 1.0, 3.0},
+                ConfigSchemaEntry{"count", ConfigValueType::number_integer, true, 0.0, 100.0},
+                ConfigSchemaEntry{"ratio", ConfigValueType::number_float, true, 1.0, 3.0},
         };
 
         EXPECT_TRUE(runSchemaValidation(values, schema).valid);
@@ -195,9 +226,9 @@ namespace AsynGyanis::Base
                 {"blank", ConfigValue(nullptr)},
         });
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"label", ConfigValueType::String, true, 10.0, 20.0},
-                ConfigSchemaEntry{"flag", ConfigValueType::Bool, true, 10.0, 20.0},
-                ConfigSchemaEntry{"blank", ConfigValueType::Null, true, 10.0, 20.0},
+                ConfigSchemaEntry{"label", ConfigValueType::string, true, 10.0, 20.0},
+                ConfigSchemaEntry{"flag", ConfigValueType::boolean, true, 10.0, 20.0},
+                ConfigSchemaEntry{"blank", ConfigValueType::null, true, 10.0, 20.0},
         };
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
@@ -213,7 +244,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, MissingRequiredKeyFailsWithKeyInReason)
     {
         const ConfigKeyValueMap values = makeValues({{"present", ConfigValue(static_cast<std::int64_t>(1))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"database.url", ConfigValueType::String, true, std::nullopt, std::nullopt}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"database.url", ConfigValueType::string, true, std::nullopt, std::nullopt}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -227,7 +258,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, TypeMismatchFailsWithExpectedAndActualTypeNames)
     {
         const ConfigKeyValueMap values = makeValues({{"server.port", ConfigValue(std::string("not-a-number"))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"server.port", ConfigValueType::Int, true, std::nullopt, std::nullopt}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"server.port", ConfigValueType::number_integer, true, std::nullopt, std::nullopt}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -243,7 +274,7 @@ namespace AsynGyanis::Base
     {
         // 类型已不符时不再重复报数值越界，一个键只留一条错误
         const ConfigKeyValueMap values = makeValues({{"port", ConfigValue(std::string("text"))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::Int, true, 1000.0, 2000.0}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::number_integer, true, 1000.0, 2000.0}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -256,7 +287,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, ValueBelowMinimumFailsWithReason)
     {
         const ConfigKeyValueMap values = makeValues({{"timeout", ConfigValue(static_cast<std::int64_t>(7))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"timeout", ConfigValueType::Int, true, 10.0, std::nullopt}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"timeout", ConfigValueType::number_integer, true, 10.0, std::nullopt}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -269,7 +300,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, ValueAboveMaximumFailsWithReason)
     {
         const ConfigKeyValueMap values = makeValues({{"ratio", ConfigValue(9.5)}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"ratio", ConfigValueType::Double, false, std::nullopt, 5.0}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"ratio", ConfigValueType::number_float, false, std::nullopt, 5.0}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -282,7 +313,7 @@ namespace AsynGyanis::Base
     TEST(ConfigSchemaTest, BothBoundsViolatedReportTwoErrorsForSameKey)
     {
         const ConfigKeyValueMap values = makeValues({{"window", ConfigValue(static_cast<std::int64_t>(7))}});
-        const ConfigSchema schema = {ConfigSchemaEntry{"window", ConfigValueType::Int, true, 10.0, 5.0}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"window", ConfigValueType::number_integer, true, 10.0, 5.0}};
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
@@ -299,9 +330,9 @@ namespace AsynGyanis::Base
                 {"gamma", ConfigValue(static_cast<std::int64_t>(500))},
         });
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"alpha", ConfigValueType::Int, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"beta", ConfigValueType::String, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"gamma", ConfigValueType::Int, true, 0.0, 100.0},
+                ConfigSchemaEntry{"alpha", ConfigValueType::number_integer, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"beta", ConfigValueType::string, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"gamma", ConfigValueType::number_integer, true, 0.0, 100.0},
         };
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
@@ -320,8 +351,8 @@ namespace AsynGyanis::Base
     {
         ConfigKeyValueMap values = makeValues({{"port", ConfigValue(static_cast<std::int64_t>(1))}});
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"absent", ConfigValueType::Int, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"port", ConfigValueType::String, false, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"absent", ConfigValueType::number_integer, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"port", ConfigValueType::string, false, std::nullopt, std::nullopt},
         };
 
         const std::size_t sizeBeforeValidation = values.size();
@@ -329,7 +360,7 @@ namespace AsynGyanis::Base
 
         EXPECT_FALSE(result.valid);
         EXPECT_EQ(values.size(), sizeBeforeValidation);
-        EXPECT_EQ(values.at("port").type(), ConfigValueType::Int);
+        EXPECT_EQ(values.at("port").type(), ConfigValueType::number_integer);
     }
 
     TEST(ConfigSchemaTest, EmptySchemaOnEmptySnapshotIsValid)

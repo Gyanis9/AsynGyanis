@@ -21,31 +21,37 @@ namespace AsynGyanis::Base
 {
     namespace
     {
-        /// 全部合法的配置值类型枚举，顺序与 ConfigValue::VariantType 的变体下标一致
+        /// 全部合法的配置值类型枚举（nlohmann value_t 的全部取值）
         const std::vector<ConfigValueType> kAllTypes = {
-                ConfigValueType::Null,
-                ConfigValueType::Bool,
-                ConfigValueType::Int,
-                ConfigValueType::Double,
-                ConfigValueType::String,
-                ConfigValueType::Array,
-                ConfigValueType::Object,
+                ConfigValueType::null,
+                ConfigValueType::object,
+                ConfigValueType::array,
+                ConfigValueType::string,
+                ConfigValueType::boolean,
+                ConfigValueType::number_integer,
+                ConfigValueType::number_unsigned,
+                ConfigValueType::number_float,
+                ConfigValueType::binary,
+                ConfigValueType::discarded,
         };
 
         /// 合法枚举值与类型名的完整映射表
         const std::vector<std::pair<ConfigValueType, const char *> > kTypeNameTable = {
-                {ConfigValueType::Null, "null"},
-                {ConfigValueType::Bool, "bool"},
-                {ConfigValueType::Int, "int"},
-                {ConfigValueType::Double, "double"},
-                {ConfigValueType::String, "string"},
-                {ConfigValueType::Array, "array"},
-                {ConfigValueType::Object, "object"},
+                {ConfigValueType::null, "null"},
+                {ConfigValueType::boolean, "bool"},
+                {ConfigValueType::number_integer, "int"},
+                {ConfigValueType::number_unsigned, "uint"},
+                {ConfigValueType::number_float, "double"},
+                {ConfigValueType::string, "string"},
+                {ConfigValueType::array, "array"},
+                {ConfigValueType::object, "object"},
+                {ConfigValueType::binary, "binary"},
+                {ConfigValueType::discarded, "discarded"},
         };
 
         /// 超出枚举定义范围的值，用于驱动 typeName 的 default 分支
-        /// （7 已被 FormatValueType::UInt 占用，此处只能从 8 起取值）
-        const std::vector<std::uint8_t> kOutOfRangeValues = {8, 9, 100, 128, 254, 255};
+        /// （0..9 已被 value_t 全部占用，此处只能从 10 起取值）
+        const std::vector<std::uint8_t> kOutOfRangeValues = {10, 11, 100, 128, 254, 255};
 
         /// 带 YAML 后缀（含大小写混合）的路径样本
         const std::vector<std::string> kYamlPaths = {
@@ -163,21 +169,15 @@ namespace AsynGyanis::Base
         }
     }
 
-    TEST(ConfigValueTypeTest, TypeNameOfMapsEveryStoredVariantType)
+    TEST(ConfigValueTypeTest, TypeNameIsStableAcrossRepeatedCalls)
     {
-        EXPECT_STREQ(typeNameOf<bool>(), "bool");
-        EXPECT_STREQ(typeNameOf<int64_t>(), "int");
-        EXPECT_STREQ(typeNameOf<double>(), "double");
-        EXPECT_STREQ(typeNameOf<std::string>(), "string");
-        EXPECT_STREQ(typeNameOf<std::nullptr_t>(), "null");
-    }
-
-    TEST(ConfigValueTypeTest, TypeNameOfUsesContainerSpecializationsForArrayAndObject)
-    {
-        EXPECT_STREQ(typeNameOf<ConfigArray>(), "array");
-        EXPECT_STREQ(typeNameOf<ConfigObject>(), "object");
-        EXPECT_STREQ(typeNameOf<ConfigArray>(), typeName(ConfigValueType::Array));
-        EXPECT_STREQ(typeNameOf<ConfigObject>(), typeName(ConfigValueType::Object));
+        // 错误文案依赖这些名称保持稳定：重复调用必须给出同一份字面量
+        for (int iteration = 0; iteration < 1000; ++iteration)
+        {
+            EXPECT_STREQ(typeName(ConfigValueType::number_integer), "int");
+            EXPECT_STREQ(typeName(ConfigValueType::number_unsigned), "uint");
+            EXPECT_STREQ(typeName(ConfigValueType::boolean), "bool");
+        }
     }
 
     // ============================================================================

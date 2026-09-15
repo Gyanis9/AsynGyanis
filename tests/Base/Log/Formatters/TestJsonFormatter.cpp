@@ -1,7 +1,7 @@
 /**
  * @file TestJsonFormatter.cpp
  * @brief JsonFormatter 单元测试：字段完整性与省略规则、单行紧凑输出、转义与 UTF-8 直通
- * @details 每条输出都用 JsonParser 解析回来断言（而不是匹配字符串片段）：格式化器的契约是
+ * @details 每条输出都用 nlohmann::json 解析回来断言（而不是匹配字符串片段）：格式化器的契约是
  *          「产出合法 JSON」，把结果喂回解析器是唯一能同时验证合法性与取值的方式。
  * @author Gyanis
  * @date 2026-09-13
@@ -11,8 +11,9 @@
 
 #include "Base/Log/Formatters/JsonFormatter.h"
 
-#include "Base/Format/Json/JsonParser.h"
-#include "Base/Format/Value/FormatValue.h"
+#include "Base/Exception/Exception.h"
+
+#include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
 
@@ -55,10 +56,10 @@ namespace AsynGyanis::Base
          * @param key 键名
          * @return std::string 取值；键不存在时为空串（断言由调用方负责）
          */
-        std::string textField(const FormatValue &object, const std::string_view key)
+        std::string textField(const nlohmann::json &object, const std::string_view key)
         {
-            const FormatValue *field = object.find(key);
-            return field == nullptr ? std::string() : field->asString();
+            const auto iterator = object.find(key);
+            return iterator == object.end() ? std::string() : iterator->get<std::string>();
         }
     } // namespace
 
@@ -67,11 +68,11 @@ namespace AsynGyanis::Base
      */
     TEST(JsonFormatterTest, RendersCoreFieldsAsParsableJsonObject)
     {
-        JsonFormatter formatter;
+        JsonFormatter     formatter;
         const std::string line = formatter.format(makeEvent("请求处理完成"));
 
-        const FormatValue parsed = JsonParser::parse(line);
-        ASSERT_TRUE(parsed.isObject());
+        const nlohmann::json parsed = nlohmann::json::parse(line);
+        ASSERT_TRUE(parsed.is_object());
         EXPECT_EQ(textField(parsed, "timestamp"), kFixedTimestamp);
         // 等级名不带文本版式的对齐空格：取值要能直接比对，不能是「INFO 加空格」
         const std::string levelText = textField(parsed, "level");
@@ -88,12 +89,12 @@ namespace AsynGyanis::Base
      */
     TEST(JsonFormatterTest, OmitsLoggerKeyWhenLoggerNameIsEmpty)
     {
-        JsonFormatter formatter;
+        JsonFormatter     formatter;
         const std::string line = formatter.format(makeEvent("匿名日志器", {}));
 
-        const FormatValue parsed = JsonParser::parse(line);
-        ASSERT_TRUE(parsed.isObject());
-        EXPECT_EQ(parsed.find("logger"), nullptr);
+        const nlohmann::json parsed = nlohmann::json::parse(line);
+        ASSERT_TRUE(parsed.is_object());
+        EXPECT_FALSE(parsed.contains("logger"));
         // 其余字段照旧：省键不能顺手把日志本身也省掉
         EXPECT_EQ(textField(parsed, "message"), "匿名日志器");
     }
@@ -109,7 +110,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(line.find('\n'), std::string::npos);
         EXPECT_EQ(line.find('\r'), std::string::npos);
-        EXPECT_EQ(textField(JsonParser::parse(line), "message"), message);
+        EXPECT_EQ(textField(nlohmann::json::parse(line), "message"), message);
     }
 
     /**
@@ -121,15 +122,28 @@ namespace AsynGyanis::Base
         JsonFormatter     formatter;
         const std::string line = formatter.format(makeEvent(message));
 
-        EXPECT_EQ(textField(JsonParser::parse(line), "message"), message);
+        EXPECT_EQ(textField(nlohmann::json::parse(line), "message"), message);
     }
 
     /**
-     * @brief 中文按 UTF-8 原样写出（ensureAscii 关闭），不膨胀成 \uXXXX
+     * @brief 消息里的 NUL 字节必须转义为 \u0000 且能原样解析回来：日志内容不被截断
+     */
+    TEST(JsonFormatterTest, KeepsEmbeddedNulByteInMessage)
+    {
+        const std::string message("前\0后", 7);
+        JsonFormatter     formatter;
+        const std::string line = formatter.format(makeEvent(message));
+
+        EXPECT_NE(line.find("\\u0000"), std::string::npos);
+        EXPECT_EQ(textField(nlohmann::json::parse(line), "message"), message);
+    }
+
+    /**
+     * @brief 中文按 UTF-8 原样写出，不膨胀成 \uXXXX
      */
     TEST(JsonFormatterTest, WritesNonAsciiTextAsRawUtf8Bytes)
     {
-        JsonFormatter formatter;
+        JsonFormatter     formatter;
         const std::string line = formatter.format(makeEvent("中文日志"));
 
         EXPECT_NE(line.find("中文日志"), std::string::npos);
@@ -137,11 +151,25 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 非法 UTF-8 明确失败：不写出携带乱码字节的 JSON，也不替换字节凑一份「能解析」的输出
+     */
+    TEST(JsonFormatterTest, RejectsInvalidUtf8MessageBytes)
+    {
+        // 0xFF 不是任何 UTF-8 序列的合法字节
+        std::string message = "坏";
+        message.push_back(static_cast<char>(0xFF));
+        message += "字节";
+        JsonFormatter formatter;
+
+        EXPECT_THROW(static_cast<void>(formatter.format(makeEvent(message))), Exception);
+    }
+
+    /**
      * @brief 紧凑单行：没有缩进换行，也没有缩进用的空格
      */
     TEST(JsonFormatterTest, WritesCompactSingleLineJson)
     {
-        JsonFormatter formatter;
+        JsonFormatter     formatter;
         const std::string line = formatter.format(makeEvent("紧凑"));
 
         EXPECT_EQ(line.find('\n'), std::string::npos);
@@ -155,17 +183,17 @@ namespace AsynGyanis::Base
      */
     TEST(JsonFormatterTest, IncludesSourceLocationOnlyInDebugBuilds)
     {
-        JsonFormatter formatter;
-        const FormatValue parsed = JsonParser::parse(formatter.format(makeEvent("定位")));
+        JsonFormatter        formatter;
+        const nlohmann::json parsed = nlohmann::json::parse(formatter.format(makeEvent("定位")));
 
 #ifdef ASYN_DEBUG
         EXPECT_EQ(textField(parsed, "file"), kSourceFile);
-        EXPECT_EQ(parsed.find("line")->asInt(), kSourceLine);
+        EXPECT_EQ(parsed.at("line").get<std::int64_t>(), kSourceLine);
         EXPECT_EQ(textField(parsed, "function"), kSourceFunction);
 #else
-        EXPECT_EQ(parsed.find("file"), nullptr);
-        EXPECT_EQ(parsed.find("line"), nullptr);
-        EXPECT_EQ(parsed.find("function"), nullptr);
+        EXPECT_FALSE(parsed.contains("file"));
+        EXPECT_FALSE(parsed.contains("line"));
+        EXPECT_FALSE(parsed.contains("function"));
 #endif
     }
 
@@ -174,15 +202,14 @@ namespace AsynGyanis::Base
      */
     TEST(JsonFormatterTest, WritesLineNumberAsJsonNumber)
     {
-        JsonFormatter formatter;
-        const FormatValue parsed = JsonParser::parse(formatter.format(makeEvent("行号")));
+        JsonFormatter        formatter;
+        const nlohmann::json parsed = nlohmann::json::parse(formatter.format(makeEvent("行号")));
 
 #ifdef ASYN_DEBUG
-        const FormatValue *lineField = parsed.find("line");
-        ASSERT_NE(lineField, nullptr);
-        EXPECT_TRUE(lineField->isIntegralNumber());
+        ASSERT_TRUE(parsed.contains("line"));
+        EXPECT_TRUE(parsed.at("line").is_number_integer() || parsed.at("line").is_number_unsigned());
 #else
-        EXPECT_EQ(parsed.find("line"), nullptr);
+        EXPECT_FALSE(parsed.contains("line"));
 #endif
     }
 } // namespace AsynGyanis::Base

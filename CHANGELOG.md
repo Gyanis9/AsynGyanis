@@ -17,6 +17,18 @@
 
 ### 变更
 
+- **JSON/YAML 改用 nlohmann_json 与 yaml-cpp，自研格式层整体移除**（破坏性）：`Base/Format/` 全部下线
+  （值模型 `FormatValue`、JSON 解析/输出/Pointer/Patch/流式、YAML 1.2 解析/输出/事件、`FormatError`、
+  `ValueAccessError`），`ConfigValue` 现在就是 `nlohmann::json`。迁移：值访问改 `at()` / `get<T>()` / `is_*()`，
+  JSON 解析与序列化用 `nlohmann::json::parse` / `dump()`，JSON Pointer、Patch、Merge Patch 与 SAX 用 nlohmann 实现，
+  YAML 多文档与事件用 yaml-cpp；`ConfigManager::get<T>()` 类型不匹配改抛 `ConfigValidationException`
+  （原来的 `ValueAccessError` 随格式层删除）。三处原生口径差异要留意：正整数落 `number_unsigned`；
+  `empty()` 只对 `null` 与空容器为真（空字符串不算空）；`get<T>()` 会做算术互转，配置层另提供不取整、
+  不回绕的严格取用（`configValueAs`）。依赖随之新增两项：`nlohmann_json` 3.12.0（头文件随 `Base` 公开传递）
+  与 `yaml-cpp` 0.9.0（只在实现里使用，静态库符号经 `Base` 传递）。配置加载把 YAML 文档转成 JSON 值模型时，
+  标量按 1.2 核心 schema 判定（引号标量一律字符串、`yes/no/on/off` 是字符串），重复键、复杂键与自定义标签
+  直接报错，别名展开设 128 层与 20 万节点上限。
+
 - **Windows 事件后端换成完成端口（IOCP）**：`Epoll` 在 Windows 上改为 `using Epoll = Iocp`，事件由完成
   通知翻译而来（读方向 1 字节 `MSG_PEEK` 探针、写方向零字节 `WSASend`、监听描述符用 `AcceptEx`）；
   `IoWatcher` / `EventLoop` / `AsyncSocket` 的接口与语义都不变，Linux 侧仍是 epoll。wepoll 不再参与轮询，

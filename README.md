@@ -1,11 +1,11 @@
 # AsynGyanis
 
-> 基于 C++20 协程与 epoll/wepoll 边缘触发的跨平台异步服务器引擎 —— 网络（TCP / HTTP / HTTPS）、数据库（ORM / 连接池 / 三方驱动）与自研格式库（JSON / YAML）
+> 基于 C++20 协程与 epoll/wepoll 边缘触发的跨平台异步服务器引擎 —— 网络（TCP / HTTP / HTTPS）、数据库（ORM / 连接池 / 三方驱动）与原生格式库（nlohmann_json / yaml-cpp）
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](https://en.cppreference.com/w/cpp/20)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-1716-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-1944-brightgreen)]()
 
 ## 特性
 
@@ -40,7 +40,7 @@
 
 **基础（Platform / Base）**
 
-- **手搓格式库** — JSON（RFC 8259 + Pointer 6901 + Patch 6902 + Merge Patch 7396 + 流式读写）与 YAML 1.2 严格实现，含 DOM 增删改查、零拷贝视图、输出器
+- **原生格式库** — JSON 与 YAML 直接使用 [nlohmann_json](https://github.com/nlohmann/json) 与 [yaml-cpp](https://github.com/jbeder/yaml-cpp) 的接口（DOM、Pointer/Patch、多文档、事件），不再自研解析与值模型
 - **配置管理** — YAML/JSON 加载、目录递归装载、热重载（inotify / ReadDirectoryChangesW）
 - **结构化日志** — 6 级、4 种 Sink（控制台/文件/滚动/异步）、C++20 `std::format`、源码位置
 - **平台隔离** — 所有 OS 调用集中在 `Platform`，上层不出现平台宏与 Win32/POSIX API
@@ -63,14 +63,14 @@
 | 模块 | 库 | 依赖 | 职责 |
 |------|----|------|------|
 | `Platform` | `libPlatform.a` | — | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
-| `Base` | `libBase.a` | Platform | 日志、配置、异常层次、格式库（JSON/YAML） |
+| `Base` | `libBase.a` | Platform, nlohmann_json, yaml-cpp | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
 | `Core` | `libCore.a` | Platform, Base, OpenSSL | 事件循环、协程运行时、socket、TLS |
 | `Net` | `libNet.a` | Core, llhttp | TCP 服务基类、HTTP/HTTPS 服务、路由与中间件 |
 | `Database` | `libDatabase.a` | Core, sqlite3, hiredis, libmysqlclient | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
 
 模块内的子目录（如 `Base/Log/Sinks`、`Core/EventLoop`）**不引入新的命名空间**：命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。
 
-> `asserts/` 下的 5 张架构图绘于重构之前，与当前模块划分（尤其是新增的 `Database`、Core 的四目录拆分、`Base/Format` 改名）已不一致，**待重绘**；上表是当前状态的准确描述。
+> `asserts/` 下的 5 张架构图绘于重构之前，与当前模块划分（尤其是新增的 `Database`、Core 的四目录拆分、`Base/Format` 已整体移除）已不一致，**待重绘**；上表是当前状态的准确描述。
 
 ## 快速开始
 
@@ -255,23 +255,25 @@ void useOrm(AsynGyanis::Database::ConnectionPool &pool)
 
 把阻塞链路挪出事件循环线程：同名的 `toListAsync` / `firstAsync` / `countAsync` / `insertAsync` / `insertBatchAsync` / `updateAsync` / `executeNonQueryAsync` 接受一个 `Core::EventLoop&` 作为恢复目标，`co_await` 它们即可。
 
-### 格式库：JSON 解析与写出
+### JSON 与 YAML：使用原生库接口
 
 ```cpp
-#include "Base/Format/Json/JsonParser.h"
-#include "Base/Format/Json/JsonWriter.h"
-#include "Base/Format/Value/FormatValue.h"
+#include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
-const AsynGyanis::Base::FormatValue document = AsynGyanis::Base::JsonParser::parse(R"({"port":8080})");
-if (document.type() == AsynGyanis::Base::FormatValueType::Object)
-{
-    const std::string compact = AsynGyanis::Base::JsonWriter::write(document);
-    const std::string pretty  = AsynGyanis::Base::JsonWriter::write(
-        document, AsynGyanis::Base::JsonWriteOptions{.indentWidth = 2});
-}
+const auto document = nlohmann::json::parse(R"({"port":8080})");
+const int port = document.at("port").get<int>();
+const std::string compact = document.dump();
+const std::string pretty = document.dump(2);
+
+const YAML::Node configuration = YAML::Load("port: 8080");
+const int yamlPort = configuration["port"].as<int>();
+const std::string yamlText = YAML::Dump(configuration);
 ```
 
-解析失败抛 `FormatError`（带 `kind()` 分类与 `position()` 行列）；YAML 侧对应 `YamlParser::parse` / `parseAll` 与 `YamlWriter::write`；另有 JSON Pointer / Patch / Merge Patch 与流式读写，接口与契约都写在 `src/Base/Format/` 各头文件的 Doxygen 里。
+链接 `AsynGyanis::Base` 即可获得两库的传递依赖。JSON Pointer、Patch、Merge Patch 与 SAX 直接使用 nlohmann_json；YAML 多文档与事件接口直接使用 yaml-cpp。原生接口分别抛 `nlohmann::json::exception` 与 `YAML::Exception`，配置加载边界将错误汇入 `ConfigLoadResult::errors`。
+
+`ConfigValue` 是 `nlohmann::json` 的别名：成员读取用 `at()`，取值用 `get<T>()`，类型判定用 `is_*()`；不再提供自研 DOM、解析选项或兼容接口。几处与旧值模型不同、容易踩的口径：原生 JSON 的正整数是无符号类型（`number_unsigned`）；`empty()` 只对 `null` 与空容器为真，**空字符串不算空**；`get<T>()` 允许算术类型互转，配置层另有严格取用（`configValueAs`，不取整、不回绕）。配置加载把 YAML 文档转换为 JSON 值模型时，标量按 YAML 1.2 核心 schema 识别（引号标量一律按字符串、`yes/no/on/off` 是字符串），自定义标签、重复键与复杂键直接报错。
 
 ### 配置与日志
 
@@ -306,10 +308,10 @@ LOG_INFO_FMT("listening on port {}", port);
 
 | 分类 | 内容 |
 |------|------|
-| 异常 | `Exception` 层次（携带 `source_location`），配置与格式各自的错误类型 |
+| 异常 | `Exception` 层次（携带 `source_location`），配置与网络各自的错误类型 |
 | 日志 | `Logger` / `LoggerRegistry`、6 级 `LogLevel`、`LogEvent`、`LogMacros`、4 种 `LogSink`（控制台/文件/滚动/异步）、两种格式化器、从配置装载日志设置 |
-| 配置 | `ConfigManager`（多文件/目录装载、热重载、类型化取值）、文件监听 |
-| 格式 | `FormatValue` 值模型、JSON（解析/写出/Pointer/Patch/Merge Patch/流式）、YAML 1.2（解析/多文档/事件/Schema/写出） |
+| 配置 | `ConfigManager`（多文件/目录装载、热重载、严格类型化取值）、文件监听；`ConfigValue` 即 nlohmann_json 文档 |
+| 格式 | JSON 与 YAML 使用 nlohmann_json / yaml-cpp 的原生接口，由 `Base` 传递依赖（见「外部依赖」） |
 
 ### Core — 异步运行时（`libCore.a`）
 
@@ -350,7 +352,7 @@ AsynGyanis/
 ├── asserts/                # 架构图（绘于重构前，待重绘）
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）
-│   ├── Base/               # Config / Exception / Format / Log
+│   ├── Base/               # Config / Exception / Log
 │   ├── Core/               # Coroutine / EventLoop / Socket / Tls
 │   ├── Net/                # Tcp / Http
 │   └── Database/           # Common / Dialect / Pool / Queryable / Sqlite / MySql / Redis
@@ -361,6 +363,8 @@ AsynGyanis/
 
 | 库 | 版本 | 用途 |
 |----|------|------|
+| [nlohmann_json](https://github.com/nlohmann/json) | 3.12.0 | JSON 值模型与解析/序列化（Base 公开接口） |
+| [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 解析（配置加载） |
 | [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | 单元测试 |
 | [SQLite3](https://www.sqlite.org/) | 3.51.3 | 嵌入式数据库驱动 |
@@ -368,7 +372,7 @@ AsynGyanis/
 | [hiredis](https://github.com/redis/hiredis) | 1.3.0 | Redis 客户端 |
 | [libmysqlclient](https://dev.mysql.com/doc/c-api/) | 8.1.0 | MySQL 客户端 |
 
-- YAML 与 JSON 由 `Base/Format` 自研实现，不引入第三方解析库。
+- YAML 与 JSON 使用 nlohmann_json 与 yaml-cpp（均为必选依赖，随 `Base` 公开传递其头文件与链接）。YAML 转配置值模型的口径：引号标量按字符串、`!!str/!!int/!!float/!!bool/!!null` 之外的自定义标签直接报错、重复键报错、别名展开设深度与节点总数上限。
 - [wepoll](https://github.com/piscisaureus/wepoll) 已 **vendored** 进 `src/Core/EventLoop/`（`wepoll.h` 与 `Wepoll.cpp`，
   随仓库分发，不在构建期联网下载），并直接编进 `Core` 库——它是 Windows 侧事件通知的实现细节，不单独导出目标。
 - SQLite3 为必选；hiredis 与 libmysqlclient 为**可选**：探测不到时对应驱动退化为报错桩，不会让配置阶段失败。
@@ -376,9 +380,9 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**1716 个用例**（其中 33 个是真机门控用例，无凭据即 SKIP）
+- 当前规模：**1944 个用例**（其中 34 个是真机门控用例，无凭据即 SKIP）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
-- 真机套件：MySQL 20 例、Redis 13 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
+- 真机套件：MySQL 21 例、Redis 13 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
 ## 编码规范
 

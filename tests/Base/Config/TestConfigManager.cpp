@@ -19,7 +19,7 @@
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
-#include "Base/Format/Value/ValueAccessError.h"
+#include "Base/Exception/ConfigValidationException.h"
 
 #include <gtest/gtest.h>
 
@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -356,16 +357,16 @@ namespace AsynGyanis::Base
 
         const std::optional<ConfigValue> extra = configuration().getOptional("extra");
         ASSERT_TRUE(extra.has_value());
-        EXPECT_EQ(extra->type(), ConfigValueType::Object);
+        EXPECT_EQ(extra->type(), ConfigValueType::object);
         EXPECT_TRUE(extra->empty());
         EXPECT_EQ(extra->size(), 0U);
 
         const std::optional<ConfigValue> list = configuration().getOptional("list");
         ASSERT_TRUE(list.has_value());
-        EXPECT_EQ(list->type(), ConfigValueType::Array);
+        EXPECT_EQ(list->type(), ConfigValueType::array);
         EXPECT_TRUE(list->empty());
 
-        EXPECT_EQ(configuration().getOptional("nested.blank")->type(), ConfigValueType::Object);
+        EXPECT_EQ(configuration().getOptional("nested.blank")->type(), ConfigValueType::object);
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectorySkipsUnparsableFileAndRecordsItAsFailed)
@@ -452,12 +453,37 @@ namespace AsynGyanis::Base
         EXPECT_EQ(configuration().getInt("server.port", 0), 8080);
         EXPECT_TRUE(configuration().getBool("debug", false));
         EXPECT_DOUBLE_EQ(configuration().getDouble("ratio", 0.0), 1.25);
-        EXPECT_EQ(configuration().getOptional("missing")->type(), ConfigValueType::Null);
+        EXPECT_EQ(configuration().getOptional("missing")->type(), ConfigValueType::null);
 
         const std::optional<ConfigValue> list = configuration().getOptional("list");
         ASSERT_TRUE(list.has_value());
         EXPECT_EQ(list->size(), 2U);
-        EXPECT_EQ((*list)[0].asString(), "a");
+        EXPECT_EQ((*list)[0].get<std::string>(), "a");
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryAcceptsJsonWithUtf8Bom)
+    {
+        // Windows 编辑器常写 BOM，而原生解析器不认它：加载前必须先剥掉
+        writeFile("bom.json", std::string("\xEF\xBB\xBF") + "{\"port\": 8080}");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+        EXPECT_EQ(configuration().getInt("port", 0), 8080);
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryKeepsLargeUnsignedIntegerExact)
+    {
+        // 超出 int64 的取值必须原样保留为无符号整数：截断或退化成浮点都会给出一个错误的数
+        writeFile("large.yaml", "big: 18446744073709551615\n");
+
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        const std::optional<ConfigValue> big = configuration().getOptional("big");
+        ASSERT_TRUE(big.has_value());
+        EXPECT_EQ(big->type(), ConfigValueType::number_unsigned);
+        EXPECT_EQ(big->get<std::uint64_t>(), std::numeric_limits<std::uint64_t>::max());
+        // 取成有符号整数会溢出，必须回落默认值而不是回绕成负数
+        EXPECT_EQ(configuration().getInt("big", -1), -1);
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryMergesYamlAndJsonFromSameDirectory)
@@ -499,26 +525,26 @@ namespace AsynGyanis::Base
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
         ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
 
-        // 替换 GENERATE：以显式表驱动逐条断言类型
+        // 以显式表驱动逐条断言类型；非负整数与 JSON 侧口径一致地落无符号数
         const std::vector<std::pair<std::string, ConfigValueType> > expectedTypes = {
-                {"boolTrue", ConfigValueType::Bool},
-                {"boolFalse", ConfigValueType::Bool},
+                {"boolTrue", ConfigValueType::boolean},
+                {"boolFalse", ConfigValueType::boolean},
                 // YAML 1.2 核心 schema 只认 true/false，yes/no/on/off 一律是字符串
-                {"textYes", ConfigValueType::String},
-                {"textNo", ConfigValueType::String},
-                {"textOn", ConfigValueType::String},
-                {"textOff", ConfigValueType::String},
-                {"intPositive", ConfigValueType::Int},
-                {"intNegative", ConfigValueType::Int},
-                {"intZero", ConfigValueType::Int},
-                {"doublePlain", ConfigValueType::Double},
-                {"textPlain", ConfigValueType::String},
-                {"textQuotedNumber", ConfigValueType::String},
-                {"textDottedVersion", ConfigValueType::String},
-                {"textEmptyQuoted", ConfigValueType::String},
-                {"nullExplicit", ConfigValueType::Null},
-                {"nullTilde", ConfigValueType::Null},
-                {"nullOmitted", ConfigValueType::Null},
+                {"textYes", ConfigValueType::string},
+                {"textNo", ConfigValueType::string},
+                {"textOn", ConfigValueType::string},
+                {"textOff", ConfigValueType::string},
+                {"intPositive", ConfigValueType::number_unsigned},
+                {"intNegative", ConfigValueType::number_integer},
+                {"intZero", ConfigValueType::number_unsigned},
+                {"doublePlain", ConfigValueType::number_float},
+                {"textPlain", ConfigValueType::string},
+                {"textQuotedNumber", ConfigValueType::string},
+                {"textDottedVersion", ConfigValueType::string},
+                {"textEmptyQuoted", ConfigValueType::string},
+                {"nullExplicit", ConfigValueType::null},
+                {"nullTilde", ConfigValueType::null},
+                {"nullOmitted", ConfigValueType::null},
         };
 
         for (const auto &[key, expectedType]: expectedTypes)
@@ -539,7 +565,9 @@ namespace AsynGyanis::Base
         EXPECT_DOUBLE_EQ(configuration().getDouble("doublePlain", 0.0), 3.5);
         EXPECT_EQ(configuration().getString("textQuotedNumber", ""), "12345");
         EXPECT_EQ(configuration().getString("textDottedVersion", ""), "1.2.3");
-        EXPECT_TRUE(configuration().getOptional("textEmptyQuoted")->empty());
+        // 空引号标量按空字符串落地。注意原生 empty() 只对 null 与空容器为真（标量一律非空），
+        // 空串要按字符串内容判断，不能拿 empty() 当「空串判定」用
+        EXPECT_EQ(configuration().getOptional("textEmptyQuoted")->get<std::string>(), "");
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryScalesToHundredsOfKeys)
@@ -616,15 +644,88 @@ namespace AsynGyanis::Base
 
     TEST_F(ConfigManagerTest, LoadReportsParseErrorWithLineAndColumn)
     {
-        // 制表符缩进被手搓 YAML 解析器拒绝，错误必须带上可定位的行列
-        writeFile("bad.yaml", "root:\n\tchild: 1\n");
+        // 保留字符 @ 不能作为标量开头：错误必须带上原生库给出的可定位位置（出错的那一行）
+        writeFile("bad.yaml", "a: 1\nb: @invalid\n");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
         EXPECT_FALSE(result.success);
         EXPECT_TRUE(anyEntryContains(result.errors, "解析错误：")) << result.errors.front();
+        EXPECT_TRUE(anyEntryContains(result.errors, "YAML 语法错误"));
         EXPECT_TRUE(anyEntryContains(result.errors, "第 2 行"));
-        EXPECT_TRUE(anyEntryContains(result.errors, "第 1 列"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsDuplicateKeys)
+    {
+        // 库的 DOM 会把重复键的两份都留下：加载必须报错，而不是让后者静默覆盖前者的取值
+        writeFile("dup.yaml", "server:\n  port: 1\n  port: 2\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "重复键"));
+        EXPECT_FALSE(configuration().has("server.port"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsUnsupportedYamlTags)
+    {
+        // !!binary 之类的标签无法忠实表达为 JSON 值：明确报错，不静默丢成字符串
+        writeFile("tagged.yaml", "payload: !!binary aGVsbG8=\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "不支持的 YAML 标签"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsNonScalarMapKeys)
+    {
+        writeFile("complex-key.yaml", "{[1, 2]: value}\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "键必须是标量"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsIntegerBeyond64Bit)
+    {
+        // 越界整数必须报错：静默回绕或退化成浮点都会给出一个看似正常的错误取值
+        writeFile("huge.yaml", "big: 123456789012345678901234567890\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "超出 64 位表示范围"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryCutsOffCyclicAliases)
+    {
+        // 自引用别名：转换必须在上限处停下并报错，而不是无限递归
+        writeFile("cycle.yaml", "loop: &loop\n  self: *loop\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "别名"));
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromDirectoryCutsOffAliasBombs)
+    {
+        // 别名炸弹：每层把上一层引用三次，11 层展开后节点数（3^11 量级）已远超预算上限，
+        // 转换必须在上限处失败，而不是继续指数级复制
+        std::string yamlText = "level0: &level0 [\"x\"]\n";
+        for (int level = 1; level <= 11; ++level)
+        {
+            const std::string previous = "level" + std::to_string(level - 1);
+            yamlText += "level" + std::to_string(level) + ": &level" + std::to_string(level) + " [*" + previous + ", *" + previous + ", *" + previous + "]\n";
+        }
+        writeFile("bomb.yaml", yamlText);
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "节点总数超过上限"));
     }
 
     TEST_F(ConfigManagerTest, LoadAcceptsEmptyFileWithoutProducingKeys)
@@ -765,9 +866,9 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigValue nameValue = configuration().get("name");
-        EXPECT_EQ(nameValue.type(), ConfigValueType::String);
-        EXPECT_EQ(nameValue.asString(), "test");
-        EXPECT_EQ(configuration().get("count").asInt(), 7);
+        EXPECT_EQ(nameValue.type(), ConfigValueType::string);
+        EXPECT_EQ(nameValue.get<std::string>(), "test");
+        EXPECT_EQ(configuration().get("count").get<std::int64_t>(), 7);
     }
 
     TEST_F(ConfigManagerTest, GetOptionalReturnsValueOrNullopt)
@@ -777,7 +878,7 @@ namespace AsynGyanis::Base
 
         const std::optional<ConfigValue> present = configuration().getOptional("name");
         ASSERT_TRUE(present.has_value());
-        EXPECT_EQ(present->asString(), "test");
+        EXPECT_EQ(present->get<std::string>(), "test");
 
         EXPECT_FALSE(configuration().getOptional("nonexistent").has_value());
     }
@@ -787,10 +888,21 @@ namespace AsynGyanis::Base
         writeFile("cfg.yaml", "name: test\nport: 8080\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        EXPECT_THROW(static_cast<void>(configuration().get<std::string>("port")), ValueAccessError);
-        EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("name")), ValueAccessError);
+        EXPECT_THROW(static_cast<void>(configuration().get<std::string>("port")), ConfigValidationException);
+        EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("name")), ConfigValidationException);
         EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("nonexistent")), ConfigKeyNotFoundException);
         EXPECT_EQ(configuration().get<std::string>("name"), "test");
+
+        try
+        {
+            static_cast<void>(configuration().get<std::string>("port"));
+            FAIL() << "类型不匹配应当抛出 ConfigValidationException";
+        } catch (const ConfigValidationException &exception)
+        {
+            EXPECT_EQ(exception.key(), "port");
+            EXPECT_TRUE(textContains(exception.what(), "期望 string"));
+            EXPECT_TRUE(textContains(exception.what(), "实际 uint"));
+        }
     }
 
     TEST_F(ConfigManagerTest, GetWithDefaultReturnsValueOrFallback)
@@ -828,7 +940,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(configuration().getRequired<std::string>("name"), "test");
         EXPECT_THROW(static_cast<void>(configuration().getRequired<std::string>("nonexistent")), ConfigKeyNotFoundException);
-        EXPECT_THROW(static_cast<void>(configuration().getRequired<int64_t>("name")), ValueAccessError);
+        EXPECT_THROW(static_cast<void>(configuration().getRequired<int64_t>("name")), ConfigValidationException);
     }
 
     TEST_F(ConfigManagerTest, ConvenienceGettersReadLoadedValues)
@@ -938,8 +1050,8 @@ namespace AsynGyanis::Base
         const ConfigKeyValueMap snapshot = configuration().dump();
 
         ASSERT_EQ(snapshot.size(), 2U);
-        EXPECT_EQ(snapshot.at("key").asString(), "value");
-        EXPECT_EQ(snapshot.at("other").asInt(), 2);
+        EXPECT_EQ(snapshot.at("key").get<std::string>(), "value");
+        EXPECT_EQ(snapshot.at("other").get<std::int64_t>(), 2);
         EXPECT_EQ(snapshot.size(), configuration().keys().size());
     }
 
@@ -1179,8 +1291,8 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"port", ConfigValueType::Int, true, 1.0, 65535.0},
-                ConfigSchemaEntry{"name", ConfigValueType::String, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"port", ConfigValueType::number_integer, true, 1.0, 65535.0},
+                ConfigSchemaEntry{"name", ConfigValueType::string, true, std::nullopt, std::nullopt},
         };
 
         const ConfigValidationResult result = configuration().validateSchema(schema);
@@ -1195,8 +1307,8 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigSchema schema = {
-                ConfigSchemaEntry{"port", ConfigValueType::Int, true, std::nullopt, std::nullopt},
-                ConfigSchemaEntry{"host", ConfigValueType::String, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"port", ConfigValueType::number_integer, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"host", ConfigValueType::string, true, std::nullopt, std::nullopt},
         };
 
         const ConfigValidationResult result = configuration().validateSchema(schema);
@@ -1212,7 +1324,7 @@ namespace AsynGyanis::Base
         writeFile("cfg.yaml", "port: 8080\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::Int, true, 1.0, 65535.0}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"port", ConfigValueType::number_integer, true, 1.0, 65535.0}};
 
         EXPECT_TRUE(configuration().validateSchema(schema).valid);
         EXPECT_TRUE(configuration().validateSchema(schema).valid);
@@ -1224,7 +1336,7 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigValidationResult result = configuration().setSchema(ConfigSchema{
-                ConfigSchemaEntry{"count", ConfigValueType::Int, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"count", ConfigValueType::number_integer, true, std::nullopt, std::nullopt},
         });
 
         EXPECT_FALSE(result.valid);
@@ -1248,7 +1360,7 @@ namespace AsynGyanis::Base
     {
         writeFile("cfg.yaml", "port: 8080\n");
         static_cast<void>(configuration().setSchema(ConfigSchema{
-                ConfigSchemaEntry{"must.exist", ConfigValueType::String, true, std::nullopt, std::nullopt},
+                ConfigSchemaEntry{"must.exist", ConfigValueType::string, true, std::nullopt, std::nullopt},
         }));
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
@@ -1262,7 +1374,7 @@ namespace AsynGyanis::Base
     {
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        const ConfigSchema schema = {ConfigSchemaEntry{"app.size", ConfigValueType::Int, true, std::nullopt, std::nullopt}};
+        const ConfigSchema schema = {ConfigSchemaEntry{"app.size", ConfigValueType::number_integer, true, std::nullopt, std::nullopt}};
 
         // 注册时即对当前（空）快照校验一次：缺失必需键被报告，但不阻断后续写入
         const ConfigValidationResult registration = configuration().setSchema(schema);
@@ -1271,7 +1383,7 @@ namespace AsynGyanis::Base
 
         // 现状记录：schema 为建议性约束，setValue 不校验类型，仅由 validateSchema 暴露违规
         EXPECT_TRUE(configuration().setValue("app.size", ConfigValue(std::string("not-a-number"))));
-        EXPECT_EQ(configuration().getOptional("app.size")->type(), ConfigValueType::String);
+        EXPECT_EQ(configuration().getOptional("app.size")->type(), ConfigValueType::string);
 
         const ConfigValidationResult result = configuration().validateSchema(schema);
         EXPECT_FALSE(result.valid);
@@ -1431,22 +1543,22 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigValue section = configuration().getSection("server");
-        ASSERT_TRUE(section.isObject());
+        ASSERT_TRUE(section.is_object());
 
         // 直接子键与嵌套子对象都要在：还原的正是 flattenValue() 拆掉的那一层结构
-        ASSERT_NE(section.find("maximum_connections"), nullptr);
-        EXPECT_EQ(section.find("maximum_connections")->asInt(), 8);
-        EXPECT_TRUE(section.find("expose_metrics")->asBool());
+        ASSERT_TRUE(section.contains("maximum_connections"));
+        EXPECT_EQ(section.at("maximum_connections").get<std::int64_t>(), 8);
+        EXPECT_TRUE(section.at("expose_metrics").get<bool>());
 
-        const ConfigValue *limits = section.find("limits");
-        ASSERT_NE(limits, nullptr);
-        ASSERT_TRUE(limits->isObject());
-        EXPECT_EQ(limits->find("idle_timeout_ms")->asInt(), 1500);
-        EXPECT_EQ(limits->find("read_timeout_ms")->asInt(), 2000);
+        ASSERT_TRUE(section.contains("limits"));
+        const ConfigValue &limits = section.at("limits");
+        ASSERT_TRUE(limits.is_object());
+        EXPECT_EQ(limits.at("idle_timeout_ms").get<std::int64_t>(), 1500);
+        EXPECT_EQ(limits.at("read_timeout_ms").get<std::int64_t>(), 2000);
 
         // 段名本身不是键，取值里不该出现这两层的外壳
-        EXPECT_EQ(section.find("server"), nullptr);
-        EXPECT_EQ(section.find("maximum_connections.limits"), nullptr);
+        EXPECT_FALSE(section.contains("server"));
+        EXPECT_FALSE(section.contains("maximum_connections.limits"));
     }
 
     TEST_F(ConfigManagerTest, GetSectionReturnsEmptyObjectWhenSectionIsAbsent)
@@ -1456,8 +1568,8 @@ namespace AsynGyanis::Base
 
         // 缺段不是错误：消费方（如 HTTP 服务器配置读取器）据此走默认值
         const ConfigValue section = configuration().getSection("server");
-        ASSERT_TRUE(section.isObject());
-        EXPECT_TRUE(section.asObject().empty());
+        ASSERT_TRUE(section.is_object());
+        EXPECT_TRUE(section.empty());
     }
 
     TEST_F(ConfigManagerTest, GetSectionIgnoresKeysThatMerelyShareTheNamePrefix)
@@ -1473,9 +1585,9 @@ namespace AsynGyanis::Base
 
         // 只有 server.port 属于这一段：前缀比较必须带上分隔符，否则同名前缀的段会被误捞
         const ConfigValue section = configuration().getSection("server");
-        ASSERT_TRUE(section.isObject());
-        ASSERT_EQ(section.asObject().size(), 1U);
-        EXPECT_EQ(section.find("port")->asInt(), 3);
+        ASSERT_TRUE(section.is_object());
+        ASSERT_EQ(section.size(), 1U);
+        EXPECT_EQ(section.at("port").get<std::int64_t>(), 3);
     }
 
     TEST_F(ConfigManagerTest, GetSectionReturnsDetachedCopySurvivingLaterReload)
@@ -1489,7 +1601,7 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(configuration().loadFiles({secondFile}).success);
 
         // 取走的是副本：热重载换代快照后，先前那一份仍是当时的取值
-        EXPECT_EQ(beforeReload.find("maximum_connections")->asInt(), 8);
-        EXPECT_EQ(configuration().getSection("server").find("maximum_connections")->asInt(), 99);
+        EXPECT_EQ(beforeReload.at("maximum_connections").get<std::int64_t>(), 8);
+        EXPECT_EQ(configuration().getSection("server").at("maximum_connections").get<std::int64_t>(), 99);
     }
 } // namespace AsynGyanis::Base

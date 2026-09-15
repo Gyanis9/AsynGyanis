@@ -3,8 +3,11 @@
 # 子目录仅作物理组织，命名空间统一为 AsynGyanis::Base。
 set_property(GLOBAL PROPERTY AsynGyanisBaseSources "")
 
+find_package(nlohmann_json 3.12.0 CONFIG REQUIRED)
+find_package(yaml-cpp 0.9.0 CONFIG REQUIRED)
+set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Base nlohmann_json yaml-cpp)
+
 add_subdirectory(Exception)
-add_subdirectory(Format)
 add_subdirectory(Config)
 add_subdirectory(Log)
 
@@ -16,6 +19,8 @@ add_library(Base STATIC
 
 target_link_libraries(Base PUBLIC
         Platform
+        nlohmann_json::nlohmann_json
+        yaml-cpp::yaml-cpp
 )
 
 target_include_directories(Base PUBLIC

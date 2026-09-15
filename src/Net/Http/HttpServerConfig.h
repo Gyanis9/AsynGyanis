@@ -14,6 +14,7 @@
 #include "Net/Http/HttpServerLimits.h"
 
 #include <cstddef>
+#include <string_view>
 
 namespace AsynGyanis::Net
 {

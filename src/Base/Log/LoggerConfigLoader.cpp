@@ -15,12 +15,37 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace AsynGyanis::Base
 {
+    namespace
+    {
+        /**
+         * @brief 按键取配置值，键缺失或类型不符时返回空
+         * @details 与 ConfigManager 的类型化取值同一口径（见 configValueAs）：不做跨类型转换，
+         *          字符串 "true" 不会当布尔用、数字不会当字符串取。
+         * @tparam ValueType 目标类型
+         * @param configuration 承载该键的对象
+         * @param key 键名
+         * @return std::optional<ValueType> 取值或空
+         */
+        template<typename ValueType>
+        [[nodiscard]] std::optional<ValueType> configValueAt(const ConfigValue &configuration, const std::string_view key)
+        {
+            const auto iterator = configuration.find(key);
+            if (iterator == configuration.end())
+            {
+                return std::nullopt;
+            }
+            return configValueAs<ValueType>(*iterator);
+        }
+    } // namespace
+
     void LoggerConfigLoader::loadFromConfig(const std::string &configurationPrefix, const std::filesystem::path &baseDirectory)
     {
         const auto &configuration = ConfigManager::instance();
@@ -85,13 +110,13 @@ namespace AsynGyanis::Base
 
         if (loggerConfiguration.contains("level"))
         {
-            const auto levelString = loggerConfiguration["level"].as<std::string>();
+            const auto levelString = loggerConfiguration.at("level").get<std::string>();
             logger.setLevel(logLevelFromString(levelString));
         }
 
         if (loggerConfiguration.contains("sinks"))
         {
-            for (const auto &sinksArray = loggerConfiguration["sinks"].as<ConfigArray>(); const auto &sinkConfiguration: sinksArray)
+            for (const auto &sinksArray = loggerConfiguration.at("sinks").get<ConfigArray>(); const auto &sinkConfiguration: sinksArray)
             {
                 if (auto sink = createSinkFromConfig(sinkConfiguration, baseDirectory))
                 {
@@ -103,13 +128,13 @@ namespace AsynGyanis::Base
 
     std::unique_ptr<LogSink> LoggerConfigLoader::createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
     {
-        if (!sinkConfiguration.is<ConfigObject>())
+        if (!sinkConfiguration.is_object())
         {
             return nullptr;
         }
 
-        // 安全获取 type 字段，避免 operator[] 抛出异常中断整个配置加载
-        const auto typeOptional = sinkConfiguration.get<std::string>("type");
+        // 安全获取 type 字段，避免取缺失键抛出异常中断整个配置加载
+        const auto typeOptional = configValueAt<std::string>(sinkConfiguration, "type");
         if (!typeOptional.has_value())
         {
             std::cerr << "LoggerConfig：sink 缺少 'type' 字段，已跳过" << '\n';
@@ -121,11 +146,11 @@ namespace AsynGyanis::Base
 
         if (type == "console")
         {
-            const bool color = sinkConfiguration.get<bool>("color").value_or(true);
+            const bool color = configValueAt<bool>(sinkConfiguration, "color").value_or(true);
             sink             = std::make_unique<ConsoleSink>(color);
         } else if (type == "file")
         {
-            const auto pathOptional = sinkConfiguration.get<std::string>("path");
+            const auto pathOptional = configValueAt<std::string>(sinkConfiguration, "path");
             if (!pathOptional.has_value())
             {
                 std::cerr << "LoggerConfig：file sink 缺少 'path'，已跳过" << '\n';
@@ -140,12 +165,12 @@ namespace AsynGyanis::Base
             {
                 filePath = basePath / filePath;
             }
-            const bool truncate = sinkConfiguration.get<bool>("truncate").value_or(false);
+            const bool truncate = configValueAt<bool>(sinkConfiguration, "truncate").value_or(false);
             LOG_INFO_FMT("文件日志输出：{}", filePath.string());
             sink = std::make_unique<FileSink>(filePath, truncate);
         } else if (type == "rolling_file")
         {
-            const auto baseOptional = sinkConfiguration.get<std::string>("base_filename");
+            const auto baseOptional = configValueAt<std::string>(sinkConfiguration, "base_filename");
             if (!baseOptional.has_value())
             {
                 std::cerr << "LoggerConfig：rolling_file sink 缺少 'base_filename'，已跳过" << '\n';
@@ -156,13 +181,13 @@ namespace AsynGyanis::Base
                                                        ? AsynGyanis::Platform::ProcessInfo::applicationDirectory()
                                                        : baseDirectory;
             std::filesystem::path logDirectory = AsynGyanis::Platform::FileSystem::pathFromUtf8(
-                    sinkConfiguration.get<std::string>("directory").value_or("logs"));
+                    configValueAt<std::string>(sinkConfiguration, "directory").value_or("logs"));
             if (logDirectory.is_relative())
             {
                 logDirectory = basePath / logDirectory;
             }
             const std::string directory  = logDirectory.string();
-            const std::string policyName = sinkConfiguration.get<std::string>("policy").value_or("size");
+            const std::string policyName = configValueAt<std::string>(sinkConfiguration, "policy").value_or("size");
 
             RollingPolicy policy;
             if (policyName == "size")
@@ -174,8 +199,8 @@ namespace AsynGyanis::Base
             else
                 policy = RollingPolicy::Size;
 
-            const size_t maximumSizeBytes   = sinkConfiguration.get<int64_t>("max_size_mb").value_or(10) * 1024 * 1024;
-            const size_t maximumBackupCount = sinkConfiguration.get<int64_t>("max_backup").value_or(10);
+            const size_t maximumSizeBytes   = configValueAt<int64_t>(sinkConfiguration, "max_size_mb").value_or(10) * 1024 * 1024;
+            const size_t maximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
 
             sink = std::make_unique<RollingFileSink>(baseOptional.value(), directory, policy, maximumSizeBytes, maximumBackupCount);
         } else if (type == "async")
@@ -185,11 +210,11 @@ namespace AsynGyanis::Base
                 std::cerr << "LoggerConfig：async sink 缺少 'wrapped'，已跳过" << '\n';
                 return nullptr;
             }
-            auto wrappedSink = createSinkFromConfig(sinkConfiguration["wrapped"], baseDirectory);
+            auto wrappedSink = createSinkFromConfig(sinkConfiguration.at("wrapped"), baseDirectory);
             if (!wrappedSink)
                 return nullptr;
 
-            const int64_t configuredQueueSize = sinkConfiguration.get<int64_t>("queue_size").value_or(1024);
+            const int64_t configuredQueueSize = configValueAt<int64_t>(sinkConfiguration, "queue_size").value_or(1024);
             // 配置边界钳制：queue_size 为 0（或负数）会让 AsyncSink 的三种策略全部退化——
             // Drop 丢弃全部事件、DropOldest 对空队列 pop（未定义行为）、Block 永久阻塞。
             // 这里钳到 AsyncSink 声明的最小容量并给出可见诊断，AsyncSink 内部还有一次兜底钳制
@@ -201,7 +226,7 @@ namespace AsynGyanis::Base
                         << AsyncSink::kMinimumQueueSize << '\n';
                 queueSize = AsyncSink::kMinimumQueueSize;
             }
-            const std::string overflowPolicyName = sinkConfiguration.get<std::string>("overflow_policy").value_or("block");
+            const std::string overflowPolicyName = configValueAt<std::string>(sinkConfiguration, "overflow_policy").value_or("block");
             // overflow_policy 支持 block / drop / drop_oldest 三种取值，非法值回退为 block
             auto              overflowPolicy     = AsyncSink::OverflowPolicy::Block;
             if (overflowPolicyName == "drop")
@@ -222,7 +247,7 @@ namespace AsynGyanis::Base
 
         if (sink && sinkConfiguration.contains("level"))
         {
-            const auto levelString = sinkConfiguration["level"].as<std::string>();
+            const auto levelString = sinkConfiguration.at("level").get<std::string>();
             sink->setLevel(logLevelFromString(levelString));
         }
 
