@@ -208,6 +208,9 @@ namespace AsynGyanis::Core
         void          *m_submissionEntriesMapping{nullptr};
         std::size_t    m_submissionEntriesMappingSize{0};
         unsigned       m_submissionCapacity{0};      ///< SQ 条目数（本地副本）
+        /// 已取走、尚未发布给内核的槽位数：取槽只推进它，尾指针等 flush 时才发布——
+        /// 内核因此不会读到半写的 SQE（「先填内容、再发布尾指针」这条顺序由它保证）
+        unsigned       m_reservedSubmissionCount{0};
 
         int  m_ringFileDescriptor{-1};  ///< ring 描述符
         bool m_isValid{false};          ///< 是否已完成初始化

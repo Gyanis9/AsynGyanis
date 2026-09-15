@@ -153,6 +153,7 @@ namespace AsynGyanis::Core
             m_submissionEntriesMapping    = std::exchange(other.m_submissionEntriesMapping, nullptr);
             m_submissionEntriesMappingSize = std::exchange(other.m_submissionEntriesMappingSize, 0);
             m_submissionCapacity          = std::exchange(other.m_submissionCapacity, 0);
+            m_reservedSubmissionCount     = std::exchange(other.m_reservedSubmissionCount, 0);
             m_ringFileDescriptor          = std::exchange(other.m_ringFileDescriptor, -1);
             m_isValid                     = std::exchange(other.m_isValid, false);
             m_timeoutValue                = std::exchange(other.m_timeoutValue, nullptr);
@@ -224,32 +225,39 @@ namespace AsynGyanis::Core
 
     io_uring_sqe *Uring::acquireSubmission()
     {
-        const unsigned tail = __atomic_load_n(m_submissionTail, __ATOMIC_RELAXED);
-        if (tail - __atomic_load_n(m_submissionHead, __ATOMIC_ACQUIRE) >= m_submissionCapacity)
+        // 用「已取走未发布」的本地计数判容量：尾指针此刻还没发布，内核看到的仍是上一批
+        if (m_reservedSubmissionCount - __atomic_load_n(m_submissionHead, __ATOMIC_ACQUIRE) >= m_submissionCapacity)
         {
             // 队列满：先提交一批腾位，仍满则放弃（调用方按提交失败处理）
             if (!flushSubmissions())
             {
                 return nullptr;
             }
-            if (tail - __atomic_load_n(m_submissionHead, __ATOMIC_ACQUIRE) >= m_submissionCapacity)
+            if (m_reservedSubmissionCount - __atomic_load_n(m_submissionHead, __ATOMIC_ACQUIRE) >= m_submissionCapacity)
             {
                 return nullptr;
             }
         }
 
-        const unsigned index = tail & *m_submissionRingMask;
+        const unsigned index = m_reservedSubmissionCount & *m_submissionRingMask;
         io_uring_sqe  *const submission = &m_submissionEntries[index];
         std::memset(submission, 0, sizeof(io_uring_sqe));
         m_submissionArray[index] = index;
-        // 先填内容、再发布尾指针：内核看到尾指针前必须看到完整条目
-        __atomic_store_n(m_submissionTail, tail + 1, __ATOMIC_RELEASE);
+        // 只推进本地计数，**不发布尾指针**：调用方随后才填 opcode/fd 这些字段，
+        // 而尾部一旦发布给内核，它就可能读到半写的 SQE（发布统一放在 flushSubmissions）
+        ++m_reservedSubmissionCount;
         return submission;
     }
 
     bool Uring::flushSubmissions()
     {
-        unsigned pending = __atomic_load_n(m_submissionTail, __ATOMIC_RELAXED) - __atomic_load_n(m_submissionHead, __ATOMIC_RELAXED);
+        // 发布尾指针：此刻所有已取走的槽位都填完了，内核读到的每条 SQE 都是完整的
+        const unsigned reserved = m_reservedSubmissionCount;
+        unsigned       pending  = reserved - __atomic_load_n(m_submissionHead, __ATOMIC_RELAXED);
+        if (pending != 0)
+        {
+            __atomic_store_n(m_submissionTail, reserved, __ATOMIC_RELEASE);
+        }
         while (pending != 0)
         {
             const long submitted = enterRing(m_ringFileDescriptor, pending, 0, 0);
@@ -467,6 +475,15 @@ namespace AsynGyanis::Core
         registration->inFlightTicket = 0;
         registration->pendingRemove  = false;
 
+        // 注销中：这次完成只用来清账，结果不再上报——上层的注册对象（IoWatcher）此刻
+        // 可能已经析构，投递过去就是释放后使用（Iocp 对同类情形是同一条口径：
+        // state.isDeleted 时只清账、不上报）
+        if (registration->pendingDelete)
+        {
+            eraseRegistration(registration);
+            return;
+        }
+
         if (result >= 0)
         {
             // 轮询结果就是 POLL* 掩码，数值与 EPOLL* 同源
@@ -483,11 +500,6 @@ namespace AsynGyanis::Core
             m_readyEvents.push_back(readyEvent);
         }
 
-        if (registration->pendingDelete)
-        {
-            eraseRegistration(registration);
-            return;
-        }
         if (registration->pendingRearm)
         {
             // 成功才清位：失败留给 maintainRegistrations() 补投，避免等待方永远挂起
