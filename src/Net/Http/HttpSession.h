@@ -443,10 +443,14 @@ namespace AsynGyanis::Net
                 [[maybe_unused]] const bool isNormalCloseSent = co_await peer.close(kWebSocketNormalClosureCode);
             }
 
-            // 标记收口：此后 peer 不再交付消息、send*() 一律返回 false。挂起中的业务协程不唤醒，
-            // 它的帧随本协程一起销毁（会话已经结束，让它继续跑没有意义）
+            // 收口（先唤醒再销毁）：业务可能挂在 receive() 上，也可能挂在写等待上（对端不再读、
+            // 发送缓冲占满）。两种都要唤醒——关掉套接字会让挂起的 I/O 等待以失败结束，业务随即
+            // 拿到那句 false。随后等它跑完自己的收尾，本帧才结束。
+            // 顺序不能颠倒：直接 co_return 会让业务帧随本帧一起销毁，false 与它的收尾代码全部丢失
             peer.markClosed();
-            co_return;
+            peer.wakeDeliveryWaiter();
+            socket.close();
+            co_await businessTask;
         }
 
         /**
