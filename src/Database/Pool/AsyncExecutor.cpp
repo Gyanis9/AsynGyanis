@@ -26,6 +26,10 @@ namespace AsynGyanis::Database
 
     AsyncExecutor::~AsyncExecutor()
     {
+        // 先立停止标志再请求停止：此后提交的任务一律被拒绝（显式失败），
+        // 队列里已接收的任务仍由下面的流程跑完
+        m_isStopping.store(true, std::memory_order_release);
+
         for (std::jthread &worker: m_workers)
         {
             // 请求停止（幂等）：已请求过或无活动任务时都无副作用
@@ -48,10 +52,16 @@ namespace AsynGyanis::Database
         return sharedExecutor;
     }
 
-    void AsyncExecutor::enqueue(std::function<void()> task)
+    bool AsyncExecutor::enqueue(std::function<void()> task)
     {
         {
             std::lock_guard lock(m_mutex);
+            // 已进入停止流程：工作线程即将（或已经）退出，没人会取这张队列，
+            // 收下任务等于让提交方永久挂起——宁可当场拒绝，由调用方显式失败
+            if (m_isStopping.load(std::memory_order_acquire))
+            {
+                return false;
+            }
             m_tasks.push_back(std::move(task));
             m_pendingCount.fetch_add(1, std::memory_order_relaxed);
         }
@@ -59,6 +69,7 @@ namespace AsynGyanis::Database
         // 入队后立刻唤醒一个等待线程。不必持锁调用 notify：唤醒与入队之间没有需要原子化的关系，
         // 被唤醒的线程会自己重新取锁并检查队列
         m_condition.notify_one();
+        return true;
     }
 
     void AsyncExecutor::workerLoop(const std::stop_token &stopToken)

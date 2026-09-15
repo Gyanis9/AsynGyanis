@@ -18,6 +18,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Database/Common/DatabaseException.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -189,14 +190,15 @@ namespace AsynGyanis::Database
              *          入队后立即返回，控制权交回调用方，因此 await_suspend 的耗时与 work
              *          的耗时无关——「提交后控制权立刻返回」正是由这一点保证的。
              * @param continuation 当前协程的句柄，任务完成后由工作线程投递回来恢复它
+             * @return true 已挂起，等工作线程恢复；false 执行器已停止，就地以失败恢复
              */
-            void await_suspend(std::coroutine_handle<> continuation)
+            bool await_suspend(std::coroutine_handle<> continuation)
             {
                 // 复制一份 shared_ptr 进入队列：只要任务还在队列里或正在执行，堆状态就不会被销毁
                 std::shared_ptr<SubmissionState<ResultType> > state = m_state;
                 state->continuation                                 = continuation;
 
-                m_executor->enqueue(
+                const bool isQueued = m_executor->enqueue(
                         [state]()
                         {
                             try
@@ -213,6 +215,15 @@ namespace AsynGyanis::Database
                             // 因此协程的后续代码与调用方对线程的假设保持一致
                             state->completionLoop->scheduler().scheduleRemote(state->continuation);
                         });
+                if (!isQueued)
+                {
+                    // 执行器已停止：任务不会被任何人执行，静默挂起是最差的结果，
+                    // 因此明确失败并就地恢复（此刻正跑在调用方的线程上，恢复它是安全的）
+                    state->error = std::make_exception_ptr(
+                            DatabaseException("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交"));
+                    return false;
+                }
+                return true;
             }
 
             /**
@@ -243,9 +254,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 把任务放进队列并唤醒一个工作线程
          * @param task 待执行的闭包（已捕获好全部输入与输出位置）
+         * @return true 已入队；false 执行器正在停止，任务未被执行（调用方应显式失败而不是挂起）
          * @note 本方法只做入队，不执行任务：调用方（await_suspend）因此不会被阻塞
          */
-        void enqueue(std::function<void()> task);
+        [[nodiscard]] bool enqueue(std::function<void()> task);
 
         /**
          * @brief 工作线程主循环
@@ -257,6 +269,10 @@ namespace AsynGyanis::Database
         std::condition_variable            m_condition;       ///< 通知工作线程有新任务或收到停止请求
         std::deque<std::function<void()> > m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
         std::atomic<std::size_t>           m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
+
+        /// 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——
+        /// 工作线程退出后没人再取队列，收下任务等于让提交方永久挂起
+        std::atomic<bool> m_isStopping{false};
 
         // m_workers 必须声明在最后：成员按声明逆序销毁，最后声明的先销毁，
         // jthread 析构会 join，从而保证线程都结束了才会轮到上面的互斥锁与条件变量被销毁

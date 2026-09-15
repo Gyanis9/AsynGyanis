@@ -17,14 +17,17 @@ namespace AsynGyanis::Database
             return create(*guessed, config);
         }
 
-        // SQLite 不需要端口：未指定端口但给出了库路径或 ":memory:" 时按嵌入式库处理。
-        // // 回退成 MySQL 会让 SQLite 之类的配置永远连不上
-        if (config.port == 0 && !config.database.empty())
+        // SQLite 不需要端口：未指定端口、且**没有任何网络库特征**（主机、账号、口令全空）时
+        // 才按嵌入式库处理。只看「库名非空」会把「填了主机账号、忘了端口」的 MySQL 配置
+        // 悄悄写成同名本地文件，那是最难排查的一类「连上了但不是你以为的那个库」
+        if (config.port == 0 && !config.database.empty() && config.host.empty() && config.userName.empty() && config.password.empty())
         {
             return createSqlite(config);
         }
 
-        throw Base::InvalidArgumentException("无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 未知且未提供数据库名");
+        throw Base::InvalidArgumentException("无法从配置判定数据库类型：端口 " + std::to_string(config.port) +
+                                             " 未知，配置里还带着网络库特征（主机/账号/口令非空）："
+                                             "请补上端口，或清空这些字段并按 SQLite 使用");
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::create(const DatabaseType type, const ConnectionConfig &config)

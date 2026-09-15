@@ -11,6 +11,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
@@ -196,12 +197,24 @@ namespace AsynGyanis::Database
         EXPECT_EQ(fileConnection->configuration().database, "data/application.db");
     }
 
-    TEST(DatabaseFactory, CreateFromConfigFallsBackToSqliteWithHostButNoPort)
+    TEST(DatabaseFactory, CreateFromConfigRejectsNetworkConfigWithoutPort)
     {
-        // 判定条件只看 port 与 database：填了 host 也不会被推成远程库，端口未指定即走嵌入式
+        // 旧断言：填了 host/账号但没填端口时回落成 SQLite（把 MySQL 配置悄悄写成同名本地文件）。
+        // 新语义：这类配置按「无法判定类型」当场拒绝——带着网络库特征的配置只缺端口，
+        // 多半是写错了配置而不是想要一个本地库；静默换库是最难排查的一类故障。
+        // 依据：DatabaseFactory::create() 的 SQLite 回落以「主机/账号/口令全空」为前提
         ConnectionConfig configuration;
         configuration.host     = "127.0.0.1";
         configuration.userName = "root";
+        configuration.database = ":memory:";
+
+        EXPECT_THROW(static_cast<void>(DatabaseFactory::create(configuration)), Base::InvalidArgumentException);
+    }
+
+    TEST(DatabaseFactory, CreateFromConfigFallsBackToSqliteWhenOnlyDatabaseNameGiven)
+    {
+        // 真正「只想用嵌入式库」的形态：只给库名（或 ":memory:"），没有任何网络库特征
+        ConnectionConfig configuration;
         configuration.database = ":memory:";
 
         const std::unique_ptr<DatabaseConnection> connection = DatabaseFactory::create(configuration);
