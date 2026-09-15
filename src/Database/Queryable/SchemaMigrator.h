@@ -182,6 +182,9 @@ namespace AsynGyanis::Database::Queryable
          * @return true 语句已被引擎接受（表已存在时同样返回 true，因为目标状态已达成）
          * @return false 取连接失败、方言不支持或 DDL 被引擎拒绝，原因见 errorText
          * @throws Base::LogicException 表结构本身不合法（表名为空、主键列不存在），见 createTableStatement()
+         * @warning 不做结构漂移检测：ifNotExists 为 true 时，表已存在就直接跳过整条语句，
+         *          即使现有表的列与 TableSchema<T> 已经不一致（缺列、类型变了）也不会被发现，
+         *          本方法不会生成 ALTER。改过 TableSchema 后需要调用方自行迁移或重建表。
          */
         template<RowMappable T>
         [[nodiscard]] static bool createTable(ConnectionPool &pool, const bool ifNotExists = true, std::string *errorText = nullptr)
