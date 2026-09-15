@@ -33,7 +33,9 @@ namespace AsynGyanis::Base
         {
             for (std::size_t index = 0; index < timestamp.size(); ++index)
             {
-                if (const bool isSeparator = index == 4 || index == 7 || index == 10 || index == 13 || index == 16 || index == 19)
+                // 分隔符位置（日期与时刻的固定下标）直接跳段：不落成命名变量，
+                // 免得编译器把「只在条件里用一次的局部量」判成未使用（GCC 的 -Wunused-variable）
+                if (index == 4 || index == 7 || index == 10 || index == 13 || index == 16 || index == 19)
                 {
                     continue;
                 }

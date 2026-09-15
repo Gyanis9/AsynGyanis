@@ -2034,7 +2034,7 @@ namespace AsynGyanis::Net
         HpackDecoder responseDecoder;
         const std::vector<HpackHeaderField> headers = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
         EXPECT_EQ(findHeaderValue(headers, ":status"), "200");
-        for (const std::string &forbiddenHeaderName: {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection"})
+        for (const char *forbiddenHeaderName: {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection"})
         {
             EXPECT_EQ(findHeaderValue(headers, forbiddenHeaderName), "")
                     << "HTTP/2 响应里不得出现连接特定头「" << forbiddenHeaderName << "」（RFC 9113 §8.2.2）";

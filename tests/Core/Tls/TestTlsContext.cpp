@@ -771,6 +771,13 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief FILE* 的关闭器类型
+         * @note 显式写出生效类型而不是 decltype(&std::fclose)：fclose 带 nonnull 属性，
+         *       GCC 会对「把带属性的函数指针当模板实参」报 -Wignored-attributes
+         */
+        using FileCloser = int (*)(FILE *);
+
+        /**
          * @brief 打开一个 std::FILE*（OpenSSL 的 PEM 读写接口收 FILE*，用不了流式接口）
          * @param filePath 文件路径
          * @param mode fopen 模式串
@@ -801,7 +808,7 @@ namespace AsynGyanis::Core
         bool writeSelfSignedCertificate(const std::filesystem::path &keyFile, const std::filesystem::path &outputFile,
                                         const long serialNumber)
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> keyStream(openFileStream(keyFile.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> keyStream(openFileStream(keyFile.string().c_str(), "rb"), &std::fclose);
             if (!keyStream)
             {
                 return false;
@@ -845,7 +852,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<FILE, decltype(&std::fclose)> certificateStream(openFileStream(outputFile.string().c_str(), "wb"),
+            const std::unique_ptr<FILE, FileCloser> certificateStream(openFileStream(outputFile.string().c_str(), "wb"),
                                                                                   &std::fclose);
             if (!certificateStream)
             {
@@ -922,7 +929,7 @@ namespace AsynGyanis::Core
 
         // 往证书路径写垃圾：模拟「续期只写了一半」「文件传坏」
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(certificatePath.string().c_str(), "wb"), &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(certificatePath.string().c_str(), "wb"), &std::fclose);
             ASSERT_TRUE(stream != nullptr);
             // 判据用 fwrite 的返回值：fputs 只承诺「非负」，MSVC 下成功也返回 0
             const char brokenCertificateText[] = "-----BEGIN CERTIFICATE-----\nnot a certificate\n";
@@ -1212,7 +1219,7 @@ namespace AsynGyanis::Core
         /// 载入仓库夹具证书（OCSP 用例的签发者）
         std::unique_ptr<X509, decltype(&X509_free)> loadFixtureCertificate()
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(kTestCertificatePath.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(kTestCertificatePath.string().c_str(), "rb"), &std::fclose);
             if (!stream)
             {
                 return {nullptr, &X509_free};
@@ -1223,7 +1230,7 @@ namespace AsynGyanis::Core
         /// 载入仓库夹具私钥（复用为叶证书密钥与签名密钥，避免另生成密钥的版本差异）
         std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> loadFixturePrivateKey()
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(kTestKeyPath.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(kTestKeyPath.string().c_str(), "rb"), &std::fclose);
             if (!stream)
             {
                 return {nullptr, &EVP_PKEY_free};
@@ -1234,7 +1241,7 @@ namespace AsynGyanis::Core
         /// 载入任意 PEM 证书文件
         std::unique_ptr<X509, decltype(&X509_free)> loadCertificateFrom(const std::filesystem::path &file)
         {
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(file.string().c_str(), "rb"), &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(file.string().c_str(), "rb"), &std::fclose);
             if (!stream)
             {
                 return {nullptr, &X509_free};
@@ -1293,7 +1300,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<FILE, decltype(&std::fclose)> stream(openFileStream(outputFile.string().c_str(), "wb"), &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(outputFile.string().c_str(), "wb"), &std::fclose);
             if (!stream)
             {
                 return false;
