@@ -242,9 +242,12 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] std::shared_ptr<Core::Connection> createConnection(Core::AsyncSocket socket) override
             {
-                m_createConnectionCalls.fetch_add(1, std::memory_order_release);
+                // 先记载荷、**最后**才把「调用次数」放出去：次数是等待方判定「到了」的信号，
+                // 先加计数再写端口会让等待方在端口还是 0 时就往下走（x86 上先写的计数先可见，
+                // Windows CI 实测读到 recordedLocalPort()==0）
                 m_recordedLocalPort.store(socket.localAddress().port(), std::memory_order_release);
                 m_recordedPeerPort.store(socket.remoteAddress().port(), std::memory_order_release);
+                m_createConnectionCalls.fetch_add(1, std::memory_order_release);
 
                 if (m_options.mode == CreateConnectionMode::ReturnsNullPointer)
                 {

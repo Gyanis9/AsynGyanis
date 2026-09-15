@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -456,9 +457,11 @@ namespace AsynGyanis::Net
                     m_loop.run();
                 });
 
-                // 绑定成功后 listeningPort() 才有值：端口由内核分配
+                // 绑定成功后 listeningPort() 才有值：端口由内核分配。**端口是循环线程写下的**，
+                // 只能在循环线程上读——这里反复投递去采样（直接跨线程读就是与循环抢同一个成员，
+                // TSan 报过这条），此后测试线程读的都是快照
                 const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-                while (m_server->listeningPort() == 0 && std::chrono::steady_clock::now() < deadline)
+                while (refreshListeningPort() == 0 && std::chrono::steady_clock::now() < deadline)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds{5});
                 }
@@ -483,10 +486,55 @@ namespace AsynGyanis::Net
                 return *m_server;
             }
 
-            /// 服务端监听端口（0 表示还没绑上）
+            /// 服务端监听端口（0 表示还没绑上）：读的是循环线程写下的原子快照
             [[nodiscard]] std::uint16_t listeningPort() const noexcept
             {
-                return m_server->listeningPort();
+                return m_listeningPort.load(std::memory_order_acquire);
+            }
+
+            /**
+             * @brief 在循环线程上执行一段动作，并等它做完
+             * @param action 待执行的动作
+             * @details 服务端归它的循环所有：连接表、本端端口这些成员都只由循环线程读写，
+             *          测试线程直接读就是与循环抢同一批数据（TSan 在并发用例集里报的正是这一类）。
+             *          正路是投递（scheduler().postRemote()）——用具从测试线程取值时走这条
+             */
+            void runOnLoopAndWait(const std::function<void()> &action)
+            {
+                std::atomic<bool> isFinished{false};
+                m_loop.scheduler().postRemote(
+                        [&action, &isFinished]
+                        {
+                            action();
+                            isFinished.store(true, std::memory_order_release);
+                        });
+
+                const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
+                while (!isFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+                EXPECT_TRUE(isFinished.load(std::memory_order_acquire)) << "投递到循环线程的动作没有在时限内完成";
+            }
+
+            /// 在循环线程上取一次本端端口，更新快照后返回
+            std::uint16_t refreshListeningPort()
+            {
+                std::uint16_t port = 0;
+                runOnLoopAndWait([this, &port] { port = m_server->listeningPort(); });
+                m_listeningPort.store(port, std::memory_order_release);
+                return port;
+            }
+
+            /**
+             * @brief 在循环线程上取当前在线连接数
+             * @return std::size_t 连接数
+             */
+            [[nodiscard]] std::size_t sampleConnectionCount()
+            {
+                std::size_t count = 0;
+                runOnLoopAndWait([this, &count] { count = m_server->connectionCount(); });
+                return count;
             }
 
         private:
@@ -494,6 +542,7 @@ namespace AsynGyanis::Net
             std::unique_ptr<QuicServer>     m_server;           ///< 被测服务端
             std::optional<Core::Task<>>     m_listenTask;       ///< 监听协程（活到夹具析构；Task 没有默认构造，用 optional 托管）
             std::thread                     m_loopThread;       ///< 跑循环的线程
+            std::atomic<std::uint16_t>      m_listeningPort{0}; ///< 循环线程写下的本端端口快照
         };
 
         /// 造服务端地址（回环 + 给定端口）
@@ -546,9 +595,9 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
 
         ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); }))
-                << "握手没有在时限内完成（写错误码 " << client.lastWriteError() << "，服务端连接数 " << server.server().connectionCount() << "，读错 " << client.hasReadError() << "，收 " << client.receivedDatagramCount() << " 条 / 发 " << client.sentDatagramCount() << " 条）";
+                << "握手没有在时限内完成（写错误码 " << client.lastWriteError() << "，服务端连接数 " << server.sampleConnectionCount() << "，读错 " << client.hasReadError() << "，收 " << client.receivedDatagramCount() << " 条 / 发 " << client.sentDatagramCount() << " 条）";
         EXPECT_STREQ(client.selectedApplicationProtocol().c_str(), "h3") << "协商出的 ALPN 不是 h3";
-        EXPECT_EQ(server.server().connectionCount(), 1U) << "服务端应当正好有一条连接";
+        EXPECT_EQ(server.sampleConnectionCount(), 1U) << "服务端应当正好有一条连接";
     }
 
     /**
@@ -612,7 +661,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
         ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); }))
                 << "乱码报文之后服务端不再接受合法握手";
-        EXPECT_EQ(server.server().connectionCount(), 1U) << "乱码报文不该建出连接";
+        EXPECT_EQ(server.sampleConnectionCount(), 1U) << "乱码报文不该建出连接";
     }
 
     /**
@@ -662,17 +711,17 @@ namespace AsynGyanis::Net
 
         // 先等这条连接真的建起来——否则下面那个「计数为 0」可能只是服务端还没处理那个 Initial
         const auto appearedDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
-        while (server.server().connectionCount() == 0 && std::chrono::steady_clock::now() < appearedDeadline)
+        while (server.sampleConnectionCount() == 0 && std::chrono::steady_clock::now() < appearedDeadline)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         }
-        ASSERT_EQ(server.server().connectionCount(), 1U) << "首个 Initial 没有建出连接";
+        ASSERT_EQ(server.sampleConnectionCount(), 1U) << "首个 Initial 没有建出连接";
 
         const auto reapedDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
-        while (server.server().connectionCount() != 0 && std::chrono::steady_clock::now() < reapedDeadline)
+        while (server.sampleConnectionCount() != 0 && std::chrono::steady_clock::now() < reapedDeadline)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         }
-        EXPECT_EQ(server.server().connectionCount(), 0U) << "握手没完成的连接没有在超时后被收口";
+        EXPECT_EQ(server.sampleConnectionCount(), 0U) << "握手没完成的连接没有在超时后被收口";
     }
 } // namespace AsynGyanis::Net
