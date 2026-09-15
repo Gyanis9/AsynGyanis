@@ -15,17 +15,16 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/TimerQueue.cpp
 )
 
-# wepoll（epoll 的 Windows 兼容实现，BSD-2-Clause 许可，见 wepoll.h 头部）已随仓库 vendored，
-# 不再构建期联网下载。它**编进 Core 库本身**、不单独导出目标：Windows 侧的事件通知是 Core 的
-# 实现细节，消费方只需链 AsynGyanis::Core，不必知道底下是谁在做。
-# wepoll.h 与 Wepoll.cpp 同目录：Epoll.h 用引号包含 "wepoll.h"，引号包含先从包含者所在目录找
+# wepoll 的**头文件**（epoll 的 Windows 兼容实现，BSD-2-Clause 许可）随仓库保留：
+# 事件后端换成完成端口（Iocp）之后，Iocp.h 仍借它的 epoll_event 与事件位定义，因此头文件
+# 随 Core 一起安装、不单独导出目标；AFD 轮询实现（Wepoll.cpp）已删除——事件通知全部走 Iocp.cpp，
+# 留着两套 Windows 后端只会各自腐化
 # 事件后端按平台二选一：Linux 是 epoll 的薄封装（Epoll.cpp），Windows 是完成端口后端（Iocp.cpp）。
 # 两者接口同构，Epoll.h 在 Windows 上以 using Epoll = Iocp 指过去，因此上面那些文件不需要平台分支。
 if (WIN32)
     set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
             ${CMAKE_CURRENT_LIST_DIR}/Iocp.cpp
             ${CMAKE_CURRENT_LIST_DIR}/Iocp.h
-            ${CMAKE_CURRENT_LIST_DIR}/Wepoll.cpp
             ${CMAKE_CURRENT_LIST_DIR}/wepoll.h
     )
 elseif (ASYN_WITH_IO_URING)

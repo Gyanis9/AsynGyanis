@@ -10,13 +10,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 事件循环只有两个后端：Linux 的 epoll（src/Core/EventLoop/Epoll.cpp）与 Windows 的 vendored
-# wepoll（src/Core/EventLoop/wepoll.h 与 Wepoll.cpp）。其它系统在 Core 这一层就编译不过，而报出来的会是几百行
-# 模板错误——与其让人去猜，不如在这里一句话说清「缺的是 kqueue 后端」以及补它的落点。
-# README 的「环境要求」也写了这一点，两处一致
+# 事件循环只有两个后端：Linux 的 epoll（src/Core/EventLoop/Epoll.cpp）与 Windows 的完成端口
+# （src/Core/EventLoop/Iocp.cpp；wepoll.h 只提供 epoll_event 与事件位定义，实现已删除）。
+# 其它系统在 Core 这一层就编译不过，而报出来的会是几百行模板错误——与其让人去猜，不如在这里
+# 一句话说清「缺的是 kqueue 后端」以及补它的落点。README 的「环境要求」也写了这一点，两处一致
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR
-            "AsynGyanis 目前只支持 Linux 与 Windows：事件循环的实现是 epoll 与 vendored wepoll，"
+            "AsynGyanis 目前只支持 Linux 与 Windows：事件循环的实现是 epoll 与完成端口，"
             "没有可用的 kqueue 后端（当前系统：${CMAKE_SYSTEM_NAME}）。要支持该系统，"
             "需要新增一个与 Core/EventLoop/Epoll.h 同接口的事件通知实现，并在 Core 的 CMakeLists 里按平台选用。")
 endif()
