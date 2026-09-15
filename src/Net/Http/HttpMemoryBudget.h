@@ -25,8 +25,11 @@ namespace AsynGyanis::Net
      *       （与按 IP 限额同理）不要给每个监听器各建一份，否则上限会乘以监听器数量。
      * @note 上限为 0 表示不限制（仍会记账，`reservedByteCount()` 可观测）。预留与归还都是原子操作，
      *       不阻塞、不加锁，可在事件循环线程上直接用。
-     * @note 只约束**请求正文**这一类可预期增长的内存：每连接的接收窗口是固定的 8 KiB 且已被
-     *       `TcpServer::setMaxConnections` 兜住，响应正文由业务自己决定，两者都不在本预算之内。
+     * @note 只约束**请求正文**这一类可预期增长的内存：每连接的接收窗口是固定的 8 KiB，响应正文由
+     *       业务自己决定，头部（默认上限 64 KiB/请求）也不在本预算之内。
+     * @warning 本预算与 `TcpServer::setMaxConnections` 都是**可选开关、默认不启用**：默认配置下
+     *          「头部 + 接收窗口 × N 条连接」没有总量上限，暴露在公网前应当显式配置两者
+     *          （见 HttpServer::setMemoryBudget() 与 setMaxConnections()）。
      * @see HttpServer::setMemoryBudget()
      */
     class HttpMemoryBudget

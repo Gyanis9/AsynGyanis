@@ -35,6 +35,9 @@ namespace AsynGyanis::Database
      *
      * @warning 管道命令登记后不立即发送，flushPipeline() 之前不会有任何网络往返；
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
+     * @warning 不支持订阅式用法（SUBSCRIBE/PSUBSCRIBE/监视模式）：本类按「一条命令一次读回复」
+     *          的模型执行，一旦对端切到推送模式，后续回复会与命令错位——调用方若需要订阅，
+     *          请自行使用 hiredis 的异步 API。
      */
     class RedisConnection : public DatabaseConnection
     {

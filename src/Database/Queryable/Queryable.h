@@ -188,9 +188,13 @@ namespace AsynGyanis::Database::Queryable
          * @brief 设置 SELECT 列
          *
          * @details 默认（不调用此方法或传入空列表）使用 TableSchema 中 kColumns 的顺序。
+         *          列名之外也接受表达式文本（如 COUNT(*)、COALESCE(age, 0)），表达式按原样拼进 SQL。
          *
-         * @param columns 列名列表
+         * @param columns 列名或表达式文本列表
          * @return Queryable& 自身引用，支持链式调用
+         * @warning 表达式文本**按原样拼进 SQL 语句**，不是参数绑定的对象：
+         *          只允许传入编译期常量或可信文本，任何来自用户输入的片段都必须走参数绑定
+         *          （值用占位符），否则就是 SQL 注入面
          */
         Queryable &select(std::vector<std::string> columns)
         {
@@ -213,8 +217,9 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 设置 GROUP BY 字段
          *
-         * @param fields 分组列名列表
+         * @param fields 分组列名列表（也接受表达式文本，规则同 select()）
          * @return Queryable& 自身引用，支持链式调用
+         * @warning 与 select() 同一条信任边界：文本按原样拼进 SQL，只允许编译期常量或可信文本
          */
         Queryable &groupBy(std::vector<std::string> fields)
         {

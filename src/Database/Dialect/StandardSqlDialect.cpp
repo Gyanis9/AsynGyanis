@@ -158,10 +158,11 @@ namespace AsynGyanis::Database
         if (!isIdentifierChain)
         {
             // 含运算符、括号、逗号等结构字符的文本按表达式原样输出：例如 COUNT(*)，
-            // COALESCE(age, 0)，age + 1。对表达式整体加引用会把它降级成一个列名，
-            // 直接改变语义；这里不做任何加工在安全上也是成立的——字段引用全部来自编译期常量
-            // （Column() 的 columnName 参数或 asc()/desc() 的字符串字面量），不是外部输入，
-            // 而数据值一律走参数绑定，因此不存在注入面。
+            // COALESCE(age, 0)，age + 1。对表达式整体加引用会把它降级成一个列名，直接改变语义。
+            // **信任边界**：这一段按原样拼进 SQL，因此字段引用只允许来自编译期常量
+            // （Column() 的 columnName 参数或 asc()/desc() 的字符串字面量）等可信文本；
+            // 数据值一律走参数绑定。调用方若把用户输入喂进 select()/groupBy()，那就是注入面——
+            // 公共 API 的文档已就这条边界给出 @warning
             // 只含标识符字节与空格的文本（如含空格的列名）不走这里，会被引用成 "full name"
             return std::string(fieldText);
         }
