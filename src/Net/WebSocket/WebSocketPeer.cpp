@@ -14,6 +14,46 @@ namespace AsynGyanis::Net
     {
         /// 关闭帧负载里状态码占用的字节数（RFC 6455 §5.5.1）
         constexpr std::size_t kCloseCodeByteLength = 2;
+
+        /**
+         * @brief 对端 Close 里的状态码是否合法（RFC 6455 §7.4.1）
+         * @param closeCode 线上收到的状态码
+         * @return true 合法：1000-1003、1007-1014、3000-4999
+         * @return false 非法：1004/1005/1006/1015 等保留值、1000 以下与 1016-2999 段
+         */
+        bool isValidReceivedCloseCode(const std::uint16_t closeCode) noexcept
+        {
+            if (closeCode >= 3000 && closeCode <= 4999) return true;
+            switch (closeCode)
+            {
+            case 1000:
+            case 1001:
+            case 1002:
+            case 1003:
+            case 1007:
+            case 1008:
+            case 1009:
+            case 1010:
+            case 1011:
+            case 1012:
+            case 1013:
+            case 1014:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        /**
+         * @brief 本端主动 Close 的状态码是否可上线（RFC 6455 §7.4.1、§7.4.2）
+         * @param closeCode 业务给出的状态码
+         * @return true 可发送；false 为保留值或落在保留区间
+         * @note 1005/1006/1015 是「不得出现在线上」的哨兵值，1016-2999 段未经注册不可发
+         */
+        bool isValidCloseCodeToSend(const std::uint16_t closeCode) noexcept
+        {
+            return isValidReceivedCloseCode(closeCode);
+        }
     } // namespace
 
     WebSocketPeer::WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *const metrics) :
@@ -89,6 +129,8 @@ namespace AsynGyanis::Net
 
         WebSocketFrame frame = std::move(m_peer->m_incomingFrames.front());
         m_peer->m_incomingFrames.pop_front();
+        // 出队即从积压计数里扣除（与 enqueueFrame 的累加配对），上界据此放行后续帧
+        m_peer->m_queuedPayloadByteCount -= frame.payload.size();
         return frame;
     }
 
@@ -177,6 +219,16 @@ namespace AsynGyanis::Net
                                 reason.size(), kMaximumReasonLength, kWebSocketMaximumControlPayloadLength, kCloseCodeByteLength));
         }
 
+        // 状态码同样按用法错误当场拒绝：1005/1006/1015 是「不得上线」的哨兵值，1016-2999 段
+        // 未经注册不可发。发出去对端只能按协议错误收口，改掉正是调用方该做的事
+        if (!isValidCloseCodeToSend(code))
+        {
+            throw Base::InvalidArgumentException(
+                    std::format("WebSocketPeer::close：状态码 {} 不允许出现在线上（RFC 6455 §7.4.1/§7.4.2：1005/1006/1015 为保留哨兵值，"
+                                "1016-2999 段未经注册）：请改用 1000-1003、1007-1014 或 3000-4999 段的值",
+                                code));
+        }
+
         // 本侧已经发过 Close、或连接已不可用：不再补第二条（§5.5.1 只要求一次关闭握手），
         // 也绝不把业务给的关闭原因当成一次新的关闭请求发出去。
         // 短路返回不记日志：本侧主动关闭属预期路径，传输失败则早已在收口那一刻记过原因
@@ -236,14 +288,31 @@ namespace AsynGyanis::Net
 
     Core::Task<> WebSocketPeer::echoCloseFrame(const std::string_view payload)
     {
-        // 状态码 echo（RFC 6455 §5.5.1）：对端给了合法状态码就原样回送；
-        // 负载为空或不足两字节表示「不带状态码的关闭」，此时按 1000 正常关闭回送
+        // 对端 Close 的负载要按 RFC 6455 §5.5.1 / §7.4.1 校验：状态码缺失（只有 1 字节）、
+        // 禁止上线的状态码（1005/1006/1015 等）、原因文本不是 UTF-8 都是协议错误。
+        // 这类关闭不能原样回送对端的码，否则一次非法关闭会被当成正常关闭放过去
         std::uint16_t closeCode = kWebSocketNormalClosureCode;
-        if (payload.size() >= kCloseCodeByteLength)
+        if (payload.size() == 1)
+        {
+            closeCode = kWebSocketProtocolErrorCode;
+        } else if (payload.size() >= kCloseCodeByteLength)
         {
             // 线上是大端：第一个字节是高位
-            closeCode = static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
-                                                   static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
+            const std::uint16_t receivedCode =
+                    static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
+                                               static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
+            const std::string_view reason = payload.substr(kCloseCodeByteLength);
+            if (!isValidReceivedCloseCode(receivedCode))
+            {
+                closeCode = kWebSocketProtocolErrorCode;
+            } else if (findInvalidWebSocketUtf8ByteOffset(reason) != std::string_view::npos)
+            {
+                // 原因不是 UTF-8：按负载非法收口（RFC 6455 §7.4.1 的 1007）
+                closeCode = kWebSocketInvalidPayloadDataCode;
+            } else
+            {
+                closeCode = receivedCode;
+            }
         }
 
         // 回帧即收口。结果不看：对端往往已经断开，这条回帧写不出去也不影响收尾
@@ -262,6 +331,8 @@ namespace AsynGyanis::Net
         }
 
         m_incomingFrames.push_back(std::move(frame));
+        // 积压计数在入队处唯一累加：出队在 await_resume() 里扣减，两处配对
+        m_queuedPayloadByteCount += m_incomingFrames.back().payload.size();
 
         // 业务正挂在 receive() 上：就地恢复它，把控制权交给它——交付与唤醒都由会话侧驱动，
         // 业务侧的任一挂起点（收消息、发帧）都在本对象的调用链上
@@ -345,6 +416,16 @@ namespace AsynGyanis::Net
                     m_metrics->countWebSocketMessage();
                 }
 
+                // 收帧积压上界：业务消费慢于对端发送时内存不能无界增长。超限按策略违规收口，
+                // 不静默丢帧——丢了会让业务看到一条缺帧的流，比直接断开更难排查
+                if (m_queuedPayloadByteCount + frame.payload.size() > kWebSocketMaximumQueuedPayloadByteCount)
+                {
+                    m_payloadErrorMessage = std::format("待交付的 WebSocket 帧积压超过上限 {} 字节（业务消费速度跟不上对端发送）："
+                                                        "请提高消费速度，或在对端侧放慢发送速率",
+                                                        kWebSocketMaximumQueuedPayloadByteCount);
+                    m_payloadErrorCloseCode = kWebSocketPolicyViolationCode;
+                    return WebSocketFeedStatus::DecodeError;
+                }
                 enqueueFrame(std::move(frame));
                 continue;
             }
@@ -358,7 +439,16 @@ namespace AsynGyanis::Net
     void WebSocketPeer::markClosed() noexcept
     {
         // 有意不唤醒挂起中的 receive()：会话收尾时业务协程的帧会随之销毁，
-        // 让它在别人的栈上接着跑没有意义
+        // 让它在别人的栈上接着跑没有意义。需要「先唤醒再收尾」的路径调 wakeDeliveryWaiter()
         m_isOpen = false;
+    }
+
+    void WebSocketPeer::wakeDeliveryWaiter() noexcept
+    {
+        // 取走句柄再恢复：业务恢复后可能立刻走到收尾并销毁本对象，此后不能再访问成员
+        if (const std::coroutine_handle<> waiter = std::exchange(m_deliveryWaiter, nullptr); waiter != nullptr)
+        {
+            waiter.resume();
+        }
     }
 } // namespace AsynGyanis::Net

@@ -48,6 +48,12 @@ namespace AsynGyanis::Net
     /// 消息过大状态码：单帧或重组后的消息超出解码层上限
     inline constexpr std::uint16_t kWebSocketMessageTooBigCode = 1009;
 
+    /// 策略违规状态码：对端行为超出本端接受范围（如长期不消费导致的收帧积压）
+    inline constexpr std::uint16_t kWebSocketPolicyViolationCode = 1008;
+
+    /// 待交付帧的积压上界（字节，按负载计）：消费者慢于对端时内存不能被无界吃光
+    inline constexpr std::size_t kWebSocketMaximumQueuedPayloadByteCount = 16 * 1024 * 1024;
+
     /**
      * @brief 一条完整的数据消息
      *
@@ -213,9 +219,16 @@ namespace AsynGyanis::Net
         /**
          * @brief 会话侧：标记连接收口，此后不再交付消息
          * @note 有意不唤醒挂起中的 receive()：会话收尾时业务协程的帧会随之销毁，
-         *       让它在别人的栈上继续跑没有任何意义
+         *       让它在别人的栈上继续跑没有任何意义。需要「先唤醒再收尾」的路径调 wakeDeliveryWaiter()
          */
         void markClosed() noexcept;
+
+        /**
+         * @brief 会话侧：唤醒挂在 receive() 上的业务，让它以「连接已收口」收尾
+         * @note 只在业务协程帧会活到它自己跑完的路径上调用（隧道路径由 reapFinishedTunnels()
+         *       兜底）。会话一边收尾一边直接销毁帧的路径不能调它——那是「先销毁后唤醒」
+         */
+        void wakeDeliveryWaiter() noexcept;
 
         /**
          * @brief 会话侧：当前是否有帧正在写
@@ -294,8 +307,10 @@ namespace AsynGyanis::Net
         void enqueueFrame(WebSocketFrame frame);
 
         /**
-         * @brief 处理一条 Close 帧：回一条同状态码的 Close 并让本侧关闭（RFC 6455 §5.5.1）
-         * @param payload 对端 Close 帧的负载，可能为空或只有状态码
+         * @brief 处理一条 Close 帧：校验负载后回 Close 并让本侧关闭（RFC 6455 §5.5.1、§7.4.1）
+         * @param payload 对端 Close 帧的负载，可能为空、只有状态码或带原因文本
+         * @details 负载非法（1 字节、禁止上线的状态码、原因不是 UTF-8）时不回送对端的码，
+         *          改按 1002/1007 收口——原样回送会把一个非法关闭当成正常关闭放过去
          */
         Core::Task<> echoCloseFrame(std::string_view payload);
 
@@ -303,6 +318,8 @@ namespace AsynGyanis::Net
         HttpMetricsCollector *m_metrics{nullptr};    ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
         WebSocketFrameDecoder m_decoder;             ///< 帧解码器：掩码校验、分片重组都在它内部完成
         std::deque<WebSocketFrame> m_incomingFrames; ///< 已解出、等待业务取走的帧（FIFO）
+        /// 待交付帧的积压计数：enqueueFrame() 累加、出队处扣减，两处必须配对
+        std::size_t m_queuedPayloadByteCount{0};     ///< 队列里待交付帧的负载总字节数
         std::coroutine_handle<> m_deliveryWaiter{};  ///< 业务正挂在 receive() 上的句柄，空表示无人等待
         bool m_isOpen{true};                         ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
         bool m_isWriteInFlight{false};               ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）

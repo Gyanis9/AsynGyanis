@@ -274,7 +274,9 @@ namespace AsynGyanis::Net
         /// 负载落点：未分片时是本帧负载，分片消息进行中时是「已重组的部分」，
         /// 因此重组不需要第二份缓冲，也不会多一次拷贝
         std::string m_payloadBuffer;
-
+        /// 控制帧的负载落点：与 m_payloadBuffer 分开，因为控制帧可以插在分片消息中间（RFC 6455 §5.4），
+        /// 共用一块缓冲会把已经重组了一半的消息冲掉
+        std::string m_controlPayloadBuffer;
         bool m_isFragmentedMessageInProgress{false};   ///< 是否正处在一条分片消息中间
         bool m_isPerMessageDeflateEnabled{false};      ///< 是否已协商 permessage-deflate（决定 RSV1 是否合法）
         bool m_isCurrentMessageCompressed{false};      ///< 当前这条消息的首帧是否置了 RSV1；消息交付时随帧交出并复位

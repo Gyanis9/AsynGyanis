@@ -223,13 +223,16 @@ namespace AsynGyanis::Net
             const std::size_t chunkLength = std::min(remainingLength, length - consumed);
 
             // 先整段追加、再就地解掩码：一次 append 比逐字节 push_back 少若干次扩容判断，
-            // 而掩码必须解除（RFC 6455 §5.3），键按 4 字节循环、每个帧用自己的键
-            const std::size_t appendedBegin = m_payloadBuffer.size();
-            m_payloadBuffer.append(data + consumed, chunkLength);
+            // 而掩码必须解除（RFC 6455 §5.3），键按 4 字节循环、每个帧用自己的键。
+            // 控制帧的负载落在自己的缓冲里：它可能插在分片消息中间，共用一块会把
+            // 已重组的那半条消息冲掉（RFC 6455 §5.4）
+            std::string &payloadSink = isControlOpCodeValue(m_opCodeValue) ? m_controlPayloadBuffer : m_payloadBuffer;
+            const std::size_t appendedBegin = payloadSink.size();
+            payloadSink.append(data + consumed, chunkLength);
             for (std::size_t offset = 0; offset < chunkLength; ++offset)
             {
                 const std::size_t maskIndex = (m_framePayloadBytesSeen + offset) % kMaskKeyLength;
-                char &targetByte = m_payloadBuffer[appendedBegin + offset];
+                char &targetByte = payloadSink[appendedBegin + offset];
                 targetByte = static_cast<char>(static_cast<std::uint8_t>(targetByte) ^ m_maskKey[maskIndex]);
             }
             m_framePayloadBytesSeen += chunkLength;
@@ -273,6 +276,7 @@ namespace AsynGyanis::Net
     {
         clearFrameScratch();
         m_payloadBuffer.clear();
+        m_controlPayloadBuffer.clear();
         m_isFragmentedMessageInProgress = false;
         m_isCurrentMessageCompressed = false;
         m_fragmentedMessageOpCodeValue = 0;
@@ -346,14 +350,9 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // 控制帧必须自成一体：插在分片消息中间会让「取帧顺序」与「消息到达顺序」不再是同一件事
-        if (isControlFrame && m_isFragmentedMessageInProgress)
-        {
-            recordFailure(false, "分片消息尚未结束时收到控制帧：请等这条消息的末帧（FIN=1）到齐后再发 Close/Ping/Pong");
-            return false;
-        }
-
-        // 控制帧不得分片（RFC 6455 §5.5），否则对端永远等不到它的末尾
+        // 控制帧不得分片（RFC 6455 §5.5），否则对端永远等不到它的末尾。
+        // 插在分片消息中间的控制帧是允许的（§5.4：control frames MAY be injected in the middle
+        // of a fragmented message），下面按独立帧处理，分片状态不受影响
         if (isControlFrame && !isFinal)
         {
             recordFailure(false, "控制帧不得分片（RFC 6455 §5.5）：Close/Ping/Pong 的 FIN 位必须为 1，请改用完整帧发送");
@@ -362,8 +361,9 @@ namespace AsynGyanis::Net
 
         if (isControlFrame)
         {
-            // 控制帧独立成帧，负载落点从零开始（缓冲区里可能还留着上一帧移走前的残留内容）
-            m_payloadBuffer.clear();
+            // 控制帧独立成帧，负载落点从零开始（缓冲区里可能还留着上一帧移走前的残留内容）。
+            // 落在 m_controlPayloadBuffer：分片消息的 m_payloadBuffer 此刻可能正存着半条消息
+            m_controlPayloadBuffer.clear();
         }
         else if (opCodeValue == 0x0)
         {
@@ -519,14 +519,21 @@ namespace AsynGyanis::Net
                                                : static_cast<WebSocketOpCode>(isMessageEnd ? m_fragmentedMessageOpCodeValue : m_opCodeValue);
         m_pendingFrame.isFinal = true;
         m_pendingFrame.isCompressed = !isControlFrame && m_isCurrentMessageCompressed;
-        m_pendingFrame.payload = std::move(m_payloadBuffer);
+        // 控制帧的负载在自己的缓冲里（数据消息的缓冲要留给还在进行中的分片）
+        std::string &payloadSource = isControlFrame ? m_controlPayloadBuffer : m_payloadBuffer;
+        m_pendingFrame.payload = std::move(payloadSource);
         // 移动之后源串的状态未指定：显式清空，让容量留着供下一帧复用
-        m_payloadBuffer.clear();
+        payloadSource.clear();
         m_hasPendingFrame = true;
 
-        // 消息到此收尾（未分片的数据帧与分片消息的末帧都走这里），下一帧要么开新消息，要么是控制帧
-        m_isFragmentedMessageInProgress = false;
-        m_isCurrentMessageCompressed = false;
+        // 控制帧不改变分片状态：RFC 6455 §5.4 允许控制帧插在分片消息中间，此时那条消息
+        // 仍在进行中，后面的继续帧必须照常接上（把状态清掉会让它变成「孤立继续帧」被判错）
+        if (!isControlFrame)
+        {
+            // 消息到此收尾（未分片的数据帧与分片消息的末帧都走这里），下一帧要么开新消息，要么是控制帧
+            m_isFragmentedMessageInProgress = false;
+            m_isCurrentMessageCompressed = false;
+        }
         clearFrameScratch();
         m_stage = Stage::FirstByte;
     }

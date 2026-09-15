@@ -542,7 +542,10 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, RejectsNonZeroReservedBits)
     {
-        for (const unsigned char firstByte: {0xc1U, 0xa1U, 0x91U})
+        // 用 array<unsigned char> 而不是 {0xc1U, ...} 这种 unsigned int 列表：
+        // 后者在 /W4 下会按「窄化转换」报 C4244
+        constexpr std::array<unsigned char, 3> kReservedBitVariants{0xc1U, 0xa1U, 0x91U};
+        for (const unsigned char firstByte: kReservedBitVariants)
         {
             WebSocketFrameDecoder decoder;
             std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
@@ -557,7 +560,9 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, RejectsUndefinedOpCode)
     {
-        for (const unsigned char opCodeValue: {3U, 7U, 0xbU, 0xfU})
+        // 同上：显式给出 unsigned char 形态的取值，避免窄化告警
+        constexpr std::array<unsigned char, 4> kReservedOpCodeValues{3U, 7U, 0xbU, 0xfU};
+        for (const unsigned char opCodeValue: kReservedOpCodeValues)
         {
             WebSocketFrameDecoder decoder;
             std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
@@ -618,14 +623,22 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 控制帧插在分片消息中间判错（本实现从严：消息既然在此重组，插帧会让取帧顺序与消息顺序脱钩）
+     * @brief 分片消息中间的控制帧照常交付，且不影响分片重组（RFC 6455 §5.4：控制帧可以插在分片消息中间）
      */
-    TEST(WebSocketFrame, RejectsControlFrameBetweenFragments)
+    TEST(WebSocketFrame, AcceptsControlFrameBetweenFragments)
     {
         WebSocketFrameDecoder decoder;
         EXPECT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Text, "Hel", false)), WebSocketDecodeStatus::NeedMore);
 
-        EXPECT_TRUE(containsText(feedAndExpectError(decoder, makeMaskedClientFrame(WebSocketOpCode::Ping, "hi")), "控制帧"));
+        // 中间插一条 Ping：它独立成帧交付，分片消息仍在进行中
+        ASSERT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Ping, "hi")), WebSocketDecodeStatus::Frame);
+        EXPECT_EQ(decoder.takeFrame().opCode, WebSocketOpCode::Ping);
+
+        // 末片照旧接上：重组出的仍是完整的 "Hello"
+        ASSERT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Continuation, "lo", true)), WebSocketDecodeStatus::Frame);
+        const WebSocketFrame reassembled = decoder.takeFrame();
+        EXPECT_EQ(reassembled.opCode, WebSocketOpCode::Text);
+        EXPECT_EQ(reassembled.payload, "Hello");
     }
 
     /**
