@@ -1,6 +1,9 @@
 #include "Core/Socket/ConnectionManager.h"
 #include "Core/Socket/Connection.h"
 
+#include "Base/Log/LogMacros.h"
+
+#include <chrono>
 #include <ranges>
 #include <vector>
 
@@ -86,10 +89,21 @@ namespace AsynGyanis::Core
     void ConnectionManager::waitAll()
     {
         std::shared_lock lock(m_mutex);
-        m_condition.wait(lock, [this]()
+
+        // 不在一条 wait 上无限期地干等：每两秒把「还剩几条」写进日志。
+        // 服务停不下来时（某条连接没走到 remove()，例如它的协程没跑到 finally）
+        // 至少能看到还剩多少、从而知道该去查哪条收尾路径，而不是面对一个没有任何线索的挂起
+        constexpr std::chrono::seconds kProgressReportInterval{2};
+        while (!m_connections.empty())
         {
-            return m_connections.empty();
-        });
+            if (m_condition.wait_for(lock, kProgressReportInterval, [this]() { return m_connections.empty(); }))
+            {
+                break;
+            }
+            LOG_WARN_FMT("ConnectionManager: 等待全部连接结束已超过 {} 秒，仍有 {} 条在册；"
+                         "若某条连接的收尾路径没有走到 remove()，这里会一直等下去",
+                         kProgressReportInterval.count(), m_connections.size());
+        }
     }
 
 }
