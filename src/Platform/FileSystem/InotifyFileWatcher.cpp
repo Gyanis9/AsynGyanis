@@ -3,6 +3,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <poll.h>
