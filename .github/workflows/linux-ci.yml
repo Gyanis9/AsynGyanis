@@ -135,7 +135,7 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
 
       - name: 并发相关用例集（TSan）
-        run: ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket"
+        run: ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor"
 
       - name: 失败时上传用例日志
         if: failure()
@@ -143,4 +143,130 @@ jobs:
         with:
           name: ctest-logs-tsan
           path: build/tsan/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
+  # 静态检查：仓库里一直有 .clang-tidy（bugprone-* 等一组精选检查），但没有任何流水线跑它——
+  # 等于一份没人执行的规范。这里补上。
+  #
+  # 当前以**报告形式**接入：存量的告警数量还没有清点过，直接把 --warnings-as-errors 打开会让
+  # 每次推送都红。CI 日志里能看到全部发现；把下面的 -warnings-as-errors 改成 '*'（或先清干净
+  # 存量再打开）它就成为门禁。clang-tidy 只扫本仓库源码（src/，不含 third_party/）。
+  clang-tidy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan、clang-tidy 与 run-clang-tidy
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy
+          echo "CLANG_TIDY_BIN=$(command -v clang-tidy)" >> "$GITHUB_ENV"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      # 生成 compile_commands.json（clang-tidy 需要它来取每个文件的真实编译参数）
+      - name: 配置（生成编译数据库）
+        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # -p build/debug：从编译数据库取参数；--header-filter 只看本仓库头文件；
+      # run-clang-tidy 会并行处理 src/ 下的全部翻译单元
+      - name: 运行 clang-tidy（报告形式，不阻塞）
+        run: |
+          run-clang-tidy -p build/debug -header-filter '.*[\\/]src[\\/].*' -quiet src/ 2>&1 | tee /tmp/clang-tidy.log
+          {
+            echo "## clang-tidy 摘要（报告形式，当前不阻塞）"
+            echo '```'
+            grep -cE "warning:|error:" /tmp/clang-tidy.log || echo 0
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传 clang-tidy 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report
+          path: /tmp/clang-tidy.log
+          if-no-files-found: ignore
+
+  # HTTP/3 互通验收：用 aioquic（独立实现）当对端，向 echo_server 的 h3 端点发一条 GET 与一条
+  # 扩展 CONNECT（RFC 9220）WebSocket 隧道。自写探针会与实现共享同一批误解，独立实现不会——
+  # 这一层协议此前只有手工 .bat 触发，回归时没有任何流水线会变红，这里把它接上。
+  # 用 Release 构建：验收量的是协议能否互通，插桩只会拖慢握手。
+  http3-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan 与 aioquic
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25" aioquic
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（Release；Conan 依赖由 conan_provider.cmake 自动安装）
+        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF
+
+      - name: 构建 echo_server
+        run: cmake --build build/release --target echo_server
+
+      - name: HTTP/3 验收（GET + RFC 9220 WebSocket 隧道）
+        run: |
+          # 证书用仓库内的测试夹具：探针以 CERT_NONE 连接，夹具的 CN 与 SAN 不参与校验
+          ./build/release/samples/echo_server --port 18443 --threads 1 \
+            --https --h3 --cert tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem \
+            > /tmp/echo-h3.log 2>&1 &
+          SERVER_PID=$!
+
+          # 先等 UDP 端口就绪：探针自带 10 秒握手超时，这里最多轮询 20 秒
+          for attempt in $(seq 1 20); do
+            if python3 scripts/h3_acceptance.py 127.0.0.1 18443 /bench 200 >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          # 正式验收：两条都必须通过，否则这一步红
+          python3 scripts/h3_acceptance.py 127.0.0.1 18443 /bench 200
+          python3 scripts/h3_acceptance.py 127.0.0.1 18443 /ws --websocket "hello-h3"
+
+          kill "$SERVER_PID"
+          wait "$SERVER_PID" 2>/dev/null || true
+
+      - name: 失败时上传服务端日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-h3-log
+          path: /tmp/echo-h3.log
           if-no-files-found: ignore
