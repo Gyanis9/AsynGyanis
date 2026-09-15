@@ -163,6 +163,12 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isClosed() const noexcept;
 
         /**
+         * @brief 从外部请求收口（例如会话层判定不可用时）
+         * @details 只置标志：后续 handleDatagram()/flush() 不再产出，服务端的清理循环随后摘除本连接
+         */
+        void requestClose() noexcept;
+
+        /**
          * @brief 在一条流上排队一段待发数据（应用层用）
          * @param streamId 目标流号
          * @param data 数据

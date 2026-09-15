@@ -228,6 +228,14 @@ namespace AsynGyanis::Net
     {
         if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
         {
+            if (session->isBroken() || !session->isUsable())
+            {
+                // 会话建不起来（控制流/QPACK 开不出）或已被判协议错误：这条连接上再也不会有
+                // 请求能完成，留着只会让对端干等到空闲超时。收口后交给清理循环摘除
+                LOG_WARN_FMT("QuicServer: HTTP/3 会话不可用（{}），连接按收口处理", session->isBroken() ? "已判协议错误" : "初始化失败");
+                connection.requestClose();
+                co_return;
+            }
             co_await session->pump();
             // 业务刚写下的响应此刻才排进连接的待发队列，必须再刷一次才会出网：
             // handleDatagram 里那次 flush 发生在业务之前（SETTINGS 那批因此出得去，

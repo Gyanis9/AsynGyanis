@@ -309,6 +309,9 @@ namespace AsynGyanis::Net
                 nghttp3_conn_read_stream2(m_connection, streamId, data.data(), data.size(), isEndStream ? 1 : 0, currentTimestamp());
         if (consumedLength < 0)
         {
+            // 带上流号与本次读入的字节数：没有这两个数，事后只能靠猜是哪条流、字节到齐没有
+            LOG_WARN_FMT("Http3Session: 流 {} 的 {} 字节读入被 nghttp3 拒绝（{}）", streamId, data.size(),
+                         nghttp3_strerror(static_cast<int>(consumedLength)));
             markBroken(static_cast<int>(consumedLength), "读入流数据");
             return;
         }
@@ -512,10 +515,15 @@ namespace AsynGyanis::Net
 
     void Http3Session::finishRequest(const std::int64_t streamId)
     {
-        // 隧道流（含待建的）不看 FIN：隧道建立之后对端发的是 WebSocket 帧，它的收尾由帧层的
-        // Close 与承载侧的流关闭决定，CONNECT 流的 END_STREAM 在这里不改变隧道状态
+        // 隧道流（含待建的）：对端用 END_STREAM 结束隧道（RFC 9220 §5 的关闭方式之一），
+        // 该流的发送方向就此关闭。已建成的隧道随之收口并让业务看到终点，而不是永远挂着
         if (m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId))
         {
+            if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
+            {
+                tunnel->second->isStreamClosed = true;
+                closeTunnel(streamId);
+            }
             return;
         }
 
@@ -532,14 +540,31 @@ namespace AsynGyanis::Net
     {
         m_outgoingBodies.erase(streamId);
         m_incomingRequests.erase(streamId);
-        m_streamingResponses.erase(streamId);
+        // 还没派发的请求记录一并摘掉：对端已经重置了这条流，再派发就是给一条死流跑业务
+        std::erase_if(m_readyRequests, [streamId](const auto &entry) { return entry.first == streamId; });
+        m_pendingTunnelStreams.erase(streamId);
+        m_pendingTunnelBytes.erase(streamId);
+
+        if (const auto streaming = m_streamingResponses.find(streamId); streaming != m_streamingResponses.end())
+        {
+            // 流没了：先叫醒等缓冲排空的生产者，再摘记录。等待器与生产者各持一份共享所有权，
+            // 摘表后他们读到的是 isStreamClosed，不会踩空；漏掉这一步生产者会永远等不到唤醒
+            const std::shared_ptr<StreamingResponse> state = streaming->second;
+            state->isStreamClosed = true;
+            if (const std::coroutine_handle<> waiter = std::exchange(state->spaceWaiter, {}); waiter != nullptr)
+            {
+                waiter.resume();
+            }
+            m_streamingResponses.erase(streaming);
+        }
 
         if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
         {
-            // 隧道：承载侧的流没了，对端对象随之关闭。记录先留着——业务协程可能还挂着，
-            // 跑完由 reapFinishedTunnels() 一起摘掉
+            // 隧道：承载侧的流没了，对端对象随之关闭，挂在 receive() 上的业务也要醒来收尾
+            //（记录先留着——业务协程可能还挂着，跑完由 reapFinishedTunnels() 一起摘掉）
             tunnel->second->isStreamClosed = true;
             tunnel->second->peer->markClosed();
+            tunnel->second->peer->wakeDeliveryWaiter();
             return;
         }
 
@@ -791,6 +816,12 @@ namespace AsynGyanis::Net
             }
 
             const WebSocketFeedStatus feedStatus = tunnel.peer->feedBytes(incomingBytes.data(), incomingBytes.size());
+            if (m_crediter != nullptr)
+            {
+                // 字节已交给对端对象（解码器已消费），到达即归还的接收额度在这里补上：
+                // 隧道分支在 addRequestBody 里攒字节时没有归还过，不补就会把 QUIC 流窗口用光
+                m_crediter(streamId, incomingBytes.size());
+            }
             if (feedStatus == WebSocketFeedStatus::DecodeError)
             {
                 LOG_WARN_FMT("Http3Session: 流 {} 上的 WebSocket 帧解不开（{}），按 {} 收口隧道", streamId, tunnel.peer->decodeErrorText(),
@@ -816,8 +847,8 @@ namespace AsynGyanis::Net
         response.setStatus(200);
 
         // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧由数据读取回调按需拉走
-        StreamingResponse &state = streamingResponseFor(streamId);
-        if (!submitStreamingResponseHead(streamId, state, response))
+        const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
+        if (!submitStreamingResponseHead(streamId, *state, response))
         {
             co_return;
         }
@@ -884,16 +915,25 @@ namespace AsynGyanis::Net
             co_return false; // 隧道已经收口，调用方应停止写入
         }
 
-        StreamingResponse &state = streamingResponseFor(streamId);
+        const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
+        // 承载侧的流已经关闭：写多少都出不去，直接按失败收手，别让调用方白等
+        if (state->isStreamClosed)
+        {
+            co_return false;
+        }
         if (!frameBytes.empty())
         {
-            state.chunks.emplace_back(frameBytes);
-            state.pendingByteCount += state.chunks.back().size();
+            state->chunks.emplace_back(frameBytes);
+            state->pendingByteCount += state->chunks.back().size();
         }
-        // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空
-        while (state.pendingByteCount > kStreamingResponseBufferByteCount)
+        // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空；流一关闭立即收手
+        while (!state->isStreamClosed && state->pendingByteCount > kStreamingResponseBufferByteCount)
         {
-            co_await ResponseSpaceAwaiter(&state);
+            co_await ResponseSpaceAwaiter(state);
+        }
+        if (state->isStreamClosed)
+        {
+            co_return false;
         }
 
         // 有新正文了：让库里再来取（读回调上次报的是 EOF|NO_END_STREAM，得唤一声它才会重来），
@@ -912,6 +952,9 @@ namespace AsynGyanis::Net
         }
 
         found->second->peer->markClosed();
+        // 挂在 receive() 上的业务要醒来收尾。隧道记录活到业务跑完（reapFinishedTunnels），
+        // 因此协程帧在此期间不会被销毁，这次唤醒不存在「恢复已销毁帧」的风险
+        found->second->peer->wakeDeliveryWaiter();
 
         // 出向到此为止：标记写完并唤一次，库会把余下的取走并在最后关掉发送侧
         if (const auto state = m_streamingResponses.find(streamId); state != m_streamingResponses.end())
@@ -966,14 +1009,14 @@ namespace AsynGyanis::Net
                                 });
     }
 
-    Http3Session::StreamingResponse &Http3Session::streamingResponseFor(const std::int64_t streamId)
+    std::shared_ptr<Http3Session::StreamingResponse> Http3Session::streamingResponseFor(const std::int64_t streamId)
     {
-        std::unique_ptr<StreamingResponse> &entry = m_streamingResponses[streamId];
+        std::shared_ptr<StreamingResponse> &entry = m_streamingResponses[streamId];
         if (entry == nullptr)
         {
-            entry = std::make_unique<StreamingResponse>();
+            entry = std::make_shared<StreamingResponse>();
         }
-        return *entry;
+        return entry;
     }
 
     bool Http3Session::submitStreamingResponseHead(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response)
@@ -1026,15 +1069,20 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    Core::Task<bool> Http3Session::sendStreamingChunk(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response,
-                                                     const std::string_view chunk)
+    Core::Task<bool> Http3Session::sendStreamingChunk(const std::int64_t streamId, std::shared_ptr<StreamingResponse> state,
+                                                     HttpResponse &response, const std::string_view chunk)
     {
-        if (!state.isHeadSent)
+        // 承载侧的流已经关闭：这一段写不出去，按失败收手
+        if (state->isStreamClosed)
+        {
+            co_return false;
+        }
+        if (!state->isHeadSent)
         {
             // 首个段落是 HttpResponse::writeChunk() 推上来的 HTTP/1.1 头部文本（状态行 + 头部块）：
             // 内容是 h1 线格式，不是 h3 要发的头块，这次调用只当「头部该上线了」的信号，
             // 真正发出的字段按响应对象现取；它自身那些字节不进正文（与 h2 侧同一口径）
-            if (!submitStreamingResponseHead(streamId, state, response))
+            if (!submitStreamingResponseHead(streamId, *state, response))
             {
                 co_return false;
             }
@@ -1046,13 +1094,18 @@ namespace AsynGyanis::Net
         const std::string_view payload = chunkFramePayload(chunk);
         if (!payload.empty())
         {
-            state.chunks.emplace_back(payload);
-            state.pendingByteCount += state.chunks.back().size();
+            state->chunks.emplace_back(payload);
+            state->pendingByteCount += state->chunks.back().size();
         }
-        // 有界缓冲：生产者跑得比网络快就挂起等排空，而不是把内存堆到把进程拖垮
-        while (state.pendingByteCount > kStreamingResponseBufferByteCount)
+        // 有界缓冲：生产者跑得比网络快就挂起等排空，而不是把内存堆到把进程拖垮。
+        // 流被关闭（对端重置/连接收口）时无需再等，直接收手
+        while (!state->isStreamClosed && state->pendingByteCount > kStreamingResponseBufferByteCount)
         {
-            co_await ResponseSpaceAwaiter(&state);
+            co_await ResponseSpaceAwaiter(state);
+        }
+        if (state->isStreamClosed)
+        {
+            co_return false;
         }
 
         // 有新数据了：唤一声让库里再来取（读回调上次报的是 WOULDBLOCK，库在等这一声），随后立刻发出去
@@ -1063,13 +1116,13 @@ namespace AsynGyanis::Net
 
     void Http3Session::finishStreamingResponse(const std::int64_t streamId, HttpResponse &response)
     {
-        StreamingResponse &state = streamingResponseFor(streamId);
-        if (!state.isHeadSent && !submitStreamingResponseHead(streamId, state, response))
+        const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
+        if (!state->isHeadSent && !submitStreamingResponseHead(streamId, *state, response))
         {
             return; // 提交失败时已经记过日志
         }
 
-        state.isFinished = true;
+        state->isFinished = true;
         // 收尾：唤一声让库把余下的取走、最后关掉发送侧（读回调此时会报 EOF）
         static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
         flushPendingStreamData();

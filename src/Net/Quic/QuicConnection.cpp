@@ -106,11 +106,18 @@ namespace AsynGyanis::Net
             return 0;
         }
 
-        /// 一条流结束：把该流尚未发完的排队数据丢掉（对端已经不要了）
-        int streamCloseCallback(ngtcp2_conn *, const std::uint32_t, const std::int64_t streamId, const std::uint64_t, const std::uint64_t,
-                                void *const userData, void *) noexcept
+        /// 一条流结束：丢掉该流尚未发完的排队数据，并把「对端可开双向流」的额度还一档——
+        /// ngtcp2 只在 stream_open 没触发过时自动补，这里必须自己还，否则对端开满
+        /// initial_max_streams_bidi 条流之后再也开不出新请求
+        int streamCloseCallback(ngtcp2_conn *const connection, const std::uint32_t, const std::int64_t streamId, const std::uint64_t,
+                                const std::uint64_t, void *const userData, void *) noexcept
         {
             fromNative(userData)->dropPendingStreamData(streamId);
+            // 只还「对端发起的双向流」（流号低两位为 0）：单向流与本地发起的流用的不是同一份额度
+            if ((streamId & 0x03) == 0)
+            {
+                ngtcp2_conn_extend_max_streams_bidi(connection, 1);
+            }
             return 0;
         }
 
@@ -551,23 +558,32 @@ namespace AsynGyanis::Net
             std::size_t  dataVectorCount = 0;
             std::int64_t streamId        = -1;
             std::uint32_t flags          = NGTCP2_WRITE_STREAM_FLAG_NONE;
+            bool         selectedFinOnlyEntry = false;
 
             for (auto &pendingEntry: m_pendingStreamData)
             {
                 PendingStreamData &pending = pendingEntry.second;
-                if (pending.offset >= pending.bytes.size())
+                const bool hasUnsentData = pending.offset < pending.bytes.size();
+                // 「零字节 + 收尾」也要选出来：nghttp3 在正文写完时只报收尾、不带数据，
+                // 漏掉它 END_STREAM 就永远发不出去（对端等不到流结束，只能等空闲超时）
+                const bool isFinOnly = !hasUnsentData && pending.isEndStream && pending.bytes.empty();
+                if (!hasUnsentData && !isFinOnly)
                 {
                     continue;
                 }
-                streamId        = pendingEntry.first;
-                dataVector.base = reinterpret_cast<std::uint8_t *>(pending.bytes.data() + pending.offset);
-                dataVector.len  = pending.bytes.size() - pending.offset;
-                dataVectors     = &dataVector;
-                dataVectorCount = 1;
+                streamId = pendingEntry.first;
+                if (hasUnsentData)
+                {
+                    dataVector.base = reinterpret_cast<std::uint8_t *>(pending.bytes.data() + pending.offset);
+                    dataVector.len  = pending.bytes.size() - pending.offset;
+                    dataVectors     = &dataVector;
+                    dataVectorCount = 1;
+                }
                 if (pending.isEndStream)
                 {
                     flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
                 }
+                selectedFinOnlyEntry = isFinOnly;
                 break;
             }
 
@@ -582,6 +598,12 @@ namespace AsynGyanis::Net
                 if (writtenLength == NGTCP2_ERR_STREAM_DATA_BLOCKED || writtenLength == NGTCP2_ERR_STREAM_SHUT_WR ||
                     writtenLength == NGTCP2_ERR_WRITE_MORE)
                 {
+                    if (writtenLength == NGTCP2_ERR_STREAM_SHUT_WR && selectedFinOnlyEntry)
+                    {
+                        // 写侧已关说明这条流的 FIN 早就发出去了；零字节条目没有可重传的数据，
+                        // 摘掉它，免得每一轮 flush 都在同一条流上空转
+                        m_pendingStreamData.erase(streamId);
+                    }
                     continue;
                 }
                 if (writtenLength == NGTCP2_ERR_DRAINING)
@@ -591,7 +613,8 @@ namespace AsynGyanis::Net
                     co_return;
                 }
                 m_isClosed = true;
-                LOG_WARN_FMT("QuicConnection: 写出失败（ngtcp2 错误 {}），连接收口", ngtcp2_strerror(writtenLength));
+                // ngtcp2_strerror 收 int：这里的负值是错误码，显式收窄（/W4 下隐式转换会被判为可能丢数据）
+                LOG_WARN_FMT("QuicConnection: 写出失败（ngtcp2 错误 {}），连接收口", ngtcp2_strerror(static_cast<int>(writtenLength)));
                 co_return;
             }
             if (writtenLength == 0)
@@ -657,6 +680,11 @@ namespace AsynGyanis::Net
             co_return;
         }
         co_await flush();
+    }
+
+    void QuicConnection::requestClose() noexcept
+    {
+        m_isClosed = true;
     }
 
     bool QuicConnection::isClosed() const noexcept

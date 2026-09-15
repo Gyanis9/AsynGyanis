@@ -84,6 +84,7 @@ namespace AsynGyanis::Net
             std::size_t             pendingByteCount{0};  ///< 还挂在手上（未交付完）的字节总数
             bool                    isHeadSent{false};    ///< 响应头是否已提交
             bool                    isFinished{false};    ///< 处理器已写完（正文到此为止）
+            bool                    isStreamClosed{false}; ///< 承载侧的流已关闭：生产者据此收手，不再等下一位唤醒
             std::coroutine_handle<> spaceWaiter{};        ///< 生产者等缓冲排空时挂在这里
         };
 
@@ -288,14 +289,19 @@ namespace AsynGyanis::Net
         public:
             /**
              * @brief 绑定要等的流
-             * @param streamingResponse 目标流的状态
+             * @param streamingResponse 目标流的状态（共享所有权：流被 dropRequest 摘掉后
+             *        生产者手里的这份仍然有效，醒来时能看到 isStreamClosed 而不是踩空）
              */
-            explicit ResponseSpaceAwaiter(StreamingResponse *streamingResponse) noexcept : m_streamingResponse(streamingResponse) {}
+            explicit ResponseSpaceAwaiter(std::shared_ptr<StreamingResponse> streamingResponse) noexcept :
+                m_streamingResponse(std::move(streamingResponse))
+            {
+            }
 
-            /// 已经退到上界以内（或状态没了）就不必挂起
+            /// 已经退到上界以内（或状态没了、流已关闭）就不必挂起
             [[nodiscard]] bool await_ready() const noexcept
             {
-                return m_streamingResponse == nullptr || m_streamingResponse->pendingByteCount <= kStreamingResponseBufferByteCount;
+                return m_streamingResponse == nullptr || m_streamingResponse->isStreamClosed ||
+                       m_streamingResponse->pendingByteCount <= kStreamingResponseBufferByteCount;
             }
 
             /// 记下等待者（本流的响应只有一个生产者）
@@ -307,7 +313,7 @@ namespace AsynGyanis::Net
             static void await_resume() noexcept {}
 
         private:
-            StreamingResponse *m_streamingResponse{nullptr}; ///< 目标流的状态（非拥有）
+            std::shared_ptr<StreamingResponse> m_streamingResponse; ///< 目标流的状态（与 map 共享所有权）
         };
 
         /**
@@ -321,9 +327,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 取（必要时创建）某条流的流式响应状态
          * @param streamId 流号
-         * @return StreamingResponse& 该流的状态（活在 m_streamingResponses 里）
+         * @return std::shared_ptr<StreamingResponse> 该流的状态（活在 m_streamingResponses 里；
+         *         生产者与等待器各持一份共享所有权，摘表不等于对象立刻销毁）
          */
-        StreamingResponse &streamingResponseFor(std::int64_t streamId);
+        std::shared_ptr<StreamingResponse> streamingResponseFor(std::int64_t streamId);
 
         /**
          * @brief 提交流式响应的响应头（第一次写块时才提交：此刻业务设的头部才齐）
@@ -342,8 +349,8 @@ namespace AsynGyanis::Net
          * @param chunk 本段字节
          * @return Core::Task<bool> 本段是否已收下（缓冲满时挂起等排空）
          */
-        [[nodiscard]] Core::Task<bool> sendStreamingChunk(std::int64_t streamId, StreamingResponse &state, HttpResponse &response,
-                                                         std::string_view chunk);
+        [[nodiscard]] Core::Task<bool> sendStreamingChunk(std::int64_t streamId, std::shared_ptr<StreamingResponse> state,
+                                                          HttpResponse &response, std::string_view chunk);
 
         /**
          * @brief 流式响应写完：标记收尾并让 nghttp3 把余下的取走
@@ -461,7 +468,7 @@ namespace AsynGyanis::Net
         /// 协程句柄，而记录本身会被移进移出（头收齐那一刻从 m_incomingRequests 转过来）
         std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;
         /// 流式写出响应的状态：键是流号。正文缓冲要让 nghttp3 借指针，因此同样用 unique_ptr 保地址稳定
-        std::map<std::int64_t, std::unique_ptr<StreamingResponse>> m_streamingResponses;
+        std::map<std::int64_t, std::shared_ptr<StreamingResponse>> m_streamingResponses;
         /// 等派发的隧道流：扩展 CONNECT（:method=CONNECT + :protocol=websocket）的那些
         std::set<std::int64_t> m_pendingTunnelStreams;
         /// 隧道建立之前先到达的帧字节：隧道是在 pump() 里建的，而帧可能在同一批字节里就跟到了
