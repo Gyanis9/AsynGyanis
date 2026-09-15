@@ -97,9 +97,11 @@ namespace AsynGyanis::Core
         {
             rearm();
 
-            // 注册失效（队列或循环在收尾）时以「未就绪」结束，驱动随之退出
+            // 注册失效（队列或循环在收尾）时以「未就绪」结束，驱动随之退出。
+            // 标志位一并复位：不清的话后续登记会以为驱动还在，而它已经退出，等待者永远等不到人叫醒
             if (!co_await m_watcher.waitReadable())
             {
+                m_isDriverStarted = false;
                 co_return;
             }
 
