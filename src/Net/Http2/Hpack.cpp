@@ -144,7 +144,7 @@ namespace AsynGyanis::Net
         std::size_t findHpackDynamicTableIndex(const HpackDynamicTable &dynamicTable, const std::string_view name,
                                               const std::string_view value) noexcept
         {
-            const std::vector<HpackHeaderField> &entries = dynamicTable.entries();
+            const std::deque<HpackHeaderField> &entries = dynamicTable.entries();
             for (std::size_t entryIndex = 0; entryIndex < entries.size(); ++entryIndex)
             {
                 if (entries[entryIndex].name == name && entries[entryIndex].value == value)
@@ -443,7 +443,7 @@ namespace AsynGyanis::Net
         }
 
         m_sizeByteCount += entrySizeByteCount;
-        m_entries.insert(m_entries.begin(), std::move(field));
+        m_entries.push_front(std::move(field));
     }
 
     bool HpackDynamicTable::tryGetEntry(const std::size_t entryIndex, HpackHeaderField &field) const
@@ -471,7 +471,7 @@ namespace AsynGyanis::Net
         return m_entries.size();
     }
 
-    const std::vector<HpackHeaderField> &HpackDynamicTable::entries() const noexcept
+    const std::deque<HpackHeaderField> &HpackDynamicTable::entries() const noexcept
     {
         return m_entries;
     }
@@ -543,7 +543,7 @@ namespace AsynGyanis::Net
         return m_errorMessage;
     }
 
-    const std::vector<HpackHeaderField> &HpackDecoder::dynamicTableEntries() const noexcept
+    const std::deque<HpackHeaderField> &HpackDecoder::dynamicTableEntries() const noexcept
     {
         return m_dynamicTable.entries();
     }
@@ -822,7 +822,7 @@ namespace AsynGyanis::Net
         m_hasPendingTableSizeUpdate = false;
     }
 
-    const std::vector<HpackHeaderField> &HpackEncoder::dynamicTableEntries() const noexcept
+    const std::deque<HpackHeaderField> &HpackEncoder::dynamicTableEntries() const noexcept
     {
         return m_dynamicTable.entries();
     }

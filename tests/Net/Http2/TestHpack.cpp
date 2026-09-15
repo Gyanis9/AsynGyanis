@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -127,7 +128,7 @@ namespace AsynGyanis::Net
          * @param expectedEntries 规范给出的条目顺序
          * @param expectedSizeByteCount 规范给出的表大小
          */
-        void expectDynamicTableEquals(const std::vector<HpackHeaderField> &entries, const std::size_t sizeByteCount,
+        void expectDynamicTableEquals(const std::deque<HpackHeaderField> &entries, const std::size_t sizeByteCount,
                                       const std::initializer_list<HeaderListEntry> &expectedEntries,
                                       const std::size_t expectedSizeByteCount)
         {
@@ -150,7 +151,7 @@ namespace AsynGyanis::Net
          * @param sizeByteCount 实际表大小
          * @param expectedFields 期望条目顺序
          */
-        void expectDynamicTableFieldsMatch(const std::vector<HpackHeaderField> &entries, const std::size_t sizeByteCount,
+        void expectDynamicTableFieldsMatch(const std::deque<HpackHeaderField> &entries, const std::size_t sizeByteCount,
                                           const std::vector<HpackHeaderField> &expectedFields)
         {
             std::size_t expectedSizeByteCount = 0;

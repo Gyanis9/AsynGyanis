@@ -12,6 +12,7 @@
 #include "Net/Http2/Http2Frame.h"
 
 #include <array>
+#include <deque>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -578,7 +579,7 @@ namespace AsynGyanis::Net
          * @brief 取全部条目，供调试、统计与测试观察表的演进
          * @return const std::vector<HpackHeaderField>& 条目列表，下标 0 是最新插入的一项
          */
-        [[nodiscard]] const std::vector<HpackHeaderField> &entries() const noexcept;
+        [[nodiscard]] const std::deque<HpackHeaderField> &entries() const noexcept;
 
         /**
          * @brief 清空条目（表大小归零，上限不变）
@@ -586,8 +587,10 @@ namespace AsynGyanis::Net
         void clear() noexcept;
 
     private:
-        /// 条目列表：下标 0 对应索引空间里的 62（最新插入），驱逐总是从末尾开始
-        std::vector<HpackHeaderField> m_entries;
+        /// 条目列表：下标 0 对应索引空间里的 62（最新插入），驱逐总是从末尾开始。
+        /// 用 std::deque 而不是 std::vector：插入走的是头插，vector 每次都要把已有条目整体后移
+        ///（一条连接的动态表通常几十项，而每个请求的头部块都可能带增量索引的字段）
+        std::deque<HpackHeaderField> m_entries;
 
         std::size_t m_sizeByteCount{0};              ///< 当前表大小，单位字节
         std::size_t m_maximumSizeByteCount{0};       ///< 当前表上限，单位字节
@@ -699,9 +702,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取动态表内容，供调试、统计与测试观察表的演进
-         * @return const std::vector<HpackHeaderField>& 条目列表，下标 0 对应索引空间里的 62
+         * @return const std::deque<HpackHeaderField>& 条目列表，下标 0 对应索引空间里的 62
          */
-        [[nodiscard]] const std::vector<HpackHeaderField> &dynamicTableEntries() const noexcept;
+        [[nodiscard]] const std::deque<HpackHeaderField> &dynamicTableEntries() const noexcept;
 
         /**
          * @brief 取动态表当前大小
@@ -839,9 +842,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取动态表内容，供调试、统计与测试观察表的演进
-         * @return const std::vector<HpackHeaderField>& 条目列表，下标 0 对应索引空间里的 62
+         * @return const std::deque<HpackHeaderField>& 条目列表，下标 0 对应索引空间里的 62
          */
-        [[nodiscard]] const std::vector<HpackHeaderField> &dynamicTableEntries() const noexcept;
+        [[nodiscard]] const std::deque<HpackHeaderField> &dynamicTableEntries() const noexcept;
 
         /**
          * @brief 取动态表当前大小
