@@ -874,6 +874,10 @@ namespace AsynGyanis::Base
 
     void ConfigManager::clear()
     {
+        // 清空同样是写者：不取锁的话，与并发的 setValue/加载谁后发布谁生效，
+        // 一次 clear 可能把刚写进快照的键整份抹掉
+        const std::lock_guard writeLock(m_writeMutex);
+
         const auto newData = std::make_shared<ConfigData>();
         m_data.store(newData, std::memory_order_release);
     }
@@ -1244,6 +1248,10 @@ namespace AsynGyanis::Base
                                          const std::chrono::steady_clock::time_point timestamp,
                                          const std::filesystem::path &               configDirectory)
     {
+        // 与 setValue() 共用同一把写锁：加载/热重载也是「整份快照替换」的写者，
+        // 不串行化的话，与并发的 setValue 谁后发布谁生效，先发布的那些键会被整份覆盖掉
+        const std::lock_guard writeLock(m_writeMutex);
+
         const auto newData       = std::make_shared<ConfigData>();
         newData->values          = std::move(values);
         newData->loadedFiles     = loadedFiles;

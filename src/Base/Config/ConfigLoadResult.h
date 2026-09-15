@@ -21,6 +21,9 @@ namespace AsynGyanis::Base
      *
      * @details 一次加载/重载的完整回执：成功标记、成功与失败的文件清单、
      *          错误明细以及完成时间戳，供调用方逐条上报或断言。
+     * @note 部分文件加载失败时，成功文件里的键照常生效，失败文件里的键会从快照中消失
+     *       （后续读回默认值）。需要「全成功才切换」语义的调用方应先检查 success 与
+     *       failedFiles，再决定如何使用本次结果。
      */
     struct ConfigLoadResult
     {
