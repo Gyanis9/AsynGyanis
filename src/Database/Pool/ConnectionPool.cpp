@@ -213,7 +213,10 @@ namespace AsynGyanis::Database
 
         // 仍无可用连接：加入等待列表。**这次判定必须与入表同锁**：唤醒方（归还路径）拿的
         // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
-        // notifyAsyncWaiter 判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒
+        // notifyAsyncWaiter 判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
+        // 截止时刻也必须在同一段锁里定下：后台线程是持锁读它的，放锁之后再写，
+        // 它会在那个窗口里看到默认值（时钟纪元）→ 把刚入表的等待者判成「已超时」并投递恢复，
+        // 而此刻协程还没挂起（轻则异步获取无故返回空连接，重则恢复尚未挂起的帧）
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
             m_result = m_pool->tryAcquireOrCreateInternal();
@@ -221,13 +224,11 @@ namespace AsynGyanis::Database
             {
                 return false;
             }
+            // 只在入表时定一次，不随每次尝试刷新——否则反复失败的重试会把超时无限顺延
+            m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_pool->m_config.acquireTimeoutMilliseconds);
             m_pool->m_asyncWaiters.push_back(this);
             m_inList = true;
         }
-
-        // 定下等待截止时刻：与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒。
-        // 只在入表时定一次，不随每次尝试刷新——否则反复失败的重试会把超时无限顺延
-        m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_pool->m_config.acquireTimeoutMilliseconds);
 
         return true; // 挂起，等待归还路径唤醒
     }
