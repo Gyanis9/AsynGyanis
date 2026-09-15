@@ -15,6 +15,7 @@ namespace AsynGyanis::Platform
 {
     namespace
     {
+#if ASYN_PLATFORM_WIN32
         /**
          * @brief Winsock 初始化引用计数状态
          *
@@ -38,6 +39,7 @@ namespace AsynGyanis::Platform
             static WinsockReferenceCount state;
             return state;
         }
+#endif
 
         /**
          * @brief 设置一个 int 尺寸的套接字选项
