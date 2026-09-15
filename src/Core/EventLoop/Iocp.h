@@ -213,16 +213,43 @@ namespace AsynGyanis::Core
         /// 重试上一次投递失败的方向（在每次 wait() 阻塞之前）
         void retryFailedArms();
 
+        /// 合并索引：按 key 在扁平表里查找，返回 m_results 下标；未命中返回 kEmptyResultSlot
+        [[nodiscard]] std::size_t findResultSlot(void *userData) const noexcept;
+
+        /// 合并索引：登记一条新结果（装载因子过半先扩容，排空路径会累积多批）
+        void noteResultSlot(void *userData, std::size_t resultIndex);
+
+        /// 合并索引：把一条结果散进当前表（不判扩容，供 noteResultSlot 与扩容重散使用）
+        void insertResultSlot(void *userData, std::size_t resultIndex);
+
+        /// 合并索引：表容量翻倍后把已有条目重新散一遍
+        void growResultMergeTable();
+
+        /// 合并索引：开始新一轮收集（只清本轮用过的槽位，槽位与容量沿用）
+        void resetResultMergeTable() noexcept;
+
         static constexpr int kMaximumEventCount = 1024; ///< 单次 wait() 最多取出的完成通知数
 
         static constexpr std::uint32_t kDrainTimeoutMilliseconds = 1000; ///< 排空完成通知的单次等待上限（毫秒）
 
+        /// 合并索引的初始槽位数：事件上限的两倍且是 2 的幂，装到一半就扩容，探测链因此不会长
+        static constexpr std::size_t kInitialResultMergeSlotCount = 2048;
+
+        /// 空槽标记（下标表里的哨兵值）。删除只发生在整表重置时，因此探测到空槽即可判定「没有」
+        static constexpr std::size_t kEmptyResultSlot = static_cast<std::size_t>(-1);
+
         Platform::EpollHandle          m_iocp{nullptr};     ///< 完成端口句柄
         std::vector<OVERLAPPED_ENTRY>  m_entries;           ///< 单次取出的完成通知
         std::vector<epoll_event>       m_results;           ///< 翻译结果（wait() 的返回值指向它）
-        /// 同一批完成通知的合并索引：data.ptr → m_results 下标。与 m_results 同生命周期
-        /// （每轮 wait() 一起清空），把两个方向的完成合并成一条 epoll_event 时不必线性扫
-        std::unordered_map<void *, std::size_t> m_resultIndexByUserData;
+        /// 同一批完成通知的合并索引：data.ptr → m_results 下标，与 m_results 同生命周期。
+        /// 用开放寻址的扁平表而不是 unordered_map：后者每插一个键分配一个节点，
+        /// 而合并是**每条完成通知**都要走的一步（把同一注册对象两个方向的完成并入一条 epoll_event）
+        std::vector<void *>            m_resultSlotUserData; ///< 槽位的键（内容仅在下标有效时有意义）
+        std::vector<std::size_t>       m_resultSlotIndex;    ///< 槽位的值：m_results 下标，kEmptyResultSlot 为空槽
+        /// 本轮真正用过的槽位：一轮通常只有几条完成通知，重置时按这张表逐个清即可——
+        /// 整表填充是 16 KB 级别的工作量，比清几条还贵
+        std::vector<std::size_t>       m_usedResultSlots;
+        std::size_t                    m_resultSlotMask{0};  ///< 槽位数 - 1（槽位数恒为 2 的幂）
         std::unordered_map<int, SocketState *> m_sockets;      ///< 活动注册表：描述符 → 状态
         std::vector<SocketState *>     m_graveyard;         ///< 已注销但仍有完成通知在队的状态
         std::vector<SocketState *>     m_pendingRearm;      ///< 需要重新武装的水平触发状态

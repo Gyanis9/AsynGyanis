@@ -20,6 +20,22 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief 算一个合并表键落在哪个槽位
+         * @param userData 注册对象的用户数据（OVERLAPPED_ENTRY::lpOverlapped）
+         * @param slotMask 槽位数 - 1
+         * @return std::size_t 起始槽位
+         * @details 不直接用 std::hash<void*>（多数实现就是恒等），而是先右移四位再乘 64 位黄金比例
+         *          常数：同一批完成通知里各注册对象的地址往往只差固定步长，不把高位打散就会在探测链上
+         *          排队（指针按 16 字节对齐，低四位本来就没有信息量，右移不会丢键的区分度）
+         */
+        std::size_t hashResultSlotKey(void *const userData, const std::size_t slotMask) noexcept
+        {
+            constexpr std::uint64_t kGoldenRatioOddConstant = 0x9E3779B97F4A7C15ULL;
+            const auto              keyBits = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(userData)) >> 4U;
+            return static_cast<std::size_t>(keyBits * kGoldenRatioOddConstant) & slotMask;
+        }
+
+        /**
          * @brief 取 AcceptEx 的函数指针
          * @param probeSocket 任意有效的套接字（Winsock 按 GUID 问一次即可，进程内缓存）
          * @return LPFN_ACCEPTEX 函数指针；本机不支持时为 nullptr
@@ -101,6 +117,10 @@ namespace AsynGyanis::Core
         }
         m_entries.resize(kMaximumEventCount);
         m_results.reserve(kMaximumEventCount);
+        m_resultSlotUserData.resize(kInitialResultMergeSlotCount);
+        m_resultSlotIndex.assign(kInitialResultMergeSlotCount, kEmptyResultSlot);
+        m_usedResultSlots.reserve(kInitialResultMergeSlotCount);
+        m_resultSlotMask = kInitialResultMergeSlotCount - 1;
     }
 
     Iocp::~Iocp()
@@ -112,6 +132,10 @@ namespace AsynGyanis::Core
         m_iocp(other.m_iocp),
         m_entries(std::move(other.m_entries)),
         m_results(std::move(other.m_results)),
+        m_resultSlotUserData(std::move(other.m_resultSlotUserData)),
+        m_resultSlotIndex(std::move(other.m_resultSlotIndex)),
+        m_usedResultSlots(std::move(other.m_usedResultSlots)),
+        m_resultSlotMask(other.m_resultSlotMask),
         m_sockets(std::move(other.m_sockets)),
         m_graveyard(std::move(other.m_graveyard)),
         m_pendingRearm(std::move(other.m_pendingRearm)),
@@ -128,6 +152,10 @@ namespace AsynGyanis::Core
             m_iocp         = other.m_iocp;
             m_entries      = std::move(other.m_entries);
             m_results      = std::move(other.m_results);
+            m_resultSlotUserData = std::move(other.m_resultSlotUserData);
+            m_resultSlotIndex    = std::move(other.m_resultSlotIndex);
+            m_usedResultSlots    = std::move(other.m_usedResultSlots);
+            m_resultSlotMask     = other.m_resultSlotMask;
             m_sockets         = std::move(other.m_sockets);
             m_graveyard       = std::move(other.m_graveyard);
             m_pendingRearm    = std::move(other.m_pendingRearm);
@@ -543,7 +571,7 @@ namespace AsynGyanis::Core
         }
 
         m_results.clear();
-        m_resultIndexByUserData.clear();
+        resetResultMergeTable();
         for (DWORD index = 0; index < entryCount; ++index)
         {
             translateCompletion(m_entries[index]);
@@ -619,15 +647,85 @@ namespace AsynGyanis::Core
         // 这正是 epoll 给事件的方式（一个 epoll_event 带多个事件位）。分成两条时，上层处理第一条
         // 就可能把该注册对象销毁（读侧收到 EOF 就关连接是常态），第二条随后写到已释放内存上——
         // ASan 实测：IoWatcher::handleEvents 里往 m_armedEvents 写入时 heap-use-after-free。
-        // 合并走「用户数据 → 结果下标」的索引表：事件上限 1024 时线性查重最坏是 O(n²)，
+        // 合并走「用户数据 → 结果下标」的扁平索引表：事件上限 1024 时线性查重最坏是 O(n²)，
         // 这是每轮 wait() 的热路径
-        if (const auto existing = m_resultIndexByUserData.find(event.data.ptr); existing != m_resultIndexByUserData.end())
+        const std::size_t existingResultIndex = findResultSlot(event.data.ptr);
+        if (existingResultIndex != kEmptyResultSlot)
         {
-            m_results[existing->second].events |= event.events;
+            m_results[existingResultIndex].events |= event.events;
             return;
         }
-        m_resultIndexByUserData.emplace(event.data.ptr, m_results.size());
+        noteResultSlot(event.data.ptr, m_results.size());
         m_results.push_back(event);
+    }
+
+    std::size_t Iocp::findResultSlot(void *const userData) const noexcept
+    {
+        std::size_t slot = hashResultSlotKey(userData, m_resultSlotMask);
+        for (;;)
+        {
+            const std::size_t resultIndex = m_resultSlotIndex[slot];
+            if (resultIndex == kEmptyResultSlot)
+            {
+                // 空槽即「查不到」：删除只发生在整表重置时，探测链上不会有被删出来的空槽
+                return kEmptyResultSlot;
+            }
+            if (m_resultSlotUserData[slot] == userData)
+            {
+                return resultIndex;
+            }
+            slot = (slot + 1) & m_resultSlotMask;
+        }
+    }
+
+    void Iocp::noteResultSlot(void *const userData, const std::size_t resultIndex)
+    {
+        // 装载因子过半就翻倍：wait() 每批最多 1024 条，而排空路径（drainCompletions）会在一次
+        // 调用里累积多批，表必须跟着长，否则探测会绕不出去
+        if ((m_results.size() + 1) * 2 > m_resultSlotIndex.size())
+        {
+            growResultMergeTable();
+        }
+        insertResultSlot(userData, resultIndex);
+    }
+
+    void Iocp::insertResultSlot(void *const userData, const std::size_t resultIndex)
+    {
+        std::size_t slot = hashResultSlotKey(userData, m_resultSlotMask);
+        while (m_resultSlotIndex[slot] != kEmptyResultSlot)
+        {
+            slot = (slot + 1) & m_resultSlotMask;
+        }
+        m_resultSlotUserData[slot] = userData;
+        m_resultSlotIndex[slot]    = resultIndex;
+        m_usedResultSlots.push_back(slot);
+    }
+
+    void Iocp::growResultMergeTable()
+    {
+        const std::size_t newSlotCount = m_resultSlotIndex.size() * 2;
+        m_resultSlotUserData.assign(newSlotCount, nullptr);
+        m_resultSlotIndex.assign(newSlotCount, kEmptyResultSlot);
+        m_usedResultSlots.clear();
+        m_usedResultSlots.reserve(newSlotCount);
+        m_resultSlotMask = newSlotCount - 1;
+
+        // 已收集的结果重新散一遍：扩容前后同一个键的位置会变，不重散就查不到了
+        for (std::size_t resultIndex = 0; resultIndex < m_results.size(); ++resultIndex)
+        {
+            insertResultSlot(m_results[resultIndex].data.ptr, resultIndex);
+        }
+    }
+
+    void Iocp::resetResultMergeTable() noexcept
+    {
+        // 只清本轮用过的槽位：空槽的判据是下标表里的哨兵值，键表留着上一轮的旧值不影响判定，
+        // 而整表填充是 16 KB 级别的工作量，比清掉那几条完成通知还贵
+        for (const std::size_t slot: m_usedResultSlots)
+        {
+            m_resultSlotIndex[slot] = kEmptyResultSlot;
+        }
+        m_usedResultSlots.clear();
     }
 
     void Iocp::cancelProbes(SocketState &state) noexcept
@@ -650,7 +748,7 @@ namespace AsynGyanis::Core
         // 排空阶段同样维护合并索引：translateCompletion 会往 m_results 里写，
         // 索引表不跟着清就与结果集对不上（析构路径只关心通知被取走，内容不再使用）
         m_results.clear();
-        m_resultIndexByUserData.clear();
+        resetResultMergeTable();
 
         for (;;)
         {
