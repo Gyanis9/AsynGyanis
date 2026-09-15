@@ -55,14 +55,13 @@ echo Starting %SERVER_PATH% --port %SERVER_PORT% --threads %SERVER_THREADS% %RAT
 echo Server log: %SERVER_LOG%
 start "AsynGyanis soak server" /MIN cmd /c ""%SERVER_PATH%" --port %SERVER_PORT% --threads %SERVER_THREADS% %RATE_LIMIT_ARGS% > "%SERVER_LOG%" 2>&1"
 
-rem Wait for the server process: up to 30 seconds, one try per second
+rem Wait for the server process: up to 30 seconds, one try per second. Plain tasklist
+rem is not enough: it lists every echo_server.exe, so a leftover instance (or a second
+rem soak on another port) would hand us a pid that is not ours - soak.py would then
+rem measure the wrong process, and the taskkill at the end would shoot someone else's
+rem server. Match on the command line instead.
 set SERVER_PID=
-for /l %%i in (1,1,30) do (
-    if not defined SERVER_PID (
-        for /f "tokens=2 delims=," %%p in ('tasklist /FI "IMAGENAME eq echo_server.exe" /FO CSV /NH 2^>nul') do set SERVER_PID=%%~p
-        if not defined SERVER_PID timeout /t 1 /nobreak >nul
-    )
-)
+for /l %%i in (1,1,30) do call :FindServerPid
 if not defined SERVER_PID (
     echo Server did not start within 30 seconds, giving up. See %SERVER_LOG%
     exit /b 1
@@ -86,3 +85,15 @@ taskkill /F /PID %SERVER_PID% >nul 2>&1
 
 echo Soak finished, exit code %SOAK_EXIT_CODE% (0 means zero protocol and payload failures)
 exit /b %SOAK_EXIT_CODE%
+
+rem Helper for the wait loop above: set SERVER_PID to the pid of the echo_server.exe
+rem that was started with our port. Stay ASCII-only and keep parentheses out of the
+rem PowerShell command: cmd counts bare parens when parsing the for /f set. Keep the
+rem test down to one -match as well: PowerShell gives -and and -or the same precedence
+rem and evaluates them left to right, so "A -and B -or A -and C" is not "A -and (B -or C)".
+rem The word boundary accepts both "--port 8080 " and a port at the end of the line.
+:FindServerPid
+if defined SERVER_PID exit /b 0
+for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'echo_server.exe' -and $_.CommandLine -match '--port\s+%SERVER_PORT%\b' } | Select-Object -First 1 -ExpandProperty ProcessId" 2^>nul`) do set SERVER_PID=%%p
+if not defined SERVER_PID ping -n 2 127.0.0.1 >nul
+exit /b 0
