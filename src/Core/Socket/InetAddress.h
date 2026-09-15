@@ -66,6 +66,7 @@ namespace AsynGyanis::Core
          * @brief 从通用 sockaddr_storage 及长度构造
          * @param address 套接字地址存储结构
          * @param length  地址结构实际长度（必须与 address 指定的协议族匹配）
+         * @throws Base::InvalidArgumentException length 为 0 或超过 sockaddr_storage 的容量
          */
         InetAddress(const sockaddr_storage &address, socklen_t length);
 

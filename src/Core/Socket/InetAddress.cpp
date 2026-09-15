@@ -36,6 +36,14 @@ namespace AsynGyanis::Core
     InetAddress::InetAddress(const sockaddr_storage &address, const socklen_t length) :
         m_addressLength(length)
     {
+        // 长度由调用方给出，直接按它 memcpy 会越界写（成员只有 sizeof(sockaddr_storage) 字节）：
+        // 超出容量的取值当场拒绝，绝不静默截断或照抄
+        if (length == 0 || static_cast<std::size_t>(length) > sizeof(sockaddr_storage))
+        {
+            throw Base::InvalidArgumentException(
+                    "InetAddress: 地址长度 " + std::to_string(length) + " 非法（必须在 1.." +
+                    std::to_string(sizeof(sockaddr_storage)) + " 之间）：请传入内核回填的 socklen_t 长度");
+        }
         std::memcpy(&m_address, &address, length);
     }
 
