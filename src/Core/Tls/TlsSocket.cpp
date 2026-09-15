@@ -1,9 +1,11 @@
 #include "Core/Tls/TlsSocket.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Socket/InetAddress.h"
 
+#include <limits>
 #include <openssl/err.h>
 
 namespace AsynGyanis::Core
@@ -86,6 +88,13 @@ namespace AsynGyanis::Core
             co_return 0;
         }
 
+        // 长度上限要先判：OpenSSL 的长度形参是 int，超限强转会得到可疑的负数，
+        // 与同步套接字侧的显式拒绝保持同一口径
+        if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
+        {
+            throw Base::InvalidArgumentException("TLS 读取的长度超出单次调用上限（底层接口按 int 收长度）：请分批读取");
+        }
+
         while (true)
         {
             const int ret = SSL_read(m_ssl.get(), buffer, static_cast<int>(length));
@@ -99,7 +108,7 @@ namespace AsynGyanis::Core
             {
                 if (!co_await m_socket.waitReadable())
                 {
-                    throw CoreException("TLS 握手失败：等待可读期间套接字被关闭");
+                    throw CoreException("TLS 读取失败：等待可读期间套接字被关闭");
                 }
                 continue;
             }
@@ -130,6 +139,12 @@ namespace AsynGyanis::Core
         if (length == 0)
         {
             co_return 0;
+        }
+
+        // 长度上限同 asyncReceive()：底层按 int 收长度，超限强转会得到可疑的负数
+        if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
+        {
+            throw Base::InvalidArgumentException("TLS 写入的长度超出单次调用上限（底层接口按 int 收长度）：请分批写入");
         }
 
         while (true)
