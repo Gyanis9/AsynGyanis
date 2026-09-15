@@ -25,8 +25,10 @@ namespace AsynGyanis::Core
 
 #if !ASYN_PLATFORM_WIN32
         /// 当前正在运行的编排器：信号处理函数只拿得到这一个入口，因此用文件级指针登记
-        /// （同一进程同时只该有一个 master，多份编排器注册后装的就只剩最后一个）
-        WorkerSupervisor *volatile g_runningSupervisor = nullptr;
+        /// （同一进程同时只该有一个 master，多份编排器注册后装的就只剩最后一个）。
+        /// 用原子量而不是 volatile：volatile 只保证「不被优化掉」，信号线程与主线程之间
+        /// 仍缺同步语义；is_always_lock_free 由上面的 static_assert 钉住
+        std::atomic<WorkerSupervisor *> g_runningSupervisor{nullptr};
 
         /**
          * @brief 停止信号的处理函数：只置原子标记，退出流程留给 run() 的循环
@@ -35,9 +37,9 @@ namespace AsynGyanis::Core
         void handleStopSignal(int signalNumber) noexcept
         {
             static_cast<void>(signalNumber);
-            if (g_runningSupervisor != nullptr)
+            if (WorkerSupervisor *const supervisor = g_runningSupervisor.load(std::memory_order_acquire); supervisor != nullptr)
             {
-                g_runningSupervisor->requestStop();
+                supervisor->requestStop();
             }
         }
 #endif
@@ -60,11 +62,13 @@ namespace AsynGyanis::Core
             throw CoreException("多进程编排的轮询间隔与收尾期限都必须大于 0，否则循环会空转或收尾没有期限");
         }
 #if ASYN_PLATFORM_WIN32
+        // Windows 上没有 SO_REUSEPORT 的等价物，端口共享无从谈起：这里当场拒绝，
+        // 而不是让调用方拿到一个「启动了多个进程但只有一个能绑定端口」的假成功
         throw CoreException("Windows 不支持多进程 worker 模型：端口共享依赖 SO_REUSEPORT，而 Windows 没有等价物。"
                             "请把 workers 设为 1（单进程 + 多工作循环），或改在 Linux 上部署");
-#endif
-
+#else
         m_workers.resize(m_configuration.workerCount);
+#endif
     }
 
     WorkerSupervisor::~WorkerSupervisor()
@@ -84,7 +88,7 @@ namespace AsynGyanis::Core
     {
 #if !ASYN_PLATFORM_WIN32
         // 信号处理只置标记：真正的收尾在下面的循环里做，那里才能安全地分配、日志、等进程
-        g_runningSupervisor = this;
+        g_runningSupervisor.store(this, std::memory_order_release);
         void (*previousTerminateHandler)(int) = std::signal(SIGTERM, handleStopSignal);
         void (*previousInterruptHandler)(int) = std::signal(SIGINT, handleStopSignal);
 #endif
@@ -145,7 +149,7 @@ namespace AsynGyanis::Core
 #if !ASYN_PLATFORM_WIN32
         std::signal(SIGTERM, previousTerminateHandler);
         std::signal(SIGINT, previousInterruptHandler);
-        g_runningSupervisor = nullptr;
+        g_runningSupervisor.store(nullptr, std::memory_order_release);
 #endif
         LOG_INFO_FMT("WorkerSupervisor: 编排结束");
     }
