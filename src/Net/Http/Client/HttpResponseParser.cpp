@@ -1,5 +1,9 @@
 #include "Net/Http/Client/HttpResponseParser.h"
+
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
+
 namespace AsynGyanis::Net
 {
     namespace
@@ -14,11 +18,30 @@ namespace AsynGyanis::Net
             return true;
         }
         /// 取一行并拼入 lineBuffer（应对跨馈送调用的行拆分）
-        bool feedLine(std::string_view &data, std::string &buffer, std::string_view &line)
+        /// @note 慢路径交出的行指向 lineBuffer，调用方必须在下一次 feedLine 之前用完它；
+        ///       清缓冲推迟到下一次调用（见 isLineHandedOut）——交出去就清会让 MSVC 的
+        ///       std::string 在首字节写 NUL，调用方读到的是坏内容
+        bool feedLine(std::string_view &data, std::string &buffer, std::string_view &line, bool &isLineHandedOut)
         {
+            // 上一次慢路径交出去的行按契约已经用完，此刻才清暂存
+            if (isLineHandedOut)
+            {
+                buffer.clear();
+                isLineHandedOut = false;
+            }
             if (buffer.empty())
             {
                 if (takeLine(data, line)) return true;
+            }
+            // 跨段 CRLF：缓冲末字节是 '\r'、本段首字节是 '\n' 时，终止符正好被切开，
+            // 下面按 "\r\n" 查找是找不到的——不单独识别，这一行会一直拼下去（两行并成一行）
+            if (!buffer.empty() && buffer.back() == '\r' && !data.empty() && data.front() == '\n')
+            {
+                buffer.pop_back();
+                line            = buffer;
+                isLineHandedOut = true;
+                data.remove_prefix(1);
+                return true;
             }
             // 拼入已有缓冲
             const auto pos = data.find("\r\n");
@@ -29,9 +52,9 @@ namespace AsynGyanis::Net
                 return false;
             }
             buffer.append(data.data(), pos);
-            line = buffer;
+            line            = buffer;
+            isLineHandedOut = true;
             data.remove_prefix(pos + 2);
-            buffer.clear();
             return true;
         }
         /// 小写化一个 string_view（只用于头部名比较）
@@ -42,7 +65,108 @@ namespace AsynGyanis::Net
             for (auto c: s) r.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
             return r;
         }
-    }
+        /// 忽略大小写比较两个 ASCII 串
+        bool equalsIgnoringCase(const std::string_view left, const std::string_view right) noexcept
+        {
+            if (left.size() != right.size()) return false;
+            for (std::size_t index = 0; index < left.size(); ++index)
+            {
+                if (std::tolower(static_cast<unsigned char>(left[index])) != std::tolower(static_cast<unsigned char>(right[index])))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        /// 去掉字段值两端的空白（RFC 9112 §5：字段值允许带 OWS）
+        std::string_view trimFieldValue(std::string_view value) noexcept
+        {
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1);
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
+            return value;
+        }
+        /// 按逗号切分的头部取值里是否含指定 token（忽略大小写；只按整个 token 匹配，不做子串命中）
+        bool headerValueListContainsToken(const std::string_view value, const std::string_view token) noexcept
+        {
+            std::size_t start = 0;
+            while (start <= value.size())
+            {
+                const auto             comma = value.find(',', start);
+                const std::string_view entry =
+                        value.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+                if (equalsIgnoringCase(trimFieldValue(entry), token))
+                {
+                    return true;
+                }
+                if (comma == std::string_view::npos)
+                {
+                    break;
+                }
+                start = comma + 1;
+            }
+            return false;
+        }
+        /// 取 Transfer-Encoding 的最后一个编码（RFC 9112 §6.1：chunked 必须是最后一个编码）
+        std::string_view lastTransferEncoding(const std::string_view value) noexcept
+        {
+            std::string_view last;
+            std::size_t      start = 0;
+            while (start <= value.size())
+            {
+                const auto             comma = value.find(',', start);
+                const std::string_view entry =
+                        value.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+                const std::string_view token = trimFieldValue(entry);
+                if (!token.empty())
+                {
+                    last = token;
+                }
+                if (comma == std::string_view::npos)
+                {
+                    break;
+                }
+                start = comma + 1;
+            }
+            return last;
+        }
+        /// 严格解析十进制长度：只接受纯数字（不取整、不忽略后缀），超长按非法拒绝
+        bool parseDecimalLength(const std::string_view text, std::size_t &length) noexcept
+        {
+            // 19 位十进制已覆盖现实里可能的长度，再多就是损坏或恶意的取值
+            if (text.empty() || text.size() > 19) return false;
+            std::size_t value = 0;
+            for (const char character: text)
+            {
+                if (character < '0' || character > '9') return false;
+                value = value * 10 + static_cast<std::size_t>(character - '0');
+            }
+            length = value;
+            return true;
+        }
+        /// 严格解析十六进制块大小：只接受 1 个以上的十六进制数字（RFC 9112 §7.1）
+        bool parseChunkSize(const std::string_view text, std::size_t &chunkSize) noexcept
+        {
+            if (text.empty() || text.size() > 16) return false;
+            std::size_t value = 0;
+            for (const char character: text)
+            {
+                std::size_t digit = 0;
+                if (character >= '0' && character <= '9') digit = static_cast<std::size_t>(character - '0');
+                else if (character >= 'a' && character <= 'f') digit = static_cast<std::size_t>(character - 'a') + 10;
+                else if (character >= 'A' && character <= 'F') digit = static_cast<std::size_t>(character - 'A') + 10;
+                else return false;
+                value = value * 16 + digit;
+            }
+            chunkSize = value;
+            return true;
+        }
+        /// 1xx / 204 / 304 一律没有正文（RFC 9112 §6.1）
+        bool statusHasNoBody(const int statusCode) noexcept
+        {
+            return (statusCode >= 100 && statusCode < 200) || statusCode == 204 || statusCode == 304;
+        }
+    } // namespace
+
     std::size_t HttpResponseParser::feed(const std::string_view raw)
     {
         auto data = raw;
@@ -54,13 +178,15 @@ namespace AsynGyanis::Net
             case Stage::StatusLine:
             {
                 std::string_view line;
-                if (!feedLine(data, m_lineBuffer, line)) return startSize - data.size();
+                if (!feedLine(data, m_lineBuffer, line, m_isLineHandedOut)) return startSize - data.size();
                 // "HTTP/1.1 200 OK" 或 "HTTP/1.0 200 OK"
                 if (line.size() < 12 || !line.starts_with("HTTP/1."))
                 {
                     m_stage = Stage::Failed;
                     return startSize - data.size();
                 }
+                // HTTP/1.0 的响应没有长度自定界语义：无定界头时正文要读到连接关闭
+                m_isHttp10 = line[7] == '0';
                 const auto sp1 = line.find(' ', 8);
                 if (sp1 == std::string_view::npos) { m_stage = Stage::Failed; return startSize - data.size(); }
                 auto codeStr = line.substr(sp1 + 1);
@@ -74,30 +200,79 @@ namespace AsynGyanis::Net
             case Stage::Headers:
             {
                 std::string_view line;
-                if (!feedLine(data, m_lineBuffer, line)) return startSize - data.size();
+                if (!feedLine(data, m_lineBuffer, line, m_isLineHandedOut)) return startSize - data.size();
                 if (line.empty())
                 {
-                    // 头部收完，准备进入正文阶段
-                    m_isChunked = false;
-                    m_isCloseDelimited = false;
-                    m_expectedBodyBytes = 0;
-                    for (auto &[k, v]: m_result.headers)
+                    // 头部收完：先按 RFC 9112 §6 把定界头核一遍，再决定正文形态
+                    bool        hasContentLength    = false;
+                    bool        hasTransferEncoding = false;
+                    std::size_t declaredLength      = 0;
+                    bool        isCloseConnection   = false;
+                    for (auto &[name, value]: m_result.headers)
                     {
-                        auto lk = toLower(k);
-                        if (lk == "content-length")
-                            m_expectedBodyBytes = static_cast<std::size_t>(std::atoll(v.c_str()));
-                        else if (lk == "transfer-encoding" && v.find("chunked") != std::string::npos)
-                            m_isChunked = true;
-                        else if (lk == "connection" && v.find("close") != std::string::npos)
-                            m_isCloseDelimited = true;
+                        const auto lowerName = toLower(name);
+                        if (lowerName == "content-length")
+                        {
+                            // 重复出现只允许取值完全一致；取值必须是纯数字——长度有歧义就不猜
+                            std::size_t thisLength = 0;
+                            if (!parseDecimalLength(trimFieldValue(value), thisLength) ||
+                                (hasContentLength && thisLength != declaredLength))
+                            {
+                                m_stage = Stage::Failed;
+                                return startSize - data.size();
+                            }
+                            declaredLength   = thisLength;
+                            hasContentLength = true;
+                        } else if (lowerName == "transfer-encoding")
+                        {
+                            hasTransferEncoding = true;
+                            // chunked 只认最后一个编码（前面可以有 gzip 等外层编码）
+                            if (equalsIgnoringCase(lastTransferEncoding(value), "chunked"))
+                            {
+                                m_isChunked = true;
+                            }
+                        } else if (lowerName == "connection" && headerValueListContainsToken(value, "close"))
+                        {
+                            isCloseConnection = true;
+                        }
                     }
-                    if (m_expectedBodyBytes > 0)
-                        m_stage = Stage::Body;
-                    else if (m_isChunked)
-                    { m_stage = Stage::Body; m_inChunk = false; }  // chunk 解析在 Body 分支里做
-                    else
+
+                    if (hasTransferEncoding && hasContentLength)
                     {
-                        // 无正文 → 完成
+                        // 两者并存一律拒绝：挑一个信正是响应走私的入口
+                        m_stage = Stage::Failed;
+                        return startSize - data.size();
+                    }
+                    if (statusHasNoBody(m_result.statusCode))
+                    {
+                        // 无正文的状态码：即便带了 Content-Length 也不能据此等待正文
+                        m_stage = Stage::Complete;
+                        break;
+                    }
+                    if (hasContentLength)
+                    {
+                        m_expectedBodyBytes = declaredLength;
+                        m_stage = declaredLength == 0 ? Stage::Complete : Stage::Body;
+                    } else if (hasTransferEncoding)
+                    {
+                        if (m_isChunked)
+                        {
+                            m_chunkPhase = ChunkPhase::SizeLine;
+                            m_stage      = Stage::Body;
+                        } else
+                        {
+                            // 末尾编码不是 chunked：长度无法自定界，只能读到连接关闭（RFC 9112 §6.3）
+                            m_isCloseDelimited = true;
+                            m_stage            = Stage::Body;
+                        }
+                    } else if (isCloseConnection || m_isHttp10)
+                    {
+                        // HTTP/1.0 与 Connection: close 的响应都以连接关闭为正文终点
+                        m_isCloseDelimited = true;
+                        m_stage            = Stage::Body;
+                    } else
+                    {
+                        // HTTP/1.1 且无定界头：本响应没有正文
                         m_stage = Stage::Complete;
                     }
                     break;
@@ -123,47 +298,65 @@ namespace AsynGyanis::Net
             {
                 if (m_isChunked)
                 {
-                    if (!m_inChunk)
+                    // 分段读取（RFC 9112 §7.1）：块大小行 → 块数据 → CRLF，0 块之后是 trailer 段，
+                    // 以空行收尾。每一步都可能跨多次 feed()，阶段因此记在成员里
+                    while (!data.empty() && m_stage == Stage::Body)
                     {
-                        // 读块大小行
+                        if (m_chunkPhase == ChunkPhase::Data)
+                        {
+                            const auto toCopy = std::min(m_chunkSize, data.size());
+                            m_result.body.append(data.data(), toCopy);
+                            data.remove_prefix(toCopy);
+                            m_chunkSize -= toCopy;
+                            if (m_chunkSize == 0)
+                            {
+                                // 数据段收满：随后必须是 CRLF
+                                m_chunkPhase = ChunkPhase::DataTerminator;
+                            }
+                            continue;
+                        }
+
                         std::string_view line;
-                        if (!feedLine(data, m_lineBuffer, line))
-                            return startSize - data.size();
-                        m_chunkSize = static_cast<std::size_t>(std::strtoll(std::string(line).c_str(), nullptr, 16));
-                        if (m_chunkSize == 0)
+                        if (!feedLine(data, m_lineBuffer, line, m_isLineHandedOut)) break;
+                        if (m_chunkPhase == ChunkPhase::SizeLine)
                         {
-                            m_awaitingTrailer = true;
-                            m_stage = Stage::Body; // 继续读 trailer 空行
-                        } else
-                        {
-                            m_inChunk = true;
+                            // 块大小可带扩展（;ext=value）：只取分号前的十六进制数字
+                            const auto             semicolonPosition = line.find(';');
+                            const std::string_view sizeText =
+                                    semicolonPosition == std::string_view::npos ? line : line.substr(0, semicolonPosition);
+                            std::size_t chunkSize = 0;
+                            if (!parseChunkSize(sizeText, chunkSize))
+                            {
+                                m_stage = Stage::Failed;
+                                break;
+                            }
+                            m_chunkSize = chunkSize;
+                            // 0 块 = 正文到此为止，后面只剩 trailer 段
+                            m_chunkPhase = chunkSize == 0 ? ChunkPhase::Trailer : ChunkPhase::Data;
+                            continue;
                         }
-                        break;
-                    }
-                    // 读块数据
-                    const auto available = data.size();
-                    const auto toCopy = std::min(m_chunkSize, available);
-                    m_result.body.append(data.data(), toCopy);
-                    data.remove_prefix(toCopy);
-                    m_chunkSize -= toCopy;
-                    if (m_chunkSize == 0)
-                    {
-                        m_inChunk = false;
-                        // 等块后的 CRLF
-                        if (data.size() >= 2 && data[0] == '\r' && data[1] == '\n')
+                        if (m_chunkPhase == ChunkPhase::DataTerminator)
                         {
-                            data.remove_prefix(2);
+                            // 块数据之后必须是 CRLF（feedLine 已把 CRLF 吃掉，这一行必须为空）
+                            if (!line.empty())
+                            {
+                                m_stage = Stage::Failed;
+                                break;
+                            }
+                            m_chunkPhase = ChunkPhase::SizeLine;
+                            continue;
                         }
-                        // 如果 size == 0 的块已经遇到过且处理好了
-                    }
-                    // 检查是不是刚完成一个 0 长度块
-                    // 实际上在 feedLine 中处理 0 长度块后会设置 m_awaitingTrailer
-                    // 这里利用标志检查是否完成
-                    if (m_awaitingTrailer && data.size() >= 2 && data[0] == '\r' && data[1] == '\n')
-                    {
-                        data.remove_prefix(2);
-                        m_stage = Stage::Complete;
-                        m_awaitingTrailer = false;
+                        // Trailer 段：空行表示报文完整；其余行按头字段形态校验后忽略
+                        if (line.empty())
+                        {
+                            m_stage = Stage::Complete;
+                            break;
+                        }
+                        if (line.find(':') == std::string_view::npos)
+                        {
+                            m_stage = Stage::Failed;
+                            break;
+                        }
                     }
                     break;
                 }
@@ -199,12 +392,13 @@ namespace AsynGyanis::Net
         m_stage = Stage::StatusLine;
         m_result = {};
         m_lineBuffer.clear();
+        m_isLineHandedOut = false;
         m_expectedBodyBytes = 0;
         m_isChunked = false;
         m_isCloseDelimited = false;
+        m_isHttp10 = false;
+        m_chunkPhase = ChunkPhase::SizeLine;
         m_chunkSize = 0;
-        m_inChunk = false;
-        m_awaitingTrailer = false;
     }
 
     void HttpResponseParser::endOfStream()
