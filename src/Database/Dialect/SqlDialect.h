@@ -160,6 +160,24 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view columnTypeName(ColumnType type) const noexcept = 0;
 
         /**
+         * @brief 把一个逻辑列类型翻译成**可作主键**的物理类型名
+         *
+         * @details 主键（以及任何索引列）对物理类型有额外要求：MySQL 的 TEXT/LONGBLOB
+         *          不能直接进索引，建表语句会以 1170 号错误被拒，必须换成带长度的同族类型
+         *          （VARCHAR/VARBINARY）。默认实现直接沿用 columnTypeName()——SQLite 的
+         *          TEXT 主键本就合法，无需区分；只有引擎存在这种限制时才重写。
+         *
+         * @param type 逻辑列类型
+         * @return std::string_view 该引擎可直接写进**主键列定义**的物理类型名
+         * @note 需要为键列换类型时，换出的类型可能比原类型短（例如 TEXT → VARCHAR(255)），
+         *       超长取值会被引擎按自己的规则拒绝——这是引擎侧的硬限制，不是本映射的取舍
+         */
+        [[nodiscard]] virtual std::string_view keyColumnTypeName(const ColumnType type) const noexcept
+        {
+            return columnTypeName(type);
+        }
+
+        /**
          * @brief 生成「查询某张表是否存在」的元数据语句
          *
          * @details 各引擎的表清单来源完全不同：SQLite 查 sqlite_master，MySQL 查

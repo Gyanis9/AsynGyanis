@@ -817,4 +817,47 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(m_databaseFile.exists());
     }
 
+    /**
+     * @brief 只读查询的预扫描失败要如实报错，而不是变成一个「0 行」的空结果
+     * @details 查询在构造结果集时先被预扫描一遍数行；中途出错时结果集看起来只是「没有数据」。
+     *          把这种结果当成功交出去，调用方拿到的是「查询没有返回任何行」，真原因只剩在
+     *          结果集的 lastError() 里没人看——写路径一直是如实失败，两条路径口径必须一致
+     */
+    TEST(SqliteConnection, ReadOnlyQueryPreScanFailureSurfacesAsError)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // abs() 对最小整数报 "integer overflow"，且这发生在 step 阶段、语句本身是只读的
+        // （减一写法是为了绕开字面量解析：9223372036854775808 会被当成浮点数）
+        EXPECT_EQ(connection.execute("SELECT abs(-9223372036854775807 - 1)"), nullptr) << "预扫描失败被当成空结果返回了";
+        EXPECT_FALSE(connection.lastError().empty()) << "报错时没有留下原因";
+    }
+
+    /**
+     * @brief 归还连接池前把未提交的事务滚掉：下一个借用者不会继承上一笔事务
+     */
+    TEST(SqliteConnection, ResetSessionStateRollsBackUncommittedTransaction)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+
+        ASSERT_TRUE(connection.beginTransaction()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "INSERT INTO t (id, name) VALUES (1, 'leftover')"), nullptr);
+
+        // 复位前：事务仍开着，这条未提交的行在本连接里看得见
+        ASSERT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(1));
+
+        connection.resetSessionState();
+
+        // 事务被滚掉：未提交的行随之消失，也就是没有串给下一个借用者
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(0))
+                << "归还时没有滚掉未提交的事务：下一个借用者会继承上一笔事务";
+
+        // 幂等：没有活动事务时再调一次什么都不做，也不留下错误文本
+        EXPECT_NO_THROW(connection.resetSessionState());
+        EXPECT_TRUE(connection.lastError().empty()) << connection.lastError();
+    }
+
 } // namespace AsynGyanis::Database

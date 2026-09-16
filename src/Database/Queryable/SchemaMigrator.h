@@ -374,17 +374,22 @@ namespace AsynGyanis::Database::Queryable
                 columnDefinitions += ", ";
             }
 
+            const bool isKeyColumn = columnDescriptor.columnName == primaryKeyName;
+
             // 列名一律引用：含空格、保留字或引用字符的列名只有被引用才能作为标识符出现
             columnDefinitions += dialect.quoteIdentifier(columnDescriptor.columnName);
             columnDefinitions += ' ';
-            columnDefinitions += dialect.columnTypeName(columnTypeOf<ValueType>());
+            // 主键列走可作键的类型映射：MySQL 的 TEXT/LONGBLOB 进不了索引，
+            // 直接用 columnTypeName() 的表征会让建表语句以 1170 号错误被整个拒掉
+            columnDefinitions += isKeyColumn ? dialect.keyColumnTypeName(columnTypeOf<ValueType>())
+                                             : dialect.columnTypeName(columnTypeOf<ValueType>());
 
             if constexpr (!kisNullable)
             {
                 columnDefinitions += " NOT NULL";
             }
 
-            if (columnDescriptor.columnName == primaryKeyName)
+            if (isKeyColumn)
             {
                 // PRIMARY KEY 写在约束的最后：类型与可空性在前，读起来与结构体声明顺序一致。
                 // 命中主键的列同时记入出参，供调用方判断 kPrimaryKey 是否落在 kColumns 里

@@ -223,10 +223,19 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 带返回列 = 查询：把游标整体交给结果集，由 SqliteResult 负责推进与 finalize
+        // 带返回列 = 查询：把游标整体交给结果集，由 SqliteResult 负责推进与 finalize。
+        // 构造期会预扫描数行，中途出错（锁超时、IO 错误）时结果集看起来只是「0 行」——
+        // 直接交出去，调用方拿到的是「查询没有返回数据」，真错误被静默吞掉。
+        // 与写路径同一口径：如实报失败，错误文本先取回本连接，结果集随指针析构一并 finalize
         if (sqlite3_column_count(statement) > 0)
         {
-            return std::make_unique<SqliteResult>(statement, m_database);
+            auto result = std::make_unique<SqliteResult>(statement, m_database);
+            if (const std::string preScanError = result->lastError(); !preScanError.empty())
+            {
+                m_lastError = preScanError;
+                return nullptr;
+            }
+            return result;
         }
 
         // 无返回列 = 写操作（INSERT/UPDATE/DELETE/DDL）：SQLite 保证一条写语句一次 step 即可跑完
@@ -281,6 +290,21 @@ namespace AsynGyanis::Database
         const SqliteDialect dialect;
         // 没有活动事务时 SQLite 会在 step 阶段报错，这里如实返回 false 并由 lastError() 给出原因
         return execute(dialect.rollbackStatement()) != nullptr;
+    }
+
+    void SqliteConnection::resetSessionState() noexcept
+    {
+        // 未连接，或引擎报告当前处于自动提交（即没有活动事务）：没有要复位的东西。
+        // 判据取自 sqlite3_get_autocommit 而不是本类记账，手工执行的 "BEGIN" 也能被认出来
+        if (m_database == nullptr || ::sqlite3_get_autocommit(m_database) != 0)
+        {
+            return;
+        }
+
+        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），
+        // 归还路径不看返回码——连接随后会照常回到池里，最坏情况是被下一个借用者拿到一条
+        // 仍带事务的连接（这与修复前的行为一致），但绝不在这里抛异常打断归还
+        [[maybe_unused]] const bool isRolledBack = rollback();
     }
 
     std::string SqliteConnection::serverVersion() const

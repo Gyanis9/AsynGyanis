@@ -907,4 +907,18 @@ namespace AsynGyanis::Database
         return execute(dialect.rollbackStatement()) != nullptr;
     }
 
+    void MySqlConnection::resetSessionState() noexcept
+    {
+        // 未连接，或服务端在最近一次响应里报告「不在事务中」：没有要复位的东西。
+        // 判据取自客户端库记下的状态位而不是本类记账，手工执行的 START TRANSACTION 也能被认出
+        if (m_mysqlHandle == nullptr || (m_mysqlHandle->server_status & SERVER_STATUS_IN_TRANS) == 0U)
+        {
+            return;
+        }
+
+        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），
+        // 归还路径不看返回码——连接随后会照常回到池里，绝不在这里抛异常打断归还
+        [[maybe_unused]] const bool isRolledBack = rollback();
+    }
+
 } // namespace AsynGyanis::Database

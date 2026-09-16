@@ -1194,6 +1194,25 @@ TEST(MySqlDialectDdl, ColumnTypeNamesFollowEngineWidths)
 }
 
 /**
+ * @brief 验证主键列换用带长度前缀的类型：TEXT/LONGBLOB 直接进索引会被服务端拒绝（1170）
+ */
+TEST(MySqlDialectDdl, KeyColumnTypesCarryIndexableLengths)
+{
+    const MySqlDialect dialect;
+
+    // 主键就是索引：MySQL 不接受不带长度前缀的 TEXT/LONGBLOB 作键列，
+    // 建表语句会以 "BLOB/TEXT column used in key specification without a key length" 被整条拒掉
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Text), "VARCHAR(255)");
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Blob), "VARBINARY(255)");
+
+    // 其余类型本就带长度（或长度无关），与普通列的映射一致，不给键列另立一套
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Int64), dialect.columnTypeName(ColumnType::Int64));
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::UInt64), dialect.columnTypeName(ColumnType::UInt64));
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Double), dialect.columnTypeName(ColumnType::Double));
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Bool), dialect.columnTypeName(ColumnType::Bool));
+}
+
+/**
  * @brief 验证表存在性查询限定了当前库，且表名以绑定参数送出
  */
 TEST(MySqlDialectDdl, TableExistsStatementScopesToCurrentDatabase)

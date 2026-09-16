@@ -307,4 +307,45 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(probe.finished.load(std::memory_order_acquire)) << "帧已销毁，这次恢复不该跑任何代码";
     }
 
+    /**
+     * @brief 交接之后丢弃 Task：连接要回到池里，池的配额也要跟着回退
+     * @details 交接那一刻连接已经记在等待者名下。帧被销毁时这次「取出」从未真正开始，
+     *          若不按归还结账，池就永远少一个位置：连接随帧一起消失，而总创建数不降、
+     *          空闲栈也拿不回它——反复丢弃几次之后，所有 acquire 都会卡在「池已满」上直到超时
+     */
+    TEST(ConnectionPoolAsync, DiscardedTaskAfterHandoffReturnsConnectionToPool)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 1;
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        // 不启动的循环：交接只会把恢复动作排进它的队列，不会有人执行
+        Core::EventLoop loop;
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+        ASSERT_EQ(pool.activeCount(), 1U);
+
+        AcquireProbe probe;
+        {
+            Core::Task<void> driver = probeAcquireAsync(pool, loop, probe);
+            driver.handle().resume(); // 池满：挂到等待列表
+            ASSERT_EQ(pool.waitingCount(), 1U);
+
+            occupying.release(); // 交接：连接转给等待者，恢复动作排进 loop 的队列
+        }                        // driver 在这里析构 → 帧连同等待器一起销毁
+
+        loop.scheduler().runAll(); // 那次恢复此刻执行：空操作
+
+        // 连接回到了空闲栈，活跃计数回零——这次丢弃没有吃掉池的配额
+        EXPECT_EQ(pool.activeCount(), 0U);
+        EXPECT_EQ(pool.idleCount(), 1U);
+        EXPECT_EQ(pool.waitingCount(), 0U);
+
+        // 池没满、连接也在：再取一次必须立刻成功，而不是等到超时
+        const PooledConnection reacquired = pool.tryAcquire();
+        EXPECT_TRUE(reacquired) << "丢弃一次之后池再也取不出连接：配额被这次丢弃吃掉了";
+    }
+
 } // namespace AsynGyanis::Database

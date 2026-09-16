@@ -104,6 +104,21 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view columnTypeName(ColumnType type) const noexcept override;
 
         /**
+         * @brief 把逻辑列类型翻译成可作主键的 MySQL 物理类型名
+         * @details 重写 SqlDialect::keyColumnTypeName()：MySQL 的 TEXT 与 LONGBLOB 不能直接进
+         *          索引（1170 号错误 "BLOB/TEXT column used in key specification without a key
+         *          length"），而主键就是索引，因此键列必须换成带长度的同族类型：
+         *          Text→"VARCHAR(255)"、Blob→"VARBINARY(255)"。
+         *          255 是业界惯用上限：utf8mb4 下 255 字符恰好 1020 字节，连同 InnoDB
+         *          3072 字节的索引前缀上限都有富余；代价是超长取值会被服务端拒绝
+         *          （严格模式下报「Data too long」），这是引擎的硬限制，换个更长的前缀只是把
+         *          阈值推后，换不出「任意长度都能当主键」的效果。
+         * @param type 逻辑列类型
+         * @return std::string_view 对应物理类型名；非文本/二进制类型与 columnTypeName() 一致
+         */
+        [[nodiscard]] std::string_view keyColumnTypeName(ColumnType type) const noexcept override;
+
+        /**
          * @brief 生成 MySQL 的「表是否存在」查询
          * @details 重写 SqlDialect::tableExistsStatement()：MySQL 没有 SQLite 那样的库内元数据表，
          *          表清单在 information_schema.tables 里，而它是整个实例共享的：

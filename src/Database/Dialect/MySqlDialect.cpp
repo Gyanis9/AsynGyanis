@@ -78,6 +78,21 @@ namespace AsynGyanis::Database
         }
     }
 
+    std::string_view MySqlDialect::keyColumnTypeName(const ColumnType type) const noexcept
+    {
+        // 只有「不带长度的变长类型」需要为索引换成带长度前缀的同族类型，其余按原映射走。
+        // 长度 255 的依据见头文件：utf8mb4 下 1020 字节，远在 InnoDB 索引前缀上限之内
+        switch (type)
+        {
+            case ColumnType::Text:
+                return "VARCHAR(255)";
+            case ColumnType::Blob:
+                return "VARBINARY(255)";
+            default:
+                return columnTypeName(type);
+        }
+    }
+
     SqlStatement MySqlDialect::tableExistsStatement(const std::string_view tableName) const
     {
         SqlStatement statement;

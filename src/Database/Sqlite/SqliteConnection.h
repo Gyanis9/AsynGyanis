@@ -172,6 +172,17 @@ namespace AsynGyanis::Database
         bool rollback();
 
         /**
+         * @brief 归还连接池时复位会话状态：把未提交的事务滚掉
+         * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务
+         *          （提交/回滚的决定权早已随上一个借用者消失），而 BEGIN IMMEDIATE 取到的写锁
+         *          会一直握到那条连接被回收，别的连接全被挡在门外。
+         *          判定直接问引擎（sqlite3_get_autocommit），因此手工执行的 "BEGIN" 同样能被认出，
+         *          不依赖本类另记一份事务状态。
+         * @note 与基类契约一致：不抛异常、幂等；未连接或本就没有活动事务时不做任何事
+         */
+        void resetSessionState() noexcept override;
+
+        /**
          * @brief 获取数据库版本字符串
          * @details SQLite 没有服务端进程，因此返回的是链接进来的 SQLite 库版本；
          *          sqlite3_libversion() 不依赖句柄，未连接时同样返回有效文本。

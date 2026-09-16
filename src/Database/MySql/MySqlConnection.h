@@ -162,6 +162,17 @@ namespace AsynGyanis::Database
         bool rollback();
 
         /**
+         * @brief 归还连接池时复位会话状态：把未提交的事务滚掉
+         * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，
+         *          行锁与元数据锁也一直被握到事务结束（可能永远不结束）为止。
+         *          判定读客户端库在最近一次响应里记下的服务端状态位
+         *          （SERVER_STATUS_IN_TRANS），手工执行的 "START TRANSACTION" 同样能被认出，
+         *          不依赖本类另记一份事务状态。
+         * @note 与基类契约一致：不抛异常、幂等；未连接或本就没有活动事务时不做任何事
+         */
+        void resetSessionState() noexcept override;
+
+        /**
          * @brief 获取服务端版本字符串
          * @details 走 mysql_get_server_info，它必须持有已建立连接的句柄，因此未连接时返回空串
          *          （这与 Sqlite 驱动不同：SQLite 是进程内引擎，版本随时可取）。
