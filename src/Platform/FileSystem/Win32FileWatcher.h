@@ -112,6 +112,9 @@ namespace AsynGyanis::Platform
             std::vector<uint8_t> buffer;                                ///< 变更通知接收缓冲区
             OVERLAPPED           overlapped{};                          ///< 异步 IO 控制结构
             bool                 pending{false};                        ///< 是否有一次未完成的读取请求
+            /// 读操作以硬错误收场（目录被删/改名、句柄失效）：该监听再也收不到事件，
+            /// 由 watchLoop 摘掉它（递归根会在下一秒的自愈复查里重新挂上）
+            bool                 isDead{false};
         };
 
         /**
@@ -129,8 +132,16 @@ namespace AsynGyanis::Platform
         /**
          * @brief 为目录发起一次 ReadDirectoryChangesW 重叠读
          * @param entry 目标目录上下文
+         * @return true 已投递；false 投递失败（目录已不存在、句柄失效），调用方应摘掉该条目
          */
-        void issueRead(WatchEntry &entry) const;
+        [[nodiscard]] bool issueRead(WatchEntry &entry) const;
+
+        /**
+         * @brief 把不在监听集合里的递归根重新挂上
+         * @details 目录被整个换掉（删除后重建）时原有的监听随句柄失效，而重建后的目录没有人会
+         *          再调 addWatch——根上不补挂，它内部的变更就永久丢失。按秒节拍复查一遍
+         */
+        void rewatchMissingRecursiveRoots();
 
         /**
          * @brief 取消目录未完成读取并关闭其全部句柄
@@ -173,6 +184,10 @@ namespace AsynGyanis::Platform
         std::atomic<bool>         m_running{false};     ///< 监听线程是否正在运行
         std::atomic<bool>         m_shouldStop{false};  ///< 是否已请求停止
         HANDLE                    m_stopEvent{nullptr}; ///< 用于唤醒监听线程的停止事件
+
+        /// 递归根自愈的复查节拍：等待循环每轮最多 100ms，按时间而不是按轮数计
+        static constexpr std::chrono::seconds kRootRecheckInterval{1};
+        std::chrono::steady_clock::time_point rootRecheckDeadline{}; ///< 下一次复查时刻
 
         static constexpr std::size_t kBufferSize  = 4096; ///< 变更通知缓冲区字节数
         static constexpr DWORD       kWatchFilter =       ///< 关注的目录变更类型掩码

@@ -390,6 +390,54 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(receivedEvent) << "递归监听开始之后新建的子目录没有被补挂监视";
     }
 
+    /**
+     * @brief 递归根被整个换掉（删除后重建）时框架自己把监视补回来
+     * @details 部署工具常把整个配置目录删掉再放回来。根上的监听随句柄/内核状态失效，而重建后的
+     *          目录没有人会再调 addWatch——实现按秒节拍复查递归根并补挂，这条用例不重新注册、
+     *          只等自愈，钉住的就是这条自愈路径
+     */
+    TEST(FileWatcher, RecursiveRootIsRewatchedAfterDirectoryIsReplaced)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_ReplaceRoot");
+        const std::string                     watchedPath = temporaryDirectory.path().string();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(watchedPath, /*recursive=*/true));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 把整个目录换掉：删掉再重建，**不**重新 addWatch
+        std::error_code removeError;
+        static_cast<void>(std::filesystem::remove_all(temporaryDirectory.path(), removeError));
+        ASSERT_FALSE(removeError) << "删除被监视目录失败：" << removeError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        ASSERT_TRUE(std::filesystem::create_directories(temporaryDirectory.path()));
+
+        // 等自愈复查（1 秒节拍）把根重新挂上
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+
+        ASSERT_TRUE(temporaryDirectory.writeFile("replaced.yaml", "back: true\n"));
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("replaced.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "换掉重建的递归根没有被补挂监视：它内部的变更此后永久丢失";
+    }
+
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件

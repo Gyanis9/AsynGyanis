@@ -150,7 +150,9 @@ namespace AsynGyanis::Platform
             }
 
             entry->overlapped.hEvent = entry->eventHandle;
-            issueRead(*entry);
+            // 首次投递失败（目录刚被删等）：条目照样登记，watchLoop 的下一拍会把它当死条目摘掉，
+            // 递归根随后由自愈复查补挂
+            static_cast<void>(issueRead(*entry));
 
             m_watches[directoryPath] = std::move(entry);
         }
@@ -225,6 +227,16 @@ namespace AsynGyanis::Platform
 
         while (!m_shouldStop.load(std::memory_order_acquire))
         {
+            // 递归根自愈：按秒节拍复查一遍递归根都还在不在监听集合里。部署工具把目录整个换掉
+            // （删掉再重建）是常见做法，而重建后的目录没有人会再调 addWatch——根上的监听一旦
+            // 失效，它内部的变更就永久丢失。放在收集等待集之前：根刚被换掉时条目已被摘除、
+            // 等待集为空，那条空转分支（sleep 后 continue）走不到本函数
+            if (std::chrono::steady_clock::now() >= rootRecheckDeadline)
+            {
+                rootRecheckDeadline = std::chrono::steady_clock::now() + kRootRecheckInterval;
+                rewatchMissingRecursiveRoots();
+            }
+
             // 收集所有待等待的事件句柄及其对应监听路径，停止事件固定占据索引 0
             allEventHandles.clear();
             allPendingPaths.clear();
@@ -295,6 +307,7 @@ namespace AsynGyanis::Platform
             const std::string                                    targetPath = pendingPaths[index - 1];
             std::vector<std::pair<std::string, FileChangeType> > pendingCallbacks;
             FileChangeCallback                                   callbackSnapshot;
+            std::string                                          deadWatchPath; // 本轮读失败的目录：锁外摘掉
             {
                 std::shared_lock lock(m_watchMutex);
 
@@ -309,9 +322,28 @@ namespace AsynGyanis::Platform
                 callbackSnapshot = m_callback;
 
                 // 处理完毕后重新发起下一次重叠读
-                ::ResetEvent(entry.eventHandle);
-                entry.pending = false;
-                issueRead(entry);
+                if (entry.isDead)
+                {
+                    // 目录已被删除/改名（句柄随之失效）：这条监听再也收不到事件，摘掉它。
+                    // 若它是个递归根，下一秒的自愈复查会把它重新挂上
+                    deadWatchPath = targetPath;
+                } else
+                {
+                    ::ResetEvent(entry.eventHandle);
+                    entry.pending = false;
+                    if (!issueRead(entry))
+                    {
+                        // 投递失败同样是死条目（目录刚被删、句柄失效）：不摘掉的话它既不进等待集、
+                        // 也没人会再投递——条目与两个句柄一起留到 stop()
+                        deadWatchPath = targetPath;
+                    }
+                }
+            }
+
+            if (!deadWatchPath.empty())
+            {
+                // removeWatch() 自带写锁：CancelIo → 关句柄 → 从监听集合摘除
+                static_cast<void>(removeWatch(deadWatchPath));
             }
 
             // 递归根之下新出现的目录要在锁外补挂监视：新子目录内部的变更否则永远不上报
@@ -346,6 +378,27 @@ namespace AsynGyanis::Platform
         }
     }
 
+    void Win32FileWatcher::rewatchMissingRecursiveRoots()
+    {
+        std::vector<std::string> missingRoots;
+        {
+            const std::shared_lock lock(m_watchMutex);
+            for (const std::string &root: m_recursiveRoots)
+            {
+                if (!m_watches.contains(root))
+                {
+                    missingRoots.push_back(root);
+                }
+            }
+        }
+
+        // 锁外补挂：addWatch() 要拿写锁；目录还没回来时它会失败，下一拍再试
+        for (const std::string &root: missingRoots)
+        {
+            static_cast<void>(addWatch(root, true));
+        }
+    }
+
     bool Win32FileWatcher::isUnderRecursiveRoot(const std::string &path) const
     {
         const std::shared_lock lock(m_watchMutex);
@@ -370,10 +423,14 @@ namespace AsynGyanis::Platform
         {
             // 缓冲区溢出（变更过快过多，通知被内核丢弃）时 Windows 报 ERROR_NOTIFY_ENUM_DIR：
             // 派发一次「已修改」让消费方重新扫描该目录，而不是静默漏掉这一批变更
-            if (::GetLastError() == ERROR_NOTIFY_ENUM_DIR)
+            if (::GetLastError() != ERROR_NOTIFY_ENUM_DIR)
             {
-                events.emplace_back(entry.path, FileChangeType::Modified);
+                // 其余失败（目录已被删除/改名、句柄失效、访问被拒）：这条监听不会再产生事件，
+                // 交给 watchLoop 摘掉它，而不是留一个永远不进等待集的僵尸条目
+                entry.isDead = true;
+                return;
             }
+            events.emplace_back(entry.path, FileChangeType::Modified);
             return;
         }
 
@@ -409,7 +466,7 @@ namespace AsynGyanis::Platform
         }
     }
 
-    void Win32FileWatcher::issueRead(WatchEntry &entry) const
+    bool Win32FileWatcher::issueRead(WatchEntry &entry) const
     {
         entry.overlapped        = OVERLAPPED{};
         entry.overlapped.hEvent = entry.eventHandle;
@@ -423,6 +480,7 @@ namespace AsynGyanis::Platform
         {
             entry.pending = false;
         }
+        return success != FALSE;
     }
 
     void Win32FileWatcher::closeEntry(WatchEntry &entry) const

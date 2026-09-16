@@ -189,6 +189,8 @@ namespace AsynGyanis::Platform
 
             if (pollResult == 0)
             {
+                // 没有事件也走一遍自愈复查（下面在循环末尾统一做），这里只是别提前 continue 掉
+                recheckRecursiveRootsIfDue();
                 continue;
             }
 
@@ -196,6 +198,7 @@ namespace AsynGyanis::Platform
             {
                 processEvents();
             }
+            recheckRecursiveRootsIfDue();
         }
     }
 
@@ -322,6 +325,36 @@ namespace AsynGyanis::Platform
             }
         }
     }
+
+    void InotifyFileWatcher::recheckRecursiveRootsIfDue()
+        {
+            // 目录被整个换掉（删除后重建）时内核会摘掉 watch，而重建后的目录没有人会再调
+            // addWatch——根上不补挂，它内部的变更就永久丢失。按秒节拍复查一遍
+            const auto now = std::chrono::steady_clock::now();
+            if (now < m_rootRecheckDeadline)
+            {
+                return;
+            }
+            m_rootRecheckDeadline = now + kRootRecheckInterval;
+
+            std::vector<std::string> missingRoots;
+            {
+                const std::shared_lock lock(m_watchMutex);
+                for (const std::string &root: m_recursiveRoots)
+                {
+                    if (!m_pathToWatchDescriptor.contains(root))
+                    {
+                        missingRoots.push_back(root);
+                    }
+                }
+            }
+
+            // 锁外补挂：addWatch() 要拿写锁；目录还没回来时它会失败，下一拍再试
+            for (const std::string &root: missingRoots)
+            {
+                static_cast<void>(addWatch(root, true));
+            }
+        }
 
     void InotifyFileWatcher::dispatchOverflowRescan()
     {

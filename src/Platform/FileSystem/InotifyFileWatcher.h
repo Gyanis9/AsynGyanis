@@ -123,6 +123,13 @@ namespace AsynGyanis::Platform
         void dispatchOverflowRescan();
 
         /**
+         * @brief 按秒节拍复查递归根是否还在监听集合里，不在就补挂
+         * @details 目录被整个换掉（删除后重建）时原有监视随内核状态失效，而重建后的目录没有人会
+         *          再调 addWatch——根上不补挂，它内部的变更就永久丢失
+         */
+        void recheckRecursiveRootsIfDue();
+
+        /**
          * @brief 摘掉内核已不再监视的那个 watch 的两张映射表条目
          * @param watchDescriptor 内核已摘除的监视描述符（来自 IN_IGNORED）
          * @note 不清的话，重建出来的同名路径会因「路径已在表里」而挂不上监视，事件永久丢失
@@ -133,6 +140,10 @@ namespace AsynGyanis::Platform
         std::unordered_map<int, std::string> m_watchDescriptors;          ///< 监视描述符到监听路径的映射
         std::unordered_map<std::string, int> m_pathToWatchDescriptor;     ///< 监听路径到监视描述符的映射
         std::unordered_set<std::string>      m_recursiveRoots;            ///< 以递归方式注册过的根：新子目录要补挂监视
+
+        /// 递归根自愈的复查节拍：等待循环按 100ms 轮询，按时间而不是按轮数计
+        static constexpr std::chrono::seconds kRootRecheckInterval{1};
+        std::chrono::steady_clock::time_point m_rootRecheckDeadline{}; ///< 下一次复查时刻
 
         FileChangeCallback        m_callback;         ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;       ///< 保护监听映射与回调的读写锁
