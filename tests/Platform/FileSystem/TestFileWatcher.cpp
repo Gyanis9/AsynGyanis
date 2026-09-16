@@ -343,6 +343,56 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(receivedEvent) << "递归监听未能覆盖子目录中的文件";
     }
 
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件
+     * @details WaitForMultipleObjects 单次最多等 64 个对象（含停止事件，因此目录只有 63 个额度）。
+     *          原实现只截前 63 个、且遍历顺序稳定，排在后面的目录永远进不了等待集——它们的事件
+     *          永久丢失。这里递归监视 70 个子目录，写**最后一个**子目录里的文件来钉住轮转切片
+     */
+    TEST(FileWatcher, WatchesMoreDirectoriesThanOneWaitBatch)
+    {
+        constexpr int kSubDirectoryCount = 70; // 超过 63 才会触发截断
+        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_ManyDirectories");
+        std::error_code                 error;
+        for (int index = 0; index < kSubDirectoryCount; ++index)
+        {
+            std::filesystem::create_directories(temporaryDirectory.path() / ("sub-" + std::to_string(index)), error);
+            ASSERT_FALSE(error) << "建子目录失败：" << error.message();
+        }
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        // 写在最靠后的子目录里：只截前 63 个的实现恰好把它排在等待集之外
+        {
+            std::ofstream tailFile(temporaryDirectory.path() / ("sub-" + std::to_string(kSubDirectoryCount - 1)) / "tail.yaml");
+            tailFile << "tail: true\n";
+        }
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("tail.yaml");
+                },
+                5000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "排在等待批次之外的目录收不到事件：批次没有轮转";
+    }
+#endif
+
     TEST(FileWatcher, DestructorStopsRunningWatcherSafely)
     {
         TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Destructor");

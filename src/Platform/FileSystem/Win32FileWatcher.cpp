@@ -203,15 +203,25 @@ namespace AsynGyanis::Platform
 
     void Win32FileWatcher::watchLoop()
     {
-        // 提到循环外并预留到系统上限：clear() 不回收容量，之后每轮收集不再产生堆分配
+        // 提到循环外并预留到系统上限：clear() 不回收容量，之后每轮收集不再产生堆分配。
+        // 两组容器分工：all* 是本轮全部待等待的条目，eventHandles/pendingPaths 是真正交给
+        // WaitForMultipleObjects 的那一批（最多 63 个目录 + 停止事件）
+        std::vector<HANDLE>      allEventHandles;
+        std::vector<std::string> allPendingPaths;
         std::vector<HANDLE>      eventHandles;
         std::vector<std::string> pendingPaths;
         eventHandles.reserve(MAXIMUM_WAIT_OBJECTS);
         pendingPaths.reserve(MAXIMUM_WAIT_OBJECTS - 1);
 
+        // 单次最多等 63 个目录，超出的那部分靠**轮转**排下一轮：只截前 63 个的话，顺序一旦稳定
+        // （m_watches 是有序表），尾部目录永远进不了等待集，它们的事件会永久收不到
+        std::size_t rotationOffset = 0;
+
         while (!m_shouldStop.load(std::memory_order_acquire))
         {
             // 收集所有待等待的事件句柄及其对应监听路径，停止事件固定占据索引 0
+            allEventHandles.clear();
+            allPendingPaths.clear();
             eventHandles.clear();
             pendingPaths.clear();
 
@@ -223,17 +233,33 @@ namespace AsynGyanis::Platform
                 {
                     if (entry->pending)
                     {
-                        eventHandles.push_back(entry->eventHandle);
-                        pendingPaths.push_back(path);
+                        allEventHandles.push_back(entry->eventHandle);
+                        allPendingPaths.push_back(path);
                     }
                 }
             }
 
-            // WaitForMultipleObjects 单次最多等待 MAXIMUM_WAIT_OBJECTS 个对象，超出部分留待下轮
-            if (eventHandles.size() > MAXIMUM_WAIT_OBJECTS)
+            // WaitForMultipleObjects 单次最多等待 MAXIMUM_WAIT_OBJECTS 个对象：从轮转起点截一段，
+            // 下一轮从截断处接着排，保证每个待等待目录迟早进入等待集
+            constexpr std::size_t kMaximumWatchedDirectoryCount = MAXIMUM_WAIT_OBJECTS - 1; // 去掉停止事件
+            if (allEventHandles.size() <= kMaximumWatchedDirectoryCount)
             {
-                eventHandles.resize(MAXIMUM_WAIT_OBJECTS);
-                pendingPaths.resize(MAXIMUM_WAIT_OBJECTS - 1);
+                rotationOffset = 0;
+                eventHandles.insert(eventHandles.end(), allEventHandles.begin(), allEventHandles.end());
+                pendingPaths.insert(pendingPaths.end(), allPendingPaths.begin(), allPendingPaths.end());
+            } else
+            {
+                if (rotationOffset >= allEventHandles.size())
+                {
+                    rotationOffset = 0;
+                }
+                for (std::size_t index = 0; index < kMaximumWatchedDirectoryCount; ++index)
+                {
+                    const std::size_t position = (rotationOffset + index) % allEventHandles.size();
+                    eventHandles.push_back(allEventHandles[position]);
+                    pendingPaths.push_back(allPendingPaths[position]);
+                }
+                rotationOffset = (rotationOffset + kMaximumWatchedDirectoryCount) % allEventHandles.size();
             }
 
             if (eventHandles.size() <= 1)
