@@ -198,8 +198,10 @@ namespace AsynGyanis::Net
             {
                 return isAlive();
             };
+            // 正文预算必须一并传下去：漏传时 setMemoryBudget() 在 TLS 的 h1 回落下静默失效，
+            // 而同样的请求走明文端会被 503 收口
             co_await detail::httpKeepAliveLoop(*m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate,
-                                              *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get());
+                                              *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get(), m_memoryBudget.get());
             co_return;
         }
 

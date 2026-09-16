@@ -672,6 +672,13 @@ namespace AsynGyanis::Net
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
+            if (streamId <= m_highestPeerStreamId)
+            {
+                // 记录已被挤出（已终止流只保留最近 kTerminatedStreamMemoryCount 条）：对端确实开过这条流，
+                // 在终止流上补发的在途 DATA 允许直接忽略——把连接级窗口还回去，不当连接错误
+                creditConnectionReceiveWindow(static_cast<std::size_t>(frameByteCount));
+                return true;
+            }
             // 从未开启的流上出现 DATA：§5.1「idle」段只允许 HEADERS 与 PRIORITY
             fail(Http2ErrorCode::ProtocolError,
                  std::format("流 {} 从未开启（idle），不能在该流上发 DATA（RFC 7540 §5.1）；本端已用过的最大对端流号是 {}",
@@ -835,6 +842,12 @@ namespace AsynGyanis::Net
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
+            if (streamId <= m_highestPeerStreamId)
+            {
+                // 记录已被挤出：该流开过（终止记录只保留最近一批），§5.1「closed」段要求忽略
+                // RST_STREAM——对端可能还没看到本端终止它的那一帧
+                return true;
+            }
             // idle 流上只允许 HEADERS 与 PRIORITY（§5.1）：对从未开启的流发 RST_STREAM 是连接错误
             fail(Http2ErrorCode::ProtocolError,
                  std::format("收到流 {} 的 RST_STREAM，但该流从未开启（idle）：RFC 7540 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY",
@@ -960,6 +973,12 @@ namespace AsynGyanis::Net
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
+            if (streamId <= m_highestPeerStreamId)
+            {
+                // 记录已被挤出：与「已终止流」同一处置（§5.1「closed」段要求忽略 WINDOW_UPDATE）——
+                // 记成连接错误会把一条合法的连接整条打掉
+                return true;
+            }
             // 从未开启的流上出现 WINDOW_UPDATE：同样是 §5.1「idle」段的连接错误（与下面「已终止流要忽略」不同）
             fail(Http2ErrorCode::ProtocolError,
                  std::format("收到流 {} 的 WINDOW_UPDATE，但该流从未开启（idle）：RFC 7540 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY",
