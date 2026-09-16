@@ -12,14 +12,15 @@
 name: Windows CI
 
 on:
+  # 只在 main 的推送与手动触发上跑：日常开发在 develop 上，PR 不再触发任何 CI（免费分钟数有限，
+  # 一次全量构建+用例要几十个 runner 分钟）。要验证某个提交就手动 dispatch，或者合进 main。
   push:
     branches: [ main ]
-  pull_request:
-    # 纯文档改动不值得等十几分钟的构建与用例。版本号门禁在 release-gate.yml，
-    # 那条工作流不受这里的过滤影响
+    # 纯文档改动与工作流自身的改动不值得等构建；版本号门禁在 release-gate.yml，那条不受这里影响
     paths-ignore:
       - '**.md'
       - 'LICENSE'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
