@@ -860,6 +860,9 @@ namespace AsynGyanis::Net
         }
         try
         {
+            // 处理器相位按「响应产出预算」计时（writeTimeout）：本相位既不读套接字也不写，
+            // 上一次读刷出的 readTimeout 会在这里悄悄到期，把慢处理器当成空闲连接掐掉
+            refreshIdleDeadline(m_limits->writeTimeout);
             co_await m_router.route(request, m_response);
         } catch (...)
         {

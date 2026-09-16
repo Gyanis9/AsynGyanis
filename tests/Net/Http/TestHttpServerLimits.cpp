@@ -105,6 +105,85 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
+    /**
+     * @brief 处理器运行超过 readTimeout（但没超过 writeTimeout）时，连接不被清扫掐掉
+     * @details 处理器相位既不读也不写，此前沿用的是最后一次读刷出的 readTimeout——慢处理器会被
+     *          当成空闲连接收口，客户端拿不到任何响应（连 504 都没有）。现在该相位按 writeTimeout
+     *          （响应产出预算）计时：要放宽处理器时限就调它
+     */
+    TEST(HttpServerLimits, SlowHandlerIsNotClosedWhileItRuns)
+    {
+        HttpServerLimits limits;
+        limits.idleTimeout  = std::chrono::seconds{10};
+        limits.readTimeout  = std::chrono::milliseconds{200}; // 处理器要跑得比它长
+        limits.writeTimeout = std::chrono::seconds{5};        // 响应产出预算
+
+        std::atomic<bool> handlerStarted{false};
+        SlowRouteOptions  slowRoute;
+        slowRoute.processingTime = std::chrono::milliseconds{700}; // 3.5 倍 readTimeout，远小于 writeTimeout
+        slowRoute.handlerStarted = &handlerStarted;
+
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{30}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+        EXPECT_FALSE(fixture.startThrew());
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
+        ASSERT_TRUE(waitForCondition(
+                [&handlerStarted]
+                {
+                    return handlerStarted.load(std::memory_order_acquire);
+                },
+                kWaitTimeout)) << "慢路由未在时限内开始处理";
+
+        std::string receivedText;
+        EXPECT_TRUE(client.waitForText(receivedText, "served-slow", kWaitTimeout))
+                << "处理器运行期间连接被清扫掐掉：响应没到达（处理耗时 700ms，readTimeout 只有 200ms）";
+    }
+
+    /**
+     * @brief 处理器运行超过 writeTimeout 时照样被收口——预算存在，不只是「忙就不掐」
+     */
+    TEST(HttpServerLimits, SlowHandlerIsClosedWhenItExceedsWriteTimeout)
+    {
+        HttpServerLimits limits;
+        limits.idleTimeout  = std::chrono::seconds{10};
+        limits.readTimeout  = std::chrono::seconds{10};       // 保证收口不来自读超时
+        limits.writeTimeout = std::chrono::milliseconds{300}; // 处理器预算
+
+        std::atomic<bool> handlerStarted{false};
+        SlowRouteOptions  slowRoute;
+        slowRoute.processingTime = std::chrono::milliseconds{700}; // 超预算两倍
+        slowRoute.handlerStarted = &handlerStarted;
+
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{30}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+        EXPECT_FALSE(fixture.startThrew());
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
+        ASSERT_TRUE(waitForCondition(
+                [&handlerStarted]
+                {
+                    return handlerStarted.load(std::memory_order_acquire);
+                },
+                kWaitTimeout)) << "慢路由未在时限内开始处理";
+
+        std::string receivedText;
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout))
+                << "处理器超出 writeTimeout 却没收口：上界 kWaitTimeout（writeTimeout 300ms + 清扫节拍 30ms）";
+        EXPECT_EQ(receivedText.find("served-slow"), std::string::npos) << "超预算的处理器仍然把响应写了出来";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+    }
+
     TEST(HttpServerLimits, KeepAliveCapClosesConnectionAfterMaximumRequests)
     {
         // 单连接请求上限：上限为 2 时，第 2 条响应就是「达到上限」的那条——它必须带

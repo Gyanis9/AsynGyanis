@@ -1235,6 +1235,9 @@ namespace AsynGyanis::Net
                 std::exception_ptr handlerException = nullptr;
                 try
                 {
+                    // 处理器相位按「响应产出预算」计时（writeTimeout）：本相位既不读套接字也不写，
+                    // 上一次读刷出的 readTimeout 会在这里悄悄到期，把慢处理器当成空闲连接掐掉。
+                    connection.refreshIdleDeadline(limits.writeTimeout);
                     co_await router.route(request, response);
                 } catch (...)
                 {
