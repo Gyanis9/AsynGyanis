@@ -197,6 +197,18 @@ namespace AsynGyanis::Net
         void dropRequest(std::int64_t streamId);
 
         /**
+         * @brief 承载层通知：对端取消了一条流（RESET_STREAM 或 STOP_SENDING）
+         *
+         * @details nghttp3 自己看不到 QUIC 层的重置信号，只有被明确告知才会释放该流的状态；少了这一路，
+         *          「对端取消一条已发正文的 POST」会让请求缓冲、流式等待者与隧道记录永久驻留
+         *          （ngtcp2 归还的 MAX_STREAMS 额度还允许对端反复重来）。
+         * @param streamId 被对端取消的流
+         * @note 本函数只记下流号：它由 ngtcp2 的流回调调用，而回调期间动库、唤醒业务协程都属
+         *       「回调期间重入库」；真正的回收在下一个安全点 pump() 里做（见 drainPeerCancelledStreams）
+         */
+        void cancelStreamByPeer(std::int64_t streamId);
+
+        /**
          * @brief 头收齐时判一下：命中流式正文路由就提前派发（正文边收边交，不等整份收齐）
          * @param streamId 流号
          * @note 由 .cpp 里的 end_headers 回调转交：那时方法/路径已可判，正文还在路上
@@ -310,6 +322,12 @@ namespace AsynGyanis::Net
          * @brief 在不进 nghttp3 回调的位置唤醒各条流：起还没起过的派发协程，或叫醒等正文的那个
          */
         void wakeStreamingRequests();
+
+        /**
+         * @brief 处理承载层攒下的「对端取消」：把那些流从 nghttp3 与会话两侧一并回收
+         * @note 只能在安全点（pump() 里）调用：回收会唤醒业务协程，而它们随时可能回写响应
+         */
+        void drainPeerCancelledStreams();
 
         /// 流式响应的缓冲上界：超过就让生产者挂起，等网络排空再继续（不无限堆内存）
         static constexpr std::size_t kStreamingResponseBufferByteCount = 256U * 1024U;
@@ -520,6 +538,9 @@ namespace AsynGyanis::Net
         bool                      m_isBroken{false};     ///< 是否已作废
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
+        /// 承载层报来的「对端取消」流号：它们到的时候正在 ngtcp2 的回调里，只能先记下来，
+        /// 等 pump() 这个安全点再统一回收（见 cancelStreamByPeer / drainPeerCancelledStreams）
+        std::vector<std::int64_t> m_peerCancelledStreamIds;
         /// 流式请求的本地状态：键是流号。用 unique_ptr 持有是为了地址稳定——里面存着等待者的
         /// 协程句柄，而记录本身会被移进移出（头收齐那一刻从 m_incomingRequests 转过来）
         std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;

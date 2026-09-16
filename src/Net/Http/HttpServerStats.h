@@ -41,9 +41,9 @@ namespace AsynGyanis::Net
      *       webSocketUpgradeCount，但 101 由握手模块逐字节生成、不走 HttpResponse 序列化，
      *       故不进状态码类计数；101 之后的帧错误另进 webSocketProtocolErrorCloseCount，
      *       不并入 badRequestCount（后者的口径是 HTTP 报文解析失败，回的是 4xx）。
-     * @note streamCancelledCount 是 HTTP/2 专有口径：一条流被对端 RST_STREAM 取消只作废这一条请求
-     *       （连接与同连接上的其它流照旧工作），因此既不算已应答也不算坏请求；HTTP/1.1 上没有
-     *       「单流取消」这一形态（取消即断连），该字段恒为 0。
+     * @note streamCancelledCount 是「单流取消」这一形态的口径（HTTP/2 的 RST_STREAM、HTTP/3 的
+     *       RESET_STREAM/STOP_SENDING）：只作废这一条请求（连接与同连接上的其它流照旧工作），
+     *       因此既不算已应答也不算坏请求；HTTP/1.1 上没有这一形态（取消即断连），该字段恒为 0。
      * @see HttpMetricsCollector, HttpServer::stats()
      */
     struct HttpServerStats
@@ -72,8 +72,8 @@ namespace AsynGyanis::Net
         std::uint64_t webSocketPeerCloseCount{0};          ///< 对端发起关闭握手的次数（收到对端 Close 帧）
         std::uint64_t webSocketServerCloseCount{0};        ///< 本侧发起关闭握手的次数：正常收尾与协议错误收口都算，回应对端 Close 的回帧不算；按发起计，不看该帧是否写出成功
 
-        /// ---- HTTP/2 专有计数：单流取消不改连接状态，故与连接级的各组计数并列、口径互不覆盖 ----
-        std::uint64_t streamCancelledCount{0}; ///< 请求已收齐、但对端用 RST_STREAM 取消了该流，本端因此未发响应的条数
+        /// ---- 单流取消计数：取消不改连接状态，故与连接级的各组计数并列、口径互不覆盖 ----
+        std::uint64_t streamCancelledCount{0}; ///< 请求已收齐（或正在收），但对端用 RST_STREAM（h2）/ RESET_STREAM（h3）取消了该流，本端因此未发响应的条数
 
         /// ---- 发送路径计数：正文经内核零拷贝（sendfile）直接发出的响应条数，仅 Linux 上恒可能非零 ----
         std::uint64_t zeroCopySendCount{0}; ///< 正文走零拷贝发送的响应条数；运维据此确认静态文件的快路径是否在生效

@@ -75,6 +75,10 @@ namespace AsynGyanis::Net
             /// 只靠「处理完报文再同步一遍」会漏掉定时器驱动的 flush 里签发的标识，对端随后改用
             /// 该标识寻址时，报文会因命不中任何键被整包丢掉（实测：客户端的请求就是这样丢的）
             std::function<void(QuicConnection &connection, std::span<const std::uint8_t> connectionId)> onConnectionIdIssued;
+            /// 对端取消（RESET_STREAM / STOP_SENDING）或传输层收尾了某个请求流时的通知：
+            /// 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**对端发起的双向流**触发
+            /// （流号低两位为 0）——请求只跑在这类流上，控制流与 QPACK 流另有各自己的一套规矩
+            std::function<void(QuicConnection &connection, std::int64_t streamId)> onPeerStreamClosed;
             std::vector<std::uint8_t>  statelessResetSecret; ///< 无状态重置令牌的密钥（服务端级固定）
             std::chrono::milliseconds  idleTimeout{30000};   ///< 空闲超时
         };
@@ -199,6 +203,13 @@ namespace AsynGyanis::Net
 
         /// 丢掉某条流尚未发完的排队数据（流被重置或收尾时）
         void dropPendingStreamData(std::int64_t streamId);
+
+        /**
+         * @brief 把「对端取消了这个请求流」告诉配置里的通知方
+         * @param streamId 流号（只对端发起的双向流才转交，其余流静默忽略）
+         * @note 三条 ngtcp2 回调（stream_reset / recv_stop_sending / stream_close2）共用本入口
+         */
+        void notifyPeerStreamClosed(std::int64_t streamId);
 
         /**
          * @brief 记下某条流的待发数据被对端确认了多少，全确认了就释放这条条目

@@ -81,11 +81,14 @@ namespace AsynGyanis::Net
         }
 
         /// 一条流彻底关闭：该流的本地状态（含待发正文）都可以丢了
-        int streamCloseCallback(nghttp3_conn *, std::int64_t streamId, std::uint64_t, void *connectionUserData, void *) noexcept
+        int streamCloseCallback(nghttp3_conn *const connection, std::int64_t streamId, std::uint64_t, void *connectionUserData, void *) noexcept
         {
             auto *session = static_cast<Http3Session *>(connectionUserData);
             if (session != nullptr)
             {
+                // 先摘掉 nghttp3 手里那块正文指针（stream_user_data 指向会话持有的 OutgoingBody）：
+                // 下面的 dropRequest() 会把它释放，留下来就是悬垂指针
+                static_cast<void>(nghttp3_conn_set_stream_user_data(connection, streamId, nullptr));
                 session->dropRequest(streamId);
             }
             return 0;
@@ -403,6 +406,10 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        // 先回收承载层报来的「对端取消」：那些通知到的时候正在 ngtcp2 的回调里，此刻（处理完
+        // 一条报文之后）才是能安全动 nghttp3 与唤醒业务协程的安全点
+        drainPeerCancelledStreams();
+
         while (!m_readyRequests.empty())
         {
             const std::int64_t streamId              = m_readyRequests.front().streamId;
@@ -681,10 +688,13 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 「还没答完」的三种形态：请求已收齐但还没派发、正在收或正在跑、流式响应还在写
+        // 「还没答完」的几种形态：请求已收齐但还没派发、正在收或正在跑（流式正文的处理器挂在
+        // m_streamingRequests 上，不在这里面就会漏掉）、流式响应还在写、隧道（含还没建起来的）
         const bool isStillPending =
                 std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; }) ||
-                m_incomingRequests.contains(streamId) || m_streamingResponses.contains(streamId) || m_webSocketTunnels.contains(streamId);
+                m_incomingRequests.contains(streamId) || m_streamingRequests.contains(streamId) ||
+                m_streamingResponses.contains(streamId) || m_webSocketTunnels.contains(streamId) ||
+                m_pendingTunnelStreams.contains(streamId);
         if (isStillPending)
         {
             m_metrics->countStreamCancelled();
@@ -733,6 +743,46 @@ namespace AsynGyanis::Net
         // 记录先留着——它的派发协程可能还在跑，跑完由 reapFinishedStreamingRequests() 连同记录摘掉
         found->second->isStreamClosed = true;
         found->second->body.markBroken();
+    }
+
+    void Http3Session::cancelStreamByPeer(const std::int64_t streamId)
+    {
+        // 只记流号：本函数由 ngtcp2 的流回调调用（此刻正在读报文），而回收要动 nghttp3 并唤醒可能
+        // 立刻回写响应的业务协程——那属于「回调期间重入库」。真正的处理在 drainPeerCancelledStreams()
+        m_peerCancelledStreamIds.push_back(streamId);
+    }
+
+    void Http3Session::drainPeerCancelledStreams()
+    {
+        if (m_peerCancelledStreamIds.empty() || m_connection == nullptr || m_isBroken)
+        {
+            return;
+        }
+
+        // 整表换出来再逐条处理：回收过程会唤醒业务协程，它们可能立刻回写响应，flush 又触发新的
+        // 流收尾回调往同一张表里追加——边遍历边追加会踩到迭代器失效
+        std::vector<std::int64_t> cancelledStreamIds;
+        cancelledStreamIds.swap(m_peerCancelledStreamIds);
+
+        for (const std::int64_t streamId: cancelledStreamIds)
+        {
+            // 先计数再关流：dropRequest() 会把「还没答完」的痕迹一并抹掉，判据只在关流之前成立
+            noteStreamResetByPeer(streamId);
+
+            // 告诉 nghttp3 这条流没了：它随即调 streamCloseCallback -> dropRequest()，请求缓冲、
+            // 流式等待者与隧道记录都跟着释放（与正常收尾走同一条路，不另开清理分支）
+            const int result = nghttp3_conn_close_stream(m_connection, streamId, NGHTTP3_H3_REQUEST_CANCELLED);
+            if (result != 0 && result != NGHTTP3_ERR_STREAM_NOT_FOUND)
+            {
+                // 已经收尾的流会回 STREAM_NOT_FOUND（正常情形）；其余错误码说明这条流没释放干净
+                LOG_WARN_FMT("Http3Session: 关闭被对端取消的流 {} 时 nghttp3 报错（{}），该流的状态可能未完全释放", streamId,
+                             nghttp3_strerror(result));
+            }
+        }
+
+        // 唤醒被这些取消波及的处理器：等正文的那些只记了「有新进展」，真正的唤醒在这里做，
+        // 漏掉这一步它们就会一直挂到 QUIC 空闲超时
+        wakeStreamingRequests();
     }
 
     void Http3Session::enqueueRequest(const std::int64_t streamId)

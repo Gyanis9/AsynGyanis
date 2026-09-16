@@ -114,7 +114,11 @@ namespace AsynGyanis::Net
         int streamCloseCallback(ngtcp2_conn *const connection, const std::uint32_t, const std::int64_t streamId, const std::uint64_t,
                                 const std::uint64_t, void *const userData, void *) noexcept
         {
-            fromNative(userData)->dropPendingStreamData(streamId);
+            QuicConnection *const self = fromNative(userData);
+            self->dropPendingStreamData(streamId);
+            // 传输层这边已经收尾，会话侧不能还留着这条流：正常收尾时状态早已摘干净（本条因此是空操作），
+            // 半途收口的那种才是它要救的（nghttp3 看不到 QUIC 层的收尾信号）
+            self->notifyPeerStreamClosed(streamId);
             // 只还「对端发起的双向流」（流号低两位为 0）：单向流与本地发起的流用的不是同一份额度
             if ((streamId & 0x03) == 0)
             {
@@ -123,15 +127,33 @@ namespace AsynGyanis::Net
             return 0;
         }
 
-        /// 对端重置了一条流：同样丢掉该流的待发数据
-        int streamResetCallback(ngtcp2_conn *, const std::int64_t streamId, const std::uint64_t, const std::uint64_t, void *const userData,
-                                void *) noexcept
+        /// 对端重置了一条流：丢掉该流的待发数据、把传输层的这条流一并收掉，并通知上层
+        int streamResetCallback(ngtcp2_conn *const connection, const std::int64_t streamId, const std::uint64_t, const std::uint64_t appErrorCode,
+                                void *const userData, void *) noexcept
         {
-            fromNative(userData)->dropPendingStreamData(streamId);
+            QuicConnection *const self = fromNative(userData);
+            self->dropPendingStreamData(streamId);
+            // 对端只重置了它自己那一侧（RESET_STREAM 只作用于发送方向），本端这一侧若不再发响应就会
+            // 永远半开着：对端的 MAX_STREAMS 额度收不回去，反复取消几次它连新请求都开不出来。
+            // 本端既然按「这条请求作废」处理，这条流就整体收掉
+            static_cast<void>(ngtcp2_conn_shutdown_stream(connection, 0, streamId, appErrorCode));
+            self->notifyPeerStreamClosed(streamId);
             return 0;
         }
 
-        /// 对端要求本端停止发送：本端据此收手
+        /// 对端要求本端停止发送（STOP_SENDING）：本端不再有响应可发，把这条流整体收掉
+        int receiveStopSendingCallback(ngtcp2_conn *const connection, const std::int64_t streamId, const std::uint64_t appErrorCode,
+                                       void *const userData, void *) noexcept
+        {
+            QuicConnection *const self = fromNative(userData);
+            self->dropPendingStreamData(streamId);
+            static_cast<void>(ngtcp2_conn_shutdown_stream(connection, 0, streamId, appErrorCode));
+            self->notifyPeerStreamClosed(streamId);
+            return 0;
+        }
+
+        /// 本端不再读一条流（ngtcp2 对 shutdown_stream_read 的回执）：丢掉该流排队中的待发数据。
+        /// 注意这与「对端要求本端停止发送」不是一回事，后者见 receiveStopSendingCallback
         int stopSendingCallback(ngtcp2_conn *, const std::int64_t streamId, const std::uint64_t, void *const userData, void *) noexcept
         {
             fromNative(userData)->dropPendingStreamData(streamId);
@@ -235,6 +257,7 @@ namespace AsynGyanis::Net
                 .version_negotiation            = ngtcp2_crypto_version_negotiation_cb,
                 .get_new_connection_id2         = newConnectionIdCallback,
                 .get_path_challenge_data2       = ngtcp2_crypto_get_path_challenge_data2_cb,
+                .recv_stop_sending              = receiveStopSendingCallback,
                 .stream_close2                  = streamCloseCallback,
         };
 
@@ -428,6 +451,20 @@ namespace AsynGyanis::Net
     void QuicConnection::dropPendingStreamData(const std::int64_t streamId)
     {
         m_pendingStreamData.erase(streamId);
+    }
+
+    void QuicConnection::notifyPeerStreamClosed(const std::int64_t streamId)
+    {
+        // 只转交对端发起的双向流（流号低两位为 0）：请求跑在这类流上，控制流与 QPACK 流
+        // 无论收口还是重置都有自己的规矩（RFC 9114 §6.2.1），不该被当成「请求被取消」
+        if (streamId < 0 || (streamId & 0x03) != 0)
+        {
+            return;
+        }
+        if (m_configuration.onPeerStreamClosed)
+        {
+            m_configuration.onPeerStreamClosed(*this, streamId);
+        }
     }
 
     void QuicConnection::acknowledgePendingStreamData(const std::int64_t streamId, const std::uint64_t offset, const std::uint64_t dataLength)

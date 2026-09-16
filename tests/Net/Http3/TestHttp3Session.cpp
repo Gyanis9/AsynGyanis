@@ -1081,6 +1081,79 @@ namespace AsynGyanis::Net
         EXPECT_EQ(peer.response().body, "uploaded") << "处理器的响应没有回到客户端";
     }
     /**
+     * @brief 对端取消（RESET_STREAM）一条正在收正文的流：会话在下一个安全点把它整条回收
+     * @details nghttp3 看不到 QUIC 层的重置信号。少了承载层这一路通知，被取消的请求会连同已攒下的
+     *          正文一直留在会话里（对端还能靠归还的 STREAMS 额度反复重来），等正文的处理器更是永远
+     *          等不到唤醒。这条用例钉住三件事：处理器被唤醒收尾、请求不再被应答、计入单流取消
+     */
+    TEST(Http3Session, ReclaimsStreamCancelledByPeer)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             },
+                             Http3Session::StreamCrediter{}, metrics);
+
+        constexpr std::size_t    kChunkByteCount = 4;
+        const std::string        body            = "abcdefghijkl"; // 共 3 批
+        std::vector<std::size_t> observedChunkByteCounts;
+        bool                     isHandlerEntered  = false;
+        bool                     isHandlerFinished = false;
+
+        Router router;
+        router.postStreaming("/upload",
+                             [&observedChunkByteCounts, &isHandlerEntered, &isHandlerFinished](HttpRequest &request,
+                                                                                              HttpResponse &) -> Core::Task<>
+                             {
+                                 isHandlerEntered = true;
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                     observedChunkByteCounts.push_back(request.bodyStream()->chunk().size());
+                                 }
+                                 // 流被取消后 readNext() 必须终止循环；挂在这里就是「等待者永不唤醒」那个缺陷
+                                 isHandlerFinished = true;
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", body, kChunkByteCount));
+
+        // 只送到「处理器进入且读到第一批」为止：此刻正文还没收完，这条流是活的
+        bool isFirstChunkObserved = false;
+        for (std::size_t stepIndex = 0; stepIndex < 16 && !isFirstChunkObserved; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+            isFirstChunkObserved = isHandlerEntered && !observedChunkByteCounts.empty();
+        }
+        ASSERT_TRUE(isFirstChunkObserved) << "用例前提：处理器应当在正文收齐之前就拿到第一批";
+
+        // 对端放弃这条请求：承载层把 RESET_STREAM 转成这一声通知，回收发生在下一个安全点（pump）
+        session.cancelStreamByPeer(kFirstRequestStreamId);
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_TRUE(isHandlerFinished) << "流被取消后等正文的处理器没有醒过来：等待者被留在了已摘掉的记录上";
+        const bool hasRequestStreamBytes =
+                std::ranges::any_of(sentStreamData, [](const CapturedStreamData &sent) { return sent.streamId == kFirstRequestStreamId; });
+        EXPECT_FALSE(hasRequestStreamBytes) << "被取消的流不该再发出任何响应字节";
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.streamCancelledCount, 1U) << "被对端取消的流没有计入单流取消";
+    }
+
+    /**
      * @brief h3 上跑 WebSocket：扩展 CONNECT（RFC 9220）建隧道，帧在流上原样收发
      * @details 隧道建立之后这条流上跑的就是 WebSocket 帧本身（不是 h3 正文），因此这里手工造一个带
      *          掩码的文本帧喂进去，断言业务把同样的负载回显回来——回显帧由服务端发出，不带掩码，
