@@ -1077,9 +1077,10 @@ namespace AsynGyanis::Net
             co_return false; // 隧道已经收口，调用方应停止写入
         }
 
-        const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
-        // 承载侧的流已经关闭：写多少都出不去，直接按失败收手，别让调用方白等
-        if (state->isStreamClosed)
+        // 只查表：对端已经重置这条流时它不在表里，重建只会留下永远清理不掉的条目
+        const std::shared_ptr<StreamingResponse> state = findStreamingResponse(streamId);
+        // 状态不在（流已被重置）或承载侧的流已经关闭：写多少都出不去，直接按失败收手
+        if (state == nullptr || state->isStreamClosed)
         {
             co_return false;
         }
@@ -1173,8 +1174,16 @@ namespace AsynGyanis::Net
                                     {
                                         co_return true;
                                     }
+                                    // 这块路径保持「按需建表」：首个写入块发生在状态建立之前，
+                                    // 只查不建会让第一块直接失败（另一条路径——隧道帧——才必须只查不建）
                                     co_return co_await sendStreamingChunk(streamId, streamingResponseFor(streamId), response, chunk);
                                 });
+    }
+
+    std::shared_ptr<Http3Session::StreamingResponse> Http3Session::findStreamingResponse(const std::int64_t streamId) const noexcept
+    {
+        const auto entry = m_streamingResponses.find(streamId);
+        return entry == m_streamingResponses.end() ? nullptr : entry->second;
     }
 
     std::shared_ptr<Http3Session::StreamingResponse> Http3Session::streamingResponseFor(const std::int64_t streamId)

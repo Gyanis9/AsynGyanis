@@ -359,6 +359,16 @@ namespace AsynGyanis::Net
         std::shared_ptr<StreamingResponse> streamingResponseFor(std::int64_t streamId);
 
         /**
+         * @brief 查一条流已有的流式响应状态（**只查不建**）
+         * @details 对端已经重置这条流时表里没有它：此时重建一个「未关闭」的新状态会让条目与
+         *          其中的字节永久驻留（没人再置位、也没人清理），大帧还会卡在等缓冲空间那里
+         *          永远等下去。发送侧因此一律只查表，查不到按「流没了」处理
+         * @param streamId 流号
+         * @return 状态；该流没有登记时为空
+         */
+        [[nodiscard]] std::shared_ptr<StreamingResponse> findStreamingResponse(std::int64_t streamId) const noexcept;
+
+        /**
          * @brief 提交流式响应的响应头（第一次写块时才提交：此刻业务设的头部才齐）
          * @param streamId 流号
          * @param state 该流的状态
