@@ -12,6 +12,14 @@ namespace AsynGyanis::Core
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
         //「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
         m_scheduler.setWakeupNotifier(&m_wakeup);
+
+        // 唤醒描述符建不起来（fd 耗尽等）：stop() 再也唤不醒阻塞在 epoll_wait 上的线程，
+        // 收尾时的 join 会永久挂住，跨线程投递也永远不执行——启动期就当场失败，不要留一个
+        // 「能跑但停不下来」的循环（与 TimerQueue 对描述符失败的处理同一口径）
+        if (!m_wakeup.isValid())
+        {
+            throw Base::SystemException("创建事件循环的唤醒描述符失败：跨线程投递与 stop() 都将无法工作");
+        }
         m_epoll.addFileDescriptor(m_wakeup.readDescriptor(), EPOLLIN, &m_wakeupSentinel);
     }
 
