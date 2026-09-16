@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -230,7 +231,12 @@ namespace AsynGyanis::Net
          */
         struct PendingStreamData
         {
-            std::string bytes;            ///< 待发字节
+            /// 待发字节按**块**存放，每块一旦入列就不再改动：
+            /// 上面那条「必须活到确认」的承诺要求地址稳定，而整块 std::string 追加会重分配——
+            /// 先前交给 ngtcp2 的指针随即悬垂（重传读已释放内存，或发出搬走后的坏字节）
+            std::deque<std::string> blocks;         ///< 尚未丢弃的字节块（最旧的在前面）
+            std::size_t discardedByteCount{0};      ///< 已从头部丢弃的字节数（绝对偏移的基准）
+            std::size_t totalByteCount{0};          ///< 累计入列字节数（含已丢弃与已确认的）
             std::size_t offset{0};        ///< 已交给 ngtcp2 的字节数（它内部的重传仍要用这些字节）
             std::size_t ackedOffset{0};   ///< 已被对端确认的字节数：到多少才能释放多少
             bool        isEndStream{false}; ///< 发完是否收尾

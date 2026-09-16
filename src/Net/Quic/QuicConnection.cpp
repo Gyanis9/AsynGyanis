@@ -3,7 +3,9 @@
 #include "Base/Log/LogMacros.h"
 #include "Platform/IO/DatagramSocket.h"
 
+#include <array>
 #include <cstring>
+#include <span>
 #include <utility>
 
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -443,8 +445,16 @@ namespace AsynGyanis::Net
             pending.ackedOffset = acknowledgedEnd;
         }
 
+        // 整块都确认过的块可以从头部丢掉：重传只会读未确认的那部分，
+        // 「地址稳定」的承诺也只对未确认字节有效
+        while (!pending.blocks.empty() && pending.discardedByteCount + pending.blocks.front().size() <= pending.ackedOffset)
+        {
+            pending.discardedByteCount += pending.blocks.front().size();
+            pending.blocks.pop_front();
+        }
+
         // 全部确认之后这些字节再没人会读（重传只用未确认的那部分），这时才释放
-        if (pending.ackedOffset >= pending.bytes.size())
+        if (pending.ackedOffset >= pending.totalByteCount)
         {
             m_pendingStreamData.erase(pendingEntry);
         }
@@ -460,10 +470,18 @@ namespace AsynGyanis::Net
         }
     }
 
+    namespace
+    {
+        /// 一次 flush 最多带几块的向量：多出来的块留到下一轮（ngtcp2 允许部分写）
+        constexpr std::size_t kMaximumVectorsPerFlush = 16;
+    } // namespace
+
     void QuicConnection::queueStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
     {
         PendingStreamData &pending = m_pendingStreamData[streamId];
-        pending.bytes.append(reinterpret_cast<const char *>(data.data()), data.size());
+        // 每次入列单独成块：块地址此后不再变动，ngtcp2 手里的指针始终有效
+        pending.blocks.emplace_back(reinterpret_cast<const char *>(data.data()), data.size());
+        pending.totalByteCount += data.size();
         pending.isEndStream = pending.isEndStream || endStream;
         m_needsFlush       = true;
     }
@@ -546,6 +564,35 @@ namespace AsynGyanis::Net
         m_needsFlush = false;
 
         std::vector<std::uint8_t> packetBuffer(Platform::DatagramSocket::kMaximumDatagramBytes);
+        std::array<ngtcp2_vec, kMaximumVectorsPerFlush> dataVectorScratch{};
+
+        // 把「已交给 ngtcp2 之后剩下的待发区间」按块整理成向量数组：每块的地址在整个
+        // 「已交出去」期间都不变，ngtcp2 重传时读到的仍是同一段内存
+        const auto collectVectors = [&dataVectorScratch](const PendingStreamData &pending) noexcept -> std::size_t
+        {
+            std::size_t count      = 0;
+            std::size_t blockStart = pending.discardedByteCount;
+            for (const std::string &block: pending.blocks)
+            {
+                const std::size_t blockEnd = blockStart + block.size();
+                if (blockEnd <= pending.offset)
+                {
+                    blockStart = blockEnd;
+                    continue; // 这一块已经整块交给 ngtcp2 了
+                }
+                const std::size_t from = pending.offset > blockStart ? pending.offset - blockStart : 0;
+                dataVectorScratch[count] =
+                        ngtcp2_vec{reinterpret_cast<std::uint8_t *>(const_cast<char *>(block.data())) + from, block.size() - from};
+                ++count;
+                blockStart = blockEnd;
+                if (count == dataVectorScratch.size())
+                {
+                    break;
+                }
+            }
+            return count;
+        };
+
         for (std::size_t packetIndex = 0; packetIndex < kMaximumPacketsPerFlush; ++packetIndex)
         {
             // 本轮要发的都从当前待发表里现取，所以先把「再写一轮」的请求清掉；它在本轮等发送期间
@@ -553,7 +600,6 @@ namespace AsynGyanis::Net
             const bool wasRequested = std::exchange(m_hasFlushRequest, false);
 
             // 一次只带一条流的数据：ngtcp2 的写接口按流给数据；没有流数据可带时用流号 -1 写控制帧
-            ngtcp2_vec   dataVector{};
             ngtcp2_vec  *dataVectors     = nullptr;
             std::size_t  dataVectorCount = 0;
             std::int64_t streamId        = -1;
@@ -563,7 +609,7 @@ namespace AsynGyanis::Net
             for (auto &pendingEntry: m_pendingStreamData)
             {
                 PendingStreamData &pending = pendingEntry.second;
-                const bool hasUnsentData = pending.offset < pending.bytes.size();
+                const bool hasUnsentData = pending.offset < pending.totalByteCount;
                 // 「收尾还没有交给 ngtcp2」也要选出来：nghttp3 在正文写完时只报收尾、不带数据，
                 // 而这种收尾可能单独到达（字节早已发完、条目还在等确认），
                 // 只按「还有字节要发」挑流会让 END_STREAM 永远发不出去（对端只能等空闲超时）
@@ -574,10 +620,10 @@ namespace AsynGyanis::Net
                 streamId = pendingEntry.first;
                 if (hasUnsentData)
                 {
-                    dataVector.base = reinterpret_cast<std::uint8_t *>(pending.bytes.data() + pending.offset);
-                    dataVector.len  = pending.bytes.size() - pending.offset;
-                    dataVectors     = &dataVector;
-                    dataVectorCount = 1;
+                    // 待发区间可能横跨多块：按块各出一个向量交给 ngtcp2（它自己按窗口截断），
+                    // 每块的地址在整个「已交出去」期间都不变
+                    dataVectorCount = collectVectors(pending);
+                    dataVectors     = dataVectorScratch.data();
                 }
                 if (pending.isEndStream)
                 {
@@ -639,7 +685,7 @@ namespace AsynGyanis::Net
                     // 这一次把剩下的字节全写完了，说明随段带的收尾也已被 ngtcp2 收下
                     // （它只在「给的数据全部写完」时才把 FIN 置进帧）：记下来，
                     // 免得后续再为同一条流反复投一次只带收尾的写
-                    if (pending.isEndStream && pending.offset >= pending.bytes.size())
+                    if (pending.isEndStream && pending.offset >= pending.totalByteCount)
                     {
                         pending.isFinSent = true;
                     }
