@@ -161,8 +161,11 @@ namespace AsynGyanis::Core
 
         std::unique_ptr<SSL, SslDeleter> m_ssl;                  ///< OpenSSL SSL 对象，RAII 管理
         /// 「反方向已被占用」时让出一次调度的时长：远小于任何握手/读超时口径，
-        /// 只用来把控制权交回事件循环，让对方那个方向的协程先跑一步
-        static constexpr std::chrono::milliseconds kPeerProgressYieldInterval{1};
+        /// 只用来把控制权交回事件循环，让对方那个方向的协程先跑一步。
+        /// 5ms 而非 1ms：对方方向靠自己的 I/O 事件推进，与本间隔无关，间隔只决定「本方向多久后
+        /// 重试一次」——1ms 会在停顿期间造成近千赫兹的定时器唤醒，而 5ms 的重试延迟在握手场景里
+        /// 完全够用
+        static constexpr std::chrono::milliseconds kPeerProgressYieldInterval{5};
 
         /**
          * @brief 让出一次调度（定时器驱动），等反方向先推进
