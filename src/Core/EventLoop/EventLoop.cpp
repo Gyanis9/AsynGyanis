@@ -64,8 +64,15 @@ namespace AsynGyanis::Core
                     {
                         // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
                         // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
-                        //（它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）
-                        static_cast<IoWatcher *>(ev.data.ptr)->handleEvents(ev.events);
+                        //（它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）。
+                        // **派发前先确认对象还活着**：这一批是批量取回来的，先前处理的那条事件
+                        // 可能已经把它所属的连接关掉（会话收口就是这么做的），此时再派发就是
+                        // 往已释放对象里写成员
+                        auto *const watcher = static_cast<IoWatcher *>(ev.data.ptr);
+                        if (isWatcherAlive(watcher))
+                        {
+                            watcher->handleEvents(ev.events);
+                        }
                     }
                 }
 
@@ -109,6 +116,24 @@ namespace AsynGyanis::Core
     Scheduler &EventLoop::scheduler() noexcept
     {
         return m_scheduler;
+    }
+
+    void EventLoop::registerWatcher(const IoWatcher *const watcher)
+    {
+        const std::lock_guard lock(m_liveWatcherMutex);
+        m_liveWatchers.insert(watcher);
+    }
+
+    void EventLoop::unregisterWatcher(const IoWatcher *const watcher)
+    {
+        const std::lock_guard lock(m_liveWatcherMutex);
+        m_liveWatchers.erase(watcher);
+    }
+
+    bool EventLoop::isWatcherAlive(const IoWatcher *const watcher) const
+    {
+        const std::lock_guard lock(m_liveWatcherMutex);
+        return m_liveWatchers.contains(watcher);
     }
 
     TimerQueue &EventLoop::timerQueue() noexcept

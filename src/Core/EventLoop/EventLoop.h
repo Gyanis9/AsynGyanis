@@ -15,6 +15,8 @@
 #include "Core/Coroutine/Scheduler.h"
 
 #include <atomic>
+#include <mutex>
+#include <unordered_set>
 
 namespace AsynGyanis::Core
 {
@@ -29,6 +31,7 @@ namespace AsynGyanis::Core
      *       这个取舍是刻意的——它保证「先 stop() 后 run()」的时序不会丢失停止请求，
      *       而 start() 之后立刻 stop() 正是常见写法。需要重新运行请新建 EventLoop 实例。
      */
+    class IoWatcher;
     class EventLoop
     {
     public:
@@ -91,12 +94,40 @@ namespace AsynGyanis::Core
         [[nodiscard]] TimerQueue &timerQueue() noexcept;
 
         /**
+         * @brief 登记一个存活的事件注册对象（由 IoWatcher 的构造调用）
+         * @param watcher 目标对象（非拥有）
+         */
+        void registerWatcher(const IoWatcher *watcher);
+
+        /**
+         * @brief 注销一个事件注册对象（由 IoWatcher 的析构调用）
+         * @param watcher 目标对象（非拥有）
+         */
+        void unregisterWatcher(const IoWatcher *watcher);
+
+        /**
+         * @brief 该事件注册对象是否仍然存活
+         * @details 事件是**批量**从内核取回来的：先处理的那条事件有可能销毁后一条事件所属的对象
+         *          （会话收口时顺手关掉另一条连接就是这条路径），因此派发前必须确认接收对象还在。
+         *          少了这一步，后一条事件就是往已释放对象里写成员并 resume 垃圾句柄。
+         * @param watcher 目标对象
+         * @return true 仍在登记表里，可以安全派发
+         * @note 登记与注销都可能发生在别的线程上（收尾时从外部线程关闭连接会析构它的注册对象），
+         *       因此内部加锁；派发路径上的判定也在同一把锁内，代价是一次未争用的互斥锁
+         */
+        [[nodiscard]] bool isWatcherAlive(const IoWatcher *watcher) const;
+
+        /**
          * @brief 检查事件循环是否正在运行
          * @return true 表示正处于 run() 循环中，false 表示已停止或尚未启动
          */
         [[nodiscard]] bool isRunning() const noexcept;
 
     private:
+        /// 存活登记表：IoWatcher 构造/析构时登记与注销，事件派发前据此确认接收对象还活着
+        mutable std::mutex                  m_liveWatcherMutex;
+        std::unordered_set<const IoWatcher *> m_liveWatchers;
+
         Epoll                   m_epoll;          ///< epoll 事件管理器
         Scheduler               m_scheduler;      ///< 协程调度器，管理待运行的任务队列
         Platform::EventNotifier m_wakeup;         ///< 跨线程唤醒器

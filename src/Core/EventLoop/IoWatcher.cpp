@@ -80,6 +80,9 @@ namespace AsynGyanis::Core
         }
         m_isRegistered = true;
         m_armedEvents  = EPOLLIN;
+        // 存活登记：事件是批量派发的，先处理的那条事件可能销毁本对象所属的连接，
+        // 循环据此在派发前确认接收对象还在（见 EventLoop::isWatcherAlive）
+        m_loop->registerWatcher(this);
     }
 
     IoWatcher::~IoWatcher()
@@ -101,6 +104,7 @@ namespace AsynGyanis::Core
         }
         m_isRegistered = false;
         m_armedEvents  = 0;
+        m_loop->unregisterWatcher(this);
 
         if (m_fileDescriptor >= 0)
         {
