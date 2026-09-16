@@ -170,6 +170,13 @@ namespace AsynGyanis::Core
         void translateCompletion(const OVERLAPPED_ENTRY &entry);
 
         /**
+         * @brief 把「探针投递时就撞上硬错误」的方向合成成错误事件交给等待方
+         * @details 这类方向没有完成通知可等：只记重投的话等待方永远收不到任何事件（epoll 此时
+         *          会报 EPOLLERR|EPOLLHUP，Windows 没有等价物，只能自己造）
+         */
+        void harvestSyntheticErrorEvents();
+
+        /**
          * @brief 取消一个状态上的全部在途探针
          * @param state 目标状态
          * @note 取消是异步的：完成通知仍会入队，由它的回收路径收尾

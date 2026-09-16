@@ -80,6 +80,15 @@ namespace AsynGyanis::Core
         /// 是否数据报套接字（SOCK_DGRAM）：-1 未知、0 否、1 是。数据报无连接，read 探针的
         /// 「先确认已连上」守卫对它必然不成立，而 WSARecv 在无连接 UDP 上本就合法
         int isDatagramSocket{-1};
+
+        /// 「连接性已确认」：-1 未知、1 已确认。已连上的流式套接字与数据报套接字都属于这一类，
+        /// 此后每次武装都可以跳过 SO_ACCEPTCONN 与 getpeername 两次探测（各一次内核往返）
+        int isConnectivitySettled{-1};
+
+        /// 探针投递时就撞上硬错误（对端复位、套接字已失效）的方向位：没有完成通知可等，
+        /// 由 wait() 合成一条错误事件交给等待方，见 harvestSyntheticErrorEvents()
+        std::uint32_t readyDirections{0};
+
         bool          isDeleted{false};               ///< 已注销但仍有完成通知在队，见 m_graveyard
         std::uint32_t failedDirections{0};            ///< 上一次投递失败的方向位（等下一次 wait() 重试）
         bool          isArmRetryQueued{false};        ///< 是否已排进待重试表（避免重复入表）
@@ -332,6 +341,19 @@ namespace AsynGyanis::Core
         return true;
     }
 
+    /**
+     * @brief 探针投递失败是否属于「等下一拍再来」的可重试错误
+     * @details 连接尚未建立（监听描述符还没 listen()、客户端套接字还没 connect 完）与发送缓冲
+     *          暂时满都会自愈，值得下一拍重投；其余（对端复位、描述符已失效、参数非法）是硬错误，
+     *          再重投也不会变好——那条路径交给 wait() 合成一条错误事件让等待方立刻收尾
+     * @param socketError WSASend/WSARecv 返回的错误码
+     * @return true 可重试
+     */
+    [[nodiscard]] static bool isRetryableProbeFailure(const int socketError) noexcept
+    {
+        return socketError == WSAEWOULDBLOCK || socketError == WSAENOTCONN || socketError == WSAEINPROGRESS;
+    }
+
     bool Iocp::armProbe(SocketState &state, const std::uint32_t direction, std::string *const errorText)
     {
         if (direction == EPOLLIN)
@@ -342,8 +364,10 @@ namespace AsynGyanis::Core
             }
             // 监听态要在这里现查而不是注册时查一次：IoWatcher 在 AsyncSocket 构造时就注册了，
             // 那时 listen() 还没被调用，SO_ACCEPTCONN 必然是 0（实测：因此把监听描述符当成
-            // 普通套接字投了 WSARecv，得到 10057 且再没有任何完成通知，接受路径整个卡死）
-            if (!state.isListening)
+            // 普通套接字投了 WSARecv，得到 10057 且再没有任何完成通知，接受路径整个卡死）。
+            // 连接性一旦确认过就不再查：已连接的套接字不会变回监听态，而这次查询与下面的
+            // getpeername 都是内核往返，落在「每条可读事件后的重新武装」这条热路径上
+            if (!state.isListening && state.isConnectivitySettled != 1)
             {
                 int acceptConnection = 0;
                 int optionLength     = static_cast<int>(sizeof(acceptConnection));
@@ -372,6 +396,11 @@ namespace AsynGyanis::Core
                                         socketType == SOCK_DGRAM
                                 ? 1
                                 : 0;
+                if (state.isDatagramSocket == 1)
+                {
+                    // 数据报无连接：连接性探测（getpeername）对它没有意义，此后一并跳过
+                    state.isConnectivitySettled = 1;
+                }
             }
 
             // 还没连上的套接字不能投读探针：客户端套接字在 connect 完成之前、监听描述符在 listen()
@@ -390,6 +419,8 @@ namespace AsynGyanis::Core
                     noteArmFailure(state, EPOLLIN);
                     return false;
                 }
+                // 连上了就不会再退回去：此后这次探测与上面的 SO_ACCEPTCONN 查询都不必再做
+                state.isConnectivitySettled = 1;
             }
 
             std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
@@ -404,10 +435,16 @@ namespace AsynGyanis::Core
                 state.failedDirections &= ~EPOLLIN;
                 return true;
             }
-            noteArmFailure(state, EPOLLIN);
+            const int readSocketError = ::WSAGetLastError();
+            if (!isRetryableProbeFailure(readSocketError))
+            {
+                // 硬错误（对端复位、描述符已失效）：这条套接字上不会再有任何完成通知，
+                // 只记重投的话等待方永远收不到事件——合成一条错误事件让它立刻收尾
+                state.readyDirections |= EPOLLIN;
+            }
             if (errorText != nullptr)
             {
-                *errorText = std::format("投递可读探针失败（WSARecv 错误码 {}）", ::WSAGetLastError());
+                *errorText = std::format("投递可读探针失败（WSARecv 错误码 {}）", readSocketError);
             }
             return false;
         }
@@ -428,10 +465,16 @@ namespace AsynGyanis::Core
             state.failedDirections &= ~EPOLLOUT;
             return true;
         }
-        noteArmFailure(state, EPOLLOUT);
+        const int writeSocketError = ::WSAGetLastError();
+        if (!isRetryableProbeFailure(writeSocketError))
+        {
+            // 与读侧同一处置：硬错误（对端复位后零字节 WSASend 直接返回 WSAECONNRESET，实测确认）
+            // 不会再有任何完成通知，合成一条错误事件让等待方立刻去拿真实错误
+            state.readyDirections |= EPOLLOUT;
+        }
         if (errorText != nullptr)
         {
-            *errorText = std::format("投递可写探针失败（WSASend 错误码 {}）", ::WSAGetLastError());
+            *errorText = std::format("投递可写探针失败（WSASend 错误码 {}）", writeSocketError);
         }
         return false;
     }
@@ -547,6 +590,36 @@ namespace AsynGyanis::Core
         // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接
     }
 
+    void Iocp::harvestSyntheticErrorEvents()
+    {
+        for (auto &[fileDescriptor, state]: m_sockets)
+        {
+            static_cast<void>(fileDescriptor);
+            if (state->readyDirections == 0)
+            {
+                continue;
+            }
+            const std::uint32_t directions = state->readyDirections;
+            state->readyDirections         = 0;
+            if (state->isDeleted)
+            {
+                // 已注销：通知只用来清账，上层的注册对象可能已经析构（与 translateCompletion 同一口径）
+                continue;
+            }
+            epoll_event event{};
+            event.data.ptr = state->userData;
+            event.events   = directions | EPOLLERR | EPOLLHUP;
+            const std::size_t existingResultIndex = findResultSlot(event.data.ptr);
+            if (existingResultIndex != kEmptyResultSlot)
+            {
+                m_results[existingResultIndex].events |= event.events;
+                continue;
+            }
+            noteResultSlot(event.data.ptr, m_results.size());
+            m_results.push_back(event);
+        }
+    }
+
     std::span<epoll_event> Iocp::wait(const int timeoutMs)
     {
         // 补投上一次失败的探针：注册成功但当时武装不上（监听描述符还没 listen() 等）的方向
@@ -557,6 +630,17 @@ namespace AsynGyanis::Core
         // 与 epoll_wait 每次重新取一次就绪状态等价（若先武装再交付，会被自己刚看到的数据
         // 立刻再触发一次，白白多绕一圈）
         rearmLevelTriggered();
+
+        // 探针投递时就撞上硬错误的方向没有完成通知可等（对端复位后零字节 WSASend 直接返回
+        // WSAECONNRESET，实测确认）：在这里合成错误事件，让等待方立刻醒来去拿真实错误。
+        // 有事件就直接返回，不进入阻塞等待
+        m_results.clear();
+        resetResultMergeTable();
+        harvestSyntheticErrorEvents();
+        if (!m_results.empty())
+        {
+            return {m_results.data(), m_results.size()};
+        }
 
         const ULONG timeout = timeoutMs < 0 ? INFINITE : static_cast<ULONG>(timeoutMs);
         DWORD       entryCount = 0;

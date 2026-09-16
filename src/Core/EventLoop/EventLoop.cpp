@@ -20,7 +20,12 @@ namespace AsynGyanis::Core
         {
             throw Base::SystemException("创建事件循环的唤醒描述符失败：跨线程投递与 stop() 都将无法工作");
         }
-        m_epoll.addFileDescriptor(m_wakeup.readDescriptor(), EPOLLIN, &m_wakeupSentinel);
+        // 建起来了还要注册成功才算数：注册失败（epoll 实例的 watch 配额打满等）时写入唤醒描述符
+        // 不会被监听，stop() 唤不醒阻塞中的 wait()，收尾的 join 仍会永久挂住——与上面同一口径当场抛
+        if (!m_epoll.addFileDescriptor(m_wakeup.readDescriptor(), EPOLLIN, &m_wakeupSentinel))
+        {
+            throw Base::SystemException("把唤醒描述符注册进事件后端失败：跨线程投递与 stop() 都将无法工作");
+        }
     }
 
     EventLoop::~EventLoop()

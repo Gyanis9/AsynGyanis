@@ -128,6 +128,12 @@ namespace AsynGyanis::Core
                     {
                         throw CoreException("TLS 读取失败：等写侧推进时定时器不可用（描述符耗尽？）");
                     }
+                    if (m_ssl == nullptr)
+                    {
+                        // 让出期间连接被关停（TcpServer 的清扫/优雅收口都会走到 close()）：
+                        // 恢复后 m_ssl 已是空，再交给 SSL_read 就是空指针解引用
+                        throw CoreException("TLS 读取失败：等对端推进期间连接已被关闭");
+                    }
                     continue;
                 }
                 if (!co_await m_socket.waitWritable())
@@ -173,6 +179,21 @@ namespace AsynGyanis::Core
             const int error = SSL_get_error(m_ssl.get(), ret);
             if (error == SSL_ERROR_WANT_WRITE)
             {
+                // 与读侧对称：写方向若已被写协程占着（一条 TlsSocket 上读写各由一个协程驱动），
+                // 不能去抢等待槽——抢槽会直接抛 LogicException，把一次可自愈的等待变成硬故障。
+                // 让出一次调度，由占槽的一方先把字节发出去，再回来重试
+                if (m_socket.isWaitingWritable())
+                {
+                    if (!co_await yieldForPeerProgress())
+                    {
+                        throw CoreException("TLS 写入失败：等写侧推进时定时器不可用（描述符耗尽？）");
+                    }
+                    if (m_ssl == nullptr)
+                    {
+                        throw CoreException("TLS 写入失败：等对端推进期间连接已被关闭");
+                    }
+                    continue;
+                }
                 if (!co_await m_socket.waitWritable())
                 {
                     throw CoreException("TLS 写入失败：等待可写期间套接字被关闭");
