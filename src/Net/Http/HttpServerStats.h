@@ -143,16 +143,28 @@ namespace AsynGyanis::Net
          */
         void recordResponse(const int statusCode, const std::chrono::steady_clock::duration elapsed) noexcept
         {
-            if (std::atomic<std::uint64_t> *classCounter = statusClassCounter(statusCode); classCounter != nullptr)
-            {
-                classCounter->fetch_add(1, std::memory_order_relaxed);
-            }
+            countResponseStatus(statusCode);
 
             // 延迟照记：即便状态码不在 1xx~5xx 内，这次请求的耗时也是真实发生过的
             m_latencyBucketCounts[latencyBucketIndex(elapsed)].fetch_add(1, std::memory_order_relaxed);
             m_totalLatencyMicroseconds.fetch_add(
                     static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()),
                     std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 只记一条已发出的响应的状态码类，不落延迟样本
+         * @details 给拿不到可信请求耗时的会话用（HTTP/3 各流由传输层驱动，会话没有「收到完整请求」
+         *          那一刻的戳），让它们的流量至少出现在请求数与状态码类里。**不要用 0 秒糊弄**：
+         *          那会把延迟直方图与 _sum 写脏，让两个协议的耗时混在一张图里失去意义
+         * @param statusCode 响应状态码；1xx~5xx 之外的取值不计入任何一类（本框架不会发出这种状态码）
+         */
+        void countResponseStatus(const int statusCode) noexcept
+        {
+            if (std::atomic<std::uint64_t> *classCounter = statusClassCounter(statusCode); classCounter != nullptr)
+            {
+                classCounter->fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         /// WebSocket 各项计数与上面几组同档：都用放宽内存序，只做累加，读侧不依赖字段间的先后次序
@@ -198,7 +210,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 记一条被对端 RST_STREAM 取消了单流的 HTTP/2 请求（本端因此未再发送响应）
+         * @brief 记一条被对端取消了的单流请求（HTTP/2 的 RST_STREAM、HTTP/3 的 RESET_STREAM）
          * @note 只作废这一条请求：连接与同连接上的其它流照旧工作，故不计入 badRequestCount
          */
         void countStreamCancelled() noexcept

@@ -207,7 +207,8 @@ namespace AsynGyanis::Net
                 [rawConnection](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                 { rawConnection->queueStreamData(streamId, data, isEndStream); },
                 [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
-                { rawConnection->extendReceiveWindow(streamId, consumedByteCount); });
+                { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
+                m_configuration.metricsCollector);
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);
@@ -219,6 +220,18 @@ namespace AsynGyanis::Net
         Http3Session &createdSession = *session;
         m_http3Sessions.emplace(rawConnection, std::move(session));
         return createdSession;
+    }
+
+    HttpServerStats QuicServer::stats() const
+    {
+        HttpServerStats snapshot;
+        if (m_configuration.metricsCollector != nullptr)
+        {
+            snapshot = m_configuration.metricsCollector->snapshot();
+        }
+        // 在线连接数与 h1/h2 侧同一口径：取快照这一刻的连接数（这里是近似值，不做一致性保证）
+        snapshot.activeConnectionCount = static_cast<std::uint64_t>(connectionCount());
+        return snapshot;
     }
 
     Http3Session *QuicServer::findHttp3Session(const QuicConnection *const connection) noexcept

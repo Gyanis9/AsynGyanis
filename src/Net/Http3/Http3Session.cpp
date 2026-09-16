@@ -115,6 +115,7 @@ namespace AsynGyanis::Net
             auto *session = static_cast<Http3Session *>(connectionUserData);
             if (session != nullptr)
             {
+                session->noteStreamResetByPeer(streamId);
                 session->dropRequest(streamId);
             }
             return 0;
@@ -225,8 +226,9 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter) :
-        m_writer(std::move(writer)), m_crediter(std::move(crediter))
+    Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter,
+                               std::shared_ptr<HttpMetricsCollector> metrics) :
+        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_metrics(std::move(metrics))
     {
         if (!opener || !m_writer)
         {
@@ -405,10 +407,26 @@ namespace AsynGyanis::Net
             HttpRequest        request        = std::move(m_readyRequests.front().request);
             m_readyRequests.pop_front();
 
+            // 与 h1/h2 同口径：收齐的请求计入请求数（含随后被 413 拒掉的那些，它们同样是有效的 h3 请求）
+            // 与 h1/h2 同口径：收齐的请求计入请求数（含随后被 413 拒掉的那些，它们同样是有效的 h3 请求）
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countParsedRequest();
+            }
+
             HttpResponse response;
+            // 业务异常在这里就地收口（与 h1/h2 同一处置）：不捕获的话它会穿出 pump()、
+            // 打断 QuicServer 的收报文循环，整台服务不再处理任何报文。
+            // 声明在分支之外：下面的统计要按「有没有半途抛异常」决定这条流式响应是否落账
+            std::exception_ptr handlerException;
+
             if (isBodyTooLarge)
             {
                 // 正文越界：不派发，直接回 413（与 h1/h2 同一口径与文案）
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countBadRequest();
+                }
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限，已按 413 应答且不交给业务", streamId);
                 response.setStatus(413);
                 response.setBody("Payload Too Large");
@@ -427,9 +445,6 @@ namespace AsynGyanis::Net
                     response.suppressStreamingBody();
                 }
 
-                // 业务异常在这里就地收口（与 h1/h2 同一处置）：不捕获的话它会穿出 pump()、
-                // 打断 QuicServer 的收报文循环，整台服务不再处理任何报文
-                std::exception_ptr handlerException = nullptr;
                 try
                 {
                     co_await m_router->route(request, response);
@@ -472,10 +487,19 @@ namespace AsynGyanis::Net
             {
                 // 流式响应：响应头与各块在处理器写的过程中已经出去了，这里只做收尾
                 finishStreamingResponse(streamId, response);
+                // 中途抛异常的流式响应只发了一半，落账等于把半成品记成已应答（与 h2 同一判据）
+                if (m_metrics != nullptr && handlerException == nullptr)
+                {
+                    m_metrics->countResponseStatus(response.status());
+                }
             } else
             {
                 finalizeResponseForHttp3(streamId, response);
                 submitResponse(streamId, response);
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countResponseStatus(response.status());
+                }
             }
         }
 
@@ -615,6 +639,23 @@ namespace AsynGyanis::Net
             return;
         }
         enqueueRequest(streamId);
+    }
+
+    void Http3Session::noteStreamResetByPeer(const std::int64_t streamId) noexcept
+    {
+        if (m_metrics == nullptr)
+        {
+            return;
+        }
+
+        // 「还没答完」的三种形态：请求已收齐但还没派发、正在收或正在跑、流式响应还在写
+        const bool isStillPending =
+                std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; }) ||
+                m_incomingRequests.contains(streamId) || m_streamingResponses.contains(streamId) || m_webSocketTunnels.contains(streamId);
+        if (isStillPending)
+        {
+            m_metrics->countStreamCancelled();
+        }
     }
 
     void Http3Session::dropRequest(const std::int64_t streamId)

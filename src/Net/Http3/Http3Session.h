@@ -11,6 +11,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -94,10 +95,15 @@ namespace AsynGyanis::Net
          * @param opener 单向流的开流口
          * @param writer 流数据出口
          * @param crediter 接收窗口的归还口（可空：为空时不归还，正文一大就会把接收窗口用光）
+         * @param metrics 统计采集端；传空指针表示本会话不采集统计
          * @note 构造里就把控制流与两条 QPACK 流绑上。开流失败只记日志并让会话保持不可用
          *       （`isUsable()` 为假），不抛异常：一条连接建不起 h3 不该把服务端拖垮
+         * @note 采集口径与 h1/h2 对齐：请求数与 413/协议性拒绝计入，响应按状态码类计数，
+         *       被对端 RESET_STREAM 取消的流计入「单流取消」。**耗时直方图不参与**——
+         *       h3 各流由传输层驱动，会话没有「收到完整请求」那一刻的戳，宁可不记也不用 0 秒糊弄
          */
-        Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {});
+        Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {},
+                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr);
 
         ~Http3Session();
 
@@ -175,6 +181,14 @@ namespace AsynGyanis::Net
          * @param streamId 流号
          */
         void finishRequest(std::int64_t streamId);
+
+        /**
+         * @brief 对端重置了一条流：还没答完的那条计入「单流取消」
+         * @details 只把「还没答完就取消」算成取消——响应早已发完、事后被重置的流不该记进来
+         *          （与 h2 同一判据：那边只在响应发不出去、原因是流被取消时计数）
+         * @param streamId 被重置的流
+         */
+        void noteStreamResetByPeer(std::int64_t streamId) noexcept;
 
         /**
          * @brief 丢掉一条流上尚未收全的请求（流被重置或关闭）
@@ -480,6 +494,7 @@ namespace AsynGyanis::Net
         StreamWriter              m_writer;              ///< 流数据出口
         StreamCrediter            m_crediter;            ///< 接收窗口归还口
         Router                   *m_router{nullptr};     ///< 路由器（不持有；由服务端保证其寿命）
+        std::shared_ptr<HttpMetricsCollector> m_metrics; ///< 统计采集端（可空：空表示本会话不采集）
         HttpParserLimits          m_parserLimits{};      ///< 请求解析上限（正文总量上限等）
         std::vector<std::uint8_t> m_pendingBytes;        ///< 一次 flush 用的连续缓冲（把分片拼在一起）
         bool                      m_isUsable{false};     ///< 三条单向流是否都绑上了

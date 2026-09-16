@@ -20,6 +20,7 @@
 
 #include <nghttp3/nghttp3.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -662,6 +663,120 @@ namespace AsynGyanis::Net
         const auto contentLengthHeader = peer.response().headers.find("content-length");
         ASSERT_NE(contentLengthHeader, peer.response().headers.end()) << "缺正文长度时应当按实际长度补上 content-length";
         EXPECT_EQ(contentLengthHeader->second, "2");
+    }
+
+    /**
+     * @brief 接上采集端后，h3 的请求数与状态码类如实落账
+     * @details 与 h1/h2 同一套口径：收齐的请求计一条、响应按状态码类归档。耗时直方图**不参与**——
+     *          h3 各流由传输层驱动，会话没有「收到完整请求」那一刻的戳，宁可不记也不用 0 秒糊弄
+     */
+    TEST(Http3Session, ReportsRequestsAndStatusClassesToMetricsCollector)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             },
+                             Http3Session::StreamCrediter{}, metrics);
+
+        Router router;
+        router.get("/hello",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/hello", "example.com"))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        // 服务端的字节要真的喂回客户端，才谈得上「这条请求被正常应答」
+        ASSERT_FALSE(sentStreamData.empty()) << "服务端一个字节都没回：响应没发出去";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        ASSERT_EQ(peer.response().status, 200) << "用例前提：这条请求应当被正常应答";
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.totalRequestCount, 1U) << "h3 的请求没有计入请求数";
+        EXPECT_EQ(snapshot.status2xxCount, 1U) << "h3 的 200 响应没有计入 2xx";
+        EXPECT_EQ(snapshot.badRequestCount, 0U);
+        // 延迟刻意不记：两条计数都不该被写脏
+        EXPECT_EQ(snapshot.totalLatencyMicroseconds, 0U) << "h3 不该往耗时直方图里记样本";
+        EXPECT_TRUE(std::ranges::all_of(snapshot.latencyBucketCounts, [](const std::uint64_t count) { return count == 0U; }));
+    }
+
+    /**
+     * @brief 正文越界的 h3 请求：既计请求数，也计一条「坏请求」，响应状态码记 4xx
+     */
+    TEST(Http3Session, ReportsOversizeRequestAsBadRequestToMetricsCollector)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             },
+                             Http3Session::StreamCrediter{}, metrics);
+
+        HttpParserLimits limits;
+        limits.maximumBodySize = 8;
+        session.setParserLimits(limits);
+
+        Router router;
+        router.post("/upload",
+                    [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.setStatus(200);
+                        response.setBody("uploaded");
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过上限 8
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        ASSERT_EQ(peer.response().status, 413) << "用例前提：这条请求应当被 413 拒绝";
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.totalRequestCount, 1U) << "被 413 拒掉的请求同样是收齐的 h3 请求，要计入请求数";
+        EXPECT_EQ(snapshot.badRequestCount, 1U) << "正文越界应当计一条坏请求（与 h2 同一口径）";
+        EXPECT_EQ(snapshot.status4xxCount, 1U) << "413 属于 4xx 类";
     }
 
     /**

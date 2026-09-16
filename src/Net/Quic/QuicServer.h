@@ -14,6 +14,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
 
@@ -59,6 +60,10 @@ namespace AsynGyanis::Net
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
             /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
             HttpParserLimits         parserLimits{};
+            /// 统计采集端（可空：空表示 h3 流量不采集）。
+            /// **与 HTTP 侧共用同一个实例**，那台服务器的 /metrics 就一并覆盖 h3（见
+            /// HttpServer::metricsCollector()）；单独采集时用 stats() 读本服务端的快照
+            std::shared_ptr<HttpMetricsCollector> metricsCollector;
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);
@@ -104,6 +109,16 @@ namespace AsynGyanis::Net
          * @return std::size_t 连接数
          */
         [[nodiscard]] std::size_t connectionCount() const noexcept;
+
+        /**
+         * @brief 取本服务端的统计快照（h3 会话的请求数、状态码类、单流取消与在线连接数）
+         * @details 与 HttpServer::stats() 同一形态与同一套指标口径，只是数据来自 h3 会话：
+         *          请求数与状态码类由各会话累加，耗时直方图不参与（h3 没有可信的请求起始戳，
+         *          详见 Http3Session 构造函数的说明）
+         * @return HttpServerStats 快照；未配置采集端时除在线连接数外各计数为零
+         * @note 可从任意线程调用（计数是原子量、连接数是加锁读的近似值）
+         */
+        [[nodiscard]] HttpServerStats stats() const;
 
         /**
          * @brief 本端实际绑定的端口
