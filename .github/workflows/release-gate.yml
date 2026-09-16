@@ -1,0 +1,27 @@
+# 发布门禁：版本号三处（CMake 的 project(VERSION) / CHANGELOG 最新发布段 / 最新标签）必须一致。
+#
+# 单独成一条工作流的原因：它必须**任何改动都跑**——纯文档改动会跳过 linux-ci / windows-ci 的
+# 重型作业（见那两个文件里的 paths-ignore），而改 CHANGELOG 与版本号恰恰就是文档改动的常态，
+# 正是这条门禁最该盯住的场景。几十秒的成本，不该被路径过滤一起跳掉。
+
+name: 发布门禁
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  version-consistency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 只跑一条脚本，不装任何依赖：版本漂移要在几秒钟内暴露，而不是等几分钟的构建
+      - name: 校验发布版本号（CMake / CHANGELOG / 标签）
+        run: |
+          git fetch --tags --force --quiet || true
+          python3 scripts/check-release-version.py

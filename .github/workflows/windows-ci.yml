@@ -1,14 +1,11 @@
 # Windows CI：构建（Debug + AddressSanitizer）并跑全量用例。
 #
-# 与 linux-ci.yml 分工：本工作流覆盖 MSVC + winsock/wepoll 路径；GCC/Linux 侧由 linux-ci.yml
+# 与 linux-ci.yml 分工：本工作流覆盖 MSVC + winsock 路径；GCC/Linux 侧由 linux-ci.yml
 # 覆盖（GCC 的 ASan 额外检出 use-after-scope 与泄漏，MSVC 的 ASan 不支持这两类检测）。
-# 注意：本文件尚未在真实的 GitHub runner 上执行过（开发机没有 runner），其中的命令与
-# 本地验证时使用的完全一致（cmake --preset debug / --build / ctest）。
-# 本地已核对（2026-09-14）：两个工作流的 YAML 可解析；本文件引用的 debug 预设、conan_provider.cmake、
-# ASYN_SKIP_MYSQL_DEPS 与 -DDATABASE_WITH_MYSQL=OFF 都真实存在；configure → build → ctest 这条
-# 序列已在全新构建目录里从零跑通（2259 例全绿、零告警）。同日还按同一命令序列配置通过并跑完全量用例
-# （外加上一轮「装到临时前缀 + 消费方探针」验证了 find_package 的组件门控与依赖清单）。剩下只有
-# 「真机 runner 环境差异」这一项本地无法覆盖，需要一次 push 或手动 workflow_dispatch 才能验证。
+#
+# 编译输出由 sccache 缓存（MSVC 侧的时间几乎全花在编译上，用例本身只占一小部分）。
+# 为了让 MSVC 的调试信息可缓存，CI 里把调试信息格式换成 Embedded（/Z7）：默认的 /Zi 会把
+# 调试信息写进一个共享 PDB，sccache 对这种形态不做缓存。这只影响 CI 的构建目录，本机预设不变。
 
 name: Windows CI
 
@@ -16,6 +13,11 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    # 纯文档改动不值得等十几分钟的构建与用例。版本号门禁在 release-gate.yml，
+    # 那条工作流不受这里的过滤影响
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
   workflow_dispatch:
 
 jobs:
@@ -29,6 +31,8 @@ jobs:
       # libmysqlclient 在 ConanCenter 上只有源码包，现场编译要十几分钟；CI 不需要真机
       # MySQL（驱动有报错桩，集成用例本身也按环境变量跳过），因此跳过该依赖
       ASYN_SKIP_MYSQL_DEPS: "1"
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 2G
 
     steps:
       - uses: actions/checkout@v4
@@ -39,21 +43,39 @@ jobs:
           path: ${{ env.CONAN_HOME }}
           key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
 
+      - name: 缓存 sccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: sccache-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            sccache-${{ runner.os }}-
+
       # 让 cl.exe、ninja 等进入 PATH；windows-latest 上已预装 Visual Studio 与 Ninja
       - uses: ilammy/msvc-dev-cmd@v1
 
-      - name: 安装 Conan
-        run: pip install "conan>=2.25"
+      - name: 安装 Conan 与 sccache
+        run: |
+          pip install "conan>=2.25"
+          choco install sccache -y --no-progress
 
       - name: 探测 Conan profile
         run: conan profile detect --force
 
-      - name: 配置（Debug + sanitizers；Conan 依赖由 conan_provider.cmake 自动安装）
-        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF
+      - name: 配置（Debug + sanitizers + sccache；Conan 依赖由 conan_provider.cmake 自动安装）
+        run: |
+          cmake --preset debug -DDATABASE_WITH_MYSQL=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
 
       # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
       - name: 构建
         run: cmake --build build/debug
+
+      # 缓存是否真的命中，看这一行的 compile requests / cache hits
+      - name: sccache 统计
+        run: sccache --show-stats
 
       - name: 全量用例
         run: ctest --test-dir build/debug --output-on-failure --parallel

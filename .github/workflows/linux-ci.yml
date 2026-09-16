@@ -4,8 +4,11 @@
 # use-after-scope 与泄漏（测试代码的生命周期问题只有这一侧能兜住）；Redis 集成用例连真实服务。
 # MySQL 依赖仍跳过（ASYN_SKIP_MYSQL_DEPS）：libmysqlclient 的 ConanCenter 预编译包在 runner
 # 编译器版本变化时不保证可用，现场编译要十几分钟；MySQL 集成用例按环境变量跳过。
-# 注意：本文件尚未在真实的 GitHub runner 上执行过（开发机没有 runner），其中的命令与
-# 本地验证时使用的完全一致（cmake --preset debug / --build / ctest）。
+#
+# 全量用例拆成三个分片并行跑（platform-base-core / net / database）：分片按 tests/ 下的子目录切，
+# 新用例只要落在对应目录就会被自动带上，不需要维护名字清单。编译输出由 ccache 缓存——分片会让
+# Platform/Base/Core 这些公共依赖被重复编译，命中缓存之后这份重复就不再花时间。
+# Redis 只在 database 分片里起；版本号门禁在 release-gate.yml（那条工作流不被路径过滤跳过）。
 
 name: Linux CI
 
@@ -13,6 +16,11 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    # 纯文档改动不值得等十几分钟的全量构建与用例。注意 write 权限之外没有副作用：
+    # 版本号门禁在 release-gate.yml，那条不受这里的过滤影响
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
   workflow_dispatch:
 
 jobs:
@@ -20,21 +28,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
+    strategy:
+      # 一个分片红不该掩盖其它分片的结果：三个都跑完再收工
+      fail-fast: false
+      matrix:
+        shard:
+          - name: platform-base-core
+            targets: "TestPlatform TestBase TestCore"
+            testDirectories: "tests/Platform tests/Base tests/Core"
+            redis: "0"
+          - name: net
+            targets: "TestNet echo_server"
+            testDirectories: "tests/Net"
+            redis: "0"
+          - name: database
+            targets: "TestDatabase"
+            testDirectories: "tests/Database"
+            redis: "1"
+
     env:
       # Conan 的包缓存搬到仓库内，便于下面的 actions/cache 缓存它
       CONAN_HOME: ${{ github.workspace }}/.conan2
       # 跳过 MySQL 客户端依赖的理由见文件头
       ASYN_SKIP_MYSQL_DEPS: "1"
+      # ccache：Debug + ASan 的目标文件偏大，上限与压缩都按这个量级给
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "true"
 
     steps:
       - uses: actions/checkout@v4
-
-      # 发布版本号一致性：CMake 的 project(VERSION)、CHANGELOG 最新发布段、最新标签必须一致。
-      # 单跑一条命令、不依赖构建，放在最前面，好让版本漂移在几分钟的构建之前就暴露出来
-      - name: 校验发布版本号（CMake / CHANGELOG / 标签）
-        run: |
-          git fetch --tags --force --quiet
-          python3 scripts/check-release-version.py
 
       - name: 缓存 Conan 依赖
         uses: actions/cache@v4
@@ -42,24 +65,40 @@ jobs:
           path: ${{ env.CONAN_HOME }}
           key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
 
+      # 分片各存各的缓存，回退键吃到同平台其它分片留下的公共部分：Platform/Base/Core 的目标
+      # 文件三个分片都要编，命中回退键就把这份重复省掉（缓存一经写入不可覆盖，因此键里带分片名）
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ matrix.shard.name }}-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.shard.name }}-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            ccache-${{ runner.os }}-
+
       # ubuntu-latest 的 pip 受 PEP 668 限制不能直接装包，先建虚拟环境再进 PATH
-      - name: 安装 Conan
+      - name: 安装 Conan 与 ccache
         run: |
           python3 -m venv "$HOME/conan-venv"
           "$HOME/conan-venv/bin/pip" install "conan>=2.25"
           echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y ccache
 
       - name: 探测 Conan profile
         run: conan profile detect --force
 
-      - name: 配置（Debug + sanitizers；Conan 依赖由 conan_provider.cmake 自动安装）
-        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF
+      - name: 配置（Debug + sanitizers + ccache；Conan 依赖由 conan_provider.cmake 自动安装）
+        run: |
+          cmake --preset debug -DDATABASE_WITH_MYSQL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
       # `-- -k 0`：一次编译完所有目标，把全部告警一次收齐——逐个文件报错时，
       # 修一轮要等一整轮 CI，收集式失败才能一轮改完
-      - name: 构建
-        run: cmake --build build/debug -- -k 0
+      # 只编本分片要用的目标（连同它们的依赖），三个分片并起来仍是全量
+      - name: 构建（本分片的目标）
+        run: cmake --build build/debug --target ${{ matrix.shard.targets }} -- -k 0
 
       # GitHub 的 ubuntu runner 上 vm.mmap_rnd_bits=32 时 AddressSanitizer 有随机崩溃的
       # 已知问题，调低 ASLR 熵规避；失败不阻塞（本地同为 32 且稳定，此处属保险）
@@ -68,6 +107,7 @@ jobs:
 
       # Redis 集成用例需要真实服务与口令；口令运行时随机生成并加掩码，仓库零明文口令
       - name: 启动 Redis（随机口令）
+        if: matrix.shard.redis == '1'
         run: |
           REDIS_PASSWORD="$(openssl rand -hex 16)"
           echo "::add-mask::$REDIS_PASSWORD"
@@ -83,18 +123,24 @@ jobs:
           docker logs ci-redis >&2
           exit 1
 
-      - name: 全量用例（含 Redis 真机集成）
+      # 按 tests/ 下的子目录跑 ctest：每个分片只跑自己那一批，用例清单由 gtest_discover_tests
+      # 在构建期生成，新增用例落在对应目录里就会自动进来
+      - name: 用例（本分片）
         run: |
-          export ASYN_REDIS_TEST_HOST=127.0.0.1
-          export ASYN_REDIS_TEST_PASSWORD="$REDIS_PASSWORD"
-          ctest --test-dir build/debug --output-on-failure -j"$(nproc)"
+          if [ "${{ matrix.shard.redis }}" = "1" ]; then
+            export ASYN_REDIS_TEST_HOST=127.0.0.1
+            export ASYN_REDIS_TEST_PASSWORD="$REDIS_PASSWORD"
+          fi
+          for testDirectory in ${{ matrix.shard.testDirectories }}; do
+            ctest --test-dir "build/debug/$testDirectory" --output-on-failure -j"$(nproc)"
+          done
 
       - name: 失败时上传用例日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ctest-logs-linux
-          path: build/debug/Testing/Temporary/LastTest.log
+          name: ctest-logs-linux-${{ matrix.shard.name }}
+          path: build/debug/tests/*/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
   # MySQL 真机驱动分支的**编译**覆盖：其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
@@ -201,6 +247,11 @@ jobs:
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
       ASYN_SKIP_MYSQL_DEPS: "1"
+      # 与 build-and-test 同源的 ccache：同样的源码、不同的插桩选项，ccache 按参数分开存，
+      # 互不干扰
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -211,18 +262,31 @@ jobs:
           path: ${{ env.CONAN_HOME }}
           key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
 
-      - name: 安装 Conan
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-tsan-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-tsan-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            ccache-${{ runner.os }}-
+
+      - name: 安装 Conan 与 ccache
         run: |
           python3 -m venv "$HOME/conan-venv"
           "$HOME/conan-venv/bin/pip" install "conan>=2.25"
           echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y ccache
 
       - name: 探测 Conan profile
         run: conan profile detect --force
 
       # 复用 debug 预设（含 -g 与 Ninja），但把目录换成 build/tsan，并关掉 ASan、只留 TSan
-      - name: 配置（Debug + ThreadSanitizer）
-        run: cmake --preset debug -B build/tsan -DSANITIZE_THREADS=ON -DENABLE_SANITIZERS=OFF -DDATABASE_WITH_MYSQL=OFF
+      - name: 配置（Debug + ThreadSanitizer + ccache）
+        run: |
+          cmake --preset debug -B build/tsan -DSANITIZE_THREADS=ON -DENABLE_SANITIZERS=OFF -DDATABASE_WITH_MYSQL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: 构建
         run: cmake --build build/tsan
