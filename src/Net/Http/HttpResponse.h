@@ -32,11 +32,13 @@ namespace AsynGyanis::Net
      *          另提供 ok()、notFound()、serverError() 等常用工厂方法。
      *          一个响应对象只服务一条请求：需要复用时先 reset()。
      *
-     * @note 头部存储模型（两份存储必须同步清空与更新）：
+     * @note 头部存储模型：
      *       @li 权威记录 m_headerFields 按「设置顺序」保存每条头部，toString() 就按它逐条输出，
      *           因此报文头部顺序稳定可复现，多条 Set-Cookie 也保持先后次序；
      *       @li 单值视图 m_headers 是名到值的映射（可重复头部只留首条），供 headers()/getHeader()
-     *           使用，逐条取值请用 headerValues()；头部名一律转小写存储（RFC 9110 §5.1）。
+     *           使用，逐条取值请用 headerValues()；**首次查询时才由权威记录建出**（写入只把视图标脏），
+     *           HTTP/1.1 的序列化从不读它，因此那条路径不再为每个响应维护一张映射表；
+     *           头部名一律转小写存储（RFC 9110 §5.1）。
      * @warning 头部值会被原样写入报文，调用方不得传入含 CR/LF 的内容，否则构成响应拆分注入。
      *          正文与状态码由本类自行序列化，不受此限。
      *
@@ -445,10 +447,20 @@ namespace AsynGyanis::Net
          */
         void appendHead(std::string &result) const;
 
+        /**
+         * @brief 由权威记录重建单值视图（可重复头只留首条）
+         * @details 与 HttpRequest 同一惰性形态：写入只把视图标脏，首次查询才建一次。
+         *          HTTP/1.1 的序列化只读权威记录，因此那条路径不必为每个响应维护映射表
+         */
+        void rebuildSingleValueView() const;
+
         int m_status{200};                                     ///< HTTP 状态码，默认 200
         std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1
         HeaderFieldList m_headerFields;                        ///< 头部权威记录，按设置顺序保存，决定序列化顺序
-        std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用
+        /// 头部单值视图（名到值，可重复头部只留首条），供 headers()/getHeader() 使用；
+        /// 首次查询时由权威记录建出，写入只把它标脏
+        mutable std::unordered_map<std::string, std::string> m_headers;
+        mutable bool m_isSingleValueViewStale{true};           ///< 单值视图是否已过期（写入后为 true，重建后为 false）
         std::string m_body;                                    ///< 响应正文（堆存储），与 m_mappedBody 互斥
         Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效
         std::size_t m_mappedBodyOffset{0};                     ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）

@@ -191,13 +191,14 @@ namespace AsynGyanis::Net
 
     void HttpResponse::removeHeaderField(const std::string &canonicalName)
     {
-        // 两份存储必须一起删：只删权威记录会留下「查询查得到、序列化里没有」的鬼条目
         const auto isSameName = [&canonicalName](const HeaderField &field)
         {
             return field.name == canonicalName;
         };
         m_headerFields.erase(std::ranges::remove_if(m_headerFields, isSameName).begin(), m_headerFields.end());
-        m_headers.erase(canonicalName);
+        // 单值视图不在这里维护：标脏即可，下次查询由权威记录重建（否则会留下
+        // 「查询查得到、序列化里没有」的鬼条目）
+        m_isSingleValueViewStale = true;
     }
 
     bool HttpResponse::setHeader(const std::string &name, const std::string &value)
@@ -212,15 +213,16 @@ namespace AsynGyanis::Net
             return false;
         }
 
+        // 视图只标脏、不在写入路径上维护：首次查询时由权威记录一次性重建
+        m_isSingleValueViewStale = true;
+
         if (isRepeatableHeaderName(canonicalName))
         {
             // 可重复头部（Set-Cookie）的 set 语义退化为「追加一条」：既有调用方逐条 setHeader
             // 下发多个 cookie，覆盖式写法会静默丢掉前面的 cookie。每条各占一项，序列化时逐条上线
             m_headerFields.push_back(HeaderField{.name = canonicalName, .value = value});
-
             // 单值视图只留首条：headers()/getHeader() 的「一个名字一个值」契约不变，
             // 需要全部值请用 headerValues()
-            m_headers.try_emplace(canonicalName, value);
             return true;
         }
 
@@ -229,17 +231,21 @@ namespace AsynGyanis::Net
             // 普通头部：原地覆盖值，条目位置仍停在首次设置处，
             // 这样序列化顺序不因反复改写而漂移
             iterator->value = value;
-            m_headers[canonicalName] = value;
             return true;
         }
 
         m_headerFields.push_back(HeaderField{.name = canonicalName, .value = value});
-        m_headers.emplace(canonicalName, value);
         return true;
     }
 
     std::optional<std::string> HttpResponse::getHeader(const std::string &name) const
     {
+        // 查询前先把过期视图重建出来：写入只标脏，合并逻辑只有 rebuildSingleValueView() 一处实现
+        if (m_isSingleValueViewStale)
+        {
+            rebuildSingleValueView();
+        }
+
         if (const auto iterator = m_headers.find(toCanonicalHeaderName(name)); iterator != m_headers.end())
         {
             return iterator->second;
@@ -266,7 +272,32 @@ namespace AsynGyanis::Net
 
     const std::unordered_map<std::string, std::string> &HttpResponse::headers() const
     {
+        if (m_isSingleValueViewStale)
+        {
+            rebuildSingleValueView();
+        }
         return m_headers;
+    }
+
+    void HttpResponse::rebuildSingleValueView() const
+    {
+        m_headers.clear();
+        for (const HeaderField &field: m_headerFields)
+        {
+            if (isRepeatableHeaderName(field.name))
+            {
+                // 可重复头部只留首条（与 setHeader 的追加语义一致），其余靠 headerValues() 逐条取
+                m_headers.try_emplace(field.name, field.value);
+                continue;
+            }
+
+            // 普通头部同名多条时后写的覆盖先写的：与 setHeader 的原地覆盖语义同口径
+            if (const auto [iterator, isInserted] = m_headers.try_emplace(field.name, field.value); !isInserted)
+            {
+                iterator->second = field.value;
+            }
+        }
+        m_isSingleValueViewStale = false;
     }
 
     void HttpResponse::setBody(const std::string_view body)
@@ -797,9 +828,10 @@ namespace AsynGyanis::Net
         m_status      = 200;
         m_httpVersion = "HTTP/1.1";
 
-        // 两份存储一起清：只清一处会留下「视图里查得到、序列化里没有」的鬼条目
+        // 清权威记录并把视图标脏：下次查询会重建出空视图（只清一处会留下
+        // 「视图里查得到、序列化里没有」的鬼条目）
         m_headerFields.clear();
-        m_headers.clear();
+        m_isSingleValueViewStale = true;
 
         // 正文同样是两条存储：堆串清空之外映射也要解除，
         // 否则复用响应对象时上一轮的文件会继续当正文发出去
