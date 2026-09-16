@@ -409,17 +409,39 @@ namespace AsynGyanis::Net
             }
 
             const auto now = std::chrono::steady_clock::now();
-            for (auto &connectionEntry: m_connections)
+
+            // 先取一份连接标识快照再逐个查表：本循环里每一步都可能挂起（flush 撞上窗口不足、
+            // handleExpiry 等回包），而挂起期间收报文路径会 reapClosedConnections() 摘掉已收口的
+            // 连接——直接按迭代器+引用遍历的话，恢复后手里的引用与隐藏迭代器都悬垂
+            std::vector<std::string> connectionKeys;
+            connectionKeys.reserve(m_connections.size());
+            for (const auto &connectionEntry: m_connections)
             {
+                connectionKeys.push_back(connectionEntry.first);
+            }
+
+            for (const std::string &connectionKey: connectionKeys)
+            {
+                const auto connectionEntry = m_connections.find(connectionKey);
+                if (connectionEntry == m_connections.end())
+                {
+                    continue; // 已经收口摘掉了
+                }
                 // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
                 // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它等某个 ngtcp2 定时器
-                if (connectionEntry.second->needsFlush())
+                if (connectionEntry->second->needsFlush())
                 {
-                    co_await connectionEntry.second->flush();
+                    co_await connectionEntry->second->flush();
                 }
-                if (connectionEntry.second->nextExpiry() <= now)
+                // 上面这次挂起期间它可能已经被摘掉：用之前重新查一次表
+                const auto recheckedEntry = m_connections.find(connectionKey);
+                if (recheckedEntry == m_connections.end())
                 {
-                    co_await connectionEntry.second->handleExpiry();
+                    continue;
+                }
+                if (recheckedEntry->second->nextExpiry() <= now)
+                {
+                    co_await recheckedEntry->second->handleExpiry();
                 }
             }
             reapClosedConnections();
