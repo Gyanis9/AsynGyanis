@@ -498,14 +498,19 @@ namespace AsynGyanis::Database
 
             auto pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
 
+            // 工作线程持裸指针：捕获 unique_ptr 的话，主线程下面那次 reset() 会与线程里的
+            // 解引用构成对指针本身的数据竞争（TSan 实测抓到过），而池对象的成员访问另有
+            // 锁与停摆标志兜住
+            ConnectionPool *const poolPointer = pool.get();
+
             std::atomic<bool>          isWaiterReturned{false};
             std::atomic<bool>          isWaiterGotConnection{true};
             std::atomic<std::int64_t>  waiterElapsedMilliseconds{0};
             std::thread                waiter(
-                    [&pool, &isWaiterReturned, &isWaiterGotConnection, &waiterElapsedMilliseconds]
+                    [poolPointer, &isWaiterReturned, &isWaiterGotConnection, &waiterElapsedMilliseconds]
                     {
                         const auto startedAt = std::chrono::steady_clock::now();
-                        const PooledConnection connection = pool->acquire();
+                        const PooledConnection connection = poolPointer->acquire();
                         waiterElapsedMilliseconds.store(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                                 std::chrono::steady_clock::now() - startedAt)
                                                                 .count(),
