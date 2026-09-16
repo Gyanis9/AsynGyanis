@@ -377,6 +377,18 @@ namespace AsynGyanis::Net
     [[nodiscard]] std::string encodeHttp2DataFrame(const Http2DataPayload &payload, std::uint32_t streamId);
 
     /**
+     * @brief 编码 DATA 帧（负载按「指针 + 长度」取，不经过负载结构体）
+     * @param data 应用数据
+     * @param endStream 是否置 END_STREAM
+     * @param streamId 目标流号，必须非 0（§6.1 要求 DATA 关联到一条流）
+     * @return std::string 完整帧字节
+     * @throws Base::InvalidArgumentException 用法错误：streamId 为 0
+     * @note 发送路径用这个重载：待发缓冲里的字节可以直接按视图交给编码器，
+     *       不必先拷进 Http2DataPayload::data 再由编码器拷进帧缓冲（正文一大就是整段白拷一次）
+     */
+    [[nodiscard]] std::string encodeHttp2DataFrame(std::string_view data, bool endStream, std::uint32_t streamId);
+
+    /**
      * @brief 编码 HEADERS 帧（不产生 padding；hasPriority 为 true 时写出 5 字节优先级字段）
      * @param payload 负载结构体
      * @param streamId 目标流号，必须非 0（§6.2 要求 HEADERS 关联到一条流）

@@ -1685,15 +1685,16 @@ namespace AsynGyanis::Net
             const std::int64_t allowedByteCount = std::min({stream.sendWindowByteCount, m_connectionSendWindowByteCount,
                                                             static_cast<std::int64_t>(maximumFrameSize)});
             const std::size_t byteCount = std::min<std::size_t>(stream.pendingData.size(), static_cast<std::size_t>(allowedByteCount));
-            Http2DataPayload payload;
             // END_STREAM 只落在把队列排空的那一帧上：窗口不足时提前收尾会把没发出去的正文丢掉
-            payload.endStream = byteCount == stream.pendingData.size() && stream.isEndStreamPending;
-            payload.data = stream.pendingData.substr(0, byteCount);
-            appendOutgoing(encodeHttp2DataFrame(payload, stream.streamId));
+            const bool isEndStreamSegment = byteCount == stream.pendingData.size() && stream.isEndStreamPending;
+            // 负载按视图交给编码器：待发缓冲里的字节不必先拷进负载结构体，省掉一次整段拷贝。
+            // 视图在 erase 之前用完（编码是同步的），因此不存在悬垂窗口
+            appendOutgoing(encodeHttp2DataFrame(std::string_view(stream.pendingData).substr(0, byteCount), isEndStreamSegment,
+                                                stream.streamId));
             stream.pendingData.erase(0, byteCount);
             stream.sendWindowByteCount -= static_cast<std::int64_t>(byteCount);
             m_connectionSendWindowByteCount -= static_cast<std::int64_t>(byteCount);
-            if (payload.endStream)
+            if (isEndStreamSegment)
             {
                 stream.isEndStreamPending = false;
                 noteLocalEndStream(stream);

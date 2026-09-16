@@ -426,6 +426,11 @@ namespace AsynGyanis::Net
 
     std::string encodeHttp2DataFrame(const Http2DataPayload &payload, const std::uint32_t streamId)
     {
+        return encodeHttp2DataFrame(payload.data, payload.endStream, streamId);
+    }
+
+    std::string encodeHttp2DataFrame(const std::string_view data, const bool endStream, const std::uint32_t streamId)
+    {
         if (streamId == 0)
         {
             throw Base::InvalidArgumentException("DATA 必须关联到一条流（RFC 7540 §6.1 要求流号非 0）："
@@ -433,7 +438,7 @@ namespace AsynGyanis::Net
         }
 
         // 编码侧不产生 padding：填充只用来打乱长度特征，服务端发出的数据帧没有这个需求
-        return encodeHttp2Frame(Http2FrameType::Data, payload.endStream ? kHttp2FlagEndStream : 0U, streamId, payload.data);
+        return encodeHttp2Frame(Http2FrameType::Data, endStream ? kHttp2FlagEndStream : 0U, streamId, data);
     }
 
     std::string encodeHttp2HeadersFrame(const Http2HeadersPayload &payload, const std::uint32_t streamId)
