@@ -159,14 +159,16 @@ namespace AsynGyanis::Net
              * @param method 方法原文
              * @param path 路径（:path）
              * @param authority 权威主机（:authority）
+             * @param requestStreamId 请求所在的双向流号：一条请求一条流是 HTTP/3 的规矩，
+             *        同一对象上再发一条就要换号（客户端发起的双向流是 0、4、8…）
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含控制流与请求流）
              */
-            std::vector<CapturedStreamData> submitRequest(const std::string &method, const std::string &path, const std::string &authority)
+            std::vector<CapturedStreamData> submitRequest(const std::string &method, const std::string &path, const std::string &authority,
+                                                         const std::int64_t requestStreamId = kFirstRequestStreamId)
             {
                 const std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
 
-                if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), nullptr, nullptr) !=
-                    0)
+                if (nghttp3_conn_submit_request(m_connection, requestStreamId, headerFields.data(), headerFields.size(), nullptr, nullptr) != 0)
                 {
                     return {};
                 }
@@ -663,6 +665,76 @@ namespace AsynGyanis::Net
         const auto contentLengthHeader = peer.response().headers.find("content-length");
         ASSERT_NE(contentLengthHeader, peer.response().headers.end()) << "缺正文长度时应当按实际长度补上 content-length";
         EXPECT_EQ(contentLengthHeader->second, "2");
+    }
+
+    /**
+     * @brief 业务处理器抛异常时回 500，且会话与后续请求都不受影响
+     * @details 异常此前没人接，会穿出 pump()、打断 QuicServer 的收报文循环——整台服务此后
+     *          不再处理任何报文。这条用例同时钉住「回 500」与「下一条请求照样正常」两件事
+     */
+    TEST(Http3Session, Answers500WhenHandlerThrowsAndStaysUsable)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        Router router;
+        router.get("/boom",
+                   [](HttpRequest &, HttpResponse &) -> Core::Task<>
+                   {
+                       throw std::runtime_error("intentional handler failure");
+                   });
+        router.get("/hello",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        // 第一条：处理器抛异常，必须是 500（而不是没有响应、也不是异常穿出去）
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/boom", "example.com"))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        // 响应必须真的排出去：异常若穿出 pump()，这里一个字节都不会有（status 会是 0）
+        ASSERT_FALSE(sentStreamData.empty()) << "处理器抛异常后一条响应都没发：异常把 pump() 带走了";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 500) << "处理器抛异常没有回 500";
+        EXPECT_FALSE(peer.response().body.empty()) << "500 应当带一条可读的正文";
+
+        // 第二条：会话仍然可用，正常请求照常 200（换一条请求流：0 号那条已经用过了）
+        // 测试侧的 peer 只记一份响应、正文会跨请求累加，因此按「新增的那一段」核对
+        const std::size_t bodyLengthBeforeSecondRequest = peer.response().body.size();
+        sentStreamData.clear();
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/hello", "example.com", kFirstRequestStreamId + 4))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> secondPumpTask = session.pump();
+        resumeUntilReady(secondPumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 200) << "抛过异常之后会话不再服务后续请求";
+        ASSERT_GE(peer.response().body.size(), bodyLengthBeforeSecondRequest);
+        EXPECT_EQ(peer.response().body.substr(bodyLengthBeforeSecondRequest), "hi") << "第二条响应的正文";
     }
 
     /**
