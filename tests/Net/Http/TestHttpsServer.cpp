@@ -6,6 +6,8 @@
 // 夹具在本文件内自建（TestHttpsServer + TlsLoopbackClient），回环端口由内核分配，用例之间不共用端口。
 
 #include "Net/Http/HttpsServer.h"
+
+#include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpServerStats.h"
 
@@ -26,6 +28,7 @@
 #include <openssl/ssl.h>
 
 #include <array>
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -45,8 +48,24 @@ namespace AsynGyanis::Net
         /// 仓库内预生成的自签测试证书（CN=asyngyanis-test，有效期至 2036）
         const std::filesystem::path kTestCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
 
+        /// 出站客户端用例专用的证书夹具：CN=localhost 且 SAN=DNS:localhost（生成命令见用例说明）。
+        /// 与 test_cert.pem 的差别就在名字——那张只认 CN=asyngyanis-test，任何用 IP/localhost 连它的
+        /// 客户端都该被主机名校验拒掉，因此它做不了「名字对得上」的正面用例
+        const std::filesystem::path kLocalhostCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_cert.pem";
+
         /// 仓库内预生成的配套私钥
         const std::filesystem::path kTestKeyPath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+
+        /// 与上面那张 localhost 证书配套的私钥
+        const std::filesystem::path kLocalhostKeyPath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_key.pem";
+
+        /// 客户端正面用例的证书夹具：CN=127.0.0.1 且 SAN=IP:127.0.0.1（生成命令见用例说明）。
+        /// 正面用例直接连回环 IP，不经过域名解析——省掉「localhost 解析成 ::1 而服务端只监听 IPv4」
+        /// 这类与本用例无关的干扰
+        const std::filesystem::path kLoopbackCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem";
+
+        /// 与上面那张回环 IP 证书配套的私钥
+        const std::filesystem::path kLoopbackKeyPath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem";
 
         /// 生成的 request-id 形态：4 位十六进制前缀 + '-' + 16 位十六进制序号（见 HttpRequestId.h）
         constexpr std::size_t kGeneratedRequestIdLength = 4 + 1 + 16;
@@ -462,13 +481,17 @@ namespace AsynGyanis::Net
              * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
              * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
              * @param configureServer 可选的服务器配置动作（例如打开指标端点），同样在 start() 之前执行
+             * @param certificatePath 服务器证书路径，默认用仓库自签夹具 test_cert.pem
+             * @param privateKeyPath 服务器私钥路径，默认用仓库自签夹具 test_key.pem
              */
             RunningHttpsServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
                                       const RouteRegistrar &registerRoutes = {},
                                       const HttpParserLimits &parserLimits = HttpParserLimits{},
-                                      const std::function<void(HttpsServer &)> &configureServer = {}) :
+                                      const std::function<void(HttpsServer &)> &configureServer = {},
+                                      const std::filesystem::path &certificatePath = kTestCertificatePath,
+                                      const std::filesystem::path &privateKeyPath = kTestKeyPath) :
                 m_loop(),
-                m_server(m_loop, Core::InetAddress::localhost(0), kTestCertificatePath.string(), kTestKeyPath.string()),
+                m_server(m_loop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string()),
                 m_serverTask(driveStart(m_server, m_startThrew)),
                 m_loopThread(m_loop)
             {
@@ -599,6 +622,99 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：一条 HTTPS 请求得到 200 与正确正文，统计里的请求条数与状态码类计数各 +1
      */
+
+        /**
+         * @brief 用出站客户端请求一次 HTTPS 地址（自建循环，跑完即停）
+         * @param url 目标地址
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含证书校验不过）返回空
+         */
+        std::unique_ptr<HttpClientResponse> doHttpsGet(const std::string &url)
+        {
+            Core::EventLoop                     loop;
+            std::unique_ptr<HttpClientResponse> result;
+            // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
+            auto requestBody = [&loop, &result, &url]() -> Core::Task<>
+            {
+                result = co_await HttpClient::get(loop, url);
+                loop.stop();
+            };
+            Core::Task<> request = requestBody();
+            if (!request.isReady())
+            {
+                loop.scheduler().schedule(request.handle());
+            }
+            loop.run();
+            return result;
+        }
+
+        /**
+         * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
+         * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
+         *          OpenSSL 解析默认路径时认 SSL_CERT_FILE 这个环境变量，于是用例借此把夹具证书
+         *          当成受信根。**必须在进程内第一次 HTTPS 客户端请求之前设好**——SSL_CTX 是那时
+         *          惰性创建并缓存的。析构还原原值（没设过就清掉）
+         */
+        class ScopedTrustedCertificateFile
+        {
+        public:
+            explicit ScopedTrustedCertificateFile(const std::filesystem::path &certificatePath)
+            {
+                m_previousValue = readEnvironment("SSL_CERT_FILE");
+#if ASYN_PLATFORM_WIN32
+                static_cast<void>(::_putenv_s("SSL_CERT_FILE", certificatePath.string().c_str()));
+#else
+                static_cast<void>(::setenv("SSL_CERT_FILE", certificatePath.string().c_str(), 1));
+#endif
+            }
+
+            ~ScopedTrustedCertificateFile()
+            {
+#if ASYN_PLATFORM_WIN32
+                static_cast<void>(::_putenv_s("SSL_CERT_FILE", m_previousValue.c_str()));
+#else
+                if (m_previousValue.empty())
+                {
+                    static_cast<void>(::unsetenv("SSL_CERT_FILE"));
+                } else
+                {
+                    static_cast<void>(::setenv("SSL_CERT_FILE", m_previousValue.c_str(), 1));
+                }
+#endif
+            }
+
+            ScopedTrustedCertificateFile(const ScopedTrustedCertificateFile &) = delete;
+
+            ScopedTrustedCertificateFile &operator=(const ScopedTrustedCertificateFile &) = delete;
+
+        private:
+            /**
+             * @brief 读一个环境变量并拷贝成 std::string
+             * @details MSVC 在 /W4 下把 std::getenv 判为弃用（C4996），Windows 侧改用 _dupenv_s；
+             *          两种实现都立即拷贝，调用方不保留指向环境块的指针
+             * @param variableName 环境变量名
+             * @return std::string 取值；未设置时为空串
+             */
+            [[nodiscard]] static std::string readEnvironment(const char *variableName)
+            {
+#if ASYN_PLATFORM_WIN32
+                char  *rawValue      = nullptr;
+                size_t valueCapacity = 0;
+                if (::_dupenv_s(&rawValue, &valueCapacity, variableName) != 0 || rawValue == nullptr)
+                {
+                    return {};
+                }
+                std::string variableValue(rawValue);
+                std::free(rawValue);
+                return variableValue;
+#else
+                const char *rawValue = std::getenv(variableName);
+                return rawValue != nullptr ? std::string(rawValue) : std::string{};
+#endif
+            }
+
+            std::string m_previousValue; ///< 之前的值；原本没设过时为空串
+        };
+
     TEST(HttpsServer, ServesRequestAndCountsStats)
     {
         ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
@@ -689,6 +805,52 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(makeRequestText("GET /metrics HTTP/1.1"), kWaitTimeout)) << "第二次指标请求未能写入";
         EXPECT_TRUE(client.waitForTextOccurrences(secondMetricsText, "asyn_http_responses_total{status_class=\"2xx\"} 3", 1, kWaitTimeout))
                 << "成功响应的状态码类没有计入：「" << secondMetricsText << "」";
+    }
+
+    /**
+     * @brief 客户端校验主机名：证书名字对得上就正常握手并拿到响应
+     * @details 夹具证书 test_ip_cert.pem 由下面的命令生成，SAN 只有 IP:127.0.0.1：
+     *          `openssl req -x509 -newkey rsa:2048 -nodes -keyout test_ip_key.pem
+     *           -out test_ip_cert.pem -days 3650 -subj "/CN=127.0.0.1"
+     *           -addext "subjectAltName=IP:127.0.0.1"`
+     *          用例把它同时当作「服务端身份」与「受信根」，因此链校验必然通过——能过就只说明
+     *          客户端走的是 IP 那一路校验（X509_VERIFY_PARAM_set1_ip_asc），而这正是要钉住的那条
+     */
+    TEST(HttpsServer, ClientAcceptsCertificateMatchingTheRequestedHost)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {},
+                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        const std::unique_ptr<HttpClientResponse> response = doHttpsGet(url);
+        ASSERT_NE(response, nullptr) << "证书名字与请求的主机名一致，握手却被拒";
+        EXPECT_EQ(response->statusCode, 200);
+        EXPECT_NE(response->body.find("served-hello"), std::string::npos) << "正文：" << response->body;
+    }
+
+    /**
+     * @brief 客户端校验主机名：证书名字对不上就必须拒绝，不能只看「链是受信的」
+     * @details 同一张受信证书（SAN 只有 DNS:localhost）用 IP 去连：链校验必然通过（它就在受信根里），
+     *          唯一能拦住这次握手的只有**主机名校验**。去掉客户端侧的 SSL_set1_host /
+     *          X509_VERIFY_PARAM_set1_ip_asc 后本条会变绿——那正是被修掉的那个缺陷（CWE-297）
+     */
+    TEST(HttpsServer, ClientRejectsCertificateForAnotherHost)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLocalhostCertificatePath)) << "缺少客户端用例的证书夹具：" << kLocalhostCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLocalhostCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {},
+                                          kLocalhostCertificatePath, kLocalhostKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        // 受信证书 + 对不上的名字（IP 不在 SAN 里）：必须失败
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        EXPECT_EQ(doHttpsGet(url), nullptr) << "证书与请求的主机名不匹配，握手却成功了：主机名校验没生效";
     }
 
     /**

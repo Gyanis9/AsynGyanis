@@ -10,8 +10,8 @@
 
 namespace AsynGyanis::Core
 {
-    TlsSocket::TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket) :
-        m_ssl(ssl), m_loop(&loop), m_socket(std::move(socket))
+    TlsSocket::TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket, const Role role) :
+        m_ssl(ssl), m_loop(&loop), m_socket(std::move(socket)), m_role(role)
     {
     }
 
@@ -21,6 +21,7 @@ namespace AsynGyanis::Core
         m_ssl(std::move(other.m_ssl)),
         m_loop(other.m_loop),
         m_socket(std::move(other.m_socket)),
+        m_role(other.m_role),
         m_handshakeDone(other.m_handshakeDone)
     {
     }
@@ -32,6 +33,7 @@ namespace AsynGyanis::Core
             m_loop          = other.m_loop;
             m_ssl           = std::move(other.m_ssl);
             m_socket        = std::move(other.m_socket);
+            m_role          = other.m_role;
             m_handshakeDone = other.m_handshakeDone;
         }
         return *this;
@@ -46,7 +48,9 @@ namespace AsynGyanis::Core
 
         while (true)
         {
-            const int ret = SSL_accept(m_ssl.get());
+            // 角色决定握手入口：服务端 SSL_accept、客户端 SSL_connect。用错的那个会让两端
+            // 各停在初始状态等对方先说话——客户端用 SSL_accept 时握手永远完不成
+            const int ret = m_role == Role::Client ? ::SSL_connect(m_ssl.get()) : ::SSL_accept(m_ssl.get());
             if (ret == 1)
             {
                 m_handshakeDone = true;

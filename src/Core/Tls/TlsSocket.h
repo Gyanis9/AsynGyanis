@@ -31,12 +31,25 @@ namespace AsynGyanis::Core
     {
     public:
         /**
+         * @brief 本端角色：决定握手走哪个 OpenSSL 入口
+         * @details 用错入口两端会各停在初始状态等对方先说话，握手永远完不成——服务端只有
+         *          `SSL_accept`，客户端只有 `SSL_connect`，二者不可互换
+         */
+        enum class Role
+        {
+            Server, ///< 服务端：握手走 SSL_accept（默认，与既有调用点一致）
+            Client  ///< 客户端：握手走 SSL_connect
+        };
+
+        /**
          * @brief 构造 TlsSocket 对象。
-         * @param ssl   已关联 socket 文件描述符的 SSL 对象（由 TlsContext::createSSL 获得），所有权转移
+         * @param ssl   已关联 socket 文件描述符的 SSL 对象（服务端由 TlsContext::createSSL 获得，
+         *              客户端自行 SSL_new），所有权转移
          * @param loop  所属事件循环
          * @param socket 已建立的异步 socket（非阻塞，已连接）
+         * @param role  本端角色，默认服务端
          */
-        TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket);
+        TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket, Role role = Role::Server);
 
         /**
          * @brief 析构函数，释放 SSL 对象并关闭底层 socket。
@@ -162,6 +175,7 @@ namespace AsynGyanis::Core
 
         EventLoop *                      m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
         AsyncSocket                      m_socket;               ///< 底层异步 socket
+        Role                             m_role{Role::Server};   ///< 本端角色：决定握手入口
         bool                             m_handshakeDone{false}; ///< 握手是否已完成
     };
 

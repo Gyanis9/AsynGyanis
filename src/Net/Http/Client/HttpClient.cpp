@@ -181,6 +181,14 @@ namespace AsynGyanis::Net
             SSL *ssl = SSL_new(ctx);
             if (!ssl) co_return nullptr;
 
+            // SSL 必须绑上底层描述符才有 BIO 可用：少了这一步 SSL_connect 立刻失败，
+            // 而且错误队列是空的（error:00000000），现场只剩「握手失败」四个字
+            if (::SSL_set_fd(ssl, sock.fileDescriptor()) == 0)
+            {
+                SSL_free(ssl);
+                co_return nullptr;
+            }
+
             // 4. 设置 SNI 与**主机名校验**：链校验只证明「证书由受信 CA 签发」，不证明
             //    「签发的对象就是我们要访问的那台主机」——少了这一步，任何受信 CA 给他域签的
             //    证书都能冒充目标（CWE-297）。IP 字面量与 DNS 名的匹配规则不同，必须分开设置
@@ -195,7 +203,7 @@ namespace AsynGyanis::Net
 
             // 5. 创建 TlsSocket 并握手。看门狗声明在套接字之后：此刻起（握手到收完响应）
             //    每一步都受请求级时限约束，而任何返回路径都会先撤销看门狗再销毁套接字
-            Core::TlsSocket tlsSocket(ssl, loop, std::move(sock));
+            Core::TlsSocket tlsSocket(ssl, loop, std::move(sock), Core::TlsSocket::Role::Client);
             const DeadlineGuard<Core::TlsSocket> deadline(loop, tlsSocket, requestTimeout);
             try { co_await tlsSocket.handshake(); }
             catch (const Base::Exception &) { co_return nullptr; }
