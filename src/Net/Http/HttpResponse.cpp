@@ -324,7 +324,9 @@ namespace AsynGyanis::Net
         // 两条正文存储互斥：换成堆正文之前先解除映射，否则 bodyView() 会继续读旧映射
         releaseMappedBody();
 
-        // string_view 不保证零终止也不拥有内存，落到成员前必须实体化一份
+        // 刻意不动调用方显式设过的 content-length：HEAD 与静态文件服务靠「先声明长度、
+        // 不读正文」省一次整文件 IO（见 HttpServer 的静态文件分支与 Router 的 HEAD 用例），
+        // 这里删掉就等于把那份声明抹平。替换既有正文的中间件（如响应压缩）要自己清这条头
         m_body = std::string(body);
     }
 
@@ -360,6 +362,8 @@ namespace AsynGyanis::Net
 
         // 反向的互斥：映射正文接管后堆正文必须清空，避免 content-length 按残留字节数算错
         m_body.clear();
+        // content-length 与 setBody 同一口径：调用方显式声明的长度原样保留（区间响应
+        // 正是「先声明区间长度、再交出映射」的写法），只有替换正文的中间件需要自己清
         m_mappedBody = std::move(mappedFile);
         m_mappedBodyOffset = offset;
         m_mappedBodyLength = length;

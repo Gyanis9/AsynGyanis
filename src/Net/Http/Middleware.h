@@ -986,7 +986,13 @@ namespace AsynGyanis::Net
 
             detail::appendVaryAcceptEncoding(response);
             response.setHeader("content-encoding", std::string(selectedEncoding));
-            // content-length 由序列化层按新正体重算；mappedBody 会被 setBody 一并解除
+            // 正文表示变了，业务此前显式声明过的 content-length（如静态文件对 HEAD 用的
+            // 「先声明长度、不读正文」）此刻描述的是未压缩正文的字节数，必须按压缩后的
+            // 实际字节数改写：留着旧值就是「头部说一万字节、实际只有三千」，keep-alive 上
+            // 对端按旧长度截断，余下字节被当成下一条响应。
+            // setBody 刻意保留调用方声明过的长度（那是 HEAD/静态文件路径赖以省一次读的手段），
+            // 因此改写这条头是替换正文的一方——也就是本中间件——自己的责任
+            response.setHeader("content-length", std::to_string(compressed->size()));
             response.setBody(*compressed);
             co_return;
         };

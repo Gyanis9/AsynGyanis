@@ -134,6 +134,16 @@ namespace AsynGyanis::Net
                                response.setBody(kLargeBody);
                                co_return;
                            });
+                router.get("/declared-length",
+                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.setHeader("content-type", "text/plain; charset=utf-8");
+                               // 刻意声明一个错的长度再设正文：与静态文件对 HEAD 的
+                               // 「先声明长度、不读正文」是同一条路径，压缩中间件必须把它清掉重算
+                               response.setHeader("content-length", "999999");
+                               response.setBody(kLargeBody);
+                               co_return;
+                           });
             };
 
             const ServerConfigurator configureServer = [minimumBodySize](TestHttpServer &server)
@@ -200,6 +210,31 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "响应没有声明 gzip 编码：\n" << response->headers;
         EXPECT_TRUE(hasHeaderLine(response->headers, "vary: accept-encoding")) << "压缩改变了表示，必须告诉缓存按 Accept-Encoding 分桶";
         EXPECT_LT(response->body.size(), kLargeBody.size()) << "正文没有变小，压缩可能没真正生效";
+
+        const std::optional<std::string> restored = gunzip(response->body);
+        ASSERT_TRUE(restored.has_value()) << "压出来的正文解不开";
+        EXPECT_EQ(*restored, kLargeBody);
+    }
+
+    /**
+     * @brief 业务显式声明过的 content-length 描述的是未压缩正文：压完必须按新正体重算
+     * @details 旧长度若残留，线上就是「头部说 999999 字节、实际只有几千」——本用例的读取器
+     *          严格按声明长度收正文，读到不齐会超时返回空值，因此这条断言同时也是线上报文
+     *          边界是否正确的证明（对 keep-alive，错位会让余下字节被当成下一条响应）
+     */
+    TEST(CompressionMiddleware, RecomputesContentLengthDeclaredByHandler)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+        const std::uint16_t                             port    = fixture->listeningPort();
+        ASSERT_NE(port, 0U);
+
+        const std::optional<ParsedResponse> response = sendAndReadResponse(
+                port, makeRequestText("GET /declared-length HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+        ASSERT_TRUE(response.has_value()) << "没有读到完整响应：content-length 可能仍是压缩前的旧值";
+
+        ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "响应没有声明 gzip 编码：\n" << response->headers;
+        EXPECT_EQ(parseContentLength(response->headers), response->body.size()) << "content-length 与压缩后的正文长度不符";
+        EXPECT_EQ(parseContentLength(response->headers) == 999999U, false) << "旧长度被原样发上线";
 
         const std::optional<std::string> restored = gunzip(response->body);
         ASSERT_TRUE(restored.has_value()) << "压出来的正文解不开";

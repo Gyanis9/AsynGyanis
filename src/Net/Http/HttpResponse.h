@@ -130,6 +130,9 @@ namespace AsynGyanis::Net
          * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
          *         正文只能由 writeChunk() 逐段写出
          * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
+         * @note 调用方已显式设过的 content-length 原样保留（HEAD 与静态文件服务靠「先声明
+         *       长度、不读正文」省一次整文件 IO）。替换既有正文的中间件要自己清这条头，
+         *       否则发出「头部说 5 字节、正文几千字节」的报文
          */
         void setBody(std::string_view body);
 

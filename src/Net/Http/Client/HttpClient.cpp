@@ -4,6 +4,7 @@
 #include "Core/Socket/AsyncResolver.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Tls/TlsSocket.h"
+#include "Platform/IO/Socket.h"
 #include "Net/Tcp/TcpClient.h"
 
 #include <openssl/ssl.h>
@@ -68,6 +69,14 @@ namespace AsynGyanis::Net
             return ctx;
         }
 
+        /// 判断主机名是不是 IP 字面量：IP 与 DNS 名的证书校验规则不同，必须分开处理
+        bool isIpLiteral(const std::string &host)
+        {
+            std::array<std::uint8_t, 16> addressBytes{};
+            return ::inet_pton(AF_INET, host.c_str(), addressBytes.data()) == 1 ||
+                   ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
+        }
+
         /// 用 asyncSend 发完一整段（TlsSocket 没有 writeAll，SSL_write 默认全部或失败）
         Core::Task<bool> sendAll(Core::TlsSocket &socket, const std::string_view data)
         {
@@ -102,8 +111,17 @@ namespace AsynGyanis::Net
             SSL *ssl = SSL_new(ctx);
             if (!ssl) co_return nullptr;
 
-            // 4. 设置 SNI
+            // 4. 设置 SNI 与**主机名校验**：链校验只证明「证书由受信 CA 签发」，不证明
+            //    「签发的对象就是我们要访问的那台主机」——少了这一步，任何受信 CA 给他域签的
+            //    证书都能冒充目标（CWE-297）。IP 字面量与 DNS 名的匹配规则不同，必须分开设置
             SSL_set_tlsext_host_name(ssl, u.host.c_str());
+            if (isIpLiteral(u.host))
+            {
+                X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), u.host.c_str());
+            } else
+            {
+                SSL_set1_host(ssl, u.host.c_str());
+            }
 
             // 5. 创建 TlsSocket 并握手
             Core::TlsSocket tlsSocket(ssl, loop, std::move(sock));

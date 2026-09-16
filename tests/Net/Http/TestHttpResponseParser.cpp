@@ -235,6 +235,54 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 声明的正文长度超过上限：当场判失败，不为一条永远收不完的响应白分配缓冲
+     */
+    TEST(HttpResponseParser, FailsWhenDeclaredBodyExceedsLimit)
+    {
+        HttpResponseParser parser(16);
+        parser.feed(std::string("HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n"));
+
+        EXPECT_TRUE(parser.hasFailed()) << "声明长度超上限却继续等着收";
+        EXPECT_FALSE(parser.isComplete());
+    }
+
+    /**
+     * @brief 分块正文边收边判上限：一直喂块也不能把内存撑破
+     */
+    TEST(HttpResponseParser, FailsWhenChunkedBodyExceedsLimit)
+    {
+        HttpResponseParser parser(16);
+        feedAll(parser, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n0123456789abcdef\r\n");
+
+        // 第一块正好 16 字节，还没越界；再来一块就必须失败
+        ASSERT_FALSE(parser.hasFailed()) << "恰好等于上限就被判失败，上限口径按「超过」算";
+        parser.feed("1\r\nx\r\n");
+
+        EXPECT_TRUE(parser.hasFailed()) << "分块正文越上限却继续累积";
+    }
+
+    /**
+     * @brief 读到连接关闭定界的正文同样受上限约束：长度完全由对端决定
+     */
+    TEST(HttpResponseParser, FailsWhenCloseDelimitedBodyExceedsLimit)
+    {
+        HttpResponseParser parser(16);
+        parser.feed("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789abcdef01234");
+
+        EXPECT_TRUE(parser.hasFailed()) << "读到关闭的正文越上限却继续累积";
+    }
+
+    /**
+     * @brief 上限为 0 表示不限：调用方明确要求收多大的正文都得收完
+     */
+    TEST(HttpResponseParser, ZeroLimitMeansUnlimited)
+    {
+        HttpResponseParser parser(0);
+        EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n01234567890123456789"));
+        EXPECT_EQ(parser.result().body.size(), 20u);
+    }
+
+    /**
      * @brief 钉住重置语义：reset() 之后可以复用同一对象解析下一条响应
      */
     TEST(HttpResponseParser, ResetAllowsReuse)

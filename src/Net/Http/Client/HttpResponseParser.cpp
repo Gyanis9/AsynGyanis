@@ -262,6 +262,13 @@ namespace AsynGyanis::Net
                     }
                     if (hasContentLength)
                     {
+                        // 声明的长度本身就是对端给的：先按上限判一次，免得为一条永远收不完的
+                        // 响应白分配缓冲（chunked 与读到关闭两条路只能边收边判，见下面两处）
+                        if (m_maximumBodySize != 0 && declaredLength > m_maximumBodySize)
+                        {
+                            m_stage = Stage::Failed;
+                            break;
+                        }
                         m_expectedBodyBytes = declaredLength;
                         m_stage = declaredLength == 0 ? Stage::Complete : Stage::Body;
                     } else if (hasTransferEncoding)
@@ -319,6 +326,12 @@ namespace AsynGyanis::Net
                             m_result.body.append(data.data(), toCopy);
                             data.remove_prefix(toCopy);
                             m_chunkSize -= toCopy;
+                            // 分块的长度由对端一块一块给：只有边收边判才拦得住「无限分块」
+                            if (isBodyOverLimit())
+                            {
+                                m_stage = Stage::Failed;
+                                break;
+                            }
                             if (m_chunkSize == 0)
                             {
                                 // 数据段收满：随后必须是 CRLF
@@ -383,9 +396,15 @@ namespace AsynGyanis::Net
                 }
                 if (m_isCloseDelimited)
                 {
-                    // 把所有剩余数据收作正文，连接关闭即「正文完成」
+                    // 把所有剩余数据收作正文，连接关闭即「正文完成」。
+                    // 超上限按失败收口：这条路的正文长度完全由对端决定（一直不关连接就一直收），
+                    // 没有上限就是让对端决定本进程分配多少内存
                     m_result.body.append(data.data(), data.size());
                     data = {};
+                    if (isBodyOverLimit())
+                    {
+                        m_stage = Stage::Failed;
+                    }
                     break;
                 }
                 // 无正文
@@ -398,6 +417,12 @@ namespace AsynGyanis::Net
         }
         return startSize - data.size();
     }
+
+    HttpResponseParser::HttpResponseParser(const std::size_t maximumBodySize) noexcept :
+        m_maximumBodySize(maximumBodySize)
+    {
+    }
+
     void HttpResponseParser::reset()
     {
         m_stage = Stage::StatusLine;

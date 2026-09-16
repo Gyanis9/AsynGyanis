@@ -31,6 +31,19 @@ namespace AsynGyanis::Net
     class HttpResponseParser
     {
     public:
+        /**
+         * @brief 正文默认上限：与服务端请求解析器同一量级（8 MiB）
+         * @details 客户端同样需要这道闸：chunked 与「读到连接关闭」两种定界方式下，
+         *          正文长度由**对端**说了算，没有上限就是让对端决定本进程分配多少内存
+         */
+        static constexpr std::size_t kDefaultMaximumBodySize = 8ull * 1024 * 1024;
+
+        /**
+         * @brief 构造解析器
+         * @param maximumBodySize 正文长度上限（字节，chunked 按解码后累计）；0 表示不限
+         */
+        explicit HttpResponseParser(std::size_t maximumBodySize = kDefaultMaximumBodySize) noexcept;
+
         enum class Stage { StatusLine, Headers, Body, Complete, Failed };
         /// 喂入数据，返回本轮消费的字节数（返回 0 表示需要更多数据）
         std::size_t feed(std::string_view data);
@@ -66,5 +79,15 @@ namespace AsynGyanis::Net
         bool             m_isHttp10{false};
         ChunkPhase       m_chunkPhase{ChunkPhase::SizeLine};
         std::size_t      m_chunkSize{0};
+        std::size_t      m_maximumBodySize{kDefaultMaximumBodySize}; ///< 正文上限（0 表示不限）
+
+        /**
+         * @brief 已收正文是否越过上限
+         * @return true 越界；调用方据此把解析置为失败（越界后不再接收任何正文）
+         */
+        [[nodiscard]] bool isBodyOverLimit() const noexcept
+        {
+            return m_maximumBodySize != 0 && m_result.body.size() > m_maximumBodySize;
+        }
     };
 } // namespace AsynGyanis::Net

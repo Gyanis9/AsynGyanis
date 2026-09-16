@@ -426,7 +426,34 @@ namespace AsynGyanis::Net
                 {
                     response.suppressStreamingBody();
                 }
-                co_await m_router->route(request, response);
+
+                // 业务异常在这里就地收口（与 h1/h2 同一处置）：不捕获的话它会穿出 pump()、
+                // 打断 QuicServer 的收报文循环，整台服务不再处理任何报文
+                std::exception_ptr handlerException = nullptr;
+                try
+                {
+                    co_await m_router->route(request, response);
+                } catch (...)
+                {
+                    handlerException = std::current_exception();
+                }
+                if (handlerException != nullptr)
+                {
+                    const bool isStreamingStarted = response.isChunkedResponse() && response.hasSentChunkedHead();
+                    if (isStreamingStarted)
+                    {
+                        // 头部已随首段正文上线：改不了状态码，只能记日志并补末片收尾
+                        LOG_ERROR_FMT("Http3Session: 流 {} 的流式响应中途抛出异常，头部已上线无法改写状态码，"
+                                      "已按原状态码收尾",
+                                      streamId);
+                    } else
+                    {
+                        response.reset();
+                        response.setStatus(500);
+                        response.setBody("Internal Server Error");
+                        static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                    }
+                }
 
                 if (isTunnelStream)
                 {
@@ -756,7 +783,30 @@ namespace AsynGyanis::Net
         {
             response.suppressStreamingBody();
         }
-        co_await m_router->route(streamingRequest.request, response);
+
+        // 业务异常必须在这里收口：本协程的 Task 由会话自己驱动，异常若逃出去只会存进 promise
+        // 被静默吞掉——对端既拿不到 500、也等不到 END_STREAM，只能挂到 QUIC 空闲超时
+        std::exception_ptr handlerException = nullptr;
+        try
+        {
+            co_await m_router->route(streamingRequest.request, response);
+        } catch (...)
+        {
+            handlerException = std::current_exception();
+        }
+        if (handlerException != nullptr)
+        {
+            if (response.isChunkedResponse() && response.hasSentChunkedHead())
+            {
+                LOG_ERROR_FMT("Http3Session: 流 {} 的流式响应中途抛出异常，头部已上线无法改写状态码，已按原状态码收尾", streamId);
+            } else
+            {
+                response.reset();
+                response.setStatus(500);
+                response.setBody("Internal Server Error");
+                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            }
+        }
 
         // 正文越界且业务还没开始流式写出：按 413 改判（与 h2 侧同一处置）。
         // 已经开始流式写出时头部已上线，改状态码不可能，只能让它收尾
@@ -1127,8 +1177,11 @@ namespace AsynGyanis::Net
         // 读正文的回调靠 stream_user_data 找回状态，必须先挂上
         if (nghttp3_conn_set_stream_user_data(m_connection, streamId, &state) != 0)
         {
-            LOG_ERROR_FMT("Http3Session: 流 {} 的流式响应状态挂不上（nghttp3 找不到该流），本次响应作废", streamId);
-            m_isBroken = true;
+            // nghttp3 找不到这条流：对端多半已经把它 RST 掉了（慢业务上很常见）。
+            // 这只是**这一条流**的响应发不出去，连接与其它流都还健康——按流级作废处理，
+            // 不能置 m_isBroken（那会连带关掉整条 QUIC 连接；h2 同场景只作废该流）
+            LOG_WARN_FMT("Http3Session: 流 {} 已经不在了（对端多半已重置该流），这条流式响应作废；连接与其它流不受影响", streamId);
+            m_streamingResponses.erase(streamId);
             return false;
         }
 
@@ -1288,8 +1341,10 @@ namespace AsynGyanis::Net
         const bool hasBody = !isBodylessStatus && !outgoingBody.bytes.empty();
         if (nghttp3_conn_set_stream_user_data(m_connection, streamId, &outgoingBody) != 0)
         {
-            LOG_ERROR_FMT("Http3Session: 流 {} 的响应正文挂不上（nghttp3 找不到该流），本次响应作废", streamId);
-            m_isBroken = true;
+            // 与 submitStreamingResponseHead 同一处置：整条流没了（对端重置）只作废这一条响应，
+            // 不牵连连接与其它流
+            LOG_WARN_FMT("Http3Session: 流 {} 已经不在了（对端多半已重置该流），本次响应作废；连接与其它流不受影响", streamId);
+            m_outgoingBodies.erase(streamId);
             return;
         }
 
