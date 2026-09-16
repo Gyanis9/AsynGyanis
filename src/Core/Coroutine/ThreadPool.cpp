@@ -1,5 +1,7 @@
 #include "Core/Coroutine/ThreadPool.h"
 
+#include "Base/Log/LogMacros.h"
+
 namespace AsynGyanis::Core
 {
     ThreadPool::ThreadPool(const size_t threadCount) :
@@ -33,7 +35,19 @@ namespace AsynGyanis::Core
         {
             m_threads.emplace_back([this, i]()
             {
-                m_eventLoops[i]->run();
+                // 事件循环里的异常会一路穿到线程入口：postRemote 的投递体抛异常时，循环按契约
+                // 重抛，而线程体不接就是 std::terminate——整个进程连同在途请求一起没了，
+                // 收尾也不会跑。这里兜住并如实记一条 ERROR，让该线程体面退出
+                try
+                {
+                    m_eventLoops[i]->run();
+                } catch (const std::exception &loopError)
+                {
+                    LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因异常退出：{}", i, loopError.what());
+                } catch (...)
+                {
+                    LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因未知异常退出", i);
+                }
             });
         }
     }
