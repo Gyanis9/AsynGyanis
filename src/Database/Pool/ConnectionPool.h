@@ -99,8 +99,9 @@ namespace AsynGyanis::Database
          *             且对象生命周期要覆盖到协程完成之后
          * @return Core::Task<PooledConnection> 协程任务，co_await 后获得连接
          *
-         * @note 调用方必须确保协程不被提前销毁（Task 析构）以免悬挂指针；
-         *       协程被提前销毁时自动从等待列表中移除。
+         * @note 提前销毁协程（Task 析构）是安全的：还在等待列表里时会自行移除；已被交接或
+         *       超时唤醒、但恢复动作尚未执行时，那次恢复会变成空操作（见 AcquireAwaiter::ResumeTicket），
+         *       不会有人去 resume 已经随帧释放的内存。
          * @note 池被 shutdown 时会以「空连接」唤醒全部等待者，且那一次**就地恢复**而不是
          *       投回事件循环：池都停摆了，投递到循环里可能永远不被执行，那会让协程永久挂起。
          */
@@ -235,11 +236,25 @@ namespace AsynGyanis::Database
             friend class ConnectionPool;
 
         private:
+            /**
+             * @brief 恢复票据：把「恢复这次等待」与「等待器是否还活着」分开
+             * @details 交接连接时池把恢复动作投回事件循环，而那一刻之后调用方随时可能销毁 Task
+             *          （帧连同等待器一起析构）。池投出去的若是裸句柄，循环那边就会 resume 一块
+             *          已释放的帧——那是释放后使用。票据由等待器与投递方共享：等待器析构时把里面的
+             *          句柄清空，投递方执行时看到空句柄就什么都不做
+             */
+            struct ResumeTicket
+            {
+                std::coroutine_handle<> handle{nullptr}; ///< 待恢复的协程；等待器析构后为空
+            };
+
             std::coroutine_handle<>             m_handle{nullptr}; ///< 等待协程的句柄（await_suspend 时保存）
             ConnectionPool *                    m_pool;            ///< 所属连接池
             Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
             std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
+            /// 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
+            std::shared_ptr<ResumeTicket> m_resumeTicket;
             /// 等待截止时刻（await_suspend 时按 acquireTimeoutMilliseconds 定下）：
             /// 与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒
             std::chrono::steady_clock::time_point m_deadline{};

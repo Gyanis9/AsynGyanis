@@ -75,20 +75,29 @@ namespace AsynGyanis::Database
         // 就地恢复至少能让它们拿到空连接、继续走完自己的错误分支。
         // **恢复必须在锁外做**：协程恢复后可能立刻再触池（重试 acquire、归还连接），
         // 那些路径都要拿 m_asyncMutex，持锁恢复就是同线程二次加锁的自死锁
-        std::vector<AcquireAwaiter *> abandonedWaiters;
+        // 收集票据而不是裸指针：票据是共享所有权，等待器随帧析构时我们手里的这一份仍然有效，
+        // 而裸指针在锁外就已经可能悬垂（调用方可以随时销毁那个 Task）
+        std::vector<std::shared_ptr<AcquireAwaiter::ResumeTicket>> abandonedTickets;
         {
             std::lock_guard lock(m_asyncMutex);
-            abandonedWaiters.assign(m_asyncWaiters.begin(), m_asyncWaiters.end());
-            m_asyncWaiters.clear();
-            for (AcquireAwaiter *waiter: abandonedWaiters)
+            abandonedTickets.reserve(m_asyncWaiters.size());
+            for (AcquireAwaiter *waiter: m_asyncWaiters)
             {
                 waiter->m_result = nullptr;
                 waiter->m_inList = false;
+                if (waiter->m_resumeTicket != nullptr)
+                {
+                    abandonedTickets.push_back(waiter->m_resumeTicket);
+                }
             }
+            m_asyncWaiters.clear();
         }
-        for (AcquireAwaiter *waiter: abandonedWaiters)
+        for (const std::shared_ptr<AcquireAwaiter::ResumeTicket> &ticket: abandonedTickets)
         {
-            waiter->m_handle.resume();
+            if (ticket->handle != nullptr)
+            {
+                ticket->handle.resume();
+            }
         }
     }
 
@@ -197,6 +206,13 @@ namespace AsynGyanis::Database
         {
             m_pool->removeAsyncWaiter(this);
         }
+
+        // 票据里的句柄一并清空：池可能已经把「恢复这次等待」投回了事件循环（交接连接那一刻），
+        // 而本帧眼下就要析构。投递那边执行时看到空句柄会直接跳过，不会 resume 已释放的帧
+        if (m_resumeTicket)
+        {
+            m_resumeTicket->handle = nullptr;
+        }
     }
 
     bool ConnectionPool::AcquireAwaiter::await_ready() noexcept
@@ -232,6 +248,9 @@ namespace AsynGyanis::Database
             }
             // 只在入表时定一次，不随每次尝试刷新——否则反复失败的重试会把超时无限顺延
             m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_pool->m_config.acquireTimeoutMilliseconds);
+            // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据
+            m_resumeTicket      = std::make_shared<ResumeTicket>();
+            m_resumeTicket->handle = handle;
             m_pool->m_asyncWaiters.push_back(this);
             m_inList = true;
         }
@@ -643,8 +662,21 @@ namespace AsynGyanis::Database
         // 把恢复动作投递回等待者所属的事件循环，而不是就地恢复：归还连接可能发生在
         // 任意线程（工作线程、另一个事件循环），就地恢复会让协程的后续代码跑在那个线程上，
         // 而调用方是按「回调都在自己的事件循环线程上」来写代码的。
-        // scheduleRemote 内部持锁入队并唤醒目标循环，因此不存在丢唤醒的窗口
-        waiter->m_completionLoop->scheduler().scheduleRemote(waiter->m_handle);
+        // postRemote 内部持锁入队并唤醒目标循环，因此不存在丢唤醒的窗口。
+        // **经票据投递**：这次投递之后调用方随时可能销毁 Task（帧连同等待器一起析构），
+        // 投裸句柄会让循环那边 resume 一块已释放的帧——票据让那次恢复在帧没了之后变成空操作
+        const auto resumeTicket = waiter->m_resumeTicket;
+        if (resumeTicket != nullptr)
+        {
+            waiter->m_completionLoop->scheduler().postRemote(
+                    [resumeTicket]()
+                    {
+                        if (resumeTicket->handle != nullptr)
+                        {
+                            resumeTicket->handle.resume();
+                        }
+                    });
+        }
 
         return true;
     }
@@ -663,10 +695,12 @@ namespace AsynGyanis::Database
 
     void ConnectionPool::expireTimedOutWaiters() noexcept
     {
-        const auto                    now = std::chrono::steady_clock::now();
-        std::vector<AcquireAwaiter *> timedOutWaiters;
+        const auto                                 now = std::chrono::steady_clock::now();
+        std::vector<std::shared_ptr<AcquireAwaiter::ResumeTicket>> timedOutTickets;
+        std::vector<Core::EventLoop *>             completionLoops;
         {
             std::lock_guard lock(m_asyncMutex);
+            std::vector<AcquireAwaiter *> timedOutWaiters;
             std::erase_if(m_asyncWaiters,
                           [&timedOutWaiters, now](AcquireAwaiter *const waiter)
                           {
@@ -681,14 +715,28 @@ namespace AsynGyanis::Database
             for (AcquireAwaiter *const waiter: timedOutWaiters)
             {
                 waiter->m_inList = false;
+                if (waiter->m_resumeTicket != nullptr)
+                {
+                    timedOutTickets.push_back(waiter->m_resumeTicket);
+                    completionLoops.push_back(waiter->m_completionLoop);
+                }
             }
         }
 
         // 恢复投回各自的事件循环：本函数跑在后台线程上，就地恢复会把协程的后续代码
-        // 跑到这个线程上，而调用方是按「回调都在自己的事件循环线程上」写代码的
-        for (AcquireAwaiter *const waiter: timedOutWaiters)
+        // 跑到这个线程上，而调用方是按「回调都在自己的事件循环线程上」写代码的。
+        // 与交接路径同样经票据投递：投出去之后调用方可能立刻销毁 Task，裸句柄会 resume 已释放的帧
+        for (std::size_t index = 0; index < timedOutTickets.size(); ++index)
         {
-            waiter->m_completionLoop->scheduler().scheduleRemote(waiter->m_handle);
+            const std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket = timedOutTickets[index];
+            completionLoops[index]->scheduler().postRemote(
+                    [ticket]()
+                    {
+                        if (ticket->handle != nullptr)
+                        {
+                            ticket->handle.resume();
+                        }
+                    });
         }
     }
 

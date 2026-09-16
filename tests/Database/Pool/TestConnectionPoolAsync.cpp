@@ -17,6 +17,7 @@
 // - AcquireAsyncResumesOnGivenEventLoop（慢路径：隔线程归还后，恢复发生在循环线程上）
 // - DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
 // - DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection（析构期唤醒的协程归还连接，不得同线程死锁）
+// - DiscardingTaskAfterHandoffDoesNotResumeFreedFrame（交接后销毁 Task 不得 resume 已释放帧）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -269,6 +270,41 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(probe.connection.value()) << "池停摆后归还的连接应被关闭（包装器随之置空）而不是留在池里";
 
         loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 钉住：连接已交接、恢复尚未执行时销毁 Task，不得 resume 已释放的协程帧
+     * @details 交接把「恢复这次等待」投回事件循环，而调用方在那之后随时可能销毁 Task——
+     *          协程帧连同等待器一起析构。投裸句柄时循环那边会 resume 一块已释放的内存
+     *          （ASan 实测：heap-use-after-free）；用例用一个**不启动**的循环把这次恢复
+     *          留在队列里，销毁 Task 之后再手动排空队列
+     */
+    TEST(ConnectionPoolAsync, DiscardingTaskAfterHandoffDoesNotResumeFreedFrame)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 1;
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        // 不启动的循环：交接只会把恢复动作排进它的队列，不会有人执行
+        Core::EventLoop loop;
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+
+        AcquireProbe probe;
+        {
+            Core::Task<void> driver = probeAcquireAsync(pool, loop, probe);
+            driver.handle().resume(); // 池满：挂到等待列表
+            ASSERT_FALSE(probe.finished.load(std::memory_order_acquire));
+            ASSERT_EQ(pool.waitingCount(), 1U);
+
+            occupying.release(); // 交接：恢复动作排进 loop 的队列
+        }                        // driver 在这里析构 → 协程帧连同等待器一起销毁
+
+        // 队列里的那次恢复现在才执行：帧已经没了，它必须什么都不做
+        loop.scheduler().runAll();
+        EXPECT_FALSE(probe.finished.load(std::memory_order_acquire)) << "帧已销毁，这次恢复不该跑任何代码";
     }
 
 } // namespace AsynGyanis::Database
