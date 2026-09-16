@@ -152,6 +152,40 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 钉住 isWaitingFor 的口径：挂起期间为真，完成后为假
+     * @details TLS 侧靠它判断「本方向需要反方向先推进时能不能去等对方方向」——一个方向只允许
+     *          一个等待者，抢槽会抛异常，所以先问一句再决定走哪条让出路径
+     */
+    TEST(IoWatcher, ReportsWhetherADirectionHasAWaiter)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+
+        EXPECT_FALSE(watcher.isWaitingFor(EPOLLIN)) << "还没人等待时应当为假";
+        EXPECT_FALSE(watcher.isWaitingFor(EPOLLOUT));
+
+        Task<WaitOutcome> waiting = waitReadableOnce(watcher);
+        waiting.handle().resume();
+        ASSERT_FALSE(waiting.isReady());
+        EXPECT_TRUE(watcher.isWaitingFor(EPOLLIN)) << "读方向已有等待者";
+        EXPECT_FALSE(watcher.isWaitingFor(EPOLLOUT)) << "写方向不受影响";
+
+        makeReadable(peerDescriptor);
+        ASSERT_GT(dispatchOnce(loop), 0U);
+        ASSERT_TRUE(waiting.isReady());
+        EXPECT_FALSE(watcher.isWaitingFor(EPOLLIN)) << "等待完成后不该再报有等待者";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
     TEST(IoWatcher, ReadinessIsCachedWhenNobodyIsWaiting)
     {
         EventLoop loop;

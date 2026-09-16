@@ -165,6 +165,15 @@ namespace AsynGyanis::Core
         [[nodiscard]] Awaiter waitWritable() noexcept;
 
         /**
+         * @brief 该方向上是否已有协程在等待
+         * @details 供「本方向需要反方向先推进」的情形判断：一个方向只允许一个等待者，
+         *          抢槽会直接抛 LogicException，调用方应当据此改走别的让出方式
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         * @return true 该方向已有等待者
+         */
+        [[nodiscard]] bool isWaitingFor(std::uint32_t event) const noexcept;
+
+        /**
          * @brief 处理来自事件循环的事件分发
          * @details 仅由 EventLoop 在分发 epoll 事件时调用。若该方向有等待者，就把就绪结果
          *          交给它并恢复它；没有等待者则把就绪记下来留给下一次等待。仍有人在等的

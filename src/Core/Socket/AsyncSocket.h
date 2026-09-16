@@ -294,6 +294,21 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] IoWatcher::Awaiter waitWritable() const;
 
+        /**
+         * @brief 读方向上是否已有协程在等待
+         * @details 注册对象可能还没创建（从未等待过）：那自然没有等待者。
+         *          供「不能抢等待槽、只能换一种让出方式」的调用方判断（见 TlsSocket 的
+         *          SSL_ERROR_WANT_READ 处置）
+         * @return true 已有等待者
+         */
+        [[nodiscard]] bool isWaitingReadable() const noexcept;
+
+        /**
+         * @brief 写方向上是否已有协程在等待
+         * @return true 已有等待者
+         */
+        [[nodiscard]] bool isWaitingWritable() const noexcept;
+
     private:
         EventLoop &m_loop;           ///< 关联的事件循环，用于异步等待和事件注册
         int        m_fileDescriptor; ///< 底层 socket 文件描述符，-1 表示无效

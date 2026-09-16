@@ -115,6 +115,17 @@ namespace AsynGyanis::Core
 
             if (error == SSL_ERROR_WANT_WRITE)
             {
+                // 握手期的读会需要先写：写方向若已被写协程占着，就不能去抢等待槽（一个方向只允许
+                // 一个等待者，抢槽会直接抛 LogicException，把一次读失败变成一条莫名异常）。
+                // 改为让出一次调度，由写侧先把需要的字节发出去，再回来重试
+                if (m_socket.isWaitingWritable())
+                {
+                    if (!co_await yieldForPeerProgress())
+                    {
+                        throw CoreException("TLS 读取失败：等写侧推进时定时器不可用（描述符耗尽？）");
+                    }
+                    continue;
+                }
                 if (!co_await m_socket.waitWritable())
                 {
                     throw CoreException("TLS 握手失败：等待可写期间套接字被关闭");
@@ -167,6 +178,16 @@ namespace AsynGyanis::Core
 
             if (error == SSL_ERROR_WANT_READ)
             {
+                // TLS 1.3 的 KeyUpdate（以及握手期）会让 SSL_write 需要先读：读方向若已有读协程
+                // 在等，同样不能抢槽——让出一次调度，由读侧把那批握手字节吃进来再重试
+                if (m_socket.isWaitingReadable())
+                {
+                    if (!co_await yieldForPeerProgress())
+                    {
+                        throw CoreException("TLS 写入失败：等读侧推进时定时器不可用（描述符耗尽？）");
+                    }
+                    continue;
+                }
                 if (!co_await m_socket.waitReadable())
                 {
                     throw CoreException("TLS 读取失败：等待可读期间套接字被关闭");
@@ -179,6 +200,26 @@ namespace AsynGyanis::Core
             throw CoreException(std::string("TLS 写入失败：") + errorBuffer +
                                 "（连接多半已被对端关闭或 TLS 会话已失效，应关闭该连接而不是重试）");
         }
+    }
+
+    Task<bool> TlsSocket::yieldForPeerProgress() const
+    {
+        // 让出一次调度：本方向需要反方向先推进，而反方向的等待槽已被占用
+        if (m_loop == nullptr)
+        {
+            co_return false;
+        }
+
+        Timer timer(*m_loop);
+        try
+        {
+            // 定时器申请不到描述符时会抛：按失败收场，由调用方给出可操作的错误文本
+            static_cast<void>(co_await timer.waitFor(kPeerProgressYieldInterval));
+        } catch (...)
+        {
+            co_return false;
+        }
+        co_return true;
     }
 
     void TlsSocket::close()

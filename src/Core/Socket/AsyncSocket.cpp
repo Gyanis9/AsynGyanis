@@ -383,6 +383,16 @@ namespace AsynGyanis::Core
         return releasedFileDescriptor;
     }
 
+    bool AsyncSocket::isWaitingReadable() const noexcept
+    {
+        return m_watcher != nullptr && m_watcher->isWaitingFor(EPOLLIN);
+    }
+
+    bool AsyncSocket::isWaitingWritable() const noexcept
+    {
+        return m_watcher != nullptr && m_watcher->isWaitingFor(EPOLLOUT);
+    }
+
     void AsyncSocket::close()
     {
         if (m_fileDescriptor >= 0)

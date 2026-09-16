@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Coroutine/Task.h"
 
@@ -146,6 +147,19 @@ namespace AsynGyanis::Core
         };
 
         std::unique_ptr<SSL, SslDeleter> m_ssl;                  ///< OpenSSL SSL 对象，RAII 管理
+        /// 「反方向已被占用」时让出一次调度的时长：远小于任何握手/读超时口径，
+        /// 只用来把控制权交回事件循环，让对方那个方向的协程先跑一步
+        static constexpr std::chrono::milliseconds kPeerProgressYieldInterval{1};
+
+        /**
+         * @brief 让出一次调度（定时器驱动），等反方向先推进
+         * @details 用于 SSL_write 需要先读、SSL_read 需要先写这类情形：对方方向的等待槽不能抢
+         *          （一个方向只允许一个等待者），自己方向又不能等（可写立刻返回会变成空转）。
+         *          定时器是唯一既不抢槽也不空转的让出方式
+         * @return true 让出成功；false 定时器不可用（调用方按失败收场）
+         */
+        [[nodiscard]] Task<bool> yieldForPeerProgress() const;
+
         EventLoop *                      m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
         AsyncSocket                      m_socket;               ///< 底层异步 socket
         bool                             m_handshakeDone{false}; ///< 握手是否已完成

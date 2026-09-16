@@ -144,6 +144,12 @@ namespace AsynGyanis::Core
         return Awaiter(*this, EPOLLOUT);
     }
 
+    bool IoWatcher::isWaitingFor(const std::uint32_t event) const noexcept
+    {
+        const WaiterSlot &slot = (event & EPOLLIN) != 0 ? m_readWaiter : m_writeWaiter;
+        return slot.handle != nullptr;
+    }
+
     void IoWatcher::handleEvents(const std::uint32_t events) noexcept
     {
         // 水平触发：这次上报不消耗关注位（不再有 ONESHOT 的一发即消），账本因此保持不动。
