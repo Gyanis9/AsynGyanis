@@ -145,7 +145,9 @@ namespace AsynGyanis::Platform
 
     ssize_t DatagramSocket::send(const SocketAddress &peerAddress, const void *const buffer, const std::size_t length) const noexcept
     {
-        if (!isValid() || buffer == nullptr || length == 0)
+        // 零长数据报是合法的（RFC 768：最小报文就是 8 字节头、零负载），接收侧一直照收，
+        // 这里也照发——用零长报文做保活探测是常见做法，拒掉它会让两种方向的行为不对称
+        if (!isValid() || buffer == nullptr)
         {
             PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return -1;

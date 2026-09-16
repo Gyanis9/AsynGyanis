@@ -216,6 +216,35 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 零长数据报可以发出去、接收侧照收（RFC 768 允许空报文）
+     * @details 空报文常用作保活探测。此前发送侧把 length == 0 当成参数错误拒掉，而接收侧一直
+     *          照收——同一件事在两个方向上行为不一致
+     */
+    TEST(AsyncUdpSocket, SendsAndReceivesEmptyDatagram)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket receiver = bindLoopbackSocket(loop);
+        ASSERT_TRUE(receiver.isValid()) << "接收端绑定失败";
+        AsyncUdpSocket sender = bindLoopbackSocket(loop);
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败";
+
+        TransferObservation observation;
+        Task<void>          scenario = sendThenReceiveTask(sender, receiver, std::string{}, observation);
+        loop.scheduler().schedule(scenario.handle());
+        ASSERT_TRUE(stepLoopUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
+                << "空报文没有被交付";
+
+        ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
+        ASSERT_TRUE(observation.sentByteCount.has_value()) << "发送没有走到";
+        EXPECT_EQ(*observation.sentByteCount, 0) << "空报文应当原样发出";
+        ASSERT_TRUE(observation.receivedByteCount.has_value());
+        EXPECT_EQ(*observation.receivedByteCount, 0);
+        EXPECT_TRUE(observation.receivedPayload.empty());
+    }
+
+    /**
      * @brief 报文晚于接收挂起到达时，等就绪能把协程唤醒并把报文交回来
      * @details 这一条才真正走到 IoWatcher 的等待路径：先把接收摊到挂起，再从另一条套接字发报文。
      *          「推进一轮后仍未完成」本身就是「它挂在了等可读上」的证据——此刻一个字节都还没发
