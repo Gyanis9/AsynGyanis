@@ -238,6 +238,12 @@ namespace AsynGyanis::Net
                 if (!co_await sendAll(tlsSocket, request)) co_return nullptr;
 
                 HttpResponseParser parser;
+                if (method == "HEAD")
+                {
+                    // 对 HEAD 的应答一律在头块之后结束（RFC 9112 §6.3 第 1 条）：不标记的话
+                    // 「不带 Content-Length 的 HEAD 应答」会被当成读到关闭，客户端只能干等
+                    parser.markAsHeadResponse();
+                }
                 std::array<char, 4096> buf{};
                 while (true)
                 {
@@ -293,6 +299,11 @@ namespace AsynGyanis::Net
                 co_await stream.writeAll(request.data(), request.size());
 
                 HttpResponseParser parser;
+                if (method == "HEAD")
+                {
+                    // 与 HTTPS 连路同一处置：HEAD 的应答在头块之后结束，不等正文也不等关闭
+                    parser.markAsHeadResponse();
+                }
                 std::array<char, 4096> buf{};
                 while (true)
                 {

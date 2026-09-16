@@ -55,6 +55,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] const HttpResponseInfo &result() const noexcept { return m_result; }
         /// 通知对端已关闭（close-delimited 模式下据此完成解析）
         void endOfStream();
+
+        /**
+         * @brief 标记「接下来解析的是 HEAD 请求的应答」
+         * @details RFC 9112 §6.3 第 1 条：对 HEAD 的应答一律在头块之后结束，无论带不带定界头，
+         *          正文都为空。解析器本身不知道请求方法，由调用方在喂字节之前告知——不标记的话，
+         *          「HEAD 应答不带 Content-Length」会被按「读到连接关闭」处理，客户端只能干等
+         *          对端关闭（keep-alive 连接上是等不到结果的）
+         */
+        void markAsHeadResponse() noexcept { m_isHeadResponse = true; }
+
         /// 重置解析器状态
         void reset();
     private:
@@ -76,7 +86,7 @@ namespace AsynGyanis::Net
         std::size_t      m_expectedBodyBytes{0};
         bool             m_isChunked{false};
         bool             m_isCloseDelimited{false};
-        bool             m_isHttp10{false};
+        bool             m_isHeadResponse{false}; ///< 接下来解析的是 HEAD 请求的应答（RFC 9112 §6.3 第 1 条）
         ChunkPhase       m_chunkPhase{ChunkPhase::SizeLine};
         std::size_t      m_chunkSize{0};
         std::size_t      m_maximumBodySize{kDefaultMaximumBodySize}; ///< 正文上限（0 表示不限）

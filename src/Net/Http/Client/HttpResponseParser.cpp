@@ -85,27 +85,6 @@ namespace AsynGyanis::Net
             while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
             return value;
         }
-        /// 按逗号切分的头部取值里是否含指定 token（忽略大小写；只按整个 token 匹配，不做子串命中）
-        bool headerValueListContainsToken(const std::string_view value, const std::string_view token) noexcept
-        {
-            std::size_t start = 0;
-            while (start <= value.size())
-            {
-                const auto             comma = value.find(',', start);
-                const std::string_view entry =
-                        value.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
-                if (equalsIgnoringCase(trimFieldValue(entry), token))
-                {
-                    return true;
-                }
-                if (comma == std::string_view::npos)
-                {
-                    break;
-                }
-                start = comma + 1;
-            }
-            return false;
-        }
         /// 取 Transfer-Encoding 的最后一个编码（RFC 9112 §6.1：chunked 必须是最后一个编码）
         std::string_view lastTransferEncoding(const std::string_view value) noexcept
         {
@@ -185,8 +164,7 @@ namespace AsynGyanis::Net
                     m_stage = Stage::Failed;
                     return startSize - data.size();
                 }
-                // HTTP/1.0 的响应没有长度自定界语义：无定界头时正文要读到连接关闭
-                m_isHttp10 = line[7] == '0';
+                // HTTP/1.1 与 1.0 在正文定界上不再区别对待：无定界头时一律读到连接关闭（RFC 9112 §6.3）
                 const auto sp1 = line.find(' ', 8);
                 if (sp1 == std::string_view::npos) { m_stage = Stage::Failed; return startSize - data.size(); }
                 auto codeStr = line.substr(sp1 + 1);
@@ -207,7 +185,9 @@ namespace AsynGyanis::Net
                     bool        hasContentLength    = false;
                     bool        hasTransferEncoding = false;
                     std::size_t declaredLength      = 0;
-                    bool        isCloseConnection   = false;
+                    // 多字段 Transfer-Encoding 要按 §6.1 合并成一个列表再取最后一个编码：
+                    // 「chunked 必须在末尾」是对合并结果说的，逐条看会把 chunked, gzip 误判成 chunked
+                    std::string combinedTransferEncoding;
                     for (auto &[name, value]: m_result.headers)
                     {
                         const auto lowerName = toLower(name);
@@ -226,14 +206,11 @@ namespace AsynGyanis::Net
                         } else if (lowerName == "transfer-encoding")
                         {
                             hasTransferEncoding = true;
-                            // chunked 只认最后一个编码（前面可以有 gzip 等外层编码）
-                            if (equalsIgnoringCase(lastTransferEncoding(value), "chunked"))
+                            if (!combinedTransferEncoding.empty())
                             {
-                                m_isChunked = true;
+                                combinedTransferEncoding += ", ";
                             }
-                        } else if (lowerName == "connection" && headerValueListContainsToken(value, "close"))
-                        {
-                            isCloseConnection = true;
+                            combinedTransferEncoding += trimFieldValue(value);
                         }
                     }
 
@@ -251,12 +228,26 @@ namespace AsynGyanis::Net
                         m_result.statusCode = 0;
                         m_result.reasonPhrase.clear();
                         m_result.headers.clear();
+                        // 定界标志也要复位：过渡响应若带了 Transfer-Encoding，留在成员上会把
+                        // 随后那条真正响应的正文按分块解读
+                        m_isChunked         = false;
+                        m_isCloseDelimited  = false;
+                        m_expectedBodyBytes = 0;
+                        m_chunkSize         = 0;
+                        m_chunkPhase        = ChunkPhase::SizeLine;
                         m_stage = Stage::StatusLine;
                         break;
                     }
                     if (statusHasNoBody(m_result.statusCode))
                     {
                         // 无正文的状态码：即便带了 Content-Length 也不能据此等待正文
+                        m_stage = Stage::Complete;
+                        break;
+                    }
+                    if (m_isHeadResponse)
+                    {
+                        // 对 HEAD 的应答一律在头块之后结束（RFC 9112 §6.3 第 1 条），
+                        // 无论带不带定界头都不该再去等正文
                         m_stage = Stage::Complete;
                         break;
                     }
@@ -273,8 +264,9 @@ namespace AsynGyanis::Net
                         m_stage = declaredLength == 0 ? Stage::Complete : Stage::Body;
                     } else if (hasTransferEncoding)
                     {
-                        if (m_isChunked)
+                        if (equalsIgnoringCase(lastTransferEncoding(combinedTransferEncoding), "chunked"))
                         {
+                            m_isChunked  = true;
                             m_chunkPhase = ChunkPhase::SizeLine;
                             m_stage      = Stage::Body;
                         } else
@@ -283,15 +275,12 @@ namespace AsynGyanis::Net
                             m_isCloseDelimited = true;
                             m_stage            = Stage::Body;
                         }
-                    } else if (isCloseConnection || m_isHttp10)
-                    {
-                        // HTTP/1.0 与 Connection: close 的响应都以连接关闭为正文终点
-                        m_isCloseDelimited = true;
-                        m_stage            = Stage::Body;
                     } else
                     {
-                        // HTTP/1.1 且无定界头：本响应没有正文
-                        m_stage = Stage::Complete;
+                        // 既无 Transfer-Encoding 也无 Content-Length 的响应（不论 1.0 还是 1.1）：
+                        // 正文长度由「对端关闭连接前收到的字节数」决定（RFC 9112 §6.3 第 8 条）
+                        m_isCloseDelimited = true;
+                        m_stage            = Stage::Body;
                     }
                     break;
                 }
@@ -432,7 +421,6 @@ namespace AsynGyanis::Net
         m_expectedBodyBytes = 0;
         m_isChunked = false;
         m_isCloseDelimited = false;
-        m_isHttp10 = false;
         m_chunkPhase = ChunkPhase::SizeLine;
         m_chunkSize = 0;
     }

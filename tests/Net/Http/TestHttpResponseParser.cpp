@@ -172,6 +172,67 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief HTTP/1.1 且既无 Transfer-Encoding 也无 Content-Length：正文按「读到连接关闭」定界
+     * @details RFC 9112 §6.3 第 8 条对响应同样成立，不是因为带了 Connection: close 才如此。
+     *          此前这种情况被当成「本响应没有正文」当场收尾，对端随后发来的正文被静默截成空串
+     */
+    TEST(HttpResponseParser, TreatsHttp11WithoutFramingHeadersAsCloseDelimited)
+    {
+        HttpResponseParser parser;
+        parser.feed("HTTP/1.1 200 OK\r\n\r\nbody-by-close");
+        EXPECT_FALSE(parser.isComplete()) << "无定界头的 HTTP/1.1 响应不该当场收尾";
+        EXPECT_FALSE(parser.hasFailed());
+        parser.endOfStream();
+        EXPECT_TRUE(parser.isComplete());
+        EXPECT_EQ(parser.result().body, "body-by-close") << "正文被静默截掉了";
+    }
+
+    /**
+     * @brief HEAD 的应答在头块之后立即结束：不带定界头也不去等正文或关闭
+     * @details RFC 9112 §6.3 第 1 条。解析器不知道请求方法，由调用方标记；不标记的话这条响应
+     *          会被按「读到连接关闭」处理，keep-alive 连接上客户端永远等不到结果
+     */
+    TEST(HttpResponseParser, CompletesHeadResponseWithoutFramingHeadersImmediately)
+    {
+        HttpResponseParser parser;
+        parser.markAsHeadResponse();
+        EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"));
+        EXPECT_EQ(parser.result().statusCode, 200);
+        EXPECT_TRUE(parser.result().body.empty());
+    }
+
+    /**
+     * @brief 过渡响应带的 Transfer-Encoding 不能影响随后那条真正响应的正文定界
+     * @details 1xx 只是招呼，它的定界头随头部一起作废；标志若留在成员上，最终响应即便只给了
+     *          Content-Length 也会被按分块解读，解析直接失败
+     */
+    TEST(HttpResponseParser, InterimResponseFramingHeadersDoNotLeakIntoFinalResponse)
+    {
+        HttpResponseParser parser;
+        const std::string message = "HTTP/1.1 103 Early Hints\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        EXPECT_TRUE(feedAll(parser, message));
+        EXPECT_EQ(parser.result().statusCode, 200);
+        EXPECT_EQ(parser.result().body, "ok");
+    }
+
+    /**
+     * @brief 多字段 Transfer-Encoding 按 RFC 9112 §6.1 合并后取最后一个编码：chunked, gzip 不是分块
+     * @details 「chunked 必须在末尾」是对**合并后的列表**说的。逐条看最后一项，会把
+     *          `Transfer-Encoding: chunked` + `Transfer-Encoding: gzip` 判成分块，正文随即错位
+     */
+    TEST(HttpResponseParser, MergesTransferEncodingFieldsBeforeCheckingChunkedIsLast)
+    {
+        HttpResponseParser parser;
+        parser.feed("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\nraw-bytes");
+        EXPECT_FALSE(parser.hasFailed()) << "合并后的末尾编码是 gzip，不该按分块解读";
+        EXPECT_FALSE(parser.isComplete());
+        parser.endOfStream();
+        EXPECT_TRUE(parser.isComplete());
+        EXPECT_EQ(parser.result().body, "raw-bytes");
+    }
+
+    /**
      * @brief 钉住无正文状态码：204 / 304 即便带 Content-Length 也立即完成、不等待正文
      */
     TEST(HttpResponseParser, CompletesNoBodyStatusWithoutWaiting)
