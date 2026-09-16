@@ -693,6 +693,66 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 已收口但仍被协程持有的连接，要等在途动作结束才摘除
+     * @details 收报文路径与定时循环都会 co_await 连接的方法（handleDatagram / flush / handleExpiry
+     *          都可能在等网络时挂起）：挂起期间另一条路径若把「已收口」的连接摘掉销毁，恢复后手里
+     *          那份引用与迭代器就是悬垂的。这里用 ActivityGuard 精确造出「有在途动作」这一状态——
+     *          守卫在时清扫必须跳过（等满多个节拍），守卫一放立刻摘掉
+     */
+    TEST(QuicServer, KeepsClosedConnectionWhileAnActionIsInFlight)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        RunningQuicServer server;
+        ASSERT_NE(server.listeningPort(), 0);
+
+        // 握手后让服务端把连接交到流数据回调里：用例据此拿到服务端那一侧的 QuicConnection
+        std::atomic<QuicConnection *> observedConnection{nullptr};
+        server.server().setStreamDataHandler(
+                [&observedConnection](QuicConnection &connection, const std::int64_t, const std::span<const std::uint8_t>, const bool)
+                {
+                    observedConnection.store(&connection, std::memory_order_release);
+                });
+
+        QuicTestClient client;
+        ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+        ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); })) << "握手没有完成";
+
+        const std::vector<std::uint8_t> payload{'x'};
+        ASSERT_TRUE(client.openStreamAndQueuePayload(payload)) << "流没有开出来";
+        ASSERT_TRUE(pumpUntil(client, [&observedConnection] { return observedConnection.load(std::memory_order_acquire) != nullptr; }))
+                << "服务端没有把连接交到流数据回调里";
+        QuicConnection *const serverConnection = observedConnection.load(std::memory_order_acquire);
+        ASSERT_EQ(server.sampleConnectionCount(), 1U);
+
+        // 「已收口 + 有在途动作」：守卫跨过下面整整一段等待
+        std::optional<QuicConnection::ActivityGuard> activityGuard;
+        server.runOnLoopAndWait(
+                [serverConnection, &activityGuard]
+                {
+                    serverConnection->requestClose();
+                    activityGuard.emplace(*serverConnection);
+                });
+
+        // 清扫节拍是 10ms：等 20 拍（200ms）看它会被摘掉几次。守卫在，一次都不该被摘
+        const auto guardDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{200};
+        while (std::chrono::steady_clock::now() < guardDeadline)
+        {
+            ASSERT_EQ(server.sampleConnectionCount(), 1U) << "有在途动作的已收口连接被提前摘掉了";
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+
+        // 放开守卫：下一次节拍就该摘掉它——这一步同时证明清扫一直在跑，上面的「没被摘」不是假通过
+        server.runOnLoopAndWait([&activityGuard] { activityGuard.reset(); });
+        const auto reapDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (server.sampleConnectionCount() != 0 && std::chrono::steady_clock::now() < reapDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        EXPECT_EQ(server.sampleConnectionCount(), 0U) << "在途动作结束后连接没有被摘除";
+    }
+
+    /**
      * @brief 只发出首个 Initial 就消失的客户端：握手超时后服务端必须把这条连接收口
      * @details 失败面用例。对端半路消失时连接若一直留在路由表里，既占着连接上限，也让「在线连接数」
      *          永远不可信。超时调到 1 秒，否则要干等默认的 30 秒。

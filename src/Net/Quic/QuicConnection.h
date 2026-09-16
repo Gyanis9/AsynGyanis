@@ -168,6 +168,50 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isClosed() const noexcept;
 
         /**
+         * @brief 「有协程正拿着本连接」的记账守卫
+         *
+         * @details 收报文路径与定时循环都会 `co_await` 本连接的方法（handleDatagram / flush /
+         *          handleExpiry 都可能在等网络时挂起）。挂起期间另一条路径可能把它判成「已收口」
+         *          并摘除销毁——恢复后手里那份引用与迭代器就是悬垂的。持有守卫的整个区间内，
+         *          服务端不得把它摘掉（见 QuicServer::reapClosedConnections()）。
+         * @note 只归本连接所属的事件循环线程使用（计数不是原子量，两条路径都在该线程上）
+         */
+        class ActivityGuard
+        {
+        public:
+            /**
+             * @brief 记账 +1
+             * @param connection 被记账的连接，其寿命必须覆盖本守卫
+             */
+            explicit ActivityGuard(QuicConnection &connection) noexcept :
+                m_connection(&connection)
+            {
+                ++m_connection->m_activityCount;
+            }
+
+            /**
+             * @brief 记账 -1
+             */
+            ~ActivityGuard() { --m_connection->m_activityCount; }
+
+            ActivityGuard(const ActivityGuard &) = delete;
+
+            ActivityGuard &operator=(const ActivityGuard &) = delete;
+
+        private:
+            QuicConnection *m_connection{nullptr}; ///< 被记账的连接（非拥有）
+        };
+
+        /**
+         * @brief 当前是否有协程正持有本连接（守卫计数不为零）
+         * @return true 有在途动作，摘除必须推迟到它结束
+         */
+        [[nodiscard]] bool hasActivity() const noexcept
+        {
+            return m_activityCount != 0;
+        }
+
+        /**
          * @brief 从外部请求收口（例如会话层判定不可用时）
          * @details 只置标志：后续 handleDatagram()/flush() 不再产出，服务端的清理循环随后摘除本连接
          */
@@ -260,6 +304,8 @@ namespace AsynGyanis::Net
         Configuration                  m_configuration;      ///< 连接配置
         ngtcp2_conn                   *m_connection{nullptr}; ///< ngtcp2 连接对象
         SSL                           *m_tlsSession{nullptr}; ///< 本连接的 TLS 会话（QUIC 模式）
+        /// 正持有本连接的协程数（ActivityGuard 维护）：摘除必须等它归零，见 hasActivity()
+        int                            m_activityCount{0};
         ngtcp2_crypto_ossl_ctx        *m_cryptoContext{nullptr}; ///< ossl 后端的每连接上下文（要交给 set_tls_native_handle）
         ngtcp2_cid                     m_sourceConnectionId{}; ///< 本端连接标识（路由键）
         Platform::SocketAddress        m_peerAddress;         ///< 对端地址

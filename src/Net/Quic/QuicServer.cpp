@@ -295,6 +295,9 @@ namespace AsynGyanis::Net
                                                   versionAndConnectionIds.dcidlen);
         if (const auto existing = m_connections.find(destinationConnectionId); existing != m_connections.end())
         {
+            // 记账：下面几次 await 都可能在挂起中被定时循环判成「已收口」并试图摘掉它——守卫
+            // 让那次摘除推迟（见 reapClosedConnections）。迭代器与本引用因此在整个区间内有效
+            const QuicConnection::ActivityGuard activityGuard(*existing->second);
             co_await existing->second->handleDatagram(peerAddress, datagram);
             registerConnectionIds(*existing->second);
             co_await pumpHttp3For(*existing->second);
@@ -308,7 +311,9 @@ namespace AsynGyanis::Net
         if (const auto byAliasConnectionId = m_connectionsByAliasConnectionId.find(destinationConnectionId);
             byAliasConnectionId != m_connectionsByAliasConnectionId.end())
         {
-            QuicConnection *matchedConnection = byAliasConnectionId->second;
+            QuicConnection *const matchedConnection = byAliasConnectionId->second;
+            // 与上面同一条记账：别名表里存的是裸指针，摘除会把这条一起抹掉
+            const QuicConnection::ActivityGuard activityGuard(*matchedConnection);
             co_await matchedConnection->handleDatagram(peerAddress, datagram);
             registerConnectionIds(*matchedConnection);
             co_await pumpHttp3For(*matchedConnection);
@@ -382,6 +387,9 @@ namespace AsynGyanis::Net
         // 同时按「客户端最初选的 DCID」登记一份：重传的 Initial 靠这一路认回同一条连接。
         // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
+        // 新连接同样要记账：它随时可能在下面几次 await 里被判成收口（会话层判定不可用、对端
+        // 立刻发来 CONNECTION_CLOSE 等），而收报文路径收尾与清扫节拍都会尝试摘除它
+        const QuicConnection::ActivityGuard activityGuard(*rawConnection);
         co_await rawConnection->handleDatagram(peerAddress, datagram);
         // 只在本次报文选出了新标识时才重扫：签发那一刻已经逐条登记过，这里只是兜底一遍
         if (m_connectionsWithFreshConnectionIds.erase(rawConnection) != 0U)
@@ -405,6 +413,15 @@ namespace AsynGyanis::Net
         {
             if (iterator->second->isClosed())
             {
+                if (iterator->second->hasActivity())
+                {
+                    LOG_DEBUG_FMT("QuicServer: 连接已收口但仍有在途动作，推迟摘除");
+                    ++iterator;
+                    continue;
+                }
+                // 还有协程拿着它（收报文路径或定时循环正停在它的某个 co_await 上）：此刻销毁，
+                // 那条协程恢复后手里的引用与迭代器就是悬垂的。推迟到它的在途动作结束——下一次
+                // 收报文或下一次清扫节拍会回到这里（两条路径都在收尾处调本函数）
                 LOG_DEBUG_FMT("QuicServer: 连接已收口并从路由表摘除（剩 {} 条）", m_connections.size() - 1);
                 // 三张表都要摘：别名索引存的是裸指针，HTTP/3 会话内部又指回这条连接——
                 // 漏掉任何一处，都会把已销毁的连接留在表里（悬空指针）
@@ -449,6 +466,9 @@ namespace AsynGyanis::Net
                 {
                     continue; // 已经收口摘掉了
                 }
+                // 记账：下面两次 await 都可能挂起（flush 撞上发送缓冲满、handleExpiry 等回包），
+                // 而挂起期间另一条路径可能把它判成收口并摘除——守卫让那次摘除推迟到本迭代结束
+                const QuicConnection::ActivityGuard activityGuard(*connectionEntry->second);
                 // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
                 // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它等某个 ngtcp2 定时器
                 if (connectionEntry->second->needsFlush())
