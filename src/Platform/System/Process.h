@@ -72,6 +72,9 @@ namespace AsynGyanis::Platform
              * @brief 释放平台侧句柄
              * @details 幂等。已退出但尚未被取退出码的子进程在这里回收，不留下僵尸；
              *          仍在运行的进程不受影响（句柄一释放就再也观察不到它了）
+             * @warning 句柄一释放，那个 pid 就再也没人回收：**刚强杀过子进程的调用方必须先等它结束
+             *          再释放句柄**（`isRunning()` / `pollExitCode()` 观察时顺手回收），否则 POSIX 上
+             *          会留下僵尸进程。`WorkerSupervisor::shutdown()` 的强杀路径就是这么做的
              */
             void close() noexcept;
 

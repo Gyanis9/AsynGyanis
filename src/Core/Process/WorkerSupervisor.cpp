@@ -5,6 +5,7 @@
 #include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
 
+#include <algorithm>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -19,6 +20,10 @@ namespace AsynGyanis::Core
     {
         /// 等待 worker 退出时的轮询间隔：比 pollInterval 细，让收尾尽量贴着 shutdownTimeout 收干净
         constexpr std::chrono::milliseconds kReapPollInterval{20};
+
+        /// 强杀之后等子进程被回收的上限：SIGKILL 的投递与调度有个短窗口，
+        /// 立刻释放句柄会把 pid 丢掉、从此没人收尸（POSIX 上就是僵尸进程）
+        constexpr std::chrono::milliseconds kForcedReapWait{2000};
 
         /// 停止请求的原子必须无锁，否则不能在信号处理函数里置位
         static_assert(std::atomic<bool>::is_always_lock_free, "WorkerSupervisor::requestStop() 要求无锁原子才能在信号处理函数里调用");
@@ -269,6 +274,7 @@ namespace AsynGyanis::Core
         }
 
         // 期限到了还在的一律强杀：收尾不能没有尽期，否则一次卡住的退出会让 master 永远关不掉
+        bool hasForcedTermination = false;
         for (Worker &worker: m_workers)
         {
             if (!worker.handle.isValid())
@@ -279,6 +285,43 @@ namespace AsynGyanis::Core
             {
                 LOG_ERROR_FMT("WorkerSupervisor: worker 进程号 {} 在收尾期限内没有退出，已强杀", worker.handle.processId());
                 static_cast<void>(Platform::Process::forceTermination(worker.handle));
+                hasForcedTermination = true;
+            }
+        }
+
+        // 强杀之后要等到子进程真的被回收再释放句柄：SIGKILL 的投递与调度有个短窗口，
+        // 立刻 close() 会把 pid 丢掉、从此没有任何人收尸（POSIX 上就是僵尸进程，master 在
+        // 守护进程里长期运行时这些僵尸会一直堆着）。isRunning() 观察时顺手回收，因此这里的
+        // 轮询同时完成「等它结束」与「收尸」两件事；等待仍然有界，通知早已发出
+        if (hasForcedTermination)
+        {
+            const auto reapDeadline = std::chrono::steady_clock::now() + kForcedReapWait;
+            while (std::chrono::steady_clock::now() < reapDeadline)
+            {
+                const bool hasUnreapedWorker = std::ranges::any_of(m_workers,
+                                                                   [](const Worker &worker)
+                                                                   {
+                                                                       return worker.handle.isValid() &&
+                                                                              Platform::Process::isRunning(worker.handle);
+                                                                   });
+                if (!hasUnreapedWorker)
+                {
+                    break;
+                }
+                std::this_thread::sleep_for(kReapPollInterval);
+            }
+        }
+
+        for (Worker &worker: m_workers)
+        {
+            if (!worker.handle.isValid())
+            {
+                continue;
+            }
+            if (Platform::Process::isRunning(worker.handle))
+            {
+                LOG_WARN_FMT("WorkerSupervisor: worker 进程号 {} 在强杀后仍未结束，句柄已释放但没回收（POSIX 上可能留下僵尸）",
+                             worker.handle.processId());
             }
             worker.handle.close();
         }
