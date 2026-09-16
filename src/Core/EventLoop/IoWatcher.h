@@ -181,6 +181,10 @@ namespace AsynGyanis::Core
             Awaiter                *awaiter{nullptr}; ///< 对应的等待器，用于把结果写回它
         };
 
+        /// 「内核掩码未知」的哨兵：mod 失败时账本记它，保证下一次 armEvents 必定再下发一次 mod。
+        /// 有效事件位只占低位（EPOLLIN/EPOLLOUT），与全 1 不可能相等
+        static constexpr std::uint32_t kUnknownArmedEvents = ~static_cast<std::uint32_t>(0);
+
         /**
          * @brief 登记一个等待者，并把它的关注位武装到位
          * @param event 事件位（EPOLLIN 或 EPOLLOUT）

@@ -286,7 +286,10 @@ namespace AsynGyanis::Core
         // 否则长期为真的关注位（如可写）会在没人等待时被反复上报
         if (!m_loop->epoll().modFileDescriptor(m_fileDescriptor, events, this))
         {
-            m_armedEvents = 0;
+            // 失败时内核掩码停在原样：账本必须记成「未知」，不能记成「已武装 0 位」——
+            // 后者会让下一次 armEvents(0) 命中「已经是要的形状」的短路，从此再也不下发清零，
+            // 而水平触发下那套陈旧关注位会一轮一轮上报（epoll_wait 空转）
+            m_armedEvents = kUnknownArmedEvents;
             return false;
         }
         m_armedEvents = events;
