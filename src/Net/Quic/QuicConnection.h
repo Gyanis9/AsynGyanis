@@ -308,6 +308,8 @@ namespace AsynGyanis::Net
         int                            m_activityCount{0};
         ngtcp2_crypto_ossl_ctx        *m_cryptoContext{nullptr}; ///< ossl 后端的每连接上下文（要交给 set_tls_native_handle）
         ngtcp2_cid                     m_sourceConnectionId{}; ///< 本端连接标识（路由键）
+        /// 发包缓冲（按连接复用）：每条报文现分配 64 KiB 是热路径上的大头
+        std::vector<std::uint8_t>      m_packetBuffer;
         Platform::SocketAddress        m_peerAddress;         ///< 对端地址
         Platform::SocketAddress        m_localAddress;        ///< 本端地址
         ngtcp2_path_storage            m_path{};              ///< ngtcp2 的收发路径（地址在初始化时拷入）

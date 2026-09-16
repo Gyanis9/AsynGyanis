@@ -600,7 +600,13 @@ namespace AsynGyanis::Net
         // 本轮会把当前攒下的都取走：标记在这里清掉，之后再有人排队会重新置起来
         m_needsFlush = false;
 
-        std::vector<std::uint8_t> packetBuffer(Platform::DatagramSocket::kMaximumDatagramBytes);
+        // 发包缓冲按连接复用：此前每条报文现分配并清零 64 KiB，是每报文热路径上单笔最大的
+        // 固定开销（值初始化要付一次 memset）
+        if (m_packetBuffer.empty())
+        {
+            m_packetBuffer.resize(Platform::DatagramSocket::kMaximumDatagramBytes);
+        }
+        std::vector<std::uint8_t> &packetBuffer = m_packetBuffer;
         std::array<ngtcp2_vec, kMaximumVectorsPerFlush> dataVectorScratch{};
 
         // 把「已交给 ngtcp2 之后剩下的待发区间」按块整理成向量数组：每块的地址在整个
@@ -630,6 +636,11 @@ namespace AsynGyanis::Net
             return count;
         };
 
+        /// 本轮已确认被流控挡住的流：窗口何时放开完全由对端决定，再问一次也不会变。
+        /// 不跳过的话，流号最小的那条被挡住时这里会空转 kMaximumPacketsPerFlush 次，
+        /// 而本连接其它流（含服务端的控制流与 QPACK 流）一个字节都出不去
+        std::vector<std::int64_t> blockedStreamIds;
+
         for (std::size_t packetIndex = 0; packetIndex < kMaximumPacketsPerFlush; ++packetIndex)
         {
             // 本轮要发的都从当前待发表里现取，所以先把「再写一轮」的请求清掉；它在本轮等发送期间
@@ -645,6 +656,10 @@ namespace AsynGyanis::Net
 
             for (auto &pendingEntry: m_pendingStreamData)
             {
+                if (std::ranges::find(blockedStreamIds, pendingEntry.first) != blockedStreamIds.end())
+                {
+                    continue;
+                }
                 PendingStreamData &pending = pendingEntry.second;
                 const bool hasUnsentData = pending.offset < pending.totalByteCount;
                 // 「收尾还没有交给 ngtcp2」也要选出来：nghttp3 在正文写完时只报收尾、不带数据，
@@ -681,6 +696,11 @@ namespace AsynGyanis::Net
                 if (writtenLength == NGTCP2_ERR_STREAM_DATA_BLOCKED || writtenLength == NGTCP2_ERR_STREAM_SHUT_WR ||
                     writtenLength == NGTCP2_ERR_WRITE_MORE)
                 {
+                    if (writtenLength == NGTCP2_ERR_STREAM_DATA_BLOCKED && streamId != -1)
+                    {
+                        // 本轮不再碰这条流：等对端的 MAX_STREAM_DATA 到了，下一轮 flush 自然会带上它
+                        blockedStreamIds.push_back(streamId);
+                    }
                     if (writtenLength == NGTCP2_ERR_STREAM_SHUT_WR && selectedFinOnlyEntry)
                     {
                         // 写侧已关说明这条流的 FIN 早就发出去了；零字节条目没有可重传的数据，
@@ -709,6 +729,11 @@ namespace AsynGyanis::Net
                 }
                 co_return;
             }
+
+            // ngtcp2 的硬性约定：每次 writev_stream 之后要调一次 update_pkt_tx_time，
+            // 否则拥塞控制算出的 pacing 间隔从不生效（pacing.next_ts 一直是 UINT64_MAX，
+            // 发包成串突发）。框架此前从未调用过它
+            ngtcp2_conn_update_pkt_tx_time(m_connection, currentTimestamp());
 
             if (streamId != -1 && writtenStreamDataLength > 0)
             {

@@ -159,6 +159,12 @@ namespace AsynGyanis::Net
                 ngtcp2_transport_params parameters{};
                 ngtcp2_settings_default(&settings);
                 ngtcp2_transport_params_default(&parameters);
+                // 给服务端一点发送窗口：默认全 0 时服务端在本端流上一个字节都发不出来，
+                // 「一条流被流控挡住」这类场景也就无从构造。流级只给 4 KiB：够小响应，
+                // 大响应必定撞上窗口而停下
+                parameters.initial_max_data                    = 256 * 1024;
+                parameters.initial_max_stream_data_bidi_local  = 4 * 1024;
+                parameters.initial_max_stream_data_uni         = 4 * 1024;
                 settings.initial_ts = currentTimestamp();
 
                 fillRandomConnectionId(m_destinationConnectionId);
@@ -303,6 +309,29 @@ namespace AsynGyanis::Net
                 return m_sentDatagramCount;
             }
 
+            /// 最近一次 openStreamAndQueuePayload() 开出来的流号
+            [[nodiscard]] std::int64_t lastOpenedStreamId() const noexcept
+            {
+                return m_pendingStreamId;
+            }
+
+            /**
+             * @brief 指定一条「收到数据也不还窗口」的流，用于构造流控阻塞
+             * @param streamId 目标流号；-1 表示所有流都照常还窗口
+             * @note 必须在该流的数据到达之前设置
+             */
+            void setStreamToKeepFlowControlBlocked(const std::int64_t streamId) noexcept
+            {
+                m_streamKeptFlowControlBlocked = streamId;
+            }
+
+            /// 某条流上收到的字节（按到达顺序拼接）
+            [[nodiscard]] std::string receivedPayloadOn(const std::int64_t streamId) const
+            {
+                const auto found = m_receivedStreamPayloads.find(streamId);
+                return found == m_receivedStreamPayloads.end() ? std::string{} : found->second;
+            }
+
             /// 服务端协商出的 ALPN（握手完成后才有值）
             [[nodiscard]] std::string selectedApplicationProtocol() const
             {
@@ -381,6 +410,7 @@ namespace AsynGyanis::Net
                 callbacks.rand                     = onRandom;
                 callbacks.get_new_connection_id    = onGetNewConnectionId;
                 callbacks.handshake_completed      = onHandshakeCompleted;
+                callbacks.recv_stream_data         = onReceiveStreamData;
                 return callbacks;
             }
 
@@ -406,6 +436,24 @@ namespace AsynGyanis::Net
                 return 0;
             }
 
+            /// 收下服务端发来的流数据：按流号累积，供用例断言「某条流的响应真的到了」
+            static int onReceiveStreamData(ngtcp2_conn * /*conn*/, const std::uint32_t /*flags*/, const std::int64_t streamId,
+                                           const std::uint64_t /*offset*/, const std::uint8_t *data, const std::size_t dataLength,
+                                           void *userData, void * /*streamUserData*/)
+            {
+                QuicTestClient *const client = static_cast<QuicTestClient *>(userData);
+                client->m_receivedStreamPayloads[streamId].append(reinterpret_cast<const char *>(data), dataLength);
+                // 一般情形下收到即还窗口：不还的话服务端发满 4 KiB 就再也发不动
+                //（用例若要构造「某条流被流控挡住」，就把该流登记为不还窗口，见 setStreamToKeepFlowControlBlocked）
+                if (streamId == client->m_streamKeptFlowControlBlocked)
+                {
+                    return 0;
+                }
+                ngtcp2_conn_extend_max_stream_offset(client->m_connection, streamId, dataLength);
+                ngtcp2_conn_extend_max_offset(client->m_connection, dataLength);
+                return 0;
+            }
+
             Platform::DatagramSocket  m_socket;                        ///< 客户端的 UDP 套接字
             SSL_CTX                  *m_sslContext{nullptr};           ///< 客户端 TLS 上下文
             SSL                      *m_ssl{nullptr};                  ///< 客户端 SSL（QUIC 模式）
@@ -419,6 +467,8 @@ namespace AsynGyanis::Net
             Platform::SocketAddress   m_remoteStorage;                 ///< 服务端地址本体
             Platform::SocketAddress   m_serverAddress;                 ///< 服务端地址（发送用）
             std::int64_t              m_pendingStreamId{-1};           ///< 排队负载所属的流
+            std::map<std::int64_t, std::string> m_receivedStreamPayloads; ///< 各流上收到的字节（按流号累积）
+            std::int64_t m_streamKeptFlowControlBlocked{-1};              ///< 收到数据也不还窗口的流（-1 表示没有）
             std::vector<std::uint8_t> m_pendingStreamPayload;          ///< 待发负载（必须活到确认）
             ngtcp2_vec                m_pendingStreamVector{};         ///< 待发负载的 ngtcp2 视图
             std::atomic<bool>         m_isHandshakeCompleted{false};   ///< 握手是否完成（回调里置位）
@@ -750,6 +800,67 @@ namespace AsynGyanis::Net
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         }
         EXPECT_EQ(server.sampleConnectionCount(), 0U) << "在途动作结束后连接没有被摘除";
+    }
+
+
+    /**
+     * @brief 一条流被流控挡住时，同连接其它流的响应照样出得去
+     * @details 选流此前是「按流号顺序取第一条还有待发数据的流」，而窗口不够时只 continue 重新进
+     *          循环——又选中同一条，64 轮全空转：流号更小的那条被挡住时，同连接其它流（含服务端
+     *          自己的控制流与 QPACK 流）一个字节都出不去。客户端窗口只给 4 KiB：流 0 上排 32 KiB
+     *          必定被挡住，流 4 上排一小段则该出得去
+     */
+    TEST(QuicServer, DoesNotStarveOtherStreamsWhenOneIsFlowControlBlocked)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        const std::string bigPayload(32 * 1024, 'B');
+        const std::string smallPayload = "small-response";
+
+        RunningQuicServer server;
+        ASSERT_NE(server.listeningPort(), 0);
+
+        // 服务端每收到一条流的字节就往该流排一份响应：第一条流排大响应（撑爆窗口），
+        // 其余排小响应。回调在服务端循环线程上跑，用一个原子记录「第一条流」即可
+        std::atomic<std::int64_t> firstStreamId{-1};
+        server.server().setStreamDataHandler(
+                [&firstStreamId, &bigPayload, &smallPayload](QuicConnection &connection, const std::int64_t streamId,
+                                                             const std::span<const std::uint8_t>, const bool)
+                {
+                    const bool isFirstStream = firstStreamId.exchange(streamId) == -1;
+                    const std::string &payload = isFirstStream ? bigPayload : smallPayload;
+                    connection.queueStreamData(streamId,
+                                               std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(
+                                                                                     const_cast<char *>(payload.data())),
+                                                                             payload.size()),
+                                               false);
+                });
+
+        QuicTestClient client;
+        ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+        ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); })) << "握手没有完成";
+
+        const std::vector<std::uint8_t> requestByte{'r'};
+        ASSERT_TRUE(client.openStreamAndQueuePayload(requestByte)) << "第一条流没有开出来";
+        const std::int64_t blockedStreamId = client.lastOpenedStreamId();
+        // 这一条流收到数据也不还窗口：服务端发满它的 4 KiB 流窗口后就再也发不动——
+        // 正是「一条流被流控挡住」这条前提
+        client.setStreamToKeepFlowControlBlocked(blockedStreamId);
+
+        // 等第一条流被服务端收下并排上大响应（服务端此时已撞上 4 KiB 的流窗口）
+        ASSERT_TRUE(pumpUntil(client, [&firstStreamId] { return firstStreamId.load(std::memory_order_acquire) != -1; }))
+                << "服务端没有收到第一条流的字节";
+
+        // 再开一条流：它的响应必须出得去，而不是被第一条流的窗口堵死
+        ASSERT_TRUE(client.openStreamAndQueuePayload(requestByte)) << "第二条流没有开出来";
+        const std::int64_t laterStreamId = client.lastOpenedStreamId();
+        ASSERT_NE(laterStreamId, blockedStreamId);
+
+        const bool isDelivered = pumpUntil(client, [&client, laterStreamId, &smallPayload]
+                                         { return client.receivedPayloadOn(laterStreamId) == smallPayload; });
+        EXPECT_TRUE(isDelivered) << "一条流被流控挡住后，同连接其它流的响应一字节都没出去（实现仍在空转选同一条流）";
+        EXPECT_LT(client.receivedPayloadOn(blockedStreamId).size(), bigPayload.size())
+                << "被挡住的那条流不该整份发完（用例前提：它的窗口只有 4 KiB）";
     }
 
     /**
