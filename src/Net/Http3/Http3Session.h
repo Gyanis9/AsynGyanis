@@ -506,8 +506,10 @@ namespace AsynGyanis::Net
          * @brief 把一条响应交给 nghttp3（头部转成 nghttp3_nv，正文挂在数据读取回调上）
          * @param streamId 流号
          * @param response 业务填好的响应
+         * @param isHeadRequest 是否 HEAD 请求：true 时不发正文，content-length 仍按完整正文长度给出
+         *        （RFC 9110 §9.3.2），与 h1/h2 的抑制口径一致
          */
-        void submitResponse(std::int64_t streamId, const HttpResponse &response);
+        void submitResponse(std::int64_t streamId, const HttpResponse &response, bool isHeadRequest);
 
         /**
          * @brief 用 nghttp3 的错误码记日志并把会话作废

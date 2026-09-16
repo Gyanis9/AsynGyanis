@@ -520,7 +520,7 @@ namespace AsynGyanis::Net
             } else
             {
                 finalizeResponseForHttp3(streamId, response);
-                submitResponse(streamId, response);
+                submitResponse(streamId, response, request.method() == HttpMethod::HEAD);
                 if (m_metrics != nullptr)
                 {
                     m_metrics->countResponseStatus(response.status());
@@ -952,7 +952,7 @@ namespace AsynGyanis::Net
         } else
         {
             finalizeResponseForHttp3(streamId, response);
-            submitResponse(streamId, response);
+            submitResponse(streamId, response, streamingRequest.request.method() == HttpMethod::HEAD);
         }
         streamingRequest.isServeFinished = true;
         co_return;
@@ -1086,7 +1086,8 @@ namespace AsynGyanis::Net
         {
             // 业务没登记升级：这条流不是隧道，按普通响应回（RFC 9220 也允许服务端不升级）
             finalizeResponseForHttp3(streamId, response);
-            submitResponse(streamId, response);
+            // 隧道路径只可能是扩展 CONNECT（:method=CONNECT），HEAD 不适用
+            submitResponse(streamId, response, false);
             co_return;
         }
 
@@ -1425,7 +1426,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Session::submitResponse(const std::int64_t streamId, const HttpResponse &response)
+    void Http3Session::submitResponse(const std::int64_t streamId, const HttpResponse &response, const bool isHeadRequest)
     {
         const std::string_view body = response.body();
 
@@ -1473,7 +1474,9 @@ namespace AsynGyanis::Net
         const std::vector<nghttp3_nv> headerFields = makeHeaderFieldViews(names, values);
 
         // 读正文的回调靠 stream_user_data 找回这段正文，因此必须先挂上去
-        const bool hasBody = !isBodylessStatus && !outgoingBody.bytes.empty();
+        // HEAD：正文一个字节都不发（与 h2 的 isHeadRequest ? {} : body 同一处置），content-length
+        // 上面已按完整正文长度给出——这正是 HEAD 的语义（RFC 9110 §9.3.2）
+        const bool hasBody = !isBodylessStatus && !isHeadRequest && !outgoingBody.bytes.empty();
         if (nghttp3_conn_set_stream_user_data(m_connection, streamId, &outgoingBody) != 0)
         {
             // 与 submitStreamingResponseHead 同一处置：整条流没了（对端重置）只作废这一条响应，

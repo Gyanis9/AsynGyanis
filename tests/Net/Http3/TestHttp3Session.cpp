@@ -668,6 +668,61 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief HEAD 只收头部：正文一个字节都不发，content-length 仍按完整正文给出
+     * @details h1/h2 都在发送那一刻把正文换成空（Router 明确把这件事留给会话），h3 此前照发正文，
+     *          严格的对端会把它判成畸形响应（RFC 9110 §9.3.2）
+     */
+    TEST(Http3Session, SuppressesBodyForHeadRequests)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        Router router;
+        router.get("/bench",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("content-type", "text/plain");
+                       response.setBody("OK");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("HEAD", "/bench", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        ASSERT_FALSE(sentStreamData.empty()) << "服务端一个字节都没回：响应没发出去";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 200) << "客户端没解出 200";
+        EXPECT_TRUE(peer.response().body.empty()) << "HEAD 响应不该带正文（RFC 9110 §9.3.2）";
+        EXPECT_TRUE(peer.response().isComplete) << "HEAD 响应没有收尾";
+        const auto contentLengthHeader = peer.response().headers.find("content-length");
+        ASSERT_NE(contentLengthHeader, peer.response().headers.end()) << "HEAD 响应仍要给出 content-length";
+        EXPECT_EQ(contentLengthHeader->second, "2") << "content-length 必须等于 GET 会发出的那份正文长度";
+    }
+
+    /**
      * @brief 业务处理器抛异常时回 500，且会话与后续请求都不受影响
      * @details 异常此前没人接，会穿出 pump()、打断 QuicServer 的收报文循环——整台服务此后
      *          不再处理任何报文。这条用例同时钉住「回 500」与「下一条请求照样正常」两件事
