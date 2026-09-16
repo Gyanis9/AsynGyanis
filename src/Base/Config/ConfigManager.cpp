@@ -997,9 +997,17 @@ namespace AsynGyanis::Base
 
         for (const auto &filePath: configFiles)
         {
-            if (loadConfigFile(filePath, values, result.errors))
+            // 每个文件先摊进自己那份临时表，成功了才并进来：解析中途失败（例如键里带点号）时，
+            // 这个文件已经展开的那半份键绝不能跟着提交——契约是「失败的键从快照中消失」，
+            // 而现在同目录还有别的文件成功，那半份配置就会被一起提交，比整份丢弃更危险
+            ConfigKeyValueMap fileValues;
+            if (loadConfigFile(filePath, fileValues, result.errors))
             {
                 result.loadedFiles.push_back(filePath.string());
+                for (auto &[key, value]: fileValues)
+                {
+                    values.insert_or_assign(std::move(key), std::move(value));
+                }
             } else
             {
                 result.failedFiles.push_back(filePath.string());

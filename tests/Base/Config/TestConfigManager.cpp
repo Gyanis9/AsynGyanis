@@ -269,6 +269,28 @@ server:
         EXPECT_TRUE(anyEntryContains(result.errors, "分隔符")) << "报错里没有说明拒绝的原因";
     }
 
+    /**
+     * @brief 解析中途失败的文件：它已经展开的那半份键不能跟着提交进快照
+     * @details 契约是「失败文件里的键从快照中消失」（见 ConfigLoadResult 的说明）。扁平表此前
+     *          跨文件共用、边遍历边写，带点号的键在中途抛异常时，排在前面的键已经落表；同目录
+     *          只要还有别的文件加载成功，那半份配置就会被一起提交——运维看到失败提示，实际却
+     *          已经应用了一半新配置
+     */
+    TEST_F(ConfigManagerTest, FailedFileDoesNotCommitItsAlreadyFlattenedKeys)
+    {
+        writeFile("a.yaml", "kept: true\n");
+        // 对象按键名排序展开：alpha 先落进扁平表，随后 "bad.key" 让这次加载失败
+        writeFile("z.yaml", "alpha: 1\n\"bad.key\": 2\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success) << "带点号的键必须让这次加载失败";
+        EXPECT_EQ(result.failedFiles.size(), 1U);
+        EXPECT_TRUE(configuration().getBool("kept", false)) << "没问题的那份文件应当照常提交";
+        EXPECT_EQ(configuration().getInt("alpha", -1), -1)
+                << "失败文件里「已经展开」的那半份键跟着提交了：契约说失败的键要从快照中消失";
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryWithRegularFileFails)
     {
         const std::filesystem::path filePathInPlaceOfDirectory = writeFile("plain.yaml", "key: value\n");
