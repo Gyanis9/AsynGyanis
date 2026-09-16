@@ -29,9 +29,20 @@ from conan import ConanFile
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
 from conan.tools.files import copy
 
-# 库本体必需的四项依赖：TLS 与摘要走 openssl，HTTP 响应压缩与 permessage-deflate 走 zlib，
-# Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis
-BASE_REQUIREMENTS = ["zlib/1.3.1", "openssl/3.6.2", "sqlite3/3.51.3", "hiredis/1.3.0"]
+# 库本体必需的外部依赖：TLS 与摘要走 openssl，HTTP 响应压缩与 permessage-deflate 走 zlib，
+# 压缩协商里还有 zstd 与 brotli（gzip/deflate/zstd/br 四选一的其余两项），HTTP/3 协议层走 nghttp3，
+# Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis。
+# **这份清单必须与 src/*/CMakeLists.txt 里的 find_package(... REQUIRED) 对齐**：漏一项，
+# 包就在 configure 阶段直接失败（本清单曾漏掉 zstd/brotli/nghttp3，conan create 从来没跑到过）
+BASE_REQUIREMENTS = [
+    "zlib/1.3.1",
+    "zstd/1.5.7",
+    "brotli/1.1.0",
+    "openssl/3.6.2",
+    "nghttp3/1.12.0",
+    "sqlite3/3.51.3",
+    "hiredis/1.3.0",
+]
 
 # Base 的原生格式接口：JSON 头文件直接出现在公开头（ConfigValue.h）里，消费方需要它的包含目录；
 # YAML 库只在实现里使用，但 Base 是静态库，它的符号要由消费方在链接时一并向库解析
@@ -56,13 +67,17 @@ class AsynGyanisLibrary(ConanFile):
 
     def export_sources(self):
         # 源就在本仓库里，导出时从仓库根整棵快照：包内容因此与仓库版本严格对应，不需要在
-        # 配方里复制任何一份源。只取构建库本体需要的那三项，测试/示例/基准目录不进来——
-        # 它们由下面的两个开关在配置阶段关掉，缺目录也不会被 add_subdirectory 碰到
+        # 配方里复制任何一份源。四项都是构建库本体必需的：CMakeLists.txt（顶层入口）、
+        # src/**（模块源）、cmake/**（构建助手）、third_party/**（vendor 进来的 ngtcp2 与
+        # 它的 OpenSSL QUIC 探针配置——顶层 CMakeLists 无条件 add_subdirectory(third_party)，
+        # 漏了它配置期就失败，而这条路径没有任何 CI 作业跑到，所以只能在改配方时盯住）。
+        # 测试/示例/基准目录不进来：它们由下面的两个开关在配置阶段关掉，缺目录也不会被碰到
         repository_root = os.path.abspath(os.path.join(self.recipe_folder, "..", ".."))
         copy(self, "CMakeLists.txt", src=repository_root, dst=self.export_sources_folder)
         # 目录必须用 ** 递归匹配：不带通配符的 "src" 只会去找一个叫 src 的文件，目录匹配不上
         copy(self, "src/**", src=repository_root, dst=self.export_sources_folder)
         copy(self, "cmake/**", src=repository_root, dst=self.export_sources_folder)
+        copy(self, "third_party/**", src=repository_root, dst=self.export_sources_folder)
 
     def layout(self):
         cmake_layout(self)
@@ -123,7 +138,9 @@ class AsynGyanisLibrary(ConanFile):
 
         net = self.cpp_info.components["net"]
         net.libs = ["Net"]
-        net.requires = ["core", "zlib::zlib"]
+        # 压缩三项与 nghttp3 在 Net 的 CMake 里是 PRIVATE 链接，但静态库不会把它们带给最终
+        # 可执行文件：这里必须逐个声明，少一个就是消费方链接期「无法解析的外部符号」
+        net.requires = ["core", "zlib::zlib", "zstd::zstdlib", "brotli::brotli", "nghttp3::nghttp3"]
         net.set_property("cmake_target_name", "AsynGyanis::Net")
 
         database = self.cpp_info.components["database"]
