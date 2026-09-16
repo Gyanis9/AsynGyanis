@@ -402,8 +402,10 @@ namespace AsynGyanis::Net
 
         while (!m_readyRequests.empty())
         {
-            const std::int64_t streamId      = m_readyRequests.front().streamId;
-            const bool         isBodyTooLarge = m_readyRequests.front().isBodyTooLarge;
+            const std::int64_t streamId              = m_readyRequests.front().streamId;
+            const bool         isBodyTooLarge        = m_readyRequests.front().isBodyTooLarge;
+            const bool         isHeaderLimitExceeded = m_readyRequests.front().isHeaderLimitExceeded;
+            const bool         isUriTooLong          = m_readyRequests.front().isUriTooLong;
             HttpRequest        request        = std::move(m_readyRequests.front().request);
             m_readyRequests.pop_front();
 
@@ -420,7 +422,20 @@ namespace AsynGyanis::Net
             // 声明在分支之外：下面的统计要按「有没有半途抛异常」决定这条流式响应是否落账
             std::exception_ptr handlerException;
 
-            if (isBodyTooLarge)
+            if (isHeaderLimitExceeded || isUriTooLong)
+            {
+                // 与 h1/h2 同一套状态码：头部越限 431、请求目标越限 414，都不交给业务
+                const int   rejectionStatus = isHeaderLimitExceeded ? 431 : 414;
+                const char *rejectionBody   = isHeaderLimitExceeded ? "Request Header Fields Too Large" : "URI Too Long";
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countBadRequest();
+                }
+                LOG_ERROR_FMT("Http3Session: 流 {} 的请求头部或请求目标超过配置上限，已按 {} 应答且不交给业务", streamId, rejectionStatus);
+                response.setStatus(rejectionStatus);
+                response.setBody(rejectionBody);
+                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            } else if (isBodyTooLarge)
             {
                 // 正文越界：不派发，直接回 413（与 h1/h2 同一口径与文案）
                 if (m_metrics != nullptr)
@@ -510,6 +525,17 @@ namespace AsynGyanis::Net
     void Http3Session::addRequestHeader(const std::int64_t streamId, std::string name, std::string value)
     {
         IncomingRequest &incoming = m_incomingRequests[streamId];
+        // 头部限额与 h1/h2 同口径：条数、单名/单值长度、整块净字节。越限只置位、让请求收完，
+        // 服务阶段统一回 431——中途断开的话对端只看到「连接没了」，拿不到「头部太大」这个结论
+        ++incoming.headerFieldCount;
+        incoming.headerBlockByteCount += name.size() + value.size();
+        if ((m_parserLimits.maximumHeaderCount != 0 && incoming.headerFieldCount > m_parserLimits.maximumHeaderCount) ||
+            (m_parserLimits.maximumHeaderFieldNameLength != 0 && name.size() > m_parserLimits.maximumHeaderFieldNameLength) ||
+            (m_parserLimits.maximumHeaderFieldValueLength != 0 && value.size() > m_parserLimits.maximumHeaderFieldValueLength) ||
+            (m_parserLimits.maximumHeaderBlockLength != 0 && incoming.headerBlockByteCount > m_parserLimits.maximumHeaderBlockLength))
+        {
+            incoming.isHeaderLimitExceeded = true;
+        }
         if (name == ":method")
         {
             incoming.method = std::move(value);
@@ -517,6 +543,10 @@ namespace AsynGyanis::Net
         }
         if (name == ":path")
         {
+            if (m_parserLimits.maximumUriLength != 0 && value.size() > m_parserLimits.maximumUriLength)
+            {
+                incoming.isUriTooLong = true;
+            }
             incoming.path = std::move(value);
             return;
         }
@@ -738,7 +768,9 @@ namespace AsynGyanis::Net
         }
 
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId, .request = std::move(request),
-                                               .isBodyTooLarge = incoming.isBodyTooLarge});
+                                               .isBodyTooLarge = incoming.isBodyTooLarge,
+                                               .isHeaderLimitExceeded = incoming.isHeaderLimitExceeded,
+                                               .isUriTooLong = incoming.isUriTooLong});
         if (isWebSocketTunnelRequest)
         {
             m_pendingTunnelStreams.insert(streamId);

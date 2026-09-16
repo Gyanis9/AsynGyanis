@@ -227,6 +227,13 @@ namespace AsynGyanis::Net
             /// 正文总量越过 HttpParserLimits::maximumBodySize：此后到达的 DATA 一律丢弃，
             /// 服务阶段按 413 应答（与 h1/h2 同一口径）
             bool isBodyTooLarge{false};
+
+            /// 头部逐条累计的判据（条数、单名/单值长度、整块净字节）与请求目标长度，
+            /// 口径与 h1 的 HttpParserLimits 一致：越限即置位，服务阶段按 431/414 应答
+            std::size_t headerFieldCount{0};
+            std::size_t headerBlockByteCount{0};
+            bool        isHeaderLimitExceeded{false};
+            bool        isUriTooLong{false};
         };
 
         /**
@@ -498,6 +505,8 @@ namespace AsynGyanis::Net
             std::int64_t streamId{0};                 ///< 流号
             HttpRequest  request;                     ///< 已收齐的请求
             bool         isBodyTooLarge{false};       ///< 正文越界：服务阶段回 413 而不是派发
+            bool         isHeaderLimitExceeded{false}; ///< 头部越限：服务阶段回 431 而不是派发
+            bool         isUriTooLong{false};         ///< 请求目标越限：服务阶段回 414 而不是派发
         };
 
         nghttp3_conn             *m_connection{nullptr}; ///< nghttp3 连接对象
