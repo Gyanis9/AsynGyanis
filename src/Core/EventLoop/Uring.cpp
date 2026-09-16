@@ -158,6 +158,7 @@ namespace AsynGyanis::Core
             m_isValid                     = std::exchange(other.m_isValid, false);
             m_timeoutValue                = std::exchange(other.m_timeoutValue, nullptr);
             m_registrations               = std::move(other.m_registrations);
+            m_zombiePolls                 = std::move(other.m_zombiePolls);
             m_inFlightPolls               = std::move(other.m_inFlightPolls);
             m_nextTicket                  = std::exchange(other.m_nextTicket, 1);
             m_timeoutTicket               = std::exchange(other.m_timeoutTicket, 0);
@@ -170,6 +171,7 @@ namespace AsynGyanis::Core
     {
         // 注册记录只清本地状态：描述符归调用方所有，这里不 close
         m_registrations.clear();
+        m_zombiePolls.clear();
         m_inFlightPolls.clear();
         m_readyEvents.clear();
 
@@ -219,6 +221,20 @@ namespace AsynGyanis::Core
         {
             m_registrations.erase(iterator);
         }
+    }
+
+    void Uring::zombifyRegistration(Registration *const registration)
+    {
+        const auto iterator = m_registrations.find(registration->fileDescriptor);
+        if (iterator == m_registrations.end() || iterator->second.get() != registration)
+        {
+            return;
+        }
+        // 把 unique_ptr 移到僵尸表：描述符键随之释放，记录仍被持有着（m_inFlightPolls 里那份
+        // 裸指针继续有效），等取消完成通知到了再销毁
+        const std::uint64_t ticket = registration->inFlightTicket;
+        m_zombiePolls.emplace(ticket, std::move(iterator->second));
+        m_registrations.erase(iterator);
     }
 
     // ---- 提交 ---------------------------------------------------------------
@@ -427,12 +443,14 @@ namespace AsynGyanis::Core
 
         if (registration->inFlightTicket != 0)
         {
-            // 在途轮询先取消：完成通知到齐之前不能销毁记录（内核还持有它的地址）
+            // 在途轮询先取消：完成通知到齐之前不能销毁记录（内核还持有它的地址）。
+            // 但描述符键要**当场**释放——那个 fd 号可能立刻被复用，键留着会让新连接注册失败
             registration->pendingDelete = true;
             if (!registration->pendingRemove && submitPollRemove(registration->inFlightTicket))
             {
                 registration->pendingRemove = true;
             }
+            zombifyRegistration(registration);
             return true;
         }
 
@@ -480,7 +498,9 @@ namespace AsynGyanis::Core
         // state.isDeleted 时只清账、不上报）
         if (registration->pendingDelete)
         {
-            eraseRegistration(registration);
+            // 记录本体在僵尸表里（描述符键在 delFileDescriptor 那次就释放了）：这次完成
+            // 正是它等的最后一份引用，就地销毁
+            m_zombiePolls.erase(ticket);
             return;
         }
 
@@ -525,6 +545,16 @@ namespace AsynGyanis::Core
 
     void Uring::maintainRegistrations()
     {
+        // 僵尸记录先补取消：它们已经不在 m_registrations 里，取消请求没提交成功的话
+        // 永远等不到完成通知，记录就永远留在僵尸表里
+        for (auto &[ticket, registration]: m_zombiePolls)
+        {
+            if (!registration->pendingRemove && submitPollRemove(ticket))
+            {
+                registration->pendingRemove = true;
+            }
+        }
+
         for (auto &[fileDescriptor, registration]: m_registrations)
         {
             // 取消请求没提交成功过：补一次（删除与重投都依赖它落地）

@@ -190,6 +190,14 @@ namespace AsynGyanis::Core
          */
         void eraseRegistration(Registration *registration);
 
+        /**
+         * @brief 把一条在途轮询的注册记录移入「僵尸表」：描述符键立刻释放，记录留到取消完成
+         * @param registration 待删记录（其 inFlightTicket 必须非 0）
+         * @note 描述符键必须当场释放：内核虽然还持有记录的地址，但那个 fd 号可能马上被下一条连接
+         *       复用——键留着的话新连接注册同一个 fd 号会直接失败（IoWatcher 构造随之抛异常）
+         */
+        void zombifyRegistration(Registration *registration);
+
         // ---- 环形映射（内核共享内存；跨线程可见性由 __atomic 内建保证） ----
         unsigned      *m_submissionHead{nullptr};   ///< SQ 头
         unsigned      *m_submissionTail{nullptr};   ///< SQ 尾
@@ -219,6 +227,9 @@ namespace AsynGyanis::Core
         __kernel_timespec *m_timeoutValue{nullptr};
 
         std::map<int, std::unique_ptr<Registration>> m_registrations; ///< 按描述符的注册表
+        /// 僵尸登记项（键是在途票据）：描述符键已释放、但内核还持有记录地址的那些。取消完成通知
+        /// 到达时在这里释放；在那之前同一个 fd 号必须能被新连接重新注册
+        std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls;
         std::map<std::uint64_t, Registration *>      m_inFlightPolls; ///< 票据到在途轮询的映射
         std::uint64_t                                m_nextTicket{1};  ///< 票据分配器（单调递增）
         std::uint64_t                                m_timeoutTicket{0}; ///< 在途超时操作的票据

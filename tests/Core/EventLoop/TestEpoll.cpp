@@ -157,6 +157,48 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(events.empty());
     }
 
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 注销一个已武装的描述符之后，同一个描述符号（已被新描述符占用）要能立刻重新注册
+     * @details 连接关闭与新建连接拿到同一个描述符号是常态（内核把最小可用号复用出去）。io_uring
+     *          后端的在途轮询要等取消完成通知到齐才能销毁记录，但**描述符键必须当场释放**：键留着
+     *          的话新连接的注册会被直接拒掉，IoWatcher 构造随之抛 SystemException。
+     *          这里的「号复用」用 dup2 做成确定性的（不赌内核挑号）：新 eventfd 精确落到旧号上。
+     *          完成端口后端（Windows）没有这个窗口——那边的 fd 键本来就是当场摘的，且新连接拿到的是
+     *          全新句柄，够不成「同一个活句柄注册两次」
+     */
+    TEST(Epoll, AllowsReregisteringDescriptorNumberRightAfterDelete)
+    {
+        Epoll epoll;
+
+        TestEventFd staleEventFd;
+        ASSERT_GE(staleEventFd.fileDescriptor, 0);
+        const int reusedDescriptorNumber = staleEventFd.fileDescriptor;
+
+        int firstSentinel = 1;
+        ASSERT_TRUE(epoll.addFileDescriptor(reusedDescriptorNumber, EPOLLIN, &firstSentinel));
+        ASSERT_TRUE(epoll.delFileDescriptor(reusedDescriptorNumber));
+
+        // 号的复用：新 eventfd 经 dup2 精确落到旧号上（旧号上原来那份随 dup2 一并关闭）
+        TestEventFd freshEventFd;
+        ASSERT_GE(freshEventFd.fileDescriptor, 0);
+        ASSERT_EQ(::dup2(freshEventFd.writeDescriptor, reusedDescriptorNumber), reusedDescriptorNumber);
+
+        int secondSentinel = 2;
+        EXPECT_TRUE(epoll.addFileDescriptor(reusedDescriptorNumber, EPOLLIN, &secondSentinel))
+                << "注销后同一个描述符号不能再注册：描述符键没有当场释放";
+
+        // 新注册必须真的生效：让这个号变成可读，事件要带新挂的用户数据
+        ASSERT_TRUE(freshEventFd.trigger());
+
+        const auto events = epoll.wait(100);
+        ASSERT_FALSE(events.empty()) << "重新注册的描述符没有投递事件";
+        EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&secondSentinel)) << "投递的是旧注册的用户数据";
+
+        static_cast<void>(epoll.delFileDescriptor(reusedDescriptorNumber));
+    }
+#endif
+
     /**
      * @brief 无注册描述符时 wait() 在超时后返回空列表：既不死等也不报错
      */
