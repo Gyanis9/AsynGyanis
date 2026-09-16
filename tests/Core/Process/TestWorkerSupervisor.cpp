@@ -47,14 +47,35 @@ namespace AsynGyanis::Core
         public:
             WorkerLaunchLog()
             {
-                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-                m_path = std::filesystem::temp_directory_path() / ("AsynGyanis_WorkerSupervisor_" + salt + ".log");
+                // 记录文件放在**跨进程唯一**的临时目录里：ctest 会把每个用例作为独立进程并行拉起，
+                // 而时钟读数全系统共享、序号计数器又是每进程各自从 0 开始，只靠时钟加盐仍可能撞名
+                //（撞名时两个用例共用同一个记录文件，计数断言随机出错）。以「真的新建了目录」为准，
+                // 撞了就换盐重试——与 BaseTestSupport::TemporaryDirectory 同一写法
+                static std::atomic<unsigned int> sequenceCounter{0};
+
+                std::error_code error;
+                while (true)
+                {
+                    const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
+                                             std::to_string(sequenceCounter.fetch_add(1));
+                    m_directory = std::filesystem::temp_directory_path() / ("AsynGyanis_WorkerSupervisor_" + salt);
+                    if (std::filesystem::create_directories(m_directory, error))
+                    {
+                        break;
+                    }
+                    if (error)
+                    {
+                        // 真出错（权限等）不再重试：让用例自己去失败并暴露环境问题
+                        break;
+                    }
+                }
+                m_path = m_directory / "worker-launches.log";
             }
 
             ~WorkerLaunchLog()
             {
                 std::error_code error;
-                std::filesystem::remove(m_path, error);
+                std::filesystem::remove_all(m_directory, error);
             }
 
             WorkerLaunchLog(const WorkerLaunchLog &) = delete;
@@ -84,7 +105,8 @@ namespace AsynGyanis::Core
             }
 
         private:
-            std::filesystem::path m_path; ///< 记录文件
+            std::filesystem::path m_directory; ///< 本用例独占的临时目录
+            std::filesystem::path m_path;      ///< 记录文件
         };
 
         /**
