@@ -531,6 +531,8 @@ int main(int argc, char **argv)
         Net::QuicServer::Configuration http3Configuration;
         http3Configuration.certificateFile = certificateFile;
         http3Configuration.privateKeyFile  = keyFile;
+        // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
+        http3Configuration.parserLimits    = configuration.parserLimits;
 
         try
         {

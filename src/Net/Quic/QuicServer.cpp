@@ -212,6 +212,9 @@ namespace AsynGyanis::Net
         {
             session->attachRouter(*m_router);
         }
+        // 解析上限必须显式交给会话：默认构造的上限虽然安全，但调用方在 Configuration 里
+        // 调过的值（例如放宽正文上限）必须真的生效，否则「配置了却不生效」更难排查
+        session->setParserLimits(m_configuration.parserLimits);
 
         Http3Session &createdSession = *session;
         m_http3Sessions.emplace(rawConnection, std::move(session));

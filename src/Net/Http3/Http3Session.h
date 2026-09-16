@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -112,6 +113,13 @@ namespace AsynGyanis::Net
         void attachRouter(Router &router) noexcept;
 
         /**
+         * @brief 设置请求解析上限（正文总量上限等），与 h1/h2 同一套配置
+         * @param limits 解析上限；不设置时用 HttpParserLimits 的默认值
+         * @note 必须在收到第一个请求之前设置（服务端在装配会话时调用）
+         */
+        void setParserLimits(HttpParserLimits limits) noexcept;
+
+        /**
          * @brief 会话是否可用（控制流与 QPACK 流都绑上了）
          * @return true 可用
          */
@@ -201,6 +209,10 @@ namespace AsynGyanis::Net
             std::string protocol;   ///< :protocol 原文（RFC 9220 扩展 CONNECT 用；普通请求为空）
             std::string body;       ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
             bool        hasHostHeader{false}; ///< 对端是否显式给了 host 头
+
+            /// 正文总量越过 HttpParserLimits::maximumBodySize：此后到达的 DATA 一律丢弃，
+            /// 服务阶段按 413 应答（与 h1/h2 同一口径）
+            bool isBodyTooLarge{false};
         };
 
         /**
@@ -455,10 +467,20 @@ namespace AsynGyanis::Net
          */
         void markBroken(int errorCode, const char *what);
 
+        /// 待服务的一条请求：收齐的请求本体 + 收的过程中记下的越界标记。
+        /// 标记要跟着请求走到服务阶段，413 才发得出来（与 h2 的 PendingRequest::isBodyTooLarge 同形）
+        struct ReadyRequest
+        {
+            std::int64_t streamId{0};                 ///< 流号
+            HttpRequest  request;                     ///< 已收齐的请求
+            bool         isBodyTooLarge{false};       ///< 正文越界：服务阶段回 413 而不是派发
+        };
+
         nghttp3_conn             *m_connection{nullptr}; ///< nghttp3 连接对象
         StreamWriter              m_writer;              ///< 流数据出口
         StreamCrediter            m_crediter;            ///< 接收窗口归还口
         Router                   *m_router{nullptr};     ///< 路由器（不持有；由服务端保证其寿命）
+        HttpParserLimits          m_parserLimits{};      ///< 请求解析上限（正文总量上限等）
         std::vector<std::uint8_t> m_pendingBytes;        ///< 一次 flush 用的连续缓冲（把分片拼在一起）
         bool                      m_isUsable{false};     ///< 三条单向流是否都绑上了
         bool                      m_isBroken{false};     ///< 是否已作废
@@ -476,7 +498,7 @@ namespace AsynGyanis::Net
         /// 已建立的 WebSocket 隧道：键是流号。这些流上的 DATA 是 WebSocket 帧，不是 h3 请求正文
         std::map<std::int64_t, std::unique_ptr<WebSocketTunnel>> m_webSocketTunnels;
         /// 已收全、等待派发的请求（按收全先后）
-        std::deque<std::pair<std::int64_t, HttpRequest>> m_readyRequests;
+        std::deque<ReadyRequest> m_readyRequests;
         /// 待发响应的正文：std::map 的节点地址稳定，nghttp3 借走的指针不会因为它增删而失效
         std::map<std::int64_t, OutgoingBody> m_outgoingBodies;
     };

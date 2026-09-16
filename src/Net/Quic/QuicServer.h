@@ -56,6 +56,9 @@ namespace AsynGyanis::Net
             std::chrono::seconds     idleTimeout{30};               ///< 空闲超时：超过即由 ngtcp2 收口
             std::string              applicationProtocol{"h3"};     ///< 必须协商出的 ALPN；不是它就拒绝握手
             std::chrono::milliseconds expiryTickInterval{10};       ///< 定时器驱动的节拍（见 runExpiryTicker 的说明）
+            /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
+            /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
+            HttpParserLimits         parserLimits{};
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);

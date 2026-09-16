@@ -665,6 +665,67 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：h3 的请求正文受 HttpParserLimits::maximumBodySize 约束，越界回 413 且不交给业务
+     * @details h3 此前完全没有正文上限（h1 有在途预算、h2 有 413），一条 POST 就能把内存吃光。
+     *          上限调到 8 字节触发，避免用例为了越界真去分配默认上限那么大的缓冲。
+     */
+    TEST(Http3Session, RejectsOversizeRequestBodyWith413)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        HttpParserLimits limits;
+        limits.maximumBodySize = 8;
+        session.setParserLimits(limits);
+
+        bool   isHandlerEntered = false;
+        Router router;
+        router.post("/upload",
+                    [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        isHandlerEntered = true;
+                        response.setStatus(200);
+                        response.setBody("uploaded");
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过上限 8
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered) << "正文越界的请求不该交给业务";
+        EXPECT_EQ(peer.response().status, 413) << "正文越界必须回 413（与 h1/h2 同一口径）";
+        EXPECT_EQ(peer.response().body, "Payload Too Large");
+    }
+
+    /**
      * @brief 把请求正文的字节按 DATA 帧归还给 QUIC 的接收窗口
      * @details read_stream2 的消费计数不含 DATA 负载，正文那部分必须单独归还；漏了这条，
      *          正文一大就会把接收窗口用光（对端随后被流控卡住，而本端并不知道为什么）

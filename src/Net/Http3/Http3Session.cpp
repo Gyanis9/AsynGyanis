@@ -281,6 +281,11 @@ namespace AsynGyanis::Net
         }
     }
 
+    void Http3Session::setParserLimits(const HttpParserLimits limits) noexcept
+    {
+        m_parserLimits = limits;
+    }
+
     void Http3Session::attachRouter(Router &router) noexcept
     {
         m_router = &router;
@@ -395,18 +400,31 @@ namespace AsynGyanis::Net
 
         while (!m_readyRequests.empty())
         {
-            const std::int64_t streamId = m_readyRequests.front().first;
-            HttpRequest        request  = std::move(m_readyRequests.front().second);
+            const std::int64_t streamId      = m_readyRequests.front().streamId;
+            const bool         isBodyTooLarge = m_readyRequests.front().isBodyTooLarge;
+            HttpRequest        request        = std::move(m_readyRequests.front().request);
             m_readyRequests.pop_front();
 
             HttpResponse response;
-            if (m_router != nullptr)
+            if (isBodyTooLarge)
+            {
+                // 正文越界：不派发，直接回 413（与 h1/h2 同一口径与文案）
+                LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限，已按 413 应答且不交给业务", streamId);
+                response.setStatus(413);
+                response.setBody("Payload Too Large");
+                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            } else if (m_router != nullptr)
             {
                 // 隧道流上跑的是 WebSocket 帧而不是正文段，因此不装流式发送口
                 const bool isTunnelStream = m_pendingTunnelStreams.contains(streamId);
                 if (!isTunnelStream)
                 {
                     attachChunkSender(streamId, response);
+                }
+                // HEAD：响应只发头部（正文由发送口抑制），与 h1/h2 同一口径
+                if (request.method() == HttpMethod::HEAD)
+                {
+                    response.suppressStreamingBody();
                 }
                 co_await m_router->route(request, response);
 
@@ -496,17 +514,53 @@ namespace AsynGyanis::Net
 
         if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
         {
-            // 流式：字节进本流自己的缓冲，**窗口在字节被处理器取走时才还**（消费回调已绑好）。
-            // 这里顺手还掉就等于「到达即归还」，背压随之失效——那正是流式路径要保住的东西
-            found->second->body.append(std::string_view(reinterpret_cast<const char *>(data.data()), data.size()), data.size(), false);
+            HttpStreamBody &streamBody = found->second->body;
+
+            // 体量越界（与 h1/h2 同口径）：此后到达的字节一律丢弃，响应在服务阶段按 413 发出。
+            // 判在收的过程中而不是收齐之后——等 END_STREAM 再判，内存已经占住了
+            if (m_parserLimits.maximumBodySize != 0
+                && streamBody.totalReceivedByteCount() + data.size() > m_parserLimits.maximumBodySize)
+            {
+                if (!streamBody.isBodyTooLarge())
+                {
+                    LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止流式接收并按 413 应答",
+                                  streamId, m_parserLimits.maximumBodySize);
+                    streamBody.markBodyTooLarge();
+                }
+            } else
+            {
+                // 流式：字节进本流自己的缓冲，**窗口在字节被处理器取走时才还**（消费回调已绑好）。
+                // 这里顺手还掉就等于「到达即归还」，背压随之失效——那正是流式路径要保住的东西
+                streamBody.append(std::string_view(reinterpret_cast<const char *>(data.data()), data.size()), data.size(), false);
+                return;
+            }
+
+            // 丢弃的字节同样要还窗口：不还的话对端会卡在自己耗尽的接收窗口上
+            if (m_crediter && !data.empty())
+            {
+                m_crediter(streamId, data.size());
+            }
             return;
         }
 
         IncomingRequest &incoming = m_incomingRequests[streamId];
-        incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
+
+        // 体量越界：只标记与记日志，不再缓冲；此后到达的 DATA 一律丢弃，但窗口照还。
+        // 响应在服务阶段统一按 413 发出（与 h1/h2 同一口径）
+        if (!incoming.isBodyTooLarge && m_parserLimits.maximumBodySize != 0
+            && incoming.body.size() + data.size() > m_parserLimits.maximumBodySize)
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答",
+                          streamId, m_parserLimits.maximumBodySize);
+            incoming.isBodyTooLarge = true;
+        }
+        if (!incoming.isBodyTooLarge)
+        {
+            incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
+        }
 
         // 非流式：正文整段收在请求对象里，本端等于立刻消费掉了，因此到达即归还接收额度
-        // （DATA 帧的字节不在 read_stream2 的消费计数里，要在这里单独还）
+        // （DATA 帧的字节不在 read_stream2 的消费计数里，要在这里单独还）；丢弃的字节同样要还
         if (m_crediter && !data.empty())
         {
             m_crediter(streamId, data.size());
@@ -541,7 +595,7 @@ namespace AsynGyanis::Net
         m_outgoingBodies.erase(streamId);
         m_incomingRequests.erase(streamId);
         // 还没派发的请求记录一并摘掉：对端已经重置了这条流，再派发就是给一条死流跑业务
-        std::erase_if(m_readyRequests, [streamId](const auto &entry) { return entry.first == streamId; });
+        std::erase_if(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
         m_pendingTunnelStreams.erase(streamId);
         m_pendingTunnelBytes.erase(streamId);
 
@@ -615,7 +669,8 @@ namespace AsynGyanis::Net
             request.addHeader("host", incoming.authority);
         }
 
-        m_readyRequests.emplace_back(streamId, std::move(request));
+        m_readyRequests.push_back(ReadyRequest{.streamId = streamId, .request = std::move(request),
+                                               .isBodyTooLarge = incoming.isBodyTooLarge});
         if (isWebSocketTunnelRequest)
         {
             m_pendingTunnelStreams.insert(streamId);
@@ -697,7 +752,23 @@ namespace AsynGyanis::Net
     {
         HttpResponse response;
         attachChunkSender(streamId, response);
+        if (streamingRequest.request.method() == HttpMethod::HEAD)
+        {
+            response.suppressStreamingBody();
+        }
         co_await m_router->route(streamingRequest.request, response);
+
+        // 正文越界且业务还没开始流式写出：按 413 改判（与 h2 侧同一处置）。
+        // 已经开始流式写出时头部已上线，改状态码不可能，只能让它收尾
+        if (streamingRequest.body.isBodyTooLarge() && !response.isChunkedResponse())
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 的流式请求正文超过上限，已按 413 改判", streamId);
+            response.reset();
+            response.setStatus(413);
+            response.setBody("Payload Too Large");
+            static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+        }
+
         if (response.isChunkedResponse())
         {
             // 流式响应：响应头与各块在处理器写的过程中已经出去了，这里只做收尾
@@ -1005,6 +1076,12 @@ namespace AsynGyanis::Net
         // 捕获 &response：发送口只在处理器运行期间被调用，而处理器就活在这次路由的栈帧里
         response.setChunkSender([this, streamId, &response](const std::string_view chunk) -> Core::Task<bool>
                                 {
+                                    // HEAD：响应只有头部，正文段一字节都不发（头部由收尾路径与 END_STREAM
+                                    // 一起发出）。发出去会被对端当成下一条报文的开头
+                                    if (response.isStreamingBodySuppressed())
+                                    {
+                                        co_return true;
+                                    }
                                     co_return co_await sendStreamingChunk(streamId, streamingResponseFor(streamId), response, chunk);
                                 });
     }
