@@ -367,6 +367,9 @@ namespace AsynGyanis::Base
         std::atomic<std::shared_ptr<const HotReloadCallback> > m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
         std::atomic<bool>                                      m_hotReloadEnabled{false};    ///< 热加载功能是否启用（true 启用，false 关闭）
         std::atomic<bool>                                      m_reloadPending{false};       ///< 是否有重载任务正在执行（节流）
+        /// 重载进行期间又收到变更：由当前那轮任务在收尾时接力再来一轮。
+        /// 直接丢弃会让「重载恰好读到半截文件」变成常态——配置一直停在旧值，直到用户下一次改动
+        std::atomic<bool>                                      m_reloadDirty{false};
         std::mutex                                             m_reloadTasksMutex;           ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
         std::vector<std::unique_ptr<ReloadTask> >              m_reloadTasks;                ///< 活跃的重载任务（用于析构前 join）
 
@@ -376,6 +379,18 @@ namespace AsynGyanis::Base
          *          这样一次长 reload 阻塞 join 时不会连带挡住其它热加载检查。
          */
         void collectFinishedReloadTasks();
+
+        /**
+         * @brief 登记并启动一轮重载任务（调用方需先占住 m_reloadPending）
+         * @note 只负责登记与启动；任务的收尾（清 pending、接力下一轮）在任务体内
+         */
+        void startReloadTask();
+
+        /**
+         * @brief 重载任务体（在后台线程上跑）
+         * @param rawTask 本轮任务的完成标记（任务列表持有它的所有权）
+         */
+        void runReloadTask(ReloadTask *rawTask);
 
         /**
          * @brief 目录加载的内部实现，负责扫描、解析并原子替换配置快照。

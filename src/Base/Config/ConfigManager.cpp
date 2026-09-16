@@ -980,7 +980,10 @@ namespace AsynGyanis::Base
 
         if (configFiles.empty())
         {
-            // 目录中没有任何配置文件：提交空配置（等价于清空）
+            // 目录中没有任何配置文件：提交空配置（等价于清空）。
+            // 与 commitConfigData 共用同一把写锁——它同样是「整份快照替换」的写者，
+            // 不加锁就会与并发的 setValue 互相覆盖
+            const std::lock_guard writeLock(m_writeMutex);
             const auto newData       = std::make_shared<ConfigData>();
             newData->configDirectory = configDirectory;
             newData->loadTime        = result.timestamp;
@@ -1127,41 +1130,87 @@ namespace AsynGyanis::Base
             return;
         }
 
+        // 已有任务在跑：记下「之后还要再来一轮」而不是直接丢弃。重载要读完整份目录，
+        // 期间到达的变更（尤其是紧接着那次写入）会落在本轮之后——丢掉它配置就停在旧值，
+        // 直到用户下一次改动；接力由当前那轮任务在收尾时完成
         if (bool expected = false; !m_reloadPending.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         {
+            m_reloadDirty.store(true, std::memory_order_release);
             return;
         }
 
-        {
-            const std::lock_guard lock(m_reloadTasksMutex);
+        startReloadTask();
 
-            auto        task    = std::make_unique<ReloadTask>();
-            ReloadTask *rawTask = task.get();
-            task->thread        = std::jthread([this, rawTask]()
+        // 清理已完成任务并回收线程资源，防止任务列表无限增长。
+        // join 在锁外执行：持 m_reloadTasksMutex 期间 join 会把「一次长 reload 的等待」
+        // 变成对所有后续热加载检查的阻塞
+        collectFinishedReloadTasks();
+    }
+
+    void ConfigManager::startReloadTask()
+    {
+        const std::lock_guard lock(m_reloadTasksMutex);
+
+        auto        task    = std::make_unique<ReloadTask>();
+        ReloadTask *rawTask = task.get();
+        task->thread        = std::jthread([this, rawTask]() { runReloadTask(rawTask); });
+        m_reloadTasks.push_back(std::move(task));
+    }
+
+    void ConfigManager::runReloadTask(ReloadTask *rawTask)
+    {
+        // 任务体的顶层兜底：doReload() 与用户回调都可能抛（解析失败、类型不符、用户代码）。
+        // 让异常逃出线程函数就是 std::terminate 把整个进程带走——这里收口成一次「失败的重载」，
+        // 并照常通知回调，免得调用方以为配置已经刷新
+        try
+        {
+            if (!m_hotReloadEnabled.load(std::memory_order_acquire))
             {
-                if (!m_hotReloadEnabled.load(std::memory_order_acquire))
-                {
-                    m_reloadPending.store(false, std::memory_order_release);
-                    rawTask->finished.store(true, std::memory_order_release);
-                    return;
-                }
-                const auto result = doReload();
+                // 热重载已关闭：本轮不跑，收尾在下面统一做
+            } else
+            {
+                const ConfigLoadResult result = doReload();
 
                 // 回调快照：本线程（重载工作线程）读到的是 enableHotReload 发布的那一份
                 if (const auto callback = m_hotReloadCallback.load(std::memory_order_acquire); callback && *callback)
                 {
                     (*callback)(result);
                 }
-
-                m_reloadPending.store(false, std::memory_order_release);
-                rawTask->finished.store(true, std::memory_order_release);
-            });
-            m_reloadTasks.push_back(std::move(task));
+            }
+        } catch (const std::exception &reloadError)
+        {
+            LOG_ERROR_FMT("ConfigManager: 热重载任务抛出异常，本轮按失败处理：{}", reloadError.what());
+            // 再通知回调一次「本轮失败」：不通知的话调用方会以为配置已经刷新。
+            // 这一次通知同样可能抛（抛的那个回调就是它），因此单独兜一层——再逃出去还是 terminate
+            try
+            {
+                if (const auto callback = m_hotReloadCallback.load(std::memory_order_acquire); callback && *callback)
+                {
+                    ConfigLoadResult failedResult;
+                    failedResult.success = false;
+                    failedResult.errors.push_back(std::string("热重载任务抛出异常：") + reloadError.what());
+                    (*callback)(failedResult);
+                }
+            } catch (const std::exception &notificationError)
+            {
+                LOG_ERROR_FMT("ConfigManager: 通知「本轮重载失败」时回调又抛出异常，已忽略：{}", notificationError.what());
+            }
+        } catch (...)
+        {
+            LOG_ERROR_FMT("ConfigManager: 热重载任务抛出非标准异常，本轮按失败处理");
         }
-        // 清理已完成任务并回收线程资源，防止任务列表无限增长。
-        // join 在锁外执行：持 m_reloadTasksMutex 期间 join 会把「一次长 reload 的等待」
-        // 变成对所有后续热加载检查的阻塞
-        collectFinishedReloadTasks();
+
+        // 接力：先清 pending 再看 dirty——顺序反过来的话，「清 pending 之后、检查 dirty 之前」
+        // 到达的变更会被漏掉。抢不到 pending 说明别的触发者已经接手，它那轮同样会看到 dirty
+        m_reloadPending.store(false, std::memory_order_release);
+        if (m_reloadDirty.exchange(false, std::memory_order_acq_rel))
+        {
+            if (bool expected = false; m_reloadPending.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+            {
+                startReloadTask();
+            }
+        }
+        rawTask->finished.store(true, std::memory_order_release);
     }
 
     void ConfigManager::collectFinishedReloadTasks()

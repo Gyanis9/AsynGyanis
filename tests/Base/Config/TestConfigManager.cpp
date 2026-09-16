@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -1439,6 +1441,154 @@ namespace AsynGyanis::Base
         EXPECT_NO_THROW(configuration().disableHotReload());
         EXPECT_NO_THROW(configuration().disableHotReload());
         EXPECT_FALSE(configuration().isHotReloadEnabled());
+    }
+
+    /**
+     * @brief 钉住：重载进行期间到达的变更不会丢——当前那轮收尾时接力再来一轮
+     * @details 重载要读完整份目录，期间到达的变更（尤其是紧接着那次写入）若被直接丢弃，
+     *          配置就会停在旧值直到用户下一次改动。用例用「回调里阻塞」把第一轮卡住，
+     *          在阻塞期间再写一次文件，释放回调后必须等到第二轮、且那一轮读到的是新值。
+     *          没有接力逻辑时第二轮永不到来，等待超时即判失败。
+     */
+    TEST_F(ConfigManagerTest, ChangeArrivingDuringReloadTriggersATrailingRound)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        std::mutex              callbackMutex;
+        std::condition_variable callbackCondition;
+        int                     callbackCount          = 0;
+        bool                    isFirstCallbackEntered = false;
+        bool                    shouldReleaseCallback  = false;
+        std::vector<std::string> observedValuesInCallbacks;
+
+        const bool enabled = configuration().enableHotReload(
+                [&](const ConfigLoadResult &)
+                {
+                    std::unique_lock lock(callbackMutex);
+                    ++callbackCount;
+                    observedValuesInCallbacks.push_back(configuration().getString("value"));
+                    callbackCondition.notify_all();
+                    if (callbackCount == 1)
+                    {
+                        isFirstCallbackEntered = true;
+                        callbackCondition.notify_all();
+                        // 卡住第一轮：把「重载进行中」这个窗口撑开，测试在里面写第二次
+                        callbackCondition.wait(lock, [&shouldReleaseCallback] { return shouldReleaseCallback; });
+                    }
+                },
+                std::chrono::milliseconds(50));
+
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        // 静置一小段再写：监听线程要先把 ReadDirectoryChangesW/inotify 投出去，
+        // 紧跟着 enableHotReload 就写文件会落在武装之前（与其它监听用例同一处置）
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: trigger-first-round\n");
+
+        {
+            std::unique_lock lock(callbackMutex);
+            ASSERT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(8),
+                                                   [&isFirstCallbackEntered] { return isFirstCallbackEntered; }))
+                    << "第一次变更没有触发重载回调";
+        }
+
+        // 重载正卡在回调里：此刻再写一次，事件只能被记成「之后还要再来一轮」。
+        // 先等过防抖窗口——同一路径 50ms 内的重复事件会被监听器按设计抑制（那是防抖，不是丢事件）
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        writeFile("cfg.yaml", "value: second\n");
+        std::this_thread::sleep_for(std::chrono::milliseconds(300)); // 让文件监听把事件送达
+
+        {
+            std::unique_lock lock(callbackMutex);
+            shouldReleaseCallback = true;
+            callbackCondition.notify_all();
+            EXPECT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(5), [&callbackCount] { return callbackCount >= 2; }))
+                    << "重载期间到达的变更被丢掉了：没有接力第二轮";
+            const std::string joinedValues = [&observedValuesInCallbacks]
+            {
+                std::string joined;
+                for (const std::string &value: observedValuesInCallbacks)
+                {
+                    joined += (joined.empty() ? "" : " | ") + value;
+                }
+                return joined;
+            }();
+            EXPECT_EQ(observedValuesInCallbacks.back(), "second")
+                    << "接力那一轮读到的仍是旧值；每轮回调读到的值依次为：" << joinedValues;
+            EXPECT_EQ(configuration().getString("value"), "second") << "最终生效的配置不是最新那一份";
+        }
+
+        configuration().disableHotReload();
+    }
+
+    /**
+     * @brief 钉住：热重载回调抛异常不会把进程带走，后续变更仍能继续触发重载
+     * @details 回调跑在重载工作线程上，异常逃出线程函数就是 std::terminate——整进程没了。
+     *          实现把任务体整体包在 try/catch 里（连「通知失败结果」那一次也单独兜住，
+     *          因为抛的就是那个回调）。没有这层兜底时本用例会让整个测试进程消失
+     */
+    TEST_F(ConfigManagerTest, ThrowingHotReloadCallbackDoesNotKillTheProcess)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        std::atomic<int> callbackCount{0};
+        const bool       enabled = configuration().enableHotReload(
+                [&callbackCount](const ConfigLoadResult &)
+                {
+                    callbackCount.fetch_add(1, std::memory_order_relaxed);
+                    throw std::runtime_error("回调故意抛异常");
+                },
+                std::chrono::milliseconds(50));
+
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: second\n");
+
+        const bool receivedFirstCallback = [&callbackCount]
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (callbackCount.load(std::memory_order_relaxed) > 0)
+                {
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return false;
+        }();
+        EXPECT_TRUE(receivedFirstCallback) << "抛异常的回调一次都没被调用：重载任务压根没跑";
+
+        // 再改一次：任务机制必须还能继续工作（异常没有把 pending/dirty 卡死）
+        const int countBeforeSecondChange = callbackCount.load(std::memory_order_relaxed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        writeFile("cfg.yaml", "value: third\n");
+
+        bool receivedAnotherCallback = false;
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (callbackCount.load(std::memory_order_relaxed) > countBeforeSecondChange)
+                {
+                    receivedAnotherCallback = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        EXPECT_TRUE(receivedAnotherCallback) << "第一次异常之后重载再也没被触发：任务状态被卡死了";
+
+        configuration().disableHotReload();
     }
 
     // ============================================================================
