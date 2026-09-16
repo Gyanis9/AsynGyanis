@@ -897,6 +897,11 @@ namespace AsynGyanis::Net
         return m_isHttp2CleartextEnabled;
     }
 
+    std::shared_ptr<HttpMetricsCollector> HttpServer::metricsCollector() const noexcept
+    {
+        return m_metrics;
+    }
+
     HttpServerStats HttpServer::stats() const
     {
         HttpServerStats snapshot = m_metrics->snapshot();

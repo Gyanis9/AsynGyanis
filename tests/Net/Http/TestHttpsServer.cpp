@@ -6,6 +6,7 @@
 // 夹具在本文件内自建（TestHttpsServer + TlsLoopbackClient），回环端口由内核分配，用例之间不共用端口。
 
 #include "Net/Http/HttpsServer.h"
+#include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpServerStats.h"
 
 #include "Core/EventLoop/EventLoop.h"
@@ -460,10 +461,12 @@ namespace AsynGyanis::Net
              * @param sweepInterval 空闲清扫节拍
              * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
              * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
+             * @param configureServer 可选的服务器配置动作（例如打开指标端点），同样在 start() 之前执行
              */
             RunningHttpsServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
                                       const RouteRegistrar &registerRoutes = {},
-                                      const HttpParserLimits &parserLimits = HttpParserLimits{}) :
+                                      const HttpParserLimits &parserLimits = HttpParserLimits{},
+                                      const std::function<void(HttpsServer &)> &configureServer = {}) :
                 m_loop(),
                 m_server(m_loop, Core::InetAddress::localhost(0), kTestCertificatePath.string(), kTestKeyPath.string()),
                 m_serverTask(driveStart(m_server, m_startThrew)),
@@ -482,6 +485,12 @@ namespace AsynGyanis::Net
                 if (registerRoutes)
                 {
                     registerRoutes(m_server.router(), m_loop);
+                }
+
+                // 端点这类「必须开机前落定」的配置同样在投递 start() 之前做
+                if (configureServer)
+                {
+                    configureServer(m_server);
                 }
 
                 m_loopThread.schedule(m_serverTask);
@@ -633,6 +642,53 @@ namespace AsynGyanis::Net
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "HTTPS 会话收口后未从连接管理器摘除";
         EXPECT_EQ(fixture.server().stats().activeConnectionCount, 0u) << "连接已关闭，活跃连接数没有回落";
+    }
+
+    /**
+     * @brief HTTPS 侧也能导出 /metrics 与 /healthz：抓一次端点就能看到 TLS 路径上的计数
+     * @details 采集本来就在做（Http2Session 一直向本服务器的采集端计数），缺的只是把读数暴露出来；
+     *          顺带钉住「端点自身那条请求也计入请求数」——它就是一条普通路由
+     */
+    TEST(HttpsServer, ExposesMetricsAndHealthEndpoints)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
+                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                                          [](HttpsServer &server)
+                                          {
+                                              server.enableMetricsEndpoint();
+                                              server.enableHealthEndpoint();
+                                          });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        TlsLoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::string receivedText;
+        ASSERT_TRUE(client.sendText(helloRequestText(), kWaitTimeout)) << "HTTPS 请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout)) << "HTTPS 请求未得到响应";
+
+        // 健康检查端点：固定正文
+        std::string healthText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /healthz HTTP/1.1"), kWaitTimeout)) << "健康检查请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(healthText, kHealthCheckResponseBody, 1, kWaitTimeout))
+                << "健康检查端点没有回固定正文：「" << healthText << "」";
+
+        // 指标端点：值行里应当有**三条**请求——先前那条 /hello、/healthz，以及本条 /metrics 自己
+        //（计数发生在派发业务之前，因此它自己也算在内）。等的是值行而不是指标名：
+        // HELP/TYPE 行先到，只等名字会在取到值之前就返回
+        std::string metricsText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /metrics HTTP/1.1"), kWaitTimeout)) << "指标请求未能写入";
+        EXPECT_TRUE(client.waitForTextOccurrences(metricsText, "asyn_http_requests_total 3", 1, kWaitTimeout))
+                << "抓取这一刻应当已记下三条请求（/hello、/healthz 与 /metrics 自己）：「" << metricsText << "」";
+        // 状态码类在**第二次抓取**里核对：响应计数发生在「响应已排入待发字节」之后、渲染那一刻之前，
+        // 因此第一次抓取的正文里还没有它自己那条。第二次抓取时前三条响应都已落账
+        std::string secondMetricsText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /metrics HTTP/1.1"), kWaitTimeout)) << "第二次指标请求未能写入";
+        EXPECT_TRUE(client.waitForTextOccurrences(secondMetricsText, "asyn_http_responses_total{status_class=\"2xx\"} 3", 1, kWaitTimeout))
+                << "成功响应的状态码类没有计入：「" << secondMetricsText << "」";
     }
 
     /**

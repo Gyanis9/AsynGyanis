@@ -235,7 +235,7 @@ int main(int argc, char **argv)
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）");
         LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
-        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz，仅 HTTP 端可用；");
+        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz；开了 --h3 时 h3 的请求数/状态码类一并计入");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
         LOG_INFO("  --dispatch-accept 一个监听器 + N 个工作循环：连接由接受循环轮转交给工作循环服务；");
@@ -380,6 +380,13 @@ int main(int argc, char **argv)
         LOG_INFO_FMT("单来源并发上限 {}（所有 {} 个监听器共享同一份计数）", configuration.maximumConnectionsPerIp, actualThreads);
     }
 
+    // h3 的统计要并进哪一份采集端：多监听器下每台服务器各有一份采集端（/metrics 报的是
+    // 「本实例」的口径），这里取第一台启用指标的那份——抓它的 /metrics 就能同时看到 TCP 端与 h3 的量。
+    // 全进程口径需要所有服务路径共用一份采集端，那是部署方自己的取舍，样本不代劳。
+    // 指标端点两个服务类各有一份（HttpServer 与 HttpsServer 各是自己实现的），
+    // 谁先开着就把谁的采集端借给 h3；没开指标则留空指针，h3 不采集
+    std::shared_ptr<Net::HttpMetricsCollector> http3MetricsCollector;
+
     // 限流桶同样只有一份：它要的正是「进程级全局 RPS 上限」，各持一份等于上限乘以监听器数
     std::shared_ptr<Net::TokenBucket> rateLimitBucket;
     if (configuration.requestsPerSecond > 0.0)
@@ -428,6 +435,11 @@ int main(int argc, char **argv)
         {
             server->enableMetricsEndpoint();
             server->enableHealthEndpoint();
+            // 第一台启用指标的服务器把自己的采集端借给 h3：一处抓取覆盖两条服务路径
+            if (http3MetricsCollector == nullptr)
+            {
+                http3MetricsCollector = server->metricsCollector();
+            }
         }
         return server;
     };
@@ -448,6 +460,18 @@ int main(int argc, char **argv)
         if (rateLimitBucket != nullptr)
         {
             server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+        }
+
+        // 指标与健康检查端点同样是显式开关；与明文侧同一形态（HttpsServer 自己的实现）
+        if (configuration.exposeMetrics)
+        {
+            server->enableMetricsEndpoint();
+            server->enableHealthEndpoint();
+            // 第一台启用指标的服务器把自己的采集端借给 h3：一处抓取覆盖 TLS 与 QUIC 两条服务路径
+            if (http3MetricsCollector == nullptr)
+            {
+                http3MetricsCollector = server->metricsCollector();
+            }
         }
         return server;
     };
@@ -533,6 +557,8 @@ int main(int argc, char **argv)
         http3Configuration.privateKeyFile  = keyFile;
         // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
         http3Configuration.parserLimits    = configuration.parserLimits;
+        // 指标打开时 h3 的请求数、状态码类与单流取消并进上面那份采集端；没打开则为空指针、不采集
+        http3Configuration.metricsCollector = http3MetricsCollector;
 
         try
         {

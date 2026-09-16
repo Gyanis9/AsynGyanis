@@ -152,6 +152,38 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpServerStats stats() const;
 
         /**
+         * @brief 在本服务器上注册指标导出端点（Prometheus 文本格式）
+         * @details 与 HttpServer::enableMetricsEndpoint() 同一形态与同一套指标口径：TLS 上的 h1/h2
+         *          会话本来就向本服务器的采集端计数（见 stats()），只差把这个读数暴露出来。
+         *          与 HTTP 侧共用一份采集端（metricsCollector()）时，两条服务路径的计数会并进同一份输出
+         * @param path 端点路径，必须以 `/` 开头；默认 `/metrics`
+         * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
+         * @note **端点默认不开**（不调用本方法就没有任何暴露面）：本框架不做鉴权，公网可达的
+         *       /metrics 等于把内部负载与错误率公开出去
+         * @note 必须在 start() 之前调用：路由表在收到请求时读取，开机后再注册会让早到的请求拿不到
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @see HttpMetricsEndpoint.h, HttpServer::enableMetricsEndpoint()
+         */
+        void enableMetricsEndpoint(std::string_view path = "/metrics", std::string_view metricNamePrefix = "asyn_http");
+
+        /**
+         * @brief 在本服务器上注册健康检查端点
+         * @param path 端点路径，必须以 `/` 开头；默认 `/healthz`
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @see HttpServer::enableHealthEndpoint(), kHealthCheckResponseBody
+         */
+        void enableHealthEndpoint(std::string_view path = "/healthz");
+
+        /**
+         * @brief 取本服务器的统计采集端
+         * @details 采集端是共享对象：把它传给别的服务端（例如 QuicServer 的
+         *          Configuration::metricsCollector），那条服务路径的计数就会并进本服务器的
+         *          /metrics 与 stats()，一处抓取即可覆盖多条服务路径
+         * @return std::shared_ptr<HttpMetricsCollector> 采集端，恒非空
+         */
+        [[nodiscard]] std::shared_ptr<HttpMetricsCollector> metricsCollector() const noexcept;
+
+        /**
          * @brief 用当前证书路径重新加载证书与私钥，新连接立即改用新证书（热轮换）。
          *
          * @details 续期流程：ACM 客户端/certbot 把新证书覆盖到原路径 → 调用本方法。已建立的连接

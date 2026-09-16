@@ -1,8 +1,10 @@
 #include "Net/Http/HttpsServer.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Net/Http/HttpMemoryBudget.h"
+#include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http2/Http2Session.h"
 
 #include <openssl/ssl.h>
@@ -76,6 +78,49 @@ namespace AsynGyanis::Net
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
         return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
                                               m_memoryBudget);
+    }
+
+    std::shared_ptr<HttpMetricsCollector> HttpsServer::metricsCollector() const noexcept
+    {
+        return m_metrics;
+    }
+
+    void HttpsServer::enableMetricsEndpoint(const std::string_view path, const std::string_view metricNamePrefix)
+    {
+        // 与 HttpServer 同一处置：路径形状先拦下来，静默注册会给人一个「调了却没有端点」的假象
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpsServer: 指标端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
+        const std::string metricPrefix(metricNamePrefix);
+        m_router.get(std::string(path),
+                     [this, metricPrefix](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         // 每次抓取现取一次快照：计数是原子的，不必把动作投递到事件循环
+                         response.setStatus(200);
+                         response.setHeader("content-type", std::string(kPrometheusTextContentType));
+                         response.setBody(formatPrometheusMetrics(stats(), metricPrefix));
+                         co_return;
+                     });
+    }
+
+    void HttpsServer::enableHealthEndpoint(const std::string_view path)
+    {
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpsServer: 健康检查端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        m_router.get(std::string(path),
+                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         response.setStatus(200);
+                         response.setHeader("content-type", "application/json");
+                         response.setBody(kHealthCheckResponseBody);
+                         co_return;
+                     });
     }
 
     void HttpsServer::setLimits(HttpServerLimits limits)
