@@ -258,7 +258,10 @@ namespace AsynGyanis::Database
         // 而此刻协程还没挂起（轻则异步获取无故返回空连接，重则恢复尚未挂起的帧）
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
-            m_result = m_pool->tryAcquireOrCreateInternal();
+            // 锁里**只取空闲栈**，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
+            // 会让归还路径、后台超时唤醒与健康检查全排在它后面。池未满时的建连已经在上面
+            // 那次无锁尝试里做过了，这里还是空栈就说明确实没有立即可用的连接
+            m_result = m_pool->tryAcquireInternal();
             if (m_result)
             {
                 return false;
