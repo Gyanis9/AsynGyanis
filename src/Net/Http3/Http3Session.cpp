@@ -369,16 +369,19 @@ namespace AsynGyanis::Net
             {
                 totalLength += vectors[vectorIndex].len;
             }
-            m_pendingBytes.resize(totalLength);
-            std::size_t offset = 0;
+            // 不用 resize + memcpy：resize 会先把整段字节清零，而紧接着 memcpy 又把它覆盖掉，
+            // 大帧（几十 KiB）白付一次 memset。先按总长腾出空间，再逐片 append（只写新增的字节）
+            m_pendingBytes.clear();
+            m_pendingBytes.reserve(totalLength);
             for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
             {
                 if (vectors[vectorIndex].len == 0)
                 {
                     continue;
                 }
-                std::memcpy(m_pendingBytes.data() + offset, vectors[vectorIndex].base, vectors[vectorIndex].len);
-                offset += vectors[vectorIndex].len;
+                // 逐片插入而不是 resize + memcpy：resize 的零填充随后就被 memcpy 覆盖，白付一次 memset
+                const std::uint8_t *const sourceBytes = vectors[vectorIndex].base;
+                m_pendingBytes.insert(m_pendingBytes.end(), sourceBytes, sourceBytes + vectors[vectorIndex].len);
             }
 
             m_writer(streamId, m_pendingBytes, isFinal != 0);
