@@ -1859,6 +1859,77 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 对端只读不授窗口时，流式发送方会被上界挡住而不是把待发正文堆到无界
+     * @details h1 侧套接字写满会自然挂住生产者，h2 侧窗口完全由对端控制：对端把字节读走却不发
+     *          WINDOW_UPDATE 时，连接层只会把正文排进发送队列。没有上界的话业务写多少就驻留多少，
+     *          一条不配合的客户端能把服务端内存顶到 OOM。这条用例钉住「到上界即失败、业务据此停写」
+     */
+    TEST(Http2Session, StopsStreamingWhenPeerNeverGrantsWindow)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        constexpr std::size_t kChunkByteCount = 64U * 1024U; ///< 每段 64 KiB，远大于默认的 64 KiB 流窗口
+        constexpr std::size_t kChunkAttemptLimit = 256U;     ///< 业务最多尝试 16 MiB：远超 1 MiB 的队列上界
+
+        std::atomic<std::size_t> writtenChunkCount{0};
+        std::atomic<bool>        isWriteStopped{false};
+
+        RunningHttp2ServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                [&writtenChunkCount, &isWriteStopped](Router &router, Core::EventLoop &)
+                {
+                    router.get("/firehose",
+                               [&writtenChunkCount, &isWriteStopped](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.startChunkedResponse(200);
+                        response.setHeader("content-type", "application/octet-stream");
+                        const std::string chunk(kChunkByteCount, 'x');
+                        for (std::size_t attemptIndex = 0; attemptIndex < kChunkAttemptLimit; ++attemptIndex)
+                        {
+                            if (!co_await response.writeChunk(chunk))
+                            {
+                                // 到上界的失败：业务据此停写，正是背压信号该有的样子
+                                isWriteStopped.store(true);
+                                co_return;
+                            }
+                            writtenChunkCount.fetch_add(1);
+                        }
+                        co_return;
+                    });
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/firehose"), true), kWaitTimeout))
+                << "流式请求未能写入";
+
+        // 客户端一直读（把套接字抽干）但一帧 WINDOW_UPDATE 都不发：这正是窗口耗尽后还不放行的形态
+        const bool isStoppedInTime =
+                client.pumpUntil(frames, [&isWriteStopped](const std::vector<TestFrame> &) { return isWriteStopped.load(); }, kWaitTimeout);
+        EXPECT_TRUE(isStoppedInTime) << "对端始终不授窗口，业务却一直写到了自设的段数上限：待发队列没有上界";
+        EXPECT_LT(writtenChunkCount.load(), kChunkAttemptLimit)
+                << "写成功的段数达到了尝试上限，说明业务没有收到背压信号（成功段数 " << writtenChunkCount.load() << "）";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住「边写边到」：处理器写完第一段后卡在「等客户端读到它」上，客户端因此只能在处理器
      *        尚未结束时读到第一段与承载它的头部——框架若把正文攒到处理器结束才发，这个等待必然超时
      */

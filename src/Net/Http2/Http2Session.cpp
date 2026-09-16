@@ -1053,9 +1053,19 @@ namespace AsynGyanis::Net
                       request.requestId(), request.uri());
         noteServedRequest();
 
-        // 业务写出的帧发成这条流上的 DATA 帧；写失败（流被对端取消或连接不可用）即 false，与 h1 侧同口径
+        // 业务写出的帧发成这条流上的 DATA 帧；写失败（流被对端取消、队列到上界或连接不可用）即 false，
+        // 与 h1 侧同口径
         const auto sendFrameBytes = [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
         {
+            // 与流式正文同一道闸：对端只读不授窗口时隧道帧同样会无限堆积
+            if (m_connection.pendingResponseByteCount(streamId) > kStreamingSendQueueLimitByteCount)
+            {
+                LOG_ERROR_FMT("Http2Session: 隧道流 {} 的待发字节已超过上限 {} 字节（对端长期未发 WINDOW_UPDATE），"
+                              "本帧不再入队",
+                              streamId, kStreamingSendQueueLimitByteCount);
+                co_return false;
+            }
+
             std::string sendErrorText;
             if (m_connection.sendResponseData(streamId, frameBytes, false, &sendErrorText) != Http2ResponseSendStatus::Sent)
             {
@@ -1456,6 +1466,16 @@ namespace AsynGyanis::Net
             }
         } else
         {
+            // 上界先行：窗口何时放开完全由对端决定，对端长期不发 WINDOW_UPDATE 时再入队就是无界内存。
+            // 到顶即失败，业务据此停写（h1 侧不设这道闸是因为套接字写满会自然挂住生产者）
+            if (m_connection.pendingResponseByteCount(streamId) > kStreamingSendQueueLimitByteCount)
+            {
+                LOG_ERROR_FMT("Http2Session: 流 {} 的待发正文已超过上限 {} 字节（对端长期未发 WINDOW_UPDATE），"
+                              "本段不再入队，业务应停止写入",
+                              streamId, kStreamingSendQueueLimitByteCount);
+                co_return false;
+            }
+
             // 其余段落是 HttpResponse::writeChunk() 按 h1 分块帧成帧的正文（RFC 9112 §7.1）：HTTP/2 里
             // 没有分块帧这一层（transfer-encoding 属禁止头，RFC 9113 §8.2.2），只把帧里的负载发成 DATA 帧
             const std::string_view payload = chunkFramePayload(segment);

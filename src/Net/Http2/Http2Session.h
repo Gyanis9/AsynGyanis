@@ -180,6 +180,11 @@ namespace AsynGyanis::Net
         void onGracefulShutdownRequested() override;
 
     private:
+        /// 单条流「窗口不足排队」的正文上界：超了就让流式发送方当场失败，别把内存堆到把进程拖垮。
+        /// h1 的等价物是套接字背压（写满就挂住），h2 侧窗口完全由对端控制——对端只读不授窗口时
+        /// 队列是唯一还在涨的东西。取 1 MiB：远高于任何正常慢消费者的在途量，又远小于单请求上限
+        static constexpr std::size_t kStreamingSendQueueLimitByteCount = 1024U * 1024U;
+
         /**
          * @brief 一条请求的服务结论
          *
@@ -335,8 +340,9 @@ namespace AsynGyanis::Net
          * @param streamId 本段落所属的流号
          * @param segment writeChunk 交出的段落字节
          * @return true 本段已排入待发字节（窗口不足时留在发送队列里，等对端 WINDOW_UPDATE 续发）
-         * @return false 本段未发出、业务应停止继续写：对端已取消这条流（连接继续服务其它流），
-         *         或连接已不可用——两种原因的日志分别由本方法与 serveOneRequest() 记出
+         * @return false 本段未发出、业务应停止继续写：对端已取消这条流、待发队列已到
+         *         kStreamingSendQueueLimitByteCount（对端长期不发 WINDOW_UPDATE，连接继续服务其它流），
+         *         或连接已不可用——各种原因的日志分别由本方法与 serveOneRequest() 记出
          * @throws Base::LogicException 分块帧布局与 writeChunk 的文档不符（本段未发出，绝不把帧头当正文）
          */
         [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, std::string_view segment);

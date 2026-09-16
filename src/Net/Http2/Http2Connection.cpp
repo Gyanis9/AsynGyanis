@@ -522,6 +522,17 @@ namespace AsynGyanis::Net
         return m_openStreamCount;
     }
 
+    std::size_t Http2Connection::pendingResponseByteCount(const std::uint32_t streamId) const noexcept
+    {
+        const auto streamIterator = m_streams.find(streamId);
+        if (streamIterator == m_streams.end())
+        {
+            return 0;
+        }
+        // 整段缓冲都算：游标之前的前缀虽然已经出过帧，但在压缩掉之前仍是本端占住的内存
+        return streamIterator->second.pendingData.size();
+    }
+
     bool Http2Connection::tryGetPeerSetting(const Http2SettingIdentifier identifier, std::uint32_t &value) const noexcept
     {
         const auto settingIterator = m_peerSettings.find(static_cast<std::uint16_t>(identifier));

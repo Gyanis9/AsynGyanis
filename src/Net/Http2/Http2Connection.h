@@ -416,6 +416,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t openStreamCount() const noexcept;
 
         /**
+         * @brief 取一条流上「窗口不足排队」的正文字节数
+         * @param streamId 流号
+         * @return 仍占着本端内存的待发字节数（含已出帧但尚未压缩掉的前缀）；流不在账本里时为 0
+         * @details 窗口耗尽时 sendResponseData() 只排队不出帧，对端又长期不发 WINDOW_UPDATE 的话
+         *          这份队列就是唯一还在涨的东西。流式发送方据此自设上界，别让它无限堆内存
+         */
+        [[nodiscard]] std::size_t pendingResponseByteCount(std::uint32_t streamId) const noexcept;
+
+        /**
          * @brief 查对端在 SETTINGS 里通告过的参数
          * @param identifier 目标参数标识
          * @param value 输出参数：参数取值，仅在返回 true 时有效
