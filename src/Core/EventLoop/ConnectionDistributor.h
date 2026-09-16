@@ -66,7 +66,10 @@ namespace AsynGyanis::Core
          * @brief 把一条已接受的连接交给下一个工作循环
          * @param fileDescriptor 已接受的连接描述符
          * @return true 已投递给某个工作循环，描述符所有权随之转移，调用方不得再碰它
-         * @return false 没有可用的工作循环（或描述符本身无效），描述符仍归调用方，需自行关闭
+         * @return false 没有可用的工作循环、描述符本身无效，或交接句柄分配失败——
+         *         这三种情形下描述符仍归调用方，需自行关闭
+         * @note 一旦交接句柄建成，所有权就算交出去了：此后即便投递排不上队也返回 true
+         *       （那条连接由句柄关闭），调用方不会对同一个号关第二次
          */
         [[nodiscard]] bool distribute(int fileDescriptor) noexcept;
 

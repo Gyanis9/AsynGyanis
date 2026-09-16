@@ -1,5 +1,6 @@
 #include "Core/EventLoop/ConnectionDistributor.h"
 
+#include "Base/Log/LogMacros.h"
 #include "Platform/IO/FileDescriptor.h"
 
 #include <memory>
@@ -78,15 +79,35 @@ namespace AsynGyanis::Core
         // 轮转取一个工作循环：登记顺序即轮转顺序，游标只在本线程（接受循环）里推进
         Worker &worker = m_workers[m_nextWorkerIndex];
         m_nextWorkerIndex = (m_nextWorkerIndex + 1) % m_workers.size();
-        ++m_distributedCount;
 
-        // 交接句柄与回调一起投递：目标循环先退出时回调被丢弃，句柄析构把描述符关上
-        auto handoff = std::make_shared<HandoffDescriptor>(fileDescriptor);
-        worker.loop->scheduler().postRemote(
-                [adopter = worker.adopter, handoff]() mutable
-                {
-                    adopter(handoff->take());
-                });
+        // 交接句柄与回调一起投递：目标循环先退出时回调被丢弃，句柄析构把描述符关上。
+        // 本函数是 noexcept 而这两步都会分配，因此不能任由分配失败升级成 terminate：
+        // - 句柄还没建起来：按「没人接手」返回 false，描述符仍归调用方（由它关闭）；
+        // - 句柄一旦建成，所有权就算交出去了——此后一律返回 true，免得调用方再关一次同一个
+        //   号（那个号可能已被复用），未执行的投递由句柄自己把它关掉
+        std::shared_ptr<HandoffDescriptor> handoff;
+        try
+        {
+            handoff = std::make_shared<HandoffDescriptor>(fileDescriptor);
+        } catch (...)
+        {
+            return false;
+        }
+
+        try
+        {
+            worker.loop->scheduler().postRemote(
+                    [adopter = worker.adopter, handoff]() mutable
+                    {
+                        adopter(handoff->take());
+                    });
+        } catch (...)
+        {
+            // 投递排不上队：回调没进队列，句柄随本函数返回析构并关上这条描述符
+            LOG_WARN_FMT("ConnectionDistributor: 连接未能交给工作循环（投递无法排队），该连接已关闭");
+        }
+
+        ++m_distributedCount;
         return true;
     }
 

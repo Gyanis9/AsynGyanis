@@ -98,13 +98,16 @@ namespace AsynGyanis::Net
                 break;
             }
 
-            // 分发模式：本循环只负责接受，连接交给登记进来的工作循环接手。
-            // 没人接手（工作循环都没了）说明配置或生命周期出了问题：关掉这条连接并记一条，
-            // 不静默丢弃——症状同样是「在监听但连不上」，没有日志就无从下手
+            // 分发模式：本循环只负责接受，连接交给登记进来的工作循环接手
             if (distributor != nullptr)
             {
-                if (!distributor->distribute(acceptedSocket->releaseFileDescriptor()))
+                const int acceptedFileDescriptor = acceptedSocket->releaseFileDescriptor();
+                if (!distributor->distribute(acceptedFileDescriptor))
                 {
+                    // 没人接手（工作循环都没了）说明配置或生命周期出了问题：关掉这条连接并记一条，
+                    // 不静默丢弃——症状同样是「在监听但连不上」，没有日志就无从下手。
+                    // 描述符已经从套接字对象手里交出来了（它此后不再关闭它），这里不关就是漏一个 fd
+                    Platform::FileDescriptor::close(acceptedFileDescriptor);
                     LOG_ERROR_FMT("TcpServer: 没有可用的工作循环，已丢弃一条新连接，监听地址 {}",
                                   m_acceptor.localAddress().toString());
                 }
