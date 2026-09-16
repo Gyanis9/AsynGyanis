@@ -250,6 +250,25 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(configuration().keys().empty());
     }
 
+    /**
+     * @brief 键里带点号的配置直接判加载失败：它与嵌套写法落成同一个扁平路径，会互相覆盖
+     */
+    TEST_F(ConfigManagerTest, DottedKeyIsRejectedInsteadOfSilentlyOverwriting)
+    {
+        // 这份文件里 "server.port" 与 server.port 是同一个扁平键：不拦住的话谁后写谁赢，
+        // 调用方拿到的配置与文件里写的对不上，而且毫无提示
+        const std::filesystem::path filePathWithDottedKey = writeFile("dotted.yaml", R"("server.port": 8080
+server:
+  port: 9090
+)");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(filePathWithDottedKey.parent_path());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "server.port")) << "报错里没有指出是哪个键";
+        EXPECT_TRUE(anyEntryContains(result.errors, "分隔符")) << "报错里没有说明拒绝的原因";
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryWithRegularFileFails)
     {
         const std::filesystem::path filePathInPlaceOfDirectory = writeFile("plain.yaml", "key: value\n");

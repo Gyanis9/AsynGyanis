@@ -418,9 +418,12 @@ namespace AsynGyanis::Base
          *          类型判定已在解析阶段完成，此处不再二次判定。
          *          点号前缀用同一个缓冲「追加—递归—回溯」复用，避免每层重复拼接父前缀；
          *          叶子值直接从文档中移出，省掉一次深拷贝。
+         *          键里带点号时抛错：那样的键与嵌套写法落成同一个扁平路径，两者互相覆盖
+         *          且很难察觉（配置里出现这种键几乎总是笔误）。
          * @param node 当前文档值节点（必须是对象），其叶子值会被移出，故必须是可改写的临时对象
          * @param prefixBuffer 复用的点号前缀缓冲，进入时表示当前层前缀
          * @param values 扁平化结果容器
+         * @throws std::runtime_error 某个键名含有分隔符 '.'
          */
         static void flattenValue(ConfigValue &node, std::string &prefixBuffer, ConfigKeyValueMap &values);
 

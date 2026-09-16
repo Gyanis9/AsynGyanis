@@ -1095,6 +1095,16 @@ namespace AsynGyanis::Base
 
         for (auto &[key, value]: node.get_ref<ConfigObject &>())
         {
+            // 键里出现点号会让扁平路径产生歧义：`"a.b": 1` 与 `a: {b: 1}` 落成同一个键，
+            // 后写的一方静默覆盖先写的一方——配置里出现这种键几乎总是笔误。直接拒绝并说清原因，
+            // 好过让调用方拿着一份被悄悄改过的配置去跑（抛出由 loadConfigFile 统一收成加载错误）
+            if (key.find('.') != std::string::npos)
+            {
+                throw std::runtime_error("配置键 '" + key +
+                                         "' 含有分隔符 '.'：它会与嵌套写法落成同一个扁平路径（例如 a: {b: 1} 落成 a.b），"
+                                         "两者互相覆盖且不易察觉；请改用嵌套写法，或去掉键里的点号");
+            }
+
             // 追加本层键后递归，返回时把缓冲回退到进入本层前的长度：
             // 整棵子树共用同一个前缀缓冲，路径字符只写一次而不是每层重新拼一遍父前缀
             const std::size_t prefixLength = prefixBuffer.size();

@@ -19,8 +19,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <iostream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -441,6 +443,24 @@ namespace AsynGyanis::Base
 
         ASSERT_EQ(m_ledger->eventCount(), 1u);
         EXPECT_EQ(m_ledger->lastMessage(), "survives failing sink");
+    }
+
+    /**
+     * @brief Sink 抛异常不能静默：日志系统自身出故障时，至少要往标准错误留一行
+     */
+    TEST_F(LoggerTest, ThrowingSinkLeavesDiagnosticOnStandardError)
+    {
+        Logger logger("noisy_sink");
+        logger.addSink(std::make_unique<ThrowingSink>());
+
+        std::ostringstream capturedError;
+        std::streambuf    *const originalErrorBuffer = std::cerr.rdbuf(capturedError.rdbuf());
+        EXPECT_NO_THROW(logger.log(LogLevel::Info, "diagnostic message"));
+        std::cerr.rdbuf(originalErrorBuffer);
+
+        const std::string diagnostic = capturedError.str();
+        EXPECT_TRUE(contains(diagnostic, "noisy_sink")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "intentional sink failure")) << diagnostic;
     }
 
     TEST_F(LoggerTest, ThrowingSinkDoesNotBreakSubsequentFlush)
