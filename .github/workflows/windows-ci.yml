@@ -5,7 +5,9 @@
 #
 # 编译输出由 sccache 缓存（MSVC 侧的时间几乎全花在编译上，用例本身只占一小部分）。
 # 为了让 MSVC 的调试信息可缓存，CI 里把调试信息格式换成 Embedded（/Z7）：默认的 /Zi 会把
-# 调试信息写进一个共享 PDB，sccache 对这种形态不做缓存。这只影响 CI 的构建目录，本机预设不变。
+# 调试信息写进一个共享 PDB，并行编译时多个 cl.exe 抢同一个 PDB 直接报 C1041，sccache 也不缓存。
+# 这个变量受策略 CMP0141 管辖，而本工程的 cmake_minimum_required 是 3.20（策略默认 OLD，
+# 于是变量会被静默忽略）——因此配置行里还要把 CMP0141 显式置 NEW。只影响 CI 的构建目录。
 
 name: Windows CI
 
@@ -64,10 +66,7 @@ jobs:
         run: conan profile detect --force
 
       - name: 配置（Debug + sanitizers + sccache；Conan 依赖由 conan_provider.cmake 自动安装）
-        run: |
-          cmake --preset debug -DDATABASE_WITH_MYSQL=OFF `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
 
       # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
       - name: 构建
