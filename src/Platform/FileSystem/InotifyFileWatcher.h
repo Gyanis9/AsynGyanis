@@ -122,6 +122,13 @@ namespace AsynGyanis::Platform
          */
         void dispatchOverflowRescan();
 
+        /**
+         * @brief 摘掉内核已不再监视的那个 watch 的两张映射表条目
+         * @param watchDescriptor 内核已摘除的监视描述符（来自 IN_IGNORED）
+         * @note 不清的话，重建出来的同名路径会因「路径已在表里」而挂不上监视，事件永久丢失
+         */
+        void removeWatchMapping(int watchDescriptor);
+
         int                                  m_inotifyFileDescriptor{-1}; ///< inotify 文件描述符
         std::unordered_map<int, std::string> m_watchDescriptors;          ///< 监视描述符到监听路径的映射
         std::unordered_map<std::string, int> m_pathToWatchDescriptor;     ///< 监听路径到监视描述符的映射

@@ -143,6 +143,19 @@ namespace AsynGyanis::Platform
         return true;
     }
 
+    void InotifyFileWatcher::removeWatchMapping(const int watchDescriptor)
+    {
+        // 内核摘除 watch 之后它不会再投递任何事件，两张表留着只会挡住同一路径的重新注册
+        std::lock_guard lock(m_watchMutex);
+        const auto      iterator = m_watchDescriptors.find(watchDescriptor);
+        if (iterator == m_watchDescriptors.end())
+        {
+            return;
+        }
+        m_pathToWatchDescriptor.erase(iterator->second);
+        m_watchDescriptors.erase(iterator);
+    }
+
     void InotifyFileWatcher::setCallback(FileChangeCallback callback)
     {
         std::lock_guard lock(m_watchMutex);
@@ -203,9 +216,13 @@ namespace AsynGyanis::Platform
 
             // IN_IGNORED：watch 被移除后内核必补的一条。它的掩码不参与本端的事件分类，
             // 却会落到下面「len == 0 → 监视目标本身」的分支上被当成一次「已修改」派发出去——
-            // 删除之后再来一条假修改，会诱导热加载去重扫一个已经不存在的路径
+            // 删除之后再来一条假修改，会诱导热加载去重扫一个已经不存在的路径。
+            // 映射必须跟着摘掉：内核已经不再监视这个 wd（目录被删、文件被替换都是这条路径），
+            // 留着会让 addWatch(同一路径) 被「已经看过这个路径」挡下——重建出来的同名目录/文件
+            // 从此再也挂不上监视，事件永久丢失（这里尚未取共享锁，可以安全地做清理）
             if ((event->mask & IN_IGNORED) != 0)
             {
+                removeWatchMapping(event->wd);
                 continue;
             }
 

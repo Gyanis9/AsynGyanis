@@ -198,6 +198,56 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(recorder.eventCount(), 0U);
     }
 
+#if ASYN_PLATFORM_LINUX
+    /**
+     * @brief 钉住（Linux）：被内核摘除监视之后，同一路径还能重新挂上监视
+     * @details 目录被删时内核自动摘 watch 并补一条 IN_IGNORED。实现若不跟着清映射，重建出来的同名
+     *          目录会在 addWatch() 里被「路径已在表里」挡下（该分支直接返回 true，看不出失败），
+     *          此后这个目录的事件永久丢失——「配置目录被删掉再放回来」正好撞在这条路径上
+     */
+    TEST(FileWatcher, RecreatedDirectoryCanBeWatchedAgain)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Recreate");
+        const std::string                     watchedPath = temporaryDirectory.path().string();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(watchedPath));
+        ASSERT_TRUE(watcher->start());
+
+        // 删掉被监视的目录：内核摘掉 watch 并补一条 IN_IGNORED（此刻本端应当把映射清掉）
+        std::error_code removeError;
+        static_cast<void>(std::filesystem::remove_all(temporaryDirectory.path(), removeError));
+        ASSERT_FALSE(removeError) << "删除被监视目录失败：" << removeError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        // 重建同名目录并重新挂监视：没清映射时这一步是空操作（被 contains 挡下）
+        ASSERT_TRUE(std::filesystem::create_directories(temporaryDirectory.path()));
+        ASSERT_TRUE(watcher->addWatch(watchedPath));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        ASSERT_TRUE(temporaryDirectory.writeFile("reborn.yaml", "back: true\n"));
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("reborn.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "重建出来的目录收不到事件：监视没挂上（IN_IGNORED 之后映射没清）";
+    }
+#endif
+
     TEST(FileWatcher, AddWatchOnMissingDirectoryFails)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Missing");
