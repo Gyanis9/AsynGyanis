@@ -232,6 +232,48 @@ namespace AsynGyanis::Net
         EXPECT_EQ(parser.result().body, "raw-bytes");
     }
 
+
+    /**
+     * @brief 头部没有闸门就是让对端决定本端分配多少内存（正文早有 8 MiB 上限）
+     * @details 三种都钉：条数、头块净字节、单行长度。客户端是「对端说了算」的那一侧，
+     *          恶意或被接管的服务端可以用无限头部把客户端进程顶爆
+     */
+    TEST(HttpResponseParser, RejectsOversizeHeaderCountAndBlock)
+    {
+        HttpResponseParser parser;
+
+        // 条数：默认上限 100 条，发 101 条即判失败
+        std::string manyHeaders = "HTTP/1.1 200 OK\r\n";
+        for (std::size_t index = 0; index <= HttpResponseParser::kDefaultMaximumHeaderCount; ++index)
+        {
+            manyHeaders += "x-" + std::to_string(index) + ": v\r\n";
+        }
+        manyHeaders += "\r\n";
+        parser.feed(manyHeaders);
+        EXPECT_TRUE(parser.hasFailed()) << "头部条数超过上限没有被拦下";
+
+        // 头块净字节：单条头就把块长顶爆（值给到上限 + 1 字节）
+        HttpResponseParser blockParser;
+        std::string       bigHeader = "HTTP/1.1 200 OK\r\nx-big: " +
+                                std::string(HttpResponseParser::kDefaultMaximumHeaderBlockByteCount, 'v') + "\r\n\r\n";
+        blockParser.feed(bigHeader);
+        EXPECT_TRUE(blockParser.hasFailed()) << "头部块总长超过上限没有被拦下";
+    }
+
+    /**
+     * @brief 一行永不含 CRLF 的字节流不能把行缓冲撑到无界
+     */
+    TEST(HttpResponseParser, RejectsEndlessStatusLineWithoutCrlf)
+    {
+        HttpResponseParser parser;
+
+        const std::string endlessLine(HttpResponseParser::kDefaultMaximumLineByteCount + 1, 'A');
+        parser.feed(endlessLine);
+        // 闸门在 feed() 入口看行缓冲：越界那一段落地后即刻判失败（最多多攒一次喂入的字节）
+        parser.feed(endlessLine);
+        EXPECT_TRUE(parser.hasFailed()) << "永不含 CRLF 的行没有被行长度闸门拦下";
+    }
+
     /**
      * @brief 钉住无正文状态码：204 / 304 即便带 Content-Length 也立即完成、不等待正文
      */

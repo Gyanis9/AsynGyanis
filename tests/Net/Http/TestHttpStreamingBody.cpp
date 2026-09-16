@@ -235,6 +235,85 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：处理器没读完正文也安全——剩余字节被排空，连接按 keep-alive 继续服务
      */
+
+    /**
+     * @brief 流式消费方每轮把缓冲抽干，正文上限照样按「累计已收」生效
+     * @details 这条判据曾经只看当前缓冲长度：处理器每轮把已交付的字节取走，缓冲一直是空的，
+     *          上限于是形同虚设、对端可以无限收正文（第五轮修掉的正是这条）。
+     *          用例刻意分 4 次发、每次等处理器取走再发下一批，把「边读边取走」这条路径钉住：
+     *          累计 64 字节而上限只有 16，必须判越界并按 413 收口
+     */
+    TEST(HttpStreamingBody, EnforcesCumulativeBodyLimitWhileConsumerDrains)
+    {
+        constexpr std::size_t kChunkBytes        = 16;
+        constexpr std::size_t kChunkCount        = 4;
+        constexpr std::size_t kMaximumBodyBytes  = 16;
+
+        HttpParserLimits limits;
+        limits.maximumBodySize = kMaximumBodyBytes;
+
+        std::atomic<std::size_t> drainedByteCount{0};
+
+        const auto registerRoutes = [&drainedByteCount](Router &router, Core::EventLoop &)
+        {
+            router.postStreaming("/upload", [&drainedByteCount](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            {
+                HttpRequestBody *stream = request.bodyStream();
+                if (stream == nullptr)
+                {
+                    response.setBody("no-stream");
+                    co_return;
+                }
+
+                std::size_t totalBytes = 0;
+                while (co_await stream->readNext())
+                {
+                    totalBytes += stream->chunk().size();
+                    // 每取走一段就报一次：用例据此确认「处理器确实在持续把缓冲抽干」
+                    drainedByteCount.store(totalBytes, std::memory_order_release);
+                    // 让出一次：把交付与解析交错开，判据才真的落在「累计」上
+                    co_await std::suspend_never{};
+                }
+                response.setBody("bytes=" + std::to_string(totalBytes));
+                co_return;
+            });
+        };
+
+        RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes, limits);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+
+        std::string request = "POST /upload HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: chunked\r\n\r\n";
+        ASSERT_TRUE(client.sendText(request, kWaitTimeout));
+
+        // 分次发：每次发一块 16 字节，等处理器把上一块取走（最多等 200ms）再发下一块
+        for (std::size_t index = 0; index < kChunkCount; ++index)
+        {
+            if (!client.sendText("10\r\n" + std::string(kChunkBytes, 'x') + "\r\n", kWaitTimeout))
+            {
+                break; // 已被收口：后面不用再发了
+            }
+            static_cast<void>(waitForCondition(
+                    [&drainedByteCount, index]
+                    {
+                        return drainedByteCount.load(std::memory_order_acquire) >= (index + 1) * kChunkBytes;
+                    },
+                    std::chrono::milliseconds{200}));
+        }
+        static_cast<void>(client.sendText("0\r\n\r\n", kWaitTimeout));
+
+        std::string accumulated;
+        const bool isRejected = client.waitForText(accumulated, "413", kWaitTimeout) ||
+                                client.waitForClosure(accumulated, kWaitTimeout);
+        EXPECT_TRUE(isRejected) << "累计正文超过上限却没有被判越界，累计收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.find("bytes=" + std::to_string(kChunkBytes * kChunkCount)), std::string::npos)
+                << "累计正文超过上限却把整份正文都交给了处理器（判据又退回看当前缓冲了）：" << accumulated;
+    }
+
     TEST(HttpStreamingBody, DrainsUnreadBodyAndKeepsConnectionAlive)
     {
         constexpr std::size_t kTotalBytes = 32 * 1024;

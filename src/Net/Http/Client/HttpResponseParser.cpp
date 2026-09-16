@@ -148,6 +148,14 @@ namespace AsynGyanis::Net
 
     std::size_t HttpResponseParser::feed(const std::string_view raw)
     {
+        // 行长度闸门：取行路径有多处（状态行、头部行、块大小行…），把闸门放在入口一处就够——
+        // 行缓冲只在这里增长，一行永不含 CRLF 的字节流因此不会无界吃内存
+        if (kDefaultMaximumLineByteCount != 0 && m_lineBuffer.size() > kDefaultMaximumLineByteCount)
+        {
+            m_stage = Stage::Failed;
+            return 0;
+        }
+
         auto data = raw;
         const auto startSize = raw.size();
         while (!data.empty() && m_stage != Stage::Complete && m_stage != Stage::Failed)
@@ -232,6 +240,7 @@ namespace AsynGyanis::Net
                         // 随后那条真正响应的正文按分块解读
                         m_isChunked         = false;
                         m_isCloseDelimited  = false;
+                        m_headerBlockByteCount = 0;
                         m_expectedBodyBytes = 0;
                         m_chunkSize         = 0;
                         m_chunkPhase        = ChunkPhase::SizeLine;
@@ -297,6 +306,15 @@ namespace AsynGyanis::Net
                 } else
                 {
                     name = std::string(line);
+                }
+                m_headerBlockByteCount += name.size() + value.size();
+                if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() >= kDefaultMaximumHeaderCount) ||
+                    (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
+                {
+                    // 与正文上限同源：头部也是「对端说了算」的字节数，没有闸门就是让对方决定
+                    // 本端分配多少内存（正文早有 8 MiB 上限，头部此前一条都没有）
+                    m_stage = Stage::Failed;
+                    break;
                 }
                 m_result.headers.emplace_back(std::move(name), std::move(value));
                 break;
@@ -421,6 +439,7 @@ namespace AsynGyanis::Net
         m_expectedBodyBytes = 0;
         m_isChunked = false;
         m_isCloseDelimited = false;
+        m_headerBlockByteCount = 0;
         m_chunkPhase = ChunkPhase::SizeLine;
         m_chunkSize = 0;
     }

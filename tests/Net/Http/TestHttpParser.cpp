@@ -13,6 +13,8 @@
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/ParseStatus.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -660,4 +662,31 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(parser.isLimitExceeded());
         EXPECT_TRUE(containsText(parser.errorMessage(), "上限"));
     }
+    /**
+     * @brief Content-Length 的取值必须是不带符号、无空格、无后缀的纯十进制
+     * @details 这条共享规则是请求走私面的第一道闸：`12abc`（前缀解析会读成 12）、`+5`、
+     *          `" 5 "`（两侧空白）、超过 19 位（溢出）都必须拒。h1 与 h2 两侧都走它，
+     *          因此这里直接钉规则本身——此前只有「声明与实收不符」一类用例，规则改宽松了
+     *          一条用例都不会红
+     */
+    TEST(HttpHeaderRules, RejectsMalformedContentLengthValues)
+    {
+        std::size_t parsed = 0;
+
+        EXPECT_FALSE(parseContentLengthValue("12abc", parsed)) << "带后缀的取值被当成了 12";
+        EXPECT_FALSE(parseContentLengthValue("+5", parsed));
+        EXPECT_FALSE(parseContentLengthValue("-5", parsed));
+        EXPECT_FALSE(parseContentLengthValue("5 5", parsed)) << "中间夹空白不是十进制数";
+        EXPECT_FALSE(parseContentLengthValue("", parsed));
+        EXPECT_FALSE(parseContentLengthValue("99999999999999999999", parsed)) << "20 位数字应判越界而不是回绕";
+
+        EXPECT_TRUE(parseContentLengthValue("0", parsed)) << "0 是合法的正文长度（空正文）";
+        EXPECT_EQ(parsed, 0U);
+        EXPECT_TRUE(parseContentLengthValue("8192", parsed));
+        EXPECT_EQ(parsed, 8192U);
+        // 首尾 OWS 本就不属于字段值（RFC 9110 §5.5），规则先裁掉再判——两侧带空白的取值因此合法
+        EXPECT_TRUE(parseContentLengthValue(" 5 ", parsed)) << "字段值允许首尾 OWS";
+        EXPECT_EQ(parsed, 5U);
+    }
+
 } // namespace AsynGyanis::Net

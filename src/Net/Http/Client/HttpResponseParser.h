@@ -38,6 +38,16 @@ namespace AsynGyanis::Net
          */
         static constexpr std::size_t kDefaultMaximumBodySize = 8ull * 1024 * 1024;
 
+        /// 头部条数上限：与服务端请求解析器同档，防对端用无限头部把客户端顶爆
+        static constexpr std::size_t kDefaultMaximumHeaderCount = 100;
+
+        /// 头部块净字节上限（名 + 值，不含分隔与 CRLF）：与服务端同档
+        static constexpr std::size_t kDefaultMaximumHeaderBlockByteCount = 64ull * 1024;
+
+        /// 单行上限（状态行、头部行、分块大小行共用）：一行永不含 CRLF 的字节流会让行缓冲
+        /// 无界增长；闸门在 feed() 入口统一看行缓冲长度，越界即判失败
+        static constexpr std::size_t kDefaultMaximumLineByteCount = 8ull * 1024;
+
         /**
          * @brief 构造解析器
          * @param maximumBodySize 正文长度上限（字节，chunked 按解码后累计）；0 表示不限
@@ -83,6 +93,7 @@ namespace AsynGyanis::Net
         /// 上一次跨馈送取行把手里的视图交出去了：下一次取行时才能清暂存
         ///（交出去就清会让 std::string 在首字节写 NUL，调用方读到坏内容）
         bool             m_isLineHandedOut{false};
+        std::size_t      m_headerBlockByteCount{0}; ///< 已收头部块的净字节数（名 + 值）
         std::size_t      m_expectedBodyBytes{0};
         bool             m_isChunked{false};
         bool             m_isCloseDelimited{false};
