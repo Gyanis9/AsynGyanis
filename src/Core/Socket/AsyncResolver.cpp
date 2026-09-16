@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <memory>
+#include <atomic>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,12 +37,43 @@ namespace AsynGyanis::Core
             }
         };
 
+        /// 同时在跑的解析线程上限：解析要起线程去跑阻塞的 getaddrinfo，线程栈与内核调度都不免费，
+        /// 不设上限的话一次解析风暴能把进程线程数顶到系统限制。到顶之后的解析**如实失败**
+        /// （空地址列表）并留一条日志，而不是无限起线程
+        constexpr int kMaximumConcurrentResolutions = 256;
+
+        /// 当前在跑的解析线程数（进程级）
+        std::atomic<int> g_activeResolutionCount{0};
+
+        /**
+         * @brief 解析线程的计数守卫：线程函数无论怎么退出都把名额还回去
+         */
+        struct ResolutionSlotGuard
+        {
+            /// 占用一个名额
+            ResolutionSlotGuard() noexcept
+            {
+                g_activeResolutionCount.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            /// 归还名额
+            ~ResolutionSlotGuard()
+            {
+                g_activeResolutionCount.fetch_sub(1, std::memory_order_relaxed);
+            }
+
+            ResolutionSlotGuard(const ResolutionSlotGuard &) = delete;
+
+            ResolutionSlotGuard &operator=(const ResolutionSlotGuard &) = delete;
+        };
+
         /**
          * @brief 在后台线程执行阻塞的 getaddrinfo，完成后通过 postRemote 唤醒调用方协程
          */
         void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop,
                              std::shared_ptr<ResolveState> state)
         {
+            const ResolutionSlotGuard slotGuard;
             // Windows 上 getaddrinfo 需要 Winsock 已初始化
             const Platform::Socket::Initialization winsock;
             if (!winsock.isValid())
@@ -113,6 +145,13 @@ namespace AsynGyanis::Core
             bool await_suspend(const std::coroutine_handle<> handle) noexcept
             {
                 state->callerHandle.store(handle, std::memory_order_release);
+                // 并发上限：到顶了就按「解析失败（空列表）」就地收尾，并留一条可见的日志——
+                // 无限起线程会把进程线程数顶到系统限制，那比一次解析失败严重得多
+                if (g_activeResolutionCount.load(std::memory_order_relaxed) >= kMaximumConcurrentResolutions)
+                {
+                    LOG_WARN_FMT("AsyncResolver: 同时在跑的解析已达上限 {}，本次解析按失败返回空地址列表", kMaximumConcurrentResolutions);
+                    return false;
+                }
                 // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
                 // 结果保持空列表，按文档的「空列表表示解析失败」收尾
                 try
