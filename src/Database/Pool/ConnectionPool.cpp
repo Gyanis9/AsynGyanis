@@ -210,11 +210,17 @@ namespace AsynGyanis::Database
         // 已经交到手上、却来不及被取走的连接按「取出后立刻归还」结账：交接那一刻归还路径
         // 已经减过活跃计数，这次取出则从未被记上（记在 await_resume 里），因此先补记再归还。
         // 不结账的话池会永远少一个位置——连接随帧销毁，而总创建数不降、空闲栈也拿不回它，
-        // 反复丢弃几次之后所有 acquire 都会卡在「池已满」上直到超时
-        if (m_result)
+        // 反复丢弃几次之后所有 acquire 都会卡在「池已满」上直到超时。
+        // 判活与调用都在令牌锁内（与 PooledConnection::doReturnToPool 同一处置）：调用方可能
+        // 把这具帧留到池析构之后才销毁，那时碰池的记账就是释放后使用
+        if (m_result && m_liveness != nullptr)
         {
-            m_pool->m_activeCount.fetch_add(1);
-            m_pool->returnConnection(std::move(m_result));
+            const std::lock_guard livenessLock(m_liveness->mutex);
+            if (m_liveness->isAlive)
+            {
+                m_pool->m_activeCount.fetch_add(1);
+                m_pool->returnConnection(std::move(m_result));
+            }
         }
 
         // 票据里的句柄一并清空：池可能已经把「恢复这次等待」投回了事件循环（交接连接那一刻），

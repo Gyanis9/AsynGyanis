@@ -348,4 +348,44 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(reacquired) << "丢弃一次之后池再也取不出连接：配额被这次丢弃吃掉了";
     }
 
+    /**
+     * @brief 帧活过池的析构：销毁时不能再按归还结账（池已经没了），连接随帧关闭
+     * @details 归还动作要经存活令牌判活（与 PooledConnection::doReturnToPool 同一处置）：
+     *          只判「我等过、手里有连接」就去调池，池已析构时那是一次释放后使用
+     */
+    TEST(ConnectionPoolAsync, FrameOutlivingDestroyedPoolDoesNotTouchIt)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 1;
+
+        // 不启动的循环：交接只会把恢复动作排进它的队列，不会有人执行
+        Core::EventLoop loop;
+
+        // 帧比池活得久：池先析构，帧随后才销毁（Task 由用例自己持有）
+        std::unique_ptr<Core::Task<void>> driver;
+        AcquireProbe                      probe;
+        {
+            ConnectionPool pool(makeMockFactory(counter), configuration);
+
+            const PooledConnection occupying = pool.acquire();
+            ASSERT_TRUE(occupying);
+
+            driver = std::make_unique<Core::Task<void>>(probeAcquireAsync(pool, loop, probe));
+            driver->handle().resume(); // 池满：挂到等待列表
+            ASSERT_EQ(pool.waitingCount(), 1U);
+        } // occupying 先归还（连接转给等待者），pool 随后析构——连接此刻记在帧名下
+
+        // 帧销毁：手里的等待器不能再去碰已经析构的池，连接随帧一起关掉。
+        // 队列里那次恢复刻意还没执行（循环不推进），所以这一次销毁走的正是「既等过、
+        // 手里又有连接」的归还路径——池已停摆，这条路径必须原地收手
+        driver.reset();
+        EXPECT_EQ(counter.totalCreated.load(), 1);
+        EXPECT_EQ(counter.totalDestroyed.load(), 1) << "连接没有随帧销毁：归还路径踩到了已析构的池";
+
+        // 帧没了，队列里那次恢复此刻执行：票据句柄已随帧清空，它什么都不做
+        loop.scheduler().runAll();
+        EXPECT_FALSE(probe.finished.load(std::memory_order_acquire));
+    }
+
 } // namespace AsynGyanis::Database

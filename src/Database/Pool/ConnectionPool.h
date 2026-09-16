@@ -200,7 +200,7 @@ namespace AsynGyanis::Database
              * @param completionLoop 协程恢复时要回到的事件循环，由 acquireAsync() 的调用方给出
              */
             AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop) noexcept :
-                m_pool(pool), m_completionLoop(completionLoop)
+                m_pool(pool), m_completionLoop(completionLoop), m_liveness(pool->livenessToken())
             {
             }
 
@@ -251,6 +251,8 @@ namespace AsynGyanis::Database
             std::coroutine_handle<>             m_handle{nullptr}; ///< 等待协程的句柄（await_suspend 时保存）
             ConnectionPool *                    m_pool;            ///< 所属连接池
             Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
+            /// 池的存活令牌（构造时取）：析构里的归还动作要经它判活，见 ~AcquireAwaiter
+            std::shared_ptr<PoolLiveness>       m_liveness;
             std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
             /// 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
