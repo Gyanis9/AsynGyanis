@@ -1275,6 +1275,9 @@ namespace AsynGyanis::Net
     std::vector<HpackHeaderField> Http2Session::collectResponseHeaderFields(const HttpResponse &response)
     {
         std::vector<HpackHeaderField> headerFields;
+        // 常见情形下每条头名展开成一条，再加后面自动补齐的三条；可重复头（如 Set-Cookie）会多出几条，
+        // 那时也就多一次扩容，比从头开始反复搬移便宜
+        headerFields.reserve(response.headers().size() + 3U);
         bool hasContentTypeHeader = false;
         bool hasContentLengthHeader = false;
         bool hasDateHeader = false;
