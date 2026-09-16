@@ -369,9 +369,10 @@ namespace AsynGyanis::Net
             // 业务链的起始时刻：正常路径由看门狗判到期，这里只给「定时器不可用」的退化路径兜底
             const auto chainStartTimePoint = std::chrono::steady_clock::now();
 
-            Core::Task<> watchdogTask = detail::timeoutWatchdog(loop, request, timeout, state);
+            // 用 optional 持有：业务跑完之后直接销毁它（见下方收尾处），不必等它按分片醒来
+            std::optional<Core::Task<>> watchdogTask = detail::timeoutWatchdog(loop, request, timeout, state);
             // Core::Task 是惰性协程：只构造不会开跑，必须把句柄显式投给调度器
-            loop.scheduler().schedule(watchdogTask.handle());
+            loop.scheduler().schedule(watchdogTask->handle());
 
             // 业务链的异常先存起来：无论它正常返回还是抛出，都必须先把看门狗收干净再往上抛
             std::exception_ptr chainException = nullptr;
@@ -386,9 +387,20 @@ namespace AsynGyanis::Net
             // 置位结束标志：看门狗最迟在当前睡眠分片末尾看到它并正常完成
             state->isChainFinished = true;
 
-            // 回收看门狗协程帧。本中间件绝不带着未完成的子协程返回——
-            // 否则请求对象与响应对象都可能在协程余下的生命周期里被会话复用掉
-            co_await watchdogTask;
+            // 回收看门狗协程帧。两条路都不能带着未完成的子协程返回——否则请求对象与响应对象
+            // 都可能在协程余下的生命周期里被会话复用掉：
+            // @li 已经开跑（挂在定时器上或已结束）：**直接销毁**，不必等它自己按分片醒来
+            //     （最长 25ms，而此刻已经不需要它了）。销毁帧即停掉它挂着的定时器。
+            // @li 还没开跑：它的句柄仍在调度器的就绪队列里，销毁帧会让队列里留下一个悬空句柄
+            //     （实测 ASan 报 resume 未知地址）。这条路 co_await 它——它一被取出就会看到
+            //     结束标志并立刻返回，同样不会等满一个分片。
+            if (watchdogTask->handle().promise().m_isStarted)
+            {
+                watchdogTask.reset();
+            } else
+            {
+                co_await *watchdogTask;
+            }
 
             // 定时器申请不到描述符时看门狗根本没能跑起来，退化成「事后按实际耗时判超时」：
             // 至少不会悄悄丢掉超时语义；两条判据互斥，正常路径只走前者
