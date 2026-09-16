@@ -14,7 +14,7 @@
 
 #include <cstdint>
 #include <memory>
-#include <string_view>
+#include <string>
 
 namespace AsynGyanis::Core
 {
@@ -42,7 +42,9 @@ namespace AsynGyanis::Net
          *         所有地址都连不上时返回 nullptr
          * @note 本版本没有应用层连接超时，超时由内核 tcp_syn_retries 控制；
          *       需要精确超时的场景将在 HTTP 客户端层补充
+         * @note host 按值取 std::string 而不是视图：本函数是惰性 Task，帧体要等 co_await 才跑，
+         *       中间隔着「发起到等待」这一步——视图参数在那时早已悬垂
          */
-        static Core::Task<std::unique_ptr<TcpStream>> connect(Core::EventLoop &loop, std::string_view host, uint16_t port);
+        static Core::Task<std::unique_ptr<TcpStream>> connect(Core::EventLoop &loop, std::string host, uint16_t port);
     };
 } // namespace AsynGyanis::Net

@@ -10,15 +10,15 @@
 
 namespace AsynGyanis::Net
 {
-    Core::Task<std::unique_ptr<TcpStream>> TcpClient::connect(Core::EventLoop &loop, const std::string_view host, const uint16_t port)
+    Core::Task<std::unique_ptr<TcpStream>> TcpClient::connect(Core::EventLoop &loop, std::string host, const uint16_t port)
     {
         if (host.empty())
         {
             co_return nullptr;
         }
 
-        // 第一步：异步解析主机名
-        const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, host, port);
+        // 第一步：异步解析主机名（host 移进解析器那一帧，本帧此后不再读它）
+        const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, std::move(host), port);
         if (addresses.empty())
         {
             co_return nullptr;
