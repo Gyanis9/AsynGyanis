@@ -32,6 +32,10 @@ namespace AsynGyanis::Net
      * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
      * @return std::string 可直接作为 200 响应正文的文本，以换行结尾
      * @note 行序固定（计数器、状态码分类、直方图、WebSocket、HTTP/2），便于人眼比对两次抓取
+     * @warning **本快照只覆盖 HTTP/1.1 与 HTTP/2 那条服务路径，不含 HTTP/3（QUIC）**：h3 由
+     *          独立的 QuicServer 服务，会话本身不向采集端计数。只跑 h3 的部署抓这个端点会看到
+     *          全零——那不是「没有流量」，而是这套指标还没接上 h3。h3 流的在途字节另由 QUIC
+     *          自身的流量控制窗口约束（见 QuicServer::Configuration 的 initial_max_* 设置）
      * @see HttpServer::enableMetricsEndpoint(), HttpServerStats
      */
     [[nodiscard]] std::string formatPrometheusMetrics(const HttpServerStats &stats, std::string_view metricNamePrefix);

@@ -211,6 +211,9 @@ namespace AsynGyanis::Net
          *
          * @details 指标内容见 HttpMetricsEndpoint.h：计数器、状态码分类、耗时直方图、WebSocket 与
          *          HTTP/2 的专项计数，都是本服务器实例自己的口径。
+         * @warning **不含 HTTP/3**：h3 由独立的 QuicServer 服务，不向本服务器的采集端计数——
+         *          只跑 h3 的部署抓这个端点会看到全零。需要 h3 观测请另行采集（见
+         *          HttpMetricsEndpoint.h 中 formatPrometheusMetrics 的说明）
          *
          * @param path 端点路径，必须以 `/` 开头；默认 `/metrics`
          * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
