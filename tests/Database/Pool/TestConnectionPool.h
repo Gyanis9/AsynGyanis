@@ -36,6 +36,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         std::atomic<std::int64_t> totalCreated{0};   ///< 累计创建的连接数
         std::atomic<std::int64_t> totalDestroyed{0};  ///< 累计销毁的连接数
         std::atomic<std::int64_t> healthCheckCount{0}; ///< isConnected() 调用次数
+        std::atomic<std::int64_t> sessionResetCount{0}; ///< resetSessionState() 调用次数（会话状态复位钩子）
     };
 
     /**
@@ -95,6 +96,12 @@ namespace AsynGyanis::Database::TestPoolSupport
         {
             m_counter->healthCheckCount.fetch_add(1);
             return m_healthOk && m_isConnected;
+        }
+
+        /// 归还路径上的会话状态复位：用例据此断言池在两条去向（空闲栈/等待者）之前都调过它
+        void resetSessionState() noexcept override
+        {
+            m_counter->sessionResetCount.fetch_add(1);
         }
 
         /**

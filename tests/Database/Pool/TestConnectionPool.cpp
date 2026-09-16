@@ -422,5 +422,60 @@ namespace AsynGyanis::Database
             EXPECT_FALSE(another) << "移动赋值后源应为空";
         }
 
+        // ========================================================================
+        // ResetSessionStateIsCalledOnReturn
+        // ========================================================================
+
+        /**
+         * @brief 钉住：归还连接时池会复位会话状态，且两条去向都复位
+         * @details 会话级状态（Redis 的未发送管道、临时表……）不能串给下一个借用者。
+         *          池有两条交接路径——放回空闲栈、直接交给异步等待者——两条都必须先复位
+         */
+        TEST(ConnectionPool, ResetsSessionStateOnBothReturnPaths)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize = 1;
+
+            ConnectionPool pool(factory, configuration);
+
+            // 路径一：归还进空闲栈
+            {
+                PooledConnection connection = pool.acquire();
+                ASSERT_TRUE(connection);
+                EXPECT_EQ(counter.sessionResetCount.load(), 0) << "还没归还就不该复位";
+            }
+            EXPECT_EQ(counter.sessionResetCount.load(), 1) << "归还进空闲栈之前必须复位一次";
+
+            // 路径二：归还时正有等待者，连接直接转给它（不入空闲栈）
+            PooledConnection held = pool.acquire();
+            ASSERT_TRUE(held);
+
+            std::atomic<bool> waiterFinished{false};
+            PooledConnection  assignedToWaiter;
+            std::thread       waiter([&pool, &assignedToWaiter, &waiterFinished]()
+            {
+                assignedToWaiter = pool.acquire(); // 池满：阻塞等待
+                waiterFinished.store(true, std::memory_order_release);
+            });
+
+            // 等它真的挂在等待列表上再归还，保证走的是「直接交给等待者」那条路
+            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            ASSERT_EQ(pool.waitingCount(), 1U) << "等待者没有挂上：用例前提不成立";
+
+            held.release();
+            waiter.join();
+
+            EXPECT_TRUE(waiterFinished.load(std::memory_order_acquire));
+            EXPECT_TRUE(assignedToWaiter) << "等待者应当拿到刚归还的连接";
+            EXPECT_EQ(counter.sessionResetCount.load(), 2) << "交给等待者之前同样必须复位";
+        }
+
     } // namespace
 } // namespace AsynGyanis::Database

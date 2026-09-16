@@ -68,6 +68,18 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual bool isConnected() const = 0;
 
         /**
+         * @brief 归还连接池时的会话状态复位（默认什么都不做）
+         * @details 池在把连接放回空闲栈**或直接交给等待者**之前调用一次。会话级状态（未发送的
+         *          管道缓冲、临时表、未提交的事务……）必须在这里清掉，否则会串给下一个借用者：
+         *          Redis 的管道缓冲就是活例子——残留命令会被下一个借用者的 flushPipeline() 代发，
+         *          回复按下标错位且毫无报错
+         * @note 不得抛异常（池的归还路径不处理异常），实现必须是幂等的
+         */
+        virtual void resetSessionState() noexcept
+        {
+        }
+
+        /**
          * @brief 执行数据库命令（SQL 语句或 Redis 命令）
          * @param command 命令文本
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()

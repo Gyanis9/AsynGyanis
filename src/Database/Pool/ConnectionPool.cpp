@@ -313,6 +313,10 @@ namespace AsynGyanis::Database
             return; // 空连接直接忽略
         }
 
+        // 会话状态复位必须早于「放回空闲栈」与「直接交给等待者」两条去向：
+        // 上一个借用者留下的会话级状态（Redis 的未发送管道、临时表等）不能串给下一个借用者
+        connection->resetSessionState();
+
         // ---- 健康检查 ----
         if (!isConnectionHealthy(connection.get()))
         {

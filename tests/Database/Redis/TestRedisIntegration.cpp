@@ -448,6 +448,25 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(m_connection->lastError().empty());
     }
 
+    TEST_F(RedisIntegrationTest, ResetSessionStateDiscardsPendingPipelineCommands)
+    {
+        const std::string key = makeKey("reset-session");
+
+        // 登记一条管道命令但**不 flush**：这正是「借了连接没写完就还回去」的形态
+        ASSERT_TRUE(m_connection->pipelineCommand("SET " + key + " must-not-be-sent"));
+
+        // 归还路径上的会话复位（池在归还时统一调它）：残留命令必须被丢掉
+        m_connection->resetSessionState();
+
+        const std::vector<std::unique_ptr<DatabaseResult>> replies = m_connection->flushPipeline();
+        EXPECT_TRUE(replies.empty()) << "复位之后仍有命令被发出：残留管道会串给下一个借用者";
+
+        // 反向确认：那条命令确实没到服务端（EXISTS 回 0）
+        const std::optional<DatabaseValue> existsValue = runScalar({"EXISTS", key});
+        ASSERT_TRUE(existsValue.has_value());
+        EXPECT_EQ(std::get<std::int64_t>(*existsValue), 0) << "被丢弃的管道命令却在服务端生效了";
+    }
+
     TEST_F(RedisIntegrationTest, ConfiguredKeyspaceIsSelectedOnConnect)
     {
         const std::string key = makeKey("keyspace");

@@ -148,6 +148,14 @@ namespace AsynGyanis::Database
         bool pipelineCommand(std::string_view command);
 
         /**
+         * @brief 归还连接池时丢掉未发送的管道命令
+         * @details 管道是「登记到 flush 之间」的会话状态：上一个借用者没 flush 就归还时，
+         *          残留命令会被下一个借用者的 flushPipeline() 代发，回复按下标错位且毫无报错。
+         *          池在归还时统一调用本方法（见 DatabaseConnection::resetSessionState）
+         */
+        void resetSessionState() noexcept override;
+
+        /**
          * @brief 一次性发送全部已登记的管道命令并读回回复
          * @details 先逐条 append（此时才开始发送），再按已发出的条数读回复，因此返回顺序与登记顺序严格
          *          一致；返回的元素永不为 nullptr。服务端 error 回复被原样封装成 RedisResult 返回，由调用方
