@@ -443,9 +443,21 @@ namespace AsynGyanis::Net
             bool wasTerminatedByReset{false};                                 ///< 终止方式：true 表示 RST_STREAM（任一端），false 表示双向 END_STREAM
             std::int64_t sendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端可发送的流级窗口，可为负（§6.9.2 要求允许并等 WINDOW_UPDATE 救回来）
             std::string pendingData;                                          ///< 窗口不足时排队的正文
+            /// 已交给对端的前缀长度（游标语义）：出帧后只推进游标，不整段搬移缓冲；
+            /// 前缀攒够一定量才整段压缩一次，均摊下来出帧是 O(1)
+            std::size_t pendingDataOffset{0};
             bool isEndStreamPending{false};                                   ///< 队列排空后是否还要补一个 END_STREAM
             std::int64_t receiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的流级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
             std::size_t pendingReceiveCreditByteCount{0};                     ///< 已消费、还没用 WINDOW_UPDATE 还回去的字节数
+
+            /**
+             * @brief 队列里还有没发出去的正文吗
+             * @return true 游标之后仍有字节
+             */
+            [[nodiscard]] bool hasPendingData() const noexcept
+            {
+                return pendingDataOffset < pendingData.size();
+            }
         };
 
         /**
