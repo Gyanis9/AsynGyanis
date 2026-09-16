@@ -69,10 +69,11 @@ namespace AsynGyanis::Core
             return;
         }
 
-        // 注册只建立归属关系，顺手带上可读方向的一次性探测：可读要等真有数据才可能就绪，
+        // 注册只建立归属关系，顺手带上可读方向的关注：可读要等真有数据才可能就绪，
         // 因此最多产生一次无害的探测事件；而可写几乎长期为真，提前武装它只会在没人等待时
-        // 交付一份陈旧的可写就绪（例如套接字刚创建、还没 connect 就被判成「可写」）
-        if (!m_loop->epoll().addFileDescriptor(m_fileDescriptor, EPOLLIN | EPOLLONESHOT, this))
+        // 交付一份陈旧的可写就绪（例如套接字刚创建、还没 connect 就被判成「可写」）。
+        // 水平触发下这次关注会一直有效，直到本类显式改掩码（见 armEvents）
+        if (!m_loop->epoll().addFileDescriptor(m_fileDescriptor, EPOLLIN, this))
         {
             throw Base::SystemException("把文件描述符注册到 epoll 失败（该描述符可能已被另一个 "
                                         "IoWatcher 注册，或不是有效的描述符）");
@@ -145,9 +146,9 @@ namespace AsynGyanis::Core
 
     void IoWatcher::handleEvents(const std::uint32_t events) noexcept
     {
-        // 本次上报已经消耗掉上一次的一次性关注：账本同步归零，随后按实际仍在等待的方向补武装
-        m_armedEvents = 0;
-
+        // 水平触发：这次上报不消耗关注位（不再有 ONESHOT 的一发即消），账本因此保持不动。
+        // 只有「没有人等的方向」必须收掉——内核会一轮一轮重复上报同一个就绪，
+        // 收不掉就是 epoll_wait 全速空转
         // 错误与挂断同时算作可读与可写：让上层的 recv/send 自己去拿真实错误。
         // 在这里吞掉它们会把「对端已关闭」变成一次静默的无事发生，而读侧正需要靠
         // 那一次可读把 recv 走到 0（EOF）
@@ -155,7 +156,10 @@ namespace AsynGyanis::Core
         const bool isWritable = (events & (EPOLLOUT | EPOLLERR | EPOLLHUP)) != 0;
 
         // 就绪要么当场交给等待者、要么留给下一次等待，二者只能其一：
-        // 两边都给会让「交出去的那次等待」之后还残留一个标记，后续等待遂空转重试
+        // 两边都给会让「交出去的那次等待」之后还残留一个标记，后续等待遂空转重试。
+        // 先记下「本次上报时谁在等」：掩码收敛要用它区分「刚被唤醒」与「本来就没人等」
+        const bool hadReadWaiter  = m_readWaiter.handle != nullptr;
+        const bool hadWriteWaiter = m_writeWaiter.handle != nullptr;
         std::coroutine_handle<> resumableRead =
             isReadable ? takeWaiter(EPOLLIN, true) : std::coroutine_handle<>();
         std::coroutine_handle<> resumableWrite =
@@ -170,12 +174,22 @@ namespace AsynGyanis::Core
             m_readyEvents |= EPOLLOUT;
         }
 
-        // 仍在等待的方向要补一次武装（本次上报已消耗掉上一次的一次性关注）。
-        // 必须在恢复协程之前做：恢复之后本对象可能已被销毁。
-        // 武装不上意味着描述符已失效：那些等待者再也不会被唤醒，一并按「未就绪」收尾
-        const std::uint32_t stillWaited =
+        // 掩码收敛到「谁在等」的形状，但刚被唤醒的方向保持武装：它多半马上会再次等待
+        //（keep-alive 的读写循环），保持武装就省下了「先收掉、再武装」两次 epoll_ctl。
+        // 而「本次上报时本来就没有等待者」的方向必须收掉——它没有任何人会领走后续上报，
+        // 尤其可写几乎长期为真，留着就是 epoll_wait 全速空转。
+        // 必须在恢复协程之前做：恢复之后本对象可能已被销毁
+        std::uint32_t wanted =
                 (m_readWaiter.handle ? EPOLLIN : 0U) | (m_writeWaiter.handle ? EPOLLOUT : 0U);
-        if (stillWaited != 0 && !armEvents(stillWaited))
+        if (hadReadWaiter && isReadable)
+        {
+            wanted |= EPOLLIN;
+        }
+        if (hadWriteWaiter && isWritable)
+        {
+            wanted |= EPOLLOUT;
+        }
+        if (wanted != m_armedEvents && !armEvents(wanted))
         {
             if (!resumableRead)
             {
@@ -261,15 +275,16 @@ namespace AsynGyanis::Core
 
     bool IoWatcher::armEvents(const std::uint32_t events) noexcept
     {
-        if (events == 0 || events == m_armedEvents)
+        if (events == m_armedEvents)
         {
-            // 没有要关注的，或已经按当前需要武装着：不动内核状态，也就没有 epoll_ctl
+            // 内核状态已经就是要的形状：不动它。水平触发下这一步就是省下来的那次 epoll_ctl——
+            // 一次就绪上报不再需要重新武装，只有「谁在等」发生变化时才改掩码
             return true;
         }
 
-        // EPOLLONESHOT：一次上报之后内核自动解除武装，这正是「关注位只在等待期间存在」所需的语义。
-        // 少了它，水平触发下长期为真的关注位会被反复上报，而那时可能已经没有等待者了
-        if (!m_loop->epoll().modFileDescriptor(m_fileDescriptor, events | EPOLLONESHOT, this))
+        // 掩码为 0 同样要落一次 mod：水平触发下「不关注」必须显式写进内核，
+        // 否则长期为真的关注位（如可写）会在没人等待时被反复上报
+        if (!m_loop->epoll().modFileDescriptor(m_fileDescriptor, events, this))
         {
             m_armedEvents = 0;
             return false;
