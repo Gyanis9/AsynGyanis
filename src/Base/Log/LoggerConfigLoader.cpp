@@ -108,17 +108,29 @@ namespace AsynGyanis::Base
 
     void LoggerConfigLoader::applyLoggerConfig(Logger &logger, const ConfigValue &loggerConfiguration, const std::filesystem::path &baseDirectory)
     {
-        logger.clearSinks();
-
-        if (loggerConfiguration.contains("level"))
+        // 先把取值形态校验完再动 sink：类型不符时当场诊断并保留原有 sink，否则「清空之后抛异常」
+        // 会让这个 logger 此后静默丢日志，而那个异常类型还没写在契约里
+        const auto levelText     = configValueAt<std::string>(loggerConfiguration, "level");
+        const auto sinksArrayOpt = configValueAt<ConfigArray>(loggerConfiguration, "sinks");
+        if (loggerConfiguration.contains("level") && !levelText.has_value())
         {
-            const auto levelString = loggerConfiguration.at("level").get<std::string>();
-            logger.setLevel(logLevelFromString(levelString));
+            std::cerr << "LoggerConfig：logger 的 level 不是字符串，已忽略该字段" << '\n';
+        }
+        if (loggerConfiguration.contains("sinks") && !sinksArrayOpt.has_value())
+        {
+            std::cerr << "LoggerConfig：logger 的 sinks 不是列表（YAML 里每条前要加 '-'），已忽略该字段" << '\n';
         }
 
-        if (loggerConfiguration.contains("sinks"))
+        logger.clearSinks();
+
+        if (levelText.has_value())
         {
-            for (const auto &sinksArray = loggerConfiguration.at("sinks").get<ConfigArray>(); const auto &sinkConfiguration: sinksArray)
+            logger.setLevel(logLevelFromString(*levelText));
+        }
+
+        if (sinksArrayOpt.has_value())
+        {
+            for (const auto &sinkConfiguration: *sinksArrayOpt)
             {
                 if (auto sink = createSinkFromConfig(sinkConfiguration, baseDirectory))
                 {
@@ -273,8 +285,14 @@ namespace AsynGyanis::Base
 
         if (sink && sinkConfiguration.contains("level"))
         {
-            const auto levelString = sinkConfiguration.at("level").get<std::string>();
-            sink->setLevel(logLevelFromString(levelString));
+            // 与上面同口径：形态不符只诊断并忽略，不让未声明的异常逃出配置加载
+            if (const auto sinkLevelText = configValueAt<std::string>(sinkConfiguration, "level"); sinkLevelText.has_value())
+            {
+                sink->setLevel(logLevelFromString(*sinkLevelText));
+            } else
+            {
+                std::cerr << "LoggerConfig：sink 的 level 不是字符串，已忽略该字段" << '\n';
+            }
         }
 
         return sink;
