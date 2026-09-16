@@ -591,6 +591,19 @@ namespace AsynGyanis::Net
                                         || pending.isBudgetExceeded;
             if (!isReadyToServe)
             {
+                // 对端可能已经 RST 掉了这条流（头收齐、正文没收完就取消）：那样的请求再也不会
+                // 变成「可服务」，留着它既占着请求头与已收正文，又让「有待办就不算空闲」的判据
+                // 一直为真（空闲超时随之失效）。按流已关闭清掉，并计入单流取消
+                Http2StreamState streamState{};
+                if (!m_connection.tryGetStreamState(it->first, streamState) || streamState == Http2StreamState::Closed)
+                {
+                    if (m_metrics != nullptr)
+                    {
+                        m_metrics->countStreamCancelled();
+                    }
+                    it = m_pendingRequests.erase(it);
+                    continue;
+                }
                 ++it;
                 continue;
             }
