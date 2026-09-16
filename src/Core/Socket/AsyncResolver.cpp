@@ -121,7 +121,7 @@ namespace AsynGyanis::Core
         }
     } // namespace
 
-    Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, const std::string_view host, const uint16_t port)
+    Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, std::string host, const uint16_t port)
     {
         if (host.empty())
         {
@@ -176,7 +176,7 @@ namespace AsynGyanis::Core
             }
         };
 
-        co_await ResolveAwaiter{loop, std::string(host), port, state};
+        co_await ResolveAwaiter{loop, std::move(host), port, state};
         co_return std::move(state->addresses);
     }
 } // namespace AsynGyanis::Core

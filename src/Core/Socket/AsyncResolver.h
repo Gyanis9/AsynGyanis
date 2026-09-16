@@ -14,7 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
+#include <string>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -45,7 +45,10 @@ namespace AsynGyanis::Core
          * @param port 端口号（主机字节序）
          * @return Task<std::vector<InetAddress>> 按地址族分组的地址列表（IPv4 在前、IPv6 在后），
          *         空列表表示解析失败或主机名为空
+         * @note host 按值取 std::string 而不是视图：本函数是惰性 Task，帧体要等 co_await 才跑，
+         *       中间隔着「发起到等待」这一步——视图参数在那时早已悬垂（`auto task = resolve(loop,
+         *       临时串, 80); co_await task;` 这种两步写法尤其明显）
          */
-        static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string_view host, uint16_t port);
+        static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port);
     };
 } // namespace AsynGyanis::Core
