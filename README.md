@@ -1,29 +1,35 @@
 # AsynGyanis
 
-> 基于 C++20 协程与 epoll/wepoll 边缘触发的跨平台异步服务器引擎 —— 网络（TCP / HTTP / HTTPS）、数据库（ORM / 连接池 / 三方驱动）与原生格式库（nlohmann_json / yaml-cpp）
+> 基于 C++20 协程与水平触发事件循环（Linux epoll / Windows 完成端口 / 可选 io_uring）的跨平台异步服务器引擎 —— 网络（TCP / HTTP/1.1 / HTTP/2 / HTTP/3 / WebSocket / QUIC）、数据库（ORM / 连接池 / 三方驱动）与原生格式库（nlohmann_json / yaml-cpp）
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](https://en.cppreference.com/w/cpp/20)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-1944-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-2031-brightgreen)]()
 
 ## 特性
 
 **运行时（Core）**
 
-- **epoll / wepoll 边缘触发 I/O** — 统一事件循环；Linux 用 epoll，Windows 用 vendored 的 wepoll，两边语义一致
+- **三后端统一事件循环** — Linux epoll、Windows 完成端口（IOCP，完成通知翻译成 epoll 事件位）、Linux 可选 io_uring（`ASYN_WITH_IO_URING`）；语义一律水平触发 + 按需摘除关注位
 - **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起与恢复；等待描述符就绪、定时到期、跨线程投递都是可等待对象
 - **每线程一个事件循环** — `IoContext` 持有 `ThreadPool`，每个工作线程绑定独立的 `EventLoop`
 - **两级就绪队列调度** — `Scheduler` 本地队列 + 全局队列，跨线程投递按归属循环投递
 - **协作式取消与优雅启停** — `std::stop_token` 贯穿，`stop()` 后各线程收敛退出
+- **多进程 worker** — `WorkerSupervisor` 拉起 N 个 worker 同端口服务、崩溃即补位；进程间不共享状态
 - **TLS** — 基于 OpenSSL 的非阻塞 `SSL_read` / `SSL_write` 与事件循环集成
-- **自研内存与缓冲** — 协程帧内存池（`CoroutinePool`，重载 `operator new` 接入 `Task`）
+- **自研内存与缓冲** — 协程帧内存池（`CoroutinePool`，重载 `operator new` 接入 `Task`）；可选 mimalloc 接管全局分配（`ASYN_WITH_MIMALLOC`）
 
 **网络（Net）**
 
 - **HTTP/1.1** — 手写增量解析器（含资源上限与分块编码）、Keep-Alive 持久连接
-- **HTTPS** — TLS 握手 + HTTP over TLS
+- **HTTPS** — TLS 握手 + ALPN 协商（h2 / http/1.1）、mTLS、证书热轮换
+- **HTTP/2** — RFC 9113 帧与连接状态机、自研 HPACK（含 Huffman）、接收窗口流控、流式响应、GOAWAY；h2c 明文与 RFC 8441 扩展 CONNECT 隧道
+- **HTTP/3 + QUIC** — ngtcp2 传输层（连接标识路由、迁移、流控）+ nghttp3 会话（QPACK、流式正文、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
+- **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692）；h1 升级与 h2/h3 隧道共用协商
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型
+- **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）与 `/healthz` 内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
+- **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
@@ -49,28 +55,15 @@
 
 模块分层与依赖方向（箭头表示「依赖」）：
 
-```
-                 samples（示例程序）
-                        │
-   ┌────────────────────┼────────────────────┐
-   │                    │                    │
-  Net ────── Core ─── Database ──────────  Base
-   │         │            │                  │
-   └─────────┴────────────┴──────► Platform ◄┘
-                                  （唯一允许直接触碰 OS 的模块）
-```
-
 | 模块 | 库 | 依赖 | 职责 |
 |------|----|------|------|
-| `Platform` | `libPlatform.a` | — | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
+| `Platform` | `libPlatform.a` | Threads（Windows 另加 ws2_32 / Mswsock） | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
 | `Base` | `libBase.a` | Platform, nlohmann_json, yaml-cpp | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
-| `Core` | `libCore.a` | Platform, Base, OpenSSL | 事件循环、协程运行时、socket、TLS |
-| `Net` | `libNet.a` | Core, llhttp | TCP 服务基类、HTTP/HTTPS 服务、路由与中间件 |
-| `Database` | `libDatabase.a` | Core, sqlite3, hiredis, libmysqlclient | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
+| `Core` | `libCore.a` | Platform, Base, OpenSSL（可选 mimalloc） | 事件循环、协程运行时、socket、TLS、多进程编排 |
+| `Net` | `libNet.a` | Core, OpenSSL, ngtcp2（vendored）；私有 nghttp3 / zlib / zstd / brotli | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件 |
+| `Database` | `libDatabase.a` | Core, Base, Platform, sqlite3；可选 libmysqlclient / hiredis | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
 
 模块内的子目录（如 `Base/Log/Sinks`、`Core/EventLoop`）**不引入新的命名空间**：命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。
-
-> `asserts/` 下的 5 张架构图绘于重构之前，与当前模块划分（尤其是新增的 `Database`、Core 的四目录拆分、`Base/Format` 已整体移除）已不一致，**待重绘**；上表是当前状态的准确描述。
 
 ## 快速开始
 
@@ -78,7 +71,7 @@
 
 - **CMake** ≥ 3.20、**Conan** ≥ 2.0
 - **编译器**：MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++20 协程）
-- **系统**：Windows ≥ 10 或 Linux（依赖 epoll；Windows 侧由 vendored wepoll 提供等价能力）
+- **系统**：Windows ≥ 10 或 Linux（事件后端：Linux epoll、Windows 完成端口；Linux 另可用 `ASYN_WITH_IO_URING` 换 io_uring，需内核 5.6+）
 
 第三方依赖由 `conan_provider.cmake` 在 CMake 配置阶段自动安装（`conan install --build=missing`），无需手工执行。
 
@@ -136,8 +129,12 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 ```bash
 ./build/debug/samples/echo_server --port 8080 --threads 4                 # HTTP
 ./build/debug/samples/echo_server --https --cert cert.pem --key key.pem   # HTTPS
+# 同一个端口号的 UDP 上再提供 HTTP/3（QUIC 自带 TLS，故需与 --https 同用）
+./build/debug/samples/echo_server --https --cert cert.pem --key key.pem --h3
 # 一个监听器 + N 个工作循环，靠用户态分发而非 SO_REUSEPORT（Windows 多线程请用这个）
 ./build/debug/samples/echo_server --port 8080 --threads 4 --dispatch-accept
+# N 个 worker 进程服务同一个端口，崩溃即补位（进程间不共享状态）
+./build/debug/samples/echo_server --port 8080 --workers 4
 ./build/debug/samples/echo_server --help                                  # 全部参数
 ```
 
@@ -317,17 +314,23 @@ LOG_INFO_FMT("listening on port {}", port);
 
 | 子目录 | 内容 |
 |--------|------|
-| `EventLoop/` | `IoContext`（运行时入口）、`EventLoop`、`Epoll`（wepoll 后端）、`EpollAwaiter`、`Timer` |
+| `EventLoop/` | `IoContext`（运行时入口）、`EventLoop`、`IoWatcher`、`TimerQueue` / `Timer`、三后端 `Epoll`（Linux）/ `Iocp`（Windows）/ `Uring`（可选）、`ConnectionDistributor`（接受分发） |
 | `Coroutine/` | `Task<T>`、`Scheduler`（本地队列 + 全局队列）、`ThreadPool`、`CoroutinePool`、`Cancelable` |
-| `Socket/` | `AsyncSocket`、`VectoredSendCursor`、`InetAddress`、`Connection`、`ConnectionManager` |
+| `Socket/` | `AsyncSocket`、`AsyncUdpSocket`、`AsyncResolver`、`VectoredSendCursor`、`InetAddress`、`Connection`、`ConnectionManager` |
 | `Tls/` | `TlsContext`、`TlsSocket` |
+| `Process/` | `WorkerSupervisor`（多进程 worker 的启停与看护） |
+| `Exception/` | Core 侧异常类型 |
 
 ### Net — 网络应用层（`libNet.a`）
 
 | 子目录 | 内容 |
 |--------|------|
 | `Tcp/` | `TcpAcceptor`（`SO_REUSEPORT` 监听）、`TcpStream`（`readExact` / `readUntil` / `writeAll`）、`TcpServer` |
-| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（llhttp）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsSession` / `HttpsServer`、`FileSender`（静态文件） |
+| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsSession` / `HttpsServer`、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient` 与响应解析器） |
+| `Http2/` | `Http2Session` / `Http2Connection`、`Http2Frame`、`Hpack`（含 Huffman） |
+| `Http3/` | `Http3Session`（nghttp3 会话，含 RFC 9220 隧道） |
+| `Quic/` | `QuicServer`（数据报路由与连接表）、`QuicConnection`（ngtcp2 传输） |
+| `WebSocket/` | `WebSocketHandshake` / `WebSocketFrame` / `WebSocketPeer`、`WebSocketUtf8`、`PerMessageDeflate` |
 
 ### Database — 数据访问（`libDatabase.a`）
 
@@ -343,18 +346,21 @@ LOG_INFO_FMT("listening on port {}", port);
 
 ```
 AsynGyanis/
-├── CMakeLists.txt          # 顶层：C++20 设置 + sanitizer 开关 + add_subdirectory
+├── CMakeLists.txt          # 顶层：C++20 设置 + sanitizer / mimalloc / io_uring 开关 + add_subdirectory
 ├── CMakePresets.json       # debug / release 预设（debug 带 AddressSanitizer）
 ├── conanfile.py            # 依赖清单由 conandata.yml 驱动
 ├── conandata.yml           # 第三方依赖与版本
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
 ├── samples/                # echo_server（随构建编译，示例即被验证）
-├── asserts/                # 架构图（绘于重构前，待重绘）
+├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
+├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
+├── scripts/                # 发布版本一致性门禁、HTTP/3 真机验收脚本
+├── third_party/ngtcp2/     # vendored 的 QUIC 传输层（随仓库构建）
 ├── src/
-│   ├── Platform/           # 平台底层（OS 调用的唯一出处）
+│   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
 │   ├── Base/               # Config / Exception / Log
-│   ├── Core/               # Coroutine / EventLoop / Socket / Tls
-│   ├── Net/                # Tcp / Http
+│   ├── Core/               # Coroutine / EventLoop / Socket / Tls / Process / Exception
+│   ├── Net/                # Tcp / Http / Http2 / Http3 / Quic / WebSocket
 │   └── Database/           # Common / Dialect / Pool / Queryable / Sqlite / MySql / Redis
 └── tests/                  # 与 src 逐级对齐的 GoogleTest 测试
 ```
@@ -365,10 +371,13 @@ AsynGyanis/
 |----|------|------|
 | [nlohmann_json](https://github.com/nlohmann/json) | 3.12.0 | JSON 值模型与解析/序列化（Base 公开接口） |
 | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 解析（配置加载） |
-| [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS |
+| [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS，兼作 QUIC 的加密胶水 |
+| [ngtcp2](https://github.com/ngtcp2/ngtcp2) | 1.25.0（vendored） | QUIC 传输层（`third_party/ngtcp2` 随仓库构建） |
+| [nghttp3](https://github.com/ngtcp2/nghttp3) | 1.12.0 | HTTP/3 帧与 QPACK |
+| [zlib](https://zlib.net/) / [zstd](https://facebook.github.io/zstd/) / [brotli](https://github.com/google/brotli) | 1.3.1 / 1.5.7 / 1.1.0 | 响应正文与 WebSocket 压缩 |
+| [mimalloc](https://microsoft.github.io/mimalloc/) | 3.5.1 | 可选全局分配器（`ASYN_WITH_MIMALLOC`） |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | 单元测试 |
 | [SQLite3](https://www.sqlite.org/) | 3.51.3 | 嵌入式数据库驱动 |
-| [llhttp](https://github.com/nodejs/llhttp) | 9.3.0 | HTTP/1.1 解析 |
 | [hiredis](https://github.com/redis/hiredis) | 1.3.0 | Redis 客户端 |
 | [libmysqlclient](https://dev.mysql.com/doc/c-api/) | 8.1.0 | MySQL 客户端 |
 
@@ -380,9 +389,9 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**1944 个用例**（其中 34 个是真机门控用例，无凭据即 SKIP）
+- 当前规模：**2031 个用例**（其中 36 个是真机门控用例，无凭据即 SKIP）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
-- 真机套件：MySQL 21 例、Redis 13 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
+- 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
 ## 编码规范
 
