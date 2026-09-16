@@ -346,6 +346,9 @@ namespace AsynGyanis::Net
             // 定时器驱动的 flush 里签发的那些，对端随后用它们发的报文会被整包丢掉
             m_connectionsByAliasConnectionId.insert_or_assign(
                     std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()), &connection);
+            // 标记这条连接「标识表有新条目」：处理完报文的那次重扫据此决定要不要跑
+            //（没有新标识时不扫——每个入向报文都整表重扫是无谓的开销）
+            m_connectionsWithFreshConnectionIds.insert(&connection);
         };
         connectionConfiguration.sendDatagram         = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data,
                                                           const std::size_t length) -> Core::Task<bool>
@@ -369,7 +372,11 @@ namespace AsynGyanis::Net
         // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
         co_await rawConnection->handleDatagram(peerAddress, datagram);
-        registerConnectionIds(*rawConnection);
+        // 只在本次报文选出了新标识时才重扫：签发那一刻已经逐条登记过，这里只是兜底一遍
+        if (m_connectionsWithFreshConnectionIds.erase(rawConnection) != 0U)
+        {
+            registerConnectionIds(*rawConnection);
+        }
         co_await pumpHttp3For(*rawConnection);
     }
 
@@ -392,6 +399,7 @@ namespace AsynGyanis::Net
                 // 漏掉任何一处，都会把已销毁的连接留在表里（悬空指针）
                 const QuicConnection *closedConnection = iterator->second.get();
                 m_http3Sessions.erase(closedConnection);
+                m_connectionsWithFreshConnectionIds.erase(closedConnection);
                 std::erase_if(m_connectionsByAliasConnectionId,
                               [closedConnection](const auto &entry) { return entry.second == closedConnection; });
                 iterator = m_connections.erase(iterator);

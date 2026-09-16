@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -215,5 +216,7 @@ namespace AsynGyanis::Net
         /// 二是 ngtcp2 后续签发的额外 SCID——对端可能改用其中之一（实测：只认最初那个时，
         /// 握手能通但流数据一条都到不了）
         std::map<std::string, QuicConnection *, std::less<>> m_connectionsByAliasConnectionId;
+        /// 有新签发的连接标识、但还没做过整表重扫的连接：处理完报文时据此决定要不要扫
+        std::set<const QuicConnection *>                      m_connectionsWithFreshConnectionIds;
     };
 } // namespace AsynGyanis::Net
