@@ -162,13 +162,15 @@ namespace AsynGyanis::Database
         bool rollback();
 
         /**
-         * @brief 归还连接池时复位会话状态：把未提交的事务滚掉
+         * @brief 归还连接池时复位会话状态：把本类开着的事务滚掉
          * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，
          *          行锁与元数据锁也一直被握到事务结束（可能永远不结束）为止。
-         *          判定读客户端库在最近一次响应里记下的服务端状态位
-         *          （SERVER_STATUS_IN_TRANS），手工执行的 "START TRANSACTION" 同样能被认出，
-         *          不依赖本类另记一份事务状态。
-         * @note 与基类契约一致：不抛异常、幂等；未连接或本就没有活动事务时不做任何事
+         *          判定用本类记下的「事务是否开着」（beginTransaction 置位、commit/rollback
+         *          清零）：MySQL 8 起 `struct MYSQL` 对使用方是不完整类型，读不到客户端库
+         *          记录的服务端状态位，公共 C API 也没有对应的取值函数。
+         * @note 与基类契约一致：不抛异常、幂等；未连接或本类没开过事务时不做任何事
+         * @note **记账范围**是本类的事务入口：手工执行的 "START TRANSACTION"、把 autocommit
+         *       关掉的会话不在这份记账里——那些是绕过连接对象自管的用法，本方法看不出它们
          */
         void resetSessionState() noexcept override;
 
@@ -242,6 +244,9 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> materializePreparedResult(MYSQL_STMT *statement);
 
         MYSQL *m_mysqlHandle{nullptr}; ///< MySQL C API 连接句柄，本对象独占所有权，未连接时为 nullptr
+        /// 本类开着的事务（beginTransaction 置位，commit/rollback 与连接生命周期重置清零）：
+        /// 归还路径据此决定要不要滚，见 resetSessionState 的记账范围说明
+        bool m_isTransactionOpen{false};
     };
 
 } // namespace AsynGyanis::Database

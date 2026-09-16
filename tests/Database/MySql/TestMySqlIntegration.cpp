@@ -1955,6 +1955,32 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 验证归还连接池时（resetSessionState）把未提交的事务滚掉
+     * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，
+     *          行锁一直被握到事务结束为止
+     */
+    TEST_F(MySqlIntegrationTest, ResetSessionStateRollsBackUncommittedTransaction)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionRollbackTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        ASSERT_TRUE(connection->beginTransaction()) << connection->lastError();
+        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionRollbackTableName, 1, "会话复位", 1.5))
+                << connection->lastError();
+        // 事务内可见：证明这一行确实被写进去过，复位要撤销的是真实存在的数据
+        ASSERT_EQ(countRows(*connection, kTransactionRollbackTableName), 1);
+
+        connection->resetSessionState();
+
+        // 事务被滚掉：未提交的行随之消失，也就是没有串给下一个借用者
+        EXPECT_EQ(countRows(*connection, kTransactionRollbackTableName), 0) << "归还时没有滚掉未提交的事务";
+        // 幂等：没有活动事务时再调一次什么都不做
+        EXPECT_NO_THROW(connection->resetSessionState());
+    }
+
+    /**
      * @brief 验证事务对象析构（未提交）时自动回滚
      */
     TEST_F(MySqlIntegrationTest, TransactionDestructorRollsBackUncommittedRows)

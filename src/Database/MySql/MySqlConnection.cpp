@@ -212,8 +212,10 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 全部步骤走通才置位：中途任何一步失败都不会让 isConnected() 读到「已连接」的中间态
-        m_isConnected = true;
+        // 全部步骤走通才置位：中途任何一步失败都不会让 isConnected() 读到「已连接」的中间态。
+        // 事务标记随新会话一起归零：新连接上不可能开着上一次连接的事务
+        m_isConnected       = true;
+        m_isTransactionOpen = false;
         return true;
     }
 
@@ -226,8 +228,10 @@ namespace AsynGyanis::Database
         }
 
         // 先落状态再关句柄：关闭过程中若有回调读 isConnected()，也应看到「已断开」。
-        // 这里不清 m_lastError——失败路径上先写好的原因不能被断开动作抹掉
-        m_isConnected = false;
+        // 这里不清 m_lastError——失败路径上先写好的原因不能被断开动作抹掉。
+        // 事务标记一并归零：连接都没了，谈不上还开着事务（服务端那边断开即回滚）
+        m_isConnected       = false;
+        m_isTransactionOpen = false;
 
         if (m_mysqlHandle == nullptr)
         {
@@ -891,33 +895,46 @@ namespace AsynGyanis::Database
         // 就会随方言演进而漂移，与 Transaction 走方言的路径产生行为差异
         const MySqlDialect dialect;
         // 事务语句没有返回列，execute() 非空即代表 START TRANSACTION 已被服务端接受
-        return execute(dialect.beginTransactionStatement()) != nullptr;
+        const bool isStarted = execute(dialect.beginTransactionStatement()) != nullptr;
+        m_isTransactionOpen = isStarted;
+        return isStarted;
     }
 
     bool MySqlConnection::commit()
     {
         const MySqlDialect dialect;
-        return execute(dialect.commitStatement()) != nullptr;
+        const bool    isCommitted = execute(dialect.commitStatement()) != nullptr;
+        if (isCommitted)
+        {
+            m_isTransactionOpen = false;
+        }
+        return isCommitted;
     }
 
     bool MySqlConnection::rollback()
     {
         const MySqlDialect dialect;
         // 没有活动事务时服务端会直接报错，这里如实返回 false，并由 lastError() 给出原因
-        return execute(dialect.rollbackStatement()) != nullptr;
+        const bool isRolledBack = execute(dialect.rollbackStatement()) != nullptr;
+        if (isRolledBack)
+        {
+            m_isTransactionOpen = false;
+        }
+        return isRolledBack;
     }
 
     void MySqlConnection::resetSessionState() noexcept
     {
-        // 未连接，或服务端在最近一次响应里报告「不在事务中」：没有要复位的东西。
-        // 判据取自客户端库记下的状态位而不是本类记账，手工执行的 START TRANSACTION 也能被认出
-        if (m_mysqlHandle == nullptr || (m_mysqlHandle->server_status & SERVER_STATUS_IN_TRANS) == 0U)
+        // 未连接，或本类没开过事务：没有要复位的东西（记账范围见头文件说明）
+        if (m_mysqlHandle == nullptr || !m_isTransactionOpen)
         {
             return;
         }
 
-        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），
-        // 归还路径不看返回码——连接随后会照常回到池里，绝不在这里抛异常打断归还
+        // 先清标记再滚：即便这次 ROLLBACK 发不出去（链路已断），连接也不会带着「还开着事务」
+        // 的假状态回到池里。失败只记在 lastError() 里（与 rollback() 同一口径），
+        // 归还路径不看返回码——绝不在这里抛异常打断归还
+        m_isTransactionOpen = false;
         [[maybe_unused]] const bool isRolledBack = rollback();
     }
 
