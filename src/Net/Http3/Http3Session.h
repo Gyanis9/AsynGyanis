@@ -12,6 +12,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -103,7 +104,8 @@ namespace AsynGyanis::Net
          *       h3 各流由传输层驱动，会话没有「收到完整请求」那一刻的戳，宁可不记也不用 0 秒糊弄
          */
         Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {},
-                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr);
+                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
 
         ~Http3Session();
 
@@ -240,6 +242,13 @@ namespace AsynGyanis::Net
             /// 服务阶段按 413 应答（与 h1/h2 同一口径）
             bool isBodyTooLarge{false};
 
+            /// 正文超出全局在途预算：此后到达的 DATA 一律丢弃，服务阶段按 503 应答
+            /// （额度由 bodyBudget 在记录销毁时归还）
+            bool isBudgetExceeded{false};
+
+            /// 本条流已缓冲正文占用的全局额度：随记录一起析构即归还
+            HttpMemoryBudget::Reservation bodyBudget;
+
             /// 头部逐条累计的判据（条数、单名/单值长度、整块净字节）与请求目标长度，
             /// 口径与 h1 的 HttpParserLimits 一致：越限即置位，服务阶段按 431/414 应答
             std::size_t headerFieldCount{0};
@@ -328,6 +337,18 @@ namespace AsynGyanis::Net
          * @note 只能在安全点（pump() 里）调用：回收会唤醒业务协程，而它们随时可能回写响应
          */
         void drainPeerCancelledStreams();
+
+        /**
+         * @brief 唤醒被 dropRequest 记下的流式生产者
+         * @note 同属安全点动作：被唤醒的业务会接着写响应（那要动 nghttp3）
+         */
+        void resumeDeferredWaiters();
+
+        /**
+         * @brief 收口被记下的隧道（对端 END_STREAM 或重置）
+         * @note 同属安全点动作：closeTunnel() 会动 nghttp3
+         */
+        void closeDeferredTunnels();
 
         /// 流式响应的缓冲上界：超过就让生产者挂起，等网络排空再继续（不无限堆内存）
         static constexpr std::size_t kStreamingResponseBufferByteCount = 256U * 1024U;
@@ -525,6 +546,7 @@ namespace AsynGyanis::Net
             std::int64_t streamId{0};                 ///< 流号
             HttpRequest  request;                     ///< 已收齐的请求
             bool         isBodyTooLarge{false};       ///< 正文越界：服务阶段回 413 而不是派发
+            bool         isBudgetExceeded{false};     ///< 正文超出全局在途预算：服务阶段回 503 而不是派发
             bool         isHeaderLimitExceeded{false}; ///< 头部越限：服务阶段回 431 而不是派发
             bool         isUriTooLong{false};         ///< 请求目标越限：服务阶段回 414 而不是派发
         };
@@ -543,6 +565,18 @@ namespace AsynGyanis::Net
         /// 承载层报来的「对端取消」流号：它们到的时候正在 ngtcp2 的回调里，只能先记下来，
         /// 等 pump() 这个安全点再统一回收（见 cancelStreamByPeer / drainPeerCancelledStreams）
         std::vector<std::int64_t> m_peerCancelledStreamIds;
+
+        /// 待唤醒的流式生产者（同上：dropRequest 在 nghttp3 回调里被调用，不能当场恢复它们）
+        std::vector<std::coroutine_handle<>> m_deferredWaiterResumes;
+
+        /// 待收口的隧道流号（同上）
+        std::vector<std::int64_t> m_deferredTunnelClosures;
+
+        /// 「扩展 CONNECT 与 END_STREAM 同趟到达」的待建隧道流号：建成那一刻立刻收尾，
+        /// 不记下来的话业务会永远挂在 receive() 上（隧道还没建，收尾无处可施）
+        std::set<std::int64_t> m_pendingTunnelStreamsEnded;
+
+        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务端共享；空表示不受约束
         /// 流式请求的本地状态：键是流号。用 unique_ptr 持有是为了地址稳定——里面存着等待者的
         /// 协程句柄，而记录本身会被移进移出（头收齐那一刻从 m_incomingRequests 转过来）
         std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;

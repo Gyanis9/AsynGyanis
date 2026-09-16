@@ -230,8 +230,9 @@ namespace AsynGyanis::Net
     } // namespace
 
     Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter,
-                               std::shared_ptr<HttpMetricsCollector> metrics) :
-        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_metrics(std::move(metrics))
+                               std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpMemoryBudget> memoryBudget) :
+        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_metrics(std::move(metrics)),
+        m_memoryBudget(std::move(memoryBudget))
     {
         if (!opener || !m_writer)
         {
@@ -399,6 +400,41 @@ namespace AsynGyanis::Net
         }
     }
 
+    void Http3Session::resumeDeferredWaiters()
+    {
+        if (m_deferredWaiterResumes.empty())
+        {
+            return;
+        }
+        std::vector<std::coroutine_handle<>> waiters;
+        waiters.swap(m_deferredWaiterResumes);
+        for (const std::coroutine_handle<> waiter: waiters)
+        {
+            if (waiter != nullptr)
+            {
+                waiter.resume();
+            }
+        }
+    }
+
+    void Http3Session::closeDeferredTunnels()
+    {
+        if (m_deferredTunnelClosures.empty())
+        {
+            return;
+        }
+        std::vector<std::int64_t> streamIds;
+        streamIds.swap(m_deferredTunnelClosures);
+        for (const std::int64_t streamId: streamIds)
+        {
+            if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
+            {
+                tunnel->second->isStreamClosed = true;
+                closeTunnel(streamId);
+            }
+        }
+    }
+
     Core::Task<> Http3Session::pump()
     {
         if (m_connection == nullptr || m_isBroken)
@@ -409,11 +445,15 @@ namespace AsynGyanis::Net
         // 先回收承载层报来的「对端取消」：那些通知到的时候正在 ngtcp2 的回调里，此刻（处理完
         // 一条报文之后）才是能安全动 nghttp3 与唤醒业务协程的安全点
         drainPeerCancelledStreams();
+        // 同样在安全点做的两件事：唤醒被摘掉的流式生产者、收口已被对端收尾的隧道
+        resumeDeferredWaiters();
+        closeDeferredTunnels();
 
         while (!m_readyRequests.empty())
         {
             const std::int64_t streamId              = m_readyRequests.front().streamId;
             const bool         isBodyTooLarge        = m_readyRequests.front().isBodyTooLarge;
+            const bool         isBudgetExceeded      = m_readyRequests.front().isBudgetExceeded;
             const bool         isHeaderLimitExceeded = m_readyRequests.front().isHeaderLimitExceeded;
             const bool         isUriTooLong          = m_readyRequests.front().isUriTooLong;
             HttpRequest        request        = std::move(m_readyRequests.front().request);
@@ -444,6 +484,17 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求头部或请求目标超过配置上限，已按 {} 应答且不交给业务", streamId, rejectionStatus);
                 response.setStatus(rejectionStatus);
                 response.setBody(rejectionBody);
+                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            } else if (isBudgetExceeded)
+            {
+                // 与 h1/h2 同一处置：全局在途正文预算不足时回 503，把剩余额度留给已经收下正文的请求
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countBadRequest();
+                }
+                LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超出全局在途预算，已按 503 应答且不交给业务", streamId);
+                response.setStatus(503);
+                response.setBody("Service Unavailable");
                 static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
             } else if (isBodyTooLarge)
             {
@@ -635,6 +686,11 @@ namespace AsynGyanis::Net
         }
 
         IncomingRequest &incoming = m_incomingRequests[streamId];
+        if (!incoming.bodyBudget.hasBudget() && m_memoryBudget != nullptr)
+        {
+            // 记录刚建出来：把这份共享预算绑上（额度随记录析构归还）
+            incoming.bodyBudget.reset(m_memoryBudget.get());
+        }
 
         // 体量越界：只标记与记日志，不再缓冲；此后到达的 DATA 一律丢弃，但窗口照还。
         // 响应在服务阶段统一按 413 发出（与 h1/h2 同一口径）
@@ -645,9 +701,19 @@ namespace AsynGyanis::Net
                           streamId, m_parserLimits.maximumBodySize);
             incoming.isBodyTooLarge = true;
         }
-        if (!incoming.isBodyTooLarge)
+        if (!incoming.isBodyTooLarge && !incoming.isBudgetExceeded)
         {
-            incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
+            const std::size_t bufferedByteCount = incoming.body.size() + data.size();
+            // 全局在途预算：单条流的上限挡不住「很多条流各压一份正文」，这里按增量预留，
+            // 预留失败即表示此刻收下就会超预算——与 h1/h2 同一处置（回 503，额度随记录归还）
+            if (!incoming.bodyBudget.growTo(bufferedByteCount))
+            {
+                LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超出全局在途预算，已停止缓冲并按 503 应答", streamId);
+                incoming.isBudgetExceeded = true;
+            } else
+            {
+                incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
+            }
         }
 
         // 非流式：正文整段收在请求对象里，本端等于立刻消费掉了，因此到达即归还接收额度
@@ -664,11 +730,16 @@ namespace AsynGyanis::Net
         // 该流的发送方向就此关闭。已建成的隧道随之收口并让业务看到终点，而不是永远挂着
         if (m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId))
         {
-            if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
+            if (m_webSocketTunnels.contains(streamId))
             {
-                tunnel->second->isStreamClosed = true;
-                closeTunnel(streamId);
+                // 隧道已建成：收尾动作要动 nghttp3（closeTunnel 里会 resume_stream），而本函数是在
+                // nghttp3 的回调里被调用的——只记流号，由 pump() 这个安全点统一处理
+                m_deferredTunnelClosures.push_back(streamId);
+                return;
             }
+            // 隧道还没建成（扩展 CONNECT 的头与 END_STREAM 同一趟到达）：先把「对端已收尾」记下来，
+            // 建成那一刻据此立刻收口——丢掉这个事实的话业务会永远挂在 receive() 上
+            m_pendingTunnelStreamsEnded.insert(streamId);
             return;
         }
 
@@ -709,27 +780,29 @@ namespace AsynGyanis::Net
         std::erase_if(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
         m_pendingTunnelStreams.erase(streamId);
         m_pendingTunnelBytes.erase(streamId);
+        m_pendingTunnelStreamsEnded.erase(streamId);
 
         if (const auto streaming = m_streamingResponses.find(streamId); streaming != m_streamingResponses.end())
         {
             // 流没了：先叫醒等缓冲排空的生产者，再摘记录。等待器与生产者各持一份共享所有权，
-            // 摘表后他们读到的是 isStreamClosed，不会踩空；漏掉这一步生产者会永远等不到唤醒
+            // 摘表后他们读到的是 isStreamClosed，不会踩空；漏掉这一步生产者会永远等不到唤醒。
+            // **唤醒本身推到安全点**：被唤醒的业务会接着写响应（resume_stream / submit_response），
+            // 而本函数是经 nghttp3 回调进来的，回调期间重入库是未定义行为
             const std::shared_ptr<StreamingResponse> state = streaming->second;
             state->isStreamClosed = true;
             if (const std::coroutine_handle<> waiter = std::exchange(state->spaceWaiter, {}); waiter != nullptr)
             {
-                waiter.resume();
+                m_deferredWaiterResumes.push_back(waiter);
             }
             m_streamingResponses.erase(streaming);
         }
 
-        if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
+        if (m_webSocketTunnels.contains(streamId))
         {
-            // 隧道：承载侧的流没了，对端对象随之关闭，挂在 receive() 上的业务也要醒来收尾
-            //（记录先留着——业务协程可能还挂着，跑完由 reapFinishedTunnels() 一起摘掉）
-            tunnel->second->isStreamClosed = true;
-            tunnel->second->peer->markClosed();
-            tunnel->second->peer->wakeDeliveryWaiter();
+            // 隧道：承载侧的流没了，对端对象随之关闭、挂在 receive() 上的业务要醒来收尾。
+            // 同理由安全点统一处理（收尾要走 nghttp3）；记录先留着——业务协程可能还挂着，
+            // 跑完由 reapFinishedTunnels() 一起摘掉
+            m_deferredTunnelClosures.push_back(streamId);
             return;
         }
 
@@ -822,6 +895,7 @@ namespace AsynGyanis::Net
 
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId, .request = std::move(request),
                                                .isBodyTooLarge = incoming.isBodyTooLarge,
+                                               .isBudgetExceeded = incoming.isBudgetExceeded,
                                                .isHeaderLimitExceeded = incoming.isHeaderLimitExceeded,
                                                .isUriTooLong = incoming.isUriTooLong});
         if (isWebSocketTunnelRequest)
@@ -1124,6 +1198,14 @@ namespace AsynGyanis::Net
 
         // 攒下的帧此刻才喂（上面那次 resume 让业务挂在 receive() 上，这里喂进去正好唤醒它）
         wakeWebSocketTunnels();
+
+        if (m_pendingTunnelStreamsEnded.erase(streamId) != 0)
+        {
+            // 扩展 CONNECT 的头与 END_STREAM 同一趟到达：隧道建立即收尾（RFC 9220 §5 的关闭方式之一）
+            LOG_DEBUG_FMT("Http3Session: 流 {} 的扩展 CONNECT 与 END_STREAM 同趟到达，隧道建立即收尾", streamId);
+            created.isStreamClosed = true;
+            closeTunnel(streamId);
+        }
         co_return;
     }
 

@@ -211,7 +211,7 @@ namespace AsynGyanis::Net
                 { rawConnection->queueStreamData(streamId, data, isEndStream); },
                 [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
                 { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
-                m_configuration.metricsCollector);
+                m_configuration.metricsCollector, m_configuration.memoryBudget);
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);
@@ -291,8 +291,10 @@ namespace AsynGyanis::Net
         {
             co_return;
         }
-        const std::string destinationConnectionId(reinterpret_cast<const char *>(versionAndConnectionIds.dcid),
-                                                  versionAndConnectionIds.dcidlen);
+        // 用视图查表：两张表都是透明比较（std::less<>），而本端 SCID 固定 18 字节、超过
+        // 小字符串优化阈值——此前每个入向报文都要为它分配一次 std::string
+        const std::string_view destinationConnectionId(reinterpret_cast<const char *>(versionAndConnectionIds.dcid),
+                                                       versionAndConnectionIds.dcidlen);
         if (const auto existing = m_connections.find(destinationConnectionId); existing != m_connections.end())
         {
             // 记账：下面几次 await 都可能在挂起中被定时循环判成「已收口」并试图摘掉它——守卫

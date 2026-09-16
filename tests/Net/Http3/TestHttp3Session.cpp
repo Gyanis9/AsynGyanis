@@ -238,6 +238,25 @@ namespace AsynGyanis::Net
              *       同一条流上发 WebSocket 帧，那时服务端会把 DATA 判成 H3_FRAME_UNEXPECTED。
              *       回调给出最后一条帧之后报「暂时没有」而不是 EOF——隧道到对端关流为止都开着
              */
+            /**
+             * @brief 提交一条「不带任何请求正文」的扩展 CONNECT：递交即 END_STREAM
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @return std::vector<CapturedStreamData> 按流号分好的待发字节
+             * @note 与 submitWebSocketTunnel 的区别只有一处：不挂数据读取回调，因此请求在这批字节
+             *       之后就收尾——「头与 END_STREAM 同一趟到达」正是这条路径
+             */
+            std::vector<CapturedStreamData> submitEndedWebSocketTunnel(const std::string &path, const std::string &authority)
+            {
+                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
+                if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), nullptr,
+                                                nullptr) != 0)
+                {
+                    return {};
+                }
+                return takeOutgoingBytes();
+            }
+
             std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority,
                                                                  std::string firstWebSocketFrame)
             {
@@ -1206,6 +1225,127 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(hasRequestStreamBytes) << "被取消的流不该再发出任何响应字节";
         const HttpServerStats snapshot = metrics->snapshot();
         EXPECT_EQ(snapshot.streamCancelledCount, 1U) << "被对端取消的流没有计入单流取消";
+    }
+
+
+    /**
+     * @brief 扩展 CONNECT 与 END_STREAM 同一趟到达时，隧道建立即收尾、响应正常收完
+     * @details 头收齐那一刻流号只进了「待建隧道」集合，随后的 END_STREAM 此前被这条分支直接丢掉：
+     *          隧道建成后业务永远挂在 receive() 上、对端也拿不到响应收尾。这里钉住「头与 END_STREAM
+     *          同趟到达」这条路径——客户端的响应必须收尾（isComplete）
+     */
+    TEST(Http3Session, ClosesTunnelWhenConnectAndEndStreamArriveTogether)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+
+        bool             isBusinessFinished = false;
+        Router           router;
+        router.get("/chat",
+                   [&isBusinessFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [&isBusinessFinished](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   // 对端一上来就收尾：receive() 必须立刻返回「没有更多消息」，
+                                   // 而不是永远挂着
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   isBusinessFinished = true;
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::vector<CapturedStreamData> requestChunks = peer.submitEndedWebSocketTunnel("/chat", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 200) << "隧道没有以 2xx 应答";
+        EXPECT_TRUE(peer.response().isComplete)
+                << "对端已收尾的隧道没有跟着收口：响应永远收不完（业务也醒不过来）";
+        EXPECT_TRUE(isBusinessFinished) << "隧道收口后业务没有醒来收尾";
+    }
+
+    /**
+     * @brief 正文超出全局在途预算时回 503，且不交给业务（与 h1/h2 同一口径）
+     */
+    TEST(Http3Session, Answers503WhenInflightBodyBudgetIsExhausted)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      budget = std::make_shared<HttpMemoryBudget>(8); // 只够 8 字节正文
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             },
+                             Http3Session::StreamCrediter{}, nullptr, budget);
+
+        bool   isHandlerEntered = false;
+        Router router;
+        router.post("/upload",
+                    [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        isHandlerEntered = true;
+                        response.setStatus(200);
+                        response.setBody("uploaded");
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过预算 8
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered) << "超出全局预算的请求不该交给业务";
+        EXPECT_EQ(peer.response().status, 503) << "全局在途预算不足必须回 503（与 h1/h2 同一口径）";
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "被拒的请求不该占着额度（记录析构即归还）";
     }
 
     /**

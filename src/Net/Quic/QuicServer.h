@@ -61,6 +61,9 @@ namespace AsynGyanis::Net
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
             /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
             HttpParserLimits         parserLimits{};
+            /// 在途正文字节的全局预算（可空：空表示不受约束）。与 HTTP 侧共用同一份账——
+            /// h3 的正文同样驻留在进程内存里，只限「单条流」挡不住 100 条流各压 8 MiB
+            std::shared_ptr<HttpMemoryBudget> memoryBudget;
             /// 统计采集端（可空：空表示 h3 流量不采集）。
             /// **与 HTTP 侧共用同一个实例**，那台服务器的 /metrics 就一并覆盖 h3（见
             /// HttpServer::metricsCollector()）；单独采集时用 stats() 读本服务端的快照

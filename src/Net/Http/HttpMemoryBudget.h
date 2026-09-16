@@ -142,6 +142,16 @@ namespace AsynGyanis::Net
             }
 
             /**
+             * @brief 是否已经绑定了预算
+             * @return true 已绑定（含绑定到「不限制」的预算对象）；false 还是未绑定的空会话
+             * @note 给「按记录懒绑定」的用法：记录是容器默认构造出来的，绑定时机由会话决定
+             */
+            [[nodiscard]] bool hasBudget() const noexcept
+            {
+                return m_budget != nullptr;
+            }
+
+            /**
              * @brief 把已占额度补到指定字节数
              * @param totalBytes 需要占用的总字节数（已含此前预留的部分）
              * @return true 已满足（含未绑定预算、无需增加两种情况）
