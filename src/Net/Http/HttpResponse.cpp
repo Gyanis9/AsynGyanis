@@ -761,6 +761,14 @@ namespace AsynGyanis::Net
                 continue;
             }
 
+            // 反方向同理：正文定界由本框架掌管（流式=分块，其余=content-length）。调用方自设的
+            // transfer-encoding 在这里一律剥掉——留着它就会出现「既补 content-length 又声明
+            // chunked」而正文并没有分块帧化，对端按哪条解都是错位（h2/h3 早已剥掉，与它们对齐）
+            if (!m_isChunked && field.name == kTransferEncodingHeaderName)
+            {
+                continue;
+            }
+
             result.append(field.name);
             result.append(kHeaderNameValueSeparator);
             result.append(field.value);

@@ -939,8 +939,10 @@ namespace AsynGyanis::Net
 
                     if (!isResponseSent)
                     {
-                        const std::string_view responseBody =
-                                request.method() == HttpMethod::HEAD ? std::string_view{} : response.body();
+                        // 只有头部的响应（HEAD）与不允许带正文的状态码（1xx/204/304）都必须一个
+                        // 正文字节都不发：多出去的字节会被对端当成下一条报文的开头（keep-alive 错位）
+                        const bool             isBodySuppressed = request.method() == HttpMethod::HEAD || response.carriesNoContent();
+                        const std::string_view responseBody = isBodySuppressed ? std::string_view{} : response.body();
                         // HEAD 的正文段恒为空（上面已按方法取空），分块响应也不补终止块：那 5 个字节
                         // 会被对端当成下一条报文的开头
                         const std::string_view trailingSegment = response.isChunkedResponse() && !response.isStreamingBodySuppressed()
