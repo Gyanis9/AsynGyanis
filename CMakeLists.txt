@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(AsynGyanis
-        VERSION 1.0.0
+        VERSION 1.1.0
         DESCRIPTION "Industrial-grade C++20 async server framework"
         LANGUAGES C CXX
 )

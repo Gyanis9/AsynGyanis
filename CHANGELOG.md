@@ -15,6 +15,15 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [1.1.0] - 2026-09-16
+
+自 1.0.0 起的累计变化：HTTP/2 与 HTTP/3 补齐流式收发、隧道与流回收，新增出站客户端与多进程 worker、
+可选 io_uring 事件后端与可选 mimalloc，格式层改用 nlohmann_json 与 yaml-cpp。**本版含破坏性变更**
+（`Base/Format/` 整体移除、`AsynGyanis::wepoll` 目标不再导出、`WebSocketPeer::close()` 的非法用法
+改抛异常），从 1.0.0 升级前请先读「变更」段。
+
 ### 变更
 
 - **JSON/YAML 改用 nlohmann_json 与 yaml-cpp，自研格式层整体移除**（破坏性）：`Base/Format/` 全部下线
@@ -42,9 +51,33 @@
   状态码（1005/1006/1015 哨兵值、1016–2999 未注册段）与超长的关闭原因照原样发出去，对端只能按协议错误
   收口；现在这两种用法错误当场抛 `Base::InvalidArgumentException`（原因上限 123 字节）。可用的取值是
   1000–1003、1007–1014 与 3000–4999。收帧侧口径对称：对端用非法状态码收口时本端按 1002 回敬。
+- **事件语义统一为水平触发 + 按需摘除**：一次就绪上报不再重新武装（去掉 ONESHOT 的一发即消），
+  「不关注」显式写进内核；IOCP 侧在入睡前重武装已消费的方向，与 epoll 每轮重取就绪等价。
+  对使用者接口不变，但自定义循环装配时要知道关注位的账本在 `IoWatcher` 里。
+- **`writeTimeout` 的语义明确为「响应产出预算」**：处理器执行与等待可写的整段时间都计入它
+  （进入路由前会按它刷新一次空闲时限），慢处理器不再被空闲清扫误杀，超预算的连接仍会被收口。
+  配置键名不变，含义以 `HttpServerLimits` 头文件注释为准。
 
 ### 新增
 
+- **HTTP/3 与 QUIC 服务端**：vendored 的 ngtcp2 1.25.0 做传输层（`QuicServer` 按连接标识路由数据报、
+  迁移与流控），nghttp3 1.12.0 做会话层（`Http3Session`：QPACK、控制流 SETTINGS、流式请求正文、
+  流式响应与 SSE、RFC 9220 扩展 CONNECT 隧道）；请求映射与响应回写接进既有 `Router`，处理器一份代码
+  三种协议共用。`echo_server --h3` 在同一个端口号的 UDP 上提供 h3（QUIC 自带 TLS，需与 `--https` 同用）；
+  h3 的请求数与状态码类计入 `/metrics`。
+- **多进程 worker 模型**：`Core::WorkerSupervisor` 拉起 N 个 worker 进程服务同一个端口、崩溃即补位，
+  进程间不共享状态；`echo_server --workers N` 开启（默认 1 = 单进程），响应里带 pid 便于核对。
+  与既有的「每线程一个监听 socket」和「接受分发」是三种并列的多核形态。
+- **出站客户端**：明文与 HTTPS 的 HTTP 客户端（`Net/Http/Client/`）、异步 DNS 解析
+  （`Core/Socket/AsyncResolver`）与 `TcpClient`，构成完整的客户端侧。
+- **HTTP/2 补强**：流式请求正文、按流并行的收发、隧道期间同连接其它流改为就地服务（不再一律 503）。
+- **Linux 可选 io_uring 事件后端**：`ASYN_WITH_IO_URING=ON` 时 `Epoll` 别名改指 io_uring 实现
+  （一次性 POLL_ADD 复刻水平触发语义，注销走墓碑表延迟摘除）；需要内核 5.6+，Windows 上配置期直接报错。
+  接口与语义和 epoll / IOCP 两后端保持一致。
+- **可选 mimalloc 全局分配器**：`ASYN_WITH_MIMALLOC=ON` 时由 mimalloc 接管整个进程的 malloc/free
+  （生产构建用；与 sanitizer 互斥，配置期拦住同开）。
+- **HTTPS 侧的指标与健康检查端点**：`--https` 下 `/metrics` 与 `/healthz` 此前打不开，现已与明文侧同口径。
+- **监听套接字支持 TCP Fast Open**（Linux，`TcpAcceptor` 配置项开启）。
 - **零停机重启的接手侧（监听器移交）**：`TcpAcceptor` / `TcpServer` / `HttpServer` / `HttpsServer`
   新增「用已经在监听中的套接字构造」的入口。监听套接字可以交给 supervisor 持有（Linux 的 socket
   activation）或由上一代进程交出来，新一代接手它继续服务，端口全程不关，配合既有的 `drain()` 与
@@ -90,6 +123,40 @@
 - **配置**：`setValue` 与加载/热重载、`clear()` 串行化到同一把写锁，写入不再被整份快照覆盖。
 - **文件监听**：Linux 上按单个文件监听不再静默失效；补齐创建/删除事件与新建子目录的注册；
   事件队列溢出时派发一次重扫信号，而不是静默丢。原子写补上落盘屏障（fsync 文件与目录）与唯一临时名。
+  递归监视覆盖「监视开始后才建出来的子目录」；被内核摘除监视的目录（删掉再放回来）能重新挂上，
+  Windows 侧根目录被替换后按节拍重挂。
+- **HTTP 语义对齐 RFC**：304 响应带上等于文件大小的 `Content-Length`（RFC 9110 §8.8.2 / 9112 口径），
+  且不再自动补正文长度之外的矛盾头。
+- **HTTPS 与 HTTP/2**：TLS 上的 HTTP/1.1 回落路径接上全局正文预算（此前只有明文端生效，TLS 侧可无界
+  堆正文）；h2 的终止流记录被挤出上限后，合规客户端迟到的 `RST_STREAM` / `WINDOW_UPDATE` 不再被判成
+  空闲流而回 `PROTOCOL_ERROR`、把整条连接 GOAWAY 掉。
+- **HTTP/3 流回收**：被对端 RESET / STOP_SENDING 的流此前永不回收（流表与在途计数只增不减），
+  现在按取消收口并唤醒等待中的生产者；在途正文超过预算时明确回 503 而不是无界接收。
+- **WebSocket 收帧上界计入帧开销**：空帧此前不占额度，可以靠海量空帧绕过队列上界；现在每帧的
+  64 B 编解码开销一并计入。
+- **连接池析构不再丢等待者**：池销毁时同步等待获取连接的线程此前会永久阻塞，现在被唤醒并拿到
+  「池已停止」的明确失败；异步等待者的恢复改走票据，不再 resume 已释放的协程帧。
+- **配置与日志装载不再部分提交**：某个文件解析失败时，此前已摊平进全局表的那部分键会留下来
+  （半份配置生效）；现在整批回滚。日志配置的 `sinks` 字段类型写错时保留现有 Sink，不再清成零个。
+- **io_uring 后端**：注销描述符后同一个 fd 号立即重注册此前会被延迟摘除挡下（新注册收不到事件），
+  现在注销当场释放 fd 键、在途轮询转墓碑表收尾；槽位发布与注销的竞态一并修掉。
+- **多进程 worker（Windows）**：worker 被强杀后父进程此前可能拿着未回收的句柄继续记账，
+  现在有界等待回收再释放。
+- **交接失败不再漏描述符**：`ConnectionDistributor` 的分配失败不再让 noexcept 函数 terminate，
+  失败路径上也会关闭描述符（此前每丢一条连接漏一个文件描述符）。
+- **零长数据报允许发送**，与接收侧口径一致；`TcpClient::connect` 的 host 改按值接收（惰性 Task 下
+  不再悬垂）；`AsyncSink` 不再旁路被包装 sink 的 level 过滤。
+
+### 性能
+
+- **HTTP/2 发送路径**：待发队列改游标推进（不再每帧 `erase(0,n)` 搬移整段剩余缓冲），写完的缓冲回收复用；
+  响应头组装按条数预留容量，发正文不再整段白拷一次。
+- **HPACK 动态表改 deque**：头插不再整体后移。
+- **HTTP/3**：拼分片不再先零填充一遍缓冲；只在有新连接标识签发时才重扫 SCID 表。
+- **HTTP/1.1**：响应头的单值视图改为惰性构建（不按请求遍历全部头）。
+- **事件循环**：完成通知的合并索引改扁平表；TLS 让出间隔 1 ms 提到 5 ms，停顿期间不再近千赫兹唤醒。
+- **日志**：根日志器热路径只读裸指针缓存。
+- **Linux 静态文件**：`sendfile` 零拷贝发送。
 
 ## [1.0.0] - 2026-09-13
 
@@ -124,5 +191,6 @@
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gyanis9/AsynGyanis/releases/tag/v1.0.0
