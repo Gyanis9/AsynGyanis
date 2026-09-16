@@ -1,5 +1,6 @@
 #include "Net/Http/Client/HttpClient.h"
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -27,6 +28,14 @@ namespace AsynGyanis::Net
 {
     ParsedUrl parseUrl(const std::string_view url)
     {
+        // 请求行是把 path 原样拼出来的：里面若有 CR/LF 或空白，等于让调用方自己结束请求行、
+        // 甚至插进新的头部（请求分裂）。这不是「请求失败」，是用法错误，当场报出来
+        if (url.find_first_of("\r\n\t ") != std::string_view::npos)
+        {
+            throw Base::InvalidArgumentException("HttpClient：URL 里不允许出现空白或控制字符（会撕裂请求行）：「" +
+                                                 std::string(url) + "」");
+        }
+
         ParsedUrl parsed;
         auto p = url;
         auto colon = p.find("://");

@@ -132,6 +132,22 @@ def make_masked_text_frame(text):
     return header + mask + masked
 
 
+def make_server_text_frame(payload):
+    """造一条不带掩码的服务端文本帧（RFC 6455 §5.2 的三档长度编码）。
+
+    期望回显若直接手写帧头，超过 125 字节的负载会把 126/127 哨兵当成实际长度写进 7 位字段，
+    解析出的长度与真实负载不符——探针会把「服务端其实答对了」误判成失败。
+    """
+    length = len(payload)
+    if length <= 125:
+        header = bytes([0x81, length])
+    elif length <= 0xFFFF:
+        header = bytes([0x81, 126]) + length.to_bytes(2, "big")
+    else:
+        header = bytes([0x81, 127]) + length.to_bytes(8, "big")
+    return header + payload
+
+
 def make_quic_configuration():
     """客户端 QUIC 配置：ALPN 与证书校验口径全在这一处。"""
     configuration = QuicConfiguration(is_client=True, alpn_protocols=H3_ALPN)
@@ -163,7 +179,7 @@ async def run_websocket_probe(host, port, path, text):
     """
     frames = [make_masked_text_frame(text), make_masked_text_frame(text + "!")]
     # 服务端回显的帧不带掩码（RFC 6455 §5.1）
-    expected_echo = bytes([0x81, len(text)]) + text.encode() + bytes([0x81, len(text) + 1]) + (text + "!").encode()
+    expected_echo = make_server_text_frame(text.encode()) + make_server_text_frame((text + "!").encode())
 
     async with connect(host, port, configuration=make_quic_configuration(), create_protocol=Http3Probe) as client:
         await asyncio.sleep(SETTINGS_SETTLE_SECONDS)

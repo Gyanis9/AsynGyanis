@@ -310,6 +310,9 @@ namespace AsynGyanis::Platform
             if (errno == ECHILD)
             {
                 handle.m_exitCode = -1;
+                // 句柄一并作废：这个 pid 已经交还系统、可能已被别的进程复用。只记退出码的话
+                // isRunning() 仍会说「在运行」，终止类操作会拿一个复用的 pid 去 kill
+                handle.m_processId = -1;
             }
             return std::nullopt;
         }
