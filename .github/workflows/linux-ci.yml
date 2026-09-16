@@ -97,6 +97,51 @@ jobs:
           path: build/debug/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
+  # MySQL 真机驱动分支的**编译**覆盖：其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
+  # -DDATABASE_WITH_MYSQL=OFF，于是 MySqlConnection/MySqlResult 那些源文件在 CI 里从不参与编译，
+  # 连语法/类型错误都不会红（本机真机用例跑的是另一套环境）。这个作业只构建 Database 目标，
+  # 不做真机连接测试。
+  #
+  # 成本：libmysqlclient 在 ConanCenter 上只有源码包，第一次跑要现场编译十几分钟；之后
+  # CONAN_HOME 被 actions/cache 缓存（key 与其它作业相同），后续运行几乎是白拿。
+  mysql-driver-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      # 这个作业存在的意义就是要它——不设 ASYN_SKIP_MYSQL_DEPS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（只编库本体，开 MySQL 真机分支）
+        run: |
+          cmake -S . -B build/mysql-driver-check -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DDATABASE_WITH_MYSQL=ON \
+            -DASYN_BUILD_TESTS=OFF \
+            -DASYN_BUILD_SAMPLES=OFF \
+            -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake"
+
+      - name: 编译 Database（含真机驱动分支；告警同样是失败）
+        run: cmake --build build/mysql-driver-check --target Database -- -k 0
+
   # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑**并发相关**的
   # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
   # 投递（scheduleRemote / 全局队列 / TimerQueue 唤醒）此前只有注释级约定，这里是唯一的自动兜底。
