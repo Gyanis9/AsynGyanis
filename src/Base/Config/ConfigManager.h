@@ -130,8 +130,10 @@ namespace AsynGyanis::Base
          * @brief 安全获取配置值。
          * @param key 配置键。
          * @return std::optional<ConfigValue> 键存在时返回值，否则为空。
+         * @note 返回值是配置子树的一份**深拷贝**，拷贝要分配内存，因此本方法不是 noexcept：
+         *       写成 noexcept 只会在内存耗尽时把一次可捕获的失败升级成 std::terminate
          */
-        [[nodiscard]] std::optional<ConfigValue> getOptional(std::string_view key) const noexcept;
+        [[nodiscard]] std::optional<ConfigValue> getOptional(std::string_view key) const;
 
         /**
          * @brief 获取指定类型的配置值，键不存在或类型不匹配时抛出异常。
@@ -163,9 +165,10 @@ namespace AsynGyanis::Base
          * @return 配置值或默认值
          * @note 取值遵循严格口径（见 configValueAs）：不做取整、回绕与跨类型转换，
          *       类型对不上按「未配置」处理而不抛出。
+         * @note 同样不是 noexcept：取用过程要深拷贝配置子树（见 getOptional）
          */
         template<typename T>
-        T get(const std::string_view key, T &&defaultValue) const noexcept
+        T get(const std::string_view key, T &&defaultValue) const
         {
             const auto optionalValue = getOptional(key);
             if (!optionalValue)
@@ -200,7 +203,7 @@ namespace AsynGyanis::Base
          * @param defaultValue 默认值。
          * @return bool 配置值或默认值。
          */
-        bool getBool(std::string_view key, bool defaultValue = false) const noexcept;
+        bool getBool(std::string_view key, bool defaultValue = false) const;
 
         /**
          * @brief 读取整型配置值，缺失或类型不匹配时返回默认值。
@@ -208,7 +211,7 @@ namespace AsynGyanis::Base
          * @param defaultValue 默认值。
          * @return int64_t 配置值或默认值。
          */
-        int64_t getInt(std::string_view key, int64_t defaultValue = 0) const noexcept;
+        int64_t getInt(std::string_view key, int64_t defaultValue = 0) const;
 
         /**
          * @brief 读取浮点配置值，缺失或类型不匹配时返回默认值。
@@ -216,7 +219,7 @@ namespace AsynGyanis::Base
          * @param defaultValue 默认值。
          * @return double 配置值或默认值。
          */
-        double getDouble(std::string_view key, double defaultValue = 0.0) const noexcept;
+        double getDouble(std::string_view key, double defaultValue = 0.0) const;
 
         /**
          * @brief 读取字符串配置值，缺失或类型不匹配时返回默认值。

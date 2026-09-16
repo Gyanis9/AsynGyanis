@@ -264,6 +264,44 @@ namespace AsynGyanis::Base
         EXPECT_EQ(collectFilesMatching(directory, R"(cap\.\d+\.log)").size(), 2u);
     }
 
+    /**
+     * @brief 清理要认得出带时间戳的备份名（周期策略留下的那些），同时不误删同前缀的无关文件
+     * @details 周期策略的备份名形如 app.log.2026-09-15 或 app.log.2026-09-15_07，时间戳里带
+     *          '-' 与 '_'。备份名判定若只认数字与点，这类备份就永远进不了清理名单——
+     *          max_backup 形同虚设，日志目录无界增长。用例用大小策略触发清理：
+     *          清理只看备份名形态，与触发它的是哪种策略无关
+     */
+    TEST(RollingFileSink, TimeStampedBackupsAreRecognizedByCleanup)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_TimeBackups");
+        const fs::path                        directory = temporaryDirectory.path();
+
+        ASSERT_TRUE(temporaryDirectory.writeFile("mixed.2026-09-14.log", "oldest_backup\n"));
+        ASSERT_TRUE(temporaryDirectory.writeFile("mixed.2026-09-15_07.log", "newer_backup\n"));
+        // 同前缀但非备份的无关文件：清理必须放过它，误删就是数据丢失
+        ASSERT_TRUE(temporaryDirectory.writeFile("mixed.audit.log", "unrelated\n"));
+
+        // 把两份备份的最后写入时间拉开，使「最旧」有唯一解（两份都是刚写入的，时间本就相同）
+        const auto      baseTime = fs::file_time_type::clock::now();
+        std::error_code timeError;
+        fs::last_write_time(directory / "mixed.2026-09-14.log", baseTime - std::chrono::minutes(10), timeError);
+        ASSERT_FALSE(timeError);
+        fs::last_write_time(directory / "mixed.2026-09-15_07.log", baseTime - std::chrono::minutes(5), timeError);
+        ASSERT_FALSE(timeError);
+
+        // 活动文件预置内容已超过阈值：构造后的第一次写入即触发滚动，从而走到清理逻辑
+        ASSERT_TRUE(temporaryDirectory.writeFile("mixed.log", std::string(256, 'x')));
+        RollingFileSink sink("mixed.log", directory, RollingPolicy::Size, 128, 1);
+        sink.write(makeEvent(LogLevel::Info, "trigger_roll"));
+        sink.flush();
+
+        // 上限 1 只留得下本次滚动产生的那份，两份时间戳备份都必须被清掉
+        EXPECT_FALSE(fs::exists(directory / "mixed.2026-09-14.log")) << "带时间戳的备份没有被清理";
+        EXPECT_FALSE(fs::exists(directory / "mixed.2026-09-15_07.log")) << "带下划线的时间戳同样要认得出";
+        EXPECT_TRUE(fs::exists(directory / "mixed.1.log")) << "本次滚动产生的备份不该被清掉";
+        EXPECT_TRUE(fs::exists(directory / "mixed.audit.log")) << "同前缀的无关文件被误删了";
+    }
+
     // ============================================================================
     // 按时间滚动
     // ============================================================================

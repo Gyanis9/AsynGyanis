@@ -387,6 +387,71 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(captured, "default console root")) << captured;
     }
 
+    /**
+     * @brief 只配了具名 logger 时 root 也要就位：框架自身走 root，不能停在「无 sink」的默认状态
+     */
+    TEST_F(LoggerConfigLoaderTest, RootLoggerKeepsDefaultConsoleSinkWhenOnlyNamedLoggersConfigured)
+    {
+        loadConfiguration(R"(logging:
+  global_level: DEBUG
+  loggers:
+    app:
+      sinks:
+        - type: console
+          color: false
+)");
+
+        LoggerRegistry::instance().clear();
+        applyLogging();
+
+        const Logger &root = LoggerRegistry::instance().getRootLogger();
+        EXPECT_EQ(root.getLevel(), LogLevel::Debug) << "root 没有跟着 global_level 走";
+
+        std::string captured;
+        {
+            const ConsoleCapture capture;
+            root.log(LogLevel::Info, "root still emits");
+            captured = capture.text();
+        }
+        EXPECT_TRUE(contains(captured, "root still emits"))
+                << "root 停在默认状态上：框架自身那些走 root 的日志被静默丢掉了";
+    }
+
+    /**
+     * @brief max_backup 为负数时钳到 0 并给出诊断：负数转 size_t 会变成「一个都不删」
+     */
+    TEST_F(LoggerConfigLoaderTest, NegativeMaximumBackupIsClampedWithDiagnostic)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      sinks:
+        - type: rolling_file
+          base_filename: clamped_backup.log
+          directory: rolling
+          max_size_mb: 1
+          max_backup: -1
+)");
+
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "max_backup=-1")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "钳制")) << diagnostic;
+
+        // 钳到 0 之后仍应正常写出：非法取值不该让整个 sink 失效
+        logAndFlush("root", LogLevel::Info, "clamped_backup_line");
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/clamped_backup.log"), "clamped_backup_line"))
+                << readTemporaryFile("rolling/clamped_backup.log");
+    }
+
     TEST_F(LoggerConfigLoaderTest, EmptyConfigurationCreatesRootLoggerAtInfoLevel)
     {
         applyLogging();

@@ -74,14 +74,16 @@ namespace AsynGyanis::Base
             }
         }
 
-        if (loggerNames.empty())
+        // root 是兜底：没人显式配 logging.loggers.root 时，它照样要按 global_level 与默认输出
+        // 目标就位。只在「整个 loggers 段缺席」时才配 root 是不够的——只配了具名 logger 的部署里，
+        // 框架自身那些走 root 的日志会停在「无 sink」的默认状态上被静默丢掉，而那恰恰是最需要
+        // 看到的诊断。显式配了 root 的走下面具名 logger 那条路（LoggerRegistry 的 "root" 就是它本体）
+        if (!loggerNames.contains("root"))
         {
-            // 无 loggers 配置，创建默认 root logger
             auto &root = LoggerRegistry::instance().getRootLogger();
             root.clearSinks();
             root.setLevel(defaultLevel);
             root.addSink(std::make_unique<ConsoleSink>(true));
-            return;
         }
 
         for (const auto &name: loggerNames)
@@ -207,8 +209,18 @@ namespace AsynGyanis::Base
                 std::cerr << "LoggerConfig：rolling sink 的 max_size_mb=" << configuredMaximumSizeMb
                         << " 非法（要求 >= 1），已钳制为 1" << '\n';
             }
-            const size_t maximumSizeBytes   = static_cast<size_t>(configuredMaximumSizeMb < 1 ? 1 : configuredMaximumSizeMb) * 1024 * 1024;
-            const size_t maximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
+            const size_t maximumSizeBytes = static_cast<size_t>(configuredMaximumSizeMb < 1 ? 1 : configuredMaximumSizeMb) * 1024 * 1024;
+
+            // 边界钳制：负数强转成 size_t 会成为 SIZE_MAX，等于「备份一个都不删」——
+            // 与「限制备份数量」的意图正好相反，日志目录会无界增长。与 max_size_mb、queue_size
+            // 两处同口径钳到合法下界并给出诊断（0 是合法值：不保留任何备份）
+            const int64_t configuredMaximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
+            if (configuredMaximumBackupCount < 0)
+            {
+                std::cerr << "LoggerConfig：rolling sink 的 max_backup=" << configuredMaximumBackupCount
+                        << " 非法（要求 >= 0），已钳制为 0" << '\n';
+            }
+            const size_t maximumBackupCount = static_cast<size_t>(configuredMaximumBackupCount < 0 ? 0 : configuredMaximumBackupCount);
 
             sink = std::make_unique<RollingFileSink>(baseOptional.value(), directory, policy, maximumSizeBytes, maximumBackupCount);
         } else if (type == "async")

@@ -289,7 +289,7 @@ namespace AsynGyanis::Base
         return iterator->second;
     }
 
-    std::optional<ConfigValue> ConfigManager::getOptional(const std::string_view key) const noexcept
+    std::optional<ConfigValue> ConfigManager::getOptional(const std::string_view key) const
     {
         const auto currentData = m_data.load(std::memory_order_acquire);
 
@@ -301,17 +301,17 @@ namespace AsynGyanis::Base
         return iterator->second;
     }
 
-    bool ConfigManager::getBool(const std::string_view key, bool defaultValue) const noexcept
+    bool ConfigManager::getBool(const std::string_view key, bool defaultValue) const
     {
         return get<bool>(key, std::move(defaultValue));
     }
 
-    int64_t ConfigManager::getInt(const std::string_view key, int64_t defaultValue) const noexcept
+    int64_t ConfigManager::getInt(const std::string_view key, int64_t defaultValue) const
     {
         return get<int64_t>(key, std::move(defaultValue));
     }
 
-    double ConfigManager::getDouble(const std::string_view key, double defaultValue) const noexcept
+    double ConfigManager::getDouble(const std::string_view key, double defaultValue) const
     {
         return get<double>(key, std::move(defaultValue));
     }

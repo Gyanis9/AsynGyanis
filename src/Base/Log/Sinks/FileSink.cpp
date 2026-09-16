@@ -1,6 +1,7 @@
 #include "Base/Log/Sinks/FileSink.h"
 
 #include <filesystem>
+#include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -77,6 +78,23 @@ namespace AsynGyanis::Base
         m_lineBuffer.assign(line);
         m_lineBuffer.push_back('\n');
         m_file << m_lineBuffer;
+
+        // 写入后必须看流状态：磁盘写满或配额耗尽时插入不会抛异常，只会把 failbit/badbit 置起，
+        // 此后每次 << 都是空操作——日志整片静默消失，而返回值还在报「写成功了」。
+        // 这里如实返回 0，并把诊断写到标准错误：日志系统自身出了故障，没有别的去处可报。
+        // 诊断只在「连续失败」的第一条上报一次，避免磁盘故障时每一行日志都去写一次标准错误
+        if (!m_file.good())
+        {
+            if (!m_hasReportedWriteFailure)
+            {
+                m_hasReportedWriteFailure = true;
+                std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）：" << m_filePath.string()
+                        << "；流已失效，后续日志不会再落盘，重新打开该文件（reopen）后恢复" << '\n';
+            }
+            return 0;
+        }
+        m_hasReportedWriteFailure = false;
+
         // 返回写入字节数（换行按 1 字节计）：文本模式下 Windows 会额外补 '\r'，
         // 调用方只用它做「是否达到滚动阈值」的近似判据，不需要与磁盘大小逐字节相等
         return line.size() + 1;
@@ -96,6 +114,8 @@ namespace AsynGyanis::Base
         std::lock_guard lock(m_mutex);
         m_file.close();
         m_filePath = newPath;
+        // 换了一条流，上一个流上的失败不该压着新的：下一次再失败要重新报一次
+        m_hasReportedWriteFailure = false;
         // 同样使用 error_code 重载：reopen 常在运行期由滚动/切换路径调用，
         // 这里不允许抛异常打断日志写入；若目录无法创建，随后的 open 会失败，
         // 文件保持关闭状态（write() 对已关闭文件静默跳过）

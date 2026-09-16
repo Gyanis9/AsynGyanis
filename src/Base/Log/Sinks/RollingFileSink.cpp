@@ -261,8 +261,10 @@ namespace AsynGyanis::Base
             }
             const std::string filename = entry.path().filename().string();
             // 备份名只有两种形态：`name.N.ext`（大小策略的序号备份）与 `name.<时间戳>[.N].ext`
-            // （周期策略）。因此除了前缀与后缀，中间那段必须是纯数字与点——只按前缀匹配会把
-            // app.audit.log 这类同前缀的无关文件也扫进删除区间，那是数据丢失
+            // （周期策略，时间戳形如 2026-09-16 或 2026-09-16_07，本身带连字符与下划线）。
+            // 因此中间那段只允许数字、点、连字符与下划线：只按前缀匹配会把 app.audit.log 这类
+            // 同前缀的无关文件也扫进删除区间，那是数据丢失；而不认 `-`/`_` 会让周期备份
+            // 永远清不掉——max_backup 形同虚设，日志目录无界增长
             const bool hasBackupPrefix = filename != activeName && std::string_view(filename).starts_with(backupPrefixView) &&
                                          std::string_view(filename).ends_with(extensionPart);
             if (!hasBackupPrefix)
@@ -274,7 +276,8 @@ namespace AsynGyanis::Base
             const bool isBackupName = !middlePart.empty() &&
                                       std::ranges::all_of(middlePart, [](const char character)
                                       {
-                                          return (character >= '0' && character <= '9') || character == '.';
+                                          return (character >= '0' && character <= '9') || character == '.' ||
+                                                 character == '-' || character == '_';
                                       });
             if (isBackupName)
             {
