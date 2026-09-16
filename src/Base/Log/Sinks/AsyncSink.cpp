@@ -143,7 +143,16 @@ namespace AsynGyanis::Base
             {
                 if (m_wrappedSink)
                 {
-                    m_wrappedSink->write(event);
+                    // 被包装 sink 自己的等级过滤要在这里补上：它永远不是 Logger 的直接子节点，
+                    // 而 Logger 只按挂在它下面的 sink 预筛（LogSink 的契约里写明过滤由调用方问）。
+                    // 少了这一步，`wrapped: {type: file, level: ERROR}` 会收到 DEBUG/INFO 全量内容
+                    if (m_wrappedSink->shouldLog(event.level))
+                    {
+                        m_wrappedSink->write(event);
+                    } else
+                    {
+                        m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             } catch (...)
             {

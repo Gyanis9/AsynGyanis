@@ -95,7 +95,9 @@ namespace AsynGyanis::Base
         void stop();
 
         /**
-         * @brief 返回因队列溢出或停止后写入被丢弃的事件累计数
+         * @brief 返回被丢弃的事件累计数
+         * @details 三种情形计入：队列溢出按策略丢弃、已请求停止后写入、以及被包装 sink 的
+         *          level 过滤挡下（那一层过滤没有别人会问，见 workerLoop 里的说明）
          * @return uint64_t 丢弃事件总数
          */
         [[nodiscard]] uint64_t droppedEventCount() const noexcept;

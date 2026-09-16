@@ -448,6 +448,30 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(events->contains("async_forwarded"));
     }
 
+    /**
+     * @brief 被包装 sink 自己的 level 过滤不能被旁路
+     * @details LogSink 的契约是「过滤由调用方用 shouldLog() 预筛」，而被包装的 sink 永远不是
+     *          Logger 的直接子节点——Logger 只按挂在它下面的 AsyncSink 预筛。少了这一步，
+     *          配置里写成 `wrapped: {type: file, level: ERROR}` 的那个 sink 会收到 DEBUG/INFO 全量
+     */
+    TEST(AsyncSink, RespectsWrappedSinkLevelFilter)
+    {
+        auto downstream = std::make_unique<RecordingSink>(std::make_shared<RecordedEvents>());
+        auto events     = downstream->events();
+        downstream->setLevel(LogLevel::Error);
+
+        AsyncSink sink(std::move(downstream), 128);
+
+        sink.write(makeEvent(LogLevel::Info, "below_wrapped_level"));
+        sink.write(makeEvent(LogLevel::Error, "at_wrapped_level"));
+        sink.flush();
+
+        EXPECT_FALSE(events->contains("below_wrapped_level")) << "被包装 sink 的 level 被旁路了";
+        EXPECT_TRUE(events->contains("at_wrapped_level")) << "达到等级的事件被误挡";
+        EXPECT_EQ(events->size(), 1u);
+        EXPECT_EQ(sink.droppedEventCount(), 1u) << "被下游等级挡下的事件应计入丢弃";
+    }
+
     TEST(AsyncSink, FlushBlocksUntilQueueDrainedAndDownstreamFlushed)
     {
         auto          events     = std::make_shared<RecordedEvents>();
