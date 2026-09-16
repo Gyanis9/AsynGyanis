@@ -241,6 +241,18 @@ namespace AsynGyanis::Net
         return std::exchange(m_outgoingBytes, std::string{});
     }
 
+    void Http2Connection::recycleOutgoingBytes(std::string &&buffer) noexcept
+    {
+        // 只在内部缓冲为空时回收：非空说明取走之后又产生了新字节（例如写挂起期间排队的帧），
+        // 换过去就是覆盖在途数据
+        if (!m_outgoingBytes.empty())
+        {
+            return;
+        }
+        buffer.clear();
+        m_outgoingBytes = std::move(buffer);
+    }
+
     std::vector<Http2Request> Http2Connection::takeRequests()
     {
         return std::exchange(m_pendingRequests, std::vector<Http2Request>{});

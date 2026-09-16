@@ -1586,6 +1586,10 @@ namespace AsynGyanis::Net
                           failureReason);
             m_isConnectionUnusable = true;
         }
+
+        // 缓冲还回去复用（容量留下）：h2 的每条响应至少要交两次待发字节，不复用就是每条响应
+        // 重新分配一整块。写失败路径同样还——那份缓冲已经没用处了
+        m_connection.recycleOutgoingBytes(std::move(outgoingBytes));
         co_return isSucceeded;
     }
 

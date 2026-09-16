@@ -225,6 +225,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string takeOutgoingBytes();
 
         /**
+         * @brief 把刚取走的待发缓冲还回来复用（容量留下、字节清空）
+         * @param buffer 之前 takeOutgoingBytes() 取走的那个字符串（按右值移交）
+         * @note 写完之后还回来，下一条响应就不必再分配一整块：take 走的那份容量原本随返回值一起
+         *       析构，而 h2 的每条响应至少要交两次待发字节（响应头+正文、控制帧）。
+         *       内部此刻已有新的待发字节时直接丢弃这份缓冲（不能覆盖在途数据）
+         */
+        void recycleOutgoingBytes(std::string &&buffer) noexcept;
+
+        /**
          * @brief 取走已校验通过的请求
          * @return std::vector<Http2Request> 按到达顺序排列的请求；没有新请求时为空
          * @note 取走即清空。请求在头块的 END_HEADERS 收齐、语义校验通过后才出现；同一流后续的正文
