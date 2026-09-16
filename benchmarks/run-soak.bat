@@ -7,8 +7,13 @@ rem Build type: debug by default (build\debug); set ASYN_SOAK_BUILD=release to u
 rem       Debug carries AddressSanitizer, so its throughput only compares with other
 rem       Debug runs and is not a performance ceiling; comparing against
 rem       benchmarks/baseline.json must use release, where that baseline was measured.
-rem Gate usage: ... run-soak.bat 18080 4 --json-out build\soak.json
-rem       then: python benchmarks\check-baseline.py build\soak.json
+rem Gate usage (baseline.json covers both http1-* and http2-h2c-pipeline*):
+rem   1) ... run-soak.bat 18080 4 --json-out build\soak.json
+rem   2) start the server again WITH --h2c, then
+rem      python benchmarks\soak_h2c.py --port 18080 --json-out build\soak-h2c.json
+rem   3) python benchmarks\check-baseline.py build\soak.json build\soak-h2c.json
+rem NOTE: feeding only soak.py's JSON to check-baseline.py makes the h2c entries show up
+rem       as missing and the gate exits 1 - that is a setup mistake, not a regression.
 rem ----------------------------------------------------------------------------
 rem NOTE: keep this file ASCII-only. cmd parses batch files using the console OEM
 rem       code page (936 on zh-CN Windows), so UTF-8 comments are split mid-line and
