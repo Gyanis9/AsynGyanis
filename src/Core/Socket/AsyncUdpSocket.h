@@ -79,7 +79,24 @@ namespace AsynGyanis::Core
          * @return Task<ssize_t> 收到的字节数（**0 是合法的空报文**）；等待可读期间套接字被关闭时返回 -1
          * @throws Base::Exception 平台层报错（描述符非法等），原因已含中文说明
          */
-        [[nodiscard]] Task<ssize_t> asyncReceiveFrom(void *buffer, std::size_t capacity, Platform::SocketAddress &peerAddress);
+        /**
+         * @brief 一次数据报接收的结果
+         * @note 按值返回而不是写进调用方给的引用：本方法是惰性协程，调用方可能先拿到 Task、
+         *       稍后才 await，那时那个实参（临时量或已离开作用域的局部对象）已经亡故
+         */
+        struct DatagramReceiveResult
+        {
+            ssize_t                 receivedByteCount{-1}; ///< 收到的字节数；负值表示失败（-1）
+            Platform::SocketAddress peerAddress;           ///< 来源地址（失败时无意义）
+        };
+
+        /**
+         * @brief 接收一个数据报并带回来源地址
+         * @param buffer 目标缓冲
+         * @param capacity 缓冲容量
+         * @return Task<DatagramReceiveResult> 字节数与来源地址（见结构体说明：按值返回）
+         */
+        [[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity);
 
         /**
          * @brief 发一条报文，内部吸收「发送缓冲暂时放不下」

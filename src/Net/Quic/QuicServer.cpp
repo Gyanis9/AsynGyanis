@@ -151,8 +151,11 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t> receiveBuffer(Platform::DatagramSocket::kMaximumDatagramBytes);
         while (!m_isStopped.load(std::memory_order_acquire))
         {
-            Platform::SocketAddress peerAddress;
-            const ssize_t           receivedLength = co_await m_socket->asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size(), peerAddress);
+            // 结果按值回来（惰性协程不往调用方的引用里写：实参可能比 await 先亡）
+            const Core::AsyncUdpSocket::DatagramReceiveResult received =
+                    co_await m_socket->asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
+            const ssize_t                  receivedLength = received.receivedByteCount;
+            const Platform::SocketAddress &peerAddress    = received.peerAddress;
             if (receivedLength < 0)
             {
                 // 套接字被关（stop()）或读失败：退出收循环，收尾交给析构

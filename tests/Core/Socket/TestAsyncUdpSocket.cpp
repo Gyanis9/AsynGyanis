@@ -133,9 +133,12 @@ namespace AsynGyanis::Core
                 observation.sentByteCount = co_await sender.asyncSendTo(receiver.localAddress(), payload.data(), payload.size());
 
                 std::array<char, 256> buffer{};
-                const ssize_t         receivedByteCount =
-                        co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size(), observation.peerAddress);
-                observation.receivedByteCount = receivedByteCount;
+                // 结果按值回来：字节数与来源地址一起拿到（惰性协程不往调用方的引用里写）
+                const AsyncUdpSocket::DatagramReceiveResult received =
+                        co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
+                const ssize_t receivedByteCount = received.receivedByteCount;
+                observation.peerAddress         = received.peerAddress;
+                observation.receivedByteCount   = receivedByteCount;
                 if (receivedByteCount > 0)
                 {
                     observation.receivedPayload.assign(buffer.data(), static_cast<std::size_t>(receivedByteCount));
@@ -157,9 +160,12 @@ namespace AsynGyanis::Core
             try
             {
                 std::array<char, 256> buffer{};
-                const ssize_t         receivedByteCount =
-                        co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size(), observation.peerAddress);
-                observation.receivedByteCount = receivedByteCount;
+                // 结果按值回来：字节数与来源地址一起拿到（惰性协程不往调用方的引用里写）
+                const AsyncUdpSocket::DatagramReceiveResult received =
+                        co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
+                const ssize_t receivedByteCount = received.receivedByteCount;
+                observation.peerAddress         = received.peerAddress;
+                observation.receivedByteCount   = receivedByteCount;
                 if (receivedByteCount > 0)
                 {
                     observation.receivedPayload.assign(buffer.data(), static_cast<std::size_t>(receivedByteCount));

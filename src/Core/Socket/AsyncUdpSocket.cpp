@@ -77,16 +77,16 @@ namespace AsynGyanis::Core
         return watcher->waitWritable();
     }
 
-    Task<ssize_t> AsyncUdpSocket::asyncReceiveFrom(void *const buffer, const std::size_t capacity,
-                                                  Platform::SocketAddress &peerAddress)
+    Task<AsyncUdpSocket::DatagramReceiveResult> AsyncUdpSocket::asyncReceiveFrom(void *const buffer, const std::size_t capacity)
     {
+        Platform::SocketAddress peerAddress;
         while (true)
         {
             const ssize_t receivedByteCount = m_socket.receive(buffer, capacity, peerAddress);
             if (receivedByteCount >= 0)
             {
                 // 0 是合法的空报文（对端确实发了一条零长数据报），不能当成「没收到」处理
-                co_return receivedByteCount;
+                co_return DatagramReceiveResult{.receivedByteCount = receivedByteCount, .peerAddress = peerAddress};
             }
 
             const int errorCode = Platform::PlatformError::lastSocketErrorCode();
@@ -95,7 +95,7 @@ namespace AsynGyanis::Core
                 // 同 AsyncSocket：等待失败即套接字已关闭，用 -1 交给调用方收手
                 if (!co_await waitReadable())
                 {
-                    co_return -1;
+                    co_return DatagramReceiveResult{};
                 }
                 continue;
             }
