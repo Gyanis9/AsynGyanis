@@ -485,7 +485,8 @@ namespace AsynGyanis::Database
          * @brief 池析构时仍阻塞在 acquire() 上的同步等待者要被叫醒，而不是等满自己的超时
          * @details 等待谓词此前只有「空闲栈非空」，而析构做的第一件事就是清空空闲栈——谓词永远
          *          不成立，等待者只能靠超时退出（超时设成 30 秒就是为了把这件事照出来），而它睡的
-         *          那把条件变量此刻已经随对象销毁。判据：析构一返回，等待线程就已经醒了、拿到空连接
+         *          那把条件变量此刻已经随对象销毁。判据：析构叫醒它之后，它自己带着空连接回来
+         *          （不是被那 30 秒超时叫醒的）
          */
         TEST(ConnectionPool, DestructorWakesBlockedSyncWaiters)
         {
@@ -528,6 +529,15 @@ namespace AsynGyanis::Database
             ASSERT_GT(pool->waitingCount(), 0U) << "等待者没有挂上：用例前提不成立";
 
             pool.reset();
+
+            // 析构只是把等待者从条件变量上叫醒，它未必来得及在 reset() 返回前跑完 acquire()，
+            // 直接断言就是赌调度（Linux 满载的 CI 上实测红过两次）；先等它回来再断言形态——
+            // 析构真没叫醒它时这里只会等满时限，用例照样红
+            const auto returnDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!isWaiterReturned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < returnDeadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
 
             EXPECT_TRUE(isWaiterReturned.load(std::memory_order_acquire))
                     << "析构返回后同步等待者还睡着：它只能等满 30 秒超时，而条件变量已经随对象销毁";
