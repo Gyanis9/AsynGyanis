@@ -1,5 +1,6 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Base/Exception/SystemException.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/EventLoop/TimerQueue.h"
 
@@ -35,33 +36,51 @@ namespace AsynGyanis::Core
 
         while (true)
         {
-            m_scheduler.runAll();
-
-            if (m_stopRequested.load(std::memory_order_acquire))
+            // 投进来的可调用体/协程抛异常时不能让异常无声地逃出去：本函数通常跑在线程入口上，
+            // 逃出去就是 std::terminate（整个进程带走），而且末尾的 m_running 复位会被跳过，
+            // isRunning() 永远停在 true。这里就地记一条 ERROR 并复位状态，然后**照旧重抛**——
+            // 失败语义不变（快速失败，由 WorkerSupervisor 重启 worker），但现场有据可查；
+            // 自行捕获 run() 的调用方也不会再看到一个「仍在运行」的假状态
+            try
             {
-                break;
-            }
+                m_scheduler.runAll();
 
-            // 有就绪协程时用 0 超时轮询，否则无限阻塞等待 epoll 事件
-            const int timeoutMs = m_scheduler.hasWork() ? 0 : -1;
-            for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
-            {
-                if (ev.data.ptr == &m_wakeupSentinel)
+                if (m_stopRequested.load(std::memory_order_acquire))
                 {
-                    m_wakeup.drain();
-                    continue;
+                    break;
                 }
 
-                if (ev.data.ptr)
+                // 有就绪协程时用 0 超时轮询，否则无限阻塞等待 epoll 事件
+                const int timeoutMs = m_scheduler.hasWork() ? 0 : -1;
+                for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
                 {
-                    // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
-                    // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
-                    //（它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）
-                    static_cast<IoWatcher *>(ev.data.ptr)->handleEvents(ev.events);
-                }
-            }
+                    if (ev.data.ptr == &m_wakeupSentinel)
+                    {
+                        m_wakeup.drain();
+                        continue;
+                    }
 
-            m_scheduler.runAll();
+                    if (ev.data.ptr)
+                    {
+                        // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
+                        // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
+                        //（它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）
+                        static_cast<IoWatcher *>(ev.data.ptr)->handleEvents(ev.events);
+                    }
+                }
+
+                m_scheduler.runAll();
+            } catch (const std::exception &loopError)
+            {
+                LOG_ERROR_FMT("EventLoop: 事件循环里逃出的异常已就地收口（循环停止）：{}", loopError.what());
+                m_running.store(false, std::memory_order_release);
+                throw;
+            } catch (...)
+            {
+                LOG_ERROR_FMT("EventLoop: 事件循环里逃出的非标准异常已就地收口（循环停止）");
+                m_running.store(false, std::memory_order_release);
+                throw;
+            }
         }
 
         m_running.store(false, std::memory_order_release);
