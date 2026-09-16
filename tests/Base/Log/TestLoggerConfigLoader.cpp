@@ -1312,6 +1312,46 @@ namespace AsynGyanis::Base
     // 重复加载
     // ============================================================================
 
+    /**
+     * @brief sinks 字段类型不符（漏写每条的 `-`）时保留原有 sink，而不是把该 logger 清空
+     * @details 诊断写的是「已忽略该字段」，行为就得是忽略：清空会让这个 logger 此后静默丢掉
+     *          所有日志，而运维只看到一行标准错误。这里先配好一个可用的 console sink，再用
+     *          类型不符的配置覆盖同一 logger
+     */
+    TEST_F(LoggerConfigLoaderTest, KeepsExistingSinksWhenSinksFieldHasWrongType)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: TRACE
+      sinks:
+        - type: console
+)");
+        applyLogging();
+
+        // 第二次：sinks 写成了映射（每条前面的 `-` 漏了）
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: TRACE
+      sinks:
+        type: console
+)");
+        applyLogging();
+
+        std::string captured;
+        {
+            const ConsoleCapture capture;
+            logAndFlush("root", LogLevel::Info, "still has its sink");
+            captured = capture.text();
+        }
+
+        EXPECT_TRUE(contains(captured, "still has its sink"))
+                << "sinks 类型不符时说好「已忽略该字段」，实际却把原有 sink 清空了：" << captured;
+    }
+
     TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationReplacesSinksInsteadOfDuplicating)
     {
         loadConfiguration(R"(logging:

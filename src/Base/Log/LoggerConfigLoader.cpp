@@ -121,15 +121,16 @@ namespace AsynGyanis::Base
             std::cerr << "LoggerConfig：logger 的 sinks 不是列表（YAML 里每条前要加 '-'），已忽略该字段" << '\n';
         }
 
-        logger.clearSinks();
-
         if (levelText.has_value())
         {
             logger.setLevel(logLevelFromString(*levelText));
         }
 
+        // 清空只发生在「这份配置确实带了一份可用的 sinks 列表」时：字段缺失或类型不符都算
+        // 「没说要换 sink」，此时清空会让该 logger 此后静默丢日志，而诊断却说「已忽略该字段」
         if (sinksArrayOpt.has_value())
         {
+            logger.clearSinks();
             for (const auto &sinkConfiguration: *sinksArrayOpt)
             {
                 if (auto sink = createSinkFromConfig(sinkConfiguration, baseDirectory))
