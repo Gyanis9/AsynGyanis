@@ -146,6 +146,51 @@ jobs:
       - name: 编译 Database（含真机驱动分支；告警同样是失败）
         run: cmake --build build/mysql-driver-check --target Database -- -k 0
 
+  # io_uring 事件后端的**只编译**覆盖：该分支只在显式开关下参与编译（默认走 epoll），
+  # 此前从未在任何 CI 里编过——接口或宏漂移只有人工本地构建才会发现。这里只编 Core，
+  # 不做任何运行验证。
+  #
+  # mimalloc 分支不在其中：它要先在 conanfile 里声明依赖（find_package(mimalloc REQUIRED)），
+  # 而本仓库的 Conan 依赖清单里没有它——加作业之前得先补依赖，见 PR 说明。
+  io-uring-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（io_uring 事件后端）
+        run: |
+          cmake -S . -B build/io-uring-check -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DASYN_WITH_IO_URING=ON \
+            -DDATABASE_WITH_MYSQL=OFF \
+            -DASYN_BUILD_TESTS=OFF \
+            -DASYN_BUILD_SAMPLES=OFF \
+            -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake"
+
+      - name: 编译 Core（io_uring 分支；告警同样是失败）
+        run: cmake --build build/io-uring-check --target Core -- -k 0
+
   # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑**并发相关**的
   # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
   # 投递（scheduleRemote / 全局队列 / TimerQueue 唤醒）此前只有注释级约定，这里是唯一的自动兜底。
