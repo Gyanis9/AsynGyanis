@@ -477,5 +477,62 @@ namespace AsynGyanis::Database
             EXPECT_EQ(counter.sessionResetCount.load(), 2) << "交给等待者之前同样必须复位";
         }
 
+        // ========================================================================
+        // DestructorWakesBlockedSyncWaiters
+        // ========================================================================
+
+        /**
+         * @brief 池析构时仍阻塞在 acquire() 上的同步等待者要被叫醒，而不是等满自己的超时
+         * @details 等待谓词此前只有「空闲栈非空」，而析构做的第一件事就是清空空闲栈——谓词永远
+         *          不成立，等待者只能靠超时退出（超时设成 30 秒就是为了把这件事照出来），而它睡的
+         *          那把条件变量此刻已经随对象销毁。判据：析构一返回，等待线程就已经醒了、拿到空连接
+         */
+        TEST(ConnectionPool, DestructorWakesBlockedSyncWaiters)
+        {
+            ConnectionCounter counter;
+
+            // 上限 0：任何连接都不允许创建，同步 acquire() 必然走等待路径
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 0;
+            configuration.acquireTimeoutMilliseconds = 30000;
+
+            auto pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
+
+            std::atomic<bool>          isWaiterReturned{false};
+            std::atomic<bool>          isWaiterGotConnection{true};
+            std::atomic<std::int64_t>  waiterElapsedMilliseconds{0};
+            std::thread                waiter(
+                    [&pool, &isWaiterReturned, &isWaiterGotConnection, &waiterElapsedMilliseconds]
+                    {
+                        const auto startedAt = std::chrono::steady_clock::now();
+                        const PooledConnection connection = pool->acquire();
+                        waiterElapsedMilliseconds.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                std::chrono::steady_clock::now() - startedAt)
+                                                                .count(),
+                                                        std::memory_order_relaxed);
+                        isWaiterGotConnection.store(static_cast<bool>(connection));
+                        isWaiterReturned.store(true, std::memory_order_release);
+                    });
+
+            // 等它真的挂进等待列表再析构：否则考的是「析构之后才来等」，不是这条用例要钉的场景
+            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (pool->waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            ASSERT_GT(pool->waitingCount(), 0U) << "等待者没有挂上：用例前提不成立";
+
+            pool.reset();
+
+            EXPECT_TRUE(isWaiterReturned.load(std::memory_order_acquire))
+                    << "析构返回后同步等待者还睡着：它只能等满 30 秒超时，而条件变量已经随对象销毁";
+            EXPECT_FALSE(isWaiterGotConnection.load()) << "池停摆时被唤醒的同步等待者应拿到空连接";
+            EXPECT_LT(waiterElapsedMilliseconds.load(), 10000)
+                    << "等待者是被自己的 30 秒超时叫醒的，而不是被析构叫醒的（等待了 "
+                    << waiterElapsedMilliseconds.load() << "ms）";
+
+            waiter.join();
+        }
+
     } // namespace
 } // namespace AsynGyanis::Database

@@ -329,6 +329,14 @@ namespace AsynGyanis::Database
         void removeAsyncWaiter(AcquireAwaiter *waiter) noexcept;
 
         /**
+         * @brief 同 removeAsyncWaiter()，但要求调用方已持有 m_asyncMutex
+         * @param waiter 待移除的等待者指针
+         * @note 给等待器析构用：它要在一段锁里同时完成「摘表」与「取走交接结果」，
+         *       不能再调那个要自己加锁的版本（同一把非递归锁，二次加锁即自死锁）
+         */
+        void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept;
+
+        /**
          * @brief 唤醒已到截止时刻的异步等待者（以「空连接」收尾）
          * @details 由后台线程按秒节拍调用，语义与同步 acquire() 的超时一致；
          *          恢复投回各自的事件循环，不就地恢复（本函数不在那些循环的线程上）
@@ -357,6 +365,9 @@ namespace AsynGyanis::Database
         std::vector<IdleEntry>  m_idleStack; ///< LIFO 空闲连接栈
         mutable std::mutex      m_mutex;     ///< 保护空闲栈及相关计数
         std::condition_variable m_cv;        ///< 条件变量：通知等待者有空闲连接
+        /// 池正在停摆：析构一置位，同步等待者的等待谓词随之成立，它们返回空连接后自减计数，
+        /// 析构等计数归零才继续销毁成员（否则等待者还睡在即将销毁的 m_cv 上）
+        std::atomic<bool> m_isShuttingDown{false};
 
         // ----- 原子统计 -----
         std::atomic<std::size_t> m_activeCount{0};      ///< 已取出未归还的连接数

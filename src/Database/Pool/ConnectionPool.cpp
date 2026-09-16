@@ -44,7 +44,11 @@ namespace AsynGyanis::Database
 
         // 关闭所有空闲连接
         {
-            std::lock_guard lock(m_mutex);
+            std::unique_lock lock(m_mutex);
+
+            // 停摆标志：同步等待者的谓词据此成立，醒来后返回空连接而不是继续睡在 m_cv 上
+            m_isShuttingDown.store(true, std::memory_order_release);
+
             for (auto &entry: m_idleStack)
             {
                 if (entry.connection)
@@ -59,15 +63,19 @@ namespace AsynGyanis::Database
                 }
             }
             m_idleStack.clear();
-        }
 
-        {
-            std::lock_guard ctLock(m_ctMapMutex);
-            m_creationTimeMap.clear();
-        }
+            {
+                std::lock_guard ctLock(m_ctMapMutex);
+                m_creationTimeMap.clear();
+            }
 
-        // 唤醒所有剩余的同步等待者，让它们拿到空连接
-        m_cv.notify_all();
+            // 唤醒所有剩余的同步等待者：它们醒来会看到停摆标志、返回空连接并自减计数
+            m_cv.notify_all();
+
+            // 等最后一位同步等待者真的离开等待。不等的话本析构返回后它还睡在 m_cv 上——而 m_cv
+            // 已随对象销毁（等待者的退出路径也会 notify_all，因此这里的等待不会漏唤醒）
+            m_cv.wait(lock, [this] { return m_syncWaitingCount.load(std::memory_order_acquire) == 0; });
+        }
 
         // 唤醒所有异步等待者：给它们空连接。
         // 这一次刻意「就地恢复」而不是投回各自的事件循环——池已经停摆，投递进循环的任务
@@ -139,19 +147,28 @@ namespace AsynGyanis::Database
 
         std::unique_lock lock(m_mutex);
 
-        // 等待直到有空闲连接或超时
+        // 等待直到有空闲连接、池停摆或超时
         m_syncWaitingCount.fetch_add(1);
-        while (m_idleStack.empty())
+        bool isTimedOut = false;
+        while (m_idleStack.empty() && !m_isShuttingDown.load(std::memory_order_acquire))
         {
             // 等待条件变量，最多等到截止时间
             if (m_cv.wait_until(lock, deadline) == std::cv_status::timeout)
             {
-                // 超时：没有拿到连接，返回空
-                m_syncWaitingCount.fetch_sub(1);
-                return {};
+                isTimedOut = true;
+                break;
             }
         }
         m_syncWaitingCount.fetch_sub(1);
+        // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_cv 上等计数归零）
+        m_cv.notify_all();
+
+        if (isTimedOut || m_isShuttingDown.load(std::memory_order_acquire))
+        {
+            // 超时或池已停摆：栈里的连接都已关闭，返回空让调用方看见「没拿到」
+            lock.unlock();
+            return {};
+        }
 
         // 从 LIFO 栈顶弹出（最新归还的连接最可能还在热点缓存中）
         IdleEntry entry = std::move(m_idleStack.back());
@@ -201,11 +218,22 @@ namespace AsynGyanis::Database
 
     ConnectionPool::AcquireAwaiter::~AcquireAwaiter()
     {
-        // 如果还在等待列表中，自行移除（防悬挂）
-        // 这发生在调用方提前销毁 Task 导致协程帧被释放的场景
-        if (m_inList)
+        // 摘表与「取走交接结果」必须在唤醒方那把锁里做：notifyAsyncWaiter() / expireTimedOutWaiters()
+        // 都是持 m_asyncMutex 写 m_result 与 m_inList 的，而本析构可能跑在任意线程、与它们没有任何
+        // happens-before。无锁读的后果不只是摘表漏一条：读不到刚交接进来的连接就会把它随帧一起销毁，
+        // 而池的总创建数不降、空闲栈也拿不回它——反复几次之后所有 acquire 都卡在「池已满」上。
+        std::unique_ptr<DatabaseConnection> handedOverConnection;
+        std::shared_ptr<ResumeTicket>       resumeTicket;
         {
-            m_pool->removeAsyncWaiter(this);
+            const std::lock_guard asyncLock(m_pool->m_asyncMutex);
+            if (m_inList)
+            {
+                // 就地摘除，不再调 removeAsyncWaiter()：它要再拿一次同一把非递归锁
+                m_pool->removeAsyncWaiterLocked(this);
+                m_inList = false;
+            }
+            handedOverConnection = std::move(m_result);
+            resumeTicket         = std::move(m_resumeTicket);
         }
 
         // 已经交到手上、却来不及被取走的连接按「取出后立刻归还」结账：交接那一刻归还路径
@@ -214,21 +242,21 @@ namespace AsynGyanis::Database
         // 反复丢弃几次之后所有 acquire 都会卡在「池已满」上直到超时。
         // 判活与调用都在令牌锁内（与 PooledConnection::doReturnToPool 同一处置）：调用方可能
         // 把这具帧留到池析构之后才销毁，那时碰池的记账就是释放后使用
-        if (m_result && m_liveness != nullptr)
+        if (handedOverConnection && m_liveness != nullptr)
         {
             const std::lock_guard livenessLock(m_liveness->mutex);
             if (m_liveness->isAlive)
             {
                 m_pool->m_activeCount.fetch_add(1);
-                m_pool->returnConnection(std::move(m_result));
+                m_pool->returnConnection(std::move(handedOverConnection));
             }
         }
 
         // 票据里的句柄一并清空：池可能已经把「恢复这次等待」投回了事件循环（交接连接那一刻），
         // 而本帧眼下就要析构。投递那边执行时看到空句柄会直接跳过，不会 resume 已释放的帧
-        if (m_resumeTicket)
+        if (resumeTicket)
         {
-            m_resumeTicket->handle.store(nullptr, std::memory_order_release);
+            resumeTicket->handle.store(nullptr, std::memory_order_release);
         }
     }
 
@@ -706,7 +734,11 @@ namespace AsynGyanis::Database
     void ConnectionPool::removeAsyncWaiter(AcquireAwaiter *waiter) noexcept
     {
         std::lock_guard lock(m_asyncMutex);
+        removeAsyncWaiterLocked(waiter);
+    }
 
+    void ConnectionPool::removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept
+    {
         // 在列表中查找并移除
         if (const auto it = std::ranges::find(m_asyncWaiters, waiter); it != m_asyncWaiters.end())
         {
