@@ -94,9 +94,10 @@ namespace AsynGyanis::Database
         }
         for (const std::shared_ptr<AcquireAwaiter::ResumeTicket> &ticket: abandonedTickets)
         {
-            if (ticket->handle != nullptr)
+            // 取走再恢复：句柄只能被恢复一次（另一侧可能同时把它置空）
+            if (const std::coroutine_handle<> abandonedHandle = ticket->handle.exchange(nullptr); abandonedHandle != nullptr)
             {
-                ticket->handle.resume();
+                abandonedHandle.resume();
             }
         }
     }
@@ -227,7 +228,7 @@ namespace AsynGyanis::Database
         // 而本帧眼下就要析构。投递那边执行时看到空句柄会直接跳过，不会 resume 已释放的帧
         if (m_resumeTicket)
         {
-            m_resumeTicket->handle = nullptr;
+            m_resumeTicket->handle.store(nullptr, std::memory_order_release);
         }
     }
 
@@ -265,8 +266,8 @@ namespace AsynGyanis::Database
             // 只在入表时定一次，不随每次尝试刷新——否则反复失败的重试会把超时无限顺延
             m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_pool->m_config.acquireTimeoutMilliseconds);
             // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据
-            m_resumeTicket      = std::make_shared<ResumeTicket>();
-            m_resumeTicket->handle = handle;
+            m_resumeTicket = std::make_shared<ResumeTicket>();
+            m_resumeTicket->handle.store(handle, std::memory_order_release);
             m_pool->m_asyncWaiters.push_back(this);
             m_inList = true;
         }
@@ -687,9 +688,11 @@ namespace AsynGyanis::Database
             waiter->m_completionLoop->scheduler().postRemote(
                     [resumeTicket]()
                     {
-                        if (resumeTicket->handle != nullptr)
+                        // 取走再恢复：句柄只能被恢复一次
+                        if (const std::coroutine_handle<> handedOverHandle = resumeTicket->handle.exchange(nullptr);
+                            handedOverHandle != nullptr)
                         {
-                            resumeTicket->handle.resume();
+                            handedOverHandle.resume();
                         }
                     });
         }
@@ -748,9 +751,9 @@ namespace AsynGyanis::Database
             completionLoops[index]->scheduler().postRemote(
                     [ticket]()
                     {
-                        if (ticket->handle != nullptr)
+                        if (const std::coroutine_handle<> timedOutHandle = ticket->handle.exchange(nullptr); timedOutHandle != nullptr)
                         {
-                            ticket->handle.resume();
+                            timedOutHandle.resume();
                         }
                     });
         }

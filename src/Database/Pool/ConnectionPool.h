@@ -245,7 +245,13 @@ namespace AsynGyanis::Database
              */
             struct ResumeTicket
             {
-                std::coroutine_handle<> handle{nullptr}; ///< 待恢复的协程；等待器析构后为空
+                /// 待恢复的协程；等待器析构后为空。
+                /// **必须是原子的**：清空发生在等待器（任意线程）的析构里，而读取发生在投递回
+                /// 事件循环的 lambda 里，两者之间没有任何 happens-before（shared_ptr 的引用计数
+                /// 不建立它）。用非原子字段就是数据竞争，读侧还可能看到一个已经失效的句柄，
+                /// 于是 resume 一块已释放的帧——正是票据要防的那件事。
+                /// 取用一律 `exchange(nullptr)`：**同一个句柄只允许被恢复一次**
+                std::atomic<std::coroutine_handle<>> handle{nullptr};
             };
 
             std::coroutine_handle<>             m_handle{nullptr}; ///< 等待协程的句柄（await_suspend 时保存）
