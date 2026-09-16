@@ -18,6 +18,7 @@
 #include "Net/Http/HttpResponse.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/SourceLocation.h"
 
@@ -396,11 +397,23 @@ namespace AsynGyanis::Net
             // 超时判定只在此处单点改写响应：晚于业务的一切写入，保证线上发的就是 504
             if (state->isDeadlineReached || isElapsedOverTimeout)
             {
-                // 先重置再填：业务在半路上写的头与正文都可能带着「已经成功」的痕迹，留着会误导客户端
-                response.reset();
-                response.setStatus(504);
-                response.setBody("Gateway Timeout");
-                response.setHeader("content-type", "text/plain");
+                // 流式响应已经发过至少一段时**不能改写**：头部（状态码与头字段）早在上线那一刻定稿，
+                // 而 reset() 会把 isChunked/hasSentChunkedHead 一并清掉——会话据此以为这是「新响应」，
+                // 于是分块正文中间又插进一条完整的 504，对端直接报协议错。
+                // 此时唯一正确的动作是记一条日志、让这条流按已发出的状态码收尾
+                if (response.isChunkedResponse() && response.hasSentChunkedHead())
+                {
+                    LOG_WARN_FMT("TimeoutMiddleware: 请求已超时，但流式响应的头部早已上线，无法改写成 504；"
+                                 "该流将按已发出的状态码收尾（对端不会看到超时语义）");
+                }
+                else
+                {
+                    // 先重置再填：业务在半路上写的头与正文都可能带着「已经成功」的痕迹，留着会误导客户端
+                    response.reset();
+                    response.setStatus(504);
+                    response.setBody("Gateway Timeout");
+                    response.setHeader("content-type", "text/plain");
+                }
             }
 
             // 异常原样上抛，由会话统一转成 500：超时中间件不改变业务的失败语义

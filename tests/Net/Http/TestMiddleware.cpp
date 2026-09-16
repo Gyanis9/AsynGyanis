@@ -719,6 +719,48 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(exceptionCaught.load());
     }
 
+    /**
+     * @brief 钉住：流式响应的头部已上线时，超时中间件不得改写响应
+     * @details 头部随首段正文上线之后状态码就定稿了；此时 reset() 会把流式标记一并清掉，
+     *          会话据此以为这是「新响应」，会在分块正文中间再插一条完整的 504——对端直接报协议错。
+     *          正确处置是记日志并按已发出的状态码收尾。
+     */
+    TEST_F(MiddlewareLoopFixture, DoesNotRewriteStreamingResponseWhoseHeadIsAlreadyOnTheWire)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(timeoutMiddleware(m_loop, kShortTimeout));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/sse");
+        HttpResponse response;
+        std::vector<std::string> sentSegments;
+        response.setChunkSender([&sentSegments](const std::string_view segment) -> Core::Task<bool>
+        {
+            sentSegments.emplace_back(segment);
+            co_return true;
+        });
+
+        std::atomic<bool> observedCancel{false};
+        std::atomic<bool> exceptionCaught{false};
+        std::atomic<bool> isFinished{false};
+        const TerminalHandler handler = [this, &request, &response, &observedCancel]() -> Core::Task<>
+        {
+            response.startChunkedResponse(200);
+            static_cast<void>(co_await response.writeChunk("first-segment"));
+            // 拖到超时之后：此时头部已经在对端手里
+            co_await cooperativeHandler(m_loop, request, response, observedCancel);
+        };
+
+        Core::Task<void> chainTask = runChainOnLoop(pipeline, request, response, handler, exceptionCaught, isFinished);
+        ASSERT_TRUE(runOnLoop(chainTask, isFinished));
+
+        EXPECT_TRUE(observedCancel.load()) << "看门狗应当照常发取消信号";
+        EXPECT_EQ(response.status(), 200) << "头部早已上线：不得改写成 504";
+        EXPECT_TRUE(response.hasSentChunkedHead()) << "流式标记被 reset 清掉了：会话会在正文中间再发一条响应";
+        EXPECT_EQ(response.body(), "");
+        ASSERT_EQ(sentSegments.size(), 2U) << "线上应当只有「头部 + 一段分块帧」";
+        EXPECT_NE(sentSegments.front().find("200"), std::string::npos);
+    }
+
     TEST_F(MiddlewareLoopFixture, PassesThroughWithoutTimerForNonPositiveTimeout)
     {
         MiddlewarePipeline pipeline;
