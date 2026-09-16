@@ -25,10 +25,15 @@ namespace AsynGyanis::Database
 
     ConnectionPool::~ConnectionPool()
     {
-        // 第一件事就持令牌锁并置假：此刻起归还路径要么已经持锁进来（本析构会等它走完），
-        // 要么看到「池已停摆」直接关掉连接——池已析构就不能再被取消引用
-        const std::lock_guard livenessLock(m_liveness->mutex);
-        m_liveness->isAlive = false;
+        // 置假必须在令牌锁里做：此刻起归还路径要么已经持锁进来（本析构会等它走完），
+        // 要么看到「池已停摆」直接关掉连接——池已析构就不能再被取消引用。
+        // **锁只覆盖这一次赋值**：析构末尾会就地恢复等待者，被恢复的协程可能归还
+        // PooledConnection，那条路径要锁同一把**非递归**令牌锁；持锁跨越恢复就是同线程
+        // 二次加锁的自死锁（与下面「恢复必须在 m_asyncMutex 锁外做」是同一条纪律）
+        {
+            const std::lock_guard livenessLock(m_liveness->mutex);
+            m_liveness->isAlive = false;
+        }
 
         // 请求后台线程停止并等待其退出
         m_healthThread.request_stop();

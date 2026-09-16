@@ -16,6 +16,7 @@
 // - AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
 // - AcquireAsyncResumesOnGivenEventLoop（慢路径：隔线程归还后，恢复发生在循环线程上）
 // - DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
+// - DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection（析构期唤醒的协程归还连接，不得同线程死锁）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -206,6 +207,66 @@ namespace AsynGyanis::Database
         }));
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_FALSE(probe.connection.value()) << "池停摆时被唤醒的等待者应拿到空连接";
+
+        loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 驱动协程：先占住唯一一条连接，再等第二条（池已满，必然挂起），恢复后把第一条还回去
+     *
+     * @details 「占着连接等第二条」正是析构期就地恢复最危险的组合：池析构会锁着存活令牌锁
+     *          恢复等待者，而本协程在恢复点之后立刻归还连接——归还路径要锁**同一把非递归锁**。
+     *          析构若不把锁收到置假那一步为止，本协程就会在同线程上二次加锁、永久挂住。
+     * @param pool 目标连接池（用例持有，会在等待者挂起期间析构）
+     * @param loop 恢复用的事件循环
+     * @param probe 观测结果出参
+     * @return Core::Task<void> 驱动协程
+     */
+    Core::Task<void> probeHoldFirstThenWaitSecond(ConnectionPool &pool, Core::EventLoop &loop, AcquireProbe &probe)
+    {
+        PooledConnection first = co_await pool.acquireAsync(loop);
+        probe.connection.emplace(std::move(first));
+        probe.resumeThreadId = std::this_thread::get_id();
+
+        // 池上限为 1：这一句必然挂起，等待者就这样留在池的列表里
+        PooledConnection second = co_await pool.acquireAsync(loop);
+        probe.finished.store(true, std::memory_order_release);
+
+        // 恢复路径上归还连接：这一步必须能在池析构期间跑完
+        probe.connection->release();
+    }
+
+    /**
+     * @brief 钉住：池析构时唤醒的等待者可以安全地归还手里的连接（不得同线程死锁）
+     * @details 归还路径「判活 + 调池」都在存活令牌锁内完成，析构则在同一把锁下置假——
+     *          因此那把锁**只能覆盖置假这一步**。一旦它跨到析构末尾的就地恢复点上，
+     *          被恢复的协程在归还连接时就会对同一把非递归锁二次加锁：本用例会直接挂死。
+     */
+    TEST(ConnectionPoolAsync, DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 1;
+        auto pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
+
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+
+        AcquireProbe probe;
+        Core::Task<void> driver = probeHoldFirstThenWaitSecond(*pool, loopThread.loop(), probe);
+        driver.handle().resume();
+
+        ASSERT_TRUE(probe.connection.has_value()) << "第一条连接应当立刻建好返回";
+        ASSERT_FALSE(probe.finished.load(std::memory_order_acquire)) << "第二条应当挂在等待列表里";
+        ASSERT_EQ(pool->waitingCount(), 1U);
+
+        // 析构会就地恢复等待者；被恢复的协程紧接着归还手里的连接。
+        // 若析构把存活令牌锁持过了恢复点，这一句永远不返回（用例挂死即回归）
+        pool.reset();
+
+        EXPECT_TRUE(probe.finished.load(std::memory_order_acquire)) << "等待者没有被唤醒";
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_FALSE(probe.connection.value()) << "池停摆后归还的连接应被关闭（包装器随之置空）而不是留在池里";
 
         loopThread.parkDriver(std::move(driver));
     }
