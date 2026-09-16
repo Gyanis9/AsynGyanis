@@ -402,4 +402,42 @@ namespace AsynGyanis::Net
         EXPECT_EQ(writeAttemptCount, attemptCountAfterFailure) << "不可用之后不该再向连接写字节";
         EXPECT_FALSE(stream.isOpen());
     }
+
+    /**
+     * @brief 钉住：HEAD 打在流式路由上只回头部，一字节正文都不发
+     * @details HEAD 的响应在头部之后的第一个空行就结束（RFC 9112 §6.1）：分块帧与终止块都算正文，
+     *          发出去会被对端当成下一条报文的开头（keep-alive 上就是协议错位）。用 connection: close
+     *          收口后逐字节断言，比子串断言更能证明「后面什么都没有」
+     */
+    TEST(SseStream, HeadRequestOnStreamingRouteGetsHeadersOnly)
+    {
+        RunningHttpServerFixture fixture(
+                HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/sse-head",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   SseStream stream(response);
+                                   static_cast<void>(co_await stream.sendEvent("must-not-reach-the-wire"));
+                               });
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+
+        ASSERT_TRUE(client.sendText("HEAD /sse-head HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n", kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "服务端没有按 connection: close 收口";
+
+        const std::size_t headerEnd = accumulated.find("\r\n\r\n");
+        ASSERT_NE(headerEnd, std::string::npos) << "连响应头部都没收到：" << accumulated;
+        EXPECT_NE(accumulated.find("HTTP/1.1 200"), std::string::npos) << "HEAD 也应当拿到状态行";
+        EXPECT_EQ(accumulated.size(), headerEnd + 4U)
+                << "HEAD 的响应在头部之后就结束了，后面不该有任何字节（分块帧与终止块都算正文）："
+                << accumulated.substr(headerEnd + 4U);
+        EXPECT_EQ(accumulated.find("must-not-reach-the-wire"), std::string::npos) << "SSE 负载不该出现在 HEAD 响应里";
+    }
 } // namespace AsynGyanis::Net

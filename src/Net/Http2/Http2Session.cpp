@@ -838,6 +838,12 @@ namespace AsynGyanis::Net
         }
 
         std::exception_ptr handlerException = nullptr;
+        // HEAD 的响应只有头部（RFC 9113 §8.1）：流式路径下正文段一律不发，头部改在收尾时与
+        // END_STREAM 一起发出（见 finishStreamingResponse 的「一段都没写」分支）
+        if (request.method() == HttpMethod::HEAD)
+        {
+            m_response.suppressStreamingBody();
+        }
         try
         {
             co_await m_router.route(request, m_response);
@@ -1403,6 +1409,13 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, const std::string_view segment)
     {
+        // HEAD：一段正文都不发（含头部）——头部与 END_STREAM 由 finishStreamingResponse 一起发出，
+        // 只发头部不发正文正是 HEAD 的语义
+        if (m_response.isStreamingBodySuppressed())
+        {
+            co_return true;
+        }
+
         // 本侧已判定写不出去：与 h1 契约一致，短路返回 false 且不新增日志（首次失败已经交代过原因）
         if (m_isConnectionUnusable)
         {

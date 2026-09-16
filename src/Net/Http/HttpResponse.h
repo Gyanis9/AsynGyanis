@@ -103,6 +103,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::vector<std::string> headerValues(const std::string &name) const;
 
         /**
+         * @brief 只发流式响应的头部、不发正文（HEAD 请求用）
+         * @details HEAD 的响应「只有头部、没有正文」：对端在头部之后的第一个空行就认为消息结束
+         *          （RFC 9112 §6.1）。分块帧与终止块都算正文，发出去会被对端当成下一条报文的开头，
+         *          因此一并不发；头部照发（它描述的正是 GET 会返回什么）。会话在派发前按请求方法设置，
+         *          重置（reset）时清除
+         */
+        void suppressStreamingBody() noexcept;
+
+        /**
+         * @brief 流式响应的正文是否被抑制（见 suppressStreamingBody）
+         * @return true 只发头部、不发正文段
+         */
+        [[nodiscard]] bool isStreamingBodySuppressed() const noexcept;
+
+        /**
          * @brief 获取所有头部字段的单值视图。
          * @return 名到值的 unordered_map 引用，键为小写头部名；可重复头部在此只有首条值。
          *         序列化顺序不看这张表，一律按权威记录的插入顺序输出
@@ -461,6 +476,7 @@ namespace AsynGyanis::Net
         /// 首次查询时由权威记录建出，写入只把它标脏
         mutable std::unordered_map<std::string, std::string> m_headers;
         mutable bool m_isSingleValueViewStale{true};           ///< 单值视图是否已过期（写入后为 true，重建后为 false）
+        bool m_isStreamingBodySuppressed{false};               ///< HEAD 请求：流式响应只发头部、不发正文段
         std::string m_body;                                    ///< 响应正文（堆存储），与 m_mappedBody 互斥
         Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效
         std::size_t m_mappedBodyOffset{0};                     ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）

@@ -270,6 +270,16 @@ namespace AsynGyanis::Net
         return values;
     }
 
+    void HttpResponse::suppressStreamingBody() noexcept
+    {
+        m_isStreamingBodySuppressed = true;
+    }
+
+    bool HttpResponse::isStreamingBodySuppressed() const noexcept
+    {
+        return m_isStreamingBodySuppressed;
+    }
+
     const std::unordered_map<std::string, std::string> &HttpResponse::headers() const
     {
         if (m_isSingleValueViewStale)
@@ -536,6 +546,13 @@ namespace AsynGyanis::Net
 
             // 头部已在对端手里：此后状态码与头部都改不了，即使接下来的数据段发送失败
             m_hasSentChunkedHead = true;
+        }
+
+        // HEAD：响应只有头部（RFC 9112 §6.1 的口径在流式路径上同样成立）——头部已经在上面发出去，
+        // 正文段一字节都不发。对端在头部后的第一个空行就认为消息结束，发出去的帧会被当成下一条报文
+        if (m_isStreamingBodySuppressed)
+        {
+            co_return true;
         }
 
         // 帧 = <十六进制长度>\r\n<数据>\r\n。长度必须与数据逐字节相符，错一位对端就再也找不回
@@ -849,6 +866,9 @@ namespace AsynGyanis::Net
         // 升级意图与处理器一起清：留在复用对象上会把下一条报文也拖进升级分支
         m_webSocketHandler = WebSocketHandler{};
         m_isWebSocketUpgradeRequested = false;
+
+        // 正文抑制标记同样复位：它属于「这一条报文」，下一条可能是 GET，正文必须照发
+        m_isStreamingBodySuppressed = false;
     }
 
 } // namespace AsynGyanis::Net

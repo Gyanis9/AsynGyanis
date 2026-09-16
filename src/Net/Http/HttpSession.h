@@ -762,6 +762,12 @@ namespace AsynGyanis::Net
                 }
                 response.reset();
                 response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1
+                // HEAD 的响应只有头部、没有正文（RFC 9112 §6.1）：流式路径下分块帧与终止块都算正文，
+                // 发送侧按这个标记一并不发；头部照发（它描述的是 GET 会返回什么）
+                if (request.method() == HttpMethod::HEAD)
+                {
+                    response.suppressStreamingBody();
+                }
             };
 
             // 流式正文的泵（流式派发路径专用）：推进一步就交还——窗口里有未解析字节就先解析一段，
@@ -843,8 +849,9 @@ namespace AsynGyanis::Net
                                       requestIdView, request.uri(), describeException(handlerException));
                     }
 
-                    // 头部已在 writeChunk 里上线，这里只补终止块，不再重复发头部
-                    if (!co_await sendChunkSegment(kChunkedTerminator))
+                    // 头部已在 writeChunk 里上线，这里只补终止块，不再重复发头部。
+                    // HEAD：终止块同样是正文的一部分，一并不发
+                    if (!response.isStreamingBodySuppressed() && !co_await sendChunkSegment(kChunkedTerminator))
                     {
                         // 终止块没发出去：本条消息对端收不全，不计状态码类与延迟
                         co_return false;
@@ -934,8 +941,11 @@ namespace AsynGyanis::Net
                     {
                         const std::string_view responseBody =
                                 request.method() == HttpMethod::HEAD ? std::string_view{} : response.body();
-                        const std::string_view trailingSegment = response.isChunkedResponse() ? kChunkedTerminator
-                                                                                             : responseBody;
+                        // HEAD 的正文段恒为空（上面已按方法取空），分块响应也不补终止块：那 5 个字节
+                        // 会被对端当成下一条报文的开头
+                        const std::string_view trailingSegment = response.isChunkedResponse() && !response.isStreamingBodySuppressed()
+                                                                         ? kChunkedTerminator
+                                                                         : responseBody;
                         if (!co_await sendResponse(serializedHead, trailingSegment))
                         {
                             // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
