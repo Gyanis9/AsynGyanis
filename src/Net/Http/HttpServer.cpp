@@ -741,6 +741,9 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(304);
                 appendCacheHeaders();
+                // 304 里的 content-length 只允许取「同一请求的 200 会发出的正文长度」（RFC 9112 §6.2），
+                // 这里正是唯一知道那个长度的位置（正文已被清空，自动补缺只会补出 0——那是禁止的取值）
+                response.setHeader("content-length", std::to_string(fileSize));
                 co_return;
             }
 

@@ -611,6 +611,11 @@ namespace AsynGyanis::Net
         // 304 只带验证器：不再下发表示本身的头部
         EXPECT_FALSE(response.getHeader("content-type").has_value());
         EXPECT_FALSE(response.getHeader("accept-ranges").has_value());
+        // 但 content-length 是个例外：RFC 9112 §6.2 允许 304 携带它，前提是取值等于「同一请求的
+        // 200 会发出的正文长度」——静态文件路径正是唯一知道这个长度的位置，因此显式写出。
+        //（200 那条的 content-length 是序列化时按正文长度补的，头部表里查不到，故直接对文件长度）
+        EXPECT_EQ(headerValueOf(response, "content-length"), std::to_string(kHelloFileContent.size()))
+                << "304 声明的长度必须与 200 会发出的正文长度一致";
     }
 
     /**

@@ -459,19 +459,29 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 304 允许携带 content-length：自动补缺规则必须只排除 1xx 与 204
+     * @brief 304 不得自动补 content-length；调用方显式给出的那一份原样保留
      *
-     * @details 这条与「不允许带正文」是两套判据：304 不许有正文，却明确允许声明长度。
-     *          两者混成一条会让 304 响应丢掉 content-length，收端对报文边界的判断随之失去依据。
+     * @details RFC 9112 §6.2 允许 304 带 content-length，但只允许取「同一请求的 200 会发出的
+     *          正文长度」；此刻正文已被清空，自动补出来的是 0——正好是这条 MUST NOT 禁止的取值。
+     *          真实长度只有生成响应的一方知道（静态文件路径就显式设了它），因此这里两种情形都钉：
+     *          不设就不补，设了就原样发出。
+     * @note 本条此前断言的是「304 自动补出 content-length: 0」（旧口径照 RFC 7230 的宽松读法），
+     *       与 RFC 9112 §6.2 冲突，随实现一起改成现在这样
      */
-    TEST(HttpResponse, KeepsAutoContentLengthOnNotModifiedResponse)
+    TEST(HttpResponse, NotModifiedResponseHasNoAutoContentLength)
     {
         HttpResponse response;
         response.setStatus(304);
 
         const std::string output = response.toString();
-        EXPECT_TRUE(containsText(output, "content-length: 0\r\n")) << "304 被误当成「不得声明长度」的一类";
+        EXPECT_FALSE(containsText(output, "content-length")) << "304 不该自动补出 content-length: 0";
         EXPECT_EQ(output.ends_with("\r\n\r\n"), true) << "304 不该带上正文";
+
+        // 显式声明（值等于 200 会发出的正文长度）则原样保留
+        HttpResponse withLength;
+        withLength.setStatus(304);
+        ASSERT_TRUE(withLength.setHeader("content-length", "1024"));
+        EXPECT_TRUE(containsText(withLength.toString(), "content-length: 1024\r\n"));
     }
 
     /**

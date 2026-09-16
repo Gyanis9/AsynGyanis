@@ -683,9 +683,12 @@ namespace AsynGyanis::Net
 
     bool HttpResponse::mustNotDeclareContentLength() const noexcept
     {
-        // 204 与 1xx 响应不得带正文，自动补 content-length 会让收端把「接下来没有字节」
-        // 当成一条额外承诺；304 则被 RFC 7230 明确允许携带，故不排除
-        return m_status == 204 || (m_status >= 100 && m_status < 200);
+        // 三种状态码都不自动补 content-length：
+        // - 204 与 1xx 不得带正文，补出去是让收端白等一条正文（RFC 9112 §6.2 的 MUST NOT）；
+        // - 304 虽然允许携带，但只允许取「同一请求的 200 会发出的正文长度」——此刻正文已被
+        //   清空，自动补出来的是 0，正好落在 §6.2 的 MUST NOT 上。要带这个头就由知道真实长度
+        //   的调用方显式设（静态文件路径就是这么做的）
+        return m_status == 204 || m_status == 304 || (m_status >= 100 && m_status < 200);
     }
 
     std::size_t HttpResponse::headReserveLength() const

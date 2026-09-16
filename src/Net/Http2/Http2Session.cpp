@@ -92,14 +92,15 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判断状态码是否不得自动补 content-length
-         * @details 与 HttpResponse::mustNotDeclareContentLength() 同口径：1xx 与 204 不补，
-         *          304 明确允许携带（RFC 7230 §3.3.2）
+         * @details 与 HttpResponse::mustNotDeclareContentLength() 同口径：1xx / 204 / 304 都不补。
+         *          304 允许携带 content-length，但只允许取「同一请求的 200 会发出的正文长度」
+         *          （RFC 9112 §6.2）——自动补出来的是 0，正好是这条 MUST NOT 禁止的取值
          * @param statusCode 响应状态码
          * @return true 表示不补 content-length
          */
         bool mustNotDeclareContentLength(const int statusCode) noexcept
         {
-            return statusCode / 100 == 1 || statusCode == 204;
+            return statusCode / 100 == 1 || statusCode == 204 || statusCode == 304;
         }
     } // namespace
 

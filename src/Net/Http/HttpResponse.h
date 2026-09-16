@@ -430,8 +430,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 该状态码是否不得自动补 content-length
-         * @details 与 carriesNoContent() 刻意不同：304 不允许带正文，但明确允许携带
-         *          content-length（RFC 7230），因此只有 1xx 与 204 需要跳过自动补缺
+         * @details 与 carriesNoContent() 刻意不同：304 允许携带 content-length，但只允许取
+         *          「同一请求的 200 会发出的正文长度」（RFC 9112 §6.2）——自动补出来的是 0，
+         *          正好违反该条 MUST NOT。因此 1xx / 204 / 304 一律不补，要带就由知道真实长度的
+         *          调用方显式设置
          * @return true 表示不补 content-length
          */
         [[nodiscard]] bool mustNotDeclareContentLength() const noexcept;
