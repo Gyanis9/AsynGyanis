@@ -92,7 +92,11 @@ namespace AsynGyanis::Platform
             void         *m_processHandle{nullptr}; ///< 进程句柄；空表示无效
             unsigned long m_processId{0};           ///< 进程号，仅用于日志
 #else
-            int m_processId{-1}; ///< 进程号；负数表示无效
+            /// 进程号；负数表示无效。
+            /// **mutable**：观察类接口（pollExitCode）收的是 const 引用，而「子进程已被回收」
+            /// 这件事只能在那次观察里发现——发现时要把句柄一并作废（否则后面拿这个 pid 去 kill
+            /// 可能打到复用它的无关进程），所以它必须能在 const 路径上写
+            mutable int m_processId{-1};
 #endif
             /// 已回收时的退出码：pollExitCode()/isRunning() 都可能触发回收，回收过一次就记住，
             /// 否则第二次问会拿到「查不到这个子进程」。mutable 是因为它只是缓存——观察一个进程
