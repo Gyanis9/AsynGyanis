@@ -294,9 +294,10 @@ namespace AsynGyanis::Net
                 const std::size_t remainingBodyLength = m_contentLength - m_receivedBodyLength;
                 const std::size_t chunkLength         = std::min(remainingBodyLength, length - consumed);
 
-                // 正文按「已收 + 本次」的总量卡上限：单看 Content-Length 头不足以设防，
-                // 声明 1 字节然后狂发数据同样能撑爆内存
-                if (exceedsLimit(m_body.size() + chunkLength, m_limits.maximumBodySize))
+                // 上限按**累计已收**（不止当前缓冲）判定：流式消费方每轮都会把缓冲取走，
+                // 只算 m_body.size() 等于把上限交给「调用方取走的快慢」，狂发数据照样能撑爆内存。
+                // 声明 1 字节然后狂发同样防住——判据是实收总量，不是头部声明
+                if (exceedsLimit(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
                 {
                     failBodyTooLarge(std::format("请求体超出上限 {} 字节", m_limits.maximumBodySize));
                     break;
@@ -319,8 +320,9 @@ namespace AsynGyanis::Net
                 // 块数据按字节数整段搬：内容可能含任意字节（含 CR/LF），因此只按长度拷、不扫描
                 const std::size_t chunkLength = std::min(m_chunkRemainingBytes, length - consumed);
 
-                // 上限按「解码后」的正文字节数判定：编码后的体积不能用来代替它
-                if (exceedsLimit(m_body.size() + chunkLength, m_limits.maximumBodySize))
+                // 上限按「解码后」的正文字节数判定，且用**累计已收**（理由同上：流式消费方
+                // 会把缓冲取走，只算当前缓冲的话上限形同虚设）；编码后的体积不能用来代替它
+                if (exceedsLimit(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
                 {
                     failBodyTooLarge(std::format("分块解码后的请求体超出上限 {} 字节", m_limits.maximumBodySize));
                     break;
