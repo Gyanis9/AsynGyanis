@@ -136,6 +136,25 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 已经退出并被回收的子进程不能再被终止：回收那一刻 pid 就交还系统了
+     * @details 拿已回收的 pid 去 kill 可能命中一个复用了同一 pid 的无关进程——
+     *          Linux 上 SIGKILL 必中，而且是「杀掉别人」这种最恶劣的串扰
+     */
+    TEST(Process, TerminationOnReapedChildIsRejected)
+    {
+        const ExitCommand command = makeExitCommand(3);
+        const Process::Handle handle = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        ASSERT_TRUE(handle.isValid());
+
+        // 先回收：退出码被记下，pid 从此不再属于本进程
+        const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
+        ASSERT_TRUE(exitCode.has_value()) << "子进程没有在时限内退出";
+
+        EXPECT_FALSE(Process::requestTermination(handle)) << "对已回收的 pid 发出了 SIGTERM";
+        EXPECT_FALSE(Process::forceTermination(handle)) << "对已回收的 pid 发出了 SIGKILL";
+    }
+
+    /**
      * @brief 无效句柄上的观察与终止一律安全失败，不崩不猜
      */
     TEST(Process, InvalidHandleIsSafeToObserveAndTerminate)

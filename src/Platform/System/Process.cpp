@@ -330,7 +330,10 @@ namespace AsynGyanis::Platform
         PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
         return false;
 #else
-        if (!handle.isValid())
+        // 已经退出并被回收的进程不能再发信号：回收那一刻 pid 就交还系统了，此后拿它去 kill
+        // 可能落到复用了同一 pid 的无关进程上。pollExitCode 顺带完成回收并把退出码记在句柄上，
+        // 因此这一判据与 isRunning() 完全同源；仍在运行的子进程（哪怕已成僵尸）不算「已回收」
+        if (!handle.isValid() || pollExitCode(handle).has_value())
         {
             PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return false;
@@ -346,7 +349,9 @@ namespace AsynGyanis::Platform
 
     bool Process::forceTermination(const Handle &handle) noexcept
     {
-        if (!handle.isValid())
+        // 与 requestTermination() 同一前置判据：已回收的 pid 可能已经被别的进程复用，
+        // 强杀下去就是杀死一个无关进程（Linux 上 SIGKILL 必中）
+        if (!handle.isValid() || pollExitCode(handle).has_value())
         {
             PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return false;

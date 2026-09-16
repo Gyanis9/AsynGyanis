@@ -115,11 +115,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 缓存键必须与其它作业不同：共用键会让「先命中的那个作业」把缓存内容钉死。
+      # 其它作业的依赖集里没有 libmysqlclient，若共用键，命中它们的缓存后本作业
+      # 仍要回退去现场编译 MySQL 驱动（或反过来把他的缓存顶掉），缓存等于白设。
+      # 注意 GitHub Actions 的缓存一经写入不可覆盖，所以两类依赖集必须各占一个键。
       - name: 缓存 Conan 依赖
         uses: actions/cache@v4
         with:
           path: ${{ env.CONAN_HOME }}
-          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+          key: conan-${{ runner.os }}-mysql-${{ hashFiles('conandata.yml', 'conanfile.py') }}
 
       - name: 安装 Conan
         run: |
