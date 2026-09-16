@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <thread>
@@ -144,7 +145,27 @@ namespace AsynGyanis::Platform
          */
         static std::string normalizeDirectoryPath(const std::string &path);
 
+        /**
+         * @brief 给本轮事件里「递归根之下新建的目录」补挂监听
+         * @details 每个目录各自一条 ReadDirectoryChangesW（不递归子树），新建的子目录不补挂就
+         *          永远收不到它内部的变更。必须在锁外调用：addWatch() 要拿写锁
+         * @param events 本轮的（路径, 变更类型）列表
+         */
+        void watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType> > &events);
+
+        /**
+         * @brief 判断某路径是否落在某个递归根之下
+         * @param path 待判定的绝对路径
+         * @return true 在某个递归根之下（含恰为根本身）
+         * @note 前缀比较落在路径分隔符边界上：纯前缀匹配会把 "C:\data" 当成 "C:\database" 的根
+         */
+        [[nodiscard]] bool isUnderRecursiveRoot(const std::string &path) const;
+
         std::unordered_map<std::string, std::unique_ptr<WatchEntry> > m_watches; ///< 目录路径到监听上下文的映射
+
+        /// 递归根（addWatch(recursive=true) 登记过的目录）：之后新建的子目录靠这份清单补挂监听。
+        /// 受 m_watchMutex 保护——addWatch 可能被任意线程调用，而读它的是监听线程
+        std::set<std::string> m_recursiveRoots;
 
         FileChangeCallback        m_callback;           ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;         ///< 保护监听映射与回调的读写锁

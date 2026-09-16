@@ -343,6 +343,53 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(receivedEvent) << "递归监听未能覆盖子目录中的文件";
     }
 
+    /**
+     * @brief 递归监听开始**之后**新建的子目录也要被覆盖
+     * @details 每个目录各自一条监视（Win32 上是一条 ReadDirectoryChangesW），新建的子目录不补挂
+     *          就永远收不到它内部的变更。inotify 侧早就有这条补挂，Win32 侧此前只在注册那一刻
+     *          递归一遍，之后新建的目录成了监听盲区
+     */
+    TEST(FileWatcher, RecursiveWatchCoversSubDirectoriesCreatedLater)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_LateSubDirectory");
+
+        std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
+        ASSERT_TRUE(watcher->start());
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        // 监听已经在跑：此刻新建子目录，框架要自己把它补进监听集合
+        std::error_code error;
+        std::filesystem::create_directories(temporaryDirectory.path() / "late", error);
+        ASSERT_FALSE(error);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+        {
+            std::ofstream lateFile(temporaryDirectory.path() / "late" / "late.yaml");
+            lateFile << "late: true\n";
+        }
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("late.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "递归监听开始之后新建的子目录没有被补挂监视";
+    }
+
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件

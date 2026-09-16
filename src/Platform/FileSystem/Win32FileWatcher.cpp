@@ -119,6 +119,12 @@ namespace AsynGyanis::Platform
             const std::string directoryPath = normalizeDirectoryPath(absolutePath);
             std::lock_guard   lock(m_watchMutex);
 
+            // 递归根要记住：之后新建的子目录靠这份清单补挂监听（否则新目录里的变更永久丢失）
+            if (recursive)
+            {
+                m_recursiveRoots.insert(directoryPath);
+            }
+
             if (m_watches.contains(directoryPath))
             {
                 return true;
@@ -308,6 +314,9 @@ namespace AsynGyanis::Platform
                 issueRead(entry);
             }
 
+            // 递归根之下新出现的目录要在锁外补挂监视：新子目录内部的变更否则永远不上报
+            watchNewSubdirectories(pendingCallbacks);
+
             // 锁外批量触发回调，防止回调中增删监听路径造成死锁
             if (callbackSnapshot)
             {
@@ -317,6 +326,41 @@ namespace AsynGyanis::Platform
                 }
             }
         }
+    }
+
+    void Win32FileWatcher::watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType> > &events)
+    {
+        for (const auto &[changedPath, changeType]: events)
+        {
+            if (changeType != FileChangeType::Created || !isUnderRecursiveRoot(changedPath))
+            {
+                continue;
+            }
+
+            std::error_code directoryError;
+            if (std::filesystem::is_directory(changedPath, directoryError) && !directoryError)
+            {
+                // 锁外补挂：addWatch() 要拿写锁，持锁递归注册会自死锁
+                static_cast<void>(addWatch(changedPath, true));
+            }
+        }
+    }
+
+    bool Win32FileWatcher::isUnderRecursiveRoot(const std::string &path) const
+    {
+        const std::shared_lock lock(m_watchMutex);
+        return std::ranges::any_of(m_recursiveRoots,
+                                   [&path](const std::string &root)
+                                   {
+                                       if (path.size() < root.size() || path.compare(0, root.size(), root) != 0)
+                                       {
+                                           return false;
+                                       }
+                                       // 完全相同，或下一个字符就是分隔符，或根本身带尾分隔符
+                                       // （addWatch 规范化后总是带），才算「在根之下」
+                                       return path.size() == root.size() || path[root.size()] == '\\' || path[root.size()] == '/' ||
+                                              root.back() == '\\' || root.back() == '/';
+                                   });
     }
 
     void Win32FileWatcher::processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events)
