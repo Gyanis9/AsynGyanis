@@ -51,35 +51,38 @@ namespace AsynGyanis::Platform
 #endif
     }
 
-    void TimerFileDescriptor::arm(const std::chrono::milliseconds duration) noexcept
+    bool TimerFileDescriptor::arm(const std::chrono::milliseconds duration) noexcept
     {
         if (duration.count() <= 0)
         {
             cancel();
-            return;
+            return true;
         }
 
 #if ASYN_PLATFORM_LINUX
         if (!isValid())
         {
-            return;
+            return false;
         }
         itimerspec timerSpec{};
         timerSpec.it_value.tv_sec  = duration.count() / 1000;
         timerSpec.it_value.tv_nsec = (duration.count() % 1000) * 1000 * 1000;
-        ::timerfd_settime(m_fileDescriptor, 0, &timerSpec, nullptr);
+        // 返回值必须报出去：定时器没设上就永远不会到期，而调用方正等着这一次唤醒
+        return ::timerfd_settime(m_fileDescriptor, 0, &timerSpec, nullptr) == 0;
 #else
         cancel();
         if (!isValid())
         {
-            return;
+            return false;
         }
         const auto dueTimeMilliseconds = static_cast<DWORD>(std::min<long long>(duration.count(), kMaximumDueTimeMilliseconds));
         HANDLE     timerHandle         = nullptr;
         if (::CreateTimerQueueTimer(&timerHandle, nullptr, &TimerFileDescriptor::timerCallback, this, dueTimeMilliseconds, 0, WT_EXECUTEONLYONCE | WT_EXECUTEINTIMERTHREAD))
         {
             m_timerHandle = timerHandle;
+            return true;
         }
+        return false;
 #endif
     }
 

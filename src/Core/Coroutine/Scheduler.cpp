@@ -39,6 +39,16 @@ namespace AsynGyanis::Core
         }
     }
 
+    void Scheduler::postLocal(std::function<void()> callable)
+    {
+        if (!callable)
+        {
+            return;
+        }
+        // 本线程独享，不加锁也不唤醒：这段代码本来就跑在所属循环上，排进本轮清空即可
+        m_localCallables.push_back(std::move(callable));
+    }
+
     void Scheduler::postRemote(std::function<void()> callable)
     {
         if (!callable)
@@ -80,6 +90,16 @@ namespace AsynGyanis::Core
             }
         }
 
+        // 本地待执行代码优先于本地协程：它们多是「为即将运行的协程铺路」的动作
+        //（例如定时到期的恢复），先做掉能让紧接着恢复的协程看到收敛后的状态
+        if (!m_localCallables.empty())
+        {
+            std::function<void()> callable = std::move(m_localCallables.front());
+            m_localCallables.pop_front();
+            callable();
+            return true;
+        }
+
         // 处理本地队列
         if (!m_localQueue.empty())
         {
@@ -112,9 +132,20 @@ namespace AsynGyanis::Core
 
     void Scheduler::runAll()
     {
-        // 第一阶段：排空本地队列
-        while (!m_localQueue.empty())
+        // 第一阶段：排空本地待执行代码与本地队列。两段都反复回到开头，因为前一段执行期间
+        // 可能又投来新的代码（例如定时器在恢复途中又判出新的到期项）
+        while (true)
         {
+            while (!m_localCallables.empty())
+            {
+                std::function<void()> callable = std::move(m_localCallables.front());
+                m_localCallables.pop_front();
+                callable();
+            }
+            if (m_localQueue.empty())
+            {
+                break;
+            }
             const auto handle = m_localQueue.back();
             m_localQueue.pop_back();
             handle.resume();
@@ -172,9 +203,25 @@ namespace AsynGyanis::Core
                 }
             }
 
-            // 批量处理期间可能重新产生本地任务，再次排空
-            while (!m_localQueue.empty())
+            // 批量处理期间可能重新产生本地任务，再次排空（含新投来的本地代码，同一处理口径）
+            while (true)
             {
+                while (!m_localCallables.empty())
+                {
+                    std::function<void()> callable = std::move(m_localCallables.front());
+                    m_localCallables.pop_front();
+                    try
+                    {
+                        callable();
+                    } catch (...)
+                    {
+                        firstException = firstException ? firstException : std::current_exception();
+                    }
+                }
+                if (m_localQueue.empty())
+                {
+                    break;
+                }
                 const auto handle = m_localQueue.back();
                 m_localQueue.pop_back();
                 try
@@ -197,7 +244,9 @@ namespace AsynGyanis::Core
 
     bool Scheduler::hasWork() const
     {
-        if (!m_localQueue.empty())
+        // 待执行的本地代码也算待办：漏掉它会让循环带着「没事可做」的判断阻塞在 epoll 上，
+        // 那段代码要等到下一次事件才被取出
+        if (!m_localQueue.empty() || !m_localCallables.empty())
         {
             return true;
         }

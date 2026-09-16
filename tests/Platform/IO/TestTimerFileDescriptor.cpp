@@ -30,7 +30,7 @@ namespace AsynGyanis::Platform
         TimerFileDescriptor timer;
         ASSERT_TRUE(timer.isValid());
 
-        timer.arm(std::chrono::milliseconds(20));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(20)));
 
         EXPECT_TRUE(TestSupport::waitForReadable(timer.fileDescriptor(), 1000));
     }
@@ -40,7 +40,7 @@ namespace AsynGyanis::Platform
         TimerFileDescriptor timer;
         ASSERT_TRUE(timer.isValid());
 
-        timer.arm(std::chrono::milliseconds(20));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(20)));
         ASSERT_TRUE(TestSupport::waitForReadable(timer.fileDescriptor(), 1000));
 
         timer.drain();
@@ -52,7 +52,7 @@ namespace AsynGyanis::Platform
         TimerFileDescriptor timer;
         ASSERT_TRUE(timer.isValid());
 
-        timer.arm(std::chrono::milliseconds(50));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(50)));
         timer.cancel();
 
         EXPECT_FALSE(TestSupport::waitForReadable(timer.fileDescriptor(), 200));
@@ -63,8 +63,9 @@ namespace AsynGyanis::Platform
         TimerFileDescriptor timer;
         ASSERT_TRUE(timer.isValid());
 
-        timer.arm(std::chrono::milliseconds(20));
-        timer.arm(std::chrono::milliseconds(0));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(20)));
+        // 非正数时长按「取消」处理：它不需要任何内核登记，因此必须报成功
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(0)));
 
         EXPECT_FALSE(TestSupport::waitForReadable(timer.fileDescriptor(), 200));
     }
@@ -74,8 +75,8 @@ namespace AsynGyanis::Platform
         TimerFileDescriptor timer;
         ASSERT_TRUE(timer.isValid());
 
-        timer.arm(std::chrono::milliseconds(20));
-        timer.arm(std::chrono::milliseconds(-100));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(20)));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(-100)));
 
         EXPECT_FALSE(TestSupport::waitForReadable(timer.fileDescriptor(), 200));
     }
@@ -86,8 +87,8 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(timer.isValid());
 
         // 先设一个很早的截止时间再立刻覆盖为更晚，早到期的通知不应出现
-        timer.arm(std::chrono::milliseconds(10));
-        timer.arm(std::chrono::milliseconds(5000));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(10)));
+        ASSERT_TRUE(timer.arm(std::chrono::milliseconds(5000)));
 
         EXPECT_FALSE(TestSupport::waitForReadable(timer.fileDescriptor(), 100));
 
@@ -101,7 +102,7 @@ namespace AsynGyanis::Platform
 
         for (int roundIndex = 0; roundIndex < 3; ++roundIndex)
         {
-            timer.arm(std::chrono::milliseconds(10));
+            ASSERT_TRUE(timer.arm(std::chrono::milliseconds(10))) << "第 " << roundIndex << " 轮武装失败";
             ASSERT_TRUE(TestSupport::waitForReadable(timer.fileDescriptor(), 1000))
                     << "第 " << roundIndex << " 轮定时器未到期";
             timer.drain();

@@ -47,17 +47,21 @@ namespace AsynGyanis::Core
         {
         public:
             /**
-             * @brief 构造等待器并记下截止时间
+             * @brief 构造等待器并记下等待时长
              * @param queue 所属队列
              * @param duration 等待时长；非正数表示「尽快到期」（在下一个驱动周期内完成），
              *        而不是永不触发
+             * @note 截止时间在**真正挂起时**（await_suspend）才按此刻 + 时长算出，
+             *       因此 `auto awaiter = timer.waitFor(1s); …先干别的…; co_await awaiter;`
+             *       等的是「挂起时刻起 1 秒」，而不是构造时刻起 1 秒
              */
             Awaiter(TimerQueue &queue, std::chrono::milliseconds duration) noexcept;
 
             /**
              * @brief 析构时把自己从队列上摘除
              * @details 协程帧可能在等待期间被销毁（取消、异常展开）。此时等待器随帧析构，
-             *          必须顺手取消登记，否则队列的堆里会留下指向已释放等待器的指针。
+             *          必须顺手取消登记：堆里残留的是指向已释放等待器的指针，而已经收集待恢复
+             *          的那一份则会变成一次对已释放帧的 resume——两者都是释放后使用。
              */
             ~Awaiter();
 
@@ -77,9 +81,12 @@ namespace AsynGyanis::Core
 
             /**
              * @brief 登记进队列并挂起协程
-             * @param handle 当前协程句柄，到期时由队列投回调度器恢复
+             * @param handle 当前协程句柄，到期时由队列恢复
+             * @return true 已登记，可以挂起
+             * @return false 队列已停摆（定时器描述符坏了，再不会有到期通知），不挂起、
+             *         立即以「已到期」结束等待，避免业务永远卡在一次不会到来的定时上
              */
-            void await_suspend(std::coroutine_handle<> handle);
+            [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle);
 
             /**
              * @brief 到期后的收尾（无返回值：等待只有「到期」一种结果）
@@ -89,10 +96,20 @@ namespace AsynGyanis::Core
         private:
             friend class TimerQueue;
 
+            /**
+             * @brief 按「此刻 + 时长」算出截止时间，溢出方向取远
+             * @details 时长可能大得加不进时间点（例如 milliseconds::max()），直接相加会溢出成
+             *          一个过去的时刻，等待于是立刻完成——与调用方「等很久」的本意相反。
+             *          这里把结果饱和到时间点最大值，等待因此按「很久」处理
+             */
+            void computeDeadline() noexcept;
+
             TimerQueue *                            m_queue;    ///< 所属队列（非拥有）
-            std::chrono::steady_clock::time_point   m_deadline; ///< 截止时间
+            std::chrono::milliseconds               m_duration{}; ///< 等待时长（挂起时才折算成截止时间）
+            std::chrono::steady_clock::time_point   m_deadline{}; ///< 截止时间（await_suspend 时算出）
             std::coroutine_handle<>                 m_handle{}; ///< 等待中的协程，空表示无人在等
             bool                                    m_isQueued{false}; ///< 是否仍在队列的堆里
+            bool                                    m_isPendingResume{false}; ///< 已到期、尚待恢复（在队列的待恢复表里）
         };
 
         /**
@@ -148,10 +165,21 @@ namespace AsynGyanis::Core
         Task<> drive();
 
         /**
+         * @brief 驱动协程的三态
+         */
+        enum class DriverState
+        {
+            Idle,    ///< 尚未启动（还没人用过定时器）
+            Running, ///< 已投递并在跑
+            Dead     ///< 注册已失效，再不会有到期通知（此后登记一律立即完成）
+        };
+
+        /**
          * @brief 把一个等待器登记进堆
          * @param awaiter 目标等待器（其截止时间与协程句柄须已就位）
+         * @return true 已登记；false 队列已停摆，调用方不应挂起
          */
-        void insert(Awaiter &awaiter);
+        [[nodiscard]] bool insert(Awaiter &awaiter);
 
         /**
          * @brief 从堆里摘除一个等待器（等待器析构时调用）
@@ -160,22 +188,44 @@ namespace AsynGyanis::Core
         void remove(Awaiter &awaiter) noexcept;
 
         /**
-         * @brief 按堆顶截止时间重新武装（或解除武装）定时器描述符
-         * @details 截止时间没变时不做任何系统调用；堆为空时解除武装，空闲循环因此零唤醒
+         * @brief 把一个等待器从「待恢复表」里摘除（等待器析构时调用）
+         * @param awaiter 目标等待器
          */
-        void rearm() noexcept;
+        void cancelPendingResume(Awaiter &awaiter) noexcept;
 
         /**
-         * @brief 把已到期的等待者投回调度器，并按新的堆顶重新武装
+         * @brief 按堆顶截止时间重新武装（或解除武装）定时器描述符
+         * @details 截止时间没变时不做任何系统调用；堆为空时解除武装，空闲循环因此零唤醒
+         * @return true 内核状态已按当前队列需要到位；false 武装失败（描述符坏了），
+         *         本次不记账，下一次 rearm 会重试
+         */
+        [[nodiscard]] bool rearm() noexcept;
+
+        /**
+         * @brief 把已到期的等待者收进待恢复表，并按新的堆顶重新武装
          */
         void dispatchExpired();
+
+        /**
+         * @brief 恢复所有已到期、且仍然活着的等待者
+         * @details 由调度器在本轮清空里执行（见 dispatchExpired 的说明）。逐个从待恢复表摘下
+         *          再就地恢复：被恢复的代码可能销毁表中其它等待器的帧，那些等待器析构时会
+         *          把自己从表里摘掉，因此每轮都重新取表头、绝不缓存表内地址
+         */
+        void resumeExpired();
+
+        /**
+         * @brief 队列停摆后的收尾：堆里的等待者不再有人叫醒，交给各自持有者销毁
+         */
+        void abandonPendingTimers() noexcept;
 
         EventLoop                    &m_loop;         ///< 所属事件循环
         Platform::TimerFileDescriptor m_timer;        ///< 循环唯一的定时器描述符
         IoWatcher                     m_watcher;      ///< 它的常驻注册（等待时武装可读）
         std::vector<Awaiter *>        m_heap;         ///< 最小堆：按截止时间，早的在前
+        std::vector<Awaiter *>        m_expiredAwaiters; ///< 已到期待恢复：按截止时间升序，恢复在下一拍做
         std::optional<std::chrono::steady_clock::time_point> m_armedDeadline; ///< 已武装的截止时间
-        bool                          m_isDriverStarted{false}; ///< 驱动协程是否已投递（首次登记时启动）
+        DriverState                   m_driverState{DriverState::Idle}; ///< 驱动协程状态（首次登记时启动）
         Task<>                        m_driverTask;   ///< 驱动协程（最后声明，最先销毁）
     };
 

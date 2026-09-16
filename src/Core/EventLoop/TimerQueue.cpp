@@ -1,6 +1,7 @@
 #include "Core/EventLoop/TimerQueue.h"
 
 #include "Base/Exception/SystemException.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 
 #include <algorithm>
@@ -25,16 +26,20 @@ namespace AsynGyanis::Core
 
     TimerQueue::Awaiter::Awaiter(TimerQueue &queue, const std::chrono::milliseconds duration) noexcept :
         m_queue(&queue),
-        m_deadline(std::chrono::steady_clock::now() + std::max(duration, std::chrono::milliseconds::zero()))
+        m_duration(std::max(duration, std::chrono::milliseconds::zero()))
     {
     }
 
     TimerQueue::Awaiter::~Awaiter()
     {
-        // 只有真正登记过的等待器才需要动队列；队列若已先一步销毁，这里也必须是安全的
+        // 只有真正登记过的等待器才需要动队列；队列若已先一步销毁（析构里把标记清掉），这里也就什么都不做
         if (m_isQueued)
         {
             m_queue->remove(*this);
+        }
+        if (m_isPendingResume)
+        {
+            m_queue->cancelPendingResume(*this);
         }
     }
 
@@ -43,14 +48,30 @@ namespace AsynGyanis::Core
         return false;
     }
 
-    void TimerQueue::Awaiter::await_suspend(const std::coroutine_handle<> handle)
+    bool TimerQueue::Awaiter::await_suspend(const std::coroutine_handle<> handle)
     {
+        computeDeadline();
         m_handle = handle;
-        m_queue->insert(*this);
+        return m_queue->insert(*this);
     }
 
     void TimerQueue::Awaiter::await_resume() const noexcept
     {
+    }
+
+    void TimerQueue::Awaiter::computeDeadline() noexcept
+    {
+        const auto now = std::chrono::steady_clock::now();
+
+        // 上限必须在**毫秒域**里算：直接拿时长与「时间点最大值 - 此刻」比较，两侧单位不同，
+        // 比较会先把毫秒折成时钟的滴答（Windows 上是 100ns），毫秒量级的大数在这一步就越界了，
+        // 比较结果随之失真——正是要防的那种溢出。折到毫秒只做除法，不会溢出
+        const auto maximumDuration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::time_point::max() - now);
+
+        // 时长加不进去（例如 milliseconds::max()）时饱和到时间点最大值：宁可等得比要求更久，
+        // 也不能因溢出把截止时间算成过去，那会让等待立刻完成
+        m_deadline = (m_duration >= maximumDuration) ? std::chrono::steady_clock::time_point::max() : now + m_duration;
     }
 
     TimerQueue::TimerQueue(EventLoop &loop) :
@@ -68,13 +89,18 @@ namespace AsynGyanis::Core
 
     TimerQueue::~TimerQueue()
     {
-        // 堆里残留的等待者先标记为「已不在队列里」：它们的协程帧由各自的持有者销毁，
-        // 析构时不能再回来访问正在析构的本对象
+        // 残留的等待者先标记为「已不在队列里」：它们的协程帧由各自的持有者销毁，
+        // 析构时不能再回来访问正在析构的本对象（两种登记形态各清各的标记）
         for (Awaiter *const awaiter: m_heap)
         {
             awaiter->m_isQueued = false;
         }
+        for (Awaiter *const awaiter: m_expiredAwaiters)
+        {
+            awaiter->m_isPendingResume = false;
+        }
         m_heap.clear();
+        m_expiredAwaiters.clear();
         m_armedDeadline.reset();
 
         // 成员析构顺序（逆声明序）：驱动协程帧 → 描述符注册 → 描述符。
@@ -95,13 +121,16 @@ namespace AsynGyanis::Core
     {
         while (true)
         {
-            rearm();
+            [[maybe_unused]] const bool isArmed = rearm();
 
-            // 注册失效（队列或循环在收尾）时以「未就绪」结束，驱动随之退出。
-            // 标志位一并复位：不清的话后续登记会以为驱动还在，而它已经退出，等待者永远等不到人叫醒
+            // 注册失效（描述符已坏，或队列与循环在收尾）时以「未就绪」结束，驱动随之退出。
+            // 状态必须落到 Dead：只复位成 Idle 的话，后续登记会再把**已经跑完的**驱动帧投一次，
+            // 那是对停在终结点上的协程 resume，属未定义行为
             if (!co_await m_watcher.waitReadable())
             {
-                m_isDriverStarted = false;
+                m_driverState = DriverState::Dead;
+                abandonPendingTimers();
+                LOG_WARN_FMT("TimerQueue: 定时器注册已失效（事件循环正在收尾），此后登记定时等待会立即完成");
                 co_return;
             }
 
@@ -113,13 +142,19 @@ namespace AsynGyanis::Core
         }
     }
 
-    void TimerQueue::insert(Awaiter &awaiter)
+    bool TimerQueue::insert(Awaiter &awaiter)
     {
+        // 队列已停摆：再挂起就是永远等不到人的等待，直接告诉调用方「立即完成」
+        if (m_driverState == DriverState::Dead)
+        {
+            return false;
+        }
+
         // 第一次有人等定时器才把驱动协程投出去：它跑到「等定时器可读」后长期挂在那里，
         // 此后每个定时等待都只是往堆里插一项（并由 rearm 决定要不要改内核的截止时间）
-        if (!m_isDriverStarted)
+        if (m_driverState == DriverState::Idle)
         {
-            m_isDriverStarted = true;
+            m_driverState = DriverState::Running;
             m_loop.scheduler().schedule(m_driverTask.handle());
         }
 
@@ -129,7 +164,8 @@ namespace AsynGyanis::Core
 
         // 新登记的截止时间可能比已武装的更早（驱动正等着一个更晚的时刻）：重武装让内核
         // 改到最近的截止时间；否则什么都不做，一次系统调用都不付
-        rearm();
+        [[maybe_unused]] const bool isArmed = rearm();
+        return true;
     }
 
     void TimerQueue::remove(Awaiter &awaiter) noexcept
@@ -145,60 +181,113 @@ namespace AsynGyanis::Core
         }
         m_heap.erase(position);
         std::make_heap(m_heap.begin(), m_heap.end(), &TimerQueue::isLaterThan);
-        rearm();
+        [[maybe_unused]] const bool isArmed = rearm();
     }
 
-    void TimerQueue::rearm() noexcept
+    bool TimerQueue::rearm() noexcept
     {
         if (m_heap.empty())
         {
             if (!m_armedDeadline.has_value())
             {
-                return;
+                return true;
             }
             m_timer.cancel();
             m_armedDeadline.reset();
-            return;
+            return true;
         }
 
         const auto nearest = m_heap.front()->m_deadline;
         if (m_armedDeadline.has_value() && *m_armedDeadline == nearest)
         {
-            return;
+            return true;
         }
-        m_timer.arm(toArmedDuration(nearest));
+        if (!m_timer.arm(toArmedDuration(nearest)))
+        {
+            // 失败时不能记账：记成「已武装」会让同一截止时间从此不再重试，
+            // 此后所有定时器都静默失效（等待者挂在那里，没有任何日志说明为什么）
+            m_armedDeadline.reset();
+            LOG_ERROR_FMT("TimerQueue: 武装定时器描述符失败，最近一个定时（{} 毫秒后到期）不会触发；"
+                          "下一次队列变化时会重试",
+                          toArmedDuration(nearest).count());
+            return false;
+        }
         m_armedDeadline = nearest;
+        return true;
     }
 
     void TimerQueue::dispatchExpired()
     {
         const auto now = std::chrono::steady_clock::now();
 
-        // 本批到期的等待器按截止时间先后收进来，最后**反序**投递给调度器：
-        // 调度器的本地队列是 LIFO（见 Scheduler 的说明），正序投递会让「更晚截止」的先跑——
-        // 同一批里有两个以上到期定时器时，唤醒顺序就与截止时间相反（CI 上实测到过）
-        std::vector<Awaiter *> expiredAwaiters;
+        // 到期的等待器按截止时间先后收进待恢复表（堆顶即最早，故收集顺序天然升序）
         while (!m_heap.empty() && m_heap.front()->m_deadline <= now)
         {
             Awaiter *const awaiter = m_heap.front();
             std::pop_heap(m_heap.begin(), m_heap.end(), &TimerQueue::isLaterThan);
             m_heap.pop_back();
-            awaiter->m_isQueued = false;
-            expiredAwaiters.push_back(awaiter);
+            awaiter->m_isQueued        = false;
+            awaiter->m_isPendingResume = true;
+            m_expiredAwaiters.push_back(awaiter);
         }
 
-        for (auto iterator = expiredAwaiters.rbegin(); iterator != expiredAwaiters.rend(); ++iterator)
+        [[maybe_unused]] const bool isArmed = rearm();
+
+        // 恢复动作排给调度器，而不是在这里就地恢复、也不把裸句柄投出去：本协程还在推进队列，
+        // 就地恢复会让别的协程在队列状态尚未收敛时插进来；而**裸句柄一旦投出去就摘不回来**——
+        // 投出之后、恢复之前若等待者的帧被销毁（取消、连接收尾），循环会 resume 一块已释放的帧。
+        // 排一段「稍后恢复」的代码就没这个问题：恢复前逐个从待恢复表里取，帧析构时会把表里的
+        // 自己摘掉，被销毁的等待者因此根本不会被恢复（与连接池的恢复票据同一目的，见 resumeExpired）
+        if (!m_expiredAwaiters.empty())
         {
-            Awaiter *const awaiter = *iterator;
-            if (awaiter->m_handle)
+            m_loop.scheduler().postLocal([this] { resumeExpired(); });
+        }
+    }
+
+    void TimerQueue::resumeExpired()
+    {
+        while (!m_expiredAwaiters.empty())
+        {
+            Awaiter *const awaiter = m_expiredAwaiters.front();
+            m_expiredAwaiters.erase(m_expiredAwaiters.begin());
+            awaiter->m_isPendingResume = false;
+
+            // 句柄先取走再恢复（与「取回事件后再统一跑」的约定一致）：被恢复的代码可能顺手
+            // 销毁表中其它等待器的帧，那些等待器已把自己摘掉，本循环每轮重新取表头即可
+            if (const std::coroutine_handle<> handle = std::exchange(awaiter->m_handle, nullptr); handle)
             {
-                // 投回调度器而不是就地恢复：本协程还在推进队列，就地恢复会让别的协程在
-                // 队列状态尚未收敛时插进来；这也与事件分发「取回事件后再统一跑」的既有约定一致
-                m_loop.scheduler().schedule(std::exchange(awaiter->m_handle, nullptr));
+                handle.resume();
             }
         }
+    }
 
-        rearm();
+    void TimerQueue::cancelPendingResume(Awaiter &awaiter) noexcept
+    {
+        awaiter.m_isPendingResume = false;
+
+        const auto position = std::find(m_expiredAwaiters.begin(), m_expiredAwaiters.end(), &awaiter);
+        if (position != m_expiredAwaiters.end())
+        {
+            m_expiredAwaiters.erase(position);
+        }
+    }
+
+    void TimerQueue::abandonPendingTimers() noexcept
+    {
+        // 队列停摆（描述符坏了或正在收尾）：堆里的等待者再没有谁会叫醒，按既有收尾口径
+        // 把它们标记成「已不在队列里」，协程帧由各自的持有者销毁
+        for (Awaiter *const awaiter: m_heap)
+        {
+            awaiter->m_isQueued = false;
+        }
+        for (Awaiter *const awaiter: m_expiredAwaiters)
+        {
+            // 待恢复表里的同理不再恢复：排进来的那次 resumeExpired 会看到空表
+            awaiter->m_isPendingResume = false;
+        }
+        m_heap.clear();
+        m_expiredAwaiters.clear();
+        m_armedDeadline.reset();
     }
 
 } // namespace AsynGyanis::Core

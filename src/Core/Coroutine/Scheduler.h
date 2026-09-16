@@ -73,6 +73,19 @@ namespace AsynGyanis::Core
         void scheduleRemote(std::coroutine_handle<> handle);
 
         /**
+         * @brief 在本循环上稍后执行一段代码，不跨线程（与 schedule() 同一线程约束）
+         *
+         * @details 需要「决定动作」与「执行动作」分开一拍、且执行主体不是协程时用它：
+         *          例如定时器到期后不直接 resume 等待者，而是把恢复动作排进本轮清空。
+         *          std::function 的小对象优化覆盖只捕获一个指针的常见写法，常规调用不产生堆分配。
+         * @param callable 待执行的可调用对象；空对象会被忽略
+         * @note 与 schedule() 一样只在所属 EventLoop 线程调用。取出顺序是**先进先出**：
+         *       投递方按顺序排进来的动作就该按这个顺序发生，与本地就绪队列的栈式顺序
+         *       （那是「最近就绪的先跑」的调度策略）不是一回事
+         */
+        void postLocal(std::function<void()> callable);
+
+        /**
          * @brief 跨线程投递一段普通代码：在**目标循环**上执行一次（线程安全）
          *
          * @details scheduleRemote() 只能投递协程句柄，而「跨循环移交」这类动作（把刚接受的连接交给
@@ -122,6 +135,7 @@ namespace AsynGyanis::Core
 
     private:
         std::vector<std::coroutine_handle<> > m_localQueue;      ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
+        std::deque<std::function<void()> >    m_localCallables;  ///< 本地待执行代码（同上无锁，先进先出）
         std::deque<std::coroutine_handle<> >  m_globalQueue;     ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
         std::deque<std::function<void()> >    m_remoteCallables; ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
         std::mutex                            m_globalMutex;     ///< 保护全局队列与跨线程回调队列的互斥锁

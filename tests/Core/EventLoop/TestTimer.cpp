@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -236,5 +237,100 @@ namespace AsynGyanis::Core
         waiting.handle().resume();
 
         ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "取消一个等待后，其他定时器没有正常到期";
+    }
+
+    /**
+     * @brief 截止时间从「真正挂起」那一刻算起，而不是等待器构造那一刻
+     * @details 先构造等待器、干一会儿事再 co_await，等的是挂起时刻起的那段时长。
+     *          若截止时间在构造时就定下，这里会立刻「早就到期」——用例先睡够再挂起，
+     *          因此立刻完成与等满时长是可区分的
+     */
+    TEST(Timer, WaitsFullDurationWhenAwaitedLate)
+    {
+        EventLoop loop;
+        Timer     timer(loop);
+
+        // 构造等待器后先让时间过去：构造时刻起算的截止时间此刻已经过期
+        auto awaiter = timer.waitFor(std::chrono::milliseconds(80));
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+        bool isExpired    = false;
+        auto waitingBody = [&awaiter, &isExpired]() -> Task<>
+        {
+            co_await awaiter;
+            isExpired = true;
+        };
+        auto waiting = waitingBody();
+        waiting.handle().resume();
+
+        // 挂起后 30ms 内不应到期：此刻到期的只可能是「构造时起算」的旧截止时间
+        EXPECT_FALSE(advanceUntil(loop, [&isExpired] { return isExpired; }, std::chrono::milliseconds(30)))
+                << "等待器在被 co_await 之前就算到期了：截止时间应当在挂起时才算出";
+        EXPECT_FALSE(isExpired);
+
+        // 再给足时间：正常路径下 80ms 的等待必须真的完成
+        EXPECT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "80ms 的等待没有在时限内到期";
+    }
+
+    /**
+     * @brief 时长大到无法与当前时刻相加时按「很久」处理，而不是溢出成过去的时刻立刻到期
+     */
+    TEST(Timer, HugeDurationDoesNotWrapIntoImmediateExpiry)
+    {
+        EventLoop loop;
+        Timer     timer(loop);
+
+        bool isExpired    = false;
+        auto waitingBody = [&timer, &isExpired]() -> Task<>
+        {
+            co_await timer.waitFor(std::chrono::milliseconds::max());
+            isExpired = true;
+        };
+        auto waiting = waitingBody();
+        waiting.handle().resume();
+
+        // 溢出成负值的话截止时间落在过去，这一次推进就会把它捞出来
+        EXPECT_FALSE(advanceUntil(loop, [&isExpired] { return isExpired; }, std::chrono::milliseconds(50)))
+                << "milliseconds::max() 的等待立刻完成了：截止时间在相加时溢出";
+        EXPECT_FALSE(isExpired);
+        EXPECT_EQ(loop.timerQueue().pendingCount(), 1U);
+    }
+
+    /**
+     * @brief 已到期待恢复的等待者若在此之前被销毁，不会被恢复
+     * @details 两个等待者在同一批里到期，先被恢复的那个顺手销毁另一个的帧（连接收尾就是这么做的：
+     *          一个协程的收尾销毁同一批里挂着的其它帧）。恢复动作若投的是裸句柄，循环随后会
+     *          resume 一块已释放的帧——旧实现下本用例在 ASan 构建里必报释放后使用。
+     *          用例只断言「销毁确实发生了、进程没崩」，恢复顺序在两种实现下都是先早截止的那个
+     */
+    TEST(Timer, WaiterDestroyedBeforeItsResumeIsNotResumed)
+    {
+        EventLoop loop;
+        Timer     timer(loop);
+
+        bool isVictimDestroyed = false;
+
+        // 牺牲者：等待 1ms（截止时间晚于下面那个「尽快到期」的销毁者）
+        auto victimBody = [&timer]() -> Task<>
+        {
+            co_await timer.waitFor(std::chrono::milliseconds(1));
+        };
+        std::unique_ptr<Task<>> victim = std::make_unique<Task<>>(victimBody());
+        victim->handle().resume();
+
+        auto destroyerBody = [&timer, &victim, &isVictimDestroyed]() -> Task<>
+        {
+            // 非正数时长表示「尽快到期」：截止时间早于牺牲者，因此先被恢复
+            co_await timer.waitFor(std::chrono::milliseconds::zero());
+            // 恢复途中销毁仍在等待的另一个帧：它的到期恢复可能已经排在这一轮里了
+            victim.reset();
+            isVictimDestroyed = true;
+        };
+        auto destroyer = destroyerBody();
+        destroyer.handle().resume();
+
+        ASSERT_TRUE(advanceUntil(loop, [&isVictimDestroyed] { return isVictimDestroyed; }, kWaitTimeout)) << "销毁者没有在时限内被恢复";
+        EXPECT_TRUE(isVictimDestroyed);
+        EXPECT_TRUE(destroyer.isReady());
     }
 } // namespace AsynGyanis::Core

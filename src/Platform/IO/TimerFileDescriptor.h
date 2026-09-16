@@ -60,9 +60,13 @@ namespace AsynGyanis::Platform
         /**
          * @brief 设定一次性到期时间
          * @details 重复调用会覆盖上一次未决的到期设定；传入非正值等价于调用 cancel()。
+         *          Windows 侧先取消旧定时器再登记新的，因此失败时**没有任何到期会到来**，
+         *          调用方必须按返回值处理，不能当成本次设定已生效。
          * @param duration 距离到期的时长
+         * @return true 设定已生效；false 底层登记失败（描述符无效或系统资源不足），
+         *         本次不会到期
          */
-        void arm(std::chrono::milliseconds duration) noexcept;
+        [[nodiscard]] bool arm(std::chrono::milliseconds duration) noexcept;
 
         /**
          * @brief 取消未决的到期设定
