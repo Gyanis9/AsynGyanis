@@ -16,6 +16,7 @@
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
+#include <deque>
 #include <optional>
 #include <vector>
 
@@ -223,7 +224,7 @@ namespace AsynGyanis::Core
         Platform::TimerFileDescriptor m_timer;        ///< 循环唯一的定时器描述符
         IoWatcher                     m_watcher;      ///< 它的常驻注册（等待时武装可读）
         std::vector<Awaiter *>        m_heap;         ///< 最小堆：按截止时间，早的在前
-        std::vector<Awaiter *>        m_expiredAwaiters; ///< 已到期待恢复：按截止时间升序，恢复在下一拍做
+        std::deque<Awaiter *>         m_expiredAwaiters; ///< 已到期待恢复：按截止时间升序，恢复在下一拍做
         std::optional<std::chrono::steady_clock::time_point> m_armedDeadline; ///< 已武装的截止时间
         DriverState                   m_driverState{DriverState::Idle}; ///< 驱动协程状态（首次登记时启动）
         Task<>                        m_driverTask;   ///< 驱动协程（最后声明，最先销毁）

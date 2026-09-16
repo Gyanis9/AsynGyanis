@@ -249,7 +249,7 @@ namespace AsynGyanis::Core
         while (!m_expiredAwaiters.empty())
         {
             Awaiter *const awaiter = m_expiredAwaiters.front();
-            m_expiredAwaiters.erase(m_expiredAwaiters.begin());
+            m_expiredAwaiters.pop_front();
             awaiter->m_isPendingResume = false;
 
             // 句柄先取走再恢复（与「取回事件后再统一跑」的约定一致）：被恢复的代码可能顺手

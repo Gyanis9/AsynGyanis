@@ -19,16 +19,19 @@ namespace AsynGyanis::Core
          */
         struct ResolveState
         {
-            std::coroutine_handle<>  callerHandle;             ///< 等待结果的协程句柄
-            std::atomic<bool>        isCallerAbandoned{false}; ///< 协程帧是否已被销毁（取消、收口）
-            std::vector<InetAddress> addresses;                ///< 解析结果
+            /// 等待结果的协程句柄。**必须是原子的**：置空发生在等待器析构（帧销毁，可能在
+            /// 任意线程），读取发生在后台线程投回的唤醒里，两者无同步就是数据竞争；而且
+            /// 「先判活再 resume」本身有个窗口——判活通过之后帧仍可能被销毁。改成一取一空
+            /// （exchange）：谁取到句柄谁负责恢复，帧销毁时置空则那次恢复自然作废
+            std::atomic<std::coroutine_handle<>> callerHandle{nullptr};
+            std::vector<InetAddress>             addresses; ///< 解析结果
 
-            /// 唤醒等待方：协程帧已被销毁时跳过——resume 一个已释放的帧是释放后使用
-            void wakeCaller() const noexcept
+            /// 唤醒等待方：句柄已被取走或已被置空时什么都不做（resume 已释放的帧是释放后使用）
+            void wakeCaller() noexcept
             {
-                if (!isCallerAbandoned.load(std::memory_order_acquire))
+                if (const std::coroutine_handle<> handle = callerHandle.exchange(nullptr, std::memory_order_acq_rel); handle != nullptr)
                 {
-                    callerHandle.resume();
+                    handle.resume();
                 }
             }
         };
@@ -109,7 +112,7 @@ namespace AsynGyanis::Core
 
             bool await_suspend(const std::coroutine_handle<> handle) noexcept
             {
-                state->callerHandle = handle;
+                state->callerHandle.store(handle, std::memory_order_release);
                 // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
                 // 结果保持空列表，按文档的「空列表表示解析失败」收尾
                 try
@@ -128,9 +131,9 @@ namespace AsynGyanis::Core
 
             ~ResolveAwaiter()
             {
-                // 本等待器随协程帧一起析构：帧没了就再也不能被唤醒，
-                // 标上标记，让后台线程投回的唤醒跳过 resume（那是释放后使用）
-                state->isCallerAbandoned.store(true, std::memory_order_release);
+                // 本等待器随协程帧一起析构：帧没了就再也不能被唤醒——把句柄置空，
+                // 后台线程投回的唤醒取到空句柄，自然跳过 resume（那是释放后使用）
+                state->callerHandle.store(nullptr, std::memory_order_release);
             }
         };
 
