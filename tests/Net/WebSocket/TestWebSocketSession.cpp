@@ -1069,8 +1069,10 @@ namespace AsynGyanis::Net
 
         WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
 
-        // 一条都不取走：全部堆在待交付队列里
-        for (std::size_t index = 0; index < kWebSocketMaximumQueuedPayloadByteCount / kMessageBytes; ++index)
+        // 一条都不取走：全部堆在待交付队列里。上界按「负载 + 每帧固定开销」记账，因此满格的
+        // 条数比 上界/单条负载 少一档（最后那一条正好越过上界）
+        const std::size_t fullFrames = kWebSocketMaximumQueuedPayloadByteCount / kMessageBytes;
+        for (std::size_t index = 0; index + 1 < fullFrames; ++index)
         {
             ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted)
                     << "第 " << index + 1 << " 条消息仍在积压上界之内";
@@ -1081,6 +1083,30 @@ namespace AsynGyanis::Net
         EXPECT_EQ(peer.decodeErrorCloseCode(), kWebSocketPolicyViolationCode);
         EXPECT_NE(peer.decodeErrorText().find("积压"), std::string::npos)
                 << "原因要指出是积压超限，实得：" << peer.decodeErrorText();
+    }
+
+
+    /**
+     * @brief 零负载帧同样计入积压上界：每帧还有一份固定开销
+     * @details 上界此前只按负载字节累加，对端连发零负载帧即可绕过——6 字节线上数据换 40~64 字节
+     *          堆内存，而计数始终为零，队列按帧数无界增长
+     */
+    TEST(WebSocketPeerContract, CountsFramingOverheadSoEmptyFramesCannotBypassTheBound)
+    {
+        WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
+
+        const std::string frame = maskedClientFrame(0x2, "");
+        const std::size_t framesUntilBound = kWebSocketMaximumQueuedPayloadByteCount / kWebSocketFrameOverheadByteCount;
+
+        // 上界是「超过才拒」：恰好填满的那一帧仍然放行，因此这里要喂满 framesUntilBound 帧
+        for (std::size_t index = 0; index < framesUntilBound; ++index)
+        {
+            ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted)
+                    << "第 " << index + 1 << " 个零负载帧仍在积压上界之内";
+        }
+        EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError)
+                << "零负载帧没有计入积压上界：对端可用它把待交付队列撑到无界";
+        EXPECT_EQ(peer.decodeErrorCloseCode(), kWebSocketPolicyViolationCode);
     }
 
     // ============================================================================

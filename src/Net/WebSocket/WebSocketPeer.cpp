@@ -130,7 +130,7 @@ namespace AsynGyanis::Net
         WebSocketFrame frame = std::move(m_peer->m_incomingFrames.front());
         m_peer->m_incomingFrames.pop_front();
         // 出队即从积压计数里扣除（与 enqueueFrame 的累加配对），上界据此放行后续帧
-        m_peer->m_queuedPayloadByteCount -= frame.payload.size();
+        m_peer->m_queuedPayloadByteCount -= frame.payload.size() + kWebSocketFrameOverheadByteCount;
         return frame;
     }
 
@@ -331,8 +331,9 @@ namespace AsynGyanis::Net
         }
 
         m_incomingFrames.push_back(std::move(frame));
-        // 积压计数在入队处唯一累加：出队在 await_resume() 里扣减，两处配对
-        m_queuedPayloadByteCount += m_incomingFrames.back().payload.size();
+        // 积压计数在入队处唯一累加：出队在 await_resume() 里扣减，两处配对。
+        // 每帧再算一份固定开销，零负载帧因此同样计入上界（见 kWebSocketFrameOverheadByteCount）
+        m_queuedPayloadByteCount += m_incomingFrames.back().payload.size() + kWebSocketFrameOverheadByteCount;
 
         // 业务正挂在 receive() 上：就地恢复它，把控制权交给它——交付与唤醒都由会话侧驱动，
         // 业务侧的任一挂起点（收消息、发帧）都在本对象的调用链上
@@ -418,7 +419,8 @@ namespace AsynGyanis::Net
 
                 // 收帧积压上界：业务消费慢于对端发送时内存不能无界增长。超限按策略违规收口，
                 // 不静默丢帧——丢了会让业务看到一条缺帧的流，比直接断开更难排查
-                if (m_queuedPayloadByteCount + frame.payload.size() > kWebSocketMaximumQueuedPayloadByteCount)
+                if (m_queuedPayloadByteCount + frame.payload.size() + kWebSocketFrameOverheadByteCount >
+                    kWebSocketMaximumQueuedPayloadByteCount)
                 {
                     m_payloadErrorMessage = std::format("待交付的 WebSocket 帧积压超过上限 {} 字节（业务消费速度跟不上对端发送）："
                                                         "请提高消费速度，或在对端侧放慢发送速率",

@@ -51,6 +51,10 @@ namespace AsynGyanis::Net
     /// 策略违规状态码：对端行为超出本端接受范围（如长期不消费导致的收帧积压）
     inline constexpr std::uint16_t kWebSocketPolicyViolationCode = 1008;
 
+    /// 每帧的固定开销估算（帧对象 + 容器节点 + 负载串头）：上界按「负载 + 本开销」记账，
+    /// 否则对端连发零负载帧即可绕过（6 字节线上数据换 40~64 字节堆内存，计数却始终为零）
+    inline constexpr std::size_t kWebSocketFrameOverheadByteCount = 64;
+
     /// 待交付帧的积压上界（字节，按负载计）：消费者慢于对端时内存不能被无界吃光
     inline constexpr std::size_t kWebSocketMaximumQueuedPayloadByteCount = 16 * 1024 * 1024;
 
