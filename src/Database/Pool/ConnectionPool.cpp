@@ -219,7 +219,7 @@ namespace AsynGyanis::Database
         if (handedOverConnection)
         {
             // 未交出去（池已停摆）时连接留在手上，随本帧析构关闭；交出去则补记一次活跃取出
-            returnConnectionIfAlive(handedOverConnection, m_liveness, true);
+            m_pool->returnConnectionIfAlive(handedOverConnection, m_liveness, true);
         }
 
         // 票据里的句柄一并清空：池可能已经把「恢复这次等待」投回了事件循环（交接连接那一刻），

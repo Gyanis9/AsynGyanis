@@ -242,8 +242,9 @@ namespace AsynGyanis::Database
                  * @brief 取走句柄并恢复协程；已被取走（或等待器已析构）时空操作
                  * @note 三处投递点（交接、超时、池停摆）共用这一份「取走再恢复」，
                  *       任何一处改成先判后取都会退化成两次恢复同一个帧
+                 * @note 非 const：exchange 会改原子本身，GCC 下 const 版本编不过（MSVC 放行）
                  */
-                void resumeOnce() const noexcept
+                void resumeOnce() noexcept
                 {
                     if (const std::coroutine_handle<> resumeHandle = handle.exchange(nullptr); resumeHandle != nullptr)
                     {
