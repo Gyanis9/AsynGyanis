@@ -632,9 +632,7 @@ namespace AsynGyanis::Database
 
             // 容器的正确用法是展开成多个标量参数（如 IN 列表），而不是当成单个参数：
             // 方言层已把 IN 集合展开成多个占位符，走到这里说明调用方传了非标量值
-            m_lastError = "参数化查询不支持容器类型的参数（第 " + std::to_string(index) + " 个参数，类型 " +
-                          std::string(databaseValueTypeName(parameterValue)) +
-                          "）：请把容器展开成多个标量参数后重试";
+            m_lastError = containerParameterRejectedText(index, parameterValue);
             return false;
         }
 

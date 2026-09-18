@@ -253,7 +253,7 @@ namespace AsynGyanis::Database
         if (finalizeResult != SQLITE_OK)
         {
             // 用不依赖句柄状态的 sqlite3_errstr：finalize 之后连接的 errmsg 可能已被改写
-            m_lastError = std::string("收尾 SQL 语句失败：") + sqlite3_errstr(finalizeResult) + "（错误码 " + std::to_string(finalizeResult) + "）";
+            m_lastError = composeNativeErrorText("收尾 SQL 语句失败", sqlite3_errstr(finalizeResult), sqlite3_errstr(finalizeResult), finalizeResult);
             return nullptr;
         }
 
