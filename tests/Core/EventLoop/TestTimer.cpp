@@ -1,15 +1,7 @@
-/**
- * @file TestTimer.cpp
- * @brief Timer 单元测试：循环级定时器队列上的构造、到期唤醒、到期顺序与取消
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 用例手工推进事件循环（复刻 EventLoop::run() 的「分发事件 + 清空调度队列」两步），
- *          不引入循环线程，因此时序由用例自己掌握；真实定时器仍需等待内核到期，
- *          故每次推进都留出上限，超时判失败而不是把用例挂住。
- */
+// Timer 单元测试：循环级定时器队列上的构造、到期唤醒、到期顺序与取消
+//
+// 用例手工推进事件循环（复刻 EventLoop::run() 的「分发事件 + 清空调度队列」两步），
+// 不引入循环线程，因此时序由用例自己掌握；真实定时器仍需等待内核到期，超时判失败而不是把用例挂住。
 
 #include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/EventLoop.h"

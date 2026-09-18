@@ -1,13 +1,7 @@
-/**
- * @file TestConnectionDistributor.cpp
- * @brief ConnectionDistributor 单元测试：轮转派发、回调落在目标循环线程上、无可派人选时不接管描述符
- * @details 用例跑真实的 EventLoop（各占一个线程）与真实的套接字描述符：跨循环这件事的坑
- *          （唤醒丢失、描述符归属错）只有在真循环上才暴露得出来。
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConnectionDistributor 单元测试：轮转派发、回调落在目标循环线程上、无可派人选时不接管描述符
+//
+// 用例跑真实的 EventLoop（各占一个线程）与真实的套接字描述符：跨循环这件事的坑
+// （唤醒丢失、描述符归属错）只有在真循环上才暴露得出来。
 
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/EventLoop.h"

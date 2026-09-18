@@ -1,11 +1,4 @@
-/**
- * @file TestCoroutinePool.cpp
- * @brief CoroutinePool 单元测试：进程级单例、块内分配回收、大块回退与跨线程回收
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// CoroutinePool 单元测试：进程级单例、块内分配回收、大块回退与跨线程回收
 
 #include "Core/Coroutine/CoroutinePool.h"
 

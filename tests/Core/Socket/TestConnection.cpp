@@ -1,11 +1,4 @@
-/**
- * @file TestConnection.cpp
- * @brief Connection 单元测试：构造、关闭、取消传播与基类协程启动
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Connection 单元测试：构造、关闭、取消传播与基类协程启动
 
 #include "Core/Socket/Connection.h"
 

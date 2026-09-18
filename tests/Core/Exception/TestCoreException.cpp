@@ -1,16 +1,10 @@
-/**
- * @file TestCoreException.cpp
- * @brief CoreException 单元测试：继承关系与调用方实际可用的捕获面
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 全部用例都不触碰网络或 TLS：只构造异常对象并断言继承关系与捕获结果。
- *          Core 的运行期故障统一派生自 CoreException（进而 Base::Exception），调用方能用一条
- *          `catch (const Base::Exception &)` 网住全部；它同时仍是标准库的 std::runtime_error；
- *          用法错误（Base::InvalidArgumentException）刻意不在本链上，不被「可恢复故障」的捕获面吞掉。
- */
+// CoreException 单元测试：继承关系与调用方实际可用的捕获面
+//
+// 全部用例都不触碰网络或 TLS：只构造异常对象并断言继承关系与捕获结果。
+// Core 的运行期故障统一派生自 CoreException（进而 Base::Exception），调用方能用一条
+// `catch (const Base::Exception &)` 网住全部；它同时仍是标准库的 std::runtime_error；
+// 用法错误（Base::InvalidArgumentException）刻意不在本链上，不被「可恢复故障」的捕获面吞掉。
+
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"

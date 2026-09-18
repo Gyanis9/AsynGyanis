@@ -1,11 +1,4 @@
-/**
- * @file TestConnectionManager.cpp
- * @brief ConnectionManager 单元测试：连接增删、优雅关闭与 waitAll 阻塞语义
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConnectionManager 单元测试：连接增删、优雅关闭与 waitAll 阻塞语义
 
 #include "Core/Socket/ConnectionManager.h"
 

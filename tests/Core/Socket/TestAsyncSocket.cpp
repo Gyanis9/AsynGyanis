@@ -1,14 +1,7 @@
-/**
- * @file TestAsyncSocket.cpp
- * @brief AsyncSocket 单元测试：创建、移动语义、bind/listen 生命周期、地址查询与关闭唤醒
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 关闭唤醒那几条用例不引入事件循环线程：与 TestIoWatcher 同一手法，
- *          事件分发与调度推进由测试自己在同一线程上完成，时序因此完全确定。
- */
+// AsyncSocket 单元测试：创建、移动语义、bind/listen 生命周期、地址查询与关闭唤醒
+//
+// 关闭唤醒那几条用例不引入事件循环线程：与 TestIoWatcher 同一手法，
+// 事件分发与调度推进由测试自己在同一线程上完成，时序因此完全确定。
 
 #include "Core/Socket/AsyncSocket.h"
 

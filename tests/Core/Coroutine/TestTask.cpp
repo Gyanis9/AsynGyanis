@@ -1,11 +1,4 @@
-/**
- * @file TestTask.cpp
- * @brief Task 单元测试：返回值、异常传播、移动语义与等待器接口
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Task 单元测试：返回值、异常传播、移动语义与等待器接口
 
 #include "Core/Coroutine/Task.h"
 

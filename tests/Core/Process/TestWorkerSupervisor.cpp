@@ -1,11 +1,4 @@
-/**
- * @file TestWorkerSupervisor.cpp
- * @brief WorkerSupervisor 单元测试：配置校验、补齐 worker、崩溃退避、收尾送走
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// WorkerSupervisor 单元测试：配置校验、补齐 worker、崩溃退避、收尾送走
 
 #include "Core/Process/WorkerSupervisor.h"
 

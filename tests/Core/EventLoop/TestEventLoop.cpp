@@ -1,11 +1,4 @@
-/**
- * @file TestEventLoop.cpp
- * @brief EventLoop 单元测试：启停状态、跨线程唤醒、调度器接入与协程执行
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// EventLoop 单元测试：启停状态、跨线程唤醒、调度器接入与协程执行
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Coroutine/Scheduler.h"

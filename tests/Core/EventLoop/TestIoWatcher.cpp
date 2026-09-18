@@ -1,15 +1,8 @@
-/**
- * @file TestIoWatcher.cpp
- * @brief IoWatcher 单元测试：注册一次、关注位按需武装、就绪缓存、关闭唤醒与等待者互斥
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 本文件直接驱动 IoWatcher，不引入事件循环线程：
- *          事件分发就是 EventLoop::run() 里那一步（取回事件后交给注册对象的 handleEvents），
- *          测试自己做同样的一步，因此时序完全确定，不依赖线程调度。
- */
+// IoWatcher 单元测试：注册一次、关注位按需武装、就绪缓存、关闭唤醒与等待者互斥
+//
+// 本文件直接驱动 IoWatcher，不引入事件循环线程：事件分发就是 EventLoop::run() 里那一步
+// （取回事件后交给注册对象的 handleEvents），测试自己做同样的一步，因此时序完全确定。
+//
 // 钉住的契约：
 // 1、描述符在构造时注册一次，等待时按方向武装关注位，等待结束（事件上报）即由内核
 //    自动解除——因此空闲的注册对象不会让事件循环反复被唤醒（Windows 侧 wepoll 只有

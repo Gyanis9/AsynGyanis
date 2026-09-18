@@ -1,11 +1,4 @@
-/**
- * @file TestThreadPool.cpp
- * @brief ThreadPool 单元测试：线程数量、索引访问、启停与跨线程任务执行
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ThreadPool 单元测试：线程数量、索引访问、启停与跨线程任务执行
 
 #include "Core/Coroutine/ThreadPool.h"
 #include "Core/Coroutine/Task.h"

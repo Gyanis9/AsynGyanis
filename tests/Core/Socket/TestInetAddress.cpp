@@ -1,11 +1,4 @@
-/**
- * @file TestInetAddress.cpp
- * @brief InetAddress 单元测试：构造、工厂方法、DNS 解析与比较运算
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// InetAddress 单元测试：构造、工厂方法、DNS 解析与比较运算
 
 #include "Core/Socket/InetAddress.h"
 

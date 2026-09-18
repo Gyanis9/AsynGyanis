@@ -1,11 +1,4 @@
-/**
- * @file TestTlsSocket.cpp
- * @brief TlsSocket 单元测试：构造、移动语义、安全关闭与地址查询（使用仓库预生成证书）
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// TlsSocket 单元测试：构造、移动语义、安全关闭与地址查询（使用仓库预生成证书）
 
 #include "Core/Tls/TlsSocket.h"
 

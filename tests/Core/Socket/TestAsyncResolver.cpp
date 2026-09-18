@@ -1,4 +1,5 @@
-/** @file TestAsyncResolver.cpp 异步 DNS 解析器用例 */
+// AsyncResolver 单元测试：空主机名与不存在的主机、回环解析、IP 文本与惰性两步调用
+
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncResolver.h"
 #include <gtest/gtest.h>

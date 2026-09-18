@@ -1,11 +1,4 @@
-/**
- * @file TestScheduler.cpp
- * @brief Scheduler 单元测试：本地/跨线程调度、队列查询与工作窃取
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Scheduler 单元测试：本地就绪队列、跨线程投递与队列查询
 
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"

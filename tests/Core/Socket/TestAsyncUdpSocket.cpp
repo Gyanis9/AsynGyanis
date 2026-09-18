@@ -1,15 +1,7 @@
-/**
- * @file TestAsyncUdpSocket.cpp
- * @brief AsyncUdpSocket 单元测试：整条收发的字节与来源地址、等就绪路径、失败面
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 与 TestTimer 同一手法：循环由测试自己按步推进（epoll 等一小会儿 + 跑一遍就绪队列），
- *          时序完全由测试安排，不依赖调度运气。协程里的异常在协程内部捕获后记进观测结构，
- *          断言在推进结束之后做。
- */
+// AsyncUdpSocket 单元测试：整条收发的字节与来源地址、等就绪路径、失败面
+//
+// 与 TestTimer 同一手法：循环由测试自己按步推进，时序完全由测试安排，不依赖调度运气。
+// 协程里的异常在协程内部捕获后记进观测结构，断言在推进结束之后做。
 
 #include "Core/Socket/AsyncUdpSocket.h"
 

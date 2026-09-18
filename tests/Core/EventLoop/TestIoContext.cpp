@@ -1,11 +1,4 @@
-/**
- * @file TestIoContext.cpp
- * @brief IoContext 单元测试：线程池配置、主调度器、启停阻塞与运行前投递任务
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// IoContext 单元测试：线程池配置、主调度器、启停阻塞与运行前投递任务
 
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Coroutine/Task.h"

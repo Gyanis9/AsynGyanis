@@ -1,11 +1,4 @@
-/**
- * @file TestEpoll.cpp
- * @brief Epoll 单元测试：实例句柄、移动语义、事件注册/修改/移除与超时等待
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Epoll 单元测试：实例句柄、移动语义、事件注册/修改/移除与超时等待
 
 #include "Core/EventLoop/Epoll.h"
 #include "Platform/Platform.h"
@@ -21,9 +14,8 @@ namespace AsynGyanis::Core
     {
         /**
          * @brief 测试辅助：创建一个可触发的文件描述符
-         *
-         * Linux 直接使用 eventfd（读写为同一描述符）；
-         * Windows 没有 eventfd，改用互相连通的 socket 描述符对（wepoll 可监听 socket）。
+         * @details Linux 直接使用 eventfd（读写为同一描述符）；Windows 没有 eventfd，
+         *          改用互相连通的 socket 描述符对（wepoll 可监听 socket）。
          */
         struct TestEventFd
         {
@@ -160,12 +152,9 @@ namespace AsynGyanis::Core
 #if !ASYN_PLATFORM_WIN32
     /**
      * @brief 注销一个已武装的描述符之后，同一个描述符号（已被新描述符占用）要能立刻重新注册
-     * @details 连接关闭与新建连接拿到同一个描述符号是常态（内核把最小可用号复用出去）。io_uring
-     *          后端的在途轮询要等取消完成通知到齐才能销毁记录，但**描述符键必须当场释放**：键留着
-     *          的话新连接的注册会被直接拒掉，IoWatcher 构造随之抛 SystemException。
-     *          这里的「号复用」用 dup2 做成确定性的（不赌内核挑号）：新 eventfd 精确落到旧号上。
-     *          完成端口后端（Windows）没有这个窗口——那边的 fd 键本来就是当场摘的，且新连接拿到的是
-     *          全新句柄，够不成「同一个活句柄注册两次」
+     * @details 连接关闭与新建连接拿到同一个描述符号是常态，而 io_uring 后端的在途轮询要等取消
+     *          完成通知到齐才销毁记录——但**描述符键必须当场释放**，否则新连接的注册会被直接拒掉。
+     *          用例用 dup2 把「号复用」做成确定性的（不赌内核挑号）；Windows 完成端口没有这个窗口。
      */
     TEST(Epoll, AllowsReregisteringDescriptorNumberRightAfterDelete)
     {

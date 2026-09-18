@@ -1,11 +1,4 @@
-/**
- * @file TestTlsContext.cpp
- * @brief TlsContext 单元测试：证书与 CA 加载、SSL 对象创建，以及协议加固后的握手行为（使用仓库预生成证书）
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// TlsContext 单元测试：证书与 CA 加载、SSL 对象创建，以及协议加固后的握手行为（使用仓库预生成证书）
 
 #include "Core/Tls/TlsContext.h"
 

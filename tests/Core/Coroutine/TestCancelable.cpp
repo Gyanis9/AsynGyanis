@@ -1,11 +1,4 @@
-/**
- * @file TestCancelable.cpp
- * @brief Cancelable 单元测试：停止请求、停止令牌、停止源与移动语义
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Cancelable 单元测试：停止请求、停止令牌、停止源与移动语义
 
 #include "Core/Coroutine/Cancelable.h"
 
