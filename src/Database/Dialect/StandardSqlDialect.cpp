@@ -730,6 +730,21 @@ namespace AsynGyanis::Database
         }
     }
 
+    std::string StandardSqlDialect::placeholder() const
+    {
+        return "?";
+    }
+
+    std::string_view StandardSqlDialect::commitStatement() const noexcept
+    {
+        return "COMMIT";
+    }
+
+    std::string_view StandardSqlDialect::rollbackStatement() const noexcept
+    {
+        return "ROLLBACK";
+    }
+
     std::string_view StandardSqlDialect::joinTypeText(const Queryable::JoinType joinType) noexcept
     {
         using Queryable::JoinType;

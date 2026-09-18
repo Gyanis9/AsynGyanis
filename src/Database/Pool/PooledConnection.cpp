@@ -78,15 +78,11 @@ namespace AsynGyanis::Database
         }
 
         // 将连接归还至池；池已（或正在）析构时按文档承诺直接把连接关掉。
-        // 判活与调用都在令牌锁内完成：池的析构会一直持有这把锁，两者因此不会交错——
+        // 判活与归还调用同在一段令牌锁内（见 ConnectionPool::returnConnectionIfAlive）：
         // 只判一个原子量的话，并发销毁时判活刚通过、调用就踩空
-        if (m_pool != nullptr && m_poolLiveness != nullptr)
+        if (m_pool != nullptr)
         {
-            const std::lock_guard livenessLock(m_poolLiveness->mutex);
-            if (m_poolLiveness->isAlive)
-            {
-                m_pool->returnConnection(std::move(m_connection));
-            }
+            m_pool->returnConnectionIfAlive(m_connection, m_poolLiveness, false);
         }
 
         // 清空所有状态，防止重复归还。连接已被移走（或池已析构）时，

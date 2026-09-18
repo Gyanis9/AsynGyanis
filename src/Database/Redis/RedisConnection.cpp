@@ -1,5 +1,6 @@
 #include "Database/Redis/RedisConnection.h"
 
+#include "Database/Common/ErrorText.h"
 #include "Database/Redis/RedisResult.h"
 
 #ifdef DATABASE_HAS_REDIS
@@ -534,10 +535,10 @@ namespace AsynGyanis::Database
         }
 
         // 少数底层错误不会填 errstr，留一个兜底文本，免得调用方只看到前缀和错误码
-        const std::string reasonText = (m_redisContext->errstr[0] != '\0') ? m_redisContext->errstr : "未给出原因的协议或系统错误";
+        const std::string_view reasonText = (m_redisContext->errstr[0] != '\0') ? std::string_view(m_redisContext->errstr) : std::string_view("未给出原因的协议或系统错误");
 
         // 带上 hiredis 的 err 码：只有中文文本时排查具体的超时与 DNS 失败仍需要原始数字
-        m_lastError = std::string(description) + "：" + reasonText + "（错误码 " + std::to_string(m_redisContext->err) + "）";
+        m_lastError = composeNativeErrorText(description, reasonText, "未给出原因的协议或系统错误", m_redisContext->err);
     }
 
     bool RedisConnection::applyQueryTimeout()

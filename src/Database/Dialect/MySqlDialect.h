@@ -61,14 +61,6 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseType type() const noexcept override;
 
         /**
-         * @brief 生成一个参数占位符
-         * @details 重写 SqlDialect::placeholder()：MySQL 的位置参数（文本协议与
-         *          mysql_stmt_* 预处理接口）都写作 "?"。
-         * @return std::string 恒为 "?"
-         */
-        [[nodiscard]] std::string placeholder() const override;
-
-        /**
          * @brief 获取 MySQL 的开启事务语句
          * @details 重写 SqlDialect::beginTransactionStatement()：返回 "START TRANSACTION"。
          *          这是 MySQL 文档中的标准写法，"BEGIN" 同样可用但语义上更像过程式语句块的开始；
@@ -76,20 +68,6 @@ namespace AsynGyanis::Database
          * @return std::string_view 恒为 "START TRANSACTION"
          */
         [[nodiscard]] std::string_view beginTransactionStatement() const noexcept override;
-
-        /**
-         * @brief 获取 MySQL 的提交事务语句
-         * @details 重写 SqlDialect::commitStatement()：返回 "COMMIT"。
-         * @return std::string_view 恒为 "COMMIT"
-         */
-        [[nodiscard]] std::string_view commitStatement() const noexcept override;
-
-        /**
-         * @brief 获取 MySQL 的回滚事务语句
-         * @details 重写 SqlDialect::rollbackStatement()：返回 "ROLLBACK"。
-         * @return std::string_view 恒为 "ROLLBACK"
-         */
-        [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
 
         /**
          * @brief 把逻辑列类型翻译成 MySQL 的物理类型名

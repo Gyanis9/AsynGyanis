@@ -9,6 +9,7 @@
 #include "Database/MySql/MySqlConnection.h"
 
 #include "Database/Common/BinaryBytes.h"
+#include "Database/Common/ErrorText.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/MySql/MySqlResult.h"
 #include "Database/MySql/MySqlStatementResult.h"
@@ -484,15 +485,9 @@ namespace AsynGyanis::Database
 
         const unsigned int errorNumber = mysql_errno(m_mysqlHandle);
         const char *       rawMessage  = mysql_error(m_mysqlHandle);
-        std::string        serverMessage(rawMessage != nullptr ? rawMessage : "");
-        if (serverMessage.empty())
-        {
-            // 错误码非 0 但文本为空是客户端库的已知退化情形（例如某些选项被拒），给出可读兜底
-            serverMessage = "客户端库未给出原因";
-        }
 
         // 带上错误码：只留一句中文 + 服务端英文原文时，排查 1045 / CR_* 之类问题仍需原始数字
-        m_lastError = std::string(description) + "：" + serverMessage + "（错误码 " + std::to_string(errorNumber) + "）";
+        m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
     }
 
     void MySqlConnection::captureStatementError(MYSQL_STMT *const statement, const std::string_view description)
@@ -508,15 +503,9 @@ namespace AsynGyanis::Database
         // 连接操作的陈旧错误，必须用 mysql_stmt_* 这一对接口
         const unsigned int errorNumber = mysql_stmt_errno(statement);
         const char *       rawMessage  = mysql_stmt_error(statement);
-        std::string        statementMessage(rawMessage != nullptr ? rawMessage : "");
-        if (statementMessage.empty())
-        {
-            // 错误码非 0 但文本为空是客户端库的已知退化情形，给出可读兜底
-            statementMessage = "客户端库未给出原因";
-        }
 
         // 文本同样必须先拷贝再让调用方关闭语句：mysql_stmt_close 会释放该缓冲
-        m_lastError = std::string(description) + "：" + statementMessage + "（错误码 " + std::to_string(errorNumber) + "）";
+        m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
     }
 
     bool MySqlConnection::bindAndExecuteStatement(MYSQL_STMT *const statement, const std::span<const DatabaseValue> parameters)
@@ -526,8 +515,7 @@ namespace AsynGyanis::Database
         // 因此这里宁可当场失败也不做任何「缺省补 NULL」的宽容处理
         if (const auto expectedParameterCount = static_cast<std::size_t>(mysql_stmt_param_count(statement)); expectedParameterCount != parameters.size())
         {
-            m_lastError = "参数数量不匹配：SQL 需要 " + std::to_string(expectedParameterCount) +
-                          " 个参数，实际提供 " + std::to_string(parameters.size()) + " 个";
+            m_lastError = parameterCountMismatchText(expectedParameterCount, parameters.size());
             return false;
         }
 
@@ -584,8 +572,7 @@ namespace AsynGyanis::Database
                 // 与 *length（客户端库实际采用的输入长度）；超长文本会被 unsigned long 形参静默截断，直接拒绝
                 if (textValue->size() > kMaximumNativeLength)
                 {
-                    m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
-                                  std::to_string(textValue->size()) + " 字节，超出 MySQL 单参数上限";
+                    m_lastError = parameterTooLongText(index, false, textValue->size(), "MySQL");
                     return false;
                 }
 
@@ -604,8 +591,7 @@ namespace AsynGyanis::Database
                 // 报错——写进去和读回来就不是同一串字节了。类型上是 BLOB，服务端便不再做字符集转换
                 if (byteValue->size() > kMaximumNativeLength)
                 {
-                    m_lastError = "第 " + std::to_string(index) + " 个二进制参数过长：" +
-                                  std::to_string(byteValue->size()) + " 字节，超出 MySQL 单参数上限";
+                    m_lastError = parameterTooLongText(index, true, byteValue->size(), "MySQL");
                     return false;
                 }
 

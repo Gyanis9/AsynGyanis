@@ -51,16 +51,8 @@ namespace AsynGyanis::Database
 
             for (auto &entry: m_idleStack)
             {
-                if (entry.connection)
-                {
-                    // 从创建时间映射表中移除
-                    {
-                        std::lock_guard creationTimeLock(m_creationTimeMutex);
-                        m_creationTimeMap.erase(entry.connection.get());
-                    }
-                    entry.connection->disconnect();
-                    entry.connection.reset();
-                }
+                // 池正在析构，名额与统计都不再有意义，只做「摘记录 + 关闭」
+                closeTrackedConnection(std::move(entry.connection));
             }
             m_idleStack.clear();
 
@@ -102,11 +94,7 @@ namespace AsynGyanis::Database
         }
         for (const std::shared_ptr<AcquireAwaiter::ResumeTicket> &ticket: abandonedTickets)
         {
-            // 取走再恢复：句柄只能被恢复一次（另一侧可能同时把它置空）
-            if (const std::coroutine_handle<> abandonedHandle = ticket->handle.exchange(nullptr); abandonedHandle != nullptr)
-            {
-                abandonedHandle.resume();
-            }
+            ticket->resumeOnce();
         }
     }
 
@@ -179,14 +167,8 @@ namespace AsynGyanis::Database
         // 出栈后检查连接健康状态：不健康则丢弃并重建
         if (!isConnectionHealthy(entry.connection.get()))
         {
-            // 从创建时间映射表中移除
-            {
-                std::lock_guard creationTimeLock(m_creationTimeMutex);
-                m_creationTimeMap.erase(entry.connection.get());
-            }
-            entry.connection->disconnect();
-            entry.connection.reset();
-
+            // 名额不还：紧接着会建一条补上，丢弃与新建在总数上相抵
+            closeTrackedConnection(std::move(entry.connection));
             entry.connection = createNewConnection();
             if (!entry.connection)
             {
@@ -242,14 +224,10 @@ namespace AsynGyanis::Database
         // 反复丢弃几次之后所有 acquire 都会卡在「池已满」上直到超时。
         // 判活与调用都在令牌锁内（与 PooledConnection::doReturnToPool 同一处置）：调用方可能
         // 把这具帧留到池析构之后才销毁，那时碰池的记账就是释放后使用
-        if (handedOverConnection && m_liveness != nullptr)
+        if (handedOverConnection)
         {
-            const std::lock_guard livenessLock(m_liveness->mutex);
-            if (m_liveness->isAlive)
-            {
-                m_pool->m_activeCount.fetch_add(1);
-                m_pool->returnConnection(std::move(handedOverConnection));
-            }
+            // 未交出去（池已停摆）时连接留在手上，随本帧析构关闭；交出去则补记一次活跃取出
+            returnConnectionIfAlive(handedOverConnection, m_liveness, true);
         }
 
         // 票据里的句柄一并清空：池可能已经把「恢复这次等待」投回了事件循环（交接连接那一刻），
@@ -385,14 +363,8 @@ namespace AsynGyanis::Database
         // ---- 健康检查 ----
         if (!isConnectionHealthy(connection.get()))
         {
-            // 不健康的连接直接丢弃
-            {
-                std::lock_guard creationTimeLock(m_creationTimeMutex);
-                m_creationTimeMap.erase(connection.get());
-            }
-            connection->disconnect();
-            connection.reset();
-            m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+            // 不健康的连接直接丢弃（名额一并退还）
+            discardConnection(std::move(connection));
             return;
         }
 
@@ -432,13 +404,7 @@ namespace AsynGyanis::Database
             if (m_config.maximumLifetimeSeconds == 0)
             {
                 // 最大存活时间为 0：立即过期，直接丢弃
-                {
-                    std::lock_guard creationTimeLock(m_creationTimeMutex);
-                    m_creationTimeMap.erase(entry.connection.get());
-                }
-                entry.connection->disconnect();
-                entry.connection.reset();
-                m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+                discardConnection(std::move(entry.connection));
                 return;
             }
 
@@ -447,13 +413,7 @@ namespace AsynGyanis::Database
                 if (static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds)
                 {
                     // 连接已超最大存活时间，丢弃
-                    {
-                        std::lock_guard creationTimeLock(m_creationTimeMutex);
-                        m_creationTimeMap.erase(entry.connection.get());
-                    }
-                    entry.connection->disconnect();
-                    entry.connection.reset();
-                    m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+                    discardConnection(std::move(entry.connection));
                     return;
                 }
             }
@@ -516,26 +476,14 @@ namespace AsynGyanis::Database
         if (isEntryExpired(entry))
         {
             // 过期连接直接关闭丢弃
-            {
-                std::lock_guard creationTimeLock(m_creationTimeMutex);
-                m_creationTimeMap.erase(entry.connection.get());
-            }
-            entry.connection->disconnect();
-            entry.connection.reset();
-            m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+            discardConnection(std::move(entry.connection));
             return nullptr;
         }
 
         // 健康检查：不健康则丢弃
         if (!isConnectionHealthy(entry.connection.get()))
         {
-            {
-                std::lock_guard creationTimeLock(m_creationTimeMutex);
-                m_creationTimeMap.erase(entry.connection.get());
-            }
-            entry.connection->disconnect();
-            entry.connection.reset();
-            m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+            discardConnection(std::move(entry.connection));
             return nullptr;
         }
 
@@ -717,12 +665,7 @@ namespace AsynGyanis::Database
             waiter->m_completionLoop->scheduler().postRemote(
                     [resumeTicket]()
                     {
-                        // 取走再恢复：句柄只能被恢复一次
-                        if (const std::coroutine_handle<> handedOverHandle = resumeTicket->handle.exchange(nullptr);
-                            handedOverHandle != nullptr)
-                        {
-                            handedOverHandle.resume();
-                        }
+                        resumeTicket->resumeOnce();
                     });
         }
 
@@ -736,6 +679,53 @@ namespace AsynGyanis::Database
             m_asyncWaiters.erase(it);
             waiter->m_inList = false;
         }
+    }
+
+    void ConnectionPool::closeTrackedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
+    {
+        if (!connection)
+        {
+            return;
+        }
+
+        // 连接销毁前先摘掉创建时间记录：映射表按裸指针索引，留着就是指向已释放对象的键
+        {
+            std::lock_guard creationTimeLock(m_creationTimeMutex);
+            m_creationTimeMap.erase(connection.get());
+        }
+
+        connection->disconnect();
+        connection.reset();
+    }
+
+    void ConnectionPool::discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
+    {
+        closeTrackedConnection(std::move(connection));
+        m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness,
+                                                 const bool countAsActive) noexcept
+    {
+        if (liveness == nullptr)
+        {
+            return false;
+        }
+
+        // 判活与归还必须在同一段令牌锁内：池析构全程持这把锁，两者因此不会交错
+        const std::lock_guard livenessLock(liveness->mutex);
+        if (!liveness->isAlive)
+        {
+            return false;
+        }
+
+        // 交接发生在归还路径减过活跃计数之后，等待器取出时要把它补回去
+        if (countAsActive)
+        {
+            m_activeCount.fetch_add(1);
+        }
+        returnConnection(std::move(connection));
+        return true;
     }
 
     void ConnectionPool::expireTimedOutWaiters() noexcept
@@ -777,10 +767,7 @@ namespace AsynGyanis::Database
             completionLoops[index]->scheduler().postRemote(
                     [ticket]()
                     {
-                        if (const std::coroutine_handle<> timedOutHandle = ticket->handle.exchange(nullptr); timedOutHandle != nullptr)
-                        {
-                            timedOutHandle.resume();
-                        }
+                        ticket->resumeOnce();
                     });
         }
     }

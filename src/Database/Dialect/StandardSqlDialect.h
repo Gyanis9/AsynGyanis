@@ -132,6 +132,35 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool supportsLimitOffset() const noexcept override;
 
+        /**
+         * @brief 生成一个参数占位符
+         *
+         * @details 重写 SqlDialect::placeholder()：SQLite 与 MySQL 的位置参数都写作 "?"，
+         *          参数与占位符的对应关系由「按出现顺序依次压入 parameters」保证（见参数顺序契约）。
+         *
+         * @return std::string 占位符文本，恒为 "?"
+         */
+        [[nodiscard]] std::string placeholder() const override;
+
+        /**
+         * @brief 取得提交事务的语句文本
+         *
+         * @details 重写 SqlDialect::commitStatement()：两个引擎都用标准 SQL 的 "COMMIT"，
+         *          实现收在此处；差异只在开启事务一侧（见各子类）。
+         *
+         * @return std::string_view 恒为 "COMMIT"
+         */
+        [[nodiscard]] std::string_view commitStatement() const noexcept override;
+
+        /**
+         * @brief 取得回滚事务的语句文本
+         *
+         * @details 重写 SqlDialect::rollbackStatement()：两个引擎都用标准 SQL 的 "ROLLBACK"。
+         *
+         * @return std::string_view 恒为 "ROLLBACK"
+         */
+        [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
+
     protected:
         /**
          * @brief 取得本引擎的标识符引用字符

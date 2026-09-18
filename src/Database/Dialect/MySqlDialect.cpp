@@ -11,13 +11,6 @@ namespace AsynGyanis::Database
         return DatabaseType::MySql;
     }
 
-    std::string MySqlDialect::placeholder() const
-    {
-        // MySQL 的位置参数不区分类型、不区分序号，一律写作 '?'（文本协议与 mysql_stmt_* 都是如此）；
-        // 参数与占位符的对应关系由「按出现顺序压入」保证，因此这里不需要知道序号
-        return "?";
-    }
-
     void MySqlDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
         // 只给了 offset 时，MySQL 不允许 OFFSET 单独出现，也没有 SQLite 可用的 "LIMIT -1"
@@ -41,16 +34,6 @@ namespace AsynGyanis::Database
         // START TRANSACTION 是 MySQL 文档的标准开启写法；不用 "BEGIN"（那更像过程式块的开头），
         // 也没有 SQLite 的 IMMEDIATE 模式可选：InnoDB 的行锁在第一条写语句执行时才真正取
         return "START TRANSACTION";
-    }
-
-    std::string_view MySqlDialect::commitStatement() const noexcept
-    {
-        return "COMMIT";
-    }
-
-    std::string_view MySqlDialect::rollbackStatement() const noexcept
-    {
-        return "ROLLBACK";
     }
 
     std::string_view MySqlDialect::columnTypeName(const ColumnType type) const noexcept

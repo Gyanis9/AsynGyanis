@@ -57,14 +57,6 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseType type() const noexcept override;
 
         /**
-         * @brief 生成一个参数占位符
-         * @details 重写 SqlDialect::placeholder()：SQLite 的位置参数不区分类型、
-         *          不区分序号，统一写作 "?"。
-         * @return std::string 恒为 "?"
-         */
-        [[nodiscard]] std::string placeholder() const override;
-
-        /**
          * @brief 获取 SQLite 的开启事务语句
          * @details 重写 SqlDialect::beginTransactionStatement()：返回 "BEGIN IMMEDIATE"。
          *          不用裸 "BEGIN"（DEFERRED）：DEFERRED 事务在第一条写语句才尝试升级为写锁，
@@ -73,20 +65,6 @@ namespace AsynGyanis::Database
          * @return std::string_view 恒为 "BEGIN IMMEDIATE"
          */
         [[nodiscard]] std::string_view beginTransactionStatement() const noexcept override;
-
-        /**
-         * @brief 获取 SQLite 的提交事务语句
-         * @details 重写 SqlDialect::commitStatement()：返回 "COMMIT"。
-         * @return std::string_view 恒为 "COMMIT"
-         */
-        [[nodiscard]] std::string_view commitStatement() const noexcept override;
-
-        /**
-         * @brief 获取 SQLite 的回滚事务语句
-         * @details 重写 SqlDialect::rollbackStatement()：返回 "ROLLBACK"。
-         * @return std::string_view 恒为 "ROLLBACK"
-         */
-        [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
 
         /**
          * @brief 把逻辑列类型翻译成 SQLite 的物理类型名

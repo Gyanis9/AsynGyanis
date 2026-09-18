@@ -11,13 +11,6 @@ namespace AsynGyanis::Database
         return DatabaseType::Sqlite;
     }
 
-    std::string SqliteDialect::placeholder() const
-    {
-        // SQLite 的位置参数不区分类型、不区分序号，一律写作 '?'；
-        // 参数与占位符的对应关系由「按出现顺序压入」保证，因此这里不需要知道序号
-        return "?";
-    }
-
     void SqliteDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
         // 本方言的分页值一律内联，不占绑定参数，因此 parameters 不被使用；
@@ -53,16 +46,6 @@ namespace AsynGyanis::Database
         // IMMEDIATE 在 BEGIN 时就取写锁，避免 DEFERRED 事务在第一条写语句升级锁时撞上
         // SQLITE_BUSY（这类失败无法靠重试化解，因为两个连接会互相持有读锁）
         return "BEGIN IMMEDIATE";
-    }
-
-    std::string_view SqliteDialect::commitStatement() const noexcept
-    {
-        return "COMMIT";
-    }
-
-    std::string_view SqliteDialect::rollbackStatement() const noexcept
-    {
-        return "ROLLBACK";
     }
 
     std::string_view SqliteDialect::columnTypeName(const ColumnType type) const noexcept

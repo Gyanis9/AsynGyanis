@@ -1,6 +1,7 @@
 #include "Database/Sqlite/SqliteConnection.h"
 
 #include "Database/Common/BinaryBytes.h"
+#include "Database/Common/ErrorText.h"
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Sqlite/SqliteResult.h"
 
@@ -325,8 +326,7 @@ namespace AsynGyanis::Database
         const int expectedParameterCount = sqlite3_bind_parameter_count(statement);
         if (static_cast<std::size_t>(expectedParameterCount) != parameters.size())
         {
-            m_lastError = "参数数量不匹配：SQL 需要 " + std::to_string(expectedParameterCount) +
-                          " 个参数，实际提供 " + std::to_string(parameters.size()) + " 个";
+            m_lastError = parameterCountMismatchText(static_cast<std::size_t>(expectedParameterCount), parameters.size());
             return false;
         }
 
@@ -359,8 +359,7 @@ namespace AsynGyanis::Database
                 // sqlite3_bind_text 的长度参数是 int，超长文本会被静默截断成半条数据，直接拒绝
                 if (textValue->size() > kMaximumNativeLength)
                 {
-                    m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
-                                  std::to_string(textValue->size()) + " 字节，超出 SQLite 单参数上限";
+                    m_lastError = parameterTooLongText(index, false, textValue->size(), "SQLite");
                     return false;
                 }
 
@@ -374,8 +373,7 @@ namespace AsynGyanis::Database
                 // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断
                 if (byteValue->size() > kMaximumNativeLength)
                 {
-                    m_lastError = "第 " + std::to_string(index) + " 个二进制参数过长：" +
-                                  std::to_string(byteValue->size()) + " 字节，超出 SQLite 单参数上限";
+                    m_lastError = parameterTooLongText(index, true, byteValue->size(), "SQLite");
                     return false;
                 }
 
@@ -393,11 +391,9 @@ namespace AsynGyanis::Database
                 }
             } else
             {
-                // 容器的正确用法是展开成多个标量参数（如 IN 列表），而不是当成单个参数，
-                // 方言层已把 IN 集合展开，走到这里说明调用方传了非标量值
-                m_lastError = "参数化查询不支持容器类型的参数（第 " + std::to_string(index) + " 个参数，类型 " +
-                              std::string(databaseValueTypeName(parameterValue)) +
-                              "）：请把容器展开成多个标量参数后重试";
+                // 容器的正确用法是展开成多个标量参数（如 IN 列表），方言层已把 IN 集合展开，
+                // 走到这里说明调用方传了非标量值
+                m_lastError = containerParameterRejectedText(index, parameterValue);
                 return false;
             }
 
@@ -419,14 +415,8 @@ namespace AsynGyanis::Database
         const int   errorCode  = (m_database != nullptr) ? sqlite3_errcode(m_database) : SQLITE_ERROR;
         const char *rawMessage = (m_database != nullptr) ? sqlite3_errmsg(m_database) : sqlite3_errstr(errorCode);
 
-        std::string message(rawMessage != nullptr ? rawMessage : "未知错误");
-        if (message.empty())
-        {
-            message = sqlite3_errstr(errorCode);
-        }
-
-        // 带上错误码：上层只留中文文本时，排查具体约束冲突或锁竞争仍需原始数字
-        m_lastError = std::string(description) + "：" + message + "（错误码 " + std::to_string(errorCode) + "）";
+        // errmsg 可能给出空串，errstr 只需错误码且恒有文案，作为兜底
+        m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", sqlite3_errstr(errorCode), errorCode);
     }
 
     void SqliteConnection::applyStartupPragma(const std::string_view pragmaText, const std::string_view description)

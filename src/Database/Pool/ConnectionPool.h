@@ -243,6 +243,19 @@ namespace AsynGyanis::Database
                 /// 于是 resume 一块已释放的帧——正是票据要防的那件事。
                 /// 取用一律 `exchange(nullptr)`：**同一个句柄只允许被恢复一次**
                 std::atomic<std::coroutine_handle<>> handle{nullptr};
+
+                /**
+                 * @brief 取走句柄并恢复协程；已被取走（或等待器已析构）时空操作
+                 * @note 三处投递点（交接、超时、池停摆）共用这一份「取走再恢复」，
+                 *       任何一处改成先判后取都会退化成两次恢复同一个帧
+                 */
+                void resumeOnce() const noexcept
+                {
+                    if (const std::coroutine_handle<> resumeHandle = handle.exchange(nullptr); resumeHandle != nullptr)
+                    {
+                        resumeHandle.resume();
+                    }
+                }
             };
 
             ConnectionPool *                    m_pool;            ///< 所属连接池
@@ -319,6 +332,30 @@ namespace AsynGyanis::Database
          *       「摘表」与「取走交接结果」，不能在这个锁里再取同一把非递归锁
          */
         void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept;
+
+        /**
+         * @brief 摘除创建时间记录并把连接关闭（释放 unique_ptr 即断开），不退还名额
+         * @param connection 待关闭的连接；为空时空操作
+         * @note 池析构与「丢弃后立刻重建」两条路径用本方法：它们的名额由后续动作接手
+         */
+        void closeTrackedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
+
+        /**
+         * @brief 在 closeTrackedConnection 之外把连接占用的名额一并退还
+         * @param connection 待丢弃的连接
+         * @note 名额在取出（或预占）时就已记上，丢弃不还回去会让池永久少一个位置
+         */
+        void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
+
+        /**
+         * @brief 池仍存活时归还连接：判活与归还调用在同一段令牌锁内完成
+         * @param connection 待归还的连接，成功交接后被移走
+         * @param liveness 池存活令牌，与池共享
+         * @param countAsActive 是否先补记一次活跃取出（协程等待器交接时归还路径已减过活跃计数）
+         * @return true 已交给池；false 池已停摆，连接留在调用方手里自行关闭
+         */
+        bool returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness,
+                                     bool countAsActive) noexcept;
 
         /**
          * @brief 唤醒已到截止时刻的异步等待者（以「空连接」收尾）
