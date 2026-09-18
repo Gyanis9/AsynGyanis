@@ -15,7 +15,6 @@
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/PoolLiveness.h"
 
-#include <atomic>
 #include <memory>
 
 namespace AsynGyanis::Database

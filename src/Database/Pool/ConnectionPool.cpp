@@ -46,7 +46,7 @@ namespace AsynGyanis::Database
         {
             std::unique_lock lock(m_mutex);
 
-            // 停摆标志：同步等待者的谓词据此成立，醒来后返回空连接而不是继续睡在 m_cv 上
+            // 停摆标志：同步等待者的谓词据此成立，醒来后返回空连接而不是继续睡在 m_idleCondition 上
             m_isShuttingDown.store(true, std::memory_order_release);
 
             for (auto &entry: m_idleStack)
@@ -55,7 +55,7 @@ namespace AsynGyanis::Database
                 {
                     // 从创建时间映射表中移除
                     {
-                        std::lock_guard ctLock(m_ctMapMutex);
+                        std::lock_guard creationTimeLock(m_creationTimeMutex);
                         m_creationTimeMap.erase(entry.connection.get());
                     }
                     entry.connection->disconnect();
@@ -65,16 +65,16 @@ namespace AsynGyanis::Database
             m_idleStack.clear();
 
             {
-                std::lock_guard ctLock(m_ctMapMutex);
+                std::lock_guard creationTimeLock(m_creationTimeMutex);
                 m_creationTimeMap.clear();
             }
 
             // 唤醒所有剩余的同步等待者：它们醒来会看到停摆标志、返回空连接并自减计数
-            m_cv.notify_all();
+            m_idleCondition.notify_all();
 
-            // 等最后一位同步等待者真的离开等待。不等的话本析构返回后它还睡在 m_cv 上——而 m_cv
+            // 等最后一位同步等待者真的离开等待。不等的话本析构返回后它还睡在 m_idleCondition 上——而 m_idleCondition
             // 已随对象销毁（等待者的退出路径也会 notify_all，因此这里的等待不会漏唤醒）
-            m_cv.wait(lock, [this] { return m_syncWaitingCount.load(std::memory_order_acquire) == 0; });
+            m_idleCondition.wait(lock, [this] { return m_syncWaitingCount.load(std::memory_order_acquire) == 0; });
         }
 
         // 唤醒所有异步等待者：给它们空连接。
@@ -153,15 +153,15 @@ namespace AsynGyanis::Database
         while (m_idleStack.empty() && !m_isShuttingDown.load(std::memory_order_acquire))
         {
             // 等待条件变量，最多等到截止时间
-            if (m_cv.wait_until(lock, deadline) == std::cv_status::timeout)
+            if (m_idleCondition.wait_until(lock, deadline) == std::cv_status::timeout)
             {
                 isTimedOut = true;
                 break;
             }
         }
         m_syncWaitingCount.fetch_sub(1);
-        // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_cv 上等计数归零）
-        m_cv.notify_all();
+        // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_idleCondition 上等计数归零）
+        m_idleCondition.notify_all();
 
         if (isTimedOut || m_isShuttingDown.load(std::memory_order_acquire))
         {
@@ -181,7 +181,7 @@ namespace AsynGyanis::Database
         {
             // 从创建时间映射表中移除
             {
-                std::lock_guard ctLock(m_ctMapMutex);
+                std::lock_guard creationTimeLock(m_creationTimeMutex);
                 m_creationTimeMap.erase(entry.connection.get());
             }
             entry.connection->disconnect();
@@ -228,7 +228,7 @@ namespace AsynGyanis::Database
             const std::lock_guard asyncLock(m_pool->m_asyncMutex);
             if (m_inList)
             {
-                // 就地摘除，不再调 removeAsyncWaiter()：它要再拿一次同一把非递归锁
+                // 在锁内摘表：唤醒方写列表也持这把锁，摘表与交接因此不会交错
                 m_pool->removeAsyncWaiterLocked(this);
                 m_inList = false;
             }
@@ -269,8 +269,6 @@ namespace AsynGyanis::Database
 
     bool ConnectionPool::AcquireAwaiter::await_suspend(std::coroutine_handle<> handle) noexcept
     {
-        this->m_handle = handle;
-
         // 再试一次：在 await_ready 和 await_suspend 之间可能已有连接归还
         m_result = m_pool->tryAcquireOrCreateInternal();
         if (m_result)
@@ -389,7 +387,7 @@ namespace AsynGyanis::Database
         {
             // 不健康的连接直接丢弃
             {
-                std::lock_guard ctLock(m_ctMapMutex);
+                std::lock_guard creationTimeLock(m_creationTimeMutex);
                 m_creationTimeMap.erase(connection.get());
             }
             connection->disconnect();
@@ -407,7 +405,7 @@ namespace AsynGyanis::Database
         // ---- 查创建时间并入空闲栈 ----
         std::chrono::steady_clock::time_point createdTime;
         {
-            std::lock_guard ctLock(m_ctMapMutex);
+            std::lock_guard creationTimeLock(m_creationTimeMutex);
             if (const auto it = m_creationTimeMap.find(connection.get()); it != m_creationTimeMap.end())
             {
                 createdTime = it->second;
@@ -435,7 +433,7 @@ namespace AsynGyanis::Database
             {
                 // 最大存活时间为 0：立即过期，直接丢弃
                 {
-                    std::lock_guard ctLock(m_ctMapMutex);
+                    std::lock_guard creationTimeLock(m_creationTimeMutex);
                     m_creationTimeMap.erase(entry.connection.get());
                 }
                 entry.connection->disconnect();
@@ -450,7 +448,7 @@ namespace AsynGyanis::Database
                 {
                     // 连接已超最大存活时间，丢弃
                     {
-                        std::lock_guard ctLock(m_ctMapMutex);
+                        std::lock_guard creationTimeLock(m_creationTimeMutex);
                         m_creationTimeMap.erase(entry.connection.get());
                     }
                     entry.connection->disconnect();
@@ -464,7 +462,7 @@ namespace AsynGyanis::Database
         }
 
         // 通知一个等待者：有空闲连接了
-        m_cv.notify_one();
+        m_idleCondition.notify_one();
     }
 
     // ========================================================================
@@ -519,7 +517,7 @@ namespace AsynGyanis::Database
         {
             // 过期连接直接关闭丢弃
             {
-                std::lock_guard ctLock(m_ctMapMutex);
+                std::lock_guard creationTimeLock(m_creationTimeMutex);
                 m_creationTimeMap.erase(entry.connection.get());
             }
             entry.connection->disconnect();
@@ -532,7 +530,7 @@ namespace AsynGyanis::Database
         if (!isConnectionHealthy(entry.connection.get()))
         {
             {
-                std::lock_guard ctLock(m_ctMapMutex);
+                std::lock_guard creationTimeLock(m_creationTimeMutex);
                 m_creationTimeMap.erase(entry.connection.get());
             }
             entry.connection->disconnect();
@@ -561,7 +559,7 @@ namespace AsynGyanis::Database
             }
 
             {
-                std::lock_guard ctLock(m_ctMapMutex);
+                std::lock_guard creationTimeLock(m_creationTimeMutex);
                 m_creationTimeMap[connection.get()] = std::chrono::steady_clock::now();
             }
 
@@ -635,15 +633,15 @@ namespace AsynGyanis::Database
         while (!stopToken.stop_requested())
         {
             // 分段睡眠，每 1 秒检查一次停止标志，使线程能及时响应停止请求
-            const auto            totalSleepMs  = interval * 1000;
-            constexpr std::size_t kSleepChunkMs = 1000;
+            const auto            totalSleepMilliseconds  = interval * 1000;
+            constexpr std::size_t kSleepChunkMilliseconds = 1000;
 
-            auto remainingMs = static_cast<int64_t>(totalSleepMs);
-            while (remainingMs > 0 && !stopToken.stop_requested())
+            auto remainingMilliseconds = static_cast<int64_t>(totalSleepMilliseconds);
+            while (remainingMilliseconds > 0 && !stopToken.stop_requested())
             {
-                const auto chunk = std::min(static_cast<int64_t>(kSleepChunkMs), remainingMs);
+                const auto chunk = std::min(static_cast<int64_t>(kSleepChunkMilliseconds), remainingMilliseconds);
                 std::this_thread::sleep_for(std::chrono::milliseconds(chunk));
-                remainingMs -= chunk;
+                remainingMilliseconds -= chunk;
 
                 // 每秒一次：把等到截止时刻的异步等待者以「空连接」唤醒。
                 // 放在这里而不是等下一个健康检查周期，是为了让异步超时的粒度与同步一致（秒级以内）
@@ -670,7 +668,7 @@ namespace AsynGyanis::Database
                                                               {
                                                                   // 从创建时间映射表中移除
                                                                   {
-                                                                      std::lock_guard ctLock(m_ctMapMutex);
+                                                                      std::lock_guard creationTimeLock(m_creationTimeMutex);
                                                                       m_creationTimeMap.erase(entry.connection.get());
                                                                   }
                                                                   expiredConnections.push_back(std::move(entry.connection));
@@ -731,15 +729,8 @@ namespace AsynGyanis::Database
         return true;
     }
 
-    void ConnectionPool::removeAsyncWaiter(AcquireAwaiter *waiter) noexcept
-    {
-        std::lock_guard lock(m_asyncMutex);
-        removeAsyncWaiterLocked(waiter);
-    }
-
     void ConnectionPool::removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept
     {
-        // 在列表中查找并移除
         if (const auto it = std::ranges::find(m_asyncWaiters, waiter); it != m_asyncWaiters.end())
         {
             m_asyncWaiters.erase(it);

@@ -25,7 +25,6 @@
 #include "Database/Queryable/TableSchema.h"
 
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -365,7 +364,7 @@ namespace AsynGyanis::Database::Queryable
 
             // 可空规则：std::optional<X> 允许 NULL，其余一律 NOT NULL。
             // optional 只是可空标记而不是存储类型，去掉包装后的类型才是真正的列类型
-            constexpr bool kisNullable = Detail::IsOptional<BareType>::value;
+            constexpr bool kIsNullable = Detail::IsOptional<BareType>::value;
             using ValueType            = Detail::ColumnStorageTypeOf<BareType>;
 
             // 分隔符前置而不是后置：后置会在最后一列留下一个尾逗号，还得在拼接处再裁一次
@@ -384,7 +383,7 @@ namespace AsynGyanis::Database::Queryable
             columnDefinitions += isKeyColumn ? dialect.keyColumnTypeName(columnTypeOf<ValueType>())
                                              : dialect.columnTypeName(columnTypeOf<ValueType>());
 
-            if constexpr (!kisNullable)
+            if constexpr (!kIsNullable)
             {
                 columnDefinitions += " NOT NULL";
             }

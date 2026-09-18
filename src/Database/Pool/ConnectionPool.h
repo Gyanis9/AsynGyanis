@@ -176,15 +176,6 @@ namespace AsynGyanis::Database
         };
 
         /**
-         * @brief 异步等待者节点，用于协程级等待—唤醒
-         */
-        struct AsyncWaiter
-        {
-            std::coroutine_handle<>             handle; ///< 等待协程的句柄
-            std::unique_ptr<DatabaseConnection> result; ///< 归还路径填充的连接
-        };
-
-        /**
          * @brief acquireAsync 内部使用的可等待对象
          *
          * @details 在 await_ready 中优先尝试非阻塞获取；
@@ -254,7 +245,6 @@ namespace AsynGyanis::Database
                 std::atomic<std::coroutine_handle<>> handle{nullptr};
             };
 
-            std::coroutine_handle<>             m_handle{nullptr}; ///< 等待协程的句柄（await_suspend 时保存）
             ConnectionPool *                    m_pool;            ///< 所属连接池
             Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
             /// 池的存活令牌（构造时取）：析构里的归还动作要经它判活，见 ~AcquireAwaiter
@@ -325,14 +315,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 将等待者从异步等待列表移除
          * @param waiter 待移除的等待者指针
-         */
-        void removeAsyncWaiter(AcquireAwaiter *waiter) noexcept;
-
-        /**
-         * @brief 同 removeAsyncWaiter()，但要求调用方已持有 m_asyncMutex
-         * @param waiter 待移除的等待者指针
-         * @note 给等待器析构用：它要在一段锁里同时完成「摘表」与「取走交接结果」，
-         *       不能再调那个要自己加锁的版本（同一把非递归锁，二次加锁即自死锁）
+         * @note 要求调用方已持有 m_asyncMutex：等待器析构要在一段锁里同时完成
+         *       「摘表」与「取走交接结果」，不能在这个锁里再取同一把非递归锁
          */
         void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept;
 
@@ -362,11 +346,11 @@ namespace AsynGyanis::Database
         std::shared_ptr<PoolLiveness> m_liveness{std::make_shared<PoolLiveness>()};
 
         // ----- 空闲栈（受 m_mutex 保护） -----
-        std::vector<IdleEntry>  m_idleStack; ///< LIFO 空闲连接栈
-        mutable std::mutex      m_mutex;     ///< 保护空闲栈及相关计数
-        std::condition_variable m_cv;        ///< 条件变量：通知等待者有空闲连接
+        std::vector<IdleEntry>  m_idleStack;     ///< LIFO 空闲连接栈
+        mutable std::mutex      m_mutex;         ///< 保护空闲栈及相关计数
+        std::condition_variable m_idleCondition; ///< 条件变量：通知等待者有空闲连接
         /// 池正在停摆：析构一置位，同步等待者的等待谓词随之成立，它们返回空连接后自减计数，
-        /// 析构等计数归零才继续销毁成员（否则等待者还睡在即将销毁的 m_cv 上）
+        /// 析构等计数归零才继续销毁成员（否则等待者还睡在即将销毁的 m_idleCondition 上）
         std::atomic<bool> m_isShuttingDown{false};
 
         // ----- 原子统计 -----
@@ -380,8 +364,8 @@ namespace AsynGyanis::Database
 
         // ----- 连接创建时间追踪 -----
         // 用于在 returnConnection 时获知连接的原始创建时间，以正确设置 IdleEntry::createdTime
-        mutable std::mutex                                                              m_ctMapMutex;      ///< 保护创建时间映射表
-        std::unordered_map<DatabaseConnection *, std::chrono::steady_clock::time_point> m_creationTimeMap; ///< 连接指针 → 创建时刻
+        mutable std::mutex                                                              m_creationTimeMutex; ///< 保护创建时间映射表
+        std::unordered_map<DatabaseConnection *, std::chrono::steady_clock::time_point> m_creationTimeMap;   ///< 连接指针 → 创建时刻
 
         // ----- 后台线程 -----
         std::jthread m_healthThread; ///< 后台健康检查线程

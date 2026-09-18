@@ -18,12 +18,9 @@ namespace AsynGyanis::Database
         constexpr auto kWriteAheadLogPragma  = "PRAGMA journal_mode=WAL;";
         constexpr auto kForeignKeysPragma    = "PRAGMA foreign_keys=ON;";
 
-        // sqlite3_prepare_v2 的语句长度参数是 int，超过该上限会被静默截断成半条语句
-        constexpr size_t kMaximumCommandLength = static_cast<size_t>(std::numeric_limits<int>::max());
-
-        // sqlite3_bind_text / sqlite3_bind_blob 的长度形参同样是 int，超长参数会被静默截断，
-        // 因此与语句长度使用同一套上限判定，文本与二进制共用
-        constexpr size_t kMaximumParameterLength = static_cast<size_t>(std::numeric_limits<int>::max());
+        // 语句长度（sqlite3_prepare_v2）与参数长度（sqlite3_bind_text / sqlite3_bind_blob）
+        // 的长度形参都是 int，超限会被静默截断成半条语句或半段数据，因此共用同一上限
+        constexpr size_t kMaximumNativeLength = static_cast<size_t>(std::numeric_limits<int>::max());
     } // namespace
 
     SqliteConnection::SqliteConnection(const ConnectionConfig &configuration)
@@ -154,7 +151,7 @@ namespace AsynGyanis::Database
         const std::string commandText(command);
 
         // 长度超过 int 上限会被静默截断，宁可报错也不执行半条语句
-        if (commandText.size() > kMaximumCommandLength)
+        if (commandText.size() > kMaximumNativeLength)
         {
             m_lastError = "数据库命令过长：" + std::to_string(commandText.size()) + " 字节，超出 SQLite 单条语句上限";
             return nullptr;
@@ -360,7 +357,7 @@ namespace AsynGyanis::Database
             } else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
             {
                 // sqlite3_bind_text 的长度参数是 int，超长文本会被静默截断成半条数据，直接拒绝
-                if (textValue->size() > kMaximumParameterLength)
+                if (textValue->size() > kMaximumNativeLength)
                 {
                     m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
                                   std::to_string(textValue->size()) + " 字节，超出 SQLite 单参数上限";
@@ -375,7 +372,7 @@ namespace AsynGyanis::Database
             } else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
             {
                 // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断
-                if (byteValue->size() > kMaximumParameterLength)
+                if (byteValue->size() > kMaximumNativeLength)
                 {
                     m_lastError = "第 " + std::to_string(index) + " 个二进制参数过长：" +
                                   std::to_string(byteValue->size()) + " 字节，超出 SQLite 单参数上限";

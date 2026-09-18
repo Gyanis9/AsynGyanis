@@ -59,13 +59,9 @@ namespace AsynGyanis::Database
         // 连接字符集：utf8mb4 才能真正存下 emoji 与全部 BMP 之外的汉字（utf8mb3 不行）
         constexpr const char *kConnectionCharacterSet = "utf8mb4";
 
-        // mysql_real_query 的长度形参是 unsigned long：Windows(LLP64) 上它是 32 位，
-        // 超过上限的命令会被静默截断成半条语句，宁可报错也不执行残缺命令
-        constexpr size_t kMaximumCommandLength = static_cast<size_t>(std::numeric_limits<unsigned long>::max());
-
-        // 文本与二进制参数的绑定长度都要交给 unsigned long 形参：超长参数会被静默截断成半条数据，
-        // 与命令文本共用同一个上限，取值出处相同（Windows 上 32 位，Linux/macOS 上 64 位）
-        constexpr size_t kMaximumParameterLength = static_cast<size_t>(std::numeric_limits<unsigned long>::max());
+        // 命令文本与参数绑定的长度都交给 unsigned long 形参（Windows 上是 32 位），
+        // 超限会被静默截断成半条语句或半段数据，因此共用同一上限并在交给客户端库前拦下
+        constexpr size_t kMaximumNativeLength = static_cast<size_t>(std::numeric_limits<unsigned long>::max());
 
         // 零长度二进制载荷要交给 MYSQL_BIND 一个合法指针：buffer 为空指针时客户端库的行为
         // 没有文档保证，因此指向这个静态字节，长度仍按 0 填写
@@ -275,7 +271,7 @@ namespace AsynGyanis::Database
         // 这条比较恒假（会招来 -Wtype-limits 告警），因此只在确实存在窄化风险的平台上判
         if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
         {
-            if (command.size() > kMaximumCommandLength)
+            if (command.size() > kMaximumNativeLength)
             {
                 m_lastError = "数据库命令过长：" + std::to_string(command.size()) + " 字节，超出 MySQL 客户端协议上限";
                 return nullptr;
@@ -355,7 +351,7 @@ namespace AsynGyanis::Database
         // 超长命令会被静默截断成半条语句。Linux/macOS(LP64) 上两者等宽，该比较恒假，因此只在有风险时判
         if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
         {
-            if (command.size() > kMaximumCommandLength)
+            if (command.size() > kMaximumNativeLength)
             {
                 m_lastError = "数据库命令过长：" + std::to_string(command.size()) + " 字节，超出 MySQL 客户端协议上限";
                 return nullptr;
@@ -383,8 +379,8 @@ namespace AsynGyanis::Database
 
         // 打开「store_result 时顺带更新每列 max_length」这一属性：下面的取值缓冲区正是按 max_length
         // 分配的，正常路径上因此不会出现截断。该属性只影响元数据，必须在 execute 之前设置
-        constexpr bool kupdateMaximumLength = true;
-        if (mysql_stmt_attr_set(rawStatement, STMT_ATTR_UPDATE_MAX_LENGTH, &kupdateMaximumLength) != 0)
+        constexpr bool kUpdateMaximumLength = true;
+        if (mysql_stmt_attr_set(rawStatement, STMT_ATTR_UPDATE_MAX_LENGTH, &kUpdateMaximumLength) != 0)
         {
             captureStatementError(rawStatement, "设置 MySQL 预处理语句属性失败");
             return nullptr;
@@ -586,7 +582,7 @@ namespace AsynGyanis::Database
             {
                 // 文本按「指针 + 长度」绑定，内嵌 '\0' 因此不丢。长度同时写进 buffer_length（缓冲区容量）
                 // 与 *length（客户端库实际采用的输入长度）；超长文本会被 unsigned long 形参静默截断，直接拒绝
-                if (textValue->size() > kMaximumParameterLength)
+                if (textValue->size() > kMaximumNativeLength)
                 {
                     m_lastError = "第 " + std::to_string(index) + " 个文本参数过长：" +
                                   std::to_string(textValue->size()) + " 字节，超出 MySQL 单参数上限";
@@ -606,7 +602,7 @@ namespace AsynGyanis::Database
                 // 二进制必须走 MYSQL_TYPE_BLOB：若按 MYSQL_TYPE_STRING 下发，服务端会把载荷当作
                 // 连接字符集（本连接是 utf8mb4）下的字符串，非该字符集的字节序列可能被替换或直接
                 // 报错——写进去和读回来就不是同一串字节了。类型上是 BLOB，服务端便不再做字符集转换
-                if (byteValue->size() > kMaximumParameterLength)
+                if (byteValue->size() > kMaximumNativeLength)
                 {
                     m_lastError = "第 " + std::to_string(index) + " 个二进制参数过长：" +
                                   std::to_string(byteValue->size()) + " 字节，超出 MySQL 单参数上限";
@@ -855,19 +851,6 @@ namespace AsynGyanis::Database
     {
         // 桩里没有客户端库可问，返回空串（含义与「未连接」一致，调用方本就连不上）
         return {};
-    }
-
-    bool MySqlConnection::applyConnectionOptions()
-    {
-        // 没有句柄可下发选项；connect() 已经先行失败返回，正常路径走不到这里
-        m_lastError = kMissingDriverError;
-        return false;
-    }
-
-    void MySqlConnection::captureError(const std::string_view)
-    {
-        // 桩构建里没有句柄可采集，一律按「驱动缺失」定性
-        m_lastError = kMissingDriverError;
     }
 
 #endif // DATABASE_HAS_MYSQL

@@ -682,25 +682,6 @@ namespace AsynGyanis::Database
         return false;
     }
 
-    bool RedisConnection::applyQueryTimeout()
-    {
-        // 没有 hiredis 上下文可供 redisSetTimeout
-        m_lastError = kMissingDriverError;
-        return false;
-    }
-
-    std::unique_ptr<DatabaseResult> RedisConnection::executeArguments(const std::vector<std::string> &)
-    {
-        m_lastError = kMissingDriverError;
-        return nullptr;
-    }
-
-    void RedisConnection::captureError(const std::string_view)
-    {
-        // 桩构建里没有上下文可采集，一律按「驱动缺失」定性
-        m_lastError = kMissingDriverError;
-    }
-
 #endif // DATABASE_HAS_REDIS
 
     // ------------------------------------------------------------------------
