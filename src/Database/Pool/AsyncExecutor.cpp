@@ -30,15 +30,19 @@ namespace AsynGyanis::Database
         // 队列里已接收的任务仍由下面的流程跑完
         m_isStopping.store(true, std::memory_order_release);
 
-        for (std::jthread &worker: m_workers)
         {
-            // 请求停止（幂等）：已请求过或无活动任务时都无副作用
-            static_cast<void>(worker.request_stop());
+            // 停止请求必须与 worker 的等待谓词在**同一把锁**下发布：谓词（读 stop_requested 与队列）
+            // 在锁内求值，锁外通知时唤醒可能落在「worker 已判定谓词为假、尚未入睡」的窗口里被丢弃——
+            // worker 会永远睡着，jthread 析构时的 join 随之永久阻塞
+            const std::lock_guard lock(m_mutex);
+            for (std::jthread &worker: m_workers)
+            {
+                // 请求停止（幂等）：已请求过或无活动任务时都无副作用
+                static_cast<void>(worker.request_stop());
+            }
+            // 唤醒所有可能阻塞在条件变量上的工作线程，让它们看到停止请求后退出
+            m_condition.notify_all();
         }
-
-        // 唤醒所有可能阻塞在条件变量上的工作线程，让它们看到停止请求后退出。
-        // 若只改标志而不唤醒，线程会一直睡到下一次有新任务（可能永远不来）
-        m_condition.notify_all();
 
         // 这里不显式 join：worker 是 jthread，析构时会自动 join，
         // 而它们在成员声明顺序上是最后销毁的，因此 join 一定发生在队列与锁销毁之前

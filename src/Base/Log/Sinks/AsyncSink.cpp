@@ -120,8 +120,14 @@ namespace AsynGyanis::Base
         // 这里不额外设「已停止」标志位：停止状态由 stop_token 单一表达，worker 循环也读同一来源
         std::call_once(m_stopOnce, [this]
         {
-            m_workerThread.request_stop();
-            m_queueCondition.notify_all();
+            {
+                // 停止标记必须与 worker 的等待谓词在**同一把锁**下发布：谓词在锁内读 stop_requested()，
+                // 若在锁外通知，唤醒可能落在「worker 已判定谓词为假、尚未入睡」的窗口里被丢弃，
+                // worker 会永远睡在条件变量上、随后的 join() 永久阻塞
+                const std::lock_guard lock(m_queueMutex);
+                m_workerThread.request_stop();
+                m_queueCondition.notify_all();
+            }
             m_workerThread.join();
             if (m_wrappedSink)
             {

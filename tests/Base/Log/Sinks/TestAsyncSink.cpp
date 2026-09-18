@@ -706,4 +706,45 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(completed) << "放行后 flush() 未在超时内返回";
         EXPECT_EQ(m_events->size(), static_cast<std::size_t>(keventCount));
     }
+
+    // ============================================================================
+    // 停止协议：唤醒不得被丢弃（回归）
+    // ============================================================================
+
+    /**
+     * @brief 反复「构造完立刻析构」必须次次完成：停止请求的唤醒一旦被丢弃就是永久挂死
+     * @details 该形状正好把停止请求打进 worker 的首次等待窗口，是丢唤醒的最短路径。
+     *          循环放在独立线程里、主线程有界等待——回归时用例是**失败**，而不是把测试进程
+     *          挂到作业超时（120 分钟）才被发现。
+     */
+    TEST(AsyncSink, RepeatedConstructionAndDestructionAlwaysCompletes)
+    {
+        constexpr int     kIterationCount         = 2000;
+        constexpr int     kCompletionMilliseconds = 30000;
+        std::atomic<bool> finished{false};
+
+        std::thread cycle([&finished]
+        {
+            for (int index = 0; index < kIterationCount; ++index)
+            {
+                const AsyncSink sink(std::make_unique<RecordingSink>());
+            }
+            finished.store(true, std::memory_order_release);
+        });
+
+        const bool completed = TestSupport::waitForCondition([&finished]
+        {
+            return finished.load(std::memory_order_acquire);
+        }, kCompletionMilliseconds);
+
+        if (completed)
+        {
+            cycle.join();
+        } else
+        {
+            // 已卡在停止路径上（join 不会回来）：留着它等进程退出，让断言报失败而不是挂住进程
+            cycle.detach();
+        }
+        EXPECT_TRUE(completed) << "构造/析构循环未在时限内完成：停止请求的唤醒可能被丢弃（worker 永久睡在条件变量上）";
+    }
 } // namespace AsynGyanis::Base
