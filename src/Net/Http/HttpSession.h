@@ -87,12 +87,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 启动会话主协程：跑完整条保持活跃循环后关闭连接。
          *
-         * @details 重写 Core::Connection::start()。基类默认实现只是一个立即完成的空协程
-         *          （直接 co_return），供不需要协议逻辑的连接子类继承；本实现把它换成完整的
-         *          HTTP 事务循环：转入 detail::httpKeepAliveLoop() 处理读、解析、路由与应答，
-         *          循环退出后无条件调用 close() 归还描述符——会话不会因为退出路径不同而漏关 socket。
-         *          与基类相同的另一点：异常不在此吞掉，原样抛给 TcpServer::handleConnection()。
-         *
+         * @details 重写基类空实现，换成完整的 HTTP 事务循环：转入 detail::httpKeepAliveLoop() 处理读、解析、
+         *          路由与应答，循环退出后无条件 close() 归还描述符——不会因退出路径不同而漏关 socket。
+         *          异常不在此吞掉，原样抛给 TcpServer::handleConnection()。
          * @return Core::Task<> 协程任务，连接结束（自然关闭或出错收口）时完成
          * @see Core::Connection::start(), detail::httpKeepAliveLoop()
          */
@@ -101,12 +98,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 按 RFC 9112 §9 判定这条事务之后是否保持连接（Keep-Alive）。
          *
-         * @details 判定顺序固定，且**请求侧的显式 close 不可被响应头反转**：请求或响应带
-         *          `Connection: close` → 一律断开；请求带 `Connection: keep-alive` → 保活（只对
-         *          HTTP/1.0 有实际意义，1.1 默认本就保活）；都没有时 1.1 及以上默认保活，
-         *          1.0 与 0.9 默认断开。响应的 `Connection: keep-alive` 不参与判定。
-         *          同名头部的多个值按逗号拆分后逐 token 比对（`Connection: keep-alive, X` 这种写法合法）。
-         *
+         * @details 判定顺序固定，且请求侧的显式 close 不可被响应头反转：任一侧带 `Connection: close` → 断开；
+         *          请求带 `Connection: keep-alive` → 保活（1.0 才有实际意义，1.1 默认本就保活）；都没有时 1.1
+         *          及以上默认保活，1.0 与 0.9 默认断开。同名头的多个值按逗号拆分后逐 token 比对。
          * @param request  已完成解析的请求
          * @param response 即将发送的响应
          * @return true 应保持连接，继续处理下一个请求

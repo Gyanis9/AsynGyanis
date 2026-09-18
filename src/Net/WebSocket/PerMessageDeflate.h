@@ -28,12 +28,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 协商 permessage-deflate 扩展（RFC 7692 §7.1）
      *
-     * @details 在客户端提供的 Sec-WebSocket-Extensions 里找 permessage-deflate；找到就接受，并回一份
-     *          **本端选定**的参数：`server_no_context_takeover` 与 `client_no_context_takeover`。
-     *          两条都要求「每条消息重置压缩上下文」，因此本端收发都不需要跨消息保存 z_stream——
-     *          这是刻意的取舍：省下的是连接级的压缩状态与它的生命周期管理，代价是压缩率略低
-     *          （上下文复用能让后续消息压得更狠）。对端提供的其它参数（窗口位宽等）照 RFC 允许的
-     *          方式忽略：它们是建议，最终以本端回复为准。
+     * @details 在客户端提供的 Sec-WebSocket-Extensions 里找 permessage-deflate；找到就接受并回一份**本端
+     *          选定**的参数：`server_no_context_takeover` 与 `client_no_context_takeover`。两条都要求每条
+     *          消息重置压缩上下文，因此收发都不需要跨消息保存 z_stream——代价是压缩率略低，换来连接级压缩
+     *          状态及其生命周期管理的省却。对端其它参数照 RFC 允许的方式忽略。
      * @param extensionsHeader Sec-WebSocket-Extensions 头部的值，缺头时传空串
      * @return PerMessageDeflateNegotiation 协商结论；未提供或提供了本端不认识的扩展名时不接受
      * @note 多个扩展可以逗号分隔并存（RFC 6455 §9.1），这里只挑出 permessage-deflate 那一个，

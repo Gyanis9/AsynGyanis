@@ -56,11 +56,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 接手一个**已经在监听中**的套接字：不新建、不 bind、不 listen
          *
-         * @details 零停机重启靠这条路径：监听套接字由 supervisor 持有（Linux 的 socket activation、
-         *          Windows 上由服务管理器把已继承的句柄传进来），进程只负责接手它并开始接受连接。
-         *          接手后 bind()/listen() 都直接返回成功——它们的后置条件（套接字已绑定、已在监听）
-         *          此刻已经成立，且绝不能重新绑定，否则上一代仍在接受的连接会被丢掉。
-         *          本地地址从内核取（getsockname），因此 listeningPort() 报的是真值而不是调用方猜的值。
+         * @details 零停机重启靠这条路径：监听套接字由 supervisor 持有（Linux socket activation、Windows 服务
+         *          管理器传入），本进程只负责接手并开始接受连接。接手后 bind()/listen() 直接返回成功——后置
+         *          条件已成立，绝不能重新绑定，否则上一代仍在接受的连接会被丢掉。本地地址从内核取（getsockname），
+         *          因此 listeningPort() 报的是真值。
          * @param loop 关联的事件循环，要求与按地址构造时相同（必须比本对象活得久）
          * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符；描述符**所有权随之转移**，
          *        本对象析构或 close() 会关掉它——对旧进程来说这正是它该做的事（关闭自己那一份、
@@ -138,11 +137,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 异步接受一条新连接
-         * @details 先取走上一轮批量 accept 暂存的连接，队列为空时直接在监听描述符上收一条。
-         *          事件循环是边沿触发，一次就绪必须把队列抽干，因此多余的连接存入 m_pending
-         *          供后续调用直接返回。可恢复错误全部在协程内部消化：暂无连接时挂起等待可读；
-         *          被信号中断或对端中止时直接重试；描述符与内核缓冲耗尽时用预先建好的
-         *          m_backoffTimer 退避（此时连新协程帧都可能申请不到）。
+         * @details 先取走上一轮批量 accept 暂存的连接，队列为空时直接在监听描述符上收一条。事件循环边沿触发，
+         *          一次就绪必须把队列抽干，多余的连接存入 m_pending。可恢复错误全部在协程内消化：暂无连接挂起
+         *          等待、被信号中断直接重试、描述符或内核缓冲耗尽用 m_backoffTimer 退避（此时连新协程帧都可能
+         *          申请不到）。
          * @return Core::Task<std::optional<Core::AsyncSocket>> 成功时返回已连接的套接字；
          *         监听套接字已 close() 或描述符失效时返回 std::nullopt，表示应结束接受循环
          * @throws Base::SystemException 出现无法靠重试恢复的终止性错误（如描述符被外部关闭），

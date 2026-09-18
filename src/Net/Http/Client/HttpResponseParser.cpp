@@ -292,8 +292,8 @@ namespace AsynGyanis::Net
                 if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() >= kDefaultMaximumHeaderCount) ||
                     (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
                 {
-                    // 与正文上限同源：头部也是「对端说了算」的字节数，没有闸门就是让对方决定
-                    // 本端分配多少内存（正文早有 8 MiB 上限，头部此前一条都没有）
+                    // 与正文上限同源：头部也是「对端说了算」的字节数，没有闸门就是让对方
+                    // 决定本端分配多少内存
                     m_stage = Stage::Failed;
                     break;
                 }

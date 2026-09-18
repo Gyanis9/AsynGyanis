@@ -41,16 +41,10 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP/2 会话类：一条连接对应一个 Http2Session，TLS 与明文两条传输都走它。
      *
-     * @details 两种构造方式决定传输与进入协议循环的方式：
-     *          - **TLS（ALPN 分流）**：start() 先做 TLS 握手，再按 ALPN 协商结果选协议；协商出 h2 就跑
-     *            本类的 HTTP/2 循环，否则把连接原样交回 HTTP/1.1 事务循环（与明文侧同一份实现）。
-     *          - **明文（h2c，先验知识）**：连接按 RFC 9113 §3.4 的前奏直接进入 HTTP/2 循环，不做探测、
-     *            不提供 HTTP/1.1 回退——端口上的协议由部署决定（见 HttpServer::setHttp2CleartextEnabled()）。
-     *          HTTP/2 循环的驱动顺序是「读字节 → feedBytes() → 立刻写出（SETTINGS/ACK/WINDOW_UPDATE/
-     *          GOAWAY）→ 取请求与正文 → 路由 → sendResponseHeaders()/sendResponseData() → 再写出」，
-     *          与连接层的文档约定一致；协议循环与传输无关，只通过 isTransportOpen()/transportReceive()/
+     * @details 两种构造方式决定传输与进入协议循环的方式：TLS（ALPN 分流）在 start() 里先握手再按 ALPN 结果
+     *          选协议，协商出 h2 才跑本循环，否则原样交回 HTTP/1.1 事务循环；明文（h2c，先验知识）按
+     *          RFC 9113 §3.4 前奏直接进 h2，不探测、不回退。协议循环只经 isTransportOpen()/transportReceive()/
      *          transportSend() 三处用到传输层。
-     *
      * @note TLS 分流为什么不在 HttpsServer::createConnection() 里做：ALPN 结果产生于 TLS 握手过程，
      *       而 createConnection() 在握手之前被同步调用，此刻读到的必然是空串。服务器统一创建本类，
      *       由它在握手完成后按 TlsSocket::selectedAlpnProtocol() 选协议。
@@ -132,15 +126,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 关闭会话：SETTINGS 迟迟未被 ACK 时先把 GOAWAY(SETTINGS_TIMEOUT) 尽力送出去再收口
          *
-         * @details 重写 Core::Connection::close()：基类只会关自己那条套接字，而本类在 TLS 模式下
-         *          真实描述符归 TlsSocket 所有（基类那条是占位），必须先收 TLS 通道；明文模式下基类
-         *          那条就是真实套接字，直接走基类即可。
-         *
-         *          另外，清扫协程按空闲截止时间收口本连接时会先调用本函数，此刻描述符还在——会话自己的
-         *          读协程要等描述符关闭才被唤醒，那时一个字节都写不出去。因此这里是「会话被关停」路径上
-         *          唯一还能把收口原因告知对端的时刻：SETTINGS 仍待 ACK 且已过专项限额时先把 GOAWAY
-         *          (SETTINGS_TIMEOUT) 写出去（RFC 7540 §6.5.3 允许按该错误码收口），写出失败只记日志，
-         *          连接照常关闭。
+         * @details 重写基类 close()：TLS 模式下真实描述符归 TlsSocket（基类那条是占位），必须先收 TLS 通道；
+         *          明文模式直接走基类。清扫协程按空闲截止时间收口时会先调本函数，此刻描述符还在——这是「会话被
+         *          关停」路径上唯一还能告知对端的时刻：SETTINGS 待 ACK 且已过专项限额时先尽力写出
+         *          GOAWAY(SETTINGS_TIMEOUT)，写出失败只记日志，连接照常关闭。
          */
         void close() override;
 
@@ -166,13 +155,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 服务器要优雅收口本连接时，发一条收尾 GOAWAY 告诉对端「不再受理新流」
          *
-         * @details 重写 Core::Connection::onGracefulShutdownRequested()：服务器（TcpServer::drain()）
-         *          决定结束没有在途工作的连接时、在 close() 之前调用本函数，此刻通道还可用——这是
-         *          那个时点唯一能写字节的机会。对端因此拿到的是一条带 last-stream-id 的收尾通告，
-         *          而不是一个裸的 TCP 关闭：它据此知道哪些请求已经生效、新流没有生效，不必盲目重试
-         *          （RFC 9113 §6.8；本实现直接发**最终**形态的 GOAWAY，不走「先发 2^31-1 再发最终值」
-         *          的两段式——本连接随后就关，没有中间状态要给对端留缓冲）。
-         *
+         * @details 重写 onGracefulShutdownRequested()：服务器决定结束无在途工作的连接时、在 close() 之前调用，
+         *          此刻通道还可用——对端因此拿到带 last-stream-id 的收尾通告而不是裸 TCP 关闭，据此知道哪些
+         *          请求已生效（RFC 9113 §6.8）。本实现直接发最终形态 GOAWAY，不走两段式（连接随后就关，没有
+         *          中间状态要留缓冲）。
          * @note 已经发过收尾通告（达到单连接请求上限）或连接已失败/未完成协商时什么都不做：
          *       sendGoAway() 会拒绝，理由已由它的错误出参给出
          * @note 写出是尽力而为：这条路径不等待可写，写不出去只记一条告警，连接照常关闭

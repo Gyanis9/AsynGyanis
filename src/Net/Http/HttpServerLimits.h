@@ -17,13 +17,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 单条 HTTP 连接的限额配置。
      *
-     * @details 会话在相位切换时把对应时限刷进连接的空闲截止时间，服务器上的清扫协程按固定
-     *          节拍检查并关闭超期连接，因此实际超时是「时限 + 清扫间隔」量级。各字段取值 0 一律
-     *          表示关闭该项保护（不是「立即超时」）。readTimeout 的语义与 nginx 的
-     *          client_body_timeout 一致：约束相邻两次成功读取之间的间隔，而非整条请求的读总时长。
-     *          相位与时限的对应关系：等新请求 / WebSocket 帧间用 idleTimeout，收请求头与正文用
-     *          readTimeout，**处理器运行期**与发送响应用 writeTimeout——处理器相位既不读也不写，
-     *          若沿用上一次读取刷出的 readTimeout，慢处理器会被当成空闲连接掐掉。
+     * @details 会话把对应时限刷进连接的空闲截止时间，清扫协程按固定节拍检查并关闭超期连接，因此实际超时是
+     *          「时限 + 清扫间隔」量级；取值 0 一律表示关闭该项保护。readTimeout 与 nginx 的
+     *          client_body_timeout 同义：约束相邻两次成功读取的间隔而非读总时长。时限与相位的对应：等新请求
+     *          与帧间用 idleTimeout、收请求头与正文用 readTimeout、处理器运行与发送响应用 writeTimeout。
      * @note 会话按 shared_ptr 只读共享一份配置；要改配置请走 HttpServer::setLimits()，
      *       它整体换代而不是就地改写，避免在途会话读到半新半旧的组合。
      * @note 本结构只管时间与请求条数，单条报文的内存占用由 HttpParserLimits 负责（两者独立生效：

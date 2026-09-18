@@ -77,11 +77,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 启动服务器主协程
-         * @details 依次 bind() 与 listen(默认队列深度 kDefaultListenBacklog)，随后循环接受连接：
-         *          达到 m_maxConnections 上限时直接丢弃新连接（由 AsyncSocket 析构关闭），
-         *          否则交给 createConnection() 并并发启动 handleConnection()。
-         *          可恢复的接受错误已由 TcpAcceptor::accept() 内部退避重试，本协程只处理
-         *          终止性错误：记录日志后退出循环。退出前等待所有连接任务结束。
+         * @details 依次 bind() 与 listen(kDefaultListenBacklog)，随后循环接受连接：达到 m_maxConnections 上限时
+         *          丢弃新连接（由 AsyncSocket 析构关闭），否则交给 createConnection() 并并发启动
+         *          handleConnection()。可恢复的接受错误已在 TcpAcceptor 内退避重试，本协程只处理终止性错误并
+         *          退出循环，退出前等所有连接任务结束。
          * @return Core::Task<> 协程，直到服务器停止才完成
          * @throws Base::Exception 绑定或监听失败
          * @throws Base::SystemException accept 出现终止性错误时由 TcpAcceptor 抛出并在此传播

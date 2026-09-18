@@ -159,12 +159,10 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP/2 连接层状态机（服务端角色）
      *
-     * @details 一个实例持有这条连接的全部协议状态。上层按「读事件 → feedBytes() → takeOutgoingBytes()
-     *          写出 → takeRequests()/takeReceivedData() 交给业务 → 业务调 sendResponse*() → 再
-     *          takeOutgoingBytes()」驱动：本层既不阻塞也不 co_await，窗口不足的数据留在发送队列里，
-     *          收到 WINDOW_UPDATE 后由本层在同一入口内续发，上层只需在每次入口调用后再取一次字节。
-     *          接收方向则由上层回报消费量（creditReceivedData()），窗口更新帧由本层排进待发字节。
-     *
+     * @details 一个实例持有整条连接的协议状态。上层按「读字节 → feedBytes() → takeOutgoingBytes() 写出 →
+     *          takeRequests()/takeReceivedData() 交业务 → sendResponse*() → 再取字节」驱动；本层既不阻塞
+     *          也不 co_await，窗口不足的数据留在发送队列，收到 WINDOW_UPDATE 后在同一入口内续发；接收方向
+     *          由上层用 creditReceivedData() 回报消费量。
      * @note 流状态判定表（RFC 7540 §5.1、§5.1.1）：从未开启（idle）的流只接受 HEADERS 与 PRIORITY，
      *       其余帧（DATA/WINDOW_UPDATE/RST_STREAM/CONTINUATION）判连接错误 PROTOCOL_ERROR；新流号必须
      *       为奇数且严格大于所有已用过的流号，偶数或倒退一律连接错误 PROTOCOL_ERROR。
