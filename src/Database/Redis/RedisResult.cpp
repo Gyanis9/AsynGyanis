@@ -53,7 +53,7 @@ namespace AsynGyanis::Database
             switch (sourceReply->type)
             {
                 // 列表的备选类型只有 std::vector<std::string>：整数转成十进制文本，
-                // // 至少保住数值信息（丢掉非字符串子元素会让整数数组返回空列表）
+                // 至少保住数值信息（丢掉非字符串子元素会让整数数组返回空列表）
                 case REDIS_REPLY_INTEGER:
                     return std::to_string(sourceReply->integer);
 
@@ -111,7 +111,7 @@ namespace AsynGyanis::Database
         }
 
         // 构造属于非 const 写路径：在这里把 error 回复的原文摘进 m_lastError，
-        // // 之后所有 const 读取接口都只读不写（基类契约不允许 const 路径改状态）
+        // 之后所有 const 读取接口都只读不写（基类契约不允许 const 路径改状态）
         if (m_replyType == REDIS_REPLY_ERROR)
         {
             m_lastError = copyReplyText(m_replyPointer);
@@ -240,7 +240,7 @@ namespace AsynGyanis::Database
 
     bool RedisResult::next()
     {
-        // // 空结果集没有那一行可交；先自增下标再比较会让游标语义与 rowCount() 互相矛盾
+        // 空结果集没有那一行可交；先自增下标再比较会让游标语义与 rowCount() 互相矛盾
         if (m_columnCount == 0)
         {
             return false;

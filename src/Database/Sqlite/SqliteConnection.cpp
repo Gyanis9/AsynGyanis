@@ -137,7 +137,7 @@ namespace AsynGyanis::Database
         // 未连接时绝不触碰 prepare，避免把空句柄交给 SQLite
         if (!isConnected())
         {
-            m_lastError = "未连接到数据库，命令未执行";
+            m_lastError = "未连接到 SQLite，命令未执行：请先调用 connect() 建立连接";
             return nullptr;
         }
 
@@ -201,7 +201,7 @@ namespace AsynGyanis::Database
 
             if (hasExtraStatement)
             {
-                // // 静默丢掉后半段语句会让调用方误以为整段脚本都已生效
+                // 静默丢掉后半段语句会让调用方误以为整段脚本都已生效
                 sqlite3_finalize(statement);
                 m_lastError = "一次调用只执行一条 SQL 语句，检测到额外语句，请拆成多次 execute() 调用";
                 return nullptr;
@@ -299,16 +299,22 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），
-        // 归还路径不看返回码——连接随后会照常回到池里，最坏情况是被下一个借用者拿到一条
-        // 仍带事务的连接（这与修复前的行为一致），但绝不在这里抛异常打断归还
-        [[maybe_unused]] const bool isRolledBack = rollback();
+        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），归还路径不看返回码。
+        // try/catch 是必需的：rollback() 会构造 std::string（内存分配失败即抛），
+        // 而本方法按接口约定是 noexcept，异常穿出去就是 terminate
+        try
+        {
+            [[maybe_unused]] const bool isRolledBack = rollback();
+        } catch (...)
+        {
+            // 归还路径绝不抛出：最坏情况是连接带着未复位的事务回到池里
+        }
     }
 
     std::string SqliteConnection::serverVersion() const
     {
         // SQLite 没有服务端进程，返回链接进来的库版本；sqlite3_libversion() 不依赖句柄，
-        // // 未连接时同样有效，不因缺少句柄而白白丢掉可用信息
+        // 未连接时同样有效，不因缺少句柄而白白丢掉可用信息
         return sqlite3_libversion();
     }
 

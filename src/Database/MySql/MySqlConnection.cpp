@@ -69,6 +69,17 @@ namespace AsynGyanis::Database
         constexpr std::uint8_t kEmptyBinaryPayloadByte = 0;
 
         /**
+         * @brief 把客户端库给出的影响行数转成 ORM 口径，出错哨兵归零
+         * @param rawCount mysql_affected_rows / mysql_stmt_affected_rows 的原始返回值
+         * @return std::int64_t 影响行数；客户端库出错时返回 0（「未知」）
+         */
+        std::int64_t toAffectedRowCount(const my_ulonglong rawCount) noexcept
+        {
+            // 出错时这两个接口返回 (my_ulonglong)-1，直接转换会让调用方看到 -1 行
+            return rawCount == static_cast<my_ulonglong>(-1) ? 0 : static_cast<std::int64_t>(rawCount);
+        }
+
+        /**
          * @brief 把毫秒超时换算成 MySQL 客户端选项需要的整秒
          * @param milliseconds 时长毫秒数，来自基类的 connectTimeout() / queryTimeout()
          * @return unsigned int 秒数；非正值折算为 0，含义是「不超时」
@@ -193,6 +204,20 @@ namespace AsynGyanis::Database
         }
 
         // database 为空串时不选择默认库，这是 mysql_real_connect 的正规用法之一；
+        // mysql_real_connect 只接受零终止 C 字符串：配置里内嵌 '\0' 会让它静默截断成半截，
+        // 表现成「认证失败」这类与真实原因无关的报错，因此先本地拦下
+        const std::string_view configurationTexts[] = {m_configuration.host, m_configuration.userName,
+                                                       m_configuration.password, m_configuration.database};
+        for (const std::string_view configurationText: configurationTexts)
+        {
+            if (configurationText.find('\0') != std::string_view::npos)
+            {
+                m_lastError = "连接 MySQL 服务失败：连接配置（host / userName / password / database）含内嵌 NUL 字节，"
+                              "客户端库只接受零终止字符串并会静默截断——请检查配置的来源";
+                return false;
+            }
+        }
+
         // clientflag 传 0：不开 CLIENT_MULTI_STATEMENTS（一次一条语句），也不开 LOCAL_INFILE
         if (mysql_real_connect(m_mysqlHandle,
                                m_configuration.host.c_str(),
@@ -310,7 +335,7 @@ namespace AsynGyanis::Database
             // 只在写语句分支取，是因为查询下它返回的是「返回了多少行」，冒充影响行数会误导调用方
             if (mysql_field_count(m_mysqlHandle) == 0)
             {
-                return std::make_unique<MySqlResult>(nullptr, static_cast<std::int64_t>(mysql_affected_rows(m_mysqlHandle)));
+                return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_affected_rows(m_mysqlHandle)));
             }
 
             // 有返回列却没拿到结果集：通常是预读途中内存不足，回复流的位置已不可知，这条连接不能再用于发命令。
@@ -399,7 +424,7 @@ namespace AsynGyanis::Database
         // （mysql_stmt_affected_rows 给的是语句级计数，下一条命令一执行就被覆盖）
         if (mysql_stmt_field_count(rawStatement) == 0)
         {
-            return std::make_unique<MySqlResult>(nullptr, static_cast<std::int64_t>(mysql_stmt_affected_rows(rawStatement)));
+            return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(rawStatement)));
         }
 
         // 有返回列 = 查询：先把整份结果从服务端读进客户端内存，之后逐行 fetch 不再有任何网络往返。
@@ -904,7 +929,15 @@ namespace AsynGyanis::Database
         // 的假状态回到池里。失败只记在 lastError() 里（与 rollback() 同一口径），
         // 归还路径不看返回码——绝不在这里抛异常打断归还
         m_isTransactionOpen = false;
-        [[maybe_unused]] const bool isRolledBack = rollback();
+        // rollback() 会构造 std::string（内存分配失败即抛），而本方法按接口约定是 noexcept：
+        // 不接住就是 terminate，因此显式吞掉，失败只留在 lastError() 里
+        try
+        {
+            [[maybe_unused]] const bool isRolledBack = rollback();
+        } catch (...)
+        {
+            // 归还路径绝不抛出：最坏情况是连接带着未复位的事务回到池里
+        }
     }
 
 } // namespace AsynGyanis::Database

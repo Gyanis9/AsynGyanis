@@ -99,7 +99,7 @@ namespace AsynGyanis::Database
         }
 
         // mysql_fetch_fields 一次给出整张元数据数组（长度即列数）；
-        // // 无列或元数据读取失败时它返回空指针，直接 fields[i] 解引用会崩，这里必须先判空
+        // 无列或元数据读取失败时它返回空指针，直接 fields[i] 解引用会崩，这里必须先判空
         const MYSQL_FIELD *fields = mysql_fetch_fields(m_result);
         if (fields == nullptr)
         {
@@ -131,7 +131,7 @@ namespace AsynGyanis::Database
     DatabaseValue MySqlResult::getValue(const size_t index) const
     {
         // 游标没停在有效行上（未 next()、已走完、刚 reset()）时行指针与长度表都不可信，
-        // // 不做这层清理会读出上一行的残值；这里按「无值」返回，与读到 NULL 列的表现一致
+        // 不做这层清理会读出上一行的残值；这里按「无值」返回，与读到 NULL 列的表现一致
         if (m_result == nullptr || m_currentRow == nullptr || index >= m_columnCount)
         {
             return std::monostate{};

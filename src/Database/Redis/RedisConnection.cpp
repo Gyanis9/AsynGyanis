@@ -224,7 +224,10 @@ namespace AsynGyanis::Database
         m_redisContext                         = redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), connectionTimeout);
         if (m_redisContext == nullptr)
         {
-            m_lastError = "创建 Redis 连接上下文失败：" + m_configuration.host + ":" + std::to_string(m_configuration.port) + " 无法访问，或内存分配失败";
+            // redisConnectWithTimeout 只在内存分配失败时返回空（网络类失败会给出带 err 的上下文），
+            // 文案据此给出唯一可行动作，不要罗列与实现不符的「无法访问」
+            m_lastError = "创建 Redis 连接上下文失败：客户端库内存分配失败（" + m_configuration.host + ":" +
+                          std::to_string(m_configuration.port) + "）——请检查进程内存后重试";
             return false;
         }
 
@@ -236,7 +239,7 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // // 建连成功后立刻把 queryTimeout() 应用到上下文（不应用则命令可以无限阻塞），
+        // 建连成功后立刻把 queryTimeout() 应用到上下文（不应用则命令可以无限阻塞），
         // 放在认证与 SELECT 之前，让这两步同样处在读写超时的保护之下
         if (!applyQueryTimeout())
         {
@@ -254,7 +257,7 @@ namespace AsynGyanis::Database
             std::string password = m_configuration.password;
 
             // 用 %b（指针 + 长度）而不是 %s：密码里出现 '%' 时不会被当成格式说明符去取并不存在的参数
-            // // 而格式化接口会越界读甚至直接崩溃，内嵌 '\0' 也能完整送出。
+            // 而格式化接口会越界读甚至直接崩溃，内嵌 '\0' 也能完整送出。
             // userName 非空时走 Redis 6+ 的 ACL 两参数形式 AUTH userName password
             void *rawAuthenticationReply = nullptr;
             if (userName.empty())
@@ -289,7 +292,7 @@ namespace AsynGyanis::Database
         }
 
         // ConnectionConfig::database 对 Redis 的解释是键空间编号：非空就在建连后 SELECT，
-        // // 否则这个配置字段会被静默忽略
+        // 否则这个配置字段会被静默忽略
         if (!m_configuration.database.empty())
         {
             // 十进制解析：解析失败、留有余文（如 "3abc"）或负值都不猜测、不回退到 0 号库，
@@ -494,7 +497,7 @@ namespace AsynGyanis::Database
             if (serverReply == nullptr)
             {
                 // hiredis 约定 REDIS_OK 时不会给出空回复；真遇到就是协议层异常。
-                // // 这里宁可就地放弃也不把 nullptr 塞进结果列表：空指针交给调用方解引用会直接崩溃
+                // 这里宁可就地放弃也不把 nullptr 塞进结果列表：空指针交给调用方解引用会直接崩溃
                 m_lastError = "读取 Redis 管道回复失败：服务端回复为空，仅取回 " + std::to_string(results.size()) + " / " + std::to_string(appendedCommandCount) + " 条回复";
                 disconnect();
                 return results;

@@ -134,7 +134,7 @@ namespace AsynGyanis::Database
 
     DatabaseValue SqliteResult::getValue(const size_t index) const
     {
-        // // 游标没停在有效行上时 SQLite 的列读取接口属于未定义行为（会读到上一次 step 的残值），
+        // 游标没停在有效行上时 SQLite 的列读取接口属于未定义行为（会读到上一次 step 的残值），
         // 统一按「无值」返回 monostate，让调用方与读到 NULL 列的表现一致
         if (!m_hasCurrentRow)
         {

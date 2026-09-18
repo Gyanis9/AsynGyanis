@@ -3,11 +3,13 @@
 #include <algorithm>
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/LogicException.h"
 
 #include <limits>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -568,7 +570,7 @@ namespace AsynGyanis::Database
             {
                 if (condition.children.empty())
                 {
-                    // // 没有子条件的 NOT 视为恒假（NOT 恒真），与 SQL 语义一致
+                    // 空子条件按恒真处理（与 AND/OR 的空子条件同一条规则），取非得假
                     sqlText += "NOT (1 = 1)";
                     return;
                 }
@@ -701,7 +703,7 @@ namespace AsynGyanis::Database
         return std::to_string(pageNumber);
     }
 
-    std::string_view StandardSqlDialect::comparisonOperatorText(const Queryable::SqlOperator sqlOperator) noexcept
+    std::string_view StandardSqlDialect::comparisonOperatorText(const Queryable::SqlOperator sqlOperator)
     {
         using Queryable::SqlOperator;
 
@@ -726,7 +728,10 @@ namespace AsynGyanis::Database
             case SqlOperator::NotIn:
                 return "NOT IN";
             default:
-                return "=";
+                // 复合节点与 IS NULL 系由渲染分支提前分流，走到这里说明漏了分支；
+                // 静默给出 "=" 会生成语义错误的 SQL，宁可当场失败
+                throw Base::LogicException("标准 SQL 方言：该操作符没有比较文本（枚举值 " +
+                                           std::to_string(std::to_underlying(sqlOperator)) + "），请检查条件渲染是否漏了分支");
         }
     }
 
@@ -745,7 +750,7 @@ namespace AsynGyanis::Database
         return "ROLLBACK";
     }
 
-    std::string_view StandardSqlDialect::joinTypeText(const Queryable::JoinType joinType) noexcept
+    std::string_view StandardSqlDialect::joinTypeText(const Queryable::JoinType joinType)
     {
         using Queryable::JoinType;
 
@@ -762,7 +767,9 @@ namespace AsynGyanis::Database
             case JoinType::Cross:
                 return "CROSS";
             default:
-                return "INNER";
+                // 未知取值静默当成 INNER 会把「连错表」变成「少连了一张表」，必须当场失败
+                throw Base::LogicException("标准 SQL 方言：未知的连接类型（枚举值 " +
+                                           std::to_string(std::to_underlying(joinType)) + "），请检查连接渲染分支");
         }
     }
 

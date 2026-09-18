@@ -908,8 +908,9 @@ namespace AsynGyanis::Database::Queryable
          * @param connection 目标连接
          * @param dialect 方言，提供 translate()
          * @param countingNode 已把 SELECT 改成 COUNT(*)、并清掉排序与分页的查询树
-         * @return std::int64_t 匹配行数；无结果行或计数列为 NULL 时为 0
-         * @throws DatabaseException SQL 执行失败
+         * @return std::int64_t 匹配行数；结果集没有计数行时为 0
+         * @throws QueryExecutionException SQL 执行失败
+         * @throws RowMappingException 计数列不是整数（语句被改坏或列位置漂移）
          */
         [[nodiscard]] static std::int64_t countOn(DatabaseConnection &connection, const SqlDialect &dialect, const QueryNode &countingNode)
         {
@@ -933,8 +934,11 @@ namespace AsynGyanis::Database::Queryable
                 return *countedRows;
             }
 
-            // NULL（例如 GROUP BY 后没有任何分组）按 0 处理，语义上「没有行」与 0 行等价
-            return 0;
+            // COUNT 恒返回整数：NULL 或其它类型说明结果集与预期不符（语句被改坏或列错位），
+            // 静默返回 0 会让调用方以为「一行都没有」
+            throw RowMappingException("Queryable: 计数列不是整数（实际类型 " + std::string(databaseValueTypeName(countValue)) +
+                                      "，第 0 列列名 " + std::string(result->columnName(0).value_or("?")) +
+                                      "），请检查计数语句是否仍是 COUNT(*)");
         }
 
         /**
@@ -1489,7 +1493,9 @@ namespace AsynGyanis::Database::Queryable
                 case SqlOperator::IsNotNull:
                     return "IS NOT NULL"sv;
                 default:
-                    return "="sv;
+                    // 与执行路径同一判据：复合节点由渲染分支提前分流，漏分支时不能静默给出 "="
+                    throw Base::LogicException("Queryable: toSql 遇到没有比较文本的操作符（枚举值 " +
+                                               std::to_string(std::to_underlying(op)) + "），请检查条件渲染分支");
             }
         }
 
@@ -1510,7 +1516,9 @@ namespace AsynGyanis::Database::Queryable
                 case JoinType::Cross:
                     return "CROSS"sv;
                 default:
-                    return "INNER"sv;
+                    // 未知取值静默当成 INNER 会让调试看到的 SQL 比真实执行的少一张表
+                    throw Base::LogicException("Queryable: toSql 遇到未知的连接类型（枚举值 " +
+                                               std::to_string(std::to_underlying(type)) + "），请检查连接渲染分支");
             }
         }
 

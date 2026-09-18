@@ -279,9 +279,10 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
-            // 计数语句恒返回一行；没有行说明语句形态不符预期，按「不存在」处理
+            // 计数语句恒返回一行；游标推进失败属查询故障，不能与「表不存在」混为一谈
             if (!result->next())
             {
+                writeError(errorText, "SchemaMigrator: 表存在性查询未返回计数行（驱动状态：" + connection->lastError() + "）");
                 return false;
             }
 
@@ -291,7 +292,9 @@ namespace AsynGyanis::Database::Queryable
                 return *countedRows > 0;
             }
 
-            // 计数列不是整数说明方言的语句与解读方式不匹配（正常路径不可达），按不存在处理
+            // 计数列不是整数说明方言语句与解读方式不匹配：如实报错，不静默当成「表不存在」
+            writeError(errorText, "SchemaMigrator: 表存在性查询返回了非整数计数列（实际类型 " +
+                                      std::string(databaseValueTypeName(countValue)) + "），请检查方言的表存在性语句");
             return false;
         }
 
@@ -417,15 +420,9 @@ namespace AsynGyanis::Database::Queryable
                 return nullptr;
             }
 
-            try
-            {
-                // 未实现的类型由注册表抛带中文提示的异常，这里转成返回值 + 原因文本
-                return DialectRegistry::dialectFor(probeConnection->databaseType());
-            } catch (const std::exception &error)
-            {
-                writeError(errorText, std::string("SchemaMigrator: 该数据库类型尚无方言实现：") + error.what());
-                return nullptr;
-            }
+            // 未实现的类型由注册表抛 Base::InvalidArgumentException（用法错误）：刻意不在此处转成
+            // 「查询失败 + 原因文本」，用法错误应当由调用方看见，而不是被折叠成可恢复的返回值
+            return DialectRegistry::dialectFor(probeConnection->databaseType());
         }
 
         /**

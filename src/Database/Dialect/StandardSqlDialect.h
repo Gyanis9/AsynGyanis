@@ -291,15 +291,17 @@ namespace AsynGyanis::Database
          * @brief 将比较操作符转成 SQL 文本
          * @param sqlOperator 操作符枚举
          * @return std::string_view 对应的 SQL 操作符文本
+         * @throws Base::LogicException 传入的不是比较操作符（调用方漏了分支）
          */
-        [[nodiscard]] static std::string_view comparisonOperatorText(Queryable::SqlOperator sqlOperator) noexcept;
+        [[nodiscard]] static std::string_view comparisonOperatorText(Queryable::SqlOperator sqlOperator);
 
         /**
          * @brief 将连接类型转成 SQL 关键字
          * @param joinType 连接类型枚举
          * @return std::string_view INNER / LEFT / RIGHT / CROSS
+         * @throws Base::LogicException 传入的不是已知连接类型（调用方漏了分支）
          */
-        [[nodiscard]] static std::string_view joinTypeText(Queryable::JoinType joinType) noexcept;
+        [[nodiscard]] static std::string_view joinTypeText(Queryable::JoinType joinType);
     };
 
 } // namespace AsynGyanis::Database

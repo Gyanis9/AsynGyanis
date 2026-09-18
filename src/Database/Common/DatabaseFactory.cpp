@@ -43,7 +43,8 @@ namespace AsynGyanis::Database
         }
 
         // 枚举取值超出已知范围（反序列化出错或内存被写坏）时不给静默默认值
-        throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type));
+        throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type) +
+                                             "（枚举值 " + std::to_string(static_cast<int>(type)) + "）：请改用 MySql / Sqlite / Redis 三者之一，或修正反序列化来源");
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createMySql(const ConnectionConfig &config)
