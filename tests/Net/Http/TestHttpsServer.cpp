@@ -428,11 +428,9 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 跑起一台真实 HttpsServer 的夹具
-         * @details 成员顺序即生命周期顺序：循环 → 结果槽 → 服务器 → 主协程任务 → 循环线程。
-         *          析构体先等循环线程退出，再收尾服务器，与 HTTP 侧夹具同一套顺序。
+         * @brief 跑起一台真实 HttpsServer 的夹具（骨架见 HttpTestSupport 的 RunningServerFixture）
          */
-        class RunningHttpsServerFixture
+        class RunningHttpsServerFixture final : public RunningServerFixture<TestHttpsServer>
         {
         public:
             /**
@@ -451,132 +449,26 @@ namespace AsynGyanis::Net
                                       const std::function<void(HttpsServer &)> &configureServer = {},
                                       const std::filesystem::path &certificatePath = kTestCertificatePath,
                                       const std::filesystem::path &privateKeyPath = kTestKeyPath) :
-                m_loop(),
-                m_server(m_loop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string()),
-                m_serverTask(driveStart(m_server, m_startThrew)),
-                m_loopThread(m_loop)
+                RunningServerFixture<TestHttpsServer>(
+                        limits, sweepInterval, parserLimits,
+                        [&certificatePath, &privateKeyPath](Core::EventLoop &serverLoop)
+                        {
+                            return TestHttpsServer(serverLoop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string());
+                        })
             {
-                // 限额、清扫节拍与路由都必须在投递 start() 之前落定，与 HTTP 夹具同一约束
-                m_server.setLimits(limits);
-                m_server.setParserLimits(parserLimits);
-                m_server.setIdleCheckInterval(sweepInterval);
-                m_server.router().get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.setBody("served-hello");
-                    co_return;
-                });
-
                 if (registerRoutes)
                 {
-                    registerRoutes(m_server.router(), m_loop);
+                    registerRoutes(server().router(), loop());
                 }
 
                 // 端点这类「必须开机前落定」的配置同样在投递 start() 之前做
                 if (configureServer)
                 {
-                    configureServer(m_server);
+                    configureServer(server());
                 }
 
-                m_loopThread.schedule(m_serverTask);
+                startServer();
             }
-
-            ~RunningHttpsServerFixture()
-            {
-                // 顺序要紧：先让循环线程停手并退出，再收尾服务器（收尾会销毁挂起的协程帧）
-                m_loopThread.join();
-                m_server.close();
-            }
-
-            RunningHttpsServerFixture(const RunningHttpsServerFixture &) = delete;
-
-            RunningHttpsServerFixture &operator=(const RunningHttpsServerFixture &) = delete;
-
-            /// 被测服务器本体：观测性用例据此读取统计快照
-            /**
-             * @brief 在循环线程上执行一段动作，并等它做完
-             *
-             * @details 会话、套接字与连接管理器都归事件循环所有：从测试线程直接读它们的字段，就是在与
-             *          循环抢同一批句柄（IoWatcher 是无锁结构，空闲清扫还会随时收口连接）——TSan 的并发
-             *          用例集报的正是这类「用例从外部线程伸手进循环」。要在用例里碰这些对象就走这条路；
-             *          只读得到原子量或加锁快照的观测接口（见 server()）才可以跨线程直接读。
-             */
-            void runOnLoopAndWait(const std::function<void()> &action)
-            {
-                std::atomic<bool> isFinished{false};
-                m_loop.scheduler().postRemote(
-                        [&action, &isFinished]
-                        {
-                            action();
-                            isFinished.store(true, std::memory_order_release);
-                        });
-                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout))
-                        << "投递到循环线程的动作没有在时限内完成";
-            }
-
-            [[nodiscard]] TestHttpsServer &server() noexcept
-            {
-                return m_server;
-            }
-
-            /// 服务器是否已进入接受循环
-            [[nodiscard]] bool awaitRunning(const std::chrono::milliseconds timeout) const
-            {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_server.isRunning();
-                        },
-                        timeout);
-            }
-
-            /// 活跃连接是否已全部退场
-            [[nodiscard]] bool awaitConnectionsDrained(const std::chrono::milliseconds timeout) const
-            {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_server.activeConnectionCount() == 0;
-                        },
-                        timeout);
-            }
-
-            /// 内核实际分配的监听端口
-            [[nodiscard]] std::uint16_t listeningPort() const
-            {
-                return queryBoundPort(m_server.listenDescriptor());
-            }
-
-            /// start() 是否以异常收场（用于把这台用例的失败与「配置没生效」区分开）
-            [[nodiscard]] bool startThrew() const
-            {
-                return m_startThrew.load(std::memory_order_acquire);
-            }
-
-        private:
-            /**
-             * @brief 把 start() 包一层，记录它是否抛异常
-             * @param server 被测服务器
-             * @param startThrew 输出：是否抛异常
-             * @return Core::Task<> 协程，start() 返回后完成
-             */
-            static Core::Task<> driveStart(TestHttpsServer &server, std::atomic<bool> &startThrew)
-            {
-                try
-                {
-                    co_await server.start();
-                } catch (...)
-                {
-                    // 只标记不抛出：用例据此断言「服务器没起来」而不是让测试进程带崩
-                    startThrew.store(true, std::memory_order_release);
-                }
-                co_return;
-            }
-
-            Core::EventLoop   m_loop;        ///< 事件循环本体
-            std::atomic<bool> m_startThrew{false}; ///< start() 的退出方式，必须先于任务构造
-            TestHttpsServer   m_server;      ///< 被测服务器
-            Core::Task<>      m_serverTask;  ///< 由 driveStart 产生的主协程任务
-            EventLoopThread   m_loopThread;  ///< 承载 run() 的线程，最后构造、最先析构
         };
     } // namespace
 

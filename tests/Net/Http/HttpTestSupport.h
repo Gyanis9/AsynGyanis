@@ -619,79 +619,19 @@ namespace AsynGyanis::Net
         using ServerConfigurator = std::function<void(TestHttpServer &)>;
 
         /**
-         * @brief 跑起一台真实 HttpServer 的夹具
-         * @details 成员顺序即生命周期顺序：循环 → 结果槽 → 服务器 → 主协程任务 → 循环线程。
-         *          析构体先让服务器收手（stop + 关闭全部连接），再按逆序 join 线程、销毁协程帧与服务器。
+         * @brief 服务器夹具骨架：事件循环、被测服务器、主协程任务与承载线程
+         *
+         * @tparam ServerType 被测服务器类型（HttpServer / HttpsServer 的测试派生类）
+         *
+         * @details 成员顺序即生命周期顺序：循环 → 结果槽 → 服务器 → 主协程任务 → 循环线程；
+         *          析构先等循环线程退出再收尾服务器。子类在构造体里做启动前配置（附加路由、
+         *          端点开关、TLS 装配等），最后调用 startServer() 投递主协程。
          */
-        class RunningHttpServerFixture
+        template<typename ServerType>
+        class RunningServerFixture
         {
         public:
-            /**
-             * @brief 构造并启动服务器
-             * @param limits 连接级限额
-             * @param sweepInterval 空闲清扫节拍
-             * @param slowRoute 可选的慢路由（处理耗时与进入标记）
-             * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
-             * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
-             * @param configureServer 可选的启动前配置动作（例如打开 h2c），同样在投递 start() 之前执行
-             */
-            RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                     const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {},
-                                     const HttpParserLimits &parserLimits = HttpParserLimits{},
-                                     const ServerConfigurator &configureServer = {}) :
-                m_loop(),
-                m_server(m_loop, Core::InetAddress::localhost(0)),
-                m_serverTask(driveStart(m_server, m_startThrew)),
-                m_loopThread(m_loop)
-            {
-                // 限额、清扫节拍与路由都必须在投递 start() 之前落定：清扫协程按 start() 那一刻的
-                // 节拍投递，之后再改不会有清扫发生；路由同理，运行期改表生效时机不可预期
-                m_server.setLimits(limits);
-                m_server.setParserLimits(parserLimits);
-                m_server.setIdleCheckInterval(sweepInterval);
-                m_server.router().get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.setBody("served-hello");
-                    co_return;
-                });
-
-                // 慢路由用定时等待模拟「处理中」：定时等待挂在事件循环上，因此 drain 与本请求都能照常推进，
-                // 处理耗时越长，越能分辨「等完在途请求」与「等满死期限」
-                if (slowRoute.processingTime > std::chrono::milliseconds::zero())
-                {
-                    Core::EventLoop &loop = m_loop;
-                    m_server.router().get("/slow",
-                                          [&loop, processingTime = slowRoute.processingTime, handlerStarted = slowRoute.handlerStarted](
-                                                  HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        // 先置位再等待：用例据此确认此刻连接已被标记为「有在途工作」
-                        if (handlerStarted != nullptr)
-                        {
-                            handlerStarted->store(true, std::memory_order_release);
-                        }
-                        Core::Timer processingTimer(loop);
-                        co_await processingTimer.waitFor(processingTime);
-                        response.setBody("served-slow");
-                        co_return;
-                    });
-                }
-
-                // 附加路由：与上面两条同批落定，仍然在 start() 之前
-                if (registerRoutes)
-                {
-                    registerRoutes(m_server.router(), m_loop);
-                }
-
-                // 启动前配置：与限额、路由同一时机，保证开关在第一个连接被接受之前就位
-                if (configureServer)
-                {
-                    configureServer(m_server);
-                }
-
-                m_loopThread.schedule(m_serverTask);
-            }
-
-            ~RunningHttpServerFixture()
+            ~RunningServerFixture()
             {
                 // 顺序要紧：先让循环线程停手并退出，再收尾服务器。挂起的等待器（accept 的事件
                 // 注册、会话读等待、清扫协程的定时器登记）都活在循环内部的无锁结构里，而收尾会
@@ -700,12 +640,11 @@ namespace AsynGyanis::Net
                 m_server.close();
             }
 
-            RunningHttpServerFixture(const RunningHttpServerFixture &) = delete;
-
-            RunningHttpServerFixture &operator=(const RunningHttpServerFixture &) = delete;
+            RunningServerFixture(const RunningServerFixture &)            = delete;
+            RunningServerFixture &operator=(const RunningServerFixture &) = delete;
 
             /// 被测服务器本体：观测性用例据此读取统计快照（读取侧全是原子量或加锁接口，跨线程安全）
-            [[nodiscard]] TestHttpServer &server() noexcept
+            [[nodiscard]] ServerType &server() noexcept
             {
                 return m_server;
             }
@@ -743,27 +682,6 @@ namespace AsynGyanis::Net
                         timeout);
             }
 
-            /**
-             * @brief 把 drain() 投到循环线程并等它跑完
-             * @details drain 只能在所属循环线程上运行：本方法按 scheduleRemote 投递，并把任务对象留在
-             *          成员里活到跑完（协程帧必须有人持有）。完成标记每次调用先清空，可重复调用。
-             * @param drainTimeout 交给 drain 的最长等待时长
-             * @param waitTimeout 本方法自身的等待上限
-             * @return true drain 在时限内完成
-             */
-            [[nodiscard]] bool drainServer(const std::chrono::milliseconds drainTimeout, const std::chrono::milliseconds waitTimeout)
-            {
-                m_drainFinished.store(false, std::memory_order_release);
-                m_drainTask = driveDrain(m_server, m_drainFinished, drainTimeout);
-                m_loopThread.schedule(m_drainTask);
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_drainFinished.load(std::memory_order_acquire);
-                        },
-                        waitTimeout);
-            }
-
             /// 内核实际分配的监听端口
             [[nodiscard]] std::uint16_t listeningPort() const
             {
@@ -776,6 +694,70 @@ namespace AsynGyanis::Net
                 return m_startThrew.load(std::memory_order_acquire);
             }
 
+            /**
+             * @brief 在循环线程上执行一段动作，并等它做完
+             *
+             * @details 会话、套接字与连接管理器都归事件循环所有：从测试线程直接读它们的字段，就是在与
+             *          循环抢同一批句柄（IoWatcher 是无锁结构，空闲清扫还会随时收口连接）。要碰这些
+             *          对象就走这条路；只读原子量或加锁快照的观测接口（见 server()）才可以跨线程直接读。
+             */
+            void runOnLoopAndWait(const std::function<void()> &action)
+            {
+                std::atomic<bool> isFinished{false};
+                m_loop.scheduler().postRemote(
+                        [&action, &isFinished]
+                        {
+                            action();
+                            isFinished.store(true, std::memory_order_release);
+                        });
+                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout))
+                        << "投递到循环线程的动作没有在时限内完成";
+            }
+
+        protected:
+            /**
+             * @brief 构造骨架：用工厂造服务器（TLS 服务器的构造参数不止地址），落定通行配置
+             * @tparam ServerFactory 由事件循环造出服务器的可调用对象
+             * @param limits 连接级限额
+             * @param sweepInterval 空闲清扫节拍
+             * @param parserLimits 解析器资源上限
+             * @param serverFactory 服务器工厂，形如 (Core::EventLoop &) -> ServerType
+             */
+            template<typename ServerFactory>
+            RunningServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
+                                 const HttpParserLimits &parserLimits, ServerFactory serverFactory) :
+                m_loop(), m_server(serverFactory(m_loop)), m_serverTask(driveStart(m_server, m_startThrew)), m_loopThread(m_loop)
+            {
+                // 限额、清扫节拍与路由都必须在投递 start() 之前落定：清扫协程按 start() 那一刻的
+                // 节拍投递，之后再改不会有清扫发生；路由同理，运行期改表生效时机不可预期
+                m_server.setLimits(limits);
+                m_server.setParserLimits(parserLimits);
+                m_server.setIdleCheckInterval(sweepInterval);
+                m_server.router().get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    response.setBody("served-hello");
+                    co_return;
+                });
+            }
+
+            /// 投递主协程：子类做完全部启动前配置后调用，且只调用一次
+            void startServer()
+            {
+                m_loopThread.schedule(m_serverTask);
+            }
+
+            /// 把一个任务投到承载线程上执行（任务对象须由调用方持有到完成）
+            void scheduleOnLoopThread(Core::Task<> &task)
+            {
+                m_loopThread.schedule(task);
+            }
+
+            /// 承载服务器的事件循环（注册需要定时器的路由时用）
+            [[nodiscard]] Core::EventLoop &loop() noexcept
+            {
+                return m_loop;
+            }
+
         private:
             /**
              * @brief 把 start() 包一层，记录它是否抛异常
@@ -783,7 +765,7 @@ namespace AsynGyanis::Net
              * @param startThrew 输出：是否抛异常
              * @return Core::Task<> 协程，start() 返回后完成
              */
-            static Core::Task<> driveStart(TestHttpServer &server, std::atomic<bool> &startThrew)
+            static Core::Task<> driveStart(ServerType &server, std::atomic<bool> &startThrew)
             {
                 try
                 {
@@ -796,6 +778,97 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
+            Core::EventLoop   m_loop;              ///< 事件循环本体
+            std::atomic<bool> m_startThrew{false}; ///< start() 的退出方式，必须先于任务构造
+            ServerType        m_server;            ///< 被测服务器
+            Core::Task<>      m_serverTask;        ///< 由 driveStart 产生的主协程任务
+            EventLoopThread   m_loopThread;        ///< 承载 run() 的线程，最后构造、最先析构
+        };
+
+        /**
+         * @brief 跑起一台真实 HttpServer 的夹具（骨架见 RunningServerFixture）
+         */
+        class RunningHttpServerFixture final : public RunningServerFixture<TestHttpServer>
+        {
+        public:
+            /**
+             * @brief 构造并启动服务器
+             * @param limits 连接级限额
+             * @param sweepInterval 空闲清扫节拍
+             * @param slowRoute 可选的慢路由（处理耗时与进入标记）
+             * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
+             * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
+             * @param configureServer 可选的启动前配置动作（例如打开 h2c），同样在投递 start() 之前执行
+             */
+            RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
+                                     const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {},
+                                     const HttpParserLimits &parserLimits = HttpParserLimits{},
+                                     const ServerConfigurator &configureServer = {}) :
+                RunningServerFixture<TestHttpServer>(
+                        limits, sweepInterval, parserLimits,
+                        [](Core::EventLoop &serverLoop)
+                        {
+                            return TestHttpServer(serverLoop, Core::InetAddress::localhost(0));
+                        })
+            {
+                // 慢路由用定时等待模拟「处理中」：定时等待挂在事件循环上，因此 drain 与本请求都能照常推进，
+                // 处理耗时越长，越能分辨「等完在途请求」与「等满死期限」
+                if (slowRoute.processingTime > std::chrono::milliseconds::zero())
+                {
+                    Core::EventLoop &serverLoop = loop();
+                    server().router().get("/slow",
+                                          [&serverLoop, processingTime = slowRoute.processingTime, handlerStarted = slowRoute.handlerStarted](
+                                                  HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        // 先置位再等待：用例据此确认此刻连接已被标记为「有在途工作」
+                        if (handlerStarted != nullptr)
+                        {
+                            handlerStarted->store(true, std::memory_order_release);
+                        }
+                        Core::Timer processingTimer(serverLoop);
+                        co_await processingTimer.waitFor(processingTime);
+                        response.setBody("served-slow");
+                        co_return;
+                    });
+                }
+
+                // 附加路由：与内置路由同批落定，仍然在 start() 之前
+                if (registerRoutes)
+                {
+                    registerRoutes(server().router(), loop());
+                }
+
+                // 启动前配置：与限额、路由同一时机，保证开关在第一个连接被接受之前就位
+                if (configureServer)
+                {
+                    configureServer(server());
+                }
+
+                startServer();
+            }
+
+            /**
+             * @brief 把 drain() 投到循环线程并等它跑完
+             * @details drain 只能在所属循环线程上运行：本方法按调度器投递，并把任务对象留在成员里
+             *          活到跑完（协程帧必须有人持有）。完成标记每次调用先清空，可重复调用。
+             * @param drainTimeout 交给 drain 的最长等待时长
+             * @param waitTimeout 本方法自身的等待上限
+             * @return true drain 在时限内完成
+             */
+            [[nodiscard]] bool drainServer(const std::chrono::milliseconds drainTimeout, const std::chrono::milliseconds waitTimeout)
+            {
+                m_drainFinished.store(false, std::memory_order_release);
+                m_drainTask = driveDrain(server(), m_drainFinished, drainTimeout);
+                scheduleOnLoopThread(m_drainTask);
+                return waitForCondition(
+                        [this]
+                        {
+                            return m_drainFinished.load(std::memory_order_acquire);
+                        },
+                        waitTimeout);
+            }
+
+        private:
             /**
              * @brief 把 drain() 包一层，跑完即置位完成标记
              * @param server 被测服务器
@@ -810,13 +883,8 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            Core::EventLoop    m_loop;       ///< 事件循环本体
-            std::atomic<bool>  m_startThrew{false}; ///< start() 的退出方式，必须先于任务构造
-            TestHttpServer     m_server;     ///< 被测服务器
-            Core::Task<>       m_serverTask; ///< 由 driveStart 产生的主协程任务
-            std::atomic<bool>  m_drainFinished{false}; ///< drain 是否已返回，必须先于 drain 任务构造
-            Core::Task<>       m_drainTask{nullptr};  ///< 由 driveDrain 产生的 drain 协程任务
-            EventLoopThread    m_loopThread; ///< 承载 run() 的线程，最后构造、最先析构
+            std::atomic<bool> m_drainFinished{false}; ///< drain 是否已返回，必须先于 drain 任务构造
+            Core::Task<>      m_drainTask{nullptr};   ///< 由 driveDrain 产生的 drain 协程任务
         };
 
         /**
