@@ -48,11 +48,9 @@
 namespace AsynGyanis::Database
 {
 
-    // 环境变量读取复用测试辅助（原先每个真机套件各写一份）
     using TestSupport::readEnvironmentPortOrDefault;
     using TestSupport::readEnvironmentTextOrDefault;
 
-    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
     using TestSupport::containsLocalizedText;
     namespace
     {

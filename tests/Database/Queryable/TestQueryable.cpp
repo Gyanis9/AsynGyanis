@@ -386,16 +386,7 @@ namespace AsynGyanis::Database::Queryable
     }
 
     /**
-     * @brief 验证复杂的 AND/OR 嵌套组合
-     *
-     * (col1 == 1 && col2 == 2) || col3 == 3
-     *
-     * 树结构预期：
-     *   OR
-     *   ├── AND
-     *   │   ├── Eq(col1, 1)
-     *   │   └── Eq(col2, 2)
-     *   └── Eq(col3, 3)
+     * @brief 验证 AND/OR 嵌套组合的树结构：(col1 == 1 && col2 == 2) || col3 == 3
      */
     TEST(QueryableExpression, AndOrComposition)
     {
@@ -711,9 +702,7 @@ namespace AsynGyanis::Database::Queryable
 
     /**
      * @brief 验证嵌套 AND/OR 的 SQL 生成
-     *
-     * (col1 == 1 && col2 == 2) || col3 == "test"
-     * 期望生成: ((id = ? AND age = ?) OR name = ?)
+     * @details (col1 == 1 && col2 == 2) || col3 == "test" 期望生成 ((id = ? AND age = ?) OR name = ?)
      */
     TEST(QueryableSql, NestedAndOrGeneratesSql)
     {

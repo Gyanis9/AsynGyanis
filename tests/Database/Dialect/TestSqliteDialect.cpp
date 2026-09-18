@@ -523,8 +523,7 @@ TEST(SqliteDialectWhere, AndRecursionAddsParentheses)
 
 /**
  * @brief 验证三层嵌套 AND/OR/NOT 的参数顺序严格按 SQL 出现顺序
- *
- * 期望：(("id" = ? AND "name" IS NOT NULL) OR NOT ("age" < ?))
+ * @details 期望：(("id" = ? AND "name" IS NOT NULL) OR NOT ("age" < ?))
  */
 TEST(SqliteDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 {

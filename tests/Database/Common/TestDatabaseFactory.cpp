@@ -31,7 +31,6 @@
 namespace AsynGyanis::Database
 {
 
-    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
     using TestSupport::containsLocalizedText;
     namespace
     {

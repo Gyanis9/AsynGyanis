@@ -179,8 +179,7 @@ namespace AsynGyanis::Database
         // ========================================================================
 
         /**
-         * @brief 把 maxLifetimeSeconds 设成 0（立即过期），拿到的连接归还后应被丢弃，
-         *        下次获取拿到的是新连接（不同 ID）。
+         * @brief 把 maxLifetimeSeconds 设成 0（立即过期），归还的连接应被丢弃、下次获取拿到新连接
          */
         TEST(ConnectionPool, ExcessLifetimeConnectionIsDiscarded)
         {
