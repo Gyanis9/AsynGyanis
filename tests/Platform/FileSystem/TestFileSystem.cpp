@@ -1,12 +1,4 @@
-/**
- * @file TestFileSystem.cpp
- * @brief FileSystem 单元测试：UTF-8 字符串到路径对象的跨平台构造
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// FileSystem 单元测试：UTF-8 字符串到路径对象的跨平台构造
 #include "Platform/FileSystem/FileSystem.h"
 
 #include "Platform/System/TextEncoding.h"

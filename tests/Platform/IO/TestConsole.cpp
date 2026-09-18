@@ -1,12 +1,4 @@
-/**
- * @file TestConsole.cpp
- * @brief Console 单元测试：UTF-8 输出代码页设置与 ANSI 转义能力判定
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// Console 单元测试：UTF-8 输出代码页设置与 ANSI 转义能力判定
 #include "Platform/IO/Console.h"
 
 #include <gtest/gtest.h>

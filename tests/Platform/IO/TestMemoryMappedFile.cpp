@@ -1,12 +1,4 @@
-/**
- * @file TestMemoryMappedFile.cpp
- * @brief MemoryMappedFile 单元测试：映射内容、空文件、失败路径与移动语义
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// MemoryMappedFile 单元测试：映射内容、空文件、失败路径与移动语义
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <gtest/gtest.h>

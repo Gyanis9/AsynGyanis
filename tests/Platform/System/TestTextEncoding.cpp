@@ -1,12 +1,4 @@
-/**
- * @file TestTextEncoding.cpp
- * @brief TextEncoding 单元测试：UTF-8 与 UTF-16 互转的正确性与异常输入
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// TextEncoding 单元测试：UTF-8 与 UTF-16 互转的正确性与异常输入
 #include "Platform/Platform.h"
 #include "Platform/System/TextEncoding.h"
 

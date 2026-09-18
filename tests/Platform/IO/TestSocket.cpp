@@ -1,12 +1,4 @@
-/**
- * @file TestSocket.cpp
- * @brief Socket 单元测试：Winsock 生命周期与跨平台 accept 语义
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// Socket 单元测试：Winsock 生命周期与跨平台 accept 语义
 #include "Platform/IO/Socket.h"
 
 #include "Platform/IO/FileDescriptor.h"

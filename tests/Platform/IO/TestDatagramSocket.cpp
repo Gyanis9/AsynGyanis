@@ -1,12 +1,4 @@
-/**
- * @file TestDatagramSocket.cpp
- * @brief DatagramSocket 单元测试：绑定、收发（带对端地址）、无数据与非法参数的错误面
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// DatagramSocket 单元测试：绑定、收发（带对端地址）、无数据与非法参数的错误面
 #include "Platform/IO/DatagramSocket.h"
 
 #include "Platform/IO/Socket.h"

@@ -1,12 +1,4 @@
-/**
- * @file TestFileDescriptor.cpp
- * @brief FileDescriptor 单元测试：有效性判定、非阻塞、描述符对与读写关闭
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// FileDescriptor 单元测试：有效性判定、非阻塞、描述符对与读写关闭
 #include "Platform/IO/FileDescriptor.h"
 
 #include <gtest/gtest.h>

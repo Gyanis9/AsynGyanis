@@ -1,12 +1,4 @@
-/**
- * @file TestTimerFileDescriptor.cpp
- * @brief TimerFileDescriptor 单元测试：到期唤醒、取消、排空与非正值语义
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// TimerFileDescriptor 单元测试：到期唤醒、取消、排空与非正值语义
 #include "Platform/IO/TimerFileDescriptor.h"
 
 #include <gtest/gtest.h>

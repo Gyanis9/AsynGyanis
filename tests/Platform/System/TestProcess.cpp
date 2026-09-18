@@ -1,12 +1,4 @@
-/**
- * @file TestProcess.cpp
- * @brief Process 单元测试：起进程、取退出码、观察存活、请求退出与强杀
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// Process 单元测试：起进程、取退出码、观察存活、请求退出与强杀
 #include "Platform/System/Process.h"
 
 #include "Platform/System/PlatformError.h"

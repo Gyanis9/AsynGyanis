@@ -1,12 +1,4 @@
-/**
- * @file TestEventNotifier.cpp
- * @brief EventNotifier 单元测试：跨线程唤醒、排空与无效状态
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// EventNotifier 单元测试：跨线程唤醒、排空与无效状态
 #include "Platform/IO/EventNotifier.h"
 #include "Platform/IO/FileDescriptor.h"
 

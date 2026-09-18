@@ -1,14 +1,5 @@
-/**
- * @file TestSocketZeroCopySend.cpp
- * @brief 零拷贝发送的单元测试：整段字节一致、源文件末尾语义，以及「慢消费者不得阻塞调用方」
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- * @note Windows 下本文件整体展开为空：该平台没有可用的零拷贝发送原语，Platform 层因此不声明
- *       sendFileChunk，原因（实测的阻塞与进度不可反推）见 Socket.h 中该函数的说明
- */
-
+// 零拷贝发送的单元测试：整段字节一致、源文件末尾语义，以及「慢消费者不得阻塞调用方」 Windows 下本文件整体展开为空：该平台没有可用的零拷贝发送原语，Platform 层因此不声明
+// sendFileChunk，原因（实测的阻塞与进度不可反推）见 Socket.h 中该函数的说明
 #include "Platform/Platform.h"
 #include "PlatformTestSupport.h"
 
@@ -427,11 +418,10 @@ namespace AsynGyanis::Platform
 
     /**
      * @brief 对端不读时零拷贝发送必须尽快返回（部分写或 kWouldBlock），不得把调用线程吊住
-     * @details 这条契约是整条零拷贝路径能进事件循环的前提：一旦它按「发完才返回」实现，
-     *          一个慢消费者就能把整个循环停摆（Windows 的 TransmitFile 正是如此，因此本引擎
-     *          没有采用它）。本用例用「不读的对端 + 极小发送缓冲区 + 远超缓冲区的文件」把该
-     *          情形构造出来，并以时间为上界断言它必须返回；返回值的具体形态（部分写还是
-     *          kWouldBlock）两种都接受
+     * @details 这是零拷贝路径能进事件循环的前提：一旦按「发完才返回」实现，一个慢消费者就能把整个
+     *          循环停摆（Windows 的 TransmitFile 正是如此，本引擎因此没有采用它）。用例用「不读的
+     *          对端 + 极小发送缓冲区 + 大文件」构造该情形，以时间为上界断言必须返回；部分写与
+     *          kWouldBlock 两种形态都接受
      */
     TEST(SocketZeroCopySend, DoesNotBlockOnSlowPeer)
     {

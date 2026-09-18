@@ -1,12 +1,4 @@
-/**
- * @file TestPlatformTime.cpp
- * @brief PlatformTime 单元测试：本地时间转换的正确性与边界
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// PlatformTime 单元测试：本地时间转换的正确性与边界
 #include "Platform/System/PlatformTime.h"
 
 #include <gtest/gtest.h>

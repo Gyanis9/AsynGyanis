@@ -1,12 +1,4 @@
-/**
- * @file TestProcessInfo.cpp
- * @brief ProcessInfo 单元测试：可执行文件目录与环境变量读取
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// ProcessInfo 单元测试：可执行文件目录与环境变量读取
 #include "Platform/System/ProcessInfo.h"
 
 #include <gtest/gtest.h>

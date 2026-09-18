@@ -1,12 +1,4 @@
-/**
- * @file TestFileWatcher.cpp
- * @brief FileWatcher 单元测试：工厂创建、生命周期、事件回调与防抖
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// FileWatcher 单元测试：工厂创建、生命周期、事件回调与防抖
 #include "Platform/FileSystem/FileWatcher.h"
 
 #include <gtest/gtest.h>

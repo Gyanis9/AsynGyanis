@@ -1,12 +1,4 @@
-/**
- * @file TestAtomicFileWriter.cpp
- * @brief AtomicFileWriter 单元测试：原子写、父目录创建、失败路径与残留清理
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// AtomicFileWriter 单元测试：原子写、父目录创建、失败路径与残留清理
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include <gtest/gtest.h>

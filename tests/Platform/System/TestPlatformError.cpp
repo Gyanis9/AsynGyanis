@@ -1,12 +1,4 @@
-/**
- * @file TestPlatformError.cpp
- * @brief PlatformError 单元测试：错误码读写、常量语义与错误描述
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// PlatformError 单元测试：错误码读写、常量语义与错误描述
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
