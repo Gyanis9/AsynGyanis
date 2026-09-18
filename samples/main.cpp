@@ -278,7 +278,7 @@ int main(int argc, char **argv)
             configuration = Net::readHttpServerConfiguration(Base::ConfigValue(std::move(document)));
         } catch (const std::exception &configurationException)
         {
-            LOG_ERROR_FMT("配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
+            LOG_EXCEPTION(Base::LogLevel::Error, configurationException, "配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
             return 1;
         }
         LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}",
@@ -316,7 +316,7 @@ int main(int argc, char **argv)
             supervisor.run();
         } catch (const Base::Exception &supervisorException)
         {
-            LOG_ERROR_FMT("多进程模式无法启动，服务未运行。原因：{}", supervisorException.what());
+            LOG_EXCEPTION(Base::LogLevel::Error, supervisorException, "多进程模式无法启动，服务未运行。原因：{}", supervisorException.what());
             return 1;
         }
         return 0;
@@ -568,7 +568,7 @@ int main(int argc, char **argv)
             pool.eventLoop(0).scheduler().schedule(http3ListenTask->handle());
         } catch (const Base::Exception &http3Exception)
         {
-            LOG_ERROR_FMT("HTTP/3 服务端起不来，已退出。原因：{}", http3Exception.what());
+            LOG_EXCEPTION(Base::LogLevel::Error, http3Exception, "HTTP/3 服务端起不来，已退出。原因：{}", http3Exception.what());
             return 1;
         }
         LOG_INFO_FMT("HTTP/3 已在同一个端口号的 UDP 上监听（udp/{}）", port);

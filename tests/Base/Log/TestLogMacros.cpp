@@ -358,13 +358,14 @@ namespace AsynGyanis::Base
         EXPECT_GE(event.stackTrace.size(), 1U);
     }
 
-    TEST_F(LogMacros, ExceptionMacroComposesMessageAndCarriesThrowSiteStack)
+    TEST_F(LogMacros, ExceptionMacroCarriesThrowSiteStack)
     {
-        LOG_EXCEPTION(LogLevel::Error, "处理请求失败", Exception("probe failure"));
+        const Exception probe("probe failure");
+        LOG_EXCEPTION(LogLevel::Error, probe, "处理请求失败：{}", probe.what());
 
         ASSERT_EQ(m_recordingSink->writeCount(), 1U);
         const LogEvent event = m_recordingSink->lastEvent();
-        EXPECT_NE(event.message.find("处理请求失败: "), std::string::npos) << event.message;
+        EXPECT_NE(event.message.find("处理请求失败："), std::string::npos) << event.message;
         EXPECT_NE(event.message.find("probe failure"), std::string::npos) << event.message;
 
         if (event.stackTrace.empty())
@@ -372,6 +373,17 @@ namespace AsynGyanis::Base
             GTEST_SKIP() << "本构建未启用 std::stacktrace（降级为空实现）";
         }
         EXPECT_GE(event.stackTrace.size(), 1U);
+    }
+
+    TEST_F(LogMacros, ExceptionMacroKeepsPlainStandardExceptionsWithoutStack)
+    {
+        const std::runtime_error plain("普通标准异常");
+        LOG_EXCEPTION(LogLevel::Error, plain, "处理失败：{}", plain.what());
+
+        ASSERT_EQ(m_recordingSink->writeCount(), 1U);
+        const LogEvent event = m_recordingSink->lastEvent();
+        EXPECT_NE(event.message.find("普通标准异常"), std::string::npos) << event.message;
+        EXPECT_TRUE(event.stackTrace.empty()) << "非框架异常没有抛出点栈，不应凭空补采一个打印点的栈";
     }
 
     TEST_F(LogMacros, LoggerStackMacroRoutesToGivenLogger)
@@ -393,7 +405,7 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Off);
 
         LOG_STACK(LogLevel::Error, "被过滤");
-        LOG_EXCEPTION(LogLevel::Error, "被过滤", Exception("被过滤"));
+        LOG_EXCEPTION(LogLevel::Error, Exception("被过滤"), "被过滤：{}", "被过滤");
 
         EXPECT_EQ(m_recordingSink->writeCount(), 0U) << "被过滤的带栈日志不应产生事件（也不该为采栈付出代价）";
     }

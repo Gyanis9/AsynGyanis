@@ -1223,7 +1223,7 @@ namespace AsynGyanis::Net
             co_await tunnel.handler(*(tunnel.peer));
         } catch (const std::exception &exception)
         {
-            LOG_ERROR_FMT("Http3Session: 流 {} 的 WebSocket 业务处理器抛出异常，已按连接不可用收口。原因：{}", streamId, exception.what());
+            LOG_EXCEPTION(Base::LogLevel::Error, exception, "Http3Session: 流 {} 的 WebSocket 业务处理器抛出异常，已按连接不可用收口。原因：{}", streamId, exception.what());
         } catch (...)
         {
             LOG_ERROR_FMT("Http3Session: 流 {} 的 WebSocket 业务处理器抛出非标准异常（无 what() 描述）", streamId);

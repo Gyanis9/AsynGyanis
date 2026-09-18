@@ -96,7 +96,7 @@ namespace AsynGyanis::Core
                 m_scheduler.runAll();
             } catch (const std::exception &loopError)
             {
-                LOG_ERROR_FMT("EventLoop: 事件循环里逃出的异常已就地收口（循环停止）：{}", loopError.what());
+                LOG_EXCEPTION(Base::LogLevel::Error, loopError, "EventLoop: 事件循环里逃出的异常已就地收口（循环停止）：{}", loopError.what());
                 m_running.store(false, std::memory_order_release);
                 throw;
             } catch (...)

@@ -9,12 +9,14 @@
 
 #pragma once
 
+#include "Base/Exception/ExceptionStackTrace.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/SourceLocation.h"
 
 #include <atomic>
+#include <exception>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -97,14 +99,35 @@ namespace AsynGyanis::Base
             {
                 return;
             }
-            try
+            writeFormattedEvent(level, location, {}, formatString, std::forward<Args>(arguments)...);
+        }
+
+        /**
+         * @brief 使用 std::format 格式化日志消息并记录，同时附上异常的抛出点调用栈
+         * @details 与 logFormat 同形；异常来自框架异常家族（Base::Exception / LogicException /
+         *          InvalidArgumentException）时带上它在构造时捕获的抛出点栈，其余异常照常记录、
+         *          只是没有栈（打印点的栈没有诊断价值，不凭空补采）。
+         * @tparam Args 格式化参数类型
+         * @param level 本次日志级别
+         * @param exception 触发本次记录的异常
+         * @param location 源码位置信息
+         * @param formatString std::format 格式串（通常用 `{}` 接收 exception.what()）
+         * @param arguments 格式化参数
+         */
+        template<typename... Args>
+        void logExceptionFormat(const LogLevel level, const std::exception &exception, const SourceLocation &location,
+                                std::string_view formatString, Args &&... arguments) const
+        {
+            if (!shouldLog(level))
             {
-                writeEvent(level, std::vformat(formatString, std::make_format_args(arguments...)), location);
-            } catch (const std::format_error &exception)
-            {
-                writeEvent(LogLevel::Error,
-                           std::format("日志格式化错误：{} [format='{}']", exception.what(), formatString), location);
+                return;
             }
+            CapturedStackTrace stackTrace;
+            if (const CapturedStackTrace *captured = tryStackTrace(exception); captured != nullptr)
+            {
+                stackTrace = *captured;
+            }
+            writeFormattedEvent(level, location, std::move(stackTrace), formatString, std::forward<Args>(arguments)...);
         }
 
         /**
@@ -173,6 +196,31 @@ namespace AsynGyanis::Base
          * @param event 已构造好的日志事件对象
          */
         void writeToSinks(const LogEvent &event) const;
+
+        /**
+         * @brief 渲染格式串并分发事件，格式化失败时降级为带格式串原文的 Error 日志
+         * @details logFormat 与 logExceptionFormat 共用；降级路径与正常路径携带同一份调用栈。
+         * @tparam Args 格式化参数类型
+         * @param level 本次日志级别
+         * @param location 源码位置信息
+         * @param stackTrace 调用栈原始帧；空表示本条日志不带栈
+         * @param formatString std::format 格式串
+         * @param arguments 格式化参数
+         */
+        template<typename... Args>
+        void writeFormattedEvent(const LogLevel level, const SourceLocation &location, CapturedStackTrace stackTrace,
+                                 const std::string_view formatString, Args &&... arguments) const
+        {
+            try
+            {
+                writeEvent(level, std::vformat(formatString, std::make_format_args(arguments...)), location, std::move(stackTrace));
+            } catch (const std::format_error &formatError)
+            {
+                writeEvent(LogLevel::Error,
+                           std::format("日志格式化错误：{} [format='{}']", formatError.what(), formatString),
+                           location, std::move(stackTrace));
+            }
+        }
 
         /**
          * @brief 以「已持有消息体与调用栈」的形式构造并分发日志事件

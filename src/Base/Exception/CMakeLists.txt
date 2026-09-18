@@ -5,6 +5,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/ExceptionMessage.h
         ${CMAKE_CURRENT_LIST_DIR}/StackTrace.h
         ${CMAKE_CURRENT_LIST_DIR}/StackTrace.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ExceptionStackTrace.h
         ${CMAKE_CURRENT_LIST_DIR}/LogicException.h
         ${CMAKE_CURRENT_LIST_DIR}/LogicException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/InvalidArgumentException.h

@@ -12,8 +12,6 @@
 #include "Base/Log/SourceLocation.h"
 #include "Base/Log/LoggerRegistry.h"
 
-#include <string>
-
 // ============================================================================
 // 源码位置采集宏
 // ----------------------------------------------------------------------------
@@ -91,22 +89,19 @@
         } \
     } while (0)
 
-/// 记录异常：消息为「上下文: what()」，并附异常构造时捕获的抛出点调用栈
-#define LOG_EXCEPTION_INTERNAL(logger_expression, level, context_text, exception) \
+/// 记录异常：与 LOG_*_FMT 同形，额外把异常的抛出点调用栈带进事件（非框架异常则不带栈）
+#define LOG_EXCEPTION_INTERNAL(logger_expression, level, exception, format_string, ...) \
     do { \
         auto &internalLogger = (logger_expression); \
         if (internalLogger.shouldLog(level)) { \
-            internalLogger.logWithStackTrace(level, \
-                                             std::string(context_text) + ": " + (exception).what(), \
-                                             (exception).stackTrace(), \
-                                             LOG_SOURCE_LOCATION()); \
+            internalLogger.logExceptionFormat(level, (exception), LOG_SOURCE_LOCATION(), format_string, ## __VA_ARGS__); \
         } \
     } while (0)
 
 /// 使用默认根日志器
 #define LOG_STACK(level, message) LOG_STACK_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), level, message)
-#define LOG_EXCEPTION(level, context_text, exception) LOG_EXCEPTION_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), level, context_text, exception)
+#define LOG_EXCEPTION(level, exception, format_string, ...) LOG_EXCEPTION_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), level, exception, format_string, ## __VA_ARGS__)
 
 /// 使用指定日志器
 #define LOG_LOGGER_STACK(logger, level, message) LOG_STACK_INTERNAL(logger, level, message)
-#define LOG_LOGGER_EXCEPTION(logger, level, context_text, exception) LOG_EXCEPTION_INTERNAL(logger, level, context_text, exception)
+#define LOG_LOGGER_EXCEPTION(logger, level, exception, format_string, ...) LOG_EXCEPTION_INTERNAL(logger, level, exception, format_string, ## __VA_ARGS__)

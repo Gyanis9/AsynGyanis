@@ -43,7 +43,7 @@ namespace AsynGyanis::Core
                     m_eventLoops[i]->run();
                 } catch (const std::exception &loopError)
                 {
-                    LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因异常退出：{}", i, loopError.what());
+                    LOG_EXCEPTION(Base::LogLevel::Error, loopError, "ThreadPool: 工作线程 {} 的事件循环因异常退出：{}", i, loopError.what());
                 } catch (...)
                 {
                     LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因未知异常退出", i);

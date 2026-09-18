@@ -182,7 +182,7 @@ namespace AsynGyanis::Net
         } catch (const std::exception &handshakeException)
         {
             // 握手失败没有可信的明文可回：记日志后直接结束会话，收口交给上面的 RAII 守卫
-            LOG_ERROR_FMT("Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", transportFileDescriptor(),
+            LOG_EXCEPTION(Base::LogLevel::Error, handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", transportFileDescriptor(),
                           handshakeException.what());
             co_return;
         }
@@ -1092,7 +1092,7 @@ namespace AsynGyanis::Net
             } catch (const std::exception &exception)
             {
                 // 升级应答已经上线，此刻没有别的东西可回给对端：原因只能进日志
-                LOG_ERROR_FMT("Http2Session: WebSocket 隧道里的业务处理器抛出异常，已按连接不可用收口。原因：{}", exception.what());
+                LOG_EXCEPTION(Base::LogLevel::Error, exception, "Http2Session: WebSocket 隧道里的业务处理器抛出异常，已按连接不可用收口。原因：{}", exception.what());
             } catch (...)
             {
                 LOG_ERROR_FMT("Http2Session: WebSocket 隧道里的业务处理器抛出非标准异常（无 what() 描述）");

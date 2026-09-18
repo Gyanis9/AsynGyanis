@@ -1192,7 +1192,7 @@ namespace AsynGyanis::Base
             }
         } catch (const std::exception &reloadError)
         {
-            LOG_ERROR_FMT("ConfigManager: 热重载任务抛出异常，本轮按失败处理：{}", reloadError.what());
+            LOG_EXCEPTION(LogLevel::Error, reloadError, "ConfigManager: 热重载任务抛出异常，本轮按失败处理：{}", reloadError.what());
             // 再通知回调一次「本轮失败」：不通知的话调用方会以为配置已经刷新。
             // 这一次通知同样可能抛（抛的那个回调就是它），因此单独兜一层——再逃出去还是 terminate
             try
@@ -1206,7 +1206,7 @@ namespace AsynGyanis::Base
                 }
             } catch (const std::exception &notificationError)
             {
-                LOG_ERROR_FMT("ConfigManager: 通知「本轮重载失败」时回调又抛出异常，已忽略：{}", notificationError.what());
+                LOG_EXCEPTION(LogLevel::Error, notificationError, "ConfigManager: 通知「本轮重载失败」时回调又抛出异常，已忽略：{}", notificationError.what());
             }
         } catch (...)
         {
