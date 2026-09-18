@@ -16,6 +16,8 @@
 // hiredis 是 C 库，只在本实现文件里包含；对外只暴露 RedisConnection.h 里的前置声明
 #include <hiredis/hiredis.h>
 
+#include "Database/Redis/RedisReplyText.h"
+
 #include <charconv>
 #include <limits>
 #include <optional>
@@ -43,21 +45,6 @@ namespace AsynGyanis::Database
 
         // 参数分隔空白，与 redis-cli 的切词行为一致；手写集合而不是 std::isspace，免得引入 locale 依赖
         constexpr std::string_view kWhitespaceCharacters = " \t\n\v\f\r";
-
-        /**
-         * @brief 按长度摘取回复节点携带的原始文本
-         * @param sourceReply 回复节点，不允许为 nullptr
-         * @return std::string 文本副本
-         */
-        std::string copyReplyText(const redisReply *sourceReply)
-        {
-            // hiredis 用 str + len 表达文本，不保证零终止，必须按长度拷贝
-            if (sourceReply->str == nullptr)
-            {
-                return {};
-            }
-            return {sourceReply->str, sourceReply->len};
-        }
 
         /**
          * @brief 把毫秒换算成 hiredis 需要的「秒 + 微秒」结构

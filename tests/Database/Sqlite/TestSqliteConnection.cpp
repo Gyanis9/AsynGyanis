@@ -29,6 +29,9 @@ namespace AsynGyanis::Database
 {
 
     using TestSupport::containsLocalizedText;
+    using TestSupport::asInteger;
+    using TestSupport::asText;
+    using TestSupport::executeRequired;
     namespace
     {
         /// 基类 DatabaseConnection 声明的单条命令执行超时默认毫秒数
@@ -79,42 +82,6 @@ namespace AsynGyanis::Database
                 lowered.push_back(isUpperAscii ? static_cast<char>(character - 'A' + 'a') : character);
             }
             return lowered;
-        }
-
-        /**
-         * @brief 执行一条按契约应当成功的命令
-         * @details 失败时把 SQL 文本与 lastError() 一起报出来；返回的指针可能为空，取用时需自行 ASSERT_NE。
-         * @param connection 已连接的数据库连接
-         * @param command SQL 文本
-         * @return std::unique_ptr<DatabaseResult> 结果集，失败时为空
-         */
-        std::unique_ptr<DatabaseResult> executeRequired(DatabaseConnection &connection, const std::string_view command)
-        {
-            std::unique_ptr<DatabaseResult> result = connection.execute(command);
-            EXPECT_NE(result, nullptr) << "命令本应执行成功：" << command << "，原因：" << connection.lastError();
-            return result;
-        }
-
-        /**
-         * @brief 安全取出整型列值
-         * @param value 待判定的数据库值
-         * @return std::optional<std::int64_t> 值的类型不是整数时返回空值而不是抛异常
-         */
-        std::optional<std::int64_t> asInteger(const DatabaseValue &value)
-        {
-            const auto *integer = std::get_if<std::int64_t>(&value);
-            return integer == nullptr ? std::nullopt : std::optional<std::int64_t>(*integer);
-        }
-
-        /**
-         * @brief 安全取出文本列值
-         * @param value 待判定的数据库值
-         * @return std::optional<std::string> 值的类型不是字符串时返回空值
-         */
-        std::optional<std::string> asText(const DatabaseValue &value)
-        {
-            const auto *text = std::get_if<std::string>(&value);
-            return text == nullptr ? std::nullopt : std::optional<std::string>(*text);
         }
 
         /**

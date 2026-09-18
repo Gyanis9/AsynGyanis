@@ -22,6 +22,8 @@
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Queryable/QueryNode.h"
 
+#include "DatabaseTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -49,101 +51,12 @@ namespace
     using AsynGyanis::Database::Queryable::SqlOperator;
     using AsynGyanis::Database::Queryable::WhereCondition;
 
-    /**
-     * @brief 统计 SQL 文本里的占位符个数
-     * @param sql 待统计的 SQL 文本
-     * @return std::size_t '?' 出现的次数
-     */
-    std::size_t countPlaceholders(const std::string &sql)
-    {
-        std::size_t count = 0;
-        for (const char character: sql)
-        {
-            if (character == '?')
-            {
-                ++count;
-            }
-        }
-        return count;
-    }
-
-    /**
-     * @brief 构造字段引用
-     * @param name 列名或表达式文本
-     * @return FieldReference 字段引用
-     */
-    FieldReference makeField(const std::string &name)
-    {
-        return FieldReference{.name = name};
-    }
-
-    /**
-     * @brief 构造 列 与 参数值 的比较条件
-     * @param columnName 列名
-     * @param sqlOperator 比较操作符
-     * @param value 右操作数参数值
-     * @return WhereCondition 条件节点
-     */
-    WhereCondition makeComparison(const std::string &columnName, const SqlOperator sqlOperator, const ParameterValue &value)
-    {
-        return WhereCondition{
-            .left  = makeField(columnName),
-            .op    = sqlOperator,
-            .right = value
-        };
-    }
-
-    /**
-     * @brief 构造 列 与 列 的比较条件（右操作数是字段引用）
-     * @param columnName 左列名
-     * @param sqlOperator 比较操作符
-     * @param rightColumnName 右列名
-     * @return WhereCondition 条件节点
-     */
-    WhereCondition makeColumnComparison(const std::string &columnName,
-                                        const SqlOperator sqlOperator,
-                                        const std::string &rightColumnName)
-    {
-        return WhereCondition{
-            .left  = makeField(columnName),
-            .op    = sqlOperator,
-            .right = makeField(rightColumnName)
-        };
-    }
-
-    /**
-     * @brief 构造由 children 组成的复合条件
-     * @param sqlOperator And / Or / Not
-     * @param children 子条件列表
-     * @return WhereCondition 复合条件节点
-     */
-    WhereCondition makeComposite(const SqlOperator sqlOperator, std::vector<WhereCondition> children)
-    {
-        WhereCondition condition;
-        condition.op       = sqlOperator;
-        condition.right    = ParameterValue{nullptr};
-        condition.children = std::move(children);
-        return condition;
-    }
-
-    /**
-     * @brief 构造 IN / NOT IN 条件
-     * @param columnName 列名
-     * @param sqlOperator In 或 NotIn
-     * @param values 值集合
-     * @return WhereCondition 条件节点
-     */
-    WhereCondition makeInCondition(const std::string &columnName,
-                                   const SqlOperator sqlOperator,
-                                   std::vector<ParameterValue> values)
-    {
-        WhereCondition condition;
-        condition.left     = makeField(columnName);
-        condition.op       = sqlOperator;
-        condition.right    = ParameterValue{static_cast<std::int64_t>(0)};
-        condition.inValues = std::move(values);
-        return condition;
-    }
+    using AsynGyanis::Database::TestSupport::countPlaceholders;
+    using AsynGyanis::Database::TestSupport::makeColumnComparison;
+    using AsynGyanis::Database::TestSupport::makeComparison;
+    using AsynGyanis::Database::TestSupport::makeComposite;
+    using AsynGyanis::Database::TestSupport::makeField;
+    using AsynGyanis::Database::TestSupport::makeInCondition;
 
 } // namespace
 

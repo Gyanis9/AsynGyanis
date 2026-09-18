@@ -12,6 +12,8 @@
 #include "Database/Sqlite/SqliteConnection.h"
 #include "Database/Sqlite/SqliteResult.h"
 
+#include "DatabaseTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -27,6 +29,10 @@
 
 namespace AsynGyanis::Database
 {
+    using TestSupport::asInteger;
+    using TestSupport::asText;
+    using TestSupport::executeRequired;
+
     namespace
     {
         /// 建表样板：覆盖整数、文本、浮点、整型布尔位与二进制五种列，另留两列给 NULL 与空值场景
@@ -72,20 +78,6 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 执行一条按契约应当成功的命令
-         * @details 只用 EXPECT 记录失败，返回的指针仍可能为空，调用方需自行 ASSERT_NE 决定是否中止。
-         * @param connection 已连接的数据库连接
-         * @param command SQL 文本
-         * @return std::unique_ptr<DatabaseResult> 结果集，失败时为空
-         */
-        std::unique_ptr<DatabaseResult> executeRequired(DatabaseConnection &connection, const std::string_view command)
-        {
-            std::unique_ptr<DatabaseResult> result = connection.execute(command);
-            EXPECT_NE(result, nullptr) << "命令本应执行成功：" << command << "，原因：" << connection.lastError();
-            return result;
-        }
-
-        /**
          * @brief 把 execute() 交出的基类结果集还原成 SQLite 派生类型
          * @details lastInsertRowId() / nativeHandle() 是 SQLite 专有接口，
          *          只能向下转换后读取；转换失败即「驱动交出错类型」，用例据此失败。
@@ -108,17 +100,6 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 安全取出整型列值
-         * @param value 待判定的数据库值
-         * @return std::optional<std::int64_t> 类型不符时返回空值而不是抛异常
-         */
-        std::optional<std::int64_t> asInteger(const DatabaseValue &value)
-        {
-            const auto *integer = std::get_if<std::int64_t>(&value);
-            return integer == nullptr ? std::nullopt : std::optional<std::int64_t>(*integer);
-        }
-
-        /**
          * @brief 安全取出浮点列值
          * @param value 待判定的数据库值
          * @return std::optional<double> 类型不符时返回空值
@@ -127,17 +108,6 @@ namespace AsynGyanis::Database
         {
             const auto *realValue = std::get_if<double>(&value);
             return realValue == nullptr ? std::nullopt : std::optional<double>(*realValue);
-        }
-
-        /**
-         * @brief 安全取出文本列值
-         * @param value 待判定的数据库值
-         * @return std::optional<std::string> 类型不符时返回空值
-         */
-        std::optional<std::string> asText(const DatabaseValue &value)
-        {
-            const auto *text = std::get_if<std::string>(&value);
-            return text == nullptr ? std::nullopt : std::optional<std::string>(*text);
         }
 
         /**

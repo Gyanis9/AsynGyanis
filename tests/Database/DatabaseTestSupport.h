@@ -3,8 +3,8 @@
  * @brief Database 单元测试辅助：临时数据库文件夹具、唯一路径生成与协程测试驱动
  * @details 协程部分（waitForCondition / CompletedTask / collectTask / EventLoopThread）是
  *          Database 异步 API 的公共测试设施，SQLite 与真实服务端的用例共用同一套纪律，
- *          本文件是它唯一的落点；因此本头只依赖 Core/EventLoop/EventLoop.h、
- *          Core/Coroutine/Task.h 与标准库，不引入任何 Database 驱动头。
+ *          本文件是它唯一的落点；因此本头只依赖 Common/Queryable 下的接口头（没有任何
+ *          驱动头）、Core/Platform 与标准库，驱动被编成桩时照样可用。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -15,8 +15,14 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Database/Common/DatabaseConnection.h"
+#include "Database/Common/DatabaseResult.h"
+#include "Database/Common/DatabaseValue.h"
+#include "Database/Queryable/QueryNode.h"
 #include "Platform/Platform.h"
 #include "Platform/System/ProcessInfo.h"
+
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -431,5 +437,144 @@ namespace AsynGyanis::Database::TestSupport
         }
 
         return static_cast<std::uint16_t>(parsedPort);
+    }
+
+    // ========================================================================
+    // 查询构建与结果读取助手（方言测试与 SQLite 测试共用）
+    // ========================================================================
+
+    /**
+     * @brief 统计 SQL 文本里的占位符个数
+     * @param sql 待统计的 SQL 文本
+     * @return std::size_t '?' 出现的次数
+     */
+    [[nodiscard]] inline std::size_t countPlaceholders(const std::string &sql)
+    {
+        std::size_t count = 0;
+        for (const char character: sql)
+        {
+            if (character == '?')
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * @brief 构造字段引用
+     * @param name 列名或表达式文本
+     * @return Queryable::FieldReference 字段引用
+     */
+    [[nodiscard]] inline Queryable::FieldReference makeField(const std::string &name)
+    {
+        return Queryable::FieldReference{.name = name};
+    }
+
+    /**
+     * @brief 构造 列 与 参数值 的比较条件
+     * @param columnName 列名
+     * @param sqlOperator 比较操作符
+     * @param value 右操作数参数值
+     * @return Queryable::WhereCondition 条件节点
+     */
+    [[nodiscard]] inline Queryable::WhereCondition makeComparison(const std::string &columnName,
+                                                                  const Queryable::SqlOperator sqlOperator,
+                                                                  const Queryable::ParameterValue &value)
+    {
+        return Queryable::WhereCondition{
+            .left  = makeField(columnName),
+            .op    = sqlOperator,
+            .right = value
+        };
+    }
+
+    /**
+     * @brief 构造 列 与 列 的比较条件（右操作数是字段引用）
+     * @param columnName 左列名
+     * @param sqlOperator 比较操作符
+     * @param rightColumnName 右列名
+     * @return Queryable::WhereCondition 条件节点
+     */
+    [[nodiscard]] inline Queryable::WhereCondition makeColumnComparison(const std::string &columnName,
+                                                                       const Queryable::SqlOperator sqlOperator,
+                                                                       const std::string &rightColumnName)
+    {
+        return Queryable::WhereCondition{
+            .left  = makeField(columnName),
+            .op    = sqlOperator,
+            .right = makeField(rightColumnName)
+        };
+    }
+
+    /**
+     * @brief 构造由 children 组成的复合条件
+     * @param sqlOperator And / Or / Not
+     * @param children 子条件列表
+     * @return Queryable::WhereCondition 复合条件节点
+     */
+    [[nodiscard]] inline Queryable::WhereCondition makeComposite(const Queryable::SqlOperator sqlOperator,
+                                                                std::vector<Queryable::WhereCondition> children)
+    {
+        Queryable::WhereCondition condition;
+        condition.op       = sqlOperator;
+        condition.right    = Queryable::ParameterValue{nullptr};
+        condition.children = std::move(children);
+        return condition;
+    }
+
+    /**
+     * @brief 构造 IN / NOT IN 条件
+     * @param columnName 列名
+     * @param sqlOperator In 或 NotIn
+     * @param values 值集合
+     * @return Queryable::WhereCondition 条件节点
+     */
+    [[nodiscard]] inline Queryable::WhereCondition makeInCondition(const std::string &columnName,
+                                                                  const Queryable::SqlOperator sqlOperator,
+                                                                  std::vector<Queryable::ParameterValue> values)
+    {
+        Queryable::WhereCondition condition;
+        condition.left     = makeField(columnName);
+        condition.op       = sqlOperator;
+        condition.right    = Queryable::ParameterValue{static_cast<std::int64_t>(0)};
+        condition.inValues = std::move(values);
+        return condition;
+    }
+
+    /**
+     * @brief 执行一条按契约应当成功的命令
+     * @details 用 EXPECT 记录失败，返回的指针仍可能为空，调用方自行 ASSERT_NE 决定是否中止。
+     * @param connection 已连接的数据库连接
+     * @param command SQL 文本
+     * @return std::unique_ptr<DatabaseResult> 结果集；失败时为空
+     */
+    [[nodiscard]] inline std::unique_ptr<DatabaseResult> executeRequired(DatabaseConnection &connection, const std::string_view command)
+    {
+        std::unique_ptr<DatabaseResult> result = connection.execute(command);
+        EXPECT_NE(result, nullptr) << "命令本应执行成功：" << command << "，原因：" << connection.lastError();
+        return result;
+    }
+
+    /**
+     * @brief 安全取出整型列值
+     * @param value 待判定的数据库值
+     * @return std::optional<std::int64_t> 类型不符时返回空值而不是抛异常
+     */
+    [[nodiscard]] inline std::optional<std::int64_t> asInteger(const DatabaseValue &value)
+    {
+        const auto *integer = std::get_if<std::int64_t>(&value);
+        return integer == nullptr ? std::nullopt : std::optional<std::int64_t>(*integer);
+    }
+
+    /**
+     * @brief 安全取出文本列值
+     * @param value 待判定的数据库值
+     * @return std::optional<std::string> 类型不符时返回空值
+     */
+    [[nodiscard]] inline std::optional<std::string> asText(const DatabaseValue &value)
+    {
+        const auto *text = std::get_if<std::string>(&value);
+        return text == nullptr ? std::nullopt : std::optional<std::string>(*text);
     }
 } // namespace AsynGyanis::Database::TestSupport

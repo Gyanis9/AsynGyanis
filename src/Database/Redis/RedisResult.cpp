@@ -3,6 +3,8 @@
 #ifdef DATABASE_HAS_REDIS
 // hiredis 头只在实现文件里包含，前置声明见 RedisConnection.h 的全局作用域
 #include <hiredis/hiredis.h>
+
+#include "Database/Redis/RedisReplyText.h"
 #endif
 
 #include <optional>
@@ -23,21 +25,6 @@ namespace AsynGyanis::Database
 
     namespace
     {
-        /**
-         * @brief 按长度摘取回复节点携带的原始文本
-         * @param sourceReply 回复节点，可为 nullptr
-         * @return std::string 文本副本；节点为空或没有文本域时返回空串
-         */
-        std::string copyReplyText(const redisReply *sourceReply)
-        {
-            // hiredis 用 str + len 表达文本，不保证零终止且可以内嵌 '\0'，必须按长度拷贝
-            if (sourceReply == nullptr || sourceReply->str == nullptr)
-            {
-                return {};
-            }
-            return {sourceReply->str, sourceReply->len};
-        }
-
         /**
          * @brief 把无法用 std::string 直接表达的回复节点压成一段可读文本
          * @param sourceReply 回复节点，可为 nullptr
