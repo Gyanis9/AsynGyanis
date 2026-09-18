@@ -716,6 +716,18 @@ namespace AsynGyanis::Net
 
         protected:
             /**
+             * @brief 停止承载线程并 join
+             *
+             * @details 派生夹具若有**协程帧成员**（如 drain 任务），必须在自己的析构体里先调用本方法：
+             *          派生成员的析构早于基类析构体，不先 join 的话循环线程可能正在恢复那些帧
+             *          （TSan 在 Http2CleartextSession 的优雅关停用例上报的正是这一处）。
+             */
+            void joinLoopThread()
+            {
+                m_loopThread.join();
+            }
+
+            /**
              * @brief 构造骨架：用工厂造服务器（TLS 服务器的构造参数不止地址），落定通行配置
              * @tparam ServerFactory 由事件循环造出服务器的可调用对象
              * @param limits 连接级限额
@@ -845,6 +857,13 @@ namespace AsynGyanis::Net
                 }
 
                 startServer();
+            }
+
+            ~RunningHttpServerFixture()
+            {
+                // drain 任务（协程帧成员）的析构早于基类析构体：先让循环线程停手并 join，
+                // 否则它可能正在恢复那些帧（TSan 报过这一处数据竞争）
+                joinLoopThread();
             }
 
             /**
