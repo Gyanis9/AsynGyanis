@@ -1,5 +1,7 @@
 #include "Net/Http/HttpParser.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstring>
@@ -77,74 +79,6 @@ namespace AsynGyanis::Net
         bool isDigit(const char character) noexcept
         {
             return character >= '0' && character <= '9';
-        }
-
-        /**
-         * @brief 去掉首尾的可选空白（SP 与 HTAB）
-         * @param text 待裁剪文本
-         * @return std::string_view 裁剪后的视图
-         */
-        std::string_view trimOptionalWhitespace(const std::string_view text) noexcept
-        {
-            constexpr std::string_view kOptionalWhitespace = " \t";
-            const std::size_t          first = text.find_first_not_of(kOptionalWhitespace);
-            if (first == std::string_view::npos)
-            {
-                return {};
-            }
-            const std::size_t last = text.find_last_not_of(kOptionalWhitespace);
-            return text.substr(first, last - first + 1);
-        }
-
-        /**
-         * @brief ASCII 大小写不敏感比较
-         * @param left 左操作数
-         * @param right 右操作数
-         * @return true 表示忽略大小写后相等
-         */
-        bool equalsIgnoringCase(const std::string_view left, const std::string_view right) noexcept
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                const auto leftCharacter  = static_cast<unsigned char>(left[index]);
-                const auto rightCharacter = static_cast<unsigned char>(right[index]);
-                // 只按 ASCII 折叠：locale 相关的 tolower 会让非 ASCII 字节产生平台差异
-                const auto normalize = [](const unsigned char value) -> unsigned char
-                {
-                    return value >= 'A' && value <= 'Z' ? static_cast<unsigned char>(value - 'A' + 'a') : value;
-                };
-                if (normalize(leftCharacter) != normalize(rightCharacter))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        /**
-         * @brief 把十六进制位转成数值
-         * @param character 待转换字节
-         * @return int 0-15；不是十六进制位时为 -1
-         */
-        int hexadecimalDigitValue(const char character) noexcept
-        {
-            if (character >= '0' && character <= '9')
-            {
-                return character - '0';
-            }
-            if (character >= 'a' && character <= 'f')
-            {
-                return character - 'a' + 10;
-            }
-            if (character >= 'A' && character <= 'F')
-            {
-                return character - 'A' + 10;
-            }
-            return -1;
         }
 
         /**

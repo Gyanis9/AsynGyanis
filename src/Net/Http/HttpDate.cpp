@@ -1,5 +1,6 @@
 #include "Net/Http/HttpDate.h"
 
+#include "Net/Http/HttpHeaderRules.h"
 #include "Platform/System/PlatformTime.h"
 
 #include <algorithm>
@@ -23,24 +24,6 @@ namespace AsynGyanis::Net
 
         /// 一天的秒数，用于把「距纪元的天数」折成秒
         constexpr std::int64_t kSecondsPerDay = 86400;
-
-        /**
-         * @brief 去掉首尾 OWS（空格与水平制表符）
-         * @param text 原始文本
-         * @return 去掉首尾空白后的视图
-         */
-        std::string_view trimOptionalWhitespace(std::string_view text)
-        {
-            while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-            {
-                text.remove_prefix(1);
-            }
-            while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-            {
-                text.remove_suffix(1);
-            }
-            return text;
-        }
 
         /**
          * @brief 判断给定年份是否闰年

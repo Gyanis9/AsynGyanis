@@ -1,7 +1,8 @@
 #include "Net/Http/Client/HttpResponseParser.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <algorithm>
-#include <cctype>
 #include <cstdlib>
 
 namespace AsynGyanis::Net
@@ -58,32 +59,12 @@ namespace AsynGyanis::Net
             return true;
         }
         /// 小写化一个 string_view（只用于头部名比较）
-        std::string toLower(std::string_view s)
+        std::string toLower(const std::string_view s)
         {
             std::string r;
             r.reserve(s.size());
-            for (auto c: s) r.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            for (const char c: s) r.push_back(toLowerAscii(c));
             return r;
-        }
-        /// 忽略大小写比较两个 ASCII 串
-        bool equalsIgnoringCase(const std::string_view left, const std::string_view right) noexcept
-        {
-            if (left.size() != right.size()) return false;
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                if (std::tolower(static_cast<unsigned char>(left[index])) != std::tolower(static_cast<unsigned char>(right[index])))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-        /// 去掉字段值两端的空白（RFC 9112 §5：字段值允许带 OWS）
-        std::string_view trimFieldValue(std::string_view value) noexcept
-        {
-            while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1);
-            while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
-            return value;
         }
         /// 取 Transfer-Encoding 的最后一个编码（RFC 9112 §6.1：chunked 必须是最后一个编码）
         std::string_view lastTransferEncoding(const std::string_view value) noexcept
@@ -95,7 +76,7 @@ namespace AsynGyanis::Net
                 const auto             comma = value.find(',', start);
                 const std::string_view entry =
                         value.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
-                const std::string_view token = trimFieldValue(entry);
+                const std::string_view token = trimOptionalWhitespace(entry);
                 if (!token.empty())
                 {
                     last = token;
@@ -203,7 +184,7 @@ namespace AsynGyanis::Net
                         {
                             // 重复出现只允许取值完全一致；取值必须是纯数字——长度有歧义就不猜
                             std::size_t thisLength = 0;
-                            if (!parseDecimalLength(trimFieldValue(value), thisLength) ||
+                            if (!parseDecimalLength(trimOptionalWhitespace(value), thisLength) ||
                                 (hasContentLength && thisLength != declaredLength))
                             {
                                 m_stage = Stage::Failed;
@@ -218,7 +199,7 @@ namespace AsynGyanis::Net
                             {
                                 combinedTransferEncoding += ", ";
                             }
-                            combinedTransferEncoding += trimFieldValue(value);
+                            combinedTransferEncoding += trimOptionalWhitespace(value);
                         }
                     }
 

@@ -1,5 +1,6 @@
 #include "Net/Http/HttpSession.h"
 
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Middleware.h"
 
 #include <cstddef>
@@ -10,52 +11,6 @@
 
 namespace AsynGyanis::Net
 {
-    namespace
-    {
-        /**
-         * @brief 按 ASCII 表把字符转小写，非字母原样返回
-         * @param character 待转换字符
-         * @return char 转换结果
-         * @note 不用 std::tolower：那个受 locale 影响（土耳其语环境下 'I' 会变成 0x69 之外的东西），
-         *       而 HTTP 头部名按 ASCII 定义，必须与区域设置无关
-         */
-        constexpr char asciiToLower(const char character)
-        {
-            return (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
-        }
-
-        /**
-         * @brief 判断字符是否为头部值的空白（SP/HT）
-         * @param character 待判定字符
-         * @return true 是可在两端裁剪的空白
-         */
-        constexpr bool isHeaderWhitespace(const char character)
-        {
-            return character == ' ' || character == '\t';
-        }
-
-        /**
-         * @brief 裁掉字符串两端的空白
-         * @param text 原始视图
-         * @return std::string_view 裁剪后的视图，不复制字节
-         */
-        std::string_view trimHeaderWhitespace(std::string_view text)
-        {
-            std::size_t beginPosition = 0;
-            while (beginPosition < text.size() && isHeaderWhitespace(text[beginPosition]))
-            {
-                ++beginPosition;
-            }
-            std::size_t endPosition = text.size();
-            while (endPosition > beginPosition && isHeaderWhitespace(text[endPosition - 1]))
-            {
-                --endPosition;
-            }
-            return text.substr(beginPosition, endPosition - beginPosition);
-        }
-
-    } // namespace
-
     HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
                              std::shared_ptr<HttpMetricsCollector> metrics,
                              std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
@@ -175,9 +130,9 @@ namespace AsynGyanis::Net
                 while (!remainder.empty())
                 {
                     const std::size_t commaPosition = remainder.find(',');
-                    const std::string_view currentToken = trimHeaderWhitespace(remainder.substr(0, commaPosition));
+                    const std::string_view currentToken = trimOptionalWhitespace(remainder.substr(0, commaPosition));
 
-                    if (equalsIgnoringCaseAscii(currentToken, expectedToken))
+                    if (equalsIgnoringCase(currentToken, expectedToken))
                     {
                         return true;
                     }

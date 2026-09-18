@@ -1,10 +1,10 @@
 #include "Net/Http/HttpResponse.h"
 
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -157,13 +157,11 @@ namespace AsynGyanis::Net
 
     void HttpResponse::lowercaseInPlace(std::string &name)
     {
-        // 逐字符查 ASCII 表：std::tolower 只接受 unsigned char 或 EOF，
-        // 把可能为负的 char 直接喂进去是未定义行为
-        std::ranges::transform(name, name.begin(),
-                               [](const unsigned char character)
-                               {
-                                   return static_cast<char>(std::tolower(character));
-                               });
+        // 逐字符按 ASCII 表折叠：不用 std::tolower，那个受 locale 影响（土耳其语环境下 'I' 会折成非 ASCII 字节）
+        for (char &character: name)
+        {
+            character = toLowerAscii(character);
+        }
     }
 
     std::string HttpResponse::toCanonicalHeaderName(const std::string_view name)

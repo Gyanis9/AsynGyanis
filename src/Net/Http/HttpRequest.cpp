@@ -1,8 +1,9 @@
 #include "Net/Http/HttpRequest.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <string_view>
 #include <utility>
 
@@ -17,32 +18,13 @@ namespace AsynGyanis::Net
         {
             const std::size_t commaIndex = expectHeaderValue.find(',', tokenStart);
             const std::size_t tokenEnd = commaIndex == std::string_view::npos ? expectHeaderValue.size() : commaIndex;
-            std::string_view token = expectHeaderValue.substr(tokenStart, tokenEnd - tokenStart);
-            // 逐个 token 去掉首尾空白（OWS 只可能是 SP / HTAB）
-            while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
+
+            // 逐个 token 去掉首尾空白（OWS 只可能是 SP / HTAB）后做大小写不敏感的全等比较
+            if (equalsIgnoringCase(trimOptionalWhitespace(expectHeaderValue.substr(tokenStart, tokenEnd - tokenStart)), kContinueToken))
             {
-                token.remove_prefix(1);
+                return true;
             }
-            while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
-            {
-                token.remove_suffix(1);
-            }
-            if (token.size() == kContinueToken.size())
-            {
-                bool isMatched = true;
-                for (std::size_t index = 0; index < token.size(); ++index)
-                {
-                    if (std::tolower(static_cast<unsigned char>(token[index])) != kContinueToken[index])
-                    {
-                        isMatched = false;
-                        break;
-                    }
-                }
-                if (isMatched)
-                {
-                    return true;
-                }
-            }
+
             if (commaIndex == std::string_view::npos)
             {
                 break;
@@ -65,28 +47,6 @@ namespace AsynGyanis::Net
 
         // 一个完整的百分号转义序列形如 "%XY"，占 3 个字符
         constexpr std::size_t kPercentEscapeSequenceLength = 3;
-
-        /**
-         * @brief 取十六进制字符对应的数值
-         * @param character 待判定的字符
-         * @return 0~15 的数值；不是十六进制字符时返回 -1 作为「非十六进制」标记
-         */
-        int hexadecimalDigitValue(const char character) noexcept
-        {
-            if (character >= '0' && character <= '9')
-            {
-                return character - '0';
-            }
-            if (character >= 'A' && character <= 'F')
-            {
-                return character - 'A' + 10;
-            }
-            if (character >= 'a' && character <= 'f')
-            {
-                return character - 'a' + 10;
-            }
-            return -1;
-        }
     } // namespace
 
     HttpMethod HttpRequest::methodFromString(const std::string_view method)
@@ -143,13 +103,11 @@ namespace AsynGyanis::Net
 
     void HttpRequest::lowercaseInPlace(std::string &name)
     {
-        // 逐字符查 ASCII 表，不用 std::tolower(char)：char 可能是负值，
-        // 直接传进 <cctype> 是未定义行为，必须先转 unsigned char 再转回 char
-        std::ranges::transform(name, name.begin(),
-                               [](const unsigned char character)
-                               {
-                                   return static_cast<char>(std::tolower(character));
-                               });
+        // 逐字符按 ASCII 表折叠：不用 std::tolower，那个受 locale 影响（土耳其语环境下 'I' 会折成非 ASCII 字节）
+        for (char &character: name)
+        {
+            character = toLowerAscii(character);
+        }
     }
 
     std::string HttpRequest::toCanonicalHeaderName(const std::string_view name)

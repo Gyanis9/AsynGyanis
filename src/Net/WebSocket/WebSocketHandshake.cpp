@@ -1,5 +1,7 @@
 #include "Net/WebSocket/WebSocketHandshake.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include "Base/Exception/Exception.h"
 
 #include <openssl/evp.h>
@@ -35,64 +37,6 @@ namespace AsynGyanis::Net
 
         /// 标准 Base64 字母表（RFC 4648 §4）
         constexpr std::string_view kBase64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        /**
-         * @brief ASCII 范围内转小写，非字母原样返回
-         * @param character 待转换字节
-         * @return unsigned char 小写字节；不受 locale 影响
-         */
-        unsigned char toLowerAscii(const char character) noexcept
-        {
-            const auto byteValue = static_cast<unsigned char>(character);
-            if (byteValue >= 'A' && byteValue <= 'Z')
-            {
-                return static_cast<unsigned char>(byteValue + ('a' - 'A'));
-            }
-            return byteValue;
-        }
-
-        /**
-         * @brief 大小写不敏感的 ASCII 全等比较
-         * @param left 左侧文本
-         * @param right 右侧文本
-         * @return true 两者逐字节相等（忽略 ASCII 字母大小写）
-         */
-        bool equalsIgnoringCase(const std::string_view left, const std::string_view right) noexcept
-        {
-            // 先比长度：长度不同直接为否，省掉逐字节循环
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                if (toLowerAscii(left[index]) != toLowerAscii(right[index]))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        /**
-         * @brief 裁掉头部值首尾的可选空白（RFC 9110 §5.6.3 的 OWS：SP 与 HTAB）
-         * @param text 待裁剪文本
-         * @return std::string_view 裁剪后的视图，指向原文本
-         */
-        std::string_view trimOptionalWhitespace(std::string_view text) noexcept
-        {
-            std::size_t beginIndex = 0;
-            std::size_t endIndex   = text.size();
-            while (beginIndex < endIndex && (text[beginIndex] == ' ' || text[beginIndex] == '\t'))
-            {
-                ++beginIndex;
-            }
-            while (endIndex > beginIndex && (text[endIndex - 1] == ' ' || text[endIndex - 1] == '\t'))
-            {
-                --endIndex;
-            }
-            return text.substr(beginIndex, endIndex - beginIndex);
-        }
 
         /**
          * @brief 判断一组同名头部值里是否出现了某个 token

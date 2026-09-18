@@ -14,6 +14,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/Gzip.h"
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 
@@ -678,25 +679,6 @@ namespace AsynGyanis::Net
 
     namespace detail
     {
-        /// ASCII 大小写不敏感比较（HTTP token 语义，RFC 9110 §12.5.3）
-        [[nodiscard]] inline bool equalsIgnoringCaseAscii(const std::string_view left, const std::string_view right)
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                const char character = left[index];
-                const char lowered   = (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
-                if (lowered != right[index])
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
         /**
          * @brief 判断 Accept-Encoding 是否接受某个编码（含 q 值语义）
          * @details 既要认出目标编码名（大小写不敏感），也要认出 `*`（通配）与 `gzip;q=0`（明确拒绝）。
@@ -779,7 +761,7 @@ namespace AsynGyanis::Net
                 }
 
                 // 编码名按 token 语义大小写不敏感（RFC 9110 §12.5.3）
-                if (equalsIgnoringCaseAscii(encodingName, targetEncoding))
+                if (equalsIgnoringCase(encodingName, targetEncoding))
                 {
                     return !isRejected;
                 }

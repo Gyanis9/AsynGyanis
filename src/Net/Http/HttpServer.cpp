@@ -7,6 +7,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http2/Http2Session.h"
@@ -61,20 +62,6 @@ namespace AsynGyanis::Net
             return (character >= '0' && character <= '9') ||
                    (character >= 'a' && character <= 'f') ||
                    (character >= 'A' && character <= 'F');
-        }
-
-        /**
-         * @brief 取十六进制字符的数值
-         * @param character 已确认为十六进制字符的输入
-         * @return int 0~15
-         */
-        constexpr int hexadecimalDigitValue(const char character)
-        {
-            if (character >= '0' && character <= '9')
-            {
-                return character - '0';
-            }
-            return (character >= 'a' ? character - 'a' : character - 'A') + 10;
         }
 
         /**
@@ -263,48 +250,6 @@ namespace AsynGyanis::Net
             // 结果里出现 ".." 就说明往上出去了，且 ".." 只可能出现在开头，取首段判定即可
             const std::filesystem::path firstSegment = *relativePath.begin();
             return firstSegment != "..";
-        }
-
-        /**
-         * @brief 去掉首尾 OWS（空格与水平制表符）
-         * @param text 原始文本
-         * @return 去掉首尾空白后的视图
-         */
-        std::string_view trimOptionalWhitespace(std::string_view text)
-        {
-            while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-            {
-                text.remove_prefix(1);
-            }
-            while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-            {
-                text.remove_suffix(1);
-            }
-            return text;
-        }
-
-        /**
-         * @brief 判断两段 ASCII 文本是否相等（忽略大小写）
-         * @param left 左操作数
-         * @param right 右操作数
-         * @return true 长度相同且逐字符相等（a~z 与 A~Z 视为同一字符）
-         */
-        bool equalsIgnoreCase(const std::string_view left, const std::string_view right)
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                const auto leftCharacter = static_cast<unsigned char>(left[index]);
-                const auto rightCharacter = static_cast<unsigned char>(right[index]);
-                if (std::tolower(leftCharacter) != std::tolower(rightCharacter))
-                {
-                    return false;
-                }
-            }
-            return true;
         }
 
         /**
@@ -516,7 +461,7 @@ namespace AsynGyanis::Net
                 return RangeVerdict::Ignored;
             }
             // 区间单位大小写不敏感（RFC 9110 §14.1）
-            if (!equalsIgnoreCase(trimOptionalWhitespace(headerValue.substr(0, equalsPosition)), "bytes"))
+            if (!equalsIgnoringCase(trimOptionalWhitespace(headerValue.substr(0, equalsPosition)), "bytes"))
             {
                 return RangeVerdict::Ignored;
             }
