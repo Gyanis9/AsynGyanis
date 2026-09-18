@@ -1,14 +1,7 @@
-/**
- * @file TestConfigSchema.cpp
- * @brief ConfigSchema 单元测试：约束条目结构、校验结果语义与 runSchemaValidation 校验算法
- * @details ConfigSchema 在源码中是 std::vector<ConfigSchemaEntry> 的别名，没有独立成员函数；
- *          因此本文件针对其唯一可测行为 runSchemaValidation()（ConfigManager 的
- *          validateSchema/setSchema 均委托该纯函数）以及 ConfigValidationResult 的语义进行覆盖。
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConfigSchema 单元测试：约束条目结构、校验结果语义与 runSchemaValidation 校验算法。
+// ConfigSchema 在源码中是 std::vector<ConfigSchemaEntry> 的别名、没有独立成员函数，因此本文件
+// 覆盖其唯一可测行为 runSchemaValidation()（validateSchema/setSchema 均委托该纯函数）
+// 以及 ConfigValidationResult 的语义。
 
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Config/ConfigValidationResult.h"

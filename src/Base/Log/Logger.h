@@ -27,9 +27,9 @@ namespace AsynGyanis::Base
     /**
      * @brief 日志器实例
      *
-     * @details 每个日志器拥有自己的名字、等级过滤和一组 Sink。
-     *          线程安全，但通常通过 LoggerRegistry 获取，并由注册表保证创建过程的线程安全。
-     * @note 单个 Sink 抛出的异常会被吞掉，不会中断其余 Sink 的写入。
+     * @details 每个日志器拥有自己的名字、等级过滤与一组 Sink；线程安全，但通常经
+     *          LoggerRegistry 获取，由注册表保证创建过程的线程安全。
+     * @note 单个 Sink 抛出的异常不会中断其余 Sink 的写入（记一行标准错误）。
      */
     class Logger
     {
@@ -63,8 +63,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 使用 std::format 格式化日志消息并记录
-         * @details 格式串非法时不抛给业务方，而是降级为一条 Error 日志并带上格式串原文。
-         *          格式化结果直接移交给事件，避免再拷贝一次消息体。
+         * @details 格式串非法时不抛给业务方，降级为一条 Error 日志并带上格式串原文。
          * @tparam Args 格式化参数类型
          * @param level 本次日志级别
          * @param location 源码位置信息
@@ -134,9 +133,8 @@ namespace AsynGyanis::Base
         /**
          * @brief Sink 列表的不可变快照
          *
-         * @details 读侧原子加载一份快照后即可整轮遍历，无需任何锁；
-         *          写侧（addSink/clearSinks）构造新快照整体替换，旧快照由
-         *          仍在遍历它的线程共同持有，因此不会出现写入已释放 Sink 的情况。
+         * @details 读侧原子加载后整轮遍历，无需加锁；写侧（addSink/clearSinks）构造新快照
+         *          整体替换，旧快照由仍在遍历它的线程共同持有，因此不会写入已释放的 Sink。
          */
         struct SinkSnapshot
         {
@@ -151,16 +149,15 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 将日志事件分发到全部可用 Sink
-         * @details 先原子加载当前快照再遍历，遍历期间即使并发调用 clearSinks()
-         *          也不会解除引用已释放的 Sink。
+         * @details 先原子加载快照再遍历，因此并发 clearSinks() 不会让遍历撞上已释放的 Sink。
          * @param event 已构造好的日志事件对象
          */
         void writeToSinks(const LogEvent &event) const;
 
         /**
          * @brief 以「已持有消息体」的形式构造并分发日志事件
-         * @details 消息体按值接收并移入事件：std::vformat 的结果可以零拷贝交给事件，
-         *          这是 logFormat 与 log 共用的内部入口（公开的 log() 仍以 string_view 接收）。
+         * @details 消息体按值接收并移入事件，使 std::vformat 的结果零拷贝交给事件；
+         *          这是 log 与 logFormat 共用的内部入口。
          * @param level 本次日志级别
          * @param message 已格式化好的日志消息
          * @param location 源码位置信息

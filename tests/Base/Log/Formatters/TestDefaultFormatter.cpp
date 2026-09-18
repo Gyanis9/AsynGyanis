@@ -1,11 +1,4 @@
-/**
- * @file TestDefaultFormatter.cpp
- * @brief DefaultFormatter 单元测试：字段完整性、等级占位串与 Debug/Release 两种版式
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// DefaultFormatter 单元测试：字段完整性、等级占位串与 Debug/Release 两种版式
 
 #include "Base/Log/Formatters/DefaultFormatter.h"
 
@@ -36,10 +29,7 @@ namespace AsynGyanis::Base
         constexpr int  kSourceLine     = 4271;
 
         /**
-         * @brief 构造字段齐备的日志事件，便于逐字段断言版式
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 内容固定的日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件，便于逐字段断言版式
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "formatter message")
         {
@@ -52,9 +42,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断文本是否包含子串
-         * @param haystack 待检查文本
-         * @param needle 期望出现的子串
-         * @return true 出现
          */
         bool contains(const std::string &haystack, const std::string &needle)
         {

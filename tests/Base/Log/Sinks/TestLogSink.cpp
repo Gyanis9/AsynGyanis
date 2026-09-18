@@ -1,11 +1,4 @@
-/**
- * @file TestLogSink.cpp
- * @brief LogSink 抽象基类单元测试：等级过滤、格式化器注入与原子替换的线程安全
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LogSink 抽象基类单元测试：等级过滤、格式化器注入与原子替换的线程安全
 
 #include "Base/Log/Sinks/LogSink.h"
 
@@ -42,9 +35,8 @@ namespace AsynGyanis::Base
         public:
             /**
              * @brief 记录格式化后的日志行
-             * @details 重写 LogSink::write()：持锁保存 formatEvent() 结果并累加计数，
+             * @details 重写 LogSink::write()：持锁保存 formatEvent() 结果，
              *          自身不做等级过滤（预筛由调用方 Logger 负责）。
-             * @param event 日志事件
              */
             void write(const LogEvent &event) override
             {
@@ -64,8 +56,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 以当前格式化器渲染事件，暴露受保护的 formatEvent()
-             * @param event 日志事件
-             * @return std::string 渲染结果
              */
             [[nodiscard]] std::string render(const LogEvent &event) const
             {
@@ -74,7 +64,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取已记录的日志行快照
-             * @return std::vector<std::string> 按写入顺序排列的日志行
              */
             [[nodiscard]] std::vector<std::string> lines() const
             {
@@ -84,7 +73,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取最后一条日志行
-             * @return std::string 无记录时返回空串
              */
             [[nodiscard]] std::string lastLine() const
             {
@@ -94,7 +82,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取写入次数
-             * @return int 写入次数
              */
             [[nodiscard]] int writeCount() const
             {
@@ -104,7 +91,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取刷新次数
-             * @return int 刷新次数
              */
             [[nodiscard]] int flushCount() const noexcept
             {
@@ -125,7 +111,6 @@ namespace AsynGyanis::Base
         public:
             /**
              * @brief 使用给定前缀构造格式化器
-             * @param prefix 输出前缀标记
              */
             explicit MarkerFormatter(std::string prefix) :
                 m_prefix(std::move(prefix))
@@ -136,8 +121,6 @@ namespace AsynGyanis::Base
              * @brief 输出「前缀:消息」
              * @details 重写 LogFormatter::format()：只保留可辨识的极简版式，
              *          便于断言当前生效的格式化器身份。
-             * @param event 日志事件
-             * @return std::string 标记化文本
              */
             std::string format(const LogEvent &event) override
             {
@@ -149,10 +132,7 @@ namespace AsynGyanis::Base
         };
 
         /**
-         * @brief 构造字段齐备的日志事件
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 内容固定的日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "sink message")
         {
@@ -165,7 +145,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 全部日志等级（含 Off）
-         * @return const std::vector<LogLevel>& 等级列表
          */
         const std::vector<LogLevel> &allLevels()
         {

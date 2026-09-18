@@ -1,11 +1,4 @@
-/**
- * @file TestLoggerRegistry.cpp
- * @brief LoggerRegistry 单元测试：单例、按名获取与注册、遍历与运行时等级开关
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LoggerRegistry 单元测试：单例、按名获取与注册、遍历与运行时等级开关
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include "Platform/Platform.h"
@@ -30,22 +23,14 @@ namespace AsynGyanis::Base
 {
     namespace
     {
-        /**
-         * @brief 按字典序排序日志器名称列表，便于与期望列表整体比较
-         * @param names 待排序的名称列表（按值接收）
-         * @return std::vector<std::string> 排序后的名称列表
-         */
+        /** @brief 按字典序排序日志器名称列表，便于与期望列表整体比较 */
         std::vector<std::string> sortedNames(std::vector<std::string> names)
         {
             std::ranges::sort(names);
             return names;
         }
 
-        /**
-         * @brief 判断注册表中是否存在指定名称的日志器
-         * @param name 待查找的日志器名称
-         * @return true 存在
-         */
+        /** @brief 判断注册表中是否存在指定名称的日志器 */
         bool isRegistered(const std::string &name)
         {
             const std::vector<std::string> names = LoggerRegistry::instance().getLoggerNames();
@@ -140,8 +125,8 @@ namespace AsynGyanis::Base
 
     TEST_F(LoggerRegistryTest, CachedRootLoggerFollowsRegisterOverwrite)
     {
-        // 先走一次缓存路径让缓存预热，再用 registerLogger 覆盖 root：
-        // 缓存必须在覆盖时失效并指向新实例，否则取到的是已被替换的旧对象
+        // 先预热 root 缓存，再用 registerLogger 覆盖同一名字：缓存必须在覆盖时失效并
+        // 指向新实例，否则取到的是已被替换的旧对象
         LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Error);
 
         auto    replacement         = std::make_unique<Logger>("root");
@@ -378,7 +363,7 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().getLogger("reentrant_b");
 
         int visitedCount = 0;
-        // 回调内再次访问注册表：原实现在共享锁内调用回调，会因 shared_mutex 不可重入而自死锁
+        // 回调内再次访问注册表：遍历若持共享锁回调，shared_mutex 不可重入会自死锁
         EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger([&visitedCount](Logger &logger)
         {
             ++visitedCount;

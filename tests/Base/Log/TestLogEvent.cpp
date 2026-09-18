@@ -1,11 +1,4 @@
-/**
- * @file TestLogEvent.cpp
- * @brief LogEvent 单元测试：构造与值语义、时间戳格式、线程号缓存及压力循环
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LogEvent 单元测试：构造与值语义、时间戳格式、线程号缓存及压力循环
 
 #include "Base/Log/LogEvent.h"
 
@@ -24,11 +17,7 @@ namespace AsynGyanis::Base
         /// currentTimestamp() 的固定输出长度："YYYY-MM-DD HH:MM:SS.mmm"
         constexpr std::size_t kTimestampLength = 23;
 
-        /**
-         * @brief 判断时间戳中除分隔符外的字符是否全部为数字
-         * @param timestamp 待检查时间戳
-         * @return true 全部为数字
-         */
+        /** @brief 判断时间戳中除固定分隔符位置外的字符是否全部为数字 */
         bool onlyDigitsOutsideSeparators(const std::string &timestamp)
         {
             for (std::size_t index = 0; index < timestamp.size(); ++index)
@@ -47,11 +36,7 @@ namespace AsynGyanis::Base
             return true;
         }
 
-        /**
-         * @brief 构造一条字段齐全、便于断言的日志事件
-         * @param message 日志消息内容
-         * @return LogEvent 构造好的事件
-         */
+        /** @brief 构造一条字段齐全、便于断言的日志事件 */
         LogEvent makeEventWithMessage(const std::string &message)
         {
             return {
@@ -251,7 +236,7 @@ namespace AsynGyanis::Base
         for (std::size_t index = 0; index < kworkerCount; ++index)
         {
             EXPECT_FALSE(workerIds[index].empty()) << "worker " << index;
-            EXPECT_NE(workerIds[index], mainThreadId) << "worker " << index;
+            EXPECT_NE(workerIds[index], *mainThreadId) << "worker " << index;
             for (std::size_t otherIndex = 0; otherIndex < index; ++otherIndex)
             {
                 EXPECT_NE(workerIds[index], workerIds[otherIndex]);

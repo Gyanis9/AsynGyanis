@@ -1,13 +1,7 @@
-/**
- * @file TestJsonFormatter.cpp
- * @brief JsonFormatter 单元测试：字段完整性与省略规则、单行紧凑输出、转义与 UTF-8 直通
- * @details 每条输出都用 nlohmann::json 解析回来断言（而不是匹配字符串片段）：格式化器的契约是
- *          「产出合法 JSON」，把结果喂回解析器是唯一能同时验证合法性与取值的方式。
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// JsonFormatter 单元测试：字段完整性与省略规则、单行紧凑输出、转义与 UTF-8 直通
+//
+// 每条输出都用 nlohmann::json 解析回来断言（而不是匹配字符串片段）：格式化器的契约是
+// 「产出合法 JSON」，把结果喂回解析器是唯一能同时验证合法性与取值的方式。
 
 #include "Base/Log/Formatters/JsonFormatter.h"
 
@@ -41,9 +35,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 造一条字段齐备的日志事件
-         * @param message 日志消息
          * @param loggerName 日志器名字，空串表示根记录器
-         * @return LogEvent 事件
          */
         LogEvent makeEvent(std::string message, const std::string_view loggerName = kLoggerName)
         {
@@ -52,9 +44,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 取 JSON 对象里某个键的字符串值
-         * @param object 已解析的 JSON 对象
-         * @param key 键名
-         * @return std::string 取值；键不存在时为空串（断言由调用方负责）
+         * @return 键不存在时为空串（断言由调用方负责）
          */
         std::string textField(const nlohmann::json &object, const std::string_view key)
         {

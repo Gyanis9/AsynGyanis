@@ -35,17 +35,12 @@
 namespace AsynGyanis::Base
 {
     /**
-     * @brief 配置管理器类
+     * @brief 配置管理器
      *
-     * 配置管理器，提供以下核心功能：
-     *   - 从指定目录递归加载所有 .json/.yml/.yaml 配置文件
-     *   - 扁平化存储配置键值对
-     *   - 线程安全的读写访问（atomic shared_ptr 无锁热替换）
-     *   - 热加载支持（监听配置文件变更，自动重载）
-     *   - 类型安全的配置值访问
-     *
-     * 使用单例模式（Meyers' Singleton）确保全局唯一实例。
-     * 加载失败时保留上一次的有效配置快照。
+     * @details 从目录递归加载 .json/.yml/.yaml，扁平化成点号路径的键值对，以原子共享指针
+     *          做无锁热替换；读取与写入都拿当前快照，加载失败时保留上一份有效配置。
+     * @note 单例（Meyers' Singleton）。数值与布尔取值遵循严格口径（见 configValueAs），
+     *       不做取整、回绕与跨类型转换。
      */
     class ConfigManager
     {
@@ -67,12 +62,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 从目录加载 JSON/YAML 配置文件。
          *
-         * @details 目录下的配置文件按**文件名升序**逐个装载，后装载的同名键覆盖先装载的
-         *          （例如 `settings.json` 会覆盖 `config.yaml`，因为 's' 排在 'c' 之后）。
-         *          这是本类唯一的优先级规则，靠**命名**表达「哪份是默认、哪份是覆盖」：
-         *          想让某个文件生效得更晚，就给它排序更靠后的名字。
-         *          这样调用方可以自行决定分层（部署默认 + 本地覆盖），本类不预设任何文件名。
-         *
+         * @details 按文件名升序逐个装载，后装载的同名键覆盖先装载的（settings.json 覆盖 config.yaml）。
+         *          这是本类唯一的优先级规则，靠命名表达「哪份是默认、哪份是覆盖」，不预设任何文件名。
          * @param configDirectory 配置目录。
          * @param recursive 是否递归扫描子目录。
          * @return ConfigLoadResult 加载结果。
@@ -97,10 +88,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 启用热加载（监听配置文件变更，自动重载）
-         * @details 回调在**重载工作线程**（不是文件监听线程、也不是调用方线程）中执行，
-         *          因此回调内可以安全地做耗时处理，但不应再回调用方持有的非线程安全状态。
-         *          回调以原子共享指针快照方式持有：写入发生在 enableHotReload（启动监听之前），
-         *          读取发生在重载线程，二者有明确的 acquire/release 同步。
+         * @details 回调在**重载工作线程**上执行（不是文件监听线程、也不是调用方线程），
+         *          其快照在启动监听前发布（release/acquire 配对），因此回调内可安全做耗时处理。
          * @param callback 热加载完成后的回调函数
          * @param debounceMilliseconds 防抖间隔（毫秒），默认 500ms
          * @return bool 成功返回 true；重复调用返回 true；未加载目录或平台不支持返回 false
@@ -217,8 +206,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 宽松字符串读取：字符串原样返回；数字/布尔自动转为文本。
-         * @details 用于内容像数字但语义为字符串的键（如纯数字密码），
-         *          免疫配置类型推断差异导致的取空问题。
+         * @details 用于内容像数字但语义为字符串的键（如纯数字密码），免疫配置类型推断差异。
          * @param key 配置键（点号路径）。
          * @param defaultValue 键缺失时返回的默认值。
          * @return std::string 文本化取值或默认值。
@@ -227,9 +215,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 设置配置值并立即生效（原子替换内存快照）
-         * @details 只改内存，**不写回任何文件**：本类负责读配置，写配置是应用层的事
-         *          （它知道该写哪个文件、什么时候写、以及要不要问过运维）。
-         *          因此本方法的效果不跨进程，重启后回到文件里的取值。
+         * @details 只改内存，**不写回任何文件**：写配置是应用层的事（它知道该写哪个文件、
+         *          要不要问过运维），因此本方法的效果不跨进程，重启后回到文件里的取值。
          * @param key 配置键（点号路径，如 server.port）。
          * @param value 配置值。
          * @return bool 成功返回 true；键为空返回 false。
@@ -272,14 +259,11 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 取出某一段配置并还原成嵌套对象。
-         * @details 内部按键的点号路径扁平存放（见 dump()），本方法把 sectionPrefix 下所有键的
-         *          剩余路径重新聚成嵌套对象，供只认文档结构的消费方（如
-         *          Net::readHttpServerConfiguration）直接使用。段名本身不是键（get("server")
-         *          只会抛「键不存在」），要拿到整段取值只有这一条路径。
+         * @details 把 sectionPrefix 下所有键的剩余路径重新聚成嵌套对象，供只认文档结构的消费方
+         *          直接使用；段名本身不是键（get("server") 只会抛「键不存在」）。返回值不含段名
+         *          这一层（键是 "port" 而非 "server.port"），段落无键时返回空对象。
          * @param sectionPrefix 段名，如 "server"
-         * @return ConfigValue **该段自身**的对象副本（结果里不含段名这一层，即返回值的键是
-         *         "port" 而不是 "server.port"）；没有任何键落在该段时返回空对象，消费方可
-         *         据此走默认值。返回的是脱离快照的副本，热重载不会改写已取走的这一份
+         * @return ConfigValue 该段自身的对象副本，热重载不会改写已取走的这一份
          */
         [[nodiscard]] ConfigValue getSection(std::string_view sectionPrefix) const;
 
@@ -399,12 +383,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 递归扁平化文档值，将嵌套键转换为点号路径。
-         * @details 只向下展开对象节点；数组与标量作为叶子值存入，
-         *          类型判定已在解析阶段完成，此处不再二次判定。
-         *          点号前缀用同一个缓冲「追加—递归—回溯」复用，避免每层重复拼接父前缀；
+         * @details 只向下展开对象节点；点号前缀用同一个缓冲「追加—递归—回溯」复用，
          *          叶子值直接从文档中移出，省掉一次深拷贝。
-         *          键里带点号时抛错：那样的键与嵌套写法落成同一个扁平路径，两者互相覆盖
-         *          且很难察觉（配置里出现这种键几乎总是笔误）。
          * @param node 当前文档值节点（必须是对象），其叶子值会被移出，故必须是可改写的临时对象
          * @param prefixBuffer 复用的点号前缀缓冲，进入时表示当前层前缀
          * @param values 扁平化结果容器

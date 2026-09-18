@@ -27,8 +27,7 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造配置模块异常
-         * @details 调用 Exception("配置错误：" + message, sourceLocation)，
-         *          相较基类仅在消息前附加 "配置错误：" 领域前缀。
+         * @details 相较基类仅在消息前附加 "配置错误：" 领域前缀。
          * @param message 配置错误描述
          * @param sourceLocation 异常抛出位置，默认取调用点
          */

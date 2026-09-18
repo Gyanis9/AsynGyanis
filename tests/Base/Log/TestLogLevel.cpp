@@ -1,11 +1,4 @@
-/**
- * @file TestLogLevel.cpp
- * @brief LogLevel 单元测试：枚举数值连续性与顺序、等级字符串双向转换、非法输入回落
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LogLevel 单元测试：枚举数值连续性与顺序、等级字符串双向转换、非法输入回落
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include "Platform/Platform.h"
@@ -25,9 +18,9 @@ namespace AsynGyanis::Base
     namespace
     {
         /**
-         * @brief 去掉尾部用于固定宽度对齐的空格
-         * @param text 待处理文本（按值接收，返回处理结果）
-         * @return std::string 去掉尾部空格后的文本
+         * @brief 去掉等级标签为固定宽度对齐补的尾部空格
+         * @param text 待处理的标签文本
+         * @return 去掉尾部空格后的文本
          */
         std::string trimTrailingSpaces(std::string text)
         {

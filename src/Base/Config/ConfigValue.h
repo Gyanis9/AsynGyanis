@@ -35,10 +35,8 @@ namespace AsynGyanis::Base
      *
      * @details nlohmann_json 的 get<T>() 允许算术类型互相转换（浮点取整、布尔当数字），
      *          本项目按「宁可回落默认值也不静默变形」的口径取用，因此统一走本函数：
-     *          - bool：只接受布尔值；
-     *          - 整数：只接受整数，且目标类型必须能无损表示该取值（负值到无符号、越界一律返回空）；
-     *          - 浮点：只接受浮点值（整数与浮点互不转换），窄化到 float 前先判范围；
-     *          - 字符串/数组/对象：类型一致才成功，按值返回副本。
+     *          bool 只接受布尔；整数只接受整数且目标类型须能无损表示；浮点只接受浮点；
+     *          其余类型一致才成功。
      * @tparam ValueType 目标类型（bool、整型、浮点、std::string、ConfigArray、ConfigObject）
      * @param value 待取用的配置值
      * @return std::optional<ValueType> 类型与取值范围都满足时返回取值，否则返回空

@@ -1,11 +1,4 @@
-/**
- * @file TestConsoleSink.cpp
- * @brief ConsoleSink 单元测试：控制台写入安全性、等级到流的分流、写出即刷新与彩色开关切换
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConsoleSink 单元测试：控制台写入安全性、等级到流的分流、写出即刷新与彩色开关切换
 
 #include "Base/Log/Sinks/ConsoleSink.h"
 
@@ -62,7 +55,6 @@ namespace AsynGyanis::Base
             /**
              * @brief 获取已捕获的标准输出内容
              * @details 首次调用会先结束捕获，保证后续断言文本能正常输出到真实标准输出。
-             * @return const std::string& 文本内容
              */
             [[nodiscard]] const std::string &stdOut() const
             {
@@ -73,7 +65,6 @@ namespace AsynGyanis::Base
             /**
              * @brief 获取已捕获的标准错误内容
              * @details 首次调用会先结束捕获。
-             * @return const std::string& 文本内容
              */
             [[nodiscard]] const std::string &stdErr() const
             {
@@ -83,7 +74,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 标准输出中的换行数量
-             * @return std::size_t 行数
              */
             [[nodiscard]] std::size_t stdOutLineCount() const
             {
@@ -93,7 +83,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 标准错误中的换行数量
-             * @return std::size_t 行数
              */
             [[nodiscard]] std::size_t stdErrLineCount() const
             {
@@ -132,7 +121,6 @@ namespace AsynGyanis::Base
         public:
             /**
              * @brief 已发生的刷新次数
-             * @return std::size_t 次数
              */
             [[nodiscard]] std::size_t syncCount() const noexcept
             {
@@ -152,9 +140,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 重写 std::streambuf::xsputn()：吞掉字节并报告已写出
-             * @param characters 待写缓冲（不使用）
-             * @param count 字节数
-             * @return std::streamsize 已写出的字节数
              */
             std::streamsize xsputn(const char *characters, const std::streamsize count) override
             {
@@ -164,8 +149,7 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 重写 std::streambuf::overflow()：吞掉单个字节
-             * @param character 待写字符
-             * @return int 原样返回表示成功
+             * @return 原样返回表示成功
              */
             int overflow(const int character) override
             {
@@ -184,7 +168,6 @@ namespace AsynGyanis::Base
         public:
             /**
              * @brief 改挂流缓冲
-             * @param stream 目标标准流（std::cout 或 std::cerr）
              * @param buffer 临时缓冲，须活过本对象
              */
             ScopedStreamRedirect(std::ostream &stream, std::streambuf *buffer) :
@@ -210,10 +193,7 @@ namespace AsynGyanis::Base
         };
 
         /**
-         * @brief 构造字段齐备的日志事件
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "console message")
         {
@@ -226,9 +206,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断文本是否包含子串
-         * @param haystack 待检查文本
-         * @param needle 期望出现的子串
-         * @return true 出现
          */
         bool contains(const std::string &haystack, const std::string &needle)
         {

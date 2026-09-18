@@ -248,8 +248,7 @@ namespace AsynGyanis::Base
         const std::string        extensionPart = (dotPosition != std::string::npos) ? m_baseFilename.substr(dotPosition) : std::string{};
         const std::string        activeName  = getCurrentFilename().filename().string();
 
-        // 前缀只构造一次并转成 string_view 比较：原实现每遇到一个目录项就新建
-        // namePart + "." 这个临时字符串
+        // 前缀只构造一次，比较用 view：逐目录项拼临时串会把整目录扫描变成分配热点
         const std::string      backupPrefix = namePart + ".";
         const std::string_view backupPrefixView{backupPrefix};
 

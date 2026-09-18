@@ -31,8 +31,6 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 构造编程/用法错误异常
-         * @details 以 "file:line in function" 形式包装消息后交给 std::logic_error，
-         *          同时保留原始 source_location 供 location() 查询。
          * @param message 异常描述消息
          * @param sourceLocation 异常抛出位置，默认取调用点
          */
@@ -40,8 +38,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 获取异常抛出位置
-         * @details 返回构造时捕获的源位置快照，与格式化后的 what() 内容一致。
-         * @return const std::source_location& 抛出位置的常量引用
+         * @return const std::source_location& 构造时捕获的源位置快照
          */
         [[nodiscard]] const std::source_location &location() const noexcept;
 

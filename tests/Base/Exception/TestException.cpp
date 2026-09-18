@@ -1,11 +1,4 @@
-/**
- * @file TestException.cpp
- * @brief Base/Exception 全模块单元测试：各异常类的构造、属性、继承关系与压力场景
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Base/Exception 全模块单元测试：各异常类的构造、属性、继承关系与压力场景。
 
 #include "Base/Exception/ConfigException.h"
 #include "Base/Exception/ConfigFileException.h"

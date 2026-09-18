@@ -13,21 +13,16 @@
 #include <iostream>
 #include <string_view>
 
-// ============================================================================
-// Windows ERROR 宏冲突说明
-// ----------------------------------------------------------------------------
-// winerror.h 会把 ERROR 定义为一个值为 0 的宏，会展开 LogLevel::ERROR 这类标识符。
-// 项目级清理统一收敛在 "Platform/Platform.h"（其中已对 DELETE 与 ERROR 执行 #undef），
-// 因此这里的约定是：在 Windows 上使用日志模块的编译单元必须（直接或间接）先包含
-// "Platform/Platform.h"，否则会残留 windows.h 注入的 ERROR 宏污染后续代码。
-// ============================================================================
+// Windows 上 winerror.h 会把 ERROR 定义成值为 0 的宏，污染 LogLevel::ERROR 这类标识符；
+// 清理统一收敛在 "Platform/Platform.h"（对 ERROR 与 DELETE 执行 #undef），
+// 因此日志模块的使用方必须（直接或间接）先包含它。
 
 namespace AsynGyanis::Base
 {
     /**
      * @brief 日志等级枚举，数值越大等级越高
      *
-     * @details 供 Logger 与 LogSink 做级别过滤，字符串形式统一由
+     * @details 供 Logger 与 LogSink 做级别过滤；字符串形式统一经
      *          logLevelToString()/logLevelFromString() 互转。
      */
     enum class LogLevel : std::uint8_t
@@ -69,10 +64,9 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 将字符串解析为日志等级（大小写敏感）
-     * @details 无法识别的取值回落到 LogLevel::Info 是刻意的容错——配置里写错一个等级
-     *          不应让进程起不来，但容错必须可见：未知取值会向 std::cerr 打一条中文诊断。
-     *          刻意不经日志系统：本函数可能在日志系统就绪之前（配置加载阶段）被调用，
-     *          且日志本身也依赖等级解析，走日志通道会形成递归。
+     * @details 无法识别的取值回落为 Info 并往 std::cerr 打一条中文诊断：配置里写错一个等级
+     *          不该让进程起不来，但容错必须可见。不经日志系统是因为本函数在日志就绪前
+     *          （配置加载阶段）就可能被调用，且日志本身也依赖等级解析。
      * @param levelString 等级字符串，如 "INFO"
      * @return LogLevel 解析结果，未知字符串回退为 LogLevel::Info
      */

@@ -1,14 +1,7 @@
-/**
- * @file TestConfigManager.cpp
- * @brief ConfigManager 单元测试：目录与文件加载、类型安全访问、同目录按文件名升序覆盖、
- *        schema 校验、热加载开关状态机与并发读取
- * @details 热加载的真实文件监听行为由 tests/Platform/TestFileWatcher.cpp 覆盖，
- *          本文件只断言开关与状态机，不依赖真实文件事件时序。
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConfigManager 单元测试：目录与文件加载、类型安全访问、同目录按文件名升序覆盖、
+// schema 校验、热加载开关状态机与并发读取。
+// 文件监听器本身的行为由 tests/Platform/FileSystem/TestFileWatcher.cpp 覆盖；本文件中
+// 「接力」「回调抛异常」两条用例依赖真实监听事件，平台监听器不可用时用例跳过。
 
 #include "Base/Config/ConfigManager.h"
 
@@ -271,10 +264,8 @@ server:
 
     /**
      * @brief 解析中途失败的文件：它已经展开的那半份键不能跟着提交进快照
-     * @details 契约是「失败文件里的键从快照中消失」（见 ConfigLoadResult 的说明）。扁平表此前
-     *          跨文件共用、边遍历边写，带点号的键在中途抛异常时，排在前面的键已经落表；同目录
-     *          只要还有别的文件加载成功，那半份配置就会被一起提交——运维看到失败提示，实际却
-     *          已经应用了一半新配置
+     * @details 钉住 ConfigLoadResult 写明的「失败文件里的键从快照中消失」：半份配置被一起
+     *          提交时，运维只看到失败提示，实际却已应用了一半新配置
      */
     TEST_F(ConfigManagerTest, FailedFileDoesNotCommitItsAlreadyFlattenedKeys)
     {
@@ -615,7 +606,6 @@ server:
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryScalesToHundredsOfKeys)
     {
-        // 迁移自旧 Catch2 压力用例：键数保持在上限 1000 以内
         constexpr int kKeyCount = 500;
 
         std::string yamlContent;

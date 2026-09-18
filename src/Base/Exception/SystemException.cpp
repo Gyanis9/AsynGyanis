@@ -9,9 +9,8 @@ namespace AsynGyanis::Base
     SystemException::SystemException(const std::string &context, const std::source_location &sourceLocation) :
         SystemException(context, std::error_code(errno, std::system_category()), sourceLocation)
     {
-        // 注意：errno 在委托构造函数参数求值期间被读取，
-        // 与 context 参数的 string 构造存在竞争。
-        // 调用者应优先使用显式传递 error_code 的双参数构造函数。
+        // errno 在委托构造的参数求值期读取，无法在本体内补救读取时序，
+        // 只能提示调用方优先用显式 error_code 的重载
     }
 
     SystemException::SystemException(const std::string &context, const std::error_code errorCode, const std::source_location &sourceLocation) :

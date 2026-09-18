@@ -25,13 +25,12 @@ namespace AsynGyanis::Base
     /**
      * @brief 包装任意 Sink 提供异步写入能力
      *
-     * @details 调用方仅把 LogEvent 压入队列，真正的落地由后台线程完成，用于降低日志 IO
-     *          对业务线程的阻塞。队列满时按 OverflowPolicy 阻塞、丢弃新事件或丢弃最旧事件，
-     *          丢弃数量通过 droppedEventCount() 暴露给运维监控。
-     * @note 析构或 stop() 会尽力排空残留事件，但不保证跨进程崩溃时的日志完整性。
-     * @note 队列容量最小为 1：容量 0 会让三种溢出策略全部退化为错误语义（详见 kMinimumQueueSize），
-     *       因此构造函数会把 0（或更小的入参，经 size_t 转换后即 0）钳到 1，
-     *       调用方无需依赖「传了合法容量」这一前提。
+     * @details 调用方只把 LogEvent 压入队列，落地由后台线程完成，以免日志 IO 阻塞业务线程；
+     *          队列满时按 OverflowPolicy 阻塞、丢新事件或丢最旧事件，丢弃量经
+     *          droppedEventCount() 暴露给运维监控。
+     * @note 析构或 stop() 尽力排空残留事件，不保证跨进程崩溃时的日志完整性。
+     * @note 队列容量最小为 1（原因见 kMinimumQueueSize），构造函数自行钳制，
+     *       调用方无需保证传入合法容量。
      */
     class AsyncSink : public LogSink
     {
@@ -49,10 +48,9 @@ namespace AsynGyanis::Base
         /**
          * @brief 队列容量的最小可用值
          *
-         * @details 容量 0 在三种策略下都是错误语义而非「不限量」：
-         *          Drop 会丢弃全部事件；DropOldest 会对空队列 pop（未定义行为）
-         *          并把待落地计数从 0 回绕；Block 的等待谓词 size() < 0 永不成立而永久阻塞。
-         *          故本类内部自行钳到该下限，配置边界（LoggerConfigLoader）另有一次钳制与诊断。
+         * @details 容量 0 在三种策略下都是错误语义而非「不限量」：Drop 全丢；DropOldest 对空队列
+         *          pop（未定义行为）并让计数回绕；Block 的谓词 size() < 0 永不成立而永久阻塞。
+         *          本类自行钳到该下限，配置边界另有一次钳制与诊断。
          */
         static constexpr std::size_t kMinimumQueueSize = 1;
 
@@ -66,31 +64,31 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 析构异步 Sink 并停止后台线程
-         * @details 重写 LogSink 的虚析构：转调 stop()，请求停止并唤醒条件变量，
-         *          join 后台线程后再刷新下游 Sink，避免对象销毁后仍有线程访问成员。
+         * @details 重写 LogSink 的虚析构：转调 stop()，请求停止、唤醒条件变量、join 后台线程
+         *          再刷新下游 Sink，避免对象销毁后仍有线程访问成员。
          */
         ~AsyncSink() override;
 
         /**
          * @brief 将日志事件写入异步队列
-         * @details 重写 LogSink::write()：不直接落地，按溢出策略决定阻塞/丢弃并累计丢弃计数；
-         *          已请求停止时不再入队（同样计入丢弃计数），唤醒后台线程后即刻返回。
+         * @details 重写 LogSink::write()：不直接落地，按溢出策略阻塞或丢弃并累计丢弃计数，
+         *          已请求停止时不再入队（同样计入丢弃数）。
          * @param event 日志事件
          */
         void write(const LogEvent &event) override;
 
         /**
          * @brief 阻塞等待所有已受理事件落地后刷新下游 Sink
-         * @details 重写 LogSink::flush()：等待条件为「待落地事件数为 0」而非「队列为空」，
-         *          因此 worker 已从队列取出、仍在下游 write 中阻塞的事件同样被纳入等待范围；
-         *          等待结束后再转发 flush()，调用返回即代表已受理的日志都已交给下游刷新。
-         * @note 已停止（stop() 之后）时不再无限等待，避免 worker 退出后调用方挂死。
+         * @details 重写 LogSink::flush()：等待条件是「待落地数为 0」而非「队列为空」，
+         *          因此 worker 已取出、仍在下游 write 中阻塞的事件也算在内；随后转发 flush()，
+         *          返回即代表已受理的日志都交给了下游。
+         * @note stop() 之后不再无限等待，避免 worker 退出后调用方挂死。
          */
         void flush() override;
 
         /**
          * @brief 停止异步处理线程并尽力排空队列
-         * @details 请求 jthread 的 stop_token、唤醒所有等待者并 join；重复调用无副作用。
+         * @details 请求 stop_token、唤醒所有等待者并 join；重复调用无副作用。
          */
         void stop();
 

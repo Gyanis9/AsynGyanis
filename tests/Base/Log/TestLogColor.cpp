@@ -1,11 +1,4 @@
-/**
- * @file TestLogColor.cpp
- * @brief LogColor 单元测试：ANSI 转义序列常量合法性与日志等级到颜色的映射
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LogColor 单元测试：ANSI 转义序列常量合法性与日志等级到颜色的映射
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include <ranges>

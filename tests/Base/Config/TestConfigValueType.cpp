@@ -1,11 +1,4 @@
-/**
- * @file TestConfigValueType.cpp
- * @brief ConfigValueType 单元测试：类型枚举名称映射、配置文件后缀判定与键路径拆分
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConfigValueType 单元测试：类型枚举名称映射、配置文件后缀判定与键路径拆分。
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
@@ -238,7 +231,6 @@ namespace AsynGyanis::Base
 
     TEST(ConfigValueTypeTest, SuffixHelpersSurviveRepeatedCalls)
     {
-        // 迁移自旧 Catch2 压力用例：迭代次数由 10000 降至 1000，结果保持确定性
         for (int iteration = 0; iteration < 1000; ++iteration)
         {
             EXPECT_TRUE(isYamlFile("config.yaml"));

@@ -1,11 +1,4 @@
-/**
- * @file TestLogger.cpp
- * @brief Logger 单元测试：名称与等级、Sink 分发与异常隔离、格式化降级与并发写入
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// Logger 单元测试：名称与等级、Sink 分发与异常隔离、格式化降级与并发写入
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include "Platform/Platform.h"
@@ -44,38 +37,27 @@ namespace AsynGyanis::Base
         class SinkLedger
         {
         public:
-            /**
-             * @brief 记录一条日志事件
-             * @param event 待记录的日志事件
-             */
+            /** @brief 记录一条日志事件 */
             void record(const LogEvent &event)
             {
                 const std::lock_guard lock(m_mutex);
                 m_events.push_back(event);
             }
 
-            /**
-             * @brief 累加一次 flush 调用计数
-             */
+            /** @brief 累加一次 flush 调用计数 */
             void countFlush()
             {
                 m_flushCount.fetch_add(1, std::memory_order_relaxed);
             }
 
-            /**
-             * @brief 已记录的事件数量
-             * @return size_t 事件条数
-             */
+            /** @brief 已记录的事件数量 */
             [[nodiscard]] size_t eventCount() const
             {
                 const std::lock_guard lock(m_mutex);
                 return m_events.size();
             }
 
-            /**
-             * @brief 已记录事件的快照
-             * @return std::vector<LogEvent> 事件副本列表
-             */
+            /** @brief 已记录事件的快照 */
             [[nodiscard]] std::vector<LogEvent> events() const
             {
                 const std::lock_guard lock(m_mutex);
@@ -84,7 +66,7 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 最近一条事件的文本内容
-             * @return std::string 消息内容，无事件时返回空串
+             * @return 消息内容，无事件时返回空串
              */
             [[nodiscard]] std::string lastMessage() const
             {
@@ -92,10 +74,7 @@ namespace AsynGyanis::Base
                 return m_events.empty() ? std::string{} : m_events.back().message;
             }
 
-            /**
-             * @brief flush 被调用的次数
-             * @return int 次数
-             */
+            /** @brief flush 被调用的次数 */
             [[nodiscard]] int flushCount() const noexcept
             {
                 return m_flushCount.load(std::memory_order_relaxed);
@@ -113,10 +92,7 @@ namespace AsynGyanis::Base
         class RecordingSink : public LogSink
         {
         public:
-            /**
-             * @brief 构造记录型 Sink
-             * @param ledger 共享的事件账本
-             */
+            /** @brief 构造记录型 Sink，事件写入给定账本 */
             explicit RecordingSink(std::shared_ptr<SinkLedger> ledger) :
                 m_ledger(std::move(ledger))
             {
@@ -177,12 +153,7 @@ namespace AsynGyanis::Base
             bool     expected;  ///< 期望的判定结果
         };
 
-        /**
-         * @brief 判断文本是否包含子串
-         * @param haystack 待检查文本
-         * @param needle 子串
-         * @return true 包含
-         */
+        /** @brief 判断文本是否包含子串 */
         bool contains(const std::string &haystack, const std::string_view needle)
         {
             return haystack.find(needle) != std::string::npos;
@@ -200,10 +171,7 @@ namespace AsynGyanis::Base
             m_ledger = std::make_shared<SinkLedger>();
         }
 
-        /**
-         * @brief 创建一个写入本夹具账本的记录型 Sink
-         * @return std::unique_ptr<LogSink> Sink 所有权
-         */
+        /** @brief 创建一个写入本夹具账本的记录型 Sink */
         [[nodiscard]] std::unique_ptr<LogSink> recordingSink() const
         {
             return std::make_unique<RecordingSink>(m_ledger);
@@ -358,7 +326,7 @@ namespace AsynGyanis::Base
         logger.logFormat(LogLevel::Info, SourceLocation::current(), "formatted {}", 1);
 
         ASSERT_EQ(m_ledger->eventCount(), 2u);
-        // 名字与 Logger 共享同一份常量字符串：每条日志不再各自分配/拷贝一个名字
+        // 名字与 Logger 共享同一份常量字符串，避免每条日志各自分配、拷贝一个名字
         for (const LogEvent &event: m_ledger->events())
         {
             ASSERT_NE(event.loggerName, nullptr);

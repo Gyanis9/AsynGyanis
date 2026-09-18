@@ -1,11 +1,4 @@
-/**
- * @file TestColorFormatter.cpp
- * @brief ColorFormatter 单元测试：ANSI 转义包裹、等级到颜色的映射与 Debug/Release 版式
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ColorFormatter 单元测试：ANSI 转义包裹、等级到颜色的映射与 Debug/Release 版式
 
 #include "Base/Log/Formatters/ColorFormatter.h"
 
@@ -35,10 +28,7 @@ namespace AsynGyanis::Base
         constexpr auto kAnsiPrefix     = "\033[";
 
         /**
-         * @brief 构造字段齐备的日志事件
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 内容固定的日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "color message")
         {
@@ -51,9 +41,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断文本是否包含子串
-         * @param haystack 待检查文本
-         * @param needle 期望出现的子串
-         * @return true 出现
          */
         bool contains(const std::string &haystack, const std::string &needle)
         {
@@ -210,7 +197,7 @@ namespace AsynGyanis::Base
 
     TEST(ColorFormatter, DebugBuildHandlesSourceLocationLongerThanStackBuffer)
     {
-        // 与 DefaultFormatter 同形：共用 SourceLocationText 后，超长「文件:行号」走回退分支，
+        // 与 DefaultFormatter 同形：超长「文件:行号」走 SourceLocationText 的回退分支，
         // 输出必须与短文件名一样完整呈现，且与消息之间仍只有一个分隔空格
         ColorFormatter    formatter;
         const std::string longFileName(80, 'c');

@@ -13,12 +13,10 @@ namespace AsynGyanis::Base
 {
     std::string JsonFormatter::format(const LogEvent &event)
     {
-        // 键写进 JSON 对象：object_t 是按键有序的映射，键序稳定、可逐字比对
         nlohmann::json fields = nlohmann::json::object();
         fields["timestamp"]   = event.timestamp;
 
-        // 等级名去掉尾部空格：文本版式靠 {:<5} 补到 5 列对齐，JSON 里那只是噪声，
-        // 留着会让采集端按「INFO 加空格」精确取值时踩空
+        // 等级名去掉尾部空格（文本版式靠 {:<5} 对齐，JSON 里只是噪声，会让按精确值取用的采集端踩空）
         std::string_view levelName{logLevelToString(event.level)};
         while (!levelName.empty() && levelName.back() == ' ')
         {
@@ -44,8 +42,8 @@ namespace AsynGyanis::Base
 
         try
         {
-            // 紧凑单行（不带缩进参数即是紧凑模式）：采集端按行切分，缩进只会白白撑大日志体积。
-            // 原生序列化默认按严格 UTF-8 校验，合法 UTF-8 原样写出、NUL 转义为 \u0000
+            // 紧凑单行（不带缩进参数即紧凑模式）：采集端按行切分，缩进只会撑大日志体积。
+            // 原生序列化按严格 UTF-8 校验，合法 UTF-8 原样写出、NUL 转义为 \u0000
             return fields.dump();
         } catch (const nlohmann::json::exception &exception)
         {

@@ -1,11 +1,4 @@
-/**
- * @file TestSourceLocation.cpp
- * @brief SourceLocation 单元测试：构造语义、调用点采集与短文件名截断
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// SourceLocation 单元测试：构造语义、调用点采集与短文件名截断
 
 #include "Base/Log/SourceLocation.h"
 
@@ -24,11 +17,7 @@ namespace AsynGyanis::Base
         /// 当前测试文件名，用于校验调用点采集结果
         constexpr std::string_view kTestFileName = "TestSourceLocation.cpp";
 
-        /**
-         * @brief 判断指针是否指向空字符串
-         * @param text 待检查的 C 字符串
-         * @return true 指针为空或首字符即为结束符
-         */
+        /** @brief 判断 C 字符串指针为空或指向空串 */
         bool isEmptyText(const char *text)
         {
             return text == nullptr || text[0] == '\0';

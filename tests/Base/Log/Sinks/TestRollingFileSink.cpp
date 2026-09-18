@@ -1,11 +1,4 @@
-/**
- * @file TestRollingFileSink.cpp
- * @brief RollingFileSink 单元测试：按大小滚动、按时间滚动的命名、备份上限与析构安全性
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// RollingFileSink 单元测试：按大小滚动、按时间滚动的命名、备份上限与析构安全性
 
 #include "Base/Log/Sinks/RollingFileSink.h"
 
@@ -36,10 +29,7 @@ namespace AsynGyanis::Base
         namespace fs = std::filesystem;
 
         /**
-         * @brief 构造字段齐备的日志事件
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "rolling message")
         {
@@ -54,8 +44,7 @@ namespace AsynGyanis::Base
          * @brief 读取文本文件全部内容并统一换行符
          * @details 文件类 Sink 以文本模式写入，Windows 上会把 '\n' 变成 "\r\n"，
          *          故按二进制读取后归一化换行，保证跨平台行数统计一致。
-         * @param filePath 目标文件路径
-         * @return std::string 文件内容，无法打开时返回空串
+         * @return 无法打开文件时返回空串
          */
         std::string readWholeFile(const fs::path &filePath)
         {
@@ -76,8 +65,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 统计单个文件的换行数量
-         * @param filePath 目标文件路径
-         * @return std::size_t 行数
          */
         std::size_t countLines(const fs::path &filePath)
         {
@@ -87,9 +74,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 收集目录中文件名匹配正则的全部文件路径
-         * @param directory 待扫描目录
-         * @param pattern 文件名词法正则
-         * @return std::vector<fs::path> 匹配到的文件路径
          */
         std::vector<fs::path> collectFilesMatching(const fs::path &directory, const std::string &pattern)
         {
@@ -116,9 +100,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 写入指定数量的日志事件并刷新
-         * @param sink 目标滚动 Sink
-         * @param eventCount 事件数量
-         * @param tokenPrefix 消息前缀，便于在文件中定位
          */
         void writeEvents(RollingFileSink &sink, const int eventCount, const std::string &tokenPrefix)
         {
@@ -184,7 +165,7 @@ namespace AsynGyanis::Base
         {
             EXPECT_GT(fs::file_size(backup), 0u) << backup;
         }
-        // 活动文件与备份合起来应包含全部已写事件
+        // 最新一条事件必须落在活动文件里，而不是被滚动进备份
         EXPECT_NE(readWholeFile(activePath).find("sized_payload_39"), std::string::npos);
     }
 
@@ -431,7 +412,6 @@ namespace AsynGyanis::Base
             totalLines += countLines(file);
         }
 
-        // 备份上限足够大，因此行数必须等于全部写入次数
         EXPECT_EQ(totalLines, static_cast<std::size_t>(kthreadCount) * kwritesPerThread);
     }
 } // namespace AsynGyanis::Base

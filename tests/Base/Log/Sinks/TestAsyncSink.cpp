@@ -1,11 +1,4 @@
-/**
- * @file TestAsyncSink.cpp
- * @brief AsyncSink 单元测试：后台线程转发、flush/stop 语义与三种队列溢出策略
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// AsyncSink 单元测试：后台线程转发、flush/stop 语义与三种队列溢出策略
 
 #include "Base/Log/Sinks/AsyncSink.h"
 
@@ -51,7 +44,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 追加一条事件记录
-             * @param event 日志事件
              */
             void append(const LogEvent &event)
             {
@@ -62,7 +54,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取消息快照
-             * @return std::vector<std::string> 已记录的消息
              */
             [[nodiscard]] std::vector<std::string> snapshot() const
             {
@@ -72,7 +63,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 已记录的消息条数
-             * @return std::size_t 条数
              */
             [[nodiscard]] std::size_t size() const
             {
@@ -82,8 +72,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 判断是否记录了给定消息
-             * @param message 待查找消息
-             * @return true 找到
              */
             [[nodiscard]] bool contains(const std::string &message) const
             {
@@ -93,8 +81,7 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取指定位置记录的等级
-             * @param index 事件下标
-             * @return LogLevel 下标越界时返回 LogLevel::Off
+             * @return 下标越界时返回 LogLevel::Off
              */
             [[nodiscard]] LogLevel levelAt(const std::size_t index) const
             {
@@ -112,7 +99,6 @@ namespace AsynGyanis::Base
             /**
              * @brief 构造记录型桩 Sink
              * @param events 共享记录对象，缺省时自行创建
-             * @param perEventCost 每条事件的模拟处理耗时
              */
             explicit RecordingSink(std::shared_ptr<RecordedEvents> events       = std::make_shared<RecordedEvents>(),
                                    const std::chrono::microseconds perEventCost = std::chrono::microseconds::zero()) :
@@ -125,7 +111,6 @@ namespace AsynGyanis::Base
              * @brief 记录到达的事件
              * @details 重写 LogSink::write()：先按需休眠模拟慢速 IO，再持锁追加记录，
              *          用于统计后台线程实际转发的条数。
-             * @param event 日志事件
              */
             void write(const LogEvent &event) override
             {
@@ -148,7 +133,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 获取共享记录
-             * @return const std::shared_ptr<RecordedEvents>& 记录对象
              */
             [[nodiscard]] const std::shared_ptr<RecordedEvents> &events() const noexcept
             {
@@ -168,7 +152,6 @@ namespace AsynGyanis::Base
         public:
             /**
              * @brief 使用共享记录构造阻塞桩 Sink
-             * @param events 共享记录对象
              */
             explicit BlockingRecordingSink(std::shared_ptr<RecordedEvents> events) :
                 m_events(std::move(events))
@@ -179,7 +162,6 @@ namespace AsynGyanis::Base
              * @brief 阻塞直到 release() 后记录事件
              * @details 重写 LogSink::write()：累加进入计数后等待放行条件，被放行后像普通桩一样记录，
              *          从而在测试期间稳定地占住后台线程、让队列保持满状态。
-             * @param event 日志事件
              */
             void write(const LogEvent &event) override
             {
@@ -223,10 +205,7 @@ namespace AsynGyanis::Base
         };
 
         /**
-         * @brief 构造字段齐备的日志事件
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "async message")
         {
@@ -267,8 +246,6 @@ namespace AsynGyanis::Base
 
             /**
              * @brief 启动带阻塞下游的 AsyncSink
-             * @param queueSize 队列容量
-             * @param policy 溢出策略
              */
             void startAsyncSink(const std::size_t queueSize, const AsyncSink::OverflowPolicy policy)
             {
@@ -321,8 +298,8 @@ namespace AsynGyanis::Base
 
     TEST(AsyncSink, ZeroQueueSizeIsClampedToMinimumForBlockPolicy)
     {
-        // 容量 0 曾让 Block 策略的等待谓词「size() < 0」永不成立，第二条事件即永久阻塞；
-        // 钳到 1 之后容量虽小，但事件仍必须全部落地
+        // 容量 0 会让 Block 策略的等待谓词「size() < 0」恒不成立，每次写入都要等满超时后按丢弃处理，
+        // 事件无法全部落地；钳到 1 之后容量虽小，事件仍必须全部落地
         auto          events     = std::make_shared<RecordedEvents>();
         auto          downstream = std::make_unique<RecordingSink>(events);
         AsyncSink     sink(std::move(downstream), 0, AsyncSink::OverflowPolicy::Block);
@@ -647,7 +624,7 @@ namespace AsynGyanis::Base
     TEST_F(AsyncSinkWithBlockedDownstream, BlockedProducerCountsItsEventAsDroppedWhenStopped)
     {
         // 场景：容量 1，worker 卡在下游；队列里已有 1 条，生产者写第 3 条时阻塞在等待空间上。
-        // 此时停止必须唤醒它并把这条「等不到空间」的事件计入丢弃数（原实现静默丢弃、少报）
+        // 此时停止必须唤醒它并把这条「等不到空间」的事件计入丢弃数
         startAsyncSink(1, AsyncSink::OverflowPolicy::Block);
 
         m_async->write(makeEvent(LogLevel::Info, "in_flight"));

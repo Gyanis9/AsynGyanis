@@ -15,8 +15,7 @@ namespace AsynGyanis::Base
         m_colorEnabled(enableColor)
     {
         AsynGyanis::Platform::Console::ensureUtf8Output();
-        // 与运行期切换共用同一条选择路径：构造只是「带初值」的一次切换，
-        // 避免两处各写一份 formatter 选择逻辑而逐渐漂移
+        // 构造只是「带初值」的一次切换，与运行期切换共用同一条 formatter 选择路径
         applyFormatter();
     }
 
@@ -24,9 +23,8 @@ namespace AsynGyanis::Base
     {
         std::lock_guard lock(m_mutex);
         std::string     formatted = formatEvent(event);
-        // 换行并入同一缓冲后整行只做一次 <<：流插入每次都要构造 sentry（锁一次流缓冲，
-        // 并冲刷被 tie 的流），合并后只有一轮加锁与一轮刷新，逐字节输出不变。
-        // std::format 结果串的容量通常大于长度，追加换行基本不产生新分配
+        // 换行并入同一缓冲后整行只做一次 <<：每次流插入都要构造 sentry（锁流缓冲、
+        // 冲刷被 tie 的流），合并后只有一轮。format 结果串的容量通常够追加换行
         formatted.push_back('\n');
         if (event.level >= LogLevel::Warn)
         {
@@ -34,9 +32,8 @@ namespace AsynGyanis::Base
             std::cerr << formatted;
         } else
         {
-            // 每条刷新：重定向到文件或管道时 std::cout 是全缓冲，不刷就 tail 不到实时内容，
-            // 异常退出还会把尾部留在缓冲里丢掉（实测 +1 µs/行，Release /O2）；
-            // 换来的是「write() 返回时这一行已经落地」
+            // 每条刷新：std::cout 重定向到文件或管道时是全缓冲，不刷就 tail 不到实时内容，
+            // 异常退出还会丢掉尾部（实测 +1 µs/行，Release /O2），换来 write() 返回即已落地
             std::cout << formatted;
             std::cout.flush();
         }
@@ -58,7 +55,6 @@ namespace AsynGyanis::Base
 
     void ConsoleSink::applyFormatter()
     {
-        // 读取 m_colorEnabled 决定 formatter：这就是该字段的消费点。
         // 终端不支持 ANSI 序列时即便请求了彩色也退回纯文本，避免输出乱码
         if (m_colorEnabled && AsynGyanis::Platform::Console::supportsAnsiEscapeCodes())
         {

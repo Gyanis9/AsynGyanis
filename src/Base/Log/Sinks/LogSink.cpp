@@ -8,11 +8,9 @@ namespace AsynGyanis::Base
 {
     namespace
     {
-        /// 未设置格式化器时的回退实例。放在命名空间作用域并用 constinit 常量初始化，
-        /// 相比函数内 static：不再为每次调用生成线程安全初始化守卫（TSS 读 + 比较 + 分支，
-        /// 已用生成的汇编确认），也不需要在首次调用时注册 atexit。
-        /// 此处不能加 const：LogFormatter::format() 按接口契约是非 const 成员，
-        /// 而该对象无状态、运行期从不被修改，去掉 const 只影响静态检查
+        /// 未设置格式化器时的回退实例。constinit + 命名空间作用域省掉了函数内 static 的
+        /// 初始化守卫（每次调用一次 TSS 读 + 分支）与首次调用时的 atexit 注册。
+        /// 不加 const 是因为 LogFormatter::format() 按契约是非 const 成员；该对象无状态
         constinit DefaultFormatter kFallbackFormatter{};
     } // namespace
 
@@ -38,14 +36,12 @@ namespace AsynGyanis::Base
 
     void LogSink::setFormatter(std::unique_ptr<LogFormatter> formatter)
     {
-        // 线程安全：使用 std::atomic<std::shared_ptr> 的 store/load 保护读写
-        // 写侧与 formatEvent 的 load 以 release/acquire 语义配对，避免数据竞争
+        // 写侧与此后 formatEvent 的 load 以 release/acquire 配对，避免数据竞争
         m_formatter.store(std::shared_ptr<LogFormatter>(std::move(formatter)), std::memory_order_release);
     }
 
     std::string LogSink::formatEvent(const LogEvent &event) const
     {
-        // load 确保读取时不会与 setFormatter 产生数据竞争
         if (const auto formatter = m_formatter.load(std::memory_order_acquire))
         {
             return formatter->format(event);

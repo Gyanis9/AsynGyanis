@@ -1,11 +1,4 @@
-/**
- * @file TestLoggerConfigLoader.cpp
- * @brief LoggerConfigLoader 单元测试：从 YAML 配置构建日志器与各类 Sink 及容错跳过
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LoggerConfigLoader 单元测试：从 YAML 配置构建日志器与各类 Sink 及容错跳过
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include "Platform/Platform.h"
@@ -74,10 +67,7 @@ namespace AsynGyanis::Base
 
             ConsoleCapture &operator=(const ConsoleCapture &) = delete;
 
-            /**
-             * @brief 已捕获的文本
-             * @return std::string 标准输出与标准错误内容的拼接
-             */
+            /** @brief 已捕获的文本，为两个流内容的拼接 */
             [[nodiscard]] std::string text() const
             {
                 return m_standardOutput.str() + m_standardError.str();
@@ -93,7 +83,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 读取文本文件全部内容
          * @param filePath 文件路径
-         * @return std::string 文件内容，读不到时返回空串
+         * @return 文件内容，读不到时返回空串
          */
         std::string readTextFile(const std::filesystem::path &filePath)
         {
@@ -105,23 +95,13 @@ namespace AsynGyanis::Base
             return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
         }
 
-        /**
-         * @brief 判断文本是否包含子串
-         * @param haystack 待检查文本
-         * @param needle 子串
-         * @return true 包含
-         */
+        /** @brief 判断文本是否包含子串 */
         bool contains(const std::string &haystack, const std::string_view needle)
         {
             return haystack.find(needle) != std::string::npos;
         }
 
-        /**
-         * @brief 统计文件名列表中匹配正则的个数
-         * @param names 文件名列表
-         * @param pattern 待匹配正则
-         * @return size_t 命中数量
-         */
+        /** @brief 统计文件名列表中匹配正则的名称个数 */
         size_t countMatchingNames(const std::vector<std::string> &names, const std::regex &pattern)
         {
             return static_cast<size_t>(std::ranges::count_if(names,
@@ -131,12 +111,7 @@ namespace AsynGyanis::Base
                                                              }));
         }
 
-        /**
-         * @brief 判断文件名列表中是否有任意名称匹配正则
-         * @param names 文件名列表
-         * @param pattern 待匹配正则
-         * @return true 至少一个命中
-         */
+        /** @brief 判断文件名列表中是否有任意名称匹配正则 */
         bool anyNameMatches(const std::vector<std::string> &names, const std::regex &pattern)
         {
             return std::ranges::any_of(names,
@@ -187,10 +162,7 @@ namespace AsynGyanis::Base
             ConfigManager::instance().clear();
         }
 
-        /**
-         * @brief 把 YAML 写入临时目录并经 ConfigManager 真实加载
-         * @param yamlContent 配置正文
-         */
+        /** @brief 把 YAML 写入临时目录并经 ConfigManager 真实加载（加载失败直接判定失败） */
         void loadConfiguration(const std::string &yamlContent) const
         {
             ASSERT_TRUE(m_temporaryDirectory.writeFile(kconfigurationFileName, yamlContent));
@@ -199,11 +171,7 @@ namespace AsynGyanis::Base
             ASSERT_TRUE(result.success);
         }
 
-        /**
-         * @brief 生成一份仅滚动策略不同的 rolling_file 配置并加载
-         * @param policyName 策略名称
-         * @param baseFilename 基础文件名
-         */
+        /** @brief 生成一份仅滚动策略不同的 rolling_file 配置并加载 */
         void loadRollingFileConfiguration(const std::string &policyName, const std::string &baseFilename) const
         {
             loadConfiguration(R"(logging:
@@ -221,49 +189,31 @@ namespace AsynGyanis::Base
 )");
         }
 
-        /**
-         * @brief 以临时目录为基准目录执行一次日志配置加载
-         * @param configurationPrefix 配置根键前缀
-         */
+        /** @brief 以临时目录为基准目录执行一次日志配置加载 */
         void applyLogging(const std::string &configurationPrefix = kdefaultPrefix) const
         {
             LoggerConfigLoader::loadFromConfig(configurationPrefix, m_temporaryDirectory.path());
         }
 
-        /**
-         * @brief 临时目录内的路径
-         * @param relativePath 相对路径（正斜杠分隔）
-         * @return std::filesystem::path 绝对路径
-         */
+        /** @brief 临时目录内某个相对路径（正斜杠分隔）对应的绝对路径 */
         [[nodiscard]] std::filesystem::path temporaryPath(const std::string &relativePath) const
         {
             return m_temporaryDirectory.path() / relativePath;
         }
 
-        /**
-         * @brief 读取临时目录内的文本文件
-         * @param relativePath 相对路径
-         * @return std::string 文件内容
-         */
+        /** @brief 读取临时目录内的文本文件 */
         [[nodiscard]] std::string readTemporaryFile(const std::string &relativePath) const
         {
             return readTextFile(temporaryPath(relativePath));
         }
 
-        /**
-         * @brief 临时目录中配置文件的绝对路径
-         * @return std::filesystem::path 配置文件路径
-         */
+        /** @brief 临时目录中配置文件的绝对路径 */
         [[nodiscard]] std::filesystem::path configurationPath() const
         {
             return m_temporaryDirectory.path() / kconfigurationFileName;
         }
 
-        /**
-         * @brief 收集目录内的普通文件路径（不递归）
-         * @param directory 目标目录
-         * @return std::vector<std::filesystem::path> 文件路径列表，目录不存在时为空
-         */
+        /** @brief 收集目录内的普通文件路径（不递归），目录不存在时返回空列表 */
         [[nodiscard]] std::vector<std::filesystem::path> collectRegularFiles(const std::filesystem::path &directory) const
         {
             std::vector<std::filesystem::path> files;
@@ -277,11 +227,7 @@ namespace AsynGyanis::Base
             return files;
         }
 
-        /**
-         * @brief 递归收集目录内的普通文件路径
-         * @param directory 目标目录
-         * @return std::vector<std::filesystem::path> 文件路径列表
-         */
+        /** @brief 递归收集目录内的普通文件路径 */
         [[nodiscard]] std::vector<std::filesystem::path> collectRegularFilesRecursively(const std::filesystem::path &directory) const
         {
             std::vector<std::filesystem::path> files;
@@ -295,10 +241,7 @@ namespace AsynGyanis::Base
             return files;
         }
 
-        /**
-         * @brief 递归列出临时目录内的所有普通文件（相对路径，正斜杠分隔，升序）
-         * @return std::vector<std::string> 文件名列表
-         */
+        /** @brief 递归列出临时目录内的所有普通文件（相对路径，正斜杠分隔，升序） */
         [[nodiscard]] std::vector<std::string> listTemporaryFiles() const
         {
             std::vector<std::string> names;
@@ -310,11 +253,7 @@ namespace AsynGyanis::Base
             return names;
         }
 
-        /**
-         * @brief 列出目录内的普通文件名（升序）
-         * @param directory 目标目录
-         * @return std::vector<std::string> 文件名列表
-         */
+        /** @brief 列出目录内的普通文件名（升序） */
         [[nodiscard]] std::vector<std::string> listFilesIn(const std::filesystem::path &directory) const
         {
             std::vector<std::string> names;
@@ -326,12 +265,7 @@ namespace AsynGyanis::Base
             return names;
         }
 
-        /**
-         * @brief 判断目录内是否有任意文件包含指定文本
-         * @param directory 目标目录
-         * @param needle 期望文本
-         * @return true 命中
-         */
+        /** @brief 判断目录内是否有任意文件包含指定文本 */
         [[nodiscard]] bool anyFileContainsIn(const std::filesystem::path &directory, const std::string &needle) const
         {
             for (const auto &file: collectRegularFiles(directory))
@@ -344,12 +278,7 @@ namespace AsynGyanis::Base
             return false;
         }
 
-        /**
-         * @brief 写入一条日志并刷新，使文件 Sink 的内容立即可读
-         * @param loggerName 日志器名称
-         * @param level 日志等级
-         * @param message 日志内容
-         */
+        /** @brief 写入一条日志并刷新，使文件 Sink 的内容立即可读 */
         static void logAndFlush(const std::string &loggerName, const LogLevel level, const std::string &message)
         {
             const Logger &logger = LoggerRegistry::instance().getLogger(loggerName);
@@ -1315,8 +1244,7 @@ namespace AsynGyanis::Base
     /**
      * @brief sinks 字段类型不符（漏写每条的 `-`）时保留原有 sink，而不是把该 logger 清空
      * @details 诊断写的是「已忽略该字段」，行为就得是忽略：清空会让这个 logger 此后静默丢掉
-     *          所有日志，而运维只看到一行标准错误。这里先配好一个可用的 console sink，再用
-     *          类型不符的配置覆盖同一 logger
+     *          所有日志，而运维只看到一行标准错误
      */
     TEST_F(LoggerConfigLoaderTest, KeepsExistingSinksWhenSinksFieldHasWrongType)
     {

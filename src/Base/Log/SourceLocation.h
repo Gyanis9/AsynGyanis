@@ -17,8 +17,8 @@ namespace AsynGyanis::Base
     /**
      * @brief 轻量级源码位置信息（可 constexpr 构造）
      *
-     * @details 包装 std::source_location 的文件名/行号/函数名三项，仅保存指针而非
-     *          标准对象，便于放入 LogEvent 并在 Release 构建下退化为全空位置。
+     * @details 包装 std::source_location 的文件名/行号/函数名，只存指针不存标准对象，
+     *          便于放进 LogEvent 并在 Release 下退化为全空位置。
      */
     struct SourceLocation
     {
@@ -26,9 +26,6 @@ namespace AsynGyanis::Base
         int         line         = 0;       ///< 行号
         const char *functionName = nullptr; ///< 函数名
 
-        /**
-         * @brief 默认构造，所有字段置空
-         */
         constexpr SourceLocation() = default;
 
         /**
@@ -68,10 +65,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 仅返回文件名部分（去掉目录前缀）
-         * @details 同时识别 '/' 与 '\\' 两种分隔符，因此 Windows 与 Linux 的
-         *          编译器路径都能正确截断。标注 constexpr 后，只要文件名在编译期已知，
-         *          截断结果就能在编译期算完（source_location 的文件名对每次调用点都是常量）；
-         *          实现在 string_view 上反向查找最后一个分隔符，短文件名的场景远比逐字符正向扫描快。
+         * @details 同时识别 '/' 与 '\\'。constexpr 使编译期已知的文件名（source_location
+         *          对每个调用点都是常量）在编译期算完。
          * @return const char* 短文件名，位置为空时返回空字符串
          */
         [[nodiscard]] constexpr const char *shortFileName() const noexcept

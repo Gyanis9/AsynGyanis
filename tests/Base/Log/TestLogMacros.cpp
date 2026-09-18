@@ -1,11 +1,4 @@
-/**
- * @file TestLogMacros.cpp
- * @brief LogMacros 单元测试：源码位置采集宏与等级/格式化宏经由根日志器的输出行为
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// LogMacros 单元测试：源码位置采集宏与等级/格式化宏经由根日志器的输出行为
 
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Sinks/LogSink.h"

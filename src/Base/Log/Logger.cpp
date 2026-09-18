@@ -125,9 +125,8 @@ namespace AsynGyanis::Base
                     sink->write(event);
                 } catch (const std::exception &sinkError)
                 {
-                    // 单个 Sink 异常不应阻止其他 Sink 接收日志，但**绝不能静默**：日志系统自身
-                    // 出了故障，它没有别的去处可报，只能写一行标准错误——否则表现就是「日志莫名其妙少了」。
-                    // 会抛的写路径本就罕见（例如滚动时无法重开文件），因此不必再限流
+                    // 单个 Sink 异常不应阻止其他 Sink 收日志，但绝不能静默：日志系统自己出了故障
+                    // 没有别处可报。会抛的写路径本就罕见（如滚动时无法重开文件），无需限流
                     std::cerr << "Logger(" << name() << ")：某个 Sink 写入失败，该 Sink 的后续日志可能丢失："
                             << sinkError.what() << '\n';
                 } catch (...)

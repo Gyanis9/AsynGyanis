@@ -1,13 +1,5 @@
-/**
- * @file TestConfigValue.cpp
- * @brief ConfigValue 严格取用工具单元测试：configValueAs 的类型与范围判定、configTypeNameOf 的名称映射
- * @details 钉住的核心口径：不取整、不回绕、不跨类型转换——类型或范围对不上就返回空，
- *          由调用方回落默认值，绝不静默变形。
- * @author Gyanis
- * @date 2026-09-15
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// ConfigValue 严格取用工具单元测试：configValueAs 的类型与范围判定、configTypeNameOf 的名称映射。
+// 钉住的核心口径：不取整、不回绕、不跨类型转换——类型或范围对不上就返回空，由调用方回落默认值。
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"

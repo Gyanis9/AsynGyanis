@@ -29,9 +29,8 @@ namespace AsynGyanis::Base
     /**
      * @brief 生成当前时间戳字符串（含毫秒）
      *
-     * @details 本地时间转换统一走 AsynGyanis::Platform::PlatformTime::localTime()，
-     *          因此 Windows 与 Linux 的转换行为一致；格式化使用
-     *          thread_local 缓冲区的 std::format_to_n，避免 std::format 的堆分配。
+     * @details 本地时间转换走 PlatformTime::localTime()，两端行为一致；
+     *          格式化写进 thread_local 缓冲，省掉每行一次堆分配。
      * @return std::string 形如 "2026-09-10 12:34:56.789" 的时间戳
      */
     inline std::string currentTimestamp()

@@ -27,8 +27,7 @@ namespace AsynGyanis::Base
     {
         /**
          * @brief 按键取配置值，键缺失或类型不符时返回空
-         * @details 与 ConfigManager 的类型化取值同一口径（见 configValueAs）：不做跨类型转换，
-         *          字符串 "true" 不会当布尔用、数字不会当字符串取。
+         * @details 与 configValueAs 同一口径：不做跨类型转换，"true" 不会当布尔用、数字不会当字符串取。
          * @tparam ValueType 目标类型
          * @param configuration 承载该键的对象
          * @param key 键名
@@ -55,12 +54,11 @@ namespace AsynGyanis::Base
         const auto globalLevel  = configuration.get<std::string>(globalLevelKey, "INFO");
         const auto defaultLevel = logLevelFromString(globalLevel);
 
-        // ConfigManager 使用扁平化键存储，此处从 key 前缀提取 logger 名。
+        // 配置以扁平键存储，具名 logger 由前缀下的键推导
         const std::string     loggerPrefix = configurationPrefix + ".loggers.";
         std::set<std::string> loggerNames;
         for (const auto &key: configuration.keys())
         {
-            // C++20 起用 starts_with 表达「前缀匹配」，语义比 rfind(..., 0) == 0 直白
             if (!key.starts_with(loggerPrefix))
             {
                 continue;
@@ -74,10 +72,9 @@ namespace AsynGyanis::Base
             }
         }
 
-        // root 是兜底：没人显式配 logging.loggers.root 时，它照样要按 global_level 与默认输出
-        // 目标就位。只在「整个 loggers 段缺席」时才配 root 是不够的——只配了具名 logger 的部署里，
-        // 框架自身那些走 root 的日志会停在「无 sink」的默认状态上被静默丢掉，而那恰恰是最需要
-        // 看到的诊断。显式配了 root 的走下面具名 logger 那条路（LoggerRegistry 的 "root" 就是它本体）
+        // 没人显式配 root 时也要按 global_level 装上控制台 sink：只配了具名 logger 的部署里，
+        // 框架自身那些走 root 的日志会停在「无 sink」的默认状态上被静默丢掉，而那正是最需要
+        // 看到的诊断。显式配了 root 的走下面具名 logger 那条路
         if (!loggerNames.contains("root"))
         {
             auto &root = LoggerRegistry::instance().getRootLogger();
@@ -108,8 +105,8 @@ namespace AsynGyanis::Base
 
     void LoggerConfigLoader::applyLoggerConfig(Logger &logger, const ConfigValue &loggerConfiguration, const std::filesystem::path &baseDirectory)
     {
-        // 先把取值形态校验完再动 sink：类型不符时当场诊断并保留原有 sink，否则「清空之后抛异常」
-        // 会让这个 logger 此后静默丢日志，而那个异常类型还没写在契约里
+        // 先校验完取值形态再动 sink：类型不符时当场诊断并保留原有 sink（清空后才发现不符
+        // 会让该 logger 此后静默丢日志）
         const auto levelText     = configValueAt<std::string>(loggerConfiguration, "level");
         const auto sinksArrayOpt = configValueAt<ConfigArray>(loggerConfiguration, "sinks");
         if (loggerConfiguration.contains("level") && !levelText.has_value())

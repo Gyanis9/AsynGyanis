@@ -1,11 +1,4 @@
-/**
- * @file TestFileSink.cpp
- * @brief FileSink 单元测试：父目录创建、追加/截断语义、reopen 切换路径与落盘完整性
- * @author Gyanis
- * @date 2026-09-10
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// FileSink 单元测试：父目录创建、追加/截断语义、reopen 切换路径与落盘完整性
 
 #include "Base/Log/Sinks/FileSink.h"
 
@@ -44,7 +37,6 @@ namespace AsynGyanis::Base
         public:
             /**
              * @brief 使用给定前缀构造格式化器
-             * @param prefix 输出前缀标记
              */
             explicit MarkerFormatter(std::string prefix) :
                 m_prefix(std::move(prefix))
@@ -54,8 +46,6 @@ namespace AsynGyanis::Base
             /**
              * @brief 输出「前缀:消息」
              * @details 重写 LogFormatter::format()：版式极简，便于在文件内容中直接检索前缀。
-             * @param event 日志事件
-             * @return std::string 标记化文本
              */
             std::string format(const LogEvent &event) override
             {
@@ -67,10 +57,7 @@ namespace AsynGyanis::Base
         };
 
         /**
-         * @brief 构造字段齐备的日志事件
-         * @param level 日志等级
-         * @param message 日志消息
-         * @return LogEvent 日志事件
+         * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "file message")
         {
@@ -85,8 +72,7 @@ namespace AsynGyanis::Base
          * @brief 读取文本文件全部内容并统一换行符
          * @details FileSink 以文本模式写文件，Windows 上会把 '\n' 变成 "\r\n"，
          *          因此这里按二进制读取后再归一化换行，保证跨平台的逐行断言一致。
-         * @param filePath 目标文件路径
-         * @return std::string 文件内容，无法打开时返回空串
+         * @return 无法打开文件时返回空串
          */
         std::string readWholeFile(const fs::path &filePath)
         {
@@ -107,8 +93,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 统计文件中的换行数量
-         * @param filePath 目标文件路径
-         * @return std::size_t 行数
          */
         std::size_t countLines(const fs::path &filePath)
         {
@@ -118,9 +102,6 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断文件内容是否包含子串
-         * @param filePath 目标文件路径
-         * @param needle 期望出现的子串
-         * @return true 出现
          */
         bool fileContains(const fs::path &filePath, const std::string &needle)
         {

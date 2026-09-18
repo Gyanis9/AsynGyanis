@@ -150,9 +150,9 @@ namespace AsynGyanis::Base
         std::atomic<Logger *> m_cachedRootLoggerPointer{nullptr};
 
         /// 根日志器缓存：所有增删日志器的入口都会将其置空，读取时无锁命中缓存。
-        /// 这里保存的是 shared_ptr 强引用而非裸指针——若只缓存裸指针，缓存加载与解引用之间
-        /// 并发的 clear()/unregisterLogger() 可能已把对象销毁（原缺陷即为此类 use-after-free）。
-        /// 与 m_cachedRootLoggerPointer 成对更新：这份强引用保证对象在缓存命中期间不会被销毁
+        /// 存 strong 引用而非裸指针是必须的：否则缓存加载与解引用之间若有并发的
+        /// clear()/unregisterLogger()，对象可能已被销毁。与 m_cachedRootLoggerPointer
+        /// 成对更新——这份强引用保证对象在缓存命中期间一直存活
         std::atomic<std::shared_ptr<Logger> > m_cachedRootLogger{nullptr};
     };
 } // namespace AsynGyanis::Base

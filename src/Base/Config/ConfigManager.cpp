@@ -27,8 +27,8 @@ namespace AsynGyanis::Base
     {
         /**
          * @brief 从一批配置文件推导配置目录
-         * @details 只有全部文件同处一个目录时才据此设定配置目录；出现相对路径或跨目录时
-         *          返回空路径，表示不猜测一个并不存在的配置目录，由调用方保留既有取值。
+         * @details 全部文件同处一个目录时才返回它；出现相对路径或跨目录时返回空路径，
+         *          表示不猜测一个并不存在的配置目录，由调用方保留既有取值。
          * @param filePaths 成功加载的配置文件路径
          * @return std::filesystem::path 公共父目录，无法判定时为空路径
          */
@@ -55,11 +55,11 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 把整数或浮点值写成十进制文本
-         * @details 用 std::to_chars 写进栈上缓冲再一次性构造字符串：既不做本地化，
-         *          也不像 std::to_string/std::ostringstream 那样依赖流状态或多次扩容。
+         * @details 用 std::to_chars 写进栈上缓冲再一次性构造字符串：不受 locale 影响，
+         *          也不像 std::to_string/std::ostringstream 那样多次扩容。
          * @tparam Number 算术类型
          * @param value 待文本化的数值
-         * @return std::string 数值文本；极端情况下（缓冲区溢出）返回空串
+         * @return std::string 数值文本；缓冲区不足时返回空串
          */
         template<typename Number>
         [[nodiscard]] std::string numberToText(const Number value)
@@ -82,9 +82,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 把「剩余点分路径 → 取值」重新聚成嵌套对象
-         * @details 与 flattenValue() 互为逆运算：首段相同的路径归到同一个子对象下再递归，
-         *          剩余路径里没有点号的即为叶子。路径视图指向前一层容器里的字符串，而前一层
-         *          容器在整层递归期间一直存活，故视图始终有效。
+         * @details 与 flattenValue() 互为逆运算：首段相同的路径归到同一子对象下再递归，
+         *          剩余路径里没有点号的即叶子。路径视图指向调用方容器里的字符串，
+         *          该容器在整层递归期间一直存活。
          * @param entries 本层的全部条目
          * @return ConfigObject 本层对象
          */
@@ -619,10 +619,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 把 YAML 标量转换为 JSON 标量
-         * @details 引号标量带非特定标签 "!"，一律按字符串处理（引号就是「这是文本」的显式意图）；
-         *          普通标量（标签 "?"）按 YAML 1.2 核心 schema 识别 true/false、整数与浮点，
-         *          其余原样作字符串；显式标签只认核心 schema 的 str/int/float/bool/null，
-         *          其余标签（如 !!binary、!!timestamp）明确报错而不是静默丢成字符串。
+         * @details 引号标量（标签 "!"）一律按字符串处理；普通标量（标签 "?"）按 YAML 1.2
+         *          核心 schema 识别 true/false、整数与浮点，其余原样作字符串；显式标签只认
+         *          核心 schema 的 str/int/float/bool/null，其余（如 !!binary、!!timestamp）
+         *          明确报错而不是静默丢成字符串。
          * @param node 标量节点
          * @return ConfigValue 转换结果
          * @throws YamlConversionException 标签不受支持、整数或浮点越界、显式 bool/float 的取值不合法
@@ -688,9 +688,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 递归把 yaml-cpp 节点转换为 JSON 值
-         * @details 别名在 yaml-cpp 的 DOM 里是共享引用、在 JSON 里只能深拷贝，因此用深度与节点总数
-         *          两道上限拦住循环别名与别名炸弹；重复键在 DOM 中被保留为两份，这里明确报错，
-         *          而不是让后者静默覆盖前者。
+         * @details 别名在 yaml-cpp 的 DOM 里是共享引用、在 JSON 里只能深拷贝，故用深度与节点总数
+         *          两道上限拦住循环别名与别名炸弹；重复键在 DOM 里保留为两份，这里明确报错
+         *          而不让后者静默覆盖前者。
          * @param node 当前节点
          * @param depth 当前嵌套深度（根为 0）
          * @param remainingNodeBudget 剩余可转换节点数，逐节点扣减
@@ -755,7 +755,7 @@ namespace AsynGyanis::Base
          * @param text 文档文本
          * @return ConfigValue 文档根值
          * @throws YAML::Exception YAML 语法非法
-         * @throws YamlConversionException 文档超过了展开或深度上限、含不支持的标签
+         * @throws YamlConversionException 超过展开或深度上限、含不支持的标签
          */
         [[nodiscard]] ConfigValue yamlDocumentToConfigValue(const std::string &text)
         {
@@ -788,7 +788,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 按文件后缀选择原生解析器解析一份配置文档
-         * @details .json 走 nlohmann_json；.yaml/.yml 走 yaml-cpp 并转换为 JSON 值模型。
+         * @details .json 走 nlohmann_json；.yaml/.yml 走 yaml-cpp 再转换成 JSON 值模型。
          * @param text 文档文本
          * @param filePath 文件路径，仅用于挑选解析器
          * @return ConfigValue 文档根值
@@ -946,10 +946,6 @@ namespace AsynGyanis::Base
     {
         disableHotReload();
     }
-
-    // ============================================================================
-    // 内部加载实现
-    // ============================================================================
 
     ConfigLoadResult ConfigManager::loadFromDirectoryImplementation(const std::filesystem::path &configDirectory, const bool recursive)
     {
