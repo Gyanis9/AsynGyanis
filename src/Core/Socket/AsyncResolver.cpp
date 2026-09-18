@@ -109,9 +109,9 @@ namespace AsynGyanis::Core
                     state->addresses.emplace_back(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
                 }
             }
-            for (auto &addr: v6Addresses)
+            for (auto &address: v6Addresses)
             {
-                state->addresses.push_back(std::move(addr));
+                state->addresses.push_back(std::move(address));
             }
             freeaddrinfo(result);
 

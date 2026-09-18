@@ -46,8 +46,7 @@ namespace AsynGyanis::Core
         Timer timer(loop);
 
         // 未被 co_await 的等待器不会登记任何定时器，仅验证可构造
-        auto awaiter = timer.waitFor(std::chrono::milliseconds(100));
-        (void)awaiter;
+        [[maybe_unused]] auto awaiter = timer.waitFor(std::chrono::milliseconds(100));
         EXPECT_EQ(loop.timerQueue().pendingCount(), 0U);
     }
 

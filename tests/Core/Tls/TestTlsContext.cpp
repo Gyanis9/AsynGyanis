@@ -1064,8 +1064,7 @@ namespace AsynGyanis::Core
             {
                 // 读一轮处理握手后的 NewSessionTicket；非应用数据被 SSL_read 就地消费，最后以 WANT_READ 收尾
                 char      ignoredByte = 0;
-                const int readResult  = SSL_read(clientSsl.get(), &ignoredByte, 1);
-                (void) readResult;
+                [[maybe_unused]] const int readResult = SSL_read(clientSsl.get(), &ignoredByte, 1);
                 ERR_clear_error();
 
                 // 礼仪式关闭：SSL_free 会把「未发过 close_notify」的连接当坏会话，顺手把其当前

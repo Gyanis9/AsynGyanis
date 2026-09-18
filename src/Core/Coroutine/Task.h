@@ -207,9 +207,9 @@ namespace AsynGyanis::Core
              * @details 协程帧可能在线程之间迁移，池本身是进程级单例并由互斥锁保护，
              *          因此任何线程回收自己看到的帧都只会把块压回同一个空闲列表。
              */
-            static void operator delete(void *const ptr, const size_t size) noexcept
+            static void operator delete(void *const memory, const size_t size) noexcept
             {
-                CoroutinePool::instance().deallocate(ptr, size);
+                CoroutinePool::instance().deallocate(memory, size);
             }
 
             /**
@@ -441,9 +441,9 @@ namespace AsynGyanis::Core
             /**
              * @brief 将协程帧内存归还给进程级 CoroutinePool。
              */
-            static void operator delete(void *const ptr, const size_t size) noexcept
+            static void operator delete(void *const memory, const size_t size) noexcept
             {
-                CoroutinePool::instance().deallocate(ptr, size);
+                CoroutinePool::instance().deallocate(memory, size);
             }
 
             /**
