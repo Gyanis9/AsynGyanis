@@ -5,7 +5,7 @@
 #include "Base/Exception/Exception.h"
 #include "Platform/Platform.h"
 
-#include "BaseTestSupport.h"
+#include "CommonTestSupport.h"
 #include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -73,7 +73,7 @@ namespace AsynGyanis::Core
             }
 
         private:
-            Base::TestSupport::TemporaryDirectory m_directory; ///< 本用例独占的临时目录（析构时递归删除）
+            AsynGyanis::TestSupport::TemporaryDirectory m_directory; ///< 本用例独占的临时目录（析构时递归删除）
             std::filesystem::path                 m_path;      ///< 记录文件
         };
 

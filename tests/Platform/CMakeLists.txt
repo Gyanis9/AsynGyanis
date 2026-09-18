@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 # 测试目录结构与 src/Platform 的三个子目录一一对应
 add_executable(TestPlatform
         PlatformTestSupport.h
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
 
         IO/TestFileDescriptor.cpp
         IO/TestEventNotifier.cpp
@@ -33,6 +34,8 @@ target_link_libraries(TestPlatform PRIVATE
 target_include_directories(TestPlatform PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
+        # 共享测试夹具（临时目录与等待）的实体所在目录
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
 
 target_compile_features(TestPlatform PRIVATE cxx_std_23)

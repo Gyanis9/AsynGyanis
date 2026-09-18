@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 # 测试目录结构与 src/Core 的四个子目录逐级对应，全部链接进同一个 TestCore 可执行文件
 add_executable(TestCore
         CoreTestSupport.h
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
 
         Exception/TestCoreException.cpp
 
@@ -48,9 +49,9 @@ target_compile_definitions(TestCore PRIVATE
 target_include_directories(TestCore PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         # src 用于 "Core/..." 形式的生产头包含，本目录用于 "CoreTestSupport.h" 同级包含，
-        # tests/Base 用于复用 BaseTestSupport.h 的临时目录夹具
+        # tests/TestSupport 用于复用 CommonTestSupport.h 的临时目录与等待夹具
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/tests/Base
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
 
 target_compile_features(TestCore PRIVATE cxx_std_23)

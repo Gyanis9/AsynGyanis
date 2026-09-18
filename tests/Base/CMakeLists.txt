@@ -4,6 +4,7 @@ find_package(GTest REQUIRED)
 # 全部链接进同一个 TestBase 可执行文件
 add_executable(TestBase
         BaseTestSupport.h
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
 
         Config/TestConfigValue.cpp
         Config/TestConfigValueType.cpp
@@ -42,6 +43,8 @@ target_include_directories(TestBase PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/..
+        # 共享测试夹具（临时目录与等待）的实体所在目录
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
 
 target_compile_features(TestBase PRIVATE cxx_std_23)

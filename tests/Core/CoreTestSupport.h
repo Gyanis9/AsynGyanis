@@ -17,6 +17,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
+#include "CommonTestSupport.h"
 
 #include <atomic>
 #include <chrono>
@@ -30,33 +31,11 @@
 
 namespace AsynGyanis::Core::TestSupport
 {
-    /// 等待类断言的统一上限：正常耗时都在毫秒级，给足余量但不许无界等待
-    inline constexpr std::chrono::milliseconds kWaitTimeout{5000};
+    using AsynGyanis::TestSupport::kWaitTimeout;
+    using AsynGyanis::TestSupport::waitForCondition;
 
     /// 事件泵的单步等待（毫秒）：够短到不拖慢用例，又够长到让刚发出的字节到达
     inline constexpr int kPumpStepMilliseconds = 5;
-
-    /**
-     * @brief 在时限内轮询等待条件成立（避免固定 sleep 造成的偶发失败）
-     * @tparam Predicate 可调用且返回 bool 的类型
-     * @param predicate 待轮询的条件
-     * @param timeout 超时上限，默认 kWaitTimeout
-     * @return true 条件在时限内成立
-     */
-    template<typename Predicate>
-    bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout = kWaitTimeout)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!predicate())
-        {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     /**
      * @brief 取回一批就绪事件并交给各自的注册对象
