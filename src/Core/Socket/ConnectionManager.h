@@ -20,16 +20,12 @@ namespace AsynGyanis::Core
     class Connection;
 
     /**
-     * @brief 管理所有活跃的连接对象，提供添加/删除与优雅关闭功能。
-     *
-     * 内部连接集合由 shared_mutex 保护，因此**集合本身的**增删与遍历可以跨线程并发进行。
-     *
-     * @warning 「集合线程安全」不等于「关闭连接线程安全」：shutdown() 会在**调用者线程**上
-     *          逐个执行 connection->close()，而该连接的读写线程可能正在同一个底层套接字上
-     *          收发数据（AsyncSocket 的文件描述符是普通 int，不是原子量）。
-     *          因此从外部线程发起关闭时，约定是由连接所属的事件循环线程来收尾：
-     *          跨线程场景请把关闭动作投递到那个循环（EventLoop::scheduler().scheduleRemote()），
-     *          不要直接调用本类的 shutdown()。
+     * @brief 管理所有活跃的连接对象，提供添加/删除与优雅关闭功能
+     * @warning 集合本身由 shared_mutex 保护（增删与遍历可跨线程并发），但这不等于「关闭连接
+     *          线程安全」：shutdown() 在**调用者线程**上逐个执行 connection->close()，而该连接的
+     *          读写线程可能正在同一个底层套接字上收发数据（AsyncSocket 的文件描述符是普通 int，
+     *          不是原子量）。因此跨线程关闭必须把动作投递到连接所属的事件循环
+     *          （EventLoop::scheduler().scheduleRemote()），不要直接调用 shutdown()
      */
     class ConnectionManager
     {
@@ -71,20 +67,14 @@ namespace AsynGyanis::Core
         [[nodiscard]] std::vector<std::shared_ptr<Connection> > snapshot() const;
 
         /**
-         * @brief 关闭所有连接。
-         *
-         * 遍历所有连接，调用其关闭接口（如 close()），并请求取消（requestStop）。
-         * 通常用于服务停止时主动清理所有连接。
-         * @note 本方法置位「关闭已开始」标志，此后经 add() 挂上来的连接会被立即收尾，
-         *       因此「接受新连接」与「关闭全部连接」并发时不会有连接被漏掉。
+         * @brief 关闭所有连接
+         * @note 逐个调用 close() 并请求取消；置位「关闭已开始」标志后，经 add() 挂上来的连接
+         *       会被立即收尾，因此「接受新连接」与「关闭全部连接」并发时不会有连接被漏掉
          */
         void shutdown();
 
         /**
-         * @brief 等待所有连接完全退出。
-         *
-         * 阻塞直到 m_connections 变为空。通常配合 shutdown() 使用，
-         * 确保关闭后所有连接都已析构或释放。
+         * @brief 等待所有连接完全退出（阻塞到活跃连接表变空）
          */
         void waitAll();
 

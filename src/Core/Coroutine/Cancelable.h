@@ -14,10 +14,6 @@ namespace AsynGyanis::Core
 {
     /**
      * @brief 可取消混入类，提供标准的协作取消机制。
-     *
-     * 该类封装了 std::stop_source / std::stop_token，用于实现可取消的操作。
-     * 派生类可以通过继承获得发起取消请求、查询取消状态以及获取停止令牌的能力。
-     * 注意：该类不可拷贝，但可移动。
      */
     class Cancelable
     {
@@ -27,7 +23,6 @@ namespace AsynGyanis::Core
          */
         Cancelable() = default;
 
-        // 禁止拷贝，允许移动
         Cancelable(const Cancelable &) = delete;
 
         Cancelable &operator=(const Cancelable &) = delete;

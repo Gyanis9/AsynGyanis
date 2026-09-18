@@ -40,15 +40,14 @@ namespace AsynGyanis::Core
 
         /**
          * @brief ALPN 选择回调：在客户端提供的列表里按本端偏好选出协议名
-         * @details 偏好顺序见 kAlpnPreferences（h2 优先、其次 http/1.1）。只能选客户端**提供过**的名字
-         *          （RFC 7301 §3.2）：替对端选一个它没提过的名字会被严格的客户端直接拒绝。
-         *          客户端没提供 ALPN 时返回 NOACK 让握手继续，不因为对端没提就拒绝连接。
          * @param outputProtocol 出参，被选中的协议名（裸名称，不带长度前缀）
          * @param outputLength 出参，协议名字节数
          * @param clientProtocols 客户端提供的协议列表（线上格式：长度字节 + 名称）
          * @param clientProtocolsLength 客户端列表总字节数
-         * @return int SSL_TLSEXT_ERR_OK 选中了客户端提供过的协议名；SSL_TLSEXT_ERR_NOACK 未提供列表；
+         * @return SSL_TLSEXT_ERR_OK 选中；SSL_TLSEXT_ERR_NOACK 客户端未提供列表；
          *         SSL_TLSEXT_ERR_ALERT_FATAL 列表里没有本端支持的协议
+         * @note 只能选客户端**提供过**的名字（RFC 7301 §3.2）：替对端选一个它没提过的名字会被
+         *       严格的客户端直接拒绝；偏好顺序见 kAlpnPreferences（h2 优先）
          */
         int selectAlpnProtocol(SSL *, const unsigned char **outputProtocol, unsigned char *outputLength,
                                const unsigned char *clientProtocols, const unsigned int clientProtocolsLength, void *)

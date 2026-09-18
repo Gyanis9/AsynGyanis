@@ -223,7 +223,7 @@ namespace AsynGyanis::Core
     {
         if (m_sockets.contains(fileDescriptor))
         {
-            // 同一描述符重复注册：调用方多半是把两个注册对象套在了同一个描述符上
+            // 调用方多半是把两个注册对象套在了同一个描述符上
             return false;
         }
 
@@ -633,7 +633,6 @@ namespace AsynGyanis::Core
 
         // 探针投递时就撞上硬错误的方向没有完成通知可等（对端复位后零字节 WSASend 直接返回
         // WSAECONNRESET，实测确认）：在这里合成错误事件，让等待方立刻醒来去拿真实错误。
-        // 有事件就直接返回，不进入阻塞等待
         m_results.clear();
         resetResultMergeTable();
         harvestSyntheticErrorEvents();

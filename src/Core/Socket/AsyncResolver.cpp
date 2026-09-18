@@ -97,7 +97,7 @@ namespace AsynGyanis::Core
                 return;
             }
 
-            // 收集所有地址，先 IPv6 后 IPv4（TcpClient 从列表头部开始试连，因此优先尝试 IPv6）
+            // 两趟收集把 IPv6 挪到末尾：返回列表按「IPv4 在前、IPv6 在后」的契约排列
             std::vector<InetAddress> v6Addresses;
             for (auto *rp = result; rp != nullptr; rp = rp->ai_next)
             {
@@ -109,14 +109,12 @@ namespace AsynGyanis::Core
                     state->addresses.emplace_back(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
                 }
             }
-            // IPv6 追加在 IPv4 之后 —— 结果列表的头部是 IPv4，尾部是 IPv6
             for (auto &addr: v6Addresses)
             {
                 state->addresses.push_back(std::move(addr));
             }
             freeaddrinfo(result);
 
-            // 结果已就绪，唤醒等待的协程
             targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
         }
     } // namespace

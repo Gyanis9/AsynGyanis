@@ -18,12 +18,7 @@
 namespace AsynGyanis::Core
 {
     /**
-     * @brief 固定大小线程池。
-     *
-     * 每个工作线程绑定一个 EventLoop 和 Scheduler。
-     * 使用 std::jthread 实现自动 join 和协作取消。
-     *
-     * 线程池创建后需要调用 start() 启动所有线程，stop() 停止并等待退出。
+     * @brief 固定大小线程池，每个工作线程绑定一个 EventLoop 与 Scheduler
      */
     class ThreadPool
     {
@@ -45,15 +40,11 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 启动所有工作线程。
-         *
-         * 为每个线程创建独立的 EventLoop 和 Scheduler，并开始运行事件循环。
          */
         void start();
 
         /**
          * @brief 停止所有工作线程并等待 join。
-         *
-         * 通知所有 EventLoop 退出，并等待每个 jthread 结束。
          */
         void stop();
 

@@ -76,7 +76,7 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        // 轮转取一个工作循环：登记顺序即轮转顺序，游标只在本线程（接受循环）里推进
+        // 登记顺序即轮转顺序，游标只在本线程（接受循环）里推进
         Worker &worker = m_workers[m_nextWorkerIndex];
         m_nextWorkerIndex = (m_nextWorkerIndex + 1) % m_workers.size();
 

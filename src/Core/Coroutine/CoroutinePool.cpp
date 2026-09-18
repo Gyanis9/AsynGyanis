@@ -165,9 +165,8 @@ namespace AsynGyanis::Core
         }
         const size_t newCount = std::min(count, kMaximumTotalBlocks - allocatedBlocks);
 
-        // 段内块规格由档位决定：小档段切 256 B 块、大档段切 2048 B 块，段描述里必须记下这一点——
-        // 归属判定要按「本段自己的块大小」算边界，用全池某一个规格去乘会把前一段的区间
-        // 越到后一段上（早期单规格实现没有这个问题，加档之后就有）
+        // 段内块规格由档位决定，段描述里必须记下这一点——归属判定要按「本段自己的块大小」算边界，
+        // 用全池某一个规格去乘会把前一段的区间越到后一段上
         const size_t chunkBlockSize = tier == 0 ? m_blockSize : kLargeBlockSize;
 
         // 默认对齐即可满足协程帧要求：x64 上 ::operator new 的默认对齐为 16 字节，

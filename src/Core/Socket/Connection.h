@@ -22,10 +22,7 @@ namespace AsynGyanis::Core
     class EventLoop;
 
     /**
-     * @brief TCP连接基类。
-     *
-     * 封装一个异步TCP连接，提供启动、关闭、地址查询以及协作取消能力。
-     * 派生类应实现具体的协议处理逻辑（通过重写 start() 协程）。
+     * @brief TCP 连接基类，支持协作取消
      */
     class Connection
     {
@@ -59,22 +56,17 @@ namespace AsynGyanis::Core
         Connection &operator=(Connection &&other) noexcept;
 
         /**
-         * @brief 启动连接的主逻辑协程。
-         *
-         * 派生类应重写此函数，实现具体的读写和处理流程。
-         * 默认实现返回一个立即完成的协程。
-         *
+         * @brief 启动连接的主逻辑协程
          * @return Task<> 协程任务
+         * @note 默认实现返回一个立即完成的协程；派生类应重写它，实现具体的读写与处理流程
          */
         virtual Task<> start();
 
         /**
-         * @brief 主动关闭连接。
-         *
-         * 设置存活标志为 false，并调用 socket 的关闭接口。
+         * @brief 主动关闭连接
          * @note 派生类若在套接字之外还持有自有传输层（例如 TLS），必须重写本函数先收掉
          *       自己那一层再调用基类实现；否则经基类指针（ConnectionManager::shutdown()）
-         *       关闭时，自有传输层收不到任何通知。
+         *       关闭时，自有传输层收不到任何通知
          */
         virtual void close();
 
@@ -121,13 +113,10 @@ namespace AsynGyanis::Core
         [[nodiscard]] virtual std::string localAddress() const;
 
         /**
-         * @brief 刷新空闲截止时间，把「多久没动静算超期」重新计时。
-         *
-         * @details 会话在相位切换时调用它：等待新请求首字节前刷空闲容忍度，读到字节后刷读超时，
-         *          发送响应前刷写超时。到点之后由服务器上的清扫协程负责关闭连接，
-         *          连接自身不做任何定时等待（帧在协程被挂起期间被销毁会让定时等待指向已释放内存）。
-         *
+         * @brief 刷新空闲截止时间，把「多久没动静算超期」重新计时
          * @param timeout 容忍时长；非正数表示清除截止时间，即关闭本项超时保护
+         * @note 到点之后由服务器上的清扫协程负责关闭连接，连接自身**不做任何定时等待**：
+         *       协程挂起期间帧可能已被销毁，定时等待会指向已释放内存
          * @note 只有所属事件循环线程读写本状态（清扫协程也在该线程上），因此没有原子量
          */
         void refreshIdleDeadline(std::chrono::milliseconds timeout) noexcept;
@@ -179,12 +168,9 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 服务器要优雅收口本连接时的钩子（在 close() **之前**调用）
-         *
-         * @details 服务器决定结束这条连接时（优雅关闭里那些没有在途工作的连接）先调用它，默认空实现。
-         *          与 onIdleTimeoutClosed() 的关键差别是**调用时机**：本钩子在通道仍然可用时调用，
-         *          实现因此能借最后一次机会把收口原因告诉对端——例如 HTTP/2 发一个收尾 GOAWAY，
-         *          对端据此知道哪些请求已经生效、新流没有生效，不必盲目重试；而
-         *          onIdleTimeoutClosed() 在 close() 之后调用，那时一个字节也写不出去。
+         * @note 与 onIdleTimeoutClosed() 的关键差别是**调用时机**：本钩子在通道仍然可用时调用，
+         *       实现能借最后一次机会把收口原因告诉对端（例如 HTTP/2 发收尾 GOAWAY）；
+         *       那个钩子在 close() 之后调用，那时一个字节也写不出去
          * @note 由服务器在所属事件循环线程上调用，必须无异常（异常会穿透收尾路径被记成「关闭连接失败」）；
          *       实现里的写出只能是**尽力而为**：这条路径不为等可写而挂起，写不出去就放弃
          */

@@ -26,25 +26,20 @@ namespace AsynGyanis::Core
     /**
      * @brief Windows 完成端口（IOCP）事件后端，接口与 Epoll 一致
      *
-     * @details epoll 语义到完成通知的映射（上层 IoWatcher 与 EventLoop 对此无感）：
-     *          - **一次性关注（`EPOLLONESHOT`）**：每次武装投递一个探针操作，完成即上报一次，
-     *            上层收到后按需再武装——这正是 epoll 里「一次上报消耗掉一次关注」的行为。
-     *            连接套接字的读方向是 1 字节 `MSG_PEEK` 的 WSARecv（只探测可读、不消费字节；
-     *            对端关闭时以 0 字节成功完成，与 recv 返回 0 同义），写方向是零字节 WSASend，
-     *            监听套接字用 AcceptEx。
-     *          - **水平触发（不带 `EPOLLONESHOT`）**：上报之后由下一次 wait() 重新武装，
-     *            与 epoll_wait 每次重新取一次就绪状态等价。只有 EventLoop 的唤醒描述符用它。
-     *          - 探针以失败完成（对端复位、描述符已关闭）时，连同该方向一起附上
-     *            `EPOLLERR | EPOLLHUP` 上报，让上层的 recv/send/accept 自己取回真实错误码。
-     *
      * @note **监听套接字的连接必须由 takeAcceptedSocket() 取走**：AcceptEx 在完成时已经把连接
-     *       从监听队列里摘下并接入它自己的套接字，`::accept()` 看不到它。TcpAcceptor 走的正是
+     *       从监听队列里摘下并接入它自己的套接字，`::accept()` 看不到它——TcpAcceptor 走的正是
      *       这条路径（见 AsyncSocket::takeAcceptedConnection()）。
      * @note 线程约束：全部方法只在所属事件循环线程上调用（完成通知也只在 wait() 里取出），
      *       因此注销与回收不需要任何锁。
+     * @note 探针以失败完成（对端复位、描述符已关闭）时，连同该方向一起附上 `EPOLLERR | EPOLLHUP`
+     *       上报，让上层的 recv/send/accept 自己取回真实错误码。
      * @warning 描述符必须是 Winsock 套接字：套接字、以及 Platform 侧用回环链路对实现的
      *          唤醒与定时器描述符都满足；事件句柄或文件句柄不满足。
      *
+     * @details epoll 语义到完成通知的映射（上层 IoWatcher 与 EventLoop 因此无需平台分支）：
+     *          `EPOLLONESHOT` 对应「每次武装投递一个探针、完成即上报一次」——读方向是 1 字节
+     *          `MSG_PEEK` 的 WSARecv（只探测可读、不消费字节，对端关闭时以 0 字节成功完成），
+     *          写方向是零字节 WSASend、监听用 AcceptEx；水平触发由下一次 wait() 重新武装。
      * @see Epoll, IoWatcher, EventLoop
      */
     class Iocp
@@ -71,14 +66,13 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 注册描述符并武装它的事件位
-         *
-         * @details 注册即与完成端口建立归属关系，随后按 `events` 里给出的方向投递探针。
-         *          探针投递失败**不算注册失败**：已连接套接字的对侧还没就绪、监听描述符暂时
-         *          拿不到接受套接字都会走到这里，上层真正等待时会经 modFileDescriptor() 再武装一次。
          * @param fileDescriptor 目标描述符（必须是套接字）
          * @param events 关注的事件位（EPOLLIN / EPOLLOUT，可带 EPOLLONESHOT）
          * @param userData 上报事件时写进 epoll_event.data.ptr 的用户数据（IoWatcher 用自己的地址）
          * @return true 已注册（同一描述符重复注册返回 false）
+         * @details 注册即与完成端口建立归属关系，随后按 `events` 里给出的方向投递探针；探针投递失败
+         *          **不算注册失败**——已连接套接字的对侧还没就绪、监听描述符暂时拿不到接受套接字
+         *          都会走到这里，上层真正等待时会经 modFileDescriptor() 再武装一次。
          */
         bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData);
 

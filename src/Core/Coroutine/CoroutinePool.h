@@ -17,16 +17,10 @@
 namespace AsynGyanis::Core
 {
     /**
-     * @brief 协程帧内存池。
-     *
-     * 以固定大小块加空闲链表的方式为协程帧提供 O(1) 的分配与回收，
-     * 请求大小不超过 blockSize 时不会走到通用堆分配器。
-     *
+     * @brief 协程帧内存池：以固定块加空闲链表为协程帧提供 O(1) 的分配与回收
      * @details 池是进程级单例而非线程局部：协程帧会在 EventLoop 线程之间迁移（scheduleRemote
-     *          投递、跨线程析构），按线程拆池会让归还方把块交给全局
-     *          ::operator delete，形成无效释放并破坏堆。稳态下分配与归还只操作本线程的缓存链表，
-     *          不取锁、不做原子操作；块归属按「内存段 + 段内偏移」判定，与分配线程无关。
-     *
+     *          投递、跨线程析构），按线程拆池会让归还方把块交给全局 ::operator delete，形成无效
+     *          释放并破坏堆；块归属按「内存段 + 段内偏移」判定，与分配线程无关。
      * @note Task::promise_type 的 operator new/delete 依赖本池，进程内所有协程帧共用它。
      */
     class CoroutinePool
@@ -50,9 +44,8 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 从池中分配一块内存。
-         * @details 优先取本线程缓存（无锁）；缓存空时从全局池批量搬运；池达到
-         *          kMaximumTotalBlocks 上限后不再扩容，此后的请求落到全局 ::operator new——
-         *          因此 allocate() 在任何情况下都能成功返回，不存在「池满了就取不到块」的状态。
+         * @details 池达到 kMaximumTotalBlocks 上限后不再扩容，此后的请求落到全局 ::operator new——
+         *          因此任何情况下都能成功返回，不存在「池满了就取不到块」的状态。
          * @param requiredSize 请求的字节数
          * @return void* 指向分配内存的指针
          * @throws std::bad_alloc 底层内存分配失败
@@ -61,10 +54,8 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 回收先前分配的内存。
-         * @details 分支条件必须与 allocate() 保持一致：按大小判定该块来自池还是全局堆，
-         *          来自池则压回**当前线程**的空闲链表（无锁，这也是跨线程归还之所以成立的原因——
-         *          块归哪个线程的缓存与其分配者无关，只要还在池里就不会丢），
-         *          否则交还全局 ::operator delete。
+         * @details 分支条件必须与 allocate() 保持一致：按大小判定块来自池还是全局堆，来自池则压回
+         *          **当前线程**的空闲链表（块归哪个线程的缓存与其分配者无关，只要还在池里就不会丢）。
          * @param pointer 待回收的内存指针，允许为 nullptr
          * @param requiredSize 分配时请求的字节数
          * @note 传入不属于本池的指针时同样按大小回退到全局堆释放，不会写坏空闲链表。

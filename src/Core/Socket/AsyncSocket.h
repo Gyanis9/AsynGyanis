@@ -30,12 +30,6 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 异步 TCP socket 封装，支持协程式 I/O
-     *
-     * 持有 EventLoop 引用和非阻塞文件描述符，提供协程式异步 I/O 方法。
-     * 所有 async* 方法内部通过 while(true) 循环处理 EAGAIN,
-     * 在不可用状态时通过常驻注册的 IoWatcher 挂起协程等待文件描述符就绪。
-     *
-     * @note 支持移动语义，不可复制
      * @note close() 会先调用 shutdown(SHUT_RDWR) 再 close，避免 TCP RST 异常断开
      * @note 所有异步操作均通过 EventLoop 中的 epoll 实例等待事件，不会阻塞线程
      */
@@ -74,15 +68,11 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 创建新 socket 的工厂方法
-         *
-         * 内部调用 socket() 并自动设置 SOCK_NONBLOCK | SOCK_CLOEXEC 标志，
-         * 确保 socket 是非阻塞的，且子进程不会继承该文件描述符。
-         *
          * @param loop   关联的 EventLoop
          * @param domain 协议族，通常为 AF_INET（IPv4）或 AF_INET6（IPv6）
          * @param type   socket 类型，默认为 SOCK_STREAM（TCP）
-         * @return AsyncSocket 实例
-         * @throws SystemException 当 socket() 系统调用失败时抛出
+         * @note 内部固定带上 SOCK_NONBLOCK | SOCK_CLOEXEC：socket 必为非阻塞，且子进程不会继承该描述符
+         * @throws SystemException socket() 系统调用失败
          */
         static AsyncSocket create(EventLoop &loop, int domain = AF_INET, int type = SOCK_STREAM);
 
@@ -103,11 +93,9 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 监听队列的默认长度
-         *
          * @details 不用平台的 SOMAXCONN：它的语义是「内核可自行放大队列」，会让连接洪泛时
          *          失去背压；这里给一个明确的默认值，超出部分由内核按各平台策略丢包。
-         *          128 与 Linux 早期 somaxconn 的默认值一致，足够覆盖常规突发。
-         *          需要更深或更浅的队列时由调用方显式传参。
+         *          128 与 Linux 早期 somaxconn 的默认值一致，足够覆盖常规突发
          */
         static constexpr int kDefaultListenBacklog = 128;
 
@@ -176,15 +164,13 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 聚合发送：一次系统调用提交多段数据，全部发完才返回
-         * @details 与 asyncSend 一样吸收「发送缓冲满」并挂起等待可写，区别在于把多段数据
-         *          合成一次提交（scatter/gather），省掉「头部块 + 正文」拼进同一块缓冲的那次
-         *          整体拷贝——正文越大越明显。部分写由内部游标推进，调用方不必关心。
          * @param buffers 段数组，按序拼接即为要发送的字节流
          * @param bufferCount 段数，必须落在 [1, Platform::Socket::kMaximumVectorCount] 内
-         * @return Task<ssize_t> — 全部发送完成时返回总字节数；返回 -1 表示对端已关闭（同 asyncSend）
+         * @return 全部发送完成时返回总字节数；返回 -1 表示对端已关闭（同 asyncSend）
+         * @note 多段合成一次提交（scatter/gather），省掉「头部块 + 正文」拼进同一块缓冲的整体拷贝；
+         *       部分写由内部游标推进，调用方不必关心
          * @note **每段的地址必须活到本次 co_await 恢复**，理由同 asyncSend
-         * @throws Base::SystemException 段数为 0 或超过平台上限（当场拒绝而不是静默拆分），
-         *         或发送失败（连接重置等）
+         * @throws Base::SystemException 段数为 0 或超过平台上限（当场拒绝而不是静默拆分），或发送失败
          */
         Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const;
 
@@ -205,16 +191,13 @@ namespace AsynGyanis::Core
 #if !ASYN_PLATFORM_WIN32
         /**
          * @brief 异步零拷贝发送：把文件的一段直接推给套接字（Linux sendfile）
-         * @details 与 asyncSendVectored 同语义：内部吸收「发送缓冲满」并挂起等待可写，
-         *          全部发完才返回。正文不经过用户态缓冲——内核把文件页缓存直接推给协议栈，
-         *          省掉整份文件的拷贝与首触缺页，静态文件响应走这条路径最划算。
          * @param fileDescriptor 源文件描述符（须为普通文件，如 MemoryMappedFile::nativeFileDescriptor()）
          * @param offset 从文件的第几个字节开始发送（不动描述符自身的读写偏移）
          * @param length 待发送的字节数
-         * @return Task<ssize_t> 全部发送完成时返回总字节数；不会返回部分长度或 -1，失败一律抛异常
+         * @return 全部发送完成时返回总字节数；不会返回部分长度或 -1，失败一律抛异常
+         * @note 正文不经过用户态缓冲：内核把文件页缓存直接推给协议栈，省掉整份文件的拷贝与首触缺页
          * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层没有零拷贝发送能力，本方法也不在
-         *       TlsSocket 上，调用方用 requires 探测该能力后再选路径（见 HttpSession 的零拷贝分支）；
-         *       Windows 没有可用的等价原语，原因见 Platform::Socket::sendFileChunk 的说明
+         *       TlsSocket 上（调用方用 requires 探测该能力）；Windows 无等价原语，见 sendFileChunk
          * @throws Base::SystemException 源文件描述符非法、待发字节数为 0，或发送失败
          *         （连接重置、对端在发送期间关闭、源文件在发送期间被截断等）
          */
@@ -222,11 +205,7 @@ namespace AsynGyanis::Core
 #endif
 
         /**
-         * @brief 关闭 socket（先 shutdown 再 close，避免 TCP RST）
-         *
-         * 首先调用 shutdown(SHUT_RDWR) 优雅关闭读写通道，
-         * 然后调用 close() 释放文件描述符。这样可以避免在未读取完数据时
-         * 直接 close 导致对端收到 RST 异常。
+         * @brief 关闭 socket：先 shutdown(SHUT_RDWR) 再 close，避免未读完数据直接 close 使对端收到 RST
          */
         void close();
 
@@ -315,15 +294,9 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 按需创建常驻注册对象（第一次等待时调用）
-         *
-         * @details 注册推迟到第一次等待才做，有两个必须的理由：
-         *          - **接受分发**：连接在监听循环上被接受、随即把描述符移交给工作循环。
-         *            epoll 允许同一个描述符出现在多个实例里，而 Windows 的完成端口**绑过一次就
-         *            换不了端口**——在监听循环上注册过的描述符，到工作循环里再也注册不上。
-         *            不在构造时注册，移交时才不会带上错误的归属。
-         *          - 只是收发系统调用就完成的套接字（多数短连接、以及被移交的那些）不必为
-         *            「可能永远用不到的注册」付一次系统调用。
-         *
+         * @note 注册推迟到第一次等待才做：Windows 完成端口**绑过一次就换不了端口**，在监听循环上
+         *       提前注册的描述符移交到工作循环后就再也注册不上；同时让只靠收发系统调用完成的
+         *       短连接不必为「可能永远用不到的注册」付一次系统调用
          * @return IoWatcher* 注册对象；描述符无效或已关闭时为空指针
          * @throws Base::SystemException 注册失败（同一描述符已被另一个注册对象占用、描述符非法）
          */
@@ -331,11 +304,9 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 常驻 epoll 注册（等待时按方向武装），第一次等待时创建
-         * @details 堆分配而非直接持有：epoll 里记的是注册对象的**地址**，而本类是可移动的
-         *          （移动后描述符跟着走）。直接持有成员会在移动时改变地址，让 epoll 里的
-         *          用户数据悬空；堆对象随指针转移，地址始终不变。
-         *          可读与可写共用一个注册对象：同步只允许一个方向有等待者，方向由各等待器指定。
-         *          `mutable`：等待方法本身是 const，但「第一次等待」要把注册对象建出来
+         * @details 堆分配而非直接持有：epoll 里记的是注册对象的**地址**，而本类可移动——堆对象随
+         *          指针转移，地址始终不变。可读与可写共用一个注册对象（方向由各等待器指定，同步只
+         *          允许一个方向有等待者）；`mutable` 是因为等待方法本身是 const 而首次等待要建对象。
          */
         mutable std::unique_ptr<IoWatcher> m_watcher;
     };

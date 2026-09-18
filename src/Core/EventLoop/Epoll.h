@@ -1,10 +1,6 @@
 /**
  * @file Epoll.h
  * @brief Linux epoll 实例的 RAII 封装
- *
- * 管理 epoll 文件描述符的生命周期, 提供添加/修改/删除被监听文件描述符的接口。
- * 析构时自动关闭 epoll 文件描述符。支持移动语义, 禁止拷贝。
- *
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -57,10 +53,6 @@ namespace AsynGyanis::Core
 {
     /**
      * @brief epoll 实例 RAII 封装
-     *
-     * 封装 Linux epoll 系统调用, 提供类型安全的文件描述符管理。
-     * 内部使用 epoll_create1(EPOLL_CLOEXEC) 创建实例,
-     * 通过 epoll_wait 等待事件, 通过 epoll_ctl 管理监听文件描述符。
      */
     class Epoll
     {
@@ -110,9 +102,6 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 重新装配文件描述符并启用 EPOLLONESHOT 模式
-         *
-         * 如果文件描述符已经注册，则执行 MOD 操作；否则执行 ADD 操作。
-         * 通常用于一次性触发（one-shot）场景，事件触发后需要重新装配才能再次触发。
          * @param fileDescriptor 目标文件描述符
          * @param events         新的事件掩码（调用者通常应包含 EPOLLONESHOT）
          * @param userData       挂载的用户数据

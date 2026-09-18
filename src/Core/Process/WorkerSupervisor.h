@@ -20,13 +20,7 @@
 namespace AsynGyanis::Core
 {
     /**
-     * @brief 多进程 worker 的编排器（master 侧）
-     *
-     * @details 只做编排，不碰请求处理：按配置起 N 个 worker 进程，主线程在 run() 里轮询它们的存活；
-     *          某个 worker 退出就补一个（带退避，且对「起来就崩」有次数上限），收到停止请求就对全部
-     *          worker 先请求体面退出、超期强杀，然后返回。worker 自身就是同一个可执行文件的一个实例
-     *          （参数由调用方给，本类不认识 `--worker` 这类约定），端口共享靠 SO_REUSEPORT。
-     *
+     * @brief 多进程 worker 的编排器（master 侧）：起进程、盯退出、按需重启、收尾送走；worker 参数全部由调用方给
      * @warning run() 必须在**进程还是单线程**时调用：worker 由 fork + exec 起（见 Platform::Process），
      *          多线程下 fork 出的子进程只带调用线程，锁与运行库状态都可能不自洽。
      * @warning Windows 上多进程共享端口没有等价物（缺 SO_REUSEPORT），因此 workerCount > 1 在构造时

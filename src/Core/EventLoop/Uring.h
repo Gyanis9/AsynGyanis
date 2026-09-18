@@ -27,18 +27,12 @@ namespace AsynGyanis::Core
     /**
      * @brief io_uring 事件后端，成员集合与 Epoll 完全一致
      *
-     * @details 把 io_uring 的 `IORING_OP_POLL_ADD` 当作一次性就绪通知用：每次武装提交一条
-     *          poll 请求，内核在关注事件满足时投递完成通知，wait() 把它翻译回 epoll_event
-     *          交给上层——EventLoop / IoWatcher / AsyncSocket 因此不需要任何平台分支。
-     *
-     * @note 语义差别的两处适配：
-     *       - **EPOLLONESHOT 与一次性天然对应**：携带该位的注册在完成通知送达后不自动重投，
-     *         由上层（IoWatcher）按需重新武装，与原 epoll 路径的机会等价。
-     *       - **水平触发需要替调用方重投**：不带 EPOLLONESHOT 的注册（本框架里只有事件循环的
-     *         唤醒描述符）在 epoll 上是「条件成立就一直报」；这里每次 wait() 入睡之前对
-     *         没有在途轮询的这类注册补投一次，效果等价。
-     * @note 仅在 Linux 上可用，且需要内核 5.6+（`IORING_OP_POLL_REMOVE` / 超时操作齐备）。
-     *       由构建开关 ASYN_WITH_IO_URING 选用；Windows 与未开启时的 Linux 仍走各自后端。
+     * @note 仅在 Linux 上可用，且需要内核 5.6+（`IORING_OP_POLL_REMOVE` / 超时操作齐备）；
+     *       由构建开关 ASYN_WITH_IO_URING 选用，Windows 与未开启时的 Linux 仍走各自后端。
+     * @details 把 `IORING_OP_POLL_ADD` 当作一次性就绪通知：每次武装提交一条 poll 请求，内核在关注
+     *          事件满足时投递完成通知，wait() 翻译回 epoll_event 交给上层（上层因此无平台分支）。
+     *          两处适配：`EPOLLONESHOT` 与一次性天然对应，完成送达后不自动重投、由上层重新武装；
+     *          水平触发（只有循环的唤醒描述符用它）在每次 wait() 入睡前补投一次。
      */
     class Uring
     {

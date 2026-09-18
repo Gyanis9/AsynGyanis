@@ -1,6 +1,6 @@
 /**
  * @file Scheduler.h
- * @brief 协程调度器：线程本地多级就绪队列 + 工作窃取
+ * @brief 协程调度器：线程本地就绪队列 + 跨线程投递，不做工作窃取
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -23,18 +23,11 @@ namespace AsynGyanis::Platform
 namespace AsynGyanis::Core
 {
     /**
-     * @brief 协程调度器
-     *
-     * 每个 EventLoop 持有一个 Scheduler 实例，负责管理就绪协程的执行。
-     * - 本地队列（m_localQueue）：无锁，单消费者（所属 EventLoop 线程），
-     *   用于存放本线程调用 schedule() 投递的任务，采用后进先出的栈式调度。
-     * - 全局队列（m_globalQueue）：有互斥锁保护，用于跨线程投递任务
-     *   （scheduleRemote 调用），采用先进先出的队列调度。
-     * - **不做工作窃取**：全局队列里的任务恰恰是「必须回到这个循环上执行」的那些
-     *   （跨线程完成回调要 resume 在发起者循环、套接字与 TLS 通道按循环归属），
-     *   把它们偷到别的循环执行会破坏亲和性并引入数据竞争。跨循环的负载均衡发生在
-     *   接受层（每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
-     *
+     * @brief 协程调度器：线程本地就绪队列 + 跨线程投递，不做工作窃取
+     * @details **不做工作窃取**：全局队列里的任务恰恰是「必须回到这个循环上执行」的那些
+     *          （跨线程完成回调要 resume 在发起者循环、套接字与 TLS 通道按循环归属），把它们
+     *          偷到别的循环执行会破坏亲和性并引入数据竞争；跨循环的负载均衡发生在接受层
+     *          （每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
      * @note 本类非线程安全，除 scheduleRemote() 外，其他成员函数应由所属 EventLoop 线程调用。
      */
     class Scheduler
@@ -47,27 +40,18 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 绑定跨线程调度唤醒器
-         *
-         * 当 scheduleRemote() 将任务推入全局队列时，会通过唤醒器通知
-         * 目标 EventLoop 立即处理新任务。
          * @param notifier 唤醒器指针，传入 nullptr 表示禁用唤醒功能
          */
         void setWakeupNotifier(Platform::EventNotifier *notifier) noexcept;
 
         /**
          * @brief 将协程加入本地就绪队列（本线程调用）
-         *
-         * 该函数是无锁的，但仅允许所属 EventLoop 线程调用。
-         * 协程会被追加到 m_localQueue 末尾，随后被 runOne() / runAll() 执行。
          * @param handle 准备调度的协程句柄（必须非空）
          */
         void schedule(std::coroutine_handle<> handle);
 
         /**
          * @brief 跨线程调度：将协程推入全局队列（线程安全）
-         *
-         * 任意线程均可调用此函数，将一个协程投递到本调度器的全局队列。
-         * 若已设置唤醒器，则通过 notify() 提醒目标线程有新任务。
          * @param handle 准备调度的协程句柄（必须非空）
          */
         void scheduleRemote(std::coroutine_handle<> handle);
@@ -75,54 +59,38 @@ namespace AsynGyanis::Core
         /**
          * @brief 在本循环上稍后执行一段代码，不跨线程（与 schedule() 同一线程约束）
          *
-         * @details 需要「决定动作」与「执行动作」分开一拍、且执行主体不是协程时用它：
-         *          例如定时器到期后不直接 resume 等待者，而是把恢复动作排进本轮清空。
-         *          std::function 的小对象优化覆盖只捕获一个指针的常见写法，常规调用不产生堆分配。
+         * @details 「决定动作」与「执行动作」要分开一拍、而执行主体不是协程时用它（如定时器到期后
+         *          不直接 resume 等待者，而是把恢复动作排进本轮清空）。
          * @param callable 待执行的可调用对象；空对象会被忽略
-         * @note 与 schedule() 一样只在所属 EventLoop 线程调用。取出顺序是**先进先出**：
-         *       投递方按顺序排进来的动作就该按这个顺序发生，与本地就绪队列的栈式顺序
-         *       （那是「最近就绪的先跑」的调度策略）不是一回事
+         * @note 与 schedule() 一样只在所属 EventLoop 线程调用；取出顺序是**先进先出**，投递方排进来的
+         *       顺序就是执行顺序，与本地就绪队列的栈式顺序不是一回事
          */
         void postLocal(std::function<void()> callable);
 
         /**
          * @brief 跨线程投递一段普通代码：在**目标循环**上执行一次（线程安全）
          *
-         * @details scheduleRemote() 只能投递协程句柄，而「跨循环移交」这类动作（把刚接受的连接交给
-         *          另一个循环接手）需要一个「在那边跑一小段代码」的入口，且这段代码不属于任何协程帧：
-         *          它必须在新主人所在的线程上创建连接对象、把它挂进那边的在途表。本方法就是那个入口，
-         *          语义与 scheduleRemote() 完全一致——线程安全、FIFO、顺带唤醒可能阻塞中的目标循环。
+         * @details 用于「动作不属于任何协程帧」的跨循环移交（如把刚接受的连接交给另一个循环接手）：
+         *          它必须在目标循环的线程上创建对象并挂进那边的在途表，语义与 scheduleRemote() 一致。
          * @param callable 待执行的可调用对象；空对象（未绑定任何函数）会被忽略
-         * @note 与协程一样，**异常会向目标循环传播**（和 resume() 抛出的效果相同），因此投递方
-         *       应保证自己不抛：需要兜住的错误在可调用对象内部处理
-         * @note 目标循环若在轮到它之前就退出了，队列里尚未执行的对象会被丢弃——持有系统资源
-         *       （套接字描述符等）的投递方应当把它包在 RAII 句柄里，让丢弃也能归还资源
+         * @note **异常会向目标循环传播**（与 resume() 抛出相同），投递方应保证自己不抛：需要兜住的错误在可调用对象内部处理
+         * @note 目标循环若在轮到它之前就退出，队列里尚未执行的对象会被丢弃——持有系统资源的投递方应包在 RAII 句柄里
          */
         void postRemote(std::function<void()> callable);
 
         /**
          * @brief 执行一个就绪协程
-         *
-         * 执行策略：
-         * - 优先从本地队列尾部弹出一个协程（栈式顺序）。
-         * - 若本地队列为空，则尝试从全局队首获取一个协程（FIFO 顺序）。
-         * - 获得的协程将立即 resume()。
          * @return true 表示成功执行了一个协程，false 表示无任务可执行
          */
         bool runOne();
 
         /**
          * @brief 执行所有就绪协程（清空本地队列）
-         *
-         * 反复调用 runOne() 直到本地队列和全局队列均无任务。
-         * 该函数通常用于事件循环在阻塞前彻底清空任务。
          */
         void runAll();
 
         /**
          * @brief 查询是否有待处理的协程
-         *
-         * 检查本地队列非空，或全局队列计数非零。
          * @return true 表示至少有一个就绪协程
          */
         [[nodiscard]] bool hasWork() const;

@@ -22,10 +22,8 @@ namespace AsynGyanis::Core
     class EventLoop;
 
     /**
-     * @brief TLS socket 包装类，提供异步 SSL 握手、加密读写接口。
-     *
-     * 内部持有 SSL 对象和底层 AsyncSocket，复用其常驻 epoll 注册处理非阻塞读/写事件。
-     * 使用前必须调用 handshake() 完成 TLS 握手，之后方可使用 asyncReceive/asyncSend。
+     * @brief TLS socket 包装类，提供异步 SSL 握手、加密读写接口
+     * @note 必须先用 handshake() 完成握手，之后才能用 asyncReceive()/asyncSend()
      */
     class TlsSocket
     {
@@ -74,15 +72,10 @@ namespace AsynGyanis::Core
         TlsSocket &operator=(TlsSocket &&other) noexcept;
 
         /**
-         * @brief 执行 TLS 服务端握手（SSL_accept）。
-         *
-         * 处理非阻塞状态下的 SSL_ERROR_WANT_READ / WANT_WRITE，通过底层套接字的就绪等待
-         * 可读/可写事件，直到握手完成或出错。该函数是一个协程任务，应使用 co_await 等待。
-         *
-         * @return Task<> 协程，握手完成后返回，若失败则抛出异常
+         * @brief 执行 TLS 握手（服务端走 SSL_accept，客户端走 SSL_connect）
+         * @return Task<> 协程，握手完成后返回，失败则抛出异常
          * @throws CoreException 握手失败（对端证书不受信、协议版本不匹配、对端不是 TLS 服务，
-         *         或对端在握手期间关闭连接）。异常在 co_await 处抛出；它派生自
-         *         Base::Exception，调用方应关闭该连接而不是重试
+         *         或对端在握手期间关闭连接）。调用方应关闭该连接而不是重试
          */
         Task<> handshake();
 

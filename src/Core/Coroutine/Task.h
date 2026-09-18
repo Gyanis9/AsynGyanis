@@ -25,12 +25,7 @@ namespace AsynGyanis::Core
     // ============================================================================
 
     /**
-     * @brief 协程返回类型。
-     *
-     * 惰性启动（initial_suspend → suspend_always），
-     * 完成后 FinalAwaiter 把 continuation（等待该协程的一方）作为对称转移直接返回，
-     * 由协程机制就地恢复它——不经过调度器入队。
-     *
+     * @brief 惰性启动的协程返回类型：完成后以对称转移就地恢复等待者，不经过调度器入队
      * @tparam T 协程返回值类型
      */
     template<typename T = void>
@@ -41,10 +36,7 @@ namespace AsynGyanis::Core
     // ============================================================================
 
     /**
-     * @brief 协程最终挂起点，负责将 continuation（等待该协程的父协程）恢复执行。
-     *
-     * 该等待体在协程即将结束时被调用，通过返回父协程的句柄来实现对称转移，
-     * 避免不必要的递归恢复。
+     * @brief 协程最终挂起点：返回 continuation 句柄实现对称转移，避免递归恢复
      */
     struct FinalAwaiter
     {
@@ -66,7 +58,6 @@ namespace AsynGyanis::Core
         template<typename Promise>
         std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> handle) noexcept
         {
-            // 恢复 continuation（调用方在 co_await 时挂起的协程）
             if (auto &promise = handle.promise(); promise.m_continuation)
             {
                 return promise.m_continuation;
@@ -204,9 +195,6 @@ namespace AsynGyanis::Core
         {
             /**
              * @brief 从进程级 CoroutinePool 分配协程帧内存。
-             *
-             * 若请求大小超过池的块大小，自动回退到全局 ::operator new。
-             * 这样确保大协程帧也能正确分配。
              */
             static void *operator new(const size_t size)
             {
@@ -314,10 +302,9 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 挂起当前协程，并把 continuation 登记为「本任务结束后要恢复的协程」
-         * @details 未启动的任务（惰性协程停在初始挂起点）返回自身句柄就地启动它；已启动的任务
-         *          只登记 continuation 后挂起，等它真正到达终结点由 FinalAwaiter 以对称转移恢复。
-         *          **绝不能就地恢复已启动的任务**：那等于把它内部挂着的等待当成已完成，
-         *          任务里真正挂着的子协程会失去唯一的唤醒者。
+         * @details 未启动的任务（停在初始挂起点）返回自身句柄就地启动；已启动的只登记 continuation
+         *          后挂起，等它真正到达终结点由 FinalAwaiter 以对称转移恢复。**绝不能就地恢复已启动的
+         *          任务**：那等于把它内部挂着的等待当成已完成，任务里真正挂着的子协程会失去唤醒者。
          * @param continuation 等待当前协程的父协程句柄
          * @return 需要恢复的协程句柄：未启动的任务返回自身句柄（启动它），已启动的返回 noop_coroutine
          */

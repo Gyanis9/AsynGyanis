@@ -93,7 +93,7 @@ namespace AsynGyanis::Core
 #endif
                       &ev) == 0)
             return true;
-        // 仅在文件描述符尚未注册时才回退到 ADD，其他错误（如 EBADF）直接返回 false
+        // 仅在文件描述符尚未注册时才回退到 ADD
         if (errno == ENOENT)
             return epoll_ctl(m_fileDescriptor, EPOLL_CTL_ADD,
 #ifdef _WIN32
@@ -116,7 +116,7 @@ namespace AsynGyanis::Core
             // 也把 strerror_s / strerror_r 这类平台差异挡在 Core 之外
             throw Base::SystemException("epoll_wait 失败");
         }
-        // 动态扩容：当返回事件数接近容量上限时翻倍，防止高负载下丢失事件
+        // 防止高负载下丢失事件
         if (static_cast<size_t>(n) >= m_events.size() / 2)
         {
             m_events.resize(m_events.size() * 2);

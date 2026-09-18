@@ -17,10 +17,7 @@
 namespace AsynGyanis::Core
 {
     /**
-     * @brief 异步运行时主入口。
-     *
-     * 组合 ThreadPool，提供 run()/stop() 接口。
-     * 析构时自动停止所有 EventLoop。
+     * @brief 异步运行时主入口，组合 ThreadPool 并管理全局生命周期
      */
     class IoContext
     {
@@ -42,18 +39,12 @@ namespace AsynGyanis::Core
         IoContext &operator=(const IoContext &) = delete;
 
         /**
-         * @brief 启动线程池并阻塞当前线程。
-         *
-         * 调用后，线程池开始执行事件循环，当前线程阻塞等待直到 stop() 被调用。
-         * 内部会调用 ThreadPool::start()，并等待停止信号。
+         * @brief 启动线程池并阻塞当前线程，直到 stop() 被调用
          */
         void run();
 
         /**
-         * @brief 通知所有工作线程停止。
-         *
-         * 唤醒所有 EventLoop 线程，并向调度器发送停止请求。
-         * 调用后 run() 方法将返回。
+         * @brief 通知所有工作线程停止，run() 随之返回
          */
         void stop();
 

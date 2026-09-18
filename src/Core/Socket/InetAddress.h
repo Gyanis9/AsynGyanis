@@ -20,9 +20,7 @@ namespace AsynGyanis::Core
 {
     /**
      * @brief IPv4/IPv6 网络地址封装类
-     *
-     * 该类统一封装 sockaddr_in / sockaddr_in6 结构，提供便捷的地址构造、IP字符串转换、
-     * 端口访问、DNS 解析等功能。内部使用 sockaddr_storage 存储，支持 IPv4 和 IPv6 协议族。
+     * @note 内部统一按 sockaddr_storage 存储，屏蔽 sockaddr_in / sockaddr_in6 的差异
      */
     class InetAddress
     {

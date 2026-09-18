@@ -89,7 +89,7 @@ namespace AsynGyanis::Core
             return std::nullopt;
         }
 
-        // 遍历 getaddrinfo 链表，优先选择 IPv4（兼容性更好）
+        // 优先选择 IPv4（兼容性更好）
         std::optional<InetAddress> address;
         std::optional<InetAddress> ipv6Address;
         for (auto *rp = result; rp != nullptr; rp = rp->ai_next)
@@ -97,7 +97,7 @@ namespace AsynGyanis::Core
             if (rp->ai_addr->sa_family == AF_INET)
             {
                 address = InetAddress(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
-                break; // IPv4 优先
+                break;
             }
             if (rp->ai_addr->sa_family == AF_INET6 && !ipv6Address.has_value())
             {
