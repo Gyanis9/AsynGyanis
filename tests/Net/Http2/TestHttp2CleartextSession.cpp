@@ -23,6 +23,8 @@
 
 #include "HttpTestSupport.h"
 
+#include "Http2TestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -52,17 +54,9 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 按 RFC 7541 拼一个「带增量索引的字面量」，名字走静态表索引
-         * @param staticNameIndex 静态表里的名字索引
-         * @param value 头值
-         * @return std::string 编码结果
+         * @brief 编一个字面量字段表示（定义见 Http2TestSupport.h）
          */
-        std::string hpackLiteralField(const std::size_t staticNameIndex, const std::string_view value)
-        {
-            std::string bytes = encodeHpackInteger(staticNameIndex, 6, 0x40);
-            appendHpackString(bytes, value);
-            return bytes;
-        }
+        using AsynGyanis::Net::TestSupport::hpackLiteralField;
 
         /**
          * @brief 拼一个「带增量索引的字面量」，名字与值都是字面量（RFC 7541 §6.2.1 的名字索引 0）

@@ -4,6 +4,7 @@ find_package(GTest REQUIRED)
 add_executable(TestNet
         NetTestSupport.h
         Http/HttpTestSupport.h
+        Http2/Http2TestSupport.h
 
         Http/TestHttpParser.cpp
         Http/TestHttpParserLimits.cpp
@@ -78,12 +79,13 @@ target_link_libraries(TestNet PRIVATE
         GTest::gtest_main
 )
 
-# src 用于 "Net/..." 形式的生产头包含，Http 目录与 tests/Core 用于同级包含的测试辅助头
-# （NetTestSupport.h 在本目录、HttpTestSupport.h 在 Http/、CoreTestSupport.h 在 tests/Core）
+# src 用于 "Net/..." 形式的生产头包含；其余三条是同级包含的测试辅助头所在目录
+# （NetTestSupport.h 在本目录、HttpTestSupport.h 在 Http/、Http2TestSupport.h 在 Http2/）
 target_include_directories(TestNet PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
+        ${CMAKE_CURRENT_SOURCE_DIR}/Http2
         ${CMAKE_SOURCE_DIR}/tests/Core
 )
 

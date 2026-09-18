@@ -16,6 +16,8 @@
 
 #include "NetTestSupport.h"
 
+#include "Http2TestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -68,18 +70,9 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 用编码器拼出一帧（帧头长度按负载实际大小落定）
-         * @param type 帧类型
-         * @param flags 标志位
-         * @param streamId 流号
-         * @param payload 负载字节
-         * @return std::string 完整帧字节
+         * @brief 用编码器拼出一帧（定义见 Http2TestSupport.h）
          */
-        std::string makeFrame(const Http2FrameType type, const unsigned char flags, const std::uint32_t streamId,
-                              const std::string_view payload)
-        {
-            return encodeHttp2Frame(type, flags, streamId, payload);
-        }
+        using AsynGyanis::Net::TestSupport::makeFrame;
 
         /**
          * @brief 把一段字节喂给解码器

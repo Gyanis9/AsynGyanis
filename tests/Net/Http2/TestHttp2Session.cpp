@@ -42,6 +42,8 @@
 
 #include "NetTestSupport.h"
 
+#include "Http2TestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <openssl/ssl.h>
@@ -235,27 +237,14 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 拼一个「索引表示」（RFC 7541 §6.1）
-         * @param index 索引空间的索引（1..61 是静态表）
-         * @return std::string 编码结果
+         * @brief 编一个索引字段表示（定义见 Http2TestSupport.h）
          */
-        std::string hpackIndexedField(const std::size_t index)
-        {
-            return encodeHpackInteger(index, 7, 0x80);
-        }
+        using AsynGyanis::Net::TestSupport::hpackIndexedField;
 
         /**
-         * @brief 拼一个「带增量索引的字面量」，名字走静态表索引（RFC 7541 §6.2.1）
-         * @param staticNameIndex 静态表里的名字索引
-         * @param value 头值
-         * @return std::string 编码结果
+         * @brief 编一个字面量字段表示（定义见 Http2TestSupport.h）
          */
-        std::string hpackLiteralField(const std::size_t staticNameIndex, const std::string_view value)
-        {
-            std::string bytes = encodeHpackInteger(staticNameIndex, 6, 0x40);
-            appendHpackString(bytes, value);
-            return bytes;
-        }
+        using AsynGyanis::Net::TestSupport::hpackLiteralField;
 
         /**
          * @brief 拼一个「带增量索引的字面量」，名字与值都是字面量（RFC 7541 §6.2.1 的名字索引 0）
@@ -335,13 +324,9 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 拼一个 SETTINGS ACK 帧（§6.5.3 要求 ACK 负载为空）
-         * @return std::string 完整帧字节
+         * @brief 拼一个空的 SETTINGS ACK 帧（定义见 Http2TestSupport.h）
          */
-        std::string makeSettingsAckFrame()
-        {
-            return encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true});
-        }
+        using AsynGyanis::Net::TestSupport::makeSettingsAckFrame;
 
         /**
          * @brief 拼一个 RST_STREAM 帧
@@ -486,22 +471,9 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 在解出的头列表里找一条头的值
-         * @param headerFields 头列表
-         * @param name 头名
-         * @return std::string 头值；没有该头时为空串
+         * @brief 在解码后的头列表里找一条头值（定义见 Http2TestSupport.h）
          */
-        std::string findHeaderValue(const std::vector<HpackHeaderField> &headerFields, const std::string_view name)
-        {
-            for (const HpackHeaderField &field: headerFields)
-            {
-                if (field.name == name)
-                {
-                    return field.value;
-                }
-            }
-            return {};
-        }
+        using AsynGyanis::Net::TestSupport::findHeaderValue;
 
         /**
          * @brief 把基类的监听描述符与活跃连接数透出成只读访问器的测试服务器
