@@ -28,6 +28,28 @@
   框架内 16 处关键错误路径（事件循环、连接池线程、配置热重载、TCP 服务器的接受/建连/清扫/关闭、
   h2 握手失败、h1/h2/h3 的 WebSocket 业务异常、示例程序的启动失败）已改用该宏，日志文案保持不变。
 
+### 修复
+
+- **Database：不再把故障静默吞成正常结果**。`SchemaMigrator::tableExists()` 把「游标推不动」「计数列不是
+  整型」与「表确实不存在」一并返回 `false`，与该接口自述的「`false` 的两重含义用 errorText 区分」
+  相矛盾——现如实写入 errorText；`resolveDialect()` 的 `catch (std::exception)` 会把「该类型没有方言」
+  这类用法错误也降级成可恢复的查询失败——现不再接住，用法错误照常外抛。
+- **Database：方言层与 `toSql()` 的 `default` 分支改为抛 `Base::LogicException`**（消息带枚举值）：操作符与
+  连接类型遇到未登记的枚举值时此前静默回落成 `=` / `INNER`，会生成语义错误的 SQL。
+- **Database：`Queryable::countOn()` 在计数列不是整型时抛 `RowMappingException`**（原静默返回 0，调用方会
+  误以为「一行都没有」），异常文本带列名与实际类型。
+- **Database（MySQL 驱动）**：影响行数不再直接转换 `mysql_affected_rows` 的出错哨兵 `(my_ulonglong)-1`
+  （调用方会读到 −1 行），归零为「未知」；连接配置字段含内嵌 `NUL` 时，在 `mysql_real_connect`
+  （只接受零终止字符串）之前本地拦下，不再静默截断成认证失败。
+- **Database：`resetSessionState()` 不再可能 terminate**：SQLite/MySQL 在 `noexcept` 复位路径上调用会构造
+  `std::string` 的 `rollback()`，分配失败即 terminate，现显式接住。
+
+### 性能
+
+- **Database：MySQL 列值解析改走 `std::from_chars`**：不再为每个列值先落一份 `std::string`，也不再受
+  `LC_NUMERIC` 影响（小数点、科学计数法与余文仍然一律拒绝）；Redis 参数切词改用
+  `std::string_view::contains`，`Queryable` 的列名渲染与 `Transaction::lastError()` 改返回常引用。
+
 ## [1.1.0] - 2026-09-16
 
 自 1.0.0 起的累计变化：HTTP/2 与 HTTP/3 补齐流式收发、隧道与流回收，新增出站客户端与多进程 worker、
