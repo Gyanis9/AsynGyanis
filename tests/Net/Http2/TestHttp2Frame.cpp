@@ -14,6 +14,8 @@
 
 #include "Net/Http2/Http2Frame.h"
 
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -28,48 +30,19 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
-         * @brief 判断文本里是否出现指定子串
-         * @param haystack 待搜索文本
-         * @param needle 目标子串
-         * @return true 命中
+         * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
          */
-        bool containsText(const std::string &haystack, const std::string_view needle)
-        {
-            return haystack.find(needle) != std::string::npos;
-        }
+        using AsynGyanis::Net::TestSupport::containsText;
 
         /**
-         * @brief 由字节序列拼出二进制文本
-         * @details 不能直接用字符串字面量：帧头与负载里常含 0x00，按 const char* 构造会被零终止截断，
-         *          那样断言就测不到完整字节了。
-         * @param byteValues 字节序列
-         * @return std::string 逐字节写入的结果
+         * @brief 由字节序列拼出二进制文本（定义见 NetTestSupport.h）
          */
-        std::string makeBytes(const std::initializer_list<unsigned char> byteValues)
-        {
-            std::string bytes;
-            bytes.reserve(byteValues.size());
-            for (const unsigned char byteValue: byteValues)
-            {
-                bytes.push_back(static_cast<char>(byteValue));
-            }
-            return bytes;
-        }
+        using AsynGyanis::Net::TestSupport::makeBytes;
 
         /**
-         * @brief 按大端写出 32 位无符号数的 4 字节形态
-         * @param value 待写的数值
-         * @return std::string 4 字节
+         * @brief 把 32 位无符号数按大端写成 4 字节（定义见 NetTestSupport.h）
          */
-        std::string makeBigEndian32(const std::uint32_t value)
-        {
-            std::string bytes;
-            for (int shiftBitCount = 24; shiftBitCount >= 0; shiftBitCount -= 8)
-            {
-                bytes.push_back(static_cast<char>((value >> shiftBitCount) & 0xFFU));
-            }
-            return bytes;
-        }
+        using AsynGyanis::Net::TestSupport::makeBigEndian32;
 
         /**
          * @brief 手拼 9 字节帧头

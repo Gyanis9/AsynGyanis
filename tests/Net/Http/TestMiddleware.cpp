@@ -20,6 +20,10 @@
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpMethod.h"
 
+#include "CoreTestSupport.h"
+
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -54,37 +58,15 @@ namespace AsynGyanis::Net
         constexpr auto kRateLimitWindow = std::chrono::milliseconds(20);
 
         /**
-         * @brief 在超时上限内逐毫秒轮询等待条件成立
-         * @tparam Predicate 可调用对象，返回 bool
-         * @param predicate 待轮询的条件
-         * @param timeout   超时上限
-         * @return true 条件在时限内成立
+         * @brief 在超时上限内逐毫秒轮询等待条件成立（定义见 CoreTestSupport.h）
+         * @note 本组用例都是内存内驱动，等待上界比模块默认更短，调用点一律显式传 kConditionTimeout
          */
-        template<typename Predicate>
-        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout = kConditionTimeout)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!predicate())
-            {
-                if (std::chrono::steady_clock::now() >= deadline)
-                {
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            return true;
-        }
+        using AsynGyanis::Core::TestSupport::waitForCondition;
 
         /**
-         * @brief 判断文本里是否出现指定子串
-         * @param haystack 待搜索文本
-         * @param needle   目标子串
-         * @return true 命中
+         * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
          */
-        bool containsText(const std::string_view haystack, const std::string_view needle)
-        {
-            return haystack.find(needle) != std::string_view::npos;
-        }
+        using AsynGyanis::Net::TestSupport::containsText;
 
         /**
          * @brief 构造一条只填了方法、URI 与版本的请求，中间件读的就是这几样
@@ -279,7 +261,7 @@ namespace AsynGyanis::Net
             if (!waitForCondition([this]()
                 {
                     return m_loop.isRunning();
-                }))
+                }, kConditionTimeout))
             {
                 stopLoop();
                 GTEST_SKIP() << "事件循环未能启动，超时相关用例无法驱动";
@@ -312,7 +294,7 @@ namespace AsynGyanis::Net
             const bool isCompleted = waitForCondition([&finishedFlag]()
             {
                 return finishedFlag.load();
-            });
+            }, kConditionTimeout);
 
             // 跑完与超时都停循环：前者是为了让调用方安全销毁任务帧，后者是为了别让后台线程
             // 继续碰测试栈上的对象。stopLoop() 幂等，TearDown 再调一次无副作用
@@ -954,7 +936,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(waitForCondition([&windowStarted]()
         {
             return std::chrono::steady_clock::now() - windowStarted > kRateLimitWindow;
-        }));
+        }, kConditionTimeout));
 
         HttpRequest nextWindowRequest = makeRequest(HttpMethod::GET, "/windowed");
         HttpResponse nextWindowResponse;

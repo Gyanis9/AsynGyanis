@@ -23,6 +23,8 @@
 
 #include "HttpTestSupport.h"
 
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <openssl/ssl.h>
@@ -67,12 +69,6 @@ namespace AsynGyanis::Net
         /// 与上面那张回环 IP 证书配套的私钥
         const std::filesystem::path kLoopbackKeyPath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem";
 
-        /// 生成的 request-id 形态：4 位十六进制前缀 + '-' + 16 位十六进制序号（见 HttpRequestId.h）
-        constexpr std::size_t kGeneratedRequestIdLength = 4 + 1 + 16;
-
-        /// 生成形态里分隔前缀与序号的位置
-        constexpr std::size_t kGeneratedRequestIdSeparatorIndex = 4;
-
         /// request-id 前缀的长度（十六进制服务器序号）
         constexpr std::size_t kRequestIdPrefixLength = 4;
 
@@ -112,49 +108,14 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 判断一段文本是否是服务器生成的 request-id
-         * @param requestId 待判定的标识
-         * @return true 长度符合约定，且分隔符位置与其余字符都是小写十六进制
+         * @brief 判断请求标识是否符合自动生成格式（定义见 NetTestSupport.h）
          */
-        bool looksLikeGeneratedRequestId(const std::string_view requestId)
-        {
-            if (requestId.size() != kGeneratedRequestIdLength || requestId[kGeneratedRequestIdSeparatorIndex] != '-')
-            {
-                return false;
-            }
-
-            for (std::size_t index = 0; index < requestId.size(); ++index)
-            {
-                if (index == kGeneratedRequestIdSeparatorIndex)
-                {
-                    continue;
-                }
-                const char character = requestId[index];
-                const bool isLowerHexDigit = (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
-                if (!isLowerHexDigit)
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
+        using AsynGyanis::Net::TestSupport::looksLikeGeneratedRequestId;
 
         /**
-         * @brief 统计一段文本里子串出现的次数
-         * @param text 待搜索文本
-         * @param needle 目标子串
-         * @return std::size_t 出现次数
+         * @brief 统计文本里指定子串出现的次数（定义见 NetTestSupport.h）
          */
-        std::size_t countTextOccurrences(const std::string &text, const std::string_view needle)
-        {
-            std::size_t occurrenceCount = 0;
-            for (std::size_t foundPosition = text.find(needle); foundPosition != std::string::npos;
-                 foundPosition = text.find(needle, foundPosition + needle.size()))
-            {
-                ++occurrenceCount;
-            }
-            return occurrenceCount;
-        }
+        using AsynGyanis::Net::TestSupport::countTextOccurrences;
 
         /**
          * @brief 取响应文本里第 occurrence 个 x-request-id 头的值

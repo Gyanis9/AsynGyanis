@@ -40,6 +40,8 @@
 
 #include "HttpTestSupport.h"
 
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <openssl/ssl.h>
@@ -78,12 +80,6 @@ namespace AsynGyanis::Net
         /// 大正文响应用例的正文长度：超过对端 MAX_FRAME_SIZE（16384），应当拆成 3 片 DATA
         constexpr std::size_t kLargeResponseByteCount = 40000;
 
-        /// 生成的 request-id 形态：4 位十六进制前缀 + '-' + 16 位十六进制序号（见 HttpRequestId.h）
-        constexpr std::size_t kGeneratedRequestIdLength = 4 + 1 + 16;
-
-        /// 生成形态里分隔前缀与序号的位置
-        constexpr std::size_t kGeneratedRequestIdSeparatorIndex = 4;
-
         /**
          * @brief 观测性/超时用例共用的限额：超时四项都设得很长
          * @return HttpServerLimits 关掉超时保护的配置
@@ -99,32 +95,9 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 判断一段文本是否是服务器生成的 request-id
-         * @param requestId 待判定的标识
-         * @return true 长度符合约定，且分隔符位置与其余字符都是小写十六进制
+         * @brief 判断请求标识是否符合自动生成格式（定义见 NetTestSupport.h）
          */
-        bool looksLikeGeneratedRequestId(const std::string_view requestId)
-        {
-            if (requestId.size() != kGeneratedRequestIdLength || requestId[kGeneratedRequestIdSeparatorIndex] != '-')
-            {
-                return false;
-            }
-
-            for (std::size_t index = 0; index < requestId.size(); ++index)
-            {
-                if (index == kGeneratedRequestIdSeparatorIndex)
-                {
-                    continue;
-                }
-                const char character = requestId[index];
-                const bool isLowerHexDigit = (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
-                if (!isLowerHexDigit)
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
+        using AsynGyanis::Net::TestSupport::looksLikeGeneratedRequestId;
 
         /**
          * @brief 测试用的一帧：类型、标志、流号与净负载

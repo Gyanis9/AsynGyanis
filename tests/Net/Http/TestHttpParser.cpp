@@ -15,6 +15,8 @@
 
 #include "Net/Http/HttpHeaderRules.h"
 
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -43,34 +45,14 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 判断文本里是否出现指定子串
-         * @param haystack 待搜索文本
-         * @param needle   目标子串
-         * @return true 命中
+         * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
          */
-        bool containsText(const std::string &haystack, const std::string_view needle)
-        {
-            return haystack.find(needle) != std::string::npos;
-        }
+        using AsynGyanis::Net::TestSupport::containsText;
 
         /**
-         * @brief 用给定的头部行拼出一条完整 GET 报文
-         * @details 只负责固定请求行与收尾空行，头部行完全由调用方给，
-         *          这样「一共几条头部」这类计数断言才是可精确推算的。
-         * @param headerLines 头部行原文，不含行尾 CRLF
-         * @return std::string 可直接喂给 parse() 的报文
+         * @brief 用给定的头部行拼出一条完整 GET 报文（定义见 NetTestSupport.h）
          */
-        std::string makeRequestTextWithHeaders(const std::vector<std::string> &headerLines)
-        {
-            std::string message = "GET /indexed HTTP/1.1\r\n";
-            for (const std::string &headerLine: headerLines)
-            {
-                message.append(headerLine);
-                message.append("\r\n");
-            }
-            message.append("\r\n");
-            return message;
-        }
+        using AsynGyanis::Net::TestSupport::makeRequestTextWithHeaders;
 
         /**
          * @brief 生成指定条数的头部行，名与值各自都控制在上限之内

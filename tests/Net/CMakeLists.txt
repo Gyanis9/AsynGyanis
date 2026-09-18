@@ -2,6 +2,7 @@ find_package(GTest REQUIRED)
 
 # 测试目录结构与 src/Net 逐级对应，全部链接进同一个 TestNet 可执行文件
 add_executable(TestNet
+        NetTestSupport.h
         Http/HttpTestSupport.h
 
         Http/TestHttpParser.cpp
@@ -77,10 +78,11 @@ target_link_libraries(TestNet PRIVATE
         GTest::gtest_main
 )
 
-# src 用于 "Net/..." 形式的生产头包含，Http 目录用于 "HttpTestSupport.h" 同级包含，
-# tests/Core 用于复用 CoreTestSupport.h 的 EventLoopThread 等协程驱动设施
+# src 用于 "Net/..." 形式的生产头包含，Http 目录与 tests/Core 用于同级包含的测试辅助头
+# （NetTestSupport.h 在本目录、HttpTestSupport.h 在 Http/、CoreTestSupport.h 在 tests/Core）
 target_include_directories(TestNet PRIVATE
         ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
         ${CMAKE_SOURCE_DIR}/tests/Core
 )

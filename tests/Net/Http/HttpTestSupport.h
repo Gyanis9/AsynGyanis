@@ -68,26 +68,10 @@ namespace AsynGyanis::Net
         constexpr std::chrono::milliseconds kDrainReturnSlack{500};
 
         /**
-         * @brief 在超时上限内逐毫秒轮询等待条件成立
-         * @tparam Predicate 可调用对象，返回 bool
-         * @param predicate 待轮询的条件
-         * @param timeout 超时上限
-         * @return true 条件在时限内成立
+         * @brief 在超时上限内逐毫秒轮询等待条件成立（定义见 CoreTestSupport.h）
+         * @note 本模块的调用点都自带超时，口径见各自的 kWaitTimeout
          */
-        template<typename Predicate>
-        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!predicate())
-            {
-                if (std::chrono::steady_clock::now() >= deadline)
-                {
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            return true;
-        }
+        using AsynGyanis::Core::TestSupport::waitForCondition;
 
         /**
          * @brief 在独立线程上驱动 EventLoop 的夹具（定义见 CoreTestSupport.h，借用模式）

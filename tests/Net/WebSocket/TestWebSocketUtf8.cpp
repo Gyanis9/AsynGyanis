@@ -8,6 +8,8 @@
 
 #include "Net/WebSocket/WebSocketUtf8.h"
 
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -20,21 +22,9 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
-         * @brief 由字节值拼出待校验串
-         * @details 候选值里含 0x00，按 const char* 构造会被零终止截断，那样断言就测不到完整字节了
-         * @param byteValues 字节值序列
-         * @return std::string 逐字节写入的结果
+         * @brief 由字节序列拼出二进制文本（定义见 NetTestSupport.h）
          */
-        std::string makeBytes(const std::initializer_list<unsigned char> byteValues)
-        {
-            std::string bytes;
-            bytes.reserve(byteValues.size());
-            for (const unsigned char byteValue: byteValues)
-            {
-                bytes.push_back(static_cast<char>(byteValue));
-            }
-            return bytes;
-        }
+        using AsynGyanis::Net::TestSupport::makeBytes;
 
         /**
          * @brief 一条待校验候选值

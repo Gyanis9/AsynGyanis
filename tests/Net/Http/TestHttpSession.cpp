@@ -75,26 +75,9 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 在超时上限内逐毫秒轮询等待条件成立
-         * @tparam Predicate 可调用对象，返回 bool
-         * @param predicate 待轮询的条件
-         * @param timeout 超时上限
-         * @return true 条件在时限内成立
+         * @brief 在超时上限内逐毫秒轮询等待条件成立（定义见 CoreTestSupport.h，各调用点自带超时）
          */
-        template<typename Predicate>
-        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!predicate())
-            {
-                if (std::chrono::steady_clock::now() >= deadline)
-                {
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            return true;
-        }
+        using AsynGyanis::Core::TestSupport::waitForCondition;
 
         /**
          * @brief 全双工描述符对夹具

@@ -10,6 +10,8 @@
 
 #include "Net/Http2/Hpack.h"
 
+#include "NetTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -29,15 +31,9 @@ namespace AsynGyanis::Net
         using HeaderListEntry = std::pair<const char *, const char *>;
 
         /**
-         * @brief 判断文本里是否出现指定子串
-         * @param haystack 待搜索文本
-         * @param needle 目标子串
-         * @return true 命中
+         * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
          */
-        bool containsText(const std::string &haystack, const std::string_view needle)
-        {
-            return haystack.find(needle) != std::string::npos;
-        }
+        using AsynGyanis::Net::TestSupport::containsText;
 
         /**
          * @brief 取一个十六进制字符的数值
