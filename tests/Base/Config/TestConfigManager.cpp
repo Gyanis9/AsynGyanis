@@ -976,16 +976,6 @@ server:
         EXPECT_EQ(configuration().get<std::string>("port", "fallback"), "fallback");
     }
 
-    TEST_F(ConfigManagerTest, GetRequiredReturnsValueOrThrows)
-    {
-        writeFile("cfg.yaml", "name: test\n");
-        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
-
-        EXPECT_EQ(configuration().getRequired<std::string>("name"), "test");
-        EXPECT_THROW(static_cast<void>(configuration().getRequired<std::string>("nonexistent")), ConfigKeyNotFoundException);
-        EXPECT_THROW(static_cast<void>(configuration().getRequired<int64_t>("name")), ConfigValidationException);
-    }
-
     TEST_F(ConfigManagerTest, ConvenienceGettersReadLoadedValues)
     {
         writeFile("cfg.yaml", "debug: true\ncount: 42\npi: 3.5\ntitle: Hello World\n");

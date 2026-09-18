@@ -172,7 +172,7 @@ namespace AsynGyanis::Base
             {
                 directoryToCommit = derivedDirectory;
             }
-            commitConfigData(std::move(values), result.loadedFiles, result.timestamp, directoryToCommit);
+            commitConfigData(std::move(values), result.loadedFiles, directoryToCommit);
         }
         result.success = result.failedFiles.empty() && !result.loadedFiles.empty();
         return result;
@@ -986,7 +986,6 @@ namespace AsynGyanis::Base
             const std::lock_guard writeLock(m_writeMutex);
             const auto newData       = std::make_shared<ConfigData>();
             newData->configDirectory = configDirectory;
-            newData->loadTime        = result.timestamp;
             m_data.store(newData, std::memory_order_release);
 
             result.success = true;
@@ -1021,7 +1020,7 @@ namespace AsynGyanis::Base
             return result;
         }
 
-        commitConfigData(std::move(values), result.loadedFiles, result.timestamp, configDirectory);
+        commitConfigData(std::move(values), result.loadedFiles, configDirectory);
         result.success = result.failedFiles.empty();
         return result;
     }
@@ -1310,10 +1309,9 @@ namespace AsynGyanis::Base
         return configFiles;
     }
 
-    void ConfigManager::commitConfigData(ConfigKeyValueMap                           values,
-                                         const std::vector<std::string> &            loadedFiles,
-                                         const std::chrono::steady_clock::time_point timestamp,
-                                         const std::filesystem::path &               configDirectory)
+    void ConfigManager::commitConfigData(ConfigKeyValueMap                values,
+                                         const std::vector<std::string> & loadedFiles,
+                                         const std::filesystem::path &    configDirectory)
     {
         // 与 setValue() 共用同一把写锁：加载/热重载也是「整份快照替换」的写者，
         // 不串行化的话，与并发的 setValue 谁后发布谁生效，先发布的那些键会被整份覆盖掉
@@ -1323,7 +1321,6 @@ namespace AsynGyanis::Base
         newData->values          = std::move(values);
         newData->loadedFiles     = loadedFiles;
         newData->configDirectory = configDirectory;
-        newData->loadTime        = timestamp;
 
         m_data.store(newData, std::memory_order_release);
 

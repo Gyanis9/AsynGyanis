@@ -184,20 +184,6 @@ namespace AsynGyanis::Base
         }
 
         /**
-         * @brief 获取配置值，键不存在时抛出异常
-         * @tparam T 目标类型。
-         * @param key 配置键。
-         * @return T 配置值。
-         * @throws ConfigKeyNotFoundException 键不存在
-         * @throws ConfigValidationException 类型不匹配（消息里带键名、期望与实际类型）
-         */
-        template<typename T>
-        T getRequired(const std::string_view key) const
-        {
-            return get<T>(key);
-        }
-
-        /**
          * @brief 读取布尔配置值，缺失或类型不匹配时返回默认值。
          * @param key 配置键。
          * @param defaultValue 默认值。
@@ -340,9 +326,8 @@ namespace AsynGyanis::Base
         {
             ConfigKeyValueMap values; ///< 配置键值对映射表（支持 string_view 异质查找）
 
-            std::vector<std::string>              loadedFiles;     ///< 成功加载的配置文件路径列表
-            std::filesystem::path                 configDirectory; ///< 配置目录的路径
-            std::chrono::steady_clock::time_point loadTime;        ///< 配置加载完成的时间戳（单调时钟）
+            std::vector<std::string> loadedFiles;     ///< 成功加载的配置文件路径列表
+            std::filesystem::path    configDirectory; ///< 配置目录的路径
         };
 
         /**
@@ -452,13 +437,11 @@ namespace AsynGyanis::Base
          * @brief 原子提交新的配置快照。
          * @param values 扁平化配置字典。
          * @param loadedFiles 成功加载的文件列表。
-         * @param timestamp 加载时间戳。
          * @param configDirectory 配置目录（为空时保留原目录）。
          */
-        void commitConfigData(ConfigKeyValueMap                     values,
-                              const std::vector<std::string> &      loadedFiles,
-                              std::chrono::steady_clock::time_point timestamp,
-                              const std::filesystem::path &         configDirectory = {});
+        void commitConfigData(ConfigKeyValueMap                values,
+                              const std::vector<std::string> & loadedFiles,
+                              const std::filesystem::path &    configDirectory = {});
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。
