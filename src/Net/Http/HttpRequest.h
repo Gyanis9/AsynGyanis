@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpMethod.h"
 
 #include <cstddef>
@@ -40,9 +41,8 @@ namespace AsynGyanis::Net
      * @details 存储解析后的 HTTP 请求内容：方法、URI、版本、头部、正文与路由参数。
      *          本对象由 HttpParser 逐字段填充，本身不做任何 IO，也不校验报文合法性。
      *
-     * @note 头部有两份存储，各有用途：m_headerFields 是按线上到达顺序的权威记录（可重复头部
-     *       各占一项，也是 headerValues() 的数据来源）；m_headers 是名到值的单值视图，普通头部
-     *       按 RFC 7230 §3.2.2 用 ", " 合并、可重复头部保留首条，首次查询时才由权威记录建出。
+     * @note 头部存储见 HttpHeaderFieldStore：按到达顺序的权威记录 + 按需重建的单值视图
+     *       （普通头部按 RFC 7230 §3.2.2 用 ", " 合并、可重复头部保留首条）。
      *       头部名一律转小写存储（RFC 9110 §5.1 大小写不敏感），查询侧同样归一化。
      */
     class HttpRequest
@@ -258,49 +258,6 @@ namespace AsynGyanis::Net
 
     private:
         /**
-         * @brief 单条头部字段的线上原样记录
-         */
-        struct HeaderField
-        {
-            std::string name;  ///< 已归一化为小写的头部名
-            std::string value; ///< 头部值原文
-        };
-
-        using HeaderFieldList = std::vector<HeaderField>; ///< 头部记录的有序容器类型
-
-        /**
-         * @brief 把头部名就地改写为小写
-         * @details 归一化规则的唯一出处，toCanonicalHeaderName() 也复用它，
-         *          避免写入侧与查询侧哪天被改成两套规则。
-         * @param name 待改写的字符串，按 ASCII 表处理，不受 locale 影响
-         */
-        static void lowercaseInPlace(std::string &name);
-
-        /**
-         * @brief 把头部名归一化成内部存储形式（小写）
-         * @param name 原始头部名
-         * @return 归一化后的头部名
-         */
-        static std::string toCanonicalHeaderName(std::string_view name);
-
-        /**
-         * @brief 按需重建单值视图
-         *
-         * @details 单值视图（名 → 合并后的值）只在真正被查询时才建：绝大多数请求路径从不读它，
-         *          为它们维护一份哈希表等于每请求白付若干次节点分配。合并规则只有这一处实现：
-         *          普通头部同名多条用 ", " 合并（RFC 7230 §3.2.2 的收件人规则），可重复头部
-         *          （set-cookie）保留首条，其余靠 headerValues() 逐条取。
-         */
-        void rebuildSingleValueView() const;
-
-        /**
-         * @brief 判断头部名是否允许在同一报文里出现多条
-         * @param canonicalName 已归一化（小写）的头部名
-         * @return true 表示该头部禁止合并，必须逐条保留
-         */
-        static bool isRepeatableHeaderName(std::string_view canonicalName);
-
-        /**
          * @brief URL 百分号解码
          * @details 宽松解码，永不报错："%XX" → 对应字节、'+' → 空格（表单编码约定），其余字符原样保留；
          *          非法或残缺的序列（"%"、"%4"、"%4G"）连同百分号按原文保留，不吞字符也不报错。不报错是
@@ -313,9 +270,7 @@ namespace AsynGyanis::Net
         HttpMethod m_method{HttpMethod::UNKNOWN};                  ///< HTTP 方法
         std::string m_uri;                                         ///< 原始 URI，含查询串
         std::string m_httpVersion;                                 ///< HTTP 版本原文
-        HeaderFieldList m_headerFields;                            ///< 头部权威记录，按线上到达顺序保存
-        mutable std::unordered_map<std::string, std::string> m_headers; ///< 头部单值视图，供 headers()/getHeader() 使用：首次查询时才由权威记录建出
-        mutable bool m_isSingleValueViewStale{true};               ///< 单值视图是否已过期（新增头部或重置后置位，查询前重建）
+        HttpHeaderFieldStore m_headerStore;                        ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
         std::string m_body;                                        ///< 消息正文
         HttpRequestBody *m_bodyStream{nullptr};                    ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
         std::string m_requestId;                                   ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）

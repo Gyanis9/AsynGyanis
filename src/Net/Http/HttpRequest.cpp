@@ -1,9 +1,9 @@
 #include "Net/Http/HttpRequest.h"
 
+#include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
-#include <array>
 #include <string_view>
 #include <utility>
 
@@ -36,15 +36,6 @@ namespace AsynGyanis::Net
 
     namespace
     {
-        // 同名普通头部合并时的分隔符，与 RFC 7230 §3.2.2 给出的字段值列表形式一致
-        constexpr std::string_view kMergedHeaderSeparator = ", ";
-
-        // 允许在同一报文里出现多条、且不得逗号合并的头部名单（已归一化为小写）。
-        // 目前只有 set-cookie：RFC 6265 规定多条 Set-Cookie 各表达一个独立 cookie，
-        // 而 cookie 值本身可以含逗号，一旦合并就再也切不回去。
-        // 后续要支持 www-authenticate、link 这类同样可多条的头部，在此扩充即可。
-        constexpr std::array<std::string_view, 1> kRepeatableHeaderNames{"set-cookie"};
-
         // 一个完整的百分号转义序列形如 "%XY"，占 3 个字符
         constexpr std::size_t kPercentEscapeSequenceLength = 3;
     } // namespace
@@ -101,107 +92,26 @@ namespace AsynGyanis::Net
         return m_httpVersion;
     }
 
-    void HttpRequest::lowercaseInPlace(std::string &name)
-    {
-        // 逐字符按 ASCII 表折叠：不用 std::tolower，那个受 locale 影响（土耳其语环境下 'I' 会折成非 ASCII 字节）
-        for (char &character: name)
-        {
-            character = toLowerAscii(character);
-        }
-    }
-
-    std::string HttpRequest::toCanonicalHeaderName(const std::string_view name)
-    {
-        std::string canonicalName(name);
-        lowercaseInPlace(canonicalName);
-        return canonicalName;
-    }
-
-    bool HttpRequest::isRepeatableHeaderName(const std::string_view canonicalName)
-    {
-        // 名单极小，线性比较比构造哈希集合划算
-        return std::ranges::find(kRepeatableHeaderNames, canonicalName) != kRepeatableHeaderNames.end();
-    }
-
     void HttpRequest::addHeader(std::string key, std::string value)
     {
-        // HTTP 头部名大小写不敏感（RFC 9110 §5.1）：统一转小写入库，
-        // 于是 Content-Type 与 content-type 命中同一条。入参本来就是调用方交出的副本，
-        // 就地改写比再造一个字符串省一次分配——解析器每条头部都会走这个函数
-        lowercaseInPlace(key);
-
-        // 权威记录：线上每出现一条头部就原样留一档，可重复头部互不覆盖，顺序即到达顺序。
-        // 单值视图不在这里维护：合并逻辑只有 rebuildSingleValueView() 一处实现，
-        // 等真有人查询时再一次性建出来（多数请求路径从不查询它）
-        m_headerFields.push_back(HeaderField{.name = key, .value = std::move(value)});
-        m_isSingleValueViewStale = true;
-    }
-
-    void HttpRequest::rebuildSingleValueView() const
-    {
-        m_headers.clear();
-        for (const HeaderField &field: m_headerFields)
-        {
-            if (isRepeatableHeaderName(field.name))
-            {
-                // 单值视图只保留首条，其余靠 headerValues() 逐条取；
-                // try_emplace 而非 insert_or_assign，正是为了「后来的不覆盖首条」
-                m_headers.try_emplace(field.name, field.value);
-                continue;
-            }
-
-            // 普通头部同名多条时，按 RFC 7230 §3.2.2 的收件人规则以 ", " 合并到同一条，
-            // 视图里的条目位置与键都不变（可重复头部也不会派生出伪键）
-            if (const auto [iterator, isInserted] = m_headers.try_emplace(field.name, field.value); !isInserted)
-            {
-                iterator->second.append(kMergedHeaderSeparator);
-                iterator->second.append(field.value);
-            }
-        }
-        m_isSingleValueViewStale = false;
+        // 权威记录：线上每出现一条头部就原样留一档，可重复头部互不覆盖，顺序即到达顺序；
+        // 单值视图只标脏，等真有人查询时再一次性建出来（多数请求路径从不查询它）
+        m_headerStore.append(std::move(key), std::move(value));
     }
 
     std::optional<std::string> HttpRequest::getHeader(const std::string &key) const
     {
-        // 查询前先把过期视图重建出来：新增头部会把视图标脏，这里一次性补齐
-        if (m_isSingleValueViewStale)
-        {
-            rebuildSingleValueView();
-        }
-
-        // 查询侧走同一套归一化规则，保证写入与读取对键的认定一致
-        if (const auto iterator = m_headers.find(toCanonicalHeaderName(key)); iterator != m_headers.end())
-        {
-            return iterator->second;
-        }
-        // 未命中不是错误：可选头部缺席是常态，交给调用方用 optional 判定
-        return std::nullopt;
+        return m_headerStore.get(key);
     }
 
     std::vector<std::string> HttpRequest::headerValues(const std::string &key) const
     {
-        const std::string canonicalName = toCanonicalHeaderName(key);
-
-        std::vector<std::string> values;
-        // 按线上到达顺序收集，读到的顺序与客户端发出的顺序一致
-        for (const HeaderField &field : m_headerFields)
-        {
-            if (field.name == canonicalName)
-            {
-                values.push_back(field.value);
-            }
-        }
-        return values;
+        return m_headerStore.values(key);
     }
 
     const std::unordered_map<std::string, std::string> &HttpRequest::headers() const
     {
-        // 同 getHeader：查询前先把过期视图重建出来
-        if (m_isSingleValueViewStale)
-        {
-            rebuildSingleValueView();
-        }
-        return m_headers;
+        return m_headerStore.singleValueView();
     }
 
     void HttpRequest::setBody(std::string body)
@@ -383,9 +293,7 @@ namespace AsynGyanis::Net
         m_method      = HttpMethod::UNKNOWN;
         m_uri.clear();
         m_httpVersion.clear();
-        m_headerFields.clear();
-        m_headers.clear();
-        m_isSingleValueViewStale = true;
+        m_headerStore.clear();
         m_body.clear();
         // request-id 必须跟着清：它是上一条报文的身份，留着会让下一条报文冒用别人的标识
         m_requestId.clear();

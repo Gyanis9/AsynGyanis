@@ -1,0 +1,140 @@
+/**
+ * @file HttpHeaderFieldStore.h
+ * @brief 请求与响应共用的头部字段存储：权威记录 + 单值视图
+ * @author Gyanis
+ * @date 2026-09-18
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ *
+ * @details `HttpRequest` 与 `HttpResponse` 各需一套同样的头部存储：按加入顺序的权威记录、
+ *          按需重建的单值视图、以及名字归一化与「可重复头部」名单。此前两处各写一份完全对称的
+ *          实现，本类把它收成一份；两边的策略差异（请求只追加、响应带校验与覆盖）留在各自类里。
+ */
+
+#pragma once
+
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace AsynGyanis::Net
+{
+    /**
+     * @brief 头部字段存储
+     *
+     * @details 两份数据：m_fields 是按加入顺序的权威记录（可重复头部各占一项），
+     *          m_singleValues 是名到值的单值视图，只在真正被查询时才重建——多数请求路径
+     *          从不读它，为它们维护一份哈希表等于每请求白付若干次节点分配。
+     */
+    class HttpHeaderFieldStore
+    {
+    public:
+        /**
+         * @brief 一条头部记录
+         */
+        struct HeaderField
+        {
+            std::string name;  ///< 已归一化为小写的头部名
+            std::string value; ///< 头部值原文
+        };
+
+        using HeaderFieldList = std::vector<HeaderField>; ///< 权威记录的有序容器类型
+
+        /**
+         * @brief 追加一条头部记录（名字就地归一化为小写）
+         * @param name 头部名，按值接收后就地改写
+         * @param value 头部值
+         */
+        void append(std::string name, std::string value);
+
+        /**
+         * @brief 覆盖或追加一条非可重复头部
+         * @details 同名已有记录就地覆盖值，条目位置仍停在首次设置处；缺席则追加到末尾。
+         * @param canonicalName 已归一化的头部名
+         * @param value 头部值
+         */
+        void overwriteOrAppend(const std::string &canonicalName, const std::string &value);
+
+        /**
+         * @brief 移除该名下的全部记录
+         * @param canonicalName 已归一化的头部名
+         */
+        void removeAll(const std::string &canonicalName);
+
+        /**
+         * @brief 取单值视图里该名对应的值
+         * @param name 头部名（函数内部归一化）
+         * @return std::optional<std::string> 头部值；未命中时为空
+         */
+        [[nodiscard]] std::optional<std::string> get(const std::string &name) const;
+
+        /**
+         * @brief 取该名下的全部值，按加入顺序
+         * @param name 头部名（函数内部归一化）
+         * @return std::vector<std::string> 全部取值；未命中时为空
+         */
+        [[nodiscard]] std::vector<std::string> values(const std::string &name) const;
+
+        /**
+         * @brief 取单值视图（名 → 合并后的值）
+         * @details 可重复头部只留首条；普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并。
+         * @return const std::unordered_map<std::string, std::string>& 视图引用
+         */
+        [[nodiscard]] const std::unordered_map<std::string, std::string> &singleValueView() const;
+
+        /// 权威记录（序列化按它的顺序进行）
+        [[nodiscard]] const HeaderFieldList &fields() const noexcept
+        {
+            return m_fields;
+        }
+
+        /// 清空全部记录与视图
+        void clear() noexcept;
+
+        /// 是否一条记录都没有
+        [[nodiscard]] bool empty() const noexcept
+        {
+            return m_fields.empty();
+        }
+
+        /**
+         * @brief 把头部名就地改写为小写
+         * @details 逐字符按 ASCII 表折叠：不用 std::tolower，那个受 locale 影响
+         *          （土耳其语环境下 'I' 会折成非 ASCII 字节）。
+         * @param name 待改写的字符串
+         */
+        static void lowercaseInPlace(std::string &name);
+
+        /**
+         * @brief 把头部名归一化成内部存储形式（小写）
+         * @param name 原始头部名
+         * @return std::string 归一化后的头部名
+         */
+        [[nodiscard]] static std::string toCanonicalHeaderName(std::string_view name);
+
+        /**
+         * @brief 判断头部名是否允许在同一报文里出现多条
+         * @param canonicalName 已归一化（小写）的头部名
+         * @return true 表示该头部禁止合并，必须逐条保留
+         */
+        [[nodiscard]] static bool isRepeatableHeaderName(std::string_view canonicalName);
+
+    private:
+        /**
+         * @brief 按归一化名找第一条记录
+         * @param canonicalName 已归一化的头部名
+         * @return HeaderFieldList::iterator 命中位置；未命中为 end()
+         */
+        [[nodiscard]] HeaderFieldList::iterator findField(const std::string &canonicalName);
+
+        /// 按需要重建单值视图（调用前视图已标脏）
+        void rebuildSingleValueView() const;
+
+        HeaderFieldList m_fields; ///< 权威记录，按加入顺序保存，决定序列化顺序
+        mutable std::unordered_map<std::string, std::string> m_singleValues; ///< 单值视图，首次查询时由权威记录建出
+        mutable bool m_isViewStale{true}; ///< 视图是否已过期（写入或清空后置位，查询前重建）
+    };
+} // namespace AsynGyanis::Net

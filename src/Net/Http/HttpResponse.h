@@ -12,6 +12,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
@@ -33,9 +34,9 @@ namespace AsynGyanis::Net
      *          一个响应对象只服务一条请求：需要复用时先 reset()。
      *
      * @note 头部存储模型：
-     *       @li 权威记录 m_headerFields 按「设置顺序」保存每条头部，toString() 就按它逐条输出，
+     *       @li 权威记录按「设置顺序」保存每条头部，toString() 就按它逐条输出，
      *           因此报文头部顺序稳定可复现，多条 Set-Cookie 也保持先后次序；
-     *       @li 单值视图 m_headers 是名到值的映射（可重复头部只留首条），供 headers()/getHeader()
+     *       @li 单值视图是名到值的映射（可重复头部只留首条），供 headers()/getHeader()
      *           使用，逐条取值请用 headerValues()；**首次查询时才由权威记录建出**（写入只把视图标脏），
      *           HTTP/1.1 的序列化从不读它，因此那条路径不再为每个响应维护一张映射表；
      *           头部名一律转小写存储（RFC 9110 §5.1）。
@@ -376,16 +377,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool carriesNoContent() const noexcept;
 
     private:
-        /**
-         * @brief 单条头部字段的权威记录
-         */
-        struct HeaderField
-        {
-            std::string name;  ///< 已归一化为小写的头部名
-            std::string value; ///< 头部值原文，序列化时逐字写出
-        };
-
-        using HeaderFieldList = std::vector<HeaderField>; ///< 头部记录的有序容器类型
+        using HeaderField = HttpHeaderFieldStore::HeaderField; ///< 头部记录（存储内部类型）
 
         /**
          * @brief 根据状态码获取标准原因短语。
@@ -396,34 +388,7 @@ namespace AsynGyanis::Net
         static const char *statusMessage(int code);
 
         /**
-         * @brief 把头部名就地改写为小写
-         * @param name 待改写的字符串，按 ASCII 表处理，不受 locale 影响
-         */
-        static void lowercaseInPlace(std::string &name);
-
-        /**
-         * @brief 把头部名归一化成内部存储形式（小写）
-         * @param name 原始头部名
-         * @return 归一化后的头部名
-         */
-        static std::string toCanonicalHeaderName(std::string_view name);
-
-        /**
-         * @brief 判断头部名是否允许在同一报文里出现多条
-         * @param canonicalName 已归一化（小写）的头部名
-         * @return true 表示该头部逐条上线，不做覆盖
-         */
-        static bool isRepeatableHeaderName(std::string_view canonicalName);
-
-        /**
-         * @brief 在权威记录中按名字线性查找首个同名条目
-         * @param canonicalName 已归一化（小写）的头部名
-         * @return 指向首个同名条目的迭代器，未命中时等于 m_headerFields.end()
-         */
-        HeaderFieldList::iterator findHeaderField(const std::string &canonicalName);
-
-        /**
-         * @brief 从两份头部存储中删除指定名字的全部条目
+         * @brief 删除指定名字的全部条目
          * @param canonicalName 已归一化（小写）的头部名；不存在时为空操作
          */
         void removeHeaderField(const std::string &canonicalName);
@@ -467,20 +432,9 @@ namespace AsynGyanis::Net
          */
         void appendHead(std::string &result) const;
 
-        /**
-         * @brief 由权威记录重建单值视图（可重复头只留首条）
-         * @details 与 HttpRequest 同一惰性形态：写入只把视图标脏，首次查询才建一次。
-         *          HTTP/1.1 的序列化只读权威记录，因此那条路径不必为每个响应维护映射表
-         */
-        void rebuildSingleValueView() const;
-
         int m_status{200};                                     ///< HTTP 状态码，默认 200
         std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1
-        HeaderFieldList m_headerFields;                        ///< 头部权威记录，按设置顺序保存，决定序列化顺序
-        /// 头部单值视图（名到值，可重复头部只留首条），供 headers()/getHeader() 使用；
-        /// 首次查询时由权威记录建出，写入只把它标脏
-        mutable std::unordered_map<std::string, std::string> m_headers;
-        mutable bool m_isSingleValueViewStale{true};           ///< 单值视图是否已过期（写入后为 true，重建后为 false）
+        HttpHeaderFieldStore m_headerStore; ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
         bool m_isStreamingBodySuppressed{false};               ///< HEAD 请求：流式响应只发头部、不发正文段
         std::string m_body;                                    ///< 响应正文（堆存储），与 m_mappedBody 互斥
         Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效

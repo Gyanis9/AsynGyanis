@@ -1,6 +1,7 @@
 #include "Net/Http/HttpResponse.h"
 
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
@@ -61,10 +62,6 @@ namespace AsynGyanis::Net
         constexpr std::size_t kAutoContentLengthReserveLength =
                 kAutoContentLengthHeaderPrefix.size() + kMaximumUnsignedDecimalTextLength + kCrLfLength; ///< 前缀 16 + 最多 20 位数字 + CRLF 2 = 38
         constexpr std::size_t kAutoDateReserveLength = kAutoDateHeaderPrefix.size() + kHttpDateTextLength + kCrLfLength; ///< 前缀 6 + 定长 29 + CRLF 2 = 37
-
-        // 允许在同一报文里出现多条、且不得合并的头部名单（已归一化为小写）。
-        // 与请求侧保持同一份判定口径：RFC 6265 规定多条 Set-Cookie 各表达一个独立 cookie
-        constexpr std::array<std::string_view, 1> kRepeatableHeaderNames{"set-cookie"};
 
         /**
          * @brief 以十进制形式把整数追加到序列化缓冲
@@ -155,54 +152,17 @@ namespace AsynGyanis::Net
         return m_status;
     }
 
-    void HttpResponse::lowercaseInPlace(std::string &name)
-    {
-        // 逐字符按 ASCII 表折叠：不用 std::tolower，那个受 locale 影响（土耳其语环境下 'I' 会折成非 ASCII 字节）
-        for (char &character: name)
-        {
-            character = toLowerAscii(character);
-        }
-    }
-
-    std::string HttpResponse::toCanonicalHeaderName(const std::string_view name)
-    {
-        std::string canonicalName(name);
-        lowercaseInPlace(canonicalName);
-        return canonicalName;
-    }
-
-    bool HttpResponse::isRepeatableHeaderName(const std::string_view canonicalName)
-    {
-        // 名单极小，线性比较比构造哈希集合划算
-        return std::ranges::find(kRepeatableHeaderNames, canonicalName) != kRepeatableHeaderNames.end();
-    }
-
-    auto HttpResponse::findHeaderField(const std::string &canonicalName) -> HeaderFieldList::iterator
-    {
-        // 头部数量级为几十条，线性比较比再挂一张「名到迭代器」的索引表更划算，也少一份要维护的一致性
-        return std::ranges::find_if(m_headerFields,
-                                    [&canonicalName](const HeaderField &field)
-                                    {
-                                        return field.name == canonicalName;
-                                    });
-    }
-
     void HttpResponse::removeHeaderField(const std::string &canonicalName)
     {
-        const auto isSameName = [&canonicalName](const HeaderField &field)
-        {
-            return field.name == canonicalName;
-        };
-        m_headerFields.erase(std::ranges::remove_if(m_headerFields, isSameName).begin(), m_headerFields.end());
-        // 单值视图不在这里维护：标脏即可，下次查询由权威记录重建（否则会留下
+        // 视图不在这里维护：存储内部只标脏，下次查询由权威记录重建（否则会留下
         // 「查询查得到、序列化里没有」的鬼条目）
-        m_isSingleValueViewStale = true;
+        m_headerStore.removeAll(canonicalName);
     }
 
     bool HttpResponse::setHeader(const std::string &name, const std::string &value)
     {
         // 头部名转小写后入库，判据也按小写形态给出
-        const std::string canonicalName = toCanonicalHeaderName(name);
+        const std::string canonicalName = HttpHeaderFieldStore::toCanonicalHeaderName(name);
 
         // CR/LF/NUL 会让调用方提前结束头部块（HTTP 响应拆分），字段名里的空白与控制字符
         // 则产出线上非法报文——两种情况都拒写，且不改动任何已有状态
@@ -211,61 +171,28 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // 视图只标脏、不在写入路径上维护：首次查询时由权威记录一次性重建
-        m_isSingleValueViewStale = true;
-
-        if (isRepeatableHeaderName(canonicalName))
+        if (HttpHeaderFieldStore::isRepeatableHeaderName(canonicalName))
         {
             // 可重复头部（Set-Cookie）的 set 语义退化为「追加一条」：既有调用方逐条 setHeader
-            // 下发多个 cookie，覆盖式写法会静默丢掉前面的 cookie。每条各占一项，序列化时逐条上线
-            m_headerFields.push_back(HeaderField{.name = canonicalName, .value = value});
-            // 单值视图只留首条：headers()/getHeader() 的「一个名字一个值」契约不变，
-            // 需要全部值请用 headerValues()
+            // 下发多个 cookie，覆盖式写法会静默丢掉前面的 cookie。每条各占一项，序列化时逐条上线；
+            // 单值视图只留首条（headers()/getHeader() 的「一个名字一个值」契约不变）
+            m_headerStore.append(canonicalName, value);
             return true;
         }
 
-        if (const auto iterator = findHeaderField(canonicalName); iterator != m_headerFields.end())
-        {
-            // 普通头部：原地覆盖值，条目位置仍停在首次设置处，
-            // 这样序列化顺序不因反复改写而漂移
-            iterator->value = value;
-            return true;
-        }
-
-        m_headerFields.push_back(HeaderField{.name = canonicalName, .value = value});
+        // 普通头部：同名就地覆盖，条目位置仍停在首次设置处，序列化顺序不因反复改写而漂移
+        m_headerStore.overwriteOrAppend(canonicalName, value);
         return true;
     }
 
     std::optional<std::string> HttpResponse::getHeader(const std::string &name) const
     {
-        // 查询前先把过期视图重建出来：写入只标脏，合并逻辑只有 rebuildSingleValueView() 一处实现
-        if (m_isSingleValueViewStale)
-        {
-            rebuildSingleValueView();
-        }
-
-        if (const auto iterator = m_headers.find(toCanonicalHeaderName(name)); iterator != m_headers.end())
-        {
-            return iterator->second;
-        }
-        // 缺席是常态而非错误：可选头部查不到时交回空 optional
-        return std::nullopt;
+        return m_headerStore.get(name);
     }
 
     std::vector<std::string> HttpResponse::headerValues(const std::string &name) const
     {
-        const std::string canonicalName = toCanonicalHeaderName(name);
-
-        std::vector<std::string> values;
-        // 按权威记录的设置顺序收集，与 toString() 的上线顺序一致
-        for (const HeaderField &field : m_headerFields)
-        {
-            if (field.name == canonicalName)
-            {
-                values.push_back(field.value);
-            }
-        }
-        return values;
+        return m_headerStore.values(name);
     }
 
     void HttpResponse::suppressStreamingBody() noexcept
@@ -280,32 +207,7 @@ namespace AsynGyanis::Net
 
     const std::unordered_map<std::string, std::string> &HttpResponse::headers() const
     {
-        if (m_isSingleValueViewStale)
-        {
-            rebuildSingleValueView();
-        }
-        return m_headers;
-    }
-
-    void HttpResponse::rebuildSingleValueView() const
-    {
-        m_headers.clear();
-        for (const HeaderField &field: m_headerFields)
-        {
-            if (isRepeatableHeaderName(field.name))
-            {
-                // 可重复头部只留首条（与 setHeader 的追加语义一致），其余靠 headerValues() 逐条取
-                m_headers.try_emplace(field.name, field.value);
-                continue;
-            }
-
-            // 普通头部同名多条时后写的覆盖先写的：与 setHeader 的原地覆盖语义同口径
-            if (const auto [iterator, isInserted] = m_headers.try_emplace(field.name, field.value); !isInserted)
-            {
-                iterator->second = field.value;
-            }
-        }
-        m_isSingleValueViewStale = false;
+        return m_headerStore.singleValueView();
     }
 
     void HttpResponse::setBody(const std::string_view body)
@@ -695,7 +597,7 @@ namespace AsynGyanis::Net
         bool        hasContentTypeHeader = false;
         bool        hasContentLengthHeader = false;
         bool        hasDateHeader = false;
-        for (const HeaderField &field : m_headerFields)
+        for (const HttpHeaderFieldStore::HeaderField &field: m_headerStore.fields())
         {
             reservedLength += field.name.size() + field.value.size() + kHeaderLineReserveLength;
 
@@ -742,7 +644,7 @@ namespace AsynGyanis::Net
         bool hasContentTypeHeader  = false;
         bool hasContentLengthHeader = false;
         bool hasDateHeader = false;
-        for (const HeaderField &field : m_headerFields)
+        for (const HttpHeaderFieldStore::HeaderField &field: m_headerStore.fields())
         {
             if (field.name == kContentTypeHeaderName)
             {
@@ -860,8 +762,7 @@ namespace AsynGyanis::Net
 
         // 清权威记录并把视图标脏：下次查询会重建出空视图（只清一处会留下
         // 「视图里查得到、序列化里没有」的鬼条目）
-        m_headerFields.clear();
-        m_isSingleValueViewStale = true;
+        m_headerStore.clear();
 
         // 正文同样是两条存储：堆串清空之外映射也要解除，
         // 否则复用响应对象时上一轮的文件会继续当正文发出去
