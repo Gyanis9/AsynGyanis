@@ -117,7 +117,6 @@ namespace AsynGyanis::Database
                 rawBytes.reserve(bytes.size());
                 for (const std::uint8_t byteValue: bytes)
                 {
-                    // 反向的逐元素转换，与 toBinaryBytes 对称
                     rawBytes.push_back(static_cast<std::byte>(byteValue));
                 }
                 return rawBytes;

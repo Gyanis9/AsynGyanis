@@ -6,11 +6,10 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 三条使用路径：离线（默认构造，只用 toSql() 生成文本）、绑定连接池（借连接 → 方言
- *          translate*() → execute(sql, 参数) → 行映射）、绑定事务（全部语句走事务持有的那一条连接，
- *          与 BEGIN / COMMIT / ROLLBACK 同处一个会话）。SQL 文本一律由方言生成，本类不含任何拼接 SQL
- *          的逻辑；每个同步执行器都有语义一致、仅把阻塞链路交给工作线程的 Async 版本。
- * @endcode
+ * @details 三条使用路径：离线（默认构造，只用 toSql() 输出近似 SQL 文本）、绑定连接池（借连接 → 方言
+ *          translate*() → execute(sql, 参数) → 行映射）、绑定事务（全部语句走事务持有的那一条连接）。
+ *          本类另有离线调试渲染器 buildSelectSql() 等：不加标识符引号、SELECT 列为空时输出 "*"，只供调试
+ *          与离线测试，不参与执行；真正的执行 SQL 一律由方言 translate*() 生成，每个执行器都有 Async 版本。
  */
 #pragma once
 
@@ -53,15 +52,10 @@ namespace AsynGyanis::Database::Queryable
      * @details 提供流式接口构建类型安全的数据库查询；四种构造方式分别对应离线模式与
      *          绑定连接池（可显式指定方言）、绑定事务三种在线模式。
      *
-     * @note 执行器方法（toList/first/count/insert/insertBatch/update/executeNonQuery）及其
-     *       异步版本（toListAsync/firstAsync/countAsync/insertAsync/insertBatchAsync/
-     *       updateAsync/executeNonQueryAsync）必须在绑定连接池或事务的在线模式下调用，
-     *       默认构造的离线模式调用它们会抛 Base::LogicException。
+     * @note 全部执行器方法（含异步版本）均要求在线模式：未绑定连接池或事务时抛 Base::LogicException。
      * @note 各方法文档里的 `@throws DatabaseException` 是家族根类型，具体子类按失败原因对应：
-     *       取连接失败 → ConnectionUnavailableException（可重试）；
-     *       语句执行失败 → QueryExecutionException（重试无意义，应记日志让请求失败）；
-     *       结果集映射失败 → RowMappingException（表结构与结构体声明不一致）。
-     *       调用方按需捕获具体子类，或统一捕获 Base::Exception 网住全部运行期故障。
+     *       取连接失败 → ConnectionUnavailableException（可重试）；语句执行失败 → QueryExecutionException
+     *       （重试无意义，应记日志让请求失败）；结果集映射失败 → RowMappingException（表结构与结构体声明不一致）。
      * @note 本类不是线程安全的：异步方法只保证阻塞执行发生在工作线程上，调用方仍应避免在
      *       同一个查询对象上并发地构建查询与发起执行。
      */
@@ -375,10 +369,9 @@ namespace AsynGyanis::Database::Queryable
          * @brief 批量插入多行，一次生成多行 VALUES
          *
          * @details 走方言的 SqlDialect::translateInsertBatch()，把 rows 一次写成
-         *          "INSERT INTO 表 (列…) VALUES (?, …), (?, …), …"。
-         *          参数总数受引擎上限约束（SQLite 为 999），因此按「每行占用的参数个数 = 列数」
-         *          换算出每批行数并自动分块；分块后必须是同一个事务，
-         *          否则中途失败会留下「前几批已提交、后几批没写」的半成品，见实现处注释。
+         *          "INSERT INTO 表 (列…) VALUES (?, …), (?, …), …"。参数总数受引擎上限约束（SQLite 为 999），
+         *          因此按「每行占用的参数个数 = 列数」换算出每批行数并自动分块；
+         *          分块后必须处于同一个事务，否则中途失败会留下「前几批已提交、后几批没写」的半成品。
          *
          * @param rows 待插入的行集合，允许为空（空集合直接返回 0，不产生任何语句）
          * @return std::int64_t 累计受影响的行数（正常等于 rows.size()；驱动不提供时为 0）
@@ -703,10 +696,9 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 生成 SQL 文本
          *
-         * @details 将当前 QueryNode 查询树转换为近似 SQL 字符串，用于调试与离线测试。
-         *          这条路径不参与真实执行：它不给标识符加引号，SELECT 列为空时固定输出 "*"，
-         *          分页也不做方言补全。真正执行的 SQL 由 SqlDialect::translate() 生成
-         *          （带标识符引用、按 TableSchema 展开列、按方言补全分页），两者文本可能不同；
+         * @details 将当前 QueryNode 查询树转换为近似 SQL 字符串，用于调试与离线测试：不给标识符加引号、
+         *          SELECT 列为空时固定输出 "*"、分页不做方言补全。真正执行的 SQL 由 SqlDialect::translate()
+         *          生成（带标识符引用、按 TableSchema 展开列、按方言补全分页），两者文本可能不同；
          *          参数占位符风格与方言一致，排查问题时可直接对照。
          *
          * @return std::string 生成的 SQL 文本
@@ -750,10 +742,9 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 取得本查询要使用的方言，首次调用时解析并缓存（返回共享指针）
-         * @details 方言类型优先用构造时显式指定的值；未指定时从实际要用的连接读取其真实
-         *          DatabaseType：绑定事务时直接问事务连接（零成本且必然准确），
-         *          绑定池时才借一条连接探测（池配置里没有类型信息，直接问连接最可靠），读完立刻归还。
-         *          返回共享指针而不是引用，是为了让异步路径能把方言**按值**捕获进工作线程的任务：
+         * @details 方言类型优先用构造时显式指定的值；未指定时从实际要用的连接读取其真实 DatabaseType：
+         *          绑定事务时直接问事务连接（零成本且必然准确），绑定池时才借一条连接探测，读完立刻归还。
+         *          返回共享指针而不是引用，是为了让异步路径能把方言按值捕获进工作线程的任务：
          *          工作线程不得再触碰本对象，而引用无法脱离本对象的生命周期独立存在。
          * @return std::shared_ptr<SqlDialect> 方言实例，恒非空
          * @throws DatabaseException 无法从池中取得连接以推导类型
@@ -1096,11 +1087,9 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 按方言的参数上限分块执行批量插入，必要时用本地事务覆盖全部块
          *
-         * @details 同步与异步两条路径的唯一实现：
-         *          - 每行的参数个数就是列数，上限由方言的 maximumStatementParameters() 回答；
-         *          - 不分块时单条多行 INSERT 自身就是原子的，不额外开事务；
-         *          - 需要分块时全部块必须落在同一条连接的同一个事务里：每批各自取连接会让中途失败时
-         *            已提交的批次无法回滚，调用方拿到异常却留下半张表的数据。
+         * @details 同步与异步两条路径的唯一实现：每行的参数个数就是列数，上限由方言的
+         *          maximumStatementParameters() 回答；不分块时单条多行 INSERT 自身就是原子的，不额外开事务；
+         *          需要分块时全部块必须落在同一条连接的同一个事务里，否则中途失败会让已提交的批次无法回滚。
          *
          * @param pool 连接池，transaction 为空时由它取连接（并可能起一个本地事务）
          * @param transaction 已绑定的事务，非空时全部块共用它的连接且不自行提交或回滚

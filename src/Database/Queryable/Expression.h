@@ -114,7 +114,7 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 枚举 → int64_t（不使用 std::to_underlying，C++23 不可用）
+         * @brief 枚举 → int64_t
          */
         template<typename T>
         auto toParameterValue(T value) noexcept -> std::enable_if_t<std::is_enum_v<T>, ParameterValue>
@@ -338,7 +338,7 @@ namespace AsynGyanis::Database::Queryable
      * @brief 逻辑与组合（&& → AND），右值版本
      *
      * @details 将两个条件用 AND 组合成复合条件节点。
-     *          子条件存储在 children 中，toSql() 递归展开。
+     *          子条件存入 children，由 Queryable::buildConditionString() 递归展开。
      */
     inline WhereCondition operator&&(WhereCondition &&leftCondition, WhereCondition &&rightCondition)
     {

@@ -20,7 +20,6 @@ namespace AsynGyanis::Database
 
     PooledConnection::~PooledConnection()
     {
-        // 析构时自动归还，仅当 m_connection 和 m_pool 均有效时才执行归还
         doReturnToPool();
     }
 
@@ -29,18 +28,14 @@ namespace AsynGyanis::Database
         , m_pool(std::exchange(other.m_pool, nullptr))
         , m_poolLiveness(std::move(other.m_poolLiveness))
     {
-        // 移动后源对象完全清空：m_connection 与 m_pool 均为空，
-        // 源对象析构时不会触发归还操作
     }
 
     PooledConnection &PooledConnection::operator=(PooledConnection &&other) noexcept
     {
         if (this != &other)
         {
-            // 先归还当前持有的连接（如有）
             doReturnToPool();
 
-            // 转移所有权
             m_connection   = std::exchange(other.m_connection, nullptr);
             m_pool         = std::exchange(other.m_pool, nullptr);
             m_poolLiveness = std::move(other.m_poolLiveness);
@@ -70,8 +65,7 @@ namespace AsynGyanis::Database
 
     void PooledConnection::doReturnToPool()
     {
-        // double-release 防护：当 m_connection 已被 release 或移动走后，
-        // m_connection 为空，此处安全返回
+        // double-release 防护：已被 release 或移动走时这里安全返回
         if (m_connection == nullptr)
         {
             return;

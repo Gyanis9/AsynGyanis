@@ -24,9 +24,8 @@ namespace AsynGyanis::Database
     /**
      * @brief SQLite SQL 方言
      *
-     * @details 只覆写引擎知识，查询树渲染与参数收集一律继承基类：双引号引用、dialectName() 返回
-     *          "SQLite"、占位符 "?"、分页值内联（不占绑定参数）、事务语句 "BEGIN IMMEDIATE"、参数上限 999、
-     *          columnTypeName() / tableExistsStatement() 反映 SQLite 的存储类与 sqlite_master。
+     * @details 只覆写引擎知识（引用字符、事务语句、分页、类型名、元数据与参数上限），
+     *          查询树渲染与参数收集一律继承基类 StandardSqlDialect。
      *
      * @note 无状态实现，可被多线程并发调用；实例由 DialectRegistry 以共享指针提供，
      *       调用方一般不需要自己构造。
@@ -68,11 +67,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 把逻辑列类型翻译成 SQLite 的物理类型名
-         * @details 重写 SqlDialect::columnTypeName()：SQLite 只有 5 个存储类，映射为
-         *          Int64/Bool/Text/Blob → INTEGER/INTEGER/TEXT/BLOB，Double → REAL。
-         *          UInt64 只能退化为有符号 INTEGER（SQLite 没有无符号类型），超过 int64 上限的取值
-         *          由绑定期降级为十进制文本（见基类 convertParameter）；不用 TEXT 承载整数，
-         *          是因为字符串语义会让排序、比较、索引全部退化（"10" < "9"）。
+         * @details 重写 SqlDialect::columnTypeName()：SQLite 只有 5 个存储类，UInt64 只能退化为
+         *          有符号 INTEGER（超过 int64 上限的取值由绑定期降级为十进制文本）；不用 TEXT
+         *          承载整数，是因为字符串语义会让排序、比较、索引全部退化（"10" < "9"）。
          * @param type 逻辑列类型
          * @return std::string_view 对应存储类名；未知取值回落到 "TEXT"（见基类约定）
          */
@@ -80,11 +77,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 生成 SQLite 的「表是否存在」查询
-         * @details 重写 SqlDialect::tableExistsStatement()：SQLite 的表清单存放在
-         *          sqlite_master（只读系统表）里，用 type='table' 过滤掉索引、视图与触发器，
-         *          再按 name 精确匹配目标表名。sqlite_master 只属于当前所连接的那个库文件，
-         *          所以不需要任何库名限定——这是嵌入式引擎与 MySQL 的主要差异。
-         *          name 列以参数绑定送入，表名里出现引号或分号都不会改变语句结构。
+         * @details 重写 SqlDialect::tableExistsStatement()：表清单在 sqlite_master（只读系统表）里，
+         *          用 type='table' 过滤掉索引、视图与触发器。它是当前库文件私有的，因此不需要
+         *          MySQL 那样的库名限定；name 以参数绑定送入，表名里的引号或分号不改变语句结构。
          * @param tableName 待查询的表名
          * @return SqlStatement "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?"
          *         及其唯一绑定参数；结果为一行一列，0 表示不存在
@@ -102,16 +97,13 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::size_t maximumStatementParameters() const noexcept override;
 
-        /// SQLite 单条语句的参数个数保守上限（= SQLITE_MAX_VARIABLE_NUMBER 的默认值 999）
-        static constexpr std::size_t kMaximumStatementParameters = 999;
+        static constexpr std::size_t kMaximumStatementParameters = 999; ///< SQLite 单条语句的参数个数保守上限（= SQLITE_MAX_VARIABLE_NUMBER 的默认值 999）
 
     protected:
         /**
          * @brief 取得 SQLite 的标识符引用字符
          * @details 重写 StandardSqlDialect::identifierQuoteCharacter()：SQLite 接受 SQL 标准的
          *          双引号形式，因此返回 '"'（与 MySQL 的反引号不同）。
-         *          该字符同时驱动基类 quoteIdentifier() 的加引用与内部翻倍转义，
-         *          以及 renderFieldReference() 的「是否是可引用标识符」判定，两处必须一致。
          * @return char 恒为双引号 '"'
          */
         [[nodiscard]] char identifierQuoteCharacter() const noexcept override;
@@ -119,8 +111,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 取得本方言的显示名
          * @details 重写 StandardSqlDialect::dialectName()：返回 "SQLite"，用于拼出
-         *          「SQLite 方言：待写列列表为空…」这类中文错误文本，
-         *          保留引擎名是为了让多方言并存的调用方能立刻判断是哪一侧的输入有问题。
+         *          「SQLite 方言：待写列列表为空…」这类中文错误文本。
          * @return std::string_view 恒为 "SQLite"
          */
         [[nodiscard]] std::string_view dialectName() const noexcept override;

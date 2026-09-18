@@ -65,9 +65,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 将游标移动到下一行
-         * @details 重写 DatabaseResult::next()：数据已全在内存里，本方法只推进下标，
-         *          返回 false 只可能是「已到末尾」，不存在读取出错这一分支。
-         *          按基类契约本方法属只读路径，不会改写 m_lastError。
+         * @details 重写 DatabaseResult::next()：只推进内存下标，返回 false 只可能是「已到末尾」，不存在读取出错
+         *          这一分支；按基类契约属只读路径，不会改写 m_lastError。其余与基类一致。
          * @return true 游标停在有效行上，可以读取列值
          * @return false 已无更多行
          */
@@ -107,11 +106,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列索引读取当前行的值
-         * @details 重写 DatabaseResult::getValue()：游标没停在有效行上（未 next()、
-         *          已遍历完或刚 reset()）时返回 std::monostate，列值为 SQL NULL 时同样返回
-         *          std::monostate——两者在 DatabaseValue 里本就只有一种表达，调用方按
-         *          「无值」统一处理即可（需要区分时先判断游标状态）。
-         *          本方法是 const 读取路径，绝不改写 m_lastError。
+         * @details 重写 DatabaseResult::getValue()：游标没停在有效行上（未 next()、已遍历完或刚 reset()）
+         *          或列值为 SQL NULL 时都返回 std::monostate——两者在 DatabaseValue 里本就只有一种表达，
+         *          调用方按「无值」统一处理即可。本方法是 const 读取路径，绝不改写 m_lastError。
          * @param index 列索引，从 0 开始
          * @return DatabaseValue 列值；无当前行或索引越界时返回 std::monostate
          */
@@ -136,9 +133,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 重置游标到首行之前，使结果集可重新遍历
-         * @details 重写 DatabaseResult::reset()：数据全在内存里，复位只是把下标归零。
-         *          与基类的差异：还要清掉「当前行有效」标志，否则 getValue() 会继续读最后一行；
-         *          并清空上一轮遗留的错误文本（本方法属非 const 写路径）。
+         * @details 重写 DatabaseResult::reset()：数据全在内存里，复位即下标归零，并清掉「当前行有效」标志
+         *          （否则 getValue() 会继续读最后一行）与上一轮遗留的错误文本。其余与基类一致。
          */
         void reset() override;
 

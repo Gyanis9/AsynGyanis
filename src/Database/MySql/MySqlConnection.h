@@ -68,11 +68,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 连接 MySQL 服务
-         * @details 重写 DatabaseConnection::connect()：与基类契约的差异——
-         *          1) 已连接时直接返回 true：同一句柄上再次 mysql_real_connect 相当于隐式重连，会丢掉全部会话状态；
-         *          2) MYSQL 句柄在本方法内部才创建，每次建连都重新读取并下发超时设置与 utf8mb4 字符集；
-         *          3) host 为空视为配置错误当场失败；任何一步失败都先摘好错误文本再释放句柄，不留半开的句柄。
-         *          桩构建下直接返回 false，并在 lastError() 给出缺失驱动的提示。
+         * @details 重写 DatabaseConnection::connect()：已连接时直接返回 true（再次 mysql_real_connect
+         *          相当于隐式重连、会丢掉全部会话状态）；MYSQL 句柄在本方法内创建，每次建连都重新下发
+         *          超时设置与 utf8mb4 字符集；host 为空当场失败，任何一步失败都先摘好错误文本再释放句柄。
+         *          其余与基类一致；桩构建下直接返回 false 并在 lastError() 给出缺失驱动的提示。
          * @return true 连接已建立（含默认库选择）
          * @return false 任一环节失败，原因（含客户端库原文与错误码）见 lastError()
          * @note 重连前修改超时设置即可生效；已连接状态下修改设置要等下一次 disconnect() + connect()
@@ -81,10 +80,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 断开连接并释放底层 MYSQL 句柄
-         * @details 重写 DatabaseConnection::disconnect()：与基类的差异——
-         *          只关句柄与复位状态，不清 m_lastError（调用方常在失败路径上先写好原因再断开）；
-         *          已交出的 MySqlResult 自带全部数据，断开后仍可正常读取；
-         *          mysql_close 之后 mysql_error() 的返回值即失效，失败路径必须「先取文本、再断开」。
+         * @details 重写 DatabaseConnection::disconnect()：只关句柄与复位状态，不清 m_lastError（失败路径常
+         *          先写好原因再断开）；已交出的 MySqlResult 自带全部数据，断开后仍可读取；mysql_close 之后
+         *          mysql_error() 的返回值即失效，失败路径必须「先取文本、再断开」。其余与基类一致。
          * @note 断开后句柄被置空，下一次 connect() 会重新 mysql_init 并按最新的超时设置下发选项
          */
         void disconnect() override;
@@ -104,11 +102,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条 SQL 命令
-         * @details 重写 DatabaseConnection::execute()：每次调用开头清空 m_lastError；命令文本按
-         *          「指针 + 长度」交给 mysql_real_query（二进制安全），命令为空或长度超出 unsigned long
-         *          上限时直接失败、不发送任何字节；有返回列时把整份结果预读成 MySqlResult，无返回列的
-         *          写语句返回非空的空回执（调用方只判 nullptr 即可）；客户端报出连接级错误时顺手断开；
-         *          一次只发一条语句（未启用 CLIENT_MULTI_STATEMENTS）。
+         * @details 重写 DatabaseConnection::execute()：每次调用开头清空 m_lastError；命令按「指针 + 长度」
+         *          交给 mysql_real_query（二进制安全），命令为空或超长时直接失败、不发送任何字节；有返回列时
+         *          预读成 MySqlResult，无返回列返回非空的空回执；客户端报连接级错误时顺手断开；一次只发一条
+         *          语句（未启用 CLIENT_MULTI_STATEMENTS）。其余与基类一致。
          * @param command SQL 文本，例如 "SELECT id, name FROM users"
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
@@ -116,11 +113,11 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条带占位符的 SQL 命令，参数按位置绑定
-         * @details 重写 DatabaseConnection::execute()：与基类默认实现（直接报「暂不支持」）不同，
-         *          用预处理语句接口（mysql_stmt_*）真正绑定参数，取值绝不拼进 SQL 文本。参数个数必须与
+         * @details 重写 DatabaseConnection::execute()：用预处理语句接口（mysql_stmt_*）真正绑定参数，
+         *          取值绝不拼进 SQL 文本。与基类默认实现（直接报「暂不支持」）不同：参数个数必须与
          *          占位符个数严格相等（少给参数会让条件静默变成永假 `WHERE id = NULL`）；NULL 用
-         *          MYSQL_TYPE_NULL 表达（绑成空串会让 IS NULL 不再成立），容器类型明确拒绝；结果经
-         *          mysql_stmt_store_result 预读成快照，不引用语句句柄，可活得比连接更久。
+         *          MYSQL_TYPE_NULL 表达（绑成空串会让 IS NULL 不再成立）；容器类型明确拒绝；结果预读成
+         *          不引用语句句柄、可活得比连接更久的快照。其余与基类一致。
          * @param command 带 "?" 占位符的 SQL 文本，例如 "SELECT id FROM users WHERE age >= ?"
          * @param parameters 按占位符出现顺序排列的绑定参数，个数必须等于占位符个数
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
@@ -220,11 +217,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 绑定参数并执行一条已预处理的语句
-         * @details 绑定缓冲区（参数个数、长度表、布尔与整数的落地位）都是本函数的局部变量，生命周期
-         *          只覆盖到 mysql_stmt_execute 返回为止（客户端库正是在 execute 内部把它写进网络包），
-         *          因此「绑定」与「执行」必须成对出现在同一个函数里，不能把绑定结果留到函数外使用。
-         *          执行失败时按连接级错误码判断链路是否已断（CR_SERVER_GONE_ERROR / CR_SERVER_LOST），
-         *          是则顺手 disconnect()，让后续调用一致地看到「未连接」。
+         * @details 绑定缓冲区（参数个数、长度表、布尔与整数的落地位）都是本函数的局部变量，客户端库在
+         *          mysql_stmt_execute 内部读取它们并写进网络包，因此「绑定」与「执行」必须成对出现在
+         *          同一个函数里，绑定结果不能留到函数外使用。执行失败时按连接级错误码判断链路是否已断
+         *          （CR_SERVER_GONE_ERROR / CR_SERVER_LOST），是则顺手 disconnect()。
          * @param statement 已 prepare 成功的预处理语句句柄
          * @param parameters 按占位符出现顺序排列的绑定参数
          * @return true 参数个数匹配、绑定与执行都成功
@@ -235,9 +231,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 把已执行并 store_result 的预处理语句的全部行预读成结果集快照
          * @details 先取一次列元数据（列名、声明类型、max_length），按每列的 max_length 分配取值缓冲区，
-         *          再用 mysql_stmt_fetch 逐行取回并转换成 DatabaseValue。任何一列都比 max_length 长时
-         *          （客户端库未按 STMT_ATTR_UPDATE_MAX_LENGTH 更新长度才会发生）按实际长度补取一次，
-         *          绝不把截断的数据交给调用方。
+         *          再用 mysql_stmt_fetch 逐行取回并转换成 DatabaseValue；任何一列比 max_length 长时按实际
+         *          长度补取一次（客户端库未按 STMT_ATTR_UPDATE_MAX_LENGTH 更新长度才会发生），绝不把截断的
+         *          数据交给调用方。
          * @param statement 已 mysql_stmt_execute + mysql_stmt_store_result 成功的语句句柄
          * @return std::unique_ptr<DatabaseResult> 结果集快照；失败返回 nullptr，原因见 lastError()
          */

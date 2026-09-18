@@ -58,9 +58,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 将游标推进到下一行
-         * @details 重写 DatabaseResult::next()：直接 sqlite3_step 一次，只有 SQLITE_ROW 才算成功。
-         *          SQLITE_ERROR / SQLITE_BUSY 与游标耗尽都返回 false——基类契约把本函数归入只读路径，
-         *          因此本实现不会改写 m_lastError，需要区分时请检查语句是否已被连接侧报错。
+         * @details 重写 DatabaseResult::next()：sqlite3_step 一次，只有 SQLITE_ROW 才算成功；
+         *          SQLITE_ERROR / SQLITE_BUSY 与游标耗尽都返回 false，按基类契约属只读路径、
+         *          不改写 m_lastError，需要区分时请检查语句是否已被连接侧报错。其余与基类一致。
          * @return true 游标停在有效行上，可以读取列值
          * @return false 已无更多行，或推进过程中出错
          */
@@ -68,9 +68,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取结果集行数
-         * @details 重写 DatabaseResult::rowCount()：构造时对只读语句做一次预扫描得到精确行数；
-         *          带写副作用的语句（如 INSERT ... RETURNING）绝不重复执行，按基类契约返回 0 表示未知；
-         *          写回执结果同样返回 0。
+         * @details 重写 DatabaseResult::rowCount()：只读语句构造时预扫描得到精确行数；带写副作用的语句
+         *          （如 INSERT ... RETURNING）绝不重复执行，按基类契约返回 0（未知）；写回执同样返回 0。
          * @return size_t 行数，0 表示空集或无法预先得知
          */
         [[nodiscard]] size_t rowCount() const override;
@@ -103,9 +102,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列索引读取当前行的值
-         * @details 重写 DatabaseResult::getValue()：与基类的额外约束是——游标未停在有效行上
-         *          （未调用 next()、已走完或已 reset()）时直接返回 std::monostate，
-         *          因为 SQLite 规定列读取接口只能在 step 返回 SQLITE_ROW 之后使用，否则是未定义行为。
+         * @details 重写 DatabaseResult::getValue()：游标未停在有效行上（未调用 next()、已走完或已 reset()）
+         *          时直接返回 std::monostate——SQLite 规定列读取接口只能在 step 返回 SQLITE_ROW 之后使用，
+         *          否则是未定义行为。其余与基类一致。
          * @param index 列索引，从 0 开始
          * @return DatabaseValue 列值；无当前行、索引越界或列为 NULL 时返回 std::monostate
          */
@@ -130,18 +129,16 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 重置游标到首行之前，使结果集可以重新遍历
-         * @details 重写 DatabaseResult::reset()：除 sqlite3_reset 之外还要清掉「当前行有效」标志，
-         *          否则旧的 getValue() 会去读已经失效的列值；并先清空上一轮遗留的错误文本，
-         *          因为一次新的重置代表一次新的尝试。reset 失败（例如 SQLITE_BUSY）时本函数属于
-         *          非 const 写路径，会把原因写入 lastError()。
+         * @details 重写 DatabaseResult::reset()：除 sqlite3_reset 外还要清掉「当前行有效」标志（否则
+         *          getValue() 会去读已经失效的列值）与上一轮遗留的错误文本；reset 失败（例如 SQLITE_BUSY）
+         *          时属非 const 写路径，会把原因写入 lastError()。其余与基类一致。
          */
         void reset() override;
 
         /**
          * @brief 判断结果集是否为空
-         * @details 重写 DatabaseResult::isEmpty()：取构造阶段确定的快照，不随游标推进改变。
-         *          写回执结果没有行，恒为 true；带写副作用因而未预扫描的语句按「可能有行」处理，
-         *          其真实是否有行由 next() 的返回值决定。
+         * @details 重写 DatabaseResult::isEmpty()：取构造阶段确定的快照，不随游标推进改变；带写副作用
+         *          因而未预扫描的语句按「可能有行」处理，其真实是否有行由 next() 的返回值决定。
          * @return true 没有任何数据行
          */
         [[nodiscard]] bool isEmpty() const override;
@@ -168,10 +165,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取影响行数
-         * @details 重写 DatabaseResult::affectedRowCount()：返回构造时快照的 sqlite3_changes()。
-         *          对写回执结果就是本条语句影响的行数；对查询结果则是该连接上一条写语句的计数
-         *          （SQLite 未提供语句级历史，只能读到连接级计数器，与基类「只读结果集返回 0」
-         *          的一般约定不同，这里如实返回快照值）。
+         * @details 重写 DatabaseResult::affectedRowCount()：返回构造时快照的 sqlite3_changes()——写回执
+         *          是本条语句的影响行数，查询结果则是该连接上一条写语句的计数（SQLite 只有连接级计数器，
+         *          与基类「只读结果集返回 0」的一般约定不同，这里如实返回快照值）。其余与基类一致。
          * @return std::int64_t 受影响行数；构造时未持有连接句柄（只传了语句）时为 0
          */
         [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;

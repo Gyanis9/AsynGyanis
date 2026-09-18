@@ -25,7 +25,7 @@ namespace AsynGyanis::Database
      * @details 所有驱动（MySQL、Redis、SQLite）都继承本类，调用方只依赖本接口。
      *          生命周期：构造 → connect() → execute() → disconnect() → 析构。m_isConnected 是
      *          连接状态的唯一真值来源，派生类必须在 connect()/disconnect() 里同步维护它；
-     *          isConnected() 可在此基础上再叠加一次活性探测（如 mysql_ping）。
+     *          isConnected() 必须是纯状态查询（各驱动均刻意不发网络探活），池在获取/归还热路径上调用它。
      */
     class DatabaseConnection
     {

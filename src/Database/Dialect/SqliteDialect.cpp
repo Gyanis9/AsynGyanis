@@ -13,8 +13,7 @@ namespace AsynGyanis::Database
 
     void SqliteDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
-        // 本方言的分页值一律内联，不占绑定参数，因此 parameters 不被使用；
-        // 形参保留是为了与基类钩子签名一致（基类的默认实现会向它追加分页参数）
+        // 分页值一律内联、不占绑定参数；形参保留只为与基类钩子签名一致
         static_cast<void>(parameters);
 
         if (query.limit.has_value())
@@ -37,8 +36,6 @@ namespace AsynGyanis::Database
             sqlText += " OFFSET ";
             sqlText += std::to_string(query.offset.value());
         }
-
-        // 两个分页值都不存在时不输出任何内容（与基类默认实现一致，此处无需额外分支）
     }
 
     std::string_view SqliteDialect::beginTransactionStatement() const noexcept

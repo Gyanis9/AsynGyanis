@@ -236,13 +236,7 @@ namespace AsynGyanis::Database
              */
             struct ResumeTicket
             {
-                /// 待恢复的协程；等待器析构后为空。
-                /// **必须是原子的**：清空发生在等待器（任意线程）的析构里，而读取发生在投递回
-                /// 事件循环的 lambda 里，两者之间没有任何 happens-before（shared_ptr 的引用计数
-                /// 不建立它）。用非原子字段就是数据竞争，读侧还可能看到一个已经失效的句柄，
-                /// 于是 resume 一块已释放的帧——正是票据要防的那件事。
-                /// 取用一律 `exchange(nullptr)`：**同一个句柄只允许被恢复一次**
-                std::atomic<std::coroutine_handle<>> handle{nullptr};
+                std::atomic<std::coroutine_handle<>> handle{nullptr}; ///< 待恢复的协程；等待器析构后为空。**必须是原子的**：清空发生在等待器（任意线程）的析构里，而读取发生在投递回事件循环的 lambda 里，两者之间没有任何 happens-before（shared_ptr 的引用计数不建立它），用非原子字段就是数据竞争、甚至 resume 一块已释放的帧；取用一律 `exchange(nullptr)`，同一个句柄只允许被恢复一次
 
                 /**
                  * @brief 取走句柄并恢复协程；已被取走（或等待器已析构）时空操作
@@ -260,15 +254,11 @@ namespace AsynGyanis::Database
 
             ConnectionPool *                    m_pool;            ///< 所属连接池
             Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
-            /// 池的存活令牌（构造时取）：析构里的归还动作要经它判活，见 ~AcquireAwaiter
-            std::shared_ptr<PoolLiveness>       m_liveness;
+            std::shared_ptr<PoolLiveness>       m_liveness;        ///< 池的存活令牌（构造时取）：析构里的归还动作要经它判活，见 ~AcquireAwaiter
             std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
-            /// 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
-            std::shared_ptr<ResumeTicket> m_resumeTicket;
-            /// 等待截止时刻（await_suspend 时按 acquireTimeoutMilliseconds 定下）：
-            /// 与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒
-            std::chrono::steady_clock::time_point m_deadline{};
+            std::shared_ptr<ResumeTicket>       m_resumeTicket;    ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
+            std::chrono::steady_clock::time_point m_deadline{};    ///< 等待截止时刻（await_suspend 时按 acquireTimeoutMilliseconds 定下）：与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒
         };
 
         friend class AcquireAwaiter;
@@ -379,16 +369,13 @@ namespace AsynGyanis::Database
         std::function<std::unique_ptr<DatabaseConnection>()> m_factory; ///< 连接工厂，每次调用的返回值应是已 connect() 的状态
         PoolConfig                                           m_config;  ///< 连接池配置
 
-        /// 池存活令牌：析构一开始就置假并持锁到收尾结束，与之共享的 PooledConnection 归还时据此决定
-        std::shared_ptr<PoolLiveness> m_liveness{std::make_shared<PoolLiveness>()};
+        std::shared_ptr<PoolLiveness> m_liveness{std::make_shared<PoolLiveness>()}; ///< 池存活令牌：析构一开始就置假并持锁到收尾结束，与之共享的 PooledConnection 归还时据此决定
 
         // ----- 空闲栈（受 m_mutex 保护） -----
         std::vector<IdleEntry>  m_idleStack;     ///< LIFO 空闲连接栈
         mutable std::mutex      m_mutex;         ///< 保护空闲栈及相关计数
         std::condition_variable m_idleCondition; ///< 条件变量：通知等待者有空闲连接
-        /// 池正在停摆：析构一置位，同步等待者的等待谓词随之成立，它们返回空连接后自减计数，
-        /// 析构等计数归零才继续销毁成员（否则等待者还睡在即将销毁的 m_idleCondition 上）
-        std::atomic<bool> m_isShuttingDown{false};
+        std::atomic<bool> m_isShuttingDown{false}; ///< 池正在停摆：析构一置位，同步等待者的等待谓词随之成立，它们返回空连接后自减计数，析构等计数归零才继续销毁成员（否则等待者还睡在即将销毁的 m_idleCondition 上）
 
         // ----- 原子统计 -----
         std::atomic<std::size_t> m_activeCount{0};      ///< 已取出未归还的连接数

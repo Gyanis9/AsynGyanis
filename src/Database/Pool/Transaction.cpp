@@ -85,7 +85,7 @@ namespace AsynGyanis::Database
         {
             // 回滚失败意味着连接上可能还挂着一个未结束的事务。这样的连接绝不能还给池被别人复用，
             // 否则下一个使用者会莫名其妙地落在别人的事务里；主动断开后，池归还时的
-            // isConnected() 探活会判定它不健康并丢弃它，宁可废掉一条连接也不留下脏会话
+            // isConnected() 检查会判定它不健康并丢弃它，宁可废掉一条连接也不留下脏会话
             m_connection->disconnect();
             return false;
         }

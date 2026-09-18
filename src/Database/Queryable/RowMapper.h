@@ -6,27 +6,9 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 本文件承担 ORM 的「值映射」职责。读方向按 TableSchema<T>::kColumns 的列名在结果集里查
- *          下标取列再转成成员，因此与结果集的列顺序无关；整型接受 std::int64_t 或严格十进制文本
- *          （引擎存得下却给不出 int64 的整数只能以文本返回），越界即报错而不是取整、截断；
- *          类型不符、列缺失、NULL 落到非 optional 成员一律抛带中文说明的 RowMappingException，
- *          而不是给出字段静默为 0 的半成品对象。
- *
- * @note 文本支路是**严格**解析：允许前导负号（目标为有符号时）与十进制数字，其余一概拒绝——
- *       小数点、科学计数法、空白、多余字符、超出目标位宽的取值都报错。
- *       宁可失败也不取整：把 "1.9" 读成 1 属于静默的数据变形。
- * @warning SQLite 的列亲和性会把「装不下 int64 的十进制文本」转成 REAL，因此同一个
- *          UInt64 成员在 SQLite 上写进去、读回来会损失精度并因类型不符报错。
- *          这是引擎的存储能力边界（SQLite 只有 64 位有符号整数），不是本文件的缺陷；
- *          需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED
- *          （见 MySqlDialect::columnTypeName()）。
- *
- * @note 写方向与读方向对称：整型统一按 int64_t 绑定，无符号整型超出 int64_t 时降级为十进制文本
- *       （DatabaseValue 已冻结、没有无符号备选）；二进制成员转成二进制备选，驱动据此走
- *       sqlite3_bind_blob / MYSQL_TYPE_BLOB 落成真正的 BLOB——按文本绑定会被 MySQL 按连接字符集
- *       重新解释载荷。
- *
- * @note RowMappable<T> 要求 T 可聚合初始化且已特化 TableSchema<T>（kColumns 非空）；成员类型不受支持时由函数体内的 static_assert 给出中文编译错误。
+ * @details 本文件承担 ORM 的「值映射」职责：读方向按列名在结果集中定位列并严格转换（拒绝取整、截断），
+ *          写方向把成员值规范化成 DatabaseValue；类型不符、列缺失、NULL 落到非 optional 成员一律抛
+ *          带中文说明的 RowMappingException，而不是给出字段静默为 0 的半成品对象。
  */
 #pragma once
 
@@ -140,9 +122,8 @@ namespace AsynGyanis::Database::Queryable
          * @brief 把一段十进制整型文本严格解析成目标整型
          *
          * @details 引擎存得下、却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED
-         *          上界 2^64-1），因此整型成员
-         *          必须能读文本。解析用 std::from_chars：不跳前导空白、不接受余文、
-         *          按 C locale 解析且不抛异常（std::stoll 三者都会放宽）。
+         *          上界 2^64-1），因此整型成员必须能读文本。解析必须**严格**：用 std::from_chars，
+         *          不跳前导空白、不接受余文、按 C locale 解析且不抛异常（std::stoll 三者都会放宽）。
          *          解析宽度按目标类型的符号性选：无符号成员要吃下 int64 之外的上界。
          *
          * @tparam FundamentalType 目标整型（已剥掉 optional / cv 限定）
@@ -151,6 +132,10 @@ namespace AsynGyanis::Database::Queryable
          * @return FundamentalType 解析结果
          * @throws RowMappingException 文本不是纯十进制整数（含小数点、科学计数法、空白、多余字符，
          *         或无符号成员收到负号），或取值超出目标整型的范围
+         * @warning SQLite 的列亲和性会把「装不下 int64 的十进制文本」转成 REAL，因此同一个 UInt64
+         *          成员在 SQLite 上写进去、读回来会损失精度并因类型不符报错——这是引擎的存储能力边界
+         *          （SQLite 只有 64 位有符号整数），需要精确承载 2^63 以上取值时应改用 MySQL 的
+         *          BIGINT UNSIGNED（见 MySqlDialect::columnTypeName()）。
          */
         template<typename FundamentalType>
         [[nodiscard]] FundamentalType parseIntegerText(const std::string &textValue, const std::string_view columnName)
@@ -192,6 +177,8 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 把一个单元格的值转换成目标成员类型
+         * @details 整型接受 std::int64_t 或严格十进制文本（引擎存得下却给不出 int64 的整数只能以文本
+         *          返回），越界即报错而不是取整、截断；bool 兼容 SQLite 以 0/1 整数表达布尔的做法。
          * @tparam MemberType 目标成员类型（可为 std::optional 包装）
          * @param cellValue 结果集当前行的单元格值
          * @param columnName 列名，仅用于错误信息
@@ -352,7 +339,8 @@ namespace AsynGyanis::Database::Queryable
      * @brief 把结果集的当前行映射成结构体
      *
      * @details 调用方需保证游标已停在有效行上（即刚调用过 DatabaseResult::next() 且返回 true）。
-     *          映射过程按 TableSchema<T>::kColumns 的顺序逐列取值并赋值。
+     *          按列名在结果集中定位每一列（因此与结果集的列顺序无关），列缺失或类型不符抛
+     *          RowMappingException 而不是给出字段静默为 0 的半成品对象。
      *
      * @tparam T 已特化 TableSchema 的聚合类型
      * @param result 结果集，只读访问
@@ -421,6 +409,9 @@ namespace AsynGyanis::Database::Queryable
     {
         /**
          * @brief 把结构体成员值转换成数据库统一值
+         * @details 空 optional 绑定为 SQL NULL；整型统一按 int64_t 绑定，无符号值超出 int64_t 上限时降级为
+         *          十进制文本（DatabaseValue 已冻结、没有无符号备选）；二进制成员转成二进制备选，驱动据此走
+         *          sqlite3_bind_blob / MYSQL_TYPE_BLOB——按文本绑定会被 MySQL 按连接字符集重新解释载荷。
          * @tparam MemberType 成员类型（可为 std::optional 包装）
          * @param value 成员值
          * @return DatabaseValue 可直接作为绑定参数的统一值

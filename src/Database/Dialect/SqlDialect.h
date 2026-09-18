@@ -80,11 +80,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 把「按条件更新」翻译成带占位符的 UPDATE
          *
-         * @details 生成 "UPDATE 表 SET 列 = ?, … WHERE 条件"：SET 的列取自
-         *          query.selectColumns，取值由 values 按同一顺序提供；WHERE 由
-         *          query.whereConditions 渲染，使用的正是与 SELECT 完全相同的条件逻辑
-         *          （递归 children、IN 展开、IS NULL 不占参数）。
-         *          参数顺序：先全部赋值参数，再全部条件参数，与文本中的出现顺序一致。
+         * @details 生成 "UPDATE 表 SET 列 = ?, … WHERE 条件"：WHERE 由 query.whereConditions
+         *          渲染，复用与 SELECT 完全相同的条件逻辑（递归 children、IN 展开、
+         *          IS NULL 不占参数）；参数顺序为「先赋值参数、后条件参数」，与文本一致。
          *
          * @param query 提供表名、SET 列与 WHERE 条件的查询树，本方法不修改它
          * @param values 赋给各 SET 列的取值，个数必须等于 query.selectColumns 的列数
@@ -108,11 +106,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 把「多行插入」翻译成一次多行 VALUES 的 INSERT
          *
-         * @details 生成 "INSERT INTO 表 (列…) VALUES (?, …), (?, …), …"：行数由 rows 决定，
-         *          每行的取值个数必须等于 query.selectColumns 的列数；参数按「行优先、行内按列序」
-         *          展开。是否支持多行 VALUES 语法由各实现决定，不支持的方言可以改为
-         *          生成多条语句或直接抛异常，但绝不能静默丢掉任何一行。
-         *          调用方需自行控制行数使参数总数不超过引擎上限（SQLite 为 999）。
+         * @details 生成 "INSERT INTO 表 (列…) VALUES (?, …), (?, …), …"：参数按「行优先、
+         *          行内按列序」展开；不支持多行 VALUES 的方言可改为生成多条语句，
+         *          但绝不能静默丢掉任何一行。调用方需自行控制行数使参数总数不超过引擎上限。
          *
          * @param query 提供表名与待写列的查询树，本方法不修改它
          * @param rows 待插入的行，每行是该行各列的取值

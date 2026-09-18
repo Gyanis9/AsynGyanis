@@ -270,9 +270,7 @@ namespace AsynGyanis::Database
         std::deque<std::function<void()> > m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
         std::atomic<std::size_t>           m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
 
-        /// 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——
-        /// 工作线程退出后没人再取队列，收下任务等于让提交方永久挂起
-        std::atomic<bool> m_isStopping{false};
+        std::atomic<bool> m_isStopping{false}; ///< 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——工作线程退出后没人再取队列，收下任务等于让提交方永久挂起
 
         // m_workers 必须声明在最后：成员按声明逆序销毁，最后声明的先销毁，
         // jthread 析构会 join，从而保证线程都结束了才会轮到上面的互斥锁与条件变量被销毁

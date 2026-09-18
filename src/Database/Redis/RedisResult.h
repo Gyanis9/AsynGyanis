@@ -70,11 +70,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 将游标移动到下一行
-         * @details 重写 DatabaseResult::next()：本类只有一行（见类注释的退化单行契约），
-         *          因此首次调用且结果非空时返回 true，其后恒为 false；空回复直接返回 false。
-         *          与基类的差异：不推进任何真实游标（数据已全部在内存里），只翻转一个
-         *          「唯一一行是否已交出」的标志，reset() 会把它复位从而支持重新遍历。
-         *          按基类契约本方法属只读路径，即使重复调用也不会改写 m_lastError。
+         * @details 重写 DatabaseResult::next()：本类只有一行（见类注释的退化单行契约），首次调用且结果非空时
+         *          返回 true，其后恒为 false。与基类的差异是不推进真实游标，只翻转「唯一一行是否已交出」的
+         *          标志（reset() 复位以支持重新遍历）；属只读路径，重复调用也不改写 m_lastError。其余与基类一致。
          * @return true 游标停在这一行上，可以读取列值
          * @return false 已经走过唯一一行，或结果集本就为空
          */
@@ -90,18 +88,16 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取结果集列数
-         * @details 重写 DatabaseResult::columnCount()：即当前回复的元素个数——
-         *          数组回复取其 elements 数量，标量回复视为 1 列，nil 与空数组为 0 列。
-         *          数值取构造时的快照，不逐次调用第三方接口。
+         * @details 重写 DatabaseResult::columnCount()：数组回复取 elements 数量，标量回复视为 1 列，
+         *          nil 与空数组为 0 列；数值取构造时的快照，不逐次调用第三方接口。
          * @return size_t 列数
          */
         [[nodiscard]] size_t columnCount() const override;
 
         /**
          * @brief 按列索引取列名
-         * @details 重写 DatabaseResult::columnName()：Redis 协议里回复元素没有名字，
-         *          这里只能返回按下标合成的无语义名字 "value" + 下标（"value0"、"value1"…），
-         *          目的是让依赖列名的通用遍历代码不至于完全不可用。
+         * @details 重写 DatabaseResult::columnName()：Redis 协议里回复元素没有名字，只能返回按下标合成的
+         *          无语义名字 "value" + 下标（"value0"、"value1"…），让依赖列名的通用遍历代码不至于完全不可用。
          * @param index 列索引，从 0 开始
          * @return std::optional<std::string> 合成列名；索引越界（含空结果集）返回空值
          */
@@ -109,9 +105,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列名取列索引
-         * @details 重写 DatabaseResult::columnIndex()：在合成的列名上做精确匹配的顺序扫描，
-         *          与 columnName() 严格互逆；因为合成名字本身不带语义，
-         *          推荐调用方直接按下标取值而不是按名查找。
+         * @details 重写 DatabaseResult::columnIndex()：在合成的列名上做精确匹配的顺序扫描，与 columnName()
+         *          严格互逆；合成名字本身不带语义，推荐调用方直接按下标取值而不是按名查找。
          * @param name 列名，需与 "value" + 下标 完全一致（区分大小写）
          * @return std::optional<size_t> 列索引；名字不匹配或结果集为空返回空值
          */
@@ -119,10 +114,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列索引读取值
-         * @details 重写 DatabaseResult::getValue()：取回复的第 index 个元素并映射成 DatabaseValue，不要求先调用
-         *          next()，游标是否推进也不改变取值结果。取值失败（索引越界、无回复、nil、类型未知）一律返回
-         *          std::monostate 且绝不写入 m_lastError——这是 const 读取路径，基类不允许它改状态；
-         *          服务端报错原文可从 lastError()（构造时摘取）与 isError() 组合判定。
+         * @details 重写 DatabaseResult::getValue()：取回复的第 index 个元素并映射成 DatabaseValue，不要求先
+         *          调用 next()，游标是否推进也不改变结果；取值失败（越界、无回复、nil、类型未知）一律返回
+         *          std::monostate 且绝不写入 m_lastError。服务端报错原文可从 lastError() 与 isError() 组合判定。
          * @param index 列索引，从 0 开始
          * @return DatabaseValue 列值；索引无效或该元素为 nil 时返回 std::monostate
          */
@@ -154,9 +148,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 判断结果集是否为空
-         * @details 重写 DatabaseResult::isEmpty()：等价于 rowCount() == 0，
-         *          即「无回复 / nil 回复 / 空数组」。标量 0 或空字符串回复都不算空——
-         *          那是服务端确实给出的值，与「没有值」必须区分开。
+         * @details 重写 DatabaseResult::isEmpty()：等价于 rowCount() == 0，即「无回复 / nil 回复 / 空数组」；
+         *          标量 0 或空字符串回复都不算空——那是服务端确实给出的值，与「没有值」必须区分开。
          * @return true 没有任何数据行
          */
         [[nodiscard]] bool isEmpty() const override;

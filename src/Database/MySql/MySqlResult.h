@@ -67,9 +67,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 将游标移动到下一行
-         * @details 重写 DatabaseResult::next()：调用 mysql_fetch_row 推进缓冲游标。与基类的差异在于
-         *          execute() 一律用 mysql_store_result 预读整份结果，返回空指针只可能是「已到末尾」，
-         *          不存在网络往返导致的「耗尽与出错无从区分」；本方法属只读路径，不改写 m_lastError。
+         * @details 重写 DatabaseResult::next()：mysql_fetch_row 推进缓冲游标；预读结果下返回空指针只可能是
+         *          「已到末尾」，不存在网络往返导致的「耗尽与出错无从区分」；属只读路径、不改写 m_lastError。
+         *          其余与基类一致。
          * @return true 游标停在有效行上，可以读取列值
          * @return false 已无更多行，或本结果集是写回执（没有游标可言）
          */
@@ -77,26 +77,23 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取结果集行数
-         * @details 重写 DatabaseResult::rowCount()：取构造时快照的 mysql_num_rows。
-         *          预读结果的分母是确定的，因此这里是精确值，而不是基类注释里「无法预先得知」的那个 0；
-         *          写回执结果没有游标，返回 0。
+         * @details 重写 DatabaseResult::rowCount()：取构造时快照的 mysql_num_rows，预读结果下是精确值
+         *          （不是基类那种「无法预先得知」的 0）；写回执结果没有游标，返回 0。
          * @return size_t 行数
          */
         [[nodiscard]] size_t rowCount() const override;
 
         /**
          * @brief 获取结果集列数
-         * @details 重写 DatabaseResult::columnCount()：取构造时快照的 mysql_num_fields，
-         *          不再每次调用第三方 API；写回执结果返回 0。
+         * @details 重写 DatabaseResult::columnCount()：取构造时快照的 mysql_num_fields，不再每次调用第三方 API；写回执返回 0。
          * @return size_t 列数
          */
         [[nodiscard]] size_t columnCount() const override;
 
         /**
          * @brief 按列索引取列名
-         * @details 重写 DatabaseResult::columnName()：先用缓存的无符号列数判界，再把索引下传给
-         *          mysql_fetch_field_direct——该接口的列号形参是 unsigned int，越界值不经判界就会被
-         *          截断成另一个合法索引，从而读到别的列。
+         * @details 重写 DatabaseResult::columnName()：先用缓存的无符号列数判界——mysql_fetch_field_direct
+         *          的列号形参是 unsigned int，越界值不经判界会被截断成另一个合法索引，从而读到别的列。
          * @param index 列索引，从 0 开始
          * @return std::optional<std::string> 列名；无结果集、索引越界或该列没有名字时返回空值
          */
@@ -104,9 +101,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列名取列索引
-         * @details 重写 DatabaseResult::columnIndex()：先判空 mysql_fetch_fields 的返回（结果集无列或元数据
-         *          读取失败时它会给出空指针），再逐列做逐字节精确匹配。列名大小写敏感性由服务端排序规则
-         *          决定，客户端不复制该规则（需要大小写无关时调用方自行归一化）；同名列取第一个匹配。
+         * @details 重写 DatabaseResult::columnIndex()：先判空 mysql_fetch_fields 的返回（无列或元数据读取
+         *          失败时它是空指针）；列名大小写敏感性由服务端排序规则决定、客户端不复制，同名列取第一个。
          * @param name 列名；空串一律视为不存在
          * @return std::optional<size_t> 列索引；无结果集或列不存在时返回空值
          */
@@ -114,9 +110,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按列索引读取当前行的值
-         * @details 重写 DatabaseResult::getValue()：游标必须停在有效行上，因为 mysql_fetch_row 的行指针与
-         *          mysql_fetch_lengths 的长度表都只在下一次推进之前有效；取值一律以 (指针, 长度) 构造，长度
-         *          真正参与逻辑（TEXT/BLOB 内嵌的 '\0' 不被截断）。const 读取路径，绝不改写 m_lastError。
+         * @details 重写 DatabaseResult::getValue()：游标必须停在有效行上（mysql_fetch_row 的行指针与
+         *          mysql_fetch_lengths 的长度表都只在下一次推进之前有效）；取值以 (指针, 长度) 构造，
+         *          TEXT/BLOB 内嵌的 '\0' 不被截断。const 读取路径，绝不改写 m_lastError。
          * @param index 列索引，从 0 开始
          * @return DatabaseValue 列值；无当前行、索引越界、列值为 SQL NULL 或长度表不可用时返回 std::monostate
          */
@@ -133,10 +129,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取全部列名
-         * @details 重写 DatabaseResult::columnNames()：逐项复用 columnName()，列名来源只有一处真值；
-         *          取不到名字的列（表达式列在部分客户端版本上会缺名）补空串占位，
-         *          保证返回列表长度恒等于 columnCount() 且下标与列序严格对齐
-         *          （跳过缺名列会让 names[i] 与实际第 i 列错位）。
+         * @details 重写 DatabaseResult::columnNames()：逐项复用 columnName()（列名来源只有一处真值）；
+         *          缺名列补空串占位，保证长度恒等于 columnCount() 且下标与列序严格对齐。
          * @return std::vector<std::string> 按列顺序排列的列名；写回执结果为空向量
          */
         [[nodiscard]] std::vector<std::string> columnNames() const override;
@@ -144,26 +138,24 @@ namespace AsynGyanis::Database
         /**
          * @brief 重置游标到首行之前，使结果集可重新遍历
          * @details 重写 DatabaseResult::reset()：用 mysql_data_seek 退回第 0 行（官方保证随机定位只对
-         *          mysql_store_result 的预读结果有效）；该接口是 void、无法报告失败。除复位游标外还要把
-         *          m_currentRow 置空，否则 getValue() 会继续读到上一行遗留的数据。
+         *          mysql_store_result 的预读结果有效，该接口是 void、无法报告失败）；还要把 m_currentRow
+         *          置空，否则 getValue() 会继续读到上一行遗留的数据。
          */
         void reset() override;
 
         /**
          * @brief 判断结果集是否为空
-         * @details 重写 DatabaseResult::isEmpty()：直接由构造时快照的行数判定（预读结果的行数恒精确，
-         *          因此不需要另存一份空标志，同一事实只保留一处真值来源），不随游标推进改变——
-         *          遍历完之后 isEmpty() 依然返回 false，因为它的语义是「结果集本身有没有行」，
-         *          而不是「还剩多少行可读」。写回执结果没有游标，行数恒为 0，因此恒为空。
+         * @details 重写 DatabaseResult::isEmpty()：由构造时快照的行数判定（预读结果的行数恒精确，同一事实
+         *          只保留一处真值来源），语义是「结果集本身有没有行」而非「还剩多少行可读」，遍历完仍为 false。
          * @return true 没有任何数据行
          */
         [[nodiscard]] bool isEmpty() const override;
 
         /**
          * @brief 获取最近一次写语句实际改动的行数
-         * @details 重写 DatabaseResult::affectedRowCount()：返回连接在执行本条语句后立即快照的
-         *          mysql_affected_rows / mysql_stmt_affected_rows 取值——这两个接口给的是「语句级」结果，
-         *          必须在同一连接/语句上、下一条命令之前读取，因此由连接一次取好传进来；只读结果集返回 0。
+         * @details 重写 DatabaseResult::affectedRowCount()：返回连接在执行本条语句后立即快照的语句级计数
+         *          （mysql_affected_rows / mysql_stmt_affected_rows 会被下一条命令覆盖，因此由连接一次取好
+         *          传进来）；只读结果集与驱动未提供时为 0。
          * @return std::int64_t 影响行数；只读结果集或驱动未提供时为 0
          */
         [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;

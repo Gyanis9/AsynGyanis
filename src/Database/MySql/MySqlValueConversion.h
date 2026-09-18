@@ -6,19 +6,16 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 文本协议（mysql_store_result）与二进制协议（mysql_stmt_* 预处理语句）
- *          都把列值按「指针 + 长度」交给客户端，本头文件把「按列声明类型解析成 DatabaseValue」
- *          这件事收敛成一份实现：两条执行路径的取值语义因此必然一致——
- *          SQL NULL→monostate、整数列→int64_t、浮点列→double、二进制列→BinaryBytes、
+ * @details 文本协议（mysql_store_result）与二进制协议（mysql_stmt_* 预处理语句）都把列值按
+ *          「指针 + 长度」交给客户端，本头文件把「按列声明类型解析成 DatabaseValue」这件事收敛成
+ *          一份实现：SQL NULL→monostate、整数列→int64_t、浮点列→double、二进制列→BinaryBytes、
  *          DECIMAL 与其余类型→std::string。
  *
- * @note 二进制列**不能只看类型码**：MySQL 的 BLOB 与 TEXT 共用 MYSQL_TYPE_BLOB，
- *       VARBINARY 与 VARCHAR 共用 MYSQL_TYPE_VAR_STRING，唯一的区分依据是列的字符集
- *       是否为 binary(63)。因此本头的转换函数必须同时接收字符集号，否则会把 TEXT 列
- *       读成字节、或把 BLOB 读成文本。
- * @note 本头只在 MySql 驱动内部的 .cpp 里包含（它必须看到真实的 mysql.h 才能拿到
- *       enum_field_types 常量），因此不会把第三方 C 头传染给使用方。转换函数声明为
- *       inline 是为了不额外增加一个编译单元，它们都很小且与调用点同在一个静态库里。
+ * @note 二进制列**不能只看类型码**：MySQL 的 BLOB 与 TEXT 共用 MYSQL_TYPE_BLOB，VARBINARY 与
+ *       VARCHAR 共用 MYSQL_TYPE_VAR_STRING，唯一的区分依据是列的字符集是否为 binary(63)，
+ *       因此转换函数必须同时接收字符集号，否则会把 TEXT 列读成字节、或把 BLOB 读成文本。
+ * @note 本头只在 MySql 驱动内部的 .cpp 里包含（它必须看到真实的 mysql.h 才能拿到 enum_field_types
+ *       常量），不会把第三方 C 头传染给使用方；转换函数声明为 inline 是为了不额外增加编译单元。
  */
 #pragma once
 
@@ -50,8 +47,8 @@ namespace AsynGyanis::Database::Detail
     {
         std::int64_t parsedValue = 0;
 
-        // from_chars 直接吃「指针 + 长度」：不必先落一份 std::string 副本（行缓冲里相邻字段首尾相接，
-        // 原先正是为了拿零终止符才拷贝），也天然要求消费完整个区间——小数点、科学计数法、余文一律失败
+        // from_chars 直接吃「指针 + 长度」：不必先落一份 std::string 副本，
+        // 也天然要求消费完整个区间——小数点、科学计数法、余文一律失败
         const auto parseResult = std::from_chars(rawValue, rawValue + byteLength, parsedValue);
         if (parseResult.ec != std::errc{} || parseResult.ptr != rawValue + byteLength)
         {

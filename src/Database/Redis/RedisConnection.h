@@ -27,11 +27,10 @@ namespace AsynGyanis::Database
     /**
      * @brief Redis 键值存储连接
      *
-     * @details 可选编译：未取得 hiredis 时编译为报错桩（connect() 恒为 false、各执行入口把
-     *          「当前构建未编译 Redis 驱动」写入 lastError()）。命令一律走 hiredis 的 argv 接口，
-     *          参数按「指针 + 长度」传递，因此 '%' 不是格式串、内嵌 '\0' 不被截断；execute() 的整行
-     *          命令按 redis-cli 规则切词后送出。queryTimeout() 在建连后由 redisSetTimeout 应用到
-     *          上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内；交出的结果集拥有自己的 redisReply。
+     * @details 可选编译：未取得 hiredis 时编译为报错桩（各执行入口把「当前构建未编译 Redis 驱动」写入
+     *          lastError()）。命令一律走 hiredis 的 argv 接口，参数按「指针 + 长度」传递，因此 '%' 不是
+     *          格式串、内嵌 '\0' 不被截断；execute() 的整行命令按 redis-cli 规则切词后送出。queryTimeout()
+     *          在建连后由 redisSetTimeout 应用到上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内。
      *
      * @warning 管道命令登记后不立即发送，flushPipeline() 之前不会有任何网络往返；
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
@@ -69,9 +68,8 @@ namespace AsynGyanis::Database
          * @brief 连接 Redis 服务并完成认证与键空间选择
          * @details 重写 DatabaseConnection::connect()：已连接时直接返回 true 保持幂等（重复
          *          redisConnectWithTimeout 会泄漏前一个上下文）；建连成功后用 redisSetTimeout 应用
-         *          queryTimeout()，两个超时因此都真正生效；password / database 非空时依次发送二进制
-         *          安全的 AUTH 与 SELECT，任一步失败即断开并返回 false；m_isConnected 只在全部步骤
-         *          成功后置位，中间态不会被 isConnected() 读到。桩构建下直接返回 false。
+         *          queryTimeout()；password / database 非空时依次发送二进制安全的 AUTH 与 SELECT，任一步
+         *          失败即断开；全部成功后 m_isConnected 才置位。其余与基类一致；桩构建下直接返回 false。
          * @return true 连接已建立（含认证与键空间选择）
          * @return false 任一环节失败，原因见 lastError()
          * @note host 为空视为配置错误，直接失败而不是交给 hiredis 报出难懂的底层错误
@@ -90,10 +88,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 判断连接是否可用
-         * @details 重写 DatabaseConnection::isConnected()：不做 PING 之类的活性探测
-         *          （一次往返的代价对高频命令不可接受），只同时校验基类的 m_isConnected 标志
-         *          与 hiredis 上下文非空；链路被对端单方面断开时这里仍会返回 true，
-         *          真实失效由下一条命令的失败路径发现并断开连接。
+         * @details 重写 DatabaseConnection::isConnected()：不做 PING 之类的活性探测（一次往返的代价对
+         *          高频命令不可接受），只同时校验 m_isConnected 与 hiredis 上下文非空；链路被对端单方面
+         *          断开时这里仍返回 true，真实失效由下一条命令的失败路径发现并断开。其余与基类一致。
          * @return true 已连接且上下文有效
          */
         [[nodiscard]] bool isConnected() const override;
@@ -106,11 +103,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条 Redis 命令
-         * @details 重写 DatabaseConnection::execute()：每次调用开头清空 m_lastError，成功调用不会残留
-         *          上一轮的失败文本；入参是整行命令，按 redis-cli 规则切词后走 argv 接口，因此参数含空格
-         *          必须加引号、文本中的 '%' 不再有格式串含义；引号未闭合或整行无有效参数时判定为命令不合法，
-         *          直接失败且不发送任何字节；服务端 error 回复返回 nullptr（原文写入 lastError()），
-         *          传输层失败顺带断开连接，因为回复流已无法对齐。
+         * @details 重写 DatabaseConnection::execute()：每次调用开头清空 m_lastError；整行命令按 redis-cli
+         *          规则切词后走 argv 接口（参数含空格必须加引号，'%' 不再有格式串含义）；引号未闭合或整行无
+         *          有效参数时判定为命令不合法、直接失败且不发送任何字节；服务端 error 回复返回 nullptr 并把
+         *          原文写入 lastError()；传输层失败顺带断开连接。其余与基类一致。
          * @param command 命令文本，例如 "SET mykey myvalue"
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
@@ -118,8 +114,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取数据库类型
-         * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Redis，
-         *          不依赖连接状态，桩构建下同样返回本类型。
+         * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Redis，桩构建下同样返回本类型。
          * @return DatabaseType DatabaseType::Redis
          */
         [[nodiscard]] DatabaseType databaseType() const override;

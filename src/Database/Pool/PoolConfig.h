@@ -17,8 +17,7 @@ namespace AsynGyanis::Database
      * @brief 连接池配置
      *
      * @details 所有超时/间隔类字段均使用 size_t 以避免符号转换警告，
-     *          实际取值不应超过 uint64_t 上限。各默认值按通用服务场景
-     *          给出，线上部署应根据业务负载与数据库规格调整。
+     *          实际取值不应超过 uint64_t 上限（默认值为通用服务场景取值）。
      */
     struct PoolConfig
     {

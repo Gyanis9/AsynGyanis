@@ -625,8 +625,8 @@ namespace AsynGyanis::Database
 
     namespace
     {
-        // 桩构建的统一失败原因：旧桩让 pipelineCommand / execute 静默 no-op，
-        // 调用方会把「什么都没做」当成成功，这里每个入口都把它写成看得见的错误
+        // 桩构建的统一失败原因：每个入口都把它写成看得见的错误，
+        // 避免调用方把「什么都没做」当成成功
         constexpr const char *kMissingDriverError = "当前构建未编译 Redis 驱动（缺少 hiredis）";
     } // namespace
 

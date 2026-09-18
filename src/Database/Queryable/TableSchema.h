@@ -27,15 +27,11 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     struct TableSchema
     {
-        /// 数据库表名，默认为空字符串：未特化的类型拿到的就是它，ORM 侧会按空表名报错
-        /// （见 SchemaMigrator 的校验），而不是在编译期把「忘了特化」拦下来
-        static constexpr std::string_view kTableName = "";
+        static constexpr std::string_view kTableName = ""; ///< 表名默认为空串：未特化的类型由此在 ORM 侧报错（见 SchemaMigrator 校验），而非编译期拦截
 
-        /// 列信息元组，使用 Column() 函数列出的 ColumnDescriptor 元组
-        static constexpr auto kColumns = std::tuple{};
+        static constexpr auto kColumns = std::tuple{}; ///< 列信息元组，使用 Column() 函数列出的 ColumnDescriptor 元组
 
-        /// 主键列名，默认值为 "id"
-        static constexpr std::string_view kPrimaryKey = "id";
+        static constexpr std::string_view kPrimaryKey = "id"; ///< 主键列名，默认值为 "id"
     };
 
 } // namespace AsynGyanis::Database::Queryable

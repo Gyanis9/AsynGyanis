@@ -28,11 +28,10 @@ namespace AsynGyanis::Database
     /**
      * @brief SQLite 嵌入式数据库连接
      *
-     * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口。SQLite 是进程内引擎，
-     *          数据库就是一个文件（或 ":memory:" 代表的内存库），没有服务进程、没有网络往返，
-     *          因此 ConnectionConfig 中只有 database 字段会被读取，其余字段一律忽略。
-     *          connect() 会把基类的 queryTimeout() 映射成 sqlite3_busy_timeout（表锁最多等待
-     *          该毫秒数），并尝试启用 WAL 与外键约束，两条 PRAGMA 失败只写入 lastError()。
+     * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口。SQLite 是进程内引擎，数据库就是一个
+     *          文件（或 ":memory:" 代表的内存库），没有服务进程与网络往返，因此 ConnectionConfig 中只有
+     *          database 字段会被读取。connect() 会把基类的 queryTimeout() 映射成 sqlite3_busy_timeout
+     *          （表锁最多等待该毫秒数），并尝试启用 WAL 与外键约束，两条 PRAGMA 失败只写入 lastError()。
      *
      * @warning execute() 交出的 SqliteResult 保存本连接句柄的非拥有指针，
      *          结果集必须严格早于连接对象销毁，否则游标会访问已释放的 sqlite3*。
@@ -64,12 +63,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 打开（或创建）SQLite 数据库文件
-         * @details 重写 DatabaseConnection::connect()：SQLite 不需要握手与认证，打开失败只来自
-         *          文件系统或文件本身（路径非法、目录不可写、文件损坏等）。相较基类契约的额外行为：
-         *          1) 已连接时直接返回 true，保持幂等；
-         *          2) 打开失败时立刻关闭 sqlite3_open 可能已分配的半开句柄，绝不留下泄漏；
-         *          3) 成功后应用 busy_timeout 与两条 PRAGMA，PRAGMA 失败不影响返回值；
-         *          4) 基类的 connectTimeout() 在此无对应能力（进程内没有网络等待），故不参与配置。
+         * @details 重写 DatabaseConnection::connect()：SQLite 不需要握手与认证，打开失败只来自文件系统或
+         *          文件本身（路径非法、目录不可写、文件损坏等）。与基类的差异：已连接时直接返回 true 保持幂等；
+         *          打开失败立刻关闭 sqlite3_open 可能已分配的半开句柄；成功后应用 busy_timeout 与两条 PRAGMA
+         *          （PRAGMA 失败不影响返回值）；connectTimeout() 无对应能力，不参与配置。其余与基类一致。
          * @return true 连接已建立
          * @return false 打开失败，具体原因（含 SQLite 错误码与路径）见 lastError()
          * @note 路径必须是 UTF-8 字节序列；Windows 下由调用方负责从宽字符路径转换而来
@@ -78,11 +75,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 断开连接并释放底层 sqlite3 句柄
-         * @details 重写 DatabaseConnection::disconnect()：与基类的差异在于使用 sqlite3_close_v2
-         *          而非 sqlite3_close——后者遇到尚未 finalize 的语句会返回 SQLITE_BUSY 并拒绝关闭，
-         *          从而泄漏句柄；close_v2 会把连接标记为 zombie，等所有语句 finalize 之后再真正释放，
-         *          正好覆盖「结果集仍存活于调用方手中」这一场景。
-         *          未连接时调用是安全的空操作，析构函数会无条件调用本方法。
+         * @details 重写 DatabaseConnection::disconnect()：用 sqlite3_close_v2 而非 sqlite3_close——后者遇到
+         *          尚未 finalize 的语句会返回 SQLITE_BUSY 并拒绝关闭，从而泄漏句柄；close_v2 把连接标记为
+         *          zombie，等所有语句 finalize 之后再真正释放，正好覆盖「结果集仍存活」这一场景。
+         *          未连接时调用是安全的空操作。其余与基类一致。
          * @note 本方法不等待外部结果集销毁，只保证不再泄漏；游标在连接销毁后使用仍是未定义行为
          */
         void disconnect() override;
@@ -98,12 +94,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条 SQL 命令
-         * @details 重写 DatabaseConnection::execute()：统一走 sqlite3_prepare_v2 + sqlite3_step。
-         *          每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
-         *          带返回列的语句把游标整体交给 SqliteResult（由结果集负责 finalize 与推进），
-         *          无返回列的语句一步跑完并返回「执行成功但为空」的结果集。
-         *          一次调用只接受一条语句：发现额外语句时整次调用直接失败，避免「前面的生效、
-         *          后面的被静默丢掉」这种半执行状态。
+         * @details 重写 DatabaseConnection::execute()：统一走 sqlite3_prepare_v2 + sqlite3_step，每次调用
+         *          开头清空 m_lastError；带返回列的语句把游标整体交给 SqliteResult，无返回列的语句一步跑完并
+         *          返回「执行成功但为空」的结果集。一次调用只接受一条语句，发现额外语句时整次失败，避免
+         *          「前面的生效、后面的被静默丢掉」这种半执行状态。其余与基类一致。
          * @param command SQL 文本，内部会复制为零终止串后交给 SQLite
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          * @warning 带返回列的写语句（INSERT/UPDATE/DELETE ... RETURNING，以及会回显值的 PRAGMA）
@@ -119,11 +113,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条带参数的 SQL 命令（按位置绑定）
-         * @details 重写 DatabaseConnection::execute()：先把 parameters 逐个按位置绑定到占位符
-         *          再执行（std::monostate→SQL NULL、bool→0/1、字符串按字节长度并用 SQLITE_TRANSIENT
-         *          复制，因为 step 可能晚于本调用返回，不能引用调用方的缓冲区）。容器类型无法映射成
-         *          标量参数，直接失败。绑定前校验「占位符个数 == 参数个数」：SQLite 对未绑定的占位符
-         *          按 NULL 处理，少给参数会静默变成永假条件，宁可当场报错。
+         * @details 重写 DatabaseConnection::execute()：按位置绑定参数后执行——std::monostate→SQL NULL、
+         *          bool→0/1、字符串按字节长度并用 SQLITE_TRANSIENT 复制（step 可能晚于本调用返回，不能引用
+         *          调用方的缓冲区）。容器类型无法映射成标量参数，直接失败；绑定前校验「占位符个数 == 参数
+         *          个数」（SQLite 对未绑定的占位符按 NULL 处理，少给会静默变成永假条件）。其余与基类一致。
          * @param command    带占位符的 SQL 文本，内部会复制为零终止串后交给 SQLite
          * @param parameters 按占位符出现顺序排列的绑定参数，第 i 个元素绑定到第 i 个占位符
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
@@ -135,20 +128,17 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取数据库类型
-         * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Sqlite，
-         *          不依赖连接状态，未连接时同样可用于日志与断言。
+         * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Sqlite，未连接时同样可用。
          * @return DatabaseType DatabaseType::Sqlite
          */
         [[nodiscard]] DatabaseType databaseType() const override;
 
         /**
          * @brief 开启一个事务
-         * @details 执行本方言（SqliteDialect）给出的开启语句 "BEGIN IMMEDIATE"，是
-         *          SQLite 专有能力的便捷封装，不覆盖基类任何虚函数。
-         *          语句文本刻意取自方言而不是硬编码：方言给的是 IMMEDIATE（BEGIN 时立刻取写锁，
-         *          失败当场暴露），硬编码成 "BEGIN TRANSACTION" 则是 DEFERRED（写锁推迟到第一条
-         *          写语句，多连接并发时必然撞上无法靠重试化解的 SQLITE_BUSY）。
-         *          与 Transaction + 方言这条路径用的是同一份语句来源，二者不会漂移。
+         * @details 执行本方言（SqliteDialect）给出的开启语句 "BEGIN IMMEDIATE"，是 SQLite 专有能力的便捷
+         *          封装，不覆盖基类任何虚函数。语句文本刻意取自方言而不是硬编码：IMMEDIATE 在 BEGIN 时立刻取
+         *          写锁、失败当场暴露，硬编码的 "BEGIN TRANSACTION" 是 DEFERRED，写锁推迟到第一条写语句，
+         *          多连接并发时必然撞上无法靠重试化解的 SQLITE_BUSY。
          * @return true 事务已开启
          * @return false 已处于事务中或未连接，原因见 lastError()
          */
@@ -164,8 +154,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 回滚当前事务
-         * @details 执行本方言给出的回滚语句 "ROLLBACK"，与 commit() 一样属于事务控制便捷封装，
-         *          语句文本同样以方言为唯一来源。
+         * @details 执行本方言给出的回滚语句 "ROLLBACK"，语句文本同样以方言为唯一来源。
          * @return true 回滚成功
          * @return false 没有活动事务或未连接，原因见 lastError()
          */
@@ -173,11 +162,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 归还连接池时复位会话状态：把未提交的事务滚掉
-         * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务
-         *          （提交/回滚的决定权早已随上一个借用者消失），而 BEGIN IMMEDIATE 取到的写锁
-         *          会一直握到那条连接被回收，别的连接全被挡在门外。
-         *          判定直接问引擎（sqlite3_get_autocommit），因此手工执行的 "BEGIN" 同样能被认出，
-         *          不依赖本类另记一份事务状态。
+         * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，BEGIN IMMEDIATE
+         *          取到的写锁会一直握到那条连接被回收，别的连接全被挡在门外。判定直接问引擎
+         *          （sqlite3_get_autocommit），因此手工执行的 "BEGIN" 同样能被认出，不依赖本类另记状态。
+         *          其余与基类契约一致。
          * @note 与基类契约一致：不抛异常、幂等；未连接或本就没有活动事务时不做任何事
          */
         void resetSessionState() noexcept override;

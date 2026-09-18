@@ -17,8 +17,7 @@ namespace AsynGyanis::Database
 {
     namespace
     {
-        /// UTF-8 多字节序列的首字节与后续字节都 >= 0x80，用于把中文列名识别为合法标识符
-        constexpr unsigned char kUtf8ContinuationLowerBound = 0x80;
+        constexpr unsigned char kUtf8ContinuationLowerBound = 0x80; ///< UTF-8 多字节序列的首字节与后续字节都 >= 0x80，用于把中文列名识别为合法标识符
 
         /**
          * @brief 判断单个字节能否出现在不带引号的标识符里
@@ -41,12 +40,10 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 判断文本是否是一个可以安全加引用字符的标识符
-         * @details 在裸标识符字节之外还放行两类字符：
-         *          - 本引擎的引用字符（双引号或反引号）：那正是「列名里带引用符、必须翻倍转义」
-         *            的情形，交给 quoteIdentifier() 处理比原样输出安全得多；
-         *          - 空格：full name 这类列名在真实库里确实存在（被引用的标识符允许含空格），
-         *            而空格既不能出现在裸标识符里，也不会改变表达式结构——真正的表达式必然带
-         *            运算符、括号或逗号，那些字节会让本判定为假，从而走「表达式原样输出」的分支。
+         * @details 在裸标识符字节之外还放行本引擎的引用字符（列名里带引用符的情形，
+         *          交给 quoteIdentifier() 翻倍转义比原样输出安全）与空格（"full name" 这类
+         *          列名真实存在，且空格不会改变表达式结构——真正的表达式必然带运算符、
+         *          括号或逗号，那些字节会让本判定为假，从而走「表达式原样输出」分支）。
          * @param text 待判断的文本
          * @param quoteCharacter 本引擎的标识符引用字符
          * @return true 可以直接加引用（空文本返回 false）
@@ -273,7 +270,6 @@ namespace AsynGyanis::Database
 
     void StandardSqlDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
-        // 两个分页值都不存在时不输出任何内容
         if (query.limit.has_value())
         {
             sqlText += " LIMIT ";
