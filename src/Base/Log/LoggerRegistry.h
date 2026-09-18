@@ -82,8 +82,20 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 清空注册表中的所有日志器
+         * @details 日志器移入退休表而非就地销毁（保护在途裸引用，见 m_retiredLoggers 的说明）。
+         *          需要立刻释放它们持有的文件句柄或后台线程时，在确知已无在途引用后调用
+         *          purgeRetiredLoggers()。
          */
         void clear();
+
+        /**
+         * @brief 销毁退休表中的全部日志器，释放其 Sink 持有的文件句柄与后台线程
+         * @details 退休表平时只增不减，本方法用于调用方**确知**已无在途裸引用（正在使用
+         *          `Logger&` 的 LOG_* 宏）的场合：进程收尾，或测试夹具在删除临时目录之前
+         *          （Windows 上被打开的文件会让目录删除失败）。
+         * @warning 运行期不要调用：退休表的存在前提就是「对象仍可达」，销毁会把在途引用变成悬垂。
+         */
+        void purgeRetiredLoggers();
 
         /**
          * @brief 对每个已注册日志器执行回调

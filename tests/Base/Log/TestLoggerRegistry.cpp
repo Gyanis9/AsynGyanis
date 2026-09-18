@@ -6,6 +6,7 @@
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
 
 #include <gtest/gtest.h>
 
@@ -36,6 +37,36 @@ namespace AsynGyanis::Base
             const std::vector<std::string> names = LoggerRegistry::instance().getLoggerNames();
             return std::ranges::find(names, name) != names.end();
         }
+
+        /**
+         * @brief 观察自身销毁的 Sink：退休表是否真的释放了对象，靠它计数
+         */
+        class CountingSink final : public LogSink
+        {
+        public:
+            CountingSink()
+            {
+                s_aliveCount.fetch_add(1);
+            }
+
+            ~CountingSink() override
+            {
+                s_aliveCount.fetch_sub(1);
+            }
+
+            void write(const LogEvent &) override
+            {
+            }
+
+            void flush() override
+            {
+            }
+
+            /// 当前存活实例数；用例结束前必须回到 0，否则说明对象仍被别处持有
+            static std::atomic<int> s_aliveCount;
+        };
+
+        std::atomic<int> CountingSink::s_aliveCount{0};
     } // namespace
 
     /**
@@ -313,6 +344,24 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().clear();
 
         EXPECT_TRUE(LoggerRegistry::instance().getLoggerNames().empty());
+    }
+
+    /**
+     * @brief clear() 只退休不销毁；purgeRetiredLoggers() 才真正释放（文件句柄与后台线程随之关闭）
+     * @details 临时目录夹具依赖这条语义：退休日志器若仍持有打开的日志文件，Windows 上删目录会失败
+     */
+    TEST_F(LoggerRegistryTest, PurgeRetiredLoggersReleasesRetiredLoggers)
+    {
+        auto logger = std::make_unique<Logger>("purge_target");
+        logger->addSink(std::make_unique<CountingSink>());
+        LoggerRegistry::instance().registerLogger(std::move(logger));
+        ASSERT_EQ(CountingSink::s_aliveCount.load(), 1);
+
+        LoggerRegistry::instance().clear();
+        EXPECT_EQ(CountingSink::s_aliveCount.load(), 1) << "clear() 只应退休日志器，就地销毁会让在途裸引用悬垂";
+
+        LoggerRegistry::instance().purgeRetiredLoggers();
+        EXPECT_EQ(CountingSink::s_aliveCount.load(), 0) << "purge 后 Sink 应随日志器一同销毁";
     }
 
     TEST_F(LoggerRegistryTest, ForEachLoggerVisitsEveryRegisteredLogger)

@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -59,12 +60,19 @@ namespace AsynGyanis::Base::TestSupport
         }
 
         /**
-         * @brief 析构并递归删除临时目录，忽略删除失败
+         * @brief 析构并递归删除临时目录；删除失败时向 stderr 报告原因
          */
         ~TemporaryDirectory()
         {
             std::error_code error;
             std::filesystem::remove_all(m_path, error);
+            // 删除失败必须说出来：静默失败会让「句柄没释放」这类问题以临时目录在 %TEMP% 里
+            // 悄悄堆积的形式潜伏（曾有 2000+ 个目录累积数天无人察觉）
+            if (error)
+            {
+                std::fprintf(stderr, "[测试支持] 临时目录删除失败（可能仍被打开的文件占用）：%s — %s\n",
+                             m_path.string().c_str(), error.message().c_str());
+            }
         }
 
         TemporaryDirectory(const TemporaryDirectory &) = delete;

@@ -154,6 +154,17 @@ namespace AsynGyanis::Base
         m_loggers.clear();
     }
 
+    void LoggerRegistry::purgeRetiredLoggers()
+    {
+        // 换出到局部变量、在锁外析构：AsyncSink 的析构要 join 工作线程、FileSink 要关文件句柄，
+        // 持锁期间做这些会把其他线程的日志调用一起卡住
+        std::vector<std::shared_ptr<Logger> > retiredLoggers;
+        {
+            const std::unique_lock lock(m_mutex);
+            retiredLoggers.swap(m_retiredLoggers);
+        }
+    }
+
     void LoggerRegistry::forEachLogger(const std::function<void(Logger &)> &function) const
     {
         // 锁内只做一件事：把当前日志器的强引用复制成快照。

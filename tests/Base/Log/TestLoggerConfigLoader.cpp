@@ -156,10 +156,13 @@ namespace AsynGyanis::Base
 
         void TearDown() override
         {
-            // 先销毁持有文件句柄的 Logger，再删除临时目录，否则 Windows 上删除失败会残留日志文件
+            // 先释放持有文件句柄的 Logger，再删除临时目录（Windows 上被打开的文件会让删除失败）。
+            // clear() 只把日志器移入退休表以保护在途裸引用，句柄不会随它释放，必须再来一次 purge：
+            // 本夹具串行执行、用例体内的引用都已出栈，此刻销毁是安全的
             LoggerRegistry::instance().clear();
             ConfigManager::instance().disableHotReload();
             ConfigManager::instance().clear();
+            LoggerRegistry::instance().purgeRetiredLoggers();
         }
 
         /** @brief 把 YAML 写入临时目录并经 ConfigManager 真实加载（加载失败直接判定失败） */
