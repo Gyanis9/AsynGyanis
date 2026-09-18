@@ -6,6 +6,7 @@
 #include "Base/Log/Formatters/JsonFormatter.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/StackTrace.h"
 
 #include <nlohmann/json.hpp>
 
@@ -201,5 +202,27 @@ namespace AsynGyanis::Base
 #else
         EXPECT_FALSE(parsed.contains("line"));
 #endif
+    }
+
+    /**
+     * @brief 带栈的事件多出 stackTrace 字段（多帧文本），不带栈的事件不带该键
+     */
+    TEST(JsonFormatterTest, AddsStackTraceFieldOnlyWhenEventCarriesOne)
+    {
+        JsonFormatter formatter;
+
+        const nlohmann::json plain = nlohmann::json::parse(formatter.format(makeEvent("无栈")));
+        EXPECT_FALSE(plain.contains("stackTrace")) << "不带栈的事件不应出现 stackTrace 字段";
+
+        LogEvent event = makeEvent("带栈");
+        event.stackTrace = captureStackTrace();
+        if (formatStackTrace(event.stackTrace).empty())
+        {
+            GTEST_SKIP() << "调试信息不可用（无 PDB/符号表），栈只以原始帧存在";
+        }
+
+        const nlohmann::json withStack = nlohmann::json::parse(formatter.format(event));
+        ASSERT_TRUE(withStack.contains("stackTrace"));
+        EXPECT_FALSE(textField(withStack, "stackTrace").empty()) << "栈字段应带上解析后的帧文本";
     }
 } // namespace AsynGyanis::Base

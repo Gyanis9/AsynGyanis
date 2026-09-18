@@ -1,5 +1,6 @@
 #include "Base/Log/Formatters/ColorFormatter.h"
 #include "Base/Log/Formatters/SourceLocationText.h"
+#include "Base/Log/Formatters/StackTraceText.h"
 #include "Base/Log/LogColor.h"
 #include "Base/Log/LogLevel.h"
 
@@ -19,23 +20,26 @@ namespace AsynGyanis::Base
 
         const std::string_view location = formatSourceLocationText(event.location, locationBuffer, locationOverflow);
 
-        return std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
-                           event.timestamp,
-                           event.threadIdView(),
-                           LogColor::colorForLevel(event.level),
-                           logLevelToString(event.level),
-                           LogColor::kReset,
-                           event.loggerNameView(),
-                           location,
-                           event.message);
+        std::string text = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
+                                       event.timestamp,
+                                       event.threadIdView(),
+                                       LogColor::colorForLevel(event.level),
+                                       logLevelToString(event.level),
+                                       LogColor::kReset,
+                                       event.loggerNameView(),
+                                       location,
+                                       event.message);
 #else
-        return std::format("{} [{}{:<5}{}] [{}] {}",
-                           event.timestamp,
-                           LogColor::colorForLevel(event.level),
-                           logLevelToString(event.level),
-                           LogColor::kReset,
-                           event.loggerNameView(),
-                           event.message);
+        std::string text = std::format("{} [{}{:<5}{}] [{}] {}",
+                                       event.timestamp,
+                                       LogColor::colorForLevel(event.level),
+                                       logLevelToString(event.level),
+                                       LogColor::kReset,
+                                       event.loggerNameView(),
+                                       event.message);
 #endif
+        // 与 DefaultFormatter 一致：栈的解析在 Sink 写入线程上发生
+        appendStackTraceText(text, event.stackTrace);
+        return text;
     }
 } // namespace AsynGyanis::Base

@@ -33,6 +33,12 @@ namespace AsynGyanis::Base
         fields["thread"]  = std::string(event.threadIdView());
         fields["message"] = event.message;
 
+        // 带栈的事件：栈作为独立字段（多帧文本），换行由 JSON 序列化转义；解析在 Sink 写入线程上发生
+        if (!event.stackTrace.empty())
+        {
+            fields["stackTrace"] = formatStackTrace(event.stackTrace);
+        }
+
 #ifdef ASYN_DEBUG
         // 源码位置只在 Debug 出现，与文本格式化器同一口径
         fields["file"]     = std::string(event.location.shortFileName());

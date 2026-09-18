@@ -8,4 +8,5 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/JsonFormatter.h
         ${CMAKE_CURRENT_LIST_DIR}/JsonFormatter.cpp
         ${CMAKE_CURRENT_LIST_DIR}/SourceLocationText.h
+        ${CMAKE_CURRENT_LIST_DIR}/StackTraceText.h
 )

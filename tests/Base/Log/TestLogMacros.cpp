@@ -3,6 +3,8 @@
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Sinks/LogSink.h"
 
+#include "Base/Exception/Exception.h"
+
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -335,5 +337,64 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().getRootLogger().flush();
 
         EXPECT_EQ(m_recordingSink->flushCount(), 1);
+    }
+
+    // ============================================================================
+    // 带调用栈的宏：原始帧随事件传给 Sink，等级过滤通过后才采集
+    // ============================================================================
+
+    TEST_F(LogMacros, StackMacroAttachesCapturedFrames)
+    {
+        LOG_STACK(LogLevel::Error, "带栈记录");
+
+        ASSERT_EQ(m_recordingSink->writeCount(), 1U);
+        const LogEvent event = m_recordingSink->lastEvent();
+        EXPECT_EQ(event.message, "带栈记录");
+
+        if (event.stackTrace.empty())
+        {
+            GTEST_SKIP() << "本构建未启用 std::stacktrace（降级为空实现）";
+        }
+        EXPECT_GE(event.stackTrace.size(), 1U);
+    }
+
+    TEST_F(LogMacros, ExceptionMacroComposesMessageAndCarriesThrowSiteStack)
+    {
+        LOG_EXCEPTION(LogLevel::Error, "处理请求失败", Exception("probe failure"));
+
+        ASSERT_EQ(m_recordingSink->writeCount(), 1U);
+        const LogEvent event = m_recordingSink->lastEvent();
+        EXPECT_NE(event.message.find("处理请求失败: "), std::string::npos) << event.message;
+        EXPECT_NE(event.message.find("probe failure"), std::string::npos) << event.message;
+
+        if (event.stackTrace.empty())
+        {
+            GTEST_SKIP() << "本构建未启用 std::stacktrace（降级为空实现）";
+        }
+        EXPECT_GE(event.stackTrace.size(), 1U);
+    }
+
+    TEST_F(LogMacros, LoggerStackMacroRoutesToGivenLogger)
+    {
+        Logger localLogger("stack_local_logger");
+        auto   ownedSink              = std::make_unique<RecordingLogSink>();
+        RecordingLogSink *localSink = ownedSink.get();
+        localLogger.addSink(std::move(ownedSink));
+
+        LOG_LOGGER_STACK(localLogger, LogLevel::Warn, "本地日志器的栈");
+
+        ASSERT_EQ(localSink->writeCount(), 1U);
+        EXPECT_EQ(localSink->lastEvent().loggerNameView(), "stack_local_logger");
+        EXPECT_EQ(m_recordingSink->writeCount(), 0U) << "指定日志器的宏不应落到根日志器上";
+    }
+
+    TEST_F(LogMacros, StackMacrosWriteNothingWhenLevelIsFiltered)
+    {
+        LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Off);
+
+        LOG_STACK(LogLevel::Error, "被过滤");
+        LOG_EXCEPTION(LogLevel::Error, "被过滤", Exception("被过滤"));
+
+        EXPECT_EQ(m_recordingSink->writeCount(), 0U) << "被过滤的带栈日志不应产生事件（也不该为采栈付出代价）";
     }
 } // namespace AsynGyanis::Base

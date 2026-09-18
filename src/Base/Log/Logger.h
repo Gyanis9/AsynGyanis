@@ -62,6 +62,26 @@ namespace AsynGyanis::Base
         void log(LogLevel level, std::string_view message, const SourceLocation &location = SourceLocation::current()) const;
 
         /**
+         * @brief 记录一条带调用栈的日志（栈在等级过滤通过后于此处捕获）
+         * @details 用于「没有异常但想知道走到这里经过了哪些帧」的排障。符号解析推迟到 Sink
+         *          输出时进行，因此事件循环线程上调用它不会触发调试信息读取。
+         * @param level 本次日志级别
+         * @param message 日志消息内容
+         * @param location 源码位置信息
+         */
+        void logWithStackTrace(LogLevel level, std::string_view message, const SourceLocation &location = SourceLocation::current()) const;
+
+        /**
+         * @brief 记录一条带指定调用栈的日志（用于携带异常抛出点的栈）
+         * @param level 本次日志级别
+         * @param message 日志消息内容
+         * @param stackTrace 调用栈原始帧（如 `exception.stackTrace()`）
+         * @param location 源码位置信息
+         */
+        void logWithStackTrace(LogLevel level, std::string_view message, CapturedStackTrace stackTrace,
+                               const SourceLocation &location = SourceLocation::current()) const;
+
+        /**
          * @brief 使用 std::format 格式化日志消息并记录
          * @details 格式串非法时不抛给业务方，降级为一条 Error 日志并带上格式串原文。
          * @tparam Args 格式化参数类型
@@ -155,14 +175,15 @@ namespace AsynGyanis::Base
         void writeToSinks(const LogEvent &event) const;
 
         /**
-         * @brief 以「已持有消息体」的形式构造并分发日志事件
+         * @brief 以「已持有消息体与调用栈」的形式构造并分发日志事件
          * @details 消息体按值接收并移入事件，使 std::vformat 的结果零拷贝交给事件；
-         *          这是 log 与 logFormat 共用的内部入口。
+         *          这是 log / logFormat / logWithStackTrace 共用的内部入口。
          * @param level 本次日志级别
          * @param message 已格式化好的日志消息
          * @param location 源码位置信息
+         * @param stackTrace 调用栈原始帧；空表示本条日志不带栈
          */
-        void writeEvent(LogLevel level, std::string message, const SourceLocation &location) const;
+        void writeEvent(LogLevel level, std::string message, const SourceLocation &location, CapturedStackTrace stackTrace = {}) const;
 
         /// 日志器名称：以共享常量字符串持有，事件构造时只复制指针不再拷贝文本
         std::shared_ptr<const std::string>                m_name;

@@ -14,6 +14,7 @@
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
+#include "Base/Log/Formatters/StackTraceText.h"
 
 namespace AsynGyanis::Base
 {
@@ -250,4 +251,24 @@ namespace AsynGyanis::Base
     }
 
 #endif
+
+    /**
+     * @brief 带栈的事件在彩色版式末尾同样附上解析后的调用栈
+     */
+    TEST(ColorFormatter, AppendsResolvedStackTraceWhenEventCarriesOne)
+    {
+        LogEvent event = makeEvent(LogLevel::Error, "boom");
+        event.stackTrace = captureStackTrace();
+        if (formatStackTrace(event.stackTrace).empty())
+        {
+            GTEST_SKIP() << "调试信息不可用（无 PDB/符号表），栈只以原始帧存在";
+        }
+
+        ColorFormatter    formatter;
+        const std::string output = formatter.format(event);
+
+        const std::size_t headingPosition = output.find(kStackTraceHeading);
+        ASSERT_NE(headingPosition, std::string::npos) << output;
+        EXPECT_FALSE(output.substr(headingPosition + kStackTraceHeading.size()).empty()) << output;
+    }
 } // namespace AsynGyanis::Base

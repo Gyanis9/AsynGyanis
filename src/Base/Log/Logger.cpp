@@ -25,7 +25,24 @@ namespace AsynGyanis::Base
         writeEvent(level, std::string(message), location);
     }
 
-    void Logger::writeEvent(const LogLevel level, std::string message, const SourceLocation &location) const
+    void Logger::logWithStackTrace(const LogLevel level, const std::string_view message, const SourceLocation &location) const
+    {
+        // 采栈放在等级过滤之后：被过滤掉的日志不为采集付任何代价
+        if (!shouldLog(level))
+        {
+            return;
+        }
+        // 跳过 1 帧：captureStackTrace 已跳过自身，这里再跳过本函数，首个保留帧即调用方
+        writeEvent(level, std::string(message), location, captureStackTrace(1));
+    }
+
+    void Logger::logWithStackTrace(const LogLevel level, const std::string_view message, CapturedStackTrace stackTrace, const SourceLocation &location) const
+    {
+        // 栈由调用方携带（异常的抛出点栈），此处不做采集
+        writeEvent(level, std::string(message), location, std::move(stackTrace));
+    }
+
+    void Logger::writeEvent(const LogLevel level, std::string message, const SourceLocation &location, CapturedStackTrace stackTrace) const
     {
         if (!shouldLog(level))
         {
@@ -33,7 +50,7 @@ namespace AsynGyanis::Base
         }
 
         // 名字与线程号都是共享/缓存值，事件构造只搬指针；消息体按值移入避免二次拷贝
-        const LogEvent event{
+        LogEvent event{
                 level,
                 currentTimestamp(),
                 threadIdString(),
@@ -41,6 +58,7 @@ namespace AsynGyanis::Base
                 m_name,
                 std::move(message)
         };
+        event.stackTrace = std::move(stackTrace);
 
         writeToSinks(event);
     }

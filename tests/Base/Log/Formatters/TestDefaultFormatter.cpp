@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Base/Log/Formatters/SourceLocationText.h"
+#include "Base/Log/Formatters/StackTraceText.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -306,4 +307,35 @@ namespace AsynGyanis::Base
     }
 
 #endif
+
+    // ============================================================================
+    // 调用栈：带栈事件在 Sink 侧渲染（符号解析发生在这一步）
+    // ============================================================================
+
+    TEST(DefaultFormatter, LeavesPlainEventsUntouchedByStackTraceRendering)
+    {
+        DefaultFormatter formatter;
+
+        const std::string output = formatter.format(makeEvent(LogLevel::Info, "no stack"));
+
+        EXPECT_EQ(output.find(kStackTraceHeading), std::string::npos) << "不带栈的事件不应出现调用栈引导行";
+    }
+
+    TEST(DefaultFormatter, AppendsResolvedStackTraceWhenEventCarriesOne)
+    {
+        LogEvent event = makeEvent(LogLevel::Error, "boom");
+        event.stackTrace = captureStackTrace();
+
+        if (formatStackTrace(event.stackTrace).empty())
+        {
+            GTEST_SKIP() << "调试信息不可用（无 PDB/符号表），栈只以原始帧存在";
+        }
+
+        DefaultFormatter  formatter;
+        const std::string output = formatter.format(event);
+
+        const std::size_t headingPosition = output.find(kStackTraceHeading);
+        ASSERT_NE(headingPosition, std::string::npos) << output;
+        EXPECT_FALSE(output.substr(headingPosition + kStackTraceHeading.size()).empty()) << output;
+    }
 } // namespace AsynGyanis::Base
