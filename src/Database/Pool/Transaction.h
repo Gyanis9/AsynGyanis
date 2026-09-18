@@ -117,9 +117,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取最后一次事务控制语句失败的原因
-         * @return std::string 中文错误描述；无失败时为空串
+         * @return const std::string& 中文错误描述的常引用；无失败时为空串
          */
-        [[nodiscard]] std::string lastError() const
+        [[nodiscard]] const std::string &lastError() const
         {
             return m_lastError;
         }

@@ -32,19 +32,14 @@
 #include <mysql.h>
 #endif
 
-#include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <limits>
 #include <optional>
 #include <string>
 
 namespace AsynGyanis::Database::Detail
 {
-    /// 服务端文本协议给出的整数列恒为十进制
-    inline constexpr int kDecimalNumberBase = 10;
-
     /**
      * @brief 把一段整数文本解析为 64 位有符号整数
      * @param rawValue 列值首地址，调用方保证非空
@@ -53,61 +48,37 @@ namespace AsynGyanis::Database::Detail
      */
     inline std::optional<std::int64_t> parseIntegerText(const char *rawValue, const std::size_t byteLength)
     {
-        // 行缓冲里相邻字段首尾相接，不保证每个字段都以 '\0' 收尾；落一份 std::string 副本
-        // 才有可靠的终止符，std::strtoll 的 endptr 判定也因此才成立（副本同时保住内嵌 '\0' 之后的字节）
-        const std::string numericText(rawValue, byteLength);
+        std::int64_t parsedValue = 0;
 
-        // errno 只反映最后一次 C 库调用的结果、成功时不会自清：不清残留就可能把上一次的 ERANGE 当成本次的
-        errno = 0;
-
-        char *          endPointer  = nullptr;
-        const long long parsedValue = std::strtoll(numericText.c_str(), &endPointer, kDecimalNumberBase);
-
-        // 三种失败各自判掉：没消费任何字符（不是数字文本）、数值溢出 long long（ERANGE）、尾部仍有余文（如 "12abc"）
-        if (errno == ERANGE || endPointer == numericText.c_str() || *endPointer != '\0')
+        // from_chars 直接吃「指针 + 长度」：不必先落一份 std::string 副本（行缓冲里相邻字段首尾相接，
+        // 原先正是为了拿零终止符才拷贝），也天然要求消费完整个区间——小数点、科学计数法、余文一律失败
+        const auto parseResult = std::from_chars(rawValue, rawValue + byteLength, parsedValue);
+        if (parseResult.ec != std::errc{} || parseResult.ptr != rawValue + byteLength)
         {
             return std::nullopt;
         }
 
-        // long long 比 int64_t 更宽的平台（现实中没有，但标准允许）还要单独判一次收窄是否无损；
-        // 等宽时 ERANGE 已经覆盖了溢出情形，再写这个比较会触发「恒假比较」的编译器告警
-        if constexpr (sizeof(long long) > sizeof(std::int64_t))
-        {
-            if (parsedValue < static_cast<long long>(std::numeric_limits<std::int64_t>::min()) ||
-                parsedValue > static_cast<long long>(std::numeric_limits<std::int64_t>::max()))
-            {
-                return std::nullopt;
-            }
-        }
-
-        return static_cast<std::int64_t>(parsedValue);
+        return parsedValue;
     }
 
     /**
      * @brief 把一段浮点文本解析为 double
      * @param rawValue 列值首地址，调用方保证非空
      * @param byteLength 列值字节长度
-     * @return std::optional<double> 解析结果；非数字、有余文或上/下溢时返回空值
+     * @return std::optional<double> 解析结果；非数字、有余文或超出表示范围时返回空值
      */
     inline std::optional<double> parseDoubleText(const char *rawValue, const std::size_t byteLength)
     {
-        // 同 parseIntegerText：先拿到可靠的零终止符，endptr 判定才有意义
-        const std::string numericText(rawValue, byteLength);
+        double parsedValue = 0;
 
-        errno = 0;
-
-        char *       endPointer  = nullptr;
-        const double parsedValue = std::strtod(numericText.c_str(), &endPointer);
-
-        // strtod 的 ERANGE 同时涵盖上溢（HUGE_VAL）与下溢到 0，两者都说明这份数据落在 double 之外，
-        // 一律判失败由调用方退回原始十进制文本，至少不凭空造数
-        if (errno == ERANGE || endPointer == numericText.c_str() || *endPointer != '\0')
+        // 与整数路径同一份理由：不落副本、不受 LC_NUMERIC 影响、必须消费完整个区间；
+        // 上溢由 result_out_of_range 报出，调用方据此退回原始十进制文本，不凭空造数
+        const auto parseResult = std::from_chars(rawValue, rawValue + byteLength, parsedValue);
+        if (parseResult.ec != std::errc{} || parseResult.ptr != rawValue + byteLength)
         {
             return std::nullopt;
         }
 
-        // 十进制点依赖进程的 C 数值环境：MySQL 协议文本恒用 '.'，若上层改过 LC_NUMERIC，
-        // 这里不会解析出错误数值，而是被上面的 endptr 判定挡成失败并退回文本
         return parsedValue;
     }
 
@@ -204,7 +175,8 @@ namespace AsynGyanis::Database::Detail
                     return *parsedValue;
                 }
 
-                // 服务端的 NaN / Inf 文本由 strtod 正常识别，走到这里说明文本确实不是浮点数，退回原文
+                // 服务端的 NaN / Inf 文本（inf / nan 形式）会被解析器正常识别，
+                // 走到这里说明文本确实不是浮点数，退回原文
                 return std::string(rawValue, byteLength);
             }
 

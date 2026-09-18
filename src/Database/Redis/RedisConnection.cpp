@@ -115,7 +115,7 @@ namespace AsynGyanis::Database
                 }
 
                 // 引号外：空白就是分隔符，连续空白与首尾空白都不会产生空参数
-                if (kWhitespaceCharacters.find(currentCharacter) != std::string_view::npos)
+                if (kWhitespaceCharacters.contains(currentCharacter))
                 {
                     if (hasCurrentArgument)
                     {

@@ -1525,7 +1525,7 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 将 FieldReference 转为字符串
          */
-        [[nodiscard]] static std::string fieldReferenceToString(const FieldReference &field)
+        [[nodiscard]] static const std::string &fieldReferenceToString(const FieldReference &field)
         {
             return field.name;
         }
