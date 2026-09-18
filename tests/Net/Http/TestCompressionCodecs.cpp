@@ -1,14 +1,5 @@
-/**
- * @file TestCompressionCodecs.cpp
- * @brief zstd 与 brotli 压缩构件的单元测试：压得进去也解得回来、空输入、重复内容变小、越界档位被夹取
- * @details 与 TestGzip 同一判据：断言一律用各自库解回来逐字节比较——只比大小无法发现
- *          「压出来的字节解不开」，而那正是响应压缩最怕的事。
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// zstd 与 brotli 压缩构件的单元测试：压得进去也解得回来、空输入、重复内容变小、越界档位被夹取 与 TestGzip 同一判据：断言一律用各自库解回来逐字节比较——只比大小无法发现
+// 「压出来的字节解不开」，而那正是响应压缩最怕的事。
 #include "Net/Http/Compression.h"
 
 #include <gtest/gtest.h>

@@ -1,12 +1,4 @@
-/**
- * @file TestHttpStreamingBody.cpp
- * @brief 流式请求正文（Router::postStreaming()/putStreaming() + HttpRequestBody）的端到端用例
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 流式请求正文（Router::postStreaming()/putStreaming() + HttpRequestBody）的端到端用例
 // 覆盖场景：
 //   一. 早派发（确定性）：头部收齐即进处理器——客户端只发出正文前若干字节时，处理器已拿到首段；
 //       以「首段到达」为放行信号再补发剩余正文，证明派发发生在正文收齐之前

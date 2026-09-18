@@ -1,12 +1,4 @@
-/**
- * @file TestMiddleware.cpp
- * @brief 中间件单元测试：管道顺序与短路、日志、CORS、协作式超时、体积与速率限制
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 中间件单元测试：管道顺序与短路、日志、CORS、协作式超时、体积与速率限制
 #include "Net/Http/Middleware.h"
 
 #include "Base/Log/LogEvent.h"

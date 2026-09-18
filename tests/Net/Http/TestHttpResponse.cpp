@@ -1,13 +1,4 @@
-/**
- * @file TestHttpResponse.cpp
- * @brief HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序、自动补齐（date/content-type/content-length）
- *        与映射正文（整份与区间）的字节精确性
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序、自动补齐（date/content-type/content-length） 与映射正文（整份与区间）的字节精确性
 #include "Net/Http/HttpResponse.h"
 
 #include "Platform/IO/MemoryMappedFile.h"

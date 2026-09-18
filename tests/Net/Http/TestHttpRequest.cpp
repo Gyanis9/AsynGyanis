@@ -1,12 +1,4 @@
-/**
- * @file TestHttpRequest.cpp
- * @brief HttpRequest 单元测试：方法映射、头部存储模型、路径与查询串解析、取消信号
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpRequest 单元测试：方法映射、头部存储模型、路径与查询串解析、取消信号
 #include "Net/Http/HttpRequest.h"
 
 #include "Net/Http/HttpMethod.h"

@@ -1,13 +1,4 @@
-/**
- * @file TestHttpStaticFileTransfer.cpp
- * @brief 静态文件正文的传输路径端到端用例：大文件整份与区间响应（Linux 走 sendfile 零拷贝）、
- *        阈值以下的小文件回退、HEAD 的正文抑制，以及一条连接上复用响应对象连发两条
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 静态文件正文的传输路径端到端用例：大文件整份与区间响应（Linux 走 sendfile 零拷贝）、 阈值以下的小文件回退、HEAD 的正文抑制，以及一条连接上复用响应对象连发两条
 #include "HttpTestSupport.h"
 
 #include "Net/Http/HttpServer.h"

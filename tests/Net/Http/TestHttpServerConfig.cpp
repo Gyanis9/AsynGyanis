@@ -1,12 +1,4 @@
-/**
- * @file TestHttpServerConfig.cpp
- * @brief HttpServerConfig 单元测试：逐键读取、缺省保持默认、未知键与越界值的拒绝面
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpServerConfig 单元测试：逐键读取、缺省保持默认、未知键与越界值的拒绝面
 #include "Net/Http/HttpServerConfig.h"
 
 #include "Base/Config/ConfigValue.h"

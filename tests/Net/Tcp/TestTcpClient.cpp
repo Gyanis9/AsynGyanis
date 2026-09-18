@@ -1,4 +1,4 @@
-/** @file TestTcpClient.cpp 出站 TCP 客户端：连回本地 HTTP 服务器，读响应确认 200 */
+// 出站 TCP 客户端：连回本地 HTTP 服务器，读响应确认 200
 #include "HttpTestSupport.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Net/Tcp/TcpClient.h"

@@ -1,14 +1,5 @@
-/**
- * @file TestGzip.cpp
- * @brief Gzip 单元测试：压得进去也解得回来、空输入、不可压输入、重复内容确实变小
- * @details 断言一律走 zlib 的 inflate 解开再逐字节比较：只比大小无法发现「压出来的字节解不开」，
- *          而那正是响应压缩最怕的事（对端拿到一串解不开的正文）。
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// Gzip 单元测试：压得进去也解得回来、空输入、不可压输入、重复内容确实变小 断言一律走 zlib 的 inflate 解开再逐字节比较：只比大小无法发现「压出来的字节解不开」，
+// 而那正是响应压缩最怕的事（对端拿到一串解不开的正文）。
 #include "Net/Http/Gzip.h"
 
 #include <gtest/gtest.h>

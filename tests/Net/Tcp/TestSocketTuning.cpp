@@ -1,13 +1,4 @@
-/**
- * @file TestSocketTuning.cpp
- * @brief 套接字调参面：缓冲区上限（SO_SNDBUF/SO_RCVBUF）的读写、监听器下发与连接继承、
- *        延迟接受（TCP_DEFER_ACCEPT）的平台支持约定
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 套接字调参面：缓冲区上限（SO_SNDBUF/SO_RCVBUF）的读写、监听器下发与连接继承、 延迟接受（TCP_DEFER_ACCEPT）的平台支持约定
 // 覆盖场景：
 //   一. Platform::Socket 的缓冲区 setter：正值下发成功且 getsockopt 可读回不小于请求值；
 //       非正值被拒绝（不把含糊取值交给内核）

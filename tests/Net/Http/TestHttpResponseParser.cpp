@@ -1,13 +1,4 @@
-/**
- * @file TestHttpResponseParser.cpp
- * @brief HttpResponseParser 单元测试：正文定界（chunked / content-length / 连接关闭）、
- *        跨馈送分段与拒绝面
- * @author Gyanis
- * @date 2026-09-15
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpResponseParser 单元测试：正文定界（chunked / content-length / 连接关闭）、 跨馈送分段与拒绝面
 #include "Net/Http/Client/HttpResponseParser.h"
 
 #include <gtest/gtest.h>
@@ -57,8 +48,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住 chunked 定界：0 块 + 空行之后必须收尾完成（缺陷回归——此前的实现
-     *        永远停在正文阶段，客户端会丢弃整条响应）
+     * @brief 钉住 chunked 定界：0 块 + 空行之后必须收尾完成（缺陷回归：此前的实现永远停在正文阶段，客户端会丢弃整条响应）
      */
     TEST(HttpResponseParser, DecodesChunkedBodyAndCompletes)
     {
@@ -99,8 +89,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住「Transfer-Encoding 优先于 Content-Length」的拒绝面：两者并存按非法处理，
-     *        不能挑一个信（响应走私的入口）
+     * @brief 钉住「Transfer-Encoding 优先于 Content-Length」：两者并存按非法处理，不能挑一个信（响应走私的入口）
      */
     TEST(HttpResponseParser, RejectsContentLengthWithTransferEncoding)
     {

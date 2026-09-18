@@ -1,12 +1,4 @@
-/**
- * @file TestFileSender.cpp
- * @brief FileSender 单元测试：扩展名到 MIME 的查表映射、大小写不敏感与不可实例化契约
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// FileSender 单元测试：扩展名到 MIME 的查表映射、大小写不敏感与不可实例化契约
 #include "Net/Http/FileSender.h"
 
 #include <gtest/gtest.h>

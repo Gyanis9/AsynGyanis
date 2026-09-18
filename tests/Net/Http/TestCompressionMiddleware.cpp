@@ -1,15 +1,5 @@
-/**
- * @file TestCompressionMiddleware.cpp
- * @brief 响应压缩中间件的用例：协商、阈值、已编码内容、ETag 降级与响应往返
- * @details 断言一律把 gzip 正文解回原字节再比较（只比大小发现不了「解不开」），
- *          并且每条用例都同时钉住「不该压的时候确实没压」——压缩这类改写正文的中间件，
- *          最危险的失败是「悄悄改了不该改的响应」。
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 响应压缩中间件的用例：协商、阈值、已编码内容、ETag 降级与响应往返 断言一律把 gzip 正文解回原字节再比较（只比大小发现不了「解不开」），
+// 并且每条用例都同时钉住「不该压的时候确实没压」——压缩这类改写正文的中间件， 最危险的失败是「悄悄改了不该改的响应」。
 #include "Net/Http/Middleware.h"
 
 #include "Net/Http/HttpServer.h"

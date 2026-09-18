@@ -1,16 +1,5 @@
-/**
- * @file TestHttp3Session.cpp
- * @brief HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出，以及请求到 Router 的映射
- * @author Gyanis
- * @date 2026-09-15
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 前三条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 ngtcp2
- *          与真实 UDP，考的是会话对 nghttp3 的绑定是否合规矩。最后两条走**真字节**：测试侧自建一条
- *          客户端 nghttp3 连接当对端，请求的头块由它真编成 QPACK、响应也由它真解回来，中间不经 UDP。
- */
-
+// HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出，以及请求到 Router 的映射 前三条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 ngtcp2 与真实
+// UDP，考的是会话对 nghttp3 的绑定是否合规矩。最后两条走**真字节**：测试侧自建一条 客户端 nghttp3 连接当对端，请求的头块由它真编成 QPACK、响应也由它真解回来，中间不经 UDP。
 #include "Net/Http3/Http3Session.h"
 
 #include "Core/Coroutine/Task.h"

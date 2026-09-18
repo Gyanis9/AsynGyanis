@@ -1,11 +1,4 @@
-/**
- * @file TestHttpClient.cpp
- * @brief HTTP 出站客户端端到端用例
- * @author Gyanis
- * @date 2026-09-14
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// HTTP 出站客户端端到端用例
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include <gtest/gtest.h>

@@ -1,12 +1,4 @@
-/**
- * @file TestRouter.cpp
- * @brief Router 单元测试：两级匹配优先级、方法与 404/405 判定、HEAD 复用 GET、参数提交与响应收尾
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// Router 单元测试：两级匹配优先级、方法与 404/405 判定、HEAD 复用 GET、参数提交与响应收尾
 #include "Net/Http/Router.h"
 
 #include "Core/Coroutine/Task.h"

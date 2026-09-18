@@ -1,12 +1,4 @@
-/**
- * @file TestHttpDate.cpp
- * @brief HttpDate 单元测试：IMF-fixdate 的格式化黄金值、解析往返与非法输入拒绝
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpDate 单元测试：IMF-fixdate 的格式化黄金值、解析往返与非法输入拒绝
 #include "Net/Http/HttpDate.h"
 
 #include <gtest/gtest.h>

@@ -1529,8 +1529,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：对端 RST_STREAM 掉一条流后，发往该流的响应结论是 StreamNotWritable 且连接可以继续
-     *        ——同连接上另一条流照旧收响应，连接不进入失败态
+     * @brief 钉住：对端 RST_STREAM 后，发往该流的响应结论是 StreamNotWritable，连接可继续用（另一条流照旧收响应）
      */
     TEST(Http2Connection, ReportsStreamNotWritableWhenPeerResetsTheStream)
     {
@@ -1573,8 +1572,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：对端 RST_STREAM 掉一条还有正文在发送队列里的流时，队列随之丢弃——连接窗口
-     *        后来变大也放不出那些字节（该流的发送窗口当时仍为正，正是能把它放出来的条件）
+     * @brief 钉住：对端 RST_STREAM 掉一条还有正文在发送队列里的流时，队列随之丢弃——连接窗口后来变大也放不出那些字节
      */
     TEST(Http2Connection, DiscardsQueuedResponseDataWhenPeerResetsTheStream)
     {
@@ -1719,8 +1717,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：发完完整响应后可以请对端中止请求正文——RST_STREAM(NO_ERROR) 只终止这条流，
-     *        连接照旧可用，且在途补发的 DATA 被忽略而不会把连接判死
+     * @brief 钉住：发完完整响应后可请对端中止请求正文——RST_STREAM(NO_ERROR) 只终止这条流，连接照旧可用，在途 DATA 被忽略
      */
     TEST(Http2Connection, RequestsPeerToAbortStreamAfterEarlyResponse)
     {

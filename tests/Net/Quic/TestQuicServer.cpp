@@ -1,16 +1,5 @@
-/**
- * @file TestQuicServer.cpp
- * @brief QUIC 服务端的回环端到端用例：真 UDP 套接字、真证书、真握手
- * @author Gyanis
- * @date 2026-09-15
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 客户端的 QUIC 实现由测试自己用 ngtcp2 搭（与「用独立实现做验收」的精神一致：被测的是
- *          服务端这一侧，客户端只当对端）。握手与流数据都走真实回环 UDP，因此套接字封装、
- *          连接标识路由、定时器驱动、证书与 ALPN 协商全都在链路上。
- */
-
+// QUIC 服务端的回环端到端用例：真 UDP 套接字、真证书、真握手 客户端的 QUIC 实现由测试自己用 ngtcp2 搭（与「用独立实现做验收」的精神一致：被测的是
+// 服务端这一侧，客户端只当对端）。握手与流数据都走真实回环 UDP，因此套接字封装、 连接标识路由、定时器驱动、证书与 ALPN 协商全都在链路上。
 #include "Net/Quic/QuicServer.h"
 
 #include "Core/Coroutine/Task.h"

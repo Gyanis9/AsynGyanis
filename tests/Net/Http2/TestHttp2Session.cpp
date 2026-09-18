@@ -1046,8 +1046,7 @@ namespace AsynGyanis::Net
     } // namespace
 
     /**
-     * @brief 钉住：ALPN 提 h2 的客户端走 HTTP/2 循环——200 响应头 + 正文 DATA 末片 END_STREAM，
-     *        且同一条连接上的第二条请求照常被服务（连接复用），request-id 生成与回显与 HTTP 侧同口径
+     * @brief 钉住：ALPN 提 h2 的客户端走 HTTP/2 循环——200 头 + DATA 末片 END_STREAM，同连接第二条请求照常被服务（含 request-id 回显）
      */
     TEST(Http2Session, ServesGetOverAlpnH2EndToEnd)
     {
@@ -1606,8 +1605,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：伪头与头部按 HTTP/1.1 语义映射到 HttpRequest（:path → uri、:authority → host、
-     *        版本 → HTTP/2、正文 → body），方法原文不认识时落到 UNKNOWN 由路由器处置
+     * @brief 钉住：伪头按 HTTP/1.1 语义映射（:path → uri、:authority → host、版本 → HTTP/2），未知方法落 UNKNOWN
      */
     TEST(Http2Session, MapsTheRequestOntoHttpRequestFields)
     {
@@ -1695,9 +1693,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：h2 上的流式响应——startChunkedResponse() + 三次 writeChunk() 发成 HEADERS（不带
-     *        END_STREAM）+ 三个 DATA 帧（末片带 END_STREAM），头部里没有 transfer-encoding /
-     *        connection / content-length；同一条连接上「一段都没写」的空流式响应也能收尾
+     * @brief 钉住：h2 流式响应发成 HEADERS + DATA 帧（末片 END_STREAM）且无 h1 专属头；空流式响应也能收尾
      */
     TEST(Http2Session, StreamsChunkedResponseAsOrderedDataFrames)
     {
@@ -1875,8 +1871,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住「边写边到」：处理器写完第一段后卡在「等客户端读到它」上，客户端因此只能在处理器
-     *        尚未结束时读到第一段与承载它的头部——框架若把正文攒到处理器结束才发，这个等待必然超时
+     * @brief 钉住「边写边到」：处理器卡在等客户端读时，客户端仍能先读到第一段与头部——框架若攒到处理器结束才发必超时
      */
     TEST(Http2Session, FirstDataFrameReachesClientBeforeHandlerFinishes)
     {
@@ -1972,8 +1967,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：SseStream 零改动即可在 h2 上工作——两条事件发成两段 DATA 帧，负载是
-     *        `data: ...` 的 SSE 线格式，帧序与事件顺序一致，头部带 text/event-stream 且无分块头
+     * @brief 钉住：SseStream 零改动即可在 h2 上工作——事件发成 DATA 帧（`data: ...` 线格式），帧序与事件序一致
      */
     TEST(Http2Session, StreamsSseEventsWithoutSseStreamChanges)
     {
@@ -2044,9 +2038,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：HTTP/1.1 专属的连接特定响应头一律被剥掉（RFC 9113 §8.2.2），其余头部原样保留——
-     *        业务按 h1 习惯设下的 connection / keep-alive / transfer-encoding / upgrade / proxy-connection
-     *        不会到达客户端
+     * @brief 钉住：HTTP/1.1 专属的连接特定响应头一律被剥掉（RFC 9113 §8.2.2），业务按 h1 习惯设下的 connection/upgrade 等不到客户端
      */
     TEST(Http2Session, StripsHttp11ConnectionSpecificHeadersFromResponse)
     {
@@ -2114,9 +2106,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：达到 HttpServerLimits::maximumRequestsPerConnection 时 h2 侧用 GOAWAY 收口
-     *        （h2 没有连接级 close 头可用，RFC 9113 §8.2.2），错误码是 NO_ERROR（正常收尾而非故障），
-     *        且第二条请求不会被静默丢弃（要么在通告的流号之内被服务完，要么被 RST_STREAM 明确拒绝）
+     * @brief 钉住：达到 maximumRequestsPerConnection 时以 GOAWAY(NO_ERROR) 收口，后续请求或在通告流号内被服务、或被明确拒绝
      */
     TEST(Http2Session, SendsGoAwayWhenRequestLimitIsReached)
     {
@@ -2194,8 +2184,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：对端永不 ACK 本端 SETTINGS 时按 SETTINGS_TIMEOUT 收口——客户端在超时 + 清扫节拍内
-     *        收到 GOAWAY（错误码 0x4），连接随后关闭，收口计入 timeoutClosedCount
+     * @brief 钉住：对端永不 ACK 本端 SETTINGS 时按 SETTINGS_TIMEOUT 收口——超时 + 清扫节拍内收到 GOAWAY(0x4) 并计入 timeoutClosedCount
      */
     TEST(Http2Session, SendsSettingsTimeoutGoAwayWhenPeerNeverAcknowledges)
     {
@@ -2242,8 +2231,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：settingsAcknowledgementTimeout 取 0 表示不设这项保护——对端同样不回 ACK，但不发
-     *        GOAWAY、连接也不被 SETTINGS 超时收口，照常服务请求
+     * @brief 钉住：settingsAcknowledgementTimeout 取 0 表示不设这项保护——对端同样不回 ACK，但不发 GOAWAY、连接不被超时收口
      */
     TEST(Http2Session, KeepsConnectionWhenSettingsTimeoutProtectionIsOff)
     {
@@ -2291,9 +2279,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：客户端 RST_STREAM 取消一条流只影响它自己——同连接上并发的另一条流照旧拿到完整
-     *        响应，连接不关闭（客户端随后还能发第三条并得到 200），被取消的那条不计成协议错误
-     *
+     * @brief 钉住：客户端 RST_STREAM 取消一条流只影响它自己——同连接另一条并发流照旧拿到完整响应，被取消的不计成协议错误
      * @details 构造形态是「请求与 RST_STREAM 同批到达」：会话在服务某条流期间不读字节（驱动顺序是
      *          「读 → 喂 → 服务 → 再写出」），RST 若不在同一段字节里，就只会等这一轮服务结束才被看到。
      *          流 1 的响应因此落在「流已被对端取消」这条结论上，正是本用例要钉住的处置。

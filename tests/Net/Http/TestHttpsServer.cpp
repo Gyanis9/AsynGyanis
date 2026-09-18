@@ -770,12 +770,9 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 客户端校验主机名：证书名字对得上就正常握手并拿到响应
-     * @details 夹具证书 test_ip_cert.pem 由下面的命令生成，SAN 只有 IP:127.0.0.1：
-     *          `openssl req -x509 -newkey rsa:2048 -nodes -keyout test_ip_key.pem
-     *           -out test_ip_cert.pem -days 3650 -subj "/CN=127.0.0.1"
-     *           -addext "subjectAltName=IP:127.0.0.1"`
-     *          用例把它同时当作「服务端身份」与「受信根」，因此链校验必然通过——能过就只说明
-     *          客户端走的是 IP 那一路校验（X509_VERIFY_PARAM_set1_ip_asc），而这正是要钉住的那条
+     * @details 夹具证书 test_ip_cert.pem 是仓库预生成的自签证书，SAN 只有 IP:127.0.0.1。
+     *          用例把它同时当「服务端身份」与「受信根」，链校验必然通过——能过就只说明客户端走的是
+     *          IP 那一路校验（X509_VERIFY_PARAM_set1_ip_asc），这正是要钉住的。
      */
     TEST(HttpsServer, ClientAcceptsCertificateMatchingTheRequestedHost)
     {

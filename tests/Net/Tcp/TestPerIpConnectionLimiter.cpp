@@ -1,12 +1,4 @@
-/**
- * @file TestPerIpConnectionLimiter.cpp
- * @brief PerIpConnectionLimiter 单元测试：限额开关、按来源独立计数、凭据的移动语义与多线程下的不变式
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// PerIpConnectionLimiter 单元测试：限额开关、按来源独立计数、凭据的移动语义与多线程下的不变式
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <gtest/gtest.h>

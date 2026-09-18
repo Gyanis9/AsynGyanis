@@ -1,12 +1,4 @@
-/**
- * @file TestHttpMetricsEndpoint.cpp
- * @brief 指标导出与健康检查端点：Prometheus 文本渲染的逐字节契约，以及回环上的真实抓取
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 指标导出与健康检查端点：Prometheus 文本渲染的逐字节契约，以及回环上的真实抓取
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerStats.h"

@@ -1,14 +1,4 @@
-/**
- * @file TestPerMessageDeflate.cpp
- * @brief permessage-deflate 用例：扩展协商、消息往返、不可压内容与解压上限
- * @details 往返一律逐字节比较；解压上限那条单独钉住 zip bomb——压缩比可以做到几百倍，
- *          不设上限时一条小消息就能把服务端内存撑爆。
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// permessage-deflate 用例：扩展协商、消息往返、不可压内容与解压上限 往返一律逐字节比较；解压上限那条单独钉住 zip bomb——压缩比可以做到几百倍， 不设上限时一条小消息就能把服务端内存撑爆。
 #include "Net/WebSocket/PerMessageDeflate.h"
 
 #include <gtest/gtest.h>

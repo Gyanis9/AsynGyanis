@@ -1,12 +1,4 @@
-/**
- * @file TestHttpParser.cpp
- * @brief HttpParser 单元测试：增量解析、报文定界、头部存储模型与资源上限
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpParser 单元测试：增量解析、报文定界、头部存储模型与资源上限
 #include "Net/Http/HttpParser.h"
 
 #include "Net/Http/HttpRequest.h"

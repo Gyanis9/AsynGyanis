@@ -1,12 +1,4 @@
-/**
- * @file TestTcpServer.cpp
- * @brief TcpServer 单元测试：纯虚钩子、接受循环、连接丢弃与 ConnectionManager 参与的优雅关闭（stop/close/drain）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// TcpServer 单元测试：纯虚钩子、接受循环、连接丢弃与 ConnectionManager 参与的优雅关闭（stop/close/drain）
 #include "Net/Tcp/TcpServer.h"
 
 #include "Base/Exception/Exception.h"
@@ -349,9 +341,8 @@ namespace AsynGyanis::Net
             /**
              * @brief 在循环线程上执行一段动作，并等它做完
              *
-             * @details TcpServer::stop()/close() 的线程约束是「必须由运行本服务器事件循环的那个线程调用」：
-             *          它们关掉的是监听描述符与每条活跃连接的套接字，而那些 IoWatcher 正被该循环读写，
-             *          从外部线程直接调就是与循环抢同一批句柄（TSan 在并发用例集里报的正是这一处）。
+             * @details TcpServer::stop()/close() 必须由运行本服务器事件循环的线程调用：它们关掉的监听
+             *          描述符与连接套接字正被该循环读写，从外部线程直接调就是与循环抢同一批句柄。
              *          文档给的正路是投递（scheduler().postRemote()）——用例从测试线程发起停止时走这条，
              *          顺带把这条正路本身也测到了。
              */

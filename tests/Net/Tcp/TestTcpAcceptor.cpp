@@ -1,12 +1,4 @@
-/**
- * @file TestTcpAcceptor.cpp
- * @brief TcpAcceptor 单元测试：绑定与监听前置条件、复用选项装配、批量 accept 与关闭后的状态复位
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// TcpAcceptor 单元测试：绑定与监听前置条件、复用选项装配、批量 accept 与关闭后的状态复位
 #include "Net/Tcp/TcpAcceptor.h"
 
 #include "Base/Exception/Exception.h"

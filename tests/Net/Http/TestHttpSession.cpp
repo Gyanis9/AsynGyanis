@@ -1,13 +1,4 @@
-/**
- * @file TestHttpSession.cpp
- * @brief HttpSession 单元测试：保持活跃判定、跨次读取的缓冲与流水线残留、定界超限应答、
- *        HEAD 只发头部（与 GET 逐字节一致），以及取消转发
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpSession 单元测试：保持活跃判定、跨次读取的缓冲与流水线残留、定界超限应答、 HEAD 只发头部（与 GET 逐字节一致），以及取消转发
 #include "Net/Http/HttpSession.h"
 
 #include "Base/Exception/Exception.h"

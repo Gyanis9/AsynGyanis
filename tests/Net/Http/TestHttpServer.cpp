@@ -1,13 +1,4 @@
-/**
- * @file TestHttpServer.cpp
- * @brief HttpServer 单元测试：静态目录配置的幂等语义、请求路径清洗的越权拦截、HEAD 收尾，
- *        以及静态文件的条件请求（ETag / Last-Modified / 304）与单区间 Range（206/416）
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// HttpServer 单元测试：静态目录配置的幂等语义、请求路径清洗的越权拦截、HEAD 收尾， 以及静态文件的条件请求（ETag / Last-Modified / 304）与单区间 Range（206/416）
 #include "Net/Http/HttpServer.h"
 
 #include "Core/EventLoop/EventLoop.h"

@@ -1,15 +1,5 @@
-/**
- * @file TestHttpAcceptDispatch.cpp
- * @brief 接收分发端到端：一个监听器 + 两个工作循环，连接被轮流交给不同循环服务
- * @details 这条用例钉的是「多核扩展不再依赖 SO_REUSEPORT」：接受循环自己不做任何协议工作，
- *          连接落到哪个循环就由哪个循环的服务器应答——响应正文自报家门，因此「分没分过去」
- *          是从客户端看得见的事实，而不是内部计数的自说自话。
- * @author Gyanis
- * @date 2026-09-13
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// 接收分发端到端：一个监听器 + 两个工作循环，连接被轮流交给不同循环服务 这条用例钉的是「多核扩展不再依赖 SO_REUSEPORT」：接受循环自己不做任何协议工作，
+// 连接落到哪个循环就由哪个循环的服务器应答——响应正文自报家门，因此「分没分过去」 是从客户端看得见的事实，而不是内部计数的自说自话。
 #include "Net/Http/HttpServer.h"
 
 #include "Core/EventLoop/ConnectionDistributor.h"

@@ -1,12 +1,4 @@
-/**
- * @file TestTcpStream.cpp
- * @brief TcpStream 单元测试：首次读取真实收数据、缓冲消费顺序、分隔符截断推进与整块写入
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
+// TcpStream 单元测试：首次读取真实收数据、缓冲消费顺序、分隔符截断推进与整块写入
 #include "Net/Tcp/TcpStream.h"
 
 #include "Base/Exception/Exception.h"

@@ -632,8 +632,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：开关关闭时同一段 h2 前奏得不到 h2 应答——端口上的协议确实由该开关决定，
-     *        而不是「前奏恰好也能被当成请求处理」
+     * @brief 钉住：开关关闭时同一段 h2 前奏得不到 h2 应答——协议由开关决定，而不是「前奏恰好也能被当请求处理」
      * @details 这是上一条用例的反面：若 createConnection() 忽略开关一律建 HTTP/2 会话，
      *          本用例会因为「应答是 SETTINGS 帧、不是 HTTP/1.」而失败
      */
@@ -658,8 +657,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：正文以**尾部头块**收尾的请求（不带 END_STREAM 的 DATA + 带 END_STREAM 的 trailers）
-     *        会被正常路由并回响应——尾部头块也是消息结尾（RFC 9113 §8.1）
+     * @brief 钉住：以尾部头块收尾的请求（trailers 带 END_STREAM）照常被路由——尾部头块也是消息结尾（RFC 9113 §8.1）
      * @details 会话只按 `Http2ReceivedData::endStream` 判定「正文收齐」，不读流状态；连接层若在
      *          尾部头块分支只把流置成 half-closed (remote) 而不产出收尾片段，这条请求就永远等不到
      *          收齐、不会进路由（客户端只能等到超时）。本用例的响应必须在时限内出现。
@@ -718,8 +716,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：优雅关停时 h2 对端收到的是收尾 GOAWAY（NO_ERROR + 已处理的最后流号），
-     *        而不是一个裸的 TCP 关闭——对端据此知道哪些请求已经生效、新流没有生效
+     * @brief 钉住：优雅关停时 h2 对端收到收尾 GOAWAY（NO_ERROR + 最后流号）而不是裸 TCP 关闭——对端据此知道哪些请求已生效
      * @details 服务器在「关停没有在途工作的连接」那一步先给协议层一次写字节的机会
      *          （`Core::Connection::onGracefulShutdownRequested()`），HTTP/2 会话借此发出 GOAWAY。
      *          本端已经服务过流 1，因此 last-stream-id 应当是 1。
@@ -789,8 +786,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：正文超过上限时回 413 并**请对端中止上传**（RST_STREAM(NO_ERROR)），
-     *        而不是把剩余字节白收一遍；连接与后续请求照常工作
+     * @brief 钉住：正文超上限回 413 并请对端中止上传（RST_STREAM(NO_ERROR)），而不是把剩余字节白收一遍；连接照常可用
      */
     TEST(Http2CleartextSession, AbortsOversizedUploadAfterAnswering413)
     {
@@ -1002,8 +998,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：RFC 8441 的扩展 CONNECT 把一条 h2c 流变成 WebSocket 隧道——200 + 规范黄金 accept 值、
-     *        文本帧原样回显（隧道内是 DATA 帧）、Close 之后本侧方向以 END_STREAM 收尾
+     * @brief 钉住：RFC 8441 扩展 CONNECT 把 h2c 流变成 WebSocket 隧道（200 + 规范 accept 值、帧原样回显、Close 后 END_STREAM 收尾）
      * @details 客户端与 h1 的差别只有握手承载方式：没有 Upgrade/Connection 头，改用 :protocol=websocket；
      *          服务端的应答是 200 而不是 101。accept 值用 RFC 6455 §1.3 的示例 key 对照规范原文的黄金值。
      */
@@ -1115,8 +1110,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：扩展 CONNECT 用了本端未实现的 :protocol 时回 501（而不是当未知方法回 404/405），
-     *        且连接照旧可用
+     * @brief 钉住：扩展 CONNECT 用了本端未实现的 :protocol 时回 501（而不是当未知方法回 404/405），且连接照旧可用
      */
     TEST(Http2CleartextSession, Answers501ForUnsupportedConnectProtocol)
     {
