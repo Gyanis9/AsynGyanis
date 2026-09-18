@@ -15,6 +15,8 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Platform/IO/FileDescriptor.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -160,43 +162,11 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 在独立线程上驱动 EventLoop 的夹具
-         * @details 必须在协程任务对象之后构造：析构顺序保证「先 join 循环线程，再销毁协程帧」，
-         *          否则循环线程可能恢复一个已被销毁的句柄。
+         * @brief 在独立线程上驱动 EventLoop 的夹具（定义见 CoreTestSupport.h，借用模式）
+         * @note 必须在协程任务对象之后构造：析构顺序保证「先 join 循环线程，再销毁协程帧」，
+         *       否则循环线程可能恢复一个已被销毁的句柄
          */
-        class EventLoopThread
-        {
-        public:
-            explicit EventLoopThread(Core::EventLoop &loop) :
-                m_loop(loop), m_worker([this]
-                {
-                    m_loop.run();
-                })
-            {
-            }
-
-            ~EventLoopThread()
-            {
-                m_loop.stop();
-                if (m_worker.joinable())
-                {
-                    m_worker.join();
-                }
-            }
-
-            EventLoopThread(const EventLoopThread &) = delete;
-            EventLoopThread &operator=(const EventLoopThread &) = delete;
-
-            /// 把协程投给事件循环线程执行（跨线程安全：走调度器全局队列并唤醒循环）
-            void schedule(Core::Task<> &task)
-            {
-                m_loop.scheduler().scheduleRemote(task.handle());
-            }
-
-        private:
-            Core::EventLoop &m_loop; ///< 被执行的事件循环
-            std::thread     m_worker; ///< 承载 run() 的线程
-        };
+        using AsynGyanis::Core::TestSupport::EventLoopThread;
 
         /**
          * @brief 把一段协程逻辑跑到结束，并按类型记录它抛出的异常

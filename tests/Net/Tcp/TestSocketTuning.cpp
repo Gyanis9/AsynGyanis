@@ -23,6 +23,8 @@
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -119,43 +121,11 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 在独立线程上驱动事件循环的夹具
-         * @details 必须声明在协程任务与结果槽之后：析构顺序保证「先 join 循环线程，
-         *          再销毁协程帧与已接受的套接字」，否则循环线程可能恢复已销毁的句柄
+         * @brief 在独立线程上驱动事件循环的夹具（定义见 CoreTestSupport.h，借用模式）
+         * @note 必须声明在协程任务与结果槽之后：析构顺序保证「先 join 循环线程，
+         *       再销毁协程帧与已接受的套接字」，否则循环线程可能恢复已销毁的句柄
          */
-        class EventLoopThread
-        {
-        public:
-            explicit EventLoopThread(Core::EventLoop &loop) :
-                m_loop(loop), m_worker([this]
-                {
-                    m_loop.run();
-                })
-            {
-            }
-
-            ~EventLoopThread()
-            {
-                m_loop.stop();
-                if (m_worker.joinable())
-                {
-                    m_worker.join();
-                }
-            }
-
-            EventLoopThread(const EventLoopThread &) = delete;
-
-            EventLoopThread &operator=(const EventLoopThread &) = delete;
-
-            void schedule(Core::Task<> &task)
-            {
-                m_loop.scheduler().scheduleRemote(task.handle());
-            }
-
-        private:
-            Core::EventLoop &m_loop;  ///< 被执行的事件循环
-            std::thread     m_worker; ///< 承载 run() 的线程
-        };
+        using AsynGyanis::Core::TestSupport::EventLoopThread;
 
         /// 一次接受尝试的结果槽
         struct AcceptOutcome

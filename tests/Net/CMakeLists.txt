@@ -77,10 +77,12 @@ target_link_libraries(TestNet PRIVATE
         GTest::gtest_main
 )
 
-# src 用于 "Net/Http/..." 形式的生产头包含，本目录下的 Http 用于 "HttpTestSupport.h" 形式
+# src 用于 "Net/..." 形式的生产头包含，Http 目录用于 "HttpTestSupport.h" 同级包含，
+# tests/Core 用于复用 CoreTestSupport.h 的 EventLoopThread 等协程驱动设施
 target_include_directories(TestNet PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
+        ${CMAKE_SOURCE_DIR}/tests/Core
 )
 
 # HTTPS 端到端用例使用的仓库内证书目录（与 tests/Core/fixtures 同一份自签证书）
