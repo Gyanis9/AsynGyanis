@@ -1,10 +1,10 @@
 /**
  * @file DatabaseTestSupport.h
- * @brief Database 单元测试辅助：临时数据库文件夹具、唯一路径生成与协程测试驱动
- * @details 协程部分（waitForCondition / CompletedTask / collectTask / EventLoopThread）是
- *          Database 异步 API 的公共测试设施，SQLite 与真实服务端的用例共用同一套纪律，
- *          本文件是它唯一的落点；因此本头只依赖 Common/Queryable 下的接口头（没有任何
- *          驱动头）、Core/Platform 与标准库，驱动被编成桩时照样可用。
+ * @brief Database 单元测试辅助：临时数据库文件夹具、唯一路径生成与查询构建助手
+ * @details 协程驱动设施（等待、CompletedTask/collectTask、EventLoopThread）统一定义在
+ *          CoreTestSupport.h，本文件只做转发，SQLite 与真实服务端的异步用例因此与 Core/Net
+ *          共用同一套纪律；本头只依赖 Common/Queryable 下的接口头（没有任何驱动头）、
+ *          Core/Platform 与标准库，驱动被编成桩时照样可用。
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
@@ -15,6 +15,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "CoreTestSupport.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
@@ -30,14 +31,12 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
-#include <exception>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <random>
 #include <string>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -186,205 +185,23 @@ namespace AsynGyanis::Database::TestSupport
     };
 
     // ========================================================================
-    // 协程驱动辅助
+    // 协程驱动辅助（定义在 CoreTestSupport.h，此处转发给 Database 用例）
     // ========================================================================
 
-    /// 轮询等待的上限：所有用例的正常耗时都在毫秒级，5 秒足够暴露「协程没被恢复」这类问题
-    inline constexpr std::chrono::milliseconds kWaitTimeout{5000};
+    /// 等待类断言的统一上限
+    using AsynGyanis::Core::TestSupport::kWaitTimeout;
 
-    /**
-     * @brief 轮询等待条件成立（避免固定 sleep 造成的偶发失败）
-     * @tparam Predicate 判定可调用对象
-     * @param predicate 判定函数
-     * @return true 条件在时限内成立
-     */
-    template<typename Predicate>
-    [[nodiscard]] bool waitForCondition(Predicate predicate)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-        while (!predicate())
-        {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
+    /// 在时限内轮询等待条件成立
+    using AsynGyanis::Core::TestSupport::waitForCondition;
 
-    /**
-     * @brief 一次异步任务的观测结果
-     * @tparam ResultType 任务结果类型
-     */
-    template<typename ResultType>
-    struct CompletedTask
-    {
-        std::optional<ResultType> value;            ///< 任务返回值（成功时才有值）
-        std::exception_ptr        error;            ///< 任务抛出的异常（失败时非空）
-        bool                      finished = false; ///< 是否在时限内收到完成通知
-    };
+    /// 一次异步任务的观测结果（结果值、异常与完成情况）
+    using AsynGyanis::Core::TestSupport::CompletedTask;
 
-    /**
-     * @brief 驱动协程：co_await 目标任务，把结果或异常搬进调用方提供的变量
-     *
-     * @details Task<T> 只能被协程 co_await，故先挂起在内层任务上、完成后在事件循环线程上恢复，
-     *          再把结果写出去并最后置完成标记：标记由事件循环线程写入，调用线程读取前必须做
-     *          acquire 语义的同步（见 std::atomic 内存序），这是结果得以按值搬出的前提。
-     *
-     * @tparam ResultType 内层任务的结果类型
-     * @param inner 待等待的任务（按值接收，帧内持有它的生命周期）
-     * @param value 出参：任务返回值
-     * @param error 出参：任务抛出的异常
-     * @param finished 出参：完成标记，写于所有其它出参之后
-     * @return Core::Task<void> 驱动协程
-     */
-    template<typename ResultType>
-    Core::Task<void> collectTask(Core::Task<ResultType> inner,
-                                std::optional<ResultType> &value,
-                                std::exception_ptr &error,
-                                std::atomic<bool> &finished)
-    {
-        try
-        {
-            value.emplace(co_await std::move(inner));
-        }
-        catch (...)
-        {
-            // 任务异常在此收敛：驱动协程本身不向上抛，调用线程只需看 error 是否被写入
-            error = std::current_exception();
-        }
+    /// 驱动协程：co_await 目标任务，把结果或异常搬进调用方提供的变量
+    using AsynGyanis::Core::TestSupport::collectTask;
 
-        // release 语义：保证上面的写入对读取到本标记的线程可见
-        finished.store(true, std::memory_order_release);
-    }
-
-    /**
-     * @brief 后台事件循环运行器：构造即起线程跑 EventLoop::run()，析构先 stop() 再 join
-     *
-     * @details 销毁纪律：**协程帧必须活到事件循环线程结束之后**——驱动协程帧一律留在 m_driverTasks，
-     *          且它声明在 m_thread **之前**，逆序析构保证帧销毁晚于循环线程结束；
-     *          调用方自持的驱动协程对象也须声明在本类之前。
-     */
-    class EventLoopThread
-    {
-    public:
-        EventLoopThread()
-            : m_thread([this]()
-            {
-                m_loop.run();
-            })
-        {
-        }
-
-        /**
-         * @brief 析构：先请求停止事件循环，join 由 m_thread 成员析构完成
-         * @details stop() 只是置停止标志并唤醒 epoll_wait，因此必须等到 join 之后才算真正
-         *          「循环线程已结束」——这正是 m_thread 成员排在 m_driverTasks 之前的意义。
-         */
-        ~EventLoopThread()
-        {
-            m_loop.stop();
-        }
-
-        EventLoopThread(const EventLoopThread &)            = delete;
-        EventLoopThread &operator=(const EventLoopThread &) = delete;
-
-        /**
-         * @brief 获取后台线程上运行的事件循环
-         * @return Core::EventLoop& 事件循环，供提交协程、注册事件使用
-         */
-        [[nodiscard]] Core::EventLoop &loop() noexcept
-        {
-            return m_loop;
-        }
-
-        /**
-         * @brief 事件循环的 run() 是否已经进入循环体
-         * @return true 已进入；false 尚未启动或已停止
-         */
-        [[nodiscard]] bool isRunning() const noexcept
-        {
-            return m_loop.isRunning();
-        }
-
-        /**
-         * @brief 取得后台循环线程的 id
-         * @details 用于断言「协程恢复发生在事件循环线程上」这类线程归属性质：
-         *          在驱动协程里记录 `std::this_thread::get_id()`，再与本方法比较即可。
-         * @return std::thread::id 循环线程 id；线程尚未启动时为空 id
-         */
-        [[nodiscard]] std::thread::id threadId() const noexcept
-        {
-            return m_thread.get_id();
-        }
-
-        /**
-         * @brief 自旋等待事件循环进入运行状态
-         * @details 线程刚启动时 run() 可能还没读到运行标志，此时提交的协程虽然不会丢
-         *          （调度器会先入队），但断言「已经跑起来」会让用例结论依赖调度时序。
-         *          需要确定性起点的用例调用本方法等一个明确的「已运行」。
-         * @return true 在 kWaitTimeout 内进入运行状态
-         */
-        [[nodiscard]] bool waitUntilRunning() const
-        {
-            return waitForCondition([this]()
-            {
-                return m_loop.isRunning();
-            });
-        }
-
-        /**
-         * @brief 启动一个任务并等到它完成
-         *
-         * @details 内层任务内联执行到「把阻塞任务交给执行器」这一步就挂起，调用线程不会被占住等待数据库，
-         *          由执行器与循环线程协作推进。完成标记是驱动协程的**最后一次**出参写入，之后只走
-         *          final_suspend 收尾，故按值搬出结果安全；帧本身仍留在 m_driverTasks 里活到 join 之后。
-         *
-         * @tparam ResultType 任务结果类型
-         * @param task 待执行的异步任务
-         * @return CompletedTask<ResultType> 结果、异常与完成情况
-         */
-        template<typename ResultType>
-        [[nodiscard]] CompletedTask<ResultType> runToCompletion(Core::Task<ResultType> task)
-        {
-            CompletedTask<ResultType> completed;
-            std::atomic<bool>         finishedFlag{false};
-
-            Core::Task<void> driver =
-                collectTask<ResultType>(std::move(task), completed.value, completed.error, finishedFlag);
-            // 内联启动：阻塞任务只做入队，控制权在这里立刻回到调用线程
-            driver.handle().resume();
-
-            completed.finished = waitForCondition([&finishedFlag]()
-            {
-                return finishedFlag.load(std::memory_order_acquire);
-            });
-
-            // 帧的销毁推迟到事件循环线程 join 之后（见类注释的成员声明顺序）
-            m_driverTasks.push_back(std::move(driver));
-            return completed;
-        }
-
-        /**
-         * @brief 把调用方自己的驱动协程交给运行器保管，直到循环线程结束
-         *
-         * @details 用于「提交后先断言尚未完成、放行后再等结果」这类用例：此时协程帧不能放在
-         *          用例体的局部对象里（用例体先于夹具成员析构，帧会与 resume() 收尾竞态），
-         *          交出来让运行器按成员声明顺序统一销毁即可。
-         * @param driver 待保管的驱动协程（通常由 collectTask() 产出）
-         */
-        void parkDriver(Core::Task<void> driver)
-        {
-            m_driverTasks.push_back(std::move(driver));
-        }
-
-    private:
-        Core::EventLoop               m_loop;        ///< 后台线程上运行的事件循环
-        std::vector<Core::Task<void>> m_driverTasks; ///< 驱动协程：声明在 m_thread 之前，故晚于 join 销毁
-        std::jthread                  m_thread;      ///< 跑 m_loop.run() 的后台线程，析构自动 join
-    };
-
+    /// 后台事件循环运行器（自持循环模式，销毁纪律见其类注释）
+    using AsynGyanis::Core::TestSupport::EventLoopThread;
 
     /**
      * @brief 判断文本是否含非 ASCII 字节，即「驱动自己拼了中文说明」的稳定判据

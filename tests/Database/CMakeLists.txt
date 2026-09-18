@@ -41,10 +41,12 @@ target_link_libraries(TestDatabase PRIVATE
         GTest::gtest_main
 )
 
-# src 用于 "Database/..." 形式的生产头包含，本目录用于 "DatabaseTestSupport.h" 同级包含
+# src 用于 "Database/..." 形式的生产头包含，本目录用于 "DatabaseTestSupport.h" 同级包含，
+# tests/Core 用于复用 CoreTestSupport.h 的协程驱动设施（等待、EventLoopThread）
 target_include_directories(TestDatabase PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/tests/Core
 )
 
 target_compile_features(TestDatabase PRIVATE cxx_std_23)
