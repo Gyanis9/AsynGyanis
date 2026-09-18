@@ -11,6 +11,7 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
 #include "Database/Redis/RedisConnection.h"
+#include "DatabaseTestSupport.h"
 
 #include <gtest/gtest.h>
 

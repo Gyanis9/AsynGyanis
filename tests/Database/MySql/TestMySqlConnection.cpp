@@ -9,6 +9,7 @@
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/MySql/MySqlConnection.h"
+#include "DatabaseTestSupport.h"
 
 #include <gtest/gtest.h>
 

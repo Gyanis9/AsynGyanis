@@ -17,6 +17,7 @@
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseType.h"
+#include "DatabaseTestSupport.h"
 
 #include <gtest/gtest.h>
 
