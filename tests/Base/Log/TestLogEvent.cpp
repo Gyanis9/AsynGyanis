@@ -67,7 +67,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(event.level, LogLevel::Trace);
         EXPECT_TRUE(event.timestamp.empty());
-        EXPECT_TRUE(event.threadId.empty());
+        EXPECT_TRUE(event.threadIdView().empty());
         EXPECT_TRUE(event.loggerNameView().empty());
         EXPECT_TRUE(event.message.empty());
         EXPECT_EQ(event.location.fileName, nullptr);
@@ -82,7 +82,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(event.level, LogLevel::Error);
         EXPECT_EQ(event.timestamp, "2026-09-10 08:09:10.011");
-        EXPECT_EQ(event.threadId, "9527");
+        EXPECT_EQ(event.threadIdView(), "9527");
         EXPECT_EQ(event.loggerNameView(), "appLogger");
         EXPECT_EQ(event.message, "disk full");
         EXPECT_STREQ(event.location.fileName, "App.cpp");
@@ -96,7 +96,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(event.level, LogLevel::Off);
         EXPECT_TRUE(event.timestamp.empty());
-        EXPECT_TRUE(event.threadId.empty());
+        EXPECT_TRUE(event.threadIdView().empty());
         EXPECT_TRUE(event.loggerNameView().empty());
         EXPECT_TRUE(event.message.empty());
         EXPECT_EQ(event.location.fileName, nullptr);
@@ -146,7 +146,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(moved.message, "moved message");
         EXPECT_EQ(moved.loggerNameView(), "eventLogger");
         EXPECT_EQ(moved.timestamp, "2026-09-10 12:34:56.789");
-        EXPECT_EQ(moved.threadId, "12345");
+        EXPECT_EQ(moved.threadIdView(), "12345");
 
         EXPECT_NO_THROW(original.message.clear());
         EXPECT_TRUE(original.message.empty());
@@ -217,22 +217,22 @@ namespace AsynGyanis::Base
 
     TEST(LogEvent, ThreadIdStringIsNonEmptyAndCachedPerThread)
     {
-        const std::string &firstCall = threadIdString();
+        const std::shared_ptr<const std::string> &firstCall = threadIdString();
 
-        ASSERT_FALSE(firstCall.empty());
-        EXPECT_TRUE(firstCall.size() <= std::string::size_type(64));
+        ASSERT_FALSE(firstCall->empty());
+        EXPECT_TRUE(firstCall->size() <= std::string::size_type(64));
 
-        const std::string &secondCall = threadIdString();
-        EXPECT_TRUE(&firstCall == &secondCall);
-        EXPECT_EQ(firstCall, secondCall);
+        const std::shared_ptr<const std::string> &secondCall = threadIdString();
+        EXPECT_TRUE(&firstCall == &secondCall) << "同一线程内应当复用同一份快照";
+        EXPECT_EQ(*firstCall, *secondCall);
     }
 
     TEST(LogEvent, ThreadIdStringDiffersBetweenThreads)
     {
         constexpr std::size_t kworkerCount = 4;
 
-        const std::string &      mainThreadId = threadIdString();
-        std::vector<std::string> workerIds(kworkerCount);
+        const std::shared_ptr<const std::string> &mainThreadId = threadIdString();
+        std::vector<std::string>                  workerIds(kworkerCount);
         std::vector<std::thread> workers;
 
         workers.reserve(kworkerCount);
@@ -240,7 +240,7 @@ namespace AsynGyanis::Base
         {
             workers.emplace_back([&workerIds, index]()
             {
-                workerIds[index] = threadIdString();
+                workerIds[index] = *threadIdString();
             });
         }
         for (std::thread &worker: workers)
@@ -262,10 +262,10 @@ namespace AsynGyanis::Base
     TEST(LogEvent, EventAssembledFromHelpersMatchesCallerContext)
     {
         const SourceLocation location = SourceLocation::current();
-        const LogEvent       event(LogLevel::Info, currentTimestamp(), threadIdString(), location, "root", "assembled message");
+        const LogEvent       event(LogLevel::Info, currentTimestamp(), threadIdString(), location, std::make_shared<const std::string>("root"), "assembled message");
 
         EXPECT_EQ(event.timestamp.size(), kTimestampLength);
-        EXPECT_EQ(event.threadId, threadIdString());
+        EXPECT_EQ(event.threadId.get(), threadIdString().get()) << "事件应当直接共享本线程的 ID 快照，而不是另分配一份";
         EXPECT_STREQ(event.location.functionName, location.functionName);
         EXPECT_EQ(event.location.line, location.line);
     }
@@ -281,13 +281,13 @@ namespace AsynGyanis::Base
             {
                 ++failureCount;
             }
-            if (threadIdString().empty())
+            if (threadIdString()->empty())
             {
                 ++failureCount;
             }
         }
 
         EXPECT_EQ(failureCount, 0);
-        EXPECT_FALSE(threadIdString().empty());
+        EXPECT_FALSE(threadIdString()->empty());
     }
 } // namespace AsynGyanis::Base

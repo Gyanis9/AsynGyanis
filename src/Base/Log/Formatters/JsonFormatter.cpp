@@ -26,18 +26,17 @@ namespace AsynGyanis::Base
         }
         fields["level"] = std::string(levelName);
 
-        // 根记录器的名字为空：省略该键而不是写一个空串，免得每条日志都带一个没信息量的字段
+        // 名字为空时省略该键，而不是每条日志带一个空字段
         if (const std::string_view loggerName = event.loggerNameView(); !loggerName.empty())
         {
             fields["logger"] = std::string(loggerName);
         }
 
-        fields["thread"]  = event.threadId;
+        fields["thread"]  = std::string(event.threadIdView());
         fields["message"] = event.message;
 
 #ifdef ASYN_DEBUG
-        // 源码位置只在 Debug 构建里出现：与 DefaultFormatter 保持同一口径，
-        // Release 下这些字段既不采集也不写出
+        // 源码位置只在 Debug 出现，与文本格式化器同一口径
         fields["file"]     = std::string(event.location.shortFileName());
         fields["line"]     = static_cast<std::int64_t>(event.location.line);
         fields["function"] = std::string(event.location.functionName != nullptr ? event.location.functionName : "");

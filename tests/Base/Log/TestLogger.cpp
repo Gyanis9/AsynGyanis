@@ -346,7 +346,7 @@ namespace AsynGyanis::Base
         ASSERT_EQ(m_ledger->eventCount(), 1u);
         const LogEvent event = m_ledger->events().front();
         EXPECT_FALSE(event.timestamp.empty());
-        EXPECT_FALSE(event.threadId.empty());
+        EXPECT_FALSE(event.threadIdView().empty());
     }
 
     TEST_F(LoggerTest, EventsShareTheLoggerNameInstance)

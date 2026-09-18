@@ -13,6 +13,7 @@
 
 #include <format>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace AsynGyanis::Base
@@ -47,5 +48,26 @@ namespace AsynGyanis::Base
             return {};
         }
         return {buffer.data(), requiredLength};
+    }
+
+    /**
+     * @brief 生成「文件:行号」文本，短文件名走栈缓冲、装不下才回退到堆分配
+     * @details 回退路径与命中路径共用同一格式串，因此两种情况下文本逐字节一致；
+     *          封装在此是为了让该不变量由代码结构保证，而不是靠各格式化器各抄一份。
+     * @param location 日志事件的源码位置
+     * @param buffer 调用方提供的栈缓冲
+     * @param overflow 装不下时承载文本的字符串；返回的视图会指向它，调用方须让它活到使用结束
+     * @return std::string_view 指向 buffer 或 overflow 中的完整文本
+     */
+    [[nodiscard]] inline std::string_view formatSourceLocationText(const SourceLocation &location,
+                                                                   const std::span<char>  buffer,
+                                                                   std::string           &overflow)
+    {
+        if (const std::string_view text = tryFormatSourceLocationText(location, buffer); !text.empty())
+        {
+            return text;
+        }
+        overflow = std::format("{}:{}", location.shortFileName(), location.line);
+        return overflow;
     }
 } // namespace AsynGyanis::Base

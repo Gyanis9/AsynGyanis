@@ -13,21 +13,15 @@ namespace AsynGyanis::Base
     std::string ColorFormatter::format(const LogEvent &event)
     {
 #ifdef ASYN_DEBUG
-        // 与 DefaultFormatter 共用 tryFormatSourceLocationText：短「文件:行号」写进栈缓冲、
-        // 省掉每行一次堆分配，装不下时（返回空视图）才回退到分配路径。回退用的是与共用工具
-        // 完全相同的格式串 "{}:{}"，因此命中与回退的输出逐字节一致（含 {:<13} 的右填充空格），
-        // 两个格式化器也据此保持同一套源码位置文本
+        // 与 DefaultFormatter 同一套源码位置文本（见 formatSourceLocationText）
         std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
+        std::string                                     locationOverflow;
 
-        const std::string_view locationText     = tryFormatSourceLocationText(event.location, locationBuffer);
-        const std::string      overflowLocation = locationText.empty()
-                                                 ? std::format("{}:{}", event.location.shortFileName(), event.location.line)
-                                                 : std::string();
-        const std::string_view location = locationText.empty() ? std::string_view(overflowLocation) : locationText;
+        const std::string_view location = formatSourceLocationText(event.location, locationBuffer, locationOverflow);
 
         return std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
                            event.timestamp,
-                           event.threadId,
+                           event.threadIdView(),
                            LogColor::colorForLevel(event.level),
                            logLevelToString(event.level),
                            LogColor::kReset,

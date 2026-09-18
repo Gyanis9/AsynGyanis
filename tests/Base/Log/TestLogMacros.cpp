@@ -187,7 +187,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.message, "macro info message");
         EXPECT_EQ(event.loggerNameView(), "root");
         EXPECT_EQ(event.timestamp.size(), 23U);
-        EXPECT_EQ(event.threadId, threadIdString());
+        EXPECT_EQ(event.threadId.get(), threadIdString().get()) << "宏产出的日志应共享本线程的 ID 快照";
 
 #ifdef ASYN_DEBUG
         EXPECT_STREQ(event.location.shortFileName(), "TestLogMacros.cpp");
