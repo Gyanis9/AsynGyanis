@@ -35,7 +35,7 @@ target_include_directories(TestPlatform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_compile_features(TestPlatform PRIVATE cxx_std_20)
+target_compile_features(TestPlatform PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestPlatform)

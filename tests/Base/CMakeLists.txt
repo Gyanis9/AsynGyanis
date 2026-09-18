@@ -44,7 +44,7 @@ target_include_directories(TestBase PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_compile_features(TestBase PRIVATE cxx_std_20)
+target_compile_features(TestBase PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestBase)

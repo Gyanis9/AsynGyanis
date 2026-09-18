@@ -12,7 +12,7 @@ target_include_directories(microbench PRIVATE
         ${CMAKE_SOURCE_DIR}/src
 )
 
-target_compile_features(microbench PRIVATE cxx_std_20)
+target_compile_features(microbench PRIVATE cxx_std_23)
 
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(microbench)

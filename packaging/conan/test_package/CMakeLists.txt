@@ -9,4 +9,4 @@ find_package(AsynGyanis REQUIRED)
 
 add_executable(consumer_smoke main.cpp)
 target_link_libraries(consumer_smoke PRIVATE AsynGyanis::Net)
-target_compile_features(consumer_smoke PRIVATE cxx_std_20)
+target_compile_features(consumer_smoke PRIVATE cxx_std_23)

@@ -1,8 +1,8 @@
 # AsynGyanis
 
-> 基于 C++20 协程与水平触发事件循环（Linux epoll / Windows 完成端口 / 可选 io_uring）的跨平台异步服务器引擎 —— 网络（TCP / HTTP/1.1 / HTTP/2 / HTTP/3 / WebSocket / QUIC）、数据库（ORM / 连接池 / 三方驱动）与原生格式库（nlohmann_json / yaml-cpp）
+> 基于 C++23 协程与水平触发事件循环（Linux epoll / Windows 完成端口 / 可选 io_uring）的跨平台异步服务器引擎 —— 网络（TCP / HTTP/1.1 / HTTP/2 / HTTP/3 / WebSocket / QUIC）、数据库（ORM / 连接池 / 三方驱动）与原生格式库（nlohmann_json / yaml-cpp）
 
-[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](https://en.cppreference.com/w/cpp/20)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
 [![Tests](https://img.shields.io/badge/tests-2031-brightgreen)]()
@@ -70,7 +70,7 @@
 ### 前置依赖
 
 - **CMake** ≥ 3.20、**Conan** ≥ 2.0
-- **编译器**：MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++20 协程）
+- **编译器**：MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++23 标准）
 - **系统**：Windows ≥ 10 或 Linux（事件后端：Linux epoll、Windows 完成端口；Linux 另可用 `ASYN_WITH_IO_URING` 换 io_uring，需内核 5.6+）
 
 第三方依赖由 `conan_provider.cmake` 在 CMake 配置阶段自动安装（`conan install --build=missing`），无需手工执行。
@@ -346,7 +346,7 @@ LOG_INFO_FMT("listening on port {}", port);
 
 ```
 AsynGyanis/
-├── CMakeLists.txt          # 顶层：C++20 设置 + sanitizer / mimalloc / io_uring 开关 + add_subdirectory
+├── CMakeLists.txt          # 顶层：C++23 设置 + sanitizer / mimalloc / io_uring 开关 + add_subdirectory
 ├── CMakePresets.json       # debug / release 预设（debug 带 AddressSanitizer）
 ├── conanfile.py            # 依赖清单由 conandata.yml 驱动
 ├── conandata.yml           # 第三方依赖与版本

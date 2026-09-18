@@ -88,7 +88,7 @@ target_compile_definitions(TestNet PRIVATE
         TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/Core/fixtures"
 )
 
-target_compile_features(TestNet PRIVATE cxx_std_20)
+target_compile_features(TestNet PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestNet)

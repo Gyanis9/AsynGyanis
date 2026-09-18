@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-- **编译器**: MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++20 协程）
+- **编译器**: MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++23 标准）
 - **构建工具**: CMake >= 3.20, Conan >= 2.0, Ninja（推荐）
 - **平台**: Windows ≥ 10（事件后端为完成端口）或 Linux kernel >= 3.9（epoll；`ASYN_WITH_IO_URING` 可换 io_uring，需内核 5.6+）
 
@@ -64,7 +64,7 @@ ctest --test-dir build/debug --output-on-failure
 
 ## 代码风格
 
-- 注释遵循 C++20 编码规范：文件头块（`@file`/`@brief`/`@author`/`@date`/`@version`/`@copyright`）**只写在 `.h` 上**，`.cpp` 不写文件头；类与公开方法写完整中文 Doxygen（`@param`/`@return`），成员变量行尾用 `///<`
+- 注释遵循 C++23 编码规范：文件头块（`@file`/`@brief`/`@author`/`@date`/`@version`/`@copyright`）**只写在 `.h` 上**，`.cpp` 不写文件头；类与公开方法写完整中文 Doxygen（`@param`/`@return`），成员变量行尾用 `///<`
 - 子类每个 `override` 必须独立书写完整中文注释，`@details` 说明与父类的行为差异，禁止「同上/继承自父类」占位
 - 优先使用 RAII 管理资源
 - 协程接口使用 `AsynGyanis::Core::Task<T>` 返回类型

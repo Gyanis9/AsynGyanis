@@ -47,7 +47,7 @@ target_include_directories(TestCore PRIVATE
         ${CMAKE_SOURCE_DIR}/src
 )
 
-target_compile_features(TestCore PRIVATE cxx_std_20)
+target_compile_features(TestCore PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestCore)

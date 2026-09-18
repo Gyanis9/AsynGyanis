@@ -43,7 +43,7 @@ target_include_directories(Core PUBLIC
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-target_compile_features(Core PUBLIC cxx_std_20)
+target_compile_features(Core PUBLIC cxx_std_23)
 
 if(ASYN_WITH_IO_URING)
     # 事件后端换成 io_uring 后，Epoll.h（公共头）与 Core 源码都按该宏走 using Epoll = Uring，

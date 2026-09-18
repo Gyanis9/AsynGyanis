@@ -2,11 +2,11 @@ cmake_minimum_required(VERSION 3.20)
 
 project(AsynGyanis
         VERSION 1.1.0
-        DESCRIPTION "Industrial-grade C++20 async server framework"
+        DESCRIPTION "Industrial-grade C++23 async server framework"
         LANGUAGES C CXX
 )
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 

@@ -29,4 +29,4 @@ target_include_directories(Base PUBLIC
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-target_compile_features(Base PUBLIC cxx_std_20)
+target_compile_features(Base PUBLIC cxx_std_23)

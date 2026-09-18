@@ -57,7 +57,7 @@ MYSQL_REQUIREMENT = "libmysqlclient/8.1.0"
 class AsynGyanisLibrary(ConanFile):
     name = "asyngyanis"
     version = "1.0.0"
-    description = "工业级 C++20 协程服务端框架（epoll/wepoll 传输层 + HTTP/1.1 + HTTP/2 + WebSocket）"
+    description = "工业级 C++23 协程服务端框架（epoll/wepoll 传输层 + HTTP/1.1 + HTTP/2 + WebSocket）"
     package_type = "static-library"
     license = "Proprietary"
     settings = "os", "compiler", "build_type", "arch"
