@@ -1,14 +1,8 @@
-/**
- * @file TestMySqlStatementResult.cpp
- * @brief MySqlStatementResult 单元测试：参数化执行路径的结果集快照语义（不需要数据库）
- * @details MySqlStatementResult 承载预处理语句（mysql_stmt_*）预读出来的行数据，不接触任何 MySQL C API，因此可以在
- *          没有服务端的情况下直接构造并验证全部接口：列名/列序/取值映射、游标推进与复位、NULL 与空串的区分、越界判定。
- *          连接侧真正的「准备—绑定—执行—预读」链路需要可用的服务端，本文件不覆盖。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 覆盖场景（MySqlStatementResult 承载预处理语句预读出的行数据，不接触 MySQL C API，无需服务端）：
+// - 形状：行数/列数/列名快照，列名与列索引的边界判定
+// - 游标：首次 next 之前的取值、按快照顺序推进、走到末尾清空、reset 后重放
+// - 取值映射：整数/文本/布尔/浮点、NULL 与空串的区分、内嵌 '\0' 按长度保留、影响行数恒为 0
+// 连接侧「准备—绑定—执行—预读」链路需要可用的服务端，不在此文件覆盖。
 
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
@@ -47,6 +41,9 @@ namespace AsynGyanis::Database
     // 形状：行数、列数、列名
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住结果集形状取自构造快照：行数、列数与列名顺序都逐项相符
+     */
     TEST(MySqlStatementResult, ReportsShapeFromSnapshot)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -63,6 +60,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(names[2], "note");
     }
 
+    /**
+     * @brief 钉住列名按索引取用且越界返回空值，不做回绕
+     */
     TEST(MySqlStatementResult, ColumnNameRespectsIndexBounds)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -73,6 +73,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->columnName(3).has_value());
     }
 
+    /**
+     * @brief 钉住列名反查按原文精确匹配：空串、不存在的列与大小写变体都未命中
+     */
     TEST(MySqlStatementResult, ColumnIndexMatchesNameExactly)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -86,6 +89,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->columnIndex("NAME").has_value());
     }
 
+    /**
+     * @brief 钉住零行快照仍是「有列但为空」：isEmpty 为真且 next() 恒假
+     */
     TEST(MySqlStatementResult, EmptySnapshotIsEmptyAndIteratesNothing)
     {
         MySqlStatementResult result(std::vector<std::string>{"id"}, std::vector<std::vector<DatabaseValue>>{});
@@ -100,6 +106,9 @@ namespace AsynGyanis::Database
     // 游标：推进、取值、复位
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住构造后游标停在首行之前：按索引或按名取值都得到 monostate
+     */
     TEST(MySqlStatementResult, ValueIsUnavailableBeforeFirstNext)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -109,6 +118,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(std::holds_alternative<std::monostate>(result->getValue("name")));
     }
 
+    /**
+     * @brief 钉住 next() 按快照顺序逐行推进、NULL 与文本列逐值正确、末尾后取值退回无值
+     */
     TEST(MySqlStatementResult, NextWalksRowsInSnapshotOrder)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -130,6 +142,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /**
+     * @brief 钉住 reset() 把游标退回首行之前并清除错误状态，整份快照可重放
+     */
     TEST(MySqlStatementResult, ResetRewindsCursorAndClearsError)
     {
         std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -149,6 +164,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /**
+     * @brief 钉住列索引越界与「无当前行」在契约里同为 monostate
+     */
     TEST(MySqlStatementResult, OutOfRangeAccessReturnsNoValue)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
@@ -163,6 +181,9 @@ namespace AsynGyanis::Database
     // 取值映射与影响行数
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住布尔/浮点/内嵌 '\0' 的文本都按原类型原长度交出
+     */
     TEST(MySqlStatementResult, PreservesValueTypesAndEmbeddedNul)
     {
         std::vector<std::string> columnNames{"flag", "score", "payload"};
@@ -182,6 +203,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(payload, std::string("a\0b", 3));
     }
 
+    /**
+     * @brief 钉住查询快照的影响行数为 0、无错误，不把返回行数冒充成改动行数
+     */
     TEST(MySqlStatementResult, AffectedRowCountIsZeroForQuerySnapshot)
     {
         const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();

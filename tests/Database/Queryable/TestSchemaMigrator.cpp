@@ -1,16 +1,8 @@
-/**
- * @file TestSchemaMigrator.cpp
- * @brief 建表迁移工具测试 —— 离线 DDL 文本断言 + 内存 SQLite 端到端
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 两个层次：离线只用 createTableStatement() / dropTableStatement() 生成文本并逐字断言（类型映射、可空规则、
- *          主键、标识符引用、IF NOT EXISTS/IF EXISTS）；端到端（内存 SQLite）走建表 → ORM 读写 → tableExists → dropTable 全链路，
- *          并验证重复建表幂等、不带 IF NOT EXISTS 时对已存在表如实失败。二进制列另有专项用例：用 typeof() 断言存储类确实是 blob
- *          （声明成 BLOB 却按文本绑定会存成 text，只看 DDL 发现不了）、零长载荷与 NULL 可区分、按二进制列做参数化条件查询。
- */
+// 覆盖场景（两个层次：离线 DDL 文本断言 + 内存 SQLite 端到端）：
+// - 离线：createTableStatement / dropTableStatement 的类型映射、可空规则、主键、标识符引用与 IF [NOT] EXISTS 开关
+// - 端到端：建表 → ORM 读写 → tableExists → dropTable 全链路；重复建表幂等，不带 IF NOT EXISTS 时对已存在表如实失败
+// - 二进制列专项：用 typeof() 断言存储类确实是 blob（声明成 BLOB 却按文本绑定会存成 text，只看 DDL 发现不了）、
+//   零长载荷与 NULL 可区分、按二进制列做参数化条件查询；成功返回的调用清空出参（表不存在 vs 查询失败的判据）
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"

@@ -1,16 +1,4 @@
-/**
- * @file TestQueryableAsync.cpp
- * @brief 异步执行测试 —— 阻塞调用挪出事件循环、读写结果与同步版一致、异常按原样穿出
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 四个层次：读路径与写路径的结果都与同步版逐项相等（异步写之后一律用**同步查询**读回，那是「数据真的落库」
- *          的权威证据）；用闩锁卡住工作任务证明调用线程不被阻塞；异常在协程恢复处重新抛出，类型与消息与同步版一致。
- *          协程帧由常驻的 TestSupport::EventLoopThread 持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
- */
-// 覆盖场景：
+// 覆盖场景（读路径与写路径的结果都与同步版逐项相等、不阻塞调用线程、异常按原样穿出）：
 // - AsyncQueryResultsMatchSyncVersions
 // - AsyncInsertWritesRowReadableBySyncQuery / AsyncUpdateWritesRowReadableBySyncQuery
 // - AsyncInsertBatchWritesRowsEqualToSyncInsertBatch
@@ -20,6 +8,8 @@
 // - AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
 // - AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
 // - OfflineModeThrowsOnAsyncExecution
+// 异步写之后一律用**同步查询**读回，那是「数据真的落库」的权威证据；协程帧由常驻的 TestSupport::EventLoopThread
+// 持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
 
 #include "DatabaseTestSupport.h"
 

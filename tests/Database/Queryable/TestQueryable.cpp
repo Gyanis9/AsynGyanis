@@ -1,15 +1,5 @@
-/**
- * @file TestQueryable.cpp
- * @brief ORM 查询树核心子系统单元测试
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 覆盖 Queryable 的全部公开 API：列与表结构描述、条件与表达式组合、查询树到 SQL 文本的生成，
- *          全程在内存中完成，不涉及任何数据库 IO。
- */
-// 覆盖场景：
+// 覆盖场景（Queryable 的全部公开 API：列与表结构描述、条件与表达式组合、查询树到 SQL 文本的生成，
+// 全程在内存中完成，不涉及任何数据库 IO）：
 // - ColumnDescriptorStoresCorrectMemberPointerAndName
 // - ColumnDescriptorWithExplicitPropertyName
 // - TableSchemaIsSpecializable
@@ -139,20 +129,15 @@ namespace AsynGyanis::Database::Queryable
     {
         constexpr auto columnDescriptor = Column(&User::name, "name");
 
-        // 编译期常量
         static_assert(columnDescriptor.columnName == "name");
         static_assert(columnDescriptor.propertyName == "name");
 
-        // 类型检查：ClassType 应为 User
         static_assert(std::is_same_v<decltype(columnDescriptor)::ClassType, User>);
 
-        // 类型检查：MemberType 应为 std::string
         static_assert(std::is_same_v<decltype(columnDescriptor)::MemberType, std::string>);
 
-        // 成员指针应为 &User::name
         EXPECT_EQ(columnDescriptor.memberPointer, &User::name);
 
-        // 列名和属性名
         EXPECT_EQ(columnDescriptor.columnName, "name");
         EXPECT_EQ(columnDescriptor.propertyName, "name");
     }
@@ -199,15 +184,12 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(QueryableSchema, TableSchemaIsSpecializable)
     {
-        // 表名
         static_assert(TableSchema<User>::kTableName == "users");
         EXPECT_EQ(TableSchema<User>::kTableName, "users");
 
-        // 主键
         static_assert(TableSchema<User>::kPrimaryKey == "id");
         EXPECT_EQ(TableSchema<User>::kPrimaryKey, "id");
 
-        // 列数：User 有 3 列
         constexpr std::size_t columnCount = std::tuple_size_v<decltype(TableSchema<User>::kColumns)>;
         static_assert(columnCount == 3);
         EXPECT_EQ(columnCount, 3);
@@ -225,7 +207,6 @@ namespace AsynGyanis::Database::Queryable
         static_assert(columnCount == 4);
         EXPECT_EQ(columnCount, 4);
 
-        // 验证第三列是 price
         constexpr auto priceCol = std::get<2>(TableSchema<Product>::kColumns);
         static_assert(priceCol.columnName == "price");
         static_assert(std::is_same_v<decltype(priceCol)::MemberType, double>);
@@ -253,14 +234,11 @@ namespace AsynGyanis::Database::Queryable
         constexpr auto ageColumn = Column(&User::age, "age");
         const auto condition = ageColumn >= 18;
 
-        // 左操作数应为 "age"
         ASSERT_TRUE(true);
         EXPECT_EQ(condition.left.name, "age");
 
-        // 操作符应为 Ge
         EXPECT_EQ(condition.op, SqlOperator::Ge);
 
-        // 右操作数应为 int64_t(18)
         ASSERT_TRUE(std::holds_alternative<ParameterValue>(condition.right));
         const auto &parameter = std::get<ParameterValue>(condition.right);
         ASSERT_TRUE(std::holds_alternative<int64_t>(parameter));
@@ -274,7 +252,6 @@ namespace AsynGyanis::Database::Queryable
     {
         constexpr auto ageColumn = Column(&User::age, "age");
 
-        // ==
         {
             auto cond = ageColumn == 25;
             EXPECT_EQ(cond.left.name, "age");
@@ -282,31 +259,26 @@ namespace AsynGyanis::Database::Queryable
             EXPECT_EQ(std::get<int64_t>(std::get<ParameterValue>(cond.right)), 25);
         }
 
-        // !=
         {
             auto cond = ageColumn != 25;
             EXPECT_EQ(cond.op, SqlOperator::Neq);
         }
 
-        // <
         {
             auto cond = ageColumn < 25;
             EXPECT_EQ(cond.op, SqlOperator::Lt);
         }
 
-        // <=
         {
             auto cond = ageColumn <= 25;
             EXPECT_EQ(cond.op, SqlOperator::Le);
         }
 
-        // >
         {
             auto cond = ageColumn > 25;
             EXPECT_EQ(cond.op, SqlOperator::Gt);
         }
 
-        // >=
         {
             auto cond = ageColumn >= 25;
             EXPECT_EQ(cond.op, SqlOperator::Ge);
@@ -379,11 +351,9 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_EQ(condition.op, SqlOperator::And);
         EXPECT_EQ(condition.children.size(), 2);
 
-        // 第一个子条件：age >= 18
         EXPECT_EQ(condition.children[0].left.name, "age");
         EXPECT_EQ(condition.children[0].op, SqlOperator::Ge);
 
-        // 第二个子条件：id == 1
         EXPECT_EQ(condition.children[1].left.name, "id");
         EXPECT_EQ(condition.children[1].op, SqlOperator::Eq);
     }
@@ -435,26 +405,21 @@ namespace AsynGyanis::Database::Queryable
 
         auto condition = (col1 == 1 && col2 == 2) || col3 == "test";
 
-        // 顶层应为 OR
         EXPECT_EQ(condition.op, SqlOperator::Or);
         ASSERT_EQ(condition.children.size(), 2);
 
-        // 第一个子节点应为 AND
         const auto &andNode = condition.children[0];
         EXPECT_EQ(andNode.op, SqlOperator::And);
         ASSERT_EQ(andNode.children.size(), 2);
 
-        // AND 的第一子节点：col1 == 1
         EXPECT_EQ(andNode.children[0].op, SqlOperator::Eq);
         ASSERT_TRUE(std::holds_alternative<ParameterValue>(andNode.children[0].right));
         EXPECT_EQ(std::get<int64_t>(std::get<ParameterValue>(andNode.children[0].right)), 1);
 
-        // AND 的第二子节点：col2 == 2
         EXPECT_EQ(andNode.children[1].op, SqlOperator::Eq);
         ASSERT_TRUE(std::holds_alternative<ParameterValue>(andNode.children[1].right));
         EXPECT_EQ(std::get<int64_t>(std::get<ParameterValue>(andNode.children[1].right)), 2);
 
-        // 第二个子节点：col3 == "test"
         const auto &thirdNode = condition.children[1];
         EXPECT_EQ(thirdNode.op, SqlOperator::Eq);
         ASSERT_TRUE(std::holds_alternative<ParameterValue>(thirdNode.right));
@@ -494,7 +459,6 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_EQ(condition.op, SqlOperator::In);
         EXPECT_EQ(condition.inValues.size(), 3);
 
-        // 验证值列表正确
         ASSERT_GE(condition.inValues.size(), 3);
         EXPECT_EQ(std::get<int64_t>(condition.inValues[0]), 1);
         EXPECT_EQ(std::get<int64_t>(condition.inValues[1]), 2);
@@ -523,7 +487,7 @@ namespace AsynGyanis::Database::Queryable
 
         std::vector<int> excluded = {0, 1, 99};
         auto condition = in(ageColumn, excluded);
-        // 手动将 In 改为 NotIn（NotIn 构建器暂未提供，这里验证 inValues 机制）
+        // NotIn 构建器暂未提供：手动把操作符置为 NotIn，只验证 inValues 机制本身
         condition.op = SqlOperator::NotIn;
 
         EXPECT_EQ(condition.op, SqlOperator::NotIn);
@@ -586,18 +550,14 @@ namespace AsynGyanis::Database::Queryable
         // 通过 toSql 间接验证树结构
         std::string sql = query.toSql();
 
-        // 应包含表名
         EXPECT_NE(sql.find("users"), std::string::npos);
 
-        // 应包含 WHERE 条件和参数占位符
         EXPECT_NE(sql.find("WHERE"), std::string::npos);
         EXPECT_NE(sql.find(">="), std::string::npos);
 
-        // 应包含 ORDER BY
         EXPECT_NE(sql.find("ORDER BY"), std::string::npos);
         EXPECT_NE(sql.find("age ASC"), std::string::npos);
 
-        // 应包含 LIMIT 和 OFFSET
         EXPECT_NE(sql.find("LIMIT"), std::string::npos);
         EXPECT_NE(sql.find("OFFSET"), std::string::npos);
     }
@@ -703,15 +663,12 @@ namespace AsynGyanis::Database::Queryable
 
         std::string sql = query.toSql();
 
-        // 验证 SELECT 列
         EXPECT_NE(sql.find("SELECT id, name, age"), std::string::npos);
 
-        // 验证 ORDER BY 多字段
         EXPECT_NE(sql.find("ORDER BY"), std::string::npos);
         EXPECT_NE(sql.find("name ASC"), std::string::npos);
         EXPECT_NE(sql.find("age DESC"), std::string::npos);
 
-        // 验证分页
         EXPECT_NE(sql.find("LIMIT 20"), std::string::npos);
         EXPECT_NE(sql.find("OFFSET 10"), std::string::npos);
     }

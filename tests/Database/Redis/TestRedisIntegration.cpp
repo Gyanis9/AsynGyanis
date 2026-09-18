@@ -1,17 +1,4 @@
-/**
- * @file TestRedisIntegration.cpp
- * @brief Redis 真机集成测试 —— 认证、命令往返、回复类型映射与管道
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 只覆盖必须连上真实 Redis 才能验证的部分：认证、命令参数的二进制安全往返、回复到 DatabaseValue 的映射、
- *          键空间选择与管道批量收发（不需要服务端即可成立的行为归 TestRedisConnection.cpp 管）。
- *          门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
- *          键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
- */
-// 覆盖场景：
+// 覆盖场景（只覆盖必须连上真实 Redis 才能验证的部分；不需要服务端即可成立的行为归 TestRedisConnection.cpp 管）：
 // - ConnectsAndAnswersPing（含认证成功）
 // - ConnectWithWrongPasswordFailsWithLocalizedReason
 // - StatusAndIntegerRepliesMapToTheirTypes
@@ -23,6 +10,8 @@
 // - PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
+// 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
+// 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
@@ -46,6 +35,13 @@
 
 namespace AsynGyanis::Database
 {
+
+    // 环境变量读取复用测试辅助（原先每个真机套件各写一份）
+    using TestSupport::readEnvironmentPortOrDefault;
+    using TestSupport::readEnvironmentTextOrDefault;
+
+    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
+    using TestSupport::containsLocalizedText;
     namespace
     {
 #if defined(DATABASE_HAS_REDIS)
@@ -76,35 +72,6 @@ namespace AsynGyanis::Database
 
         /// 键空间编号的默认值：见文件头「刻意不用 0」的说明
         constexpr std::string_view kDefaultTestKeyspace = "15";
-
-        /**
-         * @brief 读取环境变量，未设置时返回默认值
-         * @param variableName 环境变量名
-         * @param defaultValue 未设置时使用的默认值
-         * @return std::string 变量值或默认值
-         */
-        [[nodiscard]] std::string readEnvironment(const char *variableName, const std::string_view defaultValue)
-        {
-            const std::string variableValue = TestSupport::readEnvironmentVariableText(variableName);
-            return variableValue.empty() ? std::string(defaultValue) : variableValue;
-        }
-
-        /**
-         * @brief 判断文本中是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
-         * @param text 待检查文本
-         * @return true 含非 ASCII 字节
-         */
-        [[nodiscard]] bool containsLocalizedText(const std::string &text)
-        {
-            for (const unsigned char byte: text)
-            {
-                if (byte >= 0x80U)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
 
     } // namespace
 
@@ -202,11 +169,11 @@ namespace AsynGyanis::Database
         [[nodiscard]] static ConnectionConfig configFromEnvironment(const std::string &password)
         {
             ConnectionConfig configuration      = ConnectionConfig::redisDefault();
-            configuration.host                  = readEnvironment("ASYN_REDIS_TEST_HOST", "127.0.0.1");
-            configuration.port                  = static_cast<std::uint16_t>(std::stoi(readEnvironment("ASYN_REDIS_TEST_PORT", "6379")));
-            configuration.userName              = readEnvironment("ASYN_REDIS_TEST_USER", "");
+            configuration.host                  = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_HOST", "127.0.0.1");
+            configuration.port                  = readEnvironmentPortOrDefault("ASYN_REDIS_TEST_PORT", 6379);
+            configuration.userName              = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_USER", "");
             configuration.password              = password;
-            configuration.database              = readEnvironment("ASYN_REDIS_TEST_DATABASE", kDefaultTestKeyspace);
+            configuration.database              = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_DATABASE", kDefaultTestKeyspace);
             return configuration;
         }
 
@@ -243,6 +210,9 @@ namespace AsynGyanis::Database
         std::vector<std::string>           m_createdKeys;        ///< 本用例写入的键，TearDown 逐个删除
     };
 
+    /**
+     * @brief 钉住环境变量配置能完成建连与认证，且 PING 的状态回复按字符串交出
+     */
     TEST_F(RedisIntegrationTest, ConnectsAndAnswersPing)
     {
         // 建连（含认证）已在 SetUp 里完成；这里确认链路真的可用：PING 的状态回复是 "PONG"
@@ -254,6 +224,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(*text, "PONG");
     }
 
+    /**
+     * @brief 钉住错误口令建连失败时的原因是中文且点明认证环节，而不是笼统的连接失败
+     */
     TEST_F(RedisIntegrationTest, ConnectWithWrongPasswordFailsWithLocalizedReason)
     {
         ConnectionConfig wrongConfiguration = m_configuration;
@@ -270,6 +243,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(reason.find("认证"), std::string::npos) << reason;
     }
 
+    /**
+     * @brief 钉住状态回复按字符串、整数回复按 int64 交出，且映射对多条命令一致
+     */
     TEST_F(RedisIntegrationTest, StatusAndIntegerRepliesMapToTheirTypes)
     {
         const std::string key = makeKey("typed");
@@ -299,6 +275,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::int64_t>(deleted.value()), 1);
     }
 
+    /**
+     * @brief 钉住按字节存取的取值原样往返：中文、引号、换行与内嵌 '\0' 都不被改写或截断
+     */
     TEST_F(RedisIntegrationTest, StringValuesRoundTripVerbatim)
     {
         const std::string key = makeKey("verbatim");
@@ -319,6 +298,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(*text, payload);
     }
 
+    /**
+     * @brief 钉住参数逐个独立送达：含空格与引号的取值不会被拼成一条命令行
+     */
     TEST_F(RedisIntegrationTest, MultiArgumentCommandKeepsArgumentsSeparate)
     {
         const std::string key = makeKey("separate");
@@ -334,6 +316,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(fetched.value()), payload);
     }
 
+    /**
+     * @brief 钉住 nil 回复映射成 0 行 0 列的空结果集，且不把空结果当错误
+     */
     TEST_F(RedisIntegrationTest, MissingKeyYieldsEmptyResult)
     {
         const std::string key = makeKey("missing");
@@ -350,6 +335,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /**
+     * @brief 钉住空数组回复与 nil 同样落到空结果集，调用方无需区分两种协议形态
+     */
     TEST_F(RedisIntegrationTest, EmptyArrayYieldsEmptyResult)
     {
         const std::string key = makeKey("empty-list");
@@ -361,6 +349,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(result->lastError().empty()) << result->lastError();
     }
 
+    /**
+     * @brief 钉住数组回复按「单行、一列一个元素」交出且保持服务端顺序，列名是合成占位名
+     */
     TEST_F(RedisIntegrationTest, ArrayReplyExposesOneColumnPerElement)
     {
         const std::string key = makeKey("array");
@@ -387,6 +378,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(firstName.value(), "value0");
     }
 
+    /**
+     * @brief 钉住连接级命令错误返回 nullptr 并把中文原因写进连接的 lastError()
+     */
     TEST_F(RedisIntegrationTest, CommandErrorFailsWithLocalizedReason)
     {
         // 参数个数不对：服务端回 error 回复。真机实测确认本驱动的契约是
@@ -402,6 +396,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(reason.find("Redis 服务器返回错误"), std::string::npos) << reason;
     }
 
+    /**
+     * @brief 钉住管道里单条命令失败不拖垮整批，错误原因留在该条自己的结果上
+     */
     TEST_F(RedisIntegrationTest, PipelineErrorReplySurfacesOnItsOwnResult)
     {
         const std::string key = makeKey("pipe-error");
@@ -422,6 +419,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(replies[1]->lastError().empty()) << "管道里的 error 回复必须把原因留在该条结果上";
     }
 
+    /**
+     * @brief 钉住管道一次 flush 按登记顺序收齐回复，且非法命令在登记阶段就被拒
+     */
     TEST_F(RedisIntegrationTest, PipelineBatchesCommandsAndFlushesInOrder)
     {
         const std::string firstKey  = makeKey("pipe-a");
@@ -448,6 +448,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(m_connection->lastError().empty());
     }
 
+    /**
+     * @brief 钉住归还连接时的会话复位丢弃残留管道命令：命令既不发出也不串给下一个借用者
+     */
     TEST_F(RedisIntegrationTest, ResetSessionStateDiscardsPendingPipelineCommands)
     {
         const std::string key = makeKey("reset-session");
@@ -467,6 +470,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::int64_t>(*existsValue), 0) << "被丢弃的管道命令却在服务端生效了";
     }
 
+    /**
+     * @brief 钉住连接期按配置执行键空间选择：同一个键在默认 0 号库中不可见
+     */
     TEST_F(RedisIntegrationTest, ConfiguredKeyspaceIsSelectedOnConnect)
     {
         const std::string key = makeKey("keyspace");
@@ -486,6 +492,9 @@ namespace AsynGyanis::Database
         defaultKeyspaceConnection.disconnect();
     }
 
+    /**
+     * @brief 钉住 execute() 的整行切词路径与显式参数列表结果一致，未闭合引号在本地被拒
+     */
     TEST_F(RedisIntegrationTest, TextCommandPathSplitsArguments)
     {
         const std::string key = makeKey("text-path");

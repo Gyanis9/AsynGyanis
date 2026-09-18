@@ -1,15 +1,10 @@
-/**
- * @file TestMySqlIntegration.cpp
- * @brief MySQL 真实服务端集成测试 —— 连接、参数化执行、ORM 端到端、事务与边界
- * @details 与同目录的 TestMySqlConnection.cpp（不依赖服务端的失败语义）互补：只在真能连上 MySQL 服务端时才跑断言，
- *          覆盖建连、预处理语句的参数化读写、ORM 同步与异步全链路、事务、迁移与二进制列这类只有真机才能验证的部分。
- *          连接参数一律从环境变量读，口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值：未设置时整组 GTEST_SKIP，仓库零明文口令。
- *          用例只碰自建专用库与自己建的表，表名用例间唯一——并行（ctest -j）安全靠资源名不重叠，不靠 TearDown 清理。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 覆盖场景（MySQL 真实服务端集成；与只测离线失败语义的 TestMySqlConnection.cpp 互补）：
+// - 建连与服务端版本、错误口令的中文失败原因
+// - 参数化执行（mysql_stmt_*）：影响行数、各类取值与 NULL/空串的往返、注入文本、参数个数与容器参数的拒绝面
+// - ORM 端到端：CRUD、排序分页、批量插入分块、引用标识符（保留字/空格/反引号）、SchemaMigrator 建表与删表
+// - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
+// 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
+// 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
 
 #include "DatabaseTestSupport.h"
 
@@ -52,6 +47,13 @@
 
 namespace AsynGyanis::Database
 {
+
+    // 环境变量读取复用测试辅助（原先每个真机套件各写一份）
+    using TestSupport::readEnvironmentPortOrDefault;
+    using TestSupport::readEnvironmentTextOrDefault;
+
+    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
+    using TestSupport::containsLocalizedText;
     namespace
     {
 #ifdef DATABASE_HAS_MYSQL
@@ -126,6 +128,10 @@ namespace AsynGyanis::Database
         /// 事务用例的四张表（提交可见 / 回滚不可见 / 析构自动回滚 / 异常穿越）
         constexpr std::string_view kTransactionCommitTableName    = "Asyn_Mysql_Tx_Commit";
         constexpr std::string_view kTransactionRollbackTableName  = "Asyn_Mysql_Tx_Rollback";
+
+        // 会话复位用例刻意不与回滚用例共用表：ctest 每个用例是独立进程且并行执行，
+        // 共用同一张表时两个用例会互相 DROP/撞主键（并行偶发、串行必过）
+        constexpr std::string_view kTransactionResetTableName     = "Asyn_Mysql_Tx_Reset";
         constexpr std::string_view kTransactionDestructorTableName = "Asyn_Mysql_Tx_Destructor";
         constexpr std::string_view kTransactionExceptionTableName  = "Asyn_Mysql_Tx_Exception";
         constexpr std::string_view kTransactionColumns =
@@ -163,66 +169,6 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string readEnvironmentText(const char *variableName)
         {
             return TestSupport::readEnvironmentVariableText(variableName);
-        }
-
-        /**
-         * @brief 读取文本型环境变量并在缺失时回落到默认值
-         * @param variableName 环境变量名
-         * @param fallback 未设置（或为空串）时使用的默认值
-         * @return std::string 生效取值
-         */
-        [[nodiscard]] std::string readEnvironmentTextOrDefault(const char *variableName, const std::string_view fallback)
-        {
-            std::string variableValue = readEnvironmentText(variableName);
-            // 空串与「未设置」在这里等价：两种情况都使用默认值，避免拼出一个空主机名
-            return variableValue.empty() ? std::string(fallback) : variableValue;
-        }
-
-        /**
-         * @brief 读取端口型环境变量
-         * @details 用 std::from_chars 而不是 std::stoi：后者靠异常报错且接受 "3306abc" 这类
-         *          带余文的输入。非法取值一律回落默认端口，不因为环境写错就让整组用例失败。
-         * @param variableName 环境变量名
-         * @param fallback 未设置或取值非法时使用的默认端口
-         * @return std::uint16_t 生效端口
-         */
-        [[nodiscard]] std::uint16_t readEnvironmentPortOrDefault(const char *variableName, const std::uint16_t fallback)
-        {
-            const std::string portText = readEnvironmentText(variableName);
-            if (portText.empty())
-            {
-                return fallback;
-            }
-
-            int parsedPort = 0;
-            const auto [remainderBegin, parseError] =
-                std::from_chars(portText.data(), portText.data() + portText.size(), parsedPort);
-
-            // 三种非法情形一律回落：解析失败、尾部有余文、超出 1..65535 的端口范围
-            if (parseError != std::errc{} || remainderBegin != portText.data() + portText.size() ||
-                parsedPort <= 0 || parsedPort > 65535)
-            {
-                return fallback;
-            }
-
-            return static_cast<std::uint16_t>(parsedPort);
-        }
-
-        /**
-         * @brief 判断文本是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
-         * @param text 待判定的文本
-         * @return true 至少有一个字节的最高位被置起（UTF-8 多字节序列的特征）
-         */
-        [[nodiscard]] bool containsLocalizedText(const std::string &text)
-        {
-            for (const char character: text)
-            {
-                if (static_cast<unsigned char>(character) >= 0x80U)
-                {
-                    return true;
-                }
-            }
-            return false;
         }
 
     } // namespace
@@ -307,8 +253,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 无符号取值域用例的结构体：与建表迁移用例同构，但绑定独立的物理表
          *
-         * @details SchemaMigrator 的表名只能来自编译期常量，两个用例共用同一结构体就等于共用同一张表：
-         *          并行执行时会互相删表、互相撞主键。拆成独立结构体后语义不变，只是各持一张表。
+         * @details SchemaMigrator 的表名只能来自编译期常量：与建表迁移用例共用结构体就等于共用同一张表，
+         *          并行执行时会互相删表、互相撞主键，因此本用例单列一个绑定独立表名的结构体。
          */
         struct IntegrationUnsignedRow
         {
@@ -1479,11 +1425,9 @@ namespace AsynGyanis::Database
     /**
      * @brief 验证 BIGINT UNSIGNED 列的完整取值域都能往返，含 int64 装不下的那一段
      *
-     * @details MySQL 的 BIGINT UNSIGNED 上界是 2^64-1、超出 int64，驱动只能把这类取值以十进制文本返回；
-     *          写方向也把超出 int64 的无符号值降级为文本，两个方向必须配套——缺了读方向的文本支路，写进去就再也拿不回来，
-     *          而且不会报错、只会让映射抛「类型不符」。四个取值刻意跨过 2^63：线下走 int64 支路，线上只能走文本支路；
-     *          建表同样由 SchemaMigrator 完成，结构体与建表迁移用例同构但绑定独立表名：
-     *          两个用例各持自己的物理表，并行执行时不会互删对方正在使用的表。
+     * @details BIGINT UNSIGNED 的上界超出 int64，驱动只能以十进制文本返回这类取值，写方向同样降级为文本：
+     *          读方向缺了文本支路就会「写得进、读不回」。本用例与建表迁移用例同构但绑定独立表名，
+     *          各自持有自己的物理表，并行执行时不会互删对方正在使用的表。
      */
     TEST_F(MySqlIntegrationTest, UnsignedColumnRoundTripsAcrossInt64Boundary)
     {
@@ -1548,10 +1492,9 @@ namespace AsynGyanis::Database
     /**
      * @brief 验证二进制列在真实服务端上按 BLOB 存取，且同表的文本列不会被误判成二进制
      *
-     * @details MySQL 在协议层**不区分** BLOB 与 TEXT（两者的类型码都是 MYSQL_TYPE_BLOB），驱动只能靠列的字符集号
-     *          （binary = 63）判断。LONGBLOB 与 TEXT 同表时两列类型码相同、字符集不同：只看类型码，label 会被读成
-     *          字节、或 payload 被读成文本。载荷刻意含单独出现的 0xFF（不是合法的 utf8mb4 序列）：按文本绑定会被
-     *          服务端按连接字符集替换掉非法部分，写入与读回因此不是同一串字节。
+     * @details MySQL 协议层不区分 BLOB 与 TEXT（类型码同为 MYSQL_TYPE_BLOB），驱动只能靠列的字符集号
+     *          （binary = 63）判断。载荷刻意含单独出现的 0xFF（不是合法 utf8mb4 序列）：按文本绑定会被
+     *          服务端按连接字符集替换，因此只有按 BLOB 存取才能逐字节往返。
      */
     TEST_F(MySqlIntegrationTest, BinaryColumnRoundTripsAsBlobWhileTextColumnStaysText)
     {
@@ -1774,10 +1717,9 @@ namespace AsynGyanis::Database
     /**
      * @brief 验证 insertBatchAsync 在真实服务端上的行数与逐行内容都与同步 insertBatch 一致
      *
-     * @details 行数远低于 MySQL 的参数上限（65535），因此走一次生成多行 VALUES 的单语句分支，
-     *          不与 SQLite 端的分块用例重复。对照方式：异步批量写完后同步读回全部行，
-     *          清空表再交给同步 insertBatch 写同一份数据，两次读回的行必须逐字段相等——
-     *          「多行 VALUES 在真实服务端能被接受」这件事本身也由这条用例钉住（空串与 NULL 并存）。
+     * @details 行数远低于 MySQL 的参数上限，走一次生成多行 VALUES 的单语句分支，不与 SQLite 端的分块用例重复。
+     *          对照方式：异步批量写完同步读回全部行，清空表再交给同步 insertBatch 写同一份数据，
+     *          两次读回必须逐字段相等，顺带钉住「多行 VALUES 在真实服务端可接受（空串与 NULL 并存）」。
      */
     TEST_F(MySqlIntegrationTest, AsyncBatchInsertWritesRowsEqualToSyncInsertBatch)
     {
@@ -1961,21 +1903,21 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, ResetSessionStateRollsBackUncommittedTransaction)
     {
-        ASSERT_TRUE(prepareTable(kTransactionRollbackTableName, kTransactionColumns)) << m_lastSetupError;
+        ASSERT_TRUE(prepareTable(kTransactionResetTableName, kTransactionColumns)) << m_lastSetupError;
 
         std::unique_ptr<MySqlConnection> connection = makeConnection();
         ASSERT_TRUE(connection->connect()) << connection->lastError();
 
         ASSERT_TRUE(connection->beginTransaction()) << connection->lastError();
-        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionRollbackTableName, 1, "会话复位", 1.5))
+        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionResetTableName, 1, "会话复位", 1.5))
                 << connection->lastError();
         // 事务内可见：证明这一行确实被写进去过，复位要撤销的是真实存在的数据
-        ASSERT_EQ(countRows(*connection, kTransactionRollbackTableName), 1);
+        ASSERT_EQ(countRows(*connection, kTransactionResetTableName), 1);
 
         connection->resetSessionState();
 
         // 事务被滚掉：未提交的行随之消失，也就是没有串给下一个借用者
-        EXPECT_EQ(countRows(*connection, kTransactionRollbackTableName), 0) << "归还时没有滚掉未提交的事务";
+        EXPECT_EQ(countRows(*connection, kTransactionResetTableName), 0) << "归还时没有滚掉未提交的事务";
         // 幂等：没有活动事务时再调一次什么都不做
         EXPECT_NO_THROW(connection->resetSessionState());
     }

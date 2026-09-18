@@ -1,15 +1,8 @@
-/**
- * @file TestSqliteResult.cpp
- * @brief SqliteResult 单元测试：游标与预扫描语义、列元数据、存储类到 DatabaseValue 的映射与写回执快照
- * @details 结果集只能由 execute() 交出，因此全部用例跑在真实内存库上（建表灌样本、经 execute() 取回），零外部服务。
- *          钉住的契约：只有只读语句会被预扫描（rowCount() 对只读查询精确、对写语句与 INSERT ... RETURNING 返回 0）；列值必须
- *          next() 之后读取（未 next()、游标耗尽、reset() 后一律 std::monostate）；存储类映射 NULL→monostate、INTEGER→int64_t、
- *          FLOAT→double、TEXT→std::string、BLOB→BinaryBytes（零长非 NULL）；越界用无符号比较；RETURNING 需 SQLite 3.35+。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// SqliteResult 单元测试：游标与预扫描语义、列元数据、存储类到 DatabaseValue 的映射与写回执快照。
+// 结果集只能由 execute() 交出，因此全部用例跑在真实内存库上（建表灌样本、经 execute() 取回），零外部服务。
+// 钉住的契约：只有只读语句会被预扫描（rowCount() 对只读查询精确、对写语句与 INSERT ... RETURNING 返回 0）；列值必须
+// next() 之后读取（未 next()、游标耗尽、reset() 后一律 std::monostate）；存储类映射 NULL→monostate、INTEGER→int64_t、
+// FLOAT→double、TEXT→std::string、BLOB→BinaryBytes（零长非 NULL）；越界用无符号比较；RETURNING 需 SQLite 3.35+。
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
@@ -241,6 +234,7 @@ namespace AsynGyanis::Database
     // 写回执与列元数据：不依赖样本数据
     // ============================================================================
 
+    /** @brief 钉住写回执的退化形态处处一致：无游标、零列、取值一律 monostate */
     TEST(SqliteResult, WriteReceiptCarriesNoCursorOrColumnMetadata)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -262,6 +256,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(isMissingValue(receipt->getValue(std::size_t{0})));
     }
 
+    /** @brief 钉住列数/列名表/双向索引互相对得上，且查询结果持有真实游标 */
     TEST(SqliteResult, QueryMetadataIsSelfConsistent)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -283,6 +278,7 @@ namespace AsynGyanis::Database
         EXPECT_NE(queryResult->nativeHandle(), nullptr);
     }
 
+    /** @brief 钉住 next() 之前没有当前行：两个取值重载都读不到残值 */
     TEST(SqliteResult, ValueReadBeforeFirstStepIsMissing)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -298,6 +294,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asInteger(result->getValue(std::size_t{0})), std::optional<std::int64_t>(1));
     }
 
+    /** @brief 钉住越界索引与未知列名一律按「没有值」返回，索引比较走无符号防回绕 */
     TEST(SqliteResult, OutOfRangeIndexAndUnknownNameReadAsMissingValue)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -313,6 +310,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->columnName(std::numeric_limits<std::size_t>::max()).has_value());
     }
 
+    /** @brief 钉住列名比对区分大小写，空名字一律视为不存在 */
     TEST(SqliteResult, ColumnIndexMatchingIsExactAndRejectsEmptyName)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -327,6 +325,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->columnIndex("").has_value());
     }
 
+    /** @brief 钉住同名列先到先得：按名取值命中第一列 */
     TEST(SqliteResult, DuplicateColumnNamesResolveToFirstIndex)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -342,6 +341,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asInteger(result->getValue(std::size_t{1})), std::optional<std::int64_t>(2));
     }
 
+    /** @brief 钉住无名表达式列补空串占位，下标与列序严格对齐 */
     TEST(SqliteResult, ExpressionColumnKeepsItsSlotInColumnNames)
     {
         const std::unique_ptr<SqliteConnection> connection = openMemoryConnection();
@@ -360,6 +360,7 @@ namespace AsynGyanis::Database
     // 游标推进、预扫描与 reset
     // ============================================================================
 
+    /** @brief 钉住只读查询构造期完成预扫描：未 next() 也有精确行数与非空判定 */
     TEST_F(SqliteUserQuery, RowCountIsExactForReadOnlyQuery)
     {
         const std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -371,6 +372,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->columnCount(), 6u);
     }
 
+    /** @brief 钉住空集仍有列元数据，游标一步都迈不出去 */
     TEST_F(SqliteUserQuery, EmptyResultHasColumnsButNoRows)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM users WHERE 1 = 0");
@@ -384,6 +386,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(isMissingValue(result->getValue(std::size_t{0})));
     }
 
+    /** @brief 钉住列数与行数是构造期快照，不随游标推进或耗尽改变 */
     TEST_F(SqliteUserQuery, MetadataSnapshotSurvivesFullScan)
     {
         std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -399,6 +402,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->rowCount(), 4u);
     }
 
+    /** @brief 钉住 reset 支持完整重扫，逐行内容与首次一致 */
     TEST_F(SqliteUserQuery, ResetAllowsSecondFullScan)
     {
         std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -414,6 +418,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(secondScan, firstScan);
     }
 
+    /** @brief 钉住 reset 同时清掉「当前行有效」标志，两个取值路径都失效 */
     TEST_F(SqliteUserQuery, ResetInvalidatesCurrentRow)
     {
         std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -432,6 +437,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asText(result->getValue("name")), std::optional<std::string>("Alice"));
     }
 
+    /** @brief 钉住无游标的写回执上 reset 是安全空操作 */
     TEST_F(SqliteUserQuery, ResetOnWriteReceiptIsSafeNoOp)
     {
         std::unique_ptr<DatabaseResult> result = query("CREATE TABLE scratch (id INTEGER)");
@@ -446,6 +452,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(result->lastError().empty()) << result->lastError();
     }
 
+    /** @brief 钉住游标耗尽后读值一律 monostate，且 next() 不会重新开始 */
     TEST_F(SqliteUserQuery, ExhaustedCursorReadsAsMissingValue)
     {
         std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -462,6 +469,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /** @brief 钉住只读访问路径不改写错误状态，正常耗尽也不算失败 */
     TEST_F(SqliteUserQuery, ReadOnlyAccessorsNeverRecordAnError)
     {
         std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -484,6 +492,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(result->lastError().empty()) << result->lastError();
     }
 
+    /** @brief 钉住结果集提前销毁会 finalize，读锁与语句资源归还连接 */
     TEST_F(SqliteUserQuery, ResultDestroyedMidScanLeavesConnectionUsable)
     {
         {
@@ -504,6 +513,7 @@ namespace AsynGyanis::Database
     // 存储类到 DatabaseValue 的映射
     // ============================================================================
 
+    /** @brief 钉住 INTEGER 落 int64 不做收窄，含边界负值与 0 */
     TEST_F(SqliteUserQuery, IntegerValuesKeepFullSignedRange)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT age FROM users WHERE id = 1");
@@ -520,6 +530,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asInteger(boundary->getValue("zeroValue")), std::optional<std::int64_t>(0));
     }
 
+    /** @brief 钉住 FLOAT 存储类落 double，不退化成整数或文本 */
     TEST_F(SqliteUserQuery, RealColumnMapsToDouble)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT score FROM users WHERE id = 1");
@@ -532,6 +543,7 @@ namespace AsynGyanis::Database
         EXPECT_DOUBLE_EQ(score.value(), 95.5);
     }
 
+    /** @brief 钉住 TEXT 存储类落 std::string */
     TEST_F(SqliteUserQuery, TextColumnMapsToString)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT name FROM users WHERE id = 1");
@@ -543,6 +555,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(name.value(), "Alice");
     }
 
+    /** @brief 钉住 UTF-8 文本按字节长度拷贝，中文不被截断 */
     TEST_F(SqliteUserQuery, UnicodeTextKeepsEveryByte)
     {
         const std::string insertStatement = std::string("INSERT INTO users (name) VALUES ('") + kUnicodeName + "')";
@@ -558,6 +571,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(stored), std::string(kUnicodeName));
     }
 
+    /** @brief 钉住 SQL NULL 落 monostate */
     TEST_F(SqliteUserQuery, NullColumnMapsToMissingValue)
     {
         // Carol 只写了 name，age / score / payload 三列都是 NULL
@@ -571,6 +585,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住空串与零长 BLOB 是「有值为空」，不塌成 monostate */
     TEST_F(SqliteUserQuery, EmptyTextAndEmptyBlobAreNotReportedAsNull)
     {
         // 第 4 行的 name 是空串、payload 是零长 BLOB：两者都是「有值且值为空」，不能塌成 monostate。
@@ -588,6 +603,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(std::get<BinaryBytes>(emptyPayload).empty());
     }
 
+    /** @brief 钉住二进制按长度拷贝，内嵌空字节不丢失 */
     TEST_F(SqliteUserQuery, BlobKeepsEmbeddedNullByte)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT payload FROM users WHERE id = 1");
@@ -603,6 +619,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ((*payload)[2], 0x41);
     }
 
+    /** @brief 钉住只有 BLOB 存储类才走二进制，TEXT 列仍是字符串（挡住按声明类型一刀切） */
     TEST_F(SqliteUserQuery, TextColumnStillReadsAsStringNotBytes)
     {
         // 二进制现在是独立备选，但只有 BLOB 存储类才走它：TEXT 列必须仍是 std::string。
@@ -617,6 +634,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(std::holds_alternative<BinaryBytes>(name)) << databaseValueTypeName(name);
     }
 
+    /** @brief 钉住 0/1 位落 int64 而不是 bool，收窄交给调用方 */
     TEST_F(SqliteUserQuery, BooleanFlagReadsAsIntegerNotBool)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT id, active FROM users ORDER BY id");
@@ -631,6 +649,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(std::holds_alternative<bool>(result->getValue(std::size_t{1})));
     }
 
+    /** @brief 钉住声明类型落不到四种存储类时按文本交出 */
     TEST_F(SqliteUserQuery, NumericAndDateColumnsReadAsText)
     {
         const std::unique_ptr<DatabaseResult> result = query("SELECT asDate, asNumeric FROM typedValues");
@@ -647,6 +666,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(numericText.value(), "n/a");
     }
 
+    /** @brief 钉住按名与按下标两条取值路径共用同一份边界判定，结果完全一致 */
     TEST_F(SqliteUserQuery, ValueByIndexMatchesValueByName)
     {
         const std::unique_ptr<DatabaseResult> result = query(kSelectUsersInIdOrderSql);
@@ -675,6 +695,7 @@ namespace AsynGyanis::Database
     // 影响行数与 rowid 快照
     // ============================================================================
 
+    /** @brief 钉住影响行数跟随写语句：INSERT 计 1、UPDATE 计全部匹配行、IGNORE 计 0 */
     TEST_F(SqliteUserQuery, AffectedRowCountFollowsTheStatementThatWroteRows)
     {
         std::unique_ptr<DatabaseResult> singleInsert = query("INSERT INTO users (name) VALUES ('Dan')");
@@ -698,6 +719,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(ignoredReceipt->affectedRowCount(), 0);
     }
 
+    /** @brief 钉住影响行数在构造这一刻快照，不被后来的写入改写 */
     TEST_F(SqliteUserQuery, WriteReceiptSnapshotsAffectedRowsOfItsOwnStatement)
     {
         // 删除全部四行：影响行数必须在构造这一刻快照，之后的写入不会回来改写它
@@ -711,6 +733,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(deletionReceipt->affectedRowCount(), 4) << "结果集快照不该反映后来的写入";
     }
 
+    /** @brief 钉住结果集快照与连接级计数器语义不同：快照不随新写入前进 */
     TEST_F(SqliteUserQuery, LastInsertRowIdSnapshotBelongsToItsOwnStatement)
     {
         const std::unique_ptr<DatabaseResult> firstInsert = query("INSERT INTO users (name) VALUES ('Eve')");
@@ -731,6 +754,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection().lastInsertRowId(), 6);
     }
 
+    /** @brief 钉住查询结果上的计数来自连接上一条写语句（SQLite 无语句级历史） */
     TEST_F(SqliteUserQuery, QueryResultCountersComeFromThePreviousWrite)
     {
         ASSERT_NE(executeRequired(connection(), "UPDATE users SET age = age + 1"), nullptr);
@@ -746,6 +770,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(selectionResult->lastInsertRowId(), 5);
     }
 
+    /** @brief 钉住带写副作用的 RETURNING 绝不预扫描：rowCount 为 0，首次 next() 才真正执行 */
     TEST_F(SqliteUserQuery, InsertReturningRowIsNotPrescanned)
     {
         ASSERT_NE(executeRequired(connection(), "UPDATE users SET active = 1"), nullptr);
@@ -769,6 +794,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /** @brief 钉住影响行数经基类虚接口即可取得，不必按驱动向下转型 */
     TEST_F(SqliteUserQuery, AffectedRowCountIsReachableThroughTheBaseInterface)
     {
         const std::unique_ptr<DatabaseResult> receipt =

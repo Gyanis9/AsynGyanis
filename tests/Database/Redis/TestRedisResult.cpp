@@ -1,15 +1,9 @@
-/**
- * @file TestRedisResult.cpp
- * @brief RedisResult 单元测试：退化单行游标语义、RESP 回复到统一值的映射与合成列名
- * @details RedisResult 唯一的公开构造入口是接管一份 hiredis 交出的 redisReply（析构时 freeReplyObject），而本测试环境
- *          没有可用的 Redis 服务。为不伪造结构体、不触碰内部状态，本文件用 hiredis 文档化的公开解析接口（redisReaderCreate /
- *          redisReaderFeed / redisReaderGetReply）把一段完整的 RESP 文本还原成真实回复——与 socket 上收到的回复走相同的构造
- *          路径，因此全部用例零网络、零服务端；未编译 hiredis 时结果集退化成永远为空的对象，convertReply() 只经 getValue() 间接验证。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 覆盖场景（用 hiredis 公开的协议解析接口把完整 RESP 文本还原成真实回复，零网络、零服务端）：
+// - 无回复即空集：形状、游标、列元数据、取值与错误状态（真实驱动与桩构建同义）
+// - 标量回复：状态/整数/零值/空批量字符串/内嵌 '\0' 的批量字符串各按自己的类型交出
+// - 数组回复：一列一元素、越界与空数组、嵌套数组降级为文本、nil 子元素占位、error 回复
+// - 游标与合成列名：单行只访问一次、reset 后重放、valueN 按名与按索引取值一致
+// 未编译 hiredis 时结果集退化成永远为空的对象，只有「无回复」一组用例仍可跑。
 
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
@@ -52,6 +46,9 @@ namespace AsynGyanis::Database
     // 无回复即空集：不依赖 hiredis，真实驱动与桩构建同义
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住「没有回复」在构造后就是 0 行 0 列的空集，而不是等首次访问才失败
+     */
     TEST(RedisResult, WithoutReplyItIsAlreadyEmpty)
     {
         const std::unique_ptr<RedisResult> result = makeEmptyResult();
@@ -61,6 +58,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->columnCount(), 0u);
     }
 
+    /**
+     * @brief 钉住空集上 next() 恒为假，reset() 也不改变这一结论
+     */
     TEST(RedisResult, WithoutReplyCursorNeverAdvances)
     {
         const std::unique_ptr<RedisResult> result = makeEmptyResult();
@@ -72,6 +72,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /**
+     * @brief 钉住空集没有任何列元数据，列名与列索引查询一律未命中
+     */
     TEST(RedisResult, WithoutReplyHasNoColumnMetadata)
     {
         const std::unique_ptr<RedisResult> result = makeEmptyResult();
@@ -81,6 +84,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->columnIndex("value0").has_value());
     }
 
+    /**
+     * @brief 钉住空集上按索引或按名取值一律得到 monostate，与越界同义
+     */
     TEST(RedisResult, WithoutReplyValuesReadAsNull)
     {
         const std::unique_ptr<RedisResult> result = makeEmptyResult();
@@ -91,6 +97,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(std::holds_alternative<std::monostate>(result->getValue("value0")));
     }
 
+    /**
+     * @brief 钉住空集不携带错误、无原生句柄，replyType() 为 0
+     */
     TEST(RedisResult, WithoutReplyReportsNoErrorAndNoHandle)
     {
         const std::unique_ptr<RedisResult> result = makeEmptyResult();
@@ -101,6 +110,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(result->lastError().empty());
     }
 
+    /**
+     * @brief 钉住 const 读取路径（next/getValue/列名查询）不改写错误状态
+     */
     TEST(RedisResult, ValueReadsOnEmptyResultDoNotCreateErrorState)
     {
         std::unique_ptr<RedisResult> result = makeEmptyResult();
@@ -203,6 +215,9 @@ namespace AsynGyanis::Database
     // 标量回复：一行一列
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住 +status 回复映射成一行一列的字符串，replyType 保持 STATUS
+     */
     TEST(RedisResult, StatusReplyReadsAsSingleStringColumn)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("+PONG\r\n");
@@ -216,6 +231,9 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(result->getValue(std::size_t{0})), "String");
     }
 
+    /**
+     * @brief 钉住整数回复（含负数）按 int64 交出，与 DatabaseValue 的整型备选对齐
+     */
     TEST(RedisResult, IntegerReplyReadsAsInt64Column)
     {
         const std::unique_ptr<RedisResult> positive = makeResultFromResp(":42\r\n");
@@ -230,6 +248,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::int64_t>(negative->getValue(std::size_t{0})), -1000);
     }
 
+    /**
+     * @brief 钉住「服务端确实给了 0」与「没有值」的区分，合法零值不被吞成空集
+     */
     TEST(RedisResult, ScalarZeroIsNotAnEmptyResult)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp(":0\r\n");
@@ -241,6 +262,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::int64_t>(result->getValue(std::size_t{0})), 0);
     }
 
+    /**
+     * @brief 钉住零长度批量字符串是「有值且为空」，不是空集也不是 monostate
+     */
     TEST(RedisResult, BulkStringReplyKeepsEmptyPayloadAsString)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("$0\r\n\r\n");
@@ -253,6 +277,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(textAt(*result, 0), std::optional<std::string>(""));
     }
 
+    /**
+     * @brief 钉住按「指针 + 长度」取值：内嵌 '\0' 之后的字节不被截断
+     */
     TEST(RedisResult, BulkStringReplyPreservesEmbeddedNullByte)
     {
         // 载荷 5 字节，其中含一个内嵌 '\0'：hiredis 按 str + len 表达文本，取值也必须按长度拷贝
@@ -277,6 +304,9 @@ namespace AsynGyanis::Database
     // 数组回复：一行 N 列
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住数组回复按单行 N 列交出，第 i 列即第 i 个元素
+     */
     TEST(RedisResult, ArrayReplyMapsEachElementToAColumn)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
@@ -290,6 +320,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(textAt(*result, 1), std::optional<std::string>("bar"));
     }
 
+    /**
+     * @brief 钉住越界列读为 monostate 且不因此进入错误状态
+     */
     TEST(RedisResult, OutOfRangeColumnReadsAsNull)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*1\r\n$1\r\nx\r\n");
@@ -301,6 +334,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(result->lastError().empty());
     }
 
+    /**
+     * @brief 钉住空数组回复是 0 行 0 列的空集，isEmpty 与 rowCount()==0 等价
+     */
     TEST(RedisResult, EmptyArrayReplyIsAnEmptyResult)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*0\r\n");
@@ -314,6 +350,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /**
+     * @brief 钉住嵌套数组的元素按十进制文本摊平，结构保不住时不静默丢值
+     */
     TEST(RedisResult, ArrayReplyFlattensNestedIntegersToText)
     {
         // 顶层数组 [ [7, 8], "x" ]：列表备选类型只有字符串，整数子元素按十进制文本保留
@@ -329,6 +368,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(textAt(*result, 1), std::optional<std::string>("x"));
     }
 
+    /**
+     * @brief 钉住更深一层的数组降级为 "[…]" 文本，而不是静默丢数据
+     */
     TEST(RedisResult, DoublyNestedArrayBecomesBracketedText)
     {
         // 顶层数组 [ [ [7, 8] ] ]：更深一层的数组牺牲结构，串成 "[7, 8]" 形式，换取不静默丢数据
@@ -340,6 +382,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(*bracketed, (std::vector<std::string>{"[7, 8]"}));
     }
 
+    /**
+     * @brief 钉住数组内的 nil 子元素用空串占位，不破坏后续元素的下标对齐
+     */
     TEST(RedisResult, NilElementInsideArrayKeepsIndexAlignment)
     {
         // 顶层数组 [ ["foo", nil], "x" ]：nil 子元素用空串占位，保证 MGET 未命中那一项下标不串位
@@ -358,6 +403,9 @@ namespace AsynGyanis::Database
     // error 回复
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住 error 回复被标记 isError，服务端原文逐字进入 lastError()
+     */
     TEST(RedisResult, ErrorReplyIsFlaggedAndKeepsServerText)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("-WRONGTYPE Operation against a key\r\n");
@@ -372,6 +420,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->isEmpty());
     }
 
+    /**
+     * @brief 钉住 error 回复的取值仍可按文本读出，与状态/字符串回复同一载体
+     */
     TEST(RedisResult, ErrorReplyValueIsReadableAsText)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("-ERR bad command\r\n");
@@ -381,6 +432,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(textAt(*result, 0), std::optional<std::string>("ERR bad command"));
     }
 
+    /**
+     * @brief 钉住多次 const 读取（越界、按名、next）不会改写已记录的错误原文
+     */
     TEST(RedisResult, ReadingValuesDoesNotRewriteErrorState)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("-ERR bad command\r\n");
@@ -402,6 +456,9 @@ namespace AsynGyanis::Database
     // 游标与合成列名
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住 while(next()) 惯用法对单行结果恰好走一轮，reset 后可重放
+     */
     TEST(RedisResult, SingleRowIsVisitedOnceAndReturnsAfterReset)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("+OK\r\n");
@@ -417,6 +474,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->next());
     }
 
+    /**
+     * @brief 钉住数据在内存中即可读：next() 不 gate 取值，这是与游标式结果集的关键差异
+     */
     TEST(RedisResult, ValuesReadableWithoutAdvancingCursor)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*2\r\n$1\r\na\r\n$1\r\nb\r\n");
@@ -430,6 +490,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(textAt(*result, 1), std::optional<std::string>("b"));
     }
 
+    /**
+     * @brief 钉住列名按 valueN 合成且与 columnCount 一致，越界列名为空
+     */
     TEST(RedisResult, ColumnNamesAreSynthesizedFromIndex)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n");
@@ -446,6 +509,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(names, (std::vector<std::string>{"value0", "value1", "value2"}));
     }
 
+    /**
+     * @brief 钉住列名反查按精确匹配（区分大小写），非合成名与越界名一律未命中
+     */
     TEST(RedisResult, ColumnIndexInvertsSynthesizedNames)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*2\r\n$1\r\na\r\n$1\r\nb\r\n");
@@ -461,6 +527,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(result->columnIndex("value2").has_value());
     }
 
+    /**
+     * @brief 钉住按名与按索引两条取值路径的判定完全一致
+     */
     TEST(RedisResult, ValueByNameMatchesValueByIndex)
     {
         const std::unique_ptr<RedisResult> result = makeResultFromResp("*2\r\n:1\r\n$3\r\ntwo\r\n");
@@ -474,6 +543,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::int64_t>(result->getValue(std::size_t{0})), 1);
     }
 
+    /**
+     * @brief 钉住 nativeHandle() 只借出指针：所有权仍属结果集，由结果集析构释放
+     */
     TEST(RedisResult, NativeHandleIsBorrowedNotOwned)
     {
         {

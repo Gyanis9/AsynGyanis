@@ -1,15 +1,9 @@
-/**
- * @file TestSqliteConnection.cpp
- * @brief SqliteConnection 单元测试：真实 SQLite 驱动的建库、单语句执行契约、事务与连接级计数器
- * @details SQLite 是进程内引擎，全部用例零外部服务（内存库 ":memory:"，文件库用 TestSupport::TemporaryDatabaseFile
- *          的临时路径，结束即连 -wal/-shm/-journal 残留一起删除）。钉住的契约：execute() 一次只执行一条语句（分号后
- *          还有可执行语句就整次失败、一条都不执行）；queryTimeout() 走 sqlite3_busy_timeout 并经 PRAGMA 直读验证；
- *          启动期两条 PRAGMA 失败不致命；刻意不测命令超 INT_MAX 与 SQLITE_MISUSE（外部抢先关句柄）两条分支。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// SqliteConnection 单元测试：真实 SQLite 驱动的建库、单语句执行契约、事务与连接级计数器。
+// SQLite 是进程内引擎，全部用例零外部服务（内存库 ":memory:"，文件库用 TestSupport::TemporaryDatabaseFile 的临时路径，
+// 结束即连 -wal/-shm/-journal 残留一起删除）。
+// 钉住的契约：execute() 一次只执行一条语句（分号后还有可执行语句就整次失败、一条都不执行）；queryTimeout() 走
+// sqlite3_busy_timeout 并经 PRAGMA 直读验证；启动期两条 PRAGMA 失败不致命；刻意不测命令超 INT_MAX 与
+// SQLITE_MISUSE（外部抢先关句柄）两条分支。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
@@ -33,6 +27,9 @@
 
 namespace AsynGyanis::Database
 {
+
+    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
+    using TestSupport::containsLocalizedText;
     namespace
     {
         /// 基类 DatabaseConnection 声明的单条命令执行超时默认毫秒数
@@ -67,25 +64,6 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 判断文本是否含非 ASCII 字节，用作「驱动自己拼了中文说明」的稳定判据
-         * @details 断言只查「有中文 + 有底层关键英文原文 + 有错误码」，不硬编码整句中文，
-         *          避免 SQLite 版本升级改了英文措辞时用例集体失败。
-         * @param text 待判定文本
-         * @return true 至少有一个字节的最高位被置起
-         */
-        bool containsLocalizedText(const std::string &text)
-        {
-            for (const char character: text)
-            {
-                if (static_cast<unsigned char>(character) >= 0x80)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /**
          * @brief 转出一份小写副本，供 PRAGMA 返回值做大小写无关比较
          * @details 日志模式名一类的取值由 SQLite 内部拼写，不同版本的大小写并不保证一致，
          *          比较前统一转小写，避免把用例的失败原因留给无关的大小写差异。
@@ -106,8 +84,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 执行一条按契约应当成功的命令
-         * @details 失败时把 SQL 文本与 lastError() 一起报出来，省去每个用例手抄两遍；
-         *          只用 EXPECT 不用 ASSERT，因此返回的指针可能为空，调用方需自行 ASSERT_NE 决定是否中止。
+         * @details 失败时把 SQL 文本与 lastError() 一起报出来；返回的指针可能为空，取用时需自行 ASSERT_NE。
          * @param connection 已连接的数据库连接
          * @param command SQL 文本
          * @return std::unique_ptr<DatabaseResult> 结果集，失败时为空
@@ -264,6 +241,7 @@ namespace AsynGyanis::Database
     // 未连接状态：构造即安全，各入口一致失败
     // ============================================================================
 
+    /** @brief 钉住构造阶段不做任何 IO：无句柄、无错误文本，重复 disconnect 是安全空操作 */
     TEST(SqliteConnection, ConstructedConnectionHasNoHandleAndToleratesDisconnect)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -279,6 +257,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.lastError().empty()) << connection.lastError();
     }
 
+    /** @brief 钉住未连接时 databaseType() 仍可读，可安全用于日志与分派 */
     TEST(SqliteConnection, DatabaseTypeIsSqliteWithoutConnection)
     {
         const SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -288,6 +267,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseTypeName(connection.databaseType()), "Sqlite");
     }
 
+    /** @brief 钉住版本取自链接进来的库：连接前后可读且不变 */
     TEST(SqliteConnection, ServerVersionDoesNotDependOnConnection)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -305,6 +285,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.serverVersion(), versionBeforeConnect);
     }
 
+    /** @brief 钉住未连接时绝不把空句柄交给 SQLite：如实失败并给出中文前置条件说明 */
     TEST(SqliteConnection, ExecuteWithoutConnectionIsRejectedWithLocalizedReason)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -318,6 +299,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection.lastError(), "未连接")) << connection.lastError();
     }
 
+    /** @brief 钉住三个事务入口共用 execute() 的未连接前置检查，行为一致 */
     TEST(SqliteConnection, TransactionHelpersAllFailWithoutConnection)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -329,6 +311,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.rollback());
     }
 
+    /** @brief 钉住 rowid 计数器随句柄走：无句柄或断开后归零，不残留上次会话的值 */
     TEST(SqliteConnection, LastInsertRowIdIsZeroWithoutOpenHandle)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -346,6 +329,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.lastInsertRowId(), 0);
     }
 
+    /** @brief 钉住内存库建连暴露句柄，且启动期 PRAGMA 不留下错误文本 */
     TEST(SqliteConnection, ConnectsToInMemoryDatabaseAndExposesNativeHandle)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -358,6 +342,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.lastError().empty()) << connection.lastError();
     }
 
+    /** @brief 钉住重复 connect 幂等且复用同一句柄，不因重开造成旧句柄泄漏 */
     TEST(SqliteConnection, RepeatedConnectIsIdempotentAndKeepsSameHandle)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -371,6 +356,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.isConnected());
     }
 
+    /** @brief 钉住 disconnect 释放句柄，之后的命令按未连接被拒 */
     TEST(SqliteConnection, DisconnectReleasesHandleAndRejectsFurtherCommands)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -386,6 +372,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection.lastError(), "未连接")) << connection.lastError();
     }
 
+    /** @brief 钉住内存库随句柄销毁一起清空：重连拿到全新空库 */
     TEST(SqliteConnection, ReconnectAfterDisconnectOpensFreshInMemoryDatabase)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
@@ -402,6 +389,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection.lastError(), "no such table")) << connection.lastError();
     }
 
+    /** @brief 钉住空库路径兜底成内存库，且兜底后连接可正常执行 */
     TEST(SqliteConnection, EmptyDatabasePathFallsBackToInMemoryDatabase)
     {
         ConnectionConfig configuration;
@@ -419,6 +407,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asInteger(result->getValue(std::size_t{0})), std::optional<std::int64_t>(1));
     }
 
+    /** @brief 钉住嵌入式引擎忽略 host/port，不偷读无关网络字段 */
     TEST(SqliteConnection, HostAndPortAreIgnoredAndOnlyDatabasePathIsUsed)
     {
         TestSupport::TemporaryDatabaseFile databaseFile("SqliteIgnoresRemote");
@@ -439,6 +428,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(databaseFile.exists());
     }
 
+    /** @brief 钉住打不开文件时如实失败、回收半开句柄，并把请求路径写进错误文本 */
     TEST(SqliteConnection, ConnectIntoMissingDirectoryFailsAndReportsRequestedPath)
     {
         // 父目录不存在且刻意不创建：SQLite 只能报「打不开文件」，这是无需权限即可稳定复现的失败路径
@@ -468,6 +458,7 @@ namespace AsynGyanis::Database
     // execute()：单语句约束与错误路径
     // ============================================================================
 
+    /** @brief 钉住空命令在执行前就被拦下，不占用一次 prepare */
     TEST_F(SqliteConnectedMemoryDatabase, EmptyCommandIsRejected)
     {
         const std::unique_ptr<DatabaseResult> result = connection().execute("");
@@ -477,6 +468,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection().lastError(), "为空")) << connection().lastError();
     }
 
+    /** @brief 钉住无语句输入（空白/分号/注释）如实失败，不把空操作报成执行成功 */
     TEST_F(SqliteConnectedMemoryDatabase, CommandWithoutExecutableStatementIsRejected)
     {
         // 四种输入都让 prepare 成功却不产出语句：只剩空白、多余分号、行注释与块注释
@@ -492,6 +484,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住尾部分号与注释不算第二条语句，首条语句照常执行 */
     TEST_F(SqliteConnectedMemoryDatabase, TrailingSemicolonAndCommentAfterStatementAreNotExtraStatements)
     {
         // 分号与注释之后的空白不算第二条语句：这种尾巴必须照常执行首条语句
@@ -505,6 +498,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(asInteger(withComment->getValue(std::size_t{0})), std::optional<std::int64_t>(2));
     }
 
+    /** @brief 钉住多语句脚本整次拒绝且首条也不执行，不留半执行状态 */
     TEST_F(SqliteConnectedMemoryDatabase, MultipleStatementsAreRejectedWithoutRunningTheFirst)
     {
         const std::string script = "CREATE TABLE pairs (leftValue INTEGER, rightValue INTEGER);"
@@ -523,6 +517,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection().lastError(), "no such table")) << connection().lastError();
     }
 
+    /** @brief 钉住额外语句编译失败时归因正确、首条不执行 */
     TEST_F(SqliteConnectedMemoryDatabase, BrokenTrailingStatementIsRejectedWithoutRunningTheFirst)
     {
         const std::string script = "CREATE TABLE triplets (firstValue INTEGER); SELECT FROM;";
@@ -538,6 +533,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection().lastError(), "no such table")) << connection().lastError();
     }
 
+    /** @brief 钉住错误文本三要素齐全：中文动作说明 + SQLite 原文 + 错误码 */
     TEST_F(SqliteConnectedMemoryDatabase, InvalidSqlIsRejectedWithUnderlyingReason)
     {
         const std::unique_ptr<DatabaseResult> result = connection().execute("SELECT * FROM missing_table");
@@ -549,6 +545,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection().lastError(), "错误码")) << connection().lastError();
     }
 
+    /** @brief 钉住 step 阶段的约束违例如实报错，且失败的插入不产生新行 */
     TEST_F(SqliteConnectedMemoryDatabase, ConstraintViolationIsRejectedAtStepPhase)
     {
         // NOT NULL 违例在 step 阶段才暴露，编译期无从发现
@@ -563,6 +560,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(rowCount, std::optional<std::int64_t>(3));
     }
 
+    /** @brief 钉住每次调用先清错误：成功路径不拿上一轮失败冒充本次结果 */
     TEST_F(SqliteConnectedMemoryDatabase, SuccessfulCommandClearsPreviousFailure)
     {
         EXPECT_EQ(connection().execute("SELECT * FROM missing_table"), nullptr);
@@ -578,6 +576,7 @@ namespace AsynGyanis::Database
     // 事务
     // ============================================================================
 
+    /** @brief 钉住 BEGIN/COMMIT 收尾后写入生效，rowid 计数器随之前进 */
     TEST_F(SqliteConnectedMemoryDatabase, BeginAndCommitKeepInsertedRow)
     {
         ASSERT_TRUE(connection().beginTransaction()) << connection().lastError();
@@ -588,6 +587,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection().lastInsertRowId(), 4);
     }
 
+    /** @brief 钉住 ROLLBACK 撤销本次写入，行数回到事务前的三条 */
     TEST_F(SqliteConnectedMemoryDatabase, RollbackDiscardsInsertedRow)
     {
         ASSERT_TRUE(connection().beginTransaction()) << connection().lastError();
@@ -598,6 +598,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(readScalarInteger(connection(), "SELECT COUNT(*) FROM users"), std::optional<std::int64_t>(3));
     }
 
+    /** @brief 钉住嵌套 BEGIN 被拒且不破坏已有事务，后续写入与提交照常 */
     TEST_F(SqliteConnectedMemoryDatabase, NestedBeginIsRejected)
     {
         ASSERT_TRUE(connection().beginTransaction()) << connection().lastError();
@@ -611,6 +612,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(readScalarInteger(connection(), "SELECT COUNT(*) FROM users"), std::optional<std::int64_t>(4));
     }
 
+    /** @brief 钉住自动提交模式下无事务可收尾时如实失败，且连接保持可用 */
     TEST_F(SqliteConnectedMemoryDatabase, CommitOrRollbackWithoutActiveTransactionIsRejected)
     {
         // 自动提交模式下没有事务可收尾，两个入口都必须如实失败而不是返回「成功但什么都没做」
@@ -629,6 +631,7 @@ namespace AsynGyanis::Database
     // 连接级计数器与启动期配置
     // ============================================================================
 
+    /** @brief 钉住计数器记的是「最近插入的 rowid」：显式 rowid 的插入同样刷新它 */
     TEST_F(SqliteConnectedMemoryDatabase, LastInsertRowIdFollowsEachSuccessfulInsert)
     {
         // AUTOINCREMENT 的 rowid 从 1 递增，样本数据已占到 3
@@ -642,6 +645,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection().lastInsertRowId(), 500);
     }
 
+    /** @brief 钉住只有 INSERT 会改变 rowid 计数器，读与删除都不动它 */
     TEST_F(SqliteConnectedMemoryDatabase, LastInsertRowIdIgnoresReadAndDeleteStatements)
     {
         ASSERT_NE(executeRequired(connection(), "INSERT INTO users (name) VALUES ('Dan')"), nullptr);
@@ -656,6 +660,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection().lastInsertRowId(), rowIdAfterInsert);
     }
 
+    /** @brief 钉住启动期外键 PRAGMA 真正生效：孤儿行被拒、父行存在后可插入 */
     TEST_F(SqliteConnectedMemoryDatabase, StartupPragmaEnablesForeignKeys)
     {
         ASSERT_NE(executeRequired(connection(), "CREATE TABLE parents (id INTEGER PRIMARY KEY)"), nullptr);
@@ -671,6 +676,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(executeRequired(connection(), "INSERT INTO children (parentId) VALUES (99)"), nullptr);
     }
 
+    /** @brief 钉住 queryTimeout 经 busy_timeout 零计时映射进 SQLite，含基类默认值 */
     TEST(SqliteConnection, QueryTimeoutBecomesBusyTimeoutOnConnect)
     {
         // PRAGMA busy_timeout 的读形式直接反映 sqlite3_busy_timeout 设进去的值，是零计时的映射验证；
@@ -685,6 +691,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住非正超时统一夹成 0（不等锁，立刻 SQLITE_BUSY） */
     TEST(SqliteConnection, NonPositiveQueryTimeoutMapsToZeroBusyTimeout)
     {
         // 基类允许 0 与负值；负数交给 SQLite 属未定义用法，实现统一夹成 0（不等锁，立刻 SQLITE_BUSY）
@@ -699,6 +706,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住内存库改不成 WAL 不算失败：不报错且连接照常可用 */
     TEST_F(SqliteConnectedMemoryDatabase, InMemoryDatabaseKeepsItsOwnJournalModeAndStaysUsable)
     {
         // 内存库改不成 WAL 是预期行为，connect() 不许因此失败，也不许留下错误文本
@@ -719,6 +727,7 @@ namespace AsynGyanis::Database
     // 文件库：落盘、重开与锁竞争
     // ============================================================================
 
+    /** @brief 钉住 connect 创建库文件，且文件只落在系统临时目录 */
     TEST_F(SqliteTemporaryFileDatabase, ConnectCreatesDatabaseFileOnDisk)
     {
         // 构造夹具时文件还不存在，是 connect() 把它创建出来的
@@ -735,6 +744,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(result->next());
     }
 
+    /** @brief 钉住文件库的 WAL PRAGMA 真正生效（读回 wal） */
     TEST_F(SqliteTemporaryFileDatabase, FileDatabaseRunsInWriteAheadLogMode)
     {
         const std::unique_ptr<DatabaseResult> result = executeRequired(connection(), "PRAGMA journal_mode");
@@ -747,6 +757,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(mode.value(), "wal");
     }
 
+    /** @brief 钉住断连时检查点回写与重连后的数据完整 */
     TEST_F(SqliteTemporaryFileDatabase, CommittedRowsAndFileContentSurviveReconnect)
     {
         ASSERT_NE(executeRequired(connection(), kCreateUsersTableSql), nullptr);
@@ -761,6 +772,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(readScalarInteger(connection(), "SELECT COUNT(*) FROM users"), std::optional<std::int64_t>(1));
     }
 
+    /** @brief 钉住第二个连接对象能读到已提交内容，与是谁写入的无关 */
     TEST_F(SqliteTemporaryFileDatabase, SecondConnectionObjectReadsCommittedRows)
     {
         ASSERT_NE(executeRequired(connection(), kCreateUsersTableSql), nullptr);
@@ -780,6 +792,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection().isConnected());
     }
 
+    /** @brief 钉住等锁超时如实报错，解锁后同一写入成功 */
     TEST_F(SqliteTemporaryFileDatabase, WriteOnSecondConnectionFailsWhileFirstHoldsExclusiveLock)
     {
         ASSERT_NE(executeRequired(connection(), kCreateUsersTableSql), nullptr);
@@ -801,6 +814,7 @@ namespace AsynGyanis::Database
         EXPECT_NE(executeRequired(*contender, "INSERT INTO users (name) VALUES ('Queued')"), nullptr);
     }
 
+    /** @brief 钉住工厂交出的基类指针能对配置的文件读写 */
     TEST_F(SqliteTemporaryFileDatabase, FactoryCreatedConnectionWritesAndReadsConfiguredFile)
     {
         const std::unique_ptr<DatabaseConnection> connection =

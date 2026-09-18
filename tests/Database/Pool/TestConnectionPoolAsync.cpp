@@ -1,16 +1,7 @@
-/**
- * @file TestConnectionPoolAsync.cpp
- * @brief 连接池异步获取测试 —— 挂起/唤醒的线程归属与快慢两条路径
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 这个文件盯住的是一条容易被忽略、却在真机上才会暴露的性质：**协程在哪个线程上恢复**。
- *          池满时 `acquireAsync()` 挂起，归还连接的一方把恢复动作投递回 `acquireAsync()` 给定的 `EventLoop`
- *          （`Scheduler::scheduleRemote`），因此恢复后的代码仍运行在那个事件循环线程上。
- *          本文件就是防止它退化的那道闸：断言恢复线程 == 事件循环线程，且**不等于**调用线程。
- */
+// 连接池异步获取测试 —— 挂起/唤醒的线程归属与快慢两条路径。
+// 盯住一条容易被忽略、却在真机上才会暴露的性质：**协程在哪个线程上恢复**。池满时 `acquireAsync()` 挂起，
+// 归还连接的一方把恢复动作投递回 `acquireAsync()` 给定的 `EventLoop`（`Scheduler::scheduleRemote`），
+// 因此恢复后的代码仍运行在那个事件循环线程上；本文件断言恢复线程 == 事件循环线程，且**不等于**调用线程。
 // 覆盖场景：
 // - AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull（快路径：池未满时直接建连，不挂起）
 // - AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
@@ -18,6 +9,8 @@
 // - DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
 // - DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection（析构期唤醒的协程归还连接，不得同线程死锁）
 // - DiscardingTaskAfterHandoffDoesNotResumeFreedFrame（交接后销毁 Task 不得 resume 已释放帧）
+// - DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
+// - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -55,12 +48,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 驱动协程：等待一次异步获取，并记录恢复发生在哪个线程上
          *
-         * @details 记录线程 id 的那一行必须紧跟在 `co_await` 之后——它正是「恢复点」，
-         *          也是本文件要验证的观察点。
-         * @param pool 目标连接池
-         * @param loop 恢复用的事件循环
-         * @param probe 观测结果出参，由调用方持有并保证活到协程结束
-         * @return Core::Task<void> 驱动协程
+         * @details 记录线程 id 的那一行必须紧跟在 `co_await` 之后：它正是本文件要验证的恢复点。
          */
         Core::Task<void> probeAcquireAsync(ConnectionPool &pool, Core::EventLoop &loop, AcquireProbe &probe)
         {
@@ -83,6 +71,7 @@ namespace AsynGyanis::Database
 
     } // namespace
 
+    /** @brief 钉住快路径：池未满时异步获取直接建连返回，不挂起、不切换线程 */
     TEST(ConnectionPoolAsync, AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull)
     {
         ConnectionCounter counter;
@@ -112,6 +101,7 @@ namespace AsynGyanis::Database
         loopThread.parkDriver(std::move(driver));
     }
 
+    /** @brief 钉住快路径：有空闲连接时直接复用而不是再建一条 */
     TEST(ConnectionPoolAsync, AcquireAsyncReusesIdleConnectionImmediately)
     {
         ConnectionCounter counter;
@@ -135,6 +125,7 @@ namespace AsynGyanis::Database
         loopThread.parkDriver(std::move(driver));
     }
 
+    /** @brief 钉住慢路径的线程归属：隔线程归还后恢复发生在 acquireAsync() 指定的事件循环线程上，而非归还线程 */
     TEST(ConnectionPoolAsync, AcquireAsyncResumesOnGivenEventLoop)
     {
         ConnectionCounter counter;
@@ -176,6 +167,7 @@ namespace AsynGyanis::Database
         loopThread.parkDriver(std::move(driver));
     }
 
+    /** @brief 钉住池析构就地唤醒等待者并交回空连接，不把它永久挂在等待列表上 */
     TEST(ConnectionPoolAsync, DestructorWakesWaitersWithEmptyConnection)
     {
         ConnectionCounter counter;
@@ -215,13 +207,9 @@ namespace AsynGyanis::Database
     /**
      * @brief 驱动协程：先占住唯一一条连接，再等第二条（池已满，必然挂起），恢复后把第一条还回去
      *
-     * @details 「占着连接等第二条」正是析构期就地恢复最危险的组合：池析构会锁着存活令牌锁
-     *          恢复等待者，而本协程在恢复点之后立刻归还连接——归还路径要锁**同一把非递归锁**。
-     *          析构若不把锁收到置假那一步为止，本协程就会在同线程上二次加锁、永久挂住。
-     * @param pool 目标连接池（用例持有，会在等待者挂起期间析构）
-     * @param loop 恢复用的事件循环
-     * @param probe 观测结果出参
-     * @return Core::Task<void> 驱动协程
+     * @details 「占着连接等第二条」正是析构期就地恢复最危险的组合：析构会锁着存活令牌锁恢复等待者，
+     *          而本协程恢复后立刻归还连接——归还路径要锁**同一把非递归锁**；析构若不把锁收到置假
+     *          那一步为止，本协程就会在同线程上二次加锁、永久挂住。
      */
     Core::Task<void> probeHoldFirstThenWaitSecond(ConnectionPool &pool, Core::EventLoop &loop, AcquireProbe &probe)
     {
@@ -274,10 +262,9 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 钉住：连接已交接、恢复尚未执行时销毁 Task，不得 resume 已释放的协程帧
-     * @details 交接把「恢复这次等待」投回事件循环，而调用方在那之后随时可能销毁 Task——
-     *          协程帧连同等待器一起析构。投裸句柄时循环那边会 resume 一块已释放的内存
-     *          （ASan 实测：heap-use-after-free）；用例用一个**不启动**的循环把这次恢复
-     *          留在队列里，销毁 Task 之后再手动排空队列
+     * @details 交接把「恢复这次等待」投回事件循环，而调用方在那之后随时可能销毁 Task——协程帧连同
+     *          等待器一起析构，恢复动作必须只经持票句柄执行，不能拿裸句柄去 resume 已释放的内存。
+     *          用例用一个**不启动**的循环把这次恢复留在队列里，销毁 Task 之后再手动排空队列。
      */
     TEST(ConnectionPoolAsync, DiscardingTaskAfterHandoffDoesNotResumeFreedFrame)
     {

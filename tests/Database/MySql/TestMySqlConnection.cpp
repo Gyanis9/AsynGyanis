@@ -1,15 +1,8 @@
-/**
- * @file TestMySqlConnection.cpp
- * @brief MySqlConnection 单元测试：真实驱动的离线失败语义与驱动无关的连接骨架
- * @details DATABASE_WITH_MYSQL 默认开启：libmysqlclient 可用时编出真实驱动（CMake 定义 DATABASE_HAS_MYSQL），探测不到
- *          客户端库时才退化为报错桩。因此本文件只断言「不需要 MySQL 服务端就能成立」的行为，两种构建配置下同义（配置回显、
- *          超时往返、未连接时的失败路径、指向未监听端口的 connect() 在超时内失败）；真实驱动专属的部分（参数个数不匹配、真实
- *          查询结果、serverVersion()）需要可用的服务端，交由 TestMySqlStatementResult.cpp 与 TestMySqlDialect.cpp 在离线侧覆盖。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 覆盖场景（两种构建配置下同义：libmysqlclient 可用时是真实驱动，否则是报错桩）：
+// - 与驱动无关的连接骨架：databaseType、配置回显、超时默认值与 setter 往返
+// - 未连接 / 空主机 / 未监听端口的失败路径：有界返回、原因中文且点明 MySQL、句柄不残留
+// - 未连接时各 execute 重载与事务便捷封装一律明确失败，不静默丢弃参数或按 NULL 执行
+// 真实驱动专属的行为（参数个数不匹配、真实查询结果、serverVersion()）需要可用服务端，不在此文件断言。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
@@ -27,6 +20,9 @@
 
 namespace AsynGyanis::Database
 {
+
+    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
+    using TestSupport::containsLocalizedText;
     namespace
     {
 #ifdef DATABASE_HAS_MYSQL
@@ -54,10 +50,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 本机上一个确定没有监听的端口
-         * @details 取注册端口区间内、远离 MySQL(3306)/Redis(6379) 等常见服务，
-         *          且在 Linux(32768+) 与 Windows(49152+) 临时端口范围之下：
-         *          既不会被本机服务占用，也不会被系统当作源端口分配出去。
-         *          即使该端口上恰好有别的东西在监听，MySQL 握手也必然失败，用例结论不变
+         * @details 取注册端口区间内、远离 MySQL(3306) 与系统临时端口段（Linux 32768+ / Windows 49152+）的编号：
+         *          既不会被本机服务占用，也不会被系统当作源端口分配出去；该端口上恰好有别的服务在监听时，
+         *          MySQL 握手仍必然失败，用例结论不变
          */
         constexpr std::uint16_t kUnmonitoredPort = 16391;
 
@@ -73,28 +68,15 @@ namespace AsynGyanis::Database
             return configuration;
         }
 
-        /**
-         * @brief 判断文本是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
-         * @param text 待判定的文本
-         * @return true 至少有一个字节的最高位被置起（UTF-8 多字节序列的特征）
-         */
-        bool containsLocalizedText(const std::string &text)
-        {
-            for (const char character: text)
-            {
-                if (static_cast<unsigned char>(character) >= 0x80)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
     } // namespace
 
     // ------------------------------------------------------------------------
     // 与是否编译真实驱动无关的骨架行为
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住 databaseType() 不依赖连接状态，桩构建下同样返回 MySql
+     */
     TEST(MySqlConnection, ReportsMySqlDatabaseType)
     {
         const MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -104,6 +86,9 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseTypeName(connection.databaseType()), "MySql");
     }
 
+    /**
+     * @brief 钉住构造阶段只登记配置：五个字段原样回显，驱动不做裁剪或补默认值
+     */
     TEST(MySqlConnection, ConfigurationEchoesConstructorArgument)
     {
         ConnectionConfig configuration;
@@ -124,6 +109,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(stored.database, "warehouse");
     }
 
+    /**
+     * @brief 钉住工厂默认值不因驱动而改写（host/port/database 三项）
+     */
     TEST(MySqlConnection, ConfigurationDefaultsAreEchoedWithoutRewrite)
     {
         const MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -134,6 +122,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.configuration().database, "test");
     }
 
+    /**
+     * @brief 钉住基类声明的连接/查询超时默认值原样生效
+     */
     TEST(MySqlConnection, TimeoutsStartWithDocumentedDefaults)
     {
         const MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -142,6 +133,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.queryTimeout(), kDefaultQueryTimeoutMilliseconds);
     }
 
+    /**
+     * @brief 钉住连接超时 setter 往返，含 0 与负值由 getter 如实回显（校验推迟到 connect）
+     */
     TEST(MySqlConnection, ConnectTimeoutSetterRoundTripsBeforeConnect)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -156,6 +150,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.connectTimeout(), -1);
     }
 
+    /**
+     * @brief 钉住两个超时彼此独立存储，改一个不影响另一个
+     */
     TEST(MySqlConnection, QueryTimeoutSetterRoundTripsIndependently)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -167,6 +164,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.connectTimeout(), kDefaultConnectTimeoutMilliseconds);
     }
 
+    /**
+     * @brief 钉住未连接初值：无句柄、无错误、无服务端版本
+     */
     TEST(MySqlConnection, StartsDisconnectedWithoutAnyErrorRecorded)
     {
         const MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -178,6 +178,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.serverVersion().empty());
     }
 
+    /**
+     * @brief 钉住空主机在本地被拒：有界返回、不产生网络往返、原因点明 MySQL
+     */
     TEST(MySqlConnection, ConnectWithEmptyHostFailsWithoutServerContact)
     {
         ConnectionConfig configuration = ConnectionConfig::mySqlDefault();
@@ -198,6 +201,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住未连接时 execute() 按基类契约返回 nullptr 并写中文原因
+     */
     TEST(MySqlConnection, ExecuteWithoutConnectionReturnsNullResult)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -211,6 +217,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住参数化路径在未连接时明确失败，不静默丢参数或按 NULL 执行
+     */
     TEST(MySqlConnection, ParameterizedExecuteWithoutConnectionReturnsNullResult)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -227,6 +236,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住未连接时 disconnect() 是幂等空操作，析构依赖这条路径
+     */
     TEST(MySqlConnection, DisconnectWithoutConnectionIsSafe)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -237,6 +249,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.isConnected());
     }
 
+    /**
+     * @brief 钉住 disconnect() 不清上一条失败根因，失败原因不会被断开动作抹掉
+     */
     TEST(MySqlConnection, DisconnectKeepsLastFailureReason)
     {
         ConnectionConfig configuration = ConnectionConfig::mySqlDefault();
@@ -254,6 +269,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.isConnected());
     }
 
+    /**
+     * @brief 钉住未连接时 serverVersion() 为空：MySQL 的服务端版本必须持有已连接句柄才有值
+     */
     TEST(MySqlConnection, ServerVersionIsEmptyWhileDisconnected)
     {
         const MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -263,6 +281,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.serverVersion().empty());
     }
 
+    /**
+     * @brief 钉住 beginTransaction/commit/rollback 未连接时按同一约定失败并写原因
+     */
     TEST(MySqlConnection, TransactionHelpersFailWhileDisconnected)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());
@@ -278,6 +299,9 @@ namespace AsynGyanis::Database
     // 指向未监听端口的离线建连路径（真实驱动与报错桩都必须失败）
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住指向未监听端口的 connect() 有界失败、句柄不残留且可安全再断开
+     */
     TEST(MySqlConnection, ConnectToUnmonitoredLocalPortFailsWithinTimeout)
     {
         MySqlConnection connection(makeOfflineConfiguration());
@@ -300,6 +324,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.nativeHandle(), nullptr);
     }
 
+    /**
+     * @brief 钉住失败原因中文且点明 MySQL，并按构建形态分别指出驱动缺失或客户端错误码
+     */
     TEST(MySqlConnection, ConnectFailureKeepsLocalizedReasonAndStaysDisconnected)
     {
         MySqlConnection connection(makeOfflineConfiguration());
@@ -331,6 +358,9 @@ namespace AsynGyanis::Database
     // 反复建连/析构不泄漏、不崩溃
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住反复失败重连不泄漏句柄、不留下已连接状态
+     */
     TEST(MySqlConnection, RepeatedOfflineConnectAttemptsAreSafe)
     {
         // 每次失败都必须把句柄释放干净：真实驱动会在失败路径上 mysql_close 并置空，
@@ -347,6 +377,9 @@ namespace AsynGyanis::Database
         }
     }
 
+    /**
+     * @brief 钉住空命令/普通命令/参数化命令三条执行入口在未连接时都明确失败并给出原因
+     */
     TEST(MySqlConnection, EveryExecuteOverloadKeepsFailingWhileDisconnected)
     {
         MySqlConnection connection(ConnectionConfig::mySqlDefault());

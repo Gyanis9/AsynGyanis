@@ -1,16 +1,12 @@
-/**
- * @file TestDatabaseException.cpp
- * @brief 数据库异常体系测试：家族继承关系与调用方实际可用的捕获面
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 全部用例都不触碰数据库：只构造异常对象并断言继承关系与捕获结果，钉住三条契约——运行期故障家族
- *          （DatabaseException 及其三个子类）全部派生自 Base::Exception，调用方能用一个 catch 网住整个框架的可恢复故障；
- *          三个子类各自可精确捕获，且都能被根类型 DatabaseException 与标准库 std::runtime_error 捕获；用法错误（Base::LogicException /
- *          Base::InvalidArgumentException）刻意不在本家族内，该边界由本文件与 tests/Base/Exception/TestException.cpp 共同钉住。
- */
+// 数据库异常体系测试：家族继承关系与调用方实际可用的捕获面。
+// 覆盖场景：
+// - EveryRuntimeFailureDerivesFromProjectExceptionBase / UsageErrorsStayOutsideTheRuntimeFailureFamily
+// - OneCatchOfProjectBaseCoversEverySubclass / EachSubclassIsCatchableOnItsOwn / RootAndStandardBaseAlsoCatchSubclasses
+// - MessageKeepsOriginalTextAndCarriesThrowSite
+// 钉住的契约：运行期故障家族（DatabaseException 及其三个子类）全部派生自 Base::Exception，调用方能用一个 catch 网住
+// 整个框架的可恢复故障，且都能被根类型与标准库 std::runtime_error 捕获；用法错误（Base::LogicException /
+// Base::InvalidArgumentException）刻意不在本家族内，该边界由本文件与 tests/Base/Exception/TestException.cpp 共同钉住。
+// 全部用例都不触碰数据库：只构造异常对象并断言继承关系与捕获结果。
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
@@ -46,6 +42,7 @@ namespace AsynGyanis::Database
     // 家族继承关系
     // ============================================================================
 
+    /** @brief 钉住运行期故障家族的继承面：四类故障都能被 Base::Exception 一条 catch 网住，且不脱离 std::runtime_error 分类 */
     TEST(DatabaseExceptionFamily, EveryRuntimeFailureDerivesFromProjectExceptionBase)
     {
         // 断言这四条都派生自框架异常基类：调用方才能用一条 catch 兜住框架的运行期故障
@@ -63,6 +60,7 @@ namespace AsynGyanis::Database
         static_assert(std::is_base_of_v<DatabaseException, RowMappingException>);
     }
 
+    /** @brief 钉住用法错误与运行期故障家族互不相交：参数/状态错误不得被「可恢复故障」的捕获面吞掉 */
     TEST(DatabaseExceptionFamily, UsageErrorsStayOutsideTheRuntimeFailureFamily)
     {
         // 用法错误（参数非法、对象状态不允许）刻意留在 std::logic_error 分支：
@@ -77,6 +75,7 @@ namespace AsynGyanis::Database
     // 捕获面
     // ============================================================================
 
+    /** @brief 钉住一条 catch 兜住全家族的捕获面：按值抛出后仍能取回具体子类的消息，不因切片丢动态类型 */
     TEST(DatabaseExceptionFamily, OneCatchOfProjectBaseCoversEverySubclass)
     {
         // 调用方只需要这一个 catch 分支就能兜住本模块的全部运行期故障，不必逐个枚举子类——
@@ -98,6 +97,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(contains(catchThroughProjectBase(RowMappingException("列类型不符")), "列类型不符"));
     }
 
+    /** @brief 钉住三类故障各自可精确捕获——重试、记日志、对齐结构体等不同处置方式的前提 */
     TEST(DatabaseExceptionFamily, EachSubclassIsCatchableOnItsOwn)
     {
         // 三类失败的处置方式不同（重试 / 记日志失败 / 对齐结构体），因此必须能各自精确捕获
@@ -106,6 +106,7 @@ namespace AsynGyanis::Database
         EXPECT_THROW(throw RowMappingException("列类型不符"), RowMappingException);
     }
 
+    /** @brief 钉住放宽捕获面不漏失败：子类同样能被根类型与 std::exception 捕获 */
     TEST(DatabaseExceptionFamily, RootAndStandardBaseAlsoCatchSubclasses)
     {
         // 捕获根类型或 std::exception 同样能命中子类：放宽捕获面不会漏掉任何一类失败
@@ -118,6 +119,7 @@ namespace AsynGyanis::Database
     // 消息与位置
     // ============================================================================
 
+    /** @brief 钉住消息保留原文、不加领域前缀，且抛出点与文本格式与 Base::Exception 完全一致 */
     TEST(DatabaseExceptionFamily, MessageKeepsOriginalTextAndCarriesThrowSite)
     {
         // 消息不额外加领域前缀（调用点的文本本身已带上下文标签），

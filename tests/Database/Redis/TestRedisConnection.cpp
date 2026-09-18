@@ -1,15 +1,11 @@
-/**
- * @file TestRedisConnection.cpp
- * @brief RedisConnection 单元测试：真实 hiredis 驱动在「无可用 Redis 服务」下的离线行为
- * @details 本构建已找到 hiredis（DATABASE_HAS_REDIS），被测对象是真实驱动而不是报错桩；但测试环境没有可用的 Redis
- *          服务，因此只覆盖离线可达的路径：未连接状态的初值、配置回显、超时设置往返、connect() 对未监听端口的有界失败、
- *          未连接时各执行入口返回 nullptr 并写中文原因、管道登记与丢弃、disconnect() 幂等；需要真实服务端的语义不在此断言。
- *          超时设成百毫秒量级并用 steady_clock 判定上限（回环地址上没有监听端口会立刻收到 RST，超时只是防挂死的保险）。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 覆盖场景（真实 hiredis 驱动的离线路径；测试环境没有可用的 Redis 服务）：
+// - 未连接初值与配置：databaseType、五个配置字段原样回显、超时默认值与 setter 往返
+// - connect() 失败路径：空主机零网络往返、未监听端口有界失败、失败文本中文且点明 Redis 驱动
+// - 未连接时的执行入口：execute / executeCommand / selectDatabase / flushPipeline 一律返回 nullptr 并写原因
+// - 管道登记与丢弃：切词失败当场拒绝、未连接时 flush 不发送且丢弃缓冲、空管道不是错误
+// - disconnect() 在未连接与失败后都幂等，析构安全
+// 需要真实服务端的语义（认证、命令往返、键空间选择）由 TestRedisIntegration.cpp 在真机侧覆盖；
+// 超时取百毫秒量级并用 steady_clock 判定上界（回环未监听端口会立刻回 RST，超时只是防挂死的保险）。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
@@ -27,6 +23,9 @@
 
 namespace AsynGyanis::Database
 {
+
+    // 复用测试辅助里的中文文案判据（原先每个测试文件各写一份）
+    using TestSupport::containsLocalizedText;
     namespace
     {
 #ifdef DATABASE_HAS_REDIS
@@ -70,28 +69,15 @@ namespace AsynGyanis::Database
             return configuration;
         }
 
-        /**
-         * @brief 判断文本是否含非 ASCII 字节，用作「面向使用者的中文文案」的稳定判据
-         * @param text 待判定的文本
-         * @return true 至少有一个字节的最高位被置起（UTF-8 多字节序列的特征）
-         */
-        bool containsLocalizedText(const std::string &text)
-        {
-            for (const char character: text)
-            {
-                if (static_cast<unsigned char>(character) >= 0x80)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
     } // namespace
 
     // ------------------------------------------------------------------------
     // 未连接状态的初值与配置
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住 databaseType()/databaseTypeName() 不依赖连接状态，离线与桩构建下都返回 Redis
+     */
     TEST(RedisConnection, ReportsRedisDatabaseType)
     {
         const RedisConnection connection(ConnectionConfig::redisDefault());
@@ -101,6 +87,9 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseTypeName(connection.databaseType()), "Redis");
     }
 
+    /**
+     * @brief 钉住构造阶段零 IO：五个配置字段原样回显，database 不被解析成整数
+     */
     TEST(RedisConnection, ConfigurationEchoesConstructorArgument)
     {
         ConnectionConfig configuration;
@@ -121,6 +110,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(stored.database, "3");
     }
 
+    /**
+     * @brief 钉住未连接状态的三项初值：连接标志为假、无原生句柄、无残留错误文本
+     */
     TEST(RedisConnection, StartsDisconnectedWithoutAnyErrorRecorded)
     {
         const RedisConnection connection(ConnectionConfig::redisDefault());
@@ -131,6 +123,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.lastError().empty());
     }
 
+    /**
+     * @brief 钉住基类声明的连接/查询超时默认值（5000/30000 毫秒）原样生效
+     */
     TEST(RedisConnection, TimeoutsStartWithDocumentedDefaults)
     {
         const RedisConnection connection(ConnectionConfig::redisDefault());
@@ -139,6 +134,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.queryTimeout(), kDefaultQueryTimeoutMilliseconds);
     }
 
+    /**
+     * @brief 钉住连接超时 setter 在 connect() 之前的往返，含 0 与负值的如实回显
+     */
     TEST(RedisConnection, ConnectTimeoutSetterRoundTripsBeforeConnect)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -153,6 +151,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.connectTimeout(), -1);
     }
 
+    /**
+     * @brief 钉住连接与查询两个超时是彼此独立的存储，改一个不影响另一个
+     */
     TEST(RedisConnection, QueryTimeoutSetterRoundTripsIndependently)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -168,6 +169,9 @@ namespace AsynGyanis::Database
     // connect() 的离线失败路径
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住空主机在本地校验处被拒：有界返回、不产生网络往返、原因中文
+     */
     TEST(RedisConnection, ConnectWithEmptyHostFailsWithoutServerContact)
     {
         ConnectionConfig configuration = makeOfflineConfiguration();
@@ -188,6 +192,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsLocalizedText(connection.lastError()));
     }
 
+    /**
+     * @brief 钉住未监听端口上的 connect() 有界失败且不进入已连接状态
+     */
     TEST(RedisConnection, ConnectToUnmonitoredLocalPortFailsWithinTimeout)
     {
         RedisConnection connection(makeOfflineConfiguration());
@@ -202,6 +209,9 @@ namespace AsynGyanis::Database
         EXPECT_LT(elapsed.count(), kMaximumOfflineCallMilliseconds);
     }
 
+    /**
+     * @brief 钉住连接失败时 lastError() 是中文说明且点明 Redis 驱动名
+     */
     TEST(RedisConnection, FailedConnectRecordsLocalizedReason)
     {
         RedisConnection connection(makeOfflineConfiguration());
@@ -217,6 +227,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(reason.find("Redis"), std::string::npos) << reason;
     }
 
+    /**
+     * @brief 钉住失败路径先摘错误文本再释放上下文：不留半开连接与悬垂句柄
+     */
     TEST(RedisConnection, FailedConnectLeavesNoContextBehind)
     {
         RedisConnection connection(makeOfflineConfiguration());
@@ -229,6 +242,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.nativeHandle(), nullptr);
     }
 
+    /**
+     * @brief 钉住同一对象反复失败重连不积累状态：每次都是干净失败且都给出原因
+     */
     TEST(RedisConnection, RepeatedFailedConnectStaysStable)
     {
         RedisConnection connection(makeOfflineConfiguration());
@@ -248,6 +264,9 @@ namespace AsynGyanis::Database
     // 未连接时的执行入口
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住未连接时 execute() 按基类契约返回 nullptr 并写中文原因
+     */
     TEST(RedisConnection, ExecuteWithoutConnectionReturnsNullResult)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -261,6 +280,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("Redis"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住未连接时 executeCommand() 同样返回 nullptr 且原因点明 Redis
+     */
     TEST(RedisConnection, ExecuteCommandWithoutConnectionReturnsNullResult)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -273,6 +295,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("Redis"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住空参数检查先于连接检查，无效命令不会去碰连接状态
+     */
     TEST(RedisConnection, ExecuteCommandWithEmptyArgumentsReturnsNullResult)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -285,6 +310,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.lastError().empty());
     }
 
+    /**
+     * @brief 钉住负的键空间编号在前置校验处被拒，不会作为非法命令发往服务端
+     */
     TEST(RedisConnection, SelectDatabaseRejectsNegativeIndex)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -295,6 +323,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("Redis"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住合法键空间编号在未连接时仍失败并如实回传原因，连接状态不变
+     */
     TEST(RedisConnection, SelectDatabaseWithoutConnectionFails)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -309,6 +340,9 @@ namespace AsynGyanis::Database
     // 管道缓冲区：登记与丢弃
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住切词在登记阶段完成：引号未闭合当场拒绝并给出原因
+     */
     TEST(RedisConnection, PipelineCommandRejectsUnclosedQuote)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -319,6 +353,9 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("Redis"), std::string::npos) << connection.lastError();
     }
 
+    /**
+     * @brief 钉住整行空白的命令被本地拒绝，不会作为零参数命令发往服务端
+     */
     TEST(RedisConnection, PipelineCommandRejectsBlankCommand)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -328,6 +365,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.lastError().empty());
     }
 
+    /**
+     * @brief 钉住未连接时 flush 不发送任何字节、交出空列表并丢弃已登记命令
+     */
     TEST(RedisConnection, FlushPipelineWithoutConnectionReturnsNoResults)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -345,6 +385,9 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.flushPipeline().empty());
     }
 
+    /**
+     * @brief 钉住真实驱动的登记阶段零 IO：未连接也允许登记且不写错误
+     */
     TEST(RedisConnection, PipelineRegistrationNeedsNoConnection)
     {
         if (!kRedisDriverCompiled)
@@ -360,6 +403,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.isConnected());
     }
 
+    /**
+     * @brief 钉住空管道不是错误：交出空列表、不写原因、不触碰连接状态
+     */
     TEST(RedisConnection, FlushEmptyPipelineIsNotAnError)
     {
         if (!kRedisDriverCompiled)
@@ -381,6 +427,9 @@ namespace AsynGyanis::Database
     // disconnect() 与析构
     // ------------------------------------------------------------------------
 
+    /**
+     * @brief 钉住未连接时 disconnect() 是幂等空操作，析构路径依赖这一点
+     */
     TEST(RedisConnection, DisconnectWithoutConnectionIsSafe)
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
@@ -392,6 +441,9 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.isConnected());
     }
 
+    /**
+     * @brief 钉住连接失败后再 disconnect() 幂等且句柄保持为空
+     */
     TEST(RedisConnection, DisconnectAfterFailedConnectIsSafe)
     {
         RedisConnection connection(makeOfflineConfiguration());
@@ -404,6 +456,9 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.nativeHandle(), nullptr);
     }
 
+    /**
+     * @brief 钉住从未连接的对象带着未发送命令析构也不抛异常、不触发 IO
+     */
     TEST(RedisConnection, DestroyingNeverConnectedConnectionIsSafe)
     {
         // 析构无条件调用 disconnect()：从未连接过的对象安静离场即可，不应抛任何异常。

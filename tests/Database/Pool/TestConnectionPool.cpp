@@ -1,20 +1,11 @@
-/**
- * @file TestConnectionPool.cpp
- * @brief 连接池单元测试
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 用 TestConnectionPool.h 里的 MockConnection 驱动连接池，覆盖取用/归还复用、容量满时的阻塞与超时、
- *          超寿命连接的丢弃、并发取还的统计自洽，全程不触碰真实数据库。
- */
+// 连接池单元测试 —— 用 TestConnectionPool.h 里的 MockConnection 驱动，全程不触碰真实数据库。
 // 覆盖场景：
 // - AcquireReleaseReusesConnection：取一条，归还，再取，应得同一连接
-// - AcquireBlocksThenSucceeds：容量1，另一线程等超时前归还，阻塞者应拿到
-// - AcquireTimeout：容量0，超时内无法获取，返回空
-// - ExcessLifetimeConnectionIsDiscarded：maxLifetimeSeconds=0，归还后丢弃，下次获取得到新连接
+// - AcquireBlocksThenSucceeds / AcquireTimeoutReturnsEmpty / TryAcquireReturnsEmptyWhenExhausted：阻塞、超时与非阻塞获取
+// - ExcessLifetimeConnectionIsDiscarded / UnhealthyConnectionIsDiscarded：过期与不健康连接都在归还时丢弃
 // - ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
+// - StatisticsAreConsistent / PooledConnectionMoveSemantics：统计方法与包装器移动语义
+// - ResetsSessionStateOnBothReturnPaths / DestructorWakesBlockedSyncWaiters：两条归还去向都复位会话状态；析构叫醒同步等待者
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -59,23 +50,19 @@ namespace AsynGyanis::Database
 
             ConnectionPool pool(factory, configuration);
 
-            // 第一次获取
             PooledConnection first = pool.acquire();
             ASSERT_TRUE(first) << "首次获取应成功";
 
             DatabaseConnection *firstPointer = first.operator->();
 
-            // 归还
             first.release();
             ASSERT_FALSE(first) << "release 后应为空";
 
-            // 第二次获取
             PooledConnection second = pool.acquire();
             ASSERT_TRUE(second) << "第二次获取应成功";
 
             DatabaseConnection *secondPointer = second.operator->();
 
-            // 应当得到同一个连接（LIFO 栈顶）
             EXPECT_EQ(firstPointer, secondPointer)
                 << "第二次应得到与第一次相同的连接指针";
         }
@@ -113,13 +100,18 @@ namespace AsynGyanis::Database
                 }
             });
 
-            // 确保第二个线程已开始等待
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            // 等到第二个线程真的挂在等待列表上再归还：固定 sleep 只能缩小「还没开始等」的窗口，
+            // 慢机器上下面那条断言就退化成赌调度（同文件其它用例已统一改成这种有界轮询）
+            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            ASSERT_EQ(pool.waitingCount(), 1U) << "等待者没有挂上：用例前提不成立";
 
             // 归还连接 — 应唤醒等待者
             taken.release();
 
-            // 等待第二个线程完成
             secondThread.join();
 
             EXPECT_TRUE(secondGotConnection.load())
@@ -170,15 +162,12 @@ namespace AsynGyanis::Database
 
             ConnectionPool pool(factory, configuration);
 
-            // 第一次非阻塞获取应成功
             PooledConnection first = pool.tryAcquire();
             ASSERT_TRUE(first) << "首次 tryAcquire 应成功";
 
-            // 第二次非阻塞获取应立刻失败
             PooledConnection second = pool.tryAcquire();
             EXPECT_FALSE(second) << "池已空，tryAcquire 应立刻返回空";
 
-            // 归还后再次尝试应成功
             first.release();
 
             PooledConnection third = pool.tryAcquire();
@@ -204,7 +193,6 @@ namespace AsynGyanis::Database
 
             ConnectionPool pool(factory, configuration);
 
-            // 第一次获取
             PooledConnection first = pool.acquire();
             ASSERT_TRUE(first);
             MockConnection *firstMock = static_cast<MockConnection *>(first.operator->());
@@ -213,7 +201,6 @@ namespace AsynGyanis::Database
             // 归还：应被丢弃（maxLifetimeSeconds == 0）
             first.release();
 
-            // 第二次获取：应得到新连接
             PooledConnection second = pool.acquire();
             ASSERT_TRUE(second);
             MockConnection *secondMock = static_cast<MockConnection *>(second.operator->());
@@ -251,7 +238,6 @@ namespace AsynGyanis::Database
             // 归还：不健康的连接应被丢弃
             first.release();
 
-            // 再次获取：应创建新连接
             PooledConnection second = pool.acquire();
             ASSERT_TRUE(second);
             MockConnection *secondMock = static_cast<MockConnection *>(second.operator->());
@@ -306,7 +292,6 @@ namespace AsynGyanis::Database
                         // 模拟使用连接
                         std::this_thread::yield();
 
-                        // 归还
                         connection.release();
                     }
                 });
@@ -317,11 +302,9 @@ namespace AsynGyanis::Database
                 thread.join();
             }
 
-            // 断言：没有线程拿到空连接
             EXPECT_EQ(emptyAcquires.load(), 0)
                 << "所有线程都应成功获取到连接";
 
-            // 统计自洽：total == active + idle
             const std::size_t active = pool.activeCount();
             const std::size_t idle   = pool.idleCount();
             const std::size_t total  = pool.totalCount();
@@ -402,7 +385,6 @@ namespace AsynGyanis::Database
             PooledConnection original = pool.acquire();
             ASSERT_TRUE(original);
 
-            // 移动构造：源对象应变为空，目标持有连接
             PooledConnection moved(std::move(original));
             EXPECT_TRUE(moved) << "移动后目标应持有连接";
             EXPECT_FALSE(original) << "移动后源应为空";
@@ -410,13 +392,11 @@ namespace AsynGyanis::Database
             // 归还 moved，释放连接回池
             moved.release();
 
-            // 移动赋值：从池再取两条连接
             PooledConnection assigned = pool.acquire();
             ASSERT_TRUE(assigned);
             PooledConnection another = pool.acquire();
             ASSERT_TRUE(another);
 
-            // 移动赋值：another 的内容转移到 assigned
             assigned = std::move(another);
             EXPECT_TRUE(assigned) << "移动赋值后应持有连接";
             EXPECT_FALSE(another) << "移动赋值后源应为空";
@@ -483,10 +463,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 池析构时仍阻塞在 acquire() 上的同步等待者要被叫醒，而不是等满自己的超时
-         * @details 等待谓词此前只有「空闲栈非空」，而析构做的第一件事就是清空空闲栈——谓词永远
-         *          不成立，等待者只能靠超时退出（超时设成 30 秒就是为了把这件事照出来），而它睡的
-         *          那把条件变量此刻已经随对象销毁。判据：析构叫醒它之后，它自己带着空连接回来
-         *          （不是被那 30 秒超时叫醒的）
+         * @details 析构停摆时等待谓词必须成立：析构做的第一件事就是清空空闲栈，若等待者只看
+         *          「空闲栈非空」，它就只能等满自己的超时，而它依赖的条件变量此刻已随对象销毁。
+         *          判据：析构叫醒它之后，它自己带着空连接回来（不是被那 30 秒超时叫醒的）。
          */
         TEST(ConnectionPool, DestructorWakesBlockedSyncWaiters)
         {

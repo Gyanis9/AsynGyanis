@@ -16,12 +16,14 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -37,27 +39,14 @@ namespace AsynGyanis::Database::TestSupport
 {
     /**
      * @brief 读一个环境变量并拷贝成 std::string
-     * @details MSVC 在 /W4 下把 std::getenv 判为弃用（C4996），Windows 侧改用 _dupenv_s；
-     *          两种实现的返回值都立即拷贝，调用方不保留任何指向环境块的指针
+     * @details 平台差异（MSVC 的 C4996 与内存归属）统一由 Platform::ProcessInfo 承担，
+     *          这里只把 optional 折成用例口径的「未设置即空串」。
      * @param variableName 环境变量名
      * @return std::string 取值；未设置时为空串
      */
-    inline std::string readEnvironmentVariableText(const char *variableName)
+    inline std::string readEnvironmentVariableText(const std::string &variableName)
     {
-#if ASYN_PLATFORM_WIN32
-        char  *rawValue   = nullptr;
-        size_t valueCapacity = 0;
-        if (::_dupenv_s(&rawValue, &valueCapacity, variableName) != 0 || rawValue == nullptr)
-        {
-            return {};
-        }
-        std::string variableValue(rawValue);
-        std::free(rawValue);
-        return variableValue;
-#else
-        const char *rawValue = std::getenv(variableName);
-        return rawValue != nullptr ? std::string(rawValue) : std::string{};
-#endif
+        return Platform::ProcessInfo::environmentVariable(variableName).value_or(std::string{});
     }
 
     /**
@@ -98,10 +87,9 @@ namespace AsynGyanis::Database::TestSupport
     /**
      * @brief 临时数据库文件夹具
      *
-     * @details 在系统临时目录下拼出一个进程内唯一的 *.db 路径，析构时连同同名伴生文件
-     *          （WAL 的 -wal / -shm、回滚日志 -journal）一并删除。构造阶段刻意不做文件 IO：
-     *          文件本体由被测的 connect() 创建。使用要求：连接必须在本对象之后创建、先于本对象
-     *          析构，否则 Windows 上文件仍被占用，删除会静默失败（POSIX 下能删掉但句柄未释放）。
+     * @details 在系统临时目录下拼出一个进程内唯一的 *.db 路径，析构时连同伴生文件（-wal / -shm / -journal）一并删除；
+     *          构造阶段刻意不做文件 IO，文件本体由被测的 connect() 创建。使用要求：连接必须在本对象之后创建、
+     *          先于本对象析构，否则 Windows 上文件仍被占用，删除会静默失败（POSIX 下能删掉但句柄未释放）。
      */
     class TemporaryDatabaseFile
     {
@@ -234,10 +222,9 @@ namespace AsynGyanis::Database::TestSupport
     /**
      * @brief 驱动协程：co_await 目标任务，把结果或异常搬进调用方提供的变量
      *
-     * @details 之所以需要这层驱动，是因为 Task<T> 只能被协程 co_await：
-     *          本协程先挂起在内层任务上，内层完成后（在事件循环线程上）恢复，
-     *          这里把结果写出去并最后置完成标记——标记由事件循环线程写入，
-     *          调用线程读取前必须做 acquire 语义的同步（见 std::atomic 内存序）。
+     * @details Task<T> 只能被协程 co_await，故先挂起在内层任务上、完成后在事件循环线程上恢复，
+     *          再把结果写出去并最后置完成标记：标记由事件循环线程写入，调用线程读取前必须做
+     *          acquire 语义的同步（见 std::atomic 内存序），这是结果得以按值搬出的前提。
      *
      * @tparam ResultType 内层任务的结果类型
      * @param inner 待等待的任务（按值接收，帧内持有它的生命周期）
@@ -269,10 +256,9 @@ namespace AsynGyanis::Database::TestSupport
     /**
      * @brief 后台事件循环运行器：构造即起线程跑 EventLoop::run()，析构先 stop() 再 join
      *
-     * @details 异步 API 的协程由调用线程 inline 启动、由事件循环线程恢复，本类把「正在运行的
-     *          EventLoop」与「搬出 Task 结果的驱动协程」放在一起并承担销毁纪律：**协程帧必须活到
-     *          事件循环线程结束之后**——驱动协程帧一律留在 m_driverTasks，且它声明在 m_thread
-     *          **之前**，逆序析构保证帧销毁晚于循环线程结束；调用方自持的驱动协程对象须声明在本类之前。
+     * @details 销毁纪律：**协程帧必须活到事件循环线程结束之后**——驱动协程帧一律留在 m_driverTasks，
+     *          且它声明在 m_thread **之前**，逆序析构保证帧销毁晚于循环线程结束；
+     *          调用方自持的驱动协程对象也须声明在本类之前。
      */
     class EventLoopThread
     {
@@ -345,10 +331,9 @@ namespace AsynGyanis::Database::TestSupport
         /**
          * @brief 启动一个任务并等到它完成
          *
-         * @details 以 resume 驱动协程启动：内层任务内联执行到「把阻塞任务交给执行器」这一步
-         *          就挂起，因此调用线程不会被占住等待数据库，由执行器与循环线程协作推进。
-         *          完成标记是驱动协程的**最后一次**写入（此后只走 final_suspend 收尾、不再触碰
-         *          出参），故按值搬出结果安全；帧本身仍留在 m_driverTasks 里活到 join 之后。
+         * @details 内层任务内联执行到「把阻塞任务交给执行器」这一步就挂起，调用线程不会被占住等待数据库，
+         *          由执行器与循环线程协作推进。完成标记是驱动协程的**最后一次**出参写入，之后只走
+         *          final_suspend 收尾，故按值搬出结果安全；帧本身仍留在 m_driverTasks 里活到 join 之后。
          *
          * @tparam ResultType 任务结果类型
          * @param task 待执行的异步任务
@@ -394,4 +379,57 @@ namespace AsynGyanis::Database::TestSupport
         std::jthread                  m_thread;      ///< 跑 m_loop.run() 的后台线程，析构自动 join
     };
 
+
+    /**
+     * @brief 判断文本是否含非 ASCII 字节，即「驱动自己拼了中文说明」的稳定判据
+     * @details 断言只查「有中文 + 有底层关键英文原文 + 有错误码」，不硬编码整句中文，
+     *          免得底层库升级改了英文措辞时用例集体失败。
+     * @param text 待判定文本
+     * @return true 至少有一个字节的最高位被置起
+     */
+    [[nodiscard]] inline bool containsLocalizedText(const std::string &text)
+    {
+        return std::any_of(text.begin(), text.end(),
+                           [](const char character) { return static_cast<unsigned char>(character) >= 0x80; });
+    }
+
+    /**
+     * @brief 读取文本型环境变量，未设置时回落到默认值
+     * @param variableName 环境变量名
+     * @param fallback 未设置时使用的默认值
+     * @return std::string 生效取值
+     */
+    [[nodiscard]] inline std::string readEnvironmentTextOrDefault(const std::string &variableName, const std::string_view fallback)
+    {
+        const std::string variableValue = readEnvironmentVariableText(variableName);
+        return variableValue.empty() ? std::string(fallback) : variableValue;
+    }
+
+    /**
+     * @brief 读取端口型环境变量，未设置或取值非法时回落默认端口
+     * @details 用 std::from_chars 而不是 std::stoi：后者靠异常报错且接受 "3306abc" 这类带余文的输入。
+     *          非法取值一律回落，不因为环境写错就让整组用例失败。
+     * @param variableName 环境变量名
+     * @param fallback 未设置或取值非法时使用的默认端口
+     * @return std::uint16_t 生效端口
+     */
+    [[nodiscard]] inline std::uint16_t readEnvironmentPortOrDefault(const std::string &variableName, const std::uint16_t fallback)
+    {
+        const std::string portText = readEnvironmentVariableText(variableName);
+        if (portText.empty())
+        {
+            return fallback;
+        }
+
+        int        parsedPort = 0;
+        const auto [remainderBegin, parseError] = std::from_chars(portText.data(), portText.data() + portText.size(), parsedPort);
+
+        // 三种非法情形一律回落：解析失败、尾部有余文、超出 1..65535 的端口范围
+        if (parseError != std::errc{} || remainderBegin != portText.data() + portText.size() || parsedPort <= 0 || parsedPort > 65535)
+        {
+            return fallback;
+        }
+
+        return static_cast<std::uint16_t>(parsedPort);
+    }
 } // namespace AsynGyanis::Database::TestSupport

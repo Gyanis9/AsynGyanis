@@ -1,14 +1,13 @@
-/**
- * @file TestDatabaseTypes.cpp
- * @brief 数据库类型契约单元测试：类型名映射、统一值类型名映射与连接配置默认值
- * @details 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
- *          databaseValueTypeName 给出 DatabaseValue 八个备选各自的类型名；ConnectionConfig 默认构造全空，三个 *Default 工厂
- *          只填本驱动真正读取的字段。全部用例不触碰任何驱动与网络，属于零依赖的纯函数断言。
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 数据库类型契约单元测试：类型名映射、统一值类型名映射与连接配置默认值。
+// 覆盖场景：
+// - MapsEverySupportedTypeToItsOwnName / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
+// - NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
+// - NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
+// - KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
+// - DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / RedisDefault* / SqliteDefault*
+// 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
+// databaseValueTypeName 给出 DatabaseValue 八个备选各自的类型名；ConnectionConfig 默认构造全空，
+// 三个 *Default 工厂只填本驱动真正读取的字段。全部用例不触碰任何驱动与网络，属于零依赖的纯函数断言。
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
@@ -72,6 +71,7 @@ namespace AsynGyanis::Database
     // databaseTypeName
     // ------------------------------------------------------------------------
 
+    /** @brief 钉住每个受支持类型都有稳定可读名称，逐项比对完整映射表 */
     TEST(DatabaseType, MapsEverySupportedTypeToItsOwnName)
     {
         for (const auto &[type, expectedName]: kDatabaseTypeNameTable)
@@ -80,6 +80,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住越界枚举退化成字面量「Unknown」，不崩溃也不给出空指针 */
     TEST(DatabaseType, ReturnsUnknownForOutOfRangeEnumValues)
     {
         // default 分支存在的意义就是「不崩溃、给出可读名称」，因此越界取值也必须返回字面量
@@ -89,6 +90,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住类型名两两不撞名——日志与异常文本据此定位故障方向 */
     TEST(DatabaseType, KeepsNamesDistinctAcrossSupportedTypes)
     {
         // 名称会被写进日志与异常文本，两个类型撞名会让排查方向直接错掉
@@ -110,6 +112,7 @@ namespace AsynGyanis::Database
     // databaseValueTypeName
     // ------------------------------------------------------------------------
 
+    /** @brief 钉住 monostate 报「Null」：没有值不等于某种具体值 */
     TEST(DatabaseValue, NamesEmptyValueAsNull)
     {
         const DatabaseValue nullValue{std::monostate{}};
@@ -117,6 +120,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(nullValue), "Null");
     }
 
+    /** @brief 钉住 bool 备选的两个取值都报「Bool」，类型名与具体值无关 */
     TEST(DatabaseValue, NamesBooleanValueAsBool)
     {
         // 真与假共用同一个备选，类型名与具体取值无关
@@ -127,6 +131,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(falseValue), "Bool");
     }
 
+    /** @brief 钉住 int64 备选报「Int64」，含最小边界负值 */
     TEST(DatabaseValue, NamesIntegerValueAsInt64)
     {
         const DatabaseValue integerValue{std::int64_t{-9223372036854775807LL}};
@@ -134,6 +139,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(integerValue), "Int64");
     }
 
+    /** @brief 钉住 double 备选报「Double」 */
     TEST(DatabaseValue, NamesDoubleValueAsDouble)
     {
         const DatabaseValue doubleValue{0.0};
@@ -141,6 +147,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(doubleValue), "Double");
     }
 
+    /** @brief 钉住非空与空串都报「String」，零长度文本不被当成「没有值」 */
     TEST(DatabaseValue, NamesStringValueAsString)
     {
         // 空串代表「驱动给出的零长度文本」，与「没有值」的 monostate 必须区分开
@@ -151,6 +158,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(emptyTextValue), "String");
     }
 
+    /** @brief 钉住字符串列表备选报「List」（空列表同样有类型名） */
     TEST(DatabaseValue, NamesStringListValueAsList)
     {
         const DatabaseValue listValue{std::vector<std::string>{}};
@@ -158,6 +166,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(listValue), "List");
     }
 
+    /** @brief 钉住字符串哈希表备选报「Hash」（空表同样有类型名） */
     TEST(DatabaseValue, NamesStringHashMapValueAsHash)
     {
         const DatabaseValue hashValue{std::unordered_map<std::string, std::string>{}};
@@ -165,6 +174,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(hashValue), "Hash");
     }
 
+    /** @brief 钉住二进制备选报「Bytes」：零长 BLOB 与 SQL NULL 是两件事 */
     TEST(DatabaseValue, NamesBinaryValueAsBytes)
     {
         // 零长二进制也要报 Bytes 而不是 Null：空 BLOB 与 SQL NULL 是两件事
@@ -175,6 +185,7 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(emptyByteValue), "Bytes");
     }
 
+    /** @brief 钉住八个备选的类型名两两不同：visit 分支漏写或写错类型会立刻撞名 */
     TEST(DatabaseValue, KeepsNamesDistinctAcrossAllAlternatives)
     {
         // 映射走的是 std::visit + is_same_v：一旦某条分支漏写或写错类型，这里会立刻撞名
@@ -189,6 +200,7 @@ namespace AsynGyanis::Database
         }
     }
 
+    /** @brief 钉住每个备选都给出与文档一致的完整类型名表 */
     TEST(DatabaseValue, GivesEveryAlternativeTheDocumentedTypeName)
     {
         for (const auto &[value, expectedName]: makeValueTypeNameTable())
@@ -201,6 +213,7 @@ namespace AsynGyanis::Database
     // ConnectionConfig
     // ------------------------------------------------------------------------
 
+    /** @brief 钉住默认构造全字段为空，port 哨兵恒为 0（工厂判定 SQLite 回落的依据） */
     TEST(ConnectionConfig, DefaultConstructionLeavesEveryFieldUnset)
     {
         const ConnectionConfig configuration;
@@ -213,6 +226,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(configuration.database.empty());
     }
 
+    /** @brief 钉住 MySQL 默认配置指向本机 3306（改动需同步核对工厂用例） */
     TEST(ConnectionConfig, MySqlDefaultTargetsLocalServerOnStandardPort)
     {
         const ConnectionConfig configuration = ConnectionConfig::mySqlDefault();
@@ -222,6 +236,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(configuration.port, 3306);
     }
 
+    /** @brief 钉住 MySQL 默认账号与测试库名，且默认配置不携带明文密码 */
     TEST(ConnectionConfig, MySqlDefaultUsesRootAccountOnTestSchema)
     {
         const ConnectionConfig configuration = ConnectionConfig::mySqlDefault();
@@ -232,6 +247,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(configuration.password.empty());
     }
 
+    /** @brief 钉住 Redis 默认配置指向本机 6379 */
     TEST(ConnectionConfig, RedisDefaultTargetsLocalServerOnStandardPort)
     {
         const ConnectionConfig configuration = ConnectionConfig::redisDefault();
@@ -240,6 +256,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(configuration.port, 6379);
     }
 
+    /** @brief 钉住 Redis 默认不认证也不选键空间：空值即「不发 AUTH / 不 SELECT」 */
     TEST(ConnectionConfig, RedisDefaultLeavesCredentialAndKeySpaceEmpty)
     {
         const ConnectionConfig configuration = ConnectionConfig::redisDefault();
@@ -250,6 +267,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(configuration.database.empty());
     }
 
+    /** @brief 钉住 SQLite 默认开内存库，host/port 保持未设置 */
     TEST(ConnectionConfig, SqliteDefaultOpensInMemoryDatabaseWithoutHostOrPort)
     {
         const ConnectionConfig configuration = ConnectionConfig::sqliteDefault();
@@ -262,6 +280,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(configuration.password.empty());
     }
 
+    /** @brief 钉住 SQLite 工厂接受自定义库路径且不设置端口 */
     TEST(ConnectionConfig, SqliteDefaultAcceptsCustomDatabasePath)
     {
         const ConnectionConfig configuration = ConnectionConfig::sqliteDefault("data/application.db");
@@ -270,6 +289,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(configuration.port, 0);
     }
 
+    /** @brief 钉住空路径退化成「没有库名」的配置，正是工厂判定「无法推断」并抛出的输入 */
     TEST(ConnectionConfig, SqliteDefaultWithEmptyPathLeavesDatabaseEmpty)
     {
         // 构造函数不做任何校验：空路径会退化成「没有库名」的配置，

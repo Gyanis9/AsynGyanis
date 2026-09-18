@@ -1,16 +1,4 @@
-/**
- * @file TestParameterizedExecution.cpp
- * @brief 参数化执行链路测试 —— 驱动的参数绑定、错误路径与连接池转发
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 本文件验证 ORM 执行器所依赖的底层能力：DatabaseConnection 的带参数执行接口
- *          （见 DatabaseConnection.h）在各驱动上的行为。放在 Queryable 目录下，
- *          是因为它钉住的正是 ORM 执行链路（池 → 驱动 → 绑定）中最容易出错的一环。
- */
-// 覆盖场景：
+// 覆盖场景（ORM 执行链路「池 → 驱动 → 绑定」所依赖的底层能力：DatabaseConnection 的带参数执行接口）：
 // - SqliteBindsScalarParameterTypes（整型/文本/浮点/布尔）
 // - SqliteBindsNullParameter（NULL 与空串语义不同）
 // - SqliteParameterizedSelectReturnsRows

@@ -1,15 +1,6 @@
-/**
- * @file TestMySqlDialect.cpp
- * @brief MySQL 方言翻译单元测试（不需要数据库连接）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，不打开任何数据库文件，也不经过任何驱动。
- *          与 TestSqliteDialect.cpp 同口径覆盖，差异点（反引号引用、分页占位符与无符号上界、START TRANSACTION）
- *          单独断言。
- */
+// MySQL 方言翻译单元测试（不需要数据库连接）。
+// 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，不打开任何数据库文件，也不经过任何驱动。
+// 与 TestSqliteDialect.cpp 同口径覆盖，差异点（反引号引用、分页占位符与无符号上界、START TRANSACTION）单独断言。
 // 覆盖场景：
 // - 标识符反引号引用与内部反引号转义
 // - 占位符文本、方言类型、LIMIT/OFFSET 支持能力、参数上限 65535

@@ -1,14 +1,5 @@
-/**
- * @file TestSqliteDialect.cpp
- * @brief SQLite 方言翻译单元测试（不需要数据库连接）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- *
- * @details 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，
- *          不打开任何数据库文件，也不经过任何驱动。
- */
+// SQLite 方言翻译单元测试（不需要数据库连接）。
+// 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，不打开任何数据库文件，也不经过任何驱动。
 // 覆盖场景：
 // - 标识符引用与内部引号转义
 // - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
