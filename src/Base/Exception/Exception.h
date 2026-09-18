@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Base/Exception/StackTrace.h"
+
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -18,8 +20,9 @@ namespace AsynGyanis::Base
     /**
      * @brief 项目统一异常基类
      *
-     * @details 继承 std::runtime_error，在消息前附加抛出点（文件、行号、函数名）。
-     *          运行期故障都归入本类家族，使上层能用一条 catch 兜住框架错误。
+     * @details 继承 std::runtime_error，在消息前附加抛出点（文件、行号、函数名），并捕获抛出点
+     *          调用栈（原始帧，解析时机见 StackTrace.h）。运行期故障都归入本类家族，
+     *          使上层能用一条 catch 兜住框架错误。
      * @note 消息格式化在构造期完成，抛出后不依赖任何外部状态。
      */
     class Exception : public std::runtime_error
@@ -38,7 +41,14 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] const std::source_location &location() const noexcept;
 
+        /**
+         * @brief 获取抛出点的调用栈（原始帧，未解析符号）
+         * @return const CapturedStackTrace& 构造时捕获的调用栈；降级平台恒为空
+         */
+        [[nodiscard]] const CapturedStackTrace &stackTrace() const noexcept;
+
     private:
-        std::source_location m_location; ///< 异常抛出时的源码位置快照
+        std::source_location m_location;     ///< 异常抛出时的源码位置快照
+        CapturedStackTrace   m_stackTrace;   ///< 异常抛出时的调用栈（原始帧，解析推迟到输出时）
     };
 } // namespace AsynGyanis::Base

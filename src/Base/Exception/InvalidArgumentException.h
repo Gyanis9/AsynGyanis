@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Base/Exception/StackTrace.h"
+
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -25,8 +27,8 @@ namespace AsynGyanis::Base
      * @note 本类与 LogicException 是**兄弟**而不是父子：两者各自继承标准库的两条分支，
      *       而 C++ 里无法让一个类同时以两条路径继承 std::logic_error（会形成菱形基类）。
      *       要一次捕获两者请用它们的共同基类 std::logic_error。
-     * @note 消息格式化与位置捕获与 Exception 共用同一套实现（见 ExceptionMessage.h），
-     *       因此 what() 的文本格式与 Exception 完全一致。
+     * @note 消息格式化、位置捕获与调用栈捕获与 Exception 共用同一套实现（见 ExceptionMessage.h
+     *       与 StackTrace.h），因此 what() 的文本格式与 Exception 完全一致。
      */
     class InvalidArgumentException : public std::invalid_argument
     {
@@ -44,7 +46,14 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] const std::source_location &location() const noexcept;
 
+        /**
+         * @brief 获取抛出点的调用栈（原始帧，未解析符号）
+         * @return const CapturedStackTrace& 构造时捕获的调用栈；降级平台恒为空
+         */
+        [[nodiscard]] const CapturedStackTrace &stackTrace() const noexcept;
+
     private:
-        std::source_location m_location; ///< 异常抛出时的源码位置快照
+        std::source_location m_location;   ///< 异常抛出时的源码位置快照
+        CapturedStackTrace   m_stackTrace; ///< 异常抛出时的调用栈（原始帧，解析推迟到输出时）
     };
 } // namespace AsynGyanis::Base

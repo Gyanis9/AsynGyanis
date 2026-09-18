@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Base/Exception/StackTrace.h"
+
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -23,8 +25,8 @@ namespace AsynGyanis::Base
      *          `catch (const Base::Exception &)` 不把调用方的 bug 一并吞掉；要一次网住「所有用法错误」
      *          需捕获两条链的共同基类 std::logic_error。
      *
-     * @note 消息格式化与位置捕获与 Exception 共用同一套实现（见 ExceptionMessage.h），
-     *       因此 what() 的文本格式与 Exception 完全一致。
+     * @note 消息格式化、位置捕获与调用栈捕获与 Exception 共用同一套实现（见 ExceptionMessage.h
+     *       与 StackTrace.h），因此 what() 的文本格式与 Exception 完全一致。
      */
     class LogicException : public std::logic_error
     {
@@ -42,7 +44,14 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] const std::source_location &location() const noexcept;
 
+        /**
+         * @brief 获取抛出点的调用栈（原始帧，未解析符号）
+         * @return const CapturedStackTrace& 构造时捕获的调用栈；降级平台恒为空
+         */
+        [[nodiscard]] const CapturedStackTrace &stackTrace() const noexcept;
+
     private:
-        std::source_location m_location; ///< 异常抛出时的源码位置快照
+        std::source_location m_location;   ///< 异常抛出时的源码位置快照
+        CapturedStackTrace   m_stackTrace; ///< 异常抛出时的调用栈（原始帧，解析推迟到输出时）
     };
 } // namespace AsynGyanis::Base

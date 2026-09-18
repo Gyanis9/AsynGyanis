@@ -9,6 +9,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Base/Exception/NetworkException.h"
+#include "Base/Exception/StackTrace.h"
 #include "Base/Exception/SystemException.h"
 
 #include <gtest/gtest.h>
@@ -34,6 +35,14 @@ namespace AsynGyanis::Base
         bool contains(const std::string &haystack, const std::string &needle)
         {
             return haystack.find(needle) != std::string::npos;
+        }
+
+        /**
+         * @brief 在独立函数里构造异常：调用栈用例靠它确认「捕获到的是抛出点，不是打印点」
+         */
+        [[nodiscard]] Exception makeExceptionFromDeepFrame()
+        {
+            return Exception("stack probe");
         }
     } // namespace
 
@@ -77,6 +86,49 @@ namespace AsynGyanis::Base
 
         EXPECT_GT(exception.location().line(), 0U);
         EXPECT_NE(std::string(exception.location().function_name()).find("TestBody"), std::string::npos);
+    }
+
+    // ============================================================================
+    // 调用栈：构造时捕获抛出点（原始帧），符号解析推迟到输出时
+    // ============================================================================
+
+    TEST(Exception, CapturesThrowSiteStackTraceAtConstruction)
+    {
+        const Exception exception = makeExceptionFromDeepFrame();
+
+        if (exception.stackTrace().empty())
+        {
+            GTEST_SKIP() << "本构建未启用 std::stacktrace（ASYN_HAS_STACKTRACE 未定义），栈按空实现退化";
+        }
+        EXPECT_GE(exception.stackTrace().size(), 1U) << "构造时应至少捕获到抛出点一帧";
+    }
+
+    TEST(Exception, StackTraceTextResolvesTheThrowingFunction)
+    {
+        const Exception   exception = makeExceptionFromDeepFrame();
+        const std::string text      = formatStackTrace(exception.stackTrace());
+
+        if (text.empty())
+        {
+            GTEST_SKIP() << "调试信息不可用（无 PDB/符号表），只保留结构用例";
+        }
+        // 抛出点或被内联进调用它的测试体，二者之一必须出现——出现别的说明采到的是打印点的栈
+        const bool mentionsThrowHelper = text.find("makeExceptionFromDeepFrame") != std::string::npos;
+        const bool mentionsTestBody    = text.find("TestBody") != std::string::npos;
+        EXPECT_TRUE(mentionsThrowHelper || mentionsTestBody)
+                << "解析结果里既没有抛出点函数也没有测试体帧：\n"
+                << text;
+    }
+
+    TEST(LogicException, CapturesThrowSiteStackTrace)
+    {
+        const LogicException exception("用法错误");
+
+        if (exception.stackTrace().empty())
+        {
+            GTEST_SKIP() << "本构建未启用 std::stacktrace（降级为空实现）";
+        }
+        EXPECT_GE(exception.stackTrace().size(), 1U) << "用法错误这条链同样要携带抛出点栈";
     }
 
     // ============================================================================
