@@ -16,10 +16,11 @@
 #include "Base/Exception/Exception.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
-#include "Core/EventLoop/IoWatcher.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
+
+#include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -35,11 +36,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 推进循环的单步等待：够短到不拖慢用例，又够长到让刚发出的报文到达
-        constexpr int kStepWaitMilliseconds = 5;
-
-        /// 推进循环的时间上限
-        constexpr std::chrono::milliseconds kWaitTimeout{3000};
+        using TestSupport::advanceUntil;
+        using TestSupport::stepLoopOnce;
 
         /**
          * @brief 造一个回环 IPv4 地址
@@ -67,43 +65,6 @@ namespace AsynGyanis::Core
         {
             Platform::DatagramSocket platformSocket = Platform::DatagramSocket::bindTo(makeLoopbackAddress(0));
             return AsyncUdpSocket(loop, std::move(platformSocket));
-        }
-
-        /**
-         * @brief 推进循环一步：等一小会儿就绪事件，交给注册对象处理，再跑一遍就绪队列
-         * @param loop 事件循环
-         */
-        void stepLoopOnce(EventLoop &loop)
-        {
-            for (const auto &event: loop.epoll().wait(kStepWaitMilliseconds))
-            {
-                if (event.data.ptr != nullptr)
-                {
-                    static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
-                }
-            }
-            loop.scheduler().runAll();
-        }
-
-        /**
-         * @brief 反复推进循环，直到条件成立或超出时限
-         * @param loop 事件循环
-         * @param predicate 条件
-         * @return true 条件在时限内成立
-         */
-        template<typename Predicate>
-        bool stepLoopUntil(EventLoop &loop, Predicate predicate)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-            while (!predicate())
-            {
-                if (std::chrono::steady_clock::now() >= deadline)
-                {
-                    return false;
-                }
-                stepLoopOnce(loop);
-            }
-            return true;
         }
 
         /**
@@ -197,7 +158,7 @@ namespace AsynGyanis::Core
         // Task 只能在协程里推进：整段场景做成一个协程，由测试按步推到收完
         Task<void> scenario = sendThenReceiveTask(sender, receiver, std::string(kPayload), observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(stepLoopUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
                 << "没有在时限内收到报文";
 
         ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
@@ -233,7 +194,7 @@ namespace AsynGyanis::Core
         TransferObservation observation;
         Task<void>          scenario = sendThenReceiveTask(sender, receiver, std::string{}, observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(stepLoopUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
                 << "空报文没有被交付";
 
         ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
@@ -275,7 +236,7 @@ namespace AsynGyanis::Core
         ASSERT_EQ(sender.send(receiver.localAddress(), kPayload.data(), kPayload.size()), static_cast<ssize_t>(kPayload.size()))
                 << "发送失败，套接字错误码 " << Platform::PlatformError::lastSocketErrorCode();
 
-        ASSERT_TRUE(stepLoopUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
                 << "报文到达后等待没有被唤醒";
         ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
         EXPECT_EQ(*observation.receivedByteCount, static_cast<ssize_t>(kPayload.size()));
@@ -318,7 +279,7 @@ namespace AsynGyanis::Core
         TransferObservation observation;
         Task<void>          scenario = receiveOnlyTask(source, observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(stepLoopUntil(loop, [&observation] { return !observation.failureMessage.empty(); }))
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return !observation.failureMessage.empty(); }))
                 << "无效套接字上收报文既没抛异常也没完成：调用方会被挂住";
 
         // 异常文本形如「[异常] 数据报接收失败：...」，因此只判「里面说了是哪一步」

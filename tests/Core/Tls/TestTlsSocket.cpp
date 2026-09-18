@@ -19,6 +19,8 @@
 #include "Core/Tls/TlsContext.h"
 #include "Platform/IO/FileDescriptor.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <openssl/ssl.h>
@@ -32,6 +34,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        using TestSupport::advanceUntil;
+
         /// 仓库内预生成的自签测试证书（CN=asyngyanis-test，有效期至 2036）
         const std::filesystem::path kTestCertificatePath =
             std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
@@ -223,21 +227,9 @@ namespace AsynGyanis::Core
         Task<>      connectTask = client.asyncConnect(InetAddress("127.0.0.1", listeningPort));
         connectTask.handle().resume();
 
-        // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者需要事件循环
-        // 推进一步。这里按 EventLoop::run() 的方式分发事件——data.ptr 挂载的是常驻注册对象
-        // 的地址（而非协程句柄），由它决定恢复哪个等待者
-        if (!connectTask.isReady())
-        {
-            for (const auto &event: loop.epoll().wait(2000))
-            {
-                if (event.data.ptr != nullptr)
-                {
-                    static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
-                }
-            }
-        }
-
-        ASSERT_TRUE(connectTask.isReady()) << "连接未在预期内完成";
+        // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者要靠事件循环推进
+        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); }))
+                << "连接未在预期内完成";
         EXPECT_NO_THROW(connectTask.handle().promise().result());
 
         SSL *ssl = tlsContext.createSSL(client.fileDescriptor());

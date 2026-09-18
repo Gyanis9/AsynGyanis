@@ -11,6 +11,8 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -22,31 +24,7 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 等待类断言的轮询上限，避免固定 sleep 硬等，同时防止用例卡死
-        constexpr auto kConditionTimeout = std::chrono::milliseconds(2000);
-
-        /**
-         * @brief 在超时上限内逐毫秒轮询等待条件成立
-         * @tparam Predicate 可调用对象，返回 bool
-         * @param predicate 待轮询的条件
-         * @param timeout 超时上限，默认 2 秒
-         * @return true 条件在时限内成立
-         */
-        template<typename Predicate>
-        bool waitForCondition(Predicate predicate, const std::chrono::milliseconds timeout = kConditionTimeout)
-        {
-            // 以 steady_clock 计算截止时间，轮询而非固定 sleep
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!predicate())
-            {
-                if (std::chrono::steady_clock::now() >= deadline)
-                {
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            return true;
-        }
+        using TestSupport::waitForCondition;
 
         /**
          * @brief 测试协程：向原子变量写入标记值

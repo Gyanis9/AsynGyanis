@@ -13,7 +13,8 @@
 
 #include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/EventLoop.h"
-#include "Core/EventLoop/IoWatcher.h"
+
+#include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -27,39 +28,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 一般等待上限：毫秒级定时器在调试构建 + ASan 下也能从容到期
-        constexpr std::chrono::milliseconds kWaitTimeout{2000};
-
-        /**
-         * @brief 推进事件循环直到条件成立
-         * @details 与 EventLoop::run() 的两步同构：先取回一批 epoll 事件交给注册对象，
-         *          再清空调度队列。用例不涉及跨线程唤醒，因此不会遇到唤醒哨兵
-         * @param loop 事件循环
-         * @param predicate 待成立的条件
-         * @param timeout 时间上限
-         * @return true 条件在时限内成立
-         */
-        template<typename Predicate>
-        bool advanceUntil(EventLoop &loop, Predicate predicate, const std::chrono::milliseconds timeout)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!predicate())
-            {
-                if (std::chrono::steady_clock::now() >= deadline)
-                {
-                    return false;
-                }
-                for (const auto &event: loop.epoll().wait(5))
-                {
-                    if (event.data.ptr != nullptr)
-                    {
-                        static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
-                    }
-                }
-                loop.scheduler().runAll();
-            }
-            return true;
-        }
+        using TestSupport::advanceUntil;
+        using TestSupport::kWaitTimeout;
     } // namespace
 
     /**

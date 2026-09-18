@@ -13,6 +13,8 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/Connection.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -25,11 +27,7 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 有界轮询统一使用的超时上限（毫秒），避免固定 sleep 硬等
-        constexpr int kWaitTimeoutMilliseconds = 2000;
-
-        /// 有界轮询的步进间隔（毫秒）
-        constexpr int kPollIntervalMilliseconds = 10;
+        using TestSupport::waitForCondition;
 
         /**
          * @brief 构造一个挂在指定事件循环上的哑连接（描述符 -1，仅用于管理器增删）
@@ -39,26 +37,6 @@ namespace AsynGyanis::Core
         std::shared_ptr<Connection> makeDummyConnection(EventLoop &loop)
         {
             return std::make_shared<Connection>(AsyncSocket(loop, -1));
-        }
-
-        /**
-         * @brief 在 2 秒超时窗口内轮询等待原子标志置位
-         * @param flag 待轮询的原子标志
-         * @return 超时前置位返回 true，否则返回最后一次读取结果
-         */
-        bool waitForFlag(const std::atomic<bool> &flag)
-        {
-            const auto deadline = std::chrono::steady_clock::now() +
-                                  std::chrono::milliseconds{kWaitTimeoutMilliseconds};
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                if (flag.load())
-                {
-                    return true;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds{kPollIntervalMilliseconds});
-            }
-            return flag.load();
         }
     }
 
@@ -214,7 +192,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(finished.load());
 
         manager.remove(connection.get());
-        EXPECT_TRUE(waitForFlag(finished));
+        EXPECT_TRUE(waitForCondition([&finished] { return finished.load(); }));
 
         waiter.join();
         EXPECT_TRUE(finished.load());

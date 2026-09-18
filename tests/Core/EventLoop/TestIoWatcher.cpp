@@ -26,6 +26,8 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <coroutine>
@@ -35,6 +37,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        using TestSupport::dispatchOnce;
+
         /// 等待结果：true 表示事件就绪，false 表示注册已失效
         using WaitOutcome = bool;
 
@@ -46,27 +50,6 @@ namespace AsynGyanis::Core
         Task<WaitOutcome> waitReadableOnce(IoWatcher &watcher)
         {
             co_return co_await watcher.waitReadable();
-        }
-
-        /**
-         * @brief 推进一次事件分发：取回一批 epoll 事件并交给各自的注册对象
-         * @details 与 EventLoop::run() 内分发那一步完全同构；事件里挂载的就是注册对象地址
-         * @param loop 事件循环
-         * @param timeoutMilliseconds 等待事件的超时
-         * @return size_t 本次取回并分发的事件数
-         */
-        std::size_t dispatchOnce(EventLoop &loop, const int timeoutMilliseconds = 1000)
-        {
-            std::size_t dispatchedCount = 0;
-            for (const auto &event: loop.epoll().wait(timeoutMilliseconds))
-            {
-                if (event.data.ptr != nullptr)
-                {
-                    static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
-                    ++dispatchedCount;
-                }
-            }
-            return dispatchedCount;
         }
 
         /**

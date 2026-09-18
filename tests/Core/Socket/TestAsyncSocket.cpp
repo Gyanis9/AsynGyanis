@@ -20,6 +20,8 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -34,6 +36,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        using TestSupport::advanceUntil;
+
         /// 每轮发送的负载长度：对端不读时，两侧缓冲加起来远小于这里一轮的量
         constexpr std::size_t kBlockingSendChunkLength = 64 * 1024;
 
@@ -290,21 +294,9 @@ namespace AsynGyanis::Core
         Task<>      connectTask = client.asyncConnect(InetAddress("127.0.0.1", listeningPort));
         connectTask.handle().resume();
 
-        // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者需要事件循环
-        // 推进一步。这里按 EventLoop::run() 的方式分发事件——data.ptr 挂载的是常驻注册对象
-        // 的地址（而非协程句柄），由它决定恢复哪个等待者
-        if (!connectTask.isReady())
-        {
-            for (const auto &event: loop.epoll().wait(2000))
-            {
-                if (event.data.ptr != nullptr)
-                {
-                    static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
-                }
-            }
-        }
-
-        ASSERT_TRUE(connectTask.isReady()) << "连接未在预期内完成";
+        // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者要靠事件循环推进
+        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); }))
+                << "连接未在预期内完成";
         EXPECT_NO_THROW(connectTask.handle().promise().result());
 
         // 连接确实建立在刚监听的那个端口上：对端地址可读回即为证据

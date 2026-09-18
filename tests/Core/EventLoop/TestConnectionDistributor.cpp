@@ -14,6 +14,8 @@
 
 #include "Platform/IO/FileDescriptor.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -27,11 +29,7 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 等待上限：跨线程投递要等目标循环被唤醒并跑完回调
-        constexpr auto kWaitTimeout = std::chrono::seconds{5};
-
-        /// 轮询间隔
-        constexpr auto kPollInterval = std::chrono::milliseconds{1};
+        using TestSupport::waitForCondition;
 
         /**
          * @brief 造一个未连接的 TCP 描述符
@@ -62,19 +60,12 @@ namespace AsynGyanis::Core
          */
         bool waitForHandoffCount(std::mutex &mutex, const std::vector<HandoffRecord> &records, const std::size_t expectedCount)
         {
-            const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                {
-                    const std::lock_guard lock(mutex);
-                    if (records.size() >= expectedCount)
+            return waitForCondition(
+                    [&mutex, &records, expectedCount]
                     {
-                        return true;
-                    }
-                }
-                std::this_thread::sleep_for(kPollInterval);
-            }
-            return false;
+                        const std::lock_guard lock(mutex);
+                        return records.size() >= expectedCount;
+                    });
         }
     } // namespace
 

@@ -12,12 +12,14 @@
 #include "Base/Exception/Exception.h"
 #include "Platform/Platform.h"
 
+#include "BaseTestSupport.h"
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <string>
 #include <thread>
 
@@ -25,8 +27,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 各用例共用的等待上限：编排本身是毫秒级动作，给足余量但不许无界等待
-        constexpr std::chrono::milliseconds kWaitTimeout{5000};
+        using TestSupport::kWaitTimeout;
+        using TestSupport::waitForCondition;
 
         /// 假 worker 的行为：本类的编排逻辑要靠这些行为分别触发
         enum class WorkerBehaviour
@@ -45,37 +47,10 @@ namespace AsynGyanis::Core
         class WorkerLaunchLog
         {
         public:
-            WorkerLaunchLog()
+            WorkerLaunchLog() :
+                m_directory("WorkerSupervisor")
             {
-                // 记录文件放在**跨进程唯一**的临时目录里：ctest 会把每个用例作为独立进程并行拉起，
-                // 而时钟读数全系统共享、序号计数器又是每进程各自从 0 开始，只靠时钟加盐仍可能撞名
-                //（撞名时两个用例共用同一个记录文件，计数断言随机出错）。以「真的新建了目录」为准，
-                // 撞了就换盐重试——与 BaseTestSupport::TemporaryDirectory 同一写法
-                static std::atomic<unsigned int> sequenceCounter{0};
-
-                std::error_code error;
-                while (true)
-                {
-                    const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
-                                             std::to_string(sequenceCounter.fetch_add(1));
-                    m_directory = std::filesystem::temp_directory_path() / ("AsynGyanis_WorkerSupervisor_" + salt);
-                    if (std::filesystem::create_directories(m_directory, error))
-                    {
-                        break;
-                    }
-                    if (error)
-                    {
-                        // 真出错（权限等）不再重试：让用例自己去失败并暴露环境问题
-                        break;
-                    }
-                }
-                m_path = m_directory / "worker-launches.log";
-            }
-
-            ~WorkerLaunchLog()
-            {
-                std::error_code error;
-                std::filesystem::remove_all(m_directory, error);
+                m_path = m_directory.path() / "worker-launches.log";
             }
 
             WorkerLaunchLog(const WorkerLaunchLog &) = delete;
@@ -105,8 +80,8 @@ namespace AsynGyanis::Core
             }
 
         private:
-            std::filesystem::path m_directory; ///< 本用例独占的临时目录
-            std::filesystem::path m_path;      ///< 记录文件
+            Base::TestSupport::TemporaryDirectory m_directory; ///< 本用例独占的临时目录（析构时递归删除）
+            std::filesystem::path                 m_path;      ///< 记录文件
         };
 
         /**
@@ -154,26 +129,6 @@ namespace AsynGyanis::Core
             configuration.crashLoopWindow = std::chrono::milliseconds{300};
             configuration.crashLoopLimit  = 3;
             return configuration;
-        }
-
-        /**
-         * @brief 在时限内轮询等待某个条件成立
-         * @param predicate 条件
-         * @param timeout 等待上限
-         * @return true 在时限内成立
-         */
-        bool waitForCondition(const std::function<bool()> &predicate, const std::chrono::milliseconds timeout)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                if (predicate())
-                {
-                    return true;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds{10});
-            }
-            return predicate();
         }
     } // namespace
 
