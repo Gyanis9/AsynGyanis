@@ -47,6 +47,7 @@ target_include_directories(TestDatabase PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/tests/Core
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
 
 target_compile_features(TestDatabase PRIVATE cxx_std_23)

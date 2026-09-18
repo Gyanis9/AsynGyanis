@@ -87,6 +87,7 @@ target_include_directories(TestNet PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
         ${CMAKE_CURRENT_SOURCE_DIR}/Http2
         ${CMAKE_SOURCE_DIR}/tests/Core
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
 
 # HTTPS 端到端用例使用的仓库内证书目录（与 tests/Core/fixtures 同一份自签证书）
