@@ -86,7 +86,7 @@ namespace AsynGyanis::Net
                 // 就地等待或定时退避后重试，能抛到这里的只剩无法靠重试恢复的终止性错误。
                 // 因此这里不再复制一份重试分支：命中可恢复错误码只会变成忙等，也永远命中不了，
                 // 一律记录中文错误后停止接受。
-                LOG_EXCEPTION(Base::LogLevel::Error, systemException, "TcpServer: 接受新连接失败，停止接受连接。原因：{}", systemException.what());
+                LOG_ERROR_EXCEPTION(systemException, "TcpServer: 接受新连接失败，停止接受连接。原因：{}", systemException.what());
                 m_running = false;
                 break;
             }
@@ -172,8 +172,8 @@ namespace AsynGyanis::Net
         {
             // 子类的会话构造允许抛（例如申请 SSL 对象失败）：那只是这一条连接的失败，
             // 不该让整个服务器停摆。传入的套接字已随参数析构关闭，这里记录中文错误后继续
-            LOG_EXCEPTION(Base::LogLevel::Error, hookException, "TcpServer: 创建连接对象失败，已丢弃一条新连接，监听地址 {}。原因：{}",
-                          m_acceptor.localAddress().toString(), hookException.what());
+            LOG_ERROR_EXCEPTION(hookException, "TcpServer: 创建连接对象失败，已丢弃一条新连接，监听地址 {}。原因：{}",
+                                m_acceptor.localAddress().toString(), hookException.what());
             return;
         }
 
@@ -263,8 +263,8 @@ namespace AsynGyanis::Net
                         connection->onIdleTimeoutClosed();
                     } catch (const std::exception &connectionException)
                     {
-                        LOG_EXCEPTION(Base::LogLevel::Error, connectionException, "TcpServer: 关闭空闲超期连接失败，已跳过该连接并继续本轮。原因：{}",
-                                      connectionException.what());
+                        LOG_ERROR_EXCEPTION(connectionException, "TcpServer: 关闭空闲超期连接失败，已跳过该连接并继续本轮。原因：{}",
+                                            connectionException.what());
                         continue;
                     } catch (...)
                     {
@@ -276,7 +276,7 @@ namespace AsynGyanis::Net
             {
                 // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩。
                 // 单轮失败只丢这一轮：下一轮照常扫描，超期连接不会因为一次失败被永久漏掉
-                LOG_EXCEPTION(Base::LogLevel::Error, sweepException, "TcpServer: 空闲清扫一轮失败，已跳过本轮。原因：{}", sweepException.what());
+                LOG_ERROR_EXCEPTION(sweepException, "TcpServer: 空闲清扫一轮失败，已跳过本轮。原因：{}", sweepException.what());
             } catch (...)
             {
                 LOG_ERROR_FMT("TcpServer: 空闲清扫一轮失败，已跳过本轮。原因：非标准库异常");
@@ -391,7 +391,7 @@ namespace AsynGyanis::Net
             // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩。
             // 放弃等待但**仍强关剩余连接**：drain 的后置条件是「返回后不再有连接残留」，
             // 把连接留给调用方的收尾路径会让它们悬到进程退出
-            LOG_EXCEPTION(Base::LogLevel::Error, drainException, "TcpServer: 优雅关闭过程失败，已放弃等待并强制关闭剩余连接。原因：{}", drainException.what());
+            LOG_ERROR_EXCEPTION(drainException, "TcpServer: 优雅关闭过程失败，已放弃等待并强制关闭剩余连接。原因：{}", drainException.what());
             m_connectionManager.shutdown();
         } catch (...)
         {

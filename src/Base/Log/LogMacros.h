@@ -77,7 +77,9 @@
 // 带调用栈的日志
 // ----------------------------------------------------------------------------
 // 原始帧在等级过滤通过后才捕获（微秒级）；符号解析推迟到 Sink 输出时，因此从事件循环
-// 线程调用它们不会触发调试信息读取（见 StackTrace.h）
+// 线程调用它们不会触发调试信息读取（见 StackTrace.h）。
+// 异常日志与 LOG_ERROR_FMT / LOG_LOGGER_ERROR_FMT 同序（级别进宏名、logger 在最前）；
+// 目前只提供 Error 级，需要其他级别时按同形补一条。
 // ============================================================================
 
 /// 记录当前位置的调用栈（没有异常、但想知道走到这里经过了哪些帧）
@@ -89,7 +91,7 @@
         } \
     } while (0)
 
-/// 记录异常：与 LOG_*_FMT 同形，额外把异常的抛出点调用栈带进事件（非框架异常则不带栈）
+/// 记录异常（级别见宏名）：与 LOG_*_FMT 同形，额外把异常的抛出点调用栈带进事件（非框架异常则不带栈）
 #define LOG_EXCEPTION_INTERNAL(logger_expression, level, exception, format_string, ...) \
     do { \
         auto &internalLogger = (logger_expression); \
@@ -100,8 +102,8 @@
 
 /// 使用默认根日志器
 #define LOG_STACK(level, message) LOG_STACK_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), level, message)
-#define LOG_EXCEPTION(level, exception, format_string, ...) LOG_EXCEPTION_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), level, exception, format_string, ## __VA_ARGS__)
+#define LOG_ERROR_EXCEPTION(exception, format_string, ...) LOG_EXCEPTION_INTERNAL(AsynGyanis::Base::LoggerRegistry::instance().getRootLogger(), AsynGyanis::Base::LogLevel::Error, exception, format_string, ## __VA_ARGS__)
 
 /// 使用指定日志器
 #define LOG_LOGGER_STACK(logger, level, message) LOG_STACK_INTERNAL(logger, level, message)
-#define LOG_LOGGER_EXCEPTION(logger, level, exception, format_string, ...) LOG_EXCEPTION_INTERNAL(logger, level, exception, format_string, ## __VA_ARGS__)
+#define LOG_LOGGER_ERROR_EXCEPTION(logger, exception, format_string, ...) LOG_EXCEPTION_INTERNAL(logger, AsynGyanis::Base::LogLevel::Error, exception, format_string, ## __VA_ARGS__)

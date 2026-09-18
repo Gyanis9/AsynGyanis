@@ -15,7 +15,18 @@
 
 ## [Unreleased]
 
-（暂无）
+### 新增
+
+- **报错可携带调用栈**：框架异常（`Base::Exception` 及其用法错误分支的 `LogicException` /
+  `InvalidArgumentException`）在构造时捕获抛出点调用栈（只存原始帧，约 0.55 µs），符号解析推迟到
+  日志落地时进行——事件循环线程不会因为「日志带栈」而去读调试信息（配合异步 Sink 时解析落在
+  工作线程）。日志侧新增四个宏：`LOG_ERROR_EXCEPTION(e, fmt, …)` / `LOG_LOGGER_ERROR_EXCEPTION(logger, e, fmt, …)`
+  （记录异常并附上它的抛出点栈）与 `LOG_STACK(level, msg)` / `LOG_LOGGER_STACK(logger, level, msg)`
+  （记录当前位置的栈）。文本格式化器在消息后追加「调用栈:」块，JSON 格式化器给出独立的
+  `stackTrace` 字段；异常来自框架家族之外时照常记录、不带栈（不补采打印点的栈充数）。
+  `std::stacktrace` 不可用的平台由构建期探测（`ASYN_HAS_STACKTRACE`）自动退化为空实现。
+  框架内 16 处关键错误路径（事件循环、连接池线程、配置热重载、TCP 服务器的接受/建连/清扫/关闭、
+  h2 握手失败、h1/h2/h3 的 WebSocket 业务异常、示例程序的启动失败）已改用该宏，日志文案保持不变。
 
 ## [1.1.0] - 2026-09-16
 

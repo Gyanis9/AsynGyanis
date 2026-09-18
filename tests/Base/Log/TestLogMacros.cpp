@@ -361,7 +361,7 @@ namespace AsynGyanis::Base
     TEST_F(LogMacros, ExceptionMacroCarriesThrowSiteStack)
     {
         const Exception probe("probe failure");
-        LOG_EXCEPTION(LogLevel::Error, probe, "处理请求失败：{}", probe.what());
+        LOG_ERROR_EXCEPTION(probe, "处理请求失败：{}", probe.what());
 
         ASSERT_EQ(m_recordingSink->writeCount(), 1U);
         const LogEvent event = m_recordingSink->lastEvent();
@@ -378,7 +378,7 @@ namespace AsynGyanis::Base
     TEST_F(LogMacros, ExceptionMacroKeepsPlainStandardExceptionsWithoutStack)
     {
         const std::runtime_error plain("普通标准异常");
-        LOG_EXCEPTION(LogLevel::Error, plain, "处理失败：{}", plain.what());
+        LOG_ERROR_EXCEPTION(plain, "处理失败：{}", plain.what());
 
         ASSERT_EQ(m_recordingSink->writeCount(), 1U);
         const LogEvent event = m_recordingSink->lastEvent();
@@ -400,12 +400,30 @@ namespace AsynGyanis::Base
         EXPECT_EQ(m_recordingSink->writeCount(), 0U) << "指定日志器的宏不应落到根日志器上";
     }
 
+    TEST_F(LogMacros, LoggerExceptionMacroRoutesToGivenLogger)
+    {
+        Logger localLogger("exception_target_logger");
+        auto   ownedSink            = std::make_unique<RecordingLogSink>();
+        RecordingLogSink *localSink = ownedSink.get();
+        localLogger.addSink(std::move(ownedSink));
+
+        const Exception probe("probe failure");
+        LOG_LOGGER_ERROR_EXCEPTION(localLogger, probe, "指定日志器：{}", probe.what());
+
+        ASSERT_EQ(localSink->writeCount(), 1U);
+        EXPECT_EQ(localSink->lastEvent().loggerNameView(), "exception_target_logger");
+        // what() 自带「[异常] … [文件:行 in 函数]」外壳，因此分两段断言而不是拼一整句
+        EXPECT_NE(localSink->lastEvent().message.find("指定日志器："), std::string::npos) << localSink->lastEvent().message;
+        EXPECT_NE(localSink->lastEvent().message.find("probe failure"), std::string::npos) << localSink->lastEvent().message;
+        EXPECT_EQ(m_recordingSink->writeCount(), 0U) << "指定日志器的宏不应落到根日志器上";
+    }
+
     TEST_F(LogMacros, StackMacrosWriteNothingWhenLevelIsFiltered)
     {
         LoggerRegistry::instance().getRootLogger().setLevel(LogLevel::Off);
 
         LOG_STACK(LogLevel::Error, "被过滤");
-        LOG_EXCEPTION(LogLevel::Error, Exception("被过滤"), "被过滤：{}", "被过滤");
+        LOG_ERROR_EXCEPTION(Exception("被过滤"), "被过滤：{}", "被过滤");
 
         EXPECT_EQ(m_recordingSink->writeCount(), 0U) << "被过滤的带栈日志不应产生事件（也不该为采栈付出代价）";
     }

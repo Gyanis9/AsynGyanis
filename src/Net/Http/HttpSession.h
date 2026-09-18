@@ -371,7 +371,7 @@ namespace AsynGyanis::Net
                 } catch (const std::exception &exception)
                 {
                     // 101 已经上线，此刻没有任何可以回给对端的东西：原因只能进日志
-                    LOG_EXCEPTION(Base::LogLevel::Error, exception, "WebSocket 会话：业务处理器抛出异常，已按连接不可用收口，原因：{}", exception.what());
+                    LOG_ERROR_EXCEPTION(exception, "WebSocket 会话：业务处理器抛出异常，已按连接不可用收口，原因：{}", exception.what());
                 } catch (...)
                 {
                     LOG_ERROR_FMT("WebSocket 会话：业务处理器抛出非标准异常（无 what() 描述），已按连接不可用收口");
