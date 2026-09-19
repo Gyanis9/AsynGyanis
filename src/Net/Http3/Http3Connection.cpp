@@ -694,6 +694,7 @@ namespace AsynGyanis::Net
                                               .message = "流 " + std::to_string(streamId) + " 已不存在或本端已收尾，响应作废"});
         }
 
+        // 响应侧用一次性判定器：本端是唯一写出方，不必像请求流那样跨头段与尾段累积顺序
         Http3HeaderValidator validator(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
         if (const auto began = validator.beginHeaderBlock(false); !began)
         {
@@ -720,6 +721,8 @@ namespace AsynGyanis::Net
         {
             return std::unexpected(encoded.error());
         }
+        // 指令排编码器流、头块排响应流：两条流之间 QUIC 不保证到达顺序，对端靠头块前缀里的
+        // Required Insert Count 自己判断要不要挂起，因此这里不必（也做不到）跨流定序
         queueQpackInstructions(encoderStreamBytes, {});
 
         Http3HeadersFrame headersFrame;
@@ -730,6 +733,8 @@ namespace AsynGyanis::Net
 
         if (isEndOfStream)
         {
+            // 只记收尾标记，不在这里摘状态：尾字节还在待发队列里，等 flush 把它交给传输层之后
+            // 才走 noteLocallyFinishedStream 发关闭通知
             entry->second.isLocalFinished = true;
         }
         return {};

@@ -105,15 +105,8 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 每种已知帧的规范字节
-     * @details 推导式统一是「Type 的变长整数 + Length 的变长整数 + 载荷」：
-     *          DATA "hello" → 00 + 05 + 68656c6c6f（§7.2.1 图 4）；
-     *          CANCEL_PUSH 1024 → 03 + 02 + 4400（1024>63 走 2 字节档，0x40|0x04、0x00，§7.2.3 图 6）；
-     *          SETTINGS 三项已知一项未知 → 04 + 0c + 01 5000 06 80004000 07 03 31 07
-     *          （4096 走 2 字节档、16384>16383 走 4 字节档，载荷 3+5+2+2=12 字节，§7.2.4 图 7）；
-     *          GOAWAY 的 2^62-1 → 07 + 08 + FF×8（8 字节档首字节 0xC0|0x3F=0xFF，§7.2.6 图 9）；
-     *          MAX_PUSH_ID 1500 → 0d + 02 + 45dc（§7.2.7 图 10）；
-     *          未知类型 0x21 → 21 + 02 + ff00（§7.2.8 保留族，按 §9 原样交出）；
-     *          未知类型 0x40（=64）→ 4040 + 00（64 超单字节档，故类型本身占 2 字节）。
+     * @details 期望串按「Type 的变长整数 + Length 的变长整数 + 载荷」推出来，不是从实现里抄的；
+     *          逐条推导写在下面 cases 上方，免得注释与用例分两处漂移。
      */
     TEST(Http3FrameEncoding, WritesCanonicalBytesForEveryKnownFrame)
     {
@@ -123,6 +116,14 @@ namespace AsynGyanis::Net
             const char *hexadecimalText;
         };
 
+        // DATA "hello" → 00 + 05 + 68656c6c6f（§7.2.1 图 4）
+        // CANCEL_PUSH 1024 → 03 + 02 + 4400（1024>63 走 2 字节档，0x40|0x04、0x00，§7.2.3 图 6）
+        // SETTINGS 三项已知一项未知 → 04 + 0c + 01 5000 06 80004000 07 03 31 07
+        //   （4096 走 2 字节档、16384>16383 走 4 字节档，载荷 3+5+2+2=12 字节，§7.2.4 图 7）
+        // GOAWAY 的 2^62-1 → 07 + 08 + FF×8（8 字节档首字节 0xC0|0x3F=0xFF，§7.2.6 图 9）
+        // MAX_PUSH_ID 1500 → 0d + 02 + 45dc（§7.2.7 图 10）
+        // 未知类型 0x21 → 21 + 02 + ff00（§7.2.8 保留族，按 §9 原样交出）
+        // 未知类型 0x40（=64）→ 4040 + 00（64 超单字节档，故类型本身占 2 字节）
         const std::vector<Case> cases{
                 {Http3DataFrame{std::span<const std::uint8_t>(kHelloBytes)}, "000568656c6c6f"},
                 {Http3DataFrame{{}}, "0000"},
@@ -345,12 +346,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 载荷与声明长度不合的帧一律 Malformed
-     * @details 五个方向不同的样例：
-     *          0302 1fff —— CANCEL_PUSH 只该有一个整数，多出 1 字节尾巴（§7.1）；
-     *          0301 40 —— 声明 1 字节却起了个两字节档的整数，字段越出末尾；
-     *          0700 —— GOAWAY 的必填整数完全缺席；
-     *          040101 —— SETTINGS 只剩标识、值不见；
-     *          04020140 —— 值起了两字节档，声明长度里只剩 1 字节。
+     * @details 五个样例各偏一个方向，逐条说明写在 cases 上方。
      */
     TEST(Http3FrameDecoding, RejectsPayloadThatDisagreesWithDeclaredLength)
     {
@@ -360,6 +356,11 @@ namespace AsynGyanis::Net
             const char *expectedTextInMessage;
         };
 
+        // 03021fff：CANCEL_PUSH 只该有一个整数，多出 1 字节尾巴（§7.1）
+        // 030140：声明 1 字节却起了个两字节档的整数，字段越出末尾
+        // 0700：GOAWAY 的必填整数完全缺席
+        // 040101：SETTINGS 只剩标识、值不见
+        // 04020140：值起了两字节档，声明长度里只剩 1 字节
         const std::vector<Case> cases{
                 {"03021fff", "没被任何字段占用"},
                 {"030140", "越出载荷末尾"},

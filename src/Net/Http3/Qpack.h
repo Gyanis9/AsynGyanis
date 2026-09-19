@@ -246,8 +246,12 @@ namespace AsynGyanis::Net
         QpackEncoder(std::size_t peerMaximumTableCapacityByteCount, std::size_t peerMaximumBlockedStreamCount,
                      std::size_t localTableCapacityByteCount);
 
+        /**
+         * @brief 析构函数：动态表与未确认头块的记账都是按值容器，无额外资源需要回收
+         */
         ~QpackEncoder() = default;
 
+        // 禁拷贝：复制一份会让动态表与「已发出未确认」的记账各自推进，插入索引随即在两边指向不同条目
         QpackEncoder(const QpackEncoder &) = delete;
         QpackEncoder &operator=(const QpackEncoder &) = delete;
 
@@ -417,8 +421,13 @@ namespace AsynGyanis::Net
          */
         explicit QpackDecoder(QpackDecoderSettings settings);
 
+        /**
+         * @brief 析构函数：解码侧动态表与挂起头块的记录都是按值容器，无额外资源需要回收
+         */
         ~QpackDecoder() = default;
 
+        // 禁拷贝：解码器持有对端编码器流的解析进度与解码侧动态表，复制一份会让两边进度分叉，
+        // 该发的 Section Ack 与插入数告知也会各回吐一遍
         QpackDecoder(const QpackDecoder &) = delete;
         QpackDecoder &operator=(const QpackDecoder &) = delete;
 

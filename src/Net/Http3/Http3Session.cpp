@@ -952,21 +952,26 @@ namespace AsynGyanis::Net
         const auto found = m_webSocketTunnels.find(streamId);
         if (found == m_webSocketTunnels.end())
         {
+            // 记录已经不在了说明这条隧道早被收口：安静退出，别在 closeTunnel 之外再报一次
             co_return;
         }
 
         WebSocketTunnel &tunnel = *found->second;
         try
         {
+            // 处理器一路 co_await 隧道两端的字节，返回即业务收工
             co_await tunnel.handler(*(tunnel.peer));
         } catch (const std::exception &exception)
         {
+            // 异常必须在这里接住：本协程是从连接层的解帧回调里直接 resume 的，外抛会一路穿出
+            // 回调栈，牵连同一条连接上其它流的字节
             LOG_ERROR_EXCEPTION(exception, "Http3Session: 流 {} 的 WebSocket 业务处理器抛出异常，已按连接不可用收口。原因：{}", streamId, exception.what());
         } catch (...)
         {
             LOG_ERROR_FMT("Http3Session: 流 {} 的 WebSocket 业务处理器抛出非标准异常（无 what() 描述）", streamId);
         }
 
+        // 挂起期间这条隧道可能已被对端重置并回收，因此重新查一遍而不是复用 found
         if (const auto stillThere = m_webSocketTunnels.find(streamId); stillThere != m_webSocketTunnels.end())
         {
             stillThere->second->isBusinessFinished = true;

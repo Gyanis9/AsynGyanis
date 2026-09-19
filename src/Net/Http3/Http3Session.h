@@ -83,6 +83,7 @@ namespace AsynGyanis::Net
          * @param writer 流数据出口
          * @param crediter 接收窗口的归还口（可空：为空时不归还，正文一大就会把接收窗口用光）
          * @param metrics 统计采集端；传空指针表示本会话不采集统计
+         * @param memoryBudget 进程级内存预算；有它时缓冲的请求正文按字节占全局额度，传空指针表示不做全局占用（仍受单请求上限约束）
          * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
@@ -94,8 +95,13 @@ namespace AsynGyanis::Net
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
 
+        /**
+         * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放
+         * @note 声明在这里、定义在 .cpp：连接层只做了前向声明，析构要见到完整类型才能销毁那个 unique_ptr
+         */
         ~Http3Session();
 
+        // 禁拷贝：本类持有各流的派发协程与隧道对端对象，复制一份会让两条副本抢同一条 QUIC 流的字节
         Http3Session(const Http3Session &) = delete;
 
         Http3Session &operator=(const Http3Session &) = delete;

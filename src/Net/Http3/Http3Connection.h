@@ -115,8 +115,14 @@ namespace AsynGyanis::Net
         Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks,
                         LocalSettings settings = {});
 
+        /**
+         * @brief 析构函数：流状态与待发缓冲都是按值的标准容器，无额外资源需要回收
+         * @note 不会替本类向传输层收尾：流该不该 RESET 由上层决定，销毁时残留的待发字节直接丢弃
+         */
         ~Http3Connection() = default;
 
+        // 禁拷贝：本对象持有三条本端单向流的流号与 QPACK 两侧动态表，复制一份会让两份表各自演进，
+        // 之后同一个索引在两边指向不同条目
         Http3Connection(const Http3Connection &) = delete;
         Http3Connection &operator=(const Http3Connection &) = delete;
 
