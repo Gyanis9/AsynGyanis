@@ -295,8 +295,11 @@ namespace AsynGyanis::Net
         /// 作废连接：只记第一次的原因
         void breakConnection(Http3ErrorCode errorCode, std::string_view reason);
 
-        /// 以流错误处置一条流：丢掉待发字节、重置该流并通知上层
+        /// 以流错误处置一条流：丢掉待发字节、标记放弃并通知上层（状态本身留到安全点回收）
         void failStream(std::int64_t streamId, Http3ErrorCode errorCode, std::string_view reason);
+
+        /// 在不再持有该流引用的位置回收已放弃的流状态
+        void pruneAbandonedStream(std::int64_t streamId);
 
         static constexpr std::size_t kMaximumFlushRounds = 64; ///< 一次 flush 最多搬多少段
 

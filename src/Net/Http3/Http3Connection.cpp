@@ -424,6 +424,8 @@ namespace AsynGyanis::Net
             state.isPeerFinished = true;
             finishRequestStreamIfEnded(streamId, state);
         }
+        // 此刻不再使用该流的引用：把处理中途被判定放弃的流在这里回收
+        pruneAbandonedStream(streamId);
     }
 
     std::expected<void, QpackError> Http3Connection::handleRequestFrame(const std::int64_t streamId, StreamState &state,
@@ -946,11 +948,13 @@ namespace AsynGyanis::Net
         {
             return; // 对端不接动态表：编码器保持只用静态表
         }
+        // 构造时对端能力还不知道，编码器是按「对端上限 0」建的，直接调容量必然被拒。
+        // 此刻还没编过任何引用动态表的头块（上限 0 时插不进去），重建实例不会让对端索引错位（§2.1.3）
+        m_qpackEncoder.emplace(peerTableCapacityByteCount, peerMaximumBlockedStreamCount, std::size_t{0});
         std::string encoderStreamBytes;
         if (const auto applied = m_qpackEncoder->setMaximumTableCapacityByteCount(effectiveCapacityByteCount, encoderStreamBytes); !applied)
         {
-            LOG_WARN_FMT("Http3Connection: 按对端容量 {} 启用动态表失败（{}），本端响应继续只用静态表", effectiveCapacityByteCount,
-                         applied.error().message);
+            LOG_WARN_FMT("Http3Connection: 按对端容量启用动态表失败（{}），本端响应继续只用静态表", applied.error().message);
             return;
         }
         queueQpackInstructions(encoderStreamBytes, {});
@@ -1032,6 +1036,16 @@ namespace AsynGyanis::Net
         {
             m_callbacks.onStreamReset(streamId, errorCode);
         }
-        m_streams.erase(entry);
+        // 这里不摘状态：调用链上到处握着 StreamState 的引用（帧循环、额度归还、收尾判定都在用），
+        // 当场 erase 就是让那些引用悬空。标记已放弃后交给 pruneAbandonedStream 在安全点回收
+    }
+
+    void Http3Connection::pruneAbandonedStream(const std::int64_t streamId)
+    {
+        const auto entry = m_streams.find(streamId);
+        if (entry != m_streams.end() && entry->second.isAbandoned)
+        {
+            m_streams.erase(entry);
+        }
     }
 } // namespace AsynGyanis::Net
