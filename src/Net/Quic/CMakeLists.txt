@@ -1,6 +1,6 @@
 # Net/Quic —— QUIC 传输层
-# 现状：状态机与 TLS 胶水仍由 ngtcp2 提供（见 third_party/），Codec/ 是自研的无状态字节层。
-# 两层并存是刻意的过渡态：字节层不依赖任何跨包状态，可以先独立测准
+# 现状：自研的字节层（Codec/）、包保护与 TLS 胶水（Crypto/）、组包器与连接状态机都在树内；
+# 生产路径仍走 ngtcp2（见 third_party/），等状态机在真机上打通后再换，两套并存是刻意的过渡态
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnection.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnection.cpp
@@ -9,6 +9,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicOpenSslError.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.cpp
 )
 
 add_subdirectory(Codec)
