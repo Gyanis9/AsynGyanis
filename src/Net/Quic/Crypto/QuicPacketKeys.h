@@ -33,14 +33,14 @@ namespace AsynGyanis::Net
      * @brief TLS 协商出的密码套件，决定 AEAD、密钥长度与 HKDF 用的哈希
      *
      * @details RFC 9001 §5.3 允许 [TLS13] 的全部套件（除 TLS_AES_128_CCM_8_SHA256，它没有定义
-     *          头部保护方案）。主线的 OpenSSL 只会协商到 AES-128-GCM，其余取值是为了按协商结果
-     *          正确推导密钥，而不是为了「支持四种套件的部署」。
+     *          头部保护方案）。这里刻意**不收** TLS_AES_128_CCM_SHA256：本仓库的 OpenSSL 默认不
+     *          协商它，而 CCM 的 EVP 通路要求先报明文与总长度才能取标签，实现路径与另外三个不同。
+     *          留着枚举值就等于留一个「声明支持、实际会失败」的状态。
      */
     enum class QuicCipherSuite
     {
-        Aes128Gcm,         ///< TLS_AES_128_GCM_SHA256
+        Aes128Gcm,         ///< TLS_AES_128_GCM_SHA256：主线 OpenSSL 的默认档，Initial 一律用它
         Aes256Gcm,         ///< TLS_AES_256_GCM_SHA384
-        Aes128Ccm,         ///< TLS_AES_128_CCM_SHA256
         ChaCha20Poly1305,  ///< TLS_CHACHA20_POLY1305_SHA256
     };
 

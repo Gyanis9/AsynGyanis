@@ -4,11 +4,10 @@ namespace AsynGyanis::Net
 {
     std::size_t quicCipherSuiteKeyByteLength(const QuicCipherSuite cipherSuite) noexcept
     {
-        // AES-128 与 ChaCha20 的差别在 16/32：CCM 只有 128 位一档，ChaCha20 恒为 256 位
+        // AES-128-GCM 是 16 字节档，AES-256-GCM 与 ChaCha20 都是 32 字节档
         switch (cipherSuite)
         {
-        case QuicCipherSuite::Aes128Gcm:
-        case QuicCipherSuite::Aes128Ccm: return 16;
+        case QuicCipherSuite::Aes128Gcm: return 16;
         case QuicCipherSuite::Aes256Gcm:
         case QuicCipherSuite::ChaCha20Poly1305: return 32;
         }
@@ -21,8 +20,7 @@ namespace AsynGyanis::Net
         // AES 用与 AEAD 同位数的 ECB（§5.4.3），ChaCha20 恒用 256 位密钥（§5.4.4）
         switch (cipherSuite)
         {
-        case QuicCipherSuite::Aes128Gcm:
-        case QuicCipherSuite::Aes128Ccm: return 16;
+        case QuicCipherSuite::Aes128Gcm: return 16;
         case QuicCipherSuite::Aes256Gcm:
         case QuicCipherSuite::ChaCha20Poly1305: return 32;
         }
@@ -41,7 +39,6 @@ namespace AsynGyanis::Net
         {
         case QuicCipherSuite::Aes128Gcm: return "TLS_AES_128_GCM_SHA256";
         case QuicCipherSuite::Aes256Gcm: return "TLS_AES_256_GCM_SHA384";
-        case QuicCipherSuite::Aes128Ccm: return "TLS_AES_128_CCM_SHA256";
         case QuicCipherSuite::ChaCha20Poly1305: return "TLS_CHACHA20_POLY1305_SHA256";
         }
         return "未定义套件";

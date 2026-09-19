@@ -102,7 +102,6 @@ namespace AsynGyanis::Net
     TEST(QuicKeySchedule, CipherSuiteLengthsMatchRfc9001)
     {
         EXPECT_EQ(quicCipherSuiteKeyByteLength(QuicCipherSuite::Aes128Gcm), 16U);
-        EXPECT_EQ(quicCipherSuiteKeyByteLength(QuicCipherSuite::Aes128Ccm), 16U);
         EXPECT_EQ(quicCipherSuiteKeyByteLength(QuicCipherSuite::Aes256Gcm), 32U);
         EXPECT_EQ(quicCipherSuiteKeyByteLength(QuicCipherSuite::ChaCha20Poly1305), 32U);
 
