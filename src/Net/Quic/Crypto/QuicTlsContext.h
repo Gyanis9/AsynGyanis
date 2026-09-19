@@ -88,7 +88,8 @@ namespace AsynGyanis::Net
          * @param tlsContext 已配好证书与 ALPN 的上下文（生命周期必须覆盖本对象）
          * @param isServerSide true 为服务端
          * @param localTransportParameters 已按 RFC 9000 §18 编码的本端参数；交空即不设参数（握手会因缺
-         *        `initial_source_connection_id` 等必填项被对端判错）
+         *        `initial_source_connection_id` 等必填项被对端判错）。**本类会复制一份**：OpenSSL 的
+         *        `SSL_set_quic_tls_transport_params` 只记指针不拷内容，所以交临时缓冲进来也不会悬空
          * @throws Base::Exception 运行期故障：建会话失败、挂回调失败或 OpenSSL 拒绝了参数
          */
         QuicTlsContext(SSL_CTX &tlsContext, bool isServerSide, std::span<const std::uint8_t> localTransportParameters);
@@ -198,6 +199,9 @@ namespace AsynGyanis::Net
         void appendOutbound(QuicEncryptionLevel level, std::span<const std::uint8_t> data);
 
         SSL            *m_session{nullptr}; ///< 每连接的 TLS 会话；构造成功交回对象时恒非空
+        /// 本端参数的副本：OpenSSL 只记指针不拷内容，所以这段字节必须活到 `SSL_free` 之后。
+        /// 成员要等析构函数体（里面做 `SSL_free`）跑完才销毁，顺序天然满足
+        std::vector<std::uint8_t> m_localTransportParameters{};
         std::array<std::vector<std::uint8_t>, kLevelCount> m_inboundData{}; ///< 各级别对端交来、尚未被 TLS 消耗完的握手字节
         QuicEncryptionLevel m_inboundLevel{QuicEncryptionLevel::Initial};    ///< TLS 当前该从哪个级别取字节
         std::deque<QuicTlsRecord> m_outboundRecords{};  ///< 待交出的 TLS 记录，按产出顺序

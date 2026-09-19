@@ -7,7 +7,8 @@
 //      产出记录属于 Initial 级别。OpenSSL 的 crypto_send 回调**不带级别参数**，级别只能跟着
 //      密钥切换自己维护（写方向定产出级别、读方向定入站缓冲），这两条断言正是钉住那个跟踪的；
 //   3) transport parameters 原样往返：本类不解释其语义，只保证交回来的字节与对端设进去的一致；
-//   4) 失败路径：喂进状态机不接受的消息要判 Failed（而不是继续等数据），且能拿到 TLS 告警码。
+//   4) 失败路径：喂进状态机不接受的消息要判 Failed（而不是继续等数据），且能拿到 TLS 告警码；
+//   5) 参数所有权：交进来的参数缓冲在构造之后销毁也要能握手——OpenSSL 只记指针，副本必须由本类留。
 // 证书用仓库内的自签夹具（与 HTTPS 用例同一份），因此不依赖任何外部服务。
 
 #include "Net/Quic/Crypto/QuicTlsContext.h"
@@ -20,6 +21,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -248,5 +251,27 @@ namespace AsynGyanis::Net
         EXPECT_EQ(progress, QuicTlsProgress::Failed);
         EXPECT_TRUE(server.alert().has_value()) << "失败要靠告警码给收口原因，不能只报个失败";
         EXPECT_FALSE(server.isHandshakeCompleted());
+    }
+
+    /**
+     * @brief 交进来的参数缓冲构造完就销毁，也要能正常产出 ClientHello
+     * @details OpenSSL 的 `SSL_set_quic_tls_transport_params` 只记指针不拷内容，本类必须自己留一份副本；
+     *          没副本时下面这一步会读到已释放的内存（ASan 实测过：栈停在 `custom_ext_add` 里）
+     */
+    TEST(QuicTlsContext, OwnsTheTransportParametersItWasGiven)
+    {
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        std::optional<QuicTlsContext> client;
+        {
+            const std::vector<std::uint8_t> encoded = makeTransportParameters(0x00, "8394c8f03e515708");
+            client.emplace(*clientContext.get(), false, std::span<const std::uint8_t>(encoded));
+        }
+
+        ASSERT_EQ(client->drive(), QuicTlsProgress::NeedData) << "客户端第一步就是发 ClientHello，正是在这里读参数";
+        const auto record = client->takeOutboundRecord();
+        ASSERT_TRUE(record.has_value());
+        EXPECT_FALSE(record->data.empty());
     }
 } // namespace AsynGyanis::Net

@@ -100,12 +100,17 @@ namespace AsynGyanis::Net
                                   + "）：请确认依赖里的 OpenSSL 是 3.5 以上的主线版本");
         }
 
-        if (!localTransportParameters.empty() &&
-            SSL_set_quic_tls_transport_params(session, localTransportParameters.data(), localTransportParameters.size()) != 1)
+        if (!localTransportParameters.empty())
         {
-            SSL_free(session);
-            throw Base::Exception("QUIC 连接建立失败：本端 transport parameters 被拒（" + quicOpenSslErrorText() + "）："
-                                  "请核对是否按 RFC 9000 §18 编码、必填项是否齐全");
+            // 先落到成员再交指针：OpenSSL 的 `ossl_quic_tls_set_transport_params` 只是
+            // `qtls->local_transport_params = transport_params`，不复制内容，交临时量会当场悬空
+            m_localTransportParameters.assign(localTransportParameters.begin(), localTransportParameters.end());
+            if (SSL_set_quic_tls_transport_params(session, m_localTransportParameters.data(), m_localTransportParameters.size()) != 1)
+            {
+                SSL_free(session);
+                throw Base::Exception("QUIC 连接建立失败：本端 transport parameters 被拒（" + quicOpenSslErrorText() + "）："
+                                      "请核对是否按 RFC 9000 §18 编码、必填项是否齐全");
+            }
         }
         m_session = session;
     }
