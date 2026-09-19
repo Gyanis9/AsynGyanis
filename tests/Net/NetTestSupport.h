@@ -155,6 +155,25 @@ namespace AsynGyanis::Net::TestSupport
     }
 
     /**
+     * @brief 把按字节存的 std::string 转成无符号字节容器
+     * @details 编码器一律往 `std::string` 里追加（二进制安全），而断言的期望值多来自 RFC 的
+     *          十六进制向量，两边类型不同没法直接比；`char` 与 `std::uint8_t` 也不能用
+     *          初始化列表隐式互转，所以显式过一层。
+     * @param bytes 按字节存的内容
+     * @return std::vector<std::uint8_t> 逐字节拷出的结果
+     */
+    [[nodiscard]] inline std::vector<std::uint8_t> toUnsignedBytes(const std::string &bytes)
+    {
+        std::vector<std::uint8_t> converted;
+        converted.reserve(bytes.size());
+        for (const char byteValue: bytes)
+        {
+            converted.push_back(static_cast<std::uint8_t>(byteValue));
+        }
+        return converted;
+    }
+
+    /**
      * @brief 判断请求标识是否符合自动生成格式
      * @param requestId 待判定的标识
      * @return true 长度符合约定，且分隔符位置与其余字符都是小写十六进制

@@ -37,20 +37,9 @@ namespace AsynGyanis::Net
         using AsynGyanis::Net::TestSupport::makeUnsignedBytes;
 
         /**
-         * @brief 编码结果转成同一类型的字节容器，便于用 {0x.., 0x..} 直接比对
-         * @param bytes 编码器追加进缓冲的内容
-         * @return std::vector<std::uint8_t> 逐字节拷出的结果
+         * @brief 编码结果转成可比对的字节容器（定义见 NetTestSupport.h）
          */
-        std::vector<std::uint8_t> toUnsignedBytes(const std::string &bytes)
-        {
-            std::vector<std::uint8_t> converted;
-            converted.reserve(bytes.size());
-            for (const char byteValue: bytes)
-            {
-                converted.push_back(static_cast<std::uint8_t>(byteValue));
-            }
-            return converted;
-        }
+        using AsynGyanis::Net::TestSupport::toUnsignedBytes;
     } // namespace
 
     /**
