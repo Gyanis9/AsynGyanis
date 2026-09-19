@@ -216,6 +216,7 @@ namespace AsynGyanis::Net
         struct StreamState
         {
             std::optional<Http3FrameReader> reader;          ///< 该流的帧读取器，上限按本端配置建
+            std::unique_ptr<Http3HeaderValidator> validator; ///< 该流的消息头判定器：跨头段与尾段共用一份，才认得出「尾段必须在头段之后」
             std::uint64_t fedByteCount{0};                   ///< 交给该流读取器的字节总数
             std::uint64_t creditedByteCount{0};              ///< 已归还接收窗口的字节数，不含 DATA 载荷
             std::uint64_t receivedBodyByteCount{0};          ///< 已交出的 DATA 总长，与 content-length 比对

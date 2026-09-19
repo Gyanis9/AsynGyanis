@@ -559,7 +559,13 @@ namespace AsynGyanis::Net
     bool Http3Connection::deliverFieldSection(const std::int64_t streamId, StreamState &state,
                                               const std::vector<QpackHeaderField> &fields, const bool isTrailers)
     {
-        Http3HeaderValidator validator(Http3MessageKind::Request, m_localSettings.isExtendedConnectEnabled);
+        // 判定器按流持有：尾段的合法性（不得有伪头、必须在头段之后）依赖头段已经收过这个事实，
+        // 每个头段新建一份就会把合法尾段判成非法序列
+        if (!state.validator)
+        {
+            state.validator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Request, m_localSettings.isExtendedConnectEnabled);
+        }
+        Http3HeaderValidator &validator = *state.validator;
         if (const auto began = validator.beginHeaderBlock(isTrailers); !began)
         {
             rejectRequestHead(streamId, state, began.error().message);
