@@ -193,7 +193,8 @@ function(asyn_enable_strict_warnings target_name)
         # 两条按「针对性豁免」关掉（不是降级告警级别），理由都写在这儿：
         # - -Wmissing-field-initializers：C++ 的指定初始化器只填当前分支用得上的字段是
         #   本仓库的既定写法（其余字段由默认成员初值兜住）；GCC 会对它报「少填字段」，
-        #   而第三方结构更不可能逐个填满——ngtcp2_callbacks 有三十多个字段，我们只填需要的那些。
+        #   而第三方结构更不可能逐个填满——测试里那个 ngtcp2 裁判客户端要填的 `ngtcp2_callbacks`
+        #   有三十多个字段，用得上的只有几个。
         # - -Wcomment：文档里写路由模式（"/static/*" 这类）难免出现 "/*" 序列；
         #   该告警想抓的是「误以为注释可嵌套」，与本仓库的实际写法不符。
         target_compile_options(${target_name} PRIVATE -Wall -Wextra -Werror

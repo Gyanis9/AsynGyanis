@@ -2,7 +2,9 @@
 # 能走 ConanCenter 的一律走 Conan（见根目录 conandata.yml）。
 
 # ---------------------------------------------------------------------------
-# ngtcp2 —— QUIC 传输层（HTTP/3 的底座）
+# ngtcp2 —— QUIC 传输层的**测试裁判**（库本体已自研，Net 不再链接它）
+#   用途：tests/Net/Quic/TestQuicServer.cpp 用它搭一个独立的客户端，与自研实现走真 UDP 回环对打；
+#         登记在 tests/Net/CMakeLists.txt，与 nghttp3 当 HTTP/3 裁判是同一个道理
 #   来源：https://github.com/ngtcp2/ngtcp2 的 v1.25.0 发布包（codeload tar.gz）
 #   裁剪：保留构建库所需——CMakeLists.txt、CMakeOptions.txt、cmakeconfig.h.in、cmake/、
 #         lib/、crypto/、third-party/（被无条件 add_subdirectory）、README.rst（含 MIT 许可）、

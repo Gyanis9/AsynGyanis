@@ -38,6 +38,16 @@
   也不再声明 `nghttp3::nghttp3`（nghttp3 目前只留在测试里当跨实现裁判）。
   一处刻意的口径差异：请求头部畸形（RFC 9114 §4.1.2）现在只作废该流并按 400 应答，
   不再像此前那样把整条 QUIC 连接判死。
+- **QUIC 传输层同样改为仓库自研，`Net` 不再链接 ngtcp2**：`src/Net/Quic` 现包含变长整数、报文头与
+  帧的编解码（RFC 9000 §16/§19）、包保护与密钥调度（RFC 9001）、TLS 胶水、发包组包器、连接状态机、
+  恢复层（RTT/PTO/判丢与探测超时/NewReno 与 §8.1 的反放大上限）和流层（双向与单向流、连接级与
+  流级流量控制、1-RTT 密钥更新）。`QuicServer` 的接法与 `--h3` 一字未改；变化在依赖与接口侧：
+  公开头不再暴露 ngtcp2 类型，消费方不必再拿它的头路径与 `NGTCP2_STATICLIB` 宏（ngtcp2 目前只留在
+  测试里当跨实现裁判，与 nghttp3 同一个道理）。**含破坏性变更**：`QuicConnection::Configuration` 的
+  `statelessResetSecret` 与 `onConnectionIdIssued`、以及 `QuicConnection::sourceConnectionIds()` 已删除，
+  直接搭过这层外壳的使用者要改掉那三处引用——本实现不做无状态重置，也不签发额外连接标识，
+  路由表里除本端标识之外只剩客户端最初选定的那个目的标识。刻意未做的还有路径迁移、0-RTT、
+  RETRY 与 DATAGRAM 帧。
 
 ### 修复
 
