@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <expected>
 #include <span>
+#include <string>
 
 namespace AsynGyanis::Net
 {
@@ -101,6 +102,9 @@ namespace AsynGyanis::Net
         }
     };
 
+    /// 包号字段的最长编码：1 到 4 字节（RFC 9000 §17.1）
+    inline constexpr std::size_t kQuicMaximumPacketNumberByteCount = 4;
+
     /**
      * @brief 解出一个报文头的明文部分
      * @details 只做「不依赖密钥就能判」的校验：固定位、v1 的连接标识长度上限、Token 与 Length 是否
@@ -129,6 +133,18 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] std::expected<void, QuicDecodeError>
     refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram);
+
+    /**
+     * @brief 按线格式写出截断包号（RFC 9000 §17.1）
+     * @details 包号是**定长大端**、只保留最低 `packetNumberByteCount` 个字节，**不带**变长整数的
+     *          前缀位——§16 末段把版本、连接标识长度与包号都排除在变长整数编码之外。对端靠
+     *          「已收过的最大包号 + 半窗口」把高位补回来（见 `restoreQuicPacketNumber`）。
+     * @param bytes 目标缓冲，二进制安全
+     * @param packetNumber 完整包号
+     * @param packetNumberByteCount 写出的字节数，1 到 4
+     * @throws Base::InvalidArgumentException 用法错误：字节数不在 1..4 内
+     */
+    void appendQuicTruncatedPacketNumber(std::string &bytes, std::uint64_t packetNumber, std::size_t packetNumberByteCount);
 
     /**
      * @brief 还原截断包号（RFC 9000 §A.3 的 DecodePacketNumber）

@@ -278,6 +278,23 @@ namespace AsynGyanis::Net
         return {};
     }
 
+    void appendQuicTruncatedPacketNumber(std::string &bytes, const std::uint64_t packetNumber, const std::size_t packetNumberByteCount)
+    {
+        if (packetNumberByteCount < 1 || packetNumberByteCount > kQuicMaximumPacketNumberByteCount)
+        {
+            throw Base::InvalidArgumentException(std::format("包号字段字节数 {} 不在 1..{} 内（RFC 9000 §17.1）："
+                                                             "首字节的包号长度位只表达得到这四档",
+                                                             packetNumberByteCount, kQuicMaximumPacketNumberByteCount));
+        }
+
+        // 定长大端：只交最低的几个字节，高位由对端按窗口还原，因此这里刻意不检查值是否放得下
+        for (std::size_t byteIndex = 0; byteIndex < packetNumberByteCount; ++byteIndex)
+        {
+            const std::size_t shiftBitCount = (packetNumberByteCount - 1 - byteIndex) * 8;
+            bytes.push_back(static_cast<char>((packetNumber >> shiftBitCount) & 0xFFULL));
+        }
+    }
+
     std::uint64_t restoreQuicPacketNumber(const std::uint64_t largestReceivedPacketNumber, const std::uint64_t truncatedPacketNumber,
                                          const std::size_t packetNumberByteCount)
     {

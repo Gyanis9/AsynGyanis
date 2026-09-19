@@ -7,6 +7,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicServer.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicServer.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicOpenSslError.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.cpp
 )
 
 add_subdirectory(Codec)

@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 # 测试目录结构与 src/Net 逐级对应，全部链接进同一个 TestNet 可执行文件
 add_executable(TestNet
         NetTestSupport.h
+        Quic/QuicRfcVectors.h
         Http/HttpTestSupport.h
         Http2/Http2TestSupport.h
 
@@ -32,6 +33,7 @@ add_executable(TestNet
         Quic/Crypto/TestQuicKeySchedule.cpp
         Quic/Crypto/TestQuicHeaderProtection.cpp
         Quic/Crypto/TestQuicPacketProtection.cpp
+        Quic/TestQuicPacketBuilder.cpp
         Http3/TestHttp3Session.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
@@ -92,6 +94,7 @@ target_include_directories(TestNet PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
         ${CMAKE_CURRENT_SOURCE_DIR}/Http2
+        ${CMAKE_CURRENT_SOURCE_DIR}/Quic
         ${CMAKE_SOURCE_DIR}/tests/Core
         ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
