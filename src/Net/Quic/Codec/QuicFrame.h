@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <variant>
@@ -37,6 +38,10 @@ namespace AsynGyanis::Net
 
     /// NEW_CONNECTION_ID 里连接标识的最小长度：0 长度标识不允许出现在这一帧里（RFC 9000 §19.15）
     inline constexpr std::size_t kQuicMinimumIssuedConnectionIdLength = 1;
+
+    /// 一条 ACK 最多带几段区间：砍掉尾部老区间不改变「哪些包到了」的结论，却能保证 ACK 帧本身
+    /// 不会大到把整包预算吃光。这是本实现自设的保护值，不是规范值
+    inline constexpr std::size_t kQuicMaximumAcknowledgementRanges = 32;
 
     /**
      * @brief 帧类型取值（RFC 9000 §12.4 表 3）
@@ -308,4 +313,16 @@ namespace AsynGyanis::Net
      *         连接标识或无状态重置令牌长度不符、ACK 的 ECN 计数标记与取值不一致
      */
     void appendQuicFrame(std::string &bytes, const QuicFrame &frame);
+
+    /**
+     * @brief 把已收到的包号集合折成 ACK 区间
+     * @details §19.3.1 要求区间按包号递减、互不重叠，相邻的会被合并成一段；`QuicAcknowledgementRange`
+     *          存绝对包号，递推出来的 gap 由帧编码器负责。超过 `kQuicMaximumAcknowledgementRanges`
+     *          段的老区间直接砍掉。
+     * @param receivedPacketNumbers 升序的已收包号
+     * @param acknowledgedUpTo 本次确认到的包号（含），即 ACK 帧的最大确认值
+     * @return std::vector<QuicAcknowledgementRange> 递减的区间，至少一段且首段含 `acknowledgedUpTo`
+     */
+    [[nodiscard]] std::vector<QuicAcknowledgementRange>
+    buildQuicAcknowledgementRanges(const std::set<std::uint64_t> &receivedPacketNumbers, std::uint64_t acknowledgedUpTo);
 } // namespace AsynGyanis::Net

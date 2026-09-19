@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <format>
+#include <ranges>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -934,5 +935,34 @@ namespace AsynGyanis::Net
     void appendQuicFrame(std::string &bytes, const QuicFrame &frame)
     {
         std::visit(FrameAppender{bytes}, frame);
+    }
+
+    std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const std::set<std::uint64_t> &receivedPacketNumbers,
+                                                                         const std::uint64_t acknowledgedUpTo)
+    {
+        std::vector<QuicAcknowledgementRange> ranges;
+        for (const std::uint64_t packetNumber : receivedPacketNumbers | std::views::reverse)
+        {
+            if (packetNumber > acknowledgedUpTo)
+            {
+                continue;
+            }
+            if (!ranges.empty() && ranges.back().smallestAcknowledged == packetNumber + 1)
+            {
+                ranges.back().smallestAcknowledged = packetNumber;
+                continue;
+            }
+            if (ranges.size() >= kQuicMaximumAcknowledgementRanges)
+            {
+                break;
+            }
+            ranges.push_back(QuicAcknowledgementRange{packetNumber, packetNumber});
+        }
+        if (ranges.empty())
+        {
+            // 不变式：区间永不为空且首段必须含最大确认值（见 QuicAcknowledgementFrame 的 @note）
+            ranges.push_back(QuicAcknowledgementRange{acknowledgedUpTo, acknowledgedUpTo});
+        }
+        return ranges;
     }
 } // namespace AsynGyanis::Net

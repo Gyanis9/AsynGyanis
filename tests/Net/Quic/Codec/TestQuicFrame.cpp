@@ -9,7 +9,9 @@
 //   4) ACK 区间的递推：largest = previous_smallest - gap - 2 算出负包号一律判 Malformed（§19.3.1），
 //      编码侧同样拒绝会算出负数的区间输入；
 //   5) 拒绝面：帧类型非最短编码（§16 里唯一的例外）、未定义类型、各字段越出载荷末尾、
-//      NEW_CONNECTION_ID 的连接标识长度不在 1..20。
+//      NEW_CONNECTION_ID 的连接标识长度不在 1..20；
+//   6) ACK 区间的折叠助手 `buildQuicAcknowledgementRanges`：相邻合并、超出确认值的不认、
+//      段数封顶后砍最老的区间、空集合时兜底成只含最大确认值那一段。
 // 用例全是纯计算，不起网络也不依赖外部服务。
 
 #include "Net/Quic/Codec/QuicFrame.h"
@@ -21,6 +23,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -480,5 +483,35 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(quicFrameTypeValue(QuicConnectionCloseFrame{0, std::uint64_t{0}, emptyData}), 0x1cULL);
         EXPECT_EQ(quicFrameTypeValue(QuicConnectionCloseFrame{0, std::nullopt, emptyData}), 0x1dULL);
+    }
+
+    /**
+     * @brief ACK 区间的折叠：相邻合并、跳过超过确认值的、段数封顶，以及空集合时的兜底
+     */
+    TEST(QuicFrame, BuildsAcknowledgementRangesByMergingAndCapping)
+    {
+        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 2, 3, 4}, 4),
+                  (std::vector<QuicAcknowledgementRange>{{0, 4}}));
+        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 3, 4}, 4),
+                  (std::vector<QuicAcknowledgementRange>{{3, 4}, {0, 1}}));
+        // 确认值之外的包号不属于本帧：2 收到过但这次不认
+        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 2}, 1),
+                  (std::vector<QuicAcknowledgementRange>{{0, 1}}));
+        // 空集合也要守住「区间非空且首段含最大确认值」的不变式，否则会编出一个自相矛盾的帧
+        EXPECT_EQ(buildQuicAcknowledgementRanges({}, 7),
+                  (std::vector<QuicAcknowledgementRange>{{7, 7}}));
+
+        std::set<std::uint64_t> isolated;
+        for (std::uint64_t packetNumber = 1; packetNumber <= 79; packetNumber += 2)
+        {
+            isolated.insert(packetNumber);
+        }
+        const std::vector<QuicAcknowledgementRange> capped = buildQuicAcknowledgementRanges(isolated, 79);
+        ASSERT_EQ(capped.size(), kQuicMaximumAcknowledgementRanges);
+        EXPECT_EQ(capped.front(), (QuicAcknowledgementRange{79, 79}));
+        EXPECT_EQ(capped.back(), (QuicAcknowledgementRange{79 - 2 * (kQuicMaximumAcknowledgementRanges - 1),
+                                                          79 - 2 * (kQuicMaximumAcknowledgementRanges - 1)}));
+        // 砍掉的是最老的那些：1 号包不再被覆盖，而首段仍含最大确认值
+        EXPECT_GT(capped.back().smallestAcknowledged, 1U);
     }
 } // namespace AsynGyanis::Net
