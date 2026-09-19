@@ -1,9 +1,12 @@
 // HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出，以及请求到 Router 的映射 前三条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 ngtcp2 与真实
-// UDP，考的是会话对 nghttp3 的绑定是否合规矩。最后两条走**真字节**：测试侧自建一条 客户端 nghttp3 连接当对端，请求的头块由它真编成 QPACK、响应也由它真解回来，中间不经 UDP。
+// UDP，考的是会话把请求映射到 Router 与响应写回这套接线是否合规矩。最后几条走**真字节**：测试侧自建一条客户端 nghttp3 连接当对端，
+// 请求的头块由它真编成 QPACK、响应也由它真解回来，中间不经 UDP——服务端这一侧已经是自研实现，这份对拍正是留着当裁判用的。
 #include "Net/Http3/Http3Session.h"
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Router.h"
+#include "Net/Http3/Qpack.h"
+#include "Net/Http3/Http3Frame.h"
 
 #include <gtest/gtest.h>
 
@@ -673,6 +676,128 @@ namespace AsynGyanis::Net
         const auto contentLengthHeader = peer.response().headers.find("content-length");
         ASSERT_NE(contentLengthHeader, peer.response().headers.end()) << "缺正文长度时应当按实际长度补上 content-length";
         EXPECT_EQ(contentLengthHeader->second, "2");
+    }
+
+    /**
+     * @brief 畸形请求头：回 400 而不是作废整条连接，也不把请求交给业务
+     * @details RFC 9114 §4.1.2 允许服务端在重置之前先答一个错。这条把「连接层判定 → 会话作答」
+     *          这一段接起来测——连接层已单测过会发通知，此处钉的是通知真的变成了一个能解开的响应。
+     *          非法字节由本层自己的 QPACK 编码器造（nghttp3 客户端不会替我们产出畸形字段名），
+     *          而响应仍由 nghttp3 真解回来，判据保持跨实现。
+     */
+    TEST(Http3Session, AnswersMalformedRequestHeadWithFourHundredAndKeepsConnection)
+    {
+        FakeStreamOpener opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             });
+        ASSERT_TRUE(session.isUsable());
+        session.flushPendingStreamData();
+
+        bool isHandlerReached = false;
+        Router router;
+        router.get("/hello",
+                   [&isHandlerReached](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       isHandlerReached = true;
+                       response.setStatus(200);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        std::vector<QpackHeaderField> fieldLines = {
+                QpackHeaderField{":method", "GET"},
+                QpackHeaderField{":scheme", "https"},
+                QpackHeaderField{":authority", "example.com"},
+                QpackHeaderField{":path", "/hello"},
+                QpackHeaderField{"connection", "keep-alive"}, ///< 连接特定字段：RFC 9114 §4.2 明确禁止
+        };
+        std::string headerBlock;
+        std::string encoderStreamBytes;
+        QpackEncoder encoder(0, 0, 0);
+        ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_TRUE(encoderStreamBytes.empty()) << "只用静态表就不该产生编码器流指令，否则这条用例的前提变了";
+
+        // 帧由帧层自己编：长度域是变长整数，手写字节会在载荷超过单字节档时写出自相矛盾的帧
+        Http3HeadersFrame headersFrame;
+        headersFrame.encodedFieldSection =
+                std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
+        std::string requestBytes;
+        appendHttp3Frame(requestBytes, headersFrame);
+        session.onStreamData(0,
+                             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()),
+                             true);
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_FALSE(session.isBroken()) << "一个畸形请求不该把整条连接判死";
+        EXPECT_FALSE(isHandlerReached) << "畸形的请求不能交到业务手里";
+        ASSERT_FALSE(sentStreamData.empty()) << "没有作答：对端只能挂到空闲超时";
+        const bool isAnswerOnRequestStream =
+                std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 0; });
+        EXPECT_TRUE(isAnswerOnRequestStream) << "作答没出现在流 0 上：一共只回了 " << sentStreamData.size() << " 段，全是别的流";
+
+        // 作答由本层的帧读取器与 QPACK 解码器解回来：这条要钉的是「会话真的回了一份能解开、
+        // 且收尾完整的 400」，跨实现的字节对齐由前面几条 nghttp3 真字节用例负责，这里不重复那份判据
+        std::string answerBytes;
+        bool isAnswerEnded = false;
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            if (chunk.streamId != 0)
+            {
+                continue;
+            }
+            answerBytes.append(reinterpret_cast<const char *>(chunk.bytes.data()), chunk.bytes.size());
+            isAnswerEnded = isAnswerEnded || chunk.isEndStream;
+        }
+        ASSERT_FALSE(answerBytes.empty());
+
+        Http3FrameReader frameReader(64U * 1024U);
+        ASSERT_TRUE(frameReader.feed(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(answerBytes.data()),
+                                                                    answerBytes.size()))
+                            .has_value());
+        QpackDecoder answerDecoder(QpackDecoderSettings{.maximumTableCapacityByteCount = 4096,
+                                                        .maximumBlockedStreamCount = 100,
+                                                        .maximumFieldSectionSizeByteCount = 64U * 1024U});
+        std::string statusValue;
+        std::string answerBody;
+        std::string decoderStreamBytes;
+        while (true)
+        {
+            const auto nextFrame = frameReader.nextFrame();
+            ASSERT_TRUE(nextFrame.has_value()) << nextFrame.error().message;
+            if (!nextFrame->has_value())
+            {
+                break;
+            }
+            if (const auto *headers = std::get_if<Http3HeadersFrame>(&**nextFrame); headers != nullptr)
+            {
+                std::vector<QpackHeaderField> answerFields;
+                const auto decoded = answerDecoder.decodeFieldSection(0, headers->encodedFieldSection, answerFields, decoderStreamBytes);
+                ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+                EXPECT_TRUE(*decoded == QpackFieldSectionDecodeStatus::Decoded) << "作答不该依赖动态表";
+                for (const auto &field: answerFields)
+                {
+                    if (field.name == ":status")
+                    {
+                        statusValue = field.value;
+                    }
+                }
+            } else if (const auto *data = std::get_if<Http3DataFrame>(&**nextFrame); data != nullptr)
+            {
+                answerBody.append(reinterpret_cast<const char *>(data->payload.data()), data->payload.size());
+            }
+        }
+
+        EXPECT_EQ(statusValue, "400") << "作答的状态码不是 400";
+        EXPECT_FALSE(answerBody.empty()) << "400 应当带上命中的规则，方便对端与运维定位";
+        EXPECT_TRUE(isAnswerEnded) << "作答要把这条流收尾，不能让对端等正文";
     }
 
     /**
