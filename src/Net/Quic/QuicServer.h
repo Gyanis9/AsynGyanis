@@ -1,6 +1,6 @@
 /**
  * @file QuicServer.h
- * @brief QUIC 服务端：一条 UDP 端口上承载多条连接（ngtcp2 + OpenSSL 的 QUIC TLS 回调）
+ * @brief QUIC 服务端：一条 UDP 端口上承载多条连接（自研状态机 + OpenSSL 的 QUIC TLS 胶水）
  * @author Gyanis
  * @date 2026-09-14
  * @version 1.0.0
@@ -23,7 +23,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -55,7 +54,7 @@ namespace AsynGyanis::Net
             std::string              certificateFile;               ///< 服务器证书（PEM）
             std::string              privateKeyFile;                ///< 私钥（PEM）
             std::size_t              maximumConnections{1024};      ///< 同时在线连接上限
-            std::chrono::seconds     idleTimeout{30};               ///< 空闲超时：超过即由 ngtcp2 收口
+            std::chrono::seconds     idleTimeout{30};               ///< 空闲超时：超过即由传输层收口
             std::string              applicationProtocol{"h3"};     ///< 必须协商出的 ALPN；不是它就拒绝握手
             std::chrono::milliseconds expiryTickInterval{10};       ///< 定时器驱动的节拍（见 runExpiryTicker 的说明）
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
@@ -159,16 +158,6 @@ namespace AsynGyanis::Net
         void reapClosedConnections();
 
         /**
-         * @brief 把一条连接当前可用的全部连接标识登记进别名索引
-         * @details 握手期间 ngtcp2 会签发额外的连接标识给对端（NEW_CONNECTION_ID），对端之后可能
-         *          改用其中之一作为目的连接标识。若只登记建连接时那一个，后续报文会因为「命不中
-         *          任何键」被当成无主报文丢掉（实测：握手能通，但流数据一条都到不了）。本方法在每次
-         *          报文处理之后调用，把该连接现有的全部连接标识都补进索引。
-         * @param connection 目标连接
-         */
-        void registerConnectionIds(const QuicConnection &connection);
-
-        /**
          * @brief 取（必要时创建）某条连接上的 HTTP/3 会话
          * @param connection 目标连接
          * @return Http3Session& 该连接的会话
@@ -198,8 +187,7 @@ namespace AsynGyanis::Net
         Core::Timer          m_expiryTicker;       ///< 定时驱动的节拍定时器
         std::uint16_t        m_listeningPort{0};   ///< 实际绑定的端口
         std::atomic<bool>    m_isStopped{false};   ///< 是否已请求停止：可从别的线程置位，因此必须是原子
-        std::vector<std::uint8_t> m_statelessResetSecret; ///< 无状态重置令牌的服务端级密钥
-        Platform::SocketAddress   m_localSocketAddress;   ///< 本端地址（建连接时要进 ngtcp2 的 path）
+        Platform::SocketAddress   m_localSocketAddress;   ///< 本端地址（建连接时要写进回包与日志）
         QuicConnection::StreamDataHandler m_streamDataHandler; ///< 流数据回调（缺省为空，即收到流数据不回应）
 
         Router *m_router{nullptr}; ///< 路由器（不持有；接上之后每条连接才会有 HTTP/3 会话）
@@ -211,15 +199,12 @@ namespace AsynGyanis::Net
         /// 连接标识 → 连接。键是本端生成的 SCID（对端的 DCID）
         std::map<std::string, std::unique_ptr<QuicConnection>, std::less<>> m_connections;
 
-        /// 别名索引：除本端最初那个 SCID 之外的**任何可以寻址到本连接的目的连接标识** → 连接
-        /// （存裸指针，所有权仍在上面那张表里）。目前有两类来源：
-        /// 一是客户端最初选的 DCID——客户端重传 Initial 时报文里的 DCID 仍是它最初选的那个
-        /// （RFC 9000 §7.2 首包连接标识固定到服务端回话为止），按本端 SCID 建的键对不上，
-        /// 少了这一路会把每条重传都当成新连接（实测：一个客户端握手却建出 8 条连接）；
-        /// 二是 ngtcp2 后续签发的额外 SCID——对端可能改用其中之一（实测：只认最初那个时，
-        /// 握手能通但流数据一条都到不了）
+        /// 别名索引：除本端 SCID 之外**可以寻址到本连接的目的连接标识** → 连接
+        /// （存裸指针，所有权仍在上面那张表里）。目前只有一类来源：客户端最初选的 DCID——
+        /// 客户端重传 Initial 时报文里的 DCID 仍是它最初选的那个（RFC 9000 §7.2 首包连接标识
+        /// 固定到服务端回话为止），按本端 SCID 建的键对不上，少了这一路会把每条重传都当成新连接
+        /// （实测：一个客户端握手却建出 8 条连接）。本端不签发额外连接标识，因此别名只有这一条；
+        /// 将来做连接标识轮换时要在这里补登记
         std::map<std::string, QuicConnection *, std::less<>> m_connectionsByAliasConnectionId;
-        /// 有新签发的连接标识、但还没做过整表重扫的连接：处理完报文时据此决定要不要扫
-        std::set<const QuicConnection *>                      m_connectionsWithFreshConnectionIds;
     };
 } // namespace AsynGyanis::Net

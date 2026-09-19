@@ -206,6 +206,12 @@ namespace AsynGyanis::Net
         [[nodiscard]] const QuicPacketKeys *applicationWriteKeys() const noexcept;
 
         /**
+         * @brief 协商出的 ALPN 协议名，握手完成前为空
+         * @return std::string_view 供外壳记那条「握手完成」的日志
+         */
+        [[nodiscard]] std::string_view selectedApplicationProtocol() const noexcept;
+
+        /**
          * @brief 当前的探测超时周期，含退避倍数
          * @details 外壳要靠它算 §6.5 的「3×PTO 静置期」与 §10.1 的空闲下限，本类不自己定闹钟
          * @return Timestamp 恢复层给出的 PTO

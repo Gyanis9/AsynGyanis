@@ -1,201 +1,48 @@
 #include "Net/Quic/QuicConnection.h"
 
+#include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
-#include "Platform/IO/DatagramSocket.h"
+#include "Net/Quic/Codec/QuicPacketHeader.h"
+#include "Net/Quic/QuicConnectionCore.h"
+#include "Net/Quic/Streams/QuicStreamLayer.h"
 
-#include <array>
-#include <cstring>
-#include <span>
-#include <utility>
-
-#include <ngtcp2/ngtcp2_crypto.h>
-#include <ngtcp2/ngtcp2_crypto_ossl.h>
 #include <openssl/rand.h>
+
+#include <cstring>
+#include <utility>
 
 namespace AsynGyanis::Net
 {
     namespace
     {
         /// 一次 flush 里最多写出多少条报文：防止窗口充裕时在一条连接上转太久
-        constexpr std::size_t kMaximumPacketsPerFlush = 64;
+        constexpr std::size_t kMaximumDatagramsPerFlush = 64;
+
+        /// 一轮 flush 最多转几圈：应用回调里还能继续排数据，不设上限就没有终止保证
+        constexpr std::size_t kMaximumFlushRounds = 4;
+
+        /// 服务端宣告的流量控制额度：连接级 1 MiB、单条流 256 KiB，够放一次大响应又不放任吃内存
+        constexpr std::uint64_t kInitialMaximumData = 1024ULL * 1024ULL;
+        constexpr std::uint64_t kInitialMaximumStreamData = 256ULL * 1024ULL;
+
+        /// 服务端允许对端发起的流数：HTTP/3 一条连接上并发几十个请求是常态
+        constexpr std::uint64_t kInitialMaximumStreams = 100;
 
         /**
-         * @brief 当前单调时钟的纳秒读数
-         * @details ngtcp2 的时间戳单位就是纳秒；用单调时钟而不是墙上时钟，避免系统时间跳变影响 PTO
-         * @return ngtcp2_tstamp 纳秒计数
+         * @brief 取一段随机字节
+         * @details 随机失败没有安全的降级路径（QUIC 的密钥与连接标识都以随机数为前提），
+         *          此时交回空 vector 由调用方放弃这条连接，而不是拿全零标识去接客端
+         * @param length 需要的字节数
+         * @return std::vector<std::uint8_t> 随机字节；随机数不可用时为空
          */
-        ngtcp2_tstamp currentTimestamp() noexcept
+        std::vector<std::uint8_t> randomBytes(const std::size_t length)
         {
-            return static_cast<ngtcp2_tstamp>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-        }
-
-        /**
-         * @brief 把回调拿到的 user_data 还原成 C++ 对象
-         * @details user_data 是建立 ngtcp2 连接时随参数传进去的本对象指针（ngtcp2 会原样交给每个回调）
-         * @param userData ngtcp2 交回的 user_data
-         * @return QuicConnection* 对应的对象
-         */
-        QuicConnection *fromNative(void *const userData) noexcept
-        {
-            return static_cast<QuicConnection *>(userData);
-        }
-
-        /**
-         * @brief 随机数回调：连接标识与各类随机量都由它供给
-         * @note 随机失败没有安全降级路径（QUIC 的安全性建立在随机数上），这里写成全零让上层尽快失败
-         */
-        void randomBytesCallback(std::uint8_t *const destination, const std::size_t destinationLength, const ngtcp2_rand_ctx *) noexcept
-        {
-            if (RAND_bytes(destination, static_cast<int>(destinationLength)) != 1)
+            std::vector<std::uint8_t> bytes(length);
+            if (RAND_bytes(bytes.data(), static_cast<int>(length)) != 1)
             {
-                std::memset(destination, 0, destinationLength);
+                return {};
             }
-        }
-
-        /**
-         * @brief 轮换连接标识时生成新标识与配套的无状态重置令牌
-         */
-        int newConnectionIdCallback(ngtcp2_conn *, ngtcp2_cid *const cid, ngtcp2_stateless_reset_token *const token,
-                                    const std::size_t cidLength, void *const userData) noexcept
-        {
-            if (cidLength == 0 || cidLength > NGTCP2_MAX_CIDLEN)
-            {
-                return NGTCP2_ERR_CALLBACK_FAILURE;
-            }
-
-            std::vector<std::uint8_t> randomConnectionId(cidLength);
-            if (RAND_bytes(randomConnectionId.data(), static_cast<int>(randomConnectionId.size())) != 1)
-            {
-                return NGTCP2_ERR_CALLBACK_FAILURE;
-            }
-            ngtcp2_cid_init(cid, randomConnectionId.data(), randomConnectionId.size());
-
-            QuicConnection *const self = fromNative(userData);
-            if (ngtcp2_crypto_generate_stateless_reset_token(token->data, self->statelessResetSecret().data(),
-                                                             self->statelessResetSecret().size(), cid) != 0)
-            {
-                return NGTCP2_ERR_CALLBACK_FAILURE;
-            }
-
-            // 签发的这一刻就告诉路由表：对端随时可能改用这个标识来寻址本端，迟一步的报文就整包丢了
-            self->notifyConnectionIdIssued(std::span<const std::uint8_t>(cid->data, cid->datalen));
-            return 0;
-        }
-
-        /**
-         * @brief 收到流数据：交给应用层（HTTP/3 层或首个里程碑的回显）
-         */
-        int receiveStreamDataCallback(ngtcp2_conn *, const std::uint32_t flags, const std::int64_t streamId, const std::uint64_t,
-                                      const std::uint8_t *const data, const std::size_t dataLength, void *const userData, void *) noexcept
-        {
-            fromNative(userData)->deliverStreamData(streamId, std::span<const std::uint8_t>(data, dataLength),
-                                                    (flags & NGTCP2_STREAM_DATA_FLAG_FIN) != 0);
-            return 0;
-        }
-
-        /// 流数据被对端确认：待发条目据此释放（ngtcp2 重传还要再读这些字节，只有确认了才能丢）
-        int acknowledgedStreamDataCallback(ngtcp2_conn *, const std::int64_t streamId, const std::uint64_t offset, const std::uint64_t dataLength,
-                                           void *const userData, void *) noexcept
-        {
-            fromNative(userData)->acknowledgePendingStreamData(streamId, offset, dataLength);
-            return 0;
-        }
-
-        /// 对端开了一条流：服务端不需要额外记账，收数据时带流号就够
-        int streamOpenCallback(ngtcp2_conn *, const std::int64_t, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 一条流结束：丢掉该流尚未发完的排队数据，并把「对端可开双向流」的额度还一档——
-        /// ngtcp2 只在 stream_open 没触发过时自动补，这里必须自己还，否则对端开满
-        /// initial_max_streams_bidi 条流之后再也开不出新请求
-        int streamCloseCallback(ngtcp2_conn *const connection, const std::uint32_t, const std::int64_t streamId, const std::uint64_t,
-                                const std::uint64_t, void *const userData, void *) noexcept
-        {
-            QuicConnection *const self = fromNative(userData);
-            self->dropPendingStreamData(streamId);
-            // 传输层这边已经收尾，会话侧不能还留着这条流：正常收尾时状态早已摘干净（本条因此是空操作），
-            // 半途收口的那种才是它要救的（nghttp3 看不到 QUIC 层的收尾信号）
-            self->notifyPeerStreamClosed(streamId);
-            // 只还「对端发起的双向流」（流号低两位为 0）：单向流与本地发起的流用的不是同一份额度
-            if ((streamId & 0x03) == 0)
-            {
-                ngtcp2_conn_extend_max_streams_bidi(connection, 1);
-            }
-            return 0;
-        }
-
-        /// 对端重置了一条流：丢掉该流的待发数据、把传输层的这条流一并收掉，并通知上层
-        int streamResetCallback(ngtcp2_conn *const connection, const std::int64_t streamId, const std::uint64_t, const std::uint64_t appErrorCode,
-                                void *const userData, void *) noexcept
-        {
-            QuicConnection *const self = fromNative(userData);
-            self->dropPendingStreamData(streamId);
-            // 对端只重置了它自己那一侧（RESET_STREAM 只作用于发送方向），本端这一侧若不再发响应就会
-            // 永远半开着：对端的 MAX_STREAMS 额度收不回去，反复取消几次它连新请求都开不出来。
-            // 本端既然按「这条请求作废」处理，这条流就整体收掉
-            static_cast<void>(ngtcp2_conn_shutdown_stream(connection, 0, streamId, appErrorCode));
-            self->notifyPeerStreamClosed(streamId);
-            return 0;
-        }
-
-        /// 对端要求本端停止发送（STOP_SENDING）：本端不再有响应可发，把这条流整体收掉
-        int receiveStopSendingCallback(ngtcp2_conn *const connection, const std::int64_t streamId, const std::uint64_t appErrorCode,
-                                       void *const userData, void *) noexcept
-        {
-            QuicConnection *const self = fromNative(userData);
-            self->dropPendingStreamData(streamId);
-            static_cast<void>(ngtcp2_conn_shutdown_stream(connection, 0, streamId, appErrorCode));
-            self->notifyPeerStreamClosed(streamId);
-            return 0;
-        }
-
-        /// 本端不再读一条流（ngtcp2 对 shutdown_stream_read 的回执）：丢掉该流排队中的待发数据。
-        /// 注意这与「对端要求本端停止发送」不是一回事，后者见 receiveStopSendingCallback
-        int stopSendingCallback(ngtcp2_conn *, const std::int64_t streamId, const std::uint64_t, void *const userData, void *) noexcept
-        {
-            fromNative(userData)->dropPendingStreamData(streamId);
-            return 0;
-        }
-
-        /// 对端可以再开更多双向流了：流控由传输参数给出，无需追加通知
-        int extendMaxRemoteStreamsBidiCallback(ngtcp2_conn *, const std::uint64_t, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 对端为我方某条流放宽了发送窗口：写循环本来就会重试，无需额外动作
-        int extendMaxStreamDataCallback(ngtcp2_conn *, const std::int64_t, const std::uint64_t, void *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 路径校验结束：服务端只用一条路径，直接接受
-        int pathValidationCallback(ngtcp2_conn *, const std::uint32_t, const ngtcp2_path *, const ngtcp2_path *,
-                                  const ngtcp2_path_validation_result, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 连接标识可以退休了：按 SCID 路由的那张表由服务端维护，这里无需动作
-        int removeConnectionIdCallback(ngtcp2_conn *, const ngtcp2_cid *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 握手完成：记一条日志（HTTP/3 层在下一个切片里会在这里初始化自己的会话）
-        int handshakeCompletedCallback(ngtcp2_conn *, void *const userData) noexcept
-        {
-            const QuicConnection *self               = fromNative(userData);
-            const unsigned char  *selectedProtocol   = nullptr;
-            unsigned int          selectedProtocolLength = 0;
-            self->selectedApplicationProtocol(selectedProtocol, selectedProtocolLength);
-            LOG_INFO_FMT("QuicConnection: QUIC 握手完成（连接标识 {} 字节，协商协议 {}）", self->sourceConnectionId().size(),
-                         selectedProtocol != nullptr ? std::string(reinterpret_cast<const char *>(selectedProtocol), selectedProtocolLength)
-                                                     : std::string("(未协商)"));
-            return 0;
+            return bytes;
         }
     } // namespace
 
@@ -203,138 +50,67 @@ namespace AsynGyanis::Net
                                                            const Platform::SocketAddress &peerAddress,
                                                            const std::span<const std::uint8_t> clientInitial)
     {
-        if (configuration.tlsContext == nullptr || !configuration.sendDatagram || configuration.statelessResetSecret.empty())
+        if (configuration.tlsContext == nullptr || !configuration.sendDatagram)
         {
-            LOG_ERROR("QuicConnection: 连接配置不完整（缺 SSL_CTX、报文出口或重置密钥），连接未建立");
+            LOG_ERROR("QuicConnection: 连接配置不完整（缺 SSL_CTX 或报文出口），连接未建立");
             return nullptr;
         }
 
-        // 先按 ngtcp2 的规则判断这条报文能否起一条新连接（非 Initial、版本不支持、长度不足都会在这里被挡掉）
-        ngtcp2_pkt_hd header{};
-        if (ngtcp2_accept(&header, clientInitial.data(), clientInitial.size()) != 0)
+        // 只有能解出包头的 v1 Initial 才有资格起一条新连接：版本不认识的、短头的都直接不要。
+        // 本端此刻还没装任何密钥，也不要去猜别的形态（RFC 9000 §5.2.2、§17.2.5）
+        const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(clientInitial, kSourceConnectionIdLength);
+        if (!decodedHeader.has_value() || !decodedHeader->isLongHeader || decodedHeader->longPacketType != QuicLongPacketType::Initial ||
+            decodedHeader->version != kQuicVersion1)
         {
-            LOG_DEBUG("QuicConnection: 报文不可接受（不是可开新连接的 Initial），已丢弃");
+            LOG_DEBUG("QuicConnection: 报文不可接受（不是 v1 的 Initial），已丢弃");
             return nullptr;
         }
+        const QuicPacketHeader &header = *decodedHeader;
 
-        std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
-        connection->m_peerAddress  = peerAddress;
-        connection->m_localAddress = localAddress;
-
-        // 本端连接标识由本端生成：对端之后用报文里的目的连接标识指向它
-        std::vector<std::uint8_t> sourceConnectionIdBytes(QuicConnection::kSourceConnectionIdLength);
-        if (RAND_bytes(sourceConnectionIdBytes.data(), static_cast<int>(sourceConnectionIdBytes.size())) != 1)
+        std::vector<std::uint8_t> sourceConnectionIdBytes = randomBytes(kSourceConnectionIdLength);
+        if (sourceConnectionIdBytes.empty())
         {
             LOG_ERROR("QuicConnection: 生成连接标识失败（随机数不可用），连接未建立");
             return nullptr;
         }
-        ngtcp2_cid_init(&connection->m_sourceConnectionId, sourceConnectionIdBytes.data(), sourceConnectionIdBytes.size());
 
-        ngtcp2_path_storage_init(&connection->m_path, reinterpret_cast<const sockaddr *>(&connection->m_localAddress.storage),
-                                 connection->m_localAddress.length, reinterpret_cast<const sockaddr *>(&connection->m_peerAddress.storage),
-                                 connection->m_peerAddress.length, nullptr);
+        QuicConnectionCoreConfiguration coreConfiguration;
+        coreConfiguration.tlsContext = configuration.tlsContext;
+        coreConfiguration.localConnectionId = std::move(sourceConnectionIdBytes);
+        // 回包要打在客户端**自报**的源标识上（RFC 9000 §7.2）；填成报文里的目的标识会让对端
+        // 把所有回包当成无主报文丢掉
+        coreConfiguration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
+        // 客户端首个 Initial 的目的标识是它自己造的：Initial 密钥与参数里的 ODCID 都由它算
+        coreConfiguration.originalDestinationConnectionId.assign(header.destinationConnectionId.begin(),
+                                                                 header.destinationConnectionId.end());
 
-        static constexpr ngtcp2_callbacks callbacks = ngtcp2_callbacks{
-                .recv_client_initial            = ngtcp2_crypto_recv_client_initial_cb,
-                .recv_crypto_data               = ngtcp2_crypto_recv_crypto_data_cb,
-                .handshake_completed            = handshakeCompletedCallback,
-                .encrypt                        = ngtcp2_crypto_encrypt_cb,
-                .decrypt                        = ngtcp2_crypto_decrypt_cb,
-                .hp_mask                        = ngtcp2_crypto_hp_mask_cb,
-                .recv_stream_data               = receiveStreamDataCallback,
-                .acked_stream_data_offset       = acknowledgedStreamDataCallback,
-                .stream_open                    = streamOpenCallback,
-                .rand                           = randomBytesCallback,
-                .remove_connection_id           = removeConnectionIdCallback,
-                .update_key                     = ngtcp2_crypto_update_key_cb,
-                .path_validation                = pathValidationCallback,
-                .stream_reset                   = streamResetCallback,
-                .extend_max_remote_streams_bidi = extendMaxRemoteStreamsBidiCallback,
-                .extend_max_stream_data         = extendMaxStreamDataCallback,
-                .delete_crypto_aead_ctx         = ngtcp2_crypto_delete_crypto_aead_ctx_cb,
-                .delete_crypto_cipher_ctx       = ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
-                .stream_stop_sending            = stopSendingCallback,
-                .version_negotiation            = ngtcp2_crypto_version_negotiation_cb,
-                .get_new_connection_id2         = newConnectionIdCallback,
-                .get_path_challenge_data2       = ngtcp2_crypto_get_path_challenge_data2_cb,
-                .recv_stop_sending              = receiveStopSendingCallback,
-                .stream_close2                  = streamCloseCallback,
-        };
+        QuicTransportParameters &parameters = coreConfiguration.transportParameters;
+        parameters.initialMaximumData = kInitialMaximumData;
+        parameters.initialMaximumStreamDataBidirectionalLocal = kInitialMaximumStreamData;
+        parameters.initialMaximumStreamDataBidirectionalRemote = kInitialMaximumStreamData;
+        parameters.initialMaximumStreamDataUnidirectional = kInitialMaximumStreamData;
+        parameters.initialMaximumBidirectionalStreams = kInitialMaximumStreams;
+        parameters.initialMaximumUnidirectionalStreams = kInitialMaximumStreams;
+        parameters.maximumIdleTimeoutMilliseconds = static_cast<std::uint64_t>(configuration.idleTimeout.count());
 
-        ngtcp2_settings settings;
-        ngtcp2_settings_default(&settings);
-        settings.initial_ts        = currentTimestamp();
-        settings.cc_algo           = NGTCP2_CC_ALGO_CUBIC;
-        settings.initial_rtt       = NGTCP2_DEFAULT_INITIAL_RTT;
-        settings.max_window        = 24u * 1024u * 1024u;
-        settings.max_stream_window = 8u * 1024u * 1024u;
-        settings.handshake_timeout = static_cast<ngtcp2_duration>(configuration.idleTimeout.count()) * NGTCP2_MILLISECONDS;
-
-        ngtcp2_transport_params parameters;
-        ngtcp2_transport_params_default(&parameters);
-        parameters.initial_max_stream_data_bidi_local  = 256u * 1024u;
-        parameters.initial_max_stream_data_bidi_remote = 256u * 1024u;
-        parameters.initial_max_stream_data_uni         = 256u * 1024u;
-        parameters.initial_max_data                    = 1024u * 1024u;
-        parameters.initial_max_streams_bidi            = 100;
-        parameters.initial_max_streams_uni             = 100;
-        parameters.max_idle_timeout                    = static_cast<ngtcp2_duration>(configuration.idleTimeout.count()) * NGTCP2_MILLISECONDS;
-        parameters.active_connection_id_limit          = 7;
-        parameters.grease_quic_bit                     = 1;
-
-        // 「原始目的连接标识」与无状态重置令牌是服务端必须给的：对端据此把重置报文与这条连接对上
-        parameters.original_dcid         = header.dcid;
-        parameters.original_dcid_present = 1;
-        if (ngtcp2_crypto_generate_stateless_reset_token(parameters.stateless_reset_token, configuration.statelessResetSecret.data(),
-                                                         configuration.statelessResetSecret.size(),
-                                                         &connection->m_sourceConnectionId) != 0)
+        std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
+        connection->m_peerAddress = peerAddress;
+        connection->m_localAddress = localAddress;
+        connection->m_timeOrigin = std::chrono::steady_clock::now();
+        connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()),
+                                                coreConfiguration.localConnectionId.size());
+        try
         {
-            LOG_ERROR("QuicConnection: 生成无状态重置令牌失败，连接未建立");
+            connection->m_core = std::make_unique<QuicConnectionCore>(std::move(coreConfiguration));
+        }
+        catch (const Base::Exception &error)
+        {
+            // TLS 会话建不起来（上下文里没证书之类）：这一条报文不值得让服务端整体失败
+            LOG_ERROR_FMT("QuicConnection: 状态机创建失败，连接未建立：{}", error.what());
             return nullptr;
         }
 
-        // 第三个参数是「本端发报文时填的目的连接标识」，ngtcp2 要求它取自对端 Initial 的**源**连接标识
-        // （RFC 9000 §7.2 规定服务端的回包必须打到客户端自报的 SCID 上）。填成报文里的目的连接标识
-        // 会让本端把所有回包送到一个客户端从未公布过的标识上，且此后每条重传的 Initial 都会因为
-        // 「源连接标识对不上」被判为无主报文丢掉（ngtcp2 在首个 Initial 处理完后会校验 hd.scid）
-        if (ngtcp2_conn_server_new(&connection->m_connection, &header.scid, &connection->m_sourceConnectionId, &connection->m_path.path,
-                                   header.version, &callbacks, &settings, &parameters, nullptr, connection.get()) != 0)
-        {
-            LOG_ERROR("QuicConnection: ngtcp2 连接创建失败，连接未建立");
-            return nullptr;
-        }
-
-        connection->m_tlsSession = SSL_new(configuration.tlsContext);
-        if (connection->m_tlsSession == nullptr)
-        {
-            LOG_ERROR("QuicConnection: TLS 会话创建失败，连接未建立");
-            return nullptr;
-        }
-        SSL_set_accept_state(connection->m_tlsSession);
-        if (ngtcp2_crypto_ossl_configure_server_session(connection->m_tlsSession) != 0)
-        {
-            LOG_ERROR("QuicConnection: TLS 会话无法配置为 QUIC 服务端模式，连接未建立");
-            return nullptr;
-        }
-
-        // ossl 后端要求把「每连接的加密上下文」交给 ngtcp2（不是裸 SSL）：数据保护与密钥轮换都经它
-        if (ngtcp2_crypto_ossl_ctx_new(&connection->m_cryptoContext, connection->m_tlsSession) != 0)
-        {
-            LOG_ERROR("QuicConnection: 创建 QUIC 加密上下文失败，连接未建立");
-            return nullptr;
-        }
-        ngtcp2_conn_set_tls_native_handle(connection->m_connection, connection->m_cryptoContext);
-
-        // 反向引用同样不能少：crypto 胶水的回调是从 SSL 出发的，它把 app data 当 ngtcp2_crypto_conn_ref
-        // 调用取回 ngtcp2 连接。这一步缺了，握手会停在原地——TLS 数据交不进 ngtcp2，双方都等对方
-        connection->m_cryptoConnectionReference.user_data = connection.get();
-        connection->m_cryptoConnectionReference.get_conn  = [](ngtcp2_crypto_conn_ref *reference) -> ngtcp2_conn *
-        {
-            return static_cast<QuicConnection *>(reference->user_data)->m_connection;
-        };
-        SSL_set_app_data(connection->m_tlsSession, &connection->m_cryptoConnectionReference);
-
-        LOG_DEBUG_FMT("QuicConnection: 已接受一条连接（连接标识 {} 字节，版本 0x{:08x}）", connection->m_sourceConnectionId.datalen,
+        LOG_DEBUG_FMT("QuicConnection: 已接受一条连接（连接标识 {} 字节，版本 0x{:08x}）", connection->m_sourceConnectionId.size(),
                       header.version);
         return connection;
     }
@@ -344,237 +120,95 @@ namespace AsynGyanis::Net
     {
     }
 
-    QuicConnection::~QuicConnection()
+    QuicConnection::~QuicConnection() = default;
+
+    const std::string &QuicConnection::sourceConnectionId() const noexcept
     {
-        // 顺序有讲究：先删 ngtcp2 连接（回调都指向后两者），再删加密上下文与 TLS 会话
-        if (m_connection != nullptr)
-        {
-            ngtcp2_conn_del(m_connection);
-            m_connection = nullptr;
-        }
-        if (m_cryptoContext != nullptr)
-        {
-            ngtcp2_crypto_ossl_ctx_del(m_cryptoContext);
-            m_cryptoContext = nullptr;
-        }
-        if (m_tlsSession != nullptr)
-        {
-            SSL_free(m_tlsSession);
-            m_tlsSession = nullptr;
-        }
-    }
-
-    std::string QuicConnection::sourceConnectionId() const
-    {
-        return std::string(reinterpret_cast<const char *>(m_sourceConnectionId.data), m_sourceConnectionId.datalen);
-    }
-
-    std::vector<std::string> QuicConnection::sourceConnectionIds() const
-    {
-        if (m_connection == nullptr)
-        {
-            return {};
-        }
-
-        // 先用空目标问一次条数，再按条数备好缓冲——ngtcp2 要求缓冲正好容纳 sizeof(ngtcp2_cid) * n 个
-        const std::size_t issuedCount = ngtcp2_conn_get_scid2(m_connection, nullptr);
-        if (issuedCount == 0)
-        {
-            return {};
-        }
-
-        std::vector<ngtcp2_cid> nativeConnectionIds(issuedCount);
-        ngtcp2_conn_get_scid2(m_connection, nativeConnectionIds.data());
-
-        std::vector<std::string> connectionIds;
-        connectionIds.reserve(nativeConnectionIds.size());
-        for (const ngtcp2_cid &nativeConnectionId: nativeConnectionIds)
-        {
-            connectionIds.emplace_back(reinterpret_cast<const char *>(nativeConnectionId.data), nativeConnectionId.datalen);
-        }
-        return connectionIds;
+        return m_sourceConnectionId;
     }
 
     std::int64_t QuicConnection::openUnidirectionalStream()
     {
-        if (m_connection == nullptr || m_isClosed)
+        if (m_core == nullptr || isClosed())
         {
             return -1;
         }
-
-        std::int64_t streamId = -1;
-        if (ngtcp2_conn_open_uni_stream(m_connection, &streamId, nullptr) != 0)
+        const std::optional<std::uint64_t> streamId = m_core->streamLayer().openUnidirectionalStream();
+        if (!streamId.has_value())
         {
             // 开不出来意味着这条连接上建不起 HTTP/3 的控制流与 QPACK 流，协议层只能降级不用
-            LOG_WARN("QuicConnection: 打开本端单向流失败，HTTP/3 的控制流与 QPACK 流无法建立");
+            LOG_WARN("QuicConnection: 打开本端单向流失败（对端给的单向流额度已用尽），HTTP/3 的控制流与 QPACK 流无法建立");
             return -1;
         }
-        return streamId;
+        m_needsFlush = true;
+        return static_cast<std::int64_t>(*streamId);
     }
 
     void QuicConnection::extendReceiveWindow(const std::int64_t streamId, const std::size_t consumedByteCount)
     {
-        if (m_connection == nullptr || consumedByteCount == 0)
+        if (m_core == nullptr || consumedByteCount == 0 || streamId < 0)
         {
             return;
         }
-
-        // 流级与连接级两本账都要还：只还流级的话，连接级窗口迟早也会被耗光而无人察觉
-        if (ngtcp2_conn_extend_max_stream_offset(m_connection, streamId, consumedByteCount) != 0)
-        {
-            LOG_DEBUG_FMT("QuicConnection: 流 {} 的接收额度归还被拒（本端发起的单向流无需归还），已跳过", streamId);
-        }
-        ngtcp2_conn_extend_max_offset(m_connection, consumedByteCount);
+        // 流级与连接级两本账一起还：只还流级的话，连接级窗口迟早也会被耗光而无人察觉——
+        // 症状是对端安静地不再发数据，本端看不出任何异常
+        m_core->streamLayer().releaseReceiveWindow(static_cast<std::uint64_t>(streamId), consumedByteCount);
+        m_needsFlush = true;
     }
-
-    const std::vector<std::uint8_t> &QuicConnection::statelessResetSecret() const noexcept
-    {
-        return m_configuration.statelessResetSecret;
-    }
-
-    void QuicConnection::deliverStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-    {
-        if (m_configuration.onStreamData)
-        {
-            m_configuration.onStreamData(*this, streamId, data, isEndStream);
-        }
-    }
-
-    void QuicConnection::notifyConnectionIdIssued(const std::span<const std::uint8_t> connectionId)
-    {
-        if (m_configuration.onConnectionIdIssued)
-        {
-            m_configuration.onConnectionIdIssued(*this, connectionId);
-        }
-    }
-
-    void QuicConnection::dropPendingStreamData(const std::int64_t streamId)
-    {
-        m_pendingStreamData.erase(streamId);
-    }
-
-    void QuicConnection::notifyPeerStreamClosed(const std::int64_t streamId)
-    {
-        // 只转交对端发起的双向流（流号低两位为 0）：请求跑在这类流上，控制流与 QPACK 流
-        // 无论收口还是重置都有自己的规矩（RFC 9114 §6.2.1），不该被当成「请求被取消」
-        if (streamId < 0 || (streamId & 0x03) != 0)
-        {
-            return;
-        }
-        if (m_configuration.onPeerStreamClosed)
-        {
-            m_configuration.onPeerStreamClosed(*this, streamId);
-        }
-    }
-
-    void QuicConnection::acknowledgePendingStreamData(const std::int64_t streamId, const std::uint64_t offset, const std::uint64_t dataLength)
-    {
-        const auto pendingEntry = m_pendingStreamData.find(streamId);
-        if (pendingEntry == m_pendingStreamData.end())
-        {
-            return;
-        }
-
-        PendingStreamData &pending            = pendingEntry->second;
-        const std::size_t  acknowledgedEnd    = static_cast<std::size_t>(offset + dataLength);
-        if (acknowledgedEnd > pending.ackedOffset)
-        {
-            pending.ackedOffset = acknowledgedEnd;
-        }
-
-        // 整块都确认过的块可以从头部丢掉：重传只会读未确认的那部分，
-        // 「地址稳定」的承诺也只对未确认字节有效
-        while (!pending.blocks.empty() && pending.discardedByteCount + pending.blocks.front().size() <= pending.ackedOffset)
-        {
-            pending.discardedByteCount += pending.blocks.front().size();
-            pending.blocks.pop_front();
-        }
-
-        // 全部确认之后这些字节再没人会读（重传只用未确认的那部分），这时才释放
-        if (pending.ackedOffset >= pending.totalByteCount)
-        {
-            m_pendingStreamData.erase(pendingEntry);
-        }
-    }
-
-    void QuicConnection::selectedApplicationProtocol(const unsigned char *&protocol, unsigned int &protocolLength) const noexcept
-    {
-        protocol       = nullptr;
-        protocolLength = 0;
-        if (m_tlsSession != nullptr)
-        {
-            SSL_get0_alpn_selected(m_tlsSession, &protocol, &protocolLength);
-        }
-    }
-
-    namespace
-    {
-        /// 一次 flush 最多带几块的向量：多出来的块留到下一轮（ngtcp2 允许部分写）
-        constexpr std::size_t kMaximumVectorsPerFlush = 16;
-    } // namespace
 
     void QuicConnection::queueStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
     {
-        PendingStreamData &pending = m_pendingStreamData[streamId];
-        // 每次入列单独成块：块地址此后不再变动，ngtcp2 手里的指针始终有效
-        pending.blocks.emplace_back(reinterpret_cast<const char *>(data.data()), data.size());
-        pending.totalByteCount += data.size();
-        pending.isEndStream = pending.isEndStream || endStream;
-        m_needsFlush       = true;
-    }
-
-    bool QuicConnection::needsFlush() const noexcept
-    {
-        return m_needsFlush;
+        if (m_core == nullptr || streamId < 0)
+        {
+            return;
+        }
+        const std::size_t acceptedByteCount = m_core->streamLayer().writeStreamData(static_cast<std::uint64_t>(streamId), data, endStream);
+        if (acceptedByteCount == 0 && !data.empty())
+        {
+            // 收不进通常是对端用 STOP_SENDING 叫停了这条流，或它超出了对端给的流数上限：响应没地方去
+            LOG_DEBUG_FMT("QuicConnection: 流 {} 拒收了 {} 字节待发数据（流已收尾、被打断或超出对端给的流数上限）", streamId,
+                          data.size());
+            return;
+        }
+        m_needsFlush = true;
     }
 
     Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> datagram)
     {
-        if (m_connection == nullptr)
+        if (m_core == nullptr || m_isClosed)
         {
             co_return;
         }
 
-        // 对端地址变了（NAT 重绑定）：QUIC 允许迁移，把新地址写回 path 再继续
+        // 对端地址变了（NAT 重绑定）：本实现不做路径迁移，但回包仍要打到最新来源地址上，
+        // 否则对端换了端口之后再也收不到东西
         if (peerAddress.length != m_peerAddress.length ||
             std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0)
         {
             m_peerAddress = peerAddress;
-            ngtcp2_path_storage_zero(&m_path);
-            ngtcp2_path_storage_init(&m_path, reinterpret_cast<const sockaddr *>(&m_localAddress.storage), m_localAddress.length,
-                                     reinterpret_cast<const sockaddr *>(&m_peerAddress.storage), m_peerAddress.length, nullptr);
         }
 
-        ngtcp2_pkt_info packetInfo{};
-        if (const int result = ngtcp2_conn_read_pkt(m_connection, &m_path.path, &packetInfo, datagram.data(), datagram.size(),
-                                                    currentTimestamp());
-            result != 0)
+        const std::expected<void, QuicDecodeError> handled = m_core->onDatagramReceived(datagram, currentTime());
+        if (!handled.has_value())
         {
-            if (result == NGTCP2_ERR_DRAINING)
-            {
-                // 对端已经发过 CONNECTION_CLOSE：排空期里再读什么都会得到这个错误，属正常收尾而非故障
-                m_isClosed = true;
-                LOG_DEBUG("QuicConnection: 对端已关闭连接，本端随之收口");
-            } else
-            {
-                // 读失败多为对端违规或握手期的临时问题：记一条日志，待发字节（通常是 CONNECTION_CLOSE）由 flush 送出去
-                LOG_WARN_FMT("QuicConnection: 报文处理失败（ngtcp2 错误 {}），连接将按协议收口", ngtcp2_strerror(result));
-            }
+            LOG_DEBUG_FMT("QuicConnection: 报文不合协议（{}），已按协议收口", handled.error().message);
         }
+        // 交付排在 drive 之前：应用层是收到数据才排响应的，先 drive 就白跑一轮
+        pumpStreamCallbacks();
+        m_core->drive(currentTime());
+        pumpStreamCallbacks();
         co_await flush();
     }
 
     Core::Task<> QuicConnection::flush()
     {
-        if (m_connection == nullptr)
+        if (m_core == nullptr || m_isClosed)
         {
             co_return;
         }
 
-        // 同一条连接会被两条协程驱动 flush：收报文那条与定时器那条。两次 flush 交错时，一次会在
-        // 另一条挂在「等可写/等发送」期间改掉待发表（发完就 erase），恢复后的那条再用先前取走的
-        // 指针去写，读到的就是已释放的缓冲（实测：Linux ASan 抓到 ngtcp2 编码 STREAM 帧时 UAF）。
-        // 因此这里不许并发进：放一个「还要再写」的请求，让在跑的那一轮末再转一圈即可
+        // 同一条连接会被两条协程驱动 flush：收报文那条与定时器那条。两次 flush 交错进行会让
+        // 产出队列被两头同时掏，一边刚判完「还剩这一包」就被另一边发走，随后按过期的判断再写一遍
         if (m_isFlushing)
         {
             m_hasFlushRequest = true;
@@ -597,204 +231,65 @@ namespace AsynGyanis::Net
             bool &m_isFlushing; ///< 被看管的标记
         };
         const FlushScope flushScope(m_isFlushing);
-        // 本轮会把当前攒下的都取走：标记在这里清掉，之后再有人排队会重新置起来
-        m_needsFlush = false;
 
-        // 发包缓冲按连接复用：此前每条报文现分配并清零 64 KiB，是每报文热路径上单笔最大的
-        // 固定开销（值初始化要付一次 memset）
-        if (m_packetBuffer.empty())
+        for (std::size_t round = 0; round < kMaximumFlushRounds; ++round)
         {
-            m_packetBuffer.resize(Platform::DatagramSocket::kMaximumDatagramBytes);
-        }
-        std::vector<std::uint8_t> &packetBuffer = m_packetBuffer;
-        std::array<ngtcp2_vec, kMaximumVectorsPerFlush> dataVectorScratch{};
+            // 本轮会把当前攒下的都取走：标记在这里清掉，之后再有人排数据会重新置起来
+            m_needsFlush = false;
+            m_core->drive(currentTime());
+            // 回调里可能又写下响应或归还额度，drive 得再转一圈才编得出去
+            pumpStreamCallbacks();
 
-        // 把「已交给 ngtcp2 之后剩下的待发区间」按块整理成向量数组：每块的地址在整个
-        // 「已交出去」期间都不变，ngtcp2 重传时读到的仍是同一段内存
-        const auto collectVectors = [&dataVectorScratch](const PendingStreamData &pending) noexcept -> std::size_t
-        {
-            std::size_t count      = 0;
-            std::size_t blockStart = pending.discardedByteCount;
-            for (const std::string &block: pending.blocks)
+            std::size_t sentDatagramCount = 0;
+            while (sentDatagramCount < kMaximumDatagramsPerFlush)
             {
-                const std::size_t blockEnd = blockStart + block.size();
-                if (blockEnd <= pending.offset)
-                {
-                    blockStart = blockEnd;
-                    continue; // 这一块已经整块交给 ngtcp2 了
-                }
-                const std::size_t from = pending.offset > blockStart ? pending.offset - blockStart : 0;
-                dataVectorScratch[count] =
-                        ngtcp2_vec{reinterpret_cast<std::uint8_t *>(const_cast<char *>(block.data())) + from, block.size() - from};
-                ++count;
-                blockStart = blockEnd;
-                if (count == dataVectorScratch.size())
+                const std::optional<std::vector<std::uint8_t>> datagram = m_core->takeOutboundDatagram();
+                if (!datagram.has_value())
                 {
                     break;
                 }
-            }
-            return count;
-        };
-
-        /// 本轮已确认被流控挡住的流：窗口何时放开完全由对端决定，再问一次也不会变。
-        /// 不跳过的话，流号最小的那条被挡住时这里会空转 kMaximumPacketsPerFlush 次，
-        /// 而本连接其它流（含服务端的控制流与 QPACK 流）一个字节都出不去
-        std::vector<std::int64_t> blockedStreamIds;
-
-        for (std::size_t packetIndex = 0; packetIndex < kMaximumPacketsPerFlush; ++packetIndex)
-        {
-            // 本轮要发的都从当前待发表里现取，所以先把「再写一轮」的请求清掉；它在本轮等发送期间
-            // 若又被置起，本轮末尾会据此再转一圈
-            const bool wasRequested = std::exchange(m_hasFlushRequest, false);
-
-            // 一次只带一条流的数据：ngtcp2 的写接口按流给数据；没有流数据可带时用流号 -1 写控制帧
-            ngtcp2_vec  *dataVectors     = nullptr;
-            std::size_t  dataVectorCount = 0;
-            std::int64_t streamId        = -1;
-            std::uint32_t flags          = NGTCP2_WRITE_STREAM_FLAG_NONE;
-            bool         selectedFinOnlyEntry = false;
-
-            for (auto &pendingEntry: m_pendingStreamData)
-            {
-                if (std::ranges::find(blockedStreamIds, pendingEntry.first) != blockedStreamIds.end())
+                ++sentDatagramCount;
+                if (!co_await m_configuration.sendDatagram(m_peerAddress, datagram->data(), datagram->size()))
                 {
-                    continue;
-                }
-                PendingStreamData &pending = pendingEntry.second;
-                const bool hasUnsentData = pending.offset < pending.totalByteCount;
-                // 「收尾还没有交给 ngtcp2」也要选出来：nghttp3 在正文写完时只报收尾、不带数据，
-                // 而这种收尾可能单独到达（字节早已发完、条目还在等确认），
-                // 只按「还有字节要发」挑流会让 END_STREAM 永远发不出去（对端只能等空闲超时）
-                if (!hasUnsentData && !(pending.isEndStream && !pending.isFinSent))
-                {
-                    continue;
-                }
-                streamId = pendingEntry.first;
-                if (hasUnsentData)
-                {
-                    // 待发区间可能横跨多块：按块各出一个向量交给 ngtcp2（它自己按窗口截断），
-                    // 每块的地址在整个「已交出去」期间都不变
-                    dataVectorCount = collectVectors(pending);
-                    dataVectors     = dataVectorScratch.data();
-                }
-                if (pending.isEndStream)
-                {
-                    flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
-                }
-                selectedFinOnlyEntry = !hasUnsentData;
-                break;
-            }
-
-            ngtcp2_pkt_info    packetInfo{};
-            ngtcp2_ssize       writtenStreamDataLength = 0;
-            const ngtcp2_ssize writtenLength =
-                    ngtcp2_conn_writev_stream(m_connection, &m_path.path, &packetInfo, packetBuffer.data(), packetBuffer.size(),
-                                              &writtenStreamDataLength, flags, streamId, dataVectors, dataVectorCount, currentTimestamp());
-            if (writtenLength < 0)
-            {
-                // 这几种都是常态（窗口不够、流已收尾、还有更多数据待写），继续下一轮
-                if (writtenLength == NGTCP2_ERR_STREAM_DATA_BLOCKED || writtenLength == NGTCP2_ERR_STREAM_SHUT_WR ||
-                    writtenLength == NGTCP2_ERR_WRITE_MORE)
-                {
-                    if (writtenLength == NGTCP2_ERR_STREAM_DATA_BLOCKED && streamId != -1)
-                    {
-                        // 本轮不再碰这条流：等对端的 MAX_STREAM_DATA 到了，下一轮 flush 自然会带上它
-                        blockedStreamIds.push_back(streamId);
-                    }
-                    if (writtenLength == NGTCP2_ERR_STREAM_SHUT_WR && selectedFinOnlyEntry)
-                    {
-                        // 写侧已关说明这条流的 FIN 早就发出去了；零字节条目没有可重传的数据，
-                        // 摘掉它，免得每一轮 flush 都在同一条流上空转
-                        m_pendingStreamData.erase(streamId);
-                    }
-                    continue;
-                }
-                if (writtenLength == NGTCP2_ERR_DRAINING)
-                {
-                    // 对端已关闭连接：排空期里写不出东西是正常收尾，不必报成故障
+                    LOG_WARN("QuicConnection: 报文发送失败（对端可能已不可达），连接收口");
                     m_isClosed = true;
                     co_return;
                 }
-                m_isClosed = true;
-                // ngtcp2_strerror 收 int：这里的负值是错误码，显式收窄（/W4 下隐式转换会被判为可能丢数据）
-                LOG_WARN_FMT("QuicConnection: 写出失败（ngtcp2 错误 {}），连接收口", ngtcp2_strerror(static_cast<int>(writtenLength)));
-                co_return;
             }
-            if (writtenLength == 0)
+            if (sentDatagramCount == kMaximumDatagramsPerFlush)
             {
-                // 没有待发字节：本轮 flush 结束——除非等发送期间又有人要求写，那就再转一圈
-                if (wasRequested)
-                {
-                    continue;
-                }
-                co_return;
+                // 一轮没排空：留给下一轮，别在同一次调用里无限写下去
+                m_needsFlush = true;
             }
-
-            // ngtcp2 的硬性约定：每次 writev_stream 之后要调一次 update_pkt_tx_time，
-            // 否则拥塞控制算出的 pacing 间隔从不生效（pacing.next_ts 一直是 UINT64_MAX，
-            // 发包成串突发）。框架此前从未调用过它
-            ngtcp2_conn_update_pkt_tx_time(m_connection, currentTimestamp());
-
-            if (streamId != -1 && writtenStreamDataLength > 0)
+            if (!std::exchange(m_hasFlushRequest, false) && !m_needsFlush)
             {
-                // 只推进「已交出」的水位，**不在这里释放**：ngtcp2 没拷贝这些字节，丢包重传时还会按
-                // 同样的偏移再读一遍，交出去就释放等于让它在重传时读已释放内存。释放只发生在
-                // acknowledgePendingStreamData（对端确认）与 dropPendingStreamData（流关闭）里
-                if (const auto pendingEntry = m_pendingStreamData.find(streamId); pendingEntry != m_pendingStreamData.end())
-                {
-                    PendingStreamData &pending = pendingEntry->second;
-                    pending.offset += static_cast<std::size_t>(writtenStreamDataLength);
-                    // 这一次把剩下的字节全写完了，说明随段带的收尾也已被 ngtcp2 收下
-                    // （它只在「给的数据全部写完」时才把 FIN 置进帧）：记下来，
-                    // 免得后续再为同一条流反复投一次只带收尾的写
-                    if (pending.isEndStream && pending.offset >= pending.totalByteCount)
-                    {
-                        pending.isFinSent = true;
-                    }
-                }
-            }
-
-            if (!co_await m_configuration.sendDatagram(m_peerAddress, packetBuffer.data(), static_cast<std::size_t>(writtenLength)))
-            {
-                LOG_WARN("QuicConnection: 报文发送失败（对端可能已不可达），连接收口");
-                co_return;
+                break;
             }
         }
     }
 
     std::chrono::steady_clock::time_point QuicConnection::nextExpiry() const noexcept
     {
-        if (m_connection == nullptr)
+        if (m_core == nullptr)
         {
             return std::chrono::steady_clock::time_point::max();
         }
-        // UINT64_MAX 表示当前没有定时器（没有在途数据、也还没到空闲超时）
-        if (const ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(m_connection); expiry != UINT64_MAX)
+        const std::optional<std::chrono::microseconds> deadline = m_core->nextTimeout();
+        if (!deadline.has_value())
         {
-            return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(expiry));
+            return std::chrono::steady_clock::time_point::max();
         }
-        return std::chrono::steady_clock::time_point::max();
+        return m_timeOrigin + *deadline;
     }
 
     Core::Task<> QuicConnection::handleExpiry()
     {
-        if (m_connection == nullptr)
+        if (m_core == nullptr || m_isClosed)
         {
             co_return;
         }
-
-        if (const int result = ngtcp2_conn_handle_expiry(m_connection, currentTimestamp()); result != 0)
-        {
-            if (result == NGTCP2_ERR_IDLE_CLOSE)
-            {
-                m_isClosed = true;
-                LOG_DEBUG("QuicConnection: 空闲超时，连接收口");
-            } else
-            {
-                LOG_WARN_FMT("QuicConnection: 定时器处理失败（ngtcp2 错误 {}），连接收口", ngtcp2_strerror(result));
-            }
-            co_return;
-        }
+        m_core->onTimeout(currentTime());
+        pumpStreamCallbacks();
         co_await flush();
     }
 
@@ -805,12 +300,47 @@ namespace AsynGyanis::Net
 
     bool QuicConnection::isClosed() const noexcept
     {
-        if (m_connection == nullptr || m_isClosed)
+        // 状态机判定的空闲超时是「静默关闭」：不发收口报文也不留待发，此时 isFinished 即为真
+        return m_core == nullptr || m_isClosed || m_core->isFinished();
+    }
+
+    bool QuicConnection::needsFlush() const noexcept
+    {
+        return m_needsFlush;
+    }
+
+    void QuicConnection::pumpStreamCallbacks()
+    {
+        QuicStreamLayer &streams = m_core->streamLayer();
+        while (const std::optional<QuicStreamDelivery> delivery = streams.takeDelivery())
         {
-            return true;
+            if (m_configuration.onStreamData)
+            {
+                m_configuration.onStreamData(*this, static_cast<std::int64_t>(delivery->streamId), delivery->bytes, delivery->isFinal);
+            }
         }
-        // 收口期与排空期都表示这条连接不再服务新数据；两者之外还要看本地标志，
-        // 因为「空闲超时」这类收口在 ngtcp2 里未必立刻把状态推到收口期
-        return ngtcp2_conn_in_closing_period(m_connection) != 0 || ngtcp2_conn_in_draining_period(m_connection) != 0;
+        while (const std::optional<std::uint64_t> abortedStreamId = streams.takeAbortedStream())
+        {
+            notifyPeerStreamClosed(static_cast<std::int64_t>(*abortedStreamId));
+        }
+    }
+
+    void QuicConnection::notifyPeerStreamClosed(const std::int64_t streamId)
+    {
+        // 只转交对端发起的双向流（流号低两位为 0）：请求跑在这类流上，控制流与 QPACK 流
+        // 无论收口还是重置都有自己的规矩（RFC 9114 §6.2.1），不该被当成「请求被取消」
+        if (streamId < 0 || (streamId & 0x03) != 0)
+        {
+            return;
+        }
+        if (m_configuration.onPeerStreamClosed)
+        {
+            m_configuration.onPeerStreamClosed(*this, streamId);
+        }
+    }
+
+    std::chrono::microseconds QuicConnection::currentTime() const noexcept
+    {
+        return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_timeOrigin);
     }
 } // namespace AsynGyanis::Net

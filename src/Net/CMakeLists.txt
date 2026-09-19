@@ -45,14 +45,13 @@ target_link_libraries(Net PUBLIC
 # 以 LINK_ONLY 传给最终可执行文件（消费方的可见性由上面的清单登记保证）
 target_link_libraries(Net PRIVATE ZLIB::ZLIB zstd::libzstd brotli::brotli)
 
-# QUIC 传输层：ngtcp2 随仓库构建（third_party 在 src 之前进来），其 OpenSSL 胶水随 ngtcp2_static 带出。
-# 这里自己 find_package 一次：OpenSSL 目前是靠 Core 带进来的，显式声明过依赖关系才不会随模块顺序改变而失效。
-# 用 PUBLIC 而不是 PRIVATE：QuicConnection.h 直接暴露 ngtcp2 类型（ngtcp2_conn、path 等），
-# 消费方（测试、样本）也要拿到 ngtcp2/OpenSSL 的头路径；NGTCP2_STATICLIB 同理必须公开——
-# 漏了它，消费方按 dllimport 声明，链接期满屏 __imp_ngtcp2_* 未解析
+# QUIC 传输层已是自研实现，Net 不再链接 ngtcp2：它只剩测试里的跨实现裁判，登记在
+# tests/Net/CMakeLists.txt（与 nghttp3 同一个道理）。
+# OpenSSL 仍是 PUBLIC：连接与服务端的配置里直接暴露 SSL_CTX，消费方 include 这些头就要拿到
+# OpenSSL 的头路径。这里自己 find_package 一次：OpenSSL 目前是靠 Core 带进来的，显式声明过
+# 依赖关系才不会随模块顺序改变而失效
 find_package(OpenSSL REQUIRED)
-target_link_libraries(Net PUBLIC ngtcp2_static ngtcp2_crypto_ossl_static OpenSSL::SSL OpenSSL::Crypto)
-target_compile_definitions(Net PUBLIC NGTCP2_STATICLIB)
+target_link_libraries(Net PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 
 # HTTP/3 协议层（帧、QPACK、连接状态机、会话）已全部自研，Net 不再链接任何第三方 h3 实现。
 # nghttp3 只剩测试依赖：它当跨实现裁判出现在 tests/Net/CMakeLists.txt 里，

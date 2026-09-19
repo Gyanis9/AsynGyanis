@@ -7,12 +7,13 @@
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 #include "Net/Http/Router.h"
+#include "Net/Quic/Codec/QuicPacketHeader.h"
 
 #include <algorithm>
 #include <cstring>
+#include <expected>
 #include <string>
 
-#include <ngtcp2/ngtcp2_crypto_ossl.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
 
@@ -50,13 +51,6 @@ namespace AsynGyanis::Net
     QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) :
         m_eventLoop(eventLoop), m_configuration(std::move(configuration)), m_expiryTicker(eventLoop)
     {
-        // ngtcp2 的 ossl 胶水要做一次全局初始化（它内部缓存 EVP 相关的句柄，跳过会明显拖慢性能）
-        static const bool isCryptoInitialized = ngtcp2_crypto_ossl_init() == 0;
-        if (!isCryptoInitialized)
-        {
-            throw Base::SystemException("QUIC 服务端启动失败：ngtcp2 的 OpenSSL 胶水初始化未成功");
-        }
-
         m_tlsContext = SSL_CTX_new(TLS_server_method());
         if (m_tlsContext == nullptr)
         {
@@ -82,11 +76,6 @@ namespace AsynGyanis::Net
         }
         SSL_CTX_set_alpn_select_cb(m_tlsContext, selectApplicationProtocol, nullptr);
 
-        m_statelessResetSecret.resize(kStatelessResetSecretLength);
-        if (RAND_bytes(m_statelessResetSecret.data(), static_cast<int>(m_statelessResetSecret.size())) != 1)
-        {
-            throw Base::SystemException("QUIC 服务端启动失败：随机数不可用，无法生成无状态重置令牌的密钥");
-        }
     }
 
     QuicServer::~QuicServer()
@@ -121,8 +110,8 @@ namespace AsynGyanis::Net
         std::memcpy(&boundAddressV4, &boundAddress.storage, sizeof(boundAddressV4));
         m_listeningPort = ntohs(boundAddressV4.sin_port);
 
-        // 建连接时要拿本端地址进 ngtcp2 的 path，必须用**绑定后**的地址（端口给 0 时只有内核知道
-        // 实际端口）。漏掉这一步 path.local 就是全零地址，ngtcp2 会拒绝写报文——服务端一条都发不出去
+        // 建连接时要拿本端地址写进回包，必须用**绑定后**的地址（端口给 0 时只有内核知道
+        // 实际端口）。漏掉这一步日志与诊断里看到的就是一条全零地址
         m_localSocketAddress = boundAddress;
 
         m_socket = std::make_unique<Core::AsyncUdpSocket>(m_eventLoop, std::move(m_datagramSocket));
@@ -266,35 +255,32 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉。
-        // 最后一个参数是 **Short 头报文的 DCID 长度**：Short 头不携带这个长度，必须告诉解码器本端
-        // 自己的连接标识有多长。传 NGTCP2_MAX_CIDLEN 会让它把包号的头两字节也当成标识的一部分，
-        // 从 1-RTT 起每条报文都命不中路由表（实测：握手全通、之后客户端所有报文整包被丢）
-        ngtcp2_version_cid versionAndConnectionIds{};
-        if (ngtcp2_pkt_decode_version_cid(&versionAndConnectionIds, datagram.data(), datagram.size(),
-                                         QuicConnection::kSourceConnectionIdLength) != 0)
+        // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉。最后一个参数是
+        // **短头报文的 DCID 长度**：短头不带这个长度字段，必须告诉解码器本端自己的连接标识有多长，
+        // 否则它会把包号的头几字节也算进标识，从 1-RTT 起每条报文都命不中路由表
+        const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader =
+                decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
+        if (!decodedHeader.has_value())
         {
             co_return;
         }
-        // 用视图查表：两张表都是透明比较（std::less<>），而本端 SCID 固定 18 字节、超过
-        // 小字符串优化阈值——此前每个入向报文都要为它分配一次 std::string
-        const std::string_view destinationConnectionId(reinterpret_cast<const char *>(versionAndConnectionIds.dcid),
-                                                       versionAndConnectionIds.dcidlen);
+        // 用视图查表：两张表都是透明比较（std::less<>），而本端连接标识固定 18 字节、超过
+        // 小字符串优化阈值——每个入向报文都为它分配一次 std::string 是白付的拷贝
+        const std::string_view destinationConnectionId(reinterpret_cast<const char *>(decodedHeader->destinationConnectionId.data()),
+                                                       decodedHeader->destinationConnectionId.size());
         if (const auto existing = m_connections.find(destinationConnectionId); existing != m_connections.end())
         {
             // 记账：下面几次 await 都可能在挂起中被定时循环判成「已收口」并试图摘掉它——守卫
             // 让那次摘除推迟（见 reapClosedConnections）。迭代器与本引用因此在整个区间内有效
             const QuicConnection::ActivityGuard activityGuard(*existing->second);
             co_await existing->second->handleDatagram(peerAddress, datagram);
-            registerConnectionIds(*existing->second);
             co_await pumpHttp3For(*existing->second);
             co_return;
         }
 
-        // 别名索引：客户端重传 Initial 时，报文里的 DCID 仍是它最初选的那个（RFC 9000 §7.2 的首包
-        // 连接标识固定到服务端回话为止），而按本端 SCID 建的键这时对不上——少了这一路，每条重传
-        // 都会当成新连接（实测：一个客户端握手却建出 8 条连接，握手因此永远收不了口）。
-        // ngtcp2 后续签发的额外连接标识也走这一路，见 registerConnectionIds
+        // 别名索引：客户端重传 Initial 时，报文里的 DCID 仍是它最初选的那个（RFC 9000 §7.2 规定
+        // 首包的目的标识固定到服务端回话为止），而按本端标识建的键这时对不上——少了这一路，每条
+        // 重传都会被当成新连接（实测：一个客户端握手却建出 8 条连接，握手因此永远收不了口）
         if (const auto byAliasConnectionId = m_connectionsByAliasConnectionId.find(destinationConnectionId);
             byAliasConnectionId != m_connectionsByAliasConnectionId.end())
         {
@@ -302,7 +288,6 @@ namespace AsynGyanis::Net
             // 与上面同一条记账：别名表里存的是裸指针，摘除会把这条一起抹掉
             const QuicConnection::ActivityGuard activityGuard(*matchedConnection);
             co_await matchedConnection->handleDatagram(peerAddress, datagram);
-            registerConnectionIds(*matchedConnection);
             co_await pumpHttp3For(*matchedConnection);
             co_return;
         }
@@ -316,7 +301,6 @@ namespace AsynGyanis::Net
         // 不认识的目的连接标识：只有「可开新连接的 Initial」才值得开一条新连接
         QuicConnection::Configuration connectionConfiguration;
         connectionConfiguration.tlsContext           = m_tlsContext;
-        connectionConfiguration.statelessResetSecret = m_statelessResetSecret;
         connectionConfiguration.idleTimeout          = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
         connectionConfiguration.onStreamData         = [this](QuicConnection &connection, const std::int64_t streamId,
@@ -331,16 +315,6 @@ namespace AsynGyanis::Net
             {
                 m_streamDataHandler(connection, streamId, data, isEndStream);
             }
-        };
-        connectionConfiguration.onConnectionIdIssued  = [this](QuicConnection &connection, const std::span<const std::uint8_t> connectionId)
-        {
-            // 标识一签发就进路由表：对端随时可能改用它寻址本端。只靠「处理完报文再同步一遍」会漏掉
-            // 定时器驱动的 flush 里签发的那些，对端随后用它们发的报文会被整包丢掉
-            m_connectionsByAliasConnectionId.insert_or_assign(
-                    std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()), &connection);
-            // 标记这条连接「标识表有新条目」：处理完报文的那次重扫据此决定要不要跑
-            //（没有新标识时不扫——每个入向报文都整表重扫是无谓的开销）
-            m_connectionsWithFreshConnectionIds.insert(&connection);
         };
         // 对端取消了一条请求流（RESET_STREAM / STOP_SENDING）或传输层把它收尾了：h3 会话据此回收
         // 该流的状态。没有这一路的话，被取消的请求正文、流式等待者与隧道记录会一直留着
@@ -378,20 +352,7 @@ namespace AsynGyanis::Net
         // 立刻发来 CONNECTION_CLOSE 等），而收报文路径收尾与清扫节拍都会尝试摘除它
         const QuicConnection::ActivityGuard activityGuard(*rawConnection);
         co_await rawConnection->handleDatagram(peerAddress, datagram);
-        // 只在本次报文选出了新标识时才重扫：签发那一刻已经逐条登记过，这里只是兜底一遍
-        if (m_connectionsWithFreshConnectionIds.erase(rawConnection) != 0U)
-        {
-            registerConnectionIds(*rawConnection);
-        }
         co_await pumpHttp3For(*rawConnection);
-    }
-
-    void QuicServer::registerConnectionIds(const QuicConnection &connection)
-    {
-        for (const std::string &connectionId: connection.sourceConnectionIds())
-        {
-            m_connectionsByAliasConnectionId.insert_or_assign(connectionId, const_cast<QuicConnection *>(&connection));
-        }
     }
 
     void QuicServer::reapClosedConnections()
@@ -414,7 +375,6 @@ namespace AsynGyanis::Net
                 // 漏掉任何一处，都会把已销毁的连接留在表里（悬空指针）
                 const QuicConnection *closedConnection = iterator->second.get();
                 m_http3Sessions.erase(closedConnection);
-                m_connectionsWithFreshConnectionIds.erase(closedConnection);
                 std::erase_if(m_connectionsByAliasConnectionId,
                               [closedConnection](const auto &entry) { return entry.second == closedConnection; });
                 iterator = m_connections.erase(iterator);
@@ -457,7 +417,7 @@ namespace AsynGyanis::Net
                 // 而挂起期间另一条路径可能把它判成收口并摘除——守卫让那次摘除推迟到本迭代结束
                 const QuicConnection::ActivityGuard activityGuard(*connectionEntry->second);
                 // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
-                // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它等某个 ngtcp2 定时器
+                // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它一直等到下一次报文或定时器
                 if (connectionEntry->second->needsFlush())
                 {
                     co_await connectionEntry->second->flush();

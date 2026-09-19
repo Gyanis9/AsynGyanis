@@ -195,6 +195,15 @@ namespace AsynGyanis::Net
         return m_peerTransportParameters;
     }
 
+    std::string_view QuicTlsContext::selectedApplicationProtocol() const noexcept
+    {
+        const unsigned char *protocol = nullptr;
+        unsigned int protocolLength = 0;
+        SSL_get0_alpn_selected(m_session, &protocol, &protocolLength);
+        // 没协商上时 OpenSSL 会把指针置空、长度归零，此时给空视图而不是拿空指针构造 string_view
+        return protocol == nullptr ? std::string_view{} : std::string_view(reinterpret_cast<const char *>(protocol), protocolLength);
+    }
+
     std::optional<QuicCipherSuite> QuicTlsContext::cipherSuite() const noexcept
     {
         return m_cipherSuite;

@@ -1109,6 +1109,11 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    std::string_view QuicConnectionCore::selectedApplicationProtocol() const noexcept
+    {
+        return m_tls->selectedApplicationProtocol();
+    }
+
     QuicConnectionCore::Timestamp QuicConnectionCore::probeTimeoutPeriod() const noexcept
     {
         return m_recovery.roundTripTimeEstimate().probeTimeout;

@@ -155,6 +155,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<QuicCipherSuite> cipherSuite() const noexcept;
 
         /**
+         * @brief 协商出的 ALPN 协议名
+         * @details 服务端没配 ALPN 或对端没带 ALPN 扩展时为空；握手完成前后都可以问，只是完成前恒为空
+         * @return std::string_view 指向 OpenSSL 内部的缓冲，生命周期随本对象
+         */
+        [[nodiscard]] std::string_view selectedApplicationProtocol() const noexcept;
+
+        /**
          * @brief 最近一次 TLS 告警码
          * @return 有告警时返回其字节值，否则为空；连接收口的原因文案可以带上它
          */

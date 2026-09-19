@@ -89,8 +89,12 @@ find_package(brotli REQUIRED)
 # HTTP/3 用例要直接用 nghttp3 的客户端侧当对端（Net 对 nghttp3 是私有链接、头文件不外泄），因此这里也重新找一次
 find_package(nghttp3 REQUIRED)
 
+# QUIC 用例同样直接用 ngtcp2 搭一个独立的客户端当裁判：传输层自研之后 Net 已经不链接它，
+# 这份依赖就只剩测试这一处（NGTCP2_STATICLIB 必须一起给，漏了会按 dllimport 声明去链接）
 target_link_libraries(TestNet PRIVATE
         Net
+        ngtcp2_static
+        ngtcp2_crypto_ossl_static
         ZLIB::ZLIB
         zstd::libzstd
         brotli::brotli
@@ -98,6 +102,8 @@ target_link_libraries(TestNet PRIVATE
         GTest::gtest
         GTest::gtest_main
 )
+
+target_compile_definitions(TestNet PRIVATE NGTCP2_STATICLIB)
 
 # src 用于 "Net/..." 形式的生产头包含；其余三条是同级包含的测试辅助头所在目录
 # （NetTestSupport.h 在本目录、HttpTestSupport.h 在 Http/、Http2TestSupport.h 在 Http2/）
