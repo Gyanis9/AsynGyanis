@@ -22,8 +22,10 @@
 //      把自己撑住不关（RFC 9000 §10.1）；
 //  11) 乱序与重叠的 CRYPTO 分片按覆盖区合并，跨界重传也能把握手接上（§19.8）；
 //  12) 流与流量控制：1-RTT 包里带 STREAM 数据出去、对端的 STREAM 帧按序交付并在使用后补窗口、
-//      带数据的包判丢后按原偏移重发、越界与「流帧出现在 Initial 包里」各按错误码收口
-//      （RFC 9000 §4、§19.4–§19.11）。
+//      带数据的包判丢后按原偏移重发、越界与「流帧出现在 Initial 包里」各按错误码收口；正文比额度大
+//      时先停在窗口上，对端回了窗口之后再一字节不少地按序发完（RFC 9000 §4、§19.4–§19.11）。
+//  13) 1-RTT 密钥更新：对端翻相位就把下一代读密钥提成当前并跟着翻写密钥；本端要自己发起得先等到
+//      本相位有包被确认；相位对不上的包直接丢（RFC 9001 §6）。
 // 证书用仓库内的自签夹具（与 HTTPS、TLS 胶水用例同一份），因此不依赖任何外部服务。
 
 #include "Net/Quic/QuicConnectionCore.h"
@@ -189,17 +191,14 @@ namespace AsynGyanis::Net
              * @param context 客户端 SSL 上下文
              * @param sourceConnectionId 本端在第一个 Initial 里的源标识
              * @param mismatchedSourceConnectionId 要不要把参数里的 ISCID 写成别的值，用于 §7.3 绑定用例
-             */
-            /**
-             * @brief 建客户端
-             * @param context 客户端 SSL 上下文
-             * @param sourceConnectionId 本端在第一个 Initial 里的源标识
-             * @param mismatchedSourceConnectionId 要不要把参数里的 ISCID 写成别的值，用于 §7.3 绑定用例
              * @param maximumIdleTimeoutMilliseconds 本端宣告的 max_idle_timeout，0 表示不宣告（§18.2）
+             * @param advertisedStreamWindowByteCount 本端在**自己发起的那条双向流**上宣告的流级额度，默认
+             *        给够；用例要验「正文比额度大」时把它调小，好让流量控制而不是拥塞窗口先卡住
              */
             InMemoryQuicClient(SSL_CTX &context, std::vector<std::uint8_t> sourceConnectionId,
                                const bool mismatchedSourceConnectionId = false,
-                               const std::uint64_t maximumIdleTimeoutMilliseconds = 0)
+                               const std::uint64_t maximumIdleTimeoutMilliseconds = 0,
+                               const std::uint64_t advertisedStreamWindowByteCount = 65536)
                 : m_sourceConnectionId(std::move(sourceConnectionId))
             {
                 ClientSpace &initial = spaceOf(QuicEncryptionLevel::Initial);
@@ -208,8 +207,9 @@ namespace AsynGyanis::Net
 
                 QuicTransportParameters parameters;
                 parameters.initialMaximumData = 65536;
-                // 三档流级额度都给够：0x05 管本端发起的 0x00、0x06 管服务端发起的 0x01、0x07 管 0x03
-                parameters.initialMaximumStreamDataBidirectionalLocal = 65536;
+                // 三档流级额度默认都给够。§18.2 的视角是「各自发起」：0x05 管本端（客户端）发起的 0x00，
+                // 0x06 管服务端发起的 0x01——所以服务端往 0x00 上写数据时受的是这一档的 bidi_local 管
+                parameters.initialMaximumStreamDataBidirectionalLocal = advertisedStreamWindowByteCount;
                 parameters.initialMaximumStreamDataBidirectionalRemote = 65536;
                 parameters.initialMaximumStreamDataUnidirectional = 65536;
                 parameters.initialMaximumBidirectionalStreams = 128;
@@ -2083,6 +2083,65 @@ namespace AsynGyanis::Net
         exchange(core, client, Timestamp{130000});
         EXPECT_EQ(client.serverStreamText(), payload) << "确认过了还重发，对端会看到重复字节";
         EXPECT_EQ(client.serverStreamFinalCount(), 1U);
+    }
+
+    /**
+     * @brief 正文比对端给的额度大：必须先停在窗口上，等对端回窗口之后再按序发完
+     * @details 这是大响应在生产里的真实形状（对端的 initial_max_data 与 initial_max_stream_data
+     *          都小于正文）。窗口算错的后果不是报错而是对端收到越界字节、或者双方互相等死，
+     *          所以要端到端钉住「发出去的字节始终不超过额度、回窗口之后一字节不少地走完」。
+     */
+    TEST(QuicConnectionCore, HoldsABodyBackUntilThePeerRaisesItsWindow)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        // 对端只给 4096 字节的流级额度，比一个拥塞窗口还小：这样「停在窗口上」这件事只能归功于流量控制
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, 0, 4096);
+        finishHandshake(core, client);
+
+        constexpr std::size_t kBodyByteCount = 128U * 1024U;
+        std::vector<std::uint8_t> body(kBodyByteCount);
+        for (std::size_t index = 0; index < body.size(); ++index)
+        {
+            body[index] = static_cast<std::uint8_t>(index % 251U);
+        }
+        ASSERT_EQ(core.streamLayer().writeStreamData(0x00, body, true), body.size());
+
+        core.drive(Timestamp{110000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_GT(client.serverStreamText().size(), 0U) << "第一轮就该把额度内的字节发出去";
+        EXPECT_LE(client.serverStreamText().size(), 4096U) << "对端只给了 4096，一个字节都不许多发（RFC 9000 §4.1）";
+        EXPECT_EQ(client.serverStreamFinalCount(), 0U) << "正文没走完就把 FIN 发出去，对端会以为已经收完";
+        ASSERT_TRUE(core.streamLayer().hasOutgoingFrames()) << "被窗口挡住时这条流该继续挂在待发账上";
+
+        // 对端边消费边回额度：两档一起往上涨，直到 128 KiB 正文走完
+        std::uint64_t raisedTo = 65536U;
+        for (int round = 0; round < 40 && client.serverStreamText().size() < body.size(); ++round)
+        {
+            const Timestamp now{120000 + 10000 * static_cast<std::int64_t>(round)};
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicMaxDataFrame{.maximumData = raisedTo}});
+            appendQuicFrame(frames, QuicFrame{QuicMaxStreamDataFrame{.streamId = 0x00, .maximumStreamData = raisedTo}});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), now);
+            raisedTo += 65536U;
+            for (const auto &datagram : drain(core))
+            {
+                client.consume(datagram);
+            }
+            // 发出去的字节要被确认掉，在途账才会腾出来给下一段，否则窗口一路挂着走不动
+            exchange(core, client, now + Timestamp{5000});
+        }
+
+        EXPECT_EQ(client.serverStreamText().size(), body.size()) << "回过窗口之后没能把正文发完";
+        EXPECT_EQ(client.serverStreamText(), std::string(body.begin(), body.end())) << "到达顺序或字节内容有出入";
+        EXPECT_EQ(client.serverStreamFinalCount(), 1U) << "FIN 只该在整个正文之后出现一次";
     }
 
     /**
