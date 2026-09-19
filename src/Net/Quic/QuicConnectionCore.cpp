@@ -31,10 +31,6 @@ namespace AsynGyanis::Net
         /// 每空间跟踪的已收包号上限，超出后丢弃最小的那些（只影响 ACK 能覆盖多老的历史）
         constexpr std::size_t kQuicMaximumTrackedPacketNumbers = 4096;
 
-        /// 一条 ACK 最多带几段区间：砍掉尾部老区间不改变「哪些包到了」的结论，却能保证 ACK 帧本身
-        /// 不会大到把整包预算吃光
-        constexpr std::size_t kQuicMaximumAcknowledgementRanges = 32;
-
         // 传输层错误码（RFC 9000 §11.1）与 TLS 告警的映射基值（RFC 9001 §4.8）
         constexpr std::uint64_t kQuicNoError = 0x00;
         constexpr std::uint64_t kQuicFrameEncodingError = 0x07;
@@ -99,38 +95,6 @@ namespace AsynGyanis::Net
                         return std::same_as<FrameType, QuicPaddingFrame> || std::same_as<FrameType, QuicAcknowledgementFrame>;
                     },
                     frame);
-        }
-
-        /**
-         * @brief 把已收到的包号集合折成 ACK 区间
-         * @details §19.3.1 要求区间按包号递减、互不重叠且相邻的不合并；`QuicAcknowledgementRange`
-         *          存绝对包号，递推出来的 gap 由帧编码器负责。
-         * @param receivedPacketNumbers 升序的已收包号
-         * @param acknowledgedUpTo 本次确认到的包号（含）
-         * @return std::vector<QuicAcknowledgementRange> 递减的区间，至多 `kQuicMaximumAcknowledgementRanges` 段
-         */
-        std::vector<QuicAcknowledgementRange> buildAcknowledgementRanges(const std::set<std::uint64_t> &receivedPacketNumbers,
-                                                                         const std::uint64_t acknowledgedUpTo)
-        {
-            std::vector<QuicAcknowledgementRange> ranges;
-            for (const std::uint64_t packetNumber : receivedPacketNumbers | std::views::reverse)
-            {
-                if (packetNumber > acknowledgedUpTo)
-                {
-                    continue;
-                }
-                if (!ranges.empty() && ranges.back().smallestAcknowledged == packetNumber + 1)
-                {
-                    ranges.back().smallestAcknowledged = packetNumber;
-                    continue;
-                }
-                if (ranges.size() >= kQuicMaximumAcknowledgementRanges)
-                {
-                    break;
-                }
-                ranges.push_back(QuicAcknowledgementRange{packetNumber, packetNumber});
-            }
-            return ranges;
         }
 
         /**
@@ -312,7 +276,7 @@ namespace AsynGyanis::Net
         if (!header.areReservedBitsClear())
         {
             // 去保护后保留位非 0：能去掉保护就说明密钥对上了，这是对端真这么发的，按 §17.2/§17.3.1 回错
-            beginClose(kQuicProtocolViolation, "报文首字节的保留位在去头部保护后非 0（RFC 9000 §17.2/§17.3.1）");
+            beginClose(kQuicProtocolViolation, "报文首字节的保留位在去头部保护后非 0（RFC 9000 §17.2/§17.3.1）", arrivalTime);
             return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed, "报文首字节的保留位非 0"});
         }
 
@@ -361,7 +325,7 @@ namespace AsynGyanis::Net
         {
             // 能解密就说明这包出自持有密钥的对端，帧解不开是对端违规（§19.1）
             beginClose(frames.error().kind == QuicDecodeErrorKind::Truncated ? kQuicProtocolViolation : kQuicFrameEncodingError,
-                       std::format("帧序列不合 RFC 9000 §19：{}", frames.error().message));
+                       std::format("帧序列不合 RFC 9000 §19：{}", frames.error().message), arrivalTime);
             return std::unexpected(frames.error());
         }
 
@@ -369,7 +333,7 @@ namespace AsynGyanis::Net
         for (const QuicFrame &frame : *frames)
         {
             hasAckElicitingFrame = hasAckElicitingFrame || isAcknowledgementEliciting(frame);
-            handleFrame(frame, space);
+            handleFrame(frame, space, arrivalTime);
         }
         if (hasAckElicitingFrame)
         {
@@ -380,27 +344,19 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    void QuicConnectionCore::handleFrame(const QuicFrame &frame, const PacketNumberSpace space)
+    void QuicConnectionCore::handleFrame(const QuicFrame &frame, const PacketNumberSpace space, const Timestamp arrivalTime)
     {
         std::visit(
-                [this, space](const auto &specificFrame)
+                [this, space, arrivalTime](const auto &specificFrame)
                 {
                     using FrameType = std::remove_cvref_t<decltype(specificFrame)>;
-                    SpaceState &state = m_spaces[spaceIndex(space)];
                     if constexpr (std::same_as<FrameType, QuicAcknowledgementFrame>)
                     {
-                        // 只接受落在「我们真发过」范围内的确认值：对端吹一个更大的数，不该让我们
-                        // 以为握手已被确认；nextPacketNumber 为 0 时本分支被 hasSentPacket 挡在前面
-                        if (state.hasSentPacket && specificFrame.largestAcknowledgedPacketNumber < state.nextPacketNumber &&
-                            (!state.largestAcknowledgedPacketNumber.has_value() ||
-                             specificFrame.largestAcknowledgedPacketNumber > *state.largestAcknowledgedPacketNumber))
-                        {
-                            state.largestAcknowledgedPacketNumber = specificFrame.largestAcknowledgedPacketNumber;
-                        }
+                        handleAcknowledgement(specificFrame, space, arrivalTime);
                     }
                     else if constexpr (std::same_as<FrameType, QuicCryptoFrame>)
                     {
-                        handleCryptoBytes(space, specificFrame.offset, specificFrame.data);
+                        handleCryptoBytes(space, specificFrame.offset, specificFrame.data, arrivalTime);
                     }
                     else if constexpr (std::same_as<FrameType, QuicConnectionCloseFrame>)
                     {
@@ -414,8 +370,43 @@ namespace AsynGyanis::Net
                 frame);
     }
 
+    void QuicConnectionCore::handleAcknowledgement(const QuicAcknowledgementFrame &frame, const PacketNumberSpace space,
+                                                  const Timestamp arrivalTime)
+    {
+        // 报告延迟是线上值，按**对端自己声明**的指数还原成时间（§19.3）；它的参数还没到之前用默认指数
+        const std::uint64_t peerExponent = m_peerParameters.has_value()
+                                                ? m_peerParameters->acknowledgmentDelayExponent
+                                                : kQuicDefaultAcknowledgmentDelayExponent;
+        const std::uint64_t shiftBitCount = std::min<std::uint64_t>(peerExponent, 20U);
+        // 这个字段允许对端塞任意大的数：先按上限夹一次再移位，免得乘出一个回绕的负延迟。
+        // 60 秒远超过任何合法的 max_ack_delay，超出的部分本来就只会走「不合理就不减」那条路
+        constexpr std::uint64_t kQuicMaximumAcknowledgementDelayMicroseconds = 60ULL * 1000ULL * 1000ULL;
+        const std::uint64_t unscaledLimit = kQuicMaximumAcknowledgementDelayMicroseconds >> shiftBitCount;
+        const QuicTime acknowledgementDelay{static_cast<std::int64_t>(
+                std::min(frame.acknowledgementDelay, unscaledLimit) << shiftBitCount)};
+
+        const QuicAcknowledgementUpdate update =
+                m_recovery.onAcknowledgementReceived(recoverySpaceOf(space), frame, arrivalTime, acknowledgementDelay);
+
+        // §4.1.2：服务端「握手已确认」的判据就是对端确认了 Handshake 空间的包。确认之后才允许给
+        // 进入用空间武装 PTO，也才该发 HANDSHAKE_DONE
+        if (!m_isHandshakeConfirmed && space == PacketNumberSpace::Handshake && !update.acknowledged.empty())
+        {
+            m_isHandshakeConfirmed = true;
+            const std::uint64_t peerMaximumDelayMilliseconds = m_peerParameters.has_value()
+                                                                    ? m_peerParameters->maximumAcknowledgmentDelayMilliseconds
+                                                                    : kQuicDefaultMaximumAcknowledgmentDelayMilliseconds;
+            m_recovery.onHandshakeConfirmed(std::chrono::duration_cast<QuicTime>(
+                    std::chrono::milliseconds{peerMaximumDelayMilliseconds}));
+        }
+        if (!update.lost.empty())
+        {
+            queueRetransmissions(space, update.lost);
+        }
+    }
+
     void QuicConnectionCore::handleCryptoBytes(const PacketNumberSpace space, const std::uint64_t offset,
-                                               const std::span<const std::uint8_t> bytes)
+                                               const std::span<const std::uint8_t> bytes, const Timestamp arrivalTime)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
         if (offset + bytes.size() <= state.receivedCryptoOffset)
@@ -427,7 +418,7 @@ namespace AsynGyanis::Net
         {
             if (state.bufferedOutOfOrderByteCount + bytes.size() > kQuicCryptoBufferByteLimit)
             {
-                beginClose(kQuicCryptoBufferExceeded, "乱序早到的 CRYPTO 字节超过本端缓存上限（RFC 9000 §11.1）");
+                beginClose(kQuicCryptoBufferExceeded, "乱序早到的 CRYPTO 字节超过本端缓存上限（RFC 9000 §11.1）", arrivalTime);
                 return;
             }
             state.laterCryptoFragments.emplace(offset, std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
@@ -474,11 +465,12 @@ namespace AsynGyanis::Net
         while (const std::optional<QuicTlsRecord> record = m_tls->takeOutboundRecord())
         {
             SpaceState &state = m_spaces[spaceIndex(record->level)];
-            state.pendingCryptoBytes.insert(state.pendingCryptoBytes.end(), record->data.begin(), record->data.end());
+            // 交来的字节并进本空间的握手流：发过的部分不能丢，判丢与探针都要按偏移重发
+            state.cryptoStream.insert(state.cryptoStream.end(), record->data.begin(), record->data.end());
         }
     }
 
-    void QuicConnectionCore::adoptPeerTransportParameters()
+    void QuicConnectionCore::adoptPeerTransportParameters(const Timestamp now)
     {
         if (m_peerParameters.has_value() || m_tls->peerTransportParameters().empty())
         {
@@ -488,7 +480,7 @@ namespace AsynGyanis::Net
                 decodeQuicTransportParameters(m_tls->peerTransportParameters(), QuicTransportParameterSenderRole::Client);
         if (!decoded.has_value())
         {
-            beginClose(kQuicTransportParameterError, std::format("对端传输参数不合格：{}", decoded.error().message));
+            beginClose(kQuicTransportParameterError, std::format("对端传输参数不合格：{}", decoded.error().message), now);
             return;
         }
         // §7.3：对端参数里的 initial_source_connection_id 必须等于它第一个 Initial 的源标识
@@ -496,7 +488,7 @@ namespace AsynGyanis::Net
             !std::ranges::equal(*decoded->initialSourceConnectionId, *m_peerFirstInitialSourceConnectionId))
         {
             beginClose(kQuicTransportParameterError,
-                       "对端的 initial_source_connection_id 与它第一个 Initial 里的源标识不符（RFC 9000 §7.3）");
+                       "对端的 initial_source_connection_id 与它第一个 Initial 里的源标识不符（RFC 9000 §7.3）", now);
             return;
         }
         m_peerParameters = *decoded;
@@ -515,18 +507,18 @@ namespace AsynGyanis::Net
             {
                 if (const std::optional<std::uint8_t> alert = m_tls->alert(); alert.has_value())
                 {
-                    beginClose(kQuicCryptoErrorBase + *alert, "TLS 握手失败，错误码是 RFC 9001 §4.8 映射出的 CRYPTO_ERROR");
+                    beginClose(kQuicCryptoErrorBase + *alert, "TLS 握手失败，错误码是 RFC 9001 §4.8 映射出的 CRYPTO_ERROR", now);
                 }
                 else
                 {
-                    beginClose(kQuicProtocolViolation, "TLS 拒绝了握手数据");
+                    beginClose(kQuicProtocolViolation, "TLS 拒绝了握手数据", now);
                 }
             }
             else if (m_tls->isHandshakeCompleted())
             {
                 m_phase = QuicConnectionPhase::Established;
             }
-            adoptPeerTransportParameters();
+            adoptPeerTransportParameters(now);
         }
 
         if (m_phase != QuicConnectionPhase::Closing)
@@ -544,27 +536,22 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        // §19.20：握手完成、且对端确认过本空间的包之后，服务端在 Handshake 包里有且只发一次 HANDSHAKE_DONE
-        const bool wantsHandshakeDone = space == PacketNumberSpace::Handshake && m_phase == QuicConnectionPhase::Established &&
-                                        !m_hasSentHandshakeDone && state.hasSentPacket &&
-                                        state.largestAcknowledgedPacketNumber.has_value();
         const bool isLongHeader = space != PacketNumberSpace::Application;
+        // §19.20：握手完成、且对端确认过 Handshake 空间的包之后，服务端只发一次 HANDSHAKE_DONE
+        const bool wantsHandshakeDone = space == PacketNumberSpace::Handshake && m_phase == QuicConnectionPhase::Established &&
+                                        !m_hasSentHandshakeDone && m_isHandshakeConfirmed;
+        bool owesProbe = m_probeSpace.has_value() && *m_probeSpace == space;
 
         for (;;)
         {
             std::string frames;
+            bool elicitsAcknowledgement = false;
             if (std::exchange(state.isAcknowledgementPending, false) && state.largestAckElicitingReceived.has_value())
             {
                 QuicAcknowledgementFrame acknowledgement;
                 acknowledgement.largestAcknowledgedPacketNumber = *state.largestAckElicitingReceived;
-                acknowledgement.ranges = buildAcknowledgementRanges(state.receivedPacketNumbers,
-                                                                    *state.largestAckElicitingReceived);
-                if (acknowledgement.ranges.empty())
-                {
-                    // 不变式：区间永不为空且首段必须含最大确认值（见 QuicAcknowledgementFrame 的 @note）
-                    acknowledgement.ranges.push_back(QuicAcknowledgementRange{acknowledgement.largestAcknowledgedPacketNumber,
-                                                                              acknowledgement.largestAcknowledgedPacketNumber});
-                }
+                acknowledgement.ranges = buildQuicAcknowledgementRanges(state.receivedPacketNumbers,
+                                                                        *state.largestAckElicitingReceived);
                 // §19.3：线上值是微秒数右移本端声明的 ack_delay_exponent，指数上限 20 由参数校验保证
                 const std::int64_t elapsedMicroseconds = std::max<std::int64_t>(0, (now - *state.largestAckElicitingArrival).count());
                 acknowledgement.acknowledgementDelay = static_cast<std::uint64_t>(elapsedMicroseconds) >>
@@ -575,62 +562,139 @@ namespace AsynGyanis::Net
             {
                 appendQuicFrame(frames, QuicFrame{QuicHandshakeDoneFrame{}});
                 m_hasSentHandshakeDone = true;
+                elicitsAcknowledgement = true;
             }
 
             const std::size_t remainingByteBudget = saturatingSubtract(
                     kQuicMaximumDatagramPayloadByteLength,
                     packetOverheadByteLength(m_configuration, isLongHeader) + frames.size());
-            const std::size_t fragmentByteLength = std::min(state.pendingCryptoBytes.size(), remainingByteBudget);
-            if (fragmentByteLength > 0)
+            std::optional<QuicCryptoRange> carriedRange;
+            if (!state.pendingRetransmissions.empty())
+            {
+                // 重发队列优先：判丢的那段最可能正是对端缺的
+                QuicCryptoRange &front = state.pendingRetransmissions.front();
+                const std::size_t fragmentByteLength = std::min(front.endOffset - front.beginOffset, remainingByteBudget);
+                front.beginOffset += fragmentByteLength;
+                if (front.beginOffset == front.endOffset)
+                {
+                    state.pendingRetransmissions.erase(state.pendingRetransmissions.begin());
+                }
+                if (fragmentByteLength > 0)
+                {
+                    carriedRange = QuicCryptoRange{front.beginOffset - fragmentByteLength, front.beginOffset};
+                }
+            }
+            else if (state.cryptoWriteOffset < state.cryptoStream.size())
+            {
+                const std::size_t fragmentByteLength =
+                        std::min(state.cryptoStream.size() - state.cryptoWriteOffset, remainingByteBudget);
+                carriedRange = QuicCryptoRange{state.cryptoWriteOffset, state.cryptoWriteOffset + fragmentByteLength};
+                state.cryptoWriteOffset += fragmentByteLength;
+            }
+            if (carriedRange.has_value() && carriedRange->endOffset > carriedRange->beginOffset)
             {
                 QuicCryptoFrame crypto;
-                crypto.offset = state.nextCryptoOffset;
-                crypto.data = std::span<const std::uint8_t>(state.pendingCryptoBytes).subspan(0, fragmentByteLength);
+                crypto.offset = carriedRange->beginOffset;
+                crypto.data = std::span<const std::uint8_t>(state.cryptoStream)
+                                      .subspan(carriedRange->beginOffset, carriedRange->endOffset - carriedRange->beginOffset);
                 appendQuicFrame(frames, QuicFrame{crypto});
-                state.nextCryptoOffset += fragmentByteLength;
-                state.pendingCryptoBytes.erase(state.pendingCryptoBytes.begin(),
-                                               state.pendingCryptoBytes.begin() + static_cast<std::ptrdiff_t>(fragmentByteLength));
+                elicitsAcknowledgement = true;
+            }
+            else
+            {
+                // 这一包没真带上字节：别把空区间记进重发账，否则它永远排在队头
+                carriedRange = std::nullopt;
+            }
+
+            if (owesProbe)
+            {
+                // §6.2.2：探针优先带新数据或重发数据，两样都没有就单发一条 PING，保证对端一定会回确认
+                if (!elicitsAcknowledgement)
+                {
+                    appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+                    elicitsAcknowledgement = true;
+                }
+                m_probeSpace.reset();
+                owesProbe = false;
             }
 
             if (frames.empty())
             {
                 return;
             }
-            emitPacket(space, frames);
-            if (state.pendingCryptoBytes.empty())
+            const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
+            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange);
+            if (!carriedRange.has_value() || !hasMoreCrypto)
             {
                 return;
             }
         }
     }
 
-    void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames)
+    void QuicConnectionCore::queueRetransmissions(const PacketNumberSpace space, const std::span<const QuicSentPacketInfo> packets)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
+        std::vector<QuicCryptoRange> ranges = state.pendingRetransmissions;
+        // 判丢的那批已经从在途账里划掉了，所以字节区间只能由调用方把包本身交进来：
+        // 只扫在途集合会把「刚判丢」这一路变成空操作
+        for (const QuicSentPacketInfo &packet : packets)
+        {
+            if (packet.cryptoRange.has_value() && packet.cryptoRange->endOffset > packet.cryptoRange->beginOffset)
+            {
+                ranges.push_back(*packet.cryptoRange);
+            }
+        }
+        // 相邻或重叠的区间合并：同一段字节被两个包各带过一次时不该重发两遍，队列也不该无限增长
+        std::ranges::sort(ranges, {}, &QuicCryptoRange::beginOffset);
+        std::vector<QuicCryptoRange> merged;
+        for (const QuicCryptoRange &range : ranges)
+        {
+            if (!merged.empty() && range.beginOffset <= merged.back().endOffset)
+            {
+                merged.back().endOffset = std::max(merged.back().endOffset, range.endOffset);
+                continue;
+            }
+            merged.push_back(range);
+        }
+        state.pendingRetransmissions = std::move(merged);
+    }
+
+    void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now,
+                                        const bool isAckEliciting, const std::optional<QuicCryptoRange> cryptoRange)
+    {
+        SpaceState &state = m_spaces[spaceIndex(space)];
+        const std::uint64_t packetNumber = state.nextPacketNumber;
         QuicOutboundPacket packet;
         packet.isLongHeader = space != PacketNumberSpace::Application;
         packet.longPacketType = space == PacketNumberSpace::Handshake ? QuicLongPacketType::Handshake : QuicLongPacketType::Initial;
         packet.version = kQuicVersion1;
         packet.destinationConnectionId = m_configuration.peerConnectionId;
         packet.sourceConnectionId = m_configuration.localConnectionId;
-        packet.packetNumber = state.nextPacketNumber;
+        packet.packetNumber = packetNumber;
         packet.packetNumberByteCount = 1;
         packet.frames = asBytes(frames);
 
         std::string datagram;
         appendQuicPacket(datagram, packet, *state.writeKeys);
         ++state.nextPacketNumber;
-        state.hasSentPacket = true;
         const std::span<const std::uint8_t> datagramBytes = asBytes(datagram);
         m_outboundDatagrams.emplace_back(datagramBytes.begin(), datagramBytes.end());
+
+        QuicSentPacketInfo record;
+        record.packetNumber = packetNumber;
+        record.timeSent = now;
+        record.byteCount = datagram.size();
+        record.isAckEliciting = isAckEliciting;
+        record.cryptoRange = cryptoRange;
+        m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
     }
 
-    void QuicConnectionCore::requestClose(const std::uint64_t errorCode, const std::string_view reasonPhrase)
+    void QuicConnectionCore::requestClose(const std::uint64_t errorCode, const std::string_view reasonPhrase, const Timestamp now)
     {
-        beginClose(errorCode, reasonPhrase);
+        beginClose(errorCode, reasonPhrase, now);
     }
 
-    void QuicConnectionCore::beginClose(const std::uint64_t errorCode, const std::string_view reasonPhrase)
+    void QuicConnectionCore::beginClose(const std::uint64_t errorCode, const std::string_view reasonPhrase, const Timestamp now)
     {
         if (m_phase == QuicConnectionPhase::Closing)
         {
@@ -639,17 +703,17 @@ namespace AsynGyanis::Net
         m_localCloseErrorCode = errorCode;
         m_localCloseReasonPhrase = reasonPhrase;
         m_phase = QuicConnectionPhase::Closing;
-        queueConnectionClosePacket();
+        queueConnectionClosePacket(now);
     }
 
-    void QuicConnectionCore::queueConnectionClosePacket()
+    void QuicConnectionCore::queueConnectionClosePacket(const Timestamp now)
     {
         QuicConnectionCloseFrame close;
         close.errorCode = m_localCloseErrorCode.value_or(kQuicNoError);
         close.reasonPhrase = asBytes(m_localCloseReasonPhrase);
         std::string frames;
         appendQuicFrame(frames, QuicFrame{close});
-        emitPacket(highestSpaceWithWriteKeys(), frames);
+        emitPacket(highestSpaceWithWriteKeys(), frames, now, false, std::nullopt);
     }
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::highestSpaceWithWriteKeys() const noexcept
@@ -662,6 +726,58 @@ namespace AsynGyanis::Net
             }
         }
         return PacketNumberSpace::Initial;
+    }
+
+    QuicRecoverySpace QuicConnectionCore::recoverySpaceOf(const PacketNumberSpace space) noexcept
+    {
+        switch (space)
+        {
+        case PacketNumberSpace::Initial: return QuicRecoverySpace::Initial;
+        case PacketNumberSpace::Handshake: return QuicRecoverySpace::Handshake;
+        case PacketNumberSpace::Application: return QuicRecoverySpace::Application;
+        }
+        return QuicRecoverySpace::Application;
+    }
+
+    QuicConnectionCore::PacketNumberSpace QuicConnectionCore::spaceOf(const QuicRecoverySpace space) noexcept
+    {
+        switch (space)
+        {
+        case QuicRecoverySpace::Initial: return PacketNumberSpace::Initial;
+        case QuicRecoverySpace::Handshake: return PacketNumberSpace::Handshake;
+        case QuicRecoverySpace::Application: return PacketNumberSpace::Application;
+        }
+        return PacketNumberSpace::Application;
+    }
+
+    std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::nextTimeout() const noexcept
+    {
+        return m_recovery.nextDeadline();
+    }
+
+    void QuicConnectionCore::onTimeout(const Timestamp now)
+    {
+        if (m_phase == QuicConnectionPhase::Closing)
+        {
+            return;
+        }
+        const QuicRecoveryTimeoutAction action = m_recovery.onDeadlineReached(now);
+        if (!action.lost.empty())
+        {
+            queueRetransmissions(spaceOf(action.lostSpace), action.lost);
+        }
+        if (action.isProbeTimeout)
+        {
+            // 判丢之外还要探一条包出去：先重发仍未确认的握手字节，没有可发的就补一条 PING（§6.2.2）
+            m_probeSpace = spaceOf(action.probeSpace);
+            const std::vector<QuicSentPacketInfo> stillInFlight = m_recovery.unacknowledgedPackets(action.probeSpace);
+            queueRetransmissions(spaceOf(action.probeSpace), stillInFlight);
+        }
+        for (const PacketNumberSpace space : {PacketNumberSpace::Initial, PacketNumberSpace::Handshake,
+                                              PacketNumberSpace::Application})
+        {
+            queueSpacePackets(space, now);
+        }
     }
 
     std::optional<std::vector<std::uint8_t>> QuicConnectionCore::takeOutboundDatagram()

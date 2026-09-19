@@ -10,7 +10,7 @@
 //   2) 第一个样本走重置、后续样本走 7/8 与 3/4 的加权（§5.3）；
 //   3) ACK 延迟的夹取规则：不确认时不夹、确认后夹到 max_ack_delay、以及「减了会低于 min_rtt 就不减」（§5.3）；
 //   4) 包号阈值判丢（kPacketThreshold=3）与时间阈值判丢（9/8 + 粒度下限）各自的边界（§6.1）；
-//   5) 重复 ACK 不再采样本（§5.1）、PTO 到期翻倍退避并在收到确认时归零（§6.2.1）；
+//   5) 重复 ACK 不再采样本但照样判丢（§5.1 + §A.7 第 5 步）、PTO 到期翻倍退避并在收到确认时归零（§6.2.1）；
 //   6) 进入用空间在握手确认前不武装 PTO（§6.2.1）、丢弃空间时清账（§A.11）。
 
 #include "Net/Quic/Recovery/QuicRecovery.h"
@@ -393,5 +393,34 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(third.isRoundTripSampled);
         EXPECT_EQ(recovery.roundTripTimeEstimate().smoothed, milliseconds(10)) << "没触发确认的包不该抬高估算";
         EXPECT_FALSE(recovery.nextDeadline().has_value()) << "在途的只有不触发确认的包，不该武装任何定时器";
+    }
+
+    /**
+     * @brief 重复的 ACK 不再采样本，但判丢照做：§A.7 的 OnAckReceived 第 5 步是无条件的
+     * @details 只看「有新确认才判丢」会把补发推迟到定时器，白慢一个粒度
+     */
+    TEST(QuicRecovery, DetectsLossOnRedundantAcknowledgement)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{10500}));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, QuicTime{10800}));
+
+        // 第一帧只认到 1 号：样本 200 微秒，时间阈值被 1 毫秒的粒度抬着，10500 那包还差一点
+        const auto first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{1, 1}}),
+                                                            QuicTime{11000}, QuicTime{0});
+        ASSERT_TRUE(first.isRoundTripSampled);
+        EXPECT_TRUE(first.lost.empty()) << "1 毫秒的窗口还没到，此时判丢太急";
+        ASSERT_TRUE(recovery.nextDeadline().has_value());
+        EXPECT_EQ(*recovery.nextDeadline(), QuicTime{11500}) << "待判丢时刻 = 发出时刻 + loss_delay";
+
+        // 同一帧再来一次：没有新确认，也就不该再采样本，但空洞到这会儿已经过线
+        const auto second = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{1, 1}}),
+                                                              QuicTime{12000}, QuicTime{0});
+        EXPECT_TRUE(second.acknowledged.empty());
+        EXPECT_FALSE(second.isRoundTripSampled) << "§5.1：重复的 ACK 不许再采一次样本";
+        ASSERT_EQ(second.lost.size(), 1U) << "重复的 ACK 也要把空洞判丢";
+        EXPECT_EQ(second.lost.front().packetNumber, 0U);
+        EXPECT_EQ(recovery.roundTripTimeEstimate().smoothed, QuicTime{200}) << "没有新样本时估算不该动";
+        EXPECT_FALSE(recovery.nextDeadline().has_value()) << "在途清空后不该留着定时器";
     }
 } // namespace AsynGyanis::Net

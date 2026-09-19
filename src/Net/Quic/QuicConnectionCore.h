@@ -10,8 +10,9 @@
  *          解报头 → 去头部保护 → 还原包号 → AEAD 解密 → 解帧 → 按级别喂 TLS → 取 TLS 产出编成 CRYPTO
  *          帧 → 组包发出。时间戳一律由调用方注入，因此整条链可以在单测里逐字节复现，不需要真实网络。
  *
- * @note 本里程碑只做服务端、只做握手：0-RTT、RETRY、版本协商、流与流量控制、丢包恢复、密钥更新、
+ * @note 本里程碑只做服务端、只做握手：0-RTT、RETRY、版本协商、流与流量控制、密钥更新、
  *       连接迁移都不在当前能力内，收到对应的报文按各自章节丢弃，留待后续里程碑。
+ *       丢包恢复已经接进来：发包记账、RTT、判丢、探测超时与按偏移重发握手字节都在本类里跑。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
 
@@ -23,6 +24,7 @@
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
+#include "Net/Quic/Recovery/QuicRecovery.h"
 
 #include <array>
 #include <chrono>
@@ -124,12 +126,27 @@ namespace AsynGyanis::Net
         void drive(Timestamp now);
 
         /**
+         * @brief 下一次该醒的时刻
+         * @details 由恢复层给出：可能是按时间阈值判丢，也可能是探测超时。外层拿它定闹钟，到点调
+         *          `onTimeout`；返回空表示本连接当前不需要定时器
+         * @return 有待确认或待判丢的包时返回那个绝对时刻，否则为空
+         */
+        [[nodiscard]] std::optional<Timestamp> nextTimeout() const noexcept;
+
+        /**
+         * @brief 恢复层定时器到期：判丢并按区间重发握手字节，必要时探一条 PING
+         * @param now 当前时刻
+         */
+        void onTimeout(Timestamp now);
+
+        /**
          * @brief 本端主动收口：排一条 CONNECTION_CLOSE 并进入 Closing
          * @details 只在传输层错误码这一档（0x1c）；应用层错误码（0x1d）随 HTTP/3 那层一起接。
          * @param errorCode 连接错误码（RFC 9000 §11.1 / RFC 9001 §4.8）
          * @param reasonPhrase 原因文案，可含任意字节
+         * @param now 当前时刻，收口报文也要按发送时刻记账
          */
-        void requestClose(std::uint64_t errorCode, std::string_view reasonPhrase);
+        void requestClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
 
         /**
          * @brief 当前阶段
@@ -171,8 +188,6 @@ namespace AsynGyanis::Net
             std::optional<QuicPacketKeys> readKeys{};    ///< 解对端报文用；未就绪时相关报文只能丢弃
             std::optional<QuicPacketKeys> writeKeys{};   ///< 给本端报文加密用
             std::uint64_t nextPacketNumber{0};           ///< 下一个要发出的完整包号
-            bool hasSentPacket{false};                   ///< 本空间是否已发过包：确认「对端 ACK 的是我们的包」要靠它
-            std::optional<std::uint64_t> largestAcknowledgedPacketNumber{}; ///< 对端确认到的最大包号
 
             std::optional<std::uint64_t> largestReceivedPacketNumber{}; ///< 本空间已认证的最大包号，包号还原要靠它
             std::set<std::uint64_t> receivedPacketNumbers{};            ///< 已解密成功的包号，出 ACK 的原料
@@ -180,8 +195,9 @@ namespace AsynGyanis::Net
             std::optional<Timestamp> largestAckElicitingArrival{};      ///< 它的到达时刻，算 ack_delay
             bool isAcknowledgementPending{false};        ///< 有触发确认的包尚未被确认：下一次出包要带 ACK
 
-            std::vector<std::uint8_t> pendingCryptoBytes{}; ///< 出站：TLS 交来、还没编进 CRYPTO 帧的握手字节
-            std::uint64_t nextCryptoOffset{0};              ///< 出站：下一段 CRYPTO 帧的流上偏移
+            std::vector<std::uint8_t> cryptoStream{};    ///< 出站：本空间已经交给 TLS 产出、可作为重发依据的全部握手字节
+            std::uint64_t cryptoWriteOffset{0};          ///< 出站：下一个待新发字节的偏移，即 cryptoStream 里已排过队的长度
+            std::vector<QuicCryptoRange> pendingRetransmissions{}; ///< 出站：判丢或探针后要重发的区间，按偏移递增
 
             std::uint64_t receivedCryptoOffset{0};          ///< 入站：已经交给 TLS 的字节数，也就是下一个期望偏移
             std::map<std::uint64_t, std::vector<std::uint8_t>> laterCryptoFragments{}; ///< 入站：早到的乱序分片，按偏移存
@@ -191,29 +207,44 @@ namespace AsynGyanis::Net
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicEncryptionLevel level) noexcept;
         [[nodiscard]] static std::size_t spaceIndex(QuicEncryptionLevel level) noexcept;
         [[nodiscard]] static std::size_t spaceIndex(PacketNumberSpace space) noexcept;
+        [[nodiscard]] static QuicRecoverySpace recoverySpaceOf(PacketNumberSpace space) noexcept;
+        [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
         std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime);
-        void handleFrame(const QuicFrame &frame, PacketNumberSpace space);
-        void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes);
+        void handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
         void adoptTlsKeys();
         void adoptTlsRecords();
         void queueSpacePackets(PacketNumberSpace space, Timestamp now);
-        void queueConnectionClosePacket();
-        void beginClose(std::uint64_t errorCode, std::string_view reasonPhrase);
-        void emitPacket(PacketNumberSpace space, const std::string &frames);
-        void adoptPeerTransportParameters();
+        /**
+         * @brief 把这些包带过的握手字节区间并进本空间的重发队列
+         * @details 两个来源：判丢的包（已经从在途账里划掉，只能由调用方交进来）与探测超时时仍在途的包。
+         *          与队里剩下的区间合并，重叠的不重发两遍。
+         * @param space 哪个包号空间
+         * @param packets 要按偏移补发的包
+         */
+        void queueRetransmissions(PacketNumberSpace space, std::span<const QuicSentPacketInfo> packets);
+        void queueConnectionClosePacket(Timestamp now);
+        void beginClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
+        void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting,
+                        std::optional<QuicCryptoRange> cryptoRange);
+        void adoptPeerTransportParameters(Timestamp now);
         [[nodiscard]] static std::optional<QuicEncryptionLevel> levelOf(const QuicPacketHeader &header) noexcept;
         [[nodiscard]] static QuicEncryptionLevel levelOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] PacketNumberSpace highestSpaceWithWriteKeys() const noexcept;
 
         QuicConnectionCoreConfiguration m_configuration;             ///< 建连接时给的那些值，发包要反复用
         std::unique_ptr<QuicTlsContext> m_tls;                       ///< 每连接的 TLS 上下文
+        QuicRecovery m_recovery{};                                   ///< 发包记账、RTT、判丢与探测超时
         std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};  ///< 三个包号空间
         std::deque<std::vector<std::uint8_t>> m_outboundDatagrams{}; ///< 待发数据报队列
         QuicConnectionPhase m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
         std::optional<std::uint64_t> m_localCloseErrorCode{};        ///< 待发的 CONNECTION_CLOSE 错误码
         std::string m_localCloseReasonPhrase{};                      ///< 随错误码一起发出的原因文案
         bool m_hasSentHandshakeDone{false};                          ///< HANDSHAKE_DONE 一生只发一次（§19.20）
+        bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
+        std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
         std::optional<QuicTransportParameters> m_peerParameters{};   ///< 验过的对端参数
         std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{}; ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它
     };

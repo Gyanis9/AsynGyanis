@@ -73,6 +73,7 @@ namespace AsynGyanis::Net
     struct QuicRecoveryTimeoutAction
     {
         std::vector<QuicSentPacketInfo> lost{};         ///< 按时间阈值新判丢的包
+        QuicRecoverySpace lostSpace{QuicRecoverySpace::Initial}; ///< 这些丢包属于哪个空间
         bool isProbeTimeout{false};                     ///< 是否需要发探测包
         QuicRecoverySpace probeSpace{QuicRecoverySpace::Initial}; ///< 探测包该用哪个空间
     };
@@ -159,6 +160,14 @@ namespace AsynGyanis::Net
          * @return std::size_t 三个空间里尚未确认、且计入拥塞窗口的包之和
          */
         [[nodiscard]] std::size_t inFlightByteCount() const noexcept;
+
+        /**
+         * @brief 某空间里仍未被确认的包
+         * @details 重发时要靠这些记录的 `cryptoRange` 决定该重出哪几段握手字节：判丢与探测超时都走这条路
+         * @param space 包号空间
+         * @return std::vector<QuicSentPacketInfo> 按包号递增
+         */
+        [[nodiscard]] std::vector<QuicSentPacketInfo> unacknowledgedPackets(QuicRecoverySpace space) const;
 
     private:
         static constexpr std::size_t kSpaceCount = 3; ///< 包号空间个数

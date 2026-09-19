@@ -97,7 +97,9 @@ namespace AsynGyanis::Net
         }
         if (update.acknowledged.empty())
         {
-            // 没有新确认就没有任何可更新的东西（§5.1：重复的 ACK 不许再采一次样本）
+            // 重复的 ACK 不更新 RTT（§5.1），但判丢照做：§A.7 的 OnAckReceived 无条件走第 5 步，
+            // 否则「时间阈值已经到了、却又没有新包要确认」的局面只能等定时器，重发会晚一个粒度
+            update.lost = detectLostPackets(space, acknowledgementTime);
             return update;
         }
 
@@ -110,7 +112,7 @@ namespace AsynGyanis::Net
 
         update.lost = detectLostPackets(space, acknowledgementTime);
 
-        // 服务端认为对端的地址验证已完成（§A.8 的 PeerCompletedAddressValidation），任何新确认都归零退避
+        // §6.2.1：只有本帧真的确认到了新包，才把探测退避清零；退避的复位依据是「有进展」而不是「有帧到」
         m_probeBackoffExponent = 0;
         return update;
     }
@@ -278,6 +280,7 @@ namespace AsynGyanis::Net
                 return action;
             }
             action.lost = detectLostPackets(lossSpace, now);
+            action.lostSpace = lossSpace;
             return action;
         }
 
@@ -320,6 +323,18 @@ namespace AsynGyanis::Net
     std::size_t QuicRecovery::inFlightByteCount() const noexcept
     {
         return m_inFlightByteCount;
+    }
+
+    std::vector<QuicSentPacketInfo> QuicRecovery::unacknowledgedPackets(const QuicRecoverySpace space) const
+    {
+        const SpaceState &state = m_spaces[spaceIndex(space)];
+        std::vector<QuicSentPacketInfo> packets;
+        packets.reserve(state.unacknowledged.size());
+        for (const auto &[packetNumber, packet] : state.unacknowledged)
+        {
+            packets.push_back(packet);
+        }
+        return packets;
     }
 
     QuicRoundTripTimeEstimate QuicRecovery::roundTripTimeEstimate() const noexcept
