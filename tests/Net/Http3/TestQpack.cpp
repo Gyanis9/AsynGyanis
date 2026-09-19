@@ -619,9 +619,10 @@ namespace AsynGyanis::Net
         const std::optional<std::uint64_t> secondIndex = table.insert(QpackHeaderField{"b", ""});
         ASSERT_TRUE(secondIndex.has_value());
         EXPECT_EQ(*secondIndex, 1U);
-        EXPECT_EQ(table.sizeByteCount(), 66U) << "两项各 33 字节";
+        // 64 字节的表装不下两项 33 字节，插入前必须先从表尾淘汰（§3.2.2），故此刻只剩刚插入的这一项
+        EXPECT_EQ(table.sizeByteCount(), 33U) << "第二项把首项挤掉了，表里只有一项";
 
-        // 第三项挤不掉两项里的一项时（放不进容量），先淘汰表尾
+        // 第三项同样放不下：先淘汰表尾那一项再插入（§3.2.2 的顺序）
         const std::optional<std::uint64_t> thirdIndex = table.insert(QpackHeaderField{"c", ""});
         ASSERT_TRUE(thirdIndex.has_value());
         EXPECT_EQ(*thirdIndex, 2U);
@@ -643,7 +644,7 @@ namespace AsynGyanis::Net
         const std::optional<std::uint64_t> tooLarge = table.insert(QpackHeaderField{std::string(40, 'x'), ""});
         EXPECT_FALSE(tooLarge.has_value());
         EXPECT_EQ(table.entryCount(), 1U) << "失败的插入不得动过表内容";
-        EXPECT_EQ(table.sizeByteCount(), 41U + 23U);
+        EXPECT_EQ(table.sizeByteCount(), 33U) << "表大小仍是那唯一一项的 1 + 0 + 32（§3.2.1）";
     }
 
     /**
@@ -675,7 +676,8 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DynamicTableRespectsEvictionPredicate)
     {
-        QpackDynamicTable table(64);
+        // 96 字节恰好放得下两项 33 字节而放不下第三项：第三项必须靠淘汰表尾才能插入（§3.2.2）
+        QpackDynamicTable table(96);
         ASSERT_TRUE(table.insert(QpackHeaderField{"a", ""}).has_value());
         ASSERT_TRUE(table.insert(QpackHeaderField{"b", ""}).has_value());
 
@@ -695,14 +697,14 @@ namespace AsynGyanis::Net
         std::vector<std::uint64_t> unblockedStreamIds;
         std::string controlBytes;
 
-        // 十个空名空值的插入：每项 32 字节，容量 100 → 表里只留最近 3 项（绝对索引 7/8/9）
-        std::string tenInserts;
-        for (int insertCount = 0; insertCount < 10; ++insertCount)
-        {
-            tenInserts += "40 00";
-        }
-        const std::vector<std::uint8_t> instructions = hexToBytes(tenInserts);
-        ASSERT_TRUE(decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes).has_value());
+        // 十次插入，名依次是 0..9（每项 1 + 0 + 32 = 33 字节），容量 100 → 表里只留最近三项（绝对索引
+        // 7/8/9）。名字取成可辨的字符，才能从解出的项反推还原出的 Required Insert Count。动态表初始容量
+        // 为 0，插入前必须先来一条 Set Dynamic Table Capacity=100（§3.2.2、§4.3.1）
+        const std::vector<std::uint8_t> instructions = hexToBytes("3f45"
+                                                                 "413000 413100 413200 413300 413400"
+                                                                 "413500 413600 413700 413800 413900");
+        const auto fed = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
+        ASSERT_TRUE(fed.has_value()) << fed.error().message;
         EXPECT_EQ(decoder.insertCount(), 10U);
         EXPECT_EQ(decoder.dynamicTableEntries().size(), 3U);
 
@@ -715,13 +717,13 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(result.has_value()) << result.error().message << "：Base=9、相对索引 0 → 绝对索引 8，且 8 < 9";
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded);
         EXPECT_EQ(fields.size(), 1U);
-        EXPECT_TRUE(fields[0].name.empty()) << "引用的就是那批空名空值项";
+        EXPECT_EQ(fields[0].name, "8") << "还原值只可能是 9：换成 10 就会指到绝对索引 9 那一项";
 
         // 同一取值在只收到 3 次插入的本端要还原成 3（离当前插入数最近的那一圈）
         QpackDecoder shallowDecoder(makeDecoderSettings(100, 100));
         std::vector<std::uint64_t> shallowUnblocked;
         std::string shallowControl;
-        const std::vector<std::uint8_t> threeInserts = hexToBytes("40 00 40 00 40 00");
+        const std::vector<std::uint8_t> threeInserts = hexToBytes("3f45 413000 413100 413200");
         ASSERT_TRUE(shallowDecoder.feedEncoderStream(asSpan(threeInserts), shallowUnblocked, shallowControl).has_value());
         const std::vector<std::uint8_t> shallowSection = hexToBytes("0400"
                                                                    "80");
@@ -729,6 +731,7 @@ namespace AsynGyanis::Net
         const auto shallowResult = shallowDecoder.decodeFieldSection(0, asSpan(shallowSection), shallowFields, shallowControl);
         ASSERT_TRUE(shallowResult.has_value()) << shallowResult.error().message << "：RIC=3 时 Base=3，绝对索引 2 仍在表里";
         EXPECT_EQ(shallowFields.size(), 1U);
+        EXPECT_EQ(shallowFields[0].name, "2") << "还原成 3 才落在绝对索引 2 上，还原成 9 会因超出本端插入数而挂起";
     }
 
     /**
@@ -771,9 +774,11 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decoder.blockedStreamCount(), 1U);
         EXPECT_TRUE(decoder.hasBlockedStreams());
 
-        const std::vector<std::uint8_t> insert = hexToBytes("41610162");
+        // 动态表初始容量为 0，插入得先由 Set Dynamic Table Capacity=4096 打开（§3.2.2、§4.3.1）
+        const std::vector<std::uint8_t> encoderStream = hexToBytes("3fe11f"
+                                                                   "41610162");
         controlBytes.clear();
-        const auto consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
+        const auto consumed = decoder.feedEncoderStream(asSpan(encoderStream), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
         ASSERT_EQ(unblockedStreamIds.size(), 1U);
         EXPECT_EQ(unblockedStreamIds[0], 0U) << "表补齐后要报出可续解的流";
@@ -898,7 +903,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住 §4.4.1 的确认语义：Ack 只认最早一段、无据 Ack 判错、取消释放全部引用
+     * @brief 钉住 §4.4.1 的确认语义：Ack 只认最早一段、无据 Ack 判错、取消释放全部引用、增量推进已知计数
      */
     TEST(Qpack, EncoderTracksSectionAcknowledgementsAndCancellations)
     {
@@ -907,15 +912,17 @@ namespace AsynGyanis::Net
         std::string encoderStreamBytes;
         const std::vector<QpackHeaderField> authority = makeFieldList({{":authority", "www.example.com"}});
         const std::vector<QpackHeaderField> path = makeFieldList({{":path", "/sample/path"}});
+        const std::vector<QpackHeaderField> customKey = makeFieldList({{"custom-key", "custom-value"}});
 
-        // 同一条流上两段头块：Required Insert Count 依次是 1 与 2，只占一个阻塞名额
+        // 流 4 上两段头块各自插入一项，Required Insert Count 依次是 1 与 2，只占一个阻塞名额；流 8 那段
+        // 引用自己新插入的项（Required Insert Count=3），才会在流 4 全部确认后仍然占着名额（§2.1.2）
         ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), headerBlock, encoderStreamBytes)
                         .has_value());
         ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(path), headerBlock, encoderStreamBytes)
                         .has_value());
-        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(authority), headerBlock, encoderStreamBytes)
+        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(customKey), headerBlock, encoderStreamBytes)
                         .has_value());
-        EXPECT_EQ(encoder.insertCount(), 2U) << "流 8 复用已插入的项，不再产生新表项";
+        EXPECT_EQ(encoder.insertCount(), 3U) << "三段各自插入一项（§2.1.1 允许插入任意字段行）";
         EXPECT_EQ(encoder.blockedStreamCount(), 2U);
 
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("84"))).has_value());
@@ -926,22 +933,27 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 2U);
         EXPECT_EQ(encoder.blockedStreamCount(), 1U) << "流 4 两段都确认后只剩流 8";
 
-        const auto unknownStream = encoder.feedDecoderStream(asSpan(hexToBytes("90")));
-        ASSERT_FALSE(unknownStream.has_value()) << "流 16 上什么都没发过";
-        EXPECT_EQ(unknownStream.error().kind, QpackErrorKind::DecoderStreamError) << unknownStream.error().message;
-
         // 放弃流 8：发 Stream Cancellation 并放掉它占的名额，但已知计数不前进
         encoder.noteStreamAbandoned(8, encoderStreamBytes);
         EXPECT_EQ(toHex(encoderStreamBytes), "48");
-        EXPECT_EQ(encoder.blockedStreamCount(), 0U);
+        EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "取消把流 8 的阻塞名额还回来";
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 2U) << "取消不意味着对端收到了任何插入（§2.2.2.2）";
+
+        // Insert Count Increment 把已知计数推到本端已发出的插入数（§4.4.3）
+        ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("01"))).has_value());
+        EXPECT_EQ(encoder.knownReceivedInsertCount(), 3U);
+
+        // 被取消的流再发 Ack 即对端记账错乱（§4.4.1）
         const auto ackAfterCancel = encoder.feedDecoderStream(asSpan(hexToBytes("88")));
         ASSERT_FALSE(ackAfterCancel.has_value()) << "被取消的流再发 Ack 即对端记账错乱";
         EXPECT_EQ(ackAfterCancel.error().kind, QpackErrorKind::DecoderStreamError) << ackAfterCancel.error().message;
 
-        // Insert Count Increment 把已知计数推到本端已发的插入数
-        ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("01"))).has_value());
-        EXPECT_EQ(encoder.knownReceivedInsertCount(), 3U);
+        // 什么都没发过的流同样不该有 Ack。上一条非法指令会留在内部缓冲里让本层不再可信（§6：连接作废），
+        // 故另起一个实例，保证这里判的是「流 16 无据」而不是上一条的余波
+        QpackEncoder untouched(220, 100, 220);
+        const auto unknownStream = untouched.feedDecoderStream(asSpan(hexToBytes("90")));
+        ASSERT_FALSE(unknownStream.has_value()) << "流 16 上什么都没发过";
+        EXPECT_EQ(unknownStream.error().kind, QpackErrorKind::DecoderStreamError) << unknownStream.error().message;
     }
 
     /**
@@ -1000,7 +1012,7 @@ namespace AsynGyanis::Net
     // ============================================================================
 
     /**
-     * @brief 钉住解码器吃编码器流时的分片：一条指令拆成单字节喂入，状态不丢、消费计数可加
+     * @brief 钉住解码器吃编码器流时的分片：一条指令拆成单字节喂入，状态不丢、计数只算本趟吃掉的字节
      */
     TEST(Qpack, DecoderFeedsEncoderStreamOneByteAtATime)
     {
@@ -1020,10 +1032,12 @@ namespace AsynGyanis::Net
             totalConsumed += *consumed;
             EXPECT_TRUE(unblockedStreamIds.empty());
         }
-        EXPECT_EQ(totalConsumed, instructions.size()) << "每个字节都要在某一趟里被记为已消费";
+        // 计数口径是「本趟真正吃掉的输入字节」：凑不齐的指令整条留在内部缓冲里等下趟（§4.2 的编码器流是
+        // 无框架字节流），补齐那一趟只按本趟喂入的 1 字节记账，故三条指令各贡献 1，合计 3
+        EXPECT_EQ(totalConsumed, 3U) << "每条指令只在补齐的那一趟被记为消费了本趟那一个字节";
         EXPECT_EQ(decoder.insertCount(), 2U);
         EXPECT_EQ(decoder.tableCapacityByteCount(), 220U);
-        EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 106U);
+        EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 106U) << "逐字节喂入解出的表必须与整段喂入完全一致";
     }
 
     /**
@@ -1227,7 +1241,9 @@ namespace AsynGyanis::Net
         std::vector<std::uint64_t> unblockedStreamIds;
         std::string controlBytes;
 
-        const std::vector<std::uint8_t> encoderStream = hexToBytes("c18860d5485f2bce9a68ff208825b650c3cb8170"
+        // ls-qpack 的编码器流以容量指令开头：动态表初始容量为 0，没有它就谈不上插入（§3.2.2）
+        const std::vector<std::uint8_t> encoderStream = hexToBytes("3fe11f"
+                                                                  "c18860d5485f2bce9a68ff208825b650c3cb8170"
                                                                   "7fc5861c01fb523805");
         ASSERT_TRUE(decoder.feedEncoderStream(asSpan(encoderStream), unblockedStreamIds, controlBytes).has_value());
         EXPECT_EQ(decoder.insertCount(), 3U) << "三条插入：:path、user-agent、cookie";

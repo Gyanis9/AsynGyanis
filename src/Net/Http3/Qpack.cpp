@@ -150,7 +150,8 @@ namespace AsynGyanis::Net
          * @brief 解一个「N 位前缀字符串字面量」（RFC 9204 §4.1.2）
          * @details N 位前缀意味着首字节高 (8-N) 位属于前一个字段，随后 1 位 H 位与 (N-1) 位长度前缀；
          *          N=8 即退化为 RFC 7541 §5.2 的字节对齐写法。H 位为 1 时按 RFC 7541 附录 B 的码表解压
-         *          （RFC 9204 §4.1.2 明确复用该表），故解码侧必须支持 Huffman。
+         *          （RFC 9204 §4.1.2 明确复用该表），故解码侧必须支持 Huffman。长度已到手、本体还没到齐算
+         *          Incomplete：编码器流是无框架的字节流（§4.2），只有越界的长度才判错（§7.4）。
          * @param bytes 从该字面量首字节开始的剩余数据
          * @param prefixBitCount 该字面量的前缀位数 N，取值 2..8
          * @param errorKind 该字面量所在通道对应的失败类别
@@ -193,10 +194,8 @@ namespace AsynGyanis::Net
             const std::size_t literalByteCount = static_cast<std::size_t>(declaredLength);
             if (bytes.size() - headerByteCount < literalByteCount)
             {
-                *error = makeQpackError(errorKind, "第 " + std::to_string(lineIndex) + " 个字段行的" + std::string(what) +
-                                                        "声明 " + std::to_string(literalByteCount) + " 字节，实际只剩 " +
-                                                        std::to_string(bytes.size() - headerByteCount) + " 字节（RFC 9204 §4.1.2）");
-                return QpackParseStatus::Invalid;
+                // 长度已到手但本体还没到齐：等后续字节，别把普通的分片送达当成非法指令（§4.2、§7.4）
+                return QpackParseStatus::Incomplete;
             }
 
             const std::string_view literalBytes = bytes.substr(headerByteCount, literalByteCount);
@@ -674,7 +673,7 @@ namespace AsynGyanis::Net
                                                        " 字节，无法编码（RFC 9204 §3.2.3）"));
         }
 
-        std::string localHeaderBlock;
+        std::string fieldLineBytes;
         std::string localEncoderStream;
         if (m_hasPendingCapacityInstruction)
         {
@@ -702,7 +701,7 @@ namespace AsynGyanis::Net
             if (staticFullIndex != kQpackStaticTableNoIndex)
             {
                 // 静态表整项命中最省字节且不引入任何动态状态，故优先级最高（附录 C 的第一步）
-                appendPrefixedInteger(localHeaderBlock, staticFullIndex, 6, kIndexedStaticPatternBits);
+                appendPrefixedInteger(fieldLineBytes, staticFullIndex, 6, kIndexedStaticPatternBits);
                 continue;
             }
 
@@ -733,11 +732,11 @@ namespace AsynGyanis::Net
                     // 绝对索引小于 Base 的用相对索引，等于或大于 Base 的用表后索引（§3.2.5、§3.2.6）
                     if (matchedAbsoluteIndex < baseValue)
                     {
-                        appendPrefixedInteger(localHeaderBlock, baseValue - 1 - matchedAbsoluteIndex, 6, kIndexedPatternBits);
+                        appendPrefixedInteger(fieldLineBytes, baseValue - 1 - matchedAbsoluteIndex, 6, kIndexedPatternBits);
                     }
                     else
                     {
-                        appendPrefixedInteger(localHeaderBlock, matchedAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
+                        appendPrefixedInteger(fieldLineBytes, matchedAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
                     }
                     referencedAbsoluteIndices.push_back(matchedAbsoluteIndex);
                     requiredInsertCount = std::max(requiredInsertCount, matchedAbsoluteIndex + 1);
@@ -780,11 +779,11 @@ namespace AsynGyanis::Net
                     const std::uint64_t newAbsoluteIndex = *insertedAbsoluteIndex;
                     if (newAbsoluteIndex < baseValue)
                     {
-                        appendPrefixedInteger(localHeaderBlock, baseValue - 1 - newAbsoluteIndex, 6, kIndexedPatternBits);
+                        appendPrefixedInteger(fieldLineBytes, baseValue - 1 - newAbsoluteIndex, 6, kIndexedPatternBits);
                     }
                     else
                     {
-                        appendPrefixedInteger(localHeaderBlock, newAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
+                        appendPrefixedInteger(fieldLineBytes, newAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
                     }
                     referencedAbsoluteIndices.push_back(newAbsoluteIndex);
                     requiredInsertCount = std::max(requiredInsertCount, newAbsoluteIndex + 1);
@@ -798,8 +797,8 @@ namespace AsynGyanis::Net
                 staticNameIndex == kQpackStaticTableNoIndex ? m_dynamicTable.findNameEntry(fieldLine.name) : kQpackNoAbsoluteIndex;
             if (staticNameIndex != kQpackStaticTableNoIndex)
             {
-                appendPrefixedInteger(localHeaderBlock, staticNameIndex, 4, kLiteralStaticNamePatternBits);
-                appendHpackString(localHeaderBlock, fieldLine.value);
+                appendPrefixedInteger(fieldLineBytes, staticNameIndex, 4, kLiteralStaticNamePatternBits);
+                appendHpackString(fieldLineBytes, fieldLine.value);
                 continue;
             }
             if (dynamicNameIndex != kQpackNoAbsoluteIndex &&
@@ -807,29 +806,31 @@ namespace AsynGyanis::Net
             {
                 if (dynamicNameIndex < baseValue)
                 {
-                    appendPrefixedInteger(localHeaderBlock, baseValue - 1 - dynamicNameIndex, 4, kLiteralNameReferencePatternBits);
+                    appendPrefixedInteger(fieldLineBytes, baseValue - 1 - dynamicNameIndex, 4, kLiteralNameReferencePatternBits);
                 }
                 else
                 {
-                    appendPrefixedInteger(localHeaderBlock, dynamicNameIndex - baseValue, 3, kPostBaseNameReferencePatternBits);
+                    appendPrefixedInteger(fieldLineBytes, dynamicNameIndex - baseValue, 3, kPostBaseNameReferencePatternBits);
                 }
-                appendHpackString(localHeaderBlock, fieldLine.value);
+                appendHpackString(fieldLineBytes, fieldLine.value);
                 referencedAbsoluteIndices.push_back(dynamicNameIndex);
                 requiredInsertCount = std::max(requiredInsertCount, dynamicNameIndex + 1);
                 continue;
             }
 
             // 4 位前缀字符串字面量：首字节高 3 位是 '001'、N 位 0、H 位在 bit3、长度前缀 3 位
-            localHeaderBlock.append(encodeHpackInteger(fieldLine.name.size(), 3, kLiteralNamePatternBits));
-            localHeaderBlock.append(fieldLine.name);
-            appendHpackString(localHeaderBlock, fieldLine.value);
+            fieldLineBytes.append(encodeHpackInteger(fieldLine.name.size(), 3, kLiteralNamePatternBits));
+            fieldLineBytes.append(fieldLine.name);
+            appendHpackString(fieldLineBytes, fieldLine.value);
         }
 
-        // §4.5.1.1：Required Insert Count 按 2×MaxEntries 取模再加一编码，MaxEntries 取自对端公布的容量上限
+        // §4.5.1 的前缀占头块的最前两字节，必须排在所有字段行表示之前；它的取值要等整段编完才定得下来，
+        // 故先单独攒在 prefixBytes 里，最后与字段行拼成一整段
+        std::string prefixBytes;
         if (requiredInsertCount == 0)
         {
-            appendPrefixedInteger(localHeaderBlock, 0, 8, 0x00);
-            appendPrefixedInteger(localHeaderBlock, 0, 7, 0x00);
+            appendPrefixedInteger(prefixBytes, 0, 8, 0x00);
+            appendPrefixedInteger(prefixBytes, 0, 7, 0x00);
         }
         else
         {
@@ -842,16 +843,17 @@ namespace AsynGyanis::Net
                                                           " 字节容不下一项，却产生了 Required Insert Count " +
                                                           std::to_string(requiredInsertCount) + "（RFC 9204 §4.5.1.1）"));
             }
+            // §4.5.1.1：Required Insert Count 按 2×MaxEntries 取模再加一编码，MaxEntries 取自对端公布的容量上限
             const std::uint64_t fullRange = 2 * maximumEntryCount;
-            appendPrefixedInteger(localHeaderBlock, (requiredInsertCount % fullRange) + 1, 8, 0x00);
+            appendPrefixedInteger(prefixBytes, (requiredInsertCount % fullRange) + 1, 8, 0x00);
             if (baseValue >= requiredInsertCount)
             {
-                appendPrefixedInteger(localHeaderBlock, baseValue - requiredInsertCount, 7, 0x00);
+                appendPrefixedInteger(prefixBytes, baseValue - requiredInsertCount, 7, 0x00);
             }
             else
             {
                 // 符号位为 1 表示段内插过项：Base = Required Insert Count - Delta Base - 1（§4.5.1.2）
-                appendPrefixedInteger(localHeaderBlock, requiredInsertCount - baseValue - 1, 7, kSignBitMask);
+                appendPrefixedInteger(prefixBytes, requiredInsertCount - baseValue - 1, 7, kSignBitMask);
             }
         }
 
@@ -872,7 +874,9 @@ namespace AsynGyanis::Net
             ++m_blockingSectionCountByStreamId[streamId];
         }
 
-        headerBlock = std::move(localHeaderBlock);
+        headerBlock.reserve(prefixBytes.size() + fieldLineBytes.size());
+        headerBlock.append(prefixBytes);
+        headerBlock.append(fieldLineBytes);
         encoderStreamBytes = std::move(localEncoderStream);
         return {};
     }
