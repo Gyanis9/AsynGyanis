@@ -1,6 +1,6 @@
 /**
  * @file Http3Session.h
- * @brief 一条 QUIC 连接上的 HTTP/3 会话：绑定控制流与 QPACK 流，把 h3 请求映射到既有 HTTP 层
+ * @brief 一条 QUIC 连接上的 HTTP/3 会话：接上自研的 HTTP/3 连接层，把 h3 请求映射到既有 HTTP 层
  * @author Gyanis
  * @date 2026-09-15
  * @version 1.0.0
@@ -17,6 +17,7 @@
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpStreamBody.h"
+#include "Net/Http3/Http3Error.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include <coroutine>
@@ -30,28 +31,25 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
-
-/// nghttp3 的连接对象只以指针形式出现在本文件里，实现细节留在 .cpp——这样 Net 可以私有链接
-/// nghttp3（消费方不必被迫去 find_package 它，导出包也少一处 find_dependency）
-struct nghttp3_conn;
 
 namespace AsynGyanis::Net
 {
     class Router;
+    class Http3Connection;
 
     /**
      * @brief 一条 QUIC 连接上的 HTTP/3 会话
      *
      * @details 与 HTTP/2 侧 `Http2Session` 的位置对应：都是「一条连接上的多路复用」，区别只是多路的
-     *          载体从 TCP 帧换成了 QUIC 流。h3 这一层里，帧的组装与拆分、QPACK 的编解码都交给
-     *          nghttp3，本类负责把流数据在 nghttp3 与传输层之间搬，并把收全的请求交给既有
-     *          `Router`——业务处理器与 h1/h2 完全同一份，不需要为 h3 另写一套。
+     *          载体从 TCP 帧换成了 QUIC 流。h3 这一层里，帧的组装与拆分、QPACK 的编解码都由本仓库的
+     *          `Http3Connection` 负责，本类把它的通知接成业务：把收全的请求交给既有 `Router`——
+     *          业务处理器与 h1/h2 完全同一份，不需要为 h3 另写一套。
      *
-     * @note 控制流与 QPACK 编解码流都是**本端发起的单向流**，必须在会话建立时就开出来交给 nghttp3
-     *       绑定：少了它们 nghttp3 连 SETTINGS 都发不出去（RFC 9114 §6.2.1）。流号由传输层给
-     *       （`StreamOpener`），本类不碰 ngtcp2。
+     * @note 控制流与 QPACK 编解码流都是**本端发起的单向流**：连接层在构造时就开出这三条流、发掉
+     *       SETTINGS 并接上 QPACK 两侧（RFC 9114 §6.2.1），流号由传输层给（`StreamOpener`），本类不碰。
      * @warning 线程契约与连接一致：本对象只在其所属事件循环线程上使用。
      */
     class Http3Session
@@ -66,29 +64,17 @@ namespace AsynGyanis::Net
         /// 把已消费的字节归还给 QUIC 的接收窗口（参数：流号、本次可再收的字节数）
         using StreamCrediter = std::function<void(std::int64_t streamId, std::size_t consumedByteCount)>;
 
-        /// 一条待发响应的正文：nghttp3 只借走指针（丢包重传时还会再用一次），因此字节要活到流关闭
-        struct OutgoingBody
-        {
-            std::string bytes;         ///< 正文
-            std::size_t offset{0};     ///< 已经交给 nghttp3 的字节数
-        };
-
         /**
          * @brief 一条正在流式写出响应的流（startChunkedResponse + writeChunk 那条路）
-         * @note 公开嵌套类型：.cpp 里的正文读取回调要靠它把 stream_user_data 还原回来
+         * @note 正文是一段一段推给连接层的，本结构只记「响应头上线没有、写完没有、流还在不在」；
+         *       还挂在连接层里没交出去的字节由 `Http3Connection::pendingOutputByteCount` 给出
          */
         struct StreamingResponse
         {
-            /// 尚未交付完的正文分片。**一片一块内存**：nghttp3 会把没写完的 vec 留到下一次写再取，
-            /// 用一整块会重新分配的缓冲会让交出去的指针失效（实测：第二次追加后首片内容整体被搬走，
-            /// 线上发出去的是新缓冲的簿记字节）
-            std::deque<std::string> chunks;
-            std::size_t             headOffset{0};        ///< 头一片里已经交给 nghttp3 的字节数
-            std::size_t             pendingByteCount{0};  ///< 还挂在手上（未交付完）的字节总数
-            bool                    isHeadSent{false};    ///< 响应头是否已提交
-            bool                    isFinished{false};    ///< 处理器已写完（正文到此为止）
-            bool                    isStreamClosed{false}; ///< 承载侧的流已关闭：生产者据此收手，不再等下一位唤醒
-            std::coroutine_handle<> spaceWaiter{};        ///< 生产者等缓冲排空时挂在这里
+            bool                    isHeadSent{false};     ///< 响应头是否已提交
+            bool                    isFinished{false};     ///< 处理器已写完（正文到此为止，收尾字节已交出）
+            bool                    isStreamClosed{false}; ///< 承载侧的流已关闭：生产者据此收手，不再等下一次唤醒
+            std::coroutine_handle<> spaceWaiter{};         ///< 生产者等缓冲排空时挂在这里
         };
 
         /**
@@ -97,8 +83,9 @@ namespace AsynGyanis::Net
          * @param writer 流数据出口
          * @param crediter 接收窗口的归还口（可空：为空时不归还，正文一大就会把接收窗口用光）
          * @param metrics 统计采集端；传空指针表示本会话不采集统计
-         * @note 构造里就把控制流与两条 QPACK 流绑上。开流失败只记日志并让会话保持不可用
-         *       （`isUsable()` 为假），不抛异常：一条连接建不起 h3 不该把服务端拖垮
+         * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
+         *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
+         *       一条连接建不起 h3 不该把服务端拖垮
          * @note 采集口径与 h1/h2 对齐：请求数与 413/协议性拒绝计入，响应按状态码类计数，
          *       被对端 RESET_STREAM 取消的流计入「单流取消」。**耗时直方图不参与**——
          *       h3 各流由传输层驱动，会话没有「收到完整请求」那一刻的戳，宁可不记也不用 0 秒糊弄
@@ -128,14 +115,14 @@ namespace AsynGyanis::Net
         void setParserLimits(HttpParserLimits limits) noexcept;
 
         /**
-         * @brief 会话是否可用（控制流与 QPACK 流都绑上了）
+         * @brief 会话是否可用（三条本端单向流都开出来了）
          * @return true 可用
          */
         [[nodiscard]] bool isUsable() const noexcept;
 
         /**
          * @brief 会话是否已作废
-         * @return true 已作废（nghttp3 判定协议错误），此后唯一合法的动作是销毁
+         * @return true 已作废（HTTP/3 连接层判定协议错误），此后唯一合法的动作是销毁
          */
         [[nodiscard]] bool isBroken() const noexcept;
 
@@ -144,6 +131,7 @@ namespace AsynGyanis::Net
          * @param streamId 流号
          * @param data 本段字节
          * @param isEndStream 对端在这段之后收尾
+         * @note 除 DATA 载荷之外的接收额度由连接层就地归还；DATA 载荷的额度归本会话按流式与否决定
          */
         void onStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
 
@@ -154,14 +142,14 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 跑完排队中的请求（含路由与业务处理器）并把响应与攒下的字节发出去
-         * @details 路由与业务处理器是协程（可能去等磁盘、等上游），而 nghttp3 的回调是同步的，
+         * @details 路由与业务处理器是协程（可能去等磁盘、等上游），而连接层的通知是同步的，
          *          因此「收全请求」与「派发业务」拆成两步：同步回调只入队，本协程再逐个 co_await。
          *          传输层每处理完一条报文调一次即可。
          * @return Core::Task<> 派发与发送完成
          */
         [[nodiscard]] Core::Task<> pump();
 
-        // ---- 以下几项由 .cpp 里的 nghttp3 回调转交（只收平类型，nghttp3 的结构不外泄）----
+        // ---- 以下几项由 .cpp 里接连接层回调的转交（只收平类型，连接层的结构不外泄）----
 
         /**
          * @brief 记下一个请求头
@@ -201,29 +189,23 @@ namespace AsynGyanis::Net
         /**
          * @brief 承载层通知：对端取消了一条流（RESET_STREAM 或 STOP_SENDING）
          *
-         * @details nghttp3 自己看不到 QUIC 层的重置信号，只有被明确告知才会释放该流的状态；少了这一路，
+         * @details HTTP/3 连接层自己看不到 QUIC 层的重置信号，只有被明确告知才会释放该流的状态；少了这一路，
          *          「对端取消一条已发正文的 POST」会让请求缓冲、流式等待者与隧道记录永久驻留
-         *          （ngtcp2 归还的 MAX_STREAMS 额度还允许对端反复重来）。
+         *          （传输层归还的 MAX_STREAMS 额度还允许对端反复重来）。
          * @param streamId 被对端取消的流
-         * @note 本函数只记下流号：它由 ngtcp2 的流回调调用，而回调期间动库、唤醒业务协程都属
-         *       「回调期间重入库」；真正的回收在下一个安全点 pump() 里做（见 drainPeerCancelledStreams）
+         * @note 本函数只记下流号：它由传输层的流回调调用，而回调期间动连接层、唤醒业务协程都属
+         *       「回调期间重入」；真正的回收在下一个安全点 pump() 里做（见 drainPeerCancelledStreams）
          */
         void cancelStreamByPeer(std::int64_t streamId);
 
         /**
          * @brief 头收齐时判一下：命中流式正文路由就提前派发（正文边收边交，不等整份收齐）
          * @param streamId 流号
-         * @note 由 .cpp 里的 end_headers 回调转交：那时方法/路径已可判，正文还在路上
+         * @note 由 .cpp 里「头块收齐」的通知转交：那时方法/路径已可判，正文还在路上
          */
         void beginStreamingRequestIfMatched(std::int64_t streamId);
 
     private:
-        /// 一次 flush 最多搬多少段：防止待发字节很多时在一条连接上转太久
-        static constexpr std::size_t kMaximumWritesPerFlush = 64;
-
-        /// 一次取待发数据最多用多少个分片描述
-        static constexpr std::size_t kMaximumDataVectors = 16;
-
         /// HTTP/3 请求在 HttpRequest 里记下的版本号（业务读 httpVersion() 时与 h1/h2 同口径）
         static constexpr const char *kHttp3RequestVersion = "HTTP/3";
 
@@ -276,7 +258,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 等某条流的下一次正文到达（或收尾、断开）
          * @details h3 的正文由承载推来，泵没有「主动去读一批」这种动作可做，只能挂起等；到达时
-         *          只置标记，回到不进 nghttp3 回调的位置再由 wakeStreamingRequests() 唤醒
+         *          只置标记，回到连接层回调之外的位置再由 wakeStreamingRequests() 唤醒
          */
         class BodyWaitAwaiter
         {
@@ -323,35 +305,43 @@ namespace AsynGyanis::Net
         /**
          * @brief 记下「这条流有新进展」，等回到安全点再唤醒
          * @param streamId 流号
-         * @note 不在 nghttp3 的回调里直接唤醒：处理器会调用 nghttp3 提交响应，回调期间重入库是未定义行为
+         * @note 不在连接层的回调里直接唤醒：处理器会回头提交响应，而回调期间重入连接层是未定义行为
          */
         void noteBodyProgress(std::int64_t streamId) noexcept;
 
         /**
-         * @brief 在不进 nghttp3 回调的位置唤醒各条流：起还没起过的派发协程，或叫醒等正文的那个
+         * @brief 在连接层回调之外的位置唤醒各条流：起还没起过的派发协程，或叫醒等正文的那个
          */
         void wakeStreamingRequests();
 
         /**
-         * @brief 处理承载层攒下的「对端取消」：把那些流从 nghttp3 与会话两侧一并回收
+         * @brief 处理承载层攒下的「对端取消」：把那些流从连接层与会话两侧一并回收
          * @note 只能在安全点（pump() 里）调用：回收会唤醒业务协程，而它们随时可能回写响应
          */
         void drainPeerCancelledStreams();
 
         /**
          * @brief 唤醒被 dropRequest 记下的流式生产者
-         * @note 同属安全点动作：被唤醒的业务会接着写响应（那要动 nghttp3）
+         * @note 同属安全点动作：被唤醒的业务会接着写响应（那要动连接层）
          */
         void resumeDeferredWaiters();
 
         /**
          * @brief 收口被记下的隧道（对端 END_STREAM 或重置）
-         * @note 同属安全点动作：closeTunnel() 会动 nghttp3
+         * @note 同属安全点动作：closeTunnel() 要动连接层
          */
         void closeDeferredTunnels();
 
         /// 流式响应的缓冲上界：超过就让生产者挂起，等网络排空再继续（不无限堆内存）
         static constexpr std::size_t kStreamingResponseBufferByteCount = 256U * 1024U;
+
+        /**
+         * @brief 一条流的响应里还有多少字节没交给传输层
+         * @param streamId 流号
+         * @return std::size_t 连接层该流的待发字节数；连接层已作废时为 0
+         * @note 闸门口径按「交给传输层即视为排空」算：本端不等对端的确认，重传由传输层负责
+         */
+        [[nodiscard]] std::size_t streamingResponsePendingByteCount(std::int64_t streamId) const noexcept;
 
         /**
          * @brief 等流式响应的缓冲排空到上界以内
@@ -361,11 +351,14 @@ namespace AsynGyanis::Net
         public:
             /**
              * @brief 绑定要等的流
+             * @param session 所属会话（问连接层要该流还剩多少待发字节）
+             * @param streamId 流号
              * @param streamingResponse 目标流的状态（共享所有权：流被 dropRequest 摘掉后
              *        生产者手里的这份仍然有效，醒来时能看到 isStreamClosed 而不是踩空）
              */
-            explicit ResponseSpaceAwaiter(std::shared_ptr<StreamingResponse> streamingResponse) noexcept :
-                m_streamingResponse(std::move(streamingResponse))
+            explicit ResponseSpaceAwaiter(Http3Session &session, const std::int64_t streamId,
+                                          std::shared_ptr<StreamingResponse> streamingResponse) noexcept :
+                m_session(&session), m_streamId(streamId), m_streamingResponse(std::move(streamingResponse))
             {
             }
 
@@ -373,7 +366,7 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool await_ready() const noexcept
             {
                 return m_streamingResponse == nullptr || m_streamingResponse->isStreamClosed ||
-                       m_streamingResponse->pendingByteCount <= kStreamingResponseBufferByteCount;
+                       m_session->streamingResponsePendingByteCount(m_streamId) <= kStreamingResponseBufferByteCount;
             }
 
             /// 记下等待者（本流的响应只有一个生产者）
@@ -385,7 +378,9 @@ namespace AsynGyanis::Net
             static void await_resume() noexcept {}
 
         private:
-            std::shared_ptr<StreamingResponse> m_streamingResponse; ///< 目标流的状态（与 map 共享所有权）
+            Http3Session *m_session{nullptr};                        ///< 所属会话（问它要该流的待发字节数）
+            std::int64_t m_streamId{0};                              ///< 目标流号
+            std::shared_ptr<StreamingResponse> m_streamingResponse;  ///< 目标流的状态（与 map 共享所有权）
         };
 
         /**
@@ -420,6 +415,7 @@ namespace AsynGyanis::Net
          * @param state 该流的状态
          * @param response 业务填好的响应（取状态码与头部）
          * @return true 提交成功
+         * @note 只交头、**不结束这条流**：正文随后一段一段推给连接层
          */
         bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response);
 
@@ -435,19 +431,29 @@ namespace AsynGyanis::Net
                                                           HttpResponse &response, std::string_view chunk);
 
         /**
-         * @brief 流式响应写完：标记收尾并让 nghttp3 把余下的取走
+         * @brief 把一段出向正文推给连接层并立刻往外送：缓冲超上界时挂起等排空
+         * @param streamId 流号
+         * @param state 该流的状态（流已关闭时直接按失败收手）
+         * @param bytes 本段字节
+         * @return Core::Task<bool> 本段是否已收下
+         * @details 流式响应与隧道出向帧共用这一段：推一段、刷一次、超过闸门就等一跳
+         */
+        [[nodiscard]] Core::Task<bool> pushStreamingResponseBody(std::int64_t streamId,
+                                                                 const std::shared_ptr<StreamingResponse> &state,
+                                                                 std::string_view bytes);
+
+        /**
+         * @brief 流式响应写完：补交还没交的响应头，再交出收尾的 END_STREAM
          * @param streamId 流号
          * @param response 业务填好的响应（一次都没写过时要在这里补交响应头）
          */
         void finishStreamingResponse(std::int64_t streamId, HttpResponse &response);
 
         /**
-         * @brief 交给 nghttp3 的字节又排空了一部分：压掉已交付的前缀，并唤醒等空间的生产者
-         * @param streamId 流号
-         * @note 缓冲只在**这里**压：读回调里压会改掉已经交出去、库里还没拷走的 vec
-         *       （libstdc++ 的 clear() 会把首字节写成 '\0'，实测交出去的负载首字节就是这样丢的）
+         * @brief 刷完待发字节后唤醒等缓冲排空的生产者
+         * @note 只能在连接层回调之外调用：被唤醒的生产者接着就要推下一段正文
          */
-        void noteStreamingResponseDrained(std::int64_t streamId);
+        void resumeStreamingResponseWaiters();
 
         /// 丢掉已经跑完的派发协程随记录一起摘掉
         void reapFinishedStreamingRequests();
@@ -456,7 +462,7 @@ namespace AsynGyanis::Net
          * @brief 一条 WebSocket 隧道（RFC 9220 扩展 CONNECT）
          * @details 应答 200 之后，这条 h3 流上跑的就不再是 h3 报文，而是 WebSocket 帧本身：入向字节
          *          交给对端对象解码，出向帧作为同一条流上的 DATA 发出去。出向复用流式响应那套
-         *          「按需拉 + 没数据时挡流」的机制，因此隧道不会把内存堆起来
+         *          「推一段、挡一段」的机制，因此隧道不会把内存堆起来
          */
         struct WebSocketTunnel
         {
@@ -503,8 +509,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 在安全点把攒下的入向字节交给各条隧道的对端对象
-         * @note 不能在 nghttp3 的回调里喂：喂进去会让业务协程立刻跑起来，它回头就调 nghttp3 发帧，
-         *       而回调期间重入库是未定义行为
+         * @note 不能在连接层的回调里喂：喂进去会让业务协程立刻跑起来，它回头就推帧出去，
+         *       而回调期间重入连接层是未定义行为
          */
         void wakeWebSocketTunnels();
 
@@ -524,7 +530,7 @@ namespace AsynGyanis::Net
         void enqueueRequest(std::int64_t streamId);
 
         /**
-         * @brief 把一条响应交给 nghttp3（头部转成 nghttp3_nv，正文挂在数据读取回调上）
+         * @brief 把一条响应交给 HTTP/3 连接层：先交响应头，有正文时再一次性把正文推过去
          * @param streamId 流号
          * @param response 业务填好的响应
          * @param isHeadRequest 是否 HEAD 请求：true 时不发正文，content-length 仍按完整正文长度给出
@@ -533,11 +539,30 @@ namespace AsynGyanis::Net
         void submitResponse(std::int64_t streamId, const HttpResponse &response, bool isHeadRequest);
 
         /**
-         * @brief 用 nghttp3 的错误码记日志并把会话作废
-         * @param errorCode nghttp3 返回的负错误码
-         * @param what 正在做的事（进日志）
+         * @brief 连接层判定请求头部畸形：按 RFC 9114 §4.1.2 先答一个 400 再结束这条流
+         * @param streamId 出错的流
+         * @param reason 连接层给出的中文原因（同时作为响应正文）
+         * @note 这条流已经派发过或已经答过就只记日志：一条流只能有一个响应，
+         *       而且业务此刻可能正在往里写正文
          */
-        void markBroken(int errorCode, const char *what);
+        void answerMalformedRequest(std::int64_t streamId, std::string_view reason);
+
+        /**
+         * @brief 提交响应（头或正文）失败的处置：流已经不在了只作废这条流，其余按会话作废
+         * @param streamId 流号
+         * @param what 正在做的事（进日志）
+         * @param reason 连接层给出的中文原因
+         * @param errorCode 失败类别对应的线上错误码
+         */
+        void handleResponseSubmissionFailure(std::int64_t streamId, const char *what, std::string_view reason,
+                                             Http3ErrorCode errorCode);
+
+        /**
+         * @brief 记日志并把会话作废
+         * @param errorCode 要写进 QUIC 关闭帧的线上错误码
+         * @param reason 中文原因（同时供传输层取用）
+         */
+        void markBroken(Http3ErrorCode errorCode, std::string_view reason);
 
         /// 待服务的一条请求：收齐的请求本体 + 收的过程中记下的越界标记。
         /// 标记要跟着请求走到服务阶段，413 才发得出来（与 h2 的 PendingRequest::isBodyTooLarge 同形）
@@ -551,22 +576,21 @@ namespace AsynGyanis::Net
             bool         isUriTooLong{false};         ///< 请求目标越限：服务阶段回 414 而不是派发
         };
 
-        nghttp3_conn             *m_connection{nullptr}; ///< nghttp3 连接对象
+        std::unique_ptr<Http3Connection> m_connection;   ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空
         StreamWriter              m_writer;              ///< 流数据出口
         StreamCrediter            m_crediter;            ///< 接收窗口归还口
         Router                   *m_router{nullptr};     ///< 路由器（不持有；由服务端保证其寿命）
         std::shared_ptr<HttpMetricsCollector> m_metrics; ///< 统计采集端（可空：空表示本会话不采集）
         HttpParserLimits          m_parserLimits{};      ///< 请求解析上限（正文总量上限等）
-        std::vector<std::uint8_t> m_pendingBytes;        ///< 一次 flush 用的连续缓冲（把分片拼在一起）
-        bool                      m_isUsable{false};     ///< 三条单向流是否都绑上了
+        bool                      m_isUsable{false};     ///< 三条本端单向流是否都开出来了
         bool                      m_isBroken{false};     ///< 是否已作废
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
-        /// 承载层报来的「对端取消」流号：它们到的时候正在 ngtcp2 的回调里，只能先记下来，
+        /// 承载层报来的「对端取消」流号：它们到的时候正在传输层的回调里，只能先记下来，
         /// 等 pump() 这个安全点再统一回收（见 cancelStreamByPeer / drainPeerCancelledStreams）
         std::vector<std::int64_t> m_peerCancelledStreamIds;
 
-        /// 待唤醒的流式生产者（同上：dropRequest 在 nghttp3 回调里被调用，不能当场恢复它们）
+        /// 待唤醒的流式生产者（同上：dropRequest 在连接层回调里被调用，不能当场恢复它们）
         std::vector<std::coroutine_handle<>> m_deferredWaiterResumes;
 
         /// 待收口的隧道流号（同上）
@@ -580,7 +604,8 @@ namespace AsynGyanis::Net
         /// 流式请求的本地状态：键是流号。用 unique_ptr 持有是为了地址稳定——里面存着等待者的
         /// 协程句柄，而记录本身会被移进移出（头收齐那一刻从 m_incomingRequests 转过来）
         std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;
-        /// 流式写出响应的状态：键是流号。正文缓冲要让 nghttp3 借指针，因此同样用 unique_ptr 保地址稳定
+        /// 流式写出响应的状态：键是流号。用共享指针持有是为了让等待器与生产者各拿一份——
+        /// 流被摘掉之后它们读到的是 isStreamClosed 而不是踩空
         std::map<std::int64_t, std::shared_ptr<StreamingResponse>> m_streamingResponses;
         /// 等派发的隧道流：扩展 CONNECT（:method=CONNECT + :protocol=websocket）的那些
         std::set<std::int64_t> m_pendingTunnelStreams;
@@ -590,7 +615,5 @@ namespace AsynGyanis::Net
         std::map<std::int64_t, std::unique_ptr<WebSocketTunnel>> m_webSocketTunnels;
         /// 已收全、等待派发的请求（按收全先后）
         std::deque<ReadyRequest> m_readyRequests;
-        /// 待发响应的正文：std::map 的节点地址稳定，nghttp3 借走的指针不会因为它增删而失效
-        std::map<std::int64_t, OutgoingBody> m_outgoingBodies;
     };
 } // namespace AsynGyanis::Net

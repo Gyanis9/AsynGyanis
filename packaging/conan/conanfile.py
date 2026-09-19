@@ -30,16 +30,17 @@ from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
 from conan.tools.files import copy
 
 # 库本体必需的外部依赖：TLS 与摘要走 openssl，HTTP 响应压缩与 permessage-deflate 走 zlib，
-# 压缩协商里还有 zstd 与 brotli（gzip/deflate/zstd/br 四选一的其余两项），HTTP/3 协议层走 nghttp3，
+# 压缩协商里还有 zstd 与 brotli（gzip/deflate/zstd/br 四选一的其余两项），
 # Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis。
 # **这份清单必须与 src/*/CMakeLists.txt 里的 find_package(... REQUIRED) 对齐**：漏一项，
 # 包就在 configure 阶段直接失败（本清单曾漏掉 zstd/brotli/nghttp3，conan create 从来没跑到过）
+# HTTP/3 的帧与 QPACK 已全部自研，nghttp3 只在仓库自带的测试里当跨实现裁判，
+# 因此它**不进**库包：包消费方不会拿到一条用不上的 find_dependency。
 BASE_REQUIREMENTS = [
     "zlib/1.3.1",
     "zstd/1.5.7",
     "brotli/1.1.0",
     "openssl/3.6.2",
-    "nghttp3/1.12.0",
     "sqlite3/3.51.3",
     "hiredis/1.3.0",
 ]
@@ -138,9 +139,9 @@ class AsynGyanisLibrary(ConanFile):
 
         net = self.cpp_info.components["net"]
         net.libs = ["Net"]
-        # 压缩三项与 nghttp3 在 Net 的 CMake 里是 PRIVATE 链接，但静态库不会把它们带给最终
+        # 压缩三项在 Net 的 CMake 里是 PRIVATE 链接，但静态库不会把它们带给最终
         # 可执行文件：这里必须逐个声明，少一个就是消费方链接期「无法解析的外部符号」
-        net.requires = ["core", "zlib::zlib", "zstd::zstdlib", "brotli::brotli", "nghttp3::nghttp3"]
+        net.requires = ["core", "zlib::zlib", "zstd::zstdlib", "brotli::brotli"]
         net.set_property("cmake_target_name", "AsynGyanis::Net")
 
         database = self.cpp_info.components["database"]

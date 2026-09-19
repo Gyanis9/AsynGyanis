@@ -4,11 +4,8 @@
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Router.h"
-
-#include <chrono>
-#include <cstring>
-
-#include <nghttp3/nghttp3.h>
+#include "Net/Http3/Http3Connection.h"
+#include "Net/Http3/Qpack.h"
 
 namespace AsynGyanis::Net
 {
@@ -17,215 +14,10 @@ namespace AsynGyanis::Net
         /// HTTP/3 响应里唯一必须由本端补上的头：状态伪头（RFC 9114 §4.3.2）
         constexpr const char *kStatusHeaderName = ":status";
 
-        /// 当前单调时钟的纳秒读数（nghttp3 的时间戳口径与 ngtcp2 一致：单调、纳秒）
-        nghttp3_tstamp currentTimestamp() noexcept
+        /// 把字符串按字节交给只认「指针 + 长度」的接口，不留零终止的假设
+        [[nodiscard]] std::span<const std::uint8_t> asBytes(const std::string_view text) noexcept
         {
-            return static_cast<nghttp3_tstamp>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-        }
-
-        /// 收到请求正文分片：攒起来并把这段字节的接收额度还掉
-        int receiveDataCallback(nghttp3_conn *, std::int64_t streamId, const std::uint8_t *data, std::size_t dataLength, void *connectionUserData,
-                                void *) noexcept
-        {
-            auto *session = static_cast<Http3Session *>(connectionUserData);
-            if (session != nullptr)
-            {
-                session->addRequestBody(streamId, std::span<const std::uint8_t>(data, dataLength));
-            }
-            return 0;
-        }
-
-        /// 收到一个头字段：伪头（:method 等）与普通头都由这里转交
-        int receiveHeaderCallback(nghttp3_conn *, std::int64_t streamId, std::int32_t, nghttp3_rcbuf *name, nghttp3_rcbuf *value, std::uint8_t,
-                                  void *connectionUserData, void *) noexcept
-        {
-            auto *session = static_cast<Http3Session *>(connectionUserData);
-            if (session == nullptr)
-            {
-                return 0;
-            }
-            const nghttp3_vec nameBuffer  = nghttp3_rcbuf_get_buf(name);
-            const nghttp3_vec valueBuffer = nghttp3_rcbuf_get_buf(value);
-            // nghttp3 的缓冲只在本回调期间有效，所以这里立刻拷成自己的字符串
-            session->addRequestHeader(streamId, std::string(reinterpret_cast<const char *>(nameBuffer.base), nameBuffer.len),
-                                      std::string(reinterpret_cast<const char *>(valueBuffer.base), valueBuffer.len));
-            return 0;
-        }
-
-        /// 一个头块开始：本类不需要在头块边界做事
-        int beginHeadersCallback(nghttp3_conn *, std::int64_t, void *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 一个头块结束：头已收齐，方法/路径此刻可判——命中流式正文路由就在这里派发
-        int endHeadersCallback(nghttp3_conn *, const std::int64_t streamId, int, void *const connectionUserData, void *) noexcept
-        {
-            if (auto *session = static_cast<Http3Session *>(connectionUserData); session != nullptr)
-            {
-                session->beginStreamingRequestIfMatched(streamId);
-            }
-            return 0;
-        }
-
-        /// 一条流的接收侧关闭：对服务端来说就是「请求收全了」，整理成 HttpRequest 排队
-        int endStreamCallback(nghttp3_conn *, std::int64_t streamId, void *connectionUserData, void *) noexcept
-        {
-            auto *session = static_cast<Http3Session *>(connectionUserData);
-            if (session != nullptr)
-            {
-                session->finishRequest(streamId);
-            }
-            return 0;
-        }
-
-        /// 一条流彻底关闭：该流的本地状态（含待发正文）都可以丢了
-        int streamCloseCallback(nghttp3_conn *const connection, std::int64_t streamId, std::uint64_t, void *connectionUserData, void *) noexcept
-        {
-            auto *session = static_cast<Http3Session *>(connectionUserData);
-            if (session != nullptr)
-            {
-                // 先摘掉 nghttp3 手里那块正文指针（stream_user_data 指向会话持有的 OutgoingBody）：
-                // 下面的 dropRequest() 会把它释放，留下来就是悬垂指针
-                static_cast<void>(nghttp3_conn_set_stream_user_data(connection, streamId, nullptr));
-                session->dropRequest(streamId);
-            }
-            return 0;
-        }
-
-        /// 被流间同步挡住的字节终于被消费了
-        int deferredConsumeCallback(nghttp3_conn *, std::int64_t, std::size_t, void *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 本端发出去的流数据被对端确认：本类按流关闭统一清理，不在这里动
-        int acknowledgedStreamDataCallback(nghttp3_conn *, std::int64_t, std::uint64_t, void *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 对端要求本端停止发送
-        int stopSendingCallback(nghttp3_conn *, std::int64_t, std::uint64_t, void *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// nghttp3 要求本端重置一条流，尚未收全的请求随这次重置作废
-        int resetStreamCallback(nghttp3_conn *, std::int64_t streamId, std::uint64_t, void *connectionUserData, void *) noexcept
-        {
-            auto *session = static_cast<Http3Session *>(connectionUserData);
-            if (session != nullptr)
-            {
-                session->noteStreamResetByPeer(streamId);
-                session->dropRequest(streamId);
-            }
-            return 0;
-        }
-
-        /// 对端发起连接级收口
-        int shutdownCallback(nghttp3_conn *, std::int64_t, void *) noexcept
-        {
-            return 0;
-        }
-
-        /// 收到对端的 SETTINGS
-        int receiveSettingsCallback(nghttp3_conn *, const nghttp3_settings *, void *) noexcept
-        {
-            return 0;
-        }
-
-        /**
-         * @brief 把待发响应的正文交给 nghttp3
-         * @details nghttp3 只是把 `nghttp3_vec` 收下（不拷贝），因此这里给出的是会话持有的那一段字节，
-         *          它会一直活到流关闭（丢包重传时 nghttp3 还会再用一次）。给了 EOF 之后本回调不会再被调。
-         */
-        nghttp3_ssize readResponseBodyCallback(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount, std::uint32_t *flags,
-                                              void *, void *streamUserData) noexcept
-        {
-            if (streamUserData == nullptr || vectorCount == 0)
-            {
-                *flags = NGHTTP3_DATA_FLAG_EOF;
-                return 0;
-            }
-
-            auto *body = static_cast<Http3Session::OutgoingBody *>(streamUserData);
-            if (body->offset >= body->bytes.size())
-            {
-                *flags = NGHTTP3_DATA_FLAG_EOF;
-                return 0;
-            }
-
-            vectors[0].base = reinterpret_cast<std::uint8_t *>(body->bytes.data() + body->offset);
-            vectors[0].len  = body->bytes.size() - body->offset;
-            body->offset    = body->bytes.size();
-            *flags          = NGHTTP3_DATA_FLAG_EOF;
-            return 1;
-        }
-
-        /**
-         * @brief 流式响应的正文读取回调
-         * @details 从会话持有的分片队列里取一片交出去；交出去的整片要等传输层接走之后才会丢
-         *          （见 noteStreamingResponseDrained），因此缓冲不随响应时长无限增长。
-         *          这里只交付队列头一片：nghttp3 把没写完的 vec 留在自己的 outq 里，下一次写会接着取。
-         */
-        nghttp3_ssize readStreamingResponseBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount,
-                                               std::uint32_t *flags, void *, void *streamUserData) noexcept
-        {
-            auto *state = static_cast<Http3Session::StreamingResponse *>(streamUserData);
-            if (state == nullptr || vectorCount == 0)
-            {
-                *flags = NGHTTP3_DATA_FLAG_EOF;
-                return 0;
-            }
-
-            if (state->chunks.empty() || state->headOffset >= state->chunks.front().size())
-            {
-                if (state->isFinished)
-                {
-                    // 写完了也没数据了：报 EOF 收尾（不带 NO_END_STREAM 才会真关掉发送侧）
-                    *flags = NGHTTP3_DATA_FLAG_EOF;
-                    return 0;
-                }
-
-                // 还没写完、这一批又没数据可交：报「暂时没有」。必须用 WOULDBLOCK——库里会保住这次
-                // 数据请求、等 resume_stream 再叫；改报 EOF 则会被当成「正文已写完」，数据请求也被消费掉，
-                // 之后的块再也发不出去（实测：隧道第二条帧、SSE 第二段都会卡死在首段之后）
-                return NGHTTP3_ERR_WOULDBLOCK;
-            }
-
-            const std::string &headChunk = state->chunks.front();
-            vectors[0].base              = reinterpret_cast<std::uint8_t *>(const_cast<char *>(headChunk.data()) + state->headOffset);
-            vectors[0].len               = headChunk.size() - state->headOffset;
-            state->headOffset            = headChunk.size();
-            // 最后一片且已写完：这一批就是正文末尾，报 EOF 收尾
-            *flags = state->isFinished && state->chunks.size() == 1 ? NGHTTP3_DATA_FLAG_EOF : NGHTTP3_DATA_FLAG_NONE;
-            return 1;
-        }
-
-        /**
-         * @brief 填好 nghttp3 的回调表
-         * @details HTTP/2 侧的帧状态机是手写的，这里不重复那套：h3 的帧与 QPACK 全交给 nghttp3，
-         *          本表只把它的通知接住。返回值非 0 会被 nghttp3 当成致命错误，因此除转发外一律返回 0。
-         * @return nghttp3_callbacks 回调表
-         */
-        nghttp3_callbacks makeCallbacks() noexcept
-        {
-            nghttp3_callbacks callbacks{};
-            callbacks.acked_stream_data = acknowledgedStreamDataCallback;
-            callbacks.stream_close      = streamCloseCallback;
-            callbacks.recv_data         = receiveDataCallback;
-            callbacks.deferred_consume  = deferredConsumeCallback;
-            callbacks.begin_headers     = beginHeadersCallback;
-            callbacks.recv_header       = receiveHeaderCallback;
-            callbacks.end_headers       = endHeadersCallback;
-            callbacks.end_stream        = endStreamCallback;
-            callbacks.stop_sending      = stopSendingCallback;
-            callbacks.reset_stream      = resetStreamCallback;
-            callbacks.shutdown          = shutdownCallback;
-            callbacks.recv_settings     = receiveSettingsCallback;
-            return callbacks;
+            return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
         }
     } // namespace
 
@@ -240,52 +32,46 @@ namespace AsynGyanis::Net
             return;
         }
 
-        nghttp3_settings settings;
-        nghttp3_settings_default(&settings);
-        // RFC 9220 的扩展 CONNECT（WebSocket 隧道）：不开这一项，nghttp3 会把带 :protocol 的
-        // CONNECT 请求判成非法，隧道根本建立不起来
-        settings.enable_connect_protocol = 1;
+        // 连接层的通知逐个接回本会话：它们都在调用方线程上同步触发，这里只是把函数对象绑回来
+        Http3Connection::Callbacks callbacks;
+        // 伪头与普通头都从这一路进来：归位（:method/:path/:authority/:protocol）与限额判定都在 addRequestHeader 里
+        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value)
+                                  { addRequestHeader(streamId, std::string(name), std::string(value)); };
+        // 头块收齐：方法/路径此刻可判，命中流式正文路由或扩展 CONNECT 就在这里提前派发。
+        // 尾段也走同一个入口——那条流早已从 m_incomingRequests 搬走，函数自己会判出「已派发过」而什么都不做
+        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool)
+                                          { beginStreamingRequestIfMatched(streamId); };
+        // 正文段：DATA 载荷的额度何时归还由 addRequestBody 决定（非流式到达即还、流式消费才还）
+        callbacks.onBodyBytes = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes)
+                                { addRequestBody(streamId, bytes); };
+        callbacks.onRequestEnded = [this](const std::int64_t streamId) { finishRequest(streamId); };
+        callbacks.onStreamClosed = [this](const std::int64_t streamId) { dropRequest(streamId); };
+        // 该流已被放弃（对端重置、或本端按协议判错）：先按「还没答完」计数，再丢掉本会话的状态
+        callbacks.onStreamReset = [this](const std::int64_t streamId, Http3ErrorCode)
+                                  {
+                                      noteStreamResetByPeer(streamId);
+                                      dropRequest(streamId);
+                                  };
+        // RFC 9114 §4.1.2 允许服务端在重置之前先答一个错误响应，回哪个状态码只有业务层知道
+        callbacks.onMalformedRequest = [this](const std::int64_t streamId, const std::string_view reason)
+                                       { answerMalformedRequest(streamId, reason); };
+        // 连接级收口（对端 GOAWAY、关键流被关、协议错误）：此后唯一合法的动作是销毁
+        callbacks.onConnectionClosed = [this](const Http3ErrorCode errorCode, const std::string_view reason)
+                                       { markBroken(errorCode, reason); };
 
-        const nghttp3_callbacks callbacks = makeCallbacks();
-        if (nghttp3_conn_server_new(&m_connection, &callbacks, &settings, nullptr, this) != 0)
+        // 三条本端单向流由连接层自己开（流号来自传输层）、SETTINGS 由它写进控制流、QPACK 两侧由它接上；
+        // 接收额度的归还口一并交给它——非 DATA 字节的额度现在在那里还
+        m_connection = std::make_unique<Http3Connection>(std::move(opener), m_writer, m_crediter, std::move(callbacks));
+        m_isUsable   = m_connection->isUsable();
+        if (!m_isUsable)
         {
-            m_connection = nullptr;
-            LOG_ERROR("Http3Session: nghttp3 服务端会话创建失败，HTTP/3 会话不可用");
+            LOG_WARN("Http3Session: HTTP/3 连接层没能在本端开齐三条单向流，会话不可用");
             return;
         }
-
-        // 三条本端发起的单向流：控制流、QPACK 编码流、QPACK 解码流。流号由传输层开出来
-        // （ngtcp2 不认识这三条流的话，往它们上面写数据会被 STREAM_NOT_FOUND 拒掉）
-        const std::int64_t controlStreamId      = opener();
-        const std::int64_t qpackEncoderStreamId = opener();
-        const std::int64_t qpackDecoderStreamId = opener();
-        if (controlStreamId < 0 || qpackEncoderStreamId < 0 || qpackDecoderStreamId < 0)
-        {
-            LOG_WARN("Http3Session: 开本端单向流失败，HTTP/3 会话不可用");
-            return;
-        }
-
-        // 绑定顺序按 nghttp3 的接口来：控制流单独绑，两条 QPACK 流一次绑（编码流在前）
-        if (nghttp3_conn_bind_control_stream(m_connection, controlStreamId) != 0 ||
-            nghttp3_conn_bind_qpack_streams(m_connection, qpackEncoderStreamId, qpackDecoderStreamId) != 0)
-        {
-            LOG_WARN("Http3Session: 控制流或 QPACK 流绑定失败，HTTP/3 会话不可用");
-            return;
-        }
-
-        m_isUsable = true;
-        LOG_DEBUG_FMT("Http3Session: HTTP/3 会话已建立（控制流 {}、QPACK 编码流 {}、解码流 {}）", controlStreamId, qpackEncoderStreamId,
-                      qpackDecoderStreamId);
+        LOG_DEBUG("Http3Session: HTTP/3 会话已建立");
     }
 
-    Http3Session::~Http3Session()
-    {
-        if (m_connection != nullptr)
-        {
-            nghttp3_conn_del(m_connection);
-            m_connection = nullptr;
-        }
-    }
+    Http3Session::~Http3Session() = default;
 
     void Http3Session::setParserLimits(const HttpParserLimits limits) noexcept
     {
@@ -314,24 +100,10 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 返回的「已消费字节数」才是可以还给 QUIC 的流控额度；DATA 帧里的应用数据不算在内，
-        // 那部分由 recv_data 回调给出。两处加起来才是这条流真正被消费掉的总量
-        const nghttp3_ssize consumedLength =
-                nghttp3_conn_read_stream2(m_connection, streamId, data.data(), data.size(), isEndStream ? 1 : 0, currentTimestamp());
-        if (consumedLength < 0)
-        {
-            // 带上流号与本次读入的字节数：没有这两个数，事后只能靠猜是哪条流、字节到齐没有
-            LOG_WARN_FMT("Http3Session: 流 {} 的 {} 字节读入被 nghttp3 拒绝（{}）", streamId, data.size(),
-                         nghttp3_strerror(static_cast<int>(consumedLength)));
-            markBroken(static_cast<int>(consumedLength), "读入流数据");
-            return;
-        }
-        if (consumedLength > 0 && m_crediter)
-        {
-            m_crediter(streamId, static_cast<std::size_t>(consumedLength));
-        }
+        // 帧头与被丢弃的帧这类非 DATA 字节的接收额度由连接层就地归还，本处不再按返回值补账
+        m_connection->consumeStreamData(streamId, data, isEndStream);
 
-        // 此刻已经在 nghttp3 的回调之外了：等正文的处理器可以安全唤醒（它们醒来会回头调 nghttp3），
+        // 此刻已经在连接层的回调之外了：等正文的处理器可以安全唤醒（它们醒来会回头推响应），
         // 隧道里攒下的帧也在这里交给对端对象
         wakeStreamingRequests();
         wakeWebSocketTunnels();
@@ -347,57 +119,33 @@ namespace AsynGyanis::Net
             return;
         }
 
-        for (std::size_t writeIndex = 0; writeIndex < kMaximumWritesPerFlush; ++writeIndex)
+        // 连接层按流轮转把攒下的待发字节交给传输层，一次最多搬固定几轮，不会在一条连接上转太久
+        m_connection->flush();
+        // 交给传输层即视为排空（重传由传输层负责）：等缓冲空间的生产者在这里醒来
+        resumeStreamingResponseWaiters();
+    }
+
+    void Http3Session::resumeStreamingResponseWaiters()
+    {
+        // 先把句柄摘下来再逐个唤醒：被唤醒的生产者会接着推下一段正文，而推一段就要刷一次，
+        // 那又会走进 flushPendingStreamData——边遍历边唤醒会踩到迭代器失效
+        std::vector<std::coroutine_handle<>> waiters;
+        for (const auto &entry: m_streamingResponses)
         {
-            // nghttp3_vec 与 ngtcp2_vec 布局一致（都是 {指针, 长度}），因此这里顺手就能递给传输层
-            nghttp3_vec vectors[kMaximumDataVectors]{};
-            std::int64_t      streamId    = -1;
-            int               isFinal     = 0;
-            const nghttp3_ssize vectorCount =
-                    nghttp3_conn_writev_stream(m_connection, &streamId, &isFinal, vectors, kMaximumDataVectors);
-            if (vectorCount < 0)
+            if (const std::coroutine_handle<> waiter = std::exchange(entry.second->spaceWaiter, {}); waiter != nullptr)
             {
-                markBroken(static_cast<int>(vectorCount), "取待发流数据");
-                return;
-            }
-            if (vectorCount == 0 && streamId == -1)
-            {
-                // 没有待发字节，也没有要收尾的流：本轮搬完了
-                return;
-            }
-
-            // nghttp3 给的是分片数组，传输层的出口一次只收一段连续字节，先拼起来。
-            // 拼好的字节在交出时必须是有效的，所以用成员缓冲而不是临时对象
-            std::size_t totalLength = 0;
-            for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
-            {
-                totalLength += vectors[vectorIndex].len;
-            }
-            // 不用 resize + memcpy：resize 会先把整段字节清零，而紧接着 memcpy 又把它覆盖掉，
-            // 大帧（几十 KiB）白付一次 memset。先按总长腾出空间，再逐片 append（只写新增的字节）
-            m_pendingBytes.clear();
-            m_pendingBytes.reserve(totalLength);
-            for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
-            {
-                if (vectors[vectorIndex].len == 0)
-                {
-                    continue;
-                }
-                // 逐片插入而不是 resize + memcpy：resize 的零填充随后就被 memcpy 覆盖，白付一次 memset
-                const std::uint8_t *const sourceBytes = vectors[vectorIndex].base;
-                m_pendingBytes.insert(m_pendingBytes.end(), sourceBytes, sourceBytes + vectors[vectorIndex].len);
-            }
-
-            m_writer(streamId, m_pendingBytes, isFinal != 0);
-            // 字节已被 QUIC 收下，回告 nghttp3 实际收下的长度（它按这个推进写窗口）。
-            // 「只收尾、不带数据」时长度是 0，这一次调用同样不能省
-            nghttp3_conn_add_write_offset(m_connection, streamId, totalLength);
-            if (totalLength != 0)
-            {
-                // 流式响应的缓冲腾出一块了：等空间的生产者可以继续写
-                noteStreamingResponseDrained(streamId);
+                waiters.push_back(waiter);
             }
         }
+        for (const std::coroutine_handle<> waiter: waiters)
+        {
+            waiter.resume();
+        }
+    }
+
+    std::size_t Http3Session::streamingResponsePendingByteCount(const std::int64_t streamId) const noexcept
+    {
+        return m_connection == nullptr ? 0 : m_connection->pendingOutputByteCount(streamId);
     }
 
     void Http3Session::resumeDeferredWaiters()
@@ -442,8 +190,8 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // 先回收承载层报来的「对端取消」：那些通知到的时候正在 ngtcp2 的回调里，此刻（处理完
-        // 一条报文之后）才是能安全动 nghttp3 与唤醒业务协程的安全点
+        // 先回收承载层报来的「对端取消」：那些通知到的时候正在传输层的回调里，此刻（处理完
+        // 一条报文之后）才是能安全动连接层与唤醒业务协程的安全点
         drainPeerCancelledStreams();
         // 同样在安全点做的两件事：唤醒被摘掉的流式生产者、收口已被对端收尾的隧道
         resumeDeferredWaiters();
@@ -459,7 +207,6 @@ namespace AsynGyanis::Net
             HttpRequest        request        = std::move(m_readyRequests.front().request);
             m_readyRequests.pop_front();
 
-            // 与 h1/h2 同口径：收齐的请求计入请求数（含随后被 413 拒掉的那些，它们同样是有效的 h3 请求）
             // 与 h1/h2 同口径：收齐的请求计入请求数（含随后被 413 拒掉的那些，它们同样是有效的 h3 请求）
             if (m_metrics != nullptr)
             {
@@ -647,7 +394,7 @@ namespace AsynGyanis::Net
         if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
         {
             // CONNECT 隧道：对端发来的是 WebSocket 帧本身（RFC 9220 §4）。**不在这里直接喂**：喂进去
-            // 会让业务协程立刻跑起来，它回头就调 nghttp3 发帧，而此刻还在 nghttp3 的回调里
+            // 会让业务协程立刻跑起来，它回头就推帧给连接层，而此刻还在连接层的回调里
             // （重入是未定义行为）。攒起来，回到安全点由 wakeWebSocketTunnels() 喂
             tunnel->second->pendingIncomingBytes.append(reinterpret_cast<const char *>(data.data()), data.size());
             tunnel->second->hasPendingFeed = true;
@@ -717,7 +464,8 @@ namespace AsynGyanis::Net
         }
 
         // 非流式：正文整段收在请求对象里，本端等于立刻消费掉了，因此到达即归还接收额度
-        // （DATA 帧的字节不在 read_stream2 的消费计数里，要在这里单独还）；丢弃的字节同样要还
+        // （DATA 载荷的额度只在这里还，帧头那一类字节由连接层还，两边加起来才是这条流消费掉的总量）；
+        // 丢弃的字节同样要还
         if (m_crediter && !data.empty())
         {
             m_crediter(streamId, data.size());
@@ -732,8 +480,8 @@ namespace AsynGyanis::Net
         {
             if (m_webSocketTunnels.contains(streamId))
             {
-                // 隧道已建成：收尾动作要动 nghttp3（closeTunnel 里会 resume_stream），而本函数是在
-                // nghttp3 的回调里被调用的——只记流号，由 pump() 这个安全点统一处理
+                // 隧道已建成：收尾动作要动连接层（closeTunnel 里会交出 END_STREAM），而本函数是在
+                // 连接层的回调里被调用的——只记流号，由 pump() 这个安全点统一处理
                 m_deferredTunnelClosures.push_back(streamId);
                 return;
             }
@@ -774,7 +522,6 @@ namespace AsynGyanis::Net
 
     void Http3Session::dropRequest(const std::int64_t streamId)
     {
-        m_outgoingBodies.erase(streamId);
         m_incomingRequests.erase(streamId);
         // 还没派发的请求记录一并摘掉：对端已经重置了这条流，再派发就是给一条死流跑业务
         std::erase_if(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
@@ -786,8 +533,8 @@ namespace AsynGyanis::Net
         {
             // 流没了：先叫醒等缓冲排空的生产者，再摘记录。等待器与生产者各持一份共享所有权，
             // 摘表后他们读到的是 isStreamClosed，不会踩空；漏掉这一步生产者会永远等不到唤醒。
-            // **唤醒本身推到安全点**：被唤醒的业务会接着写响应（resume_stream / submit_response），
-            // 而本函数是经 nghttp3 回调进来的，回调期间重入库是未定义行为
+            // **唤醒本身推到安全点**：被唤醒的业务会接着写响应（那要推正文给连接层），
+            // 而本函数是经连接层回调进来的，回调期间重入连接层是未定义行为
             const std::shared_ptr<StreamingResponse> state = streaming->second;
             state->isStreamClosed = true;
             if (const std::coroutine_handle<> waiter = std::exchange(state->spaceWaiter, {}); waiter != nullptr)
@@ -800,7 +547,7 @@ namespace AsynGyanis::Net
         if (m_webSocketTunnels.contains(streamId))
         {
             // 隧道：承载侧的流没了，对端对象随之关闭、挂在 receive() 上的业务要醒来收尾。
-            // 同理由安全点统一处理（收尾要走 nghttp3）；记录先留着——业务协程可能还挂着，
+            // 同理由安全点统一处理（收尾要走连接层）；记录先留着——业务协程可能还挂着，
             // 跑完由 reapFinishedTunnels() 一起摘掉
             m_deferredTunnelClosures.push_back(streamId);
             return;
@@ -820,8 +567,8 @@ namespace AsynGyanis::Net
 
     void Http3Session::cancelStreamByPeer(const std::int64_t streamId)
     {
-        // 只记流号：本函数由 ngtcp2 的流回调调用（此刻正在读报文），而回收要动 nghttp3 并唤醒可能
-        // 立刻回写响应的业务协程——那属于「回调期间重入库」。真正的处理在 drainPeerCancelledStreams()
+        // 只记流号：本函数由传输层的流回调调用（此刻正在读报文），而回收要动连接层并唤醒可能
+        // 立刻回写响应的业务协程——那属于「回调期间重入」。真正的处理在 drainPeerCancelledStreams()
         m_peerCancelledStreamIds.push_back(streamId);
     }
 
@@ -839,18 +586,10 @@ namespace AsynGyanis::Net
 
         for (const std::int64_t streamId: cancelledStreamIds)
         {
-            // 先计数再关流：dropRequest() 会把「还没答完」的痕迹一并抹掉，判据只在关流之前成立
-            noteStreamResetByPeer(streamId);
-
-            // 告诉 nghttp3 这条流没了：它随即调 streamCloseCallback -> dropRequest()，请求缓冲、
-            // 流式等待者与隧道记录都跟着释放（与正常收尾走同一条路，不另开清理分支）
-            const int result = nghttp3_conn_close_stream(m_connection, streamId, NGHTTP3_H3_REQUEST_CANCELLED);
-            if (result != 0 && result != NGHTTP3_ERR_STREAM_NOT_FOUND)
-            {
-                // 已经收尾的流会回 STREAM_NOT_FOUND（正常情形）；其余错误码说明这条流没释放干净
-                LOG_WARN_FMT("Http3Session: 关闭被对端取消的流 {} 时 nghttp3 报错（{}），该流的状态可能未完全释放", streamId,
-                             nghttp3_strerror(result));
-            }
+            // 告诉连接层这条流没了：它先发出「该流已重置」的通知（回调里按「还没答完」计数、再走
+            // dropRequest()），请求缓冲、流式等待者与隧道记录都跟着释放
+            // （与正常收尾走同一条路，不另开清理分支，也不在这里重复计数）
+            m_connection->noteStreamCancelledByPeer(streamId);
         }
 
         // 唤醒被这些取消波及的处理器：等正文的那些只记了「有新进展」，真正的唤醒在这里做，
@@ -907,8 +646,7 @@ namespace AsynGyanis::Net
     void Http3Session::beginStreamingRequestIfMatched(const std::int64_t streamId)
     {
         const auto found = m_incomingRequests.find(streamId);
-        // 这条流已经派发过（隧道记录在案）就不再派发：重复派发会让同一条流上出现两份响应，
-        // 后一份还会把 nghttp3 的 stream_user_data 从隧道状态改成别的，读回调随即读错对象
+        // 这条流已经派发过（隧道或流式正文的记录在案）就不再派发：重复派发会让同一条流上出现两份响应
         if (found == m_incomingRequests.end() || m_router == nullptr || m_isBroken || m_pendingTunnelStreams.contains(streamId))
         {
             return;
@@ -966,8 +704,8 @@ namespace AsynGyanis::Net
         created.reader.attach(created.body, makeBodyPump(streamId));
         created.request.setBodyStream(&created.reader);
 
-        // 协程本身是惰性的，构造它不会执行任何一行；**但不在这里 resume**：此刻还在 nghttp3 的
-        // 回调里，处理器一上来就可能提交响应，而回调期间重入库是未定义行为。只置标记，
+        // 协程本身是惰性的，构造它不会执行任何一行；**但不在这里 resume**：此刻还在连接层的
+        // 回调里，处理器一上来就可能提交响应，而回调期间重入连接层是未定义行为。只置标记，
         // 回到安全点由 wakeStreamingRequests() 起
         created.serveTask.emplace(serveStreamingRequest(streamId, created));
         created.hasPendingWake = true;
@@ -1168,7 +906,7 @@ namespace AsynGyanis::Net
         // h3 里没有 101：RFC 9220 规定隧道以 2xx 应答，此后这条流上跑的就是 WebSocket 帧本身
         response.setStatus(200);
 
-        // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧由数据读取回调按需拉走
+        // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧之后一段一段推给连接层
         const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
         if (!submitStreamingResponseHead(streamId, *state, response))
         {
@@ -1245,33 +983,9 @@ namespace AsynGyanis::Net
             co_return false; // 隧道已经收口，调用方应停止写入
         }
 
-        // 只查表：对端已经重置这条流时它不在表里，重建只会留下永远清理不掉的条目
-        const std::shared_ptr<StreamingResponse> state = findStreamingResponse(streamId);
-        // 状态不在（流已被重置）或承载侧的流已经关闭：写多少都出不去，直接按失败收手
-        if (state == nullptr || state->isStreamClosed)
-        {
-            co_return false;
-        }
-        if (!frameBytes.empty())
-        {
-            state->chunks.emplace_back(frameBytes);
-            state->pendingByteCount += state->chunks.back().size();
-        }
-        // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空；流一关闭立即收手
-        while (!state->isStreamClosed && state->pendingByteCount > kStreamingResponseBufferByteCount)
-        {
-            co_await ResponseSpaceAwaiter(state);
-        }
-        if (state->isStreamClosed)
-        {
-            co_return false;
-        }
-
-        // 有新正文了：让库里再来取（读回调上次报的是 EOF|NO_END_STREAM，得唤一声它才会重来），
-        // 然后立刻把攒下的发出去
-        static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
-        flushPendingStreamData();
-        co_return true;
+        // 只查表：对端已经重置这条流时它不在表里，重建只会留下永远清理不掉的条目。
+        // 出向帧与流式响应正文走同一条路：推一段、刷一次、超过闸门就等一跳
+        co_return co_await pushStreamingResponseBody(streamId, findStreamingResponse(streamId), frameBytes);
     }
 
     void Http3Session::closeTunnel(const std::int64_t streamId)
@@ -1287,13 +1001,15 @@ namespace AsynGyanis::Net
         // 因此协程帧在此期间不会被销毁，这次唤醒不存在「恢复已销毁帧」的风险
         found->second->peer->wakeDeliveryWaiter();
 
-        // 出向到此为止：标记写完并唤一次，库会把余下的取走并在最后关掉发送侧
-        if (const auto state = m_streamingResponses.find(streamId); state != m_streamingResponses.end())
+        // 出向到此为止：把收尾的 END_STREAM 交给连接层。已经收过口（或对端已重置）就不再重复
+        const std::shared_ptr<StreamingResponse> state = findStreamingResponse(streamId);
+        if (state == nullptr || state->isFinished || m_connection == nullptr || m_isBroken)
         {
-            state->second->isFinished = true;
-            static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
-            flushPendingStreamData();
+            return;
         }
+        state->isFinished = true;
+        static_cast<void>(m_connection->appendResponseBody(streamId, std::span<const std::uint8_t>{}, true));
+        flushPendingStreamData();
     }
 
     void Http3Session::reapFinishedStreamingRequests()
@@ -1316,19 +1032,6 @@ namespace AsynGyanis::Net
             response.setStatus(500);
             response.setBody("HTTP/3 上的 WebSocket 升级需要扩展 CONNECT 请求（RFC 9220）");
         }
-    }
-
-    std::vector<nghttp3_nv> makeHeaderFieldViews(const std::vector<std::string> &names, const std::vector<std::string> &values)
-    {
-        std::vector<nghttp3_nv> headerFields;
-        headerFields.reserve(names.size());
-        for (std::size_t headerIndex = 0; headerIndex < names.size(); ++headerIndex)
-        {
-            headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(names[headerIndex].data()),
-                                              reinterpret_cast<const std::uint8_t *>(values[headerIndex].data()), names[headerIndex].size(),
-                                              values[headerIndex].size(), NGHTTP3_NV_FLAG_NONE});
-        }
-        return headerFields;
     }
 
     void Http3Session::attachChunkSender(const std::int64_t streamId, HttpResponse &response)
@@ -1366,12 +1069,14 @@ namespace AsynGyanis::Net
 
     bool Http3Session::submitStreamingResponseHead(const std::int64_t streamId, StreamingResponse &state, HttpResponse &response)
     {
-        std::vector<std::string> names;
-        std::vector<std::string> values;
-        names.reserve(response.headers().size() + 1);
-        values.reserve(response.headers().size() + 1);
-        names.emplace_back(kStatusHeaderName);
-        values.emplace_back(std::to_string(response.status()));
+        if (m_connection == nullptr)
+        {
+            return false;
+        }
+
+        std::vector<QpackHeaderField> fieldLines;
+        fieldLines.reserve(response.headers().size() + 1);
+        fieldLines.push_back(QpackHeaderField{.name = kStatusHeaderName, .value = std::to_string(response.status())});
         for (const auto &headerEntry: response.headers())
         {
             // 流式响应的长度此刻还不知道（这正是分块的意义）：content-length 一律不发，
@@ -1388,28 +1093,13 @@ namespace AsynGyanis::Net
                 LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerEntry.first);
                 continue;
             }
-            names.push_back(headerEntry.first);
-            values.push_back(headerEntry.second);
+            fieldLines.push_back(QpackHeaderField{.name = headerEntry.first, .value = headerEntry.second});
         }
 
-        // 读正文的回调靠 stream_user_data 找回状态，必须先挂上
-        if (nghttp3_conn_set_stream_user_data(m_connection, streamId, &state) != 0)
+        // 只交响应头、不结束这条流：正文随后一段一段推过来
+        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, false); !submitted)
         {
-            // nghttp3 找不到这条流：对端多半已经把它 RST 掉了（慢业务上很常见）。
-            // 这只是**这一条流**的响应发不出去，连接与其它流都还健康——按流级作废处理，
-            // 不能置 m_isBroken（那会连带关掉整条 QUIC 连接；h2 同场景只作废该流）
-            LOG_WARN_FMT("Http3Session: 流 {} 已经不在了（对端多半已重置该流），这条流式响应作废；连接与其它流不受影响", streamId);
-            m_streamingResponses.erase(streamId);
-            return false;
-        }
-
-        const std::vector<nghttp3_nv> headerFields = makeHeaderFieldViews(names, values);
-        nghttp3_data_reader           dataReader{};
-        dataReader.read_data = readStreamingResponseBody;
-        if (const int result = nghttp3_conn_submit_response(m_connection, streamId, headerFields.data(), headerFields.size(), &dataReader);
-            result != 0)
-        {
-            markBroken(result, "提交流式响应头");
+            handleResponseSubmissionFailure(streamId, "提交流式响应头", submitted.error().message, toHttp3ErrorCode(submitted.error().kind));
             return false;
         }
 
@@ -1430,101 +1120,83 @@ namespace AsynGyanis::Net
             // 首个段落是 HttpResponse::writeChunk() 推上来的 HTTP/1.1 头部文本（状态行 + 头部块）：
             // 内容是 h1 线格式，不是 h3 要发的头块，这次调用只当「头部该上线了」的信号，
             // 真正发出的字段按响应对象现取；它自身那些字节不进正文（与 h2 侧同一口径）
-            if (!submitStreamingResponseHead(streamId, *state, response))
-            {
-                co_return false;
-            }
-            co_return true;
+            co_return submitStreamingResponseHead(streamId, *state, response);
         }
 
-        // 其余段落是 h1 分块帧成帧的正文（RFC 9112 §7.1）：h3 里没有分块帧这一层，只把帧里的负载收下。
-        // 一片一块内存，追加不搬动已经交给 nghttp3 的字节（它会把没写完的 vec 留到下一次写再取）
-        const std::string_view payload = chunkFramePayload(chunk);
-        if (!payload.empty())
-        {
-            state->chunks.emplace_back(payload);
-            state->pendingByteCount += state->chunks.back().size();
-        }
-        // 有界缓冲：生产者跑得比网络快就挂起等排空，而不是把内存堆到把进程拖垮。
-        // 流被关闭（对端重置/连接收口）时无需再等，直接收手
-        while (!state->isStreamClosed && state->pendingByteCount > kStreamingResponseBufferByteCount)
-        {
-            co_await ResponseSpaceAwaiter(state);
-        }
-        if (state->isStreamClosed)
+        // 其余段落是 h1 分块帧成帧的正文（RFC 9112 §7.1）：h3 里没有分块帧这一层，只把帧里的负载收下
+        co_return co_await pushStreamingResponseBody(streamId, state, chunkFramePayload(chunk));
+    }
+
+    Core::Task<bool> Http3Session::pushStreamingResponseBody(const std::int64_t streamId, const std::shared_ptr<StreamingResponse> &state,
+                                                            const std::string_view bytes)
+    {
+        // 状态不在（流已被重置）或承载侧的流已经关闭：写多少都出不去，直接按失败收手
+        if (state == nullptr || state->isStreamClosed || m_connection == nullptr || m_isBroken)
         {
             co_return false;
         }
 
-        // 有新数据了：唤一声让库里再来取（读回调上次报的是 WOULDBLOCK，库在等这一声），随后立刻发出去
-        static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
+        if (!bytes.empty())
+        {
+            if (const auto appended = m_connection->appendResponseBody(streamId, asBytes(bytes), false); !appended)
+            {
+                handleResponseSubmissionFailure(streamId, "追加流式响应正文", appended.error().message, toHttp3ErrorCode(appended.error().kind));
+                co_return false;
+            }
+        }
+        // 推完就往外送：连接层把这流的待发字节一次性交给传输层，本端不留副本也不等人来取
         flushPendingStreamData();
-        co_return true;
+
+        // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空；流一关闭立即收手
+        while (!state->isStreamClosed && streamingResponsePendingByteCount(streamId) > kStreamingResponseBufferByteCount)
+        {
+            co_await ResponseSpaceAwaiter(*this, streamId, state);
+        }
+        co_return !state->isStreamClosed;
     }
 
     void Http3Session::finishStreamingResponse(const std::int64_t streamId, HttpResponse &response)
     {
         const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
-        if (!state->isHeadSent && !submitStreamingResponseHead(streamId, *state, response))
+        if (!state->isHeadSent)
         {
-            return; // 提交失败时已经记过日志
+            if (!submitStreamingResponseHead(streamId, *state, response))
+            {
+                return; // 提交失败时已经记过日志
+            }
+        }
+        if (state->isFinished || m_connection == nullptr || m_isBroken)
+        {
+            return; // 已经收过口（或会话已作废）：再交一次 END_STREAM 只会报错
         }
 
+        // 收尾：交出「正文到此为止」，连接层把最后一段与 END_STREAM 一起送出去
         state->isFinished = true;
-        // 收尾：唤一声让库把余下的取走、最后关掉发送侧（读回调此时会报 EOF）
-        static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
-        flushPendingStreamData();
-    }
-
-    void Http3Session::noteStreamingResponseDrained(const std::int64_t streamId)
-    {
-        const auto found = m_streamingResponses.find(streamId);
-        if (found == m_streamingResponses.end())
+        if (const auto appended = m_connection->appendResponseBody(streamId, std::span<const std::uint8_t>{}, true); !appended)
         {
+            handleResponseSubmissionFailure(streamId, "收尾流式响应", appended.error().message, toHttp3ErrorCode(appended.error().kind));
             return;
         }
-
-        StreamingResponse &state = *found->second;
-
-        // 整片交付完的才可以丢：这次 add_write_offset 说明传输层已经把读回调交出去的那段字节接走
-        // （QuicConnection 自己留着重传用的副本），nghttp3 不会再借这块内存。半片的留着，
-        // 下一次读回调从 headOffset 往后接着取。在读回调里丢会改掉还没被拷走的 vec，因此只在这里丢
-        while (!state.chunks.empty() && state.headOffset >= state.chunks.front().size())
-        {
-            state.pendingByteCount -= state.chunks.front().size();
-            state.chunks.pop_front();
-            state.headOffset = 0;
-        }
-
-        // 队列里还有分片：库里此刻正等着（读回调报过 WOULDBLOCK），唤一声它才会接着来取
-        if (!state.chunks.empty())
-        {
-            static_cast<void>(nghttp3_conn_resume_stream(m_connection, streamId));
-        }
-
-        if (const std::coroutine_handle<> waiter = std::exchange(state.spaceWaiter, {}); waiter != nullptr)
-        {
-            waiter.resume();
-        }
+        flushPendingStreamData();
     }
 
     void Http3Session::submitResponse(const std::int64_t streamId, const HttpResponse &response, const bool isHeadRequest)
     {
+        if (m_connection == nullptr)
+        {
+            return;
+        }
+
         const std::string_view body = response.body();
+        // 无正文的状态码（204/304）不带 content-length；HEAD 与非 204/304 都要给出长度，只是正文不发
+        const bool isBodylessStatus = HttpResponse::isBodylessStatusCode(response.status());
+        // HEAD：正文一个字节都不发（与 h2 的 isHeadRequest ? {} : body 同一处置），content-length
+        // 下面仍按完整正文长度给出——这正是 HEAD 的语义（RFC 9110 §9.3.2）
+        const bool hasBody = !isBodylessStatus && !isHeadRequest && !body.empty();
 
-        // 正文交给 nghttp3 时它只借走指针（丢包重传还会再用），所以放进按流号索引的表里；
-        // std::map 的节点地址稳定，后面的增删不会让已经交出去的指针失效
-        OutgoingBody &outgoingBody = m_outgoingBodies[streamId];
-        outgoingBody.bytes.assign(body.begin(), body.end());
-        outgoingBody.offset = 0;
-
-        // 头的字符串要活过下面那次调用（nghttp3_nv 里存的是指针），因此名字与取值都由本函数持有
-        std::vector<std::string> names;
-        std::vector<std::string> values;
-        names.reserve(response.headers().size() + 2);
-        values.reserve(response.headers().size() + 2);
-        names.emplace_back(kStatusHeaderName);
-        values.emplace_back(std::to_string(response.status()));
+        std::vector<QpackHeaderField> fieldLines;
+        fieldLines.reserve(response.headers().size() + 2);
+        fieldLines.push_back(QpackHeaderField{.name = kStatusHeaderName, .value = std::to_string(response.status())});
 
         bool hasContentLengthHeader = false;
         for (const auto &headerEntry: response.headers())
@@ -1540,49 +1212,76 @@ namespace AsynGyanis::Net
             {
                 hasContentLengthHeader = true;
             }
-            names.push_back(headerEntry.first);
-            values.push_back(headerEntry.second);
+            fieldLines.push_back(QpackHeaderField{.name = headerEntry.first, .value = headerEntry.second});
         }
 
-        // 无正文的状态码（204/304）不带 content-length；其余若业务没写就按实际正文长度补上，
-        // 否则对端只能靠 END_STREAM 判完，逐字节对不上 h1/h2 给出的那一份头部
-        const bool isBodylessStatus = HttpResponse::isBodylessStatusCode(response.status());
+        // 业务没写 content-length 就按实际正文长度补上，否则对端只能靠 END_STREAM 判完，
+        // 逐字节对不上 h1/h2 给出的那一份头部
         if (!isBodylessStatus && !hasContentLengthHeader)
         {
-            names.emplace_back("content-length");
-            values.emplace_back(std::to_string(outgoingBody.bytes.size()));
+            fieldLines.push_back(QpackHeaderField{.name = "content-length", .value = std::to_string(body.size())});
         }
 
-        const std::vector<nghttp3_nv> headerFields = makeHeaderFieldViews(names, values);
-
-        // 读正文的回调靠 stream_user_data 找回这段正文，因此必须先挂上去
-        // HEAD：正文一个字节都不发（与 h2 的 isHeadRequest ? {} : body 同一处置），content-length
-        // 上面已按完整正文长度给出——这正是 HEAD 的语义（RFC 9110 §9.3.2）
-        const bool hasBody = !isBodylessStatus && !isHeadRequest && !outgoingBody.bytes.empty();
-        if (nghttp3_conn_set_stream_user_data(m_connection, streamId, &outgoingBody) != 0)
+        // 没有正文时交完头就收尾；有正文则头先走（不结束流），紧接一次把整段正文推过去并收尾
+        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, !hasBody); !submitted)
         {
-            // 与 submitStreamingResponseHead 同一处置：整条流没了（对端重置）只作废这一条响应，
-            // 不牵连连接与其它流
-            LOG_WARN_FMT("Http3Session: 流 {} 已经不在了（对端多半已重置该流），本次响应作废；连接与其它流不受影响", streamId);
-            m_outgoingBodies.erase(streamId);
+            handleResponseSubmissionFailure(streamId, "提交响应头", submitted.error().message, toHttp3ErrorCode(submitted.error().kind));
             return;
         }
-
-        nghttp3_data_reader dataReader{};
-        dataReader.read_data = readResponseBodyCallback;
-
-        // dr 为空即「没有正文且就此收尾」（nghttp3 的接口约定）
-        if (const int result = nghttp3_conn_submit_response(m_connection, streamId, headerFields.data(), headerFields.size(),
-                                                           hasBody ? &dataReader : nullptr);
-            result != 0)
+        if (hasBody)
         {
-            markBroken(result, "提交响应头");
+            if (const auto appended = m_connection->appendResponseBody(streamId, asBytes(body), true); !appended)
+            {
+                handleResponseSubmissionFailure(streamId, "提交响应正文", appended.error().message, toHttp3ErrorCode(appended.error().kind));
+            }
         }
     }
 
-    void Http3Session::markBroken(const int errorCode, const char *const what)
+    void Http3Session::answerMalformedRequest(const std::int64_t streamId, const std::string_view reason)
+    {
+        // 这条流已经派发过或已经答过就只记日志：一条流只能有一份响应，业务此刻可能正在往里写正文
+        const bool isAlreadyDispatched =
+                m_streamingResponses.contains(streamId) || m_streamingRequests.contains(streamId) ||
+                m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId) ||
+                std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
+        if (isAlreadyDispatched || (m_connection != nullptr && m_connection->isLocalStreamFinished(streamId)))
+        {
+            LOG_WARN_FMT("Http3Session: 流 {} 的请求头部被连接层判为畸形（{}），但该流已派发或已作答，只记日志不再应答", streamId, reason);
+            return;
+        }
+
+        LOG_WARN_FMT("Http3Session: 流 {} 的请求头部畸形（{}），按 RFC 9114 §4.1.2 先回 400 再结束该流", streamId, reason);
+        HttpResponse response;
+        response.setStatus(400);
+        response.setBody(reason);
+        static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+        submitResponse(streamId, response, false);
+        // 作答之后这条流上不再派发业务，也不留请求缓冲：连接层此刻只看不再解释，剩下的字节会直接还额度
+        dropRequest(streamId);
+    }
+
+    void Http3Session::handleResponseSubmissionFailure(const std::int64_t streamId, const char *const what, const std::string_view reason,
+                                                       const Http3ErrorCode errorCode)
+    {
+        if (m_connection == nullptr || m_isBroken)
+        {
+            return; // 整条会话已经作废，剩下的只有销毁
+        }
+        if (m_connection->isLocalStreamFinished(streamId))
+        {
+            // 连接层找不到这条流，或本端早已收尾：对端多半已经把它 RST 掉了（慢业务上很常见）。
+            // 这只是**这一条流**的响应发不出去，连接与其它流都还健康——按流级作废，
+            // 不置 m_isBroken（那会连带关掉整条 QUIC 连接；h2 同场景也只作废该流）
+            LOG_WARN_FMT("Http3Session: 流 {} 已经不在了（对端多半已重置该流），{}作废；连接与其它流不受影响", streamId, what);
+            dropRequest(streamId);
+            return;
+        }
+        markBroken(errorCode, std::string(what) + "失败：" + std::string(reason));
+    }
+
+    void Http3Session::markBroken(const Http3ErrorCode errorCode, const std::string_view reason)
     {
         m_isBroken = true;
-        LOG_WARN_FMT("Http3Session: {}时 nghttp3 报错（{}），HTTP/3 会话作废", what, nghttp3_strerror(errorCode));
+        LOG_WARN_FMT("Http3Session: {}（{}），HTTP/3 会话作废", reason, http3ErrorCodeName(errorCode));
     }
 } // namespace AsynGyanis::Net
