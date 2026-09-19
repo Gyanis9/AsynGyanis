@@ -9,3 +9,4 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
 )
 
 add_subdirectory(Codec)
+add_subdirectory(Crypto)

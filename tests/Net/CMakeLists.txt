@@ -29,6 +29,7 @@ add_executable(TestNet
         Quic/Codec/TestQuicVariableLengthInteger.cpp
         Quic/Codec/TestQuicPacketHeader.cpp
         Quic/Codec/TestQuicFrame.cpp
+        Quic/Crypto/TestQuicKeySchedule.cpp
         Http3/TestHttp3Session.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
