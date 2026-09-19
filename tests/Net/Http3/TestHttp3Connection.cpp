@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <random>
 #include <span>
 #include <string>
 #include <utility>
@@ -69,6 +70,17 @@ namespace
         {
             const auto entry = writtenByteCounts.find(streamId);
             return entry == writtenByteCounts.end() ? 0 : entry->second;
+        }
+
+        /// 所有流上已交给传输层的字节总数：用来钉「作废之后不再长待发内容」这条不变式
+        [[nodiscard]] std::size_t totalWrittenByteCount() const
+        {
+            std::size_t total = 0;
+            for (const auto &[streamId, byteCount]: writtenByteCounts)
+            {
+                total += byteCount;
+            }
+            return total;
         }
 
         std::vector<std::int64_t> openedUnidirectionalStreamIds{};
@@ -527,4 +539,51 @@ TEST(Http3Connection, ExtendedConnectHeadIsAcceptedOnlyWhenWeAdvertiseSupport)
     permittingConnection->consumeStreamData(4, bytesOfText(makeFrame(0x01, encodeSection(tunnelFields, encoderBytes))), false);
     EXPECT_TRUE(permittingEvents.malformedRequests.empty());
     EXPECT_EQ(permittingEvents.headerBlocksReceived.size(), 1u);
+}
+
+/**
+ * @brief 不成帧的恶意字节流不得越界读写，也不得让连接出现「作废了还在长字节」的状态
+ * @details 协议层的所有输入都来自不可信对端，这一条用固定种子的伪随机字节 + 全部流类别扫一遍：
+ *          钉的是内存安全（整仓 Debug 带 ASan，越界与悬垂会直接报）与两条状态不变式，
+ *          而不是某个具体判定结果——随机用例负责让崩溃无处藏，判定分支由前面的具名用例逐个钉。
+ */
+TEST(Http3Connection, HostileByteStreamsStaySafeAndSelfConsistent)
+{
+    static constexpr std::uint64_t kSeed = 20260919;
+    std::mt19937 generator(static_cast<std::uint32_t>(kSeed));
+
+    for (int round = 0; round < 400; ++round)
+    {
+        FakeTransport transport;
+        EventLog events;
+        auto connection = makeConnection(transport, events);
+        ASSERT_TRUE(connection->isUsable());
+
+        // 五类流号都要扫到：请求流、对端控制流与两条 QPACK 流、以及未知类型的单向流
+        const std::int64_t streamIds[] = {0, 2, 6, 10, 14};
+        const std::size_t payloadByteCount = generator() % 48;
+        std::string payload(payloadByteCount, '\0');
+        for (auto &byte: payload)
+        {
+            byte = static_cast<char>(generator() % 256);
+        }
+        const std::int64_t streamId = streamIds[generator() % 5];
+        connection->consumeStreamData(streamId, bytesOfText(payload), (round % 5) == 0);
+        connection->flush();
+
+        // 不变式一：状态只可能是「可用」或「带线上错误码的作废」，不存在第三种
+        EXPECT_TRUE(connection->isUsable() || connection->isBroken()) << "第 " << round << " 轮";
+        // 不变式二：作废原因只记一次，且必须是可命名的错误码
+        EXPECT_LE(events.connectionClosures.size(), 1u) << "第 " << round << " 轮：收口通知重复发出";
+        if (connection->isBroken())
+        {
+            EXPECT_NE(connection->connectionErrorCode(), Http3ErrorCode::NoError) << "第 " << round << " 轮";
+            // 不变式三：作废之后既不再排字节也不再外发，否则销毁前的窗口里还在长内存
+            const std::size_t bytesAfterBreak = transport.totalWrittenByteCount();
+            static_cast<void>(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "500"}}, true));
+            connection->consumeStreamData(kRequestStreamId, bytesOfText(payload), false);
+            connection->flush();
+            EXPECT_EQ(transport.totalWrittenByteCount(), bytesAfterBreak) << "第 " << round << " 轮：作废之后仍在发字节";
+        }
+    }
 }
