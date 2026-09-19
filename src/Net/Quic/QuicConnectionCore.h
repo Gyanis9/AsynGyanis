@@ -184,6 +184,34 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] const QuicStreamLayer &streamLayer() const noexcept;
 
+        /**
+         * @brief 现在能不能由本端发起一次 1-RTT 密钥更新
+         * @details §6.1 的两条硬条件：握手已确认，且上一个相位里发出去的包已被确认（保证两侧都拿到新密钥）；
+         *          再加 §6.5 建议的 3×PTO 静置期，免得对端还在留旧密钥的阶段被我们打断
+         * @param now 当前时刻
+         * @return true 调 `initiateKeyUpdate(now)` 会真的换密钥
+         */
+        [[nodiscard]] bool canInitiateKeyUpdate(Timestamp now) const noexcept;
+
+        /**
+         * @brief 本端发起密钥更新：推进 1-RTT 写密钥并翻转 Key Phase 位
+         * @details 只换写侧（RFC 9001 §6.1）。读侧的「下一代」密钥在装读密钥时就备好了，等对端回应时提成当前。
+         *          下一个 1-RTT 包带着新相位出去，那一包就是更新是否被接受的探针。
+         * @param now 当前时刻，作为 3×PTO 静置期的起点
+         * @return true 真的换了；条件没满足时什么都不做并返回 false
+         */
+        bool initiateKeyUpdate(Timestamp now);
+
+        /// @return const QuicPacketKeys* 本端当前 1-RTT 写密钥，供用例与日志核对相位
+        [[nodiscard]] const QuicPacketKeys *applicationWriteKeys() const noexcept;
+
+        /**
+         * @brief 当前的探测超时周期，含退避倍数
+         * @details 外壳要靠它算 §6.5 的「3×PTO 静置期」与 §10.1 的空闲下限，本类不自己定闹钟
+         * @return Timestamp 恢复层给出的 PTO
+         */
+        [[nodiscard]] Timestamp probeTimeoutPeriod() const noexcept;
+
     private:
         /// 包号空间：0-RTT 借用 Initial 的空间，所以只有三个
         enum class PacketNumberSpace : std::size_t
@@ -204,6 +232,8 @@ namespace AsynGyanis::Net
         {
             std::optional<QuicPacketKeys> readKeys{};    ///< 解对端报文用；未就绪时相关报文只能丢弃
             std::optional<QuicPacketKeys> writeKeys{};   ///< 给本端报文加密用
+            std::optional<QuicPacketKeys> nextReadKeys{};     ///< 入站：下一代读密钥，只对 1-RTT 有意义（RFC 9001 §6.3）
+            std::optional<QuicPacketKeys> previousReadKeys{}; ///< 入站：上一代读密钥，晚到的旧包还要解，最多留 3×PTO（§6.5）
             std::uint64_t nextPacketNumber{0};           ///< 下一个要发出的完整包号
 
             std::optional<std::uint64_t> largestReceivedPacketNumber{}; ///< 本空间已认证的最大包号，包号还原要靠它
@@ -286,6 +316,10 @@ namespace AsynGyanis::Net
         /// @return std::optional<Timestamp> 空闲超时的到期时刻；还没收到过任何包或没启用时为空
         [[nodiscard]] std::optional<Timestamp> idleDeadlineTime() const noexcept;
 
+        /// §6.2/§6.3：把下一代读密钥提成当前，并按对端的相位同步推进本端写密钥
+        void applyPeerKeyUpdate(SpaceState &state, Timestamp now);
+        /// §6.5：过了 3×PTO 就把上一代读密钥丢掉，只留当前与下一代两套
+        void retireStaleKeyPhase(Timestamp now);
         [[nodiscard]] static std::optional<QuicEncryptionLevel> levelOf(const QuicPacketHeader &header) noexcept;
         [[nodiscard]] static QuicEncryptionLevel levelOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] PacketNumberSpace highestSpaceWithWriteKeys() const noexcept;
@@ -307,6 +341,11 @@ namespace AsynGyanis::Net
         bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
         std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
         std::optional<Timestamp> m_lastActivityTime{};                ///< 最后一次「收到并处理成功」的时刻，空闲超时从它起算
+        bool m_isSendKeyPhaseSet{false};                       ///< 本端出包的 Key Phase 位，随写密钥一起翻（RFC 9001 §6.1）
+        bool m_isReadKeyPhaseSet{false};                       ///< 本端当前读密钥对应的相位位；收发两套各自记账（§6.5）
+        std::optional<Timestamp> m_keyPhaseChangedAt{};        ///< 最近一次换相位的时刻，3×PTO 静置期与旧密钥回收都从它起算
+        std::optional<std::uint64_t> m_lowestPacketNumberSentInKeyPhase{}; ///< 本相位发过的最小包号（§6.1 的下一次更新门禁）
+        bool m_isKeyPhaseAcknowledged{false};                  ///< 对端确认了本相位里的某个包，才允许再来一次更新
         std::optional<QuicTransportParameters> m_peerParameters{};   ///< 验过的对端参数
         std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{}; ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它
     };

@@ -176,6 +176,8 @@ namespace AsynGyanis::Net
 
             QuicPacketKeys keys;
             keys.cipherSuite = cipherSuite;
+            // 留住这一代的流量秘密：§6.1 的密钥更新是在它上面再递推一步，拿不到秘密就没法往前推
+            std::copy(trafficSecret.begin(), trafficSecret.end(), keys.generationSecret.begin());
             // 三个标签逐字取自 RFC 9001 §5.1；IV 长度取 AEAD nonce 的最小长度 12（§5.1 末段）。
             // 目标区间要先按套件的实际长度截好：数组是 32 字节的公共容器，拿整个数组比长度会把
             // AES-128 这类短密钥一律判成长度不符
@@ -210,6 +212,19 @@ namespace AsynGyanis::Net
                                               std::format("Initial 方向密钥（{}）", directionLabel));
         // Initial 的 AEAD 固定是 AES_128_GCM，与后面协商出的套件无关
         return deriveKeyTriple(QuicCipherSuite::Aes128Gcm, trafficSecret, "Initial");
+    }
+
+    QuicPacketKeys deriveQuicUpdatedPacketKeys(const QuicPacketKeys &current)
+    {
+        const std::size_t secretLength = quicCipherSuiteSecretByteLength(current.cipherSuite);
+        const char *const hashName =
+                current.cipherSuite == QuicCipherSuite::Aes256Gcm ? kShaTwo384Name : kShaTwo256Name;
+        // secret_<n+1> = HKDF-Expand-Label(secret_<n>, "quic ku", "", Hash.length)（RFC 9001 §6.1）
+        const auto nextSecret = expandLabel(current.generationSecretBytes(), "quic ku", secretLength, hashName, "密钥更新");
+        QuicPacketKeys updated = deriveKeyTriple(current.cipherSuite, nextSecret, "密钥更新");
+        // §6.1 明写头部保护密钥不跟着换：换了会对端解不开包头，而相位位正是要写在包头里递过去的
+        updated.headerProtectionKey = current.headerProtectionKey;
+        return updated;
     }
 
     QuicPacketKeys deriveQuicPacketKeys(const QuicCipherSuite cipherSuite, const std::span<const std::uint8_t> trafficSecret)

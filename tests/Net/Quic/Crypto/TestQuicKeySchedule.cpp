@@ -99,6 +99,28 @@ namespace AsynGyanis::Net
     /**
      * @brief 三个长度表：密钥/头部保护密钥/流量秘密按套件取值，抄错会让导出长度整体错位
      */
+    /**
+     * @brief 密钥更新的递推：「quic ku」出来的下一代秘密对上附录 A.5 的取值，头部保护密钥不跟着换
+     */
+    TEST(QuicKeySchedule, AdvancesApplicationSecretPerAppendixA5)
+    {
+        const auto secret = makeBytesFromHex("9ac312a7f877468ebe69422748ad00a1"
+                                             "5443f18203a07d6060f688f30f21632b");
+        const auto current = deriveQuicPacketKeys(QuicCipherSuite::ChaCha20Poly1305, secret);
+        const auto updated = deriveQuicUpdatedPacketKeys(current);
+
+        const auto expectedNextSecret = makeBytesFromHex("1223504755036d556342ee9361d25342"
+                                                         "1a826c9ecdf3c7148684b36b714881f9");
+        const std::vector<std::uint8_t> actualNextSecret(updated.generationSecretBytes().begin(),
+                                                        updated.generationSecretBytes().end());
+        EXPECT_EQ(actualNextSecret, expectedNextSecret) << "下一代流量秘密与 RFC 9001 附录 A.5 的 ku 不符";
+        // §6.1：只有 AEAD 密钥与 IV 换，头部保护密钥原样带走
+        EXPECT_EQ(updated.headerProtectionKey, current.headerProtectionKey);
+        EXPECT_NE(updated.encryptionKey, current.encryptionKey);
+        EXPECT_NE(updated.initializationVector, current.initializationVector);
+        EXPECT_EQ(updated.cipherSuite, current.cipherSuite);
+    }
+
     TEST(QuicKeySchedule, CipherSuiteLengthsMatchRfc9001)
     {
         EXPECT_EQ(quicCipherSuiteKeyByteLength(QuicCipherSuite::Aes128Gcm), 16U);

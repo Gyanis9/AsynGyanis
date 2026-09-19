@@ -1,6 +1,6 @@
 /**
  * @file QuicKeySchedule.h
- * @brief QUIC 密钥表（RFC 9001 §5.1/§5.2）：Initial 密钥推导与按流量秘密导出包保护密钥
+ * @brief QUIC 密钥表（RFC 9001 §5.1/§5.2、§6.1）：Initial 密钥推导、按流量秘密导出包保护密钥与密钥更新
  * @author Gyanis
  * @date 2026-09-19
  * @version 1.0.0
@@ -55,8 +55,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 由 TLS 交出的流量秘密导出一组包保护密钥
      * @details 用 "quic key"/"quic iv"/"quic hp" 三个标签、零长 Context、套件的哈希函数
-     *          （RFC 9001 §5.1）。Handshake 与 Application 级别都走这里，区别只在密钥更新时
-     *          要连头部保护密钥一起换——那是 §6 的事，本函数只负责单次的三段导出。
+     *          （RFC 9001 §5.1）。Handshake 与 Application 级别都走这里；导出的同时把这一代的
+     *          流量秘密留在返回值里，§6.1 的更新要靠它递推。
      * @param cipherSuite 协商出的密码套件
      * @param trafficSecret 该方向的当前流量秘密，长度必须等于套件哈希长度（32 或 48 字节）
      * @return QuicPacketKeys 三件套密钥
@@ -64,4 +64,14 @@ namespace AsynGyanis::Net
      * @throws Base::Exception 运行期故障：OpenSSL 取不到 HKDF 实现或推导失败
      */
     [[nodiscard]] QuicPacketKeys deriveQuicPacketKeys(QuicCipherSuite cipherSuite, std::span<const std::uint8_t> trafficSecret);
+
+    /**
+     * @brief 从一组 1-RTT 密钥推出下一代（RFC 9001 §6.1）
+     * @details 只换 AEAD 密钥与 IV：新一代流量秘密由 "quic ku" 递推而来，头部保护密钥原样带走——
+     *          §6.1 明确要求不换，否则对端连携带相位位的包头都解不开。
+     * @param current 该方向当前的包保护密钥组，其 generationSecret 必须有效
+     * @return QuicPacketKeys 下一代密钥，套件与头部保护密钥与入参相同
+     * @throws Base::Exception 运行期故障：OpenSSL 拒绝了对应的 HKDF 参数
+     */
+    [[nodiscard]] QuicPacketKeys deriveQuicUpdatedPacketKeys(const QuicPacketKeys &current);
 } // namespace AsynGyanis::Net

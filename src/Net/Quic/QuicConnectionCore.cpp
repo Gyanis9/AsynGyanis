@@ -307,15 +307,44 @@ namespace AsynGyanis::Net
             return {};
         }
 
+        // 相位位不合的那一包，要么是对端刚更新、要么是晚到的旧包：同一个相位位被前后两代密钥共用，
+        // 只有包号能把它们分开（RFC 9001 §6.5）。头部保护密钥不随更新换（§6.1），所以上面那一步不必跟着分代
+        const QuicPacketKeys *reading = &*state.readKeys;
+        bool opensWithNextKeys = false;
+        if (space == PacketNumberSpace::Application && header.isKeyPhaseBitSet != m_isReadKeyPhaseSet)
+        {
+            const bool looksNewer = !state.largestReceivedPacketNumber.has_value() ||
+                                    packetNumber > *state.largestReceivedPacketNumber;
+            if (looksNewer && state.nextReadKeys.has_value())
+            {
+                reading = &*state.nextReadKeys;
+                opensWithNextKeys = true;
+            }
+            else if (!looksNewer && state.previousReadKeys.has_value())
+            {
+                reading = &*state.previousReadKeys;
+            }
+            else
+            {
+                // 手上没有对应的那一代：和「解不开」同等处理。回错误码等于给攻击者一个免费的相位探针
+                return {};
+            }
+        }
+
         const std::span<const std::uint8_t> additionalData = workingPacket.subspan(0, headerByteCount);
         const std::span<const std::uint8_t> protectedPayload = workingPacket.subspan(headerByteCount);
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
         const std::expected<std::size_t, QuicDecodeError> opened =
-                openQuicProtectedPayload(plaintext, *state.readKeys, packetNumber, additionalData, protectedPayload);
+                openQuicProtectedPayload(plaintext, *reading, packetNumber, additionalData, protectedPayload);
         if (!opened.has_value())
         {
             // 标签不合按 RFC 9001 §4.1.4 静默丢弃：可能是密钥不合或在途被改，回错误码只会喂攻击者
             return {};
+        }
+        if (opensWithNextKeys)
+        {
+            // 真用下一代密钥解开了，才说明对端确实发起了更新（§6.2）
+            applyPeerKeyUpdate(state, arrivalTime);
         }
 
         // 到这一步包才是「认证过」的，包号记账与重复判定都只在这个前提下推进
@@ -447,6 +476,18 @@ namespace AsynGyanis::Net
 
         const QuicAcknowledgementUpdate update =
                 m_recovery.onAcknowledgementReceived(recoverySpaceOf(space), frame, arrivalTime, acknowledgementDelay);
+        if (space == PacketNumberSpace::Application && m_lowestPacketNumberSentInKeyPhase.has_value())
+        {
+            // §6.1：本相位里任意一个包被确认，就代表两侧都有了新密钥，下一次更新的门禁随之打开
+            for (const QuicSentPacketInfo &packet : update.acknowledged)
+            {
+                if (packet.packetNumber >= *m_lowestPacketNumberSentInKeyPhase)
+                {
+                    m_isKeyPhaseAcknowledged = true;
+                    break;
+                }
+            }
+        }
         m_congestion.onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
         for (const QuicSentPacketInfo &packet : update.acknowledged)
         {
@@ -505,6 +546,11 @@ namespace AsynGyanis::Net
                 reading != nullptr && !state.readKeys.has_value())
             {
                 state.readKeys = *reading;
+                if (space == PacketNumberSpace::Application)
+                {
+                    // §6.3：当前与下一代两套读密钥常驻，更新到来时才不必在解包路径上现推一把密钥
+                    state.nextReadKeys = deriveQuicUpdatedPacketKeys(*state.readKeys);
+                }
             }
             if (const QuicPacketKeys *writing = m_tls->keys(level, QuicKeyDirection::Writing);
                 writing != nullptr && !state.writeKeys.has_value())
@@ -592,6 +638,7 @@ namespace AsynGyanis::Net
 
     void QuicConnectionCore::drive(const Timestamp now)
     {
+        retireStaleKeyPhase(now);
         // 解到对端 Handshake 及以上级别的报文，这批 Initial 就没有下一跳了：密钥、握手流与在途账一起
         // 退休，免得定时器为一个再也发不出包的空间亮着（RFC 9001 §4.9.1、RFC 9002 §A.11）
         if (m_isAddressValidated)
@@ -795,6 +842,7 @@ namespace AsynGyanis::Net
         packet.sourceConnectionId = m_configuration.localConnectionId;
         packet.packetNumber = packetNumber;
         packet.packetNumberByteCount = 1;
+        packet.isKeyPhaseBitSet = m_isSendKeyPhaseSet;
         packet.frames = asBytes(frames);
 
         std::string datagram;
@@ -1008,6 +1056,95 @@ namespace AsynGyanis::Net
         std::optional<std::vector<std::uint8_t>> datagram = std::move(m_outboundDatagrams.front());
         m_outboundDatagrams.pop_front();
         return datagram;
+    }
+
+    bool QuicConnectionCore::canInitiateKeyUpdate(const Timestamp now) const noexcept
+    {
+        // §6.1：握手确认之前不许更新；上一个相位没被确认过也不许再来一次
+        if (!m_isHandshakeConfirmed || m_phase != QuicConnectionPhase::Established)
+        {
+            return false;
+        }
+        if (m_lowestPacketNumberSentInKeyPhase.has_value() && !m_isKeyPhaseAcknowledged)
+        {
+            return false;
+        }
+        if (!m_keyPhaseChangedAt.has_value())
+        {
+            return true;
+        }
+        // §6.5 建议等满 3 倍 PTO：对端可能还留着上一代读密钥，太早翻它会把它的数据打成丢包
+        const Timestamp probePeriod = m_recovery.roundTripTimeEstimate().probeTimeout;
+        return now - *m_keyPhaseChangedAt >= probePeriod * 3;
+    }
+
+    bool QuicConnectionCore::initiateKeyUpdate(const Timestamp now)
+    {
+        if (!canInitiateKeyUpdate(now))
+        {
+            return false;
+        }
+        SpaceState &state = m_spaces[spaceIndex(PacketNumberSpace::Application)];
+        if (!state.writeKeys.has_value())
+        {
+            return false;
+        }
+        state.writeKeys = deriveQuicUpdatedPacketKeys(*state.writeKeys);
+        m_isSendKeyPhaseSet = !m_isSendKeyPhaseSet;
+        // 本相位的计数从下一个要发的包号起算，确认只要落在它之上就算这次更新到位
+        m_lowestPacketNumberSentInKeyPhase = state.nextPacketNumber;
+        m_isKeyPhaseAcknowledged = false;
+        m_keyPhaseChangedAt = now;
+        return true;
+    }
+
+    QuicConnectionCore::Timestamp QuicConnectionCore::probeTimeoutPeriod() const noexcept
+    {
+        return m_recovery.roundTripTimeEstimate().probeTimeout;
+    }
+
+    const QuicPacketKeys *QuicConnectionCore::applicationWriteKeys() const noexcept
+    {
+        const SpaceState &state = m_spaces[spaceIndex(PacketNumberSpace::Application)];
+        return state.writeKeys.has_value() ? &*state.writeKeys : nullptr;
+    }
+
+    void QuicConnectionCore::applyPeerKeyUpdate(SpaceState &state, const Timestamp now)
+    {
+        // §6.3：读侧始终备着两套。提成当前之后立刻推一把新的出来，下一轮更新仍不必在解包路径上现算
+        state.previousReadKeys = std::move(state.readKeys);
+        state.readKeys = std::move(state.nextReadKeys);
+        state.nextReadKeys = deriveQuicUpdatedPacketKeys(*state.readKeys);
+        m_isReadKeyPhaseSet = !m_isReadKeyPhaseSet;
+        m_keyPhaseChangedAt = now;
+
+        // §6.2：回确认之前，发密钥必须也推进到同一相位；带新相位的确认就是「这次更新已完成」的信号
+        if (m_isSendKeyPhaseSet != m_isReadKeyPhaseSet)
+        {
+            SpaceState &application = m_spaces[spaceIndex(PacketNumberSpace::Application)];
+            if (application.writeKeys.has_value())
+            {
+                application.writeKeys = deriveQuicUpdatedPacketKeys(*application.writeKeys);
+            }
+            m_isSendKeyPhaseSet = m_isReadKeyPhaseSet;
+            m_lowestPacketNumberSentInKeyPhase = application.nextPacketNumber;
+            m_isKeyPhaseAcknowledged = false;
+        }
+    }
+
+    void QuicConnectionCore::retireStaleKeyPhase(const Timestamp now)
+    {
+        SpaceState &state = m_spaces[spaceIndex(PacketNumberSpace::Application)];
+        if (!state.previousReadKeys.has_value() || !m_keyPhaseChangedAt.has_value())
+        {
+            return;
+        }
+        // §6.5：旧读密钥最多留 3 倍 PTO，过了就该收，否则网络里再晚到的包也不再算「还认得」
+        const Timestamp probePeriod = m_recovery.roundTripTimeEstimate().probeTimeout;
+        if (now - *m_keyPhaseChangedAt > probePeriod * 3)
+        {
+            state.previousReadKeys = std::nullopt;
+        }
     }
 
     QuicConnectionPhase QuicConnectionCore::phase() const noexcept

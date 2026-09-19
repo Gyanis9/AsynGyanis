@@ -58,4 +58,9 @@ namespace AsynGyanis::Net
     {
         return {headerProtectionKey.data(), quicCipherSuiteHeaderProtectionKeyByteLength(cipherSuite)};
     }
+
+    std::span<const std::uint8_t> QuicPacketKeys::generationSecretBytes() const noexcept
+    {
+        return {generationSecret.data(), quicCipherSuiteSecretByteLength(cipherSuite)};
+    }
 } // namespace AsynGyanis::Net

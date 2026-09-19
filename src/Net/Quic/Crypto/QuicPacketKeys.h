@@ -80,10 +80,11 @@ namespace AsynGyanis::Net
      */
     struct QuicPacketKeys
     {
-        QuicCipherSuite cipherSuite{QuicCipherSuite::Aes128Gcm};                                    ///< 决定下面三段的实际长度
+        QuicCipherSuite cipherSuite{QuicCipherSuite::Aes128Gcm};                                    ///< 决定下面几段的实际长度
         std::array<std::uint8_t, kQuicMaximumKeyByteLength> encryptionKey{};                        ///< AEAD 密钥（"quic key"）
         std::array<std::uint8_t, kQuicInitializationVectorByteLength> initializationVector{};        ///< AEAD 的 IV（"quic iv"）
         std::array<std::uint8_t, kQuicMaximumKeyByteLength> headerProtectionKey{};                  ///< 头部保护密钥（"quic hp"）
+        std::array<std::uint8_t, kQuicMaximumSecretByteLength> generationSecret{};                   ///< 导出上面两段的流量秘密，密钥更新靠它递推（§6.1）
 
         /**
          * @brief 按套件取 AEAD 密钥的有效字节
@@ -102,5 +103,11 @@ namespace AsynGyanis::Net
          * @return std::span<const std::uint8_t> 长度 16 或 32
          */
         [[nodiscard]] std::span<const std::uint8_t> headerProtectionKeyBytes() const noexcept;
+
+        /**
+         * @brief 按套件取这一代流量秘密的有效字节
+         * @return std::span<const std::uint8_t> 长度 32 或 48，等于该套件哈希的输出
+         */
+        [[nodiscard]] std::span<const std::uint8_t> generationSecretBytes() const noexcept;
     };
 } // namespace AsynGyanis::Net

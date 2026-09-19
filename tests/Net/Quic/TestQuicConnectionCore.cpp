@@ -150,6 +150,11 @@ namespace AsynGyanis::Net
             std::map<std::uint64_t, std::vector<std::uint8_t>> laterCryptoFragments{}; ///< 早到的乱序段，按偏移存
             bool isAcknowledgementPending{false};             ///< 收过触发确认的包还没回 ACK
             bool suppressesAcknowledgements{false};          ///< 本空间从此不再回 ACK，用来制造永久在途
+            std::optional<QuicPacketKeys> nextReadKeys{};     ///< 服务端更新之后本端要用的读密钥（RFC 9001 §6.3）
+            std::optional<QuicPacketKeys> previousReadKeys{}; ///< 本端换代之前的读密钥，晚到的旧包还要解（§6.5）
+            std::optional<QuicPacketKeys> nextWriteKeys{};    ///< 本端发起更新时要改用的写密钥
+            bool isSendKeyPhaseSet{false};                   ///< 本端出 1-RTT 包时带的相位位
+            bool isReadKeyPhaseSet{false};                   ///< 本端当前读密钥属于哪个相位，与发的是两套账（§6.5）
         };
 
         /// @return std::optional<QuicEncryptionLevel> 报文头对应的加密级别；本端不收的形态返回空
@@ -230,8 +235,69 @@ namespace AsynGyanis::Net
                         writing != nullptr && !space.writeKeys.has_value())
                     {
                         space.writeKeys = *writing;
+                        if (level == QuicEncryptionLevel::Application && space.readKeys.has_value())
+                        {
+                            // 本端既可能要发起更新，也要能回应更新：两代密钥先备好，替身才像真对端
+                            space.nextWriteKeys = deriveQuicUpdatedPacketKeys(*writing);
+                            space.nextReadKeys = deriveQuicUpdatedPacketKeys(*space.readKeys);
+                        }
                     }
                 }
+            }
+
+            /**
+             * @brief 本端发起一次 1-RTT 密钥更新：推进写密钥并翻发送侧的相位位
+             * @details 读侧不动——对端还没跟上来，它的包仍用老一代密钥，本端的读密钥要等它换相位时才提升
+             */
+            void initiateKeyUpdate()
+            {
+                ClientSpace &space = spaceOf(QuicEncryptionLevel::Application);
+                if (!space.nextWriteKeys.has_value())
+                {
+                    return;
+                }
+                space.writeKeys = std::move(space.nextWriteKeys);
+                space.nextWriteKeys = deriveQuicUpdatedPacketKeys(*space.writeKeys);
+                space.isSendKeyPhaseSet = !space.isSendKeyPhaseSet;
+            }
+
+            /**
+             * @brief 手工发一条相位位翻过来、密钥却还是当前这一代的 PING
+             * @details 「伪造密钥更新」的样子：本端解不开它，服务端也该同样解不开，用来验静默丢弃
+             * @param level 用哪个级别发
+             * @param packetNumberOverride 把包号压回这个值，用来模拟「比当前相位最老的包还老」的迟到包
+             * @return std::vector<std::uint8_t> 一条数据报
+             */
+            [[nodiscard]] std::vector<std::uint8_t> buildPingWithFlippedKeyPhase(const QuicEncryptionLevel level,
+                                                                                 const std::optional<std::uint64_t> packetNumberOverride =
+                                                                                         std::nullopt)
+            {
+                std::string frames;
+                appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+                ClientSpace &space = spaceOf(level);
+                const bool savedPhase = space.isSendKeyPhaseSet;
+                const std::uint64_t savedPacketNumber = space.nextPacketNumber;
+                space.isSendKeyPhaseSet = !savedPhase;
+                if (packetNumberOverride.has_value())
+                {
+                    space.nextPacketNumber = *packetNumberOverride;
+                }
+                std::vector<std::uint8_t> datagram = buildDatagram(level, frames);
+                space.isSendKeyPhaseSet = savedPhase;
+                space.nextPacketNumber = savedPacketNumber;
+                return datagram;
+            }
+
+            /// @return true 本端曾被迫提升读密钥代际，也就是服务端确实换过一次
+            [[nodiscard]] bool sawServerKeyUpdate() const noexcept
+            {
+                return m_sawServerKeyUpdate;
+            }
+
+            /// @return 服务端最近一条 1-RTT 报文带的相位位
+            [[nodiscard]] bool serverKeyPhase() const noexcept
+            {
+                return m_sawServerKeyPhase;
             }
 
             /**
@@ -675,12 +741,48 @@ namespace AsynGyanis::Net
                 {
                     return;
                 }
-                const auto opened = openQuicProtectedPayload(plaintext, *space.readKeys, packetNumber,
+                const QuicPacketKeys *reading = &*space.readKeys;
+                bool opensWithNextKeys = false;
+                if (*level == QuicEncryptionLevel::Application && refreshed.isKeyPhaseBitSet != space.isReadKeyPhaseSet)
+                {
+                    // 同一个相位位被前后两代密钥共用，只有包号能分「对端刚更新」与「晚到的旧包」（§6.5）
+                    const bool looksNewer = !space.largestReceived.has_value() || packetNumber > *space.largestReceived;
+                    if (looksNewer && space.nextReadKeys.has_value())
+                    {
+                        reading = &*space.nextReadKeys;
+                        opensWithNextKeys = true;
+                    }
+                    else if (!looksNewer && space.previousReadKeys.has_value())
+                    {
+                        reading = &*space.previousReadKeys;
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+                const auto opened = openQuicProtectedPayload(plaintext, *reading, packetNumber,
                                                              packet.subspan(0, headerByteCount), packet.subspan(headerByteCount));
                 if (!opened.has_value())
                 {
                     return;
                 }
+                if (opensWithNextKeys)
+                {
+                    // 解开了就认这次更新：读侧换代，发侧若还没跟上就一并推进（§6.2）
+                    space.previousReadKeys = std::move(space.readKeys);
+                    space.readKeys = std::move(space.nextReadKeys);
+                    space.nextReadKeys = deriveQuicUpdatedPacketKeys(*space.readKeys);
+                    space.isReadKeyPhaseSet = !space.isReadKeyPhaseSet;
+                    m_sawServerKeyUpdate = true;
+                    if (space.isSendKeyPhaseSet != space.isReadKeyPhaseSet && space.nextWriteKeys.has_value())
+                    {
+                        space.writeKeys = std::move(space.nextWriteKeys);
+                        space.nextWriteKeys = deriveQuicUpdatedPacketKeys(*space.writeKeys);
+                        space.isSendKeyPhaseSet = space.isReadKeyPhaseSet;
+                    }
+                }
+                m_sawServerKeyPhase = refreshed.isKeyPhaseBitSet;
                 plaintext.resize(*opened);
                 space.receivedPacketNumbers.insert(packetNumber);
                 if (!space.largestReceived.has_value() || packetNumber > *space.largestReceived)
@@ -843,6 +945,7 @@ namespace AsynGyanis::Net
                                                                                        : m_serverConnectionId);
                 QuicOutboundPacket packet;
                 packet.isLongHeader = level != QuicEncryptionLevel::Application;
+                packet.isKeyPhaseBitSet = space.isSendKeyPhaseSet;
                 packet.longPacketType = level == QuicEncryptionLevel::Initial ? QuicLongPacketType::Initial
                                                                              : QuicLongPacketType::Handshake;
                 packet.destinationConnectionId = destination;
@@ -870,6 +973,8 @@ namespace AsynGyanis::Net
             std::optional<std::uint64_t> m_skippedPacketNumber{};       ///< 要跳过的那个包号，空表示不挑
             QuicEncryptionLevel m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
             std::size_t m_pingFrameCount{0};                          ///< 收到过的 PING 帧数
+            bool m_sawServerKeyUpdate{false};                         ///< 本端是否被迫提升过读密钥代际
+            bool m_sawServerKeyPhase{false};                          ///< 服务端最近一包带的相位位
             std::string m_serverStreamText{};                         ///< 服务端发来的流数据，按到达顺序拼起来
             std::vector<QuicStreamRange> m_serverStreamRanges{};      ///< 服务端每个 STREAM 帧带的区间
             std::size_t m_serverStreamFinalCount{0};                  ///< 服务端发过带 FIN 的 STREAM 帧条数
@@ -994,8 +1099,9 @@ namespace AsynGyanis::Net
             }
             ASSERT_TRUE(client.isHandshakeCompleted()) << "握手没跑完，1-RTT 的断言无从谈起";
             ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
-            // 最后一批收到的包先确认干净，免得用例开头就欠着一条 ACK、定时器还亮着
-            exchange(core, client, Timestamp{100000});
+            // 最后一批收到的包先确认干净，免得用例开头就欠着一条 ACK、定时器还亮着。
+            // 时刻要贴着上一轮：隔太久会把一个虚高的 RTT 样本喂进估算里，依赖 PTO 的断言就没法口算
+            exchange(core, client, Timestamp{60000});
         }
 
         /**
@@ -2051,4 +2157,105 @@ namespace AsynGyanis::Net
                 << "跨过缓存段起点的那一段没并进来，握手永远接不上";
     }
 
+
+    /**
+     * @brief 客户端先更新：服务端要用下一代读密钥解开它，并把发密钥推到同一相位后才回确认
+     */
+    TEST(QuicConnectionCore, UpdatesSendKeysWhenPeerInitiatesKeyUpdate)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        feed(core, client.buildPing(QuicEncryptionLevel::Application), Timestamp{110000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_FALSE(client.sawServerKeyUpdate()) << "对端还没更新，本端不该自己换代";
+
+        client.initiateKeyUpdate();
+        feed(core, client.buildPing(QuicEncryptionLevel::Application), Timestamp{120000});
+        const std::vector<std::vector<std::uint8_t>> response = drain(core);
+        ASSERT_FALSE(response.empty()) << "带新相位的第一包解不开，§6.2 要求的回应就无从谈起";
+        for (const auto &datagram : response)
+        {
+            client.consume(datagram);
+        }
+        EXPECT_TRUE(client.sawServerKeyUpdate()) << "服务端的确认没用更新后的密钥发（§6.2 要求回确认之前先换）";
+        EXPECT_TRUE(client.serverKeyPhase()) << "服务端出包的相位位该跟着翻成 1";
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Established) << "响应一次更新不该把连接弄出问题";
+    }
+
+    /**
+     * @brief 本端发起更新要等三件事：握手确认、上一相位被确认、3×PTO 静置期满
+     */
+    TEST(QuicConnectionCore, GatesSelfInitiatedKeyUpdateOnAcknowledgement)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        ASSERT_FALSE(core.canInitiateKeyUpdate(Timestamp{0})) << "握手都没确认，不该允许更新（§6.1）";
+        finishHandshake(core, client);
+
+        ASSERT_TRUE(core.canInitiateKeyUpdate(Timestamp{200000})) << "第一次更新没有前序相位要等";
+        ASSERT_TRUE(core.initiateKeyUpdate(Timestamp{200000}));
+        const auto keyAfterFirstUpdate = core.applicationWriteKeys()->encryptionKey;
+
+        // 更新是靠「下一包用新密钥」 signaled 的，没东西可发时先给点数据它才上得了线
+        EXPECT_EQ(core.streamLayer().writeStreamData(0x00, payloadBytes("phase one"), false), 9U);
+        core.drive(Timestamp{201000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_TRUE(client.serverKeyPhase()) << "本端发的第一包该带新相位";
+        EXPECT_TRUE(client.sawServerKeyUpdate()) << "客户端没跟着换代，两侧相位会一直错开";
+
+        EXPECT_FALSE(core.initiateKeyUpdate(Timestamp{202000})) << "既没确认也没过静置期";
+        exchange(core, client, Timestamp{210000});
+        // 静置期按 PTO 的倍数算，就按倍数断言：写死时刻会在 RTT 样本一变之后变成巧合
+        const Timestamp probePeriod = core.probeTimeoutPeriod();
+        EXPECT_FALSE(core.canInitiateKeyUpdate(Timestamp{210000} + probePeriod * 2)) << "两倍 PTO 就放行，太早了（§6.5）";
+        ASSERT_TRUE(core.canInitiateKeyUpdate(Timestamp{210000} + probePeriod * 3)) << "满 3×PTO 该放行";
+        ASSERT_TRUE(core.initiateKeyUpdate(Timestamp{210000} + probePeriod * 4)) << "两道门禁都过了该放行";
+        EXPECT_NE(core.applicationWriteKeys()->encryptionKey, keyAfterFirstUpdate) << "第二次更新没换密钥";
+        // 这一回一个包都不发：静置期再久也不该放行，两侧可能还没拿到新密钥（§6.1 的硬条件）
+        EXPECT_FALSE(core.canInitiateKeyUpdate(Timestamp{100000000})) << "本相位没有任何包被确认过，不该放行第二次更新";
+    }
+
+    /**
+     * @brief 相位对不上又拿不到对应代际的密钥：静默丢弃，不收口也不产出
+     */
+    TEST(QuicConnectionCore, DropsPacketWithUnusableKeyPhase)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 只翻相位位、不换密钥，还把包号压回当前相位之前：这就是「伪造一个密钥更新」的样子。
+        // 本端此刻既没有下一代读密钥、也没有上一代，唯一正确的反应是丢掉且什么都不做（§6.5）
+        core.drive(Timestamp{109000});
+        drain(core);
+        ASSERT_TRUE(core.onDatagramReceived(
+                            client.buildPingWithFlippedKeyPhase(QuicEncryptionLevel::Application, std::uint64_t{0}),
+                            Timestamp{110000}).has_value());
+        core.drive(Timestamp{111000});
+        EXPECT_TRUE(drain(core).empty()) << "解不开的包不该惊动任何一侧状态";
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Established) << "相位不合不是对端违规，不能收口";
+    }
 } // namespace AsynGyanis::Net
