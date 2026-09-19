@@ -257,6 +257,16 @@ namespace AsynGyanis::Net
         /// @return std::size_t 3 倍已收字节减去已发字节；已验证地址时这条额度不存在
         [[nodiscard]] std::size_t amplificationRemainingByteCount() const noexcept;
         void adoptPeerTransportParameters(Timestamp now);
+        /**
+         * @brief 空闲超时的有效值
+         * @details 两端都宣告就是两者取小，只有一端宣告非 0 就用那一个，都是 0 则不启用（§10.1）；
+         *          对端参数还没到之前只有本端这一个值可用。最后按 §10.1 的硬要求抬到至少 3 倍 PTO
+         * @return std::optional<Timestamp> 不启用时返回空
+         */
+        [[nodiscard]] std::optional<Timestamp> effectiveIdleTimeout() const noexcept;
+        /// @return std::optional<Timestamp> 空闲超时的到期时刻；还没收到过任何包或没启用时为空
+        [[nodiscard]] std::optional<Timestamp> idleDeadlineTime() const noexcept;
+
         [[nodiscard]] static std::optional<QuicEncryptionLevel> levelOf(const QuicPacketHeader &header) noexcept;
         [[nodiscard]] static QuicEncryptionLevel levelOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] PacketNumberSpace highestSpaceWithWriteKeys() const noexcept;
@@ -276,6 +286,7 @@ namespace AsynGyanis::Net
         bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
         bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
         std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
+        std::optional<Timestamp> m_lastActivityTime{};                ///< 最后一次「收到并处理成功」的时刻，空闲超时从它起算
         std::optional<QuicTransportParameters> m_peerParameters{};   ///< 验过的对端参数
         std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{}; ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它
     };

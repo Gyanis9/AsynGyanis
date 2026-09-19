@@ -16,7 +16,9 @@
 //   8) 出流量的两道闸：与已交字节重叠的 CRYPTO 分片剪掉再交给 TLS（§7.5），以及地址验证之前回量
 //      夹在三倍已收字节以内、连重发与探针也不例外（RFC 9000 §8.1）；
 //   9) 解到对端的 Handshake 报文后 Initial 空间整体退休：不再补发它的字节，也不再为它亮定时器
-//      （RFC 9001 §4.9.1 + RFC 9002 §A.11）。
+//      （RFC 9001 §4.9.1 + RFC 9002 §A.11）；
+//  10) 空闲超时：有效值取两端宣告里较小的那一个，到点静默关闭（不收口、不留待发），且探测期间
+//      把自己撑住不关（RFC 9000 §10.1）。
 // 证书用仓库内的自签夹具（与 HTTPS、TLS 胶水用例同一份），因此不依赖任何外部服务。
 
 #include "Net/Quic/QuicConnectionCore.h"
@@ -177,8 +179,16 @@ namespace AsynGyanis::Net
              * @param sourceConnectionId 本端在第一个 Initial 里的源标识
              * @param mismatchedSourceConnectionId 要不要把参数里的 ISCID 写成别的值，用于 §7.3 绑定用例
              */
+            /**
+             * @brief 建客户端
+             * @param context 客户端 SSL 上下文
+             * @param sourceConnectionId 本端在第一个 Initial 里的源标识
+             * @param mismatchedSourceConnectionId 要不要把参数里的 ISCID 写成别的值，用于 §7.3 绑定用例
+             * @param maximumIdleTimeoutMilliseconds 本端宣告的 max_idle_timeout，0 表示不宣告（§18.2）
+             */
             InMemoryQuicClient(SSL_CTX &context, std::vector<std::uint8_t> sourceConnectionId,
-                               const bool mismatchedSourceConnectionId = false)
+                               const bool mismatchedSourceConnectionId = false,
+                               const std::uint64_t maximumIdleTimeoutMilliseconds = 0)
                 : m_sourceConnectionId(std::move(sourceConnectionId))
             {
                 ClientSpace &initial = spaceOf(QuicEncryptionLevel::Initial);
@@ -188,6 +198,7 @@ namespace AsynGyanis::Net
                 QuicTransportParameters parameters;
                 parameters.initialMaximumData = 65536;
                 parameters.initialMaximumBidirectionalStreams = 128;
+                parameters.maximumIdleTimeoutMilliseconds = maximumIdleTimeoutMilliseconds;
                 parameters.initialSourceConnectionId = mismatchedSourceConnectionId ? kUnknownConnectionId : m_sourceConnectionId;
                 std::string encoded;
                 appendQuicTransportParameters(encoded, parameters);
@@ -764,10 +775,13 @@ namespace AsynGyanis::Net
          * @brief 造一份服务端配置
          * @param tlsContext 服务端 SSL 上下文
          * @param peerConnectionId 回包要打的目的地标识，默认就是客户端自报的那个
+         * @param maximumIdleTimeoutMilliseconds 本端宣告的 max_idle_timeout；默认 0 表示不宣告，
+         *        免得空闲超时定时器混进那些只盯着丢包与拥塞的用例（§18.2）
          * @return QuicConnectionCoreConfiguration 填好的配置
          */
         QuicConnectionCoreConfiguration makeServerConfiguration(SSL_CTX &tlsContext,
-                                                                std::vector<std::uint8_t> peerConnectionId = kClientConnectionId)
+                                                                std::vector<std::uint8_t> peerConnectionId = kClientConnectionId,
+                                                                const std::uint64_t maximumIdleTimeoutMilliseconds = 0)
         {
             QuicConnectionCoreConfiguration configuration;
             configuration.tlsContext = &tlsContext;
@@ -776,7 +790,7 @@ namespace AsynGyanis::Net
             configuration.originalDestinationConnectionId = kOriginalDestinationConnectionId;
             configuration.transportParameters.initialMaximumData = 1048576;
             configuration.transportParameters.initialMaximumBidirectionalStreams = 1024;
-            configuration.transportParameters.maximumIdleTimeoutMilliseconds = 30000;
+            configuration.transportParameters.maximumIdleTimeoutMilliseconds = maximumIdleTimeoutMilliseconds;
             return configuration;
         }
 
@@ -1523,5 +1537,107 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(client.serverReceivedPacketCount(QuicEncryptionLevel::Initial), initialPackets)
                 << "Initial 空间退休后不该再补发它的握手字节";
+    }
+
+    /**
+     * @brief 空闲到点就静默关闭：不发 CONNECTION_CLOSE，也不留任何待发
+     * @details 对端本来就没在说话，收口报文发过去也没人接；本端把状态丢了就完事（RFC 9000 §10.1）
+     */
+    TEST(QuicConnectionCore, ClosesSilentlyWhenTheConnectionGoesIdle)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId, 30000));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, Timestamp{10000 * round});
+        }
+        ASSERT_TRUE(client.isHandshakeCompleted());
+        ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+
+        // 用一条明确的 PING 把「最后一次收到包」的时刻钉死，之后只谈 30 秒的额度怎么算
+        const Timestamp lastActivity{50000};
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), lastActivity).has_value());
+        core.drive(lastActivity + Timestamp{1000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        const std::optional<Timestamp> deadline = core.nextTimeout();
+        ASSERT_TRUE(deadline.has_value()) << "宣告了 max_idle_timeout 就该武装空闲定时器";
+        // 服务端只回了 ACK：不触发确认的出包不该把计时推后（§10.1 只认「第一个触发确认的包」）
+        EXPECT_EQ(*deadline, lastActivity + Timestamp{30000000});
+
+        core.onTimeout(*deadline);
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Closing);
+        EXPECT_TRUE(core.isFinished()) << "静默关闭不留收口报文";
+        EXPECT_TRUE(drain(core).empty()) << "空闲超时不该发出 CONNECTION_CLOSE（§10.2）";
+    }
+
+    /**
+     * @brief 有效空闲超时取两端宣告里较小的那一个（§10.1）
+     */
+    TEST(QuicConnectionCore, UsesTheSmallerIdleTimeoutOfTheTwoPeers)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId, 30000));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, 10000);
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, Timestamp{10000 * round});
+        }
+        ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+
+        const Timestamp lastActivity{50000};
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), lastActivity).has_value());
+        core.drive(lastActivity + Timestamp{1000});
+        drain(core);
+
+        const std::optional<Timestamp> deadline = core.nextTimeout();
+        ASSERT_TRUE(deadline.has_value());
+        EXPECT_EQ(*deadline, lastActivity + Timestamp{10000000}) << "对端只宣告 10 秒，本端就不该按 30 秒留着连接";
+    }
+
+    /**
+     * @brief 一路探测期间不该把自己判空闲：本端发起的触发确认的包也算活动（§10.1）
+     * @details 对端一条确认都不发时，「最后一次收到包」的时刻永远不动；只看它的实现会在第 30 秒
+     *          把还在努力恢复的连接关掉
+     */
+    TEST(QuicConnectionCore, KeepsProbingInsteadOfIdlingOut)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId, 30000));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        client.skipPacketNumber(QuicEncryptionLevel::Application, std::nullopt);
+        client.dropHandshakePackets(true);
+        exchange(core, client, Timestamp{0});
+        exchange(core, client, Timestamp{10000});
+        ASSERT_FALSE(client.isHandshakeCompleted()) << "Handshake 包被丢光，握手该停在半路";
+        // 一条 Handshake 级的 PING 让服务端确认对端能收发包，§8.1 的额度不再挡住后面的重发
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Handshake), Timestamp{20000}).has_value());
+        core.drive(Timestamp{21000});
+        drain(core);
+
+        for (int attempt = 0; attempt < 12; ++attempt)
+        {
+            const std::optional<Timestamp> deadline = core.nextTimeout();
+            ASSERT_TRUE(deadline.has_value());
+            core.onTimeout(*deadline);
+            ASSERT_FALSE(drain(core).empty()) << "第 " << attempt << " 趟探测没东西可发，连接已经死了";
+            EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "还在恢复中就把自己判空闲关掉了";
+        }
     }
 } // namespace AsynGyanis::Net

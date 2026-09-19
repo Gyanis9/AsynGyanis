@@ -320,6 +320,9 @@ namespace AsynGyanis::Net
             m_peerFirstInitialSourceConnectionId = std::vector<std::uint8_t>(header.sourceConnectionId.begin(),
                                                                             header.sourceConnectionId.end());
         }
+        // §10.1：「收到并处理成功」才算活动，解不开的包不能拿来续命。本端自己发出去的包不另算一份
+        // 活动：§10.1 那条「自发也要重启」的规则，由下面 3 倍 PTO 的下限覆盖（探测越久，额度越宽）
+        m_lastActivityTime = arrivalTime;
         if (!m_isAddressValidated && *level != QuicEncryptionLevel::Initial)
         {
             // 能解出 Handshake 及以上的包，就说明对端确实收到了我们发出去的东西（§8.1.4 的路径验证）：
@@ -841,13 +844,68 @@ namespace AsynGyanis::Net
 
     std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::nextTimeout() const noexcept
     {
-        return m_recovery.nextDeadline();
+        std::optional<Timestamp> deadline = m_recovery.nextDeadline();
+        if (const std::optional<Timestamp> idleDeadline = idleDeadlineTime(); idleDeadline.has_value() &&
+            (!deadline.has_value() || *idleDeadline < *deadline))
+        {
+            deadline = idleDeadline;
+        }
+        return deadline;
+    }
+
+    std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::idleDeadlineTime() const noexcept
+    {
+        if (!m_lastActivityTime.has_value())
+        {
+            return std::nullopt;
+        }
+        if (const std::optional<Timestamp> period = effectiveIdleTimeout(); period.has_value())
+        {
+            return *m_lastActivityTime + *period;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::effectiveIdleTimeout() const noexcept
+    {
+        // §18.2：两端都宣告取较小的那个；只有一端宣告非 0 就用那一个；两个都是 0 表示不启用
+        const std::uint64_t localMilliseconds = m_configuration.transportParameters.maximumIdleTimeoutMilliseconds;
+        const std::uint64_t peerMilliseconds = m_peerParameters.has_value()
+                                                  ? m_peerParameters->maximumIdleTimeoutMilliseconds
+                                                  : 0;
+        std::uint64_t effectiveMilliseconds = 0;
+        if (localMilliseconds != 0 && peerMilliseconds != 0)
+        {
+            effectiveMilliseconds = std::min(localMilliseconds, peerMilliseconds);
+        }
+        else
+        {
+            effectiveMilliseconds = localMilliseconds != 0 ? localMilliseconds : peerMilliseconds;
+        }
+        if (effectiveMilliseconds == 0)
+        {
+            return std::nullopt;
+        }
+        // §10.1 的硬要求：至少留够 3 倍 PTO，否则一次抖动就把好端端的连接判死
+        const Timestamp probePeriod = m_recovery.roundTripTimeEstimate().probeTimeout;
+        return std::max(Timestamp{std::chrono::milliseconds{effectiveMilliseconds}}, probePeriod * 3);
     }
 
     void QuicConnectionCore::onTimeout(const Timestamp now)
     {
         if (m_phase == QuicConnectionPhase::Closing)
         {
+            return;
+        }
+        if (const std::optional<Timestamp> idleDeadline = idleDeadlineTime(); idleDeadline.has_value() &&
+            *idleDeadline <= now)
+        {
+            // §10.1：空闲超时是「静默关闭」——不发 CONNECTION_CLOSE（对端本来就没在说话，发了也没人收），
+            // 也不留待发数据报：本连接到此为止，外层看 isFinished() 就能回收
+            m_phase = QuicConnectionPhase::Closing;
+            m_localCloseErrorCode = std::nullopt;
+            m_localCloseReasonPhrase.clear();
+            m_outboundDatagrams.clear();
             return;
         }
         const QuicRecoveryTimeoutAction action = m_recovery.onDeadlineReached(now);
