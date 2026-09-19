@@ -30,6 +30,7 @@ add_executable(TestNet
         Quic/Codec/TestQuicVariableLengthInteger.cpp
         Quic/Codec/TestQuicPacketHeader.cpp
         Quic/Codec/TestQuicFrame.cpp
+        Quic/Codec/TestQuicTransportParameters.cpp
         Quic/Crypto/TestQuicKeySchedule.cpp
         Quic/Crypto/TestQuicHeaderProtection.cpp
         Quic/Crypto/TestQuicPacketProtection.cpp
