@@ -1,6 +1,7 @@
 #include "Net/Quic/Codec/QuicFrame.h"
 
 #include "Net/Quic/Codec/QuicPacketHeader.h"
+#include "Net/Quic/Codec/QuicRawBytes.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
 #include <algorithm>
@@ -165,21 +166,6 @@ namespace AsynGyanis::Net
         QuicDecodeError makeFrameError(QuicDecodeErrorKind kind, std::string message)
         {
             return QuicDecodeError{kind, std::move(message)};
-        }
-
-        /**
-         * @brief 把字节追写进缓冲
-         * @param bytes 目标缓冲
-         * @param data 待写入字节，空视图直接返回
-         */
-        void appendBytes(std::string &bytes, const std::span<const std::uint8_t> data)
-        {
-            if (data.empty())
-            {
-                // 空视图的 data() 允许是空指针，交给 append(const char*, 0) 是未定义行为
-                return;
-            }
-            bytes.append(reinterpret_cast<const char *>(data.data()), data.size());
         }
 
         /**
@@ -367,14 +353,14 @@ namespace AsynGyanis::Net
                 appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(QuicFrameType::Crypto));
                 appendQuicVariableLengthInteger(bytes, frame.offset);
                 appendQuicVariableLengthInteger(bytes, frame.data.size());
-                appendBytes(bytes, frame.data);
+                appendQuicRawBytes(bytes, frame.data);
             }
 
             void operator()(const QuicNewTokenFrame &frame) const
             {
                 appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(QuicFrameType::NewToken));
                 appendQuicVariableLengthInteger(bytes, frame.token.size());
-                appendBytes(bytes, frame.token);
+                appendQuicRawBytes(bytes, frame.token);
             }
 
             void operator()(const QuicStreamFrame &frame) const
@@ -387,7 +373,7 @@ namespace AsynGyanis::Net
                     appendQuicVariableLengthInteger(bytes, frame.offset);
                 }
                 appendQuicVariableLengthInteger(bytes, frame.data.size());
-                appendBytes(bytes, frame.data);
+                appendQuicRawBytes(bytes, frame.data);
             }
 
             void operator()(const QuicMaxDataFrame &frame) const
@@ -453,8 +439,8 @@ namespace AsynGyanis::Net
                 appendQuicVariableLengthInteger(bytes, frame.sequenceNumber);
                 appendQuicVariableLengthInteger(bytes, frame.retirePriorTo);
                 bytes.push_back(static_cast<char>(frame.connectionId.size()));
-                appendBytes(bytes, frame.connectionId);
-                appendBytes(bytes, frame.statelessResetToken);
+                appendQuicRawBytes(bytes, frame.connectionId);
+                appendQuicRawBytes(bytes, frame.statelessResetToken);
             }
 
             void operator()(const QuicRetireConnectionIdFrame &frame) const
@@ -466,13 +452,13 @@ namespace AsynGyanis::Net
             void operator()(const QuicPathChallengeFrame &frame) const
             {
                 appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(QuicFrameType::PathChallenge));
-                appendBytes(bytes, std::span<const std::uint8_t>(frame.data));
+                appendQuicRawBytes(bytes, std::span<const std::uint8_t>(frame.data));
             }
 
             void operator()(const QuicPathResponseFrame &frame) const
             {
                 appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(QuicFrameType::PathResponse));
-                appendBytes(bytes, std::span<const std::uint8_t>(frame.data));
+                appendQuicRawBytes(bytes, std::span<const std::uint8_t>(frame.data));
             }
 
             void operator()(const QuicConnectionCloseFrame &frame) const
@@ -486,7 +472,7 @@ namespace AsynGyanis::Net
                     appendQuicVariableLengthInteger(bytes, *frame.triggeredFrameType);
                 }
                 appendQuicVariableLengthInteger(bytes, frame.reasonPhrase.size());
-                appendBytes(bytes, frame.reasonPhrase);
+                appendQuicRawBytes(bytes, frame.reasonPhrase);
             }
         };
     } // namespace

@@ -1,6 +1,7 @@
 #include "Net/Quic/QuicPacketBuilder.h"
 
 #include "Base/Exception/Exception.h"
+#include "Net/Quic/Codec/QuicRawBytes.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 #include "Net/Quic/Crypto/QuicHeaderProtection.h"
 #include "Net/Quic/Crypto/QuicPacketProtection.h"
@@ -12,20 +13,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /**
-         * @brief 把一段字节原样追写到缓冲末尾
-         * @param bytes 目标缓冲
-         * @param data 待写入字节；空视图直接返回，避免把可能为空的 data() 交给 append
-         */
-        void appendRawBytes(std::string &bytes, const std::span<const std::uint8_t> data)
-        {
-            if (data.empty())
-            {
-                return;
-            }
-            bytes.append(reinterpret_cast<const char *>(data.data()), data.size());
-        }
-
         /// PADDING 帧的类型字节：用它凑够头部保护的取样长度，对端只跳过不解释（RFC 9000 §19.1）
         inline constexpr std::uint8_t kQuicPaddingFrameType = 0x00;
 
@@ -144,15 +131,15 @@ namespace AsynGyanis::Net
             // 只有长头带标识长度字节：短头的目的标识长度由连接本身约定（RFC 9000 §17.3.1）
             datagram.push_back(static_cast<char>(packet.destinationConnectionId.size()));
         }
-        appendRawBytes(datagram, packet.destinationConnectionId);
+        appendQuicRawBytes(datagram, packet.destinationConnectionId);
         if (packet.isLongHeader)
         {
             datagram.push_back(static_cast<char>(packet.sourceConnectionId.size()));
-            appendRawBytes(datagram, packet.sourceConnectionId);
+            appendQuicRawBytes(datagram, packet.sourceConnectionId);
             if (packet.longPacketType == QuicLongPacketType::Initial)
             {
                 appendQuicVariableLengthInteger(datagram, packet.token.size());
-                appendRawBytes(datagram, packet.token);
+                appendQuicRawBytes(datagram, packet.token);
             }
             // Length 覆盖「包号 + 密文 + 标签」，此刻三项长度都已知，因此不需要先占位再回填
             appendQuicVariableLengthInteger(datagram,

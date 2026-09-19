@@ -1,3 +1,4 @@
+#include "Net/Quic/Codec/QuicRawBytes.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
 #include <array>
@@ -35,7 +36,7 @@ namespace AsynGyanis::Net
         }
         // 档位选择保证了值只用到低 (8*宽度-2) 位，首字节的高 2 位仍是空的，可以直接并上前缀
         encoded[0] = static_cast<std::uint8_t>(encoded[0] | lengthPrefix);
-        bytes.append(reinterpret_cast<const char *>(encoded.data()), byteWidth);
+        appendQuicRawBytes(bytes, std::span<const std::uint8_t>(encoded).first(byteWidth));
     }
 
     std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(const std::span<const std::uint8_t> bytes)
