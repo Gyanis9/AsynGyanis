@@ -313,8 +313,15 @@ namespace AsynGyanis::Net
          * @return std::optional<Timestamp> 不启用时返回空
          */
         [[nodiscard]] std::optional<Timestamp> effectiveIdleTimeout() const noexcept;
-        /// @return std::optional<Timestamp> 空闲超时的到期时刻；还没收到过任何包或没启用时为空
+        /// @return std::optional<Timestamp> 空闲超时的到期时刻；还没启用时为空
         [[nodiscard]] std::optional<Timestamp> idleDeadlineTime() const noexcept;
+        /**
+         * @brief 收到并处理成功一个包：重新定下本期空闲额度与截止时刻
+         * @details 额度里那个「至少 3 倍当前 PTO」的下限按**这一刻**的 PTO 取（§10.1）。之后即使
+         *          退避把 PTO 翻倍，截止点也不再后移——否则 max_idle_timeout 就成了空头承诺
+         * @param now 这个包的到达时刻
+         */
+        void restartIdleTimer(Timestamp now);
 
         /// §6.2/§6.3：把下一代读密钥提成当前，并按对端的相位同步推进本端写密钥
         void applyPeerKeyUpdate(SpaceState &state, Timestamp now);
@@ -340,7 +347,9 @@ namespace AsynGyanis::Net
         bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
         bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
         std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
-        std::optional<Timestamp> m_lastActivityTime{};                ///< 最后一次「收到并处理成功」的时刻，空闲超时从它起算
+        std::optional<Timestamp> m_idleDeadline{};                    ///< 空闲超时的截止时刻，只在「活动」发生时重算
+        std::optional<Timestamp> m_idlePeriod{};                      ///< 本期空闲额度，收包那一刻定下；主动发包的续期沿用它
+        bool m_hasSentAckElicitingSinceReceipt{false};       ///< 上次收包之后是否已发过触发确认的包（§10.1 只让第一包续期）
         bool m_isSendKeyPhaseSet{false};                       ///< 本端出包的 Key Phase 位，随写密钥一起翻（RFC 9001 §6.1）
         bool m_isReadKeyPhaseSet{false};                       ///< 本端当前读密钥对应的相位位；收发两套各自记账（§6.5）
         std::optional<Timestamp> m_keyPhaseChangedAt{};        ///< 最近一次换相位的时刻，3×PTO 静置期与旧密钥回收都从它起算

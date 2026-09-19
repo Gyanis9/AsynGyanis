@@ -365,9 +365,10 @@ namespace AsynGyanis::Net
             m_peerFirstInitialSourceConnectionId = std::vector<std::uint8_t>(header.sourceConnectionId.begin(),
                                                                             header.sourceConnectionId.end());
         }
-        // §10.1：「收到并处理成功」才算活动，解不开的包不能拿来续命。本端自己发出去的包不另算一份
-        // 活动：§10.1 那条「自发也要重启」的规则，由下面 3 倍 PTO 的下限覆盖（探测越久，额度越宽）
-        m_lastActivityTime = arrivalTime;
+        // §10.1：「收到并处理成功」才算活动，解不开的包不能拿来续命。自发的那一份活动在下面
+        // emitPacket 里按「收包之后第一次发触发确认的包」补上
+        restartIdleTimer(arrivalTime);
+        m_hasSentAckElicitingSinceReceipt = false;
         if (!m_isAddressValidated && *level != QuicEncryptionLevel::Initial)
         {
             // 能解出 Handshake 及以上的包，就说明对端确实收到了我们发出去的东西（§8.1.4 的路径验证）：
@@ -858,6 +859,13 @@ namespace AsynGyanis::Net
         record.isAckEliciting = isAckEliciting;
         record.cryptoRange = cryptoRange;
         record.streamRanges = std::move(streamRanges);
+        if (isAckEliciting && !m_hasSentAckElicitingSinceReceipt && m_idlePeriod.has_value())
+        {
+            // §10.1：本端主动发起的通信也算活动，但只有收包之后的第一包作数，且沿用本期额度——
+            // 否则每趟探测都续一期、且用的还是翻倍后的 PTO，空闲超时永远等不到
+            m_idleDeadline = now + *m_idlePeriod;
+            m_hasSentAckElicitingSinceReceipt = true;
+        }
         m_congestion.onPacketSent(record);
         m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
         m_sentByteCount += datagram.size();
@@ -970,15 +978,17 @@ namespace AsynGyanis::Net
 
     std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::idleDeadlineTime() const noexcept
     {
-        if (!m_lastActivityTime.has_value())
+        return m_idleDeadline;
+    }
+
+    void QuicConnectionCore::restartIdleTimer(const Timestamp now)
+    {
+        // 两端都没宣告（或还没拿到对端参数）时这条超时不启用，也就没有截止时刻可记
+        m_idlePeriod = effectiveIdleTimeout();
+        if (m_idlePeriod.has_value())
         {
-            return std::nullopt;
+            m_idleDeadline = now + *m_idlePeriod;
         }
-        if (const std::optional<Timestamp> period = effectiveIdleTimeout(); period.has_value())
-        {
-            return *m_lastActivityTime + *period;
-        }
-        return std::nullopt;
     }
 
     std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::effectiveIdleTimeout() const noexcept
@@ -1001,7 +1011,8 @@ namespace AsynGyanis::Net
         {
             return std::nullopt;
         }
-        // §10.1 的硬要求：至少留够 3 倍 PTO，否则一次抖动就把好端端的连接判死
+        // §10.1 的硬要求：至少留够 3 倍当前 PTO，否则一次抖动就把好端端的连接判死。
+        // 这个下限只在重算截止时刻时取一次，之后 PTO 因退避翻倍不再往后推它
         const Timestamp probePeriod = m_recovery.roundTripTimeEstimate().probeTimeout;
         return std::max(Timestamp{std::chrono::milliseconds{effectiveMilliseconds}}, probePeriod * 3);
     }

@@ -1943,14 +1943,29 @@ namespace AsynGyanis::Net
         core.drive(Timestamp{21000});
         drain(core);
 
+        // 空闲额度 30 秒，但截止点会因「收包之后第一包主动发的触发确认」再往后推一期（§10.1），
+        // 那一刻到底是第几趟探测说不准，所以这里只数探测趟数，收口留给后面那个明确超时的时刻
+        int probeRoundCount = 0;
         for (int attempt = 0; attempt < 12; ++attempt)
         {
             const std::optional<Timestamp> deadline = core.nextTimeout();
             ASSERT_TRUE(deadline.has_value());
+            // 一旦 nextTimeout 给出的不再是「再探一趟」而是空闲截止点本身，说明探测已经撑满了额度
             core.onTimeout(*deadline);
+            if (core.phase() == QuicConnectionPhase::Closing)
+            {
+                break;
+            }
             ASSERT_FALSE(drain(core).empty()) << "第 " << attempt << " 趟探测没东西可发，连接已经死了";
-            EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "还在恢复中就把自己判空闲关掉了";
+            ++probeRoundCount;
         }
+        EXPECT_GE(probeRoundCount, 3) << "退避要能吃满好几趟探测，只撑三趟以下说明 3×PTO 的下限没生效";
+
+        // 到点就静默收口：§10.1 的 idle timeout 是要兑现的承诺，不能被无限退避拖着不关
+        core.onTimeout(Timestamp{2000000000});
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Closing);
+        EXPECT_TRUE(core.isFinished()) << "空闲超时不该留下收口报文";
+        EXPECT_TRUE(drain(core).empty()) << "空闲超时是静默关闭，不发 CONNECTION_CLOSE（§10.2）";
     }
 
     /**
