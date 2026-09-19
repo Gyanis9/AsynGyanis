@@ -5,85 +5,37 @@
 
 namespace AsynGyanis::Net
 {
-    namespace
-    {
-        /**
-         * @brief 一档编码宽度的三样属性：占几字节、首字节的长度前缀、该档能表示的最大值
-         */
-        struct IntegerWidthProfile
-        {
-            std::size_t byteWidth;      ///< 该档占用的字节数
-            std::uint8_t lengthPrefix;  ///< 首字节高 2 位：字节数以 2 为底的对数
-            std::uint64_t maximumValue; ///< 该档剩下的位数能表示的最大值
-        };
-
-        /// 四档属性逐条抄自 RFC 9000 §16 表 4（可用位数 6/14/30/62），宽度递增排列
-        constexpr std::array<IntegerWidthProfile, 4> kIntegerWidthProfiles{{
-                {1, 0x00, kQuicMaximumOneByteIntegerValue},
-                {2, 0x40, kQuicMaximumTwoByteIntegerValue},
-                {4, 0x80, kQuicMaximumFourByteIntegerValue},
-                {8, 0xC0, kQuicMaximumIntegerValue},
-        }};
-
-        /**
-         * @brief 按字节数查该档属性
-         * @param byteWidth 待查的宽度
-         * @return const IntegerWidthProfile* 命中时返回该档；宽度是 3/5/6/7 这类线上无法表达的值时返回 nullptr
-         */
-        const IntegerWidthProfile *findWidthProfile(const std::size_t byteWidth) noexcept
-        {
-            for (const IntegerWidthProfile &profile: kIntegerWidthProfiles)
-            {
-                if (profile.byteWidth == byteWidth)
-                {
-                    return &profile;
-                }
-            }
-            return nullptr;
-        }
-    } // namespace
-
     void appendQuicVariableLengthInteger(std::string &bytes, const std::uint64_t value)
     {
-        // 单参重载就是「取最少档位」的特例：超上限的值让三参重载当场拒绝，不在这里另判一套
-        appendQuicVariableLengthInteger(bytes, value, quicVariableLengthIntegerByteCount(value));
-    }
-
-    void appendQuicVariableLengthInteger(std::string &bytes, const std::uint64_t value, const std::size_t byteWidth)
-    {
-        // 先判值域再判宽度：quicVariableLengthIntegerByteCount 对超限值返回 0，若先查宽度表，
-        // 报出来的会是「宽度非法」这种把责任推给调用方的错文案
-        if (value > kQuicMaximumIntegerValue)
+        const std::size_t byteWidth = quicVariableLengthIntegerByteCount(value);
+        // 先判值域：byteCount 对超限值返回 0，若直接拿去查档位表，报出来的会是「宽度非法」这种
+        // 把责任推给调用方的错文案
+        if (byteWidth == 0)
         {
             throw Base::InvalidArgumentException(std::format("值 {} 超过 QUIC 变长整数的上限 {}（2^62-1，RFC 9000 §16 表 4）："
                                                              "这个量级的数值在本协议里没有合法编码，请在写入前先把它压进上限之内",
                                                              value, kQuicMaximumIntegerValue));
         }
 
-        const IntegerWidthProfile *const profile = findWidthProfile(byteWidth);
-        if (profile == nullptr)
+        // 首字节高 2 位是「字节数以 2 为底的对数」：1→00、2→01、4→10、8→11（RFC 9000 §16 表 4）
+        std::size_t remainingWidth = byteWidth;
+        std::uint8_t lengthPrefix = 0;
+        while (remainingWidth > 1)
         {
-            throw Base::InvalidArgumentException(std::format("变长整数的宽度 {} 不是合法档位：只能是 1、2、4、8 之一"
-                                                             "（RFC 9000 §16 只定义这四种长度，首字节的 2 位前缀表达不了别的）",
-                                                             byteWidth));
-        }
-        if (value > profile->maximumValue)
-        {
-            throw Base::InvalidArgumentException(std::format("{} 字节档最多表示 {}，本次要写 {}：请放宽一档宽度，"
-                                                             "或先核对这个值是不是算错了（RFC 9000 §16 表 4）",
-                                                             byteWidth, profile->maximumValue, value));
+            remainingWidth >>= 1;
+            lengthPrefix = static_cast<std::uint8_t>(lengthPrefix + 0x40);
         }
 
         std::array<std::uint8_t, 8> encoded{};
         // 线上是大端：先写的是高位字节，因此每轮右移的位数由剩余字节数决定
-        for (std::size_t byteIndex = 0; byteIndex < profile->byteWidth; ++byteIndex)
+        for (std::size_t byteIndex = 0; byteIndex < byteWidth; ++byteIndex)
         {
-            const std::size_t shiftBitCount = (profile->byteWidth - 1 - byteIndex) * 8;
-            encoded[byteIndex]              = static_cast<std::uint8_t>((value >> shiftBitCount) & 0xFFULL);
+            const std::size_t shiftBitCount = (byteWidth - 1 - byteIndex) * 8;
+            encoded[byteIndex] = static_cast<std::uint8_t>((value >> shiftBitCount) & 0xFFULL);
         }
-        // 上面的档位校验保证了首字节只用了低 (8*宽度-2) 位，高 2 位仍是空的，可以直接并上前缀
-        encoded[0] = static_cast<std::uint8_t>(encoded[0] | profile->lengthPrefix);
-        bytes.append(reinterpret_cast<const char *>(encoded.data()), profile->byteWidth);
+        // 档位选择保证了值只用到低 (8*宽度-2) 位，首字节的高 2 位仍是空的，可以直接并上前缀
+        encoded[0] = static_cast<std::uint8_t>(encoded[0] | lengthPrefix);
+        bytes.append(reinterpret_cast<const char *>(encoded.data()), byteWidth);
     }
 
     std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(const std::span<const std::uint8_t> bytes)

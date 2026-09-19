@@ -147,25 +147,6 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 长度域回填：显式占宽写出的字节，与 RFC 里那条非最短向量完全一致
-     */
-    TEST(QuicVariableLengthInteger, ExplicitWidthMatchesNonMinimalVector)
-    {
-        std::string twoByteWidth;
-        appendQuicVariableLengthInteger(twoByteWidth, 37ULL, 2);
-        EXPECT_EQ(toUnsignedBytes(twoByteWidth), makeUnsignedBytes({0x40, 0x25}));
-
-        std::string fourByteWidth;
-        appendQuicVariableLengthInteger(fourByteWidth, 37ULL, 4);
-        EXPECT_EQ(toUnsignedBytes(fourByteWidth), makeUnsignedBytes({0x80, 0x00, 0x00, 0x25}));
-
-        std::string eightByteWidth;
-        appendQuicVariableLengthInteger(eightByteWidth, 37ULL, 8);
-        EXPECT_EQ(toUnsignedBytes(eightByteWidth),
-                  makeUnsignedBytes({0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x25}));
-    }
-
-    /**
      * @brief 一个变长整数只吃自己那几字节：交回的字节数就是调用该前移的读位置
      */
     TEST(QuicVariableLengthInteger, ConsumesOnlyItsOwnBytes)
@@ -221,22 +202,13 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 编码侧的三样用法错误当场抛：值超 62 位上限、宽度不是四档之一、值超出所选档位
+     * @brief 编码侧的用法错误当场抛：值超过 62 位上限没有合法档位
      */
     TEST(QuicVariableLengthInteger, RejectsUnencodableArguments)
     {
         std::string bytes;
+        // 2^62 这个值没有合法档位：静默降档或回绕都会产出对端解不开的字节，必须当场抛
         EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL), Base::InvalidArgumentException);
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL, 8), Base::InvalidArgumentException);
-
-        // 3/5/6/7 这些宽度在首字节的 2 位前缀里表达不了，放行就会产出对端解不出的字节
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, 1ULL, 3), Base::InvalidArgumentException);
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, 1ULL, 0), Base::InvalidArgumentException);
-
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumOneByteIntegerValue + 1ULL, 1),
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumTwoByteIntegerValue + 1ULL, 2),
-                     Base::InvalidArgumentException);
     }
 
     /**
@@ -245,7 +217,7 @@ namespace AsynGyanis::Net
     TEST(QuicVariableLengthInteger, LeavesBufferUntouchedWhenRejectingArguments)
     {
         std::string bytes = "keep";
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumOneByteIntegerValue + 1ULL, 1),
+        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL),
                      Base::InvalidArgumentException);
         EXPECT_EQ(bytes, "keep") << "先算好再写：半途写入会污染调用方正在组装的报文";
     }

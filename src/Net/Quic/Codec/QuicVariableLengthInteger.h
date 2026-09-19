@@ -71,25 +71,13 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 按最少字节数把一个变长整数追写到缓冲末尾
-     * @details 长度域要回填的场合（帧负载长度、报文 Length 域在写出前还不知道最终值）需要占更宽的档，
-     *          用带 byteWidth 的重载。
+     * @details 刻意不提供「占更宽档位」的重载：写出侧的长度域都能先算出值再写，没有回填场合，
+     *          而规范只要求帧类型必须最短（§16 末段），所以非最短写法在这里没有用武之地。
      * @param bytes 目标缓冲，二进制安全
      * @param value 待写入的数值
      * @throws Base::InvalidArgumentException 用法错误：value 超过 kQuicMaximumIntegerValue
      */
     void appendQuicVariableLengthInteger(std::string &bytes, std::uint64_t value);
-
-    /**
-     * @brief 按指定宽度把一个变长整数追写到缓冲末尾
-     * @details 规范只要求「除帧类型外不必用最短编码」（RFC 9000 §16 末段），因此占宽是合法的；
-     *          本重载就是为回填长度域准备的。
-     * @param bytes 目标缓冲，二进制安全
-     * @param value 待写入的数值
-     * @param byteWidth 占用的字节数，只能是 1、2、4、8 四档之一
-     * @throws Base::InvalidArgumentException 用法错误：byteWidth 不是 1/2/4/8，或 value 超过该档上限、
-     *         超过 kQuicMaximumIntegerValue
-     */
-    void appendQuicVariableLengthInteger(std::string &bytes, std::uint64_t value, std::size_t byteWidth);
 
     /**
      * @brief 从字节序列的开头解出一个变长整数
