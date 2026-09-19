@@ -31,8 +31,10 @@ namespace
         /// 本端发起的单向流号按 RFC 9000 §2.1 是 3 (mod 4)
         std::int64_t openUnidirectionalStream()
         {
-            openedUnidirectionalStreamIds.push_back(nextUnidirectionalStreamId);
-            return nextUnidirectionalStreamId += 4;
+            const std::int64_t streamId = nextUnidirectionalStreamId;
+            nextUnidirectionalStreamId += 4;
+            openedUnidirectionalStreamIds.push_back(streamId);
+            return streamId;
         }
 
         void write(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
@@ -176,7 +178,10 @@ namespace
      */
     [[nodiscard]] std::string encodeSection(std::vector<QpackHeaderField> fields, std::string &encoderStreamBytes)
     {
-        QpackEncoder encoder(4096, 100, 4096);
+        // 刻意用一个「对端不接动态表」的编码器：产出的头段 Required Insert Count 为 0，
+        // 不需要编码器流指令就能直接解，于是本文件能把「交付路径」单独测清楚。
+        // 动态表引用与阻塞-续解那条路径由 BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesUp 覆盖
+        QpackEncoder encoder(0, 0, 0);
         std::string headerBlock;
         const auto encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(kRequestStreamId), std::span<const QpackHeaderField>(fields),
                                                         headerBlock, encoderStreamBytes);
@@ -225,8 +230,12 @@ TEST(Http3Connection, OpensThreeUnidirectionalStreamsAndStartsControlWithSetting
     EXPECT_EQ(static_cast<unsigned char>(controlBytes[0]), 0x00) << "控制流的类型前缀必须是 0x00";
     // 前缀之后紧跟 SETTINGS 帧：类型 0x04，且它必须排在任何别的帧之前
     EXPECT_EQ(static_cast<unsigned char>(controlBytes[1]), 0x04) << "控制流的第一个帧必须是 SETTINGS";
-    EXPECT_EQ(static_cast<unsigned char>(controlBytes[2]), 0x0c) << "四项已知设置共 12 字节";
-    EXPECT_NE(controlBytes.find("\x01\x40\x00", 0), std::string::npos) << "应公布 QPACK 动态表容量 4096";
+    // 长度按「帧头 2 字节 + 载荷」自洽核对，而不是钉一个手算数字：四项设置里
+    // MAX_FIELD_SECTION_SIZE=65536 走四字节档，手算最容易在这里错一位
+    const std::size_t settingsPayloadByteCount = static_cast<unsigned char>(controlBytes[2]);
+    EXPECT_EQ(controlBytes.size(), 3u + settingsPayloadByteCount) << "SETTINGS 声明的长度要正好盖住首帧";
+    EXPECT_GT(settingsPayloadByteCount, 11u) << "四项已知设置合起来至少 12 字节";
+    EXPECT_NE(controlBytes.find(std::string("\x01\x50\x00", 3), 0), std::string::npos) << "应公布 QPACK 动态表容量 4096（两字节档 0x5000）";
     EXPECT_NE(controlBytes.find("\x08\x01", 0), std::string::npos) << "应声明支持扩展 CONNECT";
     EXPECT_EQ(static_cast<unsigned char>(transport.bytesOf(7)[0]), 0x02) << "编码器流前缀";
     EXPECT_EQ(static_cast<unsigned char>(transport.bytesOf(11)[0]), 0x03) << "解码器流前缀";
@@ -339,9 +348,10 @@ TEST(Http3Connection, BodyBytesAreCreditedByTheReceiverNotTheProtocolLayer)
     const std::size_t creditedAfterHead = transport.creditedOf(kRequestStreamId);
     EXPECT_EQ(creditedAfterHead, headerBlock.size() + 2) << "头段的帧头与载荷都算已消费";
 
-    // 正文：到达即还等于没有背压，因此协议层一分都不还
+    // 正文：DATA 载荷到达即还等于没有背压，因此一分都不还；但 DATA 帧自己的 2 字节帧头
+    // 已经被本协议层消费掉，那部分额度要还（否则窗口会被帧头一点点吃光）
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "hello world")), false);
-    EXPECT_EQ(transport.creditedOf(kRequestStreamId), creditedAfterHead) << "DATA 载荷必须由正文的接收方决定何时归还";
+    EXPECT_EQ(transport.creditedOf(kRequestStreamId), creditedAfterHead + 2) << "只多还了一个 DATA 帧头的额度";
     EXPECT_EQ(events.bodyBytes, "hello world");
 }
 
@@ -352,10 +362,12 @@ TEST(Http3Connection, ResponseHeadAndBodyBecomeOneHeadersFrameThenOneDataFrame)
     auto connection = makeConnection(transport, events);
     std::string encoderBytes;
     const std::string headerBlock = encodeSection(minimalRequestFields(), encoderBytes);
-    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), false);
+    // GET 没有正文：头段这一趟就带上 END_STREAM，于是本端收尾之后两侧都完成，该发流关闭通知
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), true);
 
     ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, false).has_value());
     EXPECT_FALSE(connection->isLocalStreamFinished(kRequestStreamId));
+    connection->flush(); // 待发字节要过一次 flush 才交给传输层
     const std::string afterHead = transport.bytesOf(kRequestStreamId);
     EXPECT_EQ(static_cast<unsigned char>(afterHead[0]), 0x01) << "响应先出一个 HEADERS 帧";
 
