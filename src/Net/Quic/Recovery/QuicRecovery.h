@@ -59,6 +59,7 @@ namespace AsynGyanis::Net
         std::size_t byteCount{0};           ///< 计入在途的字节数；交 0 表示本包不计入（例如服务端在地址验证前的包）
         bool isAckEliciting{false};         ///< 是否触发确认：只有这种包才武装探测超时
         std::optional<QuicCryptoRange> cryptoRange{}; ///< 本包带的握手字节区间；没带就为空
+        std::vector<QuicStreamRange> streamRanges{};  ///< 本包带的流数据区间；确认与判丢都按它回收额度
     };
 
     /// 一次确认处理的结果

@@ -98,6 +98,21 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 这类帧是不是只有 1-RTT 包才允许携带
+         * @details 覆盖 §19.4–§19.14 的全部流与流量控制帧：RESET_STREAM、STOP_SENDING、STREAM 家族
+         *          （0x08..0x0f 按低位变体）以及 0x10..0x17。连接标识与路径验证那几类不在其中，
+         *          它们按 §19.15–§19.18 可以在任意级别出现。
+         * @param frameType §12.4 表 3 的取值
+         * @return true 出现在 Initial 或 Handshake 包里即为 PROTOCOL_VIOLATION
+         */
+        bool isOneRttOnlyFrameType(const std::uint64_t frameType) noexcept
+        {
+            return frameType == static_cast<std::uint64_t>(QuicFrameType::ResetStream) ||
+                   frameType == static_cast<std::uint64_t>(QuicFrameType::StopSending) ||
+                   (frameType >= 0x08 && frameType <= 0x17);
+        }
+
+        /**
          * @brief 本端出包时除帧以外占掉的字节数
          * @details 长头多带版本、源标识与 Token 长度域，且有 Length 字段；短头两者都没有（§17.3）。
          *          Length 域按 2 字节档预留：1200 的预算用不到 4 字节档，1 字节档又可能被加宽。
@@ -168,7 +183,8 @@ namespace AsynGyanis::Net
     }
 
     QuicConnectionCore::QuicConnectionCore(QuicConnectionCoreConfiguration configuration)
-        : m_configuration(std::move(configuration))
+        : m_configuration(std::move(configuration)),
+          m_streams(m_configuration.transportParameters)
     {
         if (m_configuration.tlsContext == nullptr)
         {
@@ -343,6 +359,14 @@ namespace AsynGyanis::Net
         bool hasAckElicitingFrame = false;
         for (const QuicFrame &frame : *frames)
         {
+            const std::uint64_t frameType = quicFrameTypeValue(frame);
+            if (isOneRttOnlyFrameType(frameType) && space != PacketNumberSpace::Application)
+            {
+                // §19.4–§19.14 逐条写明这些帧不得出现在 Initial/Handshake 包里
+                beginClose(kQuicProtocolViolation,
+                           std::format("流与流量控制帧 0x{:x} 出现在非 1-RTT 包里（RFC 9000 §19.4–§19.14）", frameType), arrivalTime);
+                return {};
+            }
             hasAckElicitingFrame = hasAckElicitingFrame || isAcknowledgementEliciting(frame);
             handleFrame(frame, space, arrivalTime);
         }
@@ -369,14 +393,39 @@ namespace AsynGyanis::Net
                     {
                         handleCryptoBytes(space, specificFrame.offset, specificFrame.data, arrivalTime);
                     }
+                    else if constexpr (std::same_as<FrameType, QuicStreamFrame>)
+                    {
+                        reportStreamViolation(m_streams.onStreamFrame(specificFrame), arrivalTime);
+                    }
+                    else if constexpr (std::same_as<FrameType, QuicMaxDataFrame>)
+                    {
+                        reportStreamViolation(m_streams.onMaxDataFrame(specificFrame), arrivalTime);
+                    }
+                    else if constexpr (std::same_as<FrameType, QuicMaxStreamDataFrame>)
+                    {
+                        reportStreamViolation(m_streams.onMaxStreamDataFrame(specificFrame), arrivalTime);
+                    }
+                    else if constexpr (std::same_as<FrameType, QuicMaxStreamsFrame>)
+                    {
+                        reportStreamViolation(m_streams.onMaxStreamsFrame(specificFrame), arrivalTime);
+                    }
+                    else if constexpr (std::same_as<FrameType, QuicResetStreamFrame>)
+                    {
+                        reportStreamViolation(m_streams.onResetStreamFrame(specificFrame), arrivalTime);
+                    }
+                    else if constexpr (std::same_as<FrameType, QuicStopSendingFrame>)
+                    {
+                        reportStreamViolation(m_streams.onStopSendingFrame(specificFrame), arrivalTime);
+                    }
                     else if constexpr (std::same_as<FrameType, QuicConnectionCloseFrame>)
                     {
                         // 对端已经收口：本端不再发任何东西，也不再回一个 CLOSE（§10.2.3）
                         m_phase = QuicConnectionPhase::Closing;
                     }
                     // PADDING 与 PING 不需要动作：PING 的确认由触发确认的记账统一处理。
-                    // 流、流量控制、连接标识与路径验证那几类帧要到后续里程碑才有人接，本阶段忽略；
-                    // HANDSHAKE_DONE 只有服务端会发，收到它说明对端把本端当成了客户端，同样忽略。
+                    // DATA_BLOCKED 那三类只是对端的自述，本层不需要反应（§19.12–§19.14）。
+                    // 连接标识与路径验证那几类要到后续里程碑才有人接；HANDSHAKE_DONE 只有服务端会发，
+                    // 收到它说明对端把本端当成了客户端，同样忽略。
                 },
                 frame);
     }
@@ -399,6 +448,14 @@ namespace AsynGyanis::Net
         const QuicAcknowledgementUpdate update =
                 m_recovery.onAcknowledgementReceived(recoverySpaceOf(space), frame, arrivalTime, acknowledgementDelay);
         m_congestion.onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
+        for (const QuicSentPacketInfo &packet : update.acknowledged)
+        {
+            m_streams.onSendRangesAcknowledged(packet.streamRanges);
+        }
+        for (const QuicSentPacketInfo &packet : update.lost)
+        {
+            m_streams.onSendRangesLost(packet.streamRanges);
+        }
 
         // §4.1.2：服务端「握手已确认」的判据就是对端确认了 Handshake 空间的包。确认之后才允许给
         // 进入用空间武装 PTO，也才该发 HANDSHAKE_DONE
@@ -421,44 +478,20 @@ namespace AsynGyanis::Net
                                                const std::span<const std::uint8_t> bytes, const Timestamp arrivalTime)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
-        std::uint64_t beginOffset = offset;
-        std::span<const std::uint8_t> pendingBytes = bytes;
-        if (beginOffset < state.receivedCryptoOffset)
+        if (state.reassembly.bufferedByteCount() + bytes.size() > kQuicCryptoBufferByteLimit)
         {
-            // §7.5：与已交字节重叠的那一段要丢掉，只把没见过的部分交给 TLS。重发时换了分片大小
-            // 是合法写法，整段交过去会让 TLS 看到重复字节而判错
-            const std::size_t alreadyReceivedByteCount = static_cast<std::size_t>(state.receivedCryptoOffset - beginOffset);
-            if (alreadyReceivedByteCount >= pendingBytes.size())
-            {
-                return;
-            }
-            beginOffset += alreadyReceivedByteCount;
-            pendingBytes = pendingBytes.subspan(alreadyReceivedByteCount);
-        }
-        if (beginOffset > state.receivedCryptoOffset)
-        {
-            if (state.bufferedOutOfOrderByteCount + pendingBytes.size() > kQuicCryptoBufferByteLimit)
-            {
-                beginClose(kQuicCryptoBufferExceeded, "乱序早到的 CRYPTO 字节超过本端缓存上限（RFC 9000 §11.1）", arrivalTime);
-                return;
-            }
-            state.laterCryptoFragments.emplace(beginOffset, std::vector<std::uint8_t>(pendingBytes.begin(), pendingBytes.end()));
-            state.bufferedOutOfOrderByteCount += pendingBytes.size();
+            // 上限只管「还没能交给 TLS 的那部分」：连着已交付的前缀一起算会把正常握手也判成越界
+            beginClose(kQuicCryptoBufferExceeded, "乱序早到的 CRYPTO 字节超过本端缓存上限（RFC 9000 §11.1）", arrivalTime);
             return;
         }
-
-        m_tls->feedHandshakeData(levelOf(space), pendingBytes);
-        state.receivedCryptoOffset += pendingBytes.size();
-        // 这段接上之后，可能有更早到的分片正好续上，按偏移依次交给 TLS
-        for (auto fragment = state.laterCryptoFragments.find(state.receivedCryptoOffset);
-             fragment != state.laterCryptoFragments.end();
-             fragment = state.laterCryptoFragments.find(state.receivedCryptoOffset))
+        // 交入即按覆盖区合并，再一次性排干：换了分片大小的重传也补得回来（§7.5）
+        state.reassembly.insert(offset, bytes);
+        std::vector<std::uint8_t> contiguous;
+        if (state.reassembly.drain(contiguous) == 0)
         {
-            m_tls->feedHandshakeData(levelOf(space), fragment->second);
-            state.receivedCryptoOffset += fragment->second.size();
-            state.bufferedOutOfOrderByteCount -= fragment->second.size();
-            state.laterCryptoFragments.erase(fragment);
+            return;
         }
+        m_tls->feedHandshakeData(levelOf(space), contiguous);
     }
 
     void QuicConnectionCore::adoptTlsKeys()
@@ -513,6 +546,26 @@ namespace AsynGyanis::Net
             return;
         }
         m_peerParameters = *decoded;
+        // 流层的发送额度全部来自对端参数：到手之前一条流数据也发不出去（§4.1）
+        m_streams.adoptPeerParameters(*decoded);
+    }
+
+    void QuicConnectionCore::reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, const Timestamp now)
+    {
+        if (!result.has_value())
+        {
+            beginClose(result.error().errorCode, result.error().reasonPhrase, now);
+        }
+    }
+
+    QuicStreamLayer &QuicConnectionCore::streamLayer() noexcept
+    {
+        return m_streams;
+    }
+
+    const QuicStreamLayer &QuicConnectionCore::streamLayer() const noexcept
+    {
+        return m_streams;
     }
 
     void QuicConnectionCore::discardSpace(const PacketNumberSpace space)
@@ -526,8 +579,8 @@ namespace AsynGyanis::Net
         state.writeKeys = std::nullopt;
         state.cryptoStream.clear();
         state.pendingRetransmissions.clear();
-        state.laterCryptoFragments.clear();
-        state.bufferedOutOfOrderByteCount = 0;
+        // 入站缓存连着交付点一起丢掉：这个空间再也不会用到，留着只会占着一份乱序字节
+        state.reassembly = QuicReassemblyBuffer{};
         if (m_probeSpace.has_value() && *m_probeSpace == space)
         {
             // 欠的探针作废：给一个已经退休的空间发探测包，只会白对端一条报文
@@ -663,6 +716,16 @@ namespace AsynGyanis::Net
                 carriedRange = std::nullopt;
             }
 
+            std::vector<QuicStreamRange> sentRanges;
+            bool carriesStreamFrames = false;
+            if (space == PacketNumberSpace::Application)
+            {
+                // 握手字节的产出排在流数据之前：进入用空间通常只有会话票据会占那条通道
+                carriesStreamFrames = m_streams.collectFrames(
+                        frames, sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace), sentRanges);
+                elicitsAcknowledgement = elicitsAcknowledgement || carriesStreamFrames;
+            }
+
             if (owesProbe)
             {
                 // §6.2.2：探针优先带新数据或重发数据，两样都没有就单发一条 PING，保证对端一定会回确认
@@ -680,9 +743,11 @@ namespace AsynGyanis::Net
                 return;
             }
             const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
-            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange);
-            if (!carriedRange.has_value() || !hasMoreCrypto)
+            const bool hasMoreWork = hasMoreCrypto || (space == PacketNumberSpace::Application && m_streams.hasOutgoingFrames());
+            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges));
+            if (!hasMoreWork || (!carriedRange.has_value() && !carriesStreamFrames))
             {
+                // 已经没有下文，或这一包被预算挤得一个字节都没带上：再转一圈也只是空转
                 return;
             }
         }
@@ -717,7 +782,8 @@ namespace AsynGyanis::Net
     }
 
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now,
-                                        const bool isAckEliciting, const std::optional<QuicCryptoRange> cryptoRange)
+                                        const bool isAckEliciting, const std::optional<QuicCryptoRange> cryptoRange,
+                                        std::vector<QuicStreamRange> streamRanges)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
@@ -743,6 +809,7 @@ namespace AsynGyanis::Net
         record.byteCount = datagram.size();
         record.isAckEliciting = isAckEliciting;
         record.cryptoRange = cryptoRange;
+        record.streamRanges = std::move(streamRanges);
         m_congestion.onPacketSent(record);
         m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
         m_sentByteCount += datagram.size();
@@ -913,6 +980,10 @@ namespace AsynGyanis::Net
         {
             m_congestion.onCongestionUpdate({}, action.lost, now);
             queueRetransmissions(spaceOf(action.lostSpace), action.lost);
+            for (const QuicSentPacketInfo &packet : action.lost)
+            {
+                m_streams.onSendRangesLost(packet.streamRanges);
+            }
         }
         if (action.isProbeTimeout)
         {

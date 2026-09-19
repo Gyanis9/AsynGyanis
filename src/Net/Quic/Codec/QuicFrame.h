@@ -168,6 +168,23 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 一个 STREAM 帧在某条流上带过的一段字节区间
+     *
+     * @details 发送侧的记账单位：确认要按它销账，判丢要按它把同一批字节重新排队，所以字段就是
+     *          §19.8 里描述「这段字节落在哪」的那几项。定义放在帧这一层，因为恢复层与流层都要用
+     *          同一份类型，而恢复层不该反过来依赖流层。
+     */
+    struct QuicStreamRange
+    {
+        std::uint64_t streamId{0};    ///< 流号
+        std::uint64_t beginOffset{0}; ///< 本段起始偏移
+        std::uint64_t endOffset{0};   ///< 结束偏移（不含）
+        bool isFinal{false};          ///< 本段是否带着 FIN
+
+        [[nodiscard]] bool operator==(const QuicStreamRange &) const = default;
+    };
+
+    /**
      * @brief STREAM 帧（§19.8）
      *
      * @details 编码时按「偏移非 0 才带 Offset 字段、Length 字段恒带」产出规范形态，因此

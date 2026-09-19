@@ -18,7 +18,11 @@
 //   9) 解到对端的 Handshake 报文后 Initial 空间整体退休：不再补发它的字节，也不再为它亮定时器
 //      （RFC 9001 §4.9.1 + RFC 9002 §A.11）；
 //  10) 空闲超时：有效值取两端宣告里较小的那一个，到点静默关闭（不收口、不留待发），且探测期间
-//      把自己撑住不关（RFC 9000 §10.1）。
+//      把自己撑住不关（RFC 9000 §10.1）；
+//  11) 乱序与重叠的 CRYPTO 分片按覆盖区合并，跨界重传也能把握手接上（§19.8）；
+//  12) 流与流量控制：1-RTT 包里带 STREAM 数据出去、对端的 STREAM 帧按序交付并在使用后补窗口、
+//      带数据的包判丢后按原偏移重发、越界与「流帧出现在 Initial 包里」各按错误码收口
+//      （RFC 9000 §4、§19.4–§19.11）。
 // 证书用仓库内的自签夹具（与 HTTPS、TLS 胶水用例同一份），因此不依赖任何外部服务。
 
 #include "Net/Quic/QuicConnectionCore.h"
@@ -47,6 +51,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -197,7 +202,12 @@ namespace AsynGyanis::Net
 
                 QuicTransportParameters parameters;
                 parameters.initialMaximumData = 65536;
+                // 三档流级额度都给够：0x05 管本端发起的 0x00、0x06 管服务端发起的 0x01、0x07 管 0x03
+                parameters.initialMaximumStreamDataBidirectionalLocal = 65536;
+                parameters.initialMaximumStreamDataBidirectionalRemote = 65536;
+                parameters.initialMaximumStreamDataUnidirectional = 65536;
                 parameters.initialMaximumBidirectionalStreams = 128;
+                parameters.initialMaximumUnidirectionalStreams = 16;
                 parameters.maximumIdleTimeoutMilliseconds = maximumIdleTimeoutMilliseconds;
                 parameters.initialSourceConnectionId = mismatchedSourceConnectionId ? kUnknownConnectionId : m_sourceConnectionId;
                 std::string encoded;
@@ -327,6 +337,29 @@ namespace AsynGyanis::Net
             }
 
             /**
+             * @brief 把 ClientHello 分成 [后半段, 前 3/4 段] 两条**跨界重叠**的数据报
+             * @details 用来验「重传换了分片大小」这一种合法写法：后一段的起点落在前一段之内，
+             *          只按起点建索引的缓存会在喂完前 3/4 段之后再也找不到那个偏移，握手永远接不上
+             * @return 两条数据报：先是偏移靠后的那一段，再是跨过它起点的那一段
+             */
+            [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> buildStraddlingCryptoFragments()
+            {
+                const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
+                const std::size_t halfPoint = handshakeBytes.size() / 2;
+                const std::size_t straddlingPoint = handshakeBytes.size() * 3 / 4;
+                if (halfPoint == 0 || straddlingPoint <= halfPoint)
+                {
+                    return {};
+                }
+                const std::vector<std::uint8_t> tail(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(halfPoint),
+                                                     handshakeBytes.end());
+                const std::vector<std::uint8_t> straddling(handshakeBytes.begin(),
+                                                           handshakeBytes.begin() + static_cast<std::ptrdiff_t>(straddlingPoint));
+                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, halfPoint, tail),
+                        makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, straddling)};
+            }
+
+            /**
              * @brief 只发 ClientHello 的第一个字节：包合法、触发确认，但 TLS 拼不出任何消息
              * @return std::vector<std::uint8_t> 一条数据报，反放大额度的用例用它把服务端卡住
              */
@@ -434,6 +467,55 @@ namespace AsynGyanis::Net
             [[nodiscard]] const std::vector<std::uint8_t> &lastSentAcknowledgement() const noexcept
             {
                 return m_lastSentAcknowledgement;
+            }
+
+            /**
+             * @brief 手工发一条带任意帧序列的数据报
+             * @details 流与流量控制的用例要用它把 STREAM、MAX_DATA、RESET_STREAM 这类帧打到服务端，
+             *          而 `buildFlight` 那几条通道都只发握手字节
+             * @param level 用哪个级别发（同时决定空间与密钥）
+             * @param frames 已经编好的明文帧序列
+             * @return std::vector<std::uint8_t> 一条完整的 UDP 净字节
+             */
+            [[nodiscard]] std::vector<std::uint8_t> buildDatagramWith(const QuicEncryptionLevel level, const std::string &frames)
+            {
+                return buildDatagram(level, frames);
+            }
+
+            /// 服务端发来的流数据按到达顺序拼起来的文本
+            [[nodiscard]] const std::string &serverStreamText() const noexcept
+            {
+                return m_serverStreamText;
+            }
+
+            /// 服务端每个 STREAM 帧带的区间，按到达顺序（重发用例看它有没有出现两次）
+            [[nodiscard]] const std::vector<QuicStreamRange> &serverStreamRanges() const noexcept
+            {
+                return m_serverStreamRanges;
+            }
+
+            /// 服务端发过带 FIN 的 STREAM 帧的条数
+            [[nodiscard]] std::size_t serverStreamFinalCount() const noexcept
+            {
+                return m_serverStreamFinalCount;
+            }
+
+            /// 服务端最近一条 MAX_DATA 的连接级上限
+            [[nodiscard]] const std::optional<std::uint64_t> &serverMaxData() const noexcept
+            {
+                return m_serverMaxData;
+            }
+
+            /// 服务端最近一条 MAX_STREAM_DATA 的流级上限
+            [[nodiscard]] const std::optional<std::uint64_t> &serverMaxStreamData() const noexcept
+            {
+                return m_serverMaxStreamData;
+            }
+
+            /// 服务端 CONNECTION_CLOSE 里的错误码
+            [[nodiscard]] const std::optional<std::uint64_t> &serverCloseErrorCode() const noexcept
+            {
+                return m_serverCloseErrorCode;
             }
 
             /**
@@ -674,13 +756,32 @@ namespace AsynGyanis::Net
                 {
                     ++m_handshakeDoneFrameCount;
                 }
-                else if (std::holds_alternative<QuicConnectionCloseFrame>(frame))
+                else if (const auto *close = std::get_if<QuicConnectionCloseFrame>(&frame); close != nullptr)
                 {
                     m_sawConnectionClose = true;
+                    m_serverCloseErrorCode = close->errorCode;
                 }
                 else if (std::holds_alternative<QuicPingFrame>(frame))
                 {
                     ++m_pingFrameCount;
+                }
+                else if (const auto *stream = std::get_if<QuicStreamFrame>(&frame); stream != nullptr)
+                {
+                    m_serverStreamText.append(stream->data.begin(), stream->data.end());
+                    m_serverStreamRanges.push_back(
+                            QuicStreamRange{stream->streamId, stream->offset, stream->offset + stream->data.size(), stream->isFinal});
+                    if (stream->isFinal)
+                    {
+                        ++m_serverStreamFinalCount;
+                    }
+                }
+                else if (const auto *maxData = std::get_if<QuicMaxDataFrame>(&frame); maxData != nullptr)
+                {
+                    m_serverMaxData = maxData->maximumData;
+                }
+                else if (const auto *maxStreamData = std::get_if<QuicMaxStreamDataFrame>(&frame); maxStreamData != nullptr)
+                {
+                    m_serverMaxStreamData = maxStreamData->maximumStreamData;
                 }
             }
 
@@ -769,6 +870,12 @@ namespace AsynGyanis::Net
             std::optional<std::uint64_t> m_skippedPacketNumber{};       ///< 要跳过的那个包号，空表示不挑
             QuicEncryptionLevel m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
             std::size_t m_pingFrameCount{0};                          ///< 收到过的 PING 帧数
+            std::string m_serverStreamText{};                         ///< 服务端发来的流数据，按到达顺序拼起来
+            std::vector<QuicStreamRange> m_serverStreamRanges{};      ///< 服务端每个 STREAM 帧带的区间
+            std::size_t m_serverStreamFinalCount{0};                  ///< 服务端发过带 FIN 的 STREAM 帧条数
+            std::optional<std::uint64_t> m_serverMaxData{};           ///< 服务端最近一条 MAX_DATA 的上限
+            std::optional<std::uint64_t> m_serverMaxStreamData{};     ///< 服务端最近一条 MAX_STREAM_DATA 的上限
+            std::optional<std::uint64_t> m_serverCloseErrorCode{};    ///< 服务端 CONNECTION_CLOSE 的错误码
         };
 
         /**
@@ -790,6 +897,10 @@ namespace AsynGyanis::Net
             configuration.originalDestinationConnectionId = kOriginalDestinationConnectionId;
             configuration.transportParameters.initialMaximumData = 1048576;
             configuration.transportParameters.initialMaximumBidirectionalStreams = 1024;
+            // 对端发起的流按这两档收：给够才让「越界」用例是越界而不是连额度都不知道
+            configuration.transportParameters.initialMaximumStreamDataBidirectionalRemote = 4096;
+            configuration.transportParameters.initialMaximumStreamDataUnidirectional = 4096;
+            configuration.transportParameters.initialMaximumUnidirectionalStreams = 16;
             configuration.transportParameters.maximumIdleTimeoutMilliseconds = maximumIdleTimeoutMilliseconds;
             return configuration;
         }
@@ -832,6 +943,101 @@ namespace AsynGyanis::Net
             {
                 client.consume(datagram);
             }
+        }
+
+        /**
+         * @brief 若干段流数据区间盖住的字节数
+         * @details 用来判「每个偏移恰好到一次」：区间可能乱序到达，所以只加总不排重
+         * @param ranges 区间列表
+         * @return std::uint64_t 各段长度之和
+         */
+        std::uint64_t coveredStreamByteCount(const std::vector<QuicStreamRange> &ranges)
+        {
+            std::uint64_t total = 0;
+            for (const QuicStreamRange &range : ranges)
+            {
+                total += range.endOffset - range.beginOffset;
+            }
+            return total;
+        }
+
+        /**
+         * @brief 从偏移 0 开始的段有几条
+         * @param ranges 区间列表
+         * @return std::size_t 条数；补发正常时应当恰好一条
+         */
+        std::size_t headRangeCount(const std::vector<QuicStreamRange> &ranges)
+        {
+            std::size_t count = 0;
+            for (const QuicStreamRange &range : ranges)
+            {
+                if (range.beginOffset == 0)
+                {
+                    ++count;
+                }
+            }
+            return count;
+        }
+
+        /**
+         * @brief 把握手固定跑到 Established：1-RTT 的用例都从这里起步
+         * @param core 服务端状态机
+         * @param client 客户端替身
+         */
+        void finishHandshake(QuicConnectionCore &core, InMemoryQuicClient &client)
+        {
+            exchange(core, client, Timestamp{0});
+            for (int round = 1; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established);
+                 ++round)
+            {
+                exchange(core, client, Timestamp{10000 * round});
+            }
+            ASSERT_TRUE(client.isHandshakeCompleted()) << "握手没跑完，1-RTT 的断言无从谈起";
+            ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+            // 最后一批收到的包先确认干净，免得用例开头就欠着一条 ACK、定时器还亮着
+            exchange(core, client, Timestamp{100000});
+        }
+
+        /**
+         * @brief 把一条数据报交给服务端，并跑一轮产出
+         * @param core 服务端状态机
+         * @param datagram 客户端手工编出来的那一条
+         * @param arrivalTime 到达时刻
+         */
+        void feed(QuicConnectionCore &core, const std::vector<std::uint8_t> &datagram, const Timestamp arrivalTime)
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, arrivalTime).has_value());
+            core.drive(arrivalTime + kServerSendLatency);
+        }
+
+        /// @return 文本对应的字节 vector，造 STREAM 帧用
+        std::vector<std::uint8_t> payloadBytes(const std::string_view text)
+        {
+            return std::vector<std::uint8_t>(text.begin(), text.end());
+        }
+
+        /**
+         * @brief 编一条只带一个 STREAM 帧的数据报
+         * @param client 客户端替身，取它的空间与密钥
+         * @param level 用哪个级别发：验「流帧只能出现在 1-RTT 包里」时要故意发成 Initial
+         * @param streamId 流号
+         * @param offset 偏移
+         * @param data 数据本体，调用期间必须活着
+         * @param isFinal 是否带 FIN
+         * @return std::vector<std::uint8_t> 一条完整的 UDP 净字节
+         */
+        std::vector<std::uint8_t> makeStreamDatagram(InMemoryQuicClient &client, const QuicEncryptionLevel level,
+                                                    const std::uint64_t streamId, const std::uint64_t offset,
+                                                    const std::vector<std::uint8_t> &data, const bool isFinal)
+        {
+            QuicStreamFrame stream;
+            stream.streamId = streamId;
+            stream.offset = offset;
+            stream.data = std::span<const std::uint8_t>(data);
+            stream.isFinal = isFinal;
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{stream});
+            return client.buildDatagramWith(level, frames);
         }
 
         /**
@@ -1640,4 +1846,209 @@ namespace AsynGyanis::Net
             EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "还在恢复中就把自己判空闲关掉了";
         }
     }
+
+    /**
+     * @brief 1-RTT 包里把上层写的流数据带出去，确认之后不再重发
+     */
+    TEST(QuicConnectionCore, CarriesStreamDataInOneRttPackets)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        const std::string_view payload = "hello over quic";
+        const std::vector<std::uint8_t> written = payloadBytes(payload);
+        EXPECT_EQ(core.streamLayer().writeStreamData(0x00, written, true), written.size());
+        core.drive(Timestamp{110000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        ASSERT_EQ(client.serverStreamText(), payload);
+        ASSERT_FALSE(client.serverStreamRanges().empty());
+        EXPECT_EQ(client.serverStreamRanges().front().streamId, 0x00U) << "对端发起的双向流，本端在其上回数据";
+        EXPECT_EQ(client.serverStreamRanges().front().beginOffset, 0U);
+        EXPECT_EQ(client.serverStreamFinalCount(), 1U);
+
+        // 确认到了，在途账销干净：之后再跑两轮也不该把这些字节再发一遍
+        exchange(core, client, Timestamp{120000});
+        EXPECT_FALSE(core.streamLayer().hasOutgoingFrames()) << "确认过的数据还挂在待发或重发账上";
+        exchange(core, client, Timestamp{130000});
+        EXPECT_EQ(client.serverStreamText(), payload) << "确认过了还重发，对端会看到重复字节";
+        EXPECT_EQ(client.serverStreamFinalCount(), 1U);
+    }
+
+    /**
+     * @brief 对端的 STREAM 帧按序交付；上层消费过半之后补一条 MAX_STREAM_DATA
+     */
+    TEST(QuicConnectionCore, DeliversPeerStreamDataAndRefreshesWindow)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 3000 字节：跨过本端 4096 窗口的「消费一半」那条线，才看得见窗口更新
+        const std::vector<std::uint8_t> payload(3000, 'z');
+        feed(core, makeStreamDatagram(client, QuicEncryptionLevel::Application, 0x00, 0, payload, true), Timestamp{110000});
+
+        ASSERT_TRUE(core.streamLayer().hasDeliveries());
+        const std::optional<QuicStreamDelivery> delivery = core.streamLayer().takeDelivery();
+        ASSERT_TRUE(delivery.has_value());
+        EXPECT_EQ(delivery->streamId, 0x00U);
+        EXPECT_EQ(delivery->bytes, payload);
+        EXPECT_TRUE(delivery->isFinal);
+
+        core.streamLayer().releaseReceiveWindow(0x00, payload.size());
+        core.drive(Timestamp{111000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        ASSERT_TRUE(client.serverMaxStreamData().has_value()) << "消费掉大半窗口却没补额度，对端很快就会卡死";
+        EXPECT_EQ(*client.serverMaxStreamData(), payload.size() + 4096U);
+        EXPECT_FALSE(client.serverMaxData().has_value()) << "连接级还剩大半，不该跟着抬";
+    }
+
+    /**
+     * @brief 带流数据的包被判丢之后按原偏移重发，对端只看到一份字节
+     */
+    TEST(QuicConnectionCore, RetransmitsStreamDataJudgedLostByTimeThreshold)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 本端只丢第一包：空洞后面还得有被确认的包，前面的那一段才有资格被判丢（§6.1）
+        const std::uint64_t droppedPacketNumber = client.serverReceivedPacketCount(QuicEncryptionLevel::Application);
+        client.skipPacketNumber(QuicEncryptionLevel::Application, droppedPacketNumber);
+
+        const std::vector<std::uint8_t> payload(3000, 'q');
+        EXPECT_EQ(core.streamLayer().writeStreamData(0x00, payload, true), payload.size());
+        core.drive(Timestamp{110000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        client.skipPacketNumber(QuicEncryptionLevel::Application, std::nullopt);
+        EXPECT_LT(coveredStreamByteCount(client.serverStreamRanges()), payload.size()) << "第一包本该看不见";
+
+        exchange(core, client, Timestamp{120000});
+        const std::optional<Timestamp> deadline = core.nextTimeout();
+        ASSERT_TRUE(deadline.has_value()) << "带数据的包在途，恢复层该亮一个判丢时刻";
+        core.onTimeout(*deadline);
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        // 补发只把缺的那一段填回来：总覆盖量正好等于全部字节，偏移 0 也只出现一次
+        EXPECT_EQ(coveredStreamByteCount(client.serverStreamRanges()), payload.size()) << "判丢之后没按原偏移补发，或补重了";
+        EXPECT_EQ(headRangeCount(client.serverStreamRanges()), 1U);
+        EXPECT_EQ(client.serverStreamFinalCount(), 1U) << "FIN 只跟着最后一片，补发不该再带一次";
+    }
+
+    /**
+     * @brief 越过本端宣告的接收额度：按 FLOW_CONTROL_ERROR 收口
+     */
+    TEST(QuicConnectionCore, ClosesWhenPeerIgnoresFlowControl)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        const std::vector<std::uint8_t> payload(8, 'x');
+        // 本端给这条流的接收上限是 4096，偏移打到 5000 已经越界
+        feed(core, makeStreamDatagram(client, QuicEncryptionLevel::Application, 0x00, 5000, payload, false), Timestamp{110000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        EXPECT_TRUE(client.sawConnectionClose()) << "越界的偏移必须通知对端（§10.2）";
+        ASSERT_TRUE(client.serverCloseErrorCode().has_value());
+        EXPECT_EQ(*client.serverCloseErrorCode(), 0x03U);
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Closing);
+    }
+
+    /**
+     * @brief 流帧出现在 Initial 包里是 PROTOCOL_VIOLATION（§19.4–§19.14）
+     */
+    TEST(QuicConnectionCore, RejectsStreamFrameCarriedInInitialPacket)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+
+        // 抢在 ClientHello 之前发：再晚一步 Initial 空间就退休了，这条报文连解都解不开
+        const std::vector<std::uint8_t> payload = payloadBytes("too early");
+        feed(core, makeStreamDatagram(client, QuicEncryptionLevel::Initial, 0x00, 0, payload, false), Timestamp{0});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        EXPECT_TRUE(client.sawConnectionClose());
+        ASSERT_TRUE(client.serverCloseErrorCode().has_value());
+        EXPECT_EQ(*client.serverCloseErrorCode(), 0x0aU);
+    }
+
+
+    /**
+     * @brief 后一段的起点落在已缓存段之内时，必须并进来而不是各留一座孤岛
+     * @details 对端重传时换分片大小是合法写法（§19.8 允许任意偏移与长度）：喂完前 3/4 段之后，
+     *          剩下的四分之一既不在缓存的键上、也不在期望偏移上——只有合并覆盖区才补得回来
+     */
+    TEST(QuicConnectionCore, ReassemblesCryptoBytesWhoseRetransmissionUsesDifferentSplits)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        const auto [lateFragment, straddlingFragment] = client.buildStraddlingCryptoFragments();
+        ASSERT_FALSE(lateFragment.empty()) << "ClientHello 太短，分不出跨界的两段";
+
+        feed(core, lateFragment, Timestamp{0});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.serverCryptoByteCount(QuicEncryptionLevel::Initial), 0U) << "只到后半段的字节拼不出 ClientHello";
+
+        feed(core, straddlingFragment, Timestamp{2000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Initial), 0U)
+                << "跨过缓存段起点的那一段没并进来，握手永远接不上";
+    }
+
 } // namespace AsynGyanis::Net

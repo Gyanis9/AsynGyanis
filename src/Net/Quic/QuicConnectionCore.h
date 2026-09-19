@@ -10,10 +10,10 @@
  *          解报头 → 去头部保护 → 还原包号 → AEAD 解密 → 解帧 → 按级别喂 TLS → 取 TLS 产出编成 CRYPTO
  *          帧 → 组包发出。时间戳一律由调用方注入，因此整条链可以在单测里逐字节复现，不需要真实网络。
  *
- * @note 本里程碑只做服务端、只做握手：0-RTT、RETRY、版本协商、流与流量控制、密钥更新、
- *       连接迁移都不在当前能力内，收到对应的报文按各自章节丢弃，留待后续里程碑。
+ * @note 当前能力：服务端握手 + 流与流量控制。0-RTT、RETRY、版本协商、密钥更新、连接迁移不在
+ *       本里程碑内，收到对应的报文按各自章节丢弃。
  *       丢包恢复、拥塞控制与反放大上限已经接进来：发包记账、RTT、判丢、探测超时、按偏移重发
- *       握手字节、拥塞窗口许可与 Initial 空间的退休都在本类里跑。
+ *       握手字节与流数据、拥塞窗口许可与 Initial 空间的退休都在本类里跑。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
 
@@ -26,14 +26,15 @@
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
+#include "Net/Quic/QuicReassemblyBuffer.h"
 #include "Net/Quic/Recovery/QuicRecovery.h"
+#include "Net/Quic/Streams/QuicStreamLayer.h"
 
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
 #include <expected>
-#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -169,6 +170,20 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] const QuicTransportParameters *peerTransportParameters() const noexcept;
 
+        /**
+         * @brief 流层本体：读写数据、归还额度、取交付都归它
+         * @details 核心只负责把入站帧路由进来、把出站帧编进 1-RTT 包，因此这里刻意不做一层同签名转发。
+         *          写完数据要再调一次 `drive(now)` 才会真的上线；本层不自己决定发包时刻。
+         * @return QuicStreamLayer& 本连接唯一一份，生命周期随本对象
+         */
+        [[nodiscard]] QuicStreamLayer &streamLayer() noexcept;
+
+        /**
+         * @brief 流层的只读视图
+         * @return const QuicStreamLayer& 同上
+         */
+        [[nodiscard]] const QuicStreamLayer &streamLayer() const noexcept;
+
     private:
         /// 包号空间：0-RTT 借用 Initial 的空间，所以只有三个
         enum class PacketNumberSpace : std::size_t
@@ -201,9 +216,7 @@ namespace AsynGyanis::Net
             std::uint64_t cryptoWriteOffset{0};          ///< 出站：下一个待新发字节的偏移，即 cryptoStream 里已排过队的长度
             std::vector<QuicCryptoRange> pendingRetransmissions{}; ///< 出站：判丢或探针后要重发的区间，按偏移递增
 
-            std::uint64_t receivedCryptoOffset{0};          ///< 入站：已经交给 TLS 的字节数，也就是下一个期望偏移
-            std::map<std::uint64_t, std::vector<std::uint8_t>> laterCryptoFragments{}; ///< 入站：早到的乱序分片，按偏移存
-            std::size_t bufferedOutOfOrderByteCount{0};     ///< 上面那个表的总字节数，用来守住缓存上限
+            QuicReassemblyBuffer reassembly{};              ///< 入站：按覆盖区合并的 CRYPTO 分片，交付点就是已喂给 TLS 的字节数
         };
 
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicEncryptionLevel level) noexcept;
@@ -236,8 +249,14 @@ namespace AsynGyanis::Net
         void queueRetransmissions(PacketNumberSpace space, std::span<const QuicSentPacketInfo> packets);
         void queueConnectionClosePacket(Timestamp now);
         void beginClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
+        /**
+         * @brief 流层交回的违规：按它的错误码收口，没违规时什么都不做
+         * @param result 入站帧的处理结果
+         * @param now 收口报文的发送时刻
+         */
+        void reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, Timestamp now);
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting,
-                        std::optional<QuicCryptoRange> cryptoRange);
+                        std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges = {});
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -275,6 +294,7 @@ namespace AsynGyanis::Net
         std::unique_ptr<QuicTlsContext> m_tls;                       ///< 每连接的 TLS 上下文
         QuicRecovery m_recovery{};                                   ///< 发包记账、RTT、判丢与探测超时
         QuicCongestionControl m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
+        QuicStreamLayer m_streams;                                   ///< 流与流量控制；额度取自本端参数，出站要等对端参数
         std::size_t m_receivedByteCount{0};                          ///< 已收字节，反放大上限按它算（§8.1）
         std::size_t m_sentByteCount{0};                              ///< 已发字节，与上面那项一起决定还剩多少额度
         std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};  ///< 三个包号空间
