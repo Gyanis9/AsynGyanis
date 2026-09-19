@@ -10,7 +10,8 @@
 //   3) 该丢的丢：目的标识不合、垃圾字节、空数据报，都不报错也不产出；
 //   4) 乱序 CRYPTO 分片先缓存、凑齐再按序喂 TLS（§19.6 + §7.5）——只喂后半段时服务端必须没反应；
 //   5) 对端参数里的 initial_source_connection_id 与实际收到的不符 → 发 CONNECTION_CLOSE 收口；
-//   6) HANDSHAKE_DONE 只在「握手完成 + 对端确认过 Handshake 空间的包」之后发且只发一次（§19.20）；
+//   6) HANDSHAKE_DONE 只在「握手完成 + 对端确认过 Handshake 空间的包」之后发，只出现在 1-RTT 包里，
+//      没被确认之前随探针重发、确认之后不再发（§19.20 与 §19 表 3 的 Protection 列）；
 //   7) 恢复层接进来之后的四条补发路：探测超时补在途字节、时间阈值判丢后补发、重复 ACK 也要判丢补发、
 //      没字节可补时退化成一个 PING；以及在途清空后定时器跟着撤掉（RFC 9002 §6.1.2、§6.2、§A.7）；
 //   8) 出流量的两道闸：与已交字节重叠的 CRYPTO 分片剪掉再交给 TLS（§7.5），以及地址验证之前回量
@@ -646,6 +647,12 @@ namespace AsynGyanis::Net
                 return m_handshakeDoneFrameCount;
             }
 
+            /// 首次见到 HANDSHAKE_DONE 时所在的加密级别：它是 1-RTT 帧，落在别的级别就是错的
+            [[nodiscard]] const std::optional<QuicEncryptionLevel> &handshakeDoneLevel() const noexcept
+            {
+                return m_handshakeDoneLevel;
+            }
+
             [[nodiscard]] bool sawConnectionClose() const noexcept
             {
                 return m_sawConnectionClose;
@@ -845,6 +852,16 @@ namespace AsynGyanis::Net
 
             void observeFrame(const QuicFrame &frame, const QuicEncryptionLevel level)
             {
+                // §19 表 3 的 Protection 列：这些帧只许出现在 1-RTT 包里。放错空间的帧，真实对端
+                // （aioquic 实测）会直接判 PROTOCOL_VIOLATION，因此本端一律当失败处理
+                const std::uint64_t frameType = quicFrameTypeValue(frame);
+                const bool isOneRttOnlyFrame  = frameType == 0x04U || frameType == 0x05U || frameType == 0x1eU ||
+                                                (frameType >= 0x08U && frameType <= 0x17U);
+                if (isOneRttOnlyFrame && level != QuicEncryptionLevel::Application)
+                {
+                    ADD_FAILURE() << "帧类型 " << frameType << " 出现在级别序号 " << static_cast<int>(level)
+                                  << " 的包里：这类帧只许在 1-RTT 包里出现（RFC 9000 §19 表 3）";
+                }
                 if (const auto *crypto = std::get_if<QuicCryptoFrame>(&frame); crypto != nullptr)
                 {
                     acceptCryptoBytes(spaceOf(level), level, crypto->offset, crypto->data);
@@ -857,6 +874,10 @@ namespace AsynGyanis::Net
                 else if (std::holds_alternative<QuicHandshakeDoneFrame>(frame))
                 {
                     ++m_handshakeDoneFrameCount;
+                    if (!m_handshakeDoneLevel.has_value())
+                    {
+                        m_handshakeDoneLevel = level;
+                    }
                 }
                 else if (const auto *close = std::get_if<QuicConnectionCloseFrame>(&frame); close != nullptr)
                 {
@@ -967,6 +988,8 @@ namespace AsynGyanis::Net
             std::optional<std::uint64_t> m_largestServerAcknowledged{}; ///< 服务端 ACK 到的最大包号
             std::optional<std::uint64_t> m_serverAcknowledgementDelay{};///< 服务端 ACK 的延迟字段
             std::size_t m_handshakeDoneFrameCount{0};                 ///< 收到过的 HANDSHAKE_DONE 帧数
+            /// 首次见到 HANDSHAKE_DONE 的加密级别（1-RTT 才算对，§19 帧表的 Protection 列只有 1）
+            std::optional<QuicEncryptionLevel> m_handshakeDoneLevel{};
             std::vector<std::uint8_t> m_destinationOverride{};         ///< 非空时覆盖发出包的目的标识
             bool m_sawConnectionClose{false};                         ///< 是否收到过 CONNECTION_CLOSE
             bool m_dropsAllHandshakePackets{false};                 ///< 是否把 Handshake 级报文一律不看
@@ -1467,6 +1490,11 @@ namespace AsynGyanis::Net
             client.consume(datagram);
         }
         EXPECT_EQ(client.handshakeDoneFrameCount(), 1U);
+        // 级别必须是 1-RTT：HANDSHAKE_DONE 在 §19 帧表里 Protection 列只有 1，Figure 5 也把它画在
+        // 1-RTT 包里。发到 Handshake 空间里，对端（aioquic 实测）会按 PROTOCOL_VIOLATION 收口
+        ASSERT_TRUE(client.handshakeDoneLevel().has_value());
+        EXPECT_EQ(*client.handshakeDoneLevel(), QuicEncryptionLevel::Application)
+                << "HANDSHAKE_DONE 是 1-RTT 帧，出现在别的级别会被判 PROTOCOL_VIOLATION";
 
         // 再推几轮也不该重发：计数器不重置，重发会直接变成 2
         core.drive(Timestamp{9000});
@@ -1597,10 +1625,10 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 没有可重发的握手字节时，探针退化成一条 PING
-     * @details 此刻在途的是只带 HANDSHAKE_DONE 的那个包：它触发确认但不带字节，除了再探一条别无可做
+     * @brief 没被确认的 HANDSHAKE_DONE 要跟着探针重发，确认之后才收手（§19.20）
+     * @details 「一生只发一次」是错的读法：§13.1 明确写它 MUST be retransmitted until acknowledged
      */
-    TEST(QuicConnectionCore, ProbesWithPingWhenNoUnacknowledgedCryptoRemains)
+    TEST(QuicConnectionCore, RetransmitsHandshakeDoneUntilItIsAcknowledged)
     {
         const FixtureContext serverContext = FixtureContext::server();
         const FixtureContext clientContext = FixtureContext::client();
@@ -1609,27 +1637,79 @@ namespace AsynGyanis::Net
 
         QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
-        for (int round = 0; round < 3 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
+
+        // 这里刻意不走 exchange：那条路会把服务端每个包都确认掉，DONE 一出门就「已确认」，
+        // 要验的重发也就没得验了。只收不答，它才会一直挂在途上
+        for (int round = 0; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
         {
-            exchange(core, client, Timestamp{10000 * round});
+            const Timestamp now{1000 * round};
+            for (const auto &datagram : client.buildFlight())
+            {
+                ASSERT_TRUE(core.onDatagramReceived(datagram, now).has_value());
+            }
+            core.drive(now + Timestamp{5});
+            client.adoptKeys();
+            for (const auto &datagram : drain(core))
+            {
+                client.consume(datagram);
+            }
+            client.adoptKeys();
         }
         ASSERT_TRUE(client.isHandshakeCompleted());
         ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
-        ASSERT_GT(client.handshakeDoneFrameCount(), 0U) << "握手已确认，DONE 该跟着发出来";
+        EXPECT_EQ(client.handshakeDoneFrameCount(), 0U) << "对端还没确认过 Handshake 包，DONE 不该出现";
 
-        // 故意漏掉最新收到的 Handshake 包（就是带 DONE 的那一个），让本端留一包在途
-        exchange(core, client, Timestamp{40000}, QuicEncryptionLevel::Handshake);
-        ASSERT_TRUE(core.nextTimeout().has_value());
-        const Timestamp deadline = *core.nextTimeout();
-        EXPECT_EQ(client.pingFrameCount(), 0U) << "还在等待窗口里就不该发探针";
-
-        core.onTimeout(deadline);
+        // §4.1.2：服务端「握手已确认」的判据就是对端确认了 Handshake 空间的包，确认之后 DONE 才出门
+        client.acknowledgeServerPacket(QuicEncryptionLevel::Handshake, 0);
+        ASSERT_TRUE(core.onDatagramReceived(client.lastSentAcknowledgement(), Timestamp{20000}).has_value());
+        core.drive(Timestamp{20005});
         for (const auto &datagram : drain(core))
         {
             client.consume(datagram);
         }
-        EXPECT_GE(client.pingFrameCount(), 1U) << "无可重发内容时必须靠 PING 维持探测（RFC 9002 §6.2.2）";
-        EXPECT_GT(core.nextTimeout().value_or(Timestamp{0}), deadline) << "连续探测要按退避倍数拉长等待（§6.2.1）";
+        ASSERT_EQ(client.handshakeDoneFrameCount(), 1U) << "确认之后该发出 DONE，且此刻只有一份";
+
+        // 把 Initial 与 Handshake 两个空间确认干净，只留带 DONE 的这一包在途：否则先到期的定时器属于
+        // Handshake 空间，那一趟探针补的是握手字节，与 DONE 无关
+        for (const auto &datagram : client.buildAcknowledgements(QuicEncryptionLevel::Application))
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{30000}).has_value());
+        }
+        core.drive(Timestamp{30005});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.handshakeDoneFrameCount(), 1U) << "另两个空间的确认不该顺带把 DONE 再发一遍";
+
+        const std::optional<Timestamp> firstDeadline = core.nextTimeout();
+        ASSERT_TRUE(firstDeadline.has_value()) << "带 DONE 的包没被确认，探测超时应武装起来";
+        EXPECT_EQ(client.pingFrameCount(), 0U) << "还在等待窗口里就不该发探针";
+
+        core.onTimeout(*firstDeadline);
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.handshakeDoneFrameCount(), 2U) << "没被确认的 HANDSHAKE_DONE 该跟着探针重发（§19.20）";
+        EXPECT_EQ(client.pingFrameCount(), 0U) << "还有可重发的东西时轮不到单发 PING（RFC 9002 §6.2.2）";
+
+        // 全部确认之后就收手：既不再发第三份，也不必为它继续亮着定时器
+        for (const auto &datagram : client.buildAcknowledgements())
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{40000}).has_value());
+        }
+        core.drive(Timestamp{40005});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        core.drive(Timestamp{41000});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.handshakeDoneFrameCount(), 2U) << "DONE 被确认过之后不该再发（§19.20）";
     }
 
     /**
@@ -2128,6 +2208,33 @@ namespace AsynGyanis::Net
         // 抢在 ClientHello 之前发：再晚一步 Initial 空间就退休了，这条报文连解都解不开
         const std::vector<std::uint8_t> payload = payloadBytes("too early");
         feed(core, makeStreamDatagram(client, QuicEncryptionLevel::Initial, 0x00, 0, payload, false), Timestamp{0});
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        EXPECT_TRUE(client.sawConnectionClose());
+        ASSERT_TRUE(client.serverCloseErrorCode().has_value());
+        EXPECT_EQ(*client.serverCloseErrorCode(), 0x0aU);
+    }
+
+    /**
+     * @brief 服务端收到 HANDSHAKE_DONE 一律按 PROTOCOL_VIOLATION 收口（§19.20）
+     */
+    TEST(QuicConnectionCore, RejectsHandshakeDoneSentByPeer)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 帧体就一个变长整数 0x1e：这一帧只有服务端会发，客户端发过来即违规，与本端是否已建立无关
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, std::string(1, static_cast<char>(0x1e))),
+             Timestamp{120000});
         for (const auto &datagram : drain(core))
         {
             client.consume(datagram);

@@ -283,6 +283,13 @@ namespace AsynGyanis::Net
          * @param packets 要按偏移补发的包
          */
         void queueRetransmissions(PacketNumberSpace space, std::span<const QuicSentPacketInfo> packets);
+        /**
+         * @brief HANDSHAKE_DONE 还欠不欠着一个没被确认的副本
+         * @details §19.20 要求它「必须重发直到被确认」，因此发过不等于发完：只要确认还没回来、
+         *          在途又没有带着它的包，下一轮出包就得再带一次
+         * @return true 还需要（再）发一次
+         */
+        [[nodiscard]] bool isHandshakeDonePending() const noexcept;
         void queueConnectionClosePacket(Timestamp now);
         void beginClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
         /**
@@ -291,8 +298,19 @@ namespace AsynGyanis::Net
          * @param now 收口报文的发送时刻
          */
         void reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, Timestamp now);
+        /**
+         * @brief 组一个包发出去，并把它记进在途账
+         * @param space 哪个包号空间
+         * @param frames 已编码好的帧序列
+         * @param now 发出时刻
+         * @param isAckEliciting 本包是否触发确认
+         * @param cryptoRange 本包带的握手字节区间，判丢时按它补发
+         * @param streamRanges 本包带的流数据区间，确认与判丢都按它回收额度
+         * @param carriesHandshakeDone 本包是否带了 HANDSHAKE_DONE：它要在被确认之前一直重发（§19.20）
+         */
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting,
-                        std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges = {});
+                        std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges = {},
+                        bool carriesHandshakeDone = false);
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -349,7 +367,8 @@ namespace AsynGyanis::Net
         QuicConnectionPhase m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
         std::optional<std::uint64_t> m_localCloseErrorCode{};        ///< 待发的 CONNECTION_CLOSE 错误码
         std::string m_localCloseReasonPhrase{};                      ///< 随错误码一起发出的原因文案
-        bool m_hasSentHandshakeDone{false};                          ///< HANDSHAKE_DONE 一生只发一次（§19.20）
+        bool m_isHandshakeDoneAcknowledged{false}; ///< 带 HANDSHAKE_DONE 的包被确认过，之后不再重发（§19.20）
+        bool m_isHandshakeDoneInFlight{false};     ///< 有一份 HANDSHAKE_DONE 还在途：确认或判丢之前不重复发
         bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
         bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
         std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上

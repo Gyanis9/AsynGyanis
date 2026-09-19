@@ -452,10 +452,15 @@ namespace AsynGyanis::Net
                         // 对端已经收口：本端不再发任何东西，也不再回一个 CLOSE（§10.2.3）
                         m_phase = QuicConnectionPhase::Closing;
                     }
+                    else if constexpr (std::same_as<FrameType, QuicHandshakeDoneFrame>)
+                    {
+                        // §19.20：只有服务端会发这一帧，而「服务端收到它」本身就写死了要按
+                        // PROTOCOL_VIOLATION 收口——本实现只有服务端一侧，不必再看它出现在哪个空间
+                        beginClose(kQuicProtocolViolation, "对端向服务端发了 HANDSHAKE_DONE（RFC 9000 §19.20）", arrivalTime);
+                    }
                     // PADDING 与 PING 不需要动作：PING 的确认由触发确认的记账统一处理。
                     // DATA_BLOCKED 那三类只是对端的自述，本层不需要反应（§19.12–§19.14）。
-                    // 连接标识与路径验证那几类要到后续里程碑才有人接；HANDSHAKE_DONE 只有服务端会发，
-                    // 收到它说明对端把本端当成了客户端，同样忽略。
+                    // 连接标识与路径验证那几类要到后续里程碑才有人接。
                 },
                 frame);
     }
@@ -493,6 +498,12 @@ namespace AsynGyanis::Net
         for (const QuicSentPacketInfo &packet : update.acknowledged)
         {
             m_streams.onSendRangesAcknowledged(packet.streamRanges);
+            if (packet.carriesHandshakeDone)
+            {
+                // §19.20 的「重发到被确认为止」到此为止：确认回来之后这一帧这辈子不再发第二遍
+                m_isHandshakeDoneAcknowledged = true;
+                m_isHandshakeDoneInFlight = false;
+            }
         }
         for (const QuicSentPacketInfo &packet : update.lost)
         {
@@ -695,9 +706,11 @@ namespace AsynGyanis::Net
             // 连一个包头都装不进 3 倍额度：本空间这一轮什么都发不出去，等对端多打些字节再来（§8.1）
             return;
         }
-        // §19.20：握手完成、且对端确认过 Handshake 空间的包之后，服务端只发一次 HANDSHAKE_DONE
-        const bool wantsHandshakeDone = space == PacketNumberSpace::Handshake && m_phase == QuicConnectionPhase::Established &&
-                                        !m_hasSentHandshakeDone && m_isHandshakeConfirmed;
+        // §19.20：握手完成、且对端确认过 Handshake 空间的包之后才发 HANDSHAKE_DONE，且它是 **1-RTT
+        // 帧**（§19 表 3 的 Protection 列只有 1）——塞进 Handshake 空间的包会被对端按「该级别不该
+        // 出现这种帧」判 PROTOCOL_VIOLATION（aioquic 即如此）
+        bool owesHandshakeDone = space == PacketNumberSpace::Application && m_phase == QuicConnectionPhase::Established &&
+                                 m_isHandshakeConfirmed && isHandshakeDonePending();
         bool owesProbe = m_probeSpace.has_value() && *m_probeSpace == space;
         // 整轮探测都豁免窗口（§7.5）：欠的那一条可能分两包出去，只豁免第一包等于把后半段卡在门外
         const bool isProbingSpace = owesProbe;
@@ -718,10 +731,13 @@ namespace AsynGyanis::Net
                                                        std::min<std::uint64_t>(m_configuration.transportParameters.acknowledgmentDelayExponent, 20U);
                 appendQuicFrame(frames, QuicFrame{acknowledgement});
             }
-            if (wantsHandshakeDone && !m_hasSentHandshakeDone)
+            bool carriesHandshakeDone = false;
+            if (owesHandshakeDone)
             {
                 appendQuicFrame(frames, QuicFrame{QuicHandshakeDoneFrame{}});
-                m_hasSentHandshakeDone = true;
+                carriesHandshakeDone = true;
+                // 一轮里只带一次：这一包出去之后在途就有了它的副本，下一包不必再重复占字节
+                owesHandshakeDone = false;
                 elicitsAcknowledgement = true;
             }
 
@@ -792,7 +808,7 @@ namespace AsynGyanis::Net
             }
             const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
             const bool hasMoreWork = hasMoreCrypto || (space == PacketNumberSpace::Application && m_streams.hasOutgoingFrames());
-            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges));
+            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone);
             if (!hasMoreWork || (!carriedRange.has_value() && !carriesStreamFrames))
             {
                 // 已经没有下文，或这一包被预算挤得一个字节都没带上：再转一圈也只是空转
@@ -813,6 +829,11 @@ namespace AsynGyanis::Net
             {
                 ranges.push_back(*packet.cryptoRange);
             }
+            if (packet.carriesHandshakeDone)
+            {
+                // 这一包没了指望，它带的 DONE 也就没人再认账了：销账，下一轮出包补一份（§19.20）
+                m_isHandshakeDoneInFlight = false;
+            }
         }
         // 相邻或重叠的区间合并：同一段字节被两个包各带过一次时不该重发两遍，队列也不该无限增长
         std::ranges::sort(ranges, {}, &QuicCryptoRange::beginOffset);
@@ -829,9 +850,16 @@ namespace AsynGyanis::Net
         state.pendingRetransmissions = std::move(merged);
     }
 
+    bool QuicConnectionCore::isHandshakeDonePending() const noexcept
+    {
+        // 确认回来之前一直欠着一份（§19.20）；在途还有一份时不必再发第二份，等它被判丢或探测超时
+        // 之后由 queueRetransmissions 把「在途那份」的账销掉，下一轮自然补发
+        return !m_isHandshakeDoneAcknowledged && !m_isHandshakeDoneInFlight;
+    }
+
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now,
                                         const bool isAckEliciting, const std::optional<QuicCryptoRange> cryptoRange,
-                                        std::vector<QuicStreamRange> streamRanges)
+                                        std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
@@ -859,6 +887,11 @@ namespace AsynGyanis::Net
         record.isAckEliciting = isAckEliciting;
         record.cryptoRange = cryptoRange;
         record.streamRanges = std::move(streamRanges);
+        record.carriesHandshakeDone = carriesHandshakeDone;
+        if (carriesHandshakeDone)
+        {
+            m_isHandshakeDoneInFlight = true;
+        }
         if (isAckEliciting && !m_hasSentAckElicitingSinceReceipt && m_idlePeriod.has_value())
         {
             // §10.1：本端主动发起的通信也算活动，但只有收包之后的第一包作数，且沿用本期额度——
