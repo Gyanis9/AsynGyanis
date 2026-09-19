@@ -823,6 +823,9 @@ namespace AsynGyanis::Net
             return;
         }
 
+        // 先补上欠对端的插入数告知：它和这一趟要发的头块/指令属于同一批 QPACK 状态推进
+        emitDecoderStreamIncrements();
+
         for (std::size_t round = 0; round < kMaximumFlushRounds && !m_outboundOrder.empty(); ++round)
         {
             const std::int64_t streamId = m_outboundOrder.front();
@@ -863,6 +866,21 @@ namespace AsynGyanis::Net
         }
         entry->second.isLocalFinished = true;
         closeStreamIfDone(streamId);
+    }
+
+    void Http3Connection::emitDecoderStreamIncrements()
+    {
+        if (!m_qpackDecoder || m_localDecoderStreamId < 0)
+        {
+            return;
+        }
+        // 只在真有欠账时才排字节：没有增量时本方法不写任何东西，也就不会凭空多一趟 flush
+        std::string decoderStreamBytes;
+        if (m_qpackDecoder->emitInsertCountIncrement(decoderStreamBytes) == 0)
+        {
+            return;
+        }
+        queueOutboundBytes(m_localDecoderStreamId, decoderStreamBytes, false);
     }
 
     void Http3Connection::queueQpackInstructions(const std::string_view encoderBytes, const std::string_view decoderBytes)

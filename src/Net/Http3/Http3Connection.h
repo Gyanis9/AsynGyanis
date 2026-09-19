@@ -271,6 +271,9 @@ namespace AsynGyanis::Net
         /// 把 QPACK 两侧产出的指令字节排进对应单向流的待发队列
         void queueQpackInstructions(std::string_view encoderBytes, std::string_view decoderBytes);
 
+        /// 把「本端已处理但还没告知」的插入数以 Insert Count Increment 排进解码器流（RFC 9204 §4.4.3）
+        void emitDecoderStreamIncrements();
+
         /// 把字节排进某条流的待发队列
         void queueOutboundBytes(std::int64_t streamId, std::string_view bytes, bool isEndStream);
 
