@@ -1,4 +1,5 @@
 #include "Net/Quic/QuicServer.h"
+#include "Net/Quic/QuicOpenSslError.h"
 
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
@@ -24,22 +25,6 @@ namespace AsynGyanis::Net
 
         /// 服务端要协商出的 ALPN：HTTP/3 约定用 h3
         constexpr std::string_view kHttp3ApplicationProtocol = "h3";
-
-        /**
-         * @brief 把 OpenSSL 的错误队列折成一行可读文本
-         * @return std::string 最近一条错误；队列为空时给出占位文本
-         */
-        std::string lastOpenSslError()
-        {
-            const unsigned long errorCode = ERR_get_error();
-            if (errorCode == 0)
-            {
-                return "(OpenSSL 未给出错误详情)";
-            }
-            char buffer[256]{};
-            ERR_error_string_n(errorCode, buffer, sizeof(buffer));
-            return buffer;
-        }
 
         /**
          * @brief ALPN 选择回调：只接受 HTTP/3
@@ -75,25 +60,25 @@ namespace AsynGyanis::Net
         m_tlsContext = SSL_CTX_new(TLS_server_method());
         if (m_tlsContext == nullptr)
         {
-            throw Base::SystemException("QUIC 服务端启动失败：TLS 上下文创建失败（" + lastOpenSslError() + "）");
+            throw Base::SystemException("QUIC 服务端启动失败：TLS 上下文创建失败（" + quicOpenSslErrorText() + "）");
         }
 
         // QUIC 只用 TLS 1.3：低版本没有 QUIC 需要的握手接口
         if (SSL_CTX_set_min_proto_version(m_tlsContext, TLS1_3_VERSION) != 1)
         {
-            throw Base::SystemException("QUIC 服务端启动失败：无法把 TLS 最低版本限到 1.3（" + lastOpenSslError() + "）");
+            throw Base::SystemException("QUIC 服务端启动失败：无法把 TLS 最低版本限到 1.3（" + quicOpenSslErrorText() + "）");
         }
         if (SSL_CTX_use_certificate_chain_file(m_tlsContext, m_configuration.certificateFile.c_str()) != 1)
         {
-            throw Base::SystemException("QUIC 服务端启动失败：证书加载失败（" + m_configuration.certificateFile + "）：" + lastOpenSslError());
+            throw Base::SystemException("QUIC 服务端启动失败：证书加载失败（" + m_configuration.certificateFile + "）：" + quicOpenSslErrorText());
         }
         if (SSL_CTX_use_PrivateKey_file(m_tlsContext, m_configuration.privateKeyFile.c_str(), SSL_FILETYPE_PEM) != 1)
         {
-            throw Base::SystemException("QUIC 服务端启动失败：私钥加载失败（" + m_configuration.privateKeyFile + "）：" + lastOpenSslError());
+            throw Base::SystemException("QUIC 服务端启动失败：私钥加载失败（" + m_configuration.privateKeyFile + "）：" + quicOpenSslErrorText());
         }
         if (SSL_CTX_check_private_key(m_tlsContext) != 1)
         {
-            throw Base::SystemException("QUIC 服务端启动失败：私钥与证书不匹配：" + lastOpenSslError());
+            throw Base::SystemException("QUIC 服务端启动失败：私钥与证书不匹配：" + quicOpenSslErrorText());
         }
         SSL_CTX_set_alpn_select_cb(m_tlsContext, selectApplicationProtocol, nullptr);
 
