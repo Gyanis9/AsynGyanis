@@ -26,6 +26,7 @@ namespace AsynGyanis::Net
     {
         Truncated, ///< 字段越过报文末尾（含 Length 域声明的长度大于实收字节数）：整包无法解释，按不可解报文丢弃
         Malformed, ///< 字段值违反 QUIC v1 的硬性规则（长头固定位为 0、连接标识长度超 20 等）：RFC 9000 §17.2/§17.3.1 要求丢弃，上层也可按章节回 PROTOCOL_VIOLATION
+        AuthenticationFailed, ///< AEAD 标签校验不过：可能是密钥不合、包号被改或中途被篡改。RFC 9001 §4.1.4 要求整包静默丢弃，不算对端违规
     };
 
     /**
