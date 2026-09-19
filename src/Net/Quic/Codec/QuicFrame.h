@@ -123,7 +123,7 @@ namespace AsynGyanis::Net
     struct QuicAcknowledgementFrame
     {
         std::uint64_t largestAcknowledgedPacketNumber{0};        ///< 被确认的最大包号
-        std::uint64_t acknowledgementDelayMicroseconds{0};       ///< 收到最大包号到发出本帧的延迟（微秒）
+        std::uint64_t acknowledgementDelay{0};                   ///< 收到最大包号到发出本帧的延迟，**线上值**：单位是 2^本端 ack_delay_exponent 微秒，本层只搬运不换算（§19.3）
         std::vector<QuicAcknowledgementRange> ranges{};          ///< 被确认的包号区间，按包号递减且不重叠
         bool hasEcnCounts{false};                                ///< 是否带三个 ECN 计数（帧类型为 0x03 时为 true）
         std::array<std::uint64_t, 3> ecnCounts{};                ///< 依次是 ECT(0)、ECT(1)、ECN-CE 的包数

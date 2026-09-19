@@ -152,7 +152,12 @@ namespace AsynGyanis::Net
         single.ranges = {{0, 5}};
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0205000005"));
 
+        // ACK Delay 是**线上值**而不是微秒：300 原样落到第三个字段，乘除 2^指数都不在本层
+        single.acknowledgementDelay = 300;
+        EXPECT_EQ(encodeOne(single), makeBytesFromHex("0205412c0005"));
+
         single.hasEcnCounts = true;
+        single.acknowledgementDelay = 0;
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0305000005000000"));
 
         // 区间 [8,10] 与 [4,4]：First ACK Range=2，下一段 gap = 8-4-2 = 2、长度 0
@@ -185,6 +190,12 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(decodedAcknowledgement.hasEcnCounts);
         // 线格式的两段区间还原成绝对包号，正是编码时给的那两段
         EXPECT_EQ(decodedAcknowledgement.ranges, (std::vector<QuicAcknowledgementRange>{{8, 10}, {4, 4}}));
+
+        std::vector<std::uint8_t> delayStorage;
+        const auto withDelay = decodeSingle("0205412c0005", delayStorage);
+        ASSERT_TRUE(withDelay.has_value());
+        // 同一个 300 解回来还是 300：本层不拿指数去乘（那需要知道对端的 ack_delay_exponent）
+        EXPECT_EQ(std::get<QuicAcknowledgementFrame>(*withDelay).acknowledgementDelay, 300U);
 
         std::vector<std::uint8_t> ecnStorage;
         const auto withEcn = decodeSingle("0305000005010203", ecnStorage);

@@ -315,7 +315,7 @@ namespace AsynGyanis::Net
                                                 static_cast<std::uint64_t>(frame.hasEcnCounts ? QuicFrameType::AcknowledgementEcn
                                                                                               : QuicFrameType::Acknowledgement));
                 appendQuicVariableLengthInteger(bytes, frame.largestAcknowledgedPacketNumber);
-                appendQuicVariableLengthInteger(bytes, frame.acknowledgementDelayMicroseconds);
+                appendQuicVariableLengthInteger(bytes, frame.acknowledgementDelay);
                 appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(wireRanges.size() - 1));
                 // 首区间由 First ACK Range 单独表达，就是首项的区间长度
                 appendQuicVariableLengthInteger(bytes, wireRanges.front().second);
@@ -628,7 +628,7 @@ namespace AsynGyanis::Net
                     return std::unexpected(ranges.error());
                 }
                 acknowledgement.largestAcknowledgedPacketNumber = *largestAcknowledged;
-                acknowledgement.acknowledgementDelayMicroseconds = *acknowledgementDelay;
+                acknowledgement.acknowledgementDelay = *acknowledgementDelay;
                 acknowledgement.ranges = std::move(*ranges);
                 if (*typeValue == static_cast<std::uint64_t>(QuicFrameType::AcknowledgementEcn))
                 {
