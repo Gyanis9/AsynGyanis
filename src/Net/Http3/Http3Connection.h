@@ -183,13 +183,6 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isLocalStreamFinished(std::int64_t streamId) const noexcept;
 
         /**
-         * @brief 主动重置一条流：把待发字节丢掉并交给传输层去发 RESET_STREAM
-         * @param streamId 流号
-         * @param errorCode 线上错误码
-         */
-        void resetStream(std::int64_t streamId, Http3ErrorCode errorCode);
-
-        /**
          * @brief 把各流攒下的待发字节按轮转交出去
          * @note 一次最多搬 kMaximumFlushRounds 轮，避免一条连接上转太久饿死别的连接
          */
@@ -197,9 +190,6 @@ namespace AsynGyanis::Net
 
         /// 对端在 SETTINGS 里公布的动态表容量，本端编码器据此决定能插多少
         [[nodiscard]] std::size_t peerTableCapacityByteCount() const noexcept;
-
-        /// 对端是否声明支持扩展 CONNECT（RFC 9220 §3.2.1）
-        [[nodiscard]] bool isExtendedConnectPermitted() const noexcept;
 
     private:
         /// 对端发起的单向流按类型前缀落到哪种角色上

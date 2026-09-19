@@ -123,12 +123,6 @@ namespace AsynGyanis::Net
         return m_qpackEncoder ? m_qpackEncoder->tableCapacityByteCount() : std::size_t{0};
     }
 
-    bool Http3Connection::isExtendedConnectPermitted() const noexcept
-    {
-        // 判定请求里的 :protocol 看的是本端能力：本端没在 SETTINGS 里声明，就不该收到它（RFC 9220 §3.2）
-        return m_localSettings.isExtendedConnectEnabled;
-    }
-
     void Http3Connection::consumeStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data,
                                             const bool isEndStream)
     {
@@ -784,11 +778,6 @@ namespace AsynGyanis::Net
     {
         const auto entry = m_streams.find(streamId);
         return entry == m_streams.end() || entry->second.isLocalFinished || entry->second.isAbandoned;
-    }
-
-    void Http3Connection::resetStream(const std::int64_t streamId, const Http3ErrorCode errorCode)
-    {
-        failStream(streamId, errorCode, "上层要求重置该流");
     }
 
     void Http3Connection::noteStreamCancelledByPeer(const std::int64_t streamId)
