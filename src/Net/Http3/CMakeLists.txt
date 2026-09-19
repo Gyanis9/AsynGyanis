@@ -2,6 +2,8 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Http3Error.h
         ${CMAKE_CURRENT_LIST_DIR}/Http3Error.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Http3HeaderValidation.h
+        ${CMAKE_CURRENT_LIST_DIR}/Http3HeaderValidation.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http3Session.h
         ${CMAKE_CURRENT_LIST_DIR}/Http3Session.cpp
 )
