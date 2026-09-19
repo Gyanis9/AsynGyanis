@@ -3,4 +3,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicDecodeError.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicVariableLengthInteger.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicVariableLengthInteger.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicPacketHeader.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicPacketHeader.cpp
 )

@@ -90,6 +90,71 @@ namespace AsynGyanis::Net::TestSupport
     }
 
     /**
+     * @brief 由字节序列拼出可直接喂给 span 接口的无符号字节容器
+     * @details QUIC 的报文层按「指针 + 长度」收 `std::uint8_t`，用字符串字面量拼既不直观
+     *          也躲不开零终止，因此与 makeBytes 各留一份：那份给字符串口，这份给无符号字节口。
+     * @param byteValues 字节值序列
+     * @return std::vector<std::uint8_t> 逐字节拷入的结果
+     */
+    [[nodiscard]] inline std::vector<std::uint8_t> makeUnsignedBytes(const std::initializer_list<unsigned char> byteValues)
+    {
+        std::vector<std::uint8_t> bytes;
+        bytes.reserve(byteValues.size());
+        for (const unsigned char byteValue: byteValues)
+        {
+            bytes.push_back(byteValue);
+        }
+        return bytes;
+    }
+
+    /**
+     * @brief 把十六进制文本解析成字节序列，空白与非十六进制字符一律跳过
+     * @details 网络协议的官方测试向量都是按 RFC 的排版给的十六进制串（每行 16 字节、行内带空格），
+     *          逐字节改写成 initializer_list 既容易抄错也无法跟原文对照，所以这里直接贴原文。
+     * @param hexadecimalText 十六进制文本，大小写与空白不限
+     * @return std::vector<std::uint8_t> 解析出的字节；末尾落单的半个字节被忽略
+     */
+    [[nodiscard]] inline std::vector<std::uint8_t> makeBytesFromHex(std::string_view hexadecimalText)
+    {
+        auto digitValue = [](const char character) -> int
+        {
+            if (character >= '0' && character <= '9')
+            {
+                return character - '0';
+            }
+            if (character >= 'a' && character <= 'f')
+            {
+                return character - 'a' + 10;
+            }
+            if (character >= 'A' && character <= 'F')
+            {
+                return character - 'A' + 10;
+            }
+            return -1;
+        };
+
+        std::vector<std::uint8_t> bytes;
+        bytes.reserve(hexadecimalText.size() / 2 + 1);
+        int pendingHighNibble = -1;
+        for (const char character: hexadecimalText)
+        {
+            const int value = digitValue(character);
+            if (value < 0)
+            {
+                continue;
+            }
+            if (pendingHighNibble < 0)
+            {
+                pendingHighNibble = value;
+                continue;
+            }
+            bytes.push_back(static_cast<std::uint8_t>((pendingHighNibble << 4) | value));
+            pendingHighNibble = -1;
+        }
+        return bytes;
+    }
+
+    /**
      * @brief 判断请求标识是否符合自动生成格式
      * @param requestId 待判定的标识
      * @return true 长度符合约定，且分隔符位置与其余字符都是小写十六进制

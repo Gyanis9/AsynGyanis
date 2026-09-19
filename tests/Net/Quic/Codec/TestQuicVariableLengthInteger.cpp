@@ -32,22 +32,9 @@ namespace AsynGyanis::Net
         using AsynGyanis::Net::TestSupport::containsText;
 
         /**
-         * @brief 由字节序列拼出待解码的字节容器
-         * @details 解码入口收 `std::span<const std::uint8_t>`，因此不能用字符串字面量喂：
-         *          `char` 与 `std::uint8_t` 是不同类型，按字符串构造还要过一层转换，反而看不清在喂什么。
-         * @param byteValues 字节值序列
-         * @return std::vector<std::uint8_t> 逐字节拷入的容器
+         * @brief 由字节序列拼出待解码的字节容器（定义见 NetTestSupport.h）
          */
-        std::vector<std::uint8_t> makeUnsignedBytes(const std::initializer_list<unsigned char> byteValues)
-        {
-            std::vector<std::uint8_t> bytes;
-            bytes.reserve(byteValues.size());
-            for (const unsigned char byteValue: byteValues)
-            {
-                bytes.push_back(byteValue);
-            }
-            return bytes;
-        }
+        using AsynGyanis::Net::TestSupport::makeUnsignedBytes;
 
         /**
          * @brief 编码结果转成同一类型的字节容器，便于用 {0x.., 0x..} 直接比对
