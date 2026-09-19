@@ -105,11 +105,12 @@ namespace AsynGyanis::Net
         std::size_t writeStreamData(std::uint64_t streamId, std::span<const std::uint8_t> bytes, bool isFinal);
 
         /**
-         * @brief 本端发起的下一条单向流号：0x03、0x07、0x0b……
-         * @details 只报号不占用：真正占用发生在第一次 `writeStreamData`
-         * @return std::optional<std::uint64_t> 已用到对端宣告的单向流数上限时返回空
+         * @brief 开一条本端发起的单向流：0x03、0x07、0x0b……
+         * @details 调用即占用，计数器立刻推进，因此连续两次不会给出同一个流号；条目也当场建好，
+         *          后续 `writeStreamData` 直接落在它上面
+         * @return std::optional<std::uint64_t> 对端宣告的单向流数已用满时返回空
          */
-        [[nodiscard]] std::optional<std::uint64_t> nextUnidirectionalStreamId() const noexcept;
+        [[nodiscard]] std::optional<std::uint64_t> openUnidirectionalStream();
 
         /**
          * @brief 上层消费掉数据后归还额度：流级与连接级一起抬

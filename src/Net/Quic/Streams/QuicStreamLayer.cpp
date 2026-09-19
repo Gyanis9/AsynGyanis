@@ -385,13 +385,17 @@ namespace AsynGyanis::Net
         return acceptedByteCount;
     }
 
-    std::optional<std::uint64_t> QuicStreamLayer::nextUnidirectionalStreamId() const noexcept
+    std::optional<std::uint64_t> QuicStreamLayer::openUnidirectionalStream()
     {
-        if (streamIndexOfType(m_nextUnidirectionalStreamId) >= m_outgoingUnidirectionalLimit)
+        const std::uint64_t streamId = m_nextUnidirectionalStreamId;
+        if (streamIndexOfType(streamId) >= m_outgoingUnidirectionalLimit)
         {
             return std::nullopt;
         }
-        return m_nextUnidirectionalStreamId;
+        m_nextUnidirectionalStreamId += kStreamIdStride;
+        // 条目当场建好：这条流的额度与后续写入都记在它身上
+        static_cast<void>(outgoingStream(streamId));
+        return streamId;
     }
 
     bool QuicStreamLayer::collectFrames(std::string &frames, const std::size_t byteBudget,
@@ -691,10 +695,6 @@ namespace AsynGyanis::Net
         }
         OutgoingStream &fresh = m_outgoing[streamId];
         fresh.streamLimit = initialSendWindowFor(streamId).value_or(0);
-        if (isUnidirectional(streamId) && isLocallyInitiated(streamId) && streamId >= m_nextUnidirectionalStreamId)
-        {
-            m_nextUnidirectionalStreamId = streamId + kStreamIdStride;
-        }
         return fresh;
     }
 

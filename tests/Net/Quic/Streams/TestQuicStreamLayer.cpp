@@ -483,11 +483,11 @@ namespace AsynGyanis::Net
         layer.adoptPeerParameters(makeParameters(8192, 2048, 2048, 2048, 0, 1));
         EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("abc"), false), 0U) << "对端没给本端开双向流的额度";
 
-        const std::optional<std::uint64_t> first = layer.nextUnidirectionalStreamId();
+        const std::optional<std::uint64_t> first = layer.openUnidirectionalStream();
         ASSERT_TRUE(first.has_value());
         EXPECT_EQ(*first, 3U);
-        EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("abc"), false), 3U);
-        EXPECT_FALSE(layer.nextUnidirectionalStreamId().has_value()) << "唯一一条单向流已经用掉";
+        EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "唯一一条单向流已经用掉，第二次开流不该给出流号";
+        EXPECT_EQ(layer.writeStreamData(*first, bytesOf("abc"), false), 3U);
     }
 
     /**
