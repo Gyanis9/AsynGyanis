@@ -300,11 +300,11 @@ namespace AsynGyanis::Net
 
         static constexpr std::size_t kMaximumFlushRounds = 64; ///< 一次 flush 最多搬多少段
 
-        StreamOpener m_streamOpener;
-        StreamWriter m_streamWriter;
-        StreamCrediter m_streamCrediter;
-        Callbacks m_callbacks;
-        LocalSettings m_localSettings;
+        StreamOpener m_streamOpener;      ///< 开本端单向流的口
+        StreamWriter m_streamWriter;      ///< 一条流上待发字节的出口
+        StreamCrediter m_streamCrediter;  ///< 已消费字节归还接收窗口的口
+        Callbacks m_callbacks;            ///< 交给上层的通知集合，缺哪一项就不发哪一项
+        LocalSettings m_localSettings;    ///< 本端公布的能力，构造时写进 SETTINGS 帧
 
         std::optional<QpackEncoder> m_qpackEncoder; ///< 本端编码器：写自己的动态表，受对端公布容量约束
         std::optional<QpackDecoder> m_qpackDecoder; ///< 本端解码器：受本端公布的容量约束
@@ -325,9 +325,9 @@ namespace AsynGyanis::Net
 
         bool m_isPeerSettingsReceived{false}; ///< 对端控制流上是否已出现过 SETTINGS 帧
         std::uint64_t m_maximumPushId{0};     ///< 对端允许的最大推送标识；本服务端不推送，只记录
-        bool m_isUsable{false};
-        bool m_isBroken{false};
-        Http3ErrorCode m_connectionErrorCode{Http3ErrorCode::NoError};
-        std::string m_connectionErrorReason;
+        bool m_isUsable{false};                                ///< 三条本端单向流是否都开出来了
+        bool m_isBroken{false};                                ///< 是否已作废：作废后除取走待发字节与销毁外没有合法动作
+        Http3ErrorCode m_connectionErrorCode{Http3ErrorCode::NoError}; ///< 作废原因对应的线上错误码
+        std::string m_connectionErrorReason;                   ///< 作废原因的中文文本，供日志与关闭帧取用
     };
 } // namespace AsynGyanis::Net

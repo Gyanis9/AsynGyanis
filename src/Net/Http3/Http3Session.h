@@ -237,12 +237,11 @@ namespace AsynGyanis::Net
             /// 本条流已缓冲正文占用的全局额度：随记录一起析构即归还
             HttpMemoryBudget::Reservation bodyBudget;
 
-            /// 头部逐条累计的判据（条数、单名/单值长度、整块净字节）与请求目标长度，
-            /// 口径与 h1 的 HttpParserLimits 一致：越限即置位，服务阶段按 431/414 应答
-            std::size_t headerFieldCount{0};
-            std::size_t headerBlockByteCount{0};
-            bool        isHeaderLimitExceeded{false};
-            bool        isUriTooLong{false};
+            /// 以下四项的口径与 h1 的 HttpParserLimits 一致：越限即置位，服务阶段按 431/414 应答
+            std::size_t headerFieldCount{0};          ///< 已收到的头字段条数
+            std::size_t headerBlockByteCount{0};      ///< 头块净字节（只算名与值的长度，不含帧头）
+            bool        isHeaderLimitExceeded{false}; ///< 条数、单名/单值长度或整块净字节越过上限
+            bool        isUriTooLong{false};          ///< :path 长度越过请求目标上限
         };
 
         /**
