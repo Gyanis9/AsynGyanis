@@ -512,8 +512,36 @@ namespace AsynGyanis::Net
         m_peerParameters = *decoded;
     }
 
+    void QuicConnectionCore::discardSpace(const PacketNumberSpace space)
+    {
+        SpaceState &state = m_spaces[spaceIndex(space)];
+        if (!state.readKeys.has_value() && !state.writeKeys.has_value())
+        {
+            return;
+        }
+        state.readKeys = std::nullopt;
+        state.writeKeys = std::nullopt;
+        state.cryptoStream.clear();
+        state.pendingRetransmissions.clear();
+        state.laterCryptoFragments.clear();
+        state.bufferedOutOfOrderByteCount = 0;
+        if (m_probeSpace.has_value() && *m_probeSpace == space)
+        {
+            // 欠的探针作废：给一个已经退休的空间发探测包，只会白对端一条报文
+            m_probeSpace.reset();
+        }
+        // 在途账一起清：留着它们，定时器还会为一个已经退休的空间亮起来，白挨探针（§A.11）
+        m_recovery.discardSpace(recoverySpaceOf(space));
+    }
+
     void QuicConnectionCore::drive(const Timestamp now)
     {
+        // 解到对端 Handshake 及以上级别的报文，这批 Initial 就没有下一跳了：密钥、握手流与在途账一起
+        // 退休，免得定时器为一个再也发不出包的空间亮着（RFC 9001 §4.9.1、RFC 9002 §A.11）
+        if (m_isAddressValidated)
+        {
+            discardSpace(PacketNumberSpace::Initial);
+        }
         adoptTlsKeys();
         if (m_phase != QuicConnectionPhase::Closing)
         {

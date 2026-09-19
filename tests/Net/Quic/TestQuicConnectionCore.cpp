@@ -14,7 +14,9 @@
 //   7) 恢复层接进来之后的四条补发路：探测超时补在途字节、时间阈值判丢后补发、重复 ACK 也要判丢补发、
 //      没字节可补时退化成一个 PING；以及在途清空后定时器跟着撤掉（RFC 9002 §6.1.2、§6.2、§A.7）；
 //   8) 出流量的两道闸：与已交字节重叠的 CRYPTO 分片剪掉再交给 TLS（§7.5），以及地址验证之前回量
-//      夹在三倍已收字节以内、连重发与探针也不例外（RFC 9000 §8.1）。
+//      夹在三倍已收字节以内、连重发与探针也不例外（RFC 9000 §8.1）；
+//   9) 解到对端的 Handshake 报文后 Initial 空间整体退休：不再补发它的字节，也不再为它亮定时器
+//      （RFC 9001 §4.9.1 + RFC 9002 §A.11）。
 // 证书用仓库内的自签夹具（与 HTTPS、TLS 胶水用例同一份），因此不依赖任何外部服务。
 
 #include "Net/Quic/QuicConnectionCore.h"
@@ -140,6 +142,7 @@ namespace AsynGyanis::Net
             std::size_t receivedCryptoByteCount{0};           ///< 已交给 TLS 的握手字节数，也就是下一个期望偏移
             std::map<std::uint64_t, std::vector<std::uint8_t>> laterCryptoFragments{}; ///< 早到的乱序段，按偏移存
             bool isAcknowledgementPending{false};             ///< 收过触发确认的包还没回 ACK
+            bool suppressesAcknowledgements{false};          ///< 本空间从此不再回 ACK，用来制造永久在途
         };
 
         /// @return std::optional<QuicEncryptionLevel> 报文头对应的加密级别；本端不收的形态返回空
@@ -229,12 +232,14 @@ namespace AsynGyanis::Net
             }
 
             /**
-             * @brief 只跳过某个包号的 Handshake 报文，用来造「中间空一包」的局面
+             * @brief 只跳过某个级别里某一个包号的报文，用来造「中间空一包」的局面
+             * @param level 要跳过的加密级别
              * @param packetNumber 要跳过的包号；交空回到正常行为
              */
-            void skipHandshakePacketNumber(const std::optional<std::uint64_t> packetNumber) noexcept
+            void skipPacketNumber(const QuicEncryptionLevel level, const std::optional<std::uint64_t> packetNumber) noexcept
             {
-                m_skipHandshakePacketNumber = packetNumber;
+                m_skippedPacketLevel = level;
+                m_skippedPacketNumber = packetNumber;
             }
 
             /// 推进 TLS 并把产出的握手字节编成一批数据报
@@ -338,7 +343,8 @@ namespace AsynGyanis::Net
                                                         QuicEncryptionLevel::Application})
                 {
                     ClientSpace &space = spaceOf(level);
-                    if (!space.isAcknowledgementPending || !space.writeKeys.has_value() || !space.largestReceived.has_value())
+                    if (space.suppressesAcknowledgements || !space.isAcknowledgementPending ||
+                        !space.writeKeys.has_value() || !space.largestReceived.has_value())
                     {
                         continue;
                     }
@@ -353,6 +359,17 @@ namespace AsynGyanis::Net
                     acknowledgements.push_back(makeAcknowledgementDatagram(level, std::move(acknowledged), largest));
                 }
                 return acknowledgements;
+            }
+
+            /**
+             * @brief 让本端从此不再确认某个级别收到的包
+             * @details 真实实现里「一条确认都没发出去」是会出现的（确认被丢、或本端攒着没发）；
+             *          用它把某个空间的包永久留在对端的在途账里
+             * @param level 要闭嘴的级别
+             */
+            void suppressAcknowledgements(const QuicEncryptionLevel level) noexcept
+            {
+                spaceOf(level).suppressesAcknowledgements = true;
             }
 
             /**
@@ -505,15 +522,15 @@ namespace AsynGyanis::Net
                 return m_spaces[spaceIndexOf(level)];
             }
 
-            /// 这条 Handshake 报文是不是本端故意不看的：整级丢弃，或只挑掉某一个包号
-            [[nodiscard]] bool isHandshakePacketToSkip(const QuicEncryptionLevel level, const std::uint64_t packetNumber) const noexcept
+            /// 这条报文是不是本端故意不看的：整级丢弃，或只挑掉某个级别的某一个包号
+            [[nodiscard]] bool isPacketToSkip(const QuicEncryptionLevel level, const std::uint64_t packetNumber) const noexcept
             {
-                if (level != QuicEncryptionLevel::Handshake)
+                if (level == QuicEncryptionLevel::Handshake && m_dropsAllHandshakePackets)
                 {
-                    return false;
+                    return true;
                 }
-                return m_dropsAllHandshakePackets ||
-                       (m_skipHandshakePacketNumber.has_value() && packetNumber == *m_skipHandshakePacketNumber);
+                return m_skippedPacketNumber.has_value() && level == m_skippedPacketLevel &&
+                       packetNumber == *m_skippedPacketNumber;
             }
 
             void consumePacket(const std::span<const std::uint8_t> remainder, const QuicPacketHeader &header)
@@ -561,7 +578,7 @@ namespace AsynGyanis::Net
                 // 包号在线上是截断的，而且中间可能有整包被丢弃，必须按 §A.3 还原而不是自己数序号
                 const std::uint64_t packetNumber = restoreQuicPacketNumber(space.largestReceived.value_or(0),
                                                                           refreshed.packetNumber, refreshed.packetNumberByteCount);
-                if (isHandshakePacketToSkip(*level, packetNumber))
+                if (isPacketToSkip(*level, packetNumber))
                 {
                     return;
                 }
@@ -738,7 +755,8 @@ namespace AsynGyanis::Net
             std::vector<std::uint8_t> m_destinationOverride{};         ///< 非空时覆盖发出包的目的标识
             bool m_sawConnectionClose{false};                         ///< 是否收到过 CONNECTION_CLOSE
             bool m_dropsAllHandshakePackets{false};                 ///< 是否把 Handshake 级报文一律不看
-            std::optional<std::uint64_t> m_skipHandshakePacketNumber{}; ///< 要跳过的那个 Handshake 包号，空表示不挑
+            std::optional<std::uint64_t> m_skippedPacketNumber{};       ///< 要跳过的那个包号，空表示不挑
+            QuicEncryptionLevel m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
             std::size_t m_pingFrameCount{0};                          ///< 收到过的 PING 帧数
         };
 
@@ -809,7 +827,7 @@ namespace AsynGyanis::Net
          */
         void finishAfterHandshakeGap(QuicConnectionCore &core, InMemoryQuicClient &client)
         {
-            client.skipHandshakePacketNumber(std::nullopt);
+            client.skipPacketNumber(QuicEncryptionLevel::Handshake, std::nullopt);
             for (int round = 2; round < 6; ++round)
             {
                 exchange(core, client, Timestamp{10000 * round});
@@ -1194,7 +1212,7 @@ namespace AsynGyanis::Net
 
         QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
-        client.skipHandshakePacketNumber(std::uint64_t{0});
+        client.skipPacketNumber(QuicEncryptionLevel::Handshake, std::uint64_t{0});
 
         exchange(core, client, Timestamp{0});
         exchange(core, client, Timestamp{10000});
@@ -1231,7 +1249,7 @@ namespace AsynGyanis::Net
 
         QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
-        client.skipHandshakePacketNumber(std::uint64_t{0});
+        client.skipPacketNumber(QuicEncryptionLevel::Handshake, std::uint64_t{0});
 
         exchange(core, client, Timestamp{0});
         exchange(core, client, Timestamp{10000});
@@ -1459,5 +1477,51 @@ namespace AsynGyanis::Net
         exchange(core, client, probeTime + Timestamp{20000});
         EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U)
                 << "窗口腾出来后，被压住的新数据该跟着下一轮产出";
+    }
+
+    /**
+     * @brief 解到对端的 Handshake 报文之后，Initial 空间整体退休：不再补发、也不再为它亮定时器
+     * @details 客户端一条 Initial 确认都没发出去，服务端的 Initial 在途因此永远清不干净。
+     *          空间一退休就该连账一起销（RFC 9001 §4.9.1 + RFC 9002 §A.11）
+     */
+    TEST(QuicConnectionCore, RetiresTheInitialSpaceOnceThePeerSendsHandshakePackets)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        exchange(core, client, Timestamp{0});
+        client.suppressAcknowledgements(QuicEncryptionLevel::Initial);
+        for (int round = 1; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
+        {
+            exchange(core, client, Timestamp{10000 * round});
+        }
+        ASSERT_TRUE(client.isHandshakeCompleted()) << "Initial 少一份确认也该握得手——同一批字节在 Handshake 里还有一份";
+        ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+
+        const std::size_t initialPackets = client.serverReceivedPacketCount(QuicEncryptionLevel::Initial);
+        ASSERT_GT(initialPackets, 1U) << "至少要留下一包没被确认的 Initial，这条用例才不是空转";
+        // 再跑两轮静默往返：把 DONE 这些最后一批收到的包确认干净，只剩 Initial 那几包永远悬着
+        exchange(core, client, Timestamp{100000});
+        exchange(core, client, Timestamp{110000});
+        EXPECT_FALSE(core.nextTimeout().has_value()) << "退休了的空间还留着在途账，定时器会一直亮着";
+        for (int attempt = 0; attempt < 4; ++attempt)
+        {
+            const std::optional<Timestamp> deadline = core.nextTimeout();
+            if (!deadline.has_value())
+            {
+                break;
+            }
+            core.onTimeout(*deadline);
+            for (const auto &datagram : drain(core))
+            {
+                client.consume(datagram);
+            }
+        }
+        EXPECT_EQ(client.serverReceivedPacketCount(QuicEncryptionLevel::Initial), initialPackets)
+                << "Initial 空间退休后不该再补发它的握手字节";
     }
 } // namespace AsynGyanis::Net

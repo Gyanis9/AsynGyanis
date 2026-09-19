@@ -12,7 +12,8 @@
  *
  * @note 本里程碑只做服务端、只做握手：0-RTT、RETRY、版本协商、流与流量控制、密钥更新、
  *       连接迁移都不在当前能力内，收到对应的报文按各自章节丢弃，留待后续里程碑。
- *       丢包恢复已经接进来：发包记账、RTT、判丢、探测超时与按偏移重发握手字节都在本类里跑。
+ *       丢包恢复、拥塞控制与反放大上限已经接进来：发包记账、RTT、判丢、探测超时、按偏移重发
+ *       握手字节、拥塞窗口许可与 Initial 空间的退休都在本类里跑。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
 
@@ -216,6 +217,13 @@ namespace AsynGyanis::Net
         void handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
         void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
         void adoptTlsKeys();
+        /**
+         * @brief 清掉一个空间的密钥、握手流与在途账
+         * @details 密钥没了就等于这个空间不再存在：后续报文按 §5.1 丢弃，出包按「没有写密钥」跳过，
+         *          恢复层也不再为它武装定时器（RFC 9002 §A.11）
+         * @param space 要退休的包号空间
+         */
+        void discardSpace(PacketNumberSpace space);
         void adoptTlsRecords();
         void queueSpacePackets(PacketNumberSpace space, Timestamp now);
         /**
