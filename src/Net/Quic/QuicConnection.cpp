@@ -196,6 +196,7 @@ namespace AsynGyanis::Net
         // 交付排在 drive 之前：应用层是收到数据才排响应的，先 drive 就白跑一轮
         pumpStreamCallbacks();
         m_core->drive(currentTime());
+        logHandshakeCompletionOnce();
         pumpStreamCallbacks();
         co_await flush();
     }
@@ -237,6 +238,7 @@ namespace AsynGyanis::Net
             // 本轮会把当前攒下的都取走：标记在这里清掉，之后再有人排数据会重新置起来
             m_needsFlush = false;
             m_core->drive(currentTime());
+            logHandshakeCompletionOnce();
             // 回调里可能又写下响应或归还额度，drive 得再转一圈才编得出去
             pumpStreamCallbacks();
 
@@ -307,6 +309,17 @@ namespace AsynGyanis::Net
     bool QuicConnection::needsFlush() const noexcept
     {
         return m_needsFlush;
+    }
+
+    void QuicConnection::logHandshakeCompletionOnce()
+    {
+        if (m_isHandshakeLogged || m_core == nullptr || m_core->phase() != QuicConnectionPhase::Established)
+        {
+            return;
+        }
+        m_isHandshakeLogged = true;
+        LOG_INFO_FMT("QuicConnection: 握手完成（连接标识 {} 字节，ALPN {}）", m_sourceConnectionId.size(),
+                     m_core->selectedApplicationProtocol());
     }
 
     void QuicConnection::pumpStreamCallbacks()

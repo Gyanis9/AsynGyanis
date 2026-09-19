@@ -235,6 +235,12 @@ namespace AsynGyanis::Net
         void pumpStreamCallbacks();
 
         /**
+         * @brief 握手完成时记一条日志（带协商出的 ALPN），一条连接只记一次
+         * @details 状态机不碰日志——它要能在没有输出的条件下于内存里跑完，这条观测因此留在外壳这一侧
+         */
+        void logHandshakeCompletionOnce();
+
+        /**
          * @brief 把「对端取消了这个请求流」告诉配置里的通知方
          * @param streamId 流号（只对端发起的双向流才转交，其余流静默忽略）
          */
@@ -251,5 +257,6 @@ namespace AsynGyanis::Net
         bool m_isFlushing{false};                                  ///< 是否已有 flush 在写这条连接
         bool m_hasFlushRequest{false};                             ///< flush 进行中又有人要求写：让在跑的那轮末再转一圈
         bool m_needsFlush{false};                                  ///< 攒下了还没刷出去的字节
+        bool m_isHandshakeLogged{false};                           ///< 「握手完成」那条日志是否已记，见 logHandshakeCompletionOnce()
     };
 } // namespace AsynGyanis::Net
