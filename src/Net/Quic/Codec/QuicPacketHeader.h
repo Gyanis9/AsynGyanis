@@ -48,6 +48,9 @@ namespace AsynGyanis::Net
     /// v1 里连接标识的最大字节数；长头收进长度域、短头靠本端约定（RFC 9000 §5.1.1、§17.2）
     inline constexpr std::size_t kQuicMaximumConnectionIdLength = 20;
 
+    /// 没做 PMTU 探测、也没学到对端 max_udp_payload_size 之前的数据报净载荷上限（RFC 9000 §14.1）
+    inline constexpr std::size_t kQuicMaximumDatagramPayloadByteLength = 1200;
+
     /**
      * @brief 长头的子类型，枚举取值即线上那 2 位的原始值
      *

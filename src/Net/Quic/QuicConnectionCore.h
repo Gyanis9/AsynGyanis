@@ -24,6 +24,7 @@
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
+#include "Net/Quic/Recovery/QuicCongestionControl.h"
 #include "Net/Quic/Recovery/QuicRecovery.h"
 
 #include <array>
@@ -229,6 +230,24 @@ namespace AsynGyanis::Net
         void beginClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting,
                         std::optional<QuicCryptoRange> cryptoRange);
+        /**
+         * @brief 这一轮还能往网络上压多少净字节
+         * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
+         *          反放大上限（RFC 9000 §8.1，只算到 3 倍已收字节）。
+         * @param reservedByteLength 包头 + 包号 + AEAD 标签 + 已有帧的字节数，预算从它上面扣
+         * @param ignoresCongestionWindow 探针不受窗口阻塞（§7.5），重发未确认的字节时给 true
+         * @return std::size_t 还能装进一个数据报的载荷字节数，算出负数一律收成 0
+         */
+        [[nodiscard]] std::size_t sendByteBudget(std::size_t reservedByteLength, bool ignoresCongestionWindow) const;
+        /**
+         * @brief 反放大额度是否连一个固定开销都装不下
+         * @details 拥塞窗口豁免探针，这条不豁免：地址没验证之前，只带 ACK 的包也一样是放大
+         * @param reservedByteLength 这一包除载荷以外的固定字节数
+         * @return true 本空间这一轮什么都不能发
+         */
+        [[nodiscard]] bool isBlockedByAmplificationLimit(std::size_t reservedByteLength) const noexcept;
+        /// @return std::size_t 3 倍已收字节减去已发字节；已验证地址时这条额度不存在
+        [[nodiscard]] std::size_t amplificationRemainingByteCount() const noexcept;
         void adoptPeerTransportParameters(Timestamp now);
         [[nodiscard]] static std::optional<QuicEncryptionLevel> levelOf(const QuicPacketHeader &header) noexcept;
         [[nodiscard]] static QuicEncryptionLevel levelOf(PacketNumberSpace space) noexcept;
@@ -237,6 +256,9 @@ namespace AsynGyanis::Net
         QuicConnectionCoreConfiguration m_configuration;             ///< 建连接时给的那些值，发包要反复用
         std::unique_ptr<QuicTlsContext> m_tls;                       ///< 每连接的 TLS 上下文
         QuicRecovery m_recovery{};                                   ///< 发包记账、RTT、判丢与探测超时
+        QuicCongestionControl m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
+        std::size_t m_receivedByteCount{0};                          ///< 已收字节，反放大上限按它算（§8.1）
+        std::size_t m_sentByteCount{0};                              ///< 已发字节，与上面那项一起决定还剩多少额度
         std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};  ///< 三个包号空间
         std::deque<std::vector<std::uint8_t>> m_outboundDatagrams{}; ///< 待发数据报队列
         QuicConnectionPhase m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
@@ -244,6 +266,7 @@ namespace AsynGyanis::Net
         std::string m_localCloseReasonPhrase{};                      ///< 随错误码一起发出的原因文案
         bool m_hasSentHandshakeDone{false};                          ///< HANDSHAKE_DONE 一生只发一次（§19.20）
         bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
+        bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
         std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
         std::optional<QuicTransportParameters> m_peerParameters{};   ///< 验过的对端参数
         std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{}; ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它

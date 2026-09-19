@@ -38,6 +38,7 @@ add_executable(TestNet
         Quic/TestQuicPacketBuilder.cpp
         Quic/TestQuicConnectionCore.cpp
         Quic/Recovery/TestQuicRecovery.cpp
+        Quic/Recovery/TestQuicCongestionControl.cpp
         Http3/TestHttp3Session.cpp
         Http3/TestHttp3Error.cpp
         Http3/TestHttp3Frame.cpp

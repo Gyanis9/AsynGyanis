@@ -12,7 +12,9 @@
 //   5) 对端参数里的 initial_source_connection_id 与实际收到的不符 → 发 CONNECTION_CLOSE 收口；
 //   6) HANDSHAKE_DONE 只在「握手完成 + 对端确认过 Handshake 空间的包」之后发且只发一次（§19.20）；
 //   7) 恢复层接进来之后的四条补发路：探测超时补在途字节、时间阈值判丢后补发、重复 ACK 也要判丢补发、
-//      没字节可补时退化成一个 PING；以及在途清空后定时器跟着撤掉（RFC 9002 §6.1.2、§6.2、§A.7）。
+//      没字节可补时退化成一个 PING；以及在途清空后定时器跟着撤掉（RFC 9002 §6.1.2、§6.2、§A.7）；
+//   8) 出流量的两道闸：与已交字节重叠的 CRYPTO 分片剪掉再交给 TLS（§7.5），以及地址验证之前回量
+//      夹在三倍已收字节以内、连重发与探针也不例外（RFC 9000 §8.1）。
 // 证书用仓库内的自签夹具（与 HTTPS、TLS 胶水用例同一份），因此不依赖任何外部服务。
 
 #include "Net/Quic/QuicConnectionCore.h"
@@ -269,12 +271,7 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> buildReversedCryptoFragments()
             {
-                std::ignore = m_tls->drive();
-                std::vector<std::uint8_t> handshakeBytes;
-                while (const auto record = m_tls->takeOutboundRecord())
-                {
-                    handshakeBytes.insert(handshakeBytes.end(), record->data.begin(), record->data.end());
-                }
+                const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
                 const std::size_t splitPoint = handshakeBytes.size() / 2;
                 if (splitPoint == 0)
                 {
@@ -288,6 +285,43 @@ namespace AsynGyanis::Net
                                                          handshakeBytes.begin() + static_cast<std::ptrdiff_t>(splitPoint));
                 return {makeCryptoDatagram(QuicEncryptionLevel::Initial, splitPoint, firstFragment),
                         makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, secondFragment)};
+            }
+
+            /**
+             * @brief 把 ClientHello 分成 [0, 半) 与 [四分之一, 末尾) 两条**重叠**的数据报
+             * @details 用来验「重传换了分片大小时要剪掉重叠的那一段」（§7.5）：不剪就会把重复字节
+             *          喂给 TLS，握手当场报错收口
+             * @return 两条数据报，前一条短、后一条从中间开始且盖住前一条的后半段
+             */
+            [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> buildOverlappingCryptoFragments()
+            {
+                const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
+                const std::size_t halfPoint = handshakeBytes.size() / 2;
+                const std::size_t quarterPoint = handshakeBytes.size() / 4;
+                if (halfPoint == 0 || quarterPoint == 0)
+                {
+                    return {};
+                }
+                const std::vector<std::uint8_t> head(handshakeBytes.begin(),
+                                                     handshakeBytes.begin() + static_cast<std::ptrdiff_t>(halfPoint));
+                const std::vector<std::uint8_t> overlappingTail(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(quarterPoint),
+                                                                handshakeBytes.end());
+                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, head),
+                        makeCryptoDatagram(QuicEncryptionLevel::Initial, quarterPoint, overlappingTail)};
+            }
+
+            /**
+             * @brief 只发 ClientHello 的第一个字节：包合法、触发确认，但 TLS 拼不出任何消息
+             * @return std::vector<std::uint8_t> 一条数据报，反放大额度的用例用它把服务端卡住
+             */
+            [[nodiscard]] std::vector<std::uint8_t> buildStubCryptoDatagram()
+            {
+                const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
+                if (handshakeBytes.empty())
+                {
+                    return {};
+                }
+                return makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, {handshakeBytes.front()});
             }
 
             /**
@@ -332,6 +366,20 @@ namespace AsynGyanis::Net
             {
                 ClientSpace &space = spaceOf(level);
                 return makeAcknowledgementDatagram(level, space.receivedPacketNumbers, *space.largestReceived);
+            }
+
+            /**
+             * @brief 手工发一条只含 PING 的包
+             * @details 用来让服务端「解得开对端的 Handshake 报文」，从而脱离 §8.1 的反放大额度；
+             *          它自己也是触发确认的包，服务端必须回一条确认。
+             * @param level 用哪个级别发（同时决定空间与密钥）
+             * @return std::vector<std::uint8_t> 一条数据报
+             */
+            [[nodiscard]] std::vector<std::uint8_t> buildPing(const QuicEncryptionLevel level)
+            {
+                std::string frames;
+                appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+                return buildDatagram(level, frames);
             }
 
             /**
@@ -548,11 +596,21 @@ namespace AsynGyanis::Net
                 }
             }
 
-            /// 按偏移把握手字节续上：整段重传丢掉，早到的先缓存，接上了才交给 TLS（真实对端都这么做）
-            void acceptCryptoBytes(ClientSpace &space, const QuicEncryptionLevel level, const std::uint64_t offset,
-                                   const std::span<const std::uint8_t> &bytes)
+            /// 按偏移把握手字节续上：重叠的重传剪掉、早到的先缓存，接上了才交给 TLS（真实对端都这么做）
+            void acceptCryptoBytes(ClientSpace &space, const QuicEncryptionLevel level, std::uint64_t offset,
+                                   std::span<const std::uint8_t> bytes)
             {
-                if (bytes.empty() || offset + bytes.size() <= space.receivedCryptoByteCount)
+                if (offset < space.receivedCryptoByteCount)
+                {
+                    const std::size_t alreadyReceivedByteCount = static_cast<std::size_t>(space.receivedCryptoByteCount - offset);
+                    if (alreadyReceivedByteCount >= bytes.size())
+                    {
+                        return;
+                    }
+                    offset += alreadyReceivedByteCount;
+                    bytes = bytes.subspan(alreadyReceivedByteCount);
+                }
+                if (bytes.empty())
                 {
                     return;
                 }
@@ -596,6 +654,18 @@ namespace AsynGyanis::Net
                 {
                     ++m_pingFrameCount;
                 }
+            }
+
+            /// 推进 TLS 并把它交出的握手字节按顺序拼成一整段（取走即出队，本端后续没有它们）
+            [[nodiscard]] std::vector<std::uint8_t> takeHandshakeBytes()
+            {
+                std::ignore = m_tls->drive();
+                std::vector<std::uint8_t> handshakeBytes;
+                while (const auto record = m_tls->takeOutboundRecord())
+                {
+                    handshakeBytes.insert(handshakeBytes.end(), record->data.begin(), record->data.end());
+                }
+                return handshakeBytes;
             }
 
             [[nodiscard]] std::vector<std::uint8_t> makeCryptoDatagram(const QuicEncryptionLevel level,
@@ -1239,5 +1309,155 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isHandshakeCompleted());
         ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
         EXPECT_FALSE(core.nextTimeout().has_value()) << "在途清空了还留着定时器，对端会白挨探针";
+    }
+
+    /**
+     * @brief 重传换了分片大小：与已交字节重叠的那一段剪掉再交给 TLS（RFC 9000 §7.5）
+     * @details 两段分片刻意让后一段从头一段的中间开始。不剪的话 TLS 会看到重复字节，握手当场报错
+     */
+    TEST(QuicConnectionCore, TrimsOverlappingCryptoFragmentsBeforeFeedingTls)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        const auto [head, overlappingTail] = client.buildOverlappingCryptoFragments();
+        ASSERT_FALSE(head.empty());
+        ASSERT_FALSE(overlappingTail.empty());
+
+        ASSERT_TRUE(core.onDatagramReceived(head, Timestamp{0}).has_value());
+        core.drive(Timestamp{1000});
+        ASSERT_TRUE(core.onDatagramReceived(overlappingTail, Timestamp{2000}).has_value());
+        core.drive(Timestamp{3000});
+
+        const std::vector<std::vector<std::uint8_t>> flight = drain(core);
+        EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "重叠的那一段没剪掉，TLS 收到了重复字节";
+        ASSERT_FALSE(flight.empty()) << "两段合起来才是完整的 ClientHello，服务端该交出它的飞行";
+        for (const auto &datagram : flight)
+        {
+            client.consume(datagram);
+        }
+        for (int round = 0; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
+        {
+            exchange(core, client, Timestamp{10000 * (round + 1)});
+        }
+        EXPECT_TRUE(client.isHandshakeCompleted());
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Established);
+    }
+
+    /**
+     * @brief 地址验证之前的回量夹在三倍已收字节以内，重发也不能越过这条线（RFC 9000 §8.1）
+     * @details 客户端发完 ClientHello 就闭嘴：服务端既没解到 Handshake 报文（地址就没验证过），
+     *          又得一次次重发自己的飞行。第二趟重发就已经超出三倍额度，之后每一趟都该被夹住
+     */
+    TEST(QuicConnectionCore, HoldsEarlyOutputBackAtThreeTimesTheBytesReceived)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        std::size_t receivedByteCount = 0;
+        for (const auto &datagram : client.buildFlight())
+        {
+            receivedByteCount += datagram.size();
+            ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
+        }
+        core.drive(Timestamp{1000});
+        std::size_t sentByteCount = 0;
+        for (const auto &datagram : drain(core))
+        {
+            sentByteCount += datagram.size();
+            client.consume(datagram);
+        }
+        ASSERT_GT(sentByteCount, receivedByteCount) << "服务端交出的飞行比收到的是多些，才谈得上夹三倍";
+        ASSERT_LE(sentByteCount, 3 * receivedByteCount);
+
+        // 一路探测超时打下去：额度用光之后连探针也发不出去（§8.1 排在 §7.5 的豁免之前）
+        for (int attempt = 0; attempt < 6; ++attempt)
+        {
+            const std::optional<Timestamp> deadline = core.nextTimeout();
+            ASSERT_TRUE(deadline.has_value());
+            core.onTimeout(*deadline);
+            for (const auto &datagram : drain(core))
+            {
+                sentByteCount += datagram.size();
+            }
+            EXPECT_LE(sentByteCount, 3 * receivedByteCount) << "第 " << attempt << " 趟重发越过了 §8.1 的三倍额度";
+        }
+    }
+
+    /**
+     * @brief 在途把拥塞窗口占满时，新数据（票据）先被压住；确认把在途销干净之后才放行
+     * @details 探针豁免窗口（§7.5），于是一路「重发却没人确认」会把在途抬过初始窗口 12000。
+     *          之后握手完成而产生的 NewSessionTicket 是新数据，不豁免，就该等在窗口外面
+     */
+    TEST(QuicConnectionCore, WithholdsNewCryptoWhileTheCongestionWindowIsFull)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        client.dropHandshakePackets(true);
+        exchange(core, client, Timestamp{0});
+        exchange(core, client, Timestamp{10000});
+        ASSERT_EQ(client.serverReceivedPacketCount(QuicEncryptionLevel::Handshake), 0U) << "Handshake 包都该被丢掉";
+        ASSERT_TRUE(core.nextTimeout().has_value());
+
+        // 客户端在 Handshake 空间打一条 PING：服务端解得开它，地址就算验证过了，§8.1 的额度不再卡重发
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Handshake), Timestamp{20000}).has_value());
+        core.drive(Timestamp{21000});
+        drain(core);
+
+        // 十四趟探测超时：Initial 已经确认干净，欠的只剩 Handshake。每趟整段重发约 1.2KB，
+        // 累计 16KB 以上，越过慢启动涨到 13200 的拥塞窗口
+        Timestamp probeTime{0};
+        for (int attempt = 0; attempt < 14; ++attempt)
+        {
+            const std::optional<Timestamp> deadline = core.nextTimeout();
+            ASSERT_TRUE(deadline.has_value());
+            probeTime = *deadline;
+            core.onTimeout(probeTime);
+            ASSERT_FALSE(drain(core).empty()) << "探针豁免拥塞窗口，第 " << attempt << " 趟也该发得出东西（§7.5）";
+        }
+
+        // 最后一趟不再丢包：客户端这才拿到服务端的 Finished，但那些探针它一条都没确认
+        client.dropHandshakePackets(false);
+        const std::optional<Timestamp> deadline = core.nextTimeout();
+        ASSERT_TRUE(deadline.has_value());
+        probeTime = *deadline;
+        core.onTimeout(probeTime);
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        ASSERT_TRUE(client.isHandshakeCompleted()) << "补发的字节该让客户端把握手走完";
+
+        // 只交飞行、不交确认：服务端这时已经在满窗里，新数据该被压住
+        for (const auto &datagram : client.buildFlight())
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, probeTime + Timestamp{1000}).has_value());
+        }
+        core.drive(probeTime + Timestamp{2000});
+        ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U)
+                << "在途已经压满窗口，票据这种新数据不该再往上叠";
+
+        // 把在途确认干净，窗口腾出来，同一批字节就该放行
+        exchange(core, client, probeTime + Timestamp{20000});
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U)
+                << "窗口腾出来后，被压住的新数据该跟着下一轮产出";
     }
 } // namespace AsynGyanis::Net

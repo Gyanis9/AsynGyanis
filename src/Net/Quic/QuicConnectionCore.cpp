@@ -22,11 +22,11 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 没做 PMTU 探测、也没学到对端 max_udp_payload_size 之前的数据报上限（RFC 9000 §14.1）
-        constexpr std::size_t kQuicMaximumDatagramPayloadByteLength = 1200;
-
         /// 乱序早到的 CRYPTO 分片总量上限，超了直接收口。这是本实现自设的自我保护值，不是规范值
         constexpr std::size_t kQuicCryptoBufferByteLimit = 65536;
+
+        /// 地址验证之前服务端最多可以回给对端多少倍已收字节（RFC 9000 §8.1）
+        constexpr std::size_t kQuicAmplificationFactor = 3;
 
         /// 每空间跟踪的已收包号上限，超出后丢弃最小的那些（只影响 ACK 能覆盖多老的历史）
         constexpr std::size_t kQuicMaximumTrackedPacketNumbers = 4096;
@@ -201,6 +201,8 @@ namespace AsynGyanis::Net
     std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram,
                                                                                 const Timestamp arrivalTime)
     {
+        // 反放大额度按「收到的整条数据报」算，不看解没解出来：对端确实把这些字节打到了我们地址上
+        m_receivedByteCount += datagram.size();
         std::size_t offset = 0;
         while (offset < datagram.size())
         {
@@ -318,6 +320,12 @@ namespace AsynGyanis::Net
             m_peerFirstInitialSourceConnectionId = std::vector<std::uint8_t>(header.sourceConnectionId.begin(),
                                                                             header.sourceConnectionId.end());
         }
+        if (!m_isAddressValidated && *level != QuicEncryptionLevel::Initial)
+        {
+            // 能解出 Handshake 及以上的包，就说明对端确实收到了我们发出去的东西（§8.1.4 的路径验证）：
+            // 反放大上限到此解除，否则一条握手都握不完
+            m_isAddressValidated = true;
+        }
 
         const std::expected<std::vector<QuicFrame>, QuicDecodeError> frames =
                 decodeQuicFrames(std::span<const std::uint8_t>(plaintext).subspan(0, *opened));
@@ -387,6 +395,7 @@ namespace AsynGyanis::Net
 
         const QuicAcknowledgementUpdate update =
                 m_recovery.onAcknowledgementReceived(recoverySpaceOf(space), frame, arrivalTime, acknowledgementDelay);
+        m_congestion.onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
 
         // §4.1.2：服务端「握手已确认」的判据就是对端确认了 Handshake 空间的包。确认之后才允许给
         // 进入用空间武装 PTO，也才该发 HANDSHAKE_DONE
@@ -409,25 +418,34 @@ namespace AsynGyanis::Net
                                                const std::span<const std::uint8_t> bytes, const Timestamp arrivalTime)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
-        if (offset + bytes.size() <= state.receivedCryptoOffset)
+        std::uint64_t beginOffset = offset;
+        std::span<const std::uint8_t> pendingBytes = bytes;
+        if (beginOffset < state.receivedCryptoOffset)
         {
-            // 整段都是重传（落在已交字节之前），丢掉即可
-            return;
+            // §7.5：与已交字节重叠的那一段要丢掉，只把没见过的部分交给 TLS。重发时换了分片大小
+            // 是合法写法，整段交过去会让 TLS 看到重复字节而判错
+            const std::size_t alreadyReceivedByteCount = static_cast<std::size_t>(state.receivedCryptoOffset - beginOffset);
+            if (alreadyReceivedByteCount >= pendingBytes.size())
+            {
+                return;
+            }
+            beginOffset += alreadyReceivedByteCount;
+            pendingBytes = pendingBytes.subspan(alreadyReceivedByteCount);
         }
-        if (offset > state.receivedCryptoOffset)
+        if (beginOffset > state.receivedCryptoOffset)
         {
-            if (state.bufferedOutOfOrderByteCount + bytes.size() > kQuicCryptoBufferByteLimit)
+            if (state.bufferedOutOfOrderByteCount + pendingBytes.size() > kQuicCryptoBufferByteLimit)
             {
                 beginClose(kQuicCryptoBufferExceeded, "乱序早到的 CRYPTO 字节超过本端缓存上限（RFC 9000 §11.1）", arrivalTime);
                 return;
             }
-            state.laterCryptoFragments.emplace(offset, std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
-            state.bufferedOutOfOrderByteCount += bytes.size();
+            state.laterCryptoFragments.emplace(beginOffset, std::vector<std::uint8_t>(pendingBytes.begin(), pendingBytes.end()));
+            state.bufferedOutOfOrderByteCount += pendingBytes.size();
             return;
         }
 
-        m_tls->feedHandshakeData(levelOf(space), bytes);
-        state.receivedCryptoOffset += bytes.size();
+        m_tls->feedHandshakeData(levelOf(space), pendingBytes);
+        state.receivedCryptoOffset += pendingBytes.size();
         // 这段接上之后，可能有更早到的分片正好续上，按偏移依次交给 TLS
         for (auto fragment = state.laterCryptoFragments.find(state.receivedCryptoOffset);
              fragment != state.laterCryptoFragments.end();
@@ -523,9 +541,11 @@ namespace AsynGyanis::Net
 
         if (m_phase != QuicConnectionPhase::Closing)
         {
-            queueSpacePackets(PacketNumberSpace::Initial, now);
-            queueSpacePackets(PacketNumberSpace::Handshake, now);
-            queueSpacePackets(PacketNumberSpace::Application, now);
+            for (const PacketNumberSpace space : {PacketNumberSpace::Initial, PacketNumberSpace::Handshake,
+                                                  PacketNumberSpace::Application})
+            {
+                queueSpacePackets(space, now);
+            }
         }
     }
 
@@ -537,10 +557,18 @@ namespace AsynGyanis::Net
             return;
         }
         const bool isLongHeader = space != PacketNumberSpace::Application;
+        const std::size_t fixedOverheadByteLength = packetOverheadByteLength(m_configuration, isLongHeader);
+        if (isBlockedByAmplificationLimit(fixedOverheadByteLength))
+        {
+            // 连一个包头都装不进 3 倍额度：本空间这一轮什么都发不出去，等对端多打些字节再来（§8.1）
+            return;
+        }
         // §19.20：握手完成、且对端确认过 Handshake 空间的包之后，服务端只发一次 HANDSHAKE_DONE
         const bool wantsHandshakeDone = space == PacketNumberSpace::Handshake && m_phase == QuicConnectionPhase::Established &&
                                         !m_hasSentHandshakeDone && m_isHandshakeConfirmed;
         bool owesProbe = m_probeSpace.has_value() && *m_probeSpace == space;
+        // 整轮探测都豁免窗口（§7.5）：欠的那一条可能分两包出去，只豁免第一包等于把后半段卡在门外
+        const bool isProbingSpace = owesProbe;
 
         for (;;)
         {
@@ -565,9 +593,7 @@ namespace AsynGyanis::Net
                 elicitsAcknowledgement = true;
             }
 
-            const std::size_t remainingByteBudget = saturatingSubtract(
-                    kQuicMaximumDatagramPayloadByteLength,
-                    packetOverheadByteLength(m_configuration, isLongHeader) + frames.size());
+            const std::size_t remainingByteBudget = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
             std::optional<QuicCryptoRange> carriedRange;
             if (!state.pendingRetransmissions.empty())
             {
@@ -686,7 +712,35 @@ namespace AsynGyanis::Net
         record.byteCount = datagram.size();
         record.isAckEliciting = isAckEliciting;
         record.cryptoRange = cryptoRange;
+        m_congestion.onPacketSent(record);
         m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
+        m_sentByteCount += datagram.size();
+    }
+
+    std::size_t QuicConnectionCore::sendByteBudget(const std::size_t reservedByteLength, const bool ignoresCongestionWindow) const
+    {
+        std::size_t budget = saturatingSubtract(kQuicMaximumDatagramPayloadByteLength, reservedByteLength);
+        if (!ignoresCongestionWindow)
+        {
+            // 窗口余量也得先减掉这一包的固定开销，否则算出来的分片一定超窗
+            budget = std::min(budget, saturatingSubtract(m_congestion.remainingByteBudget(), reservedByteLength));
+        }
+        if (!m_isAddressValidated)
+        {
+            // §8.1：地址验证之前最多回三倍已收字节。这条排在最后，因为它是硬上限，探针也不例外
+            budget = std::min(budget, saturatingSubtract(amplificationRemainingByteCount(), reservedByteLength));
+        }
+        return budget;
+    }
+
+    bool QuicConnectionCore::isBlockedByAmplificationLimit(const std::size_t reservedByteLength) const noexcept
+    {
+        return !m_isAddressValidated && reservedByteLength > amplificationRemainingByteCount();
+    }
+
+    std::size_t QuicConnectionCore::amplificationRemainingByteCount() const noexcept
+    {
+        return saturatingSubtract(kQuicAmplificationFactor * m_receivedByteCount, m_sentByteCount);
     }
 
     void QuicConnectionCore::requestClose(const std::uint64_t errorCode, const std::string_view reasonPhrase, const Timestamp now)
@@ -713,7 +767,14 @@ namespace AsynGyanis::Net
         close.reasonPhrase = asBytes(m_localCloseReasonPhrase);
         std::string frames;
         appendQuicFrame(frames, QuicFrame{close});
-        emitPacket(highestSpaceWithWriteKeys(), frames, now, false, std::nullopt);
+        const PacketNumberSpace space = highestSpaceWithWriteKeys();
+        if (isBlockedByAmplificationLimit(packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application)
+                                          + frames.size()))
+        {
+            // 收口也受 §8.1 约束：额度不够就宁可不发，反正对端已经在把我们当放大器打了
+            return;
+        }
+        emitPacket(space, frames, now, false, std::nullopt);
     }
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::highestSpaceWithWriteKeys() const noexcept
@@ -764,6 +825,7 @@ namespace AsynGyanis::Net
         const QuicRecoveryTimeoutAction action = m_recovery.onDeadlineReached(now);
         if (!action.lost.empty())
         {
+            m_congestion.onCongestionUpdate({}, action.lost, now);
             queueRetransmissions(spaceOf(action.lostSpace), action.lost);
         }
         if (action.isProbeTimeout)
