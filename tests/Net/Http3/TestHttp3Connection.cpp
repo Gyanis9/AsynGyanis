@@ -587,3 +587,141 @@ TEST(Http3Connection, HostileByteStreamsStaySafeAndSelfConsistent)
         }
     }
 }
+
+/// 先喂完对端 SETTINGS、请求头段与一段正文：尾段相关的三条用例都从这个前置态出发
+void feedHeadAndBody(Http3Connection &connection)
+{
+    std::string encoderBytes;
+    connection.consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))),
+                                 false);
+    connection.consumeStreamData(kRequestStreamId,
+                                 bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
+    connection.consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "abc")), false);
+}
+
+TEST(Http3Connection, TrailersSectionIsAcceptedAfterTheBodyAndMarkedAsTrailers)
+{
+    // 钉住 §4.1 的头段/尾段顺序：正文之后再来的 HEADERS 是尾段，不得有伪头，且要带上
+    // 「这是尾段」的通知让会话按既有口径处理
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    feedHeadAndBody(*connection);
+
+    std::string encoderBytes;
+    const std::vector<QpackHeaderField> trailerFields{QpackHeaderField{"x-checksum", "abc123"}};
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(trailerFields, encoderBytes))), true);
+
+    EXPECT_TRUE(events.malformedRequests.empty()) << "合法尾段不该被打回";
+    ASSERT_EQ(events.trailerBlocksReceived.size(), 1u);
+    EXPECT_EQ(events.trailerBlocksReceived[0], kRequestStreamId);
+    EXPECT_EQ(events.requestsEnded.size(), 1u) << "尾段之后的 END_STREAM 才算请求收全";
+}
+
+TEST(Http3Connection, PseudoHeaderInTrailersIsRejected)
+{
+    // 同一个判定器跨头段持有：尾段里再来一个伪头必须被打死（§4.3），
+    // 这条同时证明「第二个头段被认成尾段」而不是「又一个头段」
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    feedHeadAndBody(*connection);
+
+    std::string encoderBytes;
+    const std::vector<QpackHeaderField> badTrailers{QpackHeaderField{":method", "GET"}};
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(badTrailers, encoderBytes))), false);
+
+    ASSERT_EQ(events.malformedRequests.size(), 1u);
+    EXPECT_EQ(events.trailerBlocksReceived.size(), 0u) << "判定没过就不该把尾段交上去";
+}
+
+TEST(Http3Connection, BodyAfterTrailersFailsTheStream)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    feedHeadAndBody(*connection);
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId,
+                                  bytesOfText(makeFrame(0x01, encodeSection({QpackHeaderField{"x-checksum", "z"}}, encoderBytes))), false);
+    ASSERT_EQ(events.trailerBlocksReceived.size(), 1u);
+
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "more")), false);
+    EXPECT_FALSE(events.streamsReset.empty()) << "尾段之后的正文属于非法消息顺序（§4.1.2）";
+}
+
+TEST(Http3Connection, PeerGoAwayMaxPushIdAndUnknownSettingsAreTolerated)
+{
+    // 对端 GOAWAY / MAX_PUSH_ID / 本端不认识设置项都属于「收下但不作为」：
+    // 把它们判成错误会让 Chrome/curl 这类客户端直接连不上
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+
+    std::string controlBytes = streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x33\x01", 2));
+    controlBytes += makeFrame(0x07, std::string("\x04", 1));
+    controlBytes += makeFrame(0x0d, std::string("\x0a", 1));
+    controlBytes += makeFrame(0x03, std::string("\x02", 1));
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(controlBytes), false);
+
+    EXPECT_FALSE(connection->isBroken()) << "未知设置项与这些控制帧都不该判错";
+    EXPECT_TRUE(events.connectionClosures.empty());
+}
+
+TEST(Http3Connection, FirstControlFrameMustBeSettings)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x07, std::string("\x04", 1))), false);
+
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::MissingSettings);
+}
+
+TEST(Http3Connection, SecondSettingsOrBodyOnControlStreamBreaksConnection)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto first = makeConnection(transport, events);
+    first->consumeStreamData(kPeerControlStreamId,
+                             bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "") + makeFrame(0x04, "")), false);
+    EXPECT_EQ(first->connectionErrorCode(), Http3ErrorCode::FrameUnexpected) << "第二个 SETTINGS 属重复（§7.2.4.1）";
+
+    FakeTransport secondTransport;
+    EventLog secondEvents;
+    auto second = makeConnection(secondTransport, secondEvents);
+    second->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "") + makeFrame(0x00, "x")), false);
+    EXPECT_TRUE(second->isBroken()) << "控制流上不承载正文";
+}
+
+TEST(Http3Connection, CancellingAnUnknownStreamChangesNothing)
+{
+    // 承载层的取消通知可能晚于本端的回收：这里必须安静地什么都不做，而不是造出一份状态来
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+
+    connection->noteStreamCancelledByPeer(999);
+
+    EXPECT_FALSE(connection->isBroken());
+    EXPECT_TRUE(events.streamsReset.empty());
+    EXPECT_TRUE(events.streamsClosed.empty());
+}
+
+TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId,
+                                  bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "204"}}, true).has_value());
+    connection->flush();
+    const auto late = connection->appendResponseBody(kRequestStreamId, bytesOfText("tail"), false);
+    EXPECT_FALSE(late.has_value()) << "已收尾的流上再写正文要报失败，让会话丢弃这一段";
+    EXPECT_FALSE(connection->isBroken()) << "这只作废该响应，不牵连连接";
+}
