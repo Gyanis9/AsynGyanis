@@ -57,19 +57,36 @@ namespace AsynGyanis::Net
 
     std::optional<std::string> HttpHeaderFieldStore::get(const std::string &name) const
     {
-        // 查询前先把过期视图重建出来：写入只标脏，这里一次性补齐
-        if (m_isViewStale)
-        {
-            rebuildSingleValueView();
-        }
-
         // 查询侧走同一套归一化规则，保证写入与读取对键的认定一致
-        if (const auto iterator = m_singleValues.find(toCanonicalHeaderName(name)); iterator != m_singleValues.end())
+        const std::string canonicalName = toCanonicalHeaderName(name);
+
+        // 直接在权威记录上线性找，而不是先重建单值视图再查哈希表：为取一个值而把整张表建出来，
+        // 等于让「视图按需重建」这项优化在任何只读一两个头部的请求上失效（实测多付约 700 ns，
+        // 与解析整条 h1 请求的耗时同量级）。视图留给真正要整表的调用方（headers()）
+        const bool isRepeatableName = isRepeatableHeaderName(canonicalName);
+        std::optional<std::string> collectedValue;
+        for (const HeaderField &field: m_fields)
         {
-            return iterator->second;
+            if (field.name != canonicalName)
+            {
+                continue;
+            }
+            if (!collectedValue.has_value())
+            {
+                collectedValue.emplace(field.value);
+                // 可重复头部（Set-Cookie）的单值口径是「首条」，且不得逗号合并：值本身可含逗号
+                if (isRepeatableName)
+                {
+                    break;
+                }
+                continue;
+            }
+            // 普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并，与 rebuildSingleValueView 同口径
+            collectedValue->append(kMergedHeaderSeparator);
+            collectedValue->append(field.value);
         }
         // 未命中不是错误：可选头部缺席是常态，交给调用方用 optional 判定
-        return std::nullopt;
+        return collectedValue;
     }
 
     std::vector<std::string> HttpHeaderFieldStore::values(const std::string &name) const

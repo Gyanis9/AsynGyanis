@@ -26,8 +26,9 @@ namespace AsynGyanis::Net
      * @brief 头部字段存储
      *
      * @details 两份数据：m_fields 是按加入顺序的权威记录（可重复头部各占一项），
-     *          m_singleValues 是名到值的单值视图，只在真正被查询时才重建——多数请求路径
-     *          从不读它，为它们维护一份哈希表等于每请求白付若干次节点分配。
+     *          m_singleValues 是名到值的单值视图，只在真正被整表查询时才重建——按名字取单值
+     *          走 get()/values() 直接读权威记录，多数请求只读一两个头部，为它们建表等于白付
+     *          若干次节点分配与字符串拷贝。
      */
     class HttpHeaderFieldStore
     {
@@ -65,7 +66,9 @@ namespace AsynGyanis::Net
         void removeAll(const std::string &canonicalName);
 
         /**
-         * @brief 取单值视图里该名对应的值
+         * @brief 取该名对应的单值（按权威记录算，不建单值视图）
+         * @details 可重复头部取首条；普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并，
+         *          与 singleValueView() 同口径。
          * @param name 头部名（函数内部归一化）
          * @return std::optional<std::string> 头部值；未命中时为空
          */

@@ -13,6 +13,7 @@ add_executable(TestNet
         Http/TestHttpParserFuzzSmoke.cpp
         Http/TestHttpDate.cpp
         Http/TestHttpHeaderRules.cpp
+        Http/TestHttpHeaderFieldStore.cpp
         Http/TestHttpRequest.cpp
         Http/TestHttpRequestId.cpp
         Http/TestHttpResponse.cpp

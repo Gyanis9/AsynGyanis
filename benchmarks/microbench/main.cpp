@@ -1,4 +1,5 @@
-// 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成。
+// 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
+// 头部单值查询。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -14,6 +15,7 @@
 //     h1 请求带 10 个头与 64 字节正文、h2 解一帧 200 字节头块的 HEADERS。
 //     换数据形态会改变结果，比较不同机器的数字前先确认两边用的是同一份输入。
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http2/Hpack.h"
@@ -28,6 +30,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // 与 samples/main.cpp 同一处理：本文件只碰库自身的类型，全写根命名空间会把每行都拉长一倍
@@ -339,6 +342,71 @@ int main(int argumentCount, char **argumentValues)
             {
                 const std::string requestId = requestIdGenerator.next();
                 return requestId.size();
+            },
+            results, checksum, failureCount);
+
+    // 头部单值查询：真实请求几乎每条都会读一两个头部（If-None-Match、CORS、WebSocket 握手……），
+    // 而存储的单值视图是「按需重建」的——第一次查询的代价取决于重建是否被单个查询触发。
+    // 这里按「装好 10 条头部 → 查 1 次」与「查 5 次」两种形态各测一例，
+    // 装头部是两侧共同的本底开销，只用于把视图标脏，不参与差异
+    const std::vector<std::pair<std::string, std::string>> headerFixtures = {
+        {"host", "api.example.com"},
+        {"user-agent", "curl/8.7.1"},
+        {"accept", "*/*"},
+        {"content-type", "application/json"},
+        {"content-length", "64"},
+        {"accept-encoding", "gzip, deflate, br"},
+        {"authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"},
+        {"x-request-id", "0001-0000000000000abc"},
+        {"connection", "keep-alive"},
+        {"cookie", "session=8f14e45fceea167a5a36dedd4bea2543; theme=dark"},
+    };
+    const auto refillHeaderStore = [&headerFixtures](Net::HttpHeaderFieldStore &store)
+    {
+        store.clear();
+        for (const auto &[name, value]: headerFixtures)
+        {
+            store.append(name, value);
+        }
+    };
+
+    Net::HttpHeaderFieldStore singleLookupStore;
+    refillHeaderStore(singleLookupStore);
+    measureCase(
+            "header-refill-only",
+            [&singleLookupStore, &refillHeaderStore]
+            {
+                // 对照例：只装 10 条头部不查，用来把下面两例的共同本底开销扣掉
+                refillHeaderStore(singleLookupStore);
+                return singleLookupStore.fields().size();
+            },
+            results, checksum, failureCount);
+
+    measureCase(
+            "header-get-once",
+            [&singleLookupStore, &refillHeaderStore]
+            {
+                // 每轮都从「视图已过期」的起点开始，才量得到首查询的代价（真实请求正是如此）
+                refillHeaderStore(singleLookupStore);
+                const std::optional<std::string> value = singleLookupStore.get("accept-encoding");
+                return value.has_value() ? value->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    Net::HttpHeaderFieldStore multiLookupStore;
+    refillHeaderStore(multiLookupStore);
+    measureCase(
+            "header-get-five",
+            [&multiLookupStore, &refillHeaderStore, &headerFixtures]
+            {
+                refillHeaderStore(multiLookupStore);
+                std::size_t totalLength = 0;
+                for (std::size_t index = 0; index < 5; ++index)
+                {
+                    const std::optional<std::string> value = multiLookupStore.get(headerFixtures[index].first);
+                    totalLength += value.has_value() ? value->size() : 0;
+                }
+                return totalLength;
             },
             results, checksum, failureCount);
 
