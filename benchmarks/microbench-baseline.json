@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "recordedAt": "2026-09-13",
   "machine": "Intel64 Family 6 Model 183 Stepping 1（20 逻辑核）",
-  "build": "Release（MSVC /O2 + LTO，无插桩）",
+  "build": "Release（MSVC /O2，无插桩；不开全程序优化）",
   "target": "build/release/benchmarks/microbench/microbench.exe（随常规构建产出，无需单独开关）",
   "note": [
     "本文件是 benchmarks/microbench 的本机基线，只用于同机同构建下的前后对比，用法与 baseline.json 相同：",

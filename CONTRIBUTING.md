@@ -19,7 +19,7 @@ cmake --preset debug
 cmake --build build/debug -j$(nproc)
 cd build/debug && ctest --output-on-failure
 
-# Release 构建（含 LTO）
+# Release 构建（开优化，并带上能解析调用栈的调试信息）
 cmake --preset release
 cmake --build build/release -j$(nproc)
 ```

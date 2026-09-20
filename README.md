@@ -91,7 +91,7 @@ cmake --build build/debug -j 14
 ctest --test-dir build/debug --output-on-failure
 ```
 
-`release` 预设同样可用（关闭 sanitizer、开启优化与 LTO）。
+`release` 预设同样可用（关闭 sanitizer、开启优化，并保留能解析调用栈的调试信息）。
 
 **关于 Debug 预设的 AddressSanitizer**：`debug` 预设开启 `ENABLE_SANITIZERS`，MSVC 下为 `/fsanitize=address`（GCC/Clang 上额外带 UBSan）。构建时会把 ASan 运行库拷到可执行文件旁，因此测试可脱离 VS 环境直接运行；容器注解因与未插桩的 gtest 存在 ABI 标记冲突而关闭（原因与出路写在根 `CMakeLists.txt` 注释里）。**ASan 会显著抬高每帧栈开销**，写深递归用例时要按这个预算来。
 

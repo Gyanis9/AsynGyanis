@@ -23,7 +23,7 @@
     },
     {
       "name": "release",
-      "description": "Optimized release build with LTO",
+      "description": "Optimized release build, keeps debug info so stack traces resolve symbols",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
