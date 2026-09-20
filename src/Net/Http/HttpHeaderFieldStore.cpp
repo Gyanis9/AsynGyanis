@@ -55,19 +55,19 @@ namespace AsynGyanis::Net
         m_isViewStale = true;
     }
 
-    std::optional<std::string> HttpHeaderFieldStore::get(const std::string &name) const
+    std::optional<std::string> HttpHeaderFieldStore::get(const std::string_view name) const
     {
-        // 查询侧走同一套归一化规则，保证写入与读取对键的认定一致
-        const std::string canonicalName = toCanonicalHeaderName(name);
-
         // 直接在权威记录上线性找，而不是先重建单值视图再查哈希表：为取一个值而把整张表建出来，
         // 等于让「视图按需重建」这项优化在任何只读一两个头部的请求上失效（实测多付约 700 ns，
-        // 与解析整条 h1 请求的耗时同量级）。视图留给真正要整表的调用方（headers()）
-        const bool isRepeatableName = isRepeatableHeaderName(canonicalName);
+        // 与解析整条 h1 请求的耗时同量级）。视图留给真正要整表的调用方（headers()）。
+        // 比较就地折 ASCII 大小写而不先造归一化副本：入库名已是小写，两侧折完结果一致，
+        // 而名字一超过短字符串缓冲（15 字符），那次拷贝就是每条查询一次的堆分配
+        // （CORS 预检读 access-control-request-method、握手读 sec-websocket-version 都落在这一格）
+        const bool isRepeatableName = isRepeatableHeaderName(name);
         std::optional<std::string> collectedValue;
         for (const HeaderField &field: m_fields)
         {
-            if (field.name != canonicalName)
+            if (!equalsIgnoringCase(field.name, name))
             {
                 continue;
             }
@@ -89,11 +89,11 @@ namespace AsynGyanis::Net
         return collectedValue;
     }
 
-    std::optional<std::string> HttpHeaderFieldStore::firstValue(const std::string_view canonicalName) const
+    std::optional<std::string> HttpHeaderFieldStore::firstValue(const std::string_view name) const
     {
         for (const HeaderField &field: m_fields)
         {
-            if (field.name == canonicalName)
+            if (equalsIgnoringCase(field.name, name))
             {
                 // 首条原样交出，不参与合并：链路 id 这类头部同名多条时各表达一个独立来源
                 return field.value;
@@ -102,11 +102,11 @@ namespace AsynGyanis::Net
         return std::nullopt;
     }
 
-    bool HttpHeaderFieldStore::containsListToken(const std::string_view canonicalName, const std::string_view expectedToken) const
+    bool HttpHeaderFieldStore::containsListToken(const std::string_view name, const std::string_view expectedToken) const
     {
         for (const HeaderField &field: m_fields)
         {
-            if (field.name != canonicalName)
+            if (!equalsIgnoringCase(field.name, name))
             {
                 continue;
             }
@@ -130,15 +130,13 @@ namespace AsynGyanis::Net
         return false;
     }
 
-    std::vector<std::string> HttpHeaderFieldStore::values(const std::string &name) const
+    std::vector<std::string> HttpHeaderFieldStore::values(const std::string_view name) const
     {
-        const std::string canonicalName = toCanonicalHeaderName(name);
-
         std::vector<std::string> collectedValues;
         // 按加入顺序收集，读到的顺序与写入顺序一致
         for (const HeaderField &field: m_fields)
         {
-            if (field.name == canonicalName)
+            if (equalsIgnoringCase(field.name, name))
             {
                 collectedValues.push_back(field.value);
             }
@@ -178,10 +176,15 @@ namespace AsynGyanis::Net
         return canonicalName;
     }
 
-    bool HttpHeaderFieldStore::isRepeatableHeaderName(const std::string_view canonicalName)
+    bool HttpHeaderFieldStore::isRepeatableHeaderName(const std::string_view name)
     {
-        // 名单极小，线性比较比构造哈希集合划算
-        return std::ranges::find(kRepeatableHeaderNames, canonicalName) != kRepeatableHeaderNames.end();
+        // 名单极小，线性比较比构造哈希集合划算。登记形式是小写，而读侧不再先归一化查询名，
+        // 故这里按 ASCII 大小写不敏感比：调用方传 "Set-Cookie" 也要认得出是可重复头部
+        return std::ranges::any_of(kRepeatableHeaderNames,
+                                   [name](const std::string_view registeredName)
+                                   {
+                                       return equalsIgnoringCase(registeredName, name);
+                                   });
     }
 
     HttpHeaderFieldStore::HeaderFieldList::iterator HttpHeaderFieldStore::findField(const std::string &canonicalName)

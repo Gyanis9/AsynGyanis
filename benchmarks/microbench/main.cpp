@@ -463,6 +463,42 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 长头部名（超过短字符串缓冲的 15 字符）查询：这类名字要现造一个归一化副本，
+    // 「查一个值」里因此藏着一次堆分配。CORS 预检读 access-control-request-method、
+    // WebSocket 握手读 sec-websocket-version 都落在这一格。
+    // refill-long-name 是共同本底（比上面那组多装一条），两例相减才是读路径的代价
+    std::vector<std::pair<std::string, std::string>> longNameFixtures = headerFixtures;
+    longNameFixtures.emplace_back("access-control-request-method", "POST");
+    const auto refillLongNameStore = [&longNameFixtures](Net::HttpHeaderFieldStore &store)
+    {
+        store.clear();
+        for (const auto &[name, value]: longNameFixtures)
+        {
+            store.append(name, value);
+        }
+    };
+
+    Net::HttpHeaderFieldStore longNameStore;
+    refillLongNameStore(longNameStore);
+    measureCase(
+            "header-refill-long-name",
+            [&longNameStore, &refillLongNameStore]
+            {
+                refillLongNameStore(longNameStore);
+                return longNameStore.fields().size();
+            },
+            results, checksum, failureCount);
+
+    measureCase(
+            "header-get-long-name",
+            [&longNameStore, &refillLongNameStore]
+            {
+                refillLongNameStore(longNameStore);
+                const std::optional<std::string> value = longNameStore.get("access-control-request-method");
+                return value.has_value() ? value->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
     printTable(results, failureCount, checksum);
     if (!jsonOutputPath.empty())
     {

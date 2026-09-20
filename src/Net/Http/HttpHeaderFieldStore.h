@@ -69,35 +69,35 @@ namespace AsynGyanis::Net
          * @brief 取该名对应的单值（按权威记录算，不建单值视图）
          * @details 可重复头部取首条；普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并，
          *          与 singleValueView() 同口径。
-         * @param name 头部名（函数内部归一化）
+         * @param name 头部名，大小写不敏感
          * @return std::optional<std::string> 头部值；未命中时为空
          */
-        [[nodiscard]] std::optional<std::string> get(const std::string &name) const;
+        [[nodiscard]] std::optional<std::string> get(std::string_view name) const;
 
         /**
          * @brief 取该名的首条取值（原样，不参与合并）
          * @details 与 values() 的首元素同值，但省掉为「一个值」构造整列 vector 的开销。
-         * @param canonicalName 已归一化（小写）的头部名
+         * @param name 头部名，大小写不敏感
          * @return std::optional<std::string> 首条取值；缺席时为空
          */
-        [[nodiscard]] std::optional<std::string> firstValue(std::string_view canonicalName) const;
+        [[nodiscard]] std::optional<std::string> firstValue(std::string_view name) const;
 
         /**
          * @brief 判断该名的取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
          * @details 在存储内部逐段切分比对，不构造取值列表也不拷贝取值：Connection/Upgrade 这类
          *          判定每条请求要跑好几遍，而调用方只要一个布尔结果。
-         * @param canonicalName 已归一化（小写）的头部名
+         * @param name 头部名，大小写不敏感
          * @param expectedToken 待查找的 token，大小写不敏感，段首尾的 OWS 会被裁掉
          * @return true 至少一条取值列出了该 token
          */
-        [[nodiscard]] bool containsListToken(std::string_view canonicalName, std::string_view expectedToken) const;
+        [[nodiscard]] bool containsListToken(std::string_view name, std::string_view expectedToken) const;
 
         /**
          * @brief 取该名下的全部值，按加入顺序
-         * @param name 头部名（函数内部归一化）
+         * @param name 头部名，大小写不敏感
          * @return std::vector<std::string> 全部取值；未命中时为空
          */
-        [[nodiscard]] std::vector<std::string> values(const std::string &name) const;
+        [[nodiscard]] std::vector<std::string> values(std::string_view name) const;
 
         /**
          * @brief 取单值视图（名 → 合并后的值）
@@ -138,10 +138,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判断头部名是否允许在同一报文里出现多条
-         * @param canonicalName 已归一化（小写）的头部名
+         * @param name 头部名，大小写不敏感（名单里的登记形式是小写）
          * @return true 表示该头部禁止合并，必须逐条保留
          */
-        [[nodiscard]] static bool isRepeatableHeaderName(std::string_view canonicalName);
+        [[nodiscard]] static bool isRepeatableHeaderName(std::string_view name);
 
     private:
         /**

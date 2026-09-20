@@ -79,47 +79,47 @@
       "runsMeasured": 3
     },
     "header-refill-only": {
-      "throughputPerSecond": 3498271,
-      "nanosecondsPerOperation": 285.9,
+      "throughputPerSecond": 3545082,
+      "nanosecondsPerOperation": 282.1,
       "observedNanosecondsRange": [
-        283.1,
-        287.6
+        280.2,
+        284.0
       ],
       "runsMeasured": 3
     },
     "header-get-once": {
-      "throughputPerSecond": 2957765,
-      "nanosecondsPerOperation": 338.1,
+      "throughputPerSecond": 3124997,
+      "nanosecondsPerOperation": 320.0,
       "observedNanosecondsRange": [
-        334.0,
-        341.1
+        318.4,
+        323.1
       ],
       "runsMeasured": 3
     },
     "header-get-five": {
-      "throughputPerSecond": 2154773,
-      "nanosecondsPerOperation": 464.1,
+      "throughputPerSecond": 2626914,
+      "nanosecondsPerOperation": 380.7,
       "observedNanosecondsRange": [
-        462.3,
-        464.4
+        376.8,
+        381.0
       ],
       "runsMeasured": 3
     },
     "header-token-hit": {
-      "throughputPerSecond": 3257490,
-      "nanosecondsPerOperation": 307.0,
+      "throughputPerSecond": 3272289,
+      "nanosecondsPerOperation": 305.6,
       "observedNanosecondsRange": [
-        305.6,
-        308.3
+        305.2,
+        307.3
       ],
       "runsMeasured": 3
     },
     "header-first-value": {
-      "throughputPerSecond": 3036338,
-      "nanosecondsPerOperation": 329.3,
+      "throughputPerSecond": 3130306,
+      "nanosecondsPerOperation": 319.5,
       "observedNanosecondsRange": [
-        322.5,
-        330.1
+        318.0,
+        321.4
       ],
       "runsMeasured": 3
     },
@@ -129,6 +129,24 @@
       "observedNanosecondsRange": [
         169.2,
         169.4
+      ],
+      "runsMeasured": 3
+    },
+    "header-refill-long-name": {
+      "throughputPerSecond": 2958510,
+      "nanosecondsPerOperation": 338.0,
+      "observedNanosecondsRange": [
+        332.5,
+        338.4
+      ],
+      "runsMeasured": 3
+    },
+    "header-get-long-name": {
+      "throughputPerSecond": 2768616,
+      "nanosecondsPerOperation": 361.2,
+      "observedNanosecondsRange": [
+        360.5,
+        367.1
       ],
       "runsMeasured": 3
     }

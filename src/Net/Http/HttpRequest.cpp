@@ -106,13 +106,13 @@ namespace AsynGyanis::Net
 
     std::optional<std::string> HttpRequest::firstHeaderValue(const std::string_view key) const
     {
-        // 公开入口对名大小写不敏感：折成内部存储形态再查，与 getHeader() 同规则
-        return m_headerStore.firstValue(HttpHeaderFieldStore::toCanonicalHeaderName(key));
+        // 存储侧就地做大小写不敏感比较，这里不再归一化：长头部名不必为此现造一个副本
+        return m_headerStore.firstValue(key);
     }
 
     bool HttpRequest::hasHeaderValueToken(const std::string_view key, const std::string_view expectedToken) const
     {
-        return m_headerStore.containsListToken(HttpHeaderFieldStore::toCanonicalHeaderName(key), expectedToken);
+        return m_headerStore.containsListToken(key, expectedToken);
     }
 
     std::vector<std::string> HttpRequest::headerValues(const std::string &key) const

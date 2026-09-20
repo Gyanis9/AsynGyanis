@@ -7,8 +7,8 @@
 //   二. 可重复头部（Set-Cookie）取首条且不合并；
 //   三. 单值查询不得让视图变干净或变脏（先查后取整表、先取整表后查，结果都要一致）；
 //   四. 删名之后单值查询与视图同步失去该条目（不留「查得到、序列化里没有」的鬼条目）；
-//   五. firstValue/containsListToken 只收已归一化的名，且判定只看整 token、逗号列表的畸形写法
-//       不能让循环不推进（取值由对端控制）。
+//   五. 四条读路径都按「大小写不敏感」认键（不要求调用方先归一化），且判定只看整 token、
+//       逗号列表的畸形写法不能让循环不推进（取值由对端控制）。
 
 #include "Net/Http/HttpHeaderFieldStore.h"
 
@@ -136,17 +136,30 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(store.firstValue("x-absent").has_value());
     }
 
-    TEST(HttpHeaderFieldStore, FirstValueRequiresTheCallerToCanonicalizeTheName)
+    TEST(HttpHeaderFieldStore, ReadPathsIgnoreTheNameCaseWithoutCanonicalizingIt)
     {
-        const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"}});
+        const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"}, {"connection", "close"}});
 
-        // 本函数按契约只收「已归一化的小写名」，因此不做归一化：给原大小写的名就查不中。
-        // get()/values() 会自己归一化，两者口径不同这一点要钉住——上层包装（HttpRequest/
-        // HttpResponse）负责调 toCanonicalHeaderName()，漏了就是查不到而不是查错条目
-        EXPECT_FALSE(store.firstValue("X-Request-Id").has_value());
-        EXPECT_FALSE(store.containsListToken("Connection", "close"));
-        EXPECT_TRUE(store.firstValue(HttpHeaderFieldStore::toCanonicalHeaderName("X-Request-Id")).has_value())
-                << "包装层的归一化入口要用得通";
+        // 读路径不要求调用方先归一化：入库名已是小写，比较时两侧就地折 ASCII 大小写，
+        // 于是长头部名（超过短字符串缓冲）不必为一次查询现造一个归一化副本
+        EXPECT_EQ(store.firstValue("X-Request-Id").value_or("<缺失>"), "trace-a");
+        EXPECT_TRUE(store.containsListToken("Connection", "close"));
+        EXPECT_TRUE(store.get("X-Request-Id").has_value());
+        EXPECT_EQ(store.values("X-Request-Id").size(), 1U);
+        // 显式归一化入口仍然可用，包装层与序列化按它取小写形态
+        EXPECT_TRUE(store.firstValue(HttpHeaderFieldStore::toCanonicalHeaderName("X-Request-Id")).has_value());
+    }
+
+    TEST(HttpHeaderFieldStore, MixedCaseCookieNameStillTakesTheRepeatablePath)
+    {
+        // 可重复头部的判定名单登记的是小写；读侧不再先归一化查询名，因此名单比对也必须
+        // 大小写不敏感——否则 "Set-Cookie" 会被当成普通头部按 ", " 合并，把两条独立 cookie 粘死
+        const HttpHeaderFieldStore store = makeStore({{"set-cookie", "sid=1; Path=/"},
+                                                     {"Set-Cookie", "theme=dark, admin"}});
+
+        EXPECT_EQ(store.get("Set-Cookie").value_or("<缺失>"), "sid=1; Path=/");
+        EXPECT_EQ(store.get("SET-COOKIE").value_or("<缺失>"), "sid=1; Path=/");
+        EXPECT_EQ(store.values("Set-Cookie").size(), 2U) << "权威记录仍逐条留档";
     }
 
     TEST(HttpHeaderFieldStore, ContainsListTokenSplitsOnCommasAndIgnoresOwsAndCase)

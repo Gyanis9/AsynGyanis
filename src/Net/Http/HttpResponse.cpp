@@ -182,7 +182,8 @@ namespace AsynGyanis::Net
 
     bool HttpResponse::hasHeaderValueToken(const std::string_view name, const std::string_view expectedToken) const
     {
-        return m_headerStore.containsListToken(HttpHeaderFieldStore::toCanonicalHeaderName(name), expectedToken);
+        // 存储侧就地做大小写不敏感比较，这里不再归一化：长头部名不必为此现造一个副本
+        return m_headerStore.containsListToken(name, expectedToken);
     }
 
     std::vector<std::string> HttpResponse::headerValues(const std::string &name) const
