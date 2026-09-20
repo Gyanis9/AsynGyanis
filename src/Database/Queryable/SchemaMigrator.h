@@ -40,7 +40,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 取出列的实际存储类型：std::optional<X> 取 X，其余取自身
          *
          * @details 用偏特化而不是 std::conditional_t：后者要求两个候选类型都成立，
-         *          遇到非 optional 成员去取 ::value_type 会直接编译失败。
+         *          遇到非 optional 成员去取 ::%value_type 会直接编译失败。
          * @tparam MemberType 结构体成员类型
          * @tparam IsOptionalWrapper MemberType 是否为 std::optional 包装
          */

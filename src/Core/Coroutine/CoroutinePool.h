@@ -19,7 +19,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 协程帧内存池：以固定块加空闲链表为协程帧提供 O(1) 的分配与回收
      * @details 池是进程级单例而非线程局部：协程帧会在 EventLoop 线程之间迁移（scheduleRemote
-     *          投递、跨线程析构），按线程拆池会让归还方把块交给全局 ::operator delete，形成无效
+     *          投递、跨线程析构），按线程拆池会让归还方把块交给全局 ::%operator delete，形成无效
      *          释放并破坏堆；块归属按「内存段 + 段内偏移」判定，与分配线程无关。
      * @note Task::promise_type 的 operator new/delete 依赖本池，进程内所有协程帧共用它。
      */
@@ -44,7 +44,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 从池中分配一块内存。
-         * @details 池达到 kMaximumTotalBlocks 上限后不再扩容，此后的请求落到全局 ::operator new——
+         * @details 池达到 kMaximumTotalBlocks 上限后不再扩容，此后的请求落到全局 ::%operator new——
          *          因此任何情况下都能成功返回，不存在「池满了就取不到块」的状态。
          * @param requiredSize 请求的字节数
          * @return void* 指向分配内存的指针

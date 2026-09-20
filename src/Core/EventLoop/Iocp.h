@@ -27,7 +27,7 @@ namespace AsynGyanis::Core
      * @brief Windows 完成端口（IOCP）事件后端，接口与 Epoll 一致
      *
      * @note **监听套接字的连接必须由 takeAcceptedSocket() 取走**：AcceptEx 在完成时已经把连接
-     *       从监听队列里摘下并接入它自己的套接字，`::accept()` 看不到它——TcpAcceptor 走的正是
+     *       从监听队列里摘下并接入它自己的套接字，`::%accept()` 看不到它——TcpAcceptor 走的正是
      *       这条路径（见 AsyncSocket::takeAcceptedConnection()）。
      * @note 线程约束：全部方法只在所属事件循环线程上调用（完成通知也只在 wait() 里取出），
      *       因此注销与回收不需要任何锁。

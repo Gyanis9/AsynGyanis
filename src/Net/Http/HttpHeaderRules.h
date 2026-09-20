@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 按 ASCII 表把字符折叠为小写，非 A-Z 原样返回
      *
-     * @details 不用 std::tolower：它受 locale 影响（土耳其语环境下 'I' 折叠成非 ASCII 字节），
+     * @details 不用 std::%tolower：它受 locale 影响（土耳其语环境下 'I' 折叠成非 ASCII 字节），
      *          而 HTTP 的名称与 token 都是按 ASCII 定义的，比较与归一化必须与区域设置无关。
      *
      * @param character 待折叠字符
@@ -54,7 +54,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 逐字节比较两段 ASCII 文本（忽略字母大小写）
      *
-     * @details 只折叠 A-Z 与 a-z：std::tolower 受 locale 影响，非 ASCII 字节在不同平台上
+     * @details 只折叠 A-Z 与 a-z：std::%tolower 受 locale 影响，非 ASCII 字节在不同平台上
      *          结果可能不同，头部比较若用它会在边界输入上出现平台差异。
      *
      * @param left 左操作数
