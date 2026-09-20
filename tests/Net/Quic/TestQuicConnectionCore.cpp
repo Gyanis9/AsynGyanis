@@ -2145,6 +2145,74 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 探测到期时一条帧都凑不出：退化成单发一条 PING（RFC 9002 §6.2.2）
+     * @details 生产里这是「大响应被对端窗口卡住、那批数据又还没被确认」的形状：定时器为在途的包亮着，
+     *          可探测到期既不判丢（所以没有重发账）、握手字节也没了、正文又被流量控制挡着。不发 PING
+     *          就会一路静默到空闲超时，把还能救的连接判死。
+     */
+    TEST(QuicConnectionCore, SendsABarePingProbeWhenNothingElseIsSendable)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        // 流级额度只有 4096，比一个拥塞窗口小：正文一长必然停在窗口上
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, 0, 4096);
+        finishHandshake(core, client);
+
+        std::vector<std::uint8_t> body(128U * 1024U, 0x5a);
+        ASSERT_EQ(core.streamLayer().writeStreamData(0x00, body, true), body.size());
+        core.drive(Timestamp{110000});
+        // 只收不答：那批 STREAM 包永久留在在途账里，定时器正是为它亮起来的
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        const std::size_t creditedByteCount = client.serverStreamText().size();
+        ASSERT_GT(creditedByteCount, 0U) << "额度内的字节该先发出去";
+        ASSERT_LE(creditedByteCount, 4096U) << "对端只给了 4096";
+        ASSERT_EQ(client.pingFrameCount(), 0U) << "还没到期就该安静";
+
+        const std::optional<Timestamp> firstDeadline = core.nextTimeout();
+        ASSERT_TRUE(firstDeadline.has_value()) << "有包没被确认，探测超时应武装起来";
+        core.onTimeout(*firstDeadline);
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.pingFrameCount(), 1U) << "两样可发的都没有时该单发一条 PING（RFC 9002 §6.2.2）";
+        EXPECT_EQ(client.serverStreamText().size(), creditedByteCount) << "额度没涨，一个字节都不该多带";
+
+        // PING 自己也是触发确认的包：继续不答就该再探一趟，退避一路涨而不是就此闭嘴
+        const std::optional<Timestamp> secondDeadline = core.nextTimeout();
+        ASSERT_TRUE(secondDeadline.has_value()) << "探针发出去就没下文了，等于自己把连接晾着";
+        EXPECT_GT(*secondDeadline, *firstDeadline) << "这一趟该按退避往后推";
+        core.onTimeout(*secondDeadline);
+        for (const auto &datagram : drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.pingFrameCount(), 2U) << "探针本身没被确认时该继续探（§6.2.2）";
+
+        // 对端确认到位并把额度抬上来：连接从「只发 PING」回到把正文走完
+        std::uint64_t raisedTo = 65536U;
+        for (int round = 0; round < 40 && client.serverStreamText().size() < body.size(); ++round)
+        {
+            const Timestamp now{200000 + 10000 * static_cast<std::int64_t>(round)};
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicMaxDataFrame{.maximumData = raisedTo}});
+            appendQuicFrame(frames, QuicFrame{QuicMaxStreamDataFrame{.streamId = 0x00, .maximumStreamData = raisedTo}});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), now);
+            raisedTo += 65536U;
+            exchange(core, client, now + Timestamp{100});
+        }
+        EXPECT_EQ(client.serverStreamText().size(), body.size()) << "探针续上的连接没把正文发完";
+        EXPECT_EQ(client.serverStreamFinalCount(), 1U);
+    }
+
+    /**
      * @brief 对端的 STREAM 帧按序交付；上层消费过半之后补一条 MAX_STREAM_DATA
      */
     TEST(QuicConnectionCore, DeliversPeerStreamDataAndRefreshesWindow)
