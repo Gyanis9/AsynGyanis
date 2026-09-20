@@ -796,6 +796,19 @@ namespace AsynGyanis::Net
 
     std::string HpackEncoder::encode(const std::vector<HpackHeaderField> &headerFields)
     {
+        // owning 输入只为兼容仍按 HpackHeaderField 组织头块的调用方（解码侧往返、测试与微基准）：
+        // 这里只拷视图，名与值的字节仍然原地读
+        std::vector<HpackHeaderFieldView> headerFieldViews;
+        headerFieldViews.reserve(headerFields.size());
+        for (const HpackHeaderField &field: headerFields)
+        {
+            headerFieldViews.push_back(HpackHeaderFieldView{.name = field.name, .value = field.value});
+        }
+        return encode(std::span<const HpackHeaderFieldView>{headerFieldViews});
+    }
+
+    std::string HpackEncoder::encode(const std::span<const HpackHeaderFieldView> headerFieldViews)
+    {
         std::string headerBlock;
         // 上层改过表上限时必须先通告：RFC 7541 §4.2 要求它出现在头块开头，放在别处对端会判错
         if (m_hasPendingTableSizeUpdate)
@@ -804,7 +817,7 @@ namespace AsynGyanis::Net
             m_hasPendingTableSizeUpdate = false;
         }
 
-        for (const HpackHeaderField &field: headerFields)
+        for (const HpackHeaderFieldView &field: headerFieldViews)
         {
             // 一个头只做一次静态表定位：同名段内既查「名 + 值」精确匹配，也顺带给出「仅名」匹配
             const HpackStaticNameRun *const staticNameRun = findHpackStaticNameRun(field.name);
@@ -837,8 +850,9 @@ namespace AsynGyanis::Net
                 appendHpackString(headerBlock, field.value);
             }
 
-            // 带增量索引的字面量必须两端同时进表：对端的解码器会按同一规则插入并驱逐
-            m_dynamicTable.insert(HpackHeaderField{field.name, field.value});
+            // 带增量索引的字面量必须两端同时进表：对端的解码器会按同一规则插入并驱逐。
+            // 进表这一份是必须拥有的（表要活过本次调用），也是本函数唯一的字符串构造
+            m_dynamicTable.insert(HpackHeaderField{std::string(field.name), std::string(field.value)});
         }
         return headerBlock;
     }

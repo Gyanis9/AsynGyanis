@@ -27,11 +27,29 @@
       "runsMeasured": 3
     },
     "hpack-decode": {
-      "throughputPerSecond": 2564154,
-      "nanosecondsPerOperation": 390.0,
+      "throughputPerSecond": 2335407,
+      "nanosecondsPerOperation": 428.2,
       "observedNanosecondsRange": [
-        376.2,
-        403.9
+        422.5,
+        430.9
+      ],
+      "runsMeasured": 3
+    },
+    "h2-head-table-owning-copy": {
+      "throughputPerSecond": 3177436,
+      "nanosecondsPerOperation": 314.7,
+      "observedNanosecondsRange": [
+        314.7,
+        316.5
+      ],
+      "runsMeasured": 3
+    },
+    "h2-head-table-view-table": {
+      "throughputPerSecond": 23758135,
+      "nanosecondsPerOperation": 42.1,
+      "observedNanosecondsRange": [
+        40.5,
+        42.5
       ],
       "runsMeasured": 3
     },

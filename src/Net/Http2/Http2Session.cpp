@@ -1310,9 +1310,9 @@ namespace AsynGyanis::Net
     std::vector<HpackHeaderField> Http2Session::collectResponseHeaderFields(const HttpResponse &response)
     {
         std::vector<HpackHeaderField> headerFields;
-        // 常见情形下每条头名展开成一条，再加后面自动补齐的三条；可重复头（如 Set-Cookie）会多出几条，
-        // 那时也就多一次扩容，比从头开始反复搬移便宜
-        headerFields.reserve(response.headers().size() + 3U);
+        // 常见情形是「响应自己的头 + 后面补齐的三条」；这里给一个够用的起点，宁可留一点余量，
+        // 也不为了算准数量先去把单值视图建出来（那是每次查询都要重建的哈希表）
+        headerFields.reserve(8U);
         bool hasContentTypeHeader = false;
         bool hasContentLengthHeader = false;
         bool hasDateHeader = false;
@@ -1321,42 +1321,40 @@ namespace AsynGyanis::Net
         // （RFC 9113 §8.1.2.6），此刻算不出正确值，因此这条路径一律不写它（h1 的分块模式同样不写）
         const bool isStreamingResponse = response.isChunkedResponse();
 
-        // 遍历单值视图取头名、再用 headerValues() 逐条取全部取值：Set-Cookie 这类可重复头不丢
-        for (const auto &headerEntry: response.headers())
-        {
-            const std::string &headerName = headerEntry.first;
-            if (isConnectionSpecificHeaderName(headerName))
+        // 按权威记录的设置顺序逐条取，与 h1 的 appendHead 同一条路径：
+        // 先建单值视图再按名回查，既多付一张哈希表，又会因遍历顺序不稳而让同一份响应两次编码给出不同次序
+        response.forEachHeaderField(
+            [&](const std::string_view headerName, const std::string_view headerValue)
             {
-                // 业务常按 HTTP/1.1 的习惯设 connection: close；HTTP/2 里它一律非法（§8.2.2），
-                // 丢掉它而不是让整条响应被连接层拒绝
-                LOG_DEBUG_FMT("Http2Session: 已丢弃 HTTP/2 禁止的连接特定响应头「{}」", headerName);
-                continue;
-            }
-            if (isStreamingResponse && headerName == kContentLengthHeaderName)
-            {
-                // 流式模式按 h1 契约本就不该有这条头（startChunkedResponse 已删过一遍）：业务后补的
-                // 一样丢掉，否则一个恰好等于某段长度的数字会让对端按它定界、把后续 DATA 当多余字节
-                LOG_DEBUG_FMT("Http2Session: 流式响应的正文长度由 DATA 帧给出，已丢弃 content-length 响应头");
-                continue;
-            }
-            if (headerName == kContentTypeHeaderName)
-            {
-                hasContentTypeHeader = true;
-            }
-            else if (headerName == kContentLengthHeaderName)
-            {
-                hasContentLengthHeader = true;
-            }
-            else if (headerName == kDateHeaderName)
-            {
-                hasDateHeader = true;
-            }
+                if (isConnectionSpecificHeaderName(headerName))
+                {
+                    // 业务常按 HTTP/1.1 的习惯设 connection: close；HTTP/2 里它一律非法（§8.2.2），
+                    // 丢掉它而不是让整条响应被连接层拒绝
+                    LOG_DEBUG_FMT("Http2Session: 已丢弃 HTTP/2 禁止的连接特定响应头「{}」", headerName);
+                    return;
+                }
+                if (isStreamingResponse && headerName == kContentLengthHeaderName)
+                {
+                    // 流式模式按 h1 契约本就不该有这条头（startChunkedResponse 已删过一遍）：业务后补的
+                    // 一样丢掉，否则一个恰好等于某段长度的数字会让对端按它定界、把后续 DATA 当多余字节
+                    LOG_DEBUG_FMT("Http2Session: 流式响应的正文长度由 DATA 帧给出，已丢弃 content-length 响应头");
+                    return;
+                }
+                if (headerName == kContentTypeHeaderName)
+                {
+                    hasContentTypeHeader = true;
+                }
+                else if (headerName == kContentLengthHeaderName)
+                {
+                    hasContentLengthHeader = true;
+                }
+                else if (headerName == kDateHeaderName)
+                {
+                    hasDateHeader = true;
+                }
 
-            for (const std::string &value: response.headerValues(headerName))
-            {
-                headerFields.push_back(HpackHeaderField{.name = headerName, .value = value});
-            }
-        }
+                headerFields.push_back(HpackHeaderField{std::string(headerName), std::string(headerValue)});
+            });
 
         // 自动补齐与 HttpResponse::appendHead() 同口径：有正文却漏设媒体类型按纯文本下发，
         // 长度按正文实际字节数补，日期缺省补当前时刻

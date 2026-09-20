@@ -258,16 +258,54 @@ int main(int argumentCount, char **argumentValues)
         std::printf("  警告：HPACK 动态表对齐失败，解码用例的结果不可信\n");
     }
 
+    // 编码输入改用视图（生产路径上 h2 就是按视图递的）：视图指向上面那批字符串，它们活到基准结束
+    std::vector<Net::HpackHeaderFieldView> headerFieldViews;
+    headerFieldViews.reserve(headerFields.size());
+    for (const Net::HpackHeaderField &field: headerFields)
+    {
+        headerFieldViews.push_back(Net::HpackHeaderFieldView{.name = field.name, .value = field.value});
+    }
+
     measureCase(
             "hpack-encode",
-            [&encoder, &headerFields]
+            [&encoder, &headerFieldViews]
             {
-                const std::string block = encoder.encode(headerFields);
+                const std::string block = encoder.encode(headerFieldViews);
                 return block.size();
             },
             results, checksum, failureCount);
 
     const std::string encodedHeaderBlock = encoder.encode(headerFields);
+
+    // 消融对照：h2 每条响应都要把「:status + 响应头」整表交给编码器。旧写法是再拷一份 owning
+    // vector（每个头各构造名与值两个字符串），新写法只排一张视图表。这两例量的就是被去掉的那份拷贝
+    measureCase(
+            "h2-head-table-owning-copy",
+            [&headerFields]
+            {
+                std::vector<Net::HpackHeaderField> fields;
+                fields.reserve(headerFields.size() + 1U);
+                fields.push_back(Net::HpackHeaderField{.name = ":status", .value = std::string("200")});
+                fields.insert(fields.end(), headerFields.begin(), headerFields.end());
+                return fields.size();
+            },
+            results, checksum, failureCount);
+
+    measureCase(
+            "h2-head-table-view-table",
+            [&headerFields]
+            {
+                std::vector<Net::HpackHeaderFieldView> fields;
+                fields.reserve(headerFields.size() + 1U);
+                fields.push_back(Net::HpackHeaderFieldView{.name = std::string_view(":status"), .value = std::string_view("200")});
+                for (const Net::HpackHeaderField &field: headerFields)
+                {
+                    fields.push_back(Net::HpackHeaderFieldView{.name = field.name, .value = field.value});
+                }
+                return fields.size();
+            },
+            results, checksum, failureCount);
+
     measureCase(
             "hpack-decode",
             [&decoder, &encodedHeaderBlock, &decodedHeaderFields]

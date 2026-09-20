@@ -862,4 +862,30 @@ namespace AsynGyanis::Net
         EXPECT_EQ(head.find("content-type:", firstContentType + 1), std::string::npos)
                 << "头部块里只该有一条 content-type（大小写不同的同名写入是覆盖，不是追加）";
     }
+
+    /**
+     * @brief 钉住：遍历头部记录走的是权威顺序，同名多条按插入先后各访问一次
+     * @details h2/h3 的头块组装与 h1 的序列化共用这个入口。改走 headers() 单值视图会先把同名多条
+     *          按名归组，次序取决于哈希表——两条协议就会对同一份响应给出不同的头部顺序。
+     */
+    TEST(HttpResponse, VisitsHeaderFieldsInSettingOrderIncludingInterleavedDuplicates)
+    {
+        HttpResponse response;
+
+        ASSERT_TRUE(response.setHeader("set-cookie", "a=1"));
+        ASSERT_TRUE(response.setHeader("x-trace", "first"));
+        ASSERT_TRUE(response.setHeader("set-cookie", "b=2"));
+        ASSERT_TRUE(response.setHeader("content-type", "text/plain"));
+
+        std::vector<std::string> visitedFields;
+        response.forEachHeaderField(
+            [&visitedFields](const std::string_view headerName, const std::string_view headerValue)
+            {
+                visitedFields.push_back(std::string(headerName) + "=" + std::string(headerValue));
+            });
+
+        EXPECT_EQ(visitedFields,
+                  (std::vector<std::string>{"set-cookie=a=1", "x-trace=first", "set-cookie=b=2", "content-type=text/plain"}))
+                << "遍历顺序不是设置顺序：中间插入的其它头名会把同名多条拆散，h2/h3 的头块也就与 h1 不一致";
+    }
 } // namespace AsynGyanis::Net

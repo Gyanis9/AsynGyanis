@@ -15,6 +15,7 @@
 #include <deque>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -51,6 +52,18 @@ namespace AsynGyanis::Net
     {
         std::string name;  ///< 头名（低版本 HTTP 里不区分大小写，HPACK 层原样保留收到的字节）
         std::string value; ///< 头值
+    };
+
+    /**
+     * @brief 头块编码的输入项：名与值都按视图给出，不接管所有权
+     * @details 编码只需要在调用期间读到字节，不需要拥有它们。用 HpackHeaderField 当输入会让
+     *          调用方（h2 每条响应）为每个头各拷两个字符串，编完就扔；视图把这些拷贝全部去掉。
+     * @warning 视图必须在 encode() 返回前一直有效
+     */
+    struct HpackHeaderFieldView
+    {
+        std::string_view name; ///< 头名
+        std::string_view value; ///< 头值
     };
 
     /**
@@ -925,8 +938,17 @@ namespace AsynGyanis::Net
          * @brief 编码一个头块
          * @param headerFields 待编码的头部，按给定顺序编码（顺序即线上的顺序）
          * @return std::string 头块字节，可直接放进 HEADERS 帧的净负载；为空列表时返回空串
+         * @note 调用方手里已是视图（h2/h3 的头块组装）时应直接 encode(span) 这一版，
+         *       走本重载会先拷一份视图数组
          */
         [[nodiscard]] std::string encode(const std::vector<HpackHeaderField> &headerFields);
+
+        /**
+         * @brief 编码一个头块（视图输入，不拷贝名与值）
+         * @param headerFieldViews 待编码的头部视图，按给定顺序编码
+         * @return std::string 头块字节
+         */
+        [[nodiscard]] std::string encode(std::span<const HpackHeaderFieldView> headerFieldViews);
 
         /**
          * @brief 重置编码器：清空动态表与待通告的上限变化，回到「新连接」的初态

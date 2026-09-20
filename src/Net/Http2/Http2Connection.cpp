@@ -408,11 +408,17 @@ namespace AsynGyanis::Net
             }
         }
 
-        // :status 必须排在最前（§8.1.2.1：伪头先于普通头部），其余按调用方给的顺序编码
-        std::vector<HpackHeaderField> fields;
+        // :status 必须排在最前（§8.1.2.1：伪头先于普通头部），其余按调用方给的顺序编码。
+        // 这里只另起一张视图表，不再把每个头的名与值各拷两份字符串：整张 owning vector 拷一遍
+        // 是每条响应第二次的无谓往返，编码器读到的字节完全一样
+        std::string statusCodeText = std::to_string(statusCode);
+        std::vector<HpackHeaderFieldView> fields;
         fields.reserve(headerFields.size() + 1U);
-        fields.push_back(HpackHeaderField{.name = ":status", .value = std::to_string(statusCode)});
-        fields.insert(fields.end(), headerFields.begin(), headerFields.end());
+        fields.push_back(HpackHeaderFieldView{.name = std::string_view(":status"), .value = statusCodeText});
+        for (const HpackHeaderField &field: headerFields)
+        {
+            fields.push_back(HpackHeaderFieldView{.name = field.name, .value = field.value});
+        }
 
         emitHeaderBlock(streamId, m_encoder.encode(fields), endStream);
         if (endStream)

@@ -388,6 +388,23 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool carriesNoContent() const noexcept;
 
+        /**
+         * @brief 按设置顺序遍历响应的全部头部记录，同名多条各访问一次
+         * @details h1 序列化与 h2/h3 的头块组装共用这一份权威顺序：走 headers() 单值视图既要先重建
+         *          哈希表，又因 unordered_map 的遍历顺序不稳而让同一份响应两次编码给出不同的头部次序；
+         *          按权威记录走则顺序确定，也不为名与值做任何拷贝。
+         * @tparam Visitor 可调用对象，接受 (头名视图, 头值视图)
+         * @param visitor 每个头部访问一次
+         */
+        template <typename Visitor>
+        void forEachHeaderField(const Visitor &visitor) const
+        {
+            for (const HeaderField &field: m_headerStore.fields())
+            {
+                visitor(std::string_view(field.name), std::string_view(field.value));
+            }
+        }
+
     private:
         using HeaderField = HttpHeaderFieldStore::HeaderField; ///< 头部记录（存储内部类型）
 
