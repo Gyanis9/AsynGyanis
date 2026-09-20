@@ -881,7 +881,7 @@ namespace AsynGyanis::Net
                      {
                          // 每次抓取现取一次快照：计数是原子的，不必把动作投递到事件循环
                          response.setStatus(200);
-                         response.setHeader("content-type", std::string(kPrometheusTextContentType));
+                         response.setHeader("content-type", kPrometheusTextContentType);
                          response.setBody(formatPrometheusMetrics(stats(), metricPrefix));
                          co_return;
                      });

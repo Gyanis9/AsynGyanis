@@ -499,6 +499,20 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 写路径的同一格：覆盖一条既有的长名头部。改前一次 setHeader 要造「折小写的副本 + 传参副本」
+    // 两份字符串，改后连名字都不再拷（值本来就要入库，那份拷贝省不掉）
+    Net::HttpResponse corsResponse;
+    corsResponse.setHeader("access-control-allow-origin", "https://example.com");
+    measureCase(
+            "response-set-header-long-name",
+            [&corsResponse]
+            {
+                // setHeader 返回 false 表示被拒（自检据此判定用例没走成功路径）
+                return corsResponse.setHeader("Access-Control-Allow-Origin", "https://example.com") ? std::size_t{1}
+                                                                                                    : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
     printTable(results, failureCount, checksum);
     if (!jsonOutputPath.empty())
     {

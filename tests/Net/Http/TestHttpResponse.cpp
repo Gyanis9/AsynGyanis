@@ -843,4 +843,23 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(response.hasHeaderValueToken("Connection", "upgrade"));
         EXPECT_FALSE(response.hasHeaderValueToken("X-Absent", "close"));
     }
+
+    TEST(HttpResponse, SetHeaderIgnoresTheNameCaseAndKeepsOneEntry)
+    {
+        HttpResponse response;
+        ASSERT_TRUE(response.setHeader("Content-Type", "text/html"));
+        ASSERT_TRUE(response.setHeader("CONTENT-TYPE", "text/plain"));
+
+        // 同名大小写不同的两次 set 必须落在同一条记录上，否则序列化会把两条都发出去
+        ASSERT_EQ(response.headerValues("content-type").size(), 1U);
+        EXPECT_EQ(response.getHeader("content-type").value_or("<缺失>"), "text/plain");
+        EXPECT_EQ(response.getHeader("Content-Type").value_or("<缺失>"), "text/plain");
+        const std::string head = response.serializeHead();
+        EXPECT_NE(head.find(": text/plain"), std::string::npos);
+        EXPECT_EQ(head.find("text/html"), std::string::npos) << "被覆盖掉的那条不该还在线上";
+        const std::size_t firstContentType = head.find("content-type:");
+        ASSERT_NE(firstContentType, std::string::npos);
+        EXPECT_EQ(head.find("content-type:", firstContentType + 1), std::string::npos)
+                << "头部块里只该有一条 content-type（大小写不同的同名写入是覆盖，不是追加）";
+    }
 } // namespace AsynGyanis::Net

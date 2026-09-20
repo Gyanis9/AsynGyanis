@@ -73,7 +73,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置一个 HTTP 头部字段。
          *
-         * @details 头部名转小写后入库。普通头部同名即就地覆盖值、条目位置不变；
+         * @details 头部名按小写形态入库。普通头部同名即就地覆盖值、条目位置不变；
          *          可重复头部（当前只有 set-cookie）每次调用新增一条独立头部，先设先发。
          * @param name  头部字段名（如 "Content-Type"），大小写不敏感
          * @param value 头部字段值（如 "text/html"）
@@ -85,7 +85,7 @@ namespace AsynGyanis::Net
          * @note 204 与 1xx 响应不应携带 content-length：本方法不会自动补，
          *       调用方显式设置的也不会在序列化时被抹掉，需要自行避免。
          */
-        bool setHeader(const std::string &name, const std::string &value);
+        bool setHeader(std::string_view name, std::string_view value);
 
         /**
          * @brief 获取指定名称的 HTTP 头部值。
@@ -93,7 +93,7 @@ namespace AsynGyanis::Net
          * @return 命中时返回该名字的单值（可重复头部为首条）；未命中返回空 optional
          * @see headerValues() 需要逐条取值时使用
          */
-        [[nodiscard]] std::optional<std::string> getHeader(const std::string &name) const;
+        [[nodiscard]] std::optional<std::string> getHeader(std::string_view name) const;
 
         /**
          * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
@@ -113,7 +113,7 @@ namespace AsynGyanis::Net
          * @param name 头部字段名，大小写不敏感
          * @return 值列表；名字不存在时为空列表
          */
-        [[nodiscard]] std::vector<std::string> headerValues(const std::string &name) const;
+        [[nodiscard]] std::vector<std::string> headerValues(std::string_view name) const;
 
         /**
          * @brief 只发流式响应的头部、不发正文（HEAD 请求用）
@@ -401,9 +401,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 删除指定名字的全部条目
-         * @param canonicalName 已归一化（小写）的头部名；不存在时为空操作
+         * @param name 头部名，大小写不敏感；不存在时为空操作
          */
-        void removeHeaderField(const std::string &canonicalName);
+        void removeHeaderField(std::string_view name);
 
         /**
          * @brief 该状态码是否不得自动补 content-length

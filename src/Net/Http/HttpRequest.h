@@ -113,7 +113,7 @@ namespace AsynGyanis::Net
          *         可重复头部为首条的值；未命中时返回空 optional
          * @see headerValues() 需要逐条取值时使用
          */
-        [[nodiscard]] std::optional<std::string> getHeader(const std::string &key) const;
+        [[nodiscard]] std::optional<std::string> getHeader(std::string_view key) const;
 
         /**
          * @brief 获取指定名称的全部头部值，按线上到达顺序返回。
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
          * @param key 头部字段名，大小写不敏感
          * @return 值列表；名字不存在时为空列表
          */
-        [[nodiscard]] std::vector<std::string> headerValues(const std::string &key) const;
+        [[nodiscard]] std::vector<std::string> headerValues(std::string_view key) const;
 
         /**
          * @brief 取指定名称的首条头部值（原样，不参与同名多条的 ", " 合并）

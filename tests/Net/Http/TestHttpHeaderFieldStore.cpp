@@ -200,4 +200,24 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(dangling.containsListToken("x-edge", "close"));
     }
 
+    TEST(HttpHeaderFieldStore, WritePathsMatchTheStoredNameIgnoringCase)
+    {
+        HttpHeaderFieldStore store = makeStore({{"content-type", "text/plain"}});
+
+        // 覆盖式写入即便用原大小写也必须命中既有记录：命不中就多出一条同名头部，
+        // 序列化时两条一起上线，收端按哪条读都是错位
+        store.overwriteOrAppend("CONTENT-TYPE", "application/json");
+        ASSERT_EQ(store.fields().size(), 1U) << "大小写不同的同名写入不得新增条目";
+        EXPECT_EQ(store.fields()[0].name, "content-type") << "入库形态必须是小写，序列化按它上线";
+        EXPECT_EQ(store.get("content-type").value_or("<缺失>"), "application/json");
+
+        // 缺席时新建条目，名同样折成小写入库
+        store.overwriteOrAppend("X-Trace-Id", "abc");
+        ASSERT_EQ(store.fields().size(), 2U);
+        EXPECT_EQ(store.fields()[1].name, "x-trace-id");
+
+        store.removeAll("X-TRACE-ID");
+        EXPECT_EQ(store.fields().size(), 1U) << "删名也要大小写不敏感，否则中间件清不掉处理器写下的头部";
+    }
+
 } // namespace AsynGyanis::Net

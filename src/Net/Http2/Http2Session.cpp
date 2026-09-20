@@ -936,9 +936,9 @@ namespace AsynGyanis::Net
         }
 
         // 响应自动带本次请求的 request-id（与 HTTP/1.1 侧同口径）：调用方显式设过就不覆盖
-        if (!request.requestId().empty() && !m_response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+        if (!request.requestId().empty() && !m_response.getHeader(kRequestIdHeaderName).has_value())
         {
-            static_cast<void>(m_response.setHeader(std::string(kRequestIdHeaderName), std::string(request.requestId())));
+            static_cast<void>(m_response.setHeader(kRequestIdHeaderName, request.requestId()));
         }
 
         // 流式响应：头部（首段时）与每个正文段都已由上面的回调当场发出，这里只补末片把消息收完整；
@@ -1022,7 +1022,7 @@ namespace AsynGyanis::Net
 
         // 扩展协商（RFC 7692 §7.1）：与 h1 侧同一份协商实现，接受时把结论一并写进应答头，
         // 本端随后按同一结论收发压缩帧——回给对端的那一行与本端的收发口径必须是同一个来源
-        const std::optional<std::string> extensionsHeader = request.getHeader(std::string(kWebSocketExtensionsHeaderName));
+        const std::optional<std::string> extensionsHeader = request.getHeader(kWebSocketExtensionsHeaderName);
         const PerMessageDeflateNegotiation deflateNegotiation =
                 negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
         if (!deflateNegotiation.responseValue.empty())

@@ -29,24 +29,26 @@ namespace AsynGyanis::Net
         m_isViewStale = true;
     }
 
-    void HttpHeaderFieldStore::overwriteOrAppend(const std::string &canonicalName, const std::string &value)
+    void HttpHeaderFieldStore::overwriteOrAppend(const std::string_view name, const std::string_view value)
     {
-        if (const auto iterator = findField(canonicalName); iterator != m_fields.end())
+        if (const auto iterator = findField(name); iterator != m_fields.end())
         {
-            // 原地覆盖值，条目位置仍停在首次设置处，这样序列化顺序不因反复改写而漂移
+            // 原地覆盖值，条目位置仍停在首次设置处，这样序列化顺序不因反复改写而漂移。
+            // 名字保持入库时那份小写形态不动：调用方用 "CONTENT-TYPE" 覆盖，改的仍是 content-type
             iterator->value = value;
         } else
         {
-            m_fields.push_back(HeaderField{.name = canonicalName, .value = value});
+            // 只有新建条目才需要折小写（线上形态由入库名决定），覆盖路径一次拷贝也不花
+            m_fields.push_back(HeaderField{.name = toCanonicalHeaderName(name), .value = std::string(value)});
         }
         m_isViewStale = true;
     }
 
-    void HttpHeaderFieldStore::removeAll(const std::string &canonicalName)
+    void HttpHeaderFieldStore::removeAll(const std::string_view name)
     {
-        const auto isSameName = [&canonicalName](const HeaderField &field)
+        const auto isSameName = [name](const HeaderField &field)
         {
-            return field.name == canonicalName;
+            return equalsIgnoringCase(field.name, name);
         };
         m_fields.erase(std::ranges::remove_if(m_fields, isSameName).begin(), m_fields.end());
 
@@ -187,13 +189,13 @@ namespace AsynGyanis::Net
                                    });
     }
 
-    HttpHeaderFieldStore::HeaderFieldList::iterator HttpHeaderFieldStore::findField(const std::string &canonicalName)
+    HttpHeaderFieldStore::HeaderFieldList::iterator HttpHeaderFieldStore::findField(const std::string_view name)
     {
         // 头部数量级为几十条，线性比较比再挂一张「名到迭代器」的索引表更划算，也少一份要维护的一致性
         return std::ranges::find_if(m_fields,
-                                    [&canonicalName](const HeaderField &field)
+                                    [name](const HeaderField &field)
                                     {
-                                        return field.name == canonicalName;
+                                        return equalsIgnoringCase(field.name, name);
                                     });
     }
 

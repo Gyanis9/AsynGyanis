@@ -54,16 +54,16 @@ namespace AsynGyanis::Net
         /**
          * @brief 覆盖或追加一条非可重复头部
          * @details 同名已有记录就地覆盖值，条目位置仍停在首次设置处；缺席则追加到末尾。
-         * @param canonicalName 已归一化的头部名
+         * @param name 头部名，大小写不敏感；新建条目时按小写形态入库
          * @param value 头部值
          */
-        void overwriteOrAppend(const std::string &canonicalName, const std::string &value);
+        void overwriteOrAppend(std::string_view name, std::string_view value);
 
         /**
          * @brief 移除该名下的全部记录
-         * @param canonicalName 已归一化的头部名
+         * @param name 头部名，大小写不敏感
          */
-        void removeAll(const std::string &canonicalName);
+        void removeAll(std::string_view name);
 
         /**
          * @brief 取该名对应的单值（按权威记录算，不建单值视图）
@@ -145,11 +145,11 @@ namespace AsynGyanis::Net
 
     private:
         /**
-         * @brief 按归一化名找第一条记录
-         * @param canonicalName 已归一化的头部名
+         * @brief 按名找第一条记录（大小写不敏感）
+         * @param name 头部名
          * @return HeaderFieldList::iterator 命中位置；未命中为 end()
          */
-        [[nodiscard]] HeaderFieldList::iterator findField(const std::string &canonicalName);
+        [[nodiscard]] HeaderFieldList::iterator findField(std::string_view name);
 
         /// 按需要重建单值视图（调用前视图已标脏）
         void rebuildSingleValueView() const;

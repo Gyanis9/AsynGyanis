@@ -99,7 +99,7 @@ namespace AsynGyanis::Net
         m_headerStore.append(std::move(key), std::move(value));
     }
 
-    std::optional<std::string> HttpRequest::getHeader(const std::string &key) const
+    std::optional<std::string> HttpRequest::getHeader(const std::string_view key) const
     {
         return m_headerStore.get(key);
     }
@@ -115,7 +115,7 @@ namespace AsynGyanis::Net
         return m_headerStore.containsListToken(key, expectedToken);
     }
 
-    std::vector<std::string> HttpRequest::headerValues(const std::string &key) const
+    std::vector<std::string> HttpRequest::headerValues(const std::string_view key) const
     {
         return m_headerStore.values(key);
     }

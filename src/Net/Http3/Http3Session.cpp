@@ -123,9 +123,9 @@ namespace AsynGyanis::Net
         /// 响应自动带上本次请求的 request-id：口径与 h1/h2 一致，调用方显式设过就不覆盖
         void noteRequestIdOnResponse(const HttpRequest &request, HttpResponse &response)
         {
-            if (!request.requestId().empty() && !response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+            if (!request.requestId().empty() && !response.getHeader(kRequestIdHeaderName).has_value())
             {
-                static_cast<void>(response.setHeader(std::string(kRequestIdHeaderName), std::string(request.requestId())));
+                static_cast<void>(response.setHeader(kRequestIdHeaderName, request.requestId()));
             }
         }
     } // namespace
@@ -443,7 +443,7 @@ namespace AsynGyanis::Net
                     m_pendingTunnelStreams.erase(streamId);
                     // 扩展协商要看请求里的原文：这里按值取出去，协程随后会在处理器上挂起
                     co_await serveWebSocketTunnel(streamId,
-                                                  request.getHeader(std::string(kWebSocketExtensionsHeaderName)).value_or(std::string{}),
+                                                  request.getHeader(kWebSocketExtensionsHeaderName).value_or(std::string{}),
                                                   response);
                     continue;
                 }
@@ -1172,7 +1172,7 @@ namespace AsynGyanis::Net
         const PerMessageDeflateNegotiation deflateNegotiation = negotiatePerMessageDeflate(requestedExtensions);
         if (!deflateNegotiation.responseValue.empty())
         {
-            static_cast<void>(response.setHeader(std::string(kWebSocketExtensionsHeaderName), deflateNegotiation.responseValue));
+            static_cast<void>(response.setHeader(kWebSocketExtensionsHeaderName, deflateNegotiation.responseValue));
         }
 
         // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧之后一段一段推给连接层

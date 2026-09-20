@@ -97,10 +97,10 @@ namespace AsynGyanis::Net
          * @details 按 RFC 9110 §5.1 的 tchar 集合校验，与请求侧共用同一张表：两侧判定不一致时，
          *          同一段转发代码会在「收得进来、发不出去」之间分裂。空白、冒号与控制字符都
          *          让报文无法定界，一律拒绝；空名字同样非法。
-         * @param fieldName 已归一化为小写的头部字段名
+         * @param fieldName 头部字段名，原样判定（字符集与大小写无关）
          * @return true 可作为头部字段名
          */
-        bool isValidHeaderFieldName(const std::string &fieldName)
+        bool isValidHeaderFieldName(const std::string_view fieldName)
         {
             if (fieldName.empty())
             {
@@ -108,20 +108,6 @@ namespace AsynGyanis::Net
             }
 
             return containsOnlyTokenCharacters(fieldName);
-        }
-
-        /**
-         * @brief 判断头部字段值是否可以安全写入报文
-         * @details 头部块以 CRLF 定界，值里出现 CR/LF 就等于让调用方自行结束头部块，
-         *          是 HTTP 响应拆分的经典入口；NUL 与其它控制字符同样会撕裂报文。
-         *          水平制表符是 RFC 允许在 OWS 中出现的空白，因此放行。
-         * @param headerValue 头部字段值
-         * @return true 可以写入
-         */
-        bool isSafeHeaderValue(const std::string &headerValue)
-        {
-            // 与请求侧同一张表：判定标准是 RFC 的字段值字符集，而不是 locale 决定的 iscntrl
-            return containsOnlyFieldValueCharacters(headerValue);
         }
     } // namespace
 
@@ -142,40 +128,42 @@ namespace AsynGyanis::Net
         return m_status;
     }
 
-    void HttpResponse::removeHeaderField(const std::string &canonicalName)
+    void HttpResponse::removeHeaderField(const std::string_view name)
     {
         // 视图不在这里维护：存储内部只标脏，下次查询由权威记录重建（否则会留下
         // 「查询查得到、序列化里没有」的鬼条目）
-        m_headerStore.removeAll(canonicalName);
+        m_headerStore.removeAll(name);
     }
 
-    bool HttpResponse::setHeader(const std::string &name, const std::string &value)
+    bool HttpResponse::setHeader(const std::string_view name, const std::string_view value)
     {
-        // 头部名转小写后入库，判据也按小写形态给出
-        const std::string canonicalName = HttpHeaderFieldStore::toCanonicalHeaderName(name);
-
+        // 名不再先折成一个小写副本：入库形态由存储内部负责，比对也就地做大小写不敏感，
+        // 于是头部名一超过短字符串缓冲就不再为一次写入现造副本。字符集校验与大小写无关
+        // （大写与小写同属 tchar），按原样判即可
         // CR/LF/NUL 会让调用方提前结束头部块（HTTP 响应拆分），字段名里的空白与控制字符
         // 则产出线上非法报文——两种情况都拒写，且不改动任何已有状态
-        if (!isValidHeaderFieldName(canonicalName) || !isSafeHeaderValue(value))
+        // 取值判据与请求侧同一张表：CR/LF/NUL 会撕裂报文（HTAB 是 RFC 允许的 OWS，放行），
+        // 判定标准是 RFC 的字段值字符集，而不是 locale 决定的 iscntrl
+        if (!isValidHeaderFieldName(name) || !containsOnlyFieldValueCharacters(value))
         {
             return false;
         }
 
-        if (HttpHeaderFieldStore::isRepeatableHeaderName(canonicalName))
+        if (HttpHeaderFieldStore::isRepeatableHeaderName(name))
         {
             // 可重复头部（Set-Cookie）的 set 语义退化为「追加一条」：既有调用方逐条 setHeader
             // 下发多个 cookie，覆盖式写法会静默丢掉前面的 cookie。每条各占一项，序列化时逐条上线；
             // 单值视图只留首条（headers()/getHeader() 的「一个名字一个值」契约不变）
-            m_headerStore.append(canonicalName, value);
+            m_headerStore.append(std::string(name), std::string(value));
             return true;
         }
 
         // 普通头部：同名就地覆盖，条目位置仍停在首次设置处，序列化顺序不因反复改写而漂移
-        m_headerStore.overwriteOrAppend(canonicalName, value);
+        m_headerStore.overwriteOrAppend(name, value);
         return true;
     }
 
-    std::optional<std::string> HttpResponse::getHeader(const std::string &name) const
+    std::optional<std::string> HttpResponse::getHeader(const std::string_view name) const
     {
         return m_headerStore.get(name);
     }
@@ -186,7 +174,7 @@ namespace AsynGyanis::Net
         return m_headerStore.containsListToken(name, expectedToken);
     }
 
-    std::vector<std::string> HttpResponse::headerValues(const std::string &name) const
+    std::vector<std::string> HttpResponse::headerValues(const std::string_view name) const
     {
         return m_headerStore.values(name);
     }
@@ -405,11 +393,11 @@ namespace AsynGyanis::Net
 
         // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：收端若按前者定界，
         // 分块帧就会被当成正文，整条报文的边界随之错位。调用方先设下的那条一律删掉
-        removeHeaderField(std::string(kContentLengthHeaderName));
+        removeHeaderField(kContentLengthHeaderName);
 
         // 正文长度对发送方未知，消息边界改由分块帧界定（RFC 9112 §6）。
         // 名与值都是本类自己给出的合法字面量，setHeader 不会拒收，返回值无需再判
-        setHeader(std::string(kTransferEncodingHeaderName), std::string(kChunkedTransferEncodingValue));
+        setHeader(kTransferEncodingHeaderName, kChunkedTransferEncodingValue);
     }
 
     Core::Task<bool> HttpResponse::writeChunk(const std::string_view data)

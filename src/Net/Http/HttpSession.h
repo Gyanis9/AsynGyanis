@@ -882,9 +882,9 @@ namespace AsynGyanis::Net
                     // 响应自动带本次请求的 request-id，与 date 同属「自动补齐」语义：调用方显式设过
                     // 就不覆盖（业务可能想把上游网关的 id 透传下去）。放在 500 改写之后，
                     // 保证异常路径上的响应同样能被日志检索对上
-                    if (!requestIdView.empty() && !response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+                    if (!requestIdView.empty() && !response.getHeader(kRequestIdHeaderName).has_value())
                     {
-                        response.setHeader(std::string(kRequestIdHeaderName), std::string(requestIdView));
+                        response.setHeader(kRequestIdHeaderName, requestIdView);
                     }
 
                     // HEAD 只发头部，一个正文字节都不发：正文视图在发送前换成空，而头部仍按
@@ -1274,7 +1274,7 @@ namespace AsynGyanis::Net
 
                     // 扩展协商（RFC 7692 §7.1）：对端提供了 permessage-deflate 就接受，并在 101 里回一条
                     // 只含本端选定参数的 Sec-WebSocket-Extensions。协商结论同时决定后续数据帧能否用 RSV1
-                    const std::optional<std::string> extensionsHeader = request.getHeader(std::string(kWebSocketExtensionsHeaderName));
+                    const std::optional<std::string> extensionsHeader = request.getHeader(kWebSocketExtensionsHeaderName);
                     const PerMessageDeflateNegotiation deflateNegotiation =
                             negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
 
