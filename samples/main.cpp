@@ -594,6 +594,8 @@ int main(int argc, char **argv)
         http3Configuration.requestIdGenerator = http3RequestIdGenerator;
         // 连接级限额同样一份：h3 的「单连接最多多少条请求」与两条 TCP 通道同值
         http3Configuration.serverLimits = std::make_shared<const Net::HttpServerLimits>(configuration.limits);
+        // 单来源并发上限也交给 h3：同一来源从 TCP 还是 QUIC 进来都算在同一个名额里
+        http3Configuration.perIpConnectionLimiter = perIpConnectionLimiter;
 
         try
         {

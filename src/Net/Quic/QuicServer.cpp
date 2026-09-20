@@ -28,6 +28,27 @@ namespace AsynGyanis::Net
         constexpr std::string_view kHttp3ApplicationProtocol = "h3";
 
         /**
+         * @brief 取来源地址的纯 IP 文本（不含端口），作为单来源限额的键
+         * @details 带端口就等于按连接计数，限额永远碰不到（与 TcpServer 侧同一口径）
+         * @param address 报文来源地址
+         * @return std::optional<std::string> 可识别地址族的 IP 文本；地址族不认识时为空
+         */
+        [[nodiscard]] std::optional<std::string> peerIpKey(const Platform::SocketAddress &address)
+        {
+            switch (address.storage.ss_family)
+            {
+                case AF_INET:
+                    return Core::InetAddress(*reinterpret_cast<const sockaddr_in *>(&address.storage)).ip();
+                case AF_INET6:
+                    return Core::InetAddress(*reinterpret_cast<const sockaddr_in6 *>(&address.storage)).ip();
+                default:
+                    // 地址族认不出来就不给键：硬编一个「未知」出来会把互不相干的来源并成一个名额，
+                    // 比不按来源限制更糟
+                    return std::nullopt;
+            }
+        }
+
+        /**
          * @brief ALPN 选择回调：只接受 HTTP/3
          * @details 协商不出 h3 就按致命告警终止握手——放行别的协议会让后续按 h3 解析的字节流对不上，
          *          不如在握手期就明确拒绝。
@@ -408,6 +429,21 @@ namespace AsynGyanis::Net
         }
 
         // 不认识的目的连接标识：只有「可开新连接的 Initial」才值得开一条新连接
+        // 先占单来源名额再建连接：名额拿不到就不建，避免「建了又拆」白付一次握手成本
+        std::optional<PerIpConnectionLimiter::Lease> perIpLease;
+        if (m_configuration.perIpConnectionLimiter != nullptr)
+        {
+            if (const std::optional<std::string> ipKey = peerIpKey(peerAddress); ipKey.has_value())
+            {
+                perIpLease = m_configuration.perIpConnectionLimiter->tryAcquire(*ipKey);
+                if (!perIpLease.has_value())
+                {
+                    LOG_WARN_FMT("QuicServer: 来源 {} 的并发连接已达上限，新的 Initial 被拒绝", *ipKey);
+                    co_return;
+                }
+            }
+        }
+
         QuicConnection::Configuration connectionConfiguration;
         connectionConfiguration.tlsContext           = m_tlsContext;
         connectionConfiguration.idleTimeout          = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
@@ -454,6 +490,12 @@ namespace AsynGyanis::Net
         const std::string sourceConnectionId = connection->sourceConnectionId();
         QuicConnection  *rawConnection       = connection.get();
         m_connections.emplace(sourceConnectionId, std::move(connection));
+        // 名额凭据与连接同寿命：摘连接时必须一起摘，否则那个来源的计数只增不减（等价于把
+        // 限额变成了一次性配额）
+        if (perIpLease.has_value())
+        {
+            m_perIpConnectionLeases.emplace(sourceConnectionId, std::move(*perIpLease));
+        }
         // 同时按「客户端最初选的 DCID」登记一份：重传的 Initial 靠这一路认回同一条连接。
         // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
@@ -480,10 +522,12 @@ namespace AsynGyanis::Net
                 // 那条协程恢复后手里的引用与迭代器就是悬垂的。推迟到它的在途动作结束——下一次
                 // 收报文或下一次清扫节拍会回到这里（两条路径都在收尾处调本函数）
                 LOG_DEBUG_FMT("QuicServer: 连接已收口并从路由表摘除（剩 {} 条）", m_connections.size() - 1);
-                // 三张表都要摘：别名索引存的是裸指针，HTTP/3 会话内部又指回这条连接——
-                // 漏掉任何一处，都会把已销毁的连接留在表里（悬空指针）
+                // 四张表都要摘：别名索引存的是裸指针，HTTP/3 会话内部又指回这条连接，单来源名额
+                // 则要随连接归还——漏掉任何一处，都会把已销毁的连接留在表里（悬空指针）或让计数只增不减
                 const QuicConnection *closedConnection = iterator->second.get();
                 m_http3Sessions.erase(closedConnection);
+                // 第四张表：单来源名额随连接一起归还（凭据析构即释放计数）
+                m_perIpConnectionLeases.erase(iterator->first);
                 std::erase_if(m_connectionsByAliasConnectionId,
                               [closedConnection](const auto &entry) { return entry.second == closedConnection; });
                 iterator = m_connections.erase(iterator);

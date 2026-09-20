@@ -5,6 +5,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/Socket.h"
 
@@ -477,13 +478,16 @@ namespace AsynGyanis::Net
             /**
              * @brief 起一台回环上的服务端
              * @param idleTimeout 空闲/握手超时；考「超时收口」的用例把它调小，免得干等默认的 30 秒
+             * @param perIpConnectionLimiter 单来源并发上限的限额器；空表示不按来源限制
              */
-            explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30})
+            explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30},
+                                       std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter = nullptr)
             {
                 QuicServer::Configuration configuration;
                 configuration.certificateFile = certificatePath();
                 configuration.privateKeyFile  = privateKeyPath();
                 configuration.idleTimeout     = idleTimeout;
+                configuration.perIpConnectionLimiter = std::move(perIpConnectionLimiter);
 
                 m_server = std::make_unique<QuicServer>(m_loop, configuration);
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
@@ -927,6 +931,30 @@ TEST(QuicServer, DrainClosesOpenConnectionsAndStopsServing)
     ASSERT_TRUE(lateClient.initialize(makeServerAddress(server.listeningPort())));
     EXPECT_FALSE(pumpUntil(lateClient, [&lateClient] { return lateClient.isHandshakeCompleted(); }))
             << "服务端已经收口，不该再接手新连接";
+}
+
+/**
+ * @brief 单来源并发上限对 h3 同样生效：超出的那条握手建不起连接
+ * @details TcpServer 早就有这道闸（--max-connections-per-ip），h3 此前完全不按来源计数，
+ *          于是同一个来源换条协议就能绕过限额
+ */
+TEST(QuicServer, RefusesNewConnectionBeyondPerIpLimit)
+{
+    ASSERT_TRUE(Platform::Socket::initialize());
+
+    RunningQuicServer server(std::chrono::seconds{30}, std::make_shared<PerIpConnectionLimiter>(1));
+    ASSERT_NE(server.listeningPort(), 0) << "服务端没有绑定成功";
+
+    QuicTestClient firstClient;
+    ASSERT_TRUE(firstClient.initialize(makeServerAddress(server.listeningPort())));
+    ASSERT_TRUE(pumpUntil(firstClient, [&firstClient] { return firstClient.isHandshakeCompleted(); })) << "用例前提：第一条连接要能握手";
+    ASSERT_EQ(server.sampleConnectionCount(), 1U);
+
+    QuicTestClient secondClient;
+    ASSERT_TRUE(secondClient.initialize(makeServerAddress(server.listeningPort())));
+    EXPECT_FALSE(pumpUntil(secondClient, [&secondClient] { return secondClient.isHandshakeCompleted(); }))
+            << "同一来源的第二条连接应当被限额器挡在门外";
+    EXPECT_EQ(server.sampleConnectionCount(), 1U) << "被拒的握手不该留下连接记录";
 }
 
 } // namespace AsynGyanis::Net

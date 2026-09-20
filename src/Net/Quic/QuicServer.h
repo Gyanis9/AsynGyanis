@@ -16,6 +16,7 @@
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
 
@@ -75,6 +76,9 @@ namespace AsynGyanis::Net
             /// 排空，在途请求答完再由本服务端收掉这条连接。空闲时长不在此列：QUIC 自带
             /// `idleTimeout`，那是传输层的收口时刻，与 HTTP 侧的 keep-alive 空闲不是一回事
             std::shared_ptr<const HttpServerLimits> serverLimits;
+            /// 单来源并发连接上限的限额器（可空：空表示不按来源限制）。与两条 TCP 通道共用一个实例时，
+            /// 同一来源不管从 TCP 还是 QUIC 进来都算在同一个名额里
+            std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter;
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);
@@ -238,5 +242,8 @@ namespace AsynGyanis::Net
         /// （实测：一个客户端握手却建出 8 条连接）。本端不签发额外连接标识，因此别名只有这一条；
         /// 将来做连接标识轮换时要在这里补登记
         std::map<std::string, QuicConnection *, std::less<>> m_connectionsByAliasConnectionId;
+
+        /// 连接 → 它占住的单来源名额凭据：随连接一起摘除即归还名额（键与上面那张表同源）
+        std::map<std::string, PerIpConnectionLimiter::Lease> m_perIpConnectionLeases;
     };
 } // namespace AsynGyanis::Net
