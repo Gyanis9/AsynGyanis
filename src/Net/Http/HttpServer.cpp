@@ -850,6 +850,11 @@ namespace AsynGyanis::Net
         return m_metrics;
     }
 
+    std::shared_ptr<HttpRequestIdGenerator> HttpServer::requestIdGenerator() const noexcept
+    {
+        return m_requestIdGenerator;
+    }
+
     HttpServerStats HttpServer::stats() const
     {
         HttpServerStats snapshot = m_metrics->snapshot();

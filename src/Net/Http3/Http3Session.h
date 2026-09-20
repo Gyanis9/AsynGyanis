@@ -11,6 +11,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpRequestBody.h"
@@ -84,6 +85,8 @@ namespace AsynGyanis::Net
          * @param crediter 接收窗口的归还口（可空：为空时不归还，正文一大就会把接收窗口用光）
          * @param metrics 统计采集端；传空指针表示本会话不采集统计
          * @param memoryBudget 进程级内存预算；有它时缓冲的请求正文按字节占全局额度，传空指针表示不做全局占用（仍受单请求上限约束）
+         * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
+         *        （与 h1/h2 同一取舍：id 由服务器持有、按 shared_ptr 共享，前缀标识服务器实例）
          * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
@@ -93,7 +96,8 @@ namespace AsynGyanis::Net
          */
         Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {},
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
+                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr);
 
         /**
          * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放
@@ -570,6 +574,12 @@ namespace AsynGyanis::Net
         void answerMalformedRequest(std::int64_t streamId, std::string_view reason);
 
         /**
+         * @brief 给请求落定 request-id（可采信就沿用客户端给的，否则新生成一个）
+         * @param request 已收齐、正要交给路由的请求
+         */
+        void noteRequestId(HttpRequest &request) const;
+
+        /**
          * @brief 请求带着 Expect: 100-continue 时，先交一个 :status 100 的头块
          * @details 时机与 h2 侧一致：头收齐、正文还在路上。h3 在这一刻判不出正文会不会来，因此只认
          *          「声明了正的 content-length」这一种请求（没声明的按 RFC 9110 §10.1.1 的兜底自己发）。
@@ -612,6 +622,8 @@ namespace AsynGyanis::Net
         StreamCrediter            m_crediter;            ///< 接收窗口归还口
         Router                   *m_router{nullptr};     ///< 路由器（不持有；由服务端保证其寿命）
         std::shared_ptr<HttpMetricsCollector> m_metrics; ///< 统计采集端（可空：空表示本会话不采集）
+        /// request-id 生成器（可空）：与服务器共享一份，前缀标识服务器实例
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;
         HttpParserLimits          m_parserLimits{};      ///< 请求解析上限（正文总量上限等）
         bool                      m_isUsable{false};     ///< 三条本端单向流是否都开出来了
         bool                      m_isBroken{false};     ///< 是否已作废

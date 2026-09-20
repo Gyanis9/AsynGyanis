@@ -396,6 +396,9 @@ int main(int argc, char **argv)
     // 指标端点两个服务类各有一份（HttpServer 与 HttpsServer 各是自己实现的），
     // 谁先开着就把谁的采集端借给 h3；没开指标则留空指针，h3 不采集
     std::shared_ptr<Net::HttpMetricsCollector> http3MetricsCollector;
+    // request-id 生成器同样借第一条服务器的：h1/h2/h3 落定的 id 前缀指向同一台机器，
+    // 与 --metrics 无关（request-id 不是指标端点的一部分，一直开着）
+    std::shared_ptr<Net::HttpRequestIdGenerator> http3RequestIdGenerator;
 
     // 限流桶同样只有一份：它要的正是「进程级全局 RPS 上限」，各持一份等于上限乘以监听器数
     std::shared_ptr<Net::TokenBucket> rateLimitBucket;
@@ -440,6 +443,11 @@ int main(int argc, char **argv)
             server->setHttp2CleartextEnabled(true);
         }
 
+        if (http3RequestIdGenerator == nullptr)
+        {
+            http3RequestIdGenerator = server->requestIdGenerator();
+        }
+
         // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
         if (configuration.exposeMetrics)
         {
@@ -470,6 +478,11 @@ int main(int argc, char **argv)
         if (rateLimitBucket != nullptr)
         {
             server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+        }
+
+        if (http3RequestIdGenerator == nullptr)
+        {
+            http3RequestIdGenerator = server->requestIdGenerator();
         }
 
         // 指标与健康检查端点同样是显式开关；与明文侧同一形态（HttpsServer 自己的实现）
@@ -577,6 +590,8 @@ int main(int argc, char **argv)
         http3Configuration.memoryBudget    = inflightBodyBudget;
         // 指标打开时 h3 的请求数、状态码类与单流取消并进上面那份采集端；没打开则为空指针、不采集
         http3Configuration.metricsCollector = http3MetricsCollector;
+        // request-id 与两条 TCP 通道共用一份生成器：同一台机器上 h3 的 id 前缀不该另起一套
+        http3Configuration.requestIdGenerator = http3RequestIdGenerator;
 
         try
         {

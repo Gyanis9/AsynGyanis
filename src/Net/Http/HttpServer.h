@@ -216,6 +216,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::shared_ptr<HttpMetricsCollector> metricsCollector() const noexcept;
 
         /**
+         * @brief 取本服务器的 request-id 生成器
+         * @details 与 `metricsCollector()` 同一个道理：生成器按 shared_ptr 共享，把它传给别的
+         *          服务路径（`QuicServer::Configuration::requestIdGenerator`）后，同一台机器上
+         *          h1/h2/h3 落定的 id 前缀一致、计数也不会各说各话
+         * @return std::shared_ptr<HttpRequestIdGenerator> 生成器，恒非空
+         */
+        [[nodiscard]] std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator() const noexcept;
+
+        /**
          * @brief 在本服务器上注册指标导出端点（Prometheus 文本格式）
          *
          * @details 指标内容见 HttpMetricsEndpoint.h：计数器、状态码分类、耗时直方图、WebSocket 与

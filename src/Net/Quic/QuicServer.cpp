@@ -279,7 +279,7 @@ namespace AsynGyanis::Net
                 { rawConnection->queueStreamData(streamId, data, isEndStream); },
                 [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
                 { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
-                m_configuration.metricsCollector, m_configuration.memoryBudget);
+                m_configuration.metricsCollector, m_configuration.memoryBudget, m_configuration.requestIdGenerator);
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);

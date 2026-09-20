@@ -85,6 +85,11 @@ namespace AsynGyanis::Net
         return m_metrics;
     }
 
+    std::shared_ptr<HttpRequestIdGenerator> HttpsServer::requestIdGenerator() const noexcept
+    {
+        return m_requestIdGenerator;
+    }
+
     void HttpsServer::enableMetricsEndpoint(const std::string_view path, const std::string_view metricNamePrefix)
     {
         // 与 HttpServer 同一处置：路径形状先拦下来，静默注册会给人一个「调了却没有端点」的假象

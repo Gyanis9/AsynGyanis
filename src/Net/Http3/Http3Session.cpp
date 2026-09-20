@@ -119,12 +119,22 @@ namespace AsynGyanis::Net
             }
             return fieldLines;
         }
+
+        /// 响应自动带上本次请求的 request-id：口径与 h1/h2 一致，调用方显式设过就不覆盖
+        void noteRequestIdOnResponse(const HttpRequest &request, HttpResponse &response)
+        {
+            if (!request.requestId().empty() && !response.getHeader(std::string(kRequestIdHeaderName)).has_value())
+            {
+                static_cast<void>(response.setHeader(std::string(kRequestIdHeaderName), std::string(request.requestId())));
+            }
+        }
     } // namespace
 
     Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter,
-                               std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpMemoryBudget> memoryBudget) :
+                               std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpMemoryBudget> memoryBudget,
+                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator) :
         m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_metrics(std::move(metrics)),
-        m_memoryBudget(std::move(memoryBudget))
+        m_memoryBudget(std::move(memoryBudget)), m_requestIdGenerator(std::move(requestIdGenerator))
     {
         if (!opener || !m_writer)
         {
@@ -391,6 +401,9 @@ namespace AsynGyanis::Net
                 {
                     response.suppressStreamingBody();
                 }
+                // 派发前先回显一次：流式响应的头部在处理器第一次写块时就上线了，
+                // 等处理器返回再设已经来不及（普通响应由下面那次补设兜住）
+                noteRequestIdOnResponse(request, response);
 
                 try
                 {
@@ -416,6 +429,9 @@ namespace AsynGyanis::Net
                         static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
                     }
                 }
+
+                // 处理器之后再过一遍：业务可能 reset() 了响应，把派发前设的那条擦掉
+                noteRequestIdOnResponse(request, response);
 
                 if (isTunnelStream)
                 {
@@ -758,6 +774,7 @@ namespace AsynGyanis::Net
         {
             request.addHeader("host", incoming.authority);
         }
+        noteRequestId(request);
 
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId, .request = std::move(request),
                                                .isBodyTooLarge = incoming.isBodyTooLarge,
@@ -821,6 +838,8 @@ namespace AsynGyanis::Net
         {
             streamingRequest->request.addHeader("host", authorityText);
         }
+        // 流式路径同样要落定 request-id：业务与中间件在两条路径上读到的必须是同一份
+        noteRequestId(streamingRequest->request);
         m_incomingRequests.erase(found);
 
         StreamingRequest &created = *streamingRequest;
@@ -1345,6 +1364,16 @@ namespace AsynGyanis::Net
             {
                 handleResponseSubmissionFailure(streamId, "提交响应正文", appended.error().message, toHttp3ErrorCode(appended.error().kind));
             }
+        }
+    }
+
+    void Http3Session::noteRequestId(HttpRequest &request) const
+    {
+        // 与 h1/h2 同一处落定：中间件、业务与日志读到的必须是同一个值。生成器缺席时保持空 id，
+        // 业务侧读 requestId() 就知道这台服务器没开这个功能
+        if (m_requestIdGenerator != nullptr)
+        {
+            request.setRequestId(m_requestIdGenerator->resolve(request));
         }
     }
 

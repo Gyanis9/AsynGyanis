@@ -67,6 +67,9 @@ namespace AsynGyanis::Net
             /// **与 HTTP 侧共用同一个实例**，那台服务器的 /metrics 就一并覆盖 h3（见
             /// HttpServer::metricsCollector()）；单独采集时用 stats() 读本服务端的快照
             std::shared_ptr<HttpMetricsCollector> metricsCollector;
+            /// request-id 生成器（可空：空表示 h3 不为请求落定 id）。**与 HTTP 侧共用同一个实例**：
+            /// 同一来源不管走 h1/h2 还是 h3，日志与 x-request-id 里的前缀都指向同一台服务器
+            std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator;
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);

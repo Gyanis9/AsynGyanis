@@ -184,6 +184,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::shared_ptr<HttpMetricsCollector> metricsCollector() const noexcept;
 
         /**
+         * @brief 取本服务器的 request-id 生成器
+         * @details 与明文侧 `HttpServer::requestIdGenerator()` 同一个用途：传给别的服务路径
+         *          （`QuicServer::Configuration::requestIdGenerator`）后，同一台机器上各条通道
+         *          落定的 id 前缀一致
+         * @return std::shared_ptr<HttpRequestIdGenerator> 生成器，恒非空
+         */
+        [[nodiscard]] std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator() const noexcept;
+
+        /**
          * @brief 用当前证书路径重新加载证书与私钥，新连接立即改用新证书（热轮换）。
          *
          * @details 续期流程：ACM 客户端/certbot 把新证书覆盖到原路径 → 调用本方法。已建立的连接

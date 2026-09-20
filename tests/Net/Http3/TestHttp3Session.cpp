@@ -5,6 +5,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
 
@@ -164,12 +165,20 @@ namespace AsynGyanis::Net
              * @param authority 权威主机（:authority）
              * @param requestStreamId 请求所在的双向流号：一条请求一条流是 HTTP/3 的规矩，
              *        同一对象上再发一条就要换号（客户端发起的双向流是 0、4、8…）
+             * @param extraHeaders 伪头之后追加的普通头（本文件用来带 x-request-id）
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含控制流与请求流）
              */
             std::vector<CapturedStreamData> submitRequest(const std::string &method, const std::string &path, const std::string &authority,
-                                                         const std::int64_t requestStreamId = kFirstRequestStreamId)
+                                                        const std::int64_t requestStreamId = kFirstRequestStreamId,
+                                                        const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
-                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
+                std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
+                for (const auto &[name, value]: extraHeaders)
+                {
+                    headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name.data()),
+                                                     reinterpret_cast<const std::uint8_t *>(value.data()), name.size(), value.size(),
+                                                     NGHTTP3_NV_FLAG_NONE});
+                }
 
                 if (nghttp3_conn_submit_request(m_connection, requestStreamId, headerFields.data(), headerFields.size(), nullptr, nullptr) != 0)
                 {
@@ -919,14 +928,16 @@ namespace AsynGyanis::Net
     }
 
     /// 造一个只挂了 writer 的会话：出口把字节按流收进 sentStreamData，开流口按本端单向流递增
-    Http3Session makeSession(FakeStreamOpener &opener, std::vector<CapturedStreamData> &sentStreamData)
+    Http3Session makeSession(FakeStreamOpener &opener, std::vector<CapturedStreamData> &sentStreamData,
+                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr)
     {
         return Http3Session(std::ref(opener),
                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                             {
                                 sentStreamData.push_back(
                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                            });
+                            },
+                            {}, nullptr, nullptr, std::move(requestIdGenerator));
     }
 
     /**
@@ -1960,5 +1971,103 @@ namespace AsynGyanis::Net
 
         ASSERT_EQ(peer.response().status, 200) << "扩展 CONNECT 应当以 200 应答";
         EXPECT_EQ(peer.response().headers.count("sec-websocket-extensions"), 0U) << "没协商扩展却回一行，对端会以为要按压缩帧收";
+    }
+
+    /**
+     * @brief 有生成器时业务与响应头读到的是同一个 request-id，且流式响应的头部也带得上
+     * @details 流式响应的头部在处理器第一次写块时就上线了，等处理器返回再设已经来不及——
+     *          因此回显必须发生在派发之前，这条用例钉的正是这个时机
+     */
+    TEST(Http3Session, EchoesRequestIdOnStreamingResponseHead)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
+
+        std::string observedRequestId;
+        Router router;
+        router.get("/stream",
+                   [&observedRequestId](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                   {
+                       observedRequestId = std::string(request.requestId());
+                       response.startChunkedResponse(200);
+                       static_cast<void>(co_await response.writeChunk("data: one\n\n"));
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/stream");
+
+        EXPECT_FALSE(observedRequestId.empty()) << "生成器在场时业务必须读到落定好的 request-id";
+        const auto requestIdHeader = response.headers.find("x-request-id");
+        ASSERT_NE(requestIdHeader, response.headers.end()) << "响应头里没有 x-request-id";
+        EXPECT_EQ(requestIdHeader->second, observedRequestId) << "响应回显的必须正是业务读到的那一份，不能各生成一个";
+    }
+
+    /**
+     * @brief 客户端带来的链路 id 原样沿用（与 h1/h2 同口径），换掉就断了关联
+     */
+    TEST(Http3Session, AdoptsClientSuppliedRequestId)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
+
+        Router router;
+        router.get("/whoami",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("ok");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::vector<CapturedStreamData> requestChunks =
+                peer.submitRequest("GET", "/whoami", "example.com", kFirstRequestStreamId, {{"x-request-id", "trace-me"}});
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        const auto requestIdHeader = peer.response().headers.find("x-request-id");
+        ASSERT_NE(requestIdHeader, peer.response().headers.end());
+        EXPECT_EQ(requestIdHeader->second, "trace-me") << "客户端给的合法 id 被换掉了，上游的链路关联就此断掉";
+    }
+
+    /**
+     * @brief 拒绝面：没接生成器时不该凭空造一个 x-request-id
+     */
+    TEST(Http3Session, OmitsRequestIdWhenNoGeneratorIsShared)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/plain",
+                   [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                   {
+                       EXPECT_TRUE(request.requestId().empty()) << "用例前提：没生成器时 id 保持空";
+                       response.setStatus(200);
+                       response.setBody("ok");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/plain");
+        EXPECT_EQ(response.headers.count("x-request-id"), 0U) << "空 id 也要回显，等于给对端一个空头";
     }
 } // namespace AsynGyanis::Net
