@@ -180,13 +180,29 @@ namespace AsynGyanis::Net
         m_isStopped.store(true, std::memory_order_release);
     }
 
-    void QuicServer::closeAllOpenConnections()
+    Core::Task<> QuicServer::closeAllOpenConnections()
     {
-        // 逐条请求收口后再统一摘除：requestClose() 只置标记，真正的路由表清理靠
-        // reapClosedConnections()（它会跳过还有协程持有的连接）
-        for (auto &connectionEntry: m_connections)
+        // 逐条带原因收口再统一摘除：closeNow() 会把 CONNECTION_CLOSE 刷出去（对端因此立刻知道
+        // 连接没了，而不是等自己的空闲超时），真正的路由表清理靠 reapClosedConnections()
+        // （它会跳过还有协程持有的连接）
+        // 先取一份标识快照：每次 co_await 都可能挂起，而挂起期间收报文路径会摘掉已收口的连接
+        std::vector<std::string> connectionKeys;
+        connectionKeys.reserve(m_connections.size());
+        for (const auto &connectionEntry: m_connections)
         {
-            connectionEntry.second->requestClose();
+            connectionKeys.push_back(connectionEntry.first);
+        }
+
+        for (const std::string &connectionKey: connectionKeys)
+        {
+            const auto connectionEntry = m_connections.find(connectionKey);
+            if (connectionEntry == m_connections.end() || connectionEntry->second->isClosed())
+            {
+                continue; // 已经收口摘掉了
+            }
+            // 挂起期间它可能正被别的路径摘除：守卫让那次摘除推迟到本次收口结束
+            const QuicConnection::ActivityGuard activityGuard(*connectionEntry->second);
+            co_await connectionEntry->second->closeNow(0, "服务端正在收口");
         }
         reapClosedConnections();
     }
@@ -271,7 +287,7 @@ namespace AsynGyanis::Net
 
         // 三条出口（排空完成 / 到期 / 出错）的后置条件一样：本服务器不再留任何连接给调用方收尾
         stop();
-        closeAllOpenConnections();
+        co_await closeAllOpenConnections();
     }
 
     void QuicServer::setStreamDataHandler(QuicConnection::StreamDataHandler handler)
@@ -343,7 +359,7 @@ namespace AsynGyanis::Net
                 // 会话建不起来（控制流/QPACK 开不出）或已被判协议错误：这条连接上再也不会有
                 // 请求能完成，留着只会让对端干等到空闲超时。收口后交给清理循环摘除
                 LOG_WARN_FMT("QuicServer: HTTP/3 会话不可用（{}），连接按收口处理", session->isBroken() ? "已判协议错误" : "初始化失败");
-                connection.requestClose();
+                co_await connection.closeNow(0, "HTTP/3 会话不可用");
                 co_return;
             }
             co_await session->pump();
@@ -355,7 +371,7 @@ namespace AsynGyanis::Net
             // 单连接请求条数到量、或调用方主动 drain 过一条连接，都从这里收口
             if (session->isDrainedAndFinished())
             {
-                connection.requestClose();
+                co_await connection.closeNow(0, "已排空且无在途请求");
             }
         }
         co_return;

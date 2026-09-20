@@ -225,6 +225,10 @@ namespace AsynGyanis::Net
                     {
                         // -1 是「这一轮没有可发的」以外的错误；本用例里只记录，不把它当成断言失败
                         m_lastWriteError = static_cast<int>(writtenByteCount);
+                        if (writtenByteCount == NGTCP2_ERR_CLOSING || writtenByteCount == NGTCP2_ERR_DRAINING)
+                        {
+                            m_isPeerClosing = true;
+                        }
                         return;
                     }
                     if (writtenByteCount == 0)
@@ -249,9 +253,14 @@ namespace AsynGyanis::Net
                         break;
                     }
                     ++m_receivedDatagramCount;
-                    if (ngtcp2_conn_read_pkt(m_connection, &m_path, nullptr, receivedPacket.data(),
-                                             static_cast<std::size_t>(receivedByteCount), now) != 0)
+                    const ngtcp2_ssize readResult = ngtcp2_conn_read_pkt(m_connection, &m_path, nullptr, receivedPacket.data(),
+                                                                        static_cast<std::size_t>(receivedByteCount), now);
+                    if (readResult != 0)
                     {
+                        if (readResult == NGTCP2_ERR_CLOSING || readResult == NGTCP2_ERR_DRAINING)
+                        {
+                            m_isPeerClosing = true;
+                        }
                         m_hasReadError = true;
                         break;
                     }
@@ -279,6 +288,12 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool hasReadError() const noexcept
             {
                 return m_hasReadError;
+            }
+
+            /// 对端是否已发来 CONNECTION_CLOSE（ngtcp2 之后一律以 CLOSING/DRAINING 拒绝读写）
+            [[nodiscard]] bool isPeerClosing() const noexcept
+            {
+                return m_isPeerClosing;
             }
 
             /// 到目前为止收到过多少条服务端报文（分「服务端没发」与「发了但客户端处理不了」用）
@@ -465,6 +480,7 @@ namespace AsynGyanis::Net
             std::atomic<int>          m_lastWriteError{0};             ///< 最近一次写失败的错误码
             std::atomic<bool>         m_hasReadError{false};           ///< 读入是否失败过
             std::atomic<std::size_t>  m_receivedDatagramCount{0};   ///< 收到过多少条服务端报文
+            bool                      m_isPeerClosing{false};       ///< 对端是否已发来 CONNECTION_CLOSE
             std::atomic<std::size_t>  m_sentDatagramCount{0};       ///< 发出过多少条报文
             std::size_t               m_writtenStreamByteCount{0};  ///< 已写出的流数据字节数
         };
@@ -955,6 +971,35 @@ TEST(QuicServer, RefusesNewConnectionBeyondPerIpLimit)
     EXPECT_FALSE(pumpUntil(secondClient, [&secondClient] { return secondClient.isHandshakeCompleted(); }))
             << "同一来源的第二条连接应当被限额器挡在门外";
     EXPECT_EQ(server.sampleConnectionCount(), 1U) << "被拒的握手不该留下连接记录";
+}
+
+/**
+ * @brief 收口连接时会给对端一个 CONNECTION_CLOSE，而不是让对端干等
+ * @details 只置标志的收口对端什么都收不到，只能等自己的空闲超时——这对「排空后关闭」与
+ *          「会话不可用即关」两条路径都成立，是关停语义的最后一环
+ */
+TEST(QuicServer, AnnouncesConnectionCloseWhenDraining)
+{
+    ASSERT_TRUE(Platform::Socket::initialize());
+
+    // 协程帧的存放声明在 fixture 之前：drain 里会 co_await 发包，帧必须活过循环停止
+    std::optional<Core::Task<>> drainTask;
+
+    RunningQuicServer server;
+    ASSERT_NE(server.listeningPort(), 0) << "服务端没有绑定成功";
+
+    QuicTestClient client;
+    ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+    ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); })) << "用例前提：先让连接握手完成";
+    ASSERT_FALSE(client.isPeerClosing()) << "刚握手完不该已处于收口态";
+
+    drainTask.emplace(server.server().drain(std::chrono::milliseconds{0}));
+    Core::Task<> *const drainTaskPointer = &drainTask.value();
+    server.runOnLoopAndWait([drainTaskPointer] { drainTaskPointer->handle().resume(); });
+
+    EXPECT_TRUE(pumpUntil(client, [&client] { return client.isPeerClosing(); }))
+            << "服务端收口时对端没收到任何 CONNECTION_CLOSE，只能等自己的空闲超时";
+    EXPECT_EQ(server.sampleConnectionCount(), 0U) << "收口后连接表应当清空";
 }
 
 } // namespace AsynGyanis::Net

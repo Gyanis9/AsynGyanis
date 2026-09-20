@@ -50,6 +50,10 @@
   「已通告且手上没活」的连接由承载层收掉）与按来源 IP 的并发连接上限（`PerIpConnectionLimiter`
   与两条 TCP 通道共用一个实例，名额凭据与连接同寿命）。此前 h3 两条都没有：长连接可被无限期
   复用，同一来源换走 QUIC 就绕过了 `--max-connections-per-ip`。
+- **QUIC 服务端主动收口时会发 CONNECTION_CLOSE**：新增 `QuicConnection::closeNow(错误码, 原因)`——
+  原先只有 `requestClose()`（只置标记、一个字节都不发），对端收不到任何告知，只能等自己的空闲
+  超时才发现连接没了（RFC 9000 §10.2 的 SHOULD）。`drain()` 的兜底收口、单连接排空完成、
+  HTTP/3 会话不可用这三条路径现在都带原因收口。
 
 ### 变更
 

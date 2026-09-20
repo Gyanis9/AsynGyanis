@@ -300,6 +300,22 @@ namespace AsynGyanis::Net
         m_isClosed = true;
     }
 
+    Core::Task<> QuicConnection::closeNow(const std::uint64_t errorCode, const std::string_view reasonPhrase)
+    {
+        if (m_core == nullptr || m_isClosed)
+        {
+            co_return;
+        }
+
+        LOG_INFO_FMT("QuicConnection: 本端主动收口（错误码 {}，原因：{}）", errorCode, reasonPhrase);
+        // 顺序不能反：先把收口报文交给发送口，再认这条连接已收口——反过来的话 flush() 会因为
+        // 标志已置而不再产出任何字节，对端就什么都收不到
+        m_core->requestClose(errorCode, reasonPhrase, currentTime());
+        co_await flush();
+        m_isClosed = true;
+        co_return;
+    }
+
     bool QuicConnection::isClosed() const noexcept
     {
         // 状态机判定的空闲超时是「静默关闭」：不发收口报文也不留待发，此时 isFinished 即为真

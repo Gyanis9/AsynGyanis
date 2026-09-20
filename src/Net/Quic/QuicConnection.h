@@ -205,6 +205,18 @@ namespace AsynGyanis::Net
         void requestClose() noexcept;
 
         /**
+         * @brief 带着原因收口：发一个 CONNECTION_CLOSE 再停手（RFC 9000 §10.2）
+         * @details 与 `requestClose()` 的区别就是那一个报文：只置标志的话对端什么都收不到，
+         *          只能等自己的空闲超时才发现连接已经没了。本方法把收口报文交给状态机排队，
+         *          并当场刷出去（此刻还在所属循环上，能写字节的窗口就只有现在），因此调用之后
+         *          本连接即视为已收口，服务端可以安全摘除。
+         * @param errorCode 写进 CONNECTION_CLOSE 的错误码（应用协议错误取 0x100 以上；正常收口用 0）
+         * @param reasonPhrase 供人读的收口原因（仅进日志与本端记录，线上是原样字节）
+         * @return Core::Task<> 报文已交给发送口（发送失败也已记日志）后完成
+         */
+        [[nodiscard]] Core::Task<> closeNow(std::uint64_t errorCode, std::string_view reasonPhrase);
+
+        /**
          * @brief 在一条流上排队一段待发数据（应用层用）
          * @param streamId 目标流号
          * @param data 数据；本层会拷进待发队列，交出后即可释放

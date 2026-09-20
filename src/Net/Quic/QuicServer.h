@@ -185,10 +185,11 @@ namespace AsynGyanis::Net
         void reapClosedConnections();
 
         /**
-         * @brief 请求收口所有还开着的连接并立刻清理路由表
-         * @note 与 drain() 的三条出口配合：无论等到什么程度，返回后本服务器不再持有连接
+         * @brief 带原因收口所有还开着的连接，并立刻清理路由表
+         * @note 与 drain() 的三条出口配合：无论等到什么程度，返回后本服务器不再持有连接。
+         *       收口报文（CONNECTION_CLOSE）先刷出去再摘连接，否则对端只能等自己的空闲超时
          */
-        void closeAllOpenConnections();
+        [[nodiscard]] Core::Task<> closeAllOpenConnections();
 
         /**
          * @brief 取（必要时创建）某条连接上的 HTTP/3 会话
