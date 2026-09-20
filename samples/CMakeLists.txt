@@ -35,3 +35,6 @@ asyn_add_sample(core_loop core_loop/main.cpp)
 
 # Core TLS：加固上下文、证书装载与热替换、OCSP、私有 CA 与双向 TLS 的回环握手
 asyn_add_sample(core_tls core_tls/main.cpp)
+
+# Core 多进程：WorkerSupervisor 的起停、崩溃补位与「起来就崩」的次数上限
+asyn_add_sample(core_worker core_worker/main.cpp)
