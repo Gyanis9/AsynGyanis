@@ -738,6 +738,9 @@ int main(const int argc, char **argv)
     // 接受分发占两个端口：一个给「只接受与派发」的那台，一个给接手连接的 worker 自己占位
     const std::uint16_t dispatchPort       = static_cast<std::uint16_t>(mainPort + 3);
     const std::uint16_t dispatchWorkerPort = static_cast<std::uint16_t>(mainPort + 4);
+    // 全局并发上限单独一台：受护那台的空闲时限被压到 300 毫秒去验空闲收口，挂住的静默连接
+    // 会被清扫掉，名额随之空出来——探针就可能被正常服务，这条负向用例就成了赌调度
+    const std::uint16_t cappedPort = static_cast<std::uint16_t>(mainPort + 5);
     auto &samples = Samples::checklist();
 
     Core::IoContext context(2);
@@ -771,13 +774,15 @@ int main(const int argc, char **argv)
     Net::HttpServerLimits defaultLimits;
     Net::HttpServerLimits strictLimits;
     strictLimits.maximumRequestsPerConnection = 2;
-    strictLimits.idleTimeout                  = std::chrono::seconds{5};
+    // 空闲时限留默认的 75 秒：单来源上限那条要挂一条静默连接当占位，时限比探针跑完长才不会
+    // 被清扫走、名额才确实占满
     Net::HttpServerLimits guardedLimits;
     guardedLimits.idleTimeout = std::chrono::milliseconds{300};
 
     auto mainServer    = buildServer(mainPort, defaultLimits, true);
     auto strictServer  = buildServer(strictPort, strictLimits, false);
     auto guardedServer = buildServer(guardedPort, guardedLimits, false);
+    auto cappedServer  = buildServer(cappedPort, defaultLimits, false);
 
     // 静态文件目录：只挂在与业务路由同一台服务器上，配置必须在 start() 之前完成
     const std::filesystem::path staticDirectory = prepareStaticDirectory();
@@ -799,8 +804,9 @@ int main(const int argc, char **argv)
 
     // 单来源上限 1：额度被占满时，再来一条连接不该拿到服务
     strictServer->setPerIpConnectionLimiter(std::make_shared<Net::PerIpConnectionLimiter>(1));
-    // 全局并发上限 2：挂住两条之后第三条不该拿到服务
-    guardedServer->setMaxConnections(2);
+    // 全局并发上限 2：挂住两条之后第三条不该拿到服务。这台用默认 75 秒的空闲时限，
+    // 挂住的静默连接才不会被清扫走、名额才确实占满
+    cappedServer->setMaxConnections(2);
     // 令牌桶：容量 3、每秒补 1 个——空闲超时那条先占一枚，随后连发三条在第三条耗尽
     guardedServer->router().addMiddleware(
             Net::tokenBucketRateLimiterMiddleware(std::make_shared<Net::TokenBucket>(1.0, 3.0)));
@@ -810,6 +816,7 @@ int main(const int argc, char **argv)
     tasks.push_back(mainServer->start());
     tasks.push_back(strictServer->start());
     tasks.push_back(guardedServer->start());
+    tasks.push_back(cappedServer->start());
     tasks.push_back(acceptorServer->startAccepting(distributor));
     for (auto &task: tasks)
     {
@@ -817,8 +824,9 @@ int main(const int argc, char **argv)
     }
     pool.start();
 
-    samples.check(awaitListening(mainPort) && awaitListening(strictPort) && awaitListening(guardedPort) && awaitListening(dispatchPort),
-                  "四条监听器都已在收连接（就绪等待有界，不靠睡一觉碰运气）");
+    samples.check(awaitListening(mainPort) && awaitListening(strictPort) && awaitListening(guardedPort) && awaitListening(cappedPort) &&
+                          awaitListening(dispatchPort),
+                  "五条监听器都已在收连接（就绪等待有界，不靠睡一觉碰运气）");
 
     // —— 正向用例：一次请求一条连接，读循环以「对端收口」结束 ——
     g_observations.root        = requestOnce(mainPort, plainRequest("GET", "/"));
@@ -888,8 +896,8 @@ int main(const int argc, char **argv)
         closeHeldConnections(held);
     }
     {
-        std::vector<socket_handle_t> held = openHeldConnections(guardedPort, 2);
-        g_observations.maxConnectionProbe       = requestOnce(guardedPort, plainRequest("GET", "/"));
+        std::vector<socket_handle_t> held = openHeldConnections(cappedPort, 2);
+        g_observations.maxConnectionProbe       = requestOnce(cappedPort, plainRequest("GET", "/"));
         closeHeldConnections(held);
     }
 
