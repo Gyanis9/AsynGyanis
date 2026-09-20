@@ -41,12 +41,12 @@ add_executable(TestNet
         Quic/Recovery/TestQuicCongestionControl.cpp
         Quic/TestQuicReassemblyBuffer.cpp
         Quic/Streams/TestQuicStreamLayer.cpp
-        Http3/TestHttp3Session.cpp
         Http3/TestHttp3Error.cpp
         Http3/TestHttp3Frame.cpp
         Http3/TestHttp3HeaderValidation.cpp
         Http3/TestHttp3Connection.cpp
         Http3/TestQpack.cpp
+        Http3/TestHttp3Session.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp
