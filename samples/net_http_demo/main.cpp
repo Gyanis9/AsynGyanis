@@ -8,10 +8,12 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/FileSender.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
@@ -23,6 +25,7 @@
 #include "Net/Tcp/TcpServer.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
 #include "common/SampleSupport.h"
 
 #include <algorithm>
@@ -32,6 +35,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -424,6 +429,11 @@ namespace
         SessionRead perIpProbe;         ///< 单来源额度被占满后的那一条
         SessionRead maxConnectionProbe; ///< 超过全局并发上限的那一条
         SessionRead afterStop;          ///< stop() 之后再连一条
+        SessionRead staticPage;         ///< GET /page.html（静态文件目录）
+        SessionRead staticMissing;      ///< 静态目录里没有的文件
+        SessionRead staticUppercase;    ///< 大写扩展名的静态文件
+        SessionRead dispatchedFirst;    ///< 接受分发链路第一条请求
+        SessionRead dispatchedSecond;   ///< 接受分发链路第二条请求
         std::size_t statsTotalRequests{0};   ///< 服务器统计：累计请求数
         std::size_t statsBadRequests{0};     ///< 服务器统计：坏请求数
         bool        isHttpClientOkay{false}; ///< 走 Net::HttpClient 的一条真请求
@@ -436,6 +446,33 @@ namespace
 
     /// 框架自带客户端的探针是否跑完
     std::atomic<bool> g_isClientProbeFinished{false};
+
+    /**
+     * @brief 造一个只放两个文件的临时静态目录（一个小写扩展名、一个大写扩展名）
+     * @return std::filesystem::path 目录路径；建不出来时为空
+     */
+    std::filesystem::path prepareStaticDirectory()
+    {
+        const auto directory = std::filesystem::temp_directory_path() /
+                               ("asyn-sample-net_http-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+        std::error_code makeError;
+        std::filesystem::create_directories(directory, makeError);
+        if (makeError)
+        {
+            return {};
+        }
+        for (const char *fileName: {"page.html", "PAGE.HTML"})
+        {
+            std::ofstream stream(directory / fileName, std::ios::binary);
+            stream << "<p>static payload from disk</p>";
+            stream.close();
+            if (!stream)
+            {
+                return {};
+            }
+        }
+        return directory;
+    }
 
 #if ASYN_PLATFORM_WIN32
     using socket_handle_t = SOCKET;
@@ -698,6 +735,9 @@ int main(const int argc, char **argv)
     const std::uint16_t mainPort    = Samples::readPortArgument(argc, argv, 0);
     const std::uint16_t strictPort  = static_cast<std::uint16_t>(mainPort + 1);
     const std::uint16_t guardedPort = static_cast<std::uint16_t>(mainPort + 2);
+    // 接受分发占两个端口：一个给「只接受与派发」的那台，一个给接手连接的 worker 自己占位
+    const std::uint16_t dispatchPort       = static_cast<std::uint16_t>(mainPort + 3);
+    const std::uint16_t dispatchWorkerPort = static_cast<std::uint16_t>(mainPort + 4);
     auto &samples = Samples::checklist();
 
     Core::IoContext context(2);
@@ -739,6 +779,24 @@ int main(const int argc, char **argv)
     auto strictServer  = buildServer(strictPort, strictLimits, false);
     auto guardedServer = buildServer(guardedPort, guardedLimits, false);
 
+    // 静态文件目录：只挂在与业务路由同一台服务器上，配置必须在 start() 之前完成
+    const std::filesystem::path staticDirectory = prepareStaticDirectory();
+    const bool                  hasStaticDirectory = !staticDirectory.empty();
+    if (hasStaticDirectory)
+    {
+        mainServer->staticFileDir(staticDirectory.string());
+    }
+
+    // 接受分发：acceptor 只接受与派发，连接对象与协议工作全落在另一条循环上的 worker 实例
+    auto distributor     = std::make_shared<Core::ConnectionDistributor>();
+    auto dispatchServer  = buildServer(dispatchWorkerPort, defaultLimits, false);
+    auto acceptorServer  = buildServer(dispatchPort, defaultLimits, false);
+    Net::HttpServer *rawDispatchServer = dispatchServer.get();
+    distributor->addWorker(probeLoop, [rawDispatchServer](const int fileDescriptor)
+    {
+        rawDispatchServer->adoptConnection(fileDescriptor);
+    });
+
     // 单来源上限 1：额度被占满时，再来一条连接不该拿到服务
     strictServer->setPerIpConnectionLimiter(std::make_shared<Net::PerIpConnectionLimiter>(1));
     // 全局并发上限 2：挂住两条之后第三条不该拿到服务
@@ -752,14 +810,15 @@ int main(const int argc, char **argv)
     tasks.push_back(mainServer->start());
     tasks.push_back(strictServer->start());
     tasks.push_back(guardedServer->start());
+    tasks.push_back(acceptorServer->startAccepting(distributor));
     for (auto &task: tasks)
     {
         serverLoop.scheduler().schedule(task.handle());
     }
     pool.start();
 
-    samples.check(awaitListening(mainPort) && awaitListening(strictPort) && awaitListening(guardedPort),
-                  "三条监听器都已在收连接（就绪等待有界，不靠睡一觉碰运气）");
+    samples.check(awaitListening(mainPort) && awaitListening(strictPort) && awaitListening(guardedPort) && awaitListening(dispatchPort),
+                  "四条监听器都已在收连接（就绪等待有界，不靠睡一觉碰运气）");
 
     // —— 正向用例：一次请求一条连接，读循环以「对端收口」结束 ——
     g_observations.root        = requestOnce(mainPort, plainRequest("GET", "/"));
@@ -802,6 +861,15 @@ int main(const int argc, char **argv)
     g_observations.metricsFirst  = requestOnce(mainPort, plainRequest("GET", "/metrics"));
     g_observations.health        = requestOnce(mainPort, plainRequest("GET", "/healthz"));
     g_observations.metricsSecond = requestOnce(mainPort, plainRequest("GET", "/metrics"));
+
+    // —— 静态文件：请求路径不在路由表里时，兜底路由才去磁盘上找 ——
+    g_observations.staticPage      = requestOnce(mainPort, plainRequest("GET", "/page.html"));
+    g_observations.staticUppercase = requestOnce(mainPort, plainRequest("GET", "/PAGE.HTML"));
+    g_observations.staticMissing   = requestOnce(mainPort, plainRequest("GET", "/nowhere.html"));
+
+    // —— 接受分发：连接由 acceptor 收下，交给另一条循环上的 worker 实例服务 ——
+    g_observations.dispatchedFirst  = requestOnce(dispatchPort, plainRequest("GET", "/"));
+    g_observations.dispatchedSecond = requestOnce(dispatchPort, plainRequest("GET", "/json"));
 
     // —— 限额服务器：一条连接上按序管线化三条，第三条起连接该被收口（单连接请求数上限 2）——
     g_observations.pipelined = requestChain(strictPort,
@@ -942,6 +1010,24 @@ int main(const int argc, char **argv)
     samples.check(observations.perIpProbe.bytes.empty(), "单来源并发上限生效：额度被占满时新连接拿不到服务");
     samples.check(observations.maxConnectionProbe.bytes.empty(), "全局并发上限生效：超出上限的连接拿不到服务");
     samples.check(observations.afterStop.bytes.empty(), "stop() 之后新建连接不再被服务（优雅收口第一步）");
+
+    samples.check(hasStaticDirectory, "临时静态目录建起来了（后面三条的前提）");
+    const auto staticResponses = splitResponses(observations.staticPage.bytes);
+    samples.check(!staticResponses.empty() && staticResponses.front().status == 200 &&
+                          staticResponses.front().body == "<p>static payload from disk</p>" &&
+                          headerOf(staticResponses.front(), "Content-Type") == "text/html",
+                  "静态文件按磁盘内容返回，并给出 text/html");
+    samples.check(firstStatusOf(observations.staticUppercase) == 200 && observations.staticUppercase.bytes.find("text/html") != std::string::npos,
+                  "大写扩展名也落到 text/html（MIME 查表不区分大小写）");
+    samples.check(firstStatusOf(observations.staticMissing) == 404, "静态目录里没有的文件回 404");
+    samples.check(std::string_view{Net::FileSender::contentTypeForFile("archive.unknownext")} == "application/octet-stream" &&
+                          std::string_view{Net::FileSender::contentTypeForFile("page.HTML")} == "text/html",
+                  "FileSender 的 MIME 查表：未知扩展名按二进制流，大小写同表");
+    samples.check(firstStatusOf(observations.dispatchedFirst) == 200 && firstStatusOf(observations.dispatchedSecond) == 200,
+                  "接受分发链路：acceptor 收下的连接交给另一条循环上的 worker，两条请求都答完");
+
+    std::error_code removeError;
+    std::filesystem::remove_all(staticDirectory, removeError);
 
     context.stop();
     return Samples::finishSample("net_http_demo");
