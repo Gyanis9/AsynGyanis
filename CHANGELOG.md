@@ -17,6 +17,14 @@
 
 ### 新增
 
+- **示例按模块拆开，并配总跑脚本**：`samples/` 新增 `base_log`、`base_config`、`platform`、`core_loop`、
+  `core_tls`、`core_worker`、`net_http_demo`、`net_https_h2_demo`、`database_demo` 九个各自自检的可执行程序
+  （`echo_server` 保持部署形态）。每个程序逐步打印 `✓`/`✗`，并在 stdout 留一行 `RESULT <名字> PASS|FAIL <步数>`，
+  退出码即结论；`scripts/run_samples.py` 从构建目录扫出示例清单、跑完并汇总成「模块 × 示例」矩阵，
+  任一失败、超时或没有结论行都以非零退出。拆的过程同时是对公开面的清点，实测到这些事实：框架没有
+  HTTP/2 与 QUIC 客户端（TLS/h2 示例因此自带一个回环客户端才能驱动服务端），h1 不发 `100 Continue`
+  interim 响应，请求目标过长按 431 收口而不是 414，HTTP/2 的并发流与头块上限只通告不可配，
+  异步数据库链路「在哪条线程上恢复」没有契约（实测不在事件循环线程上）。
 - **报错可携带调用栈**：框架异常（`Base::Exception` 及其用法错误分支的 `LogicException` /
   `InvalidArgumentException`）在构造时捕获抛出点调用栈（只存原始帧，约 0.55 µs），符号解析推迟到
   日志落地时进行——事件循环线程不会因为「日志带栈」而去读调试信息（配合异步 Sink 时解析落在

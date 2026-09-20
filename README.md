@@ -140,6 +140,31 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 
 内建端点：`GET /`、`GET /json`、`GET /bench`。
 
+### 按模块的自检示例
+
+`echo_server` 是部署形态；能力按模块拆成了 9 个各自自检的程序，每个程序逐步打印 `✓`/`✗`，
+并在 stdout 上留一行 `RESULT <名字> PASS|FAIL <步数>` 供脚本判定（退出码 0 表示全绿）：
+
+| 程序 | 覆盖 | 自检步数 |
+| --- | --- | --- |
+| `base_log` | Sink（控制台/文件/滚动/异步）、格式化器、注册表、配置驱动装配、异常带栈 | 20 |
+| `base_config` | 多文件加载与优先级、目录递归、点分路径取值、模式校验、热重载 | 21 |
+| `platform` | 描述符与套接字工具、通知器、定时器、内存映射、数据报、进程起停、编码与时间 | 37 |
+| `core_loop` | 事件循环与调度器、定时器、IO 监听器、解析器、UDP/TCP 协程收发、协程池、取消令牌 | 13 |
+| `core_tls` | 证书装载与热替换、OCSP、私有 CA、回环握手与会话恢复 | 10 |
+| `core_worker` | WorkerSupervisor 的构造期拒因；POSIX 上另验补位、崩溃上限与收手 | 4（Windows） |
+| `net_http_demo` | HTTP/1.1 路由与中间件、解析上限、分块与 SSE、WebSocket、四类限额、指标与健康端点、优雅收口 | 36 |
+| `net_https_h2_demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
+| `database_demo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 72 |
+
+一把跑完并汇总成矩阵（示例清单从构建目录里扫出来，新增程序不必改脚本）：
+
+```bash
+python scripts/run_samples.py                        # 全部跑一遍
+python scripts/run_samples.py --only net_http_demo --repeat 3   # 重复跑，抓靠时序侥幸的用例
+python scripts/run_samples.py --build build/release --timeout 300
+```
+
 ## 代码示例
 
 以下示例均取自 `samples/main.cpp` 与 `tests/`，是当前代码里真实可编译的用法。
@@ -351,10 +376,10 @@ AsynGyanis/
 ├── conanfile.py            # 依赖清单由 conandata.yml 驱动
 ├── conandata.yml           # 第三方依赖与版本
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
-├── samples/                # echo_server（随构建编译，示例即被验证）
+├── samples/                # 按模块拆开的自检示例 + echo_server（部署形态），总跑见 scripts/run_samples.py
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
-├── scripts/                # 发布版本一致性门禁、HTTP/3 真机验收脚本
+├── scripts/                # 发布版本一致性门禁、示例总跑、HTTP/3 真机验收脚本
 ├── third_party/ngtcp2/     # vendored 的第三方 QUIC，只剩测试里的跨实现对拍裁判
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
