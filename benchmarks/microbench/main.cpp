@@ -1,5 +1,5 @@
 // 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
-// 头部单值查询与列表 token 判定、响应头序列化。
+// 头部单值查询与列表 token 判定、响应头序列化、h2/h3 组头块的两种走法。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -16,11 +16,13 @@
 //     换数据形态会改变结果，比较不同机器的数字前先确认两边用的是同一份输入。
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
+#include "Net/Http3/Qpack.h"
 
 #include <algorithm>
 #include <chrono>
@@ -303,6 +305,103 @@ int main(int argumentCount, char **argumentValues)
                     fields.push_back(Net::HpackHeaderFieldView{.name = field.name, .value = field.value});
                 }
                 return fields.size();
+            },
+            results, checksum, failureCount);
+
+    // h3 采集器两种走法的消融对照：旧写法先建单值视图（一张每次被写脏都要重建的哈希表）再按名回查
+    // 每头的全部值（每头一个临时 vector），新写法按权威记录的设置顺序一次走完。
+    // 两例每轮开头都做同一次 setHeader 把视图标脏——真实响应正是「业务刚写完」的样子，
+    // 这份共同开销不参与差异；两条默认补齐行也不进本例，两侧一致且已由别的用例量过
+    const auto makeH3ResponseFixture = []
+    {
+        Net::HttpResponse fixture;
+        fixture.setStatus(200);
+        fixture.setHeader("content-type", "text/plain; charset=utf-8");
+        fixture.setHeader("set-cookie", "session=8f14e45fceea167a5a36dedd4bea2543; Path=/");
+        fixture.setHeader("x-trace", "0001-0000000000000abc");
+        fixture.setHeader("set-cookie", "theme=dark; Path=/");
+        fixture.setHeader("connection", "keep-alive");
+        fixture.setBody(std::string(64, 'x'));
+        return fixture;
+    };
+
+    /// 把一张字段行表压成与顺序无关的内容指纹：两条走法给出的次序本就不同，
+    /// 但字节总量与条数必须一致，否则比的就是「少拿了几个头」而不是拷贝开销
+    const auto fieldLineFingerprint = [](const std::vector<Net::QpackHeaderField> &fields)
+    {
+        std::size_t fingerprint = 0;
+        for (const Net::QpackHeaderField &field: fields)
+        {
+            fingerprint += field.name.size() + field.value.size() + 1U;
+        }
+        return fingerprint;
+    };
+
+    {
+        // 先自检两种走法的产出等价，再开始计时（不等价说明用例本身写错了，数字没有意义）
+        Net::HttpResponse selfCheckResponse = makeH3ResponseFixture();
+        std::vector<Net::QpackHeaderField> legacyFields;
+        legacyFields.reserve(selfCheckResponse.headers().size() + 3U);
+        for (const auto &headerEntry: selfCheckResponse.headers())
+        {
+            for (const std::string &headerValue: selfCheckResponse.headerValues(headerEntry.first))
+            {
+                legacyFields.push_back(Net::QpackHeaderField{.name = headerEntry.first, .value = headerValue});
+            }
+        }
+        std::vector<Net::QpackHeaderField> orderedFields;
+        selfCheckResponse.forEachHeaderField(
+                [&orderedFields](const std::string_view headerName, const std::string_view headerValue)
+                { orderedFields.push_back(Net::QpackHeaderField{std::string(headerName), std::string(headerValue)}); });
+        if (fieldLineFingerprint(legacyFields) != fieldLineFingerprint(orderedFields))
+        {
+            std::printf("  警告：h3 采集器两例的产出不等价，其结果不可信\n");
+        }
+    }
+
+    Net::HttpResponse h3LegacyResponse = makeH3ResponseFixture();
+    measureCase(
+            "h3-head-collect-view-then-lookup",
+            [&h3LegacyResponse, &fieldLineFingerprint]
+            {
+                static_cast<void>(h3LegacyResponse.setHeader("x-trace", "0001-0000000000000abc"));
+                std::vector<Net::QpackHeaderField> fields;
+                fields.reserve(h3LegacyResponse.headers().size() + 3U);
+                fields.push_back(Net::QpackHeaderField{.name = ":status", .value = std::string("200")});
+                for (const auto &headerEntry: h3LegacyResponse.headers())
+                {
+                    if (Net::isConnectionSpecificHeaderName(headerEntry.first))
+                    {
+                        continue;
+                    }
+                    for (const std::string &headerValue: h3LegacyResponse.headerValues(headerEntry.first))
+                    {
+                        fields.push_back(Net::QpackHeaderField{.name = headerEntry.first, .value = headerValue});
+                    }
+                }
+                return fieldLineFingerprint(fields);
+            },
+            results, checksum, failureCount);
+
+    Net::HttpResponse h3OrderedResponse = makeH3ResponseFixture();
+    measureCase(
+            "h3-head-collect-ordered-walk",
+            [&h3OrderedResponse, &fieldLineFingerprint]
+            {
+                static_cast<void>(h3OrderedResponse.setHeader("x-trace", "0001-0000000000000abc"));
+                std::vector<Net::QpackHeaderField> fields;
+                fields.reserve(8U);
+                fields.push_back(Net::QpackHeaderField{.name = ":status", .value = std::string("200")});
+                h3OrderedResponse.forEachHeaderField(
+                        [&fields](const std::string_view headerName, const std::string_view headerValue)
+                        {
+                            if (Net::isConnectionSpecificHeaderName(headerName))
+                            {
+                                return;
+                            }
+                            fields.push_back(Net::QpackHeaderField{std::string(headerName), std::string(headerValue)});
+                        });
+                return fieldLineFingerprint(fields);
             },
             results, checksum, failureCount);
 

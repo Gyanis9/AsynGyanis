@@ -53,69 +53,71 @@ namespace AsynGyanis::Net
                                                                              const bool isStreamingResponse)
         {
             std::vector<QpackHeaderField> fieldLines;
-            // 常见情形是一条头名展开一行，再加后面最多补的三行；可重复头（Set-Cookie）会多几条，
-            // 那时多一次扩容比反复搬移便宜
-            fieldLines.reserve(response.headers().size() + 3U);
+            // 常见情形是「响应自己的头 + 后面补齐的三条」；给一个够用的起点，宁可留一点余量，
+            // 也不为了算准数量先去把单值视图建出来（那是每次查询都要重建的哈希表）
+            fieldLines.reserve(8U);
 
-            const int         wireStatusCode = normalizeWireStatusCode(response.status(), streamId);
-            const bool        isBodylessStatus = HttpResponse::isBodylessStatusCode(wireStatusCode);
+            const int              wireStatusCode = normalizeWireStatusCode(response.status(), streamId);
+            const bool             isBodylessStatus = HttpResponse::isBodylessStatusCode(wireStatusCode);
             const std::string_view responseBody = response.body();
-            bool              hasContentTypeHeader = false;
-            bool              hasContentLengthHeader = false;
-            bool              hasDateHeader = false;
+            bool                   hasContentTypeHeader = false;
+            bool                   hasContentLengthHeader = false;
+            bool                   hasDateHeader = false;
 
-            fieldLines.push_back(QpackHeaderField{.name = kStatusHeaderName, .value = std::to_string(wireStatusCode)});
+            fieldLines.push_back(QpackHeaderField{.name = std::string(kStatusHeaderName), .value = std::to_string(wireStatusCode)});
 
-            // 视图只给「名字 → 一个值」，逐条取值必须再走 headerValues()，
-            // 否则多条 Set-Cookie 只剩一条（HttpResponse.h 的类说明写明了这点）
-            for (const auto &headerEntry: response.headers())
-            {
-                const std::string &headerName = headerEntry.first;
-                if (isConnectionSpecificHeaderName(headerName))
+            // 按权威记录的设置顺序逐条取，与 h1 的 appendHead、h2 的采集器走同一条路径：
+            // 先建单值视图再按名回查，既多付一张哈希表和每头一个临时 vector，
+            // 也让同名多条被按名归组、次序取决于哈希表
+            response.forEachHeaderField(
+                [&](const std::string_view headerName, const std::string_view headerValue)
                 {
-                    // h3 禁止连接特定字段（RFC 9114 §4.2）：HttpResponse 按 h1 口径可能带上它们，
-                    // 带上会被对端判成报文格式错误，整条响应作废
-                    LOG_DEBUG_FMT("Http3Session: 流 {} 的响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerName);
-                    continue;
-                }
-                if (isStreamingResponse && headerName == kContentLengthHeaderName)
-                {
-                    // 流式响应的长度由 DATA 帧的总长给出：这个数字与随后陆续发出的正文对不上，
-                    // 留着反而让对端按它定界、把后面的段当多余字节
-                    LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应正文长度由 DATA 给出，已丢弃 content-length 响应头", streamId);
-                    continue;
-                }
-                if (headerName == kContentTypeHeaderName)
-                {
-                    hasContentTypeHeader = true;
-                }
-                else if (headerName == kContentLengthHeaderName)
-                {
-                    hasContentLengthHeader = true;
-                }
-                else if (headerName == kDateHeaderName)
-                {
-                    hasDateHeader = true;
-                }
+                    if (isConnectionSpecificHeaderName(headerName))
+                    {
+                        // h3 禁止连接特定字段（RFC 9114 §4.2）：HttpResponse 按 h1 口径可能带上它们，
+                        // 带上会被对端判成报文格式错误，整条响应作废
+                        LOG_DEBUG_FMT("Http3Session: 流 {} 的响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerName);
+                        return;
+                    }
+                    if (isStreamingResponse && headerName == kContentLengthHeaderName)
+                    {
+                        // 流式响应的长度由 DATA 帧的总长给出：这个数字与随后陆续发出的正文对不上，
+                        // 留着反而让对端按它定界、把后面的段当多余字节
+                        LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应正文长度由 DATA 给出，已丢弃 content-length 响应头", streamId);
+                        return;
+                    }
+                    if (headerName == kContentTypeHeaderName)
+                    {
+                        hasContentTypeHeader = true;
+                    }
+                    else if (headerName == kContentLengthHeaderName)
+                    {
+                        hasContentLengthHeader = true;
+                    }
+                    else if (headerName == kDateHeaderName)
+                    {
+                        hasDateHeader = true;
+                    }
 
-                for (const std::string &headerValue: response.headerValues(headerName))
-                {
-                    fieldLines.push_back(QpackHeaderField{.name = headerName, .value = headerValue});
-                }
-            }
+                    fieldLines.push_back(QpackHeaderField{std::string(headerName), std::string(headerValue)});
+                });
 
             if (!hasContentTypeHeader && !responseBody.empty())
             {
-                fieldLines.push_back(QpackHeaderField{.name = kContentTypeHeaderName, .value = kDefaultContentTypeValue});
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kContentTypeHeaderName),
+                                                      .value = std::string(kDefaultContentTypeValue)});
             }
             // 没有长度对端就只能靠 END_STREAM 定界；1xx/204/304 补出去是让它白等一段正文
             if (!hasContentLengthHeader && !isStreamingResponse && !isBodylessStatus)
             {
-                fieldLines.push_back(QpackHeaderField{.name = kContentLengthHeaderName, .value = std::to_string(responseBody.size())});
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kContentLengthHeaderName),
+                                                      .value = std::to_string(responseBody.size())});
             }
             if (!hasDateHeader)
             {
-                fieldLines.push_back(QpackHeaderField{.name = kDateHeaderName, .value = std::string(currentHttpDateText())});
+                // 日期视图指向线程内的缓存，下一轮就可能被覆盖：这里必须落一份自己的拷贝
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kDateHeaderName),
+                                                      .value = std::string(currentHttpDateText())});
             }
             return fieldLines;
         }

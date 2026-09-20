@@ -956,9 +956,10 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 多条 Set-Cookie 要逐条上线，顺序与设置顺序一致
-     * @details HttpResponse 的头视图是「一名一值」，可重复头只在 headerValues() 里逐条给出；
-     *          采集时若直接用视图，业务设的第二条 Cookie 会静默消失（h1/h2 都会发全）
+     * @brief 可重复头逐条上线，且整段字段行的次序就是业务的设置顺序
+     * @details 单值视图是「一名一值」，可重复头只在 headerValues() 里逐条给出：采集时直接用视图，
+     *          业务设的第二条 Cookie 会静默消失（h1/h2 都会发全）。按名回查虽然能把值取全，
+     *          次序却由那张视图的哈希顺序决定，同名多条会被归到一起——与 h1 的 appendHead 不一致。
      */
     TEST(Http3Session, SendsEveryValueOfRepeatableResponseHeaders)
     {
@@ -971,7 +972,9 @@ namespace AsynGyanis::Net
                    [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                    {
                        response.setStatus(200);
+                       // 交错设置：中间夹一条别的头，才能把「同名归组」与「按设置顺序发出」区分开
                        response.setHeader("set-cookie", "first=1");
+                       response.setHeader("x-trace", "abc");
                        response.setHeader("set-cookie", "second=2");
                        response.setBody("ok");
                        co_return;
@@ -983,21 +986,24 @@ namespace AsynGyanis::Net
 
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/cookies");
         EXPECT_EQ(response.countOf("set-cookie"), 2U) << "可重复响应头只剩一条，第二条被单值视图吃掉了";
-        const std::vector<std::string> cookieValues = [&response]
+        const std::vector<std::pair<std::string, std::string>> trackedFields = [&response]
         {
-            std::vector<std::string> values;
+            std::vector<std::pair<std::string, std::string>> values;
             for (const auto &[name, value]: response.headerFields)
             {
-                if (name == "set-cookie")
+                if (name == "set-cookie" || name == "x-trace")
                 {
-                    values.push_back(value);
+                    values.emplace_back(name, value);
                 }
             }
             return values;
         }();
-        ASSERT_EQ(cookieValues.size(), 2U);
-        EXPECT_EQ(cookieValues[0], "first=1") << "多条同名头的先后顺序要跟着业务的设置顺序";
-        EXPECT_EQ(cookieValues[1], "second=2");
+        // 逐条比对而不是只数条数：三条的相对次序正是「按设置顺序上线」这条契约
+        EXPECT_EQ(trackedFields,
+                  (std::vector<std::pair<std::string, std::string>>{{"set-cookie", "first=1"},
+                                                                    {"x-trace", "abc"},
+                                                                    {"set-cookie", "second=2"}}))
+                << "多条同名头的先后顺序要跟着业务的设置顺序，中间夹的头不能被归到后面";
     }
 
     /**
