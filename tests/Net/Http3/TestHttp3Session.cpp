@@ -255,13 +255,22 @@ namespace AsynGyanis::Net
              * @brief 提交一条「不带任何请求正文」的扩展 CONNECT：递交即 END_STREAM
              * @param path 路径（:path）
              * @param authority 权威主机（:authority）
+             * @param extraHeaders 伪头之后追加的普通头（本用例用来带 sec-websocket-extensions）
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节
              * @note 与 submitWebSocketTunnel 的区别只有一处：不挂数据读取回调，因此请求在这批字节
              *       之后就收尾——「头与 END_STREAM 同一趟到达」正是这条路径
              */
-            std::vector<CapturedStreamData> submitEndedWebSocketTunnel(const std::string &path, const std::string &authority)
+            std::vector<CapturedStreamData> submitEndedWebSocketTunnel(const std::string &path, const std::string &authority,
+                                                                       const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
-                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
+                std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
+                for (const auto &[name, value]: extraHeaders)
+                {
+                    // nghttp3_nv 只存指针：参数由调用方持有，寿命覆盖到本次提交
+                    headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name.data()),
+                                                     reinterpret_cast<const std::uint8_t *>(value.data()), name.size(), value.size(),
+                                                     NGHTTP3_NV_FLAG_NONE});
+                }
                 if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), nullptr,
                                                 nullptr) != 0)
                 {
@@ -1873,5 +1882,83 @@ namespace AsynGyanis::Net
                 << "第二条帧没有回显：首条交付完之后的出向帧没发出去";
         EXPECT_EQ(bothEchoes.substr(2U + payload.size() + 2U, secondPayload.size()), secondPayload)
                 << "第二帧的回显负载与发出去的不一致";
+    }
+
+    /**
+     * @brief 隧道建立时把 permessage-deflate 的协商结论回给对端（README 声称三条通道共用这套协商）
+     * @details 只看应答头里那一行：压缩本身由 WebSocketPeer 负责，它的压缩收发已有
+     *          TestWebSocketSession 的用例钉住，这里重复一遍不会多出信息
+     */
+    TEST(Http3Session, EchoesNegotiatedPerMessageDeflateOnTheTunnel)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket([](WebSocketPeer &) -> Core::Task<> { co_return; });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::vector<CapturedStreamData> requestChunks =
+                peer.submitEndedWebSocketTunnel("/chat", "example.com", {{"sec-websocket-extensions", "permessage-deflate; client_max_window_bits"}});
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        ASSERT_EQ(peer.response().status, 200) << "扩展 CONNECT 应当以 200 应答";
+        const auto extensionsHeader = peer.response().headers.find("sec-websocket-extensions");
+        ASSERT_NE(extensionsHeader, peer.response().headers.end()) << "对端提了 permessage-deflate，应答里却没回协商结论";
+        EXPECT_TRUE(extensionsHeader->second.starts_with("permessage-deflate")) << extensionsHeader->second;
+    }
+
+    /**
+     * @brief 拒绝面：对端没提扩展时，应答头里不该凭空出现 sec-websocket-extensions
+     */
+    TEST(Http3Session, OmitsExtensionHeaderWhenPeerOffersNothing)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket([](WebSocketPeer &) -> Core::Task<> { co_return; });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        for (const CapturedStreamData &chunk: peer.submitEndedWebSocketTunnel("/chat", "example.com"))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        ASSERT_EQ(peer.response().status, 200) << "扩展 CONNECT 应当以 200 应答";
+        EXPECT_EQ(peer.response().headers.count("sec-websocket-extensions"), 0U) << "没协商扩展却回一行，对端会以为要按压缩帧收";
     }
 } // namespace AsynGyanis::Net

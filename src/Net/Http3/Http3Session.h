@@ -483,10 +483,12 @@ namespace AsynGyanis::Net
         /**
          * @brief 建立 WebSocket 隧道：应答 200（不结束流）并把业务处理器跑起来
          * @param streamId 流号
+         * @param requestedExtensions 请求里的 Sec-WebSocket-Extensions 原文（空串表示对端没提扩展）；
+         *        按值取是必须的——本协程会在处理器上挂起，届时请求记录可能已被回收
          * @param response 业务填好的响应（其中的升级登记给出处理器）
          * @return Core::Task<> 建立完成
          */
-        [[nodiscard]] Core::Task<> serveWebSocketTunnel(std::int64_t streamId, HttpResponse &response);
+        [[nodiscard]] Core::Task<> serveWebSocketTunnel(std::int64_t streamId, std::string requestedExtensions, HttpResponse &response);
 
         /**
          * @brief 隧道里的业务协程：跑处理器，返回后收尾

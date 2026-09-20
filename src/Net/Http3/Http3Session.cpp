@@ -5,6 +5,7 @@
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Router.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Qpack.h"
 
@@ -395,7 +396,10 @@ namespace AsynGyanis::Net
                 if (isTunnelStream)
                 {
                     m_pendingTunnelStreams.erase(streamId);
-                    co_await serveWebSocketTunnel(streamId, response);
+                    // 扩展协商要看请求里的原文：这里按值取出去，协程随后会在处理器上挂起
+                    co_await serveWebSocketTunnel(streamId,
+                                                  request.getHeader(std::string(kWebSocketExtensionsHeaderName)).value_or(std::string{}),
+                                                  response);
                     continue;
                 }
             } else
@@ -998,7 +1002,7 @@ namespace AsynGyanis::Net
         reapFinishedTunnels();
     }
 
-    Core::Task<> Http3Session::serveWebSocketTunnel(const std::int64_t streamId, HttpResponse &response)
+    Core::Task<> Http3Session::serveWebSocketTunnel(const std::int64_t streamId, std::string requestedExtensions, HttpResponse &response)
     {
         if (!response.isWebSocketUpgradeRequested())
         {
@@ -1012,18 +1016,34 @@ namespace AsynGyanis::Net
         // h3 里没有 101：RFC 9220 规定隧道以 2xx 应答，此后这条流上跑的就是 WebSocket 帧本身
         response.setStatus(200);
 
+        // 扩展协商（RFC 7692 §7.1）用与 h1/h2 同一份实现：接受时把选定参数写进应答头，
+        // 本端随后按同一结论收发压缩帧——回给对端的那一行与本端开关必须同源
+        const PerMessageDeflateNegotiation deflateNegotiation = negotiatePerMessageDeflate(requestedExtensions);
+        if (!deflateNegotiation.responseValue.empty())
+        {
+            static_cast<void>(response.setHeader(std::string(kWebSocketExtensionsHeaderName), deflateNegotiation.responseValue));
+        }
+
         // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧之后一段一段推给连接层
         const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
         if (!submitStreamingResponseHead(streamId, *state, response))
         {
             co_return;
         }
+        // 升级计数以应答头排入待发字节为准（与 h1 以 101 写出、h2 以刷新成功为准同一口径）
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countWebSocketUpgrade();
+        }
 
         auto tunnel     = std::make_unique<WebSocketTunnel>();
         tunnel->handler = response.webSocketHandler();
         tunnel->peer    = std::make_unique<WebSocketPeer>(
                 [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
-                { co_return co_await sendTunnelBytes(streamId, frameBytes); });
+                { co_return co_await sendTunnelBytes(streamId, frameBytes); },
+                m_metrics.get());
+        // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
+        tunnel->peer->setPerMessageDeflateEnabled(deflateNegotiation.accepted);
 
         WebSocketTunnel &created = *tunnel;
         m_webSocketTunnels.emplace(streamId, std::move(tunnel));
