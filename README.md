@@ -5,7 +5,7 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-2350-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-2419-brightgreen)]()
 
 ## 特性
 
@@ -185,7 +185,9 @@ pip install gcovr && gcovr --root . --filter 'src/' --print-summary
 Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个文件——`MySqlResult.cpp`
 （那个镜像里没有 MySQL 客户端库，驱动整块没进编译）与一个异常类的头；Database 偏低是两处门控
 （MySQL/Redis 真机）与 ORM 模板未实例化的组合。也就是说：**能被从库外驱动到的公开面，示例现在都能触达**。
-（同一份代码在本机 Windows 侧 `ctest` 为 2380/2380 全绿。）
+（同一份代码在本机 Windows 侧 `ctest` 为 Debug（含 ASan）2419/2419、Release 2414/2414 全绿；
+两侧差 5 条是因为日志格式化的布局用例按 `NDEBUG` 分支编译——Debug 编进 8 条 `DebugBuild*`、
+Release 编进 3 条 `ReleaseBuild*`，跨配置比数量前先看清是哪一种构建类型。）
 
 ## 代码示例
 
@@ -436,7 +438,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**2378 个用例**（MSVC/Windows 全绿口径；Linux/GCC 侧 2387 个，两侧差额全是平台专属用例：Linux 的 epoll 与 `sendfile` 零拷贝、进程终止，Windows 的 IOCP 批量等待与多进程禁用判定）。其中 36 个是真机门控用例，无凭据即 SKIP
+- 当前规模：**2419 个用例**（MSVC/Windows 全绿口径；Linux/GCC 侧 2428 个，两侧差额 9 条全是平台专属用例：Linux 的 epoll 描述符重注册、inotify 目录重建、`sendfile` 零拷贝、进程终止与多进程 worker 的真实行为，Windows 的 IOCP 批量等待与「多进程在本机禁用」判定）。其中 36 个是真机门控用例，无凭据即 SKIP
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
