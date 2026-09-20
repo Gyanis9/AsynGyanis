@@ -166,6 +166,18 @@ python scripts/run_samples.py --only net_http_demo --repeat 3   # 重复跑，�
 python scripts/run_samples.py --build build/release --timeout 300
 ```
 
+要看「还有哪些代码没被触达」，用覆盖率构建（只在 GCC/Clang 侧，MSVC 没有 gcov 兼容工具链）：
+就地重配一次并跑完测试与示例，再用 `gcovr` 出报告——没被触达的行与分支就是清单上的欠账，
+示例里挂掉的每一步也都对应一处「公开面没被从库外驱动过」的地方。
+
+```bash
+cmake --preset debug -DASYN_ENABLE_COVERAGE=ON     # 就地重配，会触发一次全量重建
+cmake --build build/debug -j 6
+ctest --test-dir build/debug -j 6
+python scripts/run_samples.py --build build/debug --timeout 300
+pip install gcovr && gcovr --root . --filter 'src/' --print-summary
+```
+
 ## 代码示例
 
 以下示例均取自 `samples/main.cpp` 与 `tests/`，是当前代码里真实可编译的用法。
