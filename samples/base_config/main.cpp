@@ -1,0 +1,197 @@
+// Base 配置子系统示例：多文件与目录加载、点分路径取值、schema 校验、类型不符与缺键、热重载
+#include "Base/Config/ConfigManager.h"
+#include "Base/Config/ConfigSchema.h"
+#include "Base/Exception/ConfigValidationException.h"
+#include "common/SampleSupport.h"
+
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
+using namespace AsynGyanis;
+
+namespace
+{
+    /// 往指定路径写一份文本配置（父目录不存在时一并建出来）
+    void writeTextFile(const std::filesystem::path &path, const std::string &text)
+    {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path);
+        output << text;
+    }
+
+    void demonstrateLoading(const std::filesystem::path &directory)
+    {
+        writeTextFile(directory / "app.yaml",
+                      "server:\n"
+                      "  port: 8080\n"
+                      "  host: 0.0.0.0\n"
+                      "  workers: 4\n"
+                      "feature:\n"
+                      "  enable_tls: true\n"
+                      "  sample_rate: 0.25\n");
+        // 后加载的文件覆盖先加载的：这是「同一份键在两个环境里不同值」的常用形态
+        writeTextFile(directory / "override.yaml", "server:\n  port: 9090\n");
+        writeTextFile(directory / "nested/deep.json", R"({"logging": {"level": "DEBUG"}})");
+
+        auto &manager = Base::ConfigManager::instance();
+        manager.clear();
+        const Base::ConfigLoadResult loaded = manager.loadFiles({directory / "app.yaml", directory / "override.yaml"});
+        Samples::checklist().check(loaded.success && loaded.loadedFiles.size() == 2, "loadFiles 一次读两份配置并报告读到的文件");
+        Samples::checklist().check(manager.getInt("server.port", 0) == 9090, "后加载的文件覆盖同名键");
+        Samples::checklist().check(manager.getString("server.host") == "0.0.0.0", "点分路径能取到字符串");
+        Samples::checklist().check(manager.getBool("feature.enable_tls", false) &&
+                                           manager.getDouble("feature.sample_rate", 0.0) == 0.25,
+                                   "getBool 与 getDouble 按类型取值");
+
+        // 目录式加载：递归子目录，把目录里所有受支持的文件一次读进来
+        const Base::ConfigLoadResult fromDirectory = manager.loadFromDirectory(directory, true);
+        Samples::checklist().check(fromDirectory.success && fromDirectory.loadedFiles.size() >= 3,
+                                   "loadFromDirectory 递归读到了子目录里的配置");
+        Samples::checklist().check(manager.getString("logging.level") == "DEBUG", "子目录里的 JSON 配置也生效了");
+
+        const Base::ConfigLoadResult reloaded = manager.reload();
+        Samples::checklist().check(reloaded.success, "reload 能按同一批路径重放配置");
+    }
+
+    void demonstrateValueAccess(const std::filesystem::path &directory)
+    {
+        writeTextFile(directory / "typed.yaml",
+                      "limits:\n"
+                      "  maximum_body: 1048576\n"
+                      "  ratio: 1.5\n"
+                      "  label: heavy\n");
+        auto &manager = Base::ConfigManager::instance();
+        manager.clear();
+        static_cast<void>(manager.loadFiles({directory / "typed.yaml"}));
+
+        Samples::checklist().check(manager.get<std::int64_t>("limits.maximum_body") == 1048576, "模板版 get 按声明类型取值");
+        Samples::checklist().check(!manager.getOptional("limits.absent").has_value(), "缺键时 getOptional 给空而不是抛异常");
+        Samples::checklist().check(manager.get("limits.absent", std::string{"fallback"}) == "fallback",
+                                   "带默认值的 get 在缺键时回落默认值");
+
+        bool isThrownForWrongType = false;
+        try
+        {
+            // 类型不符要当场抛：静默回落等于配置错了却看不出来
+            static_cast<void>(manager.get<bool>("limits.label"));
+        } catch (const Base::ConfigValidationException &validationException)
+        {
+            isThrownForWrongType = true;
+            LOG_INFO_FMT("按预期抛出的类型不匹配说明：{}", validationException.what());
+        }
+        Samples::checklist().check(isThrownForWrongType, "取用类型不符时抛 ConfigValidationException");
+
+        Samples::checklist().check(!manager.keys().empty(), "keys() 能列出已加载的全部键");
+        const Base::ConfigValue section = manager.getSection("limits");
+        Samples::checklist().check(section.is_object() && section.size() == 3, "getSection 把扁平键还原成嵌套对象");
+
+        const std::vector<std::string> missing = manager.validateRequired({"limits.label", "limits.nope"});
+        Samples::checklist().check(missing.size() == 1 && missing.front() == "limits.nope",
+                                   "validateRequired 只列出缺失的那几个键");
+    }
+
+    void demonstrateSchemaValidation(const std::filesystem::path &directory)
+    {
+        auto &manager = Base::ConfigManager::instance();
+
+        const Base::ConfigSchema schema = {
+                {"server.port", Base::ConfigValueType::number_integer, true, 1.0, 65535.0},
+                {"server.host", Base::ConfigValueType::string, true, {}, {}},
+                {"server.workers", Base::ConfigValueType::number_integer, false, 1.0, 128.0},
+        };
+        // 校验只对着「当前已加载的配置」判：先装一份合规的，再看破坏版
+        writeTextFile(directory / "schema-good.yaml",
+                      "server:\n  port: 8080\n  host: 0.0.0.0\n  workers: 4\n");
+        manager.clear();
+        static_cast<void>(manager.loadFiles({directory / "schema-good.yaml"}));
+        const Base::ConfigValidationResult passed = manager.validateSchema(schema);
+        for (const auto &error: passed.errors)
+        {
+            LOG_INFO_FMT("本该通过的校验却报了：{}", error);
+        }
+        Samples::checklist().check(passed.valid && passed.errors.empty(), "满足 schema 时校验通过");
+
+        // 三处同时破坏：缺必需键（host）、类型不符（workers）、数值越界（port）
+        writeTextFile(directory / "schema-bad.yaml", "server:\n  port: 70000\n  workers: not-a-number\n");
+        manager.clear();
+        static_cast<void>(manager.loadFiles({directory / "schema-bad.yaml"}));
+        const Base::ConfigValidationResult failed = manager.validateSchema(schema);
+        Samples::checklist().check(!failed.valid && failed.errors.size() >= 3,
+                                   "缺键、类型不符、越界三类问题都被 schema 校验挑出来");
+        for (const auto &error: failed.errors)
+        {
+            LOG_INFO_FMT("schema 报告：{}", error);
+        }
+    }
+
+    void demonstrateFailurePaths(const std::filesystem::path &directory)
+    {
+        auto &manager = Base::ConfigManager::instance();
+
+        // 文件不存在：加载整体失败并给出原因，而不是留下一份「看起来加载过」的空配置
+        manager.clear();
+        const Base::ConfigLoadResult missingFile = manager.loadFiles({directory / "absent.yaml"});
+        Samples::checklist().check(!missingFile.success && !missingFile.failedFiles.empty() && !missingFile.errors.empty(),
+                                   "加载不存在的文件时如实报告失败与原因");
+
+        writeTextFile(directory / "broken.yaml", "server:\n  port: 1\n   bad-indent: [unclosed\n");
+        manager.clear();
+        const Base::ConfigLoadResult broken = manager.loadFiles({directory / "broken.yaml"});
+        Samples::checklist().check(!broken.success, "语法坏掉的 YAML 被拒，不会装进半份配置");
+    }
+
+    void demonstrateHotReload(const std::filesystem::path &directory)
+    {
+        const auto path = directory / "hot.yaml";
+        writeTextFile(path, "runtime:\n  flag: off\n");
+
+        auto &manager = Base::ConfigManager::instance();
+        manager.clear();
+        static_cast<void>(manager.loadFiles({path}));
+
+        std::atomic<bool> isCallbackFired{false};
+        // 回调里只置标记：热重载回调在监视线程上跑，重活都不该在这里做
+        if (!manager.enableHotReload([&isCallbackFired](const Base::ConfigLoadResult &)
+                                     { isCallbackFired.store(true, std::memory_order_release); }))
+        {
+            Samples::checklist().check(false, "enableHotReload 应当能装上文件监视");
+            return;
+        }
+        Samples::checklist().check(manager.getString("runtime.flag") == "off", "热重载前读到的是初始配置");
+
+        writeTextFile(path, "runtime:\n  flag: on\n");
+        // 有界等待：轮询窗口 + 防抖都在实现里，最迟几百毫秒内该看到变更
+        const bool isReloaded = Samples::waitUntil(
+                [&manager] { return manager.getString("runtime.flag") == "on"; }, std::chrono::seconds{8});
+        Samples::checklist().check(isReloaded, "改动文件后热重载把新值装了进来");
+        Samples::checklist().check(isCallbackFired.load(std::memory_order_acquire), "热重载回调被调用过");
+        manager.disableHotReload();
+    }
+}
+
+int main()
+{
+    Samples::setupConsoleLogging();
+
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("asyn-sample-base-config-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+
+    LOG_INFO("=== Base 配置子系统示例开始 ===");
+    demonstrateLoading(directory);
+    demonstrateValueAccess(directory);
+    demonstrateSchemaValidation(directory);
+    demonstrateFailurePaths(directory);
+    demonstrateHotReload(directory);
+
+    Base::ConfigManager::instance().disableHotReload();
+    Base::ConfigManager::instance().clear();
+    std::filesystem::remove_all(directory);
+
+    return Samples::finishSample("base_config");
+}
