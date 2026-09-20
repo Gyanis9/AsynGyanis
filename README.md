@@ -5,7 +5,7 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-2031-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-2346-brightgreen)]()
 
 ## 特性
 
@@ -25,7 +25,7 @@
 - **HTTP/1.1** — 手写增量解析器（含资源上限与分块编码）、Keep-Alive 持久连接
 - **HTTPS** — TLS 握手 + ALPN 协商（h2 / http/1.1）、mTLS、证书热轮换
 - **HTTP/2** — RFC 9113 帧与连接状态机、自研 HPACK（含 Huffman）、接收窗口流控、流式响应、GOAWAY；h2c 明文与 RFC 8441 扩展 CONNECT 隧道
-- **HTTP/3 + QUIC** — ngtcp2 传输层（连接标识路由、迁移、流控）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
+- **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复与 NewReno 拥塞控制、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
 - **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692）；h1 升级与 h2/h3 隧道共用协商
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）与 `/healthz` 内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
@@ -60,7 +60,7 @@
 | `Platform` | `libPlatform.a` | Threads（Windows 另加 ws2_32 / Mswsock） | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
 | `Base` | `libBase.a` | Platform, nlohmann_json, yaml-cpp | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
 | `Core` | `libCore.a` | Platform, Base, OpenSSL（可选 mimalloc） | 事件循环、协程运行时、socket、TLS、多进程编排 |
-| `Net` | `libNet.a` | Core, OpenSSL, ngtcp2（vendored）；私有 zlib / zstd / brotli | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件 |
+| `Net` | `libNet.a` | Core, OpenSSL；私有 zlib / zstd / brotli | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件 |
 | `Database` | `libDatabase.a` | Core, Base, Platform, sqlite3；可选 libmysqlclient / hiredis | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
 
 模块内的子目录（如 `Base/Log/Sinks`、`Core/EventLoop`）**不引入新的命名空间**：命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。
@@ -329,7 +329,7 @@ LOG_INFO_FMT("listening on port {}", port);
 | `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsSession` / `HttpsServer`、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient` 与响应解析器） |
 | `Http2/` | `Http2Session` / `Http2Connection`、`Http2Frame`、`Hpack`（含 Huffman） |
 | `Http3/` | `Http3Session` + 自研帧层 / QPACK / `Http3Connection`（含 RFC 9220 隧道） |
-| `Quic/` | `QuicServer`（数据报路由与连接表）、`QuicConnection`（ngtcp2 传输） |
+| `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复与 NewReno）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
 | `WebSocket/` | `WebSocketHandshake` / `WebSocketFrame` / `WebSocketPeer`、`WebSocketUtf8`、`PerMessageDeflate` |
 
 ### Database — 数据访问（`libDatabase.a`）
@@ -355,7 +355,7 @@ AsynGyanis/
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
 ├── scripts/                # 发布版本一致性门禁、HTTP/3 真机验收脚本
-├── third_party/ngtcp2/     # vendored 的 QUIC 传输层（随仓库构建）
+├── third_party/ngtcp2/     # vendored 的第三方 QUIC，只剩测试里的跨实现对拍裁判
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
 │   ├── Base/               # Config / Exception / Log
@@ -372,7 +372,7 @@ AsynGyanis/
 | [nlohmann_json](https://github.com/nlohmann/json) | 3.12.0 | JSON 值模型与解析/序列化（Base 公开接口） |
 | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 解析（配置加载） |
 | [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS，兼作 QUIC 的加密胶水 |
-| [ngtcp2](https://github.com/ngtcp2/ngtcp2) | 1.25.0（vendored） | QUIC 传输层（`third_party/ngtcp2` 随仓库构建） |
+| [ngtcp2](https://github.com/ngtcp2/ngtcp2) | 1.25.0（vendored） | 仅测试：QUIC 跨实现对拍裁判（传输层已自研，`Net` 不再链接它） |
 | [nghttp3](https://github.com/ngtcp2/nghttp3) | 1.12.0 | 仅测试：HTTP/3 跨实现对拍裁判（库本体已自研，不再依赖） |
 | [zlib](https://zlib.net/) / [zstd](https://facebook.github.io/zstd/) / [brotli](https://github.com/google/brotli) | 1.3.1 / 1.5.7 / 1.1.0 | 响应正文与 WebSocket 压缩 |
 | [mimalloc](https://microsoft.github.io/mimalloc/) | 3.5.1 | 可选全局分配器（`ASYN_WITH_MIMALLOC`） |
@@ -389,13 +389,13 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**2031 个用例**（其中 36 个是真机门控用例，无凭据即 SKIP）
+- 当前规模：**2346 个用例**（MSVC/Windows 全绿口径；Linux/GCC 侧 2355 个，两侧差额全是平台专属用例：Linux 的 epoll 与 `sendfile` 零拷贝、进程终止，Windows 的 IOCP 批量等待与多进程禁用判定）。其中 36 个是真机门控用例，无凭据即 SKIP
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
 ## 编码规范
 
-完整规范见个人 skill `cpp20-coding-standards`（命名、Doxygen 中文注释、错误契约、测试、目录与构建、验证纪律）。仓库层面的要点：
+代码风格以根目录 `.clang-format` 为基线，但仓库从未整体格式化过、也不设格式门禁（新增代码与周围保持一致即可，别对既有文件整文件跑 `clang-format -i`）；`.clang-tidy` 的检查在 CI 里以报告形式跑，不阻塞合入。下表是仓库层面的约定要点，新增代码与既有代码保持一致：
 
 | 规则 | 说明 |
 |------|------|
