@@ -405,6 +405,53 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // QPACK 的头块编解码：h3 每条响应过一次编码器、每个请求过一次解码器。
+    // 这里刻意用「整段都命中静态表」的字段行（三项都是 RFC 9204 附录 A 的整项）：一次插入都不产生，
+    // 也就没有未确认段与引用的累积，量出来的才是稳态而不是越跑越慢的记账
+    const std::vector<Net::QpackHeaderField> qpackStaticHitFields = {
+        Net::QpackHeaderField{.name = ":status", .value = "200"},
+        Net::QpackHeaderField{.name = "content-type", .value = "application/json"},
+        Net::QpackHeaderField{.name = "content-length", .value = "0"},
+    };
+    Net::QpackEncoder qpackEncoder(4096, 100, 4096);
+    std::string       qpackHeaderBlock;
+    std::string       qpackEncoderStreamBytes;
+    static_cast<void>(qpackEncoder.encodeFieldSection(0, std::span<const Net::QpackHeaderField>{qpackStaticHitFields},
+                                                      qpackHeaderBlock, qpackEncoderStreamBytes));
+    measureCase(
+            "qpack-encode",
+            [&qpackEncoder, &qpackStaticHitFields, &qpackHeaderBlock, &qpackEncoderStreamBytes]
+            {
+                static_cast<void>(qpackEncoder.encodeFieldSection(0, std::span<const Net::QpackHeaderField>{qpackStaticHitFields},
+                                                                  qpackHeaderBlock, qpackEncoderStreamBytes));
+                return qpackHeaderBlock.size();
+            },
+            results, checksum, failureCount);
+
+    // 解码侧要按 h3 的口径把 Section Ack 还回去才算收口：这里每轮都调 noteFieldSectionDelivered，
+    // 与真实连接上「解完一段就交付」一致，不至于让挂起记录越积越多
+    const Net::QpackDecoderSettings qpackDecoderSettings{
+        .maximumTableCapacityByteCount = 4096, .maximumBlockedStreamCount = 100, .maximumFieldSectionSizeByteCount = 16384};
+    Net::QpackDecoder       qpackDecoder(qpackDecoderSettings);
+    std::vector<Net::QpackHeaderField> qpackDecodedFields;
+    std::string                        qpackDecoderStreamBytes;
+    measureCase(
+            "qpack-decode",
+            [&qpackDecoder, &qpackHeaderBlock, &qpackDecodedFields, &qpackDecoderStreamBytes]
+            {
+                const std::span<const std::uint8_t> sectionBytes(reinterpret_cast<const std::uint8_t *>(qpackHeaderBlock.data()),
+                                                                 qpackHeaderBlock.size());
+                const auto decoded = qpackDecoder.decodeFieldSection(0, sectionBytes, qpackDecodedFields, qpackDecoderStreamBytes);
+                if (!decoded || *decoded != Net::QpackFieldSectionDecodeStatus::Decoded)
+                {
+                    return std::size_t{0};
+                }
+                std::string deliveredBytes;
+                static_cast<void>(qpackDecoder.noteFieldSectionDelivered(0, deliveredBytes));
+                return qpackDecodedFields.size();
+            },
+            results, checksum, failureCount);
+
     measureCase(
             "hpack-decode",
             [&decoder, &encodedHeaderBlock, &decodedHeaderFields]
