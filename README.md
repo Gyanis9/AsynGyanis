@@ -183,7 +183,7 @@ pip install gcovr && gcovr --root . --filter 'src/' --print-summary
 Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个文件——`MySqlResult.cpp`
 （那个镜像里没有 MySQL 客户端库，驱动整块没进编译）与一个异常类的头；Database 偏低是两处门控
 （MySQL/Redis 真机）与 ORM 模板未实例化的组合。也就是说：**能被从库外驱动到的公开面，示例现在都能触达**。
-（同一份代码在本机 Windows 侧 `ctest` 为 2379/2379 全绿。）
+（同一份代码在本机 Windows 侧 `ctest` 为 2380/2380 全绿。）
 
 ## 代码示例
 
