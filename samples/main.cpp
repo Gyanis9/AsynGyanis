@@ -236,7 +236,7 @@ int main(int argc, char **argv)
         LOG_INFO("            内核不会分摊，全部连接都压在其中一条监听器上）");
         LOG_INFO("  --compress 按 Accept-Encoding 协商压缩响应正文（zstd/br/gzip 按偏好选择，默认 1 KiB 起压，静态文件也适用）");
         LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
-        LOG_INFO("            超出的请求回 503，明文与 HTTPS 两端都生效");
+        LOG_INFO("            超出的请求回 503，明文、HTTPS 与 h3 三端共用同一份账");
         LOG_INFO("  --workers N 用 N 个 worker 进程服务同一个端口（默认 1 = 单进程）：");
         LOG_INFO("            master 只做编排不服务，各 worker 靠 SO_REUSEPORT 分别监听同一端口，");
         LOG_INFO("            SIGTERM/SIGINT 会让 worker 各自体面退出；");
