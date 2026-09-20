@@ -24,6 +24,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "Net/Http3/Http3Error.h"
@@ -104,16 +105,29 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 建立协议状态机并开出三条本端单向流
+         * @brief 建立协议状态机并开出三条本端单向流，本端能力取 `LocalSettings` 的默认值
          * @param opener 单向流的开流口；为空即无法建立（isUsable() 为假）
          * @param writer 流数据出口；为空同上
          * @param crediter 接收窗口归还口；可为空（空表示不归还，正文一大就会用光窗口）
          * @param callbacks 通知集合；缺哪一项就不发哪一项通知，不因此失败
-         * @param settings 本端能力，写进控制流的 SETTINGS 帧
          * @note 开流失败不抛异常：一条连接建不起 h3 不该把服务端拖垮，上层按 isUsable() 降级
          */
+        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks)
+            : Http3Connection(std::move(opener), std::move(writer), std::move(crediter), std::move(callbacks), LocalSettings{})
+        {
+        }
+
+        /**
+         * @brief 同上，区别是本端能力由调用方给定
+         * @param opener 单向流的开流口；为空即无法建立（isUsable() 为假）
+         * @param writer 流数据出口；为空同上
+         * @param crediter 接收窗口归还口；可为空（空表示不归还，正文一大就会用光窗口）
+         * @param callbacks 通知集合；缺哪一项就不发哪一项通知，不因此失败
+         * @param settings 本端能力，写进控制流的 SETTINGS 帧。默认值取不到这里来：`LocalSettings` 的
+         *        成员初值属于本类的 complete-class context，写成默认参数在 GCC 下非法（[class.mem]）
+         */
         Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks,
-                        LocalSettings settings = {});
+                        const LocalSettings settings);
 
         /**
          * @brief 析构函数：流状态与待发缓冲都是按值的标准容器，无额外资源需要回收

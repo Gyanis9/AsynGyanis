@@ -15,11 +15,6 @@ namespace AsynGyanis::Net
             return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
         }
 
-        [[nodiscard]] std::span<const std::uint8_t> asBytes(const std::string_view text) noexcept
-        {
-            return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
-        }
-
         /// 对端发起的双向流：请求只跑在这类流上（RFC 9000 §2.1 的低位编码）
         [[nodiscard]] constexpr bool isPeerInitiatedBidirectionalStream(const std::int64_t streamId) noexcept
         {
