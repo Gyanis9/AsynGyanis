@@ -301,6 +301,23 @@ namespace AsynGyanis::Net
         /// 把字节排进某条流的待发队列
         void queueOutboundBytes(std::int64_t streamId, std::string_view bytes, bool isEndStream);
 
+        /**
+         * @brief 把一帧「帧头 + 载荷」直接排进该流的待发缓冲，不为载荷另起临时串
+         * @param streamId 目标流标识
+         * @param frameType 帧类型
+         * @param payload 帧载荷视图，只在本调用期间被读
+         * @param isEndStream true 表示交完这些字节本端在该流上收尾
+         */
+        void queueOutboundFrame(std::int64_t streamId, Http3FrameType frameType, std::span<const std::uint8_t> payload,
+                                bool isEndStream);
+
+        /**
+         * @brief 取（必要时新建）某条流的待发缓冲
+         * @param streamId 目标流标识
+         * @return OutboundStream& 引用只在未再插入其它流条目前有效（std::map 不搬已存在节点）
+         */
+        OutboundStream &outboundFor(std::int64_t streamId);
+
         /// 应用对端 SETTINGS 里与 QPACK 有关的能力
         void applyPeerSettings(const Http3SettingsFrame &settingsFrame);
 

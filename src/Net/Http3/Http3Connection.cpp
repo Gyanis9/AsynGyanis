@@ -737,11 +737,7 @@ namespace AsynGyanis::Net
         // Required Insert Count 自己判断要不要挂起，因此这里不必（也做不到）跨流定序
         queueQpackInstructions(encoderStreamBytes, {});
 
-        Http3HeadersFrame headersFrame;
-        headersFrame.encodedFieldSection = asBytes(headerBlock);
-        std::string frameBytes;
-        appendHttp3Frame(frameBytes, headersFrame);
-        queueOutboundBytes(streamId, frameBytes, isEndOfStream);
+        queueOutboundFrame(streamId, Http3FrameType::Headers, asBytes(headerBlock), isEndOfStream);
 
         if (isEndOfStream)
         {
@@ -765,11 +761,7 @@ namespace AsynGyanis::Net
 
         if (!bytes.empty())
         {
-            Http3DataFrame dataFrame;
-            dataFrame.payload = bytes;
-            std::string frameBytes;
-            appendHttp3Frame(frameBytes, dataFrame);
-            queueOutboundBytes(streamId, frameBytes, isEndStream);
+            queueOutboundFrame(streamId, Http3FrameType::Data, bytes, isEndStream);
         }
         else if (isEndStream)
         {
@@ -963,23 +955,42 @@ namespace AsynGyanis::Net
         }
     }
 
+    Http3Connection::OutboundStream &Http3Connection::outboundFor(const std::int64_t streamId)
+    {
+        const auto entry = m_outbound.find(streamId);
+        if (entry != m_outbound.end())
+        {
+            return entry->second;
+        }
+        // 新建才排进轮转队列：一次 flush 会把这条流的字节全交出去，重复排队等于让同一条流走两遍
+        OutboundStream &outbound = m_outbound[streamId];
+        m_outboundOrder.push_back(streamId);
+        return outbound;
+    }
+
     void Http3Connection::queueOutboundBytes(const std::int64_t streamId, const std::string_view bytes, const bool isEndStream)
     {
         if (m_isBroken)
         {
             return; // 作废之后不再排任何字节，等销毁
         }
-        const auto entry = m_outbound.find(streamId);
-        if (entry == m_outbound.end())
+        OutboundStream &outbound = outboundFor(streamId);
+        outbound.bytes.append(bytes);
+        outbound.isEndStream = outbound.isEndStream || isEndStream;
+    }
+
+    void Http3Connection::queueOutboundFrame(const std::int64_t streamId, const Http3FrameType frameType,
+                                             const std::span<const std::uint8_t> payload, const bool isEndStream)
+    {
+        if (m_isBroken)
         {
-            m_outbound[streamId].bytes.assign(bytes);
-            m_outbound[streamId].isEndStream = isEndStream;
-            m_outboundOrder.push_back(streamId);
             return;
         }
-        // 已在队里就不必再排一次：一次 flush 会把这条流的字节全交出去
-        entry->second.bytes.append(bytes);
-        entry->second.isEndStream = entry->second.isEndStream || isEndStream;
+        // 帧头与载荷直接排进本流缓冲：先拼一份临时 string 会把载荷整段多搬一遍，
+        // 而 DATA 段可以很大——静态文件正文因此每响应白付一次 memcpy
+        OutboundStream &outbound = outboundFor(streamId);
+        appendHttp3FrameWithPayload(outbound.bytes, frameType, payload);
+        outbound.isEndStream = outbound.isEndStream || isEndStream;
     }
 
     void Http3Connection::applyPeerSettings(const Http3SettingsFrame &settingsFrame)

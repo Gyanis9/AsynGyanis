@@ -379,6 +379,14 @@ namespace AsynGyanis::Net
         bytes += payload;
     }
 
+    void appendHttp3FrameWithPayload(std::string &bytes, const Http3FrameType frameType, const std::span<const std::uint8_t> payload)
+    {
+        // 与帧版本同一套头部写法：Length 取载荷视图的实际字节数，二者不可能对不上
+        appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(frameType));
+        appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(payload.size()));
+        appendQuicRawBytes(bytes, payload);
+    }
+
     void appendHttp3StreamTypeHeader(std::string &bytes, const Http3StreamType streamType)
     {
         // §6.2 图 1：单向流开头就是单个变长整数，没有长度域也没有别的字段

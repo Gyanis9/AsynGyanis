@@ -162,6 +162,41 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 「帧头 + 现成载荷」的出口与帧版本写出逐字相同的字节
+     * @details 出站路径用它省掉一份载荷临时串（DATA 段可以很大，多拷一份等于把正文再搬一遍）。
+     *          省拷贝不许改线上字节，故 DATA/HEADERS 各比一次，长度落在两字节前缀上的大段也一起比。
+     */
+    TEST(Http3FrameEncoding, PayloadFormMatchesFrameFormByteForByte)
+    {
+        const std::vector<std::uint8_t> smallPayload{0x01, 0x02, 0x03};
+        const std::vector<std::uint8_t> largePayload(500, 0x7f);
+
+        for (const std::vector<std::uint8_t> *payload: {&smallPayload, &largePayload})
+        {
+            const std::span<const std::uint8_t> payloadView{payload->data(), payload->size()};
+
+            std::string dataFrameForm;
+            appendHttp3Frame(dataFrameForm, Http3DataFrame{payloadView});
+            std::string dataPayloadForm;
+            appendHttp3FrameWithPayload(dataPayloadForm, Http3FrameType::Data, payloadView);
+            EXPECT_EQ(dataPayloadForm, dataFrameForm) << "DATA 载荷 " << payload->size() << " 字节时两种写法不一致";
+
+            std::string headersFrameForm;
+            appendHttp3Frame(headersFrameForm, Http3HeadersFrame{payloadView});
+            std::string headersPayloadForm;
+            appendHttp3FrameWithPayload(headersPayloadForm, Http3FrameType::Headers, payloadView);
+            EXPECT_EQ(headersPayloadForm, headersFrameForm) << "HEADERS 载荷两种写法不一致";
+        }
+
+        // 目标缓冲已有内容时只能追加：出站时它就是这条流的待发字节，前面排着的帧不许被覆盖
+        std::string outbound = "prefix";
+        appendHttp3FrameWithPayload(outbound, Http3FrameType::Data, std::span<const std::uint8_t>{smallPayload.data(),
+                                                                                                  smallPayload.size()});
+        EXPECT_EQ(outbound.compare(0, 6, "prefix"), 0);
+        EXPECT_EQ(outbound.size(), 6U + smallPayload.size() + 2U) << "小载荷的 DATA 帧头是两个 1 字节变长整数";
+    }
+
+    /**
      * @brief 单向流开头的流类型前缀（§6.2 图 1）：只有一个变长整数，没有长度域
      * @details 0x00 控制流、0x01 推送流（§6.2.1/§6.2.2）、0x02/0x03 QPACK 编码器与解码器流（RFC 9204 §4.2）。
      *          保留族 0x21 与超单字节档的 0x40 也照普通变长整数写：本层不为流类型设特殊编码。

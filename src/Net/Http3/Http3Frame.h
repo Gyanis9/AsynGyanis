@@ -299,6 +299,16 @@ namespace AsynGyanis::Net
     void appendHttp3Frame(std::string &bytes, const Http3Frame &frame);
 
     /**
+     * @brief 把「帧头 + 现成载荷」直接排进目标缓冲，写出的字节与 appendHttp3Frame 逐字相同
+     * @details 帧版本要先把载荷拼进一份临时 std::string 才能算出 Length；DATA 段与头块本身就已经
+     *          是一段连续字节，再拼一次等于把正文多搬一遍，故这条按「载荷已在手」的形态给出口。
+     * @param bytes 目标缓冲，帧排在尾部
+     * @param frameType 帧类型的线上值（§7.1）
+     * @param payload 帧载荷视图，只在本调用期间被读，长度即写进 Length 的值
+     */
+    void appendHttp3FrameWithPayload(std::string &bytes, Http3FrameType frameType, std::span<const std::uint8_t> payload);
+
+    /**
      * @brief 追写单向流开头的流类型前缀（§6.2 图 1）
      * @details 只写类型这一个变长整数。推送流还要紧跟一个 Push ID（§6.2.2 图 2），本层不代拼：
      *          调用方直接再用 appendQuicVariableLengthInteger 追写即可。未知流类型不在此列——

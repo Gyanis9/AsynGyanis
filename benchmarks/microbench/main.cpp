@@ -23,6 +23,7 @@
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Qpack.h"
+#include "Net/Http3/Http3Frame.h"
 
 #include <algorithm>
 #include <chrono>
@@ -449,6 +450,33 @@ int main(int argumentCount, char **argumentValues)
                 std::string deliveredBytes;
                 static_cast<void>(qpackDecoder.noteFieldSectionDelivered(0, deliveredBytes));
                 return qpackDecodedFields.size();
+            },
+            results, checksum, failureCount);
+
+    // h3 出站 DATA 帧的两种排法（生产改动的正是这一处）：旧写法先把载荷拼进一份临时 string
+    // 再整段搬进该流的待发缓冲，新写法直接拼进待发缓冲。两例都从「缓冲已清空」起步，
+    // 差的只在那一趟载荷往返
+    const std::vector<std::uint8_t> dataFramePayload(16 * 1024, 0x5a);
+    const std::span<const std::uint8_t> dataFramePayloadView{dataFramePayload.data(), dataFramePayload.size()};
+    std::string outboundBuffer;
+    measureCase(
+            "h3-data-frame-via-temporary",
+            [&outboundBuffer, &dataFramePayloadView]
+            {
+                outboundBuffer.clear();
+                std::string frameBytes;
+                Net::appendHttp3Frame(frameBytes, Net::Http3DataFrame{dataFramePayloadView});
+                outboundBuffer.append(frameBytes);
+                return outboundBuffer.size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "h3-data-frame-direct",
+            [&outboundBuffer, &dataFramePayloadView]
+            {
+                outboundBuffer.clear();
+                Net::appendHttp3FrameWithPayload(outboundBuffer, Net::Http3FrameType::Data, dataFramePayloadView);
+                return outboundBuffer.size();
             },
             results, checksum, failureCount);
 

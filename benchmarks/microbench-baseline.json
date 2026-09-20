@@ -91,6 +91,24 @@
       ],
       "runsMeasured": 3
     },
+    "h3-data-frame-via-temporary": {
+      "throughputPerSecond": 1299893,
+      "nanosecondsPerOperation": 769.3,
+      "observedNanosecondsRange": [
+        751.1,
+        777.9
+      ],
+      "runsMeasured": 3
+    },
+    "h3-data-frame-direct": {
+      "throughputPerSecond": 10591878,
+      "nanosecondsPerOperation": 94.4,
+      "observedNanosecondsRange": [
+        94.3,
+        94.8
+      ],
+      "runsMeasured": 3
+    },
     "http1-parse-request": {
       "throughputPerSecond": 945586,
       "nanosecondsPerOperation": 1057.5,
