@@ -84,15 +84,17 @@ namespace AsynGyanis::Net
         ///@}
 
         /**
-         * @brief 编出这一轮要发的帧：窗口更新在前，排队数据在后
+         * @brief 编出这一轮要发的帧：收口宣告在前，窗口更新居中，排队数据在后
          * @param frames 目标缓冲，追写到末尾；二进制安全
          * @param byteBudget 本包还能装多少字节；用完即止，剩下的下一包再来
          * @param sentRanges 排进数据帧的字节区间，核心要照它登记进发包凭据，好让确认与判丢能对上
+         * @param announcements 排进本包的收口宣告，同样由核心登记：这两类帧要发到被确认为止（§13.3）
          * @return true 至少编进了一帧
          */
-        bool collectFrames(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamRange> &sentRanges);
+        bool collectFrames(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamRange> &sentRanges,
+                           std::vector<QuicStreamAnnouncement> &announcements);
 
-        /// @return true 还有数据或窗口更新等着发
+        /// @return true 还有数据、窗口更新或收口宣告等着发
         [[nodiscard]] bool hasOutgoingFrames() const noexcept;
 
         /**
@@ -103,6 +105,24 @@ namespace AsynGyanis::Net
          * @return std::size_t 被接收的字节数；流已收尾、被打断或超出流数上限时是 0
          */
         std::size_t writeStreamData(std::uint64_t streamId, std::span<const std::uint8_t> bytes, bool isFinal);
+
+        /**
+         * @brief 本端放弃这条流的发送侧：作废待发与在途，排一条 RESET_STREAM（§4.5、§19.4）
+         * @details 收尾长度在调用这一刻定稿（取曾上线的最大结束偏移），之后重发不会变——§13.3
+         *          明令内容不许改，因为对端要靠它把连接级额度算到同一个数上。
+         * @param streamId 流号
+         * @param applicationErrorCode 应用协议的错误码（h3 用 0x0100 以上那一档，见 RFC 9114 §8.1）
+         */
+        void resetStreamSending(std::uint64_t streamId, std::uint64_t applicationErrorCode);
+
+        /**
+         * @brief 请对端别再往这条流上发：排一条 STOP_SENDING（§3.5、§19.5）
+         * @details 对端收到之后应当回一条 RESET_STREAM 收尾；本端的接收记账照旧——停发之后的入站
+         *          字节仍然占连接级额度（§3.5），所以这里不动窗口，也不提前丢掉已缓存的分片。
+         * @param streamId 流号；本端没有它的入站记账时直接跳过（还不存在的流、或本端只能发的那一档）
+         * @param applicationErrorCode 期望对端在 RESET_STREAM 里带回的错误码
+         */
+        void stopStreamReceiving(std::uint64_t streamId, std::uint64_t applicationErrorCode);
 
         /**
          * @brief 开一条本端发起的单向流：0x03、0x07、0x0b……
@@ -146,6 +166,18 @@ namespace AsynGyanis::Net
          */
         void onSendRangesLost(const std::vector<QuicStreamRange> &lostRanges);
 
+        /**
+         * @brief 确认一批包：里面带出的收口宣告就此落定，不再发第二遍
+         * @param acknowledgedAnnouncements 这些包带出的宣告（按 `collectFrames` 交出去的原样还回来）
+         */
+        void onStreamAnnouncementsAcknowledged(const std::vector<QuicStreamAnnouncement> &acknowledgedAnnouncements);
+
+        /**
+         * @brief 判丢一批包：里面带出的收口宣告重新排队，下一包补发同一份内容
+         * @param lostAnnouncements 判丢的包带出的宣告
+         */
+        void onStreamAnnouncementsLost(const std::vector<QuicStreamAnnouncement> &lostAnnouncements);
+
     private:
         /// 一段待发或在途的流数据；判丢后重发时偏移不变，同一批字节不会被算成两遍额度
         struct QuicStreamChunk
@@ -153,6 +185,19 @@ namespace AsynGyanis::Net
             std::uint64_t beginOffset{0};      ///< 本段起始偏移
             std::vector<std::uint8_t> bytes{}; ///< 本段字节
             bool isFinal{false};               ///< 本段带着 FIN
+        };
+
+        /**
+         * @brief 一条收口宣告的状态（RESET_STREAM 或 STOP_SENDING 各一份）
+         * @details 内容一次定稿：错误码与收尾长度在决定收口的那一刻就冻结，此后每次重发都是同一份
+         *          （§13.3 的「内容不许变」）。之后只剩两件事要记：有没有在途、有没有被确认。
+         */
+        struct AbortAnnouncement
+        {
+            std::uint64_t applicationErrorCode{0}; ///< 线上的 application error code，定稿后不再变
+            std::uint64_t finalSize{0};            ///< RESET_STREAM 的收尾长度；STOP_SENDING 用不到
+            bool isInFlight{false};                ///< 已排进某个包，还没确认也没判丢：这段时间不重复发
+            bool isAcknowledged{false};            ///< 已被确认：这辈子不再发第二遍
         };
 
         /// 一条出站流的状态：待发队列 + 在途账 + 发送额度
@@ -164,6 +209,8 @@ namespace AsynGyanis::Net
             std::uint64_t sentHighWater{0};                         ///< 曾经上线的最大结束偏移，额度按它算
             std::uint64_t streamLimit{0};                           ///< 对端给的这条流的发送上限
             std::optional<std::uint64_t> finalOffset{};             ///< 本端收尾后的总长度
+            std::optional<AbortAnnouncement> sendAbort{};           ///< 本端放弃发送：欠对端一条 RESET_STREAM
+            bool isFinalSentToPeer{false};                          ///< 带 FIN 的那段是否已经上过线（收齐了就无需再复位）
             bool isAborted{false};                                  ///< 被对端 STOP_SENDING 叫停，队列作废
         };
 
@@ -175,6 +222,7 @@ namespace AsynGyanis::Net
             std::uint64_t receivedHighWaterOffset{0};                ///< 见过的最大结束偏移，连接级额度按它算
             std::uint64_t streamLimit{0};                            ///< 本端给这条流的接收上限，也是已宣告出去的值
             std::optional<std::uint64_t> finalOffset{};              ///< 对端收尾后的总长度
+            std::optional<AbortAnnouncement> receiveStop{};          ///< 已请对端停发：欠对端一条 STOP_SENDING
             bool isFinished{false};                                  ///< 收齐且已交付
             bool isFinalDelivered{false};                            ///< 带 FIN 的那段交付已经排进队列，不重复通知
             bool isReset{false};                                     ///< 被对端 RESET_STREAM 打断
@@ -182,6 +230,8 @@ namespace AsynGyanis::Net
         };
 
         [[nodiscard]] OutgoingStream &outgoingStream(std::uint64_t streamId);
+        /// 按宣告描述找回它对应的那份状态；流已不存在或该方向没收口即返回空
+        [[nodiscard]] AbortAnnouncement *abortAnnouncementOf(const QuicStreamAnnouncement &announcement);
         /// 按流的类别取对端给的初始发送窗口；对端参数没到手时返回空
         [[nodiscard]] std::optional<std::uint64_t> initialSendWindowFor(std::uint64_t streamId) const noexcept;
         /// 按流的类别取本端宣告的初始接收窗口
@@ -189,6 +239,9 @@ namespace AsynGyanis::Net
         /// 排干重组缓存里连续的字节，攒成一段交付
         void drainContiguousBytes(IncomingStream &stream, std::uint64_t streamId);
         [[nodiscard]] std::size_t collectWindowUpdates(std::string &frames, std::size_t byteBudget);
+        /// 收口宣告排在最前：一条帧只占十几字节，却决定对端要不要继续等下去
+        [[nodiscard]] std::size_t collectAbortAnnouncements(std::string &frames, std::size_t byteBudget,
+                                                            std::vector<QuicStreamAnnouncement> &announcements);
         [[nodiscard]] std::size_t collectStreamData(std::string &frames, std::size_t byteBudget,
                                                     std::vector<QuicStreamRange> &sentRanges);
         /// 对端用掉一半已宣告的流数就续上限，两处入口（新建流、消费数据）共用一段判据

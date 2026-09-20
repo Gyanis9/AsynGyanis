@@ -60,6 +60,9 @@ namespace AsynGyanis::Net
         bool isAckEliciting{false};         ///< 是否触发确认：只有这种包才武装探测超时
         std::optional<QuicCryptoRange> cryptoRange{}; ///< 本包带的握手字节区间；没带就为空
         std::vector<QuicStreamRange> streamRanges{};  ///< 本包带的流数据区间；确认与判丢都按它回收额度
+        /// 本包带出的流收口宣告（RESET_STREAM / STOP_SENDING）：这两类帧要发到被确认为止（RFC 9000 §13.3），
+        /// 所以和流数据一样得由发包方标出来，让上层按确认落定、按判丢补发
+        std::vector<QuicStreamAnnouncement> streamAnnouncements{};
         /// 本包是否带了 HANDSHAKE_DONE：恢复层不理解帧语义，但这一帧要「重发到被确认为止」，
         /// 所以由发包方标出来，让上层判丢时知道该再补一次（RFC 9000 §19.20）
         bool carriesHandshakeDone{false};

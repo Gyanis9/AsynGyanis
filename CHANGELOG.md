@@ -54,6 +54,11 @@
   原先只有 `requestClose()`（只置标记、一个字节都不发），对端收不到任何告知，只能等自己的空闲
   超时才发现连接没了（RFC 9000 §10.2 的 SHOULD）。`drain()` 的兜底收口、单连接排空完成、
   HTTP/3 会话不可用这三条路径现在都带原因收口。
+- **QUIC 流层能收口单条流**：新增 `QuicStreamLayer::resetStreamSending()` 与 `stopStreamReceiving()`，
+  分别编出 RESET_STREAM 与 STOP_SENDING。此前这两个方向只能「本端自己丢掉队列」，对端一个字节也
+  收不到，只能干等那条流。两份宣告都按 RFC 9000 §13.3 记了「内容一次定稿、在途不重发、判丢补发
+  同一份、确认即落定」这笔账。反方向也补齐了：收到对端的 STOP_SENDING 时按 RFC 9000 §3.5 回一条
+  RESET_STREAM（错误码照抄），否则对端永远等不到那条流的终局信号。
 
 ### 变更
 

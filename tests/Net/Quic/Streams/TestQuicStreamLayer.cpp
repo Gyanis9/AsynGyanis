@@ -9,7 +9,8 @@
 //   5) 流数超限判 STREAM_LIMIT_ERROR，用掉一半自动续上限（§4.6）；
 //   6) 单向方向性错误的三处 STREAM_STATE_ERROR 与 PROTOCOL_VIOLATION（§2.1、§4.5、§4.6）；
 //   7) 发送排队：按额度与包预算分片、判丢按原偏移重排、确认销账、STOP_SENDING 作废待发（§4.5）；
-//   8) 窗口续期按「消费掉一半」批量抬，且任何预算下都不超编（§2.2）。
+//   8) 窗口续期按「消费掉一半」批量抬，且任何预算下都不超编（§2.2）；
+//   9) 本端收口一条流：RESET_STREAM / STOP_SENDING 各编得出、在途不重发、判丢补发同一份、确认即落定（§3.5、§13.3）。
 
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 
@@ -154,16 +155,18 @@ namespace AsynGyanis::Net
         /// 一次窗口更新的收集结果，省掉每个用例两行样板
         struct Collected
         {
-            std::string frames{};                  ///< 编出来的帧字节
-            std::vector<QuicStreamRange> ranges{}; ///< 排进数据帧的字节区间
-            bool hasFrames{false};                 ///< collectFrames 的返回值
+            std::string frames{};                                    ///< 编出来的帧字节
+            std::vector<QuicStreamRange> ranges{};                   ///< 排进数据帧的字节区间
+            std::vector<QuicStreamAnnouncement> announcements{};      ///< 排进本包的收口宣告
+            bool hasFrames{false};                                   ///< collectFrames 的返回值
         };
 
         /// 按给定预算收一轮帧
         Collected collect(QuicStreamLayer &layer, const std::size_t byteBudget)
         {
             Collected collected;
-            collected.hasFrames = layer.collectFrames(collected.frames, byteBudget, collected.ranges);
+            collected.hasFrames = layer.collectFrames(collected.frames, byteBudget, collected.ranges,
+                                                      collected.announcements);
             return collected;
         }
 
@@ -764,6 +767,8 @@ namespace AsynGyanis::Net
 
     /**
      * @brief STOP_SENDING 叫停本端的发送：待发队列作废，之后的写入也不收
+     * @details 旧断言「叫停之后本端没有任何东西要发」按 §3.5 是错的：被叫停的一方必须回一条
+     *          RESET_STREAM 交代收尾，否则对端永远等不到那条流的终局信号
      */
     TEST(QuicStreamLayer, DropsPendingDataOnStopSending)
     {
@@ -776,8 +781,9 @@ namespace AsynGyanis::Net
         stopSending.applicationErrorCode = 0x200;
         EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
         EXPECT_EQ(layer.takeAbortedStream().value_or(999), 0x03U);
-        EXPECT_FALSE(layer.hasOutgoingFrames());
-        EXPECT_FALSE(collect(layer, 1200).hasFrames);
+        const Collected collected = collect(layer, 1200);
+        EXPECT_TRUE(framesOfType<QuicStreamFrame>(collected.frames).empty()) << "叫停之后不再排数据帧";
+        EXPECT_EQ(framesOfType<QuicResetStreamFrame>(collected.frames).size(), 1U);
         EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("ghi"), false), 0U) << "叫停之后不再收写";
     }
 
@@ -817,5 +823,159 @@ namespace AsynGyanis::Net
             EXPECT_LE(collected.frames.size(), budget) << "预算 " << budget << " 字节，实际编出 " << collected.frames.size();
             EXPECT_TRUE(layer.hasOutgoingFrames()) << "预算扫到 " << budget << " 时待发已被清空，后面的轮次是空转";
         }
+    }
+
+    /**
+     * @brief 本端放弃一条流的发送侧：作废待发与在途，编一条 RESET_STREAM 出去（§4.5、§13.3）
+     * @details 收尾长度按「已上线的字节」算，不是上层写过的总数——报一个对端没见过的偏移，
+     *          它按越界处理就会把整条连接判死
+     */
+    TEST(QuicStreamLayer, EmitsResetStreamWhenLocalSendIsAbandoned)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("abcde"), false), 5U);
+        const Collected sent = collect(layer, 1200);
+        ASSERT_EQ(framesOfType<QuicStreamFrame>(sent.frames).size(), 1U) << "用例前提：5 字节先上线";
+
+        layer.resetStreamSending(0x01, 0x010b);
+        EXPECT_TRUE(layer.hasOutgoingFrames());
+        const Collected aborted = collect(layer, 1200);
+        const std::vector<QuicResetStreamFrame> resets = framesOfType<QuicResetStreamFrame>(aborted.frames);
+        ASSERT_EQ(resets.size(), 1U);
+        EXPECT_EQ(resets.front().streamId, 0x01U);
+        EXPECT_EQ(resets.front().applicationErrorCode, 0x010bU);
+        EXPECT_EQ(resets.front().finalSize, 5U);
+        EXPECT_TRUE(framesOfType<QuicStreamFrame>(aborted.frames).empty()) << "作废之后不该再排数据帧";
+        ASSERT_EQ(aborted.announcements.size(), 1U);
+        EXPECT_TRUE(aborted.announcements.front().isResetStream);
+        EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("fgh"), false), 0U) << "复位之后不再收写";
+    }
+
+    /**
+     * @brief 判丢的在途数据不重发：那一侧的收尾交给 RESET_STREAM 交代（§3.5）
+     */
+    TEST(QuicStreamLayer, DoesNotRetransmitDataAfterLocalReset)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("hello"), false), 5U);
+        const Collected sent = collect(layer, 1200);
+        ASSERT_EQ(sent.ranges.size(), 1U);
+
+        layer.resetStreamSending(0x01, 0x010b);
+        layer.onSendRangesLost(sent.ranges);
+        const Collected afterLoss = collect(layer, 1200);
+        EXPECT_TRUE(framesOfType<QuicStreamFrame>(afterLoss.frames).empty()) << "判丢的段不该排回待发";
+        EXPECT_EQ(framesOfType<QuicResetStreamFrame>(afterLoss.frames).size(), 1U);
+    }
+
+    /**
+     * @brief 宣告在途不重发、判丢补发同一份、确认之后落定（§13.3「发到被确认为止」且内容不许变）
+     */
+    TEST(QuicStreamLayer, RetransmitsResetStreamOnlyWhileUnacknowledged)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        layer.resetStreamSending(0x01, 0x010b);
+
+        const Collected first = collect(layer, 1200);
+        ASSERT_EQ(first.announcements.size(), 1U);
+        EXPECT_FALSE(collect(layer, 1200).hasFrames) << "在途期间不重复发同一份宣告";
+        EXPECT_FALSE(layer.hasOutgoingFrames()) << "在途的宣告不该把出包循环吊住";
+
+        layer.onStreamAnnouncementsLost(first.announcements);
+        const std::vector<QuicResetStreamFrame> resent = framesOfType<QuicResetStreamFrame>(collect(layer, 1200).frames);
+        ASSERT_EQ(resent.size(), 1U);
+        EXPECT_EQ(resent.front().applicationErrorCode, 0x010bU);
+        EXPECT_EQ(resent.front().finalSize, 0U) << "补发的内容必须与第一份一致";
+
+        const Collected second = collect(layer, 1200);
+        layer.onStreamAnnouncementsAcknowledged(second.announcements);
+        EXPECT_FALSE(layer.hasOutgoingFrames()) << "已确认的宣告这辈子不再发第二遍";
+        EXPECT_FALSE(collect(layer, 1200).hasFrames);
+    }
+
+    /**
+     * @brief FIN 已经上线之后不再复位：那种情况对端迟早收齐，补 RESET 是自相矛盾
+     */
+    TEST(QuicStreamLayer, SkipsResetOnceFinalMarkerIsSent)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("abc"), true), 3U);
+        static_cast<void>(collect(layer, 1200));
+
+        layer.resetStreamSending(0x01, 0x010b);
+        EXPECT_TRUE(framesOfType<QuicResetStreamFrame>(collect(layer, 1200).frames).empty());
+    }
+
+    /**
+     * @brief 收到 STOP_SENDING 就要回一条 RESET_STREAM，错误码照抄（§3.5 的 MUST）
+     * @details 只作废队列不作废发送侧的话，对端会一直等那条流的收尾信号；本端被叫停之后
+     *          不可能再发 FIN，所以收尾只能由 RESET_STREAM 给出
+     */
+    TEST(QuicStreamLayer, AnswersStopSendingWithResetStream)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("hello"), false), 5U);
+        static_cast<void>(collect(layer, 1200));
+
+        QuicStopSendingFrame stopSending;
+        stopSending.streamId = 0x01;
+        stopSending.applicationErrorCode = 0x010b;
+        EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
+
+        const std::vector<QuicResetStreamFrame> resets = framesOfType<QuicResetStreamFrame>(collect(layer, 1200).frames);
+        ASSERT_EQ(resets.size(), 1U);
+        EXPECT_EQ(resets.front().applicationErrorCode, 0x010bU) << "错误码照抄对端的停发请求";
+        EXPECT_EQ(resets.front().finalSize, 5U);
+    }
+
+    /**
+     * @brief 请对端停发：编一条 STOP_SENDING，对端复位之后就不必再发（§3.5）
+     */
+    TEST(QuicStreamLayer, EmitsStopSendingForIncomingStreamUntilItIsTerminal)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, bytesOf("abc"))).has_value());
+        layer.stopStreamReceiving(0x00, 0x010b);
+
+        const Collected collected = collect(layer, 1200);
+        const std::vector<QuicStopSendingFrame> stops = framesOfType<QuicStopSendingFrame>(collected.frames);
+        ASSERT_EQ(stops.size(), 1U);
+        EXPECT_EQ(stops.front().streamId, 0x00U);
+        EXPECT_EQ(stops.front().applicationErrorCode, 0x010bU);
+        ASSERT_EQ(collected.announcements.size(), 1U);
+        EXPECT_FALSE(collected.announcements.front().isResetStream);
+
+        QuicResetStreamFrame reset;
+        reset.streamId = 0x00;
+        reset.finalSize = 3;
+        EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
+        // 让那条宣告重新变成待发：若它没被撤下，这一轮就会把一帧多余的 STOP_SENDING 发出去
+        layer.onStreamAnnouncementsLost(collected.announcements);
+        EXPECT_TRUE(framesOfType<QuicStopSendingFrame>(collect(layer, 1200).frames).empty()) << "对端已复位，停发请求不再必要";
+    }
+
+    /**
+     * @brief 本端没有入站记账的流不必请它停发：那种流上对端本来就不发字节
+     */
+    TEST(QuicStreamLayer, IgnoresStopRequestForStreamWithoutIncomingState)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        layer.stopStreamReceiving(0x03, 0x010b);
+        layer.stopStreamReceiving(0x08, 0x010b);
+        EXPECT_FALSE(layer.hasOutgoingFrames());
+        EXPECT_FALSE(collect(layer, 1200).hasFrames);
+    }
+
+    /**
+     * @brief 预算装不下一帧宣告时，它得留在待发里等下一包（§13.3 不能丢信号）
+     */
+    TEST(QuicStreamLayer, KeepsAbortAnnouncementPendingWhenBudgetIsTooSmall)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        layer.resetStreamSending(0x01, 0x010b);
+        // 一条 RESET_STREAM 至少五字节：三字节预算必须整帧退回
+        EXPECT_FALSE(collect(layer, 3).hasFrames);
+        EXPECT_TRUE(layer.hasOutgoingFrames()) << "被挤掉的宣告不能当成已经发过";
+        EXPECT_EQ(framesOfType<QuicResetStreamFrame>(collect(layer, 1200).frames).size(), 1U);
     }
 } // namespace AsynGyanis::Net

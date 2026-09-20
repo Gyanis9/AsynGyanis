@@ -134,12 +134,12 @@ namespace AsynGyanis::Net
         std::array<std::uint64_t, 3> ecnCounts{};                ///< 依次是 ECT(0)、ECT(1)、ECN-CE 的包数
     };
 
-    /// RESET_STREAM 帧（§19.4）：告知对端本端不再读这条流
+    /// RESET_STREAM 帧（§19.4）：告知对端本端不再发送这条流的剩余数据，收尾长度由本帧给出
     struct QuicResetStreamFrame
     {
         std::uint64_t streamId{0};           ///< 流号
         std::uint64_t applicationErrorCode{0}; ///< 应用错误码
-        std::uint64_t finalSize{0};          ///< 本端已处理到该偏移，之后的数据丢弃
+        std::uint64_t finalSize{0};          ///< 本端发送侧的收尾长度，重发时不得改变（§13.3）
     };
 
     /// STOP_SENDING 帧（§19.5）：要求对端别再往这条流上发
@@ -182,6 +182,21 @@ namespace AsynGyanis::Net
         bool isFinal{false};          ///< 本段是否带着 FIN
 
         [[nodiscard]] bool operator==(const QuicStreamRange &) const = default;
+    };
+
+    /**
+     * @brief 一个包里带出的一条流收口宣告（RESET_STREAM 或 STOP_SENDING）
+     *
+     * @details 记账单位与 `QuicStreamRange` 同类：这两类帧都「发到被确认为止」，所以流层要交出
+     *          「本包带了哪几条」，核心据此登记、确认时落定、判丢时补发同一份内容（RFC 9000 §13.3）。
+     *          定义同样放在帧这一层，因为恢复层与流层都要用，而恢复层不该反过来依赖流层。
+     */
+    struct QuicStreamAnnouncement
+    {
+        std::uint64_t streamId{0}; ///< 流号
+        bool isResetStream{false}; ///< true 是 RESET_STREAM（本端不再发），false 是 STOP_SENDING（请对端别再发）
+
+        [[nodiscard]] bool operator==(const QuicStreamAnnouncement &) const = default;
     };
 
     /**

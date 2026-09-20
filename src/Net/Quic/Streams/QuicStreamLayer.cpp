@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <format>
+#include <memory>
 #include <ranges>
 #include <utility>
 
@@ -67,6 +68,30 @@ namespace AsynGyanis::Net
         QuicStreamViolation makeViolation(const std::uint64_t errorCode, std::string reasonPhrase)
         {
             return QuicStreamViolation{errorCode, std::move(reasonPhrase)};
+        }
+
+        /**
+         * @brief 试着把一帧编进缓冲：装不下就原样退回，什么都不改
+         * @details 控制帧的宽度取决于变长整数落在哪一档，先编再看真实长度比先算再编省事；
+         *          退回必须把 `frames` 裁回原样，否则这一包会超出调用方给的预算。
+         * @param frames 目标帧缓冲
+         * @param byteBudget 本包还能装多少字节
+         * @param usedByteCount 已经用掉的字节数，就地累加
+         * @param frame 要编出去的帧
+         * @return true 已编进去并累加了长度；false 预算不够，缓冲保持原样
+         */
+        bool tryAppendFrame(std::string &frames, const std::size_t byteBudget, std::size_t &usedByteCount,
+                            const QuicFrame &frame)
+        {
+            const std::size_t beforeByteCount = frames.size();
+            appendQuicFrame(frames, frame);
+            if (frames.size() - beforeByteCount > byteBudget - usedByteCount)
+            {
+                frames.resize(beforeByteCount);
+                return false;
+            }
+            usedByteCount += frames.size() - beforeByteCount;
+            return true;
         }
 
         /**
@@ -239,6 +264,8 @@ namespace AsynGyanis::Net
         if (stream.finalOffset.has_value() && stream.reassembly.deliveredOffset() == *stream.finalOffset)
         {
             stream.isFinished = true;
+            // 收齐了对端的字节：再请它停发就是多余的一帧（§3.5）
+            stream.receiveStop.reset();
         }
         return {};
     }
@@ -324,6 +351,8 @@ namespace AsynGyanis::Net
         }
         stream.finalOffset = frame.finalSize;
         stream.isReset = true;
+        // 对端既然已经复位，欠着的停发请求就没有必要再发了（§3.5）
+        stream.receiveStop.reset();
         // 乱序缓存作废，但 receivedHighWaterOffset 不动：复位不退还已经占掉的连接级额度（§4.1）
         stream.reassembly = QuicReassemblyBuffer{};
         m_abortedStreams.push_back(frame.streamId);
@@ -343,10 +372,17 @@ namespace AsynGyanis::Net
         {
             return {};
         }
-        // 待发队列作废；在途账留着，那些包的确认还要按区间销账（§4.5 允许忽略 STOP_SENDING，
-        // 但既然本端决定不再发，就顺手把排着的字节丢掉并通知上层）
+        // 待发队列作废：本端既然被叫停，就不该再把字节往这条流上排
         stream.pendingQueue.clear();
         stream.isAborted = true;
+        // §3.5：收到停发请求而本端还没发完，就必须回一条 RESET_STREAM，错误码照抄过去。FIN 已经
+        // 上线的除外——那种情况对端迟早收齐，补复位反而多余
+        if (!stream.isFinalSentToPeer && !stream.sendAbort.has_value())
+        {
+            stream.sendAbort = AbortAnnouncement{frame.applicationErrorCode, stream.sentHighWater, false, false};
+            stream.finalOffset = stream.sentHighWater;
+            stream.inFlight.clear();
+        }
         m_abortedStreams.push_back(frame.streamId);
         return {};
     }
@@ -385,6 +421,42 @@ namespace AsynGyanis::Net
         return acceptedByteCount;
     }
 
+    void QuicStreamLayer::resetStreamSending(const std::uint64_t streamId, const std::uint64_t applicationErrorCode)
+    {
+        OutgoingStream &stream = outgoingStream(streamId);
+        if (stream.sendAbort.has_value() || stream.isFinalSentToPeer)
+        {
+            // 已经放弃过：RESET 的内容一旦上线就不许改（§13.3）；FIN 已上线则发送侧本就收口了，
+            // 再复位只会让对端看到「收齐之后又被复位」这种自相矛盾的信号
+            return;
+        }
+        // 收尾长度取「曾上线的最大结束偏移」而不是上层写过的字节数：没上过线的偏移对端没见过，
+        // 报上去会被判越界（§4.5）
+        const std::uint64_t finalSize = stream.sentHighWater;
+        stream.sendAbort = AbortAnnouncement{applicationErrorCode, finalSize, false, false};
+        stream.finalOffset = finalSize; // 从此拒绝再写这条流
+        stream.pendingQueue.clear();
+        // 在途账一并丢掉：这些包若判丢，不该再重发数据，改由 RESET_STREAM 交代收尾（§3.5）
+        stream.inFlight.clear();
+    }
+
+    void QuicStreamLayer::stopStreamReceiving(const std::uint64_t streamId, const std::uint64_t applicationErrorCode)
+    {
+        auto incoming = m_incoming.find(streamId);
+        if (incoming == m_incoming.end())
+        {
+            // 本端没有这条流的入站记账：要么它还不存在，要么是本端只能发的那一档，两种都没什么可停的
+            return;
+        }
+        IncomingStream &stream = incoming->second;
+        if (stream.isReset || stream.receiveStop.has_value())
+        {
+            // 对端已复位（或本端已请过）：停发只对还在收的流有意义（§3.5）
+            return;
+        }
+        stream.receiveStop = AbortAnnouncement{applicationErrorCode, 0, false, false};
+    }
+
     std::optional<std::uint64_t> QuicStreamLayer::openUnidirectionalStream()
     {
         const std::uint64_t streamId = m_nextUnidirectionalStreamId;
@@ -399,12 +471,62 @@ namespace AsynGyanis::Net
     }
 
     bool QuicStreamLayer::collectFrames(std::string &frames, const std::size_t byteBudget,
-                                        std::vector<QuicStreamRange> &sentRanges)
+                                        std::vector<QuicStreamRange> &sentRanges,
+                                        std::vector<QuicStreamAnnouncement> &announcements)
     {
-        const std::size_t windowUpdateByteCount = collectWindowUpdates(frames, byteBudget);
+        // 收口宣告最先编：它不占流量控制额度，却是「对端还要不要等下去」的答案
+        const std::size_t announcementByteCount = collectAbortAnnouncements(frames, byteBudget, announcements);
+        const std::size_t remainingAfterAnnouncements =
+                byteBudget > announcementByteCount ? byteBudget - announcementByteCount : 0;
+        const std::size_t windowUpdateByteCount = collectWindowUpdates(frames, remainingAfterAnnouncements);
         // 数据帧只能花窗口更新剩下的那一截：各算各的预算会让这一包超出调用方给的上限
-        const std::size_t remainingBudget = byteBudget > windowUpdateByteCount ? byteBudget - windowUpdateByteCount : 0;
-        return windowUpdateByteCount + collectStreamData(frames, remainingBudget, sentRanges) > 0;
+        const std::size_t remainingBudget =
+                remainingAfterAnnouncements > windowUpdateByteCount ? remainingAfterAnnouncements - windowUpdateByteCount : 0;
+        return announcementByteCount + windowUpdateByteCount +
+                       collectStreamData(frames, remainingBudget, sentRanges) >
+               0;
+    }
+
+    std::size_t QuicStreamLayer::collectAbortAnnouncements(
+            std::string &frames, const std::size_t byteBudget, std::vector<QuicStreamAnnouncement> &announcements)
+    {
+        std::size_t usedByteCount = 0;
+        for (auto &[streamId, stream] : m_outgoing)
+        {
+            const std::optional<AbortAnnouncement> &abort = stream.sendAbort;
+            if (!abort.has_value() || abort->isInFlight || abort->isAcknowledged)
+            {
+                continue;
+            }
+            QuicResetStreamFrame reset;
+            reset.streamId = streamId;
+            reset.applicationErrorCode = abort->applicationErrorCode;
+            reset.finalSize = abort->finalSize;
+            if (!tryAppendFrame(frames, byteBudget, usedByteCount, QuicFrame{reset}))
+            {
+                continue; // 预算不够：这一包不带，下一包再补同一份内容
+            }
+            stream.sendAbort->isInFlight = true;
+            announcements.push_back(QuicStreamAnnouncement{streamId, true});
+        }
+        for (auto &[streamId, stream] : m_incoming)
+        {
+            const std::optional<AbortAnnouncement> &stop = stream.receiveStop;
+            if (!stop.has_value() || stop->isInFlight || stop->isAcknowledged)
+            {
+                continue;
+            }
+            QuicStopSendingFrame stopSending;
+            stopSending.streamId = streamId;
+            stopSending.applicationErrorCode = stop->applicationErrorCode;
+            if (!tryAppendFrame(frames, byteBudget, usedByteCount, QuicFrame{stopSending}))
+            {
+                continue;
+            }
+            stream.receiveStop->isInFlight = true;
+            announcements.push_back(QuicStreamAnnouncement{streamId, false});
+        }
+        return usedByteCount;
     }
 
     std::size_t QuicStreamLayer::collectWindowUpdates(std::string &frames, const std::size_t byteBudget)
@@ -413,15 +535,10 @@ namespace AsynGyanis::Net
         // 编码后量一次真实长度，装不下就退回原样：控制帧的宽度取决于变长整数档位，算不如量
         const auto tryAppend = [&](const QuicFrame &frame, bool &isPending)
         {
-            const std::size_t beforeByteCount = frames.size();
-            appendQuicFrame(frames, frame);
-            if (frames.size() - beforeByteCount > byteBudget - usedByteCount)
+            if (tryAppendFrame(frames, byteBudget, usedByteCount, frame))
             {
-                frames.resize(beforeByteCount);
-                return;
+                isPending = false;
             }
-            usedByteCount += frames.size() - beforeByteCount;
-            isPending = false;
         };
 
         if (m_connectionWindowUpdatePending)
@@ -534,6 +651,11 @@ namespace AsynGyanis::Net
                     stream.sentHighWater = endOffset;
                 }
                 sentRanges.push_back(QuicStreamRange{streamId, front.beginOffset, endOffset, carriesFinal});
+                if (carriesFinal)
+                {
+                    // 记一笔「FIN 已上线」：本端发送侧就此收口，之后不必也不该再发 RESET_STREAM（§3.5）
+                    stream.isFinalSentToPeer = true;
+                }
                 stream.inFlight[front.beginOffset] = QuicStreamChunk{
                         front.beginOffset,
                         std::vector<std::uint8_t>(front.bytes.begin(), front.bytes.begin() + static_cast<std::ptrdiff_t>(payloadByteLength)),
@@ -558,9 +680,16 @@ namespace AsynGyanis::Net
 
     bool QuicStreamLayer::hasOutgoingFrames() const noexcept
     {
+        // 在途或已确认的宣告都不算「还欠着」：否则这一条会把出包循环永远吊住
+        const auto owesAnnouncement = [](const std::optional<AbortAnnouncement> &announcement)
+        { return announcement.has_value() && !announcement->isInFlight && !announcement->isAcknowledged; };
         return m_connectionWindowUpdatePending || m_streamsBidirectionalUpdatePending ||
                m_streamsUnidirectionalUpdatePending ||
                std::ranges::any_of(m_incoming, [](const auto &entry) { return entry.second.windowUpdatePending; }) ||
+               std::ranges::any_of(m_incoming,
+                                   [&](const auto &entry) { return owesAnnouncement(entry.second.receiveStop); }) ||
+               std::ranges::any_of(m_outgoing,
+                                   [&](const auto &entry) { return owesAnnouncement(entry.second.sendAbort); }) ||
                std::ranges::any_of(m_outgoing, [](const auto &entry)
                { return !entry.second.isAborted && !entry.second.pendingQueue.empty(); });
     }
@@ -671,6 +800,11 @@ namespace AsynGyanis::Net
             }
             QuicStreamChunk lost = std::move(inFlight->second);
             stream->second.inFlight.erase(inFlight);
+            if (range.isFinal)
+            {
+                // 带 FIN 的那段没了指望：发送侧还没收口，之后收到停发请求要按 §3.5 补一条复位
+                stream->second.isFinalSentToPeer = false;
+            }
             if (stream->second.isAborted)
             {
                 // 已经被叫停：判丢的段不必再排回去
@@ -684,6 +818,54 @@ namespace AsynGyanis::Net
         {
             std::ranges::sort(stream.pendingQueue, {}, &QuicStreamChunk::beginOffset);
         }
+    }
+
+    void QuicStreamLayer::onStreamAnnouncementsAcknowledged(const std::vector<QuicStreamAnnouncement> &acknowledgedAnnouncements)
+    {
+        for (const QuicStreamAnnouncement &announcement : acknowledgedAnnouncements)
+        {
+            AbortAnnouncement *target = abortAnnouncementOf(announcement);
+            if (target == nullptr)
+            {
+                continue;
+            }
+            // 落定之后这一帧这辈子不再发第二遍（§13.3 只要「发到被确认为止」）
+            target->isAcknowledged = true;
+            target->isInFlight = false;
+        }
+    }
+
+    void QuicStreamLayer::onStreamAnnouncementsLost(const std::vector<QuicStreamAnnouncement> &lostAnnouncements)
+    {
+        for (const QuicStreamAnnouncement &announcement : lostAnnouncements)
+        {
+            AbortAnnouncement *target = abortAnnouncementOf(announcement);
+            if (target == nullptr || target->isAcknowledged)
+            {
+                // 已经有一份被确认过就不再补发：乱序里「先判丢后确认」的包不该复活一帧已落定的宣告
+                continue;
+            }
+            target->isInFlight = false; // 下一包补发同一份内容（§13.3：内容不许变）
+        }
+    }
+
+    QuicStreamLayer::AbortAnnouncement *QuicStreamLayer::abortAnnouncementOf(const QuicStreamAnnouncement &announcement)
+    {
+        if (announcement.isResetStream)
+        {
+            const auto outgoing = m_outgoing.find(announcement.streamId);
+            if (outgoing != m_outgoing.end() && outgoing->second.sendAbort.has_value())
+            {
+                return std::addressof(*outgoing->second.sendAbort);
+            }
+            return nullptr;
+        }
+        const auto incoming = m_incoming.find(announcement.streamId);
+        if (incoming != m_incoming.end() && incoming->second.receiveStop.has_value())
+        {
+            return std::addressof(*incoming->second.receiveStop);
+        }
+        return nullptr;
     }
 
     QuicStreamLayer::OutgoingStream &QuicStreamLayer::outgoingStream(const std::uint64_t streamId)

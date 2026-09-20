@@ -498,6 +498,7 @@ namespace AsynGyanis::Net
         for (const QuicSentPacketInfo &packet : update.acknowledged)
         {
             m_streams.onSendRangesAcknowledged(packet.streamRanges);
+            m_streams.onStreamAnnouncementsAcknowledged(packet.streamAnnouncements);
             if (packet.carriesHandshakeDone)
             {
                 // §19.20 的「重发到被确认为止」到此为止：确认回来之后这一帧这辈子不再发第二遍
@@ -781,12 +782,13 @@ namespace AsynGyanis::Net
             }
 
             std::vector<QuicStreamRange> sentRanges;
+            std::vector<QuicStreamAnnouncement> announcements;
             bool carriesStreamFrames = false;
             if (space == PacketNumberSpace::Application)
             {
                 // 握手字节的产出排在流数据之前：进入用空间通常只有会话票据会占那条通道
                 carriesStreamFrames = m_streams.collectFrames(
-                        frames, sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace), sentRanges);
+                        frames, sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace), sentRanges, announcements);
                 elicitsAcknowledgement = elicitsAcknowledgement || carriesStreamFrames;
             }
 
@@ -808,7 +810,8 @@ namespace AsynGyanis::Net
             }
             const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
             const bool hasMoreWork = hasMoreCrypto || (space == PacketNumberSpace::Application && m_streams.hasOutgoingFrames());
-            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone);
+            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone,
+                       std::move(announcements));
             if (!hasMoreWork || (!carriedRange.has_value() && !carriesStreamFrames))
             {
                 // 已经没有下文，或这一包被预算挤得一个字节都没带上：再转一圈也只是空转
@@ -834,6 +837,9 @@ namespace AsynGyanis::Net
                 // 这一包没了指望，它带的 DONE 也就没人再认账了：销账，下一轮出包补一份（§19.20）
                 m_isHandshakeDoneInFlight = false;
             }
+            // §13.3：复位与停发都「发到被确认为止」，这一包没了指望就得把宣告重新排回待发。
+            // 判丢（按包号）与探测超时（按时间）两条路都走这里，所以登记只在这一处
+            m_streams.onStreamAnnouncementsLost(packet.streamAnnouncements);
         }
         // 相邻或重叠的区间合并：同一段字节被两个包各带过一次时不该重发两遍，队列也不该无限增长
         std::ranges::sort(ranges, {}, &QuicCryptoRange::beginOffset);
@@ -859,7 +865,8 @@ namespace AsynGyanis::Net
 
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now,
                                         const bool isAckEliciting, const std::optional<QuicCryptoRange> cryptoRange,
-                                        std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone)
+                                        std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone,
+                                        std::vector<QuicStreamAnnouncement> streamAnnouncements)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
@@ -887,6 +894,7 @@ namespace AsynGyanis::Net
         record.isAckEliciting = isAckEliciting;
         record.cryptoRange = cryptoRange;
         record.streamRanges = std::move(streamRanges);
+        record.streamAnnouncements = std::move(streamAnnouncements);
         record.carriesHandshakeDone = carriesHandshakeDone;
         if (carriesHandshakeDone)
         {

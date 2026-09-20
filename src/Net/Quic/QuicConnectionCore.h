@@ -307,10 +307,11 @@ namespace AsynGyanis::Net
          * @param cryptoRange 本包带的握手字节区间，判丢时按它补发
          * @param streamRanges 本包带的流数据区间，确认与判丢都按它回收额度
          * @param carriesHandshakeDone 本包是否带了 HANDSHAKE_DONE：它要在被确认之前一直重发（§19.20）
+         * @param streamAnnouncements 本包带出的流收口宣告，确认与判丢同样按它回收（§13.3）
          */
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting,
                         std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges = {},
-                        bool carriesHandshakeDone = false);
+                        bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {});
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
