@@ -14,6 +14,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
@@ -70,6 +71,10 @@ namespace AsynGyanis::Net
             /// request-id 生成器（可空：空表示 h3 不为请求落定 id）。**与 HTTP 侧共用同一个实例**：
             /// 同一来源不管走 h1/h2 还是 h3，日志与 x-request-id 里的前缀都指向同一台服务器
             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator;
+            /// 连接级限额（可空）：目前用到「单连接最多处理多少条请求」——达到后 h3 会话发 GOAWAY
+            /// 排空，在途请求答完再由本服务端收掉这条连接。空闲时长不在此列：QUIC 自带
+            /// `idleTimeout`，那是传输层的收口时刻，与 HTTP 侧的 keep-alive 空闲不是一回事
+            std::shared_ptr<const HttpServerLimits> serverLimits;
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);

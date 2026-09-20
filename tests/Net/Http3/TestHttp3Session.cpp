@@ -2067,7 +2067,67 @@ namespace AsynGyanis::Net
 
         Http3ClientPeer peer;
         ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/plain");
         EXPECT_EQ(response.headers.count("x-request-id"), 0U) << "空 id 也要回显，等于给对端一个空头";
+    }
+
+    /**
+     * @brief 单连接请求条数到量后 h3 会排空：答完在途的，就不再受理新流
+     * @details h1/h2 早就有 maximumRequestsPerConnection（回完当前响应即收口），h3 此前无上限：
+     *          一条长连接可以被无限期复用。这里把上限调到 2，避免用例真去刷满默认值
+     */
+    TEST(Http3Session, DrainsConnectionAfterThePerRequestLimit)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        const auto limits = std::make_shared<HttpServerLimits>();
+        limits->maximumRequestsPerConnection = 2;
+        session.setServerLimits(limits);
+
+        Router router;
+        router.get("/limit",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("ok");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        // 一条请求一轮：提交、喂会话、派发、把服务端的字节交回客户端
+        const auto serveOne = [&](const std::int64_t requestStreamId)
+        {
+            sentStreamData.clear();
+            const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/limit", "example.com", requestStreamId);
+            for (const CapturedStreamData &chunk: requestChunks)
+            {
+                session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+            for (const CapturedStreamData &chunk: sentStreamData)
+            {
+                peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+        };
+
+        serveOne(kFirstRequestStreamId);
+        EXPECT_EQ(peer.response().status, 200);
+        EXPECT_FALSE(session.isDrainedAndFinished()) << "只答了一条，远没到上限";
+
+        serveOne(4);
+        EXPECT_EQ(peer.response().status, 200) << "上限这条响应本身必须照常答完";
+        EXPECT_TRUE(session.isDrainedAndFinished()) << "到量之后应当已通告排空且手上没活";
+
+        // 第三条走新流号：排空之后不该再有它的任何字节
+        serveOne(8);
+        EXPECT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 8; }))
+                << "GOAWAY 之后的新流不该被处理，更不该往回写东西";
     }
 } // namespace AsynGyanis::Net

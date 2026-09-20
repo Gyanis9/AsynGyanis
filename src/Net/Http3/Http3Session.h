@@ -11,6 +11,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpMemoryBudget.h"
@@ -123,6 +124,20 @@ namespace AsynGyanis::Net
          * @note 必须在收到第一个请求之前设置（服务端在装配会话时调用）
          */
         void setParserLimits(HttpParserLimits limits) noexcept;
+
+        /**
+         * @brief 设置连接级限额（单连接最多处理多少条请求），与 h1/h2 同一份配置
+         * @param limits 限额快照；传空指针表示不设（本会话不因请求条数收口）
+         * @note 达到上限后的处置与 h1/h2 不同处只在承载：这里发 GOAWAY 让对端换连接，
+         *       在途请求做完后由承载层收掉这条连接
+         */
+        void setServerLimits(std::shared_ptr<const HttpServerLimits> limits) noexcept;
+
+        /**
+         * @brief 是否「已通告排空且手上没活」：承载层据此可以收掉这条连接
+         * @details 两个条件都要——只看过 GOAWAY 但还有请求在跑就收，等于把在途响应丢掉
+         */
+        [[nodiscard]] bool isDrainedAndFinished() const noexcept;
 
         /**
          * @brief 会话是否可用（三条本端单向流都开出来了）
@@ -574,6 +589,11 @@ namespace AsynGyanis::Net
         void answerMalformedRequest(std::int64_t streamId, std::string_view reason);
 
         /**
+         * @brief 记下一条已答完的请求：达到单连接上限就地发 GOAWAY 排空
+         */
+        void noteRequestServed();
+
+        /**
          * @brief 给请求落定 request-id（可采信就沿用客户端给的，否则新生成一个）
          * @param request 已收齐、正要交给路由的请求
          */
@@ -625,6 +645,9 @@ namespace AsynGyanis::Net
         /// request-id 生成器（可空）：与服务器共享一份，前缀标识服务器实例
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;
         HttpParserLimits          m_parserLimits{};      ///< 请求解析上限（正文总量上限等）
+        /// 连接级限额（可空）：目前用到的是「单连接最多处理多少条请求」
+        std::shared_ptr<const HttpServerLimits> m_serverLimits;
+        std::size_t               m_servedRequestCount{0};   ///< 本会话已答完的请求条数，达到上限即排空
         bool                      m_isUsable{false};     ///< 三条本端单向流是否都开出来了
         bool                      m_isBroken{false};     ///< 是否已作废
         /// 正在接收的请求：键是流号

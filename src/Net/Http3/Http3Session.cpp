@@ -467,6 +467,8 @@ namespace AsynGyanis::Net
                     m_metrics->countResponseStatus(response.status());
                 }
             }
+            // 答完一条就记一笔：单连接请求条数上限靠它触发排空
+            noteRequestServed();
         }
 
         flushPendingStreamData();
@@ -1364,6 +1366,32 @@ namespace AsynGyanis::Net
             {
                 handleResponseSubmissionFailure(streamId, "提交响应正文", appended.error().message, toHttp3ErrorCode(appended.error().kind));
             }
+        }
+    }
+
+    void Http3Session::setServerLimits(const std::shared_ptr<const HttpServerLimits> limits) noexcept
+    {
+        m_serverLimits = std::move(limits);
+    }
+
+    bool Http3Session::isDrainedAndFinished() const noexcept
+    {
+        // 两个条件缺一不可：只看过 GOAWAY 但手上还有请求，收连接就是把在途响应丢掉
+        return m_connection != nullptr && m_connection->isDraining() && !hasOutstandingWork();
+    }
+
+    void Http3Session::noteRequestServed()
+    {
+        ++m_servedRequestCount;
+        if (m_serverLimits == nullptr || m_serverLimits->maximumRequestsPerConnection == 0)
+        {
+            return;
+        }
+        if (m_servedRequestCount >= m_serverLimits->maximumRequestsPerConnection)
+        {
+            // 到量就通告排空（与 h1/h2「回完当前响应即收口」同一意图），对端按 GOAWAY 换一条连接；
+            // 这条连接等在途做完后由承载层收掉（见 QuicServer::pumpHttp3For）
+            static_cast<void>(beginGracefulShutdown());
         }
     }
 

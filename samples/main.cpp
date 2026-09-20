@@ -592,6 +592,8 @@ int main(int argc, char **argv)
         http3Configuration.metricsCollector = http3MetricsCollector;
         // request-id 与两条 TCP 通道共用一份生成器：同一台机器上 h3 的 id 前缀不该另起一套
         http3Configuration.requestIdGenerator = http3RequestIdGenerator;
+        // 连接级限额同样一份：h3 的「单连接最多多少条请求」与两条 TCP 通道同值
+        http3Configuration.serverLimits = std::make_shared<const Net::HttpServerLimits>(configuration.limits);
 
         try
         {

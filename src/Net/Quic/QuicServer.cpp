@@ -287,6 +287,8 @@ namespace AsynGyanis::Net
         // 解析上限必须显式交给会话：默认构造的上限虽然安全，但调用方在 Configuration 里
         // 调过的值（例如放宽正文上限）必须真的生效，否则「配置了却不生效」更难排查
         session->setParserLimits(m_configuration.parserLimits);
+        // 连接级限额同样要交下去：单连接请求条数到量后排空，靠的就是这一份
+        session->setServerLimits(m_configuration.serverLimits);
 
         Http3Session &createdSession = *session;
         m_http3Sessions.emplace(rawConnection, std::move(session));
@@ -328,6 +330,12 @@ namespace AsynGyanis::Net
             // handleDatagram 里那次 flush 发生在业务之前（SETTINGS 那批因此出得去，
             // 而响应留在队列里等下一次定时器把它想起来——实测客户端就是干等超时）
             co_await connection.flush();
+            // 已排空且手上没活：这条连接的使命结束了（对端早收到过 GOAWAY，不会再往它上面发新请求）。
+            // 单连接请求条数到量、或调用方主动 drain 过一条连接，都从这里收口
+            if (session->isDrainedAndFinished())
+            {
+                connection.requestClose();
+            }
         }
         co_return;
     }
