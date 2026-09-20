@@ -5,7 +5,7 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-2346-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-2350-brightgreen)]()
 
 ## 特性
 
@@ -389,7 +389,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**2346 个用例**（MSVC/Windows 全绿口径；Linux/GCC 侧 2355 个，两侧差额全是平台专属用例：Linux 的 epoll 与 `sendfile` 零拷贝、进程终止，Windows 的 IOCP 批量等待与多进程禁用判定）。其中 36 个是真机门控用例，无凭据即 SKIP
+- 当前规模：**2350 个用例**（MSVC/Windows 全绿口径；Linux/GCC 侧 2359 个，两侧差额全是平台专属用例：Linux 的 epoll 与 `sendfile` 零拷贝、进程终止，Windows 的 IOCP 批量等待与多进程禁用判定）。其中 36 个是真机门控用例，无凭据即 SKIP
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
