@@ -11,7 +11,8 @@
     "所以轮次间的离散只有几个百分点（见表里的 observedNanosecondsRange）——对比时可以把下限收紧到 0.8，",
     "不必用服务端压测那份基线的 0.6（那边 Python 客户端的开销与后台负载占主导，噪声有 1.5~2 倍）。",
     "被测输入的形态写在 microbench/main.cpp 顶部：同一份头部反复编解码（编解码器复用）、一条带 10 个头与",
-    "64 字节正文的 h1 请求、一帧 200 字节头块的 HEADERS。换输入形态结果会变，跨机器比之前先确认两边一致。"
+    "64 字节正文的 h1 请求、一帧 200 字节头块的 HEADERS。换输入形态结果会变，跨机器比之前先确认两边一致。",
+    "header-* 五例是头部存储的读路径：它们共同的 280~290 ns 本底来自「装 10 条头部」（header-refill-only 就是这一例，它自己不查任何东西），比读路径快慢时要先减掉这个本底，否则会误判成读路径的开销。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -74,6 +75,51 @@
       "observedNanosecondsRange": [
         91.0,
         92.3
+      ],
+      "runsMeasured": 3
+    },
+    "header-refill-only": {
+      "throughputPerSecond": 3498271,
+      "nanosecondsPerOperation": 285.9,
+      "observedNanosecondsRange": [
+        283.1,
+        287.6
+      ],
+      "runsMeasured": 3
+    },
+    "header-get-once": {
+      "throughputPerSecond": 2957765,
+      "nanosecondsPerOperation": 338.1,
+      "observedNanosecondsRange": [
+        334.0,
+        341.1
+      ],
+      "runsMeasured": 3
+    },
+    "header-get-five": {
+      "throughputPerSecond": 2154773,
+      "nanosecondsPerOperation": 464.1,
+      "observedNanosecondsRange": [
+        462.3,
+        464.4
+      ],
+      "runsMeasured": 3
+    },
+    "header-token-hit": {
+      "throughputPerSecond": 3257490,
+      "nanosecondsPerOperation": 307.0,
+      "observedNanosecondsRange": [
+        305.6,
+        308.3
+      ],
+      "runsMeasured": 3
+    },
+    "header-first-value": {
+      "throughputPerSecond": 3036338,
+      "nanosecondsPerOperation": 329.3,
+      "observedNanosecondsRange": [
+        322.5,
+        330.1
       ],
       "runsMeasured": 3
     }
