@@ -38,3 +38,9 @@ asyn_add_sample(core_tls core_tls/main.cpp)
 
 # Core 多进程：WorkerSupervisor 的起停、崩溃补位与「起来就崩」的次数上限
 asyn_add_sample(core_worker core_worker/main.cpp)
+
+# Net HTTP/1.1：路由与中间件、解析上限、分块与 SSE、WebSocket、限额、观测端点、优雅收口
+asyn_add_sample(net_http_demo net_http_demo/main.cpp)
+
+# Net TLS 与 HTTP/2：ALPN 协商、h2c 明文、多路复用、GOAWAY 排空与解析上限
+asyn_add_sample(net_https_h2_demo net_https_h2_demo/main.cpp)
