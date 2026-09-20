@@ -38,7 +38,7 @@ ctest --test-dir build/debug --output-on-failure
 ## 开发流程
 
 1. **Fork & Clone**: 从 `main` 分支创建功能分支
-2. **编码**: 遵循 `.clang-format` 风格（`clang-format -i src/**/*.{cpp,h}`）
+2. **编码**: 新增代码对齐 `.clang-format` 与周围既有风格。仓库从未整体格式化过，**别对既有文件整文件跑 `clang-format -i`**：一刀切会改出几百个文件的无关 diff，把真正的改动淹掉
 3. **静态检查**: 运行 `clang-tidy -p build/debug src/<changed-file>`
 4. **测试**: 确保 `ctest --output-on-failure` 全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
