@@ -761,6 +761,13 @@ namespace AsynGyanis::Net
         const HttpMethod   method          = HttpRequest::methodFromString(methodText);
         const std::string  uri             = pathText.empty() ? std::string("/") : pathText;
 
+        // 头收齐、正文还在路上的这一刻回 100（与 h2 同一时机）。扩展 CONNECT 排除在外：
+        // 隧道里没有「请求正文」这回事，对端随后发来的是 WebSocket 帧
+        if (protocolText.empty())
+        {
+            answerExpectContinueIfRequested(streamId, incoming);
+        }
+
         // 扩展 CONNECT（RFC 9220）要在**头收齐时**就派发：隧道建立之后对端才会在同一
         // 条流上发 WebSocket 帧，等 end_stream 就等于永远等不到（对方不会结束这条流）
         if (methodText == "CONNECT" && protocolText == "websocket")
@@ -1294,6 +1301,37 @@ namespace AsynGyanis::Net
             {
                 handleResponseSubmissionFailure(streamId, "提交响应正文", appended.error().message, toHttp3ErrorCode(appended.error().kind));
             }
+        }
+    }
+
+    void Http3Session::answerExpectContinueIfRequested(const std::int64_t streamId, const IncomingRequest &incoming)
+    {
+        if (m_connection == nullptr)
+        {
+            return;
+        }
+        if (!isContinueExpected(incoming.request.getHeader("expect").value_or(std::string{})))
+        {
+            return;
+        }
+
+        // 这一刻还没有 DATA，也无从知道正文到底会不会来：只在请求声明了正的 content-length 时回，
+        // 免得给「带 Expect 却没有正文」的请求凭空塞一个 100。真没声明长度又确实要发正文的对端，
+        // 按 RFC 9110 §10.1.1 的兜底走「等自己的 expect 超时后照发」，不会卡死
+        std::size_t declaredBodyByteCount = 0;
+        if (!parseContentLengthValue(incoming.request.getHeader("content-length").value_or(std::string{}), declaredBodyByteCount) ||
+            declaredBodyByteCount == 0)
+        {
+            LOG_DEBUG_FMT("Http3Session: 流 {} 带 Expect: 100-continue 却没声明正的正文长度，不回 100", streamId);
+            return;
+        }
+
+        // 只交一个 :status 100 的头块，不收尾也不带正文（RFC 9114 §5.3.2 的信息性响应）。
+        // 失败不外抛也不改答：100 只是催对端发正文，真正的问题会在随后交最终响应时暴露出来
+        const std::vector<QpackHeaderField> fieldLines{QpackHeaderField{.name = kStatusHeaderName, .value = "100"}};
+        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, false); !submitted)
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 的 100 Continue 未能排进待发字节。原因：{}", streamId, submitted.error().message);
         }
     }
 

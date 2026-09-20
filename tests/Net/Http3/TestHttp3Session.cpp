@@ -100,7 +100,9 @@ namespace AsynGyanis::Net
             /// 解出来的响应
             struct DecodedResponse
             {
-                int                                status{0};     ///< :status
+                int                                status{0};     ///< :status（最后一条，即最终响应）
+                /// 按到达顺序记下的全部 :status：信息性响应（100/103）会排在最终响应之前
+                std::vector<int>                   statuses;
                 std::map<std::string, std::string> headers;      ///< 其余头部（同名只留最后一条）
                 /// 全部响应字段按到达顺序逐条记下：可重复头（Set-Cookie）只有这里能数出条数
                 std::vector<std::pair<std::string, std::string>> headerFields;
@@ -183,16 +185,26 @@ namespace AsynGyanis::Net
              * @param authority 权威主机（:authority）
              * @param body 正文
              * @param chunkByteCount 每次回调给出的字节数（分批到达就是这样造出来的）
+             * @param extraHeaders 伪头之后追加的普通头（如 expect、content-length）：
+             *        nghttp3 只按显式给出的字段编头块，不会自己补这些
              * @return true 请求已提交（字节要靠 takeNextWriteStep() 逐步取出）
              */
             bool submitRequestWithBody(const std::string &method, const std::string &path, const std::string &authority, std::string body,
-                                       const std::size_t chunkByteCount)
+                                       const std::size_t chunkByteCount,
+                                       const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
                 m_requestBody           = std::move(body);
                 m_requestBodyOffset     = 0;
                 m_requestChunkByteCount = chunkByteCount;
 
-                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
+                std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
+                for (const auto &[name, value]: extraHeaders)
+                {
+                    // nghttp3_nv 只存指针：参数是调用方持有的引用，寿命覆盖到本次提交
+                    headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name.data()),
+                                                     reinterpret_cast<const std::uint8_t *>(value.data()), name.size(), value.size(),
+                                                     NGHTTP3_NV_FLAG_NONE});
+                }
                 nghttp3_data_reader           dataReader{};
                 dataReader.read_data = readRequestBody;
                 return nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), &dataReader,
@@ -438,6 +450,7 @@ namespace AsynGyanis::Net
             if (headerName == ":status")
             {
                 peer->m_response.status = std::atoi(headerValue.c_str());
+                peer->m_response.statuses.push_back(peer->m_response.status);
             } else
             {
                 peer->m_response.headerFields.emplace_back(headerName, headerValue);
@@ -1037,6 +1050,104 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.status, 500) << "越界状态码没有改回 500，而是把这条流的响应废掉了";
         EXPECT_EQ(response.body, "boom");
         EXPECT_TRUE(response.isComplete) << "改回 500 之后这条流仍要正常收尾";
+    }
+
+    /**
+     * @brief 带 Expect: 100-continue 且声明了正文长度的请求，先收到 100 再收到最终响应
+     * @details h1 与 h2 都会先回一个 100 催对端把正文发完（RFC 9110 §10.1.1）；h3 此前不接这个头，
+     *          严格等 100 的对端只能靠自己的 expect 超时兜底。信息性响应是一条不带 END_STREAM
+     *          的 HEADERS（RFC 9114 §5.3.2），随后才是最终响应
+     */
+    TEST(Http3Session, AnswersContinueInformationallyBeforeTheFinalResponse)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.post("/upload",
+                    [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.setStatus(201);
+                        response.setBody(std::string(request.body()));
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4,
+                                               {{"expect", "100-continue"}, {"content-length", "4"}}))
+                << "客户端没能提交这条带正文的请求";
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        const Http3ClientPeer::DecodedResponse response = peer.response();
+        ASSERT_EQ(response.statuses.size(), 2U) << "应当有一条信息性响应加一条最终响应，实际收到的状态码序列不符";
+        EXPECT_EQ(response.statuses[0], 100) << "第一条应是 100 Continue：对端在等它才敢发正文";
+        EXPECT_EQ(response.statuses[1], 201) << "最终响应要照旧给出";
+        EXPECT_EQ(response.body, "abcd") << "正文没有完整交给业务";
+        EXPECT_TRUE(response.isComplete) << "这条流没有收尾";
+    }
+
+    /**
+     * @brief 没有 Expect 的请求不会平白收到一个 100
+     * @details 拒绝面：100 是给「等着被催」的对端的，给别的请求塞一条会让它多解一段头块
+     */
+    TEST(Http3Session, DoesNotSendContinueWhenExpectHeaderIsAbsent)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.post("/upload",
+                    [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.setStatus(201);
+                        response.setBody("done");
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"content-length", "4"}}))
+                << "客户端没能提交这条带正文的请求";
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        const Http3ClientPeer::DecodedResponse response = peer.response();
+        ASSERT_EQ(response.statuses.size(), 1U) << "没带 Expect 的请求不该收到信息性响应";
+        EXPECT_EQ(response.statuses[0], 201);
     }
 
     /**

@@ -553,6 +553,15 @@ namespace AsynGyanis::Net
         void answerMalformedRequest(std::int64_t streamId, std::string_view reason);
 
         /**
+         * @brief 请求带着 Expect: 100-continue 时，先交一个 :status 100 的头块
+         * @details 时机与 h2 侧一致：头收齐、正文还在路上。h3 在这一刻判不出正文会不会来，因此只认
+         *          「声明了正的 content-length」这一种请求（没声明的按 RFC 9110 §10.1.1 的兜底自己发）。
+         * @param streamId 承载这条请求的流
+         * @param incoming 头已收齐、还没派发的请求
+         */
+        void answerExpectContinueIfRequested(std::int64_t streamId, const IncomingRequest &incoming);
+
+        /**
          * @brief 提交响应（头或正文）失败的处置：流已经不在了只作废这条流，其余按会话作废
          * @param streamId 流号
          * @param what 正在做的事（进日志）
