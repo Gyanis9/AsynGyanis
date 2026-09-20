@@ -907,6 +907,21 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief FIN 还排在队列里（上层已交出收尾、尚未上线）时也不复位：抢一份 RESET 会把收尾字节作废
+     * @details h3 侧「先把 413 完整交出去、再请对端停发」正依赖这一点：那时 FIN 通常还没上线
+     */
+    TEST(QuicStreamLayer, SkipsResetWhenFinalIsQueuedButNotSent)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("abc"), true), 3U);
+
+        layer.resetStreamSending(0x01, 0x010b);
+        const Collected collected = collect(layer, 1200);
+        EXPECT_TRUE(framesOfType<QuicResetStreamFrame>(collected.frames).empty()) << "不该抢出一份 RESET";
+        EXPECT_EQ(framesOfType<QuicStreamFrame>(collected.frames).size(), 1U) << "排队中的收尾字节要照发";
+    }
+
+    /**
      * @brief 收到 STOP_SENDING 就要回一条 RESET_STREAM，错误码照抄（§3.5 的 MUST）
      * @details 只作废队列不作废发送侧的话，对端会一直等那条流的收尾信号；本端被叫停之后
      *          不可能再发 FIN，所以收尾只能由 RESET_STREAM 给出

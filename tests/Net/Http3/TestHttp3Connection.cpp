@@ -798,7 +798,7 @@ TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
     }
 
     /**
-     * @brief 通告之后的新流不处理也不回应，但额度照还、连接不受牵连
+     * @brief 通告之后的新流不处理也不回应，但要显式取消，且额度照还、连接不受牵连
      * @details 不还会让对端卡在自己耗尽的流控窗口上；判成连接错误则会把同连接上已受理的请求一起废掉
      */
     TEST(Http3Connection, RequestsAfterTheDrainAnnouncementAreIgnoredButCredited)
@@ -821,6 +821,10 @@ TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
         EXPECT_TRUE(events.requestsEnded.empty()) << "这条流也不该被当作「请求收齐」交给上层";
         EXPECT_EQ(transport.creditedOf(8), lateRequestBytes.size()) << "拒绝不等于不还额度：不还会把对端卡在窗口上";
         EXPECT_FALSE(connection->isBroken()) << "拒收一条新流是排空的正常结局，不该作废连接";
+        // §5.2 的 SHOULD：不处理之外还要显式取消这条流，对端才不必等到连接收尾才知道结果
+        ASSERT_EQ(events.streamsReset.size(), 1U) << "通告之后的新流没有被交代一次取消";
+        EXPECT_EQ(events.streamsReset.front().first, 8);
+        EXPECT_EQ(events.streamsReset.front().second, Http3ErrorCode::RequestRejected);
 
         // 通告之前已受理的流照常能答：这是「已受理的处理完」这条承诺的实质
         ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, true).has_value());

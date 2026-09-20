@@ -424,10 +424,11 @@ namespace AsynGyanis::Net
     void QuicStreamLayer::resetStreamSending(const std::uint64_t streamId, const std::uint64_t applicationErrorCode)
     {
         OutgoingStream &stream = outgoingStream(streamId);
-        if (stream.sendAbort.has_value() || stream.isFinalSentToPeer)
+        if (stream.sendAbort.has_value() || stream.isFinalSentToPeer || stream.finalOffset.has_value())
         {
-            // 已经放弃过：RESET 的内容一旦上线就不许改（§13.3）；FIN 已上线则发送侧本就收口了，
-            // 再复位只会让对端看到「收齐之后又被复位」这种自相矛盾的信号
+            // 已经放弃过：RESET 的内容一旦上线就不许改（§13.3）。FIN 已上线、或上层已经把收尾长度
+            // 定下来（排在队列里还没出去）的都不必再复位：那种情况对端迟早收齐，抢一份 RESET 反而
+            // 会把已经交出去的收尾字节作废
             return;
         }
         // 收尾长度取「曾上线的最大结束偏移」而不是上层写过的字节数：没上过线的偏移对端没见过，

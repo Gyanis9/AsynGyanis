@@ -173,6 +173,20 @@ namespace AsynGyanis::Net
         m_needsFlush = true;
     }
 
+    void QuicConnection::abortStream(const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+    {
+        if (m_core == nullptr || m_isClosed || streamId < 0)
+        {
+            return;
+        }
+        // 双向流的两头各管各的：本端不再发用 RESET_STREAM，请对端别再发用 STOP_SENDING（§3.5）。
+        // 方向不合法的那一头（例如本端只能发的单向流）由流层自己跳过
+        QuicStreamLayer &streams = m_core->streamLayer();
+        streams.resetStreamSending(static_cast<std::uint64_t>(streamId), applicationErrorCode);
+        streams.stopStreamReceiving(static_cast<std::uint64_t>(streamId), applicationErrorCode);
+        m_needsFlush = true;
+    }
+
     Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> datagram)
     {
         if (m_core == nullptr || m_isClosed)

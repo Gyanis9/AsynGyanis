@@ -927,9 +927,24 @@ namespace AsynGyanis::Net
         return peer.response();
     }
 
-    /// 造一个只挂了 writer 的会话：出口把字节按流收进 sentStreamData，开流口按本端单向流递增
+    /// 一条被本端收口的流：流号与写进 RESET_STREAM / STOP_SENDING 的应用错误码
+    struct AbortedStream
+    {
+        std::int64_t  streamId{0};             ///< 被收口的流
+        std::uint64_t applicationErrorCode{0}; ///< RFC 9114 §8.1 那一档的错误码
+    };
+
+    /**
+     * @brief 造一个只挂了 writer 的会话：出口把字节按流收进 sentStreamData，开流口按本端单向流递增
+     * @param opener 假开流口
+     * @param sentStreamData 会话出口的字节收集容器
+     * @param requestIdGenerator request-id 生成器（可空）
+     * @param aborter 流收口出口（可空）：给了就能断言「本端有没有把这条流交代给传输层」
+     * @return Http3Session 可按值搬走的会话
+     */
     Http3Session makeSession(FakeStreamOpener &opener, std::vector<CapturedStreamData> &sentStreamData,
-                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr)
+                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                             Http3Session::StreamAborter aborter = {})
     {
         return Http3Session(std::ref(opener),
                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
@@ -937,7 +952,7 @@ namespace AsynGyanis::Net
                                 sentStreamData.push_back(
                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                             },
-                            {}, nullptr, nullptr, std::move(requestIdGenerator));
+                            {}, nullptr, nullptr, std::move(requestIdGenerator), std::move(aborter));
     }
 
     /**
@@ -2129,5 +2144,126 @@ namespace AsynGyanis::Net
         serveOne(8);
         EXPECT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 8; }))
                 << "GOAWAY 之后的新流不该被处理，更不该往回写东西";
+    }
+
+    /**
+     * @brief 排空通告之后的新流要显式取消，错误码是 H3_REQUEST_REJECTED（RFC 9114 §5.2 的 SHOULD）
+     * @details 只「不处理」的话对端看不出这条流被判死了，只能等连接收尾；显式取消让客户端立刻
+     *          知道该换一条连接重试。上一条用例只管服务端不回字节，这里核对的是它有没有交代给传输层
+     */
+    TEST(Http3Session, CancelsStreamsArrivingAfterTheDrainAnnouncement)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr,
+                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits = std::make_shared<HttpServerLimits>();
+        limits->maximumRequestsPerConnection = 1;
+        session.setServerLimits(limits);
+
+        Router router;
+        router.get("/hello",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        // 第一条：答完之后连接就该通告排空
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/hello", "example.com", kFirstRequestStreamId))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> firstPumpTask = session.pump();
+        resumeUntilReady(firstPumpTask);
+        ASSERT_TRUE(session.isDrainedAndFinished()) << "用例前提：这一条答完就该通告排空";
+        ASSERT_TRUE(abortedStreams.empty()) << "正常答完的流不该被收口";
+
+        // 第二条：通告之后的新流，只喂进来、不该有响应，但要被显式取消
+        sentStreamData.clear();
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/late", "example.com", kFirstRequestStreamId + 4))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> latePumpTask = session.pump();
+        resumeUntilReady(latePumpTask);
+
+        EXPECT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == kFirstRequestStreamId + 4; }))
+                << "通告之后的新流不该回任何字节";
+        ASSERT_EQ(abortedStreams.size(), 1U) << "这条流没有被显式取消：对端只能等到连接收尾才知道结果";
+        EXPECT_EQ(abortedStreams.front().streamId, kFirstRequestStreamId + 4);
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010bU) << "拒绝一条排空后的请求该用 H3_REQUEST_REJECTED";
+    }
+
+    /**
+     * @brief 正文越界时立刻回 413，不等对端收尾；回完还请对端别再发正文
+     * @details 此前 h3 的 413 排在「请求收齐」之后：客户端一边分批 dribble 一边等，响应永远不来，
+     *          这条流就这么挂着。h2 的判据是 isReadyToServe 里带上 isBodyTooLarge，这里对齐它，
+     *          并在响应完整交给传输层之后请对端停发（h2 那边同样是发完才 abortStream）
+     */
+    TEST(Http3Session, AnswersPayloadTooLargeBeforeTheBodyEndsAndAsksPeerToStop)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr,
+                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 8;
+        session.setParserLimits(parserLimits);
+
+        bool isHandlerEntered = false;
+        Router router;
+        router.post("/upload",
+                    [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        isHandlerEntered = true;
+                        response.setStatus(200);
+                        response.setBody("uploaded");
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::string oversizeBody(32, 'x');
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, 4));
+
+        // 只喂到「还没收尾」为止：最后那片带着 END_STREAM，喂进去就测不出「不等收尾」这件事
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1 || step.isEndStream)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        ASSERT_FALSE(sentStreamData.empty()) << "服务端一个字节都没回：413 没发出去";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 413) << "正文越界没能在请求收尾之前就回掉";
+        EXPECT_TRUE(peer.response().isComplete) << "413 的响应要收尾";
+        EXPECT_FALSE(isHandlerEntered) << "越界的请求不该交给业务";
+        ASSERT_EQ(abortedStreams.size(), 1U) << "响应已发出，却没请对端停发剩余正文";
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x0100U) << "这是无错的收尾请求（H3_NO_ERROR），不是错误";
     }
 } // namespace AsynGyanis::Net

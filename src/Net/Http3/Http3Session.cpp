@@ -132,9 +132,10 @@ namespace AsynGyanis::Net
 
     Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter,
                                std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpMemoryBudget> memoryBudget,
-                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator) :
-        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_metrics(std::move(metrics)),
-        m_memoryBudget(std::move(memoryBudget)), m_requestIdGenerator(std::move(requestIdGenerator))
+                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, StreamAborter aborter) :
+        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_aborter(std::move(aborter)),
+        m_metrics(std::move(metrics)), m_requestIdGenerator(std::move(requestIdGenerator)),
+        m_memoryBudget(std::move(memoryBudget))
     {
         if (!opener || !m_writer)
         {
@@ -156,9 +157,11 @@ namespace AsynGyanis::Net
                                 { addRequestBody(streamId, bytes); };
         callbacks.onRequestEnded = [this](const std::int64_t streamId) { finishRequest(streamId); };
         callbacks.onStreamClosed = [this](const std::int64_t streamId) { dropRequest(streamId); };
-        // 该流已被放弃（对端重置、或本端按协议判错）：先按「还没答完」计数，再丢掉本会话的状态
-        callbacks.onStreamReset = [this](const std::int64_t streamId, Http3ErrorCode)
+        // 该流已被放弃（对端重置、或本端按协议判错）：先把收口信号落到传输层——对端因此立刻知道
+        // 这条流不会再有响应，而不是等连接收尾；再按「还没答完」计数、丢掉本会话的状态
+        callbacks.onStreamReset = [this](const std::int64_t streamId, const Http3ErrorCode errorCode)
                                   {
+                                      abortRequestStream(streamId, errorCode);
                                       noteStreamResetByPeer(streamId);
                                       dropRequest(streamId);
                                   };
@@ -338,6 +341,8 @@ namespace AsynGyanis::Net
             const bool         isBudgetExceeded      = m_readyRequests.front().isBudgetExceeded;
             const bool         isHeaderLimitExceeded = m_readyRequests.front().isHeaderLimitExceeded;
             const bool         isUriTooLong          = m_readyRequests.front().isUriTooLong;
+            // 四个标记里任何一个为真，这条请求都不交给业务：它按 4xx/503 直接回掉
+            const bool         isRejectedWithoutHandler = isHeaderLimitExceeded || isUriTooLong || isBudgetExceeded || isBodyTooLarge;
             HttpRequest        request        = std::move(m_readyRequests.front().request);
             m_readyRequests.pop_front();
 
@@ -469,6 +474,13 @@ namespace AsynGyanis::Net
             }
             // 答完一条就记一笔：单连接请求条数上限靠它触发排空
             noteRequestServed();
+            if (isRejectedWithoutHandler)
+            {
+                // 这条请求不会被受理，正文也没必要继续往上传：响应已完整交给传输层，此刻请对端
+                // 停发（与 h2 同一处置——那边也是 413 发出去之后才 abortStream）。收尾已交出的流
+                // 不会被复位，因此这一步只落 STOP_SENDING
+                abortRequestStream(streamId, Http3ErrorCode::NoError);
+            }
         }
 
         flushPendingStreamData();
@@ -577,10 +589,22 @@ namespace AsynGyanis::Net
             return;
         }
 
-        IncomingRequest &incoming = m_incomingRequests[streamId];
+        const auto incomingEntry = m_incomingRequests.find(streamId);
+        if (incomingEntry == m_incomingRequests.end())
+        {
+            // 这条流的请求记录已经派发过了（正文越界时是提前派发，之后还会有尾随的 DATA 到达）：
+            // 再建一份记录就会派出第二份响应。字节照还窗口，其余一概不做
+            if (m_crediter && !data.empty())
+            {
+                m_crediter(streamId, data.size());
+            }
+            return;
+        }
+        IncomingRequest &incoming = incomingEntry->second;
         if (!incoming.bodyBudget.hasBudget() && m_memoryBudget != nullptr)
         {
-            // 记录刚建出来：把这份共享预算绑上（额度随记录析构归还）
+            // 头段建记录时还没绑上预算（那时不知道正文多大）：第一口正文到达时把这份共享预算绑上
+            // （额度随记录析构归还）
             incoming.bodyBudget.reset(m_memoryBudget.get());
         }
 
@@ -606,6 +630,12 @@ namespace AsynGyanis::Net
             {
                 incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
             }
+        }
+        // 越界之后这条请求不可能再被受理，不必等对端收尾：当场就把它排进待派发（h2 的
+        // isReadyToServe 同一判据）。等下去的代价是对端一边 dribble 正文一边等一个永远不来的响应
+        if (incoming.isBodyTooLarge || incoming.isBudgetExceeded)
+        {
+            enqueueRequest(streamId);
         }
 
         // 非流式：正文整段收在请求对象里，本端等于立刻消费掉了，因此到达即归还接收额度
@@ -663,6 +693,16 @@ namespace AsynGyanis::Net
         {
             m_metrics->countStreamCancelled();
         }
+    }
+
+    void Http3Session::abortRequestStream(const std::int64_t streamId, const Http3ErrorCode errorCode)
+    {
+        if (!m_aborter)
+        {
+            // 承载方没接这个口子（例如单测里只给了 writer）：本端照样丢掉记账，只是对端收不到信号
+            return;
+        }
+        m_aborter(streamId, static_cast<std::uint64_t>(errorCode));
     }
 
     void Http3Session::dropRequest(const std::int64_t streamId)
@@ -903,6 +943,7 @@ namespace AsynGyanis::Net
 
         // 正文越界且业务还没开始流式写出：按 413 改判（与 h2 侧同一处置）。
         // 已经开始流式写出时头部已上线，改状态码不可能，只能让它收尾
+        bool isRejectedByBodyOverflow = false;
         if (streamingRequest.body.isBodyTooLarge() && !response.isChunkedResponse())
         {
             LOG_ERROR_FMT("Http3Session: 流 {} 的流式请求正文超过上限，已按 413 改判", streamId);
@@ -910,6 +951,7 @@ namespace AsynGyanis::Net
             response.setStatus(413);
             response.setBody("Payload Too Large");
             static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            isRejectedByBodyOverflow = true;
         }
 
         if (response.isChunkedResponse())
@@ -920,6 +962,11 @@ namespace AsynGyanis::Net
         {
             finalizeResponseForHttp3(streamId, response);
             submitResponse(streamId, response, streamingRequest.request.method() == HttpMethod::HEAD);
+        }
+        if (isRejectedByBodyOverflow)
+        {
+            // 413 已完整交给传输层：请对端别再往这条流上发正文（本端已经不需要了）
+            abortRequestStream(streamId, Http3ErrorCode::NoError);
         }
         streamingRequest.isServeFinished = true;
         co_return;

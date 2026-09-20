@@ -66,6 +66,9 @@ namespace AsynGyanis::Net
         /// 把已消费的字节归还给 QUIC 的接收窗口（参数：流号、本次可再收的字节数）
         using StreamCrediter = std::function<void(std::int64_t streamId, std::size_t consumedByteCount)>;
 
+        /// 收口一条流：本端不再发、也请对端别再发（参数：流号、RFC 9114 §8.1 那一档的应用错误码）
+        using StreamAborter = std::function<void(std::int64_t streamId, std::uint64_t applicationErrorCode)>;
+
         /**
          * @brief 一条正在流式写出响应的流（startChunkedResponse + writeChunk 那条路）
          * @note 正文是一段一段推给连接层的，本结构只记「响应头上线没有、写完没有、流还在不在」；
@@ -88,6 +91,8 @@ namespace AsynGyanis::Net
          * @param memoryBudget 进程级内存预算；有它时缓冲的请求正文按字节占全局额度，传空指针表示不做全局占用（仍受单请求上限约束）
          * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
          *        （与 h1/h2 同一取舍：id 由服务器持有、按 shared_ptr 共享，前缀标识服务器实例）
+         * @param aborter 收口一条流的出口（可空：为空时本会话只丢掉自己的记账，对端收不到任何信号，
+         *        只能等那条流随连接一起没掉。GOAWAY 之后拒收与越界请求回完响应后的「别再发了」都靠它落实）
          * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
@@ -98,7 +103,8 @@ namespace AsynGyanis::Net
         Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {},
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
-                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr);
+                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                     StreamAborter aborter = {});
 
         /**
          * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放
@@ -219,6 +225,16 @@ namespace AsynGyanis::Net
          * @param streamId 被重置的流
          */
         void noteStreamResetByPeer(std::int64_t streamId) noexcept;
+
+        /**
+         * @brief 把一条流的收口信号交给传输层：本端不再发、也请对端别再发
+         * @details 错误码原样写进 RESET_STREAM 与 STOP_SENDING；两个方向各由流层自己判断该不该发
+         *          （FIN 已经上线的那一头不必复位，本端只能收的那一头不必请对端停发）。没接这个
+         *          口子时只丢本端记账——对端一个字节也收不到，只能等那条流随连接一起没掉
+         * @param streamId 要收口的流
+         * @param errorCode 写进帧里的错误码（RFC 9114 §8.1 那一档）
+         */
+        void abortRequestStream(std::int64_t streamId, Http3ErrorCode errorCode);
 
         /**
          * @brief 丢掉一条流上尚未收全的请求（流被重置或关闭）
@@ -640,6 +656,7 @@ namespace AsynGyanis::Net
         std::unique_ptr<Http3Connection> m_connection;   ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空
         StreamWriter              m_writer;              ///< 流数据出口
         StreamCrediter            m_crediter;            ///< 接收窗口归还口
+        StreamAborter             m_aborter;             ///< 单条流的收口出口（可空：空则只丢本端记账，对端收不到信号）
         Router                   *m_router{nullptr};     ///< 路由器（不持有；由服务端保证其寿命）
         std::shared_ptr<HttpMetricsCollector> m_metrics; ///< 统计采集端（可空：空表示本会话不采集）
         /// request-id 生成器（可空）：与服务器共享一份，前缀标识服务器实例

@@ -59,6 +59,10 @@
   收不到，只能干等那条流。两份宣告都按 RFC 9000 §13.3 记了「内容一次定稿、在途不重发、判丢补发
   同一份、确认即落定」这笔账。反方向也补齐了：收到对端的 STOP_SENDING 时按 RFC 9000 §3.5 回一条
   RESET_STREAM（错误码照抄），否则对端永远等不到那条流的终局信号。
+- **HTTP/3 会把「这条流我们不做了」说给对方听**：`Http3Session` 新增 `StreamAborter` 接缝，
+  `QuicServer` 把它接到 `QuicConnection::abortStream`。两处落地：GOAWAY 通告之后到达的新流按
+  RFC 9114 §5.2 用 `H3_REQUEST_REJECTED` 取消（此前只是不回字节，对端要等连接收尾才知道结果）；
+  被 413/431/414/503 拒掉的请求在响应完整交出后用 `H3_NO_ERROR` 请对端停发剩余正文（与 h2 同一处置）。
 
 ### 变更
 
@@ -83,6 +87,9 @@
 
 ### 修复
 
+- **HTTP/3 的 413/503 不再等对端收尾**：正文越界或全局在途预算不足时，请求当场排进待派发并立刻应答。
+  此前这两个响应排在「请求收齐」之后——客户端只要分批 dribble 且不发 END_STREAM，响应就永远不来，
+  这条流就这么挂着（h2 的 `isReadyToServe` 早就带上了这个判据）。
 - **Database：不再把故障静默吞成正常结果**。`SchemaMigrator::tableExists()` 把「游标推不动」「计数列不是
   整型」与「表确实不存在」一并返回 `false`，与该接口自述的「`false` 的两重含义用 errorText 区分」
   相矛盾——现如实写入 errorText；`resolveDialect()` 的 `catch (std::exception)` 会把「该类型没有方言」

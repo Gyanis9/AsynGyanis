@@ -307,7 +307,7 @@ namespace AsynGyanis::Net
             return *existing;
         }
 
-        // 会话的三个口子都绑到这条连接上：开单向流、写流数据、归还接收额度。
+        // 会话的四个口子都绑到这条连接上：开单向流、写流数据、归还接收额度、收口单条流。
         // 这里捕获裸指针而不是引用，是为了让「会话指向哪条连接」在代码里显式可见
         QuicConnection *const rawConnection = &connection;
         auto                  session       = std::make_unique<Http3Session>(
@@ -316,7 +316,9 @@ namespace AsynGyanis::Net
                 { rawConnection->queueStreamData(streamId, data, isEndStream); },
                 [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
                 { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
-                m_configuration.metricsCollector, m_configuration.memoryBudget, m_configuration.requestIdGenerator);
+                m_configuration.metricsCollector, m_configuration.memoryBudget, m_configuration.requestIdGenerator,
+                [rawConnection](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { rawConnection->abortStream(streamId, applicationErrorCode); });
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);

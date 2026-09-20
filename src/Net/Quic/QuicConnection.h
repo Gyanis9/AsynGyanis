@@ -225,6 +225,17 @@ namespace AsynGyanis::Net
         void queueStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream);
 
         /**
+         * @brief 收口一条流：本端不再发、也请对端别再发（RFC 9000 §3.5）
+         * @details 双向流的两头是各管各的：只丢本端队列的话对端什么也收不到，只能干等。这里一次
+         *          把 RESET_STREAM 与 STOP_SENDING 都排上，方向不合法的那一头由流层自己跳过。
+         *          排完不刷：调用方所在的收报文路径与定时循环都会顺手 flush，这里再等一次反而把
+         *          非协程的调用方挡在门外。
+         * @param streamId 流号
+         * @param applicationErrorCode 应用协议的错误码（HTTP/3 取 RFC 9114 §8.1 那一档）
+         */
+        void abortStream(std::int64_t streamId, std::uint64_t applicationErrorCode);
+
+        /**
          * @brief 是否攒下了还没刷出去的字节
          * @return true 表示有待发字节等着 flush
          * @note 收报文那条路会顺手 flush，但业务协程可能在**收报文路径之外**写下响应（例如先 await

@@ -920,9 +920,9 @@ namespace AsynGyanis::Net
         {
             m_streamCrediter(streamId, data.size());
         }
-        // TODO(Gyanis): 传输层能发 RESET_STREAM 之后，这里按 §5.2 的 SHOULD 补一次取消，
-        // 让对端立刻知道这条流不会被处理，而不是等到连接关闭
-        LOG_DEBUG_FMT("Http3Connection: 流 {} 在 GOAWAY 通告（标识 {}）之后到达，不处理也不回应", streamId, m_rejectedFromStreamId);
+        // §5.2 的 SHOULD：通告之后到达的新流要显式取消，让对端立刻知道这条流不会被处理，而不是
+        // 等到连接关闭。走 failStream 是为了让会话在同一处收到「该流已放弃」并回收它的记账
+        failStream(streamId, Http3ErrorCode::RequestRejected, "GOAWAY 已通告，新请求不再受理");
     }
 
     void Http3Connection::noteLocallyFinishedStream(const std::int64_t streamId)
