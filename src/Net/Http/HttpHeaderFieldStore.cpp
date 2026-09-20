@@ -89,6 +89,47 @@ namespace AsynGyanis::Net
         return collectedValue;
     }
 
+    std::optional<std::string> HttpHeaderFieldStore::firstValue(const std::string_view canonicalName) const
+    {
+        for (const HeaderField &field: m_fields)
+        {
+            if (field.name == canonicalName)
+            {
+                // 首条原样交出，不参与合并：链路 id 这类头部同名多条时各表达一个独立来源
+                return field.value;
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool HttpHeaderFieldStore::containsListToken(const std::string_view canonicalName, const std::string_view expectedToken) const
+    {
+        for (const HeaderField &field: m_fields)
+        {
+            if (field.name != canonicalName)
+            {
+                continue;
+            }
+
+            std::string_view remainder(field.value);
+            // 同一个头名可以用逗号列多个 token（"Connection: keep-alive, Upgrade"），逐段比对
+            while (!remainder.empty())
+            {
+                const std::size_t commaPosition = remainder.find(',');
+                if (equalsIgnoringCase(trimOptionalWhitespace(remainder.substr(0, commaPosition)), expectedToken))
+                {
+                    return true;
+                }
+                if (commaPosition == std::string_view::npos)
+                {
+                    break;
+                }
+                remainder = remainder.substr(commaPosition + 1);
+            }
+        }
+        return false;
+    }
+
     std::vector<std::string> HttpHeaderFieldStore::values(const std::string &name) const
     {
         const std::string canonicalName = toCanonicalHeaderName(name);

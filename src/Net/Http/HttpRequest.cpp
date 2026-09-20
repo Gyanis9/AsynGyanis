@@ -104,6 +104,17 @@ namespace AsynGyanis::Net
         return m_headerStore.get(key);
     }
 
+    std::optional<std::string> HttpRequest::firstHeaderValue(const std::string_view key) const
+    {
+        // 公开入口对名大小写不敏感：折成内部存储形态再查，与 getHeader() 同规则
+        return m_headerStore.firstValue(HttpHeaderFieldStore::toCanonicalHeaderName(key));
+    }
+
+    bool HttpRequest::hasHeaderValueToken(const std::string_view key, const std::string_view expectedToken) const
+    {
+        return m_headerStore.containsListToken(HttpHeaderFieldStore::toCanonicalHeaderName(key), expectedToken);
+    }
+
     std::vector<std::string> HttpRequest::headerValues(const std::string &key) const
     {
         return m_headerStore.values(key);

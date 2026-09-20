@@ -1,6 +1,5 @@
 #include "Net/Http/HttpSession.h"
 
-#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Middleware.h"
 
 #include <cstddef>
@@ -82,24 +81,23 @@ namespace AsynGyanis::Net
 
     bool HttpSession::shouldKeepAlive(const HttpRequest &request, const HttpResponse &response)
     {
-        // 请求侧的 Connection 只取一次：下面两条判定都从这一份快照上做，
-        // 每请求少一次 vector<string> 与逐条拷贝（keep-alive 是热路径）
-        const std::vector<std::string> requestConnectionValues = request.headerValues("connection");
+        // 保活判定只看 token 在不在，不需要把同名取值整列拷出来：下面三条 token 判定都走
+        // hasHeaderValueToken，它在存储内部逐段比对（keep-alive 是每条请求的热路径）
 
         // ---- 第 1 优先级：请求显式 close。客户端的明确指令不可被任何一侧的响应头反转 ----
-        if (detail::headerValueListContainsToken(requestConnectionValues, "close"))
+        if (request.hasHeaderValueToken("connection", "close"))
         {
             return false;
         }
 
         // ---- 第 2 优先级：响应显式 close。中间件或 handler 主动收口时同样不可被保活 ----
-        if (detail::headerValueListContainsToken(response.headerValues("connection"), "close"))
+        if (response.hasHeaderValueToken("connection", "close"))
         {
             return false;
         }
 
         // ---- 第 3 优先级：请求显式 keep-alive。对 HTTP/1.0 是「要求保活」，对 1.1 只是重申默认 ----
-        if (detail::headerValueListContainsToken(requestConnectionValues, "keep-alive"))
+        if (request.hasHeaderValueToken("connection", "keep-alive"))
         {
             return true;
         }
@@ -116,33 +114,6 @@ namespace AsynGyanis::Net
             m_stopCallback(cancelable.stopToken(), RequestCancelForwarder{&request})
         {
             // 构造即注册：路由器与中间件跑完之后本对象析构注销，回调的作用域恰好等于「本次请求」
-        }
-
-        bool headerValueListContainsToken(const std::vector<std::string> &headerValueList, const std::string_view expectedToken)
-        {
-            for (const std::string &headerValue : headerValueList)
-            {
-                std::string_view remainder(headerValue);
-
-                // 同一个头名里可以用逗号列多个值（"Connection: keep-alive, X"），逐个比对
-                while (!remainder.empty())
-                {
-                    const std::size_t commaPosition = remainder.find(',');
-                    const std::string_view currentToken = trimOptionalWhitespace(remainder.substr(0, commaPosition));
-
-                    if (equalsIgnoringCase(currentToken, expectedToken))
-                    {
-                        return true;
-                    }
-
-                    if (commaPosition == std::string_view::npos)
-                    {
-                        break;
-                    }
-                    remainder = remainder.substr(commaPosition + 1);
-                }
-            }
-            return false;
         }
 
         void writeParseErrorResponse(HttpResponse &response, const HttpParseErrorKind errorKind)

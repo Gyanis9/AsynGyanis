@@ -138,4 +138,27 @@ namespace AsynGyanis::Net
         EXPECT_EQ(generator.resolve(withoutHeaderRequest).size(), 21U);
     }
 
+    TEST(HttpRequestId, ResolveTakesTheFirstOfTwoClientIdentifiers)
+    {
+        const HttpRequestIdGenerator generator;
+
+        HttpRequest request;
+        request.addHeader(std::string(kRequestIdHeaderName), "trace-from-edge");
+        request.addHeader("X-Request-Id", "trace-from-origin");
+
+        // 同名两条各表达一个上游，取首条即可；若走 getHeader() 的 ", " 合并口径，
+        // 回显出去的响应头里就会出现一个两个上游都不是的拼接值
+        EXPECT_EQ(generator.resolve(request), "trace-from-edge");
+        EXPECT_EQ(request.getHeader(std::string(kRequestIdHeaderName)).value_or("<缺失>"),
+                  "trace-from-edge, trace-from-origin")
+                << "合并口径本身仍要成立，本用例钉的是 resolve 没用它";
+
+        // 首条非法时不改取第二条：非法取值一律按「客户端没给」处理，重新生成
+        HttpRequest untrustedFirst;
+        untrustedFirst.addHeader(std::string(kRequestIdHeaderName), "bad\tvalue");
+        untrustedFirst.addHeader(std::string(kRequestIdHeaderName), "trace-good");
+        EXPECT_EQ(untrustedFirst.headerValues(std::string(kRequestIdHeaderName)).front(), "bad\tvalue");
+        EXPECT_EQ(generator.resolve(untrustedFirst).size(), 21U);
+    }
+
 } // namespace AsynGyanis::Net

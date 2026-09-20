@@ -96,6 +96,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string> getHeader(const std::string &name) const;
 
         /**
+         * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
+         * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
+         *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表；保活判定每条响应都要跑，
+         *          而它只需要一个布尔结果。
+         * @param name 头部字段名，大小写不敏感
+         * @param expectedToken 待查找的 token，大小写不敏感
+         * @return true 至少一条取值列出了该 token
+         * @see headerValues() 需要逐条取值时使用
+         */
+        [[nodiscard]] bool hasHeaderValueToken(std::string_view name, std::string_view expectedToken) const;
+
+        /**
          * @brief 获取指定名称的全部头部值，按设置顺序返回。
          * @details 主要给 Set-Cookie 这类可重复头部使用：setHeader 每调一次就多条一项。
          * @param name 头部字段名，大小写不敏感

@@ -358,7 +358,7 @@ int main(int argumentCount, char **argumentValues)
         {"accept-encoding", "gzip, deflate, br"},
         {"authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"},
         {"x-request-id", "0001-0000000000000abc"},
-        {"connection", "keep-alive"},
+        {"connection", "keep-alive, Upgrade"},
         {"cookie", "session=8f14e45fceea167a5a36dedd4bea2543; theme=dark"},
     };
     const auto refillHeaderStore = [&headerFixtures](Net::HttpHeaderFieldStore &store)
@@ -407,6 +407,35 @@ int main(int argumentCount, char **argumentValues)
                     totalLength += value.has_value() ? value->size() : 0;
                 }
                 return totalLength;
+            },
+            results, checksum, failureCount);
+
+    // 列表 token 判定与「取首条」这两条读路径走的是 HttpRequest/HttpSession 的 keep-alive 与
+    // request-id 逻辑：每条请求都要跑几遍，判据本身只要布尔与首值，却常顺手把整列值拷出来
+    Net::HttpHeaderFieldStore tokenStore;
+    refillHeaderStore(tokenStore);
+    measureCase(
+            "header-token-hit",
+            [&tokenStore, &refillHeaderStore]
+            {
+                refillHeaderStore(tokenStore);
+                // 改后形态：在存储内部逐段比对，不构造取值列表
+                return tokenStore.containsListToken("connection", "keep-alive")
+                               ? std::size_t{1}
+                               : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    Net::HttpHeaderFieldStore firstValueStore;
+    refillHeaderStore(firstValueStore);
+    measureCase(
+            "header-first-value",
+            [&firstValueStore, &refillHeaderStore]
+            {
+                refillHeaderStore(firstValueStore);
+                // 改后形态与 HttpRequestIdGenerator::resolve() 一致：只取首条，不构造 vector
+                const std::optional<std::string> clientRequestId = firstValueStore.firstValue("x-request-id");
+                return clientRequestId.has_value() ? clientRequestId->size() : std::size_t{0};
             },
             results, checksum, failureCount);
 

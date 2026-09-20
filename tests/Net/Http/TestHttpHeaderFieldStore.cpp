@@ -1,11 +1,14 @@
-// TestHttpHeaderFieldStore.cpp —— 头部存储的读取侧语义：单值查询（get）与整表视图
-//   （singleValueView）必须给出同一套口径，而 get 现在直接走权威记录、不再顺手把视图建出来。
+// TestHttpHeaderFieldStore.cpp —— 头部存储的读取侧语义：单值查询（get）、首条取值（firstValue）、
+//   列表 token 判定（containsListToken）与整表视图（singleValueView）。四条读路径必须给出同一套
+//   口径，而 get 现在直接走权威记录、不再顺手把视图建出来。
 //   这里钉的都是两条实现容易分叉的地方：
 //   一. 同名多条的 ", " 合并（RFC 7230 §3.2.2），含「值为空串」这一格——判「有没有首条」
 //       只能用 optional 是否 engaged，用 empty() 判会把第二条的分隔符吞掉；
 //   二. 可重复头部（Set-Cookie）取首条且不合并；
 //   三. 单值查询不得让视图变干净或变脏（先查后取整表、先取整表后查，结果都要一致）；
-//   四. 删名之后单值查询与视图同步失去该条目（不留「查得到、序列化里没有」的鬼条目）。
+//   四. 删名之后单值查询与视图同步失去该条目（不留「查得到、序列化里没有」的鬼条目）；
+//   五. firstValue/containsListToken 只收已归一化的名，且判定只看整 token、逗号列表的畸形写法
+//       不能让循环不推进（取值由对端控制）。
 
 #include "Net/Http/HttpHeaderFieldStore.h"
 
@@ -118,6 +121,70 @@ namespace AsynGyanis::Net
         // 覆盖不追加条目：序列化顺序仍停在首次设置处
         ASSERT_EQ(store.fields().size(), 2U);
         EXPECT_EQ(store.fields()[0].name, "host");
+    }
+
+    TEST(HttpHeaderFieldStore, FirstValueTakesTheEarliestFieldAndNeverMerges)
+    {
+        const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"},
+                                                     {"host", "example.com"},
+                                                     {"x-request-id", "trace-b"}});
+
+        // 首条原样交出：同名多条时 get() 会按 ", " 合并，那条口径不适合链路 id
+        EXPECT_EQ(store.firstValue("x-request-id").value_or("<缺失>"), "trace-a");
+        EXPECT_EQ(store.firstValue("x-request-id"), store.values("x-request-id").front())
+                << "firstValue 必须与 values() 的首元素同值，否则两条读路径会分叉";
+        EXPECT_FALSE(store.firstValue("x-absent").has_value());
+    }
+
+    TEST(HttpHeaderFieldStore, FirstValueRequiresTheCallerToCanonicalizeTheName)
+    {
+        const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"}});
+
+        // 本函数按契约只收「已归一化的小写名」，因此不做归一化：给原大小写的名就查不中。
+        // get()/values() 会自己归一化，两者口径不同这一点要钉住——上层包装（HttpRequest/
+        // HttpResponse）负责调 toCanonicalHeaderName()，漏了就是查不到而不是查错条目
+        EXPECT_FALSE(store.firstValue("X-Request-Id").has_value());
+        EXPECT_FALSE(store.containsListToken("Connection", "close"));
+        EXPECT_TRUE(store.firstValue(HttpHeaderFieldStore::toCanonicalHeaderName("X-Request-Id")).has_value())
+                << "包装层的归一化入口要用得通";
+    }
+
+    TEST(HttpHeaderFieldStore, ContainsListTokenSplitsOnCommasAndIgnoresOwsAndCase)
+    {
+        const HttpHeaderFieldStore store = makeStore({{"connection", "Keep-Alive, Upgrade"},
+                                                     {"x-flag", ""},
+                                                     {"x-flag", "  trailing , 中段  "}});
+
+        EXPECT_TRUE(store.containsListToken("connection", "keep-alive"));
+        EXPECT_TRUE(store.containsListToken("connection", "upgrade"));
+        // 段首尾的 OWS 会被裁掉，段内的大小写不敏感
+        EXPECT_TRUE(store.containsListToken("x-flag", "trailing"));
+        EXPECT_TRUE(store.containsListToken("x-flag", "中段"));
+        // 值为空串的那条不构成任何 token，但不该影响同名第二条的判定
+        EXPECT_TRUE(store.containsListToken("x-flag", "TrAiLiNg"));
+    }
+
+    TEST(HttpHeaderFieldStore, ContainsListTokenMatchesWholeTokensOnly)
+    {
+        const HttpHeaderFieldStore store = makeStore({{"connection", "keep-aliveish, xkeep-alive, close-ish"}});
+
+        // 拒绝面：子串不算命中。把 keep-alive 当成 "keep-aliveish" 的一部分，
+        // 就会让一条本不该保活的连接被保持，而这类误判在日志里完全看不出来
+        EXPECT_FALSE(store.containsListToken("connection", "keep-alive"));
+        EXPECT_FALSE(store.containsListToken("connection", "close"));
+        EXPECT_TRUE(store.containsListToken("connection", "close-ish"));
+        EXPECT_FALSE(store.containsListToken("x-absent", "keep-alive"));
+    }
+
+    TEST(HttpHeaderFieldStore, ContainsListTokenTerminatesOnMalformedCommaLists)
+    {
+        const HttpHeaderFieldStore emptyValue;
+        EXPECT_FALSE(emptyValue.containsListToken("connection", "close"));
+
+        const HttpHeaderFieldStore dangling = makeStore({{"connection", "close,"}, {"x-edge", ","}});
+        // 尾逗号与「只有一个逗号」都不能让循环不推进：这条路径对端可控，挂住就是拒绝服务
+        EXPECT_TRUE(dangling.containsListToken("connection", "close"));
+        EXPECT_FALSE(dangling.containsListToken("x-edge", "close"));
     }
 
 } // namespace AsynGyanis::Net

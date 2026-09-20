@@ -16,9 +16,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -121,14 +121,15 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string resolve(const HttpRequest &request) const
         {
-            // 读权威记录取首条（headerValues），而不是 getHeader()：x-request-id 不在可重复头部
+            // 读权威记录取首条（firstHeaderValue），而不是 getHeader()：x-request-id 不在可重复头部
             // 名单里，同名多条时 getHeader() 会按 RFC 7230 §3.2.2 以 ", " 合并，于是两条互不相干的
-            // 上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径
-            const std::vector<std::string> clientRequestIds = request.headerValues(std::string(kRequestIdHeaderName));
-            if (!clientRequestIds.empty() && isAcceptableRequestId(clientRequestIds.front()))
+            // 上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径。
+            // 也不用 headerValues()：为了一个值构造整列 string 是每请求一次的多余分配
+            const std::optional<std::string> clientRequestId = request.firstHeaderValue(kRequestIdHeaderName);
+            if (clientRequestId.has_value() && isAcceptableRequestId(*clientRequestId))
             {
                 // 客户端自带值原样沿用：它往往是上游网关或客户端自己的链路 id，替换掉就断了关联
-                return clientRequestIds.front();
+                return *clientRequestId;
             }
             return next();
         }

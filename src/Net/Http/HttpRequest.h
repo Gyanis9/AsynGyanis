@@ -124,6 +124,26 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::vector<std::string> headerValues(const std::string &key) const;
 
         /**
+         * @brief 取指定名称的首条头部值（原样，不参与同名多条的 ", " 合并）
+         * @details 与 headerValues() 的首元素同值，但不为「只要一个值」构造整列值列表。
+         *          链路 id 这类同名多条各表一个来源的头部，要的就是首条原值。
+         * @param key 头部字段名，大小写不敏感
+         * @return std::optional<std::string> 首条值；名字不存在时为空
+         */
+        [[nodiscard]] std::optional<std::string> firstHeaderValue(std::string_view key) const;
+
+        /**
+         * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
+         * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
+         *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表：Connection/Upgrade
+         *          这类判定每条请求都要跑几遍，而调用方只需要一个布尔结果。
+         * @param key 头部字段名，大小写不敏感
+         * @param expectedToken 待查找的 token，大小写不敏感
+         * @return true 至少一条取值列出了该 token
+         */
+        [[nodiscard]] bool hasHeaderValueToken(std::string_view key, std::string_view expectedToken) const;
+
+        /**
          * @brief 获取所有头部字段的单值视图。
          * @return 名到值的 unordered_map 引用，键为小写头部名；
          *         可重复头部在此只有一条（首次出现的值），逐条取值请用 headerValues()

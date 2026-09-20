@@ -410,6 +410,31 @@ namespace AsynGyanis::Net
         EXPECT_EQ(request.headers().at("cookie"), "a=1, b=2");
     }
 
+    TEST(HttpRequest, FirstHeaderValueNormalizesTheKeyAndSkipsMerging)
+    {
+        HttpRequest request;
+        request.addHeader("X-Request-Id", "trace-a");
+        request.addHeader("x-request-id", "trace-b");
+
+        // 包装层负责把名归一化（存储侧的 firstValue 只收小写名），调用方按线上写法传即可
+        EXPECT_EQ(request.firstHeaderValue("X-Request-Id").value_or("<缺失>"), "trace-a");
+        EXPECT_EQ(request.firstHeaderValue("x-request-id"), request.headerValues("X-Request-Id").front());
+        EXPECT_FALSE(request.firstHeaderValue("X-Absent").has_value());
+    }
+
+    TEST(HttpRequest, HeaderValueTokenLooksAcrossRepeatedHeadersOfTheSameName)
+    {
+        HttpRequest request;
+        // 对端把 Connection 拆成两条发（合法写法），token 判定必须跨条生效
+        request.addHeader("Connection", "Keep-Alive");
+        request.addHeader("connection", "Upgrade, TE");
+
+        EXPECT_TRUE(request.hasHeaderValueToken("Connection", "keep-alive"));
+        EXPECT_TRUE(request.hasHeaderValueToken("CONNECTION", "upgrade"));
+        EXPECT_TRUE(request.hasHeaderValueToken("connection", "te"));
+        EXPECT_FALSE(request.hasHeaderValueToken("connection", "close"));
+    }
+
     TEST(HttpRequest, ResetHandsOverFreshCancelSource)
     {
         HttpRequest request;

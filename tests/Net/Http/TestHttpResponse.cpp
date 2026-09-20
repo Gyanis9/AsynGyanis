@@ -831,4 +831,16 @@ namespace AsynGyanis::Net
         EXPECT_NO_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 0, 10));
         EXPECT_EQ(response.body(), content);
     }
+
+    TEST(HttpResponse, HeaderValueTokenReadsTheResponseSideOfKeepAlive)
+    {
+        HttpResponse response;
+        ASSERT_TRUE(response.setHeader("Connection", "Close, keep-Alive"));
+
+        // 会话侧的「响应显式 close」判定走这里：名要归一化、token 要整段且大小写不敏感
+        EXPECT_TRUE(response.hasHeaderValueToken("Connection", "close"));
+        EXPECT_TRUE(response.hasHeaderValueToken("connection", "keep-alive"));
+        EXPECT_FALSE(response.hasHeaderValueToken("Connection", "upgrade"));
+        EXPECT_FALSE(response.hasHeaderValueToken("X-Absent", "close"));
+    }
 } // namespace AsynGyanis::Net

@@ -180,6 +180,11 @@ namespace AsynGyanis::Net
         return m_headerStore.get(name);
     }
 
+    bool HttpResponse::hasHeaderValueToken(const std::string_view name, const std::string_view expectedToken) const
+    {
+        return m_headerStore.containsListToken(HttpHeaderFieldStore::toCanonicalHeaderName(name), expectedToken);
+    }
+
     std::vector<std::string> HttpResponse::headerValues(const std::string &name) const
     {
         return m_headerStore.values(name);

@@ -16,7 +16,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -37,38 +36,6 @@ namespace AsynGyanis::Net
 
         /// 标准 Base64 字母表（RFC 4648 §4）
         constexpr std::string_view kBase64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        /**
-         * @brief 判断一组同名头部值里是否出现了某个 token
-         * @param headerValueList 同一头名的全部取值，按线上到达顺序
-         * @param expectedToken 待查找的 token，须为小写形式
-         * @return true 至少有一条取值里出现了该 token
-         */
-        bool containsToken(const std::vector<std::string> &headerValueList, const std::string_view expectedToken)
-        {
-            for (const std::string &headerValue: headerValueList)
-            {
-                std::string_view remainder(headerValue);
-
-                // 同一个头名可以按逗号列出多个 token（"Upgrade: WebSocket, foo"），逐段比对
-                while (!remainder.empty())
-                {
-                    const std::size_t commaPosition = remainder.find(',');
-                    const std::string_view rawToken = remainder.substr(0, commaPosition);
-                    if (equalsIgnoringCase(trimOptionalWhitespace(rawToken), expectedToken))
-                    {
-                        return true;
-                    }
-
-                    if (commaPosition == std::string_view::npos)
-                    {
-                        break;
-                    }
-                    remainder = remainder.substr(commaPosition + 1);
-                }
-            }
-            return false;
-        }
 
         /**
          * @brief 解析「HTTP/主版本.次版本」形式的版本串
@@ -267,13 +234,13 @@ namespace AsynGyanis::Net
         }
 
         // 第 3 条：Upgrade 头要含 token websocket
-        if (!containsToken(request.headerValues("upgrade"), "websocket"))
+        if (!request.hasHeaderValueToken("upgrade", "websocket"))
         {
             return reject("WebSocket 握手要求 Upgrade 头包含 websocket，请补上 Upgrade: websocket");
         }
 
         // 第 4 条：Connection 头要含 token Upgrade —— 它才是让中间代理放行本次协议切换的开关
-        if (!containsToken(request.headerValues("connection"), "upgrade"))
+        if (!request.hasHeaderValueToken("connection", "upgrade"))
         {
             return reject("WebSocket 握手要求 Connection 头包含 Upgrade，请补上 Connection: Upgrade");
         }

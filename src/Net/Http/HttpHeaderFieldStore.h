@@ -75,6 +75,24 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string> get(const std::string &name) const;
 
         /**
+         * @brief 取该名的首条取值（原样，不参与合并）
+         * @details 与 values() 的首元素同值，但省掉为「一个值」构造整列 vector 的开销。
+         * @param canonicalName 已归一化（小写）的头部名
+         * @return std::optional<std::string> 首条取值；缺席时为空
+         */
+        [[nodiscard]] std::optional<std::string> firstValue(std::string_view canonicalName) const;
+
+        /**
+         * @brief 判断该名的取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
+         * @details 在存储内部逐段切分比对，不构造取值列表也不拷贝取值：Connection/Upgrade 这类
+         *          判定每条请求要跑好几遍，而调用方只要一个布尔结果。
+         * @param canonicalName 已归一化（小写）的头部名
+         * @param expectedToken 待查找的 token，大小写不敏感，段首尾的 OWS 会被裁掉
+         * @return true 至少一条取值列出了该 token
+         */
+        [[nodiscard]] bool containsListToken(std::string_view canonicalName, std::string_view expectedToken) const;
+
+        /**
          * @brief 取该名下的全部值，按加入顺序
          * @param name 头部名（函数内部归一化）
          * @return std::vector<std::string> 全部取值；未命中时为空

@@ -168,14 +168,6 @@ namespace AsynGyanis::Net
         void writeParseErrorResponse(HttpResponse &response, HttpParseErrorKind errorKind);
 
         /**
-         * @brief 判断一组同名头部值里是否出现了某个 token（大小写不敏感，按逗号拆分）
-         * @param headerValueList 同一头名的全部值，按线上到达顺序
-         * @param expectedToken 要查找的 token，例如 "close"、"keep-alive"
-         * @return true 至少有一条值里出现了该 token
-         */
-        bool headerValueListContainsToken(const std::vector<std::string> &headerValueList, std::string_view expectedToken);
-
-        /**
          * @brief 停止回调实体：把连接的停止请求转发成本次请求的协作式取消
          *
          * @details stop_callback 按回调类型模板化并内联存储，这里用具名 struct 而不是
