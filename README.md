@@ -152,7 +152,7 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 | `platform` | 描述符与套接字工具、通知器、定时器、内存映射、数据报、进程起停、编码与时间 | 37（POSIX 39） |
 | `core_loop` | 事件循环与调度器、定时器、IO 监听器、解析器、UDP/TCP 协程收发、协程池、取消令牌 | 13 |
 | `core_tls` | 证书装载与热替换、OCSP、私有 CA、回环握手与会话恢复 | 10 |
-| `core_worker` | WorkerSupervisor 的构造期拒因；POSIX 上另验补位、崩溃上限与收手 | 4（Windows） |
+| `core_worker` | WorkerSupervisor 的构造期拒因；POSIX 上另验补位、崩溃上限与自行收手 | 4（Windows）/ 10（POSIX） |
 | `net_http_demo` | HTTP/1.1 路由与中间件、静态文件目录、解析上限、分块与 SSE、WebSocket、四类限额、接受分发、指标与健康端点、优雅收口 | 44 |
 | `net_https_h2_demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
 | `net_http3_demo` | QUIC 服务端的证书校验、UDP 端口起停与端口归还、乱码与畸形长头容错、定时驱动、统计、排空 | 15 |
@@ -177,6 +177,13 @@ ctest --test-dir build/debug -j 6
 python scripts/run_samples.py --build build/debug --timeout 300
 pip install gcovr && gcovr --root . --filter 'src/' --print-summary
 ```
+
+2026-09-20 在 ubuntu24（GCC 13，ASan/UBSan 与 gcov 同开）跑完整套测试与全部示例后的实测：
+**行 76.2%（19828/26034）、函数 83.9%、分支 44.6%**；分模块行覆盖 Net 89.2%、Core 86.4%、
+Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个文件——`MySqlResult.cpp`
+（那个镜像里没有 MySQL 客户端库，驱动整块没进编译）与一个异常类的头；Database 偏低是两处门控
+（MySQL/Redis 真机）与 ORM 模板未实例化的组合。也就是说：**能被从库外驱动到的公开面，示例现在都能触达**。
+（同一份代码在本机 Windows 侧 `ctest` 为 2379/2379 全绿。）
 
 ## 代码示例
 
