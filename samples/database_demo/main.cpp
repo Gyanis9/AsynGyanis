@@ -1333,6 +1333,28 @@ namespace
         return kRedisDriverCompiled && !Platform::ProcessInfo::environmentVariable(kRedisPasswordVariableName).value_or(std::string{}).empty();
     }
 
+    // 「驱动没编进来」与「凭据没给」是两回事：混成一句会让人白去查环境变量。
+    // 本仓库的 MySQL 驱动要有 libmysqlclient/MariaDB Connector 才进编译，容器镜像里就没有
+    /// @return 跳过 MySQL 真机那一步的真实原因
+    std::string describeMySqlSkipReason()
+    {
+        if (!kMySqlDriverCompiled)
+        {
+            return "本构建未编译 MySQL 驱动（平台缺 MySQL 客户端库）";
+        }
+        return "未设置环境变量 ASYN_MYSQL_TEST_PASSWORD（凭据只从环境进来，仓库零明文）";
+    }
+
+    /// @return 跳过 Redis 真机那一步的真实原因
+    std::string describeRedisSkipReason()
+    {
+        if (!kRedisDriverCompiled)
+        {
+            return "本构建未编译 Redis 驱动";
+        }
+        return "未设置环境变量 ASYN_REDIS_TEST_PASSWORD（凭据只从环境进来，仓库零明文）";
+    }
+
     Database::ConnectionConfig makeMySqlConfigurationFromEnvironment()
     {
         Database::ConnectionConfig configuration = Database::ConnectionConfig::mySqlDefault();
@@ -1558,9 +1580,9 @@ int main()
     runStep("连接池", [&samplePool] { demonstrateConnectionPool(*samplePool); });
     runStep("异步执行链路", [&asyncDatabaseFile] { demonstrateAsyncSurface(asyncDatabaseFile); });
 
-    runGatedStep("MySQL 真机", isMySqlConfigured(), "未设置环境变量 ASYN_MYSQL_TEST_PASSWORD（凭据只从环境进来，仓库零明文）",
+    runGatedStep("MySQL 真机", isMySqlConfigured(), describeMySqlSkipReason(),
                  [] { demonstrateMySqlIntegration(); });
-    runGatedStep("Redis 真机", isRedisConfigured(), "未设置环境变量 ASYN_REDIS_TEST_PASSWORD（凭据只从环境进来，仓库零明文）",
+    runGatedStep("Redis 真机", isRedisConfigured(), describeRedisSkipReason(),
                  [] { demonstrateRedisIntegration(); });
 
     // 连接必须先关再删文件：Windows 上打开着的文件删不掉
