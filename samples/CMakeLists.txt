@@ -25,3 +25,7 @@ asyn_add_sample(base_log base_log/main.cpp)
 
 # Base：配置子系统（多文件加载、点分路径取值、模式校验、热重载）
 asyn_add_sample(base_config base_config/main.cpp)
+
+# Platform：套接字工具、描述符、通知器、定时器、内存映射、数据报、进程起停与平台杂项
+asyn_add_sample(platform platform/main.cpp)
+target_link_libraries(platform PRIVATE Platform)
