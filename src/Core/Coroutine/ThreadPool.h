@@ -44,6 +44,18 @@ namespace AsynGyanis::Core
         void start();
 
         /**
+         * @brief 打开/关闭「启动时把工作线程逐个绑到逻辑核」
+         * @details 绑核减少调度迁移，让每枚核上的 L1/L2 与 TLB 不被别的工作线程踩掉，
+         *          尾延迟因此更稳；但绑错的核（容器只放行一部分 CPU、或线程数多于核数）
+         *          反而会把负载挤在同一枚核上，所以默认关闭，由部署方按机器实际情况打开。
+         * @note 线程数多于可用核数时，只有下标在核数以内的那部分被绑，其余线程保持可迁移；
+         *       单个线程绑定失败只记一条 WARN，不会让启动失败。
+         * @note start() 之后再调用不会生效（线程已经起来），此时只记一条 WARN 说明该改在哪一步调。
+         * @param pinThreadsToCores true 表示 start() 时按线程下标绑核
+         */
+        void setThreadsPinnedToCores(bool pinThreadsToCores) noexcept;
+
+        /**
          * @brief 停止所有工作线程并等待 join。
          */
         void stop();
@@ -76,6 +88,7 @@ namespace AsynGyanis::Core
         size_t                                   m_threadCount; ///< 实际线程数量（启动后不变）
         std::vector<std::unique_ptr<EventLoop> > m_eventLoops;  ///< 每个线程独立的 EventLoop
         std::vector<std::jthread>                m_threads;     ///< 工作线程，使用 jthread 自动管理生命周期
+        bool m_pinsThreadsToCores{false};                       ///< 是否在 start() 时把工作线程逐个绑到逻辑核
     };
 
 }

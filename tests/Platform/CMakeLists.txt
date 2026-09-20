@@ -18,6 +18,7 @@ add_executable(TestPlatform
         FileSystem/TestAtomicFileWriter.cpp
         FileSystem/TestFileWatcher.cpp
 
+        System/TestCpuAffinity.cpp
         System/TestPlatformError.cpp
         System/TestPlatformTime.cpp
         System/TestProcess.cpp

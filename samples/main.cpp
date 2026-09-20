@@ -24,6 +24,7 @@
 #include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/WebSocket/WebSocketPeer.h"
+#include "Platform/System/CpuAffinity.h"
 #include "Platform/System/ProcessInfo.h"
 
 #include <atomic>
@@ -169,6 +170,7 @@ int main(int argc, char **argv)
     bool        exposeMetrics = false;
     bool        logJson = false; // 日志按 JSON Lines 输出，供采集端解析
     bool        dispatchAccept = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
+    bool        pinThreadsToCores = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
     bool        compressResponses = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
     std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
     std::size_t workerProcessCount = 1;   // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
@@ -201,6 +203,8 @@ int main(int argc, char **argv)
             logJson = true;
         else if (arg == "--dispatch-accept")
             dispatchAccept = true;
+        else if (arg == "--pin-threads")
+            pinThreadsToCores = true;
         else if (arg == "--compress")
             compressResponses = true;
         else if (arg == "--max-inflight-body" && i + 1 < argc)
@@ -248,6 +252,8 @@ int main(int argc, char **argv)
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz；开了 --h3 时 h3 的请求数/状态码类一并计入");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
+        LOG_INFO("  --pin-threads 启动时把每条工作循环线程绑到一枚逻辑核上（按线程池下标顺序占核，");
+        LOG_INFO("            线程数多于可用核数时多出来的线程保持可迁移；容器里按 cpuset 放行的核算）");
         LOG_INFO("  --dispatch-accept 一个监听器 + N 个工作循环：连接由接受循环轮转交给工作循环服务；");
         LOG_INFO("            不依赖 SO_REUSEPORT，因此 Windows 上开多线程也要用它（否则每个线程各绑一次同端口，");
         LOG_INFO("            内核不会分摊，全部连接都压在其中一条监听器上）");
@@ -371,6 +377,15 @@ int main(int argc, char **argv)
 
     auto &   pool          = context.threadPool();
     auto actualThreads = static_cast<unsigned>(pool.threadCount());
+
+    // 绑核是部署方的选择：开了之后每条循环线程固定占一枚逻辑核，减少调度迁移与缓存被踩。
+    // 线程数多于可用核数时只有前若干条被绑（实现里会记 WARN），这里只如实报出开关与核数
+    if (pinThreadsToCores)
+    {
+        pool.setThreadsPinnedToCores(true);
+        LOG_INFO_FMT("已开启工作线程绑核：{} 条循环线程按线程池下标依次占核，本进程可用核 {} 枚",
+                     actualThreads, Platform::CpuAffinity::availableCoreCount());
+    }
 
     LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads, std::thread::hardware_concurrency());
 

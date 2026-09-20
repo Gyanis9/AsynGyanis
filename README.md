@@ -133,6 +133,8 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 ./build/debug/samples/echo_server --https --cert cert.pem --key key.pem --h3
 # 一个监听器 + N 个工作循环，靠用户态分发而非 SO_REUSEPORT（Windows 多线程请用这个）
 ./build/debug/samples/echo_server --port 8080 --threads 4 --dispatch-accept
+# 每条工作循环线程绑一枚逻辑核（按线程池下标顺序占核，减少调度迁移；容器里按 cpuset 放行的核算）
+./build/debug/samples/echo_server --port 8080 --threads 4 --pin-threads
 # N 个 worker 进程服务同一个端口，崩溃即补位（进程间不共享状态）
 ./build/debug/samples/echo_server --port 8080 --workers 4
 ./build/debug/samples/echo_server --help                                  # 全部参数
