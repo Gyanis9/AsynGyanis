@@ -45,6 +45,10 @@ namespace AsynGyanis::Core
             co_return co_await watcher.waitReadable();
         }
 
+        /// 单轮分发的时限（毫秒）：等待唤醒这类判据必须落在有限时间内出结果，
+        /// 缺陷表现为「叫不醒」时要让它超时失败，而不是把测试作业挂在那里
+        constexpr int kDispatchTimeoutMilliseconds = 2000;
+
         /**
          * @brief 向文件描述符写一个字节，使其对端变为可读
          * @param fileDescriptor 目标描述符
@@ -53,6 +57,20 @@ namespace AsynGyanis::Core
         {
             const char payload = 'x';
             [[maybe_unused]] auto _ = Platform::FileDescriptor::write(fileDescriptor, &payload, 1);
+        }
+
+        /**
+         * @brief 读走描述符里已到的字节，让它重新回到「无数据可读」
+         * @param fileDescriptor 目标描述符
+         */
+        void consumeReadable(const int fileDescriptor)
+        {
+            char     payload = 0;
+            ssize_t  readCount = 0;
+            do
+            {
+                readCount = Platform::FileDescriptor::read(fileDescriptor, &payload, 1);
+            } while (readCount > 0);
         }
     } // namespace
 
@@ -249,6 +267,49 @@ namespace AsynGyanis::Core
         second.handle().resume();
         ASSERT_TRUE(second.isReady()) << "第二个等待者应当以异常结束";
         EXPECT_THROW(second.handle().promise().result(), Base::LogicException);
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 钉住头文件的自述「注册一次即可反复等待」：第二轮等待必须由**新**到的事件唤醒
+     * @details IOCP 后端的一条读探针只上报一次，第二轮能否被唤醒取决于「上报之后在下一轮 wait()
+     *          前重新投探针」这条水平触发等价路径是否真走到。用例先把上一轮的字节取干净，
+     *          使第二轮只能靠新事件醒来；超时落在有限值上，叫不醒就判失败。
+     */
+    TEST(IoWatcher, SecondWaitIsAwokenByTheNextEvent)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+
+        // ---- 第一轮：数据先到，分发一次即唤醒 ----
+        makeReadable(peerDescriptor);
+        Task<WaitOutcome> firstWait = waitReadableOnce(watcher);
+        firstWait.handle().resume();
+        ASSERT_FALSE(firstWait.isReady()) << "尚未分发时第一轮应当挂起";
+        ASSERT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "第一轮等待没被唤醒";
+        ASSERT_TRUE(firstWait.isReady());
+        EXPECT_TRUE(firstWait.handle().promise().result());
+
+        // 取走字节：第二轮不得靠残留的可读状态立即完成
+        consumeReadable(localDescriptor);
+
+        // ---- 第二轮：同一个常驻注册对象上再等一次 ----
+        Task<WaitOutcome> secondWait = waitReadableOnce(watcher);
+        secondWait.handle().resume();
+        ASSERT_FALSE(secondWait.isReady()) << "描述符已空时第二轮应当挂起";
+
+        makeReadable(peerDescriptor);
+        EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U)
+            << "第二轮等待没被新事件唤醒：常驻注册的关注位没有重新武装，「注册一次即可反复等待」不成立";
+        EXPECT_TRUE(secondWait.isReady()) << "第二轮等待没被新事件唤醒";
 
         Platform::FileDescriptor::close(localDescriptor);
         Platform::FileDescriptor::close(peerDescriptor);
