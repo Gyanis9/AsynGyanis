@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -79,6 +80,7 @@ namespace
     {
         std::string bytes;             ///< 收到的全部字节
         bool        isClosedByPeer{false}; ///< 是否等到对端收口（与「只是超时」区分开）
+        std::string stopReason;        ///< 读循环为何停下：eof / timeout / reset / error-N，见 describeReadStopReason
     };
 
     /// 大小写不敏感比较（HTTP 头名按规范不区分大小写）
@@ -505,6 +507,43 @@ namespace
     }
 #endif
 
+    /**
+     * @brief 把「recv 没拿到字节」归因，供读循环记录停止原因
+     * @details 「探针没等够」（timeout）与「服务端把连接复位了」（reset）在断言与排查时是两回事：
+     *          后者通常是服务端在仍有未读入站数据时关闭连接，内核直接发 RST，连已写出的响应都可能一起丢
+     * @param byteCount recv 的返回值，0 表示对端正常收口
+     * @return std::string eof / timeout / reset / error-N 之一，直接进日志
+     */
+    [[nodiscard]] std::string describeReadStopReason(const int byteCount)
+    {
+        if (byteCount == 0)
+        {
+            return "eof";
+        }
+#if ASYN_PLATFORM_WIN32
+        const int errorCode = static_cast<int>(::WSAGetLastError());
+        if (errorCode == WSAETIMEDOUT)
+        {
+            return "timeout";
+        }
+        if (errorCode == WSAECONNRESET)
+        {
+            return "reset";
+        }
+#else
+        const int errorCode = errno;
+        if (errorCode == EAGAIN || errorCode == EWOULDBLOCK)
+        {
+            return "timeout";
+        }
+        if (errorCode == ECONNRESET)
+        {
+            return "reset";
+        }
+#endif
+        return "error-" + std::to_string(errorCode);
+    }
+
     /// 连到本机的示例端口；失败时返回无效句柄
     socket_handle_t connectToLocalhost(const std::uint16_t port)
     {
@@ -604,6 +643,7 @@ namespace
                     continue;
                 }
                 reading.isClosedByPeer = byteCount == 0;
+                reading.stopReason = describeReadStopReason(byteCount);
                 break;
             }
             return reading;
@@ -1000,8 +1040,17 @@ int main(const int argc, char **argv)
     samples.check(firstStatusOf(observations.health) == 200, "/healthz 回 200");
 
     const auto pipelinedResponses = splitResponses(observations.pipelined.bytes);
+    // 断言之外先留一行现场：这条探针历史上偶发不过，光看「1 步没过」分不出是探针没等够、
+    // 还是服务端在仍有未读入站数据时关连接把响应带成了 RST
+    LOG_INFO_FMT("管线化探针：解出 {} 条响应，读循环停止原因 {}，被对端收口 {}",
+                 pipelinedResponses.size(), observations.pipelined.stopReason, observations.pipelined.isClosedByPeer);
+    // 收口方式可以是 FIN 也可以是 RST：客户端一次写下三条请求，服务端答完两条就决定关连接，
+    // 而第三条此刻可能还留在自己的接收队列里（是否已进队列取决于分段到达的时机），带未读数据
+    // 关闭套接字时协议栈就会发 RST。两条响应都已完整到手，这才是本步要钉的契约；
+    // 「不再服务第三条」由 size()==2 表达，「确实是被服务端收口而不是探针没等够」由停止原因表达
+    const bool isClosedByServer = observations.pipelined.stopReason == "eof" || observations.pipelined.stopReason == "reset";
     samples.check(pipelinedResponses.size() == 2 && pipelinedResponses.front().status == 200 && pipelinedResponses.back().status == 200 &&
-                          observations.pipelined.isClosedByPeer,
+                          isClosedByServer,
                   "单连接请求数上限 2：前两条按序答完，第三条起连接被收口");
 
     const auto idleResponses = splitResponses(observations.idleClosed.bytes);
