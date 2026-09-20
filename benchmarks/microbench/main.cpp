@@ -1,5 +1,5 @@
 // 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
-// 头部单值查询。
+// 头部单值查询与列表 token 判定、响应头序列化。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -18,6 +18,7 @@
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpRequestId.h"
+#include "Net/Http/HttpResponse.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 
@@ -436,6 +437,29 @@ int main(int argumentCount, char **argumentValues)
                 // 改后形态与 HttpRequestIdGenerator::resolve() 一致：只取首条，不构造 vector
                 const std::optional<std::string> clientRequestId = firstValueStore.firstValue("x-request-id");
                 return clientRequestId.has_value() ? clientRequestId->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    // 响应头序列化：每条响应一次，且它是「先按 headReserveLength 统计一遍、再 appendHead 写一遍」
+    // 的两趟遍历所在。Date 走的是响应对象内的缓存值（与真实服务里同一秒内复用一致），
+    // 格式化本身的代价另有 http-date-format 一例量着，这里不重复计
+    const std::string responseBody(64, 'x');
+    Net::HttpResponse responseFixture;
+    responseFixture.setStatus(200);
+    responseFixture.setHeader("content-type", "application/json");
+    responseFixture.setHeader("server", "AsynGyanis/1.1");
+    responseFixture.setHeader("cache-control", "no-store");
+    responseFixture.setHeader("x-request-id", "0001-0000000000000abc");
+    responseFixture.setBody(responseBody);
+    measureCase(
+            "response-head-serialize",
+            [&responseFixture]
+            {
+                const std::string serializedHead = responseFixture.serializeHead();
+                // 自检数的是「行数」而不是长度：setHeader 会拒掉非法名，只量长度看不出头部
+                // 有没有真的进去。状态行 1 + 自设 4 + 自动 content-length 1 + 自动 Date 1 + 终止空行 1
+                const std::size_t lineCount = static_cast<std::size_t>(std::ranges::count(serializedHead, '\n'));
+                return lineCount >= 8 ? serializedHead.size() : std::size_t{0};
             },
             results, checksum, failureCount);
 

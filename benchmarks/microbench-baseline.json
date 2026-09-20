@@ -122,6 +122,15 @@
         330.1
       ],
       "runsMeasured": 3
+    },
+    "response-head-serialize": {
+      "throughputPerSecond": 5905030,
+      "nanosecondsPerOperation": 169.3,
+      "observedNanosecondsRange": [
+        169.2,
+        169.4
+      ],
+      "runsMeasured": 3
     }
   }
 }
