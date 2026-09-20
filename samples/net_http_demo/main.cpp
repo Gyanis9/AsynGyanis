@@ -1040,14 +1040,13 @@ int main(const int argc, char **argv)
     samples.check(firstStatusOf(observations.health) == 200, "/healthz 回 200");
 
     const auto pipelinedResponses = splitResponses(observations.pipelined.bytes);
-    // 断言之外先留一行现场：这条探针历史上偶发不过，光看「1 步没过」分不出是探针没等够、
-    // 还是服务端在仍有未读入站数据时关连接把响应带成了 RST
+    // 留一行现场：收口形态是本步最不容易读出来的信息，光看「1 步没过」分不出探针没等够还是连接被复位
     LOG_INFO_FMT("管线化探针：解出 {} 条响应，读循环停止原因 {}，被对端收口 {}",
                  pipelinedResponses.size(), observations.pipelined.stopReason, observations.pipelined.isClosedByPeer);
-    // 收口方式可以是 FIN 也可以是 RST：客户端一次写下三条请求，服务端答完两条就决定关连接，
-    // 而第三条此刻可能还留在自己的接收队列里（是否已进队列取决于分段到达的时机），带未读数据
-    // 关闭套接字时协议栈就会发 RST。两条响应都已完整到手，这才是本步要钉的契约；
-    // 「不再服务第三条」由 size()==2 表达，「确实是被服务端收口而不是探针没等够」由停止原因表达
+    // 收口方式按 FIN 与 RST 两种接受：服务端关闭前会先丢干净自己接收队列里没人读的字节，正常落点是 FIN；
+    // 只有第三条请求恰好在那次清理之后才到达时，内核才会改发 RST，而「何时到达」不在探针的控制范围内。
+    // 本步要钉的契约是前两条按序答完、第三条起不再服务：size()==2 表达后者，停止原因表达「被服务端收口
+    // 而不是探针没等够」。对端一律收到 FIN 这条更强的保证由直测套接字的用例钉住
     const bool isClosedByServer = observations.pipelined.stopReason == "eof" || observations.pipelined.stopReason == "reset";
     samples.check(pipelinedResponses.size() == 2 && pipelinedResponses.front().status == 200 && pipelinedResponses.back().status == 200 &&
                           isClosedByServer,

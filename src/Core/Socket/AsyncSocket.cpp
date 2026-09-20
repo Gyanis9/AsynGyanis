@@ -8,6 +8,7 @@
 #include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
 
+#include <array>
 #include <cerrno>
 #include <limits>
 #include <string>
@@ -39,6 +40,37 @@ namespace AsynGyanis::Core
         std::error_code localSocketClosedError()
         {
             return {Platform::PlatformError::kConnectionAborted, std::system_category()};
+        }
+
+        /// 收口时丢弃入站字节的单轮缓冲大小
+        constexpr std::size_t kDiscardChunkBytes = 8 * 1024;
+
+        /// 收口时丢弃入站字节的轮数上限（合计 64 KiB）
+        constexpr int kDiscardRoundLimit = 8;
+
+        /**
+         * @brief 丢弃内核接收队列里本端再也不会读的字节
+         * @details 描述符必须是已非阻塞的（构造与 create() 都保证了这点）：每轮 recv 要么立刻取走
+         *          一段、要么以 WOULD_BLOCK 收场，因此整段清理不会挂住事件循环线程。轮数封顶是
+         *          必需的——对端持续洪泛时，无界地读下去等于让一条坏连接拖慢整个循环。
+         * @param fileDescriptor 待清理的套接字描述符
+         */
+        void discardUnreadInboundData(const int fileDescriptor) noexcept
+        {
+            std::array<char, kDiscardChunkBytes> scratchBuffer{};
+            for (int roundCount = 0; roundCount < kDiscardRoundLimit; ++roundCount)
+            {
+                const ssize_t receivedBytes = ::recv(fileDescriptor,
+                                                     scratchBuffer.data(),
+                                                     static_cast<int>(scratchBuffer.size()),
+                                                     MSG_DONTWAIT);
+                // 0 是对端已收口、-1 配 WOULD_BLOCK 是队列已空、配其它错误码是连接已不可用：
+                // 三种情况都没有需要继续丢弃的字节
+                if (receivedBytes <= 0)
+                {
+                    return;
+                }
+            }
         }
     } // namespace
 
@@ -401,6 +433,13 @@ namespace AsynGyanis::Core
             // 而且它会唤醒仍挂在上面的等待协程——关闭描述符并不会唤醒 epoll 的等待者，
             // 少了这一步，正在等待可读/可写的协程会永久挂起
             m_watcher.reset();
+
+            // 只关发送半轴：FIN 当场发出，随后清理入站队列期间对端仍能读完我们已经写出去的响应
+            ::shutdown(m_fileDescriptor, SHUT_WR);
+
+            // 接收队列里还有本端不再会读的字节时关闭，栈会改发 RST 而不是 FIN，对端把自己已收到、
+            // 还没来得及读的响应一并丢掉（管线化时第二个请求最容易踩到）；先把它们丢干净
+            discardUnreadInboundData(m_fileDescriptor);
 
             ::shutdown(m_fileDescriptor, SHUT_RDWR);
             Platform::FileDescriptor::close(m_fileDescriptor);

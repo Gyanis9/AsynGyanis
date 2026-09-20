@@ -11,6 +11,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
 
 #include "CoreTestSupport.h"
@@ -30,12 +31,22 @@ namespace AsynGyanis::Core
     namespace
     {
         using TestSupport::advanceUntil;
+        using TestSupport::waitForCondition;
 
         /// 每轮发送的负载长度：对端不读时，两侧缓冲加起来远小于这里一轮的量
         constexpr std::size_t kBlockingSendChunkLength = 64 * 1024;
 
         /// 触发「等可写」的轮数上限：跑满说明本机没有构造出写阻塞，而不是实现出错
         constexpr int kBlockingSendRoundLimit = 4096;
+
+        /// 灌满对端接收队列的单轮负载长度
+        constexpr std::size_t kInboundFillChunkLength = 16 * 1024;
+
+        /// 灌满接收队列的轮数上限：跑满说明本机的缓冲大到构造不出「有未读数据」
+        constexpr int kInboundFillRoundLimit = 4096;
+
+        /// 服务端接收缓冲的目标大小：显式设置会关掉内核的自动扩窗，灌满只需几十 KB
+        constexpr int kSmallReceiveBufferBytes = 8 * 1024;
 
         /**
          * @brief 写阻塞用例的观测结果
@@ -168,6 +179,83 @@ namespace AsynGyanis::Core
 
         EXPECT_NO_THROW(asyncSocket.close());
         EXPECT_EQ(asyncSocket.fileDescriptor(), -1);
+    }
+
+    /**
+     * @brief 验证 close() 会先丢干净内核里没人读的入站字节，使对端收到 EOF 而不是连接重置
+     * @details 接收队列非空时关闭，栈会改发 RST：对端把自己已收到、还没来得及读的响应一并丢掉，
+     *          管线化场景里表现为「响应凭空消失」。用例不赌时序——先在对端写到 EAGAIN，此刻本端
+     *          接收队列必然是满的且从未被读，再关闭本端，然后有界轮询对端的读结果。
+     * @note 必须走真实的回环 TCP：收口形态是 TCP 的语义，POSIX 侧的 socketpair 是 AF_UNIX，
+     *       它不遵守 FIN/RST 这套规则，用它测出来的是另一个协议的行为。
+     */
+    TEST(AsyncSocket, CloseDiscardsUnreadInboundDataSoPeerSeesEof)
+    {
+        EventLoop loop;
+
+        AsyncSocket listener = AsyncSocket::create(loop);
+        ASSERT_TRUE(listener.bind(InetAddress::localhost(0)));
+        ASSERT_TRUE(listener.listen(1));
+
+        AsyncSocket client      = AsyncSocket::create(loop);
+        Task<>      connectTask = client.asyncConnect(InetAddress::localhost(listener.localAddress().port()));
+        connectTask.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); }))
+                << "回环连接没能在时限内完成";
+        EXPECT_NO_THROW(connectTask.handle().promise().result());
+
+        // 服务端这一端要交给 AsyncSocket 包装，因此直接走平台层接受（它已经把非阻塞置好了）
+        const int acceptedDescriptor = Platform::Socket::accept(listener.fileDescriptor(), nullptr, nullptr);
+        ASSERT_TRUE(Platform::FileDescriptor::isValid(acceptedDescriptor)) << "回环连接没有被接受";
+        // 先把服务端接收缓冲压小，客户端此刻还什么都没写：不压的话内核自动扩窗，灌满要写几十 MB
+        ASSERT_TRUE(Platform::Socket::setReceiveBufferSize(acceptedDescriptor, kSmallReceiveBufferBytes));
+        AsyncSocket server(loop, acceptedDescriptor);
+
+        const int clientDescriptor = client.fileDescriptor();
+
+        // 客户端不收，写到 EAGAIN 就说明服务端的接收队列里已经堆了没人读的字节
+        std::array<char, kInboundFillChunkLength> payload{};
+        std::int64_t submittedByteCount = 0;
+        bool isQueueFilledObservably    = false;
+        for (int roundCount = 0; roundCount < kInboundFillRoundLimit; ++roundCount)
+        {
+            const ssize_t writtenBytes =
+                Platform::FileDescriptor::write(clientDescriptor, payload.data(), payload.size());
+            if (writtenBytes > 0)
+            {
+                submittedByteCount += writtenBytes;
+                continue;
+            }
+            if (writtenBytes < 0 &&
+                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            {
+                isQueueFilledObservably = true;
+                break;
+            }
+            break;
+        }
+        ASSERT_TRUE(isQueueFilledObservably)
+                << "没能在 " << kInboundFillRoundLimit << " 轮内把服务端接收队列灌到 EAGAIN，条件没构造出来";
+        EXPECT_GT(submittedByteCount, 0) << "一个字节都没写出去，谈不上「有未读数据」";
+
+        server.close();
+
+        // 收口报文到达前客户端读到的是 EWOULDBLOCK：等到出现 0（EOF）或真正的错误为止
+        std::array<char, 64> probeBuffer{};
+        ssize_t readResult        = -2;
+        int     observedErrorCode = Platform::PlatformError::kWouldBlock;
+        const bool isClosureObserved = waitForCondition(
+            [&]
+            {
+                readResult = Platform::FileDescriptor::read(clientDescriptor, probeBuffer.data(), probeBuffer.size());
+                observedErrorCode =
+                    readResult < 0 ? Platform::PlatformError::lastSocketErrorCode() : 0;
+                return readResult == 0 || observedErrorCode != Platform::PlatformError::kWouldBlock;
+            });
+
+        ASSERT_TRUE(isClosureObserved) << "关闭服务端后客户端既没读到 EOF 也没报错，收口报文没有到达";
+        EXPECT_EQ(readResult, 0) << "客户端读到错误码 " << observedErrorCode
+                                 << "：RST 会让它丢掉已收到但还没读的响应";
     }
 
     /**

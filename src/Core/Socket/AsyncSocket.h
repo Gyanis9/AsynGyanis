@@ -30,7 +30,8 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 异步 TCP socket 封装，支持协程式 I/O
-     * @note close() 会先调用 shutdown(SHUT_RDWR) 再 close，避免 TCP RST 异常断开
+     * @note close() 会先把内核里没人读的入站字节丢干净再关描述符：接收队列非空时关闭，
+     *       栈会改发 RST 而不是 FIN，对端连自己已收到、还没来得及读的响应一起丢掉
      * @note 所有异步操作均通过 EventLoop 中的 epoll 实例等待事件，不会阻塞线程
      */
     class AsyncSocket
@@ -205,7 +206,11 @@ namespace AsynGyanis::Core
 #endif
 
         /**
-         * @brief 关闭 socket：先 shutdown(SHUT_RDWR) 再 close，避免未读完数据直接 close 使对端收到 RST
+         * @brief 关闭 socket：注销等待者 → shutdown(SHUT_WR) 发出 FIN → 丢弃未读的入站字节 →
+         *        shutdown(SHUT_RDWR) → 关闭描述符
+         * @note 丢弃入站字节是收口形态的关键一步：队列里还留着没人读的字节时关闭，栈会改发 RST，
+         *       对端由此丢掉它已收到但还没读的响应。丢弃有轮数上限，不会因对端洪泛而拖住循环线程
+         * @note 幂等：已关闭（描述符为 -1）时再次调用不做任何事
          */
         void close();
 

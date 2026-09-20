@@ -73,6 +73,13 @@
     #ifndef MSG_NOSIGNAL
         #define MSG_NOSIGNAL 0
     #endif
+    #ifndef MSG_DONTWAIT
+        // winsock 没有 per-call 的「不等待」标志：本层套接字一律非阻塞，取 0 即等价
+        #define MSG_DONTWAIT 0
+    #endif
+    #ifndef SHUT_WR
+        #define SHUT_WR SD_SEND
+    #endif
     #ifndef SHUT_RDWR
         #define SHUT_RDWR SD_BOTH
     #endif

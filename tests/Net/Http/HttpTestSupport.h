@@ -374,6 +374,8 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 轮询读直到观察到对端关闭或连接出错
+             * @details 只判「连接已断」而不区分 FIN 与 RST：本端读得慢时，未读字节会让内核改发 RST，
+             *          那是读取粒度的产物而不是服务端契约。要断言收口形态就别用这个助手
              * @param accumulated 输入输出：累计读到的字节
              * @param timeout 等待上限
              * @return true 在时限内观察到连接已断
