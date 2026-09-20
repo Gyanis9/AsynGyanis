@@ -12,11 +12,124 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string_view>
 
 namespace AsynGyanis::Net
 {
+    /**
+     * @brief RFC 9110 §5.1 的 tchar 集合：下标是字节值，true 表示该字节可出现在 token 里
+     * @details 用表而非逐字符比较：请求行与每条头部都要按字节过一遍判定，分支链在这里既慢
+     *          又容易在边界写错。也不走 std::%isalnum——它随 locale 变化，GBK 一类区域设置下
+     *          高位字节会被算成字母数字，把非 tchar 放行成合法头名。
+     */
+    inline constexpr std::array<bool, 256> kHttpTokenCharacterSet = []
+    {
+        std::array<bool, 256> characterSet{};
+        // 按 string_view 遍历而不是遍历字符数组：后者会把结尾的 '\0' 也算进集合
+        for (const std::string_view tokenCharacters: {"0123456789", "abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                                                      "!#$%&'*+-.^_`|~"})
+        {
+            for (const char character: tokenCharacters)
+            {
+                characterSet[static_cast<unsigned char>(character)] = true;
+            }
+        }
+        return characterSet;
+    }();
+
+    static_assert(!kHttpTokenCharacterSet[0], "NUL 不属于 tchar");
+    static_assert(!kHttpTokenCharacterSet[static_cast<unsigned char>(' ')], "SP 不属于 tchar");
+    static_assert(!kHttpTokenCharacterSet[static_cast<unsigned char>('\t')], "HTAB 不属于 tchar");
+    static_assert(!kHttpTokenCharacterSet[0x7F], "DEL 不属于 tchar");
+    static_assert(!kHttpTokenCharacterSet[0xFF], "obs-text 不属于 tchar");
+    static_assert(kHttpTokenCharacterSet[static_cast<unsigned char>('~')], "~ 属于 tchar");
+
+    /**
+     * @brief RFC 9110 §5.6.2 的字段值集合：下标是字节值，true 表示该字节可以出现在头字段值里
+     * @details 放行 HTAB、可见 ASCII 与 obs-text（0x80 以上）；CR/LF/NUL/DEL 与其余控制字符一律
+     *          判否——头部块以 CRLF 定界，放行的话一个字段值就能自己结束头部块。
+     */
+    inline constexpr std::array<bool, 256> kHttpFieldValueCharacterSet = []
+    {
+        std::array<bool, 256> characterSet{};
+        characterSet[static_cast<unsigned char>('\t')] = true;
+        // 循环变量用 int：unsigned char 推到 0xFF 之后再自增会回绕成 0，终止条件永不成立
+        for (int byte = 0x20; byte <= 0xFF; ++byte)
+        {
+            // 0x7F（DEL）夹在 0x20-0xFF 中间，它是控制字符，不能随可见 ASCII 与 obs-text 一起放行
+            characterSet[static_cast<std::size_t>(byte)] = byte != 0x7F;
+        }
+        return characterSet;
+    }();
+
+    static_assert(kHttpFieldValueCharacterSet[static_cast<unsigned char>(' ')], "SP 属于字段值");
+    static_assert(kHttpFieldValueCharacterSet[static_cast<unsigned char>('\t')], "HTAB 属于字段值");
+    static_assert(kHttpFieldValueCharacterSet[0x7E], "DEL 之前最后一个可见字符属于字段值");
+    static_assert(kHttpFieldValueCharacterSet[0x80], "obs-text 下界属于字段值");
+    static_assert(kHttpFieldValueCharacterSet[0xFF], "obs-text 上界属于字段值");
+    static_assert(!kHttpFieldValueCharacterSet[static_cast<unsigned char>('\r')], "CR 不属于字段值");
+    static_assert(!kHttpFieldValueCharacterSet[static_cast<unsigned char>('\n')], "LF 不属于字段值");
+    static_assert(!kHttpFieldValueCharacterSet[0], "NUL 不属于字段值");
+    static_assert(!kHttpFieldValueCharacterSet[0x7F], "DEL 不属于字段值");
+
+    /**
+     * @brief 判断字节是否为 RFC 9110 §5.1 的 tchar
+     * @param character 待判断字节
+     * @return true 表示可用作方法名、头部字段名等 token 的一部分
+     */
+    [[nodiscard]] constexpr bool isTokenCharacter(const unsigned char character) noexcept
+    {
+        return kHttpTokenCharacterSet[character];
+    }
+
+    /**
+     * @brief 判断整段文本是否全部由 tchar 组成
+     * @details 空文本按「未被反例否决」返回 true；名字/方法本身是否允许为空由调用方各自判定。
+     * @param text 待判断文本
+     * @return true 表示每个字节都是 tchar
+     */
+    [[nodiscard]] inline bool containsOnlyTokenCharacters(const std::string_view text) noexcept
+    {
+        for (const char character: text)
+        {
+            if (!kHttpTokenCharacterSet[static_cast<unsigned char>(character)])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 判断字节是否可以出现在头字段值里
+     * @param character 待判断字节
+     * @return true 表示是 HTAB、可见 ASCII 或 obs-text
+     */
+    [[nodiscard]] constexpr bool isFieldValueCharacter(const unsigned char character) noexcept
+    {
+        return kHttpFieldValueCharacterSet[character];
+    }
+
+    /**
+     * @brief 判断整段文本是否全部由合法的字段值字节组成
+     * @details 空文本按「未被反例否决」返回 true。
+     * @param text 待判断文本
+     * @return true 表示不含 CR/LF/NUL/DEL 或其它非法控制字符
+     */
+    [[nodiscard]] inline bool containsOnlyFieldValueCharacters(const std::string_view text) noexcept
+    {
+        for (const char character: text)
+        {
+            if (!kHttpFieldValueCharacterSet[static_cast<unsigned char>(character)])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * @brief 裁掉首尾的可选空白（OWS，RFC 9110 §5.6.3：SP 与 HTAB）
      * @param text 原始文本视图

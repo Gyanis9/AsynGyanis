@@ -84,17 +84,7 @@ namespace AsynGyanis::Net
          */
         bool isTokenName(const std::string_view name) noexcept
         {
-            constexpr std::string_view kExtraTokenCharacters = "!#$%&'*+-.^_`|~";
-            for (const char character: name)
-            {
-                const bool isAlphaNumeric = (character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') ||
-                                            (character >= 'A' && character <= 'Z');
-                if (!isAlphaNumeric && kExtraTokenCharacters.find(character) == std::string_view::npos)
-                {
-                    return false;
-                }
-            }
-            return true;
+            return containsOnlyTokenCharacters(name);
         }
 
         /**
@@ -106,15 +96,7 @@ namespace AsynGyanis::Net
          */
         bool isHeaderValueBytes(const std::string_view value) noexcept
         {
-            for (const char character: value)
-            {
-                const unsigned char byteValue = static_cast<unsigned char>(character);
-                if (byteValue != '\t' && (byteValue < 0x20 || byteValue == 0x7F))
-                {
-                    return false;
-                }
-            }
-            return true;
+            return containsOnlyFieldValueCharacters(value);
         }
 
         /**

@@ -4,7 +4,6 @@
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
 
-#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -95,8 +94,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判断字符串是否是合法的 HTTP 头部字段名
-         * @details 按 RFC 9110 §5.1 的 tchar 集合逐字符校验：`!#$%&'*+-.^_`|~` 加数字与字母。
-         *          空白、冒号、控制字符都会让报文无法定界，一律拒绝；空名字同样非法。
+         * @details 按 RFC 9110 §5.1 的 tchar 集合校验，与请求侧共用同一张表：两侧判定不一致时，
+         *          同一段转发代码会在「收得进来、发不出去」之间分裂。空白、冒号与控制字符都
+         *          让报文无法定界，一律拒绝；空名字同样非法。
          * @param fieldName 已归一化为小写的头部字段名
          * @return true 可作为头部字段名
          */
@@ -107,12 +107,7 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            const auto isTokenCharacter = [](const char character)
-            {
-                static constexpr std::string_view kTokenSeparators = "!#$%&'*+-.^_`|~";
-                return std::isalnum(static_cast<unsigned char>(character)) != 0 || kTokenSeparators.find(character) != std::string_view::npos;
-            };
-            return std::ranges::all_of(fieldName, isTokenCharacter);
+            return containsOnlyTokenCharacters(fieldName);
         }
 
         /**
@@ -125,13 +120,8 @@ namespace AsynGyanis::Net
          */
         bool isSafeHeaderValue(const std::string &headerValue)
         {
-            const auto isForbiddenCharacter = [](const char character)
-            {
-                // character 先转 unsigned char：把负值交给 std::iscntrl 是未定义行为
-                const auto unsignedCharacter = static_cast<unsigned char>(character);
-                return character == '\0' || (std::iscntrl(unsignedCharacter) != 0 && character != '\t');
-            };
-            return std::ranges::find_if(headerValue, isForbiddenCharacter) == headerValue.end();
+            // 与请求侧同一张表：判定标准是 RFC 的字段值字符集，而不是 locale 决定的 iscntrl
+            return containsOnlyFieldValueCharacters(headerValue);
         }
     } // namespace
 

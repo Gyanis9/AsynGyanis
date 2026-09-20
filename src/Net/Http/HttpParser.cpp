@@ -28,22 +28,6 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 判断字符是否为 RFC 9110 定义的 token 字符
-         * @param character 待判断字节
-         * @return true 表示可用作方法名或头部名（"!#$%&'*+-.^_`|~" 与字母数字）
-         */
-        bool isTokenCharacter(const unsigned char character) noexcept
-        {
-            if ((character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') ||
-                (character >= 'A' && character <= 'Z'))
-            {
-                return true;
-            }
-            constexpr std::string_view kExtraTokenCharacters = "!#$%&'*+-.^_`|~";
-            return kExtraTokenCharacters.find(static_cast<char>(character)) != std::string_view::npos;
-        }
-
-        /**
          * @brief 判断字符是否可以出现在请求目标里
          * @details 只接受可见 ASCII：空格是请求行的分隔符，控制字符与 DEL 都不允许。
          * @param character 待判断字节
@@ -52,23 +36,6 @@ namespace AsynGyanis::Net
         bool isTargetCharacter(const unsigned char character) noexcept
         {
             return character >= 0x21 && character <= 0x7E;
-        }
-
-        /**
-         * @brief 判断字符是否可以出现在头部值里
-         * @details 允许 HTAB、可见 ASCII 与 obs-text（0x80 以上，RFC 9110 允许接收）；
-         *          其余控制字符（含 DEL）一律拒绝——它们既无法出现在合法报文里，
-         *          又常被用来构造响应拆分之类的注入。
-         * @param character 待判断字节
-         * @return true 表示合法
-         */
-        bool isHeaderValueCharacter(const unsigned char character) noexcept
-        {
-            if (character == '\t' || (character >= 0x20 && character <= 0x7E) || character >= 0x80)
-            {
-                return true;
-            }
-            return false;
         }
 
         /**
@@ -610,13 +577,10 @@ namespace AsynGyanis::Net
             failMalformed(std::format("HTTP 报文解析失败：请求方法长度必须在 1 到 {} 字节之间", kMaximumMethodLength));
             return false;
         }
-        for (const char character: methodText)
+        if (!containsOnlyTokenCharacters(methodText))
         {
-            if (!isTokenCharacter(static_cast<unsigned char>(character)))
-            {
-                failMalformed("HTTP 报文解析失败：请求方法只能由 token 字符组成");
-                return false;
-            }
+            failMalformed("HTTP 报文解析失败：请求方法只能由 token 字符组成");
+            return false;
         }
 
         if (targetText.empty())
@@ -678,14 +642,11 @@ namespace AsynGyanis::Net
         }
 
         const std::string_view fieldName = line.substr(0, colonPosition);
-        for (const char character: fieldName)
+        // 冒号前若有空白也会在这里被判掉：token 字符集不含 SP 与 HTAB
+        if (!containsOnlyTokenCharacters(fieldName))
         {
-            // 冒号前若有空白也会落到这里：token 字符集不含 SP 与 HTAB
-            if (!isTokenCharacter(static_cast<unsigned char>(character)))
-            {
-                failMalformed(std::format("HTTP 报文解析失败：{}名只能由 token 字符组成（冒号前不得有空白）", fieldContextLabel));
-                return false;
-            }
+            failMalformed(std::format("HTTP 报文解析失败：{}名只能由 token 字符组成（冒号前不得有空白）", fieldContextLabel));
+            return false;
         }
         if (exceedsLimit(fieldName.size(), m_limits.maximumHeaderFieldNameLength))
         {
@@ -699,13 +660,10 @@ namespace AsynGyanis::Net
             failHeaderTooLarge(std::format("{}值超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderFieldValueLength));
             return false;
         }
-        for (const char character: fieldValue)
+        if (!containsOnlyFieldValueCharacters(fieldValue))
         {
-            if (!isHeaderValueCharacter(static_cast<unsigned char>(character)))
-            {
-                failMalformed(std::format("HTTP 报文解析失败：{}值含非法控制字符", fieldContextLabel));
-                return false;
-            }
+            failMalformed(std::format("HTTP 报文解析失败：{}值含非法控制字符", fieldContextLabel));
+            return false;
         }
 
         // 头部块总长（名与值的净字节）与条数是两道独立的闸：单条名、单条值、条数各自合规，

@@ -16,21 +16,6 @@ namespace AsynGyanis::Net
             return Http3HeaderError{.kind = errorKind, .message = std::move(messageText)};
         }
 
-        /// RFC 9110 §5.1 的 tchar：字段名只允许这些字符加字母数字（大写字母在这里放行、由上层单独判畸形）
-        bool isTokenCharacter(const char character) noexcept
-        {
-            static constexpr std::string_view kSpecialCharacters = "!#$%&'*+-.^_`|~";
-            if (character >= 'a' && character <= 'z')
-            {
-                return true;
-            }
-            if (character >= '0' && character <= '9')
-            {
-                return true;
-            }
-            return (character >= 'A' && character <= 'Z') || kSpecialCharacters.find(character) != std::string_view::npos;
-        }
-
         /// RFC 3986 §3.1 的 scheme：首字符必须是字母，其后只允许字母数字与 + - .
         bool isSchemeCharacter(const char character) noexcept
         {
@@ -136,7 +121,7 @@ namespace AsynGyanis::Net
         // 伪头名的字符集与字段名同一套（tchar），冒号之外不额外放行
         for (const char character: name)
         {
-            if (!isTokenCharacter(character) || (character >= 'A' && character <= 'Z'))
+            if (!isTokenCharacter(static_cast<unsigned char>(character)) || (character >= 'A' && character <= 'Z'))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::UndefinedPseudoHeader,
                                                        "伪头名 \"" + std::string(name) + "\" 含非法字符或大写字母（RFC 9110 §5.1）"));
@@ -367,7 +352,7 @@ namespace AsynGyanis::Net
     {
         for (const char character: name)
         {
-            if (!isTokenCharacter(character))
+            if (!isTokenCharacter(static_cast<unsigned char>(character)))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::IllegalFieldNameCharacter,
                                                        "字段名 \"" + printableFieldText(name) + "\" 含 tchar 之外的字符（RFC 9110 §5.1）"));
@@ -384,17 +369,11 @@ namespace AsynGyanis::Net
 
     std::expected<void, Http3HeaderError> Http3HeaderValidator::validateFieldValue(const std::string_view value) const
     {
-        for (const char character: value)
+        // CR/LF/NUL 一旦放行，字段值就能伪造出状态行或截断头部，这是响应拆分的最小形态
+        if (!containsOnlyFieldValueCharacters(value))
         {
-            const auto byte = static_cast<unsigned char>(character);
-            // HTAB 与可见 ASCII、以及 obs-text（0x80-0xFF）之外的字节都不合法：
-            // CR/LF/NUL 一旦放行，字段值就能伪造出状态行或截断头部，这是响应拆分的最小形态
-            const bool isAllowed = byte == '\t' || (byte >= 0x20 && byte <= 0x7E) || byte >= 0x80;
-            if (!isAllowed)
-            {
-                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::IllegalFieldValueCharacter,
-                                                       "头字段取值含控制字符（RFC 9110 §5.6.2 只允许 HTAB、可见 ASCII 与 obs-text）"));
-            }
+            return std::unexpected(makeHeaderError(Http3HeaderErrorKind::IllegalFieldValueCharacter,
+                                                   "头字段取值含控制字符（RFC 9110 §5.6.2 只允许 HTAB、可见 ASCII 与 obs-text）"));
         }
         return {};
     }
