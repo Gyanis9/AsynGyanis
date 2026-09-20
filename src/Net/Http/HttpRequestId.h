@@ -28,6 +28,42 @@ namespace AsynGyanis::Net
     /// 采信客户端自带 request-id 的最大长度，单位字节；更长的取值一律按「客户端没给」处理
     inline constexpr std::size_t kMaximumRequestIdLength = 64;
 
+    namespace detail
+    {
+        /// request-id 里序号的十六进制位数：定长是「按长度与分隔符就能从日志里截出 id」的前提
+        inline constexpr std::size_t kRequestIdSequenceDigitCount = 16;
+
+        /**
+         * @brief 拼出 `<前缀>-<16 位十六进制序号>` 形态的 request-id
+         * @details 不用 std::format：每条请求都要一个 id，格式化器要为运行期才确定的前缀
+         *          现场解析格式串，实测比按已知长度直接写入慢数倍。产出与
+         *          `std::format("{}-{:016x}", prefix, sequenceNumber)` 逐字节相同。
+         * @param prefix 服务器前缀（十六进制文本），长度任意、原样搬运
+         * @param sequenceNumber 本服务器内的递增序号
+         * @return std::string 定长形态的 request-id
+         */
+        [[nodiscard]] inline std::string formatRequestIdText(const std::string_view prefix, const std::uint64_t sequenceNumber)
+        {
+            static constexpr char kHexDigits[] = "0123456789abcdef";
+
+            std::string requestIdText;
+            requestIdText.resize(prefix.size() + 1 + kRequestIdSequenceDigitCount);
+
+            // 前缀原样拷贝：它只在建生成器时算一次，不参与这里的长度判定
+            std::copy(prefix.begin(), prefix.end(), requestIdText.begin());
+            requestIdText[prefix.size()] = '-';
+
+            // 从高位往低位逐个取 nibble：写满 16 位就等于零填充，不需要单独判「不足位补几个 0」
+            for (std::size_t digitIndex = 0; digitIndex < kRequestIdSequenceDigitCount; ++digitIndex)
+            {
+                const std::uint64_t shiftAmount = (kRequestIdSequenceDigitCount - 1 - digitIndex) * 4U;
+                const std::size_t digitValue = static_cast<std::size_t>((sequenceNumber >> shiftAmount) & 0xFULL);
+                requestIdText[prefix.size() + 1 + digitIndex] = kHexDigits[digitValue];
+            }
+            return requestIdText;
+        }
+    } // namespace detail
+
     /**
      * @brief request-id 生成器：每台服务器一个进程内唯一前缀 + 递增序号
      *
@@ -104,9 +140,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string next() const
         {
             const std::uint64_t sequenceNumber = m_sequence.fetch_add(1, std::memory_order_relaxed);
-
-            // 序号零填充到 16 位：64 位计数必然放得下，长度与形态因此完全可预期
-            return std::format("{}-{:016x}", m_prefix, sequenceNumber);
+            return detail::formatRequestIdText(m_prefix, sequenceNumber);
         }
 
     private:
