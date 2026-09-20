@@ -121,9 +121,9 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string resolve(const HttpRequest &request) const
         {
-            // 读权威记录（headerValues）而不是 getHeader()：后者首次查询要重建整张头部单值视图，
-            // 为取一个头就付这笔开销等于把「按需建视图」的优化废掉。同名多条时取首条，
-            // 与 getHeader() 对可重复头部的口径一致
+            // 读权威记录取首条（headerValues），而不是 getHeader()：x-request-id 不在可重复头部
+            // 名单里，同名多条时 getHeader() 会按 RFC 7230 §3.2.2 以 ", " 合并，于是两条互不相干的
+            // 上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径
             const std::vector<std::string> clientRequestIds = request.headerValues(std::string(kRequestIdHeaderName));
             if (!clientRequestIds.empty() && isAcceptableRequestId(clientRequestIds.front()))
             {
