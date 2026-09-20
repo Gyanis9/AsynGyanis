@@ -112,8 +112,8 @@ namespace AsynGyanis::Core
 
     private:
         /// 存活登记表：IoWatcher 构造/析构时登记与注销，事件派发前据此确认接收对象还活着
-        mutable std::mutex                  m_liveWatcherMutex;
-        std::unordered_set<const IoWatcher *> m_liveWatchers;
+        mutable std::mutex                  m_liveWatcherMutex;  ///< 保护下面那张表的锁，跨线程注销也要用
+        std::unordered_set<const IoWatcher *> m_liveWatchers;    ///< 当前还活着的 IoWatcher
 
         Epoll                   m_epoll;          ///< epoll 事件管理器
         Scheduler               m_scheduler;      ///< 协程调度器，管理待运行的任务队列

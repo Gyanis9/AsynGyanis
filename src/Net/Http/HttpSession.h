@@ -68,6 +68,8 @@ namespace AsynGyanis::Net
          * @param requestIdGenerator request-id 生成器；传空指针表示本会话不为请求落定 request-id
          * @param parserLimits 解析器资源上限；默认取 HttpParserLimits 的缺省字段。它按值交给本会话的
          *        解析器并在构造时固定，因此只影响此后新建的会话（见 HttpParserLimits 的 @note）
+         * @param memoryBudget 在途正文字节的全局预算，与服务器及同服务器上的其它连接共享；
+         *        传空指针表示本会话不受该预算约束
          *
          * @note 事件循环由 AsyncSocket 内部持有，会话不需要第二份引用，因此只收一个 socket
          *       （见 Core::Connection 的构造）。
@@ -125,7 +127,7 @@ namespace AsynGyanis::Net
         // 接收窗口每连接一份、随连接存续，只在首次读取时分配一次，之后整条连接复用；因此不接共享缓冲池：
         // 池化能省下的只是「每条连接一次」的分配，而建连本身（accept/close）在 Release 基线里是 1.7k 连接/s
         // 这个量级，省下的被它淹没。要改先量「短连接 churn 下分配器占多少 CPU」，别凭「高频分配该池化」的直觉。
-        std::vector<char> m_receiveBuffer;
+        std::vector<char> m_receiveBuffer; ///< 接收窗口：首次读取时分配，之后整条连接复用
 
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集
@@ -480,6 +482,7 @@ namespace AsynGyanis::Net
          *                      WebSocket 各项计数都不更新
          * @param requestIdGenerator request-id 生成器，可为空；为空时不为请求落定 request-id，
          *                          响应也不带 x-request-id
+         * @param memoryBudget    在途正文字节的全局预算，可为空；为空时正文不受该预算约束
          */
         template<typename Socket>
         Core::Task<> httpKeepAliveLoop(Socket &socket,

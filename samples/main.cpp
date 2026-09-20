@@ -1,11 +1,4 @@
-/**
- * @file main.cpp
- * @brief 多线程 HTTP/HTTPS 服务器示例 — 每线程一个 EventLoop + HttpServer/HttpsServer（SO_REUSEPORT）
- * @author Gyanis
- * @date 2026-09-12
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 多线程 HTTP/HTTPS 服务器示例：每线程一个 EventLoop + HttpServer/HttpsServer（SO_REUSEPORT）
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/ConsoleSink.h"

@@ -1,10 +1,12 @@
 /**
  * @file TestHelpers.h
- * @brief 测试辅助工具 — ConfigManager 单例互斥锁，防止并行测试状态干扰
- * @copyright Copyright (c) 2026
+ * @brief 测试辅助工具：ConfigManager 单例的互斥锁，防止并行用例互相踩状态
+ * @author Gyanis
+ * @date 2026-05-03
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
  */
-#ifndef TESTS_TESTHELPERS_H
-#define TESTS_TESTHELPERS_H
+#pragma once
 
 #include <mutex>
 
@@ -14,5 +16,3 @@ inline std::mutex &configTestMutex()
     static std::mutex m;
     return m;
 }
-
-#endif

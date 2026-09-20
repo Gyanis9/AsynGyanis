@@ -1,4 +1,11 @@
-/** @file HttpClient.h 出站 HTTP 客户端 */
+/**
+ * @file HttpClient.h
+ * @brief 出站 HTTP 客户端与 URL 拆解：一次请求一条连接，明文与 https 两条路都支持
+ * @author Gyanis
+ * @date 2026-09-14
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 #pragma once
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpResponseParser.h"
@@ -14,18 +21,18 @@ namespace AsynGyanis::Net
     /// HTTP 客户端响应
     struct HttpClientResponse
     {
-        int      statusCode{0};
-        std::string reasonPhrase;
-        std::vector<std::pair<std::string, std::string>> headers;
-        std::string body;
+        int      statusCode{0};  ///< 状态码；0 表示没拿到响应（连接或 TLS 失败）
+        std::string reasonPhrase; ///< 状态行里的原因短语
+        std::vector<std::pair<std::string, std::string>> headers; ///< 头部字段，按收到的顺序原样留着
+        std::string body;        ///< 正文；chunked 已按块拼回原样
     };
     /// URL 拆解结果
     struct ParsedUrl
     {
-        std::string scheme{"http"};
-        std::string host;
-        uint16_t    port{80};
-        std::string path{"/"};
+        std::string scheme{"http"}; ///< 协议；只有 http 与 https 两条路，其余按 http 处理
+        std::string host;           ///< authority 里去掉端口的那一段（不做百分号解码）
+        uint16_t    port{80};       ///< 端口；URL 里没写时 https 取 443、其余取 80
+        std::string path{"/"};      ///< 请求路径，含查询串；没写路径时为 "/"
     };
     /// URL 拆解工具
     [[nodiscard]] ParsedUrl parseUrl(std::string_view url);

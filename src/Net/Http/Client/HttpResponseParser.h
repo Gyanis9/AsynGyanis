@@ -1,4 +1,11 @@
-/** @file HttpResponseParser.h 响应报文解析器 */
+/**
+ * @file HttpResponseParser.h
+ * @brief 出站 HTTP 响应报文解析器：增量喂字节，把状态行、头部块与三种正文定界方式解成一条响应
+ * @author Gyanis
+ * @date 2026-09-14
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -54,7 +61,16 @@ namespace AsynGyanis::Net
          */
         explicit HttpResponseParser(std::size_t maximumBodySize = kDefaultMaximumBodySize) noexcept;
 
-        enum class Stage { StatusLine, Headers, Body, Complete, Failed };
+        /// 解析推进到的阶段
+        enum class Stage
+        {
+            StatusLine, ///< 状态行还没拿到
+            Headers,    ///< 正在收头部块
+            Body,       ///< 头部收完，正在按定界方式收正文
+            Complete,   ///< 一条响应收齐
+            Failed,     ///< 报文不合规或正文越出上限，本解析器不再推进
+        };
+
         /// 喂入数据，返回本轮消费的字节数（返回 0 表示需要更多数据）
         std::size_t feed(std::string_view data);
         /// 解析是否已完成（所有期望的正文都收到了）
@@ -87,19 +103,19 @@ namespace AsynGyanis::Net
             Trailer         ///< 0 块之后的 trailer 段，空行收尾
         };
 
-        Stage            m_stage{Stage::StatusLine};
-        HttpResponseInfo m_result;
-        std::string      m_lineBuffer;
+        Stage            m_stage{Stage::StatusLine}; ///< 现在正在解哪一段
+        HttpResponseInfo m_result;                   ///< 累积中的解析结果，收齐后才完整
+        std::string      m_lineBuffer;               ///< 跨馈送的半行暂存，凑满一行才清
         /// 上一次跨馈送取行把手里的视图交出去了：下一次取行时才能清暂存
         ///（交出去就清会让 std::string 在首字节写 NUL，调用方读到坏内容）
         bool             m_isLineHandedOut{false};
         std::size_t      m_headerBlockByteCount{0}; ///< 已收头部块的净字节数（名 + 值）
-        std::size_t      m_expectedBodyBytes{0};
-        bool             m_isChunked{false};
-        bool             m_isCloseDelimited{false};
+        std::size_t      m_expectedBodyBytes{0};    ///< 还欠多少正文字节（Content-Length 或块边界给的）
+        bool             m_isChunked{false};        ///< 正文按 chunked 分块定界
+        bool             m_isCloseDelimited{false}; ///< 正文靠对端关闭连接定界
         bool             m_isHeadResponse{false}; ///< 接下来解析的是 HEAD 请求的应答（RFC 9112 §6.3 第 1 条）
-        ChunkPhase       m_chunkPhase{ChunkPhase::SizeLine};
-        std::size_t      m_chunkSize{0};
+        ChunkPhase       m_chunkPhase{ChunkPhase::SizeLine}; ///< chunked 读取当前停在哪一步
+        std::size_t      m_chunkSize{0};            ///< 当前块还剩多少字节没收
         std::size_t      m_maximumBodySize{kDefaultMaximumBodySize}; ///< 正文上限（0 表示不限）
 
         /**

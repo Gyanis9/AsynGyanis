@@ -203,12 +203,12 @@ namespace AsynGyanis::Core
         unsigned      *m_completionRingMask{nullptr}; ///< CQ 下标掩码
         io_uring_sqe  *m_submissionEntries{nullptr};  ///< 提交项数组
         io_uring_cqe  *m_completionEntries{nullptr};  ///< 完成项数组
-        void          *m_submissionRingMapping{nullptr};
-        std::size_t    m_submissionRingMappingSize{0};
-        void          *m_completionRingMapping{nullptr};
-        std::size_t    m_completionRingMappingSize{0};
-        void          *m_submissionEntriesMapping{nullptr};
-        std::size_t    m_submissionEntriesMappingSize{0};
+        void          *m_submissionRingMapping{nullptr}; ///< SQ 环那段映射的基址（munmap 与算偏移都用它）
+        std::size_t    m_submissionRingMappingSize{0};   ///< 上面那段映射的长度
+        void          *m_completionRingMapping{nullptr}; ///< CQ 环映射基址；内核把两段并成一份时与 SQ 相同
+        std::size_t    m_completionRingMappingSize{0};   ///< 上面那段映射的长度
+        void          *m_submissionEntriesMapping{nullptr};   ///< SQ 条目数组的映射基址（内核侧那块）
+        std::size_t    m_submissionEntriesMappingSize{0};     ///< 上面那段映射的长度
         unsigned       m_submissionCapacity{0};      ///< SQ 条目数（本地副本）
         /// 已取走、尚未发布给内核的槽位数：取槽只推进它，尾指针等 flush 时才发布——
         /// 内核因此不会读到半写的 SQE（「先填内容、再发布尾指针」这条顺序由它保证）

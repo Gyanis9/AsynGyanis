@@ -85,6 +85,7 @@ namespace AsynGyanis::Net
          * @param requestIdGenerator request-id 生成器；传空指针表示不为请求落定 request-id
          * @param parserLimits 解析上限；HTTP/2 路径只用其中的 maximumBodySize（头块上限由
          *        Http2ConnectionConfiguration 管），语义与 HTTP 侧一致
+         * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
          * @note 构造函数不做握手：握手是协程动作，放在 start() 的第一步
          */
         Http2Session(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
@@ -100,8 +101,14 @@ namespace AsynGyanis::Net
          * @details 套接字直接交给基类持有：明文传输没有第二份通道，不需要 TLS 那样的占位套接字。
          *          本构造函数不做任何协议协商——调用方（HttpServer::createConnection()）已经在按
          *          「这个端口只说 h2」创建会话，因此 start() 直接进 HTTP/2 循环。
+         * @param loop 事件循环；本会话只取它的调度器来挂主协程
          * @param socket 已建立的异步套接字，所有权转移给基类
-         * @param router 全局路由器；其它参数含义同上一个构造函数
+         * @param router 全局路由器，用于分发请求；其生命周期必须不短于本会话
+         * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
+         * @param metrics 统计采集端；传空指针表示本会话不采集统计
+         * @param requestIdGenerator request-id 生成器；传空指针表示不为请求落定 request-id
+         * @param parserLimits 解析上限；HTTP/2 路径只用其中的 maximumBodySize，语义与上一个构造函数一致
+         * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
          */
         Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
                      std::shared_ptr<const HttpServerLimits> limits = nullptr,
@@ -469,8 +476,8 @@ namespace AsynGyanis::Net
 
         /// HTTP/1.1 回退路径（TLS 上 ALPN 未协商出 h2 时）的解析器与接收窗口。
         /// 基类的同名成员是私有的，因此回退路径各持一份，两条路径不共用状态
-        HttpParser m_parser;
-        std::vector<char> m_receiveBuffer;
+        HttpParser m_parser;                  ///< HTTP/1.1 回退路径的解析器
+        std::vector<char> m_receiveBuffer;    ///< 回退路径自己的接收窗口
 
         Http2Connection m_connection;                 ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
         Core::Scheduler &m_scheduler;                     ///< 本会话所在事件循环的调度器

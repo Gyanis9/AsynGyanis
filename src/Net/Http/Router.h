@@ -223,6 +223,7 @@ namespace AsynGyanis::Net
              * @param matchAnyMethod 是否为 any() 注册的「任意方法」路由
              * @param routePattern 注册时给出的路径模式原文，所有权转移给本条目
              * @param routeHandler 处理函数，所有权转移给本条目
+             * @param isStreaming 本条路由是否按流式接口注册，存进 streaming 供流式判定读取
              */
             PatternRoute(HttpMethod routeMethod, bool matchAnyMethod, std::string routePattern, Handler routeHandler,
                          bool isStreaming = false);

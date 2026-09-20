@@ -1,9 +1,16 @@
-// QuicRfcVectors.h —— RFC 9000/9001 附录里的官方测试向量，供 QUIC 各层的用例共用
-//
-// 这些向量是从 rfc9001.txt 原文机器抽取后逐段落下来的（不是手抄），改动请重新抽取而不是就地编辑：
-// 抄错一个字符的表现是「实现看起来是对的但解不开」，比编译失败难查得多。
-// 覆盖 RFC 9001 附录 A.2（AES-128-GCM 的客户端 Initial，含组包器要用的完整保护态报文）与
-// 附录 A.5（ChaCha20-Poly1305 的最小短头包），以及附录 A.1 的 Initial 密钥。
+/**
+ * @file QuicRfcVectors.h
+ * @brief RFC 9000/9001 附录里的官方测试向量，供 QUIC 各层的用例共用
+ * @author Gyanis
+ * @date 2026-09-19
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ *
+ * @details 向量是从 rfc9001.txt 原文机器抽取后落下来的，改动请重新抽取而不是就地编辑：抄错一个字符的
+ *          表现是「实现看起来是对的但解不开」，比编译失败难查得多。覆盖 RFC 9001 的附录 A.1（Initial
+ *          密钥）、A.2（AES-128-GCM 的客户端 Initial，含组包器要用的整条保护态报文）与 A.5
+ *          （ChaCha20-Poly1305 的最小短头包）。
+ */
 
 #pragma once
 
@@ -22,6 +29,7 @@ namespace AsynGyanis::Net::TestSupport
     /// 附录 A.1 的客户端 Initial AEAD 密钥与 IV
     constexpr std::string_view kClientInitialKeyHex = "1f369613dd76d5467730efcbe3b1a22d";
 
+    /// 附录 A.1 的客户端 Initial 初始化向量
     constexpr std::string_view kClientInitialInitializationVectorHex = "fa044b2f42a3fd3b46fb255c";
 
     /// 附录 A.2：未保护头部（18 字节 + 4 字节包号 2），同时就是 AEAD 的附加认证数据
@@ -30,6 +38,7 @@ namespace AsynGyanis::Net::TestSupport
     /// 附录 A.2：包号与整包载荷长度
     constexpr std::uint64_t kAppendixA2PacketNumber = 2ULL;
 
+    /// 附录 A.2 那条报文的载荷长度：列出的帧加上补足用的 PADDING
     constexpr std::size_t kAppendixA2PayloadByteCount = 1162;
 
     /// 附录 A.2：RFC 只列出这 245 字节的帧，余下补足 1162 字节的部分全是 PADDING 帧
@@ -100,15 +109,19 @@ namespace AsynGyanis::Net::TestSupport
     /// 附录 A.5：同一包的 AEAD 输出（1 字节 PING 的密文加 16 字节标签），即整包去掉 4 字节头部
     constexpr std::string_view kAppendixA5ProtectedPayloadHex = "655e5cd55c41f69080575d7999c25a5bfb";
 
+    /// 附录 A.5 的附加认证数据：短头首字节加截断后的包号
     constexpr std::string_view kAppendixA5AdditionalDataHex = "4200bff4";
 
+    /// 附录 A.5 的明文载荷：就一条 PING 帧
     constexpr std::string_view kAppendixA5PlaintextHex = "01";
 
+    /// 附录 A.5 的包号（线上写 3 字节）
     constexpr std::uint64_t kAppendixA5PacketNumber = 654360564ULL;
 
     constexpr std::string_view kAppendixA5KeyHex = "c6d98ff3441c3fe1b2182094f69caa2e"
                                                    "d4b716b65488960a7a984979fb23e1c8";
 
+    /// 附录 A.5 的 ChaCha20-Poly1305 初始化向量
     constexpr std::string_view kAppendixA5InitializationVectorHex = "e0459b3474bdd0e44a41c144";
 
     constexpr std::string_view kAppendixA5HeaderProtectionKeyHex = "25a282b9e82f06f21f488917a4fc8f1b"
