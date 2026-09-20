@@ -14,7 +14,6 @@
 #include "Core/Socket/InetAddress.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/EventNotifier.h"
-#include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "common/SampleSupport.h"
 
@@ -35,7 +34,7 @@ namespace
         bool isRemotePostDelivered{false};
         bool isTimerElapsed{false};
         bool isWatcherAwakened{false};
-        ssize_t watcherDrainByteCount{0};
+        bool isSecondWaitAwoken{false};
         bool isResolverSucceeded{false};
         bool isUdpRoundTripSucceeded{false};
         bool isTcpRoundTripSucceeded{false};
@@ -172,17 +171,17 @@ namespace
 
         Platform::EventNotifier notifier;
         Core::IoWatcher         watcher(loop, notifier.readDescriptor());
-        // 一次「通知 → 等待」：等待是否真被唤醒由走到赋值那行证明（叫不醒就挂在这次 await 上，
-        // 整轮的 isFinished 会红）。
-        // 唤醒后描述符里还剩不剩字节不当判据：Linux 上这次通知会被观察侧取走（实测 drain 拿到
-        // -1），Windows 上则还剩一个字节——两端不同形，只把结果打进日志。
-        // 也不做第二轮：Windows(IOCP) 上同一个观察者的第二次 waitReadable 实测不再被唤醒
-        // （整轮 30 秒超时），这条与「注册一次即可反复等待」的自述相矛盾，留作待查线索。
-        std::uint8_t wakeupByte = 0;
+        // 两轮「通知 → 等待」跑在同一个常驻注册对象上，验「注册一次即可反复等待」这条自述：
+        // 等待是否真被唤醒由 await 的返回值证明（叫不醒就挂在那次 await 上，整轮的 isFinished 会红）
+        // 轮与轮之间必须走 drain()：notify() 是合并唤醒的，标记不清掉就一直不再写字节，
+        // 第二轮的 notify 根本发不出东西（自己读描述符也不行——Linux 上它是 eventfd，按 1 字节读只会得到 EINVAL）
         notifier.notify();
-        co_await watcher.waitReadable();
-        probe.watcherDrainByteCount = Platform::FileDescriptor::read(notifier.readDescriptor(), &wakeupByte, 1);
-        probe.isWatcherAwakened = true;
+        probe.isWatcherAwakened = co_await watcher.waitReadable();
+        notifier.drain();
+
+        notifier.notify();
+        probe.isSecondWaitAwoken = co_await watcher.waitReadable();
+        notifier.drain();
 
         const auto resolved = co_await Core::AsyncResolver::resolve(loop, "localhost", port);
         probe.isResolverSucceeded = !resolved.empty();
@@ -242,7 +241,7 @@ int main(const int argc, char **argv)
     samples.check(isRemotePosted.load(std::memory_order_acquire), "跨线程 postRemote 排进了目标循环的队列");
     samples.check(probe.isTimerElapsed, "Core::Timer 到点唤醒协程");
     samples.check(probe.isWatcherAwakened, "IoWatcher 等到了事件通知器的唤醒（等待没有靠超时脱身）");
-    LOG_INFO_FMT("唤醒后从通知器读到的字节数：{}（Linux 上观察侧会替调用方取走这次通知，实测为 -1）", probe.watcherDrainByteCount);
+    samples.check(probe.isSecondWaitAwoken, "同一个常驻注册对象的第二次等待也被新事件唤醒（注册一次即可反复等待）");
     samples.check(probe.isResolverSucceeded, "异步解析器给出结果");
     samples.check(probe.isUdpRoundTripSucceeded, "UDP 协程收发完成一回环往返");
     samples.check(probe.isTcpRoundTripSucceeded, "TCP 协程收发完成一回环往返");
