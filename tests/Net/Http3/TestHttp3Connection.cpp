@@ -725,3 +725,105 @@ TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
     EXPECT_FALSE(late.has_value()) << "已收尾的流上再写正文要报失败，让会话丢弃这一段";
     EXPECT_FALSE(connection->isBroken()) << "这只作废该响应，不牵连连接";
 }
+
+    /// 数控制流字节里有几个 GOAWAY，并给出第一个报出的标识（前缀那一字节是流类型，要跳过）
+    [[nodiscard]] std::pair<std::size_t, std::uint64_t> inspectGoAwayFrames(const std::string &controlBytes)
+    {
+        AsynGyanis::Net::Http3FrameReader reader(4096);
+        static_cast<void>(reader.feed(bytesOfText(controlBytes.substr(1))));
+
+        std::size_t goAwayCount = 0;
+        std::uint64_t firstAnnouncedId = 0;
+        while (true)
+        {
+            const auto frame = reader.nextFrame();
+            if (!frame.has_value() || !frame->has_value())
+            {
+                break; // 没有完整帧（或已进入错误态）就收手：本助手只数已经解得出来的 GOAWAY
+            }
+            if (const auto *goAway = std::get_if<AsynGyanis::Net::Http3GoAwayFrame>(&frame->value()); goAway != nullptr)
+            {
+                if (goAwayCount == 0)
+                {
+                    firstAnnouncedId = goAway->streamIdOrPushId;
+                }
+                ++goAwayCount;
+            }
+        }
+        return {goAwayCount, firstAnnouncedId};
+    }
+
+    /**
+     * @brief 排空通告报的是「最后一条已受理流之后的下一条流号」，且只发一次
+     * @details RFC 9114 §5.2 的语义是「等于或高于该标识都被拒绝」，把已受理的那条流本身报进去
+     *          就等于告诉对端「它不会被处理」，正好与「照常处理完」矛盾
+     */
+    TEST(Http3Connection, DrainAnnouncementCoversStreamsAfterTheLastAcceptedOne)
+    {
+        FakeTransport transport;
+        EventLog events;
+        auto connection = makeConnection(transport, events);
+
+        std::string encoderBytes;
+        connection->consumeStreamData(kRequestStreamId,
+                                      bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+
+        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+        EXPECT_TRUE(connection->isDraining());
+        connection->flush();
+
+        const auto [goAwayCount, announcedId] = inspectGoAwayFrames(transport.bytesOf(3));
+        EXPECT_EQ(goAwayCount, 1U) << "控制流上应当只有一条 GOAWAY";
+        EXPECT_EQ(announcedId, 4U) << "已受理流 0，通告要报下一条客户端双向流号 4";
+
+        // 幂等：第二次调用不再补发（后发的标识不得比先发的大，重复发也没有新信息）
+        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+        connection->flush();
+        EXPECT_EQ(inspectGoAwayFrames(transport.bytesOf(3)).first, 1U) << "重复排空不该再发一条 GOAWAY";
+    }
+
+    /// 一条请求都没收过时，通告标识按 §5.2 取 0
+    TEST(Http3Connection, DrainAnnouncementIsZeroBeforeAnyRequest)
+    {
+        FakeTransport transport;
+        EventLog events;
+        auto connection = makeConnection(transport, events);
+
+        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+        connection->flush();
+
+        const auto [goAwayCount, announcedId] = inspectGoAwayFrames(transport.bytesOf(3));
+        EXPECT_EQ(goAwayCount, 1U);
+        EXPECT_EQ(announcedId, 0U) << "还没受理任何请求时，第一条流号（0）就该被拒绝";
+    }
+
+    /**
+     * @brief 通告之后的新流不处理也不回应，但额度照还、连接不受牵连
+     * @details 不还会让对端卡在自己耗尽的流控窗口上；判成连接错误则会把同连接上已受理的请求一起废掉
+     */
+    TEST(Http3Connection, RequestsAfterTheDrainAnnouncementAreIgnoredButCredited)
+    {
+        FakeTransport transport;
+        EventLog events;
+        auto connection = makeConnection(transport, events);
+
+        std::string encoderBytes;
+        connection->consumeStreamData(kRequestStreamId,
+                                      bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+
+        const std::string lateRequestBytes = makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes));
+        events.headerFields.clear();
+        events.requestsEnded.clear();
+        connection->consumeStreamData(8, bytesOfText(lateRequestBytes), true);
+
+        EXPECT_TRUE(events.headerFields.empty()) << "通告之后的新流不该再交出任何头字段";
+        EXPECT_TRUE(events.requestsEnded.empty()) << "这条流也不该被当作「请求收齐」交给上层";
+        EXPECT_EQ(transport.creditedOf(8), lateRequestBytes.size()) << "拒绝不等于不还额度：不还会把对端卡在窗口上";
+        EXPECT_FALSE(connection->isBroken()) << "拒收一条新流是排空的正常结局，不该作废连接";
+
+        // 通告之前已受理的流照常能答：这是「已受理的处理完」这条承诺的实质
+        ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, true).has_value());
+        connection->flush();
+        EXPECT_GT(transport.writtenOf(kRequestStreamId), 0U) << "已受理的响应发不出去，排空就失去了意义";
+    }

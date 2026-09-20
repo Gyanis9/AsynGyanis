@@ -212,6 +212,30 @@ namespace AsynGyanis::Net
         flushPendingStreamData();
     }
 
+    bool Http3Session::beginGracefulShutdown()
+    {
+        if (m_connection == nullptr || m_isBroken)
+        {
+            return false;
+        }
+        const bool isAnnounced = m_connection->beginGracefulDrain().has_value();
+        // 通告得真的送到传输层才算数：这是关停路径上唯一还能往外写字节的时刻，顺手搬一次
+        if (isAnnounced)
+        {
+            flushPendingStreamData();
+        }
+        return isAnnounced;
+    }
+
+    bool Http3Session::hasOutstandingWork() const noexcept
+    {
+        // 任一处非空都算「还有事」：正在收的请求、收齐待派发、流式正文的处理器、流式写出的响应、
+        // 已建隧道，以及「扩展 CONNECT 已到但隧道还没建」的那两批
+        return !m_incomingRequests.empty() || !m_readyRequests.empty() || !m_streamingRequests.empty() ||
+               !m_streamingResponses.empty() || !m_webSocketTunnels.empty() || !m_pendingTunnelStreams.empty() ||
+               !m_pendingTunnelStreamsEnded.empty();
+    }
+
     void Http3Session::flushPendingStreamData()
     {
         if (m_connection == nullptr || m_isBroken)

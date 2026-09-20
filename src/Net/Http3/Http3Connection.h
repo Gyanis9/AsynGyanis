@@ -208,6 +208,19 @@ namespace AsynGyanis::Net
          */
         void flush();
 
+        /**
+         * @brief 发出 GOAWAY 排空通告：本端从此不再受理通告标识及以上的请求流
+         * @details RFC 9114 §5.2 的语义是「等于或高于该标识的请求都被拒绝」，因此通告值取
+         *          「最后一条已受理流之后的下一条客户端双向流号」（客户端双向流恒 ≡ 0 mod 4），
+         *          一条请求都没收过时按规范取 0。已受理的流照常处理完，本方法不影响它们。
+         * @return 成功返回空；失败返回原因（会话不可用时控制流还不存在，作废后不再写任何字节）
+         * @note 幂等：重复调用不再补发通告，也不改变已经通告出去的标识
+         */
+        [[nodiscard]] std::expected<void, QpackError> beginGracefulDrain();
+
+        /// 是否已发出排空通告（通告之后到达的新请求流一律拒绝）
+        [[nodiscard]] bool isDraining() const noexcept;
+
         /// 对端在 SETTINGS 里公布的动态表容量，本端编码器据此决定能插多少
         [[nodiscard]] std::size_t peerTableCapacityByteCount() const noexcept;
 
@@ -312,6 +325,9 @@ namespace AsynGyanis::Net
         /// 在不再持有该流引用的位置回收已放弃的流状态
         void pruneAbandonedStream(std::int64_t streamId);
 
+        /// 排空通告之后才见到的新请求流：不处理也不回应，只把这条流标记为放弃并归还额度
+        void rejectStreamAfterDrain(std::int64_t streamId, std::span<const std::uint8_t> data);
+
         static constexpr std::size_t kMaximumFlushRounds = 64; ///< 一次 flush 最多搬多少段
 
         StreamOpener m_streamOpener;      ///< 开本端单向流的口
@@ -339,6 +355,11 @@ namespace AsynGyanis::Net
 
         bool m_isPeerSettingsReceived{false}; ///< 对端控制流上是否已出现过 SETTINGS 帧
         std::uint64_t m_maximumPushId{0};     ///< 对端允许的最大推送标识；本服务端不推送，只记录
+        bool m_isDraining{false};             ///< 是否已发出 GOAWAY 排空通告
+        /// 排空通告里的标识：等于或高于它的请求流一律拒绝（RFC 9114 §5.2）。0 表示一条都没受理过
+        std::int64_t m_rejectedFromStreamId{0};
+        /// 已受理的最大对端请求流号；-1 表示还没受理过任何请求流，决定 GOAWAY 该报哪个标识
+        std::int64_t m_lastProcessedRequestStreamId{-1};
         bool m_isUsable{false};                                ///< 三条本端单向流是否都开出来了
         bool m_isBroken{false};                                ///< 是否已作废：作废后除取走待发字节与销毁外没有合法动作
         Http3ErrorCode m_connectionErrorCode{Http3ErrorCode::NoError}; ///< 作废原因对应的线上错误码

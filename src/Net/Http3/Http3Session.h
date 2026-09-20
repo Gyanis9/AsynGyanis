@@ -155,6 +155,21 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<> pump();
 
+        /**
+         * @brief 开始优雅收口：向对端发 GOAWAY，此后不再受理新请求流
+         * @details 与 h2 侧的 `onGracefulShutdownRequested()` 同一职责：关停路径上给协议层最后一次
+         *          「告诉对端」的机会，随后 `hasOutstandingWork()` 归零或期限到点再由承载层收连接。
+         *          已经受理的请求照常处理完——通告值取的正是「最后一条已受理流之后的下一条流号」。
+         * @return true 已把通告（或此前已发过）排进待发字节；false 连接层不可用，本会话发不出东西
+         */
+        bool beginGracefulShutdown();
+
+        /**
+         * @brief 这条连接上是否还有没做完的事（收集中的请求、待派发、流式正文、流式响应、隧道）
+         * @details 收口时按它决定「这条连接可以关了吗」；一条都不剩才算空闲
+         */
+        [[nodiscard]] bool hasOutstandingWork() const noexcept;
+
         // ---- 以下几项由 .cpp 里接连接层回调的转交（只收平类型，连接层的结构不外泄）----
 
         /**

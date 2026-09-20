@@ -15,6 +15,9 @@ namespace AsynGyanis::Net
             return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
         }
 
+        /// 客户端发起的双向流号之间的跨度（RFC 9000 §2.1：这类流号恒 ≡ 0 mod 4）
+        constexpr std::int64_t kClientBidirectionalStreamIdStep = 4;
+
         /// 对端发起的双向流：请求只跑在这类流上（RFC 9000 §2.1 的低位编码）
         [[nodiscard]] constexpr bool isPeerInitiatedBidirectionalStream(const std::int64_t streamId) noexcept
         {
@@ -356,7 +359,21 @@ namespace AsynGyanis::Net
     void Http3Connection::consumeRequestStream(const std::int64_t streamId, const std::span<const std::uint8_t> data,
                                                const bool isEndStream)
     {
+        // 这条流是不是刚见到：决定要不要按排空通告拒绝，也决定 GOAWAY 该报哪个标识
+        const bool isNewRequestStream = !m_streams.contains(streamId);
+        // 排空通告之后才到的新流一律不处理（RFC 9114 §5.2：等于或高于通告标识的请求被拒绝），
+        // 对端会把这条请求换一条连接重发；这里不回应，但要照还额度并放弃这条流
+        if (isNewRequestStream && m_isDraining && streamId >= m_rejectedFromStreamId)
+        {
+            rejectStreamAfterDrain(streamId, data);
+            return;
+        }
+
         StreamState &state = streamStateFor(streamId);
+        if (isNewRequestStream && streamId > m_lastProcessedRequestStreamId)
+        {
+            m_lastProcessedRequestStreamId = streamId;
+        }
         if (state.isAbandoned)
         {
             // 已经作废的流：剩下的字节全部直接还额度，不再产生任何事件
@@ -852,6 +869,60 @@ namespace AsynGyanis::Net
                 noteLocallyFinishedStream(streamId);
             }
         }
+    }
+
+    std::expected<void, QpackError> Http3Connection::beginGracefulDrain()
+    {
+        if (!m_isUsable)
+        {
+            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState,
+                                              .message = "HTTP/3 协议层没建起来，控制流还不存在，GOAWAY 无处可发"});
+        }
+        if (m_isBroken)
+        {
+            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState,
+                                              .message = "HTTP/3 协议层已作废，不再往任何流写字节"});
+        }
+        // 通告只发一次：后发的 GOAWAY 标识不得比先发的大（§7.2.6），重复发也不带来新信息
+        if (m_isDraining)
+        {
+            return {};
+        }
+
+        m_isDraining = true;
+        // 语义是「等于或高于该标识都被拒绝」，因此要留住的最后一条流本身不能进通告值，
+        // 报它之后的下一条客户端双向流号；一条请求都没收过时按 §5.2 报 0
+        m_rejectedFromStreamId =
+                m_lastProcessedRequestStreamId < 0 ? 0 : m_lastProcessedRequestStreamId + kClientBidirectionalStreamIdStep;
+
+        Http3GoAwayFrame goAwayFrame;
+        goAwayFrame.streamIdOrPushId = static_cast<std::uint64_t>(m_rejectedFromStreamId);
+        std::string frameBytes;
+        appendHttp3Frame(frameBytes, goAwayFrame);
+        // GOAWAY 走控制流且不收尾：这条流上随后可能还要发别的（本端不主动结束控制流）
+        queueOutboundBytes(m_localControlStreamId, frameBytes, false);
+        LOG_INFO_FMT("Http3Connection: 已发出 GOAWAY，流 {} 及以上的请求不再受理（已受理的照常处理完）", m_rejectedFromStreamId);
+        return {};
+    }
+
+    bool Http3Connection::isDraining() const noexcept
+    {
+        return m_isDraining;
+    }
+
+    void Http3Connection::rejectStreamAfterDrain(const std::int64_t streamId, const std::span<const std::uint8_t> data)
+    {
+        // 先建状态再立刻放弃：不建的话对端后续字节会被当成「一条全新的流」重新判一遍，
+        // 而「已受理」与「已拒绝」的边界必须稳定
+        StreamState &state = streamStateFor(streamId);
+        state.isAbandoned = true;
+        if (m_streamCrediter && !data.empty())
+        {
+            m_streamCrediter(streamId, data.size());
+        }
+        // TODO(Gyanis): 传输层能发 RESET_STREAM 之后，这里按 §5.2 的 SHOULD 补一次取消，
+        // 让对端立刻知道这条流不会被处理，而不是等到连接关闭
+        LOG_DEBUG_FMT("Http3Connection: 流 {} 在 GOAWAY 通告（标识 {}）之后到达，不处理也不回应", streamId, m_rejectedFromStreamId);
     }
 
     void Http3Connection::noteLocallyFinishedStream(const std::int64_t streamId)
