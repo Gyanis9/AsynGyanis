@@ -160,11 +160,13 @@ int main(const int argc, char **argv)
 {
     using namespace std::chrono_literals;
 
-    // 子进程模式：不装日志、不做检查，只留证据或立刻退出，给编排循环当被管的对象
-    for (int index = 1; index + 1 < argc; ++index)
+    // 子进程模式：不装日志、不做检查，只留证据或立刻退出，给编排循环当被管的对象。
+    // 判据必须逐个参数看：`--child-crash` 后面没有取值，用「index + 1 < argc」当循环条件就永远
+    // 扫不到它，于是子进程会掉回父进程那条路——再去起自己的 worker，一层层往下 fork
+    for (int index = 1; index < argc; ++index)
     {
         const std::string_view mode(argv[index]);
-        if (mode == "--child-hold")
+        if (mode == "--child-hold" && index + 1 < argc)
         {
             return runHoldChild(argv[index + 1], 400ms);
         }
