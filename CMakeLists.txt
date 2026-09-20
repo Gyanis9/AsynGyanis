@@ -31,13 +31,17 @@ endif()
 
 # Release 也要带调试信息：异常与日志的调用栈按「构造时采原始帧、输出时才符号解析」实现，
 # 而 MSVC 的 Release 默认不产 PDB——部署形态下每条异常日志只剩「MyServer+0x1A2B3」，
-# 等于把这项可观测性关掉。调试信息只影响链接耗时与磁盘占用，运行期不产生开销。
+# 等于把这项可观测性关掉。PDB 是独立文件，链接期之外的运行期开销本应为零，前提是下面
+# 那两个链接器开关没被 /DEBUG 顺手关掉（见其注释）。
 if(MSVC)
     # 直接给编译器与链接器加开关，而不是走 CMAKE_MSVC_DEBUG_INFORMATION_FORMAT：
     # 后者受 CMP0141 管辖，而本文件声明的 3.20 下限把该策略停在 OLD，变量会被静默忽略
     add_compile_options($<$<CONFIG:Release>:/Zi>)
-    string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE " /DEBUG")
-    string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG")
+    # /OPT:REF 与 /OPT:ICF 必须显式写回来：链接器只在「不做完整调试链接」时才默认启用它们，
+    # 给了 /DEBUG 就退化成 NOREF/NOICF。实测只写 /DEBUG 时 http1-parse-request 由 730 ns
+    # 涨到 961 ns（+31%）——死代码留下、相同代码不再折叠，代码布局散开之后指令缓存命中变差
+    string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
+    string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
 else()
     # GCC/Clang 侧同理：栈回溯靠 -g 才能给出函数名与行号，没有它就只剩地址
     add_compile_options($<$<CONFIG:Release>:-g>)
