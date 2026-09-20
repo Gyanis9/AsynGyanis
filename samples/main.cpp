@@ -544,12 +544,20 @@ int main(int argc, char **argv)
         {
             http3Router.addMiddleware(Net::compressionMiddleware());
         }
+        // 限流中间件挂在路由上，与明文/TLS 两侧同一份令牌桶：只限 h1/h2 等于给 h3 留了条后门
+        if (rateLimitBucket != nullptr)
+        {
+            http3Router.addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
+        }
 
         Net::QuicServer::Configuration http3Configuration;
         http3Configuration.certificateFile = certificateFile;
         http3Configuration.privateKeyFile  = keyFile;
         // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
         http3Configuration.parserLimits    = configuration.parserLimits;
+        // 在途正文预算与 HTTP 侧共用同一份账：h3 的正文也驻留在进程内存里，
+        // 不给它这份账就等于 --max-inflight-body 只管两条 TCP 通道
+        http3Configuration.memoryBudget    = inflightBodyBudget;
         // 指标打开时 h3 的请求数、状态码类与单流取消并进上面那份采集端；没打开则为空指针、不采集
         http3Configuration.metricsCollector = http3MetricsCollector;
 
