@@ -45,6 +45,9 @@ asyn_add_sample(net_http_demo net_http_demo/main.cpp)
 # Net TLS 与 HTTP/2：ALPN 协商、h2c 明文、多路复用、GOAWAY 排空与解析上限
 asyn_add_sample(net_https_h2_demo net_https_h2_demo/main.cpp)
 
+# Net HTTP/3：QUIC 服务端的配置校验、UDP 端口起停、畸形报文容错、定时驱动与排空
+asyn_add_sample(net_http3_demo net_http3_demo/main.cpp)
+
 # Database：SQLite 文件库/内存库、ORM 与查询构造、事务、二进制列、参数绑定、连接池；MySQL/Redis 按环境变量门控
 asyn_add_sample(database_demo database_demo/main.cpp)
 target_link_libraries(database_demo PRIVATE Database)

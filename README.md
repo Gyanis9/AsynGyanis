@@ -142,7 +142,7 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 
 ### 按模块的自检示例
 
-`echo_server` 是部署形态；能力按模块拆成了 9 个各自自检的程序，每个程序逐步打印 `✓`/`✗`，
+`echo_server` 是部署形态；能力按模块拆成了 10 个各自自检的程序，每个程序逐步打印 `✓`/`✗`，
 并在 stdout 上留一行 `RESULT <名字> PASS|FAIL <步数>` 供脚本判定（退出码 0 表示全绿）：
 
 | 程序 | 覆盖 | 自检步数 |
@@ -155,6 +155,7 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 | `core_worker` | WorkerSupervisor 的构造期拒因；POSIX 上另验补位、崩溃上限与收手 | 4（Windows） |
 | `net_http_demo` | HTTP/1.1 路由与中间件、解析上限、分块与 SSE、WebSocket、四类限额、指标与健康端点、优雅收口 | 36 |
 | `net_https_h2_demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
+| `net_http3_demo` | QUIC 服务端的证书校验、UDP 端口起停与端口归还、乱码与畸形长头容错、定时驱动、统计、排空 | 15 |
 | `database_demo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 72 |
 
 一把跑完并汇总成矩阵（示例清单从构建目录里扫出来，新增程序不必改脚本）：
