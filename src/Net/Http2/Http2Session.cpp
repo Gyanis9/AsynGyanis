@@ -771,9 +771,10 @@ namespace AsynGyanis::Net
         // 回 400，绝不把「声明一个长度、实收另一个长度」的正文交给业务——那正是走私的收益所在
         if (!pending.isStreamingBody)
         {
-            const std::vector<std::string> declaredLengths = request.headerValues("content-length");
-            std::size_t                    declaredLength  = 0;
-            if (!declaredLengths.empty() && parseContentLengthValue(declaredLengths.front(), declaredLength) &&
+            // 只看首条：这里要的就是那一个声明值，为它构造整列 string 是每条请求一次的多余分配
+            const std::optional<std::string> declaredLengthText = request.firstHeaderValue("content-length");
+            std::size_t                      declaredLength     = 0;
+            if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) &&
                 request.body().size() != declaredLength)
             {
                 if (m_metrics != nullptr)
