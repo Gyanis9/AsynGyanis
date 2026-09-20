@@ -141,6 +141,99 @@ namespace AsynGyanis::Net
     }};
 
     /**
+     * @brief 静态表里同一个头名占据的连续区间，按名字有序，供编码侧二分定位
+     * @details 编码器原本每写一个头要把 61 项线性扫两遍（先按「名 + 值」精确匹配、再只按名匹配），
+     *          自定义头名必然扫满两遍才落空；有了区间表就只剩一次二分加区间内几项的值比较。
+     */
+    struct HpackStaticNameRun
+    {
+        std::string_view name;           ///< 头名
+        std::size_t firstEntryIndex = 0; ///< 首个同名条目的 0 基下标
+        std::size_t entryCount      = 0; ///< 同名条目数
+    };
+
+    /// 静态表里同名段的段数：每遇到一次「与上一项不同名」就开一段
+    [[nodiscard]] consteval std::size_t countHpackStaticNameRuns() noexcept
+    {
+        std::size_t runCount = 0;
+        for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
+        {
+            if (entryIndex == 0 || kHpackStaticTable[entryIndex].name != kHpackStaticTable[entryIndex - 1].name)
+            {
+                ++runCount;
+            }
+        }
+        return runCount;
+    }
+
+    /// 静态表里不同头名的个数
+    [[nodiscard]] consteval std::size_t countHpackStaticDistinctNames() noexcept
+    {
+        std::size_t distinctCount = 0;
+        for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
+        {
+            bool hasAppearedBefore = false;
+            for (std::size_t earlierIndex = 0; earlierIndex < entryIndex; ++earlierIndex)
+            {
+                if (kHpackStaticTable[earlierIndex].name == kHpackStaticTable[entryIndex].name)
+                {
+                    hasAppearedBefore = true;
+                    break;
+                }
+            }
+            if (!hasAppearedBefore)
+            {
+                ++distinctCount;
+            }
+        }
+        return distinctCount;
+    }
+
+    // 段数等于不同名数，当且仅当每个名字只出现一次且连成一片：区间表的前提，抄错表就编译不过
+    static_assert(countHpackStaticNameRuns() == countHpackStaticDistinctNames(),
+                  "HPACK 静态表里同名条目必须相邻（RFC 7541 Appendix A 的排列即满足）");
+
+    /// 编译期算好的同名段索引表，按头名升序排列以便二分查找（静态表本身不是字典序）
+    [[nodiscard]] consteval std::array<HpackStaticNameRun, countHpackStaticNameRuns()> buildHpackStaticNameRuns() noexcept
+    {
+        std::array<HpackStaticNameRun, countHpackStaticNameRuns()> runs{};
+
+        std::size_t runIndex  = 0;
+        std::size_t entryIndex = 0;
+        while (entryIndex < kHpackStaticTable.size())
+        {
+            const std::size_t firstEntryIndex = entryIndex;
+            while (entryIndex + 1 < kHpackStaticTable.size() && kHpackStaticTable[entryIndex + 1].name == kHpackStaticTable[firstEntryIndex].name)
+            {
+                ++entryIndex;
+            }
+            runs[runIndex] = HpackStaticNameRun{
+                .name            = kHpackStaticTable[firstEntryIndex].name,
+                .firstEntryIndex = firstEntryIndex,
+                .entryCount      = entryIndex - firstEntryIndex + 1,
+            };
+            ++runIndex;
+            ++entryIndex;
+        }
+
+        // 插入排序：规模只有五十来项，编译期成本可忽略，换来运行期的二分查找
+        for (std::size_t insertIndex = 1; insertIndex < runs.size(); ++insertIndex)
+        {
+            const HpackStaticNameRun moving = runs[insertIndex];
+            std::size_t shiftIndex          = insertIndex;
+            while (shiftIndex > 0 && runs[shiftIndex - 1].name > moving.name)
+            {
+                runs[shiftIndex] = runs[shiftIndex - 1];
+                --shiftIndex;
+            }
+            runs[shiftIndex] = moving;
+        }
+        return runs;
+    }
+
+    inline constexpr auto kHpackStaticNameRuns = buildHpackStaticNameRuns();
+
+    /**
      * @brief Huffman 码表（RFC 7541 Appendix B 的 257 项，下标即符号值，256 为 EOS）
      * @details 表按规范原文逐项抄录，解码器用它构造前缀树：码字从高位到低位推进，
      *          EOS（30 位全 1）出现在编码数据里即为解码错误。表是完整前缀码（各码字位长的

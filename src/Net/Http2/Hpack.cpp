@@ -154,30 +154,55 @@ namespace AsynGyanis::Net
             }
             return 0;
         }
+
+        /**
+         * @brief 二分定位静态表里某个头名的同名段
+         * @param name 头名，按字节精确匹配（HPACK 的字符串比较就是逐字节相等，RFC 7541 §5.4）
+         * @return const HpackStaticNameRun * 命中时指向编译期索引表里的一项，未命中返回 nullptr
+         */
+        [[nodiscard]] const HpackStaticNameRun *findHpackStaticNameRun(const std::string_view name) noexcept
+        {
+            const auto location = std::ranges::lower_bound(kHpackStaticNameRuns, name, {}, &HpackStaticNameRun::name);
+            if (location == kHpackStaticNameRuns.end() || location->name != name)
+            {
+                return nullptr;
+            }
+            return &*location;
+        }
+
+        /**
+         * @brief 在静态表的同名段内查「名 + 值」精确匹配
+         * @param run 该头名对应的同名段，nullptr 表示名字不在静态表里
+         * @param value 头值
+         * @return std::size_t 静态表索引（1 起）；0 表示没有精确匹配
+         */
+        [[nodiscard]] std::size_t findHpackStaticExactIndex(const HpackStaticNameRun *run, const std::string_view value) noexcept
+        {
+            if (run == nullptr)
+            {
+                return 0;
+            }
+            for (std::size_t offset = 0; offset < run->entryCount; ++offset)
+            {
+                if (kHpackStaticTable[run->firstEntryIndex + offset].value == value)
+                {
+                    return run->firstEntryIndex + offset + 1;
+                }
+            }
+            return 0;
+        }
     } // namespace
 
     std::size_t findHpackStaticTableIndex(const std::string_view name, const std::string_view value) noexcept
     {
-        for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
-        {
-            if (kHpackStaticTable[entryIndex].name == name && kHpackStaticTable[entryIndex].value == value)
-            {
-                return entryIndex + 1;
-            }
-        }
-        return 0;
+        return findHpackStaticExactIndex(findHpackStaticNameRun(name), value);
     }
 
     std::size_t findHpackStaticTableNameIndex(const std::string_view name) noexcept
     {
-        for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
-        {
-            if (kHpackStaticTable[entryIndex].name == name)
-            {
-                return entryIndex + 1;
-            }
-        }
-        return 0;
+        const HpackStaticNameRun *const run = findHpackStaticNameRun(name);
+        // 同名段的首项即「最早出现的该项」，与原本从头扫表取首个命中的结果一致
+        return run == nullptr ? 0 : run->firstEntryIndex + 1;
     }
 
     Http2ErrorCode toHttp2ErrorCode(const HpackErrorKind errorKind) noexcept
@@ -781,10 +806,12 @@ namespace AsynGyanis::Net
 
         for (const HpackHeaderField &field: headerFields)
         {
-            const std::size_t staticIndex = findHpackStaticTableIndex(field.name, field.value);
-            if (staticIndex != 0)
+            // 一个头只做一次静态表定位：同名段内既查「名 + 值」精确匹配，也顺带给出「仅名」匹配
+            const HpackStaticNameRun *const staticNameRun = findHpackStaticNameRun(field.name);
+            const std::size_t staticExactIndex = findHpackStaticExactIndex(staticNameRun, field.value);
+            if (staticExactIndex != 0)
             {
-                headerBlock.append(encodeHpackInteger(staticIndex, 7, kIndexedRepresentationPattern));
+                headerBlock.append(encodeHpackInteger(staticExactIndex, 7, kIndexedRepresentationPattern));
                 continue;
             }
 
@@ -796,7 +823,7 @@ namespace AsynGyanis::Net
             }
 
             // 索引命中不了就发字面量：名字能命中静态表时只发值，否则名与值都发
-            const std::size_t staticNameIndex = findHpackStaticTableNameIndex(field.name);
+            const std::size_t staticNameIndex = staticNameRun == nullptr ? 0 : staticNameRun->firstEntryIndex + 1;
             if (staticNameIndex != 0)
             {
                 headerBlock.append(encodeHpackInteger(staticNameIndex, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern));

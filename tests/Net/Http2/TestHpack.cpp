@@ -396,6 +396,67 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findHpackStaticTableNameIndex("x-unknown"), 0U);
     }
 
+    /**
+     * @brief 钉住：静态表的段索引 + 二分查找，结果与逐项线性扫表在每一项上都一致
+     * @details 段表与它的排序都在编译期算出，前提「同名条目相邻」由 static_assert 把守；这个用例补上
+     *          运行期的对拍：全表逐项比两种求法，再专门试前缀名与大小写——HPACK 的字符串比较是逐字节
+     *          精确的，二分边界判错会让两端压缩上下文不同步（RFC 7540 §4.3）。
+     */
+    TEST(Hpack, StaticTableIndexedLookupMatchesLinearScan)
+    {
+        const auto linearExactIndex = [](const std::string_view name, const std::string_view value)
+        {
+            for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
+            {
+                if (kHpackStaticTable[entryIndex].name == name && kHpackStaticTable[entryIndex].value == value)
+                {
+                    return entryIndex + 1;
+                }
+            }
+            return std::size_t{0};
+        };
+        const auto linearNameIndex = [](const std::string_view name)
+        {
+            for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
+            {
+                if (kHpackStaticTable[entryIndex].name == name)
+                {
+                    return entryIndex + 1;
+                }
+            }
+            return std::size_t{0};
+        };
+
+        for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
+        {
+            const HpackStaticTableEntry &entry = kHpackStaticTable[entryIndex];
+            EXPECT_EQ(findHpackStaticTableIndex(entry.name, entry.value), linearExactIndex(entry.name, entry.value))
+                    << "第 " << entryIndex + 1 << " 项 " << entry.name;
+            EXPECT_EQ(findHpackStaticTableNameIndex(entry.name), linearNameIndex(entry.name))
+                    << "第 " << entryIndex + 1 << " 项 " << entry.name;
+            // 名对得上而值对不上时必须落空：这是「只发索引名的字面量」这条路的前提
+            EXPECT_EQ(findHpackStaticTableIndex(entry.name, "必然不在表里的值"), linearExactIndex(entry.name, "必然不在表里的值"))
+                    << "第 " << entryIndex + 1 << " 项 " << entry.name;
+        }
+
+        for (const std::string_view name: {std::string_view{":stat"},
+                                           std::string_view{":statuss"},
+                                           std::string_view{"accept"},
+                                           std::string_view{"accept-"},
+                                           std::string_view{"accept-encodin"},
+                                           std::string_view{"acceptance"},
+                                           std::string_view{"content-type "},
+                                           std::string_view{"Content-Type"},
+                                           std::string_view{"www-authenticat"},
+                                           std::string_view{"x-custom"},
+                                           std::string_view{},
+                                           std::string_view{"ZZZ"}})
+        {
+            EXPECT_EQ(findHpackStaticTableNameIndex(name), linearNameIndex(name)) << "名字 [" << name << ']';
+            EXPECT_EQ(findHpackStaticTableIndex(name, "200"), linearExactIndex(name, "200")) << "名字 [" << name << ']';
+        }
+    }
+
     // ============================================================================
     // RFC 7541 Appendix C.2：四种表示（黄金向量）
     // ============================================================================
