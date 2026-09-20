@@ -36,6 +36,20 @@
   压缩开关。此前 h3 隧道是裸的：对端提了扩展也收不到结论，只能全量走明文，而按压缩发过来的帧
   会被本端当成 RSV1 违规判成协议错误。同时补上两处与另两条通道不一致的统计：隧道里的
   WebSocket 帧计数（原先没拿到采集端，恒为零）与升级成功计数。
+- **HTTP/3 有关停通告与优雅收口**：`Http3Connection::beginGracefulDrain()` 在控制流上发 GOAWAY
+  （通告值按 §5.2 取「最后一条已受理流之后的下一条客户端双向流号」，一条都没受理过时为 0），
+  通告之后到达的新请求流一律不处理、只归还接收额度；`QuicServer::drain(超时)` 与
+  `TcpServer::drain()` 同形状——先只挡新连接（不能直接 `stop()`，那会让收报文的循环退出、
+  在途请求再也收不到后续报文），再发 GOAWAY、等在途做完，到期兜底强关。示例程序的关停路径
+  现在把 h3 一并排空，不再只 `stop()` 了事。
+- **HTTP/3 落定并回显 request-id**：与 h1/h2 同一份 `HttpRequestIdGenerator`（`HttpServer`/
+  `HttpsServer` 新增 `requestIdGenerator()` 取值口，`QuicServer::Configuration` 转交给每个会话），
+  业务从 `request.requestId()` 读得到、响应回 `x-request-id`；派发前先回显一次，流式响应的头部
+  才带得上（它的头是在处理器写第一块时上线的），处理器之后再过一次兜住 `reset()`。
+- **HTTP/3 认下两条连接级限额**：`maximumRequestsPerConnection`（答完这么多条就发 GOAWAY 排空，
+  「已通告且手上没活」的连接由承载层收掉）与按来源 IP 的并发连接上限（`PerIpConnectionLimiter`
+  与两条 TCP 通道共用一个实例，名额凭据与连接同寿命）。此前 h3 两条都没有：长连接可被无限期
+  复用，同一来源换走 QUIC 就绕过了 `--max-connections-per-ip`。
 
 ### 变更
 
