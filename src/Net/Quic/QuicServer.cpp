@@ -159,6 +159,100 @@ namespace AsynGyanis::Net
         m_isStopped.store(true, std::memory_order_release);
     }
 
+    void QuicServer::closeAllOpenConnections()
+    {
+        // 逐条请求收口后再统一摘除：requestClose() 只置标记，真正的路由表清理靠
+        // reapClosedConnections()（它会跳过还有协程持有的连接）
+        for (auto &connectionEntry: m_connections)
+        {
+            connectionEntry.second->requestClose();
+        }
+        reapClosedConnections();
+    }
+
+    Core::Task<> QuicServer::drain(const std::chrono::milliseconds drainTimeout)
+    {
+        // 第一步只挡新连接：不能直接 stop()——收报文那条循环会随之退出，在途请求的后续报文与
+        // 对端的 ACK 就再也进不来，「等它做完」也就无从谈起
+        m_isRefusingNewConnections.store(true, std::memory_order_release);
+
+        try
+        {
+            // 给每条已有连接一次「告诉对端」的机会：h3 的收尾通告是控制流上的 GOAWAY。
+            // 通告排进待发队列后立刻刷出去——关停路径上这是还能写字节的时刻
+            for (auto &connectionEntry: m_connections)
+            {
+                QuicConnection &connection = *connectionEntry.second;
+                if (connection.isClosed())
+                {
+                    continue;
+                }
+                if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
+                {
+                    static_cast<void>(session->beginGracefulShutdown());
+                }
+                // 挂起期间定时循环可能把这条连接判成收口并试图摘掉：守卫让那次摘除推迟到本迭代结束
+                const QuicConnection::ActivityGuard activityGuard(connection);
+                co_await connection.flush();
+            }
+
+            const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + drainTimeout;
+            while (drainTimeout > std::chrono::milliseconds::zero())
+            {
+                // 先取一份连接标识快照再逐个查表：下面那次 await 期间收报文路径可能摘掉它们
+                std::vector<std::string> openConnectionKeys;
+                openConnectionKeys.reserve(m_connections.size());
+                for (const auto &connectionEntry: m_connections)
+                {
+                    if (!connectionEntry.second->isClosed())
+                    {
+                        openConnectionKeys.push_back(connectionEntry.first);
+                    }
+                }
+
+                std::size_t busyConnectionCount = 0;
+                for (const std::string &connectionKey: openConnectionKeys)
+                {
+                    const auto connectionEntry = m_connections.find(connectionKey);
+                    if (connectionEntry == m_connections.end())
+                    {
+                        continue; // 已经收口摘掉了
+                    }
+                    if (const Http3Session *session = findHttp3Session(connectionEntry->second.get());
+                        session != nullptr && session->hasOutstandingWork())
+                    {
+                        ++busyConnectionCount;
+                    }
+                }
+                // 没有在途工作就是排空完成，不必把等待额度耗满
+                if (busyConnectionCount == 0)
+                {
+                    break;
+                }
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    LOG_INFO_FMT("QuicServer: 优雅收口等待超时，剩余 {} 条仍有在途工作的连接被强制关闭。等待时长 {}ms",
+                                 busyConnectionCount, drainTimeout.count());
+                    break;
+                }
+                // 等待期间的驱动不用本协程操心：定时循环只看 m_isStopped，它会继续刷包、
+                // 继续按到期推进重传，业务协程也在同一个循环上被唤醒
+                co_await m_expiryTicker.waitFor(kDrainPollInterval);
+            }
+        } catch (const std::exception &drainException)
+        {
+            // 本协程由调度器独立恢复：异常逃出去等于在事件循环线程上抛，会带走整个进程
+            LOG_ERROR_EXCEPTION(drainException, "QuicServer: 优雅收口过程失败，已放弃等待并强制关闭剩余连接。原因：{}", drainException.what());
+        } catch (...)
+        {
+            LOG_ERROR_FMT("QuicServer: 优雅收口过程失败，已放弃等待并强制关闭剩余连接。原因：非标准库异常");
+        }
+
+        // 三条出口（排空完成 / 到期 / 出错）的后置条件一样：本服务器不再留任何连接给调用方收尾
+        stop();
+        closeAllOpenConnections();
+    }
+
     void QuicServer::setStreamDataHandler(QuicConnection::StreamDataHandler handler)
     {
         m_streamDataHandler = std::move(handler);
@@ -295,6 +389,13 @@ namespace AsynGyanis::Net
         if (m_connections.size() >= m_configuration.maximumConnections)
         {
             LOG_WARN_FMT("QuicServer: 在线连接已达上限 {}，新连接被拒绝", m_configuration.maximumConnections);
+            co_return;
+        }
+
+        // 排空期间不再接手新连接：对端会按 GOAWAY 或握手失败另找一台。这里只丢弃，
+        // 不回 CONNECTION_CLOSE——本端还不认识这条连接，回什么都得先造一套密钥
+        if (m_isRefusingNewConnections.load(std::memory_order_acquire))
+        {
             co_return;
         }
 

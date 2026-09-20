@@ -129,7 +129,22 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::uint16_t listeningPort() const noexcept;
 
+        /**
+         * @brief 优雅收口：先挡新连接，给已有连接发 GOAWAY，等在途请求做完，到期再兜底强关
+         * @details 与 `TcpServer::drain()` 同一形状。这里**不能**直接 `stop()`：收报文那条循环会
+         *          随之退出，在途请求的后续报文与 ACK 再也进不来，「等它做完」就无从谈起。因此第一段
+         *          只置「不再接受新连接」的标记，h3 侧则在各连接的控制流上发一条 GOAWAY（RFC 9114 §5.2）
+         *          告诉对端别再发新请求；等待期间的驱动仍由定时循环与本协程的轮询完成。
+         * @param drainTimeout 最长等待时长；非正数表示不等，直接收口全部连接
+         * @return Core::Task<> 连接已清空或期限到时完成
+         * @note 线程约束同 `stop()`：必须在运行本服务器的那个事件循环线程上调用（外部线程请走
+         *       `scheduler().scheduleRemote()`），本协程要遍历并关闭连接
+         */
+        [[nodiscard]] Core::Task<> drain(std::chrono::milliseconds drainTimeout);
+
     private:
+        /// 排空期间的轮询间隔：决定「没有在途工作」多快被发现，代价是等待期间多几次唤醒
+        static constexpr std::chrono::milliseconds kDrainPollInterval{50};
         /**
          * @brief 定时器驱动：按固定节拍检查各连接的到期时刻
          * @details QUIC 的 PTO/空闲超时/握手超时都要在「没有报文到达」时也准时触发，因此不能只靠
@@ -156,6 +171,12 @@ namespace AsynGyanis::Net
          * @brief 把已收口的连接摘出路由表
          */
         void reapClosedConnections();
+
+        /**
+         * @brief 请求收口所有还开着的连接并立刻清理路由表
+         * @note 与 drain() 的三条出口配合：无论等到什么程度，返回后本服务器不再持有连接
+         */
+        void closeAllOpenConnections();
 
         /**
          * @brief 取（必要时创建）某条连接上的 HTTP/3 会话
@@ -187,6 +208,9 @@ namespace AsynGyanis::Net
         Core::Timer          m_expiryTicker;       ///< 定时驱动的节拍定时器
         std::uint16_t        m_listeningPort{0};   ///< 实际绑定的端口
         std::atomic<bool>    m_isStopped{false};   ///< 是否已请求停止：可从别的线程置位，因此必须是原子
+        /// 排空期间只挡新连接（收报文与在途请求照常跑）：与 m_isStopped 分开，
+        /// 因为后者会让收报文的循环退出，在途请求就永远做不完
+        std::atomic<bool> m_isRefusingNewConnections{false};
         Platform::SocketAddress   m_localSocketAddress;   ///< 本端地址（建连接时要写进回包与日志）
         QuicConnection::StreamDataHandler m_streamDataHandler; ///< 流数据回调（缺省为空，即收到流数据不回应）
 

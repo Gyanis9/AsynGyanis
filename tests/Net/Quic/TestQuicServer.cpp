@@ -884,4 +884,49 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(server.sampleConnectionCount(), 0U) << "握手没完成的连接没有在超时后被收口";
     }
+/**
+ * @brief drain 会等在途做完再收口全部连接，并且此后不再服务任何新连接
+ * @details 关停路径最怕两件事：把还在做事的连接当场掐掉，以及「以为收了」其实连接表还在。
+ *          这条用例两头都钉：握手完成的连接被 drain 收掉（计数归零），随后一条新连接的握手
+ *          在时限内完不成
+ */
+TEST(QuicServer, DrainClosesOpenConnectionsAndStopsServing)
+{
+    ASSERT_TRUE(Platform::Socket::initialize());
+
+    // 协程帧的存放声明在 fixture 之前：循环停止（fixture 析构）之后才轮到它销毁
+    std::optional<Core::Task<>> drainTask;
+
+    RunningQuicServer server;
+    ASSERT_NE(server.listeningPort(), 0) << "服务端没有绑定成功";
+
+    QuicTestClient client;
+    ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+    ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); })) << "用例前提：先让一条连接握手完成";
+    ASSERT_EQ(server.sampleConnectionCount(), 1U);
+
+    drainTask.emplace(server.server().drain(std::chrono::milliseconds{1500}));
+    // 本服务器只在其所属循环上被触碰：排入 drain 这个动作本身也投递过去做
+    Core::Task<> *const drainTaskPointer = &drainTask.value();
+    server.runOnLoopAndWait([drainTaskPointer]
+                            {
+                                // 这次已经在循环线程上，直接首次恢复就是「归属线程内」的合法调用；
+                                // 之后它挂在定时器上，由循环自己唤醒
+                                drainTaskPointer->handle().resume();
+                            });
+
+    const auto drainedDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+    while (server.sampleConnectionCount() != 0 && std::chrono::steady_clock::now() < drainedDeadline)
+    {
+        client.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    EXPECT_EQ(server.sampleConnectionCount(), 0U) << "drain 返回后不应再留任何连接";
+
+    QuicTestClient lateClient;
+    ASSERT_TRUE(lateClient.initialize(makeServerAddress(server.listeningPort())));
+    EXPECT_FALSE(pumpUntil(lateClient, [&lateClient] { return lateClient.isHandshakeCompleted(); }))
+            << "服务端已经收口，不该再接手新连接";
+}
+
 } // namespace AsynGyanis::Net

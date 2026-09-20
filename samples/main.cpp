@@ -139,6 +139,23 @@ namespace
         remainingDrainCount.fetch_sub(1, std::memory_order_acq_rel);
         co_return;
     }
+
+    /**
+     * @brief 投递给 HTTP/3 服务端的优雅收口协程
+     * @details QuicServer 归它的循环所有，drain() 只能在那个线程上跑（它会遍历连接表）；
+     *          计数与 TCP 侧同一用法，主线程据此判断它是否已经收手。
+     * @param server 目标服务端
+     * @param drainTimeout 交给 drain 的最长等待时长
+     * @param remainingDrainCount 输入输出：尚未完成的 drain 条数，完成一条减一
+     * @return Core::Task<> 协程，drain 返回后立即完成
+     */
+    Core::Task<> drainHttp3ServerTask(Net::QuicServer &server, const std::chrono::milliseconds drainTimeout,
+                                      std::atomic<std::size_t> &remainingDrainCount)
+    {
+        co_await server.drain(drainTimeout);
+        remainingDrainCount.fetch_sub(1, std::memory_order_acq_rel);
+        co_return;
+    }
 }
 
 int main(int argc, char **argv)
@@ -618,11 +635,20 @@ int main(int argc, char **argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // HTTP/3 的收尾：stop() 只置停止标记，真正的连接收尾交给随之而来的循环停止与对象析构
+    // HTTP/3 与 TCP 侧同一形状收口：挡新连接、给每条连接发 GOAWAY、等在途请求做完，
+    // 到期由 drain 自己兜底强关。它必须投回自己那条循环（drain 要遍历连接表）
     if (http3Server != nullptr)
     {
-        LOG_INFO("Stopping HTTP/3 server...");
-        http3Server->stop();
+        std::atomic<std::size_t> remainingHttp3DrainCount{1};
+        Core::Task<>             http3DrainTask       = drainHttp3ServerTask(*http3Server, kShutdownDrainTimeout, remainingHttp3DrainCount);
+        pool.eventLoop(0).scheduler().scheduleRemote(http3DrainTask.handle());
+        LOG_INFO_FMT("Draining HTTP/3 server, in-flight requests get up to {}ms...", kShutdownDrainTimeout.count());
+        while (remainingHttp3DrainCount.load(std::memory_order_acquire) > 0)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        // 与上面两条 TCP 路径一样：帧收进 shutdownTasks，别在它还被循环持有时就先离开作用域
+        shutdownTasks.push_back(std::move(http3DrainTask));
     }
 
     context.stop();
