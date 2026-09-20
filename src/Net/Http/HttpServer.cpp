@@ -394,7 +394,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 判断本次请求是否满足「应用 Range」的前提（If-Range 校验）
          * @details If-Range 缺省即放行；在场时其值必须与本资源 ETag 逐字相同（强比较），
-         *          或解析为日期且不早于 Last-Modified（RFC 9110 §13.1.5）。
+         *          或解析为日期且与 Last-Modified 相等（RFC 9110 §14.22）：两者都不成立时
+         *          忽略 Range，按 200 下发完整表示。
          * @param request 请求对象
          * @param entityTag 本资源当前 ETag
          * @param lastWriteSeconds 本资源 Last-Modified 的整秒值
@@ -421,7 +422,10 @@ namespace AsynGyanis::Net
                 return false;
             }
             const std::int64_t ifRangeSeconds = std::chrono::duration_cast<std::chrono::seconds>(parsedDate->time_since_epoch()).count();
-            return lastWriteSeconds <= ifRangeSeconds;
+            // 日期验证器走「相等」而不是「不晚于」：If-Range 问的是「你手上那份还是不是我现在这份」，
+            // 对端的日期再晚也不代表表示没变——文件被换回更早的版本（恢复备份、时钟回拨）时，
+            // 按「不晚于」放行就会把另一份表示的字节段拼进对端的缓存，正是 Range 校验要防的事
+            return lastWriteSeconds == ifRangeSeconds;
         }
 
         /// 单个字节区间的解析结论

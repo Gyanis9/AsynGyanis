@@ -5,6 +5,7 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
 
@@ -811,6 +812,48 @@ namespace AsynGyanis::Net
                                                              {{"range", "bytes=0-4"}, {"if-range", etag}});
         ASSERT_EQ(matched.status(), 206);
         EXPECT_EQ(matched.body(), "hello");
+    }
+
+    /**
+     * @brief If-Range 的日期验证器要的是「相等」：比 Last-Modified 更晚的日期也不放行
+     * @details 对端拿这个日期问的是「你手上那份还是不是我现在这份」。文件被换回更早的版本（恢复备份、
+     *          时钟回拨）时，对端的日期反而会比当前修改时间更晚，按「不晚于」放行就会把另一份表示的
+     *          字节段拼进对端缓存——RFC 9110 §14.22 要求验证器不相等即忽略 Range、回 200 完整表示。
+     */
+    TEST(HttpServer, AppliesRangeOnlyWhenIfRangeDateEqualsLastModified)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeIfRangeDate");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::optional<std::chrono::system_clock::time_point> lastWriteTimePoint =
+                parseHttpDate(headerValueOf(baseline, "last-modified"));
+        ASSERT_TRUE(lastWriteTimePoint.has_value()) << "基线响应没给出可解析的 Last-Modified";
+        const std::int64_t lastWriteSeconds =
+                std::chrono::duration_cast<std::chrono::seconds>(lastWriteTimePoint->time_since_epoch()).count();
+        const auto dateOfSeconds = [](const std::int64_t seconds)
+        { return formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(seconds))); };
+
+        const HttpResponse equalDate = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
+                                                               {{"range", "bytes=0-4"},
+                                                                {"if-range", dateOfSeconds(lastWriteSeconds)}});
+        ASSERT_EQ(equalDate.status(), 206) << "日期与 Last-Modified 相等时必须按 Range 处理";
+        EXPECT_EQ(equalDate.body(), "hello");
+
+        // 晚一分钟、早一分钟都不算同一份表示：被换回旧版本时对端拿到的是「更晚」的那个日期，
+        // 旧写法（不晚于即放行）正是在这一支上误把 Range 接了下来
+        for (const std::string &ifRangeDate: {dateOfSeconds(lastWriteSeconds + 60), dateOfSeconds(lastWriteSeconds - 60)})
+        {
+            const HttpResponse ignored = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
+                                                                {{"range", "bytes=0-4"}, {"if-range", ifRangeDate}});
+            EXPECT_EQ(ignored.status(), 200) << "If-Range 日期与当前表示不相等，Range 必须被忽略";
+            EXPECT_EQ(ignored.body(), kHelloFileContent);
+            EXPECT_FALSE(ignored.getHeader("content-range").has_value());
+        }
     }
 
     /**
