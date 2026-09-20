@@ -296,6 +296,21 @@ namespace AsynGyanis::Net
                 return m_isPeerClosing;
             }
 
+            /**
+             * @brief 某条流是否已收口，以及它的应用错误码
+             * @param streamId 流号
+             * @return std::optional<std::uint64_t> 还没收口时返回空
+             */
+            [[nodiscard]] std::optional<std::uint64_t> closedStreamErrorCodeOf(const std::int64_t streamId) const
+            {
+                const auto found = m_closedStreamCodes.find(streamId);
+                if (found == m_closedStreamCodes.end())
+                {
+                    return std::nullopt;
+                }
+                return found->second;
+            }
+
             /// 到目前为止收到过多少条服务端报文（分「服务端没发」与「发了但客户端处理不了」用）
             [[nodiscard]] std::size_t receivedDatagramCount() const noexcept
             {
@@ -416,6 +431,7 @@ namespace AsynGyanis::Net
                 callbacks.get_new_connection_id    = onGetNewConnectionId;
                 callbacks.handshake_completed      = onHandshakeCompleted;
                 callbacks.recv_stream_data         = onReceiveStreamData;
+                callbacks.stream_close             = onStreamClose;
                 return callbacks;
             }
 
@@ -438,6 +454,18 @@ namespace AsynGyanis::Net
             static int onHandshakeCompleted(ngtcp2_conn * /*conn*/, void *userData)
             {
                 static_cast<QuicTestClient *>(userData)->m_isHandshakeCompleted = true;
+                return 0;
+            }
+
+            /**
+             * @brief 一条流收口了：记下它的应用错误码
+             * @details 本端收到服务端的 RESET_STREAM 或 STOP_SENDING 时 ngtcp2 都走这里（收到停发
+             *          请求时它自己会回一条复位），因此这也是「服务端那份帧对不对」的裁判点
+             */
+            static int onStreamClose(ngtcp2_conn * /*conn*/, const std::uint32_t /*flags*/, const std::int64_t streamId,
+                                     const std::uint64_t applicationErrorCode, void *userData, void * /*streamUserData*/)
+            {
+                static_cast<QuicTestClient *>(userData)->m_closedStreamCodes[streamId] = applicationErrorCode;
                 return 0;
             }
 
@@ -473,6 +501,8 @@ namespace AsynGyanis::Net
             Platform::SocketAddress   m_serverAddress;                 ///< 服务端地址（发送用）
             std::int64_t              m_pendingStreamId{-1};           ///< 排队负载所属的流
             std::map<std::int64_t, std::string> m_receivedStreamPayloads; ///< 各流上收到的字节（按流号累积）
+            /// 各流的收口应用错误码：服务端发来 RESET_STREAM / STOP_SENDING 时由 ngtcp2 报进来
+            std::map<std::int64_t, std::uint64_t> m_closedStreamCodes;
             std::int64_t m_streamKeptFlowControlBlocked{-1};              ///< 收到数据也不还窗口的流（-1 表示没有）
             std::vector<std::uint8_t> m_pendingStreamPayload;          ///< 待发负载（必须活到确认）
             ngtcp2_vec                m_pendingStreamVector{};         ///< 待发负载的 ngtcp2 视图
@@ -1000,6 +1030,49 @@ TEST(QuicServer, AnnouncesConnectionCloseWhenDraining)
     EXPECT_TRUE(pumpUntil(client, [&client] { return client.isPeerClosing(); }))
             << "服务端收口时对端没收到任何 CONNECTION_CLOSE，只能等自己的空闲超时";
     EXPECT_EQ(server.sampleConnectionCount(), 0U) << "收口后连接表应当清空";
+}
+
+/**
+ * @brief 服务端收口一条流时，那份 RESET_STREAM / STOP_SENDING 要能被另一个实现接受
+ * @details 单元用例只能证明「自己编的自己解得回去」；收尾长度这类字段是否合规范，只有别的实现
+ *          愿意收才算数。这里让服务端一收到数据就把那条流两头收掉，客户端（ngtcp2）必须既不报
+ *          读错、又看到这条流以指定错误码收口
+ */
+TEST(QuicServer, AnnouncesStreamAbortToCrossImplementationClient)
+{
+    ASSERT_TRUE(Platform::Socket::initialize());
+
+    RunningQuicServer server;
+    ASSERT_NE(server.listeningPort(), 0) << "服务端没有绑定成功";
+
+    std::atomic<QuicConnection *> observedConnection{};
+    std::atomic<std::int64_t>     observedStreamId{-1};
+    server.server().setStreamDataHandler(
+            [&observedConnection, &observedStreamId](QuicConnection &connection, const std::int64_t streamId,
+                                                    const std::span<const std::uint8_t> /*data*/, const bool /*isEndStream*/)
+            {
+                observedStreamId.store(streamId, std::memory_order_release);
+                // 错误码取 RFC 9114 §8.1 里那一档的一个值：这里只关心线上那份帧对不对，不套 h3 语义
+                connection.abortStream(streamId, 0x010b);
+                // 标记放在收口之后：用例据此保证「等到的那一趟里，宣告已经排进待发」
+                observedConnection.store(&connection, std::memory_order_release);
+            });
+
+    QuicTestClient client;
+    ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+    ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); })) << "握手没有完成";
+
+    const std::vector<std::uint8_t> payload{'p', 'i', 'n', 'g'};
+    ASSERT_TRUE(client.openStreamAndQueuePayload(payload)) << "客户端流没开出来";
+    ASSERT_TRUE(pumpUntil(client, [&observedConnection] { return observedConnection.load(std::memory_order_acquire) != nullptr; }))
+            << "服务端没把流数据交给回调";
+    const std::int64_t abortedStreamId = observedStreamId.load(std::memory_order_acquire);
+    ASSERT_GE(abortedStreamId, 0) << "用例前提：回调里确实看到了一条流";
+
+    ASSERT_TRUE(pumpUntil(client, [&] { return client.closedStreamErrorCodeOf(abortedStreamId).has_value(); }))
+            << "客户端没接受服务端收口这条流：那份帧不合裁判的意（读错标志 " << (client.hasReadError() ? "有" : "无") << "）";
+    EXPECT_EQ(client.closedStreamErrorCodeOf(abortedStreamId).value_or(0U), 0x010bU) << "对端看到的收口错误码";
+    EXPECT_FALSE(client.hasReadError()) << "客户端读这些帧时出错：编码不合 ngtcp2 的裁判";
 }
 
 } // namespace AsynGyanis::Net
