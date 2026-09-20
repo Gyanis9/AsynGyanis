@@ -23,6 +23,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -100,9 +101,17 @@ namespace AsynGyanis::Net
             struct DecodedResponse
             {
                 int                                status{0};     ///< :status
-                std::map<std::string, std::string> headers;      ///< 其余头部
+                std::map<std::string, std::string> headers;      ///< 其余头部（同名只留最后一条）
+                /// 全部响应字段按到达顺序逐条记下：可重复头（Set-Cookie）只有这里能数出条数
+                std::vector<std::pair<std::string, std::string>> headerFields;
                 std::string                        body;         ///< 正文
                 bool                               isComplete{false}; ///< 是否收到了收尾
+
+                /// 数某个头名出现了几次
+                [[nodiscard]] std::size_t countOf(const std::string &name) const
+                {
+                    return static_cast<std::size_t>(std::ranges::count(headerFields, name, &std::pair<std::string, std::string>::first));
+                }
             };
 
             Http3ClientPeer()
@@ -431,6 +440,7 @@ namespace AsynGyanis::Net
                 peer->m_response.status = std::atoi(headerValue.c_str());
             } else
             {
+                peer->m_response.headerFields.emplace_back(headerName, headerValue);
                 peer->m_response.headers[headerName] = headerValue;
             }
             return 0;
@@ -853,6 +863,180 @@ namespace AsynGyanis::Net
         const auto contentLengthHeader = peer.response().headers.find("content-length");
         ASSERT_NE(contentLengthHeader, peer.response().headers.end()) << "HEAD 响应仍要给出 content-length";
         EXPECT_EQ(contentLengthHeader->second, "2") << "content-length 必须等于 GET 会发出的那份正文长度";
+    }
+
+    /**
+     * @brief 走一条完整的 GET 往返，把服务端交出的字节喂回客户端
+     * @details 下面几条「响应形状」用例只差业务往响应里写了什么，走完的步子完全一样，
+     *          因此把提交请求、喂会话、pump、回喂客户端这四步收在这里
+     * @param session 被测会话（由调用方持有，会话不可搬运）
+     * @param peer 测试侧的客户端连接
+     * @param sentStreamData 会话出口的字节收集容器
+     * @param path 请求路径
+     * @return 客户端解出来的响应
+     */
+    Http3ClientPeer::DecodedResponse answerOneGet(Http3Session &session, Http3ClientPeer &peer,
+                                                 std::vector<CapturedStreamData> &sentStreamData, const std::string &path)
+    {
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", path, "example.com");
+        EXPECT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_FALSE(sentStreamData.empty()) << "服务端一个字节都没回：响应没发出去";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        return peer.response();
+    }
+
+    /// 造一个只挂了 writer 的会话：出口把字节按流收进 sentStreamData，开流口按本端单向流递增
+    Http3Session makeSession(FakeStreamOpener &opener, std::vector<CapturedStreamData> &sentStreamData)
+    {
+        return Http3Session(std::ref(opener),
+                            [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                            {
+                                sentStreamData.push_back(
+                                        CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                            });
+    }
+
+    /**
+     * @brief 多条 Set-Cookie 要逐条上线，顺序与设置顺序一致
+     * @details HttpResponse 的头视图是「一名一值」，可重复头只在 headerValues() 里逐条给出；
+     *          采集时若直接用视图，业务设的第二条 Cookie 会静默消失（h1/h2 都会发全）
+     */
+    TEST(Http3Session, SendsEveryValueOfRepeatableResponseHeaders)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/cookies",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("set-cookie", "first=1");
+                       response.setHeader("set-cookie", "second=2");
+                       response.setBody("ok");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/cookies");
+        EXPECT_EQ(response.countOf("set-cookie"), 2U) << "可重复响应头只剩一条，第二条被单值视图吃掉了";
+        const std::vector<std::string> cookieValues = [&response]
+        {
+            std::vector<std::string> values;
+            for (const auto &[name, value]: response.headerFields)
+            {
+                if (name == "set-cookie")
+                {
+                    values.push_back(value);
+                }
+            }
+            return values;
+        }();
+        ASSERT_EQ(cookieValues.size(), 2U);
+        EXPECT_EQ(cookieValues[0], "first=1") << "多条同名头的先后顺序要跟着业务的设置顺序";
+        EXPECT_EQ(cookieValues[1], "second=2");
+    }
+
+    /**
+     * @brief 业务没写 date 时按 h1/h2 同一口径补上（RFC 9110 §6.1 要求源服务器给出）
+     */
+    TEST(Http3Session, AddsDateHeaderWhenHandlerOmitsIt)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/dated",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("content-type", "text/plain");
+                       response.setBody("ok");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/dated");
+        const auto                             dateHeader = response.headers.find("date");
+        ASSERT_NE(dateHeader, response.headers.end()) << "h1/h2 都会自动补 date，h3 漏给会让客户端自己做缓存判定";
+        EXPECT_TRUE(dateHeader->second.ends_with("GMT")) << "date 必须是 IMF-fixdate 形态：" << dateHeader->second;
+    }
+
+    /**
+     * @brief 有正文却没设媒体类型时按纯文本下发（与 HttpResponse::appendHead 的缺省一致）
+     */
+    TEST(Http3Session, DefaultsContentTypeWhenBodyIsPresent)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/plain",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/plain");
+        const auto contentTypeHeader = response.headers.find("content-type");
+        ASSERT_NE(contentTypeHeader, response.headers.end()) << "有正文却没设类型，h1/h2 会补 text/plain";
+        EXPECT_EQ(contentTypeHeader->second, "text/plain");
+    }
+
+    /**
+     * @brief 越界的状态码改回 500，而不是把整条流废掉
+     * @details setStatus 不校验取值范围，而 :status 必须是三位十进制（RFC 9114 §4.3.2）：
+     *          原样交出去会被自己的连接层拒收，这条响应一个字节都发不出去，对端只能干等
+     */
+    TEST(Http3Session, MapsOutOfRangeStatusCodeBackToFiveHundred)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/bogus",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(1000);
+                       response.setBody("boom");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/bogus");
+        EXPECT_EQ(response.status, 500) << "越界状态码没有改回 500，而是把这条流的响应废掉了";
+        EXPECT_EQ(response.body, "boom");
+        EXPECT_TRUE(response.isComplete) << "改回 500 之后这条流仍要正常收尾";
     }
 
     /**

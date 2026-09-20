@@ -2,6 +2,7 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Net/Http/HttpChunkFrame.h"
+#include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Router.h"
 #include "Net/Http3/Http3Connection.h"
@@ -14,10 +15,108 @@ namespace AsynGyanis::Net
         /// HTTP/3 响应里唯一必须由本端补上的头：状态伪头（RFC 9114 §4.3.2）
         constexpr const char *kStatusHeaderName = ":status";
 
+        constexpr const char *kContentTypeHeaderName = "content-type"; ///< 正文媒体类型
+        constexpr const char *kContentLengthHeaderName = "content-length"; ///< 正文长度
+        constexpr const char *kDateHeaderName = "date";                ///< 响应生成时刻
+        constexpr const char *kDefaultContentTypeValue = "text/plain"; ///< 有正文却没设类型时的缺省值
+
         /// 把字符串按字节交给只认「指针 + 长度」的接口，不留零终止的假设
         [[nodiscard]] std::span<const std::uint8_t> asBytes(const std::string_view text) noexcept
         {
             return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
+        }
+
+        /// 100..999 之外（RFC 9110 §15）的状态码不得上线：连接层会拒收这个 :status，
+        /// 整条流就此发不出东西，改回 500 至少让对端拿到一份能读的响应
+        [[nodiscard]] int normalizeWireStatusCode(const int responseStatus, const std::int64_t streamId)
+        {
+            if (responseStatus < 100 || responseStatus > 999)
+            {
+                LOG_ERROR_FMT("Http3Session: 响应状态码 {} 越界（应为 100..999），流 {} 已改回 500", responseStatus, streamId);
+                return 500;
+            }
+            return responseStatus;
+        }
+
+        /**
+         * @brief 把 HttpResponse 摊平成 h3 要交的字段行，口径与 Http2Session 的采集器一致
+         * @details 三条默认补齐（类型/长度/日期）与「可重复头逐条展开」必须与 h1/h2 逐字相同，
+         *          否则同一份业务代码换个协议就会少发 Set-Cookie 或少发 date。
+         * @param streamId 只用于日志
+         * @param response 业务写好的响应
+         * @param isStreamingResponse true 表示正文由后续 DATA 逐段给出，此刻算不出长度
+         * @return 以 :status 开头的字段行
+         */
+        [[nodiscard]] std::vector<QpackHeaderField> collectResponseFieldLines(const std::int64_t streamId,
+                                                                             const HttpResponse &response,
+                                                                             const bool isStreamingResponse)
+        {
+            std::vector<QpackHeaderField> fieldLines;
+            // 常见情形是一条头名展开一行，再加后面最多补的三行；可重复头（Set-Cookie）会多几条，
+            // 那时多一次扩容比反复搬移便宜
+            fieldLines.reserve(response.headers().size() + 3U);
+
+            const int         wireStatusCode = normalizeWireStatusCode(response.status(), streamId);
+            const bool        isBodylessStatus = HttpResponse::isBodylessStatusCode(wireStatusCode);
+            const std::string_view responseBody = response.body();
+            bool              hasContentTypeHeader = false;
+            bool              hasContentLengthHeader = false;
+            bool              hasDateHeader = false;
+
+            fieldLines.push_back(QpackHeaderField{.name = kStatusHeaderName, .value = std::to_string(wireStatusCode)});
+
+            // 视图只给「名字 → 一个值」，逐条取值必须再走 headerValues()，
+            // 否则多条 Set-Cookie 只剩一条（HttpResponse.h 的类说明写明了这点）
+            for (const auto &headerEntry: response.headers())
+            {
+                const std::string &headerName = headerEntry.first;
+                if (isConnectionSpecificHeaderName(headerName))
+                {
+                    // h3 禁止连接特定字段（RFC 9114 §4.2）：HttpResponse 按 h1 口径可能带上它们，
+                    // 带上会被对端判成报文格式错误，整条响应作废
+                    LOG_DEBUG_FMT("Http3Session: 流 {} 的响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerName);
+                    continue;
+                }
+                if (isStreamingResponse && headerName == kContentLengthHeaderName)
+                {
+                    // 流式响应的长度由 DATA 帧的总长给出：这个数字与随后陆续发出的正文对不上，
+                    // 留着反而让对端按它定界、把后面的段当多余字节
+                    LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应正文长度由 DATA 给出，已丢弃 content-length 响应头", streamId);
+                    continue;
+                }
+                if (headerName == kContentTypeHeaderName)
+                {
+                    hasContentTypeHeader = true;
+                }
+                else if (headerName == kContentLengthHeaderName)
+                {
+                    hasContentLengthHeader = true;
+                }
+                else if (headerName == kDateHeaderName)
+                {
+                    hasDateHeader = true;
+                }
+
+                for (const std::string &headerValue: response.headerValues(headerName))
+                {
+                    fieldLines.push_back(QpackHeaderField{.name = headerName, .value = headerValue});
+                }
+            }
+
+            if (!hasContentTypeHeader && !responseBody.empty())
+            {
+                fieldLines.push_back(QpackHeaderField{.name = kContentTypeHeaderName, .value = kDefaultContentTypeValue});
+            }
+            // 没有长度对端就只能靠 END_STREAM 定界；1xx/204/304 补出去是让它白等一段正文
+            if (!hasContentLengthHeader && !isStreamingResponse && !isBodylessStatus)
+            {
+                fieldLines.push_back(QpackHeaderField{.name = kContentLengthHeaderName, .value = std::to_string(responseBody.size())});
+            }
+            if (!hasDateHeader)
+            {
+                fieldLines.push_back(QpackHeaderField{.name = kDateHeaderName, .value = formatHttpDate(std::chrono::system_clock::now())});
+            }
+            return fieldLines;
         }
     } // namespace
 
@@ -1079,27 +1178,8 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        std::vector<QpackHeaderField> fieldLines;
-        fieldLines.reserve(response.headers().size() + 1);
-        fieldLines.push_back(QpackHeaderField{.name = kStatusHeaderName, .value = std::to_string(response.status())});
-        for (const auto &headerEntry: response.headers())
-        {
-            // 流式响应的长度此刻还不知道（这正是分块的意义）：content-length 一律不发，
-            // 否则那个数字会跟随后陆续发出的 DATA 对不上
-            if (headerEntry.first == "content-length")
-            {
-                continue;
-            }
-            // HttpResponse 是按 h1 口径造的：startChunkedResponse() 会往头部里放 transfer-encoding，
-            // 而 h3 禁止连接特定字段（RFC 9114 §4.2）。带上它会被对端判成报文格式错误——
-            // 实测客户端直接回 MALFORMED_HTTP_HEADER，整条响应连正文一起废掉
-            if (isConnectionSpecificHeaderName(headerEntry.first))
-            {
-                LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerEntry.first);
-                continue;
-            }
-            fieldLines.push_back(QpackHeaderField{.name = headerEntry.first, .value = headerEntry.second});
-        }
+        // 流式路径按「正文由 DATA 逐段给出」采集：content-length 一律不出，date 照补
+        std::vector<QpackHeaderField> fieldLines = collectResponseFieldLines(streamId, response, true);
 
         // 只交响应头、不结束这条流：正文随后一段一段推过来
         if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, false); !submitted)
@@ -1193,39 +1273,14 @@ namespace AsynGyanis::Net
         }
 
         const std::string_view body = response.body();
-        // 无正文的状态码（204/304）不带 content-length；HEAD 与非 204/304 都要给出长度，只是正文不发
+        // 无正文的状态码（1xx/204/304）不给出 content-length；HEAD 与其余状态码都要给长度，只是正文不发
         const bool isBodylessStatus = HttpResponse::isBodylessStatusCode(response.status());
         // HEAD：正文一个字节都不发（与 h2 的 isHeadRequest ? {} : body 同一处置），content-length
         // 下面仍按完整正文长度给出——这正是 HEAD 的语义（RFC 9110 §9.3.2）
         const bool hasBody = !isBodylessStatus && !isHeadRequest && !body.empty();
 
-        std::vector<QpackHeaderField> fieldLines;
-        fieldLines.reserve(response.headers().size() + 2);
-        fieldLines.push_back(QpackHeaderField{.name = kStatusHeaderName, .value = std::to_string(response.status())});
-
-        bool hasContentLengthHeader = false;
-        for (const auto &headerEntry: response.headers())
-        {
-            // h3 禁止连接特定字段（RFC 9114 §4.2）：HttpResponse 按 h1 口径可能带上它们，
-            // 带上会被对端判成报文格式错误，整条响应作废
-            if (isConnectionSpecificHeaderName(headerEntry.first))
-            {
-                LOG_DEBUG_FMT("Http3Session: 流 {} 的响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerEntry.first);
-                continue;
-            }
-            if (headerEntry.first == "content-length")
-            {
-                hasContentLengthHeader = true;
-            }
-            fieldLines.push_back(QpackHeaderField{.name = headerEntry.first, .value = headerEntry.second});
-        }
-
-        // 业务没写 content-length 就按实际正文长度补上，否则对端只能靠 END_STREAM 判完，
-        // 逐字节对不上 h1/h2 给出的那一份头部
-        if (!isBodylessStatus && !hasContentLengthHeader)
-        {
-            fieldLines.push_back(QpackHeaderField{.name = "content-length", .value = std::to_string(body.size())});
-        }
+        // 头部与 h1/h2 逐字同源：采集器负责丢连接特定字段、逐条展开可重复头并补齐类型/长度/日期
+        const std::vector<QpackHeaderField> fieldLines = collectResponseFieldLines(streamId, response, false);
 
         // 没有正文时交完头就收尾；有正文则头先走（不结束流），紧接一次把整段正文推过去并收尾
         if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, !hasBody); !submitted)
