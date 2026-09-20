@@ -486,14 +486,12 @@ namespace
     }
 
     /**
-     * @brief 正向探针：在第二条循环上把所有「期待拿到响应」的请求跑一遍
+     * @brief 主服务器上的正向探针：路由、解析上限、压缩、SSE、WebSocket 与观测端点
      * @param loop 探针自己的循环（与被测服务不抢同一条线程）
      * @param mainPort 主服务器端口
-     * @param strictPort 限额服务器端口（单连接请求数）
-     * @param guardedPort 受护服务器端口（令牌桶、空闲超时、全局并发上限）
      * @return Core::Task<> 跑完即返回
      */
-    Core::Task<> runProbes(Core::EventLoop &loop, const std::uint16_t mainPort, const std::uint16_t strictPort, const std::uint16_t guardedPort)
+    Core::Task<> runMainServerProbes(Core::EventLoop &loop, const std::uint16_t mainPort)
     {
         g_observations.root        = co_await exchange(loop, mainPort, {plainRequest("GET", "/")});
         g_observations.big         = co_await exchange(loop, mainPort, {plainRequest("GET", "/big")});
@@ -501,8 +499,10 @@ namespace
         g_observations.head        = co_await exchange(loop, mainPort, {plainRequest("HEAD", "/")});
         g_observations.json        = co_await exchange(loop, mainPort, {plainRequest("GET", "/json")});
         g_observations.missing     = co_await exchange(loop, mainPort, {plainRequest("GET", "/nope")});
-        g_observations.wrongMethod = co_await exchange(loop, mainPort, {plainRequest("POST", "/json", false, "Content-Length: 0")});
-        g_observations.echo = co_await exchange(loop, mainPort, {plainRequest("POST", "/echo", false, "Content-Length: 11", "hello echo?")});
+        std::vector<std::string> payloads_wrongMethod {plainRequest("POST", "/json", false, "Content-Length: 0")};
+        g_observations.wrongMethod = co_await exchange(loop, mainPort, payloads_wrongMethod);
+        std::vector<std::string> payloads_echo {plainRequest("POST", "/echo", false, "Content-Length: 11", "hello echo?")};
+        g_observations.echo = co_await exchange(loop, mainPort, payloads_echo);
         g_observations.chunkedUpload =
                 co_await exchange(loop, mainPort,
                                   {plainRequest("POST", "/echo", false, "Transfer-Encoding: chunked", "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")});
@@ -513,7 +513,8 @@ namespace
                                                                "ping")});
         g_observations.oversizeBody =
                 co_await exchange(loop, mainPort, {plainRequest("POST", "/echo", false, "Content-Length: 4096", "short")});
-        g_observations.longUri = co_await exchange(loop, mainPort, {plainRequest("GET", "/" + std::string(3000, 'a'))});
+        std::vector<std::string> payloads_longUri {plainRequest("GET", "/" + std::string(3000, 'a'))};
+        g_observations.longUri = co_await exchange(loop, mainPort, payloads_longUri);
 
         std::string manyHeadersRequest{"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"};
         for (int index = 0; index < 80; ++index)
@@ -521,34 +522,65 @@ namespace
             manyHeadersRequest += "X-Filler-" + std::to_string(index) + ": v\r\n";
         }
         manyHeadersRequest += "\r\n";
-        g_observations.manyHeaders = co_await exchange(loop, mainPort, {manyHeadersRequest});
+        std::vector<std::string> payloads_manyHeaders {manyHeadersRequest};
+        g_observations.manyHeaders = co_await exchange(loop, mainPort, payloads_manyHeaders);
 
-        g_observations.malformed = co_await exchange(loop, mainPort, {"THIS IS NOT HTTP\r\n\r\n"});
+        std::vector<std::string> payloads_malformed {"THIS IS NOT HTTP\r\n\r\n"};
+        g_observations.malformed = co_await exchange(loop, mainPort, payloads_malformed);
         g_observations.thrown    = co_await exchange(loop, mainPort, {plainRequest("GET", "/boom")});
         g_observations.inspect   = co_await exchange(loop, mainPort, {plainRequest("GET", "/inspect?needle=42")});
 
-        g_observations.requestIds = co_await exchange(loop, mainPort, {plainRequest("GET", "/", false, "X-Request-Id: probe-fixed-id")});
+        std::vector<std::string> payloads_requestIds {plainRequest("GET", "/", false, "X-Request-Id: probe-fixed-id")};
+        g_observations.requestIds = co_await exchange(loop, mainPort, payloads_requestIds);
         g_observations.requestIds += '\0';
         g_observations.requestIds += co_await exchange(loop, mainPort, {plainRequest("GET", "/")});
 
         g_observations.sse       = co_await exchange(loop, mainPort, {plainRequest("GET", "/sse")});
-        g_observations.webSocket = co_await exchange(loop, mainPort, {webSocketHandshake(), makeClientFrame(0x1, "ping-frame"), makeClientFrame(0x8, "")});
-        g_observations.extension = co_await exchange(loop, mainPort,
-                                                     {webSocketHandshake("Sec-WebSocket-Extensions: permessage-deflate"), makeClientFrame(0x8, "")});
+        std::vector<std::string> payloads_webSocket {webSocketHandshake(), makeClientFrame(0x1, "ping-frame"), makeClientFrame(0x8, "")};
+        g_observations.webSocket = co_await exchange(loop, mainPort, payloads_webSocket);
+        std::vector<std::string> payloads_extension {webSocketHandshake("Sec-WebSocket-Extensions: permessage-deflate"), makeClientFrame(0x8, "")};
+        g_observations.extension = co_await exchange(loop, mainPort, payloads_extension);
         g_observations.metricsFirst  = co_await exchange(loop, mainPort, {plainRequest("GET", "/metrics")});
         g_observations.health        = co_await exchange(loop, mainPort, {plainRequest("GET", "/healthz")});
-        g_observations.metricsSecond = co_await exchange(loop, mainPort, {plainRequest("GET", "/metrics")});
+        std::vector<std::string> payloads_metricsSecond {plainRequest("GET", "/metrics")};
+        g_observations.metricsSecond = co_await exchange(loop, mainPort, payloads_metricsSecond);
+    }
 
+    /**
+     * @brief 限额与受护服务器上的正向探针：单连接请求数、令牌桶、空闲超时
+     * @param loop 探针自己的循环
+     * @param strictPort 限额服务器端口（单连接请求数）
+     * @param guardedPort 受护服务器端口（令牌桶、空闲超时、全局并发上限）
+     * @return Core::Task<> 跑完即返回
+     */
+    Core::Task<> runLimitProbes(Core::EventLoop &loop, const std::uint16_t strictPort, const std::uint16_t guardedPort)
+    {
         // 限额服务器：一条连接上按序管线化三条，第三条起连接该被收口（单连接请求数上限 2）
-        g_observations.pipelined = co_await exchange(loop, strictPort,
-                                                     {plainRequest("GET", "/", true), plainRequest("GET", "/", true),
-                                                      plainRequest("GET", "/", true)});
+        std::vector<std::string> payloads_pipelined {plainRequest("GET", "/", true), plainRequest("GET", "/", true),
+                                                      plainRequest("GET", "/", true)};
+        g_observations.pipelined = co_await exchange(loop, strictPort, payloads_pipelined);
 
         // 受护服务器：空闲超时那条先跑（它会吃掉桶里一枚令牌），随后三条限流探针正好在第三条耗尽
-        g_observations.idleClosed = co_await exchange(loop, guardedPort, {plainRequest("GET", "/", true)});
+        std::vector<std::string> payloads_idleClosed {plainRequest("GET", "/", true)};
+        g_observations.idleClosed = co_await exchange(loop, guardedPort, payloads_idleClosed);
         g_observations.rateFirst  = co_await exchange(loop, guardedPort, {plainRequest("GET", "/")});
-        g_observations.rateSecond = co_await exchange(loop, guardedPort, {plainRequest("GET", "/")});
+        std::vector<std::string> payloads_rateSecond {plainRequest("GET", "/")};
+        g_observations.rateSecond = co_await exchange(loop, guardedPort, payloads_rateSecond);
         g_observations.rateThird  = co_await exchange(loop, guardedPort, {plainRequest("GET", "/")});
+    }
+
+    /**
+     * @brief 正向探针总入口：分两段跑完，最后再走一遍框架自带的客户端
+     * @param loop 探针自己的循环
+     * @param mainPort 主服务器端口
+     * @param strictPort 限额服务器端口（单连接请求数）
+     * @param guardedPort 受护服务器端口（令牌桶、空闲超时、全局并发上限）
+     * @return Core::Task<> 跑完即返回
+     */
+    Core::Task<> runProbes(Core::EventLoop &loop, const std::uint16_t mainPort, const std::uint16_t strictPort, const std::uint16_t guardedPort)
+    {
+        co_await runMainServerProbes(loop, mainPort);
+        co_await runLimitProbes(loop, strictPort, guardedPort);
 
         const auto response = co_await Net::HttpClient::get(loop, "http://127.0.0.1:" + std::to_string(mainPort) + "/");
         g_observations.isHttpClientOkay = response != nullptr && response->statusCode == 200 && response->body == "Hello World";
