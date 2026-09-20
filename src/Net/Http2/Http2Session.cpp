@@ -1373,8 +1373,9 @@ namespace AsynGyanis::Net
         }
         if (!hasDateHeader)
         {
+            // 定长文本按秒缓存在线程局部，这里显式构造拥有者（头字段要持有值）
             headerFields.push_back(HpackHeaderField{.name = std::string(kDateHeaderName),
-                                                    .value = formatHttpDate(std::chrono::system_clock::now())});
+                                                    .value = std::string(currentHttpDateText())});
         }
         return headerFields;
     }

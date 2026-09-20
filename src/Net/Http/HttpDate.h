@@ -30,6 +30,16 @@ namespace AsynGyanis::Net
     [[nodiscard]] std::string formatHttpDate(std::chrono::system_clock::time_point time);
 
     /**
+     * @brief 取「此刻」的 HTTP 日期文本，按整秒缓存
+     * @details Date 头每条响应都要写一份，而文本精度只到秒：同一秒内重复折算纯属浪费。缓存是
+     *          thread_local 的，各事件循环线程自己刷新，因此不需要锁；时钟被往回调时秒数不相等，
+     *          会照常重算而不会继续发未来的那一秒。
+     * @warning 返回的视图指向本线程内部缓冲，下一次调用即失效——要跨调用持有必须立刻拷走
+     * @return 定长 29 字节的 IMF-fixdate 文本
+     */
+    [[nodiscard]] std::string_view currentHttpDateText();
+
+    /**
      * @brief 解析 HTTP 日期文本
      * @details 支持 RFC 9110 §5.6.7 的 IMF-fixdate；格式、星期名、月份名或字段取值不合法时
      *          返回空 optional，不抛异常——外部输入不能靠异常否定整个请求。

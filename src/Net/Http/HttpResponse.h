@@ -427,7 +427,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 取自动补出的 date 头部值，首次调用时按当前时刻生成并缓存
          * @details 缓存保证同一响应的多次序列化给出逐字一致的 date：serializeHead() 与 toString()
-         *          若各自取一次 now()，跨秒的两次调用会产出不同的头部字节。
+         *          若各自取一次 now()，跨秒的两次调用会产出不同的头部字节。文本本身取自
+         *          `currentHttpDateText()` 的按秒缓存，这一层保证的是「同一响应内不变」。
          * @return 自动生成的 IMF-fixdate 文本
          */
         [[nodiscard]] std::string_view autoDateText() const;

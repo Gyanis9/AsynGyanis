@@ -297,7 +297,8 @@ namespace AsynGyanis::Net
         // 只生成一次：同一响应多次序列化（serializeHead + toString）必须给出逐字一致的 date
         if (m_autoDateValue.empty())
         {
-            m_autoDateValue = formatHttpDate(std::chrono::system_clock::now());
+            // 文本本身按秒缓存在线程局部，这里只是把当轮那份定长文本抄进响应对象
+            m_autoDateValue = currentHttpDateText();
         }
         return m_autoDateValue;
     }

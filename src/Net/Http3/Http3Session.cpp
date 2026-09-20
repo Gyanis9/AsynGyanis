@@ -115,7 +115,7 @@ namespace AsynGyanis::Net
             }
             if (!hasDateHeader)
             {
-                fieldLines.push_back(QpackHeaderField{.name = kDateHeaderName, .value = formatHttpDate(std::chrono::system_clock::now())});
+                fieldLines.push_back(QpackHeaderField{.name = kDateHeaderName, .value = std::string(currentHttpDateText())});
             }
             return fieldLines;
         }

@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
-#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -107,25 +106,88 @@ namespace AsynGyanis::Net
             value = parsedValue;
             return true;
         }
+
+        /// 把一个十位数写成两位（0 填充）并推进游标；入参取自 std::tm，取值范围天然落在 0..99
+        void putTwoDigits(std::array<char, kHttpDateTextLength> &text, std::size_t &cursor, const int value) noexcept
+        {
+            text[cursor++] = static_cast<char>('0' + value / 10);
+            text[cursor++] = static_cast<char>('0' + value % 10);
+        }
+
+        /// 抄入三个字母的星期/月份缩写
+        void putThreeLetters(std::array<char, kHttpDateTextLength> &text, std::size_t &cursor, const std::string_view word) noexcept
+        {
+            text[cursor++] = static_cast<char>(word[0]);
+            text[cursor++] = static_cast<char>(word[1]);
+            text[cursor++] = static_cast<char>(word[2]);
+        }
+
+        /**
+         * @brief 把 UTC 字段折成 29 字节的 IMF-fixdate
+         * @details 手工拼装而不是 std::format：定长格式没有可选字段，而这条路径每条响应（Date 头）
+         *          与每次静态文件请求（Last-Modified）都要走，std::format 处理七个字段要 270 ns 上下，
+         *          比整个折算本身的开销高一个量级。结果与原实现逐字节一致，不受 locale 影响。
+         * @param fields UTC 字段（utcTime 失败时是零值结构）
+         * @return std::array<char, kHttpDateTextLength> 定长文本
+         */
+        [[nodiscard]] std::array<char, kHttpDateTextLength> buildHttpDateText(const Platform::UtcTimeFields &fields) noexcept
+        {
+            // 索引先夹到合法区间：utcTime 失败时返回的是零值结构，直接用来查表会越界
+            const std::size_t weekdayIndex = (fields.weekday >= 0 && fields.weekday < 7) ? static_cast<std::size_t>(fields.weekday) : 0U;
+            const std::size_t monthIndex = (fields.month >= 1 && fields.month <= 12) ? static_cast<std::size_t>(fields.month - 1) : 0U;
+
+            std::array<char, kHttpDateTextLength> text{};
+            std::size_t cursor = 0;
+            putThreeLetters(text, cursor, kWeekdayNames[weekdayIndex]);
+            text[cursor++] = ',';
+            text[cursor++] = ' ';
+            putTwoDigits(text, cursor, fields.day);
+            text[cursor++] = ' ';
+            putThreeLetters(text, cursor, kMonthNames[monthIndex]);
+            text[cursor++] = ' ';
+            // 年份按十进制定宽四位（与原来 "{:04d}" 一致，1900 起够用，不引入负号分支）
+            text[cursor++] = static_cast<char>('0' + fields.year / 1000);
+            text[cursor++] = static_cast<char>('0' + fields.year / 100 % 10);
+            text[cursor++] = static_cast<char>('0' + fields.year / 10 % 10);
+            text[cursor++] = static_cast<char>('0' + fields.year % 10);
+            text[cursor++] = ' ';
+            putTwoDigits(text, cursor, fields.hour);
+            text[cursor++] = ':';
+            putTwoDigits(text, cursor, fields.minute);
+            text[cursor++] = ':';
+            putTwoDigits(text, cursor, fields.second);
+            text[cursor++] = ' ';
+            text[cursor++] = 'G';
+            text[cursor++] = 'M';
+            text[cursor++] = 'T';
+            return text;
+        }
     } // namespace
 
     std::string formatHttpDate(const std::chrono::system_clock::time_point time)
     {
         const std::time_t calendarTime = std::chrono::system_clock::to_time_t(time);
         const Platform::UtcTimeFields fields = Platform::PlatformTime::utcTime(calendarTime);
+        const std::array<char, kHttpDateTextLength> text = buildHttpDateText(fields);
+        return std::string(text.data(), text.size());
+    }
 
-        // 索引先夹到合法区间：utcTime 失败时返回的是零值结构，直接用来查表会越界
-        const std::size_t weekdayIndex = (fields.weekday >= 0 && fields.weekday < 7) ? static_cast<std::size_t>(fields.weekday) : 0U;
-        const std::size_t monthIndex = (fields.month >= 1 && fields.month <= 12) ? static_cast<std::size_t>(fields.month - 1) : 0U;
+    std::string_view currentHttpDateText()
+    {
+        thread_local std::int64_t cachedSecondOfEpoch = -1;
+        thread_local std::array<char, kHttpDateTextLength> cachedText{};
 
-        return std::format("{}, {:02d} {} {:04d} {:02d}:{:02d}:{:02d} GMT",
-                           kWeekdayNames[weekdayIndex],
-                           fields.day,
-                           kMonthNames[monthIndex],
-                           fields.year,
-                           fields.hour,
-                           fields.minute,
-                           fields.second);
+        // Date 头每条响应都要写一份，而文本精度只到秒：同一秒内重复折算是纯浪费。
+        // 判据用「不相等」而不是「更晚」，时钟被 NTP 往回调时也会照常重算，不会继续发未来的那一秒。
+        // 缓存是 thread_local：各事件循环线程自己刷，不需要锁，也不会跨线程伪共享。
+        const std::int64_t currentSecondOfEpoch = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (cachedSecondOfEpoch != currentSecondOfEpoch)
+        {
+            cachedText = buildHttpDateText(Platform::PlatformTime::utcTime(static_cast<std::time_t>(currentSecondOfEpoch)));
+            cachedSecondOfEpoch = currentSecondOfEpoch;
+        }
+        return std::string_view(cachedText.data(), cachedText.size());
     }
 
     std::optional<std::chrono::system_clock::time_point> parseHttpDate(std::string_view text)

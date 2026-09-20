@@ -326,6 +326,16 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 与上一例对照就是「每条响应都重算」的浪费：这一例走按秒缓存的线程局部文本
+    measureCase(
+            "http-date-now",
+            []
+            {
+                const std::string_view text = Net::currentHttpDateText();
+                return text.size() + static_cast<std::size_t>(text[0]);
+            },
+            results, checksum, failureCount);
+
     constexpr std::string_view kSampleHttpDate = "Sun, 06 Nov 1994 08:49:37 GMT";
     measureCase(
             "http-date-parse",
