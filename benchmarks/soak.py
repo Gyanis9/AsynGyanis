@@ -148,7 +148,10 @@ def readResponse(connection: socket.socket, buffer: bytes, headOnly: bool = Fals
     while b"\r\n\r\n" not in buffer:
         chunk = connection.recv(65536)
         if not chunk:
-            raise ConnectionError("连接在头部完整前关闭")
+            # 把已收的字节一起报出来：服务端回的是 HTTP/2 帧时，头部的终止串永远等不到，
+            # 只说「连接关闭」会让人去查网络；看到 00 00 xx 07 才知道对端把这条连接当成 h2c
+            raise ConnectionError(
+                    f"连接在头部完整前关闭，已收 {len(buffer)} 字节，开头 {buffer[:16]!r}")
         buffer += chunk
     head, buffer = buffer.split(b"\r\n\r\n", 1)
     lines = head.split(b"\r\n")
@@ -163,7 +166,8 @@ def readResponse(connection: socket.socket, buffer: bytes, headOnly: bool = Fals
     while len(buffer) < length:
         chunk = connection.recv(65536)
         if not chunk:
-            raise ConnectionError("连接在正文完整前关闭")
+            raise ConnectionError(
+                    f"连接在正文完整前关闭，声明 {length} 字节、实收 {len(buffer)} 字节")
         buffer += chunk
     return status, headers, buffer[:length], buffer[length:]
 
@@ -539,27 +543,36 @@ def main() -> int:
     measurements = {}
 
     if not arguments.skip_load_stages:
-        failures += runProtocolChecks(arguments.host, arguments.port)
-        keepAliveFailures, keepAliveSummary = runKeepAliveLoad(
-                arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
-        failures += keepAliveFailures
-        measurements["http1-keepalive"] = keepAliveSummary
+        try:
+            failures += runProtocolChecks(arguments.host, arguments.port)
+            keepAliveFailures, keepAliveSummary = runKeepAliveLoad(
+                    arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
+            failures += keepAliveFailures
+            measurements["http1-keepalive"] = keepAliveSummary
 
-        churnFailures, churnSummary = runChurnLoad(arguments.host, arguments.port, 8, arguments.churn_connections)
-        failures += churnFailures
-        measurements["http1-churn"] = churnSummary
+            churnFailures, churnSummary = runChurnLoad(arguments.host, arguments.port, 8, arguments.churn_connections)
+            failures += churnFailures
+            measurements["http1-churn"] = churnSummary
 
-        failures += runIdleConnections(arguments.host, arguments.port, arguments.idle_connections, arguments.idle_seconds)
+            failures += runIdleConnections(arguments.host, arguments.port, arguments.idle_connections, arguments.idle_seconds)
 
-        if arguments.slow_connections > 0:
-            failures += runSlowClientResilience(
-                    arguments.host, arguments.port, arguments.slow_connections, arguments.slow_hold_seconds)
+            if arguments.slow_connections > 0:
+                failures += runSlowClientResilience(
+                        arguments.host, arguments.port, arguments.slow_connections, arguments.slow_hold_seconds)
 
-        sweepLevels = arguments.connection_sweep
-        if sweepLevels:
-            sweepFailures, sweepSummary = runConnectionSweep(arguments.host, arguments.port, sweepLevels)
-            failures += sweepFailures
-            measurements["connection-sweep"] = sweepSummary
+            sweepLevels = arguments.connection_sweep
+            if sweepLevels:
+                sweepFailures, sweepSummary = runConnectionSweep(arguments.host, arguments.port, sweepLevels)
+                failures += sweepFailures
+                measurements["connection-sweep"] = sweepSummary
+        except (OSError, ValueError) as probeError:
+            # 探针跑不通要报成「一条失败」并给出下一步，不能让 Python 回溯把结论糊掉：
+            # 最常见的原因是这个端口按 h2c 专用启动（echo_server --h2c），HTTP/1.1 探针被
+            # 当成 HTTP/2 前导，收到的第一帧是 GOAWAY；h2c 那一档本来就该由 soak_h2c.py 采
+            failures += 1
+            print(f"  探针中断：{probeError}")
+            print("  若服务端启用了 h2c，这个端口只认 HTTP/2 前导，本脚本的 HTTP/1.1 阶段量不出结果；"
+                  "h2c 的一档请跑 benchmarks/soak_h2c.py")
     else:
         print("== 负载阶段已跳过（--skip-load-stages：限流开启时这些探针会被限流本身干扰）==")
 
