@@ -7,13 +7,19 @@ rem Build type: debug by default (build\debug); set ASYN_SOAK_BUILD=release to u
 rem       Debug carries AddressSanitizer, so its throughput only compares with other
 rem       Debug runs and is not a performance ceiling; comparing against
 rem       benchmarks/baseline.json must use release, where that baseline was measured.
-rem Gate usage (baseline.json covers both http1-* and http2-h2c-pipeline*):
+rem Gate usage (baseline.json has three groups: http1-*, http2-h2c-pipeline1, http2-h2c-pipeline32):
 rem   1) ... run-soak.bat 18080 4 --json-out build\soak.json
-rem   2) start the server again WITH --h2c, then
-rem      python benchmarks\soak_h2c.py --port 18080 --json-out build\soak-h2c.json
-rem   3) python benchmarks\check-baseline.py build\soak.json build\soak-h2c.json
-rem NOTE: feeding only soak.py's JSON to check-baseline.py makes the h2c entries show up
-rem       as missing and the gate exits 1 - that is a setup mistake, not a regression.
+rem   2) start the server again WITH --h2c, then run the h2c probe TWICE: soak_h2c.py
+rem      names its result after --pipeline, so a single run can only ever fill one entry
+rem      (its default is 32, which leaves pipeline1 permanently "missing").
+rem      python benchmarks\soak_h2c.py --port 18080 --pipeline 1  --json-out build\soak-h2c-p1.json
+rem      python benchmarks\soak_h2c.py --port 18080 --pipeline 32 --json-out build\soak-h2c.json
+rem   3) python benchmarks\check-baseline.py build\soak.json build\soak-h2c-p1.json build\soak-h2c.json
+rem NOTE: a baseline entry that none of the fed files contains is reported as missing and
+rem       the gate exits 1 - that is a setup mistake, not a regression. The three-file
+rem       sequence above was re-run on 2026-09-20 and reports 0 violations.
+rem NOTE: the HTTP/1.1 probe must face a server WITHOUT --h2c: an h2c port treats the
+rem       connection as HTTP/2 prior knowledge and answers a plain request with GOAWAY.
 rem ----------------------------------------------------------------------------
 rem NOTE: keep this file ASCII-only. cmd parses batch files using the console OEM
 rem       code page (936 on zh-CN Windows), so UTF-8 comments are split mid-line and
