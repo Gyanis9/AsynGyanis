@@ -29,3 +29,6 @@ asyn_add_sample(base_config base_config/main.cpp)
 # Platform：套接字工具、描述符、通知器、定时器、内存映射、数据报、进程起停与平台杂项
 asyn_add_sample(platform platform/main.cpp)
 target_link_libraries(platform PRIVATE Platform)
+
+# Core：事件循环与线程池、调度器、定时器、IO 监听器、帧池、取消令牌、解析与 UDP/TCP 协程收发
+asyn_add_sample(core_loop core_loop/main.cpp)
