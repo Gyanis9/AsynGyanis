@@ -250,7 +250,21 @@ namespace
         Platform::Process::LaunchOptions bogusOptions;
         bogusOptions.executablePath = "asyn-definitely-not-an-executable";
         const auto bogusProcess = Platform::Process::spawn(bogusOptions);
+#if ASYN_PLATFORM_WIN32
+        // Windows 上 CreateProcess 当场失败：拿不到句柄，也不抛
         Samples::checklist().check(!bogusProcess.isValid(), "启动不存在的程序时给出无效句柄而不是抛异常");
+#else
+        // POSIX 上是 fork + exec：fork 会成功、exec 才失败，本层的约定是「子进程以 127 退出」，
+        // 所以这里句柄有效、退出码才是结论。两端不同形这件事本身就是这份清单要记录的内容之一
+        const bool isBogusFinished = Samples::waitUntil([&bogusProcess]
+                                                        {
+                                                            return !Platform::Process::isRunning(bogusProcess);
+                                                        },
+                                                        std::chrono::seconds{5});
+        const std::optional<int> bogusExitCode = Platform::Process::pollExitCode(bogusProcess);
+        Samples::checklist().check(isBogusFinished && bogusExitCode.value_or(-1) == 127,
+                                   "POSIX 上 fork 成功而 exec 失败：句柄有效，退出码按本层约定为 127");
+#endif
     }
 
     void demonstrateMisc()

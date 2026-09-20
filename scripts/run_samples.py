@@ -84,8 +84,10 @@ def run_one(executable: Path, timeout: float) -> tuple[str, str, int, float, str
     arguments = ["--help"] if executable.stem in SMOKE_ONLY else []
     try:
         finished = subprocess.run([str(executable), *arguments], capture_output=True, text=False, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        return "TIMEOUT", "-", -1, time.monotonic() - started, ""
+    except subprocess.TimeoutExpired as expiry:
+        # 超时时已经收着的输出也带上：挂死前跑到哪一步往往就在这几行里
+        partial = decode(expiry.stdout) if isinstance(expiry.stdout, bytes) else str(expiry.stdout or "")
+        return "TIMEOUT", "-", -1, time.monotonic() - started, "\n".join(partial.splitlines()[-8:])
 
     elapsed = time.monotonic() - started
     output = decode(finished.stdout) + decode(finished.stderr)
@@ -98,7 +100,10 @@ def run_one(executable: Path, timeout: float) -> tuple[str, str, int, float, str
         tail = "\n".join(output.splitlines()[-5:])
         return f"NO_RESULT(exit={finished.returncode})", "-", finished.returncode, elapsed, tail
     name, verdict, steps = matches[-1]
-    return ("PASS" if verdict == "PASS" else "FAIL"), steps, finished.returncode, elapsed, ""
+    if verdict != "PASS":
+        # 失败时带上末尾输出：在容器里跑时不必再单独复现一次才知道是哪一步红
+        return "FAIL", steps, finished.returncode, elapsed, "\n".join(output.splitlines()[-8:])
+    return "PASS", steps, finished.returncode, elapsed, ""
 
 
 def main() -> int:
