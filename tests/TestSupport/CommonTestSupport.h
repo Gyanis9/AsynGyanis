@@ -1,6 +1,6 @@
 /**
  * @file CommonTestSupport.h
- * @brief 跨模块共用的测试夹具：临时目录与轮询等待
+ * @brief 跨模块共用的测试夹具：临时目录、轮询等待与栈帧符号判定
  * @author Gyanis
  * @date 2026-09-18
  * @version 1.0.0
@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -174,5 +175,25 @@ namespace AsynGyanis::TestSupport
     bool waitForCondition(Predicate predicate, const int timeoutMilliseconds)
     {
         return waitForCondition(std::move(predicate), std::chrono::milliseconds(timeoutMilliseconds));
+    }
+
+    /**
+     * @brief 判断调用栈文本里的帧是否已被符号解析出源文件位置
+     * @details 没有调试信息时 MSVC 只给「模块名+0x偏移」、GCC 给「??」，文本照样非空——
+     *          因此「文本为空」不能当作「符号不可用」的判据，只能看有没有出现源文件名。
+     * @param stackTraceText 栈帧文本（Base::formatStackTrace() 的产出）
+     * @return true 至少有一帧带出了源文件名
+     */
+    [[nodiscard]] inline bool hasResolvedStackTraceFrames(const std::string_view stackTraceText) noexcept
+    {
+        // 两家工具链的行号写法不同：MSVC 是 file.cpp(12)，GCC 是 file.cpp:12；头文件里的内联帧同理
+        for (const std::string_view fileExtension: {".cpp", ".cc", ".hpp", ".h(", ".h:"})
+        {
+            if (stackTraceText.find(fileExtension) != std::string_view::npos)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 } // namespace AsynGyanis::TestSupport

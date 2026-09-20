@@ -12,6 +12,8 @@
 #include "Base/Exception/StackTrace.h"
 #include "Base/Exception/SystemException.h"
 
+#include "CommonTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <functional>
@@ -108,9 +110,9 @@ namespace AsynGyanis::Base
         const Exception   exception = makeExceptionFromDeepFrame();
         const std::string text      = formatStackTrace(exception.stackTrace());
 
-        if (text.empty())
+        if (!TestSupport::hasResolvedStackTraceFrames(text))
         {
-            GTEST_SKIP() << "调试信息不可用（无 PDB/符号表），只保留结构用例";
+            GTEST_SKIP() << "本构建没有调试信息（既无 PDB 也无 -g），栈帧只剩模块加偏移，符号解析断言不适用";
         }
         // 抛出点或被内联进调用它的测试体，二者之一必须出现——出现别的说明采到的是打印点的栈
         const bool mentionsThrowHelper = text.find("makeExceptionFromDeepFrame") != std::string::npos;

@@ -29,6 +29,20 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# Release 也要带调试信息：异常与日志的调用栈按「构造时采原始帧、输出时才符号解析」实现，
+# 而 MSVC 的 Release 默认不产 PDB——部署形态下每条异常日志只剩「MyServer+0x1A2B3」，
+# 等于把这项可观测性关掉。调试信息只影响链接耗时与磁盘占用，运行期不产生开销。
+if(MSVC)
+    # 直接给编译器与链接器加开关，而不是走 CMAKE_MSVC_DEBUG_INFORMATION_FORMAT：
+    # 后者受 CMP0141 管辖，而本文件声明的 3.20 下限把该策略停在 OLD，变量会被静默忽略
+    add_compile_options($<$<CONFIG:Release>:/Zi>)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE " /DEBUG")
+    string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG")
+else()
+    # GCC/Clang 侧同理：栈回溯靠 -g 才能给出函数名与行号，没有它就只剩地址
+    add_compile_options($<$<CONFIG:Release>:-g>)
+endif()
+
 # ============================================================================
 # 内存与未定义行为检测（Debug preset 里的 ENABLE_SANITIZERS）
 # ============================================================================

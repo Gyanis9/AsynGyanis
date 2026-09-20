@@ -10,6 +10,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "CommonTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -216,9 +218,9 @@ namespace AsynGyanis::Base
 
         LogEvent event = makeEvent("带栈");
         event.stackTrace = captureStackTrace();
-        if (formatStackTrace(event.stackTrace).empty())
+        if (!TestSupport::hasResolvedStackTraceFrames(formatStackTrace(event.stackTrace)))
         {
-            GTEST_SKIP() << "调试信息不可用（无 PDB/符号表），栈只以原始帧存在";
+            GTEST_SKIP() << "本构建没有调试信息（既无 PDB 也无 -g），栈帧只剩模块加偏移，符号解析断言不适用";
         }
 
         const nlohmann::json withStack = nlohmann::json::parse(formatter.format(event));
