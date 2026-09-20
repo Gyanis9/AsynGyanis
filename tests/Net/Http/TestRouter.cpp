@@ -253,6 +253,26 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.body(), "exact");
     }
 
+    TEST(Router, KeepsExactGetRouteAheadOfAnyMethodCatchAllForHeadRequest)
+    {
+        Router router;
+        std::atomic<int> catchAllCalls{0};
+        std::atomic<int> exactCalls{0};
+        // 静态目录就是这么挂的（HttpServer::staticFileDir 注册 any("*")）。HEAD 必须与 GET 走同一套
+        // 优先级：若先按 HEAD 匹配一遍、没中再按 GET 匹配一遍，any() 会在第一遍就把请求抢走，
+        // 同路径的 GET 业务路由反而轮不到——那是「HEAD 与 GET 只差有没有正文」这条语义的直接违反
+        router.any("*", textHandler("catch-all", &catchAllCalls));
+        router.get("/page", textHandler("business", &exactCalls));
+
+        HttpRequest request = makeRequest(HttpMethod::HEAD, "/page");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(exactCalls.load(), 1);
+        EXPECT_EQ(catchAllCalls.load(), 0);
+        EXPECT_EQ(response.body(), "business");
+    }
+
     TEST(Router, Reports405ForHeadRequestOnPostOnlyPath)
     {
         Router router;

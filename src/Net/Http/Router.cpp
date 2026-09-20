@@ -407,61 +407,80 @@ namespace AsynGyanis::Net
         const Handler *selectedHandler = nullptr;
         PathParameters selectedParameters;
 
-        // 按指定方法跑一遍两级匹配，命中即选中并返回 true。抽成 lambda 是为了让 HEAD 复用 GET 时
-        // 能原样再跑一遍：优先级、参数收集与 Allow 记录因此天然与首次完全一致，不会两处漂移
+        // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）的判据落在「同一级之内
+        // 先严格匹配、这一级全都没中才按 GET 复用」，而不是「整张表先按 HEAD 跑一遍、没中再按 GET
+        // 跑一遍」：后者会让下一级的兜底 any("*")（HttpServer 的静态目录就是这么挂的）在 HEAD 那一遍
+        // 就把请求抢走，同路径的 GET 业务路由反而永远轮不到。级别之间的优先级因此与 GET 完全一致
         const auto selectHandlerForMethod = [&](const HttpMethod matchMethod) -> bool
         {
+            // 只有 HEAD 有第二遍：第一遍认「显式放行本方法」（head() 与 any()），第二遍才复用 GET。
+            // 因此显式注册的 head() 无论先注册还是后注册都赢过同路径的 get()
+            const int passCount = matchMethod == HttpMethod::HEAD ? 2 : 1;
+
             // ---- 一级：字面路径索引。命中即完成本层候选收集 ----
             if (const auto exactIterator = m_exactRoutes.find(requestPath); exactIterator != m_exactRoutes.end())
             {
-                for (const ExactRoute &candidate: exactIterator->second)
+                for (int pass = 0; pass < passCount; ++pass)
                 {
-                    rememberAllowedMethod(candidate.method, candidate.isAnyMethod);
-
-                    // 先到先得：同一路径上的多个条目按注册顺序取第一个放行本方法的
-                    if (isRequestMethodRecognized && (candidate.isAnyMethod || candidate.method == matchMethod))
+                    for (const ExactRoute &candidate: exactIterator->second)
                     {
-                        selectedHandler = &candidate.handler;
-                        return true;
+                        // Allow 只在第一遍记：第二遍的候选是它的子集，重复记没有新信息
+                        if (pass == 0)
+                        {
+                            rememberAllowedMethod(candidate.method, candidate.isAnyMethod);
+                        }
+
+                        if (!isRequestMethodRecognized)
+                        {
+                            continue;
+                        }
+                        // 先到先得：同一路径上的多个条目按注册顺序取第一个放行本方法的
+                        const bool isStrictMatch = candidate.isAnyMethod || candidate.method == matchMethod;
+                        const bool isGetReuse    = pass == 1 && candidate.method == HttpMethod::GET;
+                        if (isStrictMatch || isGetReuse)
+                        {
+                            selectedHandler = &candidate.handler;
+                            return true;
+                        }
                     }
                 }
             }
 
             // ---- 二级：模式路由线性扫描。仅在一级没选中处理函数时才继续，规则同样是先到先得 ----
-            for (const PatternRoute &route: m_patternRoutes)
+            for (int pass = 0; pass < passCount; ++pass)
             {
-                // 参数只在本条路由成立时才留下：每轮都换一个新的临时容器，
-                // 失败候选攒下的 ":id" 就此被整体丢弃，不会串到别的路由上
-                PathParameters candidateParameters;
-                if (!matchesPattern(route, requestPath, candidateParameters))
+                for (const PatternRoute &route: m_patternRoutes)
                 {
-                    continue;
-                }
+                    // 参数只在本条路由成立时才留下：每轮都换一个新的临时容器，
+                    // 失败候选攒下的 ":id" 就此被整体丢弃，不会串到别的路由上
+                    PathParameters candidateParameters;
+                    if (!matchesPattern(route, requestPath, candidateParameters))
+                    {
+                        continue;
+                    }
 
-                rememberAllowedMethod(route.method, route.isAnyMethod);
+                    if (pass == 0)
+                    {
+                        rememberAllowedMethod(route.method, route.isAnyMethod);
+                    }
 
-                if (isRequestMethodRecognized && (route.isAnyMethod || route.method == matchMethod))
-                {
-                    selectedHandler    = &route.handler;
-                    selectedParameters = std::move(candidateParameters);
-                    return true;
+                    const bool isStrictMatch = route.isAnyMethod || route.method == matchMethod;
+                    const bool isGetReuse    = pass == 1 && route.method == HttpMethod::GET;
+                    if (isRequestMethodRecognized && (isStrictMatch || isGetReuse))
+                    {
+                        selectedHandler    = &route.handler;
+                        selectedParameters = std::move(candidateParameters);
+                        return true;
+                    }
+                    // 路径命中而方法不合：记下事实，扫完全部候选再决定 405，Allow 也才凑得齐
                 }
-                // 路径命中而方法不合：记下事实，扫完全部候选再决定 405，Allow 也才凑得齐
             }
             return false;
         };
 
-        // 第一遍按请求方法本身匹配。未收录方法是唯一不放行的例外：UNKNOWN 不能蹭上 any()
-        // 路由，这条判据由 selectHandlerForMethod 内部的 isRequestMethodRecognized 把关
+        // 按请求方法跑一遍两级匹配。未收录方法是唯一不放行的例外：UNKNOWN 不能蹭上 any() 路由，
+        // 这条判据由 isRequestMethodRecognized 把关
         static_cast<void>(selectHandlerForMethod(requestMethod));
-
-        // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）：显式注册的 head()、
-        // any() 与 GET 路由都没命中时，按 GET 再匹配一遍并执行它的处理器。两者语义上只差
-        // 「响应不带正文」，因此匹配与优先级规则必须与 GET 完全一致——照搬同一段匹配逻辑即可
-        if (requestMethod == HttpMethod::HEAD && selectedHandler == nullptr)
-        {
-            static_cast<void>(selectHandlerForMethod(HttpMethod::GET));
-        }
 
         if (selectedHandler != nullptr)
         {
