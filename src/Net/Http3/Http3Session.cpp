@@ -490,6 +490,8 @@ namespace AsynGyanis::Net
     void Http3Session::addRequestHeader(const std::int64_t streamId, std::string name, std::string value)
     {
         IncomingRequest &incoming = m_incomingRequests[streamId];
+        // 收到一段请求就是「有进展」：读时限按 readTimeout 往后推，慢客户端一直发就一直不算超时
+        incoming.deadline = nextRequestDeadline();
         // 头部限额与 h1/h2 同口径：条数、单名/单值长度、整块净字节。越限只置位、让请求收完，
         // 服务阶段统一回 431——中途断开的话对端只看到「连接没了」，拿不到「头部太大」这个结论
         ++incoming.headerFieldCount;
@@ -561,6 +563,8 @@ namespace AsynGyanis::Net
         if (const auto found = m_streamingRequests.find(streamId); found != m_streamingRequests.end())
         {
             HttpStreamBody &streamBody = found->second->body;
+            // 正文每到一段就把读时限往后推：流式请求的处理器本来就在边收边跑，一直有进展就一直不超时
+            found->second->deadline = nextRequestDeadline();
 
             // 体量越界（与 h1/h2 同口径）：此后到达的字节一律丢弃，响应在服务阶段按 413 发出。
             // 判在收的过程中而不是收齐之后——等 END_STREAM 再判，内存已经占住了
@@ -601,6 +605,7 @@ namespace AsynGyanis::Net
             return;
         }
         IncomingRequest &incoming = incomingEntry->second;
+        incoming.deadline = nextRequestDeadline();
         if (!incoming.bodyBudget.hasBudget() && m_memoryBudget != nullptr)
         {
             // 头段建记录时还没绑上预算（那时不知道正文多大）：第一口正文到达时把这份共享预算绑上
@@ -703,6 +708,60 @@ namespace AsynGyanis::Net
             return;
         }
         m_aborter(streamId, static_cast<std::uint64_t>(errorCode));
+    }
+
+    Http3Session::Deadline Http3Session::nextRequestDeadline() const noexcept
+    {
+        if (m_serverLimits == nullptr || m_serverLimits->readTimeout <= std::chrono::milliseconds::zero())
+        {
+            // 时限为 0 是「关闭这项保护」的既有口径（见 HttpServerLimits）：给时钟上限，永不过点
+            return Deadline::max();
+        }
+        return std::chrono::steady_clock::now() + m_serverLimits->readTimeout;
+    }
+
+    void Http3Session::expireStaleRequests(const Deadline now)
+    {
+        if (m_connection == nullptr || m_isBroken || m_serverLimits == nullptr)
+        {
+            return;
+        }
+
+        // 先把过点的流号挑出来：下面的回收会摘表（dropRequest），边遍历边摘会踩到迭代器
+        std::vector<std::int64_t> expiredStreamIds;
+        for (const auto &[streamId, incoming]: m_incomingRequests)
+        {
+            if (incoming.deadline <= now)
+            {
+                expiredStreamIds.push_back(streamId);
+            }
+        }
+        for (const auto &[streamId, streaming]: m_streamingRequests)
+        {
+            // 正文收齐之后就不归这里管了（处理器那一头的预算本类不判），只等「还有字节要来」的流
+            if (!streaming->body.isComplete() && streaming->deadline <= now)
+            {
+                expiredStreamIds.push_back(streamId);
+            }
+        }
+
+        for (const std::int64_t streamId: expiredStreamIds)
+        {
+            LOG_WARN_FMT("Http3Session: 流 {} 在 readTimeout（{} 毫秒）内没有新的请求字节，本端收口这条流",
+                         streamId, m_serverLimits->readTimeout.count());
+            if (m_metrics != nullptr)
+            {
+                // 与 413/431 同一类：本端按限额拒绝，不算「对端主动取消」
+                m_metrics->countBadRequest();
+            }
+            abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
+            dropRequest(streamId);
+        }
+        if (!expiredStreamIds.empty())
+        {
+            // 被收口的流上可能挂着等正文的处理器：当场叫醒，让它们看到终止而不是挂到连接结束
+            wakeStreamingRequests();
+        }
     }
 
     void Http3Session::dropRequest(const std::int64_t streamId)

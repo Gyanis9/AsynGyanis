@@ -584,9 +584,15 @@ namespace AsynGyanis::Net
                 {
                     continue; // 已经收口摘掉了
                 }
-                // 记账：下面两次 await 都可能挂起（flush 撞上发送缓冲满、handleExpiry 等回包），
+                // 记账：下面几次 await 都可能挂起（flush 撞上发送缓冲满、handleExpiry 等回包），
                 // 而挂起期间另一条路径可能把它判成收口并摘除——守卫让那次摘除推迟到本迭代结束
                 const QuicConnection::ActivityGuard activityGuard(*connectionEntry->second);
+                // 先按时限收口「收不全」的请求：h3 会话没有套接字可等，读时限只能靠这一拍落实。
+                // 排在 flush 之前，被叫醒的处理器若因此产出了什么，这一拍就一起送出去
+                if (Http3Session *const session = findHttp3Session(connectionEntry->second.get()); session != nullptr)
+                {
+                    session->expireStaleRequests(now);
+                }
                 // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
                 // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它一直等到下一次报文或定时器
                 if (connectionEntry->second->needsFlush())

@@ -22,6 +22,7 @@
 #include "Net/Http3/Http3Error.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
@@ -68,6 +69,9 @@ namespace AsynGyanis::Net
 
         /// 收口一条流：本端不再发、也请对端别再发（参数：流号、RFC 9114 §8.1 那一档的应用错误码）
         using StreamAborter = std::function<void(std::int64_t streamId, std::uint64_t applicationErrorCode)>;
+
+        /// 时限判定用的时刻：与承载层节拍循环同一个时钟（steady_clock），用例因此能精确复现「过点」
+        using Deadline = std::chrono::steady_clock::time_point;
 
         /**
          * @brief 一条正在流式写出响应的流（startChunkedResponse + writeChunk 那条路）
@@ -132,12 +136,23 @@ namespace AsynGyanis::Net
         void setParserLimits(HttpParserLimits limits) noexcept;
 
         /**
-         * @brief 设置连接级限额（单连接最多处理多少条请求），与 h1/h2 同一份配置
-         * @param limits 限额快照；传空指针表示不设（本会话不因请求条数收口）
-         * @note 达到上限后的处置与 h1/h2 不同处只在承载：这里发 GOAWAY 让对端换连接，
+         * @brief 设置连接级限额（单连接请求条数上限、收请求的时限），与 h1/h2 同一份配置
+         * @param limits 限额快照；传空指针表示不设（本会话不因请求条数收口，也不按读时限收口）
+         * @note 达到请求条数上限后的处置与 h1/h2 不同处只在承载：这里发 GOAWAY 让对端换连接，
          *       在途请求做完后由承载层收掉这条连接
          */
         void setServerLimits(std::shared_ptr<const HttpServerLimits> limits) noexcept;
+
+        /**
+         * @brief 按时限收口「收不全」的请求：一段时段内没有新字节的流不再等下去
+         * @details 由承载层的节拍循环按拍调用（h3 会话没有套接字可等，也没有自己的定时器）。
+         *          h1/h2 撞到这个时限是把整条连接掐掉，这里只处置那一条流（RESET_STREAM +
+         *          STOP_SENDING）：多路复用是 h3 的常态，一条慢客户端不该连坐同连接上的其它请求。
+         *          **处理器相位不适用**——流式响应与 WebSocket 隧道本来就该长期挂着，本类没有
+         *          「业务产出了新字节」这个钩子去刷新那份预算，误伤比收益大。
+         * @param now 本拍时刻（由调用方注入，用例据此精确复现「过点」）
+         */
+        void expireStaleRequests(Deadline now);
 
         /**
          * @brief 是否「已通告排空且手上没活」：承载层据此可以收掉这条连接
@@ -237,6 +252,12 @@ namespace AsynGyanis::Net
         void abortRequestStream(std::int64_t streamId, Http3ErrorCode errorCode);
 
         /**
+         * @brief 下一次「该有进展」的时刻：从此刻按 readTimeout 往后推
+         * @return Deadline 没设限额、或时限为 0（表示关闭这项保护）时给时钟上限，即永不过点
+         */
+        [[nodiscard]] Deadline nextRequestDeadline() const noexcept;
+
+        /**
          * @brief 丢掉一条流上尚未收全的请求（流被重置或关闭）
          * @param streamId 流号
          */
@@ -292,6 +313,9 @@ namespace AsynGyanis::Net
             std::size_t headerBlockByteCount{0};      ///< 头块净字节（只算名与值的长度，不含帧头）
             bool        isHeaderLimitExceeded{false}; ///< 条数、单名/单值长度或整块净字节越过上限
             bool        isUriTooLong{false};          ///< :path 长度越过请求目标上限
+
+            /// 下一次「该有进展」的时刻：每收到一段请求就按 readTimeout 往后推，过点即收口这条流
+            Deadline deadline{std::chrono::steady_clock::now()};
         };
 
         /**
@@ -308,6 +332,8 @@ namespace AsynGyanis::Net
             bool isServeFinished{false};          ///< 派发协程已跑完（记录可随流关闭一起摘掉）
             bool isStreamClosed{false};           ///< 承载侧的流已关闭（此后不会再有 DATA 到达）
             bool hasPendingWake{false};           ///< 有新正文/收尾/断开，等回到安全点再唤醒
+            /// 正文还没收完时「下一次该有进展」的时刻，随每段到达按 readTimeout 往后推；收完之后不再判
+            Deadline deadline{std::chrono::steady_clock::now()};
         };
 
         /**

@@ -2266,4 +2266,114 @@ namespace AsynGyanis::Net
         ASSERT_EQ(abortedStreams.size(), 1U) << "响应已发出，却没请对端停发剩余正文";
         EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x0100U) << "这是无错的收尾请求（H3_NO_ERROR），不是错误";
     }
+
+    /**
+     * @brief 请求一直收不齐：过 readTimeout 就收口这条流，不连坐同连接的其它请求
+     * @details h1/h2 撞到这个时限是掐掉整条连接，h3 多路复用是常态，只处置那一条流。时限取 1 毫秒，
+     *          再往里注入一个未来的「本拍时刻」，用例因此是确定的，不靠睡眠等超时
+     */
+    TEST(Http3Session, AbortsRequestThatStopsArrivingWithinTheReadDeadline)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr,
+                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits = std::make_shared<HttpServerLimits>();
+        limits->readTimeout = std::chrono::milliseconds{1};
+        session.setServerLimits(limits);
+
+        bool isHandlerEntered = false;
+        Router router;
+        router.get("/hello",
+                   [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       isHandlerEntered = true;
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        // 请求流号取常量：peer 交出的第一段往往是本端单向流（控制流 2、编码器流 6）的字节
+        const std::int64_t requestStreamId = kFirstRequestStreamId;
+        // 头交进去、但强行不收尾：这条请求永远差一个 END_STREAM
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, false);
+        }
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{5});
+
+        ASSERT_EQ(abortedStreams.size(), 1U) << "过点的请求没有被收口：它会一直占着这条流";
+        EXPECT_EQ(abortedStreams.front().streamId, requestStreamId);
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010cU) << "本端放弃一条请求该用 H3_REQUEST_CANCELLED";
+        EXPECT_TRUE(std::ranges::none_of(sentStreamData, [requestStreamId](const CapturedStreamData &chunk)
+                                         { return chunk.streamId == requestStreamId; }))
+                << "没收齐的请求不该回任何字节（没有 :method/:path 可派发的半成品响应）";
+        EXPECT_FALSE(isHandlerEntered) << "过点的请求不该交给业务";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "过点的流要连同记账一起摘掉，否则排空永远等不完";
+    }
+
+    /**
+     * @brief 还在 readTimeout 之内的请求照常能答：时限判定不能把活着的请求误杀
+     */
+    TEST(Http3Session, KeepsRequestThatIsStillWithinTheReadDeadline)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr,
+                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits = std::make_shared<HttpServerLimits>();
+        limits->readTimeout = std::chrono::seconds{60};
+        session.setServerLimits(limits);
+
+        Router router;
+        router.get("/hello",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        // 请求流号取常量：peer 交出的第一段往往是本端单向流（控制流 2、编码器流 6）的字节
+        const std::int64_t requestStreamId = kFirstRequestStreamId;
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, false);
+        }
+
+        // 本拍时刻就取「现在」：一分钟的预算不该被判定过点
+        session.expireStaleRequests(std::chrono::steady_clock::now());
+        EXPECT_TRUE(abortedStreams.empty()) << "没到时限的请求被误杀了";
+
+        // 再把这条流收尾：请求照常走完整轮，拿到 200
+        const std::vector<std::uint8_t> noBytes;
+        session.onStreamData(requestStreamId, std::span<const std::uint8_t>(noBytes), true);
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        ASSERT_FALSE(sentStreamData.empty()) << "服务端一个字节都没回：响应没发出去";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 200) << "差一个收尾的请求，补上收尾之后就该正常应答";
+    }
 } // namespace AsynGyanis::Net

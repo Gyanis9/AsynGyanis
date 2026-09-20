@@ -63,6 +63,11 @@
   `QuicServer` 把它接到 `QuicConnection::abortStream`。两处落地：GOAWAY 通告之后到达的新流按
   RFC 9114 §5.2 用 `H3_REQUEST_REJECTED` 取消（此前只是不回字节，对端要等连接收尾才知道结果）；
   被 413/431/414/503 拒掉的请求在响应完整交出后用 `H3_NO_ERROR` 请对端停发剩余正文（与 h2 同一处置）。
+- **HTTP/3 认下收请求的时限**：`Http3Session::expireStaleRequests(本拍时刻)` 由 `QuicServer` 的到期
+  节拍按拍调用，一条流在 `HttpServerLimits::readTimeout` 内没有新的请求字节就收口它
+  （`H3_REQUEST_CANCELLED`）。h1/h2 撞到这个时限是掐掉整条连接，这里只处置那一条流——多路复用是 h3
+  的常态，一个慢客户端不该连坐同连接上的其它请求。**处理器相位刻意不判**：流式响应与 WebSocket
+  隧道本来就该长期挂着，会话没有「业务产出了新字节」这个钩子去刷那份预算，误伤比收益大。
 
 ### 变更
 
