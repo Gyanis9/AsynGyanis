@@ -135,6 +135,19 @@ if(SANITIZE_THREADS)
     message(STATUS "Sanitizers: 已启用 ThreadSanitizer（线程竞态检测；与 ASan 互斥）")
 endif()
 
+# 行/分支覆盖率开关：只在 GCC/Clang 侧有意义（MSVC 没有 gcov 兼容的工具链）。
+# 与 sanitizer 可以同开（gcov 计数不受 ASan 插桩影响），但两份开销叠起来很慢，
+# 出报告时通常单独配一个 coverage 构建；-O0 是为了让行归属与源码一致（优化会把行合并）。
+option(ASYN_ENABLE_COVERAGE "用 gcov 插桩以生成行/分支覆盖率报告（GCC/Clang；配 gcovr 或 lcov 消费）" OFF)
+if(ASYN_ENABLE_COVERAGE)
+    if(MSVC)
+        message(FATAL_ERROR "ASYN_ENABLE_COVERAGE=ON 在 MSVC 上不可用：请在 Linux（GCC/Clang）侧配置该构建")
+    endif()
+    add_compile_options(--coverage -O0)
+    add_link_options(--coverage)
+    message(STATUS "Coverage: 已用 gcov 插桩（跑完 ctest 与 samples/ 后用 gcovr 出报告）")
+endif()
+
 # Debug 构建注入 ASYN_DEBUG：日志输出线程号与源码位置，Release 走精简格式
 add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 
