@@ -545,6 +545,26 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(response.body().empty());
     }
 
+    TEST(HttpResponse, SetOwnedBodyMovesContentInAndSharesSetBodyGuards)
+    {
+        // 钉住 setOwnedBody 与 setBody 的唯一差异是「移动而非拷贝」、其余不变式共用一处实现
+        HttpResponse response;
+        response.setBody("stale-plaintext");
+
+        std::string ownedBody(256, 'z');  // 远超短字符串缓冲，确保走真实堆所有权转移而非逐字节内联拷贝
+        ownedBody = "owned-body-content";
+        response.setOwnedBody(std::move(ownedBody));
+
+        EXPECT_TRUE(ownedBody.empty()) << "交出所有权后源串应被移空，正文改由响应持有（这正是省掉整块拷贝的证据）";
+        EXPECT_EQ(response.body(), "owned-body-content");
+
+        // 与 setBody 同一条流式互斥闸门：已进入流式模式就不允许再塞整块正文
+        HttpResponse chunked;
+        chunked.startChunkedResponse(200);
+        std::string rejected = "x";
+        EXPECT_THROW(chunked.setOwnedBody(std::move(rejected)), Base::LogicException);
+    }
+
     TEST(HttpResponse, BuildsOkayResponseFromFactory)
     {
         const HttpResponse response = HttpResponse::ok("hi");

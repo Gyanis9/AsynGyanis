@@ -158,6 +158,20 @@ namespace AsynGyanis::Net
         void setBody(std::string_view body);
 
         /**
+         * @brief 用「调用方交出所有权的字符串」当正文：把正文移动进响应，免去 setBody 的那次整块拷贝
+         *
+         * @details 中间件（如响应压缩）已经构造好一整块正文 std::string，用 setBody(string_view)
+         *          会把这份字节再拷一遍进响应内部缓冲；本入口直接接管调用方的缓冲。语义与不变式
+         *          与 setBody 完全一致（互斥流式模式、解除旧映射、保留调用方显式声明的 content-length），
+         *          差别只在正文按所有权移动而非复制。
+         * @param body 正文字符串，内容被移入本响应
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥
+         * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
+         * @see setBody
+         */
+        void setOwnedBody(std::string body);
+
+        /**
          * @brief 用「内存映射的文件」当正文：整份文件不复制进堆，直接以映射视图参与发送
          *
          * @details 静态文件响应的正文动辄几十 KiB 到几十 MiB，先读进堆再发等于白白多一次
@@ -442,6 +456,15 @@ namespace AsynGyanis::Net
          * @param name 头部名，大小写不敏感；不存在时为空操作
          */
         void removeHeaderField(std::string_view name);
+
+        /**
+         * @brief setBody 与 setOwnedBody 的共用落点：校验流式互斥、解除旧映射后把正文写入堆缓冲
+         * @details 两条入口只在「复制还是移动进 m_body」上不同，其余不变式集中在此一处维护，
+         *          避免两份实现各自漂移。
+         * @param body 已交出所有权的正文字符串，移动进 m_body
+         * @throws Base::LogicException 响应已进入流式模式
+         */
+        void assignBody(std::string body);
 
         /**
          * @brief 该状态码是否不得自动补 content-length

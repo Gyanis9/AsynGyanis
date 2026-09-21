@@ -984,7 +984,8 @@ namespace AsynGyanis::Net
             // setBody 刻意保留调用方声明过的长度（那是 HEAD/静态文件路径赖以省一次读的手段），
             // 因此改写这条头是替换正文的一方——也就是本中间件——自己的责任
             response.setHeader("content-length", std::to_string(compressed->size()));
-            response.setBody(*compressed);
+            // 压缩结果此刻只被本中间件持有，交出所有权直接移动进响应，省掉一整份压缩字节的拷贝与再分配
+            response.setOwnedBody(std::move(*compressed));
             co_return;
         };
     }
