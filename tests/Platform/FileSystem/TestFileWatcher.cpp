@@ -577,6 +577,63 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住（Windows）：子目录被改名走开再原地重建，框架自己把监视补回新目录
+     * @details 子目录自己那条监视的句柄会跟着目录一起搬走：条目既不会读失败也不会自己消失，只会按
+     *          注册时的旧前缀派发（派发出去的路径指向的位置上坐着的是另一个新目录），并且占住这个
+     *          键，使原地重建出来的同名目录在 addWatch 的去重分支上被挡下。全程不再调 addWatch，
+     *          钉的就是框架自己收尾：按父目录报出的旧名字摘掉陈旧条目，再由自愈补挂新目录。
+     * @note 只在 Windows 编译：本用例的形状依赖「目录句柄跟随改名」这条 NTFS 行为。Linux 侧同型
+     *       缺陷（改名走开后重复注册不生效）由 ReaddedWatchAfterRenameTracksTheNewDirectory 钉住。
+     */
+    TEST(FileWatcher, RenamedAwayWatchedDirectoryIsRewatchedAfterInPlaceRecreation)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RenameSubDirectory");
+        const std::filesystem::path     subPath = temporaryDirectory.path() / "sub";
+        std::error_code                 error;
+        std::filesystem::create_directories(subPath, error);
+        ASSERT_FALSE(error) << "建子目录失败：" << error.message();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 把子目录改名走开，再在原位置建一个同名新目录：之后不重新 addWatch，只看框架自己收尾
+        const std::filesystem::path movedPath = temporaryDirectory.path() / "sub.moved";
+        std::filesystem::rename(subPath, movedPath, error);
+        ASSERT_FALSE(static_cast<bool>(error)) << "改名走开失败：" << error.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        ASSERT_TRUE(std::filesystem::create_directories(subPath));
+
+        // 跨过至少一个自愈节拍：补挂新目录要么由同批通知里的 Created 完成，要么靠这份复查
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+
+        {
+            std::ofstream probeFile(subPath / "after_rename.yaml");
+            probeFile << "back: true";
+        }
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("after_rename.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "被改名走开的子目录占住了监视键，原地重建的同名目录从此收不到事件";
+    }
+
+    /**
      * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件
      * @details WaitForMultipleObjects 单次最多等 64 个对象（含停止事件，因此目录只有 63 个额度）。
      *          原实现只截前 63 个、且遍历顺序稳定，排在后面的目录永远进不了等待集——它们的事件

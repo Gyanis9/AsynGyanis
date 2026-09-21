@@ -114,8 +114,8 @@ namespace AsynGyanis::Platform
             std::vector<uint8_t> buffer;                                ///< 变更通知接收缓冲区
             OVERLAPPED           overlapped{};                          ///< 异步 IO 控制结构
             bool                 pending{false};                        ///< 是否有一次未完成的读取请求
-            /// 读操作以硬错误收场（目录被删/改名、句柄失效）：该监听再也收不到事件，
-            /// 由 watchLoop 摘掉它（递归根会在下一秒的自愈复查里重新挂上）
+            /// 读操作以硬错误收场（目录被删、句柄失效）：这条监听再也收不到事件，由 watchLoop 摘掉它
+            /// （落在递归覆盖清单里的目录会在下一秒的自愈复查里重新挂上）
             bool                 isDead{false};
         };
 
@@ -128,8 +128,11 @@ namespace AsynGyanis::Platform
          * @brief 解析某个目录已完成的变更通知批次
          * @param entry 目标目录上下文
          * @param events 输出参数，收集防抖后待回调的（路径, 变更类型）列表
+         * @param renamedPairs 输出参数，收集本批里成对出现的目录改名（旧路径, 新路径），供调用方把
+         *        被改名目录自己的监视跟到新位置
          */
-        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events);
+        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events,
+                          std::vector<std::pair<std::string, std::string> > &renamedPairs);
 
         /**
          * @brief 为目录发起一次 ReadDirectoryChangesW 重叠读
@@ -139,24 +142,49 @@ namespace AsynGyanis::Platform
         [[nodiscard]] bool issueRead(WatchEntry &entry) const;
 
         /**
-         * @brief 把不在监听集合里的递归根重新挂上
-         * @details 目录被整个换掉（删除后重建）时原有的监听随句柄失效，而重建后的目录没有人会
-         *          再调 addWatch——根上不补挂，它内部的变更就永久丢失。按秒节拍复查一遍
+         * @brief 把不在监听集合里的目录重新挂上
+         * @details 目录被整个换掉（删除后重建、改名走开再原地重建）时原有的监听随之失效或被摘除，
+         *          而重建出来的目录没有人会再调 addWatch——不补挂，它内部的变更就永久丢失。
+         *          按秒节拍复查一遍递归覆盖清单
          */
-        void rewatchMissingRecursiveRoots();
+        void rewatchMissingRecursivePaths();
 
         /**
-         * @brief 摘掉一条监视：内部清理与调用方撤销的共同实现，差别只在要不要连递归根清单一起摘
-         * @details 两条路都必须清监视表，但对「递归根清单」的诉求正相反：
-         *          - 目录被删导致的死条目由监听线程自己来摘，这份清单要**留着**，
-         *            否则下一秒的自愈复查找不到根，目录被换掉重建后其内部变更永久丢失；
-         *          - 调用方显式 removeWatch() 是在撤销意图，清单必须**一起摘掉**，
+         * @brief 把一条监视从被改名的目录跟到它的新位置
+         * @details 目录被改名走开时它的句柄跟着走，条目既不会读失败也不会自己消失，只会按注册时的
+         *          旧前缀派发路径。摘掉重来做不到：那条未完成的读挂在已搬走的目录对象上，CancelIo
+         *          对它不给完成，等下去监听线程就停摆。这里只换键并同步条目里的路径。
+         * @param oldPath 通知里的旧路径，按「同一个目录」判定来找条目
+         * @param newPath 通知里的新路径；规范化后与已有监视的键冲突时不动
+         * @return true 找到该目录的监视并已换到新位置；false 改名的不是被监视的目录，或新位置已有监视
+         */
+        bool relocateWatchedDirectory(const std::string &oldPath, const std::string &newPath);
+
+        /**
+         * @brief 注册一条目录监视，并按需记进递归覆盖清单
+         * @details FileWatcher::addWatch() 的实际实现。多出来的那一项区分「调用方自己给的注册」与
+         *          「递归注册时枚举出来的子目录」：两者挂的都是本目录自身的监视，但只有后者也要进
+         *          自愈清单——它们当时按 recursive=false 挂上，不进清单就没有人再把它们补回来。
+         * @param path 待监听的目录路径
+         * @param recursive 是否递归监听子目录
+         * @param partOfRecursiveTree 本次注册是否落在某条递归监视覆盖的范围内
+         * @return true 注册成功或路径已在监听集合中
+         * @return false 路径无法解析、目录或事件句柄创建失败、首次重叠读投递失败
+         */
+        bool registerWatch(std::string_view path, bool recursive, bool partOfRecursiveTree);
+
+        /**
+         * @brief 摘掉一条监视：内部清理与调用方撤销的共同实现，差别只在要不要连递归覆盖清单一起摘
+         * @details 两条路都必须清监视表，但对这份清单的诉求正相反：
+         *          - 目录被删或被改名导致的死条目由监听线程自己来摘，这份清单要**留着**，
+         *            否则下一秒的自愈复查找不到它，目录被换掉重建后其内部变更永久丢失；
+         *          - 调用方显式 removeWatch() 是在撤销意图，清单必须**连同整棵子树一起摘掉**，
          *            否则自愈会在下一拍把刚被撤销的监视重新挂回来。
          * @param path 目录路径；本方法内部再做规范化（该规范化是幂等的，两个调用方给的形式不同也能共用）
-         * @param keepRecursiveRoot 是否保留该路径在递归根清单里的条目
+         * @param keepRecursiveWatchPath 是否保留该路径及其子树在递归覆盖清单里的条目
          * @return true 该路径原本有监视且已摘掉；false 没有这条监视（绝对化路径失败或表里没有）
          */
-        bool dropWatch(std::string_view path, bool keepRecursiveRoot);
+        bool dropWatch(std::string_view path, bool keepRecursiveWatchPath);
 
         /**
          * @brief 取消目录未完成读取并关闭其全部句柄
@@ -180,18 +208,19 @@ namespace AsynGyanis::Platform
         void watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType> > &events);
 
         /**
-         * @brief 判断某路径是否落在某个递归根之下
+         * @brief 判断某路径是否落在某条递归监视覆盖的范围之内
          * @param path 待判定的绝对路径
-         * @return true 在某个递归根之下（含恰为根本身）
+         * @return true 落在其中一条递归监视之内（含恰为该目录本身）
          * @note 前缀比较落在路径分隔符边界上：纯前缀匹配会把 "C:\data" 当成 "C:\database" 的根
          */
-        [[nodiscard]] bool isUnderRecursiveRoot(const std::string &path) const;
+        [[nodiscard]] bool isUnderRecursiveWatch(const std::string &path) const;
 
         std::unordered_map<std::string, std::unique_ptr<WatchEntry> > m_watches; ///< 目录路径到监听上下文的映射
 
-        /// 递归根（addWatch(recursive=true) 登记过的目录）：之后新建的子目录靠这份清单补挂监听。
-        /// 受 m_watchMutex 保护——addWatch 可能被任意线程调用，而读它的是监听线程
-        std::set<std::string> m_recursiveRoots;
+        /// 递归监视覆盖到的目录：登记时 recursive=true 的那条根，以及把根枚举出来的每一个子目录。
+        /// 两个用途——条目被摘掉后由自愈复查按这份清单补挂，以及判定新建目录是否落在递归范围内。
+        /// 受 m_watchMutex 保护——注册入口可能被任意线程调用，而读它的是监听线程
+        std::set<std::string> m_recursiveWatchPaths;
 
         FileChangeCallback        m_callback;           ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;         ///< 保护监听映射与回调的读写锁
