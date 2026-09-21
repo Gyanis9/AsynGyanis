@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -224,22 +225,32 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile, const std::size_t offset, const std::size_t length)
     {
+        // 按值入口只做一件事：把调用方交来的映射升成共享所有权，之后与共享入口走同一条存储路径。
+        // 校验留在被调方，所以移动之前不取任何状态——形参求值顺序未指定，边移动边读会读到空壳
+        setSharedMappedBody(std::make_shared<Platform::MemoryMappedFile>(std::move(mappedFile)), offset, length);
+    }
+
+    void HttpResponse::setSharedMappedBody(std::shared_ptr<const Platform::MemoryMappedFile> mappedFile,
+                                           const std::size_t offset,
+                                           const std::size_t length)
+    {
         // 互斥判定放在最前：流式模式下的整块正文（无论来自堆还是映射）都不允许，
         // 也不该让调用方以为「越界检查通过了就能设」
         if (m_isChunked)
         {
-            throw Base::LogicException("HttpResponse::setMappedBody：本响应已进入流式模式，正文只能由 writeChunk() 逐段写出，"
+            throw Base::LogicException("HttpResponse 的映射正文入口：本响应已进入流式模式，正文只能由 writeChunk() 逐段写出，"
                                        "不能再设置整块正文；请去掉这次的 setMappedBody() 调用，"
                                        "或不要调用 startChunkedResponse() 而改用普通响应");
         }
 
-        const std::size_t availableLength = mappedFile.isValid() ? mappedFile.bytes().size() : 0;
+        const bool        isUsableMapping = mappedFile != nullptr && mappedFile->isValid();
+        const std::size_t availableLength = isUsableMapping ? mappedFile->bytes().size() : 0;
 
         // 越界属于调用方的用法错误（重试无用），归入 logic_error 分支；静默钳制会让
         // content-length 与实际字节数悄悄不一致，那正是收端报文边界错位的源头
         if (offset > availableLength || length > availableLength - offset)
         {
-            throw Base::InvalidArgumentException("HttpResponse::setMappedBody：映射正文区间越界，offset=" + std::to_string(offset) +
+            throw Base::InvalidArgumentException("HttpResponse 的映射正文入口：区间越界，offset=" + std::to_string(offset) +
                                                  "，length=" + std::to_string(length) + "，映射字节数=" + std::to_string(availableLength) +
                                                  "；请先按 MemoryMappedFile::bytes().size() 校验区间，或改用整份映射的重载");
         }
@@ -248,7 +259,8 @@ namespace AsynGyanis::Net
         m_body.clear();
         // content-length 与 setBody 同一口径：调用方显式声明的长度原样保留（区间响应
         // 正是「先声明区间长度、再交出映射」的写法），只有替换正文的中间件需要自己清
-        m_mappedBody = std::move(mappedFile);
+        // 无效映射（含空指针）归一成「没有映射正文」：读侧只需判一次指针，不必每次再问 isValid
+        m_mappedBody = isUsableMapping ? std::move(mappedFile) : nullptr;
         m_mappedBodyOffset = offset;
         m_mappedBodyLength = length;
     }
@@ -258,35 +270,36 @@ namespace AsynGyanis::Net
     {
         // 只有「有效映射 + 非空区间」才给得出可发送的描述：堆正文、空文件、流式响应
         // 都没有文件可交给内核搬运，一律以空值表示走普通发送路径
-        if (!m_mappedBody.isValid() || m_mappedBodyLength == 0)
+        if (m_mappedBody == nullptr || m_mappedBodyLength == 0)
         {
             return std::nullopt;
         }
-        return ZeroCopyBody{m_mappedBody.nativeFileDescriptor(), m_mappedBodyOffset, m_mappedBodyLength};
+        return ZeroCopyBody{m_mappedBody->nativeFileDescriptor(), m_mappedBodyOffset, m_mappedBodyLength};
     }
 #endif
 
     void HttpResponse::releaseMappedBody() noexcept
     {
         // 只释放映射正文，不碰状态码与头部：会话在响应发出后调用，此时正文已不再需要，
-        // 提前归还映射与文件句柄能避免空闲的 keep-alive 连接长期占着它们
-        m_mappedBody = Platform::MemoryMappedFile{};
+        // 提前归还映射与文件句柄能避免空闲的 keep-alive 连接长期占着它们。
+        // 这里是放掉本响应的那一份引用：若映射同时被缓存或其他在途响应持有，页不会消失
+        m_mappedBody.reset();
         m_mappedBodyOffset = 0;
         m_mappedBodyLength = 0;
     }
 
     std::string_view HttpResponse::bodyView() const noexcept
     {
-        if (m_mappedBody.isValid())
+        if (m_mappedBody != nullptr)
         {
-            const std::span<const std::byte> mappedBytes = m_mappedBody.bytes();
+            const std::span<const std::byte> mappedBytes = m_mappedBody->bytes();
             if (mappedBytes.empty() || m_mappedBodyLength == 0)
             {
                 // 空文件映射不出可解引用的地址（data() 可能为空），长度为 0 的区间同理，
                 // 两者都用空视图表示「正文 0 字节」，不构造 string_view(nullptr, 0)
                 return {};
             }
-            // 区间合法性已由 setMappedBody 拦住，这里直接按 offset/length 取子视图
+            // 区间合法性已由 setSharedMappedBody 拦住，这里直接按 offset/length 取子视图
             return std::string_view(reinterpret_cast<const char *>(mappedBytes.data() + m_mappedBodyOffset), m_mappedBodyLength);
         }
         return m_body;

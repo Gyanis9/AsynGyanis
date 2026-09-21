@@ -12,9 +12,11 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -789,6 +791,47 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.body(), "23456");
         EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 5\r\n"));
         EXPECT_EQ(response.toString(), response.serializeHead() + "23456");
+    }
+
+    /**
+     * @brief 一份映射可同时支撑多条响应，且先释放的那条不影响其余：静态文件的映射缓存靠这条才成立
+     */
+    TEST(HttpResponse, SharesOneMappingBetweenResponsesUntilAllReleaseIt)
+    {
+        const std::string content = "0123456789";
+        const TemporaryFile temporaryFile("MappedShared", content);
+
+        auto sharedMapping = std::make_shared<Platform::MemoryMappedFile>(Platform::MemoryMappedFile::open(temporaryFile.path()));
+        ASSERT_TRUE(sharedMapping->isValid());
+
+        HttpResponse first;
+        HttpResponse second;
+        first.setSharedMappedBody(sharedMapping, 0, content.size());
+        second.setSharedMappedBody(std::move(sharedMapping), 4, 3);
+
+        EXPECT_EQ(first.body(), content);
+        EXPECT_EQ(second.body(), "456");
+        // 两条响应的正文必须落在同一段虚拟地址上：各自重映射会给出不同基址，
+        // 那正是本改造要省掉的开销，因此这条断言钉的是「共享」而不是「都能读」
+        EXPECT_EQ(first.body().substr(4, 3).data(), second.body().data());
+
+        // 先释放的那条只放下自己那份引用，另一条仍要能完整发出
+        first.releaseMappedBody();
+        EXPECT_TRUE(first.body().empty());
+        EXPECT_EQ(second.body(), "456");
+        EXPECT_EQ(second.toString(), second.serializeHead() + "456");
+    }
+
+    /**
+     * @brief 换成共享存储之后响应仍不可拷贝：拷贝一份「正指向文件页的响应」不该是隐式能力
+     */
+    TEST(HttpResponse, RemainsMoveOnlyAfterMappingBecomesShared)
+    {
+        static_assert(!std::is_copy_constructible_v<HttpResponse>, "响应可被拷贝，等于悄悄复制一份文件页视图");
+        static_assert(!std::is_copy_assignable_v<HttpResponse>);
+        static_assert(std::is_move_constructible_v<HttpResponse>, "会话与协程都要靠移动交出响应，移动不能丢");
+        static_assert(std::is_move_assignable_v<HttpResponse>);
+        SUCCEED();
     }
 
     /**

@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -55,6 +56,13 @@ namespace AsynGyanis::Net
          * @brief 构造一个默认响应（状态码 200 OK，无正文）。
          */
         HttpResponse();
+
+        // 可移动、不可拷贝：换成共享所有权存映射正文之后，编译器本会把拷贝操作放出来，
+        // 而「复制一份响应」意味着复制一份它正在引用的文件页视图——语义上就该由调用方显式做
+        HttpResponse(const HttpResponse &) = delete;
+        HttpResponse &operator=(const HttpResponse &) = delete;
+        HttpResponse(HttpResponse &&) noexcept = default;
+        HttpResponse &operator=(HttpResponse &&) noexcept = default;
 
         /**
          * @brief 设置 HTTP 状态码。
@@ -180,6 +188,19 @@ namespace AsynGyanis::Net
          * @see Platform::MemoryMappedFile
          */
         void setMappedBody(Platform::MemoryMappedFile mappedFile, std::size_t offset, std::size_t length);
+
+        /**
+         * @brief 用「多份响应共享的一份映射」里的一个区间当正文，供静态文件的映射缓存零拷贝引用
+         * @details 与上面的按值重载差在所有权：本入口不接管映射，只与其余持有者共同持有一份引用。
+         *          缓存因此可以在淘汰之后仍让在途响应读到完整的页——按值那份会在响应之前析构。
+         * @param mappedFile 共享的映射；空指针或指向无效映射都按「无映射正文」处理
+         * @param offset 区间起始偏移，单位字节
+         * @param length 区间长度，单位字节；0 表示空正文
+         * @throws Base::InvalidArgumentException 区间超出映射范围（offset 或 length 越界）
+         * @throws Base::LogicException 响应已进入流式模式
+         * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
+         */
+        void setSharedMappedBody(std::shared_ptr<const Platform::MemoryMappedFile> mappedFile, std::size_t offset, std::size_t length);
 
         /**
          * @brief 获取响应正文。
@@ -466,10 +487,15 @@ namespace AsynGyanis::Net
         std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1
         HttpHeaderFieldStore m_headerStore; ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
         bool m_isStreamingBodySuppressed{false};               ///< HEAD 请求：流式响应只发头部、不发正文段
-        std::string m_body;                                    ///< 响应正文（堆存储），与 m_mappedBody 互斥
-        Platform::MemoryMappedFile m_mappedBody;               ///< 响应正文（文件映射），持有映射所有权，保证发送期间映射有效
-        std::size_t m_mappedBodyOffset{0};                     ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
-        std::size_t m_mappedBodyLength{0};                     ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
+        std::string m_body; ///< 响应正文（堆存储），与 m_mappedBody 互斥
+        /**
+         * @brief 映射正文的来源；空指针表示没有映射正文
+         * @details 刻意用共享所有权而非内嵌对象：一份映射可以同时支撑多条在途响应（静态文件的
+         *          映射缓存淘汰时不能把还在发送的响应脚下抽走），响应只保证「自己活着时页有效」
+         */
+        std::shared_ptr<const Platform::MemoryMappedFile> m_mappedBody;
+        std::size_t m_mappedBodyOffset{0}; ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
+        std::size_t m_mappedBodyLength{0}; ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
         bool m_isChunked{false};                               ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
         bool m_hasSentChunkedHead{false};                      ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
         ChunkSender m_chunkSender;                             ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
