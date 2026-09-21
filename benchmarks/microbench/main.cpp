@@ -331,7 +331,9 @@ int main(int argumentCount, char **argumentValues)
     const std::string encodedHeaderBlock = encoder.encode(headerFields);
 
     // 消融对照：h2 每条响应都要把「:status + 响应头」整表交给编码器。旧写法是再拷一份 owning
-    // vector（每个头各构造名与值两个字符串），新写法只排一张视图表。这两例量的就是被去掉的那份拷贝
+    // vector（每个头各构造名与值两个字符串），新写法只排一张视图表。这两例量的就是被去掉的那份拷贝。
+    // 本例是纯分配器负载，读数随前序用例留下的堆上下文而变（同样的构造在干净进程的单文件探针里
+    // 只要 283.7 ns），因此它只当「比视图表贵一个数量级」这把量级尺子用，别拿它读 1.2 倍以内的漂移
     measureCase(
             "h2-head-table-owning-copy",
             [&headerFields]
