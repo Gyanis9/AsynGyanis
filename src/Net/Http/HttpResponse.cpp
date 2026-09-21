@@ -208,12 +208,28 @@ namespace AsynGyanis::Net
 
     void HttpResponse::assignBody(std::string body)
     {
+        beginHeapBodyStorage();
+        m_body = std::move(body);
+    }
+
+    std::string &HttpResponse::prepareBodyBuffer(const std::size_t length)
+    {
+        // 与 setOwnedBody 共用同一套前置不变式（流式互斥、解除旧映射），差别只在正文就地写：
+        // resize 到 length 之后，调用方读满这段即可，不必再经过任何一次正文拷贝或移动
+        beginHeapBodyStorage();
+        m_body.resize(length);
+        return m_body;
+    }
+
+    void HttpResponse::beginHeapBodyStorage()
+    {
         // 流式模式下正文由 writeChunk 逐段写出、长度对序列化层未知：再塞一份整块正文就是
         // 两份互相矛盾的正文表述，明确报错而不是静默丢弃调用方给的内容
         if (m_isChunked)
         {
-            throw Base::LogicException("HttpResponse::setBody/setOwnedBody：本响应已进入流式模式，正文只能由 writeChunk() 逐段写出，"
-                                       "不能再设置整块正文；请去掉这次的 setBody()/setOwnedBody()/setMappedBody() 调用，"
+            throw Base::LogicException("HttpResponse::setBody/setOwnedBody/prepareBodyBuffer：本响应已进入流式模式，"
+                                       "正文只能由 writeChunk() 逐段写出，"
+                                       "不能再设置整块正文；请去掉这次的整块正文调用，"
                                        "或不要调用 startChunkedResponse() 而改用普通响应");
         }
 
@@ -223,7 +239,6 @@ namespace AsynGyanis::Net
         // 刻意不动调用方显式设过的 content-length：HEAD 与静态文件服务靠「先声明长度、
         // 不读正文」省一次整文件 IO（见 HttpServer 的静态文件分支与 Router 的 HEAD 用例），
         // 这里删掉就等于把那份声明抹平。替换既有正文的中间件（如响应压缩）要自己清这条头
-        m_body = std::move(body);
     }
 
     void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile)

@@ -18,17 +18,21 @@
 namespace AsynGyanis::Platform
 {
 #if ASYN_PLATFORM_WIN32
-    std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath,
-                                                                 const std::size_t offset,
-                                                                 const std::size_t length) noexcept
+    std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath,
+                                                                     const std::size_t offset,
+                                                                     const std::size_t length,
+                                                                     std::string &target) noexcept
     {
+        // 先把缓冲调到位：容量够时 resize 只是改长度，keep-alive 连接的第二条请求起不再分配
+        target.resize(length);
         if (length == 0)
         {
             // 空段不需要打开文件：省掉一次系统调用，也不需要区分「文件不存在」与「什么都不要读」
-            return std::string{};
+            return std::size_t{0};
         }
 
-        // 共享模式与 MemoryMappedFile 取平：读正文不该把发布方的改名或截断挡在共享冲突上
+        // 共享模式与 MemoryMappedFile 取平：读正文不该把发布方的删除挡在共享冲突上
+        // （改名与截断救不了，那是段对象自身的限制，与共享位无关）
         HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_READ,
                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -47,16 +51,14 @@ namespace AsynGyanis::Platform
             return std::unexpected(error);
         }
 
-        std::string contents;
-        contents.resize(length);
         std::size_t bytesRead = 0;
         while (bytesRead < length)
         {
-            // 单次 ReadFile 的长度形参是 DWORD，超过就分次读；本函数的调用方不会走到第二轮
+            // 单次 ReadFile 的长度形参是 DWORD，超过就分次读；静态正文的上限远到不了第二轮
             const auto chunkLength = static_cast<DWORD>(
                 std::min<std::size_t>(length - bytesRead, std::numeric_limits<DWORD>::max()));
             DWORD readNow = 0;
-            if (::ReadFile(fileHandle, contents.data() + bytesRead, chunkLength, &readNow, nullptr) == 0)
+            if (::ReadFile(fileHandle, target.data() + bytesRead, chunkLength, &readNow, nullptr) == 0)
             {
                 // 偏移越界在 Windows 上不是错误而是「读到 0 字节」，因此这里只报真的失败的读
                 const std::error_code error(static_cast<int>(::GetLastError()), std::system_category());
@@ -65,24 +67,26 @@ namespace AsynGyanis::Platform
             }
             if (readNow == 0)
             {
-                // 到文件末尾：交回已读到的那段，由调用方判断长度是否够用
+                // 到文件末尾：把长度收到实际读到的那段，由调用方判断内容是否完整
                 break;
             }
             bytesRead += readNow;
         }
         ::CloseHandle(fileHandle);
 
-        contents.resize(bytesRead);
-        return contents;
+        target.resize(bytesRead);
+        return bytesRead;
     }
 #else
-    std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath,
-                                                                 const std::size_t offset,
-                                                                 const std::size_t length) noexcept
+    std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath,
+                                                                     const std::size_t offset,
+                                                                     const std::size_t length,
+                                                                     std::string &target) noexcept
     {
+        target.resize(length);
         if (length == 0)
         {
-            return std::string{};
+            return std::size_t{0};
         }
 
         const int descriptor = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
@@ -91,13 +95,11 @@ namespace AsynGyanis::Platform
             return std::unexpected(std::error_code(errno, std::system_category()));
         }
 
-        std::string contents;
-        contents.resize(length);
         std::size_t bytesRead = 0;
         while (bytesRead < length)
         {
-            // pread 自带偏移、不动别人的文件指针，因此同一段内容可以并发读同一只 fd
-            const ssize_t readNow = ::pread(descriptor, contents.data() + bytesRead, length - bytesRead,
+            // pread 自带偏移、不动别人的文件指针，因此同一条路径可以并发读同一只 fd
+            const ssize_t readNow = ::pread(descriptor, target.data() + bytesRead, length - bytesRead,
                                             static_cast<off_t>(offset + bytesRead));
             if (readNow < 0)
             {
@@ -118,8 +120,23 @@ namespace AsynGyanis::Platform
         }
         ::close(descriptor);
 
-        contents.resize(bytesRead);
-        return contents;
+        target.resize(bytesRead);
+        return bytesRead;
     }
 #endif
+
+    std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath,
+                                                                 const std::size_t offset,
+                                                                 const std::size_t length) noexcept
+    {
+        // 便捷层：读法只有一份实现，这里给出一份自己的缓冲，读成功就交出所有权
+        std::string contents;
+        const std::expected<std::size_t, std::error_code> bytesRead =
+                readFileContentsInto(filePath, offset, length, contents);
+        if (!bytesRead.has_value())
+        {
+            return std::unexpected(bytesRead.error());
+        }
+        return contents;
+    }
 } // namespace AsynGyanis::Platform

@@ -172,6 +172,21 @@ namespace AsynGyanis::Net
         void setOwnedBody(std::string body);
 
         /**
+         * @brief 备好一段长度为 length 的堆正文缓冲，交给调用方就地写入
+         * @details 正文由「一次读取」产生的调用方（静态文件服务）走这里可以省掉每请求的堆分配：
+         *          响应对象按连接复用，第一条之后缓冲的容量就在，读第二个文件只是往同一块内存里
+         *          覆写。不变式与 setOwnedBody 一致（互斥流式模式、解除旧映射、不动显式声明的
+         *          content-length），返回的引用即内部缓冲，写满 length 字节后正文就已经就位。
+         * @param length 正文长度，单位字节；缓冲被调整成这一长度
+         * @return std::string & 指向响应内部正文缓冲的引用，长度为 length，内容尚未定义
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥
+         * @warning 拿到引用就要把 length 字节全写完；中途放弃要改用 setBody()/setOwnedBody()
+         *          重设正文，否则这份缓冲会按原长度被当成正文发出去。
+         * @see setOwnedBody
+         */
+        std::string &prepareBodyBuffer(std::size_t length);
+
+        /**
          * @brief 用「内存映射的文件」当正文：整份文件不复制进堆，直接以映射视图参与发送
          *
          * @details 静态文件响应的正文动辄几十 KiB 到几十 MiB，先读进堆再发等于白白多一次
@@ -469,9 +484,15 @@ namespace AsynGyanis::Net
         void removeHeaderField(std::string_view name);
 
         /**
-         * @brief setBody 与 setOwnedBody 的共用落点：校验流式互斥、解除旧映射后把正文写入堆缓冲
-         * @details 两条入口只在「复制还是移动进 m_body」上不同，其余不变式集中在此一处维护，
-         *          避免两份实现各自漂移。
+         * @brief setBody、setOwnedBody 与 prepareBodyBuffer 的共用前置：校验流式互斥并解除旧映射
+         * @details 三条堆正文入口只在「复制 / 移动 / 就地写进 m_body」上不同，其余不变式集中在
+         *          这一处维护，避免三份实现各自漂移。刻意不动显式设过的 content-length。
+         * @throws Base::LogicException 响应已进入流式模式
+         */
+        void beginHeapBodyStorage();
+
+        /**
+         * @brief setBody 与 setOwnedBody 的共用落点：过完前置检查后把正文移动进堆缓冲
          * @param body 已交出所有权的正文字符串，移动进 m_body
          * @throws Base::LogicException 响应已进入流式模式
          */

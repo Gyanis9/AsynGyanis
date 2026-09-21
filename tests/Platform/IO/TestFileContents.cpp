@@ -127,4 +127,55 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(contents.size(), 5U);
         EXPECT_EQ(contents, payload.substr(1, 5)) << "按长度取字节，不得在任何位置当成字符串结尾";
     }
+
+    /**
+     * @brief 钉住：就地读取把调用方给的缓冲填满并回报实际字节数，不另外造一份正文
+     */
+    TEST(FileContents, FillsTheCallersBufferAndReportsTheByteCount)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_IntoBuffer");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "0123456789"));
+
+        std::string buffer;
+        const std::expected<std::size_t, std::error_code> bytesRead =
+                readFileContentsInto(temporaryDirectory.path() / "asset.bin", 2U, 5U, buffer);
+        ASSERT_TRUE(bytesRead.has_value()) << "读取失败：" << bytesRead.error().message();
+        EXPECT_EQ(*bytesRead, 5U);
+        EXPECT_EQ(buffer.size(), 5U);
+        EXPECT_EQ(buffer, "23456");
+    }
+
+    /**
+     * @brief 钉住：短读要就地收缩缓冲长度，而不是留下带尾部脏数据的长缓冲
+     * @details 调用方（静态文件服务）把缓冲当正文发出去，缓冲多一位就会多发一位；
+     *          回报值与缓冲长度必须同时是实际读到的数。
+     */
+    TEST(FileContents, ShrinksTheBufferToTheBytesActuallyRead)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_IntoShort");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "abc"));
+
+        std::string buffer("预先占好的一大段内容xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 40);
+        const std::expected<std::size_t, std::error_code> bytesRead =
+                readFileContentsInto(temporaryDirectory.path() / "asset.bin", 0U, 128U, buffer);
+        ASSERT_TRUE(bytesRead.has_value());
+        EXPECT_EQ(*bytesRead, 3U);
+        EXPECT_EQ(buffer.size(), 3U) << "缓冲没收缩，多发出去的就是旧内容的尾巴";
+        EXPECT_EQ(buffer, "abc");
+    }
+
+    /**
+     * @brief 钉住：读失败时以错误码表达，调用方据返回值判断即可，不必看缓冲内容
+     */
+    TEST(FileContents, YieldsErrorCodeForIntoReadOfMissingPath)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_IntoMissing");
+        const std::filesystem::path           missingPath = temporaryDirectory.path() / "no-such-file.bin";
+
+        std::string buffer;
+        const std::expected<std::size_t, std::error_code> bytesRead =
+                readFileContentsInto(missingPath, 0U, 8U, buffer);
+        ASSERT_FALSE(bytesRead.has_value()) << "打不开文件不能当成「读到了 0 字节」";
+        EXPECT_EQ(bytesRead.error().category(), std::system_category());
+    }
 }

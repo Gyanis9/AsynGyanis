@@ -739,33 +739,26 @@ namespace AsynGyanis::Net
             // 一条光秃秃的错误（content-type + 正文），不会留下「500 带 Content-Range 与 ETag」这种
             // 自相矛盾的报文
 #if ASYN_PLATFORM_WIN32
-            // 本平台把正文读进堆缓冲，不建映射。理由全是实测的：TransmitFile 在非阻塞套接字上仍会
-            // 阻塞线程（不可用），所以映射并不能省掉「把字节交给内核」那次拷贝，只额外付出整段缺页
-            // —— 同一文件两条路的中位数为 1 KiB 18.1/14.1 µs、64 KiB 34.7/15.5、1 MiB 343/46.7；
-            // 且映射存活期间发布方的 rename 与就地截断分别以 5 与 1224 失败，读完即松手就没有这条占用
-            std::string responseBodyBytes;
+            // 本平台把正文读进响应自己的堆缓冲，不建映射。理由全是实测的：TransmitFile 在非阻塞
+            // 套接字上仍会阻塞线程（不可用），所以映射并不能省掉「把字节交给内核」那次拷贝，只额外
+            // 付出整段缺页 —— 同一文件两条路的中位数为 4 KiB 17.2–18.4/12.7–15.1 µs、
+            // 64 KiB（含首触）29.4–31.1/15.5、1 MiB 343/46.7；且映射存活期间发布方的 rename 与就地
+            // 截断分别以 5 与 1224 失败，读完即松手就没有这条占用。缓冲取自响应对象本身（按连接
+            // 复用），第二条请求起这条路上一次堆分配都不发生
             if (!isHeadRequest)
             {
-                std::expected<std::string, std::error_code> readResult =
-                        Platform::readFileContents(candidatePath, bodyOffset, bodyLength);
-                if (!readResult.has_value())
+                std::string &bodyBuffer = response.prepareBodyBuffer(bodyLength);
+                const std::expected<std::size_t, std::error_code> readResult =
+                        Platform::readFileContentsInto(candidatePath, bodyOffset, bodyLength, bodyBuffer);
+                if (!readResult.has_value() || *readResult < bodyLength)
                 {
-                    // 文件在 stat 之后被并发删除或改了权限（TOCTOU 窗口）：按服务端故障处理，不回半个文件
+                    // 两种情形都不是「可以发出去的正文」：文件在 stat 之后被删/改权限（TOCTOU 窗口），
+                    // 或被截断到比请求的那段还短。按服务端故障收口，不回半个文件
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
                     response.setHeader("content-type", "text/plain");
                     co_return;
                 }
-                if (readResult->size() < bodyLength)
-                {
-                    // stat 与读之间文件被截断：请求的那段已经落在文件之外，按 500 收口，
-                    // 不让越界区间走到正文校验里变成异常
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
-                    co_return;
-                }
-                responseBodyBytes = std::move(*readResult);
             }
 #else
             std::shared_ptr<const Platform::MemoryMappedFile> mappedFile;
@@ -808,10 +801,9 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-#if ASYN_PLATFORM_WIN32
-                response.setOwnedBody(std::move(responseBodyBytes));
-#else
-                // 上限已限在 64 MiB 且区间经过 fileSize 钳制，折算到 size_t 不会窄化
+#if !ASYN_PLATFORM_WIN32
+                // 上限已限在 64 MiB 且区间经过 fileSize 钳制，折算到 size_t 不会窄化。
+                // Windows 的这一段正文已经在上面就地写进响应缓冲，无需再挂任何东西
                 response.setSharedMappedBody(mappedFile, bodyOffset, bodyLength);
 #endif
                 co_return;
@@ -827,12 +819,10 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-#if ASYN_PLATFORM_WIN32
-            response.setOwnedBody(std::move(responseBodyBytes));
-#else
+#if !ASYN_PLATFORM_WIN32
             // 映射整份文件当正文：不经过堆缓冲，发送时由 sendfile 直接把页交给内核，
-            // 省掉「文件 → 堆正文」那次等量拷贝与分配。长度取映射自身而不是 stat 读数，
-            // 因此正文与它自己描述的是同一份字节
+            // 省掉「文件 → 堆正文」那次等量拷贝与分配。缓存让同一份页能同时服务多条在途响应。
+            // 长度取映射自身而不是 stat 读数，因此正文与它自己描述的是同一份字节
             response.setSharedMappedBody(mappedFile, 0, mappedFile->bytes().size());
 #endif
         }

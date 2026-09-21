@@ -565,6 +565,43 @@ namespace AsynGyanis::Net
         EXPECT_THROW(chunked.setOwnedBody(std::move(rejected)), Base::LogicException);
     }
 
+    /**
+     * @brief 钉住：就地备好的正文缓冲就是响应自己的缓冲，反复备不重新分配，且与映射正文互斥
+     * @details 静态文件在 Windows 上走这条路（读进响应缓冲、不再建映射）。它的前提是「第二条请求
+     *          起不再分配」，因此两次取到的引用必须同一块内存；同时它必须过与 setBody 相同的两道
+     *          闸门（流式互斥、解除旧映射），否则会发出「头部说映射那份、正文是堆这份」的报文。
+     */
+    TEST(HttpResponse, PreparesReusableHeapBufferForInlineBodyWrites)
+    {
+        HttpResponse response;
+        response.setStatus(200);
+
+        std::string &firstBuffer = response.prepareBodyBuffer(256);
+        firstBuffer.assign(256, 'a');
+        EXPECT_EQ(response.body().size(), 256U);
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 256\r\n"));
+
+        // 第二次只取一小段：正文长度跟着缓冲走，序列化不会把上一条的尾巴带出去
+        std::string &secondBuffer = response.prepareBodyBuffer(4);
+        secondBuffer.assign("body");
+        EXPECT_EQ(&firstBuffer, &secondBuffer) << "每次调用都换了一块缓冲，就白付了每请求的堆分配";
+        EXPECT_EQ(response.body(), "body");
+        EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 4\r\n"));
+
+        // 与映射正文互斥：备堆缓冲要顺手解除已挂的映射，否则 body() 仍读到旧的文件页
+        const TemporaryFile             temporaryFile("PrepareBodyAfterMapping", "mapped-contents-here");
+        Platform::MemoryMappedFile      mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        ASSERT_TRUE(mappedFile.isValid());
+        response.setMappedBody(std::move(mappedFile));
+        ASSERT_EQ(response.body(), "mapped-contents-here");
+        response.prepareBodyBuffer(2).assign("ok");
+        EXPECT_EQ(response.body(), "ok") << "映射没被解除，序列化出去的仍是上一个正文";
+
+        HttpResponse chunked;
+        chunked.startChunkedResponse(200);
+        EXPECT_THROW(chunked.prepareBodyBuffer(8), Base::LogicException);
+    }
+
     TEST(HttpResponse, BuildsOkayResponseFromFactory)
     {
         const HttpResponse response = HttpResponse::ok("hi");
