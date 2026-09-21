@@ -17,6 +17,16 @@
 
 ### 新增
 
+- **响应压缩可以交给工作线程做**：新增 `compressionMiddleware(completionLoop, executor, options)`
+  一版重载，把「压完整块正文」这一步交给 `Core::AsyncExecutor` 的工作线程，压完再回到发起请求的那条
+  事件循环续上（`scheduleRemote`）。判断、阈值、编码协商、ETag 降级与头部改写全部与就地版共用同一份
+  实现体，两条路径的产物逐字节相同——所以换执行位置不是换语义。原来的
+  `compressionMiddleware(options)` 签名与行为都不变，仍然在调用协程所在线程上压。
+  为什么要有这一版：HTTP 三条路径的处理器协程都跑在事件循环线程上，一条 256 KiB 正文的 gzip 要占住
+  循环 4.4 ms，这期间同一条循环上的其他连接什么都做不了。
+- **阻塞任务执行器上收到 Core**：`Core::AsyncExecutor`（原 `Database::AsyncExecutor`）是通用基础设施，
+  承载一切「不能在被调用处立刻完成」的活——阻塞式驱动调用与整块 CPU 运算。头文件在
+  `Core/Coroutine/AsyncExecutor.h`。
 - **示例按模块拆开，并配总跑脚本**：`samples/` 新增 `base_log`、`base_config`、`platform`、`core_loop`、
   `core_tls`、`core_worker`、`net_http_demo`、`net_https_h2_demo`、`net_http3_demo`、`database_demo` 十个
   各自自检的可执行程序（`echo_server` 保持部署形态）。每个程序逐步打印 `✓`/`✗`，并在 stdout 留一行 `RESULT <名字> PASS|FAIL <步数>`，
@@ -88,6 +98,14 @@
 
 ### 变更
 
+- **破坏性变更：`AsyncExecutor` 从 Database 迁到 Core**。头文件 `Database/Pool/AsyncExecutor.h` →
+  `Core/Coroutine/AsyncExecutor.h`，类型 `AsynGyanis::Database::AsyncExecutor` →
+  `AsynGyanis::Core::AsyncExecutor`；连带 `Queryable::useAsyncExecutor()` 的形参类型与
+  `Queryable::asyncExecutor()` 的返回类型一起换了限定名。迁移只需改 include 路径与限定名：
+  `submit()` 的签名、提前丢弃 Task 时的作废语义与「恢复落在指定循环」的契约都没动。
+  搬动的原因是它是通用基础设施（阻塞式驱动与整块 CPU 活都要用），留在 Database 里就只有那一侧能受益，
+  而让 `Net` 反向依赖 `Database` 不合本项目层次。执行器抛出「已停止」时的异常类型也从
+  `DatabaseException` 换成 `Base::LogicException`——那是调用方的用法错误，按规范属于 `logic_error` 分支。
 - **示例结论行分开「执行过的步」与「因环境不齐备跳过的步」**：`RESULT <名字> PASS|FAIL <步数>`
   现在是 `RESULT <名字> PASS|FAIL <步数> gated <跳过数>`。原先跳过的步什么都不留，于是无凭据的
   机器与有凭据的机器给出的是同一条结论行，`run_samples.py --repeat` 的步数一致性检查也就无从区分；
@@ -257,6 +275,11 @@
 
 ### 性能
 
+- **压缩挪出事件循环线程后，同循环的小请求不再等大正文**：`--threads 1` 起服务、一路客户端持续要
+  gzip 版 `/big`（256 KiB）、另一路量 `/bench` 的往返延迟，Release 实测：压缩留在循环里做时小请求
+  p50 5,930us、p95 6,300us、max 12,637us；交给工作线程后 p50 21us、p95 55us、max 284us，
+  而那条重活本身 10 秒 1,629 → 1,596 条（-2%）。代价是一份正文副本（按值交给工作线程）与一次
+  跨线程恢复，量级在几十微秒内。`echo_server --compress` 默认走这条路，`--compress-sync` 保留就地压作对照。
 - **头部存储补两条「不拷贝」的读取出口**：`HttpHeaderFieldStore` 新增 `firstValueView()`（交出存储内取值
   的视图，不分配）与 `contains()`（只问存在性），owning 的 `firstValue()` 改由视图版派生——两条入口共用
   同一次查找，「同名取首条」「大小写不敏感」这类口径不会再各修一侧而分叉。此前只要读一个值就得拷一份：
