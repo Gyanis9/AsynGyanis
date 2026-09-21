@@ -262,6 +262,13 @@ namespace AsynGyanis::Net
         // （承载层是每拍调一次，直到 hasOutstandingWork() 归零才把连接摘除）
         reapFinishedStreamingRequests();
         reapFinishedTunnels();
+        if (m_hasAbandonedPendingStreams)
+        {
+            // 收口信号只交一次：已挂起的等待者被叫醒过一次之后，重复唤醒是对着可能已恢复的
+            // 句柄再 resume 一遍。之后每拍只剩上面那两条收敛
+            return;
+        }
+        m_hasAbandonedPendingStreams = true;
 
         // 每条还没答完的流都走与「对端取消」同一个回收口子（dropRequest），差别只在不发
         // RESET/STOP：连接已经没了，那些帧无处可去。这里先攒齐流号再逐条摘——dropRequest 会动这些容器

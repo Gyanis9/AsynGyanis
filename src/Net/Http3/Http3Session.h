@@ -214,7 +214,7 @@ namespace AsynGyanis::Net
          * @details 传输层按空闲上限收口时不逐条流发 RESET/STOP，本会话拿不到「这条流结束」的信号。
          *          缺这一步，挂在 `readNext()` / `receive()` 上的协程帧会随会话一起被销毁，等待之后的
          *          收尾永不执行；而已把恢复动作投回循环的在途等待（如外置到工作线程的响应压缩）会指向
-         *          已释放的帧。可重复调用：承载层每拍调一次，直到 `hasOutstandingWork()` 归零。
+         *          已释放的帧。唤醒只交一次；承载层每拍重复调用，用于收敛那些等业务跑完才能摘的记录
          */
         void abandonPendingStreams();
 
@@ -701,6 +701,7 @@ namespace AsynGyanis::Net
         std::size_t               m_servedRequestCount{0};   ///< 本会话已答完的请求条数，达到上限即排空
         bool                      m_isUsable{false};     ///< 三条本端单向流是否都开出来了
         bool                      m_isBroken{false};     ///< 是否已作废
+        bool m_hasAbandonedPendingStreams{false}; ///< 承载连接的收口信号是否已交过：唤醒只做一次，之后每拍只收敛
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
         /// 承载层报来的「对端取消」流号：它们到的时候正在传输层的回调里，只能先记下来，
