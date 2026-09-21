@@ -153,17 +153,21 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 | --- | --- | --- |
 | `base_log` | Sink（控制台/文件/滚动/异步）、格式化器、注册表、配置驱动装配、异常带栈 | 21 |
 | `base_config` | 多文件加载与优先级、目录递归、点分路径取值、模式校验、热重载 | 21 |
-| `platform` | 描述符与套接字工具、通知器、定时器、内存映射、数据报、进程起停、编码与时间 | 36（POSIX 未复跑） |
+| `platform` | 描述符与套接字工具、通知器、定时器、内存映射、数据报、进程起停、编码与时间 | 36（Windows）/ 38（POSIX） |
 | `core_loop` | 事件循环与调度器、定时器、IO 监听器、解析器、UDP/TCP 协程收发、协程池、取消令牌 | 14 |
 | `core_tls` | 证书装载与热替换、OCSP、私有 CA、回环握手与会话恢复 | 10 |
 | `core_worker` | WorkerSupervisor 的构造期拒因；POSIX 上另验补位、崩溃上限与自行收手 | 4（Windows）/ 10（POSIX） |
 | `net_http_demo` | HTTP/1.1 路由与中间件、静态文件目录、解析上限、分块与 SSE、WebSocket、四类限额、接受分发、指标与健康端点、优雅收口 | 45 |
 | `net_https_h2_demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
 | `net_http3_demo` | QUIC 服务端的证书校验、UDP 起停与指定端口、乱码与畸形长头容错、定时驱动、统计、排空 | 14 |
-| `database_demo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 72（另 2 步门控） |
+| `database_demo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 72 + 2 门控（无凭据）/ 82（连上 MySQL 与 Redis） |
 
-表内步数是 Windows 侧实测（`run_samples.py --repeat 2` 逐对一致）；带 POSIX 括注的是上一轮在
-容器里跑的记录，自 2026-09-21 起本机不再跑 POSIX 侧，括注不随本轮改动重算。
+表内步数是两侧各自实测：Windows 一轮 `run_samples.py --repeat 2` 逐对一致，POSIX 侧在容器
+`ubuntu24` 里跑同一份源码。两台的差只来自平台专属步骤（本轮逐条比对过步骤名）：`platform` 在
+POSIX 多三条（`sendfile` 零拷贝两条、fork 成功而 exec 失败的一条），在 Windows 多一条（启动不存在的
+程序给出无效句柄而不是抛异常）；`core_worker` 在 Windows 只验构造期拒因，POSIX 才验补位、崩溃上限与
+自行收手。`database_demo` 的两种写法是同一条命令的两种环境：设了 `ASYN_MYSQL_TEST_PASSWORD` 与
+`ASYN_REDIS_TEST_PASSWORD` 之后，MySQL 与 Redis 两组步骤真跑（各自展开成多步），`gated` 归零。
 
 一把跑完并汇总成矩阵（示例清单从构建目录里扫出来，新增程序不必改脚本）：
 
@@ -443,7 +447,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**2491 个用例**（MSVC/Windows Debug 含 ASan 全绿口径；同一份代码 Windows Release 2486）。自 2026-09-21 起本机以 Windows 单机为验证环境，Linux 侧按「可编译、逻辑正确」验收，下面引用的 Linux 条数是上一轮在容器里实跑的记录（2495）。Linux 与 Windows 差的 9 条是按用例名逐行 diff 出来的（Linux 独有 13 条、Windows 独有 4 条；另有 7 条参数化标签两侧写法不同，属同一批用例，已从两边各扣掉），全是平台专属用例：Linux 的 epoll 描述符重注册、inotify 目录重建与改名后重新挂监视、`sendfile` 零拷贝、进程终止与多进程 worker 的真实行为、静态文件 inode 被回收后的身份识别，Windows 的「目录数超出一个等待批次」判定、「多进程在本机禁用」判定、描述符长度回绕的拒绝、以及「创建时间派生的身份认不出同名重建」这条记档。其中 36 个是真机门控用例，无凭据即 SKIP
+- 当前规模：**Windows Debug（含 ASan）2494 个用例全绿**，同一份代码 Windows Release 2489（差的 5 条来自日志格式化器那批按构建配置编译的用例：Debug 侧 8 条 `*DebugBuild*`、Release 侧 3 条 `*ReleaseBuild*`），Linux 侧在容器 `ubuntu24` 以 GCC + ASan + LSan + UBSan 跑出 **2502 个用例全绿、零泄漏、零未定义行为**。两侧条数差 8 是按用例名逐行 diff 出来的：Linux 独有 21 条、Windows 独有 13 条，其中 7 条是同一批参数化用例两侧标签写法不同（Linux 写 `/stride1`、Windows 写 `/1`），各从两边扣掉之后是 **Linux 独有 14 条、Windows 独有 6 条、两侧共有 2488 条**。Linux 那 14 条：epoll 描述符重注册、inotify 的「目录重建后可再监视」「改名走开后可重挂」「换掉 inode 的单文件被补挂」、`sendfile` 零拷贝三条、进程终止三条与多进程 worker 两条真实行为、静态文件 inode 被回收后的身份识别。Windows 那 6 条：「目录数超出一个等待批次」、「多进程在本机被拒」、描述符长度回绕的拒绝、普通文件不可监视、「创建时间派生的身份认不出同名重建」。其中 36 个是真机门控用例，无凭据即 SKIP
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
