@@ -14,6 +14,7 @@ add_executable(TestNet
         Http/TestHttpDate.cpp
         Http/TestHttpHeaderRules.cpp
         Http/TestHttpHeaderFieldStore.cpp
+        Http/TestHotPathAllocations.cpp
         Http/TestHttpRequest.cpp
         Http/TestHttpRequestId.cpp
         Http/TestHttpResponse.cpp
