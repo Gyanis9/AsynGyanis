@@ -878,6 +878,10 @@ namespace AsynGyanis::Net
     struct CompressionOptions
     {
         std::size_t minimumBodySize = 1024;                  ///< 正文达到该字节数才压缩；小正文压缩后往往更大，白烧 CPU
+        /// 外置给工作线程时要达到的正文长度（字节）：小于它就就地压。一次「工作线程 → 循环」的
+        /// 投递加唤醒实测约 9.7 µs（热循环下的下限，整跳按两趟算约 20 µs），而 4 KiB 正文压一次
+        /// zstd 只要 8.1 µs——比那一跳还便宜，外派反而把循环和响应一起拖慢
+        std::size_t offloadMinimumBodySize = 8 * 1024;
         int         gzipLevel       = kDefaultGzipLevel;     ///< gzip 压缩级别，1..9
         int         brotliQuality   = kDefaultBrotliQuality; ///< brotli 压缩质量，0..11
         int         zstdLevel       = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
@@ -977,7 +981,7 @@ namespace AsynGyanis::Net
                 }
 
                 std::optional<std::string> compressed;
-                if (offloadExecutor != nullptr)
+                if (offloadExecutor != nullptr && body.size() >= options.offloadMinimumBodySize)
                 {
                     // 交给工作线程的只有这份副本与编码名：响应对象、协程帧都属于循环线程，
                     // 跨线程碰它们就是数据竞争。恢复落在 completionLoop 上，因此下面的改写仍在原线程
@@ -1052,7 +1056,8 @@ namespace AsynGyanis::Net
      * @brief 响应压缩中间件，压缩交给工作线程、完成后回到指定事件循环
      * @details 判断、头部改写与就地版完全同源（同一份实现体），差别只在压缩那一步落在哪个线程：
      *          循环线程因此不会被一次压缩占住数毫秒，代价是多一份正文副本（按值交给工作线程）与
-     *          一次跨线程恢复。
+     *          一次跨线程恢复。正文不足 `offloadMinimumBodySize` 的仍就地压：那份压缩比这一跳更便宜，
+     *          外派只会同时拖慢响应与循环。
      * @param completionLoop 恢复协程用的事件循环，必须是处理器所属的那条循环——否则响应改写会
      *        发生在别的线程上，与那条循环的会话状态构成数据竞争
      * @param offloadExecutor 承载压缩的工作线程池，见 Core::AsyncExecutor

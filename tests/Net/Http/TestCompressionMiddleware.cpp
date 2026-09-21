@@ -190,6 +190,9 @@ namespace AsynGyanis::Net
         /// 外置用例的大正文大小：4 MiB 让 gzip 至少占住线程几十毫秒，够把「循环被堵住」量出来
         constexpr std::size_t kWordyBodyBytes = 4U * 1024U * 1024U;
 
+        /// 「够小、压得动、但不到外派门槛」的正文大小：默认门槛是 8 KiB，这里取 2 KiB
+        constexpr std::size_t kMidBodyBytes = 2U * 1024U;
+
         /// 压缩期间第二条请求允许的最长等待：明显小于大正文的压缩耗时，又容得下建连与调度
         constexpr auto kLoopMustStayFreeBudget = std::chrono::milliseconds{50};
 
@@ -222,13 +225,24 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 造一台只有「大正文 + 小正文」两条路由的服务器，压缩中间件由调用方按循环现造
-         * @details 两种执行位置共用同一份路由与同一份正文，唯一的变量就是压缩落在哪个线程上
+         * @brief 大正文那一份的前 kMidBodyBytes 字节：压得动，但不到默认的外派门槛
+         * @return const std::string & 正文本体（同一份静态语料，不另造）
+         */
+        const std::string &midBody()
+        {
+            static const std::string body = wordyLargeBody().substr(0, kMidBodyBytes);
+            return body;
+        }
+
+        /**
+         * @brief 造一台只有「大正文 + 中等正文 + 不压缩的小正文」三条路由的服务器，压缩中间件由调用方按循环现造
+         * @details 几种执行位置共用同一份路由与同一份正文，唯一的变量就是压缩落在哪个线程上：
+         *          `/huge` 过外派门槛、`/mid` 在门槛之下、`/quick` 连压缩门槛都不到
          * @param makeMiddleware 拿到本服务器的循环、造出要挂的压缩中间件
          * @param isHugeHandled 输入输出：大正文路由被调用过就置真，调用方据此确定重叠窗口
          * @return std::unique_ptr<RunningHttpServerFixture> 已在监听的服务器
          */
-        std::unique_ptr<RunningHttpServerFixture> makeTwoRouteCompressionFixture(
+        std::unique_ptr<RunningHttpServerFixture> makeCompressionProbeFixture(
                 const std::function<MiddlewareFunc(Core::EventLoop &)> &makeMiddleware, std::atomic<bool> &isHugeHandled)
         {
             const RouteRegistrar registerRoutes = [&](Router &router, Core::EventLoop &loop)
@@ -240,6 +254,12 @@ namespace AsynGyanis::Net
                     // 交回中间件之前先亮旗：调用方据此知道「服务端正要开始压」，
                     // 重叠是自己构造出来的，不靠睡眠去猜调度
                     isHugeHandled.store(true);
+                    co_return;
+                });
+                router.get("/mid", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    response.setHeader("content-type", "text/plain; charset=utf-8");
+                    response.setBody(midBody());
                     co_return;
                 });
                 router.get("/quick", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -460,13 +480,13 @@ namespace AsynGyanis::Net
         Core::AsyncExecutor executor{1};
         std::atomic<bool>   isHugeHandled{false};
 
-        const std::unique_ptr<RunningHttpServerFixture> inLoopFixture = makeTwoRouteCompressionFixture(
+        const std::unique_ptr<RunningHttpServerFixture> inLoopFixture = makeCompressionProbeFixture(
                 [](Core::EventLoop &)
                 {
                     return compressionMiddleware({.minimumBodySize = kTestThresholdBytes});
                 },
                 isHugeHandled);
-        const std::unique_ptr<RunningHttpServerFixture> offloadedFixture = makeTwoRouteCompressionFixture(
+        const std::unique_ptr<RunningHttpServerFixture> offloadedFixture = makeCompressionProbeFixture(
                 [&executor](Core::EventLoop &loop)
                 {
                     return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes});
@@ -502,7 +522,7 @@ namespace AsynGyanis::Net
     {
         Core::AsyncExecutor executor{2};
         std::atomic<bool>   isHugeHandled{false};
-        const std::unique_ptr<RunningHttpServerFixture> fixture = makeTwoRouteCompressionFixture(
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
                 [&executor](Core::EventLoop &loop)
                 {
                     return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes});
@@ -541,5 +561,65 @@ namespace AsynGyanis::Net
         const std::optional<std::string> restored = gunzip(hugeResponse->body);
         ASSERT_TRUE(restored.has_value()) << "大正文压出来的响应解不开";
         EXPECT_EQ(*restored, wordyLargeBody());
+    }
+
+    /**
+     * @brief 门槛之下的正文不外派：那一跳比压一次更贵，外派会同时拖慢响应与循环
+     * @details 判据要能报红：把外派门槛降到 0（等于没有这道门槛），这条 2 KiB 正文就得排在
+     *          4 MiB 那份后面等唯一的那条工作线程，必然越过 50ms 线。前置条件同样做成断言：
+     *          大正文那条要真的占住工作线程（耗时 ≥ 50ms），否则「小正文很快」说明不了任何事。
+     *          门槛改变的只是执行位置，不是压不压——所以这里仍然核对小正文被压过且能解回原样
+     */
+    TEST(CompressionMiddleware, SmallBodiesStayOnTheLoopWhenOffloading)
+    {
+        Core::AsyncExecutor executor{1};
+        std::atomic<bool>   isHugeHandled{false};
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
+                [&executor](Core::EventLoop &loop)
+                {
+                    return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes});
+                },
+                isHugeHandled);
+        const std::uint16_t port = fixture->listeningPort();
+        ASSERT_NE(port, 0U);
+
+        std::optional<ParsedResponse> hugeResponse;
+        std::atomic<long long>        hugeElapsedMilliseconds{0};
+        const std::string             hugeRequestText = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
+        std::thread                   hugeReader(
+                [&]
+                {
+                    const auto began = std::chrono::steady_clock::now();
+                    hugeResponse = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout);
+                    hugeElapsedMilliseconds.store(
+                            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(),
+                            std::memory_order_release);
+                });
+
+        const auto deadline = std::chrono::steady_clock::now() + kCompressionTestTimeout;
+        while (!isHugeHandled.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        ASSERT_TRUE(isHugeHandled.load(std::memory_order_acquire)) << "大正文请求没有在时限内进到服务端";
+
+        const auto midBegin = std::chrono::steady_clock::now();
+        const std::optional<ParsedResponse> midResponse =
+                sendAndReadResponse(port, makeRequestText("GET /mid HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+        const auto midElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - midBegin);
+
+        hugeReader.join();
+        ASSERT_TRUE(midResponse.has_value()) << "小正文那条没读到响应";
+        ASSERT_TRUE(hugeResponse.has_value()) << "大正文那条没读到完整响应";
+        EXPECT_GE(hugeElapsedMilliseconds.load(std::memory_order_acquire), kLoopMustStayFreeBudget.count())
+                << "大正文没占住工作线程（只耗时 " << hugeElapsedMilliseconds.load() << "ms），前置条件不成立，本用例说明不了排队";
+
+        EXPECT_LT(midElapsed, kLoopMustStayFreeBudget)
+                << "门槛之下的 " << kMidBodyBytes << " 字节正文被外派后排在长任务后面等了 " << midElapsed.count()
+                << "ms：这道门槛没生效";
+        EXPECT_TRUE(hasHeaderLine(midResponse->headers, "content-encoding: gzip")) << "小正文压根没被压缩：\n" << midResponse->headers;
+        const std::optional<std::string> restoredMid = gunzip(midResponse->body);
+        ASSERT_TRUE(restoredMid.has_value()) << "小正文压出来的响应解不开";
+        EXPECT_EQ(*restoredMid, midBody());
     }
 } // namespace AsynGyanis::Net

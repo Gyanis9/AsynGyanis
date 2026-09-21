@@ -24,6 +24,9 @@
   `compressionMiddleware(options)` 签名与行为都不变，仍然在调用协程所在线程上压。
   为什么要有这一版：HTTP 三条路径的处理器协程都跑在事件循环线程上，一条 256 KiB 正文的 gzip 要占住
   循环 4.4 ms，这期间同一条循环上的其他连接什么都做不了。
+  不是所有正文都值得外派：`CompressionOptions` 新增 `offloadMinimumBodySize`（默认 8 KiB），不足它的
+  仍在循环线程上压。一次「工作线程 → 循环」的投递加唤醒实测 9.7 µs（热循环下的下限，整跳约两倍），
+  而 4 KiB 正文压一次 zstd 只要 8.1 µs、gzip 22.6 µs——门槛以下外派反而把响应和循环一起拖慢。
   前提与限制：外置要求「会话收尾会等处理器协程跑完」——h1 与 h2 的请求路径按结构成立，HTTP/3 则由
   承载层在摘掉连接之前叫醒并等完会话里分离的派发协程（`Http3Session::abandonPendingStreams()`）。
   `echo_server` 的明文、TLS 与 h3 三条通道默认都走工作线程，`--compress-sync` 逐档切回就地版做对照。
