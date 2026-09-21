@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -882,8 +883,148 @@ namespace AsynGyanis::Net
         int         zstdLevel       = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
     };
 
+    namespace detail
+    {
+        /**
+         * @brief 按选定编码压一次正文，失败（含内存不足）返回空
+         * @details 就地压与外置到工作线程压共用这一份实现：两条路径的产物必须逐字节相同，
+         *          否则开关一拨就换了一套编码语义
+         * @param encoding 选定的编码名，取值见 kCompressionPreference
+         * @param body 待压的正文
+         * @param options 各算法的档位
+         * @return std::optional<std::string> 压缩结果；为空表示没压成
+         */
+        [[nodiscard]] inline std::optional<std::string> compressWithEncoding(const std::string_view encoding,
+                                                                            const std::string_view body,
+                                                                            const CompressionOptions options)
+        {
+            if (encoding == "zstd")
+            {
+                return zstdCompress(body, options.zstdLevel);
+            }
+            if (encoding == "br")
+            {
+                return brotliCompress(body, options.brotliQuality);
+            }
+            return gzipCompress(body, options.gzipLevel);
+        }
+    } // namespace detail
+
+    namespace detail
+    {
+        /**
+         * @brief 响应压缩中间件的实现体：就地压与外置到工作线程压共用同一套判断与头部改写
+         * @details 两条路径必须产出一样的字节与头，否则「换一种执行位置」本身就成了行为变更
+         * @param offloadExecutor 非空时把压缩交给它的工作线程，为空时在调用协程所在线程上压完
+         * @param completionLoop 外置时恢复协程用的事件循环，须是处理器所属的那条循环
+         * @param options 压缩选项（阈值与各算法档位）
+         * @return MiddlewareFunc 中间件
+         */
+        inline MiddlewareFunc compressionMiddlewareImplementation(Core::AsyncExecutor *offloadExecutor,
+                                                                Core::EventLoop *completionLoop,
+                                                                const CompressionOptions options)
+        {
+            return [offloadExecutor, completionLoop, options](HttpRequest &request, HttpResponse &response,
+                                                              const std::function<Core::Task<void>()> next) -> Core::Task<>
+            {
+                co_await next();
+
+                // 已经声明过编码（业务自己压的，或上游中间件压的）：再压一层对端解不开
+                if (response.hasHeader("content-encoding"))
+                {
+                    co_return;
+                }
+
+                // 流式响应逐段写出、长度对序列化层未知，压不了整块；无正文的状态码没有可压的内容
+                if (response.isChunkedResponse() || response.carriesNoContent())
+                {
+                    co_return;
+                }
+
+                // 区间响应：正文只是某个区间的一段字节，压缩它会让对端的区间语义错乱（206 必带 content-range）
+                if (response.hasHeader("content-range"))
+                {
+                    co_return;
+                }
+
+                // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
+                // q=0 视为明确拒绝，`*` 视为接受（语义见 detail::acceptsEncoding）
+                const std::string acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
+                std::string_view  selectedEncoding;
+                for (const std::string_view candidate: detail::kCompressionPreference)
+                {
+                    if (detail::acceptsEncoding(acceptEncodingHeader, candidate))
+                    {
+                        selectedEncoding = candidate;
+                        break;
+                    }
+                }
+                if (selectedEncoding.empty())
+                {
+                    co_return;
+                }
+
+                const std::string_view body = response.body();
+                if (body.size() < options.minimumBodySize)
+                {
+                    co_return;
+                }
+
+                if (const std::optional<std::string> contentType = response.getHeader("content-type");
+                    contentType.has_value() && detail::isIncompressibleContentType(*contentType))
+                {
+                    co_return;
+                }
+
+                std::optional<std::string> compressed;
+                if (offloadExecutor != nullptr)
+                {
+                    // 交给工作线程的只有这份副本与编码名：响应对象、协程帧都属于循环线程，
+                    // 跨线程碰它们就是数据竞争。恢复落在 completionLoop 上，因此下面的改写仍在原线程
+                    std::string bodyCopy{body};
+                    const std::string_view encoding = selectedEncoding;
+                    compressed = co_await offloadExecutor->submit<std::optional<std::string>>(
+                            *completionLoop,
+                            [bodyCopy, encoding, options]
+                            {
+                                return compressWithEncoding(encoding, bodyCopy, options);
+                            });
+                } else
+                {
+                    compressed = compressWithEncoding(selectedEncoding, body, options);
+                }
+                if (!compressed.has_value())
+                {
+                    // 压缩失败（内存不足）不是错误响应：照原样发未压缩正文，别让对端拿到半截数据
+                    co_return;
+                }
+
+                // 正文表示变了：强 ETag 必须降级为弱校验器（RFC 9110 §8.8.1），否则缓存会把
+                // 压缩副本与未压缩副本当成同一份表示
+                if (const std::optional<std::string> entityTag = response.getHeader("etag");
+                    entityTag.has_value() && !entityTag->starts_with("W/"))
+                {
+                    response.setHeader("etag", "W/" + *entityTag);
+                }
+
+                detail::appendVaryAcceptEncoding(response);
+                response.setHeader("content-encoding", std::string(selectedEncoding));
+                // 正文表示变了，业务此前显式声明过的 content-length（如静态文件对 HEAD 用的
+                // 「先声明长度、不读正文」）此刻描述的是未压缩正文的字节数，必须按压缩后的
+                // 实际字节数改写：留着旧值就是「头部说一万字节、实际只有三千」，keep-alive 上
+                // 对端按旧长度截断，余下字节被当成下一条响应。
+                // setBody 刻意保留调用方声明过的长度（那是 HEAD/静态文件路径赖以省一次读的手段），
+                // 因此改写这条头是替换正文的一方——也就是本中间件——自己的责任
+                response.setHeader("content-length", std::to_string(compressed->size()));
+                // 压缩结果此刻只被本中间件持有，交出所有权直接移动进响应，省掉一整份压缩字节的拷贝与再分配
+                response.setOwnedBody(std::move(*compressed));
+                co_return;
+            };
+        }
+    } // namespace detail
+
     /**
-     * @brief 响应压缩中间件（zstd / brotli / gzip）
+     * @brief 响应压缩中间件（zstd / brotli / gzip），压缩在调用协程所在线程上做完
      *
      * @details 在业务处理完之后判断并压缩响应正文；对所有路由生效，静态文件命中压缩时从 mmap 零拷贝换成
      *          内存正文（阈值默认 1 KiB，是「省带宽」与「多一次拷贝 + 一次压缩」的取舍）。对端接受多种编码时
@@ -895,106 +1036,37 @@ namespace AsynGyanis::Net
      *       正文小于阈值、内容类型属于已压缩媒体
      * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
      *       h1 与 h2 共用同一份响应序列化，因此两条路径都生效
-     * @warning 压缩是在调用协程所在线程上同步做完的，而 HTTP 三条路径的协程都跑在事件循环线程上：
-     *          一条正文压多久，同一条循环上的其他连接就等多久。256 KiB 近似真实正文的占用是
-     *          gzip6 4.4 ms、brotli6 4.2 ms、gzip1 1.3 ms、zstd3 0.45 ms（微基准四条
-     *          `*-response-compress-256k`）；线上同一结论：单条循环上只跑一路持续要 gzip 大正文的
-     *          客户端，就能把同循环小请求的 p50 从 37us 顶到 5.9ms。偏好顺序 zstd > br > gzip
-     *          也是 CPU 成本顺序，只接受 gzip 的对端要付 9.8 倍压缩 CPU——正文可能很大时，
-     *          要么把压缩挪到工作线程再做，要么按大小跳过，别把它留在循环线程上
-     * @see Gzip.h, Compression.h, HttpResponse::setBody()
+     * @warning 正文可能很大时别用这一版：HTTP 三条路径的协程都跑在事件循环线程上，一条正文压多久，
+     *          同一条循环上的其他连接就等多久。256 KiB 近似真实正文的占用是 gzip6 4.4 ms、
+     *          brotli6 4.2 ms、gzip1 1.3 ms、zstd3 0.45 ms（微基准四条 `*-response-compress-256k`）；
+     *          线上同结论：单条循环上只跑一路持续要 gzip 大正文的客户端，就能把同循环小请求的 p50
+     *          从 37us 顶到 5.9ms。改用下面带执行器的那一版把压缩挪出循环线程
+     * @see compressionMiddleware(Core::EventLoop &, Core::AsyncExecutor &, CompressionOptions)
      */
     inline MiddlewareFunc compressionMiddleware(const CompressionOptions options = {})
     {
-        return [options](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            co_await next();
+        return detail::compressionMiddlewareImplementation(nullptr, nullptr, options);
+    }
 
-            // 已经声明过编码（业务自己压的，或上游中间件压的）：再压一层对端解不开
-            if (response.hasHeader("content-encoding"))
-            {
-                co_return;
-            }
-
-            // 流式响应逐段写出、长度对序列化层未知，压不了整块；无正文的状态码没有可压的内容
-            if (response.isChunkedResponse() || response.carriesNoContent())
-            {
-                co_return;
-            }
-
-            // 区间响应：正文只是某个区间的一段字节，压缩它会让对端的区间语义错乱（206 必带 content-range）
-            if (response.hasHeader("content-range"))
-            {
-                co_return;
-            }
-
-            // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
-            // q=0 视为明确拒绝，`*` 视为接受（语义见 detail::acceptsEncoding）
-            const std::string acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
-            std::string_view  selectedEncoding;
-            for (const std::string_view candidate: detail::kCompressionPreference)
-            {
-                if (detail::acceptsEncoding(acceptEncodingHeader, candidate))
-                {
-                    selectedEncoding = candidate;
-                    break;
-                }
-            }
-            if (selectedEncoding.empty())
-            {
-                co_return;
-            }
-
-            const std::string_view body = response.body();
-            if (body.size() < options.minimumBodySize)
-            {
-                co_return;
-            }
-
-            if (const std::optional<std::string> contentType = response.getHeader("content-type");
-                contentType.has_value() && detail::isIncompressibleContentType(*contentType))
-            {
-                co_return;
-            }
-
-            std::optional<std::string> compressed;
-            if (selectedEncoding == "zstd")
-            {
-                compressed = zstdCompress(body, options.zstdLevel);
-            } else if (selectedEncoding == "br")
-            {
-                compressed = brotliCompress(body, options.brotliQuality);
-            } else
-            {
-                compressed = gzipCompress(body, options.gzipLevel);
-            }
-            if (!compressed.has_value())
-            {
-                // 压缩失败（内存不足）不是错误响应：照原样发未压缩正文，别让对端拿到半截数据
-                co_return;
-            }
-
-            // 正文表示变了：强 ETag 必须降级为弱校验器（RFC 9110 §8.8.1），否则缓存会把
-            // 压缩副本与未压缩副本当成同一份表示
-            if (const std::optional<std::string> entityTag = response.getHeader("etag");
-                entityTag.has_value() && !entityTag->starts_with("W/"))
-            {
-                response.setHeader("etag", "W/" + *entityTag);
-            }
-
-            detail::appendVaryAcceptEncoding(response);
-            response.setHeader("content-encoding", std::string(selectedEncoding));
-            // 正文表示变了，业务此前显式声明过的 content-length（如静态文件对 HEAD 用的
-            // 「先声明长度、不读正文」）此刻描述的是未压缩正文的字节数，必须按压缩后的
-            // 实际字节数改写：留着旧值就是「头部说一万字节、实际只有三千」，keep-alive 上
-            // 对端按旧长度截断，余下字节被当成下一条响应。
-            // setBody 刻意保留调用方声明过的长度（那是 HEAD/静态文件路径赖以省一次读的手段），
-            // 因此改写这条头是替换正文的一方——也就是本中间件——自己的责任
-            response.setHeader("content-length", std::to_string(compressed->size()));
-            // 压缩结果此刻只被本中间件持有，交出所有权直接移动进响应，省掉一整份压缩字节的拷贝与再分配
-            response.setOwnedBody(std::move(*compressed));
-            co_return;
-        };
+    /**
+     * @brief 响应压缩中间件，压缩交给工作线程、完成后回到指定事件循环
+     * @details 判断、头部改写与就地版完全同源（同一份实现体），差别只在压缩那一步落在哪个线程：
+     *          循环线程因此不会被一次压缩占住数毫秒，代价是多一份正文副本（按值交给工作线程）与
+     *          一次跨线程恢复。
+     * @param completionLoop 恢复协程用的事件循环，必须是处理器所属的那条循环——否则响应改写会
+     *        发生在别的线程上，与那条循环的会话状态构成数据竞争
+     * @param offloadExecutor 承载压缩的工作线程池，见 Core::AsyncExecutor
+     * @param options 压缩选项（阈值与各算法档位）
+     * @return MiddlewareFunc 中间件
+     * @warning 执行器与循环都必须比返回的中间件活得久：中间件只握着它们的裸指针，
+     *          注册进服务器后由每条请求复用
+     * @note 处理器协程在等待期间是挂起的，因此帧活着；会话收尾会等业务跑完（三条传输路径同口径），
+     *       外置压缩不会被「业务帧先销毁」那条坑咬到
+     */
+    inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor,
+                                              const CompressionOptions options = {})
+    {
+        return detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
     }
 
 } // namespace AsynGyanis::Net
