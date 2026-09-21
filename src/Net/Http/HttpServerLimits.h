@@ -38,6 +38,12 @@ namespace AsynGyanis::Net
         std::chrono::milliseconds settingsAcknowledgementTimeout{std::chrono::seconds(10)};
 
         std::size_t maximumRequestsPerConnection{1000};                   ///< 单连接最多处理的请求条数，达到后回完当前响应即收口；0 表示不限
+
+        /// 静态文件的映射缓存条数上限：同时保留多少份已建好的映射。命中一次即省掉「打开文件 + 建立映射」
+        /// 那约 17 µs 的固定开销。0 表示关闭缓存、退回每请求现建一次；上限只管条数，不管累计字节数。
+        /// Windows 上本项一律按 0 处理：挂着活动映射的文件既不能被截断也不能被 rename 覆盖，
+        /// 启用会挡掉「写临时文件 + rename」这种常规发布方式（HttpServer 在建静态配置时降级并记一条 INFO）
+        std::size_t maximumMappedStaticFiles{64};
     };
 
 } // namespace AsynGyanis::Net

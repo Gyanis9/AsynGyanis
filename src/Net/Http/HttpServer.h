@@ -17,6 +17,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/StaticFileMappingCache.h"
 #include "Net/Tcp/TcpServer.h"
 
 #include <cstdint>
@@ -40,6 +41,12 @@ namespace AsynGyanis::Net
         bool isEnabled{false};                ///< 是否启用静态文件服务；根目录规范化失败即为 false
         std::filesystem::path rootDirectory;  ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
         std::optional<std::string> cacheControl; ///< 静态文件响应的 Cache-Control 值；空表示不发这条头
+        /**
+         * @brief 映射缓存，由 ensureStaticFileSettings() 按当时的限额建立，之后只读
+         * @note 条目上限取自建立配置那一刻的 HttpServerLimits::maximumMappedStaticFiles，
+         *       因此要改上限必须先 setLimits() 再 staticFileDir()
+         */
+        std::shared_ptr<StaticFileMappingCache> mappingCache;
     };
 
     /**

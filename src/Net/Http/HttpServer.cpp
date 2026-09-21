@@ -12,6 +12,7 @@
 #include "Net/Http/HttpSession.h"
 #include "Net/Http2/Http2Session.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
+#include "Platform/Platform.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <array>
@@ -685,28 +686,40 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            // 打开映射并复核长度：返回 false 时响应已被写成 500/413，调用方直接收尾
-            const auto prepareMappedFile = [&candidatePath, &response](Platform::MemoryMappedFile &mappedFile) -> bool
+            // 取这份文件的映射：返回空指针时响应已被写成 500/413，调用方直接收尾。
+            // 先查缓存，命中即免去「打开文件 + 建立映射」那约 17 µs；未命中才真的建，建成再回填
+            const auto prepareMappedFile = [&]() -> std::shared_ptr<const Platform::MemoryMappedFile>
             {
-                mappedFile = Platform::MemoryMappedFile::open(candidatePath);
-                if (!mappedFile.isValid())
+                if (const std::shared_ptr<const Platform::MemoryMappedFile> cached =
+                        settings->mappingCache->find(candidatePath, *fileBasicInfo);
+                    cached != nullptr)
+                {
+                    return cached;
+                }
+
+                auto mappedFile = std::make_shared<Platform::MemoryMappedFile>(Platform::MemoryMappedFile::open(candidatePath));
+                if (!mappedFile->isValid())
                 {
                     // 文件在 stat 之后被并发删除、改权限或占满句柄（TOCTOU 窗口）：按服务端故障处理，不回半个文件
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
                     response.setHeader("content-type", "text/plain");
-                    return false;
+                    return nullptr;
                 }
                 // 映射长度才是正文的真实字节数。文件在 stat 与映射之间被换成更大的版本时，
                 // 上面的上限判定已经过期，这里按新长度复查一次，避免绕过限制
-                if (mappedFile.bytes().size() > kMaximumStaticFileSize)
+                if (mappedFile->bytes().size() > kMaximumStaticFileSize)
                 {
                     response.setStatus(413);
                     response.setBody("Payload Too Large");
                     response.setHeader("content-type", "text/plain");
-                    return false;
+                    return nullptr;
                 }
-                return true;
+
+                // 登记的元数据就是刚查到的那一份：下一次请求带着新的 size/mtime 来比，
+                // 文件被换掉即不命中，不需要额外的失效通知通道
+                settings->mappingCache->store(candidatePath, mappedFile, *fileBasicInfo);
+                return mappedFile;
             };
 
             // 200 与 206 共有的表示头部：都要声明支持按字节取区间
@@ -728,14 +741,14 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                Platform::MemoryMappedFile mappedFile;
-                if (!prepareMappedFile(mappedFile))
+                const std::shared_ptr<const Platform::MemoryMappedFile> mappedFile = prepareMappedFile();
+                if (mappedFile == nullptr)
                 {
                     co_return;
                 }
                 // stat 与映射之间文件被截断：请求区间已落在映射之外，按 500 收口，
                 // 不让越界区间走到区间校验里变成异常
-                if (mappedFile.bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
+                if (mappedFile->bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
                 {
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
@@ -744,7 +757,7 @@ namespace AsynGyanis::Net
                 }
 
                 // 上限已限在 64 MiB 且区间经过 fileSize 钳制，折算到 size_t 不会窄化
-                response.setMappedBody(std::move(mappedFile), static_cast<std::size_t>(byteRange.start), static_cast<std::size_t>(rangeLength));
+                response.setSharedMappedBody(mappedFile, static_cast<std::size_t>(byteRange.start), static_cast<std::size_t>(rangeLength));
                 co_return;
             }
 
@@ -759,14 +772,14 @@ namespace AsynGyanis::Net
             }
 
             // 映射整份文件当正文：不经过堆缓冲，发送时由聚合写直接引用文件页，
-            // 省掉「文件 → 堆正文」那次等量拷贝与分配。映射对象随响应存活，发送期间一定有效
-            Platform::MemoryMappedFile mappedFile;
-            if (!prepareMappedFile(mappedFile))
+            // 省掉「文件 → 堆正文」那次等量拷贝与分配。缓存让同一份页能同时服务多条在途响应
+            const std::shared_ptr<const Platform::MemoryMappedFile> mappedFile = prepareMappedFile();
+            if (mappedFile == nullptr)
             {
                 co_return;
             }
 
-            response.setMappedBody(std::move(mappedFile));
+            response.setSharedMappedBody(mappedFile, 0, mappedFile->bytes().size());
         }
     } // namespace
 
@@ -890,6 +903,21 @@ namespace AsynGyanis::Net
         }
 
         m_staticFileSettings = std::make_shared<StaticFileSettings>();
+        // 缓存随配置一起建立：上限取当下这份限额（限额要在 staticFileDir() 之前设），
+        // 之后只做读写、不再重建，处理函数因此只依赖 settings 而不依赖服务器本身
+        std::size_t maximumMappedStaticFiles = m_limits->maximumMappedStaticFiles;
+#if ASYN_PLATFORM_WIN32
+        // Windows 上刻意不缓存映射：文件只要还挂着一个活动映射，既不能就地截断，也不能被
+        // rename 覆盖（实测 ERROR_ACCESS_DENIED）。「写临时文件 + rename」是静态资源发布的常规做法，
+        // 让缓存把它挡掉，代价比省下的那次「打开 + 建映射」重得多。此处按 0 处理，POSIX 不受影响。
+        if (maximumMappedStaticFiles != 0)
+        {
+            LOG_INFO("HttpServer: 本平台不启用静态文件映射缓存（映射期间文件无法被替换或截断），"
+                     "已按关闭处理；需要省掉这次映射开销请把服务跑在 POSIX 平台上");
+            maximumMappedStaticFiles = 0;
+        }
+#endif
+        m_staticFileSettings->mappingCache = std::make_shared<StaticFileMappingCache>(maximumMappedStaticFiles);
         m_router.any("*", [settings = m_staticFileSettings](HttpRequest &request, HttpResponse &response) -> Core::Task<>
         {
             co_await serveStaticFileRequest(request, response, settings);

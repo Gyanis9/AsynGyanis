@@ -13,8 +13,12 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -217,4 +221,61 @@ namespace AsynGyanis::Net::TestSupport
         message.append("\r\n");
         return message;
     }
+        /**
+         * @brief 临时文件夹具：给「映射正文」的用例提供一份磁盘上的真实文件
+         *
+         * @details 文件内容按二进制写入（文本模式会在 Windows 上把换行翻译成 CRLF，
+         *          正文长度随之失真）；析构时递归删除整个临时目录，失败退出也能清理干净。
+         */
+        class TemporaryFile
+        {
+        public:
+            /**
+             * @brief 创建临时目录并写入待映射的文件（文件名为 body.bin）
+             * @param namePrefix 便于调试的用途前缀
+             * @param content 文件内容
+             */
+            TemporaryFile(const std::string &namePrefix, const std::string_view content)
+            {
+                static std::atomic<unsigned int> sequenceCounter{0};
+
+                const std::string salt = std::to_string(
+                                                 std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
+                                         std::to_string(sequenceCounter.fetch_add(1));
+                m_directory = std::filesystem::temp_directory_path() / ("AsynGyanis_Net_" + namePrefix + "_" + salt);
+
+                std::error_code error;
+                std::filesystem::create_directories(m_directory, error);
+                m_filePath = m_directory / "body.bin";
+
+                std::ofstream file(m_filePath, std::ios::out | std::ios::binary | std::ios::trunc);
+                if (file.is_open())
+                {
+                    file.write(content.data(), static_cast<std::streamsize>(content.size()));
+                }
+            }
+
+            ~TemporaryFile()
+            {
+                std::error_code error;
+                std::filesystem::remove_all(m_directory, error);
+            }
+
+            TemporaryFile(const TemporaryFile &) = delete;
+
+            TemporaryFile &operator=(const TemporaryFile &) = delete;
+
+            /**
+             * @brief 文件路径
+             * @return const std::filesystem::path& 映射用的文件绝对路径
+             */
+            [[nodiscard]] const std::filesystem::path &path() const noexcept
+            {
+                return m_filePath;
+            }
+
+        private:
+            std::filesystem::path m_directory; ///< 本次用例独占的临时目录
+            std::filesystem::path m_filePath;  ///< 目录内待映射的文件
+        };
 } // namespace AsynGyanis::Net::TestSupport

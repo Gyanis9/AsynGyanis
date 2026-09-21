@@ -1,6 +1,6 @@
 /**
  * @file FileBasicInfo.h
- * @brief 一次系统调用读回文件基本信息：是否普通文件、字节数、最后修改时间
+ * @brief 一次系统调用读回文件基本信息：是否普通文件、字节数、最后修改时间与文件身份
  * @author Gyanis
  * @date 2026-09-21
  * @version 1.0.0
@@ -23,6 +23,13 @@ namespace AsynGyanis::Platform
         bool isRegularFile = false;        ///< 是否普通文件；目录为 false（大小与时间照实给出，只是不代表正文长度）
         std::uintmax_t sizeBytes = 0;      ///< 文件字节数
         std::int64_t lastWriteSeconds = 0; ///< 最后修改时间的 Unix 秒，向零取整（与 std::chrono::duration_cast 同口径）
+        /**
+         * @brief 「同一路径现在指向哪个文件」的身份标记，与大小、修改秒一起构成缓存命中判据
+         * @details 只靠大小与修改秒会漏掉一种情形：文件被原子替换成新内容，长度一样、且落在同一秒内。
+         *          Windows 取创建时间的 100 纳秒刻度（替换出来的新文件必然是新创建时间），
+         *          POSIX 取 inode——两者都来自同一次底层查询，不多花一次系统调用。
+         */
+        std::uint64_t identityTag = 0;
     };
 
     /**

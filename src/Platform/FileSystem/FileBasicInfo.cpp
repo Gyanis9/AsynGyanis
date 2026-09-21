@@ -55,6 +55,13 @@ namespace AsynGyanis::Platform
         info.sizeBytes        = (static_cast<std::uintmax_t>(attributes.nFileSizeHigh) << 32) |
                                 static_cast<std::uintmax_t>(attributes.nFileSizeLow);
         info.lastWriteSeconds = fileTimeToUnixSeconds(attributes.ftLastWriteTime);
+        {
+            ULARGE_INTEGER creation{};
+            creation.LowPart  = attributes.ftCreationTime.dwLowDateTime;
+            creation.HighPart = attributes.ftCreationTime.dwHighDateTime;
+            // 原样取 100 纳秒刻度而不折算成秒：这里要的只是「是不是同一个文件」，越细越不会误判
+            info.identityTag = creation.QuadPart;
+        }
         return info;
     }
 #else
@@ -72,6 +79,8 @@ namespace AsynGyanis::Platform
         info.sizeBytes        = static_cast<std::uintmax_t>(status.st_size);
         // 亚秒部分直接舍：ETag 与 Last-Modified 用的都是这一个整秒值，两处必须看到同一个数
         info.lastWriteSeconds = static_cast<std::int64_t>(status.st_mtime);
+        // inode 即身份：原子替换或删除重建都会换一个新 inode，即使长度与修改秒完全一样
+        info.identityTag = static_cast<std::uint64_t>(status.st_ino);
         return info;
     }
 #endif

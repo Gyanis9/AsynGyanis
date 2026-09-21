@@ -97,6 +97,23 @@ namespace AsynGyanis::Net
                 return m_alternateRoot;
             }
 
+            /**
+             * @brief 用原子替换的方式换掉静态根目录里的一个文件
+             * @details 先写同目录的临时文件再 rename 覆盖：被缓存映射着的文件在 Windows 上无法就地截断，
+             *          而「写临时文件 + 替换」正是部署侧更新静态文件的常规做法，用例要按它来验。
+             */
+            void replaceStaticFile(const std::string &fileName, const std::string_view content) const
+            {
+                const std::filesystem::path target = m_staticRoot / fileName;
+                writeTextFile(target.string() + ".incoming", content);
+                std::error_code error;
+                std::filesystem::rename(target.string() + ".incoming", target, error);
+                if (error)
+                {
+                    throw std::runtime_error("替换静态夹具文件失败：" + error.message());
+                }
+            }
+
             /// 目录是否真的建起来了（建不起来时用例应当立即失败，而不是把「404」误读成「拦截成功」）
             [[nodiscard]] bool isReady() const
             {
@@ -874,6 +891,76 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(response.body().empty());
         EXPECT_EQ(headerValueOf(response, "content-length"), "5");
         EXPECT_EQ(headerValueOf(response, "content-range"), "bytes 0-4/22");
+    }
+
+    /**
+     * @brief 文件被改过之后，下一次请求给出新正文：缓存的命中判据（大小 + 修改整秒）必须把它挡掉
+     */
+    TEST(HttpServer, ServesUpdatedStaticFileAfterTheFileChanges)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheInvalidation");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        // 第一条请求把整份文件的映射建出来（POSIX 上还会登记进缓存）。
+        // 这里刻意用临时量而不留具名对象：响应可能正持有那份映射，留着它会让 Windows 的替换被挡住
+        ASSERT_EQ(serveRequest(server, HttpMethod::GET, "/hello.txt").body(), kHelloFileContent);
+
+        // 换成一份**等长**的正文：大小不变，替换若落在同一秒内连修改秒都不变，
+        // 只有「文件身份」这一维能挡住的旧映射就会被发出去——这正是身份标记存在的理由
+        const std::string updatedContent = "hello_from_static_root";
+        ASSERT_EQ(updatedContent.size(), kHelloFileContent.size());
+        tree.replaceStaticFile("hello.txt", updatedContent);
+
+        const HttpResponse rewritten = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        EXPECT_EQ(rewritten.body(), updatedContent);
+        EXPECT_NE(rewritten.toString().find("content-length: " + std::to_string(updatedContent.size())), std::string::npos);
+    }
+
+    /**
+     * @brief 全量请求把映射喂进缓存之后，区间请求要从同一份映射上切出正确的字节
+     */
+    TEST(HttpServer, ServesByteRangeFromTheCachedWholeFileMapping)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheRange");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        ASSERT_EQ(serveRequest(server, HttpMethod::GET, "/hello.txt").body(), kHelloFileContent);
+
+        const HttpResponse ranged = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=6-10"}});
+        ASSERT_EQ(ranged.status(), 206);
+        EXPECT_EQ(ranged.body(), "from-");
+        EXPECT_EQ(headerValueOf(ranged, "content-range"), "bytes 6-10/22");
+    }
+
+    /**
+     * @brief 缓存上限设为 0 即整条关闭：静态文件仍按原语义服务，改过的文件也照常跟上新内容
+     */
+    TEST(HttpServer, ServesStaticFileWithMappingCacheDisabled)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticCacheDisabled");
+        ASSERT_TRUE(tree.isReady());
+
+        // 上限要在 staticFileDir() 之前设：缓存条目数是在建立静态配置时按当时的限额定下的
+        HttpServerLimits limits;
+        limits.maximumMappedStaticFiles = 0;
+        server.setLimits(limits);
+        server.staticFileDir(tree.staticRootText());
+
+        ASSERT_EQ(serveRequest(server, HttpMethod::GET, "/hello.txt").body(), kHelloFileContent);
+
+        const std::string updatedContent = "uncached-path-still-sees-new-bytes";
+        tree.replaceStaticFile("hello.txt", updatedContent);
+        EXPECT_EQ(serveRequest(server, HttpMethod::GET, "/hello.txt").body(), updatedContent);
     }
 
     /**
