@@ -1146,7 +1146,10 @@ namespace AsynGyanis::Base
             return;
         }
 
-        if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted)
+        // Moved 也要收：Windows 把「改名走开」报成 Moved（源路径），Linux 的同一条动作被映射成 Deleted。
+        // 只收三种时，Windows 上「把 config.yaml 改名挪走」这个下线动作一条通知都不算数——旧名被类型
+        // 判据滤掉、新名因不是配置后缀被上一条滤掉，配置停在已经消失的那份上直到下次改动
+        if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted && changeType != Platform::FileChangeType::Moved)
         {
             return;
         }

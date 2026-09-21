@@ -1612,6 +1612,68 @@ server:
         configuration().disableHotReload();
     }
 
+    /**
+     * @brief 钉住：把配置文件改名移走也要触发热重载
+     * @details 消费方接受的事件种类是 Modified/Created/Deleted 三种。Linux 的 `IN_MOVED_FROM` 被映射成
+     *          Deleted，正好落在其中；Windows 的 `FILE_ACTION_RENAMED_OLD_NAME` 映射成 Moved，于是
+     *          「把 config.yaml 改名挪走」这个下线动作在 Windows 上一条通知都不算数：旧名被 Moved 滤掉，
+     *          新名因不是配置后缀被扩展名滤掉，配置停在已经消失的那份上直到下次改动。
+     *          先做一次普通改写当对照：确认监视通道活着，后面的判据才只指向「移走」这一条路。
+     */
+    TEST_F(ConfigManagerTest, RenamingConfigFileAwayTriggersHotReload)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        writeFile("control.yaml", "control: 1\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        std::atomic<int> callbackCount{0};
+        const bool       enabled = configuration().enableHotReload(
+                [&callbackCount](const ConfigLoadResult &)
+                {
+                    callbackCount.fetch_add(1, std::memory_order_release);
+                },
+                std::chrono::milliseconds(50));
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        const auto waitsForMoreCallbacks = [&callbackCount](const int expectedCount)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (callbackCount.load(std::memory_order_acquire) >= expectedCount)
+                {
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return false;
+        };
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        // 对照走的是另一个文件：同一条路径在监听器的防抖窗口内被再次上报会被压掉，
+        // 用同一个文件做对照就会把「移走那一步到底通不通」和「防抖恰好吃掉了它」混在一起
+        writeFile("control.yaml", "control: 2\n");
+        const bool sawControlReload = waitsForMoreCallbacks(1);
+        EXPECT_TRUE(sawControlReload) << "普通改写就没触发重载：监视通道没建立，下面的判据无从谈起";
+        if (!sawControlReload)
+        {
+            configuration().disableHotReload();
+            return;
+        }
+
+        const int countBeforeRename = callbackCount.load(std::memory_order_acquire);
+        std::error_code renameError;
+        std::filesystem::rename(directory() / "cfg.yaml", directory() / "cfg.retired", renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名移走配置文件失败：" << renameError.message();
+
+        EXPECT_TRUE(waitsForMoreCallbacks(countBeforeRename + 1)) << "改名移走配置文件没有触发热重载：Moved 事件被消费方的种类判据滤掉了";
+
+        configuration().disableHotReload();
+    }
+
     // ============================================================================
     // 并发读取
     // ============================================================================
