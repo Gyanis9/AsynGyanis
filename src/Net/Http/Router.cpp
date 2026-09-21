@@ -224,7 +224,8 @@ namespace AsynGyanis::Net
     // 匹配
     // ============================================================================
 
-    bool Router::matchesPattern(const PatternRoute &route, const std::string_view requestPath, PathParameters &collectedParameters)
+    bool Router::matchesPattern(const PatternRoute &route, const std::string_view requestPath, PathParameters &collectedParameters,
+                                const bool collectParameters)
     {
         // 请求路径不以 '/' 开头就不是合法Origin-form（OPTIONS 的 "*" 除外，它由通配路由整体吃掉），
         // 这里直接判不匹配，避免把 "etc/passwd" 这类畸形路径与 "/etc/passwd" 当成同一条
@@ -255,7 +256,12 @@ namespace AsynGyanis::Net
                 {
                     return false;
                 }
-                collectedParameters[std::string(patternSegment.substr(1))] = std::string(currentSegment);
+                // 流式探测只关心「命没命中 + 是不是流式」，参数随即丢弃，故按 collectParameters 跳过
+                // 键与值各一次 std::string 构造（长值还是堆分配）
+                if (collectParameters)
+                {
+                    collectedParameters[std::string(patternSegment.substr(1))] = std::string(currentSegment);
+                }
             } else if (patternSegment != currentSegment)
             {
                 // 字面段不等即失败，不做前缀比较：这正是 "/static/*" 不再命中 "/staticevil" 的原因
@@ -269,7 +275,10 @@ namespace AsynGyanis::Net
         // 通配路由：固定段全部命中即可，剩下的整段（可含多级 '/'）都算捕获值
         if (route.isWildcard)
         {
-            collectedParameters[std::string(kWildcardParameterName)] = std::string(remainingPath);
+            if (collectParameters)
+            {
+                collectedParameters[std::string(kWildcardParameterName)] = std::string(remainingPath);
+            }
             return true;
         }
 
@@ -568,10 +577,12 @@ namespace AsynGyanis::Net
             }
         }
 
+        // 本探测只要「命中与否 + 是不是流式注册」，参数一律不收集：省去通配剩余路径与每个
+        // ":name" 段的 std::string 构造（这条判定每条非精确请求都会跑到）
+        PathParameters unusedParameters;
         for (const PatternRoute &route: m_patternRoutes)
         {
-            PathParameters discardedParameters;
-            if (!matchesPattern(route, requestPath, discardedParameters))
+            if (!matchesPattern(route, requestPath, unusedParameters, false))
             {
                 continue;
             }

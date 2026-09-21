@@ -258,10 +258,13 @@ namespace AsynGyanis::Net
          * @param route 待判定的模式路由
          * @param requestPath 请求路径（未解码的原文）
          * @param collectedParameters 输出参数：匹配到的 ":name" 与通配剩余路径，仅在本函数返回 true 时应被采信
+         * @param collectParameters 是否收集参数；仅需命中判定（如流式路由探测）时传 false，
+         *        免去为通配剩余路径与每个 ":name" 段各造一份 std::string 再当场丢弃
          * @return true 路径命中
          * @return false 路径不命中（此时 collectedParameters 里的残留应被丢弃）
          */
-        static bool matchesPattern(const PatternRoute &route, std::string_view requestPath, PathParameters &collectedParameters);
+        static bool matchesPattern(const PatternRoute &route, std::string_view requestPath, PathParameters &collectedParameters,
+                                   bool collectParameters = true);
 
         /**
          * @brief 判断路径是否为精确路径（不含 ":param" 与 '*' 模式字符）
