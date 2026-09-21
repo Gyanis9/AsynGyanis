@@ -19,6 +19,7 @@ add_executable(TestCore
         Coroutine/TestCoroutinePool.cpp
         Coroutine/TestCancelable.cpp
         Coroutine/TestThreadPool.cpp
+        Coroutine/TestAsyncExecutor.cpp
 
         Process/TestWorkerSupervisor.cpp
 

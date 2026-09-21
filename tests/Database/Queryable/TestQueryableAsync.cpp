@@ -16,7 +16,7 @@
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Dialect/SqliteDialect.h"
-#include "Database/Pool/AsyncExecutor.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -96,7 +96,7 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsyncMissingTableRow>
 namespace
 {
     using AsynGyanis::Core::Task;
-    using AsynGyanis::Database::AsyncExecutor;
+    using AsynGyanis::Core::AsyncExecutor;
     using AsynGyanis::Database::ConnectionConfig;
     using AsynGyanis::Database::ConnectionPool;
     using AsynGyanis::Database::DatabaseFactory;

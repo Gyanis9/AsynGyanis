@@ -1,8 +1,8 @@
-#include "Database/Pool/AsyncExecutor.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 
 #include <algorithm>
 
-namespace AsynGyanis::Database
+namespace AsynGyanis::Core
 {
     AsyncExecutor::AsyncExecutor(const std::size_t workerCount)
     {
@@ -103,10 +103,10 @@ namespace AsynGyanis::Database
                 m_pendingCount.fetch_sub(1, std::memory_order_relaxed);
             }
 
-            // 用户代码在锁外执行：一个阻塞的数据库调用可能耗时数百毫秒甚至更久，
+            // 用户代码在锁外执行：一次阻塞的数据库调用可以耗到数百毫秒，一次整块压缩也要数毫秒，
             // 若持着队列锁执行，其它工作线程会全部堵在 wait/push 上，等于退化成单线程
             task();
         }
     }
 
-} // namespace AsynGyanis::Database
+} // namespace AsynGyanis::Core

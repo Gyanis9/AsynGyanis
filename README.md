@@ -373,7 +373,7 @@ LOG_INFO_FMT("listening on port {}", port);
 | 子目录 | 内容 |
 |--------|------|
 | `EventLoop/` | `IoContext`（运行时入口）、`EventLoop`、`IoWatcher`、`TimerQueue` / `Timer`、三后端 `Epoll`（Linux）/ `Iocp`（Windows）/ `Uring`（可选）、`ConnectionDistributor`（接受分发） |
-| `Coroutine/` | `Task<T>`、`Scheduler`（本地队列 + 全局队列）、`ThreadPool`、`CoroutinePool`、`Cancelable` |
+| `Coroutine/` | `Task<T>`、`Scheduler`（本地队列 + 全局队列）、`ThreadPool`、`CoroutinePool`、`Cancelable`、`AsyncExecutor`（阻塞/CPU 密集活挪出循环线程） |
 | `Socket/` | `AsyncSocket`、`AsyncUdpSocket`、`AsyncResolver`、`VectoredSendCursor`、`InetAddress`、`Connection`、`ConnectionManager` |
 | `Tls/` | `TlsContext`、`TlsSocket` |
 | `Process/` | `WorkerSupervisor`（多进程 worker 的启停与看护） |
@@ -396,7 +396,7 @@ LOG_INFO_FMT("listening on port {}", port);
 |--------|------|
 | `Common/` | `DatabaseConnection` / `DatabaseResult` / `DatabaseValue` 抽象、`ConnectionConfig`、`DatabaseType`、`DatabaseFactory` |
 | `Dialect/` | `SqlDialect` 契约、`StandardSqlDialect`（共用渲染）、`SqliteDialect`、`MySqlDialect`、`SqlStatement`、`ColumnType`、`DialectRegistry` |
-| `Pool/` | `PoolConfig`、`PooledConnection`（RAII 租约）、`ConnectionPool`、`Transaction`、`AsyncExecutor` |
+| `Pool/` | `PoolConfig`、`PooledConnection`（RAII 租约）、`ConnectionPool`、`Transaction` |
 | `Queryable/` | `Column` / `TableSchema` / `QueryNode` / `Expression`、`Queryable<T>`、`RowMapper`、`SchemaMigrator` |
 | `Sqlite/` `MySql/` `Redis/` | 三种驱动实现（可选依赖缺失时退化为「每个入口给中文错误」的桩） |
 

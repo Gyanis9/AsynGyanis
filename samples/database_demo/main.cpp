@@ -22,7 +22,7 @@
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/MySql/MySqlConnection.h"
-#include "Database/Pool/AsyncExecutor.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -1228,7 +1228,7 @@ namespace
         std::atomic<bool> isFinished{false};            ///< 观测值写完由这枚标记 release 出去
     };
 
-    Core::Task<> runAsyncProbe(Database::ConnectionPool &pool, Database::AsyncExecutor &executor, Core::EventLoop &loop,
+    Core::Task<> runAsyncProbe(Database::ConnectionPool &pool, Core::AsyncExecutor &executor, Core::EventLoop &loop,
                                AsyncProbeResult &outcome)
     {
         try
@@ -1266,7 +1266,7 @@ namespace
         // 两条连接：一条给工作线程上的异步语句，另一条留给主线程的同步读回
         poolConfiguration.maximumPoolSize = 2;
         Database::ConnectionPool       pool(makeSqliteFactory(databaseFile.utf8Path()), poolConfiguration);
-        Database::AsyncExecutor        executor{2};
+        Core::AsyncExecutor        executor{2};
         std::string                    errorText;
         if (!Database::Queryable::SchemaMigrator::createTable<AccountRow>(pool, true, &errorText))
         {

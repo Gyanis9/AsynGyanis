@@ -7,9 +7,9 @@
 // - DiscardingSuspendedTaskDoesNotResumeFreedFrame（任务开工后、交付前销毁 Task，恢复必须是空操作）
 // - AbandonedSubmissionDoesNotStrandTheWorker（作废的那次提交不占住工作线程，后续提交照常完成）
 
-#include "Database/Pool/AsyncExecutor.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 
-#include "DatabaseTestSupport.h"
+#include "CoreTestSupport.h"
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -21,12 +21,12 @@
 #include <thread>
 #include <utility>
 
-namespace AsynGyanis::Database
+namespace AsynGyanis::Core
 {
     namespace
     {
-        using AsynGyanis::Database::TestSupport::EventLoopThread;
-        using AsynGyanis::Database::TestSupport::waitForCondition;
+        using AsynGyanis::Core::TestSupport::EventLoopThread;
+        using AsynGyanis::Core::TestSupport::waitForCondition;
 
         /// 一次提交的观测结果。就绪标记最后发布：finished 为真后另两个字段才可读
         struct SubmitProbe
@@ -217,4 +217,4 @@ namespace AsynGyanis::Database
             EXPECT_FALSE(abandonedProbe.finished.load(std::memory_order_acquire)) << "被丢弃的那次提交不该产出结果";
         }
     } // namespace
-} // namespace AsynGyanis::Database
+} // namespace AsynGyanis::Core

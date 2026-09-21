@@ -21,7 +21,7 @@
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
-#include "Database/Pool/AsyncExecutor.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/Transaction.h"
@@ -239,7 +239,7 @@ namespace AsynGyanis::Database::Queryable
          * @return Queryable& 自身引用，支持链式调用
          * @note 同步方法不使用执行器，调用本方法不会改变它们的行为
          */
-        Queryable &useAsyncExecutor(AsyncExecutor &executor)
+        Queryable &useAsyncExecutor(Core::AsyncExecutor &executor)
         {
             m_asyncExecutor = &executor;
             return *this;
@@ -799,11 +799,11 @@ namespace AsynGyanis::Database::Queryable
          * @brief 取得本查询异步执行时要用的执行器
          * @details 未注入时使用进程级共享实例：零配置即可用，且多个 Queryable 共享同一组
          *          工作线程，不会因为「每个查询各建一个执行器」而把线程数乘起来。
-         * @return AsyncExecutor& 执行器引用
+         * @return Core::AsyncExecutor& 执行器引用
          */
-        [[nodiscard]] AsyncExecutor &asyncExecutor() const
+        [[nodiscard]] Core::AsyncExecutor &asyncExecutor() const
         {
-            return m_asyncExecutor != nullptr ? *m_asyncExecutor : AsyncExecutor::shared();
+            return m_asyncExecutor != nullptr ? *m_asyncExecutor : Core::AsyncExecutor::shared();
         }
 
         /**
@@ -1544,7 +1544,7 @@ namespace AsynGyanis::Database::Queryable
         Transaction *               m_transaction = nullptr;   ///< 事务指针；非空时全部语句走事务持有的连接
         std::optional<DatabaseType> m_databaseType;            ///< 构造时显式指定的数据库类型；未指定时从连接推导
         std::shared_ptr<SqlDialect> m_dialect;                 ///< 缓存的方言实例，首次执行时解析并长期持有
-        AsyncExecutor *             m_asyncExecutor = nullptr; ///< 注入的异步执行器；为空时用进程级共享实例
+        Core::AsyncExecutor *       m_asyncExecutor = nullptr; ///< 注入的异步执行器；为空时用进程级共享实例
     };
 
 } // namespace AsynGyanis::Database::Queryable

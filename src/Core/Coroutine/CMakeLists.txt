@@ -8,4 +8,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/Cancelable.h
         ${CMAKE_CURRENT_LIST_DIR}/ThreadPool.h
         ${CMAKE_CURRENT_LIST_DIR}/ThreadPool.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/AsyncExecutor.h
+        ${CMAKE_CURRENT_LIST_DIR}/AsyncExecutor.cpp
 )

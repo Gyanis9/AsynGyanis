@@ -1,15 +1,16 @@
 /**
  * @file AsyncExecutor.h
- * @brief 阻塞任务执行器 —— 把数据库这类阻塞调用挪出事件循环线程
+ * @brief 阻塞任务执行器 —— 把不该占住事件循环线程的活挪到工作线程上跑
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 数据库驱动（sqlite3 / libmysqlclient）的接口全是阻塞的，事件循环线程一旦被占住，
- *          同一线程上所有连接的可读可写事件、定时器与已就绪协程都会一起停摆。本类提供「固定线程数的
- *          工作线程 + 任务队列」，完成后统一走 Scheduler::scheduleRemote() 把协程恢复投回调用方指定的
- *          EventLoop，因此调用方对线程的假设不会被工作线程破坏。
+ * @details 两类活都要挪出去：阻塞式接口（sqlite3 / libmysqlclient 这类驱动）与 CPU 密集的整块运算
+ *          （响应压缩就是一次压完整块正文）。事件循环线程一旦被占住，同一线程上所有连接的可读可写事件、
+ *          定时器与已就绪协程都会一起停摆。本类提供「固定线程数的工作线程 + 任务队列」，完成后统一走
+ *          Scheduler::scheduleRemote() 把协程恢复投回调用方指定的 EventLoop，因此调用方对线程的假设
+ *          不会被工作线程破坏。
  * @note 析构时队列中已接收的任务会先跑完再退出：直接丢弃会让等待结果的协程永远挂起。
  *       本对象必须比所有借用它的协程活得久。
  * @warning 调用方可以在任务完成前销毁 Task（等待体会作废那次恢复），但**不能**在恢复动作
@@ -19,9 +20,9 @@
  */
 #pragma once
 
+#include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
-#include "Database/Common/DatabaseException.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -38,12 +39,13 @@
 #include <utility>
 #include <vector>
 
-namespace AsynGyanis::Database
+namespace AsynGyanis::Core
 {
     /**
      * @brief 阻塞任务执行器
      *
-     * @details 固定数量的工作线程 + 一个任务队列，用于承载数据库这类阻塞调用。
+     * @details 固定数量的工作线程 + 一个任务队列，用于承载「不能在被调用处立刻完成」的活：
+     *          阻塞式驱动的调用，或一次要占住线程数毫秒的整块 CPU 运算（响应压缩即此类）。
      *          线程数在构造时确定，运行期不再增减：数据库连接的并行度受池上限约束，
      *          工作线程数多于池容量只会让多出来的线程排队等连接，反而增加上下文切换。
      *
@@ -251,7 +253,7 @@ namespace AsynGyanis::Database
                     // 执行器已停止：任务不会被任何人执行，静默挂起是最差的结果，
                     // 因此明确失败并就地恢复（此刻正跑在调用方的线程上，恢复它是安全的）
                     state->error = std::make_exception_ptr(
-                            DatabaseException("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交"));
+                            Base::LogicException("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交"));
                     return false;
                 }
                 return true;
@@ -308,4 +310,4 @@ namespace AsynGyanis::Database
         std::vector<std::jthread> m_workers; ///< 固定数量的工作线程，析构时自动 join
     };
 
-} // namespace AsynGyanis::Database
+} // namespace AsynGyanis::Core
