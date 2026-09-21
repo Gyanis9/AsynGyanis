@@ -22,7 +22,9 @@
     "http-date-format 在 2026-09-20 随「定长文本手工拼装（不再走 std::format）」重测（260.9 → 47.3 ns）；新增 http-date-now 一例量 Date 头的实际每条代价（按秒缓存，16.7 ns），与 http-date-format 的差就是「每条响应都重算」的浪费。",
     "router-streaming-* 两例（2026-09-21 新增）是 Router::hasStreamingRoute 的稳态成本——h1/h2/h3 会话每条请求头部收齐后都要跑它：get 一例量 GET/HEAD 撞方法闸直接返回（改前要跑整表扫描并把通配剩余路径拷成 std::string，实测消融 146.2 → 1.1 ns）；post-param 一例量 POST 命中 \":id\" 流式路由时「匹配但不收集参数」这条（消融 107.3 → 72.6 ns）。两例作吞吐下限门禁：若日后有人把方法闸或收集开关改回去，get 会当场掉约两个数量级报红。",
     "ws-deflate-message（2026-09-21 新增）量的是 WebSocket permessage-deflate 单条消息（1 KiB 可压文本）的压缩稳态：改前每条 deflateInit2/End 重建约 240KB 内部状态，改后复用 thread_local 流、每条 deflateReset（no_context_takeover 下与新建逐字节等价）。实测消融 8707 → 3174 ns/条（−64%），短消息上省的固定项占比更大。作吞吐下限门禁：改回复用即报红。同一 payload 连压两次字节一致由 TestPerMessageDeflate 钉死。",
-    "gzip-response-compress / zstd-response-compress（2026-09-21 新增）量的是响应压缩中间件一次性压 ~4KiB 可压 HTML 正文的稳态，与 ws-deflate-message 同源的一类浪费：改前每条响应都重建压缩器上下文（gzip deflateInit2/End；zstd 的 ZSTD_compress 内部建/销 CCtx），改后复用 thread_local 上下文（gzip deflateReset、zstd ZSTD_compressCCtx，产出逐字节一致）。实测消融 gzip 14133 → 10348 ns（−27%，正文大时压缩本身占比高）、zstd 6055 → 3177 ns（−47%）。zstd 的 0.6× 下限即可挡住退回；gzip 收益较小、按微基准惯例用 0.8× 收紧。正确性由 GzipTest/CompressionCodecs 的「同输入连压两次逐字节一致 + 多长度交错往返」钉死。"
+    "gzip-response-compress / zstd-response-compress（2026-09-21 新增）量的是响应压缩中间件一次性压 ~4KiB 可压 HTML 正文的稳态，与 ws-deflate-message 同源的一类浪费：改前每条响应都重建压缩器上下文（gzip deflateInit2/End；zstd 的 ZSTD_compress 内部建/销 CCtx），改后复用 thread_local 上下文（gzip deflateReset、zstd ZSTD_compressCCtx，产出逐字节一致）。实测消融 gzip 14133 → 10348 ns（−27%，正文大时压缩本身占比高）、zstd 6055 → 3177 ns（−47%）。zstd 的 0.6× 下限即可挡住退回；gzip 收益较小、按微基准惯例用 0.8× 收紧。正确性由 GzipTest/CompressionCodecs 的「同输入连压两次逐字节一致 + 多长度交错往返」钉死。",
+    "header-first-value-view / header-contains 两例（2026-09-21 新增，同一份二进制六跑）是头部存储新增的「不拷贝」读取出口与存在性判定，与 header-first-value 逐对比：减掉 281.6 ns 的装机本底之后，owning 查询 70.2 ns、视图查询 13.1 ns、存在性判定 15.6 ns。差额就是那一次取值拷贝（本 fixture 的 x-request-id 超过短串内联长度，每查一次要向堆要一次内存）。",
+    "qpack-decode 在 2026-09-21 重录下限：这一例在同一份二进制下跨进程严重双峰，六跑落在 ~258 ns 与 ~410-421 ns 两个集群里（最大/最小 1.63 倍），而且换一个无关的用例插进 main.cpp 就会把大部分跑推到慢峰；尝试把注意力集中在承接交付指令的临时串从计时体内挬到体外复用，双峰一丝不变（因此也没保留那处改动）。所以这里把下限按「已观察到的最慢跑」登记（2374677/s），而不是中位数——否则单跑门禁会把快慢峰当成回归。这一例只能报出量级回归，报不出 1.6 倍以内的漂移。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -89,13 +91,13 @@
       "runsMeasured": 3
     },
     "qpack-decode": {
-      "throughputPerSecond": 3893659,
-      "nanosecondsPerOperation": 256.8,
+      "throughputPerSecond": 2374677,
+      "nanosecondsPerOperation": 421.1,
       "observedNanosecondsRange": [
-        256.3,
-        258.6
+        258.3,
+        421.1
       ],
-      "runsMeasured": 3
+      "runsMeasured": 6
     },
     "h3-data-frame-via-temporary": {
       "throughputPerSecond": 1299893,
@@ -366,6 +368,24 @@
         3213.3
       ],
       "runsMeasured": 3
+    },
+    "header-first-value-view": {
+      "throughputPerSecond": 3393310,
+      "nanosecondsPerOperation": 294.7,
+      "observedNanosecondsRange": [
+        291.8,
+        297.0
+      ],
+      "runsMeasured": 6
+    },
+    "header-contains": {
+      "throughputPerSecond": 3364636,
+      "nanosecondsPerOperation": 297.2,
+      "observedNanosecondsRange": [
+        294.2,
+        298.8
+      ],
+      "runsMeasured": 6
     }
   }
 }
