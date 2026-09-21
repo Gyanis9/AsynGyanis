@@ -663,11 +663,9 @@ int main(int argc, char **argv)
         setupRoutes(http3Router);
         if (compressResponses)
         {
-            // h3 这一侧仍用就地版：QUIC 连接异常关闭时，会话收尾只看连接级在途动作，
-            // 不等会话里分离的派发协程，而被外置压缩挂起的帧正需要「收尾等它跑完」这条前提
-            // （详见 compressionMiddleware 那一版重载的 @warning）。h1/https 两条路径按结构成立，
-            // 所以只有它们走工作线程
-            http3Router.addMiddleware(Net::compressionMiddleware());
+            // 三条通道一律走外置版：h3 的会话收口现在会先叫醒并等完挂在业务协程上的在途动作
+            // （Http3Session::abandonPendingStreams），「等它跑完」这条前提在 QUIC 侧同样成立
+            http3Router.addMiddleware(makeCompressionMiddleware(pool.eventLoop(0)));
         }
         // 限流中间件挂在路由上，与明文/TLS 两侧同一份令牌桶：只限 h1/h2 等于给 h3 留了条后门
         if (rateLimitBucket != nullptr)

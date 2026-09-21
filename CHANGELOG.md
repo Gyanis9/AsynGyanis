@@ -24,8 +24,9 @@
   `compressionMiddleware(options)` 签名与行为都不变，仍然在调用协程所在线程上压。
   为什么要有这一版：HTTP 三条路径的处理器协程都跑在事件循环线程上，一条 256 KiB 正文的 gzip 要占住
   循环 4.4 ms，这期间同一条循环上的其他连接什么都做不了。
-  前提与限制：外置要求「会话收尾会等处理器协程跑完」——h1 与 h2 的请求路径按结构成立，HTTP/3 的连接
-  异常关闭目前不等会话里分离的派发协程，因此 `echo_server` 只在明文与 TLS 两侧走工作线程，h3 仍走就地版。
+  前提与限制：外置要求「会话收尾会等处理器协程跑完」——h1 与 h2 的请求路径按结构成立，HTTP/3 则由
+  承载层在摘掉连接之前叫醒并等完会话里分离的派发协程（`Http3Session::abandonPendingStreams()`）。
+  `echo_server` 的明文、TLS 与 h3 三条通道默认都走工作线程，`--compress-sync` 逐档切回就地版做对照。
 - **阻塞任务执行器上收到 Core**：`Core::AsyncExecutor`（原 `Database::AsyncExecutor`）是通用基础设施，
   承载一切「不能在被调用处立刻完成」的活——阻塞式驱动调用与整块 CPU 运算。头文件在
   `Core/Coroutine/AsyncExecutor.h`。

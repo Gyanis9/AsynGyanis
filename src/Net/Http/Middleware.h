@@ -1060,10 +1060,10 @@ namespace AsynGyanis::Net
      * @return MiddlewareFunc 中间件
      * @warning 执行器与循环都必须比返回的中间件活得久：中间件只握着它们的裸指针，
      *          注册进服务器后由每条请求复用
-     * @warning 前提是这条传输路径的会话收尾会**等**处理器协程跑完（HTTP/1.1 与 HTTP/2 的请求路径
-     *          按结构成立：帧在会话帧里、服务器只在 isReady() 后回收）。挂起的帧若被提前销毁，
-     *          已经投回循环的那次恢复就是悬垂句柄。HTTP/3 的连接异常关闭目前不满足这条
-     *          （收口只看连接级在途动作，不看会话里分离的派发协程），因此 h3 一侧暂用就地版
+     * @warning 前提是这条传输路径的会话收尾会**等**处理器协程跑完：挂起的帧若被提前销毁，已经投回
+     *          循环的那次恢复就是悬垂句柄。三条通道都满足——HTTP/1.1 与 HTTP/2 的请求路径按结构成立
+     *          （帧在会话帧里、服务器只在 isReady() 之后回收），HTTP/3 由承载层在摘掉连接之前调用
+     *          Http3Session::abandonPendingStreams()，叫醒并等完在途的派发协程
      */
     inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor,
                                               const CompressionOptions options = {})
