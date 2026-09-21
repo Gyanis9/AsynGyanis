@@ -556,6 +556,39 @@ int main(int argumentCount, char **argumentValues)
             results, checksum, failureCount);
     std::filesystem::remove(mappingProbePath);
 
+    // 静态正文的两条取法，一页大小（4 KiB）：小文件走一次顺序读还是建映射。
+    // 服务端把正文交给套接字时两条路都要再拷一次，差别就在「建/解映射」对「读进堆缓冲」
+    const std::filesystem::path smallFilePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-small.txt";
+    {
+        std::ofstream smallFile(smallFilePath, std::ios::binary | std::ios::trunc);
+        smallFile << std::string(4096, 'q');
+    }
+    measureCase(
+            "static-small-file-read",
+            [&smallFilePath]
+            {
+                std::string body(4096, '\0');
+                std::ifstream file(smallFilePath, std::ios::in | std::ios::binary);
+                if (!file.is_open())
+                {
+                    return std::size_t{0};
+                }
+                file.read(body.data(), static_cast<std::streamsize>(body.size()));
+                return static_cast<std::size_t>(file.gcount());
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "static-small-file-mmap",
+            [&smallFilePath]
+            {
+                Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(smallFilePath);
+                const std::size_t mappedLength = mappedFile.bytes().size();
+                mappedFile = Platform::MemoryMappedFile{};
+                return mappedLength;
+            },
+            results, checksum, failureCount);
+    std::filesystem::remove(smallFilePath);
+
     measureCase(
             "hpack-decode",
             [&decoder, &encodedHeaderBlock, &decodedHeaderFields]
