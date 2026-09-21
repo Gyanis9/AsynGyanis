@@ -796,9 +796,10 @@ int main(const int argc, char **argv)
     parserLimits.maximumHeaderBlockLength = 4096;
     parserLimits.maximumBodySize          = 1024;
 
-    const auto buildServer = [&](const std::uint16_t port, const Net::HttpServerLimits &limits, const bool withExtras)
+    // 服务器归哪条循环就必须在构造时写死：它的连接表与协程队列都不加锁，只有「归本循环」这条纪律
+    const auto buildServer = [&](Core::EventLoop &owningLoop, const std::uint16_t port, const Net::HttpServerLimits &limits, const bool withExtras)
     {
-        auto server = std::make_unique<Net::HttpServer>(serverLoop, *Core::InetAddress::resolve("127.0.0.1", port));
+        auto server = std::make_unique<Net::HttpServer>(owningLoop, *Core::InetAddress::resolve("127.0.0.1", port));
         setupRoutes(server->router());
         server->setLimits(limits);
         server->setParserLimits(parserLimits);
@@ -819,10 +820,10 @@ int main(const int argc, char **argv)
     Net::HttpServerLimits guardedLimits;
     guardedLimits.idleTimeout = std::chrono::milliseconds{300};
 
-    auto mainServer    = buildServer(mainPort, defaultLimits, true);
-    auto strictServer  = buildServer(strictPort, strictLimits, false);
-    auto guardedServer = buildServer(guardedPort, guardedLimits, false);
-    auto cappedServer  = buildServer(cappedPort, defaultLimits, false);
+    auto mainServer    = buildServer(serverLoop, mainPort, defaultLimits, true);
+    auto strictServer  = buildServer(serverLoop, strictPort, strictLimits, false);
+    auto guardedServer = buildServer(serverLoop, guardedPort, guardedLimits, false);
+    auto cappedServer  = buildServer(serverLoop, cappedPort, defaultLimits, false);
 
     // 静态文件目录：只挂在与业务路由同一台服务器上，配置必须在 start() 之前完成
     const std::filesystem::path staticDirectory = prepareStaticDirectory();
@@ -834,8 +835,12 @@ int main(const int argc, char **argv)
 
     // 接受分发：acceptor 只接受与派发，连接对象与协议工作全落在另一条循环上的 worker 实例
     auto distributor     = std::make_shared<Core::ConnectionDistributor>();
-    auto dispatchServer  = buildServer(dispatchWorkerPort, defaultLimits, false);
-    auto acceptorServer  = buildServer(dispatchPort, defaultLimits, false);
+    // worker 侧的服务器必须挂在 worker 自己那条循环上：addWorker 的回调是在 probeLoop 的线程上
+    // 执行的，而 adoptConnection 会改这台服务器的连接表、并把会话协程排进它所属循环的本地队列——
+    // 两处都不加锁。挂在 serverLoop 上就等于从 probeLoop 去动别人的循环内结构（与 echo_server 里
+    // 「第 i 个 worker 用 eventLoop(i)」的写法同一纪律）
+    auto dispatchServer  = buildServer(probeLoop, dispatchWorkerPort, defaultLimits, false);
+    auto acceptorServer  = buildServer(serverLoop, dispatchPort, defaultLimits, false);
     Net::HttpServer *rawDispatchServer = dispatchServer.get();
     distributor->addWorker(probeLoop, [rawDispatchServer](const int fileDescriptor)
     {
