@@ -110,6 +110,55 @@ namespace AsynGyanis::Database::Queryable
         }
     }
 
+    /**
+     * @brief 可空文本成员（std::optional<std::string>）非 NULL 时也走移动：搬空源变体、值逐字节不损
+     * @details 与裸 std::string 同一条右值重载的可空分支。源串被搬空即证明走的是移动而非「变体→optional
+     *          内部」那次整串拷贝；optional 取回值逐字节正确即证明搬的没错。
+     */
+    TEST(RowMapperStringMove, MovesTextBufferIntoOptionalStringMember)
+    {
+        DatabaseValue cell{std::string(4096, 'y')};   // 远超短字符串缓冲，是真实堆缓冲
+        const std::optional<std::string> converted =
+                Detail::convertDatabaseValue<std::optional<std::string>>(std::move(cell), kColumnName);
+        ASSERT_TRUE(converted.has_value());
+        EXPECT_EQ(*converted, std::string(4096, 'y'));
+        EXPECT_TRUE(std::get<std::string>(cell).empty()) << "可空文本列源缓冲应已被搬空（走移动而非拷贝路径）";
+    }
+
+    /**
+     * @brief 可空文本成员的 NULL 与拒绝面：monostate 落成空 optional，非文本载荷仍按原语义报错
+     * @details 移动分支只接管「单元格确实是文本」的情形；NULL（monostate）回落 const& 版得 nullopt，
+     *          整数落到 optional<std::string> 仍走列类型不一致的报错——不能因为加了 move 分支就把
+     *          拒绝面也放宽。
+     */
+    TEST(RowMapperStringMove, OptionalStringStillMapsNullToEmptyAndRejectsMismatch)
+    {
+        DatabaseValue nullCell{std::monostate{}};
+        const std::optional<std::string> converted =
+                Detail::convertDatabaseValue<std::optional<std::string>>(std::move(nullCell), kColumnName);
+        EXPECT_FALSE(converted.has_value()) << "SQL NULL 应映射成空 optional";
+
+        DatabaseValue integerCell{std::int64_t{7}};
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::optional<std::string>>(std::move(integerCell), kColumnName)),
+                     RowMappingException)
+                << "整数落到 optional<std::string> 仍须报列类型不一致，移动分支不得放宽拒绝面";
+    }
+
+    /**
+     * @brief 可空规范二进制成员也走移动：搬空源缓冲、字节不损
+     * @details optional<std::vector<std::uint8_t>> 命中可空二进制分支，源被搬空即证明走移动。
+     */
+    TEST(RowMapperBinaryMove, MovesCanonicalByteBufferIntoOptionalBinaryMember)
+    {
+        const BinaryBytes expected(4096, static_cast<std::uint8_t>(0x5A));
+        DatabaseValue cell{expected};
+        const std::optional<BinaryBytes> converted =
+                Detail::convertDatabaseValue<std::optional<BinaryBytes>>(std::move(cell), kColumnName);
+        ASSERT_TRUE(converted.has_value());
+        EXPECT_EQ(*converted, expected);
+        EXPECT_TRUE(std::get<BinaryBytes>(cell).empty()) << "可空二进制列源缓冲应已被搬空";
+    }
+
     // ------------------------------------------------------------------------
     // 无符号成员：int64 支路
     // ------------------------------------------------------------------------

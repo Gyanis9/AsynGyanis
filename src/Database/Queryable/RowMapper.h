@@ -284,12 +284,14 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 右值入口：成员是 std::string 或规范二进制类型、且单元格正是对应载荷时，把变体里的堆缓冲直接搬走
+         * @brief 右值入口：成员是 std::string / 规范二进制类型、或它们的 std::optional 包装，且单元格正是对应
+         *        载荷时，把变体里的堆缓冲直接搬走
          * @details assignColumn 手里的 cellValue 是即将析构的局部量；文本/二进制列走 const& 版本会把整段
          *          载荷再拷一份进成员（叠加驱动读值那次 = 每单元两次分配）。本重载对这两种大载荷 std::move
          *          搬走缓冲区（二进制仅规范拼法 std::vector<std::uint8_t> 可无损搬走，std::vector<std::byte>
-         *          仍逐字节转、回落 const& 版）。其余类型（标量按值、optional）没有可无损搬走的大缓冲区，
-         *          统一转交 const& 版本按原语义取值，保持单一派发真相。
+         *          仍逐字节转、回落 const& 版）；可空成员（optional<string>/optional<二进制>）同形——非 NULL
+         *          时把载荷搬进 optional 内部，NULL（monostate）与非匹配载荷都回落 const& 版走原有语义。
+         *          其余标量类型没有可无损搬走的大缓冲区，统一转交 const& 版本按原语义取值，保持单一派发真相。
          * @tparam MemberType 目标成员类型
          * @param cellValue 即将被搬空的单元格值（右值引用）
          * @param columnName 列名，仅用于错误信息
@@ -314,6 +316,26 @@ namespace AsynGyanis::Database::Queryable
                 {
                     return AsynGyanis::Database::Detail::fromBinaryBytes<BareType>(std::move(*byteValue));
                 }
+            }
+            else if constexpr (IsOptional<BareType>::value)
+            {
+                using InnerType = typename BareType::value_type;
+                if constexpr (std::is_same_v<InnerType, std::string>)
+                {
+                    // 可空文本列：非 NULL 时把堆缓冲搬进 optional，省掉「变体→成员」那次整串拷贝
+                    if (auto *const textValue = std::get_if<std::string>(&cellValue))
+                    {
+                        return MemberType{std::move(*textValue)};
+                    }
+                }
+                else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<InnerType>)
+                {
+                    if (auto *const byteValue = std::get_if<BinaryBytes>(&cellValue))
+                    {
+                        return MemberType{AsynGyanis::Database::Detail::fromBinaryBytes<InnerType>(std::move(*byteValue))};
+                    }
+                }
+                // monostate（NULL→nullopt）与非匹配载荷：落到下面的 const& 版按原语义取值/报错
             }
             return convertDatabaseValue<MemberType>(static_cast<const DatabaseValue &>(cellValue), columnName);
         }
