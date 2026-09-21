@@ -110,6 +110,16 @@ namespace AsynGyanis::Net
         return m_headerStore.firstValue(key);
     }
 
+    std::optional<std::string_view> HttpRequest::firstHeaderValueView(const std::string_view key) const
+    {
+        return m_headerStore.firstValueView(key);
+    }
+
+    bool HttpRequest::hasHeader(const std::string_view key) const
+    {
+        return m_headerStore.contains(key);
+    }
+
     bool HttpRequest::hasHeaderValueToken(const std::string_view key, const std::string_view expectedToken) const
     {
         return m_headerStore.containsListToken(key, expectedToken);

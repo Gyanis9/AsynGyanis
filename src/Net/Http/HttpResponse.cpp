@@ -169,6 +169,12 @@ namespace AsynGyanis::Net
         return m_headerStore.get(name);
     }
 
+    bool HttpResponse::hasHeader(const std::string_view name) const
+    {
+        // 只问存在性：取值上百字节时 owning 入口的那次拷贝纯属白付
+        return m_headerStore.contains(name);
+    }
+
     bool HttpResponse::hasHeaderValueToken(const std::string_view name, const std::string_view expectedToken) const
     {
         // 存储侧就地做大小写不敏感比较，这里不再归一化：长头部名不必为此现造一个副本

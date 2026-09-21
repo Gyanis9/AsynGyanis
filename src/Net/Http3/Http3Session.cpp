@@ -125,7 +125,7 @@ namespace AsynGyanis::Net
         /// 响应自动带上本次请求的 request-id：口径与 h1/h2 一致，调用方显式设过就不覆盖
         void noteRequestIdOnResponse(const HttpRequest &request, HttpResponse &response)
         {
-            if (!request.requestId().empty() && !response.getHeader(kRequestIdHeaderName).has_value())
+            if (!request.requestId().empty() && !response.hasHeader(kRequestIdHeaderName))
             {
                 static_cast<void>(response.setHeader(kRequestIdHeaderName, request.requestId()));
             }

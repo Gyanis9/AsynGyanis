@@ -121,15 +121,17 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string resolve(const HttpRequest &request) const
         {
-            // 读权威记录取首条（firstHeaderValue），而不是 getHeader()：x-request-id 不在可重复头部
+            // 读权威记录取首条（视图版），而不是 getHeader()：x-request-id 不在可重复头部
             // 名单里，同名多条时 getHeader() 会按 RFC 7230 §3.2.2 以 ", " 合并，于是两条互不相干的
             // 上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径。
-            // 也不用 headerValues()：为了一个值构造整列 string 是每请求一次的多余分配
-            const std::optional<std::string> clientRequestId = request.firstHeaderValue(kRequestIdHeaderName);
+            // 也不用 headerValues()：为了一个值构造整列 string 是每请求一次的多余分配。
+            // 用视图版而非 owning 版：本函数只在「采信客户端值」那条路上才需要一份字符串，
+            // 校验阶段（长度与字符集）读完就丢，不必先拷一份再拷一份
+            const std::optional<std::string_view> clientRequestId = request.firstHeaderValueView(kRequestIdHeaderName);
             if (clientRequestId.has_value() && isAcceptableRequestId(*clientRequestId))
             {
                 // 客户端自带值原样沿用：它往往是上游网关或客户端自己的链路 id，替换掉就断了关联
-                return *clientRequestId;
+                return std::string{*clientRequestId};
             }
             return next();
         }

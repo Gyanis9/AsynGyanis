@@ -83,6 +83,25 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string> firstValue(std::string_view name) const;
 
         /**
+         * @brief 取该名首条取值的视图，不拷贝也不分配
+         * @details 给「读完就丢」的调用方（判取值形态、比对前缀）用：owning 版每查一条长头部
+         *          就向堆要一次内存，而这些地方只要读几十字节。
+         * @param name 头部名，大小写不敏感
+         * @return std::optional<std::string_view> 首条取值；缺席时为空（空取值给出「存在且为空视图」，
+         *         不与缺席混淆）
+         * @note 视图指向存储内的字符串，只在本存储下次写入或清空之前有效；要跨过改写点就得自己拷走
+         */
+        [[nodiscard]] std::optional<std::string_view> firstValueView(std::string_view name) const;
+
+        /**
+         * @brief 判断该名是否出现过（不看取值）
+         * @details 只要存在性的调用方用它：owning 的取值入口会为一次判定拷出整个值。
+         * @param name 头部名，大小写不敏感
+         * @return true 至少有一条该名的记录
+         */
+        [[nodiscard]] bool contains(std::string_view name) const;
+
+        /**
          * @brief 判断该名的取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
          * @details 在存储内部逐段切分比对，不构造取值列表也不拷贝取值：Connection/Upgrade 这类
          *          判定每条请求要跑好几遍，而调用方只要一个布尔结果。

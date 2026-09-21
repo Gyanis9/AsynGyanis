@@ -447,4 +447,33 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(request.cancelToken().stop_requested());
         EXPECT_TRUE(request.requestCancel());
     }
+
+    TEST(HttpRequest, ExposesPresenceAndZeroCopyViewsOfHeaderValues)
+    {
+        HttpRequest request;
+        request.addHeader("Accept-Encoding", "gzip, deflate, br");
+        request.addHeader("x-empty", "");
+
+        // 存在性与视图都大小写不敏感，且与 owning 版同口径：会话与中间件改走这两条入口之后，
+        // 口径不一致会让「同一份请求」在两条路上读出不同结果
+        EXPECT_TRUE(request.hasHeader("accept-encoding"));
+        EXPECT_TRUE(request.hasHeader("ACCEPT-ENCODING"));
+        EXPECT_FALSE(request.hasHeader("cookie"));
+
+        const auto encoding = request.firstHeaderValueView("accept-encoding");
+        ASSERT_TRUE(encoding.has_value());
+        EXPECT_EQ(*encoding, "gzip, deflate, br");
+        EXPECT_EQ(request.firstHeaderValue("Accept-Encoding").value_or("<缺失>"), *encoding)
+                << "两版取到的必须是同一个首值";
+
+        // 空取值算「存在」：写 `Content-Length:` 与压根不写这条头部不是同一回事
+        EXPECT_TRUE(request.hasHeader("x-empty"));
+        const auto emptyValue = request.firstHeaderValueView("x-empty");
+        ASSERT_TRUE(emptyValue.has_value());
+        EXPECT_TRUE(emptyValue->empty());
+
+        request.reset();
+        EXPECT_FALSE(request.hasHeader("accept-encoding")) << "复用连接后不得看到上一条请求的头部";
+        EXPECT_FALSE(request.firstHeaderValueView("accept-encoding").has_value());
+    }
 } // namespace AsynGyanis::Net

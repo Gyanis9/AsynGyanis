@@ -14,7 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -218,6 +220,62 @@ namespace AsynGyanis::Net
 
         store.removeAll("X-TRACE-ID");
         EXPECT_EQ(store.fields().size(), 1U) << "删名也要大小写不敏感，否则中间件清不掉处理器写下的头部";
+    }
+
+    TEST(HttpHeaderFieldStore, ValueViewsAgreeWithTheirOwningCounterparts)
+    {
+        // 两条入口必须同一条查找：owning 版由视图版派生，否则「同名多条取首条」「大小写不敏感」
+        // 这类口径会在某一次改写里只修一侧而分叉
+        const HttpHeaderFieldStore store = makeStore({{"accept", "*/*"},
+                                                      {"x-request-id", "upstream-edge-0001-0000000000000abc"},
+                                                      {"x-request-id", "second-edge-id"},
+                                                      {"set-cookie", "a=1"}});
+
+        for (const std::string_view name: {"accept", "x-request-id", "set-cookie", "missing"})
+        {
+            const std::optional<std::string>        owning    = store.firstValue(name);
+            const std::optional<std::string_view>   view      = store.firstValueView(name);
+            EXPECT_EQ(owning.has_value(), view.has_value()) << "缺席与命中在两版上必须一致：" << name;
+            if (view.has_value())
+            {
+                EXPECT_EQ(*owning, *view) << "两版取到的必须是同一个首值：" << name;
+            }
+            EXPECT_EQ(store.contains(name), view.has_value()) << "存在性判据与取值判据同源：" << name;
+        }
+
+        // 视图指向存储内的那条字符串，而不是新拷贝：这是本入口存在的全部理由
+        const std::optional<std::string_view> view = store.firstValueView("x-request-id");
+        ASSERT_TRUE(view.has_value());
+        EXPECT_EQ(view->data(), store.fields()[1].value.data()) << "视图必须零拷贝指向权威记录";
+        EXPECT_EQ(store.fields().size(), 4U) << "只读入口不得往权威记录里添条目";
+    }
+
+    TEST(HttpHeaderFieldStore, EmptyValueIsPresentAndIsNotConfusedWithAbsent)
+    {
+        const HttpHeaderFieldStore store = makeStore({{"x-empty", ""}, {"content-type", "text/plain"}});
+
+        // 「有这条头部但取值为空」与「没有这条头部」在协议上是两回事（Content-Length: 与缺席
+        // 就不是同一个意思），因此判存在性不能看值空不空，视图版也不许用空视图代替 nullopt
+        EXPECT_TRUE(store.contains("x-empty"));
+        const std::optional<std::string_view> emptyView = store.firstValueView("x-empty");
+        ASSERT_TRUE(emptyView.has_value());
+        EXPECT_TRUE(emptyView->empty());
+        EXPECT_EQ(store.firstValue("x-empty").value_or("<缺失>"), "");
+
+        EXPECT_FALSE(store.contains("x-absent"));
+        EXPECT_FALSE(store.firstValueView("x-absent").has_value());
+    }
+
+    TEST(HttpHeaderFieldStore, PresenceAndViewLookupIgnoringCaseLikeTheOtherReaders)
+    {
+        const HttpHeaderFieldStore store = makeStore({{"X-Request-Id", "abc"}});
+
+        // 入库名被折成小写，调用方按线上原大小写查询是常态：四条读路径都大小写不敏感，
+        // 新增的两条也不例外，否则调用方会以为「查不到这条头部」而做出错误决策
+        EXPECT_TRUE(store.contains("x-request-id"));
+        EXPECT_TRUE(store.contains("X-REQUEST-ID"));
+        ASSERT_TRUE(store.firstValueView("X-REQUEST-ID").has_value());
+        EXPECT_EQ(*store.firstValueView("X-REQUEST-ID"), "abc");
     }
 
 } // namespace AsynGyanis::Net

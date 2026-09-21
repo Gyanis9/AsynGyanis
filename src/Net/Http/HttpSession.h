@@ -879,7 +879,7 @@ namespace AsynGyanis::Net
                     if (!keepAlive)
                     {
                         response.setHeader("connection", "close");
-                    } else if (isHttp10OrOlder && !response.getHeader("connection").has_value())
+                    } else if (isHttp10OrOlder && !response.hasHeader("connection"))
                     {
                         response.setHeader("connection", "keep-alive");
                     }
@@ -887,7 +887,7 @@ namespace AsynGyanis::Net
                     // 响应自动带本次请求的 request-id，与 date 同属「自动补齐」语义：调用方显式设过
                     // 就不覆盖（业务可能想把上游网关的 id 透传下去）。放在 500 改写之后，
                     // 保证异常路径上的响应同样能被日志检索对上
-                    if (!requestIdView.empty() && !response.getHeader(kRequestIdHeaderName).has_value())
+                    if (!requestIdView.empty() && !response.hasHeader(kRequestIdHeaderName))
                     {
                         response.setHeader(kRequestIdHeaderName, requestIdView);
                     }

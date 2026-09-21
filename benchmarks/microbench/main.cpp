@@ -781,6 +781,30 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 同一条查询的「不拷贝」出口，与 header-first-value 成对：差额就是把取值拷进一份新串
+    // 的代价（这个 fixture 的 x-request-id 超过短串内联长度，owning 版每轮要向堆要一次）。
+    // 走这条出口的是 request-id 的校验阶段与所有「只看存在性/读完就丢」的判定
+    std::optional<std::string_view> clientRequestIdView;
+    measureCase(
+            "header-first-value-view",
+            [&firstValueStore, &refillHeaderStore, &clientRequestIdView]
+            {
+                refillHeaderStore(firstValueStore);
+                clientRequestIdView = firstValueStore.firstValueView("x-request-id");
+                return clientRequestIdView.has_value() ? clientRequestIdView->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    measureCase(
+            "header-contains",
+            [&firstValueStore, &refillHeaderStore]
+            {
+                refillHeaderStore(firstValueStore);
+                // 存在性判定：过去调用方写 getHeader(x).has_value()，为一次布尔拷出整个取值
+                return firstValueStore.contains("x-request-id") ? std::size_t{1} : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
     // 响应头序列化：每条响应一次，且它是「先按 headReserveLength 统计一遍、再 appendHead 写一遍」
     // 的两趟遍历所在。Date 走的是响应对象内的缓存值（与真实服务里同一秒内复用一致），
     // 格式化本身的代价另有 http-date-format 一例量着，这里不重复计

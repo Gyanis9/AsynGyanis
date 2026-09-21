@@ -93,15 +93,32 @@ namespace AsynGyanis::Net
 
     std::optional<std::string> HttpHeaderFieldStore::firstValue(const std::string_view name) const
     {
+        // 走同一条查找：owning 版只多一步「把找到的那段拷出来」，两条入口的匹配口径不会漂移
+        const std::optional<std::string_view> valueView = firstValueView(name);
+        if (!valueView.has_value())
+        {
+            return std::nullopt;
+        }
+        return std::string{*valueView};
+    }
+
+    std::optional<std::string_view> HttpHeaderFieldStore::firstValueView(const std::string_view name) const
+    {
         for (const HeaderField &field: m_fields)
         {
             if (equalsIgnoringCase(field.name, name))
             {
                 // 首条原样交出，不参与合并：链路 id 这类头部同名多条时各表达一个独立来源
-                return field.value;
+                return std::string_view{field.value};
             }
         }
         return std::nullopt;
+    }
+
+    bool HttpHeaderFieldStore::contains(const std::string_view name) const
+    {
+        // 只看有没有这条记录：取值可能上百字节，为一次存在性判定把它整个拷出来是纯浪费
+        return firstValueView(name).has_value();
     }
 
     bool HttpHeaderFieldStore::containsListToken(const std::string_view name, const std::string_view expectedToken) const

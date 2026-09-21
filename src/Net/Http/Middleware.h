@@ -298,7 +298,7 @@ namespace AsynGyanis::Net
     {
         return [policy = std::move(policy)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            const bool isPreflightRequest = request.method() == HttpMethod::OPTIONS && request.getHeader("access-control-request-method").has_value();
+            const bool isPreflightRequest = request.method() == HttpMethod::OPTIONS && request.hasHeader("access-control-request-method");
 
             // 预检分支：应答只描述「允许的跨域方式」，与业务资源无关，所以直接短路
             if (isPreflightRequest)
@@ -904,7 +904,7 @@ namespace AsynGyanis::Net
             co_await next();
 
             // 已经声明过编码（业务自己压的，或上游中间件压的）：再压一层对端解不开
-            if (response.getHeader("content-encoding").has_value())
+            if (response.hasHeader("content-encoding"))
             {
                 co_return;
             }
@@ -916,7 +916,7 @@ namespace AsynGyanis::Net
             }
 
             // 区间响应：正文只是某个区间的一段字节，压缩它会让对端的区间语义错乱（206 必带 content-range）
-            if (response.getHeader("content-range").has_value())
+            if (response.hasHeader("content-range"))
             {
                 co_return;
             }

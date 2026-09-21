@@ -104,6 +104,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string> getHeader(std::string_view name) const;
 
         /**
+         * @brief 判断指定名称的头部是否已设置（只看存在性，不看取值）
+         * @details 取代 `getHeader(x).has_value()`：后者会为一次判定把整个取值拷出来，
+         *          而保活与链路 id 这类判定每条响应都要跑。
+         * @param name 头部字段名，大小写不敏感
+         * @return true 至少有一条该名的记录
+         */
+        [[nodiscard]] bool hasHeader(std::string_view name) const;
+
+        /**
          * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
          * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
          *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表；保活判定每条响应都要跑，

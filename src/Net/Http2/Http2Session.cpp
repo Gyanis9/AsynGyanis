@@ -937,7 +937,7 @@ namespace AsynGyanis::Net
         }
 
         // 响应自动带本次请求的 request-id（与 HTTP/1.1 侧同口径）：调用方显式设过就不覆盖
-        if (!request.requestId().empty() && !m_response.getHeader(kRequestIdHeaderName).has_value())
+        if (!request.requestId().empty() && !m_response.hasHeader(kRequestIdHeaderName))
         {
             static_cast<void>(m_response.setHeader(kRequestIdHeaderName, request.requestId()));
         }

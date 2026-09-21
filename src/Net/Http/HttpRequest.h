@@ -133,6 +133,26 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string> firstHeaderValue(std::string_view key) const;
 
         /**
+         * @brief 取指定名称的首条头部值视图：不拷贝、不向堆要内存
+         * @details 给「读完就丢」的判定用（比对格式、取前缀、按分隔符切一段）。owning 的
+         *          firstHeaderValue() 每查一条超过短串内联长度的取值就分配一次，而这些地方
+         *          读完就扔，那份拷贝是白付的。
+         * @param key 头部字段名，大小写不敏感
+         * @return std::optional<std::string_view> 首条值；名字不存在时为空（取到空视图表示
+         *         「有这条头部且取值为空」，不与缺席混淆）
+         * @note 视图指向请求内部的取值，只在本请求下次改写头部之前有效；要跨过改写点就得自己拷走
+         */
+        [[nodiscard]] std::optional<std::string_view> firstHeaderValueView(std::string_view key) const;
+
+        /**
+         * @brief 判断指定名称的头部是否出现过（只看存在性，不看取值）
+         * @details 取代 `getHeader(x).has_value()`：后者会为一次判定把整个取值拷出来。
+         * @param key 头部字段名，大小写不敏感
+         * @return true 至少有一条该名的记录
+         */
+        [[nodiscard]] bool hasHeader(std::string_view key) const;
+
+        /**
          * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
          * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
          *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表：Connection/Upgrade

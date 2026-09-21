@@ -960,4 +960,24 @@ namespace AsynGyanis::Net
         EXPECT_LT(reusedBuffer.size(), static_cast<std::size_t>(longResponse.serializeHead().size()))
                 << "缓冲没有被清空：短头部会接在上一次长头部之后，破坏 keep-alive 报文边界";
     }
+
+    TEST(HttpResponse, ReportsHeaderPresenceWithoutCopyingTheValue)
+    {
+        HttpResponse response;
+        static_cast<void>(response.setHeader("content-encoding", "gzip"));
+        static_cast<void>(response.setHeader("etag", "\"v7\""));
+
+        // 保活与压缩中间件只问「设过没有」：owning 入口会为一次布尔把整个取值拷出来
+        EXPECT_TRUE(response.hasHeader("Content-Encoding")) << "存在性判定大小写不敏感";
+        EXPECT_TRUE(response.hasHeader("etag"));
+        EXPECT_FALSE(response.hasHeader("content-range"));
+
+        // 覆盖式改写与整体清空都要立刻反映到存在性上：中间件按「设过没有」决定要不要再压一层，
+        // 留下「查得到但已被清掉」的鬼条目就会对着不存在的编码再压一次
+        static_cast<void>(response.setHeader("content-encoding", "br"));
+        EXPECT_TRUE(response.hasHeader("content-encoding"));
+        response.reset();
+        EXPECT_FALSE(response.hasHeader("content-encoding")) << "reset 之后不得残留存在性";
+        EXPECT_FALSE(response.hasHeader("etag"));
+    }
 } // namespace AsynGyanis::Net
