@@ -416,6 +416,9 @@ namespace AsynGyanis::Net
             // 四个标记里任何一个为真，这条请求都不交给业务：它按 4xx/503 直接回掉
             const bool         isRejectedWithoutHandler = isHeaderLimitExceeded || isUriTooLong || isBudgetExceeded || isBodyTooLarge;
             HttpRequest        request        = std::move(m_readyRequests.front().request);
+            // 额度接进本次服务的作用域（而不是留在待派发记录里）：处理器 co_await 期间正文还在内存里，
+            // 与 h1「应答写完后归还」、h2「记录摘掉时归还」同口径。记录被 pop 掉时才不会提前还账
+            HttpMemoryBudget::Reservation bodyBudget = std::move(m_readyRequests.front().bodyBudget);
             m_readyRequests.pop_front();
 
             // 与 h1/h2 同口径：收齐的请求计入请求数（含随后被 413 拒掉的那些，它们同样是有效的 h3 请求）
@@ -950,6 +953,8 @@ namespace AsynGyanis::Net
         noteRequestId(request);
 
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId, .request = std::move(request),
+                                               // 额度跟着正文走：这份 body 直到派发完处理器、写出响应才离开内存
+                                               .bodyBudget = std::move(incoming.bodyBudget),
                                                .isBodyTooLarge = incoming.isBodyTooLarge,
                                                .isBudgetExceeded = incoming.isBudgetExceeded,
                                                .isHeaderLimitExceeded = incoming.isHeaderLimitExceeded,

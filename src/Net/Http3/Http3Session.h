@@ -681,6 +681,9 @@ namespace AsynGyanis::Net
         {
             std::int64_t streamId{0};                 ///< 流号
             HttpRequest  request;                     ///< 已收齐的请求
+            /// 本条请求正文占用的全局在途额度：随待派发记录一起活着，直到服务完这一条才归还。
+            /// 早一步还掉（在排队时就还）会让「排队的正文」脱离预算，多条流能把实际占用推过上限
+            HttpMemoryBudget::Reservation bodyBudget;
             bool         isBodyTooLarge{false};       ///< 正文越界：服务阶段回 413 而不是派发
             bool         isBudgetExceeded{false};     ///< 正文超出全局在途预算：服务阶段回 503 而不是派发
             bool         isHeaderLimitExceeded{false}; ///< 头部越限：服务阶段回 431 而不是派发

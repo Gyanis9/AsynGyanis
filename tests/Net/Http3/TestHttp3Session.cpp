@@ -1871,6 +1871,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 排队中与服务中的正文都要占着全局额度，直到这一条服务完才归还
+     * @details 额度若在「请求被排进待派发队列」时就归还，排队的正文与正在跑处理器的正文都不再被记账，
+     *          多条流各自压一份正文就能把实际占用推过上限——这道限额要挡的正是这个。
+     *          判据取两处：请求收齐、还没 pump 时的占用，以及处理器进门时看到的占用
+     */
+    TEST(Http3Session, KeepsInflightBudgetHeldWhileRequestIsQueuedAndServed)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      budget = std::make_shared<HttpMemoryBudget>(16); // 够一条 10 字节正文，再只剩 6
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                             },
+                             Http3Session::StreamCrediter{}, nullptr, budget);
+
+        std::size_t reservedAtHandlerEntry = 0;
+        Router      router;
+        router.post("/upload",
+                    [&reservedAtHandlerEntry, budget](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        // 处理器跑起来时，它自己那份正文必须还记在账上
+                        reservedAtHandlerEntry = budget->reservedByteCount();
+                        response.setStatus(200);
+                        response.setBody("uploaded");
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::string body = "0123456789"; // 10 字节，在 16 的预算之内
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", body, body.size()));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        // 请求已收齐、还排在待派发队列里：正文仍在内存里，额度不能先还
+        EXPECT_EQ(budget->reservedByteCount(), body.size()) << "请求还在排队，额度就已经归还了";
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 200);
+        EXPECT_EQ(reservedAtHandlerEntry, body.size()) << "处理器跑起来时没看到自己那份正文占着额度";
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "这一条服务完之后额度应当整份归还";
+    }
+
+    /**
      * @brief h3 上跑 WebSocket：扩展 CONNECT（RFC 9220）建隧道，帧在流上原样收发
      * @details 隧道建立之后这条流上跑的就是 WebSocket 帧本身（不是 h3 正文），因此这里手工造一个带
      *          掩码的文本帧喂进去，断言业务把同样的负载回显回来——回显帧由服务端发出，不带掩码，
