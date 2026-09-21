@@ -965,6 +965,12 @@ namespace AsynGyanis::Net
             co_return serveOutcome;
         }
 
+        // 正文已拷进这条流的待发队列（Http2Connection 按帧 append 进 pendingData），映射与此后的发送无关了。
+        // 本会话的响应对象是**按连接复用**的，不在此处解除的话，这条连接转入空闲后映射会一直攥到下一条
+        // 请求开头 reset() 才放下：Windows 上就地改名/截断该文件因此被挡最长一个空闲超时，POSIX 上则是一条
+        // fd 与一段地址空间预留按空闲连接计（与 h1 侧 HttpSession 同一判据）
+        m_response.releaseMappedBody();
+
         // 流式正文的接收侧收尾必须排在响应之后：RST_STREAM 与响应排在同一条待发字节流里，
         // 先中止就会让对端先看到 RST，响应反而到不了（见 finishStreamingRequestBody 的说明）
         if (pending.isStreamingBody)
