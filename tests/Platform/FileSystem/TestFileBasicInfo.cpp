@@ -1,5 +1,8 @@
-// FileBasicInfo 单元测试：普通文件、目录、缺失路径，以及修改时间的取整方向与「现读不缓存」
+// FileBasicInfo 单元测试：普通文件、目录、缺失路径，修改时间的取整方向与「现读不缓存」，
+// 以及身份标记的三件事——POSIX 认得出同名重建、同一文件对象反复查要稳、Windows 认不出（记档）
 #include "Platform/FileSystem/FileBasicInfo.h"
+
+#include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
 
@@ -8,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 
 #include "PlatformTestSupport.h"
 
@@ -106,4 +110,88 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(afterRewrite.has_value());
         EXPECT_EQ(afterRewrite->sizeBytes, 10U) << "本层不缓存：改写之后必须立刻看到新大小，而不是上一次查到的那份";
     }
+
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（POSIX）：同一路径换成另一个文件对象、且大小与修改秒都相同，身份标记仍要认出来
+     * @details 这是静态映射缓存命中判据的第三条腿：只比大小与修改秒时，「原地换成等长内容且落在
+     *          同一秒」会端出旧字节。修改时间刻意从旧文件原样搬到新文件上，把这条退路堵死，因此
+     *          「身份只由时间派生」那种实现会让本用例变红。Windows 侧同一形状实测认不出（见
+     *          `CreationTimestampIdentityCannotSeeARecreatedFileOnWindows`），故不在本平台断言。
+     */
+    TEST(FileBasicInfo, DistinguishesARecreatedFileAtTheSamePath)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_Recreated");
+        const std::filesystem::path           targetPath = temporaryDirectory.path() / "asset.txt";
+
+        writeTemporaryFile(targetPath, "version-one");
+        const std::optional<FileBasicInfo> beforeReplacement = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(beforeReplacement.has_value());
+        const std::filesystem::file_time_type originalLastWrite = std::filesystem::last_write_time(targetPath);
+
+        std::error_code removeError;
+        const bool      removed = std::filesystem::remove(targetPath, removeError);
+        ASSERT_FALSE(static_cast<bool>(removeError)) << "删除旧文件失败：" << removeError.message();
+        ASSERT_TRUE(removed) << "旧文件不在，写出来的还是同一个文件对象，这条用例就没有被测到";
+        writeTemporaryFile(targetPath, "version-two");
+        std::filesystem::last_write_time(targetPath, originalLastWrite);
+
+        const std::optional<FileBasicInfo> afterReplacement = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(afterReplacement.has_value());
+        EXPECT_EQ(afterReplacement->sizeBytes, beforeReplacement->sizeBytes);
+        EXPECT_EQ(afterReplacement->lastWriteSeconds, beforeReplacement->lastWriteSeconds)
+                << "修改时间没搬过去，后面的身份判据就成了空转";
+        EXPECT_NE(afterReplacement->identityTag, beforeReplacement->identityTag)
+                << "另一个文件对象被当成了同一个文件，缓存会一直端出旧内容";
+    }
+#endif
+
+    /**
+     * @brief 钉住：同一个文件对象反复查询要给出稳定的身份标记
+     * @details 反向的护栏：身份若掺进了任何会变的东西（最后访问时间、每次查询自取的计数器这类），
+     *          每次查询都在变，静态映射缓存就永远命中不上——退化成「每次请求现建一次映射」。
+     */
+    TEST(FileBasicInfo, KeepsIdentityStableAcrossRepeatedQueriesOfTheSameFile)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_IdentityStable");
+        const std::filesystem::path           targetPath = temporaryDirectory.path() / "stable.txt";
+        writeTemporaryFile(targetPath, "unchanged");
+
+        const std::optional<FileBasicInfo> firstQuery = queryFileBasicInfo(targetPath);
+        const std::optional<FileBasicInfo> secondQuery = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(firstQuery.has_value());
+        ASSERT_TRUE(secondQuery.has_value());
+        EXPECT_EQ(firstQuery->identityTag, secondQuery->identityTag) << "同一个文件对象的身份标记不稳定，缓存无从命中";
+    }
+
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 记档（Windows）：创建时间派生的身份认不出「删掉再同名重建」这一常规发布路径
+     * @details NTFS 的隧道缓存（tunneling）在删除后短时限内以同名重建时会把创建时间连同短文件名一起
+     *          还原回去，于是两次查询拿到逐位相同的标记——这恰好是映射缓存最需要认出的那种替换。
+     *          为它每请求多付一次只读属性的句柄查询不值（映射缓存在本平台本来就因「活动映射挡住
+     *          rename 与截断」而关闭），所以这里断言现状而不是理想。
+     * @note 谁要让 Windows 也启用映射缓存，这条会先变红：那时把判据换成文件系统记账的卷号 + 文件 ID
+     *       （实测多一次句柄查询，9.5 到 10.1 微秒每请求），并把本用例改成断言「认得出」。
+     */
+    TEST(FileBasicInfo, CreationTimestampIdentityCannotSeeARecreatedFileOnWindows)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_Tunneling");
+        const std::filesystem::path           targetPath = temporaryDirectory.path() / "asset.txt";
+
+        writeTemporaryFile(targetPath, "version-one");
+        const std::optional<FileBasicInfo> beforeReplacement = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(beforeReplacement.has_value());
+
+        std::error_code removeError;
+        ASSERT_TRUE(std::filesystem::remove(targetPath, removeError)) << "旧文件没被删掉，这里就没有重建任何东西";
+        writeTemporaryFile(targetPath, "version-two");
+
+        const std::optional<FileBasicInfo> afterReplacement = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(afterReplacement.has_value());
+        EXPECT_EQ(afterReplacement->sizeBytes, beforeReplacement->sizeBytes);
+        EXPECT_EQ(afterReplacement->identityTag, beforeReplacement->identityTag)
+                << "身份已不再由创建时间派生，Windows 侧的映射缓存可以打开了，见本用例的 @note";
+    }
+#endif
 }

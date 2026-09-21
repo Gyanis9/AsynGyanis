@@ -59,7 +59,11 @@ namespace AsynGyanis::Platform
             ULARGE_INTEGER creation{};
             creation.LowPart  = attributes.ftCreationTime.dwLowDateTime;
             creation.HighPart = attributes.ftCreationTime.dwHighDateTime;
-            // 原样取 100 纳秒刻度而不折算成秒：这里要的只是「是不是同一个文件」，越细越不会误判
+            // 原样取 100 纳秒刻度而不折算成秒：这里要的只是「是不是同一个文件」，越细越不会误判。
+            // 但它在该平台认不出「删掉再同名重建」：NTFS 的隧道缓存会把旧文件的创建时间还原到新文件上
+            // （实测两次逐位相同）。换成文件系统记账的卷号 + 文件 ID 才认得出，代价是每请求多一次只读
+            // 属性的句柄查询（实测 9.5 到 10.1 µs）；本平台的静态映射缓存处于关闭状态，这个标记没有
+            // 消费方，因此不付这次查询
             info.identityTag = creation.QuadPart;
         }
         return info;
@@ -79,8 +83,15 @@ namespace AsynGyanis::Platform
         info.sizeBytes        = static_cast<std::uintmax_t>(status.st_size);
         // 亚秒部分直接舍：ETag 与 Last-Modified 用的都是这一个整秒值，两处必须看到同一个数
         info.lastWriteSeconds = static_cast<std::int64_t>(status.st_mtime);
-        // inode 即身份：原子替换或删除重建都会换一个新 inode，即使长度与修改秒完全一样
-        info.identityTag = static_cast<std::uint64_t>(status.st_ino);
+        // inode 号会被回收：删掉再同名重建时，文件系统往往把刚释放的那个号原样发给新文件（容器内
+        // overlayfs 实测两次同为 245657），所以光看 inode 认不出这种替换。再把设备号与 ctime 折进来：
+        // 设备号让「同一条路径换挂到另一个文件系统」不被当成同一个文件，ctime 则任何用户态 API 都
+        // 设不了（只能由内核在 inode 变更时刷新），回收来的 inode 必然带一个新的
+        const std::uint64_t inodeTag  = static_cast<std::uint64_t>(status.st_ino);
+        const std::uint64_t deviceTag = static_cast<std::uint64_t>(status.st_dev);
+        const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL +
+                                        static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
+        info.identityTag = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
         return info;
     }
 #endif
