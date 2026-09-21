@@ -1019,4 +1019,45 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(containsText(reason, "RSV2")) << reason;
     }
 
+    /**
+     * @brief 钉住字级解掩码在任意分片相位下都与「朴素逐字节」逐字一致
+     * @details 解掩码改为「先对齐到键相位 0、再按 4 字节一字异或、后收尾」以吃满向量化。分片输入下
+     *          每段首字节的键下标可为 0..3，一旦对齐/尾处理有偏差就会让某个步长解错。用一条 33 字节
+     *          （8 整字 + 1 尾）且字节值互不相同的负载，按 1..9、17、整段一次共多种步长喂入，逐一比对
+     *          重组结果 == 原文；任何一种步长解错都当场红，是这条改动的证伪点。
+     */
+    TEST(WebSocketFrame, DecoderUnmasksIdenticallyAcrossEveryChunkStride)
+    {
+        std::string plaintext;
+        for (std::size_t index = 0; index < 33; ++index)
+        {
+            plaintext.push_back(static_cast<char>(static_cast<std::uint8_t>(index * 7 + 1)));
+        }
+        const std::array<std::uint8_t, 4> maskKey{0x11, 0x22, 0x33, 0x44};
+        const std::string clientFrame = makeMaskedClientFrame(WebSocketOpCode::Binary, plaintext, true, maskKey);
+
+        const std::vector<std::size_t> strides{1, 2, 3, 4, 5, 6, 7, 9, 17, clientFrame.size()};
+        for (const std::size_t stride: strides)
+        {
+            WebSocketFrameDecoder decoder;
+            std::string reassembled;
+            std::size_t offset = 0;
+            while (offset < clientFrame.size())
+            {
+                const std::size_t remaining = clientFrame.size() - offset;
+                const std::size_t chunkLength = stride < remaining ? stride : remaining;
+                const WebSocketDecodeStatus status = decoder.parse(clientFrame.data() + offset, chunkLength);
+                ASSERT_TRUE(status == WebSocketDecodeStatus::Frame || status == WebSocketDecodeStatus::NeedMore)
+                        << "步长 " << stride << " 喂到 offset " << offset << " 判错：" << decoder.errorMessage();
+                // 契约：NeedMore 吃满本段、Frame 只吃本帧字节；两者都按 consumedByteCount() 推进
+                offset += decoder.consumedByteCount();
+                if (status == WebSocketDecodeStatus::Frame)
+                {
+                    reassembled.append(decoder.takeFrame().payload);
+                }
+            }
+            EXPECT_EQ(reassembled, plaintext) << "步长 " << stride << " 下解掩码结果与原文不一致";
+        }
+    }
+
 } // namespace AsynGyanis::Net

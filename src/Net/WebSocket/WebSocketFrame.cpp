@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <string>
 #include <string_view>
@@ -26,6 +27,51 @@ namespace AsynGyanis::Net
 
         /// 掩码键长度，单位字节（RFC 6455 §5.3）
         constexpr std::size_t kMaskKeyLength = 4;
+
+        /**
+         * @brief 就地对一段负载解掩码，按「先对齐、再 4 字节一字、后收尾」处理键相位
+         * @details 掩码是 4 字节循环异或（RFC 6455 §5.3），逐字节循环带一个 4 字节表取值挡着向量化。
+         *          分片输入下本段首字节的键下标未必是 0（上一段可能停在键中间），故先逐字节推进到
+         *          相位 0，再按 uint32 一字异或，最后处理不足 4 字节的尾。负载与键都经 memcpy 载入同一
+         *          主机字节序再异或，逐字节对应关系与端序无关，产出与朴素逐字节实现逐字相同。
+         * @param bytes 本段负载首地址（调用方保证可读可写 length 字节）
+         * @param length 本段长度，单位字节
+         * @param startKeyIndex 本段首字节对应的掩码键下标，取值 0..3
+         * @param maskKey 本帧的 4 字节掩码键
+         */
+        void unmaskPayloadInPlace(char *bytes, const std::size_t length, const std::size_t startKeyIndex,
+                                  const std::array<std::uint8_t, kMaskKeyLength> &maskKey)
+        {
+            std::size_t offset = 0;
+            std::size_t keyIndex = startKeyIndex;
+
+            // 先逐字节推进到相位 0（至多 3 字节），之后的每 4 字节才恰好对齐键的 0..3
+            while (offset < length && keyIndex != 0)
+            {
+                bytes[offset] = static_cast<char>(static_cast<std::uint8_t>(bytes[offset]) ^ maskKey[keyIndex]);
+                ++offset;
+                keyIndex = (keyIndex + 1) % kMaskKeyLength;
+            }
+
+            // 对齐后按 4 字节一字：键与负载以同样的 memcpy 映射进 uint32，位对应关系与端序无关
+            std::uint32_t keyWord = 0;
+            std::memcpy(&keyWord, maskKey.data(), sizeof(keyWord));
+            for (; offset + kMaskKeyLength <= length; offset += kMaskKeyLength)
+            {
+                std::uint32_t payloadWord = 0;
+                std::memcpy(&payloadWord, bytes + offset, sizeof(payloadWord));
+                payloadWord ^= keyWord;
+                std::memcpy(bytes + offset, &payloadWord, sizeof(payloadWord));
+            }
+
+            // 收尾不足 4 字节的部分（keyIndex 此刻回到 0）
+            while (offset < length)
+            {
+                bytes[offset] = static_cast<char>(static_cast<std::uint8_t>(bytes[offset]) ^ maskKey[keyIndex]);
+                ++offset;
+                keyIndex = (keyIndex + 1) % kMaskKeyLength;
+            }
+        }
 
         /**
          * @brief 判断操作码取值是否落在 RFC 6455 §5.2 定义过的取值里
@@ -229,12 +275,9 @@ namespace AsynGyanis::Net
             std::string &payloadSink = isControlOpCodeValue(m_opCodeValue) ? m_controlPayloadBuffer : m_payloadBuffer;
             const std::size_t appendedBegin = payloadSink.size();
             payloadSink.append(data + consumed, chunkLength);
-            for (std::size_t offset = 0; offset < chunkLength; ++offset)
-            {
-                const std::size_t maskIndex = (m_framePayloadBytesSeen + offset) % kMaskKeyLength;
-                char &targetByte = payloadSink[appendedBegin + offset];
-                targetByte = static_cast<char>(static_cast<std::uint8_t>(targetByte) ^ m_maskKey[maskIndex]);
-            }
+            // 本段首字节的键下标 = 本帧已收字节数 mod 4：分片输入可能停在键中间，相位要接着上一段
+            unmaskPayloadInPlace(payloadSink.data() + appendedBegin, chunkLength,
+                                 m_framePayloadBytesSeen % kMaskKeyLength, m_maskKey);
             m_framePayloadBytesSeen += chunkLength;
             consumed += chunkLength;
 

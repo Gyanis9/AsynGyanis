@@ -28,6 +28,7 @@
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
+#include "Net/WebSocket/WebSocketFrame.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
@@ -903,6 +904,46 @@ int main(int argumentCount, char **argumentValues)
             {
                 const std::optional<std::string> compressed = Net::deflateWebSocketMessage(wsDeflatePayload);
                 return compressed.has_value() ? compressed->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    // 入站帧解掩码：服务端每收到一条客户端帧都要按 4 字节循环异或解除掩码（RFC 6455 §5.3），
+    // 逐字节 + 表取值挡住向量化。预拼一条 4KiB 掩码帧，计时里只跑 decoder.parse（头部仅 8 字节，
+    // 解掩码占满），reset 复用同一解码器落在稳态。这是本会话量「字级解掩码值不值」的对照例
+    const std::string wsUnmaskPlain(4096, 'q');
+    const std::array<std::uint8_t, 4> wsUnmaskKey{0xDE, 0xAD, 0xBE, 0xEF};
+    std::string wsMaskedFrame;
+    wsMaskedFrame.push_back(static_cast<char>(0x81)); // FIN + text
+    wsMaskedFrame.push_back(static_cast<char>(0xFE)); // MASK=1 + 126（16 位扩展长度）
+    wsMaskedFrame.push_back(static_cast<char>((4096 >> 8) & 0xFF));
+    wsMaskedFrame.push_back(static_cast<char>(4096 & 0xFF));
+    for (const std::uint8_t keyByte: wsUnmaskKey)
+    {
+        wsMaskedFrame.push_back(static_cast<char>(keyByte));
+    }
+    for (std::size_t index = 0; index < wsUnmaskPlain.size(); ++index)
+    {
+        wsMaskedFrame.push_back(
+                static_cast<char>(static_cast<std::uint8_t>(wsUnmaskPlain[index]) ^ wsUnmaskKey[index % 4]));
+    }
+    Net::WebSocketFrameDecoder unmaskDecoder;
+    measureCase(
+            "ws-unmask-payload",
+            [&wsMaskedFrame, &unmaskDecoder]
+            {
+                unmaskDecoder.reset();
+                if (unmaskDecoder.parse(wsMaskedFrame.data(), wsMaskedFrame.size()) != Net::WebSocketDecodeStatus::Frame)
+                {
+                    return std::size_t{0};
+                }
+                const Net::WebSocketFrame frame = unmaskDecoder.takeFrame();
+                // 逐字节求和：既强制真把解出来的负载读一遍（否则整趟异或可被优化掉），又恒非 0
+                std::size_t checksumBytes = 0;
+                for (const char payloadByte: frame.payload)
+                {
+                    checksumBytes += static_cast<std::uint8_t>(payloadByte);
+                }
+                return frame.payload.size() == 4096 ? checksumBytes : std::size_t{0};
             },
             results, checksum, failureCount);
 

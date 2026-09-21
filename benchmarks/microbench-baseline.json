@@ -340,6 +340,15 @@
       ],
       "runsMeasured": 3
     },
+    "ws-unmask-payload": {
+      "throughputPerSecond": 866323,
+      "nanosecondsPerOperation": 1154.3,
+      "observedNanosecondsRange": [
+        1151.7,
+        1159.9
+      ],
+      "runsMeasured": 3
+    },
     "gzip-response-compress": {
       "throughputPerSecond": 96633,
       "nanosecondsPerOperation": 10348.4,
