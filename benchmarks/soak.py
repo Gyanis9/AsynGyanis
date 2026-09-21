@@ -5,7 +5,8 @@
                               [--keepalive-rounds N] [--churn-connections N] [--idle-connections N]
                               [--json-out <结果文件>]
 
-`--pid` 给出服务进程号才会采样句柄与内存（Windows 上用 ctypes 直接问内核，不需要额外工具）。
+`--pid` 给出服务进程号才会采样句柄与内存（Windows 上用 ctypes 直接问内核，Linux 上读 /proc/<pid>，
+都不需要额外工具；两侧采的量分别是 句柄数/私有字节/工作集 与 文件描述符数/私有 RSS/常驻 RSS）。
 `--json-out` 把本次结果写成 JSON（结构见 benchmarks/baseline.json 的 note 字段），供 check-baseline.py 比对。
 
 参考基线（2026-09-13，本机 Windows / MSVC / 4 工作线程，仅供回归对比，不是性能上限）：
@@ -26,6 +27,7 @@
 import argparse
 import ctypes
 import json
+import os
 import socket
 import statistics
 import sys
@@ -55,48 +57,81 @@ class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
 
 
 class ServerMonitor(threading.Thread):
-    """每秒采样一次服务进程的句柄数、私有字节数与工作集。"""
+    """每秒采样一次服务进程的资源占用，只看「起 → 止」的漂移，不看绝对值。
+
+    Windows 采（句柄数, 私有字节, 工作集字节），走 psapi/kernel32；Linux 采
+    （文件描述符数, 私有 RSS, 常驻 RSS），直接读 /proc/<pid>，不需要额外工具。
+    """
 
     def __init__(self, processId: int):
         super().__init__(daemon=True)
         self.processId = processId
         self.samples = []
         self.available = False
+        self.handleLabel = "句柄"
+        self.memoryLabel = "工作集"
         self._stopRequested = False
+        self._sampler = None
+        if sys.platform == "win32":
+            self._openWindowsProcess()
+        else:
+            # 没有 procfs（macOS/BSD）就按「无法采样」处理，让调用方照常跑完发压阶段
+            if os.path.isdir(f"/proc/{self.processId}"):
+                self.handleLabel = "文件描述符"
+                self.memoryLabel = "常驻 RSS"
+                self._sampler = self._sampleProcFs
+                self.available = True
 
+    def _openWindowsProcess(self):
+        """打开进程句柄并备好两个查询函数；打不开则保持 available 为假。"""
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         psapi = ctypes.WinDLL("psapi", use_last_error=True)
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 
-        self._handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, False, processId)
-        if not self._handle:
-            self._handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, processId)
-        if not self._handle:
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, False, self.processId)
+        if not handle:
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, self.processId)
+        if not handle:
             return
 
         kernel32.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
         psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS), wintypes.DWORD]
         self._kernel32 = kernel32
         self._psapi = psapi
+        self._processHandle = handle
+        self._sampler = self._sampleWindows
         self.available = True
 
-    def sample(self):
+    def _sampleWindows(self):
         """取一次（句柄数, 私有字节, 工作集字节）；任一查询失败返回 None。"""
         handleCount = wintypes.DWORD(0)
-        if not self._kernel32.GetProcessHandleCount(self._handle, ctypes.byref(handleCount)):
+        if not self._kernel32.GetProcessHandleCount(self._processHandle, ctypes.byref(handleCount)):
             return None
         counters = PROCESS_MEMORY_COUNTERS()
         counters.cb = ctypes.sizeof(counters)
-        if not self._psapi.GetProcessMemoryInfo(self._handle, ctypes.byref(counters), counters.cb):
+        if not self._psapi.GetProcessMemoryInfo(self._processHandle, ctypes.byref(counters), counters.cb):
             return None
         return (handleCount.value, counters.PagefileUsage, counters.WorkingSetSize)
+
+    def _sampleProcFs(self):
+        """读 /proc 取一次（fd 数, 私有 RSS, 常驻 RSS）；进程已退出或字段读不动返回 None。"""
+        try:
+            descriptorCount = len(os.listdir(f"/proc/{self.processId}/fd"))
+            # statm 的单位是页：size resident shared text lib data dt
+            fields = open(f"/proc/{self.processId}/statm", encoding="ascii").read().split()
+            residentPages = int(fields[1])
+            sharedPages = int(fields[2])
+        except OSError:
+            return None
+        pageSize = os.sysconf("SC_PAGE_SIZE")
+        return (descriptorCount, (residentPages - sharedPages) * pageSize, residentPages * pageSize)
 
     def run(self):
         if not self.available:
             return
         while not self._stopRequested:
-            result = self.sample()
+            result = self._sampler()
             if result is not None:
                 self.samples.append(result)
             time.sleep(1.0)
@@ -613,10 +648,10 @@ def main() -> int:
         if monitor.samples:
             first, last = monitor.samples[0], monitor.samples[-1]
             print("== 采样（起 → 止）==")
-            print(f"  句柄 {first[0]} → {last[0]}，私有 {first[1] // 1024} → {last[1] // 1024} KiB，"
-                  f"工作集 {first[2] // 1024} → {last[2] // 1024} KiB")
-            print(f"  峰值句柄 {max(sample[0] for sample in monitor.samples)}，"
-                  f"峰值工作集 {max(sample[2] for sample in monitor.samples) // 1024} KiB")
+            print(f"  {monitor.handleLabel} {first[0]} → {last[0]}，私有 {first[1] // 1024} → {last[1] // 1024} KiB，"
+                  f"{monitor.memoryLabel} {first[2] // 1024} → {last[2] // 1024} KiB")
+            print(f"  峰值{monitor.handleLabel} {max(sample[0] for sample in monitor.samples)}，"
+                  f"峰值{monitor.memoryLabel} {max(sample[2] for sample in monitor.samples) // 1024} KiB")
             processSamples = {
                 "handleCountFirst": first[0],
                 "handleCountLast": last[0],
