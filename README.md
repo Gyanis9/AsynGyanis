@@ -447,7 +447,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**Windows Debug（含 ASan）2501 个用例全绿**，同一份代码 Windows Release 2496（差的 5 条来自日志格式化器那批按构建配置编译的用例：Debug 侧 8 条 `*DebugBuild*`、Release 侧 3 条 `*ReleaseBuild*`），Linux 侧在容器 `ubuntu24` 以 GCC + ASan + LSan + UBSan 跑出 **2509 个用例全绿、零泄漏、零未定义行为**。两侧条数差 8 是按用例名逐行 diff 出来的：Linux 独有 21 条、Windows 独有 13 条，其中 7 条是同一批参数化用例两侧标签写法不同（Linux 写 `/stride1`、Windows 写 `/1`），各从两边扣掉之后是 **Linux 独有 14 条、Windows 独有 6 条、两侧共有 2495 条**。Linux 那 14 条：epoll 描述符重注册、inotify 的「目录重建后可再监视」「改名走开后可重挂」「换掉 inode 的单文件被补挂」、`sendfile` 零拷贝三条、进程终止三条与多进程 worker 两条真实行为、静态文件 inode 被回收后的身份识别。Windows 那 6 条：「目录数超出一个等待批次」、「多进程在本机被拒」、描述符长度回绕的拒绝、普通文件不可监视、「创建时间派生的身份认不出同名重建」。其中 36 个是真机门控用例，无凭据即 SKIP
+- 当前规模：**Windows Debug（含 ASan）2503 个用例全绿**，同一份代码 Windows Release 2498（差的 5 条来自日志格式化器那批按构建配置编译的用例：Debug 侧 8 条 `*DebugBuild*`、Release 侧 3 条 `*ReleaseBuild*`），Linux 侧在容器 `ubuntu24` 以 GCC + ASan + LSan + UBSan 跑出 **2511 个用例全绿、零泄漏、零未定义行为**。两侧条数差 8 是按用例名逐行 diff 出来的：Linux 独有 21 条、Windows 独有 13 条，其中 7 条是同一批参数化用例两侧标签写法不同（Linux 写 `/stride1`、Windows 写 `/1`），各从两边扣掉之后是 **Linux 独有 14 条、Windows 独有 6 条、两侧共有 2497 条**。Linux 那 14 条：epoll 描述符重注册、inotify 的「目录重建后可再监视」「改名走开后可重挂」「换掉 inode 的单文件被补挂」、`sendfile` 零拷贝三条、进程终止三条与多进程 worker 两条真实行为、静态文件 inode 被回收后的身份识别。Windows 那 6 条：「目录数超出一个等待批次」、「多进程在本机被拒」、描述符长度回绕的拒绝、普通文件不可监视、「创建时间派生的身份认不出同名重建」。其中 36 个是真机门控用例，无凭据即 SKIP
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
