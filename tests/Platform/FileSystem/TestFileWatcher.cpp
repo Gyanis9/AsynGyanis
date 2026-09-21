@@ -225,6 +225,63 @@ namespace AsynGyanis::Platform
 
 #if ASYN_PLATFORM_LINUX
     /**
+     * @brief 钉住（Linux）：被监视目录**改名走开**之后在同一路径重建，再注册一次要真的挂上新目录
+     * @details inotify 对「被监视目录本身被改名」只发 IN_MOVE_SELF、不发 IN_IGNORED，内核仍持有该
+     *          wd，于是映射不会自己消失；随后的 addWatch(原路径) 撞上「已经看过这个路径」这条去重、
+     *          **返回 true 却不注册**，原地重建的同名目录里的变更从此永久丢失。这里刻意不调
+     *          removeWatch，走的就是调用方以为「重复注册是幂等的」那条路。
+     * @note 只在 Linux 编译：Windows 有同一形状的症状（改名走开再原地重建后收不到事件），但一次
+     *       「按句柄实际落处判陈旧、命中则重新注册」的修法在该用例下仍未投递事件，成因尚未定位——
+     *       不写没被验证过的结论，Windows 侧留作单独一项。
+     */
+    TEST(FileWatcher, ReaddedWatchAfterRenameTracksTheNewDirectory)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RenameReadd");
+        const std::string                     watchedPath = temporaryDirectory.path().string();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(watchedPath));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 把整个被监视目录改名走开，再在**原路径**上建一个同名新目录（全程不 stop、不 removeWatch）
+        const std::filesystem::path movedAwayPath =
+                temporaryDirectory.path().parent_path() / (temporaryDirectory.path().filename().string() + ".moved");
+        std::error_code renameError;
+        std::filesystem::rename(temporaryDirectory.path(), movedAwayPath, renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名走开失败：" << renameError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        ASSERT_TRUE(std::filesystem::create_directories(temporaryDirectory.path()));
+
+        ASSERT_TRUE(watcher->addWatch(watchedPath)) << "重复注册本身要成功（它应当挂的是新目录）";
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+
+        ASSERT_TRUE(temporaryDirectory.writeFile("after_rename.yaml", "back: true\n"));
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("after_rename.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "改名走开后在同一原路径重建的目录没被重新监视，其内部变更永久丢失";
+
+        // 改名走开的那份留在临时目录的兄弟位置上，用例自建自清：不留残留给下一次运行
+        std::error_code cleanupError;
+        static_cast<void>(std::filesystem::remove_all(movedAwayPath, cleanupError));
+    }
+
+    /**
      * @brief 钉住（Linux）：被内核摘除监视之后，同一路径还能重新挂上监视
      * @details 目录被删时内核自动摘 watch 并补一条 IN_IGNORED。实现若不跟着清映射，重建出来的同名
      *          目录会在 addWatch() 里被「路径已在表里」挡下（该分支直接返回 true，看不出失败），

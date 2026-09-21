@@ -233,6 +233,17 @@ namespace AsynGyanis::Platform
                 continue;
             }
 
+            // IN_MOVE_SELF：被监视的目录**本身**被改名或移到别处（len==0 才代表目标自身，带名字的
+            // 是子项改名）。与 IN_IGNORED 不同，内核到这里仍然持有这个 wd、不会补 IN_IGNORED，
+            // 于是映射一直留着：原地重建同名目录后再 addWatch，会被「已经看过这个路径」挡下而不
+            // 重新注册，新目录的事件从此永久丢失。这里按同样的方式摘掉映射——递归根随后由自愈
+            // 复查补挂，非递归的由调用方下一次 addWatch 补挂
+            if ((event->mask & IN_MOVE_SELF) != 0 && event->len == 0)
+            {
+                removeWatchMapping(event->wd);
+                continue;
+            }
+
             // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
             // 对每个受监视的根各派发一次「已修改」让消费方重新扫描，绝不静默停在旧状态
             if (event->wd == -1)
