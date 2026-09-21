@@ -150,20 +150,28 @@ namespace AsynGyanis::Samples
     }
 
     /**
-     * @brief 打印结论并给出退出码：有任何一步失败即非零
+     * @brief 打印结论并给出退出码：有任何一步失败、或一步都没执行，都算不通过
      * @param sampleName 示例名（出现在结论里，脚本按它对齐清单）
-     * @return int 0 表示全部通过，1 表示有失败步
+     * @return int 0 表示全绿且至少有一步证据，1 表示有失败步或零步
      */
     inline int finishSample(const std::string_view sampleName)
     {
         const SampleChecklist &steps = checklist();
+        // 零步不算通过：示例在登记任何检查之前就 return（平台分支整块被 #if 挡掉、初始化抛异常后被
+        // 吞掉）留下的正是「没有失败也没有证据」的结论行，只判 failureCount()==0 会把它报成绿
+        const bool hasEvidence = steps.failureCount() == 0 && steps.stepCount() > 0;
         // 结论同时走 stdout：脚本读这一行判定，级别与 sink 被示例自己改掉也不影响（本示例就有这一步）
-        std::cout << "RESULT " << sampleName << ' ' << (steps.failureCount() == 0 ? "PASS " : "FAIL ") << steps.stepCount()
+        std::cout << "RESULT " << sampleName << ' ' << (hasEvidence ? "PASS " : "FAIL ") << steps.stepCount()
                   << std::endl;
-        if (steps.failureCount() == 0)
+        if (hasEvidence)
         {
             LOG_INFO_FMT("示例 {} 自检通过：{} 步全绿", sampleName, steps.stepCount());
             return 0;
+        }
+        if (steps.stepCount() == 0)
+        {
+            LOG_ERROR_FMT("示例 {} 一步都没执行：没有证据的 PASS 不算通过", sampleName);
+            return 1;
         }
         LOG_ERROR_FMT("示例 {} 自检失败：{} 步里有 {} 步没过", sampleName, steps.stepCount(), steps.failureCount());
         return 1;

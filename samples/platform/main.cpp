@@ -299,9 +299,11 @@ namespace
         Samples::checklist().check(!Platform::ProcessInfo::environmentVariable("ASYN_DEFINITELY_UNSET").has_value(),
                                    "不存在的环境变量返回空而不是编出一个值");
 
+        // 只装配、不断言：ensureUtf8Output() 返回 void，控制台输出代码页在进程内没有可查询的出口，
+        // 而 supportsAnsiEscapeCodes() 的值由终端能力决定、不是这次装配的结果。留一条恒真断言等于
+        // 把「测过了」写进结论里骗人，因此这一步从清单里去掉，只保留信息输出
         Platform::Console::ensureUtf8Output();
         LOG_INFO_FMT("终端是否支持 ANSI 颜色转义：{}", Platform::Console::supportsAnsiEscapeCodes() ? "支持" : "不支持");
-        Samples::checklist().check(true, "控制台 UTF-8 输出装配完成");
     }
 }
 

@@ -141,6 +141,21 @@ def main() -> int:
                 if detail:
                     print(f"     末尾输出：\n       {detail}", file=sys.stderr)
 
+    # --repeat 之间步数必须一致：某一步被条件跳过（平台分支、可选依赖缺席、初始化提前 return）时
+    # 结论行仍是 PASS，只有步数会掉。把「同一个示例在不同次重复里步数不同」当失败，
+    # 才不至于让重复跑只用来抓崩溃
+    if arguments.repeat > 1:
+        stepsByName: dict[str, set[str]] = {}
+        for _module, name, verdict, steps, _elapsed in rows:
+            # 只比真正跑到结论的运行：TIMEOUT / NO_RESULT 那几行本来就已经计过失败了
+            if verdict in ("PASS", "FAIL"):
+                stepsByName.setdefault(name, set()).add(steps)
+        for name, distinctSteps in sorted(stepsByName.items()):
+            if len(distinctSteps) > 1:
+                failures += 1
+                print(f"  !! {name} 在 {arguments.repeat} 次重复里步数不一致：{'、'.join(sorted(distinctSteps))}"
+                      "（有步骤只在部分运行里执行，PASS 不构成证据）", file=sys.stderr)
+
     module_width = max(len(row[0]) for row in rows) + 2
     name_width = max(len(row[1]) for row in rows) + 2
     print()

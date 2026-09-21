@@ -172,15 +172,39 @@ namespace
         }
         Samples::checklist().check(rolledFileCount >= 2, "RollingFileSink 按大小滚出了备份文件");
 
-        // 按天与按小时只走构造与写入路径：时间策略要跨到次日/次时才切，示例不等那个时刻
-        for (const Base::RollingPolicy policy: {Base::RollingPolicy::Daily, Base::RollingPolicy::Hourly})
+        // 按天与按小时只走构造与写入路径：时间策略要跨到次日/次时才切，示例不等那个时刻。
+        // 两种策略各用一份自己的文件，证据才分得清是谁写出来的（同名共用一份文件时，
+        // 第二种策略即使整块没写也照样能看见前一种留下的文件）
+        const auto writesUnderTimePolicy = [&](const Base::RollingPolicy policy, const std::string &fileBase,
+                                               const std::string &nameStem)
         {
             auto timeLogger = std::make_unique<Base::Logger>("sample.time-rolling");
-            timeLogger->addSink(std::make_unique<Base::RollingFileSink>("timed.log", rollingDirectory, policy, 1024, 1));
+            timeLogger->addSink(std::make_unique<Base::RollingFileSink>(fileBase, rollingDirectory, policy, 1024, 1));
             LOG_LOGGER_INFO_FMT(*timeLogger, "时间策略下的写入");
             static_cast<void>(timeLogger->flush());
-        }
-        Samples::checklist().check(true, "按天与按小时的 RollingFileSink 构造与写入路径都走得通");
+
+            for (const auto &entry: std::filesystem::directory_iterator(rollingDirectory))
+            {
+                // 时间策略的**当前**文件就把周期段插在扩展名之前（`timed-daily.2026-09-21.log`，
+                // 见 RollingFileSink::getCurrentFilename），所以按不带扩展名的主干认
+                std::error_code sizeError;
+                if (!entry.is_regular_file() || !entry.path().filename().string().starts_with(nameStem))
+                {
+                    continue;
+                }
+                if (const std::uintmax_t writtenBytes = std::filesystem::file_size(entry, sizeError);
+                    !sizeError && writtenBytes > 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        Samples::checklist().check(writesUnderTimePolicy(Base::RollingPolicy::Daily, "timed-daily.log", "timed-daily"),
+                                   "按天滚动的 sink 把一条日志真的写到了磁盘上");
+        Samples::checklist().check(writesUnderTimePolicy(Base::RollingPolicy::Hourly, "timed-hourly.log", "timed-hourly"),
+                                   "按小时滚动的 sink 把一条日志真的写到了磁盘上");
     }
 
     /// @return Base::LogEvent 一条 Info 级、只带正文的事件（直接喂 Sink 时用）
