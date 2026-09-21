@@ -244,15 +244,24 @@ namespace AsynGyanis::Net
      */
     TEST(HttpParserChunked, RejectsContentLengthTogetherWithTransferEncoding)
     {
-        const std::string message =
-                "POST /smuggle HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        // 两个定界头并存必须拒，且与出现顺序无关：CL.TE 与 TE.CL 是两类真实的请求走私载荷，
+        // 前端代理看到哪条在前取决于客户端拼包顺序，收端不能因为先读到某一条就先定死分帧方式。
+        static constexpr std::array<std::string_view, 2> kSmugglingMessages{
+                // CL 在前、TE 在后
+                "POST /smuggle HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+                // TE 在前、CL 在后（同一等价类的另一种顺序）
+                "POST /smuggle HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        };
 
-        expectRejected(message, HttpParseErrorKind::Malformed, false, "CL 与 TE 并存");
+        for (const std::string_view message: kSmugglingMessages)
+        {
+            expectRejected(std::string(message), HttpParseErrorKind::Malformed, false, "CL 与 TE 并存");
 
-        HttpParser parser;
-        ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
-        EXPECT_NE(parser.errorMessage().find("Content-Length"), std::string::npos);
-        EXPECT_NE(parser.errorMessage().find("Transfer-Encoding"), std::string::npos);
+            HttpParser parser;
+            ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
+            EXPECT_NE(parser.errorMessage().find("Content-Length"), std::string::npos);
+            EXPECT_NE(parser.errorMessage().find("Transfer-Encoding"), std::string::npos);
+        }
     }
 
     /**
