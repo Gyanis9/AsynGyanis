@@ -19,7 +19,8 @@
     "file-meta-* 两例是静态文件每请求读元数据的两种走法（2026-09-21 新增，27871.3 → 9000.9 ns）：量的是系统调用与内核路径，绝对值天然比同批其它用例高两个数量级，别拿它跟纯用户态的读写路径横向比。",
     "mmap-* 两例（2026-09-21 新增，64 KiB 文件）量的是静态响应的映射开销：open+close 17.2 µs，再按页首触一遍共 30.4 µs。它们与 file-meta-single-probe 相加就是每请求在文件系统上的全部现读成本——「映射缓存」这项有意未做的事，等的就是这两个数。",
     "static-small-file-* 两例（4 KiB）验掉了「小文件改走一次顺序读」的设想：读 14.9 µs 对建映射 16.3 µs，只差 8%——两条路的成本都不在正文拷贝，而在打开路径与建立映射这一串系统调用上。它同时说明静态路径真正值得做的是缓存，不是换个读法。",
-    "http-date-format 在 2026-09-20 随「定长文本手工拼装（不再走 std::format）」重测（260.9 → 47.3 ns）；新增 http-date-now 一例量 Date 头的实际每条代价（按秒缓存，16.7 ns），与 http-date-format 的差就是「每条响应都重算」的浪费。"
+    "http-date-format 在 2026-09-20 随「定长文本手工拼装（不再走 std::format）」重测（260.9 → 47.3 ns）；新增 http-date-now 一例量 Date 头的实际每条代价（按秒缓存，16.7 ns），与 http-date-format 的差就是「每条响应都重算」的浪费。",
+    "router-streaming-* 两例（2026-09-21 新增）是 Router::hasStreamingRoute 的稳态成本——h1/h2/h3 会话每条请求头部收齐后都要跑它：get 一例量 GET/HEAD 撞方法闸直接返回（改前要跑整表扫描并把通配剩余路径拷成 std::string，实测消融 146.2 → 1.1 ns）；post-param 一例量 POST 命中 \":id\" 流式路由时「匹配但不收集参数」这条（消融 107.3 → 72.6 ns）。两例作吞吐下限门禁：若日后有人把方法闸或收集开关改回去，get 会当场掉约两个数量级报红。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -298,6 +299,24 @@
       "observedNanosecondsRange": [
         30.2,
         30.7
+      ],
+      "runsMeasured": 3
+    },
+    "router-streaming-get": {
+      "throughputPerSecond": 875369137,
+      "nanosecondsPerOperation": 1.1,
+      "observedNanosecondsRange": [
+        0.9,
+        1.2
+      ],
+      "runsMeasured": 3
+    },
+    "router-streaming-post-param": {
+      "throughputPerSecond": 13768378,
+      "nanosecondsPerOperation": 72.6,
+      "observedNanosecondsRange": [
+        72.6,
+        72.7
       ],
       "runsMeasured": 3
     }

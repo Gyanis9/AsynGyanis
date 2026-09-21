@@ -20,6 +20,7 @@
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
+#include "Net/Http/Router.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Qpack.h"
@@ -841,6 +842,38 @@ int main(int argumentCount, char **argumentValues)
                 // setHeader 返回 false 表示被拒（自检据此判定用例没走成功路径）
                 return corsResponse.setHeader("Access-Control-Allow-Origin", "https://example.com") ? std::size_t{1}
                                                                                                     : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    // 路由流式探测：h1/h2/h3 会话每条请求头部收齐后都要调 hasStreamingRoute 决定派发时机，
+    // 微基准此前不覆盖 Router。路由表含一条 any("*") 兜底（HttpServer 开静态目录时正是这么挂的）
+    // 与若干 ":id" 路由，贴近真实。两例钉住本轮两处优化各自留下的稳态成本：
+    //  · get：GET 撞方法闸直接返回，不再跑整表扫描、也不再让通配路由把整段路径拷成 std::string；
+    //  · post-param：POST 命中 ":id" 流式路由仍走匹配，但参数收集被关掉（免去键值各一次字符串构造）。
+    Net::Router streamingRouter;
+    const auto noOpHandler = []([[maybe_unused]] Net::HttpRequest &request,
+                                [[maybe_unused]] Net::HttpResponse &response) -> Core::Task<void>
+    { co_return; };
+    streamingRouter.postStreaming("/upload/:id", noOpHandler);
+    streamingRouter.get("/api/users/:id", noOpHandler);
+    streamingRouter.post("/api/orders/:id", noOpHandler);
+    streamingRouter.any("*", noOpHandler);
+    measureCase(
+            "router-streaming-get",
+            [&streamingRouter]
+            {
+                // 累加进返回值：既保证这次跨库调用不被优化掉，又让自检把它认作成功路径（恒非 0）
+                return std::size_t{1} + static_cast<std::size_t>(
+                        streamingRouter.hasStreamingRoute(Net::HttpMethod::GET, "/static/css/main.css"));
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "router-streaming-post-param",
+            [&streamingRouter]
+            {
+                // POST 命中 /upload/:id 的流式路由 → true（非 0）；量的是「匹配但不收集参数」这条
+                return streamingRouter.hasStreamingRoute(Net::HttpMethod::POST, "/upload/42") ? std::size_t{1}
+                                                                                              : std::size_t{0};
             },
             results, checksum, failureCount);
 
