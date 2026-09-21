@@ -21,9 +21,11 @@ namespace AsynGyanis::Platform
 
 #if ASYN_PLATFORM_WIN32
         // 文件类 Win32 API 的错误来自 GetLastError，与 socket 的 WSAGetLastError、CRT 的 errno 都不同源
-        // 共享模式放宽到 READ|WRITE|DELETE：映射存活期间别的进程（含本进程的静态文件热更新）
-        // 仍然可以重命名/删除被映射的文件。默认的 FILE_SHARE_READ 会把 rename 挡在共享冲突上，
-        // 而 Linux 侧 mmap 之后重命名不受影响，两边行为必须一致
+        // 共享模式放到 READ|WRITE|DELETE：映射存活期间别的进程仍可**删除**该文件（不放宽 DELETE 就连
+        // 删除都会撞共享冲突，Linux 侧 mmap 之后 unlink 不受影响）。要说清的是它换不来什么：实测
+        // 「写临时文件 + rename 覆盖」在视图存活时仍以 ERROR_ACCESS_DENIED(5) 失败，就地截断以
+        // ERROR_USER_MAPPED_FILE(1224) 失败——这是段对象自己的限制，与共享位无关。因此需要让发布方
+        // 随时替换文件的场景（静态文件服务）在本平台不要长期持有映射，读完即走的堆正文才是那条路
         HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (fileHandle == INVALID_HANDLE_VALUE)
