@@ -80,6 +80,36 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_TRUE(std::get<std::string>(cell).empty()) << "源变体的文本缓冲应已被搬空（走移动而非拷贝路径）";
     }
 
+    /**
+     * @brief 规范二进制单元格（std::vector<std::uint8_t> 成员）映射走移动：搬空源缓冲、字节不损
+     * @details 与文本移动同一条右值重载。规范拼法可无损搬走；断言源被搬空即证明走的是移动而非整块拷贝。
+     */
+    TEST(RowMapperBinaryMove, MovesCanonicalByteBufferIntoMember)
+    {
+        const BinaryBytes expected(4096, static_cast<std::uint8_t>(0xAB));   // 真实堆缓冲
+        DatabaseValue cell{expected};
+        const BinaryBytes converted = Detail::convertDatabaseValue<BinaryBytes>(std::move(cell), kColumnName);
+        EXPECT_EQ(converted, expected);
+        EXPECT_TRUE(std::get<BinaryBytes>(cell).empty()) << "源二进制缓冲应已被搬空（走移动而非整块拷贝）";
+    }
+
+    /**
+     * @brief std::byte 拼法的二进制成员仍逐字节转（无法无损搬走），值必须逐字节等价
+     * @details 右值重载对 std::vector<std::byte> 目标回落 const& 版本；此例钉「回落不改变取值」，
+     *          避免为了移动而错把 std::byte 成员也走 move 分支。
+     */
+    TEST(RowMapperBinaryMove, ByteSpellingStillRoundTripsThroughMoveEntry)
+    {
+        const BinaryBytes expected{0x00, 0x7F, 0x80, 0xFF};
+        DatabaseValue cell{expected};
+        const std::vector<std::byte> converted = Detail::convertDatabaseValue<std::vector<std::byte>>(std::move(cell), kColumnName);
+        ASSERT_EQ(converted.size(), expected.size());
+        for (std::size_t index = 0; index < expected.size(); ++index)
+        {
+            EXPECT_EQ(static_cast<std::uint8_t>(converted[index]), expected[index]);
+        }
+    }
+
     // ------------------------------------------------------------------------
     // 无符号成员：int64 支路
     // ------------------------------------------------------------------------

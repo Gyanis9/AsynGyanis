@@ -284,11 +284,12 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 右值入口：成员是 std::string 且单元格正是文本时，把变体里的堆缓冲直接搬进返回值
-         * @details assignColumn 手里的 cellValue 是即将析构的局部量；文本列走 const& 版本会再拷一整串
-         *          （驱动读值那次仍在，这次是可省的第二份）。本重载对该情形 std::move 走缓冲区，省掉
-         *          「变体→成员」的整串拷贝与再分配。其余类型（标量按值、二进制/optional 各有转换语义）
-         *          没有可无损搬走的 std::string，统一转交 const& 版本按原语义取值，保持单一派发真相。
+         * @brief 右值入口：成员是 std::string 或规范二进制类型、且单元格正是对应载荷时，把变体里的堆缓冲直接搬走
+         * @details assignColumn 手里的 cellValue 是即将析构的局部量；文本/二进制列走 const& 版本会把整段
+         *          载荷再拷一份进成员（叠加驱动读值那次 = 每单元两次分配）。本重载对这两种大载荷 std::move
+         *          搬走缓冲区（二进制仅规范拼法 std::vector<std::uint8_t> 可无损搬走，std::vector<std::byte>
+         *          仍逐字节转、回落 const& 版）。其余类型（标量按值、optional）没有可无损搬走的大缓冲区，
+         *          统一转交 const& 版本按原语义取值，保持单一派发真相。
          * @tparam MemberType 目标成员类型
          * @param cellValue 即将被搬空的单元格值（右值引用）
          * @param columnName 列名，仅用于错误信息
@@ -298,11 +299,20 @@ namespace AsynGyanis::Database::Queryable
         template<typename MemberType>
         [[nodiscard]] MemberType convertDatabaseValue(DatabaseValue &&cellValue, const std::string_view columnName)
         {
-            if constexpr (std::is_same_v<std::remove_cv_t<MemberType>, std::string>)
+            using BareType = std::remove_cv_t<MemberType>;
+
+            if constexpr (std::is_same_v<BareType, std::string>)
             {
                 if (auto *const textValue = std::get_if<std::string>(&cellValue))
                 {
                     return std::move(*textValue);
+                }
+            }
+            else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
+            {
+                if (auto *const byteValue = std::get_if<BinaryBytes>(&cellValue))
+                {
+                    return AsynGyanis::Database::Detail::fromBinaryBytes<BareType>(std::move(*byteValue));
                 }
             }
             return convertDatabaseValue<MemberType>(static_cast<const DatabaseValue &>(cellValue), columnName);

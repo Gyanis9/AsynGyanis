@@ -123,6 +123,28 @@ namespace AsynGyanis::Database
             }
         }
 
+        /**
+         * @brief 右值入口：目标成员正是规范类型 BinaryBytes 时把字节缓冲直接搬走，免去整块拷贝
+         * @details 与 const& 版严格等价，只是当 `MemberType == BinaryBytes`（std::vector<std::uint8_t> 这一常见拼法）
+         *          时把来源缓冲 move 进返回值；`std::vector<std::byte>` 成员因元素类型不同仍需逐字节转换，回落 const& 版。
+         *          驱动读值与调用方交出所有权的场景（ORM 行映射）据此省掉一次大载荷的堆分配与 memcpy。
+         * @tparam MemberType 目标成员类型（须已判定为二进制载荷）
+         * @param bytes 即将被搬空的规范字节序列（右值引用）
+         * @return MemberType 目标成员类型的值
+         */
+        template<typename MemberType>
+        [[nodiscard]] MemberType fromBinaryBytes(BinaryBytes &&bytes)
+        {
+            if constexpr (std::is_same_v<MemberType, BinaryBytes>)
+            {
+                return std::move(bytes);
+            }
+            else
+            {
+                return fromBinaryBytes<MemberType>(static_cast<const BinaryBytes &>(bytes));
+            }
+        }
+
     } // namespace Detail
 
 } // namespace AsynGyanis::Database
