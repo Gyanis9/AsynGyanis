@@ -1,5 +1,6 @@
 // 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
-// 头部单值查询与列表 token 判定、响应头序列化、h2/h3 组头块的两种走法。
+// 头部单值查询与列表 token 判定、响应头序列化、h2/h3 组头块的两种走法、响应压缩的一次性耗时、
+// 事件循环的跨线程唤醒。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -14,6 +15,9 @@
 //   · 数据形态尽量贴近稳态：HPACK 同一份头部反复编码/解码（同一连接复用编解码器）、
 //     h1 请求带 10 个头与 64 字节正文、h2 解一帧 200 字节头块的 HEADERS。
 //     换数据形态会改变结果，比较不同机器的数字前先确认两边用的是同一份输入。
+#include "Core/Coroutine/Scheduler.h"
+#include "Core/Coroutine/ThreadPool.h"
+#include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/Gzip.h"
@@ -42,6 +46,9 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
+#include <future>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -1106,6 +1113,30 @@ int main(int argumentCount, char **argumentValues)
                 return compressed.has_value() ? compressed->size() : std::size_t{0};
             },
             results, checksum, failureCount);
+
+    // 「把压缩交给工作线程」那一跳的回程成本：一次 外部线程 → 事件循环 的跨线程投递与唤醒。
+    // 执行器那头还另有一次同量级的队列唤醒，因此一整跳约为本例的两倍。拿它与上面两例的每响应
+    // 压缩耗时对照，才知道小到什么程度的正文不值得外派。计时体里 promise 的共享状态要取一次堆块，
+    // 真实外派路径同样付这笔，故不剥到计时体外（本例单次约 10 µs，这点分配落在噪声里）
+    Core::ThreadPool wakeupThreadPool(1);
+    wakeupThreadPool.start();
+    Core::EventLoop &wakeupLoop = wakeupThreadPool.eventLoop(0);
+    measureCase(
+            "eventloop-remote-post-roundtrip",
+            [&wakeupLoop]
+            {
+                // 有界等待：这一跳没落地就返回 0 让自检报红，而不是让整轮基准挂在下一次 wait 上。
+                // 回调按 shared_ptr 持有 promise——超时后本线程先走，迟到的回调写的仍是活着的对象
+                auto arrived = std::make_shared<std::promise<void>>();
+                std::future<void> arrivedFuture = arrived->get_future();
+                wakeupLoop.scheduler().postRemote([arrived]
+                                                  { arrived->set_value(); });
+                constexpr auto kWakeupHopDeadline = std::chrono::seconds{2};
+                return arrivedFuture.wait_for(kWakeupHopDeadline) == std::future_status::ready ? std::size_t{1}
+                                                                                               : std::size_t{0};
+            },
+            results, checksum, failureCount);
+    wakeupThreadPool.stop();
 
     // 大正文的一次性压缩：中间件在调用协程所在线程上同步压完整块正文，而 HTTP 三条路径的协程都跑在
     // 事件循环线程上——一条响应压多久，同一条循环上别的连接就等多久。按真实响应大小量出「每字节要占
