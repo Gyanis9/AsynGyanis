@@ -173,7 +173,12 @@ def readResponse(connection: socket.socket, buffer: bytes, headOnly: bool = Fals
 
 
 def requestOnce(connection: socket.socket, buffer: bytes, path: bytes, method: bytes = b"GET", host: str = "127.0.0.1"):
-    """发一条请求并校验响应：状态 200 且 content-length 与实收正文字节数一致。"""
+    """发一条请求并校验响应：状态 200 且 content-length 与实收正文字节数一致。
+
+    第三个返回值 isConnectionClosing 表示服务端已声明本条连接到此为止（Connection: close）。
+    调用方必须据此换新连接再发下一条：往已声明收口的连接上继续写，是对端违约后的正常失败，
+    会被误记成服务端缺陷。
+    """
     connection.sendall(method + b" " + path + b" HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n")
     status, headers, body, buffer = readResponse(connection, buffer)
     if status != 200:
@@ -181,7 +186,7 @@ def requestOnce(connection: socket.socket, buffer: bytes, path: bytes, method: b
     declared = int(headers.get(b"content-length", b"-1"))
     if declared != len(body):
         raise ValueError(f"content-length 声明 {declared} 实收 {len(body)}")
-    return body, buffer
+    return body, buffer, headers.get(b"connection") == b"close"
 
 
 def runProtocolChecks(host: str, port: int) -> int:
@@ -190,9 +195,9 @@ def runProtocolChecks(host: str, port: int) -> int:
     failures = 0
 
     connection = socket.create_connection((host, port), timeout=5)
-    _, buffer = requestOnce(connection, b"", b"/bench", host=host)
+    _, buffer, _ = requestOnce(connection, b"", b"/bench", host=host)
     for _ in range(50):
-        _, buffer = requestOnce(connection, buffer, b"/bench", host=host)
+        _, buffer, _ = requestOnce(connection, buffer, b"/bench", host=host)
     connection.close()
     print("  保持连接连发 51 条：正文与 content-length 全部一致")
 
@@ -226,7 +231,13 @@ def runProtocolChecks(host: str, port: int) -> int:
 
 
 def runKeepAliveLoad(host: str, port: int, threadCount: int, connectionCount: int, requestCount: int):
-    """保持连接负载：每线程若干连接，每条连接上串行压满 requestCount 条。返回 (失败数, 结果字典)。"""
+    """保持连接负载：每线程若干连接，每条连接上串行压满 requestCount 条。返回 (失败数, 结果字典)。
+
+    服务端按 HttpServerLimits::maximumRequestsPerConnection（默认 1000）到点收口，回完第 1000 条
+    就声明 Connection: close。本阶段要把 rounds 调到上限之上（例如 1001），所以见到 close 声明就
+    换一条新连接继续跑剩余请求：这既守住「不给已收口的连接再发报文」的客户端本分，也让吞吐与
+    分位在任何 rounds 下都量得准。代价是实际建立的连接数会略多于 connectionCount。
+    """
     print(f"== 阶段二：保持连接负载（{threadCount} 线程 × {connectionCount} 连接 × {requestCount} 请求）==")
     statistics = Statistics("keep-alive")
     lock = threading.Lock()
@@ -245,14 +256,28 @@ def runKeepAliveLoad(host: str, port: int, threadCount: int, connectionCount: in
             for index in range(requestCount):
                 begin = time.perf_counter()
                 try:
-                    _, buffer = requestOnce(connection, buffer, paths[index % len(paths)], host=host)
+                    _, buffer, isConnectionClosing = requestOnce(connection, buffer, paths[index % len(paths)], host=host)
                 except (OSError, ConnectionError, ValueError) as exception:
+                    # 落在第几条决定下一步查哪里：正好是每连接最后一条 ⇒ 客户端收尾口径，
+                    # 落在中间 ⇒ 服务端提前收口（真缺陷）。不记下来的话这条线索只能靠猜。
+                    # 打印放在锁内：多个 worker 同时失败时，半行交错会把这条证据糊掉
                     with lock:
                         statistics.recordFailure(type(exception).__name__)
+                        print(f"  失败：第 {index} 条请求（本连接已成功 {succeeded} 条）报 {type(exception).__name__}: {exception}")
                     break
                 with lock:
                     statistics.latencies.append(time.perf_counter() - begin)
                 succeeded += 1
+                if isConnectionClosing:
+                    # 服务端已声明本条连接到此为止，必须换新连接再发下一条
+                    connection.close()
+                    try:
+                        connection = socket.create_connection((host, port), timeout=10)
+                        buffer = b""
+                    except OSError as exception:
+                        with lock:
+                            statistics.recordFailure(f"reconnect:{type(exception).__name__}")
+                        break
             connection.close()
             with lock:
                 statistics.ok += succeeded
@@ -285,7 +310,7 @@ def runChurnLoad(host: str, port: int, threadCount: int, connectionCount: int):
             begin = time.perf_counter()
             try:
                 connection = socket.create_connection((host, port), timeout=10)
-                body, _ = requestOnce(connection, b"", b"/bench", host=host)
+                body, _, _ = requestOnce(connection, b"", b"/bench", host=host)
                 connection.close()
                 if not body:
                     raise ValueError("正文为空")
@@ -349,7 +374,7 @@ def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: 
     try:
         probe = socket.create_connection((host, port), timeout=5)
         try:
-            body, _ = requestOnce(probe, b"", b"/bench", host=host)
+            body, _, _ = requestOnce(probe, b"", b"/bench", host=host)
         finally:
             probe.close()
     except (OSError, ConnectionError, ValueError) as exception:
@@ -391,7 +416,7 @@ def runSlowClientResilience(host: str, port: int, connectionCount: int, holdSeco
         with socket.create_connection((host, port), timeout=5) as normal:
             buffer = b""
             for _ in range(20):
-                body, buffer = requestOnce(normal, buffer, b"/bench", host=host)
+                body, buffer, _ = requestOnce(normal, buffer, b"/bench", host=host)
                 servedCount += 1 if body == b"OK" else 0
     except (OSError, ConnectionError, ValueError) as exception:
         probeFailure = exception
