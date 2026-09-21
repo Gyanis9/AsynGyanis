@@ -42,9 +42,43 @@ namespace
 {
     std::atomic g_running{true};
 
+    /// /big 的正文大小：与微基准 `*-response-compress-256k` 同档，两侧读数可互相印证
+    constexpr std::size_t kLargeBodyBytes = 256 * 1024;
+
     void handleSignal(int)
     {
         g_running.store(false);
+    }
+
+    /**
+     * @brief 构造一条固定内容的可压缩大正文，全进程只造一次
+     * @details 词序由线性同余发生器驱动：按固定周期重复的词表会被压缩器当成一次超长匹配，
+     *          256 KiB 能压到 1 KiB 量级，那样量出来的「每字节压缩成本」比真实正文低一个数量级。
+     *          种子与倍频常数固定，因此每次运行拿到的是同一份字节，跨运行、跨探针可比。
+     * @return const std::string & 正文本体（构造后不再改动，可被各工作线程并发只读）
+     */
+    [[nodiscard]] const std::string &largeCompressibleBody()
+    {
+        static const std::string body = []
+        {
+            static constexpr std::string_view vocabulary[] = {
+                "server", "engine", "request", "connection", "scheduler", "socket", "buffer", "response",
+                "timeout", "header", "payload", "cipher", "packet", "stream", "window", "priority",
+            };
+            // 数值是 Numerical Recipes 的 LCG 常数；只需伪随机，不需高质量随机源
+            std::uint32_t randomState = 0x2545F491u;
+            std::string text;
+            text.reserve(kLargeBodyBytes + 1);
+            while (text.size() < kLargeBodyBytes)
+            {
+                randomState = randomState * 1664525u + 1013904223u;
+                text += vocabulary[(randomState >> 16) % std::size(vocabulary)];
+                // 每 16 个词换行：留出与真实文本一样的行结构，压缩器的匹配长度才有东西可吃
+                text += (text.size() % 16 == 0) ? '\n' : ' ';
+            }
+            return text;
+        }();
+        return body;
     }
 
     void setupRoutes(Net::Router &router)
@@ -73,6 +107,17 @@ namespace
             response.setStatus(200);
             response.setHeader("Content-Type", "text/plain");
             response.setBody("OK");
+            co_return;
+        });
+
+        // 响应压缩链路的端到端落点：/bench 的 2 字节正文永远到不了压缩阈值，所以「压完还能不能
+        // 正确走完整条网络路径」（h1/h2 的序列化、content-length、vary）此前只有单测覆盖，
+        // 这条路由给了进程外探针一个真 socket 的可比对象：同一地址带与不带 Accept-Encoding 各要一次
+        router.get("/big", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+        {
+            response.setStatus(200);
+            response.setHeader("Content-Type", "text/plain");
+            response.setBody(largeCompressibleBody());
             co_return;
         });
 
@@ -630,7 +675,7 @@ int main(int argc, char **argv)
 
     LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + address->toString());
     LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
-    LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench");
+    LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
     LOG_INFO("Press Ctrl+C to exit");
 
     // 等待退出信号
