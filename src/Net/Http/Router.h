@@ -202,6 +202,8 @@ namespace AsynGyanis::Net
          * @param method 请求方法
          * @param uri 请求 URI 原文（本函数内部按 route() 同一口径截取路径部分）
          * @return true 命中且该条路由为流式注册；路径未命中或命中的是普通路由时为 false
+         * @note 仅 POST/PUT 可能返回 true：流式注册只经 postStreaming()/putStreaming() 两个方法绑定的
+         *       入口产生，其余方法（含 GET/HEAD）在方法层即不可能命中流式路由，直接返回 false 不扫表
          * @see postStreaming(), putStreaming()
          */
         [[nodiscard]] bool hasStreamingRoute(HttpMethod method, std::string_view uri) const;

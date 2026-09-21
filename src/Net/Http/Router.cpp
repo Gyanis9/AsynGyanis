@@ -596,8 +596,10 @@ namespace AsynGyanis::Net
 
     bool Router::hasStreamingRoute(const HttpMethod method, const std::string_view uri) const
     {
-        // 未收录方法不参与业务匹配（与 route() 的识别性判定一致），流式判定同理
-        if (method == HttpMethod::UNKNOWN)
+        // 流式注册只有 postStreaming()/putStreaming() 两个入口，二者都绑死 POST/PUT 且非 any 方法，
+        // 故除这两个方法外任何请求都不可能被判定为流式（UNKNOWN 一并落在此处挡掉）。
+        // GET/HEAD（静态与只读流量的大头）据此直接返回 false，免去整张路由表的空转扫描
+        if (method != HttpMethod::POST && method != HttpMethod::PUT)
         {
             return false;
         }

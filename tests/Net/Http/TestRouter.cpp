@@ -747,18 +747,23 @@ namespace AsynGyanis::Net
         // 本用例保证「跳过收集」不会改变命中与否、以及是否流式的判定结果
         Router router;
         router.postStreaming("/upload/:id", textHandler("uploading"));
+        router.putStreaming("/replace/:id", textHandler("replacing"));
         router.postStreaming("/assets/*", textHandler("streaming-assets"));
         router.get("/plain", textHandler("plain")); // 非流式，作对照
 
         EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42"))
             << ":id 段命中的流式路由必须被探测为流式";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::PUT, "/replace/42"))
+            << "PUT 绑定的流式路由同样要探测为流式";
         EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/assets/css/main.css"))
             << "通配路由命中即算流式，剩余路径不收集也不影响判定";
         EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42?token=abc"))
             << "带查询串时要先按 route() 同口径裁出路径部分再判定";
-        // 只注册了 POST 的流式路由，GET 命中不了：路径能通配但方法不合 → false
+        // 流式只绑 POST/PUT：其余方法在方法层即不可能命中，直接 false（不扫表）
         EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/upload/42"))
             << "GET 不该命中只按 POST 注册的流式路由";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::HEAD, "/assets/x"))
+            << "HEAD 复用 GET 是针对普通路由的，流式判定不涉及";
         EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/plain"))
             << "非流式路由不得被探测为流式";
         EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/nowhere"))
