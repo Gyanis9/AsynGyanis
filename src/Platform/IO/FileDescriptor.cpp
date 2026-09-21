@@ -2,6 +2,8 @@
 
 #include "Platform/IO/Socket.h"
 
+#include <limits>
+
 namespace AsynGyanis::Platform
 {
     bool FileDescriptor::setNonBlocking(const int fileDescriptor) noexcept
@@ -26,6 +28,14 @@ namespace AsynGyanis::Platform
             return -1;
         }
 #if ASYN_PLATFORM_WIN32
+        // recv/send 的长度形参是 int：超过上界时强转会得到负数或回绕成另一个合法值，
+        // 而回绕后的结果与「对端关闭/暂无数据」同为 0，调用方无从分辨。与 Socket 的向量发送同一口径——
+        // 宁可明确失败，也不静默少读。同时把错误码置上，否则调用方读到的是上一次调用留下的残值
+        if (length > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            ::WSASetLastError(WSAEMSGSIZE);
+            return -1;
+        }
         return ::recv(fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), 0);
 #else
         return ::read(fileDescriptor, buffer, length);
@@ -39,6 +49,12 @@ namespace AsynGyanis::Platform
             return -1;
         }
 #if ASYN_PLATFORM_WIN32
+        // 同上：这里静默截断会更糟——少写了字节却回报成功，是最难排查的那种数据损坏
+        if (length > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            ::WSASetLastError(WSAEMSGSIZE);
+            return -1;
+        }
         return ::send(fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), 0);
 #else
         return ::write(fileDescriptor, buffer, length);

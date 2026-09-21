@@ -140,4 +140,32 @@ namespace AsynGyanis::Platform
         }
         SUCCEED();
     }
+
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（Windows）：长度大到会回绕成小正数时，读写按失败收口而不是「搬了 0 字节」
+     * @details recv/send 的长度形参是 int。刻意取 4 GiB 这个形状：它回绕之后是**正数 0**，
+     *          于是系统调用正常返回 0 —— 读侧与「对端关闭/暂无数据」同形，写侧看起来是「一个字节都没
+     *          发出去但没报错」，两种都不会被调用方察觉。取 INT_MAX+1 那种回绕成负数的形状反而测不出
+     *          问题（系统调用自己就会报错），所以这里要量的正是「回绕后仍合法」那一类。
+     *          POSIX 侧长度形参本就是 size_t、不存在这次回绕，因此用例只在 Windows 编译。
+     */
+    TEST(FileDescriptor, WrappingLengthFailsInsteadOfQuietlyTransferringNothing)
+    {
+        int readDescriptor  = FileDescriptor::kInvalid;
+        int writeDescriptor = FileDescriptor::kInvalid;
+        ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
+
+        constexpr std::size_t wrappingLength = static_cast<std::size_t>(1) << 32;
+        char                  buffer[1]      = {};
+
+        EXPECT_EQ(FileDescriptor::read(readDescriptor, buffer, wrappingLength), -1)
+                << "长度回绕成 0 会安静地什么也没读，而 0 在本接口里另有「对端关闭」的含义";
+        EXPECT_EQ(FileDescriptor::write(writeDescriptor, buffer, wrappingLength), -1)
+                << "写侧同样的回绕会报成「发送了 0 字节」，调用方以为已经发完";
+
+        FileDescriptor::close(readDescriptor);
+        FileDescriptor::close(writeDescriptor);
+    }
+#endif
 } // namespace AsynGyanis::Platform
