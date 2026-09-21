@@ -233,6 +233,37 @@ namespace
         stream << document;
         std::printf("  结果已写入 %s\n", path.c_str());
     }
+
+    /**
+     * @brief 造一段接近真实响应的可压缩正文：词表按线性同余挑，数字与行长都在变
+     * @details 把同一句话重复 N 遍会把压缩器送进退化路径（实测那样一份 256 KiB 正文能压到 0.05%），
+     *          量出来的每字节耗时远低于真实 HTML/JSON 响应，照着它做取舍会做错决定。种子固定，
+     *          因此各轮与多次运行拿到的都是逐字节相同的同一份正文（基准必须可重复）
+     * @param minimumSize 正文至少要有的字节数
+     * @return std::string 生成好的正文
+     */
+    [[nodiscard]] std::string makeResponseLikeBody(const std::size_t minimumSize)
+    {
+        static constexpr std::string_view kWords[] = {
+                "request", "connection", "timeout", "payload", "etag", "server", "client", "window",
+                "congestion", "stream", "header", "packet", "latency", "throughput", "backpressure", "route"};
+        constexpr std::size_t kWordCount = sizeof(kWords) / sizeof(kWords[0]);
+
+        std::string body;
+        std::uint32_t state = 0x2545F491U;
+        while (body.size() < minimumSize)
+        {
+            state = state * 1664525U + 1013904223U;
+            body += "<";
+            body += kWords[(state >> 7) % kWordCount];
+            body += " id=\"";
+            body += std::to_string(state % 1000003U);
+            body += "\" ms=\"";
+            body += std::to_string((state >> 11) % 997U);
+            body += "\"/></row>\n";
+        }
+        return body;
+    }
 } // namespace
 
 int main(int argumentCount, char **argumentValues)
@@ -1057,16 +1088,8 @@ int main(int argumentCount, char **argumentValues)
 
     // 响应压缩中间件的 gzip / zstd 两条一次性压缩：改前每条响应都重建压缩器内部状态
     // （gzip deflateInit2/End、zstd 的 ZSTD_compress 内部建/销 CCtx），改后复用 thread_local 上下文。
-    // 同一线程反复调用正落在复用路径上，量的是稳态。取一段 ~4KiB 可压正文贴近真实响应
-    const std::string responseCompressBody = []
-    {
-        std::string body;
-        while (body.size() < 4096)
-        {
-            body += "<div class=\"row\">AsynGyanis 响应压缩基准正文，重复以模拟可压缩的 HTML。</div>";
-        }
-        return body;
-    }();
+    // 同一线程反复调用正落在复用路径上，量的是稳态。正文取 ~4KiB 接近真实响应的一份生成文本
+    const std::string responseCompressBody = makeResponseLikeBody(4096);
     measureCase(
             "gzip-response-compress",
             [&responseCompressBody]
@@ -1083,6 +1106,61 @@ int main(int argumentCount, char **argumentValues)
                 return compressed.has_value() ? compressed->size() : std::size_t{0};
             },
             results, checksum, failureCount);
+
+    // 大正文的一次性压缩：中间件在调用协程所在线程上同步压完整块正文，而 HTTP 三条路径的协程都跑在
+    // 事件循环线程上——一条响应压多久，同一条循环上别的连接就等多久。按真实响应大小量出「每字节要占
+    // 多少纳秒」才知道这个同步成本该不该被搬到工作线程上
+    const std::string largeResponseCompressBody = makeResponseLikeBody(256 * 1024);
+    const std::size_t largeResponseBodySize = largeResponseCompressBody.size();
+    // 返回 0 即自检失败：压缩不可用、或压完不降反升（级别映射接错、把 0 当成「不压」都会走这条）
+    const auto compressedOrZero = [largeResponseBodySize](std::optional<std::string> compressed)
+    {
+        if (!compressed.has_value() || compressed->size() >= largeResponseBodySize)
+        {
+            return std::size_t{0};
+        }
+        return compressed->size();
+    };
+    measureCase(
+            "gzip-response-compress-256k",
+            [&largeResponseCompressBody, &compressedOrZero]
+            {
+                return compressedOrZero(Net::gzipCompress(largeResponseCompressBody));
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "gzip-response-compress-256k-level1",
+            [&largeResponseCompressBody, &compressedOrZero]
+            {
+                return compressedOrZero(Net::gzipCompress(largeResponseCompressBody, 1));
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "zstd-response-compress-256k",
+            [&largeResponseCompressBody, &compressedOrZero]
+            {
+                return compressedOrZero(Net::zstdCompress(largeResponseCompressBody));
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "brotli-response-compress-256k",
+            [&largeResponseCompressBody, &compressedOrZero]
+            {
+                return compressedOrZero(Net::brotliCompress(largeResponseCompressBody));
+            },
+            results, checksum, failureCount);
+
+    // 时间与压缩比要一起看才做得出「要不要为 gzip-only 的对端降档」这个判断，所以在这里各调一次
+    // 把长度打出来（不计入任何用例的计时，也不影响校验和）
+    const std::optional<std::string> gzipRatioReference = Net::gzipCompress(largeResponseCompressBody, 6);
+    const std::optional<std::string> gzipRatioLevel1    = Net::gzipCompress(largeResponseCompressBody, 1);
+    const std::optional<std::string> zstdRatio          = Net::zstdCompress(largeResponseCompressBody);
+    const std::optional<std::string> brotliRatio        = Net::brotliCompress(largeResponseCompressBody);
+    if (gzipRatioReference && gzipRatioLevel1 && zstdRatio && brotliRatio)
+    {
+        std::printf("  256 KiB 正文压缩后长度：gzip6=%zu gzip1=%zu zstd3=%zu brotli6=%zu\n",
+                    gzipRatioReference->size(), gzipRatioLevel1->size(), zstdRatio->size(), brotliRatio->size());
+    }
 
     printTable(results, failureCount, checksum);
     if (!jsonOutputPath.empty())

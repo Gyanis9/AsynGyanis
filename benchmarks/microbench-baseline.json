@@ -22,11 +22,12 @@
     "http-date-format 在 2026-09-20 随「定长文本手工拼装（不再走 std::format）」重测（260.9 → 47.3 ns）；新增 http-date-now 一例量 Date 头的实际每条代价（按秒缓存，16.7 ns），与 http-date-format 的差就是「每条响应都重算」的浪费。",
     "router-streaming-* 两例（2026-09-21 新增）是 Router::hasStreamingRoute 的稳态成本——h1/h2/h3 会话每条请求头部收齐后都要跑它：get 一例量 GET/HEAD 撞方法闸直接返回（改前要跑整表扫描并把通配剩余路径拷成 std::string，实测消融 146.2 → 1.1 ns）；post-param 一例量 POST 命中 \":id\" 流式路由时「匹配但不收集参数」这条（消融 107.3 → 72.6 ns）。两例作吞吐下限门禁：若日后有人把方法闸或收集开关改回去，get 会当场掉约两个数量级报红。",
     "ws-deflate-message（2026-09-21 新增）量的是 WebSocket permessage-deflate 单条消息（1 KiB 可压文本）的压缩稳态：改前每条 deflateInit2/End 重建约 240KB 内部状态，改后复用 thread_local 流、每条 deflateReset（no_context_takeover 下与新建逐字节等价）。实测消融 8707 → 3174 ns/条（−64%），短消息上省的固定项占比更大。作吞吐下限门禁：改回复用即报红。同一 payload 连压两次字节一致由 TestPerMessageDeflate 钉死。",
-    "gzip-response-compress / zstd-response-compress（2026-09-21 新增）量的是响应压缩中间件一次性压 ~4KiB 可压 HTML 正文的稳态，与 ws-deflate-message 同源的一类浪费：改前每条响应都重建压缩器上下文（gzip deflateInit2/End；zstd 的 ZSTD_compress 内部建/销 CCtx），改后复用 thread_local 上下文（gzip deflateReset、zstd ZSTD_compressCCtx，产出逐字节一致）。实测消融 gzip 14133 → 10348 ns（−27%，正文大时压缩本身占比高）、zstd 6055 → 3177 ns（−47%）。zstd 的 0.6× 下限即可挡住退回；gzip 收益较小、按微基准惯例用 0.8× 收紧。正确性由 GzipTest/CompressionCodecs 的「同输入连压两次逐字节一致 + 多长度交错往返」钉死。",
+    "gzip-response-compress / zstd-response-compress 量响应压缩中间件一次性压 ~4KiB 正文的稳态。改掉「每条响应重建压缩器上下文」这笔改动的消融是在旧正文上量的（历史数字：gzip 14133 → 10348 ns、zstd 6055 → 3177 ns）；2026-09-21 晚正文换成按词表生成的近似真实文本（见另一条 note）之后两例按新正文重录：gzip 24725 ns、zstd 8176 ns。zstd 的 0.6× 下限即可挡住退回；gzip 收益较小、按微基准惯例用 0.8× 收紧。正确性由 GzipTest/CompressionCodecs 的「同输入连压两次逐字节一致 + 多长度交错往返」钉死。",
     "header-first-value-view / header-contains 两例（2026-09-21 新增，同一份二进制六跑）是头部存储新增的「不拷贝」读取出口与存在性判定，与 header-first-value 逐对比：减掉 281.6 ns 的装机本底之后，owning 查询 70.2 ns、视图查询 13.1 ns、存在性判定 15.6 ns。差额就是那一次取值拷贝（本 fixture 的 x-request-id 超过短串内联长度，每查一次要向堆要一次内存）。",
     "qpack-decode 在 2026-09-21 重录下限：这一例在同一份二进制下跨进程严重双峰，六跑落在 ~258 ns 与 ~410-421 ns 两个集群里（最大/最小 1.63 倍），而且换一个无关的用例插进 main.cpp 就会把大部分跑推到慢峰；尝试把注意力集中在承接交付指令的临时串从计时体内挬到体外复用，双峰一丝不变（因此也没保留那处改动）。所以这里把下限按「已观察到的最慢跑」登记（2374677/s），而不是中位数——否则单跑门禁会把快慢峰当成回归。这一例只能报出量级回归，报不出 1.6 倍以内的漂移。",
     "static-body-read-4k-* 与 -256k-* 四条把「正文缓冲随响应复用」这笔改动第一次量了出来：4 KiB 复用 15.0 µs 对每次新建 15.1 µs（差 0.6%），256 KiB 是 20.6 µs 对 24.1 µs（省 3.5 µs，14.6%）——省下的那份确实随正文大小线性增长，但只在正文够大时才够看。同一批里 static-body-read-4k-reused 15.0 µs 对上 std::ifstream 那条 static-small-file-read 14.9 µs，说明换读法省不了什么，成本全在打开路径与读出这串系统调用上。",
-    "mime-lookup-from-string 29.5 ns 是扩展名查表本身；mime-lookup-from-path 加上了 HttpServer 调用形状里那次 path→std::string 的窄化拷贝，跨 4 跑还有 1.81x 的离散（下限按最慢那跑登），两者之差 150-300 ns 就是「把入口改成 string_view」的理论上限。但 Windows 上 std::filesystem::path 是 UTF-16，这次窄化拷贝省不掉——改入口只是把拷贝推到调用方，故不动实现。占一条静态请求（元数据 13.4 µs + 正文 15.0 µs）的 0.5% 不到。"
+    "mime-lookup-from-string 29.5 ns 是扩展名查表本身；mime-lookup-from-path 加上了 HttpServer 调用形状里那次 path→std::string 的窄化拷贝，跨 4 跑还有 1.81x 的离散（下限按最慢那跑登），两者之差 150-300 ns 就是「把入口改成 string_view」的理论上限。但 Windows 上 std::filesystem::path 是 UTF-16，这次窄化拷贝省不掉——改入口只是把拷贝推到调用方，故不动实现。占一条静态请求（元数据 13.4 µs + 正文 15.0 µs）的 0.5% 不到。",
+    "响应压缩的四条 256 KiB 用例（2026-09-21 晚新增）顺带暴露了正文选取的缺陷：旧正文把同一句 HTML 重复到目标长度，压缩器因此走退化路径——同一份 gzip 在退化正文上 674 µs，在按词表与数字生成的近似真实正文上 4.44 ms（每字节 2.6 ns 对 16.9 ns，差 6.6 倍）；照旧数字判断「同步压缩占不了多少」会做错决定，故把两份正文都换成 makeResponseLikeBody，四条 256 KiB 用例与两条 4 KiB 用例按新正文重录。四例给的是同步压缩占住事件循环线程的实际时长（256 KiB 正文）：gzip6 4.44 ms、brotli6 4.20 ms、gzip1 1.27 ms、zstd3 0.45 ms；压缩后长度依次 53634 / 51271 / 70047 / 58798 字节。两条结论：偏好顺序 zstd > br > gzip 恰好也是 CPU 成本顺序，只接受 gzip 的对端要付 9.8 倍于 zstd 的压缩 CPU；gzip 档位从 6 降到 1 是 3.5 倍提速换 30.6% 体积膨胀，不是免费的，故默认档保持 zlib 自身的折中点 6 不动。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -408,20 +409,56 @@
       "runsMeasured": 3
     },
     "gzip-response-compress": {
-      "throughputPerSecond": 96633,
-      "nanosecondsPerOperation": 10348.4,
+      "throughputPerSecond": 40445,
+      "nanosecondsPerOperation": 24725.0,
       "observedNanosecondsRange": [
-        10279.5,
-        10477.9
+        24634.1,
+        25430.9
       ],
       "runsMeasured": 3
     },
     "zstd-response-compress": {
-      "throughputPerSecond": 314753,
-      "nanosecondsPerOperation": 3177.1,
+      "throughputPerSecond": 122310,
+      "nanosecondsPerOperation": 8176.0,
       "observedNanosecondsRange": [
-        3129.2,
-        3213.3
+        8151.9,
+        8177.0
+      ],
+      "runsMeasured": 3
+    },
+    "gzip-response-compress-256k": {
+      "throughputPerSecond": 225,
+      "nanosecondsPerOperation": 4437645.5,
+      "observedNanosecondsRange": [
+        4402290.9,
+        4448350.0
+      ],
+      "runsMeasured": 3
+    },
+    "gzip-response-compress-256k-level1": {
+      "throughputPerSecond": 790,
+      "nanosecondsPerOperation": 1265035.1,
+      "observedNanosecondsRange": [
+        1218948.1,
+        1276342.1
+      ],
+      "runsMeasured": 3
+    },
+    "zstd-response-compress-256k": {
+      "throughputPerSecond": 2219,
+      "nanosecondsPerOperation": 450707.3,
+      "observedNanosecondsRange": [
+        439243.6,
+        514585.4
+      ],
+      "runsMeasured": 3
+    },
+    "brotli-response-compress-256k": {
+      "throughputPerSecond": 238,
+      "nanosecondsPerOperation": 4196627.3,
+      "observedNanosecondsRange": [
+        4186127.3,
+        4228472.7
       ],
       "runsMeasured": 3
     },
