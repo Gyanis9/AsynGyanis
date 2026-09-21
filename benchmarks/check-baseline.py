@@ -64,6 +64,31 @@ def accumulateMeasurement(samples: dict, incoming: dict, sourcePath: str) -> dic
     return samples
 
 
+# 跨运行离散度的可信上限：同一指标各次实测之间 max/min 超过这个倍数，说明这批读数量的是
+# 「这次跑落在哪个区」而不是被测代码。本机实测会整段进入 ~1.5 倍的负载区——同一份二进制
+# 连续三跑全在 1100 ns、隔一批又全在 736 ns，而组内离散只有 1.01，所以「分批各跑几轮」看不出来。
+# 本会话有两次 0.78x 的假报红（qpack-decode、header-first-value）就是这么来的，故只做提示、
+# 不判失败：判失败会把机器状态当成代码回归。
+kDispersionRatioLimit = 1.3
+
+
+def dispersionRatio(samples: dict) -> tuple:
+    """跨运行离散度自检：返回 (最大 max/min 倍数, 对应指标名)；不足两份实测时返回 (1.0, "")。"""
+    widestRatio = 1.0
+    widestKey = ""
+    for key in GAUGED_KEYS:
+        values = samples.get(key)
+        if not values or len(values) < 2:
+            continue
+        minimumValue = min(values)
+        maximumValue = max(values)
+        ratio = maximumValue / minimumValue if minimumValue > 0 else float("inf")
+        if ratio > widestRatio:
+            widestRatio = ratio
+            widestKey = key
+    return widestRatio, widestKey
+
+
 def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> list:
     """比对单项：返回违反项的中文描述列表（空列表表示通过）。"""
     violations = []
@@ -104,6 +129,13 @@ def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> l
               f"样本 {'/'.join(f'{value:.1f}' for value in latencySamples)}）")
         if not passed:
             violations.append(f"{name}：{label} {actualValue:.1f}us 高于基线的 {ratioLimit:.2f} 倍（上限 {maximum:.1f}us）")
+
+    # 可信度自检放在判定之后：它不改变本项的输赢，只标出「这次的中位数不值得信」
+    widestRatio, widestKey = dispersionRatio(samples)
+    if widestRatio > kDispersionRatioLimit:
+        print(f"     [噪声] {widestKey} 跨 {runCount} 份实测的 max/min = {widestRatio:.2f}x，"
+              f"超过可信上限 {kDispersionRatioLimit:.2f}x：本项只当量级退化检查用，"
+              f"亚阈值差异请以同批交替的 A/B 为准")
 
     return violations
 
