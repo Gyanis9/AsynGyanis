@@ -28,6 +28,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace AsynGyanis::Database::Queryable
@@ -64,6 +65,20 @@ namespace AsynGyanis::Database::Queryable
         }
 
     } // namespace
+
+    /**
+     * @brief 文本单元格映射进 std::string 成员时走移动：搬空源变体、值逐字节不损
+     * @details 钉住 convertDatabaseValue 的右值重载——cellValue 是即将析构的局部量，文本列应把堆缓冲
+     *          std::move 进返回值而非再拷一份（省掉的正是「变体→成员」那次整串拷贝与再分配）。
+     *          源串被搬空即证明走的是移动；返回值逐字节正确即证明搬的没错、没截断。
+     */
+    TEST(RowMapperStringMove, MovesTextBufferIntoStringMember)
+    {
+        DatabaseValue cell{std::string(4096, 'x')};   // 远超短字符串缓冲，是真实堆缓冲
+        const std::string converted = Detail::convertDatabaseValue<std::string>(std::move(cell), kColumnName);
+        EXPECT_EQ(converted, std::string(4096, 'x'));
+        EXPECT_TRUE(std::get<std::string>(cell).empty()) << "源变体的文本缓冲应已被搬空（走移动而非拷贝路径）";
+    }
 
     // ------------------------------------------------------------------------
     // 无符号成员：int64 支路
