@@ -733,15 +733,16 @@ namespace AsynGyanis::Platform
 #endif
 
     /**
-     * @brief 已知缺陷的可复现用例（当前禁用）：并发写同一个被监视的目录时，通知会凭空消失
-     * @details 实测：8 线程共写成功 1200 个文件，静置 8.6 s 后仍有 17~19 个文件名的通知一条都没
-     *          到过（三次运行各自如此）。`GetOverlappedResult` 全程成功——既没有
-     *          ERROR_NOTIFY_ENUM_DIR（溢出应当由它报），也没有别的失败，单批最大 3240/4096 字节
-     *          说明缓冲区本身没装满。也就是说这种丢法是平台不告状的，本端的兜底无从触发。
-     * @note 禁用而不是删掉：这是目前唯一可跑的复现，断言写的就是「要么收齐、要么收到重扫信号」
-     *       这个应达到的契约。定位到成因（NTFS 合并规则还是重投窗口）之后把它启回来当回归钉。
+     * @brief 钉住：并发涌入同一个被监视目录的通知不允许静默丢失
+     * @details 8 线程共写 1200 个文件，契约是「要么每个文件都收到事件，要么收到一条 NeedsRescan
+     *          让消费方去重扫」。两头都不占就是丢事件：实测通知缓冲区取 4 KiB 时，三次运行各自
+     *          静默丢掉 17~19 个文件名，且 `GetOverlappedResult` 全程成功、没有
+     *          ERROR_NOTIFY_ENUM_DIR——也就是这种丢法平台不告状，只能靠把缓冲区给足来避免
+     *          （取 64 KiB 后连跑 10 次一条不丢）。期望集合只收「确实写成功」的文件名，
+     *          灌入本身失败不算丢失。
+     * @note 断言取两支之或，不赌调度时序：慢机器上排得过来就走「收齐」那一支，同样算通过。
      */
-    TEST(FileWatcher, DISABLED_OverflowIsNeverSilent)
+    TEST(FileWatcher, ConcurrentChangesAreNeverSilentlyDropped)
     {
         constexpr int kFloodFileCount = 1200;
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Overflow");
