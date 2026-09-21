@@ -191,6 +191,13 @@ namespace AsynGyanis::Platform
                 m_recursiveWatchPaths.insert(directoryPath);
             }
 
+            // 调用方点过名的路径另记一份：非递归的那条不进上面那份清单（进了就会被当成递归范围去
+            // 判定新建子目录），可它同样需要在目录被换掉后补挂回来
+            if (!partOfRecursiveTree)
+            {
+                m_selfHealPaths.insert(directoryPath);
+            }
+
             if (m_watches.contains(directoryPath))
             {
                 return true;
@@ -284,6 +291,7 @@ namespace AsynGyanis::Platform
         if (!keepRecursiveWatchPath)
         {
             m_recursiveWatchPaths.erase(normalizedPath);
+            m_selfHealPaths.erase(normalizedPath);
             std::erase_if(m_recursiveWatchPaths,
                           [&normalizedPath](const std::string &coveredPath)
                           {
@@ -332,7 +340,7 @@ namespace AsynGyanis::Platform
             if (std::chrono::steady_clock::now() >= rootRecheckDeadline)
             {
                 rootRecheckDeadline = std::chrono::steady_clock::now() + kRootRecheckInterval;
-                rewatchMissingRecursivePaths();
+                rewatchMissingWatches();
             }
 
             // 收集所有待等待的事件句柄及其对应监听路径，停止事件固定占据索引 0
@@ -491,24 +499,36 @@ namespace AsynGyanis::Platform
         }
     }
 
-    void Win32FileWatcher::rewatchMissingRecursivePaths()
+    void Win32FileWatcher::rewatchMissingWatches()
     {
-        std::vector<std::string> missingPaths;
+        std::vector<std::pair<std::string, bool> > missingWatches;
         {
             const std::shared_lock lock(m_watchMutex);
             for (const std::string &coveredPath: m_recursiveWatchPaths)
             {
                 if (!m_watches.contains(coveredPath))
                 {
-                    missingPaths.push_back(coveredPath);
+                    missingWatches.emplace_back(coveredPath, true);
+                }
+            }
+
+            for (const std::string &requestedPath: m_selfHealPaths)
+            {
+                // 已经由上面那份递归清单兜住的路径不再重复登记：两条路的 recursive 取值不同
+                if (!m_watches.contains(requestedPath) && !m_recursiveWatchPaths.contains(requestedPath))
+                {
+                    // 落在自愈清单而不在递归清单里的，一定是调用方按 recursive=false 给的那条：
+                    // 按递归挂上会把一条只要一层的请求悄悄扩成整棵树
+                    missingWatches.emplace_back(requestedPath, false);
                 }
             }
         }
 
-        // 锁外补挂：registerWatch() 要拿写锁；目录还没回来时它会失败，下一拍再试
-        for (const std::string &missingPath: missingPaths)
+        // 锁外补挂：registerWatch() 要拿写锁；目录还没回来时它会失败，下一拍再试。
+        // 三条参数里的 partOfRecursiveTree 一律给 true：这些是框架的补挂动作，不该被记成新的调用方请求
+        for (const auto &[missingPath, recursive]: missingWatches)
         {
-            static_cast<void>(registerWatch(missingPath, true, false));
+            static_cast<void>(registerWatch(missingPath, recursive, true));
         }
     }
 
@@ -540,6 +560,15 @@ namespace AsynGyanis::Platform
         m_watches.insert(std::move(node));
         // 新位置同样纳入自愈范围；旧键**故意留着**——原地重建出同名目录时靠自愈复查补挂第二条监视
         m_recursiveWatchPaths.insert(relocatedPath);
+        // 调用方点过名的那条监视搬到哪，自愈就该在新位置复查它；旧键同样留着，理由与上面一致
+        if (std::ranges::any_of(m_selfHealPaths,
+                               [&oldPath](const std::string &requestedPath)
+                               {
+                                   return isSameDirectoryPath(requestedPath, oldPath);
+                               }))
+        {
+            m_selfHealPaths.insert(relocatedPath);
+        }
         return true;
     }
 

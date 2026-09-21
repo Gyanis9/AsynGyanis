@@ -142,12 +142,13 @@ namespace AsynGyanis::Platform
         [[nodiscard]] bool issueRead(WatchEntry &entry) const;
 
         /**
-         * @brief 把不在监听集合里的目录重新挂上
+         * @brief 把「调用方要过、但已不在监听集合里」的目录重新挂上
          * @details 目录被整个换掉（删除后重建、改名走开再原地重建）时原有的监听随之失效或被摘除，
          *          而重建出来的目录没有人会再调 addWatch——不补挂，它内部的变更就永久丢失。
-         *          按秒节拍复查一遍递归覆盖清单
+         *          按秒节拍复查两份清单：递归覆盖清单（补挂时按递归登记）与调用方点过名的路径
+         *          （按它当时的 recursive 取值补挂，给一条只要一层的请求按递归挂上会让范围越滚越大）
          */
-        void rewatchMissingRecursivePaths();
+        void rewatchMissingWatches();
 
         /**
          * @brief 把一条监视从被改名的目录跟到它的新位置
@@ -161,13 +162,14 @@ namespace AsynGyanis::Platform
         bool relocateWatchedDirectory(const std::string &oldPath, const std::string &newPath);
 
         /**
-         * @brief 注册一条目录监视，并按需记进递归覆盖清单
-         * @details FileWatcher::addWatch() 的实际实现。多出来的那一项区分「调用方自己给的注册」与
-         *          「递归注册时枚举出来的子目录」：两者挂的都是本目录自身的监视，但只有后者也要进
-         *          自愈清单——它们当时按 recursive=false 挂上，不进清单就没有人再把它们补回来。
+         * @brief 注册一条目录监视，并按需记进递归覆盖清单与自愈清单
+         * @details FileWatcher::addWatch() 的实际实现。两份清单的判据都落在这多出来的那一项上：
+         *          递归登记时枚举出来的子目录进递归覆盖清单（它们按 recursive=false 挂上，不进清单
+         *          就没有人再把它们补回来），调用方自己给的注册进自愈清单（非递归的那条不在覆盖清单里，
+         *          目录被换掉后同样要补挂）。框架自己的补挂动作给 true，免得被记成一次新的调用方请求。
          * @param path 待监听的目录路径
          * @param recursive 是否递归监听子目录
-         * @param partOfRecursiveTree 本次注册是否落在某条递归监视覆盖的范围内
+         * @param partOfRecursiveTree 本次注册是否由框架发起（递归登记的子目录、自愈复查的补挂）而非调用方新给的请求
          * @return true 注册成功或路径已在监听集合中
          * @return false 路径无法解析、目录或事件句柄创建失败、首次重叠读投递失败
          */
@@ -221,6 +223,10 @@ namespace AsynGyanis::Platform
         /// 两个用途——条目被摘掉后由自愈复查按这份清单补挂，以及判定新建目录是否落在递归范围内。
         /// 受 m_watchMutex 保护——注册入口可能被任意线程调用，而读它的是监听线程
         std::set<std::string> m_recursiveWatchPaths;
+
+        /// 调用方点过名的监视路径（不含递归注册时枚举出来的子目录）：非递归的那条不在上面那份清单里，
+        /// 目录被换掉后就没人再挂回来。自愈复查读它，removeWatch() 与被撤销的那条一起摘掉
+        std::set<std::string> m_selfHealPaths;
 
         FileChangeCallback        m_callback;           ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;         ///< 保护监听映射与回调的读写锁

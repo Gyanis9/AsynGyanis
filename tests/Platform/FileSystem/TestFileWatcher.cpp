@@ -421,9 +421,9 @@ namespace AsynGyanis::Platform
      *          wd，于是映射不会自己消失；随后的 addWatch(原路径) 撞上「已经看过这个路径」这条去重、
      *          **返回 true 却不注册**，原地重建的同名目录里的变更从此永久丢失。这里刻意不调
      *          removeWatch，走的就是调用方以为「重复注册是幂等的」那条路。
-     * @note 只在 Linux 编译：Windows 有同一形状的症状（改名走开再原地重建后收不到事件），但一次
-     *       「按句柄实际落处判陈旧、命中则重新注册」的修法在该用例下仍未投递事件，成因尚未定位——
-     *       不写没被验证过的结论，Windows 侧留作单独一项。
+     * @note 只在 Linux 编译：Windows 上同一形状（改名走开再原地重建）由另一条修法解决——监视条目按
+     *       父目录报出的旧名/新名配对换键跟随目录，重建出的同名目录再交给按秒节拍的自愈补挂，
+     *       钉住它的是本文件里 Windows 专属的那条同名用例。
      */
     TEST(FileWatcher, ReaddedWatchAfterRenameTracksTheNewDirectory)
     {
@@ -775,6 +775,54 @@ namespace AsynGyanis::Platform
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "换掉重建的递归根没有被补挂监视：它内部的变更此后永久丢失";
+    }
+
+    /**
+     * @brief 钉住：非递归的目录监视在目录被换掉之后同样要由自愈补挂
+     * @details 自愈清单原先只收「递归监视覆盖到的目录」，调用方按 recursive=false 注册的那一条不在里面：
+     *          目录被删掉再放回时旧监视随句柄失效，而重建出来的目录没有人会再调 addWatch，它内部的变更
+     *          从此不上报。Linux 侧的清单已经改成「调用方请求过的每条路径」，覆盖这一条；Windows 仍漏，
+     *          于是同一次调用在两台机器上给出不同的可靠性。全程不重新注册，只等自愈节拍。
+     */
+    TEST(FileWatcher, NonRecursiveWatchIsRewatchedAfterDirectoryIsReplaced)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_ReplacePlain");
+        const std::filesystem::path           watchedDirectory = temporaryDirectory.path() / "plain";
+        ASSERT_TRUE(std::filesystem::create_directories(watchedDirectory));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(watchedDirectory.string(), /*recursive=*/false));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        std::error_code removeError;
+        static_cast<void>(std::filesystem::remove_all(watchedDirectory, removeError));
+        ASSERT_FALSE(removeError) << "删除被监视目录失败：" << removeError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        ASSERT_TRUE(std::filesystem::create_directories(watchedDirectory));
+
+        // 跨过至少一个自愈节拍（1 秒）：这条用例考的就是「没有人重新注册时框架自己补不补」
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/inside.yaml", "back: true\n"));
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("inside.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "换掉重建的非递归监视没有被补挂：它内部的变更此后永久丢失";
     }
 
 #if ASYN_PLATFORM_WIN32
