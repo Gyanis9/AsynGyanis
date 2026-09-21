@@ -6,13 +6,16 @@
 用法：
     python3 h3_acceptance.py <host> <port> <path> [期望状态码] [正文应包含的片段]
     python3 h3_acceptance.py <host> <port> <path> --websocket <帧负载文本>
+    python3 h3_acceptance.py <host> <port> <path> --accept-encoding gzip [期望状态码] [正文片段]
 前一条发普通 GET；带 --websocket 时改成扩展 CONNECT（RFC 9220）隧道，在同一流上发两条 WebSocket
-帧并核对回显。退出码 0 表示核对通过；非 0 打印原因后退出。
+帧并核对回显。带 --accept-encoding 时在请求里声明该编码，并按响应里的 content-encoding 把正文
+解回来再核对片段（探针只带 gzip 解码器）。退出码 0 表示核对通过；非 0 打印原因后退出。
 
 依赖：pip install aioquic
 """
 
 import asyncio
+import gzip
 import os
 import ssl
 import sys
@@ -50,19 +53,19 @@ class Http3Probe(QuicConnectionProtocol):
         self.expected_byte_count = None
         self.enough_bytes = asyncio.Event()
 
-    def send_get(self, authority, path):
+    def send_get(self, authority, path, accept_encoding=None):
         """在一条新的双向流上发一条 GET（请求立即收尾，无正文）。"""
         self._stream_id = self._quic.get_next_available_stream_id()
-        self._http.send_headers(
-            stream_id=self._stream_id,
-            headers=[
-                (b":method", b"GET"),
-                (b":scheme", b"https"),
-                (b":authority", authority.encode()),
-                (b":path", path.encode()),
-            ],
-            end_stream=True,
-        )
+        headers = [
+            (b":method", b"GET"),
+            (b":scheme", b"https"),
+            (b":authority", authority.encode()),
+            (b":path", path.encode()),
+        ]
+        # 带上 accept-encoding 才能验到压缩那一条链路：不声明的客户端本就不该收到编码正文
+        if accept_encoding is not None:
+            headers.append((b"accept-encoding", accept_encoding.encode()))
+        self._http.send_headers(stream_id=self._stream_id, headers=headers, end_stream=True)
         self.transmit()
 
     def send_websocket_tunnel(self, authority, path, frames):
@@ -160,13 +163,13 @@ def make_quic_configuration():
     return configuration
 
 
-async def run_probe(host, port, path):
+async def run_probe(host, port, path, accept_encoding=None):
     """跑完一条 GET 并返回探针（含状态码与正文）。"""
     async with connect(host, port, configuration=make_quic_configuration(), create_protocol=Http3Probe) as client:
         # 先让服务端的 SETTINGS 到达再发请求（RFC 9114 §6.2.1 的口径）：aioquic 1.3.0 没有公开
         # 的 SETTINGS 事件可等，这里用一小段确定性的等待代替
         await asyncio.sleep(SETTINGS_SETTLE_SECONDS)
-        client.send_get(f"{host}:{port}", path)
+        client.send_get(f"{host}:{port}", path, accept_encoding)
         await asyncio.wait_for(client.finished.wait(), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         return client
 
@@ -210,7 +213,8 @@ def run_websocket_mode(host, port, path, text):
 
 def main():
     if len(sys.argv) < 4:
-        print("用法：h3_acceptance.py <host> <port> <path> [期望状态码] [正文片段] [--websocket <文本>]", file=sys.stderr)
+        print("用法：h3_acceptance.py <host> <port> <path> [期望状态码] [正文片段] "
+              "[--websocket <文本>] [--accept-encoding <编码>]", file=sys.stderr)
         return 2
 
     host = sys.argv[1]
@@ -225,17 +229,54 @@ def main():
             return 2
         return run_websocket_mode(host, port, path, sys.argv[websocket_index + 1])
 
-    expected_status = int(sys.argv[4]) if len(sys.argv) > 4 else 200
-    expected_body = sys.argv[5] if len(sys.argv) > 5 else None
+    # 带 --accept-encoding 时按响应里的 content-encoding 把正文解回来再比对片段：只看压缩后的
+    # 字节会把「压根没压」与「压了但解不开」都当成通过
+    accept_encoding = None
+    if "--accept-encoding" in sys.argv:
+        encoding_index = sys.argv.index("--accept-encoding")
+        if encoding_index + 1 >= len(sys.argv):
+            print("--accept-encoding 后面要给出编码名（本探针只解得开 gzip）", file=sys.stderr)
+            return 2
+        accept_encoding = sys.argv[encoding_index + 1]
+
+    # 位置参数与开关分开取：开关本身和紧跟它的取值都不算位置参数，否则状态码会读到开关名
+    positional_arguments = []
+    skip_next_value = False
+    for argument in sys.argv[1:]:
+        if skip_next_value:
+            skip_next_value = False
+            continue
+        if argument in ("--websocket", "--accept-encoding"):
+            skip_next_value = True
+            continue
+        positional_arguments.append(argument)
+    expected_status = int(positional_arguments[3]) if len(positional_arguments) > 3 else 200
+    expected_body = positional_arguments[4] if len(positional_arguments) > 4 else None
 
     try:
-        client = asyncio.run(run_probe(host, port, path))
+        client = asyncio.run(run_probe(host, port, path, accept_encoding))
     except Exception as probe_error:  # noqa: BLE001 - 验收探针要把任何失败原因如实报出来
         print(f"HTTP/3 请求失败：{type(probe_error).__name__}: {probe_error}", file=sys.stderr)
         return 1
 
-    body_text = client.body.decode(errors="replace")
-    print(f"status={client.status} headers={client.headers} body={body_text!r}")
+    body_bytes = bytes(client.body)
+    content_encoding = client.headers.get("content-encoding")
+    if accept_encoding is not None:
+        # 声明了编码却没压，或压了却没声明，都算失败：只看正文会把「压根没压」当成通过
+        if content_encoding != accept_encoding:
+            print(f"响应没按声明编码：请求 accept-encoding={accept_encoding}，实得 content-encoding={content_encoding!r}", file=sys.stderr)
+            return 1
+        if "accept-encoding" not in client.headers.get("vary", ""):
+            print(f"压缩改变了表示，必须带 vary: accept-encoding，实得 {client.headers.get('vary')!r}", file=sys.stderr)
+            return 1
+    if content_encoding == "gzip":
+        body_bytes = gzip.decompress(body_bytes)
+    elif content_encoding is not None:
+        print(f"响应声明了本探针解不开的编码：{content_encoding}（探针只带 gzip 解码器）", file=sys.stderr)
+        return 1
+    body_text = body_bytes.decode(errors="replace")
+    print(f"status={client.status} headers={client.headers} 线上 {len(client.body)} 字节"
+          f"（编码 {content_encoding or 'identity'}）解开后 {len(body_bytes)} 字节 body={body_text[:80]!r}")
 
     if client.status != expected_status:
         print(f"状态码不符：期望 {expected_status}，实得 {client.status}", file=sys.stderr)
