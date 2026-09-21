@@ -8,6 +8,7 @@ add_executable(TestDatabase
         Common/TestDatabaseFactory.cpp
         Common/TestDatabaseException.cpp
 
+        Pool/TestAsyncExecutor.cpp
         Pool/TestConnectionPool.cpp
         Pool/TestConnectionPoolAsync.cpp
         Pool/TestTransaction.cpp

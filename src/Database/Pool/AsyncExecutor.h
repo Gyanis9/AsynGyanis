@@ -11,8 +11,11 @@
  *          工作线程 + 任务队列」，完成后统一走 Scheduler::scheduleRemote() 把协程恢复投回调用方指定的
  *          EventLoop，因此调用方对线程的假设不会被工作线程破坏。
  * @note 析构时队列中已接收的任务会先跑完再退出：直接丢弃会让等待结果的协程永远挂起。
- *       本对象必须比所有借用它的协程活得久；提前销毁 Task 不会让工作线程访问已释放的协程帧，
- *       但被销毁的协程永远不会被恢复。
+ *       本对象必须比所有借用它的协程活得久。
+ * @warning 调用方可以在任务完成前销毁 Task（等待体会作废那次恢复），但**不能**在恢复动作
+ *          已经投递给事件循环之后再销毁：那一刻句柄已离开共享状态，作废不再生效，循环会 resume
+ *          一块已释放的帧。判据是「投递是否已发生」，而调用方无从得知，因此实践上的约束是
+ *          驱动协程帧必须活到恢复被处理完（测试里交给 EventLoopThread::parkDriver 保管）。
  */
 #pragma once
 
@@ -136,8 +139,8 @@ namespace AsynGyanis::Database
          * @brief 一次提交的共享状态
          *
          * @details 放在堆上由提交方与工作线程各持一份 shared_ptr：协程挂起期间工作线程
-         *          只读写本结构，不触碰协程帧，因此调用方提前销毁 Task 也不会让工作线程
-         *          访问到已释放的帧内对象。
+         *          只读写本结构，不触碰协程帧，因此调用方在恢复投递之前销毁 Task 也不会让
+         *          工作线程访问到已释放的帧（投递之后的约束见类注释 @warning）。
          *
          * @tparam ResultType 任务返回值类型
          */
@@ -147,7 +150,10 @@ namespace AsynGyanis::Database
             std::function<ResultType()> work;                    ///< 待执行的阻塞任务
             std::optional<ResultType>   value;                   ///< 任务返回值（成功后才有值）
             std::exception_ptr          error;                   ///< 任务抛出的异常（失败时非空）
-            std::coroutine_handle<>     continuation;            ///< 等待结果的协程句柄
+            /// 待恢复的协程句柄，取走一次即作废（空即「等待体已析构」或「已被恢复」）。
+            /// **必须是原子的**：清空发生在等待体（任意线程）的析构里，读取发生在工作线程的队列闭包里，
+            /// 两者之间没有任何 happens-before（shared_ptr 的引用计数不建立它）
+            std::atomic<std::coroutine_handle<> > continuation{nullptr};
             Core::EventLoop *           completionLoop{nullptr}; ///< 恢复该协程的事件循环
         };
 
@@ -175,6 +181,22 @@ namespace AsynGyanis::Database
             }
 
             /**
+             * @brief 析构：作废尚未取走的恢复，让投递回来的动作变成空操作
+             * @details 调用方在任务完成前销毁 Task 时，帧连同本等待体一起析构；此刻句柄还留在
+             *          堆状态里，清空它工作线程就取不到东西，也就不会 resume 一块已释放的帧。
+             *          句柄已被取走（恢复已投递）时这里是空操作，那一窗口由帧的生存期兜住，
+             *          见类注释的 @warning
+             */
+            ~SubmissionAwaiter()
+            {
+                m_state->continuation.store(nullptr, std::memory_order_release);
+            }
+
+            SubmissionAwaiter(const SubmissionAwaiter &) = delete;
+
+            SubmissionAwaiter &operator=(const SubmissionAwaiter &) = delete;
+
+            /**
              * @brief 恒不就地完成：阻塞任务绝不能在调用线程上执行，否则本类就失去了意义
              * @return false
              */
@@ -196,7 +218,7 @@ namespace AsynGyanis::Database
             {
                 // 复制一份 shared_ptr 进入队列：只要任务还在队列里或正在执行，堆状态就不会被销毁
                 std::shared_ptr<SubmissionState<ResultType> > state = m_state;
-                state->continuation                                 = continuation;
+                state->continuation.store(continuation, std::memory_order_release);
 
                 const bool isQueued = m_executor->enqueue(
                         [state]()
@@ -211,9 +233,18 @@ namespace AsynGyanis::Database
                                 state->error = std::current_exception();
                             }
 
+                            // exchange 取走即作废：取到空说明等待体已析构（调用方丢了 Task），
+                            // 投出去等于踩已释放的帧，因此当场什么都不做；同一个句柄也因此只可能被恢复一次
+                            const std::coroutine_handle<> waitingCoroutine =
+                                    state->continuation.exchange(nullptr, std::memory_order_acq_rel);
+                            if (waitingCoroutine == nullptr)
+                            {
+                                return;
+                            }
+
                             // 恢复动作投回事件循环线程（scheduleRemote 线程安全且自带唤醒），
                             // 因此协程的后续代码与调用方对线程的假设保持一致
-                            state->completionLoop->scheduler().scheduleRemote(state->continuation);
+                            state->completionLoop->scheduler().scheduleRemote(waitingCoroutine);
                         });
                 if (!isQueued)
                 {
