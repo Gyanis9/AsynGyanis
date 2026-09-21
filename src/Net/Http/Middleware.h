@@ -896,10 +896,11 @@ namespace AsynGyanis::Net
      * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
      *       h1 与 h2 共用同一份响应序列化，因此两条路径都生效
      * @warning 压缩是在调用协程所在线程上同步做完的，而 HTTP 三条路径的协程都跑在事件循环线程上：
-     *          一条正文压多久，同一条循环上的其他连接就等多久。实测 256 KiB 近似真实正文的占用是
+     *          一条正文压多久，同一条循环上的其他连接就等多久。256 KiB 近似真实正文的占用是
      *          gzip6 4.4 ms、brotli6 4.2 ms、gzip1 1.3 ms、zstd3 0.45 ms（微基准四条
-     *          `*-response-compress-256k` 盯着这些数）。偏好顺序 zstd > br > gzip 恰好也是
-     *          CPU 成本顺序——只接受 gzip 的对端要付 9.8 倍于 zstd 的压缩 CPU；正文可能很大时，
+     *          `*-response-compress-256k`）；线上同一结论：单条循环上只跑一路持续要 gzip 大正文的
+     *          客户端，就能把同循环小请求的 p50 从 37us 顶到 5.9ms。偏好顺序 zstd > br > gzip
+     *          也是 CPU 成本顺序，只接受 gzip 的对端要付 9.8 倍压缩 CPU——正文可能很大时，
      *          要么把压缩挪到工作线程再做，要么按大小跳过，别把它留在循环线程上
      * @see Gzip.h, Compression.h, HttpResponse::setBody()
      */
