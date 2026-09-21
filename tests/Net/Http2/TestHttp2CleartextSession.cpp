@@ -30,9 +30,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -551,6 +554,108 @@ namespace AsynGyanis::Net
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "正常请求不该被收口";
         }
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：h2c 也服务静态目录，且首条响应落账后不再攥着那份文件映射
+     * @details 两条判据各管一面。其一跨平台：静态正文按字节原样上线、验证器与 accept-ranges 齐全，
+     *          而 h2 侧对「静态目录服务」此前零直测，先把门面钉住。
+     *          其二在 Windows 侧可证伪：替换文件时**不发第二条请求**，因此只有「响应发出后立刻解除映射」
+     *          这条会话纪律成立才能替换成功——会话的响应对象按连接复用，没解除就会一直攥到下一条请求开头。
+     *          同步点用 2xx 落账计数（recordResponse 排在解除之后且中间无挂起点），不靠睡眠赌调度。
+     *          POSIX 允许就地替换已映射的文件，那一侧本条只作正向断言。
+     */
+    TEST(Http2CleartextSession, ServesStaticFileAndReleasesMappingAfterResponse)
+    {
+        const AsynGyanis::TestSupport::TemporaryDirectory directory("H2cStaticFile");
+        const std::filesystem::path assetPath = directory.path() / "asset.txt";
+        {
+            std::ofstream initial(assetPath, std::ios::binary | std::ios::trunc);
+            initial << "first-version-body";
+        }
+        ASSERT_TRUE(std::filesystem::exists(assetPath));
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [&directory](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+            server.staticFileDir(directory.path().string());
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+
+        // 一条请求一个流号；两次都走同一条连接，第二次只在第一次彻底收尾之后才发出
+        const auto requestStaticFile = [&client, &frames](const std::uint32_t streamId, const std::string_view path) -> bool
+        {
+            if (!client.sendBytes(makeRequestHeadersFrame(streamId, makeGetRequestHeaderBlock(path), true), kWaitTimeout))
+            {
+                return false;
+            }
+            return client.pumpUntil(frames,
+                                    [streamId](const std::vector<Http2Frame> &receivedFrames)
+                                    {
+                                        return hasEndStream(receivedFrames, streamId);
+                                    },
+                                    kWaitTimeout);
+        };
+
+        ASSERT_TRUE(requestStaticFile(1U, "/asset.txt")) << "没有在时限内拿到静态文件的首条响应";
+        HpackDecoder firstDecoder;
+        EXPECT_EQ(findResponseHeaderValue(firstDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "first-version-body") << "静态正文必须按字节原样上线";
+        HpackDecoder validatorDecoder;
+        EXPECT_FALSE(findResponseHeaderValue(validatorDecoder, frames, 1U, "etag").empty()) << "静态响应要带强验证器";
+        EXPECT_FALSE(findResponseHeaderValue(validatorDecoder, frames, 1U, "last-modified").empty());
+        EXPECT_EQ(findResponseHeaderValue(validatorDecoder, frames, 1U, "accept-ranges"), "bytes");
+
+        // 等到服务端把这条响应落账：recordResponse 排在会话解除映射之后，且两者之间没有挂起点，
+        // 因此计数可见就说明「发送完成后的收尾」已经跑过，替换动作不必赌调度
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&fixture]()
+        {
+            return fixture.server().stats().status2xxCount >= 1U;
+        })) << "服务端没有把首条静态响应落账";
+
+        // 发布方的常规做法：写临时文件再 rename 覆盖。响应若还攥着那份映射，Windows 上这一步会被挡下
+        const std::filesystem::path replacementPath = directory.path() / "asset.txt.next";
+        {
+            std::ofstream replacement(replacementPath, std::ios::binary | std::ios::trunc);
+            replacement << "second-version-body";
+        }
+        std::error_code renameError;
+        std::filesystem::rename(replacementPath, assetPath, renameError);
+        EXPECT_FALSE(static_cast<bool>(renameError)) << "首条响应之后文件仍被占用，替换失败：" << renameError.message();
+
+        ASSERT_TRUE(requestStaticFile(3U, "/asset.txt")) << "替换之后同一条连接的第二次请求没有收尾";
+        // 第二条响应刻意不再按名查 :status —— findResponseHeaderValue() 每次只喂被查询那一条流的头块，
+        // 而服务端的 HPACK 编码上下文是按连接推进的：首条响应插进动态表的条目在这次孤立解码里并不存在，
+        // 索引因此位移、查不到值。这里要钉的是「同一条连接跟上了替换后的内容」，正文字节与
+        // 「这条流确实回了头块」两项足够，且都不依赖跨流的 HPACK 状态。
+        EXPECT_EQ(responseDataPayload(frames, 3U), "second-version-body") << "同一条连接要能跟上被替换后的内容";
+        // 头块按帧类型结构判定，不走 HPACK 取值：上面那条注释说明它拿不到跨流的编码上下文
+        bool hasSecondResponseHead = false;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.streamId == 3U && frame.header.type == Http2FrameType::Headers)
+            {
+                hasSecondResponseHead = true;
+            }
+        }
+        EXPECT_TRUE(hasSecondResponseHead) << "第二条响应没有回头块";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
