@@ -24,7 +24,9 @@
     "ws-deflate-message（2026-09-21 新增）量的是 WebSocket permessage-deflate 单条消息（1 KiB 可压文本）的压缩稳态：改前每条 deflateInit2/End 重建约 240KB 内部状态，改后复用 thread_local 流、每条 deflateReset（no_context_takeover 下与新建逐字节等价）。实测消融 8707 → 3174 ns/条（−64%），短消息上省的固定项占比更大。作吞吐下限门禁：改回复用即报红。同一 payload 连压两次字节一致由 TestPerMessageDeflate 钉死。",
     "gzip-response-compress / zstd-response-compress（2026-09-21 新增）量的是响应压缩中间件一次性压 ~4KiB 可压 HTML 正文的稳态，与 ws-deflate-message 同源的一类浪费：改前每条响应都重建压缩器上下文（gzip deflateInit2/End；zstd 的 ZSTD_compress 内部建/销 CCtx），改后复用 thread_local 上下文（gzip deflateReset、zstd ZSTD_compressCCtx，产出逐字节一致）。实测消融 gzip 14133 → 10348 ns（−27%，正文大时压缩本身占比高）、zstd 6055 → 3177 ns（−47%）。zstd 的 0.6× 下限即可挡住退回；gzip 收益较小、按微基准惯例用 0.8× 收紧。正确性由 GzipTest/CompressionCodecs 的「同输入连压两次逐字节一致 + 多长度交错往返」钉死。",
     "header-first-value-view / header-contains 两例（2026-09-21 新增，同一份二进制六跑）是头部存储新增的「不拷贝」读取出口与存在性判定，与 header-first-value 逐对比：减掉 281.6 ns 的装机本底之后，owning 查询 70.2 ns、视图查询 13.1 ns、存在性判定 15.6 ns。差额就是那一次取值拷贝（本 fixture 的 x-request-id 超过短串内联长度，每查一次要向堆要一次内存）。",
-    "qpack-decode 在 2026-09-21 重录下限：这一例在同一份二进制下跨进程严重双峰，六跑落在 ~258 ns 与 ~410-421 ns 两个集群里（最大/最小 1.63 倍），而且换一个无关的用例插进 main.cpp 就会把大部分跑推到慢峰；尝试把注意力集中在承接交付指令的临时串从计时体内挬到体外复用，双峰一丝不变（因此也没保留那处改动）。所以这里把下限按「已观察到的最慢跑」登记（2374677/s），而不是中位数——否则单跑门禁会把快慢峰当成回归。这一例只能报出量级回归，报不出 1.6 倍以内的漂移。"
+    "qpack-decode 在 2026-09-21 重录下限：这一例在同一份二进制下跨进程严重双峰，六跑落在 ~258 ns 与 ~410-421 ns 两个集群里（最大/最小 1.63 倍），而且换一个无关的用例插进 main.cpp 就会把大部分跑推到慢峰；尝试把注意力集中在承接交付指令的临时串从计时体内挬到体外复用，双峰一丝不变（因此也没保留那处改动）。所以这里把下限按「已观察到的最慢跑」登记（2374677/s），而不是中位数——否则单跑门禁会把快慢峰当成回归。这一例只能报出量级回归，报不出 1.6 倍以内的漂移。",
+    "static-body-read-4k-* 与 -256k-* 四条把「正文缓冲随响应复用」这笔改动第一次量了出来：4 KiB 复用 15.0 µs 对每次新建 15.1 µs（差 0.6%），256 KiB 是 20.6 µs 对 24.1 µs（省 3.5 µs，14.6%）——省下的那份确实随正文大小线性增长，但只在正文够大时才够看。同一批里 static-body-read-4k-reused 15.0 µs 对上 std::ifstream 那条 static-small-file-read 14.9 µs，说明换读法省不了什么，成本全在打开路径与读出这串系统调用上。",
+    "mime-lookup-from-string 29.5 ns 是扩展名查表本身；mime-lookup-from-path 加上了 HttpServer 调用形状里那次 path→std::string 的窄化拷贝，跨 4 跑还有 1.81x 的离散（下限按最慢那跑登），两者之差 150-300 ns 就是「把入口改成 string_view」的理论上限。但 Windows 上 std::filesystem::path 是 UTF-16，这次窄化拷贝省不掉——改入口只是把拷贝推到调用方，故不动实现。占一条静态请求（元数据 13.4 µs + 正文 15.0 µs）的 0.5% 不到。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -161,6 +163,60 @@
         17412.7
       ],
       "runsMeasured": 3
+    },
+    "static-body-read-4k-reused": {
+      "throughputPerSecond": 61684,
+      "nanosecondsPerOperation": 16211.8,
+      "observedNanosecondsRange": [
+        14995.9,
+        16758.7
+      ],
+      "runsMeasured": 4
+    },
+    "static-body-read-4k-fresh-buffer": {
+      "throughputPerSecond": 62538,
+      "nanosecondsPerOperation": 15994.5,
+      "observedNanosecondsRange": [
+        15087.8,
+        16503.3
+      ],
+      "runsMeasured": 4
+    },
+    "static-body-read-256k-reused": {
+      "throughputPerSecond": 46553,
+      "nanosecondsPerOperation": 21481.2,
+      "observedNanosecondsRange": [
+        20611.4,
+        22092.0
+      ],
+      "runsMeasured": 4
+    },
+    "static-body-read-256k-fresh-buffer": {
+      "throughputPerSecond": 39858,
+      "nanosecondsPerOperation": 25091.0,
+      "observedNanosecondsRange": [
+        24137.5,
+        25398.2
+      ],
+      "runsMeasured": 4
+    },
+    "mime-lookup-from-string": {
+      "throughputPerSecond": 33882543,
+      "nanosecondsPerOperation": 29.5,
+      "observedNanosecondsRange": [
+        29.3,
+        29.9
+      ],
+      "runsMeasured": 4
+    },
+    "mime-lookup-from-path": {
+      "throughputPerSecond": 3033610,
+      "nanosecondsPerOperation": 329.6,
+      "observedNanosecondsRange": [
+        182.3,
+        329.6
+      ],
+      "runsMeasured": 4
     },
     "mmap-page-touch": {
       "throughputPerSecond": 32879,

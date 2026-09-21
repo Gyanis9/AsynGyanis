@@ -15,6 +15,7 @@
 //     h1 请求带 10 个头与 64 字节正文、h2 解一帧 200 字节头块的 HEADERS。
 //     换数据形态会改变结果，比较不同机器的数字前先确认两边用的是同一份输入。
 #include "Net/Http/Compression.h"
+#include "Net/Http/FileSender.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
@@ -30,12 +31,14 @@
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
+#include "Platform/IO/FileContents.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -593,6 +596,82 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
     std::filesystem::remove(smallFilePath);
+
+    // 静态正文在生产形状下的每请求开销：读进响应自己那块按连接复用的缓冲（Platform 的
+    // readFileContentsInto），两档大小各测「复用缓冲」与「每次新建缓冲」两条——后者才是
+    // 把正文缓冲改成随响应复用之前真正的样子，两档相减就是那次改动省掉的分配量。
+    // 上面那对 static-small-file-* 用的是 std::ifstream，不代表现在的服务端走法
+    const std::filesystem::path bodyProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-body.bin";
+    constexpr std::size_t kSmallBodyBytes = 4 * 1024;
+    constexpr std::size_t kLargeBodyBytes = 256 * 1024;
+    {
+        std::ofstream bodyFile(bodyProbePath, std::ios::binary | std::ios::trunc);
+        bodyFile << std::string(kLargeBodyBytes, 'b');
+    }
+    std::string reusedBodyBuffer;
+    measureCase(
+            "static-body-read-4k-reused",
+            [&bodyProbePath, &reusedBodyBuffer]
+            {
+                const std::expected<std::size_t, std::error_code> readResult =
+                        Platform::readFileContentsInto(bodyProbePath, 0, kSmallBodyBytes, reusedBodyBuffer);
+                return readResult.has_value() ? *readResult : std::size_t{0};
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "static-body-read-4k-fresh-buffer",
+            [&bodyProbePath]
+            {
+                std::string freshBuffer;
+                const std::expected<std::size_t, std::error_code> readResult =
+                        Platform::readFileContentsInto(bodyProbePath, 0, kSmallBodyBytes, freshBuffer);
+                return readResult.has_value() ? *readResult : std::size_t{0};
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "static-body-read-256k-reused",
+            [&bodyProbePath, &reusedBodyBuffer]
+            {
+                const std::expected<std::size_t, std::error_code> readResult =
+                        Platform::readFileContentsInto(bodyProbePath, 0, kLargeBodyBytes, reusedBodyBuffer);
+                return readResult.has_value() ? *readResult : std::size_t{0};
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "static-body-read-256k-fresh-buffer",
+            [&bodyProbePath]
+            {
+                std::string freshBuffer;
+                const std::expected<std::size_t, std::error_code> readResult =
+                        Platform::readFileContentsInto(bodyProbePath, 0, kLargeBodyBytes, freshBuffer);
+                return readResult.has_value() ? *readResult : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    // 静态路由每请求还要在路径上做的两件小事，与上面的正文读取放在一起才知道值不值得动：
+    // 扩展名查 MIME（含把整条路径转窄字符的那次拷贝，正是 HttpServer 现在的调用形状），
+    // 以及只查 MIME、路径已经是窄字符串的情形。两行之差就是「给 contentTypeForFile 加一个
+    // string_view 入口」理论上能省下的全部
+    const std::filesystem::path mimeProbePath = bodyProbePath.parent_path() / "asyngyanis-microbench-index.html";
+    const std::string mimeProbeText = mimeProbePath.string();
+    measureCase(
+            "mime-lookup-from-path",
+            [&mimeProbePath]
+            {
+                // 现取 .string() 再喂进去，与 HttpServer 里那行调用逐字同形：量的包含整条路径的窄化拷贝
+                const char *mimeType = Net::FileSender::contentTypeForFile(mimeProbePath.string());
+                return std::string_view(mimeType).size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "mime-lookup-from-string",
+            [&mimeProbeText]
+            {
+                const char *mimeType = Net::FileSender::contentTypeForFile(mimeProbeText);
+                return std::string_view(mimeType).size();
+            },
+            results, checksum, failureCount);
+    std::filesystem::remove(bodyProbePath);
 
     measureCase(
             "hpack-decode",
