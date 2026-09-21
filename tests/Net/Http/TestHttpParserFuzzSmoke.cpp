@@ -5,7 +5,9 @@
 //   三. 单字节变异：合法报文逐字节翻转后，要么解析成功且字段自洽，要么判错；
 //   四. 粘滞错误：一旦 Error，再喂完整合法报文仍是 Error 且不再消费字节；
 //   五. reset() 之后错误状态必须干净，能重新接受一条完整报文；
-//   六. 资源上限：超长 URI / 超长头部块必须判错，而不是无限吃内存。
+//   六. 资源上限：超长 URI / 超长头部块必须判错，而不是无限吃内存；
+//   七. 管线化的两条报文：Done 时消费的前缀必须**正好**是第一份报文的边界，多一条都不吃；
+//   八. 分片无关性：同一段字节整体喂与一次一字节喂，结论、消费量与解出的字段必须完全一致。
 // 随机源是自带种子的 LCG（不用 std::random_device），因此失败可复现：日志里给出轮次与字节。
 // 真正的 libFuzzer 目标需要 clang + Linux，本机工具链没有，故用这套属性化用例作为常驻防线。
 
@@ -17,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -220,5 +223,137 @@ namespace AsynGyanis::Net
         EXPECT_EQ(parser.parse(oversizedHeaders.data(), oversizedHeaders.size()), ParseStatus::Error);
         EXPECT_TRUE(parser.isLimitExceeded());
         EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::HeaderTooLarge);
+    }
+
+    namespace
+    {
+        /// 接在被解析报文之后的第二条管线化请求：解析第一条时它一个字节都不许被吃掉
+        constexpr std::string_view kTrailingPipelinedRequest = "GET /second HTTP/1.1\r\nHost: b\r\n\r\n";
+
+        /**
+         * @brief 三种定界写法各一条完整报文，连同其预期路径
+         * @details 覆盖 Content-Length 正文、chunked 收尾、chunked 带尾段头部与无正文四种收口形态；
+         *          只放规范上确定合法的输入，这样「没解析成 Done」本身就是一条值得看到的结论。
+         * @return 语料引用，进程内只建一次
+         */
+        const std::vector<std::pair<std::string, std::string>> &framingCorpus()
+        {
+            static const std::vector<std::pair<std::string, std::string>> corpus = {
+                {"GET /plain HTTP/1.1\r\nHost: a\r\n\r\n", "/plain"},
+                {"POST /cl HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello", "/cl"},
+                {"POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", "/chunked"},
+                {"POST /trailers HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Tail: 1\r\n\r\n", "/trailers"},
+            };
+            return corpus;
+        }
+
+        /**
+         * @brief 按固定分片大小把字节喂到「不再 NeedMore」为止
+         * @param parser 目标解析器（调用前应是干净状态）
+         * @param text 待喂字节
+         * @param chunkLength 每次交付的字节数，1 表示一次一字节
+         * @param consumedTotal 输出参数：累计消费的字节数。consumedByteCount 给的是**本次调用**从缓冲里
+         *        吃掉的字节，因此要逐次相加才是报文边界；Error 那一次记 0，故这个数只在 Done 时可比。
+         * @return 最后一次 parse() 给出的状态
+         */
+        ParseStatus feedUntilDecided(HttpParser &parser, const std::string &text, const std::size_t chunkLength,
+                                     std::size_t &consumedTotal)
+        {
+            ParseStatus status = ParseStatus::NeedMore;
+            consumedTotal      = 0;
+            for (std::size_t offset = 0; offset < text.size();)
+            {
+                const std::size_t thisChunk = std::min(chunkLength, text.size() - offset);
+                status                      = parser.parse(text.data() + offset, thisChunk);
+                consumedTotal += parser.consumedByteCount();
+                offset += thisChunk;
+                if (status != ParseStatus::NeedMore)
+                {
+                    break;
+                }
+            }
+            return status;
+        }
+    } // namespace
+
+    TEST(HttpParserFuzzSmoke, ConsumedPrefixEndsExactlyAtFirstMessageBoundary)
+    {
+        for (const auto &[message, expectedPath]: framingCorpus())
+        {
+            const std::string pipelined = message + std::string(kTrailingPipelinedRequest);
+
+            HttpParser parser;
+            const ParseStatus status = parser.parse(pipelined.data(), pipelined.size());
+            ASSERT_EQ(status, ParseStatus::Done) << "报文「" << toEscapedText(message) << "」没被认成完整请求";
+            // 多吃的任何一个字节都会把第二条请求的前缀吞进第一条的正文/头部——就是走私本身
+            EXPECT_EQ(parser.consumedByteCount(), message.size()) << "报文「" << toEscapedText(message) << "」的边界算错";
+            EXPECT_EQ(parser.request().path(), expectedPath);
+
+            // 剩下的字节必须正好是一条可独立解析的下一请求。consumedByteCount 要先取出来再 reset：
+            // 复位会把消费量清成 0，用复位后的值切分就变成「从第一个字节再解一遍」
+            const std::size_t   firstMessageLength = parser.consumedByteCount();
+            const std::string   remainder          = pipelined.substr(firstMessageLength);
+            parser.reset();
+            HttpParser followUp;
+            ASSERT_EQ(followUp.parse(remainder.data(), remainder.size()), ParseStatus::Done)
+                    << "边界之后的剩余字节解不出下一条请求，报文「" << toEscapedText(message) << "」";
+            EXPECT_EQ(followUp.request().path(), "/second");
+            EXPECT_EQ(followUp.consumedByteCount(), kTrailingPipelinedRequest.size());
+        }
+    }
+
+    TEST(HttpParserFuzzSmoke, VerdictDoesNotDependOnHowTheBytesAreSplit)
+    {
+        DeterministicRandom random{0x1DEA20U};
+
+        // 语料本体：整体喂与一次一字节喂必须给出同样的结论，Done 时还要给出同一条报文边界
+        for (const auto &[message, expectedPath]: framingCorpus())
+        {
+            const std::string pipelined = message + std::string(kTrailingPipelinedRequest);
+
+            HttpParser whole;
+            std::size_t wholeConsumedTotal = 0;
+            const ParseStatus wholeStatus = feedUntilDecided(whole, pipelined, pipelined.size(), wholeConsumedTotal);
+
+            HttpParser split;
+            std::size_t splitConsumedTotal = 0;
+            const ParseStatus splitStatus = feedUntilDecided(split, pipelined, 1, splitConsumedTotal);
+
+            EXPECT_EQ(wholeStatus, splitStatus) << "分片方式改变了结论，报文「" << toEscapedText(message) << "」";
+            if (wholeStatus == ParseStatus::Done && splitStatus == ParseStatus::Done)
+            {
+                EXPECT_EQ(wholeConsumedTotal, splitConsumedTotal) << "分片方式改变了报文边界，报文「" << toEscapedText(message) << "」";
+                EXPECT_EQ(whole.request().path(), expectedPath);
+                EXPECT_EQ(split.request().path(), whole.request().path());
+                EXPECT_EQ(split.request().body(), whole.request().body());
+            }
+        }
+
+        // 变异语料：位置 × 随机字节。这里不问「该不该判错」，只问两种喂法是否一致——
+        // 状态机在被拆碎的输入上走偏，正是这类不一致唯一能被稳定抓出来的时刻
+        const std::string &chunkedSample = framingCorpus()[2].first;
+        for (std::size_t position = 0; position < chunkedSample.size(); ++position)
+        {
+            std::string mutated(chunkedSample);
+            mutated[position] = static_cast<char>(random.nextBelow(256));
+
+            HttpParser whole;
+            std::size_t wholeConsumedTotal = 0;
+            const ParseStatus wholeStatus = feedUntilDecided(whole, mutated, mutated.size(), wholeConsumedTotal);
+
+            HttpParser split;
+            std::size_t splitConsumedTotal = 0;
+            const ParseStatus splitStatus = feedUntilDecided(split, mutated, 1, splitConsumedTotal);
+
+            ASSERT_TRUE(isKnownStatus(wholeStatus)) << "位置 " << position << " 整体喂返回未知状态";
+            EXPECT_EQ(wholeStatus, splitStatus) << "位置 " << position << " 变异「" << toEscapedText(mutated)
+                                                << "」在两种喂法下结论不同";
+            // 只在两侧都宣布完成时比边界：NeedMore 下的消费量取决于这一次喂了多少，本就不可比
+            if (wholeStatus == ParseStatus::Done && splitStatus == ParseStatus::Done)
+            {
+                EXPECT_EQ(wholeConsumedTotal, splitConsumedTotal) << "位置 " << position << " 变异「" << toEscapedText(mutated)
+                                                      << "」在两种喂法下给出不同的报文边界";
+            }
+        }
     }
 } // namespace AsynGyanis::Net
