@@ -150,9 +150,17 @@ namespace AsynGyanis::Platform
             }
 
             entry->overlapped.hEvent = entry->eventHandle;
-            // 首次投递失败（目录刚被删等）：条目照样登记，watchLoop 的下一拍会把它当死条目摘掉，
-            // 递归根随后由自愈复查补挂
-            static_cast<void>(issueRead(*entry));
+
+            // 首次投递读不出变更，这条监视就没有任何成立的形式：条目既不在等待集合里，也没有
+            // 人会再给它投递一次，登记下来只会占住这个路径——之后同一目录再 addWatch 会被上面的
+            // 去重分支挡下并返回 true，于是「注册成功」而事件永久收不到。当场失败返回，让调用方
+            // 看得见这条监视没成立（最常见的触发形状是路径指向普通文件：CreateFileW 带着
+            // FILE_FLAG_BACKUP_SEMANTICS 会成功，拒的是后面的 ReadDirectoryChangesW）
+            if (!issueRead(*entry))
+            {
+                closeEntry(*entry);
+                return false;
+            }
 
             m_watches[directoryPath] = std::move(entry);
         }

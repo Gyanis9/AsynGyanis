@@ -3,7 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -521,6 +523,59 @@ namespace AsynGyanis::Platform
     }
 
 #if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（Windows）：指向普通文件的 addWatch 当场报失败，且不挡住该路径后来的目录监视
+     * @details CreateFileW 带着 FILE_FLAG_BACKUP_SEMANTICS 打开普通文件是成功的，拒的是随后的
+     *          ReadDirectoryChangesW。首次投递失败后条目若照样登记，它既不进等待集也没有人会再给它
+     *          投递一次，于是永久占住这个路径：同一路径换成真目录后，addWatch 被「已在监听集合」挡下
+     *          并返回 true，调用方以为监视成立而事件永久收不到。
+     * @note 只在 Windows 编译：inotify 支持直接监视普通文件，那条路上这一步本就是成功路径。
+     */
+    TEST(FileWatcher, AddWatchOnOrdinaryFileFailsWithoutBlockingThePath)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_OrdinaryFile");
+        ASSERT_TRUE(temporaryDirectory.writeFile("not-a-directory.txt", "plain file"));
+        const std::filesystem::path targetPath = temporaryDirectory.path() / "not-a-directory.txt";
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        EXPECT_FALSE(watcher->addWatch(targetPath.string())) << "普通文件不是可监视的目录，要当场报失败";
+
+        // 同一路径换成真目录：先前那次失败的注册不得留下任何占位，这条监视必须挂得上。
+        // 中间刻意不调 removeWatch——那条撤销恰好会把僵尸条目清掉，也就测不出「挡住路径」这半边
+        std::error_code removeError;
+        std::filesystem::remove(targetPath, removeError);
+        ASSERT_FALSE(static_cast<bool>(removeError)) << "删除占位文件失败：" << removeError.message();
+        ASSERT_TRUE(std::filesystem::create_directories(targetPath));
+
+        ASSERT_TRUE(watcher->addWatch(targetPath.string(), true));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        {
+            std::ofstream probeFile(targetPath / "inside.yaml");
+            probeFile << "inside: true";
+        }
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("inside.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "先前那次失败的注册挡住了这个目录，换成功后事件永久丢失";
+    }
+
     /**
      * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件
      * @details WaitForMultipleObjects 单次最多等 64 个对象（含停止事件，因此目录只有 63 个额度）。

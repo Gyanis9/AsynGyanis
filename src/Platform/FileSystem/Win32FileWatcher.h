@@ -68,10 +68,12 @@ namespace AsynGyanis::Platform
          * @details 重写 FileWatcher::addWatch()：目录路径统一补上尾部反斜杠，
          *          使回调中的相对文件名可直接拼接；recursive 为真时在锁外
          *          递归注册全部子目录。
+         * @note 本平台只有目录可监视：ReadDirectoryChangesW 不接受普通文件句柄，
+         *       指向文件的 path 会以 false 收场而不是挂上一条永不生效的监视。
          * @param path 待监听的目录路径
          * @param recursive 是否递归监听子目录
          * @return true 注册成功或路径已在监听集合中
-         * @return false 目录句柄或事件句柄创建失败
+         * @return false 目录句柄或事件句柄创建失败，或首次重叠读投递失败
          */
         bool addWatch(std::string_view path, bool recursive = false) override;
 
