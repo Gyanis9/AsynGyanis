@@ -63,7 +63,8 @@ namespace AsynGyanis::Net
          * @brief 把一份映射登记进缓存，超出上限时淘汰最久未用的一条
          * @param filePath 规范化之后的绝对路径；已存在则整条替换
          * @param mappedFile 待登记的映射；空指针不写入（映射失败不该占缓存名额）
-         * @param fileBasicInfo 建立这份映射时查到的文件基本信息
+         * @param fileBasicInfo 建立这份映射时查到的文件基本信息；其中「大小」按映射自身的长度登记，
+         *        修改秒与身份标记原样采用
          */
         void store(const std::filesystem::path &filePath,
                    std::shared_ptr<const Platform::MemoryMappedFile> mappedFile,
@@ -85,7 +86,7 @@ namespace AsynGyanis::Net
         {
             std::filesystem::path filePath;                                ///< 键，冗余存一份供淘汰时反查哈希表
             std::shared_ptr<const Platform::MemoryMappedFile> mappedFile;   ///< 共享的映射
-            Platform::FileBasicInfo fileBasicInfo{};                        ///< 建立这份映射时所见的元数据，命中判据与它比对
+            Platform::FileBasicInfo fileBasicInfo{};                        ///< 命中判据：大小取自映射自身长度，修改秒与身份标记取自建立时的查询
         };
 
         using EntryList = std::list<Entry>;   ///< 按最近使用排序（表头最新）

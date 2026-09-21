@@ -54,6 +54,14 @@ namespace AsynGyanis::Net
             return;
         }
 
+        // 命中判据里的「大小」一律取映射自身的长度，而不是调用方那份 stat 读数：两者可能不一致
+        // （查询与建映射之间文件被改大），而条目能交出的字节数只由映射决定。若照抄调用方的读数，
+        // 就会留下一条「键说 S1、正文给 S2」的条目；日后一次改回 S1 的查询（同一秒内截断回去即命中
+        // 三项判据）会拿它当命中，按映射长度发正文就踩到已随截断解除的页——POSIX 上是 SIGBUS，
+        // Linux 的 sendfile 侧则是发出比 Content-Length 少的字节。按映射长度登记则这条不一致根本进不来
+        Platform::FileBasicInfo stampOfEntry = fileBasicInfo;
+        stampOfEntry.sizeBytes               = mappedFile->bytes().size();
+
         const std::lock_guard<std::mutex> guard(m_mutex);
 
         if (const auto existing = m_index.find(filePath); existing != m_index.end())
@@ -62,7 +70,7 @@ namespace AsynGyanis::Net
             // 否则同一文件会长期占两个名额，淘汰也腾不出多余的那份
             Entry &entry = *existing->second;
             entry.mappedFile = std::move(mappedFile);
-            entry.fileBasicInfo = fileBasicInfo;
+            entry.fileBasicInfo = stampOfEntry;
             if (existing->second != m_entries.begin())
             {
                 m_entries.splice(m_entries.begin(), m_entries, existing->second);
@@ -70,7 +78,7 @@ namespace AsynGyanis::Net
             return;
         }
 
-        m_entries.push_front(Entry{filePath, std::move(mappedFile), fileBasicInfo});
+        m_entries.push_front(Entry{filePath, std::move(mappedFile), stampOfEntry});
         m_index[filePath] = m_entries.begin();
 
         while (m_entries.size() > m_maximumEntryCount)

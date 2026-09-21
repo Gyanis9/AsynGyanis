@@ -251,4 +251,34 @@ namespace AsynGyanis::Net
 
         EXPECT_LE(cache.entryCount(), 3U);
     }
+
+    /**
+     * @brief 登记的命中判据按映射的真实长度成形，而不是照抄调用方那份查询读数
+     * @details 查询与建映射之间文件被改大时两者会不一致。若照抄调用方的读数，就留下一条
+     *          「键说 4 字节、正文却能给 10 字节」的条目；日后一次在同一秒内把文件截断回 4 字节的
+     *          查询会命中它（三项判据全对上），按映射长度发正文就踩到已随截断解除的页。
+     *          本用例两个方向各钉一次：过期读数不得命中，映射长度那份读数必须命中。
+     */
+    TEST(StaticFileMappingCache, KeysEntryByMappingLengthRatherThanByCallerStamp)
+    {
+        const TemporaryFile temporaryFile("StaleStamp", "0123456789");
+        const std::shared_ptr<const Platform::MemoryMappedFile> mapping = openMapping(temporaryFile.path());
+        ASSERT_EQ(mapping->bytes().size(), 10U);
+
+        {
+            StaticFileMappingCache cache{4};
+            cache.store(temporaryFile.path(), mapping, makeStamp(4, 100));
+            EXPECT_NE(cache.find(temporaryFile.path(), makeStamp(10, 100)), nullptr)
+                    << "键必须描述这份映射真能交出的字节数，否则映射长度那份读数永远命不中";
+        }
+
+        {
+            StaticFileMappingCache cache{4};
+            cache.store(temporaryFile.path(), mapping, makeStamp(4, 100));
+            // 判据不一致时 find 会就地摘掉条目，因此这里既要不命中、也要看到表被清空
+            EXPECT_EQ(cache.find(temporaryFile.path(), makeStamp(4, 100)), nullptr)
+                    << "调用方的过期读数被照抄进键，就会允许「键 4 字节 / 正文 10 字节」的条目存在";
+            EXPECT_EQ(cache.entryCount(), 0U);
+        }
+    }
 } // namespace AsynGyanis::Net
