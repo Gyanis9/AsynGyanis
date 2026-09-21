@@ -67,9 +67,9 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 注册 inotify 监听路径
-         * @details 重写 FileWatcher::addWatch()：把路径转为绝对路径后调用
-         *          inotify_add_watch；recursive 为真时逐层递归注册子目录，
-         *          递归过程在锁外进行以避免长时间持锁。
+         * @details 重写 FileWatcher::addWatch()：路径转绝对后交给 registerWatch()，并把这条请求
+         *          记进自愈清单——被监视的文件被原子替换后内核会摘掉 watch，而调用方不会再来注册一次。
+         *          recursive 为真时逐层递归注册子目录，递归过程在锁外进行以避免长时间持锁。
          * @param path 待监听的文件或目录路径
          * @param recursive 是否递归监听子目录
          * @return true 注册成功或路径已在监听集合中
@@ -105,6 +105,19 @@ namespace AsynGyanis::Platform
 
     private:
         /**
+         * @brief 注册一条 inotify 监视，并按需记进自愈清单
+         * @details addWatch() 的实际实现。多出来的那一项区分「调用方（或框架自己补挂）给的注册」与
+         *          「递归注册时枚举出来的子目录」：子目录不进自愈清单，否则一棵大目录树会把每秒一次的
+         *          复查变成上千次系统调用——它们失挂时父目录会收到 IN_CREATE，由那条事件补挂。
+         * @param absolutePath 已转绝对的待监听路径
+         * @param recursive 是否递归监听子目录
+         * @param keepForSelfHeal 这条注册要不要进自愈清单
+         * @return true 注册成功或路径已在监听集合中
+         * @return false 原生注册失败（路径不存在或无权访问）
+         */
+        bool registerWatch(const std::string &absolutePath, bool recursive, bool keepForSelfHeal);
+
+        /**
          * @brief 事件读取循环，轮询 inotify 描述符并分发事件
          * @param stopToken 用于响应 stop() 的停止请求
          */
@@ -123,11 +136,14 @@ namespace AsynGyanis::Platform
         void dispatchOverflowRescan();
 
         /**
-         * @brief 按秒节拍复查递归根是否还在监听集合里，不在就补挂
-         * @details 目录被整个换掉（删除后重建）时原有监视随内核状态失效，而重建后的目录没有人会
-         *          再调 addWatch——根上不补挂，它内部的变更就永久丢失
+         * @brief 按秒节拍补挂「调用方要过、但内核已经不再监视」的那些路径
+         * @details 三种失效都走同一扇门：监视的文件被替换或删除（IN_IGNORED）、被监视的目录本身
+         *          被移走（IN_MOVE_SELF 之后内核照样补 IN_IGNORED）、以及注册时路径还不存在。
+         *          失效时 removeWatchMapping() 摘掉映射，之后没有别的人会再为这条路径调 addWatch
+         *          ——不补挂，它内部的变更就永久丢失。补挂时按 m_recursiveRoots 里记过的值决定要不要
+         *          递归，避免把一条本来只要一层的路径悄悄扩成整棵树
          */
-        void recheckRecursiveRootsIfDue();
+        void rearmMissingWatchesIfDue();
 
         /**
          * @brief 摘掉内核已不再监视的那个 watch 的两张映射表条目
@@ -140,10 +156,13 @@ namespace AsynGyanis::Platform
         std::unordered_map<int, std::string> m_watchDescriptors;          ///< 监视描述符到监听路径的映射
         std::unordered_map<std::string, int> m_pathToWatchDescriptor;     ///< 监听路径到监视描述符的映射
         std::unordered_set<std::string>      m_recursiveRoots;            ///< 以递归方式注册过的根：新子目录要补挂监视
+        /// 自愈清单：调用方请求过的路径与递归注册的目录。内核摘掉 watch 之后由自愈节拍据此补挂；
+        /// removeWatch() 会一并摘除，使显式撤销不会被自愈复活
+        std::unordered_set<std::string> m_selfHealPaths;
 
-        /// 递归根自愈的复查节拍：等待循环按 100ms 轮询，按时间而不是按轮数计
-        static constexpr std::chrono::seconds kRootRecheckInterval{1};
-        std::chrono::steady_clock::time_point m_rootRecheckDeadline{}; ///< 下一次复查时刻
+        /// 监视自愈的复查节拍：等待循环按 100ms 轮询，按时间而不是按轮数计
+        static constexpr std::chrono::seconds kRearmInterval{1};
+        std::chrono::steady_clock::time_point m_rearmDeadline{}; ///< 下一次复查时刻
 
         FileChangeCallback        m_callback;         ///< 用户注册的变更回调
         mutable std::shared_mutex m_watchMutex;       ///< 保护监听映射与回调的读写锁

@@ -74,8 +74,21 @@ namespace AsynGyanis::Platform
             return false;
         }
 
+        // 对外入口：调用方自己给的这一次注册要进自愈清单
+        return registerWatch(absolutePath, recursive, true);
+    }
+
+    bool InotifyFileWatcher::registerWatch(const std::string &absolutePath, const bool recursive, const bool keepForSelfHeal)
+    {
+        std::error_code error;
         {
             std::lock_guard lock(m_watchMutex);
+
+            // 自愈清单只记调用方（与框架自己的补挂）给的注册，不记递归枚举出来的子目录
+            if (keepForSelfHeal)
+            {
+                m_selfHealPaths.insert(absolutePath);
+            }
 
             // 递归根要记住：之后新建的子目录靠这份清单补挂监视（否则新目录里的变更永久丢失）
             if (recursive)
@@ -88,6 +101,7 @@ namespace AsynGyanis::Platform
                 return true;
             }
 
+            // 此刻注册失败（路径还不存在）也保留清单里的那一条：自愈节拍会在它出现后补挂
             const int watchDescriptor = ::inotify_add_watch(m_inotifyFileDescriptor, absolutePath.c_str(), kWatchEventMask);
             if (watchDescriptor < 0)
             {
@@ -109,7 +123,7 @@ namespace AsynGyanis::Platform
                 }
                 if (entry.is_directory())
                 {
-                    addWatch(entry.path().string(), false);
+                    registerWatch(entry.path().string(), false, false);
                 }
             }
         }
@@ -139,10 +153,11 @@ namespace AsynGyanis::Platform
 
         m_watchDescriptors.erase(iterator->second);
         m_pathToWatchDescriptor.erase(iterator);
-        // 递归根清单要一起摘掉：留着它，下一拍的 recheckRecursiveRootsIfDue 会把这条刚被撤销的
+        // 递归根清单要一起摘掉：留着它，下一拍的 rearmMissingWatchesIfDue 会把这条刚被撤销的
         // 监视重新挂回来（自愈的用途是「目录被删掉后又回来时补挂」，不是替调用方否决一次显式
         // 撤销）。那样 removeWatch() 虽然返回了 true，描述符却会重开、回调照旧派发
         m_recursiveRoots.erase(absolutePath);
+        m_selfHealPaths.erase(absolutePath);
 
         return true;
     }
@@ -194,7 +209,7 @@ namespace AsynGyanis::Platform
             if (pollResult == 0)
             {
                 // 没有事件也走一遍自愈复查（下面在循环末尾统一做），这里只是别提前 continue 掉
-                recheckRecursiveRootsIfDue();
+                rearmMissingWatchesIfDue();
                 continue;
             }
 
@@ -202,7 +217,7 @@ namespace AsynGyanis::Platform
             {
                 processEvents();
             }
-            recheckRecursiveRootsIfDue();
+            rearmMissingWatchesIfDue();
         }
     }
 
@@ -341,35 +356,36 @@ namespace AsynGyanis::Platform
         }
     }
 
-    void InotifyFileWatcher::recheckRecursiveRootsIfDue()
+    void InotifyFileWatcher::rearmMissingWatchesIfDue()
+    {
+        // 清单里的路径一旦失去内核监视就得补挂（监视的文件被替换或删除、被监视的目录被移走、注册时
+        // 路径还不存在）：除了这条节拍，没有别的人会再为同一个路径调 addWatch。按秒复查一遍
+        const auto now = std::chrono::steady_clock::now();
+        if (now < m_rearmDeadline)
         {
-            // 目录被整个换掉（删除后重建）时内核会摘掉 watch，而重建后的目录没有人会再调
-            // addWatch——根上不补挂，它内部的变更就永久丢失。按秒节拍复查一遍
-            const auto now = std::chrono::steady_clock::now();
-            if (now < m_rootRecheckDeadline)
-            {
-                return;
-            }
-            m_rootRecheckDeadline = now + kRootRecheckInterval;
+            return;
+        }
+        m_rearmDeadline = now + kRearmInterval;
 
-            std::vector<std::string> missingRoots;
+        std::vector<std::pair<std::string, bool> > missingWatches;
+        {
+            const std::shared_lock lock(m_watchMutex);
+            for (const std::string &path: m_selfHealPaths)
             {
-                const std::shared_lock lock(m_watchMutex);
-                for (const std::string &root: m_recursiveRoots)
+                if (!m_pathToWatchDescriptor.contains(path))
                 {
-                    if (!m_pathToWatchDescriptor.contains(root))
-                    {
-                        missingRoots.push_back(root);
-                    }
+                    // 补挂要照当初的 recursive 取值：给一条只要一层的路径按递归挂上，监视范围会越滚越大
+                    missingWatches.emplace_back(path, m_recursiveRoots.contains(path));
                 }
             }
-
-            // 锁外补挂：addWatch() 要拿写锁；目录还没回来时它会失败，下一拍再试
-            for (const std::string &root: missingRoots)
-            {
-                static_cast<void>(addWatch(root, true));
-            }
         }
+
+        // 锁外补挂：registerWatch() 要拿写锁；路径还没回来时它会失败，下一拍再试
+        for (const auto &[path, recursive]: missingWatches)
+        {
+            static_cast<void>(registerWatch(path, recursive, true));
+        }
+    }
 
     void InotifyFileWatcher::dispatchOverflowRescan()
     {

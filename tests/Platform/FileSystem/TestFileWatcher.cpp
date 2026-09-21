@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -69,6 +70,27 @@ namespace AsynGyanis::Platform
             }
 
             /**
+             * @brief 统计指向指定文件名的回调条数
+             * @param fileName 文件名（不含目录）
+             * @param changeType 只统计这一类事件；nullopt 表示不限类型
+             * @return std::size_t 符合条件的事件条数
+             */
+            [[nodiscard]] std::size_t eventCountForFile(const std::string &fileName,
+                                                        const std::optional<FileChangeType> changeType = std::nullopt) const
+            {
+                std::lock_guard lock(m_mutex);
+                std::size_t     count = 0;
+                for (const auto &[filePath, recordedType]: m_events)
+                {
+                    if (fileNameOf(filePath) == fileName && (!changeType.has_value() || recordedType == *changeType))
+                    {
+                        ++count;
+                    }
+                }
+                return count;
+            }
+
+            /**
              * @brief 统计这批文件名里有多少一条事件都没出现过
              * @param fileNames 文件名（不含目录）列表
              * @return std::size_t 完全没出现过的文件名个数
@@ -82,9 +104,7 @@ namespace AsynGyanis::Platform
                     for (const auto &[filePath, changeType]: m_events)
                     {
                         (void) changeType;
-                        const std::size_t separator = filePath.find_last_of("\\/");
-                        seenNames.insert(separator == std::string::npos ? filePath
-                                                                        : filePath.substr(separator + 1));
+                        seenNames.insert(std::string(fileNameOf(filePath)));
                     }
                 }
 
@@ -118,6 +138,17 @@ namespace AsynGyanis::Platform
             }
 
         private:
+            /**
+             * @brief 取事件路径的文件名部分
+             * @param filePath 回调给出的完整路径
+             * @return std::string_view 最后一个分隔符之后的内容；不含分隔符时返回整条路径
+             */
+            [[nodiscard]] static std::string_view fileNameOf(const std::string_view filePath)
+            {
+                const std::size_t separator = filePath.find_last_of("\\/");
+                return separator == std::string_view::npos ? filePath : filePath.substr(separator + 1);
+            }
+
             mutable std::mutex                                   m_mutex;  ///< 保护事件列表
             std::vector<std::pair<std::string, FileChangeType> > m_events; ///< 已记录事件
         };
@@ -379,6 +410,72 @@ namespace AsynGyanis::Platform
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "重建出来的目录收不到事件：监视没挂上（IN_IGNORED 之后映射没清）";
+    }
+
+    /**
+     * @brief 钉住（Linux）：被监视的单个文件换掉 inode 之后，框架要自己把监视补回来
+     * @details inotify 的 watch 挂在 inode 上：文件被删除、或被原子保存换成新 inode 时内核发
+     *          IN_IGNORED 并摘掉它，本端随之清掉映射。调用方只监视这个文件（父目录不在监听集合里），
+     *          没有任何人会再为这个路径调 addWatch，重建出来的同名文件从此不再上报——「热加载单个
+     *          配置文件」正落在这一条上。自愈节拍按秒补挂，这里每 500ms 重写一次，最迟几拍内必有一
+     *          次写入落在补挂之后
+     */
+    TEST(FileWatcher, ReplacedWatchedFileIsRearmed)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_FileRearm");
+        ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: 1\n"));
+        const std::string watchedFilePath = (temporaryDirectory.path() / "single.yaml").string();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(watchedFilePath));
+        ASSERT_TRUE(watcher->start());
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: 2\n"));
+
+        // 先确认单文件监视挂得上：这一步红了就别去怪后面的补挂
+        const bool firstEventArrived = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) > 0;
+                },
+                3000);
+        ASSERT_TRUE(firstEventArrived) << "监视单个文件本身就没有效果，补挂的判据无从谈起";
+
+        std::error_code removeError;
+        static_cast<void>(std::filesystem::remove(watchedFilePath, removeError));
+        ASSERT_FALSE(removeError) << "删除被监视文件失败：" << removeError.message();
+        // 留出时间让 IN_DELETE_SELF 与随后补发的 IN_IGNORED 被处理掉：映射没清时补挂会被「路径已在表里」挡下
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        // 判据只数 Modified：删除自身留下一条 Deleted，把它算进来就等于「监视失效也能通过」
+        const std::size_t modifiedCountBeforeReplacement =
+                recorder.eventCountForFile("single.yaml", FileChangeType::Modified);
+
+        bool rearmed = false;
+        for (int attempt = 0; attempt < 12 && !rearmed; ++attempt)
+        {
+            ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: 3\n"));
+            rearmed = TestSupport::waitForCondition(
+                    [&recorder, modifiedCountBeforeReplacement]()
+                    {
+                        return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) >
+                               modifiedCountBeforeReplacement;
+                    },
+                    500);
+        }
+
+        watcher->stop();
+        EXPECT_TRUE(rearmed) << "换掉 inode 之后这个文件再也上报不了变更：失效的单文件监视没人补挂";
     }
 #endif
 
