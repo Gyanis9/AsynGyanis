@@ -580,47 +580,30 @@ namespace AsynGyanis::Net
 
             const auto now = std::chrono::steady_clock::now();
 
-            // 先取一份连接标识快照再逐个查表：本循环里每一步都可能挂起（flush 撞上窗口不足、
-            // handleExpiry 等回包），而挂起期间收报文路径会 reapClosedConnections() 摘掉已收口的
-            // 连接——直接按迭代器+引用遍历的话，恢复后手里的引用与隐藏迭代器都悬垂
-            std::vector<std::string> connectionKeys;
-            connectionKeys.reserve(m_connections.size());
+            // 直接遍历连接表，不做标识快照：本循环里每一次挂起都被下面那枚守卫罩着，而摘除已收口
+            // 的连接只有 reapClosedConnections() 一处、它见到守卫就跳过——这条因此不会在挂起期间被
+            // 销毁；std::map 里别处摘除条目也不影响手里的迭代器。省下的是每拍一份快照：每条连接
+            // 一次标识字符串分配，加一次按串的查表（空闲服务器上这项与流量无关，只随在线数走）
             for (const auto &connectionEntry: m_connections)
             {
-                connectionKeys.push_back(connectionEntry.first);
-            }
-
-            for (const std::string &connectionKey: connectionKeys)
-            {
-                const auto connectionEntry = m_connections.find(connectionKey);
-                if (connectionEntry == m_connections.end())
-                {
-                    continue; // 已经收口摘掉了
-                }
                 // 记账：下面几次 await 都可能挂起（flush 撞上发送缓冲满、handleExpiry 等回包），
-                // 而挂起期间另一条路径可能把它判成收口并摘除——守卫让那次摘除推迟到本迭代结束
-                const QuicConnection::ActivityGuard activityGuard(*connectionEntry->second);
+                // 守卫把「本条连接的摘除」推迟到这次迭代结束
+                const QuicConnection::ActivityGuard activityGuard(*connectionEntry.second);
                 // 先按时限收口「收不全」的请求：h3 会话没有套接字可等，读时限只能靠这一拍落实。
                 // 排在 flush 之前，被叫醒的处理器若因此产出了什么，这一拍就一起送出去
-                if (Http3Session *const session = findHttp3Session(connectionEntry->second.get()); session != nullptr)
+                if (Http3Session *const session = findHttp3Session(connectionEntry.second.get()); session != nullptr)
                 {
                     session->expireStaleRequests(now);
                 }
                 // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
                 // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它一直等到下一次报文或定时器
-                if (connectionEntry->second->needsFlush())
+                if (connectionEntry.second->needsFlush())
                 {
-                    co_await connectionEntry->second->flush();
+                    co_await connectionEntry.second->flush();
                 }
-                // 上面这次挂起期间它可能已经被摘掉：用之前重新查一次表
-                const auto recheckedEntry = m_connections.find(connectionKey);
-                if (recheckedEntry == m_connections.end())
+                if (connectionEntry.second->nextExpiry() <= now)
                 {
-                    continue;
-                }
-                if (recheckedEntry->second->nextExpiry() <= now)
-                {
-                    co_await recheckedEntry->second->handleExpiry();
+                    co_await connectionEntry.second->handleExpiry();
                 }
             }
             reapClosedConnections();
