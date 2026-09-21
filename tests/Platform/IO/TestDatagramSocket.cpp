@@ -1,15 +1,18 @@
 // DatagramSocket 单元测试：绑定、收发（带对端地址）、无数据与非法参数的错误面
 #include "Platform/IO/DatagramSocket.h"
 
+#include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -109,6 +112,90 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(localAddress.length, sizeof(sockaddr_in)) << "回环 IPv4 的地址长度应当是 sockaddr_in";
         EXPECT_EQ(localAddress.storage.ss_family, AF_INET);
         EXPECT_NE(portOf(localAddress), 0) << "端口给 0 时应当取回内核分配的实际端口";
+    }
+
+    /**
+     * @brief 共用一个 UDP 端口的多个监听器：报文要分到不止一个监听器上
+     * @details 「绑得上」不是这里的性质——只设 SO_REUSEADDR 的内核让每个监听器都绑定成功，却把全部报文
+     *          交给最后绑上的那一个（实测 24 条流全落在第 3 个监听器，前两个各 0 条且不报任何错误）。
+     *          多进程 worker 各绑同一端口做 h3 横向扩展正是这个形态，故断言落在「收到过流量的监听器
+     *          个数」上：加上 SO_REUSEPORT 后同一负载实测分成 9/6/9。删掉 bindTo() 里那次 setReusePort
+     *          本例必红
+     */
+    TEST(DatagramSocket, SharedPortSpreadsDatagramsAcrossListeners)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        // 没有该选项的平台（Windows、3.9 之前的内核）不存在「多监听器分摊」这回事
+        const int probeDescriptor = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_TRUE(FileDescriptor::isValid(probeDescriptor));
+        const bool isReusePortSupported = Socket::setReusePort(probeDescriptor);
+        FileDescriptor::close(probeDescriptor);
+        if (!isReusePortSupported)
+        {
+            GTEST_SKIP() << "本平台没有 SO_REUSEPORT，共享端口的场景不适用";
+        }
+
+        // 三个监听器：与 --workers 3 的进程数对应，两个无法区分「1 个收全部」与「恰好分了一半」
+        constexpr std::size_t kListenerCount = 3;
+        // 每条流用自己的临时源端口：内核按四元组哈希选监听器，源端口相同就只会命中同一个
+        constexpr int kFlowCount = 24;
+
+        std::vector<DatagramSocket> listeners;
+        listeners.reserve(kListenerCount);
+        listeners.emplace_back(DatagramSocket::bindTo(makeLoopbackAddress(0)));
+        ASSERT_TRUE(listeners.front().isValid()) << "第一个绑定就失败了，套接字错误码 " << PlatformError::lastSocketErrorCode();
+        const std::uint16_t port = portOf(listeners.front().localAddress());
+
+        for (std::size_t index = 1; index < kListenerCount; ++index)
+        {
+            listeners.emplace_back(DatagramSocket::bindTo(makeLoopbackAddress(port)));
+            ASSERT_TRUE(listeners.back().isValid()) << "第 " << index + 1 << " 个监听器绑不上共用端口 " << port
+                                                    << "，套接字错误码 " << PlatformError::lastSocketErrorCode();
+        }
+
+        const SocketAddress listeningAddress = makeLoopbackAddress(port);
+        for (int flow = 0; flow < kFlowCount; ++flow)
+        {
+            // 发完即关：客户端的临时端口各条不同，报文此刻已落在某个监听器的接收队列里
+            const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+            ASSERT_TRUE(sender.isValid());
+            const std::string payload = "flow" + std::to_string(flow);
+            ASSERT_EQ(sender.send(listeningAddress, payload.data(), payload.size()), static_cast<ssize_t>(payload.size()))
+                    << "第 " << flow << " 条流发送失败，套接字错误码 " << PlatformError::lastSocketErrorCode();
+        }
+
+        // 等到条数收齐或时限到点：不靠「睡一会儿大概就到了」，构造不出条件时本例应当红
+        std::array<std::size_t, kListenerCount> receivedCount{};
+        std::size_t                             totalReceivedCount = 0;
+        const auto                              deadline           = std::chrono::steady_clock::now() +
+                                                                     std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+        while (totalReceivedCount < static_cast<std::size_t>(kFlowCount) && std::chrono::steady_clock::now() < deadline)
+        {
+            for (std::size_t index = 0; index < listeners.size(); ++index)
+            {
+                std::array<char, 64> payloadBuffer{};
+                SocketAddress        peerAddress;
+                while (listeners[index].receive(payloadBuffer.data(), payloadBuffer.size(), peerAddress) > 0)
+                {
+                    ++receivedCount[index];
+                    ++totalReceivedCount;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{2});
+        }
+
+        EXPECT_EQ(totalReceivedCount, static_cast<std::size_t>(kFlowCount))
+                << "共用端口的 " << kListenerCount << " 个监听器一共只收到 " << totalReceivedCount << " 条，报文不该丢";
+
+        const std::size_t activeListenerCount = static_cast<std::size_t>(
+                std::ranges::count_if(receivedCount, [](const std::size_t count)
+                                      {
+                                          return count > 0;
+                                      }));
+        EXPECT_GT(activeListenerCount, 1U) << "全部 " << totalReceivedCount << " 条报文都落在同一个监听器上（分布 "
+                                           << receivedCount[0] << '/' << receivedCount[1] << '/' << receivedCount[2]
+                                           << "）：这些监听器都报告绑定成功，其余的其实一条也收不到";
     }
 
     /**

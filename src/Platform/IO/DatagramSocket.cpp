@@ -61,6 +61,12 @@ namespace AsynGyanis::Platform
         // 地址复用：服务端重启时端口可能还在被上一个实例占着，不允许复用会让重启失败
         static_cast<void>(Socket::setReuseAddress(socket.m_fileDescriptor));
 
+        // 端口复用：多个监听器共用一个 UDP 端口时，只设 SO_REUSEADDR 的内核会让每一个都「绑定成功」，
+        // 却把全部报文交给最后绑上的那一个——前面的监听器一句错误都不报，永远收不到报文。
+        // 多进程 worker 各自绑同一端口做 h3 横向扩展正好落在这个坑上。Linux 3.9+ 才有这个选项，
+        // Windows 上必然失败——按「平台不支持即降级」处理，与 TcpAcceptor 同一惯例，不当作绑定失败
+        [[maybe_unused]] const bool isReusePortSet = Socket::setReusePort(socket.m_fileDescriptor);
+
         if (::bind(socket.m_fileDescriptor, reinterpret_cast<const sockaddr *>(&localAddress.storage), localAddress.length) != 0)
         {
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
