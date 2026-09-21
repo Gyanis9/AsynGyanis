@@ -119,7 +119,10 @@ namespace AsynGyanis::Net
          *          过载与按来源 IP 的限额在这里判，与接受路径同一套逻辑——限额的判据是本服务器
          *          此刻的在途连接数，只有接手方最清楚。
          * @param fileDescriptor 已接受的连接描述符，本方法一进入就接管它的所有权
-         * @return true 已接手并起服务；false 本服务器此刻不收（过载或该来源超限），描述符已关闭
+         * @return true 已接手并起服务
+         * @return false 本服务器此刻不收（描述符无效、过载、该来源超限、取不到对端地址或子类钩子失败），
+         *         描述符已关闭
+         * @note 不抛：坏描述符只丢这一条连接，接受路径照常运行
          * @note 必须在本服务器所属循环上调用；连接建立后与 start() 接受的连接走完全相同的路径
          */
         bool adoptConnection(int fileDescriptor);
@@ -253,8 +256,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 接受/接手一条连接后的共同收尾：限额判定、建会话、起服务协程、回收已完成的帧
          * @param socket 已建立的连接套接字，所有权转移
+         * @return true 已接手并起服务协程
+         * @return false 本服务器此刻不收（过载、该来源超限、取不到对端地址、子类钩子失败）；描述符已关闭
          */
-        void takeOverConnection(Core::AsyncSocket socket);
+        bool takeOverConnection(Core::AsyncSocket socket);
 
         /// 空闲清扫的默认节拍（毫秒）：够密以免超时被成倍放大，又不会让空闲服务器频繁空转
         static constexpr std::chrono::milliseconds kDefaultIdleCheckInterval{250};

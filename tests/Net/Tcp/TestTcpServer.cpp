@@ -709,6 +709,58 @@ namespace AsynGyanis::Net
                 kWaitTimeout)) << "连接结束后按 IP 的名额未归还：上界 kWaitTimeout";
     }
 
+    /**
+     * @brief 取不到对端地址的描述符只丢掉这一条，不把异常穿出接手路径
+     * @details remoteAddress() 在 getpeername 失败时会抛（这里用一条没连上的套接字造出该失败）。
+     *          adoptConnection 的契约是「返回真/假、不抛」：接手一条坏描述符不该把整台服务器的接受
+     *          路径一起带走。用例同时核对这次失败没占住按 IP 的名额，且服务器此后照常接手新连接
+     */
+    TEST(TcpServer, AdoptionWithUnusablePeerAddressReturnsFalseWithoutThrowing)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.perIpLimiter = std::make_shared<PerIpConnectionLimiter>(1);
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        // 一条只创建、没连上的套接字：getpeername 对它必然失败
+        const int unconnectedDescriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_TRUE(Platform::FileDescriptor::isValid(unconnectedDescriptor));
+
+        bool isAdopted{true};
+        bool isThrowing{false};
+        fixture.runOnLoopAndWait(
+                [&fixture, unconnectedDescriptor, &isAdopted, &isThrowing]
+                {
+                    try
+                    {
+                        isAdopted = fixture.server().adoptConnection(unconnectedDescriptor);
+                    } catch (...)
+                    {
+                        isThrowing = true;
+                    }
+                });
+        EXPECT_FALSE(isThrowing) << "接手一条取不到对端地址的描述符把异常抛给了调用方：接受路径会被它一起带走";
+        EXPECT_FALSE(isAdopted) << "没接手的这条不该报「已接手」，调用方要靠这个返回值决定下一步";
+        EXPECT_EQ(options.perIpLimiter->activeCountFor("127.0.0.1"), 0u) << "失败的那次接手仍占着按 IP 的名额";
+
+        // 接受路径还活着：真连一条进来，钩子就该被调用到
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        EXPECT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 1u;
+                },
+                kWaitTimeout)) << "一次失败的接手之后，服务器不再接受新连接";
+
+        fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
+        EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
+    }
+
     TEST(TcpServer, CloseShutsDownActiveConnectionThroughConnectionManager)
     {
         ServerTestOptions options;

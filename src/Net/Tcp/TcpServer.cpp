@@ -139,42 +139,46 @@ namespace AsynGyanis::Net
         m_connectionManager.waitAll();
     }
 
-    void TcpServer::takeOverConnection(Core::AsyncSocket socket)
+    bool TcpServer::takeOverConnection(Core::AsyncSocket socket)
     {
         // 过载保护：并发达到上限时直接丢弃这条连接（局部对象析构即关闭描述符）。
         // 选择立即拒绝而不是暂存等待，是为了不把已握手的连接压在服务器手里占对端资源
         if (m_maxConnections > 0 && m_connectionManager.activeCount() >= m_maxConnections)
         {
-            return;
+            return false;
         }
 
         // 按来源 IP 记账：与全局上限互补——全局挡总量，这里挡「同一个来源开一堆连接」。
         // 取名额排在建连之前，超限的连接连会话对象都不必构造；同样直接丢弃。
         // 键取 ip() 而不是 toString()：后者带对端端口，每条连接的端口都不同，拿它当键等于按连接计数、
         // 限额永远碰不到
-        PerIpConnectionLimiter::Lease perIpLease;
-        if (m_perIpConnectionLimiter != nullptr)
-        {
-            std::optional<PerIpConnectionLimiter::Lease> acquiredLease =
-                    m_perIpConnectionLimiter->tryAcquire(socket.remoteAddress().ip());
-            if (!acquiredLease.has_value())
-            {
-                return;
-            }
-            perIpLease = std::move(acquiredLease).value();
-        }
-
+        //
+        // 取对端地址与建连对象同处一个 try：remoteAddress() 在 getpeername 失败时会抛（描述符刚被对端
+        // 关掉、或接手到的是一条没连上的描述符），而这条异常只关于这一条连接。让它穿出去会把接受循环
+        // 一起带走——之后所有来源都不再有人接。adoptConnection 的契约也写明只返回真/假，不抛
         std::shared_ptr<Core::Connection> connection;
+        PerIpConnectionLimiter::Lease      perIpLease;
         try
         {
+            if (m_perIpConnectionLimiter != nullptr)
+            {
+                std::optional<PerIpConnectionLimiter::Lease> acquiredLease =
+                        m_perIpConnectionLimiter->tryAcquire(socket.remoteAddress().ip());
+                if (!acquiredLease.has_value())
+                {
+                    return false;
+                }
+                perIpLease = std::move(acquiredLease).value();
+            }
+
             connection = createConnection(std::move(socket));
         } catch (const std::exception &hookException)
         {
-            // 子类的会话构造允许抛（例如申请 SSL 对象失败）：那只是这一条连接的失败，
-            // 不该让整个服务器停摆。传入的套接字已随参数析构关闭，这里记录中文错误后继续
-            LOG_ERROR_EXCEPTION(hookException, "TcpServer: 创建连接对象失败，已丢弃一条新连接，监听地址 {}。原因：{}",
+            // 子类的会话构造允许抛（例如申请 SSL 对象失败），取对端地址也可能失败：那都只是这一条
+            // 连接的失败，传入的套接字随参数析构关闭，记录中文错误后继续接受下一条
+            LOG_ERROR_EXCEPTION(hookException, "TcpServer: 接手新连接失败（取对端地址或创建连接对象），已丢弃一条新连接，监听地址 {}。原因：{}",
                                 m_acceptor.localAddress().toString(), hookException.what());
-            return;
+            return false;
         }
 
         // createConnection 是纯虚钩子，返回空指针属于子类缺陷。
@@ -183,7 +187,7 @@ namespace AsynGyanis::Net
         if (connection == nullptr)
         {
             LOG_ERROR_FMT("TcpServer: createConnection 未返回连接对象，已丢弃一条新连接，监听地址 {}", m_acceptor.localAddress().toString());
-            return;
+            return false;
         }
 
         m_connectionManager.add(connection);
@@ -204,6 +208,7 @@ namespace AsynGyanis::Net
             m_nextTaskCleanupThreshold = std::max<std::size_t>(kFinishedTaskCleanupStride,
                                                               m_connectionTasks.size() + kFinishedTaskCleanupStride);
         }
+        return true;
     }
 
     bool TcpServer::adoptConnection(const int fileDescriptor)
@@ -215,8 +220,7 @@ namespace AsynGyanis::Net
 
         // 从描述符重新造一条绑在本循环上的套接字：接受循环那条套接字属于它的循环，
         // 拿过来用会让事件注册落错地方。所有权在这里就接管，后面任何一条 ! 分支都会关掉它
-        takeOverConnection(Core::AsyncSocket(m_loop, fileDescriptor));
-        return true;
+        return takeOverConnection(Core::AsyncSocket(m_loop, fileDescriptor));
     }
 
     Core::Task<> TcpServer::idleSweepLoop()
