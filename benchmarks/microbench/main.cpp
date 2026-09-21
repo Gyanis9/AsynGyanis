@@ -765,13 +765,18 @@ int main(int argumentCount, char **argumentValues)
 
     Net::HttpHeaderFieldStore firstValueStore;
     refillHeaderStore(firstValueStore);
+    // 承接返回值的 optional 必须在计时之外：留在体内就变成每轮现取现还一块堆内存，这一例量的
+    // 就成了分配器那个 size class 的运气而不是查询本身。实测同一份被测代码会因此随无关文件的
+    // 代码布局在 ~320 ns 与 ~540 ns 之间摆（相邻的 header-refill-only 始终在 1% 内），
+    // 挪出来之后同一二进制跨进程的重测离散回到几个百分点
+    std::optional<std::string> clientRequestId;
     measureCase(
             "header-first-value",
-            [&firstValueStore, &refillHeaderStore]
+            [&firstValueStore, &refillHeaderStore, &clientRequestId]
             {
                 refillHeaderStore(firstValueStore);
                 // 改后形态与 HttpRequestIdGenerator::resolve() 一致：只取首条，不构造 vector
-                const std::optional<std::string> clientRequestId = firstValueStore.firstValue("x-request-id");
+                clientRequestId = firstValueStore.firstValue("x-request-id");
                 return clientRequestId.has_value() ? clientRequestId->size() : std::size_t{0};
             },
             results, checksum, failureCount);
