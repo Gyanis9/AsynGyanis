@@ -413,7 +413,7 @@ namespace
     }
 
     /**
-     * @brief 跑一步依赖外部环境变量的真机自检：条件不满足时只记一行跳过原因
+     * @brief 跑一步依赖外部环境变量的真机自检：条件不满足时记一步「跳过」
      * @param stepName 步骤名
      * @param isAvailable 环境是否齐备（驱动已编译且必需变量已设置）
      * @param skipReason 跳过原因，只写变量名，绝不带上取值
@@ -424,7 +424,9 @@ namespace
     {
         if (!isAvailable)
         {
-            LOG_INFO_FMT("跳过「{}」：{}（这一步不计入通过也不计入失败）", stepName, skipReason);
+            // 单列进 gated 计数而不是什么都不留：这 36 例真机步骤否则既不算失败也不留证据，
+            // 「真机跑过」和「真机没跑」两种运行会给出完全相同的结论行
+            Samples::checklist().skip(stepName, skipReason);
             return;
         }
         runStep(stepName, body);

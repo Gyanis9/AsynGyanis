@@ -65,9 +65,29 @@ namespace AsynGyanis::Samples
             return m_stepCount;
         }
 
+        /**
+         * @brief 记一步「因环境不齐备而没执行」，并在结论里单独列出
+         * @details 这类步骤既不算通过也不算失败：把它混进步数会让「真机跑过」与「真机没跑」两种
+         *          运行给出同一条结论行，步数一致性检查也就看不出差别。单独计数才留得下证据。
+         * @param step 步骤说明（中文，直接进日志）
+         * @param reason 跳过原因，只写缺什么（如环境变量名），绝不带上取值
+         */
+        void skip(const std::string_view step, const std::string_view reason)
+        {
+            ++m_gatedCount;
+            LOG_INFO_FMT("– {}：{}（因环境不齐备跳过，不计入通过也不计入失败）", step, reason);
+        }
+
+        /// @return std::size_t 因环境不齐备而跳过的步骤数
+        [[nodiscard]] std::size_t gatedCount() const noexcept
+        {
+            return m_gatedCount;
+        }
+
     private:
         std::size_t m_stepCount{0};    ///< 已记下的步数
         std::size_t m_failureCount{0}; ///< 其中失败的步数
+        std::size_t m_gatedCount{0};   ///< 因环境不齐备而跳过的步数，单列不进 m_stepCount
     };
 
     /// @return SampleChecklist & 本进程的自检清单（单实例，示例都是单线程主干）
@@ -151,6 +171,9 @@ namespace AsynGyanis::Samples
 
     /**
      * @brief 打印结论并给出退出码：有任何一步失败、或一步都没执行，都算不通过
+     * @details 结论行固定带 `gated <m>`：跳过的步数不混进 <步数>，但必须留在结论里，
+     *          否则「真机跑过」与「真机没跑」两种运行给出的是同一行，重复跑的步数一致性
+     *          检查也就无从区分。
      * @param sampleName 示例名（出现在结论里，脚本按它对齐清单）
      * @return int 0 表示全绿且至少有一步证据，1 表示有失败步或零步
      */
@@ -162,10 +185,11 @@ namespace AsynGyanis::Samples
         const bool hasEvidence = steps.failureCount() == 0 && steps.stepCount() > 0;
         // 结论同时走 stdout：脚本读这一行判定，级别与 sink 被示例自己改掉也不影响（本示例就有这一步）
         std::cout << "RESULT " << sampleName << ' ' << (hasEvidence ? "PASS " : "FAIL ") << steps.stepCount()
-                  << std::endl;
+                  << " gated " << steps.gatedCount() << std::endl;
         if (hasEvidence)
         {
-            LOG_INFO_FMT("示例 {} 自检通过：{} 步全绿", sampleName, steps.stepCount());
+            LOG_INFO_FMT("示例 {} 自检通过：{} 步全绿，另有 {} 步因环境不齐备跳过",
+                         sampleName, steps.stepCount(), steps.gatedCount());
             return 0;
         }
         if (steps.stepCount() == 0)
