@@ -185,9 +185,16 @@ namespace AsynGyanis::Platform
             return false;
         }
 
+        // 调用方撤销的是「这条监视」本身，递归根清单要一起摘掉，只留监视表的删除是不完整的
+        return dropWatch(absolutePath, false);
+    }
+
+    bool Win32FileWatcher::dropWatch(const std::string_view path, const bool keepRecursiveRoot)
+    {
         std::lock_guard lock(m_watchMutex);
 
-        const auto iterator = m_watches.find(normalizeDirectoryPath(absolutePath));
+        const std::string            normalizedPath = normalizeDirectoryPath(std::string(path));
+        const auto                   iterator       = m_watches.find(normalizedPath);
         if (iterator == m_watches.end())
         {
             return false;
@@ -195,6 +202,13 @@ namespace AsynGyanis::Platform
 
         closeEntry(*iterator->second);
         m_watches.erase(iterator);
+        // 内部清理（目录被删导致的死条目）刻意留着这份清单：自愈复查正是靠它把换掉重建的根重新挂上。
+        // 而调用方显式撤销时必须摘掉——否则下一拍自愈会把刚撤销的监视悄悄加回来，removeWatch()
+        // 虽然返回了 true，句柄却重开、回调照旧派发
+        if (!keepRecursiveRoot)
+        {
+            m_recursiveRoots.erase(normalizedPath);
+        }
         return true;
     }
 
@@ -342,8 +356,10 @@ namespace AsynGyanis::Platform
 
             if (!deadWatchPath.empty())
             {
-                // removeWatch() 自带写锁：CancelIo → 关句柄 → 从监听集合摘除
-                static_cast<void>(removeWatch(deadWatchPath));
+                // dropWatch 自带写锁：CancelIo → 关句柄 → 从监听集合摘掉。递归根清单要保留，
+                // 下一秒的自愈复查靠它把这个根重新挂上（走公共 removeWatch() 会连清单一起摘掉，
+                // 于是「目录被换掉重建」之后其内部变更永久丢失）
+                static_cast<void>(dropWatch(deadWatchPath, true));
             }
 
             // 递归根之下新出现的目录要在锁外补挂监视：新子目录内部的变更否则永远不上报

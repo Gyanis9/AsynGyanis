@@ -139,6 +139,10 @@ namespace AsynGyanis::Platform
 
         m_watchDescriptors.erase(iterator->second);
         m_pathToWatchDescriptor.erase(iterator);
+        // 递归根清单要一起摘掉：留着它，下一拍的 recheckRecursiveRootsIfDue 会把这条刚被撤销的
+        // 监视重新挂回来（自愈的用途是「目录被删掉后又回来时补挂」，不是替调用方否决一次显式
+        // 撤销）。那样 removeWatch() 虽然返回了 true，描述符却会重开、回调照旧派发
+        m_recursiveRoots.erase(absolutePath);
 
         return true;
     }

@@ -190,6 +190,39 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(recorder.eventCount(), 0U);
     }
 
+    /**
+     * @brief 钉住：撤销一条**递归**监视之后，它不会被自愈逻辑悄悄加回来
+     * @details 递归根另存了一份清单，供「目录被删掉后又回来」时补挂监视用。撤销一条递归监视时
+     *          若只清监视表、不清这份清单，下一拍自愈就会把它重新挂上：removeWatch() 明明返回了
+     *          true，句柄却重开、回调照旧派发——等于把调用方的显式撤销否决掉。
+     *          等待时长刻意跨过至少一个自愈节拍，否则这条用例只在「恰好没到点」时才有意义。
+     */
+    TEST(FileWatcher, RemovedRecursiveRootStaysRemovedAcrossSelfHealTicks)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RemoveRecursive");
+        const std::unique_ptr<FileWatcher>    watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
+        EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string()));
+
+        ASSERT_TRUE(watcher->start());
+        // 跨过至少一个自愈节拍：清单没被摘掉的话，正是这一刻把监视悄悄挂回来
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+        ASSERT_TRUE(temporaryDirectory.writeFile("should_be_ignored.yaml", "ignored: true"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        watcher->stop();
+
+        EXPECT_EQ(recorder.eventCount(), 0U) << "撤销掉的递归监视被自愈逻辑重新挂上了，回调仍在派发";
+    }
+
 #if ASYN_PLATFORM_LINUX
     /**
      * @brief 钉住（Linux）：被内核摘除监视之后，同一路径还能重新挂上监视

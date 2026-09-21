@@ -144,6 +144,19 @@ namespace AsynGyanis::Platform
         void rewatchMissingRecursiveRoots();
 
         /**
+         * @brief 摘掉一条监视：内部清理与调用方撤销的共同实现，差别只在要不要连递归根清单一起摘
+         * @details 两条路都必须清监视表，但对「递归根清单」的诉求正相反：
+         *          - 目录被删导致的死条目由监听线程自己来摘，这份清单要**留着**，
+         *            否则下一秒的自愈复查找不到根，目录被换掉重建后其内部变更永久丢失；
+         *          - 调用方显式 removeWatch() 是在撤销意图，清单必须**一起摘掉**，
+         *            否则自愈会在下一拍把刚被撤销的监视重新挂回来。
+         * @param path 目录路径；本方法内部再做规范化（该规范化是幂等的，两个调用方给的形式不同也能共用）
+         * @param keepRecursiveRoot 是否保留该路径在递归根清单里的条目
+         * @return true 该路径原本有监视且已摘掉；false 没有这条监视（绝对化路径失败或表里没有）
+         */
+        bool dropWatch(std::string_view path, bool keepRecursiveRoot);
+
+        /**
          * @brief 取消目录未完成读取并关闭其全部句柄
          * @param entry 目标目录上下文
          */
