@@ -13,6 +13,7 @@ add_executable(TestPlatform
         IO/TestDatagramSocket.cpp
         IO/TestSocketZeroCopySend.cpp
         IO/TestMemoryMappedFile.cpp
+        IO/TestFileContents.cpp
 
         FileSystem/TestFileSystem.cpp
         FileSystem/TestFileBasicInfo.cpp
