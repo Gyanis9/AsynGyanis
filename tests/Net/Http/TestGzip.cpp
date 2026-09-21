@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -72,6 +73,33 @@ namespace AsynGyanis::Net
         const std::optional<std::string> restored = gunzip(*compressed);
         ASSERT_TRUE(restored.has_value()) << "压缩结果解不开";
         EXPECT_EQ(*restored, original);
+    }
+
+    /**
+     * @brief 复用流按调用复位：不得把上一条响应的字典带进这一条
+     * @details gzipCompress 改为复用 thread_local deflate 流 + 每条 deflateReset。若复位不彻底，
+     *          同一输入第二次压缩会吃到上一条字典而与第一次不一致，或不同输入交错后解不回原文。
+     *          这里把「复用 + 复位」钉成与「每条新建流」逐字节一致。
+     */
+    TEST(GzipTest, ReusesStreamAcrossCallsWithoutLeakingContext)
+    {
+        const std::string repeated = "复用的 deflate 流不得把上一条响应的字典带进这一条：中文 + ASCII 混排正文。";
+        const std::optional<std::string> first = gzipCompress(repeated);
+        const std::optional<std::string> second = gzipCompress(repeated);
+        ASSERT_TRUE(first.has_value());
+        ASSERT_TRUE(second.has_value());
+        EXPECT_EQ(*first, *second) << "同一输入连压两次必须逐字节一致（证明按调用复位、无跨调用字典残留）";
+
+        // 多种输入交错压缩 + gunzip，逐条往返一致，覆盖「不同长度复用同一条流」
+        const std::vector<std::string> payloads{std::string("短"), std::string(), std::string(2048, 'k')};
+        for (const std::string &payload: payloads)
+        {
+            const std::optional<std::string> reCompressed = gzipCompress(payload);
+            ASSERT_TRUE(reCompressed.has_value());
+            const std::optional<std::string> restoredPayload = gunzip(*reCompressed);
+            ASSERT_TRUE(restoredPayload.has_value());
+            EXPECT_EQ(*restoredPayload, payload);
+        }
     }
 
     /**

@@ -14,8 +14,30 @@ namespace AsynGyanis::Net
         static constexpr char kEmptyInput[] = "";
         const char *const source = input.empty() ? kEmptyInput : input.data();
 
+        // 复用 thread_local 压缩上下文：ZSTD_compress 每次调用都内部新建并销毁一个 ZSTD_CCtx（含数百 KB
+        // 工作区），与 permessage-deflate 侧重建 deflate 状态同源的浪费——每条响应一次，短正文上固定开销占比很高。
+        // ZSTD_compressCCtx 用外部上下文做单段压缩、每次自行复位并按入参应用压缩级别，产出与 ZSTD_compress 逐字节一致。
+        // thread_local 使每条循环线程各持一份，天然无跨线程共享；上下文创建失败（OOM）退回不压缩语义。
+        struct ReusableZstdContext
+        {
+            ZSTD_CCtx *const context{::ZSTD_createCCtx()};   ///< 复用的压缩上下文，创建失败为空
+            ~ReusableZstdContext()
+            {
+                if (context != nullptr)
+                {
+                    ::ZSTD_freeCCtx(context);
+                }
+            }
+        };
+        thread_local ReusableZstdContext holder;
+        if (holder.context == nullptr)
+        {
+            return std::nullopt;
+        }
+
         std::string output(ZSTD_compressBound(input.size()), '\0');
-        const std::size_t writtenLength = ZSTD_compress(output.data(), output.size(), source, input.size(), level);
+        const std::size_t writtenLength =
+                ::ZSTD_compressCCtx(holder.context, output.data(), output.size(), source, input.size(), level);
         if (ZSTD_isError(writtenLength) != 0)
         {
             return std::nullopt;

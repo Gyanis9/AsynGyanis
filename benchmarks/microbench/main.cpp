@@ -14,6 +14,8 @@
 //   · 数据形态尽量贴近稳态：HPACK 同一份头部反复编码/解码（同一连接复用编解码器）、
 //     h1 请求带 10 个头与 64 字节正文、h2 解一帧 200 字节头块的 HEADERS。
 //     换数据形态会改变结果，比较不同机器的数字前先确认两边用的是同一份输入。
+#include "Net/Http/Compression.h"
+#include "Net/Http/Gzip.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
@@ -887,6 +889,35 @@ int main(int argumentCount, char **argumentValues)
             [&wsDeflatePayload]
             {
                 const std::optional<std::string> compressed = Net::deflateWebSocketMessage(wsDeflatePayload);
+                return compressed.has_value() ? compressed->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    // 响应压缩中间件的 gzip / zstd 两条一次性压缩：改前每条响应都重建压缩器内部状态
+    // （gzip deflateInit2/End、zstd 的 ZSTD_compress 内部建/销 CCtx），改后复用 thread_local 上下文。
+    // 同一线程反复调用正落在复用路径上，量的是稳态。取一段 ~4KiB 可压正文贴近真实响应
+    const std::string responseCompressBody = []
+    {
+        std::string body;
+        while (body.size() < 4096)
+        {
+            body += "<div class=\"row\">AsynGyanis 响应压缩基准正文，重复以模拟可压缩的 HTML。</div>";
+        }
+        return body;
+    }();
+    measureCase(
+            "gzip-response-compress",
+            [&responseCompressBody]
+            {
+                const std::optional<std::string> compressed = Net::gzipCompress(responseCompressBody);
+                return compressed.has_value() ? compressed->size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "zstd-response-compress",
+            [&responseCompressBody]
+            {
+                const std::optional<std::string> compressed = Net::zstdCompress(responseCompressBody);
                 return compressed.has_value() ? compressed->size() : std::size_t{0};
             },
             results, checksum, failureCount);

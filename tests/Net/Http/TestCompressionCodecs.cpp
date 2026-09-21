@@ -108,6 +108,30 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief zstdCompress 复用 thread_local CCtx：每次调用自复位，不得跨调用残留状态
+     * @details 改前每次 ZSTD_compress 内部新建/销毁 CCtx；改后用 ZSTD_compressCCtx 复用一条上下文。
+     *          若上下文复位不彻底，同一输入连压两次会不一致，或不同输入交错后解不回原文。
+     */
+    TEST(CompressionCodecs, ZstdReusesContextAcrossCallsWithoutLeakingState)
+    {
+        const std::string repeated = "复用的 ZSTD_CCtx 不得把上一条响应的状态带进这一条：中文 + ASCII 混排正文。";
+        const std::optional<std::string> first = zstdCompress(repeated);
+        const std::optional<std::string> second = zstdCompress(repeated);
+        ASSERT_TRUE(first.has_value());
+        ASSERT_TRUE(second.has_value());
+        EXPECT_EQ(*first, *second) << "同一输入连压两次必须逐字节一致（证明每次 compressCCtx 自复位）";
+
+        for (const std::string &payload: {std::string("短"), std::string(), std::string(2048, 'k')})
+        {
+            const std::optional<std::string> compressed = zstdCompress(payload);
+            ASSERT_TRUE(compressed.has_value());
+            const std::optional<std::string> restored = unzstd(*compressed, payload.size());
+            ASSERT_TRUE(restored.has_value());
+            EXPECT_EQ(*restored, payload);
+        }
+    }
+
+    /**
      * @brief brotli 压缩后再解开必须与原内容逐字节一致
      */
     TEST(CompressionCodecs, BrotliRoundTripsBackToTheOriginalBytes)
