@@ -25,6 +25,7 @@
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
+#include "Platform/IO/MemoryMappedFile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -515,6 +516,45 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
     std::filesystem::remove(metadataProbePath);
+
+    // 静态路径剩下的另一块每请求系统调用：把文件映射进来再解除。量它才知道「映射缓存」这项
+    // 有意未做的事值不值——它与上面那次元数据查询相加，才是每请求在文件系统上的全部开销
+    const std::filesystem::path mappingProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-mmap.txt";
+    std::string mappingProbeBytes;
+    {
+        mappingProbeBytes.assign(64 * 1024, 'x');
+        std::ofstream mappingFile(mappingProbePath, std::ios::binary | std::ios::trunc);
+        mappingFile << mappingProbeBytes;
+    }
+    measureCase(
+            "mmap-open-and-close",
+            [&mappingProbePath]
+            {
+                // 每轮真的打开再解除映射：这正是一条静态响应在文件系统上的收尾开销，
+                // 缓存命中时要省的也就是这一段
+                Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(mappingProbePath);
+                const std::size_t mappedLength = mappedFile.bytes().size();
+                mappedFile = Platform::MemoryMappedFile{};
+                return mappedLength;
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "mmap-page-touch",
+            [&mappingProbePath]
+            {
+                Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(mappingProbePath);
+                // 首触缺页：映射成功后按页读一遍，等价于发送路径真的把这些字节交出去
+                std::size_t touched = 0;
+                const std::span<const std::byte> bytes = mappedFile.bytes();
+                for (std::size_t offset = 0; offset < bytes.size(); offset += 4096)
+                {
+                    touched += std::to_integer<std::size_t>(bytes[offset]);
+                }
+                mappedFile = Platform::MemoryMappedFile{};
+                return touched;
+            },
+            results, checksum, failureCount);
+    std::filesystem::remove(mappingProbePath);
 
     measureCase(
             "hpack-decode",
