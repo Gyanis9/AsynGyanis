@@ -12,6 +12,7 @@
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Coroutine/ThreadPool.h"
@@ -217,6 +218,7 @@ int main(int argc, char **argv)
     bool        dispatchAccept = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
     bool        pinThreadsToCores = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
     bool        compressResponses = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
+    bool        compressInLoop    = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
     std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
     std::size_t workerProcessCount = 1;   // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
     bool        isWorkerProcess = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
@@ -252,6 +254,12 @@ int main(int argc, char **argv)
             pinThreadsToCores = true;
         else if (arg == "--compress")
             compressResponses = true;
+        else if (arg == "--compress-sync")
+        {
+            // 一并打开压缩，只是把执行位置换回循环线程：与默认的外置路径对照才看得出差多少
+            compressResponses = true;
+            compressInLoop    = true;
+        }
         else if (arg == "--max-inflight-body" && i + 1 < argc)
             maxInflightBodyBytes = static_cast<std::size_t>(std::stoull(argv[++i]));
         else if (arg == "--cert" && i + 1 < argc)
@@ -302,7 +310,10 @@ int main(int argc, char **argv)
         LOG_INFO("  --dispatch-accept 一个监听器 + N 个工作循环：连接由接受循环轮转交给工作循环服务；");
         LOG_INFO("            不依赖 SO_REUSEPORT，因此 Windows 上开多线程也要用它（否则每个线程各绑一次同端口，");
         LOG_INFO("            内核不会分摊，全部连接都压在其中一条监听器上）");
-        LOG_INFO("  --compress 按 Accept-Encoding 协商压缩响应正文（zstd/br/gzip 按偏好选择，默认 1 KiB 起压，静态文件也适用）");
+        LOG_INFO("  --compress 按 Accept-Encoding 协商压缩响应正文（zstd/br/gzip 按偏好选择，默认 1 KiB 起压，静态文件也适用）；");
+        LOG_INFO("            压缩交给工作线程做，完成后回到本连接的循环线程续上，循环不会为一次压缩停摆");
+        LOG_INFO("  --compress-sync 同样开压缩，但留在事件循环线程上同步做完（只作对照：实测一条 256 KiB");
+        LOG_INFO("            正文的 gzip 会把同循环小请求的 p50 从 37us 顶到 5.9ms）");
         LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
         LOG_INFO("            超出的请求回 503，明文、HTTPS 与 h3 三端共用同一份账");
         LOG_INFO("  --workers N 用 N 个 worker 进程服务同一个端口（默认 1 = 单进程）：");
@@ -411,6 +422,15 @@ int main(int argc, char **argv)
                  Platform::ProcessInfo::currentProcessId(), isWorkerProcess ? " (worker)" : "");
 
     // 多线程运行时
+    // 压缩用的工作线程池要在 context 之前声明：析构按声明的逆序，因此它会比那些循环活得久，
+    // 在途压缩完成时总还能把恢复投回目标循环。线程数与循环条数同量级就够——N 条循环最多
+    // 同时产生 N 次压缩，多出来的线程只会排队
+    std::optional<Core::AsyncExecutor> compressionExecutor;
+    if (compressResponses && !compressInLoop)
+    {
+        compressionExecutor.emplace(threads);
+    }
+
     Core::IoContext context(threads);
 
     auto address = Core::InetAddress::resolve(host, port);
@@ -477,6 +497,17 @@ int main(int argc, char **argv)
         LOG_INFO_FMT("在途正文总量上限 {} 字节（所有 {} 个监听器共享同一份账）", maxInflightBodyBytes, actualThreads);
     }
 
+    // 压缩中间件的两种落点：默认交给工作线程（一次 gzip 大正文要占住循环线程几毫秒，
+    // 这期间同循环的其他连接什么都做不了）；--compress-sync 留在循环里压，作对照
+    const auto makeCompressionMiddleware = [&](Core::EventLoop &loop)
+    {
+        if (compressionExecutor.has_value())
+        {
+            return Net::compressionMiddleware(loop, *compressionExecutor);
+        }
+        return Net::compressionMiddleware();
+    };
+
     // 按 --https 决定造哪种协议的服务器；返回基类指针，两条路径共用一套构造逻辑
     const auto buildHttpServer = [&](Core::EventLoop &loop)
     {
@@ -494,7 +525,7 @@ int main(int argc, char **argv)
 
         if (compressResponses)
         {
-            server->router().addMiddleware(Net::compressionMiddleware());
+            server->router().addMiddleware(makeCompressionMiddleware(loop));
         }
 
         // h2c：明文连接按先验知识直接说 HTTP/2（对端不发前奏就会被回 GOAWAY）。默认关闭
@@ -528,7 +559,7 @@ int main(int argc, char **argv)
         setupRoutes(server->router());
         if (compressResponses)
         {
-            server->router().addMiddleware(Net::compressionMiddleware());
+            server->router().addMiddleware(makeCompressionMiddleware(loop));
         }
         server->setPerIpConnectionLimiter(perIpConnectionLimiter);
         server->setMaxConnections(configuration.maximumConnections);
@@ -632,7 +663,7 @@ int main(int argc, char **argv)
         setupRoutes(http3Router);
         if (compressResponses)
         {
-            http3Router.addMiddleware(Net::compressionMiddleware());
+            http3Router.addMiddleware(makeCompressionMiddleware(pool.eventLoop(0)));
         }
         // 限流中间件挂在路由上，与明文/TLS 两侧同一份令牌桶：只限 h1/h2 等于给 h3 留了条后门
         if (rateLimitBucket != nullptr)
