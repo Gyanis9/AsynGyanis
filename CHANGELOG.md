@@ -150,8 +150,10 @@
 - **文件监视：被监视目录改名走开后原地重建，同名目录可以被重新监视**（仅 inotify 侧）。内核这时只投
   `IN_MOVE_SELF`、不补 `IN_IGNORED`，wd 仍被持有，于是路径映射不会自己消失；调用方对同一原路径再
   `addWatch()` 会撞上按路径去重的那条分支——返回 true 却不注册，新目录的事件从此永久丢失。现在按
-  `IN_IGNORED` 的同一方式摘掉映射（递归根交给自愈复查补挂）。Windows 有同一形状的症状，但一次
-  「按句柄实际落处判陈旧、命中则重新注册」的修法仍未投递事件，成因未定位，故用例只在 Linux 编译。
+  `IN_IGNORED` 的同一方式摘掉映射（递归根交给自愈复查补挂）。Windows 上同一形状的症状由另一条修法解决：
+  监视条目按父目录报出的旧名/新名配对换键跟随目录，原地重建的同名目录再交给按秒节拍的自愈补挂，
+  两侧各自有用例钉住（Linux `RecreatedDirectoryCanBeWatchedAgain`、Windows
+  `RenamedAwayWatchedDirectoryIsRewatchedAfterInPlaceRecreation`）。
 - **文件监视：换掉 inode 的单个文件会被重新挂上监视**（仅 inotify 侧）。inotify 的 watch 挂在 inode 上，
   监视对象自己消失时内核补一条 `IN_IGNORED`、本端随之清掉路径映射；调用方只监视这一个文件（父目录不在
   监听集合里）时，没有任何人会再为这条路径调 `addWatch()`，编辑器式原子保存之后的变更从此永久丢失。
@@ -160,7 +162,8 @@
   子目录不进这份清单——它们失挂时父目录会收到 `IN_CREATE` 并由那条事件补挂，收进来只会把每秒一次的复查
   变成上千次系统调用。用例先确认单文件监视本身有效，再删掉文件、换上新 inode 反复写入；判据只数
   `Modified` 事件，因为删除自身还会留下一条 `Deleted`，把它算进来等于「监视失效也能通过」。Windows 不
-  监视普通文件，非递归目录监视在 Windows 侧仍不补挂（它的句柄陈旧判定另有未定位成因），是本次留下的已知边界。
+  监视普通文件；另一处两侧不对称留着：非递归的目录监视在 Windows 仍不在自愈清单里（那份清单只收递归根与
+  被枚举出的子目录），Linux 侧则按调用方请求过的每条路径补挂。
 - **改名落位的文件变更在 Windows 上按 `Created` 上报**，与 Linux 同口径。`FileChangeType::Created` 的定义是
   「文件被创建或原子替换后落位」，Linux 的 `IN_MOVED_TO` 走的正是这一条；Windows 却把
   `FILE_ACTION_RENAMED_NEW_NAME` 与 `FILE_ACTION_MODIFIED` 合并映射成 `Modified`。同一个「写临时文件再改名
