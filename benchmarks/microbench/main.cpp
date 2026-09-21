@@ -798,6 +798,19 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 与上一例同源，唯一差别是头部序列化进一块按连接复用的缓冲（保活会话走的路径）：
+    // 相减即是「每响应省掉的一次堆分配 + 释放」的代价，response-head-serialize 是本底
+    std::string reusedHeadScratch;
+    measureCase(
+            "response-head-serialize-reused",
+            [&responseFixture, &reusedHeadScratch]
+            {
+                responseFixture.serializeHeadInto(reusedHeadScratch);
+                const std::size_t lineCount = static_cast<std::size_t>(std::ranges::count(reusedHeadScratch, '\n'));
+                return lineCount >= 8 ? reusedHeadScratch.size() : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
     // 长头部名（超过短字符串缓冲的 15 字符）查询：这类名字要现造一个归一化副本，
     // 「查一个值」里因此藏着一次堆分配。CORS 预检读 access-control-request-method、
     // WebSocket 握手读 sec-websocket-version 都落在这一格。

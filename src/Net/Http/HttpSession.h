@@ -798,6 +798,11 @@ namespace AsynGyanis::Net
                 co_return true;
             };
 
+            // 保活连接上逐条响应共用的头部序列化缓冲：把「每响应一次 malloc/free」压成「整条连接
+            // 第一条响应一次」。只在 respondAndFinish 里按顺序清-填-发，协程在本连接上串行推进，
+            // 不存在与下一条报文并发改写它的窗口
+            std::string reusedHeadBuffer;
+
             // 响应收尾（普通与流式两条派发路径共用）：计数与上限判定 → 流式响应补终止块 /
             // 普通响应整块发出 → 统计与日志 → 复位解析器等连接状态。返回 true 表示连接可继续
             // 服务下一条报文，false 表示会话应当立即结束（发送失败或强制收口）。
@@ -893,9 +898,10 @@ namespace AsynGyanis::Net
                     // 「按状态码判定无正文」这一套语义，与 HEAD 的方法语义不是一回事
                     // （正文视图在下面两条发送分支里各自按此抑制取值）
 
-                    // 头部序列化一次，跟随段一起提交（普通响应跟正文，流式响应跟终止块）：
-                    // serializedHead 是具名局部，跟随段视图指向的 response 也活到本次调用之后
-                    const std::string serializedHead = response.serializeHead();
+                    // 头部序列化进连接复用的缓冲，跟随段一起提交（普通响应跟正文，流式响应跟终止块）：
+                    // reusedHeadBuffer 活到本次 co_await 之后，跟随段视图指向的 response 亦然
+                    response.serializeHeadInto(reusedHeadBuffer);
+                    const std::string_view serializedHead = reusedHeadBuffer;
 
                     // 本条响应是否已经发出（零拷贝分支发出后不再走普通分段写）
                     bool isResponseSent = false;

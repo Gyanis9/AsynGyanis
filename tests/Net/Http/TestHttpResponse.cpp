@@ -897,4 +897,30 @@ namespace AsynGyanis::Net
                   (std::vector<std::string>{"set-cookie=a=1", "x-trace=first", "set-cookie=b=2", "content-type=text/plain"}))
                 << "遍历顺序不是设置顺序：中间插入的其它头名会把同名多条拆散，h2/h3 的头块也就与 h1 不一致";
     }
+
+    // 覆盖 serializeHeadInto 的两条契约：与 serializeHead 逐字一致；同一缓冲跨不同响应复用时
+    // 先清空——否则短头部会接在长头部残留之后发出，keep-alive 下一条报文的头部被上一条污染
+    TEST(HttpResponse, SerializeHeadIntoMatchesSerializeHeadAndClearsReusedBuffer)
+    {
+        HttpResponse longResponse;
+        longResponse.setStatus(200);
+        longResponse.setHeader("content-type", "text/plain");
+        longResponse.setHeader("x-a-very-long-header-name", "a-very-long-header-value-to-grow-the-head");
+        longResponse.setBody("hello world, this body grows content-length");
+
+        HttpResponse shortResponse;
+        shortResponse.setStatus(204);
+
+        std::string reusedBuffer;
+
+        // 第一条：Into 版与返回版逐字相同
+        longResponse.serializeHeadInto(reusedBuffer);
+        EXPECT_EQ(reusedBuffer, longResponse.serializeHead());
+
+        // 第二条更短：复用同一缓冲必须只含短头部，长度回落到短头部的字节数（清空的证据）
+        shortResponse.serializeHeadInto(reusedBuffer);
+        EXPECT_EQ(reusedBuffer, shortResponse.serializeHead());
+        EXPECT_LT(reusedBuffer.size(), static_cast<std::size_t>(longResponse.serializeHead().size()))
+                << "缓冲没有被清空：短头部会接在上一次长头部之后，破坏 keep-alive 报文边界";
+    }
 } // namespace AsynGyanis::Net

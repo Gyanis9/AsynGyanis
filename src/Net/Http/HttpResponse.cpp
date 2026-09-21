@@ -714,11 +714,19 @@ namespace AsynGyanis::Net
         result.append(kCrLf);
     }
 
+    void HttpResponse::serializeHeadInto(std::string &out) const
+    {
+        // 只清不缩：调用方复用的缓冲保留上一轮的容量，稳定后 reserve 命中已有容量即空操作，
+        // 于是整条保活连接只在第一条响应上碰一次分配器
+        out.clear();
+        out.reserve(headReserveLength());
+        appendHead(out);
+    }
+
     std::string HttpResponse::serializeHead() const
     {
         std::string result;
-        result.reserve(headReserveLength());
-        appendHead(result);
+        serializeHeadInto(result);
         return result;
     }
 

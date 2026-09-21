@@ -382,6 +382,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string serializeHead() const;
 
         /**
+         * @brief 把响应头部序列化进调用方提供的缓冲，复用其已分配的容量
+         *
+         * @details 保活连接上每条响应都要发一段头部，逐条新建串即逐条 malloc/free。调用方把缓冲
+         *          提到循环作用域、按连接复用，这里先 clear 再按预估长度 reserve（容量够即空操作），
+         *          稳定后不再触碰分配器。补齐规则与 serializeHead() 逐字一致（同一 appendHead 分发）。
+         * @param out 目标串：进入时先清空，随后写入头部块；调用方持有其生命周期
+         * @note out 不得与响应内部存储（正文视图等）别名，否则 appendHead 边读边写会读到半成品
+         */
+        void serializeHeadInto(std::string &out) const;
+
+        /**
          * @brief 创建一个 200 OK 响应。
          * @param body 响应正文
          * @return HttpResponse 对象，已带 content-type: text/plain
