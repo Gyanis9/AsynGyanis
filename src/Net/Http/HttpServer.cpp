@@ -722,6 +722,29 @@ namespace AsynGyanis::Net
                 return mappedFile;
             };
 
+            // 表示头部一旦写下就与状态码绑定了，所以映射必须在此之前拿稳：这里失败的话，响应还只是一条
+            // 光秃秃的错误（content-type + 正文），不会留下「500 带 Content-Range 与 ETag」这种自相矛盾的报文
+            std::shared_ptr<const Platform::MemoryMappedFile> mappedFile;
+            if (!isHeadRequest)
+            {
+                mappedFile = prepareMappedFile();
+                if (mappedFile == nullptr)
+                {
+                    co_return;
+                }
+
+                // stat 与映射之间文件被截断：请求区间已落在映射之外，按 500 收口，
+                // 不让越界区间走到正文校验里变成异常
+                if (rangeVerdict == RangeVerdict::Satisfiable &&
+                    mappedFile->bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
+                {
+                    response.setStatus(500);
+                    response.setBody("Internal Server Error");
+                    response.setHeader("content-type", "text/plain");
+                    co_return;
+                }
+            }
+
             // 200 与 206 共有的表示头部：都要声明支持按字节取区间
             response.setHeader("content-type", mimeType);
             response.setHeader("accept-ranges", "bytes");
@@ -738,21 +761,6 @@ namespace AsynGyanis::Net
                 if (isHeadRequest)
                 {
                     response.setHeader("content-length", std::to_string(rangeLength));
-                    co_return;
-                }
-
-                const std::shared_ptr<const Platform::MemoryMappedFile> mappedFile = prepareMappedFile();
-                if (mappedFile == nullptr)
-                {
-                    co_return;
-                }
-                // stat 与映射之间文件被截断：请求区间已落在映射之外，按 500 收口，
-                // 不让越界区间走到区间校验里变成异常
-                if (mappedFile->bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
-                {
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
                     co_return;
                 }
 
@@ -773,12 +781,6 @@ namespace AsynGyanis::Net
 
             // 映射整份文件当正文：不经过堆缓冲，发送时由聚合写直接引用文件页，
             // 省掉「文件 → 堆正文」那次等量拷贝与分配。缓存让同一份页能同时服务多条在途响应
-            const std::shared_ptr<const Platform::MemoryMappedFile> mappedFile = prepareMappedFile();
-            if (mappedFile == nullptr)
-            {
-                co_return;
-            }
-
             response.setSharedMappedBody(mappedFile, 0, mappedFile->bytes().size());
         }
     } // namespace
