@@ -28,7 +28,12 @@ namespace AsynGyanis::Platform
                 case FILE_ACTION_RENAMED_OLD_NAME:
                     return FileChangeType::Moved;
                 case FILE_ACTION_MODIFIED:
+                    return FileChangeType::Modified;
                 case FILE_ACTION_RENAMED_NEW_NAME:
+                    // 「改名落到这个位置」与 Linux 的 IN_MOVED_TO 是同一条事实，两侧要给同一个类型：
+                    // 枚举把 Created 定义成「创建或原子替换后落位」，编辑器与配置发布走的正是这条；
+                    // 递归监视补挂新目录的判据也只看 Created，报成 Modified 就漏挂
+                    return FileChangeType::Created;
                 default:
                     return FileChangeType::Modified;
             }

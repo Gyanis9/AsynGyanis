@@ -161,6 +161,12 @@
   变成上千次系统调用。用例先确认单文件监视本身有效，再删掉文件、换上新 inode 反复写入；判据只数
   `Modified` 事件，因为删除自身还会留下一条 `Deleted`，把它算进来等于「监视失效也能通过」。Windows 不
   监视普通文件，非递归目录监视在 Windows 侧仍不补挂（它的句柄陈旧判定另有未定位成因），是本次留下的已知边界。
+- **改名落位的文件变更在 Windows 上按 `Created` 上报**，与 Linux 同口径。`FileChangeType::Created` 的定义是
+  「文件被创建或原子替换后落位」，Linux 的 `IN_MOVED_TO` 走的正是这一条；Windows 却把
+  `FILE_ACTION_RENAMED_NEW_NAME` 与 `FILE_ACTION_MODIFIED` 合并映射成 `Modified`。同一个「写临时文件再改名
+  覆盖」的发布动作因此在两台机器上给出不同类型，按 `Created` 分支的消费方在 Windows 上走不到；递归监视给
+  新目录补挂监视的判据同样只看 `Created`，改名落位的目录因此不在补挂之列（实测从监视树外移入时内核报的是
+  `FILE_ACTION_ADDED`，那一路径本来就被覆盖，用例钉住了这一点）。
 - **`ProcessInfo::applicationDirectory()` 不再交出一个被截断的目录**（POSIX 侧）。`readlink("/proc/self/exe")`
   在缓冲不够时返回的是「填满的字节数」且不补零终止，原实现按 `size - 1` 传缓冲又不过判这一步，于是路径
   超过 4095 字节时返回一份被剪短的字符串，它的 `parent_path()` 指向一个不存在的位置。现在按整个缓冲长度

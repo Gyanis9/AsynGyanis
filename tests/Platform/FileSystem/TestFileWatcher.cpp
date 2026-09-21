@@ -70,6 +70,25 @@ namespace AsynGyanis::Platform
             }
 
             /**
+             * @brief 是否记录过指定文件名与指定类型的事件
+             * @param fileName 文件名（不含目录）
+             * @param changeType 事件类型
+             * @return true 至少有一条同名的该类型事件
+             */
+            [[nodiscard]] bool sawFileNamedWithType(const std::string &fileName, const FileChangeType changeType) const
+            {
+                std::lock_guard lock(m_mutex);
+                for (const auto &[filePath, recordedType]: m_events)
+                {
+                    if (recordedType == changeType && fileNameOf(filePath) == fileName)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            /**
              * @brief 统计指向指定文件名的回调条数
              * @param fileName 文件名（不含目录）
              * @param changeType 只统计这一类事件；nullopt 表示不限类型
@@ -271,6 +290,95 @@ namespace AsynGyanis::Platform
         watcher->stop();
 
         EXPECT_EQ(recorder.eventCount(), 0U);
+    }
+
+    /**
+     * @brief 钉住：原子保存（写临时文件再改名覆盖）落位时报 Created，两侧平台同一口径
+     * @details 枚举把 Created 定义成「文件被创建或原子替换后落位」，Linux 的 IN_MOVED_TO 正是这一条。
+     *          Windows 曾把 FILE_ACTION_RENAMED_NEW_NAME 映射成 Modified：同一个部署动作在两台机器上
+     *          给出不同类型，按 Created 分支的消费方与「新建目录要补挂监视」的自愈判据在 Windows 上
+     *          都走不到（下一条用例钉的正是那个漏挂）。
+     */
+    TEST(FileWatcher, AtomicSaveByRenameReportsCreated)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_AtomicSave");
+        ASSERT_TRUE(temporaryDirectory.writeFile("config.yaml", "value: 1\n"));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        ASSERT_TRUE(watcher->start());
+
+        ASSERT_TRUE(temporaryDirectory.writeFile("config.yaml.tmp", "value: 2\n"));
+        std::error_code renameError;
+        std::filesystem::rename(temporaryDirectory.path() / "config.yaml.tmp", temporaryDirectory.path() / "config.yaml", renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名覆盖失败：" << renameError.message();
+
+        const bool sawCreated = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamedWithType("config.yaml", FileChangeType::Created);
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(sawCreated) << "改名落位没有按「原子替换后落位」报出 Created，两侧口径不一致";
+    }
+
+    /**
+     * @brief 钉住：整目录改名进入递归监视范围之后，它内部的变更要能上报
+     * @details 递归监视是「每个目录各一条监视」，新出现的目录必须补挂，否则把一整个配置子目录移进
+     *          监视树之后，它内部的变更永久不上报。补挂的判据只看 Created：Linux 由 IN_MOVED_TO 给出，
+     *          Windows 的改名落位当时被映射成 Modified，于是这条补挂根本不触发。全程不重新 addWatch，
+     *          走的就是调用方以为「递归监视会自动跟上」的那条路。
+     */
+    TEST(FileWatcher, DirectoryMovedIntoRecursiveWatchIsCovered)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_MoveInto");
+        // 监视树与「等着被移进来」的目录都在临时目录里：改名不跨文件系统
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("tree/keep.yaml", "kept: true\n"));
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("outside/arriving/seed.yaml", "seed: true\n"));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch((temporaryDirectory.path() / "tree").string(), true));
+        ASSERT_TRUE(watcher->start());
+
+        std::error_code renameError;
+        std::filesystem::rename(temporaryDirectory.path() / "outside" / "arriving", temporaryDirectory.path() / "tree" / "arrived", renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "把目录移进监视树失败：" << renameError.message();
+
+        // 补挂要处理完改名通知才发生，时机由监视线程决定：每半秒再写一次，最迟几轮之内必有一次落在补挂之后
+        bool covered = false;
+        for (int attempt = 0; attempt < 12 && !covered; ++attempt)
+        {
+            ASSERT_TRUE(temporaryDirectory.writeNestedFile("tree/arrived/deep.yaml", "deep: true\n"));
+            covered = TestSupport::waitForCondition(
+                    [&recorder]()
+                    {
+                        return recorder.sawFileNamed("deep.yaml");
+                    },
+                    500);
+        }
+
+        watcher->stop();
+        EXPECT_TRUE(covered) << "移进递归树的目录没有补挂监视：它内部的变更从此不再上报";
     }
 
     /**
