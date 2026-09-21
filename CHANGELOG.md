@@ -24,6 +24,8 @@
   `compressionMiddleware(options)` 签名与行为都不变，仍然在调用协程所在线程上压。
   为什么要有这一版：HTTP 三条路径的处理器协程都跑在事件循环线程上，一条 256 KiB 正文的 gzip 要占住
   循环 4.4 ms，这期间同一条循环上的其他连接什么都做不了。
+  前提与限制：外置要求「会话收尾会等处理器协程跑完」——h1 与 h2 的请求路径按结构成立，HTTP/3 的连接
+  异常关闭目前不等会话里分离的派发协程，因此 `echo_server` 只在明文与 TLS 两侧走工作线程，h3 仍走就地版。
 - **阻塞任务执行器上收到 Core**：`Core::AsyncExecutor`（原 `Database::AsyncExecutor`）是通用基础设施，
   承载一切「不能在被调用处立刻完成」的活——阻塞式驱动调用与整块 CPU 运算。头文件在
   `Core/Coroutine/AsyncExecutor.h`。
@@ -279,7 +281,8 @@
   gzip 版 `/big`（256 KiB）、另一路量 `/bench` 的往返延迟，Release 实测：压缩留在循环里做时小请求
   p50 5,930us、p95 6,300us、max 12,637us；交给工作线程后 p50 21us、p95 55us、max 284us，
   而那条重活本身 10 秒 1,629 → 1,596 条（-2%）。代价是一份正文副本（按值交给工作线程）与一次
-  跨线程恢复，量级在几十微秒内。`echo_server --compress` 默认走这条路，`--compress-sync` 保留就地压作对照。
+  跨线程恢复，量级在几十微秒内。`echo_server --compress` 的明文与 TLS 两侧默认走这条路（h3 见上一条的前提），
+  `--compress-sync` 保留就地压作对照。
 - **头部存储补两条「不拷贝」的读取出口**：`HttpHeaderFieldStore` 新增 `firstValueView()`（交出存储内取值
   的视图，不分配）与 `contains()`（只问存在性），owning 的 `firstValue()` 改由视图版派生——两条入口共用
   同一次查找，「同名取首条」「大小写不敏感」这类口径不会再各修一侧而分叉。此前只要读一个值就得拷一份：
