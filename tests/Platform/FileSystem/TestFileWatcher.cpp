@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -60,6 +61,55 @@ namespace AsynGyanis::Platform
                     (void) changeType;
                     if (filePath.size() >= fileName.size() &&
                         filePath.compare(filePath.size() - fileName.size(), fileName.size(), fileName) == 0)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            /**
+             * @brief 统计这批文件名里有多少一条事件都没出现过
+             * @param fileNames 文件名（不含目录）列表
+             * @return std::size_t 完全没出现过的文件名个数
+             */
+            [[nodiscard]] std::size_t missingFileCount(const std::vector<std::string> &fileNames) const
+            {
+                std::unordered_set<std::string> seenNames;
+                {
+                    std::lock_guard lock(m_mutex);
+                    seenNames.reserve(m_events.size() * 2U);
+                    for (const auto &[filePath, changeType]: m_events)
+                    {
+                        (void) changeType;
+                        const std::size_t separator = filePath.find_last_of("\\/");
+                        seenNames.insert(separator == std::string::npos ? filePath
+                                                                        : filePath.substr(separator + 1));
+                    }
+                }
+
+                std::size_t missingCount = 0;
+                for (const std::string &fileName: fileNames)
+                {
+                    if (!seenNames.contains(fileName))
+                    {
+                        ++missingCount;
+                    }
+                }
+                return missingCount;
+            }
+
+            /**
+             * @brief 是否收到过「事件被丢弃、需要重扫该目录」的信号
+             * @return true 至少有一条 NeedsRescan 事件
+             */
+            [[nodiscard]] bool sawRescan() const
+            {
+                std::lock_guard lock(m_mutex);
+                for (const auto &[filePath, changeType]: m_events)
+                {
+                    (void) filePath;
+                    if (changeType == FileChangeType::NeedsRescan)
                     {
                         return true;
                     }
@@ -681,6 +731,90 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(receivedEvent) << "排在等待批次之外的目录收不到事件：批次没有轮转";
     }
 #endif
+
+    /**
+     * @brief 已知缺陷的可复现用例（当前禁用）：并发写同一个被监视的目录时，通知会凭空消失
+     * @details 实测：8 线程共写成功 1200 个文件，静置 8.6 s 后仍有 17~19 个文件名的通知一条都没
+     *          到过（三次运行各自如此）。`GetOverlappedResult` 全程成功——既没有
+     *          ERROR_NOTIFY_ENUM_DIR（溢出应当由它报），也没有别的失败，单批最大 3240/4096 字节
+     *          说明缓冲区本身没装满。也就是说这种丢法是平台不告状的，本端的兜底无从触发。
+     * @note 禁用而不是删掉：这是目前唯一可跑的复现，断言写的就是「要么收齐、要么收到重扫信号」
+     *       这个应达到的契约。定位到成因（NTFS 合并规则还是重投窗口）之后把它启回来当回归钉。
+     */
+    TEST(FileWatcher, DISABLED_OverflowIsNeverSilent)
+    {
+        constexpr int kFloodFileCount = 1200;
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Overflow");
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        // 文件名刻意加长：每条通知记录按 UTF-16 名字长度占缓冲，长名让 4 KiB 更早装满。
+        // 单线程逐个写的速率低于监听端排空的速度，永远灌不满，因此由多个线程同时往同一个
+        // 目录里写——溢出要的就是「生产比消费快」这个条件
+        constexpr int kFloodThreadCount = 8;
+        std::vector<std::string> floodNames;
+        floodNames.reserve(static_cast<std::size_t>(kFloodFileCount));
+        for (int index = 0; index < kFloodFileCount; ++index)
+        {
+            floodNames.push_back("flood-" + std::string(40, 'x') + '-' + std::to_string(index) + ".tmp");
+        }
+
+        // 灌入必须全部发生完才谈得上「有没有漏」：线程组放在内层作用域里，出作用域即 join。
+        // 期望集合只收「确实写成功的那些名字」——写失败时那个文件根本不存在，不该指望它有事件
+        std::mutex             writtenNamesMutex;
+        std::vector<std::string> writtenNames;
+        writtenNames.reserve(static_cast<std::size_t>(kFloodFileCount));
+        {
+            std::vector<std::jthread> floodThreads;
+            floodThreads.reserve(kFloodThreadCount);
+            for (int workerIndex = 0; workerIndex < kFloodThreadCount; ++workerIndex)
+            {
+                floodThreads.emplace_back(
+                        [&floodNames, &temporaryDirectory, &writtenNames, &writtenNamesMutex, workerIndex]
+                        {
+                            std::vector<std::string> locallyWritten;
+                            for (std::size_t index = static_cast<std::size_t>(workerIndex);
+                                 index < floodNames.size();
+                                 index += static_cast<std::size_t>(kFloodThreadCount))
+                            {
+                                if (temporaryDirectory.writeFile(floodNames[index], "x"))
+                                {
+                                    locallyWritten.push_back(floodNames[index]);
+                                }
+                            }
+                            const std::lock_guard lock(writtenNamesMutex);
+                            writtenNames.insert(writtenNames.end(), locallyWritten.begin(), locallyWritten.end());
+                        });
+            }
+        }
+        ASSERT_GT(writtenNames.size(), static_cast<std::size_t>(kFloodFileCount * 3 / 4))
+                << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
+
+        const bool everythingArrived = TestSupport::waitForCondition(
+                [&recorder, &writtenNames]()
+                {
+                    // 两支任一到位即算判定完成：收齐了（没溢出），或漏了但拿到重扫信号
+                    return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0;
+                },
+                8000);
+        const std::size_t missingCount = recorder.missingFileCount(writtenNames);
+
+        watcher->stop();
+        EXPECT_TRUE(everythingArrived || recorder.sawRescan())
+                << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+    }
 
     TEST(FileWatcher, DestructorStopsRunningWatcherSafely)
     {

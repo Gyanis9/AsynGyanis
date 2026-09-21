@@ -1133,6 +1133,14 @@ namespace AsynGyanis::Base
 
     void ConfigManager::handleFileChange(const std::string_view filePath, const Platform::FileChangeType changeType)
     {
+        // 重扫信号走的是**目录**路径，按扩展名的那道过滤会把它整个滤掉——内核丢事件时本要的正是
+        // 「把整份目录重读一遍」，因此它在过滤之前先接下来，与单个文件变更走同一条重载路径
+        if (changeType == Platform::FileChangeType::NeedsRescan)
+        {
+            scheduleReload();
+            return;
+        }
+
         if (!isConfigFile(filePath))
         {
             return;
@@ -1143,6 +1151,14 @@ namespace AsynGyanis::Base
             return;
         }
 
+        scheduleReload();
+    }
+
+    /**
+     * @brief 安排一轮重载：已在跑就记脏，由那一轮收尾时接力
+     */
+    void ConfigManager::scheduleReload()
+    {
         // 已有任务在跑：记下「之后还要再来一轮」而不是直接丢弃。重载要读完整份目录，
         // 期间到达的变更（尤其是紧接着那次写入）会落在本轮之后——丢掉它配置就停在旧值，
         // 直到用户下一次改动；接力由当前那轮任务在收尾时完成

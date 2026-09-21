@@ -245,7 +245,7 @@ namespace AsynGyanis::Platform
             }
 
             // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
-            // 对每个受监视的根各派发一次「已修改」让消费方重新扫描，绝不静默停在旧状态
+            // 对每个受监视的目录各派发一次「要重扫了」，让消费方重新扫描，绝不静默停在旧状态
             if (event->wd == -1)
             {
                 dispatchOverflowRescan();
@@ -388,7 +388,7 @@ namespace AsynGyanis::Platform
         {
             if (callback)
             {
-                callback(watchedPath, FileChangeType::Modified);
+                callback(watchedPath, FileChangeType::NeedsRescan);
             }
         }
     }

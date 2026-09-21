@@ -116,7 +116,7 @@ namespace AsynGyanis::Platform
         void processEvents();
 
         /**
-         * @brief 事件队列溢出后的兜底：对每个受监视的根各派发一次「已修改」
+         * @brief 事件队列溢出后的兜底：对每个受监视的目录各派发一次 NeedsRescan
          * @details 内核丢事件时无法知道丢了哪些路径（IN_Q_OVERFLOW 不带路径），
          *          消费方需要一次重新扫描的信号；条数等于注册的监视数，有界
          */

@@ -562,7 +562,8 @@ namespace AsynGyanis::Platform
         if (!::GetOverlappedResult(entry.directoryHandle, &entry.overlapped, &bytesTransferred, FALSE))
         {
             // 缓冲区溢出（变更过快过多，通知被内核丢弃）时 Windows 报 ERROR_NOTIFY_ENUM_DIR：
-            // 派发一次「已修改」让消费方重新扫描该目录，而不是静默漏掉这一批变更
+            // 派发一次「该重扫了」让消费方重新扫描该目录，而不是静默漏掉这一批变更。用专门的
+            // 事件种类而不是「目录被修改」：消费方按扩展名过滤事件时，前者会被一起滤掉
             if (::GetLastError() != ERROR_NOTIFY_ENUM_DIR)
             {
                 // 其余失败（目录已被删除/改名、句柄失效、访问被拒）：这条监听不会再产生事件，
@@ -570,7 +571,7 @@ namespace AsynGyanis::Platform
                 entry.isDead = true;
                 return;
             }
-            events.emplace_back(entry.path, FileChangeType::Modified);
+            events.emplace_back(entry.path, FileChangeType::NeedsRescan);
             return;
         }
 

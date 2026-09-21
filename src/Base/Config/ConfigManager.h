@@ -359,6 +359,13 @@ namespace AsynGyanis::Base
         void startReloadTask();
 
         /**
+         * @brief 安排一轮重载：已有任务在跑就只记脏，由那一轮在收尾时接力
+         * @details 单个文件变更与「事件溢出、需要重扫整份目录」两条路都汇到这里——
+         *          重载本来就是读完整份目录，两者不需要区分动作。
+         */
+        void scheduleReload();
+
+        /**
          * @brief 重载任务体（在后台线程上跑）
          * @param rawTask 本轮任务的完成标记（任务列表持有它的所有权）
          */
@@ -394,7 +401,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 处理文件监听回调并触发后台重载。
-         * @param filePath 发生变化的文件路径。
+         * @param filePath 发生变化的文件路径；changeType 为 NeedsRescan 时是被监视的目录路径，
+         *        此时不按扩展名过滤（那条信号要的就是「重读整份目录」）。
          * @param changeType 文件变更类型。
          */
         void handleFileChange(std::string_view filePath, Platform::FileChangeType changeType);

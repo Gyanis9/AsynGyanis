@@ -27,15 +27,18 @@ namespace AsynGyanis::Platform
      */
     enum class FileChangeType : std::uint8_t
     {
-        Modified, ///< 文件内容被修改
-        Created,  ///< 文件被创建或原子替换后落位
-        Deleted,  ///< 文件被删除
-        Moved     ///< 文件被移动或重命名（源路径）
+        Modified,    ///< 文件内容被修改
+        Created,     ///< 文件被创建或原子替换后落位
+        Deleted,     ///< 文件被删除
+        Moved,       ///< 文件被移动或重命名（源路径）
+        NeedsRescan, ///< 事件队列/缓冲区溢出，本监视周期内有事件被内核丢弃且不知丢了哪些：
+                     ///< 附带的路径是**被监视的目录**而不是文件，消费方要据此重新扫描该目录，
+                     ///< 不能按「某个文件变了」去理解（新成员只能追加在末尾，取值会被序列化）
     };
 
     /**
      * @brief 文件变更回调函数类型
-     * @param filePath 发生变更的文件绝对路径
+     * @param filePath 发生变更的文件绝对路径；changeType 为 NeedsRescan 时是被监视的**目录**路径
      * @param changeType 变更事件类型
      * @note 回调在监听线程上执行，实现方不得在回调内阻塞过久或直接销毁监听器
      */
