@@ -2,6 +2,8 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/FileSystem.h
         ${CMAKE_CURRENT_LIST_DIR}/FileSystem.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/FileBasicInfo.h
+        ${CMAKE_CURRENT_LIST_DIR}/FileBasicInfo.cpp
         ${CMAKE_CURRENT_LIST_DIR}/AtomicFileWriter.h
         ${CMAKE_CURRENT_LIST_DIR}/AtomicFileWriter.cpp
         ${CMAKE_CURRENT_LIST_DIR}/FileWatcher.h

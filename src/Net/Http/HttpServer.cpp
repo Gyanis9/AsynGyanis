@@ -11,6 +11,7 @@
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpSession.h"
 #include "Net/Http2/Http2Session.h"
+#include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <array>
@@ -273,21 +274,6 @@ namespace AsynGyanis::Net
             }
             value = parsedValue;
             return true;
-        }
-
-        /**
-         * @brief 把文件系统时间折算成 system_clock 时间点
-         * @details file_time_type 的纪元由实现决定（MSVC 为 1601-01-01，libstdc++ 为 1970-01-01），
-         *          与 system_clock 不同源，不能直接当秒数相加；用「同一瞬间两个 now() 的差值」
-         *          折算，可移植地绕开 std::chrono::clock_cast 的可用性问题。
-         * @param fileTime 文件系统时间
-         * @return 对应的 system_clock 时间点
-         */
-        std::chrono::system_clock::time_point toSystemClockTime(const std::filesystem::file_time_type fileTime)
-        {
-            const std::filesystem::file_time_type fileNow = std::filesystem::file_time_type::clock::now();
-            const std::chrono::system_clock::time_point systemNow = std::chrono::system_clock::now();
-            return std::chrono::time_point_cast<std::chrono::system_clock::duration>(systemNow + (fileTime - fileNow));
         }
 
         /**
@@ -622,28 +608,22 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            std::error_code statusError;
-            // 元数据（类型/大小/修改时间）每请求现读，共 2~3 次 stat 系统调用，且随后 mmap 的文件
-            // 首触还会产生缺页——都发生在事件循环线程上。这是静态文件服务的固有代价（nginx 同形态），
-            // 消除它需要一层「路径 → 元数据」缓存并配失效策略（交给 file watcher 或 TTL），
-            // 在实测表明它成为瓶颈之前不做：缓存失效写错会把「文件更新后仍旧 ETag」变成真缺陷
-            if (!std::filesystem::is_regular_file(candidatePath, statusError) || statusError)
+            // 元数据（类型/大小/修改时间）每请求现读，但只读一次：一次底层查询同时给出三样，
+            // 逐项取值与 std::filesystem 的那三个函数一致。随后 mmap 的文件首触仍会产生缺页，
+            // 这是静态文件服务的固有代价（nginx 同形态）。要连这份现读一起消掉得加一层
+            // 「路径 → 元数据」缓存并配失效策略（交给 file watcher 或 TTL），实测表明它成为瓶颈
+            // 之前不做：缓存失效写错会把「文件更新后仍旧 ETag」变成真缺陷
+            const std::optional<Platform::FileBasicInfo> fileBasicInfo = Platform::queryFileBasicInfo(candidatePath);
+            if (!fileBasicInfo.has_value() || !fileBasicInfo->isRegularFile)
             {
-                // 不存在、是目录、是设备文件，或 stat 失败：一律 404，避免把目录结构泄露给探测者
+                // 不存在、是目录、是设备文件，或查询本身失败：一律 404，避免把目录结构泄露给探测者
                 response.setStatus(404);
                 response.setBody("Not Found");
                 response.setHeader("content-type", "text/plain");
                 co_return;
             }
 
-            const std::uintmax_t fileSize = std::filesystem::file_size(candidatePath, statusError);
-            if (statusError)
-            {
-                response.setStatus(500);
-                response.setBody("Internal Server Error");
-                response.setHeader("content-type", "text/plain");
-                co_return;
-            }
+            const std::uintmax_t fileSize = fileBasicInfo->sizeBytes;
 
             // 内存保护：超限的大文件不映射，也不给半截正文
             if (fileSize > kMaximumStaticFileSize)
@@ -654,20 +634,10 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            std::error_code metadataError;
-            const std::filesystem::file_time_type lastWriteFileTime = std::filesystem::last_write_time(candidatePath, metadataError);
-            if (metadataError)
-            {
-                // 取不到修改时间就给不出可用的验证器，按服务端故障收口，而不是发一条没有 Last-Modified 的响应
-                response.setStatus(500);
-                response.setBody("Internal Server Error");
-                response.setHeader("content-type", "text/plain");
-                co_return;
-            }
-
-            // 验证器：Last-Modified 由文件系统时间折算到 system_clock，ETag 由「大小 + 修改时间整秒」构出
-            const std::chrono::system_clock::time_point lastWriteTimePoint = toSystemClockTime(lastWriteFileTime);
-            const std::int64_t lastWriteSeconds = std::chrono::duration_cast<std::chrono::seconds>(lastWriteTimePoint.time_since_epoch()).count();
+            // 验证器：ETag 由「大小 + 修改时间整秒」构出，Last-Modified 由同一个整秒格式化而来。
+            // 三样取自同一次查询，因此大小与修改时间必然描述同一个版本；分三次查时中间被改过
+            // 就会拼出一对来自不同版本的验证器，那才是原先两处 500 分支想挡的东西
+            const std::int64_t lastWriteSeconds = fileBasicInfo->lastWriteSeconds;
             const std::string entityTagText = makeStrongEtag(fileSize, lastWriteSeconds);
             const std::string lastModifiedText = formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)));
             const std::string mimeType = FileSender::contentTypeForFile(candidatePath.string());

@@ -6,6 +6,7 @@ target_link_libraries(microbench PRIVATE
         Base
         Core
         Net
+        Platform
 )
 
 target_include_directories(microbench PRIVATE

@@ -15,6 +15,7 @@ add_executable(TestPlatform
         IO/TestMemoryMappedFile.cpp
 
         FileSystem/TestFileSystem.cpp
+        FileSystem/TestFileBasicInfo.cpp
         FileSystem/TestAtomicFileWriter.cpp
         FileSystem/TestFileWatcher.cpp
 

@@ -16,6 +16,7 @@
     "hpack-encode 一项在 2026-09-20 随「静态表改同名段二分」重测（756.1 → 527.3 ns），其余各项仍是 2026-09-13/09-20 那批读数；跨项比较前先看清各自的重测时间。",
     "h3-head-collect-* 两例是 h3 响应头采集器两种走法的消融对照（2026-09-21 新增，950.4 → 375.7 ns）：两例每轮开头都做同一次 setHeader 把单值视图标脏，这份共同开销不参与差异。",
     "qpack-encode / qpack-decode 两例在 2026-09-21 纳入门禁：输入刻意取三项全命中 QPACK 静态表的字段行，一次动态表插入都不产生——否则会留下永不确认的段与引用，量的就不是稳态。h3 一条响应的头块编码 144 ns、解码 257 ns，都不在瓶颈上。",
+    "file-meta-* 两例是静态文件每请求读元数据的两种走法（2026-09-21 新增，27871.3 → 9000.9 ns）：量的是系统调用与内核路径，绝对值天然比同批其它用例高两个数量级，别拿它跟纯用户态的读写路径横向比。",
     "http-date-format 在 2026-09-20 随「定长文本手工拼装（不再走 std::format）」重测（260.9 → 47.3 ns）；新增 http-date-now 一例量 Date 头的实际每条代价（按秒缓存，16.7 ns），与 http-date-format 的差就是「每条响应都重算」的浪费。"
   ],
   "benchmarks": {
@@ -106,6 +107,24 @@
       "observedNanosecondsRange": [
         94.3,
         94.8
+      ],
+      "runsMeasured": 3
+    },
+    "file-meta-three-queries": {
+      "throughputPerSecond": 35879,
+      "nanosecondsPerOperation": 27871.3,
+      "observedNanosecondsRange": [
+        27294.6,
+        28655.7
+      ],
+      "runsMeasured": 3
+    },
+    "file-meta-single-probe": {
+      "throughputPerSecond": 111100,
+      "nanosecondsPerOperation": 9000.9,
+      "observedNanosecondsRange": [
+        8627.6,
+        9229.2
       ],
       "runsMeasured": 3
     },

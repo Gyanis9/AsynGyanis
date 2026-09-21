@@ -24,16 +24,19 @@
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Platform/FileSystem/FileBasicInfo.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -479,6 +482,39 @@ int main(int argumentCount, char **argumentValues)
                 return outboundBuffer.size();
             },
             results, checksum, failureCount);
+
+    // 静态文件每请求的元数据读取：三项分三样查（各开一次路径）还是一次查完。
+    // 两侧读同一个临时文件，指纹不同也无妨——量的是取到这些数要付多少系统调用
+    const std::filesystem::path metadataProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-meta.txt";
+    {
+        std::ofstream probeFile(metadataProbePath, std::ios::binary | std::ios::trunc);
+        probeFile << "0123456789";
+    }
+    measureCase(
+            "file-meta-three-queries",
+            [&metadataProbePath]
+            {
+                std::error_code errorCode;
+                std::size_t fingerprint = std::filesystem::is_regular_file(metadataProbePath, errorCode) ? 1U : 0U;
+                fingerprint += static_cast<std::size_t>(std::filesystem::file_size(metadataProbePath, errorCode));
+                const std::filesystem::file_time_type lastWriteTime = std::filesystem::last_write_time(metadataProbePath, errorCode);
+                fingerprint += static_cast<std::size_t>(lastWriteTime.time_since_epoch().count() >> 7);
+                return errorCode ? std::size_t{0} : fingerprint;
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "file-meta-single-probe",
+            [&metadataProbePath]
+            {
+                const std::optional<Platform::FileBasicInfo> info = Platform::queryFileBasicInfo(metadataProbePath);
+                if (!info.has_value() || !info->isRegularFile)
+                {
+                    return std::size_t{0};
+                }
+                return info->sizeBytes + static_cast<std::size_t>(info->lastWriteSeconds >> 7);
+            },
+            results, checksum, failureCount);
+    std::filesystem::remove(metadataProbePath);
 
     measureCase(
             "hpack-decode",
