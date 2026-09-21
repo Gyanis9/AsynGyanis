@@ -151,9 +151,15 @@ def make_server_text_frame(payload):
     return header + payload
 
 
-def make_quic_configuration():
-    """客户端 QUIC 配置：ALPN 与证书校验口径全在这一处。"""
+def make_quic_configuration(idle_timeout_seconds=None):
+    """客户端 QUIC 配置：ALPN 与证书校验口径全在这一处。
+
+    :param idle_timeout_seconds: 客户端侧的空闲上限；不给就用 aioquic 的默认值。
+        压测要「晾着连接让服务端自己收口」时会把它调小，让两端都在几秒内收掉。
+    """
     configuration = QuicConfiguration(is_client=True, alpn_protocols=H3_ALPN)
+    if idle_timeout_seconds is not None:
+        configuration.idle_timeout = idle_timeout_seconds
     # 仓库内的自签证书：验收只关心协议互通，不校验链
     configuration.verify_mode = ssl.CERT_NONE
     # ASYN_H3_QLOG 给一个目录就把每一帧的收发都落盘（aioquic 自带 qlog）：验收失败时用它看清楚
