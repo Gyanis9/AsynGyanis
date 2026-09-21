@@ -1,6 +1,8 @@
 // AtomicFileWriter 单元测试：原子写、父目录创建、失败路径与残留清理
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
+#include "Platform/System/ProcessInfo.h"
+
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -138,5 +140,29 @@ namespace AsynGyanis::Platform
         // 不传错误输出参数时失败也不应崩溃
         EXPECT_NO_THROW((void)AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}));
         EXPECT_FALSE(AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}));
+    }
+
+    /**
+     * @brief 钉住：临时文件名带进程号，跨进程并发写同一目标不会撞进同一个 .tmp
+     * @details 只有进程内计数器时，两个进程各自从 0 开始算出同一个 `.tmp.0`，于是两个写者
+     *          交叉写同一份临时文件、再把夹杂内容 rename 成目标——「各写各的临时文件」恰好在
+     *          跨进程发布这条路上失效。这里从失败路径的回显里读名字：把父目录位置摆一个普通
+     *          文件，打开临时文件必然失败，报错文案带出完整的临时路径。
+     * @note 钉的是「名字里有进程号」这一条足以分开跨进程的性质；两个真实进程同时写这种
+     *       端到端形状要起子进程且时序敏感，不放进本用例。
+     */
+    TEST(AtomicFileWriter, NamesTheTemporaryFileAfterTheCurrentProcess)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("AtomicWriter_TempName");
+        const std::filesystem::path           blockingFile = temporaryDirectory.path() / "blocker3";
+
+        std::string error;
+        ASSERT_TRUE(AtomicFileWriter::writeText(blockingFile, "x", {}, &error)) << error;
+
+        error.clear();
+        EXPECT_FALSE(AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}, &error));
+        const std::string expectedMarker = ".tmp." + std::to_string(ProcessInfo::currentProcessId());
+        EXPECT_NE(error.find(expectedMarker), std::string::npos)
+                << "临时名里没有进程号，跨进程并发写会共用同一个 .tmp：" << error;
     }
 } // namespace AsynGyanis::Platform

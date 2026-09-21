@@ -1,6 +1,7 @@
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
 #include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <atomic>
 #include <cstdint>
@@ -83,11 +84,14 @@ namespace AsynGyanis::Platform
             }
         }
 
-        // 临时名带上进程内计数器：并发写同一目标时各写各的临时文件，
-        // 不会出现「两个写者交叉写同一个 .tmp、再把夹杂内容 rename 成目标」的情形
+        // 临时名同时带上进程号与进程内计数器。只有计数器是不够的：它是进程内的，两个进程
+        // 并发写同一目标会各自从 0 开始算出同一个 `.tmp.0`，于是「各写各的临时文件」这件事
+        // 恰好在最需要它的跨进程发布场景里失效——两个写者交叉写同一个 .tmp，再把夹杂内容
+        // rename 成目标。进程号在同一台机器上同时存活的进程之间唯一，配上计数器两个维度都分开
         static std::atomic<std::uint32_t> temporaryFileCounter{0};
-        const std::filesystem::path       temporaryPath =
-                targetPath.string() + ".tmp." + std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed));
+        const std::filesystem::path       temporaryPath = targetPath.string() + ".tmp." +
+                                                    std::to_string(ProcessInfo::currentProcessId()) + "." +
+                                                    std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed));
 
         {
             std::ofstream temporaryFile(temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc);
