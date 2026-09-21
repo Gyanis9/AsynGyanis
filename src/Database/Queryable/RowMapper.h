@@ -18,6 +18,7 @@
 #include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/TableSchema.h"
 
+#include <array>
 #include <charconv>
 #include <cstdint>
 #include <limits>
@@ -306,16 +307,16 @@ namespace AsynGyanis::Database::Queryable
     namespace Detail
     {
         /**
-         * @brief 把当前行的一列赋值给结构体的对应成员
+         * @brief 把结构体一列在结果集中的下标解析出来（找不到列即抛，不改动成员）
          * @tparam T 结构体类型
          * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
-         * @param mappedRow 目标结构体，成员的赋值目标
-         * @param columnDescriptor 列的元信息（列名 + 成员指针）
-         * @param result 结果集，游标须已停在有效行上
-         * @throws RowMappingException 列不存在或类型不匹配
+         * @param result 结果集
+         * @param columnDescriptor 列的元信息（列名用于定位）
+         * @return std::size_t 该列在结果集中的下标
+         * @throws RowMappingException 列不存在
          */
         template<typename T, typename ColumnDescriptorType>
-        void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, const DatabaseResult &result)
+        [[nodiscard]] std::size_t resolveColumnIndex(const DatabaseResult &result, const ColumnDescriptorType &columnDescriptor)
         {
             // 按列名解析下标：结果集的列顺序由 SELECT 列表决定，与结构体声明顺序无关，
             // 因此不能按下标硬编码，否则一旦查询换列就会整体错位
@@ -326,13 +327,61 @@ namespace AsynGyanis::Database::Queryable
                                           std::string(columnDescriptor.columnName) + "\"（表 " +
                                           std::string(TableSchema<T>::kTableName) + "）");
             }
+            return columnIndex.value();
+        }
 
-            const DatabaseValue cellValue = result.getValue(columnIndex.value());
+        /**
+         * @brief 用已解析好的下标把当前行的一列赋值给结构体的对应成员
+         * @tparam T 结构体类型
+         * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
+         * @param mappedRow 目标结构体，成员的赋值目标
+         * @param columnDescriptor 列的元信息（成员指针 + 列名）
+         * @param result 结果集，游标须已停在有效行上
+         * @param columnIndex 该列在结果集中的下标（由 resolveColumnIndex 一次性解析）
+         * @throws RowMappingException 类型不匹配
+         */
+        template<typename T, typename ColumnDescriptorType>
+        void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, const DatabaseResult &result,
+                          const std::size_t columnIndex)
+        {
+            const DatabaseValue cellValue = result.getValue(columnIndex);
 
             using MemberType                            = typename ColumnDescriptorType::MemberType;
             mappedRow.*(columnDescriptor.memberPointer) = convertDatabaseValue<MemberType>(cellValue, columnDescriptor.columnName);
         }
 
+        /**
+         * @brief 一次性解析结构体全部列在结果集中的下标（列结构对整个结果集不变，供逐行复用）
+         * @tparam T 结构体类型
+         * @tparam IndexPositions kColumns 的下标序列
+         * @param result 结果集
+         * @return std::array<std::size_t, sizeof...(IndexPositions)> 与 kColumns 同序的下标表
+         * @throws RowMappingException 任一列不存在（按 kColumns 顺序报告第一个缺失列）
+         */
+        template<typename T, std::size_t... IndexPositions>
+        [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolveColumnIndices(const DatabaseResult &result,
+                                                                                              std::index_sequence<IndexPositions...>)
+        {
+            return { resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))... };
+        }
+
+        /**
+         * @brief 用已解析的下标表把当前行逐列映射进结构体
+         * @tparam T 结构体类型
+         * @tparam IndexPositions kColumns 的下标序列
+         * @param mappedRow 目标结构体
+         * @param result 结果集，游标须已停在有效行上
+         * @param columnIndices 与 kColumns 同序的下标表
+         * @throws RowMappingException 类型不匹配
+         */
+        template<typename T, std::size_t... IndexPositions>
+        void assignRowFromIndices(T &mappedRow, const DatabaseResult &result,
+                                  const std::array<std::size_t, sizeof...(IndexPositions)> &columnIndices,
+                                  std::index_sequence<IndexPositions...>)
+        {
+            // 折叠表达式逐个赋值：逗号运算符保证从左到右按 kColumns 顺序执行
+            (assignColumn<T>(mappedRow, std::get<IndexPositions>(TableSchema<T>::kColumns), result, columnIndices[IndexPositions]), ...);
+        }
     } // namespace Detail
 
     /**
@@ -359,13 +408,11 @@ namespace AsynGyanis::Database::Queryable
 
         T mappedRow{};
 
-        std::apply(
-                [&mappedRow, &result](const auto &... columnDescriptors)
-                {
-                    // 折叠表达式逐个赋值：逗号运算符保证从左到右按 kColumns 顺序执行
-                    (Detail::assignColumn<T>(mappedRow, columnDescriptors, result), ...);
-                },
-                TableSchema<T>::kColumns);
+        // 列下标只解析一次，逐列赋值复用同一张表（columnIndex 在某些驱动里是线性扫列名）
+        constexpr std::size_t columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)> >;
+        const std::array<std::size_t, columnCount> columnIndices =
+                Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
+        Detail::assignRowFromIndices<T>(mappedRow, result, columnIndices, std::make_index_sequence<columnCount>{});
 
         return mappedRow;
     }
@@ -384,6 +431,13 @@ namespace AsynGyanis::Database::Queryable
     template<RowMappable T>
     [[nodiscard]] std::vector<T> mapResultRows(DatabaseResult &result)
     {
+        // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯
+        static_assert(Detail::allColumnTypesSupported<T>(),
+                      "RowMapper：TableSchema<T>::kColumns 中存在不支持的列类型。"
+                      "仅支持整型、bool、浮点、std::string、二进制载荷"
+                      "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                      "以及它们的 std::optional 包装");
+
         std::vector<T> mappedRows;
 
         // rowCount() 只在驱动能预知总行数时才有意义（SQLite 对只读语句会预扫描），
@@ -393,9 +447,22 @@ namespace AsynGyanis::Database::Queryable
             mappedRows.reserve(knownRowCount);
         }
 
+        // 结果集的列结构对全部行固定不变，故列下标只在第一行解析一次并复用：
+        // 部分驱动的 columnIndex 是线性扫列名，逐行重解会让整表映射退化成 O(行数 × 列数²)。
+        // 留到第一行才解析（而非进循环前），是为了保住「空结果集即使列缺失也不抛、只返回空向量」的既有语义
+        constexpr std::size_t columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)> >;
+        std::array<std::size_t, columnCount> columnIndices{};
+        bool isColumnIndicesResolved = false;
         while (result.next())
         {
-            mappedRows.push_back(mapResultRow<T>(result));
+            if (!isColumnIndicesResolved)
+            {
+                columnIndices = Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
+                isColumnIndicesResolved = true;
+            }
+            T mappedRow{};
+            Detail::assignRowFromIndices<T>(mappedRow, result, columnIndices, std::make_index_sequence<columnCount>{});
+            mappedRows.push_back(std::move(mappedRow));
         }
 
         return mappedRows;
