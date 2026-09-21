@@ -26,6 +26,7 @@
 
 import argparse
 import ctypes
+import gzip
 import json
 import os
 import socket
@@ -261,6 +262,66 @@ def runProtocolChecks(host: str, port: int) -> int:
     print(f"  HEAD / -> {status}，content-length={declared}，正文按约定不下发")
     failures += 0 if status in (200, 405) else 1
     probe.close()
+
+    return failures
+
+
+def runCompressionCheck(host: str, port: int) -> int:
+    """响应压缩的端到端验收：同一份大正文带与不带 Accept-Encoding 各要一次，解压后逐字节比对。
+
+    判据要能在两种服务端配置下都成立：没开 --compress 时 gzip 那次拿回未压缩正文，
+    属于「本阶段无从判定」，按跳过说明原因，不给假绿；而 `gzip;q=0` 是明确拒绝，
+    任何配置下都必须原样发正文，这一条始终要成立。
+    """
+    print("== 阶段：响应压缩协商 ==")
+    failures = 0
+
+    def fetch(acceptEncoding: bytes):
+        probe = socket.create_connection((host, port), timeout=10)
+        try:
+            probe.sendall(b"GET /big HTTP/1.1\r\nHost: x\r\nAccept-Encoding: " + acceptEncoding +
+                          b"\r\nConnection: close\r\n\r\n")
+            status, headers, body, _ = readResponse(probe, b"")
+        finally:
+            probe.close()
+        if status != 200:
+            raise ValueError(f"/big 状态码 {status}，期望 200")
+        return headers, body
+
+    plainHeaders, plainBody = fetch(b"identity")
+    if plainHeaders.get(b"content-encoding") is not None:
+        print("  identity 请求被压了：明确不接受编码时必须原样发正文")
+        failures += 1
+    declaredLength = int(plainHeaders.get(b"content-length", b"-1"))
+    if declaredLength != len(plainBody):
+        print(f"  未压缩正文 content-length 声明 {declaredLength} 实收 {len(plainBody)}")
+        failures += 1
+    print(f"  identity -> 未压缩正文 {len(plainBody)} 字节")
+
+    gzipHeaders, gzipBody = fetch(b"gzip")
+    if gzipHeaders.get(b"content-encoding") != b"gzip":
+        print("  跳过 gzip 一致性比对：服务端未启用压缩中间件（启动时加 --compress 才会压）")
+    else:
+        restored = gzip.decompress(gzipBody)
+        if restored != plainBody:
+            print(f"  解压后与未压缩正文不一致：{len(restored)} / {len(plainBody)} 字节")
+            failures += 1
+        elif "accept-encoding" not in gzipHeaders.get(b"vary", b"").decode().lower():
+            # 只在真压了的时候才要 vary：它的作用就是告诉缓存「换编码要给不同副本」
+            print(f"  压缩响应缺 accept-encoding 的 Vary：中间缓存会把两种表示当成同一份，got {gzipHeaders.get(b'vary')!r}")
+            failures += 1
+        else:
+            print(f"  gzip -> {len(gzipBody)} 字节，解压后与未压缩正文逐字节相同，Vary 已带 accept-encoding")
+
+    rejectedHeaders, rejectedBody = fetch(b"gzip;q=0")
+    if rejectedHeaders.get(b"content-encoding") is not None:
+        print(f"  gzip;q=0 被当成接受（实际 {rejectedHeaders.get(b'content-encoding')!r}）：q=0 是明确拒绝")
+        failures += 1
+    elif rejectedBody != plainBody:
+        print("  gzip;q=0 的正文与未压缩正文不一致")
+        failures += 1
+    else:
+        print("  gzip;q=0 -> 原样发未压缩正文")
 
     return failures
 
@@ -605,6 +666,7 @@ def main() -> int:
     if not arguments.skip_load_stages:
         try:
             failures += runProtocolChecks(arguments.host, arguments.port)
+            failures += runCompressionCheck(arguments.host, arguments.port)
             keepAliveFailures, keepAliveSummary = runKeepAliveLoad(
                     arguments.host, arguments.port, 8, 8, arguments.keepalive_rounds)
             failures += keepAliveFailures
