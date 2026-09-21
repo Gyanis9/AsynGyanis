@@ -1207,6 +1207,12 @@ namespace AsynGyanis::Net
         }
         peer.markClosed();
 
+        // 收口与 h1 阶段同一顺序（先唤醒再销毁）：业务可能正挂在 receive() 上，而 markClosed() 有意不唤醒它。
+        // 随后等它跑完自己的收尾，本帧才结束——直接往下走会让业务帧随本帧一起销毁（Task 的析构无条件
+        // destroy()），它 receive() 之后的代码全部丢失，而任何已投递给循环的恢复动作会指向已释放的帧
+        peer.wakeDeliveryWaiter();
+        co_await businessTask;
+
         // 本侧方向到此结束：零长 DATA 带 END_STREAM（对端据此知道隧道的这一半关完了）
         std::string endStreamErrorText;
         const Http2ResponseSendStatus endStatus = m_connection.sendResponseData(streamId, std::string_view{}, true, &endStreamErrorText);

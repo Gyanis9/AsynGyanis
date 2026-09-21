@@ -1216,6 +1216,74 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：隧道提前结束（对端直接断开）时业务处理器要被等完，而不是随隧道帧一起销毁
+     * @details 判据与 h1 的收口同一条（HttpSession.h「先唤醒再销毁」那段）：处理器挂在 receive() 上时，
+     *          隧道循环因传输层不可用退出后必须唤醒它并等它跑完自己的收尾。直接 co_return 会让业务帧
+     *          随本帧一起销毁（Task 的析构无条件 destroy()），等待之后的代码全部丢失，而任何已经投递给
+     *          事件循环的恢复动作会指向已释放的帧。
+     * @note 时序不靠运气：升级应答在启动业务协程之前就已 flush，服务端在处理对端 FIN 时必然已经走到
+     *       receive() 的挂起点，因此这条用例要么钉住「等完」，要么钉住「丢弃」，不会两头跑
+     */
+    TEST(Http2CleartextSession, AwaitsBusinessHandlerWhenTunnelEndsAbruptly)
+    {
+        std::atomic<bool> isHandlerResumed{false};
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                                         [&isHandlerResumed](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/chat", [&isHandlerResumed](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                             {
+                                                 response.upgradeToWebSocket([&isHandlerResumed](WebSocketPeer &peer) -> Core::Task<>
+                                                 {
+                                                     // 不等对端发帧：让隧道在业务正挂着的时候被拆掉
+                                                     static_cast<void>(co_await peer.receive());
+                                                     isHandlerResumed.store(true);
+                                                     co_return;
+                                                 });
+                                                 co_return;
+                                             });
+                                         },
+                                         HttpParserLimits{}, [](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "扩展 CONNECT 没有得到应答";
+
+        // 不发任何隧道帧、也不走关闭握手：直接收掉客户端连接，让隧道的读循环拿到「传输层已不可用」
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_TRUE(isHandlerResumed.load()) << "业务处理器挂在 receive() 上就被连帧一起销毁了：隧道收尾要先唤醒再等它跑完";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：扩展 CONNECT 用了本端未实现的 :protocol 时回 501（而不是当未知方法回 404/405），且连接照旧可用
      */
     TEST(Http2CleartextSession, Answers501ForUnsupportedConnectProtocol)
