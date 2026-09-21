@@ -5,6 +5,11 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Router.h"
+#include "Net/Http3/Http3Frame.h"
+#include "Net/Http3/Qpack.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/Socket.h"
@@ -155,6 +160,9 @@ namespace AsynGyanis::Net
                 parameters.initial_max_data                    = 256 * 1024;
                 parameters.initial_max_stream_data_bidi_local  = 4 * 1024;
                 parameters.initial_max_stream_data_uni         = 4 * 1024;
+                // 服务端接上路由器后要开三条单向流（控制流 + QPACK 编/解码流）才建得起 HTTP/3
+                // 会话，额度为 0 时会话直接判「不可用」，连接随即被收口：一条请求都派不出去
+                parameters.initial_max_streams_uni             = 3;
                 settings.initial_ts = currentTimestamp();
 
                 fillRandomConnectionId(m_destinationConnectionId);
@@ -839,6 +847,87 @@ namespace AsynGyanis::Net
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         }
         EXPECT_EQ(server.sampleConnectionCount(), 0U) << "在途动作结束后连接没有被摘除";
+    }
+
+
+    /**
+     * @brief 钉住：连接被空闲收口时，还挂在正文上的 h3 处理器要醒来收尾，会话之后才被摘掉
+     * @details 对端不再发任何报文 → 连接级空闲超时把连接收掉。这条路径上没有逐流的 RST，
+     *          所以会话不会经由「对端取消」那条既有的收口口子里得到通知：处理器挂在
+     *          `bodyStream()->readNext()` 上的帧若随会话一起销毁，它等待之后的代码全不执行，
+     *          而任何已经投回循环的恢复动作会指向已释放的帧（外置到工作线程的响应压缩正是这样一个唤醒者）。
+     *          判据两条：处理器跑到收尾、连接连同会话最终被摘除（后者同时防「为了不等业务而漏摘」）
+     */
+    TEST(QuicServer, WakesPendingHandlersWhenConnectionIsReapedByIdleTimeout)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        std::atomic<bool> isHandlerEntered{false};
+        std::atomic<bool> isHandlerFinished{false};
+
+        Router router;
+        router.postStreaming("/upload",
+                             [&isHandlerEntered, &isHandlerFinished](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerEntered.store(true, std::memory_order_release);
+                                 // 正文声明了 4 字节而客户端只发头部：这里必然挂起等下一段字节
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 isHandlerFinished.store(true, std::memory_order_release);
+                                 response.setStatus(204);
+                                 co_return;
+                             });
+
+        // 空闲 1 秒：客户端停手后连接很快被服务端自己收掉（远早于 10 秒级的正文读超时，
+        // 因此这条用例走的是「连接没了」而不是「这条流超时了」）
+        RunningQuicServer server(std::chrono::seconds{1});
+        ASSERT_NE(server.listeningPort(), 0);
+        server.server().setRouter(router);
+
+        std::vector<QpackHeaderField> fieldLines = {
+                QpackHeaderField{":method", "POST"},
+                QpackHeaderField{":scheme", "https"},
+                QpackHeaderField{":authority", "example.com"},
+                QpackHeaderField{":path", "/upload"},
+                QpackHeaderField{"content-length", "4"},
+        };
+        std::string headerBlock;
+        std::string encoderStreamBytes;
+        QpackEncoder encoder(0, 0, 0);
+        ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_TRUE(encoderStreamBytes.empty()) << "只用字面量编码就不该产生 QPACK 编码器指令";
+
+        Http3HeadersFrame headersFrame;
+        headersFrame.encodedFieldSection =
+                std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
+        std::string requestBytes;
+        appendHttp3Frame(requestBytes, headersFrame);
+        const std::span<const std::uint8_t> requestPayload(
+                reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size());
+
+        QuicTestClient client;
+        ASSERT_TRUE(client.initialize(makeServerAddress(server.listeningPort())));
+        ASSERT_TRUE(pumpUntil(client, [&client] { return client.isHandshakeCompleted(); })) << "握手没有完成";
+        ASSERT_TRUE(client.openStreamAndQueuePayload(requestPayload)) << "流没有开出来";
+        ASSERT_TRUE(pumpUntil(client, [&isHandlerEntered] { return isHandlerEntered.load(std::memory_order_acquire); }))
+                << "服务端没有把这条请求派发给流式正文处理器，此时在线连接数=" << server.sampleConnectionCount();
+
+        // 此后不再替客户端发任何报文：连接静默 → 服务端按空闲上限收口
+        const auto finishDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (!isHandlerFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < finishDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        EXPECT_TRUE(isHandlerFinished.load(std::memory_order_acquire))
+                << "连接被收口时没唤醒挂在正文上的处理器：它的帧被连会话一起销毁了";
+
+        const auto reapDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (server.sampleConnectionCount() != 0 && std::chrono::steady_clock::now() < reapDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        EXPECT_EQ(server.sampleConnectionCount(), 0U) << "会话收口后连接没有被摘除（在途动作的账没还干净）";
     }
 
 

@@ -536,6 +536,19 @@ namespace AsynGyanis::Net
                     ++iterator;
                     continue;
                 }
+                // HTTP/3 会话：传输层收口不逐条流发信号，挂在正文或隧道上的业务协程只能由这里叫醒。
+                // 摘掉会话等于把它们的协程帧一起销毁（等待之后的收尾代码就不再执行），所以先把账
+                // 清下去，再等它们跑完——本函数每拍重来一次，直到这条会话没有在途工作
+                if (Http3Session *const session = findHttp3Session(iterator->second.get()); session != nullptr)
+                {
+                    session->abandonPendingStreams();
+                    if (session->hasOutstandingWork())
+                    {
+                        LOG_DEBUG_FMT("QuicServer: 连接已收口但 h3 业务协程还没跑完，推迟摘除");
+                        ++iterator;
+                        continue;
+                    }
+                }
                 // 还有协程拿着它（收报文路径或定时循环正停在它的某个 co_await 上）：此刻销毁，
                 // 那条协程恢复后手里的引用与迭代器就是悬垂的。推迟到它的在途动作结束——下一次
                 // 收报文或下一次清扫节拍会回到这里（两条路径都在收尾处调本函数）

@@ -209,6 +209,15 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool hasOutstandingWork() const noexcept;
 
+        /**
+         * @brief 承载连接已经没了：收掉本会话所有还没答完的流，并叫醒挂在上面的业务协程
+         * @details 传输层按空闲上限收口时不逐条流发 RESET/STOP，本会话拿不到「这条流结束」的信号。
+         *          缺这一步，挂在 `readNext()` / `receive()` 上的协程帧会随会话一起被销毁，等待之后的
+         *          收尾永不执行；而已把恢复动作投回循环的在途等待（如外置到工作线程的响应压缩）会指向
+         *          已释放的帧。可重复调用：承载层每拍调一次，直到 `hasOutstandingWork()` 归零。
+         */
+        void abandonPendingStreams();
+
         // ---- 以下几项由 .cpp 里接连接层回调的转交（只收平类型，连接层的结构不外泄）----
 
         /**

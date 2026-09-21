@@ -251,6 +251,69 @@ namespace AsynGyanis::Net
                !m_pendingTunnelStreamsEnded.empty();
     }
 
+    void Http3Session::abandonPendingStreams()
+    {
+        if (m_connection == nullptr)
+        {
+            return;
+        }
+
+        // 上一拍之后才跑完的记录先摘掉：这条连接已经不会再有报文进来，替它们收尾的只有本函数
+        // （承载层是每拍调一次，直到 hasOutstandingWork() 归零才把连接摘除）
+        reapFinishedStreamingRequests();
+        reapFinishedTunnels();
+
+        // 每条还没答完的流都走与「对端取消」同一个回收口子（dropRequest），差别只在不发
+        // RESET/STOP：连接已经没了，那些帧无处可去。这里先攒齐流号再逐条摘——dropRequest 会动这些容器
+        std::vector<std::int64_t> streamIds;
+        for (const auto &entry: m_incomingRequests)
+        {
+            streamIds.push_back(entry.first);
+        }
+        for (const auto &entry: m_streamingRequests)
+        {
+            streamIds.push_back(entry.first);
+        }
+        for (const auto &entry: m_streamingResponses)
+        {
+            streamIds.push_back(entry.first);
+        }
+        for (const auto &entry: m_webSocketTunnels)
+        {
+            streamIds.push_back(entry.first);
+        }
+        for (const ReadyRequest &entry: m_readyRequests)
+        {
+            streamIds.push_back(entry.streamId);
+        }
+        for (const std::int64_t streamId: m_pendingTunnelStreams)
+        {
+            streamIds.push_back(streamId);
+        }
+        for (const std::int64_t streamId: m_pendingTunnelStreamsEnded)
+        {
+            streamIds.push_back(streamId);
+        }
+        // 同一条流可以同时出现在上面几张表里（隧道就同时有记录与待发字节）：去重后一次摘干净，
+        // 也让下面那句日志里的条数是真实条数
+        std::ranges::sort(streamIds);
+        streamIds.erase(std::ranges::unique(streamIds).begin(), streamIds.end());
+
+        if (!streamIds.empty())
+        {
+            LOG_WARN_FMT("Http3Session: 承载连接已收口，本会话 {} 条没答完的流被丢弃并叫醒业务协程", streamIds.size());
+        }
+        for (const std::int64_t streamId: streamIds)
+        {
+            dropRequest(streamId);
+        }
+
+        // dropRequest 只置标记、把唤醒推到安全点；本函数就在安全点上（承载层的收尾处），当场叫醒
+        wakeStreamingRequests();
+        resumeDeferredWaiters();
+        closeDeferredTunnels();
+    }
+
     void Http3Session::flushPendingStreamData()
     {
         if (m_connection == nullptr || m_isBroken)

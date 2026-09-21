@@ -956,6 +956,24 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 造一条带掩码的 WebSocket 文本帧
+     * @details 客户端→服务端的帧必须带掩码（RFC 6455 §5.3），测试侧自己拼一份比借用本端的编码器更独立
+     * @param textPayload 负载
+     * @param maskBytes 4 字节掩码
+     * @return std::vector<std::uint8_t> 帧字节（含首字节、长度、掩码与掩蔽后的负载）
+     */
+    std::vector<std::uint8_t> makeMaskedTextFrame(const std::string_view textPayload, const std::array<std::uint8_t, 4> &maskBytes)
+    {
+        std::vector<std::uint8_t> frame{0x81U, static_cast<std::uint8_t>(0x80U | textPayload.size())};
+        frame.insert(frame.end(), maskBytes.begin(), maskBytes.end());
+        for (std::size_t payloadIndex = 0; payloadIndex < textPayload.size(); ++payloadIndex)
+        {
+            frame.push_back(static_cast<std::uint8_t>(textPayload[payloadIndex]) ^ maskBytes[payloadIndex % maskBytes.size()]);
+        }
+        return frame;
+    }
+
+    /**
      * @brief 可重复头逐条上线，且整段字段行的次序就是业务的设置顺序
      * @details 单值视图是「一名一值」，可重复头只在 headerValues() 里逐条给出：采集时直接用视图，
      *          业务设的第二条 Cookie 会静默消失（h1/h2 都会发全）。按名回查虽然能把值取全，
@@ -1742,6 +1760,60 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 承载连接没了：还挂在 receive() 上的隧道业务要醒来收尾，会话随后才算空闲
+     * @details 传输层收口不会逐条流发信号，这条流上没有「对端取消」那一路通知；少了 abandon 这一步，
+     *          会话被摘掉时连着业务协程帧一起销毁，等待之后的收尾永不执行。第二次调用把「业务已跑完
+     *          且流已关闭」的记录摘走，承载层据此才敢收连接——两条断言分别钉住唤醒与收敛
+     */
+    TEST(Http3Session, WakesTunnelBusinessWhenTheCarryingConnectionIsGone)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        bool   isBusinessFinished = false;
+        Router router;
+        router.get("/chat",
+                   [&isBusinessFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [&isBusinessFinished](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   isBusinessFinished = true;
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        // 带一条帧而不带 END_STREAM：隧道建起来、业务读完这一条，然后挂在 receive() 上等下一条
+        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
+        const std::vector<CapturedStreamData> requestChunks =
+                peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        ASSERT_TRUE(session.hasOutstandingWork()) << "隧道没建起来，这条用例就没东西可唤醒";
+
+        session.abandonPendingStreams();
+        EXPECT_TRUE(isBusinessFinished) << "承载连接收口时没唤醒挂在 receive() 上的隧道业务";
+
+        session.abandonPendingStreams();
+        EXPECT_FALSE(session.hasOutstandingWork()) << "业务跑完后会话仍报「有在途工作」：承载层会一直不敢收这条连接";
+    }
+
+    /**
      * @brief 正文超出全局在途预算时回 503，且不交给业务（与 h1/h2 同一口径）
      */
     TEST(Http3Session, Answers503WhenInflightBodyBudgetIsExhausted)
@@ -1839,19 +1911,9 @@ namespace AsynGyanis::Net
 
         Http3ClientPeer peer;
         ASSERT_TRUE(peer.isUsable());
-        // 隧道建立后要发的帧：带掩码的文本帧（客户端帧必须带掩码，RFC 6455 §5.3）
+        // 隧道建立后要发的帧：带掩码的文本帧（构造器见 makeMaskedTextFrame）
         const std::string                 payload = "hello";
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
-        const auto                        makeMaskedTextFrame = [](const std::string_view textPayload, const std::array<std::uint8_t, 4> &maskBytes)
-        {
-            std::vector<std::uint8_t> frame{0x81U, static_cast<std::uint8_t>(0x80U | textPayload.size())};
-            frame.insert(frame.end(), maskBytes.begin(), maskBytes.end());
-            for (std::size_t payloadIndex = 0; payloadIndex < textPayload.size(); ++payloadIndex)
-            {
-                frame.push_back(static_cast<std::uint8_t>(textPayload[payloadIndex]) ^ maskBytes[payloadIndex % maskBytes.size()]);
-            }
-            return frame;
-        };
         const std::vector<std::uint8_t> firstFrameBytes = makeMaskedTextFrame(payload, mask);
         const std::string               webSocketFrameText(firstFrameBytes.begin(), firstFrameBytes.end());
 
