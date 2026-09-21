@@ -94,6 +94,34 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 复用流按消息复位：不得把上一条消息的字典带进下一条（no_context_takeover 契约）
+     * @details 实现改为复用 thread_local z_stream + 每条 deflateReset/inflateReset。若复位没清干净，
+     *          同一条 payload 的第二次压缩会因吃到上一条的字典而字节变短、或与第一次不一致，解压侧同理串消息。
+     *          这里把「复用 + 复位」钉成与「每条新建流」逐字节一致，正是这套复用最容易被破坏的不变式。
+     */
+    TEST(PerMessageDeflate, ReusesStreamAcrossMessagesWithoutContextTakeover)
+    {
+        const std::string repeated = "复用的 deflate 流不得把上一条的字典带进这一条：A/B/C 混排 + 空字节前的普通文本。";
+
+        const std::optional<std::string> first = deflateWebSocketMessage(repeated);
+        const std::optional<std::string> second = deflateWebSocketMessage(repeated);
+        ASSERT_TRUE(first.has_value());
+        ASSERT_TRUE(second.has_value());
+        EXPECT_EQ(*first, *second) << "同一条 payload 连续两次压缩必须逐字节一致（证明按消息复位、无上下文接管）";
+
+        // 交错压缩 + 解压多种长度（含空、含不可压），逐条往返一致，验证 inflate 侧复用同样不串
+        const std::vector<std::string> payloads{std::string("甲"), std::string(4096, 'x'), std::string(), std::string("tail")};
+        for (const std::string &payload: payloads)
+        {
+            const std::optional<std::string> compressed = deflateWebSocketMessage(payload);
+            ASSERT_TRUE(compressed.has_value());
+            const std::optional<std::string> restored = inflateWebSocketMessage(*compressed, 64 * 1024);
+            ASSERT_TRUE(restored.has_value());
+            EXPECT_EQ(*restored, payload);
+        }
+    }
+
+    /**
      * @brief 空消息也要能往返（线上负载是合法的压缩字节）
      */
     TEST(PerMessageDeflate, RoundTripsEmptyMessage)

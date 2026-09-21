@@ -25,6 +25,7 @@
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
@@ -874,6 +875,19 @@ int main(int argumentCount, char **argumentValues)
                 // POST 命中 /upload/:id 的流式路由 → true（非 0）；量的是「匹配但不收集参数」这条
                 return streamingRouter.hasStreamingRoute(Net::HttpMethod::POST, "/upload/42") ? std::size_t{1}
                                                                                               : std::size_t{0};
+            },
+            results, checksum, failureCount);
+
+    // WebSocket permessage-deflate 单条消息压缩：会话每发一条压缩消息都要走一次。改前每条都
+    // deflateInit2/End（重建约 240KB 内部状态，短消息上比压缩本身还贵），改后复用 thread_local 流、
+    // 每条 deflateReset。同一线程反复调用正落在复用路径上，量的就是稳态
+    const std::string wsDeflatePayload(1024, 'a');
+    measureCase(
+            "ws-deflate-message",
+            [&wsDeflatePayload]
+            {
+                const std::optional<std::string> compressed = Net::deflateWebSocketMessage(wsDeflatePayload);
+                return compressed.has_value() ? compressed->size() : std::size_t{0};
             },
             results, checksum, failureCount);
 

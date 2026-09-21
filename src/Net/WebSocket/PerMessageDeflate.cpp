@@ -22,6 +22,48 @@ namespace AsynGyanis::Net
         constexpr std::size_t kDeflateOutputHeadroomBytes = 64;
 
         /**
+         * @brief 本线程复用的压缩流：避免每条消息重建一次 deflate 状态
+         *
+         * @details 协商里两端都选了 `*_no_context_takeover`（每条消息不延续字典），这恰好等于
+         *          `deflateReset` 的语义——把流恢复到「刚 init 完」的状态，产出与「每条消息新建一条流」
+         *          逐字节一致，却免去每次 deflateInit2/End 重建约 200KB 内部状态（短消息上那比压缩本身还贵）。
+         *          thread_local 让每条事件循环线程各持一份，天然无跨线程共享；出错路径就地 End 并标记关闭，
+         *          下一次调用重新 init，绝不在可疑状态上继续复用。
+         */
+        struct ReusableDeflateStream
+        {
+            z_stream stream{};    ///< 复用的 deflate 流
+            bool isOpen{false};   ///< 是否已 init 且可复用（false 表示下次调用需重新 init）
+
+            ~ReusableDeflateStream()
+            {
+                // 线程退出时释放长期持有的 deflate 状态
+                if (isOpen)
+                {
+                    ::deflateEnd(&stream);
+                }
+            }
+        };
+
+        /**
+         * @brief 本线程复用的解压流与 16KiB 输出块缓冲，理由同 ReusableDeflateStream
+         */
+        struct ReusableInflateStream
+        {
+            z_stream stream{};       ///< 复用的 inflate 流
+            std::string chunk;       ///< 逐块解压用的暂存缓冲，容量跨消息保留
+            bool isOpen{false};      ///< 是否已 init 且可复用
+
+            ~ReusableInflateStream()
+            {
+                if (isOpen)
+                {
+                    ::inflateEnd(&stream);
+                }
+            }
+        };
+
+        /**
          * @brief 取下一个逗号分隔项并前移游标
          * @param text 全部分隔文本
          * @param offset 输入输出：当前游标
@@ -103,9 +145,25 @@ namespace AsynGyanis::Net
 
     std::optional<std::string> deflateWebSocketMessage(const std::string_view payload)
     {
-        z_stream stream{};
-        if (::deflateInit2(&stream, kWebSocketDeflateLevel, Z_DEFLATED, kRawDeflateWindowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        // 复用本线程的 deflate 流：见 ReusableDeflateStream 注释——no_context_takeover 下每条消息独立，
+        // deflateReset 即等价于「新建一条流」，却免去约 200KB 内部状态的反复重建
+        thread_local ReusableDeflateStream context;
+        if (!context.isOpen)
         {
+            if (::deflateInit2(&context.stream, kWebSocketDeflateLevel, Z_DEFLATED, kRawDeflateWindowBits, 8,
+                               Z_DEFAULT_STRATEGY) != Z_OK)
+            {
+                return std::nullopt;
+            }
+            context.isOpen = true;
+        }
+
+        z_stream &stream = context.stream;
+        // 每次使用前复位到「刚 init」的状态；复位失败说明流已不可信，关掉让下次重新 init
+        if (::deflateReset(&stream) != Z_OK)
+        {
+            ::deflateEnd(&stream);
+            context.isOpen = false;
             return std::nullopt;
         }
 
@@ -134,6 +192,7 @@ namespace AsynGyanis::Net
             if (result != Z_OK && result != Z_BUF_ERROR && result != Z_STREAM_END)
             {
                 ::deflateEnd(&stream);
+                context.isOpen = false;
                 return std::nullopt;
             }
 
@@ -146,17 +205,19 @@ namespace AsynGyanis::Net
             {
                 // 缓冲真的不够（理论上有余量就不该发生）：放弃压缩而不是发出半截流
                 ::deflateEnd(&stream);
+                context.isOpen = false;
                 return std::nullopt;
             }
         }
-
-        ::deflateEnd(&stream);
+        // 成功路径不再 deflateEnd：把流留给下一条消息 reset 复用（线程退出时由析构释放）
 
         // 输出必须真的以那四字节收尾：不是的话说明 zlib 行为与预期不符，宁可放弃压缩也不要发出
-        // 一段对端解不开的负载
+        // 一段对端解不开的负载；此刻流状态存疑，关掉让下次重新 init
         if (producedBytes < kDeflateTail.size() ||
             std::memcmp(output.data() + producedBytes - kDeflateTail.size(), kDeflateTail.data(), kDeflateTail.size()) != 0)
         {
+            ::deflateEnd(&stream);
+            context.isOpen = false;
             return std::nullopt;
         }
 
@@ -166,9 +227,22 @@ namespace AsynGyanis::Net
 
     std::optional<std::string> inflateWebSocketMessage(const std::string_view payload, const std::size_t maximumOutputBytes)
     {
-        z_stream stream{};
-        if (::inflateInit2(&stream, kRawDeflateWindowBits) != Z_OK)
+        // 与压缩侧对称：复用本线程的 inflate 流与块缓冲，每条消息前 inflateReset
+        thread_local ReusableInflateStream context;
+        if (!context.isOpen)
         {
+            if (::inflateInit2(&context.stream, kRawDeflateWindowBits) != Z_OK)
+            {
+                return std::nullopt;
+            }
+            context.isOpen = true;
+        }
+
+        z_stream &stream = context.stream;
+        if (::inflateReset(&stream) != Z_OK)
+        {
+            ::inflateEnd(&stream);
+            context.isOpen = false;
             return std::nullopt;
         }
 
@@ -181,7 +255,9 @@ namespace AsynGyanis::Net
         stream.avail_in = static_cast<uInt>(input.size());
 
         std::string output;
-        std::string chunk(kInflateChunkBytes, '\0');
+        // 块缓冲容量跨消息保留，省掉每条消息重填 16KiB；resize 到固定块大小供本轮写入
+        context.chunk.resize(kInflateChunkBytes);
+        std::string &chunk = context.chunk;
 
         while (true)
         {
@@ -192,6 +268,7 @@ namespace AsynGyanis::Net
             if (result != Z_OK && result != Z_STREAM_END && result != Z_BUF_ERROR)
             {
                 ::inflateEnd(&stream);
+                context.isOpen = false;
                 return std::nullopt;
             }
 
@@ -200,6 +277,7 @@ namespace AsynGyanis::Net
             if (maximumOutputBytes != 0 && output.size() + producedBytes > maximumOutputBytes)
             {
                 ::inflateEnd(&stream);
+                context.isOpen = false;
                 return std::nullopt;
             }
             output.append(chunk.data(), producedBytes);
@@ -214,8 +292,8 @@ namespace AsynGyanis::Net
                 break;
             }
         }
+        // 成功路径不再 inflateEnd：留给下一条消息 reset 复用
 
-        ::inflateEnd(&stream);
         return output;
     }
 } // namespace AsynGyanis::Net
