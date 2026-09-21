@@ -169,6 +169,112 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 归还多于账目时按 0 收住，预算不会被一次错账翻转成「放行一切」
+     * @details 旧写法是无符号 fetch_sub：多还一点就把账目绕成天文数字，而 tryReserve 判的是
+     *          「上限减当前值」——跟着回绕之后剩余额度变成巨大，限额这道防线当场失效。
+     *          这条用例钉的是回绕不再发生，且上限依旧被守住
+     */
+    TEST(HttpMemoryBudgetTest, OverReleaseIsClampedAndKeepsTheLimit)
+    {
+        HttpMemoryBudget budget(100);
+        ASSERT_TRUE(budget.tryReserve(10));
+
+        budget.release(20);
+        EXPECT_EQ(budget.reservedByteCount(), 0U) << "多归还把账目绕成了大数，预算已不再拒绝超限";
+
+        EXPECT_TRUE(budget.tryReserve(100));
+        EXPECT_FALSE(budget.tryReserve(1)) << "账目回绕后上限形同虚设：用满了还放行";
+    }
+
+    /**
+     * @brief Reservation 把自己的额度记在预算上，缩容不动账、超限不占账、二次归还是空操作
+     * @details 这一层是「不漏还、不双还」的全部机制，此前只被会话用例间接经过，没有直测
+     */
+    TEST(HttpMemoryBudgetTest, ReservationTracksGrowShrinkAndReleaseAll)
+    {
+        HttpMemoryBudget budget(100);
+        HttpMemoryBudget::Reservation reservation(&budget);
+        ASSERT_TRUE(reservation.hasBudget());
+
+        EXPECT_TRUE(reservation.growTo(40));
+        EXPECT_EQ(budget.reservedByteCount(), 40U);
+
+        // 缩到比已占的还小：空操作，账目必须一分不动（正文被截短不等于额度被归还）
+        EXPECT_TRUE(reservation.growTo(10));
+        EXPECT_EQ(budget.reservedByteCount(), 40U);
+
+        // 增量超出剩余额度：整次调用不占任何额度，调用方据此收口
+        EXPECT_FALSE(reservation.growTo(200));
+        EXPECT_EQ(budget.reservedByteCount(), 40U);
+
+        reservation.releaseAll();
+        EXPECT_EQ(budget.reservedByteCount(), 0U);
+        // 重复归还必须是空操作：守卫析构与手工归还叠加时不能把账目还成负数
+        reservation.releaseAll();
+        EXPECT_EQ(budget.reservedByteCount(), 0U);
+
+        // 归零之后同一份占用还能继续按新正文长回去
+        EXPECT_TRUE(reservation.growTo(100));
+        EXPECT_EQ(budget.reservedByteCount(), 100U);
+    }
+
+    /**
+     * @brief 移交占用时额度恰好跟着走一次
+     * @details 待服务记录在容器间移动是常态：移走的一方必须交出归还责任（否则析构时二次归还），
+     *          而接收方析构时要能把整份额度还回去。移动赋值还要先还掉自己原来的账
+     */
+    TEST(HttpMemoryBudgetTest, ReservationMoveTransfersQuotaExactlyOnce)
+    {
+        HttpMemoryBudget budget(100);
+
+        HttpMemoryBudget::Reservation source(&budget);
+        ASSERT_TRUE(source.growTo(30));
+        HttpMemoryBudget::Reservation receiver(std::move(source));
+        EXPECT_FALSE(source.hasBudget()) << "被移走的一方仍认为自己绑着预算，析构时会二次归还";
+        EXPECT_EQ(budget.reservedByteCount(), 30U);
+
+        // 赋值接收方自己先还掉在占的额度，再接管对方的
+        HttpMemoryBudget::Reservation assigned(&budget);
+        ASSERT_TRUE(assigned.growTo(20));
+        assigned = std::move(receiver);
+        EXPECT_EQ(budget.reservedByteCount(), 30U) << "移动赋值没先归还自己的账，或把对方的账丢了";
+
+        // 接收方析构只该还一次：还完账目归零，而不是绕成负数或留下尾巴
+        assigned.releaseAll();
+        EXPECT_EQ(budget.reservedByteCount(), 0U);
+    }
+
+    /**
+     * @brief 未绑定预算的占用一切为空操作，重新绑定会先结清旧账
+     */
+    TEST(HttpMemoryBudgetTest, UnboundReservationIsInertAndResetSettlesOldBudget)
+    {
+        HttpMemoryBudget firstBudget(100);
+        HttpMemoryBudget secondBudget(100);
+
+        HttpMemoryBudget::Reservation unbound;
+        EXPECT_FALSE(unbound.hasBudget());
+        EXPECT_TRUE(unbound.growTo(1000));
+        unbound.releaseAll();
+
+        HttpMemoryBudget::Reservation bound(&firstBudget);
+        ASSERT_TRUE(bound.growTo(40));
+        EXPECT_EQ(firstBudget.reservedByteCount(), 40U);
+
+        // 换绑到另一份预算：旧账当场结清，新预算不会被「继承」上一段的占用
+        bound.reset(&secondBudget);
+        EXPECT_EQ(firstBudget.reservedByteCount(), 0U);
+        EXPECT_EQ(secondBudget.reservedByteCount(), 0U);
+        EXPECT_TRUE(bound.growTo(50));
+        EXPECT_EQ(secondBudget.reservedByteCount(), 50U);
+
+        // 绑到空指针表示此后不记账，但已占的额度仍要还掉
+        bound.reset(nullptr);
+        EXPECT_FALSE(bound.hasBudget());
+        EXPECT_EQ(secondBudget.reservedByteCount(), 0U);
+    }
+
+    /**
      * @brief 正文超出全局预算的请求立即被 503 收口，且收口后额度归还
      */
     TEST(HttpMemoryBudgetTest, RejectsRequestBodyBeyondGlobalBudgetWith503)
