@@ -63,7 +63,6 @@ namespace
         bool        survivesRouterAndHandlerWiring{false};///< 接上路由器与直通回调后仍照常容错
         bool        expiryTickerKeepsServiceAlive{false};///< 空闲超时与节拍定时在没有连接时也能跑
         bool        drainReturnsImmediatelyWhenIdle{false};///< 无在途连接时 drain() 立刻返回
-        bool        stopFreesPort{false};               ///< stop() 之后同一端口能被重新绑定
         std::uint16_t ephemeralPort{0};                 ///< 端口 0 实际拿到的端口号
     };
 
@@ -379,11 +378,11 @@ namespace
 
         co_await wakeAndStop(loop, *server, ephemeralPort);
         server.reset();
-        {
-            // 端口要等对象真的销毁才还出来：这条同时验「收循环确实退出了」
-            auto probeSocket        = Platform::DatagramSocket::bindTo(loopbackSocketAddress(ephemeralPort));
-            g_observations.stopFreesPort = probeSocket.isValid();
-        }
+        // 「收循环真的退出了」这里量不出来，原来的「重新绑定同一 UDP 端口」探针去掉：
+        // Platform::DatagramSocket::bindTo 无条件设 SO_REUSEADDR，而 Windows 与 Linux 都允许
+        // 另一个套接字绑上仍被占用的 UDP 端口——探针在任何情况下都会成功，失败也没有可报的方向。
+        // 循环退出由「整轮检查在时限内跑完」那一步与 wakeAndStop 自身的等待上限钉住；
+        // 要真测端口释放，得绕开 bindTo 用不带 SO_REUSEADDR 的裸套接字，那是 Platform 层的活
 
         // —— 7. 指定端口起监听：读回来的就是那个端口（换一个端口重起，顺带验可重复起停）——
         const auto fixedAddress = Core::InetAddress::resolve("127.0.0.1", fixedPort);
@@ -443,7 +442,6 @@ int main(const int argc, char **argv)
     samples.check(g_observations.survivesRouterAndHandlerWiring, "接上路由器与流数据直通出口后仍照常容错");
     samples.check(g_observations.expiryTickerKeepsServiceAlive, "空闲超时与节拍定时在没有连接时也能稳定跑过一整个超时窗口");
     samples.check(g_observations.drainReturnsImmediatelyWhenIdle, "无在途连接时 drain() 立即返回，不白等期限");
-    samples.check(g_observations.stopFreesPort, "stop() 之后同一 UDP 端口能被重新绑定（收循环真的退出了）");
 
     context.stop();
     return Samples::finishSample("net_http3_demo");

@@ -1039,9 +1039,14 @@ int main(const int argc, char **argv)
     samples.check(observations.extension.bytes.find("permessage-deflate") != std::string::npos, "握手带上 permessage-deflate 提议时被协商进响应头");
 
     const auto metricsResponses = splitResponses(observations.metricsFirst.bytes);
+    const auto laterMetricsResponses = splitResponses(observations.metricsSecond.bytes);
     samples.check(!metricsResponses.empty() && metricsResponses.front().status == 200 && !metricsResponses.front().body.empty(),
                   "/metrics 有内容且是 200");
-    samples.check(observations.metricsSecond.bytes != observations.metricsFirst.bytes, "两次抓取的指标数值随请求推进而变化");
+    // 比**正文**而不是比原始字节：每条 h1 响应都带自己的 x-request-id 与 Date 头，
+    // 比原始字节永远不等——那样连「指标正文是冻结常量」也会被判成「数值随请求推进而变化」
+    samples.check(!metricsResponses.empty() && !laterMetricsResponses.empty() &&
+                          metricsResponses.front().body != laterMetricsResponses.front().body,
+                  "两次抓取的指标正文不同（计数确实随请求推进）");
     samples.check(firstStatusOf(observations.health) == 200, "/healthz 回 200");
 
     const auto pipelinedResponses = splitResponses(observations.pipelined.bytes);
@@ -1068,8 +1073,15 @@ int main(const int argc, char **argv)
     samples.check(observations.isHttpClientOkay, "框架自带的 Net::HttpClient 也能把这条服务打穿");
     samples.check(observations.statsTotalRequests > 20 && observations.statsBadRequests >= 2, "服务器统计把成功与坏请求分别计入");
 
-    samples.check(observations.perIpProbe.bytes.empty(), "单来源并发上限生效：额度被占满时新连接拿不到服务");
-    samples.check(observations.maxConnectionProbe.bytes.empty(), "全局并发上限生效：超出上限的连接拿不到服务");
+    // 「拿不到服务」要与服务根本没起来区分开：requestOnce 在连接/发送失败时同样交出空字节，
+    // 那种情况下读循环根本没跑，stopReason 是空串。额度被占满时服务端是**接受后再收口**，
+    // stopReason 必为 eof/reset/error-N 之一
+    samples.check(observations.perIpProbe.bytes.empty() && !observations.perIpProbe.stopReason.empty(),
+                  "单来源并发上限生效：额度被占满时新连接被接受后不获服务（连接被服务端合上）");
+    samples.check(observations.maxConnectionProbe.bytes.empty() && !observations.maxConnectionProbe.stopReason.empty(),
+                  "全局并发上限生效：超出上限的连接被接受后不获服务（连接被服务端合上）");
+    // stop() 之后这条只需「拿不到服务」：端口已关，被拒与接受后合上都算契约达成，
+    // 而服务在此之前已被大量请求证明活着，不存在「根本没起来」的混淆
     samples.check(observations.afterStop.bytes.empty(), "stop() 之后新建连接不再被服务（优雅收口第一步）");
 
     samples.check(hasStaticDirectory, "临时静态目录建起来了（后面三条的前提）");
@@ -1087,9 +1099,15 @@ int main(const int argc, char **argv)
     samples.check(firstStatusOf(observations.dispatchedFirst) == 200 && firstStatusOf(observations.dispatchedSecond) == 200,
                   "接受分发链路：acceptor 收下的连接交给另一条循环上的 worker，两条请求都答完");
 
+    context.stop();
+
+    // 静态目录要等服务收口之后再删，并且要查删除结果：此前 remove_all 排在 context.stop() 之前，
+    // 那时服务器对象仍在作用域里、可能还握着这条目录，删除会静默失败而本步照常打勾，
+    // 于是 %TEMP% 里留下 asyn-sample-net_http-<pid>。现在把它当证据核对
     std::error_code removeError;
     std::filesystem::remove_all(staticDirectory, removeError);
-
-    context.stop();
+    std::error_code existsError;
+    samples.check(!removeError && !std::filesystem::exists(staticDirectory, existsError),
+                  "临时静态目录在服务收口后被清理干净");
     return Samples::finishSample("net_http_demo");
 }
