@@ -31,8 +31,14 @@ namespace AsynGyanis::Core
                 }
             }
 
+            // 其余段整段交出，但空段不占提交位：占位会把真正待发的段挤出本次提交，
+            // 多付一次系统调用（快照的契约就是「只交出真正待发的字节」）
             for (std::size_t index = m_pendingIndex + 1; index < m_bufferCount && pendingCount < capacity; ++index)
             {
+                if (m_buffers[index].length == 0)
+                {
+                    continue;
+                }
                 outBuffers[pendingCount] = m_buffers[index];
                 ++pendingCount;
             }

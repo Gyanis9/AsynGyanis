@@ -159,6 +159,55 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 空段在游标之后同样不交出，也不占提交位
+     * @details 既有的 ZeroLengthSegmentsAreSkipped 只把空段放在第 0 段，而那正好是首段裁剪
+     *          分支顺手处理掉的位置；空段出现在游标之后时按整段拷贝那条路上会照原样交出去。
+     *          后果不止是「提交里多一个空段」：容量只有那么多时，空段占的位子会把真正待发的段
+     *          挤出本次提交，于是多付一次系统调用
+     */
+    TEST(VectoredSendCursor, ZeroLengthSegmentsAfterTheCursorAreSkippedWithoutOccupyingSlots)
+    {
+        const std::array<Platform::Socket::WriteBuffer, 4> buffers{{
+                {kFirstSegment.data(), kFirstSegment.size()},
+                {kSecondSegment.data(), 0},                      // 空段在两段真实数据之间
+                {kSecondSegment.data(), kSecondSegment.size()},
+                {kThirdSegment.data(), kThirdSegment.size()},
+        }};
+        const detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+
+        // 容量够：交出三段真实数据，顺序与长度都不受空段影响
+        std::array<Platform::Socket::WriteBuffer, 4> roomy{};
+        const std::size_t roomyCount = cursor.snapshotPending(roomy.data(), roomy.size());
+        ASSERT_EQ(roomyCount, 3U) << "空段占掉了一次提交的段位";
+        EXPECT_EQ(roomy[0].data, kFirstSegment.data());
+        EXPECT_EQ(roomy[1].data, kSecondSegment.data());
+        EXPECT_EQ(roomy[2].data, kThirdSegment.data());
+        // 只查被交出的那几段：数组余下的是用例自己清零的空位，不是快照的内容
+        for (std::size_t index = 0; index < roomyCount; ++index)
+        {
+            EXPECT_NE(roomy[index].length, 0U) << "快照里不该出现零长度的段";
+        }
+
+        // 容量等于真实段数：空段不该把最后一段挤出去（挤出去就是多一次系统调用）
+        std::array<Platform::Socket::WriteBuffer, 3> tight{};
+        ASSERT_EQ(cursor.snapshotPending(tight.data(), tight.size()), 3U);
+        EXPECT_EQ(tight[0].data, kFirstSegment.data());
+        EXPECT_EQ(tight[1].data, kSecondSegment.data());
+        EXPECT_EQ(tight[2].data, kThirdSegment.data());
+        EXPECT_EQ(tight[2].length, kThirdSegment.size());
+
+        // 部分写之后接着量：停在首段中间时，后面的空段同样不该露头
+        detail::VectoredSendCursor partialCursor(buffers.data(), buffers.size());
+        partialCursor.advance(2);
+        std::array<Platform::Socket::WriteBuffer, 4> partialPending{};
+        ASSERT_EQ(partialCursor.snapshotPending(partialPending.data(), partialPending.size()), 3U);
+        EXPECT_EQ(partialPending[0].data, kFirstSegment.data() + 2);
+        EXPECT_EQ(partialPending[0].length, kFirstSegment.size() - 2);
+        EXPECT_EQ(partialPending[1].data, kSecondSegment.data());
+        EXPECT_EQ(partialPending[2].data, kThirdSegment.data());
+    }
+
+    /**
      * @brief 快照容量不足时按序截断，不越界写
      */
     TEST(VectoredSendCursor, SnapshotRespectsCapacity)
