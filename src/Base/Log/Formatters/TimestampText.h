@@ -61,12 +61,18 @@ namespace AsynGyanis::Base
     inline std::string_view formatTimestampText(std::array<char, kTimestampTextBufferSize> &buffer,
                                                 const std::chrono::system_clock::time_point moment) noexcept
     {
-        // 向下取整到整秒：朝零截断会让预 1970 的时刻偏一整秒，且下面的毫秒差值成了负数
+        // 向下取整到整秒：朝零截断会让预 1970 的时刻偏一整秒，且下面的毫秒残差成了负数
         const auto wholeSeconds = std::chrono::floor<std::chrono::seconds>(moment);
-        const auto secondValue  = wholeSeconds.time_since_epoch().count();
+        const std::int64_t secondValue = wholeSeconds.time_since_epoch().count();
 
-        // 减掉已向下取整的整秒，残差恒在 [0, 1000) 毫秒，因此不必判符号
-        const auto millisecondValue = std::chrono::duration_cast<std::chrono::milliseconds>(moment - wholeSeconds).count();
+        // 残差按「毫秒刻度」取，不用 moment - wholeSeconds：两个 time_point 相减要先落到彼此更细的
+        // 公共单位（本平台是纳秒或 100 纳秒），那次整秒→细单位的乘法在 time_point::min()/max() 上
+        // 直接溢出（UBSan 实测报在 chrono.h 的 __duration_cast_impl）。duration_cast 是除法，
+        // 极端值也不会溢出；整秒向下取整、毫秒朝零截断，二者之差因此恒落在 [0, 1000) 毫秒
+        constexpr std::int64_t kMillisecondsPerSecond = 1'000LL;
+        const std::int64_t millisecondCount =
+                std::chrono::duration_cast<std::chrono::milliseconds>(moment.time_since_epoch()).count();
+        const std::int64_t millisecondValue = millisecondCount - secondValue * kMillisecondsPerSecond;
 
         thread_local detail::TimestampPrefixCache prefixCache;
 
