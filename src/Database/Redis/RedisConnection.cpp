@@ -157,11 +157,15 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 为 hiredis 的 argv 接口准备「指针数组 + 长度数组」两个平行数组
+         * @tparam ArgumentRange 任何可区间遍历、元素有 data() 与 size() 的容器：std::vector<std::string>
+         *         （自己解析出来的参数）、std::vector<std::string_view> 与 std::span<const std::string_view>
+         *         （调用方给的参数视图）都满足，因此三条来源共用这一份实现，不必为视图先落一份 owning 副本
          * @param argumentValues 参数值列表，整个调用期间必须保持存活且不再被修改
          * @param argumentPointers 出参：每个参数的首地址
          * @param argumentLengths 出参：每个参数的字节长度
          */
-        void buildArgumentViews(const std::vector<std::string> &argumentValues, std::vector<const char *> &argumentPointers, std::vector<size_t> &argumentLengths)
+        template<typename ArgumentRange>
+        void buildArgumentViews(const ArgumentRange &argumentValues, std::vector<const char *> &argumentPointers, std::vector<size_t> &argumentLengths)
         {
             argumentPointers.clear();
             argumentLengths.clear();
@@ -169,8 +173,8 @@ namespace AsynGyanis::Database
             argumentLengths.reserve(argumentValues.size());
 
             // 长度数组一并给出，Redis 的批量字符串按长度取值，'\0' 因此能安全穿过协议；
-            // 指针指向 std::string 内部缓冲，所以参数表在本函数返回后到调用结束之间不能变
-            for (const std::string &argumentValue: argumentValues)
+            // 指针指向参数自身的缓冲，所以参数表在本函数返回后到调用结束之间不能变
+            for (const auto &argumentValue: argumentValues)
             {
                 argumentPointers.push_back(argumentValue.data());
                 argumentLengths.push_back(argumentValue.size());
@@ -296,8 +300,8 @@ namespace AsynGyanis::Database
             }
 
             const std::string keySpaceText = std::to_string(keySpaceIndex);
-            if (const std::vector<std::string> selectArguments{"SELECT", keySpaceText};
-                executeArguments(selectArguments) == nullptr)
+            if (const std::vector<std::string_view> selectArguments{std::string_view("SELECT"), keySpaceText};
+                executeArguments(std::span<const std::string_view>(selectArguments)) == nullptr)
             {
                 // executeArguments 已把服务端原文或传输层原因写进 m_lastError，
                 // 这里只补一句上下文，说明失败发生在连接初始化阶段
@@ -370,7 +374,9 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        return executeArguments(*argumentValues);
+        // 切词得到的那批 std::string 才是数据的持有者；这里只叠一层视图，不再逐条复制内容
+        const std::vector<std::string_view> argumentViews(argumentValues->begin(), argumentValues->end());
+        return executeArguments(std::span<const std::string_view>(argumentViews));
     }
 
     std::unique_ptr<DatabaseResult> RedisConnection::executeCommand(const std::vector<std::string_view> &arguments)
@@ -389,9 +395,9 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // string_view 不保证零终止，逐条落成带长度的 std::string 才能既不越界又保住内嵌 '\0'
-        const std::vector<std::string> argumentValues(arguments.begin(), arguments.end());
-        return executeArguments(argumentValues);
+        // 直接把视图交给 argv 接口：它要的就是「指针 + 长度」，内嵌 '\0' 靠长度而不是终止符穿过协议。
+        // 这里落成一份 vector<std::string> 只会为每个参数多取一次堆块，而 arguments 在整个调用期间都活着
+        return executeArguments(std::span<const std::string_view>(arguments));
     }
 
     bool RedisConnection::pipelineCommand(const std::string_view command)
@@ -435,11 +441,13 @@ namespace AsynGyanis::Database
 
         // 第一阶段：把命令逐条 append 进 hiredis 的输出缓冲，到这一步才真正开始发送。
         // 用 argv 接口而不是把命令文本当格式串传进去，否则参数里的 '%' 同样会被解释成格式说明符
+        // 这对暂存表跨条复用：buildArgumentViews 进来先 clear()，容量因此逐条继承，
+        // 一条长管道不再为每条命令各取两个堆块（管线的全部收益来自批量，这里的常数按条数放大）
+        std::vector<const char *> argumentPointers;
+        std::vector<size_t>       argumentLengths;
         size_t appendedCommandCount = 0;
         for (const std::vector<std::string> &commandArguments: m_pipelineCommands)
         {
-            std::vector<const char *> argumentPointers;
-            std::vector<size_t>       argumentLengths;
             buildArgumentViews(commandArguments, argumentPointers, argumentLengths);
 
             if (redisAppendCommandArgv(m_redisContext, static_cast<int>(argumentPointers.size()),
@@ -553,7 +561,7 @@ namespace AsynGyanis::Database
         return false;
     }
 
-    std::unique_ptr<DatabaseResult> RedisConnection::executeArguments(const std::vector<std::string> &argumentValues)
+    std::unique_ptr<DatabaseResult> RedisConnection::executeArguments(const std::span<const std::string_view> argumentValues)
     {
         // 前置条件由调用方保证上下文有效；这里再兜一次，任何路径都不会把空句柄交给 hiredis
         if (m_redisContext == nullptr)

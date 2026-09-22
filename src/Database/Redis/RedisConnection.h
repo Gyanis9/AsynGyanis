@@ -12,6 +12,7 @@
 #include "Database/Common/DatabaseConnection.h"
 
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -198,10 +199,12 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 用已切分好的参数数组发送一条命令并封装结果（execute/executeCommand 的共同路径）
-         * @param argumentValues 参数数组，第一个元素为命令名，调用期间必须保持存活且不被修改
+         * @param argumentValues 参数数组，第一个元素为命令名，调用期间必须保持存活且不被修改。
+         *        按视图接收：hiredis 的 argv 接口要的就是「指针 + 长度」，把参数落回 std::string
+         *        只会为每个参数多取一次堆块，而内嵌 '\0' 照样靠长度安全穿过
          * @return std::unique_ptr<DatabaseResult> 结果集；传输失败或服务端报错时返回 nullptr
          */
-        [[nodiscard]] std::unique_ptr<DatabaseResult> executeArguments(const std::vector<std::string> &argumentValues);
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeArguments(std::span<const std::string_view> argumentValues);
 
         redisContext *m_redisContext{nullptr}; ///< hiredis 连接上下文，本对象独占所有权，未连接时为 nullptr
 
