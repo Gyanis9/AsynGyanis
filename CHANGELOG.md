@@ -351,6 +351,14 @@
 
 ### 性能
 
+- **HTTP/2 出站 DATA 帧不再为算长度先拷一遍载荷**：`pumpSendQueue` 原先把待发缓冲里的一段正文交给
+  `encodeHttp2DataFrame()`，后者先拼出一份「帧头 + 载荷」的临时串，再由连接整段搬进待发字节——中间那份
+  临时串对一条帧只起「先攒起来好算长度域」的作用，而长度在动手前就知道。新增 `appendHttp2Frame(bytes, ...)`
+  作为同一套布局的「目标缓冲已在手」出口（`encodeHttp2Frame()` 改为委托它，帧的写法与校验仍只有一份），
+  连接侧 `appendOutgoingFrame()` 直接把帧拼进待发缓冲。消融实测（16 KiB 载荷 = 对端默认通告的
+  `SETTINGS_MAX_FRAME_SIZE`）：**270.4 → 92.1 ns/帧（−66%）**，随载荷线性；每条数据帧还少一次堆块取还。
+  线上字节由新用例逐字钉住（与临时串出口、与 `encodeHttp2DataFrame()` 三条互比，含二进制含 NUL 的载荷、
+  目标缓冲非空只能追加、校验不过时一字节不加）。
 - **流式响应的分块帧改用响应自带的缓冲**：`HttpResponse::writeChunk()` 原先每段都新建一个串装
   `<十六进制长度>\r\n<数据>\r\n`，每个正文段付一次堆块加一次整段拷贝——SSE 这类「小段、高频」的
   出口上，这笔分配会盖过组帧本身的工作量。组帧挪到 `HttpChunkFrame.h` 的 `appendChunkFrame(frame, data)`，
