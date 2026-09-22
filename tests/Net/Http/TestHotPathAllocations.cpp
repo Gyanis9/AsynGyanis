@@ -32,105 +32,25 @@
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Frame.h"
 
+#include "AllocationProbe.h"
+
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <new>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-namespace
-{
-    std::atomic<std::uint64_t> allocationCount{0};
-    std::atomic<std::uint64_t> allocationBytes{0};
-
-    /**
-     * @brief 记一次分配：relaxed 足够，这两个数只当读数用，不靠它们同步任何状态
-     */
-    void recordAllocation(const std::size_t size) noexcept
-    {
-        allocationCount.fetch_add(1U, std::memory_order_relaxed);
-        allocationBytes.fetch_add(static_cast<std::uint64_t>(size), std::memory_order_relaxed);
-    }
-} // namespace
-
-// 全局替换：本可执行体里所有走 operator new 的分配都过这里（静态链接进来的第三方也一样）。
-// 转发给 malloc/free，语义与默认实现一致，只是多记两笔数
-[[nodiscard]] void *operator new(const std::size_t size)
-{
-    recordAllocation(size);
-    void *const pointer = std::malloc(size == 0U ? 1U : size);
-    if (pointer == nullptr)
-    {
-        throw std::bad_alloc();
-    }
-    return pointer;
-}
-
-[[nodiscard]] void *operator new[](const std::size_t size)
-{
-    recordAllocation(size);
-    void *const pointer = std::malloc(size == 0U ? 1U : size);
-    if (pointer == nullptr)
-    {
-        throw std::bad_alloc();
-    }
-    return pointer;
-}
-
-[[nodiscard]] void *operator new(const std::size_t size, const std::nothrow_t &) noexcept
-{
-    recordAllocation(size);
-    return std::malloc(size == 0U ? 1U : size);
-}
-
-[[nodiscard]] void *operator new[](const std::size_t size, const std::nothrow_t &) noexcept
-{
-    recordAllocation(size);
-    return std::malloc(size == 0U ? 1U : size);
-}
-
-void operator delete(void *pointer) noexcept
-{
-    std::free(pointer);
-}
-
-void operator delete(void *pointer, const std::size_t) noexcept
-{
-    std::free(pointer);
-}
-
-void operator delete[](void *pointer) noexcept
-{
-    std::free(pointer);
-}
-
-void operator delete[](void *pointer, const std::size_t) noexcept
-{
-    std::free(pointer);
-}
-
-void operator delete(void *pointer, const std::nothrow_t &) noexcept
-{
-    std::free(pointer);
-}
-
-void operator delete[](void *pointer, const std::nothrow_t &) noexcept
-{
-    std::free(pointer);
-}
-
 namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 每个形状连跑这么多次再摊平：单次读数会被「临时串先分配后释放」这类顺序细节影响
-        constexpr std::uint64_t kMeasurementIterations = 1000U;
+        // 轮数常量、AllocationProfile 与 measurePerOperation 都来自共用探针（AllocationProbe.h）
+        using AsynGyanis::TestSupport::AllocationProfile;
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
 
         /// 解析形状暖身用的轮数：四份容器（解析器与请求各自的字节缓冲和记录表）按倍扩容要几轮才长到位
         constexpr std::uint64_t kParseWarmUpIterationCount = 64U;
@@ -151,64 +71,6 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
         constexpr std::uint64_t kChunkFrameTotalAllocationsReused = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
 #endif
-
-        /**
-         * @brief 累计计数的一次快照
-         */
-        struct Snapshot
-        {
-            std::uint64_t count{0}; ///< 累计分配次数
-            std::uint64_t bytes{0}; ///< 累计申请字节数
-        };
-
-        /**
-         * @brief 取当前累计计数
-         * @note 两个计数分别读，不是同一时刻的原子对——被测形状都在单线程里跑，差值仍然准确
-         */
-        [[nodiscard]] Snapshot sample() noexcept
-        {
-            return {allocationCount.load(std::memory_order_relaxed), allocationBytes.load(std::memory_order_relaxed)};
-        }
-
-        /**
-         * @brief 一次测量的结果：窗口内的分配原值，外加摊平到每次操作的读数
-         * @details 摊平是整除，因此「每次 0 次」这个读数掩盖得住一千次里的零星几次分配。
-         *          凡是要钉「稳态一次都不碰堆」的形状，判据一律用 totalAllocations 原值。
-         */
-        struct AllocationProfile
-        {
-            std::uint64_t totalAllocations{0};        ///< 整个测量窗口的分配总次数
-            std::uint64_t totalBytes{0};              ///< 整个测量窗口申请的字节总数
-            std::uint64_t allocationsPerOperation{0}; ///< 每次操作的分配次数
-            std::uint64_t bytesPerOperation{0};       ///< 每次操作申请的字节数
-            std::uint64_t resultSum{0};               ///< 被测体标记之和，用于证明它真的跑了
-        };
-
-        /**
-         * @brief 把 body 连跑 kMeasurementIterations 次，摊平给出每次操作的分配数
-         * @param body 被测形状：只做事、不断言，返回一个与「做成了多少」成正比的标记
-         * @return AllocationProfile 每次操作的分配次数与字节数，外加所有标记之和
-         */
-        template<typename Body>
-        [[nodiscard]] AllocationProfile measurePerOperation(const Body &body)
-        {
-            const Snapshot began = sample();
-            std::uint64_t resultSum = 0;
-            for (std::uint64_t iteration = 0; iteration < kMeasurementIterations; ++iteration)
-            {
-                resultSum += static_cast<std::uint64_t>(body());
-            }
-            const Snapshot ended = sample();
-
-            AllocationProfile profile;
-            profile.totalAllocations    = ended.count - began.count;
-            profile.totalBytes          = ended.bytes - began.bytes;
-            profile.allocationsPerOperation = profile.totalAllocations / kMeasurementIterations;
-            profile.bytesPerOperation       = profile.totalBytes / kMeasurementIterations;
-            profile.resultSum = resultSum;
-            return profile;
-        }
-
         /// 一条贴近真实的 h1 请求：10 个头部 + 64 字节正文（与微基准的 http1-parse-request 同形）
         std::string makeRequestText()
         {

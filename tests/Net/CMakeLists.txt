@@ -6,6 +6,8 @@ add_executable(TestNet
         Quic/QuicRfcVectors.h
         Http/HttpTestSupport.h
         Http2/Http2TestSupport.h
+        # 分配计数探针的实体（替换全局 operator new，每个可执行体只能有一份定义）
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
         Http/TestHttpParser.cpp
         Http/TestHttpParserLimits.cpp

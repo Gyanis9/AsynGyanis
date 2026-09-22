@@ -5,6 +5,8 @@ find_package(GTest REQUIRED)
 add_executable(TestBase
         BaseTestSupport.h
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
+        # 分配计数探针的实体（替换全局 operator new，每个可执行体只能有一份定义）
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
         Config/TestConfigValue.cpp
         Config/TestConfigValueType.cpp
@@ -21,6 +23,7 @@ add_executable(TestBase
         Log/TestLogger.cpp
         Log/TestLoggerRegistry.cpp
         Log/TestLoggerConfigLoader.cpp
+        Log/TestLogHotPathAllocations.cpp
 
         Log/Formatters/TestDefaultFormatter.cpp
         Log/Formatters/TestJsonFormatter.cpp
