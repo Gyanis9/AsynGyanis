@@ -343,12 +343,14 @@ namespace AsynGyanis::Database
 
     void ConnectionPool::returnConnection(std::unique_ptr<DatabaseConnection> connection)
     {
-        m_activeCount.fetch_sub(1);
-
+        // 先验空再动账：这是个公有入口，空指针在这里减一次活跃计数会把计数打到回绕，
+        // 而它永远不会再被加回来（activeCount() 变成天文数字，totalCount() 与容量判定随之失真）
         if (!connection)
         {
             return;
         }
+
+        m_activeCount.fetch_sub(1);
 
         // 会话状态复位必须早于「放回空闲栈」与「直接交给等待者」两条去向：
         // 上一个借用者留下的会话级状态（Redis 的未发送管道、临时表等）不能串给下一个借用者

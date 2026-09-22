@@ -10,6 +10,7 @@
 //   两条丢弃出口都不握着 m_mutex 做 disconnect
 // - EstablishedTimeSurvivesRepeatedBorrowAndReturn：连接的建立时刻跟着连接本身，反复借用不重新盖戳
 // - ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
+// - NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -368,6 +369,36 @@ namespace AsynGyanis::Database
             EXPECT_EQ(pool.activeCount(), 1);
             EXPECT_EQ(pool.idleCount(), 1);
             EXPECT_EQ(pool.totalCount(), 2);
+        }
+
+        // ========================================================================
+        // NullReturnDoesNotCorruptCounters
+        // ========================================================================
+
+        /**
+         * @brief 归还空指针不得动活跃计数：计数是无符号量，先减后判会把 0 绕成天量
+         * @details returnConnection() 是公有入口（除 PooledConnection 外也能被直接调用），
+         *          一次误传就要永久扭曲 activeCount()/totalCount() 与据其判定的池容量
+         */
+        TEST(ConnectionPool, NullReturnDoesNotCorruptCounters)
+        {
+            ConnectionCounter counter;
+            PoolConfig        configuration;
+            configuration.maximumPoolSize = 2;
+            ConnectionPool    pool(makeMockFactory(counter), configuration);
+
+            pool.returnConnection({});
+            // 无符号回绕后的值远大于池上限，一眼可辨；正确实现应当停在 0
+            EXPECT_EQ(pool.activeCount(), 0U) << "空归还也减了一次活跃计数，计数已经回绕";
+            EXPECT_EQ(pool.totalCount(), 0U);
+
+            const PooledConnection connection = pool.acquire();
+            ASSERT_TRUE(connection);
+            ASSERT_EQ(pool.activeCount(), 1U);
+
+            // 借出期间的空归还若也减账，这条在用的连接就从账上消失了（归还时才又减一次）
+            pool.returnConnection({});
+            EXPECT_EQ(pool.activeCount(), 1U) << "空归还抹掉了正在被借出的那条连接的账";
         }
 
         // ========================================================================
