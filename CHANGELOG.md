@@ -789,6 +789,21 @@
   额度不变；恰好 2^60 合法），传输参数侧在 `RejectsOutOfRangeIntegerValues` 里两档各加一条边界用例。
   三处突变——方向三元符取反、去掉帧侧上界、参数表回到旧上界——各自让对应用例转红。容器实测 `TestNet`
   1246 例全绿、零告警、零 sanitizer。
+- **滚动日志的文件名不再被本地代码页改写**：`LoggerConfigLoader` 早已把日志目录全程按 `std::filesystem::path`
+  传递，唯独 `base_filename` 仍按窄串交给 `RollingFileSink`，而它在类内与目录拼接、拼备份名、比对目录项时
+  要把这段窄串再解释一次——Windows 上这一步走本地代码页，落在代码页外的字符变成 `?`，滚动日志就此写到
+  另一个名字上（同一份配置在 file sink 那条通道是对的）。更糟的是清理旧备份时把目录项名字也转回窄串比较：
+  两处各自失真恰好互相掩护——备份认不出来、`max_backup` 形同虚设、日志目录无界增长，而日志里一切正常。
+  现在基础文件名按路径的原生刻度持有，主名与扩展名的切分、活动名与备份名的拼装、清理时的识别统一走同一处
+  切分，只含 ASCII 的序号与时间后缀直译进原生刻度（`std::format` 不吃宽格式串，故这些名字按刻度手工拼）。
+  口径变化只有一处：只含前导点的名字（`.log`）其备份名由 `.1.log` 变成 `.log.1`，与标准库把前导点当隐藏名
+  而非扩展名的解释一致，活动名与备份名同源切分因此仍认得全。另新增 `Platform::FileSystem::utf8FromPath`
+  （`pathFromUtf8` 的反向出口），把留在诊断文本里的三处 `path::string()` 换掉：装配那一处在 Windows 上对
+  代码页外的名字**直接抛出**，一句「日志写到哪了」的说明会毁掉整次配置装配，`FileSink` 的另两处则让一次
+  报错变成二次抛出。新增 `FileSystem.Utf8FromPathRoundTripsPathFromUtf8`、`Utf8FromPathDescribesNameOutsideCodePage`
+  与 `LoggerConfigLoader` 的两条端到端用例（file / rolling_file 各钉住「代码页外的名字落到真名」），其中
+  rolling 那条在改前为红。容器（GCC 13.3 + ASan/LSan/UBSan）实测 `TestBase` 561 例通过 / 1 例按环境如实跳过、
+  `TestPlatform` 184 例全绿、零告警、零 sanitizer；Windows 侧 `TestBase` 562 例全绿、`base_log` 示例 23 步全 PASS。
 
 ### 性能
 
