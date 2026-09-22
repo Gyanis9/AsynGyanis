@@ -477,14 +477,18 @@ namespace AsynGyanis::Net
                 pending.isRemoteEndStream = true;
             }
             pending.request = mapToHttpRequest(http2Request);
+            // 头块越限：字段是空的，既不能派发也不该再等正文，服务阶段直接按 431 收口
+            pending.isHeaderListTooLarge = http2Request.isHeaderListTooLarge;
             // 流式路由：头部收齐即可派发，正文边收边交给业务，不必等 END_STREAM（与 h1 侧同一判据）。
             // 扩展 CONNECT 排除在外——它的「正文」是隧道里的帧，走隧道那条完全不同的路径
-            pending.isStreamingBody = !pending.isExtendedConnect
+            pending.isStreamingBody = !pending.isHeaderListTooLarge
+                                      && !pending.isExtendedConnect
                                       && m_router.hasStreamingRoute(pending.request.method(), pending.request.uri());
             // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
             // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串
-            const bool isContinueRequested =
-                    http2Request.hasBody && isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
+            const bool isContinueRequested = !pending.isHeaderListTooLarge
+                                             && http2Request.hasBody
+                                             && isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
             m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
 
             // RFC 9110 §10.1.1 在 h2 上的等价物：对端声明了 Expect: 100-continue 且还有正文要发时，
@@ -571,13 +575,14 @@ namespace AsynGyanis::Net
             }
             // 全局在途正文预算：与 HTTP/1.1 侧同一口径，只是记账挂在每条流上。
             // 同样必须在收的过程中判——等 END_STREAM 再判，内存已经占住了
-            if (!pending.isBodyTooLarge && !pending.isBudgetExceeded && !pending.bodyBudget.growTo(bodyByteCount))
+            if (!pending.isHeaderListTooLarge && !pending.isBodyTooLarge && !pending.isBudgetExceeded &&
+                !pending.bodyBudget.growTo(bodyByteCount))
             {
                 LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答",
                               receivedData.streamId, m_memoryBudget->reservedByteCount());
                 pending.isBudgetExceeded = true;
             }
-            if (!pending.isBodyTooLarge && !pending.isBudgetExceeded)
+            if (!pending.isHeaderListTooLarge && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
             {
                 pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
             }
@@ -606,7 +611,7 @@ namespace AsynGyanis::Net
             // 流式正文的请求在头部收齐那一刻就可以服务：正文由业务边收边读，不等 END_STREAM。
             // 其余请求要等正文收齐（或已判超限/超预算）
             const bool isReadyToServe = pending.isStreamingBody || pending.isRemoteEndStream || pending.isBodyTooLarge
-                                        || pending.isBudgetExceeded;
+                                        || pending.isHeaderListTooLarge || pending.isBudgetExceeded;
             if (!isReadyToServe)
             {
                 // 对端可能已经 RST 掉了这条流（头收齐、正文没收完就取消）：那样的请求再也不会
@@ -715,6 +720,39 @@ namespace AsynGyanis::Net
                 noteStreamCancelled();
             }
             co_return unsupportedOutcome;
+        }
+
+        if (pending.isHeaderListTooLarge)
+        {
+            // RFC 9113 §10.5.1：收不下这一条头块就按 431 应答，而不是把整条连接判死——
+            // 同一条连接上其它在跑的流与此无关，HPACK 上下文也已经在连接层整块解完、仍与对端同步。
+            // 与 413 同一口径：只计入 badRequestCount，不计入已处理的请求条数
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countBadRequest();
+            }
+            LOG_ERROR_FMT("Http2Session: 流 {} 的请求头超出本端上限，已按 431 应答并保持连接可用。request-id {}，路径 {}",
+                          streamId, request.requestId(), request.uri());
+            HttpResponse headerTooLargeResponse;
+            headerTooLargeResponse.setStatus(431);
+            headerTooLargeResponse.setBody("Request Header Fields Too Large");
+            static_cast<void>(headerTooLargeResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            const RequestServeOutcome headerTooLargeOutcome =
+                    toRequestServeOutcome(co_await sendResponse(streamId, headerTooLargeResponse, isHeadRequest));
+            if (headerTooLargeOutcome == RequestServeOutcome::StreamCancelled)
+            {
+                noteStreamCancelled();
+            }
+            if (headerTooLargeOutcome == RequestServeOutcome::Served)
+            {
+                // 正文还可能在路上：与 413 同样请对端别再发了，剩下的字节本端一律不收
+                std::string abortErrorText;
+                if (!m_connection.abortStream(streamId, "请求头超出上限，响应（431）已发出，本端不再需要该请求的正文", &abortErrorText))
+                {
+                    LOG_DEBUG_FMT("Http2Session: 流 {} 的请求头超限后未能请求对端中止发送。原因：{}", streamId, abortErrorText);
+                }
+            }
+            co_return headerTooLargeOutcome;
         }
 
         if (pending.isBodyTooLarge)
@@ -1274,7 +1312,8 @@ namespace AsynGyanis::Net
             }
 
             // 正文还没收齐的流继续等：本协程的下一轮读会把剩余 DATA 攒进来
-            if (!pending.isRemoteEndStream && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
+            if (!pending.isRemoteEndStream && !pending.isHeaderListTooLarge && !pending.isBodyTooLarge
+                && !pending.isBudgetExceeded)
             {
                 ++requestIterator;
                 continue;

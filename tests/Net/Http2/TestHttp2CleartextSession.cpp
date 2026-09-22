@@ -927,6 +927,62 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：请求头超出本端上限只作废那一条流并按 431 应答，连接上的后续请求照常
+     * @details 依据：RFC 9113 §10.5.1 明确「收不下这一条头块的服务端可以回 431」。旧口径是连接级
+     *          ENHANCE_YOUR_CALM，等于任何对端发一条超大头部就能把整条连接上别人的在途请求一起带走。
+     */
+    TEST(Http2CleartextSession, Answers431ForOversizedRequestHeadersAndKeepsConnection)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 一条 9000 字节的头值：远超单条头值的 8 KiB 上限，但整个头块仍在一帧之内（16 KiB）
+        std::string requestBytes = makeRequestHeadersFrame(1U,
+                                                           makeGetRequestHeaderBlock("/hello") + hpackLiteralField("x-big", std::string(9000U, 'a')),
+                                                           true);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !responseHeaderBlock(receivedFrames, 1U, 0).empty();
+                                     },
+                                     kWaitTimeout)) << "超大头部的请求没有收到应答";
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "431");
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "一条越限的请求头不该把整条连接判死";
+        }
+
+        // 同一条连接随后那条正常请求必须拿到 200：HPACK 上下文没被这次拒绝弄乱
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !responseHeaderBlock(receivedFrames, 3U, 0).empty();
+                                     },
+                                     kWaitTimeout)) << "越限请求之后的正常请求没有收到应答";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
+    }
+
+    /**
      * @brief 钉住：正文超上限回 413 并请对端中止上传（RST_STREAM(NO_ERROR)），而不是把剩余字节白收一遍；连接照常可用
      */
     TEST(Http2CleartextSession, AbortsOversizedUploadAfterAnswering413)

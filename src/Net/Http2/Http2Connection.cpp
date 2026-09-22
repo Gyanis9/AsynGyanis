@@ -1078,10 +1078,44 @@ namespace AsynGyanis::Net
         std::vector<HpackHeaderField> headerFields;
         if (!m_hpackDecoder.decode(headerBlock, headerFields))
         {
-            // 两种失败都按连接级收场：压缩上下文出错必须终止连接（§4.3），突破头列表上限时解码器也已粘滞
-            // （动态表与对端编码器不再同步），无法边拒绝这条流边继续服务整条连接
-            fail(toHttp2ErrorCode(m_hpackDecoder.errorKind()), std::format("流 {} 的头块解码失败：{}", streamId, m_hpackDecoder.errorMessage()));
-            return false;
+            if (!m_hpackDecoder.isLimitExceeded())
+            {
+                // 压缩上下文出错必须终止连接（§4.3）：两端的动态表已经错开，
+                // 之后每个头块都会解成别的错误，边拒绝这条流边服务整条连接是不可能的
+                fail(toHttp2ErrorCode(m_hpackDecoder.errorKind()), std::format("流 {} 的头块解码失败：{}", streamId, m_hpackDecoder.errorMessage()));
+                return false;
+            }
+            // 越过头部上限只是「本端不收这一条请求」：解码器已把整块处理完，动态表仍与对端同步
+            // （RFC 9113 §10.5.1 明说头块必须处理完以保证连接状态一致），因此按 431 作废这一条流
+            // 就够了，不必把整条连接上其它在跑的流一起带走
+            if (purpose == HeaderBlockPurpose::Discard)
+            {
+                // 这条流早先已被拒绝或已终止：解完即弃，动态表同步就是它唯一的作用
+                return true;
+            }
+            if (purpose == HeaderBlockPurpose::Trailers)
+            {
+                // 尾部头块越限：响应已经发出，没有 431 可回，按流错误收掉这一条流
+                if (StreamRecord *const trailerStream = findStream(streamId); trailerStream != nullptr)
+                {
+                    failStream(*trailerStream, Http2ErrorCode::EnhanceYourCalm,
+                               std::format("流 {} 的尾部头块超出本端上限：{}", streamId, m_hpackDecoder.errorMessage()));
+                }
+                return true;
+            }
+            Http2Request oversizedRequest;
+            oversizedRequest.streamId = streamId;
+            oversizedRequest.hasBody = !endStream;
+            oversizedRequest.isHeaderListTooLarge = true;
+            m_pendingRequests.push_back(std::move(oversizedRequest));
+            if (endStream)
+            {
+                if (StreamRecord *const closedStream = findStream(streamId); closedStream != nullptr)
+                {
+                    noteRemoteEndStream(*closedStream);
+                }
+            }
+            return true;
         }
 
         StreamRecord *const stream = findStream(streamId);

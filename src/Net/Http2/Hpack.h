@@ -737,8 +737,11 @@ namespace AsynGyanis::Net
      *          （重复的头名与头值在后续头块里可以直接用索引表示）。四种表示的判定互斥且穷尽
      *          （最高位模式覆盖了全部 8 位取值），未知表示因此不存在。
      *
-     * @note 失败后解码器进入粘滞错误态：动态表已与对端不同步，继续解码只会解出错误的头部，
-     *       调用方必须按 toHttp2ErrorCode() 的结论终止连接，reset() 之后才可复用（新连接专用）。
+     * @note 两类失败的处理完全不同：压缩上下文出错（解不开整数/字符串、索引不存在、大小更新出现在
+     *       头部之后）会粘滞错误态——动态表已与对端不同步，继续解只会解出错误的头部，调用方必须按
+     *       toHttp2ErrorCode() 的结论终止连接，reset() 之后才可复用（新连接专用）。
+     *       而超出本端头部上限只是否掉这一条头块：剩余表示照常解完（动态表照旧同步），因此不粘滞，
+     *       同一条连接的下一个头块仍然能解。见 isLimitExceeded()。
      * @warning 入参是一个**完整头块**：HEADERS 与 CONTINUATION 的片段由会话层按序拼好后一次喂入；
      *          本层不做跨帧拼接，也不看帧头标志。
      * @warning 头值的字节内容不做语法校验（大小写、是否含 NUL、是否合法 UTF-8 都不管）：本层只
@@ -767,17 +770,19 @@ namespace AsynGyanis::Net
         /**
          * @brief 解码一个完整的头块
          *
-         * @details 三种情况互斥且穷尽：已处于粘滞错误态 → 直接返回 false 且不动动态表；否则逐个
-         *          表示解码，任一表示出错即置粘滞错误态并返回 false；全部解完返回 true。
+         * @details 三种情况互斥且穷尽：已粘滞压缩错误 → 直接返回 false 且不动动态表；否则逐个表示
+         *          解码，任一表示解不开即置粘滞错误态并返回 false；越过头部上限时把剩余表示解完
+         *          （动态表照常演进）但不收字段，最后返回 false；全部解完且未越限返回 true。
          *
          * @param headerBlock 完整头块的字节，按「指针 + 长度」取，可含 NUL 与任意二进制
          * @param headerFields 输出参数：解出的头部，按到达顺序；进入调用时先清空，**失败时也会被清空**
          *        （解到一半的字段不留在这里，避免调用方漏掉「丢弃」这一步就把半截头块当成真的用）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
          * @return true 整个头块解完，headerFields 完整可用
-         * @return false 头块非法或超出上限：headerFields 为空（已清空），且解码器粘滞在
-         *         错误态直到 reset()，调用方应按 errorKind() 收场（COMPRESSION_ERROR 必须终止连接）
-         * @see errorKind(), toHttp2ErrorCode()
+         * @return false 头块非法或超出上限：headerFields 为空（已清空）。按 isLimitExceeded() 分两支
+         *         收场——越限只作废本头块所属的那一条流（连接照旧，本解码器也照旧可用），
+         *         压缩错误则已粘滞，调用方必须按 errorKind() 终止连接
+         * @see errorKind(), isLimitExceeded(), toHttp2ErrorCode()
          */
         [[nodiscard]] bool decode(std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields,
                                   std::string *errorText = nullptr);
@@ -799,6 +804,16 @@ namespace AsynGyanis::Net
          * @return HpackErrorKind 失败类别；未失败时为 None
          */
         [[nodiscard]] HpackErrorKind errorKind() const;
+
+        /**
+         * @brief 本次失败是否只因为超出本端的头部上限
+         * @details 与 HttpParser::isLimitExceeded() 同一口径：报文形态合法、只是体量越界。
+         *          这类失败不该牵连整条连接（RFC 9113 §10.5.1 给的处置是按 431 应答），
+         *          而压缩上下文出错没有「只作废一条流」的解法。
+         * @return true 头块被上限挡下，解码器仍可继续服务下一个头块
+         * @return false 未失败，或失败原因是压缩上下文出错
+         */
+        [[nodiscard]] bool isLimitExceeded() const noexcept;
 
         /**
          * @brief 获取错误信息描述（若有）。
@@ -857,12 +872,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool resolveIndexedField(std::size_t index, HpackHeaderField &field) const;
 
         /**
-         * @brief 收下一个头部：先判单条名/值长度与头列表总大小上限，再追加到输出
+         * @brief 收下一个头部：先判单条名/值长度与头列表总大小上限，越限则记下原因并到此为止
+         * @details 越限时不追加也不中断整块解码——动态表已经按对端的增量插好，剩下的表示必须继续
+         *          解完，否则两端的表错开，后面每个头块都会解成压缩错误。
          * @param field 待收下的头部，按移动收下
-         * @param headerFields 输出参数：解出的头部按序追加
-         * @return true 未超限且已追加
+         * @param headerFields 输出参数：未越限时按序追加
          */
-        [[nodiscard]] bool appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields);
+        void appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields);
 
         /**
          * @brief 统一的失败记录：置粘滞错误态并补上中文前缀
@@ -871,11 +887,18 @@ namespace AsynGyanis::Net
          */
         void recordFailure(HpackErrorKind errorKind, std::string reason);
 
+        /**
+         * @brief 记一次「超出本端头部上限」：不置粘滞错误态，只留下本轮的结论与文案
+         * @param reason 中文详情（不含前缀）
+         */
+        void noteHeaderLimitExceeded(std::string reason);
+
         HpackDecoderLimits m_limits{};   ///< 构造时按值落定的资源上限，没有中途更换的入口
         HpackDynamicTable m_dynamicTable;///< 动态表，与对端的编码器同步演进
 
         std::size_t m_headerListByteCount{0};      ///< 当前头块已解出的头列表大小（§6.5.2 算式）
         bool m_hasSeenHeaderRepresentation{false}; ///< 本头块是否已解出过一个头部：大小更新只许出现在它之前
+        bool m_isBeyondHeaderLimits{false};        ///< 本头块是否已越过头部上限：越过后剩余表示只解不收
 
         bool m_hasError{false};                    ///< 是否已发生解码错误
         HpackErrorKind m_errorKind{HpackErrorKind::None}; ///< 失败类别（决定上层回哪个错误码）

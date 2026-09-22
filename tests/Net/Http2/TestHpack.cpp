@@ -85,6 +85,26 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 造一条「带增量索引的字面量」表示（RFC 7541 §6.2.1），名与值都用字面量
+         * @details 名与值的长度都要小于 128 字节，因此长度各占一字节、且不置 Huffman 标志位。
+         * @param name 头名
+         * @param value 头值
+         * @return std::string 该表示的字节
+         */
+        std::string makeIncrementalLiteralField(const std::string_view name, const std::string_view value)
+        {
+            EXPECT_LT(name.size(), 128U) << "本助手不编码多位长度前缀";
+            EXPECT_LT(value.size(), 128U) << "本助手不编码多位长度前缀";
+            std::string bytes;
+            bytes.push_back(static_cast<char>(0x40));
+            bytes.push_back(static_cast<char>(name.size()));
+            bytes += name;
+            bytes.push_back(static_cast<char>(value.size()));
+            bytes += value;
+            return bytes;
+        }
+
+        /**
          * @brief 由「名 = 值」二元组拼出期望的头列表
          * @param entries 头部条目
          * @return std::vector<HpackHeaderField> 期望值
@@ -179,7 +199,9 @@ namespace AsynGyanis::Net
             std::string reason;
             EXPECT_FALSE(decoder.decode(headerBlock, headerFields, &reason)) << "这个头块本应解不开";
             EXPECT_EQ(decoder.errorKind(), expectedKind);
-            EXPECT_TRUE(decoder.hasError());
+            // 只有压缩上下文出错才粘滞：越限的头块整块解完，两端的表仍然同步，下一个头块照常能解
+            EXPECT_EQ(decoder.hasError(), expectedKind == HpackErrorKind::CompressionError);
+            EXPECT_EQ(decoder.isLimitExceeded(), expectedKind == HpackErrorKind::LimitExceeded);
             EXPECT_FALSE(reason.empty()) << "失败必须给出可排查的原因";
             EXPECT_EQ(reason, decoder.errorMessage()) << "出参与 errorMessage() 必须是同一份原因";
             return reason;
@@ -1146,6 +1168,36 @@ namespace AsynGyanis::Net
             expectHeaderListEquals(headerFields, {{"custom-key", "custom-header"}});
             EXPECT_TRUE(decoder.dynamicTableEntries().empty()) << "上限为 0 时任何项都进不了动态表";
         }
+    }
+
+    /**
+     * @brief 超出头部上限不粘滞解码器，且被拒绝的头块仍把动态表更新到位
+     * @details 这是「只作废这一条流」的前提：对端的编码器已经把这些项插进了它自己的表，本端不跟着
+     *          插就会让两端从此错开（RFC 9113 §10.5.1 要求头块必须处理完以保证连接状态一致）。
+     *          判据取「被拒绝块里最后插入的那一项随后能用索引取到」——表没同步就会解成 CompressionError。
+     */
+    TEST(Hpack, KeepsDynamicTableSyncedWhenHeaderLimitsRejectTheBlock)
+    {
+        // 名长 + 值长 + 32：第一项 63 字节过得去，第二项累计 136 字节撑爆 100 的上限
+        constexpr std::size_t kHeaderListLimit = 100;
+        const std::string firstField = makeIncrementalLiteralField("a", std::string(30, 'u'));
+        const std::string secondField = makeIncrementalLiteralField("b", std::string(40, 'v'));
+
+        HpackDecoder decoder(HpackDecoderLimits{.maximumHeaderListByteCount = kHeaderListLimit});
+        std::vector<HpackHeaderField> headerFields;
+        std::string reason;
+        ASSERT_FALSE(decoder.decode(firstField + secondField, headerFields, &reason)) << "累计 136 字节应当被 100 的上限挡下";
+        EXPECT_TRUE(headerFields.empty()) << "越限的头块不交出任何字段";
+        EXPECT_TRUE(decoder.isLimitExceeded()) << "越限要能与压缩错误区分开";
+        EXPECT_FALSE(decoder.hasError()) << "越限不许把解码器钉死，同一条连接的下一个头块还得解";
+        EXPECT_EQ(decoder.dynamicTableEntries().size(), 2U) << "被拒绝的块里两项带增量索引的都要进表";
+
+        // 62 是最后插入的那一项（b）：能按索引解回来就说明两端没有错开
+        ASSERT_TRUE(decoder.decode(std::string_view("\xbe", 1), headerFields, &reason)) << reason;
+        EXPECT_FALSE(decoder.isLimitExceeded());
+        ASSERT_EQ(headerFields.size(), 1U);
+        EXPECT_EQ(headerFields.front().name, "b");
+        EXPECT_EQ(headerFields.front().value, std::string(40, 'v'));
     }
 
     /**

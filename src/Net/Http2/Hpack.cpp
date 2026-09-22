@@ -525,6 +525,11 @@ namespace AsynGyanis::Net
             return false;
         }
 
+        // 本轮的结论要在入口处归零：上一轮可能因越限留下 errorKind 与文案，而越限不置粘滞标记，
+        // 不清的话这一轮即使解好了，errorKind() 仍会报上一次的结论
+        m_isBeyondHeaderLimits = false;
+        m_errorKind = HpackErrorKind::None;
+        m_errorMessage.clear();
         m_headerListByteCount = 0;
         m_hasSeenHeaderRepresentation = false;
         std::size_t consumed = 0;
@@ -540,6 +545,13 @@ namespace AsynGyanis::Net
                 return false;
             }
         }
+        // 越限不中断解码循环（动态表必须与对端同步），因此结论在循环走完后才落地
+        if (m_isBeyondHeaderLimits)
+        {
+            headerFields.clear();
+            writeError(errorText, m_errorMessage);
+            return false;
+        }
         return true;
     }
 
@@ -548,6 +560,7 @@ namespace AsynGyanis::Net
         m_dynamicTable = HpackDynamicTable(m_limits.maximumDynamicTableSizeByteCount);
         m_headerListByteCount = 0;
         m_hasSeenHeaderRepresentation = false;
+        m_isBeyondHeaderLimits = false;
         m_hasError = false;
         m_errorKind = HpackErrorKind::None;
         m_errorMessage.clear();
@@ -561,6 +574,11 @@ namespace AsynGyanis::Net
     HpackErrorKind HpackDecoder::errorKind() const
     {
         return m_errorKind;
+    }
+
+    bool HpackDecoder::isLimitExceeded() const noexcept
+    {
+        return m_isBeyondHeaderLimits;
     }
 
     std::string HpackDecoder::errorMessage() const
@@ -614,7 +632,8 @@ namespace AsynGyanis::Net
                 return false;
             }
             m_hasSeenHeaderRepresentation = true;
-            return appendField(std::move(field), headerFields);
+            appendField(std::move(field), headerFields);
+            return true;
         }
 
         if ((firstByte & kLiteralIncrementalIndexingMask) == kLiteralIncrementalIndexingPattern)
@@ -716,7 +735,8 @@ namespace AsynGyanis::Net
             m_dynamicTable.insert(HpackHeaderField{field.name, field.value});
         }
         m_hasSeenHeaderRepresentation = true;
-        return appendField(std::move(field), headerFields);
+        appendField(std::move(field), headerFields);
+        return true;
     }
 
     bool HpackDecoder::resolveIndexedField(const std::size_t index, HpackHeaderField &field) const
@@ -731,39 +751,50 @@ namespace AsynGyanis::Net
         return m_dynamicTable.tryGetEntry(index - kHpackFirstDynamicTableIndex, field);
     }
 
-    bool HpackDecoder::appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields)
+    void HpackDecoder::appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields)
     {
+        // 已经越限：这一项解出来了（动态表也照常插过），只是不再收集，也不重复记原因
+        if (m_isBeyondHeaderLimits)
+        {
+            return;
+        }
+
         // 单条长度先卡住：单条超长即使总量没超，上层拿到它也没法安全处理
         if (field.name.size() > m_limits.maximumHeaderFieldNameLength)
         {
-            recordFailure(HpackErrorKind::LimitExceeded,
-                          std::format("头名 {} 字节超出上限 {} 字节：请调高 HpackDecoderLimits::maximumHeaderFieldNameLength，"
-                                      "或让对端不要发这么长的头名",
-                                      field.name.size(), m_limits.maximumHeaderFieldNameLength));
-            return false;
+            noteHeaderLimitExceeded(std::format("头名 {} 字节超出上限 {} 字节：请调高 HpackDecoderLimits::"
+                                                "maximumHeaderFieldNameLength，或让对端不要发这么长的头名",
+                                                field.name.size(), m_limits.maximumHeaderFieldNameLength));
+            return;
         }
         if (field.value.size() > m_limits.maximumHeaderFieldValueLength)
         {
-            recordFailure(HpackErrorKind::LimitExceeded,
-                          std::format("头值 {} 字节超出上限 {} 字节：请调高 HpackDecoderLimits::maximumHeaderFieldValueLength，"
-                                      "或让对端不要发这么长的头值",
-                                      field.value.size(), m_limits.maximumHeaderFieldValueLength));
-            return false;
+            noteHeaderLimitExceeded(std::format("头值 {} 字节超出上限 {} 字节：请调高 HpackDecoderLimits::"
+                                                "maximumHeaderFieldValueLength，或让对端不要发这么长的头值",
+                                                field.value.size(), m_limits.maximumHeaderFieldValueLength));
+            return;
         }
 
         // 头列表总大小按 RFC 7540 §6.5.2 的算式累计：每项名长 + 值长 + 32
         m_headerListByteCount += field.name.size() + field.value.size() + kHpackDynamicTableEntryOverheadBytes;
         if (m_headerListByteCount > m_limits.maximumHeaderListByteCount)
         {
-            recordFailure(HpackErrorKind::LimitExceeded,
-                          std::format("本头块累计的头列表大小 {} 字节超出上限 {} 字节（RFC 7540 §6.5.2 的算式）："
-                                      "请调高 HpackDecoderLimits::maximumHeaderListByteCount，或让对端少发头部",
-                                      m_headerListByteCount, m_limits.maximumHeaderListByteCount));
-            return false;
+            noteHeaderLimitExceeded(std::format("本头块累计的头列表大小 {} 字节超出上限 {} 字节（RFC 7540 §6.5.2 的算式）："
+                                                "请调高 HpackDecoderLimits::maximumHeaderListByteCount，或让对端少发头部",
+                                                m_headerListByteCount, m_limits.maximumHeaderListByteCount));
+            return;
         }
 
         headerFields.push_back(std::move(field));
-        return true;
+    }
+
+    void HpackDecoder::noteHeaderLimitExceeded(std::string reason)
+    {
+        // 刻意不置 m_hasError：越限的头块已经整块解完，两端动态表仍然同步，
+        // 粘滞会让下一条无关的请求把整条连接带走（RFC 9113 §10.5.1 只要求按 431 应答这一条）
+        m_isBeyondHeaderLimits = true;
+        m_errorKind = HpackErrorKind::LimitExceeded;
+        m_errorMessage = "HPACK 头块超出本端上限：" + std::move(reason);
     }
 
     void HpackDecoder::recordFailure(const HpackErrorKind errorKind, std::string reason)

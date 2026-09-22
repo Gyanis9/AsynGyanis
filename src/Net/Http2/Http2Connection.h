@@ -141,6 +141,7 @@ namespace AsynGyanis::Net
         std::string authority;                      ///< :authority 原文；对端没带时为空
         std::vector<HpackHeaderField> headerFields; ///< 普通头部，按到达顺序，名已校验为小写
         bool hasBody{false};                        ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
+        bool isHeaderListTooLarge{false};           ///< 头块超出本端上限：各字段全为空，上层应按 431 应答而不是派发路由
         std::string protocol;                        ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
     };
 

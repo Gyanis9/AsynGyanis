@@ -696,29 +696,55 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：头列表超出本端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 时按 ENHANCE_YOUR_CALM 收场
-     * @details 依据：§7 把 ENHANCE_YOUR_CALM 列为「对端可能造成过量负载」的建议取值，而 HpackDecoder 在
-     *          超限后处于粘滞错误态、动态表已与对端编码器不同步，因此只能作为连接级故障终止。
+     * @brief 钉住：头列表超出本端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 只作废那一条流，连接照旧服务
+     * @details 依据：RFC 9113 §10.5.1「收不下这一条头块的服务端可以回 431（Request Header Fields Too
+     *          Large），且头块必须被处理完以保证连接状态一致」。上限是本端策略而非对端把压缩上下文
+     *          弄坏，因此既不粘滞解码器也不该终止连接——旧口径下一条超大头部就能打掉整条连接上所有
+     *          在跑的流，那是一枚远程可发的拒绝服务。
      */
-    TEST(Http2Connection, RejectsHeaderListBeyondTheAdvertisedLimit)
+    TEST(Http2Connection, RejectsHeaderListBeyondTheAdvertisedLimitOnThatStreamOnly)
     {
+        // 预算取 256 字节：最小 GET 请求块（177 字节）过得去，再叠一条 400 字节字面量就撑爆
         Http2ConnectionConfiguration configuration;
-        configuration.maximumHeaderListSize = 64U; // 只够放一两条头（§6.5.2 算式：名长 + 值长 + 32）
+        configuration.maximumHeaderListSize = 256U;
         Http2Connection connection(configuration);
         completeHandshake(connection);
 
-        // 一条 100 字节的头值就足以撑爆 64 字节的预算
-        const std::string headerBlock = makeMinimalGetRequestBlock() + hpackLiteralField("x-big", std::string(100, 'a'));
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)),
-                  Http2ConnectionFeedStatus::Failed);
-        EXPECT_EQ(connection.errorCode(), Http2ErrorCode::EnhanceYourCalm);
-        EXPECT_NE(connection.errorMessage().find("头块解码失败"), std::string::npos) << connection.errorMessage();
-        EXPECT_EQ(takeGoAwayErrorCode(connection.takeOutgoingBytes()), Http2ErrorCode::EnhanceYourCalm);
+        const std::string normalHeaderBlock = makeMinimalGetRequestBlock();
+        const std::string oversizedHeaderBlock = normalHeaderBlock + hpackLiteralField("x-big", std::string(400, 'a'));
+
+        EXPECT_EQ(feed(connection,
+                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, oversizedHeaderBlock)),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        const std::vector<Http2Request> rejectedRequests = connection.takeRequests();
+        ASSERT_EQ(rejectedRequests.size(), 1U) << "越限的头块仍要交给上层，由它按 431 应答";
+        EXPECT_TRUE(rejectedRequests.front().isHeaderListTooLarge);
+        EXPECT_EQ(rejectedRequests.front().streamId, 1U);
+        EXPECT_TRUE(rejectedRequests.front().method.empty()) << "越限的头块不交出任何字段";
+        EXPECT_TRUE(rejectedRequests.front().headerFields.empty());
+
+        // 同一连接上随后那条正常请求必须照常交出来：这是旧实现跑不到的一步（连接已经死了）
+        EXPECT_EQ(feed(connection,
+                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, normalHeaderBlock)),
+                  Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> followingRequests = connection.takeRequests();
+        ASSERT_EQ(followingRequests.size(), 1U);
+        EXPECT_FALSE(followingRequests.front().isHeaderListTooLarge);
+        EXPECT_EQ(followingRequests.front().method, "GET");
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        // 越限不该发出 GOAWAY：连接没有故障
+        for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "只作废一条流不该把整条连接判死";
+        }
 
         // 上限是配置项：同一个请求块在默认配置下必须通过
         Http2Connection defaults;
         completeHandshake(defaults);
-        EXPECT_EQ(feed(defaults, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)),
+        EXPECT_EQ(feed(defaults, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, oversizedHeaderBlock)),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(defaults.hasFailed()) << defaults.errorMessage();
         EXPECT_EQ(defaults.takeRequests().size(), 1U);
