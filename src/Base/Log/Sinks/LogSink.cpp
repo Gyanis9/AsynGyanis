@@ -26,12 +26,16 @@ namespace AsynGyanis::Base
 
     bool LogSink::shouldLog(const LogLevel level) const
     {
+        // 阈值只读一次：读两次就在两次取值之间留出一个窗口，并发的 setLevel(Off) 会让
+        // 「Off 一律不放行」这条承诺落空（第一读过了 Off 的判定、第二读拿到 Off，
+        // 而任何真实级别都 >= Off），刚被静音的 Sink 还会再吐一行
+        const LogLevel currentLevel = getLevel();
         // Off 表示关闭全部输出，且它本身不是可用于记录消息的等级，因此一律不放行
-        if (getLevel() == LogLevel::Off)
+        if (currentLevel == LogLevel::Off)
         {
             return false;
         }
-        return level >= getLevel();
+        return level >= currentLevel;
     }
 
     void LogSink::setFormatter(std::unique_ptr<LogFormatter> formatter)
