@@ -14,6 +14,7 @@
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Config/Detail/ReloadRoundGate.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Platform/FileSystem/FileWatcher.h"
 
@@ -349,10 +350,10 @@ namespace AsynGyanis::Base
         std::unique_ptr<Platform::FileWatcher>                 m_fileWatcher;                ///< 文件监控器（用于热加载）
         std::atomic<std::shared_ptr<const HotReloadCallback> > m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
         std::atomic<bool>                                      m_hotReloadEnabled{false};    ///< 热加载功能是否启用（true 启用，false 关闭）
-        std::atomic<bool>                                      m_reloadPending{false};       ///< 是否有重载任务正在执行（节流）
-        /// 重载进行期间又收到变更：由当前那轮任务在收尾时接力再来一轮。
-        /// 直接丢弃会让「重载恰好读到半截文件」变成常态——配置一直停在旧值，直到用户下一次改动
-        std::atomic<bool>                                      m_reloadDirty{false};
+        /// 重载轮次的节流闸门：一轮在跑时来的变更不丢，由世代号差别保证之后必有一轮重读到它。
+        /// 不用「pending + dirty 两面旗」——并发收尾时停在中途的那轮会把别人的欠账吃掉，
+        /// 配置就永久停在旧值直到用户下一次改动（详见 ReloadRoundGate 的 @details）
+        Detail::ReloadRoundGate                                m_reloadGate;
         std::mutex                                             m_reloadTasksMutex;           ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
         std::vector<std::unique_ptr<ReloadTask> >              m_reloadTasks;                ///< 活跃的重载任务（用于析构前 join）
 
@@ -364,16 +365,16 @@ namespace AsynGyanis::Base
         void collectFinishedReloadTasks();
 
         /**
-         * @brief 登记并启动一轮重载任务（调用方需先占住 m_reloadPending）
-         * @details 任务的收尾（清 pending、接力下一轮）在任务体内。线程起不来时不抛：
+         * @brief 登记并启动一轮重载任务（调用方需先占到执行权）
+         * @details 任务的收尾（交还执行权、按世代差别决定要不要再来一轮）在任务体内。线程起不来时不抛：
          *          调用它的是文件监视线程与重载线程，异常逃出线程函数即 std::terminate；
-         *          改由本函数把 pending 让回去并留 dirty，本轮让给下一次事件。
+         *          改由本函数交还执行权，本轮让给下一次事件。
          * @note 只负责登记与启动
          */
         void startReloadTask();
 
         /**
-         * @brief 安排一轮重载：已有任务在跑就只记脏，由那一轮在收尾时接力
+         * @brief 安排一轮重载：已有任务在跑就只记下变更，由世代号差别保证之后必有一轮覆盖它
          * @details 单个文件变更与「事件溢出、需要重扫整份目录」两条路都汇到这里——
          *          重载本来就是读完整份目录，两者不需要区分动作。
          */

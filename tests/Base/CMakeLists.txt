@@ -12,6 +12,7 @@ add_executable(TestBase
         Config/TestConfigValueType.cpp
         Config/TestConfigSchema.cpp
         Config/TestConfigManager.cpp
+        Config/TestReloadRoundGate.cpp
         Config/TestConfigHotPathAllocations.cpp
 
         Exception/TestException.cpp

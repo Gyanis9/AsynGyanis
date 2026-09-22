@@ -1304,16 +1304,19 @@ namespace AsynGyanis::Base
     }
 
     /**
-     * @brief 安排一轮重载：已在跑就记脏，由那一轮收尾时接力
+     * @brief 安排一轮重载：已在跑就只记下这次变更，由那一轮的收尾接力
      */
     void ConfigManager::scheduleReload()
     {
-        // 已有任务在跑：记下「之后还要再来一轮」而不是直接丢弃。重载要读完整份目录，
-        // 期间到达的变更（尤其是紧接着那次写入）会落在本轮之后——丢掉它配置就停在旧值，
-        // 直到用户下一次改动；接力由当前那轮任务在收尾时完成
-        if (bool expected = false; !m_reloadPending.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        // 先把「又要重读」记进世代号，再去抢执行权：抢不到时正在跑的那一轮收尾会比对自己开始时的
+        // 快照，看到差别就再来一轮。反过来（先抢后记）可能让那一轮刚好比对在这次记录之前，
+        // 这次变更就没人接力了
+        m_reloadGate.noteChanged();
+
+        // 已有任务在跑：不重复起轮，交给它那轮的接力。重载要读完整份目录，期间到达的变更
+        // （尤其是紧接着那次写入）会落在本轮之后——丢掉它配置就停在旧值，直到用户下一次改动
+        if (!m_reloadGate.claimRound())
         {
-            m_reloadDirty.store(true, std::memory_order_release);
             return;
         }
 
@@ -1347,14 +1350,17 @@ namespace AsynGyanis::Base
             LOG_ERROR_FMT("ConfigManager: 启动热重载任务失败（非标准异常），本轮重载让给下一次事件");
         }
 
-        // 起不来时由这里把进入本函数前占住的 pending 让回去，并把这一轮的需求留在 dirty 上：
-        // pending 若停在 true，之后每条变更都只会记下 dirty 而没人接力，热重载永久停摆
-        m_reloadDirty.store(true, std::memory_order_release);
-        m_reloadPending.store(false, std::memory_order_release);
+        // 起不来时把刚抢到的执行权交还：本轮就此作罢，等下一次事件重新起轮。
+        // 这里刻意不做接力（releaseRound 会在有新变更时再起一轮）——线程本来就起不来，
+        // 接力只会在这条失败路径上原地递归
+        m_reloadGate.finishRunning();
     }
 
     void ConfigManager::runReloadTask(ReloadTask *rawTask)
     {
+        // 本轮开始前的世代快照：收尾时与当前值比对，不同就说明「本轮跑完之后或跑的过程中」
+        // 又有变更落盘，那笔变更本轮没读到，必须再来一轮
+        const std::uint64_t observedGeneration = m_reloadGate.observedGeneration();
         // 任务体的顶层兜底：doReload() 与用户回调都可能抛（解析失败、类型不符、用户代码）。
         // 让异常逃出线程函数就是 std::terminate 把整个进程带走——这里收口成一次「失败的重载」，
         // 并照常通知回调，免得调用方以为配置已经刷新
@@ -1396,15 +1402,13 @@ namespace AsynGyanis::Base
             LOG_ERROR_FMT("ConfigManager: 热重载任务抛出非标准异常，本轮按失败处理");
         }
 
-        // 接力：先清 pending 再看 dirty——顺序反过来的话，「清 pending 之后、检查 dirty 之前」
-        // 到达的变更会被漏掉。抢不到 pending 说明别的触发者已经接手，它那轮同样会看到 dirty
-        m_reloadPending.store(false, std::memory_order_release);
-        if (m_reloadDirty.exchange(false, std::memory_order_acq_rel))
+        // 接力：先交还执行权，再比对自己那份世代快照。顺序不能反——反了会让「交还之后、
+        // 比对之前」到达的变更没人接力。比对而不是清标记，是因为收尾可以并发：一轮交还执行权
+        // 之后它的收尾代码还在跑，另一轮已经起好并跑完，此时若共用一面脏标记，停在中间那一格
+        // 的旧轮次会把别人记下的欠账吃掉，而它自己又抢不到接力权——那笔变更再没人重读
+        if (m_reloadGate.releaseRound(observedGeneration))
         {
-            if (bool expected = false; m_reloadPending.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-            {
-                startReloadTask();
-            }
+            startReloadTask();
         }
         rawTask->finished.store(true, std::memory_order_release);
     }
