@@ -41,35 +41,93 @@ namespace AsynGyanis::Base
             std::filesystem::file_time_type writeTime; ///< 预先取好的最后写入时间
         };
 
+        /// 路径的字符串刻度：Windows 上是 wstring，POSIX 上是 string。文件名一律按这个刻度拼与比，
+        /// 换成窄串会经过本地代码页——落在代码页外的字符要么变成 '?'（写到改了名的文件上），
+        /// 要么直接抛出（清理与滚动路径上多一次不该有的失败）
+        using PathText = std::filesystem::path::string_type;
+
+        /// 路径刻度下的字符串视图：目录扫描里免掉逐条临时串
+        using PathView = std::basic_string_view<PathText::value_type>;
+
+        /**
+         * @brief 把只含 ASCII 的文本换成路径刻度
+         * @details 序号与时间后缀都由数字、点、连字符、下划线组成，宽窄两种刻度逐位等同，
+         *          因此这条转换不经过任何编码，也就不会失败。
+         * @param text 只含 ASCII 的文本
+         * @return PathText 路径刻度下的同一段文本
+         */
+        [[nodiscard]] PathText pathTextFromAscii(const std::string &text)
+        {
+            return PathText(text.begin(), text.end());
+        }
+
+        /**
+         * @brief 把基础文件名切成「主名 + 含点号扩展名」两段
+         * @details 走 path 自己的 stem/extension 口径，且活动名、备份名、清理识别三处共用这一处：
+         *          两处口径不一致就会认不出自己产出的备份，max_backup 形同虚设。
+         * @param baseFilename 基础文件名
+         * @return std::pair<PathText, PathText> 主名与扩展名（无扩展名时第二段为空）
+         */
+        [[nodiscard]] std::pair<PathText, PathText> splitBaseFilename(const std::filesystem::path &baseFilename)
+        {
+            return {baseFilename.stem().native(), baseFilename.extension().native()};
+        }
+
+        /**
+         * @brief 按「主名.中段.扩展名」拼出活动文件名或备份文件名
+         * @param namePart 主名（路径刻度）
+         * @param middle 只含 ASCII 的中段：大小策略的序号、周期策略的时间后缀（可再带冲突序号）
+         * @param extensionPart 含点号的扩展名（路径刻度），可为空
+         * @return PathText 不含目录的文件名
+         */
+        [[nodiscard]] PathText joinDottedName(const PathText &namePart, const std::string &middle, const PathText &extensionPart)
+        {
+            PathText filename = namePart;
+            filename += pathTextFromAscii("." + middle);
+            filename += extensionPart;
+            return filename;
+        }
+
+        /**
+         * @brief 判断备份名中段的字符是否只可能是「序号或时间戳」
+         * @param character 中段的单个字符
+         * @return true 属于数字、点、连字符、下划线之一
+         */
+        [[nodiscard]] bool isBackupMiddleCharacter(const PathText::value_type character) noexcept
+        {
+            return (character >= '0' && character <= '9') || character == '.' || character == '-' || character == '_';
+        }
+
         /**
          * @brief 按大小滚动前把已有备份整体向后顺移一位，为空出 1 号位
          * @param directory 日志目录
          * @param namePart 去掉扩展名的基础文件名
-         * @param extensionPart 含点号的扩展名，无扩展名时为空串
+         * @param extensionPart 含点号的扩展名，无扩展名时为空
          * @param maximumBackupFiles 允许保留的备份数量上限
          * @note 必须从最大序号倒序移动，正序会把后一个备份直接覆盖
          */
-        void rotateSizeBackups(const std::filesystem::path &directory, const std::string &namePart, const std::string &extensionPart, const std::size_t maximumBackupFiles)
+        void rotateSizeBackups(const std::filesystem::path &directory, const PathText &namePart, const PathText &extensionPart,
+                               const std::size_t maximumBackupFiles)
         {
             // 序号一路用 std::size_t 走到底：转成 int 会在上限以上回绕成负数，于是整个顺移循环
             // 一步不跑，后面的 rename 直接把 1 号备份盖掉——保留 N 份配置实际只剩 1 份
             const std::size_t highestIndex = maximumBackupFiles == 0 ? 1U : maximumBackupFiles;
             for (std::size_t index = highestIndex; index >= 1U; --index)
             {
-                std::error_code             errorCode;
-                const std::filesystem::path sourcePath = directory / std::format("{}.{}{}", namePart, index, extensionPart);
+                std::error_code errorCode;
+                const std::filesystem::path sourcePath = directory / joinDottedName(namePart, std::to_string(index), extensionPart);
                 if (!std::filesystem::exists(sourcePath, errorCode) || errorCode)
                 {
                     continue;
                 }
                 // 顺移失败时保持原文件不动，后续 cleanupOldFiles 仍会按上限收敛
-                const std::filesystem::path targetPath = directory / std::format("{}.{}{}", namePart, index + 1, extensionPart);
+                const std::filesystem::path targetPath = directory / joinDottedName(namePart, std::to_string(index + 1), extensionPart);
                 std::filesystem::rename(sourcePath, targetPath, errorCode);
             }
         }
     } // namespace
 
-    RollingFileSink::RollingFileSink(std::string           baseFilename,
+    RollingFileSink::RollingFileSink(std::filesystem::path baseFilename,
                                      std::filesystem::path directory,
                                      const RollingPolicy   policy,
                                      const size_t          maximumSizeBytes,
@@ -160,37 +218,27 @@ namespace AsynGyanis::Base
             const auto currentPath = getCurrentFilename();
             if (std::error_code existsError; std::filesystem::exists(currentPath, existsError) && !existsError)
             {
-                const auto  dotPosition = m_baseFilename.rfind('.');
-                std::string namePart;
-                std::string extensionPart;
-                if (dotPosition != std::string::npos)
-                {
-                    namePart      = m_baseFilename.substr(0, dotPosition);
-                    extensionPart = m_baseFilename.substr(dotPosition);
-                } else
-                {
-                    namePart = m_baseFilename;
-                }
-
-                std::string backupFilename;
+                const auto [namePart, extensionPart] = splitBaseFilename(m_baseFilename);
+                PathText   backupName;
                 if (m_policy == RollingPolicy::Size)
                 {
                     // 已有备份整体向后顺移一位，空出 .1，避免序号耗尽后覆盖最旧备份
                     rotateSizeBackups(m_directory, namePart, extensionPart, m_maximumBackupFiles);
-                    backupFilename = std::format("{}.1{}", namePart, extensionPart);
+                    backupName = joinDottedName(namePart, "1", extensionPart);
                 } else
                 {
-                    backupFilename = std::format("{}.{}{}", namePart, m_currentSuffix, extensionPart);
+                    backupName = joinDottedName(namePart, m_currentSuffix, extensionPart);
                     // 同一周期内已有备份（例如进程重启后再次滚动）时追加序号，不覆盖历史内容
-                    for (int collisionIndex = 2; std::filesystem::exists(m_directory / backupFilename) && collisionIndex <= kMaximumSuffixCollisions;
+                    for (int collisionIndex = 2;
+                         std::filesystem::exists(m_directory / backupName) && collisionIndex <= kMaximumSuffixCollisions;
                          ++collisionIndex)
                     {
-                        backupFilename = std::format("{}.{}.{}{}", namePart, m_currentSuffix, collisionIndex, extensionPart);
+                        backupName = joinDottedName(namePart, m_currentSuffix + "." + std::to_string(collisionIndex), extensionPart);
                     }
                 }
 
                 std::error_code renameError;
-                std::filesystem::rename(currentPath, m_directory / backupFilename, renameError);
+                std::filesystem::rename(currentPath, m_directory / backupName, renameError);
                 if (renameError)
                 {
                     // 重命名失败（目标目录只读、跨卷等）时清空当前文件：
@@ -218,18 +266,14 @@ namespace AsynGyanis::Base
 
     std::filesystem::path RollingFileSink::getCurrentFilename() const
     {
-        std::string filename = m_baseFilename;
-        if (m_policy == RollingPolicy::Daily || m_policy == RollingPolicy::Hourly)
+        if (m_policy == RollingPolicy::Size)
         {
-            if (const auto dotPosition = filename.rfind('.'); dotPosition != std::string::npos)
-            {
-                filename.insert(dotPosition, "." + m_currentSuffix);
-            } else
-            {
-                filename += "." + m_currentSuffix;
-            }
+            return m_directory / m_baseFilename;
         }
-        return m_directory / filename;
+        // 周期策略把时间后缀插在扩展名之前（app.log -> app.2026-09-22.log），与备份名同一套拼法，
+        // 否则清理那侧按前缀认不出自己的产物
+        const auto [namePart, extensionPart] = splitBaseFilename(m_baseFilename);
+        return m_directory / joinDottedName(namePart, m_currentSuffix, extensionPart);
     }
 
     std::string RollingFileSink::generateTimestampSuffix() const
@@ -265,14 +309,13 @@ namespace AsynGyanis::Base
     {
         // m_maximumBackupFiles == 0 表示不保留任何备份，备份列表仍需要构建并全部清理
         std::vector<BackupEntry> backupFiles;
-        const auto               dotPosition = m_baseFilename.rfind('.');
-        const std::string        namePart    = (dotPosition != std::string::npos) ? m_baseFilename.substr(0, dotPosition) : m_baseFilename;
-        const std::string        extensionPart = (dotPosition != std::string::npos) ? m_baseFilename.substr(dotPosition) : std::string{};
-        const std::string        activeName  = getCurrentFilename().filename().string();
+        const auto               [namePart, extensionPart] = splitBaseFilename(m_baseFilename);
+        const PathText           activeName                = getCurrentFilename().filename().native();
 
         // 前缀只构造一次，比较用 view：逐目录项拼临时串会把整目录扫描变成分配热点
-        const std::string      backupPrefix = namePart + ".";
-        const std::string_view backupPrefixView{backupPrefix};
+        const PathText backupPrefix     = namePart + pathTextFromAscii(".");
+        const PathView backupPrefixView{backupPrefix};
+        const PathView extensionView{extensionPart};
 
         for (std::error_code errorCode; const auto &entry: std::filesystem::directory_iterator(m_directory, errorCode))
         {
@@ -280,14 +323,15 @@ namespace AsynGyanis::Base
             {
                 break;
             }
-            const std::string filename = entry.path().filename().string();
+            const PathText filename     = entry.path().filename().native();
+            const PathView filenameView{filename};
             // 备份名只有两种形态：`name.N.ext`（大小策略的序号备份）与 `name.<时间戳>[.N].ext`
             // （周期策略，时间戳形如 2026-09-16 或 2026-09-16_07，本身带连字符与下划线）。
             // 因此中间那段只允许数字、点、连字符与下划线：只按前缀匹配会把 app.audit.log 这类
             // 同前缀的无关文件也扫进删除区间，那是数据丢失；而不认 `-`/`_` 会让周期备份
             // 永远清不掉——max_backup 形同虚设，日志目录无界增长
-            const bool hasBackupPrefix = filename != activeName && std::string_view(filename).starts_with(backupPrefixView) &&
-                                         std::string_view(filename).ends_with(extensionPart);
+            const bool hasBackupPrefix = filename != activeName && filenameView.starts_with(backupPrefixView) &&
+                                         filenameView.ends_with(extensionView);
             if (!hasBackupPrefix)
             {
                 continue;
@@ -295,18 +339,13 @@ namespace AsynGyanis::Base
             // 前缀与后缀合起来可能比文件名本身还长：大小策略留下的 app.1.log 交给按天策略清理时
             // 就是这种形状（长度 7 小于前缀 4 加后缀 4）。先挡掉再算中段，否则下面的长度减法
             // 会回绕成天量、读到串尾之外
-            if (filename.size() < backupPrefixView.size() + extensionPart.size())
+            if (filename.size() < backupPrefixView.size() + extensionView.size())
             {
                 continue;
             }
-            const std::string_view middlePart{filename.data() + backupPrefixView.size(),
-                                              filename.size() - backupPrefixView.size() - extensionPart.size()};
-            const bool isBackupName = !middlePart.empty() &&
-                                      std::ranges::all_of(middlePart, [](const char character)
-                                      {
-                                          return (character >= '0' && character <= '9') || character == '.' ||
-                                                 character == '-' || character == '_';
-                                      });
+            const PathView middlePart{filename.data() + backupPrefixView.size(),
+                                      filename.size() - backupPrefixView.size() - extensionView.size()};
+            const bool     isBackupName = !middlePart.empty() && std::ranges::all_of(middlePart, isBackupMiddleCharacter);
             if (isBackupName)
             {
                 // 时间戳在排序前一次性读好：比较器里再调 last_write_time 会在出错时抛异常，

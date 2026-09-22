@@ -268,7 +268,9 @@ namespace AsynGyanis::Base
             // 相对路径基于基准目录解析，避免依赖进程工作目录
             const std::filesystem::path filePath = resolveLogPath(*pathOptional, baseDirectory);
             const bool                  truncate = optionalFieldWithDiagnosis(sinkConfiguration, "truncate", false, "file sink");
-            LOG_INFO_FMT("文件日志输出：{}", filePath.string());
+            // 路径文本按 UTF-8 报：`path::string()` 走本地代码页，代码页外的字符直接抛出，
+            // 一条「日志写到哪了」的说明不该把整次装配打断
+            LOG_INFO_FMT("文件日志输出：{}", AsynGyanis::Platform::FileSystem::utf8FromPath(filePath));
             sink = std::make_unique<FileSink>(filePath, truncate);
         } else if (type == "rolling_file")
         {
@@ -336,7 +338,10 @@ namespace AsynGyanis::Base
             }
             const size_t maximumBackupCount = static_cast<size_t>(clampedMaximumBackupCount);
 
-            sink = std::make_unique<RollingFileSink>(*baseOptional, logDirectory, policy, maximumSizeBytes, maximumBackupCount);
+            // 基础文件名同样按 UTF-8 解成 path 再交给 Sink：直接交窄串，Sink 内部与目录拼接时
+            // 会过一遍本地代码页，代码页外的字符变成 '?'，滚动日志就此写到改了名的文件上
+            sink = std::make_unique<RollingFileSink>(AsynGyanis::Platform::FileSystem::pathFromUtf8(*baseOptional), logDirectory, policy,
+                                                     maximumSizeBytes, maximumBackupCount);
         } else if (type == "async")
         {
             if (!sinkConfiguration.contains("wrapped"))

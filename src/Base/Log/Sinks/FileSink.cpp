@@ -1,4 +1,5 @@
 #include "Base/Log/Sinks/FileSink.h"
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/Platform.h"
 
 #include <algorithm>
@@ -98,7 +99,9 @@ namespace AsynGyanis::Base
         m_file.open(m_filePath, mode);
         if (!m_file.is_open())
         {
-            throw std::runtime_error("无法打开日志文件：" + m_filePath.string() + directoryError);
+            // 路径按 UTF-8 拼进异常文本：`path::string()` 走本地代码页，代码页外的字符会直接抛出，
+            // 那时逃出去的是「无法转码」而不是真正的打开失败，定位信息反而丢了
+            throw std::runtime_error("无法打开日志文件：" + AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath) + directoryError);
         }
     }
 
@@ -148,7 +151,8 @@ namespace AsynGyanis::Base
             if (!m_hasReportedWriteFailure)
             {
                 m_hasReportedWriteFailure = true;
-                std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）：" << m_filePath.string()
+                std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）："
+                        << AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath)
                         << "；流已失效，后续日志不会再落盘，重新打开该文件（reopen）后恢复" << '\n';
             }
             return 0;

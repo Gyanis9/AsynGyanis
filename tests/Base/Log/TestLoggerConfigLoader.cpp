@@ -11,6 +11,7 @@
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/RollingFileSink.h"
 #include "BaseTestSupport.h"
+#include "Platform/FileSystem/FileSystem.h"
 
 #include "TestHelpers.h"
 
@@ -801,6 +802,66 @@ namespace AsynGyanis::Base
         logAndFlush("root", LogLevel::Info, "nested directory line");
 
         EXPECT_TRUE(contains(readTemporaryFile("nested/deep/nested_app.log"), "nested directory line"));
+    }
+
+    // ---- 文件名文本的编码口径：file 与 rolling_file 成对，两处都是「UTF-8 配置文本 -> 原生刻度」 ----
+    // POSIX 上窄串与原生刻度逐字节相同，因此这两条只有 Windows 侧能证伪（那里窄串要过本地代码页，
+    // 代码页外的字符会变成 '?'，日志就写到另一个名字上，而进程一切正常、无人报警）
+
+    TEST_F(LoggerConfigLoaderTest, FileSinkKeepsPathTextOutsideLocalCodePage)
+    {
+        static constexpr std::string_view kPathTextUtf8 = "日志-🐳.log";
+
+        loadConfiguration(std::string{"logging:\n"
+                                      "  global_level: INFO\n"
+                                      "  loggers:\n"
+                                      "    root:\n"
+                                      "      level: INFO\n"
+                                      "      sinks:\n"
+                                      "        - type: file\n"
+                                      "          path: "}
+                          + std::string{kPathTextUtf8} + "\n");
+
+        applyLogging();
+
+        const std::filesystem::path expectedPath =
+                m_temporaryDirectory.path() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{kPathTextUtf8});
+        ASSERT_TRUE(std::filesystem::exists(expectedPath));
+
+        logAndFlush("root", LogLevel::Info, "file sink code page line");
+
+        EXPECT_TRUE(contains(readTextFile(expectedPath), "file sink code page line"));
+    }
+
+    TEST_F(LoggerConfigLoaderTest, RollingFileSinkKeepsBaseFilenameOutsideLocalCodePage)
+    {
+        static constexpr std::string_view kBaseFilenameUtf8 = "应用-🐳.log";
+
+        loadConfiguration(std::string{"logging:\n"
+                                      "  global_level: INFO\n"
+                                      "  loggers:\n"
+                                      "    root:\n"
+                                      "      level: INFO\n"
+                                      "      sinks:\n"
+                                      "        - type: rolling_file\n"
+                                      "          base_filename: "}
+                          + std::string{kBaseFilenameUtf8} + R"(
+          directory: rolling
+          policy: size
+          max_size_mb: 2
+          max_backup: 3
+)");
+
+        applyLogging();
+
+        // 目录侧已经是 path 刻度（这一半早就修好了），落空的只会是文件名那一段
+        const std::filesystem::path expectedPath =
+                temporaryPath("rolling") / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{kBaseFilenameUtf8});
+        ASSERT_TRUE(std::filesystem::exists(expectedPath));
+
+        logAndFlush("root", LogLevel::Info, "rolling sink code page line");
+
+        EXPECT_TRUE(contains(readTextFile(expectedPath), "rolling sink code page line"));
     }
 
     TEST_F(LoggerConfigLoaderTest, FileSinkAppendsToExistingFileByDefault)

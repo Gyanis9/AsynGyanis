@@ -54,13 +54,15 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 构造滚动文件 Sink
-         * @param baseFilename 基础文件名
+         * @param baseFilename 基础文件名（路径刻度，只取其中的文件名段做主名与扩展名切分）。
+         *                     由 UTF-8 配置文本进来时要先经 `Platform::FileSystem::pathFromUtf8`，
+         *                     直接交窄串会在 Windows 上过一遍本地代码页
          * @param directory 日志目录
          * @param policy 滚动策略
          * @param maximumSizeBytes 按大小滚动时的阈值（字节）
          * @param maximumBackupFiles 最大保留备份文件数，超过 kMaximumBackupFileCount 时按该上限钳制
          */
-        RollingFileSink(std::string           baseFilename,
+        RollingFileSink(std::filesystem::path baseFilename,
                         std::filesystem::path directory,
                         RollingPolicy         policy,
                         size_t                maximumSizeBytes   = 10 * 1024 * 1024,
@@ -129,7 +131,7 @@ namespace AsynGyanis::Base
          */
         void cleanupOldFiles() const;
 
-        std::string           m_baseFilename;       ///< 基础文件名
+        std::filesystem::path m_baseFilename;       ///< 基础文件名（路径刻度：备份名与活动名都按它拼）
         std::filesystem::path m_directory;          ///< 日志目录
         RollingPolicy         m_policy;             ///< 滚动策略
         size_t                m_maximumSizeBytes;   ///< 按大小滚动阈值（字节）
