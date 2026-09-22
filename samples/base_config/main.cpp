@@ -15,6 +15,19 @@ using namespace AsynGyanis;
 
 namespace
 {
+/**
+ * @brief 给一段演示开一个专属子目录
+ * @details 每段演示都必须各用各的目录：热重载与 reload() 重扫的是「锚点目录里的全部配置」，
+ *          共用一个目录就等于把前面演示留下的坏文件（broken.yaml 一类）塞进后面演示的加载范围，
+ *          表现为「示例明明通过了，却是在一次部分失败的加载上通过的」
+ */
+std::filesystem::path sampleDirectory(const std::filesystem::path &root, const std::string &name)
+{
+    const std::filesystem::path directory = root / name;
+    std::filesystem::create_directories(directory);
+    return directory;
+}
+
     /// 往指定路径写一份文本配置（父目录不存在时一并建出来）
     void writeTextFile(const std::filesystem::path &path, const std::string &text)
     {
@@ -23,8 +36,9 @@ namespace
         output << text;
     }
 
-    void demonstrateLoading(const std::filesystem::path &directory)
+    void demonstrateLoading(const std::filesystem::path &root)
     {
+        const std::filesystem::path directory = sampleDirectory(root, "loading");
         writeTextFile(directory / "app.yaml",
                       "server:\n"
                       "  port: 8080\n"
@@ -57,8 +71,9 @@ namespace
         Samples::checklist().check(reloaded.success, "reload 能按同一批路径重放配置");
     }
 
-    void demonstrateValueAccess(const std::filesystem::path &directory)
+    void demonstrateValueAccess(const std::filesystem::path &root)
     {
+        const std::filesystem::path directory = sampleDirectory(root, "typed");
         writeTextFile(directory / "typed.yaml",
                       "limits:\n"
                       "  maximum_body: 1048576\n"
@@ -94,8 +109,9 @@ namespace
                                    "validateRequired 只列出缺失的那几个键");
     }
 
-    void demonstrateSchemaValidation(const std::filesystem::path &directory)
+    void demonstrateSchemaValidation(const std::filesystem::path &root)
     {
+        const std::filesystem::path directory = sampleDirectory(root, "schema");
         auto &manager = Base::ConfigManager::instance();
 
         const Base::ConfigSchema schema = {
@@ -128,8 +144,10 @@ namespace
         }
     }
 
-    void demonstrateFailurePaths(const std::filesystem::path &directory)
+    void demonstrateFailurePaths(const std::filesystem::path &root)
     {
+        // 这一段刻意留下语法坏掉的文件，就更不能与别的演示共用目录
+        const std::filesystem::path directory = sampleDirectory(root, "failures");
         auto &manager = Base::ConfigManager::instance();
 
         // 文件不存在：加载整体失败并给出原因，而不是留下一份「看起来加载过」的空配置
@@ -144,8 +162,9 @@ namespace
         Samples::checklist().check(!broken.success, "语法坏掉的 YAML 被拒，不会装进半份配置");
     }
 
-    void demonstrateHotReload(const std::filesystem::path &directory)
+    void demonstrateHotReload(const std::filesystem::path &root)
     {
+        const std::filesystem::path directory = sampleDirectory(root, "hot");
         const auto path = directory / "hot.yaml";
         writeTextFile(path, "runtime:\n  flag: off\n");
 
@@ -154,9 +173,16 @@ namespace
         static_cast<void>(manager.loadFiles({path}));
 
         std::atomic<bool> isCallbackFired{false};
+        std::atomic<bool> isReloadCompletelySuccessful{false};
         // 回调里只置标记：热重载回调在监视线程上跑，重活都不该在这里做
-        if (!manager.enableHotReload([&isCallbackFired](const Base::ConfigLoadResult &)
-                                     { isCallbackFired.store(true, std::memory_order_release); }))
+        if (!manager.enableHotReload(
+                    [&](const Base::ConfigLoadResult &result)
+                    {
+                        // success 为假意味着这一轮有文件没读进来——值可能已经换上去了，
+                        // 但配置只是半份。只断言「响过」会把这种部分失败当成热重载正常工作
+                        isReloadCompletelySuccessful.store(result.success, std::memory_order_release);
+                        isCallbackFired.store(true, std::memory_order_release);
+                    }))
         {
             Samples::checklist().check(false, "enableHotReload 应当能装上文件监视");
             return;
@@ -169,6 +195,8 @@ namespace
                 [&manager] { return manager.getString("runtime.flag") == "on"; }, std::chrono::seconds{8});
         Samples::checklist().check(isReloaded, "改动文件后热重载把新值装了进来");
         Samples::checklist().check(isCallbackFired.load(std::memory_order_acquire), "热重载回调被调用过");
+        Samples::checklist().check(isReloadCompletelySuccessful.load(std::memory_order_acquire),
+                                   "热重载那一轮把目录里的每个配置文件都读进来了（没有部分失败）");
         manager.disableHotReload();
     }
 }
