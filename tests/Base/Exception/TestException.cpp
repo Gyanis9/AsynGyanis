@@ -6,6 +6,7 @@
 #include "Base/Exception/ConfigParseException.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/ExceptionStackTrace.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Base/Exception/NetworkException.h"
@@ -131,6 +132,51 @@ namespace AsynGyanis::Base
             GTEST_SKIP() << "本构建未启用 std::stacktrace（降级为空实现）";
         }
         EXPECT_GE(exception.stackTrace().size(), 1U) << "用法错误这条链同样要携带抛出点栈";
+    }
+
+    // ============================================================================
+    // tryStackTrace：只 catch 到 std::exception 时取回抛出点栈（日志宏的异常出口靠它）
+    // ============================================================================
+
+    TEST(ExceptionStackTraceAccess, ResolvesEveryFrameworkChainToItsOwnStackTrace)
+    {
+        const Exception                 runtimeFailure("运行期故障");
+        const LogicException            usageFailure("用法错误");
+        const InvalidArgumentException  invalidValue("取值非法");
+        // 派生类也要认得：ConfigValidationException 只是借基类带上栈，识别依据是运行期类型
+        const ConfigValidationException validationFailure("server.port", "取值超出范围");
+
+        EXPECT_NE(tryStackTrace(runtimeFailure), nullptr) << "这条链漏识别时，日志里只剩消息没有栈";
+        EXPECT_NE(tryStackTrace(usageFailure), nullptr) << "logic_error 分支漏识别";
+        EXPECT_NE(tryStackTrace(invalidValue), nullptr) << "InvalidArgumentException 与 LogicException 是兄弟而非父子，只能各自识别一次";
+        EXPECT_NE(tryStackTrace(validationFailure), nullptr) << "按基类接口传进来的派生类同样要取到栈";
+
+        // 交回的必须是异常自己持有的那一份而不是副本，否则解析出的帧与调用方拿到的不是同一次采样
+        EXPECT_EQ(tryStackTrace(runtimeFailure), &runtimeFailure.stackTrace());
+        EXPECT_EQ(tryStackTrace(invalidValue), &invalidValue.stackTrace());
+    }
+
+    TEST(ExceptionStackTraceAccess, ReturnsNullForForeignExceptions)
+    {
+        const std::runtime_error foreignFailure("标准库异常，不带框架的栈");
+        const std::logic_error   foreignUsage("用法错误的标准库分支");
+
+        // Exception 派生自 std::runtime_error，反过来不成立：外来异常不能误报成「有栈可解析」
+        EXPECT_EQ(tryStackTrace(foreignFailure), nullptr);
+        EXPECT_EQ(tryStackTrace(foreignUsage), nullptr);
+    }
+
+    TEST(ExceptionStackTraceAccess, InvalidArgumentChainCarriesTheThrowSiteFrames)
+    {
+        const InvalidArgumentException invalidValue("取值非法");
+
+        const CapturedStackTrace *captured = tryStackTrace(invalidValue);
+        ASSERT_NE(captured, nullptr) << "取不到栈就无从判断这条链有没有在构造时采样";
+        if (captured->empty())
+        {
+            GTEST_SKIP() << "本构建未启用 std::stacktrace（降级为空实现）";
+        }
+        EXPECT_GE(captured->size(), 1U) << "第三条链也得在构造那一刻采到抛出点帧";
     }
 
     // ============================================================================
