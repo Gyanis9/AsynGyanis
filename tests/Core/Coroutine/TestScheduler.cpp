@@ -271,4 +271,39 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.hasWork());
     }
 
+    /**
+     * @brief 一趟 runAll() 不把跨线程投递吃到见底：做满上限就把控制权交回调用方，剩下的分趟取完且一条不丢
+     * @details 钉住的是公平性上界——投递方（执行器完成回调、别的循环移交的连接）可以长期不断流，
+     *          没有上界的一趟会让事件循环再也回不到 epoll_wait，同循环上的套接字一个事件都收不到。
+     *          同时钉住「剩余仍算待办」：漏记账会让循环带着积压睡在 epoll 上，那是比慢更糟的挂死
+     */
+    TEST(Scheduler, SingleRunAllPassIsBoundedOnRemoteQueue)
+    {
+        Scheduler        scheduler;
+        std::atomic<int> executed{0};
+
+        constexpr int kPostCount = static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass) * 3;
+        for (int index = 0; index < kPostCount; ++index)
+        {
+            scheduler.postRemote([&executed]
+            {
+                executed.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+
+        scheduler.runAll();
+
+        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass))
+            << "一趟 runAll() 吃掉了超过上限的跨线程投递：调用方拿不回控制权，IO 事件会被饿死";
+        EXPECT_TRUE(scheduler.hasWork()) << "剩下的投递没被算成待办：循环会带着积压睡在 epoll 上";
+
+        // 分趟取用必须最终把所有投递做完：上界不能变成丢任务或取不完
+        for (int pass = 0; pass < kPostCount && scheduler.hasWork(); ++pass)
+        {
+            scheduler.runAll();
+        }
+        EXPECT_EQ(executed.load(), kPostCount) << "分趟取用把投递弄丢了或没有取完";
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
 } // namespace AsynGyanis::Core

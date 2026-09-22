@@ -151,26 +151,46 @@ namespace AsynGyanis::Core
             handle.resume();
         }
 
-        // 第二阶段：批量窃取全局队列，防止本地任务持续产生导致全局饥饿。
+        // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；每批不超过
+        // kMaximumRemoteItemsPerPass 件，取满就把控制权还给调用方（见该常量的说明）。
         // 批处理缓冲提到循环外：跨批次复用已申请的容量，避免每轮都做一次堆分配
         std::vector<std::coroutine_handle<> > batch;
         std::deque<std::function<void()> >    callableBatch;
         while (true)
         {
+            std::size_t takenHandleCount    = 0;
+            std::size_t takenCallableCount  = 0;
             {
-                std::lock_guard lock(m_globalMutex);
+                const std::lock_guard lock(m_globalMutex);
                 batch.clear();
-                batch.reserve(m_globalQueue.size());
-                while (!m_globalQueue.empty())
+                callableBatch.clear();
+
+                // 回调先取、协程句柄补满剩余额度：与 runOne() 的优先级口径保持一致
+                while (callableBatch.size() < kMaximumRemoteItemsPerPass && !m_remoteCallables.empty())
+                {
+                    callableBatch.push_back(std::move(m_remoteCallables.front()));
+                    m_remoteCallables.pop_front();
+                }
+                takenCallableCount = callableBatch.size();
+
+                const std::size_t remainingCapacity = kMaximumRemoteItemsPerPass - takenCallableCount;
+                while (batch.size() < remainingCapacity && !m_globalQueue.empty())
                 {
                     batch.push_back(m_globalQueue.front());
                     m_globalQueue.pop_front();
                 }
-                m_globalCount.store(0, std::memory_order_relaxed);
+                takenHandleCount = batch.size();
 
-                // 回调与协程各自成批取出再执行：执行期间可能又有新投递，下一轮循环会接着处理
-                callableBatch.swap(m_remoteCallables);
-                m_remoteCallableCount.store(0, std::memory_order_relaxed);
+                // 计数按「本批实际取走数」递减而不是清零：还剩着没取的投递必须继续算待办，
+                // 否则 hasWork() 会误报空闲、让循环带着积压睡在 epoll 上
+                if (takenCallableCount > 0)
+                {
+                    m_remoteCallableCount.fetch_sub(takenCallableCount, std::memory_order_relaxed);
+                }
+                if (takenHandleCount > 0)
+                {
+                    m_globalCount.fetch_sub(takenHandleCount, std::memory_order_relaxed);
+                }
             }
 
             if (batch.empty() && callableBatch.empty())
@@ -237,6 +257,12 @@ namespace AsynGyanis::Core
             if (firstException)
             {
                 std::rethrow_exception(firstException);
+            }
+
+            // 这一批已做满上限：把控制权交回调用方，让它有机会去取 IO 事件，剩下的下一趟再取
+            if (takenHandleCount + takenCallableCount >= kMaximumRemoteItemsPerPass)
+            {
+                break;
             }
         }
     }

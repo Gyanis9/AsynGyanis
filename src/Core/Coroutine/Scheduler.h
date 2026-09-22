@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <coroutine>
+#include <cstddef>
 #include <functional>
 #include <deque>
 #include <mutex>
@@ -33,6 +34,14 @@ namespace AsynGyanis::Core
     class Scheduler
     {
     public:
+        /**
+         * @brief 单趟 runAll() 从跨线程队列里取走的任务上限
+         * @details 投递方可以长期不断流（执行器完成回调、别的循环移交的连接），不设上界的一趟
+         *          会吃到生产者停手为止，事件循环因此再也回不到 epoll_wait，同循环上的套接字
+         *          一个事件都收不到。超出部分的投递不丢：hasWork() 仍为真，循环下一趟接着取
+         */
+        static constexpr std::size_t kMaximumRemoteItemsPerPass = 256;
+
         /**
          * @brief 默认构造调度器，内部结构为空
          */
@@ -85,7 +94,8 @@ namespace AsynGyanis::Core
         bool runOne();
 
         /**
-         * @brief 执行所有就绪协程（清空本地队列）
+         * @brief 执行所有就绪协程：本地队列清空，跨线程队列每趟最多取 kMaximumRemoteItemsPerPass 件就返回
+         * @note 返回时若跨线程队列还有剩余，hasWork() 仍为真，调用方下一趟接着取（不会丢也不会误判空闲）
          */
         void runAll();
 
