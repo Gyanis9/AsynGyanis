@@ -611,7 +611,13 @@ namespace AsynGyanis::Core
 
         if (timeoutMs > 0)
         {
-            submitTimeout(timeoutMs);
+            // 时限操作的返回值不能吞：没投上这一觉就没有期限（下面的 enter 是「至少等一条完成」），
+            // 调用方会一直睡到某个无关事件把它叫醒。与其挂着或交空结果让上层空转，
+            // 不如与同一函数里「提交失败」的既有口径一致地报出来
+            if (!submitTimeout(timeoutMs))
+            {
+                throw Base::SystemException("io_uring 提交超时操作失败（提交队列拿不到位置）：本次等待无法设定时限，宁可失败也不无限睡");
+            }
             if (!flushSubmissions())
             {
                 throw Base::SystemException("io_uring 提交超时操作失败");
