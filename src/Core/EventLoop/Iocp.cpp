@@ -89,6 +89,9 @@ namespace AsynGyanis::Core
         /// 由 wait() 合成一条错误事件交给等待方，见 harvestSyntheticErrorEvents()
         std::uint32_t readyDirections{0};
 
+        /// 是否已排进待合成表（与 isArmRetryQueued 同一套路，避免同一个状态重复入表）
+        bool isSyntheticReadyQueued{false};
+
         bool          isDeleted{false};               ///< 已注销但仍有完成通知在队，见 m_graveyard
         std::uint32_t failedDirections{0};            ///< 上一次投递失败的方向位（等下一次 wait() 重试）
         bool          isArmRetryQueued{false};        ///< 是否已排进待重试表（避免重复入表）
@@ -148,7 +151,8 @@ namespace AsynGyanis::Core
         m_sockets(std::move(other.m_sockets)),
         m_graveyard(std::move(other.m_graveyard)),
         m_pendingRearm(std::move(other.m_pendingRearm)),
-        m_pendingArmRetry(std::move(other.m_pendingArmRetry))
+        m_pendingArmRetry(std::move(other.m_pendingArmRetry)),
+        m_pendingSyntheticReady(std::move(other.m_pendingSyntheticReady))
     {
         other.m_iocp = nullptr;
     }
@@ -169,6 +173,7 @@ namespace AsynGyanis::Core
             m_graveyard       = std::move(other.m_graveyard);
             m_pendingRearm    = std::move(other.m_pendingRearm);
             m_pendingArmRetry = std::move(other.m_pendingArmRetry);
+            m_pendingSyntheticReady = std::move(other.m_pendingSyntheticReady);
             other.m_iocp      = nullptr;
         }
         return *this;
@@ -212,6 +217,7 @@ namespace AsynGyanis::Core
         m_graveyard.clear();
         m_pendingRearm.clear();
         m_pendingArmRetry.clear();
+        m_pendingSyntheticReady.clear();
     }
 
     Platform::EpollHandle Iocp::fileDescriptor() const noexcept
@@ -305,6 +311,8 @@ namespace AsynGyanis::Core
         // 注销必须把它们一起摘掉，否则下一轮 wait() 会摸到已释放的状态
         std::erase(m_pendingRearm, &state);
         std::erase(m_pendingArmRetry, &state);
+        // 待合成表也要一起摘：这条状态可能马上就在这里被 delete，留着指针下一轮 wait() 就是摸已释放内存
+        std::erase(m_pendingSyntheticReady, &state);
 
         cancelProbes(state);
         if (state.hasProbeInFlight())
@@ -440,7 +448,7 @@ namespace AsynGyanis::Core
             {
                 // 硬错误（对端复位、描述符已失效）：这条套接字上不会再有任何完成通知，
                 // 只记重投的话等待方永远收不到事件——合成一条错误事件让它立刻收尾
-                state.readyDirections |= EPOLLIN;
+                noteSyntheticReady(state, EPOLLIN);
             }
             if (errorText != nullptr)
             {
@@ -470,7 +478,7 @@ namespace AsynGyanis::Core
         {
             // 与读侧同一处置：硬错误（对端复位后零字节 WSASend 直接返回 WSAECONNRESET，实测确认）
             // 不会再有任何完成通知，合成一条错误事件让等待方立刻去拿真实错误
-            state.readyDirections |= EPOLLOUT;
+            noteSyntheticReady(state, EPOLLOUT);
         }
         if (errorText != nullptr)
         {
@@ -590,15 +598,34 @@ namespace AsynGyanis::Core
         // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接
     }
 
+    void Iocp::noteSyntheticReady(SocketState &state, const std::uint32_t direction)
+    {
+        state.readyDirections |= direction;
+        // 一个状态在同一批里只占一个表项：两个方向都撞硬错误时由同一次合成一并带出
+        if (!state.isSyntheticReadyQueued)
+        {
+            state.isSyntheticReadyQueued = true;
+            m_pendingSyntheticReady.push_back(&state);
+        }
+    }
+
     void Iocp::harvestSyntheticErrorEvents()
     {
-        for (auto &[fileDescriptor, state]: m_sockets)
+        // 绝大多数轮次没有任何硬错误：先按表空判定返回，稳态连一次取还堆块都不付
+        if (m_pendingSyntheticReady.empty())
         {
-            static_cast<void>(fileDescriptor);
-            if (state->readyDirections == 0)
-            {
-                continue;
-            }
+            return;
+        }
+
+        // 同 retryFailedArms()：先换出来再遍历，避免与本轮内的入表操作互相干扰
+        std::vector<SocketState *> pending;
+        pending.swap(m_pendingSyntheticReady);
+
+        // 表里只有真正撞上硬错误的状态，因此这里的代价与本批条数成正比：每轮 wait() 都要走这一步，
+        // 按注册表整体遍历会让「没有任何硬错误」的常态轮次也付出随连接数线性放大的成本
+        for (SocketState *state: pending)
+        {
+            state->isSyntheticReadyQueued = false;
             const std::uint32_t directions = state->readyDirections;
             state->readyDirections         = 0;
             if (state->isDeleted)

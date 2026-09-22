@@ -171,6 +171,15 @@ namespace AsynGyanis::Core
         void harvestSyntheticErrorEvents();
 
         /**
+         * @brief 记下「某个方向在投递探针时就撞上了硬错误」，并把它排进待合成表
+         * @details 待合成表只由真正撞上硬错误的那两个方向变更过，因此 harvestSyntheticErrorEvents()
+         *          不必为找一个方向而遍历整张注册表（遍历代价随连接数线性放大，而事件循环每轮都等）
+         * @param state 目标状态
+         * @param direction 撞上硬错误的方向
+         */
+        void noteSyntheticReady(SocketState &state, uint32_t direction);
+
+        /**
          * @brief 取消一个状态上的全部在途探针
          * @param state 目标状态
          * @note 取消是异步的：完成通知仍会入队，由它的回收路径收尾
@@ -255,5 +264,6 @@ namespace AsynGyanis::Core
         std::vector<SocketState *>     m_graveyard;         ///< 已注销但仍有完成通知在队的状态
         std::vector<SocketState *>     m_pendingRearm;      ///< 需要重新武装的水平触发状态
         std::vector<SocketState *>     m_pendingArmRetry;   ///< 上一次投递失败、需要重试的状态
+        std::vector<SocketState *>     m_pendingSyntheticReady; ///< 探针投递时撞上硬错误、等下一轮合成成事件的状态
     };
 } // namespace AsynGyanis::Core
