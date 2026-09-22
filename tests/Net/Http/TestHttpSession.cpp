@@ -642,6 +642,46 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：头部块大于接收窗口时，跨多趟读取要完整解析出最后一个头部
+     * @details 窗口从 2 KiB 起步、读满才翻倍（每连接内存的大头），于是一坨 7 KiB 的头部要跨三趟读取。
+     *          改动前只有超过 8 KiB 的头部块才走得到「窗口被读满」这条路，现在两 KiB 就走到——
+     *          任何「按 8 KiB 固定档写死」的假设都会在这里露出来。哨兵取最后一个头部：
+     *          中途定界错了就答不出它
+     */
+    TEST(HttpSession, AnswersRequestWhoseHeaderBlockExceedsTheInitialReceiveWindow)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        fixture.router().get("/big", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+        {
+            response.setBody(request.getHeader("x-tail").value_or("<缺失>"));
+            co_return;
+        });
+
+        std::vector<std::string> headerLines;
+        headerLines.reserve(61);
+        for (int index = 0; index < 60; ++index)
+        {
+            headerLines.push_back("x-pad-" + std::to_string(index) + ": " + std::string(120, 'p'));
+        }
+        headerLines.emplace_back("x-tail: tail-survived-window-growth");
+
+        const std::string request = makeRequestText("GET /big HTTP/1.1", headerLines);
+        ASSERT_GT(request.size(), 4096U) << "用例前提没成立：头部块要超过起步档翻倍后的 4 KiB，否则测不到跨多趟读取";
+
+        ASSERT_TRUE(fixture.writeRequest(request));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "大头部请求未答：上界 kWaitTimeout";
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 200"));
+        EXPECT_NE(responseText.find("tail-survived-window-growth"), std::string::npos)
+                << "跨多趟读取的头部块没拼完整：最后一位头部丢了";
+
+        EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
+    /**
      * @brief 钉住：对端声明 Expect: 100-continue 时，本端在**读到正文之前**先回 100（RFC 9110 §10.1.1）
      * @details 客户端（curl 等）会在头部之后停下等这个 100；本端若等正文才应答，对端只能白等到自己的
      *          超时（curl 默认 1 秒）再发正文——这条用例把「100 先于正文」钉成契约

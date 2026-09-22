@@ -141,9 +141,18 @@ namespace AsynGyanis::Net
 
     namespace detail
     {
-        /// 接收窗口大小，单位字节：只用来接住「刚到的字节」，正文与跨读的半行都由解析器自己存，
+        /// 接收窗口的上限档，单位字节：只用来接住「刚到的字节」，正文与跨读的半行都由解析器自己存，
         /// 因此这一块固定大小就够——窗口永远是「开头一段未解析字节」，不需要按报文体量增长
         inline constexpr std::size_t kReceiveWindowLength = 8ull * 1024;
+
+        /**
+         * @brief 接收窗口的起步档，单位字节
+         * @details 每连接内存里这一档占大头（直方图实测 8 KiB 占一条空闲连接的 57%），而挂着不动的连接
+         *          一次也读不满 2 KiB，于是永远停在起步档。只有「把窗口读满」才翻倍，翻倍到上限档为止：
+         *          忙连接在第一两拍就回到既有的 8 KiB，稳态的读次数与改动前一致。
+         *          TLS 一侧同理——握手期多两趟翻倍读，稳态仍按 8 KiB 档走（一条记录本来就装不满一次）
+         */
+        inline constexpr std::size_t kInitialReceiveWindowLength = 2ull * 1024;
 
         /// 分块传输的终止块：零长度块加尾部空行，即「本条消息到此结束」（RFC 9112 §7.1）。
         /// 它同时就是 keep-alive 的消息边界，因此流式响应写完不必断开连接
@@ -711,8 +720,12 @@ namespace AsynGyanis::Net
                 return description;
             };
 
+            // 上一趟是否把整个窗口读满了：这是「内核里还有字节没取走」的唯一可见证据，
+            // 用它决定下一趟要不要把窗口翻倍（见 kInitialReceiveWindowLength 的说明）
+            bool lastReadFilledWindow{false};
+
             // 读一次网络字节到窗口剩余空间。返回 0 表示对端正常关闭，负值表示连接不可用
-            const auto readIntoWindow = [&isAlive, &receiveBuffer, &socket, &windowLength]() -> Core::Task<ssize_t>
+            const auto readIntoWindow = [&isAlive, &receiveBuffer, &socket, &windowLength, &lastReadFilledWindow]() -> Core::Task<ssize_t>
             {
                 // 挂起前先复查存活：对端断开或被服务器强制关闭时不该再多读一次
                 if (!isAlive())
@@ -721,16 +734,22 @@ namespace AsynGyanis::Net
                 }
 
                 // 窗口挡满时才需要读：调用点保证「窗口里没有未解析的字节」到这里来，
-                // 因此下面这两句是把窗口整体腾空，而不是在已有数据后面追加
+                // 因此下面这几句是把窗口整体腾空，而不是在已有数据后面追加
                 if (receiveBuffer.size() == 0)
                 {
-                    receiveBuffer.resize(kReceiveWindowLength);
+                    receiveBuffer.resize(kInitialReceiveWindowLength);
+                } else if (lastReadFilledWindow && receiveBuffer.size() < kReceiveWindowLength)
+                {
+                    // 读满过 = 对端还在发：翻倍，最多到既有那一档 8 KiB
+                    receiveBuffer.resize(std::min(receiveBuffer.size() * 2, kReceiveWindowLength));
                 }
                 windowLength = 0;
 
                 try
                 {
-                    co_return co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
+                    const ssize_t receivedLength = co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
+                    lastReadFilledWindow = receivedLength == static_cast<ssize_t>(receiveBuffer.size());
+                    co_return receivedLength;
                 } catch (const std::exception &)
                 {
                     // 传输层读失败（对端 RST、描述符被 close() 关掉、TLS 记录错误）一律视为连接不可用：
