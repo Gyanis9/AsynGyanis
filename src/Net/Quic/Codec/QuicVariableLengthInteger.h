@@ -23,6 +23,10 @@ namespace AsynGyanis::Net
     /// 8 字节档可用的位数是 62，因此这是全协议里所有「用变长整数表示的值」的共同上限（RFC 9000 §16 表 4）
     inline constexpr std::uint64_t kQuicMaximumIntegerValue = (1ULL << 62) - 1ULL;
 
+    /// 流数上限能通告到的最大值（RFC 9000 §4.6）：再大就会算出无法用变长整数表达的流号
+    /// （流号按「上限 * 4 + 首号」算），因此传输参数与 MAX_STREAMS 帧都以这条界判
+    inline constexpr std::uint64_t kQuicMaximumStreamLimitValue = std::uint64_t{1} << 60;
+
     /// 1 字节档（前缀 00，可用 6 位）能表示的最大值
     inline constexpr std::uint64_t kQuicMaximumOneByteIntegerValue = 63ULL;
 

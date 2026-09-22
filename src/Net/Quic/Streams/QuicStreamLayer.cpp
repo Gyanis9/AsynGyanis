@@ -17,6 +17,7 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kStreamLimitError = 0x04;
         constexpr std::uint64_t kStreamStateError = 0x05;
         constexpr std::uint64_t kFinalSizeError = 0x06;
+        constexpr std::uint64_t kFrameEncodingError = 0x07;
         constexpr std::uint64_t kProtocolViolation = 0x0a;
 
         /// 流号低位（§2.1）：bit0 标发起方，bit1 标单向
@@ -348,7 +349,19 @@ namespace AsynGyanis::Net
 
     std::expected<void, QuicStreamViolation> QuicStreamLayer::onMaxStreamsFrame(const QuicMaxStreamsFrame &frame)
     {
+        // §4.6：大于 2^60 的流数上限会算出无法用变长整数表达的流号，收到就必须以 FRAME_ENCODING_ERROR
+        // 收口连接——先把这条界挡住，下面才轮到「按方向取一档」与「只增不减」
+        if (frame.maximumStreams > kQuicMaximumStreamLimitValue)
+        {
+            return std::unexpected(makeViolation(kFrameEncodingError,
+                                                 std::format("对端通告的 {} 向流数上限 {} 超过 2^60（RFC 9000 §4.6），"
+                                                             "再按它算流号就超出变长整数能表达的范围",
+                                                             frame.isUnidirectional ? "单向" : "双向",
+                                                             frame.maximumStreams)));
+        }
+        // 两类流各有各的上限：取错一档等于对端抬双向流数却能开更多单向流（§4.6 分开计两类）
         std::uint64_t &target = frame.isUnidirectional ? m_outgoingUnidirectionalLimit : m_outgoingBidirectionalLimit;
+        // §4.6：通告过的上限只增不减，不增大的 MAX_STREAMS 直接忽略（对端想收回额度没有这条通道）
         target = std::max(target, frame.maximumStreams);
         return {};
     }

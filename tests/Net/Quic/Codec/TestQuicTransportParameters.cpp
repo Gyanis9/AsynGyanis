@@ -209,6 +209,18 @@ namespace AsynGyanis::Net
         // active_connection_id_limit 小于 2 非法
         expectRejected(withMinimalParameters("0e0101"), QuicTransportParameterSenderRole::Client,
                        QuicDecodeErrorKind::Malformed);
+        // 流数上限大于 2^60 非法（§4.6：再按「上限 * 4 + 首号」算流号就超出变长整数的表达能力）。
+        // 0x08 是 initial_max_streams_bidi、0x09 是 unidirectional，两档各钉一条，防止只给一档设界。
+        // 取值写成 8 字节档：0xD0 是「前缀 11 + 高位 0x10」，故 d0...01 即 2^60 + 1
+        expectRejected(withMinimalParameters("0808d000000000000001"), QuicTransportParameterSenderRole::Client,
+                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0908d000000000000001"), QuicTransportParameterSenderRole::Client,
+                       QuicDecodeErrorKind::Malformed);
+        // 恰好 2^60 是允许的上界
+        const auto atStreamLimitCeiling = decodeHex(withMinimalParameters("0808d000000000000000"),
+                                                    QuicTransportParameterSenderRole::Client);
+        ASSERT_TRUE(atStreamLimitCeiling.has_value()) << atStreamLimitCeiling.error().message;
+        EXPECT_EQ(atStreamLimitCeiling->initialMaximumBidirectionalStreams, std::uint64_t{1} << 60);
     }
 
     /**

@@ -777,6 +777,18 @@
   那条流被交代了一次 `INTERNAL_ERROR` 复位；测试侧的对端夹具因此新增「通告一个小的头段上限」这一格）。
   分别摘掉这两处判据时，对应的两条用例各自转红。容器（GCC 13.3 + ASan/LSan/UBSan）实测 `TestNet`
   1244 例全绿、零告警、零 sanitizer。
+- **流数上限补上 RFC 9000 §4.6 的 2^60 界，并把「两类流各记各的账」钉住**：这条界是 MUST——流号按
+  「上限 × 4 + 该类首号」算，上限再大就会算出变长整数表达不了的流号。本端原先两处都不设界：传输参数表把
+  `initial_max_streams_bidi` / `_uni` 的上限写成「变长整数最大值」，`onMaxStreamsFrame` 更是任何取值都收。
+  后果不是「对端多给了额度」这么无害——本端照着它去开流，发出去的就是自己违反协议的流号。现在帧侧以
+  `FRAME_ENCODING_ERROR`（0x07）收口连接、参数表侧按既有的取值越界判错，两处共用同一个新常量
+  `kQuicMaximumStreamLimitValue`。顺带补上这条入口的直测：`onMaxStreamsFrame` 是三个 `MAX_*` 处理里唯一
+  从未被用例直接碰过的，方向取反（单向的通告去抬双向额度）在旧覆盖下完全看不出来。新增
+  `QuicStreamLayer.MaxStreamsFramesApplyToTheirOwnStreamClass`（单向↔双向互不影响，且不增大的通告按 §4.6
+  忽略、不收回已有额度也不报错）与 `...RejectsAbsurdStreamLimitsAndKeepsTheAdvertisedCredit`（2^60+1 被拒、
+  额度不变；恰好 2^60 合法），传输参数侧在 `RejectsOutOfRangeIntegerValues` 里两档各加一条边界用例。
+  三处突变——方向三元符取反、去掉帧侧上界、参数表回到旧上界——各自让对应用例转红。容器实测 `TestNet`
+  1246 例全绿、零告警、零 sanitizer。
 
 ### 性能
 

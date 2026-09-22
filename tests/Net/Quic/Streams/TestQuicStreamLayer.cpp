@@ -1513,4 +1513,77 @@ namespace AsynGyanis::Net
         EXPECT_EQ(expectedNextIndex, abortedStreamCount) << "有一串被打断的流没被交给上层";
         EXPECT_FALSE(layer.hasAbortedStreams()) << "取完不该还剩着队列非空";
     }
+
+    /**
+     * @brief 钉住：MAX_STREAMS 只抬它那一类流的上限，且不增大的通告一律忽略（§4.6）
+     * @details 单向与双向各记一本账：取错一档等于「对端抬双向流数」却让本端多开出单向流。
+     *          原文还要求「通告过更小的上限没有效果」，因此这里既不许降级也不许报错。
+     */
+    TEST(QuicStreamLayer, MaxStreamsFramesApplyToTheirOwnStreamClass)
+    {
+        // 对端：双向 1 条、单向 1 条
+        QuicStreamLayer layer(makeParameters(4096, 1024, 1024, 1024, 4, 4));
+        layer.adoptPeerParameters(makeParameters(8192, 2048, 2048, 2048, 1, 1));
+
+        // 本端（服务端）发起的流号：双向 1、5、9…，单向 3、7…（§2.1 的方向位）
+        const std::vector<std::uint8_t> payload = bytesOf("x");
+        EXPECT_EQ(layer.writeStreamData(1, payload, false), 1U) << "第一条双向流在对端额度内";
+        EXPECT_EQ(layer.writeStreamData(5, payload, false), 0U) << "双向额度只有一条";
+        ASSERT_TRUE(layer.openUnidirectionalStream().has_value()) << "第一条单向流在对端额度内";
+        EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "单向额度只有一条";
+
+        QuicMaxStreamsFrame unidirectionalBoost;
+        unidirectionalBoost.isUnidirectional = true;
+        unidirectionalBoost.maximumStreams = 3;
+        ASSERT_TRUE(layer.onMaxStreamsFrame(unidirectionalBoost).has_value());
+
+        // 单向抬到 3 条：能再开两条，且双向额度一条也没多——两条判据合起来才挡得住「取错一档」
+        ASSERT_TRUE(layer.openUnidirectionalStream().has_value());
+        ASSERT_TRUE(layer.openUnidirectionalStream().has_value());
+        EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "单向额度到 3 条为止";
+        EXPECT_EQ(layer.writeStreamData(5, payload, false), 0U) << "单向的 MAX_STREAMS 不该动双向那本账";
+
+        QuicMaxStreamsFrame bidirectionalBoost;
+        bidirectionalBoost.isUnidirectional = false;
+        bidirectionalBoost.maximumStreams = 2;
+        ASSERT_TRUE(layer.onMaxStreamsFrame(bidirectionalBoost).has_value());
+        EXPECT_EQ(layer.writeStreamData(5, payload, false), 1U) << "双向抬到 2 条之后第二条流可写";
+
+        // 不增大的通告按 §4.6 忽略：既不把额度收回，也不报错
+        QuicMaxStreamsFrame shrink;
+        shrink.isUnidirectional = false;
+        shrink.maximumStreams = 1;
+        EXPECT_TRUE(layer.onMaxStreamsFrame(shrink).has_value());
+        EXPECT_EQ(layer.writeStreamData(5, payload, false), 1U) << "已抬上去的双向额度不该被更小的通告收回去";
+        EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "双向的收缩也不该动单向那本账";
+    }
+
+    /**
+     * @brief 钉住：超过 2^60 的流数上限以 FRAME_ENCODING_ERROR 收口，且原额度保持不变（§4.6）
+     * @details 流号按「上限 * 4 + 首号」算，上限过界就会算出变长整数表达不了的流号（§16），
+     *          所以规范把这条界定为 MUST；收下它等于让本端自己去发非法流号。
+     */
+    TEST(QuicStreamLayer, RejectsAbsurdStreamLimitsAndKeepsTheAdvertisedCredit)
+    {
+        QuicStreamLayer layer(makeParameters(4096, 1024, 1024, 1024, 4, 4));
+        layer.adoptPeerParameters(makeParameters(8192, 2048, 2048, 2048, 4, 1));
+        ASSERT_TRUE(layer.openUnidirectionalStream().has_value());
+        EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "起点：单向只有一条";
+
+        QuicMaxStreamsFrame absurd;
+        absurd.isUnidirectional = true;
+        absurd.maximumStreams = (std::uint64_t{1} << 60) + 1;
+        const auto rejected = layer.onMaxStreamsFrame(absurd);
+        ASSERT_FALSE(rejected.has_value());
+        EXPECT_EQ(rejected.error().errorCode, 0x07) << "0x07 即 FRAME_ENCODING_ERROR（§4.6 的 MUST）";
+        EXPECT_NE(rejected.error().reasonPhrase.find("2^60"), std::string::npos) << rejected.error().reasonPhrase;
+        EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "被拒的通告不该把额度抬上去";
+
+        // 恰好 2^60 是允许的上界：收下它，之后的正常通告也照常处理
+        QuicMaxStreamsFrame boundary;
+        boundary.isUnidirectional = true;
+        boundary.maximumStreams = std::uint64_t{1} << 60;
+        EXPECT_TRUE(layer.onMaxStreamsFrame(boundary).has_value()) << "2^60 本身合法";
+        EXPECT_TRUE(layer.openUnidirectionalStream().has_value()) << "边界之内就该把额度抬起来";
+    }
 } // namespace AsynGyanis::Net
