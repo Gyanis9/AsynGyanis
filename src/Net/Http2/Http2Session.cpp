@@ -1805,11 +1805,12 @@ namespace AsynGyanis::Net
                 // 对端已经取消或收尾了这条流：本条再没有响应可发，连接与其它流不受影响
                 return RequestServeOutcome::StreamCancelled;
             case Http2ResponseSendStatus::ConnectionUnavailable:
-            case Http2ResponseSendStatus::Rejected:
                 return RequestServeOutcome::ConnectionUnusable;
+            case Http2ResponseSendStatus::Rejected:
             case Http2ResponseSendStatus::HeaderListTooLarge:
-                // 错在本端（响应头越过对端通告的上限），且连接层已经把这条流 RST 掉了：
-                // 不能并到 StreamCancelled，那个取值会把它记成「对端取消了这条流」
+                // 错在本端（状态码/响应头不合规，或响应头越过对端通告的上限），且连接层已经把这条流
+                // RST 掉了：不能并到 StreamCancelled，那个取值会把它记成「对端取消了这条流」；
+                // 也不能判成连接不可用，那会让一处写错的调用带走同连接上别人在途的请求
                 return RequestServeOutcome::StreamFailed;
         }
         return RequestServeOutcome::ConnectionUnusable;

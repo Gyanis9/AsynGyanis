@@ -390,22 +390,32 @@ namespace AsynGyanis::Net
                                              streamId));
             return Http2ResponseSendStatus::StreamNotWritable;
         }
+        // 本端已经收尾：这条流不再需要响应，也不该回头去拆一个已经交付完成的响应。与「对端已 RST」
+        // 落同一个结论（只作废这一条流），别把它和下面「对端还在等」的两处混在一起
         if (stream->state == Http2StreamState::HalfClosedLocal)
         {
             writeError(errorText, std::format("流 {} 上本端已经发过 END_STREAM：一条流只能有一个响应，请另开新流", streamId));
-            return Http2ResponseSendStatus::Rejected;
+            return Http2ResponseSendStatus::StreamNotWritable;
         }
+        // 下面两处是「这条流永远不会有响应了」而对端还在等：按 INTERNAL_ERROR 中止这一条流（§5.4.2）。
+        // 判成连接级故障会把同一条连接上别人在途的请求一起带走，而那只是本端一处调用写错了参数
         if (statusCode < 100 || statusCode > 999)
         {
-            writeError(errorText, std::format("响应状态码 {} 越界：HTTP 状态码是 100..999 的三位数字，请给出合法取值", statusCode));
+            const std::string reason = std::format("响应状态码 {} 越界：HTTP 状态码是 100..999 的三位数字，请给出合法取值", statusCode);
+            failStream(*stream, Http2ErrorCode::InternalError, reason);
+            writeError(errorText, reason);
             return Http2ResponseSendStatus::Rejected;
         }
         for (const HpackHeaderField &field: headerFields)
         {
-            if (!acceptResponseHeaderField(field.name, field.value, errorText))
+            if (acceptResponseHeaderField(field.name, field.value, errorText))
             {
-                return Http2ResponseSendStatus::Rejected;
+                continue;
             }
+            // 校验器已把可操作的原因写进 errorText：照着它中止这条流（errorText 缺席时只留个空原因，
+            // 不影响线上字节——RST_STREAM 的正文只有错误码）
+            failStream(*stream, Http2ErrorCode::InternalError, errorText != nullptr ? *errorText : std::string{});
+            return Http2ResponseSendStatus::Rejected;
         }
 
         // :status 必须排在最前（§8.1.2.1：伪头先于普通头部），其余按调用方给的顺序编码。
@@ -432,8 +442,10 @@ namespace AsynGyanis::Net
                 std::string reason = std::format("流 {} 的响应头列表 {} 字节越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE {} 字节，"
                                                  "本端按 INTERNAL_ERROR 中止这条流",
                                                  streamId, headerListByteCount, peerMaximumHeaderListSize);
-                failStream(*stream, Http2ErrorCode::InternalError, std::move(reason));
+                // 先把原因交给调用方再搬进 failStream：反过来的话 errorText 拿到的是个已移动的空串，
+                // 直接按 API 用这一层的调用方就看不见失败原因了
                 writeError(errorText, reason);
+                failStream(*stream, Http2ErrorCode::InternalError, std::move(reason));
                 return Http2ResponseSendStatus::HeaderListTooLarge;
             }
         }
@@ -472,17 +484,19 @@ namespace AsynGyanis::Net
             writeError(errorText, std::format("流 {} 不在账本里或已经终止：只有对端开过、还没收尾的流才能发正文", streamId));
             return Http2ResponseSendStatus::StreamNotWritable;
         }
+        // 这两处都是「这条流的响应已经定了」：本端收尾之后多要的正文没有去处，但它既不需要中止这条流
+        // （对端已经或即将拿到完整响应），更不该牵连整条连接
         if (stream->state == Http2StreamState::HalfClosedLocal)
         {
             writeError(errorText, std::format("流 {} 上本端已经发过 END_STREAM：不能再发正文，请另开新流", streamId));
-            return Http2ResponseSendStatus::Rejected;
+            return Http2ResponseSendStatus::StreamNotWritable;
         }
         if (stream->isEndStreamPending)
         {
             writeError(errorText, std::format("流 {} 上已经安排了 END_STREAM（可能还在等窗口）：本片之后只能由对端收尾，"
                                              "请不要再追加正文",
                                              streamId));
-            return Http2ResponseSendStatus::Rejected;
+            return Http2ResponseSendStatus::StreamNotWritable;
         }
 
         // 正文先进队列再按窗口尽量出帧：窗口不足的部分留在这里，等对端 WINDOW_UPDATE 进来后由 feedBytes() 续发

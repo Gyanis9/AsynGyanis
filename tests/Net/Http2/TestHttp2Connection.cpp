@@ -1622,9 +1622,12 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：响应入口按结论区分「这条流不可写」与「连接不可用」，失败路径不写任何字节，错误文案可操作
+     * @brief 钉住：不合规的响应只中止它那一条流，连接与同连接上其它流不受影响
+     * @details 依据 RFC 9113 §5.4.2：RST_STREAM 作废一条流，连接照旧。原先这类用法错误连带把整条连接
+     *          判死（会话按「连接不可用」收口），一处写错的参数会带走别人在途的请求。
+     *          每条非法响应占一条新流——前一条被中止后，后一条仍要走同一条判据。
      */
-    TEST(Http2Connection, ResponseEntryRejectsUnknownStreamAndIllegalHeaderFields)
+    TEST(Http2Connection, RejectsIllegalResponseOnThatStreamOnly)
     {
         Http2Connection connection;
         completeHandshake(connection);
@@ -1641,28 +1644,90 @@ namespace AsynGyanis::Net
         EXPECT_EQ(notNegotiated.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::ConnectionUnavailable);
         EXPECT_NE(errorText.find("SETTINGS"), std::string::npos) << errorText;
 
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+        struct IllegalCase
+        {
+            std::uint32_t statusCode;                    ///< 交给响应入口的状态码
+            std::string headerName;                      ///< 唯一那条响应头的名字
+            std::string headerValue;                     ///< 唯一那条响应头的取值
+            std::string_view reasonFragment;             ///< 原因文案里必须出现的定位片段
+        };
+        // 状态码越界（两侧）、头名大写、连接特定头、头值含控制字符、调用方自己塞伪头
+        const IllegalCase illegalCases[] = {
+            IllegalCase{42U, "x-test", "1", "状态码"},
+            IllegalCase{1000U, "x-test", "1", "状态码"},
+            IllegalCase{200U, "X-Test", "1", "X-Test"},
+            IllegalCase{200U, "connection", "keep-alive", "connection"},
+            IllegalCase{200U, "x-test", "a\rb", "x-test"},
+            IllegalCase{200U, ":status", "200", ":status"},
+        };
+        constexpr std::uint32_t streamIds[] = {3U, 5U, 7U, 9U, 11U, 13U};
+
+        std::size_t caseIndex = 0;
+        for (const IllegalCase &testCase: illegalCases)
+        {
+            const std::uint32_t streamId = streamIds[caseIndex];
+            ++caseIndex;
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
+                                                 makeMinimalGetRequestBlock())),
+                      Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
+            static_cast<void>(connection.takeRequests());
+
+            errorText = "脏数据";
+            const std::vector<HpackHeaderField> headerFields{
+                HpackHeaderField{testCase.headerName, testCase.headerValue}};
+            EXPECT_EQ(connection.sendResponseHeaders(streamId, testCase.statusCode, headerFields, true, &errorText),
+                      Http2ResponseSendStatus::Rejected) << "流 " << streamId;
+            EXPECT_FALSE(errorText.empty()) << "调用方必须自己拿到原因，不能只留在连接层的最后一行流错误里";
+            EXPECT_NE(errorText.find(testCase.reasonFragment), std::string::npos) << errorText;
+
+            const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+            ASSERT_EQ(resetFrames.size(), 1U) << "每条非法响应只该中止自己那一条流";
+            Http2RstStreamPayload resetPayload;
+            std::string resetErrorText;
+            ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), resetPayload, &resetErrorText)) << resetErrorText;
+            EXPECT_EQ(resetPayload.errorCode, Http2ErrorCode::InternalError);
+            EXPECT_EQ(resetFrames.front().header.streamId, streamId);
+        }
+
+        EXPECT_FALSE(connection.hasFailed()) << "错在本端也只该作废一条流：" << connection.errorMessage();
+        // 同一条连接上新的流照常应答：六条非法响应没有把连接判死，也没有提前通告收口
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 15U,
+                                             makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+        EXPECT_EQ(connection.sendResponseHeaders(15U, 200U, {{"content-type", "text/plain"}}, true, &errorText),
+                  Http2ResponseSendStatus::Sent) << errorText;
+        for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "一条非法响应不该通告整条连接收口";
+        }
+    }
+
+    /**
+     * @brief 钉住：本端已收尾的流上多余调用判「该流不可写」，既不写字节也不回头拆掉已交付的响应
+     * @details 响应已经完整交出去，事后补一帧 RST_STREAM 等于告诉对端「刚才那份答复不算」（§5.1
+     *          的流状态里本端已半关）；这类多余调用按原样退回调用方即可。
+     */
+    TEST(Http2Connection, ExtraCallsOnALocallyFinishedStreamChangeNothing)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                             makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
-        // 状态码越界、头名与头值不合规：全部在入口拦下，结论是用法错误 Rejected
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 42U, {}, true, &errorText), Http2ResponseSendStatus::Rejected);
-        EXPECT_NE(errorText.find("状态码"), std::string::npos) << errorText;
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 1000U, {}, true, &errorText), Http2ResponseSendStatus::Rejected);
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"X-Test", "1"}}, true, &errorText), Http2ResponseSendStatus::Rejected);
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"connection", "keep-alive"}}, true, &errorText),
-                  Http2ResponseSendStatus::Rejected);
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-test", "a\rb"}}, true, &errorText), Http2ResponseSendStatus::Rejected);
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{":status", "200"}}, true, &errorText), Http2ResponseSendStatus::Rejected);
-        EXPECT_EQ(connection.sendResponseData(9U, "x", false, &errorText), Http2ResponseSendStatus::StreamNotWritable);
-        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "失败路径不得写入任何字节";
-
-        // 正常发出响应之后，本端已经 END_STREAM：不允许再补正文
+        std::string errorText;
         ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         static_cast<void>(connection.takeOutgoingBytes());
-        EXPECT_EQ(connection.sendResponseData(1U, "x", false, &errorText), Http2ResponseSendStatus::Rejected);
+
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::StreamNotWritable);
         EXPECT_FALSE(errorText.empty());
-        EXPECT_TRUE(connection.takeOutgoingBytes().empty());
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "多余的响应不得写入任何字节";
+        EXPECT_EQ(connection.sendResponseData(1U, "x", false, &errorText), Http2ResponseSendStatus::StreamNotWritable);
+        EXPECT_FALSE(errorText.empty());
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "多余的正文不得写入任何字节";
+        EXPECT_FALSE(connection.hasFailed());
     }
 
     /**
@@ -2118,6 +2183,8 @@ namespace AsynGyanis::Net
         std::string errorText;
         EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(300U, 'v')}}, true, &errorText),
                   Http2ResponseSendStatus::HeaderListTooLarge) << errorText;
+        // 原因必须同时交给调用方与连接层：只留一份的话，直接按 API 用这一层的调用方会拿到空串
+        EXPECT_NE(errorText.find("SETTINGS_MAX_HEADER_LIST_SIZE"), std::string::npos) << errorText;
         EXPECT_FALSE(connection.hasFailed()) << "只该作废一条流，不该把连接判死：" << connection.errorMessage();
         EXPECT_NE(connection.lastStreamErrorMessage().find("SETTINGS_MAX_HEADER_LIST_SIZE"), std::string::npos)
                 << connection.lastStreamErrorMessage();

@@ -738,6 +738,22 @@
   而给出两种文本。新增两条用例分别钉「类别与取值配对」与「两条重载都带对端」，前者在 Linux 上两个
   类别文本相同、只有 Windows 侧能证伪；同时把「采到的是打印点的栈」那条**假断言**改成按帧身份判
   （旧写法把 `captureStackTrace(1)` 改成 0 也照样全绿，改后同一处改动立即转红）。
+- **响应提交失败的牵连面从整条连接收到那一条流**：`Http2Connection` 的响应入口把两类不同的失败混在
+  同一个结论（`Rejected`）里——「对端还在等，本端给的状态码或响应头不合规」与「本端已经收尾后又多了
+  几次调用」。会话据这个结论走「连接不可用」出口：`servePendingRequests` 直接返回 false，外层 `break`
+  之后连待发字节都不再写出——本端一处写错的参数就此放大成全连接断连，同一条连接上别人在途的请求一起丢。
+  现在前者由连接层按 INTERNAL_ERROR 中止那一条流（RST_STREAM 已排队，对端不必等到超时），会话给它的
+  结论是 `StreamFailed` 并记一行错误日志；后者落回「该流不再需要响应」（`StreamNotWritable`）且一个字节
+  都不写——已经交付完整的响应不该被事后补的 RST 拆掉（RFC 9113 §5.1）。顺带修掉上一轮留下的静默变形：
+  `HeaderListTooLarge` 先把原因 `std::move` 进连接层、再拿它填调用方的 `errorText`，调用方读到的是空串
+  （原因只剩 `lastStreamErrorMessage()` 那一份），现在先交给调用方再交出所有权；头文件里「返回非 Sent
+  时不写入任何字节」这条承诺也已按实现改准（它上一轮就已与实现不符）。
+  用例 `Http2Connection.RejectsIllegalResponseOnThatStreamOnly` 让六条独立流各撞一类非法响应
+  （状态码两侧越界、头名大写、连接特定头、头值含控制字符、调用方自塞伪头），逐条断言恰好一帧
+  RST_STREAM(INTERNAL_ERROR)、`errorText` 非空且含定位片段，最后一条新流照常收到 200、全程无 GOAWAY；
+  另加 `ExtraCallsOnALocallyFinishedStreamChangeNothing` 钉住「多余调用不写字节」。把新增的两处
+  `failStream` 摘掉（等于旧写法）时前一条转红。容器实测 `TestNet` 1241 例全绿、零告警、零 sanitizer，
+  h2c 对手探针十项全过。
 
 ### 性能
 

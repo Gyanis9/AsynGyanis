@@ -84,16 +84,17 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次响应发送（响应头或响应正文）的结论
      *
-     * @details 响应发送的失败分两类，调用方要采取的处置完全不同：该流已被对端取消或关闭（停掉这一条流、
-     *          连接继续服务其它流）与连接不可用（写出待发字节后收口整条连接）。用法错误单列，见 Rejected。
+     * @details 响应发送的失败分两类，调用方要采取的处置完全不同：只作废这一条流（对端已取消、本端已收尾，
+     *          或本端没能应答而主动中止该流——连接继续服务其它流）与连接不可用（写出待发字节后收口整条连接）。
+     *          一处调用写错参数不该把同连接上别人在途的请求一起带走，所以「本端没能应答」也归在前一类里。
      * @note 新增取值一律追加在末尾。
      */
     enum class Http2ResponseSendStatus
     {
         Sent,                  ///< 已排入待发字节或该流的发送队列（窗口不足时留在队列里，等对端 WINDOW_UPDATE 后由本层续发）
-        StreamNotWritable,     ///< 该流已不可写响应：不在账本里、已终止（对端 RST_STREAM 或双向 END_STREAM）；本条流不再需要响应，连接继续服务其它流
+        StreamNotWritable,     ///< 该流已不可写响应：不在账本里、已终止（对端 RST_STREAM 或双向 END_STREAM）、本端已收尾或已安排 END_STREAM；本条流不再需要响应，连接继续服务其它流
         ConnectionUnavailable, ///< 连接尚未完成协商或已失败：整条连接不可再用，调用方应写出待发字节后收口
-        Rejected,              ///< 本次调用参数或时序不合规（状态码越界、头名非法、已安排 END_STREAM 后又追加正文）：本条流因用法错误无法应答
+        Rejected,              ///< 本次调用的状态码或响应头不合规：本层已按 INTERNAL_ERROR 中止这条流（RST_STREAM 已排入待发字节），连接照旧
         HeaderListTooLarge     ///< 响应头列表越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE：本层已按 INTERNAL_ERROR 中止这条流，连接照旧
     };
 
@@ -339,10 +340,12 @@ namespace AsynGyanis::Net
          * @param endStream 响应是否到此结束（无正文）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
          * @return Http2ResponseSendStatus Sent 已排入待发字节（窗口不影响头块，HEADERS 不受流控）；
-         *         StreamNotWritable 该流已被对端取消或已终止（停掉这条流即可，连接继续）；
-         *         ConnectionUnavailable 连接尚未协商完成或已失败；Rejected 状态码或头名不合规
-         * @note 返回非 Sent 时不写入任何字节；调用方按返回值决定是只停这条流还是收口整条连接，
-         *       不要只看 errorText（原因文本只供日志与排查）
+         *         StreamNotWritable 该流已被对端取消、已终止或本端已收尾（停掉这条流即可，连接继续）；
+         *         ConnectionUnavailable 连接尚未协商完成或已失败；Rejected 状态码或响应头不合规，本层已中止这条流；
+         *         HeaderListTooLarge 响应头越过对端通告的上限，本层已中止这条流
+         * @note 除 Rejected 与 HeaderListTooLarge 外，返回非 Sent 时不写入任何字节——那两类各排出一帧
+         *       RST_STREAM（对端还在等这条流的响应，不给个结论它只能等到超时）。调用方按返回值决定是
+         *       只停这条流还是收口整条连接，不要只看 errorText（原因文本只供日志与排查）
          */
         [[nodiscard]] Http2ResponseSendStatus sendResponseHeaders(std::uint32_t streamId, std::uint32_t statusCode,
                                                                   const std::vector<HpackHeaderField> &headerFields, bool endStream,
@@ -360,9 +363,9 @@ namespace AsynGyanis::Net
          * @param endStream 本片之后本端不再发正文（本片可能因窗口不足尚未出帧）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
          * @return Http2ResponseSendStatus Sent 已排入待发字节或发送队列（可能一帧都没出，需等 WINDOW_UPDATE）；
-         *         StreamNotWritable 该流已被对端取消或已终止（停掉这条流即可，连接继续）；
-         *         ConnectionUnavailable 连接尚未协商完成或已失败；Rejected 本端已收尾或已安排 END_STREAM
-         * @note 返回非 Sent 时不改动任何状态；调用方按返回值决定是只停这条流还是收口整条连接
+         *         StreamNotWritable 该流已被对端取消、已终止，或本端已收尾/已安排 END_STREAM（多余的正文按原样
+         *         退回调用方，停掉这条流即可，连接继续）；ConnectionUnavailable 连接尚未协商完成或已失败
+         * @note 返回非 Sent 时不改动任何状态、也不写入任何字节；调用方按返回值决定是只停这条流还是收口整条连接
          */
         [[nodiscard]] Http2ResponseSendStatus sendResponseData(std::uint32_t streamId, std::string_view data, bool endStream,
                                                                std::string *errorText = nullptr);

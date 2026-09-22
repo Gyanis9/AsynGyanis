@@ -201,8 +201,8 @@ namespace AsynGyanis::Net
         {
             Served,            ///< 响应已排入待发字节
             StreamCancelled,   ///< 对端已取消这条流：本条不再有响应，连接继续服务其它流
-            ConnectionUnusable,///< 连接不可再用（连接层失败、写出失败，或本条响应因用法错误无法应答）：调用方应停止循环
-            StreamFailed       ///< 本端把这条流按错误中止了（响应发不出去但错在本端）：连接层已写出 RST_STREAM，连接继续服务其它流
+            ConnectionUnusable,///< 连接不可再用（连接层失败或响应字节写不出去）：调用方应停止循环
+            StreamFailed       ///< 本端把这条流按错误中止了（响应不合规或越过对端上限，错在本端）：连接层已写出 RST_STREAM，连接继续服务其它流
         };
 
         /**
