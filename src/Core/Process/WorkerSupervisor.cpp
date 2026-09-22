@@ -96,10 +96,42 @@ namespace AsynGyanis::Core
     bool WorkerSupervisor::run()
     {
 #if !ASYN_PLATFORM_WIN32
-        // 信号处理只置标记：真正的收尾在下面的循环里做，那里才能安全地分配、日志、等进程
-        g_runningSupervisor.store(this, std::memory_order_release);
-        void (*previousTerminateHandler)(int) = std::signal(SIGTERM, handleStopSignal);
-        void (*previousInterruptHandler)(int) = std::signal(SIGINT, handleStopSignal);
+        /**
+         * @brief 信号处理登记与还原的守卫：本函数从哪条路退出都把它留下的痕迹抹平
+         * @details 下面的编排循环会分配（日志、进程句柄、vector），抛出时若只靠函数末尾那三行
+         *          还原，g_runningSupervisor 就一直指向这个正在栈展开中消亡的对象——
+         *          下一次 SIGTERM/SIGINT 的 handler 只做「读那个全局指针并调 requestStop()」，
+         *          那是往已释放内存上写标记。登记与还原成对放进析构里，异常路径与正常路径同一条
+         */
+        class SignalRegistration
+        {
+        public:
+            explicit SignalRegistration(WorkerSupervisor &supervisor) noexcept
+                : m_previousTerminateHandler(std::signal(SIGTERM, &handleStopSignal)),
+                  m_previousInterruptHandler(std::signal(SIGINT, &handleStopSignal))
+            {
+                // 先装 handler 再发布指针：handler 只在指针非空时才转达，装反的一拍里
+                // 信号最多被当成「没人要停」丢掉，而不是解引用一个还没定下来的 this
+                g_runningSupervisor.store(&supervisor, std::memory_order_release);
+            }
+
+            SignalRegistration(const SignalRegistration &) = delete;
+            SignalRegistration &operator=(const SignalRegistration &) = delete;
+
+            /// 还原先前两个 handler 并收回全局指针：之后再收到停止信号就与本编排器无关了
+            ~SignalRegistration()
+            {
+                std::signal(SIGTERM, m_previousTerminateHandler);
+                std::signal(SIGINT, m_previousInterruptHandler);
+                g_runningSupervisor.store(nullptr, std::memory_order_release);
+            }
+
+        private:
+            void (*m_previousTerminateHandler)(int);  ///< 被本登记换掉的 SIGTERM 处理函数
+            void (*m_previousInterruptHandler)(int);   ///< 被本登记换掉的 SIGINT 处理函数
+        };
+
+        const SignalRegistration signalRegistration(*this);
 #endif
 
         LOG_INFO_FMT("WorkerSupervisor: 开始编排 {} 个 worker，可执行文件 {}", m_configuration.workerCount, m_configuration.executablePath);
@@ -165,11 +197,7 @@ namespace AsynGyanis::Core
 
         stopAllWorkers();
 
-#if !ASYN_PLATFORM_WIN32
-        std::signal(SIGTERM, previousTerminateHandler);
-        std::signal(SIGINT, previousInterruptHandler);
-        g_runningSupervisor.store(nullptr, std::memory_order_release);
-#endif
+        // 停止信号的登记由 signalRegistration 在离开作用域时撤销：正常返回与异常展开走同一条
         LOG_INFO_FMT("WorkerSupervisor: 编排结束");
         return !isPoolGivenUp;
     }
