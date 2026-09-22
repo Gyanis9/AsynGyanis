@@ -121,53 +121,50 @@ namespace AsynGyanis::Database
         }
 
         // ---- 第三段：等待路径 ----
+        // 等待要能被「任何一次腾出名额」救活：归还的那条若被判失联或过存活期，它是被丢弃而不是入栈的，
+        // 此刻空闲栈仍然为空、名额却确实空了出来。只盯着空闲栈的写法会让这位借用者白等满
+        // acquireTimeoutMilliseconds 再拿一个空连接回去，而它完全可以自己补一条。
+        // 取连接统一走 tryAcquireOrCreateInternal：名额判定、过期判定与失联判定因此和另外三条取出路径
+        // 同一口径（本函数此前只判了失联，睡在栈里过了存活期的那条会直接被交给刚被唤醒的借用者）
         const auto deadline = std::chrono::steady_clock::now()
                               + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
 
-        std::unique_lock lock(m_mutex);
-
-        m_syncWaitingCount.fetch_add(1);
-        bool isTimedOut = false;
-        while (m_idleStack.empty() && !m_isShuttingDown.load(std::memory_order_acquire))
+        std::unique_ptr<DatabaseConnection> connection;
         {
-            if (m_idleCondition.wait_until(lock, deadline) == std::cv_status::timeout)
+            std::unique_lock lock(m_mutex);
+            m_syncWaitingCount.fetch_add(1);
+
+            while (!m_isShuttingDown.load(std::memory_order_acquire))
             {
-                isTimedOut = true;
-                break;
+                // 出锁再取：tryAcquireOrCreateInternal 自己会拿 m_mutex（握着它再拿一次就是同线程二次
+                // 加锁），而它内部的建连与丢弃都是会阻塞的调用
+                lock.unlock();
+                connection = tryAcquireOrCreateInternal();
+                lock.lock();
+                if (connection || m_isShuttingDown.load(std::memory_order_acquire))
+                {
+                    break;
+                }
+                // 每次醒来重试一轮：唤醒源是「有人归还入栈」「有人丢弃腾出名额」与池停摆三处
+                if (m_idleCondition.wait_until(lock, deadline) == std::cv_status::timeout)
+                {
+                    break;
+                }
             }
-        }
-        m_syncWaitingCount.fetch_sub(1);
-        // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_idleCondition 上等计数归零）
-        m_idleCondition.notify_all();
 
-        if (isTimedOut || m_isShuttingDown.load(std::memory_order_acquire))
+            m_syncWaitingCount.fetch_sub(1);
+            // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_idleCondition 上等计数归零）
+            m_idleCondition.notify_all();
+        }
+
+        if (!connection)
         {
-            // 超时或池已停摆：栈里的连接都已关闭，返回空让调用方看见「没拿到」
-            lock.unlock();
+            // 超时或池已停摆：拿不到连接就交出空的包装，让调用方看见「没拿到」而不是异常
             return {};
         }
 
-        // 从 LIFO 栈顶弹出（最新归还的连接最可能还在热点缓存中）
-        IdleEntry entry = std::move(m_idleStack.back());
-        m_idleStack.pop_back();
-        lock.unlock();
-
-        // ---- 健康检查 ----
-        if (!isConnectionHealthy(entry.connection.get()))
-        {
-            // 名额不还：紧接着会建一条补上，丢弃与新建在总数上相抵
-            closeTrackedConnection(std::move(entry.connection));
-            entry.connection = createNewConnection();
-            if (!entry.connection)
-            {
-                // 重建失败：总创建数减一（把不健康的丢弃了但没能补上）
-                m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
-                return {};
-            }
-        }
-
         m_activeCount.fetch_add(1);
-        return PooledConnection(std::move(entry.connection), this);
+        return PooledConnection(std::move(connection), this);
     }
 
     // ========================================================================
@@ -319,6 +316,13 @@ namespace AsynGyanis::Database
         // 统计与后台驱逐一起排队；先用「占位」把额度定下来，再放锁执行建连
         {
             std::lock_guard lock(m_mutex);
+            // 停摆中不再建连：析构已经置起这个标志（与本判定同一把锁），此时补出来的那条
+            // 只会变成一个没人认领的连接。等待路径每轮醒来都会走到这里，因此这条闸门
+            // 也挡住了「池正在销毁时等待者自己补建」那种浪费
+            if (m_isShuttingDown.load(std::memory_order_acquire))
+            {
+                return nullptr;
+            }
             if (m_totalCreated.load(std::memory_order_relaxed) >= m_config.maximumPoolSize)
             {
                 return nullptr;
@@ -359,8 +363,9 @@ namespace AsynGyanis::Database
         // ---- 健康检查 ----
         if (!isConnectionHealthy(connection.get()))
         {
-            // 不健康的连接直接丢弃（名额一并退还）
+            // 不健康的连接直接丢弃（名额一并退还），并叫醒一位等待者去试那个刚空出来的名额
             discardConnection(std::move(connection));
+            wakeOneSyncWaiter();
             return;
         }
 
@@ -374,29 +379,33 @@ namespace AsynGyanis::Database
         // 判定只读这条连接自己的建立时刻与池配置，不涉及任何共享状态，因此不必进 m_mutex；
         // 建立时刻跟着连接走（DatabaseConnection::establishedAt()），池这边不再另存一份表
         const auto returnedAt = std::chrono::steady_clock::now();
-        // 到寿命的那条先摘出来，断开留到锁外（与 healthCheckLoop 同一条纪律）
-        std::unique_ptr<DatabaseConnection> expiredConnection;
         if (isPastMaximumLifetime(*connection, returnedAt))
         {
-            expiredConnection = std::move(connection);
+            // 到寿命的这条同样退还名额；断开留在锁外做（与 healthCheckLoop 同一条纪律）
+            discardConnection(std::move(connection));
+            wakeOneSyncWaiter();
+            return;
         }
-        else
+
         {
-            std::lock_guard lock(m_mutex);
+            const std::lock_guard lock(m_mutex);
 
             IdleEntry entry;
             entry.connection   = std::move(connection);
             entry.returnedTime = returnedAt;
             m_idleStack.push_back(std::move(entry));
+            // 通知留在锁内：等待者是「出锁试一轮、再回锁睡下」的形状，锁外通知会留一次窗口——
+            // 它刚试完、还没睡下，这次通知就落空，而它此后再没人叫醒，只能白等满超时
+            m_idleCondition.notify_one();
         }
+    }
 
-        if (expiredConnection)
-        {
-            // 名额一并退还
-            discardConnection(std::move(expiredConnection));
-            return;
-        }
-
+    void ConnectionPool::wakeOneSyncWaiter() noexcept
+    {
+        // 这里只负责「叫醒」：醒来那位自己会试「从栈里取 / 未达上限就新建」。
+        // 不在这儿替它建连——建连是一次会阻塞的往返，扣在归还线程上会把整条归还路径
+        // （以及正等着这把令牌锁的池析构）一起堵住
+        const std::lock_guard lock(m_mutex);
         m_idleCondition.notify_one();
     }
 

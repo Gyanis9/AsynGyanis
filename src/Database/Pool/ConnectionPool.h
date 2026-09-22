@@ -82,7 +82,9 @@ namespace AsynGyanis::Database
          * @brief 阻塞获取连接
          *
          * @details 优先从空闲栈返回（LIFO），无空闲且未达上限时创建新连接。
-         *          忙时等待最多 acquireTimeoutMs 毫秒，超时返回空。
+         *          忙时等待最多 acquireTimeoutMs 毫秒，超时返回空；等待期间每次被叫醒都会重走一遍
+         *          「从栈里取（判过期与判存活）／未达上限就新建」，因此任何一次腾出名额——包括
+         *          归还的那条被判失联或过存活期而当场丢弃——都能把等待者救出来，不必白等满超时。
          *
          * @return PooledConnection 持有有效连接时 operator bool() 返回 true；
          *         超时或创建失败时返回空
@@ -105,6 +107,10 @@ namespace AsynGyanis::Database
          *       不会有人去 resume 已经随帧释放的内存。
          * @note 池被 shutdown 时会以「空连接」唤醒全部等待者，且那一次**就地恢复**而不是
          *       投回事件循环：池都停摆了，投递到循环里可能永远不被执行，那会让协程永久挂起。
+         * @warning 与同步 acquire() 不同，挂起的协程只在「有人把连接交到手上」或「到截止时刻」时才醒，
+         *          因此归还方当场丢弃一条连接（判失联或过存活期）腾出的名额不会把它救出来，它仍会
+         *          等到超时而返回空连接。要补这条需要给等待器加一条「醒了但没拿到就重试」的通道
+         *          （唤醒—重挂一轮），代价是每次丢弃都得走一遍协程恢复；同步路径没有这个限制。
          */
         Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop);
 
@@ -353,6 +359,14 @@ namespace AsynGyanis::Database
          * @note 名额在取出（或预占）时就已记上，丢弃不还回去会让池永久少一个位置
          */
         void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
+
+        /**
+         * @brief 叫醒一位同步等待者，让它去试刚腾出来的名额
+         * @details 归还的连接被判失联或过存活期时是被当场丢弃的，空闲栈并没有变多；
+         *          只盯着空闲栈的等待者因此需要一次额外的叫醒。通知取在 m_mutex 之内：
+         *          等待者是「出锁试一轮、再回锁睡下」的形状，锁外通知会有一次落空的窗口。
+         */
+        void wakeOneSyncWaiter() noexcept;
 
         /**
          * @brief 池仍存活时归还连接：判活与归还调用在同一段令牌锁内完成

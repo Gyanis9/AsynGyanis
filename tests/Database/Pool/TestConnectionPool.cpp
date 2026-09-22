@@ -11,6 +11,7 @@
 // - EstablishedTimeSurvivesRepeatedBorrowAndReturn：连接的建立时刻跟着连接本身，反复借用不重新盖戳
 // - ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
 // - NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
+// - WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -123,6 +124,62 @@ namespace AsynGyanis::Database
 
             EXPECT_TRUE(secondGotConnection.load())
                 << "归还连接后，阻塞的线程应成功获取连接";
+        }
+
+        // ========================================================================
+        // WaiterRecoversWhenReturnedConnectionIsDiscarded
+        // ========================================================================
+
+        /**
+         * @brief 归还的那条被当场丢弃时，等待中的借用者要被腾出来的名额救活
+         * @details 丢弃出口（判失联或过存活期）不入栈，空闲栈因此始终为空——只盯着栈的等待谓词
+         *          会让这位借用者白等满 acquireTimeoutMilliseconds 再拿一个空连接回去，
+         *          而池此刻完全有能力再建一条。钉住两件事：他拿到了连接，且那条旧的是被丢弃后补的
+         */
+        TEST(ConnectionPool, WaiterRecoversWhenReturnedConnectionIsDiscarded)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 1;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.healthCheckIntervalSeconds = 3600;   // 后台驱逐不参与本用例的时序
+            configuration.acquireTimeoutMilliseconds = 3000;   // 旧写法下等待者会等满这里才返回空
+
+            ConnectionPool pool(factory, configuration);
+
+            PooledConnection occupying = pool.acquire();
+            ASSERT_TRUE(occupying);
+            // 把建立时刻挪到存活期之外：归还时它必然走「丢弃」那条出口，而不是躺回空闲栈
+            occupying->markEstablishedAt(std::chrono::steady_clock::now() - std::chrono::hours(2));
+
+            PooledConnection woken;
+            std::thread      waiterThread([&pool, &woken]
+            {
+                woken = pool.acquire();
+            });
+
+            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            ASSERT_EQ(pool.waitingCount(), 1U) << "等待者没有挂上：用例前提不成立";
+
+            const auto releasedAt = std::chrono::steady_clock::now();
+            occupying.release();
+            waiterThread.join();
+
+            EXPECT_TRUE(woken) << "归还的连接被丢弃后，等待者白等到超时——腾出的名额没人去用";
+            EXPECT_LT(std::chrono::steady_clock::now() - releasedAt, std::chrono::milliseconds(1500))
+                << "拿到连接本该是立刻的事，等满超时就是走回了旧路径";
+            EXPECT_EQ(counter.totalCreated.load(), 2) << "等待者应当补建一条，而不是拿回那条过期的";
+            EXPECT_EQ(counter.totalDestroyed.load(), 1) << "过期那条要被丢弃，不能留在池里";
+            EXPECT_EQ(pool.activeCount(), 1U);
+            EXPECT_EQ(pool.idleCount(), 0U);
+            EXPECT_EQ(pool.totalCount(), 1U);
         }
 
         // ========================================================================
