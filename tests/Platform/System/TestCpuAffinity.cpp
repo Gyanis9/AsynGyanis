@@ -1,9 +1,11 @@
 // TestCpuAffinity.cpp —— 线程绑核的覆盖：许可集合的读回、绑到许可内的核、两类拒绝面
-//   （编号超出 64 位掩码能表达的范围、核不在本进程被允许的集合里）。
+//   （编号超出本平台那套 CPU 集合的宽度、核不在本进程被允许的集合里）。
 //   断言一律拿操作系统自己的亲和性查询与 std::thread 的机器核数当独立判据，
 //   不用本类的返回值互相印证；拒绝面还要额外确认掩码没被改到一半。
 
 #include "Platform/System/CpuAffinity.h"
+
+#include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
 
@@ -185,6 +187,66 @@ namespace AsynGyanis::Platform
             }
             return static_cast<std::size_t>((quota + period - 1) / period);
         }
+
+#if ASYN_PLATFORM_LINUX
+        /**
+         * @brief 从 /proc/self/status 的 Cpus_allowed_list 独立数出本进程被放行的核数
+         * @details 该字段是内核给出的核编号文本清单，项之间逗号分隔，每项是「核号」或「起-止」区间。
+         *          走这条外部的路是为了不与本类的掩码共享任何代码：核数超过 64 的机器上，实现若还
+         *          从 64 位掩码数核，这里就会比清单多出一截。
+         * @return std::optional<std::size_t> 读不到字段或出现不认识的项时返回空（对照失效好过猜数）
+         */
+        std::optional<std::size_t> readKernelAllowedCoreCount()
+        {
+            std::ifstream status("/proc/self/status");
+            std::string   list;
+            for (std::string line; std::getline(status, line);)
+            {
+                constexpr std::string_view fieldKey = "Cpus_allowed_list:";
+                if (line.starts_with(fieldKey))
+                {
+                    list = line.substr(fieldKey.size());
+                    break;
+                }
+            }
+
+            std::size_t coreCount = 0;
+            std::size_t offset    = 0;
+            while (offset < list.size())
+            {
+                const std::size_t comma = list.find(',', offset);
+                const std::size_t itemEnd = comma == std::string::npos ? list.size() : comma;
+                std::size_t       itemBegin = list.find_first_not_of(" \t", offset);
+                if (itemBegin == std::string::npos || itemBegin >= itemEnd)
+                {
+                    offset = itemEnd + 1;
+                    continue;
+                }
+                const std::size_t dash = list.find('-', itemBegin);
+
+                std::int64_t firstCore  = -1;
+                std::int64_t secondCore = -1;
+                if (!nextInteger(list, itemBegin, firstCore) || firstCore < 0)
+                {
+                    return std::nullopt;
+                }
+                if (dash != std::string::npos && dash < itemEnd)
+                {
+                    std::size_t rangeStart = dash + 1;
+                    if (!nextInteger(list, rangeStart, secondCore) || secondCore < firstCore)
+                    {
+                        return std::nullopt;
+                    }
+                    coreCount += static_cast<std::size_t>(secondCore - firstCore + 1);
+                } else
+                {
+                    coreCount += 1;
+                }
+                offset = itemEnd + 1;
+            }
+            return coreCount > 0 ? std::optional<std::size_t>{coreCount} : std::nullopt;
+        }
+#endif
     } // namespace
 
     TEST(CpuAffinity, AllowedCoreSetIsNonEmptyAndNeverWiderThanTheMachine)
@@ -194,13 +256,22 @@ namespace AsynGyanis::Platform
 
         const std::size_t allowedCoreCount = CpuAffinity::availableCoreCount();
         EXPECT_GE(allowedCoreCount, 1U);
-        EXPECT_EQ(allowedCoreCount, countCoresInMask(allowedMask)) << "数量与掩码两处读数不一致";
 
         // 许可集合是本进程可用核的子集：容器 cpuset 收窄后只会更少，不会多于机器核数
         const unsigned hardwareCoreCount = std::thread::hardware_concurrency();
         if (hardwareCoreCount > 0)
         {
             EXPECT_LE(allowedCoreCount, static_cast<std::size_t>(hardwareCoreCount));
+        }
+
+        // 掩码只有 64 位，机器核数不超过它时掩码才是许可集合的完整视图，两处读数必须逐位对齐；
+        // 更宽的机器上计数看得见编号 64 起的核，而那些核本就压不进掩码，只能比它对
+        if (hardwareCoreCount > 0 && hardwareCoreCount <= 64U)
+        {
+            EXPECT_EQ(allowedCoreCount, countCoresInMask(allowedMask)) << "数量与掩码两处读数不一致";
+        } else
+        {
+            EXPECT_GE(allowedCoreCount, countCoresInMask(allowedMask)) << "计数不该少于掩码里看得见的那段";
         }
     }
 
@@ -232,21 +303,88 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(CpuAffinity::currentThreadCoreMask(), ownMaskBefore) << "别的线程绑核改到了本线程的掩码";
     }
 
-    TEST(CpuAffinity, PinningRefusesCoreNumbersBeyondTheSixtyFourBitMask)
+    /**
+     * @brief 钉住：编号超出本平台那套 CPU 集合宽度的目标核必须被拒，且文案给出本平台的真实上限
+     * @details 可表达范围取各平台自己的集合宽度：Linux 的 cpu_set_t 有 1024 位，Windows 的组内
+     *          掩码只有 64 位。诊断用的 64 位掩码不决定可绑范围，因此这里的宽度按平台分别取。
+     */
+    TEST(CpuAffinity, PinningRefusesCoreNumbersBeyondThePlatformsCoreSet)
     {
         const std::uint64_t maskBefore = CpuAffinity::currentThreadCoreMask();
 
-        for (const std::size_t tooLargeIndex: {64U, 65U, 1000U})
+#if ASYN_PLATFORM_LINUX
+        constexpr std::size_t kExpressibleCoreWidth = 1024U;
+#else
+        constexpr std::size_t kExpressibleCoreWidth = 64U;
+#endif
+        const std::string expectedBoundText = std::to_string(kExpressibleCoreWidth - 1U);
+        for (const std::size_t tooLargeIndex: {kExpressibleCoreWidth, kExpressibleCoreWidth + 1U,
+                                               std::size_t{100000}})
         {
             const auto pinResult = CpuAffinity::pinCurrentThreadToCore(tooLargeIndex);
-            ASSERT_FALSE(pinResult.has_value()) << "编号 " << tooLargeIndex << " 超出 64 位掩码，必须拒绝";
-            EXPECT_NE(pinResult.error().find("64"), std::string::npos)
-                    << "拒绝文案要写清支持范围，实际：" << pinResult.error();
+            ASSERT_FALSE(pinResult.has_value()) << "编号 " << tooLargeIndex << " 超出本平台集合宽度，必须拒绝";
+            EXPECT_NE(pinResult.error().find(expectedBoundText), std::string::npos)
+                    << "拒绝文案要写清本平台的真实上限（0-" << kExpressibleCoreWidth - 1U << "），实际："
+                    << pinResult.error();
         }
 
         // 拒绝路径不留半成品：掩码一位都不该被改过
         EXPECT_EQ(CpuAffinity::currentThreadCoreMask(), maskBefore);
     }
+
+#if ASYN_PLATFORM_LINUX
+    /**
+     * @brief 钉住（Linux）：编号 64-1023 的拒绝理由是「本机没放行」，不是「本工具表达不了」
+     * @details 判定改走 cpu_set_t 之后，64 位掩码那层中转没了：宽机器上编号 64 起的核既数得到也绑
+     *          得上。窄机器上它照样被拒，但报「只支持 0-63」会把人引去改代码，真正要改的是
+     *          cpuset/taskset。绑定在独立线程上做，免得把本用例线程的亲和性绑窄了影响后面的用例。
+     */
+    TEST(CpuAffinity, CoreNumbersAboveSixtyFourAreJudgedByTheAllowedSetNotTheMask)
+    {
+        const std::size_t allowedCoreCount = CpuAffinity::availableCoreCount();
+
+        for (const std::size_t coreIndex: {64U, 65U, 127U})
+        {
+            std::optional<std::string> failureText;
+            std::jthread worker([&]
+            {
+                const auto pinResult = CpuAffinity::pinCurrentThreadToCore(coreIndex);
+                if (!pinResult.has_value())
+                {
+                    failureText = pinResult.error();
+                }
+            });
+            worker.join();
+
+            if (!failureText.has_value())
+            {
+                // 放行这个核，说明机器确实宽过 64：那计数也必须看得见它，否则定容又会少一半
+                EXPECT_GT(allowedCoreCount, 64U) << "绑上了编号 " << coreIndex << " 却只数到 " << allowedCoreCount
+                                                 << " 枚核，说明计数仍被 64 位掩码截断";
+                continue;
+            }
+            EXPECT_NE(failureText->find("不在本进程被允许的 CPU 集合"), std::string::npos)
+                    << "编号 " << coreIndex << " 在 1024 位的集合里可表达，该报的是本机没放行，实际："
+                    << *failureText;
+            EXPECT_EQ(failureText->find("本工具支持的"), std::string::npos)
+                    << "不得把「本机没放行」报成「本工具表达不了」，实际：" << *failureText;
+        }
+    }
+
+    /**
+     * @brief 钉住（Linux）：availableCoreCount() 与内核上报的许可核清单逐核对齐
+     * @details 判据取自 /proc/self/status 的 Cpus_allowed_list，与本类的掩码不共享任何代码：
+     *          计数若还从 64 位掩码数起，核数超过 64 的机器上这里就会比清单少一截。
+     */
+    TEST(CpuAffinity, AllowedCoreCountMatchesTheKernelCpuList)
+    {
+        const std::optional<std::size_t> kernelAllowedCount = readKernelAllowedCoreCount();
+        ASSERT_TRUE(kernelAllowedCount.has_value())
+                << "读不出 /proc/self/status 的 Cpus_allowed_list，这条对照没有判据可用";
+        EXPECT_EQ(CpuAffinity::availableCoreCount(), *kernelAllowedCount)
+                << "计数与内核上报的许可核清单不一致（清单：" << *kernelAllowedCount << "）";
+    }
+#endif
 
     TEST(CpuAffinity, PinningRefusesCoresOutsideTheAllowedSet)
     {

@@ -19,9 +19,10 @@ namespace AsynGyanis::Platform
 {
     namespace
     {
-        /// 核掩码是 64 位，因此可绑的逻辑核编号上限就是 64；超限一律显式拒绝而不是回绕成低位
+        /// 核掩码是 64 位，因此掩码里能出现的逻辑核编号上限就是 64；超限一律显式拒绝而不是回绕成低位
         constexpr std::size_t kMaximumAddressableCoreIndex = 64;
 
+#if !ASYN_PLATFORM_LINUX
         /**
          * @brief 数出掩码里有几个置位的核
          * @param coreMask 逻辑核掩码
@@ -36,6 +37,26 @@ namespace AsynGyanis::Platform
                 ++coreCount;
             }
             return coreCount;
+        }
+#endif
+
+        /// 许可集合读不出来时的文案：此时既数不到核也判不了目标核是否放行
+        constexpr std::string_view kCoreSetReadFailureText =
+                "绑核失败：读取本线程可用的 CPU 集合就失败了，无法判定目标核是否可用。"
+                "请确认运行环境允许查询亲和性（部分沙箱会拦下这类调用），或放弃绑核";
+
+        /**
+         * @brief 组装「目标核不在许可集合内」的文案
+         * @details 两条平台分支共用一份：同一句拒绝理由抄两遍，迟早只改一遍。
+         * @param coreIndex 被拒的目标核编号
+         * @param allowedMask 掩码形式的许可集合（只覆盖 0-63，编号更大的核不体现在其中）
+         * @return std::string 中文原因与替代做法
+         */
+        std::string coreNotAllowedText(const std::size_t coreIndex, const std::uint64_t allowedMask)
+        {
+            return std::format("绑核失败：逻辑核 {} 不在本进程被允许的 CPU 集合里（掩码 0x{:016x}）。"
+                               "容器 cpuset 或 taskset 往往只放行一部分核，请把线程绑到集合内的编号上",
+                               coreIndex, allowedMask);
         }
 
 #if ASYN_PLATFORM_LINUX
@@ -91,6 +112,18 @@ namespace AsynGyanis::Platform
                 return {false, 0};
             }
             return parseLeadingInteger(text.substr(separator + 1));
+        }
+
+        /**
+         * @brief 读本线程被允许使用的完整 CPU 集合
+         * @param[out] allowedSet 成功时写入完整的许可集合
+         * @return true 读取成功
+         */
+        bool readAllowedCoreSet(cpu_set_t &allowedSet) noexcept
+        {
+            CPU_ZERO(&allowedSet);
+            // 第 0 个参数取 0 表示调用线程本身，不必先取 tid
+            return ::sched_getaffinity(0, sizeof(allowedSet), &allowedSet) == 0;
         }
 
         /**
@@ -170,35 +203,62 @@ namespace AsynGyanis::Platform
 
     std::size_t CpuAffinity::availableCoreCount() noexcept
     {
+#if ASYN_PLATFORM_LINUX
+        // 直接从许可集合数，不经 64 位掩码中转：掩码只表达 0-63，编号更大的核会在中转时被丢掉，
+        // 于是 96 核的机器上这里报 64，线程池与事件循环按它定容就把三分之一的机器静默扔了
+        cpu_set_t allowedSet;
+        if (!readAllowedCoreSet(allowedSet))
+        {
+            return 0;
+        }
+        return static_cast<std::size_t>(CPU_COUNT(&allowedSet));
+#else
         return countSetCores(currentThreadCoreMask());
+#endif
     }
 
     std::expected<void, std::string> CpuAffinity::pinCurrentThreadToCore(const std::size_t coreIndex)
     {
-        if (coreIndex >= kMaximumAddressableCoreIndex)
+        // 可表达的核编号范围取各平台自己那套集合的宽度，而不是诊断掩码的 64 位：
+        // Windows 的 SetThreadAffinityMask 只能在同一处理器组内按位选核，Linux 的 cpu_set_t 有 1024 位
+#if ASYN_PLATFORM_LINUX
+        constexpr std::size_t kMaximumExpressibleCoreIndex = CPU_SETSIZE;
+#else
+        constexpr std::size_t kMaximumExpressibleCoreIndex = kMaximumAddressableCoreIndex;
+#endif
+        if (coreIndex >= kMaximumExpressibleCoreIndex)
         {
             return std::unexpected(std::format("绑核失败：逻辑核编号 {} 不在本工具支持的 0-{} 范围内"
-                                               "（核掩码只有 64 位）。请改用操作系统的绑核工具（如 taskset、numactl），"
+                                               "（本平台的 CPU 集合只有 {} 位）。请改用操作系统的绑核工具（如 taskset、numactl），"
                                                "或只把线程绑到编号更小的核上",
-                                               coreIndex, kMaximumAddressableCoreIndex - 1));
+                                               coreIndex, kMaximumExpressibleCoreIndex - 1,
+                                               kMaximumExpressibleCoreIndex));
         }
 
-        const std::uint64_t targetBit = std::uint64_t{1} << coreIndex;
+#if ASYN_PLATFORM_LINUX
+        cpu_set_t allowedSet;
+        if (!readAllowedCoreSet(allowedSet))
+        {
+            return std::unexpected(std::string{kCoreSetReadFailureText});
+        }
+        if (!CPU_ISSET(coreIndex, &allowedSet))
+        {
+            return std::unexpected(coreNotAllowedText(coreIndex, currentThreadCoreMask()));
+        }
+#else
         const std::uint64_t allowedMask = currentThreadCoreMask();
         if (allowedMask == 0)
         {
-            return std::unexpected("绑核失败：读取本线程可用的 CPU 集合就失败了，无法判定目标核是否可用。"
-                                   "请确认运行环境允许查询亲和性（部分沙箱会拦下这类调用），或放弃绑核");
+            return std::unexpected(std::string{kCoreSetReadFailureText});
         }
-        if ((allowedMask & targetBit) == 0)
+        if ((allowedMask & (std::uint64_t{1} << coreIndex)) == 0)
         {
-            return std::unexpected(std::format("绑核失败：逻辑核 {} 不在本进程被允许的 CPU 集合里（掩码 0x{:016x}）。"
-                                               "容器 cpuset 或 taskset 往往只放行一部分核，请把线程绑到集合内的编号上",
-                                               coreIndex, allowedMask));
+            return std::unexpected(coreNotAllowedText(coreIndex, allowedMask));
         }
+#endif
 
 #if ASYN_PLATFORM_WIN32
-        if (SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(targetBit)) == 0)
+        if (SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(std::uint64_t{1} << coreIndex)) == 0)
         {
             return std::unexpected(std::format("绑核失败：SetThreadAffinityMask 返回错误码 {}（目标核 {}）。"
                                                "请检查是否有安全策略限制线程亲和性，或放弃绑核",

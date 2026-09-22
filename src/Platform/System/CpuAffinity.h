@@ -25,15 +25,18 @@ namespace AsynGyanis::Platform
      *          sched_setaffinity 各自实现，收在这里是因为 Platform 独占 OS 底层。
      * @note 「可用核」按**本进程被允许使用的核**算，不是硬件核数：容器 cpuset 与
      *       taskset 收窄过的环境下 hardware_concurrency() 会给出机器核数而超出许可范围。
-     * @warning 只支持逻辑核编号小于 64 的绑定（核掩码是 64 位）。编号更大的机器上本函数
-     *          直接报错而不是静默截断，那种规模请交给 taskset/numactl 或改用分组亲和性 API。
-     *          Windows 上处理器分两组以上时（第 1 组起）本工具读不到可用的核，同样按不可用处理。
+     * @warning 可绑的逻辑核编号范围取各平台自己那套 CPU 集合的宽度：Linux 的 cpu_set_t 有 1024 位，
+     *          Windows 的 SetThreadAffinityMask 只能在一个处理器组内按位选核（因此只有 64 位，且线程
+     *          落在第 1 组起时读不到可用的核，按不可用处理）。超出范围一律报错而不是静默截断。
+     * @see currentThreadCoreMask() 交出的掩码只是 0-63 那一段的紧凑诊断视图，不决定可绑范围。
      */
     class CpuAffinity
     {
     public:
         /**
          * @brief 取本线程当前被允许使用的逻辑核数量
+         * @details 按平台自己的 CPU 集合整份数出来，不经 64 位掩码中转——线程池与事件循环按这个数
+         *          定容，读数被掩码截断就等于把宽机器上的一半并行度静默扔掉。
          * @return std::size_t 许可集合里的核数；查询失败时返回 0（调用方据此放弃绑核即可）
          */
         [[nodiscard]] static std::size_t availableCoreCount() noexcept;
@@ -73,7 +76,8 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 取本线程当前被允许使用的逻辑核掩码（bit i 对应核 i）
-         * @details 给断言与诊断用：绑核之后掩码应当只剩一位，否则说明绑定没生效。
+         * @details 给断言与诊断用：绑核之后掩码应当只剩一位，否则说明绑定没生效。它只有 64 位，
+         *          因此既不参与定容也不决定可绑范围——那两件事按平台自己的集合判定。
          * @return std::uint64_t 许可掩码；编号不小于 64 的核不体现在掩码里，
          *         查询失败时返回 0
          */
@@ -82,7 +86,8 @@ namespace AsynGyanis::Platform
         /**
          * @brief 把当前线程绑到指定逻辑核上
          * @details 只影响调用线程本身，不动进程亲和性，因此同一进程里可以按工作线程逐个绑。
-         * @param coreIndex 目标逻辑核编号，必须小于 64 且在本进程的许可集合内
+         * @param coreIndex 目标逻辑核编号，必须落在本平台的集合宽度内（Linux 0-1023、Windows 0-63）
+         *        且在本进程的许可集合内
          * @return 成功返回 void
          * @return 失败返回中文原因与替代做法（编号越界、核不在许可集合内、系统调用被拒）
          */
