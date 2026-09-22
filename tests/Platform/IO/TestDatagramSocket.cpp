@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+#if !ASYN_PLATFORM_WIN32
+#include <fcntl.h>
+#endif
+
 namespace AsynGyanis::Platform
 {
     namespace
@@ -319,4 +323,25 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(target.isValid());
         EXPECT_EQ(portOf(target.localAddress()), boundPort) << "移动不该换掉已绑定的端口";
     }
+
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（POSIX）：绑好的套接字带 FD_CLOEXEC，spawn 出去的 worker 不会替父进程占端口
+     * @details 多进程 worker 用 fork+exec 起子进程。少了这个标志，子进程继承描述符：父进程退出后
+     *          端口仍被占着（正是 Process 那份继承清单要收窄到三个标准句柄的原因），而且子进程
+     *          与父进程共用同一条接收队列，会把 h3 报文读进一个永不处理它的进程里。
+     */
+    TEST(DatagramSocket, BoundSocketIsMarkedCloseOnExec)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket socket = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(socket.isValid()) << "绑定失败，套接字错误码 " << PlatformError::lastSocketErrorCode();
+
+        const int descriptorFlags = ::fcntl(socket.fileDescriptor(), F_GETFD);
+        ASSERT_GE(descriptorFlags, 0) << "读不到描述符标志";
+        EXPECT_TRUE((descriptorFlags & FD_CLOEXEC) != 0)
+                << "描述符没标 FD_CLOEXEC，子进程会继承它并占住这个 UDP 端口（标志实际为 " << descriptorFlags << "）";
+    }
+#endif
 } // namespace AsynGyanis::Platform

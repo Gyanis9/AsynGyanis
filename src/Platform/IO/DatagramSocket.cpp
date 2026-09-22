@@ -3,7 +3,12 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <cstdint>
 #include <utility>
+
+#if ASYN_PLATFORM_WIN32
+    #include <windows.h>
+#endif
 
 namespace AsynGyanis::Platform
 {
@@ -47,8 +52,25 @@ namespace AsynGyanis::Platform
             return socket;
         }
 
-        // 地址族跟着调用方给的地址走：IPv4 与 IPv6 各自建自己的套接字，不做双栈推断
-        socket.m_fileDescriptor = static_cast<int>(::socket(localAddress.storage.ss_family, SOCK_DGRAM, IPPROTO_UDP));
+        // 地址族跟着调用方给的地址走：IPv4 与 IPv6 各自建自己的套接字，不做双栈推断。
+        // 建完立刻把它标成「不随 spawn 传下去」：多进程 worker 走 fork+exec 或
+        // CreateProcess(bInheritHandles=TRUE)，继承下来的套接字会让父进程退出后端口仍被占着，
+        // 而且子进程与父进程共用同一条接收队列，会把报文读进一个永远不会处理它的进程里
+        const int socketType = SOCK_DGRAM
+#if !ASYN_PLATFORM_WIN32
+                               | SOCK_CLOEXEC
+#endif
+            ;
+        socket.m_fileDescriptor = static_cast<int>(::socket(localAddress.storage.ss_family, socketType, IPPROTO_UDP));
+#if ASYN_PLATFORM_WIN32
+        // Winsock 的句柄默认可继承，而带 WSA_FLAG_NO_HANDLE_INHERIT 的 WSASocketW 要求老系统上
+        // 另走一条建法；这里只在建好之后取消继承位，语义相同且不会因缺标志而整个建不出套接字
+        if (FileDescriptor::isValid(socket.m_fileDescriptor))
+        {
+            static_cast<void>(::SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(socket.m_fileDescriptor)),
+                                                     HANDLE_FLAG_INHERIT, 0));
+        }
+#endif
         if (!FileDescriptor::isValid(socket.m_fileDescriptor))
         {
             // socket/bind/getsockname 都是套接字族调用：Windows 上错误在 WSAGetLastError，
