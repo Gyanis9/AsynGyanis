@@ -229,8 +229,13 @@ namespace AsynGyanis::Database
         bool          m_hasCurrentRow{false}; ///< 游标当前是否停在有效行上，决定能否读取列值
         bool          m_scanCompleted{false}; ///< 游标是否已走到末尾；SQLite 会对已 DONE 的语句再次 step 而重跑查询，必须显式记住耗尽
         bool          m_isEmpty{true};        ///< 结果集是否为空（写回执恒为 true）
-        /// 预扫描顺带存下的行值；m_isMaterializedRowsValid 为真时 next()/getValue() 只读这里
-        std::vector<std::vector<DatabaseValue> > m_materializedRows;
+        /// 预扫描顺带存下的行值，摊成「行优先、行内按列序」的一整块（第 r 行第 c 列在
+        /// r * m_columnCount + c）；m_isMaterializedRowsValid 为真时 next()/getValue() 只读这里。
+        /// 不用 vector<vector<...>>：那等于每行一次堆分配，256 行的快照就是 257 次
+        std::vector<DatabaseValue> m_materializedCells;
+        /// 快照里存了几行。不拿 m_materializedCells.size() / m_columnCount 反推：写回执的列数是 0，
+        /// 那个除法会炸，而快照与写回执共用这一段代码
+        size_t m_materializedRowCount{0};
         /// 快照模式下的列名表：游标交还语句缓存后列名不能再从它身上问，故与行值同时存下
         std::vector<std::string> m_columnNames;
         bool m_isMaterializedRowsValid{false}; ///< 快照是否可用（未预扫描或行数超限则为假，退回游标遍历）

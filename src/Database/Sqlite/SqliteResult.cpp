@@ -63,7 +63,7 @@ namespace AsynGyanis::Database
         // 那时 m_statement 为空但结果集依然有行可读
         if (m_isMaterializedRowsValid)
         {
-            m_hasCurrentRow = (m_materializedRowCursor < m_materializedRows.size());
+            m_hasCurrentRow = (m_materializedRowCursor < m_materializedRowCount);
             // 快照模式下游标始终停在「已耗尽」之前的位置，取值只认下标，不读游标
             m_isCurrentRowMaterialized = m_hasCurrentRow;
             if (m_hasCurrentRow)
@@ -195,7 +195,8 @@ namespace AsynGyanis::Database
         // 不再回到游标——此时游标要么停在别处，要么已交还语句缓存
         if (m_isCurrentRowMaterialized)
         {
-            return m_materializedRows[m_materializedRowCursor - 1][index];
+            // 行优先扁平布局：上一行的行首下标 = (游标 - 1) * 列数，游标在 next() 里已推进过
+            return m_materializedCells[(m_materializedRowCursor - 1) * m_columnCount + index];
         }
 
         return convertValue(static_cast<int>(index));
@@ -290,6 +291,9 @@ namespace AsynGyanis::Database
     void SqliteResult::prefetchRows()
     {
         m_rowCount = 0;
+        // 先按列数留出第一行：单行查询（按主键取一行是最常见的形状）因此只碰一次分配，
+        // 更长的结果集再按 vector 的倍增规则扩容
+        m_materializedCells.reserve(m_columnCount);
         while (true)
         {
             const int stepResult = sqlite3_step(m_statement);
@@ -299,13 +303,11 @@ namespace AsynGyanis::Database
                 if (m_rowCount <= kMaximumMaterializedRowCount)
                 {
                     // 列读取接口只在 step 返回 SQLITE_ROW 期间有效，必须当场转成 owning 值再进下一轮
-                    std::vector<DatabaseValue> rowValues;
-                    rowValues.reserve(m_columnCount);
                     for (size_t index = 0; index < m_columnCount; ++index)
                     {
-                        rowValues.push_back(convertValue(static_cast<int>(index)));
+                        m_materializedCells.push_back(convertValue(static_cast<int>(index)));
                     }
-                    m_materializedRows.push_back(std::move(rowValues));
+                    ++m_materializedRowCount;
                 }
                 // 超出容量的行只计数不存值：rowCount() 仍要精确，而内存上界由这个上限保证
                 continue;
@@ -334,7 +336,8 @@ namespace AsynGyanis::Database
         {
             // swap 而不是 clear()：clear 只把 size 归零，容量与已分配的行值缓冲会一直占着，
             // 而这条结果集之后走的是游标遍历，那份快照再也用不上
-            std::vector<std::vector<DatabaseValue> >().swap(m_materializedRows);
+            std::vector<DatabaseValue>().swap(m_materializedCells);
+            m_materializedRowCount = 0;
         } else
         {
             // 列名也要一并存下：快照完整时连接会把游标收回语句缓存，之后 sqlite3_column_name
