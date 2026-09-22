@@ -147,11 +147,13 @@ namespace AsynGyanis::Core
     TimerQueue::TimerQueue(EventLoop &loop) :
         m_loop(loop), m_timer(), m_watcher(loop, m_timer.fileDescriptor()), m_driverTask(drive())
     {
-        if (m_timer.fileDescriptor() < 0)
+        // 判据取「本平台的定时机制齐不齐」而不是「读端描述符可用」：Windows 一侧除 socketpair 的
+        // 读端外还要一枚可等待定时器与它的等待登记，任一项建不起来都只能靠 arm() 恒失败收场，
+        // 那时描述符仍是有效的——构造会假成功，而之后每一个 co_await 定时等待都永久挂起
+        if (!m_timer.isValid())
         {
-            // 定时器描述符建不起来说明本平台不支持该机制（Linux 上为 timerfd）：
             // 这是不可恢复的启动期故障，带着 errno 抛出便于定位
-            throw Base::SystemException("创建定时器描述符失败");
+            throw Base::SystemException("创建定时器机制失败（Windows 上还需可等待定时器与其等待登记齐备）");
         }
         // 驱动协程在这里只是被创建（惰性协程，还没跑），投递发生在第一次登记定时等待时：
         // 没用过定时器的循环因此不会被塞进一个常驻任务，新建的循环仍是「零待办」
