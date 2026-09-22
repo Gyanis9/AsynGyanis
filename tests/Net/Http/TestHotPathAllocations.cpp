@@ -20,7 +20,8 @@
 //     请求字段（两条都不再新取堆块；改前每请求 1 次 / 32 字节）；
 //   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
 //   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
-//   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次。
+//   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次；
+//   · 一条 h2 连接握手到关掉：每连接的固定成本（空闲连接也要付，故只作打印对照）。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
 
 #include "Net/Http/HttpChunkFrame.h"
@@ -30,6 +31,7 @@
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/Router.h"
+#include "Net/Http2/Http2Connection.h"
 #include "Net/Http2/Http2Frame.h"
 
 #include "AllocationProbe.h"
@@ -347,6 +349,58 @@ namespace AsynGyanis::Net
         EXPECT_EQ(profile.allocationsPerOperation, kFrameDecodeAllocationsPerFrame)
                 << "解一帧的分配数变了：稳态下只有取走的负载那份串要堆块";
 #endif
+    }
+
+    /**
+     * @brief 光建起一条 h2 连接再析构付出多少次分配（一个字节都没读写）
+     * @details 与下一条用例合起来把「每连接固定成本」拆成两段：这一段量的是容器与成员的默认构造，
+     *          里面每一笔都是「还没用就先占一块」，也就都是可以去掉的
+     */
+    TEST(HotPathAllocations, Http2ConnectionConstructionAllocations)
+    {
+        const auto constructOnce = []() -> std::size_t
+        {
+            Http2Connection connection;
+            return static_cast<std::size_t>(connection.state());
+        };
+        static_cast<void>(constructOnce());
+
+        const AllocationProfile profile = measurePerOperation(constructOnce);
+        std::printf("h2 每条连接的构造成本 %llu 次分配 / %llu 字节\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation));
+    }
+
+    /**
+     * @brief 一条 h2 连接从建起到握手完成再关掉付出多少次分配（每连接的固定成本）
+     * @details 喂完 preface 与一个空 SETTINGS 就析构，一个头部没解、一条流没开——空闲连接付的就是
+     *          这一笔，因此它是「每连接内存」的下界：容器与缓冲里那些压根没用过却先占一块的，全在
+     *          这个读数里。这里不钉硬阈值：这条形状的存在理由就是把改动前后的对照数字留在那里
+     */
+    TEST(HotPathAllocations, Http2ConnectionHandshakeAllocations)
+    {
+        std::string settingsFrame;
+        settingsFrame.append(3, '\0');      // 帧长度 0
+        settingsFrame.push_back(0x04);      // SETTINGS
+        settingsFrame.push_back(0x00);      // 标志位：非 ACK
+        settingsFrame.append(4, '\0');      // 流标识 0
+        const std::string handshakeBytes = std::string(kHttp2ConnectionPreface) + settingsFrame;
+
+        const auto handshakeOnce = [&handshakeBytes]() -> std::size_t
+        {
+            Http2Connection connection;
+            static_cast<void>(connection.feedBytes(handshakeBytes.data(), handshakeBytes.size()));
+            return connection.takeOutgoingBytes().size();
+        };
+        const std::size_t firstOutgoingByteCount = handshakeOnce();
+        EXPECT_GT(firstOutgoingByteCount, 0U) << "握手一个字节都没发，这条用例没测到东西";
+
+        const AllocationProfile profile = measurePerOperation(handshakeOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * firstOutgoingByteCount)
+                << "有几次握手的产物长度不一致，读数不可信";
+        std::printf("h2 每条连接的握手成本 %llu 次分配 / %llu 字节\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation));
     }
 
     /**

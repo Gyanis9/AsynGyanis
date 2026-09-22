@@ -1609,12 +1609,21 @@ namespace AsynGyanis::Net
     {
         m_terminatedStreamIds.push_back(streamId);
         // 终止记录只为区分「忽略」与「判错」而留：超过上限就把最旧的整条删掉，账本不随连接时长无限增长
-        while (m_terminatedStreamIds.size() > kTerminatedStreamMemoryCount)
+        std::size_t evictedCount = 0;
+        while (m_terminatedStreamIds.size() - evictedCount > kTerminatedStreamMemoryCount)
         {
-            m_streams.erase(m_terminatedStreamIds.front());
-            m_terminatedStreamIds.pop_front();
+            m_streams.erase(m_terminatedStreamIds[evictedCount]);
+            ++evictedCount;
             // 账本自此不完整：再也无法证明某个流号「从未被开过」，对 idle 流上的违约帧只能退回宽容忽略
             m_hasEvictedTerminatedStreamRecord = true;
+        }
+        // 攒成一段一起摘，而不是逐条 erase(begin())：稳态下每条流终止都要挤掉一条，逐条摘等于每回都把
+        // 整张表往前搬一遍
+        if (evictedCount != 0)
+        {
+            m_terminatedStreamIds.erase(m_terminatedStreamIds.begin(),
+                                        m_terminatedStreamIds.begin()
+                                            + static_cast<std::vector<std::uint32_t>::difference_type>(evictedCount));
         }
     }
 
