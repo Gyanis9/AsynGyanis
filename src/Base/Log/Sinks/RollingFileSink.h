@@ -12,6 +12,7 @@
 #include "Base/Log/Sinks/FileSink.h"
 #include "Base/Log/Sinks/LogSink.h"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -64,7 +65,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 写入日志前执行滚动检查
          * @details 重写 LogSink::write()：在互斥锁内先做滚动判定，再委派给活动 FileSink，
-         *          因此滚动与写入之间不会出现文件名切换竞态。
+         *          因此滚动与写入之间不会出现文件名切换竞态。上一次重开活动文件失败时，
+         *          这里按重试节奏再开一次，否则本 Sink 会不打一声招呼地永久停产。
          * @param event 日志事件
          */
         void write(const LogEvent &event) override;
@@ -133,5 +135,9 @@ namespace AsynGyanis::Base
         /// 下一个需要检查滚动的时间点（按时间滚动的判据）：
         /// 每行只做一次 time_t 比较，跨过边界才做本地时间转换与后缀格式化
         std::time_t m_nextPeriodBoundary = 0;
+
+        /// 下一次允许重试重开活动文件的时刻（steady_clock）：
+        /// 取默认构造值即「无冷却」，因此首次重开失败后下一行就立刻再试，不必等一个间隔
+        std::chrono::steady_clock::time_point m_nextReopenAttempt{};
     };
 } // namespace AsynGyanis::Base

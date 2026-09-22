@@ -12,6 +12,7 @@
 #include <iterator>
 #include <regex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -414,4 +415,58 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(totalLines, static_cast<std::size_t>(kthreadCount) * kwritesPerThread);
     }
+
+    /**
+     * @brief 活动文件一度打不开时，故障撤掉后日志必须恢复生产
+     * @details 钉的是「一次重开失败即永久停产」：滚动先把活动 Sink 置空，重开再失败时它就留在
+     *          空指针上，而按大小的滚动判据又要求活动 Sink 非空——再没有别的触发点，之后每一行
+     *          都被无声丢弃直到进程退出
+     */
+    TEST(RollingFileSink, ResumesWritingAfterTheActiveFileFailedToReopen)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_Reopen");
+        const fs::path                        logDirectory = temporaryDirectory.path();
+        const fs::path                        activePath   = logDirectory / "back.log";
+
+        // 故障源要能在「活动文件正被 Sink 开着」时就位，因此不能用删目录那类手法：
+        // 滚动会先关闭句柄再重开，名字到那时又自由了。这里两件事叠加：
+        //   1) 活动文件只读 -> 重开的写打开必失败；
+        //   2) 1 号与 2 号备份位各放一个非空目录 -> 滚动既挪不动 1 号位、也重命名不进 1 号位，
+        //      于是那份只读文件被留在原地，只读位就真的挡住了重开
+        constexpr std::size_t kzeroBackupCount = 0;
+        RollingFileSink       sink("back.log", logDirectory, RollingPolicy::Size, 1, kzeroBackupCount);
+        sink.write(makeEvent(LogLevel::Info, "before_outage_payload"));
+        sink.flush();
+        ASSERT_NE(readWholeFile(activePath).find("before_outage_payload"), std::string::npos)
+                << "基线：第一行就要落进活动文件";
+
+        for (const std::string blockerName: {"back.1.log", "back.2.log"})
+        {
+            ASSERT_NO_THROW(fs::create_directory(logDirectory / blockerName));
+            ASSERT_NO_THROW(fs::create_directory(logDirectory / blockerName / "inner"));
+        }
+        ASSERT_NO_THROW(fs::permissions(activePath,
+                                        fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read,
+                                        fs::perm_options::replace));
+        {
+            // 探针：只读位挡不住写打开的平台（容器里以 root 跑）没有可用的故障源，如实跳过
+            const std::ofstream probe(activePath, std::ios::out | std::ios::app);
+            if (probe.is_open())
+            {
+                GTEST_SKIP() << "本平台以当前身份运行时，只读位不阻止写打开，无法注入重开失败";
+            }
+        }
+
+        // 阈值 1 字节 -> 这一行必然进入滚动，进而走到重开并抛出
+        EXPECT_THROW(sink.write(makeEvent(LogLevel::Info, "lost_during_outage_payload")), std::exception);
+
+        // 撤掉故障：只读位解除即可（备份位那两个目录留着不影响本行的落盘位置断言）
+        ASSERT_NO_THROW(fs::permissions(activePath, fs::perms::all, fs::perm_options::add));
+        EXPECT_NO_THROW(sink.write(makeEvent(LogLevel::Info, "after_outage_payload")));
+        sink.flush();
+
+        EXPECT_NE(readWholeFile(activePath).find("after_outage_payload"), std::string::npos)
+                << "重开失败一次之后本 Sink 永久停产：故障撤掉后的日志再也没落过盘";
+    }
+
 } // namespace AsynGyanis::Base

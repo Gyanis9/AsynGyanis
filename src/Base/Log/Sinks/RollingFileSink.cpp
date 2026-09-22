@@ -28,6 +28,10 @@ namespace AsynGyanis::Base
         /// 一小时的秒数，用于推算下一个整点边界
         constexpr std::int64_t kSecondsPerHour = 60 * 60;
 
+        /// 活动文件打不开之后的重试间隔：让出锁与系统调用的同时保证故障自愈，取值与
+        /// FileSink 那条「重新打开该文件后恢复」的指引相称——占用类故障通常在秒级内消失
+        constexpr std::chrono::seconds kReopenRetryInterval{1};
+
         /**
          * @brief 清理时使用的备份条目：路径与预先读好的时间戳
          */
@@ -91,13 +95,24 @@ namespace AsynGyanis::Base
     void RollingFileSink::write(const LogEvent &event)
     {
         std::lock_guard lock(m_mutex);
-        checkAndRoll();
-        if (m_currentSink)
+        // 活动文件为空只可能来自上一次重开失败（目标被杀软/备份代理短暂独占、磁盘写满、网络盘
+        // 失联）。不在这里补一次重开就再没有触发点：按大小的滚动判据要求活动文件非空，于是本
+        // Sink 会一声不响地永久停产。限流到每秒一次；仍开不开照旧抛出，由 Logger 的 Sink
+        // 异常上报路径出声，故障期间的丢弃量因此可见而不是不可见
+        if (!m_currentSink)
         {
-            // 自行格式化（使用本 Sink 的 formatter）后交给活动文件落盘，并累计本行字节数：
-            // 这样按大小滚动的判据完全来自内存计数，无需每行 flush + file_size
-            m_bytesInCurrentFile += m_currentSink->writeLine(formatEvent(event));
+            const auto now = std::chrono::steady_clock::now();
+            if (now < m_nextReopenAttempt)
+            {
+                return;
+            }
+            m_nextReopenAttempt = now + kReopenRetryInterval;
+            reopenActiveFile();
         }
+        checkAndRoll();
+        // 自行格式化（使用本 Sink 的 formatter）后交给活动文件落盘，并累计本行字节数：
+        // 这样按大小滚动的判据完全来自内存计数，无需每行 flush + file_size
+        m_bytesInCurrentFile += m_currentSink->writeLine(formatEvent(event));
     }
 
     void RollingFileSink::flush()
