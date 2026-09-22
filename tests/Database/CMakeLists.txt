@@ -27,6 +27,7 @@ add_executable(TestDatabase
 
         MySql/TestMySqlConnection.cpp
         MySql/TestMySqlStatementResult.cpp
+        MySql/TestMySqlValueConversion.cpp
         MySql/TestMySqlIntegration.cpp
 
 
