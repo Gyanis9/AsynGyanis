@@ -386,7 +386,16 @@ namespace AsynGyanis::Base
 
     std::string ConfigManager::getString(const std::string_view key, const std::string &defaultValue) const
     {
-        return get<std::string>(key, std::string(defaultValue));
+        // 与 getText 同一口径按视图直查：走 get<std::string> 要先把整份 ConfigValue 深拷进
+        // optional、再从那份副本里拷一次字符串，而进入时形参 defaultValue 已经按值构造过一份
+        // （命中时那次分配纯属白花）。严格类型口径不变：只有字符串值才算取到，其余回落默认值
+        const auto currentData = m_data.load(std::memory_order_acquire);
+        const auto iterator    = currentData->values.find(key);
+        if (iterator == currentData->values.end() || !iterator->second.is_string())
+        {
+            return defaultValue;
+        }
+        return iterator->second.get_ref<const std::string &>();
     }
 
     std::string ConfigManager::getText(const std::string_view key, const std::string &defaultValue) const
