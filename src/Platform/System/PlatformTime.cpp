@@ -118,8 +118,16 @@ namespace AsynGyanis::Platform
         // 交给 gmtime_s 会让 MSVC 把 1970 年之前整个拒掉（POSIX 却能正常折），同一份文件在两个
         // 平台上得到不同的 Last-Modified； Date 头这类输出要求对任意可表示的 time_t 都给出正确日历
         const std::int64_t seconds      = static_cast<std::int64_t>(calendarTime);
-        const std::int64_t days         = floorDivide(seconds, kSecondsPerDay);
-        const std::int64_t secondsOfDay = seconds - days * kSecondsPerDay;   // floor 取整保证落在 [0, 86400)
+        std::int64_t days         = seconds / kSecondsPerDay;
+        std::int64_t secondsOfDay = seconds % kSecondsPerDay;
+        if (secondsOfDay < 0)
+        {
+            // 一次除法配一对余数，商与余数同时校正到 floor 口径：换成「整除后乘回去再减」会在 time_t
+            // 取到最小值那一档让 days * 86400 越出 int64（容器 UBSan 实测报出），而纯除与纯取模对最负
+            // 的输入都有定义——除数是正数，永远碰不到 INT64_MIN / -1 那种溢出
+            secondsOfDay += kSecondsPerDay;   // 校正后日内秒落在 [0, 86400)
+            --days;                           // 向零截断的商跟着降到向下取整
+        }
 
         const auto civilDate = civilFromDays(days);
         if (!civilDate.has_value())
