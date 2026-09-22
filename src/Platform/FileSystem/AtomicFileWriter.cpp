@@ -106,6 +106,7 @@ namespace AsynGyanis::Platform
                                                     std::to_string(ProcessInfo::currentProcessId()) + "." +
                                                     std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed));
 
+        bool isTemporaryFileWritten = false;
         {
             std::ofstream temporaryFile(temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc);
             if (!temporaryFile.is_open())
@@ -115,10 +116,15 @@ namespace AsynGyanis::Platform
 
             temporaryFile.write(text.data(), static_cast<std::streamsize>(text.size()));
             temporaryFile.flush();
-            if (!temporaryFile.good())
-            {
-                return reportFailure("写入临时文件 '" + temporaryPath.string() + "' 失败");
-            }
+            isTemporaryFileWritten = temporaryFile.good();
+        }
+        // 判定挪到作用域之外再做：文件还开着的时候删不掉它——实测 Windows 上对开着的路径调
+        // std::filesystem::remove 会以 error 32（共享冲突）失败并原样留着，POSIX 虽能 unlink 但目录项
+        // 仍被句柄占着。本层对外承诺「写失败时临时文件会被清理」，清理就得等 RAII 先收工
+        if (!isTemporaryFileWritten)
+        {
+            discardTemporaryFile(temporaryPath);
+            return reportFailure("写入临时文件 '" + temporaryPath.string() + "' 失败");
         }
 
         // 落盘屏障：flush 只把用户态缓冲交给内核，断电时仍可能留下「目标文件已存在但内容为空/半截」。
