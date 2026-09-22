@@ -153,7 +153,11 @@ namespace AsynGyanis::Base
         size_t m_pendingCount = 0; ///< 已受理但尚未完成落地的事件数，含 worker 正在写出的在途事件
 
         std::mutex              m_queueMutex;     ///< 保护 m_slots/m_headIndex 与 m_pendingCount 的互斥锁
-        std::condition_variable m_queueCondition; ///< 队列非空/空间可用条件变量
+        /// 「队列非空」条件：只有 worker 在此等待，入队一侧 notify_one。与腾位条件分开是因为
+        /// 一条条件变量上挂着两类谓词时，notify_one 可能叫到谓词不成立的那一类，唤醒被当场吞掉
+        std::condition_variable m_workCondition;
+        /// 「腾出了空位」条件：只有 Block 策略下等位的最初写入者在此等待，出队一侧 notify_one
+        std::condition_variable m_spaceCondition;
         std::condition_variable m_flushCondition; ///< 队列排空条件变量
 
         std::stop_token       m_stopToken;            ///< 停止令牌快照，供 write()/flush() 无锁判断停止状态

@@ -90,7 +90,7 @@ namespace AsynGyanis::Base
             // Block：等队列腾出空间。**等待有上界**——下游 sink 卡住（慢盘、网络盘失联）时
             // 队列再也不会腾位，而调用方可能就是事件循环线程本身，无限期等它等于把整个循环停摆。
             // 超时与「因停止而结束」同一条处置：计入丢弃数，让运维能从 droppedEventCount() 看到代价
-            const bool hasSpace = m_queueCondition.wait_for(lock, kMaximumBlockWaitMilliseconds, [this]
+            const bool hasSpace = m_spaceCondition.wait_for(lock, kMaximumBlockWaitMilliseconds, [this]
             {
                 return queuedEventCount() < m_maximumQueueSize || m_stopToken.stop_requested();
             });
@@ -104,7 +104,11 @@ namespace AsynGyanis::Base
             ++m_pendingCount;
         }
         lock.unlock();
-        m_queueCondition.notify_one();
+        // 只叫消费者：**入队是占走一个空位，不是腾出一个空位**，等着腾位的写入者本来就不该被这一步
+        // 叫醒。生产者与消费者共用一条条件变量时，notify_one 有概率落在某个正在等空位的写入者身上——
+        // 它复检「还有空位」为假于是再睡下，这次唤醒就此吞掉，而事件已经在队列里、消费者还在睡。
+        // 之后每条写入都要付满 Block 超时并计入丢弃，flush() 更是等不到 pending 归零
+        m_workCondition.notify_one();
     }
 
     void AsyncSink::appendSlot(LogEvent &&event)
@@ -179,12 +183,14 @@ namespace AsynGyanis::Base
         std::call_once(m_stopOnce, [this]
         {
             {
-                // 停止标记必须与 worker 的等待谓词在**同一把锁**下发布：谓词在锁内读 stop_requested()，
-                // 若在锁外通知，唤醒可能落在「worker 已判定谓词为假、尚未入睡」的窗口里被丢弃，
+                // 停止标记必须与等待谓词在**同一把锁**下发布：谓词在锁内读 stop_requested()，
+                // 若在锁外通知，唤醒可能落在「等待方已判定谓词为假、尚未入睡」的窗口里被丢弃，
                 // worker 会永远睡在条件变量上、随后的 join() 永久阻塞
                 const std::lock_guard lock(m_queueMutex);
                 m_workerThread.request_stop();
-                m_queueCondition.notify_all();
+                // 两类等待者各有各的条件变量，两条都要叫：只叫一条会把另一类留在睡梦里
+                m_workCondition.notify_all();
+                m_spaceCondition.notify_all();
             }
             m_workerThread.join();
             if (m_wrappedSink)
@@ -224,8 +230,8 @@ namespace AsynGyanis::Base
                 // 当前代价是该条事件静默丢失（由 AsyncSink 之外的调用方决定是否需要补偿）
             }
             lock.lock();
-            // 队列出现空间，唤醒因队列满而阻塞的写入者
-            m_queueCondition.notify_one();
+            // 队列腾出空间，只叫因队列满而阻塞的写入者（消费者此刻不需要被叫）
+            m_spaceCondition.notify_one();
             // 事件已交给下游，待落地计数归零时唤醒全部 flush 等待者
             if (--m_pendingCount == 0)
             {
@@ -236,7 +242,7 @@ namespace AsynGyanis::Base
         while (!stopToken.stop_requested())
         {
             std::unique_lock lock(m_queueMutex);
-            m_queueCondition.wait(lock, [this, &stopToken]
+            m_workCondition.wait(lock, [this, &stopToken]
             {
                 return queuedEventCount() > 0 || stopToken.stop_requested();
             });
