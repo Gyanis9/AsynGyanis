@@ -296,7 +296,9 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
 
       - name: 并发相关用例集（TSan）
-        run: ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config"
+        # WorkerSupervisor 在列：它是 Core 里唯一「另一个线程可以来读」的进程编排——观察线程
+        # 与编排线程碰同一批 worker 句柄。这类竞态只有 TSan 看得见，MSVC 侧根本不编这个用例
+        run: ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor"
 
       - name: 失败时上传用例日志
         if: failure()
