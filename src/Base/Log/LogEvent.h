@@ -70,7 +70,7 @@ namespace AsynGyanis::Base
         LogLevel                             level{};             ///< 日志等级
         TimestampMoment                      timestamp{};         ///< 事件发生的时刻；文本由格式化器就地渲染，见 TimestampText.h
         std::shared_ptr<const std::string>   threadId{};          ///< 线程 ID 快照（按线程共享，事件只存指针）
-        [[no_unique_address]] SourceLocation location{};          ///< 源码位置（小对象，允许复用相邻成员的填充字节）
+        SourceLocation                       location{};          ///< 源码位置（两个指针加一个行号，本身不持有所有权）
         std::shared_ptr<const std::string>   loggerName{};        ///< 日志器名称（与 Logger 共享同一份常量名字）
         std::string                          message{};           ///< 日志消息内容
         CapturedStackTrace                   stackTrace{};        ///< 调用栈原始帧；空表示本条日志不带栈
