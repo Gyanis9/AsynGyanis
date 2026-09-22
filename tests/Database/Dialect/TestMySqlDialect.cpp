@@ -1139,7 +1139,7 @@ TEST(MySqlDialectDdl, KeyColumnTypesCarryIndexableLengths)
 }
 
 /**
- * @brief 验证表存在性查询限定了当前库，且表名以绑定参数送出
+ * @brief 验证表存在性查询限定了当前库、排除了视图，且表名以绑定参数送出
  */
 TEST(MySqlDialectDdl, TableExistsStatementScopesToCurrentDatabase)
 {
@@ -1148,10 +1148,12 @@ TEST(MySqlDialectDdl, TableExistsStatementScopesToCurrentDatabase)
     const SqlStatement statement = dialect.tableExistsStatement("users");
 
     // information_schema.tables 是全实例共享的：只用 table_name 过滤会把其它库的同名表也算进来，
-    // 因此必须同时用 DATABASE() 限定当前会话的默认库
+    // 因此必须同时用 DATABASE() 限定当前会话的默认库。
+    // 视图与表在 MySQL 里共用一个名字空间，只判名字存在会把视图当成「表已存在」——
+    // 建表被跳过、后续写入落在视图上才报错，所以还要按 table_type 排除视图（SQLite 侧同为 type='table'）
     EXPECT_EQ(statement.sql,
               "SELECT COUNT(*) FROM information_schema.tables "
-              "WHERE table_schema = DATABASE() AND table_name = ?");
+              "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ?");
     ASSERT_EQ(statement.parameters.size(), 1U);
     ASSERT_TRUE(std::holds_alternative<std::string>(statement.parameters[0]));
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "users");

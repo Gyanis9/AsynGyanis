@@ -92,11 +92,13 @@ namespace AsynGyanis::Database
          * @brief 生成 MySQL 的「表是否存在」查询
          * @details 重写 SqlDialect::tableExistsStatement()：表清单在 information_schema.tables 里，
          *          它是整个实例共享的，只用 table_name 过滤会把其它库里的同名表统计进来，
-         *          因此必须用 DATABASE() 同时限定当前会话的默认库。
+         *          因此必须用 DATABASE() 同时限定当前会话的默认库。视图与表共用同一个名字空间，
+         *          所以要再用 table_type='BASE TABLE' 排除视图——与 SQLite 侧 type='table' 的过滤同口径；
+         *          漏掉它时视图会被报成「表已存在」，建表被跳过，之后的写入落在视图上只得到一句报错。
          * @param tableName 待查询的表名
          * @return SqlStatement "SELECT COUNT(*) FROM information_schema.tables WHERE
-         *         table_schema = DATABASE() AND table_name = ?" 及其唯一绑定参数；
-         *         结果为一行一列，0 表示不存在
+         *         table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ?"
+         *         及其唯一绑定参数；结果为一行一列，0 表示不存在
          */
         [[nodiscard]] SqlStatement tableExistsStatement(std::string_view tableName) const override;
 

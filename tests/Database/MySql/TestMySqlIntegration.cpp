@@ -3,6 +3,7 @@
 // - 参数化执行（mysql_stmt_*）：影响行数、各类取值与 NULL/空串的往返、注入文本、参数个数与容器参数的拒绝面
 // - 同一语句文本重复执行走连接的预处理语句缓存：必须读到最新数据，且失败一次后同一条文本仍可复用
 // - ORM 端到端：CRUD、排序分页、批量插入分块、引用标识符（保留字/空格/反引号）、SchemaMigrator 建表与删表
+// - 表存在性查询只认基表：同名视图不算「表已存在」，基表仍要算（TableExistsIgnoresViewsAndStillSeesBaseTables）
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
@@ -36,6 +37,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2040,6 +2042,48 @@ namespace AsynGyanis::Database
         EXPECT_EQ(countRows(*observer, kTransactionExceptionTableName), 1);
         EXPECT_EQ(readTransactionRowName(*observer, kTransactionExceptionTableName, 1).value_or(""), "已提交");
         EXPECT_FALSE(readTransactionRowName(*observer, kTransactionExceptionTableName, 2).has_value());
+    }
+
+    /**
+     * @brief 钉住表存在性查询只认基表：同名视图不能被算成「表已存在」
+     * @details 视图与表在 MySQL 里共用一个名字空间。视图被算成表时，建表被当成多余而跳过，
+     *          随后按表写数据的语句落在视图上，只换来一句「目标表不可插入」——问题要到第一次写入才暴露。
+     * @note 对象名带进程级随机后缀并自建自清：并行执行时别的用例/进程不会撞上这个名字
+     */
+    TEST_F(MySqlIntegrationTest, TableExistsIgnoresViewsAndStillSeesBaseTables)
+    {
+        const std::string objectName = "asyngyanis_itg_view_" + std::to_string(std::random_device{}());
+        const MySqlDialect dialect;
+
+        std::unique_ptr<ConnectionPool> pool       = makePool(1);
+        PooledConnection                connection = pool->acquire();
+        ASSERT_TRUE(connection);
+
+        // 计数只读元数据，不碰任何业务表：走方言自己给的语句与参数，判据与 SchemaMigrator 一致
+        const auto countMetadataMatches = [&connection, &dialect](const std::string &name) -> std::int64_t
+        {
+            const SqlStatement            probeStatement = dialect.tableExistsStatement(name);
+            const std::unique_ptr<DatabaseResult> result =
+                connection->execute(std::string_view{probeStatement.sql}, probeStatement.parameters);
+            EXPECT_NE(result, nullptr) << connection->lastError();
+            if (result == nullptr || !result->next())
+            {
+                return -1;
+            }
+            return std::get<std::int64_t>(result->getValue(0));
+        };
+
+        ASSERT_TRUE(connection->execute("CREATE VIEW " + objectName + " AS SELECT 1 AS one") != nullptr)
+            << connection->lastError();
+        EXPECT_EQ(countMetadataMatches(objectName), 0) << "视图被算成了基表：建表会被跳过，写入却落在视图上";
+
+        // 换名前的视图必须先撤掉才能建同名基表（名字空间共用），建好之后计数必须是 1
+        ASSERT_TRUE(connection->execute("DROP VIEW " + objectName) != nullptr) << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE TABLE " + objectName + " (id INT PRIMARY KEY)") != nullptr)
+            << connection->lastError();
+        EXPECT_EQ(countMetadataMatches(objectName), 1) << "table_type 过滤把基表也一起排除了";
+
+        EXPECT_TRUE(connection->execute("DROP TABLE " + objectName) != nullptr) << connection->lastError();
     }
 
 } // namespace AsynGyanis::Database
