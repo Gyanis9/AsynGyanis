@@ -527,14 +527,24 @@ namespace AsynGyanis::Platform
 
     void Win32FileWatcher::rewatchMissingWatches()
     {
-        std::vector<std::pair<std::string, bool> > missingWatches;
+        /**
+         * @brief 一条待补挂的监视，连同它「该按什么身份挂回去」的来历
+         */
+        struct MissingWatch
+        {
+            std::string path;                   ///< 待补挂的目录（带尾分隔符的绝对路径）
+            bool isRecursive{false};            ///< 按递归注册还是按一层注册
+            bool isPartOfRecursiveTree{false};  ///< 这一项是否属于某条递归监视覆盖的范围
+        };
+
+        std::vector<MissingWatch> missingWatches;
         {
             const std::shared_lock lock(m_watchMutex);
             for (const std::string &coveredPath: m_recursiveWatchPaths)
             {
                 if (!m_watches.contains(coveredPath))
                 {
-                    missingWatches.emplace_back(coveredPath, true);
+                    missingWatches.push_back(MissingWatch{coveredPath, true, true});
                 }
             }
 
@@ -545,16 +555,17 @@ namespace AsynGyanis::Platform
                 {
                     // 落在自愈清单而不在递归清单里的，一定是调用方按 recursive=false 给的那条：
                     // 按递归挂上会把一条只要一层的请求悄悄扩成整棵树
-                    missingWatches.emplace_back(requestedPath, false);
+                    missingWatches.push_back(MissingWatch{requestedPath, false, false});
                 }
             }
         }
 
         // 锁外补挂：registerWatch() 要拿写锁；目录还没回来时它会失败，下一拍再试。
-        // 三条参数里的 partOfRecursiveTree 一律给 true：这些是框架的补挂动作，不该被记成新的调用方请求
-        for (const auto &[missingPath, recursive]: missingWatches)
+        // 「属于递归树」这一条按来源给而不是给框架补挂一律置真：它同时决定这一项进不进递归覆盖集，
+        // 而调用方点名的一层请求一旦进了那份清单，它下面新建的子目录就会被自动补挂成递归监视
+        for (const MissingWatch &missing: missingWatches)
         {
-            static_cast<void>(registerWatch(missingPath, recursive, true));
+            static_cast<void>(registerWatch(missing.path, missing.isRecursive, missing.isPartOfRecursiveTree));
         }
     }
 

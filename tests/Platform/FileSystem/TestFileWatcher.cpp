@@ -930,6 +930,85 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(receivedEvent) << "换掉重建的非递归监视没有被补挂：它内部的变更此后永久丢失";
     }
 
+    /**
+     * @brief 钉住：自愈补挂不该把「只要一层的请求」悄悄扩成递归监视
+     * @details 补挂走的是框架内部那条注册通道，它带着「这一项属于某条递归监视枚举出来的一项」这个标记；
+     *          标记若对两类来源一律给真，调用方点名但 `recursive=false` 的那条就会进递归覆盖集——此后
+     *          它下面的新子目录被自动补挂，要一层的调用方拿到整棵树（句柄数与事件量都翻倍，而配置目录
+     *          往往正是靠「只看这一层」才不被临时子目录的噪音搅动）。
+     * @note 判据要能证伪，所以两侧各放一个对照：`second.yaml`（直接写在本目录）证明补挂后的监视仍然活着，
+     *       `deep.yaml`（写在补挂之后新建的子目录里）则必须始终看不见。只断言「没收到」会在监视根本没挂上
+     *       时假绿。
+     */
+    TEST(FileWatcher, SelfHealedNonRecursiveWatchDoesNotGrowIntoRecursiveCoverage)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_SelfHealLevel");
+        const std::filesystem::path           watchedDirectory = temporaryDirectory.path() / "plain";
+        ASSERT_TRUE(std::filesystem::create_directories(watchedDirectory));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(watchedDirectory.string(), /*recursive=*/false));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 换掉被监视的目录，逼出自愈补挂（这条触发路径由 NonRecursiveWatchIsRewatchedAfterDirectoryIsReplaced
+        // 单独钉着；这里只借它把「补挂之后」的状态造出来）
+        std::error_code removeError;
+        static_cast<void>(std::filesystem::remove_all(watchedDirectory, removeError));
+        ASSERT_FALSE(removeError) << "删除被监视目录失败：" << removeError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        ASSERT_TRUE(std::filesystem::create_directories(watchedDirectory));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600));   // 至少跨过一个自愈节拍
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/first.yaml", "rearmed: true\n"));
+        const bool isRearmed = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("first.yaml");
+                },
+                3000);
+        ASSERT_TRUE(isRearmed) << "补挂没发生，后面的判据都是空转";
+
+        // 补挂之后再建子目录，并**等它的 Created 通知被处理完**再往里写文件：覆盖集被污染时，正是这条
+        // 通知把子目录自动挂成递归监视的——不等这一步就写文件，两次变更会落进同一批通知，那批处理完
+        // 才补挂，深那条就来不及报上来，用例就成了赌打包时机
+        const std::filesystem::path subDirectory = watchedDirectory / "nested";
+        ASSERT_TRUE(std::filesystem::create_directories(subDirectory));
+        const bool sawSubDirectoryCreation = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("nested");
+                },
+                3000);
+        ASSERT_TRUE(sawSubDirectoryCreation) << "子目录的建立没被报上来：本目录的监视在补挂后已经失效";
+
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/nested/deep.yaml", "leaked: true\n"));
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/second.yaml", "control: true\n"));
+
+        const bool sawControl = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("second.yaml");
+                },
+                3000);
+        // 再多等一拍：自动补挂若走的是自愈那条路，它的时间点在本节拍之后
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+        watcher->stop();
+        EXPECT_TRUE(sawControl) << "补挂后的监视没活着，下面的「看不见子目录」就成了假绿";
+        EXPECT_FALSE(recorder.sawFileNamed("deep.yaml"))
+                << "子目录里的变更报了上来：这条只要一层的请求被自愈补挂悄悄扩成了递归监视";
+    }
+
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：指向普通文件的 addWatch 当场报失败，且不挡住该路径后来的目录监视
