@@ -150,5 +150,9 @@ namespace AsynGyanis::Base
         /// 下一次允许重试重开活动文件的时刻（steady_clock）：
         /// 取默认构造值即「无冷却」，因此首次重开失败后下一行就立刻再试，不必等一个间隔
         std::chrono::steady_clock::time_point m_nextReopenAttempt{};
+
+        /// 复用的行缓冲：本 Sink 用自己的 formatter 渲染到这里，再把视图交给活动文件的落盘逻辑，
+        /// 稳态下拼一行不取堆（格式化器造结果串那两次省掉了）。由 m_mutex 保护
+        std::string m_lineBuffer;
     };
 } // namespace AsynGyanis::Base

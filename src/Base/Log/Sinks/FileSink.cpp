@@ -63,19 +63,29 @@ namespace AsynGyanis::Base
 
     void FileSink::write(const LogEvent &event)
     {
-        static_cast<void>(writeLine(formatEvent(event)));
+        const std::lock_guard lock(m_mutex);
+        // 版式直接落在本 Sink 留了容量的行缓冲上：std::format 交出结果串本身要取两次堆，
+        // 而这里连换行都续在同一个缓冲里，稳态下拼一行不碰堆
+        m_lineBuffer.clear();
+        formatEventInto(m_lineBuffer, event);
+        static_cast<void>(writePreparedLineLocked());
     }
 
     std::size_t FileSink::writeLine(const std::string_view line)
     {
-        std::lock_guard lock(m_mutex);
+        const std::lock_guard lock(m_mutex);
+        m_lineBuffer.assign(line);
+        return writePreparedLineLocked();
+    }
+
+    std::size_t FileSink::writePreparedLineLocked()
+    {
         if (!m_file.is_open())
         {
             return 0;
         }
-        // 换行并入复用的行缓冲后整行只做一次 <<：流插入每次都要构造 sentry 并由文件
-        // 缓冲加锁，合并后只有一轮；复用成员缓冲让拼接不产生新分配，落盘的字节流不变
-        m_lineBuffer.assign(line);
+        // 换行并入缓冲后整行只做一次 <<：流插入每次都要构造 sentry 并由文件缓冲加锁，
+        // 合并后只有一轮，落盘的字节流与「正文 + \n」逐字一致
         m_lineBuffer.push_back('\n');
         m_file << m_lineBuffer;
 
@@ -97,7 +107,7 @@ namespace AsynGyanis::Base
 
         // 返回写入字节数（换行按 1 字节计）：文本模式下 Windows 会额外补 '\r'，
         // 调用方只用它做「是否达到滚动阈值」的近似判据，不需要与磁盘大小逐字节相等
-        return line.size() + 1;
+        return m_lineBuffer.size();
     }
 
     void FileSink::flush()

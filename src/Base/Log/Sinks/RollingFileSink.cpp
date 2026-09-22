@@ -115,9 +115,11 @@ namespace AsynGyanis::Base
             reopenActiveFile();
         }
         checkAndRoll();
-        // 自行格式化（使用本 Sink 的 formatter）后交给活动文件落盘，并累计本行字节数：
-        // 这样按大小滚动的判据完全来自内存计数，无需每行 flush + file_size
-        m_bytesInCurrentFile += m_currentSink->writeLine(formatEvent(event));
+        // 用本 Sink 自己的 formatter 把版式渲进复用的行缓冲，再交给活动文件的落盘与加锁逻辑：
+        // 格式化器造一个结果串要取两次堆，而这里连字节累计都只用返回的长度，无需每行 flush + stat
+        m_lineBuffer.clear();
+        formatEventInto(m_lineBuffer, event);
+        m_bytesInCurrentFile += m_currentSink->writeLine(m_lineBuffer);
     }
 
     void RollingFileSink::flush()

@@ -45,8 +45,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 将日志事件写入文件
-         * @details 重写 LogSink::write()：持锁格式化并追加换行；文件已被关闭时静默丢弃，
-         *          不向调用方抛出异常。
+         * @details 重写 LogSink::write()：持锁把版式直接渲进本 Sink 的行缓冲、续上换行一次写出；
+         *          文件已被关闭时静默丢弃，不向调用方抛出异常。
          * @param event 日志事件
          */
         void write(const LogEvent &event) override;
@@ -74,9 +74,17 @@ namespace AsynGyanis::Base
         void reopen(const std::filesystem::path &newPath);
 
     private:
+        /**
+         * @brief 把 m_lineBuffer 里已有的正文续上换行写出，并如实报告落了多少字节
+         * @details 调用方必须已持有 m_mutex。write() 与 writeLine() 共用这一段：
+         *          两者只差在正文的来处（本 Sink 的格式化器 vs 调用方交来的现成文本）。
+         * @return std::size_t 写入字节数（含换行）；文件未打开或流已失效时返回 0
+         */
+        std::size_t writePreparedLineLocked();
+
         std::filesystem::path m_filePath;   ///< 当前日志文件路径
         std::ofstream         m_file;       ///< 日志文件输出流
-        std::string           m_lineBuffer; ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 writeLine 在互斥锁内复用
+        std::string           m_lineBuffer; ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 write/writeLine 在互斥锁内复用
         std::mutex            m_mutex;      ///< 保护文件写入的互斥锁
         bool                  m_hasReportedWriteFailure{false}; ///< 本轮连续写失败是否已上报（避免每条日志都写一次标准错误）
     };
