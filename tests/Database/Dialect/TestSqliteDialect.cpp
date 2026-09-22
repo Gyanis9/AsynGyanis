@@ -365,6 +365,98 @@ TEST(SqliteDialectWhere, LikeLiteralConditionCarriesEscapeClause)
 }
 
 /**
+ * @brief 验证多于一个子条件的 NOT 被拒绝，而不是只渲染第一个子条件
+ *
+ * @details NOT (a AND b) 与 (NOT a) AND (NOT b) 结果不同，替调用方挑一个就是静默改谓词。
+ *          公开的 ! 运算符只会放一个子条件，多个只可能来自手搓的查询树。
+ *          对照组钉住单子条件的 NOT 仍正常渲染（含括号），否则本用例会连同正确路径一起红。
+ */
+TEST(SqliteDialectWhere, NotWithMultipleChildrenIsRejectedInsteadOfSilentlyDropped)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+    node.whereConditions.push_back(WhereCondition{
+            .left     = FieldReference{"placeholder"},
+            .op       = SqlOperator::Not,
+            .right    = ParameterValue{nullptr},
+            .children = {
+                    makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
+                    makeComparison("score", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(60)})
+            }
+    });
+
+    EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+
+    // 对照组：单个子条件的 NOT 是合法形态，必须仍按 "NOT (...)" 渲染
+    QueryNode singleNode;
+    singleNode.tableName = "users";
+    singleNode.whereConditions.push_back(WhereCondition{
+            .left     = FieldReference{"placeholder"},
+            .op       = SqlOperator::Not,
+            .right    = ParameterValue{nullptr},
+            .children = {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)})}
+    });
+
+    const SqlStatement statement = dialect.translate(singleNode);
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE NOT (\"age\" >= ?)");
+    EXPECT_EQ(statement.parameters.size(), 1U);
+}
+
+/**
+ * @brief 验证 IN 列表超过引擎单条语句参数上限时在翻译阶段就被拒绝
+ *
+ * @details 不拦的话要等到执行阶段，由驱动回一句引擎原文（"too many SQL variables"），
+ *          既指不出是哪一段条件撑爆的也不说怎么改。上限两侧各钉一条：恰好等于上限必须放行，
+ *          否则这条判据就退化成「把所有大 IN 都拒了」。
+ */
+TEST(SqliteDialectWhere, InListBeyondTheEngineParameterBudgetIsRejectedWithReadableReason)
+{
+    const SqliteDialect dialect;
+
+    const auto makeInNode = [](const std::size_t valueCount)
+    {
+        std::vector<ParameterValue> values;
+        values.reserve(valueCount);
+        for (std::size_t index = 0; index < valueCount; ++index)
+        {
+            values.push_back(static_cast<std::int64_t>(index));
+        }
+
+        QueryNode node;
+        node.tableName = "users";
+        node.whereConditions.push_back(WhereCondition{
+                .left     = FieldReference{"id"},
+                .op       = SqlOperator::In,
+                .right    = ParameterValue{static_cast<std::int64_t>(0)},
+                .inValues = std::move(values)
+        });
+        return node;
+    };
+
+    const std::size_t budget = dialect.maximumStatementParameters();
+
+    // 越界一格：拒绝，且文案给出实际个数、上限与替代做法
+    try
+    {
+        static_cast<void>(dialect.translate(makeInNode(budget + 1U)));
+        FAIL() << "超过引擎单条语句参数上限的 IN 列表应当被拒绝";
+    }
+    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    {
+        const std::string message = failure.what();
+        EXPECT_NE(message.find(std::to_string(budget)), std::string::npos) << message;
+        EXPECT_NE(message.find(std::to_string(budget + 1U)), std::string::npos) << message;
+        EXPECT_NE(message.find("拆成多条语句"), std::string::npos) << message;
+    }
+
+    // 恰好等于上限：放行，一条参数都不少
+    const SqlStatement atBudget = dialect.translate(makeInNode(budget));
+    EXPECT_EQ(atBudget.parameters.size(), budget);
+}
+
+/**
  * @brief 验证 IS NULL / IS NOT NULL 不产生参数
  */
 TEST(SqliteDialectWhere, NullChecksProduceNoParameter)

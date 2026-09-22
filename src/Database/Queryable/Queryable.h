@@ -1415,6 +1415,13 @@ namespace AsynGyanis::Database::Queryable
                 {
                     return "NOT (1=1)";
                 }
+                if (condition.children.size() > 1U)
+                {
+                    // 与方言同一判据：多个子条件取非的语义不确定，静默只渲染第一个会给出
+                    // 一条「看起来对」的语句，离线文本也不能替调用方猜
+                    throw Base::LogicException("Queryable: toSql 遇到带 " + std::to_string(condition.children.size()) +
+                                               " 个子条件的 NOT，取非含义不确定，请先用 && 或 || 合成一个节点再取非");
+                }
                 return "NOT " + buildConditionString(condition.children[0]);
             }
 

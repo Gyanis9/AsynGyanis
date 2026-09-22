@@ -266,6 +266,15 @@ namespace AsynGyanis::Database
         void requireMatchingColumnCount(const Queryable::QueryNode &query, std::size_t valueCount) const;
 
         /**
+         * @brief 校验绑定参数个数不超过本引擎的单条语句上限
+         * @details 上限由 maximumStatementParameters() 给出（SQLite 999、MySQL 65535）。不先拦的话，
+         *          超限要到执行阶段才由驱动回一句引擎原文，指不出是哪一段条件撑爆的。
+         * @param parameterCount 本条语句将产出的绑定参数个数（须与渲染分支的产出精确一致）
+         * @throws Base::InvalidArgumentException 参数个数超过本引擎单条语句的上限
+         */
+        void requireWithinParameterBudget(std::size_t parameterCount) const;
+
+        /**
          * @brief 递归渲染一个 WHERE / HAVING / ON 条件
          * @details AND/OR/NOT 递归展开 children，IN/NOT IN 展开 inValues，
          *          IS NULL / IS NOT NULL 与列-列比较不产生参数。

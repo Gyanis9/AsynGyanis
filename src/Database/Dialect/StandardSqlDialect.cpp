@@ -155,7 +155,11 @@ namespace AsynGyanis::Database
             {
                 case SqlOperator::And:
                 case SqlOperator::Or:
+                case SqlOperator::Not:
                 {
+                    // Not 与 And/Or 同形：参数全部来自子条件。多于一个子条件时渲染阶段会先因
+                    // 取非语义不确定而拒绝，这里按全部子条件累加只为守住
+                    // 「递归形状与 appendCondition 的分支一一对应」那条约定
                     std::size_t parameterCount = 0;
                     for (const Queryable::WhereCondition &child: condition.children)
                     {
@@ -163,10 +167,6 @@ namespace AsynGyanis::Database
                     }
                     return parameterCount;
                 }
-
-                case SqlOperator::Not:
-                    // 空子条件按恒真渲染，不产参数；非空时参数全部来自那一个子条件
-                    return condition.children.empty() ? 0 : countConditionParameters(condition.children[0]);
 
                 case SqlOperator::IsNull:
                 case SqlOperator::IsNotNull:
@@ -347,6 +347,20 @@ namespace AsynGyanis::Database
         }
     }
 
+    void StandardSqlDialect::requireWithinParameterBudget(const std::size_t parameterCount) const
+    {
+        // 超过引擎单条语句的参数上限时，两侧驱动都只在执行阶段回一句引擎原文
+        // （SQLite 是 "too many SQL variables"、MySQL 是占位符数超限），既指不出是哪一段条件撑爆的、
+        // 也不说该怎么办。调用方交来的个数与渲染分支一一对应，因此这里是精确判定而不是估算
+        if (const std::size_t parameterBudget = maximumStatementParameters(); parameterCount > parameterBudget)
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：本条语句需要 " +
+                                                 std::to_string(parameterCount) + " 个绑定参数，超过该引擎单条语句的上限 " +
+                                                 std::to_string(parameterBudget) + " 个。请缩小 IN 列表或一次写入的列数，" +
+                                                 "也可以把这次操作按上限拆成多条语句分批执行");
+        }
+    }
+
     void StandardSqlDialect::appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
     {
         if (query.limit.has_value())
@@ -395,6 +409,7 @@ namespace AsynGyanis::Database
             expectedParameterCount += countConditionParameters(query.having.value());
         }
         parameters.reserve(expectedParameterCount);
+        requireWithinParameterBudget(expectedParameterCount);
 
         // ---------- SELECT 列 ----------
         sqlText += "SELECT ";
@@ -539,6 +554,7 @@ namespace AsynGyanis::Database
             expectedParameterCount += countConditionParameters(condition);
         }
         parameters.reserve(expectedParameterCount);
+        requireWithinParameterBudget(expectedParameterCount);
 
         sqlText += "UPDATE ";
         appendTableReference(sqlText, query);
@@ -577,6 +593,7 @@ namespace AsynGyanis::Database
             expectedParameterCount += countConditionParameters(condition);
         }
         statement.parameters.reserve(expectedParameterCount);
+        requireWithinParameterBudget(expectedParameterCount);
 
         sqlText += "DELETE FROM ";
         // 别名一并带上：WHERE 里以别名限定的列名（"u"."id"）只有别名在场才能被解析
@@ -694,6 +711,17 @@ namespace AsynGyanis::Database
                     // 空子条件按恒真处理（与 AND/OR 的空子条件同一条规则），取非得假
                     sqlText += "NOT (1 = 1)";
                     return;
+                }
+
+                if (condition.children.size() > 1U)
+                {
+                    // 多个子条件取非在语义上是不确定的：NOT (a AND b) 与 (NOT a) AND (NOT b) 结果不同，
+                    // 替调用方挑一个就等于静默改谓词。公开的构造入口只会放一个子条件，
+                    // 走到这里说明是手搓的树，宁可报错也不要给出一条「看起来对」的语句
+                    throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：NOT 条件带了 " +
+                                                         std::to_string(condition.children.size()) +
+                                                         " 个子条件，取非的含义不确定（NOT (a AND b) 与 NOT a AND NOT b 结果不同）。"
+                                                         "请先用 && 或 || 把这批子条件合成一个节点，再用 ! 取非");
                 }
 
                 // NOT 后面必须带括号：否则 "NOT a = ?" 在多数数据库里会被解析成 "(NOT a) = ?"
