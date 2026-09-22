@@ -434,13 +434,6 @@ namespace AsynGyanis::Database
         m_pipelineCommands.clear();
     }
 
-    void RedisConnection::resetSessionState() noexcept
-    {
-        // 管道是「登记到 flush 之间」的会话状态：这条连接要交给下一个借用者了，残留命令必须丢掉。
-        // 留着的话会被下一位的 flushPipeline() 代发，回复按下标错位且毫无报错
-        m_pipelineCommands.clear();
-    }
-
     bool RedisConnection::isConnected() const
     {
         // 双判据：m_isConnected 是逻辑状态，上下文非空才是物理事实；
@@ -780,6 +773,15 @@ namespace AsynGyanis::Database
     // ------------------------------------------------------------------------
     // 以下定义与是否编译 hiredis 无关，两种构建配置共用
     // ------------------------------------------------------------------------
+
+    void RedisConnection::resetSessionState() noexcept
+    {
+        // 定义放在两种构建配置共用的这一段里：本方法是虚函数，桩构建同样要有一份实现，
+        // 否则虚表会引用一个不存在的符号（缺 hiredis 的配置在链接期就起不来）
+        // 管道是「登记到 flush 之间」的会话状态：这条连接要交给下一个借用者了，残留命令必须丢掉。
+        // 留着的话会被下一位的 flushPipeline() 代发，回复按下标错位且毫无报错
+        m_pipelineCommands.clear();
+    }
 
     RedisConnection::~RedisConnection()
     {
