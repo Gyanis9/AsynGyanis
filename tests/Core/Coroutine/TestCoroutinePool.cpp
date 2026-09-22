@@ -1,6 +1,7 @@
 // CoroutinePool 单元测试：进程级单例、块内分配回收、大块回退与跨线程回收
 
 #include "Core/Coroutine/CoroutinePool.h"
+#include "Core/Coroutine/Task.h"
 
 #include <gtest/gtest.h>
 
@@ -450,5 +451,40 @@ namespace AsynGyanis::Core
         void *reused = pool.allocate(64);
         EXPECT_TRUE(pool.owns(reused));
         pool.deallocate(reused, 64);
+    }
+
+    namespace
+    {
+        /**
+         * @brief 一个足够小的协程：帧尺寸落在池的小档里，只用来观察帧内存的来路
+         * @return Task<int> 恒为 1
+         */
+        Task<int> trivialFrame()
+        {
+            co_return 1;
+        }
+    } // namespace
+
+    /**
+     * @brief 协程帧的来路跟着构建方式走：检测构建里绕开帧池，常规构建里必须走帧池
+     * @details 帧池的空闲链表是 LIFO，刚回收的那块会被下一个同档申请原样取回，于是「帧已销毁
+     *          却又恢复同一个句柄」落进一块仍然有效、且多半已被别的协程占着的内存里。ASan 把
+     *          整段 slab 看成常驻存活，这类 use-after-free 就报不出来——本仓库若干条
+     *          「在 ASan 下应当报 heap-use-after-free」的证伪判据全部落空。
+     *          两侧各钉一条，缺一侧就会让另一侧变成空转：检测构建里帧不该进池，
+     *          常规构建里帧必须进池（否则这层优化被悄悄关掉而没人发现）
+     */
+    TEST(CoroutinePool, CoroutineFrameRoutingFollowsTheSanitizerBuild)
+    {
+        CoroutinePool &pool = CoroutinePool::instance();
+        const Task<int> task = trivialFrame();
+        const bool       isFrameFromPool = pool.owns(task.handle().address());
+
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+        EXPECT_FALSE(isFrameFromPool)
+                << "检测构建里协程帧仍从帧池取内存：ASan 看不见 slab 内的帧被回收后再恢复这类 use-after-free";
+#else
+        EXPECT_TRUE(isFrameFromPool) << "常规构建里协程帧没走帧池，帧内存的复用被悄悄关掉了";
+#endif
     }
 } // namespace AsynGyanis::Core

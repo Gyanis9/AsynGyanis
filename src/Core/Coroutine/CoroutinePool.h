@@ -195,4 +195,38 @@ namespace AsynGyanis::Core
         mutable std::mutex              m_mutex;                   ///< 只保护全局空闲链表与扩容
     };
 
+    /**
+     * @brief 协程帧内存的唯一申请口：优先走进程级帧池，检测构建下直送全局堆
+     * @details 帧池的空闲链表是 LIFO，刚回收的那块会被下一个同档申请原样取回。于是
+     *          「帧已销毁、却又恢复同一个句柄」这类 use-after-free 落在一块仍然有效、
+     *          且多半已被另一个协程帧占住的内存上 —— ASan 把整段 slab 看成常驻存活，
+     *          报不出来，本仓库若干「在 ASan 下应报 heap-use-after-free」的证伪判据因此是空的。
+     *          只在带 sanitizer 的编译里绕开池（GCC/Clang 自带 __SANITIZE_* 宏；MSVC 的
+     *          /fsanitize=address 不提供这一宏，也不做泄漏检测，那些结论本来就不在它上面）。
+     * @param size 帧字节数
+     * @return void* 帧内存
+     */
+    inline void *allocateCoroutineFrame(const size_t size)
+    {
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+        return ::operator new(size);
+#else
+        return CoroutinePool::instance().allocate(size);
+#endif
+    }
+
+    /**
+     * @brief 归还协程帧内存，走的分支必须与 allocateCoroutineFrame 完全同一条
+     * @param memory 待归还的帧内存（可为空）
+     * @param size 申请时给出的帧字节数
+     */
+    inline void deallocateCoroutineFrame(void *const memory, const size_t size) noexcept
+    {
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+        ::operator delete(memory, size);
+#else
+        CoroutinePool::instance().deallocate(memory, size);
+#endif
+    }
+
 } // namespace AsynGyanis::Core

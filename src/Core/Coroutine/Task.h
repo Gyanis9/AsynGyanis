@@ -223,11 +223,11 @@ namespace AsynGyanis::Core
         struct promise_type
         {
             /**
-             * @brief 从进程级 CoroutinePool 分配协程帧内存。
+             * @brief 经 CoroutinePool.h 的帧内存总口申请协程帧内存（检测构建下直送全局堆）。
              */
             static void *operator new(const size_t size)
             {
-                return CoroutinePool::instance().allocate(size);
+                return allocateCoroutineFrame(size);
             }
 
             /**
@@ -238,7 +238,7 @@ namespace AsynGyanis::Core
              */
             static void operator delete(void *const memory, const size_t size) noexcept
             {
-                CoroutinePool::instance().deallocate(memory, size);
+                deallocateCoroutineFrame(memory, size);
             }
 
             /**
@@ -460,11 +460,11 @@ namespace AsynGyanis::Core
         struct promise_type
         {
             /**
-             * @brief 从进程级 CoroutinePool 分配协程帧内存。
+             * @brief 经 CoroutinePool.h 的帧内存总口申请协程帧内存（检测构建下直送全局堆）。
              */
             static void *operator new(const size_t size)
             {
-                return CoroutinePool::instance().allocate(size);
+                return allocateCoroutineFrame(size);
             }
 
             /**
@@ -472,7 +472,7 @@ namespace AsynGyanis::Core
              */
             static void operator delete(void *const memory, const size_t size) noexcept
             {
-                CoroutinePool::instance().deallocate(memory, size);
+                deallocateCoroutineFrame(memory, size);
             }
 
             /**
