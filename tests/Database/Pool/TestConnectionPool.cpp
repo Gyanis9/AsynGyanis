@@ -6,6 +6,8 @@
 // - ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
 // - StatisticsAreConsistent / PooledConnectionMoveSemantics：统计方法与包装器移动语义
 // - ResetsSessionStateOnBothReturnPaths / DestructorWakesBlockedSyncWaiters：两条归还去向都复位会话状态；析构叫醒同步等待者
+// - ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect / AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect：
+//   两条丢弃出口都不握着 m_mutex 做 disconnect
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -13,6 +15,8 @@
 #include "Database/Common/DatabaseConnection.h"
 
 #include "TestConnectionPool.h"
+
+#include "CommonTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -525,6 +529,128 @@ namespace AsynGyanis::Database
                     << waiterElapsedMilliseconds.load() << "ms）";
 
             waiter.join();
+        }
+
+        // ========================================================================
+        // 丢弃连接的出口不握着 m_mutex 做断开
+        // ========================================================================
+
+        /**
+         * @brief 归还路径丢弃过期连接时，断开必须落在 m_mutex 之外
+         * @details disconnect() 是一次会阻塞的系统调用（驱动里还要发一条 Quit 并等它走完）。留在
+         *          锁内时，一次慢关闭会把所有取出路径、统计读取与后台驱逐一起堵在那把锁上——而
+         *          maximumLifetimeSeconds 为 0（「一归还就过期」）时这条出口就是每次归还的主路径。
+         *          重叠条件是用例自己造的：观察者只在门闩确认「归还线程确实停在 disconnect 里」之后
+         *          才去碰那把锁，因此它要么立刻拿到锁（断开已在锁外），要么一直等不到（锁被那次
+         *          关闭占着）。判据不依赖调度运气。
+         */
+        TEST(ConnectionPool, ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect)
+        {
+            ConnectionCounter counter;
+            DisconnectGate    gate;
+            counter.disconnectGate = &gate;
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.maximumLifetimeSeconds     = 0;      // 一归还就过期：必然走丢弃出口
+            configuration.healthCheckIntervalSeconds = 3600;   // 后台驱逐不参与本用例的时序
+
+            ConnectionPool pool(makeMockFactory(counter), configuration);
+
+            PooledConnection connection = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(connection)) << "连接没拿到：用例前提不成立";
+
+            gate.arm();
+            std::thread returner([&connection]()
+            {
+                connection.release();
+            });
+
+            ASSERT_TRUE(TestSupport::waitForCondition([&gate]()
+            {
+                return gate.hasArrived();
+            }, 2000)) << "归还没有发生断开：用例没有量到它要量的那条出口";
+
+            std::atomic<bool> isObserverDone{false};
+            std::thread       observer([&pool, &isObserverDone]()
+            {
+                static_cast<void>(pool.idleCount());
+                isObserverDone.store(true, std::memory_order_release);
+            });
+
+            // 一次互斥量交接用不了 200ms：读不到只能是那把锁还被占着
+            const bool observerGotThrough = TestSupport::waitForCondition([&isObserverDone]()
+            {
+                return isObserverDone.load(std::memory_order_acquire);
+            }, 200);
+
+            gate.release();
+            returner.join();
+            observer.join();
+
+            EXPECT_TRUE(observerGotThrough)
+                    << "归还路径握着 m_mutex 做 disconnect：一次慢关闭会把取出路径与统计读取一起堵住";
+        }
+
+        /**
+         * @brief 取出路径丢弃失联连接时，断开同样必须落在 m_mutex 之外
+         * @details 与上一条同一条纪律，另一处出口：连接在入栈之后才失联（空闲期被对端掐断），只有
+         *          取出时的健康检查能发现它。这个时序按单实例设置够不着，因此用全体存活开关造
+         *          「归还时健康、取出时失联」——不去睡过存活期，也就不引入时钟上的赌注。
+         */
+        TEST(ConnectionPool, AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect)
+        {
+            ConnectionCounter counter;
+            DisconnectGate    gate;
+            counter.disconnectGate = &gate;
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 3600;
+
+            ConnectionPool pool(makeMockFactory(counter), configuration);
+
+            PooledConnection first = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(first)) << "连接没拿到：用例前提不成立";
+            first.release();
+            ASSERT_EQ(pool.idleCount(), 1U) << "第一条没有入栈：用例前提不成立";
+
+            counter.connectionsHealthy.store(false); // 空闲期失联：下一次取出才发现
+            gate.arm();
+
+            // 取出的那条必然被丢弃，丢弃后要补建一条（池未满），因此这里拿到的是新连接
+            std::thread acquirer([&pool]()
+            {
+                const PooledConnection replacement = pool.acquire();
+                static_cast<void>(replacement);
+            });
+
+            ASSERT_TRUE(TestSupport::waitForCondition([&gate]()
+            {
+                return gate.hasArrived();
+            }, 2000)) << "取出没有发生断开：用例没有量到它要量的那条出口";
+
+            std::atomic<bool> isObserverDone{false};
+            std::thread       observer([&pool, &isObserverDone]()
+            {
+                static_cast<void>(pool.totalCount());
+                isObserverDone.store(true, std::memory_order_release);
+            });
+
+            const bool observerGotThrough = TestSupport::waitForCondition([&isObserverDone]()
+            {
+                return isObserverDone.load(std::memory_order_acquire);
+            }, 200);
+
+            counter.connectionsHealthy.store(true);
+            gate.release();
+            acquirer.join();
+            observer.join();
+
+            EXPECT_TRUE(observerGotThrough)
+                    << "取出路径握着 m_mutex 做 disconnect：过期与健康判定都留在锁内时，统计读取要等那次关闭";
         }
 
     } // namespace

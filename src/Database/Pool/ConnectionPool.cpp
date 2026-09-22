@@ -254,9 +254,11 @@ namespace AsynGyanis::Database
         // 而此刻协程还没挂起（轻则异步获取无故返回空连接，重则恢复尚未挂起的帧）
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
-            // 锁里**只取空闲栈**，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
+            // 锁里**只从空闲栈摘一条**，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
             // 会让归还路径、后台超时唤醒与健康检查全排在它后面。池未满时的建连已经在上面
             // 那次无锁尝试里做过了，这里还是空栈就说明确实没有立即可用的连接
+            // （摘到的那条若不可用，其断开已在 m_mutex 之外；它仍落在本把锁内，因为等待表与
+            //   空闲栈的这笔交换必须同锁完成，否则会被判成「没人等」而漏唤醒）
             m_result = m_pool->tryAcquireInternal();
             if (m_result)
             {
@@ -380,34 +382,38 @@ namespace AsynGyanis::Database
             }
         }
 
+        std::unique_ptr<DatabaseConnection> expiredConnection; ///< 到寿命的那条：出锁之后再断开
+
         {
             std::lock_guard lock(m_mutex);
 
             const auto now = std::chrono::steady_clock::now();
 
-            IdleEntry entry;
-            entry.connection   = std::move(connection);
-            entry.createdTime  = createdTime;
-            entry.returnedTime = now;
-
-            // 惰性过期检查：归还时如果连接已超过最大存活时间，直接关闭不归还；
-            // maximumLifetimeSeconds == 0 视为「立即过期」，连接永不入空闲栈
-            if (m_config.maximumLifetimeSeconds == 0)
+            // 到寿命的连接不入栈。maximumLifetimeSeconds == 0 视为「立即过期」，连接永不进空闲栈。
+            // 锁内只做判定与摘出：丢弃要断开 socket，那是一次会阻塞的系统调用，握着 m_mutex 做它
+            // 会把所有取出路径、统计读取与后台驱逐一起排在那次关闭后面（与 healthCheckLoop 同一条纪律）
+            const auto lifetimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - createdTime).count();
+            const bool isExpired = m_config.maximumLifetimeSeconds == 0
+                                   || static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds;
+            if (isExpired)
             {
-                discardConnection(std::move(entry.connection));
-                return;
+                expiredConnection = std::move(connection);
             }
-
+            else
             {
-                const auto lifetimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - createdTime).count();
-                if (static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds)
-                {
-                    discardConnection(std::move(entry.connection));
-                    return;
-                }
+                IdleEntry entry;
+                entry.connection   = std::move(connection);
+                entry.createdTime  = createdTime;
+                entry.returnedTime = now;
+                m_idleStack.push_back(std::move(entry));
             }
+        }
 
-            m_idleStack.push_back(std::move(entry));
+        if (expiredConnection)
+        {
+            // 名额一并退还
+            discardConnection(std::move(expiredConnection));
+            return;
         }
 
         m_idleCondition.notify_one();
@@ -448,17 +454,23 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseConnection> ConnectionPool::tryAcquireInternal() noexcept
     {
-        std::lock_guard lock(m_mutex);
-
-        if (m_idleStack.empty())
+        IdleEntry entry;
         {
-            return nullptr;
+            std::lock_guard lock(m_mutex);
+
+            if (m_idleStack.empty())
+            {
+                return nullptr;
+            }
+
+            // LIFO：从栈顶取（最新归还的连接最可能还在热点缓存中）
+            entry = std::move(m_idleStack.back());
+            m_idleStack.pop_back();
         }
 
-        // LIFO：从栈顶取（最新归还的连接最可能还在热点缓存中）
-        IdleEntry entry = std::move(m_idleStack.back());
-        m_idleStack.pop_back();
-
+        // 摘出之后才知道这条能不能用，而「丢弃一条不能用的」要断开 socket——那是一次会阻塞的
+        // 系统调用。整段判定与丢弃都必须在 m_mutex 之外：握着它做断开，等于让所有取出路径、
+        // 统计读取与后台驱逐一起排在那次关闭后面（与 healthCheckLoop 的锁外断开是同一条纪律）
         if (isEntryExpired(entry))
         {
             // 过期连接直接关闭丢弃

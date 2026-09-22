@@ -9,7 +9,9 @@
  * @details 管理一组 DatabaseConnection，提供阻塞获取、非阻塞尝试、协程异步获取三种方式。
  *          空闲连接用 LIFO 栈（最新归还的最可能还在热点缓存）、懒惰创建、单锁保护；归还时做
  *          空闲/存活期过期判定，后台 jthread 定期驱逐，探活放在获取路径上（调用方拿到的一定是
- *          可用连接，归还路径保持最短）。所有公有方法均为线程安全。
+ *          可用连接，归还路径保持最短）。m_mutex 的临界区内一律不做 disconnect：关闭底层连接是
+ *          会阻塞的系统调用，留在锁内会把取出路径、统计读取与后台驱逐一起堵住（丢弃动作因此都
+ *          先摘出、出锁再断）。所有公有方法均为线程安全。
  */
 #pragma once
 
@@ -328,6 +330,7 @@ namespace AsynGyanis::Database
          * @brief 摘除创建时间记录并把连接关闭（释放 unique_ptr 即断开），不退还名额
          * @param connection 待关闭的连接；为空时空操作
          * @note 池析构与「丢弃后立刻重建」两条路径用本方法：它们的名额由后续动作接手
+         * @warning 内含一次 disconnect（会阻塞的系统调用），调用方不得持有 m_mutex
          */
         void closeTrackedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
 
