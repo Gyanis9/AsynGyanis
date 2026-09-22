@@ -29,7 +29,7 @@ namespace AsynGyanis::Platform
         int day{0};     ///< 日 1~31；转换失败时为 0
         int hour{0};    ///< 时 0~23
         int minute{0};  ///< 分 0~59
-        int second{0};  ///< 秒 0~60（闰秒可能出现 60）
+        int second{0};  ///< 秒 0~59；time_t 本身是 SI 秒，折不出闰秒那一格
         int weekday{0}; ///< 星期 0~6，0 表示周日（与 std::tm::tm_wday 同约定）
     };
 
@@ -53,10 +53,11 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 将 UTC 秒数转换为 UTC 日历字段
-         * @details 收在 Platform 层是因为只有这一层能按平台选对 gmtime_r / gmtime_s；
-         *          直接用 std::gmtime 会复用静态缓冲，多线程下互相覆盖。
-         * @param calendarTime 自 Unix 纪元起的 UTC 秒数
-         * @return UtcTimeFields UTC 分解结果；转换失败时返回零值结构（各字段为 0）
+         * @details UTC 既不需要时区也不需要夏令时规则，因此走纯整数日期运算而不交给 C 库：
+         *          `gmtime_s` 会把 1970 年之前整个拒掉（`gmtime_r` 却能正常折），同一份文件的
+         *          Last-Modified 就会在两平台上给出不同的头。星期由天数直接取模，不查 `tm_wday`。
+         * @param calendarTime 自 Unix 纪元起的 UTC 秒数，可为负（即 1970 年之前）
+         * @return UtcTimeFields UTC 分解结果；年份超出 int 表达范围时返回零值结构（各字段为 0）
          */
         static UtcTimeFields utcTime(std::time_t calendarTime) noexcept;
     };
