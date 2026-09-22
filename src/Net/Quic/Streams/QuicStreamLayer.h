@@ -20,6 +20,7 @@
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -201,6 +202,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::uint64_t> takeAbortedStream();
 
         /**
+         * @brief 本层此刻还记着多少条流的状态（收、发两侧相加）
+         * @details 只作观测与用例判据：一条流两侧都收口、该发的字节也都落定之后就该忘掉它，
+         *          否则这笔账会随连接上做过的请求数一直长
+         * @return std::size_t 入站与出站两张表的条目数之和
+         */
+        [[nodiscard]] std::size_t trackedStreamCount() const noexcept;
+
+        /**
          * @brief 确认一批包：把里面已送达的流数据从在途账上销掉
          * @param acknowledgedRanges 这些包里排出去的字节区间
          */
@@ -276,6 +285,47 @@ namespace AsynGyanis::Net
         };
 
         [[nodiscard]] OutgoingStream &outgoingStream(std::uint64_t streamId);
+
+        /**
+         * @brief 这条流的接收侧是否已再无事可做
+         * @details 收齐、交付完、上层把字节都报了回来、且不再欠对端任何一帧——四条缺一条都不能摘
+         * @param stream 待判定的入站流状态
+         * @return true 可以摘掉这条记录
+         */
+        [[nodiscard]] bool isIncomingSettled(const IncomingStream &stream) const noexcept;
+
+        /**
+         * @brief 这条流的发送侧是否已再无事可做
+         * @details 带 FIN 的那段已确认（判丢会把它退回未收尾）、待发与在途都空、收口宣告也已落定
+         * @param stream 待判定的出站流状态
+         * @return true 可以摘掉这条记录
+         */
+        [[nodiscard]] bool isOutgoingSettled(const OutgoingStream &stream) const noexcept;
+
+        /**
+         * @brief 摘掉两侧都再无事可做的对端流
+         * @details 挂在每次编帧的入口：不摘的话这两张表会随连接上做过的请求数一直长
+         */
+        void retireSettledStreams();
+
+        /**
+         * @brief 记下「这个流号的某一侧已作废」
+         * @details 取的是同类档位里的边界而非逐条名单
+         * @param streamId 被摘掉记录的那条流
+         * @param isReceiveSide 摘的是接收侧还是发送侧
+         */
+        void noteStreamRetired(std::uint64_t streamId, bool isReceiveSide);
+
+        /**
+         * @brief 这条对端流的某一侧记录是否已被摘掉
+         * @details 同类型流号只增不减（§2.1），边界之下又不在表里的号只能是「有过、如今作废了」；
+         *          按新流建一份就会带着全新的额度，把对端合法的重传判成 FLOW_CONTROL_ERROR（§4.5）。
+         *          收与发各记一条边界：入站侧往往先结清，共用一条会把同一条流的响应也挡掉
+         * @param streamId 流号
+         * @param isReceiveSide 查接收侧还是发送侧
+         * @return true 那一侧的记录已作废
+         */
+        [[nodiscard]] bool isPeerStreamSideRetired(std::uint64_t streamId, bool isReceiveSide) const noexcept;
         /// 按宣告描述找回它对应的那份状态；流已不存在或该方向没收口即返回空
         [[nodiscard]] AbortAnnouncement *abortAnnouncementOf(const QuicStreamAnnouncement &announcement);
         /// 按流的类别取对端给的初始发送窗口；对端参数没到手时返回空
@@ -303,6 +353,9 @@ namespace AsynGyanis::Net
 
         std::map<std::uint64_t, IncomingStream> m_incoming{}; ///< 对端发起或回写的流
         std::map<std::uint64_t, OutgoingStream> m_outgoing{}; ///< 本端发起的流
+        /// 对端发起的流里「已作废」的流号边界，取的是同类型的第几条。两侧必须分开——一条请求的
+        /// 入站侧往往先结清，共用一条边界会把同一条流的响应也挡掉
+        std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries{}; ///< [收/发][双向/单向] 各一条边界
         std::deque<QuicStreamDelivery> m_deliveries{};        ///< 等着交给上层的数据
         std::deque<std::uint64_t> m_abortedStreams{};         ///< 被打断、等上层回收的流号
         std::size_t m_drainedSendByteCount{0};                ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段

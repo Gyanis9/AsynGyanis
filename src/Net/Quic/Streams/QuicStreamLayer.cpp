@@ -70,6 +70,17 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 「已作废流号」边界按哪一档记：只分双向与单向
+         * @details 只对对端发起的流有意义（本端发起的流不摘），所以发起方那一位不必进档位
+         * @param streamId 流号
+         * @return std::size_t 0 为双向、1 为单向
+         */
+        std::size_t retiredBoundarySlotOf(const std::uint64_t streamId) noexcept
+        {
+            return isUnidirectional(streamId) ? 1U : 0U;
+        }
+
+        /**
          * @brief 造一条带中文文案的违规
          * @param errorCode §11.1 的传输错误码
          * @param reasonPhrase 进 CONNECTION_CLOSE 的原因文案
@@ -178,6 +189,12 @@ namespace AsynGyanis::Net
         auto incoming = m_incoming.find(streamId);
         if (incoming == m_incoming.end())
         {
+            if (isPeerStreamSideRetired(streamId, true))
+            {
+                // 这条流早就收口作废了：来的是迟到的重传或重复段，按已收齐处理。这里若建一份新记录，
+                // 那份新额度会把对端合法的重传判成越界（§4.5）
+                return {};
+            }
             if (isLocallyInitiated(streamId))
             {
                 if (isUnidirectional(streamId))
@@ -316,6 +333,11 @@ namespace AsynGyanis::Net
         auto stream = m_outgoing.find(frame.streamId);
         if (stream == m_outgoing.end())
         {
+            if (isPeerStreamSideRetired(frame.streamId, false))
+            {
+                // 这条流的发送侧早已收口确认：额度抬给谁都没用了，别为它凭空建一份状态
+                return {};
+            }
             // 本端还没发起就收到额度：留着这个上限等着，等本端真开流时直接用（§4.6 允许）
             stream = m_outgoing.emplace(frame.streamId, OutgoingStream{}).first;
             stream->second.streamLimit = initialSendWindowFor(frame.streamId).value_or(0);
@@ -377,6 +399,12 @@ namespace AsynGyanis::Net
             return std::unexpected(makeViolation(kStreamStateError,
                                                  std::format("对端让本端停止发送本端只能收的单向流 {}（RFC 9000 §4.5）", frame.streamId)));
         }
+        if (isPeerStreamSideRetired(frame.streamId, false))
+        {
+            // 本端已经把这条流发完并得到确认：再补一份状态就会凭空回一条收尾长度为 0 的 RESET_STREAM，
+            // 把已经收齐的对端判成越界
+            return {};
+        }
         OutgoingStream &stream = outgoingStream(frame.streamId);
         if (stream.isAborted)
         {
@@ -405,6 +433,12 @@ namespace AsynGyanis::Net
                                                                        : m_outgoingBidirectionalLimit))
         {
             // 超出对端给的流数上限：这条流开不出来，一字节也不收（§4.6）
+            return 0;
+        }
+        if (isPeerStreamSideRetired(streamId, false))
+        {
+            // 这条对端流的两侧都已收口：本端却还想往上写，说明上层留着了一条已经作废的流。收下只会
+            // 凭空建一份状态，把已经确认收尾的流又开出正文来
             return 0;
         }
         OutgoingStream &stream = outgoingStream(streamId);
@@ -482,6 +516,11 @@ namespace AsynGyanis::Net
 
     void QuicStreamLayer::resetStreamSending(const std::uint64_t streamId, const std::uint64_t applicationErrorCode)
     {
+        if (isPeerStreamSideRetired(streamId, false))
+        {
+            // 发送侧早已收口确认：这条流没什么可复位的，建一份状态反而会被编成收尾长度为 0 的 RESET_STREAM
+            return;
+        }
         OutgoingStream &stream = outgoingStream(streamId);
         if (stream.sendAbort.has_value() || stream.isFinalSentToPeer || stream.finalOffset.has_value())
         {
@@ -534,6 +573,8 @@ namespace AsynGyanis::Net
                                         std::vector<QuicStreamRange> &sentRanges,
                                         std::vector<QuicStreamAnnouncement> &announcements)
     {
+        // 每次编帧前先摘一轮已作废的记录：下面几个收集环节都要过这两张表，留着只会让它们越扫越长
+        retireSettledStreams();
         // 收口宣告最先编：它不占流量控制额度，却是「对端还要不要等下去」的答案
         const std::size_t announcementByteCount = collectAbortAnnouncements(frames, byteBudget, announcements);
         const std::size_t remainingAfterAnnouncements =
@@ -831,6 +872,84 @@ namespace AsynGyanis::Net
         const std::optional<std::uint64_t> streamId = m_abortedStreams.front();
         m_abortedStreams.pop_front();
         return streamId;
+    }
+
+    std::size_t QuicStreamLayer::trackedStreamCount() const noexcept
+    {
+        return m_incoming.size() + m_outgoing.size();
+    }
+
+    void QuicStreamLayer::retireSettledStreams()
+    {
+        // 只摘对端发起的那两档：本端发起的流由上层自己掌握寿命，且它们的数量与连接寿命无关（控制流、
+        // QPACK 流各一条），留着的账太小，不值得为它们再记一份「哪些流号已作废」
+        for (auto entry = m_incoming.begin(); entry != m_incoming.end();)
+        {
+            if (isLocallyInitiated(entry->first) || !isIncomingSettled(entry->second))
+            {
+                ++entry;
+                continue;
+            }
+            // 先抬边界再摘条目：同类型的流号只增不减（§2.1），边界之下的号都是「曾经有过、如今已作废」的，
+            // 反过来做会让这一拍之后到达的迟到帧被当成一条新流
+            noteStreamRetired(entry->first, true);
+            entry = m_incoming.erase(entry);
+        }
+        for (auto entry = m_outgoing.begin(); entry != m_outgoing.end();)
+        {
+            if (isLocallyInitiated(entry->first) || !isOutgoingSettled(entry->second))
+            {
+                ++entry;
+                continue;
+            }
+            noteStreamRetired(entry->first, false);
+            entry = m_outgoing.erase(entry);
+        }
+    }
+
+    bool QuicStreamLayer::isIncomingSettled(const IncomingStream &stream) const noexcept
+    {
+        // 收齐且交付完：重组缓存自然空了（isFinished 的定义就是「交付点追上了收尾长度」）
+        if (!stream.isFinished || !stream.isFinalDelivered)
+        {
+            return false;
+        }
+        // 上层还没把最后一段字节报回来之前不能摘：releaseReceiveWindow 找不到条目会把这份额度**丢掉**，
+        // 连接级窗口就此不再前进，对端永远等不到 MAX_DATA
+        if (stream.consumedByteCount != stream.receivedHighWaterOffset)
+        {
+            return false;
+        }
+        // 欠对端的帧一条都不能欠：摘了就没人在 collectFrames 里把它编出去了
+        return !stream.windowUpdatePending && (!stream.receiveStop.has_value() || stream.receiveStop->isAcknowledged);
+    }
+
+    bool QuicStreamLayer::isOutgoingSettled(const OutgoingStream &stream) const noexcept
+    {
+        // FIN 上过线且没被判丢（判丢会把它退回 false 并重排），在途与待发都空：这条流的发送侧再无可为
+        if (!stream.isFinalSentToPeer || !stream.pendingQueue.empty() || !stream.inFlight.empty())
+        {
+            return false;
+        }
+        return !stream.sendAbort.has_value() || stream.sendAbort->isAcknowledged;
+    }
+
+    void QuicStreamLayer::noteStreamRetired(const std::uint64_t streamId, const bool isReceiveSide)
+    {
+        // 记的是「同类里的第几条」而不是流号本身：一个对端在同一档里只会往前走（§2.1 的流号单调），
+        // 所以一个边界就够描述「这个号以下都可能已经作废」，不必留一张随连接时长增长的名单
+        const std::size_t directionSlot = retiredBoundarySlotOf(streamId);
+        std::uint64_t &boundary = m_retiredPeerStreamBoundaries[isReceiveSide ? 0U : 1U][directionSlot];
+        boundary = std::max(boundary, streamIndexOfType(streamId) + 1);
+    }
+
+    bool QuicStreamLayer::isPeerStreamSideRetired(const std::uint64_t streamId, const bool isReceiveSide) const noexcept
+    {
+        if (isLocallyInitiated(streamId))
+        {
+            return false;
+        }
+        return streamIndexOfType(streamId) < m_retiredPeerStreamBoundaries[isReceiveSide ? 0U : 1U][retiredBoundarySlotOf(streamId)];
     }
 
     void QuicStreamLayer::onSendRangesAcknowledged(const std::vector<QuicStreamRange> &acknowledgedRanges)

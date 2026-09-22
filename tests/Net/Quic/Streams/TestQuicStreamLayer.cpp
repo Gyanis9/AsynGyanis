@@ -1087,4 +1087,203 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(layer.hasOutgoingFrames()) << "被挤掉的宣告不能当成已经发过";
         EXPECT_EQ(framesOfType<QuicResetStreamFrame>(collect(layer, 1200).frames).size(), 1U);
     }
+
+    namespace
+    {
+        /// 对端发起的第 n 条双向流的流号（同类每隔 4 一条，§2.1）
+        std::uint64_t peerBidirectionalStreamIdOf(const std::size_t index)
+        {
+            return static_cast<std::uint64_t>(index) * 4U;
+        }
+
+        /**
+         * @brief 走完整一条「请求收齐、响应发完并被确认」的往返
+         * @details 三件事按上层的真实顺序做：交付完正文、把额度还回来、把响应的 FIN 编出去并确认。
+         *          回收判据要的就是这三件都齐，缺一件都不该摘
+         * @param layer 被测流层
+         * @param requestIndex 这是第几条对端双向流
+         * @param requestByteCount 请求正文长度
+         */
+        void runCompletedRequestRoundTrip(QuicStreamLayer &layer, const std::size_t requestIndex, const std::size_t requestByteCount)
+        {
+            const std::uint64_t streamId = peerBidirectionalStreamIdOf(requestIndex);
+            const std::vector<std::uint8_t> request(requestByteCount, 'r');
+            EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, 0, request, true)).has_value());
+            while (layer.hasDeliveries())
+            {
+                static_cast<void>(layer.takeDelivery());
+            }
+            layer.releaseReceiveWindow(streamId, requestByteCount);
+
+            const std::vector<std::uint8_t> response = bytesOf("ok");
+            static_cast<void>(layer.writeStreamData(streamId, response, true));
+            // 第一轮编帧把 FIN 排进包里，确认之后才谈得上「本端发完且对端收到了」
+            const Collected firstRound = collect(layer, 1200);
+            layer.onSendRangesAcknowledged(firstRound.ranges);
+            layer.onStreamAnnouncementsAcknowledged(firstRound.announcements);
+            // 第二轮编帧顺路做回收：此刻两侧都无事可做
+            static_cast<void>(collect(layer, 1200));
+        }
+    } // namespace
+
+    /**
+     * @brief 入站侧先结清并被摘掉，不许挡住同一条流的响应：收与发各记一条作废边界
+     * @details 服务端的真实顺序就是「读完请求 → 隔几拍才写响应」，中间那几拍会把入站记录摘掉。
+     *          若两侧共用一条边界，响应写进来就会被当成「往已作废的流上写」而一分不收
+     */
+    TEST(QuicStreamLayer, RetiredReceiveSideDoesNotBlockTheResponse)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        const std::vector<std::uint8_t> request = bytesOf("payload");
+        ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
+        while (layer.hasDeliveries())
+        {
+            static_cast<void>(layer.takeDelivery());
+        }
+        // 上层读完了正文：入站侧就此结清，下面这轮编帧会把它摘掉
+        layer.releaseReceiveWindow(0x00, request.size());
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "入站侧没被摘掉，这条用例就没走到「先收口」那一面";
+
+        // 响应这才开始写：出站记录是新建的，不该被入站侧那条边界挡掉
+        EXPECT_EQ(layer.writeStreamData(0x00, bytesOf("done"), true), 4U) << "入站侧已作废被当成了整条流已作废";
+        const Collected responded = collect(layer, 1200);
+        EXPECT_FALSE(responded.ranges.empty()) << "响应没有编进包里";
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "响应还在途，出站记录必须留着";
+
+        layer.onSendRangesAcknowledged(responded.ranges);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "响应确认后两侧都该不再记账";
+    }
+
+    /**
+     * @brief 两侧都收口、额度也还清的对端流要被忘掉，别让两张表随做过的请求数一直长
+     * @details 一条 HTTP/3 请求就是一条双向流：入站记请求、出站记响应。此前这两条记录一辈子不摘，
+     *          单连接的账与每包编帧的扫描长度都按请求总数线性涨
+     */
+    TEST(QuicStreamLayer, ForgetsPeerStreamsOnceBothSidesAreSettled)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+
+        runCompletedRequestRoundTrip(layer, 0, 8);
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "一次完整的往返之后两侧记录都该摘掉";
+        EXPECT_FALSE(layer.hasOutgoingFrames());
+    }
+
+    /**
+     * @brief 连着跑一百条请求，被记着的流数不随请求数增长
+     * @details 单条往返的断言容易放过「只摘一侧」这类退化，这里看总量：不回收的话读数是 200
+     */
+    TEST(QuicStreamLayer, KeepsStreamTableBoundedAcrossManyRequests)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makePeerParameters());
+
+        constexpr std::size_t requestCount = 100;
+        for (std::size_t requestIndex = 0; requestIndex < requestCount; ++requestIndex)
+        {
+            runCompletedRequestRoundTrip(layer, requestIndex, 16);
+        }
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "每条请求都留下记录，连接越长账越大";
+    }
+
+    /**
+     * @brief 摘掉的流再收到迟到帧不判错、也不重新记一份；上层往它写数据一律拒收
+     * @details 摘记录之后本层就没了「这条流收过多少」的凭据：把它当新流会带着全新的额度，
+     *          对端合法的重传当场被误判成 FLOW_CONTROL_ERROR（§4.5），连接的账也会被重复推进
+     */
+    TEST(QuicStreamLayer, IgnoresLateFramesForRetiredPeerStream)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        runCompletedRequestRoundTrip(layer, 0, 8);
+        ASSERT_EQ(layer.trackedStreamCount(), 0U) << "没摘掉就测不到迟到帧这一路";
+
+        // 与请求正文等长的一次重复投递：偏移 0、带 FIN
+        const std::vector<std::uint8_t> replay(8, 'r');
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(0), 0, replay, true)).has_value())
+                << "已收口的流上迟到帧被当成了违规";
+        // 越界的一段同样忽略：本层已不记得收尾长度，判错的成本是把好连接杀掉
+        const std::vector<std::uint8_t> beyond(64, 'x');
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(0), 8, beyond, true)).has_value());
+        // 对端的 STOP_SENDING 也不该把这条流又激活：凭空回一条收尾长度为 0 的 RESET_STREAM 会误导对端
+        QuicStopSendingFrame stopSending;
+        stopSending.streamId = peerBidirectionalStreamIdOf(0);
+        stopSending.applicationErrorCode = 0x010b;
+        EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(1), 0, replay, true)).has_value())
+                << "回收不该挡住真正的新流";
+
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "迟到帧与停发都不该留下记账，只有新流的那条入站记录该在";
+        EXPECT_FALSE(layer.hasAbortedStreams()) << "被忽略的停发不该又排给上层一条已作废的流";
+    }
+
+    /**
+     * @brief 收与发两侧各自判定要不要摘：另一侧没收口不得拖住这一侧，反之也不得提前摘
+     * @details 判据被放松就会造出真缺陷——额度没还清就摘入站记录，上层随后报回来的字节会连同额度
+     *          一起被丢掉，连接级窗口就此不再前进（对端永久等不到 MAX_DATA）
+     */
+    TEST(QuicStreamLayer, KeepsTheUnsettledSideOfAStream)
+    {
+        // 其一：响应的 FIN 已发完并确认（出站可摘），但正文的额度上层还没报回来（入站必须留）
+        QuicStreamLayer unpaidWindow(makeEstablishedLayer());
+        const std::vector<std::uint8_t> request = bytesOf("payload");
+        ASSERT_TRUE(unpaidWindow.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
+        while (unpaidWindow.hasDeliveries())
+        {
+            static_cast<void>(unpaidWindow.takeDelivery());
+        }
+        static_cast<void>(unpaidWindow.writeStreamData(0x00, bytesOf("ok"), true));
+        const Collected unpaidRound = collect(unpaidWindow, 1200);
+        unpaidWindow.onSendRangesAcknowledged(unpaidRound.ranges);
+        static_cast<void>(collect(unpaidWindow, 1200));
+        EXPECT_EQ(unpaidWindow.trackedStreamCount(), 1U) << "出站侧该摘，入站侧要留：只剩入站这一条";
+
+        // 补上那份额度，下一轮编帧就该把它也摘掉
+        unpaidWindow.releaseReceiveWindow(0x00, request.size());
+        static_cast<void>(collect(unpaidWindow, 1200));
+        EXPECT_EQ(unpaidWindow.trackedStreamCount(), 0U) << "额度还清之后入站记录没有留下的理由";
+
+        // 其二：入站已结清，响应却还整段挂在待发队列里
+        QuicStreamLayer unsent(makeEstablishedLayer());
+        ASSERT_TRUE(unsent.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
+        while (unsent.hasDeliveries())
+        {
+            static_cast<void>(unsent.takeDelivery());
+        }
+        unsent.releaseReceiveWindow(0x00, request.size());
+        static_cast<void>(unsent.writeStreamData(0x00, bytesOf("ok"), true));
+        EXPECT_TRUE(unsent.hasOutgoingFrames()) << "正文还没上线，这条流明明还有事";
+        static_cast<void>(collect(unsent, 1200));
+        // 这一轮编帧把正文排进包里但未确认：入站侧结清可摘，出站侧还有未确认的在途账
+        EXPECT_EQ(unsent.trackedStreamCount(), 1U) << "还没确认的正文不该被当成已收口";
+    }
+
+    /**
+     * @brief 判丢会把 FIN 退回未收尾，出站记录不得被摘；重发确认之后才摘
+     * @details 确认与判丢是两条相反的路：只按「曾上线过」摘记录，重发就找不到归属了
+     */
+    TEST(QuicStreamLayer, KeepsStreamWhoseFinalSegmentWasLost)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        const std::vector<std::uint8_t> request = bytesOf("payload");
+        ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
+        while (layer.hasDeliveries())
+        {
+            static_cast<void>(layer.takeDelivery());
+        }
+        layer.releaseReceiveWindow(0x00, request.size());
+        static_cast<void>(layer.writeStreamData(0x00, bytesOf("ok"), true));
+        const Collected round = collect(layer, 1200);
+        ASSERT_FALSE(round.ranges.empty()) << "这一包没带上响应正文，用例就没走到判丢";
+
+        layer.onSendRangesLost(round.ranges);
+        const Collected resent = collect(layer, 1200);
+        EXPECT_FALSE(resent.ranges.empty()) << "判丢之后没有重发，用例就没测到「留着是为了重发」";
+        // 这一轮里入站侧已结清被摘掉，出站侧带着未确认的在途账必须留着
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "还要重发的出站记录不该被摘掉";
+
+        layer.onSendRangesAcknowledged(resent.ranges);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "重发确认后仍不摘，就等于没修";
+    }
 } // namespace AsynGyanis::Net
