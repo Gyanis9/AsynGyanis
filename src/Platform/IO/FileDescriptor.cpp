@@ -1,12 +1,25 @@
 #include "Platform/IO/FileDescriptor.h"
 
 #include "Platform/IO/Socket.h"
+#include "Platform/System/PlatformError.h"
 
 #include <cstdint>
 #include <limits>
 
 namespace AsynGyanis::Platform
 {
+    namespace
+    {
+        /**
+         * @brief 单次读写的长度上界
+         * @details Windows 的 recv/send 长度形参是 int，超过再强转就得到负数或回绕成另一个合法值；
+         *          POSIX 的形参虽是 size_t，内核也在这一档之上截短或直接报 EINVAL。把界取成两侧共同的
+         *          那个值，同一份超限请求在两平台上得到同一个「当场拒绝」的结果，而不是一侧拒绝、
+         *          一侧悄悄少搬 bytes。
+         */
+        constexpr std::size_t kMaximumTransferLength = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    } // namespace
+
     bool FileDescriptor::setNonBlocking(const int fileDescriptor) noexcept
     {
 #if ASYN_PLATFORM_WIN32
@@ -45,15 +58,15 @@ namespace AsynGyanis::Platform
         {
             return -1;
         }
-#if ASYN_PLATFORM_WIN32
-        // recv/send 的长度形参是 int：超过上界时强转会得到负数或回绕成另一个合法值，
-        // 而回绕后的结果与「对端关闭/暂无数据」同为 0，调用方无从分辨。与 Socket 的向量发送同一口径——
-        // 宁可明确失败，也不静默少读。同时把错误码置上，否则调用方读到的是上一次调用留下的残值
-        if (length > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        // 超限当场拒绝而不是静默少读：回绕后的长度交给底层，读回来的字节数与「对端关闭」同为 0，
+        // 调用方无从分辨。错误码走 PlatformError 的通道，两侧的 errno 与平台错误码要一起置上，
+        // 否则调用方读到的是上一次调用留下的残值
+        if (length > kMaximumTransferLength)
         {
-            ::WSASetLastError(WSAEMSGSIZE);
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return -1;
         }
+#if ASYN_PLATFORM_WIN32
         return ::recv(fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), 0);
 #else
         return ::read(fileDescriptor, buffer, length);
@@ -66,13 +79,13 @@ namespace AsynGyanis::Platform
         {
             return -1;
         }
-#if ASYN_PLATFORM_WIN32
-        // 同上：这里静默截断会更糟——少写了字节却回报成功，是最难排查的那种数据损坏
-        if (length > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        // 与读同一条界：这里静默截断更糟——少写了字节却回报成功，是最难排查的那种数据损坏
+        if (length > kMaximumTransferLength)
         {
-            ::WSASetLastError(WSAEMSGSIZE);
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return -1;
         }
+#if ASYN_PLATFORM_WIN32
         return ::send(fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), 0);
 #else
         return ::write(fileDescriptor, buffer, length);

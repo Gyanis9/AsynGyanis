@@ -1,9 +1,12 @@
 // FileDescriptor 单元测试：有效性判定、非阻塞、描述符对与读写关闭
 #include "Platform/IO/FileDescriptor.h"
 
+#include "Platform/System/PlatformError.h"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -39,6 +42,41 @@ namespace AsynGyanis::Platform
     TEST(FileDescriptor, CloseOnInvalidDescriptorIsNoOpSuccess)
     {
         EXPECT_EQ(FileDescriptor::close(FileDescriptor::kInvalid), 0);
+    }
+
+    /**
+     * @brief 钉住：单次读写的长度上界两平台共用一个界，越界给出同一个「参数非法」错误码
+     * @details 界此前只存在于 Windows 分支，且置的是 WSAEMSGSIZE：与 `Socket::writeVectored` 用的
+     *          kInvalidArgument 不是一套（PlatformError 的文档把「超出平台上限的长度」明确划给
+     *          kInvalidArgument），也没走 PlatformError 通道因此漏置 errno——调用方按
+     *          lastErrorCode() 读到的只是上一次留下的残值。POSIX 分支原先根本不判：两 GiB 的读取
+     *          长度会原样交给内核，而调用方给的缓冲区只有 8 字节，所以这条用例同时也是那道护栏。
+     */
+    TEST(FileDescriptor, RefusesTransferLengthsAboveTheSharedBound)
+    {
+        int readDescriptor  = FileDescriptor::kInvalid;
+        int writeDescriptor = FileDescriptor::kInvalid;
+        ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
+
+        const std::size_t    oversizedLength = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1U;
+        char                 buffer[8]       = {0};
+        // 先把错误码清成 0：要证的是「本次调用置的码」，不能靠上一次留下的值蒙对
+        PlatformError::setLastErrorCode(0);
+
+        EXPECT_EQ(FileDescriptor::read(readDescriptor, buffer, oversizedLength), -1)
+                << "超限的读取长度必须在交给内核之前拒掉";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument)
+                << "错误码只置在平台侧、没置 errno，调用方按文件类通道读就是残值";
+
+        PlatformError::setLastErrorCode(0);
+        EXPECT_EQ(FileDescriptor::write(writeDescriptor, buffer, oversizedLength), -1)
+                << "超限的写入长度宁可失败，也不能少写字节却回报成功";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument);
+
+        FileDescriptor::close(readDescriptor);
+        FileDescriptor::close(writeDescriptor);
     }
 
     TEST(FileDescriptor, SetNonBlockingFailsForInvalidDescriptor)

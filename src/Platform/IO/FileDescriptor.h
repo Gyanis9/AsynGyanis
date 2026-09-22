@@ -60,8 +60,8 @@ namespace AsynGyanis::Platform
          * @brief 从描述符读取数据
          * @param fileDescriptor 源描述符
          * @param buffer 接收缓冲区，调用方保证容量
-         * @param length 期望读取字节数
-         * @return ssize_t 实际读取字节数，0 表示暂无数据或对端关闭，-1 表示失败
+         * @param length 期望读取字节数，超过 int 上限时本次调用直接失败（两平台同一界、同一错误码）
+         * @return ssize_t 实际读取字节数，0 表示对端已关闭，-1 表示失败（原因见 PlatformError）
          */
         static ssize_t read(int fileDescriptor, void *buffer, std::size_t length) noexcept;
 
@@ -69,8 +69,8 @@ namespace AsynGyanis::Platform
          * @brief 向描述符写入数据
          * @param fileDescriptor 目标描述符
          * @param buffer 待写入数据，调用方保证生命周期覆盖本次调用
-         * @param length 待写入字节数
-         * @return ssize_t 实际写入字节数，-1 表示失败
+         * @param length 待写入字节数，超过 int 上限时直接拒绝而不是少写（两平台同一界、同一错误码）
+         * @return ssize_t 实际写入字节数，-1 表示失败（原因见 PlatformError）
          */
         static ssize_t write(int fileDescriptor, const void *buffer, std::size_t length) noexcept;
 
