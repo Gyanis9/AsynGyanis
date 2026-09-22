@@ -15,6 +15,7 @@
 
 #if !ASYN_PLATFORM_WIN32
 #include <csignal>
+#include <sys/wait.h>
 #endif
 
 namespace AsynGyanis::Platform
@@ -80,6 +81,34 @@ namespace AsynGyanis::Platform
             }
             return std::nullopt;
         }
+
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 由测试自己把子进程回收掉，模拟「别处已经收走了这个孩子」（SIGCHLD 处理函数的作为）
+         * @param processId 目标进程号
+         * @return true 在时限内回收成功
+         */
+        bool reapExternally(const long processId)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{kWaitTimeoutMilliseconds};
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                int         waitStatus = 0;
+                const pid_t reaped     = ::waitpid(static_cast<pid_t>(processId), &waitStatus, WNOHANG);
+                if (reaped > 0)
+                {
+                    return true;
+                }
+                if (reaped < 0)
+                {
+                    // 已经不可回收（ECHILD 等）：再等也不会有变化，如实报失败让用例亮出前提没成立
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            return false;
+        }
+#endif
     } // namespace
 
     /**
@@ -286,6 +315,32 @@ namespace AsynGyanis::Platform
         // 收尾：用例自己起的进程自己收掉，不给后续用例留垃圾
         EXPECT_TRUE(Process::forceTermination(handle));
         EXPECT_TRUE(waitForExit(handle, kWaitTimeoutMilliseconds).has_value());
+    }
+
+    /**
+     * @brief 子进程被别处回收之后，「已经结束了」这件事仍然要能问出来
+     * @details 类的注释写着「回收过一次就记住，否则第二次问会拿到查不到」，而实现把有效性判定排在
+     *          缓存之前、ECHILD 那条分支又回 nullopt：一旦被别的回收者（SIGCHLD 处理函数）收走，
+     *          这句话永远兑不了现，按「取到值才算结束」轮询的编排者会一直等一个不会再来的值。
+     *          -1 是本层给「已被别处回收」选的记号：POSIX 的退出码只有 0-255，它不会与真实退出码撞车。
+     */
+    TEST(Process, ExitCodeStaysReadableWhenAnotherReaperTookTheChild)
+    {
+        const ExitCommand     command = makeExitCommand(9);
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        ASSERT_TRUE(handle.isValid());
+
+        ASSERT_TRUE(reapExternally(handle.processId())) << "测试自己没能回收这个子进程，本用例失去前提";
+
+        const std::optional<int> exitCode = Process::pollExitCode(handle);
+        ASSERT_TRUE(exitCode.has_value()) << "已被别处回收也要交出「已经结束」这个事实，而不是查不到";
+        EXPECT_EQ(*exitCode, -1) << "已被别处回收时给不出真实退出码，只能记这个哨兵值";
+        EXPECT_FALSE(Process::isRunning(handle)) << "已被回收的子进程不该报成还在运行";
+
+        // 第二问必须有同一个答案：缓存排在有效性判定之前才做得到（进程号在上一问里已被作废）
+        const std::optional<int> secondExitCode = Process::pollExitCode(handle);
+        ASSERT_TRUE(secondExitCode.has_value()) << "第二次问把记住的结果弄丢了，轮询方会永远等下去";
+        EXPECT_EQ(*secondExitCode, -1);
     }
 
     /**

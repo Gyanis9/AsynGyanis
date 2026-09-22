@@ -141,8 +141,11 @@ namespace AsynGyanis::Platform
         /**
          * @brief 取子进程的退出码（不阻塞）
          * @param handle 目标句柄
-         * @return std::optional<int> 已退出时给出退出码；仍在运行、句柄无效或退出码已被别处回收
-         *         时返回 std::nullopt
+         * @return std::optional<int> 子进程已结束时给出退出码；仍在运行或句柄已被释放时返回
+         *         std::nullopt
+         * @retval -1 「这个子进程已被别处回收」（POSIX 的 ECHILD）：退出码无从得知，但「已经不在了」
+         *         是确定的事实，因此交出 -1 而不是 nullopt——按「取到值才算结束」轮询的调用方
+         *         （编排者等 worker 退出）等 nullopt 会永远等下去
          */
         [[nodiscard]] static std::optional<int> pollExitCode(const Handle &handle) noexcept;
 

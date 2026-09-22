@@ -316,14 +316,16 @@ namespace AsynGyanis::Platform
 
     std::optional<int> Process::pollExitCode(const Handle &handle) noexcept
     {
-        if (!handle.isValid())
-        {
-            return std::nullopt;
-        }
-        // 回收过一次就直接给记住的值：内核那边已经查不到这个子进程了
+        // 回收过一次就直接给记住的值，而且要排在有效性判定**之前**：被别处回收时进程号一并作废了
+        // （那个 pid 已交还系统，留着只会让终止类操作打到复用它的无关进程），把有效性判定放在前面
+        // 就等于「记住的退出码永远查不到」，与这份缓存存在的理由正好相反
         if (handle.m_exitCode.has_value())
         {
             return handle.m_exitCode;
+        }
+        if (!handle.isValid())
+        {
+            return std::nullopt;
         }
 
 #if ASYN_PLATFORM_WIN32
@@ -364,6 +366,9 @@ namespace AsynGyanis::Platform
                 // 句柄一并作废：这个 pid 已经交还系统、可能已被别的进程复用。只记退出码的话
                 // isRunning() 仍会说「在运行」，终止类操作会拿一个复用的 pid 去 kill
                 handle.m_processId = -1;
+                // 「已被别处回收」本身就是答案，不是「还查不到」：回 nullopt 会让按「取到退出码
+                // 才算结束」轮询的调用方（编排者等 worker 退出）永远等下去
+                return handle.m_exitCode;
             }
             return std::nullopt;
         }
