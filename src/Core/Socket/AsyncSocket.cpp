@@ -57,7 +57,10 @@ namespace AsynGyanis::Core
          */
         void discardUnreadInboundData(const int fileDescriptor) noexcept
         {
-            std::array<char, kDiscardChunkBytes> scratchBuffer{};
+            // 这块缓冲只作为 recv 的落点，内容从不被读，因此刻意不初始化：
+            // 带 {} 会让每次 close() 先 memset 掉 8 KiB，而绝大多数连接收口时接收队列本来就是空的
+            // （第一轮 recv 直接以 WOULD_BLOCK 收场）
+            std::array<char, kDiscardChunkBytes> scratchBuffer;
             for (int roundCount = 0; roundCount < kDiscardRoundLimit; ++roundCount)
             {
                 const ssize_t receivedBytes = ::recv(fileDescriptor,
