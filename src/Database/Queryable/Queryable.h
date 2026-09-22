@@ -312,7 +312,9 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("count()");
 
-            QueryNode countingNode     = resolvedQueryNode();
+            // 计数方向整段 SELECT 列表被 COUNT(*) 顶掉，因此不走 resolvedQueryNode()：
+            // 先把全部列名展开再覆盖一遍是白做（列名展开要建一个 vector<string>）
+            QueryNode countingNode     = m_queryNode;
             countingNode.selectColumns = {"COUNT(*)"};
             countingNode.orderBy.clear();
             countingNode.limit.reset();
@@ -520,9 +522,10 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("countAsync()");
 
-            std::shared_ptr<SqlDialect> dialect      = resolveDialect();
-            QueryNode                   countingNode = resolvedQueryNode();
-            countingNode.selectColumns               = {"COUNT(*)"};
+            std::shared_ptr<SqlDialect> dialect = resolveDialect();
+            // 与同步的 count() 同一条理由：列名展开的结果马上被 COUNT(*) 顶掉，不必先做一遍
+            QueryNode countingNode     = m_queryNode;
+            countingNode.selectColumns = {"COUNT(*)"};
             countingNode.orderBy.clear();
             countingNode.limit.reset();
             countingNode.offset.reset();
