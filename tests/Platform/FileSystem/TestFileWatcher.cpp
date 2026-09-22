@@ -742,6 +742,52 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住：把一条已注册的目录**升级**成递归，要真的挂上先就存在的子目录
+     * @details 两个后端的注册函数都是「先记递归根，再查这条路径是否已注册，已注册就当场返回 true」，
+     *          于是枚举子目录那一步被跳过：调用方两次 addWatch 都拿到 true，子目录却一个都没挂上，
+     *          里面的变更永久丢失。自愈也救不了——它只复查清单上已有的路径，枚举不到的目录它不认识。
+     * @note 断言是正向的（事件必须报上来），因此「递归压根没挂上」只会让它红，不会假绿。
+     */
+    TEST(FileWatcher, PromotingAnExistingWatchToRecursiveCoversPreExistingSubDirectories)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_PromoteRecursive");
+        std::error_code                 error;
+        std::filesystem::create_directories(temporaryDirectory.path() / "nested", error);
+        ASSERT_FALSE(error);
+
+        std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        // 先按非递归注册，再对同一条路径要递归——第二次调用才是「把这条监视升级」的意图
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), false));
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
+        ASSERT_TRUE(watcher->start());
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            std::ofstream promotedFile(temporaryDirectory.path() / "nested" / "promoted.yaml");
+            promotedFile << "promoted: true\n";
+        }
+
+        const bool receivedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("promoted.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(receivedEvent) << "addWatch 第二次要递归时被「已注册」挡回，先就存在的子目录成了监听盲区";
+    }
+
+    /**
      * @brief 递归监听开始**之后**新建的子目录也要被覆盖
      * @details 每个目录各自一条监视（Win32 上是一条 ReadDirectoryChangesW），新建的子目录不补挂
      *          就永远收不到它内部的变更。inotify 侧早就有这条补挂，Win32 侧此前只在注册那一刻

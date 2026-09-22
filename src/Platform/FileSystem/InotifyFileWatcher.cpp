@@ -83,6 +83,8 @@ namespace AsynGyanis::Platform
     bool InotifyFileWatcher::registerWatch(const std::string &absolutePath, const bool recursive, const bool keepForSelfHeal)
     {
         std::error_code error;
+        bool            registered   = true;
+        bool            needsDescend = false;
         {
             std::lock_guard lock(m_watchMutex);
 
@@ -95,27 +97,31 @@ namespace AsynGyanis::Platform
             // 递归根要记住：之后新建的子目录靠这份清单补挂监视（否则新目录里的变更永久丢失）
             if (recursive)
             {
+                // 已经在清单里就不用再走一遍树：重复的递归注册，枚举出来的子目录都已各自挂好了
+                needsDescend = !m_recursiveRoots.contains(absolutePath);
                 m_recursiveRoots.insert(absolutePath);
             }
 
-            if (m_pathToWatchDescriptor.contains(absolutePath))
+            // 「这条路径已经看过」不能直接返回：先按非递归注册、之后再要递归的那一次必须走到下面的
+            // 枚举，否则那次升级会被静默吞掉——先就存在的子目录一个都挂不上，而自愈只复查清单上
+            // 已有的路径，枚举不到的目录它根本不认识
+            if (!m_pathToWatchDescriptor.contains(absolutePath))
             {
-                return true;
+                // 此刻注册失败（路径还不存在）也保留清单里的那一条：自愈节拍会在它出现后补挂
+                const int watchDescriptor = ::inotify_add_watch(m_inotifyFileDescriptor, absolutePath.c_str(), kWatchEventMask);
+                if (watchDescriptor < 0)
+                {
+                    registered = false;
+                } else
+                {
+                    m_watchDescriptors[watchDescriptor]   = absolutePath;
+                    m_pathToWatchDescriptor[absolutePath] = watchDescriptor;
+                }
             }
-
-            // 此刻注册失败（路径还不存在）也保留清单里的那一条：自愈节拍会在它出现后补挂
-            const int watchDescriptor = ::inotify_add_watch(m_inotifyFileDescriptor, absolutePath.c_str(), kWatchEventMask);
-            if (watchDescriptor < 0)
-            {
-                return false;
-            }
-
-            m_watchDescriptors[watchDescriptor]   = absolutePath;
-            m_pathToWatchDescriptor[absolutePath] = watchDescriptor;
         }
 
         // 递归注册放在锁外，避免持锁期间遍历目录树
-        if (recursive && std::filesystem::is_directory(absolutePath, error))
+        if (needsDescend && registered && std::filesystem::is_directory(absolutePath, error))
         {
             for (const auto &entry: std::filesystem::recursive_directory_iterator(absolutePath, error))
             {
@@ -130,7 +136,7 @@ namespace AsynGyanis::Platform
             }
         }
 
-        return true;
+        return registered;
     }
 
     bool InotifyFileWatcher::removeWatch(const std::string_view path)

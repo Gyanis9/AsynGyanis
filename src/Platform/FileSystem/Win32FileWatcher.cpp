@@ -179,6 +179,9 @@ namespace AsynGyanis::Platform
             return false;
         }
 
+        // 只有「这一次才把它变成递归根」才需要走一遍目录树；子目录自己再挂递归时同样要枚举它下面那层
+        bool needsDescend = false;
+
         {
             const std::string directoryPath = normalizeDirectoryPath(absolutePath);
             std::lock_guard   lock(m_watchMutex);
@@ -188,6 +191,8 @@ namespace AsynGyanis::Platform
             // 但同属这条递归监视的范围
             if (recursive || partOfRecursiveTree)
             {
+                // 已经在递归清单里就不用再走一遍树：重复的递归注册，枚举出来的子目录都在表里了
+                needsDescend = recursive && !m_recursiveWatchPaths.contains(directoryPath);
                 m_recursiveWatchPaths.insert(directoryPath);
             }
 
@@ -198,48 +203,48 @@ namespace AsynGyanis::Platform
                 m_selfHealPaths.insert(directoryPath);
             }
 
-            if (m_watches.contains(directoryPath))
+            // 「这条路径已经挂过了」不能直接返回：先按非递归注册、之后再要递归的调用要走到下面的
+            // 枚举，否则那次升级会被静默吞掉——先就存在的子目录一个都挂不上，自愈也找不到它们
+            if (!m_watches.contains(directoryPath))
             {
-                return true;
+                auto entry  = std::make_unique<WatchEntry>();
+                entry->path = directoryPath;
+                entry->buffer.resize(kBufferSize);
+                entry->directoryHandle = ::CreateFileW(TextEncoding::toWideString(absolutePath).c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                       nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+
+                if (entry->directoryHandle == INVALID_HANDLE_VALUE)
+                {
+                    return false;
+                }
+
+                entry->eventHandle = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                if (entry->eventHandle == nullptr)
+                {
+                    ::CloseHandle(entry->directoryHandle);
+                    entry->directoryHandle = INVALID_HANDLE_VALUE;
+                    return false;
+                }
+
+                entry->overlapped.hEvent = entry->eventHandle;
+
+                // 首次投递读不出变更，这条监视就没有任何成立的形式：条目既不在等待集合里，也没有
+                // 人会再给它投递一次，登记下来只会占住这个路径——之后同一目录再 addWatch 会被上面
+                // 那条「已经挂过」的判断当成成立，于是「注册成功」而事件永久收不到。当场失败返回，
+                // 让调用方看得见这条监视没成立（最常见的触发形状是路径指向普通文件：CreateFileW
+                // 带着 FILE_FLAG_BACKUP_SEMANTICS 会成功，拒的是后面的 ReadDirectoryChangesW）
+                if (!issueRead(*entry))
+                {
+                    closeEntry(*entry);
+                    return false;
+                }
+
+                m_watches[directoryPath] = std::move(entry);
             }
-
-            auto entry  = std::make_unique<WatchEntry>();
-            entry->path = directoryPath;
-            entry->buffer.resize(kBufferSize);
-            entry->directoryHandle = ::CreateFileW(TextEncoding::toWideString(absolutePath).c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                                   nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
-
-            if (entry->directoryHandle == INVALID_HANDLE_VALUE)
-            {
-                return false;
-            }
-
-            entry->eventHandle = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            if (entry->eventHandle == nullptr)
-            {
-                ::CloseHandle(entry->directoryHandle);
-                entry->directoryHandle = INVALID_HANDLE_VALUE;
-                return false;
-            }
-
-            entry->overlapped.hEvent = entry->eventHandle;
-
-            // 首次投递读不出变更，这条监视就没有任何成立的形式：条目既不在等待集合里，也没有
-            // 人会再给它投递一次，登记下来只会占住这个路径——之后同一目录再 addWatch 会被上面的
-            // 去重分支挡下并返回 true，于是「注册成功」而事件永久收不到。当场失败返回，让调用方
-            // 看得见这条监视没成立（最常见的触发形状是路径指向普通文件：CreateFileW 带着
-            // FILE_FLAG_BACKUP_SEMANTICS 会成功，拒的是后面的 ReadDirectoryChangesW）
-            if (!issueRead(*entry))
-            {
-                closeEntry(*entry);
-                return false;
-            }
-
-            m_watches[directoryPath] = std::move(entry);
         }
 
         // 递归注册放在锁外，避免持锁期间遍历目录树
-        if (recursive && std::filesystem::is_directory(absolutePath, errorCode))
+        if (needsDescend && std::filesystem::is_directory(absolutePath, errorCode))
         {
             for (const auto &directoryEntry: std::filesystem::recursive_directory_iterator(absolutePath, errorCode))
             {
