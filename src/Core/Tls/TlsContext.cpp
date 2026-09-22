@@ -295,6 +295,11 @@ namespace AsynGyanis::Core
 
     bool TlsContext::installCertificate(SSL_CTX *context, const std::string &certificateFile, const std::string &keyFile)
     {
+        // 先清空错误栈：头文件承诺「失败可由 OpenSSL 错误栈取到原因」，而调用方通常只读第一条。
+        // 不清的话，前一次失败留下的条目还压在队首，日志就会把「私钥文件不存在」报成上次的
+        // 「证书文件不存在」——同一份文案指向错的那个文件
+        ERR_clear_error();
+
         if (SSL_CTX_use_certificate_file(context, certificateFile.c_str(), SSL_FILETYPE_PEM) != 1)
         {
             return false;
