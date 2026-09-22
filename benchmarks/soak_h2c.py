@@ -2,13 +2,15 @@
 
 用法：
     python benchmarks/soak_h2c.py --port 18080 [--host 127.0.0.1] [--requests N]
-                                  [--connections C] [--pipeline P] [--path /bench] [--json-out <结果文件>]
+                                  [--connections C] [--pipeline P] [--path /bench|/big] [--json-out <结果文件>]
 
 服务端要求：`echo_server --h2c`（明文连接按先验知识说 h2；TLS 上的 h2 由 ALPN 协商，与本脚本无关）。
 `--json-out` 把本次结果写成 JSON（结构见 benchmarks/baseline.json 的 note 字段），供 check-baseline.py 比对。
 本脚本自带一个最小 h2 客户端：不依赖任何第三方库，直接拼帧——前言 + SETTINGS、请求头块用 HPACK
-静态表索引（:method GET / :scheme http / :path），响应只按「DATA + END_STREAM」判定完成，
-并核对头块里出现过 :status 200 的表示（静态表索引 8）。
+静态表索引（:method GET / :scheme http / :path），响应只按「DATA/HEADERS 上的 END_STREAM」判定完成，
+并核对头块里出现过 :status 200 的表示（静态表索引 8）。收到的 DATA 字节会按流控规则归还（流 + 连接
+两级，攒够 4 KiB 一帧），所以 `/big`（262147 字节）这类超过初始窗口 65535 的正文也能量到——
+不归还窗口的客户端只能收到前 64 KiB，之后服务端就停在那条流上。
 
 **本脚本首先是不变式用例，其次才是负载生成器**——它自己的吞吐/延迟数字受限于单线程 Python 客户端
 （一次 sendall 一帧、串行解析），只适合同构建下的横向对比，不能当作引擎的 h2 性能结论。已实测的
@@ -23,11 +25,21 @@
       32 条一批时单条延迟随排在前面的流数增长，因为服务端**先把一轮里收齐的请求全部服务完再一次性写出**
       ——多路复用省连接数，不省排队延迟。
     · 两种构建下都累计 3400+ 条请求零失败：无 GOAWAY/RST_STREAM、每条流都收到 END_STREAM 且状态 200。
+    · 归还窗口这一档实测（2026-09-23，容器 ubuntu24 / GCC 13.3 / `echo_server` 的 ASan 构建）：
+      `/big` 4 连接 × 20 条 = 80 条流全部收完 262147 字节（单流最多 20 帧 DATA，本端共发出 1266 帧
+      WINDOW_UPDATE），零 GOAWAY/RST_STREAM、p50 9.5ms。同一份服务端上把客户端换回「不还窗口」的旧版，
+      第一批就在 10s 时限上超时——这一对照就是新代码的证据。
+      同一路径下 `/bench` 的热路径不受影响：正文远不到 4 KiB 的门槛，本端归还 0 帧、线上字节与旧版相同，
+      5 轮中位数 12,962 对 12,975 请求/s（这个构建的轮间离散本就是 6.8k~13.6k，别看单轮）。
 
 本脚本覆盖的**不变式**（任一违反即计入失败并以非零码退出）：
     1. 全程不得出现 GOAWAY / RST_STREAM：出现即说明服务端提前收口或拒了某条流；
     2. 每条流都必须收到带 END_STREAM 的响应（消息边界完整），且 :status 为 200；
-    3. 连接必须活到最后一条请求收完（多路复用 + 流控记账在长流上不退化）。
+    3. 连接必须活到最后一条请求收完（多路复用 + 流控记账在长流上不退化）；
+    4. 同一路由的各条完成流，正文字节数必须一致：不一致就是某条被截断（帧边界或窗口记账出错）。
+       这条判据不写死长度，因此 `/bench` 与 `/big` 共用它。它落地时立刻查出一个假绿：SETTINGS 的 ACK
+       位与 END_STREAM 同为 0x1，旧解法把「服务端 ACK 了我的 SETTINGS」记成「流 0 收到完整响应」，
+       于是每条连接的「少收一条响应」都会被这一条抵掉。
 注意服务端默认 `maximumRequestsPerConnection = 1000`：单连接请求数超过它会被收尾 GOAWAY 收口，
 那是**设计行为**而不是失败，因此脚本在超限时给出提示并按 900/连接 的建议值拆连接（见 --help）。
 """
@@ -40,6 +52,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 
 CONNECTION_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
@@ -64,6 +77,10 @@ HPACK_INDEXED_PATH_ROOT = bytes([0x80 | 4])
 HPACK_INDEXED_STATUS_200 = bytes([0x80 | 8])
 
 SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x8
+
+# 归还流控窗口的门槛：攒够这么多字节才发一帧 WINDOW_UPDATE（详见 FrameReader._return_consumed_window）。
+# 必须明显小于对端的初始窗口（默认 65535），否则欠着的额度会把窗口吃光、把服务端卡死
+WINDOW_UPDATE_THRESHOLD_BYTES = 4096
 
 
 def encode_frame(frame_type: int, flags: int, stream_id: int, payload: bytes = b"") -> bytes:
@@ -93,7 +110,7 @@ def make_get_header_block(path: str) -> bytes:
 
 
 class FrameReader:
-    """把收到的字节按帧切开，只保留本脚本关心的信息。"""
+    """把收到的字节按帧切开，只保留本脚本关心的信息，并顺手把消费掉的正文按流控规则归还。"""
 
     def __init__(self, sock: socket.socket):
         self._socket = sock
@@ -103,7 +120,11 @@ class FrameReader:
         self.status_ok = {}          # stream_id -> 是否看到 :status 200
         self.end_stream = {}         # stream_id -> 收到 END_STREAM 的时刻（算延迟用）
         self.data_length = {}        # stream_id -> 正文长度
+        self.data_frames = {}        # stream_id -> DATA 帧数（判「这条流的正文是否真的跨帧」）
         self.frames_seen = 0
+        self.window_updates_sent = 0
+        self._credit_by_stream = {}  # stream_id -> 已消费但还没归还的字节数
+        self._credit_connection = 0  # 连接级同一笔账：每个 DATA 字节同时扣两级窗口
 
     def feed_more(self, timeout: float) -> bool:
         """读一段字节并解帧；对端关闭或超时返回 False。"""
@@ -116,7 +137,34 @@ class FrameReader:
             return False
         self._buffer.extend(chunk)
         self._parse()
+        self._return_consumed_window()
         return True
+
+    def _return_consumed_window(self) -> None:
+        """把消费掉的 DATA 字节按「流 + 连接」两级归还给服务端，攒够一挡才发。
+
+        RFC 9113 §6.9.1：窗口只在发送方那边减少，接收方消费多少就得还多少，否则服务端迟早停在
+        `SETTINGS_INITIAL_WINDOW_SIZE`（本脚本不协商这项，即默认 65535）之后不再发一个字节——
+        `/big` 的 256 KiB 正文因此在 64 KiB 处收不完。归还动作贴在解帧之后、且在唯一的读入口里：
+        漏一次就是自己把服务端饿死，所以不留给调用方决定。
+        攒到 `WINDOW_UPDATE_THRESHOLD_BYTES` 才发一帧，是为了别把 `/bench` 这类 2 字节正文的
+        热路径变成「每个响应多两帧」——那会让压测量的数字掺进客户端自己的开销。
+        只要这一挡小于对端初值（4096 < 65535），欠着的额度就吃不光窗口，不会自己把服务端卡住。
+        """
+        frames = []
+        for stream_id, increment in list(self._credit_by_stream.items()):
+            if stream_id in self.end_stream:
+                # 已收尾的流不会再有正文，这笔额度留着没用；它占掉的连接级窗口由下面整体归还
+                del self._credit_by_stream[stream_id]
+            elif increment >= WINDOW_UPDATE_THRESHOLD_BYTES:
+                frames.append(encode_frame(FRAME_WINDOW_UPDATE, 0, stream_id, struct.pack(">I", increment)))
+                del self._credit_by_stream[stream_id]
+        if self._credit_connection >= WINDOW_UPDATE_THRESHOLD_BYTES:
+            frames.append(encode_frame(FRAME_WINDOW_UPDATE, 0, 0, struct.pack(">I", self._credit_connection)))
+            self._credit_connection = 0
+        if frames:
+            self.window_updates_sent += len(frames)
+            self._socket.sendall(b"".join(frames))
 
     def _parse(self) -> None:
         while len(self._buffer) >= 9:
@@ -141,8 +189,16 @@ class FrameReader:
                 self.status_ok[stream_id] = HPACK_INDEXED_STATUS_200 in payload
             elif frame_type == FRAME_DATA:
                 self.data_length[stream_id] = self.data_length.get(stream_id, 0) + len(payload)
+                self.data_frames[stream_id] = self.data_frames.get(stream_id, 0) + 1
+                # 流控按 DATA 帧的负载长度记账（§6.9.1），空 DATA 帧不占窗口也就不必归还
+                if payload:
+                    self._credit_by_stream[stream_id] = self._credit_by_stream.get(stream_id, 0) + len(payload)
+                    self._credit_connection += len(payload)
 
-            if flags & FLAG_END_STREAM:
+            # END_STREAM 只在 DATA 与 HEADERS 上有定义（§6.1），且流号 0 不属于任何请求：
+            # SETTINGS 的 ACK 位与 END_STREAM 同为 0x1，按标志位无脑记账会把「服务端 ACK 了我的 SETTINGS」
+            # 记成「流 0 收到完整响应」，从而让「少收一条响应」这条不变式少算一条（实测如此）
+            if stream_id != 0 and frame_type in (FRAME_DATA, FRAME_HEADERS) and flags & FLAG_END_STREAM:
                 self.end_stream[stream_id] = time.monotonic()
 
 
@@ -232,8 +288,13 @@ def main() -> int:
     started = time.monotonic()
 
     def worker(connection_index: int, results: list):
-        results[connection_index] = run_on_connection(
-            arguments.host, arguments.port, arguments.requests, arguments.pipeline, arguments.path)
+        try:
+            results[connection_index] = run_on_connection(
+                arguments.host, arguments.port, arguments.requests, arguments.pipeline, arguments.path)
+        except Exception:
+            # 异常原先逃出线程，results[index] 就停在 None，汇总只剩一行「未知错误」，
+            # 分不清是解帧、发帧还是超时——栈留在结果里，让失败结论能直接定位
+            results[connection_index] = {"error": f"客户端线程异常：{traceback.format_exc()}"}
 
     results = [None] * arguments.connections
     threads = [threading.Thread(target=worker, args=(index, results)) for index in range(arguments.connections)]
@@ -244,12 +305,23 @@ def main() -> int:
     elapsed = time.monotonic() - started
 
     expected_per_connection = arguments.requests
+    multi_frame_stream_count = 0
+    maximum_data_frames_per_stream = 0
+    window_updates_sent = 0
     for index, result in enumerate(results):
-        if result is None or "error" in result:
-            failures.append(f"连接 {index + 1}：{result.get('error') if result else '未知错误'}")
+        if result is None:
+            failures.append(f"连接 {index + 1}：工作线程没有产出结果（线程未启动或被外部终止）")
+            continue
+        if "error" in result:
+            failures.append(f"连接 {index + 1}：{result['error']}")
             continue
         reader = result["reader"]
         all_latencies.extend(result["latencies"])
+        window_updates_sent += reader.window_updates_sent
+        for data_frame_count in reader.data_frames.values():
+            if data_frame_count > 1:
+                multi_frame_stream_count += 1
+            maximum_data_frames_per_stream = max(maximum_data_frames_per_stream, data_frame_count)
         if reader.goaway_count:
             failures.append(f"连接 {index + 1}：出现 {reader.goaway_count} 个 GOAWAY（服务端提前收口）")
         if reader.rst_stream_count:
@@ -260,10 +332,17 @@ def main() -> int:
         bad_status = [stream_id for stream_id, is_ok in reader.status_ok.items() if not is_ok]
         if bad_status:
             failures.append(f"连接 {index + 1}：{len(bad_status)} 条响应的状态不是 200（流号示例 {bad_status[:3]}）")
+        # 同一路由的正文是固定内容：完成流之间的字节数不一致，就是某条被截断（帧边界或窗口记账出错）。
+        # 这里刻意不写死期望长度——/bench 与 /big 走同一条判据，也不必跟着示例的路由改数字
+        body_lengths = {reader.data_length.get(stream_id, 0) for stream_id in reader.end_stream}
+        if len(body_lengths) > 1:
+            failures.append(f"连接 {index + 1}：完成流的正文字节数不一致（出现 {sorted(body_lengths)}）")
 
     total_requests = arguments.connections * expected_per_connection
     throughput = total_requests / elapsed if elapsed > 0 else 0.0
     print(f"  用时 {elapsed:.2f}s，吞吐 {throughput:.0f} 请求/s")
+    print(f"  跨帧正文：{multi_frame_stream_count} 条流的 DATA 帧数 >1（单流最多 {maximum_data_frames_per_stream} 帧），"
+          f"本端归还流控窗口 {window_updates_sent} 帧")
     measurement = {
         "connections": arguments.connections,
         "pipeline": arguments.pipeline,
