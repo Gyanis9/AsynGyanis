@@ -274,6 +274,7 @@ namespace AsynGyanis::Net
         {
             QuicReassemblyBuffer reassembly{};                       ///< 未交付的段：重复与重叠的分片在这里并成覆盖区
             std::uint64_t consumedByteCount{0};                      ///< 上层报回来的「已经消化掉」的字节数，窗口按它抬
+            std::uint64_t discardedByteCount{0};                     ///< 对端复位时作废的未交付字节，上层永远不会为它报回来
             std::uint64_t receivedHighWaterOffset{0};                ///< 见过的最大结束偏移，连接级额度按它算
             std::uint64_t streamLimit{0};                            ///< 本端给这条流的接收上限，也是已宣告出去的值
             std::optional<std::uint64_t> finalOffset{};              ///< 对端收尾后的总长度
@@ -288,7 +289,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 这条流的接收侧是否已再无事可做
-         * @details 收齐、交付完、上层把字节都报了回来、且不再欠对端任何一帧——四条缺一条都不能摘
+         * @details 终局只有两条：FIN 收齐并交付完，或对端复位。此外「上层报回来的 + 复位作废的」要凑齐
+         *          记过的每个字节，且不再欠对端任何一帧——缺一条都不能摘
          * @param stream 待判定的入站流状态
          * @return true 可以摘掉这条记录
          */
@@ -296,7 +298,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 这条流的发送侧是否已再无事可做
-         * @details 带 FIN 的那段已确认（判丢会把它退回未收尾）、待发与在途都空、收口宣告也已落定
+         * @details 带 FIN 的那段已确认（判丢会把它退回未收尾），或本端的 RESET_STREAM 已落定；
+         *          待发与在途都要清空
          * @param stream 待判定的出站流状态
          * @return true 可以摘掉这条记录
          */

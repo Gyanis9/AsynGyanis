@@ -1286,4 +1286,150 @@ namespace AsynGyanis::Net
         static_cast<void>(collect(layer, 1200));
         EXPECT_EQ(layer.trackedStreamCount(), 0U) << "重发确认后仍不摘，就等于没修";
     }
+
+    namespace
+    {
+        /**
+         * @brief 把一条对端双向流推到「交付过一段、随后被对端复位」的状态
+         * @details 复位时乱序缓存里还压着一段不连续的尾部：那段再也不会交付，上层也就永远不会为它
+         *          报回额度
+         * @param layer 被测流层
+         * @param streamId 目标流号
+         * @param deliveredByteCount 连续送达、已交给上层的字节数
+         * @param bufferedByteCount 压在乱序缓存里的尾部字节数（与已送达段之间留 3 字节空洞）
+         * @return std::size_t 上层能为这条流报回来的字节数，即已送达的那一段
+         */
+        std::size_t feedStreamUpToPeerReset(QuicStreamLayer &layer, const std::uint64_t streamId,
+                                            const std::size_t deliveredByteCount, const std::size_t bufferedByteCount)
+        {
+            const std::vector<std::uint8_t> delivered(deliveredByteCount, 'd');
+            EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, 0, delivered)).has_value());
+            const std::uint64_t bufferedOffset = deliveredByteCount + 3U;
+            const std::vector<std::uint8_t> buffered(bufferedByteCount, 'b');
+            EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, bufferedOffset, buffered)).has_value());
+            while (layer.hasDeliveries())
+            {
+                static_cast<void>(layer.takeDelivery());
+            }
+
+            QuicResetStreamFrame reset;
+            reset.streamId = streamId;
+            reset.applicationErrorCode = 0x010c;
+            reset.finalSize = bufferedOffset + bufferedByteCount;
+            EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
+            return deliveredByteCount;
+        }
+
+        /**
+         * @brief 本端往一条对端流写半截响应，随后被对端用 STOP_SENDING 叫停
+         * @param layer 被测流层
+         * @param streamId 目标流号
+         */
+        void stopOurSendSideOn(QuicStreamLayer &layer, const std::uint64_t streamId)
+        {
+            static_cast<void>(layer.writeStreamData(streamId, bytesOf("part"), false));
+            QuicStopSendingFrame stopSending;
+            stopSending.streamId = streamId;
+            stopSending.applicationErrorCode = 0x010b;
+            EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
+        }
+    } // namespace
+
+    /**
+     * @brief 被对端复位的入站流也要能被摘掉：客户端中途取消不该留下永久记账
+     * @details 复位不置 isFinished，只按「收齐并交付完」判就会把这条记录留一辈子。改认
+     *          「报回来的 + 作废的 == 见过的最大偏移」之后，缓存里那段不连续的尾部不再挡路
+     */
+    TEST(QuicStreamLayer, ForgetsIncomingStreamThatPeerReset)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        const std::size_t delivered = feedStreamUpToPeerReset(layer, 0x00, 5, 4);
+        ASSERT_TRUE(layer.hasAbortedStreams()) << "复位没排给上层，用例就没走到被打断这一路";
+
+        layer.releaseReceiveWindow(0x00, delivered);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "作废的那段挡住了结清判定";
+
+        // 摘掉之后迟到的一段与重复的复位都不该把它又激活
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, std::vector<std::uint8_t>(12, 'x'), true)).has_value());
+        QuicResetStreamFrame again;
+        again.streamId = 0x00;
+        again.finalSize = 12;
+        EXPECT_TRUE(layer.onResetStreamFrame(again).has_value());
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "已作废的流上重复的复位又记了一份账";
+    }
+
+    /**
+     * @brief 复位不等于随手可摘：已交付的那一段还没报回额度时，入站记录必须留着
+     * @details 摘早了，上层随后报回来的字节会连同额度一起被丢掉，连接级窗口就此停住
+     */
+    TEST(QuicStreamLayer, KeepsResetIncomingStreamUntilWindowIsReported)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        static_cast<void>(feedStreamUpToPeerReset(layer, 0x00, 5, 4));
+
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "作废量把未报回的额度一起算成了已结清";
+
+        layer.releaseReceiveWindow(0x00, 3);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "只报回一半也不该摘";
+
+        layer.releaseReceiveWindow(0x00, 2);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "凑齐了还不摘，就等于没修";
+    }
+
+    /**
+     * @brief 被对端叫停的出站流，等本端的 RESET_STREAM 落定之后也要被摘掉
+     * @details 客户端不再读响应是公网路上最常见的收场：只认「FIN 已确认」的话这类记录一辈子不摘
+     */
+    TEST(QuicStreamLayer, ForgetsOutgoingStreamOnceResetIsAcknowledged)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        stopOurSendSideOn(layer, 0x00);
+
+        const Collected resetRound = collect(layer, 1200);
+        ASSERT_EQ(framesOfType<QuicResetStreamFrame>(resetRound.frames).size(), 1U) << "叫停之后没编出 RESET_STREAM";
+        ASSERT_EQ(resetRound.announcements.size(), 1U);
+
+        // 宣告还在途：摘了记录，重发就找不到归属了
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "还没落定的 RESET_STREAM 不该被当成已收口";
+
+        layer.onStreamAnnouncementsAcknowledged(resetRound.announcements);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "复位确认后这条出站记录没有留下的理由";
+
+        // 摘掉之后对端的迟到额度与又一次叫停都不该把它建回来
+        QuicMaxStreamDataFrame maxStreamData;
+        maxStreamData.streamId = 0x00;
+        maxStreamData.maximumStreamData = 4096;
+        EXPECT_TRUE(layer.onMaxStreamDataFrame(maxStreamData).has_value());
+        stopOurSendSideOn(layer, 0x00);
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "已作废的流出站侧被迟到帧激活了";
+    }
+
+    /**
+     * @brief 连着跑五十条「以打断收场」的请求，被记着的流数不随请求数增长
+     * @details 每条都同时走两个出口：请求流被对端复位、响应流被对端叫停。少摘任一侧，读数都会随
+     *          轮次往上走
+     */
+    TEST(QuicStreamLayer, KeepsStreamTableBoundedAcrossAbortedRequests)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        constexpr std::size_t requestCount = 50;
+        for (std::size_t requestIndex = 0; requestIndex < requestCount; ++requestIndex)
+        {
+            const std::uint64_t streamId = peerBidirectionalStreamIdOf(requestIndex);
+            const std::size_t delivered = feedStreamUpToPeerReset(layer, streamId, 5, 4);
+            layer.releaseReceiveWindow(streamId, delivered);
+            stopOurSendSideOn(layer, streamId);
+
+            const Collected resetRound = collect(layer, 1200);
+            layer.onStreamAnnouncementsAcknowledged(resetRound.announcements);
+            static_cast<void>(collect(layer, 1200));
+            ASSERT_EQ(layer.trackedStreamCount(), 0U) << "第 " << requestIndex << " 轮之后仍有记录没被摘掉";
+        }
+    }
 } // namespace AsynGyanis::Net

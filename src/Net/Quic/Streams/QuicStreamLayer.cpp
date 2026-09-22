@@ -382,11 +382,18 @@ namespace AsynGyanis::Net
                                                              frame.finalSize, deliveredOffset)));
         }
         stream.finalOffset = frame.finalSize;
+        // 只有第一次复位要结算作废量：缓存已在复位时清空，重复复位上再算会把交付点当成 0
+        if (!stream.isReset)
+        {
+            // 缓存里剩下的那段再也不会交付，上层也就永远不会为它报回额度：记成「作废」，
+            // 回收判据据此才认得出这条被复位的流已经结清
+            stream.discardedByteCount = stream.receivedHighWaterOffset - deliveredOffset;
+            // 乱序缓存作废，但 receivedHighWaterOffset 不动：复位不退还已经占掉的连接级额度（§4.1）
+            stream.reassembly = QuicReassemblyBuffer{};
+        }
         stream.isReset = true;
         // 对端既然已经复位，欠着的停发请求就没有必要再发了（§3.5）
         stream.receiveStop.reset();
-        // 乱序缓存作废，但 receivedHighWaterOffset 不动：复位不退还已经占掉的连接级额度（§4.1）
-        stream.reassembly = QuicReassemblyBuffer{};
         m_abortedStreams.push_back(frame.streamId);
         return {};
     }
@@ -909,14 +916,19 @@ namespace AsynGyanis::Net
 
     bool QuicStreamLayer::isIncomingSettled(const IncomingStream &stream) const noexcept
     {
-        // 收齐且交付完：重组缓存自然空了（isFinished 的定义就是「交付点追上了收尾长度」）
-        if (!stream.isFinished || !stream.isFinalDelivered)
+        // 接收侧的终局只有两条：FIN 收齐并交付完，或对端复位。乱序缓存已被复位清掉，之后不会再有交付
+        if (stream.isFinished && !stream.isFinalDelivered)
         {
             return false;
         }
-        // 上层还没把最后一段字节报回来之前不能摘：releaseReceiveWindow 找不到条目会把这份额度**丢掉**，
-        // 连接级窗口就此不再前进，对端永远等不到 MAX_DATA
-        if (stream.consumedByteCount != stream.receivedHighWaterOffset)
+        if (!stream.isFinished && !stream.isReset)
+        {
+            return false;
+        }
+        // 上层报回来的加上作废掉的，要凑齐本层记过的每一个字节：还欠着就不能摘，否则
+        // releaseReceiveWindow 找不到条目会把这份额度**丢掉**，连接级窗口就此不再前进，
+        // 对端永远等不到 MAX_DATA
+        if (stream.consumedByteCount + stream.discardedByteCount != stream.receivedHighWaterOffset)
         {
             return false;
         }
@@ -926,12 +938,18 @@ namespace AsynGyanis::Net
 
     bool QuicStreamLayer::isOutgoingSettled(const OutgoingStream &stream) const noexcept
     {
-        // FIN 上过线且没被判丢（判丢会把它退回 false 并重排），在途与待发都空：这条流的发送侧再无可为
-        if (!stream.isFinalSentToPeer || !stream.pendingQueue.empty() || !stream.inFlight.empty())
+        if (!stream.pendingQueue.empty() || !stream.inFlight.empty())
         {
             return false;
         }
-        return !stream.sendAbort.has_value() || stream.sendAbort->isAcknowledged;
+        // 还欠对端一条 RESET_STREAM：摘了记录，collectAbortAnnouncements 就找不到它要重发的那位
+        if (stream.sendAbort.has_value() && !stream.sendAbort->isAcknowledged)
+        {
+            return false;
+        }
+        // 两条收尾之路：带 FIN 的那段已上线且没被判丢（判丢会把它退回未收尾），或本端已放弃发送且
+        // 那份 RESET_STREAM 落了定
+        return stream.isFinalSentToPeer || stream.sendAbort.has_value();
     }
 
     void QuicStreamLayer::noteStreamRetired(const std::uint64_t streamId, const bool isReceiveSide)
