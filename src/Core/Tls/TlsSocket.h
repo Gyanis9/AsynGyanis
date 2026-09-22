@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace AsynGyanis::Core
 {
@@ -76,6 +77,7 @@ namespace AsynGyanis::Core
          * @return Task<> 协程，握手完成后返回，失败则抛出异常
          * @throws CoreException 握手失败（对端证书不受信、协议版本不匹配、对端不是 TLS 服务，
          *         或对端在握手期间关闭连接）。调用方应关闭该连接而不是重试
+         * @throws CoreException 本端会话已释放：close() 之后调用，或协程挂起期间被 close()
          */
         Task<> handshake();
 
@@ -86,6 +88,7 @@ namespace AsynGyanis::Core
          * @return Task<ssize_t> 协程，恢复时返回实际读取的字节数（0 表示连接关闭，负数表示错误）
          * @throws CoreException TLS 会话已失效（对端异常关闭等）。对端**正常**关闭会返回 0
          *         而不是抛异常，因此调用方看到的异常一律意味着会话不可再用
+         * @throws CoreException 本端会话已释放：close() 之后调用，或协程挂起期间被 close()
          */
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
@@ -95,6 +98,7 @@ namespace AsynGyanis::Core
          * @param length 缓冲区长度
          * @return Task<ssize_t> 协程，恢复时返回实际发送的字节数（负数表示错误）
          * @throws CoreException TLS 会话已失效（对端异常关闭、连接被重置等）
+         * @throws CoreException 本端会话已释放：close() 之后调用，或协程挂起期间被 close()
          */
         Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
 
@@ -134,6 +138,17 @@ namespace AsynGyanis::Core
         [[nodiscard]] InetAddress localAddress() const;
 
     private:
+        /**
+         * @brief 取用 SSL 对象之前的存活闸门：会话已释放时给出本端原因，而不是让 OpenSSL 去报一个空错误
+         * @details OpenSSL 3 对空 SSL 指针是返回失败而不是崩溃，但它从错误队列里取到的往往是
+         *          `error:00000000:lib(0)::reason(0)` 这种没有任何信息的原文，且各条路径的兜底文案
+         *          一律把原因指向对端——真正的起因是本端被关停。闸门放在循环开头，
+         *          因此每个让出点回到循环时都会被复查，新增让出分支不会漏保护。
+         * @param operationName 报错文案里的操作名前缀（不含「失败」二字），如「TLS 读取」
+         * @throws CoreException 本端 SSL 会话已释放
+         */
+        void requireLiveContext(std::string_view operationName) const;
+
         struct SslDeleter
         {
             void operator()(SSL *ssl) const noexcept

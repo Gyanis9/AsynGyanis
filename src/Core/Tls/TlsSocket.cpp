@@ -39,6 +39,20 @@ namespace AsynGyanis::Core
         return *this;
     }
 
+    void TlsSocket::requireLiveContext(const std::string_view operationName) const
+    {
+        // OpenSSL 3 拿到空 SSL 指针不会崩，而是返回失败并留下一条 `error:00000000:lib(0)::reason(0)`
+        // 之类的空错误；三条路径的兜底文案又把原因写成「对端关闭/会话失效」，与本端被关停这个真实
+        // 起因无关，排查的人会顺着去找对端。抛运行期故障而非用法错误：TcpServer 的空闲清扫与优雅
+        // 收口本就会在协程还挂着的时候关停本端，那是正常时序，不是调用方写错了
+        if (m_ssl == nullptr)
+        {
+            throw CoreException(std::string(operationName) +
+                                    "失败：本端 TLS 会话已释放（close() 之后不能再收发），"
+                                    "请先让在途的收发协程结束、再关闭连接");
+        }
+    }
+
     Task<> TlsSocket::handshake()
     {
         if (m_handshakeDone)
@@ -48,6 +62,9 @@ namespace AsynGyanis::Core
 
         while (true)
         {
+            // 两个等位都会让出调度，恢复时本端可能已被 close()：闸门在循环开头，不走「每条分支各判一次」
+            requireLiveContext("TLS 握手");
+
             // 角色决定握手入口：服务端 SSL_accept、客户端 SSL_connect。用错的那个会让两端
             // 各停在初始状态等对方先说话——客户端用 SSL_accept 时握手永远完不成
             const int ret = m_role == Role::Client ? ::SSL_connect(m_ssl.get()) : ::SSL_accept(m_ssl.get());
@@ -101,6 +118,10 @@ namespace AsynGyanis::Core
 
         while (true)
         {
+            // 本端可能在任何一个让出点上被 close()（等可读、等可写、为写侧让出一次调度），
+            // 恢复后先过闸门再交给 SSL_read
+            requireLiveContext("TLS 读取");
+
             const int ret = SSL_read(m_ssl.get(), buffer, static_cast<int>(length));
             if (ret > 0)
             {
@@ -128,17 +149,12 @@ namespace AsynGyanis::Core
                     {
                         throw CoreException("TLS 读取失败：等写侧推进时定时器不可用（描述符耗尽？）");
                     }
-                    if (m_ssl == nullptr)
-                    {
-                        // 让出期间连接被关停（TcpServer 的清扫/优雅收口都会走到 close()）：
-                        // 恢复后 m_ssl 已是空，再交给 SSL_read 就是空指针解引用
-                        throw CoreException("TLS 读取失败：等对端推进期间连接已被关闭");
-                    }
+                    // 让出期间本端可能被关停，由循环开头的闸门统一复查
                     continue;
                 }
                 if (!co_await m_socket.waitWritable())
                 {
-                    throw CoreException("TLS 握手失败：等待可写期间套接字被关闭");
+                    throw CoreException("TLS 读取失败：等待可写期间套接字被关闭");
                 }
                 continue;
             }
@@ -170,6 +186,10 @@ namespace AsynGyanis::Core
 
         while (true)
         {
+            // 本端可能在任何一个让出点上被 close()（等可写、等可读、为反方向让出一次调度），
+            // 恢复后先过闸门再交给 SSL_write
+            requireLiveContext("TLS 写入");
+
             const int ret = SSL_write(m_ssl.get(), buffer, static_cast<int>(length));
             if (ret > 0)
             {
@@ -188,10 +208,7 @@ namespace AsynGyanis::Core
                     {
                         throw CoreException("TLS 写入失败：等写侧推进时定时器不可用（描述符耗尽？）");
                     }
-                    if (m_ssl == nullptr)
-                    {
-                        throw CoreException("TLS 写入失败：等对端推进期间连接已被关闭");
-                    }
+                    // 让出期间本端可能被关停，由循环开头的闸门统一复查
                     continue;
                 }
                 if (!co_await m_socket.waitWritable())
@@ -215,7 +232,8 @@ namespace AsynGyanis::Core
                 }
                 if (!co_await m_socket.waitReadable())
                 {
-                    throw CoreException("TLS 读取失败：等待可读期间套接字被关闭");
+                    // 前缀按「哪条操作失败」算：这里等的是可读事件，但发起方是写入
+                    throw CoreException("TLS 写入失败：等待可读期间套接字被关闭");
                 }
                 continue;
             }

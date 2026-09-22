@@ -1,4 +1,4 @@
-// TlsSocket 单元测试：构造、移动语义、安全关闭与地址查询（使用仓库预生成证书）
+// TlsSocket 单元测试：构造、移动语义、安全关闭与地址查询，以及会话释放后的拒绝面（使用仓库预生成证书）
 
 #include "Core/Tls/TlsSocket.h"
 
@@ -278,4 +278,88 @@ namespace AsynGyanis::Core
 
         tlsSocket.close();
     }
+
+    namespace
+    {
+        /**
+         * @brief 一条已终结协程的失败观测：异常是不是框架的运行期故障，以及它的文案
+         */
+        struct FailureObservation
+        {
+            bool isCoreException{false}; ///< 是否落在 CoreException 这一支（调用方可用框架基类统一捕获）
+            std::string text{};          ///< 异常文案，用于核对「哪条操作失败」的前缀
+        };
+
+        /**
+         * @brief 取出已终结协程里的异常，一次观测同时给出类型归属与文案
+         * @details 这三条路径都在单次 resume 内就走到抛出点，因此不需要轮询也不需要等 I/O
+         */
+        template <typename TaskType>
+        FailureObservation observeFailure(TaskType &task)
+        {
+            try
+            {
+                static_cast<void>(task.handle().promise().result());
+            } catch (const CoreException &error)
+            {
+                return FailureObservation{true, std::string{error.what()}};
+            } catch (const std::exception &error)
+            {
+                return FailureObservation{false, std::string{error.what()}};
+            }
+            return FailureObservation{};
+        }
+    }
+
+    /**
+     * @brief 会话已释放之后三条入口都报出「本端」原因，而不是 OpenSSL 的空错误加对端猜测
+     * @details 摘掉闸门时实测到的文案是 `TLS 写入失败：error:00000000:lib(0)::reason(0)`
+     *          外加「多半已被对端关闭」——OpenSSL 3 对空指针返回失败而不崩溃，于是排查的人会被
+     *          一条没有内容的错误和一句指错方向的原因带走。因此这里既断言操作前缀（写错的分支
+     *          会把「写入」报成「读取」），也断言闸门那句本端原因
+     */
+    TEST(TlsSocket, EverySslEntryPointRejectsAReleasedSession)
+    {
+        EventLoop  loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int localDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+        // 先释放会话：此后 m_ssl 为空，三条入口都必须在本端把原因说清楚
+        tlsSocket.close();
+
+        char buffer[8]{};
+
+        Task<> handshakeTask = tlsSocket.handshake();
+        handshakeTask.handle().resume();
+        ASSERT_TRUE(handshakeTask.isReady()) << "会话已释放，握手不该挂起等待";
+        const FailureObservation handshakeFailure = observeFailure(handshakeTask);
+        EXPECT_TRUE(handshakeFailure.isCoreException) << handshakeFailure.text;
+        EXPECT_NE(handshakeFailure.text.find("TLS 握手失败："), std::string::npos) << handshakeFailure.text;
+        EXPECT_NE(handshakeFailure.text.find("本端 TLS 会话已释放"), std::string::npos) << handshakeFailure.text;
+
+        Task<ssize_t> receiveTask = tlsSocket.asyncReceive(buffer, sizeof(buffer));
+        receiveTask.handle().resume();
+        ASSERT_TRUE(receiveTask.isReady()) << "会话已释放，读取不该挂起等待";
+        const FailureObservation receiveFailure = observeFailure(receiveTask);
+        EXPECT_TRUE(receiveFailure.isCoreException) << receiveFailure.text;
+        EXPECT_NE(receiveFailure.text.find("TLS 读取失败："), std::string::npos) << receiveFailure.text;
+        EXPECT_NE(receiveFailure.text.find("本端 TLS 会话已释放"), std::string::npos) << receiveFailure.text;
+
+        Task<ssize_t> sendTask = tlsSocket.asyncSend(buffer, sizeof(buffer));
+        sendTask.handle().resume();
+        ASSERT_TRUE(sendTask.isReady()) << "会话已释放，写入不该挂起等待";
+        const FailureObservation sendFailure = observeFailure(sendTask);
+        EXPECT_TRUE(sendFailure.isCoreException) << sendFailure.text;
+        EXPECT_NE(sendFailure.text.find("TLS 写入失败："), std::string::npos) << sendFailure.text;
+        EXPECT_NE(sendFailure.text.find("本端 TLS 会话已释放"), std::string::npos) << sendFailure.text;
+    }
+
 } // namespace AsynGyanis::Core
