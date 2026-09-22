@@ -351,6 +351,13 @@
 
 ### 性能
 
+- **流式响应的分块帧改用响应自带的缓冲**：`HttpResponse::writeChunk()` 原先每段都新建一个串装
+  `<十六进制长度>\r\n<数据>\r\n`，每个正文段付一次堆块加一次整段拷贝——SSE 这类「小段、高频」的
+  出口上，这笔分配会盖过组帧本身的工作量。组帧挪到 `HttpChunkFrame.h` 的 `appendChunkFrame(frame, data)`，
+  与解析侧的 `chunkFramePayload()` 同处一文件、严格互逆（一帧的布局只有一处定义），帧缓冲挂在响应
+  对象上跨段复用。Release 实测每次操作从 1 次分配 / 272 字节降到 **0 次 / 0 字节**，读数由
+  `HotPathAllocations.ChunkFrameAppendAllocations` 钉住。端到端吞吐不变（`router-streaming-get`
+  0.96x、`router-streaming-post-param` 0.99x，都在跨运行噪声内）：省下的是每段一个堆块。
 - **QUIC 的定时节拍不再按在线连接数复制标识**：`runExpiryTicker` 原先每拍先把所有连接的标识
   （20 字节连接标识的十六进制文本，超出 SSO 即落堆）拷成一份快照，再逐条按串查表——防的是
   「挂起期间连接被摘走」，而摘除已收口连接的唯一一处见到 `ActivityGuard` 就跳过，节拍循环在每次
