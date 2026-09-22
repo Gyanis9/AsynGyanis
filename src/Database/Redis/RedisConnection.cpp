@@ -18,7 +18,9 @@
 
 #include "Database/Redis/RedisReplyText.h"
 
+#include <array>
 #include <charconv>
+#include <cstddef>
 #include <limits>
 #include <optional>
 #include <string>
@@ -180,6 +182,99 @@ namespace AsynGyanis::Database
                 argumentLengths.push_back(argumentValue.size());
             }
         }
+
+        /**
+         * @brief 一次命令的参数视图表：窄命令用栈上数组，宽命令才落堆
+         * @details hiredis 的 argv 接口要的是「指针数组 + 长度数组」两个连续序列。常见命令只有
+         *          两三个参数，为它们各取一块堆内存等于每条命令两次 malloc/free；只有宽命令
+         *          （MGET 上千个键）才退回 vector。两条路径都只借调用方的缓冲，不复制参数内容。
+         *          管道那一侧仍用可复用的 vector（buildArgumentViews）：那里的暂存表一次分配摊给整批。
+         * @tparam ArgumentRange 与 buildArgumentViews 同一约束
+         */
+        template<typename ArgumentRange>
+        class ArgumentViewTable
+        {
+        public:
+            /// 栈上能容下的参数个数：取 8 覆盖 SET/GET/EXPIRE/LPUSH 这类命令的常见宽度，
+            /// 两个数组各 8 槽合计 192 字节，摊在栈帧上可以接受
+            static constexpr std::size_t kInlineArgumentCapacity = 8;
+
+            /**
+             * @brief 从参数列表建表：先定容量去向，再一次性填入两个平行数组
+             * @param argumentValues 参数值列表，必须比本对象活得久（表里只有指向它们的指针）
+             */
+            explicit ArgumentViewTable(const ArgumentRange &argumentValues) :
+                m_argumentCount(argumentValues.size())
+            {
+                if (m_argumentCount <= kInlineArgumentCapacity)
+                {
+                    fill(m_inlinePointers, m_inlineLengths, argumentValues);
+                    return;
+                }
+
+                m_heapPointers.resize(m_argumentCount);
+                m_heapLengths.resize(m_argumentCount);
+                fill(m_heapPointers, m_heapLengths, argumentValues);
+            }
+
+            ArgumentViewTable(const ArgumentViewTable &) = delete;
+
+            ArgumentViewTable &operator=(const ArgumentViewTable &) = delete;
+
+            /**
+             * @brief 参数首地址数组，可直接交给 redisCommandArgv
+             * @return const char ** 长度为 count() 的连续数组
+             */
+            [[nodiscard]] const char **pointers() noexcept
+            {
+                return m_argumentCount <= kInlineArgumentCapacity ? m_inlinePointers.data() : m_heapPointers.data();
+            }
+
+            /**
+             * @brief 参数字节长度数组，可直接交给 redisCommandArgv
+             * @return const size_t * 长度为 count() 的连续数组
+             */
+            [[nodiscard]] const size_t *lengths() noexcept
+            {
+                return m_argumentCount <= kInlineArgumentCapacity ? m_inlineLengths.data() : m_heapLengths.data();
+            }
+
+            /**
+             * @brief 参数个数
+             * @return std::size_t 与构造时传入的列表长度一致
+             */
+            [[nodiscard]] std::size_t count() const noexcept
+            {
+                return m_argumentCount;
+            }
+
+        private:
+            /**
+             * @brief 把参数逐条落成「指针 + 长度」两个平行数组
+             * @tparam PointerRange 承接指针的容器（栈数组或 vector）
+             * @tparam LengthRange 承接长度的容器
+             * @param pointers 目标指针数组，槽位须已就位
+             * @param lengths 目标长度数组，槽位须已就位
+             * @param argumentValues 参数值列表
+             */
+            template<typename PointerRange, typename LengthRange>
+            static void fill(PointerRange &pointers, LengthRange &lengths, const ArgumentRange &argumentValues)
+            {
+                std::size_t index = 0;
+                for (const auto &argumentValue: argumentValues)
+                {
+                    pointers[index] = argumentValue.data();
+                    lengths[index]  = argumentValue.size();
+                    ++index;
+                }
+            }
+
+            std::size_t                                       m_argumentCount;                 ///< 参数个数，决定走栈还是走堆
+            std::array<const char *, kInlineArgumentCapacity> m_inlinePointers{};               ///< 栈上指针数组
+            std::array<size_t, kInlineArgumentCapacity>       m_inlineLengths{};                ///< 栈上长度数组
+            std::vector<const char *>                         m_heapPointers{};                 ///< 宽命令的指针数组，窄命令下不分配
+            std::vector<size_t>                               m_heapLengths{};                  ///< 宽命令的长度数组，窄命令下不分配
+        };
     } // namespace
 
     RedisConnection::RedisConnection(const ConnectionConfig &configuration)
@@ -583,14 +678,13 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        std::vector<const char *> argumentPointers;
-        std::vector<size_t>       argumentLengths;
-        buildArgumentViews(argumentValues, argumentPointers, argumentLengths);
+        // 参数表落在栈上数组里（超出 8 个才退回堆）：单条命令不再为两个平行数组各取一次内存
+        ArgumentViewTable<std::span<const std::string_view>> argumentViews(argumentValues);
 
         // 走 argv 接口而非格式化接口：参数内容里的 '%' 永远不会被解释成格式说明符，
         // '\0' 也按长度完整传递——这是 hiredis 唯一的二进制安全发送路径
-        void *rawReplyPointer = redisCommandArgv(m_redisContext, static_cast<int>(argumentPointers.size()),
-                                                 argumentPointers.data(), argumentLengths.data());
+        void *rawReplyPointer = redisCommandArgv(m_redisContext, static_cast<int>(argumentViews.count()),
+                                                 argumentViews.pointers(), argumentViews.lengths());
         auto *serverReply = static_cast<redisReply *>(rawReplyPointer);
         if (serverReply == nullptr)
         {

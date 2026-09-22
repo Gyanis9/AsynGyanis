@@ -9,6 +9,7 @@
 // - CommandErrorFailsWithLocalizedReason（连接级：nullptr + 中文原因）
 // - PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
 // - PipelineAcrossRisingAndFallingArgumentCountsKeepsCommandsIntact（参数条数升降交替仍逐条对齐）
+// - SingleCommandArgumentTableHoldsAcrossInlineCapacity（单命令参数表在栈上容量两侧都等值送达）
 // - ResetSessionStateDiscardsPendingPipelineCommands
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
@@ -486,6 +487,39 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(replies[4]->getValue(0)), "10");
         EXPECT_EQ(std::get<std::string>(replies[4]->getValue(1)), "20");
         EXPECT_EQ(std::get<std::string>(replies[4]->getValue(2)), "30");
+    }
+
+    /**
+     * @brief 钉住单命令路径的参数表在「栈上容量」两侧都不改变送达结果
+     * @details 发送前的「指针 + 长度」数组现在放在栈上（至多 8 个参数），超出才退回堆。
+     *          两侧各钉一条：参数被接错、丢失或多送都会体现在长度与顺序上，
+     *          所以既验 LLEN 也按 LRANGE 逐项比对
+     */
+    TEST_F(RedisIntegrationTest, SingleCommandArgumentTableHoldsAcrossInlineCapacity)
+    {
+        const std::string inlineKey = makeKey("inline-args");
+        const std::string heapKey   = makeKey("heap-args");
+
+        // 8 个参数（命令名 + 键 + 6 个值）：正好落在栈上容量之内
+        ASSERT_TRUE(m_connection->executeCommand({"LPUSH", inlineKey, "a1", "a2", "a3", "a4", "a5", "a6"}) != nullptr)
+            << m_connection->lastError();
+        // 12 个参数：超出容量，走堆上的兜底数组
+        ASSERT_TRUE(m_connection->executeCommand({"LPUSH", heapKey, "b1", "b2", "b3", "b4", "b5", "b6",
+                                                 "b7", "b8", "b9", "b10"}) != nullptr)
+            << m_connection->lastError();
+
+        const std::optional<DatabaseValue> inlineLength = runScalar({"LLEN", inlineKey});
+        const std::optional<DatabaseValue> heapLength   = runScalar({"LLEN", heapKey});
+        ASSERT_TRUE(inlineLength.has_value() && heapLength.has_value());
+        EXPECT_EQ(std::get<std::int64_t>(inlineLength.value()), 6) << "栈上参数表把六个值送丢了";
+        EXPECT_EQ(std::get<std::int64_t>(heapLength.value()), 10) << "堆上参数表把十个值送丢了";
+
+        // 逐项比对顺序：LPUSH 逐个插到队头，因此读出应为写入的逆序
+        const std::unique_ptr<DatabaseResult> reversed = m_connection->executeCommand({"LRANGE", heapKey, "0", "-1"});
+        ASSERT_NE(reversed, nullptr) << m_connection->lastError();
+        ASSERT_EQ(reversed->columnCount(), 10U);
+        EXPECT_EQ(std::get<std::string>(reversed->getValue(0)), "b10");
+        EXPECT_EQ(std::get<std::string>(reversed->getValue(9)), "b1");
     }
 
     /**
