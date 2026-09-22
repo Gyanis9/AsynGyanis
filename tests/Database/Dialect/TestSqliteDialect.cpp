@@ -4,6 +4,7 @@
 // - 标识符引用与内部引号转义
 // - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
 // - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含空段的点号文本 / 越过短字符串缓冲的长名 / 含引号列名）
+// - 空字段名与空表名在翻译阶段就被拒绝（残缺 SQL 不该留给服务端去报）
 // - FROM 与表别名
 // - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
 // - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
@@ -199,6 +200,65 @@ TEST(SqliteDialectSelect, QualifiedNameWithEmptySegmentIsPassedThrough)
     // 空段不是合法标识符：把它引用成 "" 会造出一个无名列，与「这压根不是限定名」是两回事。
     // 整段按表达式交给数据库报错，比在这一层替它猜一个意思更可靠
     EXPECT_EQ(statement.sql, "SELECT users., .id, a..b FROM \"users\"");
+}
+
+/**
+ * @brief 钉住「整个字段名是空串」与「表名是空串」在翻译阶段就被拒绝
+ * @details 这与上一条不同：含空段的点号文本还是一个表达式，而空文本什么都不是——
+ *          按表达式原样输出等于渲染出一个缺项（SELECT  FROM "users"、WHERE  = ?），
+ *          错误要到服务端才报出来且指不出是哪一项空了。反向对照一并钉住：
+ *          通配符与表达式列仍按原样通过，这条判据不能扩成「凡形状特别就拒」。
+ */
+TEST(SqliteDialectSelect, EmptyFieldNameAndEmptyTableNameAreRejected)
+{
+    const SqliteDialect dialect;
+
+    const auto makeNode = [](const std::string_view tableName)
+    {
+        QueryNode node;
+        node.tableName = std::string(tableName);
+        return node;
+    };
+
+    // SELECT 列表里的空项
+    {
+        QueryNode node        = makeNode("users");
+        node.selectColumns    = {"id", ""};
+        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+    }
+
+    // GROUP BY 里的空字段
+    {
+        QueryNode node    = makeNode("users");
+        node.groupBy      = {FieldReference{""}};
+        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+    }
+
+    // 条件左值是空字段
+    {
+        QueryNode node            = makeNode("users");
+        node.whereConditions.push_back(WhereCondition{
+                .left  = FieldReference{""},
+                .op    = SqlOperator::Eq,
+                .right = ParameterValue{static_cast<std::int64_t>(1)}
+        });
+        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+    }
+
+    // 空表名：引用成 "" 是一个合法但必定不存在的名字，报出的 "no such table" 指不到真因
+    {
+        const QueryNode node = makeNode("");
+        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+    }
+
+    // 反向对照：通配符与表达式列照常通过
+    {
+        QueryNode node        = makeNode("users");
+        node.selectColumns    = {"*", "COUNT(*)"};
+        node.groupBy.push_back(FieldReference{"users.name"});
+        const SqlStatement statement = dialect.translate(node);
+        EXPECT_NE(statement.sql.find("SELECT *, COUNT(*)"), std::string::npos) << statement.sql;
+    }
 }
 
 /**

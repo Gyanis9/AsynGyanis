@@ -220,6 +220,15 @@ namespace AsynGyanis::Database
 
     void StandardSqlDialect::appendFieldReference(std::string &sqlText, const std::string_view fieldText) const
     {
+        // 空文本既不是列名也不是表达式：交给下面的表达式分支会「什么都不输出」，
+        // 产出 SELECT  FROM "t" 这种要到服务端才报语法错误的语句，指不出是哪一项空了
+        if (fieldText.empty())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName())
+                                                + " 方言：字段名为空，无法生成引用。SELECT 列表、GROUP BY、ORDER BY 与条件左值"
+                                                  "都必须是非空的列名或表达式（如 \"id\"、\"t.id\"、\"COUNT(*)\"）");
+        }
+
         // 单个通配符不是标识符：加引用会得到一个名为 "*" 的列，语义完全不同
         if (fieldText == "*")
         {
@@ -270,6 +279,15 @@ namespace AsynGyanis::Database
 
     void StandardSqlDialect::appendTableReference(std::string &sqlText, const Queryable::QueryNode &query) const
     {
+        // 空表名加引用会得到 `""` / "" 这样一个合法但必定不存在的标识符，
+        // 报出来的错在服务器侧（"no such table"），指不到「查询树根本没填表名」这个真因
+        if (query.tableName.empty())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName())
+                                                + " 方言：查询树的表名为空，无法生成语句。请填写 QueryNode::tableName"
+                                                  "（Queryable 走 TableSchema<T>::kTableName，特化时别留空）");
+        }
+
         appendQuotedIdentifier(sqlText, query.tableName);
         if (!query.tableAlias.empty())
         {
