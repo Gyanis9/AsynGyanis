@@ -2,6 +2,7 @@
 #include "Platform/System/Process.h"
 
 #include "Platform/System/PlatformError.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <gtest/gtest.h>
 
@@ -183,6 +184,89 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(exitCode.has_value()) << "移动之后观察不到子进程退出";
         EXPECT_EQ(*exitCode, 5);
     }
+
+#if ASYN_PLATFORM_WIN32
+    namespace
+    {
+        /// 标记「这一份子进程是被父侧以无控制台方式启出来的探针」：内层用例据此区分角色
+        constexpr const char *kDetachedProbeEnvironmentVariable = "ASYN_DETACHED_PROBE";
+
+        /// 内层探针跑的用例名，父侧按它筛出这一条（拼进宽字符命令行，故直接给宽字面量）
+        constexpr const wchar_t *kDetachedProbeFilter = L"Process.SpawnsChildWithoutConsoleOnDetachedHost";
+
+        /// 自身路径缓冲的长度：给足 4 倍 MAX_PATH，长路径前缀也放得下
+        constexpr DWORD kExecutablePathBufferLength = 4 * MAX_PATH;
+    } // namespace
+
+    /**
+     * @brief 钉住（Windows）：宿主没有控制台时也要起得来子进程
+     * @details 服务、GUI 子系统与被 DETACHED_PROCESS 派出来的宿主都没有控制台，此时三个标准句柄
+     *          全是 NULL。把 NULL 塞进 PROC_THREAD_ATTRIBUTE_HANDLE_LIST，CreateProcessW 当场报
+     *          ERROR_INVALID_PARAMETER(87)，于是「派生 worker」这条路径在这种宿主上必然失败。
+     *          本用例不假装自己没有控制台：它把同一枚二进制以 DETACHED_PROCESS 再启一份，由那一份
+     *          走被测路径，父侧只等有界时限内的退出码（不赌时序）。
+     */
+    TEST(Process, SpawnsChildWhenHostHasNoConsole)
+    {
+        wchar_t executablePathText[kExecutablePathBufferLength] = {};
+        const DWORD pathLength = ::GetModuleFileNameW(nullptr, executablePathText, kExecutablePathBufferLength);
+        ASSERT_GT(pathLength, 0U) << "取不到自身路径，错误码 " << ::GetLastError();
+        ASSERT_LT(pathLength, kExecutablePathBufferLength) << "自身路径被截断，本用例失去前提";
+
+        static_cast<void>(::SetEnvironmentVariableA(kDetachedProbeEnvironmentVariable, "1"));
+
+        std::wstring commandLine;
+        commandLine += L'"';
+        commandLine += executablePathText;
+        commandLine += L"\" --gtest_filter=";
+        commandLine += kDetachedProbeFilter;
+
+        STARTUPINFOW    startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        PROCESS_INFORMATION processInformation{};
+        const BOOL isCreated = ::CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS,
+                                                nullptr, nullptr, &startupInfo, &processInformation);
+        static_cast<void>(::SetEnvironmentVariableA(kDetachedProbeEnvironmentVariable, nullptr));
+        ASSERT_TRUE(isCreated != 0) << "探针子进程没起来，错误码 " << ::GetLastError();
+
+        // 句柄在断言之后统一释放：中途一律用 EXPECT 而不是 ASSERT，免得提前返回把句柄漏在那里
+        const DWORD waitResult = ::WaitForSingleObject(processInformation.hProcess, 60000);
+        DWORD      childExitCode = 0;
+        static_cast<void>(::GetExitCodeProcess(processInformation.hProcess, &childExitCode));
+        ::CloseHandle(processInformation.hProcess);
+        ::CloseHandle(processInformation.hThread);
+
+        EXPECT_EQ(waitResult, WAIT_OBJECT_0) << "无控制台的探针子进程没在时限内退出";
+        EXPECT_EQ(static_cast<int>(childExitCode), 0)
+                << "探针子进程非零退出，说明无控制台宿主里 Process::spawn 仍然失败（详见该用例输出）";
+    }
+
+    /**
+     * @brief 无控制台那一侧的实际断言，只由上一条用例以 DETACHED_PROCESS 启起来执行
+     * @details 角色靠环境变量区分，且前提写成硬断言：这一份若其实有控制台就当场红，不允许
+     *          「悄悄跳过也算通过」把父侧的判据变成假证据。单独跑本用例时（全量清单会选到它）
+     *          按 SKIP 处理，因为这条路径的成立条件由父侧负责构造。
+     */
+    TEST(Process, SpawnsChildWithoutConsoleOnDetachedHost)
+    {
+        const auto probeMark = ProcessInfo::environmentVariable(kDetachedProbeEnvironmentVariable);
+        if (!probeMark.has_value())
+        {
+            GTEST_SKIP() << "本用例只在由上一条用例以 DETACHED_PROCESS 启起来时才有意义";
+        }
+
+        EXPECT_EQ(::GetConsoleWindow(), nullptr) << "本用例要在没有控制台的宿主里跑，否则测不到那条路径";
+
+        const ExitCommand     command = makeExitCommand(3);
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        ASSERT_TRUE(handle.isValid()) << "无控制台宿主里 spawn 失败，错误码 " << PlatformError::lastErrorCode()
+                                      << "（87 即 ERROR_INVALID_PARAMETER，指向句柄清单里的空句柄）";
+
+        const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
+        ASSERT_TRUE(exitCode.has_value()) << "子进程没在时限内退出";
+        EXPECT_EQ(*exitCode, 3);
+    }
+#endif
 
 #if !ASYN_PLATFORM_WIN32
     /**

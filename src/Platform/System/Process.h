@@ -117,6 +117,8 @@ namespace AsynGyanis::Platform
          * @brief 启动一个子进程
          * @param options 启动参数
          * @return Handle 子进程句柄；启动失败时 isValid() 为 false，原因见 PlatformError::lastErrorCode()
+         * @note Windows 上子进程只继承「当下真实存在」的标准句柄：套接字这类可继承句柄不会传下去，
+         *       宿主没有控制台（服务、GUI 子系统、被 DETACHED_PROCESS 派出来）时也照样能派生
          * @note POSIX 上子进程 exec 失败时以 127 退出（这是本层的约定，调用方据此区分「exec 没起来」
          *       与业务自己的退出码；POSIX 的 shell 惯例与之相同）
          * @note Linux 上子进程带着「本进程一退出就收 SIGTERM」的约定（exec 之后仍然有效）：编排者被

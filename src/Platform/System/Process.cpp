@@ -174,34 +174,63 @@ namespace AsynGyanis::Platform
             commandLine += quoteArgument(argument);
         }
 
-        // 句柄继承收窄到「只带三个标准句柄」：bInheritHandles=TRUE 会把父进程所有可继承句柄
+        // 句柄继承收窄到「只带标准输入/输出/错误」：bInheritHandles=TRUE 会把父进程所有可继承句柄
         // 复制进子进程（Winsock 套接字默认就是可继承的），监听/连接套接字因此会被子进程
-        // 一直持有，父进程退出后端口也不释放。STARTUPINFOEX 的句柄清单是唯一能限定继承集合的机制
-        const HANDLE standardHandles[] = {::GetStdHandle(STD_INPUT_HANDLE), ::GetStdHandle(STD_OUTPUT_HANDLE),
-                                          ::GetStdHandle(STD_ERROR_HANDLE)};
-
-        // 属性清单要先问出大小（首次调用必以 ERROR_INSUFFICIENT_BUFFER 失败），再按该大小分配。
-        // 缓冲用 uint64_t 数组而非字节数组：清单要求按指针宽度对齐
-        SIZE_T attributeListSize = 0;
-        static_cast<void>(::InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeListSize));
-        std::vector<std::uint64_t> attributeListStorage((attributeListSize + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t));
-        auto *attributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeListStorage.data());
-        if (attributeListSize == 0 || ::InitializeProcThreadAttributeList(attributeList, 1, 0, &attributeListSize) == 0)
+        // 一直持有，父进程退出后端口也不释放。STARTUPINFOEX 的句柄清单是唯一能限定继承集合的机制。
+        // 清单里不许出现空句柄：没有控制台的宿主（服务、GUI 子系统、被 DETACHED_PROCESS 派出来的
+        // 进程）里 GetStdHandle 给的是 NULL，整份交上去只换来 ERROR_INVALID_PARAMETER(87)，
+        // 「派生 worker」这条路径在那类宿主上等于永远起不来——所以先逐个筛过再决定建不建清单
+        std::vector<HANDLE> inheritableStandardHandles;
+        for (const DWORD standardSlot: {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE})
         {
-            PlatformError::setLastErrorCode(static_cast<int>(::GetLastError()));
-            return Handle{};
+            const HANDLE standardHandle = ::GetStdHandle(standardSlot);
+            if (standardHandle != nullptr && standardHandle != INVALID_HANDLE_VALUE)
+            {
+                inheritableStandardHandles.push_back(standardHandle);
+            }
         }
 
-        STARTUPINFOEXW startupInfo{};
-        startupInfo.StartupInfo.cb   = sizeof(startupInfo);
-        startupInfo.lpAttributeList  = attributeList;
-        if (::UpdateProcThreadAttribute(attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, const_cast<HANDLE *>(standardHandles),
-                                        sizeof(standardHandles), nullptr, nullptr) == 0)
+        STARTUPINFOEXW               startupInfo{};
+        std::vector<std::uint64_t>   attributeListStorage;
+        LPPROC_THREAD_ATTRIBUTE_LIST attributeList = nullptr;
+        BOOL                         inheritHandles = FALSE;
+        DWORD                        creationFlags = 0;
+
+        if (!inheritableStandardHandles.empty())
         {
-            const int failureCode = static_cast<int>(::GetLastError());
-            ::DeleteProcThreadAttributeList(attributeList);
-            PlatformError::setLastErrorCode(failureCode);
-            return Handle{};
+            // 属性清单要先问出大小（首次调用必以 ERROR_INSUFFICIENT_BUFFER 失败），再按该大小分配。
+            // 缓冲用 uint64_t 数组而非字节数组：清单要求按指针宽度对齐
+            SIZE_T attributeListSize = 0;
+            static_cast<void>(::InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeListSize));
+            attributeListStorage.assign((attributeListSize + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t), 0);
+            attributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeListStorage.data());
+            if (attributeListSize == 0 || ::InitializeProcThreadAttributeList(attributeList, 1, 0, &attributeListSize) == 0)
+            {
+                attributeList = nullptr;
+                PlatformError::setLastErrorCode(static_cast<int>(::GetLastError()));
+                return Handle{};
+            }
+
+            if (::UpdateProcThreadAttribute(attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inheritableStandardHandles.data(),
+                                            inheritableStandardHandles.size() * sizeof(HANDLE), nullptr, nullptr) == 0)
+            {
+                const int failureCode = static_cast<int>(::GetLastError());
+                ::DeleteProcThreadAttributeList(attributeList);
+                attributeList = nullptr;
+                PlatformError::setLastErrorCode(failureCode);
+                return Handle{};
+            }
+
+            startupInfo.StartupInfo.cb  = sizeof(startupInfo);
+            startupInfo.lpAttributeList = attributeList;
+            creationFlags               = EXTENDED_STARTUPINFO_PRESENT;
+            inheritHandles              = TRUE;
+        }
+        else
+        {
+            // 一个标准句柄都没有（无控制台的宿主）：不建清单，也干脆不开继承——此时没有值得传下去的
+            // 句柄，而「开继承却不带清单」会把父进程全部可继承句柄整个交出去，那正是清单要防的事
+            startupInfo.StartupInfo.cb = sizeof(STARTUPINFOW);
         }
 
         PROCESS_INFORMATION processInformation{};
@@ -213,11 +242,14 @@ namespace AsynGyanis::Platform
         // 含空格的完整路径因此不会被拆成两段。
         // 只传命令行串（不带独占的所有权保证）不影响子进程按路径映射映像；lpCommandLine 需要可写缓冲，
         // 这里给一份自己的副本
-        const BOOL isCreated = ::CreateProcessW(nullptr, wideCommandLine.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT,
+        const BOOL isCreated = ::CreateProcessW(nullptr, wideCommandLine.data(), nullptr, nullptr, inheritHandles, creationFlags,
                                                 nullptr, nullptr, &startupInfo.StartupInfo, &processInformation);
         const int  creationErrorCode = isCreated != 0 ? 0 : static_cast<int>(::GetLastError());
-        // 属性清单只在 CreateProcessW 调用期间被读取，调用返回即可释放
-        ::DeleteProcThreadAttributeList(attributeList);
+        // 属性清单只在 CreateProcessW 调用期间被读取，调用返回即可释放；没建清单时不释放空指针
+        if (attributeList != nullptr)
+        {
+            ::DeleteProcThreadAttributeList(attributeList);
+        }
         if (isCreated == 0)
         {
             PlatformError::setLastErrorCode(creationErrorCode);
