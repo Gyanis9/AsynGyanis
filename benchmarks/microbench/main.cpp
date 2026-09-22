@@ -1127,6 +1127,49 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 派发一整趟（Router::route）：会话把请求交给处理函数走一遍管道的成本。两例分别钉
+    // 「命中精确路由」与「扫过模式候选并收下 :id」——参数收集表按候选新建还是跨候选复用，
+    // 显形的正是后一例：候选每多扫一条，旧写法就多一张空哈希表（MSVC 上每张两次堆块取还）
+    Net::Router dispatchRouter;
+    const auto createdHandler = []([[maybe_unused]] Net::HttpRequest &request,
+                                   Net::HttpResponse &response) -> Core::Task<void>
+    {
+        response.setStatus(201);
+        co_return;
+    };
+    dispatchRouter.get("/health", createdHandler);
+    dispatchRouter.get("/i/:id", createdHandler);
+    dispatchRouter.get("/o/:id/status", createdHandler);
+    Net::HttpRequest dispatchRequest;
+    Net::HttpResponse dispatchResponse;
+    const auto routeOnce = [&dispatchRouter, &dispatchRequest, &dispatchResponse](const std::string_view uri)
+    {
+        // 对象按连接复用：每轮 reset 后按新报文填回，URI 短到进小串内联，不额外造堆块
+        dispatchRequest.reset();
+        dispatchRequest.setMethod(Net::HttpMethod::GET);
+        dispatchRequest.setUri(std::string(uri));
+        dispatchRequest.setHttpVersion("HTTP/1.1");
+        dispatchResponse.reset();
+        Core::Task<> routeTask = dispatchRouter.route(dispatchRequest, dispatchResponse);
+        routeTask.handle().resume();
+        // 状态码由处理函数写下：没跑完或没命中都会留成别的值，自检据此判失败
+        return routeTask.isReady() && dispatchResponse.status() == 201 ? std::size_t{1} : std::size_t{0};
+    };
+    measureCase(
+            "router-route-exact",
+            [&routeOnce]
+            {
+                return routeOnce("/health");
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "router-route-pattern",
+            [&routeOnce]
+            {
+                return routeOnce("/o/42/status");
+            },
+            results, checksum, failureCount);
+
     // WebSocket permessage-deflate 单条消息压缩：会话每发一条压缩消息都要走一次。改前每条都
     // deflateInit2/End（重建约 240KB 内部状态，短消息上比压缩本身还贵），改后复用 thread_local 流、
     // 每条 deflateReset。同一线程反复调用正落在复用路径上，量的就是稳态
