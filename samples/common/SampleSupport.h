@@ -23,7 +23,9 @@
 #include <charconv>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <format>
 #include <iostream>
 #include <memory>
 #include <print>
@@ -131,37 +133,61 @@ namespace AsynGyanis::Samples
     }
 
     /**
+     * @brief 取一个「--选项 数值」型命令行选项的取值，缺失或非法时当场终止
+     * @param argc 实参个数
+     * @param argv 实参表
+     * @param optionIndex 选项在实参表中的下标，取值位于 optionIndex + 1
+     * @param optionName 选项名，只用于报错文案
+     * @param minimumValue 允许的最小值（含）
+     * @param maximumValue 允许的最大值（含）
+     * @return std::uint64_t 落在区间内的取值
+     * @details 三条硬判据各挡一种静默变形：整串必须是纯十进制无符号数（负数因此判非法，不会绕回大数）、
+     *          必须落在区间内（99999 不会绕回 34463）、选项后面必须有值（漏写取值不当成「没给这个选项」）。
+     *          非法一律以退出码 2 终止而不回落默认值：脚本分发了哪个端口与程序实际听在哪个端口必须是
+     *          同一件事，否则「另一个配置跑成功」也会留下一行 PASS。
+     */
+    inline std::uint64_t readNumericOption(const int argc, char **argv, const int optionIndex, const std::string_view optionName,
+                                           const std::uint64_t minimumValue, const std::uint64_t maximumValue)
+    {
+        const std::string valueRangeText = std::format("{}-{}", minimumValue, maximumValue);
+        if (optionIndex + 1 >= argc)
+        {
+            std::print(stderr, "启动参数非法：{} 后面缺少取值。请补上一个 {} 之间的十进制整数，"
+                               "或整个去掉该选项让程序按默认值运行\n", optionName, valueRangeText);
+            std::exit(2);
+        }
+
+        const std::string_view valueText(argv[optionIndex + 1]);
+        std::uint64_t          parsedValue = 0;
+        const auto             parseResult = std::from_chars(valueText.data(), valueText.data() + valueText.size(), parsedValue);
+        if (parseResult.ec != std::errc{} || parseResult.ptr != valueText.data() + valueText.size()
+            || parsedValue < minimumValue || parsedValue > maximumValue)
+        {
+            std::print(stderr, "启动参数非法：{} 的值「{}」不是一个 {} 之间的十进制整数。"
+                               "请改成区间内的取值，或整个去掉该选项让程序按默认值运行\n",
+                       optionName, valueText, valueRangeText);
+            std::exit(2);
+        }
+        return parsedValue;
+    }
+
+    /**
      * @brief 命令行里取 --port：脚本会给每个示例分发一个明确端口
      * @param argc 实参个数
      * @param argv 实参表
      * @param offset 没给 --port 时用的默认端口偏移
      * @return std::uint16_t 端口
-     * @details 取值非法时当场以退出码 2 终止而不回落到默认端口：示例的客户端与服务端共用这一个值，
-     *          回落会让整套自检照样全绿，脚本里的端口笔误就成了假证据。
+     * @details 取值非法（含选项在末尾却没有值）时当场以退出码 2 终止而不回落到默认端口：示例的客户端
+     *          与服务端共用这一个值，回落会让整套自检照样全绿，脚本里的端口笔误就成了假证据。
      */
     inline std::uint16_t readPortArgument(const int argc, char **argv, const std::uint16_t offset)
     {
-        for (int index = 1; index + 1 < argc; ++index)
+        for (int index = 1; index < argc; ++index)
         {
-            if (std::string_view(argv[index]) != "--port")
+            if (std::string_view(argv[index]) == "--port")
             {
-                continue;
+                return static_cast<std::uint16_t>(readNumericOption(argc, argv, index, "--port", 1U, 65535U));
             }
-
-            // 整串必须是 1-65535 的十进制数。这里刻意不用 atoi：它把 "abc" 折成 0、把 99999 交给
-            // uint16 强转回绕成 34463，两种都会让示例「在另一个端口上跑成功」
-            const std::string_view portText(argv[index + 1]);
-            std::uint32_t          parsedPort = 0;
-            const auto             parseResult =
-                    std::from_chars(portText.data(), portText.data() + portText.size(), parsedPort);
-            if (parseResult.ec != std::errc{} || parseResult.ptr != portText.data() + portText.size()
-                || parsedPort == 0U || parsedPort > 65535U)
-            {
-                std::print(stderr, "示例启动参数非法：--port 的值「{}」不是一个 1-65535 的十进制端口号。"
-                                   "请改成合法端口，或整个去掉 --port 让示例自行取一个专用端口\n", portText);
-                std::exit(2);
-            }
-            return static_cast<std::uint16_t>(parsedPort);
         }
         return samplePort(offset);
     }

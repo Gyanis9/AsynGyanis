@@ -27,10 +27,12 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/System/CpuAffinity.h"
 #include "Platform/System/ProcessInfo.h"
+#include "common/SampleSupport.h"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -270,12 +272,26 @@ int main(int argc, char **argv)
     {
         if (std::string_view arg = argv[i]; arg == "--host" && i + 1 < argc)
             host = argv[++i];
-        else if (arg == "--port" && i + 1 < argc)
-            port = static_cast<uint16_t>(std::stoi(argv[++i]));
-        else if (arg == "--threads" && i + 1 < argc)
-            threads = static_cast<unsigned>(std::stoi(argv[++i]));
-        else if (arg == "--max-connections-per-ip" && i + 1 < argc)
-            maxConnectionsPerIp = static_cast<std::size_t>(std::stoull(argv[++i]));
+        // 数值选项一律走同一个严格解析器：原先逐条 std::stoi/std::stoull 有三副面孔——非数字直接抛出
+        // （整个进程无一句解释地终止）、超范围经强转绕回（--port 99999 静默听在 34463）、负数绕回极大值
+        // （--threads -4 变成 42 亿条线程），而选项排在末尾却没有值时又被当成「没给这个选项」跳过
+        else if (arg == "--port")
+        {
+            port = static_cast<uint16_t>(Samples::readNumericOption(argc, argv, i, "--port", 1U, 65535U));
+            ++i;
+        }
+        else if (arg == "--threads")
+        {
+            // 上限 4096：线程数按可用核数量级取，超出这个数只会把机器起爆，出现即视为笔误
+            threads = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, "--threads", 0U, 4096U));
+            ++i;
+        }
+        else if (arg == "--max-connections-per-ip")
+        {
+            maxConnectionsPerIp = static_cast<std::size_t>(
+                    Samples::readNumericOption(argc, argv, i, "--max-connections-per-ip", 0U, std::numeric_limits<std::uint64_t>::max()));
+            ++i;
+        }
         else if (arg == "--https")
             useHttps = true;
         else if (arg == "--h2c")
@@ -298,16 +314,24 @@ int main(int argc, char **argv)
             compressResponses = true;
             compressInLoop    = true;
         }
-        else if (arg == "--max-inflight-body" && i + 1 < argc)
-            maxInflightBodyBytes = static_cast<std::size_t>(std::stoull(argv[++i]));
+        else if (arg == "--max-inflight-body")
+        {
+            maxInflightBodyBytes = static_cast<std::size_t>(
+                    Samples::readNumericOption(argc, argv, i, "--max-inflight-body", 0U, std::numeric_limits<std::uint64_t>::max()));
+            ++i;
+        }
         else if (arg == "--cert" && i + 1 < argc)
             certificateFile = argv[++i];
         else if (arg == "--key" && i + 1 < argc)
             keyFile = argv[++i];
         else if (arg == "--config" && i + 1 < argc)
             configFile = argv[++i];
-        else if (arg == "--workers" && i + 1 < argc)
-            workerProcessCount = static_cast<std::size_t>(std::stoull(argv[++i]));
+        else if (arg == "--workers")
+        {
+            // 上限与 --threads 同一条理由：这么多进程只会把机器起爆，出现即视为笔误
+            workerProcessCount = static_cast<std::size_t>(Samples::readNumericOption(argc, argv, i, "--workers", 0U, 4096U));
+            ++i;
+        }
         else if (arg == "--worker")
             isWorkerProcess = true;
         else if (arg == "--help")
