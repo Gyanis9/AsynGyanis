@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -358,6 +359,40 @@ namespace AsynGyanis::Net
                 }
             }
             return {};
+        }
+
+        /**
+         * @brief 按帧到达顺序解出每条流的响应状态码
+         * @details 服务端的 HPACK 编码上下文是按连接推进的：逐条孤立解码会解不开后到的那条
+         *          （它引用的动态表条目是前一条响应建立的）。两条流的响应要一起判定的用例用这个助手
+         * @param frames 已解出的帧
+         * @return std::map<std::uint32_t, std::string> 流号 → :status 值；没回头块或解不开的流不在表里
+         */
+        std::map<std::uint32_t, std::string> collectResponseStatuses(const std::vector<Http2Frame> &frames)
+        {
+            std::map<std::uint32_t, std::string> statusByStream;
+            HpackDecoder decoder;
+            for (const Http2Frame &frame: frames)
+            {
+                if (frame.header.type != Http2FrameType::Headers || frame.header.streamId == 0U)
+                {
+                    continue;
+                }
+                std::vector<HpackHeaderField> headerFields;
+                std::string errorText;
+                if (!decoder.decode(frame.payload, headerFields, &errorText))
+                {
+                    continue;
+                }
+                for (const HpackHeaderField &field: headerFields)
+                {
+                    if (field.name == ":status")
+                    {
+                        statusByStream[frame.header.streamId] = field.value;
+                    }
+                }
+            }
+            return statusByStream;
         }
 
         /// GOAWAY 帧里带的错误码：负载是「4 字节最后流号 + 4 字节错误码」（RFC 9113 §6.8）
@@ -1040,6 +1075,135 @@ namespace AsynGyanis::Net
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：全局在途正文预算按「多条流之和」判定，而不是每条流各算一份
+     * @details 上一条用例只发一条流，分辨不出这两种口径——而「多流共享一份账」正是这笔预算存在的理由。
+     *          两条流各上传一段都不收尾，第二条那一段就是越界的那一口
+     */
+    TEST(Http2CleartextSession, SharesOneBodyBudgetAcrossConcurrentStreams)
+    {
+        // 预算 100：两条流各 60 字节，单看都合规，加起来就越界
+        constexpr std::size_t kFirstStreamBodyBytes = 60;
+        constexpr std::size_t kSecondStreamBodyBytes = 60;
+        constexpr std::size_t kFirstStreamTailBytes = 10;
+
+        auto budget = std::make_shared<HttpMemoryBudget>(100);
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 1024; // 让全局预算成为唯一的约束，而不是单报文正文上限
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             // 回显路由由用例自己注册：这样「先受理那条的正文被完整收下」
+                                             // 才有明确对照，而不是落在未匹配路径的兜底响应上
+                                             router.post("/echo", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                             {
+                                                 response.setBody(request.body());
+                                                 co_return;
+                                             });
+                                         },
+                                         parserLimits,
+                                         [budget](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                             server.setMemoryBudget(budget);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 两条流都只发到一半（不带 END_STREAM）：第二条那 60 字节落进来时，第一条的 60 字节还占着额度
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false)
+                                 + encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kFirstStreamBodyBytes, 'x')}, 1U)
+                                 + makeRequestHeadersFrame(3U, makePostRequestHeaderBlock("/echo"), false)
+                                 + encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kSecondStreamBodyBytes, 'y')}, 3U);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        // 越界那条不必等对端收尾就当场可判：它拿到 503，而先受理的那条还在等正文收齐
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 3U);
+                                     },
+                                     kWaitTimeout)) << "超出全局预算的那条流没有收到应答";
+
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kFirstStreamTailBytes, 'x')}, 1U),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "先受理的那条流补齐正文后没有收到应答";
+
+        const std::map<std::uint32_t, std::string> statusByStream = collectResponseStatuses(frames);
+        // 先确认两条响应都解得开：解不开时 .at() 抛的是「查不到键」，那会掩盖真正要判的口径问题
+        ASSERT_EQ(statusByStream.count(1U), 1U) << "先受理那条流的响应头块解不开";
+        ASSERT_EQ(statusByStream.count(3U), 1U) << "越界那条流的响应头块解不开";
+        EXPECT_EQ(statusByStream.at(3U), "503") << "两条流各压 60 字节、预算只有 100，后到的那条没被按 503 收口";
+        EXPECT_EQ(statusByStream.at(1U), "200") << "先受理的那条流不该被后到的流量挤掉";
+        // 先受理的那条正文完整：70 字节原样回显，说明「停止缓冲」只作用在越界的那条流上
+        EXPECT_EQ(responseDataPayload(frames, 1U).size(), kFirstStreamBodyBytes + kFirstStreamTailBytes) << "先受理的那条流的回显正文长度不对";
+
+        const auto quotaDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (budget->reservedByteCount() != 0 && std::chrono::steady_clock::now() < quotaDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "两条流都收口后额度仍未归还";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+    }
+
+    /**
+     * @brief 钉住：未注册路径在明文 h2 上同样按 404 收口，状态码与正文同源
+     * @details h2 与 h1 共用同一张路由表与同一个兜底处理器，但响应是另一条组头块的路径：
+     *          兜底处理器改的是响应对象的状态码，:status 要从它那里取，否则会出现
+     *          「正文是 Not Found 而状态行说成功」这种自相矛盾的响应
+     */
+    TEST(Http2CleartextSession, Answers404WithMatchingStatusForUnregisteredPath)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{},
+                                         [](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/no-such-path"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "未注册路径的请求没有收到应答";
+
+        const std::map<std::uint32_t, std::string> statusByStream = collectResponseStatuses(frames);
+        ASSERT_EQ(statusByStream.count(1U), 1U) << "响应头块解不开";
+        EXPECT_EQ(statusByStream.at(1U), "404") << "未注册路径的状态码不是 404，实际为 " << statusByStream.at(1U);
+        EXPECT_EQ(responseDataPayload(frames, 1U), "Not Found") << "状态码与正文不同源";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
     }
 
     /**

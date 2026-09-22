@@ -616,6 +616,37 @@ namespace AsynGyanis::Net
          */
         using RouteRegistrar = std::function<void(Router &, Core::EventLoop &)>;
 
+        /// 「按住不放」的正文路由：路径与响应正文标记，预算类用例按这两个值发请求与认响应
+        inline constexpr std::string_view kBodyHoldingRoutePath = "/hold";
+        inline constexpr std::string_view kBodyHoldingResponseBody = "held";
+
+        /**
+         * @brief 注册一条「进门即置标记、按住一段时间再回正文」的 POST 路由
+         * @details 全局在途正文预算要能在「处理器还在跑」这段时间里看到占用，才有跨请求/跨流的
+         *          判定可测；定时等待挂在服务端自己的循环上，因此这期间另一条连接或另一条流照常
+         *          能被服务。SlowRouteOptions 那条是 GET 无正文，装不下带正文的请求
+         * @param router 目标路由器
+         * @param loop 承载定时器的事件循环
+         * @param handlerStarted 处理器进门时置位的标记，可空
+         * @param holdTime 按住不放的时间
+         */
+        inline void registerBodyHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<bool> *handlerStarted,
+                                           const std::chrono::milliseconds holdTime)
+        {
+            router.post(std::string{kBodyHoldingRoutePath},
+                        [&loop, handlerStarted, holdTime](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                        {
+                            if (handlerStarted != nullptr)
+                            {
+                                handlerStarted->store(true, std::memory_order_release);
+                            }
+                            Core::Timer holdTimer(loop);
+                            co_await holdTimer.waitFor(holdTime);
+                            response.setBody(std::string{kBodyHoldingResponseBody});
+                            co_return;
+                        });
+        }
+
         /// 服务器启动前的最后一道配置动作：拿到服务器本体，用于落定 setLimits() 之外的开关
         /// （例如 setHttp2CleartextEnabled()）——这些开关同样必须在 start() 之前生效
         using ServerConfigurator = std::function<void(TestHttpServer &)>;
