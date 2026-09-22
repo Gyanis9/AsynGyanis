@@ -346,11 +346,11 @@ namespace
                                    "registerLogger 之后能从注册表取到它");
 
         Base::LoggerRegistry::instance().unregisterLogger("sample.retired");
-        // clear() 只把 logger 移进退休表（保护可能还悬着的裸引用），句柄要等 purge 才释放
-        Base::LoggerRegistry::instance().purgeRetiredLoggers();
+        // 注销当场交还 Sink（退休表只留日志器外壳护住裸引用）：文件句柄立即可放，不必先 purge
         std::error_code removalError;
         std::filesystem::remove(path, removalError);
-        Samples::checklist().check(!removalError, "purgeRetiredLoggers 释放了文件句柄（Windows 上否则删不掉）");
+        Samples::checklist().check(!removalError, "unregisterLogger 当场释放了文件句柄（Windows 上否则删不掉）");
+        Base::LoggerRegistry::instance().purgeRetiredLoggers();
     }
 }
 

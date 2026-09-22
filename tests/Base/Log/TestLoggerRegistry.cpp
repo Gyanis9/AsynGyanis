@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -67,6 +68,55 @@ namespace AsynGyanis::Base
         };
 
         std::atomic<int> CountingSink::s_aliveCount{0};
+
+        /**
+         * @brief 在 write() 内部等外部放行的 Sink：把「写入者已经进到 Sink 里」变成可观测事实
+         */
+        class BlockingSink final : public LogSink
+        {
+        public:
+            BlockingSink()
+            {
+                s_aliveCount.fetch_add(1);
+            }
+
+            ~BlockingSink() override
+            {
+                s_aliveCount.fetch_sub(1);
+            }
+
+            void write(const LogEvent &) override
+            {
+                // 先进到 Sink 里报个到，再停在这里模拟一次慢落盘：这段窗口就是要测的重叠点
+                m_entered.set_value();
+                m_release.get_future().wait();
+            }
+
+            void flush() override
+            {
+            }
+
+            /// 等到 write() 真的开始执行；返回 false 说明用例没构造出重叠，不该继续往下断言
+            [[nodiscard]] bool waitForEnter()
+            {
+                return m_entered.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+            }
+
+            /// 放行写入者，write() 随即返回
+            void release()
+            {
+                m_release.set_value();
+            }
+
+            /// 当前存活实例数
+            static std::atomic<int> s_aliveCount;
+
+        private:
+            std::promise<void> m_entered; ///< 第一次进入 write() 时兑现
+            std::promise<void> m_release; ///< 测试侧用它放行
+        };
+
+        std::atomic<int> BlockingSink::s_aliveCount{0};
     } // namespace
 
     /**
@@ -347,21 +397,69 @@ namespace AsynGyanis::Base
     }
 
     /**
-     * @brief clear() 只退休不销毁；purgeRetiredLoggers() 才真正释放（文件句柄与后台线程随之关闭）
-     * @details 临时目录夹具依赖这条语义：退休日志器若仍持有打开的日志文件，Windows 上删目录会失败
+     * @brief 退休只保留「裸引用不悬垂」这一项保证：Sink 当场交还，不必等 purge
+     * @details 退休表存在的理由是 getLogger() 给出裸引用；而 Sink 带着文件句柄与后台线程，
+     *          在退休表里多留一秒就多占一秒。在途写入者靠 Sink 快照的强引用自保，与退休表无关。
+     * @note 这条取代旧断言「clear() 之后 Sink 仍存活、要 purge 才释放」——那条把「日志器还活着」
+     *       与「Sink 还活着」用同一个计数钉住了，而契约需要的只有前者。
      */
-    TEST_F(LoggerRegistryTest, PurgeRetiredLoggersReleasesRetiredLoggers)
+    TEST_F(LoggerRegistryTest, RetiringALoggerReleasesItsSinksImmediately)
     {
-        auto logger = std::make_unique<Logger>("purge_target");
+        auto logger = std::make_unique<Logger>("retire_probe");
         logger->addSink(std::make_unique<CountingSink>());
         LoggerRegistry::instance().registerLogger(std::move(logger));
+
+        Logger &inFlightReference = LoggerRegistry::instance().getLogger("retire_probe");
         ASSERT_EQ(CountingSink::s_aliveCount.load(), 1);
 
-        LoggerRegistry::instance().clear();
-        EXPECT_EQ(CountingSink::s_aliveCount.load(), 1) << "clear() 只应退休日志器，就地销毁会让在途裸引用悬垂";
+        LoggerRegistry::instance().unregisterLogger("retire_probe");
+        EXPECT_EQ(CountingSink::s_aliveCount.load(), 0) << "Sink 该在退休那一刻交还：句柄与线程不该等 purge";
+
+        // 旧裸引用照样能用（对象还活在退休表里），只是这份日志到不了任何 Sink
+        EXPECT_NO_THROW(inFlightReference.log(LogLevel::Info, "written after retirement"));
+        EXPECT_EQ(CountingSink::s_aliveCount.load(), 0);
 
         LoggerRegistry::instance().purgeRetiredLoggers();
-        EXPECT_EQ(CountingSink::s_aliveCount.load(), 0) << "purge 后 Sink 应随日志器一同销毁";
+    }
+
+    /**
+     * @brief 写入者已经进到 Sink 里时，替换不能把那份 Sink 从脚下抽走
+     * @details 交还 Sink 只是丢掉注册表这一份强引用；写入者栈上的快照引用必须活到 write() 返回。
+     * @note 重叠由 promise/future 自己造出来：等不到「已进入 write()」就判失败，不赌调度运气。
+     */
+    TEST_F(LoggerRegistryTest, ReplacingLoggerKeepsTheSinkAliveUntilInFlightWriteReturns)
+    {
+        auto    blockingSink     = std::make_unique<BlockingSink>();
+        auto *const blockingSinkHandle = blockingSink.get();
+
+        auto logger = std::make_unique<Logger>("in_flight");
+        logger->addSink(std::move(blockingSink));
+        LoggerRegistry::instance().registerLogger(std::move(logger));
+
+        Logger &firstLogger = LoggerRegistry::instance().getLogger("in_flight");
+        std::thread writer([&firstLogger]
+        {
+            firstLogger.log(LogLevel::Info, "slow write in progress");
+        });
+
+        if (!blockingSinkHandle->waitForEnter())
+        {
+            // 没造出重叠：放行（万一它其实进了）再收线程，别让用例带着一个卡死的线程返回
+            blockingSinkHandle->release();
+            writer.join();
+            FAIL() << "写入者没有在时限内进到 Sink 里，本用例的重叠点没构造出来";
+        }
+        ASSERT_EQ(BlockingSink::s_aliveCount.load(), 1);
+
+        // 同名覆盖：注册表丢掉旧日志器并把它的 Sink 当场交还，但写入者还站在里面
+        LoggerRegistry::instance().registerLogger(std::make_unique<Logger>("in_flight"));
+        EXPECT_EQ(BlockingSink::s_aliveCount.load(), 1) << "在途写入者持有的快照引用必须顶住这一次交还";
+
+        blockingSinkHandle->release();
+        writer.join();
+        EXPECT_EQ(BlockingSink::s_aliveCount.load(), 0) << "写入者收尾之后 Sink 才该真正销毁";
+
+        LoggerRegistry::instance().purgeRetiredLoggers();
     }
 
     TEST_F(LoggerRegistryTest, ForEachLoggerVisitsEveryRegisteredLogger)

@@ -64,12 +64,16 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 注册外部创建的日志器，若同名则覆盖
+         * @details 被替换的那一份移入退休表（护住仍在用它裸引用的调用方），但它携带的 Sink
+         *          当场交还：文件句柄与后台线程不等退休表，也不靠 purgeRetiredLoggers()。
          * @param logger 待注册日志器对象
          */
         void registerLogger(std::unique_ptr<Logger> logger);
 
         /**
          * @brief 注销指定名称日志器
+         * @details 对象移入退休表而 Sink 当场交还（与 registerLogger 同名覆盖同一处置），因此
+         *          注销之后再经旧裸引用写入的日志不落地——「注销即停止输出」正是调用方要的结果。
          * @param name 日志器名称
          */
         void unregisterLogger(const std::string &name);
@@ -82,17 +86,15 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 清空注册表中的所有日志器
-         * @details 日志器移入退休表而非就地销毁（保护在途裸引用，见 m_retiredLoggers 的说明）。
-         *          需要立刻释放它们持有的文件句柄或后台线程时，在确知已无在途引用后调用
-         *          purgeRetiredLoggers()。
+         * @details 日志器移入退休表而非就地销毁（保护在途裸引用，见 m_retiredLoggers 的说明），
+         *          它们携带的 Sink 则当场交还——删临时目录这类操作不再需要先 purge 一次。
          */
         void clear();
 
         /**
-         * @brief 销毁退休表中的全部日志器，释放其 Sink 持有的文件句柄与后台线程
-         * @details 退休表平时只增不减，本方法用于调用方**确知**已无在途裸引用（正在使用
-         *          `Logger&` 的 LOG_* 宏）的场合：进程收尾，或测试夹具在删除临时目录之前
-         *          （Windows 上被打开的文件会让目录删除失败）。
+         * @brief 丢弃退休表里的日志器外壳，回收注册/注销 churn 攒下的内存
+         * @details Sink 已在退休那一刻交还，本方法剩下的是对象本身：调用方须**确知**已无在途
+         *          裸引用（正在使用 `Logger&` 的 LOG_* 宏）——进程收尾，或测试夹具删临时目录之前。
          * @warning 运行期不要调用：退休表的存在前提就是「对象仍可达」，销毁会把在途引用变成悬垂。
          */
         void purgeRetiredLoggers();
@@ -147,10 +149,10 @@ namespace AsynGyanis::Base
         mutable std::shared_mutex                                    m_mutex{};    ///< 保护 m_loggers 的读写锁
         std::unordered_map<std::string, std::shared_ptr<Logger> >    m_loggers{};  ///< 日志器名称到 Logger 实例的映射表（共享所有权，便于快照延长生命周期）
 
-        /// 已注销/被替换日志器的退休表：注销不销毁对象，只是移到这里。
+        /// 已注销/被替换日志器的退休表：注销不销毁对象，只是移到这里，同时把它们的 Sink 当场交还。
         /// getLogger() 返回的是裸引用，使用它的调用方（LOG_* 宏）可能正跨过注销点继续用；
-        /// 就地销毁会让那些引用悬垂。日志器数量少、注册/注销罕见，保留到进程退出是可接受的
-        /// 代价（对象仍可达，LeakSanitizer 不会报告）
+        /// 就地销毁会让那些引用悬垂。留下来的外壳只有名字、等级与一份空快照，而日志器数量少、
+        /// 注册/注销罕见，保留到进程退出是可接受的代价（对象仍可达，LeakSanitizer 不会报告）
         std::vector<std::shared_ptr<Logger> > m_retiredLoggers{};
 
         /// 根日志器的热路径缓存（裸指针）：每条 LOG_* 宏都先读它，命中时只需一次原子读。

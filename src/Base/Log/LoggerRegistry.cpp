@@ -9,6 +9,24 @@
 
 namespace AsynGyanis::Base
 {
+    namespace
+    {
+        /**
+         * @brief 交还一份退休日志器的 Sink：退休表要护住的是「裸引用不悬垂」，不是 Sink 的资源
+         * @details Sink 携带文件句柄与后台线程，而保护在途写入者靠的是「快照的强引用」而不是
+         *          退休表：摘掉之后最后一份引用释放时才真正销毁。必须在注册表锁**外**调用——
+         *          AsyncSink 的析构要 join 工作线程，持锁做这件事会把别人的日志调用一起卡住
+         * @param logger 已移入退休表的日志器；为空时不动作
+         */
+        void releaseSinksOfRetiredLogger(const std::shared_ptr<Logger> &logger)
+        {
+            if (logger)
+            {
+                logger->clearSinks();
+            }
+        }
+    } // namespace
+
     LoggerRegistry &LoggerRegistry::instance()
     {
         static LoggerRegistry instance;
@@ -91,43 +109,54 @@ namespace AsynGyanis::Base
             return;
         }
 
-        std::unique_lock lock(m_mutex);
+        std::shared_ptr<Logger> displacedLogger;
+        {
+            const std::unique_lock lock(m_mutex);
 
-        std::shared_ptr<Logger> registeredLogger = std::move(logger);
-        const bool              isRootLogger     = registeredLogger->name() == kRootLoggerName;
-        if (isRootLogger)
-        {
-            // 覆盖会替换旧 root，先置空缓存再替换，避免他人在窗口内继续使用旧实例
-            clearCachedRootLogger();
-        }
-        // 同名替换：旧对象移入退休表而不是就地销毁——正在使用它的裸引用（LOG_* 宏）可能跨过这一刻
-        if (const auto existing = m_loggers.find(registeredLogger->name()); existing != m_loggers.end())
-        {
-            m_retiredLoggers.push_back(std::move(existing->second));
-        }
-        m_loggers[registeredLogger->name()] = registeredLogger;
+            std::shared_ptr<Logger> registeredLogger = std::move(logger);
+            const bool              isRootLogger     = registeredLogger->name() == kRootLoggerName;
+            if (isRootLogger)
+            {
+                // 覆盖会替换旧 root，先置空缓存再替换，避免他人在窗口内继续使用旧实例
+                clearCachedRootLogger();
+            }
+            // 同名替换：旧对象移入退休表而不是就地销毁——正在使用它的裸引用（LOG_* 宏）可能跨过这一刻
+            if (const auto existing = m_loggers.find(registeredLogger->name()); existing != m_loggers.end())
+            {
+                displacedLogger = existing->second;
+                m_retiredLoggers.push_back(displacedLogger);
+            }
+            m_loggers[registeredLogger->name()] = registeredLogger;
 
-        if (isRootLogger)
-        {
-            storeCachedRootLogger(registeredLogger);
+            if (isRootLogger)
+            {
+                storeCachedRootLogger(registeredLogger);
+            }
         }
+        // 交还 Sink 放在锁外：见 releaseSinksOfRetiredLogger 的说明
+        releaseSinksOfRetiredLogger(displacedLogger);
     }
 
     void LoggerRegistry::unregisterLogger(const std::string &name)
     {
-        std::unique_lock lock(m_mutex);
+        std::shared_ptr<Logger> displacedLogger;
+        {
+            const std::unique_lock lock(m_mutex);
 
-        // 先失效缓存再擦除，避免缓存继续指向已被移除的 root
-        if (name == kRootLoggerName)
-        {
-            clearCachedRootLogger();
+            // 先失效缓存再擦除，避免缓存继续指向已被移除的 root
+            if (name == kRootLoggerName)
+            {
+                clearCachedRootLogger();
+            }
+            // 摘出而非销毁：getLogger() 给出的是裸引用，使用中的调用方可能还没走完
+            if (const auto existing = m_loggers.find(name); existing != m_loggers.end())
+            {
+                displacedLogger = std::move(existing->second);
+                m_retiredLoggers.push_back(displacedLogger);
+                m_loggers.erase(existing);
+            }
         }
-        // 摘出而非销毁：getLogger() 给出的是裸引用，使用中的调用方可能还没走完
-        if (const auto existing = m_loggers.find(name); existing != m_loggers.end())
-        {
-            m_retiredLoggers.push_back(std::move(existing->second));
-            m_loggers.erase(existing);
-        }
+        releaseSinksOfRetiredLogger(displacedLogger);
     }
 
     std::vector<std::string> LoggerRegistry::getLoggerNames() const
@@ -144,20 +173,29 @@ namespace AsynGyanis::Base
 
     void LoggerRegistry::clear()
     {
-        std::unique_lock lock(m_mutex);
-        clearCachedRootLogger();
-        // 与 unregisterLogger 同一处置：全部移入退休表，不就地销毁使用中的对象
-        for (auto &entry: m_loggers)
+        std::vector<std::shared_ptr<Logger> > displacedLoggers;
         {
-            m_retiredLoggers.push_back(std::move(entry.second));
+            const std::unique_lock lock(m_mutex);
+            clearCachedRootLogger();
+            displacedLoggers.reserve(m_loggers.size());
+            // 与 unregisterLogger 同一处置：全部移入退休表，不就地销毁使用中的对象
+            for (auto &entry: m_loggers)
+            {
+                m_retiredLoggers.push_back(std::move(entry.second));
+                displacedLoggers.push_back(m_retiredLoggers.back());
+            }
+            m_loggers.clear();
         }
-        m_loggers.clear();
+        for (const auto &logger: displacedLoggers)
+        {
+            releaseSinksOfRetiredLogger(logger);
+        }
     }
 
     void LoggerRegistry::purgeRetiredLoggers()
     {
-        // 换出到局部变量、在锁外析构：AsyncSink 的析构要 join 工作线程、FileSink 要关文件句柄，
-        // 持锁期间做这些会把其他线程的日志调用一起卡住
+        // 换出到局部变量、在锁外析构：退休日志器自己也可能持有仍在途的快照引用，
+        // 持锁期间等它们释放会把其他线程的日志调用一起卡住
         std::vector<std::shared_ptr<Logger> > retiredLoggers;
         {
             const std::unique_lock lock(m_mutex);
