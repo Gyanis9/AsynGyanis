@@ -2002,6 +2002,39 @@ server:
     // 段落还原（扁平点分键 → 嵌套对象）
     // ============================================================================
 
+    /**
+     * @brief 段里同一个名字既是标量又是更长键的第一段时，点名报冲突而不是悄悄丢掉标量
+     * @details 两份各自合法的文件就能叠出这个形状（一份给 server.port，另一份给
+     *          server.port.forwarded）：加载阶段两条键互不重名，所以都收得下；要到还原段落
+     *          这一步才无法两全。原先分组会静默盖掉标量，于是 getSection 与 getInt 各说一套话。
+     */
+    TEST_F(ConfigManagerTest, GetSectionReportsLeafVersusGroupCollision)
+    {
+        writeFile("base.yaml", "server:\n  port: 8080\n");
+        writeFile("extra.yaml", "server:\n  port:\n    forwarded: true\n  host: 0.0.0.0\n");
+        writeFile("cache.yaml", "cache:\n  ttl: 60\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+        ASSERT_TRUE(result.success) << "两份文件各自合法，加载阶段不该报错";
+        ASSERT_EQ(configuration().getInt("server.port", -1), 8080);
+        ASSERT_TRUE(configuration().has("server.port.forwarded"));
+
+        try
+        {
+            static_cast<void>(configuration().getSection("server"));
+            FAIL() << "标量与分组撞名时 getSection 必须报错，而不是丢掉其中一个";
+        } catch (const ConfigValidationException &error)
+        {
+            // 文案要点名到真实的键，调用方才知道该改哪一条
+            EXPECT_NE(std::string(error.what()).find("server.port"), std::string::npos);
+        }
+
+        // 冲突只挡住撞名的那一段：别处的段落照常还原
+        const ConfigValue cacheSection = configuration().getSection("cache");
+        ASSERT_TRUE(cacheSection.is_object());
+        EXPECT_EQ(cacheSection.at("ttl").get<int>(), 60);
+    }
+
     TEST_F(ConfigManagerTest, GetSectionRebuildsNestedObjectFromFlatKeys)
     {
         writeFile("server.yaml",

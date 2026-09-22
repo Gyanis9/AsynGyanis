@@ -265,6 +265,9 @@ namespace AsynGyanis::Base
          *          这一层（键是 "port" 而非 "server.port"），段落无键时返回空对象。
          * @param sectionPrefix 段名，如 "server"
          * @return ConfigValue 该段自身的对象副本，热重载不会改写已取走的这一份
+         * @throws ConfigValidationException 段内同一个名字既配成标量、又是更长键的第一段
+         *         （如 server.port 与 server.port.forwarded 并存）：段落结构无法同时表达两者，
+         *         宁可报错也不静默丢掉其中一条
          */
         [[nodiscard]] ConfigValue getSection(std::string_view sectionPrefix) const;
 

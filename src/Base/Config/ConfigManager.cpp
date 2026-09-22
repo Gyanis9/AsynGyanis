@@ -1,6 +1,7 @@
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
+#include "Base/Exception/ConfigValidationException.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
 
@@ -88,9 +89,11 @@ namespace AsynGyanis::Base
          *          剩余路径里没有点号的即叶子。路径视图指向调用方容器里的字符串，
          *          该容器在整层递归期间一直存活。
          * @param entries 本层的全部条目
+         * @param pathContext 本层键的完整前缀，仅用于把冲突点名到真实键（顶层传段名）
          * @return ConfigObject 本层对象
+         * @throws ConfigValidationException 同一个名字在本层既配成标量、又是更长键的第一段
          */
-        [[nodiscard]] ConfigObject buildNestedObject(const std::vector<SectionEntry> &entries)
+        [[nodiscard]] ConfigObject buildNestedObject(const std::vector<SectionEntry> &entries, const std::string &pathContext)
         {
             ConfigObject object;
 
@@ -110,7 +113,19 @@ namespace AsynGyanis::Base
 
             for (const auto &[name, children]: childGroups)
             {
-                object.insert_or_assign(std::string(name), ConfigValue(buildNestedObject(children)));
+                const std::string groupPath = pathContext.empty() ? std::string(name)
+                                                                  : pathContext + '.' + std::string(name);
+                // 同一个名字既当标量又当分组时，必须报错而不是让分组悄悄吃掉标量：这种形状真的能
+                // 由两份配置文件叠出来（一份给 a.b，另一份给 a.b.c），静默丢弃会让 getSection 与
+                // getInt("a.b") 各说一套话
+                if (object.contains(name))
+                {
+                    throw ConfigValidationException(groupPath,
+                                                    std::format("键 '{}' 既配成了标量、又是更长键的第一段（如 '{}.{}'）："
+                                                                "段落还原无法同时表达这两种形状，请把其中一条改成别的名字或换一层段落",
+                                                                groupPath, groupPath, std::string(children.front().remainingPath.substr(0, children.front().remainingPath.find('.')))));
+                }
+                object.insert_or_assign(std::string(name), ConfigValue(buildNestedObject(children, groupPath)));
             }
             return object;
         }
@@ -895,7 +910,7 @@ namespace AsynGyanis::Base
         {
             return ConfigValue(ConfigObject{});
         }
-        return ConfigValue(buildNestedObject(entries));
+        return ConfigValue(buildNestedObject(entries, std::string(sectionPrefix)));
     }
 
     std::vector<std::string> ConfigManager::loadedFiles() const
