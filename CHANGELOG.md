@@ -145,6 +145,15 @@
 
 ### 修复
 
+- **HTTP/1.1 的在途正文预算撑不住「处理器还在跑」这段时间**：预留量每轮按解析器缓冲的正文数补，而
+  收齐那一轮解析器已把正文移交给请求对象，缓冲量随即归零——正文还占在内存里、额度却已经还清，于是这笔
+  跨连接的总量上限在最该生效的那段时间里等于没设：第二条连接照样能塞满自己的正文并拿到 200（改动前实测：
+  预算 100 字节、两条连接各压 90，第二条无人拦，此刻额度读数是 0 而不是 90）。改为按「解析器缓冲」与
+  「请求对象已持有正文」的较大者预留，与 h2/h3 的「已持有 + 新到」同一口径——那两个分支一直是对的，
+  漏的只有 h1，而它自己的注释写的就是「应答完归还」。用例
+  `HttpMemoryBudgetTest.RejectsSecondConnectionBodyWhileFirstIsStillHeld` 钉住这一条；对照用例
+  `ReturnsQuotaBetweenKeepAliveRequestsOnOneConnection` 钉住反方向：额度也不能拖到应答写完都不归还，
+  否则同一条 keep-alive 连接发第二个正文，会被自己上一单的额度误判超预算。
 - **master 被强杀后多进程 worker 不再变成孤儿**：Linux 上 `Process::spawn()` 的子进程现在带着
   `PR_SET_PDEATHSIG`（父进程一退出就收 SIGTERM，非 setuid 的 exec 之后仍然有效），并在设置前后各查一次
   `getppid()` 补上「fork 到设标记之间父进程已退出」这段窗口。实测（容器，`--workers 3` 起服务后
