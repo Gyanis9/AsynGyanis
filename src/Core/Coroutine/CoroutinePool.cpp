@@ -206,7 +206,6 @@ namespace AsynGyanis::Core
         {
             void *const block           = m_globalFreeHeads[tier];
             m_globalFreeHeads[tier]     = *static_cast<void **>(block);
-            --m_globalFreeCounts[tier];
 
             *static_cast<void **>(block) = cache.freeHeads[tier];
             cache.freeHeads[tier]        = block;
@@ -216,9 +215,10 @@ namespace AsynGyanis::Core
 
     void CoroutinePool::returnToGlobalUnlocked(const size_t tier, void *const block) noexcept
     {
+        // 链表长度不单独记账：取用侧的循环条件本来就靠 m_globalFreeHeads 是否为空判定，
+        // 再存一份计数只是每次交接多写一个词，还要与链表头保持同步
         *static_cast<void **>(block) = m_globalFreeHeads[tier];
         m_globalFreeHeads[tier]      = block;
-        ++m_globalFreeCounts[tier];
     }
 
     bool CoroutinePool::isOwnedBlock(const void *const pointer) const noexcept
