@@ -22,6 +22,13 @@
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
 
+// mysql.h 顺着 <windows.h> 把 min/max 带成函数式宏，消费方一写 std::numeric_limits<T>::min() 就炸成
+// C4003 + C2589（Linux 侧没有这对宏，容器门禁看不见）。在本头里挡一次：凡是经本头拿
+// enum_field_types 的翻译单元都自动受保护，不必各自再记一句写在文件顶部的定义
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 // 两种发行布局（顶层 mysql.h / mysql/ 子目录 mysql.h）的兼容写法，说明见 MySqlConnection.cpp
 #if __has_include(<mysql/mysql.h>)
 #include <mysql/mysql.h>
