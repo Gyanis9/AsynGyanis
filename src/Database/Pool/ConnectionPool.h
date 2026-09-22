@@ -402,6 +402,11 @@ namespace AsynGyanis::Database
         std::deque<AcquireAwaiter *> m_asyncWaiters; ///< 异步协程等待列表
 
         // ----- 后台线程 -----
+        // 这两个必须声明在 m_healthThread 之前：成员按声明逆序销毁，jthread 的隐式 join 会先跑，
+        // 而它要在这对同步原语还活着时才能把睡眠中的循环叫醒
+        std::mutex m_healthWakeMutex;               ///< 只给健康线程的等待用，不保护任何数据
+        std::condition_variable m_healthWakeCondition; ///< 停止请求的落点：让健康线程不必睡满一个分片
+
         std::jthread m_healthThread; ///< 后台健康检查线程
     };
 

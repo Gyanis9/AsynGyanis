@@ -546,9 +546,16 @@ namespace AsynGyanis::Database
     {
         const auto interval = std::max(m_config.healthCheckIntervalSeconds, std::size_t{1});
 
+        // 停止请求直接把本线程从等待里叫醒：jthread 的 join 因此不必等满当前那个 1 秒分片。
+        // 回调随本函数返回而解除，所以它引用的 this 一直在有效期内
+        const std::stop_callback wakeupOnStop(stopToken, [this]
+        {
+            m_healthWakeCondition.notify_all();
+        });
+
         while (!stopToken.stop_requested())
         {
-            // 分段睡眠，每 1 秒检查一次停止标志，使线程能及时响应停止请求
+            // 分段睡眠，每 1 秒醒一次：既检查停止标志，也推进异步等待者的截止时刻
             const auto            totalSleepMilliseconds  = interval * 1000;
             constexpr std::size_t kSleepChunkMilliseconds = 1000;
 
@@ -556,7 +563,20 @@ namespace AsynGyanis::Database
             while (remainingMilliseconds > 0 && !stopToken.stop_requested())
             {
                 const auto chunk = std::min(static_cast<int64_t>(kSleepChunkMilliseconds), remainingMilliseconds);
-                std::this_thread::sleep_for(std::chrono::milliseconds(chunk));
+                {
+                    std::unique_lock lock(m_healthWakeMutex);
+                    // 谓词判定与 notify 共用这把锁，因此停止请求落在「刚要进 wait_for 之前」也不会漏唤醒
+                    m_healthWakeCondition.wait_for(lock, std::chrono::milliseconds(chunk),
+                                                   [&stopToken]
+                                                   {
+                                                       return stopToken.stop_requested();
+                                                   });
+                }
+
+                if (stopToken.stop_requested())
+                {
+                    break;
+                }
                 remainingMilliseconds -= chunk;
 
                 // 每秒一次：把等到截止时刻的异步等待者以「空连接」唤醒。

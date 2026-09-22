@@ -9,6 +9,7 @@
 // - ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect / AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect：
 //   两条丢弃出口都不握着 m_mutex 做 disconnect
 // - EstablishedTimeSurvivesRepeatedBorrowAndReturn：连接的建立时刻跟着连接本身，反复借用不重新盖戳
+// - ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -686,6 +687,47 @@ namespace AsynGyanis::Database
             // 池里只有一条连接（上限 2、只建过一条），因此第二次借用拿到的就是同一条
             EXPECT_EQ(reusedEstablishedAt, firstEstablishedAt)
                     << "借用/归还会给连接重新盖建立时刻，存活期上限因此永远到不了";
+        }
+
+        /**
+         * @brief 停摆不必等后台健康线程睡满一个分片
+         * @details 循环按 1 秒分片睡眠，旧的析构路径要等当前那个分片跑完才 join 得上，于是每次
+         *          销毁连接池都摊上最多一秒的停摆延迟——按数据源或租户各建一个池的服务里，这笔
+         *          延迟在重启与扩缩容时会被成倍放大。
+         *          每轮建完池要先停 100 ms 再拆：不等的话析构可能抢在健康线程真的进睡之前跑完，
+         *          那种情况下连退化的实现也会立刻返回，用例就成了空测。
+         *          阈值取 1500 ms：新实现六轮合计只花在停留上（约 600 ms），旧实现每轮还要再等
+         *          约 900 ms 的睡眠剩余，六轮 5.4 s 起，两个数量级分得开，不靠调度运气。
+         */
+        TEST(ConnectionPool, ShutdownDoesNotWaitForASleepChunk)
+        {
+            ConnectionCounter counter;
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 3600; // 让后台线程绝大部分时间都在睡
+
+            constexpr int kPoolCycles            = 6;
+            constexpr auto kDwellPerCycle        = std::chrono::milliseconds(100);
+            constexpr int64_t kBudgetMilliseconds = 1500;
+
+            const auto begin = std::chrono::steady_clock::now();
+            for (int cycle = 0; cycle < kPoolCycles; ++cycle)
+            {
+                ConnectionPool pool(makeMockFactory(counter), configuration);
+                // 建一条连接，再停一会儿：确保后台线程确实已经起来并睡进分片里
+                const PooledConnection connection = pool.acquire();
+                ASSERT_TRUE(static_cast<bool>(connection)) << "第 " << cycle << " 次建池后拿不到连接";
+                std::this_thread::sleep_for(kDwellPerCycle);
+            }
+            const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                     std::chrono::steady_clock::now() - begin)
+                                                     .count();
+
+            EXPECT_LT(elapsedMilliseconds, kBudgetMilliseconds)
+                    << "六次建拆用了 " << elapsedMilliseconds << " ms：析构在等健康线程睡满 1 秒分片";
         }
 
     } // namespace
