@@ -119,6 +119,11 @@ namespace AsynGyanis::Platform
          * @return Handle 子进程句柄；启动失败时 isValid() 为 false，原因见 PlatformError::lastErrorCode()
          * @note POSIX 上子进程 exec 失败时以 127 退出（这是本层的约定，调用方据此区分「exec 没起来」
          *       与业务自己的退出码；POSIX 的 shell 惯例与之相同）
+         * @note Linux 上子进程带着「本进程一退出就收 SIGTERM」的约定（exec 之后仍然有效）：编排者被
+         *       强杀时不留孤儿进程占着端口。子进程因此不要把自己改成忽略 SIGTERM 的样子——那等于放弃
+         *       这条兜底，只能靠编排者主动收口
+         * @warning 该信号的实际触发点是**调用 fork 的那个线程**退出（Linux 语义），不是整个进程：
+         *          多线程程序要在还单线程时启动编排，否则线程池收工会提前把子进程带走
          */
         [[nodiscard]] static Handle spawn(const LaunchOptions &options) noexcept;
 

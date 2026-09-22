@@ -8,6 +8,9 @@
 #if !ASYN_PLATFORM_WIN32
 #include <cerrno>
 #include <csignal>
+#if ASYN_PLATFORM_LINUX
+#include <sys/prctl.h>
+#endif
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -224,6 +227,9 @@ namespace AsynGyanis::Platform
         ::CloseHandle(processInformation.hThread);
         return Handle(processInformation.hProcess, processInformation.dwProcessId);
 #else
+        // fork 之前先记下本进程号：子进程要靠它判断「生我的那个进程是否还在」（见下面的自查）
+        const pid_t parentProcessId = ::getpid();
+
         // 子进程参数表按 POSIX 惯例：argv[0] 是可执行文件路径，末尾必须是空指针
         std::vector<std::string> argumentStrings;
         argumentStrings.reserve(options.arguments.size() + 1);
@@ -246,6 +252,21 @@ namespace AsynGyanis::Platform
         }
         if (childProcessId == 0)
         {
+#if ASYN_PLATFORM_LINUX
+            // 生我的进程一没就收 SIGTERM：worker 的生存期应当跟着编排者，否则 master 被强杀之后
+            // worker 成了孤儿继续占着端口，谁都不再管它（这个标记在非 setuid 的 exec 之后仍然有效，
+            // 正好覆盖「fork 出子进程再 exec 成服务程序」这条路径）。信号选 SIGTERM 而不是 SIGKILL，
+            // 让子进程还有机会按自己的收尾路径把在途请求做完
+            static_cast<void>(::prctl(PR_SET_PDEATHSIG, SIGTERM));
+
+            // 从 fork 到上面这句生效之间 master 就可能已经退出，那种情况下信号永远不会来：
+            // 自己认一下父号还是不是生我的那个进程，不是就直接收工
+            if (::getppid() != parentProcessId)
+            {
+                ::_exit(0);
+            }
+#endif
+
             // 子进程分支：exec 之后旧映像就没了，之前的失败在这里只能自己收场。
             // 用 _exit 而不是 exit：不能跑父进程继承来的 atexit 与静态析构（多线程下 fork 出来的
             // 子进程只带调用线程，那些清理路径可能撞上父进程留下的锁状态）
