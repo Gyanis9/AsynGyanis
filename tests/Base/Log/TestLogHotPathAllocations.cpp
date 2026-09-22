@@ -12,8 +12,11 @@
 // 分配判据只在 Release 下钉死：Debug 的 STL 迭代器调试代理会给每个容器多挂一块代理，
 // 读数被实现细节放大一个量级，钉住它等于把判据交给编译器实现。
 
+#include "Base/Log/Formatters/DefaultFormatter.h"
+#include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/Formatters/TimestampText.h"
 #include "Base/Log/LogEvent.h"
+#include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Base/Log/Sinks/ConsoleSink.h"
@@ -417,5 +420,48 @@ namespace AsynGyanis::Base
                     static_cast<unsigned long long>(profile.totalAllocations),
                     static_cast<unsigned long long>(profile.totalBytes));
         printHistogramDelta("queue-minus-sync", referenceHistogram, queueHistogram);
+    }
+
+    /**
+     * @brief 一条 JSON 行的分配读数：建 DOM 与序列化各占几块
+     * @details JSON 版式是文本版的好几倍，而手写发射器要逐字对上 nlohmann 的转义与键序才不破字节兼容，
+     *          动手前得先把「每行碰几次堆」量成读数而不是估的「约 20 次」。参照形状取同一条事件走文本
+     *          格式化器，两条相减就是「建 DOM + 键表 + dump」这一段付的分配。
+     */
+    TEST(LogHotPathAllocations, JsonFormatterLineAllocationReading)
+    {
+        const std::string threadIdSnapshot   = "tid-123456";
+        const std::string loggerNameSnapshot = "json_path_logger";
+        const std::string messageText(kMessageText);
+        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadIdSnapshot, SourceLocation{}, loggerNameSnapshot,
+                                messageText};
+
+        JsonFormatter jsonFormatter;
+        const auto    jsonOnce = [&jsonFormatter, &event]
+        {
+            return static_cast<std::uint64_t>(jsonFormatter.format(event).size());
+        };
+        jsonOnce();                        // 先跑一次把一次性构造摘出去，测的是稳态
+        resetAllocationHistogram();
+        const AllocationProfile jsonProfile = measurePerOperation(jsonOnce);
+
+        DefaultFormatter textFormatter;
+        const auto       textOnce = [&textFormatter, &event]
+        {
+            return static_cast<std::uint64_t>(textFormatter.format(event).size());
+        };
+        textOnce();
+        resetAllocationHistogram();
+        const AllocationProfile textProfile = measurePerOperation(textOnce);
+
+        // 两条读数都得非空，否则「没走到成功路径」会把零分配伪装成胜利
+        EXPECT_GT(jsonProfile.resultSum, kMeasurementIterations);
+        EXPECT_GT(textProfile.resultSum, kMeasurementIterations);
+        std::printf("json-line per-op=%llu total=%llu bytes=%llu (text-line total=%llu bytes=%llu)\n",
+                    static_cast<unsigned long long>(jsonProfile.allocationsPerOperation),
+                    static_cast<unsigned long long>(jsonProfile.totalAllocations),
+                    static_cast<unsigned long long>(jsonProfile.totalBytes),
+                    static_cast<unsigned long long>(textProfile.totalAllocations),
+                    static_cast<unsigned long long>(textProfile.totalBytes));
     }
 } // namespace AsynGyanis::Base
