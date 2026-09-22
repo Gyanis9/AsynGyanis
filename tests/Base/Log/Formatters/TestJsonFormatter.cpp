@@ -161,6 +161,52 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 追加语义：已有内容保留，JSON 落在其后
+     * @details Sink 复用自己的行缓冲，版式必须往缓冲尾部追加而不是覆盖——这条与下一条一起钉住
+     *          「直接摊进调用方缓冲」那条通道的两端。
+     */
+    TEST(JsonFormatterTest, AppendsLineIntoCallerBuffer)
+    {
+        JsonFormatter   formatter;
+        const std::string prefix       = "缓冲里原有的内容:";
+        std::string        buffer      = prefix;
+        const std::size_t  prefixSize  = buffer.size();
+        static_cast<void>(formatter.formatInto(buffer, makeEvent("追加")));
+
+        EXPECT_EQ(buffer.compare(0, prefixSize, prefix), 0);
+        const nlohmann::json appended = nlohmann::json::parse(buffer.substr(prefixSize));
+        EXPECT_EQ(textField(appended, "message"), "追加");
+    }
+
+    /**
+     * @brief 非法 UTF-8 抛出让缓冲一字未增：半途而废的半条 JSON 不能留在调用方手里
+     */
+    TEST(JsonFormatterTest, InvalidUtf8LeavesCallerBufferUntouched)
+    {
+        std::string message = "坏";
+        message.push_back(static_cast<char>(0xFF));
+
+        JsonFormatter formatter;
+        std::string   buffer = "已经写好的内容";
+        EXPECT_THROW(formatter.formatInto(buffer, makeEvent(message)), Exception);
+        EXPECT_EQ(buffer, "已经写好的内容");
+    }
+
+    /**
+     * @brief 产物是「自身解析后重新序列化」的不动点：转义表、键序与紧凑格式都取自库自己那一份
+     * @details 版式改为直接摊进缓冲之后，序列化器不再是公开的 `dump()`，这条就是「输出逐字节没变」
+     *          的可执行判据：任何一处转义或键序偏离库的规范写法，重新 dump 回来的文本就对不上。
+     */
+    TEST(JsonFormatterTest, OutputIsFixedPointOfParseAndDump)
+    {
+        JsonFormatter     formatter;
+        const std::string line =
+                formatter.format(makeEvent("转义 \b\f\n\r\t\x01\x7f 与 \" \\ 以及 ÿ ✓"));
+
+        EXPECT_EQ(line, nlohmann::json::parse(line).dump());
+    }
+
+    /**
      * @brief 紧凑单行：没有缩进换行，也没有缩进用的空格
      */
     TEST(JsonFormatterTest, WritesCompactSingleLineJson)

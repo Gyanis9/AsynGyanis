@@ -34,5 +34,15 @@ namespace AsynGyanis::Base
          * @return std::string 不含换行的 JSON 文本
          */
         std::string format(const LogEvent &event) override;
+
+        /**
+         * @brief 把单行 JSON 直接追加进调用方的缓冲
+         * @details 重写 LogFormatter::formatInto()：序列化结果落在 out 尾部，不再先落成一份临时串
+         *          （Sink 的行缓冲跨行留容量，稳态下这一段不碰堆）。输出与 `dump()` 逐字节相同。
+         * @param out 目标缓冲，已有内容保留
+         * @param event 日志事件
+         * @throws Base::Exception 消息含非法 UTF-8 字节（与 format() 同一口径）
+         */
+        void formatInto(std::string &out, const LogEvent &event) override;
     };
 } // namespace AsynGyanis::Base

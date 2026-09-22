@@ -24,6 +24,8 @@
 
 #include "AllocationProbe.h"
 
+#include <nlohmann/json.hpp>
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -423,10 +425,11 @@ namespace AsynGyanis::Base
     }
 
     /**
-     * @brief 一条 JSON 行的分配读数：建 DOM 与序列化各占几块
+     * @brief 一条 JSON 行的分配读数：建 DOM、序列化、写进留容量的缓冲各占几块
      * @details JSON 版式是文本版的好几倍，而手写发射器要逐字对上 nlohmann 的转义与键序才不破字节兼容，
-     *          动手前得先把「每行碰几次堆」量成读数而不是估的「约 20 次」。参照形状取同一条事件走文本
-     *          格式化器，两条相减就是「建 DOM + 键表 + dump」这一段付的分配。
+     *          动手前得先把「每行碰几次堆」量成读数而不是估的「约 20 次」。三个形状：整条 `format()`、
+     *          只把建好的对象 `dump()` 出来（拆出序列化那一半）、摊进一条跨行留着容量的缓冲（Sink 实际
+     *          走的通道）。文本格式化器的同一条事件当底线。
      */
     TEST(LogHotPathAllocations, JsonFormatterLineAllocationReading)
     {
@@ -457,10 +460,41 @@ namespace AsynGyanis::Base
         // 两条读数都得非空，否则「没走到成功路径」会把零分配伪装成胜利
         EXPECT_GT(jsonProfile.resultSum, kMeasurementIterations);
         EXPECT_GT(textProfile.resultSum, kMeasurementIterations);
-        std::printf("json-line per-op=%llu total=%llu bytes=%llu (text-line total=%llu bytes=%llu)\n",
+
+        // 拆一半：`dump()` 单独付几次堆。样本对象由真实输出解析回来，形状与实现一致，
+        // 用例里不另抄一份字段表（抄一份就会漂移）。剩下那半就是「建 DOM + 五对键值」的成本。
+        const nlohmann::json sample = nlohmann::json::parse(jsonFormatter.format(event));
+        const auto           dumpOnce = [&sample]
+        {
+            return static_cast<std::uint64_t>(sample.dump().size());
+        };
+        dumpOnce();
+        resetAllocationHistogram();
+        const AllocationProfile dumpProfile = measurePerOperation(dumpOnce);
+        EXPECT_GT(dumpProfile.resultSum, kMeasurementIterations);
+
+        // 真正跑的通道是 Sink 那一头：版式摊进一条跨行留着容量的缓冲（FileSink 与 ConsoleSink 的
+        // m_lineBuffer 就是这个形状），因此它不该为输出串再付增长重分配
+        std::string lineBuffer;
+        const auto  formatIntoBufferOnce = [&jsonFormatter, &event, &lineBuffer]
+        {
+            lineBuffer.clear();
+            jsonFormatter.formatInto(lineBuffer, event);
+            return static_cast<std::uint64_t>(lineBuffer.size());
+        };
+        formatIntoBufferOnce();
+        resetAllocationHistogram();
+        const AllocationProfile intoProfile = measurePerOperation(formatIntoBufferOnce);
+        EXPECT_GT(intoProfile.resultSum, kMeasurementIterations);
+
+        std::printf("json-line per-op=%llu total=%llu bytes=%llu (into-reused-buffer total=%llu bytes=%llu; dump-only total=%llu bytes=%llu; text-line total=%llu bytes=%llu)\n",
                     static_cast<unsigned long long>(jsonProfile.allocationsPerOperation),
                     static_cast<unsigned long long>(jsonProfile.totalAllocations),
                     static_cast<unsigned long long>(jsonProfile.totalBytes),
+                    static_cast<unsigned long long>(intoProfile.totalAllocations),
+                    static_cast<unsigned long long>(intoProfile.totalBytes),
+                    static_cast<unsigned long long>(dumpProfile.totalAllocations),
+                    static_cast<unsigned long long>(dumpProfile.totalBytes),
                     static_cast<unsigned long long>(textProfile.totalAllocations),
                     static_cast<unsigned long long>(textProfile.totalBytes));
     }
