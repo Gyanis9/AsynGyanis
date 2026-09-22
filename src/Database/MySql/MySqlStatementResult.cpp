@@ -88,6 +88,26 @@ namespace AsynGyanis::Database
         return currentRow[index];
     }
 
+    DatabaseValue MySqlStatementResult::takeValue(const size_t index)
+    {
+        // 判界三条与 getValue() 逐字一致：两处判定一旦分岔，「取一次」与「读一次」就会给出不同结果
+        if (!m_hasCurrentRow || index >= m_columnNames.size())
+        {
+            return std::monostate{};
+        }
+
+        std::vector<DatabaseValue> &currentRow = m_rows[m_nextRowIndex - 1];
+        if (index >= currentRow.size())
+        {
+            return std::monostate{};
+        }
+
+        // 直接把格子的载荷移动给调用方，不在本函数里造中间量再清空源：源会留成一个已搬空的
+        // 同类型值（长文本/字节序列被搬走后长度为 0），基类契约写明「取过的格不得再读」。
+        // 显式再赋一个 monostate 反而会让 GCC 13 在 SSO 缓冲上误判出 -Wfree-nonheap-object
+        return std::move(currentRow[index]);
+    }
+
     DatabaseValue MySqlStatementResult::getValue(const std::string_view name) const
     {
         // 先按名解析索引再走索引重载，保证两条路径的「无当前行」判定与取值规则完全一致

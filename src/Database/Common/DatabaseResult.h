@@ -99,6 +99,8 @@ namespace AsynGyanis::Database
          *          游标式取值本来就是当场构造的，没有可省的拷贝，因此只有物化了行的驱动值得重写。
          * @warning 取用过一次后不得再读同一格：重写方允许把源留成空值。同一行内每格只取一次是
          *          ORM 映射器的既有前提（列下标两两不同由 resolveColumnIndices 保证）。
+         *          对物化快照型的实现，reset() 只复位游标、不重建数据：被取走过的格在第二轮遍历里
+         *          读到的是空值，因此「先 takeValue 消费、再 reset() 重扫」不是受支持的用法。
          * @param index 列下标，越界或游标无效时按「无值」返回 monostate
          * @return DatabaseValue 该格的值，载荷缓冲可能已被搬空
          */

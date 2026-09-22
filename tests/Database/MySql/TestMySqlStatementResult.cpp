@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace AsynGyanis::Database
@@ -201,6 +202,72 @@ namespace AsynGyanis::Database
         const std::string payload = std::get<std::string>(result.getValue("payload"));
         ASSERT_EQ(payload.size(), 3U);
         EXPECT_EQ(payload, std::string("a\0b", 3));
+    }
+
+    /**
+     * @brief 钉住 takeValue() 交出所有权：载荷被搬出快照，同行其他列不受影响
+     * @details ORM 逐列映射器就建立在这条性质上——每格只读一次，因此把载荷搬走是净收益而不是丢数据。
+     *          刻意用足够长（超出小串内联缓冲）的载荷：只有堆缓冲才会真的被搬走，
+     *          短串的移动是逐字节复制，拿它断言「源已空」会测到实现的运气
+     */
+    TEST(MySqlStatementResult, TakeValueMovesPayloadOutOfSnapshot)
+    {
+        const std::string longPayload("blob\0very-long-payload-beyond-small-string-buffer-0123456789", 53);
+        std::vector<std::string>                 columnNames{"id", "payload"};
+        std::vector<std::vector<DatabaseValue> > rows{{std::int64_t{7}, longPayload}};
+        MySqlStatementResult                     singleRow(std::move(columnNames), std::move(rows));
+
+        ASSERT_TRUE(singleRow.next());
+        const DatabaseValue taken = singleRow.takeValue(1);
+        ASSERT_TRUE(std::holds_alternative<std::string>(taken));
+        // 整串随所有权一起搬走：按长度而非零终止，内嵌 '\0' 之后的正文不能丢
+        EXPECT_EQ(std::get<std::string>(taken), longPayload) << "内嵌 NUL 之后的正文被截断了";
+
+        // 源格子留成「同类型但已搬空」，而同行第 0 列完好：搬空是逐格发生的，不是整行清空
+        ASSERT_TRUE(std::holds_alternative<std::string>(singleRow.getValue(1)));
+        EXPECT_TRUE(std::get<std::string>(singleRow.getValue(1)).empty()) << "载荷没被搬走，takeValue 退化成了复制";
+        EXPECT_EQ(std::get<std::int64_t>(singleRow.getValue(0)), 7);
+    }
+
+    /**
+     * @brief 钉住 takeValue() 的三条判界与 getValue() 完全一致：无当前行、列数越界、遍历结束后失效
+     */
+    TEST(MySqlStatementResult, TakeValueSharesGetValueBounds)
+    {
+        const std::unique_ptr<MySqlStatementResult> result = makeSampleResult();
+
+        // 构造后尚未 next()：游标无效
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(result->takeValue(0)));
+
+        ASSERT_TRUE(result->next());
+        // 列数以外的下标一律「无值」，与 getValue() 同一判据
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(result->takeValue(result->columnCount())));
+
+        ASSERT_TRUE(result->next());
+        ASSERT_FALSE(result->next());
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(result->takeValue(0))) << "游标走出末尾后仍可取值";
+    }
+
+    /**
+     * @brief 钉住基类 @warning 承诺的后果：取走过的格在 reset() 之后的第二轮遍历里不再是原值
+     * @details 快照不重建数据，「先 takeValue 消费、再 reset() 重扫」不受支持。写成用例是为了让这条
+     *          一旦被改动就立刻报错，而不是悄悄表现为一列凭空变空
+     */
+    TEST(MySqlStatementResult, TakenCellsStayEmptyAcrossReset)
+    {
+        const std::string longPayload("payload-beyond-small-string-buffer-0123456789-0123456789", 47);
+        std::vector<std::string>                 columnNames{"id", "payload"};
+        std::vector<std::vector<DatabaseValue> > rows{{std::int64_t{3}, longPayload}};
+        MySqlStatementResult                     singleRow(std::move(columnNames), std::move(rows));
+
+        ASSERT_TRUE(singleRow.next());
+        const DatabaseValue taken = singleRow.takeValue(1);
+        ASSERT_EQ(std::get<std::string>(taken), longPayload);
+
+        singleRow.reset();
+        ASSERT_TRUE(singleRow.next());
+        EXPECT_TRUE(std::get<std::string>(singleRow.getValue(1)).empty()) << "取走过的格被重扫成了残值";
+        EXPECT_EQ(std::get<std::int64_t>(singleRow.getValue(0)), 3) << "没被取走的列不该受影响";
     }
 
     /**

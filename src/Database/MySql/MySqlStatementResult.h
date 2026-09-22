@@ -115,6 +115,18 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue getValue(size_t index) const override;
 
         /**
+         * @brief 读出指定列并把该格载荷的所有权交给调用方
+         * @details 重写 DatabaseResult::takeValue()：本类的行是预读进内存的 DatabaseValue 快照，
+         *          getValue() 每格都要复制一份 variant 载荷（文本、字节序列与嵌套列表都是堆缓冲，
+         *          每复制一次就是一次分配），这里改成把格子里的载荷直接移动出去，源留成一个已搬空的
+         *          同类型值。ORM 逐列映射器正是「每格只读一次」的用法，因此这一搬走是净收益。
+         *          判定条件（无当前行、按列数名判界、行内长度判界）与 getValue() 逐条一致。
+         * @param index 列索引，从 0 开始
+         * @return DatabaseValue 该格的值；无当前行或索引越界时返回 std::monostate，载荷缓冲已被搬空
+         */
+        [[nodiscard]] DatabaseValue takeValue(size_t index) override;
+
+        /**
          * @brief 按列名读取当前行的值
          * @details 重写 DatabaseResult::getValue()：先把列名解析成索引，再走索引重载，
          *          保证两条路径的判定完全一致。
