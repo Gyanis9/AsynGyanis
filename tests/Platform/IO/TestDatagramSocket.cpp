@@ -231,6 +231,33 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住：空报文发得出、收得到，来源地址照给
+     * @details 头文件把「0 长度就是合法空报文」写成契约（拿零长报文做保活探测是常见做法），而实现
+     *          此前不分长度地拒掉 `nullptr`——于是 `send(peer, nullptr, 0)` 这一最自然的写法只得到
+     *          kInvalidArgument。接收侧要能把「收到一条空报文」与「暂时没有数据」分开：前者是 0，
+     *          后者是 -1 加 kWouldBlock，因此本用例断言 0 才有意义。
+     * @note 「说有字节却没给缓冲区」仍是非法（见 InvalidSocketAndArgumentsFailSafely）。
+     */
+    TEST(DatagramSocket, SendsAndReceivesAnEmptyDatagram)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+
+        ASSERT_EQ(sender.send(receiver.localAddress(), nullptr, 0), static_cast<ssize_t>(0))
+                << "空报文应当照发，套接字错误码 " << PlatformError::lastSocketErrorCode();
+
+        std::array<char, 16> payloadBuffer{};
+        SocketAddress        peerAddress;
+        const ssize_t receivedByteCount = receiveWithTimeout(receiver, payloadBuffer.data(), payloadBuffer.size(), peerAddress);
+        ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(0)) << "没收到空报文（-1 表示压根没到，不是收到零字节）";
+        EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress())) << "空报文也该带来源地址";
+    }
+
+    /**
      * @brief 没有数据时收，返回 -1 且错误码是 kWouldBlock（不阻塞、不误报成功）
      */
     TEST(DatagramSocket, ReceiveWithoutDataReportsWouldBlock)

@@ -170,8 +170,9 @@ namespace AsynGyanis::Platform
     ssize_t DatagramSocket::send(const SocketAddress &peerAddress, const void *const buffer, const std::size_t length) const noexcept
     {
         // 零长数据报是合法的（RFC 768：最小报文就是 8 字节头、零负载），接收侧一直照收，
-        // 这里也照发——用零长报文做保活探测是常见做法，拒掉它会让两种方向的行为不对称
-        if (!isValid() || buffer == nullptr)
+        // 这里也照发——用零长报文做保活探测是常见做法，拒掉它会让两种方向的行为不对称。
+        // 因此只拒「说有字节却没给缓冲区」这一非法形状：`nullptr` + 0 长度就是空报文的自然写法
+        if (!isValid() || (buffer == nullptr && length > 0))
         {
             PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return -1;
@@ -189,8 +190,11 @@ namespace AsynGyanis::Platform
             return -1;
         }
 
+        // 零长 + NULL 这一组合交给提供者怎么处理，两侧并不一样（有的直接给 WSAEFAULT），而这一层
+        // 不想去赌它：长度为 0 时给一个永远读不到的有效指针，让「空报文」在两端都是同一次调用
+        const char *const payloadPointer = buffer != nullptr ? static_cast<const char *>(buffer) : "";
         const ssize_t sentByteCount = static_cast<ssize_t>(
-                ::sendto(m_fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), 0,
+                ::sendto(m_fileDescriptor, payloadPointer, static_cast<int>(length), 0,
                          reinterpret_cast<const sockaddr *>(&peerAddress.storage), peerAddress.length));
         if (sentByteCount < 0)
         {

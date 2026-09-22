@@ -89,7 +89,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 发一条报文
          * @param peerAddress 目标地址
-         * @param buffer 待发数据
+         * @param buffer 待发数据；length 为 0 时允许 nullptr（那正是空报文的自然写法）
          * @param length 数据长度；0 表示空报文（合法，接收侧照收），
          *        超过 kMaximumDatagramBytes 时当场判错（不交给系统调用去报 EMSGSIZE，
          *        那样在两端会得到不同的错误码，不如这一层统一说清）
