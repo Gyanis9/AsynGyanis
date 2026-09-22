@@ -219,6 +219,20 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] std::string encodeHttp2Frame(Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
 
+    /**
+     * @brief 把一帧直接拼进给定缓冲的末尾（载荷已在手时用它，别再造临时帧串）
+     * @details 帧的布局与校验只在本函数一处定义，`encodeHttp2Frame()` 是它的「交出一份新串」便利入口。
+     *          出站 DATA 帧的载荷本就是连接待发缓冲里的一段，先拼进临时串再搬过去等于整段白拷一遍。
+     * @param bytes 目标缓冲，只能追加；抛错时一字节未加
+     * @param type 帧类型
+     * @param flags 标志位
+     * @param streamId 流号；连接级帧传 0
+     * @param payload 负载字节，本函数同步拷完才返回，不留视图
+     * @throws Base::InvalidArgumentException 用法错误：负载超过 24 位长度域、流号超出 31 位，或类型未定义
+     */
+    void appendHttp2Frame(std::string &bytes, Http2FrameType type, std::uint8_t flags, std::uint32_t streamId,
+                          std::string_view payload);
+
     // ============================================================================
     // 具名负载结构体（RFC 7540 §6.x）
     // ============================================================================

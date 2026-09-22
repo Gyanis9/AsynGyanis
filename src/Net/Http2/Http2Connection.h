@@ -706,6 +706,18 @@ namespace AsynGyanis::Net
         void appendOutgoing(std::string frameBytes);
 
         /**
+         * @brief 把一帧直接拼进待发字节（载荷已在手时用）
+         * @details 与 appendOutgoing 的差别只在省掉一份「帧头+载荷」临时串：DATA 帧的载荷本就是
+         *          待发缓冲里的一段，先拼临时串再搬过来等于整段白拷一遍。帧布局仍只由
+         *          `appendHttp2Frame` 一处定义。
+         * @param type 帧类型
+         * @param flags 标志位
+         * @param streamId 流号；连接级帧传 0
+         * @param payload 负载字节，同步拷进待发缓冲后才返回
+         */
+        void appendOutgoingFrame(Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
+
+        /**
          * @brief 取对端通告的 MAX_FRAME_SIZE
          * @return std::uint32_t 对端通告值；对端还没通告时取规范的初始值 16384（§6.5.2）
          */

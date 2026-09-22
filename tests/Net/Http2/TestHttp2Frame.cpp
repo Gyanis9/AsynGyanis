@@ -272,6 +272,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住「直接拼进目标缓冲」这条出口与临时帧串出口逐字节相同
+     * @details 出站 DATA 帧走的是前者，它对线上字节的唯一承诺就是与 `encodeHttp2Frame` 产出一致：
+     *          长度域按实际字节数写（含 NUL 的二进制负载不得被截断）、只追加不动已有内容、
+     *          校验失败时一字节不加（否则待发缓冲里会留下半帧，之后所有帧的边界全错）。
+     */
+    TEST(Http2Frame, AppendedFrameMatchesTheTemporaryEncoding)
+    {
+        const std::string payload = makeBytes({0x00, 'a', 0xff, 0x00, 'b'});
+
+        std::string appended;
+        appendHttp2Frame(appended, Http2FrameType::Data, kHttp2FlagEndStream, 3U, payload);
+        EXPECT_EQ(appended, encodeHttp2Frame(Http2FrameType::Data, kHttp2FlagEndStream, 3U, payload));
+        EXPECT_EQ(appended, encodeHttp2DataFrame(payload, true, 3U)) << "两条出口必须产出同一份线上字节";
+        EXPECT_EQ(appended.substr(0, 3), makeBytes({0x00, 0x00, 0x05})) << "长度域按实际字节数写，不看有没有 NUL";
+
+        // 目标缓冲非空时只能追加在末尾：连接把多帧排进同一份待发缓冲靠的就是这条
+        appended = "PREFIX";
+        appendHttp2Frame(appended, Http2FrameType::Data, 0U, 1U, payload);
+        EXPECT_EQ(appended, "PREFIX" + encodeHttp2Frame(Http2FrameType::Data, 0U, 1U, payload));
+
+        // 空载荷也要产出合法的 9 字节帧头（收尾的零长 DATA 帧走的就是这一格）
+        appended.clear();
+        appendHttp2Frame(appended, Http2FrameType::Data, kHttp2FlagEndStream, 1U, {});
+        EXPECT_EQ(appended, encodeHttp2DataFrame(Http2DataPayload{.endStream = true}, 1U));
+
+        // 帧头校验在写缓冲之前：抛错时目标缓冲保持原样
+        appended = "PREFIX";
+        EXPECT_THROW(static_cast<void>(appendHttp2Frame(appended, static_cast<Http2FrameType>(0xF), 0U, 1U, "x")),
+                     Base::InvalidArgumentException);
+        EXPECT_EQ(appended, "PREFIX") << "校验不过时不能留下半帧";
+    }
+
+    /**
      * @brief R 位非 0 判错（独立入口与增量解码器两条路径）
      * @details RFC 7540 §4.1 允许接收侧忽略该位，本实现从严：放行会让「这一帧是什么」取决于对端是否
      *          在写未定义的扩展，而这些帧在本端无法被正确解释。

@@ -318,6 +318,14 @@ namespace AsynGyanis::Net
     std::string encodeHttp2Frame(const Http2FrameType type, const std::uint8_t flags, const std::uint32_t streamId,
                                  const std::string_view payload)
     {
+        std::string frame;
+        appendHttp2Frame(frame, type, flags, streamId, payload);
+        return frame;
+    }
+
+    void appendHttp2Frame(std::string &bytes, const Http2FrameType type, const std::uint8_t flags, const std::uint32_t streamId,
+                          const std::string_view payload)
+    {
         // 先判上限再窄化：直接把 size_t 转成 24 位长度域会在超限时静默回绕
         if (payload.size() > static_cast<std::size_t>(kHttp2MaximumFramePayloadByteCount))
         {
@@ -331,10 +339,14 @@ namespace AsynGyanis::Net
         header.type = type;
         header.flags = flags;
         header.streamId = streamId;
+        // 流号与类型的校验由帧头编码那一份负责：它在写目标缓冲之前就会拒掉非法值，
+        // 于是抛错时调用方的缓冲一字节未加，不会留下半帧
+        const std::string headerBytes = encodeHttp2FrameHeader(header);
 
-        std::string frame = encodeHttp2FrameHeader(header);
-        frame.append(payload);
-        return frame;
+        // 刻意不按整帧精确 reserve：连接的待发缓冲一轮里会连排多条帧，精确预留每次都把容量卡成
+        // 「刚好装下」，下一帧又要扩容，累计成 O(帧数²) 的搬移；交给 append 自己的倍增策略才是均摊 O(1)
+        bytes.append(headerBytes);
+        bytes.append(payload);
     }
 
     std::string encodeHttp2SettingsFrame(const Http2SettingsPayload &payload)

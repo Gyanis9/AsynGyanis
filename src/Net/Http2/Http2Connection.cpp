@@ -1725,10 +1725,10 @@ namespace AsynGyanis::Net
             const std::size_t byteCount          = std::min<std::size_t>(remainingByteCount, static_cast<std::size_t>(allowedByteCount));
             // END_STREAM 只落在把队列排空的那一帧上：窗口不足时提前收尾会把没发出去的正文丢掉
             const bool isEndStreamSegment = byteCount == remainingByteCount && stream.isEndStreamPending;
-            // 负载按视图交给编码器：待发缓冲里的字节不必先拷进负载结构体，省掉一次整段拷贝。
-            // 视图在 erase 之前用完（编码是同步的），因此不存在悬垂窗口
-            appendOutgoing(encodeHttp2DataFrame(std::string_view(stream.pendingData).substr(stream.pendingDataOffset, byteCount),
-                                                isEndStreamSegment, stream.streamId));
+            // 载荷按视图直接拼进待发缓冲：先前的写法是「视图 → 临时帧串 → 待发缓冲」，
+            // 中间那趟整段拷贝随载荷线性放大（一帧最大可到对端通告的 SETTINGS_MAX_FRAME_SIZE）
+            appendOutgoingFrame(Http2FrameType::Data, isEndStreamSegment ? kHttp2FlagEndStream : 0U, stream.streamId,
+                                std::string_view(stream.pendingData).substr(stream.pendingDataOffset, byteCount));
             // 只推进游标：原来每帧都 erase(0, n) 搬移整个剩余缓冲，1 MiB 响应会白搬几十 MB。
             // 前缀攒够阈值再整段压缩一次，均摊到每帧是 O(1)
             stream.pendingDataOffset += byteCount;
@@ -1806,6 +1806,12 @@ namespace AsynGyanis::Net
     void Http2Connection::appendOutgoing(std::string frameBytes)
     {
         m_outgoingBytes += frameBytes;
+    }
+
+    void Http2Connection::appendOutgoingFrame(const Http2FrameType type, const std::uint8_t flags, const std::uint32_t streamId,
+                                              const std::string_view payload)
+    {
+        appendHttp2Frame(m_outgoingBytes, type, flags, streamId, payload);
     }
 
     std::uint32_t Http2Connection::peerMaximumFrameSize() const noexcept
