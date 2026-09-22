@@ -1,7 +1,7 @@
 // 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
 // 头部单值查询与列表 token 判定、响应头序列化、h2/h3 组头块的两种走法、响应压缩的一次性耗时、
 // 事件循环的跨线程唤醒、连接池的取出与归还（稳态复用与每次新建两条通路）、SQLite 驱动的一条查询
-// 与一条写入。
+// 与一条写入、QUIC 流层在长连接上的每包编帧。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -52,6 +52,7 @@
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Net/Quic/Streams/QuicStreamLayer.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
@@ -461,6 +462,72 @@ namespace
         static_cast<void>(connection->execute("COMMIT"));
 
         return pool;
+    }
+    /**
+     * @brief 造一条「已经跑了 completedRequestCount 条完整请求」的 QUIC 流层
+     * @details 每条请求按 h3 的真实形状走完：对端发来带 FIN 的双向流、本端交出去并原数报回接收额度、
+     *          写出响应并确认。这样两侧记录都满足回收条件——本用例问的就是「连接活了很久之后，
+     *          编一帧还要不要为历史的流买单」。
+     * @param completedRequestCount 先跑完多少条请求
+     * @return std::unique_ptr<Net::QuicStreamLayer> 建好的流层
+     */
+    std::unique_ptr<Net::QuicStreamLayer> makeAgedQuicStreamLayer(const std::uint64_t completedRequestCount)
+    {
+        Net::QuicTransportParameters parameters;
+        // 额度与流数上限都给足：这里关心的是扫描成本，不该被流量控制或流数上限挡住
+        parameters.initialMaximumData = 1ULL << 40;
+        parameters.initialMaximumStreamDataBidirectionalLocal = 1ULL << 30;
+        parameters.initialMaximumStreamDataBidirectionalRemote = 1ULL << 30;
+        parameters.initialMaximumStreamDataUnidirectional = 1ULL << 30;
+        parameters.initialMaximumBidirectionalStreams = 100000;
+        parameters.initialMaximumUnidirectionalStreams = 100000;
+
+        auto layer = std::make_unique<Net::QuicStreamLayer>(parameters);
+        layer->adoptPeerParameters(parameters);
+
+        static const std::vector<std::uint8_t> requestBody = {'G', 'E', 'T', ' ', '/'};
+        static const std::vector<std::uint8_t> responseBody = {'2', '0', '0'};
+        for (std::uint64_t index = 0; index < completedRequestCount; ++index)
+        {
+            const std::uint64_t streamId = index * 4U;
+
+            Net::QuicStreamFrame incoming;
+            incoming.streamId = streamId;
+            incoming.offset = 0;
+            incoming.data = std::span<const std::uint8_t>(requestBody);
+            incoming.isFinal = true;
+            static_cast<void>(layer->onStreamFrame(incoming));
+            while (layer->hasDeliveries())
+            {
+                const std::optional<Net::QuicStreamDelivery> delivery = layer->takeDelivery();
+                if (!delivery.has_value())
+                {
+                    break;
+                }
+                // 原数报回接收额度：不报的话这条流的入站记录永远不算收口
+                layer->releaseReceiveWindow(delivery->streamId, delivery->bytes.size());
+            }
+
+            static_cast<void>(layer->writeStreamData(streamId, std::span<const std::uint8_t>(responseBody), true));
+            // 把响应编出去并逐轮确认，直到这条流两侧都收口（下一轮 collectFrames 时会摘掉记录）
+            for (int round = 0; round < 4; ++round)
+            {
+                std::string frames;
+                std::vector<Net::QuicStreamRange> sentRanges;
+                std::vector<Net::QuicStreamAnnouncement> announcements;
+                const bool hasFrames = layer->collectFrames(frames, 1200U, sentRanges, announcements);
+                layer->onSendRangesAcknowledged(sentRanges);
+                if (!announcements.empty())
+                {
+                    layer->onStreamAnnouncementsAcknowledged(announcements);
+                }
+                if (!hasFrames)
+                {
+                    break;
+                }
+            }
+        }
+        return layer;
     }
 } // namespace
 
@@ -1806,6 +1873,32 @@ int main(int argumentCount, char **argumentValues)
             {
                 benchLogger.log(Base::LogLevel::Info, kLogMessage);
                 return 1U;
+            },
+            results, checksum, failureCount);
+
+    // 这条盯的是「编一帧要不要为历史的流买单」：连接先跑完 5000 条完整请求，再量每条请求收口后
+    // 剩下的那次「写一段响应 + 编一帧」。实测（容器 GCC 13 Release、绑核）本端 255~261 ns/op；
+    // 把 collectFrames 开头那一次 retireSettledStreams() 去掉后同一条跳到 88.7 µs/op（340 倍），
+    // 也就是说这条能 unmistakably 检出「流记录不再被摘掉」这个回归。
+    // 单看空载编帧的扫描成本随连接年龄的曲线（同法量，只做 collectFrames）：
+    //   开着回收：0 / 100 / 1000 / 5000 / 20000 条请求分别是 7.3 / 6.3 / 6.3 / 6.3 / 6.7 ns；
+    //   去掉回收：同样年龄是 9.5 / 917 / 12556 / 71290 / 823700 ns（记录数 0 / 200 / 2000 / 10000 / 40000）。
+    // 超线性是因为两张 std::map 的节点随连接时长铺开后再也放不进缓存。
+    // 刻意不进基线：这条要在 Windows 上重算整套基线才有意义，先把读数记在这里
+    constexpr std::uint64_t kAgedConnectionRequestCount = 5000;
+    auto agedLayer = makeAgedQuicStreamLayer(kAgedConnectionRequestCount);
+    const std::uint64_t liveStreamId = kAgedConnectionRequestCount * 4U;
+    static const std::vector<std::uint8_t> kTinyResponseBody = {'x'};
+    measureCase(
+            "quic-frame-scan-aged",
+            [&agedLayer, liveStreamId]
+            {
+                std::string frames;
+                std::vector<Net::QuicStreamRange> sentRanges;
+                std::vector<Net::QuicStreamAnnouncement> announcements;
+                static_cast<void>(
+                        agedLayer->writeStreamData(liveStreamId, std::span<const std::uint8_t>(kTinyResponseBody), false));
+                return agedLayer->collectFrames(frames, 1200U, sentRanges, announcements) ? 1U : 0U;
             },
             results, checksum, failureCount);
 
