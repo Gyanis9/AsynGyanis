@@ -225,11 +225,18 @@ int main(const int argc, char **argv)
     // 跨线程投递交给 scheduleRemote：它连带唤醒那条循环
     loop.scheduler().scheduleRemote(probesTask.handle());
 
-    // 另一条循环上验一次远程投递：主线程投、那条循环执行
+    // 另一条循环上验一次远程投递：主线程只投递，执行必须落在那条循环自己的线程上。
+    // 不能在这里替它 runOne()——那会从主线程无锁地读那条循环的 m_localCallables 与 m_localQueue，
+    // 与它正在跑的 run() 撞车（调度器除 scheduleRemote/postRemote 外一律非线程安全）。
+    // 等到标志到位才算数，同时也就证明了「执行发生在目标循环上」而不只是「排进了队列」
     std::atomic<bool> isRemotePosted{false};
     Core::EventLoop  &otherLoop = pool.eventLoop(1 % pool.threadCount());
     otherLoop.scheduler().postRemote([&isRemotePosted] { isRemotePosted.store(true, std::memory_order_release); });
-    static_cast<void>(otherLoop.scheduler().runOne());
+    const bool isRemotePostedByTargetLoop = Samples::waitUntil([&isRemotePosted]
+                                                               {
+                                                                   return isRemotePosted.load(std::memory_order_acquire);
+                                                               },
+                                                               std::chrono::seconds{10});
 
     const bool isFinished = Samples::waitUntil([&isDone] { return isDone.load(std::memory_order_acquire); },
                                               std::chrono::seconds{30});
@@ -238,7 +245,7 @@ int main(const int argc, char **argv)
     samples.check(pool.threadCount() == 2, "IoContext 起了两条各自持有事件循环的线程");
     samples.check(isFinished, "整套运行时检查在时限内跑完（没有挂在未唤醒的等待上）");
     samples.check(probe.isLocalPostDelivered, "调度器的本线程投递当场被执行");
-    samples.check(isRemotePosted.load(std::memory_order_acquire), "跨线程 postRemote 排进了目标循环的队列");
+    samples.check(isRemotePostedByTargetLoop, "跨线程 postRemote 由目标循环自己的线程执行掉（主线程不代跑）");
     samples.check(probe.isTimerElapsed, "Core::Timer 到点唤醒协程");
     samples.check(probe.isWatcherAwakened, "IoWatcher 等到了事件通知器的唤醒（等待没有靠超时脱身）");
     samples.check(probe.isSecondWaitAwoken, "同一个常驻注册对象的第二次等待也被新事件唤醒（注册一次即可反复等待）");

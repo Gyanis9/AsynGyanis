@@ -24,7 +24,7 @@ using namespace AsynGyanis;
 namespace
 {
 #if !ASYN_PLATFORM_WIN32
-    /// 停止请求的投递时刻：到点由 SIGALRM 处理函数向编排器转达（与真实部署里 Ctrl+C 的路径同一条）
+    /// 待停的编排器：信号处理函数拿不到实参，只能经这份文件作用域指针转达（与真实部署里 Ctrl+C 的路径同一条）
     Core::WorkerSupervisor *g_supervisorToStop{nullptr};
 #endif
 

@@ -45,16 +45,6 @@ namespace
         bool        isEchoCorrect{false};
     };
 
-    /**
-     * @brief 跑一轮「服务端 + 客户端」的回环 TLS 握手与一次应用数据往返
-     * @param loop 承载本次等待的循环
-     * @param port 监听端口
-     * @param material 证书夹具路径
-     * @param requireClientCertificate true 时服务端强制双向认证（客户端不出证书就该握手失败）
-     * @param presentClientCertificate true 时客户端带上自己的证书
-     * @param probe 输出：本轮收集到的各项结果
-     * @return Core::Task<> 协程，跑完即返回
-     */
     /// 客户端一侧的裸 SSL 上下文：Core::TlsContext 是服务端形态（server method），客户端必须另起一个
     using ClientContextPointer = std::unique_ptr<SSL_CTX, void (*)(SSL_CTX *)>;
 
