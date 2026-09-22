@@ -204,4 +204,56 @@ namespace AsynGyanis::Net
                 << "每轮 8 抢 4，必然恰好 4 个线程被拒";
     }
 
+    /**
+     * @brief IPv4 映射写法与点分写法算同一个来源，两种写法共用一格
+     * @details 双栈监听器（框架显式关掉 IPV6_V6ONLY）上 IPv4 客户端的对端文本是
+     *          `::ffff:a.b.c.d`，纯 IPv4 监听器给的是 `a.b.c.d`；两类监听器共用一份限额时不折前缀
+     *          就会各占一格，「单个来源」的上限实际翻倍
+     */
+    TEST(PerIpConnectionLimiter, MappedIpv4FormSharesSlotWithPlainForm)
+    {
+        PerIpConnectionLimiter limiter(1);
+
+        const std::optional<PerIpConnectionLimiter::Lease> mappedLease = limiter.tryAcquire("::ffff:10.0.0.1");
+        ASSERT_TRUE(mappedLease.has_value());
+
+        EXPECT_FALSE(limiter.tryAcquire("10.0.0.1").has_value()) << "同一来源换一种写法就被当成另一个来源，上限翻倍";
+        // 大写前缀也来自同一套语义（IPv6 文本按规范不区分大小写），不能因为写法差异分键
+        EXPECT_FALSE(limiter.tryAcquire("::FFFF:10.0.0.1").has_value()) << "大写前缀没被折成同一个键";
+
+        // 查询侧必须与记账侧同一套规则，否则观测读数会显示「这个来源一条都没占」
+        EXPECT_EQ(limiter.activeCountFor("10.0.0.1"), 1u);
+        EXPECT_EQ(limiter.activeCountFor("::ffff:10.0.0.1"), 1u);
+    }
+
+    /**
+     * @brief 归还名额后同一来源（换写法）可重新进入，且折键只针对真正的点分四段
+     * @details 后半段是折键的边界：`::ffff:` 后面不是合法 IPv4 点分文本时保持原样，
+     *          否则就是把「不认识的写法」强行并格，掩盖掉真实的来源差异
+     */
+    TEST(PerIpConnectionLimiter, ReleasedSlotIsReusableAndFoldingStaysStrict)
+    {
+        PerIpConnectionLimiter limiter(1);
+
+        std::optional<PerIpConnectionLimiter::Lease> mappedLease = limiter.tryAcquire("::ffff:10.0.0.2");
+        ASSERT_TRUE(mappedLease.has_value());
+        mappedLease.reset();
+        EXPECT_EQ(limiter.activeCountFor("10.0.0.2"), 0u) << "凭据里保管的应是规范化后的键，否则归还找不回那一格";
+
+        const std::optional<PerIpConnectionLimiter::Lease> plainLease = limiter.tryAcquire("10.0.0.2");
+        ASSERT_TRUE(plainLease.has_value()) << "名额归还后同一来源换写法应能重新进入";
+
+        // 非点分的尾段不折：`::ffff:1:2` 与 `1:2` 因此是两个键，前者也不会挤掉后者的名额
+        const std::optional<PerIpConnectionLimiter::Lease> oddLease = limiter.tryAcquire("::ffff:1:2");
+        ASSERT_TRUE(oddLease.has_value());
+        EXPECT_EQ(limiter.activeCountFor("::ffff:1:2"), 1u) << "非法点分尾段被折掉了";
+        EXPECT_EQ(limiter.activeCountFor("1:2"), 0u);
+
+        // 超出十进制取值范围的也不算 IPv4：`999.0.0.1` 与点分本体是两种不同写法，不该并格
+        const std::optional<PerIpConnectionLimiter::Lease> outOfRangeLease = limiter.tryAcquire("::ffff:999.0.0.1");
+        ASSERT_TRUE(outOfRangeLease.has_value());
+        EXPECT_EQ(limiter.activeCountFor("::ffff:999.0.0.1"), 1u);
+        EXPECT_EQ(limiter.activeCountFor("999.0.0.1"), 0u);
+    }
+
 } // namespace AsynGyanis::Net

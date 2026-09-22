@@ -1,9 +1,87 @@
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
+#include <cstddef>
+#include <string_view>
 #include <utility>
 
 namespace AsynGyanis::Net
 {
+    namespace
+    {
+        /// IPv4 映射地址的文本前缀：glibc 与 Windows 的 inet_ntop 都按 `::ffff:a.b.c.d` 打印
+        constexpr std::string_view mappedIpv4Prefix = "::ffff:";
+
+        /**
+         * @brief 只看 ASCII 字母的大小写归一（不动其余字节，也不引入 locale）
+         * @param value 待比较的字节
+         * @return char 小写形式
+         */
+        constexpr char toLowerAscii(const char value) noexcept
+        {
+            return (value >= 'A' && value <= 'Z') ? static_cast<char>(value - 'A' + 'a') : value;
+        }
+
+        /**
+         * @brief 判断是不是「四段 1~3 位十进制、每段不超过 255」的点分 IPv4 文本
+         * @param value 候选文本
+         * @return true 是
+         */
+        bool isDottedDecimalIpv4(const std::string_view value) noexcept
+        {
+            std::size_t groupCount = 0;
+            std::size_t digitCount = 0;
+            unsigned int groupValue = 0;
+            for (std::size_t index = 0; index <= value.size(); ++index)
+            {
+                const char current = index == value.size() ? '.' : value[index];
+                if (current >= '0' && current <= '9')
+                {
+                    // 段内超三位即不再是合法点分文本（也挡掉了前导零堆出的长串）
+                    if (++digitCount > 3)
+                    {
+                        return false;
+                    }
+                    groupValue = groupValue * 10U + static_cast<unsigned int>(current - '0');
+                    continue;
+                }
+                if (current != '.' || digitCount == 0 || groupValue > 255U)
+                {
+                    return false;
+                }
+                ++groupCount;
+                digitCount = 0;
+                groupValue = 0;
+            }
+            return groupCount == 4;
+        }
+
+        /**
+         * @brief 把来源键折成规范形式：`::ffff:a.b.c.d` 去掉前缀，只留点分十进制本体
+         * @details 双栈监听器（本框架显式关掉 IPV6_V6ONLY）上的 IPv4 客户端，对端地址族是 AF_INET6、
+         *          文本带 `::ffff:` 前缀（Windows 与 glibc 实测同此形式）。同一来源若还从纯 IPv4
+         *          监听器进来，键里没有这个前缀——两种写法各占一格，「单个来源」的上限实际翻倍。
+         *          前缀之外的部分保持原样：IPv6 文本本身已是规范形式，改写它只会掩盖真正的差异。
+         * @param ipKey 调用方给出的来源键
+         * @return std::string 规范化后的来源键
+         */
+        std::string normalizeIpKey(const std::string &ipKey)
+        {
+            if (ipKey.size() <= mappedIpv4Prefix.size())
+            {
+                return ipKey;
+            }
+            for (std::size_t index = 0; index < mappedIpv4Prefix.size(); ++index)
+            {
+                if (toLowerAscii(ipKey[index]) != mappedIpv4Prefix[index])
+                {
+                    return ipKey;
+                }
+            }
+            const std::string_view tail(ipKey.data() + mappedIpv4Prefix.size(), ipKey.size() - mappedIpv4Prefix.size());
+            return isDottedDecimalIpv4(tail) ? std::string{tail} : ipKey;
+        }
+    } // namespace
+
     PerIpConnectionLimiter::PerIpConnectionLimiter(const std::size_t maximumConnectionsPerIp) :
         m_state(std::make_shared<State>()), m_maximumConnectionsPerIp(maximumConnectionsPerIp)
     {
@@ -62,6 +140,9 @@ namespace AsynGyanis::Net
             return Lease{};
         }
 
+        // 记账与归还都用规范化后的键，因此凭据里保管的也是它：还的时候必须找得到同一格
+        ipKey = normalizeIpKey(ipKey);
+
         std::lock_guard<std::mutex> guard(m_state->mutex);
 
         // 用 find 而不是 operator[]：后者会为每个来过的来源留下一个 0 计数条目，
@@ -86,8 +167,11 @@ namespace AsynGyanis::Net
 
     std::size_t PerIpConnectionLimiter::activeCountFor(const std::string &ipKey) const
     {
+        // 与 tryAcquire 同一套规范化：查询侧不折键就会看着像「这个来源一条都没占」，
+        // 而记账其实发生在去掉前缀的那一格上
+        const std::string normalizedKey = normalizeIpKey(ipKey);
         std::lock_guard<std::mutex> guard(m_state->mutex);
-        const auto iterator = m_state->activeCounts.find(ipKey);
+        const auto iterator = m_state->activeCounts.find(normalizedKey);
         return iterator == m_state->activeCounts.end() ? 0 : iterator->second;
     }
 

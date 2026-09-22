@@ -66,6 +66,7 @@ namespace AsynGyanis::Net
             std::size_t maxConnections{0};                           ///< 并发上限，0 表示不限制
             std::shared_ptr<PerIpConnectionLimiter> perIpLimiter{};  ///< 按来源 IP 的限额；空表示不作该限制
             bool markBusy{false};                                    ///< 连接是否自报「有在途工作」（用于分辨 drain 的等待与强关）
+            bool listenOnIpv6Any{false};                             ///< 绑 `::` 而非回环：双栈监听器会同时接住 IPv4 客户端
         };
 
         /// start() 协程的结束原因
@@ -263,7 +264,7 @@ namespace AsynGyanis::Net
         public:
             explicit RunningServerFixture(const ServerTestOptions &options = {}) :
                 m_loop(),
-                m_server(m_loop, Core::InetAddress::localhost(0), options, m_stopObserved),
+                m_server(m_loop, makeListenAddress(options), options, m_stopObserved),
                 m_serverTask(driveStart(m_server, m_outcome)),
                 m_loopThread(m_loop)
             {
@@ -363,6 +364,27 @@ namespace AsynGyanis::Net
 
         private:
             /**
+             * @brief 按选项决定监听地址
+             * @details 双栈档绑 `::`：TcpAcceptor 会关掉 IPV6_V6ONLY，于是 IPv4 客户端也连得进来，
+             *          而对端地址族仍是 AF_INET6——这正是「同一来源有两种地址写法」的那一半前提。
+             *          地址直接按 sockaddr_in6 造而不走 InetAddress::resolve()：后者经 getaddrinfo，
+             *          「没有全局 IPv6 地址」的机器会解析不出 `::`，而那类机器实测照样能绑上并
+             *          收下 IPv4 对端（容器内实测 `::ffff:127.0.0.1`），用例会因此被误判成跳过。
+             */
+            static Core::InetAddress makeListenAddress(const ServerTestOptions &options)
+            {
+                if (options.listenOnIpv6Any)
+                {
+                    sockaddr_in6 any{};
+                    any.sin6_family = AF_INET6;
+                    any.sin6_addr   = in6addr_any;
+                    any.sin6_port   = 0;
+                    return Core::InetAddress{any};
+                }
+                return Core::InetAddress::localhost(0);
+            }
+
+            /**
              * @brief 把 start() 包一层，记录它的退出方式
              * @param server 被测服务器
              * @param outcome 结果槽
@@ -415,18 +437,29 @@ namespace AsynGyanis::Net
          * @brief 查询描述符上由内核实际分配的本地端口
          * @details TcpServer 不对外暴露监听器，端口只能从监听描述符问出来；
          *          TcpAcceptor::localAddress() 有意只回请求值，不适用于此。
+         *          缓冲区必须按 sockaddr_storage 给：双栈监听器的地址族是 AF_INET6，
+         *          只给 sockaddr_in 大小在 Windows 上会让 getsockname 直接失败（不是截断）。
          * @param descriptor 监听描述符
          * @return std::uint16_t 实际端口，失败返回 0
          */
         std::uint16_t queryBoundPort(const int descriptor)
         {
-            sockaddr_in  address{};
-            socklen_t    addressLength = static_cast<socklen_t>(sizeof(address));
-            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
+            sockaddr_storage storage{};
+            socklen_t        storageLength = static_cast<socklen_t>(sizeof(storage));
+            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&storage), &storageLength) != 0)
             {
                 return 0;
             }
-            return ntohs(address.sin_port);
+
+            if (storage.ss_family == AF_INET)
+            {
+                return ntohs(reinterpret_cast<const sockaddr_in *>(&storage)->sin_port);
+            }
+            if (storage.ss_family == AF_INET6)
+            {
+                return ntohs(reinterpret_cast<const sockaddr_in6 *>(&storage)->sin6_port);
+            }
+            return 0;
         }
 
         /**
@@ -707,6 +740,59 @@ namespace AsynGyanis::Net
                     return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u;
                 },
                 kWaitTimeout)) << "连接结束后按 IP 的名额未归还：上界 kWaitTimeout";
+    }
+
+    /**
+     * @brief 双栈监听器上进来的 IPv4 客户端，按点分地址那一格记账
+     * @details 这条用例钉的是**线上真实形态**而不是键的字符串处理：服务器绑 `::`（接受器会关掉
+     *          IPV6_V6ONLY），客户端连 127.0.0.1，于是对端地址族是 AF_INET6、文本带 `::ffff:` 前缀。
+     *          限额若按这个原文分格，同一来源经纯 IPv4 监听器就会另占一格，上限实际翻倍
+     */
+    TEST(TcpServer, DualStackListenerAccountsIpv4PeerAsDottedSource)
+    {
+        ServerTestOptions options;
+        options.kind            = ConnectionKind::ObservesStopRequest;
+        options.perIpLimiter    = std::make_shared<PerIpConnectionLimiter>(1);
+        options.listenOnIpv6Any = true;
+        RunningServerFixture fixture(options);
+        if (!fixture.awaitRunning(kWaitTimeout))
+        {
+            GTEST_SKIP() << "本机不能在 :: 上建立双栈监听器（IPv6 不可用），端到端这一半无从构造";
+        }
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "IPv4 客户端连不上双栈监听器：这条监听器没接住另一族";
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 1u;
+                },
+                kWaitTimeout)) << "双栈监听器上的 IPv4 连接没有走到建连钩子";
+
+        // 不带前缀的写法要能看到这一条：记账格与观测读数是同一格
+        EXPECT_EQ(options.perIpLimiter->activeCountFor("127.0.0.1"), 1u) << "映射地址没折成点分本体，按 IP 的上限可被写法绕过";
+        EXPECT_EQ(options.perIpLimiter->activeCountFor("::ffff:127.0.0.1"), 1u) << "查询侧折键与记账侧不一致";
+
+        // 同源第二条：名额已被这一族的那个写法占满
+        const LoopbackClient secondClient(listeningPort);
+        ASSERT_TRUE(secondClient.isValid());
+        EXPECT_FALSE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 2u;
+                },
+                kNegativeCheckTimeout)) << "换一种地址写法就能再占一个名额";
+
+        fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
+        EXPECT_TRUE(waitForCondition(
+                [&options]
+                {
+                    return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u;
+                },
+                kWaitTimeout)) << "收尾后点分那一格的名额未归还";
     }
 
     /**
