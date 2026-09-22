@@ -110,6 +110,7 @@ namespace AsynGyanis::Core
             std::coroutine_handle<>                 m_handle{}; ///< 等待中的协程，空表示无人在等
             bool                                    m_isQueued{false}; ///< 是否仍在队列的堆里
             bool                                    m_isPendingResume{false}; ///< 已到期、尚待恢复（在队列的待恢复表里）
+            std::size_t                             m_heapIndex{0}; ///< 在堆数组里的下标，仅 m_isQueued 为真时有效
         };
 
         /**
@@ -157,6 +158,35 @@ namespace AsynGyanis::Core
          * @note 必须是 TimerQueue 的成员（等待器的截止时间是私有的）
          */
         [[nodiscard]] static bool isLaterThan(const Awaiter *left, const Awaiter *right) noexcept;
+
+        /**
+         * @brief 交换堆中两个下标上的等待器，并回写它们的堆下标
+         * @param leftIndex 左侧下标
+         * @param rightIndex 右侧下标
+         * @note 堆内指针只能经此函数交换：漏回写下标会让后续取消定位到错误的槽位
+         */
+        void swapHeapAt(std::size_t leftIndex, std::size_t rightIndex) noexcept;
+
+        /**
+         * @brief 让下标处的等待器上浮到正确位置（新登记与取消补位后用）
+         * @param index 起始下标
+         * @return std::size_t 上浮结束后的下标
+         */
+        std::size_t siftAwaiterUp(std::size_t index) noexcept;
+
+        /**
+         * @brief 让下标处的等待器下沉到正确位置（取堆顶与取消补位后用）
+         * @param index 起始下标
+         * @return std::size_t 下沉结束后的下标
+         */
+        std::size_t siftAwaiterDown(std::size_t index) noexcept;
+
+        /**
+         * @brief 摘走堆顶等待器并维持堆序，同时把它的「仍在堆里」标记清掉
+         * @return Awaiter * 原堆顶（调用方负责接着处理）
+         * @note 前置条件是堆非空
+         */
+        [[nodiscard]] Awaiter *takeHeapTop() noexcept;
 
         /**
          * @brief 队列驱动协程：武装描述符 → 等到可读 → 派发到期项

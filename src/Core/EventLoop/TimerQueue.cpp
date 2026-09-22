@@ -24,6 +24,76 @@ namespace AsynGyanis::Core
         return left->m_deadline > right->m_deadline;
     }
 
+    void TimerQueue::swapHeapAt(const std::size_t leftIndex, const std::size_t rightIndex) noexcept
+    {
+        if (leftIndex == rightIndex)
+        {
+            return;
+        }
+        std::swap(m_heap[leftIndex], m_heap[rightIndex]);
+        // 指针一动就要回写下标：取消登记靠它定位，留在旧值上会摘掉别人的槽位
+        m_heap[leftIndex]->m_heapIndex  = leftIndex;
+        m_heap[rightIndex]->m_heapIndex = rightIndex;
+    }
+
+    std::size_t TimerQueue::siftAwaiterUp(std::size_t index) noexcept
+    {
+        while (index > 0)
+        {
+            const std::size_t parentIndex = (index - 1) / 2;
+            if (!isLaterThan(m_heap[parentIndex], m_heap[index]))
+            {
+                break;
+            }
+            swapHeapAt(index, parentIndex);
+            index = parentIndex;
+        }
+        return index;
+    }
+
+    std::size_t TimerQueue::siftAwaiterDown(std::size_t index) noexcept
+    {
+        const std::size_t heapSize = m_heap.size();
+        while (true)
+        {
+            const std::size_t leftIndex = index * 2 + 1;
+            if (leftIndex >= heapSize)
+            {
+                break;
+            }
+            const std::size_t rightIndex = leftIndex + 1;
+            // 与较小的孩子换：两个孩子都更晚时，本项就已在正确位置
+            std::size_t childIndex = leftIndex;
+            if (rightIndex < heapSize && isLaterThan(m_heap[leftIndex], m_heap[rightIndex]))
+            {
+                childIndex = rightIndex;
+            }
+            if (!isLaterThan(m_heap[index], m_heap[childIndex]))
+            {
+                break;
+            }
+            swapHeapAt(index, childIndex);
+            index = childIndex;
+        }
+        return index;
+    }
+
+    TimerQueue::Awaiter *TimerQueue::takeHeapTop() noexcept
+    {
+        Awaiter *const top = m_heap.front();
+        top->m_isQueued     = false;
+
+        // 末尾项补到堆顶再下沉；补的正是被摘走的那一项时（堆里只剩一项）直接弹出
+        const std::size_t lastIndex = m_heap.size() - 1;
+        swapHeapAt(0, lastIndex);
+        m_heap.pop_back();
+        if (!m_heap.empty())
+        {
+            siftAwaiterDown(0);
+        }
+        return top;
+    }
+
     TimerQueue::Awaiter::Awaiter(TimerQueue &queue, const std::chrono::milliseconds duration) noexcept :
         m_queue(&queue),
         m_duration(std::max(duration, std::chrono::milliseconds::zero()))
@@ -159,7 +229,10 @@ namespace AsynGyanis::Core
         }
 
         m_heap.push_back(&awaiter);
-        std::push_heap(m_heap.begin(), m_heap.end(), &TimerQueue::isLaterThan);
+        awaiter.m_heapIndex = m_heap.size() - 1;
+        // 自己实现的上下浮而非 std::push_heap：堆内指针一交换就得回写等待器里的下标，
+        // 标准算法不给这个钩子，而没有下标就只能靠线性扫描定位被取消的那一项
+        siftAwaiterUp(awaiter.m_heapIndex);
         awaiter.m_isQueued = true;
 
         // 新登记的截止时间可能比已武装的更早（驱动正等着一个更晚的时刻）：重武装让内核
@@ -172,15 +245,28 @@ namespace AsynGyanis::Core
     {
         awaiter.m_isQueued = false;
 
-        // 取消是 O(n)：定位后整堆重建。它只在等待器被提前销毁（连接被强关、协程被取消）时
-        // 发生；正常路径（到期取堆顶）是 O(log n) 且不扫描
-        const auto position = std::find(m_heap.begin(), m_heap.end(), &awaiter);
-        if (position == m_heap.end())
+        // 取消靠等待器自己的堆下标定位，因此是 O(log N)：与末尾项互换、弹出，再让补位项
+        // 上下浮回正确位置。整堆重建（make_heap）会让「批量断连」退化成 O(N²)——那时每条
+        // 连接的看门狗都还在堆里，摘一项就要扫一遍其余全部
+        const std::size_t index = awaiter.m_heapIndex;
+        if (index >= m_heap.size() || m_heap[index] != &awaiter)
         {
+            // 正常情况下进不来这里（标记与下标同生同灭）；真进来说明堆与等待器已经脱钩，
+            // 宁可什么都不做，也不能凭一个过期下标去摘别人的槽位
             return;
         }
-        m_heap.erase(position);
-        std::make_heap(m_heap.begin(), m_heap.end(), &TimerQueue::isLaterThan);
+
+        const std::size_t lastIndex = m_heap.size() - 1;
+        swapHeapAt(index, lastIndex);
+        m_heap.pop_back();
+        if (index < m_heap.size())
+        {
+            // 补位项相对被摘的那一项可能更早起、也可能更晚起，两个方向各试一次
+            if (siftAwaiterUp(index) == index)
+            {
+                siftAwaiterDown(index);
+            }
+        }
         [[maybe_unused]] const bool isArmed = rearm();
     }
 
@@ -223,10 +309,7 @@ namespace AsynGyanis::Core
         // 到期的等待器按截止时间先后收进待恢复表（堆顶即最早，故收集顺序天然升序）
         while (!m_heap.empty() && m_heap.front()->m_deadline <= now)
         {
-            Awaiter *const awaiter = m_heap.front();
-            std::pop_heap(m_heap.begin(), m_heap.end(), &TimerQueue::isLaterThan);
-            m_heap.pop_back();
-            awaiter->m_isQueued        = false;
+            Awaiter *const awaiter = takeHeapTop();
             awaiter->m_isPendingResume = true;
             m_expiredAwaiters.push_back(awaiter);
         }

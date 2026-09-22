@@ -22,6 +22,26 @@ namespace AsynGyanis::Core
     {
         using TestSupport::advanceUntil;
         using TestSupport::kWaitTimeout;
+
+        /// 参与交错取消的定时器条数；7 与它互质，因此登记顺序与截止顺序被彻底错开
+        constexpr std::size_t kScrambledTimerCount = 24;
+
+        /// 第 index 个定时器等待的毫秒数：1..24 各一次，但按 index*7 取模的顺序出现
+        std::chrono::milliseconds scrambledTimerDuration(const std::size_t index) noexcept
+        {
+            return std::chrono::milliseconds(static_cast<long long>(index * 7 % kScrambledTimerCount) + 1);
+        }
+
+        /**
+         * @brief 等一个截止时刻被打乱的定时器，醒来后把它的下标记进顺序表
+         * @details 下标走函数形参而不是闭包捕获：Task 是惰性的，协程帧只按地址记住闭包，
+         *          「构造后立即调用的临时闭包」在语句结束时就已销毁，恢复时读捕获即释放后使用
+         */
+        Task<> recordFiringOnExpiry(Timer &timer, std::vector<std::size_t> &firedIndexes, const std::size_t index)
+        {
+            co_await timer.waitFor(scrambledTimerDuration(index));
+            firedIndexes.push_back(index);
+        }
     } // namespace
 
     /**
@@ -198,6 +218,56 @@ namespace AsynGyanis::Core
         waiting.handle().resume();
 
         ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "取消一个等待后，其他定时器没有正常到期";
+    }
+
+    /**
+     * @brief 交错取消一批等待者后，剩下的仍按截止时间先后到期，被取消的一个都不许醒来
+     * @details 钉住的是「取消靠等待器自带的堆下标定位、补位后上下浮」这条路径：登记顺序与
+     *          截止顺序彻底错开，取消点因此散落在堆顶、堆中与堆尾各个位置；任何一次漏回写下标
+     *          或漏下沉都会表现为到期顺序错乱、漏唤醒或多唤醒
+     */
+    TEST(Timer, InterleavedCancellationsKeepDeadlineOrder)
+    {
+        EventLoop loop;
+        Timer     timer(loop);
+
+        std::vector<std::size_t> firedIndexes;
+        std::vector<std::unique_ptr<Task<> > > waiters;
+        waiters.reserve(kScrambledTimerCount);
+
+        for (std::size_t index = 0; index < kScrambledTimerCount; ++index)
+        {
+            waiters.push_back(std::make_unique<Task<> >(recordFiringOnExpiry(timer, firedIndexes, index)));
+            waiters.back()->handle().resume();
+        }
+        ASSERT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount);
+
+        // 每隔两个取消一条：截止时刻是打乱的，因此这些下标在堆里散落在顶、中、尾各处
+        std::size_t expectedLiveCount = 0;
+        for (std::size_t index = 0; index < kScrambledTimerCount; ++index)
+        {
+            if (index % 3 == 0)
+            {
+                waiters[index].reset();
+            }
+            else
+            {
+                ++expectedLiveCount;
+            }
+        }
+        EXPECT_EQ(loop.timerQueue().pendingCount(), expectedLiveCount)
+            << "取消后堆里剩的项数不对：补位或下标回写漏了";
+
+        ASSERT_TRUE(advanceUntil(loop, [&firedIndexes, expectedLiveCount] { return firedIndexes.size() >= expectedLiveCount; },
+                                 kWaitTimeout))
+            << "有未被取消的定时器没有到期：截止时间或补位被弄坏了";
+        EXPECT_EQ(firedIndexes.size(), expectedLiveCount) << "被取消的等待者醒了，或者同一条醒了多次";
+
+        for (std::size_t position = 1; position < firedIndexes.size(); ++position)
+        {
+            EXPECT_LE(scrambledTimerDuration(firedIndexes[position - 1]), scrambledTimerDuration(firedIndexes[position]))
+                << "第 " << position << " 个醒来的定时器晚于前一个的截止时刻";
+        }
     }
 
     /**
