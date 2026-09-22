@@ -61,6 +61,19 @@ namespace AsynGyanis::Platform
             }
 #endif
         }
+
+        /**
+         * @brief 尽力清掉没换出去的临时文件，清理结果不参与报告
+         * @details 失败原因由触发它的那一步定下，这里只是别把半截文件留在目录里。把上一步那个
+         *          error_code 复用给 remove() 会把它覆盖成清理结果（成功即被清空），调用方拿到的
+         *          就成了「替换失败：Success」这种自相矛盾的原因。
+         * @param temporaryPath 待丢弃的临时文件路径
+         */
+        void discardTemporaryFile(const std::filesystem::path &temporaryPath) noexcept
+        {
+            std::error_code cleanupError;
+            std::filesystem::remove(temporaryPath, cleanupError);
+        }
     } // namespace
 
     bool AtomicFileWriter::writeText(const std::filesystem::path &targetPath, const std::string &text, const std::optional<std::filesystem::perms> permissions, std::string *error)
@@ -112,25 +125,29 @@ namespace AsynGyanis::Platform
         // 头文件承诺的「避免断电或中断留下半截文件」要求内容先真正落盘，再动 rename
         if (!flushFileToDisk(temporaryPath))
         {
-            std::filesystem::remove(temporaryPath, fileSystemError);
+            discardTemporaryFile(temporaryPath);
             return reportFailure("把临时文件 '" + temporaryPath.string() + "' 刷入持久存储失败");
         }
 
         if (permissions.has_value())
         {
-            std::filesystem::permissions(temporaryPath, *permissions, std::filesystem::perm_options::replace, fileSystemError);
-            if (fileSystemError)
+            std::error_code permissionError;
+            std::filesystem::permissions(temporaryPath, *permissions, std::filesystem::perm_options::replace, permissionError);
+            if (permissionError)
             {
-                std::filesystem::remove(temporaryPath, fileSystemError);
-                return reportFailure("设置 '" + temporaryPath.string() + "' 权限失败：" + fileSystemError.message());
+                const std::string reason = "设置 '" + temporaryPath.string() + "' 权限失败：" + permissionError.message();
+                discardTemporaryFile(temporaryPath);
+                return reportFailure(reason);
             }
         }
 
-        std::filesystem::rename(temporaryPath, targetPath, fileSystemError);
-        if (fileSystemError)
+        std::error_code renameError;
+        std::filesystem::rename(temporaryPath, targetPath, renameError);
+        if (renameError)
         {
-            std::filesystem::remove(temporaryPath, fileSystemError);
-            return reportFailure("替换 '" + targetPath.string() + "' 失败：" + fileSystemError.message());
+            const std::string reason = "替换 '" + targetPath.string() + "' 失败：" + renameError.message();
+            discardTemporaryFile(temporaryPath);
+            return reportFailure(reason);
         }
 
         // rename 这一步本身也要落盘：目录项不刷下去，掉电后可能回到「旧文件还在、新文件没出现过」

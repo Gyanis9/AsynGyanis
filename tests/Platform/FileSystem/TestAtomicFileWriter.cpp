@@ -165,4 +165,45 @@ namespace AsynGyanis::Platform
         EXPECT_NE(error.find(expectedMarker), std::string::npos)
                 << "临时名里没有进程号，跨进程并发写会共用同一个 .tmp：" << error;
     }
+    /**
+     * @brief 钉住：替换失败时交出的是替换那一步的原因，而不是清理临时文件的结果
+     * @details 清理若复用同一个 error_code，remove() 成功会把它清空，交出去的文案就成了
+     *          「替换失败：Success」——调用方与运维据此永远判断不出真因。对照文本取自测试
+     *          自己的一次同形 rename，不依赖实现内部变量。
+     */
+    TEST(AtomicFileWriter, RenameFailureReportsTheRenameReasonNotTheCleanup)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("AtomicWriter_RenameReason");
+
+        std::string error;
+        const std::filesystem::path blockedDirectory = temporaryDirectory.path() / "blocked-dir";
+        std::filesystem::create_directories(blockedDirectory);
+        // 非空目录才让「文件改名成目录」稳定失败：空目录在个别平台上会被直接换过来
+        ASSERT_TRUE(AtomicFileWriter::writeText(blockedDirectory / "occupant.txt", "x", {}, &error)) << error;
+
+        // 独立判据：自己复现一次同样的 rename，取内核给的原因文本
+        const std::filesystem::path probeSource = temporaryDirectory.path() / "probe-source.txt";
+        ASSERT_TRUE(AtomicFileWriter::writeText(probeSource, "probe", {}, &error)) << error;
+        std::error_code probeError;
+        std::filesystem::rename(probeSource, blockedDirectory, probeError);
+        ASSERT_TRUE(static_cast<bool>(probeError)) << "对照的 rename 没有失败，本用例失去判据";
+        std::filesystem::remove(probeSource);
+
+        error.clear();
+        EXPECT_FALSE(AtomicFileWriter::writeText(blockedDirectory, "should not be published", {}, &error));
+        EXPECT_NE(error.find("替换"), std::string::npos) << "失败没有落在替换那一步：" << error;
+        EXPECT_NE(error.find(probeError.message()), std::string::npos)
+                << "报错应当带上替换那一步的原因「" << probeError.message() << "」，实际：" << error;
+
+        // 清理照旧要发生：残留的 .tmp 会让下一次发布的判据被污染
+        std::size_t temporaryResidueCount = 0;
+        for (const auto &entry : std::filesystem::directory_iterator(temporaryDirectory.path()))
+        {
+            if (entry.path().filename().string().find(".tmp.") != std::string::npos)
+            {
+                ++temporaryResidueCount;
+            }
+        }
+        EXPECT_EQ(temporaryResidueCount, 0U) << "失败的发布留下了没清掉的临时文件";
+    }
 } // namespace AsynGyanis::Platform
