@@ -19,8 +19,9 @@ namespace AsynGyanis::Base
      * @brief 日志格式化器接口
      *
      * @details 把 LogEvent 渲染成一行文本，与 Sink 的落地方式（控制台/文件/异步队列）解耦。
-     *          实例由 LogSink 以 std::atomic<std::shared_ptr> 持有，实现必须无共享可变状态，
-     *          以允许同一格式化器被多个 Sink 并发调用。
+     *          实例由 LogSink 以 std::atomic<std::shared_ptr> 持有，实现不得有**跨线程共享**的可变状态，
+     *          以允许同一格式化器被多个 Sink 并发调用；线程局域的复用缓冲不在此列（JsonFormatter
+     *          就靠它省掉每条重建字段对象的开销），但实现必须在自己的类注释里写明留了什么、代价是什么。
      */
     class LogFormatter
     {
