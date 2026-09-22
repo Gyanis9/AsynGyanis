@@ -365,7 +365,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 登记并启动一轮重载任务（调用方需先占住 m_reloadPending）
-         * @note 只负责登记与启动；任务的收尾（清 pending、接力下一轮）在任务体内
+         * @details 任务的收尾（清 pending、接力下一轮）在任务体内。线程起不来时不抛：
+         *          调用它的是文件监视线程与重载线程，异常逃出线程函数即 std::terminate；
+         *          改由本函数把 pending 让回去并留 dirty，本轮让给下一次事件。
+         * @note 只负责登记与启动
          */
         void startReloadTask();
 

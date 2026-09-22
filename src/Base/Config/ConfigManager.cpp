@@ -1239,28 +1239,40 @@ namespace AsynGyanis::Base
 
     void ConfigManager::handleFileChange(const std::string_view filePath, const Platform::FileChangeType changeType)
     {
-        // 重扫信号走的是**目录**路径，按扩展名的那道过滤会把它整个滤掉——内核丢事件时本要的正是
-        // 「把整份目录重读一遍」，因此它在过滤之前先接下来，与单个文件变更走同一条重载路径
-        if (changeType == Platform::FileChangeType::NeedsRescan)
+        // 这条路径跑在文件监视线程上，而监视器派发改动时不拦回调的异常：从这里抛出去
+        // 就是逃出线程函数 → std::terminate 把整个进程带走。单个事件失败只该丢掉这一个事件
+        // （下一次改动还会再来），因此整段收口在这里
+        try
         {
+            // 重扫信号走的是**目录**路径，按扩展名的那道过滤会把它整个滤掉——内核丢事件时本要的正是
+            // 「把整份目录重读一遍」，因此它在过滤之前先接下来，与单个文件变更走同一条重载路径
+            if (changeType == Platform::FileChangeType::NeedsRescan)
+            {
+                scheduleReload();
+                return;
+            }
+
+            if (!isConfigFile(filePath))
+            {
+                return;
+            }
+
+            // Moved 也要收：Windows 把「改名走开」报成 Moved（源路径），Linux 的同一条动作被映射成 Deleted。
+            // 只收三种时，Windows 上「把 config.yaml 改名挪走」这个下线动作一条通知都不算数——旧名被类型
+            // 判据滤掉、新名因不是配置后缀被上一条滤掉，配置停在已经消失的那份上直到下次改动
+            if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted && changeType != Platform::FileChangeType::Moved)
+            {
+                return;
+            }
+
             scheduleReload();
-            return;
-        }
-
-        if (!isConfigFile(filePath))
+        } catch (const std::exception &changeError)
         {
-            return;
-        }
-
-        // Moved 也要收：Windows 把「改名走开」报成 Moved（源路径），Linux 的同一条动作被映射成 Deleted。
-        // 只收三种时，Windows 上「把 config.yaml 改名挪走」这个下线动作一条通知都不算数——旧名被类型
-        // 判据滤掉、新名因不是配置后缀被上一条滤掉，配置停在已经消失的那份上直到下次改动
-        if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted && changeType != Platform::FileChangeType::Moved)
+            LOG_ERROR_EXCEPTION(changeError, "ConfigManager: 处理文件变更事件时抛出异常，本事件已丢弃：{}", changeError.what());
+        } catch (...)
         {
-            return;
+            LOG_ERROR_FMT("ConfigManager: 处理文件变更事件时抛出非标准异常，本事件已丢弃");
         }
-
-        scheduleReload();
     }
 
     /**
@@ -1287,12 +1299,30 @@ namespace AsynGyanis::Base
 
     void ConfigManager::startReloadTask()
     {
-        const std::lock_guard lock(m_reloadTasksMutex);
+        // 起线程是这条路上唯一会失败的分配（建任务节点、开线程栈、线程数触到系统上限）。
+        // 让它抛出去等于把异常送到调用方的线程函数外——监视线程与重载线程都会 std::terminate。
+        // 这里的收口方式是「本轮不跑，把活留给下一次事件」
+        try
+        {
+            const std::lock_guard lock(m_reloadTasksMutex);
 
-        auto        task    = std::make_unique<ReloadTask>();
-        ReloadTask *rawTask = task.get();
-        task->thread        = std::jthread([this, rawTask]() { runReloadTask(rawTask); });
-        m_reloadTasks.push_back(std::move(task));
+            auto        task    = std::make_unique<ReloadTask>();
+            ReloadTask *rawTask = task.get();
+            task->thread        = std::jthread([this, rawTask]() { runReloadTask(rawTask); });
+            m_reloadTasks.push_back(std::move(task));
+            return;
+        } catch (const std::exception &startError)
+        {
+            LOG_ERROR_EXCEPTION(startError, "ConfigManager: 启动热重载任务失败，本轮重载让给下一次事件：{}", startError.what());
+        } catch (...)
+        {
+            LOG_ERROR_FMT("ConfigManager: 启动热重载任务失败（非标准异常），本轮重载让给下一次事件");
+        }
+
+        // 起不来时由这里把进入本函数前占住的 pending 让回去，并把这一轮的需求留在 dirty 上：
+        // pending 若停在 true，之后每条变更都只会记下 dirty 而没人接力，热重载永久停摆
+        m_reloadDirty.store(true, std::memory_order_release);
+        m_reloadPending.store(false, std::memory_order_release);
     }
 
     void ConfigManager::runReloadTask(ReloadTask *rawTask)
