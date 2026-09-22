@@ -796,6 +796,67 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 同一份限额挂在纯 IPv4 与双栈两台监听器上时，一个来源只有一个名额
+     * @details 这就是本类设计前提里的那种接法（多监听器共享同一份计数，否则上限会按监听器数量翻倍）。
+     *          同一个 IPv4 客户端在两侧的键写法不同——`127.0.0.1` 与 `::ffff:127.0.0.1`——不折键时
+     *          两台各占一格，「单个来源」的上限实际是配置值的两倍
+     */
+    TEST(TcpServer, OneLimiterSharedByIpv4AndDualStackListenersAllowsSingleConnection)
+    {
+        auto limiter = std::make_shared<PerIpConnectionLimiter>(1);
+
+        ServerTestOptions v4OnlyOptions;
+        v4OnlyOptions.kind         = ConnectionKind::ObservesStopRequest;
+        v4OnlyOptions.perIpLimiter = limiter;
+        RunningServerFixture v4OnlyFixture(v4OnlyOptions);
+
+        ServerTestOptions dualStackOptions;
+        dualStackOptions.kind          = ConnectionKind::ObservesStopRequest;
+        dualStackOptions.perIpLimiter  = limiter;
+        dualStackOptions.listenOnIpv6Any = true;
+        RunningServerFixture dualStackFixture(dualStackOptions);
+
+        ASSERT_TRUE(v4OnlyFixture.awaitRunning(kWaitTimeout)) << "IPv4 监听器未进入接受循环";
+        if (!dualStackFixture.awaitRunning(kWaitTimeout))
+        {
+            GTEST_SKIP() << "本机不能在 :: 上建立双栈监听器（IPv6 不可用），两台共享一份限额这一形态无从构造";
+        }
+
+        const std::uint16_t v4OnlyPort = queryBoundPort(v4OnlyFixture.listenDescriptor());
+        const std::uint16_t dualStackPort = queryBoundPort(dualStackFixture.listenDescriptor());
+        ASSERT_NE(v4OnlyPort, 0);
+        ASSERT_NE(dualStackPort, 0);
+
+        const LoopbackClient firstClient(v4OnlyPort);
+        ASSERT_TRUE(firstClient.isValid()) << "回环连接失败";
+        ASSERT_TRUE(waitForCondition(
+                [&v4OnlyFixture]
+                {
+                    return v4OnlyFixture.server().createConnectionCalls() >= 1u;
+                },
+                kWaitTimeout)) << "第一条连接没挂上 IPv4 监听器";
+
+        // 换一台监听器再连：对端写法不同，但来源是同一个，名额已被占满
+        const LoopbackClient secondClient(dualStackPort);
+        EXPECT_FALSE(waitForCondition(
+                [&dualStackFixture]
+                {
+                    return dualStackFixture.server().createConnectionCalls() >= 1u;
+                },
+                kNegativeCheckTimeout))
+                << "同一来源换一台监听器就又拿到一个名额：按来源的上限被地址写法稀释";
+        EXPECT_EQ(limiter->activeCountFor("127.0.0.1"), 1u) << "两台监听器各记了一格";
+
+        v4OnlyFixture.runOnLoopAndWait([&v4OnlyFixture] { v4OnlyFixture.server().close(); });
+        EXPECT_TRUE(waitForCondition(
+                [&limiter]
+                {
+                    return limiter->activeCountFor("127.0.0.1") == 0u;
+                },
+                kWaitTimeout)) << "第一条连接收尾后共享限额未归还";
+    }
+
+    /**
      * @brief 取不到对端地址的描述符只丢掉这一条，不把异常穿出接手路径
      * @details remoteAddress() 在 getpeername 失败时会抛（这里用一条没连上的套接字造出该失败）。
      *          adoptConnection 的契约是「返回真/假、不抛」：接手一条坏描述符不该把整台服务器的接受
