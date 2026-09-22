@@ -1370,6 +1370,82 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：对端跳过的流号仍算 idle 流违约，不能被「记录已挤出」这条宽容规则咽下
+     * @details §5.1.1 只要求新流号严格递增，跳号合法，因此「流号不超过已用最大值」推不出「这条流开过」。
+     *          账本还完整（一条终止记录都没挤掉）时本端能断定它从未开启，必须按 §5.1 回 PROTOCOL_ERROR。
+     */
+    TEST(Http2Connection, RejectsFramesOnStreamIdentifiersThePeerSkipped)
+    {
+        // 三条连接各测一种帧：判错之后连接即失效，同一对象上接着喂别的帧什么也测不出来
+        const auto openOnlySeventhStream = [](Http2Connection &connection)
+        {
+            completeHandshake(connection);
+            // 对端只用过流 7：流 1/3/5 从未出现，却都小于「本端已用过的最大对端流号」
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 7U,
+                                                 makeMinimalGetRequestBlock())),
+                      Http2ConnectionFeedStatus::NeedMore);
+            static_cast<void>(connection.takeRequests());
+        };
+
+        Http2Connection dataConnection;
+        openOnlySeventhStream(dataConnection);
+        EXPECT_EQ(feed(dataConnection, makeFrame(Http2FrameType::Data, 0, 5U, "x")), Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(dataConnection.errorCode(), Http2ErrorCode::ProtocolError);
+        EXPECT_NE(dataConnection.errorMessage().find("从未开启"), std::string::npos) << dataConnection.errorMessage();
+
+        Http2Connection windowUpdateConnection;
+        openOnlySeventhStream(windowUpdateConnection);
+        EXPECT_EQ(feed(windowUpdateConnection, makeFrame(Http2FrameType::WindowUpdate, 0, 5U, makeBigEndian32(16U))),
+                  Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(windowUpdateConnection.errorCode(), Http2ErrorCode::ProtocolError);
+
+        Http2Connection resetConnection;
+        openOnlySeventhStream(resetConnection);
+        EXPECT_EQ(feed(resetConnection, makeFrame(Http2FrameType::RstStream, 0, 5U, makeBigEndian32(8U))),
+                  Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(resetConnection.errorCode(), Http2ErrorCode::ProtocolError);
+    }
+
+    /**
+     * @brief 钉住：终止记录被挤出账本之后，该流上的迟到帧退回「按已终止流忽略」且照还连接级窗口
+     * @details 收紧 idle 流的判错不能把代价落到这里：账本一旦不完整就无从证明对端开过哪条流，只能宽容。
+     *          先断言记录确实已被挤掉，实现里的窗口值将来调大时这条用例不会静默退化成测「保留记录」那一档
+     */
+    TEST(Http2Connection, StillIgnoresFramesOnStreamsWhoseRecordsWereEvicted)
+    {
+        // 与实现里的 kTerminatedStreamMemoryCount 同值：多开两条才能把最早的记录挤出货架
+        constexpr std::uint32_t kTerminatedRecordStreamCount = 256U;
+
+        Http2Connection connection;
+        completeHandshake(connection);
+        for (std::uint32_t streamId = 1U; streamId <= kTerminatedRecordStreamCount * 2U + 1U; streamId += 2U)
+        {
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
+                                                 makeMinimalGetRequestBlock())),
+                      Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
+            static_cast<void>(connection.takeRequests());
+            // 由对端 RST 关闭：本端不再持有该流的活状态，记录进终止窗口
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, streamId, makeBigEndian32(8U))),
+                      Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
+            static_cast<void>(connection.takeOutgoingBytes());
+        }
+
+        Http2StreamState streamState{};
+        ASSERT_FALSE(connection.tryGetStreamState(1U, streamState)) << "前提没成立：流 1 的记录应已被挤出账本";
+
+        const std::string chunk(16384U, 'y');
+        for (int frameIndex = 0; frameIndex < 3; ++frameIndex)
+        {
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)), Http2ConnectionFeedStatus::NeedMore);
+        }
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        const std::vector<Http2Frame> updateFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(updateFrames.size(), 1U) << "被丢弃的正文消费在连接级窗口上，应当回一条 WINDOW_UPDATE";
+        EXPECT_EQ(updateFrames[0].header.type, Http2FrameType::WindowUpdate);
+    }
+
+    /**
      * @brief 钉住：PRIORITY 在任何流上都被接受（不建流、不回帧），未知帧类型按 §4.1 忽略
      */
     TEST(Http2Connection, IgnoresPriorityAndUnknownFrameTypes)

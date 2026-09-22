@@ -673,14 +673,16 @@ namespace AsynGyanis::Net
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
-            if (streamId <= m_highestPeerStreamId)
+            if (streamId <= m_highestPeerStreamId && m_hasEvictedTerminatedStreamRecord)
             {
                 // 记录已被挤出（已终止流只保留最近 kTerminatedStreamMemoryCount 条）：对端确实开过这条流，
                 // 在终止流上补发的在途 DATA 允许直接忽略——把连接级窗口还回去，不当连接错误
                 creditConnectionReceiveWindow(static_cast<std::size_t>(frameByteCount));
                 return true;
             }
-            // 从未开启的流上出现 DATA：§5.1「idle」段只允许 HEADERS 与 PRIORITY
+            // 从未开启的流上出现 DATA：§5.1「idle」段只允许 HEADERS 与 PRIORITY。
+            // 一条记录都没被挤掉时「流号不超过已用最大值而账本里又没有」就等于「这条流从未开过」，
+            // 这种能证伪的违约帧不能替对端咽下去
             fail(Http2ErrorCode::ProtocolError,
                  std::format("流 {} 从未开启（idle），不能在该流上发 DATA（RFC 7540 §5.1）；本端已用过的最大对端流号是 {}",
                              streamId, m_highestPeerStreamId));
@@ -843,13 +845,14 @@ namespace AsynGyanis::Net
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
-            if (streamId <= m_highestPeerStreamId)
+            if (streamId <= m_highestPeerStreamId && m_hasEvictedTerminatedStreamRecord)
             {
                 // 记录已被挤出：该流开过（终止记录只保留最近一批），§5.1「closed」段要求忽略
                 // RST_STREAM——对端可能还没看到本端终止它的那一帧
                 return true;
             }
-            // idle 流上只允许 HEADERS 与 PRIORITY（§5.1）：对从未开启的流发 RST_STREAM 是连接错误
+            // idle 流上只允许 HEADERS 与 PRIORITY（§5.1）：对从未开启的流发 RST_STREAM 是连接错误。
+            // 账本还完整（没挤掉过记录）时这里判得准，见 handleData 同一处说明
             fail(Http2ErrorCode::ProtocolError,
                  std::format("收到流 {} 的 RST_STREAM，但该流从未开启（idle）：RFC 7540 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY",
                              streamId));
@@ -974,7 +977,7 @@ namespace AsynGyanis::Net
         StreamRecord *const stream = findStream(streamId);
         if (stream == nullptr)
         {
-            if (streamId <= m_highestPeerStreamId)
+            if (streamId <= m_highestPeerStreamId && m_hasEvictedTerminatedStreamRecord)
             {
                 // 记录已被挤出：与「已终止流」同一处置（§5.1「closed」段要求忽略 WINDOW_UPDATE）——
                 // 记成连接错误会把一条合法的连接整条打掉
@@ -1610,6 +1613,8 @@ namespace AsynGyanis::Net
         {
             m_streams.erase(m_terminatedStreamIds.front());
             m_terminatedStreamIds.pop_front();
+            // 账本自此不完整：再也无法证明某个流号「从未被开过」，对 idle 流上的违约帧只能退回宽容忽略
+            m_hasEvictedTerminatedStreamRecord = true;
         }
     }
 

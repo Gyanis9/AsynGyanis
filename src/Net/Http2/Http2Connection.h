@@ -787,6 +787,7 @@ namespace AsynGyanis::Net
 
         std::map<std::uint32_t, StreamRecord> m_streams;              ///< 流账本：含刚终止的流
         std::deque<std::uint32_t> m_terminatedStreamIds;              ///< 终止顺序，用于给账本里已终止的记录设上限
+        bool m_hasEvictedTerminatedStreamRecord{false};               ///< 是否挤掉过终止流的记录：挤掉过就再也断不出「这条流号从未被开过」，idle 流上的违约帧只能宽容忽略
         std::size_t m_openStreamCount{0};                             ///< Open 与两个半关状态的流数（并发上限的判据）
         std::uint32_t m_highestPeerStreamId{0};                       ///< 对端已用过的最大流号：判「严格递增」与 GOAWAY 的 last-stream-id
         std::int64_t m_connectionSendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 连接级发送窗口（只受 WINDOW_UPDATE 影响，§6.9.2）
