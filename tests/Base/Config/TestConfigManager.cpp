@@ -282,6 +282,28 @@ server:
                 << "失败文件里「已经展开」的那半份键跟着提交了：契约说失败的键要从快照中消失";
     }
 
+    /**
+     * @brief 显式文件列表那条入口同样不能提交失败文件的半截键
+     * @details 与上一条钉同一份契约（ConfigLoadResult 写的「失败文件里的键从快照中消失」），
+     *          但走的是 loadFiles：它原先把整份累计表直接交给每份文件摊，失败文件已经展开的
+     *          键就留在里面被一起提交了。两份文件各用一种格式，顺带覆盖跨格式的这一对入口。
+     */
+    TEST_F(ConfigManagerTest, LoadFilesDoesNotCommitHalfFlattenedFailedFile)
+    {
+        const std::filesystem::path goodFile   = writeFile("good.yaml", "kept: true\n");
+        // 对象按键名排序展开：alpha 先落进临时表，随后 "bad.key" 才让这份文件判失败
+        const std::filesystem::path brokenFile = writeFile("broken.json", R"({"alpha": 1, "bad.key": 2})");
+
+        const ConfigLoadResult result = configuration().loadFiles({goodFile, brokenFile});
+
+        EXPECT_FALSE(result.success) << "带点号的键必须让这次加载失败";
+        EXPECT_EQ(result.failedFiles.size(), 1U);
+        EXPECT_EQ(result.loadedFiles.size(), 1U);
+        EXPECT_TRUE(configuration().getBool("kept", false)) << "没问题的那份文件应当照常提交";
+        EXPECT_EQ(configuration().getInt("alpha", -1), -1)
+                << "loadFiles 把失败文件已展开的那半份键跟着提交了";
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryWithRegularFileFails)
     {
         const std::filesystem::path filePathInPlaceOfDirectory = writeFile("plain.yaml", "key: value\n");

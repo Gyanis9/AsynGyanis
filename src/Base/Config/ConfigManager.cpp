@@ -152,10 +152,18 @@ namespace AsynGyanis::Base
                 result.errors.push_back("不支持的配置文件格式（应为 .json、.yaml 或 .yml）：" + filePath.string());
                 continue;
             }
-            if (loadConfigFile(filePath, values, result.errors))
+            // 每份文件先摊进自己那张临时表，成功了才并进来：与按目录加载共用同一份契约
+            // （「失败文件里的键从快照中消失」）。直接往累计表里摊的话，解析中途失败时
+            // 那份已经展开的半截键会跟着别份文件一起被提交
+            ConfigKeyValueMap fileValues;
+            if (loadConfigFile(filePath, fileValues, result.errors))
             {
                 result.loadedFiles.push_back(filePath.string());
                 loadedPaths.push_back(filePath);
+                for (auto &[key, value]: fileValues)
+                {
+                    values.insert_or_assign(std::move(key), std::move(value));
+                }
             } else
             {
                 result.failedFiles.push_back(filePath.string());
