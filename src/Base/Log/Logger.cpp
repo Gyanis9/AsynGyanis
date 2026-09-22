@@ -138,18 +138,11 @@ namespace AsynGyanis::Base
     {
         const auto snapshot = m_sinksSnapshot.load(std::memory_order_acquire);
 
-        // 先数一遍有几个 Sink 愿意收：只有一个时才把事件本体交出去（异步日志正是这一条——
-        // Logger 上挂一个 AsyncSink）。多于一个时后面的 Sink 还要读同一份事件，交出本体
-        // 就等于让它们记空行，于是这一行老老实实各读各的
-        std::size_t acceptingCount = 0;
-        for (const auto &sink: snapshot->sinks)
-        {
-            if (sink && sink->shouldLog(event.level))
-            {
-                ++acceptingCount;
-            }
-        }
-        const bool handOverEvent = acceptingCount == 1U;
+        // 「只有一个 Sink 才交出事件本体」这条判据只看快照大小，不看过滤结果：异步日志正是
+        // 挂在 Logger 上的唯一一个 Sink，这一趟就省掉整份事件拷贝。若改成数「有几个 Sink 愿意收」，
+        // 判定就得问两遍，而并发的 setLevel() 能让两遍答案不一致——按「只有一个收」交出本体之后，
+        // 后一个 Sink 读到的是已被搬空的消息，只留下一行有时间戳和级别的空日志
+        const bool soleSink = snapshot->sinks.size() == 1U;
 
         for (const auto &sink: snapshot->sinks)
         {
@@ -159,7 +152,7 @@ namespace AsynGyanis::Base
             }
             try
             {
-                if (handOverEvent)
+                if (soleSink)
                 {
                     sink->write(std::move(event));
                 } else

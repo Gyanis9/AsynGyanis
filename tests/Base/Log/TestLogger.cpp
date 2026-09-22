@@ -45,6 +45,17 @@ namespace AsynGyanis::Base
                 m_events.push_back(event);
             }
 
+            /**
+             * @brief 收下并搬走事件本体
+             * @details 与上面那条的区别就是这里真的把消息搬进账本：调用方的事件因此被搬空，
+             *          用来还原 AsyncSink 那一类「接管本体的 Sink」的实际行为
+             */
+            void record(LogEvent &&event)
+            {
+                const std::lock_guard lock(m_mutex);
+                m_events.push_back(std::move(event));
+            }
+
             /** @brief 累加一次 flush 调用计数 */
             void countFlush()
             {
@@ -118,6 +129,61 @@ namespace AsynGyanis::Base
 
         private:
             std::shared_ptr<SinkLedger> m_ledger; ///< 事件账本
+        };
+
+        /**
+         * @brief 记录事件、并在被调用时放行另一个 Sink 阈值的桩
+         * @details 用来把「两个 Sink 的过滤答案在派发中途变化」造成确定事件：本 Sink 的 write()
+         *          正好落在派发循环对后一个 Sink 求值之前，无需赌另一个线程何时 setLevel
+         */
+        class PeerEnablingSink final : public LogSink
+        {
+        public:
+            /**
+             * @brief 构造会放行同伴的 Sink
+             * @param ledger 本 Sink 的事件账本
+             * @param peer 每次收到事件后要把阈值放开的那个 Sink（不持有所有权）
+             */
+            PeerEnablingSink(std::shared_ptr<SinkLedger> ledger, LogSink *peer) :
+                m_ledger(std::move(ledger))
+                , m_peer(peer)
+            {
+            }
+
+            /**
+             * @brief 记录左值事件并放行同伴
+             * @details 重写 LogSink::write(const LogEvent &)：收到的是副本，同伴随后仍能拿到完整事件。
+             * @param event 日志事件
+             */
+            void write(const LogEvent &event) override
+            {
+                m_ledger->record(event);
+                m_peer->setLevel(LogLevel::Trace);
+            }
+
+            /**
+             * @brief 收下被交接过来的事件本体并放行同伴
+             * @details 重写 LogSink::write(LogEvent &&)：走到这一条就说明拿到的是事件本体，
+             *          这里像 AsyncSink 那样真把它搬进账本——调用方那份就此变空，
+             *          后一个 Sink 只能记出一条只剩时间与级别的空行。这正是本桩要暴露的那一步。
+             * @param event 日志事件
+             */
+            void write(LogEvent &&event) override
+            {
+                m_ledger->record(std::move(event));
+                m_peer->setLevel(LogLevel::Trace);
+            }
+
+            /**
+             * @brief 刷新空实现
+             */
+            void flush() override
+            {
+            }
+
+        private:
+            std::shared_ptr<SinkLedger> m_ledger; ///< 事件账本
+            LogSink *m_peer;                      ///< 收到事件后要放行阈值的同伴 Sink（不持有）
         };
 
         /**
@@ -404,6 +470,36 @@ namespace AsynGyanis::Base
 
         // 三个 Sink 共享同一账本，因此共收到 3 条记录
         EXPECT_EQ(m_ledger->eventCount(), 3u);
+    }
+
+    /**
+     * @brief 过滤答案在派发中途变化时，后一个 Sink 不许拿到被搬空的事件
+     * @details 钉的是「交出事件本体」这条省拷贝判据的取值方式：它一度数的是「有几个 Sink 愿意收」，
+     *          而那要把 shouldLog 问两遍。两遍之间阈值变了，就会按「只有一个人收」把本体移给前一个，
+     *          后一个则记出一条只剩时间与级别的空行。用例用前一个 Sink 的 write() 去翻后一个的阈值，
+     *          把这件事造成确定发生而不是赌调度
+     */
+    TEST_F(LoggerTest, LaterSinkNeverReceivesAnEventWhoseBodyWentToAnEarlierSink)
+    {
+        auto firstLedger  = std::make_shared<SinkLedger>();
+        auto secondLedger = std::make_shared<SinkLedger>();
+
+        // 消息必须长过小串内联，否则被搬空的那个 std::string 仍留着原文，用例看不出差别
+        constexpr std::string_view kMessage = "the dispatch decision must be sampled once, so this message stays long";
+
+        Logger logger("dispatch");
+        auto secondSink      = std::make_unique<RecordingSink>(secondLedger);
+        auto *secondSinkView = secondSink.get();
+        secondSinkView->setLevel(LogLevel::Off);
+        logger.addSink(std::make_unique<PeerEnablingSink>(firstLedger, secondSinkView));
+        logger.addSink(std::move(secondSink));
+
+        logger.log(LogLevel::Info, kMessage);
+
+        EXPECT_EQ(firstLedger->lastMessage(), kMessage) << "前一个 Sink 就该收到完整事件";
+        ASSERT_EQ(secondLedger->eventCount(), 1U) << "阈值被中途放行的后一个 Sink 也会收到这一行";
+        EXPECT_EQ(secondLedger->lastMessage(), kMessage)
+                << "后一个 Sink 记下了空行：事件本体已被移交给前一个 Sink";
     }
 
     TEST_F(LoggerTest, ThrowingSinkDoesNotStopOtherSinks)
