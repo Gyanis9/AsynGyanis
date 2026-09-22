@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -23,13 +24,29 @@ namespace AsynGyanis::Core
         using TestSupport::advanceUntil;
         using TestSupport::kWaitTimeout;
 
-        /// 参与交错取消的定时器条数；7 与它互质，因此登记顺序与截止顺序被彻底错开
-        constexpr std::size_t kScrambledTimerCount = 24;
+        /// 参与交错取消的定时器条数：堆被撑到好几层，取消点因此散落在顶、中、尾各处
+        constexpr std::size_t kScrambledTimerCount = 18;
 
-        /// 第 index 个定时器等待的毫秒数：1..24 各一次，但按 index*7 取模的顺序出现
+        /**
+         * @brief 第 index 个定时器等待的毫秒数
+         * @details 只有 15/45/135/405 这四个短值，相邻之间相差三倍：登记十几条等待只花掉毫秒级，
+         *          再慢的机器也颠倒不了它们的先后，到期顺序因此只由堆序决定。
+         *          其余一律 30 秒量级，用例期间永不到期，只负责把堆撑大、把取消点摊到各层
+         */
+        constexpr std::array<long long, kScrambledTimerCount> kScrambledDurationsMs
+            {30000, 15, 30001, 45, 30002, 30003, 30004, 135, 30005,
+             30006, 30007, 405, 30008, 30009, 30010, 30011, 30012, 30013};
+
+        /// 截止时刻最短的一批里没被取消的下标，按截止时间升序——这就是预期的醒来顺序
+        constexpr std::array<std::size_t, 3> kExpectedFiredIndexes{1, 7, 11};
+
+        /// 每隔两个取消一条时被摘掉的条数（下标 0、3、6…）
+        constexpr std::size_t kCancelledTimerCount = (kScrambledTimerCount + 2) / 3;
+
+        /// 第 index 个定时器的等待时长
         std::chrono::milliseconds scrambledTimerDuration(const std::size_t index) noexcept
         {
-            return std::chrono::milliseconds(static_cast<long long>(index * 7 % kScrambledTimerCount) + 1);
+            return std::chrono::milliseconds(kScrambledDurationsMs[index]);
         }
 
         /**
@@ -221,10 +238,12 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 交错取消一批等待者后，剩下的仍按截止时间先后到期，被取消的一个都不许醒来
+     * @brief 交错取消一批等待者后，剩下的按截止时间先后到期，被取消的一个都不许醒来
      * @details 钉住的是「取消靠等待器自带的堆下标定位、补位后上下浮」这条路径：登记顺序与
      *          截止顺序彻底错开，取消点因此散落在堆顶、堆中与堆尾各个位置；任何一次漏回写下标
-     *          或漏下沉都会表现为到期顺序错乱、漏唤醒或多唤醒
+     *          或漏下沉都会表现为到期顺序错乱、漏唤醒或多唤醒。
+     *          参与到期断言的只有间隔成倍的几条，其余挂在 30 秒外，因此用例不断言真实墙钟差，
+     *          登记的毫秒级耗时也颠倒不了它们的先后
      */
     TEST(Timer, InterleavedCancellationsKeepDeadlineOrder)
     {
@@ -242,32 +261,29 @@ namespace AsynGyanis::Core
         }
         ASSERT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount);
 
-        // 每隔两个取消一条：截止时刻是打乱的，因此这些下标在堆里散落在顶、中、尾各处
-        std::size_t expectedLiveCount = 0;
-        for (std::size_t index = 0; index < kScrambledTimerCount; ++index)
+        // 每隔两个取消一条：短截止的那条也在其中，堆顶/堆中/堆尾的摘除路径一次全走到
+        for (std::size_t index = 0; index < kScrambledTimerCount; index += 3)
         {
-            if (index % 3 == 0)
-            {
-                waiters[index].reset();
-            }
-            else
-            {
-                ++expectedLiveCount;
-            }
+            waiters[index].reset();
         }
-        EXPECT_EQ(loop.timerQueue().pendingCount(), expectedLiveCount)
+        EXPECT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount - kCancelledTimerCount)
             << "取消后堆里剩的项数不对：补位或下标回写漏了";
 
-        ASSERT_TRUE(advanceUntil(loop, [&firedIndexes, expectedLiveCount] { return firedIndexes.size() >= expectedLiveCount; },
+        // 等到最后一条短截止到期：被取消的那条 45 毫秒此刻早已越过时限，它若漏摘就会多出一条记录
+        ASSERT_TRUE(advanceUntil(loop, [&firedIndexes] { return firedIndexes.size() >= kExpectedFiredIndexes.size(); },
                                  kWaitTimeout))
-            << "有未被取消的定时器没有到期：截止时间或补位被弄坏了";
-        EXPECT_EQ(firedIndexes.size(), expectedLiveCount) << "被取消的等待者醒了，或者同一条醒了多次";
+            << "有未被取消的定时器没有到期：取消后的堆顶或重新武装被弄坏了";
 
-        for (std::size_t position = 1; position < firedIndexes.size(); ++position)
-        {
-            EXPECT_LE(scrambledTimerDuration(firedIndexes[position - 1]), scrambledTimerDuration(firedIndexes[position]))
-                << "第 " << position << " 个醒来的定时器晚于前一个的截止时刻";
-        }
+        EXPECT_EQ(firedIndexes, std::vector<std::size_t>(kExpectedFiredIndexes.begin(), kExpectedFiredIndexes.end()))
+            << "醒来的不是「按截止时间升序的、未被取消的那几条」：堆序、取消定位或补位坏了";
+
+        // 三条已摘走，剩下的只有远截止那几条：它们一条都不该被派发
+        EXPECT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount - kCancelledTimerCount - kExpectedFiredIndexes.size())
+            << "未到期的定时器被误摘或误派发";
+
+        // 收尾销毁全部等待者：摘除点再次覆盖堆的各层，漏回写下标会在这里留下悬空登记
+        waiters.clear();
+        EXPECT_EQ(loop.timerQueue().pendingCount(), 0U) << "销毁全部等待者后堆里还有残留";
     }
 
     /**
