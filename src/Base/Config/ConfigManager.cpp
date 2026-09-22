@@ -180,7 +180,9 @@ namespace AsynGyanis::Base
             {
                 directoryToCommit = derivedDirectory;
             }
-            commitConfigData(std::move(values), result.loadedFiles, directoryToCommit);
+            // 显式列表没有「递归与否」这件事：这里落下的目录只是给 reload() 与热重载当锚点，
+            // 沿用递归口径与改动前的行为一致（不这么做会让锚点目录里后加的子目录文件不再被读到）
+            commitConfigData(std::move(values), result.loadedFiles, directoryToCommit, true);
         }
         result.success = result.failedFiles.empty() && !result.loadedFiles.empty();
         return result;
@@ -201,6 +203,10 @@ namespace AsynGyanis::Base
 
     bool ConfigManager::enableHotReload(HotReloadCallback callback, const std::chrono::milliseconds debounceMilliseconds)
     {
+        // 控制面全程持锁：m_fileWatcher 是普通 unique_ptr，与 disableHotReload 并发读写就是数据竞态
+        // （原子量只保护 enabled 这一个布尔，护不住监视器对象本身）
+        const std::lock_guard controlLock(m_hotReloadControlMutex);
+
         if (bool expected = false; !m_hotReloadEnabled.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         {
             return true; // 已经启用
@@ -233,7 +239,9 @@ namespace AsynGyanis::Base
                 handleFileChange(filePath, changeType);
             });
 
-            if (!m_fileWatcher->addWatch(currentData->configDirectory.string(), true))
+            // 监听范围与 reload 的重扫范围必须同一个口径：只递归挂监听却按非递归重扫，
+            // 子目录里的改动会白叫醒一轮重载；反之则子目录的改动根本进不到重扫里
+            if (!m_fileWatcher->addWatch(currentData->configDirectory.string(), currentData->configDirectoryRecursive))
             {
                 m_fileWatcher.reset();
                 m_hotReloadEnabled.store(false, std::memory_order_release);
@@ -258,6 +266,10 @@ namespace AsynGyanis::Base
 
     void ConfigManager::disableHotReload()
     {
+        // 与 enableHotReload 共用同一把控制面锁，二者对 m_fileWatcher 的读写才互斥；
+        // 这把锁总是最外层，监听线程的回调只碰 m_reloadTasksMutex，因此不会成环
+        const std::lock_guard controlLock(m_hotReloadControlMutex);
+
         if (!m_hotReloadEnabled.exchange(false, std::memory_order_acq_rel))
         {
             return;
@@ -979,8 +991,17 @@ namespace AsynGyanis::Base
             return result;
         }
 
-        // 扫描所有 JSON/YAML 配置文件
-        const auto configFiles = scanConfigFiles(configDirectory, recursive);
+        // 扫描本身可能中途失败（子目录不可读、条目属性取不到）。这时交回的**不是**一份
+        // 少了些文件的清单，而是一次失败：按全量提交会让那些没扫到的文件的键静默消失
+        const auto scanned = scanConfigFiles(configDirectory, recursive);
+        if (!scanned.has_value())
+        {
+            result.success = false;
+            result.errors.push_back(scanned.error());
+            return result;
+        }
+
+        const auto &configFiles = *scanned;
 
         if (configFiles.empty())
         {
@@ -990,6 +1011,7 @@ namespace AsynGyanis::Base
             const std::lock_guard writeLock(m_writeMutex);
             const auto newData       = std::make_shared<ConfigData>();
             newData->configDirectory = configDirectory;
+            newData->configDirectoryRecursive = recursive;
             m_data.store(newData, std::memory_order_release);
 
             result.success = true;
@@ -1024,7 +1046,7 @@ namespace AsynGyanis::Base
             return result;
         }
 
-        commitConfigData(std::move(values), result.loadedFiles, configDirectory);
+        commitConfigData(std::move(values), result.loadedFiles, configDirectory, recursive);
         result.success = result.failedFiles.empty();
         return result;
     }
@@ -1288,17 +1310,22 @@ namespace AsynGyanis::Base
             return result;
         }
 
-        return loadFromDirectoryImplementation(currentData->configDirectory, true);
+        // 递归口径跟着快照走：调用方当初以 loadFromDirectory(dir, false) 建起来的配置，
+        // 若在 reload() 时被强行改成递归，就会凭空多出子目录里的键——没人改过文件却换了配置
+        return loadFromDirectoryImplementation(currentData->configDirectory, currentData->configDirectoryRecursive);
     }
 
-    std::vector<std::filesystem::path> ConfigManager::scanConfigFiles(const std::filesystem::path &directory, const bool recursive)
+    std::expected<std::vector<std::filesystem::path>, std::string> ConfigManager::scanConfigFiles(const std::filesystem::path &directory, const bool recursive)
     {
         std::vector<std::filesystem::path> configFiles;
 
         std::error_code errorCode;
-        const auto      collect = [&configFiles](const auto &entry)
+        // 单个条目的属性查询也走 error_code 那一份重载：无 ec 的 is_regular_file() 会抛
+        // filesystem_error，那会从「加载配置」里逃到调用方手上，而这里要的是一轮失败的重载
+        const auto      collect = [&configFiles, &errorCode](const auto &entry)
         {
-            if (entry.is_regular_file() && isConfigFile(entry.path().string()))
+            const bool isRegularFile = entry.is_regular_file(errorCode);
+            if (!errorCode && isRegularFile && isConfigFile(entry.path().string()))
             {
                 configFiles.push_back(entry.path());
             }
@@ -1313,6 +1340,10 @@ namespace AsynGyanis::Base
                     break;
                 }
                 collect(entry);
+                if (errorCode)
+                {
+                    break;
+                }
             }
         } else
         {
@@ -1323,18 +1354,31 @@ namespace AsynGyanis::Base
                     break;
                 }
                 collect(entry);
+                if (errorCode)
+                {
+                    break;
+                }
             }
         }
 
-        // 按文件名排序，保证加载顺序一致
-        std::ranges::sort(configFiles);
+        // 循环之外的这一次判定不能省：迭代器在**最后一个条目之后**才出错时，循环体内的检查
+        // 永远不会再跑到，错误就这么留在 errorCode 里没人认领
+        if (errorCode)
+        {
+            return std::unexpected(std::format("扫描配置目录 '{}' 时中断（{}），本轮只扫到 {} 个配置文件："
+                                                "不把这份不完整的清单当成全量提交，配置保持原样；"
+                                                "请检查该目录及其子目录的读取权限后重试",
+                                                directory.string(), errorCode.message(), configFiles.size()));
+        }
 
+        std::ranges::sort(configFiles);
         return configFiles;
     }
 
     void ConfigManager::commitConfigData(ConfigKeyValueMap                values,
                                          const std::vector<std::string> & loadedFiles,
-                                         const std::filesystem::path &    configDirectory)
+                                         const std::filesystem::path &    configDirectory,
+                                         const bool                       configDirectoryRecursive)
     {
         // 与 setValue() 共用同一把写锁：加载/热重载也是「整份快照替换」的写者，
         // 不串行化的话，与并发的 setValue 谁后发布谁生效，先发布的那些键会被整份覆盖掉
@@ -1344,6 +1388,8 @@ namespace AsynGyanis::Base
         newData->values          = std::move(values);
         newData->loadedFiles     = loadedFiles;
         newData->configDirectory = configDirectory;
+        // 递归与否跟着快照一起存：reload() 与热重载据此重扫，口径与这次加载一致
+        newData->configDirectoryRecursive = configDirectoryRecursive;
 
         m_data.store(newData, std::memory_order_release);
 

@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <expected>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -312,6 +313,7 @@ namespace AsynGyanis::Base
 
             std::vector<std::string> loadedFiles;     ///< 成功加载的配置文件路径列表
             std::filesystem::path    configDirectory; ///< 配置目录的路径
+            bool configDirectoryRecursive = true;     ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
         };
 
         /**
@@ -335,6 +337,9 @@ namespace AsynGyanis::Base
         ConfigSchema       m_schema;           ///< 全局 schema（setSchema 注册，提交快照时自动校验）
 
         // 热加载相关
+        /// 启停热加载的控制面锁：m_fileWatcher 是普通 unique_ptr，只能由持锁的写者改。
+        /// 它总是最外层的一把（其内才取 m_reloadTasksMutex），因此与监听线程回调之间不构成环
+        std::mutex                                              m_hotReloadControlMutex;
         std::unique_ptr<Platform::FileWatcher>                 m_fileWatcher;                ///< 文件监控器（用于热加载）
         std::atomic<std::shared_ptr<const HotReloadCallback> > m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
         std::atomic<bool>                                      m_hotReloadEnabled{false};    ///< 热加载功能是否启用（true 启用，false 关闭）
@@ -415,21 +420,27 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 扫描目录中的 JSON/YAML 配置文件并按路径排序。
+         * @details 中途出错（子目录不可读等）时交出的是**错误而不是那份扫到一半的清单**：
+         *          半份清单被当成全量提交，等于让后面那些文件的键静默从配置里消失。
          * @param directory 待扫描目录。
          * @param recursive 是否递归。
-         * @return std::vector<std::filesystem::path> 配置文件路径列表。
+         * @return std::expected<std::vector<std::filesystem::path>, std::string> 成功时是清单
+         *         （空清单表示目录里确实没有配置文件）；失败时是中文原因，调用方据此保留旧快照
          */
-        static std::vector<std::filesystem::path> scanConfigFiles(const std::filesystem::path &directory, bool recursive);
+        [[nodiscard]] static std::expected<std::vector<std::filesystem::path>, std::string> scanConfigFiles(
+                const std::filesystem::path &directory, bool recursive);
 
         /**
          * @brief 原子提交新的配置快照。
          * @param values 扁平化配置字典。
          * @param loadedFiles 成功加载的文件列表。
-         * @param configDirectory 配置目录（为空时保留原目录）。
+         * @param configDirectory 配置目录（每个调用点都给出真实目录，不存在「留空表示不改」这条）。
+         * @param configDirectoryRecursive 该目录此后重扫时要不要递归，与本次加载的口径一致。
          */
         void commitConfigData(ConfigKeyValueMap                values,
                               const std::vector<std::string> & loadedFiles,
-                              const std::filesystem::path &    configDirectory = {});
+                              const std::filesystem::path &    configDirectory,
+                              bool                             configDirectoryRecursive);
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。

@@ -353,6 +353,29 @@ server:
         EXPECT_FALSE(configuration().has("group.depth"));
     }
 
+    /**
+     * @brief 非递归加载之后，reload() 不得自己改成递归口径
+     * @details 钉的是「没人改过文件却换了配置」：loadFromDirectory(dir, false) 明确只看顶层，
+     *          而 reload() 若强行按递归重扫，子目录那份文件的键就凭空多出来。上一条只验首次
+     *          加载不含子目录，验不到 reload 这一跳——改前这一跳把 recursive 写死成 true
+     */
+    TEST_F(ConfigManagerTest, ReloadKeepsTheNonRecursiveScopeOfTheOriginalLoad)
+    {
+        writeFile("root.yaml", "root: true\n");
+        writeFile("group/nested.yaml", "group:\n  depth: 2\n");
+
+        const ConfigLoadResult firstLoad = configuration().loadFromDirectory(directory(), false);
+        ASSERT_TRUE(firstLoad.success);
+        ASSERT_FALSE(configuration().has("group.depth"));
+
+        const ConfigLoadResult reloaded = configuration().reload();
+
+        EXPECT_TRUE(reloaded.success);
+        EXPECT_TRUE(configuration().has("root")) << "顶层的键不该丢";
+        EXPECT_FALSE(configuration().has("group.depth"))
+                << "reload() 把非递归的加载改成了递归：凭空多出子目录里的键";
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryIgnoresFilesWithUnsupportedSuffix)
     {
         writeFile("app.yaml", "app:\n  name: demo\n");
@@ -892,6 +915,44 @@ server:
         EXPECT_FALSE(configuration().isHotReloadEnabled());
         // 重复关闭必须安全
         EXPECT_NO_THROW(configuration().disableHotReload());
+    }
+
+    /**
+     * @brief 多线程反复启停热加载，结束时状态必须自洽且不崩
+     * @details 改前 enableHotReload 写 m_fileWatcher（普通 unique_ptr）、disableHotReload 读并
+     *          reset 它，两边只靠一个原子布尔互相「打招呼」——那个布尔护不住监视器对象本身。
+     * @note 这条钉得到的是「不崩、收尾状态一致」这一下界；撕裂指针那类竞态只有容器里的 TSan
+     *       看得见（本机 MSVC 不提供 TSan），别把这条跑绿当成「无竞态」的证据
+     */
+    TEST_F(ConfigManagerTest, ConcurrentEnableAndDisableHotReloadEndsInOneConsistentState)
+    {
+        writeFile("app.yaml", "app:\n  name: demo\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        constexpr int kThreadCount = 3;
+        constexpr int kRoundCount  = 12;
+
+        std::vector<std::jthread> workers;
+        workers.reserve(kThreadCount);
+        for (int workerIndex = 0; workerIndex < kThreadCount; ++workerIndex)
+        {
+            // 每个线程各起各的监视器再各关各的：两条控制路径会在同一时刻撞 m_fileWatcher
+            workers.emplace_back([this]
+            {
+                for (int round = 0; round < kRoundCount; ++round)
+                {
+                    static_cast<void>(configuration().enableHotReload());
+                    configuration().disableHotReload();
+                }
+            });
+        }
+        workers.clear();   // jthread 析构即 join：任何一个 worker 卡在启停里都会让这里挂住
+
+        configuration().disableHotReload();
+        EXPECT_FALSE(configuration().isHotReloadEnabled());
+        // 关掉之后必须还能再开起来：指针被撕坏时这一步会崩或返回 false
+        EXPECT_TRUE(configuration().enableHotReload());
+        EXPECT_TRUE(configuration().isHotReloadEnabled());
     }
 
     // ============================================================================
