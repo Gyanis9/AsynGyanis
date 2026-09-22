@@ -769,6 +769,25 @@ namespace
                                                         .toList();
         Samples::checklist().check(matched.size() == 1 && matched[0].id == 1, "IN 与 LIKE 复合条件递归渲染，只命中 id=1 那一行");
 
+        // 同一个字符在两条通道上含义不同：like 的入参是**模式**（% 是通配符），contains 的入参是
+        // **字面量**（% 就匹配一个百分号，方言为它补出 ESCAPE 子句）。把外部输入递给 like 的后果不是慢，
+        // 而是谓词被放宽成全表匹配——一个含 % 的搜索词就能越过过滤条件读到别人的行
+        OrmQuery<AccountRow> wildcardQuery(pool, Database::DatabaseType::Sqlite);
+        OrmQuery<AccountRow> literalQuery(pool, Database::DatabaseType::Sqlite);
+        const std::size_t wildcardRows =
+                wildcardQuery.where(Database::Queryable::like(kAccountNameColumn, std::string("%"))).toList().size();
+        const std::size_t literalRows =
+                literalQuery.where(Database::Queryable::contains(kAccountNameColumn, std::string("%"))).toList().size();
+        Samples::checklist().check(wildcardRows == 3 && literalRows < wildcardRows,
+                                   "同一个 '%'：like 当通配符命中全部三行，contains 当字面量只匹配真含百分号的行");
+
+        OrmQuery<AccountRow> prefixQuery(pool, Database::DatabaseType::Sqlite);
+        OrmQuery<AccountRow> suffixQuery(pool, Database::DatabaseType::Sqlite);
+        const std::vector<AccountRow> prefixRows = prefixQuery.where(Database::Queryable::startsWith(kAccountNameColumn, std::string("张"))).toList();
+        const std::size_t            suffixRows = suffixQuery.where(Database::Queryable::endsWith(kAccountNameColumn, std::string("四"))).toList().size();
+        Samples::checklist().check(prefixRows.size() == 1 && prefixRows[0].id == 1 && suffixRows == 1,
+                                   "startsWith / endsWith 按字面量匹配前缀与后缀，各只命中一行");
+
         OrmQuery<AccountRow> missingQuery(pool, Database::DatabaseType::Sqlite);
         Samples::checklist().check(!missingQuery.where(kAccountIdColumn == std::int64_t{999}).first().has_value(),
                                    "first() 在无匹配行时给出空 optional 而不是抛异常");
