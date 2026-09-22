@@ -104,8 +104,18 @@ namespace AsynGyanis::Database
         return *m_connection;
     }
 
+    std::unique_lock<std::mutex> Transaction::acquireStatementLock() const
+    {
+        // 独占语义由 unique_lock 自己承担：拿到即独占这条连接，离开作用域即交还
+        return std::unique_lock<std::mutex>(m_statementMutex);
+    }
+
     bool Transaction::executeControlStatement(const std::string_view statement)
     {
+        // BEGIN / COMMIT / ROLLBACK 也是「走这条连接的语句」，因此与查询共用同一把使用权锁：
+        // 不与并发中的业务语句同时踩同一个驱动句柄，也不出现「语句还在跑就被 COMMIT」
+        const std::unique_lock<std::mutex> statementLock = acquireStatementLock();
+
         // 每次尝试都先清掉上一轮的失败文本：本函数代表一次新的尝试，
         // 历史错误不能冒充本次结果
         m_lastError.clear();

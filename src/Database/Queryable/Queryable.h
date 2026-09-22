@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -727,6 +728,10 @@ namespace AsynGyanis::Database::Queryable
         {
             PooledConnection    pooled;               ///< 池借出的连接；绑定事务时为空
             DatabaseConnection *connection = nullptr; ///< 本次真正使用的连接，恒非空
+
+            // 事务连接的使用权：租约活着的整段时间里独占那一条连接，离开作用域自动交还。
+            // 池连接不必取锁——每个借用者各拿一条，本来就互不相干
+            std::unique_lock<std::mutex> statementLock;
         };
 
         /**
@@ -831,7 +836,10 @@ namespace AsynGyanis::Database::Queryable
             ConnectionLease lease;
             if (transaction != nullptr)
             {
-                lease.connection = std::addressof(transaction->connection());
+                // 先取连接的使用权再交出连接：异步路径会把语句投到工作线程上，两条并发语句
+                // 不能同时踩同一条驱动连接（一个句柄一条协议流，交错发送即协议错乱）
+                lease.statementLock = transaction->acquireStatementLock();
+                lease.connection    = std::addressof(transaction->connection());
                 return lease;
             }
 

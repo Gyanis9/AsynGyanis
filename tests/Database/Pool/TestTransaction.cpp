@@ -11,6 +11,8 @@
 // - TransactionHoldsItsConnectionUntilItEnds
 // - BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt / BatchInsertEdgeCases
 // - StatementsComeFromTheDialect（事务控制语句来自方言）
+// - StatementsOnOneTransactionWaitForTheConnection（同一事务上的语句互斥：ORM 查询与 COMMIT 都排队）
+// - SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
@@ -29,8 +31,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -471,4 +476,71 @@ TEST(TransactionDialectStatements, StatementsComeFromTheDialect)
     EXPECT_EQ(dialect.beginTransactionStatement(), "BEGIN IMMEDIATE");
     EXPECT_EQ(dialect.commitStatement(), "COMMIT");
     EXPECT_EQ(dialect.rollbackStatement(), "ROLLBACK");
+}
+
+// ========================================================================
+// 同一事务上的语句互斥
+// ========================================================================
+
+/**
+ * @brief 钉住「走同一事务的语句互斥执行」：连接使用权被占时，ORM 查询与 COMMIT 都要排队
+ * @details 一个驱动句柄只有一条协议流，而 Queryable 的异步接口会把语句投到 AsyncExecutor 的
+ *          工作线程上执行——调用方全程待在自己的线程里，也可能同时有两条语句踩同一条连接。
+ *          用例把前提构造成确定成立而非赌调度：主线程先占住使用权时，后台的查询与提交**不可能**
+ *          完成（拿不到锁就到不了驱动），交还之后两者才依次跑完。
+ */
+TEST_F(TransactionTest, StatementsOnOneTransactionWaitForTheConnection)
+{
+    Transaction transaction(*m_pool);
+
+    std::unique_lock<std::mutex> heldLock = transaction.acquireStatementLock();
+    ASSERT_TRUE(heldLock.owns_lock());
+
+    std::future<std::vector<LedgerRow> > rowsFuture = std::async(std::launch::async, [&transaction]()
+    {
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        return transactionalQuery.toList();
+    });
+    std::future<bool> commitFuture = std::async(std::launch::async, [&transaction]()
+    {
+        return transaction.commit();
+    });
+
+    // 使用权没交还之前两侧都到不了终点
+    EXPECT_EQ(rowsFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
+        << "查询没等连接使用权：它会与占着连接的语句同时踩同一个驱动句柄";
+    EXPECT_EQ(commitFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
+        << "COMMIT 没等连接使用权：它可能在语句执行到一半时落下";
+
+    heldLock.unlock();
+
+    std::vector<LedgerRow> rows = rowsFuture.get();
+    EXPECT_TRUE(commitFuture.get());
+    EXPECT_TRUE(rows.empty());
+    EXPECT_FALSE(transaction.isActive());
+}
+
+/**
+ * @brief 钉住互斥不等于「绑死线程」：先后两条语句可以来自不同线程
+ * @details 异步路径每轮都可能换到一个不同的工作线程上，因此要排除的只有「同时」而不是「不同线程」。
+ *          若这里改成记录线程号并拒绝，合法的异步用法会被整片误伤。
+ */
+TEST_F(TransactionTest, SequentialStatementsFromDifferentThreadsBothRun)
+{
+    Transaction transaction(*m_pool);
+
+    static_cast<void>(std::async(std::launch::async, [&transaction]()
+    {
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        return static_cast<void>(transactionalQuery.insert(makeLedgerRow(1, "第一个线程", 1.5, std::nullopt)));
+    }).get());
+
+    static_cast<void>(std::async(std::launch::async, [&transaction]()
+    {
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        return static_cast<void>(transactionalQuery.insert(makeLedgerRow(2, "第二个线程", 2.5, std::nullopt)));
+    }).get());
+
+    EXPECT_TRUE(transaction.commit());
+    EXPECT_EQ(countCommittedRows(), 2);
 }

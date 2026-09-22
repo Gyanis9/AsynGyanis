@@ -13,7 +13,8 @@
  *
  * @note 析构必须自动回滚：异常会跨过作用域跳走，显式 rollback() 常常来不及执行，而未结束的事务
  *       会污染下一个使用者。回滚是幂等的，已提交/已回滚的事务不会再发语句（m_isActive 为假）。
- *       回滚失败时事务状态不可知，此时主动断开连接让池的探活丢弃它。不支持嵌套事务与跨线程共享。
+ *       回滚失败时事务状态不可知，此时主动断开连接让池的探活丢弃它。不支持嵌套事务；
+ *       走本事务的语句由 m_statementMutex 串行落在那一条连接上（驱动连接不是线程安全的）。
  */
 #pragma once
 
@@ -23,6 +24,7 @@
 #include "Database/Pool/PooledConnection.h"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -34,8 +36,10 @@ namespace AsynGyanis::Database
      * @details 构造即从连接池借出连接并执行方言的开启事务语句；commit() / rollback() 幂等，
      *          析构时若仍未提交则自动回滚，随后把连接归还池。
      *
-     * @warning 事务对象与它持有的连接都不允许跨线程使用；对象生命周期必须覆盖
-     *          所有走该事务执行的查询/写语句（Queryable(Transaction&) 只保存指针）。
+     * @warning 事务对象本身不允许跨线程使用：commit() / rollback() / 析构要在同一个线程上按顺序发生。
+     *          走本事务的**语句**则由 acquireStatementLock() 串行落在那一条连接上（异步接口会把语句
+     *          投到工作线程，调用方无需自己保证不并发），对象生命周期必须覆盖所有走该事务执行的
+     *          查询/写语句（Queryable(Transaction&) 只保存指针）。
      */
     class Transaction
     {
@@ -116,6 +120,18 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseConnection &connection() const;
 
         /**
+         * @brief 取得「本事务这条连接」的独占使用权
+         *
+         * @details 驱动连接不是线程安全的（一个句柄一条协议流），而 Queryable 的异步接口会把语句
+         *          投到 AsyncExecutor 的工作线程上执行——调用方即使全程待在自己的线程里，两条并发
+         *          语句也会各自落到一个工作线程上，同时踩这同一条连接。取到这把锁即代表可以独占
+         *          这条连接，返回的句柄可移动、离开作用域自动释放；已被占用时阻塞等待而不是并发进入。
+         * @return std::unique_lock<std::mutex> 已持有的独占锁
+         * @note 同一线程内嵌套取用会自锁死：语句执行期间不得再发第二条走同一事务的语句
+         */
+        [[nodiscard]] std::unique_lock<std::mutex> acquireStatementLock() const;
+
+        /**
          * @brief 获取最后一次事务控制语句失败的原因
          * @return const std::string& 中文错误描述的常引用；无失败时为空串
          */
@@ -139,6 +155,10 @@ namespace AsynGyanis::Database
         std::shared_ptr<SqlDialect> m_dialect;          ///< 本连接的方言，构造时解析并缓存（提供事务语句文本）
         bool                        m_isActive = false; ///< 事务是否仍在进行，决定析构是否回滚
         std::string                 m_lastError;        ///< 最后一次事务控制语句的失败原因
+
+        // 驱动连接不是线程安全的（一个句柄一条协议流），而 Queryable 的异步接口会把语句投到
+        // 工作线程上执行，因此同一事务上的语句必须串行落在这条连接里。锁由 Queryable 取用。
+        mutable std::mutex m_statementMutex; ///< 事务连接的使用权：同一时刻只让一条语句碰这条连接
     };
 
 } // namespace AsynGyanis::Database
