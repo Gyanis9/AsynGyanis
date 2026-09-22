@@ -1805,6 +1805,7 @@ int main(const int argc, char **argv)
     }
 
     const std::uint16_t basePort = Samples::readPortArgument(argc, argv, kSamplePortOffset);
+    Samples::requirePortHeadroom(basePort, 2);   // 三台服务器依次占 basePort / +1 / +2
     LOG_INFO_FMT("三台服务器依次使用端口 {} / {} / {}", basePort, basePort + 1, basePort + 2);
 
     if (isMaterialReady)

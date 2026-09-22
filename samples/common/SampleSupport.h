@@ -200,6 +200,9 @@ namespace AsynGyanis::Samples
         return parsedValue;
     }
 
+    /// 端口号上限：`uint16_t` 里最大的那个可用值，也是 65535 在这一份代码里的唯一出处
+    constexpr std::uint16_t kMaximumPortNumber = 65535U;
+
     /**
      * @brief 命令行里取 --port：脚本会给每个示例分发一个明确端口
      * @param argc 实参个数
@@ -208,6 +211,7 @@ namespace AsynGyanis::Samples
      * @return std::uint16_t 端口
      * @details 取值非法（含选项在末尾却没有值）时当场以退出码 2 终止而不回落到默认端口：示例的客户端
      *          与服务端共用这一个值，回落会让整套自检照样全绿，脚本里的端口笔误就成了假证据。
+     * @note 只保证基准值本身合法。一条示例若还要占相邻端口，另需 requirePortHeadroom 声明余量。
      */
     inline std::uint16_t readPortArgument(const int argc, char **argv, const std::uint16_t offset)
     {
@@ -215,10 +219,37 @@ namespace AsynGyanis::Samples
         {
             if (std::string_view(argv[index]) == "--port")
             {
-                return static_cast<std::uint16_t>(readNumericOption(argc, argv, index, "--port", 1U, 65535U));
+                return static_cast<std::uint16_t>(
+                        readNumericOption(argc, argv, index, "--port", 1U, kMaximumPortNumber));
             }
         }
         return samplePort(offset);
+    }
+
+    /**
+     * @brief 声明「本示例会从基准端口往后最多占用 highestDelta 个端口」，越出端口号上限时当场终止
+     * @param basePort 基准端口（一般就是 readPortArgument 的返回值）
+     * @param highestDelta 相对基准端口最多要加到几（0 表示只用基准端口本身）
+     * @details readPortArgument 只保证基准值落在 1..65535，而一条示例往往还要占相邻的几个端口
+     *          （分发与 worker 各一台、明文与 TLS 各一台）。派生端口是 `uint16_t` 上的加法，
+     *          基准取到 65533 这类值时第 4 个端口会绕回 0——而 bind 到 0 是「让内核随便挑」，
+     *          客户端却照旧去连 0，最后看到的是一条与端口毫无关系的失败。宁可在起跑前说清楚，
+     *          也不静默回绕（与 readNumericOption 挡「99999 绕回 34463」是同一条判据）。
+     */
+    inline void requirePortHeadroom(const std::uint16_t basePort, const std::uint16_t highestDelta)
+    {
+        const std::uint32_t highestUsedPort = static_cast<std::uint32_t>(basePort) + highestDelta;
+        if (highestUsedPort <= kMaximumPortNumber)
+        {
+            return;
+        }
+        printStartupError(std::format("启动参数非法：基准端口 {} 太靠上，本示例最多要用到端口 {}，而端口号上限是 {}。"
+                                      "请把 --port 降到 {} 或以下",
+                                      basePort,
+                                      highestUsedPort,
+                                      static_cast<std::uint32_t>(kMaximumPortNumber),
+                                      static_cast<std::uint32_t>(kMaximumPortNumber) - highestDelta));
+        std::exit(2);
     }
 
     /**

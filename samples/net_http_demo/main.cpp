@@ -773,6 +773,8 @@ int main(const int argc, char **argv)
     LOG_INFO("=== Net HTTP/1.1 服务端示例开始 ===");
 
     const std::uint16_t mainPort    = Samples::readPortArgument(argc, argv, 0);
+    // 这条示例最多用到基准端口往后第 5 个（下面逐个列出）：余量在起跑前一次判掉
+    Samples::requirePortHeadroom(mainPort, 5);
     const std::uint16_t strictPort  = static_cast<std::uint16_t>(mainPort + 1);
     const std::uint16_t guardedPort = static_cast<std::uint16_t>(mainPort + 2);
     // 接受分发占两个端口：一个给「只接受与派发」的那台，一个给接手连接的 worker 自己占位

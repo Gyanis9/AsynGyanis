@@ -412,7 +412,10 @@ int main(const int argc, char **argv)
         return Samples::finishSample("net_http3_demo");
     }
 
-    const std::uint16_t fixedPort = static_cast<std::uint16_t>(Samples::readPortArgument(argc, argv, 30) + 3);
+    // 按请求的端口绑那台服务器单独占基准端口往后第 3 个；余量在起跑前判掉，不要让端口绕回 0
+    const std::uint16_t basePort = Samples::readPortArgument(argc, argv, 30);
+    Samples::requirePortHeadroom(basePort, 3);
+    const std::uint16_t fixedPort = static_cast<std::uint16_t>(basePort + 3);
 
     Core::IoContext context(1);
     auto &          pool = context.threadPool();

@@ -211,6 +211,8 @@ int main(const int argc, char **argv)
 {
     Samples::setupConsoleLogging();
     const std::uint16_t port = Samples::readPortArgument(argc, argv, 20);
+    // TCP 往返与聚合写各占一个相邻端口（+2 / +4）：余量在起跑前就判掉，不要等到协程里把端口绕回 0
+    Samples::requirePortHeadroom(port, 4);
 
     LOG_INFO("=== Core 运行时示例开始 ===");
 
