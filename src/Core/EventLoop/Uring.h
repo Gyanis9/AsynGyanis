@@ -33,6 +33,10 @@ namespace AsynGyanis::Core
      *          事件满足时投递完成通知，wait() 翻译回 epoll_event 交给上层（上层因此无平台分支）。
      *          两处适配：`EPOLLONESHOT` 与一次性天然对应，完成送达后不自动重投、由上层重新武装；
      *          水平触发（只有循环的唤醒描述符用它）在每次 wait() 入睡前补投一次。
+     * @warning 本后端只在 `ASYN_WITH_IO_URING=ON` 时参与构建，而 CI 那条作业是**只编译不运行**的：
+     *          语义漂移（就绪事件迟一拍交付、空闲注册对象被反复唤醒这类）不会由默认门禁发现。
+     *          要实跑得在放行 io_uring 的容器里执行同一批用例：io_uring 系统调用会被 Docker 默认
+     *          seccomp 挡掉（`io_uring_setup` 返回 EPERM），需 `--security-opt seccomp=unconfined`。
      */
     class Uring
     {

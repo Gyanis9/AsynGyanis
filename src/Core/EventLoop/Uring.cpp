@@ -595,6 +595,9 @@ namespace AsynGyanis::Core
         {
             throw Base::SystemException("io_uring 提交失败");
         }
+        // 补投的这批里若有描述符本来就就绪，完成通知是在上一次 enter 里落进 CQ 的：
+        // 不再收一遍就会推迟到下一次等待才交付，wait(0) 的「本轮能收的都收掉」这条口径就不成立
+        reapCompletions();
 
         if (!m_readyEvents.empty())
         {
