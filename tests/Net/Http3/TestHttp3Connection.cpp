@@ -25,6 +25,7 @@ namespace
     using AsynGyanis::Net::Http3ErrorCode;
     using AsynGyanis::Net::Http3Frame;
     using AsynGyanis::Net::QpackEncoder;
+    using AsynGyanis::Net::QpackErrorKind;
     using AsynGyanis::Net::QpackHeaderField;
 
     /// 假传输层：记录三件事——开出过哪些流、每条流写过什么字节、归还过多少额度
@@ -895,3 +896,57 @@ TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
         connection->flush();
         EXPECT_GT(transport.writtenOf(kRequestStreamId), 0U) << "已受理的响应发不出去，排空就失去了意义";
     }
+
+/**
+ * @brief 钉住：响应头段越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE 时只作废那一条流
+ * @details 依据 RFC 9114 §4.2.2：这一项约束的正是本端发出去的头段。不判就把处置权交给对端，
+ *          而它常见做法是收掉整条连接。本端宁可只中止这一条流，且拒绝时一个字节都不上线
+ *          （上了线的部分头段会让对端的 QPACK 状态与本端错开）。
+ */
+TEST(Http3Connection, RefusesResponseFieldSectionBeyondThePeerAdvertisedLimit)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))),
+                                  false);
+    // 对端只肯收 60 字节的头段：:status 200 这一项就是名长 7 + 值长 3 + 32 = 42 字节
+    connection->consumeStreamData(kPeerControlStreamId,
+                                  bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x06\x3C", 2))), false);
+    ASSERT_FALSE(connection->isBroken());
+
+    const std::vector<QpackHeaderField> oversizedFields{QpackHeaderField{":status", "200"}, QpackHeaderField{"x-big", std::string(40U, 'v')}};
+    const auto refused = connection->submitResponseHead(kRequestStreamId, oversizedFields, true);
+    ASSERT_FALSE(refused.has_value()) << "越过对端通告上限的头段不该照样发出去";
+    EXPECT_EQ(refused.error().kind, QpackErrorKind::InvalidLocalState) << refused.error().message;
+    EXPECT_NE(refused.error().message.find("SETTINGS_MAX_FIELD_SECTION_SIZE"), std::string::npos) << refused.error().message;
+    EXPECT_FALSE(connection->isBroken()) << "越限的响应头段只该作废这一条流，不该判死连接";
+    EXPECT_TRUE(transport.bytesOf(kRequestStreamId).empty()) << "拒绝就不该有半个头段上线";
+
+    // 这条流没被拆掉：合规的那份响应照常交出
+    EXPECT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, true).has_value());
+    connection->flush();
+    EXPECT_GT(transport.writtenOf(kRequestStreamId), 0U) << "合规响应应能写出";
+}
+
+/**
+ * @brief 钉住：对端没通告 SETTINGS_MAX_FIELD_SECTION_SIZE 时按「不约束」处理，不因这项拒发
+ * @details §7.2.4.1 的默认值就是不限。没收到就必须当成不约束，否则等于替对端编一个它没说过的上限。
+ */
+TEST(Http3Connection, StillSubmitsLargeFieldSectionsWhenThePeerAdvertisesNoLimit)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))),
+                                  false);
+
+    // 没收到 SETTINGS_MAX_FIELD_SECTION_SIZE 就必须按「不约束」处理（§7.2.4.1 的默认值），
+    // 否则等于替对端编一个它没说过的上限
+    const std::vector<QpackHeaderField> largeFields{QpackHeaderField{":status", "200"},
+                                                    QpackHeaderField{"x-big", std::string(3000U, 'v')}};
+    EXPECT_TRUE(connection->submitResponseHead(kRequestStreamId, largeFields, true).has_value());
+    EXPECT_FALSE(connection->isBroken());
+}

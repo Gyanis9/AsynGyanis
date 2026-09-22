@@ -1675,6 +1675,18 @@ namespace AsynGyanis::Net
             dropRequest(streamId);
             return;
         }
+        if (!m_connection->isBroken())
+        {
+            // 连接层自己没判协议错，只是这一条流的响应交不出去（错在本端：响应不合规、头段越过对端
+            // 通告的上限、编码器状态不允许）。按本仓既有的本地中止口径收这一条流——RESET_STREAM 加
+            // STOP_SENDING，再丢掉本会话记账。原先这里是 markBroken，承载层随之 closeNow 整条 QUIC
+            // 连接：一处本端失误把同连接上别人在途的请求一起带走（h2 同一处已收到流级）
+            LOG_ERROR_FMT("Http3Session: 流 {} 的{}未能交出，本端已复位这条流；连接与其它流不受影响。原因：{}",
+                          streamId, what, reason);
+            abortRequestStream(streamId, errorCode);
+            dropRequest(streamId);
+            return;
+        }
         markBroken(errorCode, std::string(what) + "失败：" + std::string(reason));
     }
 

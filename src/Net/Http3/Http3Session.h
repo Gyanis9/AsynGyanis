@@ -665,7 +665,7 @@ namespace AsynGyanis::Net
         void answerExpectContinueIfRequested(std::int64_t streamId, const IncomingRequest &incoming);
 
         /**
-         * @brief 提交响应（头或正文）失败的处置：流已经不在了只作废这条流，其余按会话作废
+         * @brief 提交响应（头或正文）失败的处置：错在本端时只作废这条流，连接层已判错才作废整条会话
          * @param streamId 流号
          * @param what 正在做的事（进日志）
          * @param reason 连接层给出的中文原因

@@ -725,6 +725,25 @@ namespace AsynGyanis::Net
             return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = ended.error().message});
         }
 
+        // 头段大小按 RFC 9114 §4.2.2 的算式累计（每个字段行名长 + 值长 + 32），用的就是解码侧那个函数：
+        // 两侧同一口径，不会出现「本端觉得合规、对端解成超限」。对端没通告这项时不判定（0 即「不约束」）
+        if (m_peerMaximumFieldSectionSizeByteCount != 0)
+        {
+            std::size_t fieldSectionSizeByteCount = 0;
+            for (const QpackHeaderField &field: fieldLines)
+            {
+                fieldSectionSizeByteCount += QpackDynamicTable::entrySizeByteCountOf(field);
+            }
+            if (fieldSectionSizeByteCount > m_peerMaximumFieldSectionSizeByteCount)
+            {
+                return std::unexpected(QpackError{
+                    .kind = QpackErrorKind::InvalidLocalState,
+                    .message = "流 " + std::to_string(streamId) + " 的响应头段 " + std::to_string(fieldSectionSizeByteCount) +
+                               " 字节越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE " +
+                               std::to_string(m_peerMaximumFieldSectionSizeByteCount) + " 字节，本端不作答这条流（RFC 9114 §4.2.2）"});
+            }
+        }
+
         std::string headerBlock;
         std::string encoderStreamBytes;
         if (const auto encoded = m_qpackEncoder->encodeFieldSection(static_cast<std::uint64_t>(streamId),
@@ -1019,6 +1038,7 @@ namespace AsynGyanis::Net
     {
         std::size_t peerTableCapacityByteCount = 0;
         std::size_t peerMaximumBlockedStreamCount = 0;
+        std::size_t peerMaximumFieldSectionSizeByteCount = 0;
         for (const auto &[settingId, value]: settingsFrame.settings)
         {
             switch (settingId)
@@ -1030,9 +1050,13 @@ namespace AsynGyanis::Net
                     peerMaximumBlockedStreamCount = static_cast<std::size_t>(value);
                     break;
                 case Http3SettingId::MaxFieldSectionSize:
+                    // 这一项约束的正是本端发出去的头段（响应头由业务给出：几条 Set-Cookie 就能超）。
+                    // 交出去之前按它判一次，越限只作废那一条流——本端不判的话处置权就在对端手里，
+                    // 而它常见做法是收掉整条连接，同连接上别人在途的请求一起陪葬
+                    peerMaximumFieldSectionSizeByteCount = static_cast<std::size_t>(value);
+                    break;
                 case Http3SettingId::EnableConnectProtocol:
-                    // 前者只约束本端发出去的头段大小（响应头都由本类生成，远低于上限），
-                    // 后者对服务端而言只是「对端是否接受本端把它当隧道」的声明，不参与判定
+                    // 对服务端而言这只是「对端是否接受本端把它当隧道」的声明，不参与判定
                     break;
             }
         }
@@ -1042,6 +1066,8 @@ namespace AsynGyanis::Net
         }
 
         m_peerMaximumBlockedStreamCount = peerMaximumBlockedStreamCount;
+        // 必须在下面那条「对端不接动态表」的提前返回之前落地：头段上限与动态表是两件独立的事
+        m_peerMaximumFieldSectionSizeByteCount = peerMaximumFieldSectionSizeByteCount;
         const std::size_t effectiveCapacityByteCount = std::min(peerTableCapacityByteCount, m_localSettings.qpackMaximumTableCapacityByteCount);
         if (effectiveCapacityByteCount == 0)
         {

@@ -762,6 +762,21 @@
   另加 `ExtraCallsOnALocallyFinishedStreamChangeNothing` 钉住「多余调用不写字节」。把新增的两处
   `failStream` 摘掉（等于旧写法）时前一条转红。容器实测 `TestNet` 1241 例全绿、零告警、零 sanitizer，
   h2c 对手探针十项全过。
+- **HTTP/3 也守对端通告的头段上限，且本端答不出时只作废那一条流**：`applyPeerSettings` 原先把对端的
+  `SETTINGS_MAX_FIELD_SECTION_SIZE` 直接丢掉，注释写的理由是「响应头都由本类生成，远低于上限」——这个前提
+  在 h2 那一轮已被证伪：响应头来自路由与业务，几条 `set-cookie` 就能超。不判就把处置权交给对端，而它常见的
+  做法是收掉整条连接。现在按 §4.2.2 的算式（每个字段行名长 + 值长 + 32，用的就是解码侧那个函数，两侧同口径）
+  在编码前判一次，越限即拒绝作答且一个字节都不上线（半个头段上线会让两端的 QPACK 状态错开）。
+  另一半是收场：`handleResponseSubmissionFailure` 对一条还活着的流原先调 `markBroken`，承载层随之
+  `closeNow` 整条 QUIC 连接——一处本端失误带走同连接上别人在途的请求。现在走本仓既有的本地中止口径
+  （`RESET_STREAM` + `STOP_SENDING` 加丢掉本会话记账），只有连接层自己判了协议错才作废整条会话。
+  对端没通告这项时不判定（§7.2.4.1 的默认值就是不限）。
+  用例：`Http3Connection.RefusesResponseFieldSectionBeyondThePeerAdvertisedLimit`（越限被拒、连接未判死、
+  同一条流随后交出合规响应）、`...StillSubmitsLargeFieldSectionsWhenThePeerAdvertisesNoLimit`，以及走真
+  nghttp3 客户端的 `Http3Session.ResetsOnlyTheStreamWhoseResponseCannotBeSubmitted`（断言会话没被判死、
+  那条流被交代了一次 `INTERNAL_ERROR` 复位；测试侧的对端夹具因此新增「通告一个小的头段上限」这一格）。
+  分别摘掉这两处判据时，对应的两条用例各自转红。容器（GCC 13.3 + ASan/LSan/UBSan）实测 `TestNet`
+  1244 例全绿、零告警、零 sanitizer。
 
 ### 性能
 

@@ -117,10 +117,19 @@ namespace AsynGyanis::Net
                 }
             };
 
-            Http3ClientPeer()
+            /**
+             * @brief 造一条测试侧的客户端 nghttp3 连接
+             * @param maximumFieldSectionSizeByteCount 写进本端 SETTINGS_MAX_FIELD_SECTION_SIZE 的取值，
+             *        0 表示沿用 nghttp3 的默认值（用例用它通告一个很小的上限，看服务端怎么处置）
+             */
+            explicit Http3ClientPeer(const std::uint64_t maximumFieldSectionSizeByteCount = 0)
             {
                 nghttp3_settings settings;
                 nghttp3_settings_default(&settings);
+                if (maximumFieldSectionSizeByteCount != 0)
+                {
+                    settings.max_field_section_size = maximumFieldSectionSizeByteCount;
+                }
 
                 const nghttp3_callbacks callbacks = makeCallbacks();
                 if (nghttp3_conn_client_new(&m_connection, &callbacks, &settings, nullptr, this) != 0)
@@ -2716,5 +2725,41 @@ namespace AsynGyanis::Net
             peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
         }
         EXPECT_EQ(peer.response().status, 200) << "差一个收尾的请求，补上收尾之后就该正常应答";
+    }
+
+    /**
+     * @brief 钉住：本端没能交出响应时只复位那一条流，会话与整条连接继续服务其它请求
+     * @details 这里用「响应头段越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE」造出一次本端失误。
+     *          原先这条出口是 markBroken，承载层随之 closeNow 整条 QUIC 连接——一处本端失误把同连接上
+     *          别人在途的请求一起带走；h2 同一处已按流级收（RFC 9114 §4.2.2、§8.1）。
+     */
+    TEST(Http3Session, ResetsOnlyTheStreamWhoseResponseCannotBeSubmitted)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session session = makeSession(opener, sentStreamData, nullptr,
+                                           [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        Router router;
+        router.get("/wide",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("x-wide", std::string(400U, 'v'));
+                       response.setBody("ok");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        // 对端（真 nghttp3 客户端）通告只肯收 60 字节的头段：响应头段远超它，本端因此不作答这条流
+        Http3ClientPeer peer{60U};
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        static_cast<void>(answerOneGet(session, peer, sentStreamData, "/wide"));
+
+        EXPECT_FALSE(session.isBroken()) << "错在本端也只该作废一条流，不该把整条会话判死";
+        ASSERT_EQ(abortedStreams.size(), 1U) << "那条没能答出的流要被交代一次复位，对端才不必干等";
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, static_cast<std::uint64_t>(Http3ErrorCode::InternalError));
     }
 } // namespace AsynGyanis::Net

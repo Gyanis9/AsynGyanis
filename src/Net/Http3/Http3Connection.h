@@ -176,6 +176,8 @@ namespace AsynGyanis::Net
          * @param fieldLines 头字段，含 :status；伪头必须在最前（判定在 QPACK 编码之前做）
          * @param isEndOfStream true 表示这条响应没有正文，交完头就收尾
          * @return 成功返回空；失败返回错误，其类别即要写回 QUIC 的线上错误码
+         * @note 头段大小越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE 时按 InvalidLocalState 拒绝：
+         *       本端不判就把处置权交给对端，而它常见做法是收掉整条连接（RFC 9114 §4.2.2、§7.2.4.1）
          */
         [[nodiscard]] std::expected<void, QpackError> submitResponseHead(std::int64_t streamId,
                                                                         const std::vector<QpackHeaderField> &fieldLines,
@@ -376,6 +378,7 @@ namespace AsynGyanis::Net
         std::map<std::int64_t, PeerStreamKind> m_peerStreamKinds;   ///< 已归类的对端单向流
         std::map<std::int64_t, std::string> m_peerStreamTypeBuffers; ///< 类型前缀还没收全的对端单向流的残留字节
         std::uint64_t m_peerMaximumBlockedStreamCount{0};            ///< 对端允许阻塞的头块数，编码器据此决定
+        std::size_t m_peerMaximumFieldSectionSizeByteCount{0};       ///< 对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE，0 是「不约束」（RFC 9114 §7.2.4.1 默认不限）
 
         std::map<std::int64_t, StreamState> m_streams;     ///< 对端流（请求流与控制流）的状态
         std::map<std::int64_t, OutboundStream> m_outbound; ///< 各流的待发字节
