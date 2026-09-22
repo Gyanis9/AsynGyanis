@@ -685,6 +685,23 @@
   `Http2CleartextSession.Answers431ForOversizedRequestHeadersAndKeepsConnection`（真回环 socket 上越限
   请求回 431、随后那条正常请求仍拿到 200）。三条用例在把实现改回旧口径后全部转红。
   `Hpack.RejectsHeaderListAndFieldLengthLimits` 的断言由「失败必粘滞」改为「只有压缩错误粘滞」。
+- **构造失败的 QUIC 服务端不再漏掉整份 TLS 上下文**：`QuicServer` 的构造函数第一件事就是
+  `SSL_CTX_new`，其后还有四道检查会抛（限 TLS 1.3、证书链、私钥、私钥与证书是否配对），而抛出去之后
+  析构函数根本不会跑——存在成员里的那份裸 `SSL_CTX *` 就此无人认领。量级是一份上下文连带证书与私钥
+  约 16.6 KiB：`net_http3_demo` 自检 14 步全绿的最后一次跑里，LSan 报了 38 744 字节 / 549 次分配，
+  三处 `SSL_CTX_new` 全落在构造上。按「证书轮换失败就重试」的部署写法，这是随重试次数线性增长的泄漏。
+  改成先由一个局部 `unique_ptr` 守卫持有，四道检查全过才 `release()` 交接给成员。
+  新增 `QuicServer.ReleasesTlsContextWhenCertificateValidationFailsDuringConstruction` 直测三个抛点
+  （缺证书文件、缺私钥文件、两个文件都在但不配对——最后一道是构造里唯一的配对检查）：「抛」由用例钉，
+  「漏」由容器的 LSan 门禁钉。把所有权交接挪回守卫之前（等于旧写法）时该用例断言全过、而进程以
+  LSan 报出 99 611 字节 / 1468 次分配非零退出——这条用例的证据力在退出码里，只盯 `[ PASSED ]` 会漏过去。
+- **示例的启动期报错不再依赖 `<print>`**：`samples/common/SampleSupport.h` 用 `std::print` 打两条
+  命令行报错，而 `<print>` 在 GCC 13 上还不存在（标准库实现要到 GCC 14 才补齐）。本仓库拿 ubuntu24
+  容器（GCC 13.3）当 LSan/UBSan 门禁，于是 `echo_server` 与三个 `net_*_demo` 在那台工具链上
+  **整体构建不过**，进程外探针（h2c 对手、h3 验收与取消）只能跑在旧二进制上、量不到改后那一半。
+  文案改由 `std::format` 拼、`printStartupError` 单点输出到 stderr（`<format>` 两侧都有），
+  输出字节与退出码逐字不变（Linux 上实测：缺取值与越界取值两条文案照旧、退出码照旧是 2）。
+  这条仍是「C++23 里也不是所有设施都能用」的老问题：判据是 `__cpp_*` 特性宏与工具链实测，不是标准版本号。
 
 ### 性能
 

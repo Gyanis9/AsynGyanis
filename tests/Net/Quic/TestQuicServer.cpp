@@ -2,6 +2,7 @@
 // 服务端这一侧，客户端只当对端）。握手与流数据都走真实回环 UDP，因此套接字封装、 连接标识路由、定时器驱动、证书与 ALPN 协商全都在链路上。
 #include "Net/Quic/QuicServer.h"
 
+#include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
@@ -1162,6 +1163,41 @@ TEST(QuicServer, AnnouncesStreamAbortToCrossImplementationClient)
             << "客户端没接受服务端收口这条流：那份帧不合裁判的意（读错标志 " << (client.hasReadError() ? "有" : "无") << "）";
     EXPECT_EQ(client.closedStreamErrorCodeOf(abortedStreamId).value_or(0U), 0x010bU) << "对端看到的收口错误码";
     EXPECT_FALSE(client.hasReadError()) << "客户端读这些帧时出错：编码不合 ngtcp2 的裁判";
+}
+
+/**
+ * @brief 钉住：构造期证书或私钥不合规时当场抛出，且不留下一份无人认领的 TLS 上下文
+ * @details SSL_CTX 是构造里第一件拿到的资源，其后四道检查任一不过都抛——那时析构函数不会跑，
+ *          旧写法存在成员里的裸指针就此没人负责（实测一份 1784 字节直漏 + 连带 35 KiB 的间接量，
+ *          每次构造失败漏一整份）。判据分两层：抛与不抛由这里钉，漏与不漏由容器的 LSan 门禁钉，
+ *          两层缺一都挡不住「改成不抛而是吞掉」这种倒退。
+ */
+TEST(QuicServer, ReleasesTlsContextWhenCertificateValidationFailsDuringConstruction)
+{
+    // 构造与销毁都在本线程：这个循环没交给别的线程，本线程就是它的归属线程
+    Core::EventLoop loop;
+
+    QuicServer::Configuration missingCertificate;
+    missingCertificate.certificateFile = std::string(TEST_FIXTURES_DIR) + "/no-such-cert.pem";
+    missingCertificate.privateKeyFile  = privateKeyPath();
+    EXPECT_THROW(QuicServer server(loop, missingCertificate), Base::SystemException);
+
+    QuicServer::Configuration missingPrivateKey;
+    missingPrivateKey.certificateFile = certificatePath();
+    missingPrivateKey.privateKeyFile  = std::string(TEST_FIXTURES_DIR) + "/no-such-key.pem";
+    EXPECT_THROW(QuicServer server(loop, missingPrivateKey), Base::SystemException);
+
+    // 两个文件各自都在、也能各自加载，只有配对检查拦得住：这一道是构造里最后一道抛点
+    QuicServer::Configuration mismatchedPair;
+    mismatchedPair.certificateFile = certificatePath();
+    mismatchedPair.privateKeyFile  = std::string(TEST_FIXTURES_DIR) + "/test_ip_key.pem";
+    EXPECT_THROW(QuicServer server(loop, mismatchedPair), Base::SystemException);
+
+    // 反复构造失败也要抛，且不留残留：以上三道各来一轮，退出时 LSan 不许报任何东西
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        EXPECT_THROW(QuicServer server(loop, missingCertificate), Base::SystemException);
+    }
 }
 
 } // namespace AsynGyanis::Net

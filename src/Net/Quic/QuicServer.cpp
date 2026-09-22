@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 #include <expected>
+#include <memory>
 #include <string>
 
 #include <openssl/err.h>
@@ -72,31 +73,35 @@ namespace AsynGyanis::Net
     QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) :
         m_eventLoop(eventLoop), m_configuration(std::move(configuration)), m_expiryTicker(eventLoop)
     {
-        m_tlsContext = SSL_CTX_new(TLS_server_method());
-        if (m_tlsContext == nullptr)
+        // 构造期任一检查不过都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
+        // 所以先让局部守卫持有，只有全部检查过了才交接给成员（一份 SSL_CTX 连带证书与私钥约 35 KiB）
+        std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ownedTlsContext(SSL_CTX_new(TLS_server_method()), &SSL_CTX_free);
+        if (ownedTlsContext == nullptr)
         {
             throw Base::SystemException("QUIC 服务端启动失败：TLS 上下文创建失败（" + quicOpenSslErrorText() + "）");
         }
+        SSL_CTX *const tlsContext = ownedTlsContext.get();
 
         // QUIC 只用 TLS 1.3：低版本没有 QUIC 需要的握手接口
-        if (SSL_CTX_set_min_proto_version(m_tlsContext, TLS1_3_VERSION) != 1)
+        if (SSL_CTX_set_min_proto_version(tlsContext, TLS1_3_VERSION) != 1)
         {
             throw Base::SystemException("QUIC 服务端启动失败：无法把 TLS 最低版本限到 1.3（" + quicOpenSslErrorText() + "）");
         }
-        if (SSL_CTX_use_certificate_chain_file(m_tlsContext, m_configuration.certificateFile.c_str()) != 1)
+        if (SSL_CTX_use_certificate_chain_file(tlsContext, m_configuration.certificateFile.c_str()) != 1)
         {
             throw Base::SystemException("QUIC 服务端启动失败：证书加载失败（" + m_configuration.certificateFile + "）：" + quicOpenSslErrorText());
         }
-        if (SSL_CTX_use_PrivateKey_file(m_tlsContext, m_configuration.privateKeyFile.c_str(), SSL_FILETYPE_PEM) != 1)
+        if (SSL_CTX_use_PrivateKey_file(tlsContext, m_configuration.privateKeyFile.c_str(), SSL_FILETYPE_PEM) != 1)
         {
             throw Base::SystemException("QUIC 服务端启动失败：私钥加载失败（" + m_configuration.privateKeyFile + "）：" + quicOpenSslErrorText());
         }
-        if (SSL_CTX_check_private_key(m_tlsContext) != 1)
+        if (SSL_CTX_check_private_key(tlsContext) != 1)
         {
             throw Base::SystemException("QUIC 服务端启动失败：私钥与证书不匹配：" + quicOpenSslErrorText());
         }
-        SSL_CTX_set_alpn_select_cb(m_tlsContext, selectApplicationProtocol, nullptr);
-
+        SSL_CTX_set_alpn_select_cb(tlsContext, selectApplicationProtocol, nullptr);
+        // 到这里才算构造成功：所有权交给成员，由析构函数释放，守卫不再重复 free
+        m_tlsContext = ownedTlsContext.release();
     }
 
     QuicServer::~QuicServer()
