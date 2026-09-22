@@ -1,6 +1,7 @@
 // 覆盖场景（MySQL 真实服务端集成；与只测离线失败语义的 TestMySqlConnection.cpp 互补）：
 // - 建连与服务端版本、错误口令的中文失败原因
 // - 参数化执行（mysql_stmt_*）：影响行数、各类取值与 NULL/空串的往返、注入文本、参数个数与容器参数的拒绝面
+// - 同一语句文本重复执行走连接的预处理语句缓存：必须读到最新数据，且失败一次后同一条文本仍可复用
 // - ORM 端到端：CRUD、排序分页、批量插入分块、引用标识符（保留字/空格/反引号）、SchemaMigrator 建表与删表
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
@@ -91,6 +92,10 @@ namespace AsynGyanis::Database
         constexpr std::string_view kParameterSelectColumns =
             "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL, "
             "`note` VARCHAR(191) NULL, `payload` TEXT NULL";
+
+        /// 语句复用用例的表：同一文本要连跑多次，列故意少到能一眼看出读到的是哪一版
+        constexpr std::string_view kReusedStatementTableName = "Asyn_Mysql_ReuseStmt";
+        constexpr std::string_view kReusedStatementColumns = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(64) NOT NULL";
 
         /// 注入证明用例的表
         constexpr std::string_view kInjectionTableName = "Asyn_Mysql_Injection";
@@ -967,6 +972,58 @@ namespace AsynGyanis::Database
         const std::string readBackLongText = std::get<std::string>(thirdRow->getValue("payload"));
         EXPECT_EQ(readBackLongText.size(), longText.size());
         EXPECT_EQ(readBackLongText, longText);
+    }
+
+    /**
+     * @brief 钉住被复用的预处理语句仍读到最新数据，且失败一次不会把这条语句用坏
+     * @details 语句缓存带来的风险不是崩溃而是两件静默的事：复用的语句读出上一轮的旧结果，
+     *          或者一次失败之后同一条文本再也执行不成功。前者用「改数据后再跑同一文本」钉住，
+     *          后者用「本地拒绝 → 服务端拒绝 → 同文本继续正常」这一段钉住。
+     */
+    TEST_F(MySqlIntegrationTest, ReusedStatementServesFreshRowsAndRecoversFromFailure)
+    {
+        ASSERT_TRUE(prepareTable(kReusedStatementTableName, kReusedStatementColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::string insertStatement = "INSERT INTO " + quote(kReusedStatementTableName) + " (`id`, `name`) VALUES (?, ?)";
+        const std::string selectStatement = "SELECT `name` FROM " + quote(kReusedStatementTableName) + " WHERE `id` = ?";
+        const std::string updateStatement = "UPDATE " + quote(kReusedStatementTableName) + " SET `name` = ? WHERE `id` = ?";
+
+        ASSERT_NE(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{1}, std::string{"第一版"}}), nullptr)
+            << connection.lastError();
+
+        // 同一条文本被反复执行：第二次起走的就是缓存里那条已预编译的语句
+        const auto readNameById = [&connection, &selectStatement](const std::int64_t identifier) -> std::string
+        {
+            const std::unique_ptr<DatabaseResult> result = connection.execute(selectStatement, std::vector<DatabaseValue>{identifier});
+            EXPECT_NE(result, nullptr) << connection.lastError();
+            if (result == nullptr || !result->next())
+            {
+                return {};
+            }
+            return std::get<std::string>(result->getValue(0));
+        };
+
+        EXPECT_EQ(readNameById(1), "第一版");
+
+        ASSERT_NE(connection.execute(updateStatement, std::vector<DatabaseValue>{std::string{"第二版"}, std::int64_t{1}}), nullptr)
+            << connection.lastError();
+        // 复用的语句若把上一轮的结果留在客户端缓冲里交出来，这里就会读到「第一版」
+        EXPECT_EQ(readNameById(1), "第二版");
+        EXPECT_EQ(readNameById(1), "第二版");
+
+        // 参数个数与占位符不符：驱动本地拒绝，同一条文本随后仍要正常工作
+        EXPECT_EQ(connection.execute(selectStatement, std::vector<DatabaseValue>{}), nullptr);
+        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_EQ(readNameById(1), "第二版");
+
+        // 服务端拒绝的一次（主键冲突）：这条语句被弃掉，同一条插入文本下一次换参数仍要成功
+        EXPECT_EQ(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{1}, std::string{"重复"}}), nullptr);
+        EXPECT_NE(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{2}, std::string{"新增"}}), nullptr)
+            << connection.lastError();
+        EXPECT_EQ(readNameById(2), "新增");
     }
 
     /**
