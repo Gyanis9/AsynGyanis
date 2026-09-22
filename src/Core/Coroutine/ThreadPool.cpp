@@ -6,13 +6,10 @@
 namespace AsynGyanis::Core
 {
     ThreadPool::ThreadPool(const size_t threadCount) :
-        m_threadCount(threadCount > 0 ? threadCount : std::thread::hardware_concurrency())
+        // 自动档按「本进程实际能跑到多少并行」定容，而不是宿主核数：容器里每条循环都自带一份
+        // epoll 与定时器描述符，按宿主核数起会把内存、文件描述符和上下文切换一起拉满
+        m_threadCount(threadCount > 0 ? threadCount : Platform::CpuAffinity::recommendedWorkerCount())
     {
-        if (m_threadCount == 0)
-        {
-            m_threadCount = 1;
-        }
-
         m_eventLoops.reserve(m_threadCount);
         for (size_t i = 0; i < m_threadCount; ++i)
         {

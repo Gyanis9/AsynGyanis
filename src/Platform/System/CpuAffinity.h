@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <string_view>
 
 namespace AsynGyanis::Platform
 {
@@ -36,6 +37,39 @@ namespace AsynGyanis::Platform
          * @return std::size_t 许可集合里的核数；查询失败时返回 0（调用方据此放弃绑核即可）
          */
         [[nodiscard]] static std::size_t availableCoreCount() noexcept;
+
+        /**
+         * @brief 把 cgroup 的 CPU 配额折算成「等效核数」
+         * @details 配额是「每周期可用多少微秒」，除不尽时向上取整：1.5 核的额度起 2 条循环比起
+         *          1 条更接近实际并行度，而 0.5 核也只该有一条循环（取整到 0 会让线程池空掉）。
+         * @param quotaMicroseconds 一个调度周期内可用的 CPU 时间（微秒）；≤0 表示不设限
+         *        （cgroup v2 的 `max`、v1 的 -1 都归到这里）
+         * @param periodMicroseconds 调度周期长度（微秒）；≤0 表示读不到有效周期
+         * @return std::size_t 等效核数；不设限或周期无效时返回 0，由调用方按「没有这条约束」处理
+         */
+        [[nodiscard]] static std::size_t coresFromCgroupQuota(std::int64_t quotaMicroseconds,
+                                                              std::int64_t periodMicroseconds) noexcept;
+
+        /**
+         * @brief 从 /proc/self/cgroup 的文本里取出本进程所在 cgroup 的相对路径
+         * @details 抽成纯函数是为了能把格式边界摆开验（v2 单行 `0::/path`、v1 每个控制器一行、
+         *          没有冒号的残缺行）；只读根路径会把 systemd `CPUQuota=` 这类子分组上的限额
+         *          错读成「不设限」，所以这一步不能省。
+         * @param procContents /proc/self/cgroup 的全文
+         * @return std::string 以 '/' 开头的相对路径；解析不出时返回 "/"
+         */
+        [[nodiscard]] static std::string cgroupPathFromProcRecord(std::string_view procContents);
+
+        /**
+         * @brief 本进程实际能跑到多少并行度：硬件核数、许可核集合与 cgroup CPU 配额三者取最小
+         * @details 起多少条事件循环该由「进程真能跑到多少并行」决定。`hardware_concurrency()` 只看
+         *          机器：容器里 `--cpus` 走 CFS 配额、`--cpuset-cpus` 走许可集合，它两边都不看，
+         *          于是在 2 核配额的 Pod 上给出宿主核数——每条循环自带一份 epoll 与定时器描述符，
+         *          白占内存与文件描述符，还把上下文切换拉满。
+         * @note 读不到任何约束（裸机、Windows、没有 cgroup）时退化成硬件核数。
+         * @return std::size_t 至少 1，永不返回 0（调用方可以直接拿来当线程数）
+         */
+        [[nodiscard]] static std::size_t recommendedWorkerCount() noexcept;
 
         /**
          * @brief 取本线程当前被允许使用的逻辑核掩码（bit i 对应核 i）

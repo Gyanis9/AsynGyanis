@@ -13,6 +13,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Platform/System/CpuAffinity.h"
 
 #include <gtest/gtest.h>
 
@@ -217,4 +218,22 @@ namespace AsynGyanis::Core
             EXPECT_FALSE(abandonedProbe.finished.load(std::memory_order_acquire)) << "被丢弃的那次提交不该产出结果";
         }
     } // namespace
+
+    /**
+     * @brief 自动档的工作线程数不得越过本进程的 CPU 约束（与线程池同一口径）
+     * @details 工作线程干的是压缩这类纯 CPU 活：在配额受限的容器里按宿主核数起线程，
+     *          会把配额内那点 CPU 时间从事件循环手里抢走，外派压缩反而拖垮了它要保护的一方
+     */
+    TEST(AsyncExecutor, AutoWorkerCountStaysWithinProcessCpuLimits)
+    {
+        AsyncExecutor executor;
+
+        EXPECT_GE(executor.workerCount(), 1U) << "自动档起出 0 个工作线程：提交的任务永远不会有结果";
+
+        if (const std::size_t allowedCoreCount = Platform::CpuAffinity::availableCoreCount(); allowedCoreCount > 0)
+        {
+            EXPECT_LE(executor.workerCount(), allowedCoreCount)
+                    << "工作线程数超出了本进程被允许的核集合，配额内的 CPU 会被从事件循环手里抢走";
+        }
+    }
 } // namespace AsynGyanis::Core

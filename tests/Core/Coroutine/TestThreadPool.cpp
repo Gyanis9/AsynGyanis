@@ -55,13 +55,28 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 线程数为 0 时回落到 hardware_concurrency()，与构造参数的文档约定一致
+     * @brief 线程数为 0 时按「本进程实际可用的核数」定容：至少 1 条，且不超过宿主核数与许可核集合
+     * @details 旧断言是 threadCount() == hardware_concurrency()。新语义改成「不超过本进程被允许的
+     *          核集合」，依据是容器里 cpuset 或 --cpus 收窄过后，按宿主核数起循环每多一条就白多一份
+     *          epoll、定时器描述符与上下文切换。裸机上两者相等，因此这条在两种环境下都成立
      */
-    TEST(ThreadPool, ConstructionWithZeroUsesHardwareConcurrency)
+    TEST(ThreadPool, ConstructionWithZeroUsesPermittedCoreCount)
     {
         ThreadPool pool(0);
 
-        EXPECT_EQ(pool.threadCount(), std::thread::hardware_concurrency());
+        EXPECT_GE(pool.threadCount(), 1U) << "自动档给出 0 条线程：投进来的任务永远没有人跑";
+
+        if (const size_t hardwareCoreCount = std::thread::hardware_concurrency(); hardwareCoreCount > 0)
+        {
+            EXPECT_LE(pool.threadCount(), hardwareCoreCount);
+        }
+
+        // 许可集合读得出来时不得超出它：绑核路径也按同一个数收敛，两处口径必须一致
+        if (const size_t allowedCoreCount = Platform::CpuAffinity::availableCoreCount(); allowedCoreCount > 0)
+        {
+            EXPECT_LE(pool.threadCount(), allowedCoreCount)
+                << "自动档按宿主核数起线程，超出了本进程被允许的核集合";
+        }
     }
 
     /**

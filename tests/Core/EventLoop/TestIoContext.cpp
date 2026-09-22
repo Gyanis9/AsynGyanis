@@ -4,6 +4,7 @@
 #include "Core/Coroutine/Task.h"
 
 #include "CoreTestSupport.h"
+#include "Platform/System/CpuAffinity.h"
 
 #include <gtest/gtest.h>
 
@@ -127,12 +128,17 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 默认构造的线程数等于 hardware_concurrency()，不写死某个小常数
+     * @brief 默认构造的线程数取「本进程实际可用的核数」，不写死某个小常数
+     * @details 旧断言是 threadCount() == hardware_concurrency()。新语义改成与
+     *          CpuAffinity::recommendedWorkerCount() 相等：容器里按宿主核数起循环，每条都自带一份
+     *          epoll 与定时器描述符，白占内存与文件描述符。裸机上两者仍相等，因此这条在两种环境下都成立
      */
-    TEST(IoContext, DefaultConstructorUsesHardwareConcurrency)
+    TEST(IoContext, DefaultConstructorUsesPermittedCoreCount)
     {
         IoContext context;
 
-        EXPECT_EQ(context.threadPool().threadCount(), std::thread::hardware_concurrency());
+        EXPECT_EQ(context.threadPool().threadCount(), Platform::CpuAffinity::recommendedWorkerCount())
+            << "自动档没有走进程可用核数的统一口径";
+        EXPECT_GE(context.threadPool().threadCount(), 1U) << "0 条循环的运行时没有人推进事件";
     }
 } // namespace AsynGyanis::Core

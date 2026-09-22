@@ -1,15 +1,18 @@
 #include "Core/Coroutine/AsyncExecutor.h"
 
-#include <algorithm>
+#include "Platform/System/CpuAffinity.h"
 
 namespace AsynGyanis::Core
 {
     AsyncExecutor::AsyncExecutor(const std::size_t workerCount)
     {
-        // 0 表示自动：按硬件并发度取，取不到（返回 0）时按 1 处理。
+        // 0 表示自动：按「本进程实际可用的核数」取（容器配额与 cpuset 会把它收窄）。
         // 无论如何都不允许 0 个线程：没有工作线程时提交的任务永远不会被执行，
-        // 调用方会看到一个永远不完成的协程，这种错误几乎无法从现象上定位
-        const std::size_t resolvedWorkerCount = workerCount == 0 ? std::max<std::size_t>(1, std::thread::hardware_concurrency()) : workerCount;
+        // 调用方会看到一个永远不完成的协程，这种错误几乎无法从现象上定位。
+        // 这里更要收紧：工作线程干的是压缩这类纯 CPU 活，按宿主核数起会在配额内直接抢走
+        // 事件循环本就不多的 CPU 时间——正是外派压缩想要保护的那一方
+        const std::size_t resolvedWorkerCount =
+                workerCount == 0 ? Platform::CpuAffinity::recommendedWorkerCount() : workerCount;
 
         m_workers.reserve(resolvedWorkerCount);
         for (std::size_t index = 0; index < resolvedWorkerCount; ++index)

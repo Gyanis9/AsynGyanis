@@ -24,7 +24,8 @@ namespace AsynGyanis::Core
     public:
         /**
          * @brief 构造异步运行时。
-         * @param threadCount 工作线程数，0 表示自动检测（通常为 CPU 核心数）
+         * @param threadCount 工作线程数，0 表示自动检测（取本进程实际可用的核数：容器 CPU 配额与
+         *        cpuset 会把它收窄，而不是宿主核数）
          */
         explicit IoContext(size_t threadCount = 0);
 

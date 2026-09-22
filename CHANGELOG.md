@@ -821,16 +821,22 @@
   与定时器描述符，多出来的那十几条既跑不到、又白占内存与文件描述符，还把上下文切换拉满。
   新增 `Platform::CpuAffinity::recommendedWorkerCount()`：机器核数、许可核集合、cgroup 配额
   （v2 的 `cpu.max` 与 v1 的 `cfs_quota_us`/`cfs_period_us`）三者取最小，下限 1；配额除不尽时
-  向上取整（1.5 核给 2 条、0.5 核给 1 条，绝不折成 0）。绑核路径本来就在读许可集合，两处口径一致了。
+  向上取整（1.5 核给 2 条、0.5 核给 1 条，绝不折成 0）。配额按**本进程所在的分组**读
+  （`/proc/self/cgroup` 取相对路径），只读根分组会把 systemd `CPUQuota=` 这类子分组的限额错当成不设限。
+  绑核路径本来就在读许可集合，两处口径一致了。
   `AsyncExecutor`（压缩外派用的阻塞任务执行器）的自动档一起改：它的工作线程干的是纯 CPU 活，
   按宿主核数起会在配额内把 CPU 从事件循环手里抢走，正好伤到外派压缩要保护的那一方。
-  实测（同一枚探针分别跑在不限与 `--cpus=2` 的容器里）：不限时 `hardware=20 / 许可=20 / 推荐=20`
-  （与旧行为一致，裸机与不受限容器没有任何变化）；`--cpus=2` 时 `hardware=20 / 许可=20 / 推荐=2`，
-  即旧写法要在 2 核额度上起 20 条循环，现在起 2 条。Windows 没有 cgroup，只按前两者收敛。
+  实测（宿主 20 核，`ubuntu:24.04` 新容器）：不限时 `hardware=20 / 许可=20 / 推荐=20`
+  （与旧行为一致，裸机与不受限容器没有任何变化）；`--cpus=4` 时 `推荐=4`——把配额读取摘掉的突变版
+  在同一容器里给 20，用例即报「限到 4 核，推荐值却更高」（20 vs 4），换回本版 `CpuAffinity` 8 例全绿，
+  `IoContext`/`ThreadPool`/`AsyncExecutor`/`Timer` 共 33 例也在 `--cpus=4` 下全绿。
+  Windows 没有 cgroup，只按前两者收敛。
   用例 `CoresFromCgroupQuotaRoundsUpAndTreatsUnlimitedAsNoConstraint` 钉折算表（含「不设限不得变成 1 核」
-  这一类把常态当故障的方向性错误），`RecommendedWorkerCountRespectsThisProcessQuotaAndAllowedSet`
-  由用例自己重读 cgroup 再算一遍当独立判据；`ThreadPool` 那条自动档用例的断言从
-  `== hardware_concurrency()` 改成「≥1 且 ≤许可集合」，依据就是受限环境下两者必须不等。
+  这一类把常态当故障的方向性错误），`CgroupPathFromProcRecordHandlesBothVersionsAndMalformedLines`
+  钉分组路径的 v1/v2、缺前导斜杠、行尾 `\r`、残缺行与空文本，
+  `RecommendedWorkerCountRespectsThisProcessQuotaAndAllowedSet` 由用例自己重读 cgroup 再算一遍当独立判据；
+  `ThreadPool` 与 `IoContext` 两条自动档用例的断言从 `== hardware_concurrency()` 改成
+  「≥1 且 ≤许可集合」与「等于 `recommendedWorkerCount()`」，依据就是受限环境下两者必须不等。
 
 ## [1.1.0] - 2026-09-16
 

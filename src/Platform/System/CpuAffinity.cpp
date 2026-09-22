@@ -2,6 +2,13 @@
 
 #include "Platform/Platform.h"
 
+#include <charconv>
+#include <fstream>
+#include <iterator>
+#include <string_view>
+#include <thread>
+#include <utility>
+
 #include <format>
 
 #if ASYN_PLATFORM_LINUX
@@ -30,6 +37,97 @@ namespace AsynGyanis::Platform
             }
             return coreCount;
         }
+
+#if ASYN_PLATFORM_LINUX
+        /**
+         * @brief 读一个只放着一两行小文本的 procfs / cgroup 文件
+         * @param path 文件路径
+         * @return std::string 文件内容；打不开或空文件返回空串（本机没有 cgroup 是正常情形）
+         */
+        std::string readCgroupTextFile(const char *const path)
+        {
+            std::ifstream stream(path, std::ios::binary);
+            if (!stream)
+            {
+                return {};
+            }
+            return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        }
+
+        /**
+         * @brief 取一段文本里第一个整数字段
+         * @details 用 from_chars 而不是 std::stoll：后者遇到 cgroup v2 写「max」这种非数字首字段
+         *          会抛 out_of_range，而「max」恰恰是「不设限」的正常取值，按异常处理就把常态当故障
+         * @param text 待解析文本
+         * @return std::pair<bool, std::int64_t> 第一项为 false 表示开头就不是数字
+         */
+        std::pair<bool, std::int64_t> parseLeadingInteger(const std::string_view text)
+        {
+            const auto *begin = text.begin();
+            const auto *end   = text.end();
+            while (begin != end && (*begin == ' ' || *begin == '\t'))
+            {
+                ++begin;
+            }
+            std::int64_t value = 0;
+            const auto result = std::from_chars(begin, end, value);
+            if (result.ec != std::errc{})
+            {
+                return {false, 0};
+            }
+            return {true, value};
+        }
+
+        /**
+         * @brief 跳过第一个空白取下一个整数字段（cpu.max 的第二列）
+         * @param text 整行内容
+         * @return std::pair<bool, std::int64_t> 没有第二个字段时第一项为 false
+         */
+        std::pair<bool, std::int64_t> parseTrailingInteger(const std::string_view text)
+        {
+            const auto separator = text.find_first_of(" \t");
+            if (separator == std::string_view::npos)
+            {
+                return {false, 0};
+            }
+            return parseLeadingInteger(text.substr(separator + 1));
+        }
+
+        /**
+         * @brief 读本进程的 cgroup CPU 配额，折成等效核数
+         * @return std::size_t 等效核数；不设限或读不到时返回 0
+         */
+        std::size_t currentCgroupQuotaCoreCount() noexcept
+        {
+            const std::string relativePath =
+                    CpuAffinity::cgroupPathFromProcRecord(readCgroupTextFile("/proc/self/cgroup"));
+
+            // cgroup v2：一行两列「<quota|max> <period>」，各分组有自己的 cpu.max
+            const std::string v2Path = std::format("/sys/fs/cgroup{}/cpu.max", relativePath);
+            if (const std::string cpuMax = readCgroupTextFile(v2Path.c_str()); !cpuMax.empty())
+            {
+                const auto [hasQuota, quotaMicroseconds] = parseLeadingInteger(cpuMax);
+                const auto [hasPeriod, periodMicroseconds] = parseTrailingInteger(cpuMax);
+                if (hasQuota && hasPeriod)
+                {
+                    return CpuAffinity::coresFromCgroupQuota(quotaMicroseconds, periodMicroseconds);
+                }
+                // 首字段是「max」即不设限，无需再看 v1
+                return 0;
+            }
+
+            // cgroup v1：配额与周期分在两个文件，未限时配额写 -1
+            const std::string quotaPath = std::format("/sys/fs/cgroup/cpu{}/cpu.cfs_quota_us", relativePath);
+            const std::string periodPath = std::format("/sys/fs/cgroup/cpu{}/cpu.cfs_period_us", relativePath);
+            const auto [hasQuota, quotaMicroseconds]   = parseLeadingInteger(readCgroupTextFile(quotaPath.c_str()));
+            const auto [hasPeriod, periodMicroseconds] = parseLeadingInteger(readCgroupTextFile(periodPath.c_str()));
+            if (!hasQuota || !hasPeriod)
+            {
+                return 0;
+            }
+            return CpuAffinity::coresFromCgroupQuota(quotaMicroseconds, periodMicroseconds);
+        }
+#endif // ASYN_PLATFORM_LINUX
     } // namespace
 
     std::uint64_t CpuAffinity::currentThreadCoreMask() noexcept
@@ -118,6 +216,76 @@ namespace AsynGyanis::Platform
         }
 #endif
         return {};
+    }
+
+    std::size_t CpuAffinity::coresFromCgroupQuota(const std::int64_t quotaMicroseconds,
+                                                 const std::int64_t periodMicroseconds) noexcept
+    {
+        // 配额非正数即「不设限」（v2 的 max 解析失败按不设限处理、v1 写 -1）；周期为 0 是残缺数据，
+        // 两者都返回 0 让调用方按「没有这条约束」继续，而不是静默算出 1 核把并行度压死
+        if (quotaMicroseconds <= 0 || periodMicroseconds <= 0)
+        {
+            return 0;
+        }
+        return static_cast<std::size_t>((quotaMicroseconds + periodMicroseconds - 1) / periodMicroseconds);
+    }
+
+    std::string CpuAffinity::cgroupPathFromProcRecord(const std::string_view procContents)
+    {
+        for (std::size_t lineStart = 0; lineStart < procContents.size();)
+        {
+            const std::size_t lineEnd = procContents.find('\n', lineStart);
+            const std::string_view line = procContents.substr(
+                    lineStart, (lineEnd == std::string_view::npos ? procContents.size() : lineEnd) - lineStart);
+
+            // 每行形如 "<层级>:<控制器列表>:<路径>"；v2 恒为 "0::<路径>"，v1 每个控制器一行、
+            // 路径同样取最后一个冒号之后
+            const std::size_t lastColon = line.rfind(':');
+            if (lastColon != std::string_view::npos)
+            {
+                std::string path(line.substr(lastColon + 1));
+                while (!path.empty() && (path.back() == '\r' || path.back() == ' '))
+                {
+                    path.pop_back();
+                }
+                if (!path.empty())
+                {
+                    // 相对路径必须自己补上根：拼出来才是 /sys/fs/cgroup 下的真实目录
+                    return path.front() == '/' ? path : '/' + path;
+                }
+            }
+
+            if (lineEnd == std::string_view::npos)
+            {
+                break;
+            }
+            lineStart = lineEnd + 1;
+        }
+        // 一行都读不出路径时按根分组处理：此时读根上的 cpu.max 正是想要的
+        return "/";
+    }
+
+    std::size_t CpuAffinity::recommendedWorkerCount() noexcept
+    {
+        std::size_t workerCount = std::thread::hardware_concurrency();
+
+        // 许可核集合比机器小时用它：容器 cpuset 与 taskset 收窄过的环境上硬件核数没有意义
+        const std::size_t allowedCoreCount = availableCoreCount();
+        if (allowedCoreCount > 0 && (workerCount == 0 || allowedCoreCount < workerCount))
+        {
+            workerCount = allowedCoreCount;
+        }
+
+#if ASYN_PLATFORM_LINUX
+        // CFS 配额是另一条独立约束：--cpus 只改配额、不改许可集合，前一步看不出进程被限住了
+        const std::size_t quotaCoreCount = currentCgroupQuotaCoreCount();
+        if (quotaCoreCount > 0 && (workerCount == 0 || quotaCoreCount < workerCount))
+        {
+            workerCount = quotaCoreCount;
+        }
+#endif
+
+        return workerCount > 0 ? workerCount : 1;
     }
 
 } // namespace AsynGyanis::Platform

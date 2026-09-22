@@ -58,8 +58,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 构造执行器并立刻启动全部工作线程
          *
-         * @param workerCount 工作线程数；0 表示按 std::thread::hardware_concurrency() 自动确定
-         *        （取不到时按 1 处理），且无论如何至少 1 个——否则提交的任务永远不会被执行
+         * @param workerCount 工作线程数；0 表示自动取「本进程实际可用的核数」（容器 CPU 配额与
+         *        cpuset 会把它收窄），且无论如何至少 1 个——否则提交的任务永远不会被执行
          * @note 构造期间工作线程进入等待队列的循环，不会执行任何用户代码
          */
         explicit AsyncExecutor(std::size_t workerCount = 0);

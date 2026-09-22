@@ -25,7 +25,7 @@ namespace AsynGyanis::Core
     public:
         /**
          * @brief 构造线程池。
-         * @param threadCount 线程数，0 表示使用 hardware_concurrency() 自动确定
+         * @param threadCount 线程数，0 表示自动取「本进程实际可用的核数」（容器配额、cpuset 会把它收窄）
          */
         explicit ThreadPool(size_t threadCount = 0);
 
