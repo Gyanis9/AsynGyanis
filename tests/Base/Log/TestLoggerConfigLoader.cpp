@@ -1387,4 +1387,166 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(contains(content, "first run line")) << content;
         EXPECT_TRUE(contains(content, "second run line")) << content;
     }
+
+    /**
+     * @brief 可选字段类型不符时必须报出「实际类型 vs 期望类型」，不能静默按默认值生效
+     * @details YAML 里给数字加了引号（queue_size: "8192"）是本仓最常见的配错方式：原先
+     *          `.value_or(默认值)` 会让 8192 静默变成 1024，配置与生效值长期不一致而无人知道，
+     *          而同一个文件对 max_size_mb、overflow_policy 的非法取值都会报。
+     *          这条钉的是「容错必须可见」：值仍回落默认、sink 仍要建成，但必须说清原因。
+     */
+    TEST_F(LoggerConfigLoaderTest, WrongTypedOptionalFieldDiagnosesInsteadOfSilentDefault)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: TRACE
+      sinks:
+        - type: async
+          queue_size: "8192"
+          wrapped:
+            type: file
+            path: typed_queue.log
+            truncate: true
+)");
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "queue_size 类型是 string")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "要求 int")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "1024")) << diagnostic;
+
+        // 类型不符只影响这一项取值，不能顺手把整条 sink 判废
+        logAndFlush("root", LogLevel::Info, "typed_queue_line");
+        EXPECT_TRUE(contains(readTemporaryFile("typed_queue.log"), "typed_queue_line"))
+                << readTemporaryFile("typed_queue.log");
+    }
+
+    /**
+     * @brief 非法 policy 要报出非法值与支持的取值，并说明按 size 处理
+     * @details 与 overflow_policy 那条同口径：回退本身可以，「想写 daily 却拼错」不能没人说。
+     *          行为半边（按 size 滚动、活动文件就是 base_filename）改动前后都成立，
+     *          新钉住的是诊断半边——把 else 分支改回静默赋值本用例即红。
+     */
+    TEST_F(LoggerConfigLoaderTest, UnknownRollingPolicyIsDiagnosedAndFallsBackToSize)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: TRACE
+      sinks:
+        - type: rolling_file
+          base_filename: typed_policy.log
+          directory: rolling
+          policy: dailyy
+          max_size_mb: 1
+)");
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "policy='dailyy'")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "size / daily / hourly")) << diagnostic;
+
+        logAndFlush("root", LogLevel::Info, "typed_policy_line");
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/typed_policy.log"), "typed_policy_line"))
+                << readTemporaryFile("rolling/typed_policy.log");
+    }
+
+    /**
+     * @brief 必填键「存在但类型不符」不能报成「缺少字段」
+     * @details 原先 type / path / base_filename 三条都走同一个 optional 判空，`type: 42`
+     *          这样的配置会被报成「缺少 'type' 字段」——字段明明在，运维照着提示补键反而补不对。
+     */
+    TEST_F(LoggerConfigLoaderTest, WrongTypedRequiredKeyReportsActualTypeNotMissing)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: TRACE
+      sinks:
+        - type: 42
+)");
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "'type' 类型是 uint")) << diagnostic;
+        EXPECT_FALSE(contains(diagnostic, "缺少 'type'"))
+                << "键在而类型不符，报成缺少会把人引向错误的修法：" << diagnostic;
+    }
+
+    /**
+     * @brief 必填键真的缺失时仍要说「缺少」：两种失败共用一条文案就都说不准
+     */
+    TEST_F(LoggerConfigLoaderTest, MissingRequiredKeyStillReportsAsMissing)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: TRACE
+      sinks:
+        - path: without_type.log
+)");
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "缺少 'type'")) << diagnostic;
+        EXPECT_FALSE(contains(diagnostic, "'type' 类型是")) << diagnostic;
+    }
+
+    /**
+     * @brief global_level 类型不符也要报出来：它决定所有 logger 的缺省等级
+     * @details 原先经 `get<std::string>(key, "INFO")` 取值，非字符串的取值与「没配」走同一条
+     *          回落路径，一声不响——「明明配了等级却没生效」是这类配置里最难查的现场。
+     */
+    TEST_F(LoggerConfigLoaderTest, WrongTypedGlobalLevelDiagnosesAndFallsBackToInfo)
+    {
+        loadConfiguration(R"(logging:
+  global_level: 42
+  loggers:
+    root:
+      sinks:
+        - type: console
+)");
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            logAndFlush("root", LogLevel::Info, "global_level_fallback_line");
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "global_level 类型是 uint")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "已按 INFO 处理")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "global_level_fallback_line")) << diagnostic;
+    }
 } // namespace AsynGyanis::Base

@@ -1,6 +1,7 @@
 #include "Base/Log/LoggerConfigLoader.h"
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Config/ConfigValueType.h"
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Sinks/FileSink.h"
@@ -44,6 +45,115 @@ namespace AsynGyanis::Base
             }
             return configValueAs<ValueType>(*iterator);
         }
+        /**
+         * @brief 本文件各字段声明的期望类型，用于把「实际类型 vs 期望类型」写进同一条诊断
+         * @tparam ValueType 取用者要的目标类型
+         */
+        template<typename ValueType>
+        [[nodiscard]] constexpr ConfigValueType expectedValueType() noexcept
+        {
+            return ConfigValueType::null;
+        }
+
+        template<>
+        constexpr ConfigValueType expectedValueType<bool>() noexcept
+        {
+            return ConfigValueType::boolean;
+        }
+
+        template<>
+        constexpr ConfigValueType expectedValueType<int64_t>() noexcept
+        {
+            return ConfigValueType::number_integer;
+        }
+
+        template<>
+        constexpr ConfigValueType expectedValueType<std::string>() noexcept
+        {
+            return ConfigValueType::string;
+        }
+
+        /**
+         * @brief 取带默认值的可选字段；键在而类型不符时先报再回落
+         * @details 「键不存在」走默认值是正常路径，不报；「键存在而类型不符」多半是 YAML 里给
+         *          数字或布尔加了引号，静默按默认值生效会让配置与生效值长期不一致而无人知道。
+         *          与本文件对 overflow_policy、max_size_mb 的口径一致：容错必须可见。
+         * @tparam ValueType 期望取值类型（须有对应的 expectedValueType 特化）
+         * @param configuration 承载该键的配置对象
+         * @param key 键名
+         * @param defaultValue 类型不符或键缺失时的回落值
+         * @param ownerDescription 诊断里指认这是哪个 sink 的字段
+         * @return ValueType 取到的值或回落值
+         */
+        template<typename ValueType>
+        [[nodiscard]] ValueType optionalFieldWithDiagnosis(const ConfigValue &configuration, const std::string_view key,
+                                                           ValueType defaultValue, const std::string_view ownerDescription)
+        {
+            const auto iterator = configuration.find(key);
+            if (iterator == configuration.end())
+            {
+                return defaultValue;
+            }
+            const std::optional<ValueType> parsed = configValueAs<ValueType>(*iterator);
+            if (!parsed.has_value())
+            {
+                std::cerr << "LoggerConfig：" << ownerDescription << " 的 " << key << " 类型是 "
+                        << typeName((*iterator).type()) << "，要求 " << typeName(expectedValueType<ValueType>())
+                        << "，已按默认值 " << std::boolalpha << defaultValue << std::noboolalpha << " 处理" << '\n';
+                return defaultValue;
+            }
+            return *parsed;
+        }
+
+        /**
+         * @brief 取必填的字符串字段，并区分「键缺失」与「类型不符」两种失败
+         * @details 两者的处置相同（跳过这个 sink），但原因必须分开说：原先一律报「缺少字段」，
+         *          而把 `path: 2026.log` 这类写成不带引号的数字时，字段明明在、报的却是缺失，
+         *          运维照着提示补键反而补不对。
+         * @param configuration 承载该键的配置对象
+         * @param key 键名
+         * @param ownerDescription 诊断里指认这是哪个 sink 的字段
+         * @return std::optional<std::string> 取到的文本，失败时为空（原因已报出）
+         */
+        [[nodiscard]] std::optional<std::string> requiredStringField(const ConfigValue &configuration, const std::string_view key,
+                                                                     const std::string_view ownerDescription)
+        {
+            const auto iterator = configuration.find(key);
+            if (iterator == configuration.end())
+            {
+                std::cerr << "LoggerConfig：" << ownerDescription << " 缺少 '" << key << "' 字段，已跳过该 sink" << '\n';
+                return std::nullopt;
+            }
+            const std::optional<std::string> value = configValueAs<std::string>(*iterator);
+            if (!value.has_value())
+            {
+                std::cerr << "LoggerConfig：" << ownerDescription << " 的 '" << key << "' 类型是 "
+                        << typeName((*iterator).type()) << "，要求 string，已跳过该 sink" << '\n';
+            }
+            return value;
+        }
+
+        /**
+         * @brief 由 UTF-8 文本构造路径对象，并让相对路径落在基准目录下
+         * @details 基准目录为空时回落到可执行文件所在目录，避免依赖进程工作目录。
+         *          全程走 path 对象：中途 `.string()` 会经过本地代码页，落在代码页外的字符
+         *          （emoji、非本机文字）会被换成 '?'，日志就此写到改了名的文件上。
+         * @param utf8Path 配置里读到的 UTF-8 路径文本
+         * @param baseDirectory 相对路径的基准目录，可为空
+         * @return std::filesystem::path 解析后的路径
+         */
+        [[nodiscard]] std::filesystem::path resolveLogPath(const std::string &utf8Path, const std::filesystem::path &baseDirectory)
+        {
+            const std::filesystem::path basePath = baseDirectory.empty()
+                                                       ? AsynGyanis::Platform::ProcessInfo::applicationDirectory()
+                                                       : baseDirectory;
+            std::filesystem::path resolvedPath = AsynGyanis::Platform::FileSystem::pathFromUtf8(utf8Path);
+            if (resolvedPath.is_relative())
+            {
+                resolvedPath = basePath / resolvedPath;
+            }
+            return resolvedPath;
+        }
     } // namespace
 
     void LoggerConfigLoader::loadFromConfig(const std::string &configurationPrefix, const std::filesystem::path &baseDirectory)
@@ -52,8 +162,22 @@ namespace AsynGyanis::Base
 
         const std::string globalLevelKey = configurationPrefix + ".global_level";
 
-        const auto globalLevel  = configuration.get<std::string>(globalLevelKey, "INFO");
-        const auto defaultLevel = logLevelFromString(globalLevel);
+        // 键不存在时按 INFO 是正常路径；存在但不是字符串（YAML 里写成不带引号的数字、或整段漏了
+        // 缩进被解析成列表）原先会静默按 INFO 生效——「明明配了等级却没生效」是这里最难查的一类
+        // 现场，因此按 sinks 各字段的同一口径报出实际类型再回落
+        const std::optional<ConfigValue> globalLevelValue = configuration.getOptional(globalLevelKey);
+        LogLevel                        defaultLevel      = LogLevel::Info;
+        if (globalLevelValue.has_value())
+        {
+            if (const auto globalLevel = configValueAs<std::string>(*globalLevelValue); globalLevel.has_value())
+            {
+                defaultLevel = logLevelFromString(*globalLevel);
+            } else
+            {
+                std::cerr << "LoggerConfig：" << globalLevelKey << " 类型是 " << typeName(globalLevelValue->type())
+                        << "，要求 string，已按 INFO 处理" << '\n';
+            }
+        }
 
         // 配置以扁平键存储，具名 logger 由前缀下的键推导
         const std::string     loggerPrefix = configurationPrefix + ".loggers.";
@@ -146,61 +270,48 @@ namespace AsynGyanis::Base
             return nullptr;
         }
 
-        // 安全获取 type 字段，避免取缺失键抛出异常中断整个配置加载
-        const auto typeOptional = configValueAt<std::string>(sinkConfiguration, "type");
+        // 必填键先按「键缺失」与「类型不符」分别报出，再由下面统一跳过：加载器不让任何异常
+        // 逃出这条路径去打断整份配置，也不能把「类型不符」说成「缺少字段」
+        const std::optional<std::string> typeOptional = requiredStringField(sinkConfiguration, "type", "sink");
         if (!typeOptional.has_value())
         {
-            std::cerr << "LoggerConfig：sink 缺少 'type' 字段，已跳过" << '\n';
             return nullptr;
         }
-        const std::string &type = typeOptional.value();
+        const std::string &type = *typeOptional;
 
         std::unique_ptr<LogSink> sink;
 
         if (type == "console")
         {
-            const bool color = configValueAt<bool>(sinkConfiguration, "color").value_or(true);
+            const bool color = optionalFieldWithDiagnosis(sinkConfiguration, "color", true, "console sink");
             sink             = std::make_unique<ConsoleSink>(color);
         } else if (type == "file")
         {
-            const auto pathOptional = configValueAt<std::string>(sinkConfiguration, "path");
+            const std::optional<std::string> pathOptional = requiredStringField(sinkConfiguration, "path", "file sink");
             if (!pathOptional.has_value())
             {
-                std::cerr << "LoggerConfig：file sink 缺少 'path'，已跳过" << '\n';
                 return nullptr;
             }
             // 相对路径基于基准目录解析，避免依赖进程工作目录
-            const std::filesystem::path basePath = baseDirectory.empty()
-                                                       ? AsynGyanis::Platform::ProcessInfo::applicationDirectory()
-                                                       : baseDirectory;
-            std::filesystem::path filePath = AsynGyanis::Platform::FileSystem::pathFromUtf8(pathOptional.value());
-            if (filePath.is_relative())
-            {
-                filePath = basePath / filePath;
-            }
-            const bool truncate = configValueAt<bool>(sinkConfiguration, "truncate").value_or(false);
+            const std::filesystem::path filePath = resolveLogPath(*pathOptional, baseDirectory);
+            const bool                  truncate = optionalFieldWithDiagnosis(sinkConfiguration, "truncate", false, "file sink");
             LOG_INFO_FMT("文件日志输出：{}", filePath.string());
             sink = std::make_unique<FileSink>(filePath, truncate);
         } else if (type == "rolling_file")
         {
-            const auto baseOptional = configValueAt<std::string>(sinkConfiguration, "base_filename");
+            const std::optional<std::string> baseOptional = requiredStringField(sinkConfiguration, "base_filename", "rolling_file sink");
             if (!baseOptional.has_value())
             {
-                std::cerr << "LoggerConfig：rolling_file sink 缺少 'base_filename'，已跳过" << '\n';
                 return nullptr;
             }
-            // 相对目录基于基准目录解析，避免依赖进程工作目录
-            const std::filesystem::path basePath = baseDirectory.empty()
-                                                       ? AsynGyanis::Platform::ProcessInfo::applicationDirectory()
-                                                       : baseDirectory;
-            std::filesystem::path logDirectory = AsynGyanis::Platform::FileSystem::pathFromUtf8(
-                    configValueAt<std::string>(sinkConfiguration, "directory").value_or("logs"));
-            if (logDirectory.is_relative())
-            {
-                logDirectory = basePath / logDirectory;
-            }
-            const std::string directory  = logDirectory.string();
-            const std::string policyName = configValueAt<std::string>(sinkConfiguration, "policy").value_or("size");
+            // 目录全程按 path 传递：中途落成 std::string 会经过本地代码页，落在代码页之外的字符
+            // （emoji、非本机文字）会被换成 '?'，日志就此写到改了名的文件上
+            const std::filesystem::path logDirectory
+                    = resolveLogPath(optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "directory", std::string{"logs"},
+                                                                            "rolling_file sink"),
+                                     baseDirectory);
+            const std::string policyName = optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "policy", std::string{"size"},
+                                                                                   "rolling_file sink");
 
             RollingPolicy policy;
             if (policyName == "size")
@@ -210,9 +321,15 @@ namespace AsynGyanis::Base
             else if (policyName == "hourly")
                 policy = RollingPolicy::Hourly;
             else
+            {
+                // 与 overflow_policy 同一口径：回退本身可以，但必须说得出「拼错了」
+                std::cerr << "LoggerConfig：rolling_file sink 的 policy='" << policyName
+                        << "' 非法（只支持 size / daily / hourly），已按 size 处理" << '\n';
                 policy = RollingPolicy::Size;
+            }
 
-            const int64_t configuredMaximumSizeMb = configValueAt<int64_t>(sinkConfiguration, "max_size_mb").value_or(10);
+            const int64_t configuredMaximumSizeMb = optionalFieldWithDiagnosis(sinkConfiguration, "max_size_mb", int64_t{10},
+                                                                               "rolling_file sink");
             // 边界钳制：0（或负数）会让「已写字节 >= 上限」恒真，退化成每写一行就滚动一次——
             // 每次滚动都要重开文件并整目录扫描备份，日志系统会反过来把进程拖垮。这里钳到 1 MB 并给出诊断。
             // 上界 1 TiB 挡的是另一半：MB 数乘 1024*1024 时若在 size_t 里回绕，会得到一个极小的
@@ -234,7 +351,8 @@ namespace AsynGyanis::Base
             // 的意图正好相反，日志目录无界增长。上界：这个值决定每次滚动要顺移多少个序号，
             // 填成天文数字就是让滚动握着本 Sink 的锁做上千万次目录项查询，日志系统反过来拖垮进程。
             // 0 是合法值：不保留任何备份
-            const int64_t     configuredMaximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
+            const int64_t     configuredMaximumBackupCount = optionalFieldWithDiagnosis(sinkConfiguration, "max_backup", int64_t{10},
+                                                                                        "rolling_file sink");
             constexpr int64_t maximumBackupLimit           = static_cast<int64_t>(RollingFileSink::kMaximumBackupFileCount);
             const int64_t     clampedMaximumBackupCount    = std::clamp(configuredMaximumBackupCount, int64_t{0}, maximumBackupLimit);
             if (clampedMaximumBackupCount != configuredMaximumBackupCount)
@@ -245,7 +363,7 @@ namespace AsynGyanis::Base
             }
             const size_t maximumBackupCount = static_cast<size_t>(clampedMaximumBackupCount);
 
-            sink = std::make_unique<RollingFileSink>(baseOptional.value(), directory, policy, maximumSizeBytes, maximumBackupCount);
+            sink = std::make_unique<RollingFileSink>(*baseOptional, logDirectory, policy, maximumSizeBytes, maximumBackupCount);
         } else if (type == "async")
         {
             if (!sinkConfiguration.contains("wrapped"))
@@ -257,7 +375,8 @@ namespace AsynGyanis::Base
             if (!wrappedSink)
                 return nullptr;
 
-            const int64_t configuredQueueSize = configValueAt<int64_t>(sinkConfiguration, "queue_size").value_or(1024);
+            const int64_t configuredQueueSize = optionalFieldWithDiagnosis(sinkConfiguration, "queue_size", int64_t{1024},
+                                                                           "async sink");
             // 配置边界钳制：queue_size 为 0（或负数）会让 AsyncSink 的三种策略全部退化——
             // Drop 丢弃全部事件、DropOldest 对空队列 pop（未定义行为）、Block 永久阻塞。
             // 这里钳到 AsyncSink 声明的最小容量并给出可见诊断，AsyncSink 内部还有一次兜底钳制
@@ -269,7 +388,8 @@ namespace AsynGyanis::Base
                         << AsyncSink::kMinimumQueueSize << '\n';
                 queueSize = AsyncSink::kMinimumQueueSize;
             }
-            const std::string overflowPolicyName = configValueAt<std::string>(sinkConfiguration, "overflow_policy").value_or("block");
+            const std::string overflowPolicyName = optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "overflow_policy",
+                                                                                            std::string{"block"}, "async sink");
             // overflow_policy 支持 block / drop / drop_oldest 三种取值，非法值回退为 block。
             // 回退是明示的（std::cerr 诊断）：静默回退会让「想写 drop 却拼错」的配置在高负载下
             // 阻塞调用线程，而运维以为它在丢日志
