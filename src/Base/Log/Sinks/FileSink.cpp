@@ -1,5 +1,7 @@
 #include "Base/Log/Sinks/FileSink.h"
+#include "Platform/Platform.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -105,9 +107,14 @@ namespace AsynGyanis::Base
         }
         m_hasReportedWriteFailure = false;
 
-        // 返回写入字节数（换行按 1 字节计）：文本模式下 Windows 会额外补 '\r'，
-        // 调用方只用它做「是否达到滚动阈值」的近似判据，不需要与磁盘大小逐字节相等
-        return m_lineBuffer.size();
+        // 返回落到磁盘上的真实字节数：Windows 的文本模式会把每个 '\n' 翻成 "\r\n"，
+        // 而带调用栈的行每帧还有一个 '\n'。按大小滚动的阈值直接累加这个数（见
+        // RollingFileSink::write），报小了活动文件就会系统性超出上限才滚
+        std::size_t landedByteCount = m_lineBuffer.size();
+#if ASYN_PLATFORM_WIN32
+        landedByteCount += static_cast<std::size_t>(std::ranges::count(m_lineBuffer, '\n'));
+#endif
+        return landedByteCount;
     }
 
     void FileSink::flush()

@@ -57,7 +57,8 @@ namespace AsynGyanis::Base
          *          复用本 Sink 的落盘与加锁逻辑：RollingFileSink 用它完成字节累计，
          *          从而不必每行都 flush 后 stat 一次真实文件大小。
          * @param line 已格式化的单行文本（不含换行）
-         * @return std::size_t 实际写入的字节数（含换行符）；文件未打开时返回 0
+         * @return std::size_t 落到磁盘上的字节数（含行尾换行，Windows 文本模式下按 "\r\n" 计）；
+         *         文件未打开或流已失效时返回 0
          */
         std::size_t writeLine(std::string_view line);
 

@@ -421,4 +421,27 @@ namespace AsynGyanis::Base
             }
         }
     }
+
+    /**
+     * @brief writeLine 报回的字节数必须等于文件真实增长——按大小滚动的阈值直接累加它
+     * @details RollingFileSink::write 把这个返回值累加进「本文件已写字节」并据此滚动，
+     *          少算就等于活动文件系统性超出上限才滚。差值出在 Windows 的文本模式：
+     *          每个换行落到磁盘上是 "\r\n"，带调用栈的行每帧还各有一个换行。
+     *          本用例钉的是跨平台的不变量（报数 == 磁盘增长），因此在 Linux 上改动前后都绿，
+     *          只有 Windows 侧能证伪——缺陷本身就只在那一侧
+     */
+    TEST(FileSink, WriteLineReportsBytesActuallyLandedOnDisk)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileSink_ByteAccounting");
+        const fs::path                        logPath = temporaryDirectory.path() / "accounting.log";
+
+        FileSink sink(logPath);
+        const std::size_t singleLineBytes = sink.writeLine("x");
+        const std::size_t multiLineBytes  = sink.writeLine("a\nb\nc");
+        sink.flush();
+
+        EXPECT_EQ(fs::file_size(logPath), singleLineBytes + multiLineBytes)
+                << "报回的字节数与磁盘增长不一致：滚动阈值会被低估，"
+                << "实测报 " << singleLineBytes + multiLineBytes << " 而文件有 " << fs::file_size(logPath) << " 字节";
+    }
 } // namespace AsynGyanis::Base
