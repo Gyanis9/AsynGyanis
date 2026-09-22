@@ -11,10 +11,13 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <cstddef>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 // MySQL C API 的全局 C 类型前置声明集中写在本头的全局作用域（全项目只此一处）：
 // 只有 .cpp 才包含 <mysql/mysql.h>，避免第三方 C 头顺着包含链传染给所有使用方。
@@ -192,6 +195,27 @@ namespace AsynGyanis::Database
 
     private:
         /**
+         * @brief 语句文本的透明哈希，让 std::unordered_map 支持按 string_view 查 std::string 键
+         * @details 标准库的 std::hash<std::string> 没有 is_transparent（各实现进度不一），因此自写一个。
+         *          只给 string_view 这一个重载：std::string 经隐式转换走同一份实现，
+         *          「建键」与「查键」因此不可能算出两个不同的桶。
+         */
+        struct StatementTextHash
+        {
+            using is_transparent = void; ///< 打开异质查找
+
+            /**
+             * @brief 算出语句文本的哈希值
+             * @param statementText 语句文本
+             * @return std::size_t 哈希值
+             */
+            [[nodiscard]] std::size_t operator()(std::string_view statementText) const noexcept
+            {
+                return std::hash<std::string_view>{}(statementText);
+            }
+        };
+
+        /**
          * @brief 采集客户端库的错误文本与错误码并写入 m_lastError
          * @param description 面向使用者的中文动作说明，例如「执行 SQL 命令失败」
          */
@@ -239,7 +263,44 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> materializePreparedResult(MYSQL_STMT *statement);
 
+        /**
+         * @brief 在语句缓存里找一条已预处理的语句
+         * @details 按视图查（C++20 的透明哈希 + 异质比较），命中时不必为键再分配一份字符串。
+         * @param statementText 语句文本，与预处理时交给客户端库的完全一致
+         * @return MYSQL_STMT* 命中返回该语句（所有权仍属缓存）；未命中为 nullptr
+         */
+        [[nodiscard]] MYSQL_STMT *findCachedStatement(std::string_view statementText) const noexcept;
+
+        /**
+         * @brief 把一条刚预处理成功的语句放进缓存，从此表接管它的所有权
+         * @details 表满时整表清空（不做 LRU）：会涨到上限的负载说明「同一句 SQL 被反复执行」这个前提
+         *          已经不成立，换来的是服务端语句数与内存都有常数上界、零簿记。
+         * @param statementText 语句文本，接管其内容作键
+         * @param statement 已 prepare 的语句句柄
+         */
+        void cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept;
+
+        /**
+         * @brief 关闭并从表中移除一条语句（这条不再被认为可复用）
+         * @details 表里没有该键时空操作——断链路径上 disconnect() 已整表清过，重复调用不能二次关闭。
+         * @param statementText 语句文本
+         */
+        void discardCachedStatement(std::string_view statementText) noexcept;
+
+        /**
+         * @brief 关闭表中全部语句并清空缓存
+         * @details 必须在 mysql_close 之前调用：语句句柄由调用方负责关闭，客户端库不会替我们在
+         *          关连接时释放它们，留着就是服务端语句与客户端内存双双泄漏。
+         */
+        void clearStatementCache() noexcept;
+
+        /// 语句缓存的条数上限。服务端每条预处理语句都占一份会话级资源，上限换来可预期的占用
+        static constexpr std::size_t kMaximumCachedStatements = 64;
+
         MYSQL *m_mysqlHandle{nullptr}; ///< MySQL C API 连接句柄，本对象独占所有权，未连接时为 nullptr
+        /// 语句文本 → 已预处理的语句句柄。所有权归表：预处理成功即入表，此后的失败路径一律走
+        /// discardCachedStatement，本地不再持有 unique_ptr 守卫，避免与 disconnect() 的整表清理二次关闭
+        std::unordered_map<std::string, MYSQL_STMT *, StatementTextHash, std::equal_to<> > m_statementCache;
         /// 本类开着的事务（beginTransaction 置位，commit/rollback 与连接生命周期重置清零）：
         /// 归还路径据此决定要不要滚，见 resetSessionState 的记账范围说明
         bool m_isTransactionOpen{false};
