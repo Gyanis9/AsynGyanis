@@ -197,6 +197,36 @@ namespace AsynGyanis::Database
             return names;
         }
 
+        /**
+         * @brief 另建一张 bulkRows 表并灌入指定行数（id 从 1 起，name 形如 row-<id>）
+         * @details 与夹具自带的四行样本分开，行数由用例给定，用来覆盖行值快照上限的两侧
+         * @param rowCount 要写入的行数
+         */
+        void seedBulkRows(const size_t rowCount)
+        {
+            ASSERT_NE(executeRequired(connection(), "CREATE TABLE bulkRows (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+
+            const std::string seedStatement = "WITH RECURSIVE counter(rowId) AS (SELECT 1 UNION ALL SELECT rowId + 1 FROM counter WHERE rowId < " +
+                                              std::to_string(rowCount) + ") INSERT INTO bulkRows (id, name) SELECT rowId, 'row-' || rowId FROM counter";
+            ASSERT_NE(executeRequired(connection(), seedStatement), nullptr) << "批量样本写入失败：" << seedStatement;
+        }
+
+        /**
+         * @brief 生成 bulkRows 的期望名字序列，供整表比对
+         * @param rowCount 行数
+         * @return std::vector<std::string> 依次为 row-1 .. row-<rowCount>
+         */
+        [[nodiscard]] static std::vector<std::string> expectedBulkNames(const size_t rowCount)
+        {
+            std::vector<std::string> names;
+            names.reserve(rowCount);
+            for (size_t row = 1; row <= rowCount; ++row)
+            {
+                names.push_back("row-" + std::to_string(row));
+            }
+            return names;
+        }
+
         std::unique_ptr<SqliteConnection> m_connection; ///< 已连接并灌入样本数据的内存库连接
     };
 
@@ -340,6 +370,54 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->rowCount(), 4u);
         EXPECT_FALSE(result->isEmpty());
         EXPECT_EQ(result->columnCount(), 6u);
+    }
+
+    /**
+     * @brief 钉住行数正好等于快照上限时，遍历交出的仍是完整且按序的全部行
+     */
+    TEST_F(SqliteUserQuery, FullIterationIsCompleteAtTheSnapshotRowLimit)
+    {
+        seedBulkRows(SqliteResult::kMaximumMaterializedRowCount);
+
+        const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->rowCount(), SqliteResult::kMaximumMaterializedRowCount);
+        EXPECT_EQ(collectNames(*result), expectedBulkNames(SqliteResult::kMaximumMaterializedRowCount));
+    }
+
+    /**
+     * @brief 钉住行数刚超过快照上限时退回游标遍历：行数仍精确，一行都不丢
+     * @details 快照只存了前若干行，若把「存下的行数」当成结果集规模交出去，调用方会静默读到
+     *          一份被截断的数据——这条用例正是为拦住那个错而存在，它同时也是「超限即作废快照」
+     *          那条判据的证伪入口
+     */
+    TEST_F(SqliteUserQuery, FullIterationIsCompleteJustAboveTheSnapshotRowLimit)
+    {
+        const size_t rowCount = SqliteResult::kMaximumMaterializedRowCount + 1;
+        seedBulkRows(rowCount);
+
+        const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->rowCount(), rowCount) << "超过快照上限的预扫描仍要给出精确行数";
+        EXPECT_EQ(collectNames(*result), expectedBulkNames(rowCount));
+    }
+
+    /**
+     * @brief 钉住快照结果集 reset() 之后能再完整遍历一遍，两遍逐行一致
+     */
+    TEST_F(SqliteUserQuery, ResetAllowsSecondFullScanOfSnapshotRows)
+    {
+        seedBulkRows(SqliteResult::kMaximumMaterializedRowCount);
+
+        const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(result, nullptr);
+
+        const std::vector<std::string> firstScan = collectNames(*result);
+        ASSERT_EQ(firstScan, expectedBulkNames(SqliteResult::kMaximumMaterializedRowCount));
+
+        result->reset();
+        // 第二遍与第一遍逐行相同：重遍历不重新执行查询，也不会从中间某行接着读
+        EXPECT_EQ(collectNames(*result), firstScan);
     }
 
     /** @brief 钉住空集仍有列元数据，游标一步都迈不出去 */
