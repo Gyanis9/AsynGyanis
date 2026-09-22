@@ -153,6 +153,21 @@
 
 ### 修复
 
+- **WebSocket 的「有一帧在写」标记改由作用域守卫复位**：`sendFrame()` 原先在 `co_await` 前后各写一次那个
+  布尔量，而发送回调是可以抛的（写路径的框架异常正是从这次挂起点穿出）——异常展开跳过复位那一行，标记就
+  永久停在 true。会话收尾按它决定「要不要补发 Close 帧」，于是这条连接此后再也没有关闭握手：对端只看到
+  连接被直接结束，拿不到任何状态码，浏览器侧一律记成异常断开。新增一条契约用例（假发送回调抛异常，
+  断言标记已复位）；证伪：撤掉守卫改回两行赋值，该用例当场读到 `isWriteInFlight() == true`。
+- **HTTP/2 不再把对端跳过的流号上的帧当成「记录已挤出的迟到帧」咽下**：`m_highestPeerStreamId` 是**上水位**而不是
+  「开过的流」的集合，而 §5.1.1 只要求新流号严格递增、允许跳号——于是对端先开流 7，再往从未开启的流 3 发
+  DATA/RST_STREAM/WINDOW_UPDATE，三条路径都判 `streamId <= 最大值` 成立而静默忽略（DATA 还要把连接级窗口还回去），
+  本端已用过的最大流号越推越远，之后**每一个被跳过的奇号都永久免检**。HEADERS 那条路径判得对（回 PROTOCOL_ERROR），
+  正是这种不一致说明漏判是无意的。现在只有「确实挤掉过终止记录」（账本不再完整、无从证明）才允许宽容忽略；
+  一条记录都没挤掉时按 §5.1「idle」段回 PROTOCOL_ERROR。代价如实写明：一次挤出之后本端就永久退回宽容——
+  要精确到底只能永久保留全部流号，那是随连接时长线性增长的内存。证伪：去掉新增的 `&& m_hasEvictedTerminatedStreamRecord`
+  判据，新用例 `RejectsFramesOnStreamIdentifiersThePeerSkipped` 三条连接全部转红（返回 `NeedMore` 而无错误码）；
+  另一条 `StillIgnoresFramesOnStreamsWhoseRecordsWereEvicted` 钉住挤出的那一档不变——先断言流 1 的记录确实已不在账本里，
+  实现里的窗口值将来调大时它不会静默退化成测「保留记录」那一档。
 - **Base：`loadFiles()` 不再把解析中途失败那份文件的半截键提交进快照**。`ConfigLoadResult` 的契约
   写的是「失败文件里的键从快照中消失」，按目录加载那条已经用「每份文件一张临时表」兑现了它，
   `loadFiles()` 却把整份累计表直接交给每份文件去摊。于是列表里一份文件因键名带点号而抛错时，
@@ -160,6 +175,25 @@
   提示，实际却已应用了一半新配置。证伪：改回共用累计表，新用例
   `LoadFilesDoesNotCommitHalfFlattenedFailedFile` 当场读到 `alpha == 1`（该键属于那份判失败的文件）；
   按目录加载的既有用例两轮都绿，说明这条契约此前只覆盖了两个入口中的一个。
+- **Base：目录扫描被中断时不再把「少了几份文件」当成全量提交**。`scanConfigFiles()` 遇到不可读的
+  子孙目录、或某个条目连属性都取不到时会中途跳出，原先它仍把已经扫到的那份残缺清单交回上层，
+  `loadFromDirectory()` 于是按全量替换快照——那几份没扫到的文件的键就此静默消失，调用方只看目录树
+  根本发现不了。现在返回 `std::expected`：扫描失败即本轮加载失败、给出「哪个目录、什么原因、本轮
+  只扫到几份、该怎么修」的中文文案，旧快照原样留着。两个细节：单条目属性改走带 `error_code` 的
+  `is_regular_file()` 重载（无 `ec` 的那一份会抛 `filesystem_error`，会从「加载配置」里逃到调用方手上）；
+  循环**之外**还要再判一次错误码，因为迭代器在最后一个条目之后才出错时，循环体内的检查永远跑不到。
+- **Base：`reload()` 与热重载的递归口径跟着快照走**。两条路径此前都把递归硬编码成 `true`，于是调用方
+  以 `loadFromDirectory(dir, false)` 建起来的配置，在一次 `reload()`（或子目录里任何一次改动叫醒的
+  热重载）之后会凭空多出子目录里的键——没人改过文件却换了配置。递归标志改为记进快照
+  （`ConfigData::configDirectoryRecursive`），重扫与挂监听共用同一个口径。证伪：把 `doReload()` 改回
+  硬编码 `true`，新用例 `ReloadKeepsTheNonRecursiveScopeOfTheOriginalLoad` 报「凭空多出子目录里的键」。
+- **Base：并发启停热重载不再撕裂监视器对象**。`enableHotReload()` 写 `m_fileWatcher`（普通
+  `unique_ptr`）、`disableHotReload()` 读它并 `reset`，二者此前只靠一个原子布尔互相「打招呼」——
+  那个布尔护得住开关，护不住对象本身。新增控制面锁 `m_hotReloadControlMutex` 串行化这两个入口；
+  该锁总在最外层，监听线程的回调只碰 `m_reloadTasksMutex`，因此不与写锁成环。撕裂指针那类竞态
+  只有 TSan 看得见（本机 WSL2 内核上 TSan 起不来，已实测确认），新用例
+  `ConcurrentEnableAndDisableHotReloadEndsInOneConsistentState` 钉的是「终态一致、关掉后还能再开起来」
+  这一下界，跨线程证据要由 CI 的 TSan 作业提供。
 - **TLS 会话释放之后的收发不再把原因推给对端**：`close()` 会释放底层 SSL 对象，此后
   `handshake()`/`asyncReceive()`/`asyncSend()` 仍把空指针交给 OpenSSL。实测（临时摘掉闸门跑新用例）
   OpenSSL 3 不崩溃而是返回失败，错误队列里留下的是 `error:00000000:lib(0)::reason(0)` 这种没有内容的
@@ -566,6 +600,23 @@
   判据撤掉后，257 行那条静默少读 1 行而完全不报错；另有一条钉住快照结果集 `reset()` 之后第二遍
   与第一遍逐行一致。容器 GCC + ASan/UBSan 下 Database 471 例全绿（Redis 与 MySQL 真机用例同时
   开启、零跳过），LSan 报告与改动前逐字一致。
+- **SQLite 的查询游标也进语句缓存**：上一轮之后，只读查询的行在构造期就整份物化，游标此后不再被
+  任何人引用——正是回收的时机。`execute()` 如今在这条路上把游标交回 `m_statementCache`，下一次同
+  文本查询整趟跳过 `sqlite3_prepare_v2` 与「还有没有第二条语句」的探测。所有权按结果集形态分三路：
+  行已物化 → 交还缓存（命中来的那条本就在表里，只摘掉结果集的释放责任）；行没跑完（超过快照上限、
+  或 `INSERT ... RETURNING` 这种带写副作用的） → 先把键从表里摘走再随结果集走，避免结果集 finalize
+  之后表里剩一个已释放地址；构造期预扫描报错 → 同样先摘键再交出 nullptr。
+  **一处可见的语义收窄**：行已整份物化的查询结果 `nativeHandle()` 现在给出 `nullptr`（原先给出那条
+  游标）。基类文档本来就写明「写回执为 nullptr」，即返回值允许为空，解引用前必须判空的调用方不受影响；
+  原先默认「查询结果一定有游标」的调用方需要改判空。列名与列序不受影响——快照模式下列名表与行值
+  一起存下了，`columnName/columnNames/columnIndex` 走的是缓存。
+  消融实测（容器 GCC Release，改动前后两枚二进制同批交替各 7 跑，取安静窗口的中位数；对照组
+  `pool-acquire-return` 106.1 → 107.4 ns 在噪声内）：按主键查一行 **1439.7 → 422.7 ns（−70.6%）**，
+  吞吐 69.5 万 → 236.6 万 op/s；与上一轮的「少跑一遍」合计，这一条查询从本轮开始前的 1366~1427 ns
+  降到 378~524 ns 区间。`benchmarks/microbench-baseline.json` 里记的是 MSVC 读数，待本机构建恢复后重录。
+  新增两条用例：重复执行同一条查询时第二遍结果逐行不变（并能在第一份结果仍打开时重遍历它），
+  以及超限的两位结果集各握一条游标互不借用。容器 GCC + ASan/UBSan 下 Database 473 例全绿、
+  真机 Redis 与 MySQL 同时开启零跳过，LSan 回到 6328 B / 7 块的上游基线。
 - **连接池停摆不再等满后台线程的 1 秒睡眠分片**：健康检查线程按 1 秒为一片 `sleep_for`，靠「醒来
   时发现停止标志」退出，于是 `~ConnectionPool()` 的 join 平均要等半个分片、最坏等满一整秒。按数据源
   或租户各建一个池的服务里，这笔延迟在重启与扩缩容时按池数成倍放大；测试侧同样是每条用例都白付一次
