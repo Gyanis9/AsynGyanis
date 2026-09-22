@@ -1,5 +1,6 @@
 #include "Base/Log/Sinks/AsyncSink.h"
 
+#include <algorithm>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -12,6 +13,12 @@ namespace AsynGyanis::Base
     {
         /// Block 策略单次等待队列空间的上限：下游卡死时按丢弃处置，不无限期阻塞调用线程
         constexpr std::chrono::milliseconds kMaximumBlockWaitMilliseconds{200};
+
+        /// 回收已消费前缀的最小槽位数：低于这个规模，搬一次内存的代价不如再攒一会儿
+        constexpr std::size_t kMinimumReclaimableSlotCount = 32U;
+
+        /// 槽位数组的起始规模：一次配置成百上千条日志的 Sink 不少，起步太小会让头几次入队各扩一次
+        constexpr std::size_t kInitialSlotCapacity = 8U;
     } // namespace
     AsyncSink::AsyncSink(std::unique_ptr<LogSink> wrappedSink, const size_t queueSize, const OverflowPolicy policy) :
         m_wrappedSink(std::move(wrappedSink))
@@ -56,27 +63,27 @@ namespace AsynGyanis::Base
 
         if (m_overflowPolicy == OverflowPolicy::Drop)
         {
-            if (m_queue.size() >= m_maximumQueueSize)
+            if (queuedEventCount() >= m_maximumQueueSize)
             {
                 // 丢弃新到事件并计数，供运维监控日志丢失规模
                 // 事件从未入队，不计入待落地计数，否则 flush() 会等到永远无法满足的条件
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
-            m_queue.push(std::move(event));
+            appendSlot(std::move(event));
             ++m_pendingCount;
         } else if (m_overflowPolicy == OverflowPolicy::DropOldest)
         {
-            // 队列非空时才会淘汰：容量至少为 1，size() >= 容量 蕴含队列非空
-            if (m_queue.size() >= m_maximumQueueSize)
+            // 队列非空时才会淘汰：容量至少为 1，在队数 >= 容量 蕴含队列非空
+            if (queuedEventCount() >= m_maximumQueueSize)
             {
                 // 淘汰队首最旧事件，为最新日志腾出空间
                 // 被淘汰的事件不会再被 worker 处理，需同步核销它的待落地计数
-                m_queue.pop();
+                discardFrontSlot();
                 --m_pendingCount;
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
             }
-            m_queue.push(std::move(event));
+            appendSlot(std::move(event));
             ++m_pendingCount;
         } else
         {
@@ -85,7 +92,7 @@ namespace AsynGyanis::Base
             // 超时与「因停止而结束」同一条处置：计入丢弃数，让运维能从 droppedEventCount() 看到代价
             const bool hasSpace = m_queueCondition.wait_for(lock, kMaximumBlockWaitMilliseconds, [this]
             {
-                return m_queue.size() < m_maximumQueueSize || m_stopToken.stop_requested();
+                return queuedEventCount() < m_maximumQueueSize || m_stopToken.stop_requested();
             });
             if (!hasSpace || m_stopToken.stop_requested())
             {
@@ -93,11 +100,55 @@ namespace AsynGyanis::Base
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
-            m_queue.push(std::move(event));
+            appendSlot(std::move(event));
             ++m_pendingCount;
         }
         lock.unlock();
         m_queueCondition.notify_one();
+    }
+
+    void AsyncSink::appendSlot(LogEvent &&event)
+    {
+        // 回收条件：已消费的槽位攒到一定规模，且不少于在队事件数。回收一次要把整段在队事件往前搬，
+        // 太频繁就成了「每取一条搬一次」，白扣掉核销槽位省下的那笔
+        if (m_headIndex >= kMinimumReclaimableSlotCount && m_headIndex >= queuedEventCount())
+        {
+            m_slots.erase(m_slots.begin(), m_slots.begin() + static_cast<std::ptrdiff_t>(m_headIndex));
+            m_headIndex = 0;
+        }
+        if (m_slots.size() == m_slots.capacity())
+        {
+            // 倍增至配置容量为止：入队因此只在扩容那一次取堆，且峰值内存不超过调用方要的队列规模。
+            // 保底留出一格是因为 size() 里可能还压着一段待回收的前缀，它比在队事件数更大
+            const std::size_t doubledCapacity = m_slots.capacity() * 2U < kInitialSlotCapacity
+                                                    ? kInitialSlotCapacity
+                                                    : m_slots.capacity() * 2U;
+            m_slots.reserve(std::max(std::min(doubledCapacity, m_maximumQueueSize), m_slots.size() + 1U));
+        }
+        m_slots.push_back(std::move(event));
+    }
+
+    LogEvent AsyncSink::takeFrontSlot()
+    {
+        LogEvent event = std::move(m_slots[m_headIndex]);
+        discardFrontSlot();
+        return event;
+    }
+
+    void AsyncSink::discardFrontSlot()
+    {
+        ++m_headIndex;
+        // 队列刚好排空时下标与槽位一起归零：留着已消费的前缀会让后面的入队不断向尾部扩张
+        if (m_headIndex == m_slots.size())
+        {
+            m_slots.clear();
+            m_headIndex = 0;
+        }
+    }
+
+    std::size_t AsyncSink::queuedEventCount() const noexcept
+    {
+        return m_slots.size() - m_headIndex;
     }
 
     uint64_t AsyncSink::droppedEventCount() const noexcept
@@ -149,8 +200,7 @@ namespace AsynGyanis::Base
         // 持锁写出会卡住所有生产者。落地返回后才核销待落地计数
         const auto drainOneEvent = [this](std::unique_lock<std::mutex> &lock)
         {
-            const LogEvent event = std::move(m_queue.front());
-            m_queue.pop();
+            const LogEvent event = takeFrontSlot();
             lock.unlock();
             try
             {
@@ -188,9 +238,9 @@ namespace AsynGyanis::Base
             std::unique_lock lock(m_queueMutex);
             m_queueCondition.wait(lock, [this, &stopToken]
             {
-                return !m_queue.empty() || stopToken.stop_requested();
+                return queuedEventCount() > 0 || stopToken.stop_requested();
             });
-            while (!m_queue.empty())
+            while (queuedEventCount() > 0)
             {
                 drainOneEvent(lock);
             }
@@ -199,7 +249,7 @@ namespace AsynGyanis::Base
         // 停止后尽力排空队列中残留的事件
         {
             std::unique_lock lock(m_queueMutex);
-            while (!m_queue.empty())
+            while (queuedEventCount() > 0)
             {
                 drainOneEvent(lock);
             }

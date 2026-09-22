@@ -16,9 +16,9 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <stop_token>
 #include <thread>
+#include <vector>
 
 namespace AsynGyanis::Base
 {
@@ -116,14 +116,43 @@ namespace AsynGyanis::Base
          */
         void workerLoop(const std::stop_token &stopToken);
 
+        /**
+         * @brief 把事件搬进队尾槽位，必要时先回收已消费的前缀
+         * @details 队列刻意不用 std::queue：MSVC 的 std::deque 对超过 16 字节的元素按「一块一元素」
+         *          分块，实测每投递一条日志就为 136 字节的事件本体多取一块堆。槽位数组按几何增长，
+         *          队列排空后保留容量，因此稳态下入队不碰堆。
+         * @param event 待入队的事件本体；返回后处于有效但未指定的状态
+         */
+        void appendSlot(LogEvent &&event);
+
+        /**
+         * @brief 搬出队首事件并把它从队列中核销
+         * @return LogEvent 队首事件本体
+         */
+        [[nodiscard]] LogEvent takeFrontSlot();
+
+        /**
+         * @brief 核销队首槽位：只推进队首下标，队列恰好排空时下标与槽位一起归零
+         * @details 留着的容量给下一轮入队复用，因此不必在每次取出事件时收缩数组
+         */
+        void discardFrontSlot();
+
+        /**
+         * @brief 当前在队的事件数
+         * @return std::size_t 已占用的槽位数，不含队首之前待回收的空槽
+         */
+        [[nodiscard]] std::size_t queuedEventCount() const noexcept;
+
         std::unique_ptr<LogSink> m_wrappedSink;      ///< 被包装的下游 Sink
-        std::queue<LogEvent>     m_queue;            ///< 事件队列
+        std::vector<LogEvent>    m_slots;            ///< 事件槽位数组；m_headIndex 之前的槽位已消费、待回收
+        std::size_t              m_headIndex = 0;    ///< 队首事件所在槽位下标
+
         size_t                   m_maximumQueueSize; ///< 队列容量上限（已钳到 kMinimumQueueSize 以上）
         OverflowPolicy           m_overflowPolicy;   ///< 溢出策略
 
         size_t m_pendingCount = 0; ///< 已受理但尚未完成落地的事件数，含 worker 正在写出的在途事件
 
-        std::mutex              m_queueMutex;     ///< 保护 m_queue 与 m_pendingCount 的互斥锁
+        std::mutex              m_queueMutex;     ///< 保护 m_slots/m_headIndex 与 m_pendingCount 的互斥锁
         std::condition_variable m_queueCondition; ///< 队列非空/空间可用条件变量
         std::condition_variable m_flushCondition; ///< 队列排空条件变量
 

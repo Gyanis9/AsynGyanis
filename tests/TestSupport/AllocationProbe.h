@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +28,26 @@ namespace AsynGyanis::TestSupport
 
     /// 测量窗口内累计申请的字节数
     extern std::atomic<std::uint64_t> allocationBytes;
+
+    /// 直方图的桶宽（字节）：24 字节以内的碎片各占一桶，够分辨「一块串」与「一块 deque 分块」
+    inline constexpr std::size_t kAllocationHistogramBucketBytes = 16U;
+
+    /// 直方图桶数：最后一桶是溢出桶，收所有不小于 16 * 桶数 的申请
+    inline constexpr std::size_t kAllocationHistogramBucketCount = 200U;
+
+    /// 按申请大小分桶的分配次数快照
+    using AllocationHistogram = std::array<std::uint64_t, kAllocationHistogramBucketCount>;
+
+    /**
+     * @brief 清零大小直方图：与 snapshotAllocationHistogram() 配对量出一段窗口的分布
+     */
+    void resetAllocationHistogram() noexcept;
+
+    /**
+     * @brief 取当前大小直方图快照
+     * @return AllocationHistogram 各桶的累计分配次数（第 i 桶对应 [i*16, i*16+15] 字节）
+     */
+    [[nodiscard]] AllocationHistogram snapshotAllocationHistogram() noexcept;
 
     /**
      * @brief 一次测量的结果：窗口内的分配原值，外加摊平到每次操作的读数

@@ -2,10 +2,48 @@
 
 #include <cstdlib>
 
+namespace
+{
+    /// 每桶一个原子量：替换掉的 operator new 会在任意线程被调用，普通数组会撞车
+    std::array<std::atomic<std::uint64_t>, AsynGyanis::TestSupport::kAllocationHistogramBucketCount> allocationHistogram{};
+
+    /**
+     * @brief 把一次申请按大小归桶
+     * @param size 本次申请的字节数
+     */
+    void recordAllocationSize(const std::size_t size) noexcept
+    {
+        // 桶下标按 16 字节一档，超出一律落溢出桶：溢出桶 nonzero 就说明有单次申请大得离谱
+        const std::size_t bucketIndex = size / AsynGyanis::TestSupport::kAllocationHistogramBucketBytes;
+        allocationHistogram[bucketIndex < AsynGyanis::TestSupport::kAllocationHistogramBucketCount
+                                ? bucketIndex
+                                : AsynGyanis::TestSupport::kAllocationHistogramBucketCount - 1U]
+            .fetch_add(1U, std::memory_order_relaxed);
+    }
+} // namespace
+
 namespace AsynGyanis::TestSupport
 {
     std::atomic<std::uint64_t> allocationCount{0};
     std::atomic<std::uint64_t> allocationBytes{0};
+
+    void resetAllocationHistogram() noexcept
+    {
+        for (auto &bucket: allocationHistogram)
+        {
+            bucket.store(0U, std::memory_order_relaxed);
+        }
+    }
+
+    AllocationHistogram snapshotAllocationHistogram() noexcept
+    {
+        AllocationHistogram snapshot{};
+        for (std::size_t bucketIndex = 0; bucketIndex < kAllocationHistogramBucketCount; ++bucketIndex)
+        {
+            snapshot[bucketIndex] = allocationHistogram[bucketIndex].load(std::memory_order_relaxed);
+        }
+        return snapshot;
+    }
 } // namespace AsynGyanis::TestSupport
 
 namespace
@@ -18,6 +56,7 @@ namespace
         using namespace AsynGyanis::TestSupport;
         allocationCount.fetch_add(1U, std::memory_order_relaxed);
         allocationBytes.fetch_add(static_cast<std::uint64_t>(size), std::memory_order_relaxed);
+        recordAllocationSize(size);
     }
 } // namespace
 
