@@ -10,7 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "CommonTestSupport.h"
+#include "BaseTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -26,7 +26,10 @@ namespace AsynGyanis::Base
 {
     namespace
     {
+        /// 固定文本：断言 timestamp 字段时按它比对
         constexpr auto kFixedTimestamp  = "2026-09-13 20:00:00.123";
+        /// 事件携带的固定时刻：由上面那段本地挂钟折出，渲染回去即得同一文本，故断言与时区无关
+        const TimestampMoment kFixedTimestampMoment = TestSupport::makeLocalMoment(2026, 9, 13, 20, 0, 0, 123);
         constexpr auto kThreadId        = "tid-123456";
         constexpr auto kLoggerName      = "json_formatter_logger";
         constexpr auto kSourceFile      = "json_formatter_fixture.cpp";
@@ -42,7 +45,7 @@ namespace AsynGyanis::Base
          */
         LogEvent makeEvent(std::string message, const std::string_view loggerName = kLoggerName)
         {
-            return LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId, kFixtureLocation, std::string(loggerName), std::move(message));
+            return LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, kFixtureLocation, std::string(loggerName), std::move(message));
         }
 
         /**

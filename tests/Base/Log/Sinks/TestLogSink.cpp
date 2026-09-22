@@ -16,6 +16,8 @@
 #include "Base/Log/Formatters/ColorFormatter.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/LogEvent.h"
+
+#include "BaseTestSupport.h"
 #include "Base/Log/Formatters/LogFormatter.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -137,7 +139,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "sink message")
         {
             return {
-                    level, "2026-09-10 12:34:56.789", "tid-112233",
+                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-112233",
                     SourceLocation("sink_fixture.cpp", 8123, "sinkTestFunction"),
                     "sink_logger", std::move(message)
             };

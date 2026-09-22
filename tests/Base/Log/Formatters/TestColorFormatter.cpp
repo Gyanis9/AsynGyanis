@@ -2,7 +2,7 @@
 
 #include "Base/Log/Formatters/ColorFormatter.h"
 
-#include "CommonTestSupport.h"
+#include "BaseTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -22,7 +22,10 @@ namespace AsynGyanis::Base
 {
     namespace
     {
+        /// 固定文本：断言版式时按它比对
         constexpr auto kFixedTimestamp = "2026-09-10 12:34:56.789";
+        /// 事件携带的固定时刻：由上面那段本地挂钟折出，渲染回去即得同一文本，故断言与时区无关
+        const TimestampMoment kFixedTimestampMoment = TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789);
         constexpr auto kThreadId       = "tid-665544";
         constexpr auto kLoggerName     = "color_logger";
         constexpr auto kSourceFile     = "color_fixture.cpp";
@@ -36,7 +39,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "color message")
         {
             return {
-                    level, kFixedTimestamp, kThreadId,
+                    level, kFixedTimestampMoment, kThreadId,
                     SourceLocation(kSourceFile, kSourceLine, kSourceFunction),
                     kLoggerName, std::move(message)
             };
@@ -192,7 +195,7 @@ namespace AsynGyanis::Base
         paddedLocation.resize(13, ' ');
 
         const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
 
         EXPECT_TRUE(contains(output, paddedLocation)) << output;
@@ -206,7 +209,7 @@ namespace AsynGyanis::Base
         const std::string longFileName(80, 'c');
 
         const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName,
                          "padding long name"));
 
@@ -229,7 +232,7 @@ namespace AsynGyanis::Base
                                                  "hit path");
 
         const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation(shortFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
 
         EXPECT_EQ(output, expected) << output;

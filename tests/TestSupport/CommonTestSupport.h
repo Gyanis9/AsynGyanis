@@ -1,6 +1,6 @@
 /**
  * @file CommonTestSupport.h
- * @brief 跨模块共用的测试夹具：临时目录、轮询等待与栈帧符号判定
+ * @brief 跨模块共用的测试夹具：临时目录、轮询等待、栈帧符号判定与本地时刻折算
  * @author Gyanis
  * @date 2026-09-18
  * @version 1.0.0
@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -195,5 +196,37 @@ namespace AsynGyanis::TestSupport
             }
         }
         return false;
+    }
+
+    /**
+     * @brief 把本地挂钟字段折成一个时刻
+     * @details 断言日志时间戳的用例要拿固定文本比对整行版式，而文本随机器时区而变，因此固定的
+     *          是本地字段而非 epoch 偏移：折出的时刻渲染回去就是同一串文本，与时区无关。
+     *          时刻类型取 system_clock，与日志事件用的同一个时钟。
+     * @param year 公元年
+     * @param month 月（1-12）
+     * @param dayOfMonth 日（1-31）
+     * @param hour 时（0-23），建议取正午前后以避开夏令时的切换窗口
+     * @param minute 分（0-59）
+     * @param second 秒（0-59）
+     * @param millisecond 毫秒（0-999）
+     * @return std::chrono::system_clock::time_point 对应的时刻；折算失败时给出明显不匹配的时刻，由断言报出来
+     */
+    [[nodiscard]] inline std::chrono::system_clock::time_point makeLocalMoment(const int year, const int month, const int dayOfMonth,
+                                                                              const int hour, const int minute, const int second,
+                                                                              const int millisecond)
+    {
+        std::tm calendarTime{};
+        calendarTime.tm_year  = year - 1900;
+        calendarTime.tm_mon   = month - 1;
+        calendarTime.tm_mday  = dayOfMonth;
+        calendarTime.tm_hour  = hour;
+        calendarTime.tm_min   = minute;
+        calendarTime.tm_sec   = second;
+        // 交还给 libc 判定夏令时：写死 0/1 会在有夏令时的时区折出偏移一小时的另一刻
+        calendarTime.tm_isdst = -1;
+
+        return std::chrono::system_clock::from_time_t(std::mktime(&calendarTime))
+               + std::chrono::milliseconds(millisecond);
     }
 } // namespace AsynGyanis::TestSupport

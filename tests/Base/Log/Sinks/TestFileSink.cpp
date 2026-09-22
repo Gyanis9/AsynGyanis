@@ -62,7 +62,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "file message")
         {
             return {
-                    level, "2026-09-10 12:34:56.789", "tid-990011",
+                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-990011",
                     SourceLocation("file_sink_fixture.cpp", 7301, "fileSinkTestFunction"),
                     "file_logger", std::move(message)
             };

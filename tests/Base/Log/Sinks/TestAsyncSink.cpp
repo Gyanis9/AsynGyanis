@@ -210,7 +210,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "async message")
         {
             return {
-                    level, "2026-09-10 12:34:56.789", "tid-556677",
+                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-556677",
                     SourceLocation("async_fixture.cpp", 3456, "asyncTestFunction"),
                     "async_logger", std::move(message)
             };

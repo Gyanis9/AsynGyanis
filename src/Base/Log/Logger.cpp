@@ -1,5 +1,6 @@
 #include "Base/Log/Logger.h"
 
+#include <chrono>
 #include <exception>
 #include <iostream>
 #include <memory>
@@ -49,10 +50,12 @@ namespace AsynGyanis::Base
             return;
         }
 
-        // 名字与线程号都是共享/缓存值，事件构造只搬指针；消息体按值移入避免二次拷贝
+        // 名字与线程号都是共享/缓存值，事件构造只搬指针；消息体按值移入避免二次拷贝。
+        // 时刻只取一个 time_point：本地时间的折算与文本化留给各 Sink 的格式化器，
+        // 于是事件循环线程上一行日志不为时间戳取堆块
         LogEvent event{
                 level,
-                currentTimestamp(),
+                std::chrono::system_clock::now(),
                 threadIdString(),
                 location,
                 m_name,

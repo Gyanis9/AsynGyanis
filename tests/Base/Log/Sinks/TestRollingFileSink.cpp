@@ -34,7 +34,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "rolling message")
         {
             return {
-                    level, "2026-09-10 12:34:56.789", "tid-223344",
+                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-223344",
                     SourceLocation("rolling_fixture.cpp", 9137, "rollingTestFunction"),
                     "rolling_logger", std::move(message)
             };

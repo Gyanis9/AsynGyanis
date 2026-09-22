@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -173,7 +175,9 @@ namespace AsynGyanis::Base
 
     TEST_F(LogMacros, InfoMacroWritesSingleEventToRootLogger)
     {
+        const TimestampMoment momentBefore = std::chrono::system_clock::now();
         LOG_INFO("macro info message");
+        const TimestampMoment momentAfter = std::chrono::system_clock::now();
 
         ASSERT_EQ(m_recordingSink->writeCount(), 1U);
 
@@ -181,7 +185,9 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.level, LogLevel::Info);
         EXPECT_EQ(event.message, "macro info message");
         EXPECT_EQ(event.loggerNameView(), "root");
-        EXPECT_EQ(event.timestamp.size(), 23U);
+        // 宏这条路上时刻在调用点就采好了，不随 Sink 的落地时间漂移
+        EXPECT_GE(event.timestamp, momentBefore);
+        EXPECT_LE(event.timestamp, momentAfter);
         EXPECT_EQ(event.threadId.get(), threadIdString().get()) << "宏产出的日志应共享本线程的 ID 快照";
 
 #ifdef ASYN_DEBUG

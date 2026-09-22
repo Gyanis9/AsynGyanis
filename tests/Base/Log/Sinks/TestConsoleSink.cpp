@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "Base/Log/LogEvent.h"
+
+#include "BaseTestSupport.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
 #include "Platform/IO/Console.h"
@@ -198,7 +200,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "console message")
         {
             return {
-                    level, "2026-09-10 12:34:56.789", "tid-334455",
+                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-334455",
                     SourceLocation("console_fixture.cpp", 6421, "consoleTestFunction"),
                     "console_logger", std::move(message)
             };

@@ -1,9 +1,13 @@
-// LogEvent 单元测试：构造与值语义、时间戳格式、线程号缓存及压力循环
+// LogEvent 单元测试：构造与值语义、事件时刻的存取、线程号缓存及压力循环
+// 时间戳文本的渲染规则已随「事件只带时刻」上收到格式化器一侧，由 TestTimestampText 直测
 
 #include "Base/Log/LogEvent.h"
 
+#include "BaseTestSupport.h"
+
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -14,33 +18,14 @@ namespace AsynGyanis::Base
 {
     namespace
     {
-        /// currentTimestamp() 的固定输出长度："YYYY-MM-DD HH:MM:SS.mmm"
-        constexpr std::size_t kTimestampLength = 23;
-
-        /** @brief 判断时间戳中除固定分隔符位置外的字符是否全部为数字 */
-        bool onlyDigitsOutsideSeparators(const std::string &timestamp)
-        {
-            for (std::size_t index = 0; index < timestamp.size(); ++index)
-            {
-                // 分隔符位置（日期与时刻的固定下标）直接跳段：不落成命名变量，
-                // 免得编译器把「只在条件里用一次的局部量」判成未使用（GCC 的 -Wunused-variable）
-                if (index == 4 || index == 7 || index == 10 || index == 13 || index == 16 || index == 19)
-                {
-                    continue;
-                }
-                if (!std::isdigit(static_cast<unsigned char>(timestamp[index])))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
+        /// 固定的事件时刻：本地挂钟 2026-09-10 12:34:56.789（正午，避开夏令时的空档与重合）
+        const TimestampMoment kFixedMoment = TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789);
 
         /** @brief 构造一条字段齐全、便于断言的日志事件 */
         LogEvent makeEventWithMessage(const std::string &message)
         {
             return {
-                    LogLevel::Warn, "2026-09-10 12:34:56.789", "12345",
+                    LogLevel::Warn, kFixedMoment, "12345",
                     SourceLocation("TestLogEvent.cpp", 100, "makeEventWithMessage"), "eventLogger", message
             };
         }
@@ -51,7 +36,9 @@ namespace AsynGyanis::Base
         const LogEvent event;
 
         EXPECT_EQ(event.level, LogLevel::Trace);
-        EXPECT_TRUE(event.timestamp.empty());
+        // 默认构造的时刻是「epoch 起算 0」而非某个真实挂钟：默认成员初始化把时刻归零，
+        // 与其余字段的「空/零」口径一致，不留下一个看着像真时间的默认值
+        EXPECT_EQ(event.timestamp.time_since_epoch().count(), 0);
         EXPECT_TRUE(event.threadIdView().empty());
         EXPECT_TRUE(event.loggerNameView().empty());
         EXPECT_TRUE(event.message.empty());
@@ -63,10 +50,12 @@ namespace AsynGyanis::Base
     TEST(LogEvent, FullConstructorStoresEveryField)
     {
         constexpr SourceLocation location("App.cpp", 77, "runApplication");
-        const LogEvent           event(LogLevel::Error, "2026-09-10 08:09:10.011", "9527", location, "appLogger", "disk full");
+        const TimestampMoment    moment = TestSupport::makeLocalMoment(2026, 9, 10, 8, 9, 10, 11);
+
+        const LogEvent event(LogLevel::Error, moment, "9527", location, "appLogger", "disk full");
 
         EXPECT_EQ(event.level, LogLevel::Error);
-        EXPECT_EQ(event.timestamp, "2026-09-10 08:09:10.011");
+        EXPECT_EQ(event.timestamp, moment);
         EXPECT_EQ(event.threadIdView(), "9527");
         EXPECT_EQ(event.loggerNameView(), "appLogger");
         EXPECT_EQ(event.message, "disk full");
@@ -77,10 +66,10 @@ namespace AsynGyanis::Base
 
     TEST(LogEvent, FullConstructorAcceptsEmptyStrings)
     {
-        const LogEvent event(LogLevel::Off, "", "", SourceLocation(), "", "");
+        const LogEvent event(LogLevel::Off, TimestampMoment{}, "", SourceLocation(), "", "");
 
         EXPECT_EQ(event.level, LogLevel::Off);
-        EXPECT_TRUE(event.timestamp.empty());
+        EXPECT_EQ(event.timestamp.time_since_epoch().count(), 0);
         EXPECT_TRUE(event.threadIdView().empty());
         EXPECT_TRUE(event.loggerNameView().empty());
         EXPECT_TRUE(event.message.empty());
@@ -130,7 +119,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(moved.level, LogLevel::Warn);
         EXPECT_EQ(moved.message, "moved message");
         EXPECT_EQ(moved.loggerNameView(), "eventLogger");
-        EXPECT_EQ(moved.timestamp, "2026-09-10 12:34:56.789");
+        EXPECT_EQ(moved.timestamp, kFixedMoment);
         EXPECT_EQ(moved.threadIdView(), "12345");
 
         EXPECT_NO_THROW(original.message.clear());
@@ -142,62 +131,6 @@ namespace AsynGyanis::Base
         assigned            = std::move(moveSource);
         EXPECT_EQ(assigned.message, "reassigned message");
         EXPECT_EQ(assigned.level, LogLevel::Warn);
-    }
-
-    TEST(LogEvent, CurrentTimestampHasFixedWidthFormat)
-    {
-        const std::string timestamp = currentTimestamp();
-
-        ASSERT_EQ(timestamp.size(), kTimestampLength);
-        EXPECT_EQ(timestamp[4], '-');
-        EXPECT_EQ(timestamp[7], '-');
-        EXPECT_EQ(timestamp[10], ' ');
-        EXPECT_EQ(timestamp[13], ':');
-        EXPECT_EQ(timestamp[16], ':');
-        EXPECT_EQ(timestamp[19], '.');
-        EXPECT_TRUE(onlyDigitsOutsideSeparators(timestamp));
-    }
-
-    TEST(LogEvent, CurrentTimestampFieldsStayInCalendarRanges)
-    {
-        const std::string timestamp = currentTimestamp();
-
-        ASSERT_EQ(timestamp.size(), kTimestampLength);
-        const int year        = std::stoi(timestamp.substr(0, 4));
-        const int month       = std::stoi(timestamp.substr(5, 2));
-        const int dayOfMonth  = std::stoi(timestamp.substr(8, 2));
-        const int hour        = std::stoi(timestamp.substr(11, 2));
-        const int minute      = std::stoi(timestamp.substr(14, 2));
-        const int second      = std::stoi(timestamp.substr(17, 2));
-        const int millisecond = std::stoi(timestamp.substr(20, 3));
-
-        EXPECT_GE(year, 1970);
-        EXPECT_GE(month, 1);
-        EXPECT_LE(month, 12);
-        EXPECT_GE(dayOfMonth, 1);
-        EXPECT_LE(dayOfMonth, 31);
-        EXPECT_GE(hour, 0);
-        EXPECT_LE(hour, 23);
-        EXPECT_GE(minute, 0);
-        EXPECT_LE(minute, 59);
-        EXPECT_GE(second, 0);
-        EXPECT_LE(second, 60);
-        EXPECT_GE(millisecond, 0);
-        EXPECT_LE(millisecond, 999);
-    }
-
-    TEST(LogEvent, CurrentTimestampNeverGoesBackwardsOnConsecutiveCalls)
-    {
-        std::string previous = currentTimestamp();
-
-        for (int iteration = 0; iteration < 50; ++iteration)
-        {
-            const std::string current = currentTimestamp();
-
-            ASSERT_EQ(current.size(), kTimestampLength) << "iteration " << iteration;
-            EXPECT_GE(current, previous) << "iteration " << iteration;
-            previous = current;
-        }
     }
 
     TEST(LogEvent, ThreadIdStringIsNonEmptyAndCachedPerThread)
@@ -247,25 +180,22 @@ namespace AsynGyanis::Base
     TEST(LogEvent, EventAssembledFromHelpersMatchesCallerContext)
     {
         const SourceLocation location = SourceLocation::current();
-        const LogEvent       event(LogLevel::Info, currentTimestamp(), threadIdString(), location, std::make_shared<const std::string>("root"), "assembled message");
+        const TimestampMoment moment   = std::chrono::system_clock::now();
+        const LogEvent       event(LogLevel::Info, moment, threadIdString(), location, std::make_shared<const std::string>("root"), "assembled message");
 
-        EXPECT_EQ(event.timestamp.size(), kTimestampLength);
+        EXPECT_EQ(event.timestamp, moment) << "事件带出的时刻必须就是构造时那个，不在中途改取";
         EXPECT_EQ(event.threadId.get(), threadIdString().get()) << "事件应当直接共享本线程的 ID 快照，而不是另分配一份";
         EXPECT_STREQ(event.location.functionName, location.functionName);
         EXPECT_EQ(event.location.line, location.line);
     }
 
-    TEST(LogEvent, TimestampAndThreadIdSurviveStressLoop)
+    TEST(LogEvent, ThreadIdStringSurvivesStressLoop)
     {
         constexpr int kiterationCount = 500;
 
         int failureCount = 0;
         for (int iteration = 0; iteration < kiterationCount; ++iteration)
         {
-            if (currentTimestamp().size() != kTimestampLength)
-            {
-                ++failureCount;
-            }
             if (threadIdString()->empty())
             {
                 ++failureCount;

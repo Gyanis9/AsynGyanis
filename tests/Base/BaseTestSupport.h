@@ -1,6 +1,6 @@
 /**
  * @file BaseTestSupport.h
- * @brief Base 模块单元测试辅助：转发共享的临时目录与等待夹具
+ * @brief Base 模块单元测试辅助：转发共享的临时目录、等待与时刻折算夹具
  * @author Gyanis
  * @date 2026-09-10
  * @version 1.0.0
@@ -16,7 +16,9 @@
 
 namespace AsynGyanis::Base::TestSupport
 {
+    using AsynGyanis::TestSupport::hasResolvedStackTraceFrames;
     using AsynGyanis::TestSupport::kWaitTimeout;
+    using AsynGyanis::TestSupport::makeLocalMoment;
     using AsynGyanis::TestSupport::TemporaryDirectory;
     using AsynGyanis::TestSupport::waitForCondition;
 } // namespace AsynGyanis::Base::TestSupport

@@ -25,6 +25,7 @@ add_executable(TestBase
         Log/Formatters/TestDefaultFormatter.cpp
         Log/Formatters/TestJsonFormatter.cpp
         Log/Formatters/TestColorFormatter.cpp
+        Log/Formatters/TestTimestampText.cpp
 
         Log/Sinks/TestLogSink.cpp
         Log/Sinks/TestConsoleSink.cpp

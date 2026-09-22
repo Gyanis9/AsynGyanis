@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -309,11 +310,15 @@ namespace AsynGyanis::Base
         Logger logger("metadata");
         logger.addSink(recordingSink());
 
+        const TimestampMoment momentBefore = std::chrono::system_clock::now();
         logger.log(LogLevel::Warn, "metadata check");
+        const TimestampMoment momentAfter = std::chrono::system_clock::now();
 
         ASSERT_EQ(m_ledger->eventCount(), 1u);
         const LogEvent event = m_ledger->events().front();
-        EXPECT_FALSE(event.timestamp.empty());
+        // 事件带的必须就是这次调用采到的那个时刻：既不是默认零值，也不是 Sink 落地时刻
+        EXPECT_GE(event.timestamp, momentBefore);
+        EXPECT_LE(event.timestamp, momentAfter);
         EXPECT_FALSE(event.threadIdView().empty());
     }
 

@@ -2,7 +2,7 @@
 
 #include "Base/Log/Formatters/DefaultFormatter.h"
 
-#include "CommonTestSupport.h"
+#include "BaseTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -24,7 +24,10 @@ namespace AsynGyanis::Base
 {
     namespace
     {
+        /// 固定文本：断言版式时按它比对
         constexpr auto kFixedTimestamp = "2026-09-10 12:34:56.789";
+        /// 事件携带的固定时刻：由上面那段本地挂钟折出，格式化器渲染回去即得同一文本，故断言与时区无关
+        const TimestampMoment kFixedTimestampMoment = TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789);
         constexpr auto kThreadId       = "tid-778899";
         constexpr auto kLoggerName     = "formatter_logger";
         constexpr auto kSourceFile     = "formatter_fixture.cpp";
@@ -37,7 +40,7 @@ namespace AsynGyanis::Base
         LogEvent makeEvent(const LogLevel level, std::string message = "formatter message")
         {
             return {
-                    level, kFixedTimestamp, kThreadId,
+                    level, kFixedTimestampMoment, kThreadId,
                     SourceLocation(kSourceFile, kSourceLine, kSourceFunction),
                     kLoggerName, std::move(message)
             };
@@ -193,7 +196,7 @@ namespace AsynGyanis::Base
     TEST(DefaultFormatter, EmptySourceLocationDoesNotBreakFormatting)
     {
         DefaultFormatter formatter;
-        const LogEvent   event(LogLevel::Debug, kFixedTimestamp, kThreadId, SourceLocation(), kLoggerName, "no location");
+        const LogEvent   event(LogLevel::Debug, kFixedTimestampMoment, kThreadId, SourceLocation(), kLoggerName, "no location");
 
         const std::string output = formatter.format(event);
 
@@ -229,10 +232,10 @@ namespace AsynGyanis::Base
         }();
 
         const std::string shortOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
         const std::string longOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation("a-much-longer-fixture-file-name.cpp", 987654, kSourceFunction),
                          kLoggerName, "padding long"));
 
@@ -248,7 +251,7 @@ namespace AsynGyanis::Base
         const std::string longFileName(80, 'n');
 
         const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "padding long name"));
 
         EXPECT_TRUE(contains(output, longFileName + ":1234567")) << output;
@@ -272,10 +275,10 @@ namespace AsynGyanis::Base
         const std::string fallbackFileName(80, 'n');
 
         const std::string hitOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation(hitFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
         const std::string fallbackOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestamp, kThreadId,
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
                          SourceLocation(fallbackFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "fallback path"));
 
         EXPECT_EQ(hitOutput, referenceLine(hitFileName.c_str(), 42, "hit path")) << hitOutput;

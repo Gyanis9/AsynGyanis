@@ -1,10 +1,12 @@
 #include "Base/Log/Formatters/JsonFormatter.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Log/Formatters/TimestampText.h"
 #include "Base/Log/LogLevel.h"
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -13,8 +15,13 @@ namespace AsynGyanis::Base
 {
     std::string JsonFormatter::format(const LogEvent &event)
     {
+        // 时刻在本线程渲染成与文本版式同一口径的字符串：整条 JSON 本来就要落一份文本，
+        // 这里的一次拷贝不参与事件产生线程的成本
+        std::array<char, kTimestampTextBufferSize> timestampBuffer{};
+        const std::string_view                     timestampText = formatTimestampText(timestampBuffer, event.timestamp);
+
         nlohmann::json fields = nlohmann::json::object();
-        fields["timestamp"]   = event.timestamp;
+        fields["timestamp"]   = std::string{timestampText};
 
         // 等级名去掉尾部空格（文本版式靠 {:<5} 对齐，JSON 里只是噪声，会让按精确值取用的采集端踩空）
         std::string_view levelName{logLevelToString(event.level)};
