@@ -20,8 +20,9 @@ namespace AsynGyanis::Base
     /**
      * @brief 项目统一异常基类
      *
-     * @details 继承 std::runtime_error，在消息前附加抛出点（文件、行号、函数名），并捕获抛出点
-     *          调用栈（原始帧，解析时机见 StackTrace.h）。运行期故障都归入本类家族，
+     * @details 继承 std::runtime_error，把消息包成「[异常] 消息 [文件:行 in 函数]」——抛出点
+     *          （文件、行号、函数名）附在消息**之后**而不是之前，见 Detail::formatExceptionMessage。
+     *          同时捕获抛出点调用栈（原始帧，解析时机见 StackTrace.h）。运行期故障都归入本类家族，
      *          使上层能用一条 catch 兜住框架错误。
      * @note 消息格式化在构造期完成，抛出后不依赖任何外部状态。
      */

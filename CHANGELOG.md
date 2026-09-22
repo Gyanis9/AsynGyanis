@@ -717,6 +717,27 @@
   把守卫条件改成恒假（等于旧写法：不看对端通告照发）时前一条转红。
   容器（GCC 13.3，ASan/LSan/UBSan）实测 `TestNet` 1240 例全绿、零告警、sanitizer 命中 0，
   h2c 对手探针 `scripts/h2_adversarial_probe.sh` 十项照旧全绿。
+- **日志配置的「类型不符」与「非法枚举」不再静默按默认值生效**：`LoggerConfigLoader` 对越界取值
+  （`max_size_mb`、`max_backup`、`queue_size`、`overflow_policy`）都会报出非法值与生效值，但同一份
+  配置里另有四条通道一声不响——可选字段**类型不符**（YAML 给数字或布尔加了引号，于是 8192 变 1024、
+  写 no 的 `color` 变彩色、写 false 的 `truncate` 变追加）、`policy` 拼错按 size 滚动、
+  `global_level` 配错类型按 INFO，以及必填键把「存在但类型不符」报成「缺少字段」（照着提示补键反而
+  补不对）。现在类型不符会连「实际类型 vs 期望类型」一起报出（类型名复用 `typeName`，与 ConfigManager
+  的诊断同一套词汇），必填键区分两种失败原因；日志目录与文件路径全程按 `std::filesystem::path`
+  传递，去掉中途 `.string()` 那一次本地代码页往返（落在代码页外的字符会被换成 `?`）。
+  新增 5 条用例各钉一处，均走既有的标准错误捕获夹具；把 `policy` 的诊断改回静默赋值，只有那一条转红。
+- **`SystemException` 不再把 `errno` 冒充 Win32 错误码**：隐式错误码那条构造函数读 `errno` 却配
+  `std::system_category()`，而 Windows 上这个类别按 **Win32 码**查表——更要紧的是 kernel32 与 winsock
+  的失败根本不写 `errno`，于是 `what()` 给出的是一句与本次失败无关（或干脆是「操作成功完成」）的描述。
+  同一条教训本仓早已写在 `AsyncSocket` 的注释里（实测发送失败被报成「[112] There is not enough space
+  on the disk」），只是没接到这条通道上。现在 errno 与 `std::generic_category()` 配成自洽的一对
+  （经新增的 `SystemException::lastErrnoErrorCode()` 单点读取），四个「刚做完 Win32/socket 调用」的
+  抛出点改为显式传码：`Iocp` 的创建完成端口与等待完成端口（后者上一行刚取到 `GetLastError()`，
+  抛出去却报 errno）、`AsyncSocket::remoteAddress()` 与 `localAddress()` 的 `getpeername`/`getsockname`。
+  `NetworkException` 不显式传码的那条重载顺带补上对端地址——同一次失败不该因调用方手上有没有错误码
+  而给出两种文本。新增两条用例分别钉「类别与取值配对」与「两条重载都带对端」，前者在 Linux 上两个
+  类别文本相同、只有 Windows 侧能证伪；同时把「采到的是打印点的栈」那条**假断言**改成按帧身份判
+  （旧写法把 `captureStackTrace(1)` 改成 0 也照样全绿，改后同一处改动立即转红）。
 
 ### 性能
 
