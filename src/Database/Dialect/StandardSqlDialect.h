@@ -269,7 +269,9 @@ namespace AsynGyanis::Database
          * @brief 校验绑定参数个数不超过本引擎的单条语句上限
          * @details 上限由 maximumStatementParameters() 给出（SQLite 999、MySQL 65535）。不先拦的话，
          *          超限要到执行阶段才由驱动回一句引擎原文，指不出是哪一段条件撑爆的。
-         * @param parameterCount 本条语句将产出的绑定参数个数（须与渲染分支的产出精确一致）
+         * @param parameterCount 本条语句**实际产出**的绑定参数个数：各 translate* 在渲染完成后传入
+         *        statement.parameters.size()。渲染前的估算数不能当判据——方言可以选择不为某个取值
+         *        产出占位符（SQLite 把分页取值内联进文本），拿估计数会误拒正好贴着上限的查询
          * @throws Base::InvalidArgumentException 参数个数超过本引擎单条语句的上限
          */
         void requireWithinParameterBudget(std::size_t parameterCount) const;

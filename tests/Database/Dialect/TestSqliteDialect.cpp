@@ -9,6 +9,7 @@
 // - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
 // - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
 // - 参数顺序、数量、类型与 uint64 降级
+// - 参数上限：判定按实际产出的占位符数（SQLite 内联的分页不占额度），写方向同样受上限保护
 // - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
 // - 事务控制语句文本与单条语句的参数上限
 // - DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
@@ -454,6 +455,95 @@ TEST(SqliteDialectWhere, InListBeyondTheEngineParameterBudgetIsRejectedWithReada
     // 恰好等于上限：放行，一条参数都不少
     const SqlStatement atBudget = dialect.translate(makeInNode(budget));
     EXPECT_EQ(atBudget.parameters.size(), budget);
+}
+
+/**
+ * @brief 钉住参数上限按**实际产出的占位符数**判定：SQLite 内联的分页不许把查询挤出去
+ * @details 本方言把 limit/offset 直接写进文本、不产出参数，而翻译前的估算按「各占一个」算。
+ *          拿估计数当判据时，一条恰好贴着上限的大 IN 只要再带一个 LIMIT 就被误拒——
+ *          而它实际只有 999 个占位符，是完全可执行的语句（MySQL 侧分页确实绑定，估计数即实际数，
+ *          因此这条判据在两个方言上都会给出同一份正确结论）。
+ */
+TEST(SqliteDialectWhere, InlinedPaginationDoesNotConsumeTheParameterBudget)
+{
+    const SqliteDialect dialect;
+
+    std::vector<ParameterValue> inValues;
+    inValues.reserve(dialect.maximumStatementParameters());
+    for (std::size_t index = 0; index < dialect.maximumStatementParameters(); ++index)
+    {
+        inValues.push_back(static_cast<std::int64_t>(index));
+    }
+
+    QueryNode node;
+    node.tableName = "users";
+    node.whereConditions.push_back(WhereCondition{
+            .left     = FieldReference{"id"},
+            .op       = SqlOperator::In,
+            .right    = ParameterValue{static_cast<std::int64_t>(0)},
+            .inValues = std::move(inValues)
+    });
+    node.limit  = 10U;
+    node.offset = 5U;
+
+    // 估算会数出 1001 个（999 + 分页各一），实际产出仍是 999：必须放行
+    const SqlStatement statement = dialect.translate(node);
+    EXPECT_EQ(statement.parameters.size(), dialect.maximumStatementParameters());
+    EXPECT_NE(statement.sql.find("LIMIT 10"), std::string::npos) << "分页应内联进文本而不是占位符";
+    EXPECT_NE(statement.sql.find("OFFSET 5"), std::string::npos);
+}
+
+/**
+ * @brief 钉住写方向同样受参数上限保护，且给出中文可操作原因
+ * @details 分块是 ORM 的职责，但直接调方言的调用方（以及列数本身就已超限的宽表）也要在翻译阶段
+ *          拿到「哪个数撑爆了、上限多少、怎么办」，而不是驱动在 execute 阶段回一句引擎原文。
+ */
+TEST(SqliteDialectWrite, InsertAndBatchBeyondTheParameterBudgetAreRejected)
+{
+    const SqliteDialect dialect;
+    const std::size_t   budget = dialect.maximumStatementParameters();
+
+    const auto makeWideNode = [&dialect](const std::size_t columnCount)
+    {
+        QueryNode node;
+        node.tableName = "wide";
+        for (std::size_t index = 0; index < columnCount; ++index)
+        {
+            node.selectColumns.push_back("c" + std::to_string(index));
+        }
+        return node;
+    };
+
+    // 单行 INSERT：列数越界一格即拒绝
+    {
+        const QueryNode      overNode = makeWideNode(budget + 1U);
+        const std::vector<DatabaseValue> values(budget + 1U, static_cast<std::int64_t>(1));
+        EXPECT_THROW(static_cast<void>(dialect.translateInsert(overNode, values)),
+                     AsynGyanis::Base::InvalidArgumentException);
+
+        const QueryNode      atNode = makeWideNode(budget);
+        const std::vector<DatabaseValue> atValues(budget, static_cast<std::int64_t>(1));
+        EXPECT_EQ(dialect.translateInsert(atNode, atValues).parameters.size(), budget);
+    }
+
+    // 批量 INSERT：每行不越界，但列数 × 行数越界——一次 VALUES 多行就是本条语句的参数总数
+    {
+        const std::size_t columnsPerRow = budget / 2U + 1U;
+        const QueryNode   batchNode       = makeWideNode(columnsPerRow);
+        const std::vector<std::vector<DatabaseValue> > rows(2U, std::vector<DatabaseValue>(columnsPerRow, static_cast<std::int64_t>(7)));
+
+        try
+        {
+            static_cast<void>(dialect.translateInsertBatch(batchNode, rows));
+            FAIL() << "列数 × 行数超过引擎单条语句上限的批量插入应当被拒绝";
+        }
+        catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_NE(message.find(std::to_string(budget)), std::string::npos) << message;
+            EXPECT_NE(message.find("拆成多条语句"), std::string::npos) << message;
+        }
+    }
 }
 
 /**

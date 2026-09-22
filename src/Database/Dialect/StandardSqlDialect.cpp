@@ -351,7 +351,9 @@ namespace AsynGyanis::Database
     {
         // 超过引擎单条语句的参数上限时，两侧驱动都只在执行阶段回一句引擎原文
         // （SQLite 是 "too many SQL variables"、MySQL 是占位符数超限），既指不出是哪一段条件撑爆的、
-        // 也不说该怎么办。调用方交来的个数与渲染分支一一对应，因此这里是精确判定而不是估算
+        // 也不说该怎么办。传入的是**渲染完成后实际产出的参数个数**：占位符只在 push 参数时写出，
+        // 两者一一对应，而方言自己决定要不要把某个取值内联进文本（SQLite 内联分页），
+        // 所以渲染前的估算数只能用于预留缓冲，拿它当判据会误拒贴着上限的查询
         if (const std::size_t parameterBudget = maximumStatementParameters(); parameterCount > parameterBudget)
         {
             throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：本条语句需要 " +
@@ -409,7 +411,6 @@ namespace AsynGyanis::Database
             expectedParameterCount += countConditionParameters(query.having.value());
         }
         parameters.reserve(expectedParameterCount);
-        requireWithinParameterBudget(expectedParameterCount);
 
         // ---------- SELECT 列 ----------
         sqlText += "SELECT ";
@@ -511,6 +512,11 @@ namespace AsynGyanis::Database
         // 三个引擎在这条子句上的差异最大，交给子类覆写的钩子处理
         appendLimitOffsetClause(sqlText, parameters, query);
 
+        // 参数上限在这里按**实际产出的参数数**判定：渲染前那个估算值只是给 reserve 用的宽度
+        // （分页按「各占一个」估，而 SQLite 把分页取值内联进文本、一个占位符都不产生），
+        // 拿估计数当判据会把刚好贴着上限的查询误拒
+        requireWithinParameterBudget(parameters.size());
+
         return statement;
     }
 
@@ -535,6 +541,8 @@ namespace AsynGyanis::Database
         // 单行插入就是「只有一行 VALUES」的批量插入，占位符与参数的收集规则完全一致
         appendValueRow(sqlText, statement.parameters, values);
 
+        requireWithinParameterBudget(statement.parameters.size());
+
         return statement;
     }
 
@@ -554,7 +562,6 @@ namespace AsynGyanis::Database
             expectedParameterCount += countConditionParameters(condition);
         }
         parameters.reserve(expectedParameterCount);
-        requireWithinParameterBudget(expectedParameterCount);
 
         sqlText += "UPDATE ";
         appendTableReference(sqlText, query);
@@ -578,6 +585,8 @@ namespace AsynGyanis::Database
         // WHERE 与 SELECT / DELETE 共用同一份渲染与参数收集实现
         appendWhereClause(sqlText, parameters, query);
 
+        requireWithinParameterBudget(parameters.size());
+
         return statement;
     }
 
@@ -593,7 +602,6 @@ namespace AsynGyanis::Database
             expectedParameterCount += countConditionParameters(condition);
         }
         statement.parameters.reserve(expectedParameterCount);
-        requireWithinParameterBudget(expectedParameterCount);
 
         sqlText += "DELETE FROM ";
         // 别名一并带上：WHERE 里以别名限定的列名（"u"."id"）只有别名在场才能被解析
@@ -601,6 +609,8 @@ namespace AsynGyanis::Database
 
         // 无条件时 appendWhereClause() 不输出任何内容，SQL 退化为整表删除，与 SQL 语义一致
         appendWhereClause(sqlText, statement.parameters, query);
+
+        requireWithinParameterBudget(statement.parameters.size());
 
         return statement;
     }
@@ -649,6 +659,10 @@ namespace AsynGyanis::Database
             }
             appendValueRow(sqlText, parameters, rows[rowIndex]);
         }
+
+        // 写方向同样判上限：分块是 ORM 的职责，直接调方言的调用方也要拿到中文原因，
+        // 而不是驱动在 execute 阶段回一句引擎原文
+        requireWithinParameterBudget(parameters.size());
 
         return statement;
     }
