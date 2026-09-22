@@ -1,6 +1,7 @@
 // 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
 // 头部单值查询与列表 token 判定、响应头序列化、h2/h3 组头块的两种走法、响应压缩的一次性耗时、
-// 事件循环的跨线程唤醒、连接池的取出与归还（稳态复用与每次新建两条通路）。
+// 事件循环的跨线程唤醒、连接池的取出与归还（稳态复用与每次新建两条通路）、SQLite 驱动的一条查询
+// 与一条写入。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -20,9 +21,11 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseResult.h"
+#include "Database/Common/DatabaseValue.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
+#include "Database/Sqlite/SqliteConnection.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/Gzip.h"
@@ -44,6 +47,7 @@
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -328,6 +332,41 @@ namespace
          */
         [[nodiscard]] Database::DatabaseType databaseType() const override { return Database::DatabaseType::Sqlite; }
     };
+
+    /// 驱动侧用例的表行数：读写两侧都按主键命中，因此行数不随轮次增长
+    inline constexpr int kBenchRowCount = 4096;
+
+    /**
+     * @brief 建一份填满的内存 SQLite 库，给驱动侧的耗时用例当底
+     * @details 用 ":memory:"：这几例要量的是「编译 SQL + 绑定 + 推进游标」这条 CPU 通路，掺进真实
+     *          文件 IO 会让读数随磁盘状态漂。行数固定且写侧只改不增，否则后面的轮次单调变慢，
+     *          改动前后的两枚二进制就跑不到同一种数据规模上。
+     * @return std::unique_ptr<Database::SqliteConnection> 已建好并填满的连接；建库失败时为空
+     */
+    [[nodiscard]] std::unique_ptr<Database::SqliteConnection> makePopulatedMemoryDatabase()
+    {
+        Database::ConnectionConfig configuration;
+        configuration.database = ":memory:";
+
+        auto connection = std::make_unique<Database::SqliteConnection>(configuration);
+        if (!connection->connect())
+        {
+            return nullptr;
+        }
+
+        static_cast<void>(connection->execute("CREATE TABLE bench (id INTEGER PRIMARY KEY, label TEXT NOT NULL)"));
+        static_cast<void>(connection->execute("BEGIN"));
+
+        std::array<Database::DatabaseValue, 2> parameters{std::int64_t{0}, std::string("bench-label-0000")};
+        for (int rowIndex = 0; rowIndex < kBenchRowCount; ++rowIndex)
+        {
+            parameters[0] = static_cast<std::int64_t>(rowIndex);
+            static_cast<void>(connection->execute("INSERT INTO bench VALUES(?, ?)", std::span<const Database::DatabaseValue>(parameters)));
+        }
+        static_cast<void>(connection->execute("COMMIT"));
+
+        return connection;
+    }
 } // namespace
 
 int main(int argumentCount, char **argumentValues)
@@ -998,6 +1037,55 @@ int main(int argumentCount, char **argumentValues)
                 return static_cast<std::uint64_t>(connection ? 1U : 0U);
             },
             results, checksum, failureCount);
+
+    // SQLite 驱动的一条查询与一条写入（本文件第一次量驱动侧）。这两例里「编译 SQL」与「推进游标」
+    // 目前是混在一起的：每次调用都重新 sqlite3_prepare_v2 再 finalize，所以读数里含一整趟词法分析、
+    // 语法分析与字节码生成。参数表放在计时体外、只改主键，为的是把驱动本身的开销与调用方造参数的
+    // 开销分开——被量的应该是驱动那一侧
+    const std::unique_ptr<Database::SqliteConnection> benchDatabase = makePopulatedMemoryDatabase();
+    if (benchDatabase == nullptr)
+    {
+        std::printf("  跳过 SQLite 两例：内存库没建起来\n");
+    }
+    else
+    {
+        std::array<Database::DatabaseValue, 1> keyParameters{std::int64_t{0}};
+        // 占位符顺序就是绑定顺序：这条 SQL 里第一个 ? 是 label、第二个才是 id，摆反了会一行都不命中
+        std::array<Database::DatabaseValue, 2> updateParameters{std::string("bench-label-0000"), std::int64_t{0}};
+        int                                    benchCursor = 0;
+
+        measureCase(
+                "sqlite-select-by-primary-key",
+                [&benchDatabase, &keyParameters, &benchCursor]() -> std::uint64_t
+                {
+                    keyParameters[0] = static_cast<std::int64_t>(benchCursor = (benchCursor + 1) % kBenchRowCount);
+                    const std::unique_ptr<Database::DatabaseResult> result = benchDatabase->execute(
+                            "SELECT label FROM bench WHERE id = ?", std::span<const Database::DatabaseValue>(keyParameters));
+                    if (result == nullptr || !result->next())
+                    {
+                        return 0U;
+                    }
+                    // 真把那一列取出来：只判 next() 的话游标推进与列值物化都不在计时里
+                    return std::get<std::string>(result->getValue(std::string_view("label"))).size();
+                },
+                results, checksum, failureCount);
+
+        measureCase(
+                "sqlite-update-by-primary-key",
+                [&benchDatabase, &updateParameters, &benchCursor]() -> std::uint64_t
+                {
+                    updateParameters[1] = static_cast<std::int64_t>(benchCursor = (benchCursor + 1) % kBenchRowCount);
+                    const std::unique_ptr<Database::DatabaseResult> result = benchDatabase->execute(
+                            "UPDATE bench SET label = ? WHERE id = ?", std::span<const Database::DatabaseValue>(updateParameters));
+                    if (result == nullptr)
+                    {
+                        return 0U;
+                    }
+                    // 影响行数当自检证据：为 0 说明这条 UPDATE 根本没命中行，量到的就是空跑
+                    return static_cast<std::uint64_t>(result->affectedRowCount());
+                },
+                results, checksum, failureCount);
+    }
 
     // 头部单值查询：真实请求几乎每条都会读一两个头部（If-None-Match、CORS、WebSocket 握手……），
     // 而存储的单值视图是「按需重建」的——第一次查询的代价取决于重建是否被单个查询触发。
