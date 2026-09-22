@@ -40,6 +40,17 @@ namespace AsynGyanis::Base
         m_formatter.store(std::shared_ptr<LogFormatter>(std::move(formatter)), std::memory_order_release);
     }
 
+    void LogSink::formatEventInto(std::string &out, const LogEvent &event) const
+    {
+        // 与 formatEvent() 选同一份格式化器快照，只是把去处换成调用方的行缓冲
+        if (const auto formatter = m_formatter.load(std::memory_order_acquire))
+        {
+            formatter->formatInto(out, event);
+            return;
+        }
+        kFallbackFormatter.formatInto(out, event);
+    }
+
     std::string LogSink::formatEvent(const LogEvent &event) const
     {
         if (const auto formatter = m_formatter.load(std::memory_order_acquire))

@@ -6,12 +6,13 @@
 
 #include <array>
 #include <format>
+#include <iterator>
 #include <string>
 #include <string_view>
 
 namespace AsynGyanis::Base
 {
-    std::string DefaultFormatter::format(const LogEvent &event)
+    void DefaultFormatter::formatInto(std::string &out, const LogEvent &event)
     {
         // 时刻在本线程就地渲染成文本：一块栈缓冲，不取堆。两条版式分支只走其中一条，
         // 因此一次渲染一份缓冲就够
@@ -24,23 +25,31 @@ namespace AsynGyanis::Base
 
         const std::string_view location = formatSourceLocationText(event.location, locationBuffer, locationOverflow);
 
-        std::string text = std::format("{} {} [{:<5}] [{}] {:<13} {}",
-                                       timestampText,
-                                       event.threadIdView(),
-                                       logLevelToString(event.level),
-                                       event.loggerNameView(),
-                                       location,
-                                       event.message);
+        // 写进调用方的缓冲而不是 std::format 造一个新串：后者交回结果要取两次堆，
+        // 而 Sink 那侧本来就有留了容量的行缓冲，追加进它是零次
+        std::format_to(std::back_inserter(out), "{} {} [{:<5}] [{}] {:<13} {}",
+                       timestampText,
+                       event.threadIdView(),
+                       logLevelToString(event.level),
+                       event.loggerNameView(),
+                       location,
+                       event.message);
 #else
         // Release：不输出线程号与源码位置，只保留定位问题必需的字段
-        std::string text = std::format("{} [{:<5}] [{}] {}",
-                                       timestampText,
-                                       logLevelToString(event.level),
-                                       event.loggerNameView(),
-                                       event.message);
+        std::format_to(std::back_inserter(out), "{} [{:<5}] [{}] {}",
+                       timestampText,
+                       logLevelToString(event.level),
+                       event.loggerNameView(),
+                       event.message);
 #endif
         // 栈的符号解析在这里发生：本函数的调用方（Sink）决定它跑在哪个线程上
-        appendStackTraceText(text, event.stackTrace);
+        appendStackTraceText(out, event.stackTrace);
+    }
+
+    std::string DefaultFormatter::format(const LogEvent &event)
+    {
+        std::string text;
+        formatInto(text, event);
         return text;
     }
 } // namespace AsynGyanis::Base

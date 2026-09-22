@@ -36,5 +36,18 @@ namespace AsynGyanis::Base
          * @return std::string 格式化后的文本（不含行尾换行符）
          */
         virtual std::string format(const LogEvent &event) = 0;
+
+        /**
+         * @brief 把日志事件渲染进调用方的缓冲，稳态下不取堆
+         * @details 默认实现转调 format() 再整份追加，因此不比 format() 更省、也不会更差，
+         *          自定义格式化器无需改动即可走通 Sink 的行缓冲。自带版式的两个格式化器都覆写了
+         *          它：std::format 交回一个 std::string 要取两次堆，而直接写进留有容量的缓冲是零次。
+         * @param out 目标缓冲；不清空，本次文本追加在其现有内容之后
+         * @param event 日志事件
+         */
+        virtual void formatInto(std::string &out, const LogEvent &event)
+        {
+            out.append(format(event));
+        }
     };
 } // namespace AsynGyanis::Base

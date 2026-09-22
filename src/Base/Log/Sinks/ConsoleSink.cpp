@@ -22,19 +22,21 @@ namespace AsynGyanis::Base
     void ConsoleSink::write(const LogEvent &event)
     {
         std::lock_guard lock(m_mutex);
-        std::string     formatted = formatEvent(event);
-        // 换行并入同一缓冲后整行只做一次 <<：每次流插入都要构造 sentry（锁流缓冲、
-        // 冲刷被 tie 的流），合并后只有一轮。format 结果串的容量通常够追加换行
-        formatted.push_back('\n');
+        // 整行只做一次 <<：每次流插入都要构造 sentry（锁流缓冲、冲刷被 tie 的流），合并后只有一轮。
+        // 版式直接落在留了容量的成员缓冲上——std::format 交回一个新串要取两次堆，
+        // 而控制台这条路径每行都要走一遍这里
+        m_lineBuffer.clear();
+        formatEventInto(m_lineBuffer, event);
+        m_lineBuffer.push_back('\n');
         if (event.level >= LogLevel::Warn)
         {
             // std::cerr 恒为 unitbuf：整行写出即落地，无需额外刷新
-            std::cerr << formatted;
+            std::cerr << m_lineBuffer;
         } else
         {
             // 每条刷新：std::cout 重定向到文件或管道时是全缓冲，不刷就 tail 不到实时内容，
             // 异常退出还会丢掉尾部（实测 +1 µs/行，Release /O2），换来 write() 返回即已落地
-            std::cout << formatted;
+            std::cout << m_lineBuffer;
             std::cout.flush();
         }
     }

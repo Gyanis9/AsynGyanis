@@ -16,6 +16,7 @@
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/Sinks/AsyncSink.h"
+#include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Sinks/LogSink.h"
 
 #include "AllocationProbe.h"
@@ -27,8 +28,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <iostream>
 #include <memory>
 #include <queue>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -308,6 +311,58 @@ namespace AsynGyanis::Base
                     static_cast<unsigned long long>(profile.totalAllocations),
                     static_cast<unsigned long long>(profile.totalBytes));
         printHistogramDelta("async-minus-sync", referenceHistogram, asyncHistogram);
+    }
+
+    /**
+     * @brief 读数：走控制台 Sink 的一条日志在稳态下取几次堆
+     * @details 格式化器交回的是长度恰等于内容的串，直接给它追加换行必然再取一块堆并把整行搬一次，
+     *          而且这一切在控制台 Sink 的互斥锁内。改成搬进留容量的成员行缓冲后，稳态下拼行不碰堆：
+     *          一千行只该剩格式化器那一次。控制台被重定向到内存缓冲，读数里不含 IO 本身
+     */
+    TEST(LogHotPathAllocations, ConsoleSinkLineAllocationReading)
+    {
+        std::ostringstream captured;
+        auto *const originalBuffer = std::cout.rdbuf(captured.rdbuf());
+
+        // 参照形状：同一条日志只走到「事件构造」为止，格式化与落地都不计。两条读数相减，
+        // 差出来的就是「格式化 + 写控制台」这一段付的分配
+        Logger referenceLogger("console_ref");
+        referenceLogger.addSink(std::make_unique<NonWritingSink>());
+        const auto logReferenceOnce = [&referenceLogger]
+        {
+            referenceLogger.log(LogLevel::Info, kMessageText);
+            return 1U;
+        };
+        resetAllocationHistogram();
+        const AllocationProfile referenceProfile = measurePerOperation(logReferenceOnce);
+
+        Logger logger("console_path");
+        logger.addSink(std::make_unique<ConsoleSink>(false));
+
+        const auto logOnce = [&logger]
+        {
+            logger.log(LogLevel::Info, kMessageText);
+            return 1U;
+        };
+        logOnce();                       // 先让行缓冲把容量长出来，测的是稳态
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(logOnce);
+
+        std::cout.rdbuf(originalBuffer);
+
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有几次没走进控制台 Sink";
+#ifdef NDEBUG
+        // 上限给 1/64 的增长余量：行缓冲第一次长容量那几次要取堆，具体几次取决于实现的分因子，
+        // 不钉死。真正的判据是「整段格式化 + 写出不超过事件构造那一段」——未修时这一千行多付
+        // 一千次（std::format 造结果串），远超本上限
+        EXPECT_LE(profile.totalAllocations, referenceProfile.totalAllocations + kMeasurementIterations / 64U)
+                << "拼那一行还在逐条取堆：版式没有直接落进 Sink 的行缓冲";
+#endif
+        std::printf("console-line per-op=%llu total=%llu bytes=%llu (ref total=%llu)\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations),
+                    static_cast<unsigned long long>(profile.totalBytes),
+                    static_cast<unsigned long long>(referenceProfile.totalAllocations));
     }
 
     /**

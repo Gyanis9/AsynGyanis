@@ -7,12 +7,13 @@
 
 #include <array>
 #include <format>
+#include <iterator>
 #include <string>
 #include <string_view>
 
 namespace AsynGyanis::Base
 {
-    std::string ColorFormatter::format(const LogEvent &event)
+    void ColorFormatter::formatInto(std::string &out, const LogEvent &event)
     {
         // 与 DefaultFormatter 同一套时刻渲染：写进栈缓冲，本函数的两条版式分支只走其中一条
         std::array<char, kTimestampTextBufferSize> timestampBuffer{};
@@ -24,26 +25,33 @@ namespace AsynGyanis::Base
 
         const std::string_view location = formatSourceLocationText(event.location, locationBuffer, locationOverflow);
 
-        std::string text = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
-                                       timestampText,
-                                       event.threadIdView(),
-                                       LogColor::colorForLevel(event.level),
-                                       logLevelToString(event.level),
-                                       LogColor::kReset,
-                                       event.loggerNameView(),
-                                       location,
-                                       event.message);
+        // 直接追加进调用方留有容量的缓冲：std::format 交回一个新串要取两次堆
+        std::format_to(std::back_inserter(out), "{} {} [{}{:<5}{}] [{}] {:<13} {}",
+                       timestampText,
+                       event.threadIdView(),
+                       LogColor::colorForLevel(event.level),
+                       logLevelToString(event.level),
+                       LogColor::kReset,
+                       event.loggerNameView(),
+                       location,
+                       event.message);
 #else
-        std::string text = std::format("{} [{}{:<5}{}] [{}] {}",
-                                       timestampText,
-                                       LogColor::colorForLevel(event.level),
-                                       logLevelToString(event.level),
-                                       LogColor::kReset,
-                                       event.loggerNameView(),
-                                       event.message);
+        std::format_to(std::back_inserter(out), "{} [{}{:<5}{}] [{}] {}",
+                       timestampText,
+                       LogColor::colorForLevel(event.level),
+                       logLevelToString(event.level),
+                       LogColor::kReset,
+                       event.loggerNameView(),
+                       event.message);
 #endif
         // 与 DefaultFormatter 一致：栈的解析在 Sink 写入线程上发生
-        appendStackTraceText(text, event.stackTrace);
+        appendStackTraceText(out, event.stackTrace);
+    }
+
+    std::string ColorFormatter::format(const LogEvent &event)
+    {
+        std::string text;
+        formatInto(text, event);
         return text;
     }
 } // namespace AsynGyanis::Base

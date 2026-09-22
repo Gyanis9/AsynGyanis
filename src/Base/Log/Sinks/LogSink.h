@@ -92,6 +92,16 @@ namespace AsynGyanis::Base
          */
         std::string formatEvent(const LogEvent &event) const;
 
+        /**
+         * @brief 用当前格式化器把事件追加进调用方的行缓冲，稳态下不取堆
+         * @details 与 formatEvent() 选同一份格式化器、产出逐字相同的文本，区别只在去处：
+         *          Sink 自己留着一条容量足够的行缓冲时，走这一条就省掉「格式化器造一个新串、
+         *          Sink 再搬一次」。out 不被清空，便于调用方先写前缀再续内容。
+         * @param out 目标缓冲；本次文本追加在其现有内容之后
+         * @param event 日志事件
+         */
+        void formatEventInto(std::string &out, const LogEvent &event) const;
+
     private:
         std::atomic<LogLevel>                       m_level{LogLevel::Trace}; ///< 当前最小日志级别
         std::atomic<std::shared_ptr<LogFormatter> > m_formatter;              ///< 原子 shared_ptr，store/load 保证线程安全的读写
