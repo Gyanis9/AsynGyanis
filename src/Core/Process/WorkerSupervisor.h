@@ -85,8 +85,12 @@ namespace AsynGyanis::Core
         void requestStop() noexcept;
 
         /**
-         * @brief 当前仍在运行的 worker 数（日志与诊断用）
-         * @return std::size_t 个数
+         * @brief 当前仍在运行的 worker 数（日志与诊断用），任何线程可调
+         * @return std::size_t 个数；这是编排线程**最近一轮扫描**的快照，最长滞后一个 pollInterval
+         * @note 本接口不去探句柄：观察线程若直接调存活查询，会与编排线程同时读写同一个进程句柄
+         *       （存活查询顺手回收子进程并把退出码与进程号写回句柄）。回收本身不能并发——两个线程
+         *       只有一个拿得到退出状态；更要紧的是终止路径读到的进程号可能已被并发的回收改写成
+         *       「作废」哨兵，那是一次面向全系统的 kill
          */
         [[nodiscard]] std::size_t runningWorkerCount() const noexcept;
 
@@ -135,5 +139,8 @@ namespace AsynGyanis::Core
         /// 停止请求：只置一个无锁原子，因此信号处理函数里调用 requestStop() 是安全的
         /// （.cpp 里对 is_always_lock_free 做了断言，平台不满足会在编译期就拦住）
         std::atomic<bool> m_isStopRequested{false};
+
+        /// 在运行的 worker 数：只由编排线程在每轮扫描末尾与收尾末尾发布，观察者线程只读它
+        std::atomic<std::size_t> m_runningWorkerCount{0};
     };
 } // namespace AsynGyanis::Core

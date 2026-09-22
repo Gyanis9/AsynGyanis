@@ -190,6 +190,9 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 正常 worker 只起一次就稳定运行；收到停止请求后编排把它送走并返回
+     * @details 本用例刻意让一个观察者线程在整个编排期间（含收尾与终止路径）连续读
+     *          runningWorkerCount()：观察线程与编排线程碰的是同一批 worker，
+     *          Linux TSan 下这是本类唯一覆盖那条竞态的入口
      */
     TEST(WorkerSupervisor, StartsWorkersOnceAndStopsThemOnRequest)
     {
@@ -204,13 +207,37 @@ namespace AsynGyanis::Core
                     isOrchestrationSettled.store(supervisor.run(), std::memory_order_release);
                 });
 
+        // 观察者线程：只读计数，读到编排线程收口为止（不额外探测句柄，也不改任何状态）
+        std::atomic<bool>     isObserving{true};
+        std::atomic<std::size_t> maximumObservedCount{0};
+        std::thread           observerThread(
+                [&supervisor, &isObserving, &maximumObservedCount]
+                {
+                    while (isObserving.load(std::memory_order_acquire))
+                    {
+                        const std::size_t observed = supervisor.runningWorkerCount();
+                        // 只单调往上报最大值：收尾时读到 0 也不该把已观察到的 2 冲掉
+                        std::size_t previous = maximumObservedCount.load(std::memory_order_relaxed);
+                        while (observed > previous &&
+                               !maximumObservedCount.compare_exchange_weak(previous, observed, std::memory_order_relaxed))
+                        {
+                        }
+                    }
+                });
+
         ASSERT_TRUE(waitForCondition(
                 [&launchLog]
                 {
                     return launchLog.launchCount() >= 2;
                 },
                 kWaitTimeout)) << "两个 worker 没有都起来";
-        EXPECT_EQ(supervisor.runningWorkerCount(), 2U) << "两个 worker 都应当在运行";
+        // 计数是编排线程每轮扫描末尾发布的快照（最长滞后一个 pollInterval），因此等它到位再断言
+        EXPECT_TRUE(waitForCondition(
+                [&supervisor]
+                {
+                    return supervisor.runningWorkerCount() >= 2U;
+                },
+                kWaitTimeout)) << "两个 worker 都起来之后，快照里的在运行个数应当到位";
 
         // 稳定运行之后再等一小会儿：不该出现「明明活着却被重复补位」的情况
         std::this_thread::sleep_for(std::chrono::milliseconds{300});
@@ -218,9 +245,12 @@ namespace AsynGyanis::Core
 
         supervisor.requestStop();
         supervisorThread.join();
+        isObserving.store(false, std::memory_order_release);
+        observerThread.join();
 
         EXPECT_EQ(launchLog.launchCount(), 2U) << "收尾不该再起新 worker";
         EXPECT_EQ(supervisor.runningWorkerCount(), 0U) << "收尾之后不该还有 worker 在跑";
+        EXPECT_LE(maximumObservedCount.load(std::memory_order_acquire), 2U) << "观察线程看到的个数越过了 worker 总数";
         EXPECT_TRUE(isOrchestrationSettled.load(std::memory_order_acquire)) << "worker 正常起来又被按请求停掉，这次编排应当报「收口成功」";
     }
 

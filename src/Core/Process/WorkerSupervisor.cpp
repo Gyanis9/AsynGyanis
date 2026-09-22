@@ -175,15 +175,24 @@ namespace AsynGyanis::Core
             }
 
             // 全部槽位都放弃了就不再空转：日志已经交代过原因，交给调用方决定怎么处理。
-            // 每轮重新数一遍（而不是累加计数）：同一个槽位连续失败只算它自己那一份
+            // 每轮重新数一遍（而不是累加计数）：同一个槽位连续失败只算它自己那一份。
+            // 在运行的个数在同一趟里数出来再发布：观察者线程只读那份原子量，不碰句柄
             std::size_t givenUpWorkerCount = 0;
+            std::size_t runningWorkerCount = 0;
             for (const Worker &worker: m_workers)
             {
                 if (worker.isGivenUp)
                 {
                     ++givenUpWorkerCount;
+                    continue;
+                }
+                if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
+                {
+                    ++runningWorkerCount;
                 }
             }
+            m_runningWorkerCount.store(runningWorkerCount, std::memory_order_release);
+
             if (givenUpWorkerCount >= m_workers.size())
             {
                 LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）",
@@ -209,15 +218,9 @@ namespace AsynGyanis::Core
 
     std::size_t WorkerSupervisor::runningWorkerCount() const noexcept
     {
-        std::size_t runningCount = 0;
-        for (const Worker &worker: m_workers)
-        {
-            if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
-            {
-                ++runningCount;
-            }
-        }
-        return runningCount;
+        // 只读编排线程发布的快照：在这里探句柄等于在观察者的线程上回收子进程，
+        // 与编排线程同时读写同一份进程号/退出码缓存（见头文件里那两条理由）
+        return m_runningWorkerCount.load(std::memory_order_acquire);
     }
 
     bool WorkerSupervisor::startWorker(Worker &worker, const std::size_t workerIndex)
@@ -345,6 +348,10 @@ namespace AsynGyanis::Core
             }
             worker.handle.close();
         }
+
+        // 收尾把句柄全交还了：此后没有「还在跟踪且在运行」的 worker，快照归零。
+        // 不在这儿发布的话，观察者会一直读到停机前那一轮的个数
+        m_runningWorkerCount.store(0, std::memory_order_release);
     }
 
     void WorkerSupervisor::waitForForcedTerminationsToLand()
