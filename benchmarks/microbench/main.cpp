@@ -1,6 +1,6 @@
 // 热路径微基准：HPACK 编解码、h1 请求解析、h2 帧解码、HTTP 日期格式化/解析、request-id 生成、
 // 头部单值查询与列表 token 判定、响应头序列化、h2/h3 组头块的两种走法、响应压缩的一次性耗时、
-// 事件循环的跨线程唤醒。
+// 事件循环的跨线程唤醒、连接池的取出与归还（稳态复用与每次新建两条通路）。
 //
 // 用法：microbench [--json-out <文件>]
 // 不给参数就跑全部用例并在控制台打表；给了 --json-out 再写一份 JSON，供 benchmarks/check-baseline.py 比对
@@ -18,6 +18,11 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/ThreadPool.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Database/Common/DatabaseConnection.h"
+#include "Database/Common/DatabaseResult.h"
+#include "Database/Pool/ConnectionPool.h"
+#include "Database/Pool/PoolConfig.h"
+#include "Database/Pool/PooledConnection.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/Gzip.h"
@@ -271,6 +276,58 @@ namespace
         }
         return body;
     }
+
+    /**
+     * @brief 打桩的数据库连接：让连接池的取出/归还整条链路在没有真库的前提下跑起来
+     * @details 池在获取与归还路径上只碰 connect / disconnect / isConnected / resetSessionState，
+     *          且 isConnected() 被约定成纯状态查询（不发网络探活），因此这几个钩子就足以代表一条
+     *          真实连接的稳态形态。execute() 不在本文件要量的通路上，返回空结果即可。
+     */
+    class StubConnection : public Database::DatabaseConnection
+    {
+    public:
+        /**
+         * @brief 模拟建连成功
+         * @return 恒为 true
+         */
+        bool connect() override
+        {
+            // 状态标志由本端同步维护，与真实驱动的口径一致
+            m_isConnected = true;
+            return true;
+        }
+
+        /**
+         * @brief 模拟断开
+         */
+        void disconnect() override
+        {
+            m_isConnected = false;
+        }
+
+        /**
+         * @brief 纯状态查询：与真实驱动一样不发任何网络往返
+         * @return 当前是否处于已连接状态
+         */
+        [[nodiscard]] bool isConnected() const override { return m_isConnected; }
+
+        /**
+         * @brief 占位执行：本文件不量查询通路
+         * @param command 未被使用的命令文本
+         * @return 恒为空结果
+         */
+        [[nodiscard]] std::unique_ptr<Database::DatabaseResult> execute(const std::string_view command) override
+        {
+            static_cast<void>(command);
+            return nullptr;
+        }
+
+        /**
+         * @brief 方言归属
+         * @return 恒为 Sqlite（连接池不据此分支，仅为满足接口）
+         */
+        [[nodiscard]] Database::DatabaseType databaseType() const override { return Database::DatabaseType::Sqlite; }
+    };
 } // namespace
 
 int main(int argumentCount, char **argumentValues)
@@ -902,6 +959,43 @@ int main(int argumentCount, char **argumentValues)
             {
                 requestIdGenerator.resolveInto(requestIdTarget);
                 return requestIdTarget.requestId().size();
+            },
+            results, checksum, failureCount);
+
+    // 连接池的两条通路（本文件第一次量 Database）：一条是保活复用的稳态「取出 + 归还」，另一条是
+    // maximumLifetimeSeconds 为 0 时「每次归还都丢弃、每次取出都新建」的抖动形态。前者量的是那几把
+    // 锁与映射表查询的固定开销，后者额外把建连、映射表插删与断开一并计入——两种形态在真实服务里都
+    // 存在（连接池被配成短存活期，或对端定期掐线），只量其一都会做错取舍
+    Database::PoolConfig steadyPoolConfiguration;
+    steadyPoolConfiguration.maximumPoolSize            = 4;
+    steadyPoolConfiguration.idleTimeoutSeconds         = 3600;
+    steadyPoolConfiguration.maximumLifetimeSeconds     = 3600;
+    steadyPoolConfiguration.healthCheckIntervalSeconds = 3600; // 后台驱逐不参与这两例的时序
+    const auto makeStubConnection = []() -> std::unique_ptr<Database::DatabaseConnection>
+    {
+        return std::make_unique<StubConnection>();
+    };
+
+    Database::ConnectionPool steadyPool(makeStubConnection, steadyPoolConfiguration);
+    measureCase(
+            "pool-acquire-return",
+            [&steadyPool]
+            {
+                // 局部对象析构即归还：一次操作 = 一整趟取出与归还
+                const Database::PooledConnection connection = steadyPool.acquire();
+                return static_cast<std::uint64_t>(connection ? 1U : 0U);
+            },
+            results, checksum, failureCount);
+
+    Database::PoolConfig churnPoolConfiguration = steadyPoolConfiguration;
+    churnPoolConfiguration.maximumLifetimeSeconds = 0;
+    Database::ConnectionPool churnPool(makeStubConnection, churnPoolConfiguration);
+    measureCase(
+            "pool-churn-acquire-return",
+            [&churnPool]
+            {
+                const Database::PooledConnection connection = churnPool.acquire();
+                return static_cast<std::uint64_t>(connection ? 1U : 0U);
             },
             results, checksum, failureCount);
 

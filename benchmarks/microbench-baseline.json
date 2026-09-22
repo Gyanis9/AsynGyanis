@@ -35,7 +35,8 @@
     "header-* 与 http1-parse-request、response-set-header-long-name 这十一条在 2026-09-22 按「头部名值收进一条字节缓冲」重录（改动前后的两枚二进制在同一循环里交替各跑三次，新二进制另跑九次取中位数与观察区间）：解析一条 h1 请求 727.5 → 510.6 ns（−29.7%），装 10 条头部 280.1 → 208.9 ns，四条读路径一起快了 8.6%~24.4%（读侧不再解两个 std::string，名字与取值在同一条缓冲里就地取段）。分配数读数由 HotPathAllocations 钉死：解析一条请求 6 → 2 次、装 10 条头部 4 → 0 次。header-* 共同的装机本底从 280~290 ns 变成 202~217 ns，减本底比较要用新数。响应头序列化两条未受影响（+0.4% / −0.4%，噪声内）——遍历出口的基址判定收在循环外一次，逐条不再有分支。另注：这一批九跑的离散只有 1.02~1.15 倍，但本机偶发进入 ~1.45 倍负载区（同一份二进制整批一起抬），单例报红要先与未改动的对照例一起看再下结论；旧登记值 1057.5 ns 就是这么录下的。该例登记值其后又被末条重录过一次。",
     "http1-parse-request 在 2026-09-22 按「URI 与正文整块交换」再重录（改动前后两枚二进制同批交替各三跑，新二进制另跑六次取中位数与观察区间）：解析一条 h1 请求 510.6 → 424.3 ns（−16.9%），省下的正是那两次堆块取还——HotPathAllocations 同批把每请求分配从 2 次钉到 0 次。同批 header-* 与 response-head-serialize 各条都在 ±3% 内、对照例 hpack-encode −0.3%、h3-data-frame-direct −1.2%，这一档降幅不是整机换负载簇。这批还改了一处判据口径：声称「稳态零分配」的几条改按一千次的原值钉（摊平是整除，「每次 0 次」藏得住一千次里的 999 次分配），换原值判据后立刻量到首轮一千次里有 20 次倍扩容的暖期成本，于是用例显式暖身 64 轮再测——之后 0 才是可信的读数。",
     "router-route-exact 与 router-route-pattern 是 2026-09-22 新增的派发两例：把 Router::route 跑一整趟（处理函数即时完成，以响应状态码 201 自检「确实走到了 handler」，而不是只看协程跑完）。改动前后两枚二进制同批交替各三跑：命中精确路由 203.6 → 146.5 ns（−28.0%），扫过模式候选并收下 :id 那条 448.3 → 345.0 ns（−23.0%）。省下的都是「每个候选现造一张空参数表」——单文件探针实测 MSVC 上 1000 张空 unordered_map 要 2000 次分配、每次 104 字节，因此这笔成本原本随模式路由的条数线性放大，命中精确路由时也白付一次。同一改动把探测路径上的表摘掉（不收集就传空指针），router-streaming-post-param 于是从 71.7 降到 23.5 ns（−67.2%），该例按新读数重录；router-streaming-get 仍是 1.2 ns（方法闸在前，走不到建表那步）。",
-    "request-id-land-owning 与 request-id-land-into 是同一枚二进制里的消融对照（2026-09-22 新增，四跑）：旧写法每条请求现造一个串再交给请求（39.7 ns、每请求 1 次分配 / 32 字节），新写法先生成到调用线程的复用缓冲再原地写进请求字段（14.4 ns、0 次分配，−63.7%）。两例都在计时体内做完一整趟，因为被量的就是那一次堆块取还；分配原值由 HotPathAllocations.RequestIdResolveAllocations 钉（一千次 1000 → 0）。另注：老例 request-id-generate 本轮读到 35.0 ns 而登记值是 91.1（形状与分配数都没变，两批内部都极紧），这是跨批次的堆上下文/代码布局漂移而不是代码变快——该例地板仍留旧值，要收紧得拿同批对照下结论。"
+    "request-id-land-owning 与 request-id-land-into 是同一枚二进制里的消融对照（2026-09-22 新增，四跑）：旧写法每条请求现造一个串再交给请求（39.7 ns、每请求 1 次分配 / 32 字节），新写法先生成到调用线程的复用缓冲再原地写进请求字段（14.4 ns、0 次分配，−63.7%）。两例都在计时体内做完一整趟，因为被量的就是那一次堆块取还；分配原值由 HotPathAllocations.RequestIdResolveAllocations 钉（一千次 1000 → 0）。另注：老例 request-id-generate 本轮读到 35.0 ns 而登记值是 91.1（形状与分配数都没变，两批内部都极紧），这是跨批次的堆上下文/代码布局漂移而不是代码变快——该例地板仍留旧值，要收紧得拿同批对照下结论。",
+    "pool-acquire-return 与 pool-churn-acquire-return 是 2026-09-22 新增、本文件第一次量 Database：前者量保活复用的「取出 + 归还」一整趟（108.3 → 97.6 ns，−9.9%），后者量 maximumLifetimeSeconds 为 0 时「每次归还都丢弃、每次取出都新建」的抖动形态（222.5 → 154.3 ns，−30.7%）。省下的都是连接池那张「按裸指针索引创建时刻」的映射表——第三把锁与每次建连一次节点分配（表已删，建立时刻改由 DatabaseConnection 自己携带）。两枚二进制同批交替各三跑；同批对照里 request-id-land-into 完全持平（14.4 → 14.4），http1-parse-request −3.7% 与 router-route-exact −6.9% 是跨二进制的代码布局漂移，因此 pool-acquire-return 那 −9.9% 里只有约一半可归给本次改动，−30.7% 那一条远在漂移之上。抖动形态一例的跨批离散明显大于复用形态（本机观察到 219.6~225.6 对 153.9~156.9），单跑别按 1.1 倍判它。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -343,6 +344,24 @@
         14.5
       ],
       "runsMeasured": 4
+    },
+    "pool-acquire-return": {
+      "throughputPerSecond": 10245901,
+      "nanosecondsPerOperation": 97.6,
+      "observedNanosecondsRange": [
+        96.8,
+        98.4
+      ],
+      "runsMeasured": 3
+    },
+    "pool-churn-acquire-return": {
+      "throughputPerSecond": 6480881,
+      "nanosecondsPerOperation": 154.3,
+      "observedNanosecondsRange": [
+        153.9,
+        156.9
+      ],
+      "runsMeasured": 3
     },
     "header-refill-only": {
       "throughputPerSecond": 4786979,
