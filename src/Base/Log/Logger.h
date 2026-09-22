@@ -193,9 +193,11 @@ namespace AsynGyanis::Base
         /**
          * @brief 将日志事件分发到全部可用 Sink
          * @details 先原子加载快照再遍历，因此并发 clearSinks() 不会让遍历撞上已释放的 Sink。
-         * @param event 已构造好的日志事件对象
+         *          最后一个愿意收的 Sink 拿到事件本体（move），其余各拿一份只读引用：
+         *          异步队列那条路因此不必再为每行日志复制一份消息体。
+         * @param event 已构造好的日志事件；本函数可能交出它的内容，调用方此后不得再读
          */
-        void writeToSinks(const LogEvent &event) const;
+        void writeToSinks(LogEvent &event) const;
 
         /**
          * @brief 渲染格式串并分发事件，格式化失败时降级为带格式串原文的 Error 日志

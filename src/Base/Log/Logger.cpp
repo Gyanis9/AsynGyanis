@@ -134,26 +134,47 @@ namespace AsynGyanis::Base
         return level >= currentLevel;
     }
 
-    void Logger::writeToSinks(const LogEvent &event) const
+    void Logger::writeToSinks(LogEvent &event) const
     {
         const auto snapshot = m_sinksSnapshot.load(std::memory_order_acquire);
+
+        // 先数一遍有几个 Sink 愿意收：只有一个时才把事件本体交出去（异步日志正是这一条——
+        // Logger 上挂一个 AsyncSink）。多于一个时后面的 Sink 还要读同一份事件，交出本体
+        // 就等于让它们记空行，于是这一行老老实实各读各的
+        std::size_t acceptingCount = 0;
         for (const auto &sink: snapshot->sinks)
         {
             if (sink && sink->shouldLog(event.level))
             {
-                try
+                ++acceptingCount;
+            }
+        }
+        const bool handOverEvent = acceptingCount == 1U;
+
+        for (const auto &sink: snapshot->sinks)
+        {
+            if (!sink || !sink->shouldLog(event.level))
+            {
+                continue;
+            }
+            try
+            {
+                if (handOverEvent)
+                {
+                    sink->write(std::move(event));
+                } else
                 {
                     sink->write(event);
-                } catch (const std::exception &sinkError)
-                {
-                    // 单个 Sink 异常不应阻止其他 Sink 收日志，但绝不能静默：日志系统自己出了故障
-                    // 没有别处可报。会抛的写路径本就罕见（如滚动时无法重开文件），无需限流
-                    std::cerr << "Logger(" << name() << ")：某个 Sink 写入失败，该 Sink 的后续日志可能丢失："
-                            << sinkError.what() << '\n';
-                } catch (...)
-                {
-                    std::cerr << "Logger(" << name() << ")：某个 Sink 写入时抛出未知异常，该 Sink 的后续日志可能丢失" << '\n';
                 }
+            } catch (const std::exception &sinkError)
+            {
+                // 单个 Sink 异常不应阻止其他 Sink 收日志，但绝不能静默：日志系统自己出了故障
+                // 没有别处可报。会抛的写路径本就罕见（如滚动时无法重开文件），无需限流
+                std::cerr << "Logger(" << name() << ")：某个 Sink 写入失败，该 Sink 的后续日志可能丢失："
+                        << sinkError.what() << '\n';
+            } catch (...)
+            {
+                std::cerr << "Logger(" << name() << ")：某个 Sink 写入时抛出未知异常，该 Sink 的后续日志可能丢失" << '\n';
             }
         }
     }

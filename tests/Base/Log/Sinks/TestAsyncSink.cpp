@@ -291,6 +291,46 @@ namespace AsynGyanis::Base
         EXPECT_EQ(sink.droppedEventCount(), 0u);
     }
 
+    /**
+     * @brief 按基类引用交出右值事件时，走的必须是接管那条并且内容不丢
+     * @details Logger 手里拿的是 LogSink 基类指针，虚派发是否落到 write(LogEvent &&)
+     *          只有从基类调用才看得出来；从基类走通了才算「一条日志不再复制事件」这条改动生效。
+     */
+    TEST(AsyncSink, RvalueEventViaBaseReferenceKeepsItsContent)
+    {
+        auto          events     = std::make_shared<RecordedEvents>();
+        auto          downstream = std::make_unique<RecordingSink>(events);
+        AsyncSink     sink(std::move(downstream), 16);
+        LogSink      &asBaseSink = sink;
+
+        asBaseSink.write(makeEvent(LogLevel::Error, "handed over by rvalue"));
+        sink.flush();
+
+        ASSERT_EQ(events->size(), 1u);
+        EXPECT_EQ(events->snapshot().front(), "handed over by rvalue") << "移进队列时把消息丢了";
+        EXPECT_EQ(events->levelAt(0), LogLevel::Error);
+    }
+
+    /**
+     * @brief 左值事件走复制那条路，内容同样必须完整到达
+     * @details 与上一条配对：接管那条省下的只是拷贝，两条出口的落地结果必须一模一样，
+     *          否则「省一次分配」就是靠少带数据换来的。
+     */
+    TEST(AsyncSink, LvalueEventIsCopiedIntoTheQueueWithoutLosingContent)
+    {
+        auto          events     = std::make_shared<RecordedEvents>();
+        auto          downstream = std::make_unique<RecordingSink>(events);
+        AsyncSink     sink(std::move(downstream), 16);
+        const LogEvent event = makeEvent(LogLevel::Warn, "kept as lvalue");
+
+        sink.write(event);
+        sink.flush();
+
+        ASSERT_EQ(events->size(), 1u);
+        EXPECT_EQ(events->snapshot().front(), "kept as lvalue");
+        EXPECT_EQ(sink.droppedEventCount(), 0u);
+    }
+
     TEST(AsyncSink, MinimumQueueSizeIsOne)
     {
         EXPECT_EQ(AsyncSink::kMinimumQueueSize, 1u);

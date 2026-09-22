@@ -70,12 +70,21 @@ namespace AsynGyanis::Base
         ~AsyncSink() override;
 
         /**
-         * @brief 将日志事件写入异步队列
-         * @details 重写 LogSink::write()：不直接落地，按溢出策略阻塞或丢弃并累计丢弃计数，
-         *          已请求停止时不再入队（同样计入丢弃数）。
+         * @brief 将日志事件复制进异步队列
+         * @details 重写 LogSink::write(const LogEvent &)：先复制一份再走接管那条路。
+         *          调用方交出的是左值，复制这一步省不掉。
          * @param event 日志事件
          */
         void write(const LogEvent &event) override;
+
+        /**
+         * @brief 将日志事件移进异步队列，不复制
+         * @details 重写 LogSink::write(LogEvent &&)：不直接落地，按溢出策略阻塞或丢弃并累计丢弃
+         *          计数，已请求停止时不再入队（同样计入丢弃数）。事件本体被搬进队列，因此一条
+         *          日志在生产线程上不再为它多取一块堆。
+         * @param event 日志事件；返回后处于有效但未指定的状态
+         */
+        void write(LogEvent &&event) override;
 
         /**
          * @brief 阻塞等待所有已受理事件落地后刷新下游 Sink

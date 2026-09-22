@@ -42,6 +42,17 @@ namespace AsynGyanis::Base
         virtual void write(const LogEvent &event) = 0;
 
         /**
+         * @brief 输出一条日志事件，并接管事件本体
+         * @details 默认实现原样转调左值版本，因此只实现左值版本的 Sink 行为不变。省下拷贝的
+         *          实现方（异步队列就是这一个）重写本条：交出的是调用方不再读的那份事件。
+         * @param event 日志事件；返回后它处于有效但未指定的状态
+         */
+        virtual void write(LogEvent &&event)
+        {
+            write(static_cast<const LogEvent &>(event));
+        }
+
+        /**
          * @brief 刷新输出缓冲
          * @note 实现方应尽量阻塞到数据落盘后再返回
          */

@@ -37,6 +37,13 @@ namespace AsynGyanis::Base
 
     void AsyncSink::write(const LogEvent &event)
     {
+        // 左值入口只做一件事：复制一份交出所有权，之后与接管那条走同一段代码，
+        // 于是三种溢出策略的判定与计数不必各写一遍
+        write(LogEvent{event});
+    }
+
+    void AsyncSink::write(LogEvent &&event)
+    {
         std::unique_lock lock(m_queueMutex);
 
         // 已请求停止：事件既不会落地，也不应留在队列里冒充「待落地」而让 flush() 永远等不到 0。
@@ -56,7 +63,7 @@ namespace AsynGyanis::Base
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
-            m_queue.push(event);
+            m_queue.push(std::move(event));
             ++m_pendingCount;
         } else if (m_overflowPolicy == OverflowPolicy::DropOldest)
         {
@@ -69,7 +76,7 @@ namespace AsynGyanis::Base
                 --m_pendingCount;
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
             }
-            m_queue.push(event);
+            m_queue.push(std::move(event));
             ++m_pendingCount;
         } else
         {
@@ -86,7 +93,7 @@ namespace AsynGyanis::Base
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
-            m_queue.push(event);
+            m_queue.push(std::move(event));
             ++m_pendingCount;
         }
         lock.unlock();
