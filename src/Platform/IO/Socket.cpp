@@ -112,6 +112,9 @@ namespace AsynGyanis::Platform
                 PlatformError::setLastErrorCode(failureCode);
                 return FileDescriptor::kInvalid;
             }
+            // 与 POSIX 侧的 SOCK_CLOEXEC 取平：Windows 的 accept 句柄默认可继承，留着继承位就等于
+            // 把一条已建立的连接交给随机一个子进程——父进程关掉它之后这一侧仍被陌生进程持着
+            static_cast<void>(FileDescriptor::markNonInheritable(static_cast<int>(fileDescriptor)));
         }
         return static_cast<int>(fileDescriptor);
 #else

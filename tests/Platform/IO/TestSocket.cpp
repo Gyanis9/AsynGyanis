@@ -11,6 +11,8 @@
 #include <string_view>
 #include <thread>
 
+#include "PlatformTestSupport.h"
+
 namespace AsynGyanis::Platform
 {
     namespace
@@ -191,6 +193,31 @@ namespace AsynGyanis::Platform
         // 无数据时读取应立即失败而不是阻塞，说明两侧实现都置入了非阻塞标志
         char buffer[8];
         EXPECT_LT(FileDescriptor::read(accepted, buffer, sizeof(buffer)), 0);
+
+        FileDescriptor::close(accepted);
+        FileDescriptor::close(client);
+        FileDescriptor::close(listener);
+    }
+
+    /**
+     * @brief accept 出来的连接不得随进程创建传给子进程
+     * @details POSIX 侧由 accept4 的 SOCK_CLOEXEC 在建好时就带上标记；Windows 的 accept 句柄默认
+     *          可继承，不补一刀就等于把一条已建立的连接交给随机一个子进程——本框架以导出库的形态
+     *          被消费，调用方的 CreateProcess 不一定会带句柄清单把继承收窄。
+     */
+    TEST(Socket, AcceptedDescriptorIsNotInheritable)
+    {
+        std::uint16_t port     = 0;
+        const int     listener = createLoopbackListener(port);
+        ASSERT_TRUE(FileDescriptor::isValid(listener));
+
+        const int client = connectToLoopback(port);
+        ASSERT_TRUE(FileDescriptor::isValid(client));
+
+        const int accepted = acceptWithTimeout(listener, nullptr, nullptr);
+        ASSERT_TRUE(FileDescriptor::isValid(accepted));
+
+        EXPECT_TRUE(TestSupport::isNotInheritable(accepted)) << "连接句柄可被继承，父进程关掉它之后这一侧仍被子进程持着";
 
         FileDescriptor::close(accepted);
         FileDescriptor::close(client);

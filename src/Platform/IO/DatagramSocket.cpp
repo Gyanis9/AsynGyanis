@@ -65,11 +65,7 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
         // Winsock 的句柄默认可继承，而带 WSA_FLAG_NO_HANDLE_INHERIT 的 WSASocketW 要求老系统上
         // 另走一条建法；这里只在建好之后取消继承位，语义相同且不会因缺标志而整个建不出套接字
-        if (FileDescriptor::isValid(socket.m_fileDescriptor))
-        {
-            static_cast<void>(::SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(socket.m_fileDescriptor)),
-                                                     HANDLE_FLAG_INHERIT, 0));
-        }
+        static_cast<void>(FileDescriptor::markNonInheritable(socket.m_fileDescriptor));
 #endif
         if (!FileDescriptor::isValid(socket.m_fileDescriptor))
         {

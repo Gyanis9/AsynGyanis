@@ -141,6 +141,28 @@ namespace AsynGyanis::Platform
         SUCCEED();
     }
 
+    /**
+     * @brief 成对的描述符不得随 spawn 传下去：两端都要与父进程再无关系
+     * @details 这一对是 EventNotifier 与 TimerFileDescriptor 的底座。可继承的一端一旦被子进程拿到，
+     *          父进程关掉自己那端也关不掉这条唤醒通道（子进程还持着一份引用），而子进程往对端写一个
+     *          字节就会叫醒父进程的事件循环。POSIX 侧由 SOCK_CLOEXEC 在建好时就带上标记；Windows 的
+     *          Winsock 句柄默认就是可继承的，必须建完显式取消继承位。仓库自带的 spawn 已用句柄清单把
+     *          继承收窄到三个标准句柄，这条判据是给库外消费者的（本框架以 find_package 与 Conan 包
+     *          对外导出，别人的 CreateProcess 未必带清单）。
+     */
+    TEST(FileDescriptor, CreatePairDescriptorsAreNotInheritable)
+    {
+        int readDescriptor  = FileDescriptor::kInvalid;
+        int writeDescriptor = FileDescriptor::kInvalid;
+        ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
+
+        EXPECT_TRUE(TestSupport::isNotInheritable(readDescriptor)) << "读端可被继承：父进程关闭后唤醒通道仍被子进程持着";
+        EXPECT_TRUE(TestSupport::isNotInheritable(writeDescriptor)) << "写端可被继承：子进程写一个字节就会叫醒父进程的循环";
+
+        FileDescriptor::close(readDescriptor);
+        FileDescriptor::close(writeDescriptor);
+    }
+
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：长度大到会回绕成小正数时，读写按失败收口而不是「搬了 0 字节」

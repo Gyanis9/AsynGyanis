@@ -46,6 +46,17 @@ namespace AsynGyanis::Platform
         static bool setNonBlocking(int fileDescriptor) noexcept;
 
         /**
+         * @brief 把描述符标成「不随进程创建传给子进程」
+         * @details 两个平台的标志方向相反，表达的是同一意图：POSIX 置 FD_CLOEXEC，Windows 清掉
+         *          HANDLE_FLAG_INHERIT（Winsock 句柄默认可继承）。建套接字时已带 SOCK_CLOEXEC 的通路
+         *          不必再调它——每次 accept 多两趟 fcntl 是要付的代价，只在没有创建期标志可用来表达时补。
+         * @param fileDescriptor 目标描述符
+         * @return true 标记成功
+         * @return false 标记失败（描述符无效或平台调用出错），调用方按「仍可能被子进程继承」处置
+         */
+        static bool markNonInheritable(int fileDescriptor) noexcept;
+
+        /**
          * @brief 从描述符读取数据
          * @param fileDescriptor 源描述符
          * @param buffer 接收缓冲区，调用方保证容量
@@ -73,7 +84,8 @@ namespace AsynGyanis::Platform
         /**
          * @brief 创建一对互相连通的非阻塞描述符
          * @details Linux 使用 socketpair(AF_UNIX)；Windows 无该接口，
-         *          改由 loopback TCP 监听-连接-接受三步构造等价描述符对。
+         *          改由 loopback TCP 监听-连接-接受三步构造等价描述符对。两端都保证不会随进程
+         *          创建传给子进程（唤醒通道被第三方持住会让父进程关不掉它）。
          * @param readDescriptor 输出参数，读端描述符
          * @param writeDescriptor 输出参数，写端描述符
          * @return true 创建成功，两个输出参数有效

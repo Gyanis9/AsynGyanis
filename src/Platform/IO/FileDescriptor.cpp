@@ -2,6 +2,7 @@
 
 #include "Platform/IO/Socket.h"
 
+#include <cstdint>
 #include <limits>
 
 namespace AsynGyanis::Platform
@@ -18,6 +19,23 @@ namespace AsynGyanis::Platform
             return false;
         }
         return ::fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+    }
+
+    bool FileDescriptor::markNonInheritable(const int fileDescriptor) noexcept
+    {
+        if (!isValid(fileDescriptor))
+        {
+            return false;
+        }
+#if ASYN_PLATFORM_WIN32
+        // Winsock 建出来的句柄默认带继承位，只能建好之后再取消（带 WSA_FLAG_NO_HANDLE_INHERIT 的
+        // WSASocketW 在老系统上会让整个创建失败，不划算走那条路）
+        return ::SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(fileDescriptor)),
+                                      HANDLE_FLAG_INHERIT, 0) != 0;
+#else
+        const int flags = ::fcntl(fileDescriptor, F_GETFD);
+        return flags >= 0 && ::fcntl(fileDescriptor, F_SETFD, flags | FD_CLOEXEC) == 0;
 #endif
     }
 
@@ -149,6 +167,10 @@ namespace AsynGyanis::Platform
             writeDescriptor = kInvalid;
             return false;
         }
+        // 这一对是 EventNotifier 与 TimerFileDescriptor 的底座：留着继承位，子进程就替父进程持着
+        // 唤醒通道的一端，父进程关掉自己的描述符也释放不掉那条通道
+        static_cast<void>(markNonInheritable(readDescriptor));
+        static_cast<void>(markNonInheritable(writeDescriptor));
         return true;
 #else
         // socketpair 会向该数组写入两个描述符

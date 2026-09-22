@@ -118,8 +118,8 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 接受一条传入连接
-         * @details Linux 使用 accept4 一次性置入非阻塞与 close-on-exec 标志；
-         *          Windows 无 accept4，接受成功后单独设置非阻塞。
+         * @details Linux 使用 accept4 一次性置入非阻塞与 close-on-exec 标志；Windows 无 accept4，
+         *          接受成功后单独设置非阻塞并取消句柄继承位——两侧交出的连接都不得随进程创建传下去。
          * @param listenDescriptor 监听描述符
          * @param address 输出参数，对端地址，可为 nullptr
          * @param addressLength 输入输出参数，address 缓冲区容量与实际写入长度

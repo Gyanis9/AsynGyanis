@@ -16,7 +16,14 @@
 #include "Platform/IO/FileDescriptor.h"
 
 #include <chrono>
+#include <cstdint>
 #include <thread>
+
+#if ASYN_PLATFORM_WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#endif
 
 namespace AsynGyanis::Platform::TestSupport
 {
@@ -50,5 +57,25 @@ namespace AsynGyanis::Platform::TestSupport
             std::this_thread::sleep_for(std::chrono::milliseconds(kpollIntervalMilliseconds));
         }
         return false;
+    }
+
+    /**
+     * @brief 判定描述符不会随进程创建传给子进程
+     * @details 两个平台的标志方向相反（POSIX 看 FD_CLOEXEC 是否置起，Windows 看 HANDLE_FLAG_INHERIT
+     *          是否被清），表达的却是同一条契约，因此收成一句断言而不是各写一份。
+     * @param fileDescriptor 待检查的描述符
+     * @return true 已标记为不可继承
+     * @return false 仍可被子进程继承，或查询本身失败
+     */
+    inline bool isNotInheritable(const int fileDescriptor) noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        DWORD flags = 0;
+        return ::GetHandleInformation(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(fileDescriptor)), &flags) != 0
+               && (flags & HANDLE_FLAG_INHERIT) == 0;
+#else
+        const int flags = ::fcntl(fileDescriptor, F_GETFD);
+        return flags >= 0 && (flags & FD_CLOEXEC) != 0;
+#endif
     }
 } // namespace AsynGyanis::Platform::TestSupport
