@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -917,6 +918,52 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->affectedRowCount(), 1) << "重连后同一条 SQL 用到了旧句柄上的游标";
         EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 7 AND name = 'after-reconnect'"),
                   std::optional<std::int64_t>(1));
+    }
+
+    /**
+     * @brief 验证非有限的浮点参数在绑定前就被拒绝，而不是被静默改写成 NULL 落库
+     *
+     * @details REAL 的存储格式装不下 NaN 与无穷大，sqlite3_bind_double 会把它们**改绑成 NULL**：
+     *          「写入一个数」于是变成「写入空值」，语句执行成功、无告警、读回来是 NULL。
+     *          被量的那一列刻意保持可空——若给它加 NOT NULL，旧实现会撞 constraint 失败而"看起来也在拒绝"，
+     *          本用例就失去了证伪能力。
+     */
+    TEST(SqliteConnection, NonFiniteDoubleParameterIsRejectedInsteadOfSilentlyBoundAsNull)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, value REAL)"), nullptr);
+
+        const std::array<double, 3> nonFiniteValues{std::numeric_limits<double>::quiet_NaN(),
+                                                    std::numeric_limits<double>::infinity(),
+                                                    -std::numeric_limits<double>::infinity()};
+        for (std::size_t valueIndex = 0; valueIndex < nonFiniteValues.size(); ++valueIndex)
+        {
+            const std::array<DatabaseValue, 2> parameters{static_cast<std::int64_t>(valueIndex), nonFiniteValues[valueIndex]};
+            EXPECT_EQ(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(parameters)), nullptr)
+                    << "第 " << valueIndex << " 个非有限取值被当成可写入的参数放过了";
+            // 文案要能定位到具体是第几个参数，并给出替代做法（否则调用方只能自己去猜是 NaN 还是 inf）
+            EXPECT_TRUE(containsText(connection.lastError(), "第 2 个参数")) << connection.lastError();
+            EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+        }
+
+        // 三条语句都没有留下任何行：留下「value IS NULL」的行正是这个缺陷的原始形态
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(0));
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE value IS NULL"), std::optional<std::int64_t>(0));
+
+        // 有限取值不受影响，且能原样读回（含边界上的极大有限值）
+        const std::array<DatabaseValue, 2> finiteParameters{std::int64_t{7}, 3.5};
+        ASSERT_NE(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(finiteParameters)), nullptr)
+                << connection.lastError();
+        const std::array<DatabaseValue, 2> extremeFiniteParameters{std::int64_t{8}, std::numeric_limits<double>::max()};
+        ASSERT_NE(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(extremeFiniteParameters)), nullptr)
+                << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> readBack =
+                executeRequired(connection, "SELECT value FROM t WHERE id = 7");
+        ASSERT_TRUE(readBack->next());
+        EXPECT_EQ(std::get<double>(readBack->getValue(0)), 3.5);
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE value IS NULL"), std::optional<std::int64_t>(0));
     }
 
 } // namespace AsynGyanis::Database

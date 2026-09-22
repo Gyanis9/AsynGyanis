@@ -7,6 +7,7 @@
 
 #include <sqlite3.h>
 
+#include <cmath>
 #include <limits>
 #include <string>
 
@@ -459,6 +460,15 @@ namespace AsynGyanis::Database
                 bindResult = sqlite3_bind_int64(statement, parameterIndex, *integerValue);
             } else if (const auto *realValue = std::get_if<double>(&parameterValue))
             {
+                // REAL 的存储格式装不下 NaN 与无穷大，sqlite3_bind_double 会把它们**改绑成 NULL**：
+                // 「写入一个数」于是静默变成「写入空值」，既不报错也读不回原值，只能在绑定前拦下
+                if (!std::isfinite(*realValue))
+                {
+                    m_lastError = "SQLite 驱动：第 " + std::to_string(index + 1U) + " 个参数是" +
+                                  (std::isnan(*realValue) ? " NaN" : "无穷大") +
+                                  "，而 REAL 列无法保存它（SQLite 会把它改写成 NULL）。请先挡掉非有限取值，或改用文本列承载并写明其表示法";
+                    return false;
+                }
                 bindResult = sqlite3_bind_double(statement, parameterIndex, *realValue);
             } else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
             {
