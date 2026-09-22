@@ -31,6 +31,12 @@
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/TableSchema.h"
+#include "Base/Log/Formatters/DefaultFormatter.h"
+#include "Base/Log/Formatters/JsonFormatter.h"
+#include "Base/Log/LogEvent.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/Sinks/AsyncSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Database/Sqlite/SqliteConnection.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/FileSender.h"
@@ -1720,6 +1726,86 @@ int main(int argumentCount, char **argumentValues)
         std::printf("  256 KiB 正文压缩后长度：gzip6=%zu gzip1=%zu zstd3=%zu brotli6=%zu\n",
                     gzipRatioReference->size(), gzipRatioLevel1->size(), zstdRatio->size(), brotliRatio->size());
     }
+
+    // ------------------------------------------------------------------
+    // 日志热路径：一条日志从「调用 log()」到「渲成一行人读文本」的成本。
+    // 事件循环线程上每请求至少一条，这条路的钱要和 h1 解析同量级才不打扰业务。
+    // ------------------------------------------------------------------
+    constexpr std::string_view kLogMessage = "request served in 12 ms, path=/api/orders, status=200";
+    const Base::LogEvent logEvent{Base::LogLevel::Info, std::chrono::system_clock::now(), "tid-bench",
+                                  Base::SourceLocation("microbench.cpp", 4711, "benchLogFunction"),
+                                  "bench.logger", std::string{kLogMessage}};
+
+    Base::DefaultFormatter defaultFormatter;
+    // 格式化器的两个出口：copy 那条造一个结果串（也是任何自定义格式化器走的路），
+    // into 那条直接续写调用方留了容量的缓冲。两者产出逐字相同，只比取堆的次数
+    std::string formatterLineBuffer;
+    formatterLineBuffer.reserve(256U);
+    measureCase(
+            "log-format-default-copy",
+            [&defaultFormatter, &logEvent]
+            {
+                return defaultFormatter.format(logEvent).size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "log-format-default-into",
+            [&defaultFormatter, &logEvent, &formatterLineBuffer]
+            {
+                formatterLineBuffer.clear();
+                defaultFormatter.formatInto(formatterLineBuffer, logEvent);
+                return formatterLineBuffer.size();
+            },
+            results, checksum, failureCount);
+    // JSON 版式仍走 nlohmann DOM（建对象 + 逐字段插入 + dump），留在这里当下一步的对照基数
+    Base::JsonFormatter jsonFormatter;
+    measureCase(
+            "log-format-json",
+            [&jsonFormatter, &logEvent]
+            {
+                return jsonFormatter.format(logEvent).size();
+            },
+            results, checksum, failureCount);
+
+    /**
+     * @brief 收下事件就丢的下游：让异步队列的读数只含「投递 + 消费循环」，不含真实 IO
+     */
+    struct DiscardingSink final : Base::LogSink
+    {
+        /**
+         * @brief 收下事件但不落地
+         * @details 重写 LogSink::write()：刻意什么都不做，把消费端成本压到零，
+         *          这样读数剩下的就是队列与唤醒本身。
+         * @param event 日志事件
+         */
+        void write(const Base::LogEvent &event) override
+        {
+            static_cast<void>(event);
+        }
+
+        /**
+         * @brief 无缓冲可刷，空实现
+         */
+        void flush() override
+        {
+        }
+    };
+
+    // 这一条量的是生产者的单跳成本：事件构造 + 搬运 + 抢一次队列锁 + 唤醒消费者。
+    // 消费线程同时在跑，所以它是「生产消费耦合下的单条成本」，不是纯入队耗时。
+    // 刻意不进基线：机器上另有负载时这条会摆到 2 倍（实测空载 549 ns、并发构建下中位数 935 ns），
+    // 拿它当门禁只会产出假红
+    Base::Logger benchLogger("bench.async");
+    benchLogger.addSink(std::make_unique<Base::AsyncSink>(std::make_unique<DiscardingSink>(), 4096U,
+                                                         Base::AsyncSink::OverflowPolicy::Block));
+    measureCase(
+            "log-async-enqueue",
+            [&benchLogger]
+            {
+                benchLogger.log(Base::LogLevel::Info, kLogMessage);
+                return 1U;
+            },
+            results, checksum, failureCount);
 
     printTable(results, failureCount, checksum);
     if (!jsonOutputPath.empty())

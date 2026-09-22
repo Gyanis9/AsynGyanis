@@ -606,6 +606,33 @@
         10208.2
       ],
       "runsMeasured": 8
+    },
+    "log-format-default-copy": {
+      "throughputPerSecond": 3003003,
+      "nanosecondsPerOperation": 333.0,
+      "observedNanosecondsRange": [
+        332.9,
+        344.2
+      ],
+      "runsMeasured": 3
+    },
+    "log-format-default-into": {
+      "throughputPerSecond": 3320053,
+      "nanosecondsPerOperation": 301.2,
+      "observedNanosecondsRange": [
+        293.7,
+        302.9
+      ],
+      "runsMeasured": 3
+    },
+    "log-format-json": {
+      "throughputPerSecond": 653851,
+      "nanosecondsPerOperation": 1529.4,
+      "observedNanosecondsRange": [
+        1524.3,
+        1530.9
+      ],
+      "runsMeasured": 3
     }
   }
 }
