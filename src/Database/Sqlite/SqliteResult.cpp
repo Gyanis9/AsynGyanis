@@ -34,12 +34,13 @@ namespace AsynGyanis::Database
         // 只要语句带返回列就先假设非空，随后由预扫描纠正
         m_isEmpty = false;
 
-        // 只有只读语句能被安全地跑两遍（预扫描一遍、next() 再遍历一遍）；
-        // 带写副作用的语句（例如 INSERT ... RETURNING）预扫描会把数据改两次，坚决不做，
-        // 此时按基类契约让 rowCount() 返回 0 表示「无法预先得知全部行」
+        // 只有只读语句能被安全地跑一遍（带写副作用的语句例如 INSERT ... RETURNING，
+        // 预扫描会把数据改两次，坚决不做）。只读语句本来就要为 rowCount() 整趟走完，
+        // 顺带把行值存进快照，之后遍历读快照即可，同一条查询不再执行第二遍；
+        // 超限的语句退回游标遍历，此时按基类契约 rowCount() 仍给精确值（计数与存值分开）
         if (sqlite3_stmt_readonly(m_statement) != 0)
         {
-            countRows();
+            prefetchRows();
         }
     }
 
@@ -63,6 +64,19 @@ namespace AsynGyanis::Database
         {
             m_hasCurrentRow = false;
             return false;
+        }
+
+        // 快照可用时整趟遍历已在构造期跑完：这里只移动下标，同一条查询不再执行第二遍
+        if (m_isMaterializedRowsValid)
+        {
+            m_hasCurrentRow = (m_materializedRowCursor < m_materializedRows.size());
+            // 快照模式下游标始终停在「已耗尽」之前的位置，取值只认下标，不读游标
+            m_isCurrentRowMaterialized = m_hasCurrentRow;
+            if (m_hasCurrentRow)
+            {
+                ++m_materializedRowCursor;
+            }
+            return m_hasCurrentRow;
         }
 
         // SQLite 的约定是：对已返回 SQLITE_DONE 的语句再 step 一次，会隐式 reset 并从头重跑查询。
@@ -147,6 +161,13 @@ namespace AsynGyanis::Database
             return std::monostate{};
         }
 
+        // 当前行来自快照：交出构造期就转好的值（同一份 convertValue 产出，类型与列序逐位一致），
+        // 不再回到游标——此时游标并不停在这一行上，读它会拿到错位的残值
+        if (m_isCurrentRowMaterialized)
+        {
+            return m_materializedRows[m_materializedRowCursor - 1][index];
+        }
+
         return convertValue(static_cast<int>(index));
     }
 
@@ -192,6 +213,9 @@ namespace AsynGyanis::Database
 
         // 游标退回首行之前，当前行随之失效：不清这个标志会让 getValue() 继续读已被释放的列值
         m_hasCurrentRow = false;
+        // 快照模式下重遍历就是把下标拨回去，游标一侧不需要再 reset（构造期已 reset 过，且此后不再读它）
+        m_materializedRowCursor       = 0;
+        m_isCurrentRowMaterialized    = false;
         // 解除耗尽闸门：基类契约要求 reset() 之后可以重新完整遍历一遍
         m_scanCompleted = false;
 
@@ -216,7 +240,7 @@ namespace AsynGyanis::Database
         return static_cast<std::int64_t>(m_affectedRowCount);
     }
 
-    void SqliteResult::countRows()
+    void SqliteResult::prefetchRows()
     {
         m_rowCount = 0;
         while (true)
@@ -225,6 +249,18 @@ namespace AsynGyanis::Database
             if (stepResult == SQLITE_ROW)
             {
                 ++m_rowCount;
+                if (m_rowCount <= kMaximumMaterializedRowCount)
+                {
+                    // 列读取接口只在 step 返回 SQLITE_ROW 期间有效，必须当场转成 owning 值再进下一轮
+                    std::vector<DatabaseValue> rowValues;
+                    rowValues.reserve(m_columnCount);
+                    for (size_t index = 0; index < m_columnCount; ++index)
+                    {
+                        rowValues.push_back(convertValue(static_cast<int>(index)));
+                    }
+                    m_materializedRows.push_back(std::move(rowValues));
+                }
+                // 超出容量的行只计数不存值：rowCount() 仍要精确，而内存上界由这个上限保证
                 continue;
             }
 
@@ -243,12 +279,25 @@ namespace AsynGyanis::Database
 
         m_isEmpty = (m_rowCount == 0);
 
-        // 计数只是探路，必须把游标退回首行之前，next() 才能从第一行开始遍历；
-        // 若上一步已经记录了错误，就不用 reset 的结果覆盖它，保留更接近根因的文本
+        // 快照只有在「整趟遍历没出错、也没超过容量」时才可用：出错时游标状态不可信，
+        // 超容量时快照只是前 kMaximumMaterializedRowCount 行——两种情况都必须退回游标遍历，
+        // 否则调用方会读到一份不完整却被当成完整的结果集
+        m_isMaterializedRowsValid = (m_lastError.empty() && m_rowCount <= kMaximumMaterializedRowCount);
+        if (!m_isMaterializedRowsValid)
+        {
+            // swap 而不是 clear()：clear 只把 size 归零，容量与已分配的行值缓冲会一直占着，
+            // 而这条结果集之后走的是游标遍历，那份快照再也用不上
+            std::vector<std::vector<DatabaseValue> >().swap(m_materializedRows);
+        }
+
+        // 预扫描只是探路，必须把游标退回首行之前：快照可用时后续不再碰它，退回游标模式时
+        // next() 才能从第一行开始遍历；若上一步已经记录了错误，就不用 reset 的结果覆盖它，
+        // 保留更接近根因的文本
         const int resetResult = sqlite3_reset(m_statement);
         if (resetResult != SQLITE_OK && m_lastError.empty())
         {
             m_lastError = std::string("重置 SQLite 游标失败：") + sqlite3_errstr(resetResult);
+            m_isMaterializedRowsValid = false;
         }
     }
 

@@ -34,6 +34,10 @@ namespace AsynGyanis::Database
     class SqliteResult : public DatabaseResult
     {
     public:
+        /// 行值快照的行数上限：只读结果集不超过这个行数时整份存进内存（遍历因此不再执行第二遍），
+        /// 超过则退回游标遍历，以此保证「读一行就丢弃结果集」的用法不必为整表正文买单
+        static constexpr size_t kMaximumMaterializedRowCount = 256;
+
         /**
          * @brief 用已编译的预编译语句构造结果集
          * @details statement 为空表示「写操作的成功回执」，此时不建立游标，只快照连接级计数器。
@@ -58,7 +62,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 将游标推进到下一行
-         * @details 重写 DatabaseResult::next()：sqlite3_step 一次，只有 SQLITE_ROW 才算成功；
+         * @details 重写 DatabaseResult::next()：只读语句的行已在构造期预扫描并存进快照，这里只把下标
+         *          往前拨一格，不再执行语句；其余情况 sqlite3_step 一次，只有 SQLITE_ROW 才算成功。
          *          SQLITE_ERROR / SQLITE_BUSY 与游标耗尽都返回 false，按基类契约属只读路径、
          *          不改写 m_lastError，需要区分时请检查语句是否已被连接侧报错。其余与基类一致。
          * @return true 游标停在有效行上，可以读取列值
@@ -181,9 +186,13 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue convertValue(int index) const;
 
         /**
-         * @brief 预扫描只读语句以统计行数，结束后把游标复位
+         * @brief 预扫描只读语句：统计行数并顺带把行值收进快照，结束后把游标复位
+         * @details 只读语句本来就要为 rowCount() 整趟走一遍，这一步把看到的值一并存下，
+         *          之后 next()/getValue() 直接读快照，同一条查询不再执行第二遍。
+         *          行数上限之外的行只计数不存值，超限就丢掉快照退回游标遍历，
+         *          以免「读一行就丢弃结果集」的用法为整表正文买单。
          */
-        void countRows();
+        void prefetchRows();
 
         sqlite3_stmt *m_statement{nullptr};   ///< 预编译语句句柄，非空时由本对象负责 finalize
         sqlite3 *     m_database{nullptr};    ///< 所属连接的句柄，只读引用，不接管生命周期
@@ -194,6 +203,11 @@ namespace AsynGyanis::Database
         bool          m_hasCurrentRow{false}; ///< 游标当前是否停在有效行上，决定能否读取列值
         bool          m_scanCompleted{false}; ///< 游标是否已走到末尾；SQLite 会对已 DONE 的语句再次 step 而重跑查询，必须显式记住耗尽
         bool          m_isEmpty{true};        ///< 结果集是否为空（写回执恒为 true）
+        /// 预扫描顺带存下的行值；m_isMaterializedRowsValid 为真时 next()/getValue() 只读这里
+        std::vector<std::vector<DatabaseValue> > m_materializedRows;
+        bool m_isMaterializedRowsValid{false}; ///< 快照是否可用（未预扫描或行数超限则为假，退回游标遍历）
+        bool m_isCurrentRowMaterialized{false}; ///< 游标当前停的这一行是否来自快照（决定 getValue 走哪条路）
+        size_t m_materializedRowCursor{0};      ///< 快照模式下的下一次读取下标
     };
 
 } // namespace AsynGyanis::Database
