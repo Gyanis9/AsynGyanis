@@ -16,6 +16,34 @@ namespace AsynGyanis::Net
         constexpr std::size_t kCloseCodeByteLength = 2;
 
         /**
+         * @brief 作用域结束时把「有一帧在写」标记复位，异常路径也不例外
+         * @details 发送回调可以抛（写路径的框架异常正是从这里穿出的）：标记卡在 true 会让会话收尾
+         *          误判「业务还有一帧在写」，于是跳过本该补发的 Close 帧，对端只看到连接被直接结束。
+         */
+        class WriteInFlightScope
+        {
+        public:
+            /// 进入作用域即置位：构造点紧贴那次 co_await，不留无人看管的窗口
+            explicit WriteInFlightScope(bool &isWriteInFlightFlag) noexcept : m_flag(isWriteInFlightFlag)
+            {
+                m_flag = true;
+            }
+
+            WriteInFlightScope(const WriteInFlightScope &) = delete;
+
+            WriteInFlightScope &operator=(const WriteInFlightScope &) = delete;
+
+            /// 正常返回与异常展开都汇到这里复位
+            ~WriteInFlightScope()
+            {
+                m_flag = false;
+            }
+
+        private:
+            bool &m_flag;   ///< 被守护的标记本体，属于 peer 对象，活到会话收尾
+        };
+
+        /**
          * @brief 对端 Close 里的状态码是否合法（RFC 6455 §7.4.1）
          * @param closeCode 线上收到的状态码
          * @return true 合法：1000-1003、1007-1014、3000-4999
@@ -273,9 +301,8 @@ namespace AsynGyanis::Net
         const std::string frameBytes = encodeWebSocketFrame(opCode, payloadToSend, true, compressedPayload.has_value());
 
         // 置位「有一帧在写」：会话收尾据此避免把自己的 Close 插进这次写里（两条写路径的字节会互相穿插）
-        m_isWriteInFlight = true;
+        const WriteInFlightScope writeGuard(m_isWriteInFlight);
         const bool isSucceeded = co_await m_frameSender(frameBytes);
-        m_isWriteInFlight = false;
 
         if (!isSucceeded)
         {

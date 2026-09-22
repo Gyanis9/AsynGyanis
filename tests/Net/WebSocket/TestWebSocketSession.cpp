@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -981,6 +982,29 @@ namespace AsynGyanis::Net
         EXPECT_EQ(sentFrameCount, 1) << "本侧收口之后不得再写出任何帧";
         EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 0u)
                 << "本侧已收口的短路返回不记日志：否则调用方会把同一件事看成两次失败";
+    }
+
+    /**
+     * @brief 钉住：发送回调抛异常时「有一帧在写」标记必须复位
+     * @details 写路径的框架异常从那次 co_await 穿出，而会话收尾按这个标记决定要不要补发 Close 帧——
+     *          标记卡在 true 就等于「这条连接永远不会有关闭握手」，对端只看到连接被直接结束。
+     */
+    TEST(WebSocketPeerContract, ClearsWriteInFlightFlagWhenTheSenderThrows)
+    {
+        WebSocketPeer peer([](const std::string_view frameBytes) -> Core::Task<bool>
+        {
+            // 用运行时判据抛：直接 throw 后面还留着 co_return，会被 /W4 判成不可达代码（/WX 下是错误）
+            if (!frameBytes.empty())
+            {
+                throw std::runtime_error("假发送回调：写出时抛异常");
+            }
+            co_return true;
+        });
+
+        Core::Task<bool> textTask = peer.sendText("boom");
+        textTask.handle().resume();
+        EXPECT_THROW(static_cast<void>(textTask.await_resume()), std::runtime_error);
+        EXPECT_FALSE(peer.isWriteInFlight()) << "标记未随异常展开复位";
     }
 
     /**
