@@ -22,7 +22,9 @@ namespace AsynGyanis::Base
      *          logger 名为空时省略，Debug 构建追加 file、line、function，与 DefaultFormatter 保持一致。
      *          字符串中的 NUL 完整保留并转义，合法 UTF-8 原样写出，不膨胀成 `\uXXXX`。
      * @note 非法 UTF-8 拒绝输出并抛出 Base::Exception，不替换字节，以免日志内容静默变形。
-     * @note 无共享可变状态，可被多个 Sink 并发调用（见 LogFormatter 的约定）。
+     * @note 可变状态只有**线程局域**的一份复用字段对象（省掉每条日志重建五到八对键值的分配）：
+     *       不跨线程共享，因此仍可被多个 Sink 并发调用（见 LogFormatter 的约定）。
+     *       代价是每线程留着一份小对象与「历史上最长那条消息」的缓冲容量。
      * @see LogFormatter
      */
     class JsonFormatter : public LogFormatter

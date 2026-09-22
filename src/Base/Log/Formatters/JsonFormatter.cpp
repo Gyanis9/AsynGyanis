@@ -21,19 +21,63 @@ namespace AsynGyanis::Base
         constexpr std::size_t kJsonFrameOverheadBytes = 128U;
 
         /**
-         * @brief 按事件的字段表组装 JSON 对象
-         * @param event 日志事件
-         * @return nlohmann::json 待序列化的对象（键序由 nlohmann 的对象容器按字典序落定）
+         * @brief 本线程复用的字段对象
+         * @details 一条 JSON 行的键形状固定就是那五到八对，每条重新建要占掉整行分配里的大头
+         *          （实测一千行 16000 次）。留着复用的代价是每线程一份小对象，外加「历史上最长
+         *          的那条消息」的串缓冲不还给分配器——不随日志量增长，只随单条长度上界增长。
          */
-        nlohmann::json buildFields(const LogEvent &event)
+        nlohmann::json &reusableFields()
         {
+            static thread_local nlohmann::json fields = nlohmann::json::object();
+            return fields;
+        }
+
+        /**
+         * @brief 往复用对象上落一个字符串字段
+         * @details 槽位已是字符串时原地赋值，容量够用就不重新取堆（时间戳长度固定，日志器名、
+         *          线程 id 与消息在同一线程上反复取同一长度）；不是字符串（本线程第一次用这一项）
+         *          才整体替换成新的值。
+         * @param fields 复用的字段对象
+         * @param fieldName 键名
+         * @param value 字段文本
+         */
+        void assignField(nlohmann::json &fields, const char *fieldName, const std::string_view value)
+        {
+            nlohmann::json &slot = fields[fieldName];
+            if (slot.is_string())
+            {
+                slot.get_ref<std::string &>() = value;
+                return;
+            }
+            slot = value;
+        }
+
+        /**
+         * @brief 摘掉这一条不该出现的可选键
+         * @details 复用对象意味着上一条的键会留在原地；可选键必须显式摘除，否则会出现
+         *          「根日志器的行里带着上一个 logger 的名字」这类串味。
+         * @param fields 复用的字段对象
+         * @param fieldName 待摘除的键名
+         */
+        void removeField(nlohmann::json &fields, const char *fieldName)
+        {
+            static_cast<void>(fields.erase(fieldName));
+        }
+
+        /**
+         * @brief 把事件字段填进复用的 JSON 对象
+         * @param event 日志事件
+         * @return nlohmann::json& 线程局域的复用对象（键序由 nlohmann 的对象容器按字典序落定）
+         */
+        nlohmann::json &fillFields(const LogEvent &event)
+        {
+            nlohmann::json &fields = reusableFields();
+
             // 时刻在本线程渲染成与文本版式同一口径的字符串：整条 JSON 本来就要落一份文本，
             // 这里的一次拷贝不参与事件产生线程的成本
             std::array<char, kTimestampTextBufferSize> timestampBuffer{};
             const std::string_view                     timestampText = formatTimestampText(timestampBuffer, event.timestamp);
-
-            nlohmann::json fields = nlohmann::json::object();
-            fields["timestamp"]   = std::string{timestampText};
+            assignField(fields, "timestamp", timestampText);
 
             // 等级名去掉尾部空格（文本版式靠 {:<5} 对齐，JSON 里只是噪声，会让按精确值取用的采集端踩空）
             std::string_view levelName{logLevelToString(event.level)};
@@ -41,28 +85,39 @@ namespace AsynGyanis::Base
             {
                 levelName.remove_suffix(1);
             }
-            fields["level"] = std::string(levelName);
+            assignField(fields, "level", levelName);
 
-            // 名字为空时省略该键，而不是每条日志带一个空字段
+            // 名字为空时省略该键，而不是每条日志带一个空字段——省略在复用对象上要落到 erase，
+            // 否则留着的是上一条的名字
             if (const std::string_view loggerName = event.loggerNameView(); !loggerName.empty())
             {
-                fields["logger"] = std::string(loggerName);
+                assignField(fields, "logger", loggerName);
+            } else
+            {
+                removeField(fields, "logger");
             }
 
-            fields["thread"]  = std::string(event.threadIdView());
-            fields["message"] = event.message;
+            assignField(fields, "thread", event.threadIdView());
+            assignField(fields, "message", event.message);
 
             // 带栈的事件：栈作为独立字段（多帧文本），换行由 JSON 序列化转义；解析在 Sink 写入线程上发生
             if (!event.stackTrace.empty())
             {
-                fields["stackTrace"] = formatStackTrace(event.stackTrace);
+                assignField(fields, "stackTrace", formatStackTrace(event.stackTrace));
+            } else
+            {
+                removeField(fields, "stackTrace");
             }
 
 #ifdef ASYN_DEBUG
             // 源码位置只在 Debug 出现，与文本格式化器同一口径
-            fields["file"]     = std::string(event.location.shortFileName());
-            fields["line"]     = static_cast<std::int64_t>(event.location.line);
-            fields["function"] = std::string(event.location.functionName != nullptr ? event.location.functionName : "");
+            assignField(fields, "file", event.location.shortFileName());
+            fields["line"] = static_cast<std::int64_t>(event.location.line);
+            assignField(fields,
+                        "function",
+                        event.location.functionName != nullptr ? std::string_view(event.location.functionName) : std::string_view());
+#else
+            // Release 里没有这三个键；复用的对象也不会有（同一进程内 #ifdef 的形态是常量）
 #endif
             return fields;
         }
@@ -88,8 +143,8 @@ namespace AsynGyanis::Base
 
     void JsonFormatter::formatInto(std::string &out, const LogEvent &event)
     {
-        const nlohmann::json fields      = buildFields(event);
-        const std::size_t    enteredSize = out.size();
+        nlohmann::json &fields      = fillFields(event);
+        const std::size_t enteredSize = out.size();
         // 先按消息长度留一次容量：Sink 的行缓冲跨行留着不缩，稳态下这一段不碰堆；
         // 全新缓冲也只走这一次分配，而不是逐字符几何增长重分配七八次
         out.reserve(enteredSize + event.message.size() + kJsonFrameOverheadBytes);

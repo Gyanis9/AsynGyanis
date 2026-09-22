@@ -9,9 +9,9 @@
 //   · 消融对照——把同样的事件投进 std::queue<LogEvent>：一千次共 2007 次，每投一条多取一块
 //     136 字节的堆（std::deque 对超过 16 字节的元素按一块一元素分块）。这条读数就是
 //     AsyncSink 自己管槽位而不是直接用 std::queue 的依据。
-//   · JSON 版式一行：23 次 / 1838 字节（文本版式同一条事件 1 次 / 112 字节）。拆形：只 dump 一个
-//     建好的对象 7 次 / 990 字节，摊进留容量的缓冲 18 次 / 1408 字节——剩下的十六次都在「建 DOM」，
-//     那一段的读数就是「要不要手写发射器」的判断依据。
+//   · JSON 版式一行：改前 23 次 / 1838 字节；版式两处改完之后是 Sink 通道 2 次 / 560 字节、
+//     独立 format() 出口 3 次 / 736 字节（文本版式同一条事件 1 次 / 112 字节）。拆形读数在下面
+//     三条里：整条 format()、只 dump 一个建好的对象（7 次 / 990 字节）、摊进留容量的缓冲。
 // 分配判据只在 Release 下钉死：Debug 的 STL 迭代器调试代理会给每个容器多挂一块代理，
 // 读数被实现细节放大一个量级，钉住它等于把判据交给编译器实现。
 
@@ -429,10 +429,10 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 一条 JSON 行的分配读数：建 DOM、序列化、写进留容量的缓冲各占几块
-     * @details JSON 版式是文本版的好几倍，而手写发射器要逐字对上 nlohmann 的转义与键序才不破字节兼容，
-     *          动手前得先把「每行碰几次堆」量成读数而不是估的「约 20 次」。三个形状：整条 `format()`、
-     *          只把建好的对象 `dump()` 出来（拆出序列化那一半）、摊进一条跨行留着容量的缓冲（Sink 实际
-     *          走的通道）。文本格式化器的同一条事件当底线。
+     * @details 三个形状：整条 `format()`、只把建好的对象 `dump()` 出来（拆出序列化那一半）、
+     *          摊进一条跨行留着容量的缓冲（Sink 实际走的通道）。文本格式化器的同一条事件当底线。
+     *          「序列化」与「摊进复用缓冲」两项的差就是输出串的增长，落在留容量的缓冲上应当为零；
+     *          剩下的读数就是建字段对象的成本——上限按这两条钉，Release 之外只印不钉。
      */
     TEST(LogHotPathAllocations, JsonFormatterLineAllocationReading)
     {
@@ -489,6 +489,16 @@ namespace AsynGyanis::Base
         resetAllocationHistogram();
         const AllocationProfile intoProfile = measurePerOperation(formatIntoBufferOnce);
         EXPECT_GT(intoProfile.resultSum, kMeasurementIterations);
+
+#ifdef NDEBUG
+        // 摊进留容量缓冲的那一段应当几乎不碰堆：实测每行 2 次（序列化器自带的缩进缓冲一块，
+        // 加首行长容量那一次）。上限给到 3，退化回「每条现造一份输出串」的形状（实测 7 次）就会红
+        EXPECT_LE(intoProfile.totalAllocations, kMeasurementIterations * 3U)
+                << "摊进复用缓冲的这一段又开始每条取堆了";
+        // 独立出口同理：实测每行 3 次（新建串 + 一次长容量 + 序列化器），给到 5 留余量
+        EXPECT_LE(jsonProfile.totalAllocations, kMeasurementIterations * 5U)
+                << "JSON 版式又开始每条重建字段对象或输出串";
+#endif
 
         std::printf("json-line per-op=%llu total=%llu bytes=%llu (into-reused-buffer total=%llu bytes=%llu; dump-only total=%llu bytes=%llu; text-line total=%llu bytes=%llu)\n",
                     static_cast<unsigned long long>(jsonProfile.allocationsPerOperation),

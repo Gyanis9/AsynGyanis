@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
@@ -275,5 +276,48 @@ namespace AsynGyanis::Base
         const nlohmann::json withStack = nlohmann::json::parse(formatter.format(event));
         ASSERT_TRUE(withStack.contains("stackTrace"));
         EXPECT_FALSE(textField(withStack, "stackTrace").empty()) << "栈字段应带上解析后的帧文本";
+    }
+
+    /**
+     * @brief 可选键在相邻两条之间不串味：复用的字段对象必须把上一条留着的可选键摘掉
+     * @details 格式化器为省掉「每条重建全部键值」而复用一份线程局域对象，代价是可选键（logger、
+     *          stackTrace）必须由实现显式摘除——忘了摘的那一版会把上一条的名字带进根日志器的行里。
+     *          用例按「有名有栈 → 有名无栈 → 无名有栈 → 无名无栈」连着两轮，逐条断言键集合
+     *          恰好等于该条应有的那几个，并把键数逐项对上（多出来的一定是没摘掉的旧键）。
+     */
+    TEST(JsonFormatterTest, OptionalKeysDoNotLeakBetweenAlternatingLines)
+    {
+        LogEvent withNameAndStack = makeEvent("有名有栈", "leak_check_logger");
+        withNameAndStack.stackTrace = captureStackTrace();
+        LogEvent withStackNoName  = makeEvent("无名有栈", "");
+        withStackNoName.stackTrace = withNameAndStack.stackTrace;
+        if (withNameAndStack.stackTrace.empty())
+        {
+            GTEST_SKIP() << "本构建的栈回溯拿不到帧，stackTrace 这一半的串味判据量不到";
+        }
+
+        const LogEvent withNameOnly = makeEvent("只有名字", "leak_check_logger");
+        const LogEvent plainRoot    = makeEvent("根 logger 无栈", "");
+
+        JsonFormatter                        formatter;
+        const std::vector<const LogEvent *>  round = {&withNameAndStack, &withNameOnly, &withStackNoName, &plainRoot};
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            for (const LogEvent *event: round)
+            {
+                const nlohmann::json parsed = nlohmann::json::parse(formatter.format(*event));
+
+                const bool hasLoggerName = !event->loggerNameView().empty();
+                EXPECT_EQ(parsed.contains("logger"), hasLoggerName) << "logger 键与事件的名单不一致（第 " << pass << " 轮）";
+                EXPECT_EQ(parsed.contains("stackTrace"), !event->stackTrace.empty()) << "stackTrace 键与事件是否带栈不一致";
+
+                std::size_t expectedKeyCount = 4U + (hasLoggerName ? 1U : 0U) + (event->stackTrace.empty() ? 0U : 1U);
+#ifdef ASYN_DEBUG
+                expectedKeyCount += 3U;
+#endif
+                EXPECT_EQ(parsed.size(), expectedKeyCount) << "键数对不上：多出来的必是没摘掉的上一条字段";
+                EXPECT_EQ(parsed.count("message"), 1U);
+            }
+        }
     }
 } // namespace AsynGyanis::Base
