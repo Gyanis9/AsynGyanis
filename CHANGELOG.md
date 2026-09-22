@@ -104,6 +104,13 @@
 
 ### 变更
 
+- **破坏性变更：`WorkerSupervisor::run()` 回报「这次编排算不算成了」**。签名由 `void` 变成
+  `[[nodiscard]] bool`：true 是按停止请求收口，false 是整池 worker 都因「起来就崩」被放弃而提前退出。
+  此前两种收场都不留痕迹，`echo_server --workers N` 在整池起不来时仍以退出码 0 结束，只看退出码的
+  进程管理器与脚本分不出来。迁移：不关心结果的调用点写 `static_cast<void>(supervisor.run());`，
+  关心的调用点拿返回值决定退出码。仓库内 5 处调用点已跟着改——`samples/main.cpp` 据此报「服务未运行」
+  并以 1 退出，`samples/core_worker` 的两段各断言一种收场，`TestWorkerSupervisor` 三条用例改成
+  对返回值断言。
 - **破坏性变更：`AsyncExecutor` 从 Database 迁到 Core**。头文件 `Database/Pool/AsyncExecutor.h` →
   `Core/Coroutine/AsyncExecutor.h`，类型 `AsynGyanis::Database::AsyncExecutor` →
   `AsynGyanis::Core::AsyncExecutor`；连带 `Queryable::useAsyncExecutor()` 的形参类型与
@@ -138,6 +145,15 @@
 
 ### 修复
 
+- **master 被强杀后多进程 worker 不再变成孤儿**：Linux 上 `Process::spawn()` 的子进程现在带着
+  `PR_SET_PDEATHSIG`（父进程一退出就收 SIGTERM，非 setuid 的 exec 之后仍然有效），并在设置前后各查一次
+  `getppid()` 补上「fork 到设标记之间父进程已退出」这段窗口。实测（容器，`--workers 3` 起服务后
+  `kill -9` master）：改动前 3 个 worker 仍活着、端口上仍挂着 3 个监听器，再没有谁管它们；改动后活进程
+  0 个、该端口监听 0 个（留下的只有等 pid 1 收尸的僵尸，那是容器 init 的行为，不是本层的）。
+  信号选 SIGTERM 而非 SIGKILL，worker 仍有机会把在途请求做完。
+- **析构兜底也会等强杀的 worker 被收尸**：`~WorkerSupervisor()` 原来 `forceTermination()` 之后直接释放
+  句柄，丢掉 pid 等于留下没人收的僵尸；现在与收尾路径共用同一段有界等待
+  （`waitForForcedTerminationsToLand()`），两处不再各写一份轮询。
 - **共用一个 UDP 端口的多个监听器不再只有最后一个收得到报文**：`DatagramSocket::bindTo()` 原先只设
   SO_REUSEADDR，内核让每个监听器都「绑定成功」，却把全部报文交给最后绑上的那一个——`--workers 3 --h3`
   时前两个 worker 一句错误都不报、一条报文也收不到（容器内核实测 24 条流的分布是 0/0/24，补上
