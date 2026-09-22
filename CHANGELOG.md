@@ -194,6 +194,20 @@
   只有 TSan 看得见（本机 WSL2 内核上 TSan 起不来，已实测确认），新用例
   `ConcurrentEnableAndDisableHotReloadEndsInOneConsistentState` 钉的是「终态一致、关掉后还能再开起来」
   这一下界，跨线程证据要由 CI 的 TSan 作业提供。
+- **Platform：关闭一条监视不再可能把调用线程永久钉住**。`closeEntry()` 取消未完成的重叠读之后，
+  用 `GetOverlappedResult(bWait=TRUE)` 等它的完成包，那是无界等待；而本模块早已实测到「目录被改名
+  走开、之后不再往里写入时 `CancelIo` 不给完成」——两者相遇，调用 `stop()` 的线程就再也不回来。
+  表现在外是热重载的 `enableHotReload()`/`disableHotReload()` 在并发启停下卡几十秒（另一次实测里
+  ctest -j14 中同型形状跑了 562 秒），以及进程退出被同一处钉住。现在改为：`CancelIo` 之后有界等
+  该条目的事件（200 ms），再用 `bWait=FALSE` 取结果（这一句本身不阻塞）；超时就直接关句柄，
+  已取消的 IRP 交给内核在句柄回收时了结。宁可少拿一次完成包，也不把调用方的线程搭进去。
+- **Base：极深嵌套的配置文档改判加载失败，不再让进程当场倒下**。实测：一份两万多层的 JSON
+  （`{"k":{"k":…}}`）会让读取它的那个进程直接消失——nlohmann 的解析器自己是状态机，扛得住的是解析，
+  扛不住的是随后那个几万层 DOM 的递归析构，以及我们把嵌套结构摊平成点分键的那趟递归。现在 JSON 侧也
+  挂上深度闸门（挂在解析回调里，DOM 建到第 129 层就抛出），与 YAML 侧共用同一道上限
+  （`kMaximumDocumentDepth = 128`，原先只写着 YAML 一名，故连带把翻译单元内的异常类改名为
+  `DocumentConversionException`）。两条新用例各在同目录放一份层数正常的对照文件并断言它照常读入，
+  以免「拒绝」其实是「我造的文本本身不合法」；证伪就是撤掉闸门——JSON 那条会让测试进程直接消失。
 - **TLS 会话释放之后的收发不再把原因推给对端**：`close()` 会释放底层 SSL 对象，此后
   `handshake()`/`asyncReceive()`/`asyncSend()` 仍把空指针交给 OpenSSL。实测（临时摘掉闸门跑新用例）
   OpenSSL 3 不崩溃而是返回失败，错误队列里留下的是 `error:00000000:lib(0)::reason(0)` 这种没有内容的
@@ -780,6 +794,22 @@
   因此 `hasWork()` 仍报待办，循环下一趟带着 0 超时立刻接着取，不会丢也不会误判空闲去睡。
   回归用例 `SingleRunAllPassIsBoundedOnRemoteQueue` 一次攒三倍上限的投递，断言单趟不超过上限、
   剩余仍算待办、分趟最终一条不丢；换回改动前该用例转红（报「768 vs 256」）。
+- **线程池自动档按「本进程实际可用的核数」定容**：`IoContext()`/`ThreadPool()` 的线程数缺省取
+  `std::thread::hardware_concurrency()`，它只看机器——容器里 `--cpus` 走 CFS 配额、`--cpuset-cpus`
+  走许可核集合，两边它都不看。2 核配额的 Pod 上因此会起满宿主核数条事件循环，每条自带一份 epoll
+  与定时器描述符，多出来的那十几条既跑不到、又白占内存与文件描述符，还把上下文切换拉满。
+  新增 `Platform::CpuAffinity::recommendedWorkerCount()`：机器核数、许可核集合、cgroup 配额
+  （v2 的 `cpu.max` 与 v1 的 `cfs_quota_us`/`cfs_period_us`）三者取最小，下限 1；配额除不尽时
+  向上取整（1.5 核给 2 条、0.5 核给 1 条，绝不折成 0）。绑核路径本来就在读许可集合，两处口径一致了。
+  `AsyncExecutor`（压缩外派用的阻塞任务执行器）的自动档一起改：它的工作线程干的是纯 CPU 活，
+  按宿主核数起会在配额内把 CPU 从事件循环手里抢走，正好伤到外派压缩要保护的那一方。
+  实测（同一枚探针分别跑在不限与 `--cpus=2` 的容器里）：不限时 `hardware=20 / 许可=20 / 推荐=20`
+  （与旧行为一致，裸机与不受限容器没有任何变化）；`--cpus=2` 时 `hardware=20 / 许可=20 / 推荐=2`，
+  即旧写法要在 2 核额度上起 20 条循环，现在起 2 条。Windows 没有 cgroup，只按前两者收敛。
+  用例 `CoresFromCgroupQuotaRoundsUpAndTreatsUnlimitedAsNoConstraint` 钉折算表（含「不设限不得变成 1 核」
+  这一类把常态当故障的方向性错误），`RecommendedWorkerCountRespectsThisProcessQuotaAndAllowedSet`
+  由用例自己重读 cgroup 再算一遍当独立判据；`ThreadPool` 那条自动档用例的断言从
+  `== hardware_concurrency()` 改成「≥1 且 ≤许可集合」，依据就是受限环境下两者必须不等。
 
 ## [1.1.0] - 2026-09-16
 
