@@ -453,12 +453,11 @@ namespace AsynGyanis::Platform
         // 对照：子目录里的写入必须真的报上来，否则下面那条「没有新事件」是空转
         writeFileInto(controlDirectory, "control.yaml");
         const auto controlDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (recorder.eventCount() == 0 && std::chrono::steady_clock::now() < controlDeadline)
+        while (!recorder.sawFileNamed("control.yaml") && std::chrono::steady_clock::now() < controlDeadline)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         ASSERT_TRUE(recorder.sawFileNamed("control.yaml")) << "递归监视没挂到子目录上，本用例失去对照";
-        const std::size_t eventCountAfterControl = recorder.eventCount();
 
         EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string()));
 
@@ -468,9 +467,10 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         watcher->stop();
 
-        EXPECT_EQ(recorder.eventCount(), eventCountAfterControl)
+        // 判据只看「有没有报出这个文件名」，不比事件条数：控制步骤那一次写入会陆续补报
+        // （close/attrib 之类），拿条数作差就是在赌它已经报完
+        EXPECT_FALSE(recorder.sawFileNamed("should_be_ignored.yaml"))
                 << "撤销递归根之后，子目录那份活监视仍在派发回调";
-        EXPECT_FALSE(recorder.sawFileNamed("should_be_ignored.yaml")) << "被撤销的子树仍在上报变更";
     }
 
 #if ASYN_PLATFORM_LINUX
