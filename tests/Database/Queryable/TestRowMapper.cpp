@@ -10,6 +10,10 @@
 //   （写出同一串字节、读出同一串字节）；0x00..0xFF 全取值与内嵌 '\0' 往返无损；
 //   零长载荷是「有值且为空」而非 NULL；optional 包装双向可用；
 //   文本或整数落到二进制成员一律报错（列声明与成员声明不一致必须暴露，不能静默收下）
+// - bool 成员：只认 0/1 与布尔备选，2/-1 等整数一律拒绝（「非零即真」是静默改值）
+// - 浮点成员：整数只接受连续精确区间 ±2^digits 内的取值（越界会取整）；double 收窄进 float 时
+//   跨出 float 上下界要报错（会变成无穷大），而本就是 inf/NaN 的取值逐值保真予以接受；
+//   文本/布尔/二进制落到浮点成员一律拒绝
 // 这些形态在真机上难以稳定构造（后端私自改写的列类型、越界或带余文的数字文本、二进制成员）；整型「十进制文本」
 // 支路（引擎存得下、却给不出 int64 的取值只能以文本返回）也靠这里覆盖，真机侧由 MySQL 集成用例验证。
 
@@ -24,10 +28,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -43,6 +49,12 @@ namespace AsynGyanis::Database::Queryable
 
         /// 2^64 - 1：uint64 的上界，也是 MySQL BIGINT UNSIGNED 的上界
         constexpr std::uint64_t kMaximumUInt64 = std::numeric_limits<std::uint64_t>::max();
+
+        /// 2^53：double 能逐位精确表示的整数上界（再大就要取整成邻近的可表示值）
+        constexpr std::int64_t kTwoToTheFiftyThird = 9007199254740992LL;
+
+        /// 2^24：float 能逐位精确表示的整数上界
+        constexpr std::int64_t kTwoToTheTwentyFourth = 16777216LL;
 
         /**
          * @brief 以文本形态构造一个数据库值
@@ -62,6 +74,26 @@ namespace AsynGyanis::Database::Queryable
         DatabaseValue integerValue(const std::int64_t integerValue)
         {
             return DatabaseValue{integerValue};
+        }
+
+        /**
+         * @brief 以浮点形态构造一个数据库值（驱动只在列是 REAL 类存储时给出这一备选）
+         * @param realValue 列值
+         * @return DatabaseValue 承载该浮点数的统一值
+         */
+        DatabaseValue realValue(const double realValue)
+        {
+            return DatabaseValue{realValue};
+        }
+
+        /**
+         * @brief 以布尔形态构造一个数据库值
+         * @param booleanValue 列值
+         * @return DatabaseValue 承载该布尔值的统一值
+         */
+        DatabaseValue booleanValue(const bool booleanValue)
+        {
+            return DatabaseValue{booleanValue};
         }
 
     } // namespace
@@ -486,6 +518,121 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_THROW(throwMappingFailure(), DatabaseException);
         EXPECT_THROW(throwMappingFailure(), Base::Exception);
         EXPECT_THROW(throwMappingFailure(), std::runtime_error);
+    }
+
+    /**
+     * @brief 验证 bool 成员接受 0/1 整数与布尔备选，NULL 经 optional 映射成空
+     *
+     * @details SQLite 没有布尔存储类，布尔列一律以 INTEGER 的 0/1 落库，因此整数 0/1 必须能读回 bool。
+     */
+    TEST(RowMapperBool, AcceptsZeroAndOneAndTheBoolAlternative)
+    {
+        EXPECT_FALSE(Detail::convertDatabaseValue<bool>(integerValue(0), kColumnName));
+        EXPECT_TRUE(Detail::convertDatabaseValue<bool>(integerValue(1), kColumnName));
+        EXPECT_TRUE(Detail::convertDatabaseValue<bool>(booleanValue(true), kColumnName));
+        EXPECT_FALSE(Detail::convertDatabaseValue<bool>(booleanValue(false), kColumnName));
+
+        // 可空布尔列：NULL 是「没有值」而不是 false，必须落在空 optional 上
+        EXPECT_FALSE(Detail::convertDatabaseValue<std::optional<bool>>(DatabaseValue{}, kColumnName).has_value());
+        EXPECT_TRUE(Detail::convertDatabaseValue<std::optional<bool>>(integerValue(1), kColumnName).value_or(false));
+    }
+
+    /**
+     * @brief 验证 bool 成员拒绝 0/1 之外的整数，而不是按「非零即真」静默收下
+     *
+     * @details 取值 2/-1/7 塞进 bool 会静默变成 true：调用方拿到一个「看起来正常」的对象，
+     *          而真相是这一列根本不是布尔列（成员声明与列声明已经不符）。窄化整族一律要显式失败。
+     */
+    TEST(RowMapperBool, RejectsIntegersOutsideZeroAndOne)
+    {
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(2), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(7), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(-1), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(std::numeric_limits<std::int64_t>::min()), kColumnName)),
+                     RowMappingException);
+
+        // 文本形态同样拒绝：本方法只认布尔备选与 0/1 整数
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(textValue("1"), kColumnName)), RowMappingException);
+
+        // 错误文本要能定位到列并给出替代做法，否则调用方只能自己去猜
+        try
+        {
+            static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(7), kColumnName));
+            FAIL() << "7 映射为 bool 应当失败";
+        }
+        catch (const RowMappingException &failure)
+        {
+            EXPECT_NE(std::string_view{failure.what()}.find("big"), std::string_view::npos) << failure.what();
+            EXPECT_NE(std::string_view{failure.what()}.find("整型"), std::string_view::npos) << failure.what();
+        }
+    }
+
+    /**
+     * @brief 验证浮点成员接受能逐位精确表示的整数（含连续精确区间的两侧端点）
+     *
+     * @details 整数值的 REAL 列在 SQLite 里会回传 INTEGER 备选，因此这条支路必须存在；
+     *          端点取值 2^53（double）与 2^24（float）本身可精确表示，属于接受面。
+     */
+    TEST(RowMapperFloating, AcceptsIntegersUpToTheExactRepresentableBound)
+    {
+        EXPECT_DOUBLE_EQ(static_cast<double>(kTwoToTheFiftyThird), Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird), kColumnName));
+        EXPECT_DOUBLE_EQ(-static_cast<double>(kTwoToTheFiftyThird),
+                         Detail::convertDatabaseValue<double>(integerValue(-kTwoToTheFiftyThird), kColumnName));
+        EXPECT_FLOAT_EQ(static_cast<float>(kTwoToTheTwentyFourth),
+                        Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth), kColumnName));
+        EXPECT_DOUBLE_EQ(1.0, Detail::convertDatabaseValue<double>(integerValue(1), kColumnName));
+    }
+
+    /**
+     * @brief 验证浮点成员拒绝超出连续精确区间的整数，而不是静默取整
+     *
+     * @details 2^53+1 转成 double 会得到 2^53（浮点装不下那个奇数），2^24+1 转成 float 同理——
+     *          改写后它「是个数」但不再是那个数。整型一侧早已按同一口径拒绝越界，浮点一侧不能放宽。
+     */
+    TEST(RowMapperFloating, RejectsIntegersBeyondTheExactRepresentableBound)
+    {
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird + 1), kColumnName)),
+                     RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)),
+                     RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth + 1), kColumnName)),
+                     RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(-16777217), kColumnName)), RowMappingException);
+    }
+
+    /**
+     * @brief 验证 double 收窄进 float 时溢出被判失败，而原本就是无穷大/NaN 的取值逐值保真
+     *
+     * @details 1e300 转成 float 会得到 +inf——不是「精度差一点」而是换了一个数，必须拒绝；
+     *          inf/NaN 转成 float 仍是 inf/NaN，属于无损转换，予以接受（成员既然声明为 float
+     *          就要能读回引擎给出的无穷大）。尾数精度损失（3.14159… → 3.14159f）是声明 float 的既有取舍。
+     */
+    TEST(RowMapperFloating, RejectsFloatOverflowButKeepsInfiniteAndNotANumber)
+    {
+        EXPECT_FLOAT_EQ(3.4e38F, Detail::convertDatabaseValue<float>(realValue(3.4e38), kColumnName));
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(realValue(1e300), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(realValue(-1e300), kColumnName)), RowMappingException);
+        // double 成员没有这条上界问题：同一个取值原样收下
+        EXPECT_DOUBLE_EQ(1e300, Detail::convertDatabaseValue<double>(realValue(1e300), kColumnName));
+
+        const double infinity = std::numeric_limits<double>::infinity();
+        EXPECT_TRUE(std::isinf(Detail::convertDatabaseValue<float>(realValue(infinity), kColumnName)));
+        EXPECT_TRUE(std::isinf(Detail::convertDatabaseValue<double>(realValue(-infinity), kColumnName)));
+        EXPECT_TRUE(std::isnan(Detail::convertDatabaseValue<float>(realValue(std::numeric_limits<double>::quiet_NaN()), kColumnName)));
+    }
+
+    /**
+     * @brief 验证文本与二进制载荷不会为了「跑通」而被当成浮点收下
+     *
+     * @details 与整型一侧不同：浮点没有「引擎给不出该取值只能以文本返回」的必需支路，
+     *          文本落到浮点成员说明列声明与成员声明已经不符，一律按列类型错误报告。
+     */
+    TEST(RowMapperFloating, RejectsTextAndBinaryForFloatingMember)
+    {
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1.5"), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(booleanValue(true), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{BinaryBytes{0x01}}, kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{}, kColumnName)), RowMappingException);
     }
 
 } // namespace AsynGyanis::Database::Queryable

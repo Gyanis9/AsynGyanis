@@ -9,11 +9,13 @@
 // - ExecuteNonQueryDeletesMatchingRows
 // - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
 // - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
+// - DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
 // 断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入：
 // 含单引号与 "--" 的文本能原样查回、注入残留的表仍存在，证明没有拼接 SQL。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
+#include "Database/Common/DatabaseResult.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -66,6 +68,19 @@ namespace
     struct TypeMismatchRow
     {
         std::string id; ///< accounts.id 是 INTEGER，映射到 std::string 应当失败
+    };
+
+    /**
+     * @brief 撞名测试用结构体：两个成员声明了同一个列名
+     *
+     * @details 真实场景是 JOIN 两张都有 name 列的表、或 struct 改字段时漏改列名。结果集里出现两个
+     *          同名列时按名解析都指向同一列，两个成员会静默拿到同一个值——必须报错而不是照收。
+     */
+    struct DuplicatedColumnNameRow
+    {
+        std::int64_t id;         ///< 主键
+        std::string  firstName;  ///< 列名写成 "name"
+        std::string  secondName; ///< 列名同样写成 "name"，与上一个成员撞名
     };
 
     /**
@@ -162,6 +177,19 @@ struct AsynGyanis::Database::Queryable::TableSchema<TypeMismatchRow>
 };
 
 template<>
+struct AsynGyanis::Database::Queryable::TableSchema<DuplicatedColumnNameRow>
+{
+    // 两个成员写同一个列名：结果集里若有两个同名列，按名解析会让二者落到同一列
+    static constexpr std::string_view kTableName = "accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&DuplicatedColumnNameRow::id,         "id"),
+        Column(&DuplicatedColumnNameRow::firstName,  "name"),
+        Column(&DuplicatedColumnNameRow::secondName, "name"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
 struct AsynGyanis::Database::Queryable::TableSchema<SpacedIdentifierRow>
 {
     // 表名与列名一律含空格：只有把标识符整段引用起来，SQLite 才会把它们当成名字而不是语法
@@ -201,6 +229,7 @@ namespace
     using AsynGyanis::Database::Queryable::desc;
     using AsynGyanis::Database::Queryable::in;
     using AsynGyanis::Database::Queryable::like;
+    using AsynGyanis::Database::Queryable::mapResultRows;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
 
@@ -671,6 +700,33 @@ TEST_F(QueryableExecutionTest, MissingColumnThrowsReadableError)
 /**
  * @brief 验证列类型与成员类型不匹配时给出可读的中文错误
  */
+TEST_F(QueryableExecutionTest, DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn)
+{
+    insertSampleRows();
+
+    PooledConnection connection = m_pool->acquire();
+    ASSERT_TRUE(connection);
+    // 同一列选两次：驱动按名解析时两个 "name" 都落到第一个的下标（该契约见 TestSqliteResult 的
+    // DuplicateColumnNamesResolveToFirstIndex），因此结构体里第二个 std::string 成员会拿到前一列的数据
+    const std::unique_ptr<AsynGyanis::Database::DatabaseResult> result =
+            connection->execute("SELECT id, name, name FROM accounts ORDER BY id");
+    ASSERT_NE(result, nullptr) << connection->lastError();
+
+    try
+    {
+        static_cast<void>(mapResultRows<DuplicatedColumnNameRow>(*result));
+        FAIL() << "两个成员解析到了同一列，应当抛出异常而不是给出两份相同的值";
+    }
+    catch (const std::runtime_error &exception)
+    {
+        const std::string message = exception.what();
+        EXPECT_NE(message.find("都解析到结果集的第"), std::string::npos) << message;
+        EXPECT_NE(message.find("第 2 个与第 3 个成员"), std::string::npos) << message;
+        EXPECT_NE(message.find("同一个值"), std::string::npos) << message;
+        EXPECT_NE(message.find("行映射失败"), std::string::npos) << message;
+    }
+}
+
 TEST_F(QueryableExecutionTest, TypeMismatchThrowsReadableError)
 {
     insertSampleRows();

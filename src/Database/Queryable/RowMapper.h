@@ -20,6 +20,7 @@
 
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -120,6 +121,42 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 目标浮点成员的类型名，只用于错误文本里指明「收窄进哪一个类型」
+         * @tparam FloatingType 浮点成员类型
+         * @return std::string_view 该浮点类型的可读名字
+         */
+        template<typename FloatingType>
+        [[nodiscard]] constexpr std::string_view floatingTypeName() noexcept
+        {
+            if constexpr (std::is_same_v<FloatingType, float>)
+            {
+                return "float";
+            }
+            else if constexpr (std::is_same_v<FloatingType, double>)
+            {
+                return "double";
+            }
+            else
+            {
+                return "long double";
+            }
+        }
+
+        /**
+         * @brief 抛出带中文说明的整型→浮点取值错误（无损表示被破坏时使用）
+         * @param columnName 出错的列名
+         * @param expectedTypeName 目标浮点成员的类型名
+         * @param reasonText 说明这一取值为何不能被无损收窄
+         */
+        [[noreturn]] inline void throwFloatNarrowingError(const std::string_view columnName, const std::string_view expectedTypeName,
+                                                          const std::string &reasonText)
+        {
+            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 不能映射为 " +
+                                      std::string(expectedTypeName) + "：" + reasonText +
+                                      "。收窄会静默改变数值，请先把成员声明成能容纳该取值的类型（整型或 double）");
+        }
+
+        /**
          * @brief 把一段十进制整型文本严格解析成目标整型
          *
          * @details 引擎存得下、却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED
@@ -179,12 +216,13 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 把一个单元格的值转换成目标成员类型
          * @details 整型接受 std::int64_t 或严格十进制文本（引擎存得下却给不出 int64 的整数只能以文本
-         *          返回），越界即报错而不是取整、截断；bool 兼容 SQLite 以 0/1 整数表达布尔的做法。
+         *          返回），越界即报错而不是取整、截断。bool 只认 0 与 1；浮点只接受能无损表示的取值
+         *          （整数的连续精确区间是 ±2^digits，收窄到 float 时不得跨出其上下界）。
          * @tparam MemberType 目标成员类型（可为 std::optional 包装）
          * @param cellValue 结果集当前行的单元格值
          * @param columnName 列名，仅用于错误信息
          * @return MemberType 转换后的值
-         * @throws RowMappingException 类型不匹配、整型越界或 NULL 落到非 optional 成员
+         * @throws RowMappingException 类型不匹配、整型或浮点收窄会改变数值、NULL 落到非 optional 成员
          */
         template<typename MemberType>
         [[nodiscard]] MemberType convertDatabaseValue(const DatabaseValue &cellValue, const std::string_view columnName)
@@ -208,6 +246,14 @@ namespace AsynGyanis::Database::Queryable
                 // SQLite 没有布尔存储类，INTEGER 的 0/1 需要收窄成 bool
                 if (const auto *integerValue = std::get_if<std::int64_t>(&cellValue))
                 {
+                    // 只认 0 与 1：把 7 收成 true 等于替调用方认定「非零即真」，而整数列里出现 2
+                    // 通常意味着这一列压根不是布尔列（成员声明与列声明已经不符），必须在此暴露
+                    if (*integerValue != 0 && *integerValue != 1)
+                    {
+                        throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的整数值 " +
+                                                  std::to_string(*integerValue) +
+                                                  " 不是 0 或 1，无法映射为 bool。若该列确实存放多个取值，请把成员改成整型");
+                    }
                     return *integerValue != 0;
                 }
                 throwColumnTypeError(columnName, "bool", cellValue);
@@ -244,11 +290,30 @@ namespace AsynGyanis::Database::Queryable
             {
                 if (const auto *realValue = std::get_if<double>(&cellValue))
                 {
+                    // 目标类型装不下时会静默变成无穷大——那是另一个数，不是「精度差一点」，因此拒绝；
+                    // 原值本就是无穷大则逐值保真，予以接受。尾数精度损失属于「成员声明为 float」的既有取舍
+                    if constexpr (std::numeric_limits<BareType>::max() < std::numeric_limits<double>::max())
+                    {
+                        if (std::isfinite(*realValue) && std::abs(*realValue) > std::numeric_limits<BareType>::max())
+                        {
+                            throwFloatNarrowingError(columnName, floatingTypeName<BareType>(),
+                                                     "取值 " + std::to_string(*realValue) + " 超出其上下界");
+                        }
+                    }
                     return static_cast<BareType>(*realValue);
                 }
                 // 整数值的 REAL 列在 SQLite 里可能回传 INTEGER，按数值语义接受
                 if (const auto *integerValue = std::get_if<std::int64_t>(&cellValue))
                 {
+                    // 只接受能逐位精确表示的整数：连续精确区间是 ±2^digits（float 为 2^24、double 为 2^53），
+                    // 越界的整数转成浮点会取整成邻近的可表示值，即静默改值
+                    constexpr std::int64_t exactIntegerLimit = std::int64_t{1} << std::numeric_limits<BareType>::digits;
+                    if (*integerValue > exactIntegerLimit || *integerValue < -exactIntegerLimit)
+                    {
+                        throwFloatNarrowingError(columnName, floatingTypeName<BareType>(),
+                                                 "整数值 " + std::to_string(*integerValue) + " 超出其能精确表示的整数范围 ±2^" +
+                                                 std::to_string(std::numeric_limits<BareType>::digits));
+                    }
                     return static_cast<BareType>(*integerValue);
                 }
                 throwColumnTypeError(columnName, "浮点（Double）", cellValue);
@@ -410,17 +475,48 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 一次性解析结构体全部列在结果集中的下标（列结构对整个结果集不变，供逐行复用）
+         * @details 同时校验各列解析到**不同**的下标：两个成员写同一个列名（或结果集里有两个同名列）
+         *          时，二者都会拿到同一列的值而无人报错，属于静默错值，必须在建表时就暴露。
          * @tparam T 结构体类型
          * @tparam IndexPositions kColumns 的下标序列
          * @param result 结果集
          * @return std::array<std::size_t, sizeof...(IndexPositions)> 与 kColumns 同序的下标表
-         * @throws RowMappingException 任一列不存在（按 kColumns 顺序报告第一个缺失列）
+         * @throws RowMappingException 任一列不存在（按 kColumns 顺序报告第一个缺失列），或两列解析到同一下标
          */
         template<typename T, std::size_t... IndexPositions>
         [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolveColumnIndices(const DatabaseResult &result,
                                                                                               std::index_sequence<IndexPositions...>)
         {
-            return { resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))... };
+            std::array<std::size_t, sizeof...(IndexPositions)> columnIndices = {
+                resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))...
+            };
+
+            // 列名表按 kColumns 同序取出，用于在撞名下标时报告是哪两个成员
+            const std::array<std::string_view, sizeof...(IndexPositions)> columnNames = {
+                std::get<IndexPositions>(TableSchema<T>::kColumns).columnName...
+            };
+
+            // 下标表至多几列，逐个两两比对即可，不值得为它建一张哈希表
+            for (std::size_t currentIndex = 1; currentIndex < columnIndices.size(); ++currentIndex)
+            {
+                for (std::size_t previousIndex = 0; previousIndex < currentIndex; ++previousIndex)
+                {
+                    if (columnIndices[currentIndex] != columnIndices[previousIndex])
+                    {
+                        continue;
+                    }
+                    throw RowMappingException("ORM 行映射失败：结构体的第 " + std::to_string(previousIndex + 1U) + " 个与第 " +
+                                              std::to_string(currentIndex + 1U) + " 个成员（列名 \"" +
+                                              std::string(columnNames[previousIndex]) + "\" 与 \"" +
+                                              std::string(columnNames[currentIndex]) + "\"，表 " +
+                                              std::string(TableSchema<T>::kTableName) + "）都解析到结果集的第 " +
+                                              std::to_string(columnIndices[currentIndex]) +
+                                              " 列，两个成员会静默拿到同一个值。请给其中一列改用不同的列名，" +
+                                              "或在 SELECT 列表里为该列起不同的别名");
+                }
+            }
+
+            return columnIndices;
         }
 
         /**
