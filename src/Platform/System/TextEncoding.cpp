@@ -100,10 +100,11 @@ namespace AsynGyanis::Platform
                 break;
             }
 
-            bool isSequenceValid = true;
-            for (std::size_t offset = 1; offset < sequenceSize; ++offset)
+            bool        isSequenceValid   = true;
+            std::size_t validPrefixSize   = 1;
+            for (; validPrefixSize < sequenceSize; ++validPrefixSize)
             {
-                const auto continuationByte = static_cast<std::uint8_t>(utf8Text[index + offset]);
+                const auto continuationByte = static_cast<std::uint8_t>(utf8Text[index + validPrefixSize]);
                 if ((continuationByte & 0xC0) != 0x80)
                 {
                     isSequenceValid = false;
@@ -112,7 +113,9 @@ namespace AsynGyanis::Platform
                 codePoint = (codePoint << 6) | (continuationByte & 0x3FU);
             }
 
-            index += sequenceSize;
+            // 推进量取「已确认为合法续字节的前缀」而不是声明长度：那个不合法的字节往往是下一个字符
+            // 的首字节，按整段跳过会把它和它身后的合法内容一起跳过，转换结果静默变短
+            index += validPrefixSize;
 
             // 拒绝过长编码、代理区码位与超出 Unicode 范围的码位
             const bool isOverlong  = (sequenceSize == 2 && codePoint < 0x80) || (sequenceSize == 3 && codePoint < 0x800) || (sequenceSize == 4 && codePoint < 0x10000);

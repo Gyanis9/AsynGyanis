@@ -27,6 +27,8 @@ namespace AsynGyanis::Platform
          * @brief 将 UTF-8 字符串转换为 UTF-16 宽字符串
          * @param utf8Text UTF-8 编码文本
          * @return std::wstring 转换结果，输入为空或转换失败时返回空串
+         * @note 非法字节以 U+FFFD 替换后在**下一个字节**重新同步：坏字节可能正是下一个字符的首字节，
+         *       按多字节序列的声明长度整段跳过会把后面的合法内容一起丢掉（路径会静默少一截）
          */
         static std::wstring toWideString(const std::string &utf8Text);
 
