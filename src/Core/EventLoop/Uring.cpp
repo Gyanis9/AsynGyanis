@@ -458,12 +458,6 @@ namespace AsynGyanis::Core
         return true;
     }
 
-    bool Uring::rearmFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
-    {
-        // POLL_ADD 本身就是一次性的：重新武装与修改掩码是同一件事
-        return modFileDescriptor(fileDescriptor, events, userData);
-    }
-
     // ---- 完成通知 -----------------------------------------------------------
 
     void Uring::handleCompletion(const std::uint64_t ticket, const std::int32_t result)

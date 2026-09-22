@@ -291,12 +291,6 @@ namespace AsynGyanis::Core
         return true;
     }
 
-    bool Iocp::rearmFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
-    {
-        // 完成端口没有「重新装配」这一步：每个探针天然是一次性的，语义与 mod 相同
-        return modFileDescriptor(fileDescriptor, events, userData);
-    }
-
     bool Iocp::delFileDescriptor(const int fileDescriptor)
     {
         const auto iterator = m_sockets.find(fileDescriptor);

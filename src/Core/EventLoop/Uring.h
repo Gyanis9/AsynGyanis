@@ -82,15 +82,6 @@ namespace AsynGyanis::Core
         bool delFileDescriptor(int fileDescriptor);
 
         /**
-         * @brief 重新武装（与 modFileDescriptor 同义：POLL_ADD 本就是一次性的）
-         * @param fileDescriptor 目标描述符
-         * @param events         关注的事件位
-         * @param userData       用户数据
-         * @return true 已武装；false 未注册或提交失败
-         */
-        bool rearmFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr);
-
-        /**
          * @brief 等待就绪事件（把完成通知翻译成 epoll_event）
          * @param timeoutMs 超时毫秒数，-1 表示无限等待，0 表示立即返回
          * @return 就绪事件视图；空表示超时/无事件

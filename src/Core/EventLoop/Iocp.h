@@ -99,15 +99,6 @@ namespace AsynGyanis::Core
         bool delFileDescriptor(int fileDescriptor);
 
         /**
-         * @brief 语义同 modFileDescriptor()：完成端口没有「重新装配」这一步，探针天然一次性
-         * @param fileDescriptor 目标描述符
-         * @param events 本次关注的事件位
-         * @param userData 新的用户数据
-         * @return true 该描述符已注册
-         */
-        bool rearmFileDescriptor(int fileDescriptor, uint32_t events, void *userData);
-
-        /**
          * @brief 取出完成通知并翻译成 epoll_event 列表
          * @param timeoutMs 超时毫秒数，-1 表示无限等待
          * @return std::span<epoll_event> 本次就绪的事件（可能为空）
