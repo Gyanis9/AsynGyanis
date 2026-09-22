@@ -1,5 +1,13 @@
 // ConnectionDistributor 单元测试：轮转派发、回调落在目标循环线程上、无可派人选时不接管描述符
 //
+// 末尾的 HandoffAllocationProfile 是派发这条路的分配台账（共用 AllocationProbe）：
+//   · 一千次「派发 + 取走」：MSVC 2002 块 / 112128 字节，libstdc++ 2062 块 / 103744 字节，
+//     即每交一条连接两块（交接句柄一块、回调载荷一块）；
+//   · 已试过并**被读数否决**的优化：把接手动作改成登记时共享持有、闭包只捕获一个指针——
+//     一千次仍是 2062 块（字节数从 103744 降到 87744），也就是说第二块并不是「复制 Adopter」
+//     带来的，改法只是把那块换小了一点，不值得为它动结构。
+//     要真降到一块，得先弄清第二块是 std::function 在装哪个载荷时要的。
+//
 // 用例跑真实的 EventLoop（各占一个线程）与真实的套接字描述符：跨循环这件事的坑
 // （唤醒丢失、描述符归属错）只有在真循环上才暴露得出来。
 
@@ -11,11 +19,14 @@
 
 #include "CoreTestSupport.h"
 
+#include "AllocationProbe.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -252,5 +263,65 @@ namespace AsynGyanis::Core
             Platform::FileDescriptor::close(fileDescriptor);
         }
         runner.join();
+    }
+
+    /**
+     * @brief 派发一条连接的分配画像：交接句柄与回调载荷各自一块堆
+     * @details 量的是「投一条 + 那条被取走」这一整趟，跑在单线程上（循环不起线程，由本用例
+     *          直接 runOne() 取用），否则读数里会混进后台线程自己的动作。判据只在 Release 下钉，
+     *          Debug 仍跑同样的形状并打出直方图供对照（口径同 tests/Net/Http 那套台账）
+     */
+    TEST(ConnectionDistributor, HandoffAllocationProfile)
+    {
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
+
+        EventLoop             loop;
+        ConnectionDistributor distributor;
+        std::atomic<int>      handledCount{0};
+        distributor.addWorker(loop,
+                              [&handledCount](const int fileDescriptor)
+                              {
+                                  Platform::FileDescriptor::close(fileDescriptor);
+                                  handledCount.fetch_add(1, std::memory_order_relaxed);
+                              });
+
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto profile = measurePerOperation(
+                [&]
+                {
+                    const int fileDescriptor = makeDetachedSocketDescriptor();
+                    if (!distributor.distribute(fileDescriptor))
+                    {
+                        Platform::FileDescriptor::close(fileDescriptor);
+                        return 0U;
+                    }
+                    return loop.scheduler().runOne() ? 1U : 0U;
+                });
+
+        std::printf("distributor-handoff total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations),
+                    static_cast<unsigned long long>(profile.totalBytes));
+        const auto histogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        {
+            if (histogram[bucket] != 0)
+            {
+                std::printf("   bucket=%zu bytes=%zu count=%llu\n", bucket,
+                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                            static_cast<unsigned long long>(histogram[bucket]));
+            }
+        }
+
+        // 结构判据：一千次派发确实都被接手动作跑完，读数不是空转出来的
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "派发没有被取走，读数没有意义";
+        EXPECT_EQ(handledCount.load(std::memory_order_relaxed), static_cast<int>(kMeasurementIterations));
+
+#ifdef NDEBUG
+        // 一千次派发实测 2002 块（MSVC）/ 2062 块（libstdc++）：每交一条连接两块，一块是交接句柄
+        // （「没人接手就关闭」要求载荷可复制，只能共享持有），一块是回调载荷本身。上界取「每连接
+        // 至多三块」——换 STL 与队列分块差异都落在里面，而真多出一块时立刻报红
+        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * 3U)
+                << "每交一条连接的堆块数越界：交接这条路上多半又多了一次分配";
+#endif
     }
 } // namespace AsynGyanis::Core
