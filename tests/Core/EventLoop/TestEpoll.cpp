@@ -7,6 +7,12 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <vector>
+
+#if !ASYN_PLATFORM_WIN32
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 namespace AsynGyanis::Core
 {
@@ -252,4 +258,65 @@ namespace AsynGyanis::Core
         }
         EXPECT_TRUE(foundSecondSentinel);
     }
+
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 连续两次 wait() 不得换掉落地缓冲：上一个视图必须还可读
+     * @details wait() 原先在「就绪数达到容量一半」时把缓冲翻倍。翻倍发生在 epoll_wait 返回之后、
+     *          交出视图之前，所以**当次**的视图总是有效的——真正被坑的是上一次的视图：
+     *          事件循环跨着 handleEvents()（它会同步恢复等待中的协程）持有它，那一趟里
+     *          再来一次 wait() 就会把旧缓冲释放掉，之后读 data.ptr 是悬垂读、照着它派发
+     *          就是拿垃圾地址当 IoWatcher 用。现在缓冲一次定容、永不改容量。
+     *          判据不需要 sanitizer：两次 wait() 的 data() 必须同址。用 dup 把一个可读
+     *          描述符复制成一片，是因为 epoll 按 fd 去重，同一个 fd 注册不了两次。
+     */
+    TEST(Epoll, RepeatedWaitKeepsTheSameLandingBuffer)
+    {
+        /// 至少要 1024 个就绪 fd 才能连着触发两次「达到容量一半」；留出 dup 之外的余量
+        constexpr int kRequiredDescriptors = 2200;
+
+        rlimit descriptorLimit{};
+        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) == 0 && descriptorLimit.rlim_cur < kRequiredDescriptors)
+        {
+            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur
+                         << " 个描述符，凑不出「连续两次推满半容量」的高负载现场";
+        }
+
+        TestEventFd trigger;
+        ASSERT_TRUE(Platform::FileDescriptor::isValid(trigger.fileDescriptor));
+        // 先写一次计数：Linux 上 dup 出来的描述符共享同一个 open file description，
+        // 因此这一写让全部副本同时可读，而只要不去读它就一直是可读的（水平触发会反复上报）
+        ASSERT_TRUE(trigger.trigger());
+
+        Epoll         backend;
+        std::vector<int> descriptors;
+        descriptors.reserve(1024);
+        for (int index = 0; index < 1024; ++index)
+        {
+            const int duplicated = ::dup(trigger.fileDescriptor);
+            ASSERT_GE(duplicated, 0) << "dup 到第 " << index << " 次就失败了，环境句柄数不够";
+            descriptors.push_back(duplicated);
+            ASSERT_TRUE(backend.addFileDescriptor(duplicated, EPOLLIN,
+                                                  reinterpret_cast<void *>(static_cast<std::uintptr_t>(index + 1U))));
+        }
+
+        const auto firstBatch = backend.wait(0);
+        ASSERT_EQ(firstBatch.size(), 1024U) << "第一次就该取满单轮上限，才有连续两次触发扩容的现场";
+        const auto secondBatch = backend.wait(0);
+        ASSERT_EQ(secondBatch.size(), 1024U) << "水平触发下这批描述符仍就绪，第二次也该取满";
+
+        // 同址 = 上一个视图没被换掉；旧实现在这里会因为第二次翻倍而拿到不同的基址
+        EXPECT_EQ(firstBatch.data(), secondBatch.data())
+                << "wait() 换了落地缓冲：上一次交出去的视图已经悬垂，事件循环跨 handleEvents() 持有它就是野指针读";
+
+        // 再回读一次上一个视图的内容（ASan 下这是最直接的悬垂读探针）
+        EXPECT_NE(firstBatch[0].data.ptr, nullptr) << "回读上一个视图的内容应当仍是本次注册的哨兵";
+
+        for (const int descriptor: descriptors)
+        {
+            static_cast<void>(backend.delFileDescriptor(descriptor));
+            Platform::FileDescriptor::close(descriptor);
+        }
+    }
+#endif
 } // namespace AsynGyanis::Core

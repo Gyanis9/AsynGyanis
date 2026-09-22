@@ -80,31 +80,6 @@ namespace AsynGyanis::Core
                          nullptr) == 0;
     }
 
-    bool Epoll::rearmFileDescriptor(const int fileDescriptor, const uint32_t events, void *const userData) const
-    {
-        epoll_event ev{};
-        ev.events   = events | EPOLLONESHOT;
-        ev.data.ptr = userData;
-        if (epoll_ctl(m_fileDescriptor, EPOLL_CTL_MOD,
-#ifdef _WIN32
-                      static_cast<SOCKET>(fileDescriptor),
-#else
-                      fileDescriptor,
-#endif
-                      &ev) == 0)
-            return true;
-        // 仅在文件描述符尚未注册时才回退到 ADD
-        if (errno == ENOENT)
-            return epoll_ctl(m_fileDescriptor, EPOLL_CTL_ADD,
-#ifdef _WIN32
-                             static_cast<SOCKET>(fileDescriptor),
-#else
-                             fileDescriptor,
-#endif
-                             &ev) == 0;
-        return false;
-    }
-
     std::span<epoll_event> Epoll::wait(const int timeoutMs)
     {
         const int n = epoll_wait(m_fileDescriptor, m_events.data(), static_cast<int>(m_events.size()), timeoutMs);
@@ -116,11 +91,11 @@ namespace AsynGyanis::Core
             // 也把 strerror_s / strerror_r 这类平台差异挡在 Core 之外
             throw Base::SystemException("epoll_wait 失败");
         }
-        // 防止高负载下丢失事件
-        if (static_cast<size_t>(n) >= m_events.size() / 2)
-        {
-            m_events.resize(m_events.size() * 2);
-        }
+        // 缓冲容量固定、不再按负载翻倍：翻倍会把上一次 wait() 交出去的那个视图变成悬垂指针，
+        // 而事件循环是**跨着 handleEvents()（它会同步恢复等待中的协程）持有那个视图**的——
+        // 一旦恢复出去的协程再碰一次 wait()，回来时就是在已释放的内存上取 data.ptr 并派发。
+        // 取满上限也不算丢事件：epoll 是水平触发，没取走的描述符仍在就绪名单里，
+        // 本轮循环末尾的又一次 wait() 会立刻把它们再报一遍，因此不需要为「怕丢」而扩容量
         return {m_events.data(), static_cast<size_t>(n)};
     }
 
