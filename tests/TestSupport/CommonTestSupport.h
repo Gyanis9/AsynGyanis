@@ -19,6 +19,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -225,6 +226,13 @@ namespace AsynGyanis::TestSupport
         calendarTime.tm_sec   = second;
         // 交还给 libc 判定夏令时：写死 0/1 会在有夏令时的时区折出偏移一小时的另一刻
         calendarTime.tm_isdst = -1;
+
+        // mktime 会顺手 tzset，而 glibc 的时区缓存是「换掉上一份内部缓冲」（多线程并发首入时
+        // 表现为 libc 内部一次 free 与写竞争，TSan 报在 libc 帧上）。POSIX 不承诺 tzset 线程安全，
+        // 所以这条只能由调用侧回避；生产代码不在这条路径上（PlatformTime 自己折日历并缓存），
+        // 故只在测试助手里串起来：一把进程级锁把各用例的折算排开，换来「TSan 零告警」这个判据可用
+        static std::mutex calendarFoldMutex;
+        const std::lock_guard<std::mutex> foldLock(calendarFoldMutex);
 
         return std::chrono::system_clock::from_time_t(std::mktime(&calendarTime))
                + std::chrono::milliseconds(millisecond);
