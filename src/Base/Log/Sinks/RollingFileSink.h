@@ -13,6 +13,7 @@
 #include "Base/Log/Sinks/LogSink.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -42,12 +43,22 @@ namespace AsynGyanis::Base
     {
     public:
         /**
+         * @brief 保留备份数的最大可用值
+         *
+         * @details 按大小滚动前要把已有备份整体顺移一位，代价与这个上限成正比（每个序号一次
+         *          存在性探测）。不设上限的话，一个填错的配置就能让每次滚动做出上千万次目录项
+         *          查询、且全程握着本 Sink 的锁——日志系统反过来把进程拖垮。构造函数自行钳制，
+         *          配置侧共用同一个常量，两处解析必须一致。
+         */
+        static constexpr std::size_t kMaximumBackupFileCount = 4096U;
+
+        /**
          * @brief 构造滚动文件 Sink
          * @param baseFilename 基础文件名
          * @param directory 日志目录
          * @param policy 滚动策略
          * @param maximumSizeBytes 按大小滚动时的阈值（字节）
-         * @param maximumBackupFiles 最大保留备份文件数
+         * @param maximumBackupFiles 最大保留备份文件数，超过 kMaximumBackupFileCount 时按该上限钳制
          */
         RollingFileSink(std::string           baseFilename,
                         std::filesystem::path directory,

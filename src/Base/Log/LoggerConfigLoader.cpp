@@ -11,6 +11,7 @@
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/System/ProcessInfo.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -213,24 +214,36 @@ namespace AsynGyanis::Base
 
             const int64_t configuredMaximumSizeMb = configValueAt<int64_t>(sinkConfiguration, "max_size_mb").value_or(10);
             // 边界钳制：0（或负数）会让「已写字节 >= 上限」恒真，退化成每写一行就滚动一次——
-            // 每次滚动都要重开文件并整目录扫描备份，日志系统会反过来把进程拖垮。这里钳到 1 MB 并给出诊断
-            if (configuredMaximumSizeMb < 1)
+            // 每次滚动都要重开文件并整目录扫描备份，日志系统会反过来把进程拖垮。这里钳到 1 MB 并给出诊断。
+            // 上界 1 TiB 挡的是另一半：MB 数乘 1024*1024 时若在 size_t 里回绕，会得到一个极小的
+            // 阈值，症状与「填 0」完全相同，而报出来的配置却大得离谱
+            constexpr int64_t    maximumSizeMbLimit = 1024LL * 1024LL;
+            const int64_t        clampedMaximumSizeMb
+                    = std::clamp(configuredMaximumSizeMb, int64_t{1}, maximumSizeMbLimit);
+            if (clampedMaximumSizeMb != configuredMaximumSizeMb)
             {
                 std::cerr << "LoggerConfig：rolling sink 的 max_size_mb=" << configuredMaximumSizeMb
-                        << " 非法（要求 >= 1），已钳制为 1" << '\n';
+                        << " 非法（要求 1~" << maximumSizeMbLimit << "），已钳制为 " << clampedMaximumSizeMb
+                        << "；单个日志文件按钳制后的大小滚动" << '\n';
             }
-            const size_t maximumSizeBytes = static_cast<size_t>(configuredMaximumSizeMb < 1 ? 1 : configuredMaximumSizeMb) * 1024 * 1024;
+            const size_t maximumSizeBytes = static_cast<size_t>(clampedMaximumSizeMb) * 1024 * 1024;
 
-            // 边界钳制：负数强转成 size_t 会成为 SIZE_MAX，等于「备份一个都不删」——
-            // 与「限制备份数量」的意图正好相反，日志目录会无界增长。与 max_size_mb、queue_size
-            // 两处同口径钳到合法下界并给出诊断（0 是合法值：不保留任何备份）
-            const int64_t configuredMaximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
-            if (configuredMaximumBackupCount < 0)
+            // 边界钳制到 [0, kMaximumBackupFileCount]，与 RollingFileSink 构造里的同一道夹取共用
+            // 一个常量（两处解析必须一致，否则诊断报的上限与实际生效的上限会各说一遍）。
+            // 下界：负数强转成 size_t 会成为 SIZE_MAX，等于「备份一个都不删」——与「限制备份数量」
+            // 的意图正好相反，日志目录无界增长。上界：这个值决定每次滚动要顺移多少个序号，
+            // 填成天文数字就是让滚动握着本 Sink 的锁做上千万次目录项查询，日志系统反过来拖垮进程。
+            // 0 是合法值：不保留任何备份
+            const int64_t     configuredMaximumBackupCount = configValueAt<int64_t>(sinkConfiguration, "max_backup").value_or(10);
+            constexpr int64_t maximumBackupLimit           = static_cast<int64_t>(RollingFileSink::kMaximumBackupFileCount);
+            const int64_t     clampedMaximumBackupCount    = std::clamp(configuredMaximumBackupCount, int64_t{0}, maximumBackupLimit);
+            if (clampedMaximumBackupCount != configuredMaximumBackupCount)
             {
                 std::cerr << "LoggerConfig：rolling sink 的 max_backup=" << configuredMaximumBackupCount
-                        << " 非法（要求 >= 0），已钳制为 0" << '\n';
+                        << " 非法（要求 0~" << maximumBackupLimit << "），已钳制为 " << clampedMaximumBackupCount
+                        << "；请检查该键是否多打了一位数字，日志保留份数按钳制后的值生效" << '\n';
             }
-            const size_t maximumBackupCount = static_cast<size_t>(configuredMaximumBackupCount < 0 ? 0 : configuredMaximumBackupCount);
+            const size_t maximumBackupCount = static_cast<size_t>(clampedMaximumBackupCount);
 
             sink = std::make_unique<RollingFileSink>(baseOptional.value(), directory, policy, maximumSizeBytes, maximumBackupCount);
         } else if (type == "async")

@@ -51,8 +51,10 @@ namespace AsynGyanis::Base
          */
         void rotateSizeBackups(const std::filesystem::path &directory, const std::string &namePart, const std::string &extensionPart, const std::size_t maximumBackupFiles)
         {
-            const int highestIndex = maximumBackupFiles == 0 ? 1 : static_cast<int>(maximumBackupFiles);
-            for (int index = highestIndex; index >= 1; --index)
+            // 序号一路用 std::size_t 走到底：转成 int 会在上限以上回绕成负数，于是整个顺移循环
+            // 一步不跑，后面的 rename 直接把 1 号备份盖掉——保留 N 份配置实际只剩 1 份
+            const std::size_t highestIndex = maximumBackupFiles == 0 ? 1U : maximumBackupFiles;
+            for (std::size_t index = highestIndex; index >= 1U; --index)
             {
                 std::error_code             errorCode;
                 const std::filesystem::path sourcePath = directory / std::format("{}.{}{}", namePart, index, extensionPart);
@@ -72,7 +74,10 @@ namespace AsynGyanis::Base
                                      const RollingPolicy   policy,
                                      const size_t          maximumSizeBytes,
                                      const size_t          maximumBackupFiles) :
-        m_baseFilename(std::move(baseFilename)), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes), m_maximumBackupFiles(maximumBackupFiles)
+        // 备份数上限自行钳制：它同时决定每次滚动要探测多少个序号，配置侧虽已夹过一道，
+        // 但本类是公开可构造的，不能把「不会被卡死」的责任推给调用方
+        m_baseFilename(std::move(baseFilename)), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes),
+        m_maximumBackupFiles(std::min(maximumBackupFiles, kMaximumBackupFileCount))
     {
         // error_code 重载：目录创建失败时不让 std::filesystem_error 从构造路径逃逸，
         // 随后的 FileSink 打开文件会失败并抛出带路径的中文异常，定位信息更准确

@@ -9,6 +9,7 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerConfigLoader.h"
 #include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/RollingFileSink.h"
 #include "BaseTestSupport.h"
 
 #include "TestHelpers.h"
@@ -382,6 +383,85 @@ namespace AsynGyanis::Base
         logAndFlush("root", LogLevel::Info, "clamped_backup_line");
         EXPECT_TRUE(contains(readTemporaryFile("rolling/clamped_backup.log"), "clamped_backup_line"))
                 << readTemporaryFile("rolling/clamped_backup.log");
+    }
+
+    /**
+     * @brief max_backup 超出上限时钳到上限并给出诊断
+     * @details 与下界那条对称。这个值决定每次滚动要顺移多少个序号（逐个查存在性），
+     *          天文数字等于让滚动握着本 Sink 的锁做上千万次目录项查询，日志系统反过来拖垮进程。
+     *          判据取 RollingFileSink 里的同一个常量，避免诊断文案与生效值各说一遍
+     */
+    TEST_F(LoggerConfigLoaderTest, OversizedMaximumBackupIsClampedWithDiagnostic)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      sinks:
+        - type: rolling_file
+          base_filename: capped_backup.log
+          directory: rolling
+          max_size_mb: 1
+          max_backup: 999999999999
+)");
+
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "max_backup=999999999999")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "已钳制为 " + std::to_string(RollingFileSink::kMaximumBackupFileCount)))
+                << diagnostic;
+
+        // 钳到上限之后仍应正常写出：非法取值不该让整个 sink 失效
+        logAndFlush("root", LogLevel::Info, "capped_backup_line");
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/capped_backup.log"), "capped_backup_line"))
+                << readTemporaryFile("rolling/capped_backup.log");
+    }
+
+    /**
+     * @brief max_size_mb 大到换算成字节会回绕时，必须钳住而不是退化成「每写一行就滚一次」
+     * @details 2^44 MiB 乘 1024*1024 在 size_t 里正好回绕成 0，于是「已写字节 >= 阈值」恒真，
+     *          症状与填 0 一模一样，而配置里报出来的数却大得离谱——这条挡的是另一半
+     */
+    TEST_F(LoggerConfigLoaderTest, MaximumSizeThatWouldWrapIsClampedInsteadOfRollingEveryLine)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      sinks:
+        - type: rolling_file
+          base_filename: capped_size.log
+          directory: rolling
+          max_size_mb: 17592186044416
+          max_backup: 5
+)");
+
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+        EXPECT_TRUE(contains(diagnostic, "max_size_mb=17592186044416")) << diagnostic;
+
+        logAndFlush("root", LogLevel::Info, "capped_size_line_one");
+        logAndFlush("root", LogLevel::Info, "capped_size_line_two");
+        logAndFlush("root", LogLevel::Info, "capped_size_line_three");
+
+        const std::string activeContent = readTemporaryFile("rolling/capped_size.log");
+        EXPECT_TRUE(contains(activeContent, "capped_size_line_one")) << activeContent;
+        EXPECT_TRUE(contains(activeContent, "capped_size_line_three")) << activeContent;
+        EXPECT_EQ(countMatchingNames(listFilesIn(temporaryPath("rolling")), std::regex(R"(capped_size\.\d+\.log)")), 0u)
+                << "阈值被换算回绕成了 0：每写一行就滚动一次";
     }
 
     TEST_F(LoggerConfigLoaderTest, EmptyConfigurationCreatesRootLoggerAtInfoLevel)

@@ -469,4 +469,32 @@ namespace AsynGyanis::Base
                 << "重开失败一次之后本 Sink 永久停产：故障撤掉后的日志再也没落过盘";
     }
 
+    /**
+     * @brief 备份数填成超出 int 的天文数字时，编号备份仍要逐级顺移而不是被盖掉
+     * @details 钉的是顺移序号的类型：它一度被转成 int，3e9 这类取值回绕成负数后整个顺移循环
+     *          一步不跑，随后的重命名直接覆盖 1 号备份——「保留 N 份」实际只剩 1 份，
+     *          且丢掉的是最旧那一份的历史内容
+     */
+    TEST(RollingFileSink, ShiftsEveryBackupWhenTheLimitWouldWrapAroundAsInt)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_WrapLimit");
+        const fs::path                        logDirectory = temporaryDirectory.path();
+
+        // 3e9 仍在 size_t 范围内，但按 int 解释是 -1294967296：顺移循环的起点直接小于 1
+        RollingFileSink sink("wrap.log", logDirectory, RollingPolicy::Size, 1, 3000000000ULL);
+
+        sink.write(makeEvent(LogLevel::Info, "first_generation_payload"));
+        sink.write(makeEvent(LogLevel::Info, "second_generation_payload"));
+        sink.write(makeEvent(LogLevel::Info, "third_generation_payload"));
+        sink.flush();
+
+        // 阈值 1 字节 ⇒ 每行都滚动：三代内容应分别落在 2 号备份、1 号备份与活动文件里
+        const fs::path secondBackup = logDirectory / "wrap.2.log";
+        const fs::path firstBackup  = logDirectory / "wrap.1.log";
+        ASSERT_TRUE(fs::exists(secondBackup)) << "顺移一步没跑：2 号备份根本没被生成";
+        EXPECT_NE(readWholeFile(secondBackup).find("first_generation_payload"), std::string::npos)
+                << "最旧的备份被就地覆盖：备份顺移没有跑到";
+        EXPECT_NE(readWholeFile(firstBackup).find("second_generation_payload"), std::string::npos);
+        EXPECT_NE(readWholeFile(logDirectory / "wrap.log").find("third_generation_payload"), std::string::npos);
+    }
 } // namespace AsynGyanis::Base
