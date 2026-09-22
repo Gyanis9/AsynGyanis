@@ -917,7 +917,9 @@ int main(int argumentCount, char **argumentValues)
             {
                 // 对照例：只装 10 条头部不查，用来把下面两例的共同本底开销扣掉
                 refillHeaderStore(singleLookupStore);
-                return singleLookupStore.fields().size();
+                // 存储交出的是「字节缓冲 + 偏移」，不再交出 owning 容器；这里只要求常数级的自检
+                //（非空即说明装进去过），逐条点数会把一趟遍历算进本底读数里
+                return singleLookupStore.empty() ? 0U : 1U;
             },
             results, checksum, failureCount);
 
@@ -1065,7 +1067,7 @@ int main(int argumentCount, char **argumentValues)
             [&longNameStore, &refillLongNameStore]
             {
                 refillLongNameStore(longNameStore);
-                return longNameStore.fields().size();
+                return longNameStore.empty() ? 0U : 1U;
             },
             results, checksum, failureCount);
 

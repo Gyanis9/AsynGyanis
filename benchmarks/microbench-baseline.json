@@ -31,7 +31,8 @@
     "eventloop-remote-post-roundtrip（2026-09-21 深夜新增，同一份二进制八跑）量一次「外部线程 → 事件循环」的跨线程投递加唤醒：中位 9.9 µs，观察区 9.7~10.2 µs（1.05 倍离散）。它是「把活外派给工作线程值不值」的尺子：一整跳要走两趟（投出去、恢复回来）约 20 µs，而 4 KiB 正文压一次 zstd 同批中位 8.1 µs、gzip 23.4 µs，据此把 CompressionOptions::offloadMinimumBodySize 定在 8 KiB（Middleware.h 与 CHANGELOG 引的是这一例换成有界等待自检之前那批三跑的 9.7 µs，两批差 2%，结论相同）。计时体含 promise 共享状态那一次堆分配——真实外派路径同样付这笔，故不剥到体外。它读的是操作系统唤醒路径的成本，改中间件不会影响这一项，因此当量级尺子用而不是回归判据。",
     "h2-data-frame-* 两例（2026-09-22 新增，16 KiB 载荷＝对端默认通告的 SETTINGS_MAX_FRAME_SIZE）是 h2 出站 DATA 帧两种排法的消融对照：旧写法先把载荷拼进一份「帧头+载荷」临时串再整段搬进待发缓冲，新写法直接拼进待发缓冲。同批三跑 270.4 → 92.1 ns/帧（省 66%，2.9 倍），差的那 178 ns 就是「一趟 16 KiB 拷贝 + 一次堆块取还」。与 h3-data-frame-direct 的 94.4 ns 相互印证（两例做同一件事：把 16 KiB 拷进目的地）。direct 一例挡的是 appendHttp2Frame 自身退化（例如有人把临时串搬回函数内部），生产调用点是否回到旧写法要由 TestHttp2Frame 的字节一致用例配合。",
     "h2-head-frame-* 两例（2026-09-22 新增）是 h2 一条响应的 HEADERS 帧排法的消融对照，载荷取「连接首帧上的响应头块」= 144 字节（用一台没对齐动态表的编码器编 7 个响应字段；拿已对齐的编码器只会得到 12 字节的纯索引块，短到落进短串内联、一次分配也不碰，量的就不是生产形状）。旧写法要把头块 substr 成 owning 片段、再攒进 body 串、再拼进临时帧串、最后搬进待发缓冲，实测 147.8 ns；新写法按视图直接拼进待发缓冲，19.8 ns（省 128 ns、86.6%）。via-temporary 一例里标志位刻意写成 RFC 的原始位值（0x1|0x4），使这一例独立于被测代码描述线上形态。",
-    "h2-head-table-owning-copy 在 2026-09-21 深夜重录下限（登记的单次耗时 314.7 → 492.5 ns，按已观察到的最慢跑登记）：这一例是纯分配器负载——每次构造 13 个 HpackHeaderField，其中 9 个值串各要取一次堆块，再加一张 vector。判据是实地对照：把同一段构造原样搬进单文件探针，在干净进程里同一份 /O2 只要 283.7 ns（五跑 283.7~287.9，比旧登记值还快），而在整进程基准里稳定读到 454.6~492.5 ns（九跑）。差的不是被测代码，是它前面那些用例留下的堆上下文（空闲块与段状态）。因此这一例只报得出量级回归，报不出 1.2 倍以内的漂移；它作为消融对照的结论（视图表 42 ns 对 owning 拷贝 460+ ns，一个数量级）不受影响。"
+    "h2-head-table-owning-copy 在 2026-09-21 深夜重录下限（登记的单次耗时 314.7 → 492.5 ns，按已观察到的最慢跑登记）：这一例是纯分配器负载——每次构造 13 个 HpackHeaderField，其中 9 个值串各要取一次堆块，再加一张 vector。判据是实地对照：把同一段构造原样搬进单文件探针，在干净进程里同一份 /O2 只要 283.7 ns（五跑 283.7~287.9，比旧登记值还快），而在整进程基准里稳定读到 454.6~492.5 ns（九跑）。差的不是被测代码，是它前面那些用例留下的堆上下文（空闲块与段状态）。因此这一例只报得出量级回归，报不出 1.2 倍以内的漂移；它作为消融对照的结论（视图表 42 ns 对 owning 拷贝 460+ ns，一个数量级）不受影响。",
+    "header-* 与 http1-parse-request、response-set-header-long-name 这十一条在 2026-09-22 按「头部名值收进一条字节缓冲」重录（改动前后的两枚二进制在同一循环里交替各跑三次，新二进制另跑九次取中位数与观察区间）：解析一条 h1 请求 727.5 → 510.6 ns（−29.7%），装 10 条头部 280.1 → 208.9 ns，四条读路径一起快了 8.6%~24.4%（读侧不再解两个 std::string，名字与取值在同一条缓冲里就地取段）。分配数读数由 HotPathAllocations 钉死：解析一条请求 6 → 2 次、装 10 条头部 4 → 0 次。header-* 共同的装机本底从 280~290 ns 变成 202~217 ns，减本底比较要用新数。响应头序列化两条未受影响（+0.4% / −0.4%，噪声内）——遍历出口的基址判定收在循环外一次，逐条不再有分支。另注：这一批九跑的离散只有 1.02~1.15 倍，但本机偶发进入 ~1.45 倍负载区（同一份二进制整批一起抬），单例报红要先与未改动的对照例一起看再下结论；旧登记值 1057.5 ns 就是这么录下的。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -269,13 +270,13 @@
       "runsMeasured": 3
     },
     "http1-parse-request": {
-      "throughputPerSecond": 945586,
-      "nanosecondsPerOperation": 1057.5,
+      "throughputPerSecond": 1958480,
+      "nanosecondsPerOperation": 510.6,
       "observedNanosecondsRange": [
-        1047.1,
-        1061.8
+        505.3,
+        514.9
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "http2-frame-decode": {
       "throughputPerSecond": 14675958,
@@ -323,49 +324,49 @@
       "runsMeasured": 3
     },
     "header-refill-only": {
-      "throughputPerSecond": 3530651,
-      "nanosecondsPerOperation": 283.2,
+      "throughputPerSecond": 4786979,
+      "nanosecondsPerOperation": 208.9,
       "observedNanosecondsRange": [
-        280.0,
-        285.5
+        202.4,
+        217.1
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "header-get-once": {
-      "throughputPerSecond": 3058747,
-      "nanosecondsPerOperation": 326.9,
+      "throughputPerSecond": 3611412,
+      "nanosecondsPerOperation": 276.9,
       "observedNanosecondsRange": [
-        324.8,
-        328.2
+        271.7,
+        286.3
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "header-get-five": {
-      "throughputPerSecond": 2566989,
-      "nanosecondsPerOperation": 389.6,
+      "throughputPerSecond": 2787844,
+      "nanosecondsPerOperation": 358.7,
       "observedNanosecondsRange": [
-        387.4,
-        395.3
+        351.0,
+        365.2
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "header-token-hit": {
-      "throughputPerSecond": 3301508,
-      "nanosecondsPerOperation": 302.9,
+      "throughputPerSecond": 4418912,
+      "nanosecondsPerOperation": 226.3,
       "observedNanosecondsRange": [
-        299.4,
-        303.8
+        218.5,
+        235.6
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "header-first-value": {
-      "throughputPerSecond": 3104170,
-      "nanosecondsPerOperation": 322.1,
+      "throughputPerSecond": 3657644,
+      "nanosecondsPerOperation": 273.4,
       "observedNanosecondsRange": [
-        319.0,
-        322.9
+        261.8,
+        277.9
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "response-head-serialize": {
       "throughputPerSecond": 5947806,
@@ -386,31 +387,31 @@
       "runsMeasured": 3
     },
     "header-refill-long-name": {
-      "throughputPerSecond": 2997407,
-      "nanosecondsPerOperation": 333.6,
+      "throughputPerSecond": 3850596,
+      "nanosecondsPerOperation": 259.7,
       "observedNanosecondsRange": [
-        332.0,
-        334.2
+        245.2,
+        274.1
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "header-get-long-name": {
-      "throughputPerSecond": 2747538,
-      "nanosecondsPerOperation": 364.0,
+      "throughputPerSecond": 3370407,
+      "nanosecondsPerOperation": 296.7,
       "observedNanosecondsRange": [
-        360.2,
-        366.9
+        277.2,
+        307.2
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "response-set-header-long-name": {
-      "throughputPerSecond": 32639132,
-      "nanosecondsPerOperation": 30.6,
+      "throughputPerSecond": 33898305,
+      "nanosecondsPerOperation": 29.5,
       "observedNanosecondsRange": [
-        30.2,
-        30.7
+        29.1,
+        29.7
       ],
-      "runsMeasured": 3
+      "runsMeasured": 9
     },
     "router-streaming-get": {
       "throughputPerSecond": 875369137,
@@ -503,22 +504,22 @@
       "runsMeasured": 3
     },
     "header-first-value-view": {
-      "throughputPerSecond": 3393310,
-      "nanosecondsPerOperation": 294.7,
+      "throughputPerSecond": 4589261,
+      "nanosecondsPerOperation": 217.9,
       "observedNanosecondsRange": [
-        291.8,
-        297.0
+        205.1,
+        238.2
       ],
-      "runsMeasured": 6
+      "runsMeasured": 9
     },
     "header-contains": {
-      "throughputPerSecond": 3364636,
-      "nanosecondsPerOperation": 297.2,
+      "throughputPerSecond": 4424778,
+      "nanosecondsPerOperation": 226.0,
       "observedNanosecondsRange": [
-        294.2,
-        298.8
+        217.9,
+        231.7
       ],
-      "runsMeasured": 6
+      "runsMeasured": 9
     },
     "eventloop-remote-post-roundtrip": {
       "throughputPerSecond": 101338,
