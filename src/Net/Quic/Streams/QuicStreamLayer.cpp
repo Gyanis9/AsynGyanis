@@ -311,7 +311,7 @@ namespace AsynGyanis::Net
         {
             stream.isFinalDelivered = true;
         }
-        m_deliveries.push_back(QuicStreamDelivery{streamId, std::move(payload), isFinal});
+        m_deliveries.pushBack(QuicStreamDelivery{streamId, std::move(payload), isFinal});
     }
 
     std::expected<void, QuicStreamViolation> QuicStreamLayer::onMaxDataFrame(const QuicMaxDataFrame &frame)
@@ -394,7 +394,7 @@ namespace AsynGyanis::Net
         stream.isReset = true;
         // 对端既然已经复位，欠着的停发请求就没有必要再发了（§3.5）
         stream.receiveStop.reset();
-        m_abortedStreams.push_back(frame.streamId);
+        m_abortedStreams.pushBack(frame.streamId);
         return {};
     }
 
@@ -428,7 +428,7 @@ namespace AsynGyanis::Net
             stream.finalOffset = stream.sentHighWater;
             stream.inFlight.clear();
         }
-        m_abortedStreams.push_back(frame.streamId);
+        m_abortedStreams.pushBack(frame.streamId);
         return {};
     }
 
@@ -856,13 +856,7 @@ namespace AsynGyanis::Net
 
     std::optional<QuicStreamDelivery> QuicStreamLayer::takeDelivery()
     {
-        if (m_deliveries.empty())
-        {
-            return std::nullopt;
-        }
-        std::optional<QuicStreamDelivery> delivery = std::move(m_deliveries.front());
-        m_deliveries.pop_front();
-        return delivery;
+        return m_deliveries.takeFront();
     }
 
     bool QuicStreamLayer::hasAbortedStreams() const noexcept
@@ -872,13 +866,7 @@ namespace AsynGyanis::Net
 
     std::optional<std::uint64_t> QuicStreamLayer::takeAbortedStream()
     {
-        if (m_abortedStreams.empty())
-        {
-            return std::nullopt;
-        }
-        const std::optional<std::uint64_t> streamId = m_abortedStreams.front();
-        m_abortedStreams.pop_front();
-        return streamId;
+        return m_abortedStreams.takeFront();
     }
 
     std::size_t QuicStreamLayer::trackedStreamCount() const noexcept

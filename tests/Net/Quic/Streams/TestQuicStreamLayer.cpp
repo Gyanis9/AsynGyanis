@@ -1287,6 +1287,51 @@ namespace AsynGyanis::Net
         EXPECT_EQ(layer.trackedStreamCount(), 0U) << "重发确认后仍不摘，就等于没修";
     }
 
+    /**
+     * @brief 交付队列在「取一个、再塞一个」交错之后仍严格按先入先出交出，一项不丢也不重
+     * @details 交付队列现在自己管读位置、读到过半才回收前面那段；摘除点正是最容易丢项或错序的地方，
+     *          所以要用足够多的项把几次回收跑出来，而不是只测一条交付
+     */
+    TEST(QuicStreamLayer, DeliversInOrderAcrossInterleavedPushAndTake)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        constexpr std::size_t firstBatchCount  = 40;
+        constexpr std::size_t interleavedCount = 20;
+
+        for (std::size_t index = 0; index < firstBatchCount; ++index)
+        {
+            const std::vector<std::uint8_t> oneByte{static_cast<std::uint8_t>(index)};
+            ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, index, oneByte)).has_value())
+                    << "第 " << index << " 段没被收下";
+        }
+
+        std::size_t expectedNextByte = 0;
+        for (std::size_t index = 0; index < interleavedCount; ++index)
+        {
+            const std::optional<QuicStreamDelivery> delivery = layer.takeDelivery();
+            ASSERT_TRUE(delivery.has_value()) << "交错第 " << index << " 次取交付就取空了";
+            ASSERT_FALSE(delivery->bytes.empty());
+            EXPECT_EQ(delivery->bytes.front(), expectedNextByte++) << "交错取到的顺序不对";
+
+            const std::vector<std::uint8_t> oneByte{static_cast<std::uint8_t>(firstBatchCount + index)};
+            ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, firstBatchCount + index, oneByte)).has_value());
+        }
+
+        // 有界轮询：游标一旦错乱，交付队列会永远取不空，用例应当红而不是挂住
+        for (std::size_t drainIndex = 0; drainIndex < firstBatchCount + interleavedCount && layer.hasDeliveries(); ++drainIndex)
+        {
+            const std::optional<QuicStreamDelivery> delivery = layer.takeDelivery();
+            if (!delivery.has_value())
+            {
+                break;
+            }
+            ASSERT_FALSE(delivery->bytes.empty());
+            EXPECT_EQ(delivery->bytes.front(), expectedNextByte++) << "收尾取到的顺序不对或漏了项";
+        }
+        EXPECT_EQ(expectedNextByte, firstBatchCount + interleavedCount) << "有交付没被取走，或被重复取走";
+        EXPECT_FALSE(layer.hasDeliveries()) << "取完不该还剩着队列非空";
+    }
+
     namespace
     {
         /**
@@ -1431,5 +1476,41 @@ namespace AsynGyanis::Net
             static_cast<void>(collect(layer, 1200));
             ASSERT_EQ(layer.trackedStreamCount(), 0U) << "第 " << requestIndex << " 轮之后仍有记录没被摘掉";
         }
+    }
+
+    /**
+     * @brief 被打断的流号也按先入先出交给上层，交错取放同样不丢项
+     * @details 取号队列同样自己管读位置、读到过半才回收前面那段；这条走一串复位，把回收那条路反复跑
+     *          出来，顺序错或漏一项都会在对照里露出来
+     */
+    TEST(QuicStreamLayer, AbortedStreamsComeOutInOrderAcrossInterleavedTakeAndPush)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        constexpr std::size_t abortedStreamCount = 30;
+
+        for (std::size_t index = 0; index < abortedStreamCount / 2; ++index)
+        {
+            static_cast<void>(feedStreamUpToPeerReset(layer, peerBidirectionalStreamIdOf(index), 3, 4));
+        }
+
+        std::size_t expectedNextIndex  = 0;
+        std::size_t nextNewStreamIndex = abortedStreamCount / 2;
+        // 有界轮询而不是 while(还有)：取放的游标一旦错乱，队列会永远取不空，用例应当红而不是挂住
+        for (std::size_t takeIndex = 0; takeIndex < abortedStreamCount && layer.hasAbortedStreams(); ++takeIndex)
+        {
+            const std::optional<std::uint64_t> abortedStreamId = layer.takeAbortedStream();
+            ASSERT_TRUE(abortedStreamId.has_value());
+            EXPECT_EQ(*abortedStreamId, peerBidirectionalStreamIdOf(expectedNextIndex)) << "取回的流号顺序不对";
+            ++expectedNextIndex;
+            // 取一个再塞一个新的：读位置因此反复过半，回收那条路才会被反复走到。塞的必须是还没用过
+            // 的流号，否则这条队列里就会出现同一序号的两条记录，比对的是重复而不是顺序
+            if (nextNewStreamIndex < abortedStreamCount)
+            {
+                static_cast<void>(feedStreamUpToPeerReset(layer, peerBidirectionalStreamIdOf(nextNewStreamIndex), 3, 4));
+                ++nextNewStreamIndex;
+            }
+        }
+        EXPECT_EQ(expectedNextIndex, abortedStreamCount) << "有一串被打断的流没被交给上层";
+        EXPECT_FALSE(layer.hasAbortedStreams()) << "取完不该还剩着队列非空";
     }
 } // namespace AsynGyanis::Net

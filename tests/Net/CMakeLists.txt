@@ -48,6 +48,7 @@ add_executable(TestNet
         Quic/Recovery/TestQuicCongestionControl.cpp
         Quic/TestQuicReassemblyBuffer.cpp
         Quic/Streams/TestQuicStreamLayer.cpp
+        Quic/Streams/TestQuicStreamLayerHotPathAllocations.cpp
         Http3/TestHttp3Error.cpp
         Http3/TestHttp3Frame.cpp
         Http3/TestHttp3HeaderValidation.cpp

@@ -29,6 +29,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -285,6 +286,60 @@ namespace AsynGyanis::Net
             bool windowUpdatePending{false};                         ///< 欠这条流一条 MAX_STREAM_DATA
         };
 
+        /**
+         * @brief 只在流层内部用的先进先出队列：一条都没有的时候不占任何堆块
+         * @details 这两条队列多数时刻是空的或只有一两项，而 std::deque 光默认构造就要一块索引表加
+         *          一个 512 字节的节点——流层是每连接一份，这笔固定开销直接乘在连接数上。取走只推进
+         *          读位置，读到过半才把前面那段一次性擦掉，因此既不逐条搬移也不为空队列留块。
+         *          需要 push_front 的那条（出站待发队列）仍用 std::deque，不在这里勉强
+         * @tparam ItemType 队列元素类型
+         */
+        template <typename ItemType>
+        class PendingQueue
+        {
+        public:
+            /**
+             * @brief 追加到队尾
+             * @param item 要入队的元素，按值收走后移交进队列
+             */
+            void pushBack(ItemType item)
+            {
+                m_items.push_back(std::move(item));
+            }
+
+            /// @return true 没有等着被取走的元素
+            [[nodiscard]] bool empty() const noexcept
+            {
+                return m_readPosition == m_items.size();
+            }
+
+            /**
+             * @brief 取走队首元素
+             * @return std::optional<ItemType> 队首的一份内容（从队列里移出来）；队列已空时返回空
+             */
+            [[nodiscard]] std::optional<ItemType> takeFront()
+            {
+                if (empty())
+                {
+                    return std::nullopt;
+                }
+                std::optional<ItemType> taken = std::move(m_items[m_readPosition]);
+                ++m_readPosition;
+                // 攒够一半才真正回收前面那段：每取一个就 erase(begin()) 等于每回把整张表往前搬一遍
+                if (m_readPosition * 2 >= m_items.size())
+                {
+                    m_items.erase(m_items.begin(),
+                                  m_items.begin() + static_cast<std::vector<ItemType>::difference_type>(m_readPosition));
+                    m_readPosition = 0;
+                }
+                return taken;
+            }
+
+        private:
+            std::vector<ItemType> m_items{};      ///< 元素本体，前 m_readPosition 个已被取走
+            std::size_t m_readPosition{0};        ///< 下一个待取元素的下标
+        };
+
         [[nodiscard]] OutgoingStream &outgoingStream(std::uint64_t streamId);
 
         /**
@@ -359,8 +414,8 @@ namespace AsynGyanis::Net
         /// 对端发起的流里「已作废」的流号边界，取的是同类型的第几条。两侧必须分开——一条请求的
         /// 入站侧往往先结清，共用一条边界会把同一条流的响应也挡掉
         std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries{}; ///< [收/发][双向/单向] 各一条边界
-        std::deque<QuicStreamDelivery> m_deliveries{};        ///< 等着交给上层的数据
-        std::deque<std::uint64_t> m_abortedStreams{};         ///< 被打断、等上层回收的流号
+        PendingQueue<QuicStreamDelivery> m_deliveries{};        ///< 等着交给上层的数据
+        PendingQueue<std::uint64_t> m_abortedStreams{};         ///< 被打断、等上层回收的流号
         std::size_t m_drainedSendByteCount{0};                ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
 
         std::uint64_t m_connectionReceivedBytes{0};           ///< 各入站流最大结束偏移之和，§4.1 的连接级账
