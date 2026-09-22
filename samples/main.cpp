@@ -453,7 +453,9 @@ int main(int argc, char **argv)
     }
 
     if (threads == 0)
-        threads = std::max(1u, std::min(4u, std::thread::hardware_concurrency()));
+        // 自动档按「本进程实际可用的核数」收口（容器 CPU 配额与许可核集合都算），再压到示例的 4 条
+        // 上限：与 IoContext/ThreadPool 的自动档同一口径，否则受限环境下这里会起满宿主核数条循环
+        threads = std::max(1u, std::min(4u, static_cast<unsigned>(Platform::CpuAffinity::recommendedWorkerCount())));
 
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
