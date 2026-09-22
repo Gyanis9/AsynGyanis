@@ -1,5 +1,6 @@
 #include "Core/Coroutine/AsyncExecutor.h"
 
+#include "Base/Log/LogMacros.h"
 #include "Platform/System/CpuAffinity.h"
 
 namespace AsynGyanis::Core
@@ -117,7 +118,23 @@ namespace AsynGyanis::Core
 
             // 用户代码在锁外执行：一次阻塞的数据库调用可以耗到数百毫秒，一次整块压缩也要数毫秒，
             // 若持着队列锁执行，其它工作线程会全部堵在 wait/push 上，等于退化成单线程
-            task();
+            //
+            // 兜住抛出：work 自己的异常已经在闭包里收进 state，能从 task() 逃出来的只有
+            // 「把恢复投回事件循环」那一步（scheduleRemote 要分配队列结点与 std::function）。
+            // 它穿到线程入口就是 std::terminate——整个进程连同其它在跑的任务和别的循环一起没。
+            // 记一条 ERROR 让本线程继续服务：代价是那一次提交的使用者会一直挂着
+            // （它的超时由调用方自己的请求超时兜），换来的是进程活着且现场有据可查
+            try
+            {
+                task();
+            } catch (const std::exception &taskError)
+            {
+                LOG_ERROR_EXCEPTION(taskError, "AsyncExecutor: 工作线程的任务闭包抛出，本次提交的协程不会被恢复：{}",
+                                    taskError.what());
+            } catch (...)
+            {
+                LOG_ERROR_FMT("AsyncExecutor: 工作线程的任务闭包抛出非标准异常，本次提交的协程不会被恢复");
+            }
         }
     }
 
