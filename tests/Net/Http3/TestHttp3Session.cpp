@@ -1890,6 +1890,66 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 一条还没收齐正文的流被摘掉时，已缓冲的那一段要立刻把全局额度还回来
+     * @details 这是一处跨连接的放大：客户端每条连接只发半截正文再取消，攒够预算就把整台服务器的
+     *          在途正文限额占死，之后所有带正文的请求都按 503 收口。收齐、派发、被拒三条路都测过，
+     *          「没收齐就被摘」这一路此前没人直测。摘记录走的是 `dropRequest()`——传输层报上来的
+     *          取消（`cancelStreamByPeer()`）只排个号，回收要等活的连接对象把通知送回来
+     */
+    TEST(Http3Session, ReturnsBudgetWhenStreamIsDroppedMidBody)
+    {
+        FakeStreamOpener opener;
+        const auto       budget = std::make_shared<HttpMemoryBudget>(100);
+
+        Http3Session session(std::ref(opener),
+                             [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); },
+                             Http3Session::StreamCrediter{}, nullptr, budget);
+
+        const std::vector<std::uint8_t> partialBody(40, 'z');
+        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST");
+        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload");
+        session.addRequestHeader(kFirstRequestStreamId, "content-length", "60");
+        session.addRequestBody(kFirstRequestStreamId, partialBody);
+        // 不调 finishRequest：正文只到了 40/60，这条请求还躺在待服务记录里
+
+        EXPECT_EQ(budget->reservedByteCount(), partialBody.size()) << "已缓冲的正文没占着额度，这条用例也就测不到归还";
+
+        session.dropRequest(kFirstRequestStreamId);
+        EXPECT_EQ(budget->reservedByteCount(), 0U)
+                << "被摘掉的流仍占着全局额度：半截正文加一次取消就能把限额占死，当前占用 " << budget->reservedByteCount();
+    }
+
+    /**
+     * @brief 已经收齐、还排在派发队列里的请求被摘掉时，账也要跟着走
+     * @details 收齐那一刻正文的额度从待服务记录搬进了派发记录，摘除点因此有两处；只还前一处
+     *          的话，「对端在派发之前就重置了流」这一路照样漏账
+     */
+    TEST(Http3Session, ReturnsBudgetWhenQueuedRequestIsDroppedBeforeDispatch)
+    {
+        FakeStreamOpener opener;
+        const auto       budget = std::make_shared<HttpMemoryBudget>(100);
+
+        Http3Session session(std::ref(opener),
+                             [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); },
+                             Http3Session::StreamCrediter{}, nullptr, budget);
+
+        const std::vector<std::uint8_t> fullBody(40, 'z');
+        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST");
+        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload");
+        session.addRequestHeader(kFirstRequestStreamId, "content-length", "40");
+        session.addRequestBody(kFirstRequestStreamId, fullBody);
+        session.finishRequest(kFirstRequestStreamId);
+        // 不 pump：请求停在派发队列里，额度已经搬到那条记录上
+
+        ASSERT_TRUE(session.hasOutstandingWork()) << "请求没排进派发队列，这条用例测不到排队那一处摘除点";
+        EXPECT_EQ(budget->reservedByteCount(), fullBody.size()) << "排队中的正文没占着额度，用例也就测不到归还";
+
+        session.dropRequest(kFirstRequestStreamId);
+        EXPECT_EQ(budget->reservedByteCount(), 0U)
+                << "排队记录被摘掉后仍占着 " << budget->reservedByteCount() << " 字节全局额度";
+    }
+
+    /**
      * @brief 钉住：流式处理器丢下的正文，摘记录前要把接收窗口还给对端
      * @details 承载层把 DATA 载荷的归还留给上层（`creditConsumedBytes` 只补帧开销、明确扣掉载荷），
      *          h2 侧由 `finishStreamingRequestBody()` 兑现；h3 的流式记录是被收尾步骤摘掉的，
