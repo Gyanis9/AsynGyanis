@@ -34,8 +34,10 @@ namespace AsynGyanis::Platform
          * @brief 用「同一瞬间两个 now() 的差值」把文件系统时间折成 Unix 秒
          * @details 独立实现一遍换算，用来核对封装给出的整秒值与其一致——静态文件的 ETag 与
          *          Last-Modified 都取自这一个数，取整方向不同就会让同一文件在改造前后得到不同验证器。
+         *          这里刻意用 `floor` 而不是 `duration_cast`：POSIX 的 `st_mtime` 就是向下取整的
+         *          （容器实测 -0.5 秒给出 -1），照抄截断口径等于把要验的那个缺陷也抄进来。
          * @param fileTime 底层给出的文件系统时间
-         * @return std::int64_t 自 Unix 纪元起的秒数，向零取整
+         * @return std::int64_t 自 Unix 纪元起的秒数，向下取整
          */
         std::int64_t unixSecondsOf(const std::filesystem::file_time_type fileTime)
         {
@@ -43,7 +45,7 @@ namespace AsynGyanis::Platform
             const std::chrono::system_clock::time_point systemNow = std::chrono::system_clock::now();
             const std::chrono::system_clock::time_point converted =
                     std::chrono::time_point_cast<std::chrono::system_clock::duration>(systemNow + (fileTime - fileNow));
-            return std::chrono::duration_cast<std::chrono::seconds>(converted.time_since_epoch()).count();
+            return std::chrono::floor<std::chrono::seconds>(converted.time_since_epoch()).count();
         }
     } // namespace
 
@@ -61,7 +63,7 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(info->lastWriteSeconds, unixSecondsOf(std::filesystem::last_write_time(targetPath)));
     }
 
-    TEST(FileBasicInfo, RoundsSubSecondModificationTimeTowardZero)
+    TEST(FileBasicInfo, RoundsSubSecondModificationTimeDownward)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_Rounding");
         const std::filesystem::path           targetPath = temporaryDirectory.path() / "timed.txt";
@@ -75,7 +77,46 @@ namespace AsynGyanis::Platform
 
         const std::optional<FileBasicInfo> info = queryFileBasicInfo(targetPath);
         ASSERT_TRUE(info.has_value());
-        EXPECT_EQ(info->lastWriteSeconds, expectedSeconds) << "亚秒部分必须向零舍入，与 std::chrono::duration_cast 同口径";
+        EXPECT_EQ(info->lastWriteSeconds, expectedSeconds) << "亚秒部分必须舍向更早的一秒，与 POSIX 侧 st_mtime 同口径";
+    }
+
+    /**
+     * @brief 钉住：早于 Unix 纪元的亚秒时间戳也要舍向更早的一秒，两平台给出同一个数
+     * @details 这一档正是「向零截断」与「向下取整」分岔的地方：-0.5 秒向零给 0、向下给 -1，而 POSIX 的
+     *          `st_mtime` 天生就是向下的（容器实测 `tv_sec=-1, tv_nsec=5e8`）。Windows 侧把 FILETIME
+     *          折成 Unix 秒时若沿用 C++ 整除，同一份文件的 ETag 与 Last-Modified 就会比 POSIX 晚一秒——
+     *          与 `PlatformTime` 里「UTC 分解不走 gmtime_s，免得两平台给出不同头」是同一条判据。
+     * @note 目标时刻用 `clock_cast` 换成本平台的文件系统时钟：两家的 `file_clock` 纪元并不一致
+     *       （MSVC 以 1601-01-01 为零点、libstdc++ 以 1970-01-01），写死任何一侧的刻度都会让另一侧
+     *       测不到东西，而把两个时钟的 `now()` 直接相减还会把刻度提升到纳秒、当场越过 int64 的上限。
+     */
+    TEST(FileBasicInfo, RoundsPreEpochSubSecondModificationTimeDownward)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_PreEpoch");
+        const std::filesystem::path           targetPath = temporaryDirectory.path() / "ancient.txt";
+        writeTemporaryFile(targetPath, "x");
+
+        // 「Unix 纪元之前半秒」，换算的理由见本用例的 @note
+        const std::filesystem::file_time_type beforeEpoch = std::chrono::clock_cast<
+                std::filesystem::file_time_type::clock>(
+                std::chrono::time_point<std::chrono::system_clock, std::chrono::milliseconds>{
+                        std::chrono::milliseconds{-500}});
+
+        std::error_code setWriteTimeError;
+        std::filesystem::last_write_time(targetPath, beforeEpoch, setWriteTimeError);
+        if (static_cast<bool>(setWriteTimeError) || std::filesystem::last_write_time(targetPath) != beforeEpoch)
+        {
+            // 文件系统认不下这个时刻（报错或把它截成 0）时这条就没测到分岔形状，如实跳过而不是假绿
+            GTEST_SKIP() << "本机文件系统没能原样存下早于 1970 的时间戳（"
+                         << setWriteTimeError.message() << "），这条用例无从判定";
+        }
+        const std::int64_t expectedSeconds = unixSecondsOf(std::filesystem::last_write_time(targetPath));
+
+        const std::optional<FileBasicInfo> info = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(info.has_value());
+        EXPECT_EQ(expectedSeconds, -1) << "折算法自身没落在预期档位，用例的判据无从成立";
+        EXPECT_EQ(info->lastWriteSeconds, expectedSeconds)
+                << "早于纪元的半秒被向零截断，同一文件在两平台上的验证器会差出一秒";
     }
 
     TEST(FileBasicInfo, ReportsDirectoryAsNotRegularFile)

@@ -2,6 +2,8 @@
 
 #include "Platform/Platform.h"
 
+#include <chrono>
+
 #if ASYN_PLATFORM_WIN32
 #include <windows.h>
 #else
@@ -16,24 +18,26 @@ namespace AsynGyanis::Platform
         /// FILETIME 的纪元差：从 1601-01-01 到 1970-01-01 的 100 纳秒刻度数
         constexpr std::int64_t kFileTimeEpochOffsetHundredNanoseconds = 116444736000000000LL;
 
-        /// 一秒里的 100 纳秒刻度数
-        constexpr std::int64_t kHundredNanosecondsPerSecond = 10000000LL;
+        /// FILETIME 的刻度单位：一秒的一千万分之一
+        using HundredNanosecondTicks = std::chrono::duration<std::int64_t, std::ratio<1, 10000000>>;
 
         /**
          * @brief 把 FILETIME 折成 Unix 秒
          * @param fileTime 底层给出的 100 纳秒刻度时间
-         * @return std::int64_t Unix 秒，向零取整，与 std::chrono::duration_cast<seconds> 一致
+         * @return std::int64_t Unix 秒，向下取整（向负无穷，而不是向零截断）
          */
         [[nodiscard]] std::int64_t fileTimeToUnixSeconds(const FILETIME &fileTime) noexcept
         {
             ULARGE_INTEGER ticks{};
             ticks.LowPart  = fileTime.dwLowDateTime;
             ticks.HighPart = fileTime.dwHighDateTime;
-            // 先做有符号减法再整除：1970 之前的时间戳（被显式设成早于纪元的那些文件）因此
-            // 走的是同一条舍入路径，不需要为它另开一个分支
+            // 先做有符号减法再向下取整：POSIX 侧的 st_mtime 天生就是向下取整的（容器实测 -0.5 秒给出
+            // -1，而 tv_nsec 恒非负），C++ 的整除却向零截断——同一份被显式设成早于 1970 的文件会在两
+            // 平台上差出一秒，而 ETag 与 Last-Modified 都取自这个数
             const std::int64_t hundredNanosecondsSinceEpoch =
                 static_cast<std::int64_t>(ticks.QuadPart) - kFileTimeEpochOffsetHundredNanoseconds;
-            return hundredNanosecondsSinceEpoch / kHundredNanosecondsPerSecond;
+            return std::chrono::floor<std::chrono::seconds>(HundredNanosecondTicks{hundredNanosecondsSinceEpoch})
+                    .count();
         }
     } // namespace
 
@@ -81,7 +85,8 @@ namespace AsynGyanis::Platform
         FileBasicInfo info;
         info.isRegularFile    = S_ISREG(status.st_mode) != 0;
         info.sizeBytes        = static_cast<std::uintmax_t>(status.st_size);
-        // 亚秒部分直接舍：ETag 与 Last-Modified 用的都是这一个整秒值，两处必须看到同一个数
+        // st_mtime 只到秒，而底层的 tv_nsec 恒非负，因此这个数天生就是向下取整的结果；Windows 侧按
+        // 同一口径折算。ETag 与 Last-Modified 用的都是这一个整秒值，两处必须看到同一个数
         info.lastWriteSeconds = static_cast<std::int64_t>(status.st_mtime);
         // inode 号会被回收：删掉再同名重建时，文件系统往往把刚释放的那个号原样发给新文件（容器内
         // overlayfs 实测两次同为 245657），所以光看 inode 认不出这种替换。再把设备号与 ctime 折进来：
