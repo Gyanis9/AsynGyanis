@@ -30,7 +30,6 @@
 #include <mutex>
 #include <stop_token>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -168,12 +167,13 @@ namespace AsynGyanis::Database
         // ========================================================================
 
         /**
-         * @brief 空闲连接条目，附带时间戳以便过期判定
+         * @brief 空闲连接条目，附带归还时刻以便空闲期过期判定
+         * @details 建立时刻不在这里：它跟着连接本身（DatabaseConnection::establishedAt()），
+         *          连接被借出期间池拿不到别的载体。
          */
         struct IdleEntry
         {
             std::unique_ptr<DatabaseConnection>   connection;   ///< 数据库连接
-            std::chrono::steady_clock::time_point createdTime;  ///< 连接创建时刻
             std::chrono::steady_clock::time_point returnedTime; ///< 归还时刻（空闲超时的起始点）
         };
 
@@ -292,11 +292,21 @@ namespace AsynGyanis::Database
         std::unique_ptr<DatabaseConnection> createNewConnection() noexcept;
 
         /**
-         * @brief 判断连接是否过期
+         * @brief 判断空闲条目是否过期（存活期或空闲期任一到达）
          * @param entry 空闲连接条目
          * @return true 已过期，应关闭丢弃
          */
         [[nodiscard]] bool isEntryExpired(const IdleEntry &entry) const noexcept;
+
+        /**
+         * @brief 判断一条连接相对 `now` 是否已超过最大存活期
+         * @details 取出路径与归还路径共用这一份判定，避免两处对「存活期到没到」给出不同口径。
+         * @param connection 待判的连接，不可为空
+         * @param now 判定时刻（一次调用里只取一次时钟，不在本函数内部读）
+         * @return true 已超过；`maximumLifetimeSeconds == 0` 视为「立即过期」，恒为 true
+         */
+        [[nodiscard]] bool isPastMaximumLifetime(const DatabaseConnection &connection,
+                                                 std::chrono::steady_clock::time_point now) const noexcept;
 
         /**
          * @brief 检查连接健康状态
@@ -327,10 +337,11 @@ namespace AsynGyanis::Database
         void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept;
 
         /**
-         * @brief 摘除创建时间记录并把连接关闭（释放 unique_ptr 即断开），不退还名额
+         * @brief 把连接关闭（释放 unique_ptr 即断开），不退还名额
          * @param connection 待关闭的连接；为空时空操作
          * @note 池析构与「丢弃后立刻重建」两条路径用本方法：它们的名额由后续动作接手
-         * @warning 内含一次 disconnect（会阻塞的系统调用），调用方不得持有 m_mutex
+         * @warning 内含一次 disconnect（会阻塞的系统调用）：除池自身析构（此刻已不再服务任何线程）
+         *          之外，调用方不得持有 m_mutex
          */
         void closeTrackedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
 
@@ -389,11 +400,6 @@ namespace AsynGyanis::Database
         // ----- 异步等待列表（受 m_asyncMutex 保护） -----
         mutable std::mutex           m_asyncMutex;   ///< 保护异步等待列表
         std::deque<AcquireAwaiter *> m_asyncWaiters; ///< 异步协程等待列表
-
-        // ----- 连接创建时间追踪 -----
-        // 用于在 returnConnection 时获知连接的原始创建时间，以正确设置 IdleEntry::createdTime
-        mutable std::mutex                                                              m_creationTimeMutex; ///< 保护创建时间映射表
-        std::unordered_map<DatabaseConnection *, std::chrono::steady_clock::time_point> m_creationTimeMap;   ///< 连接指针 → 创建时刻
 
         // ----- 后台线程 -----
         std::jthread m_healthThread; ///< 后台健康检查线程

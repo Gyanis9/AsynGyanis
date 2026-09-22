@@ -12,6 +12,7 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
 
+#include <chrono>
 #include <memory>
 #include <span>
 #include <string>
@@ -66,6 +67,29 @@ namespace AsynGyanis::Database
          * @return true 已连接
          */
         [[nodiscard]] virtual bool isConnected() const = 0;
+
+        /**
+         * @brief 本连接最近一次建立成功的时刻
+         * @details 连接池按它判「存活期是否已到」，因此这个时刻必须跟着连接本身走，而不是记在池
+         *          的某张表里：连接被借出、归还、再借出的整段途中池拿不到一个稳定的载体。
+         * @return std::chrono::steady_clock::time_point 由 markEstablishedAt() 定下的时刻；
+         *         从未被定过则为构造时刻
+         */
+        [[nodiscard]] std::chrono::steady_clock::time_point establishedAt() const noexcept
+        {
+            return m_establishedAt;
+        }
+
+        /**
+         * @brief 把「建立成功」的时刻记下来
+         * @details 由连接池在 connect() 返回 true 之后调用一次。重连要刷新它，否则一条反复握手失败
+         *          的连接会被按第一次成功的时刻判成过期。
+         * @param moment 建立成功的时刻（通常紧挨着 connect() 返回时取一次 steady_clock）
+         */
+        void markEstablishedAt(const std::chrono::steady_clock::time_point moment) noexcept
+        {
+            m_establishedAt = moment;
+        }
 
         /**
          * @brief 归还连接池时的会话状态复位（默认什么都不做）
@@ -178,6 +202,7 @@ namespace AsynGyanis::Database
         int              m_connectTimeout = 5000;  ///< 连接超时毫秒数
         int              m_queryTimeout   = 30000; ///< 单条命令执行超时毫秒数
         bool             m_isConnected    = false; ///< 连接状态，由派生类同步维护
+        std::chrono::steady_clock::time_point m_establishedAt = std::chrono::steady_clock::now(); ///< 最近一次建立成功的时刻，池在 connect() 成功后改写
     };
 
 } // namespace AsynGyanis::Database

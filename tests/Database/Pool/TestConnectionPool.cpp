@@ -8,6 +8,7 @@
 // - ResetsSessionStateOnBothReturnPaths / DestructorWakesBlockedSyncWaiters：两条归还去向都复位会话状态；析构叫醒同步等待者
 // - ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect / AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect：
 //   两条丢弃出口都不握着 m_mutex 做 disconnect
+// - EstablishedTimeSurvivesRepeatedBorrowAndReturn：连接的建立时刻跟着连接本身，反复借用不重新盖戳
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -651,6 +652,40 @@ namespace AsynGyanis::Database
 
             EXPECT_TRUE(observerGotThrough)
                     << "取出路径握着 m_mutex 做 disconnect：过期与健康判定都留在锁内时，统计读取要等那次关闭";
+        }
+
+        /**
+         * @brief 连接的建立时刻跟着连接本身走，反复借用不会被重新盖戳
+         * @details 存活期过期判的是「这条连接建立了多久」，而这条依据只有在借用/归还的整段途中
+         *          都不漂移时才成立：若每次借出都重记一次，`maximumLifetimeSeconds` 就永远不会到，
+         *          一条连接可以被无限期地续下去。
+         */
+        TEST(ConnectionPool, EstablishedTimeSurvivesRepeatedBorrowAndReturn)
+        {
+            ConnectionCounter counter;
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.idleTimeoutSeconds         = 0;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 3600;
+
+            ConnectionPool pool(makeMockFactory(counter), configuration);
+
+            const std::chrono::steady_clock::time_point firstEstablishedAt = [&pool]
+            {
+                const PooledConnection connection = pool.acquire();
+                return connection->establishedAt();
+            }();
+
+            PooledConnection second = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(second)) << "第二条没拿到：用例前提不成立";
+            const std::chrono::steady_clock::time_point reusedEstablishedAt = second->establishedAt();
+            second.release();
+
+            // 池里只有一条连接（上限 2、只建过一条），因此第二次借用拿到的就是同一条
+            EXPECT_EQ(reusedEstablishedAt, firstEstablishedAt)
+                    << "借用/归还会给连接重新盖建立时刻，存活期上限因此永远到不了";
         }
 
     } // namespace

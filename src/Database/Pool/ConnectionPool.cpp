@@ -48,15 +48,10 @@ namespace AsynGyanis::Database
 
             for (auto &entry: m_idleStack)
             {
-                // 池正在析构，名额与统计都不再有意义，只做「摘记录 + 关闭」
+                // 池正在析构，名额与统计都不再有意义，只做关闭
                 closeTrackedConnection(std::move(entry.connection));
             }
             m_idleStack.clear();
-
-            {
-                std::lock_guard creationTimeLock(m_creationTimeMutex);
-                m_creationTimeMap.clear();
-            }
 
             // 唤醒所有剩余的同步等待者：它们醒来会看到停摆标志、返回空连接并自减计数
             m_idleCondition.notify_all();
@@ -367,46 +362,24 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // ---- 查创建时间并入空闲栈 ----
-        std::chrono::steady_clock::time_point createdTime;
+        // ---- 存活期判定，然后入空闲栈 ----
+        // 判定只读这条连接自己的建立时刻与池配置，不涉及任何共享状态，因此不必进 m_mutex；
+        // 建立时刻跟着连接走（DatabaseConnection::establishedAt()），池这边不再另存一份表
+        const auto returnedAt = std::chrono::steady_clock::now();
+        // 到寿命的那条先摘出来，断开留到锁外（与 healthCheckLoop 同一条纪律）
+        std::unique_ptr<DatabaseConnection> expiredConnection;
+        if (isPastMaximumLifetime(*connection, returnedAt))
         {
-            std::lock_guard creationTimeLock(m_creationTimeMutex);
-            if (const auto it = m_creationTimeMap.find(connection.get()); it != m_creationTimeMap.end())
-            {
-                createdTime = it->second;
-            } else
-            {
-                // 理论上不应走到这里，但若映射丢失则以当前时间为保守估计
-                // 保守估计意味着 maxLifetime 检查会延后，但仍有 healthCheckLoop 兜底
-                createdTime = std::chrono::steady_clock::now();
-            }
+            expiredConnection = std::move(connection);
         }
-
-        std::unique_ptr<DatabaseConnection> expiredConnection; ///< 到寿命的那条：出锁之后再断开
-
+        else
         {
             std::lock_guard lock(m_mutex);
 
-            const auto now = std::chrono::steady_clock::now();
-
-            // 到寿命的连接不入栈。maximumLifetimeSeconds == 0 视为「立即过期」，连接永不进空闲栈。
-            // 锁内只做判定与摘出：丢弃要断开 socket，那是一次会阻塞的系统调用，握着 m_mutex 做它
-            // 会把所有取出路径、统计读取与后台驱逐一起排在那次关闭后面（与 healthCheckLoop 同一条纪律）
-            const auto lifetimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - createdTime).count();
-            const bool isExpired = m_config.maximumLifetimeSeconds == 0
-                                   || static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds;
-            if (isExpired)
-            {
-                expiredConnection = std::move(connection);
-            }
-            else
-            {
-                IdleEntry entry;
-                entry.connection   = std::move(connection);
-                entry.createdTime  = createdTime;
-                entry.returnedTime = now;
-                m_idleStack.push_back(std::move(entry));
-            }
+            IdleEntry entry;
+            entry.connection   = std::move(connection);
+            entry.returnedTime = returnedAt;
+            m_idleStack.push_back(std::move(entry));
         }
 
         if (expiredConnection)
@@ -502,10 +475,9 @@ namespace AsynGyanis::Database
                 return nullptr;
             }
 
-            {
-                std::lock_guard creationTimeLock(m_creationTimeMutex);
-                m_creationTimeMap[connection.get()] = std::chrono::steady_clock::now();
-            }
+            // 建立成功的时刻记在连接自己身上：池在借出/归还之间没有任何地方能存这份信息，
+            // 另建一张按裸指针索引的表反而多一把锁、多一份分配，还留下地址复用后的错配空间
+            connection->markEstablishedAt(std::chrono::steady_clock::now());
 
             return connection;
         } catch (...)
@@ -515,23 +487,27 @@ namespace AsynGyanis::Database
         }
     }
 
-    bool ConnectionPool::isEntryExpired(const IdleEntry &entry) const noexcept
+    bool ConnectionPool::isPastMaximumLifetime(const DatabaseConnection &connection,
+                                               const std::chrono::steady_clock::time_point now) const noexcept
     {
-        const auto now = std::chrono::steady_clock::now();
-
-        // 最大存活时间检查：0 表示立即过期
+        // 0 视为「立即过期」：连接一归还就被丢弃，永不进空闲栈
         if (m_config.maximumLifetimeSeconds == 0)
         {
             return true;
         }
 
+        const auto lifetimeSeconds =
+                std::chrono::duration_cast<std::chrono::seconds>(now - connection.establishedAt()).count();
+        return static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds;
+    }
+
+    bool ConnectionPool::isEntryExpired(const IdleEntry &entry) const noexcept
+    {
+        const auto now = std::chrono::steady_clock::now();
+
+        if (isPastMaximumLifetime(*entry.connection, now))
         {
-            const auto lifetimeSeconds =
-                    std::chrono::duration_cast<std::chrono::seconds>(now - entry.createdTime).count();
-            if (static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds)
-            {
-                return true;
-            }
+            return true;
         }
 
         // 空闲超时检查：0 表示不设空闲超时限制
@@ -605,10 +581,6 @@ namespace AsynGyanis::Database
                                                           {
                                                               if (isEntryExpired(entry))
                                                               {
-                                                                  {
-                                                                      std::lock_guard creationTimeLock(m_creationTimeMutex);
-                                                                      m_creationTimeMap.erase(entry.connection.get());
-                                                                  }
                                                                   expiredConnections.push_back(std::move(entry.connection));
                                                                   m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
                                                                   return true;
@@ -675,12 +647,6 @@ namespace AsynGyanis::Database
         if (!connection)
         {
             return;
-        }
-
-        // 连接销毁前先摘掉创建时间记录：映射表按裸指针索引，留着就是指向已释放对象的键
-        {
-            std::lock_guard creationTimeLock(m_creationTimeMutex);
-            m_creationTimeMap.erase(connection.get());
         }
 
         connection->disconnect();
