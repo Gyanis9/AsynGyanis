@@ -18,8 +18,8 @@ namespace AsynGyanis::Platform
     /**
      * @brief 一次性定时器描述符
      *
-     * @details Linux 基于 timerfd_create / timerfd_settime 实现；Windows 无 timerfd，
-     *          用 TimerQueue 定时器在到期时向 socket 对写端写一字节，使读端变为可读。
+     * @details Linux 基于 timerfd_create / timerfd_settime 实现；Windows 无 timerfd，用高精度
+     *          可等待定时器 + 线程池等待，到期时向 socket 对写端写一字节，使读端变为可读。
      * @note 用法：把 fileDescriptor() 注册进 epoll 监听 EPOLLIN，调用 arm() 设定到期时间，
      *       被唤醒后调用 drain() 清空到期计数。
      */
@@ -33,6 +33,8 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 取消未决定时器并关闭全部句柄
+         * @details Windows 侧在关描述符之前阻塞注销到期等待：回调要往写端写字节，而描述符号一旦
+         *          被别的套接字复用，那次残留的写就成了往陌生连接里灌一个字节。
          */
         ~TimerFileDescriptor();
 
@@ -59,9 +61,9 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 设定一次性到期时间
-         * @details 重复调用会覆盖上一次未决的到期设定；传入非正值等价于调用 cancel()。
-         *          Windows 侧先取消旧定时器再登记新的，因此失败时**没有任何到期会到来**，
-         *          调用方必须按返回值处理，不能当成本次设定已生效。
+         * @details 重复调用直接覆盖上一次未决的到期设定（Windows 侧的 SetWaitableTimer 本身就是
+         *          替换待决到期，不需要先解除）。传入非正值等价于调用 cancel()。
+         *          登记失败时**没有任何到期会到来**，调用方必须按返回值处理，不能当成本次设定已生效。
          * @param duration 距离到期的时长
          * @return true 设定已生效；false 底层登记失败（描述符无效或系统资源不足），
          *         本次不会到期
@@ -70,12 +72,10 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 取消未决的到期设定
-         * @details Linux 通过写入零值 itimerspec 解除，Windows 删除 TimerQueue 定时器并
-         *          等待回调结束，保证返回后不再有任何到期通知。
-         * @warning **不得在到期回调所在的线程内调用本方法**：Windows 侧靠
-         *          DeleteTimerQueueTimer(..., INVALID_HANDLE_VALUE) 阻塞等待回调结束，
-         *          若从回调自身调用就会死锁（本类的中断回调只写通知端，不会这么做；
-         *          调用方从事件循环线程取消是安全的）。Linux 侧无此限制。
+         * @details Linux 写入零值 itimerspec 解除，Windows 调 CancelWaitableTimer 解除，两边都不
+         *          阻塞。取消后不再会有新的到期信号，但**若取消那一刻回调已在途中**，写端仍可能落下
+         *          一个字节：读端因此可能多醒一次，派发时并无到期项，按新的堆顶重新武装即可。
+         * @note 与描述符一起销毁时必须先注销等待再关描述符（见析构），本方法不做那一步。
          */
         void cancel() noexcept;
 
@@ -89,14 +89,16 @@ namespace AsynGyanis::Platform
 
 #if ASYN_PLATFORM_WIN32
         /**
-         * @brief TimerQueue 到期回调，向 socket 对写端写入一字节使读端变为可读
-         * @param context 登记回调时传入的 TimerFileDescriptor 实例指针
-         * @param timerOrWaitFired Windows 传入的到期标志，本实现未使用
+         * @brief 线程池等待回调：定时器被置信号后向 socket 对写端写入一字节使读端变为可读
+         * @param context 登记等待时传入的 TimerFileDescriptor 实例指针
+         * @param timerOrWaitFired Windows 的到期标志；等可等待定时器对象时它恒为 FALSE，
+         *        分不出到期与等待超时，因此本实现不看它
          */
         static VOID CALLBACK timerCallback(PVOID context, BOOLEAN timerOrWaitFired);
 
-        int    m_writeDescriptor{-1};  ///< 写端描述符（定时器回调写入）
-        HANDLE m_timerHandle{nullptr}; ///< TimerQueue 定时器句柄
+        int    m_writeDescriptor{-1};      ///< 写端描述符（定时器回调写入）
+        HANDLE m_waitableTimer{nullptr};   ///< 高精度可等待定时器句柄（拿不到高精度档时退化为普通档）
+        HANDLE m_waitRegistration{nullptr}; ///< 线程池等待登记句柄，销毁时要先阻塞注销再关上面的句柄
 #endif
     };
 } // namespace AsynGyanis::Platform

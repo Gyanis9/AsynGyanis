@@ -24,6 +24,10 @@ namespace AsynGyanis::Core
         using TestSupport::advanceUntil;
         using TestSupport::kWaitTimeout;
 
+        /// 精度用例请求的等待时长，以及允许的迟到上限：8 ms 仍小于 Windows 的一个时钟整拍（15.6 ms）
+        constexpr long long kPrecisionWaitMilliseconds = 20;
+        constexpr long long kMaximumLatenessMilliseconds = 8;
+
         /// 参与交错取消的定时器条数：堆被撑到好几层，取消点因此散落在顶、中、尾各处
         constexpr std::size_t kScrambledTimerCount = 18;
 
@@ -235,6 +239,37 @@ namespace AsynGyanis::Core
         waiting.handle().resume();
 
         ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "取消一个等待后，其他定时器没有正常到期";
+    }
+
+    /**
+     * @brief 一次短定时等待真的按设定时长醒来，不被系统时钟的整拍抬高
+     * @details Windows 上的普通定时器按 15.6 ms 一节取整（实测等 20 ms 要 31 ms 才醒），退避与限速
+     *          这类短定时的尾延迟因此成倍。容差取 8 ms——仍小于一节，所以「又落回整拍」必然测得到；
+     *          醒来走的是「到期写一字节 → 循环被 I/O 叫醒」这条事件链，不是按间隔轮询
+     */
+    TEST(Timer, ShortWaitWakesOnItsDeadlineNotOnTheNextTick)
+    {
+        EventLoop loop;
+        Timer     timer(loop);
+
+        bool isExpired = false;
+        const auto begin = std::chrono::steady_clock::now();
+        auto waitingBody = [&timer, &isExpired]() -> Task<>
+        {
+            co_await timer.waitFor(std::chrono::milliseconds(kPrecisionWaitMilliseconds));
+            isExpired = true;
+        };
+        auto waiting = waitingBody();
+        waiting.handle().resume();
+
+        ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "定时等待没有在时限内完成";
+        const auto elapsedMilliseconds =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+
+        EXPECT_GE(elapsedMilliseconds, kPrecisionWaitMilliseconds) << "不得提前到期";
+        EXPECT_LT(elapsedMilliseconds, kPrecisionWaitMilliseconds + kMaximumLatenessMilliseconds)
+                << "等 " << kPrecisionWaitMilliseconds << " ms 实际等了 " << elapsedMilliseconds
+                << " ms：到期被抬到了系统时钟的下一个整拍";
     }
 
     /**
