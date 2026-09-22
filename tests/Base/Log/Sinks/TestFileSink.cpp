@@ -22,6 +22,7 @@
 #include "Base/Log/SourceLocation.h"
 
 #include "BaseTestSupport.h"
+#include "Platform/Platform.h"
 
 namespace AsynGyanis::Base
 {
@@ -89,6 +90,20 @@ namespace AsynGyanis::Base
                 content.erase(position, 1);
             }
             return content;
+        }
+
+        /**
+         * @brief 按二进制读回文件全部内容，不动任何字节
+         * @details 与 readWholeFile 相对：那条归一化换行以便跨平台逐行断言，这一条用来钉落盘字节本身。
+         */
+        std::string readRawFile(const fs::path &filePath)
+        {
+            std::ifstream file(filePath, std::ios::in | std::ios::binary);
+            if (!file.is_open())
+            {
+                return {};
+            }
+            return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>{}};
         }
 
         /**
@@ -443,5 +458,29 @@ namespace AsynGyanis::Base
         EXPECT_EQ(fs::file_size(logPath), singleLineBytes + multiLineBytes)
                 << "报回的字节数与磁盘增长不一致：滚动阈值会被低估，"
                 << "实测报 " << singleLineBytes + multiLineBytes << " 而文件有 " << fs::file_size(logPath) << " 字节";
+    }
+
+    /**
+     * @brief 落盘字节逐字钉住：Windows 每个换行都是 "\r\n"，其余平台是 "\n"
+     * @details FileSink 现在按二进制打开、由自己补行尾，「与文本模式逐字相同」不再由流实现兜底，
+     *          只能由用例钉。行内另有换行的形态（带调用栈的行每帧一个）必须逐个补，
+     *          只补行尾那一个、或整段忘了补，本用例在 Windows 上转红。
+     */
+    TEST(FileSink, WritesPlatformNativeLineEndingsToDisk)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileSink_LineEndings");
+        const fs::path                        logPath = temporaryDirectory.path() / "line-endings.log";
+
+        FileSink sink(logPath);
+        static_cast<void>(sink.writeLine("single"));
+        static_cast<void>(sink.writeLine("a\nb\nc"));
+        sink.flush();
+
+        const std::string landed = readRawFile(logPath);
+#if ASYN_PLATFORM_WIN32
+        EXPECT_EQ(landed, "single\r\na\r\nb\r\nc\r\n") << "Windows 上每个换行前都要有一个 '\\r'";
+#else
+        EXPECT_EQ(landed, "single\na\nb\nc\n") << "POSIX 上行尾就是单个换行，不该多出 '\\r'";
+#endif
     }
 } // namespace AsynGyanis::Base

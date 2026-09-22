@@ -24,6 +24,8 @@ namespace AsynGyanis::Base
      *
      * @details 默认以追加模式打开，父目录不存在时自动创建；所有写入与刷新都在互斥锁内完成。
      *          滚动文件 Sink（RollingFileSink）以「一个活动 FileSink」的形式复本类。
+     *          文件一律按二进制打开，Windows 上换行由本类补成 "\r\n"（文本模式的逐字符翻译路径
+     *          每行多付约 110 纳秒），落盘字节与文本模式一致。
      */
     class FileSink : public LogSink
     {
@@ -57,7 +59,7 @@ namespace AsynGyanis::Base
          *          复用本 Sink 的落盘与加锁逻辑：RollingFileSink 用它完成字节累计，
          *          从而不必每行都 flush 后 stat 一次真实文件大小。
          * @param line 已格式化的单行文本（不含换行）
-         * @return std::size_t 落到磁盘上的字节数（含行尾换行，Windows 文本模式下按 "\r\n" 计）；
+         * @return std::size_t 落到磁盘上的字节数（含行尾换行，Windows 上是 "\r\n"）；
          *         文件未打开或流已失效时返回 0
          */
         std::size_t writeLine(std::string_view line);
