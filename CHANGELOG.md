@@ -229,6 +229,16 @@
   `catch (std::exception)` 里报「配置读取失败，服务未启动」，于是退化成一个带原因的启动失败。
   新用例 `GetSectionReportsLeafVersusGroupCollision` 同时钉住同目录另一段照常还原；证伪：摘掉那道
   `contains` 判定，用例落红在「必须报错，而不是丢掉其中一个」。
+- **Base：日志器退休时当场交还 Sink，文件句柄与后台线程不再等 purge**。`registerLogger` 同名覆盖、
+  `unregisterLogger`、`clear()` 三条路原先把日志器连着它的 Sink 一起留在退休表里，于是反复重配日志会把
+  打开的日志文件句柄与 `AsyncSink` 的工作线程一路攒到进程退出——除非调用方记得手动
+  `purgeRetiredLoggers()`，而「记得」本身就是陷阱（临时目录删不掉那次事故就是这么来的）。退休表要护住的
+  只是 `getLogger()` 交出去的裸引用，Sink 从不靠它：在途写入者握着快照的强引用，交还之后要等最后一份
+  引用释放才真正销毁。现在退休那一刻就 `clearSinks()`（放在注册表锁**外**做，`AsyncSink` 析构要 join），
+  表里只剩外壳。契约随之明确：注销之后再经旧引用写入的日志不落地，即「注销即停止输出」。两条新用例分别
+  钉住「不必 purge 就释放」与「写入者还站在 Sink 里时不许把 Sink 抽走」（后者用 promise 造出确定的重叠，
+  不赌调度）；证伪：把交还那一步摘掉，两条一起落红。`base_log` 示例改成「注销后立刻删文件」并在 Windows
+  实测通过。Debug（含 ASan）521 例、Release 516 例全绿。
 - **TLS 会话释放之后的收发不再把原因推给对端**：`close()` 会释放底层 SSL 对象，此后
   `handshake()`/`asyncReceive()`/`asyncSend()` 仍把空指针交给 OpenSSL。实测（临时摘掉闸门跑新用例）
   OpenSSL 3 不崩溃而是返回失败，错误队列里留下的是 `error:00000000:lib(0)::reason(0)` 这种没有内容的
