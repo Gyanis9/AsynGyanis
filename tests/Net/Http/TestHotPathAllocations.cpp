@@ -13,6 +13,9 @@
 //   · 解析一条 h1 请求：一千次共 0 次。头部收进一条字节缓冲，URI、头部与正文交给请求时按整块交换，
 //     四份容器的容量跨报文留着。要先前置暖身若干轮才读到这个稳态——倍扩容本身是暖期成本；
 //   · 装 10 条头部：0 次 / 0 字节。clear 只清内容、留着容量，整块头部的字节都写进同一条缓冲；
+//   · 派发一条请求（命中精确路由）：一千次共 0 次。参数收集表要进模式路由那一层才建；
+//   · 派发一条请求（扫过模式候选并收下 :id）：每次 4 次 / 368 字节，与扫过几条候选无关
+//     （候选表跨候选复用，逐候选新建会随模式路由条数线性放大）；
 //   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
 //   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次。
@@ -21,7 +24,9 @@
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
+#include "Net/Http/Router.h"
 #include "Net/Http2/Http2Frame.h"
 
 #include <gtest/gtest.h>
@@ -32,6 +37,7 @@
 #include <cstdlib>
 #include <new>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -133,6 +139,8 @@ namespace AsynGyanis::Net
         // 名字里带 Total 的钉的是「一千次一共多少次」（原值），其余是摊平到每次操作的读数
         constexpr std::uint64_t kHttp1ParseTotalAllocationsPerThousand = 0U; ///< URI、头部、正文都整块交接，暂存容量跨报文留着
         constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
+        constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand = 0U; ///< 命中精确路由不建参数表，派发本身不再碰堆
+        constexpr std::uint64_t kDispatchPatternAllocationsPerRequest = 4U; ///< 复用的候选表 2 + 候选里那一条 ":id" 1 + 提交给请求 1
         constexpr std::uint64_t kHeadSerializeAllocationsFresh = 1U;
         constexpr std::uint64_t kHeadSerializeTotalAllocationsReused = 0U;
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
@@ -259,6 +267,27 @@ namespace AsynGyanis::Net
             response.setHeader("x-request-id", "0001-0000000000000abc");
             response.setBody(std::string(64, 'x'));
             return response;
+        }
+
+        /// 按「新报文到达」的样子把请求填回初态：URI 与版本都短到进小串内联，不额外造堆块，
+        /// 这样窗里量到的就是派发本身的分配而不是把字符串搬进容器
+        void fillDispatchRequest(HttpRequest &request, const std::string_view uri)
+        {
+            request.setMethod(HttpMethod::GET);
+            request.setUri(std::string(uri));
+            request.setHttpVersion("HTTP/1.1");
+        }
+
+        /// 即时写下 200 并计一次调用的处理函数：正文留空，免得把「小串内联」之外的成本算进读数。
+        /// 计数放在体外核对，被测窗里就不必为「取参数」造一个临时串
+        Router::Handler makeCountingOkHandler(int &callCounter)
+        {
+            return [&callCounter]([[maybe_unused]] HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+            {
+                ++callCounter;
+                response.setStatus(200);
+                co_return;
+            };
         }
     } // namespace
 
@@ -500,6 +529,86 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fresh.allocationsPerOperation, kChunkFrameAllocationsFresh) << "每次新建帧串的分配数变了";
         EXPECT_EQ(reused.totalAllocations, kChunkFrameTotalAllocationsReused)
                 << "复用帧缓冲这条路应当一次堆块都不碰";
+#endif
+    }
+
+    /**
+     * @brief 路由把一条请求交给处理函数跑一遍付出多少次分配（精确路径命中）
+     * @details 解析侧的稳态分配已经归零，这条量的是另一半：派发。读数含协程帧本身
+     */
+    TEST(HotPathAllocations, RouterDispatchExactPathAllocations)
+    {
+        int handlerCallCount = 0;
+        Router router;
+        router.get("/health", makeCountingOkHandler(handlerCallCount));
+
+        HttpRequest request;
+        HttpResponse response;
+        const auto dispatchOnce = [&router, &request, &response]
+        {
+            // 每轮先 reset 再按新报文填回：对象按连接复用，容量留在原地
+            request.reset();
+            fillDispatchRequest(request, "/health");
+            response.reset();
+            Core::Task<> routeTask = router.route(request, response);
+            routeTask.handle().resume();
+            return routeTask.isReady() ? std::size_t{1} : std::size_t{0};
+        };
+        ASSERT_EQ(dispatchOnce(), 1U) << "这条形状没在同步路径上跑完，或者根本没命中处理函数";
+
+        const AllocationProfile profile = measurePerOperation(dispatchOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有几次派发没跑完（handler 里偷偷挂起了）";
+        EXPECT_EQ(handlerCallCount, static_cast<int>(kMeasurementIterations) + 1) << "有几次派发没走到处理函数";
+        std::printf("router-dispatch-exact 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations));
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, kDispatchExactTotalAllocationsPerThousand)
+                << "命中精确路由的派发多碰了堆：参数收集表又被无条件建出来了？";
+#endif
+    }
+
+    /**
+     * @brief 扫过一张模式路由表并命中带 :id 的那条，付出多少次分配
+     * @details 表里放四条模式路由、命中的是第二条，这样每一轮的候选扫描都会走一遍模式层——
+     *          模式层的收集容器是不是逐候选新建一张表，读数会直接显形
+     */
+    TEST(HotPathAllocations, RouterDispatchPatternScanAllocations)
+    {
+        int handlerCallCount = 0;
+        Router router;
+        router.get("/i/:id", makeCountingOkHandler(handlerCallCount));
+        router.get("/o/:id/status", makeCountingOkHandler(handlerCallCount));
+        router.get("/f/*", makeCountingOkHandler(handlerCallCount));
+        router.get("/r/:y/:m", makeCountingOkHandler(handlerCallCount));
+
+        HttpRequest request;
+        HttpResponse response;
+        const auto dispatchOnce = [&router, &request, &response]
+        {
+            request.reset();
+            fillDispatchRequest(request, "/o/42/status");
+            response.reset();
+            Core::Task<> routeTask = router.route(request, response);
+            routeTask.handle().resume();
+            return routeTask.isReady() ? std::size_t{1} : std::size_t{0};
+        };
+        ASSERT_EQ(dispatchOnce(), 1U) << "这条形状没在同步路径上跑完";
+        // 参数在窗外核对：取参数要造临时串，放进被测窗会把读数弄脏
+        EXPECT_EQ(request.param("id").value_or("<缺失>"), "42") << "扫表没把 :id 收下来，量的就不是那条形状";
+
+        const AllocationProfile profile = measurePerOperation(dispatchOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有几次派发没跑完（handler 里偷偷挂起了）";
+        EXPECT_EQ(handlerCallCount, static_cast<int>(kMeasurementIterations) + 1) << "有几次派发没命中那条模式路由";
+        std::printf("router-dispatch-pattern 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations));
+#ifdef NDEBUG
+        // 这条读数与「扫过几条候选」无关：候选表跨候选复用，多扫一条不该多要堆块
+        EXPECT_EQ(profile.allocationsPerOperation, kDispatchPatternAllocationsPerRequest)
+                << "模式层派发的分配数变了：候选表回到逐候选新建，或参数提交多了一次拷贝";
 #endif
     }
 } // namespace AsynGyanis::Net

@@ -224,8 +224,7 @@ namespace AsynGyanis::Net
     // 匹配
     // ============================================================================
 
-    bool Router::matchesPattern(const PatternRoute &route, const std::string_view requestPath, PathParameters &collectedParameters,
-                                const bool collectParameters)
+    bool Router::matchesPattern(const PatternRoute &route, const std::string_view requestPath, PathParameters *const collectedParameters)
     {
         // 请求路径不以 '/' 开头就不是合法Origin-form（OPTIONS 的 "*" 除外，它由通配路由整体吃掉），
         // 这里直接判不匹配，避免把 "etc/passwd" 这类畸形路径与 "/etc/passwd" 当成同一条
@@ -256,11 +255,11 @@ namespace AsynGyanis::Net
                 {
                     return false;
                 }
-                // 流式探测只关心「命没命中 + 是不是流式」，参数随即丢弃，故按 collectParameters 跳过
-                // 键与值各一次 std::string 构造（长值还是堆分配）
-                if (collectParameters)
+                // 流式探测只要「命没命中 + 是不是流式」，落点是空指针：省去键与值各一次
+                // std::string 构造（长值还要堆块），那些参数没有一个会被读
+                if (collectedParameters != nullptr)
                 {
-                    collectedParameters[std::string(patternSegment.substr(1))] = std::string(currentSegment);
+                    (*collectedParameters)[std::string(patternSegment.substr(1))] = std::string(currentSegment);
                 }
             } else if (patternSegment != currentSegment)
             {
@@ -275,9 +274,9 @@ namespace AsynGyanis::Net
         // 通配路由：固定段全部命中即可，剩下的整段（可含多级 '/'）都算捕获值
         if (route.isWildcard)
         {
-            if (collectParameters)
+            if (collectedParameters != nullptr)
             {
-                collectedParameters[std::string(kWildcardParameterName)] = std::string(remainingPath);
+                (*collectedParameters)[std::string(kWildcardParameterName)] = std::string(remainingPath);
             }
             return true;
         }
@@ -288,9 +287,8 @@ namespace AsynGyanis::Net
 
     void Router::commitPathParameters(HttpRequest &request, const PathParameters &collectedParameters)
     {
-        // 匹配阶段一律只往临时容器里写（见 matchesPattern 的 collectedParameters），
-        // 到这里才一次性提交：否则一条候选路由匹配到一半失败，它写进请求的 ":id"
-        // 会残留在最终命中的另一条路由上，handler 读到的是别条路由的参数。
+        // 匹配阶段只往候选收集表里写（见 matchesPattern 的 collectedParameters），命中那条才提交：
+        // 否则一条候选匹配到一半失败，它写进请求的 ":id" 会残留到最终命中的另一条路由上。
         // 提交策略为「先到先得、不覆盖」：同一个请求只会被一条路由处理，
         // 保留既有值只是为了让外部提前塞入的调试参数不被抹掉。
         for (const auto &[parameterName, parameterValue]: collectedParameters)
@@ -414,7 +412,6 @@ namespace AsynGyanis::Net
         // 一次拷贝意味着把大 lambda 的捕获（正则、模板、配置表）按请求复制一遍，
         // 那是纯粹的每请求堆分配，而容器在整段 co_await 期间都不会被改动，引用始终有效。
         const Handler *selectedHandler = nullptr;
-        PathParameters selectedParameters;
 
         // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）的判据落在「同一级之内
         // 先严格匹配、这一级全都没中才按 GET 复用」，而不是「整张表先按 HEAD 跑一遍、没中再按 GET
@@ -456,14 +453,16 @@ namespace AsynGyanis::Net
             }
 
             // ---- 二级：模式路由线性扫描。仅在一级没选中处理函数时才继续，规则同样是先到先得 ----
+            // 收集容器进这一层才建、逐候选 clear 复用：MSVC 上构造一张空哈希表就要两次堆分配
+            // （桶数组先摆上），按候选新建等于把这笔固定成本乘上模式路由的条数
+            PathParameters candidateParameters;
             for (int pass = 0; pass < passCount; ++pass)
             {
                 for (const PatternRoute &route: m_patternRoutes)
                 {
-                    // 参数只在本条路由成立时才留下：每轮都换一个新的临时容器，
-                    // 失败候选攒下的 ":id" 就此被整体丢弃，不会串到别的路由上
-                    PathParameters candidateParameters;
-                    if (!matchesPattern(route, requestPath, candidateParameters))
+                    // 失败候选攒下的 ":id" 在下一次 clear 里整体丢弃，不会串到别的路由上
+                    candidateParameters.clear();
+                    if (!matchesPattern(route, requestPath, &candidateParameters))
                     {
                         continue;
                     }
@@ -477,8 +476,9 @@ namespace AsynGyanis::Net
                     const bool isGetReuse    = pass == 1 && route.method == HttpMethod::GET;
                     if (isRequestMethodRecognized && (isStrictMatch || isGetReuse))
                     {
-                        selectedHandler    = &route.handler;
-                        selectedParameters = std::move(candidateParameters);
+                        selectedHandler = &route.handler;
+                        // 命中即刻提交：这张表之后还要给别的候选复用，不能留到扫完再取
+                        commitPathParameters(request, candidateParameters);
                         return true;
                     }
                     // 路径命中而方法不合：记下事实，扫完全部候选再决定 405，Allow 也才凑得齐
@@ -493,8 +493,6 @@ namespace AsynGyanis::Net
 
         if (selectedHandler != nullptr)
         {
-            commitPathParameters(request, selectedParameters);
-
             // 终点回调把「请求 + 响应 + 命中的 handler」绑成管道要求的无参可调用对象。
             // 它只在下面这次 co_await 期间存在，故引用捕获即可，无需 shared_ptr 续命。
             const TerminalHandler terminalHandler = [&request, &response, selectedHandler]() -> Core::Task<void>
@@ -577,12 +575,12 @@ namespace AsynGyanis::Net
             }
         }
 
-        // 本探测只要「命中与否 + 是不是流式注册」，参数一律不收集：省去通配剩余路径与每个
-        // ":name" 段的 std::string 构造（这条判定每条非精确请求都会跑到）
-        PathParameters unusedParameters;
+        // 本探测只要「命中与否 + 是不是流式注册」，故不收集参数：既省去通配剩余路径与每个
+        // ":name" 段的 std::string 构造，也省去为这次判定构造一张哈希表
+        // （这条判定每条非精确请求都会跑到）
         for (const PatternRoute &route: m_patternRoutes)
         {
-            if (!matchesPattern(route, requestPath, unusedParameters, false))
+            if (!matchesPattern(route, requestPath, nullptr))
             {
                 continue;
             }
