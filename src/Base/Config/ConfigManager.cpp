@@ -38,6 +38,13 @@ namespace AsynGyanis::Base
             std::filesystem::path commonDirectory;
             for (const auto &filePath: filePaths)
             {
+                // 相对路径一律不当锚点：锚点会被 enableHotReload 与之后每一次 reload() 按
+                // 当时的当前工作目录重新解析，进程一旦换过工作目录（daemonize、示例或测试改
+                // 目录），重读的就不是同一批文件，而配置目录看着「已设置」，失败只报在日志里
+                if (!filePath.is_absolute())
+                {
+                    return {};
+                }
                 const std::filesystem::path parentDirectory = filePath.parent_path();
                 if (parentDirectory.empty())
                 {
@@ -311,6 +318,18 @@ namespace AsynGyanis::Base
         {
             const std::lock_guard lock(m_reloadTasksMutex);
             pendingTasks.swap(m_reloadTasks);
+            // 重载回调里调 disableHotReload() 是合法用法（「连续几轮失败就别再监视了」），
+            // 而本轮任务此刻正跑在本线程上、finished 要到回调返回之后才置起。把它一起销毁
+            // 就是让 ~jthread 去 join 自己那一条线程：std::jthread 抛
+            // resource_deadlock_would_occur，而异常从析构里出来即 std::terminate。
+            // 留下它，本轮收尾后由 collectFinishedReloadTasks 正常回收
+            for (auto &task: pendingTasks)
+            {
+                if (task && task->thread.get_id() == std::this_thread::get_id())
+                {
+                    m_reloadTasks.push_back(std::move(task));
+                }
+            }
         }
         pendingTasks.clear();
 
@@ -447,6 +466,16 @@ namespace AsynGyanis::Base
             }
 
             content.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+            // BOM 在这里就剥掉，而不是留给 JSON 解析器：只带 BOM 的文件（Windows 记事本把空文件
+            // 存成 UTF-8 就是这个字节串）会先过「空文件」判定——三个非空白字节判不出空，
+            // 于是带着空正文去解析，被报成「JSON 语法错误」。同一个文件在 YAML 侧被当空文档接受、
+            // 真·空文件也被接受，只有 JSON+BOM 这一格被拒，而且每次热重载都重复报这个幽灵错误
+            constexpr std::string_view kUtf8ByteOrderMark = "\xEF\xBB\xBF";
+            if (content.starts_with(kUtf8ByteOrderMark))
+            {
+                content.erase(0, kUtf8ByteOrderMark.size());
+            }
             return content;
         }
 

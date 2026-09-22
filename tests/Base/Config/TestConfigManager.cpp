@@ -732,6 +732,23 @@ server:
         EXPECT_EQ(configuration().getInt("port", 0), 8080);
     }
 
+    /**
+     * @brief 只含 BOM 的 .json 必须与真·空文件同一口径：接受且不产出键
+     * @details Windows 记事本把「空」文件存成三个 BOM 字节。它过不了「全是空白」那道判定，
+     *          于是带着空正文去解析，被报成 JSON 语法错误——同一份内容在 YAML 侧被当空文档接受，
+     *          每次热重载还会把这个幽灵错误重复一遍
+     */
+    TEST_F(ConfigManagerTest, LoadFromDirectoryAcceptsByteOrderMarkOnlyJsonAsEmpty)
+    {
+        writeFile("empty-bom.json", std::string("\xEF\xBB\xBF", 3));
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+        EXPECT_TRUE(result.failedFiles.empty()) << "只有 BOM 的文件被当成了解析失败";
+        EXPECT_TRUE(configuration().keys().empty()) << "接受为空文档时不该产出任何键";
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryKeepsLargeUnsignedIntegerExact)
     {
         // 超出 int64 的取值必须原样保留为无符号整数：截断或退化成浮点都会给出一个错误的数
@@ -1602,6 +1619,57 @@ server:
         EXPECT_EQ(configuration().getString("app.language", ""), "en");
     }
 
+    /**
+     * @brief 相对路径不得被当成配置目录锚点：锚点是此后每次重读时按当前目录解析的
+     * @details 注释与头文件都写着「含相对路径时保留既有配置目录不覆盖」，实现此前只挡
+     *          「没有目录成分」那一种（"sub/settings.json" 的 parent 是 "sub"，非空即被收下）。
+     *          锚点会被 enableHotReload 与之后每一次 reload() 按**当时的**工作目录重新解析，
+     *          进程换过工作目录（daemonize 等）后重读的就是另一个目录，而配置目录看着「已设置」
+     */
+    TEST_F(ConfigManagerTest, LoadFilesWithRelativePathKeepsTheConfigDirectoryUnset)
+    {
+        struct ScopedWorkingDirectory
+        {
+            std::filesystem::path previous;
+            explicit ScopedWorkingDirectory(const std::filesystem::path &target) : previous(std::filesystem::current_path())
+            {
+                std::filesystem::current_path(target);
+            }
+            ~ScopedWorkingDirectory()
+            {
+                std::filesystem::current_path(previous);
+            }
+        };
+
+        writeFile("relative-anchor/settings.json", R"({"port": 9090})");
+        const ScopedWorkingDirectory chdirToSandbox(directory());
+
+        const ConfigLoadResult result = configuration().loadFiles({std::filesystem::path("relative-anchor/settings.json")});
+
+        ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+        EXPECT_EQ(configuration().getInt("port", 0), 9090) << "文件本身要照常加载";
+        EXPECT_TRUE(configuration().configDirectory().empty())
+                << "相对路径被当成了锚点：换工作目录之后 reload() 读的就是别处";
+        EXPECT_FALSE(configuration().reload().success) << "没有锚点时 reload 要如实失败，而不是悄悄换个目录";
+    }
+
+    /**
+     * @brief 「尚未设置配置目录」这条失败出口也要交出确定值的回执
+     * @details 两条早退出口直接返回默认构造的 ConfigLoadResult，而 timestamp 一度没有初值：
+     *          steady_clock::time_point 的默认构造底层是未初始化的整型，读它即未定义行为，
+     *          而 Debug 下 MSVC 会把栈填成 0xCDCDCDCD……，断言因此能稳定抓到
+     */
+    TEST_F(ConfigManagerTest, ReloadWithoutAnchorReportsADeterministicallyInitializedTimestamp)
+    {
+        configuration().clear();
+
+        const ConfigLoadResult result = configuration().reload();
+
+        ASSERT_FALSE(result.success);
+        EXPECT_EQ(result.timestamp.time_since_epoch().count(), 0)
+                << "这条出口没给 timestamp 赋值，交回的是不确定的栈内容";
+    }
+
     TEST_F(ConfigManagerTest, LoadFilesAppliesLaterFileFromTheGivenList)
     {
         const std::filesystem::path deployedFile = writeFile(kDeployedConfigFileName, "app:\n  theme: light\n  language: en\n");
@@ -1818,6 +1886,44 @@ server:
                 << "重复 enableHotReload 把新回调丢了：返回 true 却没人接线";
 
         configuration().disableHotReload();
+    }
+
+    /**
+     * @brief 在重载回调里关掉热重载，不得把进程带走
+     * @details 「连续几轮失败就别再监视」是合法用法，可本轮任务此刻正跑在回调所在的线程上：
+     *          disableHotReload() 原先把登记表里的任务全部销毁，~jthread 于是去 join 自己
+     *          那条线程——异常从析构里出来即 std::terminate。回调先睡一小段，确保任务已经
+     *          进了登记表，这条路径就是确定命中而不是赌调度
+     */
+    TEST_F(ConfigManagerTest, DisablingHotReloadFromWithinItsOwnCallbackDoesNotAbort)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        std::atomic<bool> isDisableReturned{false};
+        const bool        enabled = configuration().enableHotReload(
+                [&isDisableReturned](const ConfigLoadResult &)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                    ConfigManager::instance().disableHotReload();
+                    isDisableReturned.store(true, std::memory_order_release);
+                },
+                std::chrono::milliseconds(50));
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: second\n");
+
+        ASSERT_TRUE(TestSupport::waitForCondition([&isDisableReturned]
+                                                  {
+                                                      return isDisableReturned.load(std::memory_order_acquire);
+                                                  },
+                                                  std::chrono::seconds(10)))
+                << "回调里的 disableHotReload() 没有返回：它在 join 自己那条重载线程";
+        EXPECT_FALSE(configuration().isHotReloadEnabled());
     }
 
     TEST_F(ConfigManagerTest, DisableHotReloadAfterFailedEnableIsSafeToRepeat)
