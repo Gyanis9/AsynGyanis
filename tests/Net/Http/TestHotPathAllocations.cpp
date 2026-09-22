@@ -20,6 +20,8 @@
 //     请求字段（两条都不再新取堆块；改前每请求 1 次 / 32 字节）；
 //   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
 //   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
+//   · 收一条 h2 请求（四条伪头加三条普通头部的 GET，与 h1 那条同一批语料）：18 次 / 2824 字节。
+//     同一条请求在 h1 侧是 0 次——h2 的头部逐字段落成 owning 串，且没有跨报文留存的缓冲可复用；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次；
 //   · 一条 h2 连接握手到关掉：每连接的固定成本（空闲连接也要付，故只作打印对照）。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
@@ -31,6 +33,7 @@
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/Router.h"
+#include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Http2/Http2Frame.h"
 
@@ -72,6 +75,10 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
         constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
         constexpr std::uint64_t kChunkFrameTotalAllocationsReused = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
+        // 收一条 h2 请求（7 条头部）：逐字段落 owning 串、建流记录、交出请求向量三处都在碰堆。
+        // 同一条语料在 h1 那条形状上是 0 次——这个差值就是「h2 头部要不要也改成按视图交出」的起点读数
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 18000U;
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 2824000U;
 #endif
         /// 一条贴近真实的 h1 请求：10 个头部 + 64 字节正文（与微基准的 http1-parse-request 同形）
         std::string makeRequestText()
@@ -156,6 +163,50 @@ namespace AsynGyanis::Net
                 response.setStatus(200);
                 co_return;
             };
+        }
+
+        /**
+         * @brief 编一个「不索引的字面量字段」，名取自静态表（RFC 7541 §6.2.2）
+         * @details 整块头部一律用不索引的表示：动态表全程不动，读数里就只剩本端每条请求付的成本。
+         *          带增量索引的写法会把「客户端要求的插表与逐出」也算进来，那量的是对端的选型。
+         * @param staticNameIndex 静态表名下标（1..61；:authority 取 1，那是只带名字的一项）
+         * @param value 头值，按原文写出（不走 Huffman）
+         * @return std::string 编码后字节
+         */
+        std::string hpackUnindexedNamedField(const std::size_t staticNameIndex, const std::string_view value)
+        {
+            std::string bytes = encodeHpackInteger(staticNameIndex, 4, 0x10);
+            appendHpackString(bytes, value);
+            return bytes;
+        }
+
+        /**
+         * @brief 编一个「名与值都是字面量」的不索引字段（§6.2.2 的名字索引 0）
+         * @param name 头名，小写（本端会按 §8.1.2 拒掉大写名）
+         * @param value 头值
+         * @return std::string 编码后字节
+         */
+        std::string hpackUnindexedNamedField(const std::string_view name, const std::string_view value)
+        {
+            std::string bytes = encodeHpackInteger(0, 4, 0x10);
+            appendHpackString(bytes, name);
+            appendHpackString(bytes, value);
+            return bytes;
+        }
+
+        /// 一条请求交出后能代表「内容真的落地了」的标记：伪头与每条普通头的名值长度之和
+        std::size_t decodedRequestMark(const std::vector<Http2Request> &requests)
+        {
+            std::size_t mark = 0;
+            for (const Http2Request &request: requests)
+            {
+                mark += request.method.size() + request.path.size() + request.authority.size();
+                for (const HpackHeaderField &field: request.headerFields)
+                {
+                    mark += field.name.size() + field.value.size();
+                }
+            }
+            return mark;
         }
     } // namespace
 
@@ -401,6 +452,91 @@ namespace AsynGyanis::Net
         std::printf("h2 每条连接的握手成本 %llu 次分配 / %llu 字节\n",
                     static_cast<unsigned long long>(profile.allocationsPerOperation),
                     static_cast<unsigned long long>(profile.bytesPerOperation));
+    }
+
+    /**
+     * @brief 一条 h2 请求从字节走到交给上层的 Http2Request，本端付出多少次分配
+     * @details 窗里含「解头块 → 伪头分档 → 普通头逐条落地 → 建流记录 → 交出请求」整段，不含响应方向。
+     *          头块的字段与 h1 那条形状同一批语料（同一条 GET /api/v1/orders?trace=1 加三条常用头部），
+     *          两条读数因此可直接对照：同一条请求，h1 走零拷贝、h2 逐字段落owning串。
+     */
+    TEST(HotPathAllocations, Http2RequestIngestAllocations)
+    {
+        std::string headerBlock;
+        headerBlock += hpackUnindexedNamedField(2U, "GET");                     // :method
+        headerBlock += hpackUnindexedNamedField(6U, "http");                    // :scheme
+        headerBlock += hpackUnindexedNamedField(4U, "/api/v1/orders?trace=1");  // :path
+        headerBlock += hpackUnindexedNamedField(1U, "api.example.com");         // :authority
+        headerBlock += hpackUnindexedNamedField("user-agent", "curl/8.7.1");
+        headerBlock += hpackUnindexedNamedField("accept", "*/*");
+        headerBlock += hpackUnindexedNamedField("accept-encoding", "gzip, deflate, br");
+
+        // 一条连接上的流号必须严格递增，因此每轮一帧：帧头里的流号各不相同，预先造好，
+        // 测量窗口里不再组帧（否则量到的是测试自己的分配）。多造一帧给暖身那一轮吃掉，
+        // 否则测量到最后会绕回第一条流号——重复使用已终止的流被判错，读数就少一轮
+        std::vector<std::string> requestFrames;
+        requestFrames.reserve(kMeasurementIterations + 1U);
+        for (std::uint64_t iteration = 0; iteration <= kMeasurementIterations; ++iteration)
+        {
+            const std::uint32_t streamId = static_cast<std::uint32_t>(2U * iteration + 1U);
+            std::string frame;
+            frame.push_back(static_cast<char>((headerBlock.size() >> 16) & 0xFFU));
+            frame.push_back(static_cast<char>((headerBlock.size() >> 8) & 0xFFU));
+            frame.push_back(static_cast<char>(headerBlock.size() & 0xFFU));
+            frame.push_back(0x01);                                          // HEADERS
+            frame.push_back(static_cast<char>(0x01U | 0x04U));              // END_STREAM | END_HEADERS
+            frame.push_back(static_cast<char>((streamId >> 24) & 0xFFU));   // 流号最高位是保留位，必须为 0
+            frame.push_back(static_cast<char>((streamId >> 16) & 0xFFU));
+            frame.push_back(static_cast<char>((streamId >> 8) & 0xFFU));
+            frame.push_back(static_cast<char>(streamId & 0xFFU));
+            frame += headerBlock;
+            requestFrames.push_back(std::move(frame));
+        }
+
+        std::string settingsFrame;
+        settingsFrame.append(3, '\0');      // 帧长度 0：一个空 SETTINGS，只为把连接推进到能用
+        settingsFrame.push_back(0x04);
+        settingsFrame.push_back(0x00);
+        settingsFrame.append(4, '\0');
+        // 本端并发达 100 条：不回响应就不算「双向 END_STREAM 终止」，流会一直占着并发额度，
+        // 第 101 条起被 REFUSED_STREAM 拒掉，读数就断在半路。放到覆盖整个窗口，量的是纯收方向
+        Http2ConnectionConfiguration configuration;
+        configuration.maximumConcurrentStreams = static_cast<std::uint32_t>(kMeasurementIterations + 1U);
+        Http2Connection connection{configuration};
+        static_cast<void>(connection.feedBytes(kHttp2ConnectionPreface.data(), kHttp2ConnectionPreface.size()));
+        static_cast<void>(connection.feedBytes(settingsFrame.data(), settingsFrame.size()));
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        std::size_t frameCursor = 0;
+        const auto ingestOnce = [&connection, &requestFrames, &frameCursor]() -> std::size_t
+        {
+            const std::string &frame = requestFrames[frameCursor % requestFrames.size()];
+            ++frameCursor;
+            static_cast<void>(connection.feedBytes(frame.data(), frame.size()));
+            // 判据只取长度之和：这里既不能构造临时串也不能建容器，否则量进来的是用例自己的分配
+            const std::vector<Http2Request> requests = connection.takeRequests();
+            const std::size_t mark = decodedRequestMark(requests);
+            static_cast<void>(connection.takeOutgoingBytes());
+            return mark;
+        };
+
+        const std::size_t firstRequestMark = ingestOnce();
+        EXPECT_GT(firstRequestMark, 60U) << "请求没解出来或伪头没落地，这条用例没测到东西";
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        const AllocationProfile profile = measurePerOperation(ingestOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * firstRequestMark) << "有几次请求解得不一样，读数不可信";
+        std::printf("h2 每收一条请求（HPACK 解头块到交出 Http2Request）%llu 次分配 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations),
+                    static_cast<unsigned long long>(profile.totalBytes));
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, kRequestIngestTotalAllocationsPerThousand)
+                << "收一条 h2 请求的分配数变了：头部逐字段落串、流记录与交出向量这三处都会计进来";
+        EXPECT_EQ(profile.totalBytes, kRequestIngestTotalBytesPerThousand)
+                << "读数按一千次原值钉：条数不变但每块更大，同样是实现变了";
+#endif
     }
 
     /**
