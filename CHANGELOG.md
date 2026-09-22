@@ -674,6 +674,28 @@
   最新数据，以及一次失败（本地拒绝与服务端主键冲突各一次）之后同一条文本仍可执行。容器 GCC +
   ASan/UBSan 下 Database 474 例全绿、真机零跳过，LSan 与改动前逐字一致；本机 MSVC `/W4 /WX` 单 TU
   编译通过（C++20 异质查表的 `unordered_map` 在两个标准库上都成立）。
+- **方言层的标识符渲染改成直写缓冲，一条查询少十次堆分配**：`StandardSqlDialect` 过去每渲染一个字段引用就
+  `splitQualifiedName()` 切出一个 `std::vector<std::string_view>`（**每个标识符一次堆分配**），再把
+  `quoteIdentifier()` 返回的临时串 `+=` 进 SQL 文本；而 `quoteIdentifier()` 里那句 `reserve(size*2+2)` 让
+  `balance` 这种 7 字节的名字也越过短字符串缓冲、多建一份堆缓冲；SQL 文本本身从空串按 15→31→63→127 逐次翻倍。
+  三者叠起来，一条「5 列 + 1 个等值条件 + LIMIT 1」的 SELECT 光是翻译就要 **12 次分配、236 ns**。
+  现在切段与判定都在串上就地扫（`isQuotableQualifiedName()` 先判、`appendFieldReference()` 再逐段直写目标缓冲），
+  `quoteIdentifier()` 退成 `appendQuotedIdentifier()` 的一层薄壳（转义规则只有一份），文本按内容估上界一次性
+  `reserve()`，参数个数由条件树精确算出后定容（`countConditionParameters()` 与 `appendCondition()` 的分支一一对应）。
+  对照阶梯（容器 GCC 13 `-O3`，内存 SQLite，2 万次取五遍最快，全局 `operator new` 计数）：
+  **`translate()` 239 → 113 ns（−52.7%）、12 → 2 次分配**；ORM `first()` 1260 → 1135 ns（−9.9%）、24 → 14；
+  `insert()` 1513 → 1329 ns（−12.2%）、29 → 17；`count()` 17 → 10；`toList()` 20 行 7122 → 6975 ns（−2.1%）、52 → 39。
+  归因按成对 A/B 做：改前的头 + 改前的库、改后的头 + 改后的库各自成套编出两个二进制，交替跑三轮，
+  控制例（池租约 92 ns / 驱动 floor 648 ns / 只建查询树 23 ns）三轮都不动，差值才算落到翻译层。
+  顺带删掉一处白做：`count()` / `countAsync()` 原先走 `resolvedQueryNode()` 把全部列名展开一遍，
+  紧接着又整段被 `{"COUNT(*)"}` 顶掉——现在直接拷 `m_queryNode` 再覆盖，产出文本逐字不变。
+  **产出文本必须逐字不变**是这一轮的硬约束：方言用例全部断言整段 SQL 文本，`users.*`、`COUNT(*)`、
+  含空格列名、内部引号翻倍转义都在其中；点号切空段（`users.`、`.id`、`a..b`）仍判「不是限定名」走表达式分支。
+  两条新用例各自可证伪：把「空段可引用」改判为真，`QualifiedNameWithEmptySegmentIsPassedThrough` 报出
+  `SELECT "users"."", ""."id", "a"."."."b"`；撤掉引号翻倍，`LongIdentifierWithQuoteIsQuotedVerbatim` 转红。
+  容器 GCC + ASan/UBSan 下 Database **476 例全绿**（原 474 + 本轮 2 条）、真机 MySQL/Redis 零跳过，
+  LSan 仍是 6328 B / 7 块的上游基线；本机 MSVC `/W4 /WX` 下单 TU（方言实现与一条 ORM 用例）编译无告警。
+  剩下的 ORM 开销在查询树副本与结果映射那一半，不在翻译层；MySQL 侧读的是网络往返主导的路径，这一轮的收益被往返盖住。
 - **连接池停摆不再等满后台线程的 1 秒睡眠分片**：健康检查线程按 1 秒为一片 `sleep_for`，靠「醒来
   时发现停止标志」退出，于是 `~ConnectionPool()` 的 join 平均要等半个分片、最坏等满一整秒。按数据源
   或租户各建一个池的服务里，这笔延迟在重启与扩缩容时按池数成倍放大；测试侧同样是每条用例都白付一次
