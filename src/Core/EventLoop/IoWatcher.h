@@ -21,7 +21,7 @@ namespace AsynGyanis::Core
      *
      * @note 线程约束：**包括析构在内，本类的所有方法都只在所属事件循环线程上调用**——析构会连带
      *       改事件后端的常驻注册表；需要从外部线程停止某个套接字/服务器时，把动作投递到那个循环
-     *       （见 `TcpServer::stop()` 的 @warning 与 `EventLoop::scheduler().scheduleRemote()`），
+     *       （见 `TcpServer::close()` 的 @warning 与 `EventLoop::scheduler().scheduleRemote()`），
      *       不要直接调 close()/析构。
      * @note 一个方向同时只允许一个等待者：并发等待会抛 `Base::LogicException`
      *       （这几乎总是「读协程起了两个」这类用法错误，静默让某一个永远等不到危险得多）。

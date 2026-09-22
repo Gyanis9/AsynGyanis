@@ -113,11 +113,9 @@ namespace AsynGyanis::Core
 
         // 唤醒仍挂在等待器上的协程：不能让它永远等一个再也不会到来的事件
         //（关闭描述符不会让 epoll 唤醒挂在它上面的等待者，这类等待只能由本类自己收尾）。
-        // 用 scheduleRemote 而不是 schedule：销毁本对象的可能是**另一个线程**
-        //（外部调用 stop()/close() 关闭监听套接字或连接就是这条路径），
-        // 而 schedule 既不是线程安全的，也不会唤醒正睡在 epoll_wait 上的事件循环；
-        // scheduleRemote 同时解决这两点。这里也不是就地恢复——本对象还在析构中，
-        // 就地恢复会让协程在析构未完成时回来访问成员
+        // 只登记、不就地恢复：本对象还在析构中，就地恢复会让协程在析构完成前回来访问成员。
+        // 选 scheduleRemote 而不是 schedule，是因为它自带唤醒——能把正睡在等待里的那个循环叫起来；
+        // 线程契约仍要求析构发生在所属循环线程上（见类注释），这里挑的只是两条路都成立的那个入口
         if (readWaiter)
         {
             m_loop->scheduler().scheduleRemote(readWaiter);
