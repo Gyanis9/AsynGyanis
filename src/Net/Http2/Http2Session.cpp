@@ -675,7 +675,7 @@ namespace AsynGyanis::Net
 
         if (m_requestIdGenerator != nullptr)
         {
-            request.setRequestId(m_requestIdGenerator->resolve(request));
+            m_requestIdGenerator->resolveInto(request);
         }
 
         // HEAD 只发头部，一个正文字节都不发（RFC 9110 §9.1）：抑制放在这里而不是响应层——

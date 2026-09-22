@@ -8,7 +8,8 @@
 //   二. 生成器：同一实例内不重复且序号递增，不同实例的前缀不同（前缀标识哪台服务器）。
 //   三. 采信判定：长度上下的 64/65 与可见 ASCII 的 0x21/0x7E 两侧各一组，控制字符、
 //       空白、高位字节一律拒（放行即响应拆分或日志错位）。
-//   四. resolve()：合法值原样沿用、非法值改由服务器生成，绝不把对端原文回显出去。
+//   四. resolve() 与 resolveInto()：合法值原样沿用、非法值改由服务器生成，绝不把对端原文回显；
+//       两条入口共用同一份判定，就地写入那条还要与交出新串那条逐字节一致。
 
 #include "Net/Http/HttpRequestId.h"
 
@@ -159,6 +160,54 @@ namespace AsynGyanis::Net
         untrustedFirst.addHeader(std::string(kRequestIdHeaderName), "trace-good");
         EXPECT_EQ(untrustedFirst.headerValues(std::string(kRequestIdHeaderName)).front(), "bad\tvalue");
         EXPECT_EQ(generator.resolve(untrustedFirst).size(), 21U);
+    }
+
+    /**
+     * @brief 就地写入与交出新串两条出口逐字节一致，且复用同一块缓冲不留上一条的尾巴
+     * @details 复用缓冲是本轮改动的全部理由（每请求一次堆分配 → 零次），所以产出必须与原形态完全
+     *          相同；前缀按长到短排，短的那次若没把长度收回去就会带出上一条的残余字符
+     */
+    TEST(HttpRequestId, InPlaceWritingMatchesTheOwnedFormAcrossBufferReuses)
+    {
+        std::string scratch;
+        for (const std::string_view prefix: {"deadbeef", "0001", "0", ""})
+        {
+            for (const std::uint64_t sequenceNumber: {std::uint64_t{0}, std::uint64_t{0x10},
+                                                      std::uint64_t{0xFFFF'FFFF'FFFF'FFFE}})
+            {
+                const std::string expected = std::format("{}-{:016x}", prefix, sequenceNumber);
+                detail::formatRequestIdTextInto(scratch, prefix, sequenceNumber);
+                EXPECT_EQ(scratch, expected) << "前缀 " << prefix << " 序号 " << sequenceNumber;
+            }
+        }
+    }
+
+    /**
+     * @brief resolveInto 与 resolve 共用同一套判定，落定到请求上的值就是那条路该给的值
+     * @details 钉的是「两条入口没有各修一侧」：合法值原样落到请求字段，非法值换成服务器生成的
+     *          定长标识且不回显对端原文。另外连续落定同一对象时短值必须覆盖长值的尾巴——
+     *          原地写入才有的风险，按值接管那条路反而是天然正确的。
+     */
+    TEST(HttpRequestId, ResolveIntoLandsOnTheRequestWithoutKeepingTheOldTail)
+    {
+        const HttpRequestIdGenerator generator;
+
+        HttpRequest trustedRequest;
+        trustedRequest.addHeader(std::string(kRequestIdHeaderName), std::string(kAcceptableClientRequestId));
+        generator.resolveInto(trustedRequest);
+        EXPECT_EQ(trustedRequest.requestId(), kAcceptableClientRequestId);
+        EXPECT_EQ(trustedRequest.requestId(), generator.resolve(trustedRequest)) << "两条入口必须给出同一个值";
+
+        // 同一个请求对象接着落定一个更短的值：长度要收回去
+        trustedRequest.setRequestId("short-id");
+        EXPECT_EQ(trustedRequest.requestId(), "short-id");
+
+        HttpRequest untrustedRequest;
+        untrustedRequest.addHeader(std::string(kRequestIdHeaderName), "bad\tvalue");
+        generator.resolveInto(untrustedRequest);
+        EXPECT_EQ(untrustedRequest.requestId().size(), 21U) << untrustedRequest.requestId();
+        EXPECT_EQ(untrustedRequest.requestId().find("bad"), std::string_view::npos)
+                << "非法取值不得留在请求的 id 字段里";
     }
 
 } // namespace AsynGyanis::Net

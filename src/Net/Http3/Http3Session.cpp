@@ -1585,7 +1585,7 @@ namespace AsynGyanis::Net
         // 业务侧读 requestId() 就知道这台服务器没开这个功能
         if (m_requestIdGenerator != nullptr)
         {
-            request.setRequestId(m_requestIdGenerator->resolve(request));
+            m_requestIdGenerator->resolveInto(request);
         }
     }
 

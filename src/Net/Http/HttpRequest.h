@@ -245,10 +245,12 @@ namespace AsynGyanis::Net
          *          客户端自带合法的 x-request-id 就沿用，否则用服务器侧生成器发一个。
          *          业务、中间件与日志因此都从一处读到同一个值。
          *
-         * @param requestId 本次请求的标识；传空串表示不采集（例如该会话没有生成器）
+         * @param requestId 本次请求的标识文本，原样保存不裁剪；传空表示不采集（例如该会话没有生成器）
          * @note 它是**可观测性标识，不是安全令牌**：不参与鉴权，也不要求不可预测
+         * @note 按视图接收并原地写入本对象的缓冲：按值收 std::string 会把源侧刚取到的那块堆连着
+         *       容量一起接过来、再把手上那块还掉（实测每请求一次堆分配），请求按连接复用时容量本该留着
          */
-        void setRequestId(std::string requestId);
+        void setRequestId(std::string_view requestId);
 
         /**
          * @brief 获取本次请求的 request-id

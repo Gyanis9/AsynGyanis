@@ -34,32 +34,46 @@ namespace AsynGyanis::Net
         inline constexpr std::size_t kRequestIdSequenceDigitCount = 16;
 
         /**
-         * @brief 拼出 `<前缀>-<16 位十六进制序号>` 形态的 request-id
+         * @brief 把 `<前缀>-<16 位十六进制序号>` 写进给定缓冲（可反复写入，容量随首条留下）
          * @details 不用 std::format：每条请求都要一个 id，格式化器要为运行期才确定的前缀
          *          现场解析格式串，实测比按已知长度直接写入慢数倍。产出与
          *          `std::format("{}-{:016x}", prefix, sequenceNumber)` 逐字节相同。
+         *          目标缓冲按 `resize` 到位后逐字节覆写：稳态下同一块缓冲被反复复用，一次堆分配也不碰。
+         * @param target 写入目标，调用方负责复用它（每条请求现造一个串等于白取一块堆）
          * @param prefix 服务器前缀（十六进制文本），长度任意、原样搬运
          * @param sequenceNumber 本服务器内的递增序号
-         * @return std::string 定长形态的 request-id
          */
-        [[nodiscard]] inline std::string formatRequestIdText(const std::string_view prefix, const std::uint64_t sequenceNumber)
+        inline void formatRequestIdTextInto(std::string &target, const std::string_view prefix, const std::uint64_t sequenceNumber)
         {
             static constexpr char kHexDigits[] = "0123456789abcdef";
 
-            std::string requestIdText;
-            requestIdText.resize(prefix.size() + 1 + kRequestIdSequenceDigitCount);
+            target.resize(prefix.size() + 1 + kRequestIdSequenceDigitCount);
 
             // 前缀原样拷贝：它只在建生成器时算一次，不参与这里的长度判定
-            std::copy(prefix.begin(), prefix.end(), requestIdText.begin());
-            requestIdText[prefix.size()] = '-';
+            std::copy(prefix.begin(), prefix.end(), target.begin());
+            target[prefix.size()] = '-';
 
             // 从高位往低位逐个取 nibble：写满 16 位就等于零填充，不需要单独判「不足位补几个 0」
             for (std::size_t digitIndex = 0; digitIndex < kRequestIdSequenceDigitCount; ++digitIndex)
             {
                 const std::uint64_t shiftAmount = (kRequestIdSequenceDigitCount - 1 - digitIndex) * 4U;
                 const std::size_t digitValue = static_cast<std::size_t>((sequenceNumber >> shiftAmount) & 0xFULL);
-                requestIdText[prefix.size() + 1 + digitIndex] = kHexDigits[digitValue];
+                target[prefix.size() + 1 + digitIndex] = kHexDigits[digitValue];
             }
+        }
+
+        /**
+         * @brief 拼出 `<前缀>-<16 位十六进制序号>` 形态的 request-id（交出一份新串）
+         * @details 热路径上要 id 请用 formatRequestIdTextInto 复用缓冲；本入口留给调用方需要
+         *          自行持有结果的场合（如把 id 放进日志字段之外再传下去）。
+         * @param prefix 服务器前缀（十六进制文本）
+         * @param sequenceNumber 本服务器内的递增序号
+         * @return std::string 定长形态的 request-id
+         */
+        [[nodiscard]] inline std::string formatRequestIdText(const std::string_view prefix, const std::uint64_t sequenceNumber)
+        {
+            std::string requestIdText;
+            formatRequestIdTextInto(requestIdText, prefix, sequenceNumber);
             return requestIdText;
         }
     } // namespace detail
@@ -121,14 +135,8 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string resolve(const HttpRequest &request) const
         {
-            // 读权威记录取首条（视图版），而不是 getHeader()：x-request-id 不在可重复头部
-            // 名单里，同名多条时 getHeader() 会按 RFC 7230 §3.2.2 以 ", " 合并，于是两条互不相干的
-            // 上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径。
-            // 也不用 headerValues()：为了一个值构造整列 string 是每请求一次的多余分配。
-            // 用视图版而非 owning 版：本函数只在「采信客户端值」那条路上才需要一份字符串，
-            // 校验阶段（长度与字符集）读完就丢，不必先拷一份再拷一份
-            const std::optional<std::string_view> clientRequestId = request.firstHeaderValueView(kRequestIdHeaderName);
-            if (clientRequestId.has_value() && isAcceptableRequestId(*clientRequestId))
+            const std::optional<std::string_view> clientRequestId = acceptableClientRequestId(request);
+            if (clientRequestId.has_value())
             {
                 // 客户端自带值原样沿用：它往往是上游网关或客户端自己的链路 id，替换掉就断了关联
                 return std::string{*clientRequestId};
@@ -137,16 +145,71 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 生成一个新的 request-id
+         * @brief 把本次请求的 request-id 直接落定到请求对象上；判定与 resolve() 共用同一份实现
+         * @details 每请求一次的开销走这条：生成路径先写进调用线程自己的复用缓冲，再原地 assign 进
+         *          请求字段——保活连接上两侧容量都留着，稳态一次堆分配也不碰。
+         * @param request 已收齐的请求对象；本函数只写它的 request-id 字段
+         * @see resolve(), HttpRequest::setRequestId()
+         */
+        void resolveInto(HttpRequest &request) const
+        {
+            const std::optional<std::string_view> clientRequestId = acceptableClientRequestId(request);
+            if (clientRequestId.has_value())
+            {
+                request.setRequestId(*clientRequestId);
+                return;
+            }
+
+            // 线程局部复用缓冲：生成器被所有循环线程共享，缓冲不能挂在它自己身上；
+            // 每条循环线程一份、随线程退出析构，与压缩器复用流是同一条路子
+            thread_local std::string generatedRequestId;
+            nextInto(generatedRequestId);
+            request.setRequestId(generatedRequestId);
+        }
+
+        /**
+         * @brief 生成一个新的 request-id（交出一份新串）
          * @return std::string `前缀-序号` 形式的标识，本生成器实例内不重复
+         * @see nextInto() 要复用缓冲、不每次取堆块时用那条
          */
         [[nodiscard]] std::string next() const
         {
+            std::string requestIdText;
+            nextInto(requestIdText);
+            return requestIdText;
+        }
+
+        /**
+         * @brief 生成下一个 request-id 并写进给定缓冲：容量随首条留下，稳态不碰堆
+         * @param target 写入目标，调用方负责跨请求复用它
+         */
+        void nextInto(std::string &target) const
+        {
             const std::uint64_t sequenceNumber = m_sequence.fetch_add(1, std::memory_order_relaxed);
-            return detail::formatRequestIdText(m_prefix, sequenceNumber);
+            detail::formatRequestIdTextInto(target, m_prefix, sequenceNumber);
         }
 
     private:
+        /**
+         * @brief 判「客户端自带的 request-id 能不能采信」，两条落定入口共用
+         * @details 读权威记录取首条（视图版），而不是 getHeader()：x-request-id 不在可重复头部
+         *          名单里，同名多条时 getHeader() 会按 RFC 7230 §3.2.2 以 ", " 合并，两条互不相干的
+         *          上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径。校验阶段只读不拷，
+         *          需要落成字符串与否由调用方决定。
+         * @param request 已收齐的请求对象
+         * @return std::optional<std::string_view> 可采信时给出指向请求头部存储的视图；否则为空。
+         *         视图的有效期跟着本请求的头部
+         */
+        [[nodiscard]] std::optional<std::string_view> acceptableClientRequestId(const HttpRequest &request) const noexcept
+        {
+            const std::optional<std::string_view> clientRequestId = request.firstHeaderValueView(kRequestIdHeaderName);
+            if (clientRequestId.has_value() && isAcceptableRequestId(*clientRequestId))
+            {
+                return clientRequestId;
+            }
+            return std::nullopt;
+        }
+
         /**
          * @brief 取本服务器在进程内的唯一前缀
          * @return std::string 至少 4 位的十六进制序号；同进程内第 65536 台及以后自然加宽

@@ -747,7 +747,7 @@ namespace AsynGyanis::Net
             {
                 if (requestIdGenerator != nullptr)
                 {
-                    request.setRequestId(requestIdGenerator->resolve(request));
+                    requestIdGenerator->resolveInto(request);
                 }
                 response.reset();
                 response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1

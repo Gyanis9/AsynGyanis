@@ -180,10 +180,10 @@ namespace AsynGyanis::Net
         m_bodyStream = bodyStream;
     }
 
-    void HttpRequest::setRequestId(std::string requestId)
+    void HttpRequest::setRequestId(const std::string_view requestId)
     {
-        // 入参按值接收后移动接管：调用方（会话）交出的就是它自己那份，不必再拷一次
-        m_requestId = std::move(requestId);
+        // 原地写入而不是接管一个现造的串：请求对象按连接复用时容量留着，稳态一次堆分配也不碰
+        m_requestId.assign(requestId.data(), requestId.size());
     }
 
     std::string_view HttpRequest::requestId() const noexcept
