@@ -56,8 +56,10 @@
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
+#include "Platform/IO/EventNotifier.h"
 #include "Platform/IO/FileContents.h"
 #include "Platform/IO/MemoryMappedFile.h"
+#include "Platform/System/PlatformTime.h"
 
 #include <algorithm>
 #include <array>
@@ -1901,6 +1903,79 @@ int main(int argumentCount, char **argumentValues)
                 return agedLayer->collectFrames(frames, 1200U, sentRanges, announcements) ? 1U : 0U;
             },
             results, checksum, failureCount);
+
+    // ---- Platform 层：被每条请求都摸一次的三个底座 ----
+    // 这三条的存在是为了让「Platform 侧的性能结论」有地方落脚：日历分解在每条响应的 Date 头与每行
+    // 日志的时间戳上，查文件信息在每次静态文件命中判定上，唤醒一次跨线程通知在每次「从别的线程
+    // 把活投进事件循环」的路径上。它们都不在协议解析的量级里（h1 解析 ~424 ns），但都是每次付的。
+    // 本机（Release/MSVC，20 逻辑核，空载与并发构建下各测三次）实测：
+    //   platform-time-utc            8.6-8.8 ns
+    //   platform-time-local          1.7-1.9 ns（同一秒命中缓存；未命中见下）
+    //   platform-time-local-varying  17.6-30.3 ns（每次换输入，走完整换算）
+    //   platform-wakeup-roundtrip    4.77-5.43 µs
+    //   platform-stat-basic-info     8.79-12.8 µs
+    // 只有前两条够格进基线：`-varying` 的输入每调用换一次，机器负载直接印在它身上（实测 17.6 → 30.3），
+    // 后两条则由系统调用与文件系统过滤器支配——拿摆动大的读数当门禁只会产出假红。五条都只记读数，
+    // 不当作「Platform 侧已经够快」的结论
+    constexpr std::time_t kMeasuredInstant = 1767225600; // 2026-01-01T00:00:00Z，固定值：稳态下相邻请求落在同一秒
+    measureCase(
+            "platform-time-utc",
+            []
+            {
+                const Platform::UtcTimeFields fields = Platform::PlatformTime::utcTime(kMeasuredInstant);
+                return static_cast<std::uint64_t>(fields.year);
+            },
+            results, checksum, failureCount);
+
+    measureCase(
+            "platform-time-local",
+            []
+            {
+                const std::tm fields = Platform::PlatformTime::localTime(kMeasuredInstant);
+                return static_cast<std::uint64_t>(fields.tm_year + 1);
+            },
+            results, checksum, failureCount);
+
+    // 与上一条成对：这条每次换一个输入，专量「缓存永远命不中」的最坏形状。两条一起看才说得清单格
+    // 缓存省下的到底是什么，也才看得出未命中时多付的那次比较有没有把成本顶上去
+    std::time_t varyingLocalSecond = kMeasuredInstant;
+    measureCase(
+            "platform-time-local-varying",
+            [&varyingLocalSecond]
+            {
+                const std::tm fields = Platform::PlatformTime::localTime(varyingLocalSecond++);
+                return static_cast<std::uint64_t>(fields.tm_year + 1);
+            },
+            results, checksum, failureCount);
+
+    // 一次完整的跨线程唤醒：写一枚标记 + 读空它。eventfd 与 socketpair 的代价差在这条上会显形
+    Platform::EventNotifier wakeupNotifier;
+    measureCase(
+            "platform-wakeup-roundtrip",
+            [&wakeupNotifier]
+            {
+                wakeupNotifier.notify();
+                wakeupNotifier.drain();
+                return 1U;
+            },
+            results, checksum, failureCount);
+
+    // 静态文件的命中判据：一次系统调用读回大小、修改秒与身份标记（三次 std::filesystem 调用的替代）
+    const std::filesystem::path statProbePath = std::filesystem::temp_directory_path() / "asyn-microbench-stat.bin";
+    {
+        std::ofstream statProbeFile(statProbePath, std::ios::out | std::ios::binary | std::ios::trunc);
+        statProbeFile << std::string(64, 'x');
+    }
+    measureCase(
+            "platform-stat-basic-info",
+            [statProbePath]
+            {
+                const std::optional<Platform::FileBasicInfo> info = Platform::queryFileBasicInfo(statProbePath);
+                return info.has_value() ? static_cast<std::uint64_t>(info->sizeBytes) : 0U;
+            },
+            results, checksum, failureCount);
+    std::error_code statProbeRemoveError;
+    std::filesystem::remove(statProbePath, statProbeRemoveError);
 
     printTable(results, failureCount, checksum);
     if (!jsonOutputPath.empty())
