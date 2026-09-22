@@ -785,6 +785,38 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：空文件上「读不出区间」的 Range 必须忽略（200），只有合法的区间才判 416
+     * @details 「表示大小为 0」原先直接短路成 Unsatisfiable，于是 bytes=abc 这类语法就不合法的请求头
+     *          也拿到 416——RFC 9110 §14.2 要求收端无法解析的 Range 一律忽略、按 200 全量回。
+     *          判序换过来之后，空表示上的合法区间仍判 416，且后缀形态不会先算出回绕的末端。
+     */
+    TEST(HttpServer, IgnoresMalformedRangeOnEmptyFileAndRejectsOnlyValidUnsatisfiableOne)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeEmptyFile");
+        ASSERT_TRUE(tree.isReady());
+        // 空的表示：只在本用例里造，不动共用夹具的文件集合（别处有按目录列举的用例）
+        std::ofstream emptyFile(tree.staticRoot() / "empty.txt", std::ios::out | std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(emptyFile.is_open());
+        emptyFile.close();
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse malformed = serveRequestWithHeaders(server, HttpMethod::GET, "/empty.txt", {{"range", "bytes=abc"}});
+        EXPECT_EQ(malformed.status(), 200) << "语法不合法的 Range 被当成了不可满足";
+        EXPECT_TRUE(malformed.body().empty());
+        EXPECT_FALSE(malformed.hasHeader("content-range"));
+
+        const HttpResponse unsatisfiable = serveRequestWithHeaders(server, HttpMethod::GET, "/empty.txt", {{"range", "bytes=0-10"}});
+        EXPECT_EQ(unsatisfiable.status(), 416);
+        EXPECT_EQ(headerValueOf(unsatisfiable, "content-range"), "bytes */0");
+
+        const HttpResponse suffix = serveRequestWithHeaders(server, HttpMethod::GET, "/empty.txt", {{"range", "bytes=-5"}});
+        EXPECT_EQ(suffix.status(), 416) << "空表示上的后缀区间不得回绕成一个巨大的末端";
+    }
+
+    /**
      * @brief 一条 Range 里出现多个区间时整条忽略：回 200 全量，不发 content-range
      */
     TEST(HttpServer, IgnoresMultipleRangesAndServesFullBody)

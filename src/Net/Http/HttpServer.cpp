@@ -464,12 +464,6 @@ namespace AsynGyanis::Net
                 // 多区间请求整条忽略：本服务器不做 multipart/byteranges 拼装
                 return RangeVerdict::Ignored;
             }
-            if (representationSize == 0)
-            {
-                // 空表示不存在任何可满足的区间
-                return RangeVerdict::Unsatisfiable;
-            }
-
             if (rangeSpec.front() == '-')
             {
                 // 后缀形态：取末尾 suffixLength 个字节
@@ -478,8 +472,10 @@ namespace AsynGyanis::Net
                 {
                     return RangeVerdict::Ignored;
                 }
-                if (suffixLength == 0)
+                if (suffixLength == 0 || representationSize == 0)
                 {
+                    // 0 字节后缀与空表示都不存在可满足的区间；判序必须在减法之前，
+                    // 否则 representationSize - 1 会绕成一个巨大的末端
                     return RangeVerdict::Unsatisfiable;
                 }
                 byteRange.start = (suffixLength >= representationSize) ? 0 : representationSize - suffixLength;

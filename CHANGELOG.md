@@ -160,6 +160,12 @@
   才降级并补 Vary）；判不准「本来会不会压成」时只往多降级一侧偏，弱校验器不会合并变体，强校验器会。
   新增用例 `CompressionMiddleware.WeakensValidatorAndKeepsVaryOnNotModified` 同时钉住对照面（只接受
   identity 的客户端拿到的 304 不降级、不加 Vary）。证伪：把早退改回原样，该用例当场红。
+- **空文件上语法非法的 `Range` 不再被判 416**：`parseRange` 把「表示大小为 0」放在解析区间之前短路成
+  Unsatisfiable，于是 `Range: bytes=abc` 这种根本读不出区间的请求头也拿到 416 + `content-range: bytes */0`。
+  RFC 9110 §14.2 要求收端无法解析的 Range 一律忽略、按 200 全量回——416 只留给「合法但无可满足区间」。
+  判序换过来之后，空表示上的合法区间（`bytes=0-10`、`bytes=-5`）仍判 416，且后缀形态不会先算出回绕的末端。
+  新增用例 `HttpServer.IgnoresMalformedRangeOnEmptyFileAndRejectsOnlyValidUnsatisfiableOne`；
+  证伪：把早退搬回去，该用例的 200 断言当场读到 416。
 - **WebSocket 的「有一帧在写」标记改由作用域守卫复位**：`sendFrame()` 原先在 `co_await` 前后各写一次那个
   布尔量，而发送回调是可以抛的（写路径的框架异常正是从这次挂起点穿出）——异常展开跳过复位那一行，标记就
   永久停在 true。会话收尾按它决定「要不要补发 Close 帧」，于是这条连接此后再也没有关闭握手：对端只看到
@@ -215,6 +221,14 @@
   （`kMaximumDocumentDepth = 128`，原先只写着 YAML 一名，故连带把翻译单元内的异常类改名为
   `DocumentConversionException`）。两条新用例各在同目录放一份层数正常的对照文件并断言它照常读入，
   以免「拒绝」其实是「我造的文本本身不合法」；证伪就是撤掉闸门——JSON 那条会让测试进程直接消失。
+- **Base：`getSection()` 遇到「同一个名字既配成标量、又当分组」时报错，不再静默丢一边**。段落还原先逐个
+  写叶子、再按分组递归覆盖回去，于是 `server.port: 8080` 与另一份文件里的 `server.port.forwarded: true`
+  同时存在时，`getSection("server")` 里根本没有 `port`，而 `getInt("server.port")` 照旧给 8080——
+  同一个键两套答案，配置文件本身看不出任何错。现在这种形状抛 `ConfigValidationException`，点名到真实键
+  并给出改法（改其中一条的名字，或再下一层段落）；`echo_server` 读 `server` 段那条路径本来就在
+  `catch (std::exception)` 里报「配置读取失败，服务未启动」，于是退化成一个带原因的启动失败。
+  新用例 `GetSectionReportsLeafVersusGroupCollision` 同时钉住同目录另一段照常还原；证伪：摘掉那道
+  `contains` 判定，用例落红在「必须报错，而不是丢掉其中一个」。
 - **TLS 会话释放之后的收发不再把原因推给对端**：`close()` 会释放底层 SSL 对象，此后
   `handshake()`/`asyncReceive()`/`asyncSend()` 仍把空指针交给 OpenSSL。实测（临时摘掉闸门跑新用例）
   OpenSSL 3 不崩溃而是返回失败，错误队列里留下的是 `error:00000000:lib(0)::reason(0)` 这种没有内容的
