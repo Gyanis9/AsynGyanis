@@ -46,6 +46,10 @@ namespace AsynGyanis::Platform
     public:
         /**
          * @brief 将 UTC 秒数转换为本地时区日历时间
+         * @details 换算要走完整的时区与夏令时规则，是本类里最贵的一次调用，因此内部按「同一输入必有
+         *          同一输出」留了一格线程局域缓存（同一秒的多条日志只换算一次）。唯一的可见差别是：
+         *          运行期改时区（POSIX 的 setenv("TZ")+tzset 之类）之后，本线程已缓存的那一秒仍按旧
+         *          时区报出，最长持续到下一秒；正常服务不在运行期改时区。
          * @param calendarTime 自 Unix 纪元起的秒数
          * @return std::tm 本地时间分解结果；转换失败时返回零值结构
          */

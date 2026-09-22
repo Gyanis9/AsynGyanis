@@ -76,6 +76,46 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(converted.tm_sec, expected.tm_sec);
     }
 
+    /**
+     * @brief 本地时间的单格缓存不许把上一次的答案留给别的输入
+     * @details localTime 内部按「同一输入必有同一答案」缓存一格结果（换算要走完整的时区与夏令时
+     *          规则，是这条路径上最贵的一步）。这条用例按「问 A → 问 B → 再问 A」的顺序走，并把
+     *          每个答案与 C 库现算的结果逐字段比对：命中判定只要写成「有没有缓存」而不是「缓存的
+     *          是不是这一秒」，这里就会立刻错在第二次 A 上。
+     */
+    TEST(PlatformTime, LocalTimeCacheAnswersEachInputOnItsOwn)
+    {
+        constexpr std::time_t firstSecond  = 1767225600; // 2026-01-01T00:00:00Z
+        constexpr std::time_t laterSecond  = firstSecond + 3600;
+
+        const std::tm firstTime     = PlatformTime::localTime(firstSecond);
+        const std::tm laterTime     = PlatformTime::localTime(laterSecond);
+        const std::tm firstAskedTwice = PlatformTime::localTime(firstSecond);
+
+        std::tm firstExpected{};
+        std::tm laterExpected{};
+#if ASYN_PLATFORM_WIN32
+        ::localtime_s(&firstExpected, &firstSecond);
+        ::localtime_s(&laterExpected, &laterSecond);
+#else
+        ::localtime_r(&firstSecond, &firstExpected);
+        ::localtime_r(&laterSecond, &laterExpected);
+#endif
+
+        EXPECT_EQ(firstTime.tm_hour, firstExpected.tm_hour);
+        EXPECT_EQ(firstTime.tm_min, firstExpected.tm_min);
+        EXPECT_EQ(firstTime.tm_sec, firstExpected.tm_sec);
+        EXPECT_EQ(firstTime.tm_mday, firstExpected.tm_mday);
+
+        // 换过输入之后再问第一个：必须拿回第一次那一份，而不是上一次算出的 laterTime
+        EXPECT_EQ(firstAskedTwice.tm_hour, firstExpected.tm_hour) << "缓存串味：换回旧输入却端出了别人的答案";
+        EXPECT_EQ(firstAskedTwice.tm_min, firstExpected.tm_min);
+        EXPECT_EQ(firstAskedTwice.tm_sec, firstExpected.tm_sec);
+
+        EXPECT_EQ(laterTime.tm_hour, laterExpected.tm_hour);
+        EXPECT_NE(laterTime.tm_hour, firstTime.tm_hour) << "相隔一小时的两次换算给出同一个日历，命中判定根本没看输入";
+    }
+
     TEST(PlatformTime, LocalTimeIsUsableFromMultipleThreads)
     {
         // 线程安全是本类存在的理由：POSIX 的 localtime 会复用静态缓冲，

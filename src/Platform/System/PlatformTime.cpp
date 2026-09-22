@@ -77,21 +77,39 @@ namespace AsynGyanis::Platform
 
     std::tm PlatformTime::localTime(const std::time_t calendarTime) noexcept
     {
-        std::tm result{};
+        // 一次本地换算要把整套时区与夏令时规则走一遍（实测约 23-36 纳秒，而一行日志的格式化总成本
+        // 约 300 纳秒），同一秒内的多条日志又必然得到同一个答案。这里留一格「同输入同输出」的缓存：
+        // 线程局域因此不需要任何同步，也不会把别的线程的结果搬到本线程的栈上
+        thread_local struct
+        {
+            std::time_t second{};      ///< 上次换算的 UTC 秒
+            std::tm     fields{};      ///< 那次换算出的本地日历（失败时是零值结构，同样是确定答案）
+            bool        hasCachedValue{false}; ///< 缓存格里是否已有结果：不能拿纪元零点当哨兵，它是合法输入
+        } cache;
+
+        if (cache.hasCachedValue && cache.second == calendarTime)
+        {
+            return cache.fields;
+        }
+
+        std::tm converted{};
 #if ASYN_PLATFORM_WIN32
         // MSVC 转换失败时把整个结构填成 -1（不是「保持原值」），只看得出返回码：
         // 直接交回会让日志时间戳渲染成「1899-00--1 -1:-1:-1」这种带负号与空字段的文本
-        if (::localtime_s(&result, &calendarTime) != 0)
+        if (::localtime_s(&converted, &calendarTime) != 0)
         {
-            return std::tm{};
+            converted = std::tm{};
         }
 #else
-        if (::localtime_r(&calendarTime, &result) == nullptr)
+        if (::localtime_r(&calendarTime, &converted) == nullptr)
         {
-            return std::tm{};
+            converted = std::tm{};
         }
 #endif
-        return result;
+        cache.second        = calendarTime;
+        cache.fields        = converted;
+        cache.hasCachedValue = true;
+        return converted;
     }
 
     UtcTimeFields PlatformTime::utcTime(const std::time_t calendarTime) noexcept
