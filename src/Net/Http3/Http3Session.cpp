@@ -1106,6 +1106,11 @@ namespace AsynGyanis::Net
             abortRequestStream(streamId, Http3ErrorCode::NoError);
         }
         streamingRequest.isServeFinished = true;
+        // 把这一拍攒下的字节搬给传输层：无正文的应答（204/304、HEAD）只由 submitResponseHead 记下
+        // 「本端已收尾」，关闭通知要等尾字节真的交出去才发得出（连接层 flush 里的 noteLocallyFinishedStream）。
+        // 不搬这一步就永远等不到 onStreamClosed，这条流式记录连同它占着的窗口额度一起留到连接收口，
+        // 排空判定也随之永久为真
+        flushPendingStreamData();
         co_return;
     }
 

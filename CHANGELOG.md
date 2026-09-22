@@ -153,6 +153,13 @@
 
 ### 修复
 
+- **HTTP/3 流式路由答完无正文响应后把收尾字节交给传输层**：无正文的应答（204/304、HEAD）只由
+  `submitResponseHead` 记下「本端已收尾」，关闭通知留到 flush 里 `noteLocallyFinishedStream` 才发得出，
+  而流式服务路径答完之后从不 flush——于是 `onStreamClosed` 永不到来，摘除点的另一半条件（`isStreamClosed`）
+  一直不成立，这条流式记录连同它占着的窗口额度挂到连接收口，`hasOutstandingWork()` 也随之永久为真，
+  按条数上限排空就成了等不到的死路。非流式路径由 `serveRequest` 收尾统一 flush，这里补上同样的一步。
+  新增 `Http3Session.ReapsStreamingRecordAfterBodylessResponse`：流式 POST 带 2 KiB 正文、处理器只回 204，
+  断言若干拍之后不再有在途工作；去掉这一步 flush 时该断言转红。
 - **HTTP/3 摘掉流式请求记录时归还它占着的接收窗口**：承载层把 DATA 载荷的额度归还明确交给上层
   （`creditConsumedBytes` 只补帧开销、把载荷扣掉），h2 侧由 `finishStreamingRequestBody()` 兑现，h3 的流式记录
   却是在收尾步骤里直接 `erase_if` 摘掉的——处理器不读正文（提前作答、判错早退）时那些字节就永久留在

@@ -1963,6 +1963,61 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 流式路由答一个无正文响应之后，这条流式记录要能被收尾摘掉
+     * @details 无正文的应答只由 `submitResponseHead` 记下「本端已收尾」，关闭通知要等尾字节真的交给
+     *          传输层才发得出。业务协程答完就把 isServeFinished 置上，摘除点另一半场（isStreamClosed）
+     *          则来自承载层的 onStreamClosed——不 flush 就永远等不到它，记录连同它占着的窗口额度一起
+     *          挂到连接收口，排空判定也随之永久为真
+     */
+    TEST(Http3Session, ReapsStreamingRecordAfterBodylessResponse)
+    {
+        FakeStreamOpener opener;
+        Http3Session     session(
+                std::ref(opener),
+                [](const std::int64_t, const std::span<const std::uint8_t> data, const bool)
+                {
+                    return data.size();
+                },
+                [](const std::int64_t, const std::size_t) {},
+                nullptr);
+
+        bool isHandlerEntered = false;
+        Router router;
+        router.postStreaming("/streaming-no-content",
+                             [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerEntered = true;
+                                 // 204 是「有响应、没正文」：走的是只交头部就收尾的那条支路
+                                 response.setStatus(204);
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::string body(2048, 'q');
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/streaming-no-content", "example.com", body, body.size()));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        for (int pumpRound = 0; pumpRound < 6 && session.hasOutstandingWork(); ++pumpRound)
+        {
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+        }
+        ASSERT_TRUE(isHandlerEntered) << "流式路由没把请求交给业务，这条用例就没走到收尾";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "无正文应答之后流式记录没被摘掉：收尾的字节没交给传输层，关闭通知就发不出来";
+    }
+
+    /**
      * @brief 排队中与服务中的正文都要占着全局额度，直到这一条服务完才归还
      * @details 额度若在「请求被排进待派发队列」时就归还，排队的正文与正在跑处理器的正文都不再被记账，
      *          多条流各自压一份正文就能把实际占用推过上限——这道限额要挡的正是这个。
