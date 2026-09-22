@@ -1114,7 +1114,9 @@ int main(int argumentCount, char **argumentValues)
     // 连接池的两条通路（本文件第一次量 Database）：一条是保活复用的稳态「取出 + 归还」，另一条是
     // maximumLifetimeSeconds 为 0 时「每次归还都丢弃、每次取出都新建」的抖动形态。前者量的是那几把
     // 锁与映射表查询的固定开销，后者额外把建连、映射表插删与断开一并计入——两种形态在真实服务里都
-    // 存在（连接池被配成短存活期，或对端定期掐线），只量其一都会做错取舍
+    // 存在（连接池被配成短存活期，或对端定期掐线），只量其一都会做错取舍。
+    // 抖动形态还包含丢弃出口那一次「叫醒等待者」的取锁：这条出口每次归还都走，与有没有人等在决定
+    // 读数的这一项无关，别把它当成稳态通路的退化
     Database::PoolConfig steadyPoolConfiguration;
     steadyPoolConfiguration.maximumPoolSize            = 4;
     steadyPoolConfiguration.idleTimeoutSeconds         = 3600;
