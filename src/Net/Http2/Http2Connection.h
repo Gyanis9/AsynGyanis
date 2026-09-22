@@ -423,6 +423,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t pendingResponseByteCount(std::uint32_t streamId) const noexcept;
 
         /**
+         * @brief 取本连接上所有流排队正文的合计字节数
+         * @return std::size_t 各流 `pendingResponseByteCount` 之和
+         * @details 会话的待发闸门有两条：单流一条、整条连接一条。缺后者时「逐流各卡一点」是条与并发流数
+         *          同增的乘法——100 条流各压 1 MiB 就是 100 MiB，单流上限挡不住它
+         */
+        [[nodiscard]] std::size_t totalPendingResponseByteCount() const noexcept;
+
+        /**
          * @brief 查对端在 SETTINGS 里通告过的参数
          * @param identifier 目标参数标识
          * @param value 输出参数：参数取值，仅在返回 true 时有效

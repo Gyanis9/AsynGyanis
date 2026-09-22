@@ -628,6 +628,40 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 逐流各卡一点也要被连接级总量拦住
+     * @details 单流 1 MiB 乘以流数是一条与流数同增的账：几十条停滞的请求流就能各压 1 MiB。
+     *          本用例把窗口给足（宽到不可能因为流控而拒收），于是唯一的拒收理由就是总量
+     */
+    TEST(QuicStreamLayer, CapsConnectionPendingQueueAcrossStreams)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makeParameters(1024U * 1024U * 1024U, 1024U * 1024U * 1024U, 1024U * 1024U * 1024U,
+                                                 1024U * 1024U * 1024U, 4, 16));
+
+        const std::size_t streamCount = QuicStreamLayer::kMaximumConnectionPendingSendByteCount
+                                        / QuicStreamLayer::kMaximumPendingSendByteCount;
+        const std::vector<std::uint8_t> segment(QuicStreamLayer::kMaximumPendingSendByteCount, std::uint8_t{'z'});
+        for (std::size_t streamIndex = 0; streamIndex < streamCount; ++streamIndex)
+        {
+            ASSERT_EQ(layer.writeStreamData(3 + streamIndex * 4, segment, false), segment.size())
+                    << "第 " << streamIndex << " 条流要先各自填满单流额度";
+        }
+        EXPECT_EQ(layer.totalPendingSendByteCount(), QuicStreamLayer::kMaximumConnectionPendingSendByteCount);
+
+        const std::uint64_t freshStreamId = 3 + streamCount * 4;
+        EXPECT_EQ(layer.writeStreamData(freshStreamId, segment, false), 0U) << "触顶的是连接级总量，不是这条流自己的额度";
+        EXPECT_EQ(layer.pendingSendByteCount(freshStreamId), 0U);
+
+        // 排空多少就能再收多少：拦路的是总量这本账，任何一条流走掉一段都算数
+        ASSERT_TRUE(collect(layer, 200U * 1024U).hasFrames);
+        const std::size_t drainedByteCount = layer.takeDrainedSendByteCount();
+        ASSERT_GT(drainedByteCount, 0U);
+        const std::vector<std::uint8_t> drainedSegment(drainedByteCount, std::uint8_t{'w'});
+        EXPECT_EQ(layer.writeStreamData(freshStreamId, drainedSegment, false), drainedByteCount)
+                << "只按刚腾出的量收，多一个字节都是把总量闸放开";
+    }
+
+    /**
      * @brief 判丢的段按原偏移重新排队，重发不重复占用额度
      */
     TEST(QuicStreamLayer, RequeuesLostRangesAtSameOffset)

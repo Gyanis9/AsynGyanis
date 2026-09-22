@@ -1071,11 +1071,11 @@ namespace AsynGyanis::Net
         const auto sendFrameBytes = [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
         {
             // 与流式正文同一道闸：对端只读不授窗口时隧道帧同样会无限堆积
-            if (m_connection.pendingResponseByteCount(streamId) > kStreamingSendQueueLimitByteCount)
+            if (!hasSendQueueRoom(streamId))
             {
-                LOG_ERROR_FMT("Http2Session: 隧道流 {} 的待发字节已超过上限 {} 字节（对端长期未发 WINDOW_UPDATE），"
-                              "本帧不再入队",
-                              streamId, kStreamingSendQueueLimitByteCount);
+                LOG_ERROR_FMT("Http2Session: 隧道流 {} 的待发排队已触顶（单流上限 {} 字节、整条连接上限 {} 字节，"
+                              "对端长期未发 WINDOW_UPDATE），本帧不再入队",
+                              streamId, kStreamingSendQueueLimitByteCount, kStreamingSendQueueConnectionLimitByteCount);
                 co_return false;
             }
 
@@ -1486,11 +1486,11 @@ namespace AsynGyanis::Net
         {
             // 上界先行：窗口何时放开完全由对端决定，对端长期不发 WINDOW_UPDATE 时再入队就是无界内存。
             // 到顶即失败，业务据此停写（h1 侧不设这道闸是因为套接字写满会自然挂住生产者）
-            if (m_connection.pendingResponseByteCount(streamId) > kStreamingSendQueueLimitByteCount)
+            if (!hasSendQueueRoom(streamId))
             {
-                LOG_ERROR_FMT("Http2Session: 流 {} 的待发正文已超过上限 {} 字节（对端长期未发 WINDOW_UPDATE），"
-                              "本段不再入队，业务应停止写入",
-                              streamId, kStreamingSendQueueLimitByteCount);
+                LOG_ERROR_FMT("Http2Session: 流 {} 的待发排队已触顶（单流上限 {} 字节、整条连接上限 {} 字节，"
+                              "对端长期未发 WINDOW_UPDATE），本段不再入队，业务应停止写入",
+                              streamId, kStreamingSendQueueLimitByteCount, kStreamingSendQueueConnectionLimitByteCount);
                 co_return false;
             }
 
@@ -1512,6 +1512,13 @@ namespace AsynGyanis::Net
         // 窗口不足时连接层已把整段排进该流的发送队列（返回 true），这一次没有字节可写也不算失败：
         // 等对端 WINDOW_UPDATE 到达后由连接层在同一入口内续发，正是 writeChunk 文档里「入队而非失败」的含义
         co_return co_await flushOutgoingBytes();
+    }
+
+    bool Http2Session::hasSendQueueRoom(const std::uint32_t streamId) const noexcept
+    {
+        // 两道闸一起判：单流那道挡「一条流卡死」，连接那道挡「每条流各卡一点」——后者是并发流数的乘法
+        return m_connection.pendingResponseByteCount(streamId) <= kStreamingSendQueueLimitByteCount
+               && m_connection.totalPendingResponseByteCount() <= kStreamingSendQueueConnectionLimitByteCount;
     }
 
     Core::Task<Http2ResponseSendStatus> Http2Session::finishStreamingResponse(const std::uint32_t streamId)

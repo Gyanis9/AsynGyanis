@@ -929,6 +929,41 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：连接级的待发合计把各条流的排队加起来，某条流排空后跟着回落
+     * @details 会话的待发闸门有一道按整条连接算的，读的就是这个数。只有单流那道闸时，
+     *          「逐流各卡一点」是条与并发流数同增的乘法，绕得开单流上限
+     */
+    TEST(Http2Connection, TotalsPendingResponseBytesAcrossStreams)
+    {
+        Http2Connection connection;
+        completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 5U)});
+        for (const std::uint32_t streamId: {1U, 3U})
+        {
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
+                                                 makeMinimalGetRequestBlock())),
+                      Http2ConnectionFeedStatus::NeedMore);
+        }
+        static_cast<void>(connection.takeRequests());
+        static_cast<void>(connection.takeOutgoingBytes());
+        EXPECT_EQ(connection.totalPendingResponseByteCount(), 0U) << "还没写正文就不该有排队";
+
+        std::string errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, std::string(40U, 'a'), false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        ASSERT_EQ(connection.sendResponseData(3U, std::string(40U, 'b'), false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+
+        // 每条流只出得去 5 字节（流级窗口名额），整段缓冲仍占着本端内存：合计要等于两条流之和
+        EXPECT_EQ(connection.pendingResponseByteCount(1U), 40U);
+        EXPECT_EQ(connection.pendingResponseByteCount(3U), 40U);
+        EXPECT_EQ(connection.totalPendingResponseByteCount(), 80U) << "连接级闸门看的是合计，逐流各卡一点也要算进来";
+
+        // 一条流的窗口放开、排空，合计跟着回落；另一条不受影响
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(35U))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.pendingResponseByteCount(1U), 0U);
+        EXPECT_EQ(connection.totalPendingResponseByteCount(), 40U);
+    }
+
+    /**
      * @brief 钉住：流级窗口不足的数据不出帧，窗口以 WINDOW_UPDATE 或 SETTINGS 增量还回来后续发
      */
     TEST(Http2Connection, HoldsDataUntilTheStreamWindowAllowsSending)

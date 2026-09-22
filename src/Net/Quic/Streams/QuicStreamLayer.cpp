@@ -23,6 +23,16 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kStreamInitiatorBitMask = 0x01;
         constexpr std::uint64_t kStreamUnidirectionalBitMask = 0x02;
 
+        /**
+         * @brief 一条上界还剩多少地方：已占超过上界时给 0，不做无符号回绕
+         * @details 判丢重排会把字节退回队列，实际占用可以短暂越过上界；直接相减会绕成天文数字，
+         *          那道闸当场翻转成「放行一切」
+         */
+        [[nodiscard]] std::size_t saturatingRoomOf(const std::size_t limitByteCount, const std::size_t usedByteCount) noexcept
+        {
+            return usedByteCount < limitByteCount ? limitByteCount - usedByteCount : 0;
+        }
+
         /// 同类流号每隔 4 一条：0x00、0x04、0x08……（§2.1）
         constexpr std::uint64_t kStreamIdStride = 4;
 
@@ -409,10 +419,11 @@ namespace AsynGyanis::Net
         }
         // 上界先行：排空只发生在编帧那一刻，而编帧要等对端给窗口，所以对端不授窗口时这里就是唯一的
         // 闸口。收不下的部分原样退回给调用方留住——本层不替它存副本，否则同一段字节占两份内存
-        const std::size_t pendingByteCount = pendingQueueByteCount(stream);
-        const std::size_t roomByteCount = pendingByteCount < kMaximumPendingSendByteCount
-                                              ? kMaximumPendingSendByteCount - pendingByteCount
-                                              : 0;
+        const std::size_t streamRoomByteCount = saturatingRoomOf(kMaximumPendingSendByteCount, pendingQueueByteCount(stream));
+        // 连接级同上一道闸：单流上界乘以流数仍是一条与流数同增的账，逐流各卡一点就能绕过它
+        const std::size_t connectionRoomByteCount =
+                saturatingRoomOf(kMaximumConnectionPendingSendByteCount, totalPendingSendByteCount());
+        const std::size_t roomByteCount = std::min(streamRoomByteCount, connectionRoomByteCount);
         const std::size_t acceptedByteCount = std::min(bytes.size(), roomByteCount);
         if (acceptedByteCount == 0 && !bytes.empty())
         {
@@ -439,6 +450,18 @@ namespace AsynGyanis::Net
     {
         const auto stream = m_outgoing.find(streamId);
         return stream == m_outgoing.end() ? 0 : pendingQueueByteCount(stream->second);
+    }
+
+    std::size_t QuicStreamLayer::totalPendingSendByteCount() const noexcept
+    {
+        // 逐条流现算：编帧本来就要走一遍 m_outgoing，这条闸不比它更贵，也不值得另记一本账
+        std::size_t totalByteCount = 0;
+        for (const auto &[streamId, stream]: m_outgoing)
+        {
+            static_cast<void>(streamId);
+            totalByteCount += pendingQueueByteCount(stream);
+        }
+        return totalByteCount;
     }
 
     std::size_t QuicStreamLayer::takeDrainedSendByteCount() noexcept

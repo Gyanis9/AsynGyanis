@@ -72,6 +72,14 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kMaximumPendingSendByteCount = 1024U * 1024U;
 
         /**
+         * @brief 一条连接上所有出站流合计允许暂存的待发字节上界
+         * @details 单流上界挡不住「很多条流各卡一点」：本端宣告的流数上限乘以 1 MiB 是条与流数同增的
+         *          乘法，几十条停滞的请求流就能替对端压住几十 MiB。连接级这道闸把那笔乘法收成一个常数。
+         *          取单流上界的八倍：一条大文件下载照常全速跑，要八条流同时不排空才触顶。
+         */
+        static constexpr std::size_t kMaximumConnectionPendingSendByteCount = 8U * 1024U * 1024U;
+
+        /**
          * @brief 用本端宣告的参数建流层
          * @details 本端参数决定「愿意收多少」；「能发多少」要等对端参数到手，在那之前一条也不发
          * @param localParameters 本端传输参数，取 initial_max_data 与三个 initial_max_stream_data_*
@@ -127,6 +135,14 @@ namespace AsynGyanis::Net
          * @note 在途（已上线未确认）的字节不算：那部分由对端的窗口与传输参数界定，不是本端能堆的
          */
         [[nodiscard]] std::size_t pendingSendByteCount(std::uint64_t streamId) const noexcept;
+
+        /**
+         * @brief 这条连接上所有出站流的待发字节合计
+         * @return std::size_t 各流 `pendingQueue` 之和
+         * @note 每次写入现算一遍而不另记总量：流本就少（受本端宣告的流数上限约束），
+         *       而队列的增删点有六处，多一本账就多一处漏记
+         */
+        [[nodiscard]] std::size_t totalPendingSendByteCount() const noexcept;
 
         /**
          * @brief 取走并清零「自上次调用以来排进包的待发字节数」

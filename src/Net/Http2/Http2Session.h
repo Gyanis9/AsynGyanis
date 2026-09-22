@@ -178,6 +178,20 @@ namespace AsynGyanis::Net
         /// 队列是唯一还在涨的东西。取 1 MiB：远高于任何正常慢消费者的在途量，又远小于单请求上限
         static constexpr std::size_t kStreamingSendQueueLimitByteCount = 1024U * 1024U;
 
+        /// 整条连接「窗口不足排队」的正文合计上界：单流那道闸乘上并发流数（本端默认 100）仍是一条
+        /// 与流数同增的账，逐流各卡一点就能绕过它。取单流上界的八倍——一条大响应的慢消费者照常跑，
+        /// 八条流同时不排空才触顶。与 QUIC 侧的 `kMaximumConnectionPendingSendByteCount` 同值同口径
+        static constexpr std::size_t kStreamingSendQueueConnectionLimitByteCount = 8U * 1024U * 1024U;
+
+        /**
+         * @brief 这条流还有没有地方排队正文：单流与整条连接两道闸一起判
+         * @param streamId 目标流号
+         * @return true 两道闸都还没触顶，本段可以入队
+         * @note 写正文的两处出口（流式正文与 WebSocket 隧道帧）必须走同一个判据：同一阈值在两个
+         *       消费点各自解析成两样，就是留一条能绕过闸门的口子
+         */
+        [[nodiscard]] bool hasSendQueueRoom(std::uint32_t streamId) const noexcept;
+
         /**
          * @brief 一条请求的服务结论
          *

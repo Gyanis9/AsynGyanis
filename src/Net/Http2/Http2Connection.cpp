@@ -521,6 +521,19 @@ namespace AsynGyanis::Net
         return streamIterator->second.pendingData.size();
     }
 
+    std::size_t Http2Connection::totalPendingResponseByteCount() const noexcept
+    {
+        // 逐条流相加而不另记总量：账本里也含刚终止的流（它们的队列应为空），另记一本账就要在每个
+        // 增删点跟上，漏一处就把连接级闸门算歪
+        std::size_t totalByteCount = 0;
+        for (const auto &[streamId, stream]: m_streams)
+        {
+            static_cast<void>(streamId);
+            totalByteCount += stream.pendingData.size();
+        }
+        return totalByteCount;
+    }
+
     bool Http2Connection::tryGetPeerSetting(const Http2SettingIdentifier identifier, std::uint32_t &value) const noexcept
     {
         const auto settingIterator = m_peerSettings.find(static_cast<std::uint16_t>(identifier));
