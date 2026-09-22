@@ -1716,6 +1716,61 @@ server:
         EXPECT_FALSE(configuration().isHotReloadEnabled());
     }
 
+    /**
+     * @brief 已在监听时再启用一次：这一轮的新回调必须接上
+     * @details 这条走的是「已经启用」那条早退：早退此前把这一轮传入的回调整份丢掉，调用方拿到
+     *          true 却永远等不到自己新给的接线，而没有任何返回值暗示得先 disable 一次。
+     * @note 平台监听器不可用时跳过（与其余热重载用例同一口径）；先等第一次接线出声，
+     *        否则「换过去没出声」可能是根本没武装监听，而不是换回调失败。
+     */
+    TEST_F(ConfigManagerTest, RepeatedEnableHotReloadTakesTheNewCallback)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        std::atomic<int> firstCallbackCount{0};
+        std::atomic<int> secondCallbackCount{0};
+
+        const bool enabled = configuration().enableHotReload(
+                [&firstCallbackCount](const ConfigLoadResult &)
+                {
+                    firstCallbackCount.fetch_add(1);
+                },
+                std::chrono::milliseconds(50));
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        // 监听线程要先把读请求投出去，紧跟着 enableHotReload 就写文件会落在武装之前
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: second\n");
+        ASSERT_TRUE(TestSupport::waitForCondition([&firstCallbackCount]
+                                                  {
+                                                      return firstCallbackCount.load() >= 1;
+                                                  },
+                                                  std::chrono::seconds(8)))
+                << "第一次接线就没出声，换回调的判据无从谈起";
+
+        EXPECT_TRUE(configuration().enableHotReload(
+                [&secondCallbackCount](const ConfigLoadResult &)
+                {
+                    secondCallbackCount.fetch_add(1);
+                },
+                std::chrono::milliseconds(50)));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: third\n");
+        EXPECT_TRUE(TestSupport::waitForCondition([&secondCallbackCount]
+                                                  {
+                                                      return secondCallbackCount.load() >= 1;
+                                                  },
+                                                  std::chrono::seconds(8)))
+                << "重复 enableHotReload 把新回调丢了：返回 true 却没人接线";
+
+        configuration().disableHotReload();
+    }
+
     TEST_F(ConfigManagerTest, DisableHotReloadAfterFailedEnableIsSafeToRepeat)
     {
         configuration().clear();

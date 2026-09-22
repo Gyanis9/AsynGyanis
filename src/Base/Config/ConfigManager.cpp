@@ -224,8 +224,18 @@ namespace AsynGyanis::Base
         // （原子量只保护 enabled 这一个布尔，护不住监视器对象本身）
         const std::lock_guard controlLock(m_hotReloadControlMutex);
 
+        // 回调快照在判定「是否已经启用」之前就发布：重复调用也必须把调用方新给的接线换上，
+        // 只认第一次那份等于「返回 true 却没接上」。读侧是重载线程，靠这份原子快照配
+        // release/acquire 看到完整对象（与启动监听那条同一套发布方式）
+        m_hotReloadCallback.store(std::make_shared<const HotReloadCallback>(std::move(callback)), std::memory_order_release);
+
         if (bool expected = false; !m_hotReloadEnabled.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         {
+            // 已在监听：防抖间隔跟着这一轮的入参换掉。FileWatcher 里那是原子量，运行中可写
+            if (m_fileWatcher)
+            {
+                m_fileWatcher->setDebounceInterval(debounceMilliseconds);
+            }
             return true; // 已经启用
         }
 
@@ -244,10 +254,6 @@ namespace AsynGyanis::Base
                 m_hotReloadEnabled.store(false, std::memory_order_release);
                 return false;
             }
-
-            // 回调以不可变快照发布：写侧是启动监听之前的本线程，读侧是后续的重载线程，
-            // release/acquire 保证重载线程一定能看到完整的 std::function 对象
-            m_hotReloadCallback.store(std::make_shared<const HotReloadCallback>(std::move(callback)), std::memory_order_release);
 
             m_fileWatcher->setDebounceInterval(debounceMilliseconds);
 
