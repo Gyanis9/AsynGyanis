@@ -19,6 +19,8 @@
 #include "Core/EventLoop/IoWatcher.h"
 #include "CommonTestSupport.h"
 
+#include <gtest/gtest.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -155,7 +157,7 @@ namespace AsynGyanis::Core::TestSupport
             m_ownedLoop(std::make_unique<EventLoop>()), m_loop(m_ownedLoop.get()),
             m_thread([this]()
             {
-                m_loop->run();
+                runLoopGuarded();
             })
         {
         }
@@ -167,7 +169,7 @@ namespace AsynGyanis::Core::TestSupport
         explicit EventLoopThread(EventLoop &loop) :
             m_loop(&loop), m_thread([this]()
             {
-                m_loop->run();
+                runLoopGuarded();
             })
         {
         }
@@ -291,6 +293,27 @@ namespace AsynGyanis::Core::TestSupport
         }
 
     private:
+        /**
+         * @brief 在后台线程上驱动循环，并把逃出来的异常就地收口
+         * @details run() 按契约把投递体的异常重抛给调用方，而这里就是那个调用方——线程入口
+         *          不接就是 std::terminate：整个测试进程连同其它在跑的用例一起没，且没有任何
+         *          现场。与 ThreadPool 工作线程体同一口径：记一条错误、让本线程体面退出，
+         *          用例随后因等不到结果而报红（红得有信息，而不是把整条测试跑炸掉）
+         */
+        void runLoopGuarded()
+        {
+            try
+            {
+                m_loop->run();
+            } catch (const std::exception &loopError)
+            {
+                GTEST_LOG_(ERROR) << "后台事件循环因异常退出：" << loopError.what();
+            } catch (...)
+            {
+                GTEST_LOG_(ERROR) << "后台事件循环因非标准异常退出";
+            }
+        }
+
         std::unique_ptr<EventLoop> m_ownedLoop;     ///< 自持模式下的事件循环；借用模式下为空
         EventLoop *                m_loop{nullptr}; ///< 实际驱动的事件循环，恒非空
         std::vector<Task<void> >   m_driverTasks;   ///< 驱动协程：声明在 m_thread 之前，故晚于 join 销毁
