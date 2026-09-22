@@ -28,9 +28,9 @@ namespace AsynGyanis::Base
     struct ConfigLoadResult
     {
         bool                     success{false}; ///< 加载是否成功
-        std::vector<std::string> loadedFiles;    ///< 成功加载的配置文件路径列表
-        std::vector<std::string> failedFiles;    ///< 加载失败的配置文件路径列表
-        std::vector<std::string> errors;         ///< 加载过程中产生的错误信息列表
+        std::vector<std::string> loadedFiles;    ///< 成功加载的配置文件路径列表（UTF-8 文本）
+        std::vector<std::string> failedFiles;    ///< 加载失败的配置文件路径列表（UTF-8 文本）
+        std::vector<std::string> errors;         ///< 加载过程中产生的错误信息列表（含路径，UTF-8 文本）
 
         /// 本轮加载开始时的时刻。必须带初值：「尚未设置配置目录」那两条失败出口直接返回默认构造的
         /// 回执，不写这一句就会把不确定的栈内容交给调用方（读它是未定义行为）

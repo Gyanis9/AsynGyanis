@@ -4,6 +4,7 @@
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
+#include "Platform/FileSystem/FileSystem.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -136,6 +137,20 @@ namespace AsynGyanis::Base
             }
             return object;
         }
+
+        /**
+         * @brief 把路径转成 UTF-8 文本，供结果列表与诊断文案使用
+         * @details 不能就地用 `path::string()`：Windows 上它按本地代码页转换，落在代码页外的字符
+         *          直接抛 std::system_error，而本文件的转换点有三处就在 catch 块里——「构造一条报错」
+         *          会把整次加载变成抛给调用方的异常。本文件所有对外的字符串通道（loadedFiles、
+         *          failedFiles、errors）因此统一按 UTF-8 报，与配置文件内容的文本口径一致。
+         * @param path 待报出的路径
+         * @return std::string 该路径的 UTF-8 文本
+         */
+        [[nodiscard]] std::string pathText(const std::filesystem::path &path)
+        {
+            return AsynGyanis::Platform::FileSystem::utf8FromPath(path);
+        }
     } // namespace
 
     ConfigManager &ConfigManager::instance() noexcept
@@ -166,14 +181,14 @@ namespace AsynGyanis::Base
         {
             if (!std::filesystem::exists(filePath))
             {
-                result.failedFiles.push_back(filePath.string());
-                result.errors.push_back("文件不存在：" + filePath.string());
+                result.failedFiles.push_back(pathText(filePath));
+                result.errors.push_back("文件不存在：" + pathText(filePath));
                 continue;
             }
-            if (!isConfigFile(filePath.string()))
+            if (!isConfigFile(pathText(filePath)))
             {
-                result.failedFiles.push_back(filePath.string());
-                result.errors.push_back("不支持的配置文件格式（应为 .json、.yaml 或 .yml）：" + filePath.string());
+                result.failedFiles.push_back(pathText(filePath));
+                result.errors.push_back("不支持的配置文件格式（应为 .json、.yaml 或 .yml）：" + pathText(filePath));
                 continue;
             }
             // 每份文件先摊进自己那张临时表，成功了才并进来：与按目录加载共用同一份契约
@@ -182,7 +197,7 @@ namespace AsynGyanis::Base
             ConfigKeyValueMap fileValues;
             if (loadConfigFile(filePath, fileValues, result.errors))
             {
-                result.loadedFiles.push_back(filePath.string());
+                result.loadedFiles.push_back(pathText(filePath));
                 loadedPaths.push_back(filePath);
                 for (auto &[key, value]: fileValues)
                 {
@@ -190,7 +205,7 @@ namespace AsynGyanis::Base
                 }
             } else
             {
-                result.failedFiles.push_back(filePath.string());
+                result.failedFiles.push_back(pathText(filePath));
             }
         }
 
@@ -276,7 +291,11 @@ namespace AsynGyanis::Base
             });
 
             // 监听范围与 reload 的重扫范围必须同一个口径：只递归挂监听却按非递归重扫，
-            // 子目录里的改动会白叫醒一轮重载；反之则子目录的改动根本进不到重扫里
+            // 子目录里的改动会白叫醒一轮重载；反之则子目录的改动根本进不到重扫里。
+            // 这一处刻意保留 `.string()` 而不换成 pathText：FileWatcher 的接口（addWatch 的形参与
+            // 回调里的文件名）整条都是「原生窄串」刻度，两侧同刻度才配得上；改成 UTF-8 会让
+            // 今天能正常热重载的中文配置目录反而对不上号。要让代码页外的目录名也能热重载，
+            // 得把 FileWatcher 的接口一并换成 path 刻度，那是 Platform 侧的独立一轮
             if (!m_fileWatcher->addWatch(currentData->configDirectory.string(), currentData->configDirectoryRecursive))
             {
                 m_fileWatcher.reset();
@@ -901,7 +920,7 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] ConfigValue parseDocumentBySuffix(const std::string &text, const std::filesystem::path &filePath)
         {
-            if (isJsonFile(filePath.string()))
+            if (isJsonFile(pathText(filePath)))
             {
                 return parseJsonDocument(text);
             }
@@ -1059,7 +1078,7 @@ namespace AsynGyanis::Base
         if (!std::filesystem::exists(configDirectory, errorCode))
         {
             result.success = false;
-            result.errors.push_back("配置目录不存在：" + configDirectory.string());
+            result.errors.push_back("配置目录不存在：" + pathText(configDirectory));
             if (errorCode)
             {
                 result.errors.push_back("错误：" + errorCode.message());
@@ -1070,7 +1089,7 @@ namespace AsynGyanis::Base
         if (!std::filesystem::is_directory(configDirectory, errorCode))
         {
             result.success = false;
-            result.errors.push_back("路径不是目录：" + configDirectory.string());
+            result.errors.push_back("路径不是目录：" + pathText(configDirectory));
             return result;
         }
 
@@ -1106,14 +1125,14 @@ namespace AsynGyanis::Base
             ConfigKeyValueMap fileValues;
             if (loadConfigFile(filePath, fileValues, result.errors))
             {
-                result.loadedFiles.push_back(filePath.string());
+                result.loadedFiles.push_back(pathText(filePath));
                 for (auto &[key, value]: fileValues)
                 {
                     values.insert_or_assign(std::move(key), std::move(value));
                 }
             } else
             {
-                result.failedFiles.push_back(filePath.string());
+                result.failedFiles.push_back(pathText(filePath));
             }
         }
 
@@ -1136,7 +1155,7 @@ namespace AsynGyanis::Base
         const std::uintmax_t fileSize = std::filesystem::file_size(filePath, sizeError);
         if (!sizeError && fileSize > kMaximumConfigFileBytes)
         {
-            errors.push_back(std::format("文件 '{}' 超过配置文件的体积上限（{} MiB）：请拆分或精简该文件", filePath.string(),
+            errors.push_back(std::format("文件 '{}' 超过配置文件的体积上限（{} MiB）：请拆分或精简该文件", pathText(filePath),
                                          kMaximumConfigFileBytes / (1024ULL * 1024ULL)));
             return false;
         }
@@ -1144,7 +1163,7 @@ namespace AsynGyanis::Base
         const std::optional<std::string> text = readTextFile(filePath);
         if (!text.has_value())
         {
-            errors.push_back("无法打开文件 '" + filePath.string() + "'：文件不存在或不可读");
+            errors.push_back("无法打开文件 '" + pathText(filePath) + "'：文件不存在或不可读");
             return false;
         }
 
@@ -1173,7 +1192,7 @@ namespace AsynGyanis::Base
                 const std::string_view kindName = document.is_array() ? std::string_view{"sequence"}
                                                      : std::string_view{typeName(document.type())};
 
-                errors.push_back("文件 '" + filePath.string() + "'：根节点必须是映射，实际为 " + std::string(kindName));
+                errors.push_back("文件 '" + pathText(filePath) + "'：根节点必须是映射，实际为 " + std::string(kindName));
                 return false;
             }
 
@@ -1182,20 +1201,20 @@ namespace AsynGyanis::Base
         } catch (const ConfigValue::exception &exception)
         {
             // 原生库的消息自带行列与出错记号，是定位所需的全部信息，原样带出
-            errors.push_back(std::format("解析错误：'{}'：JSON 语法错误：{}", filePath.string(), exception.what()));
+            errors.push_back(std::format("解析错误：'{}'：JSON 语法错误：{}", pathText(filePath), exception.what()));
             return false;
         } catch (const YAML::Exception &exception)
         {
-            errors.push_back(std::format("解析错误：'{}'：YAML 语法错误：{}（{}）", filePath.string(), exception.msg, describeYamlMark(exception.mark)));
+            errors.push_back(std::format("解析错误：'{}'：YAML 语法错误：{}（{}）", pathText(filePath), exception.msg, describeYamlMark(exception.mark)));
             return false;
         } catch (const std::runtime_error &exception)
         {
             // YAML → JSON 值模型转换失败：本文件内抛出的中文原因（含位置）
-            errors.push_back(std::format("解析错误：'{}'：{}", filePath.string(), exception.what()));
+            errors.push_back(std::format("解析错误：'{}'：{}", pathText(filePath), exception.what()));
             return false;
         } catch (const std::exception &exception)
         {
-            errors.push_back("加载 '" + filePath.string() + "' 时发生意外错误：" + exception.what());
+            errors.push_back("加载 '" + pathText(filePath) + "' 时发生意外错误：" + exception.what());
             return false;
         }
 
@@ -1440,7 +1459,7 @@ namespace AsynGyanis::Base
         const auto      collect = [&configFiles, &errorCode](const auto &entry)
         {
             const bool isRegularFile = entry.is_regular_file(errorCode);
-            if (!errorCode && isRegularFile && isConfigFile(entry.path().string()))
+            if (!errorCode && isRegularFile && isConfigFile(pathText(entry.path())))
             {
                 configFiles.push_back(entry.path());
             }
@@ -1483,7 +1502,7 @@ namespace AsynGyanis::Base
             return std::unexpected(std::format("扫描配置目录 '{}' 时中断（{}），本轮只扫到 {} 个配置文件："
                                                 "不把这份不完整的清单当成全量提交，配置保持原样；"
                                                 "请检查该目录及其子目录的读取权限后重试",
-                                                directory.string(), errorCode.message(), configFiles.size()));
+                                                pathText(directory), errorCode.message(), configFiles.size()));
         }
 
         std::ranges::sort(configFiles);

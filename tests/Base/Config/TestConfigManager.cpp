@@ -17,6 +17,7 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
+#include "Platform/FileSystem/FileSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -431,6 +432,41 @@ server:
         EXPECT_TRUE(configuration().getBool("kept", false)) << "没问题的那份文件应当照常提交";
         EXPECT_EQ(configuration().getInt("alpha", -1), -1)
                 << "loadFiles 把失败文件已展开的那半份键跟着提交了";
+    }
+
+    /**
+     * @brief 文件名落在本地代码页外时，加载失败要「报出来」而不是把异常抛给调用方
+     * @details 本模块把路径写进结果列表与错误文案用的是 `path::string()`，Windows 上它按本地代码页
+     *          转换，落在代码页外的字符**直接抛出**，而四处抛出点里有三处就在 catch 块内——
+     *          「构造一条报错」于是把整次加载变成异常。POSIX 上窄串等于原生刻度，
+     *          这一条只有 Windows 侧能证伪
+     */
+    TEST_F(ConfigManagerTest, FileNamesOutsideLocalCodePageAreReportedInsteadOfThrowing)
+    {
+        static constexpr std::string_view brokenNameUtf8  = "坏配置-🐳.yaml";
+        static constexpr std::string_view missingNameUtf8 = "没这个文件-🐳.yaml";
+
+        // 绕开夹具的 writeFile：它按窄串拼路径，创建与断言会同过一次代码页而互相掩护
+        const std::filesystem::path brokenPath =
+                directory() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{brokenNameUtf8});
+        {
+            std::ofstream output(brokenPath);
+            ASSERT_TRUE(output.is_open());
+            output << "server:\n  port: 1\n   bad-indent: [unclosed\n";
+        }
+        const std::filesystem::path missingPath =
+                directory() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{missingNameUtf8});
+
+        ConfigLoadResult broken;
+        ASSERT_NO_THROW(broken = configuration().loadFiles({brokenPath}));
+        EXPECT_FALSE(broken.success);
+        // 文件名要原样出现在文案里：变形或替换过的名字会让运维照着提示找不到那个文件
+        EXPECT_TRUE(anyEntryContains(broken.errors, std::string{brokenNameUtf8}));
+
+        ConfigLoadResult missing;
+        ASSERT_NO_THROW(missing = configuration().loadFiles({missingPath}));
+        EXPECT_FALSE(missing.success);
+        EXPECT_TRUE(anyEntryContains(missing.failedFiles, std::string{missingNameUtf8}));
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryWithRegularFileFails)
