@@ -79,23 +79,28 @@ namespace AsynGyanis::Core
         /**
          * @brief 接收一个数据报并带回来源地址（内部吸收「暂时没有数据」）
          * @param buffer 目标缓冲
-         * @param capacity 缓冲容量
+         * @param capacity 缓冲容量，至少 1 字节（空报文也要占一位）
          * @return 字节数与来源地址（见结构体说明：按值返回）
          * @note 等待可读期间套接字被关闭时 receivedByteCount 为 -1；**0 是合法的空报文**
          * @note 缓冲放不下整条报文时多出的字节被丢弃（UDP 语义），返回值即 capacity
+         * @throws Base::InvalidArgumentException 缓冲为空或容量为 0（调用方写错了，不必重试）
+         * @throws Base::SystemException 套接字无效（已被移动走或关闭），或平台层报错
          */
         [[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity);
 
         /**
          * @brief 发一条报文，内部吸收「发送缓冲暂时放不下」
-         * @param peerAddress 目标地址
-         * @param buffer 待发数据
-         * @param length 数据长度
+         * @param peerAddress 目标地址（按值收：本方法是惰性协程，到首次恢复才读参数，
+         *        按引用接临时量会让它在那之前就已亡故——ASan 实测为 stack-use-after-scope）
+         * @param buffer 待发数据；调用方必须让它活到 await 结束
+         * @param length 数据长度；0 表示合法的空报文
          * @return 实际发出的字节数（与 length 相等即成功）；等待可写期间套接字被关闭时返回 -1
          * @note 数据报不会部分写出，因此等待可写后是**整条重发**
-         * @throws Base::Exception 平台层报错（描述符非法、长度超限等），原因已含中文说明
+         * @throws Base::InvalidArgumentException 缓冲为空，或单条报文超过
+         *         Platform::DatagramSocket::kMaximumDatagramBytes（不会被内核切开，须自行分片）
+         * @throws Base::SystemException 套接字无效（已被移动走或关闭），或平台层报错
          */
-        [[nodiscard]] Task<ssize_t> asyncSendTo(const Platform::SocketAddress &peerAddress, const void *buffer, std::size_t length);
+        [[nodiscard]] Task<ssize_t> asyncSendTo(Platform::SocketAddress peerAddress, const void *buffer, std::size_t length);
 
     private:
         /**

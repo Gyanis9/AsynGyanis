@@ -1,6 +1,8 @@
 #include "Core/Socket/AsyncUdpSocket.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
+#include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 
 #include <string>
@@ -79,6 +81,18 @@ namespace AsynGyanis::Core
 
     Task<AsyncUdpSocket::DatagramReceiveResult> AsyncUdpSocket::asyncReceiveFrom(void *const buffer, const std::size_t capacity)
     {
+        // 本端自己就能判定的失败要挡在系统调用之前，并且要说清该怎么改：底层只回一个 EINVAL，
+        // 顺着错误码翻译出来的文案既不指到「缓冲」这个真实起因，也带着一句无关的提示
+        if (!m_socket.isValid())
+        {
+            throw Base::SystemException("数据报接收失败：套接字无效或已被移动走（本对象不再持有描述符）");
+        }
+        if (buffer == nullptr || capacity == 0)
+        {
+            throw Base::InvalidArgumentException("数据报接收失败：缓冲为空或容量为 0：连一条空报文也要至少一字节的空间，"
+                                                 "请给出足够的缓冲容量");
+        }
+
         Platform::SocketAddress peerAddress;
         while (true)
         {
@@ -109,9 +123,26 @@ namespace AsynGyanis::Core
         }
     }
 
-    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress &peerAddress, const void *const buffer,
+    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer,
                                               const std::size_t length)
     {
+        // 同 asyncReceiveFrom：超限与空缓冲在这一层就报出可操作的原文，不等底层回 EINVAL
+        if (!m_socket.isValid())
+        {
+            throw Base::SystemException("数据报发送失败：套接字无效或已被移动走（本对象不再持有描述符）");
+        }
+        if (buffer == nullptr)
+        {
+            throw Base::InvalidArgumentException("数据报发送失败：待发缓冲为空（长度为 0 时也要给出一个有效地址）");
+        }
+        if (length > Platform::DatagramSocket::kMaximumDatagramBytes)
+        {
+            throw Base::InvalidArgumentException(
+                    "数据报发送失败：单条报文 " + std::to_string(length) + " 字节超过上限 "
+                    + std::to_string(Platform::DatagramSocket::kMaximumDatagramBytes)
+                    + " 字节：数据报按整条交付、不会被内核切开，请自行分片或改用流式套接字");
+        }
+
         while (true)
         {
             const ssize_t sentByteCount = m_socket.send(peerAddress, buffer, length);

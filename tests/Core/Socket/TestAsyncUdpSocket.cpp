@@ -6,6 +6,7 @@
 #include "Core/Socket/AsyncUdpSocket.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/DatagramSocket.h"
@@ -277,6 +278,157 @@ namespace AsynGyanis::Core
         // 异常文本形如「[异常] 数据报接收失败：...」，因此只判「里面说了是哪一步」
         EXPECT_NE(observation.failureMessage.find("数据报接收失败"), std::string::npos)
                 << "异常文本应当说明是哪一步失败的：" << observation.failureMessage;
+        // 本端拿不到描述符是「对象已被移动走」，与底层的 EINVAL 相比这才是可操作的原因
+        EXPECT_NE(observation.failureMessage.find("套接字无效"), std::string::npos)
+                << "无效套接字要把本端原因说清，而不是只把底层错误码翻译一遍：" << observation.failureMessage;
         EXPECT_FALSE(observation.receivedByteCount.has_value()) << "失败时不该给出接收结果";
+    }
+
+    /**
+     * @brief 缓冲容量为 0 时要在交给系统调用之前拒掉，并把原因指到缓冲上
+     * @details 底层对空缓冲回的是 EINVAL，顺着错误码翻译出来的文案是「Invalid argument」，
+     *          后面还跟着一句「对端不可达」的提示——两样都不指向真实起因（调用方给的容量是 0），
+     *          而这一类错属于用法错误，应当落在 InvalidArgument 这一支，让调用方知道改参数而不是重试
+     */
+    TEST(AsyncUdpSocket, ZeroCapacityReceiveRejectsWithTheBufferAsTheReason)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid());
+
+        std::array<char, 8> buffer{};
+        Task<AsyncUdpSocket::DatagramReceiveResult> receiveTask = socket.asyncReceiveFrom(buffer.data(), 0);
+        receiveTask.handle().resume();
+        ASSERT_TRUE(receiveTask.isReady()) << "参数在交给系统调用之前就该被拒掉，不该挂起等报文";
+
+        bool        isInvalidArgument = false;
+        std::string failureText;
+        try
+        {
+            static_cast<void>(receiveTask.handle().promise().result());
+        } catch (const Base::InvalidArgumentException &rejection)
+        {
+            isInvalidArgument = true;
+            failureText       = rejection.what();
+        } catch (const std::exception &other)
+        {
+            failureText = other.what();
+        }
+        EXPECT_TRUE(isInvalidArgument) << "零容量是调用方写错了，要落在 InvalidArgument 这一支：" << failureText;
+        EXPECT_NE(failureText.find("缓冲"), std::string::npos) << "原因要指到缓冲上：" << failureText;
+        EXPECT_EQ(failureText.find("对端不可达"), std::string::npos)
+                << "参数错误不该带上「对端不可达」这类无关提示：" << failureText;
+    }
+
+    /**
+     * @brief 单条报文超过上限时直接拒绝，并把上限数字写进文案
+     * @details 交给系统调用只会拿到平台各自的 EMSGSIZE/WSAEMSGSIZE，两端文案不一样且都不说上限是多少
+     */
+    TEST(AsyncUdpSocket, OverlongDatagramSendIsRejectedWithTheLimitInText)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid());
+
+        const std::size_t oversizedByteCount = Platform::DatagramSocket::kMaximumDatagramBytes + 1;
+        const std::string payload(oversizedByteCount, 'x');
+        Task<ssize_t>     sendTask = socket.asyncSendTo(socket.localAddress(), payload.data(), payload.size());
+        sendTask.handle().resume();
+        ASSERT_TRUE(sendTask.isReady()) << "超限的报文应当在进入系统调用之前就被拒掉";
+
+        bool        isInvalidArgument = false;
+        std::string failureText;
+        try
+        {
+            static_cast<void>(sendTask.handle().promise().result());
+        } catch (const Base::InvalidArgumentException &rejection)
+        {
+            isInvalidArgument = true;
+            failureText       = rejection.what();
+        } catch (const std::exception &other)
+        {
+            failureText = other.what();
+        }
+        EXPECT_TRUE(isInvalidArgument) << "长度超限是调用方参数问题：" << failureText;
+        EXPECT_NE(failureText.find("上限"), std::string::npos) << failureText;
+        EXPECT_NE(failureText.find(std::to_string(Platform::DatagramSocket::kMaximumDatagramBytes)), std::string::npos)
+                << "文案要写出上限是多少，调用方据此决定分片大小：" << failureText;
+    }
+
+    /**
+     * @brief 上限长度本身的另一侧：正好等于上限的报文必须放行，并且整条交给内核
+     * @details 只测拒绝面容易把判界写成「达到上限即拒」，这条用例钉住合法那一侧
+     */
+    TEST(AsyncUdpSocket, DatagramExactlyAtTheMaximumIsAccepted)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid());
+
+        const std::size_t maximumByteCount = Platform::DatagramSocket::kMaximumDatagramBytes;
+        const std::string payload(maximumByteCount, 'x');
+        Task<ssize_t>     sendTask = socket.asyncSendTo(socket.localAddress(), payload.data(), payload.size());
+        sendTask.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&sendTask]
+                                 {
+                                     return sendTask.isReady();
+                                 }))
+                << "上限长度的发送没有收尾：既没交出去也没报错";
+
+        ssize_t sentByteCount = -1;
+        EXPECT_NO_THROW(sentByteCount = sendTask.handle().promise().result());
+        EXPECT_EQ(sentByteCount, static_cast<ssize_t>(maximumByteCount)) << "整条报文应当被内核整条接下";
+    }
+
+    /**
+     * @brief 目标地址要按值收进协程帧：临时量在首次恢复之前就已亡故，也不该读到野内存
+     * @details 本仓库的规范硬性要求「惰性启动的接口不得按引用/视图收数据」——协程到首次 resume
+     *          才执行函数体，而实参的临时量在那之前早就离开了作用域。这里刻意先把 Task 存下来、
+     *          再恢复，就是那个现场（地址改成按引用收时，容器里的 ASan 报 stack-use-after-scope，
+     *          读点落在 Platform::DatagramSocket::send 判地址那一步）
+     */
+    TEST(AsyncUdpSocket, SendReadsThePeerAddressCopyHeldByTheFrameRatherThanTheTemporary)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket sender   = bindLoopbackSocket(loop);
+        AsyncUdpSocket receiver = bindLoopbackSocket(loop);
+        ASSERT_TRUE(sender.isValid());
+        ASSERT_TRUE(receiver.isValid());
+
+        const std::string payload = "lifetime";
+        Task<ssize_t>     sendTask = sender.asyncSendTo(receiver.localAddress(), payload.data(), payload.size());
+        // 这一行之前，asyncSendTo 的实参临时量已经亡故：协程还一行没跑
+        sendTask.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&sendTask]
+                                 {
+                                     return sendTask.isReady();
+                                 }))
+                << "发送既没交出去也没报错：调用方拿不到结论";
+
+        ssize_t sentByteCount = -1;
+        EXPECT_NO_THROW(sentByteCount = sendTask.handle().promise().result());
+        EXPECT_EQ(sentByteCount, static_cast<ssize_t>(payload.size())) << "按值收的地址应当与原临时量等价";
+
+        // 等价性不只看返回码：报文要真能落到那个地址上
+        std::array<char, 32> receiveBuffer{};
+        Task<AsyncUdpSocket::DatagramReceiveResult> receiveTask =
+                receiver.asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
+        receiveTask.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&receiveTask]
+                                 {
+                                     return receiveTask.isReady();
+                                 }))
+                << "发送成功而接收没等到报文：地址在传递途中被改写了";
+        const AsyncUdpSocket::DatagramReceiveResult received = receiveTask.handle().promise().result();
+        EXPECT_EQ(received.receivedByteCount, static_cast<ssize_t>(payload.size()));
+        EXPECT_EQ(std::string(receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)), payload);
     }
 } // namespace AsynGyanis::Core
