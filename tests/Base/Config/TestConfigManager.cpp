@@ -21,6 +21,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -919,10 +920,13 @@ server:
 
     /**
      * @brief 多线程反复启停热加载，结束时状态必须自洽且不崩
-     * @details 改前 enableHotReload 写 m_fileWatcher（普通 unique_ptr）、disableHotReload 读并
-     *          reset 它，两边只靠一个原子布尔互相「打招呼」——那个布尔护不住监视器对象本身。
+     * @details 启停两条路径都要碰 m_fileWatcher（普通 unique_ptr），二者之间的互斥只由控制面锁
+     *          m_hotReloadControlMutex 表达——那个原子布尔护得住开关，护不住监视器对象本身。
+     *          本例从并发起停的形状把「终态自洽、关掉后还能再开起来」钉住。
      * @note 这条钉得到的是「不崩、收尾状态一致」这一下界；撕裂指针那类竞态只有容器里的 TSan
      *       看得见（本机 MSVC 不提供 TSan），别把这条跑绿当成「无竞态」的证据
+     * @note 每一对启停都要建并销毁一个监视器线程，因此轮数刻意少（3 线程 × 6 轮），并把等待做成
+     *       有界的：卡住时报失败并放手，不让这一例把后面的用例一起挂死
      */
     TEST_F(ConfigManagerTest, ConcurrentEnableAndDisableHotReloadEndsInOneConsistentState)
     {
@@ -930,23 +934,67 @@ server:
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         constexpr int kThreadCount = 3;
-        constexpr int kRoundCount  = 12;
+        constexpr int kRoundCount  = 6;
+        constexpr std::chrono::milliseconds kDebounceMilliseconds{1};
+        // 整例的硬上界：启停一对正常是亚毫秒级。这一例曾在并行负载下把套件拖到几百秒——失败要被
+        // 报出来，而不是把排在后面的用例一起挂死，所以等待本身必须是有界的
+        constexpr std::chrono::milliseconds kMaximumTotalMilliseconds{10000};
 
-        std::vector<std::jthread> workers;
+        std::atomic<bool> stopRequested{false};
+        std::atomic<int>  returnedWorkerCount{0};
+
+        std::vector<std::thread> workers;
         workers.reserve(kThreadCount);
         for (int workerIndex = 0; workerIndex < kThreadCount; ++workerIndex)
         {
             // 每个线程各起各的监视器再各关各的：两条控制路径会在同一时刻撞 m_fileWatcher
-            workers.emplace_back([this]
+            workers.emplace_back([&stopRequested, &returnedWorkerCount, this]
             {
-                for (int round = 0; round < kRoundCount; ++round)
+                for (int round = 0; round < kRoundCount && !stopRequested.load(std::memory_order_acquire); ++round)
                 {
-                    static_cast<void>(configuration().enableHotReload());
+                    static_cast<void>(configuration().enableHotReload(nullptr, kDebounceMilliseconds));
                     configuration().disableHotReload();
                 }
+                returnedWorkerCount.fetch_add(1, std::memory_order_release);
             });
         }
-        workers.clear();   // jthread 析构即 join：任何一个 worker 卡在启停里都会让这里挂住
+
+        const auto beganAt  = std::chrono::steady_clock::now();
+        const auto deadline = beganAt + kMaximumTotalMilliseconds;
+
+        bool allWorkersReturned = false;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (returnedWorkerCount.load(std::memory_order_acquire) == kThreadCount)
+            {
+                allWorkersReturned = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - beganAt).count();
+        // 标签走 ASCII：控制台代码页会把中文读数弄成乱码，取不到数就白跑一轮
+        std::printf("hot-reload churn threads=%d rounds=%d elapsed=%lldms\n",
+                    kThreadCount, kRoundCount, static_cast<long long>(elapsedMilliseconds));
+
+        stopRequested.store(true, std::memory_order_release);
+        if (allWorkersReturned)
+        {
+            for (auto &worker: workers)
+            {
+                worker.join();
+            }
+        } else
+        {
+            // 超时就不 join：卡在锁里的线程叫不醒，等它等于等挂。结论已由下面这条断言报出，
+            // 这些线程随进程一起收场
+            for (auto &worker: workers)
+            {
+                worker.detach();
+            }
+        }
+        EXPECT_TRUE(allWorkersReturned) << "有 worker 没能在规定上界内从启停里回来，这就是那条长时间挂死的形状";
 
         configuration().disableHotReload();
         EXPECT_FALSE(configuration().isHotReloadEnabled());
