@@ -3,7 +3,7 @@
 // 覆盖场景：
 // - 标识符引用与内部引号转义
 // - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
-// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含引号列名）
+// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含空段的点号文本 / 越过短字符串缓冲的长名 / 含引号列名）
 // - FROM 与表别名
 // - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
 // - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
@@ -180,6 +180,43 @@ TEST(SqliteDialectSelect, QualifiedNameQuotesEachSegment)
     const SqlStatement statement = dialect.translate(node);
 
     EXPECT_EQ(statement.sql, "SELECT \"users\".\"id\", \"users\".* FROM \"users\"");
+}
+
+/**
+ * @brief 验证含空段的点号文本按表达式原样输出，不生成空标识符引用
+ */
+TEST(SqliteDialectSelect, QualifiedNameWithEmptySegmentIsPassedThrough)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"users.", ".id", "a..b"};
+
+    const SqlStatement statement = dialect.translate(node);
+
+    // 空段不是合法标识符：把它引用成 "" 会造出一个无名列，与「这压根不是限定名」是两回事。
+    // 整段按表达式交给数据库报错，比在这一层替它猜一个意思更可靠
+    EXPECT_EQ(statement.sql, "SELECT users., .id, a..b FROM \"users\"");
+}
+
+/**
+ * @brief 验证超出短字符串缓冲的长标识符仍逐字加引用并转义
+ */
+TEST(SqliteDialectSelect, LongIdentifierWithQuoteIsQuotedVerbatim)
+{
+    const SqliteDialect dialect;
+
+    // 长度越过短字符串优化的名字才会走堆缓冲；这里同时带一个内部引用符，两个分支一起验
+    const std::string longColumnName = "veryLongColumnNameThatWillNotFitSmallBuffer\"tail";
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {longColumnName};
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT \"veryLongColumnNameThatWillNotFitSmallBuffer\"\"tail\" FROM \"users\"");
 }
 
 /**
