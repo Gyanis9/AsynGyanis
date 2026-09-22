@@ -1114,12 +1114,19 @@ namespace AsynGyanis::Base
             // 文档必须可改写：叶子值会被移出以便省掉一次深拷贝（文档本身是本次解析的临时产物）
             ConfigValue document = parseDocumentBySuffix(*text, filePath);
 
+            // 整份文档没有内容（只有注释行的 YAML、显式的 null）与空文件等价：不产出配置项，
+            // 也不算坏文件。「放一份只写着说明的 overrides.yaml」是常见的发布做法，报它失败
+            // 等于逼运维删掉那份说明
+            if (document.is_null())
+            {
+                return true;
+            }
+
             if (!document.is_object())
             {
-                // 沿用 YAML 习惯措辞：数组报 sequence，空值报 null，标量按类型名
+                // 沿用 YAML 习惯措辞：数组报 sequence，标量按类型名
                 const std::string_view kindName = document.is_array() ? std::string_view{"sequence"}
-                                                       : document.is_null() ? std::string_view{"null"}
-                                                                            : std::string_view{typeName(document.type())};
+                                                     : std::string_view{typeName(document.type())};
 
                 errors.push_back("文件 '" + filePath.string() + "'：根节点必须是映射，实际为 " + std::string(kindName));
                 return false;

@@ -602,6 +602,30 @@ server:
         EXPECT_EQ(configuration().keys().size(), 1U);
     }
 
+    /**
+     * @brief 只有注释行的 YAML 与空文件同义：不产出键，也不算坏文件
+     * @details 解析出来是「无内容」，与逐字节为空的文档是一回事；而「放一份只写说明的
+     *          overrides.yaml」是常见的发布做法，判它失败会把整轮加载报成失败，等于逼运维
+     *          删掉那份说明。显式写成 null 文档（`~`）同理。
+     * @note 拒绝面同时钉住：标量根仍按「根节点必须是映射」报错，不能顺手一并放过。
+     */
+    TEST_F(ConfigManagerTest, LoadFromDirectoryTreatsCommentOnlyFileAsEmptyConfig)
+    {
+        writeFile("app.yaml", "key: value\n");
+        writeFile("overrides.yaml", "# 本环境不覆盖任何键\n# 说明性占位文件\n");
+        writeFile("explicitNull.yaml", "~\n");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_TRUE(result.success);
+        EXPECT_TRUE(result.failedFiles.empty()) << "只写注释的文件被判成了坏文件";
+        EXPECT_TRUE(result.errors.empty());
+        EXPECT_EQ(result.loadedFiles.size(), 3U);
+        // 占位文件既不贡献键，也不该把别的文件读进来的键带走
+        EXPECT_EQ(configuration().keys().size(), 1U);
+        EXPECT_EQ(configuration().getString("key"), "value");
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsFilesWhoseRootIsNotAMap)
     {
         writeFile("list.yaml", "- item1\n- item2\n");
