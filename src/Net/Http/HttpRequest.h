@@ -79,6 +79,15 @@ namespace AsynGyanis::Net
         void setUri(std::string uri);
 
         /**
+         * @brief 接手解析器暂存的 URI 缓冲，整块换下本请求当前的 URI
+         * @details 与 adoptStagedHeaders() 同一条理由：按值移动会把解析器那块缓冲连着容量一起交出去，
+         *          下一条报文就得重新取一块。调用前本请求必须已经 reset()，否则上一条报文的 URI
+         *          会被换进解析器的暂存里而不是被丢弃。
+         * @param stagedUri 解析器暂存的 URI；返回时它接手到本请求刚清空的那份，容量照旧留着
+         */
+        void adoptStagedUri(std::string &stagedUri) noexcept;
+
+        /**
          * @brief 获取原始 URI。
          * @return URI 字符串引用
          */
@@ -184,6 +193,14 @@ namespace AsynGyanis::Net
          * @param body 正文内容
          */
         void setBody(std::string body);
+
+        /**
+         * @brief 接手解析器暂存的正文缓冲，整块换下本请求当前的正文
+         * @details 覆盖语义与 setBody() 一致（旧正文作废），区别只在两条缓冲交换而不是移动：
+         *          解析器留着本请求那份容量，长正文的保活连接不必每条报文重新取一块。
+         * @param stagedBody 解析器暂存的正文；返回时它接手到本请求的旧正文，由调用方清零后复用
+         */
+        void adoptStagedBody(std::string &stagedBody) noexcept;
 
         /**
          * @brief 向请求正文尾部追加一段字节。

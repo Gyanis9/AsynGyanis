@@ -1,4 +1,4 @@
-// HttpRequest 单元测试：方法映射、头部存储模型、路径与查询串解析、取消信号
+// HttpRequest 单元测试：方法映射、头部存储模型、URI 与正文的整块交接、路径与查询串解析、取消信号
 #include "Net/Http/HttpRequest.h"
 
 #include "Net/Http/HttpMethod.h"
@@ -154,6 +154,37 @@ namespace AsynGyanis::Net
         request.appendBody(kTail.data(), kTail.size());
 
         EXPECT_EQ(request.body(), "second!tail");
+    }
+
+    /**
+     * @brief 交接 URI 与正文是两条缓冲整块交换，被覆盖的旧内容交给源而不是消失
+     * @details 判据取「源侧接手到本请求原先那份内容且容量还在」：按值移动会把源清空、把目标的旧内容
+     *          直接丢弃，从请求侧读结果两者一模一样，只有交换才在源侧留下可见的痕迹。
+     *          稳态零分配由 TestHotPathAllocations 钉，这里钉的是它能成立的前提——源清零之前那些字节归源。
+     */
+    TEST(HttpRequest, AdoptSwapsWholeBuffersInsteadOfDiscardingTheOldOnes)
+    {
+        HttpRequest request;
+        request.setUri("/first-with-a-long-enough-path");
+        request.setBody(std::string(64, 'a'));
+
+        std::string stagedUri  = "/second";
+        std::string stagedBody = std::string(3, 'b');
+        request.adoptStagedUri(stagedUri);
+        request.adoptStagedBody(stagedBody);
+
+        EXPECT_EQ(request.uri(), "/second");
+        EXPECT_EQ(request.body(), "bbb");
+
+        // 旧内容换到了源这一侧：复用路径上调用方必须把它清零，否则串进下一条报文
+        EXPECT_EQ(stagedUri, "/first-with-a-long-enough-path");
+        EXPECT_EQ(stagedBody, std::string(64, 'a'));
+        stagedBody.clear();
+        EXPECT_GE(stagedBody.capacity(), 64U) << "交换退化成移动时源侧接手不到这块缓冲，容量退回短串内联";
+
+        request.reset();
+        EXPECT_TRUE(request.uri().empty());
+        EXPECT_TRUE(request.body().empty());
     }
 
     // ============================================================================

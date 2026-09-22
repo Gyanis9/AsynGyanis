@@ -77,6 +77,12 @@ namespace AsynGyanis::Net
         m_uri = std::move(uri);
     }
 
+    void HttpRequest::adoptStagedUri(std::string &stagedUri) noexcept
+    {
+        // 交换而不是移动：解析器接手本请求刚清空的那份缓冲，两边容量都留着给下一条报文用
+        m_uri.swap(stagedUri);
+    }
+
     const std::string &HttpRequest::uri() const
     {
         return m_uri;
@@ -143,6 +149,13 @@ namespace AsynGyanis::Net
     void HttpRequest::setBody(std::string body)
     {
         m_body = std::move(body);
+    }
+
+    void HttpRequest::adoptStagedBody(std::string &stagedBody) noexcept
+    {
+        // 覆盖语义与 setBody 一致（旧正文作废），区别只在两条缓冲交换：换出去的旧内容由调用方清零，
+        // 两侧容量都留下来供下一条报文复用
+        m_body.swap(stagedBody);
     }
 
     void HttpRequest::appendBody(const char *data, const size_t length)

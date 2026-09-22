@@ -8,12 +8,14 @@
 //   · 计数件自己要有自检：哪天 operator new 的替换件被顶掉，所有读数都会是 0，而 0 看着像
 //     「零分配的优秀实现」。
 //
-// 本轮量出来的读数（Release，摊平到每次操作）：解析一条 h1 请求 2 次 / 113 字节——头部已收进
-// 一条字节缓冲，剩下的两次是 URI 与正文各自的缓冲（两条都按移动交付给请求，源侧容量因此被偷走，
-// 下一条报文重新要一块）；装 10 条头部 0 次 / 0 字节——clear 只清内容、留着容量，整块头部的字节
-// 都写进同一条缓冲；响应头序列化每次新建串 1 次，复用同一块缓冲 0 次；解一帧 200 字节头块的
-// HEADERS 1 次 / 208 字节，就是取走的那份负载；组一帧 256 字节分块帧每次新建串 1 次 / 272 字节，
-// 复用帧缓冲 0 次。
+// 量出来的读数（Release，摊平到每次操作）。凡声称「稳态零分配」的形状，判据一律取一千次的原值：
+// 摊平是整除，「每次 0 次」藏得住一千次里的 999 次分配。
+//   · 解析一条 h1 请求：一千次共 0 次。头部收进一条字节缓冲，URI、头部与正文交给请求时按整块交换，
+//     四份容器的容量跨报文留着。要先前置暖身若干轮才读到这个稳态——倍扩容本身是暖期成本；
+//   · 装 10 条头部：0 次 / 0 字节。clear 只清内容、留着容量，整块头部的字节都写进同一条缓冲；
+//   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
+//   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
+//   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
 
 #include "Net/Http/HttpChunkFrame.h"
@@ -121,18 +123,21 @@ namespace AsynGyanis::Net
         /// 每个形状连跑这么多次再摊平：单次读数会被「临时串先分配后释放」这类顺序细节影响
         constexpr std::uint64_t kMeasurementIterations = 1000U;
 
+        /// 解析形状暖身用的轮数：四份容器（解析器与请求各自的字节缓冲和记录表）按倍扩容要几轮才长到位
+        constexpr std::uint64_t kParseWarmUpIterationCount = 64U;
+
 #ifdef NDEBUG
-        // 下面这五个数是 Release（发布形态真正跑的那套配置）下实测摊平到每次操作的分配数。
-        // 只在 Release 上钉死：Debug 的 STL 迭代器调试代理会给每个容器对象多挂一块代理，
-        // 读数被实现细节放大一个量级，钉它等于钉噪声。
-        // Debug 侧仍跑同样的形状，把读数打出来供对照，并保留两条与配置无关的结构判据
-        constexpr std::uint64_t kHttp1ParseAllocationsPerRequest = 2U;
-        constexpr std::uint64_t kHeaderRefillAllocationsPerTenFields = 0U;
+        // 下面这些数是 Release（发布形态真正跑的那套配置）下的实测分配数。只在 Release 上钉死：
+        // Debug 的 STL 迭代器调试代理会给每个容器对象多挂一块代理，读数被实现细节放大一个量级，
+        // 钉它等于钉噪声。Debug 侧仍跑同样的形状，把读数打出来供对照，并保留两条与配置无关的结构判据。
+        // 名字里带 Total 的钉的是「一千次一共多少次」（原值），其余是摊平到每次操作的读数
+        constexpr std::uint64_t kHttp1ParseTotalAllocationsPerThousand = 0U; ///< URI、头部、正文都整块交接，暂存容量跨报文留着
+        constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
         constexpr std::uint64_t kHeadSerializeAllocationsFresh = 1U;
-        constexpr std::uint64_t kHeadSerializeAllocationsReused = 0U;
+        constexpr std::uint64_t kHeadSerializeTotalAllocationsReused = 0U;
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
         constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
-        constexpr std::uint64_t kChunkFrameAllocationsReused = 0U;     ///< 复用帧缓冲：容量长够之后一次都不碰堆
+        constexpr std::uint64_t kChunkFrameTotalAllocationsReused = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
 #endif
 
         /**
@@ -154,10 +159,14 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 一次测量的结果：摊到每次操作的分配数，加上被测体返回标记的总和
+         * @brief 一次测量的结果：窗口内的分配原值，外加摊平到每次操作的读数
+         * @details 摊平是整除，因此「每次 0 次」这个读数掩盖得住一千次里的零星几次分配。
+         *          凡是要钉「稳态一次都不碰堆」的形状，判据一律用 totalAllocations 原值。
          */
         struct AllocationProfile
         {
+            std::uint64_t totalAllocations{0};        ///< 整个测量窗口的分配总次数
+            std::uint64_t totalBytes{0};              ///< 整个测量窗口申请的字节总数
             std::uint64_t allocationsPerOperation{0}; ///< 每次操作的分配次数
             std::uint64_t bytesPerOperation{0};       ///< 每次操作申请的字节数
             std::uint64_t resultSum{0};               ///< 被测体标记之和，用于证明它真的跑了
@@ -180,8 +189,10 @@ namespace AsynGyanis::Net
             const Snapshot ended = sample();
 
             AllocationProfile profile;
-            profile.allocationsPerOperation = (ended.count - began.count) / kMeasurementIterations;
-            profile.bytesPerOperation = (ended.bytes - began.bytes) / kMeasurementIterations;
+            profile.totalAllocations    = ended.count - began.count;
+            profile.totalBytes          = ended.bytes - began.bytes;
+            profile.allocationsPerOperation = profile.totalAllocations / kMeasurementIterations;
+            profile.bytesPerOperation       = profile.totalBytes / kMeasurementIterations;
             profile.resultSum = resultSum;
             return profile;
         }
@@ -284,7 +295,7 @@ namespace AsynGyanis::Net
                     sink += 1U;
                     return std::size_t{0};
                 });
-        EXPECT_EQ(profile.allocationsPerOperation, 0U) << "测量窗里有背景分配，形状读数不可信";
+        EXPECT_EQ(profile.totalAllocations, 0U) << "测量窗里有背景分配，形状读数不可信";
         EXPECT_EQ(profile.resultSum, 0U);
         EXPECT_EQ(sink, kMeasurementIterations);
     }
@@ -309,14 +320,23 @@ namespace AsynGyanis::Net
             return consumed;
         };
         EXPECT_EQ(parseOnce(), expectedConsumed) << "这条形状的解析结果本身就不对";
+        // 跑够轮数让各容器长到位再开始测量：字节缓冲与记录表各有两份在解析器与请求之间交换，
+        // 按倍扩容要几轮才收敛，只暖一轮会把这点暖期成本读成「稳态仍在分配」
+        for (std::uint64_t warmUpIndex = 0; warmUpIndex < kParseWarmUpIterationCount; ++warmUpIndex)
+        {
+            parseOnce();
+        }
 
         const AllocationProfile profile = measurePerOperation(parseOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * expectedConsumed) << "有几次解析没走到 Done";
-        std::printf("http1-parse-request 每次分配 %llu 次 / %llu 字节\n",
+        std::printf("http1-parse-request 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
                     static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation));
+                    static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations),
+                    static_cast<unsigned long long>(profile.totalBytes));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.allocationsPerOperation, kHttp1ParseAllocationsPerRequest)
+        // 判据取原值而不是摊平读数：摊平是整除，「每次 0 次」允许一千次里藏住 999 次分配
+        EXPECT_EQ(profile.totalAllocations, kHttp1ParseTotalAllocationsPerThousand)
                 << "每条入站请求的分配数变了：要么多了一次每请求堆块，要么这份读数需要按实测重录";
 #endif
     }
@@ -349,19 +369,20 @@ namespace AsynGyanis::Net
 
         const AllocationProfile profile = measurePerOperation(refill);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * fixtures.size());
-        std::printf("header-store-refill 每次分配 %llu 次 / %llu 字节\n",
+        std::printf("header-store-refill 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
                     static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation));
+                    static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.allocationsPerOperation, kHeaderRefillAllocationsPerTenFields)
+        EXPECT_EQ(profile.totalAllocations, kHeaderRefillTotalAllocationsPerThousand)
                 << "装 10 条头部的分配数变了：稳态下这张表只该按需扩容，不该每条头各要一块";
 #endif
     }
 
     /**
      * @brief 响应头序列化的两种出口各付出多少次分配
-     * @details 复用缓冲那条正是上一轮「头部缓冲按连接复用」冲着的读数：两条出口产出的文本一模一样，
-     *          省下的就是那次新建串的分配，因此这里同时核对两者结果等长
+     * @details 两条出口产出的头部文本必须一模一样，所以这里同时核对结果等长；两者的读数差就是
+     *          每次新建串那一笔分配
      */
     TEST(HotPathAllocations, ResponseHeadSerializeAllocations)
     {
@@ -388,14 +409,15 @@ namespace AsynGyanis::Net
         // 把序列化的产物又放回了每次新建的串里
         EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation)
                 << "复用缓冲的出口反而比每次新建串更费分配";
-        std::printf("response-head-serialize 每次分配 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节\n",
+        std::printf("response-head-serialize 每次分配 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
                     static_cast<unsigned long long>(fresh.allocationsPerOperation),
                     static_cast<unsigned long long>(fresh.bytesPerOperation),
                     static_cast<unsigned long long>(reused.allocationsPerOperation),
-                    static_cast<unsigned long long>(reused.bytesPerOperation));
+                    static_cast<unsigned long long>(reused.bytesPerOperation),
+                    static_cast<unsigned long long>(reused.totalAllocations));
 #ifdef NDEBUG
         EXPECT_EQ(fresh.allocationsPerOperation, kHeadSerializeAllocationsFresh) << "每响应一份新头部串的读数变了";
-        EXPECT_EQ(reused.allocationsPerOperation, kHeadSerializeAllocationsReused)
+        EXPECT_EQ(reused.totalAllocations, kHeadSerializeTotalAllocationsReused)
                 << "复用缓冲这条路应当一次堆块都不碰";
 #endif
     }
@@ -468,14 +490,15 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fresh.resultSum, reused.resultSum) << "两条出口产出的帧长度不一致";
         EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation)
                 << "复用缓冲的出口反而比每次新建串更费分配";
-        std::printf("chunk-frame 每次分配 新建串 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节\n",
+        std::printf("chunk-frame 每次分配 新建串 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
                     static_cast<unsigned long long>(fresh.allocationsPerOperation),
                     static_cast<unsigned long long>(fresh.bytesPerOperation),
                     static_cast<unsigned long long>(reused.allocationsPerOperation),
-                    static_cast<unsigned long long>(reused.bytesPerOperation));
+                    static_cast<unsigned long long>(reused.bytesPerOperation),
+                    static_cast<unsigned long long>(reused.totalAllocations));
 #ifdef NDEBUG
         EXPECT_EQ(fresh.allocationsPerOperation, kChunkFrameAllocationsFresh) << "每次新建帧串的分配数变了";
-        EXPECT_EQ(reused.allocationsPerOperation, kChunkFrameAllocationsReused)
+        EXPECT_EQ(reused.totalAllocations, kChunkFrameTotalAllocationsReused)
                 << "复用帧缓冲这条路应当一次堆块都不碰";
 #endif
     }

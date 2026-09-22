@@ -413,7 +413,7 @@ namespace AsynGyanis::Net
         // 由调用方经 bufferedBodyView()/discardBufferedBody() 边收边取
         m_currentRequest.reset();
         m_currentRequest.setMethod(m_method);
-        m_currentRequest.setUri(std::move(m_uri));
+        m_currentRequest.adoptStagedUri(m_uri);
         m_currentRequest.setHttpVersion(std::move(m_httpVersion));
         m_currentRequest.adoptStagedHeaders(m_headerStaging);
         m_headersCommitted = true;
@@ -911,7 +911,8 @@ namespace AsynGyanis::Net
     void HttpParser::commitMessage()
     {
         // 移交：先把上一条报文留下的内容整体清掉（取消源一并重建，避免继承上一条的取消状态），
-        // 再按解析结果逐项落进去。容器与串都按移动交付，不产生逐字节拷贝。
+        // 再按解析结果逐项落进去。URI、头部与正文都按整块交换交付：两条缓冲各留各的容量，
+        // 稳态下一条报文不再为它们取还堆块；版本号短到进小串内联，按值移动即可。
         // 移交之前对外请求对象一直是空壳，因此半成品阶段的 request() 读不出任何东西
         //（比「可读但不许放行」更强）
         //
@@ -921,12 +922,11 @@ namespace AsynGyanis::Net
         {
             m_currentRequest.reset();
             m_currentRequest.setMethod(m_method);
-            m_currentRequest.setUri(std::move(m_uri));
+            m_currentRequest.adoptStagedUri(m_uri);
             m_currentRequest.setHttpVersion(std::move(m_httpVersion));
-            // 头部整块交换：请求接手暂存的那条缓冲，暂存接手请求刚清空的那条，两条容量都留着复用
             m_currentRequest.adoptStagedHeaders(m_headerStaging);
         }
-        m_currentRequest.setBody(std::move(m_body));
+        m_currentRequest.adoptStagedBody(m_body);
 
         // 暂存清回初态供下一条报文复用：clear 保留容量，因此稳态下不再为它们分配内存
         clearMessageScratch();
