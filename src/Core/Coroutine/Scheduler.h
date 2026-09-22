@@ -29,7 +29,8 @@ namespace AsynGyanis::Core
      *          （跨线程完成回调要 resume 在发起者循环、套接字与 TLS 通道按循环归属），把它们
      *          偷到别的循环执行会破坏亲和性并引入数据竞争；跨循环的负载均衡发生在接受层
      *          （每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
-     * @note 本类非线程安全，除 scheduleRemote() 外，其他成员函数应由所属 EventLoop 线程调用。
+     * @note 本类非线程安全，除 scheduleRemote() 与 postRemote() 这两个投递入口外，其他成员函数
+     *       （含 hasWork() 与 runOne()/runAll()）都应由所属 EventLoop 线程调用。
      */
     class Scheduler
     {
