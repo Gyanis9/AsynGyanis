@@ -153,6 +153,13 @@
 
 ### 修复
 
+- **HTTP/3 摘掉流式请求记录时归还它占着的接收窗口**：承载层把 DATA 载荷的额度归还明确交给上层
+  （`creditConsumedBytes` 只补帧开销、把载荷扣掉），h2 侧由 `finishStreamingRequestBody()` 兑现，h3 的流式记录
+  却是在收尾步骤里直接 `erase_if` 摘掉的——处理器不读正文（提前作答、判错早退）时那些字节就永久留在
+  连接级 MAX_DATA 里，攒够一轮整条连接再也收不进东西。摘除点现在补上「按已消费处理」，与 h2 同一件事。
+  新增 `Http3Session.ReturnsWindowForBodyAbandonedByStreamingHandler`：流式 POST 带 4 KiB 正文、处理器一个字节
+  都不读，断言归还量不少于正文长度；消融（去掉摘除点的归还）读数只有 51 字节——那是帧开销，正好是
+  承载层愿意替上层还的那部分。
 - **QUIC 退休包号空间时，拥塞层的在途账一起销**：恢复层与拥塞层各记一本在途字节，`discardSpace()` 原先只清
   恢复层那本——被退休空间里未确认的包此后既不会被确认也不会判丢，却永久留在 `bytesInFlight` 里。Initial 空间
   几乎总在握手期就退休（解到对端 Handshake 报文即退休，RFC 9001 §4.9.1），于是这条连接之后每次算

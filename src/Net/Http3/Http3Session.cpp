@@ -1376,8 +1376,19 @@ namespace AsynGyanis::Net
     {
         // 两个条件都要满足才摘：派发协程跑完**且**承载侧的流已关闭。handler 先跑完而流还开着时
         // 不能摘——那之后还会有 DATA 到达，记录没了就会被当成非流式请求又建出一份来
-        std::erase_if(m_streamingRequests,
-                      [](const auto &entry) { return entry.second->isServeFinished && entry.second->isStreamClosed; });
+        for (auto entry = m_streamingRequests.begin(); entry != m_streamingRequests.end();)
+        {
+            if (!entry->second->isServeFinished || !entry->second->isStreamClosed)
+            {
+                ++entry;
+                continue;
+            }
+            // 业务不再读这条流的正文了：把还攥着的字节按已消费处理，窗口随之归还（h2 侧
+            // finishStreamingRequestBody() 同一件事）。不还的话这些字节永久占着连接级 MAX_DATA，
+            // 攒够一轮就把整条连接的对端发送额度吃光——承载层明确把 DATA 载荷的归还留给上层
+            entry->second->body.consumePending();
+            entry = m_streamingRequests.erase(entry);
+        }
     }
 
     void Http3Session::finalizeResponseForHttp3(const std::int64_t streamId, HttpResponse &response)

@@ -1890,6 +1890,79 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：流式处理器丢下的正文，摘记录前要把接收窗口还给对端
+     * @details 承载层把 DATA 载荷的归还留给上层（`creditConsumedBytes` 只补帧开销、明确扣掉载荷），
+     *          h2 侧由 `finishStreamingRequestBody()` 兑现；h3 的流式记录是被收尾步骤摘掉的，
+     *          不在摘除点还账就等于「业务不看正文 → 这些字节永久占着对端的连接级 MAX_DATA」，
+     *          攒够一轮整条连接就收不进东西了
+     */
+    TEST(Http3Session, ReturnsWindowForBodyAbandonedByStreamingHandler)
+    {
+        FakeStreamOpener                                  opener;
+        std::vector<CapturedStreamData>                   sentStreamData;
+        std::vector<std::pair<std::int64_t, std::size_t>> creditedChunks;
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(
+                            CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                [&creditedChunks](const std::int64_t streamId, const std::size_t consumedByteCount)
+                {
+                    creditedChunks.emplace_back(streamId, consumedByteCount);
+                },
+                nullptr);
+
+        bool isHandlerEntered = false;
+        Router router;
+        router.postStreaming("/streaming-upload",
+                             [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerEntered = true;
+                                 // 刻意不碰 request.bodyStream()：这就是「处理器提前作答」的常见形状
+                                 response.setStatus(200);
+                                 response.setBody("done");
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+
+        const std::string body(4096, 'z');
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/streaming-upload", "example.com", body, body.size()));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        for (int pumpRound = 0; pumpRound < 6 && session.hasOutstandingWork(); ++pumpRound)
+        {
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+        }
+        EXPECT_FALSE(session.hasOutstandingWork()) << "记录没被收尾摘掉：这条用例测不到摘除点还账";
+        ASSERT_TRUE(isHandlerEntered) << "流式路由没把请求交给业务，这条用例就没走到摘除点";
+
+        std::size_t creditedByteCount = 0;
+        for (const auto &[streamId, consumedByteCount]: creditedChunks)
+        {
+            static_cast<void>(streamId);
+            creditedByteCount += consumedByteCount;
+        }
+        EXPECT_GE(creditedByteCount, body.size())
+                << "摘掉流式记录时没把正文占掉的接收窗口还回去（还回的只会是帧开销）";
+    }
+
+    /**
      * @brief 排队中与服务中的正文都要占着全局额度，直到这一条服务完才归还
      * @details 额度若在「请求被排进待派发队列」时就归还，排队的正文与正在跑处理器的正文都不再被记账，
      *          多条流各自压一份正文就能把实际占用推过上限——这道限额要挡的正是这个。
