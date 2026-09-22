@@ -192,14 +192,20 @@ namespace AsynGyanis::Base
         {
             // 显式文件列表同样要留下配置目录，否则后续 reload() 与 enableHotReload() 失去依据：
             // 能推导出公共父目录时采用它，否则保留既有取值不覆盖。
-            std::filesystem::path directoryToCommit = m_data.load(std::memory_order_acquire)->configDirectory;
+            const auto previousData = m_data.load(std::memory_order_acquire);
+            std::filesystem::path directoryToCommit = previousData->configDirectory;
             if (const std::filesystem::path derivedDirectory = commonParentDirectory(loadedPaths); !derivedDirectory.empty())
             {
                 directoryToCommit = derivedDirectory;
             }
-            // 显式列表没有「递归与否」这件事：这里落下的目录只是给 reload() 与热重载当锚点，
-            // 沿用递归口径与改动前的行为一致（不这么做会让锚点目录里后加的子目录文件不再被读到）
-            commitConfigData(std::move(values), result.loadedFiles, directoryToCommit, true);
+            // 锚点没换目录时沿用快照原有的递归口径：显式列表本身没有「递归与否」，把口径写成 true
+            // 等于让同一个目录在无人改文件时换了一副面孔——先 loadFromDirectory(dir, false) 再
+            // loadFiles({dir/a.yaml})，随后的 reload() 会凭空多出子目录里的键。
+            // 锚点确实是新目录时才取默认值 true（旧口径属于另一棵树，跟不过来）
+            const bool recursiveToCommit = directoryToCommit == previousData->configDirectory
+                                               ? previousData->configDirectoryRecursive
+                                               : true;
+            commitConfigData(std::move(values), result.loadedFiles, directoryToCommit, recursiveToCommit);
         }
         result.success = result.failedFiles.empty() && !result.loadedFiles.empty();
         return result;

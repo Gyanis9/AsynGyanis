@@ -378,6 +378,55 @@ server:
                 << "reload() 把非递归的加载改成了递归：凭空多出子目录里的键";
     }
 
+    /**
+     * @brief loadFiles() 复用既有锚点目录时，必须沿用该目录原本的递归口径
+     * @details 钉的是「锚点没换、口径却换了」：显式列表推出的公共父目录正好等于快照已有的锚点时，
+     *          把口径写死成 true 会让先前 loadFromDirectory(dir, false) 的顶层限定失效——
+     *          此后一次 reload() 凭空多出子目录里的键，而没人改过任何文件
+     */
+    TEST_F(ConfigManagerTest, LoadFilesReusingTheAnchorDirectoryKeepsItsRecursionScope)
+    {
+        writeFile("root.yaml", "root: true\n");
+        writeFile("group/nested.yaml", "group:\n  depth: 2\n");
+
+        ASSERT_TRUE(configuration().loadFromDirectory(directory(), false).success);
+        ASSERT_FALSE(configuration().has("group.depth"));
+
+        // 单份文件的父目录就是 directory() 本身：锚点未换，口径应当原样保留
+        ASSERT_TRUE(configuration().loadFiles({filePath("root.yaml")}).success);
+
+        const ConfigLoadResult reloaded = configuration().reload();
+
+        EXPECT_TRUE(reloaded.success);
+        EXPECT_TRUE(configuration().has("root")) << "顶层的键不该丢";
+        EXPECT_FALSE(configuration().has("group.depth"))
+                << "loadFiles() 复用了同一个锚点目录，却把它的递归口径改成了 true";
+    }
+
+    /**
+     * @brief loadFiles() 落下一个新锚点目录时，重扫按默认的递归口径
+     * @details 与上一条互为对照：旧口径属于另一棵树，跟不过来，因此新锚点按递归取默认值。
+     *          刻意放在非递归加载之后——若实现无条件沿用快照口径，这条会红
+     */
+    TEST_F(ConfigManagerTest, LoadFilesWithANewAnchorDirectoryRescansRecursively)
+    {
+        writeFile("root.yaml", "root: true\n");
+        writeFile("other/top.yaml", "other:\n  name: sidecar\n");
+        writeFile("other/deep/inner.yaml", "deep:\n  value: 7\n");
+
+        // 先建立「非递归 + 锚点为 directory()」的快照，作为新锚点必须被换掉的起点
+        ASSERT_TRUE(configuration().loadFromDirectory(directory(), false).success);
+
+        ASSERT_TRUE(configuration().loadFiles({filePath("other/top.yaml")}).success);
+
+        const ConfigLoadResult reloaded = configuration().reload();
+
+        EXPECT_TRUE(reloaded.success);
+        EXPECT_TRUE(configuration().has("other.name")) << "新锚点目录自己的文件要读得到";
+        EXPECT_TRUE(configuration().has("deep.value"))
+                << "新锚点没有历史口径可沿用，应当按默认的递归重扫，把子目录一起收进来";
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryIgnoresFilesWithUnsupportedSuffix)
     {
         writeFile("app.yaml", "app:\n  name: demo\n");
