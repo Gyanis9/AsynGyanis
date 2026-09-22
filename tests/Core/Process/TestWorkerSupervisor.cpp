@@ -225,6 +225,42 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 首轮起 worker 不尝补位退避：N 个槽位的冷启动不该串成 N × restartBackoff
+     * @details 退避是给「起来就崩」准备的。判定式若是「这个槽位现在没进程」，那么首轮每个槽位
+     *          也要先睡满一整个退避才起，默认 500 毫秒 × N 就让进程池空转几秒才开始接活。
+     *          把退避调到远大于三个冷启动应有的时长，再用启动记录的到位时间判定：只要有一次
+     *          退避被串进首轮就会越线。本用例位于本文件的 POSIX 区内（Windows 构造即拒绝多进程）
+     */
+    TEST(WorkerSupervisor, FirstLaunchesDoNotWaitOutTheRestartBackoff)
+    {
+        const WorkerLaunchLog launchLog;
+        WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 3, WorkerBehaviour::SleepUntilTerminated);
+        configuration.restartBackoff = std::chrono::milliseconds{1500};
+
+        WorkerSupervisor supervisor(configuration);
+        const auto       startedAt = std::chrono::steady_clock::now();
+        std::thread      supervisorThread(
+                [&supervisor]
+                {
+                    static_cast<void>(supervisor.run());
+                });
+
+        const bool areAllThreeUp = waitForCondition(
+                [&launchLog]
+                {
+                    return launchLog.launchCount() >= 3;
+                },
+                std::chrono::milliseconds{1000});
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+
+        supervisor.requestStop();
+        supervisorThread.join();
+
+        EXPECT_TRUE(areAllThreeUp) << "三个 worker 没在 1000 毫秒内都起来（实测等了 " << elapsed.count()
+                                   << " 毫秒）：冷启动被补位退避串成了 N × restartBackoff";
+    }
+
+    /**
      * @brief 收尾有期限：worker 不理会 SIGTERM 时，编排到点强杀并按时返回
      */
     TEST(WorkerSupervisor, ShutdownTimeoutForcesTermination)

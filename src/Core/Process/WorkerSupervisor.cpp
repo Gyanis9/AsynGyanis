@@ -121,11 +121,16 @@ namespace AsynGyanis::Core
 
                 if (!worker.handle.isValid())
                 {
-                    // 补位前先退避：崩溃循环里不留一段满速重启的窗口
-                    std::this_thread::sleep_for(m_configuration.restartBackoff);
-                    if (m_isStopRequested.load(std::memory_order_acquire))
+                    // 退避只加在「这个槽位已经崩过」之后：崩溃循环里不留一段满速重启的窗口。
+                    // 首轮起进程时崩计数还是 0，若照样退避，N 个 worker 的冷启动就要串行等
+                    // N × restartBackoff（默认 500 毫秒），进程池要空转几秒才开始接活
+                    if (worker.crashCount > 0)
                     {
-                        break;
+                        std::this_thread::sleep_for(m_configuration.restartBackoff);
+                        if (m_isStopRequested.load(std::memory_order_acquire))
+                        {
+                            break;
+                        }
                     }
                     static_cast<void>(startWorker(worker, workerIndex));
                     continue;
