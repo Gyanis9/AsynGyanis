@@ -442,6 +442,100 @@ namespace AsynGyanis::Database::Queryable
         };
     }
 
+    namespace Detail
+    {
+        /**
+         * @brief 把一段任意文本转义成 LIKE 模式里的字面量片段
+         * @details % 与 _ 在 LIKE 的模式语言里是通配符，转义符本身也要转义，否则取值 "!%"
+         *          会被读成「一个转义过的 %」。配合 LikeLiteral 补出的 ESCAPE '!' 子句使用。
+         * @param text 待匹配的字面文本，按字节处理、不解释编码
+         * @return std::string 转义后的文本，可直接与通配符拼成 LIKE 模式
+         *
+         * @note 转义符选 '!' 而不是常见的 '\\'：MySQL 默认模式下字符串里的反斜杠本身是转义符，
+         *       SQL 文本里写 ESCAPE '\' 会被解析成「引号被转义」而未闭合，换成 ESCAPE '\\' 又会在
+         *       sql_mode 含 NO_BACKSLASH_ESCAPES 时变成两个字符。'!' 在两种模式下都是它自己，
+         *       于 SQLite 与 MySQL 都不需要额外处理。
+         */
+        [[nodiscard]] inline std::string escapeLikeLiteralText(const std::string_view text)
+        {
+            std::string escaped;
+            // 最坏情况是每个字符前都要补一个转义符：一次定够，避免边拼边扩容
+            escaped.reserve(text.size() * 2U);
+            for (const char character: text)
+            {
+                if (character == '%' || character == '_' || character == '!')
+                {
+                    escaped += kLikeEscapeCharacter;
+                }
+                escaped += character;
+            }
+            return escaped;
+        }
+
+        /**
+         * @brief 造一个字面量匹配条件（contains / startsWith / endsWith 共用的那一份实现）
+         * @param columnName 列名
+         * @param pattern 已含通配符与转义的完整模式
+         * @return WhereCondition op 为 LikeLiteral 的条件
+         */
+        [[nodiscard]] inline WhereCondition makeLikeLiteralCondition(const std::string_view columnName, std::string pattern)
+        {
+            return WhereCondition{
+                    .left = makeFieldRef(columnName),
+                    .op = SqlOperator::LikeLiteral,
+                    .right = ParameterValue{std::move(pattern)}
+            };
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 构造「包含」条件：字段值含有给定的字面文本
+     * @details 与 like() 的分工：like() 的入参是**模式**（% 与 _ 按通配符解释），本函数的入参是
+     *          **字面文本**，其中的 % _ \ 按字符本身匹配。把外部输入直接交给 like() 会让一个
+     *          恰好含 % 的搜索词放宽成「匹配任意内容」（选择性归零、退化成整表扫描），
+     *          因此「用户输入的子串检索」应当走本函数而不是 like()。
+     * @tparam T 结构体类型
+     * @tparam MemberType 成员类型
+     * @param column 字段描述符
+     * @param text 要包含的字面文本；空串时等价于「匹配所有非 NULL 行」
+     * @return WhereCondition 字面量包含条件
+     */
+    template<typename T, typename MemberType>
+    WhereCondition contains(const ColumnDescriptor<T, MemberType> &column, const std::string &text)
+    {
+        return Detail::makeLikeLiteralCondition(column.columnName, "%" + Detail::escapeLikeLiteralText(text) + "%");
+    }
+
+    /**
+     * @brief 构造「以前缀开头」条件：字段值以给定的字面文本开头
+     * @details 通配符只加在尾部，前缀部分逐字符按字面量匹配；语义与取舍同 contains()。
+     * @tparam T 结构体类型
+     * @tparam MemberType 成员类型
+     * @param column 字段描述符
+     * @param prefix 作为前缀的字面文本；空串时等价于「匹配所有非 NULL 行」
+     * @return WhereCondition 字面量前缀条件
+     */
+    template<typename T, typename MemberType>
+    WhereCondition startsWith(const ColumnDescriptor<T, MemberType> &column, const std::string &prefix)
+    {
+        return Detail::makeLikeLiteralCondition(column.columnName, Detail::escapeLikeLiteralText(prefix) + "%");
+    }
+
+    /**
+     * @brief 构造「以后缀结尾」条件：字段值以给定的字面文本结尾
+     * @details 通配符只加在头部，后缀部分逐字符按字面量匹配；语义与取舍同 contains()。
+     * @tparam T 结构体类型
+     * @tparam MemberType 成员类型
+     * @param column 字段描述符
+     * @param suffix 作为后缀的字面文本；空串时等价于「匹配所有非 NULL 行」
+     * @return WhereCondition 字面量后缀条件
+     */
+    template<typename T, typename MemberType>
+    WhereCondition endsWith(const ColumnDescriptor<T, MemberType> &column, const std::string &suffix)
+    {
+        return Detail::makeLikeLiteralCondition(column.columnName, "%" + Detail::escapeLikeLiteralText(suffix));
+    }
+
     /**
      * @brief IN 集合判断
      *

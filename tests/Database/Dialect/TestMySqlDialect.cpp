@@ -308,6 +308,29 @@ TEST(MySqlDialectWhere, LikeCondition)
 }
 
 /**
+ * @brief 验证字面量匹配（LikeLiteral）补出 ESCAPE 子句
+ *
+ * @details MySQL 的 LIKE 默认转义符虽是反斜杠，但 sql_mode 含 NO_BACKSLASH_ESCAPES 时那层默认
+ *          就没了——依赖默认值会让同一份代码在两种模式下意思不同。本实现改用 '!' 并始终显式
+ *          写出 ESCAPE，使转义语义与 sql_mode 无关。
+ */
+TEST(MySqlDialectWhere, LikeLiteralConditionCarriesEscapeClause)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+    node.whereConditions.push_back(
+        makeComparison("name", SqlOperator::LikeLiteral, ParameterValue{std::string("100!%")}));
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `name` LIKE ? ESCAPE '!'");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "100!%");
+}
+
+/**
  * @brief 验证 IS NULL / IS NOT NULL 不产生参数
  */
 TEST(MySqlDialectWhere, NullChecksProduceNoParameter)

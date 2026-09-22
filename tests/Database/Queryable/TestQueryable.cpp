@@ -847,4 +847,27 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_NE(sql.find("name LIKE ?"), std::string::npos);
     }
 
+    /**
+     * @brief 验证离线渲染在两个易错点上与方言给出同样的结构
+     *
+     * @details 本渲染器的契约是「可与真正执行的 SQL 直接对照」。空集合方言产出恒假的 (1 = 0)
+     *          且不占参数——这里若仍写 "IN (?)"，照着这段文本去数占位符就会对不上一个不存在的参数；
+     *          字面量匹配少了 ESCAPE 子句则整段转义都是摆设，两者都属于「看起来能对照、实际误导」。
+     */
+    TEST(QueryableSql, OfflineRendererAgreesWithDialectOnEmptyInAndLiteralMatch)
+    {
+        Queryable<User> emptyInQuery;
+        constexpr auto idColumn = Column(&User::id, "id");
+        emptyInQuery.where(in(idColumn, std::vector<std::int64_t>{}));
+        const std::string emptyInSql = emptyInQuery.toSql();
+        EXPECT_NE(emptyInSql.find("(1 = 0)"), std::string::npos) << emptyInSql;
+        EXPECT_EQ(emptyInSql.find("IN (?)"), std::string::npos) << emptyInSql;
+
+        Queryable<User> literalQuery;
+        constexpr auto nameColumn = Column(&User::name, "name");
+        literalQuery.where(contains(nameColumn, std::string("50%")));
+        const std::string literalSql = literalQuery.toSql();
+        EXPECT_NE(literalSql.find("LIKE ? ESCAPE '!'"), std::string::npos) << literalSql;
+    }
+
 } // namespace AsynGyanis::Database::Queryable

@@ -10,6 +10,8 @@
 // - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
 // - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
 // - DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
+// - LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
+//   并保留 like() 的通配符语义作为对照组）
 // 断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入：
 // 含单引号与 "--" 的文本能原样查回、注入残留的表仍存在，证明没有拼接 SQL。
 
@@ -226,12 +228,15 @@ namespace
     using AsynGyanis::Database::PooledConnection;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
+    using AsynGyanis::Database::Queryable::contains;
     using AsynGyanis::Database::Queryable::desc;
+    using AsynGyanis::Database::Queryable::endsWith;
     using AsynGyanis::Database::Queryable::in;
     using AsynGyanis::Database::Queryable::like;
     using AsynGyanis::Database::Queryable::mapResultRows;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
+    using AsynGyanis::Database::Queryable::startsWith;
 
     /**
      * @brief ORM 端到端测试夹具
@@ -725,6 +730,57 @@ TEST_F(QueryableExecutionTest, DuplicateColumnNamesDoNotAliasTwoMembersOntoOneCo
         EXPECT_NE(message.find("同一个值"), std::string::npos) << message;
         EXPECT_NE(message.find("行映射失败"), std::string::npos) << message;
     }
+}
+
+/**
+ * @brief 验证 contains / startsWith / endsWith 把用户输入里的 % _ ! 当字面量匹配
+ *
+ * @details like() 的入参是**模式**（% 与 _ 是通配符），把外部输入直接递给它的后果是：一个恰好
+ *          含 % 的搜索词会放宽成「匹配任意内容」，选择性归零并退化成整表扫描。字面量三兄弟必须
+ *          连 ESCAPE 子句一起产出才成立——SQLite 的 LIKE 没有默认转义符，缺了那句转义就是摆设。
+ *          同一用例里保留 like() 的对照组，用来区分「修好了字面量」与「把通配符语义弄坏了」。
+ */
+TEST_F(QueryableExecutionTest, LiteralMatchHelpersTreatWildcardsAsLiteralText)
+{
+    const std::vector<std::string> sampleNames{"100%", "100percent", "a_b", "axb", "50!"};
+    std::int64_t rowId = 1;
+    for (const std::string &name: sampleNames)
+    {
+        Queryable<AccountRow> insertQuery = newQuery();
+        ASSERT_EQ(1, insertQuery.insert(makeRow(rowId++, name, 1.0, std::nullopt, true)));
+    }
+
+    const auto namesMatching = [this](const AsynGyanis::Database::Queryable::WhereCondition &condition)
+    {
+        Queryable<AccountRow> query = newQuery();
+        query.where(condition);
+        query.orderBy(asc("id"));
+
+        std::vector<std::string> matchedNames;
+        for (const AccountRow &row: query.toList())
+        {
+            matchedNames.push_back(row.name);
+        }
+        return matchedNames;
+    };
+
+    const auto nameColumn = Column(&AccountRow::name, "name");
+
+    // 含通配符字面量的输入只匹配那一行；换作 like() 这三条都会命中全部行
+    EXPECT_EQ(namesMatching(contains(nameColumn, "100%")), (std::vector<std::string>{"100%"}));
+    EXPECT_EQ(namesMatching(contains(nameColumn, "%")), (std::vector<std::string>{"100%"}));
+    EXPECT_EQ(namesMatching(contains(nameColumn, "_")), (std::vector<std::string>{"a_b"}));
+    // 转义符自身也要按字面量匹配，否则 "50!" 会被当成「50 加一个通配符前缀」
+    EXPECT_EQ(namesMatching(contains(nameColumn, "!")), (std::vector<std::string>{"50!"}));
+
+    EXPECT_EQ(namesMatching(startsWith(nameColumn, "10")), (std::vector<std::string>{"100%", "100percent"}));
+    EXPECT_EQ(namesMatching(endsWith(nameColumn, "percent")), (std::vector<std::string>{"100percent"}));
+    // 空文本退化成「匹配所有非 NULL 行」，这是 "%" 模式的既有语义
+    EXPECT_EQ(namesMatching(contains(nameColumn, "")).size(), sampleNames.size());
+
+    // 对照组：like() 仍是模式语义，% 匹配任意串——它没有被字面量改动牵连
+    EXPECT_EQ(namesMatching(like(nameColumn, "100%")), (std::vector<std::string>{"100%", "100percent"}));
+    EXPECT_EQ(namesMatching(like(nameColumn, "a_b")), (std::vector<std::string>{"a_b", "axb"}));
 }
 
 TEST_F(QueryableExecutionTest, TypeMismatchThrowsReadableError)

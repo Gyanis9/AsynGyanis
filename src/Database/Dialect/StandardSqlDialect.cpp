@@ -765,6 +765,14 @@ namespace AsynGyanis::Database
         {
             appendParameter(sqlText, parameters, std::get<Queryable::ParameterValue>(condition.right));
         }
+
+        // 字面量匹配必须补出 ESCAPE 子句：SQLite 的 LIKE 没有默认转义符，缺这一句时模式里的 '!'
+        // 会被当成普通字符、'%' 与 '_' 仍按通配符解释，转义就成了摆设。子句文本与转义符同源
+        // （见 kLikeEscapeCharacter），MySQL 与 SQLite 共用这一份
+        if (condition.op == SqlOperator::LikeLiteral)
+        {
+            sqlText += Queryable::kLikeEscapeClauseText;
+        }
     }
 
     void StandardSqlDialect::appendParameter(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::ParameterValue &parameter) const
@@ -843,6 +851,9 @@ namespace AsynGyanis::Database
             case SqlOperator::Le:
                 return "<=";
             case SqlOperator::Like:
+                // 字面量匹配在文本上与 LIKE 同形，区别由 appendCondition 补出的 ESCAPE 子句承担
+                // （两个 case 刻意合并：操作符文本只有一份，不给转义规则留出第二处真相）
+            case SqlOperator::LikeLiteral:
                 return "LIKE";
             case SqlOperator::In:
                 return "IN";

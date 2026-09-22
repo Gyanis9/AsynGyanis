@@ -341,6 +341,30 @@ TEST(SqliteDialectWhere, LikeCondition)
 }
 
 /**
+ * @brief 验证字面量匹配（LikeLiteral）补出 ESCAPE 子句
+ *
+ * @details SQLite 的 LIKE 没有默认转义符：不写 ESCAPE 时模式里的 '!' 只是普通字符，
+ *          contains()/startsWith()/endsWith() 加上去的转义会全部失效、'%_' 仍按通配符解释。
+ *          因此「有 ESCAPE 子句」本身就是这条链能不能用起来的判据，必须钉在 SQL 文本上。
+ */
+TEST(SqliteDialectWhere, LikeLiteralConditionCarriesEscapeClause)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+    node.whereConditions.push_back(
+        makeComparison("name", SqlOperator::LikeLiteral, ParameterValue{std::string("100!%")}));
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"name\" LIKE ? ESCAPE '!'");
+    // 取值仍走绑定，转义后的模式不进 SQL 文本
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "100!%");
+}
+
+/**
  * @brief 验证 IS NULL / IS NOT NULL 不产生参数
  */
 TEST(SqliteDialectWhere, NullChecksProduceNoParameter)

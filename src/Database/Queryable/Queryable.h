@@ -1435,22 +1435,30 @@ namespace AsynGyanis::Database::Queryable
             {
                 if (condition.inValues.empty())
                 {
-                    result += "(?)";
-                } else
-                {
-                    result += '(';
-                    for (std::size_t i = 0; i < condition.inValues.size(); ++i)
-                    {
-                        if (i > 0)
-                            result += ", ";
-                        result += '?';
-                    }
-                    result += ')';
+                    // 与方言同一写法：空集合在集合语义下「一个都不匹配」，渲染成恒假/恒真而不是
+                    // 给一个不存在的元素挂上占位符——后者会让人对着 "IN (?)" 去数参数而对不上
+                    result += (condition.op == SqlOperator::In) ? "(1 = 0)" : "(1 = 1)";
+                    return result;
                 }
+
+                result += '(';
+                for (std::size_t i = 0; i < condition.inValues.size(); ++i)
+                {
+                    if (i > 0)
+                        result += ", ";
+                    result += '?';
+                }
+                result += ')';
                 return result;
             }
 
             result += '?';
+            // 字面量匹配要连 ESCAPE 一起给出，否则对着这段文本改一改就会把转义过的 % 当成通配符。
+            // 子句文本与方言渲染共用同一个常量，两处的「近似 SQL」才有对照价值
+            if (condition.op == SqlOperator::LikeLiteral)
+            {
+                result += kLikeEscapeClauseText;
+            }
             return result;
         }
 
@@ -1475,6 +1483,9 @@ namespace AsynGyanis::Database::Queryable
                 case SqlOperator::Le:
                     return "<="sv;
                 case SqlOperator::Like:
+                    return "LIKE"sv;
+                case SqlOperator::LikeLiteral:
+                    // 与方言同形：操作符文本仍是 LIKE，转义语义由渲染分支补出的 ESCAPE 子句表达
                     return "LIKE"sv;
                 case SqlOperator::In:
                     return "IN"sv;

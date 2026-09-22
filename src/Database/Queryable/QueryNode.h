@@ -46,8 +46,30 @@ namespace AsynGyanis::Database::Queryable
         IsNotNull, ///< 不为空（IS NOT NULL）
         And,       ///< 逻辑与（AND）
         Or,        ///< 逻辑或（OR）
-        Not        ///< 逻辑非（NOT）
+        Not,       ///< 逻辑非（NOT）
+
+        /**
+         * @brief 字面量匹配（LIKE ... ESCAPE）
+         *
+         * @details 与 Like 的区别只在右操作数的身份：Like 的右值是**模式**（% 与 _ 按通配符解释），
+         *          LikeLiteral 的右值是**已经转义好的字面量**（% _ \\ 都按字符本身匹配），
+         *          因此方言渲染时必须补出 ESCAPE 子句。成员追加在枚举末尾：既有取值的全部数值不变。
+         */
+        LikeLiteral ///< 字面量匹配（LIKE ... ESCAPE '!'）
     };
+
+    /**
+     * @brief 字面量匹配的 LIKE 转义符
+     *
+     * @details 刻意选 '!' 而不是常见的 '\\'：MySQL 默认 sql_mode 下反斜杠在字符串字面量里也是转义符，
+     *          ESCAPE '\' 会被解析成「结尾引号被转义」而未闭合，改写成 ESCAPE '\\' 又会在
+     *          NO_BACKSLASH_ESCAPES 下变成两个字符而报「参数不对」。'!' 在两种模式下、在 SQLite 里
+     *          都就是它自己，因此一条写法在两侧都成立。
+     */
+    inline constexpr char kLikeEscapeCharacter = '!';
+
+    /// 渲染 LikeLiteral 时补在条件末尾的完整 ESCAPE 子句文本（含前导空格与两侧单引号）
+    inline constexpr std::string_view kLikeEscapeClauseText = " ESCAPE '!'";
 
     // ========================================================================
     // FieldReference
