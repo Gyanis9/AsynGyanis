@@ -205,10 +205,12 @@ namespace AsynGyanis::Database
          * @details 现有两个方言的位置参数都写作 "?"，不含序号信息；参数与占位符的对应关系
          *          由「按出现顺序依次压入 parameters」保证（见本文件的参数顺序契约），
          *          因此本接口不需要知道自己是第几个参数。
+         *          返回视图而不是字符串：批量写入时每个占位符都要取一次，一次一条 150 行
+         *          × 6 列的语句就是 900 次，临时 std::string 会白占掉这条路径上一大块成本。
          *
-         * @return std::string 占位符文本，当前恒为 "?"
+         * @return std::string_view 占位符文本，当前恒为 "?"
          */
-        [[nodiscard]] virtual std::string placeholder() const = 0;
+        [[nodiscard]] virtual std::string_view placeholder() const = 0;
 
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法

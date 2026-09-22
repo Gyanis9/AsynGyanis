@@ -374,12 +374,25 @@ namespace AsynGyanis::Database
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         // 一次把两处缓冲定够：文本按内容估上界，参数个数由条件树精确算出
-        // （分页最多各占一个参数，方言若把取值内联进文本就是留宽一点，不影响产出）
+        // （分页最多各占一个参数，方言若把取值内联进文本就是留宽一点，不影响产出）。
+        // 这里必须把 JOIN 的 ON 条件与 HAVING 一并算进来——它们同样产出占位符，
+        // 漏算的那一类查询会在渲染过程中把 parameters 撑大，退化成逐次扩容
         sqlText.reserve(estimateSqlTextCapacity(query));
         std::size_t expectedParameterCount = (query.limit.has_value() ? 1 : 0) + (query.offset.has_value() ? 1 : 0);
         for (const Queryable::WhereCondition &condition: query.whereConditions)
         {
             expectedParameterCount += countConditionParameters(condition);
+        }
+        for (const Queryable::JoinClause &join: query.joins)
+        {
+            for (const Queryable::WhereCondition &condition: join.conditions)
+            {
+                expectedParameterCount += countConditionParameters(condition);
+            }
+        }
+        if (query.having.has_value())
+        {
+            expectedParameterCount += countConditionParameters(query.having.value());
         }
         parameters.reserve(expectedParameterCount);
 
@@ -841,11 +854,6 @@ namespace AsynGyanis::Database
                 throw Base::LogicException("标准 SQL 方言：该操作符没有比较文本（枚举值 " +
                                            std::to_string(std::to_underlying(sqlOperator)) + "），请检查条件渲染是否漏了分支");
         }
-    }
-
-    std::string StandardSqlDialect::placeholder() const
-    {
-        return "?";
     }
 
     std::string_view StandardSqlDialect::commitStatement() const noexcept

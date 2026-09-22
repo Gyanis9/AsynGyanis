@@ -137,10 +137,15 @@ namespace AsynGyanis::Database
          *
          * @details 重写 SqlDialect::placeholder()：SQLite 与 MySQL 的位置参数都写作 "?"，
          *          参数与占位符的对应关系由「按出现顺序依次压入 parameters」保证（见参数顺序契约）。
+         *          实现内联在头文件：一条 150 行 × 6 列的批量语句要取用它 900 次，而两个派生方言
+         *          各自的建表/存在性渲染也用它，放在实现文件里会让这些循环各吃一次跨编译单元调用。
          *
-         * @return std::string 占位符文本，恒为 "?"
+         * @return std::string_view 占位符文本，恒为 "?"
          */
-        [[nodiscard]] std::string placeholder() const override;
+        [[nodiscard]] std::string_view placeholder() const override
+        {
+            return std::string_view{"?"};
+        }
 
         /**
          * @brief 取得提交事务的语句文本
