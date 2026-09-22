@@ -50,9 +50,11 @@ target_compile_definitions(TestCore PRIVATE
 target_include_directories(TestCore PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         # src 用于 "Core/..." 形式的生产头包含，本目录用于 "CoreTestSupport.h" 同级包含，
-        # tests/TestSupport 用于复用 CommonTestSupport.h 的临时目录与等待夹具
+        # tests/TestSupport 用于复用 CommonTestSupport.h 的临时目录与等待夹具，
+        # tests/Platform 用于复用 Platform 专有的描述符判据（下游模块复用上游测试头，方向与生产依赖一致）
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/tests/TestSupport
+        ${CMAKE_SOURCE_DIR}/tests/Platform
 )
 
 target_compile_features(TestCore PRIVATE cxx_std_23)

@@ -126,9 +126,12 @@ namespace AsynGyanis::Core
     {
 #if ASYN_PLATFORM_WIN32
         // Windows 的 SOCKET 是无符号句柄类型：显式窄化成 int 是既有的描述符约定（全仓按 int 传递），
-        // 失败值 INVALID_SOCKET 恰好变成 -1，与下面的有效性判定对齐
+        // 失败值 INVALID_SOCKET 恰好变成 -1，与下面的有效性判定对齐。POSIX 用 SOCK_CLOEXEC 在建好时
+        // 就断掉继承，Windows 的 ::socket 没有等价标志位，只能建完取消继承位——监听套接字与已建立的
+        // 连接都不该随库外消费者的 CreateProcess(bInheritHandles=TRUE) 传下去
         const SOCKET socketHandle = ::socket(domain, type, 0);
         const int    fileDescriptor = static_cast<int>(socketHandle);
+        static_cast<void>(Platform::FileDescriptor::markNonInheritable(fileDescriptor));
 #else
         const int fileDescriptor = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 #endif

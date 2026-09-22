@@ -15,6 +15,7 @@
 #include "Platform/System/PlatformError.h"
 
 #include "CoreTestSupport.h"
+#include "PlatformTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -112,6 +113,24 @@ namespace AsynGyanis::Core
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
 
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
+
+        asyncSocket.close();
+    }
+
+    /**
+     * @brief create() 交出的套接字不得随进程创建传给子进程
+     * @details POSIX 侧由 SOCK_CLOEXEC 在建套接字时一并置入；Windows 的 ::socket 没有等价标志位，
+     *          句柄默认就是可继承的，必须建完取消继承位。留着它，消费者一 spawn 就把监听端口与已建立
+     *          的连接交了出去——父进程关掉描述符也无济于事，子进程那份引用还占着端口。
+     */
+    TEST(AsyncSocket, CreatedSocketIsNotInheritable)
+    {
+        EventLoop   loop;
+        AsyncSocket asyncSocket = AsyncSocket::create(loop);
+        ASSERT_GE(asyncSocket.fileDescriptor(), 0);
+
+        EXPECT_TRUE(Platform::TestSupport::isNotInheritable(asyncSocket.fileDescriptor()))
+                << "套接字可被继承，spawn 出去的子进程会替父进程占住这个端口";
 
         asyncSocket.close();
     }

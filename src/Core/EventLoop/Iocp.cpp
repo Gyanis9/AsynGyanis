@@ -513,9 +513,11 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        // 用宽字符版（WSASocketW）：窄字符版在 /W4 下按已弃用 API 报 C4996，而这里本就没有字符串参数
+        // 用宽字符版（WSASocketW）：窄字符版在 /W4 下按已弃用 API 报 C4996，而这里本就没有字符串参数。
+        // WSA_FLAG_NO_HANDLE_INHERIT 让这条预建的接受套接字不随 spawn 传下去，且不额外付一次系统调用
         const SOCKET acceptSocket = ::WSASocketW(
-                static_cast<int>(listenerAddress.ss_family), SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+                static_cast<int>(listenerAddress.ss_family), SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+                WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
         if (acceptSocket == INVALID_SOCKET)
         {
             if (errorText != nullptr)
