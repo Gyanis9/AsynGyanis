@@ -226,8 +226,9 @@ namespace AsynGyanis::Platform
             return -1;
         }
 
-#if ASYN_PLATFORM_WIN32
-        WSABUF windowsBuffers[kMaximumVectorCount]{};
+        // 「有长度却没有数据」这一非法形状在两个平台上都得当场拒掉：交给 Windows 是 WSASend 报错，
+        // 交给 POSIX 的 sendmsg 则只得到一个依赖地址取值的 EFAULT——判据放在平台分支之前，
+        // 才不会同一份参数在一侧返回 kInvalidArgument、另一侧返回系统错误
         for (std::size_t index = 0; index < bufferCount; ++index)
         {
             if (!buffers[index].data && buffers[index].length != 0)
@@ -235,6 +236,13 @@ namespace AsynGyanis::Platform
                 PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
                 return -1;
             }
+        }
+
+#if ASYN_PLATFORM_WIN32
+        WSABUF windowsBuffers[kMaximumVectorCount]{};
+        for (std::size_t index = 0; index < bufferCount; ++index)
+        {
+            // 长度形参是 ULONG：超限直接失败，静默截断会让线上字节流缺一截而返回值看着正常
             if (buffers[index].length > static_cast<std::size_t>(std::numeric_limits<ULONG>::max()))
             {
                 PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);

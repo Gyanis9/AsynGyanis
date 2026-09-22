@@ -239,4 +239,181 @@ namespace AsynGyanis::Platform
         FileDescriptor::close(readDescriptor);
         FileDescriptor::close(writeDescriptor);
     }
+
+    namespace
+    {
+        /**
+         * @brief 读回一个 int 尺寸的套接字选项
+         * @param descriptor 目标描述符
+         * @param optionLevel 选项层级
+         * @param optionName 选项名
+         * @param[out] value 读回的值
+         * @return true 读取成功
+         */
+        bool readIntegerOption(const int descriptor, const int optionLevel, const int optionName, int &value)
+        {
+            socklen_t optionLength = static_cast<socklen_t>(sizeof(value));
+            return ::getsockopt(descriptor, optionLevel, optionName, reinterpret_cast<char *>(&value), &optionLength) == 0;
+        }
+
+        /**
+         * @brief 建一个未绑定的 TCP 套接字，供选项读写用例使用
+         * @return int 描述符；失败时返回 FileDescriptor::kInvalid
+         */
+        int createStreamSocket()
+        {
+            Socket::initialize();
+            return static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：关延迟确认与地址复用这两个开关真的落到套接字上
+     * @details 这两个选项决定首字节延迟与重启时能否立刻绑回同一端口，全仓此前只被别的层间接调用，
+     *          一次也没被直测过。判据取内核读回的值而不是 setter 的返回值——setsockopt 传错尺寸
+     *          （Windows 的值形参是 const char*，POSIX 是 const void*）时返回值照样可以是 0。
+     */
+    TEST(Socket, NoDelayAndReuseAddressAreReadableBackOnTheDescriptor)
+    {
+        const int descriptor = createStreamSocket();
+        ASSERT_TRUE(FileDescriptor::isValid(descriptor));
+
+        EXPECT_TRUE(Socket::setNoDelay(descriptor));
+        int noDelay = 0;
+        ASSERT_TRUE(readIntegerOption(descriptor, IPPROTO_TCP, TCP_NODELAY, noDelay));
+        EXPECT_NE(noDelay, 0) << "setNoDelay 报成功却没生效，等于每个小包都要等确认";
+
+        EXPECT_TRUE(Socket::setReuseAddress(descriptor));
+        int reuseAddress = 0;
+        ASSERT_TRUE(readIntegerOption(descriptor, SOL_SOCKET, SO_REUSEADDR, reuseAddress));
+        EXPECT_NE(reuseAddress, 0) << "setReuseAddress 没落到套接字上，重启时会绑不回同一端口";
+
+        FileDescriptor::close(descriptor);
+    }
+
+    /**
+     * @brief 钉住：缓冲尺寸只接受正数，非正值当场拒绝而不是交给内核
+     * @details 「0 字节缓冲」既可能被内核解释成「按上限扩容」也可能被解释成「不缓冲」，两种都不是
+     *          调用方写的数；负数更会在无符号内部表示里回绕。拒绝面与放行面都要有用例。
+     */
+    TEST(Socket, BufferSizeSettersRejectNonPositiveCountsAndAcceptPositiveOnes)
+    {
+        const int descriptor = createStreamSocket();
+        ASSERT_TRUE(FileDescriptor::isValid(descriptor));
+
+        EXPECT_FALSE(Socket::setSendBufferSize(descriptor, 0)) << "0 没有「按上限扩容」的语义";
+        EXPECT_FALSE(Socket::setSendBufferSize(descriptor, -1));
+        EXPECT_FALSE(Socket::setReceiveBufferSize(descriptor, 0));
+        EXPECT_FALSE(Socket::setReceiveBufferSize(descriptor, -4096));
+
+        EXPECT_TRUE(Socket::setSendBufferSize(descriptor, 64 * 1024));
+        int sendBufferSize = 0;
+        ASSERT_TRUE(readIntegerOption(descriptor, SOL_SOCKET, SO_SNDBUF, sendBufferSize));
+        // 内核可以在请求值之上加码（Linux 会翻倍留元数据），只不能更少，也不能是 0
+        EXPECT_GE(sendBufferSize, 64 * 1024) << "请求了 64 KiB 却拿到 " << sendBufferSize;
+
+        FileDescriptor::close(descriptor);
+    }
+
+    /**
+     * @brief 钉住：双栈开关按 int 尺寸传递并读得回来
+     * @details 布尔值若按 sizeof(bool)（1 字节）传给 setsockopt，两侧行为都不保证；本层刻意按 int
+     *          传。没有 IPv6 的环境建不出套接字，按缺依赖跳过而不是失败。
+     */
+    TEST(Socket, Ipv6OnlyFlagRoundTripsAsAnInt)
+    {
+        Socket::initialize();
+        const int descriptor = static_cast<int>(::socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
+        if (!FileDescriptor::isValid(descriptor))
+        {
+            GTEST_SKIP() << "本机没有可用的 IPv6 协议栈，双栈开关无从验证";
+        }
+
+        EXPECT_TRUE(Socket::setIpv6Only(descriptor, true));
+        int onlyV6 = 0;
+        ASSERT_TRUE(readIntegerOption(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, onlyV6));
+        EXPECT_EQ(onlyV6, 1);
+
+        EXPECT_TRUE(Socket::setIpv6Only(descriptor, false));
+        ASSERT_TRUE(readIntegerOption(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, onlyV6));
+        EXPECT_EQ(onlyV6, 0);
+
+        FileDescriptor::close(descriptor);
+    }
+
+    /**
+     * @brief 钉住：取不到 SO_ERROR 时交回真实错误码，而不是「0 = 连接已建立」
+     * @details 异步连接靠这个返回值判成功；把「连描述符都不认」报成 0，调用方会把一次彻底的失败
+     *          当成握手完成，之后对着一个不存在的连接收发。
+     */
+    TEST(Socket, TakePendingErrorDistinguishesUnusableDescriptorFromNoError)
+    {
+        Socket::initialize();
+        EXPECT_NE(Socket::takePendingError(FileDescriptor::kInvalid), 0)
+                << "无效描述符必须交出非 0 的错误码，否则与「没有错误」同形";
+
+        std::uint16_t assignedPort = 0;
+        const int     listener     = createLoopbackListener(assignedPort);
+        ASSERT_TRUE(FileDescriptor::isValid(listener));
+        // 刚建好还没接受过任何连接的监听套接字：SO_ERROR 读得到且为 0
+        EXPECT_EQ(Socket::takePendingError(listener), 0);
+
+        FileDescriptor::close(listener);
+    }
+
+    /**
+     * @brief 钉住：段里有长度却没数据时，两平台都按参数非法收口
+     * @details 此前只有 Windows 分支查这一形状；POSIX 侧把它交给 sendmsg 只会得到一个随地址取值
+     *          变化的 EFAULT，同一份参数在两平台返回不同错误码，调用方的分支就没法写。
+     */
+    TEST(Socket, WriteVectoredRejectsSegmentWithoutDataOnBothPlatforms)
+    {
+        int readDescriptor  = FileDescriptor::kInvalid;
+        int writeDescriptor = FileDescriptor::kInvalid;
+        ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
+
+        const Socket::WriteBuffer buffers[] = {
+                {nullptr, 5},
+        };
+        EXPECT_EQ(Socket::writeVectored(writeDescriptor, buffers, 1), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+
+        // 长度为 0 的空段是合法的（调用方常拿它占位），不能被同一判据一起拒掉
+        const char placeholder[] = "a";
+        const Socket::WriteBuffer acceptableBuffers[] = {
+                {placeholder, sizeof(placeholder) - 1},
+                {nullptr, 0},
+        };
+        EXPECT_GT(Socket::writeVectored(writeDescriptor, acceptableBuffers, 2), 0);
+
+        FileDescriptor::close(readDescriptor);
+        FileDescriptor::close(writeDescriptor);
+    }
+
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（Windows）：放回一份引用不会把还活着的套接字的 Winsock 支撑抽走
+     * @details initialize/finalize 若按「启动过没有」这个布尔量记账，第二个持有者析构时就会
+     *          WSACleanup 掉第一个持有者还在用的套接字——症状是之后所有 socket 调用都以
+     *          WSANOTINITIALISED 失败，而代码看起来一切正常。这里放回一份引用后必须仍能完成
+     *          一次真实的建套接字 + 收发。
+     */
+    TEST(Socket, WinsockStaysInitializedUntilTheLastReferenceIsReleased)
+    {
+        ASSERT_TRUE(Socket::initialize());
+        ASSERT_TRUE(Socket::initialize());
+
+        Socket::finalize();
+
+        const int descriptor = createStreamSocket();
+        ASSERT_TRUE(FileDescriptor::isValid(descriptor))
+                << "还有一份引用没放回，Winsock 却被清理了：错误码 " << PlatformError::lastSocketErrorCode();
+        EXPECT_TRUE(Socket::setNoDelay(descriptor));
+
+        // 本用例借来的两份引用要如数归还，否则同一进程里后续用例会看到被清理掉的 Winsock
+        Socket::finalize();
+        ASSERT_TRUE(Socket::initialize());
+        FileDescriptor::close(descriptor);
+    }
+#endif
 } // namespace AsynGyanis::Platform

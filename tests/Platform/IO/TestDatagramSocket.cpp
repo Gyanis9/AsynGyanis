@@ -324,6 +324,44 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(portOf(target.localAddress()), boundPort) << "移动不该换掉已绑定的端口";
     }
 
+    /**
+     * @brief 钉住：移动赋值要关掉被顶替的那只，并且自赋值不能伤到自己
+     * @details 只测移动构造的话，「赋值时忘了先关自己」这一条要等套接字被反复复用才显形——被顶替的
+     *          那只 UDP 套接字会继续占着端口到进程退出。而 `a = std::move(a)` 少一个自赋值自检，
+     *          就会先关掉自己再把已经变成 -1 的描述符接回来，端口无声消失。
+     */
+    TEST(DatagramSocket, MoveAssignmentClosesTheDisplacedSocketAndIgnoresSelfAssignment)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DatagramSocket source = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(source.isValid()) << "绑定失败，套接字错误码 " << PlatformError::lastSocketErrorCode();
+        DatagramSocket target = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(target.isValid()) << "绑定失败，套接字错误码 " << PlatformError::lastSocketErrorCode();
+
+        const std::uint16_t sourcePort   = portOf(source.localAddress());
+        const int           displacedFd  = target.fileDescriptor();
+
+        target = std::move(source);
+
+        EXPECT_FALSE(source.isValid()) << "移动赋值之后源侧仍自称有效，同一只套接字会被关第二次";
+        ASSERT_TRUE(target.isValid());
+        EXPECT_EQ(portOf(target.localAddress()), sourcePort) << "赋值之后接过的应是对方那只套接字";
+
+        // 被顶替的那只必须已经关闭：还开着的话 getsockname 照常成功，端口也就一直被占着
+        sockaddr_storage staleAddress{};
+        socklen_t      staleLength = sizeof(staleAddress);
+        EXPECT_NE(::getsockname(displacedFd, reinterpret_cast<sockaddr *>(&staleAddress), &staleLength), 0)
+                << "被顶替的套接字没被关掉，它的端口会一直被占到进程退出";
+
+        // 字面量上的「把自己 std::move 给自己」会被编译器直接判成缺陷（GCC 的 -Wself-move），
+        // 而这里要验的正是实现里那道 `this != &other` 自检，因此经由一个别名引用把同一个对象递进去
+        DatagramSocket &sameSocket = target;
+        target = std::move(sameSocket);
+        EXPECT_TRUE(target.isValid()) << "自赋值把套接字关掉后又接到自己空出来的描述符上";
+        EXPECT_EQ(portOf(target.localAddress()), sourcePort) << "自赋值不该改变已经拥有的套接字";
+    }
+
 #if !ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（POSIX）：绑好的套接字带 FD_CLOEXEC，spawn 出去的 worker 不会替父进程占端口
