@@ -414,6 +414,65 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(recorder.eventCount(), 0U) << "撤销掉的递归监视被自愈逻辑重新挂上了，回调仍在派发";
     }
 
+    /**
+     * @brief 钉住：撤销一条递归监视要把整棵子树的**活**监视一起停掉
+     * @details 两个后端都会给枚举出来的子目录各挂一份原生监视。只摘被点名的那一条时，子目录
+     *          那份照旧工作：调用方拿到 true 却仍在收事件，原生句柄与 watch 也一直被占（那棵树
+     *          删不掉、卷卸不掉），反复挂撤还会耗尽 inotify 的配额，之后整个实例再也挂不上监视。
+     * @note 两个子目录都在 addWatch 之前建好：事后新建的走的是另一条补挂路径，与控制步骤不同源
+     *       就没有对照意义。控制步骤先证明子树确实在被监视，否则「没有新事件」会在监视根本没挂上
+     *       时装成通过。
+     */
+    TEST(FileWatcher, RemovingRecursiveRootAlsoStopsLiveSubDirectoryWatches)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RemoveSubtree");
+        const std::unique_ptr<FileWatcher>    watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        const std::filesystem::path controlDirectory = temporaryDirectory.path() / "watched-sub";
+        const std::filesystem::path measuredDirectory = temporaryDirectory.path() / "dropped-sub";
+        std::filesystem::create_directories(controlDirectory);
+        std::filesystem::create_directories(measuredDirectory);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
+        ASSERT_TRUE(watcher->start());
+
+        const auto writeFileInto = [](const std::filesystem::path &directory, const std::string &fileName)
+        {
+            std::ofstream sink(directory / fileName, std::ios::binary);
+            sink << "value: true\n";
+        };
+
+        // 对照：子目录里的写入必须真的报上来，否则下面那条「没有新事件」是空转
+        writeFileInto(controlDirectory, "control.yaml");
+        const auto controlDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (recorder.eventCount() == 0 && std::chrono::steady_clock::now() < controlDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        ASSERT_TRUE(recorder.sawFileNamed("control.yaml")) << "递归监视没挂到子目录上，本用例失去对照";
+        const std::size_t eventCountAfterControl = recorder.eventCount();
+
+        EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string()));
+
+        // 跨过至少一个自愈节拍：子树那份若还留在补挂清单里，正是这一刻把它挂回来
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+        writeFileInto(measuredDirectory, "should_be_ignored.yaml");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        watcher->stop();
+
+        EXPECT_EQ(recorder.eventCount(), eventCountAfterControl)
+                << "撤销递归根之后，子目录那份活监视仍在派发回调";
+        EXPECT_FALSE(recorder.sawFileNamed("should_be_ignored.yaml")) << "被撤销的子树仍在上报变更";
+    }
+
 #if ASYN_PLATFORM_LINUX
     /**
      * @brief 钉住（Linux）：被监视目录**改名走开**之后在同一路径重建，再注册一次要真的挂上新目录

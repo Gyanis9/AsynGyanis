@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <poll.h>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace AsynGyanis::Platform
 {
@@ -158,6 +160,30 @@ namespace AsynGyanis::Platform
         // 撤销）。那样 removeWatch() 虽然返回了 true，描述符却会重开、回调照旧派发
         m_recursiveRoots.erase(absolutePath);
         m_selfHealPaths.erase(absolutePath);
+
+        // 子树的每一条监视也要一起解除。递归注册给每个子目录都挂了一只 inotify watch，只摘
+        // 被点名的那一条，剩下的照旧派发回调（调用方以为撤销完成了），而且每只 watch 都钉住
+        // 一枚 inode：整棵树删不掉、卷卸不掉，反复 add/remove 还会把 max_user_watches 耗尽，
+        // 到那之后本实例的 addWatch() 会全部失败。与 Windows 侧 dropWatch 同一口径
+        const std::string subtreePrefix = absolutePath.ends_with('/') ? absolutePath : absolutePath + '/';
+        std::vector<std::pair<int, std::string>> coveredWatches;
+        for (const auto &[watchDescriptor, watchedPath] : m_watchDescriptors)
+        {
+            if (watchedPath.size() > subtreePrefix.size()
+                && watchedPath.compare(0, subtreePrefix.size(), subtreePrefix) == 0)
+            {
+                coveredWatches.emplace_back(watchDescriptor, watchedPath);
+            }
+        }
+        for (const auto &[watchDescriptor, watchedPath] : coveredWatches)
+        {
+            [[maybe_unused]] const int removedDescriptor =
+                    ::inotify_rm_watch(m_inotifyFileDescriptor, watchDescriptor);
+            m_watchDescriptors.erase(watchDescriptor);
+            m_pathToWatchDescriptor.erase(watchedPath);
+            m_recursiveRoots.erase(watchedPath);
+            m_selfHealPaths.erase(watchedPath);
+        }
 
         return true;
     }

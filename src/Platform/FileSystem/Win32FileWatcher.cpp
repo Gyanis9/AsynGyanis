@@ -300,6 +300,27 @@ namespace AsynGyanis::Platform
                               return coveredPath.size() > normalizedPath.size() &&
                                      isSameDirectoryPath(std::string_view(coveredPath).substr(0, normalizedPath.size()), normalizedPath);
                           });
+
+            // 子树里已经挂上的活条目也要一并关掉。递归注册给每个子目录都建了一份监听上下文，
+            // 只摘被点名的那一条，剩下的仍照旧派发回调（调用方以为撤销完成了，事件却一直在来），
+            // 而且目录句柄不关就删不掉、也改不了那棵子树。先收集再关，免得在遍历里擦除
+            std::vector<std::string> coveredWatchPaths;
+            for (const auto &[watchedPath, watchEntry] : m_watches)
+            {
+                if (watchedPath.size() > normalizedPath.size()
+                    && isSameDirectoryPath(std::string_view(watchedPath).substr(0, normalizedPath.size()), normalizedPath))
+                {
+                    coveredWatchPaths.push_back(watchedPath);
+                }
+            }
+            for (const auto &coveredPath : coveredWatchPaths)
+            {
+                if (const auto covered = m_watches.find(coveredPath); covered != m_watches.end())
+                {
+                    closeEntry(*covered->second);
+                    m_watches.erase(covered);
+                }
+            }
         }
         return true;
     }
