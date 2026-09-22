@@ -4,12 +4,66 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Socket/InetAddress.h"
+#include "Platform/System/PlatformError.h"
 
 #include <limits>
 #include <openssl/err.h>
+#include <string>
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 把一次失败的 SSL 调用翻成「原因 + 下一步」，握手/读取/写入三条入口共用
+         * @param sslErrorCode SSL_get_error() 的结果，调用方已排除 WANT_READ/WANT_WRITE/ZERO_RETURN
+         * @param callReturn 那次 SSL_connect/SSL_accept/SSL_read/SSL_write 的返回值
+         * @return std::string 冒号之后的原因句，不含「TLS 读取失败：」这类前缀
+         * @details 原因要从两条通道读：OpenSSL 的错误队列与平台的套接字错误码。只看队列时
+         *          SSL_ERROR_SYSCALL 一类会打印出没有任何内容的 `error:00000000`，再配一句
+         *          指向对端配置的猜测，排查的人会顺着去找证书而不是查断线。
+         */
+        std::string describeSslFailure(const int sslErrorCode, const int callReturn)
+        {
+            const unsigned long queueEntry = ERR_get_error();
+
+            // 握手期被对端掐断时 OpenSSL 会留下这条 reason，它和「队列为空的 EOF」是同一件事
+            const bool isAbruptTcpBreak = sslErrorCode == SSL_ERROR_SYSCALL ||
+                                          (queueEntry != 0 &&
+                                           ERR_GET_REASON(queueEntry) == SSL_R_UNEXPECTED_EOF_WHILE_READING);
+            if (isAbruptTcpBreak)
+            {
+                // 返回 0 是读到文件尾（对端发了 FIN），返回 -1 是底层调用自己报错（重置一类）。
+                // 两路的处置相同，但把看到的是哪一种写出来，读者不必再去猜
+                if (callReturn == 0)
+                {
+                    return "对端没有发出 TLS 关闭通知（close_notify）就断开了 TCP 连接，本端读到的是文件尾："
+                           "这条会话已经失效，关闭本端连接，需要时重新握手";
+                }
+                return "对端没有发出 TLS 关闭通知就断了连接，底层套接字报「" +
+                       Platform::PlatformError::message(Platform::PlatformError::lastSocketErrorCode()) +
+                       "」：TLS 层没有收到任何告警，关闭本端连接，需要时重新握手";
+            }
+
+            if (sslErrorCode == SSL_ERROR_ZERO_RETURN)
+            {
+                // 只在写侧落到这里：读侧把干净结束当作 0 返回，不会走到失败文案
+                return "本端已经收到对端的 TLS 关闭通知（close_notify），这条会话进入关闭状态，不能再收发";
+            }
+
+            if (queueEntry != 0)
+            {
+                char queueText[256]{};
+                ERR_error_string_n(queueEntry, queueText, sizeof(queueText));
+                return std::string(queueText) +
+                       "（TLS 协议层报错，常见原因：对端证书不受信、协议版本或加密套件不匹配、对端不是 TLS 服务）";
+            }
+
+            return "TLS 层报出未知错误（SSL_get_error=" + std::to_string(sslErrorCode) +
+                   "，OpenSSL 错误队列为空）：按会话已失效处理，关闭本端连接";
+        }
+    } // namespace
+
     TlsSocket::TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket, const Role role) :
         m_ssl(ssl), m_loop(&loop), m_socket(std::move(socket)), m_role(role)
     {
@@ -101,12 +155,9 @@ namespace AsynGyanis::Core
                 continue;
             }
 
-            char buffer[256];
-            ERR_error_string_n(ERR_get_error(), buffer, sizeof(buffer));
-            // OpenSSL 的错误串本身是英文，但它是定位问题的唯一线索，因此保留并补上中文说明与常见原因
-            throw CoreException(std::string("TLS 握手失败：") + buffer +
-                                "（常见原因：对端证书不受信、协议版本不匹配、对端不是 TLS 服务，"
-                                "或对端在握手期间关闭了连接）");
+            // 失败原因由共用的翻译给出来：这里不再无条件追加「证书不受信」那类猜测——
+            // 对端在握手中途断线时那些猜测是错方向的
+            throw CoreException("TLS 握手失败：" + describeSslFailure(error, ret));
         }
     }
 
@@ -172,10 +223,7 @@ namespace AsynGyanis::Core
                 co_return 0;
             }
 
-            char errorBuffer[256];
-            ERR_error_string_n(ERR_get_error(), errorBuffer, sizeof(errorBuffer));
-            throw CoreException(std::string("TLS 读取失败：") + errorBuffer +
-                                "（连接多半已被对端关闭或 TLS 会话已失效，应关闭该连接而不是重试）");
+            throw CoreException("TLS 读取失败：" + describeSslFailure(error, ret));
         }
     }
 
@@ -246,10 +294,9 @@ namespace AsynGyanis::Core
                 continue;
             }
 
-            char errorBuffer[256];
-            ERR_error_string_n(ERR_get_error(), errorBuffer, sizeof(errorBuffer));
-            throw CoreException(std::string("TLS 写入失败：") + errorBuffer +
-                                "（连接多半已被对端关闭或 TLS 会话已失效，应关闭该连接而不是重试）");
+            // 写侧的失败与读侧同一套口径：对端断了 TCP 与协议层报错要分开说，
+            // 否则留下的还是一条没有内容的队列原文加一句猜测
+            throw CoreException("TLS 写入失败：" + describeSslFailure(error, ret));
         }
     }
 

@@ -460,4 +460,126 @@ namespace AsynGyanis::Core
         EXPECT_NE(sendFailure.text.find("本端 TLS 会话已释放"), std::string::npos) << sendFailure.text;
     }
 
+    /**
+     * @brief 对端在握手中途断开时要把「TCP 突然断了」说出来，而不是把空错误队列当原因
+     * @details SSL_ERROR_SYSCALL 一类失败在 OpenSSL 的错误队列里常常什么都没有，此时原因在
+     *          返回值与套接字错误码里。照队列原文打印会得到 `error:00000000:lib(0)::reason(0)`
+     *          再配一句「多半是证书/协议不匹配」，把人引向对端的配置而不是断线本身。
+     */
+    TEST(TlsSocket, HandshakeAgainstAbruptlyClosedPeerReportsTheTcpBreakNotAnEmptyQueue)
+    {
+        EventLoop  loop;
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        SSL *ssl = tlsContext.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+
+        TlsSocket tlsSocket(ssl, loop, AsyncSocket(loop, localDescriptor));
+
+        // 对端先消失：SSL_accept 第一次读就到文件尾，单次 resume 即可走到抛出点（不依赖时序）
+        Platform::FileDescriptor::close(peerDescriptor);
+
+        Task<> handshakeTask = tlsSocket.handshake();
+        handshakeTask.handle().resume();
+        ASSERT_TRUE(handshakeTask.isReady()) << "对端已关闭，握手不该继续挂起等待";
+
+        const FailureObservation failure = observeFailure(handshakeTask);
+        EXPECT_TRUE(failure.isCoreException) << failure.text;
+        EXPECT_EQ(failure.text.find("00000000"), std::string::npos) << "空的错误队列不能当成失败原因：" << failure.text;
+        EXPECT_NE(failure.text.find("关闭通知"), std::string::npos) << "要指明这是对端没走 TLS 关闭握手的断线：" << failure.text;
+        // 原因已经确定是「对端断了 TCP」，此时再列「证书不受信」那类猜测就是把人往对端配置上引
+        EXPECT_EQ(failure.text.find("证书不受信"), std::string::npos) << "已判定为断线时不该再给证书猜测：" << failure.text;
+
+        tlsSocket.close();
+    }
+
+    /**
+     * @brief 会话建好之后对端不走 close_notify 就断开：读侧要说清「TCP 突然断了」，而不是报一个空错误
+     * @details 这是服务器上最常见的 TLS 失败（对端进程被杀、中间设备掐断链路）。OpenSSL 在这一路
+     *          通常什么都不往错误队列里放，只照抄队列就会打印出 `error:00000000:lib(0)::reason(0)`，
+     *          再配一句「多半已被对端关闭或会话失效」的猜测——两句都没有可操作信息。
+     *          客户端用 quiet shutdown 模式关掉：SSL_shutdown 发不出 close_notify，
+     *          留下的就是「描述符正常关闭、TLS 层没有告警」这一形态。
+     */
+    TEST(TlsSocket, ReceiveAfterPeerBreaksConnectionWithoutCloseNotifyNamesTheBreak)
+    {
+        EventLoop loop;
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int serverDescriptor = -1;
+        int clientDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor));
+
+        SSL *serverHandle = serverContext.createSSL(serverDescriptor);
+        ASSERT_NE(serverHandle, nullptr);
+        TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
+
+        auto clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+        SSL *clientHandle = SSL_new(clientContext.get());
+        ASSERT_NE(clientHandle, nullptr);
+        ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
+        // 静默关闭：释放客户端会话时不发 close_notify，对端看到的就是一次不合规格的断线
+        SSL_set_quiet_shutdown(clientHandle, 1);
+
+        {
+            TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+            Task<> serverHandshake = serverSocket.handshake();
+            Task<> clientHandshake = clientSocket.handshake();
+            serverHandshake.handle().resume();
+            clientHandshake.handle().resume();
+            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake]
+                                                  {
+                                                      return serverHandshake.isReady() && clientHandshake.isReady();
+                                                  }))
+                << "两侧握手没有在时限内跑完，后面的读数说明不了任何问题";
+
+            // 客户端在这里关闭：会话先释放（不发告警），随后描述符关闭 —— 服务端只看到断线
+        }
+
+        std::uint8_t readBuffer[8]{};
+        Task<ssize_t> readTask = serverSocket.asyncReceive(readBuffer, sizeof(readBuffer));
+        readTask.handle().resume();
+        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&readTask]
+                                             {
+                                                 return readTask.isReady();
+                                             }))
+            << "服务端连断线都没读到：它挂在了一个不会再有事件的等待上";
+
+        const FailureObservation failure = observeFailure(readTask);
+        EXPECT_TRUE(failure.isCoreException) << "非正常关闭必须报错，而不是被当成干净结束：" << failure.text;
+        EXPECT_NE(failure.text.find("TLS 读取失败："), std::string::npos) << failure.text;
+        EXPECT_EQ(failure.text.find("00000000"), std::string::npos) << "空的错误队列不能当成失败原因：" << failure.text;
+        EXPECT_NE(failure.text.find("关闭通知"), std::string::npos) << "要指明这是对端没走 TLS 关闭握手的断线：" << failure.text;
+
+        // 同一条断线再写一次：写侧走的是另一个 SSL 入口，文案也要给出同一水准的原因
+        Task<ssize_t> writeTask = serverSocket.asyncSend(readBuffer, sizeof(readBuffer));
+        writeTask.handle().resume();
+        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&writeTask]
+                                             {
+                                                 return writeTask.isReady();
+                                             }))
+            << "写侧既没成功也没失败：它挂在了一个不会再有事件的等待上";
+        std::string writeFailureText;
+        try
+        {
+            static_cast<void>(writeTask.handle().promise().result());
+        } catch (const std::exception &writeFailure)
+        {
+            writeFailureText = writeFailure.what();
+        }
+        // 断线之后写不下去时，报的必须是被断的原因，而不是「多半已被对端关闭」这类没有信息量的猜测
+        EXPECT_EQ(writeFailureText.find("多半已被对端关闭"), std::string::npos) << writeFailureText;
+        EXPECT_EQ(writeFailureText.find("00000000"), std::string::npos) << writeFailureText;
+
+        serverSocket.close();
+    }
+
 } // namespace AsynGyanis::Core
