@@ -138,6 +138,33 @@
 
 ### 修复
 
+- **共用一个 UDP 端口的多个监听器不再只有最后一个收得到报文**：`DatagramSocket::bindTo()` 原先只设
+  SO_REUSEADDR，内核让每个监听器都「绑定成功」，却把全部报文交给最后绑上的那一个——`--workers 3 --h3`
+  时前两个 worker 一句错误都不报、一条报文也收不到（容器内核实测 24 条流的分布是 0/0/24，补上
+  SO_REUSEPORT 后变成 9/6/9）。TCP 侧的 `TcpAcceptor` 早就设了这个选项，缺的是数据报这一半。用例
+  `DatagramSocket.SharedPortSpreadsDatagramsAcrossListeners` 钉在「收到过流量的监听器个数 > 1」而不是
+  「绑得上」——后者删掉这次改动也照样成立。
+- **分离协程里没人接住的异常落到错误日志，启动失败不再静默**：`Task` 的 promise 只把异常存下来，被
+  `schedule()` 投递又没人 await 的协程抛出异常就等于彻底消失，而 `TcpServer::start()` 与
+  `QuicServer::listen()` 的绑定失败正好是这个形态：日志照旧写「server started」、退出码 0，端口上却没人
+  守着（拿一个不属于本机的地址即可复现）。现在协程终结点上若异常没有等待者就记一条带抛出点与调用栈的错误；
+  `echo_server` 另在启动后按有界轮询确认每台监听器真的进入监听态，确认不到就报「服务未运行」并以退出码 1
+  收场。判据见 `Task.DetachedTaskReportsUnhandledExceptionToLogger`，对照例
+  `Task.AwaitedTaskRethrowsWithoutReportingToLogger` 保证有人接住的异常不会被重复报。
+- **在途正文预算不再因一次错账翻转成「放行一切」**：`HttpMemoryBudget::release()` 原来是无符号
+  `fetch_sub`，归还多于账目时把已预留量绕成天文数字，而 `tryReserve()` 判的是「上限减当前值」——
+  跟着回绕之后剩余额度变成巨大，这道跨连接的限额当场失效（比账目偏小严重得多）。现在按 0 收住并记
+  一条中文警告（这条日志本身就是「某处重复归还」的证据）。用例 `OverReleaseIsClampedAndKeepsTheLimit`
+  钉住：多归还之后账目为 0、上限依旧拒绝对端的下一个字节。
+- **HTTP/3 排队中与正在服务的正文都算进在途预算**：额度原来随「请求被排进待派发队列」就归还
+  （`IncomingRequest` 在 `enqueueRequest()` 末尾析构），于是排着的正文与正在跑处理器的正文都不再被记账，
+  多条流各自压一份正文就能把实际占用推过上限。现在额度随待派发记录一起活着、接到服务作用域里，这一条
+  应答完才归还，与 h1「应答写完后归还」、h2「记录摘掉时归还」同口径。判据见
+  `Http3Session.KeepsInflightBudgetHeldWhileRequestIsQueuedAndServed`（排队时与处理器进门时各查一次占用）。
+- **接手一条取不到对端地址的描述符不再带走整台服务器**：`TcpServer::takeOverConnection()` 里
+  `remoteAddress()` 在 `getpeername` 失败时会抛，而它当时排在保护 `createConnection()` 的 try 之外——
+  一条坏描述符就能让接受循环退出，之后所有来源都没人接。现在两者同处一段，异常只丢这一条连接并记中文
+  错误；`adoptConnection()` 也如实返回 false（原来即便因过载或超限丢弃也报「已接手」，与它的文档契约相反）。
 - **HTTP/3 的连接收口会等完业务处理器**：QUIC 连接被空闲超时（或 CONNECTION_CLOSE）收掉时不会逐条
   流发 RESET_STREAM / STOP_SENDING，会话因此收不到「这条流结束」的信号——承载层摘掉 `Http3Session`
   的那一刻，挂在 `bodyStream()->readNext()` 或隧道 `receive()` 上的处理器协程帧被连着销毁，等待之后
