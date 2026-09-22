@@ -432,6 +432,11 @@ namespace AsynGyanis::Database
         // 管道缓冲区一律丢弃：这些命令没发出去或没读回来，重连后继续发送
         // 会把它们插进另一条会话中间，造成服务端无法预期的批量写入
         m_pipelineCommands.clear();
+
+        // 服务端侧的事务与监视状态随会话一起消失：新连接上没有残留 MULTI 要清、也没有键被盯着，
+        // 记账必须跟着归零，否则重连后的第一次归还白发一条 DISCARD / UNWATCH
+        m_isInTransaction = false;
+        m_isWatchingKeys  = false;
     }
 
     bool RedisConnection::isConnected() const
@@ -547,6 +552,10 @@ namespace AsynGyanis::Database
                 disconnect();
                 return results;
             }
+
+            // 与单命令路径同一份记账：管道里的 MULTI / EXEC 同样会留下（或了结）连接级状态，
+            // 漏记的话这条连接带着未了结的事务回池，下一个借用者的写全部被静默排队
+            noteSessionCommand(commandArguments.front());
 
             ++appendedCommandCount;
         }
@@ -688,6 +697,10 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // 收到任何回复都说明服务端已经收下这条命令，记账据此更新（error 回复也算收下：
+        // 被服务端中止的 EXEC 同样把事务了结了）；没回复的传输层失败在上面已经断开并清零
+        noteSessionCommand(argumentValues.front());
+
         if (serverReply->type == REDIS_REPLY_ERROR)
         {
             // 服务端明确回了 error：按基类「失败返回 nullptr，原因见 lastError()」处理，
@@ -730,6 +743,10 @@ namespace AsynGyanis::Database
         // 没有上下文可释放，只把状态与缓冲区归位，保证析构路径调用本方法是安全的
         m_pipelineCommands.clear();
         m_isConnected = false;
+
+        // 会话记账同样归零：桩里永远连不上，留着标记会让 resetSessionState 去发一条注定失败的清理命令
+        m_isInTransaction = false;
+        m_isWatchingKeys  = false;
     }
 
     bool RedisConnection::isConnected() const
@@ -774,13 +791,127 @@ namespace AsynGyanis::Database
     // 以下定义与是否编译 hiredis 无关，两种构建配置共用
     // ------------------------------------------------------------------------
 
+    namespace
+    {
+        /**
+         * @brief 把一个字符折成小写，只管 ASCII 那一段
+         * @details 不用 std::tolower：它按当前 locale 折叠，非英语 locale 下 'I' 之类会折出与 ASCII
+         *          不同的结果（本仓库的解析路径已为此吃过一次亏），而 Redis 的命令名只可能是 ASCII
+         * @param character 待折叠的字符
+         * @return char 折叠结果；非大写 ASCII 原样返回
+         */
+        constexpr char foldAsciiToLower(const char character) noexcept
+        {
+            return (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
+        }
+
+        /**
+         * @brief 判断命令名是否就是给定名字（ASCII 大小写不敏感）
+         * @param commandName 命令名，取自参数的第一个元素
+         * @param lowerCaseName 期望名字，必须已经全小写
+         * @return true 两者按大小写不敏感规则相等
+         */
+        constexpr bool commandNameMatches(const std::string_view commandName, const std::string_view lowerCaseName) noexcept
+        {
+            if (commandName.size() != lowerCaseName.size())
+            {
+                return false;
+            }
+
+            for (size_t index = 0; index < commandName.size(); ++index)
+            {
+                if (foldAsciiToLower(commandName[index]) != lowerCaseName[index])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+    } // namespace
+
+    void RedisConnection::noteSessionCommand(const std::string_view commandName) noexcept
+    {
+        // 只认六个会留下连接级状态的命令名。先按首字母分叉，其余命令（GET/SET/MGET…）一次字符串比较都不做
+        switch (commandName.empty() ? '\0' : foldAsciiToLower(commandName.front()))
+        {
+            case 'm':
+                // MULTI：从这一刻起本连接的命令全部排队，直到 EXEC 或 DISCARD
+                if (commandNameMatches(commandName, "multi"))
+                {
+                    m_isInTransaction = true;
+                }
+                return;
+
+            case 'e':
+            case 'd':
+            case 'r':
+                // EXEC / DISCARD / RESET 都会把事务与监视一并了结（EXEC 被服务端中止时同样算已了结）
+                if (commandNameMatches(commandName, "exec") || commandNameMatches(commandName, "discard")
+                    || commandNameMatches(commandName, "reset"))
+                {
+                    m_isInTransaction = false;
+                    m_isWatchingKeys  = false;
+                }
+                return;
+
+            case 'w':
+                // WATCH 在 MULTI 之外也能单独发出，并且一直有效到事务了结为止
+                if (commandNameMatches(commandName, "watch"))
+                {
+                    m_isWatchingKeys = true;
+                }
+                return;
+
+            case 'u':
+                // UNWATCH 只撤监视，不碰事务
+                if (commandNameMatches(commandName, "unwatch"))
+                {
+                    m_isWatchingKeys = false;
+                }
+                return;
+
+            default:
+                // 其余命令不改变连接级状态：在 MULTI 里排队的写命令尤其不能在这里被当成「事务结束了」
+                return;
+        }
+    }
+
     void RedisConnection::resetSessionState() noexcept
     {
-        // 定义放在两种构建配置共用的这一段里：本方法是虚函数，桩构建同样要有一份实现，
-        // 否则虚表会引用一个不存在的符号（缺 hiredis 的配置在链接期就起不来）
         // 管道是「登记到 flush 之间」的会话状态：这条连接要交给下一个借用者了，残留命令必须丢掉。
         // 留着的话会被下一位的 flushPipeline() 代发，回复按下标错位且毫无报错
         m_pipelineCommands.clear();
+
+        // 账先取走再归零：本方法要幂等，且清理命令发不出去（链路已断）时也不该留下「还欠一条 DISCARD」
+        const bool wasInTransaction = m_isInTransaction;
+        const bool wasWatchingKeys  = m_isWatchingKeys;
+        m_isInTransaction = false;
+        m_isWatchingKeys  = false;
+
+        // 桩构建与未连接都在这里止步：没有会话可复位，也就不必为一条发不出去的命令报错
+        if (!isConnected())
+        {
+            return;
+        }
+
+        try
+        {
+            if (wasInTransaction)
+            {
+                // DISCARD 同时撤掉监视，因此事务还在时不必再补一条 UNWATCH
+                [[maybe_unused]] const std::unique_ptr<DatabaseResult> discarded = executeCommand({std::string_view("DISCARD")});
+            }
+            else if (wasWatchingKeys)
+            {
+                // 只 WATCH 过、没进 MULTI 时 DISCARD 会被服务端判成错误（DISCARD without MULTI），
+                // 而那句错误回复并不撤监视，因此这里必须发 UNWATCH
+                [[maybe_unused]] const std::unique_ptr<DatabaseResult> unwatched = executeCommand({std::string_view("UNWATCH")});
+            }
+        } catch (...)
+        {
+            // 归还路径绝不抛出：本方法按基类约定是 noexcept，最坏情况是连接带着未复位的会话状态回池
+        }
     }
 
     RedisConnection::~RedisConnection()

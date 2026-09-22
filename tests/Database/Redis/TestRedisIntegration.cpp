@@ -11,6 +11,9 @@
 // - PipelineAcrossRisingAndFallingArgumentCountsKeepsCommandsIntact（参数条数升降交替仍逐条对齐）
 // - SingleCommandArgumentTableHoldsAcrossInlineCapacity（单命令参数表在栈上容量两侧都等值送达）
 // - ResetSessionStateDiscardsPendingPipelineCommands
+// - ResetSessionStateDiscardsLeftoverTransaction（残留 MULTI 会让下一个借用者的写全被排队）
+// - CompletedTransactionLeavesNothingForSessionReset（EXEC 之后复位不再发命令）
+// - ResetSessionStateUnwatchesLeftoverWatch（残留 WATCH 会让下一个借用者的 EXEC 中止）
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
@@ -542,6 +545,91 @@ namespace AsynGyanis::Database
         const std::optional<DatabaseValue> existsValue = runScalar({"EXISTS", key});
         ASSERT_TRUE(existsValue.has_value());
         EXPECT_EQ(std::get<std::int64_t>(*existsValue), 0) << "被丢弃的管道命令却在服务端生效了";
+    }
+
+    /**
+     * @brief 钉住归还连接时的会话复位会了结上一个借用者留下的 MULTI：写命令不再被静默排队
+     * @details MULTI 留在服务端一侧，本地清管道缓冲清不掉它。不 DISCARD 时下一个借用者的每条写命令
+     *          都只收到 +QUEUED 而根本不执行——返回值非空、看着像成功，数据却一条都没落库。
+     */
+    TEST_F(RedisIntegrationTest, ResetSessionStateDiscardsLeftoverTransaction)
+    {
+        const std::string key = makeKey("reset-transaction");
+
+        // 命令名按小写发出：Redis 不区分大小写，本类的记账因此也必须不区分
+        ASSERT_NE(m_connection->execute("multi"), nullptr) << m_connection->lastError();
+
+        const std::unique_ptr<DatabaseResult> queuedReply = m_connection->executeCommand({"SET", key, "queued-only"});
+        ASSERT_NE(queuedReply, nullptr) << m_connection->lastError();
+        // 先钉住「排队」这一形态本身：后面的断言才有对照意义
+        ASSERT_TRUE(std::holds_alternative<std::string>(queuedReply->getValue(0)));
+        EXPECT_EQ(std::get<std::string>(queuedReply->getValue(0)), "QUEUED");
+
+        // 归还路径上的会话复位（池在归还时统一调它）：未了结的事务必须被 DISCARD 掉
+        m_connection->resetSessionState();
+
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "after-reset"}), nullptr) << m_connection->lastError();
+
+        const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_EQ(std::get<std::string>(*readBack), "after-reset") << "复位之后写命令仍被排进上一个借用者的事务";
+    }
+
+    /**
+     * @brief 钉住已经 EXEC 了结的事务不再触发复位命令，也不影响后续取值
+     * @details 记账若不在 EXEC 时清零，归还路径会白发一条 DISCARD 并换来一句
+     *          「DISCARD without MULTI」——白付一次往返，还把错误原因留在 lastError() 里冒充本次失败。
+     */
+    TEST_F(RedisIntegrationTest, CompletedTransactionLeavesNothingForSessionReset)
+    {
+        const std::string key = makeKey("reset-executed");
+
+        ASSERT_NE(m_connection->executeCommand({"MULTI"}), nullptr) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "1"}), nullptr) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"EXEC"}), nullptr) << m_connection->lastError();
+
+        m_connection->resetSessionState();
+        EXPECT_TRUE(m_connection->lastError().empty()) << "事务已经了结，复位却发出了被服务端拒绝的命令："
+                                                      << m_connection->lastError();
+
+        const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_EQ(std::get<std::string>(*readBack), "1");
+    }
+
+    /**
+     * @brief 钉住会话复位撤掉残留的 WATCH：别的连接改动被盯过的键，不再让下一个借用者的 EXEC 中止
+     * @details 只 WATCH 过、没进 MULTI 时 DISCARD 会被服务端拒绝且不撤监视，因此复位必须发 UNWATCH。
+     *          监视残留的表现很有迷惑性：下一个借用者自己 MULTI + EXEC 一句没问题，却因为
+     *          上一个借用者盯过的键被改动而拿到 nil（事务被判冲突中止），写命令一条都没执行。
+     */
+    TEST_F(RedisIntegrationTest, ResetSessionStateUnwatchesLeftoverWatch)
+    {
+        const std::string key = makeKey("reset-watch");
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "initial"}), nullptr) << m_connection->lastError();
+
+        ASSERT_NE(m_connection->executeCommand({"WATCH", key}), nullptr) << m_connection->lastError();
+
+        // 归还路径上的会话复位：此刻本连接唯一残留的会话状态就是这条监视
+        m_connection->resetSessionState();
+
+        // 另开一条连接改动同一个键：监视还在的话，这一步就会让这个借用者的事务注定中止
+        RedisConnection otherBorrower(m_configuration);
+        ASSERT_TRUE(otherBorrower.connect()) << otherBorrower.lastError();
+        ASSERT_NE(otherBorrower.executeCommand({"SET", key, "from-next-borrower"}), nullptr) << otherBorrower.lastError();
+
+        // 回到这条连接上按正常事务走一遍：监视已被撤掉，EXEC 才会真的执行写命令
+        ASSERT_NE(m_connection->executeCommand({"MULTI"}), nullptr) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "committed-by-me"}), nullptr) << m_connection->lastError();
+        const std::unique_ptr<DatabaseResult> execReply = m_connection->executeCommand({"EXEC"});
+        ASSERT_NE(execReply, nullptr) << m_connection->lastError();
+        EXPECT_FALSE(execReply->isEmpty()) << "事务被服务端判成冲突而中止：残留的 WATCH 没有在复位时撤掉";
+
+        const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_EQ(std::get<std::string>(*readBack), "committed-by-me");
+
+        otherBorrower.disconnect();
     }
 
     /**

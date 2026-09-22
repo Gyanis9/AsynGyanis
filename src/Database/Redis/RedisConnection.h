@@ -144,10 +144,12 @@ namespace AsynGyanis::Database
         bool pipelineCommand(std::string_view command);
 
         /**
-         * @brief 归还连接池时丢掉未发送的管道命令
-         * @details 管道是「登记到 flush 之间」的会话状态：上一个借用者没 flush 就归还时，
-         *          残留命令会被下一个借用者的 flushPipeline() 代发，回复按下标错位且毫无报错。
+         * @brief 归还连接池时丢掉残留的会话状态：未发送的管道命令、服务端留着的 MULTI 与 WATCH
+         * @details 管道残留命令会被下一个借用者的 flushPipeline() 代发，回复按下标错位且毫无报错；
+         *          MULTI 与 WATCH 留在服务端一侧，本地清缓冲清不掉它——留着时下一个借用者的写命令全部
+         *          被排进别人的事务、服务端逐条回 +QUEUED，看着像执行成功却一条都没落库。
          *          池在归还时统一调用本方法（见 DatabaseConnection::resetSessionState）
+         * @note 只在按命令名记的账说「确有残留」时才发清理命令，干净连接不额外付一次往返
          */
         void resetSessionState() noexcept override;
 
@@ -206,11 +208,22 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> executeArguments(std::span<const std::string_view> argumentValues);
 
+        /**
+         * @brief 按送出的命令名维护「服务端还替这条连接留着什么状态」的记账
+         * @details MULTI 与 WATCH 是连接级状态，命令被服务端收到即生效，一直留到 EXEC / DISCARD / RESET
+         *          为止；本方法在两条发送路径上各调一次，resetSessionState() 据此决定要不要发清理命令。
+         * @param commandName 命令的第一个参数（命令名），Redis 的命令名不区分大小写
+         */
+        void noteSessionCommand(std::string_view commandName) noexcept;
+
         redisContext *m_redisContext{nullptr}; ///< hiredis 连接上下文，本对象独占所有权，未连接时为 nullptr
 
         // 之所以在登记时就切词而不是原样缓存命令文本：命令文本的合法性错误能在 pipelineCommand()
         // 当场反馈，不必等到 flush 时才发现「N 条里有一条引号没闭合」
         std::vector<std::vector<std::string> > m_pipelineCommands; ///< 管道命令缓冲区，元素是已切词好的参数数组
+
+        bool m_isInTransaction{false}; ///< 服务端是否停在 MULTI 里：归还时发 DISCARD，否则下一个借用者的写全被排队
+        bool m_isWatchingKeys{false};  ///< 服务端是否留着 WATCH 监视：归还时发 UNWATCH，否则别人的键改动会让他人的 EXEC 判成冲突
     };
 
 } // namespace AsynGyanis::Database
