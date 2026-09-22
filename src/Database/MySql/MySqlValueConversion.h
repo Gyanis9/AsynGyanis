@@ -63,6 +63,10 @@ namespace AsynGyanis::Database::Detail
      * @param rawValue 列值首地址，调用方保证非空
      * @param byteLength 列值字节长度
      * @return std::optional<double> 解析结果；非数字、有余文或超出表示范围时返回空值
+     * @warning 服务端把非有限值印成 inf / -inf / nan 时本函数返回空值（std::from_chars 的浮点
+     *          重载按 C++ 的数值文法走，明确不含这几种拼写），调用方因此把该列交成 std::string
+     *          备选。要认它们得先能测：本仓库的 MySQL 会把 CAST('inf' AS DOUBLE) 归成 0，
+     *          非有限值在文本协议上不可达，故此处不做无法证伪的放宽。
      */
     inline std::optional<double> parseDoubleText(const char *rawValue, const std::size_t byteLength)
     {
@@ -172,8 +176,9 @@ namespace AsynGyanis::Database::Detail
                     return *parsedValue;
                 }
 
-                // 服务端的 NaN / Inf 文本（inf / nan 形式）会被解析器正常识别，
-                // 走到这里说明文本确实不是浮点数，退回原文
+                // 非有限值的文本拼写（inf / -inf / nan）不被 parseDoubleText 认出，会按原文交出
+                // std::string 备选——这是刻意的：双精度列拿到文本会让 double 成员明确报错，
+                // 比替调用方猜出一个非有限值更容易定位（详见 parseDoubleText 的 @warning）
                 return std::string(rawValue, byteLength);
             }
 
