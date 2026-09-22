@@ -87,9 +87,13 @@ namespace AsynGyanis::Core
                 static_cast<void>(Platform::Process::forceTermination(worker.handle));
             }
         }
+
+        // 对象马上就没人了，收尸只能在这里等完：跳过这一步的话，强杀掉的 worker 会以僵尸形式
+        // 挂在父进程上，退出码再也查不到（句柄随后随本对象一起析构）
+        waitForForcedTerminationsToLand();
     }
 
-    void WorkerSupervisor::run()
+    bool WorkerSupervisor::run()
     {
 #if !ASYN_PLATFORM_WIN32
         // 信号处理只置标记：真正的收尾在下面的循环里做，那里才能安全地分配、日志、等进程
@@ -99,6 +103,10 @@ namespace AsynGyanis::Core
 #endif
 
         LOG_INFO_FMT("WorkerSupervisor: 开始编排 {} 个 worker，可执行文件 {}", m_configuration.workerCount, m_configuration.executablePath);
+
+        // 「整池子都起不来」与「按请求停掉」是两种结果：前者调用方要报非 0 退出码，
+        // 否则进程管理器与脚本只看退出码的话，会把一次彻底失败当成一次正常停机
+        bool isPoolGivenUp = false;
 
         while (!m_isStopRequested.load(std::memory_order_acquire))
         {
@@ -143,6 +151,7 @@ namespace AsynGyanis::Core
             {
                 LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）",
                               givenUpWorkerCount);
+                isPoolGivenUp = true;
                 break;
             }
 
@@ -157,6 +166,7 @@ namespace AsynGyanis::Core
         g_runningSupervisor.store(nullptr, std::memory_order_release);
 #endif
         LOG_INFO_FMT("WorkerSupervisor: 编排结束");
+        return !isPoolGivenUp;
     }
 
     void WorkerSupervisor::requestStop() noexcept
@@ -274,7 +284,6 @@ namespace AsynGyanis::Core
         }
 
         // 期限到了还在的一律强杀：收尾不能没有尽期，否则一次卡住的退出会让 master 永远关不掉
-        bool hasForcedTermination = false;
         for (Worker &worker: m_workers)
         {
             if (!worker.handle.isValid())
@@ -285,32 +294,10 @@ namespace AsynGyanis::Core
             {
                 LOG_ERROR_FMT("WorkerSupervisor: worker 进程号 {} 在收尾期限内没有退出，已强杀", worker.handle.processId());
                 static_cast<void>(Platform::Process::forceTermination(worker.handle));
-                hasForcedTermination = true;
             }
         }
 
-        // 强杀之后要等到子进程真的被回收再释放句柄：SIGKILL 的投递与调度有个短窗口，
-        // 立刻 close() 会把 pid 丢掉、从此没有任何人收尸（POSIX 上就是僵尸进程，master 在
-        // 守护进程里长期运行时这些僵尸会一直堆着）。isRunning() 观察时顺手回收，因此这里的
-        // 轮询同时完成「等它结束」与「收尸」两件事；等待仍然有界，通知早已发出
-        if (hasForcedTermination)
-        {
-            const auto reapDeadline = std::chrono::steady_clock::now() + kForcedReapWait;
-            while (std::chrono::steady_clock::now() < reapDeadline)
-            {
-                const bool hasUnreapedWorker = std::ranges::any_of(m_workers,
-                                                                   [](const Worker &worker)
-                                                                   {
-                                                                       return worker.handle.isValid() &&
-                                                                              Platform::Process::isRunning(worker.handle);
-                                                                   });
-                if (!hasUnreapedWorker)
-                {
-                    break;
-                }
-                std::this_thread::sleep_for(kReapPollInterval);
-            }
-        }
+        waitForForcedTerminationsToLand();
 
         for (Worker &worker: m_workers)
         {
@@ -324,6 +311,29 @@ namespace AsynGyanis::Core
                              worker.handle.processId());
             }
             worker.handle.close();
+        }
+    }
+
+    void WorkerSupervisor::waitForForcedTerminationsToLand()
+    {
+        // 强杀之后要等到子进程真的被回收再释放句柄：SIGKILL 的投递与调度有个短窗口，立刻 close()
+        // 会把 pid 丢掉、从此没有任何人收尸（POSIX 上就是僵尸进程，master 长期运行时这些僵尸会一直
+        // 堆着）。isRunning() 观察时顺手回收，因此这里的轮询同时完成「等它结束」与「收尸」两件事；
+        // 等待仍然有界，通知早已发出
+        const auto reapDeadline = std::chrono::steady_clock::now() + kForcedReapWait;
+        while (std::chrono::steady_clock::now() < reapDeadline)
+        {
+            const bool hasUnreapedWorker = std::ranges::any_of(m_workers,
+                                                               [](const Worker &worker)
+                                                               {
+                                                                   return worker.handle.isValid() &&
+                                                                          Platform::Process::isRunning(worker.handle);
+                                                               });
+            if (!hasUnreapedWorker)
+            {
+                return;
+            }
+            std::this_thread::sleep_for(kReapPollInterval);
         }
     }
 } // namespace AsynGyanis::Core

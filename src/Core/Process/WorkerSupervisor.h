@@ -70,9 +70,12 @@ namespace AsynGyanis::Core
          * @brief 起 worker 并进入编排循环（阻塞）
          * @details 循环里做三件事：把该在的 worker 补齐、收掉已退出的并决定是否补、检查停止请求。
          *          停止请求到达后先对全部 worker 发 SIGTERM，等到 shutdownTimeout 仍未退出的强杀，
-         *          然后返回。全部 worker 都因「起来就崩」被放弃时也返回（并已记错误日志）。
+         *          然后返回。
+         * @return bool true 表示是按请求收口；false 表示全部 worker 都因「起来就崩」被放弃而提前退出
+         * @note 返回值就是「这次编排算不算成了」：调用方要据此决定退出码，否则进程管理器与脚本
+         *       看到的是「服务退出码 0」，分不清是被停掉的还是整池子都起不来
          */
-        void run();
+        [[nodiscard]] bool run();
 
         /**
          * @brief 请求停止编排（可从信号处理函数调用）
@@ -119,6 +122,12 @@ namespace AsynGyanis::Core
          * @brief 送走全部 worker：先请求体面退出，超期强杀
          */
         void stopAllWorkers();
+
+        /**
+         * @brief 强杀之后有界等到子进程真的被收尸，再交还句柄
+         * @details 收尾路径与析构兜底共用这一处：丢掉 pid 就等于留下没人收的僵尸
+         */
+        void waitForForcedTerminationsToLand();
 
         Configuration             m_configuration;   ///< 编排参数（构造时已校验）
         std::vector<Worker>       m_workers;         ///< worker 槽位；下标即序号，槽位固定不搬

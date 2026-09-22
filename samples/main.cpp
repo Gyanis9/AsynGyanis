@@ -423,7 +423,13 @@ int main(int argc, char **argv)
             Core::WorkerSupervisor supervisor(std::move(supervisorConfiguration));
             LOG_INFO_FMT("多进程模式：{} 个 worker（master 进程号 {} 只做编排；Ctrl+C 或 SIGTERM 会让 worker 各自体面退出）",
                          workerProcessCount, Platform::ProcessInfo::currentProcessId());
-            supervisor.run();
+            if (!supervisor.run())
+            {
+                // 整池 worker 都「起来就崩」：原因上一条条记在日志里，这里只把结果落到退出码上，
+                // 否则一次彻底失败在进程管理器与脚本眼里跟一次正常停机长得很一样
+                LOG_ERROR("多进程模式：全部 worker 都因「起来就崩」被放弃，服务未运行（原因见上面的错误日志）");
+                return 1;
+            }
         } catch (const Base::Exception &supervisorException)
         {
             LOG_ERROR_EXCEPTION(supervisorException, "多进程模式无法启动，服务未运行。原因：{}", supervisorException.what());

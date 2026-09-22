@@ -77,6 +77,7 @@ namespace
         std::chrono::milliseconds elapsed; ///< 从进入 run() 到它返回用了多久（挂死的段不会回到这里，由外层超时判负）
         std::size_t              spawned;  ///< 证据目录里出现过的 worker 次数
         std::size_t              runningAtExit; ///< run() 返回后编排视图里还在的 worker 数（此时循环已结束，读取无并发）
+        bool                     isPoolGivenUp{false}; ///< 这一段是不是以「整池都起来就崩」收场的
     };
 
     /**
@@ -114,7 +115,9 @@ namespace
         }
 
         const auto startedAt = std::chrono::steady_clock::now();
-        supervisor.run();
+        // run() 报的是「这次是不是按请求收的口」，本结构记的是相反的那面（整池是否被放弃）：
+        // 两段各自断言一种收场，取反要在这里做一次，别留给读者猜
+        const bool isPoolGivenUp = !supervisor.run();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
 
         const std::size_t spawnedWorkerCount = evidenceDirectory.empty() ? 0 : countSpawnedWorkers(evidenceDirectory);
@@ -123,7 +126,7 @@ namespace
         std::signal(SIGALRM, previousHandler);
         g_supervisorToStop = nullptr;
 
-        return {elapsed, spawnedWorkerCount, runningAtExit};
+        return {elapsed, spawnedWorkerCount, runningAtExit, isPoolGivenUp};
 #endif
     }
 
@@ -238,6 +241,7 @@ int main(const int argc, char **argv)
     samples.check(holdOutcome.spawned > 2, "存活到期的 worker 被补上了新的（证据文件多于 worker 个数）");
     samples.check(holdOutcome.spawned <= 40, "补位节奏受轮询与退避约束，没有变成满速重启");
     samples.check(holdOutcome.runningAtExit == 0, "编排返回时视图里已没有在跑的 worker");
+    samples.check(!holdOutcome.isPoolGivenUp, "第一段是按请求收口，不该报成「整池都起来就崩」");
 
     // 第二段：worker 一起来就退（短于崩溃窗口），连续到上限后编排自己收手——这一段没有任何停止请求
     const SupervisionOutcome crashOutcome = superviseFor(
@@ -257,6 +261,7 @@ int main(const int argc, char **argv)
     samples.check(crashOutcome.elapsed < 10s, "「起来就崩」到上限后编排自行返回，没有卡在补位循环里");
     samples.check(crashOutcome.spawned == 0, "立刻退出的 worker 没写出一份存活证据");
     samples.check(crashOutcome.runningAtExit == 0, "自行返回时同样没有留下在跑的 worker");
+    samples.check(crashOutcome.isPoolGivenUp, "第二段没有任何停止请求，返回只能是因为整池都被放弃");
 
     std::filesystem::remove_all(evidenceDirectory, cleanError);
 

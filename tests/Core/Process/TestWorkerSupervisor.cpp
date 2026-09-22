@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -180,7 +181,7 @@ namespace AsynGyanis::Core
 
         // 两个槽位各崩 crashLoopLimit(3) 次后放弃，编排随即返回
         const auto runStartTime = std::chrono::steady_clock::now();
-        supervisor.run();
+        EXPECT_FALSE(supervisor.run()) << "整池 worker 都被放弃，这次编排不该报「按请求收口」";
 
         EXPECT_LT(std::chrono::steady_clock::now() - runStartTime, kWaitTimeout) << "崩溃循环之后编排没有自己结束";
         EXPECT_EQ(launchLog.launchCount(), 6U) << "两个槽位各应被补到上限为止（各 3 次）";
@@ -195,11 +196,13 @@ namespace AsynGyanis::Core
         const WorkerLaunchLog launchLog;
         WorkerSupervisor      supervisor(makeConfiguration(launchLog, 2, WorkerBehaviour::SleepUntilTerminated));
 
-        // run() 阻塞，因此编排跑在另一个线程上；停止请求从本线程发起
-        std::thread supervisorThread([&supervisor]
-        {
-            supervisor.run();
-        });
+        // run() 阻塞，因此编排跑在另一个线程上；停止请求从本线程发起。返回值交给收尾断言
+        std::atomic<bool> isOrchestrationSettled{false};
+        std::thread       supervisorThread(
+                [&supervisor, &isOrchestrationSettled]
+                {
+                    isOrchestrationSettled.store(supervisor.run(), std::memory_order_release);
+                });
 
         ASSERT_TRUE(waitForCondition(
                 [&launchLog]
@@ -218,6 +221,7 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(launchLog.launchCount(), 2U) << "收尾不该再起新 worker";
         EXPECT_EQ(supervisor.runningWorkerCount(), 0U) << "收尾之后不该还有 worker 在跑";
+        EXPECT_TRUE(isOrchestrationSettled.load(std::memory_order_acquire)) << "worker 正常起来又被按请求停掉，这次编排应当报「收口成功」";
     }
 
     /**
@@ -230,10 +234,13 @@ namespace AsynGyanis::Core
         configuration.shutdownTimeout = std::chrono::milliseconds{300};
 
         WorkerSupervisor supervisor(configuration);
-        std::thread      supervisorThread([&supervisor]
-        {
-            supervisor.run();
-        });
+        // 强杀兜住之后编排应当报「收口成功」：worker 是被本层送走的，不是整池起不来
+        std::atomic<bool> isOrchestrationSettled{false};
+        std::thread       supervisorThread(
+                [&supervisor, &isOrchestrationSettled]
+                {
+                    isOrchestrationSettled.store(supervisor.run(), std::memory_order_release);
+                });
 
         ASSERT_TRUE(waitForCondition(
                 [&launchLog]
@@ -249,6 +256,7 @@ namespace AsynGyanis::Core
 
         EXPECT_GE(stopElapsedTime, configuration.shutdownTimeout) << "worker 不理会 SIGTERM，收尾却早于期限返回了";
         EXPECT_LT(stopElapsedTime, kWaitTimeout) << "收尾超出了期限还在等：强杀那一步没有兜住";
+        EXPECT_TRUE(isOrchestrationSettled.load(std::memory_order_acquire)) << "worker 是被本层强杀送走的，不该报成「整池起不来」";
         EXPECT_EQ(supervisor.runningWorkerCount(), 0U);
     }
 #endif
