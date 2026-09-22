@@ -1914,6 +1914,9 @@ namespace AsynGyanis::Net
         exchange(core, client, Timestamp{100000});
         exchange(core, client, Timestamp{110000});
         EXPECT_FALSE(core.nextTimeout().has_value()) << "退休了的空间还留着在途账，定时器会一直亮着";
+        // 同一笔账在拥塞层也要销掉：退休空间的包既不会被确认也不会被判丢，留着就是永久从可用窗口里
+        // 扣走几十 KB（Initial 空间几乎总在握手期退休，这条连接后面一直背着）
+        EXPECT_EQ(core.bytesInFlightByteCount(), 0U) << "退休空间的字节没从在途账里销掉，拥塞窗口被永久扣小";
         for (int attempt = 0; attempt < 4; ++attempt)
         {
             const std::optional<Timestamp> deadline = core.nextTimeout();

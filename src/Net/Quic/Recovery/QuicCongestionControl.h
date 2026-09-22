@@ -66,6 +66,15 @@ namespace AsynGyanis::Net
                                 QuicTime eventTime);
 
         /**
+         * @brief 某个包号空间的密钥退休了：把其中的在途字节销账，但不动窗口
+         * @details 这些包既不会被确认也不会再判丢（RFC 9001 §4.9.1）。恢复层本就清了自己的在途表，
+         *          拥塞层若不同步就永久背着这笔账——Initial 空间通常在握手期就退休，几十 KB 的旧包
+         *          会把这条连接之后所有 `remainingByteBudget` 都扣掉那么多人。
+         * @param discardedPackets 该空间里尚未确认的包
+         */
+        void onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept;
+
+        /**
          * @brief 当前还能往网络上压多少字节
          * @return std::size_t 窗口减去在途；在途已超窗时返回 0 而不是回绕
          */

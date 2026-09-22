@@ -646,7 +646,12 @@ namespace AsynGyanis::Net
             m_probeSpace.reset();
         }
         // 在途账一起清：留着它们，定时器还会为一个已经退休的空间亮起来，白挨探针（§A.11）
-        m_recovery.discardSpace(recoverySpaceOf(space));
+        const QuicRecoverySpace retiredSpace = recoverySpaceOf(space);
+        const std::vector<QuicSentPacketInfo> retiredPackets = m_recovery.unacknowledgedPackets(retiredSpace);
+        m_recovery.discardSpace(retiredSpace);
+        // 恢复层与拥塞层各记一本在途账，只清一本就让这条连接永久背着退休空间的字节：
+        // Initial 空间几乎总在握手期退休，之后每次算可用窗口都要少几十 KB（RFC 9002 §7.2 的负荷口径）
+        m_congestion.onPacketsDiscarded(retiredPackets);
     }
 
     void QuicConnectionCore::drive(const Timestamp now)
@@ -1207,6 +1212,11 @@ namespace AsynGyanis::Net
     QuicConnectionPhase QuicConnectionCore::phase() const noexcept
     {
         return m_phase;
+    }
+
+    std::size_t QuicConnectionCore::bytesInFlightByteCount() const noexcept
+    {
+        return m_congestion.bytesInFlight();
     }
 
     bool QuicConnectionCore::isFinished() const noexcept

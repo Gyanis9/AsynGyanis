@@ -158,6 +158,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] QuicConnectionPhase phase() const noexcept;
 
         /**
+         * @brief 拥塞层当前记着的在途字节数
+         * @return std::size_t 与 `QuicCongestionControl::bytesInFlight()` 同源的负荷值：
+         *         某个包号空间退休后，它的字节应当从这里销账
+         */
+        [[nodiscard]] std::size_t bytesInFlightByteCount() const noexcept;
+
+        /**
          * @brief 是否已经没有下文了
          * @return true 已收口且待发队列空，外层可以销毁本连接
          */

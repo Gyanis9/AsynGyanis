@@ -110,6 +110,18 @@ namespace AsynGyanis::Net
                                                              m_congestionWindowByteLength);
     }
 
+    void QuicCongestionControl::onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept
+    {
+        // 只销账不涨窗：退休一个空间不是「网络变好了」的信号，把它当确认来涨窗口会让拥塞控制白送一段
+        for (const QuicSentPacketInfo &packet : discardedPackets)
+        {
+            if (packet.isAckEliciting)
+            {
+                m_bytesInFlight = saturatingSubtract(m_bytesInFlight, packet.byteCount);
+            }
+        }
+    }
+
     std::size_t QuicCongestionControl::remainingByteBudget() const noexcept
     {
         return saturatingSubtract(m_congestionWindowByteLength, m_bytesInFlight);
