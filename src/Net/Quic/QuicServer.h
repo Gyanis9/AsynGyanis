@@ -138,6 +138,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 本端实际绑定的端口
          * @return std::uint16_t 端口；尚未绑定时为 0
+         * @note 可从别的线程读：绑定成功时才写入非 0 值，因此读它等同于问「监听起来了吗」
          */
         [[nodiscard]] std::uint16_t listeningPort() const noexcept;
 
@@ -219,7 +220,9 @@ namespace AsynGyanis::Net
         Platform::DatagramSocket m_datagramSocket;  ///< 绑定的 UDP 套接字
         std::unique_ptr<Core::AsyncUdpSocket> m_socket; ///< 套接字的事件循环封装
         Core::Timer          m_expiryTicker;       ///< 定时驱动的节拍定时器
-        std::uint16_t        m_listeningPort{0};   ///< 实际绑定的端口
+        /// 实际绑定的端口：绑定成功才写入，故非 0 即「已在监听」。原子量是为了让外部线程能读这个
+        /// 启动凭据（写侧在循环线程、读侧只观察它），不是允许跨线程碰本类的其他成员
+        std::atomic<std::uint16_t> m_listeningPort{0};
         std::atomic<bool>    m_isStopped{false};   ///< 是否已请求停止：可从别的线程置位，因此必须是原子
         /// 排空期间只挡新连接（收报文与在途请求照常跑）：与 m_isStopped 分开，
         /// 因为后者会让收报文的循环退出，在途请求就永远做不完

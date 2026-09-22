@@ -129,14 +129,18 @@ namespace AsynGyanis::Net
         const Platform::SocketAddress boundAddress = m_datagramSocket.localAddress();
         sockaddr_in                   boundAddressV4{};
         std::memcpy(&boundAddressV4, &boundAddress.storage, sizeof(boundAddressV4));
-        m_listeningPort = ntohs(boundAddressV4.sin_port);
+        const std::uint16_t boundPort = ntohs(boundAddressV4.sin_port);
 
         // 建连接时要拿本端地址写进回包，必须用**绑定后**的地址（端口给 0 时只有内核知道
         // 实际端口）。漏掉这一步日志与诊断里看到的就是一条全零地址
         m_localSocketAddress = boundAddress;
 
         m_socket = std::make_unique<Core::AsyncUdpSocket>(m_eventLoop, std::move(m_datagramSocket));
-        LOG_INFO_FMT("QuicServer: 已在 UDP 端口 {} 上监听（ALPN {}）", m_listeningPort, m_configuration.applicationProtocol);
+
+        // 端口最后发布：非 0 值就是「已经在监听」的唯一凭据，外部线程靠轮询它确认启动结果，
+        // 因此读到非 0 时必须连带看到上面两项都已就位（release 与读侧 acquire 配对）
+        m_listeningPort.store(boundPort, std::memory_order_release);
+        LOG_INFO_FMT("QuicServer: 已在 UDP 端口 {} 上监听（ALPN {}）", boundPort, m_configuration.applicationProtocol);
 
         // 两个循环并发跑：收报文的与驱动定时器的。定时器不能只挂在收报文上，否则空闲期（对端在等超时）
         // 就没人推进 PTO/空闲超时
@@ -386,7 +390,8 @@ namespace AsynGyanis::Net
 
     std::uint16_t QuicServer::listeningPort() const noexcept
     {
-        return m_listeningPort;
+        // acquire 与写侧的 release 配对：读到非 0 就能确信本端地址与套接字封装都已就位
+        return m_listeningPort.load(std::memory_order_acquire);
     }
 
     Core::Task<> QuicServer::routeDatagram(const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> datagram)
