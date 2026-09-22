@@ -194,6 +194,104 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    namespace
+    {
+        /// 客户端一侧裸上下文的释放器：Core::TlsContext 只有服务端形态（TLS_server_method）
+        inline void destroyClientContext(SSL_CTX *const context) noexcept
+        {
+            SSL_CTX_free(context);
+        }
+
+        using ClientContextPointer = std::unique_ptr<SSL_CTX, void (*)(SSL_CTX *)>;
+
+        /**
+         * @brief 造一个「只信那张自签测试证书」的客户端上下文
+         * @param certificatePath 同时当作 CA 用的证书路径
+         * @return ClientContextPointer 建好的上下文；建不出来时为空
+         */
+        ClientContextPointer makeClientContext(const std::filesystem::path &certificatePath)
+        {
+            ClientContextPointer context(SSL_CTX_new(TLS_client_method()), &destroyClientContext);
+            if (!context)
+            {
+                return context;
+            }
+            static_cast<void>(SSL_CTX_load_verify_locations(context.get(), certificatePath.string().c_str(), nullptr));
+            SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER, nullptr);
+            return context;
+        }
+    } // namespace
+
+    /**
+     * @brief 析构（而不是显式 close()）也必须先把 close_notify 送出去、再关描述符
+     * @details m_ssl 声明在 m_socket 之前，交给默认成员析构就是「先关描述符、后 SSL_shutdown」：
+     *          那次写入落在已经关闭、编号还能被别的线程立刻复用的描述符上。对端因此收不到
+     *          close_notify，只能看到一次断线（asyncReceive 抛 CoreException 而不是返回 0），
+     *          更糟的是那几个字节的 TLS 告警记录会灌进复用同一编号的陌生连接。
+     *          这里让客户端只走作用域退出，用服务端的读数把顺序钉住。
+     */
+    TEST(TlsSocket, DestructorSendsCloseNotifyBeforeClosingTheDescriptor)
+    {
+        EventLoop loop;
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int serverDescriptor = -1;
+        int clientDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor));
+
+        SSL *serverHandle = serverContext.createSSL(serverDescriptor);
+        ASSERT_NE(serverHandle, nullptr);
+        TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
+
+        auto  clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+        SSL  *clientHandle  = SSL_new(clientContext.get());
+        ASSERT_NE(clientHandle, nullptr);
+        ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
+
+        {
+            TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+            Task<> serverHandshake = serverSocket.handshake();
+            Task<> clientHandshake = clientSocket.handshake();
+            serverHandshake.handle().resume();
+            clientHandshake.handle().resume();
+            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake]
+                                                  {
+                                                      return serverHandshake.isReady() && clientHandshake.isReady();
+                                                  }))
+                << "两侧握手没有在时限内跑完，后面的读数说明不了任何问题";
+        }   // ← 客户端在这里析构：必须已经在描述符还开着时发出过 close_notify
+
+        std::uint8_t readBuffer[8]{};
+        Task<ssize_t> readTask = serverSocket.asyncReceive(readBuffer, sizeof(readBuffer));
+        readTask.handle().resume();
+        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&readTask]
+                                             {
+                                                 return readTask.isReady();
+                                             }))
+            << "服务端连结束都没读到：它挂在了一个不会再有事件的等待上";
+
+        ssize_t     receivedByteCount = -1;
+        std::string failureText;
+        bool        isReadSucceeded = false;
+        try
+        {
+            receivedByteCount = readTask.handle().promise().result();
+            isReadSucceeded   = true;
+        } catch (const std::exception &readFailure)
+        {
+            // 顺序写反时这里收到的是「对端非正常关闭」那一类协议错误，而不是干净的结束
+            failureText = readFailure.what();
+        }
+        EXPECT_TRUE(isReadSucceeded) << "对端析构后服务端报的是协议错误而不是干净结束，说明 close_notify 没能在描述符关闭前发出："
+                                     << failureText;
+        EXPECT_EQ(receivedByteCount, 0) << "干净结束时的应用数据读数应为 0";
+
+        serverSocket.close();
+    }
+
     /**
      * @brief 地址查询透传到被包装的套接字：两端都在回环上，且关闭后按契约抛出
      * @details 不用 createPair：它只在 Windows 上造 loopback TCP，在 Linux/macOS 上产出的是

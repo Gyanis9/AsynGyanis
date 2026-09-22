@@ -15,7 +15,15 @@ namespace AsynGyanis::Core
     {
     }
 
-    TlsSocket::~TlsSocket() = default;
+    TlsSocket::~TlsSocket()
+    {
+        // 必须显式走 close() 而不是交给成员逆序析构：m_ssl 声明在 m_socket 之前，逆序就是
+        // 「先关描述符、后 SSL_shutdown」，那次 shutdown 的写入落在已关闭（且编号可被别的
+        // 线程立刻复用）的描述符上。后果有两重：对端收不到 close_notify，它的 asyncReceive
+        // 报「协议错误」而不是干净的结束符；更糟的是那几个字节的 TLS 告警记录会灌进复用
+        // 同一编号的那个陌生连接
+        close();
+    }
 
     TlsSocket::TlsSocket(TlsSocket &&other) noexcept :
         m_ssl(std::move(other.m_ssl)),
