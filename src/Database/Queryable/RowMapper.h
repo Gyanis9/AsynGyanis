@@ -463,10 +463,12 @@ namespace AsynGyanis::Database::Queryable
          * @throws RowMappingException 类型不匹配
          */
         template<typename T, typename ColumnDescriptorType>
-        void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, const DatabaseResult &result,
+        void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, DatabaseResult &result,
                           const std::size_t columnIndex)
         {
-            DatabaseValue cellValue = result.getValue(columnIndex);
+            // 按「交出所有权」读值：物化快照里的文本/二进制缓冲直接搬走，省掉一次整串拷贝与它的堆分配。
+            // 一格只读这一次是本路径的前提，而「两格撞同一列」已在 resolveColumnIndices 处被拒绝
+            DatabaseValue cellValue = result.takeValue(columnIndex);
 
             using MemberType                            = typename ColumnDescriptorType::MemberType;
             // 交出局部 cellValue 的所有权：文本列命中右值重载，把变体里的堆缓冲搬进成员，省一次整串拷贝
@@ -529,7 +531,7 @@ namespace AsynGyanis::Database::Queryable
          * @throws RowMappingException 类型不匹配
          */
         template<typename T, std::size_t... IndexPositions>
-        void assignRowFromIndices(T &mappedRow, const DatabaseResult &result,
+        void assignRowFromIndices(T &mappedRow, DatabaseResult &result,
                                   const std::array<std::size_t, sizeof...(IndexPositions)> &columnIndices,
                                   std::index_sequence<IndexPositions...>)
         {
@@ -546,12 +548,12 @@ namespace AsynGyanis::Database::Queryable
      *          RowMappingException 而不是给出字段静默为 0 的半成品对象。
      *
      * @tparam T 已特化 TableSchema 的聚合类型
-     * @param result 结果集，只读访问
+     * @param result 结果集，游标须已停在有效行上；被映射的那一行各格载荷会被搬进返回值
      * @return T 映射后的结构体
-     * @throws RowMappingException 列缺失、类型不匹配、整型越界或 NULL 落到非 optional 成员
+     * @throws RowMappingException 列缺失、类型不匹配、整型或浮点收窄会改变数值、NULL 落到非 optional 成员
      */
     template<RowMappable T>
-    [[nodiscard]] T mapResultRow(const DatabaseResult &result)
+    [[nodiscard]] T mapResultRow(DatabaseResult &result)
     {
         // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯
         static_assert(Detail::allColumnTypesSupported<T>(),

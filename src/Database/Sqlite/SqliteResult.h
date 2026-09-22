@@ -116,6 +116,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue getValue(size_t index) const override;
 
         /**
+         * @brief 读出指定列并交出该格载荷的所有权
+         * @details 重写 DatabaseResult::takeValue()：当前行来自构造期物化的快照时，把格子里的
+         *          文本/二进制缓冲直接 std::move 出去，省掉 getValue() 那次整串拷贝与它的堆分配。
+         *          游标式行（超出快照上限、带返回列的非只读语句）本来就是当场构造的值，没有可省的
+         *          拷贝，转交基类的默认实现。取用后该格可能为空值，因此同一行内每格只允许取一次。
+         * @param index 列索引，从 0 开始
+         * @return DatabaseValue 列值，载荷缓冲可能已被搬空
+         */
+        [[nodiscard]] DatabaseValue takeValue(size_t index) override;
+
+        /**
          * @brief 按列名读取当前行的值
          * @details 重写 DatabaseResult::getValue()：先按名解析列索引，再走索引重载，
          *          保证两条路径的越界与「无当前行」判定完全一致。

@@ -3,6 +3,7 @@
 // 钉住的契约：只有只读语句会被预扫描（rowCount() 对只读查询精确、对写语句与 INSERT ... RETURNING 返回 0）；列值必须
 // next() 之后读取（未 next()、游标耗尽、reset() 后一律 std::monostate）；存储类映射 NULL→monostate、INTEGER→int64_t、
 // FLOAT→double、TEXT→std::string、BLOB→BinaryBytes（零长非 NULL）；越界用无符号比较；RETURNING 需 SQLite 3.35+。
+// takeValue()（交出所有权的读值通道）在上限两侧各钉一条与 getValue 逐字比对，并钉住「无当前行/越界仍返回 monostate」。
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
@@ -401,6 +402,76 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr);
         EXPECT_EQ(result->rowCount(), rowCount) << "超过快照上限的预扫描仍要给出精确行数";
         EXPECT_EQ(collectNames(*result), expectedBulkNames(rowCount));
+    }
+
+    /**
+     * @brief 按「交出所有权」的读值通道整表取名（与 collectNames 唯一差别就是用 takeValue）
+     * @param result 结果集，游标从头推进
+     * @return std::vector<std::string> 依次为每行第 1 列的文本值
+     */
+    std::vector<std::string> collectNamesByTakeValue(DatabaseResult &result)
+    {
+        std::vector<std::string> names;
+        while (result.next())
+        {
+            // 每格只取一次——这正是 takeValue 允许搬空源的前提，也是 ORM 逐列映射的实际读法
+            names.push_back(std::get<std::string>(result.takeValue(1)));
+        }
+        return names;
+    }
+
+    /**
+     * @brief 验证快照行与游标行两侧都交出同样的取值
+     *
+     * @details takeValue() 有两条出口：物化行搬快照里的缓冲、非物化行退回当场构造的取值。
+     *          行距公式或回退条件写错时只有其中一侧会错，因此上限两侧各钉一条，并与既有的
+     *          getValue 路径比对同一份期望序列（整表逐行，不只看条数）。
+     */
+    TEST_F(SqliteUserQuery, TakeValueServesEveryRowOfAMaterializedSnapshot)
+    {
+        seedBulkRows(SqliteResult::kMaximumMaterializedRowCount);
+
+        const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(collectNamesByTakeValue(*result), expectedBulkNames(SqliteResult::kMaximumMaterializedRowCount))
+                << "物化快照路径搬错了格子（行距或列距）";
+    }
+
+    /**
+     * @brief 验证超出快照上限、退回游标遍历的行，takeValue 与 getValue 逐字一致
+     * @details 这条钉的是「回退分支」：漏掉它会让超限结果的 takeValue 拿 (游标 - 1) 去索引一份
+     *          根本不存在的快照。
+     */
+    TEST_F(SqliteUserQuery, TakeValueFallsBackToTheCursorBeyondTheSnapshotLimit)
+    {
+        const size_t cursorRowCount = SqliteResult::kMaximumMaterializedRowCount + 1;
+        seedBulkRows(cursorRowCount);
+
+        const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(collectNamesByTakeValue(*result), expectedBulkNames(cursorRowCount))
+                << "退回游标遍历的那一侧必须与快照路径逐字一致";
+    }
+
+    /**
+     * @brief 验证 takeValue 的边界行为与 getValue 一致：无当前行与越界下标都读成「无值」
+     *
+     * @details 搬空只发生在快照路径的正常取值上；两条护栏（游标未就位、下标越界）一旦在重写里被
+     *          漏掉，就会拿 (游标 - 1) 去索引负偏移的快照，属于越界读而不是「返回空」。
+     */
+    TEST_F(SqliteUserQuery, TakeValueKeepsTheMissingValueBehaviorOutsideACurrentRow)
+    {
+        const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM users ORDER BY id");
+        ASSERT_NE(result, nullptr);
+
+        // 还没 next()：游标不在任何行上，SQLite 的列读取接口此时属于未定义行为
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(result->takeValue(0)));
+
+        ASSERT_TRUE(result->next());
+        // 越界下标按「无值」返回：不能把 size_t 下标强转成 int 再比较，那会在 SIZE_MAX 上回绕绕过检查
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(result->takeValue(result->columnCount())));
+        // 同一条语句里的正常取值仍然给得出值（说明上面的拒绝没有连带打断游标路径）
+        EXPECT_FALSE(std::holds_alternative<std::monostate>(result->takeValue(0)));
     }
 
     /**

@@ -202,6 +202,20 @@ namespace AsynGyanis::Database
         return convertValue(static_cast<int>(index));
     }
 
+    DatabaseValue SqliteResult::takeValue(const size_t index)
+    {
+        // 只有快照路径手里有一份「已经存好、且之后不会有人再读」的缓冲可搬；
+        // 游标路径的取值本来就是当场构造的新对象，搬不动也不必搬，交回 getValue() 走原逻辑
+        if (m_isCurrentRowMaterialized && m_hasCurrentRow && index < m_columnCount)
+        {
+            // 行优先扁平布局，与 getValue() 用同一条行距公式：上一行的行首下标 = (游标 - 1) * 列数
+            const size_t cellOffset = (m_materializedRowCursor - 1) * m_columnCount + index;
+            return std::move(m_materializedCells[cellOffset]);
+        }
+
+        return getValue(index);
+    }
+
     DatabaseValue SqliteResult::getValue(const std::string_view name) const
     {
         const auto index = columnIndex(name);
