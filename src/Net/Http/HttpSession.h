@@ -1025,8 +1025,12 @@ namespace AsynGyanis::Net
                 // 窗口就无法推进，这一轮会变成死循环——宁可当场报错，也不要静默转圈
                 // 全局在途正文预算：正文是一点点攒起来的，等收齐（Done）再判就晚了——那时内存
                 // 已经占住。这里每收一轮就按增量补预留，超预算立刻回 503 收口，
-                // 把剩余额度留给已经收下正文的那些连接
-                if (!bodyBudget.growTo(parser.bufferedBodyByteCount()))
+                // 把剩余额度留给已经收下正文的那些连接。
+                // 取「解析器缓冲」与「已交给请求对象的正文」里的较大者：Done 那一轮解析器已把正文
+                // 移交给请求，只看解析器缓冲会让额度在应答之前就归零，跨连接的总量上限等于没设
+                const std::size_t residentBodyBytes =
+                        std::max(parser.bufferedBodyByteCount(), parser.request().body().size());
+                if (!bodyBudget.growTo(residentBodyBytes))
                 {
                     LOG_ERROR_FMT("HttpSession: 在途正文字节超出全局预算（已占 {} 字节），已回 503 并收口连接",
                                   memoryBudget->reservedByteCount());

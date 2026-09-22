@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -83,6 +84,88 @@ namespace AsynGyanis::Net
                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
             }
             return true;
+        }
+        /**
+         * @brief 轮询读，直到标记在累计文本里出现够 needed 次
+         * @details keep-alive 上连着发两条请求时，「读到过一条响应」不算证据——必须数到第二条，
+         *          否则第一条的响应就能让断言假绿
+         * @param client 回环客户端
+         * @param accumulated 输入输出：累计读到的字节
+         * @param marker 数它的出现次数
+         * @param needed 期望次数
+         * @param timeout 等待上限
+         * @return true 时限内数够了
+         */
+        bool waitForTextOccurrences(const LoopbackClient &client, std::string &accumulated, const std::string_view marker,
+                                    const std::size_t needed, const std::chrono::milliseconds timeout)
+        {
+            const auto countMatches = [&accumulated, marker]
+            {
+                std::size_t matchCount = 0;
+                for (std::size_t offset = accumulated.find(marker); offset != std::string::npos; offset = accumulated.find(marker, offset + marker.size()))
+                {
+                    ++matchCount;
+                }
+                return matchCount;
+            };
+
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (countMatches() < needed)
+            {
+                const ReadOutcome outcome = client.readOnce(accumulated);
+                if (outcome == ReadOutcome::PeerClosed || outcome == ReadOutcome::Broken)
+                {
+                    break;
+                }
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            return countMatches() >= needed;
+        }
+
+        /// 预算跨连接用例的正文长度：单条不超上限，两条一起就超（100 的预算放不下 90 + 90）
+        constexpr std::size_t kBudgetTestBodyBytes = 90;
+
+        /**
+         * @brief 造一条「按住不放」的 POST 路由：进处理器即置标记，再等一段固定时长才回响应
+         * @details 额度要能看到「处理器还在跑」这段时间，才有跨连接的判定可测；定时等待挂在服务端
+         *          自己的循环上，因此这期间另一条连接照样能被服务
+         * @param router 目标路由器
+         * @param loop 承载定时器的事件循环
+         * @param handlerStarted 处理器进门时置位的标记
+         * @param holdTime 处理器按住不放的时间
+         */
+        void registerHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<bool> *handlerStarted,
+                                  const std::chrono::milliseconds holdTime)
+        {
+            router.post("/hold",
+                        [&loop, handlerStarted, holdTime](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                        {
+                            if (handlerStarted != nullptr)
+                            {
+                                handlerStarted->store(true, std::memory_order_release);
+                            }
+                            Core::Timer holdTimer(loop);
+                            co_await holdTimer.waitFor(holdTime);
+                            response.setBody("held");
+                            co_return;
+                        });
+        }
+
+        /**
+         * @brief 造一条带正文的 POST 请求文本
+         * @param path 请求目标
+         * @return std::string 请求头 + 声明长度 + 正文
+         */
+        std::string makeBodyRequest(const std::string &path)
+        {
+            std::string request = "POST " + path + " HTTP/1.1\r\nhost: test\r\ncontent-length: " +
+                                  std::to_string(kBudgetTestBodyBytes) + "\r\n\r\n";
+            request.append(kBudgetTestBodyBytes, 'z');
+            return request;
         }
     } // namespace
 
@@ -326,5 +409,103 @@ namespace AsynGyanis::Net
                 << "正文在预算内的请求未被正常处理，实际收到：" << receivedText;
 
         EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "应答写完额度仍未归还，当前占用 " << budget->reservedByteCount();
+    }
+
+    /**
+     * @brief 同一条 keep-alive 连接上的第二个正文请求，不该被上一个请求的额度挡住
+     * @details 这笔预算管的是「同时在途的正文总量」：额度若到应答写完都不归还，一条长连接发第二个
+     *          正文就会被 503——上限会被单个连接自己吃满，与「跨连接总量」这个初衷不符
+     */
+    TEST(HttpMemoryBudgetTest, ReturnsQuotaBetweenKeepAliveRequestsOnOneConnection)
+    {
+        // 预算 100：装得下一条 90 字节的正文，装不下两条同时在场
+        auto budget = std::make_shared<HttpMemoryBudget>(100);
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 1024; // 让全局预算成为唯一的约束，而不是单请求正文上限
+
+        RunningHttpServerFixture fixture(makeBudgetTestLimits(), std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &loop)
+                                         {
+                                             registerHoldingRoute(router, loop, nullptr, std::chrono::milliseconds{1});
+                                         },
+                                         parserLimits,
+                                         [budget](TestHttpServer &server)
+                                         {
+                                             server.setMemoryBudget(budget);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+
+        std::string receivedText;
+        ASSERT_TRUE(client.sendText(makeBodyRequest("/hold"), kWaitTimeout)) << "第一条请求未能写入";
+        ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "held", 1, kWaitTimeout))
+                << "第一条请求没拿到正常响应，实际收到：" << receivedText;
+        ASSERT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout))
+                << "第一条应答已写完，额度却仍占着 " << budget->reservedByteCount() << " 字节";
+
+        // 同一条连接上再发一条同量正文：额度归还过就该照常通过，而不是被判超预算
+        ASSERT_TRUE(client.sendText(makeBodyRequest("/hold"), kWaitTimeout)) << "第二条请求未能写入（连接被提前收口？）";
+        ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "held", 2, kWaitTimeout))
+                << "同一条连接上的第二条正文请求没拿到正常响应，实际收到：" << receivedText;
+        EXPECT_EQ(receivedText.find("503"), std::string::npos)
+                << "先后进行的两个请求被算成同时在场，第二条被误判超预算：" << receivedText;
+    }
+
+    /**
+     * @brief 一条连接正占着额度时，另一条连接的正文超出的那部分要按 503 收口
+     * @details 这是这笔预算存在的全部理由——多条连接各压一份正文时总占用要有上限。若判定按连接各算一份，
+     *          第二条连接照样能塞满自己的正文，全局上限等于没有
+     */
+    TEST(HttpMemoryBudgetTest, RejectsSecondConnectionBodyWhileFirstIsStillHeld)
+    {
+        auto budget = std::make_shared<HttpMemoryBudget>(100);
+        std::atomic<bool> isFirstHandlerRunning{false};
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 1024;
+
+        RunningHttpServerFixture fixture(makeBudgetTestLimits(), std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [&isFirstHandlerRunning](Router &router, Core::EventLoop &loop)
+                                         {
+                                             // 400 毫秒的按住窗口：足够第二条连接发完正文并拿到判定
+                                             registerHoldingRoute(router, loop, &isFirstHandlerRunning, std::chrono::milliseconds{400});
+                                         },
+                                         parserLimits,
+                                         [budget](TestHttpServer &server)
+                                         {
+                                             server.setMemoryBudget(budget);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        LoopbackClient holdingClient(fixture.listeningPort());
+        ASSERT_TRUE(holdingClient.isValid()) << "第一条回环连接失败";
+        ASSERT_TRUE(holdingClient.sendText(makeBodyRequest("/hold"), kWaitTimeout)) << "第一条请求未能写入";
+
+        ASSERT_TRUE(waitForCondition(
+                [&isFirstHandlerRunning]
+                {
+                    return isFirstHandlerRunning.load(std::memory_order_acquire);
+                },
+                kWaitTimeout))
+                << "第一条请求没进处理器，额度根本没被占住";
+        EXPECT_GE(budget->reservedByteCount(), kBudgetTestBodyBytes)
+                << "处理器还在跑时额度就该占着，实际占用 " << budget->reservedByteCount() << " 字节";
+
+        LoopbackClient secondClient(fixture.listeningPort());
+        ASSERT_TRUE(secondClient.isValid()) << "第二条回环连接失败";
+        ASSERT_TRUE(secondClient.sendText(makeBodyRequest("/hold"), kWaitTimeout)) << "第二条请求未能写入";
+
+        std::string secondText;
+        ASSERT_TRUE(waitForTextOccurrence(secondClient, secondText, "503", kWaitTimeout))
+                << "两条连接各压 90 字节、预算只有 100，第二条却没被按 503 收口，实际收到：" << secondText;
+
+        // 第一条照常做完：它占的额度是先前记下的，不受第二条被拒的影响
+        std::string holdingText;
+        ASSERT_TRUE(waitForTextOccurrence(holdingClient, holdingText, "held", kWaitTimeout))
+                << "占着额度的那条请求没能做完，实际收到：" << holdingText;
+        EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "全部请求收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
     }
 } // namespace AsynGyanis::Net
