@@ -20,11 +20,13 @@
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Platform/System/ProcessInfo.h"
 
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <print>
 #include <string_view>
 #include <thread>
 
@@ -118,7 +120,9 @@ namespace AsynGyanis::Samples
     /**
      * @brief 取一个本示例专用的端口：由进程号错开，多个示例并行跑也不互撞
      * @param offset 每个示例固定一个偏移（0..99），同一次运行里也彼此不同
-     * @return std::uint16_t 20000..60000 之间的端口
+     * @return std::uint16_t 20000..29996 之间的端口
+     * @details 偏移各占 100 宽的一段、段内按进程号取模错开，取模除数 97 小于段宽，因此不同示例
+     *          的端口永不重叠。整段刻意落在系统动态端口区之下，避开本机主动外连时临时占用的端口。
      */
     inline std::uint16_t samplePort(const std::uint16_t offset)
     {
@@ -132,15 +136,32 @@ namespace AsynGyanis::Samples
      * @param argv 实参表
      * @param offset 没给 --port 时用的默认端口偏移
      * @return std::uint16_t 端口
+     * @details 取值非法时当场以退出码 2 终止而不回落到默认端口：示例的客户端与服务端共用这一个值，
+     *          回落会让整套自检照样全绿，脚本里的端口笔误就成了假证据。
      */
     inline std::uint16_t readPortArgument(const int argc, char **argv, const std::uint16_t offset)
     {
         for (int index = 1; index + 1 < argc; ++index)
         {
-            if (std::string_view(argv[index]) == "--port")
+            if (std::string_view(argv[index]) != "--port")
             {
-                return static_cast<std::uint16_t>(std::atoi(argv[index + 1]));
+                continue;
             }
+
+            // 整串必须是 1-65535 的十进制数。这里刻意不用 atoi：它把 "abc" 折成 0、把 99999 交给
+            // uint16 强转回绕成 34463，两种都会让示例「在另一个端口上跑成功」
+            const std::string_view portText(argv[index + 1]);
+            std::uint32_t          parsedPort = 0;
+            const auto             parseResult =
+                    std::from_chars(portText.data(), portText.data() + portText.size(), parsedPort);
+            if (parseResult.ec != std::errc{} || parseResult.ptr != portText.data() + portText.size()
+                || parsedPort == 0U || parsedPort > 65535U)
+            {
+                std::print(stderr, "示例启动参数非法：--port 的值「{}」不是一个 1-65535 的十进制端口号。"
+                                   "请改成合法端口，或整个去掉 --port 让示例自行取一个专用端口\n", portText);
+                std::exit(2);
+            }
+            return static_cast<std::uint16_t>(parsedPort);
         }
         return samplePort(offset);
     }
