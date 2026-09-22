@@ -6,6 +6,7 @@
 // 覆盖场景：
 // - CommitMakesChangesVisibleToOtherConnections
 // - RollbackDiscardsChanges / DestructorRollsBackUncommittedWork
+// - DestructorRollsBackEvenWhenPoolResetDoesNot（回滚归属：池的会话复位会替事务析构擦屁股）
 // - ExceptionPathRollsBackAndKeepsDatabaseClean
 // - RepeatedCommitAndRollbackAreIdempotent / CommitThenRollbackKeepsCommittedData
 // - TransactionHoldsItsConnectionUntilItEnds
@@ -15,6 +16,7 @@
 // - SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
 
 #include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
@@ -26,6 +28,7 @@
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/TableSchema.h"
+#include "Database/Sqlite/SqliteConnection.h"
 
 #include "DatabaseTestSupport.h"
 
@@ -102,13 +105,37 @@ namespace
 {
     using AsynGyanis::Database::ConnectionConfig;
     using AsynGyanis::Database::ConnectionPool;
+    using AsynGyanis::Database::DatabaseConnection;
     using AsynGyanis::Database::DatabaseFactory;
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
+    using AsynGyanis::Database::SqliteConnection;
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Transaction;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::TestSupport::TemporaryDatabaseFile;
+
+    /**
+     * @brief 归还时不做任何会话复位的 SQLite 连接，只用于把「兜底回滚」从池手里摘掉
+     *
+     * @details SqliteConnection 的实现在归还路径上会按引擎真值滚掉未结束的事务，因此「未提交就析构」
+     *          这一条性质同时被事务析构与池复位两道防线保护。要用例能指认是哪一道在起作用，
+     *          就得先让其中一道失效；除复位之外本类型不改任何行为。
+     */
+    class NoSessionResetSqliteConnection final : public SqliteConnection
+    {
+    public:
+        using SqliteConnection::SqliteConnection;
+
+        /**
+         * @brief 什么都不做，把连接带着原有会话状态交还池
+         * @details 重写 SqliteConnection::resetSessionState()：去掉归还路径上的兜底回滚，其余与基类一致。
+         *          刻意不转发给基类——转发一次，用例就又看不到未结束事务的后果了。
+         */
+        void resetSessionState() noexcept override
+        {
+        }
+    };
 
     /**
      * @brief 事务测试夹具
@@ -251,6 +278,46 @@ TEST_F(TransactionTest, DestructorRollsBackUncommittedWork)
         // 故意不提交：离开作用域时由析构补一次 ROLLBACK
     }
 
+    EXPECT_EQ(countCommittedRows(), 0);
+}
+
+/**
+ * @brief 验证上一条用例里的回滚确实来自事务析构，而不是池归还时的会话复位
+ *
+ * @details 池在把连接放回空闲栈前会调用 resetSessionState()，SQLite 的实现顺手滚掉未结束的事务——
+ *          两道防线叠着时，把事务析构里的 ROLLBACK 删掉也只会留下一条绿的用例。这里换成一把
+ *          「复位空操作」的连接（上限 1，因此下一个借用者拿到的就是同一条），当场问这条连接
+ *          「还有事务可收尾吗」：析构真滚过就答「没有」。
+ */
+TEST_F(TransactionTest, DestructorRollsBackEvenWhenPoolResetDoesNot)
+{
+    ConnectionPool unresettingPool(
+        [this]() -> std::unique_ptr<DatabaseConnection>
+        {
+            auto connection = std::make_unique<NoSessionResetSqliteConnection>(
+                ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+            // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
+            static_cast<void>(connection->connect());
+            return connection;
+        },
+        makePoolConfiguration(1));
+
+    {
+        Transaction transaction(unresettingPool);
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "只能由析构回滚", 1.0, std::nullopt)), 1);
+        // 刻意不提交也不回滚，且这个池的复位路径什么都不做：回滚只剩事务析构一个来源
+    }
+
+    PooledConnection borrowed = unresettingPool.acquire();
+    ASSERT_TRUE(borrowed) << "上一条连接没有归还：池里已经无可借的连接";
+    // 事务入口在具体驱动上而不是基类：基类只承诺「能不能收尾会话」，收尾动作本身按引擎区分
+    auto *borrowedSqliteConnection = dynamic_cast<SqliteConnection *>(borrowed.operator->());
+    ASSERT_TRUE(borrowedSqliteConnection != nullptr) << "池交出的不是 SQLite 连接，本用例的判据无从落地";
+
+    // 自动提交模式下没有事务可收尾，因此「回滚失败」恰恰证明事务已经在析构里结束掉了；
+    // 若析构漏掉 ROLLBACK，这里会成功回滚并把别人的未结束事务交到手上传给下一个借用者
+    EXPECT_FALSE(borrowedSqliteConnection->rollback()) << "析构没有补上 ROLLBACK：未结束的事务串给了下一个借用者";
     EXPECT_EQ(countCommittedRows(), 0);
 }
 
