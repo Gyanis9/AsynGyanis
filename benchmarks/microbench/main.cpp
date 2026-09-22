@@ -555,6 +555,66 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // h2 一条响应的 HEADERS 帧两种排法的消融对照。载荷取「连接首帧上的响应头块」——另起一台没对齐
+    // 动态表的编码器，字段才按字面量编出来（拿已对齐的编码器会得到 12 字节的纯索引块，短到落进
+    // 短串内联，两例都一次分配也不碰，量的就不是生产形状）。旧写法是「substr 成片段 → 拼进 body
+    // → 拼进临时帧串 → 搬进待发缓冲」，新写法直接拼进待发缓冲；两例产出必须逐字相同，否则量的就是两回事
+    const std::vector<Net::HpackHeaderField> responseHeaderFields = {
+            {":status", "200"},
+            {"content-type", "application/json; charset=utf-8"},
+            {"content-length", "1024"},
+            {"date", "Sun, 20 Sep 2026 12:34:56 GMT"},
+            {"server", "AsynGyanis/1.2"},
+            {"x-request-id", "9f14e45fceea167a5a36dedd4bea2543"},
+            {"cache-control", "no-store"},
+    };
+    Net::HpackEncoder firstResponseEncoder;
+    const std::string responseHeaderBlock = firstResponseEncoder.encode(responseHeaderFields);
+    if (responseHeaderBlock.size() <= 15U)
+    {
+        std::printf("  警告：响应头块只有 %zu 字节，落进短串内联，HEADERS 消融例量不到分配\n", responseHeaderBlock.size());
+    }
+    {
+        Net::Http2HeadersPayload selfCheckPayload;
+        selfCheckPayload.endStream = true;
+        selfCheckPayload.endHeaders = true;
+        selfCheckPayload.headerBlockFragment = responseHeaderBlock;
+        std::string legacyRoute;
+        legacyRoute.append(Net::encodeHttp2HeadersFrame(selfCheckPayload, 1U));
+        std::string directRoute;
+        Net::appendHttp2HeadersFrame(directRoute, responseHeaderBlock, true, true, 1U);
+        if (legacyRoute != directRoute)
+        {
+            std::printf("  警告：h2 HEADERS 两种排法产出不一致，消融对照失去意义（旧 %zu 字节 / 新 %zu 字节）\n",
+                        legacyRoute.size(), directRoute.size());
+        }
+        std::printf("  h2-head-frame-block-bytes = %zu\n", responseHeaderBlock.size());
+    }
+    measureCase(
+            "h2-head-frame-via-temporary",
+            [&outboundBuffer, &responseHeaderBlock]
+            {
+                // 改动前的完整形状：substr 成 owning 片段 → 攒进 body 串 → 拼进临时帧串 → 搬进待发缓冲
+                outboundBuffer.clear();
+                std::string fragment = responseHeaderBlock.substr(0, responseHeaderBlock.size());
+                std::string body;
+                body.append(fragment);
+                // §6.2 的两位：END_STREAM = 0x1、END_HEADERS = 0x4（这里刻意不取框架常量，
+                // 让这一例独立于被测代码描述线上形态）
+                outboundBuffer.append(Net::encodeHttp2Frame(Net::Http2FrameType::Headers, 0x1 | 0x4, 1U, body));
+                return outboundBuffer.size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "h2-head-frame-direct",
+            [&outboundBuffer, &responseHeaderBlock]
+            {
+                outboundBuffer.clear();
+                Net::appendHttp2HeadersFrame(outboundBuffer, responseHeaderBlock, true, true, 1U);
+                return outboundBuffer.size();
+            },
+            results, checksum, failureCount);
+
     // 静态文件每请求的元数据读取：三项分三样查（各开一次路径）还是一次查完。
     // 两侧读同一个临时文件，指纹不同也无妨——量的是取到这些数要付多少系统调用
     const std::filesystem::path metadataProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-meta.txt";
