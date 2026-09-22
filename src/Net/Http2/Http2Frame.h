@@ -233,6 +233,21 @@ namespace AsynGyanis::Net
     void appendHttp2Frame(std::string &bytes, Http2FrameType type, std::uint8_t flags, std::uint32_t streamId,
                           std::string_view payload);
 
+    /**
+     * @brief 把一帧 HEADERS 直接拼进给定缓冲末尾（头块片段已在手时用它）
+     * @details 与 `encodeHttp2HeadersFrame()` 的差别只在负载不必先拷成片段、帧也不先攒进临时串：
+     *          连接发的头块本就躺在自己的缓冲里。带优先级字段的形态没有对应的视图出口（发送侧
+     *          从不带那个字段），要走 `encodeHttp2HeadersFrame()`。
+     * @param bytes 目标缓冲，只能追加；抛错时一字节未加
+     * @param headerBlockFragment 头块片段（HPACK 编码后的字节）
+     * @param endStream END_STREAM：该流正文随本帧结束
+     * @param endHeaders END_HEADERS：头块在本帧内结束，后面没有 CONTINUATION
+     * @param streamId 目标流号，必须非 0
+     * @throws Base::InvalidArgumentException 用法错误：流号为 0，或片段长度超出 24 位长度域
+     */
+    void appendHttp2HeadersFrame(std::string &bytes, std::string_view headerBlockFragment, bool endStream, bool endHeaders,
+                                 std::uint32_t streamId);
+
     // ============================================================================
     // 具名负载结构体（RFC 7540 §6.x）
     // ============================================================================

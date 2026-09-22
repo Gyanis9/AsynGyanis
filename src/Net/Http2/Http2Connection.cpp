@@ -1782,22 +1782,18 @@ namespace AsynGyanis::Net
         {
             const std::size_t fragmentByteCount = std::min(maximumFragmentByteCount, headerBlock.size() - offsetByteCount);
             const bool isLastFrame = offsetByteCount + fragmentByteCount >= headerBlock.size();
+            // 分片按视图交出、帧直接拼进待发缓冲：整块头块本就在调用方手里，先 substr 成片段
+            // 再攒进临时帧串、最后搬进待发缓冲等于整块白拷三遍
+            const std::string_view fragment = std::string_view(headerBlock).substr(offsetByteCount, fragmentByteCount);
             if (isFirstFrame)
             {
                 // END_STREAM 只允许出现在头块的第一帧（§6.2、§6.10）
-                Http2HeadersPayload payload;
-                payload.endStream = endStream;
-                payload.endHeaders = isLastFrame;
-                payload.headerBlockFragment = headerBlock.substr(offsetByteCount, fragmentByteCount);
-                appendOutgoing(encodeHttp2HeadersFrame(payload, streamId));
+                appendHttp2HeadersFrame(m_outgoingBytes, fragment, endStream, isLastFrame, streamId);
                 isFirstFrame = false;
             }
             else
             {
-                Http2ContinuationPayload payload;
-                payload.endHeaders = isLastFrame;
-                payload.headerBlockFragment = headerBlock.substr(offsetByteCount, fragmentByteCount);
-                appendOutgoing(encodeHttp2ContinuationFrame(payload, streamId));
+                appendOutgoingFrame(Http2FrameType::Continuation, isLastFrame ? kHttp2FlagEndHeaders : 0U, streamId, fragment);
             }
             offsetByteCount += fragmentByteCount;
         } while (offsetByteCount < headerBlock.size());

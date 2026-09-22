@@ -170,6 +170,55 @@ namespace AsynGyanis::Net
                                                                  streamId));
             }
         }
+
+        /**
+         * @brief 拼 HEADERS 帧的三位标志
+         * @details END_STREAM 与 END_HEADERS 由收尾判定给出，PRIORITY 只在负载里真有 5 字节优先级
+         *          字段时置位（§6.2 图 6/7）——标志与负载必须同源于一个判定，否则对端会按错误的
+         *          偏移去读头块片段。
+         * @param endStream 本帧之后该流正文结束
+         * @param endHeaders 头块在本帧内结束，后面没有 CONTINUATION
+         * @param hasPriority 负载里带 5 字节优先级字段
+         * @return std::uint8_t 标志位
+         */
+        std::uint8_t headersFrameFlags(const bool endStream, const bool endHeaders, const bool hasPriority) noexcept
+        {
+            std::uint8_t flags = 0;
+            if (endStream)
+            {
+                flags = static_cast<std::uint8_t>(flags | kHttp2FlagEndStream);
+            }
+            if (endHeaders)
+            {
+                flags = static_cast<std::uint8_t>(flags | kHttp2FlagEndHeaders);
+            }
+            if (hasPriority)
+            {
+                flags = static_cast<std::uint8_t>(flags | kHttp2FlagPriority);
+            }
+            return flags;
+        }
+
+        /**
+         * @brief HEADERS 的两条出口共用这一处落帧：先判流号，再按同一套标志拼帧
+         * @param bytes 目标缓冲，只能追加
+         * @param body 帧负载；不带优先级字段时就是头块片段
+         * @param endStream 本帧之后该流正文结束
+         * @param endHeaders 头块在本帧内结束
+         * @param hasPriority 负载里带 5 字节优先级字段
+         * @param streamId 目标流号
+         * @throws Base::InvalidArgumentException 流号为 0（§6.2 要求流级帧）
+         */
+        void appendHeadersFrameOnStream(std::string &bytes, const std::string_view body, const bool endStream,
+                                        const bool endHeaders, const bool hasPriority, const std::uint32_t streamId)
+        {
+            if (streamId == 0)
+            {
+                throw Base::InvalidArgumentException("HEADERS 必须关联到一条流（RFC 7540 §6.2 要求流号非 0）："
+                                                     "连接级帧只能是 SETTINGS/PING/GOAWAY 这类不带头块的类型");
+            }
+            appendHttp2Frame(bytes, Http2FrameType::Headers, headersFrameFlags(endStream, endHeaders, hasPriority), streamId, body);
+        }
     } // namespace
 
     Http2ErrorCode toHttp2ErrorCode(const Http2FrameErrorKind errorKind) noexcept
@@ -453,34 +502,32 @@ namespace AsynGyanis::Net
         return encodeHttp2Frame(Http2FrameType::Data, endStream ? kHttp2FlagEndStream : 0U, streamId, data);
     }
 
+    void appendHttp2HeadersFrame(std::string &bytes, const std::string_view headerBlockFragment, const bool endStream,
+                                 const bool endHeaders, const std::uint32_t streamId)
+    {
+        appendHeadersFrameOnStream(bytes, headerBlockFragment, endStream, endHeaders, false, streamId);
+    }
+
     std::string encodeHttp2HeadersFrame(const Http2HeadersPayload &payload, const std::uint32_t streamId)
     {
-        if (streamId == 0)
+        if (!payload.hasPriority)
         {
-            throw Base::InvalidArgumentException("HEADERS 必须关联到一条流（RFC 7540 §6.2 要求流号非 0）："
-                                                 "连接级帧只能是 SETTINGS/PING/GOAWAY 这类不带头块的类型");
+            std::string frame;
+            appendHttp2HeadersFrame(frame, payload.headerBlockFragment, payload.endStream, payload.endHeaders, streamId);
+            return frame;
         }
 
-        std::uint8_t flags = 0;
-        if (payload.endStream)
-        {
-            flags = static_cast<std::uint8_t>(flags | kHttp2FlagEndStream);
-        }
-        if (payload.endHeaders)
-        {
-            flags = static_cast<std::uint8_t>(flags | kHttp2FlagEndHeaders);
-        }
-
+        rejectSelfDependency(payload.priority.streamDependency, streamId);
+        // 优先级字段排在头块片段之前（§6.2 图 6）：先攒出负载，再走同一条落帧出口，
+        // 标志里的 PRIORITY 位与这 5 字节必须同时出现
         std::string body;
-        if (payload.hasPriority)
-        {
-            rejectSelfDependency(payload.priority.streamDependency, streamId);
-            flags = static_cast<std::uint8_t>(flags | kHttp2FlagPriority);
-            body.reserve(kPriorityFieldByteCount + payload.headerBlockFragment.size());
-            appendPriorityField(body, payload.priority);
-        }
+        body.reserve(kPriorityFieldByteCount + payload.headerBlockFragment.size());
+        appendPriorityField(body, payload.priority);
         body.append(payload.headerBlockFragment);
-        return encodeHttp2Frame(Http2FrameType::Headers, flags, streamId, body);
+
+        std::string frame;
+        appendHeadersFrameOnStream(frame, body, payload.endStream, payload.endHeaders, true, streamId);
+        return frame;
     }
 
     std::string encodeHttp2ContinuationFrame(const Http2ContinuationPayload &payload, const std::uint32_t streamId)

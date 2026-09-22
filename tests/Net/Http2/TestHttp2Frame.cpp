@@ -305,6 +305,44 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 HEADERS 的「直接拼进目标缓冲」出口：标志位组合与负载都要对得上 RFC 的线上形态
+     * @details 连接发头块走的就是这一条（旧写法先 substr 成片段再交给结构体入口）。这里按 §6.2/§7
+     *          直接写出预期标志的原始位值（1 = END_STREAM、4 = END_HEADERS），而不是复用代码里的常量，
+     *          这样两条出口共用的拼帧逻辑错了也能被报出来；抛错时目标缓冲必须一字节不加。
+     */
+    TEST(Http2Frame, AppendedHeadersFrameMatchesTheWireForm)
+    {
+        const std::string block = makeBytes({0x88, 0x5f, 0x00, 0x00, 0x10, 0x40, 0x8a});
+
+        for (const bool endStream: {false, true})
+        {
+            for (const bool endHeaders: {false, true})
+            {
+                // §6.2 的两位：END_STREAM = 0x1、END_HEADERS = 0x4，视图这条出口不该带 PRIORITY 位
+                const std::uint8_t expectedFlags = static_cast<std::uint8_t>((endStream ? 0x1 : 0) | (endHeaders ? 0x4 : 0));
+                const std::string appended = [&]
+                {
+                    std::string bytes = "PREFIX";
+                    appendHttp2HeadersFrame(bytes, block, endStream, endHeaders, 3U);
+                    return bytes;
+                }();
+                EXPECT_EQ(appended, "PREFIX" + makeFrame(Http2FrameType::Headers, expectedFlags, 3U, block));
+
+                Http2HeadersPayload payload;
+                payload.endStream = endStream;
+                payload.endHeaders = endHeaders;
+                payload.headerBlockFragment = block;
+                EXPECT_EQ(appended, "PREFIX" + encodeHttp2HeadersFrame(payload, 3U)) << "两条出口必须产出同一份线上字节";
+            }
+        }
+
+        // 流号为 0 判错（§6.2 要求流级帧），且抛错前不动目标缓冲
+        std::string untouched = "PREFIX";
+        EXPECT_THROW(static_cast<void>(appendHttp2HeadersFrame(untouched, block, true, true, 0)), Base::InvalidArgumentException);
+        EXPECT_EQ(untouched, "PREFIX") << "校验不过时不能留下半帧";
+    }
+
+    /**
      * @brief R 位非 0 判错（独立入口与增量解码器两条路径）
      * @details RFC 7540 §4.1 允许接收侧忽略该位，本实现从严：放行会让「这一帧是什么」取决于对端是否
      *          在写未定义的扩展，而这些帧在本端无法被正确解释。
