@@ -187,41 +187,47 @@ namespace AsynGyanis::Database
 
     ConnectionPool::AcquireAwaiter::~AcquireAwaiter()
     {
-        // 摘表与「取走交接结果」必须在唤醒方那把锁里做：notifyAsyncWaiter() / expireTimedOutWaiters()
-        // 都是持 m_asyncMutex 写 m_result 与 m_inList 的，而本析构可能跑在任意线程、与它们没有任何
-        // happens-before。无锁读的后果不只是摘表漏一条：读不到刚交接进来的连接就会把它随帧一起销毁，
-        // 而池的总创建数不降、空闲栈也拿不回它——反复几次之后所有 acquire 都卡在「池已满」上。
-        std::unique_ptr<DatabaseConnection> handedOverConnection;
-        std::shared_ptr<ResumeTicket>       resumeTicket;
+        // 令牌锁覆盖「碰池」的全部区段，且判活排在任何取消引用之前：调用方可能把这具帧留到池析构
+        // 之后才销毁，那时连取 m_pool->m_asyncMutex 都已经是释放后使用。反过来，只要在此持锁读到
+        // isAlive 为真，池析构就还卡在置假那一步，本区段内碰池都是安全的
+        const std::lock_guard livenessLock(m_liveness->mutex);
+        if (m_liveness->isAlive)
         {
-            const std::lock_guard asyncLock(m_pool->m_asyncMutex);
-            if (m_inList)
+            // 摘表与「取走交接结果」必须在唤醒方那把锁里做：notifyAsyncWaiter() / expireTimedOutWaiters()
+            // 都是持 m_asyncMutex 写 m_result 与 m_inList 的，而本析构可能跑在任意线程、与它们没有任何
+            // happens-before。无锁读的后果不只是摘表漏一条：读不到刚交接进来的连接就会把它随帧一起销毁，
+            // 而池的总创建数不降、空闲栈也拿不回它——反复几次之后所有 acquire 都卡在「池已满」上。
+            std::unique_ptr<DatabaseConnection> handedOverConnection;
             {
-                // 在锁内摘表：唤醒方写列表也持这把锁，摘表与交接因此不会交错
-                m_pool->removeAsyncWaiterLocked(this);
-                m_inList = false;
+                const std::lock_guard asyncLock(m_pool->m_asyncMutex);
+                if (m_inList)
+                {
+                    // 在锁内摘表：唤醒方写列表也持这把锁，摘表与交接因此不会交错
+                    m_pool->removeAsyncWaiterLocked(this);
+                    m_inList = false;
+                }
+                handedOverConnection = std::move(m_result);
             }
-            handedOverConnection = std::move(m_result);
-            resumeTicket         = std::move(m_resumeTicket);
-        }
 
-        // 已经交到手上、却来不及被取走的连接按「取出后立刻归还」结账：交接那一刻归还路径
-        // 已经减过活跃计数，这次取出则从未被记上（记在 await_resume 里），因此先补记再归还。
-        // 不结账的话池会永远少一个位置——连接随帧销毁，而总创建数不降、空闲栈也拿不回它，
-        // 反复丢弃几次之后所有 acquire 都会卡在「池已满」上直到超时。
-        // 判活与调用都在令牌锁内（与 PooledConnection::doReturnToPool 同一处置）：调用方可能
-        // 把这具帧留到池析构之后才销毁，那时碰池的记账就是释放后使用
-        if (handedOverConnection)
-        {
-            // 未交出去（池已停摆）时连接留在手上，随本帧析构关闭；交出去则补记一次活跃取出
-            m_pool->returnConnectionIfAlive(handedOverConnection, m_liveness, true);
+            // 已经交到手上、却来不及被取走的连接按「取出后立刻归还」结账：交接那一刻归还路径
+            // 已经减过活跃计数，这次取出则从未被记上（记在 await_resume 里），因此先补记再归还。
+            // 归还在 m_asyncMutex 之外做：returnConnection() 还要拿那把锁去唤醒别的等待者，
+            // 持锁进入就是同线程二次加锁的自死锁
+            if (handedOverConnection)
+            {
+                m_pool->m_activeCount.fetch_add(1);
+                m_pool->returnConnection(std::move(handedOverConnection));
+            }
         }
+        // 池已停摆时什么都不做：等待表随池一起销毁，手里的连接随本帧析构关闭
 
         // 票据里的句柄一并清空：池可能已经把「恢复这次等待」投回了事件循环（交接连接那一刻），
-        // 而本帧眼下就要析构。投递那边执行时看到空句柄会直接跳过，不会 resume 已释放的帧
-        if (resumeTicket)
+        // 而本帧眼下就要析构。投递那边执行时看到空句柄会直接跳过，不会 resume 已释放的帧。
+        // 这里只读 m_resumeTicket 再原子清句柄，不搬走那份 shared_ptr——搬走要在 m_asyncMutex 里做，
+        // 而停摆分支不能碰池的锁；票据里的句柄本身是原子量，池一侧的读者只读不写，因此无竞争
+        if (m_resumeTicket != nullptr)
         {
-            resumeTicket->handle.store(nullptr, std::memory_order_release);
+            m_resumeTicket->handle.store(nullptr, std::memory_order_release);
         }
     }
 

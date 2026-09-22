@@ -336,9 +336,10 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 帧活过池的析构：销毁时不能再按归还结账（池已经没了），连接随帧关闭
-     * @details 归还动作要经存活令牌判活（与 PooledConnection::doReturnToPool 同一处置）：
-     *          只判「我等过、手里有连接」就去调池，池已析构时那是一次释放后使用
+     * @brief 帧活过池的析构：销毁时不能再碰池（连取它的锁都不行），连接随帧关闭
+     * @details 判活必须排在任何对池的取消引用之前：归还动作经存活令牌判活（与
+     *          PooledConnection::doReturnToPool 同一处置），而「先解引用再判活」的写法
+     *          在池已析构时本身就是一次释放后使用——判活的那一步已经踩空了
      */
     TEST(ConnectionPoolAsync, FrameOutlivingDestroyedPoolDoesNotTouchIt)
     {
@@ -349,19 +350,25 @@ namespace AsynGyanis::Database
         // 不启动的循环：交接只会把恢复动作排进它的队列，不会有人执行
         Core::EventLoop loop;
 
-        // 帧比池活得久：池先析构，帧随后才销毁（Task 由用例自己持有）
+        // 帧比池活得久：池先析构，帧随后才销毁（Task 由用例自己持有）。
+        // 池刻意放在堆上而不是栈上：栈内存析构后不会被立刻复用，误踩只表现为「恰好没崩」，
+        // 用例就退化成一次运气测试；堆上的释放后使用才是 ASan 一定报得出的形态
+        std::unique_ptr<ConnectionPool>   pool;
         std::unique_ptr<Core::Task<void>> driver;
         AcquireProbe                      probe;
         {
-            ConnectionPool pool(makeMockFactory(counter), configuration);
+            pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
 
-            const PooledConnection occupying = pool.acquire();
+            PooledConnection occupying = pool->acquire();
             ASSERT_TRUE(occupying);
 
-            driver = std::make_unique<Core::Task<void>>(probeAcquireAsync(pool, loop, probe));
+            driver = std::make_unique<Core::Task<void>>(probeAcquireAsync(*pool, loop, probe));
             driver->handle().resume(); // 池满：挂到等待列表
-            ASSERT_EQ(pool.waitingCount(), 1U);
-        } // occupying 先归还（连接转给等待者），pool 随后析构——连接此刻记在帧名下
+            ASSERT_EQ(pool->waitingCount(), 1U);
+
+            occupying.release(); // 交接：连接转给等待者，恢复动作排进 loop 的队列
+            pool.reset();        // 池随后析构——连接此刻记在帧名下，等待表里已经没有这一条
+        }
 
         // 帧销毁：手里的等待器不能再去碰已经析构的池，连接随帧一起关掉。
         // 队列里那次恢复刻意还没执行（循环不推进），所以这一次销毁走的正是「既等过、

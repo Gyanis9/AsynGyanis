@@ -198,7 +198,9 @@ namespace AsynGyanis::Database
             }
 
             /**
-             * @brief 析构时自动从等待列表移除（若尚未被唤醒）
+             * @brief 析构时收尾：从等待列表移除（若尚未被唤醒），并把已交接未取走的连接还给池
+             * @details 全程持存活令牌锁：帧可能活到池析构之后，那时 m_pool 已悬垂，
+             *          判活为假则整段都不碰池，连接随本帧关闭。
              */
             ~AcquireAwaiter();
 
@@ -257,7 +259,7 @@ namespace AsynGyanis::Database
 
             ConnectionPool *                    m_pool;            ///< 所属连接池
             Core::EventLoop *                   m_completionLoop;  ///< 恢复本协程的事件循环，恒非空
-            std::shared_ptr<PoolLiveness>       m_liveness;        ///< 池的存活令牌（构造时取）：析构里的归还动作要经它判活，见 ~AcquireAwaiter
+            std::shared_ptr<PoolLiveness>       m_liveness;        ///< 池的存活令牌（构造时取）：析构里「是否碰池」整段由它把关，判活必须排在任何取消引用 m_pool 之前，见 ~AcquireAwaiter
             std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
             std::shared_ptr<ResumeTicket>       m_resumeTicket;    ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
