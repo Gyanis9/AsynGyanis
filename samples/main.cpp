@@ -158,6 +158,44 @@ namespace
     /// 优雅关闭的等待上限：给在途请求留出把响应发完的时间，超出后由 drain 内部强制收口
     constexpr std::chrono::milliseconds kShutdownDrainTimeout{5000};
 
+    /// 启动确认的等待上限：绑定与监听都在协程的第一步做完，正常只需毫秒级；给足余量但不许无界等待
+    constexpr std::chrono::milliseconds kStartupConfirmTimeout{2000};
+
+    /**
+     * @brief 等到所有监听器进入监听态，或时限到点
+     * @details start() 与 listen() 都是分离投递的常驻协程：绑定失败会在协程里抛出，服务器就停在
+     *          「没在监听」的状态。日志上的「已启动」写在那之前，不核一次的话操作者看到的是
+     *          一个活着、什么也不听、退出码还是 0 的进程。
+     * @param listeningServers 真正承担监听的 TCP 服务器（接受分发模式下只有接受器那台）
+     * @param http3Server HTTP/3 服务端；未启用时为空指针
+     * @param timeout 等待上限
+     * @return std::size_t 时限到点仍未进入监听态的监听器条数
+     */
+    std::size_t waitForListenersToComeUp(const std::vector<Net::TcpServer *> &listeningServers, const Net::QuicServer *http3Server,
+                                         const std::chrono::milliseconds timeout)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (;;)
+        {
+            std::size_t pendingCount = 0;
+            for (const Net::TcpServer *server : listeningServers)
+            {
+                pendingCount += server->isRunning() ? 0U : 1U;
+            }
+            // h3 的端口是绑定成功才写下的非 0 值，读它就等于问「UDP 起来了吗」
+            if (http3Server != nullptr && http3Server->listeningPort() == 0)
+            {
+                ++pendingCount;
+            }
+
+            if (pendingCount == 0 || std::chrono::steady_clock::now() >= deadline)
+            {
+                return pendingCount;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+    }
+
     /**
      * @brief 在服务器所属的循环线程上执行 stop()
      * @details stop() 关闭的监听描述符正被该循环上的 accept 协程使用，只能在那个线程上调用；
@@ -457,8 +495,11 @@ int main(int argc, char **argv)
     // 每线程一个服务器实例（SO_REUSEPORT 内核级负载均衡）
     std::vector<std::unique_ptr<Net::TcpServer>> servers;
     std::vector<Core::Task<>>                    acceptTasks;
+    /// 真正承担监听的那几台（分发模式下只有接受器：工作服务器从不自己 accept，isRunning 恒为 false）
+    std::vector<Net::TcpServer *> listeningServers;
     servers.reserve(actualThreads);
     acceptTasks.reserve(actualThreads);
+    listeningServers.reserve(actualThreads + 1);
 
     // 按来源 IP 的限额只有一份、在所有监听器之间共享：内核按 SO_REUSEPORT 把新连接分给不同循环上的
     // 监听器，若每个服务器各持一份计数，单个来源的实际上限会乘上监听器数量，限额等于失效。
@@ -623,6 +664,8 @@ int main(int argc, char **argv)
         Core::Task<> acceptTask = acceptor->startAccepting(distributor);
         pool.eventLoop(0).scheduler().schedule(acceptTask.handle());
         acceptTasks.push_back(std::move(acceptTask));
+        // 分发模式下只有这一台自己 accept，工作服务器那几台的 isRunning 恒为 false
+        listeningServers.push_back(acceptor.get());
         servers.push_back(std::move(acceptor));
         serverLoopIndexes.push_back(0);
 
@@ -645,6 +688,7 @@ int main(int argc, char **argv)
             Core::Task<> task = server->start();
             pool.eventLoop(i).scheduler().schedule(task.handle());
             acceptTasks.push_back(std::move(task));
+            listeningServers.push_back(server.get());
             servers.push_back(std::move(server));
             serverLoopIndexes.push_back(i);
         }
@@ -706,10 +750,24 @@ int main(int argc, char **argv)
 
     pool.start();
 
-    LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + address->toString());
-    LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
-    LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
-    LOG_INFO("Press Ctrl+C to exit");
+    // 报成功之前先确认监听器真的进入了监听态：绑定失败发生在分离投递的协程里（异常由 Task 记进错误日志，
+    // 见 Core/Coroutine/Task.h 的无人接手上报），这里再不核一次的话，端口上其实没人守着，
+    // 进程却照旧一副在服务的样子、退出码还是 0
+    const std::size_t stuckListenerCount = waitForListenersToComeUp(listeningServers, http3Server.get(), kStartupConfirmTimeout);
+    if (stuckListenerCount > 0)
+    {
+        LOG_ERROR_FMT("{} 个监听器在 {}ms 内没有进入监听状态，服务未运行。监听地址：{}（协程里抛出的原因见上面的错误日志）",
+                      stuckListenerCount, kStartupConfirmTimeout.count(), address->toString());
+        // 关停走既有那条路径：真的起来的那几台照样体面收口，不另起一套收尾
+        g_running.store(false);
+    }
+    else
+    {
+        LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + address->toString());
+        LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
+        LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
+        LOG_INFO("Press Ctrl+C to exit");
+    }
 
     // 等待退出信号
     while (g_running.load())
@@ -766,5 +824,6 @@ int main(int argc, char **argv)
     context.stop();
 
     LOG_INFO("Server stopped successfully");
-    return 0;
+    // 启动没确认成功时不能报 0：编排脚本与进程管理器都靠退出码判断这次启动算不算成了
+    return stuckListenerCount == 0 ? 0 : 1;
 }
