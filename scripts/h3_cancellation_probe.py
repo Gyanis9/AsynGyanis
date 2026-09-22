@@ -6,7 +6,10 @@
 打断型请求，再补一条正常 GET——收尾那条拿到 200 且全程没被连接级错误打断，才算过。
 
 用法：
-    python3 h3_cancellation_probe.py <host> <port> [每类打断的条数]
+    python3 h3_cancellation_probe.py <host> <port> <path> [每类打断的条数]
+
+<path> 要写成 path-absolute（以 / 开头）：服务端按 RFC 9114 §4.3.1 判它，写成 "12" 这种
+会被回 400，而探针把 400 报成「收尾请求没拿到 200」，看不出是参数给错了。
 
 退出码 0 表示通过；非 0 打印原因。依赖：pip install aioquic
 """
@@ -118,6 +121,11 @@ def main():
     host = sys.argv[1]
     port = int(sys.argv[2])
     path = sys.argv[3]
+    # 参数写错时别把服务端的正确判定报成缺陷：服务端按 RFC 9114 §4.3.1 只收 path-absolute，
+    # 把「每类打断的条数」误填成第三个实参会让收尾请求拿到 400，看起来像服务端出了问题
+    if not path.startswith("/"):
+        print(f"探针参数非法：<path> 要写成以 / 开头的 path-absolute，实得「{path}」", file=sys.stderr)
+        return 2
     cancellation_count = int(sys.argv[4]) if len(sys.argv) > 4 else 20
 
     try:
