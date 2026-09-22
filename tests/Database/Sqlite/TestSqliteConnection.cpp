@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -838,6 +839,84 @@ namespace AsynGyanis::Database
         // 幂等：没有活动事务时再调一次什么都不做，也不留下错误文本
         EXPECT_NO_THROW(connection.resetSessionState());
         EXPECT_TRUE(connection.lastError().empty()) << connection.lastError();
+    }
+
+    /**
+     * @brief 同一句参数化 UPDATE 反复执行时，每一轮的参数都真正生效
+     * @details 第二次起走的是缓存里那条已编译游标，因此这条钉的是复用面的两件事：游标被 reset 回了
+     *          可重跑状态（否则第二次起一行都不命中），以及上一次的绑定不会残留成这一次的取值
+     *          （否则落库的名字与 id 会配错对）。断言核对的是最终落库结果，而不是返回码本身。
+     */
+    TEST(SqliteConnection, ReusedWriteStatementAppliesEveryRoundOfParameters)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+        ASSERT_NE(executeRequired(connection, "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"), nullptr);
+
+        constexpr std::size_t kRoundCount = 5;
+        for (std::size_t roundIndex = 0; roundIndex < kRoundCount; ++roundIndex)
+        {
+            // 占位符顺序即绑定顺序：先 name 后 id
+            const std::array<DatabaseValue, 2> parameters{
+                    "round-" + std::to_string(roundIndex), static_cast<std::int64_t>((roundIndex % 3U) + 1U)};
+            const std::unique_ptr<DatabaseResult> result = connection.execute(
+                    "UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(parameters));
+            ASSERT_NE(result, nullptr) << "第 " << roundIndex << " 轮失败：" << connection.lastError();
+            EXPECT_EQ(result->affectedRowCount(), 1) << "第 " << roundIndex << " 轮一行都没改到：复用的游标没有回到可重跑状态";
+        }
+
+        // 轮 i 写 id = i % 3 + 1，故五轮下来 id1 最后被第 3 轮改写、id2 被第 4 轮、id3 被第 2 轮。
+        // 逐行核对最终值：只要有一轮的绑定残留到了下一轮（或游标没被 reset），这里就对不上
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1 AND name = 'round-3'"),
+                  std::optional<std::int64_t>(1)) << "id 1 的最终值不是第 3 轮写的：绑定在复用间串了";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 2 AND name = 'round-4'"),
+                  std::optional<std::int64_t>(1)) << "id 2 的最终值不是第 4 轮写的：绑定在复用间串了";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 3 AND name = 'round-2'"),
+                  std::optional<std::int64_t>(1)) << "id 3 的最终值不是第 2 轮写的：绑定在复用间串了";
+    }
+
+    /**
+     * @brief 断开再重连之后，不能沿用上一个数据库句柄上编译出来的游标
+     * @details 缓存的键只有 SQL 文本，而 sqlite3_stmt 属于具体的那个 sqlite3 句柄：disconnect() 把
+     *          句柄关掉之后，表里那些游标全部是上一个数据库对象图里的东西。因此清表必须落在换句柄
+     *          之前。实测撤掉清表时的表现不是崩溃也不是 ASan 报告（sqlite3_close_v2 会把还有未
+     *          finalize 游标的连接标成 zombie，内存因此仍在），而是 step 以一个毫无意义的原因失败：
+     *          「执行 SQL 语句失败：not an error（错误码 0）」——正是那种只能靠用例拦住的静默错误。
+     *          内存库重连得到的是一个全新的空库，所以「建表能成功」这条断言只有在语句按新句柄
+     *          重新编译时才会成立。
+     */
+    TEST(SqliteConnection, ReconnectDoesNotReuseStatementsFromTheClosedHandle)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+        ASSERT_NE(executeRequired(connection, "INSERT INTO t VALUES (1, 'a')"), nullptr);
+
+        constexpr const char *kUpdateSql = "UPDATE t SET name = ? WHERE id = ?";
+        for (std::size_t roundIndex = 0; roundIndex < 3U; ++roundIndex)
+        {
+            // 必须显式写成 std::string：字面量的类型是 const char*，而 variant 的转换构造会按
+            // 「标准转换优于用户定义转换」给 bool 那一支计分，不写出来就静默绑成 true
+            const std::array<DatabaseValue, 2> parameters{std::string{"warm-up"}, std::int64_t{1}};
+            ASSERT_NE(connection.execute(kUpdateSql, std::span<const DatabaseValue>(parameters)), nullptr) << connection.lastError();
+        }
+
+        connection.disconnect();
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 换句柄即换库：内存库里那张表已经不在了，这条语句必须是重新编译的那一份在跑
+        ASSERT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM sqlite_master WHERE name = 't'"), std::optional<std::int64_t>(0))
+                << "重连没有拿到新的空库，用例的前提不成立";
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+        ASSERT_NE(executeRequired(connection, "INSERT INTO t VALUES (7, 'fresh')"), nullptr);
+
+        const std::array<DatabaseValue, 2> parameters{std::string{"after-reconnect"}, std::int64_t{7}};
+        const std::unique_ptr<DatabaseResult> result = connection.execute(kUpdateSql, std::span<const DatabaseValue>(parameters));
+        ASSERT_NE(result, nullptr) << connection.lastError();
+        EXPECT_EQ(result->affectedRowCount(), 1) << "重连后同一条 SQL 用到了旧句柄上的游标";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 7 AND name = 'after-reconnect'"),
+                  std::optional<std::int64_t>(1));
     }
 
 } // namespace AsynGyanis::Database

@@ -11,11 +11,13 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 // sqlite3 与 sqlite3_stmt 是 SQLite 头文件中定义的全局 C 结构体，前置声明统一集中写在本头的全局作用域：
 // 只有 .cpp 才包含 <sqlite3.h>，避免第三方 C 头顺着包含链传染给所有使用方。
@@ -28,10 +30,10 @@ namespace AsynGyanis::Database
     /**
      * @brief SQLite 嵌入式数据库连接
      *
-     * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口。SQLite 是进程内引擎，数据库就是一个
-     *          文件（或 ":memory:" 代表的内存库），没有服务进程与网络往返，因此 ConnectionConfig 中只有
-     *          database 字段会被读取。connect() 会把基类的 queryTimeout() 映射成 sqlite3_busy_timeout
-     *          （表锁最多等待该毫秒数），并尝试启用 WAL 与外键约束，两条 PRAGMA 失败只写入 lastError()。
+     * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口：进程内引擎、没有网络往返，因此
+     *          ConnectionConfig 只有 database 字段被读取，基类 queryTimeout() 映射成 sqlite3_busy_timeout。
+     *          一条参数化语句里「编译」占约八成耗时，所以跑完的**写**语句按 SQL 文本缓存在 m_statementCache
+     *          里复用（查询不进这张表：游标所有权要移交给 SqliteResult）；键只有文本，故 disconnect() 先清表。
      *
      * @warning execute() 交出的 SqliteResult 保存本连接句柄的非拥有指针，
      *          结果集必须严格早于连接对象销毁，否则游标会访问已释放的 sqlite3*。
@@ -199,12 +201,45 @@ namespace AsynGyanis::Database
     private:
         /**
          * @brief 把参数按位置绑定到已编译的语句上
-         * @param statement 已 prepare 的语句句柄，绑定失败时由调用方负责 finalize
+         * @param statement 已 prepare 的语句句柄，绑定失败时由调用方负责收尾
          * @param parameters 待绑定的参数列表，第 i 个元素绑定到第 i 个占位符（SQLite 序号从 1 起）
          * @return true 全部参数绑定成功
          * @return false 参数个数不匹配、参数类型不受支持或底层绑定失败，原因见 lastError()
          */
         [[nodiscard]] bool bindParameters(sqlite3_stmt *statement, std::span<const DatabaseValue> parameters);
+
+        /**
+         * @brief 在写语句缓存里找一条已编译的游标
+         * @param sqlText 语句文本（本次调用已有的那份带零终止符的副本，不再另造键）
+         * @return sqlite3_stmt* 命中时返回已 reset 到可重跑状态的游标；未命中为 nullptr
+         */
+        [[nodiscard]] sqlite3_stmt *findCachedStatement(const std::string &sqlText) const noexcept;
+
+        /**
+         * @brief 把一条跑完并 reset 过的写语句放进缓存
+         * @details 表内已有同文本条目时空操作（缓存命中的那条本就在表里）。
+         * @param sqlText 语句文本，接管其内容作键
+         * @param statement 可复用的游标，所有权移交缓存
+         */
+        void cacheStatement(std::string sqlText, sqlite3_stmt *statement);
+
+        /**
+         * @brief 收尾一条**不再复用**的游标：缓存来的 reset 归还，新编译的 finalize 释放
+         * @details 只在出错、这条不打算入表的路上用；成功路径的收尾直接 sqlite3_reset
+         *          （见 execute()），因为那条游标下一步就要交给缓存。
+         * @param statement 待收尾的游标，不可为空
+         * @param isFromCache 该游标是否来自 m_statementCache
+         * @return sqlite3_reset 或 sqlite3_finalize 的返回码；两者都是「延迟外键等 step 之后
+         *         才浮现的错误」的报出点，因此这一格返回码在两条路上都必须查
+         */
+        int retireStatement(sqlite3_stmt *statement, bool isFromCache) noexcept;
+
+        /**
+         * @brief finalize 掉缓存里全部游标并清空表
+         * @details 必须在换掉 m_database 之前调用：缓存的键只有 SQL 文本，而游标句柄属于
+         *          具体的那个数据库连接，重连之后旧游标一律不可再用。
+         */
+        void clearStatementCache() noexcept;
 
         /**
          * @brief 采集 SQLite 的错误文本与错误码并写入 m_lastError
@@ -219,7 +254,18 @@ namespace AsynGyanis::Database
          */
         void applyStartupPragma(std::string_view pragmaText, std::string_view description);
 
+        /**
+         * @brief 写语句缓存的容量上限
+         * @details 到上限时整表清空而不是做 LRU：会涨到上限的负载说明「同一句 SQL 被反复执行」这个
+         *          前提已经不成立，缓存对它本来就没收益；换来的是内存有常数上界与零簿记。
+         */
+        static constexpr std::size_t kMaximumCachedStatements = 64;
+
         sqlite3 *m_database{nullptr}; ///< SQLite C API 数据库句柄，本对象独占所有权
+
+        /// SQL 文本 → 已编译且已 reset 的**写**语句游标。查询用的游标不进这里：它的所有权要移交给
+        /// SqliteResult 并随其析构才归还，与本表的「调用结束即回表」不是同一套生命周期
+        std::unordered_map<std::string, sqlite3_stmt *> m_statementCache;
     };
 
 } // namespace AsynGyanis::Database
