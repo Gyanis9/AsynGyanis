@@ -115,11 +115,14 @@ namespace AsynGyanis::Base
         {
             GTEST_SKIP() << "本构建没有调试信息（既无 PDB 也无 -g），栈帧只剩模块加偏移，符号解析断言不适用";
         }
-        // 抛出点或被内联进调用它的测试体，二者之一必须出现——出现别的说明采到的是打印点的栈
-        const bool mentionsThrowHelper = text.find("makeExceptionFromDeepFrame") != std::string::npos;
-        const bool mentionsTestBody    = text.find("TestBody") != std::string::npos;
-        EXPECT_TRUE(mentionsThrowHelper || mentionsTestBody)
-                << "解析结果里既没有抛出点函数也没有测试体帧：\n"
+        // 按**帧身份**判，而不是「栈里有个测试体帧就算对」：任何深于两帧的栈里都有 TestBody，
+        // 旧断言在「少跳一格」（框架自己的构造帧顶在最前）与「多跳一格」（抛出点被跳掉）两种
+        // 错法下都不会红。这里两条分别钉住：抛出点所在文件必须在栈里，框架构造帧必须不在
+        EXPECT_NE(text.find("TestException.cpp"), std::string::npos)
+                << "解析结果里没有抛出点所在文件，说明采到的不是抛出点的栈：\n"
+                << text;
+        EXPECT_EQ(text.find("Exception::Exception"), std::string::npos)
+                << "栈里露出了框架自己的构造帧，说明 captureStackTrace 少跳了一格：\n"
                 << text;
     }
 
@@ -421,6 +424,44 @@ namespace AsynGyanis::Base
         EXPECT_EQ(exception.remoteAddress(), "192.168.0.1:9000");
         EXPECT_EQ(exception.nativeError(), 111);
         errno = 0;
+    }
+
+    /**
+     * @brief 隐式错误码必须按 errno 语义解释：数值与描述得来自同一个错误码空间
+     * @details Windows 上 `std::system_category()` 把数值当成 **Win32 码**查表，而 kernel32/winsock
+     *          的失败根本不写 errno，于是旧写法（errno 的值 + system_category）会给出与本次失败
+     *          无关的描述（本仓实测把发送失败报成「[112] There is not enough space on the disk」）。
+     *          Linux 上两个类别的文本相同，因此这条只有 Windows 侧能证伪——缺陷本身也只在那一侧。
+     */
+    TEST(SystemException, ErrnoValueIsDescribedWithTheErrnoCategory)
+    {
+        errno = EACCES;
+        const SystemException exception("write file");
+        const std::string     message(exception.what());
+        errno = 0;
+
+        const std::error_code errnoSemantics(EACCES, std::generic_category());
+        EXPECT_EQ(exception.errorCode().category(), errnoSemantics.category())
+                << "类别与取值不配对，报出来的描述就不是这次失败";
+        EXPECT_TRUE(contains(message, errnoSemantics.message()))
+                << "消息里的描述与 errno 语义不符（多半是按 Win32 码查的表）：" << message;
+    }
+
+    /**
+     * @brief 两个 NetworkException 重载都得把对端地址写进消息
+     * @details 旧写法只有「显式传码」那条拼 "(remote: X)"，同一次失败因调用方手上有没有错误码
+     *          而给出两种文本，而带不带对端的判断恰恰是这个类存在的理由。
+     */
+    TEST(NetworkException, IncludesRemoteAddressInBothOverloads)
+    {
+        errno = ECONNABORTED;
+        const NetworkException withoutCode("accept", "192.168.1.2:7001");
+        const std::string      message(withoutCode.what());
+        errno = 0;
+
+        EXPECT_TRUE(contains(message, "192.168.1.2:7001"))
+                << "不显式传码的那条重载把对端丢了：" << message;
+        EXPECT_EQ(withoutCode.remoteAddress(), "192.168.1.2:7001");
     }
 
     // ============================================================================

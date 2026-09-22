@@ -125,7 +125,10 @@ namespace AsynGyanis::Core
         m_iocp = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
         if (m_iocp == nullptr)
         {
-            throw Base::SystemException("创建完成端口失败（CreateIoCompletionPort）");
+            // 必须显式传 Win32 空间的码：CreateIoCompletionPort 失败只写 GetLastError，不写 errno，
+            // 走隐式 errno 通道会报出一个与本次失败无关（或干脆是 0）的描述
+            throw Base::SystemException("创建完成端口失败（CreateIoCompletionPort）",
+                                        std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
         }
         m_entries.resize(kMaximumEventCount);
         m_results.reserve(kMaximumEventCount);
@@ -673,7 +676,8 @@ namespace AsynGyanis::Core
             {
                 return {};
             }
-            throw Base::SystemException("等待完成端口失败（GetQueuedCompletionStatusEx）");
+            throw Base::SystemException("等待完成端口失败（GetQueuedCompletionStatusEx）",
+                                        std::error_code(static_cast<int>(errorCode), std::system_category()));
         }
 
         m_results.clear();

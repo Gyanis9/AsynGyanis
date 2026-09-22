@@ -500,7 +500,8 @@ namespace AsynGyanis::Core
         socklen_t        addressLength = sizeof(address);
         if (getpeername(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
         {
-            throw Base::SystemException("获取对端地址失败");
+            // winsock 失败不写 errno，本文件的 lastSocketError() 就是为这条规矩准备的
+            throw Base::SystemException("获取对端地址失败", lastSocketError());
         }
         return InetAddress(address, addressLength);
     }
@@ -511,7 +512,7 @@ namespace AsynGyanis::Core
         socklen_t        addressLength = sizeof(address);
         if (getsockname(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
         {
-            throw Base::SystemException("获取本地地址失败");
+            throw Base::SystemException("获取本地地址失败", lastSocketError());
         }
         return InetAddress(address, addressLength);
     }
