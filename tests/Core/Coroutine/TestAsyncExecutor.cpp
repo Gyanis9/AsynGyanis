@@ -5,6 +5,7 @@
 // 覆盖场景：
 // - ResumesContinuationOnGivenEventLoop（恢复线程 == submit() 给定的循环线程，且不是调用线程）
 // - DiscardingSuspendedTaskDoesNotResumeFreedFrame（任务开工后、交付前销毁 Task，恢复必须是空操作）
+// - SubmissionQueueIsBoundedAndRejectsOverCapacity（排队有上限，超出的提交如实失败并说清原因）
 // - AbandonedSubmissionDoesNotStrandTheWorker（作废的那次提交不占住工作线程，后续提交照常完成）
 
 #include "Core/Coroutine/AsyncExecutor.h"
@@ -18,7 +19,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <future>
+#include <string>
+#include <vector>
 #include <thread>
 #include <utility>
 
@@ -236,4 +240,83 @@ namespace AsynGyanis::Core
                     << "工作线程数超出了本进程被允许的核集合，配额内的 CPU 会被从事件循环手里抢走";
         }
     }
+    /**
+     * @brief 排队有上限：工作线程被占住时，超出的提交如实失败而不是把队列无限撑大
+     * @details 无界队列把「下游比提交方慢」从延迟问题变成内存问题：每个在途请求都往队列里
+     *          留下一份闭包加一份堆上的共享状态，进程先被自己的排队撑死。这里要求上限生效，
+     *          且拒绝的理由写的是「排队已满」（该降并发），不是「执行器已停止」（那是生命周期用错了）。
+     *          重叠条件由用例自己造：一条任务卡在门闩上，等它**已被工作线程取走**才开始灌队列，
+     *          于是排队数只可能来自后面这批提交，判据可以写成精确值
+     */
+    TEST(AsyncExecutor, SubmissionQueueIsBoundedAndRejectsOverCapacity)
+    {
+        EventLoopThread runner;
+        ASSERT_TRUE(runner.waitUntilRunning());
+
+        AsyncExecutor   executor(1);
+        std::atomic<bool> isGateOpen{false};
+        std::atomic<bool> isGateKeeperRunning{false};
+
+        Task<int> gateKeeper = executor.submit<int>(runner.loop(), [&isGateOpen, &isGateKeeperRunning]()
+        {
+            isGateKeeperRunning.store(true, std::memory_order_release);
+            while (!isGateOpen.load(std::memory_order_acquire))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            return 0;
+        });
+        gateKeeper.handle().resume();
+        ASSERT_TRUE(waitForCondition([&isGateKeeperRunning]
+                                     {
+                                         return isGateKeeperRunning.load(std::memory_order_acquire);
+                                     }))
+                << "门闩任务没被那唯一的工作线程取走，后面的排队数就说不清是谁占的";
+
+        constexpr std::size_t kCapacity = AsyncExecutor::kMaximumPendingTasksPerWorker;
+        std::vector<Task<int> > heldTasks;
+        heldTasks.reserve(kCapacity + 8);
+        std::size_t rejectedCount = 0;
+        std::string firstRejectionText;
+
+        for (std::size_t index = 0; index < kCapacity + 8; ++index)
+        {
+            Task<int> task = executor.submit<int>(runner.loop(), []() { return 1; });
+            task.handle().resume();
+            // 被拒的提交在 await_suspend 里就不挂起了：协程当场跑到 await_resume 抛出并结束。
+            // 此刻工作线程仍被门闩占着，因此这里读帧不与之相撞（已排上的任务不可能被恢复）
+            if (task.isReady())
+            {
+                ++rejectedCount;
+                if (firstRejectionText.empty())
+                {
+                    try
+                    {
+                        static_cast<void>(task.handle().promise().result());
+                    } catch (const std::exception &rejection)
+                    {
+                        firstRejectionText = rejection.what();
+                    }
+                }
+            }
+            heldTasks.push_back(std::move(task));
+        }
+
+        EXPECT_EQ(executor.pendingTaskCount(), kCapacity) << "队列长度越过了每线程上限：排队仍然是无界的";
+        EXPECT_EQ(rejectedCount, 8U) << "超出上限的提交数应当全部被拒";
+        EXPECT_NE(firstRejectionText.find("排队已满"), std::string::npos)
+                << "拒绝原因要说清是排队满了（该降并发），文案是：" + firstRejectionText;
+
+        isGateOpen.store(true, std::memory_order_release);
+        ASSERT_TRUE(waitForCondition([&executor]
+                                     {
+                                         return executor.pendingTaskCount() == 0;
+                                     }))
+                << "放行之后排队的任务没有做完";
+        // 帧的销毁必须晚于循环线程收手（见 EventLoopThread 的销毁纪律）：先显式 join 再让上面
+        // 那批 Task 出作用域，否则收尾里可能有人在 resume 已经消亡的帧
+        runner.join();
+    }
+
+
 } // namespace AsynGyanis::Core

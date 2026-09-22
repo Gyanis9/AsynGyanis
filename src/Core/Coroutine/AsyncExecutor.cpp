@@ -59,7 +59,7 @@ namespace AsynGyanis::Core
         return sharedExecutor;
     }
 
-    bool AsyncExecutor::enqueue(std::function<void()> task)
+    AsyncExecutor::SubmissionResult AsyncExecutor::enqueue(std::function<void()> task)
     {
         {
             std::lock_guard lock(m_mutex);
@@ -67,8 +67,17 @@ namespace AsynGyanis::Core
             // 收下任务等于让提交方永久挂起——宁可当场拒绝，由调用方显式失败
             if (m_isStopping.load(std::memory_order_acquire))
             {
-                return false;
+                return SubmissionResult::RejectedByShutdown;
             }
+
+            // 排队上限按「每线程」算，判定与入队同在一把锁里：既不超卖名额，也不会出现
+            // 「报了 Accepted 却没排上」。超出的一律如实拒绝，让提交方去降并发——
+            // 队列无界时一次下游变慢就能把进程撑死，而那本来只是几个请求的延迟问题
+            if (m_tasks.size() >= workerCount() * kMaximumPendingTasksPerWorker)
+            {
+                return SubmissionResult::RejectedBySaturatedQueue;
+            }
+
             m_tasks.push_back(std::move(task));
             m_pendingCount.fetch_add(1, std::memory_order_relaxed);
         }
@@ -76,7 +85,7 @@ namespace AsynGyanis::Core
         // 入队后立刻唤醒一个等待线程。不必持锁调用 notify：唤醒与入队之间没有需要原子化的关系，
         // 被唤醒的线程会自己重新取锁并检查队列
         m_condition.notify_one();
-        return true;
+        return SubmissionResult::Accepted;
     }
 
     void AsyncExecutor::workerLoop(const std::stop_token &stopToken)

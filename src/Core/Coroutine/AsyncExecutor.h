@@ -94,6 +94,17 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief 每个工作线程允许积压的待执行任务数上限
+         * @details 队列无界时，「提交方比消费方快」会把它变成一条内存放大路径：磁盘变慢或
+         *          某个下游超时打满时，每个在途请求都往队列里塞一份闭包加一份堆上的共享状态，
+         *          进程在请求被处理完之前就先被自己的排队撑死。按线程数定容，因此它与
+         *          「这台机器能并行做多少件阻塞活」同阶，而不是一个与规模脱钩的魔数。
+         *          越过上限的提交**如实失败**（await_resume 抛出），调用方据此降级或回压，
+         *          而不是排一个永远排不到的队
+         */
+        static constexpr std::size_t kMaximumPendingTasksPerWorker = 256;
+
+        /**
          * @brief 获取当前排队等待执行的任务数（不含正在执行的那个）
          * @return std::size_t 队列长度；主要用于监控与测试
          */
@@ -225,7 +236,7 @@ namespace AsynGyanis::Core
                 std::shared_ptr<SubmissionState<ResultType> > state = m_state;
                 state->continuation.store(continuation, std::memory_order_release);
 
-                const bool isQueued = m_executor->enqueue(
+                const SubmissionResult submission = m_executor->enqueue(
                         [state]()
                         {
                             try
@@ -251,12 +262,17 @@ namespace AsynGyanis::Core
                             // 因此协程的后续代码与调用方对线程的假设保持一致
                             state->completionLoop->scheduler().scheduleRemote(waitingCoroutine);
                         });
-                if (!isQueued)
+                if (submission != SubmissionResult::Accepted)
                 {
-                    // 执行器已停止：任务不会被任何人执行，静默挂起是最差的结果，
-                    // 因此明确失败并就地恢复（此刻正跑在调用方的线程上，恢复它是安全的）
-                    state->error = std::make_exception_ptr(
-                            Base::LogicException("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交"));
+                    // 两种拒绝都不挂起：此刻还跑在调用方线程上，就地备好异常、让 await_resume
+                    // 抛出，比让调用方等一个永远不会来的恢复好得多。文案要分得开——
+                    // 「已停止」指向本层生命周期用错了，「队列已满」指向上游并发该降下来
+                    std::string rejectionReason = submission == SubmissionResult::RejectedByShutdown
+                            ? std::string("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交")
+                            : std::string("阻塞任务执行器排队已满（每线程上限 ")
+                                      + std::to_string(kMaximumPendingTasksPerWorker)
+                                      + " 条）：下游明显慢于提交，请降低并发或改走非阻塞路径，不要继续向本执行器提交";
+                    state->error = std::make_exception_ptr(Base::LogicException(std::move(rejectionReason)));
                     return false;
                 }
                 return true;
@@ -288,12 +304,26 @@ namespace AsynGyanis::Core
         };
 
         /**
+         * @brief 一次入队的三种结局，供 await_suspend 给出**指得准**的失败原因
+         * @details 用枚举而不是 bool：原先「执行器已停止」与「队列已满」都得报成同一句话，
+         *          而调用方的处置完全不同——前者要查生命周期，后者要降并发或退避
+         */
+        enum class SubmissionResult
+        {
+            Accepted,               ///< 已入队并唤醒了一个工作线程
+            RejectedByShutdown,     ///< 执行器已进入停止流程，没人会再取队列
+            RejectedBySaturatedQueue, ///< 待执行任务已达本执行器的积压上限
+        };
+
+        /**
          * @brief 把任务放进队列并唤醒一个工作线程
          * @param task 待执行的闭包（已捕获好全部输入与输出位置）
-         * @return true 已入队；false 执行器正在停止，任务未被执行（调用方应显式失败而不是挂起）
+         * @return Accepted 表示已入队；两种 Rejected 都表示任务不会被执行，调用方应显式失败而不是挂起
          * @note 本方法只做入队，不执行任务：调用方（await_suspend）因此不会被阻塞
+         * @note 队列长度与上限的判定在持锁的临界区里完成，因此同一次调用里既不会超卖名额，
+         *       也不会把已收下却没排上的任务丢掉
          */
-        [[nodiscard]] bool enqueue(std::function<void()> task);
+        [[nodiscard]] SubmissionResult enqueue(std::function<void()> task);
 
         /**
          * @brief 工作线程主循环
