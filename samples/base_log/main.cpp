@@ -117,8 +117,12 @@ namespace
                                    "forEachLogger 与 getLoggerNames 能看到已登记的 logger");
 
         Base::LoggerRegistry::instance().setGlobalLevel(Base::LogLevel::Info);
-        Samples::checklist().check(Base::LoggerRegistry::instance().getRootLogger().getLevel() == Base::LogLevel::Info,
-                                   "setGlobalLevel 把根 logger 的级别调到位");
+        // 只问根 logger 证不出「扇出到全部 logger」：根本来就是 setupConsoleLogging 给的 Info，
+        // 把 setGlobalLevel 换成空函数也照样过。sample.net 在开头被显式设成 Warn，
+        // 它被改回 Info 才是这条 API 的说法本身
+        Samples::checklist().check(Base::LoggerRegistry::instance().getRootLogger().getLevel() == Base::LogLevel::Info &&
+                                       Base::LoggerRegistry::instance().loggerLevel("sample.net") == Base::LogLevel::Info,
+                                   "setGlobalLevel 扇出到全部 logger（含显式设过级别的具名 logger）");
     }
 
     void demonstrateFileSink(const std::filesystem::path &directory)
@@ -237,21 +241,33 @@ namespace
                                   Base::AsyncSink::OverflowPolicy::DropOldest);
             for (int index = 0; index < 50; ++index)
             {
-                async.write(makeInfoEvent("异步丢旧策略下的一条记录"));
+                async.write(makeInfoEvent("异步丢旧策略下的第 " + std::to_string(index) + " 条记录"));
             }
             async.stop();
-            Samples::checklist().check(countLines(droppingPath) > 0 && countLines(droppingPath) <= 50,
-                                       "AsyncSink(DropOldest) 不阻塞写入者，落盘条数不超过提交条数");
+            // 旧的判据是「0 < 落盘条数 <= 50」——上限由构造保证、下限只要没全丢就成立，丢没丢都过。
+            // 换成正反两条：落盘 + 丢弃必须正好等于提交条数（计数不撒谎），且留在盘上的必须是
+            // 最新那条（DropOldest 的定义是丢最旧的）。不要求「确实丢了」：那取决于 worker 抢不抢得到
+            // 时间片，两种结果下这两条都成立，所以它们不会因为调度运气而假红
+            const std::size_t landedLineCount  = countLines(droppingPath);
+            const std::size_t droppedCount     = async.droppedEventCount();
+            const std::string landedText       = readWholeFile(droppingPath);
+            Samples::checklist().check(landedLineCount + droppedCount == 50 &&
+                                           landedText.find("第 49 条记录") != std::string::npos,
+                                       "AsyncSink(DropOldest) 的丢弃计数与落盘条数对得上账，留下的是最新那条");
         }
     }
 
     void demonstrateFormatters(const std::filesystem::path &directory)
     {
-        // 断言只查「含预期片段」：颜色码与时区随平台不同，逐字节比会假红
+        // 断言只查「含预期片段」：颜色码与时区随平台不同，逐字节比会假红。
+        // 但每例的片段必须只有该格式化器会产出：三例原先都拿 "INFO" 当判据，
+        // 颜色版不发 ANSI、或 JSON 把等级写成别的值，全都照样过
         const std::vector<std::pair<std::string, std::string>> cases = {
-                {"JsonFormatter", R"("level")"},
-                {"DefaultFormatter", "INFO"},
-                {"ColorFormatter", "INFO"},
+                {"JsonFormatter", R"("level":"INFO")"},
+                // 纯文本版式里等级是补齐后的 "[INFO ]"，紧跟的方括号里就是 logger 名
+                {"DefaultFormatter", "[INFO ] [sample.DefaultFormatter]"},
+                // 彩色版式把 ANSI 前导插在等级两侧，纯文本里没有这串
+                {"ColorFormatter", "\x1b["},
         };
         for (const auto &[formatterName, expectedFragment]: cases)
         {
@@ -327,10 +343,14 @@ namespace
         LOG_ERROR("配置驱动装配之后的一条错误日志");
         static_cast<void>(root.flush());
         const bool isFileSinkApplied = countLines(directory / "configured.log") == 1;
+        // 第二个 sink 也得有人验：rolling_file 分支自己建目录、并把 base_filename 拼到 directory
+        // 之下，只查 file sink 等于这条装配链从头到尾没人看过
+        const bool isRollingSinkApplied = countLines(directory / "configured-rolling" / "configured-rolling.log") == 1;
         root.clearSinks();
         Samples::setupConsoleLogging();
         Samples::checklist().check(isLevelApplied, "配置里的 root.level 真的生效了");
         Samples::checklist().check(isFileSinkApplied, "配置里的 file sink 确实收到了这条日志");
+        Samples::checklist().check(isRollingSinkApplied, "配置里的 rolling_file sink 也收到了同一条日志");
     }
 
     void demonstrateLifetime(const std::filesystem::path &directory)
@@ -345,8 +365,19 @@ namespace
         Samples::checklist().check(Base::LoggerRegistry::instance().loggerLevel("sample.retired").has_value(),
                                    "registerLogger 之后能从注册表取到它");
 
+        // 先把裸引用留住：注册表给出的是引用，退休表护住的正是「注销时调用方还攥着它」这一刻
+        Base::Logger &retained = Base::LoggerRegistry::instance().getLogger("sample.retired");
+        static_cast<void>(retained.flush());
+        const std::size_t lineCountBeforeRemoval = countLines(path);
+
         Base::LoggerRegistry::instance().unregisterLogger("sample.retired");
-        // 注销当场交还 Sink（退休表只留日志器外壳护住裸引用）：文件句柄立即可放，不必先 purge
+        // 注销当场把 Sink 交还（退休表只留日志器外壳），所以这个引用还能安全调用，但写入不再落盘。
+        // 只断言「删得掉」在 POSIX 上等于没有断言——那里文件开着也能删，必须再看落盘结果
+        LOG_LOGGER_INFO_FMT(retained, "注销后的一条记录");
+        static_cast<void>(retained.flush());
+        Samples::checklist().check(countLines(path) == lineCountBeforeRemoval,
+                                   "注销后攥着的引用仍可用，但 Sink 已随注销交还、不再落盘");
+
         std::error_code removalError;
         std::filesystem::remove(path, removalError);
         Samples::checklist().check(!removalError, "unregisterLogger 当场释放了文件句柄（Windows 上否则删不掉）");
