@@ -45,40 +45,13 @@ namespace AsynGyanis::Base
             }
             return configValueAs<ValueType>(*iterator);
         }
-        /**
-         * @brief 本文件各字段声明的期望类型，用于把「实际类型 vs 期望类型」写进同一条诊断
-         * @tparam ValueType 取用者要的目标类型
-         */
-        template<typename ValueType>
-        [[nodiscard]] constexpr ConfigValueType expectedValueType() noexcept
-        {
-            return ConfigValueType::null;
-        }
-
-        template<>
-        constexpr ConfigValueType expectedValueType<bool>() noexcept
-        {
-            return ConfigValueType::boolean;
-        }
-
-        template<>
-        constexpr ConfigValueType expectedValueType<int64_t>() noexcept
-        {
-            return ConfigValueType::number_integer;
-        }
-
-        template<>
-        constexpr ConfigValueType expectedValueType<std::string>() noexcept
-        {
-            return ConfigValueType::string;
-        }
 
         /**
          * @brief 取带默认值的可选字段；键在而类型不符时先报再回落
          * @details 「键不存在」走默认值是正常路径，不报；「键存在而类型不符」多半是 YAML 里给
          *          数字或布尔加了引号，静默按默认值生效会让配置与生效值长期不一致而无人知道。
          *          与本文件对 overflow_policy、max_size_mb 的口径一致：容错必须可见。
-         * @tparam ValueType 期望取值类型（须有对应的 expectedValueType 特化）
+         * @tparam ValueType 期望取值类型
          * @param configuration 承载该键的配置对象
          * @param key 键名
          * @param defaultValue 类型不符或键缺失时的回落值
@@ -98,7 +71,7 @@ namespace AsynGyanis::Base
             if (!parsed.has_value())
             {
                 std::cerr << "LoggerConfig：" << ownerDescription << " 的 " << key << " 类型是 "
-                        << typeName((*iterator).type()) << "，要求 " << typeName(expectedValueType<ValueType>())
+                        << typeName((*iterator).type()) << "，要求 " << configTypeNameOf<ValueType>()
                         << "，已按默认值 " << std::boolalpha << defaultValue << std::noboolalpha << " 处理" << '\n';
                 return defaultValue;
             }
@@ -128,7 +101,7 @@ namespace AsynGyanis::Base
             if (!value.has_value())
             {
                 std::cerr << "LoggerConfig：" << ownerDescription << " 的 '" << key << "' 类型是 "
-                        << typeName((*iterator).type()) << "，要求 string，已跳过该 sink" << '\n';
+                        << typeName((*iterator).type()) << "，要求 " << configTypeNameOf<std::string>() << "，已跳过该 sink" << '\n';
             }
             return value;
         }
@@ -175,7 +148,7 @@ namespace AsynGyanis::Base
             } else
             {
                 std::cerr << "LoggerConfig：" << globalLevelKey << " 类型是 " << typeName(globalLevelValue->type())
-                        << "，要求 string，已按 INFO 处理" << '\n';
+                        << "，要求 " << configTypeNameOf<std::string>() << "，已按 INFO 处理" << '\n';
             }
         }
 
