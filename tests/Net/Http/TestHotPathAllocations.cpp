@@ -10,9 +10,11 @@
 //
 // 本轮量出来的读数（Release，摊平到每次操作）：解析一条 h1 请求 6 次 / 256 字节；装 10 条头部
 // 4 次 / 144 字节——正好是四个超过短串内联缓冲的取值各一次；响应头序列化每次新建串 1 次，
-// 复用同一块缓冲 0 次；解一帧 200 字节头块的 HEADERS 1 次 / 208 字节，就是取走的那份负载。
-// 同一条形状在 Debug（带迭代器调试代理）下是 117 / 64 / 3 与 1 / 4。
+// 复用同一块缓冲 0 次；解一帧 200 字节头块的 HEADERS 1 次 / 208 字节，就是取走的那份负载；
+// 组一帧 256 字节分块帧每次新建串 1 次 / 272 字节，复用帧缓冲 0 次。
+// 同一条形状在 Debug（带迭代器调试代理）下是 117 / 64 / 3 与 1 / 4，分块帧那条是 2 与 0。
 
+#include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpResponse.h"
@@ -127,6 +129,8 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kHeadSerializeAllocationsFresh = 1U;
         constexpr std::uint64_t kHeadSerializeAllocationsReused = 0U;
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
+        constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
+        constexpr std::uint64_t kChunkFrameAllocationsReused = 0U;     ///< 复用帧缓冲：容量长够之后一次都不碰堆
 #endif
 
         /**
@@ -416,6 +420,54 @@ namespace AsynGyanis::Net
 #ifdef NDEBUG
         EXPECT_EQ(profile.allocationsPerOperation, kFrameDecodeAllocationsPerFrame)
                 << "解一帧的分配数变了：稳态下只有取走的负载那份串要堆块";
+#endif
+    }
+
+    /**
+     * @brief 组一帧分块帧付出多少次分配：每次新建串 vs 复用缓冲
+     * @details `HttpResponse::writeChunk()` 走的就是这个出口。SSE 这类「小段、高频」的流式响应里，
+     *          每段一次分配会盖过组帧本身的工作量，所以这条形状值得单独钉住
+     */
+    TEST(HotPathAllocations, ChunkFrameAppendAllocations)
+    {
+        const std::string payload(256, 'a');
+
+        const auto buildFresh = [&payload]
+        {
+            std::string frame;
+            appendChunkFrame(frame, payload);
+            return frame.size();
+        };
+        std::string reusedFrame;
+        const auto buildReused = [&payload, &reusedFrame]
+        {
+            appendChunkFrame(reusedFrame, payload);
+            return reusedFrame.size();
+        };
+        // 各先跑一次：复用缓冲的第一轮要把容量长出来，那笔分配不属于稳态成本
+        buildFresh();
+        buildReused();
+
+        // 省分配不能省成错帧：写出的这一帧必须能被同文件的解析侧原样认回负载
+        std::string probeFrame;
+        appendChunkFrame(probeFrame, payload);
+        EXPECT_EQ(chunkFramePayload(std::string_view{probeFrame}), payload) << "写出的帧解析侧认不回来";
+
+        const AllocationProfile fresh = measurePerOperation(buildFresh);
+        const AllocationProfile reused = measurePerOperation(buildReused);
+        EXPECT_GT(fresh.resultSum, 0U) << "组帧没写出任何字节，读的是空转";
+        EXPECT_EQ(fresh.resultSum, reused.resultSum) << "两条出口产出的帧长度不一致";
+        EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation)
+                << "复用缓冲的出口反而比每次新建串更费分配";
+        std::printf("chunk-frame 每次分配 新建串 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节\n",
+                    static_cast<unsigned long long>(fresh.allocationsPerOperation),
+                    static_cast<unsigned long long>(fresh.bytesPerOperation),
+                    static_cast<unsigned long long>(reused.allocationsPerOperation),
+                    static_cast<unsigned long long>(reused.bytesPerOperation));
+#ifdef NDEBUG
+        EXPECT_EQ(fresh.allocationsPerOperation, kChunkFrameAllocationsFresh) << "每次新建帧串的分配数变了";
+        EXPECT_EQ(reused.allocationsPerOperation, kChunkFrameAllocationsReused)
+                << "复用帧缓冲这条路应当一次堆块都不碰";
 #endif
     }
 } // namespace AsynGyanis::Net

@@ -563,6 +563,7 @@ namespace AsynGyanis::Net
         bool m_isChunked{false};                               ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
         bool m_hasSentChunkedHead{false};                      ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
         ChunkSender m_chunkSender;                             ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
+        std::string m_chunkFrameBuffer;                        ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
         WebSocketHandler m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
         bool m_isWebSocketUpgradeRequested{false};              ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
         mutable std::string m_autoDateValue;                   ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -35,4 +36,15 @@ namespace AsynGyanis::Net
      *         残缺负载当成正文发出去
      */
     [[nodiscard]] std::string_view chunkFramePayload(std::string_view chunkFrame);
+
+    /**
+     * @brief 把一段应用负载写成 h1 的分块帧，写进调用方持有的缓冲
+     * @details 帧 = `<十六进制长度>\r\n<数据>\r\n`（RFC 9112 §7.1），与 chunkFramePayload() 严格互逆。
+     *          缓冲交给调用方跨次复用：正文段的大小通常稳定，每段都新建一个串等于在每个事件上摊
+     *          「一次分配 + 一次整段拷贝」，SSE 这类小段高频出口最明显。本函数清空缓冲但不缩容量。
+     * @param frame 输出缓冲；成功返回时长度恰好是一帧
+     * @param data 本段应用负载，非空（零长度块是终止块语义，跳过空段由调用方负责）
+     * @throws Base::LogicException 长度写不成十六进制文本；此时 frame 保持原样
+     */
+    void appendChunkFrame(std::string &frame, std::string_view data);
 } // namespace AsynGyanis::Net

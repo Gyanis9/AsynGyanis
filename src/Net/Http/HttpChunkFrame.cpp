@@ -2,6 +2,7 @@
 
 #include "Base/Exception/LogicException.h"
 
+#include <array>
 #include <charconv>
 #include <format>
 #include <string>
@@ -40,5 +41,27 @@ namespace AsynGyanis::Net
                                                    chunkFrame.size(), payloadLength));
         }
         return chunkFrame.substr(lengthLineEndIndex + kChunkFrameCrLf.size(), payloadLength);
+    }
+
+    void appendChunkFrame(std::string &frame, const std::string_view data)
+    {
+        // 长度行先算完再动缓冲：写不成十六进制时抛错，调用方的缓冲保持原样（不留半个帧）
+        std::array<char, kChunkLengthLineMaximumLength> lengthText{};
+        const auto [lengthEnd, lengthError] =
+                std::to_chars(lengthText.data(), lengthText.data() + lengthText.size(), data.size(), 16);
+        if (lengthError != std::errc())
+        {
+            throw Base::LogicException("Net: 分块长度无法写成十六进制文本，本段未写出；"
+                                       "请检查本段长度是否超出平台可表示范围");
+        }
+        const std::size_t lengthTextLength = static_cast<std::size_t>(lengthEnd - lengthText.data());
+
+        frame.clear();
+        // 一次预留「长度行 + 数据 + 收尾 CRLF」：缓冲容量够时这一步之后整帧不再碰堆
+        frame.reserve(lengthTextLength + kChunkFrameCrLf.size() + data.size() + kChunkFrameCrLf.size());
+        frame.append(lengthText.data(), lengthTextLength);
+        frame.append(kChunkFrameCrLf);
+        frame.append(data.data(), data.size());
+        frame.append(kChunkFrameCrLf);
     }
 } // namespace AsynGyanis::Net
