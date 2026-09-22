@@ -8,6 +8,8 @@
 // - ArrayReplyExposesOneColumnPerElement
 // - CommandErrorFailsWithLocalizedReason（连接级：nullptr + 中文原因）
 // - PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
+// - PipelineAcrossRisingAndFallingArgumentCountsKeepsCommandsIntact（参数条数升降交替仍逐条对齐）
+// - ResetSessionStateDiscardsPendingPipelineCommands
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
@@ -444,6 +446,46 @@ namespace AsynGyanis::Database
         // 非法命令在登记阶段就被拒，不会留到 flush 时才爆
         EXPECT_FALSE(m_connection->pipelineCommand("SET \"unterminated"));
         EXPECT_FALSE(m_connection->lastError().empty());
+    }
+
+    /**
+     * @brief 钉住相邻命令参数条数一升一降时，每条命令仍只带着自己的参数送达
+     * @details 发送阶段那对「指针 + 长度」暂存表跨条复用，于是「上一条的参数尾巴接到下一条」成为
+     *          这条路径独有的风险；条数先 5→2 再 2→7 才能把复用方向的两个侧面都钉住。
+     */
+    TEST_F(RedisIntegrationTest, PipelineAcrossRisingAndFallingArgumentCountsKeepsCommandsIntact)
+    {
+        const std::string firstKey  = makeKey("wide-a");
+        const std::string secondKey = makeKey("wide-b");
+        const std::string thirdKey  = makeKey("wide-c");
+
+        // 参数条数依次 5 / 2 / 2 / 7 / 5：暂存表少清一次，第 2 条就会把第 1 条的尾巴一起发出去
+        ASSERT_TRUE(m_connection->pipelineCommand("MSET " + firstKey + " 1 " + secondKey + " 2"));
+        ASSERT_TRUE(m_connection->pipelineCommand("GET " + firstKey));
+        ASSERT_TRUE(m_connection->pipelineCommand("INCR " + thirdKey));
+        ASSERT_TRUE(m_connection->pipelineCommand("MSET " + firstKey + " 10 " + secondKey + " 20 " + thirdKey + " 30"));
+        ASSERT_TRUE(m_connection->pipelineCommand("MGET " + firstKey + " " + secondKey + " " + thirdKey));
+
+        const std::vector<std::unique_ptr<DatabaseResult>> replies = m_connection->flushPipeline();
+        ASSERT_EQ(replies.size(), 5U);
+        for (const std::unique_ptr<DatabaseResult> &reply: replies)
+        {
+            ASSERT_NE(reply, nullptr);
+            // 一条命令被接上多余的参数，服务端必回 wrong number of arguments 的 error，
+            // 而管道路径把 error 留在**该条自己**的结果上，因此这里逐条验空
+            EXPECT_TRUE(reply->lastError().empty()) << reply->lastError();
+        }
+
+        // 逐条核对取值：只判「没报错」不够，参数错位仍可能拼出一条合法但含义不同的命令
+        EXPECT_EQ(std::get<std::string>(replies[0]->getValue(0)), "OK");
+        EXPECT_EQ(std::get<std::string>(replies[1]->getValue(0)), "1");
+        EXPECT_EQ(std::get<std::int64_t>(replies[2]->getValue(0)), 1);
+        EXPECT_EQ(std::get<std::string>(replies[3]->getValue(0)), "OK");
+
+        ASSERT_EQ(replies[4]->columnCount(), 3U);
+        EXPECT_EQ(std::get<std::string>(replies[4]->getValue(0)), "10");
+        EXPECT_EQ(std::get<std::string>(replies[4]->getValue(1)), "20");
+        EXPECT_EQ(std::get<std::string>(replies[4]->getValue(2)), "30");
     }
 
     /**
