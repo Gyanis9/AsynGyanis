@@ -270,6 +270,13 @@ namespace AsynGyanis::Base
             {
                 continue;
             }
+            // 前缀与后缀合起来可能比文件名本身还长：大小策略留下的 app.1.log 交给按天策略清理时
+            // 就是这种形状（长度 7 小于前缀 4 加后缀 4）。先挡掉再算中段，否则下面的长度减法
+            // 会回绕成天量、读到串尾之外
+            if (filename.size() < backupPrefixView.size() + extensionPart.size())
+            {
+                continue;
+            }
             const std::string_view middlePart{filename.data() + backupPrefixView.size(),
                                               filename.size() - backupPrefixView.size() - extensionPart.size()};
             const bool isBackupName = !middlePart.empty() &&
