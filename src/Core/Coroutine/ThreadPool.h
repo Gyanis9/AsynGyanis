@@ -40,6 +40,10 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 启动所有工作线程。
+         * @details 允许在 stop() 之后再调用：此时循环会整套换新，因为 EventLoop 的停止请求是
+         *          粘性的，复用旧循环只会让线程立刻退出。start() 之后、尚未 stop() 时重复调用是空操作。
+         * @warning 换过循环之后先前取到的 `eventLoop(i)` / `scheduler(i)` 引用指向已销毁的对象，
+         *          重启前必须重新取。
          */
         void start();
 
@@ -89,6 +93,7 @@ namespace AsynGyanis::Core
         std::vector<std::unique_ptr<EventLoop> > m_eventLoops;  ///< 每个线程独立的 EventLoop
         std::vector<std::jthread>                m_threads;     ///< 工作线程，使用 jthread 自动管理生命周期
         bool m_pinsThreadsToCores{false};                       ///< 是否在 start() 时把工作线程逐个绑到逻辑核
+        bool m_hasBeenStopped{false};                           ///< 是否已 stop() 过一轮（下次 start() 要换新循环）
     };
 
 }

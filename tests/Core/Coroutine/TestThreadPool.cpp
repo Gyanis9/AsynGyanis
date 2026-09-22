@@ -289,4 +289,30 @@ namespace AsynGyanis::Core
         EXPECT_NE(workerMask.load() & (workerMask.load() - 1), 0U)
                 << "默认不开绑核时，工作线程的掩码不该被收窄到一枚核：" << std::hex << workerMask.load();
     }
+
+    /**
+     * @brief stop() 之后再 start() 必须真的重新驱动起来，而不只是把线程起起来又立刻退出
+     * @details EventLoop 的停止请求是粘性的（stop() 之后 run() 立刻返回，为的是不丢
+     *          「先 stop 后 run」那次请求）。若重启复用同一批循环，新线程会在头一趟 runAll()
+     *          之后就 break：threadCount() 照报 N、投递永不被取，一次彻底失败的启动看起来像成功。
+     *          因此这里先投一条「暖场」的（它有可能正好被那唯一一趟 runAll 取走，证明不了循环还活着），
+     *          再投被测量的那条——那时那一趟已经花掉了，只有循环仍在跑才可能执行到它。
+     *          直接断言第一条就会被调度运气左右：投得早就赶在 break 之前，投得晚才红
+     */
+    TEST(ThreadPool, RestartAfterStopDrivesFreshLoops)
+    {
+        ThreadPool pool(1);
+
+        pool.start();
+        ASSERT_TRUE(runOnPoolThread(pool, 0, []() {})) << "首轮启动就没把工作线程驱动起来";
+        ASSERT_TRUE(runOnPoolThread(pool, 0, []() {})) << "首轮第二条投递没被执行，后面的对照失去基准";
+        pool.stop();
+
+        pool.start();
+        static_cast<void>(runOnPoolThread(pool, 0, []() {}));
+        const bool isDeliveredAfterWarmUp = runOnPoolThread(pool, 0, []() {});
+        EXPECT_TRUE(isDeliveredAfterWarmUp)
+                << "stop() 之后再 start() 没有换新循环：线程只跑一趟就退出，之后的投递永远不会被执行";
+        pool.stop();
+    }
 } // namespace AsynGyanis::Core

@@ -40,6 +40,17 @@ namespace AsynGyanis::Core
         if (!m_threads.empty())
             return;
 
+        // 停过的循环不能重跑：EventLoop 的停止请求是粘性的，再 run() 只会立刻返回。不换掉它们，
+        // 重启就变成「线程照样起、threadCount() 照样报 N，但一条事件都不驱动」的假启动
+        if (m_hasBeenStopped)
+        {
+            for (auto &loop: m_eventLoops)
+            {
+                loop = std::make_unique<EventLoop>();
+            }
+            m_hasBeenStopped = false;
+        }
+
         m_threads.reserve(m_threadCount);
         // 可绑的核数按「本进程被允许的核」算而不是硬件核数：容器 cpuset 收窄过的机器上两者不等，
         // 按硬件核数绑就会撞上许可集合外的编号
@@ -91,6 +102,8 @@ namespace AsynGyanis::Core
 
         // std::jthread 的析构会 join，因此这里必须先把停止请求发给全部 EventLoop 再清空
         m_threads.clear();
+        // 记下这批循环已经用过：EventLoop 一个实例只跑一轮生命周期，下次 start() 要换新的
+        m_hasBeenStopped = true;
     }
 
     size_t ThreadPool::threadCount() const noexcept
