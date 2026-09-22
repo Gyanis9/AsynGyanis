@@ -99,7 +99,18 @@ namespace AsynGyanis::Core
             worker.loop->scheduler().postRemote(
                     [adopter = worker.adopter, handoff]() mutable
                     {
-                        adopter(handoff->take());
+                        // take() 之后这个号就没有主人了：adopter 抛出（构造会话失败、bad_alloc）时
+                        // 必须就地关掉，否则每失败一次就漏一条描述符——投递「没被执行」由句柄析构
+                        // 兜住，而「执行了但抛了」没有任何人会关它
+                        const int descriptor = handoff->take();
+                        try
+                        {
+                            adopter(descriptor);
+                        } catch (...)
+                        {
+                            Platform::FileDescriptor::close(descriptor);
+                            throw;
+                        }
                     });
         } catch (...)
         {

@@ -7,17 +7,24 @@
 #include "Core/EventLoop/EventLoop.h"
 
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/Platform.h"
 
 #include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if !ASYN_PLATFORM_WIN32
+#include <fcntl.h>
+#endif
 
 namespace AsynGyanis::Core
 {
@@ -175,5 +182,75 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(distributor.workerCount(), 0U);
         EXPECT_FALSE(distributor.distribute(makeDetachedSocketDescriptor()));
+    }
+
+    namespace
+    {
+        /**
+         * @brief 描述符是否还开着
+         * @details 未连接的 TCP 套接字问名字报「参数无效」，已被关掉的报「不是套接字」，
+         *          两者足以区分「开着但没绑定」与「已经关了」；POSIX 上直接问 F_GETFD
+         * @return true 仍开着
+         */
+        bool isDescriptorStillOpen(const int fileDescriptor)
+        {
+#if ASYN_PLATFORM_WIN32
+            sockaddr_storage name{};
+            socklen_t        nameLength = sizeof(name);
+            if (::getsockname(fileDescriptor, reinterpret_cast<sockaddr *>(&name), &nameLength) != SOCKET_ERROR)
+            {
+                return true;
+            }
+            return ::WSAGetLastError() != WSAENOTSOCK;
+#else
+            return ::fcntl(fileDescriptor, F_GETFD) != -1;
+#endif
+        }
+    } // namespace
+
+    /**
+     * @brief 接手动作抛出时描述符当场被关闭：不留「已交出却没人管」的野描述符
+     * @details 契约是「句柄一旦建成所有权就算交出，distribute() 一律返回 true」，调用方因此
+     *          不会再关它。投递没被执行时由交接句柄的析构兜住，但「执行了、adopter 抛出」
+     *          原先没人负责：take() 已把所有权摘走，抛出来就是每失败一次漏一个句柄——
+     *          连接风暴叠加会话构造失败会把进程的文件描述符配额耗光。
+     *          抛出会穿过批次处理继续把那条工作循环停掉，这是既定的快速失败口径，
+     *          本用例只钉「句柄被关掉」这一条副作用
+     */
+    TEST(ConnectionDistributorTest, ThrowingAdopterDoesNotLeakTheDescriptor)
+    {
+        TestSupport::EventLoopThread runner;
+        ASSERT_TRUE(runner.waitUntilRunning());
+
+        std::atomic<bool> isAdopterEntered{false};
+        ConnectionDistributor distributor;
+        distributor.addWorker(runner.loop(), [&isAdopterEntered](int)
+        {
+            isAdopterEntered.store(true, std::memory_order_release);
+            throw std::runtime_error("用例设定的接手失败");
+        });
+
+        const int fileDescriptor = makeDetachedSocketDescriptor();
+        ASSERT_NE(fileDescriptor, static_cast<int>(Platform::FileDescriptor::kInvalid));
+        EXPECT_TRUE(distributor.distribute(fileDescriptor)) << "句柄已建成，按契约应当报「已接管」";
+
+        ASSERT_TRUE(waitForCondition([&isAdopterEntered]
+                                    {
+                                        return isAdopterEntered.load(std::memory_order_acquire);
+                                    }))
+                << "接手动作根本没跑起来，这条路径没被走到";
+        const bool isClosedEventually = waitForCondition(
+                [fileDescriptor]
+                {
+                    return !isDescriptorStillOpen(fileDescriptor);
+                });
+        EXPECT_TRUE(isClosedEventually)
+                << "adopter 抛出后描述符 " << fileDescriptor << " 仍开着：每次接手失败都会漏一个句柄";
+
+        if (isDescriptorStillOpen(fileDescriptor))
+        {
+            Platform::FileDescriptor::close(fileDescriptor);
+        }
+        runner.join();
     }
 } // namespace AsynGyanis::Core
