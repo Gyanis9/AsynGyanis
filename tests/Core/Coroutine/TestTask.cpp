@@ -1,5 +1,6 @@
 // Task 单元测试：返回值、异常传播（含交给等待方与没人接手两条出路）、移动语义与等待器接口
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
@@ -44,6 +45,15 @@ namespace AsynGyanis::Core
         {
             throw std::runtime_error("test error");
             co_return 0;
+        }
+
+        /**
+         * @brief 测试协程：返回一个只可移动的载荷
+         * @return Task<std::unique_ptr<int>> 指向 7 的唯一指针
+         */
+        Task<std::unique_ptr<int>> moveOnlyPayloadTask()
+        {
+            co_return std::make_unique<int>(7);
         }
 
         /**
@@ -171,6 +181,58 @@ namespace AsynGyanis::Core
 
         const int result = task.handle().promise().result();
         EXPECT_EQ(result, 42);
+    }
+
+    /**
+     * @brief 第二次读结果必须报错，而不是静默交回一份重复或已被搬空的载荷
+     * @details 结果是一次性的（按 move 交出）。老实现里第二次读既不是崩溃也不是异常：
+     *          `std::optional` 在 move 走一个 int 之后仍然是「有值」的，于是同一份值被交出两次；
+     *          而 T 是 move-only（如 `unique_ptr`）时，第二次交出的是 nullptr——一个看着合法的
+     *          空值会顺着响应与状态一路往下传。抛 `InvalidArgumentException`（`std::logic_error`
+     *          分支）而不是框架的运行期故障基类，因为这是调用方用错了对象，不该被当成可重试的故障
+     */
+    TEST(Task, SecondResultReadThrowsInsteadOfReturningGarbage)
+    {
+        auto task = simpleValueTask();
+        task.handle().resume();
+        ASSERT_TRUE(task.isReady());
+
+        EXPECT_EQ(task.handle().promise().result(), 42);
+
+        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException)
+                << "第二次读取结果应当被拒绝，而不是返回一个值";
+        // 用法错误必须落在 std::logic_error 分支，不能被「可重试的运行期故障」那一侧的 catch 兜住
+        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), std::logic_error)
+                << "报错类型不在 logic_error 分支上，调用方会把它当成可重试的故障";
+
+        try
+        {
+            static_cast<void>(task.handle().promise().result());
+        } catch (const Base::InvalidArgumentException &error)
+        {
+            // 文案要说清「已经被取走一次」并给出替代做法，只报「无值可读」等于没报
+            EXPECT_NE(std::string(error.what()).find("已经被取走一次"), std::string::npos)
+                    << "报错文案没说明原因：" << error.what();
+        }
+    }
+
+    /**
+     * @brief 只可移动的载荷把后果说得更清楚：第二次读交出的是空指针
+     * @details 老实现里这一步不报错也不崩，只是把已被搬空的 `unique_ptr` 再交出去一次；
+     *          调用方拿到「非空的返回值」却解引用到空指针，是最难归位的一类故障
+     */
+    TEST(Task, SecondResultReadOfMoveOnlyPayloadIsRejected)
+    {
+        auto task = moveOnlyPayloadTask();
+        task.handle().resume();
+        ASSERT_TRUE(task.isReady());
+
+        const std::unique_ptr<int> firstPayload = task.handle().promise().result();
+        ASSERT_NE(firstPayload, nullptr) << "第一次读取本该拿到值";
+        EXPECT_EQ(*firstPayload, 7);
+
+        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException)
+                << "第二次读取交出的是被搬空的指针：必须报错，不能静默给一个空值";
     }
 
     /**

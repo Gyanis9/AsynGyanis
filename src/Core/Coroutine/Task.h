@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/CoroutinePool.h"
 
@@ -299,12 +300,25 @@ namespace AsynGyanis::Core
             /**
              * @brief 获取协程的结果（值或异常）。
              * @return T 类型的值
+             * @throws Base::InvalidArgumentException 结果已被读取过第二次（同一个 Task 被读了两次）
              * @throw 如果协程抛出异常，则重新抛出
              */
             T result()
             {
                 if (m_exception)
                     std::rethrow_exception(m_exception);
+
+                // 结果是一次性的（按 move 交出）。判据不能看 optional 是否还有值：move 走一个 int
+                // 之后 optional 仍然是「有值」的，第二次读因此既不是异常也不是崩溃，而是**静默**
+                // 交回一份重复或已被搬空的载荷（move-only 的 T 会交出 nullptr）。这里显式记账，
+                // 把「同一个 Task 被读第二次」这个调用方错误当场报出来
+                if (m_isResultConsumed)
+                {
+                    throw Base::InvalidArgumentException("读取协程结果失败：这个 Task 的返回值已经被取走一次。"
+                                                        "同一个 Task 只应被读取一次；要反复使用请把结果留在调用方，"
+                                                        "或按每次使用重新起一个协程");
+                }
+                m_isResultConsumed = true;
                 return std::move(*m_value);
             }
 
@@ -312,6 +326,7 @@ namespace AsynGyanis::Core
             std::exception_ptr      m_exception;             ///< 协程中发生的异常（若有）
             std::coroutine_handle<> m_continuation{nullptr}; ///< 等待该协程的父协程句柄
             bool                    m_isStarted{false};       ///< 协程体是否已开始执行（初始挂起点被恢复过）
+            bool                    m_isResultConsumed{false}; ///< 结果是否已被取走（一次性的，第二次读要报出来）
         };
 
         // ========================================================================
