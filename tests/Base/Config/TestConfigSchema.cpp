@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -314,6 +315,68 @@ namespace AsynGyanis::Base
         EXPECT_EQ(result.errors.size(), 2U);
         EXPECT_TRUE(hasErrorContaining(result, "低于下限"));
         EXPECT_TRUE(hasErrorContaining(result, "高于上限"));
+    }
+
+    /**
+     * @brief NaN 带区间约束必须算违规：它对两侧比较都为假，旧写法等于「已校验通过」
+     * @details YAML 的 `.nan` 会解析成浮点 NaN，而 NaN 与任何界限比较都是假——于是它既不算
+     *          「低于下限」也不算「高于上限」，就这么冒充「通过」流到下游。质量门的判据取
+     *          fail-safe 一侧（宁可多报一条也不漏检），与 SQLite 驱动拒绝 NaN/Inf 同一口径。
+     */
+    TEST(ConfigSchemaTest, NotANumberWithBoundsFailsInsteadOfSilentlyPassing)
+    {
+        const ConfigKeyValueMap values = makeValues({{"ratio", ConfigValue(std::numeric_limits<double>::quiet_NaN())}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"ratio", ConfigValueType::number_float, false, 1.0, 10.0}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_FALSE(result.valid);
+        ASSERT_EQ(result.errors.size(), 1U);
+        EXPECT_TRUE(hasErrorContaining(result, "不是有限数值")) << result.errors.front();
+    }
+
+    /**
+     * @brief 只给下限时 +Inf 也算违规：它确实「大于下限」，但界限的意图是圈住一个可算的区间
+     */
+    TEST(ConfigSchemaTest, PositiveInfinityWithOnlyMinimumFails)
+    {
+        const ConfigKeyValueMap values = makeValues({{"window", ConfigValue(std::numeric_limits<double>::infinity())}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"window", ConfigValueType::number_float, false, 1.0, std::nullopt}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_FALSE(result.valid);
+        ASSERT_EQ(result.errors.size(), 1U);
+        EXPECT_TRUE(hasErrorContaining(result, "不是有限数值")) << result.errors.front();
+    }
+
+    /**
+     * @brief 只给上限时 -Inf 同理：与上限比较为假的那一侧不能当「已校验」
+     */
+    TEST(ConfigSchemaTest, NegativeInfinityWithOnlyMaximumFails)
+    {
+        const ConfigKeyValueMap values = makeValues({{"offset", ConfigValue(-std::numeric_limits<double>::infinity())}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"offset", ConfigValueType::number_float, false, std::nullopt, 10.0}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_FALSE(result.valid);
+        ASSERT_EQ(result.errors.size(), 1U);
+        EXPECT_TRUE(hasErrorContaining(result, "不是有限数值")) << result.errors.front();
+    }
+
+    /**
+     * @brief 没有区间约束时非有限值照旧放行：本项检查只管「设了界限却比不出来」这一种漏检
+     * @details 挡住过度收紧：类型对、又没设界限的键不该因为这条改动被拒。
+     */
+    TEST(ConfigSchemaTest, NonFiniteValueWithoutBoundsStillPasses)
+    {
+        const ConfigKeyValueMap values = makeValues({{"ratio", ConfigValue(std::numeric_limits<double>::quiet_NaN())}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"ratio", ConfigValueType::number_float, false, std::nullopt, std::nullopt}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_TRUE(result.valid) << (result.errors.empty() ? std::string{} : result.errors.front());
     }
 
     TEST(ConfigSchemaTest, EveryViolationIsCollectedInSchemaOrder)

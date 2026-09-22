@@ -1,5 +1,6 @@
 #include "Base/Config/ConfigSchema.h"
 
+#include <cmath>
 #include <format>
 
 namespace AsynGyanis::Base
@@ -79,6 +80,16 @@ namespace AsynGyanis::Base
             {
                 if (const std::optional<double> numericValue = numericValueOf(value))
                 {
+                    // 非有限值过不了任何一次区间比较：NaN 让两侧都为假，而只给一侧界限时
+                    // 另一侧的无穷大也落在界内——「设了界限却什么都比不出来」属于漏检。
+                    // 判据取 fail-safe 一侧：宁可多报一条，也不让这种取值冒充「已校验通过」
+                    if (!std::isfinite(*numericValue))
+                    {
+                        result.valid = false;
+                        result.errors.push_back(std::format("配置键 {} 的值不是有限数值（NaN 或无穷），无法满足区间约束", key));
+                        continue;
+                    }
+
                     if (minimum && *numericValue < *minimum)
                     {
                         result.valid = false;
