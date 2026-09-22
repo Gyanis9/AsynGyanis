@@ -412,6 +412,32 @@ namespace AsynGyanis::Net
         // 这里只另起一张视图表，不再把每个头的名与值各拷两份字符串：整张 owning vector 拷一遍
         // 是每条响应第二次的无谓往返，编码器读到的字节完全一样
         std::string statusCodeText = std::to_string(statusCode);
+
+        // 对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 约束的正是本端发出去的头列表，算式同 §6.5.2
+        // （每项名长 + 值长 + 32，:status 这一项也算）。越过它由对端决定怎么处置，而多数实现的做法
+        // 是收掉整条连接——同一条连接上别人在途的请求会一起陪葬。本端因此宁可只作废这一条流。
+        // 对端没通告这项时不判定：初值是「不限」，且这项按规范只是建议值
+        std::uint32_t peerMaximumHeaderListSize = 0;
+        if (tryGetPeerSetting(Http2SettingIdentifier::MaxHeaderListSize, peerMaximumHeaderListSize)
+            && peerMaximumHeaderListSize > 0)
+        {
+            std::size_t headerListByteCount = std::string_view(":status").size() + statusCodeText.size()
+                                              + kHpackDynamicTableEntryOverheadBytes;
+            for (const HpackHeaderField &field: headerFields)
+            {
+                headerListByteCount += field.name.size() + field.value.size() + kHpackDynamicTableEntryOverheadBytes;
+            }
+            if (headerListByteCount > peerMaximumHeaderListSize)
+            {
+                std::string reason = std::format("流 {} 的响应头列表 {} 字节越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE {} 字节，"
+                                                 "本端按 INTERNAL_ERROR 中止这条流",
+                                                 streamId, headerListByteCount, peerMaximumHeaderListSize);
+                failStream(*stream, Http2ErrorCode::InternalError, std::move(reason));
+                writeError(errorText, reason);
+                return Http2ResponseSendStatus::HeaderListTooLarge;
+            }
+        }
+
         std::vector<HpackHeaderFieldView> fields;
         fields.reserve(headerFields.size() + 1U);
         fields.push_back(HpackHeaderFieldView{.name = std::string_view(":status"), .value = statusCodeText});

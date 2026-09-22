@@ -1015,6 +1015,12 @@ namespace AsynGyanis::Net
             {
                 noteStreamCancelled();
             }
+            else if (serveOutcome == RequestServeOutcome::StreamFailed)
+            {
+                // 本端的错：不记成对端取消，也不许牵动整条连接，但必须留下一行能定位到路由的日志
+                LOG_ERROR_FMT("Http2Session: 流 {} 的响应未能发出，本端已按 INTERNAL_ERROR 中止这条流。request-id {}，路径 {}。原因：{}",
+                              streamId, request.requestId(), request.uri(), m_connection.lastStreamErrorMessage());
+            }
             co_return serveOutcome;
         }
 
@@ -1801,6 +1807,10 @@ namespace AsynGyanis::Net
             case Http2ResponseSendStatus::ConnectionUnavailable:
             case Http2ResponseSendStatus::Rejected:
                 return RequestServeOutcome::ConnectionUnusable;
+            case Http2ResponseSendStatus::HeaderListTooLarge:
+                // 错在本端（响应头越过对端通告的上限），且连接层已经把这条流 RST 掉了：
+                // 不能并到 StreamCancelled，那个取值会把它记成「对端取消了这条流」
+                return RequestServeOutcome::StreamFailed;
         }
         return RequestServeOutcome::ConnectionUnusable;
     }

@@ -2093,4 +2093,74 @@ namespace AsynGyanis::Net
         EXPECT_EQ(byteWise.openStreamCount(), singleShot.openStreamCount());
         EXPECT_EQ(byteWise.takeOutgoingBytes(), singleShot.takeOutgoingBytes()) << "两种喂法吐出的字节必须逐字节相同";
     }
+    /**
+     * @brief 钉住：响应头列表越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 时只作废那一条流
+     * @details 依据：§6.5.2 这项 SETTINGS 约束的正是「对端将收到的头列表」，越过它由对端决定处置，
+     *          常见做法是收掉整条连接。本端把这条越界的响应收成一个流错误（INTERNAL_ERROR 的
+     *          RST_STREAM），连接与同连接上其它在途请求都不该陪葬。本端没判定前，一条塞了大量
+     *          Set-Cookie 的响应就能把别人的请求一起带走。
+     */
+    TEST(Http2Connection, RefusesResponseHeaderListBeyondThePeerAdvertisedLimit)
+    {
+        Http2Connection connection;
+        // 对端只肯收 200 字节的头列表（:status 这项也算，算式是名长 + 值长 + 32）
+        completeHandshake(connection, {Http2Setting{static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize), 200U}});
+
+        const auto requestBytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                            makeMinimalGetRequestBlock());
+        const auto secondRequestBytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
+                                                  makeMinimalGetRequestBlock());
+        ASSERT_EQ(feed(connection, requestBytes), Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, secondRequestBytes), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.takeRequests().size(), 2U);
+
+        // 越限的那条：:status 42 + x-big 的 5+300+32 = 379 字节 > 200
+        std::string errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(300U, 'v')}}, true, &errorText),
+                  Http2ResponseSendStatus::HeaderListTooLarge) << errorText;
+        EXPECT_FALSE(connection.hasFailed()) << "只该作废一条流，不该把连接判死：" << connection.errorMessage();
+        EXPECT_NE(connection.lastStreamErrorMessage().find("SETTINGS_MAX_HEADER_LIST_SIZE"), std::string::npos)
+                << connection.lastStreamErrorMessage();
+
+        const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+        ASSERT_EQ(resetFrames.size(), 1U) << "越限的响应应当只中止这一条流";
+        Http2RstStreamPayload resetPayload;
+        std::string resetErrorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), resetPayload, &resetErrorText)) << resetErrorText;
+        EXPECT_EQ(resetPayload.errorCode, Http2ErrorCode::InternalError);
+        EXPECT_EQ(resetFrames.front().header.streamId, 1U);
+
+        // 同一条连接上另一条响应照发，且刚才那条流确实已经不可写
+        EXPECT_EQ(connection.sendResponseHeaders(3U, 200U, {{"content-type", "text/plain"}}, true, &errorText),
+                  Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::StreamNotWritable);
+
+        // 全程没有 GOAWAY：连接留着服务其它流
+        for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "一条越限的响应不该通告整条连接收口";
+        }
+    }
+
+    /**
+     * @brief 钉住：对端没通告 SETTINGS_MAX_HEADER_LIST_SIZE 时，本端不因这项判定而拒发响应
+     * @details 初值是「不限」，且规范把这项定为建议值。没收到就必须按「不约束」处理，否则等于替对端
+     *          编一个它没说过的上限。
+     */
+    TEST(Http2Connection, StillSendsOversizedResponsesWhenThePeerAdvertisesNoHeaderListLimit)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection,
+                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                 makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+
+        std::string errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(20000U, 'v')}}, false, &errorText),
+                  Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+    }
+
 } // namespace AsynGyanis::Net

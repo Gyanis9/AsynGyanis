@@ -93,7 +93,8 @@ namespace AsynGyanis::Net
         Sent,                  ///< 已排入待发字节或该流的发送队列（窗口不足时留在队列里，等对端 WINDOW_UPDATE 后由本层续发）
         StreamNotWritable,     ///< 该流已不可写响应：不在账本里、已终止（对端 RST_STREAM 或双向 END_STREAM）；本条流不再需要响应，连接继续服务其它流
         ConnectionUnavailable, ///< 连接尚未完成协商或已失败：整条连接不可再用，调用方应写出待发字节后收口
-        Rejected               ///< 本次调用参数或时序不合规（状态码越界、头名非法、已安排 END_STREAM 后又追加正文）：本条流因用法错误无法应答
+        Rejected,              ///< 本次调用参数或时序不合规（状态码越界、头名非法、已安排 END_STREAM 后又追加正文）：本条流因用法错误无法应答
+        HeaderListTooLarge     ///< 响应头列表越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE：本层已按 INTERNAL_ERROR 中止这条流，连接照旧
     };
 
     /**

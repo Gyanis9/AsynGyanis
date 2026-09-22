@@ -702,6 +702,21 @@
   文案改由 `std::format` 拼、`printStartupError` 单点输出到 stderr（`<format>` 两侧都有），
   输出字节与退出码逐字不变（Linux 上实测：缺取值与越界取值两条文案照旧、退出码照旧是 2）。
   这条仍是「C++23 里也不是所有设施都能用」的老问题：判据是 `__cpp_*` 特性宏与工具链实测，不是标准版本号。
+- **响应头越过对端通告的头列表上限时只作废那一条流**：本端编响应头之前完全不看对端的
+  `SETTINGS_MAX_HEADER_LIST_SIZE`，而这一项约束的正是「对端将收到的头列表」（RFC 9113 §6.5.2）。
+  一条路由交出超长的响应头（塞大量 `set-cookie` 就会）即违反对端策略，而多数客户端对此类响应的处置是
+  收掉整条连接——同一条连接上别人在途的请求一起陪葬，一处业务配置失误被放大成服务端断连。
+  现在按 §6.5.2 的算式（每个字段 `名长 + 值长 + 32`，`:status` 这一项也算）在编帧前判一次：
+  越限即由连接层按 `INTERNAL_ERROR` 中止这一条流，并给上层一个新结论 `HeaderListTooLarge`，
+  连接照旧服务其它流。对端没通告这项时不判定（初值是「不限」，且规范把它定为建议值），行为逐字节不变。
+  会话层为这条新增 `StreamFailed` 出口并单独记一行错误日志——不复用 `StreamCancelled`，
+  否则会把本端的失误写成「对端取消了这条流」。新增
+  `Http2Connection.RefusesResponseHeaderListBeyondThePeerAdvertisedLimit`（断言恰好一条 RST_STREAM、
+  没有 GOAWAY、同连接另一条流照常 `Sent`、越限那条随后 `StreamNotWritable`）与
+  `Http2Connection.StillSendsOversizedResponsesWhenThePeerAdvertisesNoHeaderListLimit`；
+  把守卫条件改成恒假（等于旧写法：不看对端通告照发）时前一条转红。
+  容器（GCC 13.3，ASan/LSan/UBSan）实测 `TestNet` 1240 例全绿、零告警、sanitizer 命中 0，
+  h2c 对手探针 `scripts/h2_adversarial_probe.sh` 十项照旧全绿。
 
 ### 性能
 
