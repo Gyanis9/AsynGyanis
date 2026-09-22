@@ -9,16 +9,6 @@
 
 namespace AsynGyanis::Core
 {
-    namespace
-    {
-        /// 到期时长换算成描述符需要的毫秒数；非正数（已到期）按 1ms 处理，避免被当成「解除武装」
-        std::chrono::milliseconds toArmedDuration(const std::chrono::steady_clock::time_point deadline) noexcept
-        {
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            return remaining.count() > 0 ? remaining : std::chrono::milliseconds(1);
-        }
-    } // namespace
-
     bool TimerQueue::isLaterThan(const Awaiter *const left, const Awaiter *const right) noexcept
     {
         return left->m_deadline > right->m_deadline;
@@ -290,14 +280,15 @@ namespace AsynGyanis::Core
         {
             return true;
         }
-        if (!m_timer.arm(toArmedDuration(nearest)))
+        const auto armedDuration = detail::armedDurationFor(nearest, std::chrono::steady_clock::now());
+        if (!m_timer.arm(armedDuration))
         {
             // 失败时不能记账：记成「已武装」会让同一截止时间从此不再重试，
             // 此后所有定时器都静默失效（等待者挂在那里，没有任何日志说明为什么）
             m_armedDeadline.reset();
             LOG_ERROR_FMT("TimerQueue: 武装定时器描述符失败，最近一个定时（{} 毫秒后到期）不会触发；"
                           "下一次队列变化时会重试",
-                          toArmedDuration(nearest).count());
+                          armedDuration.count());
             return false;
         }
         m_armedDeadline = nearest;

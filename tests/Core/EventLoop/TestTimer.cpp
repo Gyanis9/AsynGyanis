@@ -5,6 +5,7 @@
 
 #include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/TimerQueue.h"
 
 #include "CoreTestSupport.h"
 
@@ -414,5 +415,29 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(advanceUntil(loop, [&isVictimDestroyed] { return isVictimDestroyed; }, kWaitTimeout)) << "销毁者没有在时限内被恢复";
         EXPECT_TRUE(isVictimDestroyed);
         EXPECT_TRUE(destroyer.isReady());
+    }
+
+    /**
+     * @brief 武装时长一律向上取整：定时器不得提前醒
+     * @details 描述符只认毫秒。向下取整会让它最多提前 1 毫秒醒来，那一刻没有任何到期项，
+     *          驱动只能再武装一次——每次到期白多一发 timerfd_settime 与一次循环唤醒。
+     *          换算本身已提成纯函数，这里不靠墙钟把取整方向与几条边界钉死
+     */
+    TEST(TimerArmedDuration, RoundsUpSoTheTimerNeverFiresEarly)
+    {
+        using Clock = std::chrono::steady_clock;
+        const Clock::time_point origin{};
+
+        // 差 4 毫秒 700 微秒：武装 5 毫秒。武装 4 毫秒就是那记提前且空转的唤醒
+        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::microseconds{4700}, origin), std::chrono::milliseconds{5})
+                << "向下取整会让定时器提前醒，之后还要再武装一次";
+        // 正好整毫秒：不该多送一毫秒
+        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::milliseconds{5}, origin), std::chrono::milliseconds{5});
+        // 差不足 1 毫秒：仍给 1 毫秒，0 会被描述符当成「解除武装」
+        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::microseconds{300}, origin), std::chrono::milliseconds{1});
+        // 已经到期：给 1 毫秒，让驱动下一拍把它收掉
+        EXPECT_EQ(detail::armedDurationFor(origin - std::chrono::milliseconds{3}, origin), std::chrono::milliseconds{1});
+        // 截止时间允许饱和到 time_point::max()：补一毫秒不得把它加溢出
+        EXPECT_GT(detail::armedDurationFor(Clock::time_point::max(), Clock::now()), std::chrono::milliseconds{0});
     }
 } // namespace AsynGyanis::Core

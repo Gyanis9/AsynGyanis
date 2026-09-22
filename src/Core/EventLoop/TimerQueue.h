@@ -34,6 +34,33 @@ namespace AsynGyanis::Core
      *          堆操作；驱动协程按堆顶截止时间武装描述符（空队列不武装），到期项投回调度器而非
      *          就地恢复，避免嵌套恢复别的协程。
      */
+    namespace detail
+    {
+        /**
+         * @brief 把绝对截止时间换算成描述符要武装的时长
+         * @details 一律**向上**取整：描述符只认毫秒，向下取整会让定时器最多提前 1 毫秒醒来，
+         *          那一刻没有任何到期项，驱动只能再武装一次——每次到期白多一发
+         *          timerfd_settime 与一次循环唤醒，而定时器密集（每连接一个 tick）时这是
+         *          成倍的事件循环开销。向上取整最迟晚 1 毫秒触发，且不再有空转的一拍。
+         * @param deadline 目标截止时间
+         * @param now 换算时刻（由调用方给出，使这条换算能被确定性地测出来）
+         * @return std::chrono::milliseconds 要武装的时长；已到期时返回 1 毫秒（0 会被描述符当成解除武装）
+         */
+        inline std::chrono::milliseconds armedDurationFor(const std::chrono::steady_clock::time_point &deadline,
+                                                         const std::chrono::steady_clock::time_point &now) noexcept
+        {
+            const auto remaining = deadline - now;
+            const auto floored   = std::chrono::duration_cast<std::chrono::milliseconds>(remaining);
+            // 只比「被截掉的那一段」的正负，不构造 now + floored：截止时间允许饱和到
+            // time_point::max()，加一个毫秒会把它加溢出
+            const auto truncated = remaining - floored;
+            const auto roundedUp = floored + (truncated > decltype(truncated)::zero()
+                                                  ? std::chrono::milliseconds(1)
+                                                  : std::chrono::milliseconds(0));
+            return roundedUp > std::chrono::milliseconds(0) ? roundedUp : std::chrono::milliseconds(1);
+        }
+    } // namespace detail
+
     class TimerQueue
     {
     public:
