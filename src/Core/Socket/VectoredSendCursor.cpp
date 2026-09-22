@@ -18,8 +18,9 @@ namespace AsynGyanis::Core
             std::size_t pendingCount = 0;
 
             // 首段按游标偏移切掉已发部分：偏移已经等于段长（整段发完了）或段长为 0 时整段跳过，
-            // 否则从「段起点 + 偏移」接着发
-            if (m_pendingIndex < m_bufferCount)
+            // 否则从「段起点 + 偏移」接着发。首段同样受 capacity 约束——它是唯一一个写在
+            // 「循环条件里的那个判定」之外的写入，容量为 0 时不判就会写进调用方长度为零的数组
+            if (pendingCount < capacity && m_pendingIndex < m_bufferCount)
             {
                 const Platform::Socket::WriteBuffer &pending = m_buffers[m_pendingIndex];
                 if (m_offsetInPending < pending.length)

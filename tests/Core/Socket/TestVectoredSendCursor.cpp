@@ -225,4 +225,24 @@ namespace AsynGyanis::Core
         EXPECT_EQ(pending[1].data, kSecondSegment.data());
     }
 
+    /**
+     * @brief 容量为 0 时一个字节都不交：首段也必须让位给容量判定，不得越界写
+     * @details 首段那次写入原先落在「循环条件里的容量判定」之外，因此 `capacity == 0` 会返回 1
+     *          并写掉调用方数组之前的内存。这里把缓冲区留着哨兵，不靠 sanitizer 也能判定有没有写。
+     */
+    TEST(VectoredSendCursor, ZeroCapacityYieldsNothingAndWritesNothing)
+    {
+        const std::array<Platform::Socket::WriteBuffer, 3> buffers{{
+                {kFirstSegment.data(), kFirstSegment.size()},
+                {kSecondSegment.data(), kSecondSegment.size()},
+                {kThirdSegment.data(), kThirdSegment.size()},
+        }};
+        const detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+
+        Platform::Socket::WriteBuffer sentinel{nullptr, 0};
+        ASSERT_EQ(cursor.snapshotPending(&sentinel, 0), 0U) << "容量为 0 仍交出段：调用方按返回值遍历就会越界";
+        EXPECT_EQ(sentinel.data, nullptr) << "首段那次写入没受容量约束，越界写了调用方的缓冲区";
+        EXPECT_EQ(sentinel.length, 0U);
+    }
+
 } // namespace AsynGyanis::Core
