@@ -107,10 +107,10 @@ namespace AsynGyanis::Database
          *       不会有人去 resume 已经随帧释放的内存。
          * @note 池被 shutdown 时会以「空连接」唤醒全部等待者，且那一次**就地恢复**而不是
          *       投回事件循环：池都停摆了，投递到循环里可能永远不被执行，那会让协程永久挂起。
-         * @warning 与同步 acquire() 不同，挂起的协程只在「有人把连接交到手上」或「到截止时刻」时才醒，
-         *          因此归还方当场丢弃一条连接（判失联或过存活期）腾出的名额不会把它救出来，它仍会
-         *          等到超时而返回空连接。要补这条需要给等待器加一条「醒了但没拿到就重试」的通道
-         *          （唤醒—重挂一轮），代价是每次丢弃都得走一遍协程恢复；同步路径没有这个限制。
+         *       被这样叫醒的协程看到停摆标志就收尾，不再重挂一轮。
+         * @note 与同步 acquire() 同口径：等待中被叫醒（有人归还入栈、也有人把连接判失联或过存活期
+         *       当场丢弃而腾出名额）后都会再走一遍「从栈里取 / 未达上限就新建」，两种取法的
+         *       过期与失联判定一致，因此过期的连接不会被直接交接给协程。
          */
         Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop);
 
@@ -189,6 +189,8 @@ namespace AsynGyanis::Database
          * @details 在 await_ready 中优先尝试非阻塞获取；
          *          在 await_suspend 中再尝试一次，若仍无则加入等待列表。
          *          析构时若尚未被唤醒，从等待列表中自行移除（防悬挂）。
+         *          一次 acquireAsync() 可能重挂多轮（被「腾出名额」叫醒却没拿到连接），
+         *          各轮共用调用方定下的同一个截止时刻，超时不顺延。
          */
         class AcquireAwaiter
         {
@@ -197,9 +199,12 @@ namespace AsynGyanis::Database
              * @brief 构造等待体
              * @param pool 所属连接池
              * @param completionLoop 协程恢复时要回到的事件循环，由 acquireAsync() 的调用方给出
+             * @param deadline 本次异步获取的截止时刻，由 acquireAsync() 按配置定一次并逐轮传下来：
+             *               被「腾出名额」叫醒却没拿到连接时会重挂一轮，截止时刻不随之顺延
              */
-            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop) noexcept :
-                m_pool(pool), m_completionLoop(completionLoop), m_liveness(pool->livenessToken())
+            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop,
+                           const std::chrono::steady_clock::time_point deadline) noexcept :
+                m_pool(pool), m_completionLoop(completionLoop), m_liveness(pool->livenessToken()), m_deadline(deadline)
             {
             }
 
@@ -222,8 +227,10 @@ namespace AsynGyanis::Database
 
             /**
              * @brief 挂起当前协程并加入等待列表
+             * @details 截止时刻已过的不再入表（否则要等后台线程下一拍才发现，白睡一拍），
+             *          池已停摆的同样直接放行：停摆中的池不会再交给任何东西。
              * @param handle 当前协程句柄
-             * @return true 挂起；false 在挂起前已获取到连接，不挂起
+             * @return true 挂起；false 在挂起前已获取到连接，或已不必再等，不挂起
              */
             bool await_suspend(std::coroutine_handle<> handle) noexcept;
 
@@ -269,7 +276,7 @@ namespace AsynGyanis::Database
             std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
             std::shared_ptr<ResumeTicket>       m_resumeTicket;    ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
-            std::chrono::steady_clock::time_point m_deadline{};    ///< 等待截止时刻（await_suspend 时按 acquireTimeoutMilliseconds 定下）：与同步 acquire() 同一上限，到点由后台线程以「空连接」唤醒
+            std::chrono::steady_clock::time_point m_deadline{};    ///< 等待截止时刻（构造时由 acquireAsync() 给定）：到点由后台线程以「空连接」唤醒，重试轮次共用同一截止时刻
         };
 
         friend class AcquireAwaiter;
@@ -361,12 +368,17 @@ namespace AsynGyanis::Database
         void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
 
         /**
-         * @brief 叫醒一位同步等待者，让它去试刚腾出来的名额
+         * @brief 有名额被腾出来时叫醒等待者（同步一位、异步一位）
          * @details 归还的连接被判失联或过存活期时是被当场丢弃的，空闲栈并没有变多；
-         *          只盯着空闲栈的等待者因此需要一次额外的叫醒。通知取在 m_mutex 之内：
-         *          等待者是「出锁试一轮、再回锁睡下」的形状，锁外通知会有一次落空的窗口。
+         *          两类等待者盯着的都是「有人把连接交到我手上」，因此需要一次额外的叫醒。
+         *          同步那位醒来自己会试「栈里取 / 未达上限就新建」；异步那位同理，
+         *          由 acquireAsync() 重挂一轮共用原来的截止时刻。
+         * @note 两把锁只顺序取、绝不嵌套：m_mutex 与 m_asyncMutex 在 await_suspend 里就是
+         *       「异步锁 → 互斥锁」的次序，反过来嵌套就是 AB-BA 死锁。
+         *       同步侧的通知取在 m_mutex 之内：等待者是「出锁试一轮、再回锁睡下」的形状，
+         *       锁外通知会有一次落空的窗口。
          */
-        void wakeOneSyncWaiter() noexcept;
+        void wakeWaitersForFreedSlot() noexcept;
 
         /**
          * @brief 池仍存活时归还连接：判活与归还调用在同一段令牌锁内完成

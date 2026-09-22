@@ -173,9 +173,22 @@ namespace AsynGyanis::Database
 
     Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop &loop)
     {
-        AcquireAwaiter   awaiter(this, &loop);
-        PooledConnection result = co_await awaiter;
-        co_return std::move(result);
+        // 截止时刻在这里定一次，重挂的每一轮共用它：被叫醒却没拿到连接不会把等待上限往后推
+        const auto deadline = std::chrono::steady_clock::now()
+                              + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
+
+        while (true)
+        {
+            AcquireAwaiter   awaiter(this, &loop, deadline);
+            PooledConnection result = co_await awaiter;
+
+            // 三种情况收尾：拿到了连接；到了截止时刻；池正在停摆（停摆中以空连接就地唤醒，
+            // 再挂一轮也等不到东西，而且等待表马上要随池一起销毁）
+            if (result || std::chrono::steady_clock::now() >= deadline || m_isShuttingDown.load(std::memory_order_acquire))
+            {
+                co_return std::move(result);
+            }
+        }
     }
 
     // ========================================================================
@@ -244,12 +257,17 @@ namespace AsynGyanis::Database
             return false;
         }
 
+        // 不必再等的两种情形就地放行：截止时刻已过（等后台线程的下一拍才发现只会白睡一拍，
+        // 而调用方拿到空连接的收尾与超时同解）、池正在停摆（停摆中不会再有东西可交接，
+        // 入表反而会把这条协程留在正在销毁的池的等待表里）
+        if (std::chrono::steady_clock::now() >= m_deadline || m_pool->m_isShuttingDown.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+
         // 仍无可用连接：加入等待列表。**这次判定必须与入表同锁**：唤醒方（归还路径）拿的
         // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
         // notifyAsyncWaiter 判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
-        // 截止时刻也必须在同一段锁里定下：后台线程是持锁读它的，放锁之后再写，
-        // 它会在那个窗口里看到默认值（时钟纪元）→ 把刚入表的等待者判成「已超时」并投递恢复，
-        // 而此刻协程还没挂起（轻则异步获取无故返回空连接，重则恢复尚未挂起的帧）
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
             // 锁里**只从空闲栈摘一条**，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
@@ -262,9 +280,10 @@ namespace AsynGyanis::Database
             {
                 return false;
             }
-            // 只在入表时定一次，不随每次尝试刷新——否则反复失败的重试会把超时无限顺延
-            m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_pool->m_config.acquireTimeoutMilliseconds);
-            // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据
+            // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据。
+            // 截止时刻不在这儿定：它由 acquireAsync() 造出本等待体时给一次，重挂的每轮共用，
+            // 因此「反复失败的重试把超时无限顺延」这条路根本不存在；它在入表之前就已写好，
+            // 后台线程持同一把锁读它，看见的只会是已写定的值（不是默认的时钟纪元）
             m_resumeTicket = std::make_shared<ResumeTicket>();
             m_resumeTicket->handle.store(handle, std::memory_order_release);
             m_pool->m_asyncWaiters.push_back(this);
@@ -360,33 +379,28 @@ namespace AsynGyanis::Database
         // 上一个借用者留下的会话级状态（Redis 的未发送管道、临时表等）不能串给下一个借用者
         connection->resetSessionState();
 
-        // ---- 健康检查 ----
-        if (!isConnectionHealthy(connection.get()))
+        // ---- 判失联与判存活期：都排在两条去向之前 ----
+        // 两条去向（直接交给等待者 / 放回空闲栈）必须拿到同一条「还活着且还在存活期内」的连接：
+        // 空闲栈一侧的取出路径早就在判这两条，而直接交接此前只判了失联——把一条已过存活期的连接
+        // 从后门塞给协程，等于绕过 maximumLifetimeSeconds 的轮换约定（对端已单方面掐线的连接同理）
+        // 判定只读这条连接自己的建立时刻与池配置，不涉及共享状态，因此不必进 m_mutex
+        const auto returnedAt = std::chrono::steady_clock::now();
+        if (!isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
         {
-            // 不健康的连接直接丢弃（名额一并退还），并叫醒一位等待者去试那个刚空出来的名额
+            // 丢弃并退还名额（断开留在锁外，与 healthCheckLoop 同一条纪律），
+            // 再叫醒等待者：空闲栈没变多，但名额确实空了出来
             discardConnection(std::move(connection));
-            wakeOneSyncWaiter();
+            wakeWaitersForFreedSlot();
             return;
         }
 
-        // ---- 优先尝试唤醒异步等待者 ----
+        // ---- 优先直接交给异步等待者 ----
         if (notifyAsyncWaiter(connection))
         {
             return;
         }
 
-        // ---- 存活期判定，然后入空闲栈 ----
-        // 判定只读这条连接自己的建立时刻与池配置，不涉及任何共享状态，因此不必进 m_mutex；
-        // 建立时刻跟着连接走（DatabaseConnection::establishedAt()），池这边不再另存一份表
-        const auto returnedAt = std::chrono::steady_clock::now();
-        if (isPastMaximumLifetime(*connection, returnedAt))
-        {
-            // 到寿命的这条同样退还名额；断开留在锁外做（与 healthCheckLoop 同一条纪律）
-            discardConnection(std::move(connection));
-            wakeOneSyncWaiter();
-            return;
-        }
-
+        // ---- 入空闲栈 ----
         {
             const std::lock_guard lock(m_mutex);
 
@@ -400,13 +414,38 @@ namespace AsynGyanis::Database
         }
     }
 
-    void ConnectionPool::wakeOneSyncWaiter() noexcept
+    void ConnectionPool::wakeWaitersForFreedSlot() noexcept
     {
-        // 这里只负责「叫醒」：醒来那位自己会试「从栈里取 / 未达上限就新建」。
-        // 不在这儿替它建连——建连是一次会阻塞的往返，扣在归还线程上会把整条归还路径
-        // （以及正等着这把令牌锁的池析构）一起堵住
-        const std::lock_guard lock(m_mutex);
-        m_idleCondition.notify_one();
+        // 异步侧先叫醒一位：取走票据要持 m_asyncMutex，而恢复动作必须在锁外投
+        // （就地恢复等于让协程的后续代码跑到本次归还的线程上，与「回调在事件循环线程」的约定相悖）
+        std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket;
+        Core::EventLoop *                             completionLoop = nullptr;
+        {
+            const std::lock_guard asyncLock(m_asyncMutex);
+            if (!m_asyncWaiters.empty())
+            {
+                AcquireAwaiter *const waiter = m_asyncWaiters.front();
+                m_asyncWaiters.pop_front();
+                waiter->m_inList = false;   // 结果留空：这次叫醒只说「有名额了」，拿到拿不到由它自己再试
+                ticket         = waiter->m_resumeTicket;
+                completionLoop = waiter->m_completionLoop;
+            }
+        }
+        // 两把锁只顺序取、不嵌套：await_suspend 里是「m_asyncMutex → m_mutex」，反过来嵌套就是 AB-BA
+        if (ticket != nullptr)
+        {
+            completionLoop->scheduler().postRemote(
+                    [ticket]()
+                    {
+                        ticket->resumeOnce();
+                    });
+        }
+
+        // 同步侧：条件变量的通知取在 m_mutex 之内，理由与归还入栈那一处相同
+        {
+            const std::lock_guard lock(m_mutex);
+            m_idleCondition.notify_one();
+        }
     }
 
     // ========================================================================

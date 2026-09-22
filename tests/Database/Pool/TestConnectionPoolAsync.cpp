@@ -10,6 +10,7 @@
 // - DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection（析构期唤醒的协程归还连接，不得同线程死锁）
 // - DiscardingTaskAfterHandoffDoesNotResumeFreedFrame（交接后销毁 Task 不得 resume 已释放帧）
 // - DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
+// - WaiterRebuildsInsteadOfTakingExpiredHandover（过期连接不直接交接，协程被腾出的名额救活后另建一条）
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 
 #include "Database/Common/DatabaseConnection.h"
@@ -23,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -163,6 +165,53 @@ namespace AsynGyanis::Database
             << "协程在归还连接的线程上被就地恢复，loop 形参形同虚设";
         EXPECT_EQ(probe.resumeThreadId, loopThread.threadId())
             << "恢复应发生在 acquireAsync() 给定的那个事件循环线程上";
+
+        loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 归还的连接被当场丢弃时，挂起的协程要被腾出的名额救活，且不能接过那条过期的连接
+     * @details 钉住两处：① 过期的连接不走「直接交接」——协程拿着一条服务端可能已单方面掐线的连接
+     *          去跑，等于从后门绕过 maximumLifetimeSeconds；② 丢弃出口的那次叫醒有效——协程被
+     *          「空唤醒」后会重挂一轮并自己补建一条，而不是干等到超时拿空连接
+     */
+    TEST(ConnectionPoolAsync, WaiterRebuildsInsteadOfTakingExpiredHandover)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;   // 后台驱逐不参与本用例的时序
+        configuration.acquireTimeoutMilliseconds = 5000;   // 没被救活时，协程会等满这里才拿空连接收尾
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+        // 建立时刻挪到存活期之外：归还时它必然被判过期，只能丢弃而不是交给协程
+        occupying->markEstablishedAt(std::chrono::steady_clock::now() - std::chrono::hours(2));
+
+        AcquireProbe       probe;
+        Core::Task<void>   driver = probeAcquireAsync(pool, loopThread.loop(), probe);
+        driver.handle().resume(); // 池满：挂到等待列表
+        ASSERT_FALSE(probe.finished.load(std::memory_order_acquire));
+        ASSERT_EQ(pool.waitingCount(), 1U) << "协程没有挂起：用例前提不成立";
+
+        occupying.release(); // 丢弃过期的那条，并叫醒等待者
+
+        ASSERT_TRUE(waitForCondition([&probe]()
+        {
+            return probe.finished.load(std::memory_order_acquire);
+        })) << "协程没被腾出的名额救活：它只在等交接或等超时";
+
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_TRUE(probe.connection.value()) << "被叫醒的协程应重挂一轮并自己补建一条";
+        EXPECT_EQ(counter.totalCreated.load(), 2) << "过期那条不该被交给协程，得另建一条";
+        EXPECT_EQ(counter.totalDestroyed.load(), 1) << "过期那条要被丢弃，不能留在池里";
+        EXPECT_EQ(pool.totalCount(), 1U);
 
         loopThread.parkDriver(std::move(driver));
     }
