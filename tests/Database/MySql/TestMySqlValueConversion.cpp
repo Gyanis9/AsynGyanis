@@ -13,11 +13,14 @@
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
-#include "Database/MySql/MySqlValueConversion.h"
 
 #include <gtest/gtest.h>
 
 #ifdef DATABASE_HAS_MYSQL
+
+// 被量头文件带着 mysql.h，因此它的 include 也必须落在门控里面：写在门外时，
+// 未编译驱动的配置（-DDATABASE_WITH_MYSQL=OFF）连本文件都编不过
+#include "Database/MySql/MySqlValueConversion.h"
 
 #include <cmath>
 #include <cstddef>
