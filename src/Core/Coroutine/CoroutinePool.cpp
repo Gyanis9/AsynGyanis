@@ -179,6 +179,7 @@ namespace AsynGyanis::Core
         m_chunks[publishedChunks] = MemoryChunk{data, newCount, chunkBlockSize};
         m_chunkCount.store(publishedChunks + 1, std::memory_order_release);
         m_allocatedCount.store(allocatedBlocks + newCount, std::memory_order_relaxed);
+        m_tierAllocatedCount[tier] += newCount;
 
         for (size_t blockIndex = 0; blockIndex < newCount; ++blockIndex)
         {
@@ -191,11 +192,13 @@ namespace AsynGyanis::Core
     {
         const std::lock_guard lock(m_mutex);
 
-        // 该档的全局链表为空时先扩容：按当前容量翻倍，摊薄连续分配时的扩容次数
+        // 该档的全局链表为空时先扩容：按本档已切分的块数翻倍，摊薄连续分配时的扩容次数。
+        // 不能用两档合计的块数做基数——大档规格是小档的 8 倍，一个被小帧跑热过的池第一次
+        // 碰到大帧就会一次要下十几 MiB，既是一记长缺页停顿也一口吃满共享的总块数预算
         if (m_globalFreeHeads[tier] == nullptr)
         {
-            const size_t allocatedBlocks = m_allocatedCount.load(std::memory_order_relaxed);
-            expand(tier, allocatedBlocks > 0 ? allocatedBlocks : kDefaultInitialBlocks);
+            const size_t tierAllocatedBlocks = m_tierAllocatedCount[tier];
+            expand(tier, tierAllocatedBlocks > 0 ? tierAllocatedBlocks : kDefaultInitialBlocks);
         }
 
         // 一次性搬一批：把取锁频率摊薄到 1/kLocalCacheCapacity，而不是每次分配都取锁

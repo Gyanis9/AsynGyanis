@@ -240,47 +240,6 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 池到达块数上限后不崩溃也不静默失败：改由全局堆承担且 owns() 返回 false；归还后池内块仍可复用
-     * @details 池的块数上限是私有常量，用例不硬编码它，而是一路分配到出现「不属于本池」的块为止
-     */
-    TEST(CoroutinePool, AllocationBeyondBlockCeilingFallsBackToGlobalHeap)
-    {
-        auto &pool = CoroutinePool::instance();
-
-        // 池的块数上限是私有常量，这里不硬编码它：一路分配到出现「不属于本池」的块为止
-        std::vector<void *> blocks;
-        void              *firstForeignBlock = nullptr;
-        constexpr size_t   kAllocationAttemptCeiling = 100000;
-
-        for (size_t attempt = 0; attempt < kAllocationAttemptCeiling && firstForeignBlock == nullptr; ++attempt)
-        {
-            void *block = pool.allocate(64);
-            ASSERT_NE(block, nullptr) << "第 " << attempt << " 次分配失败：池到达上限后必须改走全局堆";
-            blocks.push_back(block);
-
-            if (!pool.owns(block))
-            {
-                firstForeignBlock = block;
-            }
-        }
-
-        ASSERT_NE(firstForeignBlock, nullptr)
-            << "在 " << kAllocationAttemptCeiling << " 次分配内没有观察到池上限：上限常量是否被调大了？";
-
-        // 越过上限的块由全局堆承载，且 released 时也必须走全局堆释放路径
-        // （deallocate 靠 ownsUnlocked() 判定归属，因此判定分支与 allocate 天然一致）
-        for (void *block: blocks)
-        {
-            pool.deallocate(block, 64);
-        }
-
-        // 归还后池内块是可以复用的：再分配一次应当回到池里，而不是每次都新建
-        void *reused = pool.allocate(64);
-        EXPECT_TRUE(pool.owns(reused));
-        pool.deallocate(reused, 64);
-    }
-
-    /**
      * @brief 验证等量复用不触发扩容：一批块释放后再申请同样多，池不再向系统要内存
      *
      * @details 判据是 allocatedCount() 不变。先申请一大批并持有，把单例中已累积的空闲块
@@ -348,5 +307,148 @@ namespace AsynGyanis::Core
 
         pool.deallocate(second, 144);
         pool.deallocate(first, 144);
+    }
+
+    /**
+     * @brief 一档的扩容步长只跟着本档历史走，不被另一档的高水位带大
+     * @details 两档块规格差 8 倍，步长一旦按「两档合计的已切分块数」算，被小帧跑热过的池第一次
+     *          碰到大帧就要一次切出与小帧同数的大块，既是一记长缺页停顿也吃满共享的块数预算。
+     *          判据取本档相邻两次扩容的比值，因此共享单例先前喂过多少块都不影响结论
+     */
+    TEST(CoroutinePool, TierExpansionStepFollowsItsOwnHistoryNotTheOtherTiers)
+    {
+        auto &pool = CoroutinePool::instance();
+
+        // 大档按自己的需求长到这一步：步长参照值从这里取
+        constexpr size_t kLargeWarmupBlockCount        = 200;
+        // 小档的高水位：合计口径的步长会被它带大，因此要明显大于大档的历史
+        constexpr size_t kSmallHighWaterBlockCount     = 4000;
+        // 逼出大档下一次扩容的尝试上限：留出足够次数，不让用例因为「没等到扩容」而空转
+        constexpr size_t kLargeDemandAfterSmallGrowth  = 2000;
+
+        const size_t smallRequestBytes = 48;                   // 落在小档
+        const size_t largeRequestBytes = pool.blockSize() * 2; // 超过小档规格，因此必定落在大档
+        ASSERT_GT(largeRequestBytes, pool.blockSize()) << "挑不到大档，本用例等于没测";
+
+        std::vector<void *> heldLarge;
+
+        // 第一段：让大档按自己的需求长起来，记下最近一次扩容的步长作为参照
+        size_t previousLargeStep = 0;
+        size_t previousCount     = pool.allocatedCount();
+        for (size_t blockIndex = 0; blockIndex < kLargeWarmupBlockCount; ++blockIndex)
+        {
+            void *const memory = pool.allocate(largeRequestBytes);
+            ASSERT_NE(memory, nullptr);
+            ASSERT_TRUE(pool.owns(memory)) << "大档的块不是从池里来的：块数上限可能已被同进程的其它用例顶满";
+            heldLarge.push_back(memory);
+
+            const size_t currentCount = pool.allocatedCount();
+            if (currentCount > previousCount)
+            {
+                previousLargeStep = currentCount - previousCount;
+            }
+            previousCount = currentCount;
+        }
+        ASSERT_GT(previousLargeStep, 0U) << "大档一次都没扩容，参照值没有意义";
+
+        // 第二段：把小档长到高水位并全部持有，使「两档合计」远大于大档自己的历史
+        std::vector<void *> heldSmall;
+        heldSmall.reserve(kSmallHighWaterBlockCount);
+        previousCount = pool.allocatedCount();
+        for (size_t blockIndex = 0; blockIndex < kSmallHighWaterBlockCount; ++blockIndex)
+        {
+            void *const memory = pool.allocate(smallRequestBytes);
+            ASSERT_NE(memory, nullptr);
+            heldSmall.push_back(memory);
+        }
+        const size_t smallGrownBlocks = pool.allocatedCount() - previousCount;
+        ASSERT_GE(smallGrownBlocks, kSmallHighWaterBlockCount / 2)
+            << "小档没能长起来：块数上限已被同进程的其它用例顶满，后面的比值断言会是空转";
+
+        // 第三段：继续向大档要块，取小档长高之后的第一次扩容步长。
+        // 只看第一次：翻倍是本档的既定行为，第二次起本来就比第一次大
+        size_t firstStepAfterSmallGrowth = 0;
+        previousCount                    = pool.allocatedCount();
+        for (size_t blockIndex = 0; blockIndex < kLargeDemandAfterSmallGrowth && firstStepAfterSmallGrowth == 0;
+             ++blockIndex)
+        {
+            void *const memory = pool.allocate(largeRequestBytes);
+            ASSERT_NE(memory, nullptr);
+            heldLarge.push_back(memory);
+
+            const size_t currentCount = pool.allocatedCount();
+            if (currentCount > previousCount)
+            {
+                firstStepAfterSmallGrowth = currentCount - previousCount;
+            }
+            previousCount = currentCount;
+        }
+        ASSERT_GT(firstStepAfterSmallGrowth, 0U) << "小档长高之后大档再没扩容，比值断言是空转";
+
+        // 本档翻倍最多让下一步等于上一步的两倍（实测比值 2），取 3 留出实现余量；
+        // 按「两档合计」算时这一步会跳到小档的高水位（实测比值 4~32）
+        EXPECT_LE(firstStepAfterSmallGrowth, previousLargeStep * 3)
+            << "大档的扩容步长被小档的高水位带大了：这一步切了 " << firstStepAfterSmallGrowth
+            << " 块大块，而大档上一步只有 " << previousLargeStep << " 块、小档本轮长到 "
+            << smallGrownBlocks << " 块";
+
+        // 单次扩容不该一口吃下池内块数的四分之一：这是「提前吃满共享预算」的直接判据，
+        // 与两档各自的规模无关
+        const size_t blocksBeforeLastExpansion = previousCount - firstStepAfterSmallGrowth;
+        EXPECT_LE(firstStepAfterSmallGrowth, blocksBeforeLastExpansion / 4)
+            << "大档一次扩容要了 " << firstStepAfterSmallGrowth << " 块，而当时池内总共只有 "
+            << blocksBeforeLastExpansion << " 块";
+
+        for (void *const memory: heldSmall)
+        {
+            pool.deallocate(memory, smallRequestBytes);
+        }
+        for (void *const memory: heldLarge)
+        {
+            pool.deallocate(memory, largeRequestBytes);
+        }
+    }
+
+    /**
+     * @brief 池到达块数上限后不崩溃也不静默失败：改由全局堆承担且 owns() 返回 false；归还后池内块仍可复用
+     * @details 池的块数上限是私有常量，用例不硬编码它，而是一路分配到出现「不属于本池」的块为止。
+     *          本用例会把共享单例顶到上限，因此排在本文件最后：直接跑整个可执行体时，排在它后面的
+     *          用例再也扩不出容（CTest 给每条用例起独立进程，顺序不影响各自的结论）
+     */
+    TEST(CoroutinePool, AllocationBeyondBlockCeilingFallsBackToGlobalHeap)
+    {
+        auto &pool = CoroutinePool::instance();
+
+        // 池的块数上限是私有常量，这里不硬编码它：一路分配到出现「不属于本池」的块为止
+        std::vector<void *> blocks;
+        void              *firstForeignBlock = nullptr;
+        constexpr size_t   kAllocationAttemptCeiling = 100000;
+
+        for (size_t attempt = 0; attempt < kAllocationAttemptCeiling && firstForeignBlock == nullptr; ++attempt)
+        {
+            void *block = pool.allocate(64);
+            ASSERT_NE(block, nullptr) << "第 " << attempt << " 次分配失败：池到达上限后必须改走全局堆";
+            blocks.push_back(block);
+
+            if (!pool.owns(block))
+            {
+                firstForeignBlock = block;
+            }
+        }
+
+        ASSERT_NE(firstForeignBlock, nullptr)
+            << "在 " << kAllocationAttemptCeiling << " 次分配内没有观察到池上限：上限常量是否被调大了？";
+
+        // 越过上限的块由全局堆承载，且归还时也必须走全局堆释放路径
+        // （deallocate 靠 isOwnedBlock() 判定归属，因此判定分支与 allocate 天然一致）
+        for (void *block: blocks)
+        {
+            pool.deallocate(block, 64);
+        }
+
+        // 归还后池内块是可以复用的：再分配一次应当回到池里，而不是每次都新建
+        void *reused = pool.allocate(64);
+        EXPECT_TRUE(pool.owns(reused));
+        pool.deallocate(reused, 64);
     }
 } // namespace AsynGyanis::Core

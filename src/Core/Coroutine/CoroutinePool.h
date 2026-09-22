@@ -97,6 +97,10 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 构造内存池并预分配若干块
+         * @warning 必须是进程内唯一实例：每线程缓存 threadCache() 只按线程分，不按池分，
+         *          两个池会共用同一条空闲链表——A 池的块可能被 B 池发出，归还时 B 认不出归属
+         *          便转交 ::operator delete，那是把池内块还给通用堆的堆损坏。构造与析构因此留在私有区，
+         *          对外只有 instance()
          * @param blockSize 小档块大小（字节），大档固定取 kLargeBlockSize
          * @param initialBlocks 启动时一次性切分的块数
          */
@@ -185,6 +189,7 @@ namespace AsynGyanis::Core
         std::array<MemoryChunk, kMaximumChunkCount> m_chunks{};    ///< 内存段描述：先写描述、再发布段数量，故可无锁读
         std::atomic<size_t>             m_chunkCount{0};           ///< 已发布的内存段数量（release 发布，acquire 读取）
         std::atomic<size_t>             m_allocatedCount{0};       ///< 已切分的块总数（两档合计，跨线程可读）
+        std::array<size_t, kTierCount>  m_tierAllocatedCount{};    ///< 各档已切分的块数（仅持锁读写）：扩容翻倍按本档历史，不按两档合计
         std::array<void *, kTierCount>  m_globalFreeHeads{};       ///< 各档全局空闲链表头（仅持锁访问）
         std::array<size_t, kTierCount>  m_globalFreeCounts{};      ///< 各档全局空闲链表长度
         mutable std::mutex              m_mutex;                   ///< 只保护全局空闲链表与扩容
