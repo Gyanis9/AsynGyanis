@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -406,6 +407,112 @@ server:
         EXPECT_EQ(configuration().getString("database.url", ""), "db.local");
         EXPECT_EQ(configuration().getInt("database.poolSize", 0), 10);
         EXPECT_EQ(configuration().keys().size(), 4U);
+    }
+
+    namespace
+    {
+        /**
+         * @brief 造一份嵌套指定层数的 JSON 文本：{"k":{"k":…{"k":1}…}}
+         * @param nestingDepth 嵌套层数
+         * @return std::string 文档文本，长度随层数线性增长
+         */
+        [[nodiscard]] std::string makeDeeplyNestedJson(const int nestingDepth)
+        {
+            std::string text;
+            text.reserve(static_cast<std::size_t>(nestingDepth) * 6U + 8U);
+            for (int level = 0; level < nestingDepth; ++level)
+            {
+                text += R"({"k":)";
+            }
+            text += "1";
+            text.append(static_cast<std::size_t>(nestingDepth), '}');
+            return text;
+        }
+
+        /**
+         * @brief 造一份嵌套指定层数的 YAML 流式映射文本：k: {k: {…k: 1…}}
+         * @details 刻意用流式写法而不是块式缩进：块式每多一层就多 2×层数个空格，文本长度按层数平方
+         *          增长，两万层就是几百 MB，量的就不再是解析器而是内存了。
+         *          层数按「摊平后的点分键有几段」计：3 层就是 k: {k: {k: 1}}，读出来是 k.k.k。
+         * @param nestingDepth 嵌套层数，1 表示一层普通映射
+         * @return std::string 文档文本
+         */
+        [[nodiscard]] std::string makeDeeplyNestedYaml(const int nestingDepth)
+        {
+            std::string text;
+            text.reserve(static_cast<std::size_t>(std::max(nestingDepth - 1, 0)) * 6U + 16U);
+            for (int level = 0; level + 1 < nestingDepth; ++level)
+            {
+                text += "k: {";
+            }
+            text += "k: 1";
+            text.append(static_cast<std::size_t>(std::max(nestingDepth - 1, 0)), '}');
+            text += "\n";
+            return text;
+        }
+    } // namespace
+
+    /**
+     * @brief 极深嵌套的 JSON 判「这一份文件失败」，而不是把调用栈吃光
+     * @details 递归下降的解析器对上无界嵌套只有两条路：要么自己有深度上限，要么当场倒下。
+     *          配置文件是可以被仓库里别人提交的一份畸形文件污染的面，因此这条契约要钉住：
+     *          超限的那份以中文原因报失败、同目录别份照常生效、进程不死。
+     */
+    TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsDeeplyNestedJsonWithReason)
+    {
+        writeFile("shallow.json", makeDeeplyNestedJson(3));
+        writeFile("abyss.json", makeDeeplyNestedJson(20000));
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_FALSE(result.failedFiles.empty()) << "深嵌套的 JSON 没被当成一次失败的加载";
+        // failedFiles 里给的是路径，按名字片段核对即可（报错点名要准：坏的只有 abyss.json 那一份）
+        const bool onlyTheAbyssFileFailed = std::ranges::any_of(result.failedFiles,
+                                                                [](const std::string &failedFile)
+                                                                {
+                                                                    return failedFile.find("abyss.json") != std::string::npos;
+                                                                })
+                                            && result.failedFiles.size() == 1U;
+        EXPECT_TRUE(onlyTheAbyssFileFailed);
+        // 失败原因里要能看出是哪份文件，调用方才知道去哪儿修
+        const bool mentionsTheOffendingFile = std::ranges::any_of(result.errors,
+                                                                  [](const std::string &error)
+                                                                  {
+                                                                      return error.find("abyss.json") != std::string::npos;
+                                                                  });
+        EXPECT_TRUE(mentionsTheOffendingFile) << "错误文案没点名那份文件，全中文也白搭";
+
+        // 拒绝而不是一起带走：同目录那份正常文件的关键照常可读
+        EXPECT_TRUE(configuration().has("k.k.k"));
+        EXPECT_EQ(configuration().getInt("k.k.k", 0), 1);
+    }
+
+    /**
+     * @brief 极深嵌套的 YAML 同样判失败而不是崩溃
+     * @details 本模块自带的 128 层换算上限拦的是「DOM 转成配置值」那一跳，而 yaml-cpp 的流式
+     *          解析本身也是递归下降的——这一例钉的是「解析器先倒下还是我们的闸门先拦住」这个缝隙：
+     *          不管哪一侧先拦，交回调用方的都必须是一轮失败的加载。
+     */
+    TEST_F(ConfigManagerTest, LoadFromDirectoryRejectsDeeplyNestedYamlWithReason)
+    {
+        // 同目录再放一份同样写法、只是层数正常的流式映射：万一「深嵌套被拒」其实是「我造的文本
+        // 本身不合法」，这一份会跟着失败，下面的 keys 断言当场就红
+        writeFile("shallow.yaml", makeDeeplyNestedYaml(3));
+        writeFile("abyss.yaml", makeDeeplyNestedYaml(20000));
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_FALSE(result.failedFiles.empty()) << "深嵌套的 YAML 被当成了成功";
+        EXPECT_TRUE(configuration().has("k.k.k")) << "同目录那份正常文件没读进来，说明失败的原因不是嵌套深度";
+        EXPECT_EQ(configuration().getInt("k.k.k", 0), 1);
+        const bool mentionsTheOffendingFile = std::ranges::any_of(result.errors,
+                                                                  [](const std::string &error)
+                                                                  {
+                                                                      return error.find("abyss.yaml") != std::string::npos;
+                                                                  });
+        EXPECT_TRUE(mentionsTheOffendingFile) << "错误文案没点名那份文件";
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryFlattensNestedMapsIntoDottedKeys)
@@ -987,14 +1094,14 @@ server:
             }
         } else
         {
-            // 超时就不 join：卡在锁里的线程叫不醒，等它等于等挂。结论已由下面这条断言报出，
-            // 这些线程随进程一起收场
-            for (auto &worker: workers)
-            {
-                worker.detach();
-            }
+            // 超时就不 join：卡在锁里的线程叫不醒，等它等于等挂。结论先记下来，再把结论冲出去，
+            // 然后立刻了断本进程——留在场外的线程还会碰单例与测试互斥量，拖到退出时就是第二次挂死。
+            // ctest 把每条用例当成独立进程，因此这一手只影响本例的判定，不会带走别的用例
+            ADD_FAILURE() << "有 worker 没能在规定上界内从启停里回来，这就是那条长时间挂死的形状";
+            std::fflush(stdout);
+            std::fflush(stderr);
+            std::_Exit(1);
         }
-        EXPECT_TRUE(allWorkersReturned) << "有 worker 没能在规定上界内从启停里回来，这就是那条长时间挂死的形状";
 
         configuration().disableHotReload();
         EXPECT_FALSE(configuration().isHotReloadEnabled());

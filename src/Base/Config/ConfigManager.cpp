@@ -64,7 +64,9 @@ namespace AsynGyanis::Base
         template<typename Number>
         [[nodiscard]] std::string numberToText(const Number value)
         {
-            std::array<char, 32> buffer{};
+            // 64 字节：任何 int64/uint64 的十进制都不超过 20 位，double 的最短往返形式也不到 30 位，
+            // 留出一倍余量是为了让「写不下」这条分支在真实数值上根本不出现
+            std::array<char, 64> buffer{};
             const auto           [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
             if (errorCode != std::errc())
             {
@@ -439,25 +441,27 @@ namespace AsynGyanis::Base
         /// 攻击载荷，在解析前拦下，免得解析器为超大文本做巨量分配
         constexpr std::uintmax_t kMaximumConfigFileBytes = 64ULL * 1024ULL * 1024ULL;
 
-        /// YAML 文档的嵌套/别名展开深度上限：别名在 DOM 里是共享引用，循环别名会让转换无限递归
-        constexpr std::size_t kMaximumYamlDepth = 128;
+        /// 文档的嵌套深度上限（JSON 与 YAML 同一口径）。YAML 侧：别名在 DOM 里是共享引用，
+        /// 循环别名会让转换无限递归；JSON 侧：nlohmann 的解析器是状态机、不会先崩在解析上，
+        /// 会崩的是 DOM 的递归析构与我们自己摊平嵌套结构的递归
+        constexpr std::size_t kMaximumDocumentDepth = 128;
 
         /// YAML 文档展开后的节点总数上限：别名炸弹（引用同一锚点逐层放大）靠这道预算拦下
         constexpr std::size_t kMaximumYamlNodeCount = 200000;
 
         /**
-         * @brief YAML 文档转 JSON 值模型时的失败（展开超限、不支持的标签、数值越界等）
+         * @brief 读取或转换配置文档时的失败（嵌套超限、不支持的标签、数值越界等）
          * @details 只在本翻译单元内抛出并被 loadConfigFile 捕获后转成中文错误文案，
          *          模块对外从不暴露该类型，因此刻意不并入 Base 的异常层次。
          */
-        class YamlConversionException : public std::runtime_error
+        class DocumentConversionException : public std::runtime_error
         {
         public:
             /**
              * @brief 以中文失败原因构造异常
              * @param reason 不含文件名的失败原因
              */
-            explicit YamlConversionException(const std::string &reason) : std::runtime_error(reason)
+            explicit DocumentConversionException(const std::string &reason) : std::runtime_error(reason)
             {
             }
         };
@@ -501,7 +505,7 @@ namespace AsynGyanis::Base
          * @param text 标量文本
          * @param node 所在节点，用于错误位置
          * @return std::optional<ConfigValue> 不是整数文本时返回空
-         * @throws YamlConversionException 是整数文本但超出 64 位表示范围
+         * @throws DocumentConversionException 是整数文本但超出 64 位表示范围
          */
         [[nodiscard]] std::optional<ConfigValue> parseCoreInteger(const std::string &text, const YAML::Node &node)
         {
@@ -551,7 +555,7 @@ namespace AsynGyanis::Base
                 // 先按无符号累加，溢出即越界：静默回绕会得到看似正常的错误数值
                 if (magnitude > (std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(digit)) / static_cast<std::uint64_t>(base))
                 {
-                    throw YamlConversionException(std::format("整数 '{}' 超出 64 位表示范围（{}）", text, describeYamlMark(node.Mark())));
+                    throw DocumentConversionException(std::format("整数 '{}' 超出 64 位表示范围（{}）", text, describeYamlMark(node.Mark())));
                 }
                 magnitude = magnitude * base + static_cast<std::uint64_t>(digit);
             }
@@ -561,7 +565,7 @@ namespace AsynGyanis::Base
                 // 负方向 uint64 只到 INT64_MIN 的量级，再大同样越界
                 if (magnitude > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL)
                 {
-                    throw YamlConversionException(std::format("整数 '{}' 超出 64 位表示范围（{}）", text, describeYamlMark(node.Mark())));
+                    throw DocumentConversionException(std::format("整数 '{}' 超出 64 位表示范围（{}）", text, describeYamlMark(node.Mark())));
                 }
                 if (magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL)
                 {
@@ -578,7 +582,7 @@ namespace AsynGyanis::Base
          *          而库的解析会接受它们，因此先按字符集挡掉再做严格的全串解析。
          * @param text 标量文本
          * @return std::optional<double> 不是浮点文本时返回空
-         * @throws YamlConversionException 是浮点文本但超出 double 表示范围
+         * @throws DocumentConversionException 是浮点文本但超出 double 表示范围
          */
         [[nodiscard]] std::optional<double> parseCoreFloat(const std::string &text)
         {
@@ -627,7 +631,7 @@ namespace AsynGyanis::Base
             const auto [stopPosition, errorCode] = std::from_chars(numericText.data(), numericText.data() + numericText.size(), parsedValue);
             if (errorCode == std::errc::result_out_of_range)
             {
-                throw YamlConversionException(std::format("浮点值 '{}' 超出 double 表示范围", text));
+                throw DocumentConversionException(std::format("浮点值 '{}' 超出 double 表示范围", text));
             }
             if (errorCode != std::errc() || stopPosition != numericText.data() + numericText.size())
             {
@@ -645,7 +649,7 @@ namespace AsynGyanis::Base
          *          明确报错而不是静默丢成字符串。
          * @param node 标量节点
          * @return ConfigValue 转换结果
-         * @throws YamlConversionException 标签不受支持、整数或浮点越界、显式 bool/float 的取值不合法
+         * @throws DocumentConversionException 标签不受支持、整数或浮点越界、显式 bool/float 的取值不合法
          */
         [[nodiscard]] ConfigValue yamlScalarToConfigValue(const YAML::Node &node)
         {
@@ -666,7 +670,7 @@ namespace AsynGyanis::Base
                 {
                     return ConfigValue(*booleanValue);
                 }
-                throw YamlConversionException(std::format("!!bool 的取值 '{}' 不是合法布尔（{}）：只接受 true/false", text, describeYamlMark(node.Mark())));
+                throw DocumentConversionException(std::format("!!bool 的取值 '{}' 不是合法布尔（{}）：只接受 true/false", text, describeYamlMark(node.Mark())));
             }
             if (tag == "tag:yaml.org,2002:int")
             {
@@ -674,7 +678,7 @@ namespace AsynGyanis::Base
                 {
                     return *integerValue;
                 }
-                throw YamlConversionException(std::format("!!int 的取值 '{}' 不是合法整数（{}）", text, describeYamlMark(node.Mark())));
+                throw DocumentConversionException(std::format("!!int 的取值 '{}' 不是合法整数（{}）", text, describeYamlMark(node.Mark())));
             }
             if (tag == "tag:yaml.org,2002:float")
             {
@@ -682,11 +686,11 @@ namespace AsynGyanis::Base
                 {
                     return ConfigValue(*floatingValue);
                 }
-                throw YamlConversionException(std::format("!!float 的取值 '{}' 不是合法浮点（{}）", text, describeYamlMark(node.Mark())));
+                throw DocumentConversionException(std::format("!!float 的取值 '{}' 不是合法浮点（{}）", text, describeYamlMark(node.Mark())));
             }
             if (tag != "?")
             {
-                throw YamlConversionException(std::format("不支持的 YAML 标签 '{}'（{}）：请改用 !!str/!!int/!!float/!!bool/!!null 或去掉标签", tag,
+                throw DocumentConversionException(std::format("不支持的 YAML 标签 '{}'（{}）：请改用 !!str/!!int/!!float/!!bool/!!null 或去掉标签", tag,
                                                            describeYamlMark(node.Mark())));
             }
 
@@ -715,17 +719,17 @@ namespace AsynGyanis::Base
          * @param depth 当前嵌套深度（根为 0）
          * @param remainingNodeBudget 剩余可转换节点数，逐节点扣减
          * @return ConfigValue 转换结果
-         * @throws YamlConversionException 超过深度或节点数上限、映射键不是标量、映射存在重复键
+         * @throws DocumentConversionException 超过深度或节点数上限、映射键不是标量、映射存在重复键
          */
         [[nodiscard]] ConfigValue yamlNodeToConfigValue(const YAML::Node &node, const std::size_t depth, std::size_t &remainingNodeBudget)
         {
-            if (depth > kMaximumYamlDepth)
+            if (depth > kMaximumDocumentDepth)
             {
-                throw YamlConversionException(std::format("文档嵌套或别名展开超过 {} 层：若文件里存在循环别名，请先解开锚点引用", kMaximumYamlDepth));
+                throw DocumentConversionException(std::format("文档嵌套或别名展开超过 {} 层：若文件里存在循环别名，请先解开锚点引用", kMaximumDocumentDepth));
             }
             if (remainingNodeBudget == 0)
             {
-                throw YamlConversionException(std::format("文档展开后的节点总数超过上限 {}：引用同一锚点的别名会被逐层复制，请减少别名引用", kMaximumYamlNodeCount));
+                throw DocumentConversionException(std::format("文档展开后的节点总数超过上限 {}：引用同一锚点的别名会被逐层复制，请减少别名引用", kMaximumYamlNodeCount));
             }
             --remainingNodeBudget;
 
@@ -752,12 +756,12 @@ namespace AsynGyanis::Base
                 {
                     if (!entry.first.IsScalar())
                     {
-                        throw YamlConversionException(std::format("映射的键必须是标量（{}）：复杂键无法表示为 JSON 对象键", describeYamlMark(entry.first.Mark())));
+                        throw DocumentConversionException(std::format("映射的键必须是标量（{}）：复杂键无法表示为 JSON 对象键", describeYamlMark(entry.first.Mark())));
                     }
                     const std::string key = entry.first.Scalar();
                     if (members.contains(key))
                     {
-                        throw YamlConversionException(std::format("映射中存在重复键 '{}'（{}）：请删除重复定义", key, describeYamlMark(entry.first.Mark())));
+                        throw DocumentConversionException(std::format("映射中存在重复键 '{}'（{}）：请删除重复定义", key, describeYamlMark(entry.first.Mark())));
                     }
                     members[key] = yamlNodeToConfigValue(entry.second, depth + 1, remainingNodeBudget);
                 }
@@ -775,7 +779,7 @@ namespace AsynGyanis::Base
          * @param text 文档文本
          * @return ConfigValue 文档根值
          * @throws YAML::Exception YAML 语法非法
-         * @throws YamlConversionException 超过展开或深度上限、含不支持的标签
+         * @throws DocumentConversionException 超过展开或深度上限、含不支持的标签
          */
         [[nodiscard]] ConfigValue yamlDocumentToConfigValue(const std::string &text)
         {
@@ -791,19 +795,33 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 解析 JSON 文本（先剥掉可选的 UTF-8 BOM）
+         * @details 深度闸门挂在解析回调上：nlohmann 的解析器自己是状态机，超限的是随后
+         *          那个几万层的 DOM 的递归析构，以及我们把嵌套结构摊平成点分键的那趟递归，
+         *          所以在建 DOM 的途中就抛出，交回调用方的是「一轮失败的加载」而不是崩溃。
          * @param text 文档文本
          * @return ConfigValue 文档根值
+         * @throws DocumentConversionException 嵌套超过 kMaximumDocumentDepth 层
          * @throws nlohmann::json::exception 语法错误（消息自带行列与出错记号）
          */
         [[nodiscard]] ConfigValue parseJsonDocument(const std::string &text)
         {
+            const auto depthGuard = [](const int depth, const ConfigValue::parse_event_t, ConfigValue &)
+            {
+                if (static_cast<std::size_t>(depth) > kMaximumDocumentDepth)
+                {
+                    throw DocumentConversionException(std::format("文档嵌套超过 {} 层：正常配置不会这么深，多半是误传或机器生成的文件",
+                                                                  kMaximumDocumentDepth));
+                }
+                return true;
+            };
+
             // nlohmann 不认 UTF-8 BOM，而 Windows 编辑器常写 BOM：先剥掉再解析
             constexpr std::string_view kUtf8Bom{"\xEF\xBB\xBF"};
             if (text.starts_with(kUtf8Bom))
             {
-                return ConfigValue::parse(text.substr(kUtf8Bom.size()));
+                return ConfigValue::parse(text.substr(kUtf8Bom.size()), depthGuard);
             }
-            return ConfigValue::parse(text);
+            return ConfigValue::parse(text, depthGuard);
         }
 
         /**
@@ -814,7 +832,7 @@ namespace AsynGyanis::Base
          * @return ConfigValue 文档根值
          * @throws nlohmann::json::exception JSON 语法非法
          * @throws YAML::Exception YAML 语法非法
-         * @throws YamlConversionException YAML 文档无法忠实转换为 JSON 值模型
+         * @throws DocumentConversionException YAML 文档无法忠实转换为 JSON 值模型
          */
         [[nodiscard]] ConfigValue parseDocumentBySuffix(const std::string &text, const std::filesystem::path &filePath)
         {
