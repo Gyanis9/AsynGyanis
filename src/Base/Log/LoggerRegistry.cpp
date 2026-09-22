@@ -35,16 +35,15 @@ namespace AsynGyanis::Base
 
     void LoggerRegistry::storeCachedRootLogger(const std::shared_ptr<Logger> &logger) noexcept
     {
-        // 两个缓存成对更新：强引用先落（对象的所有权先到位），裸指针后发布（热路径只读它）
-        m_cachedRootLogger.store(logger, std::memory_order_release);
+        // 只发裸指针：所有权本来就在 m_loggers 与退休表手里，缓存不需要再加一份强引用
+        // （一份 atomic<shared_ptr> 的 store 在 MSVC/libstdc++ 上要走全局锁池的一节，
+        // 而这条快路径每次 getLogger("root") 都会走到）
         m_cachedRootLoggerPointer.store(logger.get(), std::memory_order_release);
     }
 
     void LoggerRegistry::clearCachedRootLogger() noexcept
     {
-        // 与发布顺序相反：先断裸指针让新读者走慢路径，再放掉强引用
         m_cachedRootLoggerPointer.store(nullptr, std::memory_order_release);
-        m_cachedRootLogger.store(nullptr, std::memory_order_release);
     }
 
     Logger &LoggerRegistry::getLogger(const std::string &name)

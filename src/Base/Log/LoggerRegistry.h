@@ -32,7 +32,7 @@ namespace AsynGyanis::Base
      * @note 单例不可拷贝；全部查询与创建接口以读写锁保护，可在多线程下并发调用。
      * @note 引用契约：getLogger()/getRootLogger() 返回 Logger&，该引用仅在
      *       「注册表对象存活 + 期间没有他人对该日志器做 registerLogger/unregisterLogger/clear」
-     *       的前提下有效。注册表内部用 shared_ptr 持有 Logger，并让根日志器缓存也持有强引用，
+     *       的前提下有效。注册表用 shared_ptr 持有 Logger，被替换或注销的还会移入退休表而不销毁，
      *       因此注册表自身的读路径不会解引用已销毁对象；但调用方跨过注册表变更继续使用旧引用
      *       仍属未定义行为——这是保留 `Logger&` 返回类型所必须明示的边界。
      */
@@ -159,14 +159,7 @@ namespace AsynGyanis::Base
         /// 用裸指针而不是 shared_ptr 的原子量，是因为后者的 load 在 MSVC/libstdc++ 上要走内部
         /// 自旋锁，而这条路径每次日志调用都会被走到。
         /// **安全前提是本类的退休约定**：任何被替换/注销/清理的日志器都移入 m_retiredLoggers
-        /// 而不是销毁，因此这里拿到的指针在注册表存活期内一直有效；要改那条约定，得先把这里
-        /// 改回强引用缓存（见下一行）
+        /// 而不是销毁，因此这里拿到的指针在注册表存活期内一直有效
         std::atomic<Logger *> m_cachedRootLoggerPointer{nullptr};
-
-        /// 根日志器缓存：所有增删日志器的入口都会将其置空，读取时无锁命中缓存。
-        /// 存 strong 引用而非裸指针是必须的：否则缓存加载与解引用之间若有并发的
-        /// clear()/unregisterLogger()，对象可能已被销毁。与 m_cachedRootLoggerPointer
-        /// 成对更新——这份强引用保证对象在缓存命中期间一直存活
-        std::atomic<std::shared_ptr<Logger> > m_cachedRootLogger{nullptr};
     };
 } // namespace AsynGyanis::Base
