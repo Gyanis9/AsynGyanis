@@ -903,7 +903,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住 §4.4.1 的确认语义：Ack 只认最早一段、无据 Ack 判错、取消释放全部引用、增量推进已知计数
+     * @brief 钉住 §4.4.1 的确认语义：Ack 只认最早一段、无据 Ack 忽略、取消释放全部引用、增量推进已知计数
      */
     TEST(Qpack, EncoderTracksSectionAcknowledgementsAndCancellations)
     {
@@ -943,17 +943,27 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("01"))).has_value());
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 3U);
 
-        // 被取消的流再发 Ack 即对端记账错乱（§4.4.1）
-        const auto ackAfterCancel = encoder.feedDecoderStream(asSpan(hexToBytes("88")));
-        ASSERT_FALSE(ackAfterCancel.has_value()) << "被取消的流再发 Ack 即对端记账错乱";
-        EXPECT_EQ(ackAfterCancel.error().kind, QpackErrorKind::DecoderStreamError) << ackAfterCancel.error().message;
+        // 被放弃的流上再来一条 Ack：忽略，不动任何计数，也不把连接判死。本端的收口指令与对端这条 Ack
+        // 分属两条独立的单向流、彼此没有先后保证（RFC 9204 §2.1），「Ack 骑在收口之上」与「对端凭空
+        // Ack」无从区分，而误判的代价是一整条连接——任何客户端每条连接取消一次请求就能打到
+        const std::uint64_t receivedInsertCountBeforeStrayAck = encoder.knownReceivedInsertCount();
+        ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("88"))).has_value()) << "被放弃的流上的 Ack 不该判成协议错误";
+        EXPECT_EQ(encoder.knownReceivedInsertCount(), receivedInsertCountBeforeStrayAck) << "忽略一条 Ack 不该动已知计数";
+        EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "无据 Ack 不该再造出阻塞名额";
 
-        // 什么都没发过的流同样不该有 Ack。上一条非法指令会留在内部缓冲里让本层不再可信（§6：连接作废），
-        // 故另起一个实例，保证这里判的是「流 16 无据」而不是上一条的余波
-        QpackEncoder untouched(220, 100, 220);
-        const auto unknownStream = untouched.feedDecoderStream(asSpan(hexToBytes("90")));
-        ASSERT_FALSE(unknownStream.has_value()) << "流 16 上什么都没发过";
-        EXPECT_EQ(unknownStream.error().kind, QpackErrorKind::DecoderStreamError) << unknownStream.error().message;
+        // 什么都没发过的流同样按忽略处理，且解析游标要照常前进：把「无据 Ack」与「一条合法指令」拼进
+        // 同一趟喂进来，后一条必须照样生效——否则就是游标没走、把后面的字节当垃圾重解了一遍
+        QpackEncoder strayThenValid(220, 100, 220);
+        std::string validHeaderBlock;
+        std::string validEncoderStreamBytes;
+        ASSERT_TRUE(strayThenValid.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), validHeaderBlock,
+                                                     validEncoderStreamBytes)
+                        .has_value());
+        // 0x90 是 Section Ack(stream=16)（本端从没在这条流上发过头块），0x84 才是刚发出去那段的确认
+        const auto strayThenValidConsumed = strayThenValid.feedDecoderStream(asSpan(hexToBytes("9084")));
+        ASSERT_TRUE(strayThenValidConsumed.has_value()) << "无据 Ack 之后同趟的合法指令被判坏了";
+        EXPECT_EQ(*strayThenValidConsumed, 2U) << "两条指令都要算作本趟消费";
+        EXPECT_EQ(strayThenValid.knownReceivedInsertCount(), 1U) << "忽略无据 Ack 之后，后一条合法 Ack 仍要生效";
     }
 
     /**
@@ -1109,10 +1119,12 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 3U);
         EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "全部确认后阻塞名额归还";
 
-        // 已确认过的流再来 Ack 即对端记账错乱（§4.4.1）
-        const auto repeated = encoder.feedDecoderStream(asSpan(hexToBytes("80")));
-        ASSERT_FALSE(repeated.has_value());
-        EXPECT_EQ(repeated.error().kind, QpackErrorKind::DecoderStreamError) << repeated.error().message;
+        // 已确认过的流再来一条 Ack：与「无据 Ack」同属一类——本端无从分辨它是重复、错序还是凭空来的，
+        // 而误判的代价是一整条连接，故一并忽略且不动任何计数
+        const std::uint64_t receivedInsertCountAfterAllAcks = encoder.knownReceivedInsertCount();
+        ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("80"))).has_value()) << "重复的 Section Ack 不该判成协议错误";
+        EXPECT_EQ(encoder.knownReceivedInsertCount(), receivedInsertCountAfterAllAcks) << "忽略一条 Ack 不该动已知计数";
+        EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "忽略一条 Ack 也不该造出阻塞名额";
     }
 
     // ============================================================================

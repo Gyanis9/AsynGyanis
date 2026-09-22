@@ -934,11 +934,13 @@ namespace AsynGyanis::Net
                 const auto sectionIterator = findEarliestAwaitingAcknowledgement(parameterValue);
                 if (sectionIterator == m_pendingSectionsByStreamId.end())
                 {
-                    m_decoderStreamBuffer.erase(0, parsedByteCount);
-                    // §4.4.1：该流上没有待确认的头块却收到 Ack，说明对端记账错乱
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::DecoderStreamError, "流 " + std::to_string(parameterValue) +
-                                                                " 上没有待确认的头块，却收到 Section Ack（RFC 9204 §4.4.1）"));
+                    // 这条流本端已不再等确认：要么流被放弃了，要么压根没发过头块。放弃那条流时本端发出
+                    // 的收口指令与对端早已上路的那条 Ack 分属两条独立流、彼此没有先后保证（RFC 9204 §2.1），
+                    // 因此「Ack 骑在收口之上」是合法竞态，与对端记账错乱无从区分。既然区分不了，就只能忽略：
+                    // 忽略的代价是两三个字节，判错的代价是把一条健康连接杀掉——任何客户端每条连接
+                    // 取消一次请求就能做到。指令本身照常消费掉，不然解析游标不前进就成了死循环
+                    parsedByteCount += consumedByteCount;
+                    continue;
                 }
                 PendingFieldSection &acknowledgedSection = sectionIterator->second.front();
                 releasePendingSectionReferences(acknowledgedSection);
