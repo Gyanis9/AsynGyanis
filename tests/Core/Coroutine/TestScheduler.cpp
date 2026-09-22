@@ -2,10 +2,12 @@
 
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
+#include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <coroutine>
 #include <thread>
 #include <vector>
@@ -23,6 +25,17 @@ namespace AsynGyanis::Core
         {
             counter.fetch_add(1);
             co_return 0;
+        }
+
+        /**
+         * @brief 测试协程：以 release 语义置位标记后结束
+         * @param flag 目标标记
+         * @return Task<void> 无返回值
+         */
+        Task<void> markTask(std::atomic<bool> &flag)
+        {
+            flag.store(true, std::memory_order_release);
+            co_return;
         }
     }
 
@@ -304,6 +317,78 @@ namespace AsynGyanis::Core
         }
         EXPECT_EQ(executed.load(), kPostCount) << "分趟取用把投递弄丢了或没有取完";
         EXPECT_FALSE(scheduler.hasWork());
+    }
+
+    namespace
+    {
+        /**
+         * @brief 让一条已在跑的循环确实睡进无限阻塞的那一步
+         * @details run() 只在 `hasWork()` 为假时把超时取成 -1，因此投递前必须确认队列已空并留出
+         *          一轮空档。一轮循环是微秒级，这里的余量放到 50 毫秒：宁可放宽前置条件也不放宽
+         *          断言——前置条件宽了最坏是这次没测到唤醒路径（绿灯偏乐观），而断言宽了会把真缺陷
+         *          报成失败。跨线程投递能不能被"不需要唤醒"地取走，正是要被这条用例证伪的东西。
+         * @param runner 承载循环的运行器
+         */
+        void settleLoopIntoBlockingWait(TestSupport::EventLoopThread &runner)
+        {
+            ASSERT_TRUE(runner.waitUntilRunning()) << "后台循环没能进入 run()，谈不上睡在阻塞等待里";
+            ASSERT_FALSE(runner.loop().scheduler().hasWork()) << "循环还没跑空，等不出「睡在阻塞等待里」这个前提";
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+    } // namespace
+
+    /**
+     * @brief postRemote 能把睡在无限阻塞里的循环叫醒，并由那条循环自己执行回调
+     * @details 钉住的是整条跨线程唤醒链：投递 → 全局队列 → 写唤醒器 → 目标循环从 epoll_wait/
+     *          GetQueuedCompletionStatus 醒来完成派发。其余投递用例都由测试线程自己 runOne()，
+     *          因此把唤醒那一段整个绕开了——唤醒接线一旦被摘掉，那些用例照绿，而线上表现是
+     *          「跨循环移交的连接永不生效、stop() 之后 join 永久挂住」。
+     *          新线程刚起时循环可能还不在阻塞等待里，所以先用运行器确认它已进入 run()
+     */
+    TEST(Scheduler, PostRemoteWakesALoopBlockedInPoll)
+    {
+        TestSupport::EventLoopThread runner;
+        settleLoopIntoBlockingWait(runner);
+
+        std::thread::id  executedOn{};
+        std::atomic<bool> isExecuted{false};
+        runner.loop().scheduler().postRemote([&executedOn, &isExecuted]()
+        {
+            // 载荷先写、标记最后以 release 发布：读侧用 acquire 配对才看得到线程 id
+            executedOn = std::this_thread::get_id();
+            isExecuted.store(true, std::memory_order_release);
+        });
+
+        EXPECT_TRUE(TestSupport::waitForCondition([&isExecuted]
+                                                  {
+                                                      return isExecuted.load(std::memory_order_acquire);
+                                                  }))
+            << "睡在阻塞等待里的循环没有被 postRemote 唤醒：回调永远不会执行";
+        EXPECT_EQ(executedOn, runner.threadId()) << "回调没有跑在目标循环线程上";
+    }
+
+    /**
+     * @brief scheduleRemote 的协程恢复同样能叫醒睡住的循环，且恢复发生在循环线程上
+     * @details 与上一条同一链路，只是载荷从 std::function 换成协程句柄：执行器完成回调、跨循环
+     *          移交的连接走的都是这一支
+     */
+    TEST(Scheduler, ScheduleRemoteWakesALoopBlockedInPoll)
+    {
+        TestSupport::EventLoopThread runner;
+        settleLoopIntoBlockingWait(runner);
+
+        std::atomic<bool> isResumed{false};
+        Task<void>        task = markTask(isResumed);
+        runner.loop().scheduler().scheduleRemote(task.handle());
+        // 帧交给运行器保管：即便这次没被恢复（用例失败），也不会在「恢复已投递、尚未执行」的
+        // 窗口里被销毁，读栈时看到的就是断言失败而不是又叠一个悬垂帧
+        runner.parkDriver(std::move(task));
+
+        EXPECT_TRUE(TestSupport::waitForCondition([&isResumed]
+                                                  {
+                                                      return isResumed.load(std::memory_order_acquire);
+                                                  }))
+            << "睡在阻塞等待里的循环没有被 scheduleRemote 唤醒：协程永远得不到恢复";
     }
 
 } // namespace AsynGyanis::Core
