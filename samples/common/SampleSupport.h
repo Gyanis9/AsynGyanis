@@ -28,7 +28,6 @@
 #include <format>
 #include <iostream>
 #include <memory>
-#include <print>
 #include <string_view>
 #include <thread>
 
@@ -133,6 +132,18 @@ namespace AsynGyanis::Samples
     }
 
     /**
+     * @brief 把一行面向操作者的启动期报错写到标准错误
+     * @details 不用 std::print：`<print>` 要 GCC 14+，而本仓库当作泄漏/未定义行为门禁的容器是
+     *          GCC 13，一条命令行提示不值得让整批示例在那台工具链上构建不过。文案仍由
+     *          std::format 拼（`<format>` 两侧都有），这里只负责输出与换行。
+     * @param message 已经拼好的整行（不含行尾换行）
+     */
+    inline void printStartupError(const std::string_view message)
+    {
+        std::cerr << message << '\n';
+    }
+
+    /**
      * @brief 取「--选项 值」型选项的取值，选项在末尾却没有值时当场终止
      * @param argc 实参个数
      * @param argv 实参表
@@ -148,8 +159,8 @@ namespace AsynGyanis::Samples
     {
         if (optionIndex + 1 >= argc)
         {
-            std::print(stderr, "启动参数非法：{} 后面缺少取值。请补上{}，或整个去掉该选项让程序按默认值运行\n",
-                       optionName, expectedValueHint);
+            printStartupError(std::format("启动参数非法：{} 后面缺少取值。请补上{}，或整个去掉该选项让程序按默认值运行",
+                                          optionName, expectedValueHint));
             std::exit(2);
         }
         return argv[optionIndex + 1];
@@ -181,9 +192,9 @@ namespace AsynGyanis::Samples
         if (parseResult.ec != std::errc{} || parseResult.ptr != valueText.data() + valueText.size()
             || parsedValue < minimumValue || parsedValue > maximumValue)
         {
-            std::print(stderr, "启动参数非法：{} 的值「{}」不是一个 {} 之间的十进制整数。"
-                               "请改成区间内的取值，或整个去掉该选项让程序按默认值运行\n",
-                       optionName, valueText, valueRangeText);
+            printStartupError(std::format("启动参数非法：{} 的值「{}」不是一个 {} 之间的十进制整数。"
+                                          "请改成区间内的取值，或整个去掉该选项让程序按默认值运行",
+                                          optionName, valueText, valueRangeText));
             std::exit(2);
         }
         return parsedValue;
