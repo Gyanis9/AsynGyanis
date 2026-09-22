@@ -67,8 +67,21 @@ std::filesystem::path sampleDirectory(const std::filesystem::path &root, const s
                                    "loadFromDirectory 递归读到了子目录里的配置");
         Samples::checklist().check(manager.getString("logging.level") == "DEBUG", "子目录里的 JSON 配置也生效了");
 
+        // reload 只报「成功」不等于真重放了：先把磁盘上的值改掉，再看新值有没有进来。
+        // workers 只在基础文件里有值（不被 override 覆盖），改它才看得出「按锚点目录 + 同一递归口径
+        // 重扫」；文件条数一起断言，挡掉「重放成别的目录」或「锚点丢了」这类看似成功的空转
+        writeTextFile(directory / "app.yaml",
+                      "server:\n"
+                      "  port: 8080\n"
+                      "  host: 0.0.0.0\n"
+                      "  workers: 8\n"
+                      "feature:\n"
+                      "  enable_tls: true\n"
+                      "  sample_rate: 0.25\n");
         const Base::ConfigLoadResult reloaded = manager.reload();
-        Samples::checklist().check(reloaded.success, "reload 能按同一批路径重放配置");
+        Samples::checklist().check(reloaded.success && reloaded.loadedFiles.size() == 3 &&
+                                       manager.getInt("server.workers", 0) == 8,
+                                   "reload 按同一批路径重扫，并把磁盘上的新值装了进来");
     }
 
     void demonstrateValueAccess(const std::filesystem::path &root)
@@ -100,7 +113,10 @@ std::filesystem::path sampleDirectory(const std::filesystem::path &root, const s
         }
         Samples::checklist().check(isThrownForWrongType, "取用类型不符时抛 ConfigValidationException");
 
-        Samples::checklist().check(!manager.keys().empty(), "keys() 能列出已加载的全部键");
+        // 「全部」与顺序都要断言：非空在任何一次成功加载后都成立，什么都证不出来
+        const std::vector<std::string> loadedKeys = manager.keys();
+        Samples::checklist().check(loadedKeys == std::vector<std::string>{"limits.label", "limits.maximum_body", "limits.ratio"},
+                                   "keys() 列出已加载的全部键，且按字典序");
         const Base::ConfigValue section = manager.getSection("limits");
         Samples::checklist().check(section.is_object() && section.size() == 3, "getSection 把扁平键还原成嵌套对象");
 
@@ -159,7 +175,10 @@ std::filesystem::path sampleDirectory(const std::filesystem::path &root, const s
         writeTextFile(directory / "broken.yaml", "server:\n  port: 1\n   bad-indent: [unclosed\n");
         manager.clear();
         const Base::ConfigLoadResult broken = manager.loadFiles({directory / "broken.yaml"});
-        Samples::checklist().check(!broken.success, "语法坏掉的 YAML 被拒，不会装进半份配置");
+        // 说「不会装进半份配置」就得看配置本体：只看 success 时，「解析了一半就报错但把半份装进去」
+        // 照样过。上一步刚 clear 过，所以键表为空才是这条说法的证据
+        Samples::checklist().check(!broken.success && manager.keys().empty(),
+                                   "语法坏掉的 YAML 被拒，不会装进半份配置");
     }
 
     void demonstrateHotReload(const std::filesystem::path &root)
