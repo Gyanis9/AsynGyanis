@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <format>
 #include <string>
@@ -16,7 +17,9 @@
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
+#include "Base/Log/Formatters/SourceLocationText.h"
 #include "Base/Log/Formatters/StackTraceText.h"
+#include "Base/Log/Formatters/TimestampText.h"
 
 namespace AsynGyanis::Base
 {
@@ -275,5 +278,67 @@ namespace AsynGyanis::Base
         const std::size_t headingPosition = output.find(kStackTraceHeading);
         ASSERT_NE(headingPosition, std::string::npos) << output;
         EXPECT_FALSE(output.substr(headingPosition + kStackTraceHeading.size()).empty()) << output;
+    }
+
+    /**
+     * @brief 带颜色的整行逐字段拼接结果与 `std::format` 规范逐字节相同
+     * @details 颜色码只夹在等级两侧、不参与补齐，因此「先追加颜色码再补空格」与「补齐后再套颜色」
+     *          这两种读法结果不同——这条对拍把它钉成唯一解。输入同样覆盖非 ASCII 的短文件名：
+     *          `{:<N}` 量的是显示宽度（宽字符两格），按码元数补齐在这一条上会当场少几格。
+     */
+    TEST(ColorFormatter, LineAssemblyMatchesFormatSpecByteForByte)
+    {
+        /**
+         * @brief 一条版式输入：只列会改变文本形状的那些取值
+         */
+        struct ShapeCase
+        {
+            LogLevel    level;    ///< 事件等级（同时决定颜色码与等级名）
+            const char *file;     ///< 源文件名，shortFileName 的输入
+            const char *function; ///< 函数名
+            std::string logger;   ///< 日志器名，空串表示根日志器
+            std::string message;  ///< 消息文本
+        };
+
+        const std::vector<ShapeCase> shapes = {
+                {LogLevel::Info, "color_fixture.cpp", "colorTestFunction", "color_logger", "color message"},
+                {LogLevel::Fatal, "b.cpp", "f", "", "空 logger 名"},
+                {LogLevel::Debug, "源.cpp", "f", "库存", "非 ASCII 的短文件名"},
+        };
+
+        ColorFormatter formatter;
+        for (const auto &shape: shapes)
+        {
+            const LogEvent event{shape.level, kFixedTimestampMoment, kThreadId,
+                                 SourceLocation{shape.file, kSourceLine, shape.function}, shape.logger, shape.message};
+
+            std::array<char, kTimestampTextBufferSize> timestampBuffer{};
+            const std::string_view timestampText = formatTimestampText(timestampBuffer, event.timestamp);
+            std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
+            std::string                                    locationOverflow;
+            const std::string_view                         location = formatSourceLocationText(event.location, locationBuffer,
+                                                                                               locationOverflow);
+
+#ifdef ASYN_DEBUG
+            const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
+                                                     timestampText,
+                                                     event.threadIdView(),
+                                                     LogColor::colorForLevel(shape.level),
+                                                     logLevelToString(shape.level),
+                                                     LogColor::kReset,
+                                                     event.loggerNameView(),
+                                                     location,
+                                                     event.message);
+#else
+            const std::string expected = std::format("{} [{}{:<5}{}] [{}] {}",
+                                                     timestampText,
+                                                     LogColor::colorForLevel(shape.level),
+                                                     logLevelToString(shape.level),
+                                                     LogColor::kReset,
+                                                     event.loggerNameView(),
+                                                     event.message);
+#endif
+            EXPECT_EQ(formatter.format(event), expected) << "形状：文件 " << shape.file;
+        }
     }
 } // namespace AsynGyanis::Base

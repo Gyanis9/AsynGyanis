@@ -16,6 +16,7 @@
 
 #include "Base/Log/Formatters/SourceLocationText.h"
 #include "Base/Log/Formatters/StackTraceText.h"
+#include "Base/Log/Formatters/TimestampText.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -342,5 +343,66 @@ namespace AsynGyanis::Base
         const std::size_t headingPosition = output.find(kStackTraceHeading);
         ASSERT_NE(headingPosition, std::string::npos) << output;
         EXPECT_FALSE(output.substr(headingPosition + kStackTraceHeading.size()).empty()) << output;
+    }
+
+    /**
+     * @brief 逐字段拼出的整行与 `std::format` 的版式规范逐字节相同
+     * @details 版式从 `std::format_to` 改成逐字段追加之后，「字段顺序、分隔符、补齐口径」三件事全靠这条
+     *          对拍钉住——期望值仍按原格式串现算，不跟着实现改。输入覆盖各等级、空 logger 名、超长与
+     *          非 ASCII 的源码位置：`{:<N}` 量的是**显示宽度**（宽字符算两格），实现若按码元数就少补
+     *          几格，非 ASCII 那一条当场红（本轮实测正是这样抓到的）。
+     */
+    TEST(DefaultFormatter, LineAssemblyMatchesFormatSpecByteForByte)
+    {
+        /**
+         * @brief 一条版式输入：只列会改变文本形状的那些取值
+         */
+        struct ShapeCase
+        {
+            LogLevel    level;    ///< 事件等级（决定等级名与是否要补齐）
+            const char *file;     ///< 源文件名，shortFileName 的输入
+            const char *function; ///< 函数名，Debug 版式不参与文本但参与定位串生成
+            std::string logger;   ///< 日志器名，空串表示根日志器
+            std::string message;  ///< 消息文本
+        };
+
+        const std::vector<ShapeCase> shapes = {
+                {LogLevel::Info, "formatter_fixture.cpp", "testFunction", "formatter_logger", "formatter message"},
+                {LogLevel::Trace, "a.cpp", "f", "", "空 logger 名"},
+                {LogLevel::Warn, "源.cpp", "f", "订单", "非 ASCII 的短文件名"},
+                {LogLevel::Error, "一个很长很长的夹具文件名.cpp", "veryLongFunctionName", "net.http2.session", "超长定位串"},
+        };
+
+        DefaultFormatter formatter;
+        for (const auto &shape: shapes)
+        {
+            const LogEvent event{shape.level, kFixedTimestampMoment, kThreadId,
+                                 SourceLocation{shape.file, kSourceLine, shape.function}, shape.logger, shape.message};
+
+            std::array<char, kTimestampTextBufferSize> timestampBuffer{};
+            const std::string_view timestampText = formatTimestampText(timestampBuffer, event.timestamp);
+            std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
+            std::string                                    locationOverflow;
+            const std::string_view                         location = formatSourceLocationText(event.location, locationBuffer,
+                                                                                               locationOverflow);
+
+#ifdef ASYN_DEBUG
+            const std::string expected = std::format("{} {} [{:<5}] [{}] {:<13} {}",
+                                                     timestampText,
+                                                     event.threadIdView(),
+                                                     logLevelToString(shape.level),
+                                                     event.loggerNameView(),
+                                                     location,
+                                                     event.message);
+#else
+            const std::string expected = std::format("{} [{:<5}] [{}] {}",
+                                                     timestampText,
+                                                     logLevelToString(shape.level),
+                                                     event.loggerNameView(),
+                                                     event.message);
+#endif
+            EXPECT_EQ(formatter.format(event), expected) << "形状：文件 " << shape.file << "、logger 是否为空 "
+                                                        << shape.logger.empty();
+        }
     }
 } // namespace AsynGyanis::Base
