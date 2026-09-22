@@ -868,6 +868,40 @@ namespace AsynGyanis::Net
         /// 压缩算法偏好顺序（对端都接受时按此挑选）：zstd 压缩率与速度综合最好、brotli 次之
         /// （静态内容尤佳）、gzip 兜底兼容。加算法按偏好插进这张表即可
         inline constexpr std::string_view kCompressionPreference[] = {"zstd", "br", "gzip"};
+
+        /**
+         * @brief 按偏好顺序挑出本请求要用的编码
+         * @param acceptEncoding 请求的 Accept-Encoding 原文
+         * @return std::string_view 选中的编码名（取值见 kCompressionPreference）；空表示按未压缩的原文发
+         */
+        [[nodiscard]] inline std::string_view selectPreferredEncoding(const std::string_view acceptEncoding)
+        {
+            for (const std::string_view candidate: kCompressionPreference)
+            {
+                if (acceptsEncoding(acceptEncoding, candidate))
+                {
+                    return candidate;
+                }
+            }
+            return {};
+        }
+
+        /**
+         * @brief 把响应标记成「正文是被转换过的表示」：强校验器降级为弱，并补上 Vary
+         * @details 压缩副本与未压缩副本是同一资源的不同表示，共用一个强 ETag 会让缓存把两者当成同一份
+         *          （RFC 9110 §8.8.1）；Vary 则是告诉缓存要按 Accept-Encoding 分桶（§12.5.5）。
+         *          304 也要走这里：§15.4.5 要求它回带 200 本该给出的那几个头部，缺一样就是把缓存引向错的变体。
+         * @param response 待改写的响应
+         */
+        inline void markTransformedRepresentationValidators(HttpResponse &response)
+        {
+            if (const std::optional<std::string> entityTag = response.getHeader("etag");
+                entityTag.has_value() && !entityTag->starts_with("W/"))
+            {
+                response.setHeader("etag", "W/" + *entityTag);
+            }
+            appendVaryAcceptEncoding(response);
+        }
     } // namespace detail
 
     /**
@@ -939,9 +973,22 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                // 流式响应逐段写出、长度对序列化层未知，压不了整块；无正文的状态码没有可压的内容
-                if (response.isChunkedResponse() || response.carriesNoContent())
+                // 流式响应逐段写出、长度对序列化层未知，压不了整块
+                if (response.isChunkedResponse())
                 {
+                    co_return;
+                }
+
+                // 无正文的状态码没有可压的内容，但 304 是例外：它得回带「同一请求的 200 会给出的」
+                // 验证器与 Vary（RFC 9110 §15.4.5）。判不准会不会真压成（压缩失败时发原文）只会多降级
+                // 一次——弱校验器不会把两个变体并成一份，强校验器却会，所以宁可往这个方向偏
+                if (response.carriesNoContent())
+                {
+                    if (response.status() == 304
+                        && !detail::selectPreferredEncoding(request.getHeader("accept-encoding").value_or(std::string{})).empty())
+                    {
+                        detail::markTransformedRepresentationValidators(response);
+                    }
                     co_return;
                 }
 
@@ -954,15 +1001,7 @@ namespace AsynGyanis::Net
                 // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
                 // q=0 视为明确拒绝，`*` 视为接受（语义见 detail::acceptsEncoding）
                 const std::string acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
-                std::string_view  selectedEncoding;
-                for (const std::string_view candidate: detail::kCompressionPreference)
-                {
-                    if (detail::acceptsEncoding(acceptEncodingHeader, candidate))
-                    {
-                        selectedEncoding = candidate;
-                        break;
-                    }
-                }
+                const std::string_view selectedEncoding = detail::selectPreferredEncoding(acceptEncodingHeader);
                 if (selectedEncoding.empty())
                 {
                     co_return;
@@ -1003,15 +1042,8 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                // 正文表示变了：强 ETag 必须降级为弱校验器（RFC 9110 §8.8.1），否则缓存会把
-                // 压缩副本与未压缩副本当成同一份表示
-                if (const std::optional<std::string> entityTag = response.getHeader("etag");
-                    entityTag.has_value() && !entityTag->starts_with("W/"))
-                {
-                    response.setHeader("etag", "W/" + *entityTag);
-                }
-
-                detail::appendVaryAcceptEncoding(response);
+                // 正文表示变了：强 ETag 降级为弱校验器并补上 Vary（与 304 那条路径共用同一份改写）
+                detail::markTransformedRepresentationValidators(response);
                 response.setHeader("content-encoding", std::string(selectedEncoding));
                 // 正文表示变了，业务此前显式声明过的 content-length（如静态文件对 HEAD 用的
                 // 「先声明长度、不读正文」）此刻描述的是未压缩正文的字节数，必须按压缩后的

@@ -113,6 +113,21 @@ namespace AsynGyanis::Net
                                response.setBody(kLargeBody);
                                co_return;
                            });
+                router.get("/etagged-revalidated",
+                           [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                           {
+                               // 只验「304 上的验证器改写」这一件事：正文留空、也不声明长度
+                               // （序列化层对 304 不自动补 content-length）
+                               response.setHeader("etag", "\"strong-validator\"");
+                               if (request.getHeader("if-none-match").value_or(std::string{}) == "\"strong-validator\"")
+                               {
+                                   response.setStatus(304);
+                                   co_return;
+                               }
+                               response.setHeader("content-type", "text/plain; charset=utf-8");
+                               response.setBody(kLargeBody);
+                               co_return;
+                           });
                 router.get("/preencoded",
                            [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                            {
@@ -415,6 +430,38 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "前置条件不成立：这条响应没被压缩";
         EXPECT_TRUE(hasHeaderLine(response->headers, "etag: W/\"strong-validator\"")) << "压缩后 ETag 没有降级为弱校验器：\n" << response->headers;
+    }
+
+    /**
+     * @brief 钉住：304 也必须按「这一请求本会被压缩」改写验证器（补 Vary、ETag 转弱）
+     * @details 同一请求的 200 给的是 W/"…" + vary: accept-encoding，而 304 原先因「无正文不压缩」
+     *          整段跳过改写，回的是强校验器且不带 Vary（RFC 9110 §15.4.5 要求 304 回带 200 本该给出的
+     *          这些头部）。缓存据此会把压缩副本与未压缩副本当成同一份表示（§8.8.1 禁止的正是这个）。
+     */
+    TEST(CompressionMiddleware, WeakensValidatorAndKeepsVaryOnNotModified)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+
+        const std::optional<ParsedResponse> compressedVariant = sendAndReadResponse(
+                fixture->listeningPort(),
+                makeRequestText("GET /etagged-revalidated HTTP/1.1", {"accept-encoding: gzip", "if-none-match: \"strong-validator\""}),
+                kCompressionTestTimeout);
+        ASSERT_TRUE(compressedVariant.has_value()) << "没有读到 304 响应";
+        ASSERT_TRUE(compressedVariant->headers.starts_with("HTTP/1.1 304")) << compressedVariant->headers;
+        EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "vary: accept-encoding")) << "304 没回带 Vary：\n" << compressedVariant->headers;
+        EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "etag: W/\"strong-validator\"")) << "304 回的是强校验器：\n"
+                                                                                              << compressedVariant->headers;
+
+        // 对照：只接受 identity 的客户端本来就不会被压缩，304 也就不该被降级或加 Vary
+        const std::optional<ParsedResponse> identityVariant = sendAndReadResponse(
+                fixture->listeningPort(),
+                makeRequestText("GET /etagged-revalidated HTTP/1.1",
+                                {"accept-encoding: identity", "if-none-match: \"strong-validator\""}),
+                kCompressionTestTimeout);
+        ASSERT_TRUE(identityVariant.has_value()) << "没有读到对照响应";
+        ASSERT_TRUE(identityVariant->headers.starts_with("HTTP/1.1 304")) << identityVariant->headers;
+        EXPECT_FALSE(hasHeaderLine(identityVariant->headers, "vary: accept-encoding")) << "本不压缩却加了 Vary：\n" << identityVariant->headers;
+        EXPECT_TRUE(hasHeaderLine(identityVariant->headers, "etag: \"strong-validator\"")) << identityVariant->headers;
     }
 
     /**
