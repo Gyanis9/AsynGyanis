@@ -205,6 +205,93 @@ namespace AsynGyanis::Base
         };
 
         /**
+         * @brief 刷新会占住一段时限的桩 Sink：write 立即返回，只有 flush 慢
+         * @details 用来把「下游刷新正在跑」造成为一个可观测、确定会过去的窗口，
+         *          从而单测上游在这段窗口里还能不能写进队列
+         */
+        class SlowFlushSink final : public LogSink
+        {
+        public:
+            /**
+             * @brief 使用共享记录构造慢刷新桩 Sink
+             * @param events 共享记录
+             * @param flushHold 每次 flush 占住的时长
+             */
+            explicit SlowFlushSink(std::shared_ptr<RecordedEvents> events,
+                                   const std::chrono::milliseconds flushHold = std::chrono::milliseconds(500)) :
+                m_events(std::move(events))
+                , m_flushHold(flushHold)
+            {
+            }
+
+            /**
+             * @brief 立即记录事件
+             * @details 重写 LogSink::write()：刻意不占时间，本用例要量的只有刷新那一段。
+             */
+            void write(const LogEvent &event) override
+            {
+                m_events->append(event);
+            }
+
+            /**
+             * @brief 占住 m_flushHold 那么久，期间可被 release() 提前放行
+             * @details 重写 LogSink::flush()：先置「已进入」标记再等放行。到点自动结束而不是
+             *          死等，这样即使上游真的握着锁、本用例也只是读数变红而不是挂住不放。
+             */
+            void flush() override
+            {
+                m_entered.store(true, std::memory_order_release);
+                {
+                    std::unique_lock lock(m_gateMutex);
+                    m_gateCondition.wait_for(lock, m_flushHold, [this]
+                    {
+                        return m_released;
+                    });
+                }
+                m_events->flushCount.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            /**
+             * @brief 放行正在占位的刷新
+             */
+            void release()
+            {
+                {
+                    std::lock_guard lock(m_gateMutex);
+                    m_released = true;
+                }
+                m_gateCondition.notify_all();
+            }
+
+            /**
+             * @brief 有界等待刷新进入占位窗口
+             * @param timeout 等待上限
+             * @return true 已进入
+             */
+            [[nodiscard]] bool waitUntilEntered(const std::chrono::milliseconds timeout)
+            {
+                const auto deadline = std::chrono::steady_clock::now() + timeout;
+                while (std::chrono::steady_clock::now() < deadline)
+                {
+                    if (m_entered.load(std::memory_order_acquire))
+                    {
+                        return true;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                return m_entered.load(std::memory_order_acquire);
+            }
+
+        private:
+            std::shared_ptr<RecordedEvents> m_events;         ///< 共享记录
+            std::chrono::milliseconds       m_flushHold;      ///< 单次刷新的占位时长
+            std::mutex                      m_gateMutex;      ///< 放行条件互斥锁
+            std::condition_variable         m_gateCondition;  ///< 放行条件变量（只挂「已放行」一个谓词）
+            bool                            m_released = false; ///< 是否已放行
+            std::atomic<bool>               m_entered{false};   ///< 是否已进入刷新占位窗口
+        };
+
+        /**
          * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "async message")
@@ -786,5 +873,41 @@ namespace AsynGyanis::Base
             cycle.detach();
         }
         EXPECT_TRUE(completed) << "构造/析构循环未在时限内完成：停止请求的唤醒可能被丢弃（worker 永久睡在条件变量上）";
+    }
+
+    /**
+     * @brief 下游刷新期间不得握着队列锁，别的线程还要往里写
+     * @details 钉的是锁的边界：flush() 转给下游的那一句可能是一次 FlushFileBuffers 或一次
+     *          标准输出刷新，而生产者的 write() 取的是同一把队列锁——握着锁刷新就等于让全进程
+     *          写日志的线程排在一块慢盘后面。判据取一对不可能同时误命中的时限：下游占位 500 ms，
+     *          而这一次写入必须在 100 ms 内返回
+     */
+    TEST(AsyncSink, ProducerIsNotQueuedBehindTheDownstreamFlush)
+    {
+        auto events    = std::make_shared<RecordedEvents>();
+        auto downstream = std::make_unique<SlowFlushSink>(events);
+        auto *gate      = downstream.get();
+        AsyncSink sink(std::move(downstream), 16U);
+
+        // 先投一行并等它落地，让 flush 的等待谓词从一开始就成立、直奔下游那一句
+        sink.write(makeEvent(LogLevel::Info, "drained_before_flush"));
+
+        std::thread flusher([&sink]
+        {
+            sink.flush();
+        });
+        ASSERT_TRUE(gate->waitUntilEntered(std::chrono::seconds(5)))
+                << "下游刷新从未开始，本用例没测到刷新那一段";
+
+        const auto startedAt = std::chrono::steady_clock::now();
+        sink.write(makeEvent(LogLevel::Info, "written_during_downstream_flush"));
+        const auto producerWait = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+
+        gate->release();
+        flusher.join();
+
+        EXPECT_LT(producerWait, std::chrono::milliseconds(100))
+                << "实测等了 " << producerWait.count() << " ms：flush() 握着队列锁做下游刷新，"
+                   "生产者被排在一次慢刷新后面";
     }
 } // namespace AsynGyanis::Base

@@ -162,13 +162,18 @@ namespace AsynGyanis::Base
 
     void AsyncSink::flush()
     {
-        std::unique_lock lock(m_queueMutex);
-        // 等待条件用「待落地数为 0」而非「队列为空」：worker 取出事件后队列即空，
-        // 但下游 write 尚未返回，此时放行会让 flush() 在日志仍在途时提前返回
-        m_flushCondition.wait(lock, [this]
         {
-            return m_pendingCount == 0 || m_stopToken.stop_requested();
-        });
+            std::unique_lock lock(m_queueMutex);
+            // 等待条件用「待落地数为 0」而非「队列为空」：worker 取出事件后队列即空，
+            // 但下游 write 尚未返回，此时放行会让 flush() 在日志仍在途时提前返回
+            m_flushCondition.wait(lock, [this]
+            {
+                return m_pendingCount == 0 || m_stopToken.stop_requested();
+            });
+        }
+        // 转发刷新必须在锁外：这一句可能是 FlushFileBuffers 或一次标准输出刷新，握着队列锁
+        // 做它就等于让全进程所有写日志的线程排在一次慢盘刷新后面。m_wrappedSink 自构造起
+        // 不再换指，下游各 Sink 自己的写与刷新也各自持锁，stop() 早就是这么排的
         if (m_wrappedSink)
         {
             m_wrappedSink->flush();
