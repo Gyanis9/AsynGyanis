@@ -133,6 +133,29 @@ namespace AsynGyanis::Samples
     }
 
     /**
+     * @brief 取「--选项 值」型选项的取值，选项在末尾却没有值时当场终止
+     * @param argc 实参个数
+     * @param argv 实参表
+     * @param optionIndex 选项在实参表中的下标，取值位于 optionIndex + 1
+     * @param optionName 选项名，只用于报错文案
+     * @param expectedValueHint 该选项期望的取值写法，进报错文案
+     * @return const char * 取值字符串（指向实参表，生命周期随进程）
+     * @details 「选项排在末尾却没有取值」不当成「没给这个选项」：静默回落会让脚本以为程序按某个
+     *          地址/某份配置在跑，实际跑的是默认值，结论行照旧是 PASS。
+     */
+    inline const char *readOptionValue(const int argc, char **argv, const int optionIndex, const std::string_view optionName,
+                                       const std::string_view expectedValueHint)
+    {
+        if (optionIndex + 1 >= argc)
+        {
+            std::print(stderr, "启动参数非法：{} 后面缺少取值。请补上{}，或整个去掉该选项让程序按默认值运行\n",
+                       optionName, expectedValueHint);
+            std::exit(2);
+        }
+        return argv[optionIndex + 1];
+    }
+
+    /**
      * @brief 取一个「--选项 数值」型命令行选项的取值，缺失或非法时当场终止
      * @param argc 实参个数
      * @param argv 实参表
@@ -140,7 +163,7 @@ namespace AsynGyanis::Samples
      * @param optionName 选项名，只用于报错文案
      * @param minimumValue 允许的最小值（含）
      * @param maximumValue 允许的最大值（含）
-     * @return std::uint64_t 落在区间内的取值
+     * @return std::uint64_t 区间内的取值
      * @details 三条硬判据各挡一种静默变形：整串必须是纯十进制无符号数（负数因此判非法，不会绕回大数）、
      *          必须落在区间内（99999 不会绕回 34463）、选项后面必须有值（漏写取值不当成「没给这个选项」）。
      *          非法一律以退出码 2 终止而不回落默认值：脚本分发了哪个端口与程序实际听在哪个端口必须是
@@ -150,14 +173,9 @@ namespace AsynGyanis::Samples
                                            const std::uint64_t minimumValue, const std::uint64_t maximumValue)
     {
         const std::string valueRangeText = std::format("{}-{}", minimumValue, maximumValue);
-        if (optionIndex + 1 >= argc)
-        {
-            std::print(stderr, "启动参数非法：{} 后面缺少取值。请补上一个 {} 之间的十进制整数，"
-                               "或整个去掉该选项让程序按默认值运行\n", optionName, valueRangeText);
-            std::exit(2);
-        }
-
-        const std::string_view valueText(argv[optionIndex + 1]);
+        const std::string expectedValueHint = std::format("一个 {} 之间的十进制整数", valueRangeText);
+        const auto       *const valuePointer = readOptionValue(argc, argv, optionIndex, optionName, expectedValueHint);
+        const std::string_view valueText(valuePointer);
         std::uint64_t          parsedValue = 0;
         const auto             parseResult = std::from_chars(valueText.data(), valueText.data() + valueText.size(), parsedValue);
         if (parseResult.ec != std::errc{} || parseResult.ptr != valueText.data() + valueText.size()

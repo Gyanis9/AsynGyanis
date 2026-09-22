@@ -270,8 +270,11 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; ++i)
     {
-        if (std::string_view arg = argv[i]; arg == "--host" && i + 1 < argc)
-            host = argv[++i];
+        if (std::string_view arg = argv[i]; arg == "--host")
+        {
+            host = Samples::readOptionValue(argc, argv, i, "--host", "一个监听地址");
+            ++i;
+        }
         // 数值选项一律走同一个严格解析器：原先逐条 std::stoi/std::stoull 有三副面孔——非数字直接抛出
         // （整个进程无一句解释地终止）、超范围经强转绕回（--port 99999 静默听在 34463）、负数绕回极大值
         // （--threads -4 变成 42 亿条线程），而选项排在末尾却没有值时又被当成「没给这个选项」跳过
@@ -320,12 +323,21 @@ int main(int argc, char **argv)
                     Samples::readNumericOption(argc, argv, i, "--max-inflight-body", 0U, std::numeric_limits<std::uint64_t>::max()));
             ++i;
         }
-        else if (arg == "--cert" && i + 1 < argc)
-            certificateFile = argv[++i];
-        else if (arg == "--key" && i + 1 < argc)
-            keyFile = argv[++i];
-        else if (arg == "--config" && i + 1 < argc)
-            configFile = argv[++i];
+        else if (arg == "--cert")
+        {
+            certificateFile = Samples::readOptionValue(argc, argv, i, "--cert", "一个证书文件路径");
+            ++i;
+        }
+        else if (arg == "--key")
+        {
+            keyFile = Samples::readOptionValue(argc, argv, i, "--key", "一个私钥文件路径");
+            ++i;
+        }
+        else if (arg == "--config")
+        {
+            configFile = Samples::readOptionValue(argc, argv, i, "--config", "一个配置文件路径");
+            ++i;
+        }
         else if (arg == "--workers")
         {
             // 上限与 --threads 同一条理由：这么多进程只会把机器起爆，出现即视为笔误
