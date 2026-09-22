@@ -1,10 +1,18 @@
-// Task 单元测试：返回值、异常传播、移动语义与等待器接口
+// Task 单元测试：返回值、异常传播（含交给等待方与没人接手两条出路）、移动语义与等待器接口
 
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Core/Coroutine/Task.h"
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -65,6 +73,88 @@ namespace AsynGyanis::Core
         private:
             std::coroutine_handle<> m_handle{}; ///< 挂在门上的协程
         };
+
+        /**
+         * @brief 一条被记录下来的日志事件（只留断言要用的两项）
+         */
+        struct RecordedEntry
+        {
+            Base::LogLevel level{};     ///< 级别
+            std::string    message;     ///< 正文
+        };
+
+        /// 用例与 Sink 共享的记录容器：Sink 被日志器接管后，用例仍能从这份引用读回事件
+        struct RecordCollector
+        {
+            std::mutex                 mutex;   ///< 保护 entries
+            std::vector<RecordedEntry> entries; ///< 按到达顺序记录的日志事件
+        };
+
+        /**
+         * @brief 把事件收进内存的记录型 Sink
+         */
+        class RecordingSink final : public Base::LogSink
+        {
+        public:
+            /**
+             * @brief 构造记录型 Sink
+             * @param collector 与用例共享的记录容器
+             */
+            explicit RecordingSink(std::shared_ptr<RecordCollector> collector) :
+                m_collector(std::move(collector))
+            {
+            }
+
+            /**
+             * @brief 记下一条事件的级别与正文
+             * @param event 日志事件
+             */
+            void write(const Base::LogEvent &event) override
+            {
+                const std::lock_guard lock(m_collector->mutex);
+                m_collector->entries.push_back(RecordedEntry{event.level, event.message});
+            }
+
+            /**
+             * @brief 内容全在内存里，没有缓冲要落盘，故为空实现
+             */
+            void flush() override
+            {
+            }
+
+        private:
+            std::shared_ptr<RecordCollector> m_collector; ///< 与用例共享的记录容器
+        };
+
+        /**
+         * @brief 摘掉挂在 root 日志器上的 Sink
+         * @details root 默认不带任何 Sink（由使用方配置），故清空即恢复用例前的原样
+         */
+        class RootSinkGuard
+        {
+        public:
+            /// 显式默认构造：本类的用途是「离开作用域时清掉 Sink」，构造本身无事可做
+            RootSinkGuard() = default;
+
+            ~RootSinkGuard()
+            {
+                Base::LoggerRegistry::instance().getRootLogger().clearSinks();
+            }
+
+            RootSinkGuard(const RootSinkGuard &) = delete;
+            RootSinkGuard &operator=(const RootSinkGuard &) = delete;
+        };
+
+        /**
+         * @brief 取记录快照（把锁内的副本交出来，断言不再碰容器）
+         * @param collector 记录容器
+         * @return std::vector<RecordedEntry> 事件副本
+         */
+        std::vector<RecordedEntry> snapshotOf(const std::shared_ptr<RecordCollector> &collector)
+        {
+            const std::lock_guard lock(collector->mutex);
+            return collector->entries;
+        }
     }
 
     /**
@@ -108,6 +198,58 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(task.isReady());
 
         EXPECT_THROW(task.handle().promise().result(), std::runtime_error);
+    }
+
+    /**
+     * @brief 没人接手的协程抛出异常时，错误要落到日志而不是静静消失
+     * @details 服务起不来正是这个形态：start()/listen() 协程被 schedule 出去、没人 await，
+     *          异常存进 promise 之后再没有谁去取。这里不必启事件循环——直接把句柄 resume 到
+     *          跑完，走的是调度器投递后同一条终结路径
+     */
+    TEST(Task, DetachedTaskReportsUnhandledExceptionToLogger)
+    {
+        const std::shared_ptr<RecordCollector> collector = std::make_shared<RecordCollector>();
+        RootSinkGuard                        sinkGuard;
+        Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(collector));
+
+        auto task = throwingTask();
+        task.handle().resume();
+        ASSERT_TRUE(task.isReady());
+
+        // 只报一条：多报会让日志变成噪声，少报就等于没修
+        const std::vector<RecordedEntry> entries = snapshotOf(collector);
+        ASSERT_EQ(entries.size(), 1U) << "分离协程的异常没有被唯一地报出来";
+        EXPECT_EQ(entries.front().level, Base::LogLevel::Error) << "没人接手的异常不该按低于错误的级别记";
+        EXPECT_NE(entries.front().message.find("test error"), std::string::npos)
+                << "报出来的正文里没有异常文本，运维无从定位：" << entries.front().message;
+    }
+
+    /**
+     * @brief 有人 await 的任务不再另记这条日志：异常交回等待方，不该同时留一份噪声
+     */
+    TEST(Task, AwaitedTaskRethrowsWithoutReportingToLogger)
+    {
+        const std::shared_ptr<RecordCollector> collector = std::make_shared<RecordCollector>();
+        RootSinkGuard                        sinkGuard;
+        Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(collector));
+
+        bool isCaughtByAwaiter = false;
+        // 子任务在父协程 await_suspend 时登记了 continuation，因此它终结时异常是有主的
+        auto parentBody = [&isCaughtByAwaiter]() -> Task<>
+        {
+            try
+            {
+                co_await throwingTask();
+            } catch (const std::runtime_error &)
+            {
+                isCaughtByAwaiter = true;
+            }
+        };
+        auto parent = parentBody();
+        parent.handle().resume();
+
+        EXPECT_TRUE(isCaughtByAwaiter) << "父协程没接到子任务的异常，本例的对照前提就不成立了";
+        EXPECT_TRUE(snapshotOf(collector).empty()) << "异常已交给等待方，却又被当成没人接手报了一次";
     }
 
     /**

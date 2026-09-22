@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/CoroutinePool.h"
 
 #include <coroutine>
@@ -19,6 +20,25 @@
 namespace AsynGyanis::Core
 {
     class Scheduler;
+
+    /**
+     * @brief 记下「协程里跑出但没人接住」的异常：分离投递的任务唯一的报错出口
+     * @details 取抛出物的文本只能重抛一次再接住；非 std::exception 的抛出物不猜类型、只报它存在
+     * @param exception 待记录的异常
+     */
+    inline void reportUnhandledException(const std::exception_ptr &exception) noexcept
+    {
+        try
+        {
+            std::rethrow_exception(exception);
+        } catch (const std::exception &unhandledException)
+        {
+            LOG_ERROR_EXCEPTION(unhandledException, "Task: 协程有异常没人接住，已记录并丢弃。原因：{}", unhandledException.what());
+        } catch (...)
+        {
+            LOG_ERROR("Task: 协程抛出了非 std::exception 的抛出物，没人接住，已丢弃");
+        }
+    }
 
     // ============================================================================
     // Task<T> — 协程返回类型
@@ -50,7 +70,10 @@ namespace AsynGyanis::Core
         }
 
         /**
-         * @brief 协程挂起时，返回需要恢复的协程句柄（即 continuation）。
+         * @brief 协程挂起时，返回需要恢复的协程句柄（即 continuation）；没人接手的异常就地记日志
+         * @details 分离投递（schedule 后无人 co_await）的协程抛出的异常只会被存进 promise 再没人取，
+         *          处置与 std::execution 的 report_exception 一致：终结点上没有等待者就记一条错误。
+         *          之后真有人 await 到本任务，异常照样重新抛出（日志可能重复，不丢则不划算）
          * @tparam Promise 协程 promise 类型
          * @param handle 当前协程的句柄
          * @return 需要恢复的协程句柄，若不存在则返回 noop_coroutine
@@ -58,7 +81,13 @@ namespace AsynGyanis::Core
         template<typename Promise>
         std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> handle) noexcept
         {
-            if (auto &promise = handle.promise(); promise.m_continuation)
+            auto &promise = handle.promise();
+            if (promise.m_exception && !promise.m_continuation)
+            {
+                reportUnhandledException(promise.m_exception);
+            }
+
+            if (promise.m_continuation)
             {
                 return promise.m_continuation;
             }
