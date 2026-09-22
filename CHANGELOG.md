@@ -339,6 +339,21 @@
   （只接受零终止字符串）之前本地拦下，不再静默截断成认证失败。
 - **Database：`resetSessionState()` 不再可能 terminate**：SQLite/MySQL 在 `noexcept` 复位路径上调用会构造
   `std::string` 的 `rollback()`，分配失败即 terminate，现显式接住。
+- **Database：连接池不再握着空闲栈的锁去断开连接**：`disconnect()` 是一次会阻塞的系统调用（驱动里
+  还要发一条 Quit 并等它走完），而两处丢弃连接的出口把它留在了 `m_mutex` 的临界区内——`tryAcquireInternal()`
+  在锁内弹出后立刻判过期、判存活，不合格就在锁内断开；`returnConnection()` 的「超过最大存活期」与
+  「`maximumLifetimeSeconds == 0`（一归还就过期）」两条分支同样在锁内断开，后者意味着每次归还都触发。
+  后果是队头阻塞：一次慢关闭（对端不应答、驱动超时）会把所有 `acquire()` 快路径、`tryAcquire()`、
+  `idleCount()`/`totalCount()` 与后台驱逐一起堵在那把锁上。这条纪律其实早已写在 `healthCheckLoop()` 里
+  （「锁内只做摘出与计数，disconnect 必须留到锁外」），只是那两个出口没照做，而 `acquire()` 的等待路径
+  反而是对的——同一件事在三处给了两种答案。现在两条出口都改成锁内只判定与摘出、出锁再断开，
+  `closeTrackedConnection()` 的契约也写明调用方不得持有 `m_mutex`。
+  回归用例 `ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect` 与
+  `AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect` 各钉一条出口：打桩连接的 `disconnect()` 停在
+  门闩里，另一个线程去读统计。重叠条件由用例自己造（只在门闩确认「确实停在断开里」之后才去碰锁），
+  因此不赌调度。容器 GCC + ASan/UBSan 下先证伪：撤掉修复时两条都红在「观察者 200 ms 内读不到锁」，
+  装回修复后 60 次连跑零红。协程等待表那把 `m_asyncMutex` 仍会罩住一次断开——取出与入表必须同锁
+  才不漏唤醒，这笔代价留在该锁内（它只挡异步等待路径，不再挡整个池）。
 - **HTTP/3 的响应头部与 h1/h2 逐字同源**：同一份业务代码此前换个协议会得到不同的响应头。
   多条 `Set-Cookie` 只发得出第一条（`HttpResponse` 的头视图是「一名一值」，逐条取值要走
   `headerValues()`）；不补 `date`（RFC 9110 §6.1 要求源服务器给出）；有正文却没设媒体类型时
