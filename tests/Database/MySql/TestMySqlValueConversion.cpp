@@ -9,7 +9,8 @@
 // - parseDoubleText：十进制与科学计数、±0、上溢拒；非有限值拼写 inf / -inf / nan / -nan 及
 //   infinity 由 from_chars 的浮点文法认出（这点反直觉，故单独钉用例）
 // - isBinaryColumn：BLOB 与 TEXT 共用类型码，字符集 63 是唯一判据；非字节类型即使字符集是 binary 也不按二进制
-// - convertColumnText：整数列、浮点列、DECIMAL 交原文、零长 BLOB ≠ NULL、内嵌 '\0' 按长度保留
+// - convertColumnText：整数列、浮点列、DECIMAL 交原文、零长 BLOB ≠ NULL、内嵌 '\0' 按长度保留；
+//   BIT 列按大端整数还原（BIT(64) 超 int64 的那半段退回十进制文本，意外宽度一律不猜）
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
@@ -196,6 +197,64 @@ namespace AsynGyanis::Database::Detail
                 convertColumnText(MYSQL_TYPE_BLOB, kBinaryCharacterSetNumber, blob.data(), 0U);
         ASSERT_TRUE(std::holds_alternative<BinaryBytes>(emptyBlob)) << databaseValueTypeName(emptyBlob);
         EXPECT_TRUE(std::get<BinaryBytes>(emptyBlob).empty());
+    }
+
+    /**
+     * @brief 钉住 BIT 列按大端整数还原，而不是把一串控制字节冒充成文本列
+     * @details 真机实测的线格式：BIT(8) 的 200 是 1 字节 0xC8，BIT(1) 的 0 是 1 字节 NUL。
+     *          按文本交出时 ORM 侧只能报「文本无法映射到整型」，而 BIT(1)=0 更是一串看着像空串的内容。
+     */
+    TEST(MySqlValueConversion, BitColumnsBecomeIntegers)
+    {
+        const std::string bit8Value = std::string("\xC8", 1);
+        const DatabaseValue bit8    = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, bit8Value.data(), bit8Value.size());
+        ASSERT_TRUE(std::holds_alternative<std::int64_t>(bit8)) << databaseValueTypeName(bit8);
+        EXPECT_EQ(std::get<std::int64_t>(bit8), 200) << "字节被符号扩展或字节序读反都会得到别的数";
+
+        const std::string bit1Set   = std::string("\x01", 1);
+        const std::string bit1Clear = std::string("\x00", 1);
+        EXPECT_EQ(std::get<std::int64_t>(convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, bit1Set.data(), bit1Set.size())), 1);
+        // 清位的 BIT(1) 必须是整数 0：交出长度 1 的 NUL 文本时，它在调用方眼里与「空串」几乎没区别
+        EXPECT_EQ(std::get<std::int64_t>(convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, bit1Clear.data(), bit1Clear.size())), 0);
+
+        // 多字节按大端拼装：先到的 0x12 是高位
+        const std::string bit16Value = std::string("\x12\x34", 2);
+        EXPECT_EQ(std::get<std::int64_t>(convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, bit16Value.data(), bit16Value.size())), 0x1234);
+    }
+
+    /**
+     * @brief 钉住 BIT(64) 超出 int64 的那半段按十进制文本交出，不凭空造数
+     * @details 与 BIGINT UNSIGNED 同一条约定：RowMapper 的文本支路能把十进制文本原样读回无符号成员。
+     */
+    TEST(MySqlValueConversion, Bit64BeyondInt64RangeBecomesDecimalText)
+    {
+        const std::string allOnes       = std::string("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF", 8);
+        const DatabaseValue overflowValue = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, allOnes.data(), allOnes.size());
+        ASSERT_TRUE(std::holds_alternative<std::string>(overflowValue)) << databaseValueTypeName(overflowValue);
+        EXPECT_EQ(std::get<std::string>(overflowValue), "18446744073709551615");
+
+        // 恰好落在 int64 上界时仍按整数交出：分界线两侧不能都退化
+        const std::string int64Maximum = std::string("\x7F\xFF\xFF\xFF\xFF\xFF\xFF\xFF", 8);
+        EXPECT_EQ(std::get<std::int64_t>(convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, int64Maximum.data(), int64Maximum.size())),
+                  std::numeric_limits<std::int64_t>::max());
+    }
+
+    /**
+     * @brief 钉住 BIT 的意外宽度一律退回原文：宁可给回原始字节也不猜一个数
+     * @details 服务端不会给出长度为 0 或超过 8 字节的 BIT 载荷；真遇到（协议错位、将来加宽）说明这份
+     *          映射的前提已不成立，此时取整或截断到 64 位都属静默变形。
+     */
+    TEST(MySqlValueConversion, UnexpectedBitPayloadWidthsStayVerbatim)
+    {
+        const std::string emptyPayload = std::string();
+        const DatabaseValue emptyValue = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, emptyPayload.data(), emptyPayload.size());
+        ASSERT_TRUE(std::holds_alternative<std::string>(emptyValue)) << "空载荷应退回空文本，而不是 monostate（那等于说它是 NULL）";
+        EXPECT_TRUE(std::get<std::string>(emptyValue).empty());
+
+        const std::string nineBytes    = std::string("123456789", 9);
+        const DatabaseValue tooWideValue = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, nineBytes.data(), nineBytes.size());
+        ASSERT_TRUE(std::holds_alternative<std::string>(tooWideValue)) << databaseValueTypeName(tooWideValue);
+        EXPECT_EQ(std::get<std::string>(tooWideValue), nineBytes);
     }
 
 } // namespace AsynGyanis::Database::Detail

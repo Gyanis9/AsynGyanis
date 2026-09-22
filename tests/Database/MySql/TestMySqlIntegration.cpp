@@ -4,6 +4,7 @@
 // - 同一语句文本重复执行走连接的预处理语句缓存：必须读到最新数据，且失败一次后同一条文本仍可复用
 // - ORM 端到端：CRUD、排序分页、批量插入分块、引用标识符（保留字/空格/反引号）、SchemaMigrator 建表与删表
 // - 表存在性查询只认基表：同名视图不算「表已存在」，基表仍要算（TableExistsIgnoresViewsAndStillSeesBaseTables）
+// - BIT 列在文本协议与预处理协议上都按整数读出（BitColumnsAreReadAsIntegersOnBothProtocolPaths）
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
@@ -2084,6 +2085,52 @@ namespace AsynGyanis::Database
         EXPECT_EQ(countMetadataMatches(objectName), 1) << "table_type 过滤把基表也一起排除了";
 
         EXPECT_TRUE(connection->execute("DROP TABLE " + objectName) != nullptr) << connection->lastError();
+    }
+
+    /**
+     * @brief 钉住真机 BIT 列在两条读取路径上都按整数交出，而不是原样控制字节
+     * @details 线格式实测为 ⌈M/8⌉ 字节的大端无符号整数（BIT(8) 的 200 就是单字节 0xC8），
+     *          文本协议与 mysql_stmt_* 二进制协议都过同一份列转换，因此两条路都要钉：
+     *          只测一条时，另一条的取值缓冲形状不同（二进制协议按长度前缀读），漏改不会被发现。
+     * @note 表名带进程级随机后缀并自建自清，并行执行时不会与其它用例撞名
+     */
+    TEST_F(MySqlIntegrationTest, BitColumnsAreReadAsIntegersOnBothProtocolPaths)
+    {
+        const std::string tableName = "asyngyanis_itg_bit_" + std::to_string(std::random_device{}());
+
+        std::unique_ptr<ConnectionPool> pool       = makePool(1);
+        PooledConnection                connection = pool->acquire();
+        ASSERT_TRUE(connection);
+
+        ASSERT_TRUE(connection->execute("CREATE TABLE " + tableName
+                                        + " (id INT PRIMARY KEY, flags BIT(8), one BIT(1), wide BIT(64))")
+                    != nullptr)
+            << connection->lastError();
+        ASSERT_TRUE(connection->execute("INSERT INTO " + tableName
+                                        + " VALUES (1, b'11001000', b'0', b'1111111111111111111111111111111111111111111111111111111111111111')")
+                    != nullptr)
+            << connection->lastError();
+
+        // ---- 文本协议（mysql_store_result）----
+        const std::unique_ptr<DatabaseResult> textResult = connection->execute("SELECT flags, one, wide FROM " + tableName);
+        ASSERT_TRUE(textResult != nullptr) << connection->lastError();
+        ASSERT_TRUE(textResult->next());
+        EXPECT_EQ(std::get<std::int64_t>(textResult->getValue(0)), 200);
+        EXPECT_EQ(std::get<std::int64_t>(textResult->getValue(1)), 0) << "清位的 BIT(1) 不能读成长度 1 的 NUL 文本";
+        // BIT(64) 的全 1 装不进 int64：按十进制文本交出，与 BIGINT UNSIGNED 同一条约定
+        EXPECT_EQ(std::get<std::string>(textResult->getValue(2)), "18446744073709551615");
+
+        // ---- 二进制协议（mysql_stmt_* 预处理语句）----
+        const std::unique_ptr<DatabaseResult> preparedResult =
+            connection->execute("SELECT flags, one, wide FROM " + tableName + " WHERE id = ?",
+                                std::vector<DatabaseValue>{std::int64_t{1}});
+        ASSERT_TRUE(preparedResult != nullptr) << connection->lastError();
+        ASSERT_TRUE(preparedResult->next());
+        EXPECT_EQ(std::get<std::int64_t>(preparedResult->getValue(0)), 200);
+        EXPECT_EQ(std::get<std::int64_t>(preparedResult->getValue(1)), 0);
+        EXPECT_EQ(std::get<std::string>(preparedResult->getValue(2)), "18446744073709551615");
+
+        EXPECT_TRUE(connection->execute("DROP TABLE " + tableName) != nullptr) << connection->lastError();
     }
 
 } // namespace AsynGyanis::Database

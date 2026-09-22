@@ -8,8 +8,8 @@
  *
  * @details 文本协议（mysql_store_result）与二进制协议（mysql_stmt_* 预处理语句）都把列值按
  *          「指针 + 长度」交给客户端，本头文件把「按列声明类型解析成 DatabaseValue」这件事收敛成
- *          一份实现：SQL NULL→monostate、整数列→int64_t、浮点列→double、二进制列→BinaryBytes、
- *          DECIMAL 与其余类型→std::string。
+ *          一份实现：SQL NULL→monostate、整数列与 BIT 列→int64_t、浮点列→double、
+ *          二进制列→BinaryBytes、DECIMAL 与其余类型→std::string。
  *
  * @note 二进制列**不能只看类型码**：MySQL 的 BLOB 与 TEXT 共用 MYSQL_TYPE_BLOB，VARBINARY 与
  *       VARCHAR 共用 MYSQL_TYPE_VAR_STRING，唯一的区分依据是列的字符集是否为 binary(63)，
@@ -39,6 +39,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -123,7 +124,9 @@ namespace AsynGyanis::Database::Detail
             case MYSQL_TYPE_VARCHAR:
                 return true;
             default:
-                // 几何、BIT 等其余类型即使字符集是 binary，也各有自己的承载方式，不按字节序列交出
+                // 名单之外（几何、BIT 等）即便字符集是 binary 也不进 BinaryBytes：BIT 由 convertColumnText
+                // 按大端整数还原，几何则按 std::string 交出服务端的 WKB 字节（DatabaseValue 没有几何备选，
+                // 本驱动的方言也不建空间列）——两者都不当成「一段二进制载荷」原样交给调用方
                 return false;
         }
     }
@@ -194,10 +197,38 @@ namespace AsynGyanis::Database::Detail
                 // 因此原样交出十进制文本，由调用方决定用字符串还是本地高精度类型承接
                 return std::string(rawValue, byteLength);
 
+            case MYSQL_TYPE_BIT:
+            {
+                // 协议把 BIT(M) 送成 ⌈M/8⌉ 字节的**大端无符号整数**（实测 BIT(8)=200 回 0xC8、
+                // BIT(1)=0 回一个长度为 1 的 NUL 字节）。按文本交出等于把一串控制字节冒充成文本列，
+                // 因此还原成数值：装得进 int64 给整数，装不进（BIT(64) 上界 2^64-1）按十进制文本交出
+                // ——与 MYSQL_TYPE_*UNSIGNED 同一套约定，RowMapper 的文本支路能原样读回。
+                // 空载荷与超过 8 字节的意外宽度一律不猜，退回原文交出去
+                if (byteLength == 0 || byteLength > sizeof(std::uint64_t))
+                {
+                    return std::string(rawValue, byteLength);
+                }
+
+                std::uint64_t bitFieldValue = 0;
+                for (size_t byteIndex = 0; byteIndex < byteLength; ++byteIndex)
+                {
+                    // 大端拼装：先到的字节是高位。unsigned char 转换不能省，
+                    // 否则 char 为有符号的平台会把 0x80 以上的字节符号扩展成负数污染高位
+                    bitFieldValue = (bitFieldValue << 8U) | static_cast<unsigned char>(rawValue[byteIndex]);
+                }
+
+                if (bitFieldValue <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                {
+                    return static_cast<std::int64_t>(bitFieldValue);
+                }
+                return std::to_string(bitFieldValue);
+            }
+
             default:
-                // 日期时间、字符、BIT、SET、几何等其余类型在 DatabaseValue 里都只能用 std::string 承载：
+                // 日期时间、字符集文本、SET、几何等其余类型在 DatabaseValue 里都只能用 std::string 承载：
                 // 按 (指针, 长度) 原样拷贝，内嵌的 '\0' 因此不丢，也不依赖零终止符。
-                // （二进制列已在函数开头按字符集分流，不会走到这里）
+                // （二进制列已在函数开头按字符集分流，不会走到这里；GEOMETRY 落在这里，
+                // 交出的是服务端给的 WKB 字节，不是 WKT 文本）
                 return std::string(rawValue, byteLength);
         }
     }
