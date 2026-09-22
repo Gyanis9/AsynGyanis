@@ -1,14 +1,24 @@
 // Scheduler 单元测试：本地就绪队列、跨线程投递与队列查询
+//
+// 末尾的 RemotePostAllocationProfile 是跨线程投递的分配画像台账（口径与
+// tests/Net/Http/TestHotPathAllocations.cpp 一致，共用 AllocationProbe）：
+//   · 孤立投递（投一条立刻取走）一千次：libstdc++ 62 次 / 31744 字节，MSVC 2 次 / 128 字节；
+//   · 成批投递（投 64 条再整批取完）一千轮共六万四千条：libstdc++ 4001 次，MSVC 67 次。
+// 两家都不到「每投一条各要一块」，因此判据取「每 8 条至多一块」的上界而不是钉某个块大小；
+// 分配判据只在 Release 下钉，Debug 仍跑同样的形状并打出读数供对照
 
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "CoreTestSupport.h"
+
+#include "AllocationProbe.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
 #include <coroutine>
+#include <cstdio>
 #include <thread>
 #include <vector>
 
@@ -389,6 +399,77 @@ namespace AsynGyanis::Core
                                                       return isResumed.load(std::memory_order_acquire);
                                                   }))
             << "睡在阻塞等待里的循环没有被 scheduleRemote 唤醒：协程永远得不到恢复";
+    }
+
+    /**
+     * @brief 跨线程投递的分配画像：孤立的一条与成批的六十四条各碰几次堆
+     * @details 分两种形状量是因为队列容器按「块」要内存：一条投完就取走时，块会被交还，
+     *          下一次投递又要一块；攒够一批再取则摊薄。分不清这两种读数就会把「每投一条一块」
+     *          误判成「几乎没有分配」。口径与 tests/Net/Http/TestHotPathAllocations.cpp 一致，
+     *          判据只在 Release 下钉原值，Debug 仍跑同样的形状并把读数打出来供对照
+     */
+    TEST(Scheduler, RemotePostAllocationProfile)
+    {
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
+
+        Scheduler        scheduler;
+        std::atomic<int> executed{0};
+
+        // 形状①「一条在途」：投一条马上被 runOne() 取走——跨循环移交与执行器回调都是这种孤立投递
+        const auto single = measurePerOperation(
+                [&]
+                {
+                    scheduler.postRemote(
+                            [&executed]
+                            {
+                                executed.fetch_add(1, std::memory_order_relaxed);
+                            });
+                    return scheduler.runOne() ? 1U : 0U;
+                });
+
+        // 形状②「成批」：一次操作投 64 条再整批取完，看摊薄之后的读数
+        constexpr std::uint64_t kBatchSize = 64U;
+        const auto              batch      = measurePerOperation(
+                [&]
+                {
+                    for (std::uint64_t index = 0; index < kBatchSize; ++index)
+                    {
+                        scheduler.postRemote(
+                                [&executed]
+                                {
+                                    executed.fetch_add(1, std::memory_order_relaxed);
+                                });
+                    }
+                    std::uint64_t drainedCount = 0;
+                    while (scheduler.runOne())
+                    {
+                        ++drainedCount;
+                    }
+                    return drainedCount;
+                });
+
+        std::printf("scheduler-remote-post single total=%llu bytes=%llu | batch total=%llu bytes=%llu\n",
+                    static_cast<unsigned long long>(single.totalAllocations),
+                    static_cast<unsigned long long>(single.totalBytes),
+                    static_cast<unsigned long long>(batch.totalAllocations),
+                    static_cast<unsigned long long>(batch.totalBytes));
+
+        // 两条与配置无关的结构判据：被测体确实跑满了，且取用一条不丢
+        EXPECT_EQ(single.resultSum, kMeasurementIterations) << "单次投递根本没被执行，读数没有意义";
+        EXPECT_EQ(batch.resultSum, kMeasurementIterations * kBatchSize) << "整批取用漏了投递，读数没有意义";
+
+#ifdef NDEBUG
+        // 判据钉的是「不许退化成每投一条各要一块堆」，而不是钉某个 STL 的块大小：
+        // 实测同一形状 libstdc++ 是每 16 条要一块 512 字节（一千次 62 / 六万四千条 4001），
+        // MSVC 是每 512 条左右要一块（一千次 2 / 六万四千条 67），两家差两个量级但都远不到「每条一块」。
+        // 取「每 8 条至多一块」当上界：既容得下换 STL 与改块大小，又能在真退化成每投一条一块时立刻报红
+        constexpr std::uint64_t kMaximumBlocksPerThousandPosts = kMeasurementIterations / 8U;
+        EXPECT_LE(single.totalAllocations, kMaximumBlocksPerThousandPosts)
+                << "孤立投递的堆块数越界：队列快退化成每投一条各要一块了";
+        EXPECT_LE(batch.totalAllocations, kMaximumBlocksPerThousandPosts * kBatchSize)
+                << "成批投递的堆块数越界：同上，这条量的是六万四千条投递摊到多少块上";
+#endif
     }
 
 } // namespace AsynGyanis::Core

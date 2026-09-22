@@ -4,6 +4,8 @@ find_package(GTest REQUIRED)
 add_executable(TestCore
         CoreTestSupport.h
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
+        # 分配画像探针的实体：TestScheduler 的跨线程投递读数靠它，口径与 Base/Net 两侧一致
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
         Exception/TestCoreException.cpp
 
