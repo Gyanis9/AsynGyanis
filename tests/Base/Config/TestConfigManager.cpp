@@ -2,6 +2,7 @@
 // schema 校验、热加载开关状态机与并发读取。
 // 文件监听器本身的行为由 tests/Platform/FileSystem/TestFileWatcher.cpp 覆盖；本文件中
 // 「接力」「回调抛异常」两条用例依赖真实监听事件，平台监听器不可用时用例跳过。
+// 另有一条用例把 root 日志器的写入当闸口用（校验错误日志与写锁的先后关系），收尾时整份换掉 root。
 
 #include "Base/Config/ConfigManager.h"
 
@@ -13,6 +14,9 @@
 #include "Base/Config/ConfigValueType.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigValidationException.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
 
 #include <gtest/gtest.h>
 
@@ -25,7 +29,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -84,6 +90,127 @@ namespace AsynGyanis::Base
                                    return textContains(entry, needle);
                                });
         }
+
+        /**
+         * @brief 提交路径落日志时的闸口：把「校验正在写日志」变成用例可等待、可放行的状态
+         * @details 报到时只拦第一次写入（一条违规对应一条日志），放行之后的写入直接过去。
+         *          两类谓词共用一条 CV：两处唤醒一律用 notify_all，配合各自的谓词重查不会吞唤醒。
+         */
+        class LogWriteGate
+        {
+        public:
+            /// Sink 侧：报到后停在这里，直到用例放行
+            void enter()
+            {
+                std::unique_lock lock(m_mutex);
+                m_isEntered = true;
+                m_condition.notify_all();
+                m_condition.wait(lock, [this] { return m_isReleased; });
+            }
+
+            /**
+             * @brief 用例侧：等到确实有日志落进闸口
+             * @param timeout 最长等待时间
+             * @return true 闸口已被进入
+             */
+            [[nodiscard]] bool waitUntilEntered(const std::chrono::milliseconds &timeout)
+            {
+                std::unique_lock lock(m_mutex);
+                return m_condition.wait_for(lock, timeout, [this] { return m_isEntered; });
+            }
+
+            /// 用例侧：放行本次与之后的所有写入
+            void release()
+            {
+                {
+                    const std::lock_guard lock(m_mutex);
+                    m_isReleased = true;
+                }
+                m_condition.notify_all();
+            }
+
+        private:
+            std::mutex              m_mutex;            ///< 保护下面两个标记
+            std::condition_variable m_condition;        ///< 报到与放行的唤醒通道
+            bool                    m_isEntered{false}; ///< 是否已有写入停在闸口里
+            bool                    m_isReleased{false};///< 是否已放行
+        };
+
+        /**
+         * @brief 把一次日志写入接到闸口上的 Sink：只用来卡住线程，不落地任何内容
+         */
+        class GatedSink final : public LogSink
+        {
+        public:
+            /**
+             * @brief 构造指向闸口的 Sink
+             * @param gate 报到的闸口，存在期由用例保证（清理闸口前 root 已被换掉）
+             */
+            explicit GatedSink(LogWriteGate &gate) : m_gate(gate)
+            {
+            }
+
+            /**
+             * @brief 交出一条日志并停在闸口里
+             * @param event 日志事件，本 Sink 不看内容只数次数
+             */
+            void write(const LogEvent & /*event*/) override
+            {
+                m_gate.enter();
+            }
+
+            /// 不落盘，没有缓冲需要刷新
+            void flush() override
+            {
+            }
+
+        private:
+            LogWriteGate &m_gate; ///< 写入报到并等待放行的闸口
+        };
+
+        /**
+         * @brief 用例收尾：放行闸口、接回两条线程，再把挂了闸口 Sink 的 root 日志器换掉
+         * @details 断言失败会让用例直接返回，而可接合状态的 std::thread 析构即 std::terminate，
+         *          因此放行与接合都放进析构，任何退出路径都走同一套。
+         */
+        class GateCleanup
+        {
+        public:
+            /**
+             * @brief 登记要收尾的闸口与线程
+             * @param gate 本用例的闸口
+             * @param loaderThread 跑加载的线程（可以尚未启动）
+             * @param setterThread 跑 setValue 的线程（可以尚未启动）
+             */
+            GateCleanup(LogWriteGate &gate, std::thread &loaderThread, std::thread &setterThread) :
+                m_gate(gate), m_loaderThread(loaderThread), m_setterThread(setterThread)
+            {
+            }
+
+            ~GateCleanup()
+            {
+                m_gate.release();
+                if (m_loaderThread.joinable())
+                {
+                    m_loaderThread.join();
+                }
+                if (m_setterThread.joinable())
+                {
+                    m_setterThread.join();
+                }
+                // 闸口 Sink 挂在 root 上，而 Logger 只有 clearSinks() 没有「摘掉单个 Sink」：
+                // 整份换掉 root，后面的用例拿到的是一棵没有闸口的新 root（退休表兜住在途引用）
+                LoggerRegistry::instance().clear();
+            }
+
+            GateCleanup(const GateCleanup &)            = delete;
+            GateCleanup &operator=(const GateCleanup &) = delete;
+
+        private:
+            LogWriteGate &m_gate;          ///< 要放行的闸口
+            std::thread  &m_loaderThread;  ///< 要接回的加载线程
+            std::thread  &m_setterThread;  ///< 要接回的写入线程
+        };
     } // namespace
 
     /**
@@ -1770,6 +1897,78 @@ server:
         // 已注册 schema 只在提交时记录日志，不阻断加载流程
         EXPECT_TRUE(result.success);
         EXPECT_EQ(configuration().getInt("port", 0), 8080);
+    }
+
+    TEST_F(ConfigManagerTest, SchemaViolationLoggingDoesNotHoldTheWriterLock)
+    {
+        writeFile("cfg.yaml", "port: 8080\n");
+        // 一个缺失的必需键：提交快照时正好产生一条校验错误日志
+        static_cast<void>(configuration().setSchema(ConfigSchema{
+                ConfigSchemaEntry{"must.exist", ConfigValueType::string, true, std::nullopt, std::nullopt},
+        }));
+
+        LogWriteGate gate;
+        std::thread  loader;
+        std::thread  setter;
+        const GateCleanup cleanup(gate, loader, setter);
+        bool              isLoadSucceeded = false;
+        std::promise<void> setterFinished;
+        auto              setterDone = setterFinished.get_future();
+
+        LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<GatedSink>(gate));
+
+        loader = std::thread([this, &isLoadSucceeded]
+        {
+            isLoadSucceeded = configuration().loadFromDirectory(directory()).success;
+        });
+
+        // 先确认提交线程确实停在「写那条校验错误日志」上，否则下面的绿只是没撞上有锁的那段
+        ASSERT_TRUE(gate.waitUntilEntered(std::chrono::seconds{5})) << "闸口没等到日志写入，用例没有构造出重叠";
+
+        // 闸口进去之后再放竞争者：先跑完的 setValue 会让这条判据假绿
+        setter = std::thread([this, &setterFinished]
+        {
+            static_cast<void>(configuration().setValue("runtime.flag", ConfigValue(std::string("on"))));
+            setterFinished.set_value();
+        });
+        const bool didSetWhileGated = setterDone.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready;
+
+        gate.release();
+        loader.join();
+        setter.join();
+
+        EXPECT_TRUE(didSetWhileGated) << "校验期间的日志写入把写锁占住了：setValue 只能等一轮日志写完";
+        EXPECT_TRUE(isLoadSucceeded);
+        // 两条路都真的写了快照：提交换掉的键与 setValue 补的键同时在场
+        EXPECT_EQ(configuration().getInt("port", 0), 8080);
+        EXPECT_EQ(configuration().getString("runtime.flag"), "on");
+    }
+
+    TEST_F(ConfigManagerTest, LoadFromEmptyDirectoryStillRunsTheRegisteredSchema)
+    {
+        static_cast<void>(configuration().setSchema(ConfigSchema{
+                ConfigSchemaEntry{"must.exist", ConfigValueType::string, true, std::nullopt, std::nullopt},
+        }));
+
+        bool isLoadSucceeded = false;
+        {
+            LogWriteGate gate;
+            std::thread  loader;
+            std::thread  idleSetter;
+            const GateCleanup cleanup(gate, loader, idleSetter);
+
+            LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<GatedSink>(gate));
+            loader = std::thread([this, &isLoadSucceeded]
+            {
+                isLoadSucceeded = configuration().loadFromDirectory(directory()).success;
+            });
+
+            // 目录里一份配置文件也没有：这条提交路径同样要过已注册 schema（它以前自己换快照，绕开了这道暴露）
+            EXPECT_TRUE(gate.waitUntilEntered(std::chrono::seconds{5})) << "空目录提交没有执行已注册 schema 的校验";
+        }
+
+        EXPECT_TRUE(isLoadSucceeded);
+        EXPECT_TRUE(configuration().keys().empty());
     }
 
     TEST_F(ConfigManagerTest, SetValueIsAppliedEvenWhenRegisteredSchemaRejectsItsType)

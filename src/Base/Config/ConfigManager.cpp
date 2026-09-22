@@ -1079,14 +1079,9 @@ namespace AsynGyanis::Base
 
         if (configFiles.empty())
         {
-            // 目录中没有任何配置文件：提交空配置（等价于清空）。
-            // 与 commitConfigData 共用同一把写锁——它同样是「整份快照替换」的写者，
-            // 不加锁就会与并发的 setValue 互相覆盖
-            const std::lock_guard writeLock(m_writeMutex);
-            const auto newData       = std::make_shared<ConfigData>();
-            newData->configDirectory = configDirectory;
-            newData->configDirectoryRecursive = recursive;
-            m_data.store(newData, std::memory_order_release);
+            // 目录中没有任何配置文件：提交空配置（等价于清空）。走与其余加载路径同一条提交通道，
+            // 这样「快照换成空表」这件事同样会过一次已注册 schema，缺失的必需键不会被静默放过
+            commitConfigData({}, {}, configDirectory, recursive);
 
             result.success = true;
             return result;
@@ -1461,10 +1456,7 @@ namespace AsynGyanis::Base
                                          const std::filesystem::path &    configDirectory,
                                          const bool                       configDirectoryRecursive)
     {
-        // 与 setValue() 共用同一把写锁：加载/热重载也是「整份快照替换」的写者，
-        // 不串行化的话，与并发的 setValue 谁后发布谁生效，先发布的那些键会被整份覆盖掉
-        const std::lock_guard writeLock(m_writeMutex);
-
+        // 快照对象与它的字典都在锁外建好：分配与展开一份配置不该让并发写者等着
         const auto newData       = std::make_shared<ConfigData>();
         newData->values          = std::move(values);
         newData->loadedFiles     = loadedFiles;
@@ -1472,9 +1464,17 @@ namespace AsynGyanis::Base
         // 递归与否跟着快照一起存：reload() 与热重载据此重扫，口径与这次加载一致
         newData->configDirectoryRecursive = configDirectoryRecursive;
 
-        m_data.store(newData, std::memory_order_release);
+        {
+            // 与 setValue() 共用同一把写锁：加载/热重载也是「整份快照替换」的写者，
+            // 不串行化的话，与并发的 setValue 谁后发布谁生效，先发布的那些键会被整份覆盖掉
+            const std::lock_guard writeLock(m_writeMutex);
+            m_data.store(newData, std::memory_order_release);
+        }
 
-        // 提交后自动校验已注册 schema，配置写错时第一时间在日志中暴露
+        // 提交后自动校验已注册 schema，配置写错时第一时间在日志中暴露。
+        // 校验刻意放在写锁之外：它按每条违规做一次 std::format 并走一次 Sink 写入，锁内做这些
+        // 等于把「落一条日志」的成本转嫁给所有并发的 setValue()。快照已经发布，
+        // 校验对着自己手里的 newData 判，与后来者替换快照不冲突
         validateRegisteredSchema(newData->values);
     }
 } // namespace AsynGyanis::Base
