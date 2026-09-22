@@ -884,6 +884,27 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // request-id 落定到请求上的两条出口（同一枚二进制里的消融对照）：旧写法每条请求现造一个串再
+    // 交给请求（连着容量接管过来、把手上那块还掉），新写法先生成到调用线程的复用缓冲、再原地写进
+    // 请求字段。计时体内做完一整趟——被量的正是「每请求一次堆块取还」这件事本身
+    Net::HttpRequest requestIdTarget;
+    measureCase(
+            "request-id-land-owning",
+            [&requestIdGenerator, &requestIdTarget]
+            {
+                requestIdTarget.setRequestId(requestIdGenerator.resolve(requestIdTarget));
+                return requestIdTarget.requestId().size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "request-id-land-into",
+            [&requestIdGenerator, &requestIdTarget]
+            {
+                requestIdGenerator.resolveInto(requestIdTarget);
+                return requestIdTarget.requestId().size();
+            },
+            results, checksum, failureCount);
+
     // 头部单值查询：真实请求几乎每条都会读一两个头部（If-None-Match、CORS、WebSocket 握手……），
     // 而存储的单值视图是「按需重建」的——第一次查询的代价取决于重建是否被单个查询触发。
     // 这里按「装好 10 条头部 → 查 1 次」与「查 5 次」两种形态各测一例，

@@ -16,6 +16,8 @@
 //   · 派发一条请求（命中精确路由）：一千次共 0 次。参数收集表要进模式路由那一层才建；
 //   · 派发一条请求（扫过模式候选并收下 :id）：每次 4 次 / 368 字节，与扫过几条候选无关
 //     （候选表跨候选复用，逐候选新建会随模式路由条数线性放大）；
+//   · 落定一条请求的 request-id：一千次共 0 次。id 先生成到调用线程自己的复用缓冲，再原地写进
+//     请求字段（两条都不再新取堆块；改前每请求 1 次 / 32 字节）；
 //   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
 //   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次。
@@ -25,6 +27,7 @@
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Frame.h"
@@ -141,6 +144,7 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
         constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand = 0U; ///< 命中精确路由不建参数表，派发本身不再碰堆
         constexpr std::uint64_t kDispatchPatternAllocationsPerRequest = 4U; ///< 复用的候选表 2 + 候选里那一条 ":id" 1 + 提交给请求 1
+        constexpr std::uint64_t kRequestIdTotalAllocationsPerThousand = 0U; ///< id 就地写进请求自己的缓冲，两侧容量都留着
         constexpr std::uint64_t kHeadSerializeAllocationsFresh = 1U;
         constexpr std::uint64_t kHeadSerializeTotalAllocationsReused = 0U;
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
@@ -609,6 +613,36 @@ namespace AsynGyanis::Net
         // 这条读数与「扫过几条候选」无关：候选表跨候选复用，多扫一条不该多要堆块
         EXPECT_EQ(profile.allocationsPerOperation, kDispatchPatternAllocationsPerRequest)
                 << "模式层派发的分配数变了：候选表回到逐候选新建，或参数提交多了一次拷贝";
+#endif
+    }
+
+    /**
+     * @brief 给一条请求落定 request-id 付出多少次分配
+     * @details 会话在派发之前要为每条请求落定一个 `<前缀>-<16 位序号>` 形态的标识（21 字节，
+     *          长过小串内联），这条量的是「生成 + 交给请求」这一对的稳态成本
+     */
+    TEST(HotPathAllocations, RequestIdResolveAllocations)
+    {
+        const HttpRequestIdGenerator generator;
+        HttpRequest request;
+        const auto resolveOnce = [&generator, &request]
+        {
+            request.reset();
+            generator.resolveInto(request);
+            return request.requestId().size();
+        };
+        ASSERT_EQ(resolveOnce(), 21U) << "生成的 id 形态变了，这条读数对应的形状也就不对";
+
+        const AllocationProfile profile = measurePerOperation(resolveOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * 21U) << "有几次没落定 id";
+        std::printf("request-id-resolve 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
+                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations),
+                    static_cast<unsigned long long>(profile.totalBytes));
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, kRequestIdTotalAllocationsPerThousand)
+                << "落定 request-id 又开始碰堆了：生成或写入那条路上有人现造串？";
 #endif
     }
 } // namespace AsynGyanis::Net
