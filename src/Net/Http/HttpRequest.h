@@ -104,7 +104,16 @@ namespace AsynGyanis::Net
          * @param value 头部字段值，原样保存不做裁剪
          * @see headerValues(), headers()
          */
-        void addHeader(std::string key, std::string value);
+        void addHeader(std::string_view key, std::string_view value);
+
+        /**
+         * @brief 接手解析器暂存的头部记录，整块换下本请求当前的头部
+         * @details 报文收齐那一刻由解析器调用：只做容器交换，不逐字节拷贝，也不问调用方要临时串。
+         *          调用前本请求必须已经 reset()（否则上一条报文的头部会被换进解析器的暂存里，
+         *          而不是被丢弃）。
+         * @param stagedHeaders 解析器持有的头部暂存；返回时它接手到本请求那份空缓冲，容量照旧留着
+         */
+        void adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept;
 
         /**
          * @brief 获取指定名称的 HTTP 头部值。

@@ -2,7 +2,7 @@
  * @file HttpHeaderFieldStore.h
  * @brief 请求与响应共用的头部字段存储：权威记录 + 单值视图
  * @author Gyanis
- * @date 2026-09-18
+ * @date 2026-09-22
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstddef>
+#include <concepts>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,31 +26,37 @@ namespace AsynGyanis::Net
     /**
      * @brief 头部字段存储
      *
-     * @details 两份数据：m_fields 是按加入顺序的权威记录（可重复头部各占一项），
-     *          m_singleValues 是名到值的单值视图，只在真正被整表查询时才重建——按名字取单值
-     *          走 get()/values() 直接读权威记录，多数请求只读一两个头部，为它们建表等于白付
-     *          若干次节点分配与字符串拷贝。
+     * @details 两份数据：m_fields + m_bytes 是按加入顺序的权威记录（可重复头部各占一项，名与值的
+     *          字节全在一条连续缓冲里），m_singleValues 是名到值的单值视图，只在真正被整表查询时
+     *          才重建——按名字取单值走 get()/values() 直接读权威记录，多数请求只读一两个头部，为它们
+     *          建表等于白付若干次节点分配与字符串拷贝。
      */
     class HttpHeaderFieldStore
     {
     public:
         /**
-         * @brief 一条头部记录
+         * @brief 一条头部记录在字节缓冲里的位置
+         *
+         * @details 名与值不各自持串，只记「在 m_bytes 的哪一段」：一条请求的头部因此共用一次缓冲增长，
+         *          而不是每条名值各要一个堆块（MSVC 的短串内联也救不掉超长的取值）。偏移用 size_t
+         *          而非定长窄类型，是为了不写「长度或偏移放不下就静默截断」那种隐性行为。
          */
-        struct HeaderField
+        struct FieldRef
         {
-            std::string name;  ///< 已归一化为小写的头部名
-            std::string value; ///< 头部值原文
+            std::size_t nameOffset{0};  ///< 头部名在 m_bytes 中的起始偏移
+            std::size_t nameLength{0};  ///< 头部名长度
+            std::size_t valueOffset{0}; ///< 头部值在 m_bytes 中的起始偏移
+            std::size_t valueLength{0}; ///< 头部值长度
         };
 
-        using HeaderFieldList = std::vector<HeaderField>; ///< 权威记录的有序容器类型
-
         /**
-         * @brief 追加一条头部记录（名字就地归一化为小写）
-         * @param name 头部名，按值接收后就地改写
-         * @param value 头部值
+         * @brief 追加一条头部记录（名字归一化为小写后入库）
+         * @details 名与值各一趟 memcpy 进同一条字节缓冲，小写折叠在写入时顺带做完，
+         *          因此这里不产生任何临时串或逐字段堆块。
+         * @param name 头部名，大小写不敏感（Content-Type 与 content-type 命中同一条）
+         * @param value 头部值，原样入库
          */
-        void append(std::string name, std::string value);
+        void append(std::string_view name, std::string_view value);
 
         /**
          * @brief 覆盖或追加一条非可重复头部
@@ -125,11 +132,29 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] const std::unordered_map<std::string, std::string> &singleValueView() const;
 
-        /// 权威记录（序列化按它的顺序进行）
-        [[nodiscard]] const HeaderFieldList &fields() const noexcept
+        /// 按加入顺序遍历权威记录（序列化按它的顺序进行）
+        template <typename Visitor>
+            requires std::invocable<Visitor, std::string_view, std::string_view>
+        void forEachField(const Visitor &visitor) const
         {
-            return m_fields;
+            // 基址每次遍历只判一次：空缓冲的 data() 是空指针，而那时不可能有记录可访，
+            // 逐条再判就是序列化这种整表遍历里每条两次的白付分支
+            const char *const base = m_bytes.empty() ? "" : m_bytes.data();
+            for (const FieldRef &ref: m_fields)
+            {
+                visitor(std::string_view{base + ref.nameOffset, ref.nameLength},
+                        std::string_view{base + ref.valueOffset, ref.valueLength});
+            }
         }
+
+        /**
+         * @brief 接手另一份存储的权威记录，同时把自己现有的记录换过去
+         * @details 只做容器交换，一个字节也不拷：解析器把头部暂存在自己的存储里，报文收齐那一刻
+         *          用它换走请求对象刚被 reset() 清空的空壳缓冲。两条缓冲就此在「解析器 ↔ 请求」之间
+         *          来回复用，容量都不丢。
+         * @param source 内容要被接手的存储；返回时它持有本存储原先那份空记录（不是残留的旧头部）
+         */
+        void adoptFrom(HttpHeaderFieldStore &source) noexcept;
 
         /// 清空全部记录与视图
         void clear() noexcept;
@@ -166,14 +191,52 @@ namespace AsynGyanis::Net
         /**
          * @brief 按名找第一条记录（大小写不敏感）
          * @param name 头部名
-         * @return HeaderFieldList::iterator 命中位置；未命中为 end()
+         * @return std::vector<FieldRef>::iterator 命中位置；未命中为 end()
          */
-        [[nodiscard]] HeaderFieldList::iterator findField(std::string_view name);
+        [[nodiscard]] std::vector<FieldRef>::iterator findField(std::string_view name);
+
+        /**
+         * @brief 取缓冲里的一段视图
+         * @details 零长段直接交空视图：空 vector 的 data() 是空指针，给空指针加偏移本身就是错的，
+         *          而「有记录但值取空」是合法形态（如 foo: 这种空取值）。
+         * @param bytes 字节缓冲
+         * @param offset 段起始偏移
+         * @param length 段长度
+         * @return std::string_view 该段的视图
+         */
+        static std::string_view segmentOf(const std::vector<char> &bytes, std::size_t offset, std::size_t length) noexcept;
+
+        /// 取记录的名字段视图
+        [[nodiscard]] std::string_view nameOf(const FieldRef &ref) const noexcept
+        {
+            return segmentOf(m_bytes, ref.nameOffset, ref.nameLength);
+        }
+
+        /// 取记录的取值段视图
+        [[nodiscard]] std::string_view valueOf(const FieldRef &ref) const noexcept
+        {
+            return segmentOf(m_bytes, ref.valueOffset, ref.valueLength);
+        }
+
+        /**
+         * @brief 把名字折成小写追加进字节缓冲，并返回它的位置
+         * @param name 头部名原文
+         * @return FieldRef 只填好了名字段的引用（值段由调用方补）
+         */
+        [[nodiscard]] FieldRef appendNameToBytes(std::string_view name);
+
+        /**
+         * @brief 把取值追加进字节缓冲
+         * @param ref 待补的记录引用，就地写入值段的偏移与长度
+         * @param value 头部值
+         */
+        void appendValueToBytes(FieldRef &ref, std::string_view value);
 
         /// 按需要重建单值视图（调用前视图已标脏）
         void rebuildSingleValueView() const;
 
-        HeaderFieldList m_fields; ///< 权威记录，按加入顺序保存，决定序列化顺序
+        std::vector<FieldRef> m_fields; ///< 权威记录，按加入顺序保存，决定序列化顺序
+        std::vector<char> m_bytes;      ///< 名与值的字节缓冲：整块头部只在这条缓冲要长时碰一次分配器
         mutable std::unordered_map<std::string, std::string> m_singleValues; ///< 单值视图，首次查询时由权威记录建出
         mutable bool m_isViewStale{true}; ///< 视图是否已过期（写入或清空后置位，查询前重建）
     };

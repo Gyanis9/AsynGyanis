@@ -8,11 +8,13 @@
 //   · 计数件自己要有自检：哪天 operator new 的替换件被顶掉，所有读数都会是 0，而 0 看着像
 //     「零分配的优秀实现」。
 //
-// 本轮量出来的读数（Release，摊平到每次操作）：解析一条 h1 请求 6 次 / 256 字节；装 10 条头部
-// 4 次 / 144 字节——正好是四个超过短串内联缓冲的取值各一次；响应头序列化每次新建串 1 次，
-// 复用同一块缓冲 0 次；解一帧 200 字节头块的 HEADERS 1 次 / 208 字节，就是取走的那份负载；
-// 组一帧 256 字节分块帧每次新建串 1 次 / 272 字节，复用帧缓冲 0 次。
-// 同一条形状在 Debug（带迭代器调试代理）下是 117 / 64 / 3 与 1 / 4，分块帧那条是 2 与 0。
+// 本轮量出来的读数（Release，摊平到每次操作）：解析一条 h1 请求 2 次 / 113 字节——头部已收进
+// 一条字节缓冲，剩下的两次是 URI 与正文各自的缓冲（两条都按移动交付给请求，源侧容量因此被偷走，
+// 下一条报文重新要一块）；装 10 条头部 0 次 / 0 字节——clear 只清内容、留着容量，整块头部的字节
+// 都写进同一条缓冲；响应头序列化每次新建串 1 次，复用同一块缓冲 0 次；解一帧 200 字节头块的
+// HEADERS 1 次 / 208 字节，就是取走的那份负载；组一帧 256 字节分块帧每次新建串 1 次 / 272 字节，
+// 复用帧缓冲 0 次。
+// 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
 
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
@@ -122,10 +124,10 @@ namespace AsynGyanis::Net
 #ifdef NDEBUG
         // 下面这五个数是 Release（发布形态真正跑的那套配置）下实测摊平到每次操作的分配数。
         // 只在 Release 上钉死：Debug 的 STL 迭代器调试代理会给每个容器对象多挂一块代理，
-        // 读数被实现细节放大一个量级（同一条 h1 解析实测 6 对 117），钉它等于钉噪声。
+        // 读数被实现细节放大一个量级，钉它等于钉噪声。
         // Debug 侧仍跑同样的形状，把读数打出来供对照，并保留两条与配置无关的结构判据
-        constexpr std::uint64_t kHttp1ParseAllocationsPerRequest = 6U;
-        constexpr std::uint64_t kHeaderRefillAllocationsPerTenFields = 4U;
+        constexpr std::uint64_t kHttp1ParseAllocationsPerRequest = 2U;
+        constexpr std::uint64_t kHeaderRefillAllocationsPerTenFields = 0U;
         constexpr std::uint64_t kHeadSerializeAllocationsFresh = 1U;
         constexpr std::uint64_t kHeadSerializeAllocationsReused = 0U;
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
@@ -334,7 +336,14 @@ namespace AsynGyanis::Net
             {
                 store.append(name, value);
             }
-            return store.fields().size();
+            // 数权威记录只能走遍历出口：存储交出的是字节缓冲加偏移，不再交出 owning 容器。
+            // 这里的 lambda 不捕堆、也不让存储建单值视图，因此不污染读数
+            std::size_t fieldCount = 0;
+            store.forEachField([&fieldCount](const std::string_view, const std::string_view)
+                               {
+                                   ++fieldCount;
+                               });
+            return fieldCount;
         };
         refill();
 

@@ -415,10 +415,7 @@ namespace AsynGyanis::Net
         m_currentRequest.setMethod(m_method);
         m_currentRequest.setUri(std::move(m_uri));
         m_currentRequest.setHttpVersion(std::move(m_httpVersion));
-        for (ParsedHeader &header: m_headers)
-        {
-            m_currentRequest.addHeader(std::move(header.name), std::move(header.value));
-        }
+        m_currentRequest.adoptStagedHeaders(m_headerStaging);
         m_headersCommitted = true;
         return true;
     }
@@ -720,7 +717,8 @@ namespace AsynGyanis::Net
             m_hasContinueExpectation = isContinueExpected(value);
         }
 
-        m_headers.push_back(ParsedHeader{std::string(name), std::string(value)});
+        // 名与值就地进暂存缓冲（名字折小写也在这一趟做完）：这里不再为一条头部造两个 std::string
+        m_headerStaging.append(name, value);
         return true;
     }
 
@@ -925,10 +923,8 @@ namespace AsynGyanis::Net
             m_currentRequest.setMethod(m_method);
             m_currentRequest.setUri(std::move(m_uri));
             m_currentRequest.setHttpVersion(std::move(m_httpVersion));
-            for (ParsedHeader &header: m_headers)
-            {
-                m_currentRequest.addHeader(std::move(header.name), std::move(header.value));
-            }
+            // 头部整块交换：请求接手暂存的那条缓冲，暂存接手请求刚清空的那条，两条容量都留着复用
+            m_currentRequest.adoptStagedHeaders(m_headerStaging);
         }
         m_currentRequest.setBody(std::move(m_body));
 
@@ -961,7 +957,7 @@ namespace AsynGyanis::Net
         m_method = HttpMethod::UNKNOWN;
         m_uri.clear();
         m_httpVersion.clear();
-        m_headers.clear();
+        m_headerStaging.clear();
         m_body.clear();
 
         m_contentLength      = 0;

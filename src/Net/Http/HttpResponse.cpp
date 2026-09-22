@@ -609,22 +609,24 @@ namespace AsynGyanis::Net
         bool        hasContentTypeHeader = false;
         bool        hasContentLengthHeader = false;
         bool        hasDateHeader = false;
-        for (const HttpHeaderFieldStore::HeaderField &field: m_headerStore.fields())
-        {
-            reservedLength += field.name.size() + field.value.size() + kHeaderLineReserveLength;
+        m_headerStore.forEachField(
+                [&reservedLength, &hasContentTypeHeader, &hasContentLengthHeader, &hasDateHeader](
+                        const std::string_view name, const std::string_view value)
+                {
+                    reservedLength += name.size() + value.size() + kHeaderLineReserveLength;
 
-            // 名比对直接用库内的小写形态，无需再归一化
-            if (field.name == kContentTypeHeaderName)
-            {
-                hasContentTypeHeader = true;
-            } else if (field.name == kContentLengthHeaderName)
-            {
-                hasContentLengthHeader = true;
-            } else if (field.name == kDateHeaderName)
-            {
-                hasDateHeader = true;
-            }
-        }
+                    // 名比对直接用库内的小写形态，无需再归一化
+                    if (name == kContentTypeHeaderName)
+                    {
+                        hasContentTypeHeader = true;
+                    } else if (name == kContentLengthHeaderName)
+                    {
+                        hasContentLengthHeader = true;
+                    } else if (name == kDateHeaderName)
+                    {
+                        hasDateHeader = true;
+                    }
+                });
         if (!hasContentTypeHeader && !bodyView().empty())
         {
             reservedLength += kAutoContentTypeReserveLength;
@@ -656,39 +658,41 @@ namespace AsynGyanis::Net
         bool hasContentTypeHeader  = false;
         bool hasContentLengthHeader = false;
         bool hasDateHeader = false;
-        for (const HttpHeaderFieldStore::HeaderField &field: m_headerStore.fields())
-        {
-            if (field.name == kContentTypeHeaderName)
-            {
-                hasContentTypeHeader = true;
-            } else if (field.name == kContentLengthHeaderName)
-            {
-                hasContentLengthHeader = true;
-            } else if (field.name == kDateHeaderName)
-            {
-                hasDateHeader = true;
-            }
+        m_headerStore.forEachField(
+                [&result, &hasContentTypeHeader, &hasContentLengthHeader, &hasDateHeader, this](
+                        const std::string_view name, const std::string_view value)
+                {
+                    if (name == kContentTypeHeaderName)
+                    {
+                        hasContentTypeHeader = true;
+                    } else if (name == kContentLengthHeaderName)
+                    {
+                        hasContentLengthHeader = true;
+                    } else if (name == kDateHeaderName)
+                    {
+                        hasDateHeader = true;
+                    }
 
-            // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：流式响应一律不输出这条，
-            // 既拦住调用方自己设的，也拦住序列化层按正文长度自动补的那条
-            if (m_isChunked && field.name == kContentLengthHeaderName)
-            {
-                continue;
-            }
+                    // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：流式响应一律不输出这条，
+                    // 既拦住调用方自己设的，也拦住序列化层按正文长度自动补的那条
+                    if (m_isChunked && name == kContentLengthHeaderName)
+                    {
+                        return;
+                    }
 
-            // 反方向同理：正文定界由本框架掌管（流式=分块，其余=content-length）。调用方自设的
-            // transfer-encoding 在这里一律剥掉——留着它就会出现「既补 content-length 又声明
-            // chunked」而正文并没有分块帧化，对端按哪条解都是错位（h2/h3 早已剥掉，与它们对齐）
-            if (!m_isChunked && field.name == kTransferEncodingHeaderName)
-            {
-                continue;
-            }
+                    // 反方向同理：正文定界由本框架掌管（流式=分块，其余=content-length）。调用方自设的
+                    // transfer-encoding 在这里一律剥掉——留着它就会出现「既补 content-length 又声明
+                    // chunked」而正文并没有分块帧化，对端按哪条解都是错位（h2/h3 早已剥掉，与它们对齐）
+                    if (!m_isChunked && name == kTransferEncodingHeaderName)
+                    {
+                        return;
+                    }
 
-            result.append(field.name);
-            result.append(kHeaderNameValueSeparator);
-            result.append(field.value);
-            result.append(kCrLf);
-        }
+                    result.append(name);
+                    result.append(kHeaderNameValueSeparator);
+                    result.append(value);
+                    result.append(kCrLf);
+                });
 
         // ---- 补缺。调用方没写的几条由这里兜底，排在自设头部之后 ----
         const std::string_view responseBody = bodyView();

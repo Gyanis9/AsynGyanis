@@ -92,11 +92,16 @@ namespace AsynGyanis::Net
         return m_httpVersion;
     }
 
-    void HttpRequest::addHeader(std::string key, std::string value)
+    void HttpRequest::addHeader(const std::string_view key, const std::string_view value)
     {
         // 权威记录：线上每出现一条头部就原样留一档，可重复头部互不覆盖，顺序即到达顺序；
         // 单值视图只标脏，等真有人查询时再一次性建出来（多数请求路径从不查询它）
-        m_headerStore.append(std::move(key), std::move(value));
+        m_headerStore.append(key, value);
+    }
+
+    void HttpRequest::adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept
+    {
+        m_headerStore.adoptFrom(stagedHeaders);
     }
 
     std::optional<std::string> HttpRequest::getHeader(const std::string_view key) const

@@ -469,15 +469,10 @@ namespace AsynGyanis::Net
         template <typename Visitor>
         void forEachHeaderField(const Visitor &visitor) const
         {
-            for (const HeaderField &field: m_headerStore.fields())
-            {
-                visitor(std::string_view(field.name), std::string_view(field.value));
-            }
+            m_headerStore.forEachField(visitor);
         }
 
     private:
-        using HeaderField = HttpHeaderFieldStore::HeaderField; ///< 头部记录（存储内部类型）
-
         /**
          * @brief 根据状态码获取标准原因短语。
          * @param code 状态码

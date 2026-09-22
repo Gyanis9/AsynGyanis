@@ -612,7 +612,8 @@ namespace AsynGyanis::Net
         {
             incoming.hasHostHeader = true;
         }
-        incoming.request.addHeader(std::move(name), std::move(value));
+        // 交视图而非移动：请求的头部存储是一条字节缓冲，名与值都要拷进去，移动那两个临时串省不下什么
+        incoming.request.addHeader(name, value);
     }
 
     void Http3Session::addRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> data)

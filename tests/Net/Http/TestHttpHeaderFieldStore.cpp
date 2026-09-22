@@ -38,6 +38,23 @@ namespace AsynGyanis::Net
             }
             return store;
         }
+
+        /**
+         * @brief 按权威顺序取一份 (名, 值) 快照
+         * @details 存储交出的是「字节缓冲 + 偏移」，不再交出 owning 容器，因此用例要看权威顺序时
+         *          只能经 forEachField 取一份拷贝来看。
+         * @param store 待查看的存储
+         * @return std::vector<std::pair<std::string, std::string>> 权威记录的可读快照
+         */
+        std::vector<std::pair<std::string, std::string>> snapshotFields(const HttpHeaderFieldStore &store)
+        {
+            std::vector<std::pair<std::string, std::string>> snapshot;
+            store.forEachField([&snapshot](const std::string_view name, const std::string_view value)
+                               {
+                                   snapshot.emplace_back(name, value);
+                               });
+            return snapshot;
+        }
     } // namespace
 
     TEST(HttpHeaderFieldStore, SingleValueMergesRepeatsOfAnOrdinaryHeader)
@@ -121,8 +138,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(store.get("host").value_or("<缺失>"), "new.example.com");
         EXPECT_EQ(store.singleValueView().at("host"), "new.example.com");
         // 覆盖不追加条目：序列化顺序仍停在首次设置处
-        ASSERT_EQ(store.fields().size(), 2U);
-        EXPECT_EQ(store.fields()[0].name, "host");
+        const auto fields = snapshotFields(store);
+        ASSERT_EQ(fields.size(), 2U);
+        EXPECT_EQ(fields[0].first, "host");
     }
 
     TEST(HttpHeaderFieldStore, FirstValueTakesTheEarliestFieldAndNeverMerges)
@@ -209,17 +227,48 @@ namespace AsynGyanis::Net
         // 覆盖式写入即便用原大小写也必须命中既有记录：命不中就多出一条同名头部，
         // 序列化时两条一起上线，收端按哪条读都是错位
         store.overwriteOrAppend("CONTENT-TYPE", "application/json");
-        ASSERT_EQ(store.fields().size(), 1U) << "大小写不同的同名写入不得新增条目";
-        EXPECT_EQ(store.fields()[0].name, "content-type") << "入库形态必须是小写，序列化按它上线";
+        ASSERT_EQ(snapshotFields(store).size(), 1U) << "大小写不同的同名写入不得新增条目";
+        EXPECT_EQ(snapshotFields(store)[0].first, "content-type") << "入库形态必须是小写，序列化按它上线";
         EXPECT_EQ(store.get("content-type").value_or("<缺失>"), "application/json");
 
         // 缺席时新建条目，名同样折成小写入库
         store.overwriteOrAppend("X-Trace-Id", "abc");
-        ASSERT_EQ(store.fields().size(), 2U);
-        EXPECT_EQ(store.fields()[1].name, "x-trace-id");
+        const auto fields = snapshotFields(store);
+        ASSERT_EQ(fields.size(), 2U);
+        EXPECT_EQ(fields[1].first, "x-trace-id");
+        // 覆盖式写入改的是取值指向，名字段只有一份：两条记录的名互不重叠也证明缓冲没被写串
+        EXPECT_EQ(fields[0].second, "application/json");
 
         store.removeAll("X-TRACE-ID");
-        EXPECT_EQ(store.fields().size(), 1U) << "删名也要大小写不敏感，否则中间件清不掉处理器写下的头部";
+        EXPECT_EQ(snapshotFields(store).size(), 1U) << "删名也要大小写不敏感，否则中间件清不掉处理器写下的头部";
+    }
+
+    TEST(HttpHeaderFieldStore, AdoptTakesRecordsAndBytesTogether)
+    {
+        // 解析器提交头部走的就是这条整块交换：记录（偏移）与字节缓冲必须成对换过来——
+        // 只换了记录不换缓冲，取出来的就是别人内存里的字
+        HttpHeaderFieldStore staging = makeStore({{"x-request-id", "upstream-edge-0001-0000000000000abc"},
+                                                 {"content-type", "text/plain; charset=utf-8"}});
+        HttpHeaderFieldStore destination;
+        destination.append("host", "stale.example.com");
+        destination.clear();
+
+        destination.adoptFrom(staging);
+
+        EXPECT_EQ(destination.firstValue("x-request-id").value_or("<缺失>"), "upstream-edge-0001-0000000000000abc");
+        EXPECT_EQ(destination.get("content-type").value_or("<缺失>"), "text/plain; charset=utf-8");
+        const auto adopted = snapshotFields(destination);
+        ASSERT_EQ(adopted.size(), 2U);
+        EXPECT_EQ(adopted[0].first, "x-request-id") << "到达顺序要跟着整块过来";
+        EXPECT_TRUE(staging.empty()) << "接手之后暂存侧只剩空壳，不留上一条报文的残留";
+
+        // 换完两侧各自还能继续写：各自的缓冲都留着（解析器与请求对象靠这点把容量滚起来）
+        staging.append("accept", "*/*");
+        destination.append("accept-encoding", "gzip");
+        EXPECT_EQ(staging.get("accept").value_or("<缺失>"), "*/*");
+        EXPECT_EQ(destination.get("accept-encoding").value_or("<缺失>"), "gzip");
+        EXPECT_FALSE(destination.get("accept").has_value()) << "两侧此后互不影响";
+        EXPECT_EQ(destination.singleValueView().size(), 3U) << "adopt 之后视图必须仍是脏的，由权威记录重建";
     }
 
     TEST(HttpHeaderFieldStore, ValueViewsAgreeWithTheirOwningCounterparts)
@@ -243,11 +292,15 @@ namespace AsynGyanis::Net
             EXPECT_EQ(store.contains(name), view.has_value()) << "存在性判据与取值判据同源：" << name;
         }
 
-        // 视图指向存储内的那条字符串，而不是新拷贝：这是本入口存在的全部理由
+        // 视图指向权威记录里的那段字节，而不是新拷贝：这是本入口存在的全部理由。
+        // 判据取「两次独立查询交回同一地址」——每次现拷一份的实现交不回同一个地址（本 fixture 的
+        // 取值有 33 字节，超过短串内联，真要拷贝必然是两块堆内存）
         const std::optional<std::string_view> view = store.firstValueView("x-request-id");
+        const std::optional<std::string_view> viewAgain = store.firstValueView("x-request-id");
         ASSERT_TRUE(view.has_value());
-        EXPECT_EQ(view->data(), store.fields()[1].value.data()) << "视图必须零拷贝指向权威记录";
-        EXPECT_EQ(store.fields().size(), 4U) << "只读入口不得往权威记录里添条目";
+        ASSERT_TRUE(viewAgain.has_value());
+        EXPECT_EQ(view->data(), viewAgain->data()) << "视图必须零拷贝指向权威记录";
+        EXPECT_EQ(snapshotFields(store).size(), 4U) << "只读入口不得往权威记录里添条目";
     }
 
     TEST(HttpHeaderFieldStore, EmptyValueIsPresentAndIsNotConfusedWithAbsent)

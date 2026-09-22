@@ -371,15 +371,6 @@ namespace AsynGyanis::Net
          */
         void clearMessageScratch() noexcept;
 
-        /**
-         * @brief 解析中的一条头部（名与值都按收到的原文暂存，提交时才移交出去）
-         */
-        struct ParsedHeader
-        {
-            std::string name;  ///< 头部名原文（大小写保持，交给请求对象时归一化）
-            std::string value; ///< 头部值原文（首尾 OWS 已裁掉）
-        };
-
         Stage m_stage{Stage::RequestLine}; ///< 当前阶段
 
         HttpRequest m_currentRequest; ///< 对外可见的请求对象，只在 Done 那一刻被填充
@@ -389,7 +380,7 @@ namespace AsynGyanis::Net
         HttpMethod                m_method{HttpMethod::UNKNOWN}; ///< 请求方法
         std::string               m_uri;                         ///< 请求目标
         std::string               m_httpVersion;                 ///< 版本原文
-        std::vector<ParsedHeader> m_headers;                     ///< 已解析的头部，按到达顺序
+        HttpHeaderFieldStore      m_headerStaging;               ///< 已解析的头部，按到达顺序；提交时与请求对象整块交换缓冲
         std::string               m_body;                        ///< 已收正文
 
         std::string m_pendingLine; ///< 尚未等到 CRLF 的半行（可能跨多次 parse()）
