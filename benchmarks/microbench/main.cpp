@@ -532,6 +532,29 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // h2 出站 DATA 帧的同一对读法：旧写法先把载荷拼进一份临时帧串再整段搬进待发缓冲，
+    // 新写法直接拼进去。载荷取对端默认通告的 SETTINGS_MAX_FRAME_SIZE（16 KiB），
+    // 因为那趟拷贝正是随载荷线性放大的那一趟
+    const std::string h2DataFramePayload(16 * 1024, 'q');
+    measureCase(
+            "h2-data-frame-via-temporary",
+            [&outboundBuffer, &h2DataFramePayload]
+            {
+                outboundBuffer.clear();
+                outboundBuffer.append(Net::encodeHttp2DataFrame(h2DataFramePayload, false, 1U));
+                return outboundBuffer.size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "h2-data-frame-direct",
+            [&outboundBuffer, &h2DataFramePayload]
+            {
+                outboundBuffer.clear();
+                Net::appendHttp2Frame(outboundBuffer, Net::Http2FrameType::Data, 0U, 1U, h2DataFramePayload);
+                return outboundBuffer.size();
+            },
+            results, checksum, failureCount);
+
     // 静态文件每请求的元数据读取：三项分三样查（各开一次路径）还是一次查完。
     // 两侧读同一个临时文件，指纹不同也无妨——量的是取到这些数要付多少系统调用
     const std::filesystem::path metadataProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-meta.txt";
