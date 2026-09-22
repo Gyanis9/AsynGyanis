@@ -8,7 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <random>
@@ -38,15 +40,28 @@ namespace
             return streamId;
         }
 
-        void write(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
+        /**
+         * @brief 收下一段待发字节，累计到 pendingQueueByteLimit 为止
+         * @details 口径与真实流层一致：上界说的是「这条流的队列里现在最多压多少字节」，不是
+         *          「这一次调用允许多少字节」。同一轮 flush 里续交第二次才会拿到 0
+         * @return std::size_t 被收下的字节数——余下的仍归调用方
+         */
+        std::size_t write(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
         {
-            writtenByteCounts[streamId] += data.size();
-            outboundBytes[streamId].append(reinterpret_cast<const char *>(data.data()), data.size());
-            if (endStream)
+            const std::size_t writtenSoFarByteCount = writtenByteCounts[streamId];
+            const std::size_t roomByteCount = pendingQueueByteLimit > writtenSoFarByteCount
+                                                  ? pendingQueueByteLimit - writtenSoFarByteCount
+                                                  : 0;
+            const std::size_t acceptedByteCount = std::min(data.size(), roomByteCount);
+            writtenByteCounts[streamId] = writtenSoFarByteCount + acceptedByteCount;
+            outboundBytes[streamId].append(reinterpret_cast<const char *>(data.data()), acceptedByteCount);
+            // 收尾只随整段收下一起落定（真实流层就是这么判的：半段就 FIN 等于截断正文还骗对端发完了）
+            if (endStream && acceptedByteCount == data.size())
             {
                 endedStreams.push_back(streamId);
             }
             writeCallCount++;
+            return acceptedByteCount;
         }
 
         void credit(const std::int64_t streamId, const std::size_t byteCount)
@@ -90,6 +105,8 @@ namespace
         std::map<std::int64_t, std::size_t> creditedByteCounts{};
         int writeCallCount{0};
         bool isCrediterProvided{true};
+        /// 这条流在假传输层的待发队列里最多压多少字节：默认无限（全收），调到已交出的量即「队列已满」
+        std::size_t pendingQueueByteLimit{std::numeric_limits<std::size_t>::max()};
 
     private:
         std::int64_t nextUnidirectionalStreamId{3};
@@ -159,7 +176,7 @@ namespace
         return std::make_unique<Http3Connection>(
                 [&transport]() { return transport.openUnidirectionalStream(); },
                 [&transport](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
-                { transport.write(streamId, data, endStream); },
+                { return transport.write(streamId, data, endStream); },
                 [&transport](const std::int64_t streamId, const std::size_t byteCount) { transport.credit(streamId, byteCount); },
                 std::move(callbacks), settings);
     }
@@ -256,7 +273,8 @@ TEST(Http3Connection, OpensThreeUnidirectionalStreamsAndStartsControlWithSetting
 TEST(Http3Connection, MissingOpenerOrWriterMakesTheSessionUnusableInsteadOfThrowing)
 {
     // 开流口为空属装配错误：只让协议层不可用，不抛异常把整条连接拖垮
-    Http3Connection connectionWithoutStreams(nullptr, [](std::int64_t, std::span<const std::uint8_t>, bool) {}, nullptr, {});
+    Http3Connection connectionWithoutStreams(nullptr, [](std::int64_t, std::span<const std::uint8_t>, bool) -> std::size_t
+                                             { return 0; }, nullptr, {});
     EXPECT_FALSE(connectionWithoutStreams.isUsable());
     EXPECT_FALSE(connectionWithoutStreams.isBroken()) << "建不起来不等于协议错，不该上报连接错误码";
 }
@@ -411,6 +429,52 @@ TEST(Http3Connection, SubmittingToACancelledStreamOnlyVoidansThatResponse)
     EXPECT_FALSE(submitted.has_value()) << "流没了就该拒绝提交，让会话只作废这一条响应";
     EXPECT_FALSE(connection->isBroken());
     EXPECT_EQ(transport.writtenOf(kRequestStreamId), 0u) << "已排的字节也要丢掉";
+}
+
+/**
+ * @brief 传输层只收下一半时，余下的字节留在协议层缓冲里续交，既不截断也不重复
+ * @details 对端长期不授窗口时传输层的待发队列会到界并拒收，本层必须留住那段字节等下一次 flush。
+ *          交出去就丢副本的话，响应正文会静静少一截，而收尾标记照样上线——对端看到的是一个合法但
+ *          缺字的响应，比直接失败更难查
+ */
+TEST(Http3Connection, PartiallyAcceptedBodyIsRetainedAndResentInOrder)
+{
+    FakeTransport transport;
+    EventLog events;
+    auto connection = makeConnection(transport, events);
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId,
+                                  bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, false).has_value());
+    ASSERT_TRUE(connection->appendResponseBody(kRequestStreamId, bytesOfText("0123456789abcdef"), false).has_value());
+
+    // 先记下这条流一共要交多少字节，再让假传输层的队列只装到倒数第 4 个字节为止
+    const std::size_t totalByteCount = connection->pendingOutputByteCount(kRequestStreamId);
+    ASSERT_GT(totalByteCount, 4u);
+    transport.pendingQueueByteLimit = totalByteCount - 4;
+    connection->flush();
+    EXPECT_EQ(transport.writtenOf(kRequestStreamId), totalByteCount - 4);
+    EXPECT_EQ(connection->pendingOutputByteCount(kRequestStreamId), 4u) << "没收下的那截要留在本层，不能当作已交付";
+    EXPECT_TRUE(transport.endedStreams.empty());
+
+    transport.pendingQueueByteLimit = std::numeric_limits<std::size_t>::max();
+    connection->flush();
+    EXPECT_EQ(transport.writtenOf(kRequestStreamId), totalByteCount);
+    EXPECT_EQ(transport.bytesOf(kRequestStreamId).size(), totalByteCount) << "续交既不能丢字节也不能重放";
+    EXPECT_EQ(connection->pendingOutputByteCount(kRequestStreamId), 0u);
+
+    // 队列还满着的时候收尾不能先上线：否则对端看到的是一个合法但缺了尾字的响应
+    ASSERT_TRUE(connection->appendResponseBody(kRequestStreamId, bytesOfText("tail"), true).has_value());
+    transport.pendingQueueByteLimit = transport.writtenOf(kRequestStreamId);
+    connection->flush();
+    EXPECT_EQ(transport.writtenOf(kRequestStreamId), totalByteCount) << "队列没地方，线上不该多出任何字节";
+    EXPECT_TRUE(transport.endedStreams.empty()) << "没交完就不该告诉对端本端收尾了";
+
+    transport.pendingQueueByteLimit = std::numeric_limits<std::size_t>::max();
+    connection->flush();
+    EXPECT_EQ(transport.endedStreams.size(), 1u);
+    EXPECT_GT(transport.writtenOf(kRequestStreamId), totalByteCount);
+    EXPECT_EQ(transport.writtenOf(kRequestStreamId), transport.bytesOf(kRequestStreamId).size());
 }
 
 TEST(Http3Connection, UnknownUnidirectionalStreamTypeIsDiscardedButStillCredited)

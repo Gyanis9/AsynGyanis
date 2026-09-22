@@ -156,21 +156,24 @@ namespace AsynGyanis::Net
         m_needsFlush = true;
     }
 
-    void QuicConnection::queueStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
+    std::size_t QuicConnection::queueStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data,
+                                                const bool endStream)
     {
         if (m_core == nullptr || streamId < 0)
         {
-            return;
+            return 0;
         }
         const std::size_t acceptedByteCount = m_core->streamLayer().writeStreamData(static_cast<std::uint64_t>(streamId), data, endStream);
         if (acceptedByteCount == 0 && !data.empty())
         {
-            // 收不进通常是对端用 STOP_SENDING 叫停了这条流，或它超出了对端给的流数上限：响应没地方去
-            LOG_DEBUG_FMT("QuicConnection: 流 {} 拒收了 {} 字节待发数据（流已收尾、被打断或超出对端给的流数上限）", streamId,
+            // 一字节也没收下：对端用 STOP_SENDING 叫停了这条流、它超出了对端给的流数上限，
+            // 或该流的待发队列已到上界。前两种是响应没地方去，第三种靠上层的续交闸门
+            LOG_DEBUG_FMT("QuicConnection: 流 {} 拒收了 {} 字节待发数据（流已收尾、被打断或待发队列到上界）", streamId,
                           data.size());
-            return;
+            return 0;
         }
         m_needsFlush = true;
+        return acceptedByteCount;
     }
 
     void QuicConnection::abortStream(const std::int64_t streamId, const std::uint64_t applicationErrorCode)
@@ -275,6 +278,15 @@ namespace AsynGyanis::Net
             if (sentDatagramCount == kMaximumDatagramsPerFlush)
             {
                 // 一轮没排空：留给下一轮，别在同一次调用里无限写下去
+                m_needsFlush = true;
+            }
+            // 本层从待发队列里掏走了多少字节就通知上层一次：上层（HTTP/3）因队列到上界而留下的那段
+            // 要靠这个信号续交。对端只回窗口更新、不发数据的连接不会触发任何流数据回调，缺了这一笔
+            // 就是丢唤醒——生产者一直挂在背压闸门上，尽管线上早就有了地方
+            if (m_core->streamLayer().takeDrainedSendByteCount() > 0 && m_configuration.onSendSpaceAvailable)
+            {
+                m_configuration.onSendSpaceAvailable(*this);
+                // 上层多半又排进了新字节：再来一轮把它们编出去，别压到下一次触发
                 m_needsFlush = true;
             }
             if (!std::exchange(m_hasFlushRequest, false) && !m_needsFlush)

@@ -3,6 +3,7 @@
 #include "Base/Log/LogMacros.h"
 
 #include <cstddef>
+#include <ranges>
 #include <variant>
 
 namespace AsynGyanis::Net
@@ -854,12 +855,33 @@ namespace AsynGyanis::Net
                 }
                 continue;
             }
-            // 一次把这流的待发字节全交出去：传输层自己留重传副本并按流控发包，本类不必分批
-            m_streamWriter(streamId, asBytes(outbound.bytes), outbound.isEndStream);
+            // 一次把这流的待发字节全交出去，传输层按它自己的上界收下能收的那一段（它会留重传副本
+            // 并按流控发包，本类不必主动分批）。收不下的余数连同收尾标记留在本类缓冲里下一轮续交
+            const std::size_t acceptedByteCount = m_streamWriter(streamId, asBytes(outbound.bytes), outbound.isEndStream);
+            if (acceptedByteCount < outbound.bytes.size())
+            {
+                retainUnsentOutboundBytes(streamId, outbound, acceptedByteCount);
+                continue;
+            }
             if (outbound.isEndStream)
             {
                 noteLocallyFinishedStream(streamId);
             }
+        }
+    }
+
+    void Http3Connection::retainUnsentOutboundBytes(const std::int64_t streamId, const OutboundStream &outbound,
+                                                    const std::size_t acceptedByteCount)
+    {
+        // 收尾标记跟着最后那几个字节走：只交出一半就把 END_STREAM 记成「已本地收尾」，
+        // 上层便以为这条流结束了，而线上那段正文永远没出去
+        OutboundStream &retained = m_outbound[streamId];
+        retained.bytes.append(outbound.bytes, acceptedByteCount, std::string::npos);
+        retained.isEndStream = outbound.isEndStream;
+        // 重新排队放在队尾：这条流凭什么占着地方不该让别的流跟着等
+        if (std::ranges::find(m_outboundOrder, streamId) == m_outboundOrder.end())
+        {
+            m_outboundOrder.push_back(streamId);
         }
     }
 

@@ -317,7 +317,7 @@ namespace AsynGyanis::Net
         auto                  session       = std::make_unique<Http3Session>(
                 [rawConnection] { return rawConnection->openUnidirectionalStream(); },
                 [rawConnection](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                { rawConnection->queueStreamData(streamId, data, isEndStream); },
+                { return rawConnection->queueStreamData(streamId, data, isEndStream); },
                 [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
                 { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
                 m_configuration.metricsCollector, m_configuration.memoryBudget, m_configuration.requestIdGenerator,
@@ -493,6 +493,15 @@ namespace AsynGyanis::Net
             if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
             {
                 session->cancelStreamByPeer(streamId);
+            }
+        };
+        // 待发队列被排空一些就催一次续交：h3 连接层留着的那段字节等的是「地方」而不是「对端发数据」，
+        // 而只回窗口更新的连接不会触发任何接收回调
+        connectionConfiguration.onSendSpaceAvailable = [this](QuicConnection &connection)
+        {
+            if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
+            {
+                session->flushPendingStreamData();
             }
         };
         connectionConfiguration.sendDatagram         = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data,

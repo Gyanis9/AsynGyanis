@@ -79,6 +79,9 @@ namespace AsynGyanis::Net
             /// 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**对端发起的双向流**触发
             /// （流号低两位为 0）——请求只跑在这类流上，控制流与 QPACK 流另有各自己的一套规矩
             std::function<void(QuicConnection &connection, std::int64_t streamId)> onPeerStreamClosed;
+            /// 待发队列被编帧掏空一些时的通知：上层（HTTP/3）因队列到上界而留下的那段字节据此续交。
+            /// 没有它，「对端只给窗口不发数据」的连接上生产者会一直挂在背压闸门上（丢唤醒）
+            std::function<void(QuicConnection &connection)> onSendSpaceAvailable;
             std::chrono::milliseconds idleTimeout{30000}; ///< 空闲超时，也是本端宣告的 max_idle_timeout
         };
 
@@ -219,10 +222,13 @@ namespace AsynGyanis::Net
         /**
          * @brief 在一条流上排队一段待发数据（应用层用）
          * @param streamId 目标流号
-         * @param data 数据；本层会拷进待发队列，交出后即可释放
+         * @param data 数据；被收下的部分拷进待发队列，没被收下的仍归调用方
          * @param endStream 发完是否收尾这条流
+         * @return std::size_t 被收下的字节数。小于 `data.size()` 即该流的待发队列到了上界
+         *         （`QuicStreamLayer::kMaximumPendingSendByteCount`）或这条流已不可写：
+         *         **调用方必须留住余下的字节等 `onSendSpaceAvailable` 后再交**，直接丢弃就是截断响应
          */
-        void queueStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream);
+        std::size_t queueStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream);
 
         /**
          * @brief 收口一条流：本端不再发、也请对端别再发（RFC 9000 §3.5）

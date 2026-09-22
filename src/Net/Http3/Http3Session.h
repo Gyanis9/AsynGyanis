@@ -61,8 +61,9 @@ namespace AsynGyanis::Net
         /// 开一条本端发起的单向流并返回流号（由 QuicConnection 提供；失败返回 -1）
         using StreamOpener = std::function<std::int64_t()>;
 
-        /// 待发流数据的出口（由 QuicConnection 提供，内部就是 queueStreamData）
-        using StreamWriter = std::function<void(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream)>;
+        /// 待发流数据的出口（由 QuicConnection 提供，内部就是 queueStreamData）。
+        /// 返回被接收的字节数，签名必须与 `Http3Connection::StreamWriter` 一致，否则传给连接层时编不过
+        using StreamWriter = std::function<std::size_t(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream)>;
 
         /// 把已消费的字节归还给 QUIC 的接收窗口（参数：流号、本次可再收的字节数）
         using StreamCrediter = std::function<void(std::int64_t streamId, std::size_t consumedByteCount)>;
@@ -182,6 +183,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把 HTTP/3 层攒下的待发字节交给传输层
+         * @note 也是「传输层腾出了地方」的续交入口：承载层在待发队列被排空后回调它。
+         *       对端只回窗口更新、不发数据时不会触发任何接收回调，缺这一笔就是丢唤醒——
+         *       因队列到上界而留在连接层的那段字节一直等不到续交，挂在背压闸门上的生产者也随之睡过去
          */
         void flushPendingStreamData();
 
@@ -428,7 +432,9 @@ namespace AsynGyanis::Net
          * @brief 一条流的响应里还有多少字节没交给传输层
          * @param streamId 流号
          * @return std::size_t 连接层该流的待发字节数；连接层已作废时为 0
-         * @note 闸门口径按「交给传输层即视为排空」算：本端不等对端的确认，重传由传输层负责
+         * @note 闸门口径按「交给传输层即视为排空」算：本端不等对端的确认，重传由传输层负责。
+         *       这一句成立的前提是传输层自己也有上界——它对超界的写入直接拒收，留下的那段仍在
+         *       连接层计数之内，因此「已交出去」不等于「本端不再占这块内存」
          */
         [[nodiscard]] std::size_t streamingResponsePendingByteCount(std::int64_t streamId) const noexcept;
 

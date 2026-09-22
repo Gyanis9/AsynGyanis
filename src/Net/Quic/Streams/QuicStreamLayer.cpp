@@ -407,18 +407,54 @@ namespace AsynGyanis::Net
             // 空写又没有 FIN，编出去就是一条零长 STREAM 帧：白占包预算，也不推进任何状态
             return 0;
         }
+        // 上界先行：排空只发生在编帧那一刻，而编帧要等对端给窗口，所以对端不授窗口时这里就是唯一的
+        // 闸口。收不下的部分原样退回给调用方留住——本层不替它存副本，否则同一段字节占两份内存
+        const std::size_t pendingByteCount = pendingQueueByteCount(stream);
+        const std::size_t roomByteCount = pendingByteCount < kMaximumPendingSendByteCount
+                                              ? kMaximumPendingSendByteCount - pendingByteCount
+                                              : 0;
+        const std::size_t acceptedByteCount = std::min(bytes.size(), roomByteCount);
+        if (acceptedByteCount == 0 && !bytes.empty())
+        {
+            // 队列已满。零长的收尾写不吃地方，仍然照收——否则这条流永远收不了口
+            return 0;
+        }
+        const bool isWholeSegmentAccepted = acceptedByteCount == bytes.size();
+
         QuicStreamChunk chunk;
         chunk.beginOffset = stream.nextWriteOffset;
-        chunk.bytes.assign(bytes.begin(), bytes.end());
-        chunk.isFinal = isFinal;
-        stream.nextWriteOffset += bytes.size();
-        if (isFinal)
+        chunk.bytes.assign(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(acceptedByteCount));
+        // FIN 只随整段收下一起落定：半段就收尾等于把正文截断了还告诉对端「发完了」
+        chunk.isFinal = isWholeSegmentAccepted && isFinal;
+        stream.nextWriteOffset += acceptedByteCount;
+        if (chunk.isFinal)
         {
             stream.finalOffset = stream.nextWriteOffset;
         }
-        const std::size_t acceptedByteCount = chunk.bytes.size();
         stream.pendingQueue.push_back(std::move(chunk));
         return acceptedByteCount;
+    }
+
+    std::size_t QuicStreamLayer::pendingSendByteCount(const std::uint64_t streamId) const noexcept
+    {
+        const auto stream = m_outgoing.find(streamId);
+        return stream == m_outgoing.end() ? 0 : pendingQueueByteCount(stream->second);
+    }
+
+    std::size_t QuicStreamLayer::takeDrainedSendByteCount() noexcept
+    {
+        return std::exchange(m_drainedSendByteCount, 0);
+    }
+
+    std::size_t QuicStreamLayer::pendingQueueByteCount(const OutgoingStream &stream) noexcept
+    {
+        // 逐段相加而不另记一本账：队列本就短（上界封顶、每次编帧都在掏），多一本账就多一处漏记
+        std::size_t totalByteCount = 0;
+        for (const QuicStreamChunk &chunk: stream.pendingQueue)
+        {
+            totalByteCount += chunk.bytes.size();
+        }
+        return totalByteCount;
     }
 
     void QuicStreamLayer::resetStreamSending(const std::uint64_t streamId, const std::uint64_t applicationErrorCode)
@@ -674,6 +710,8 @@ namespace AsynGyanis::Net
                                              mutableFront.bytes.begin() + static_cast<std::ptrdiff_t>(payloadByteLength));
                     mutableFront.beginOffset += payloadByteLength;
                 }
+                // 记一笔「队列又空出这么多」：上层因本层到界而留下的那段字节靠这个数续交
+                m_drainedSendByteCount += payloadByteLength;
             }
         }
         return usedByteCount;

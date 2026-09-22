@@ -61,6 +61,17 @@ namespace AsynGyanis::Net
     {
     public:
         /**
+         * @brief 一条出站流允许暂存的待发字节上界
+         * @details 编帧只受对端窗口约束，因此这条队列的排空速度由对端决定：对端长期不授窗口
+         *          （慢读者或恶意连接）时，上层每交一段正文就往本端内存里堆一段，没有上界就是
+         *          让对端替本端决定占多少内存。超出上界即部分接收，余下的字节退回上层留着。
+         *          量级与 h2 侧的待发闸门一致（`Http2Session` 的 1 MiB）。
+         * @note 判丢重排的字节按原样回到队列里（重发不能改偏移，§13.3），因此队列可短暂越过此界；
+         *       越界期间新写入一律不收，队列回到界内即恢复
+         */
+        static constexpr std::size_t kMaximumPendingSendByteCount = 1024U * 1024U;
+
+        /**
          * @brief 用本端宣告的参数建流层
          * @details 本端参数决定「愿意收多少」；「能发多少」要等对端参数到手，在那之前一条也不发
          * @param localParameters 本端传输参数，取 initial_max_data 与三个 initial_max_stream_data_*
@@ -102,9 +113,27 @@ namespace AsynGyanis::Net
          * @param streamId 目标流号，必须是本端发起的流
          * @param bytes 数据本体，二进制安全；本层会拷进待发队列
          * @param isFinal 发完这段是否收尾
-         * @return std::size_t 被接收的字节数；流已收尾、被打断或超出流数上限时是 0
+         * @return std::size_t 被接收的字节数。小于 `bytes.size()` 即本层只收下前一段（队列到
+         *         `kMaximumPendingSendByteCount`，或流已收尾、被打断、超出对端给的流数上限时是 0）：
+         *         **余下的字节仍归调用方持有**，调用方要留住它们并在队列排空后续交，否则正文被截断
+         * @note 收尾只在整段收下时落定：只收一半时 FIN 跟着退回的那一段，不会提前告诉对端「发完了」
          */
         std::size_t writeStreamData(std::uint64_t streamId, std::span<const std::uint8_t> bytes, bool isFinal);
+
+        /**
+         * @brief 这条流的待发队列里还有多少字节（没编进包的那部分）
+         * @param streamId 流号
+         * @return std::size_t 没有这条流的出站记账时为 0
+         * @note 在途（已上线未确认）的字节不算：那部分由对端的窗口与传输参数界定，不是本端能堆的
+         */
+        [[nodiscard]] std::size_t pendingSendByteCount(std::uint64_t streamId) const noexcept;
+
+        /**
+         * @brief 取走并清零「自上次调用以来排进包的待发字节数」
+         * @return std::size_t 本层队列被编帧掏空的字节数
+         * @note 给上层一个「腾出了地方」的信号：上层因队列到界而留着的字节要等这个数非零时续交
+         */
+        [[nodiscard]] std::size_t takeDrainedSendByteCount() noexcept;
 
         /**
          * @brief 本端放弃这条流的发送侧：作废待发与在途，排一条 RESET_STREAM（§4.5、§19.4）
@@ -249,6 +278,8 @@ namespace AsynGyanis::Net
         void raiseAdvertisedStreamLimits();
         /// 这条流现在还能发多少字节：流级与连接级额度取小
         [[nodiscard]] std::size_t sendCreditOf(const OutgoingStream &stream) const noexcept;
+        /// 把这条流待发队列里各段的字节数加起来（队列短且只在写入时算，不值得另记一本账）
+        [[nodiscard]] static std::size_t pendingQueueByteCount(const OutgoingStream &stream) noexcept;
 
         QuicTransportParameters m_localParameters{};       ///< 本端宣告的参数，决定接收侧额度
         QuicTransportParameters m_peerParameters{};        ///< 对端参数；没到手前所有发送额度都是 0
@@ -258,6 +289,7 @@ namespace AsynGyanis::Net
         std::map<std::uint64_t, OutgoingStream> m_outgoing{}; ///< 本端发起的流
         std::deque<QuicStreamDelivery> m_deliveries{};        ///< 等着交给上层的数据
         std::deque<std::uint64_t> m_abortedStreams{};         ///< 被打断、等上层回收的流号
+        std::size_t m_drainedSendByteCount{0};                ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
 
         std::uint64_t m_connectionReceivedBytes{0};           ///< 各入站流最大结束偏移之和，§4.1 的连接级账
         std::uint64_t m_connectionConsumedBytes{0};           ///< 上层消化掉的字节总数，连接级窗口按它抬

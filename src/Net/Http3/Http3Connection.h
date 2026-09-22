@@ -47,8 +47,9 @@ namespace AsynGyanis::Net
         /// 开一条本端发起的单向流并返回流号；失败返回 -1（控制流与两条 QPACK 流在构造时各开一条）
         using StreamOpener = std::function<std::int64_t()>;
 
-        /// 一条流上待发字节的出口：endStream 为真表示这段之后本端在该流上收尾
-        using StreamWriter = std::function<void(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream)>;
+        /// 一条流上待发字节的出口：endStream 为真表示这段之后本端在该流上收尾。
+        /// 返回**被接收的字节数**——传输层的待发队列有上界，收不下的余数留在本类缓冲里下一轮续交
+        using StreamWriter = std::function<std::size_t(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream)>;
 
         /// 把已消费的字节归还给 QUIC 的接收窗口（本端在这条流上还可以再收多少）
         using StreamCrediter = std::function<void(std::int64_t streamId, std::size_t consumedByteCount)>;
@@ -260,6 +261,16 @@ namespace AsynGyanis::Net
             std::string bytes{};     ///< 尚未交给传输层的字节
             bool isEndStream{false}; ///< 交完这些字节本端就在该流上收尾
         };
+
+        /**
+         * @brief 把传输层没收下的那段字节放回本流的待发缓冲，并重新排进轮转序
+         * @details 传输层的待发队列有上界（`QuicStreamLayer::kMaximumPendingSendByteCount`），
+         *          对端长期不授窗口时会拒收；这段字节既不能丢（丢就是截断响应）也不该在本类之外另存一份
+         * @param streamId 目标流号
+         * @param outbound 本次没能全交出去的那份缓冲
+         * @param acceptedByteCount 传输层实际收下的字节数
+         */
+        void retainUnsentOutboundBytes(std::int64_t streamId, const OutboundStream &outbound, std::size_t acceptedByteCount);
 
         /// 归类一条对端单向流：类型前缀可能跨多次交付，凑齐一个变长整数之后才分派
         void consumePeerUnidirectionalTypePrefix(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);

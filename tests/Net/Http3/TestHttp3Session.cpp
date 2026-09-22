@@ -586,6 +586,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         ASSERT_TRUE(session.isUsable()) << "三条本端单向流都开得出来，会话却不是可用状态";
@@ -617,6 +618,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
         ASSERT_TRUE(session.isUsable());
         session.flushPendingStreamData();
@@ -641,6 +643,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         EXPECT_FALSE(session.isUsable()) << "单向流都开不出来，会话不该报可用";
@@ -663,6 +666,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         // 处理器收到的请求：断言它的字段就是「h1/h2 上同一份业务代码会看到的那一份」
@@ -736,6 +740,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
         ASSERT_TRUE(session.isUsable());
         session.flushPendingStreamData();
@@ -856,6 +861,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         Router router;
@@ -951,6 +957,9 @@ namespace AsynGyanis::Net
                             {
                                 sentStreamData.push_back(
                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                // 假出口一律全收：传输层的待发上界归 QuicStreamLayer 的用例测，
+                                // 这里只关心「协议层交了什么字节」
+                                return data.size();
                             },
                             {}, nullptr, nullptr, std::move(requestIdGenerator), std::move(aborter));
     }
@@ -1224,6 +1233,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         Router router;
@@ -1295,6 +1305,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              },
                              Http3Session::StreamCrediter{}, metrics);
 
@@ -1349,6 +1360,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              },
                              Http3Session::StreamCrediter{}, metrics);
 
@@ -1408,6 +1420,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         HttpParserLimits limits;
@@ -1470,6 +1483,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              },
                              [&creditedByteCount](const std::int64_t, const std::size_t consumedByteCount) { creditedByteCount += consumedByteCount; });
 
@@ -1496,6 +1510,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         Router router;
@@ -1554,6 +1569,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         constexpr std::size_t    kChunkByteCount = 4;
@@ -1639,6 +1655,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              },
                              Http3Session::StreamCrediter{}, metrics);
 
@@ -1712,6 +1729,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         bool             isBusinessFinished = false;
@@ -1827,6 +1845,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              },
                              Http3Session::StreamCrediter{}, nullptr, budget);
 
@@ -1887,6 +1906,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              },
                              Http3Session::StreamCrediter{}, nullptr, budget);
 
@@ -1950,6 +1970,7 @@ namespace AsynGyanis::Net
                              {
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
                              });
 
         Router router;

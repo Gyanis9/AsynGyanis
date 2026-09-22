@@ -568,6 +568,66 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 对端长期不给窗口时，本端的待发队列停在上界，而不是替对端无限占内存
+     * @details 排空只发生在编帧那一刻，而编帧要等对端给窗口，因此「只收不授窗口」正是上界要拦住的那类对端
+     */
+    TEST(QuicStreamLayer, CapsPendingSendQueueWhenPeerGrantsNoWindow)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makeParameters(0, 0, 0, 0, 4, 4));
+
+        const std::vector<std::uint8_t> segment(64U * 1024U, std::uint8_t{'x'});
+        std::size_t acceptedTotalByteCount = 0;
+        for (int attempt = 0; attempt < 32; ++attempt)
+        {
+            acceptedTotalByteCount += layer.writeStreamData(0x03, segment, false);
+        }
+        EXPECT_EQ(acceptedTotalByteCount, QuicStreamLayer::kMaximumPendingSendByteCount)
+                << "收下的总量必须恰好停在上界：多一个字节就是让对端替本端决定占多少内存";
+        EXPECT_EQ(layer.pendingSendByteCount(0x03), acceptedTotalByteCount);
+        EXPECT_EQ(layer.writeStreamData(0x03, segment, false), 0U) << "到界之后一字节也不收";
+        EXPECT_FALSE(collect(layer, 1200).hasFrames) << "没有窗口就不该编出数据帧";
+    }
+
+    /**
+     * @brief 队列到界之后收尾写照收，编帧排空后回报腾出的地方并恢复接收
+     */
+    TEST(QuicStreamLayer, KeepsAcceptingFinalMarkerAndResumesAfterTheQueueDrains)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makeParameters(8U * 1024U * 1024U, 8U * 1024U * 1024U, 8U * 1024U * 1024U,
+                                                 8U * 1024U * 1024U, 4, 4));
+        const std::size_t capByteCount = QuicStreamLayer::kMaximumPendingSendByteCount;
+        const std::vector<std::uint8_t> fullSegment(capByteCount, std::uint8_t{'y'});
+        ASSERT_EQ(layer.writeStreamData(0x03, fullSegment, false), capByteCount) << "恰好等于上界的那一段应当全收下";
+        EXPECT_EQ(layer.writeStreamData(0x03, fullSegment, false), 0U) << "队列已满，第二段一个字节也不该收";
+
+        // 零长的收尾写不吃队列空间：到界也要收下它，否则这条流永远收不了口、正文停在半路
+        layer.writeStreamData(0x03, std::span<const std::uint8_t>{}, true);
+
+        const Collected collected = collect(layer, 16U * 1024U * 1024U);
+        const std::vector<QuicStreamFrame> sent = framesOfType<QuicStreamFrame>(collected.frames);
+        std::size_t framedByteCount = 0;
+        for (const QuicStreamFrame &frame : sent)
+        {
+            framedByteCount += frame.data.size();
+        }
+        ASSERT_FALSE(sent.empty());
+        EXPECT_EQ(framedByteCount, capByteCount) << "交出去一个字节就该在线上看见一个字节，不多不少";
+        EXPECT_TRUE(sent.back().isFinal) << "队列到界时交来的收尾必须排在最后一段上";
+        EXPECT_EQ(layer.takeDrainedSendByteCount(), capByteCount);
+        EXPECT_EQ(layer.pendingSendByteCount(0x03), 0U);
+
+        // 排空之后重新接收：上界拦的是「压着多少字节没走」，不是「这条流一共发过多少」
+        ASSERT_EQ(layer.writeStreamData(0x07, fullSegment, false), capByteCount);
+        EXPECT_EQ(layer.writeStreamData(0x07, fullSegment, false), 0U);
+        EXPECT_EQ(layer.takeDrainedSendByteCount(), 0U) << "没编帧就不该报排空";
+        EXPECT_TRUE(collect(layer, 16U * 1024U * 1024U).hasFrames);
+        EXPECT_EQ(layer.takeDrainedSendByteCount(), capByteCount);
+        EXPECT_EQ(layer.writeStreamData(0x07, bytesOf("after drain"), false), 11U);
+    }
+
+    /**
      * @brief 判丢的段按原偏移重新排队，重发不重复占用额度
      */
     TEST(QuicStreamLayer, RequeuesLostRangesAtSameOffset)
