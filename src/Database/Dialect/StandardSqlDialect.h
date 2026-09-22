@@ -193,25 +193,36 @@ namespace AsynGyanis::Database
         virtual void appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const;
 
         /**
-         * @brief 渲染字段引用：纯标识符加引用字符，表达式原样输出
+         * @brief 把字段引用追加进输出缓冲：纯标识符加引用字符，表达式原样输出
          *
          * @details 处理三种情形：单个标识符（加引用）、限定名（users.id → "users"."id"）、含结构
          *          字符的表达式（原样输出，例如 COUNT(*)）。判定依据是「有无结构字符」而非「有无空格」，
          *          因此含空格的列名仍是标识符。原样输出在安全上成立：字段引用全部来自编译期常量
          *          （Column() 的列名参数或 asc()/desc() 的字面量），不是外部输入，数据值一律走参数绑定。
          *
+         * @param sqlText 输出缓冲区，字段片段追加到末尾
          * @param fieldText 字段引用文本（列名或表达式）
-         * @return std::string 可直接写入 SQL 的字段片段
+         * @note 片段直写 sqlText 而不是先返回一个临时 std::string：一条查询要渲染七八个字段引用，
+         *       临时串里长度超过短字符串缓冲的那个（"balance" 加引号已超 15 字节）每次都要建一份堆缓冲
          */
-        [[nodiscard]] std::string renderFieldReference(std::string_view fieldText) const;
+        void appendFieldReference(std::string &sqlText, std::string_view fieldText) const;
 
         /**
-         * @brief 渲染表引用：加引用的表名，附带可选的 "AS 别名"
+         * @brief 把「已引用的表名 + 可选别名」追加进输出缓冲
          * @details SELECT / UPDATE / DELETE 共用，保证表名与别名的引用方式在任何语句里都一致。
+         * @param sqlText 输出缓冲区
          * @param query 提供 tableName 与 tableAlias 的查询树
-         * @return std::string "表名" 或 "表名" AS "别名"
          */
-        [[nodiscard]] std::string renderTableReference(const Queryable::QueryNode &query) const;
+        void appendTableReference(std::string &sqlText, const Queryable::QueryNode &query) const;
+
+        /**
+         * @brief 把加好引用字符并完成转义的标识符追加进输出缓冲
+         * @details 这是引用规则的唯一实现：quoteIdentifier() 只负责建一个空串再调本方法，
+         *          两条通道不可能出现转义分歧。
+         * @param sqlText 输出缓冲区
+         * @param identifier 待引用的标识符，不含外层引用字符
+         */
+        void appendQuotedIdentifier(std::string &sqlText, std::string_view identifier) const;
 
         /**
          * @brief 渲染 " WHERE 条件..." 子句（无条件时什么都不输出）

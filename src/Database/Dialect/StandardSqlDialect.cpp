@@ -69,55 +69,146 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 把限定名按 '.' 切成若干段
-         * @details 不处理引号内的点号：调用方传入的是列名或表达式文本，
-         *          已经加好引号的文本不需要再切分（会走表达式分支原样输出）。
-         * @param text 待切分的文本
-         * @return std::vector<std::string_view> 各段视图，无点号时只含整体一段
+         * @brief 判断整串文本是否是「可引用标识符以点号相连」的限定名
+         * @details 与逐段渲染共用同一套扫描规则：空段（"a..b"、".a"、"a."）判否，交给表达式分支
+         *          原样输出；"*" 段算合法（users.* 是合法写法），但渲染时不加引用。
+         *          判定与渲染都就地扫描，不先切出一个分段容器——一条查询要判七八次，
+         *          每次那份 std::vector<std::string_view> 就是一次堆分配。
+         * @param text 待判断的文本
+         * @param quoteCharacter 本引擎的标识符引用字符
+         * @return true 整串可按限定名渲染
          */
-        std::vector<std::string_view> splitQualifiedName(const std::string_view text)
+        bool isQuotableQualifiedName(const std::string_view text, const char quoteCharacter) noexcept
         {
-            std::vector<std::string_view> segments;
-            std::size_t                   segmentStart = 0;
-
-            // 每遇到一个点号就切出一段（空段保留，交给可引用判定为非法 → 走表达式分支）
-            for (std::size_t index = 0; index < text.size(); ++index)
+            std::size_t segmentStart = 0;
+            for (;;)
             {
-                if (text[index] == '.')
+                const std::size_t dotPosition = text.find('.', segmentStart);
+                // dotPosition 为 npos 时长度自动覆盖到串尾，不必为末尾那段单开分支
+                const std::string_view segment = text.substr(segmentStart, dotPosition - segmentStart);
+                if (segment != "*" && !isQuotableIdentifier(segment, quoteCharacter))
                 {
-                    segments.push_back(text.substr(segmentStart, index - segmentStart));
-                    segmentStart = index + 1;
+                    return false;
                 }
-            }
-            segments.push_back(text.substr(segmentStart));
 
-            return segments;
+                if (dotPosition == std::string_view::npos)
+                {
+                    return true;
+                }
+                segmentStart = dotPosition + 1;
+            }
+        }
+
+        /**
+         * @brief 估算一条查询的 SQL 文本产出长度，供拼接缓冲一次性预留容量
+         * @details std::string 从空串起按 15→31→63→127 逐次翻倍，一条十几个标识符的 SELECT
+         *          中途要换三次堆缓冲。这里按「标识符长度 × 2（外层引用符与最坏情况的翻倍转义）
+         *          + 每个片段一组关键字与标点的余量」估一个上界；条件树只在顶层按片段计一次，
+         *          嵌套条件因此可能估少——估少只是退回原来的翻倍路径，估多则白占几十字节，
+         *          两种偏差都不影响产出文本。
+         * @param query 待翻译的查询树
+         * @return std::size_t 预留字节数
+         */
+        [[nodiscard]] std::size_t estimateSqlTextCapacity(const Queryable::QueryNode &query) noexcept
+        {
+            // 单个片段的固定文本余量：", "、" = "、括号、占位符与关键字
+            constexpr std::size_t kPerFragmentOverheadBytes = 16;
+            // "SELECT  FROM WHERE GROUP BY HAVING ORDER BY LIMIT OFFSET" 这些骨架关键字的余量
+            constexpr std::size_t kClauseSkeletonBytes = 64;
+
+            std::size_t identifierBytes = query.tableName.size() + query.tableAlias.size();
+            for (const std::string &column: query.selectColumns)
+            {
+                identifierBytes += column.size();
+            }
+            for (const Queryable::JoinClause &joinClause: query.joins)
+            {
+                identifierBytes += joinClause.tableName.size() + joinClause.tableAlias.size();
+            }
+            for (const Queryable::FieldReference &field: query.groupBy)
+            {
+                identifierBytes += field.name.size();
+            }
+            for (const Queryable::OrderByClause &order: query.orderBy)
+            {
+                identifierBytes += order.field.name.size();
+            }
+
+            const std::size_t fragmentCount = query.selectColumns.size() + query.joins.size() + query.groupBy.size()
+                                            + query.orderBy.size() + query.whereConditions.size() + 1;
+
+            return kClauseSkeletonBytes + identifierBytes * 2 + fragmentCount * kPerFragmentOverheadBytes;
+        }
+
+        /**
+         * @brief 统计一棵条件树会产出多少个绑定参数
+         * @details 递归形状与 appendCondition 的分支一一对应：IN 按元素个数计，IS NULL 系与
+         *          列-列比较不占参数。两处规则必须同步，否则预留容量偏小又会走扩容。
+         * @param condition 条件节点
+         * @return std::size_t 本节点及其子树产生的参数个数
+         */
+        [[nodiscard]] std::size_t countConditionParameters(const Queryable::WhereCondition &condition) noexcept
+        {
+            using Queryable::SqlOperator;
+
+            switch (condition.op)
+            {
+                case SqlOperator::And:
+                case SqlOperator::Or:
+                {
+                    std::size_t parameterCount = 0;
+                    for (const Queryable::WhereCondition &child: condition.children)
+                    {
+                        parameterCount += countConditionParameters(child);
+                    }
+                    return parameterCount;
+                }
+
+                case SqlOperator::Not:
+                    // 空子条件按恒真渲染，不产参数；非空时参数全部来自那一个子条件
+                    return condition.children.empty() ? 0 : countConditionParameters(condition.children[0]);
+
+                case SqlOperator::IsNull:
+                case SqlOperator::IsNotNull:
+                    return 0;
+
+                case SqlOperator::In:
+                case SqlOperator::NotIn:
+                    // 空集合换成恒假/恒真写法，一个参数都不占
+                    return condition.inValues.size();
+
+                default:
+                    return std::holds_alternative<Queryable::FieldReference>(condition.right) ? 0 : 1;
+            }
         }
 
     } // namespace
 
     std::string StandardSqlDialect::quoteIdentifier(const std::string_view identifier) const
     {
-        const char quoteCharacter = identifierQuoteCharacter();
-
         std::string quotedText;
         // 预分配：外层两个引用字符，加上最坏情况下每个字节都要翻倍
         quotedText.reserve(identifier.size() * 2 + 2);
+        appendQuotedIdentifier(quotedText, identifier);
+        return quotedText;
+    }
 
-        quotedText.push_back(quoteCharacter);
+    void StandardSqlDialect::appendQuotedIdentifier(std::string &sqlText, const std::string_view identifier) const
+    {
+        const char quoteCharacter = identifierQuoteCharacter();
+
+        sqlText.push_back(quoteCharacter);
         for (const char character: identifier)
         {
             // 内部引用字符按 SQL 规则翻倍表示（"a""b" / `a``b`）：
             // 反斜杠在三种引擎里都只是普通字符，用它转义既无效又会引入字面反斜杠
             if (character == quoteCharacter)
             {
-                quotedText.push_back(quoteCharacter);
+                sqlText.push_back(quoteCharacter);
             }
-            quotedText.push_back(character);
+            sqlText.push_back(character);
         }
-        quotedText.push_back(quoteCharacter);
-
-        return quotedText;
+        sqlText.push_back(quoteCharacter);
     }
 
     bool StandardSqlDialect::supportsLimitOffset() const noexcept
@@ -127,34 +218,18 @@ namespace AsynGyanis::Database
         return true;
     }
 
-    std::string StandardSqlDialect::renderFieldReference(const std::string_view fieldText) const
+    void StandardSqlDialect::appendFieldReference(std::string &sqlText, const std::string_view fieldText) const
     {
         // 单个通配符不是标识符：加引用会得到一个名为 "*" 的列，语义完全不同
         if (fieldText == "*")
         {
-            return "*";
+            sqlText.push_back('*');
+            return;
         }
 
         const char quoteCharacter = identifierQuoteCharacter();
 
-        const std::vector<std::string_view> segments = splitQualifiedName(fieldText);
-
-        // 只有每一段都是可引用的标识符（或通配符）时才按标识符渲染，否则整体视为表达式
-        bool isIdentifierChain = !segments.empty();
-        for (const std::string_view segment: segments)
-        {
-            if (segment == "*")
-            {
-                continue;
-            }
-            if (!isQuotableIdentifier(segment, quoteCharacter))
-            {
-                isIdentifierChain = false;
-                break;
-            }
-        }
-
-        if (!isIdentifierChain)
+        if (!isQuotableQualifiedName(fieldText, quoteCharacter))
         {
             // 含运算符、括号、逗号等结构字符的文本按表达式原样输出：例如 COUNT(*)，
             // COALESCE(age, 0)，age + 1。对表达式整体加引用会把它降级成一个列名，直接改变语义。
@@ -163,41 +238,45 @@ namespace AsynGyanis::Database
             // 数据值一律走参数绑定。调用方若把用户输入喂进 select()/groupBy()，那就是注入面——
             // 公共 API 的文档已就这条边界给出 @warning
             // 只含标识符字节与空格的文本（如含空格的列名）不走这里，会被引用成 "full name"
-            return std::string(fieldText);
+            sqlText.append(fieldText);
+            return;
         }
 
-        std::string renderedText;
-        for (std::size_t index = 0; index < segments.size(); ++index)
+        // 判定与渲染各扫一遍串（几十字节），比为了分段再建一个容器划算
+        std::size_t segmentStart = 0;
+        for (;;)
         {
-            if (index > 0)
-            {
-                renderedText.push_back('.');
-            }
+            const std::size_t dotPosition = fieldText.find('.', segmentStart);
+            const std::string_view segment = fieldText.substr(segmentStart, dotPosition - segmentStart);
 
-            if (segments[index] == "*")
+            if (segment == "*")
             {
                 // users.* 里的通配符同样不加引用
-                renderedText.push_back('*');
+                sqlText.push_back('*');
             } else
             {
                 // 标识符一律加引用：既能容纳 order、group 这类保留字列名，也避免大小写折叠带来的歧义
-                renderedText += quoteIdentifier(segments[index]);
+                appendQuotedIdentifier(sqlText, segment);
             }
-        }
 
-        return renderedText;
+            if (dotPosition == std::string_view::npos)
+            {
+                return;
+            }
+            sqlText.push_back('.');
+            segmentStart = dotPosition + 1;
+        }
     }
 
-    std::string StandardSqlDialect::renderTableReference(const Queryable::QueryNode &query) const
+    void StandardSqlDialect::appendTableReference(std::string &sqlText, const Queryable::QueryNode &query) const
     {
-        std::string tableReference = quoteIdentifier(query.tableName);
+        appendQuotedIdentifier(sqlText, query.tableName);
         if (!query.tableAlias.empty())
         {
             // 别名同样加引用：不加引用的别名遇到保留字（order、group）会被当成关键字
-            tableReference += " AS ";
-            tableReference += quoteIdentifier(query.tableAlias);
+            sqlText += " AS ";
+            appendQuotedIdentifier(sqlText, query.tableAlias);
         }
-        return tableReference;
     }
 
     void StandardSqlDialect::appendWhereClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
@@ -229,8 +308,8 @@ namespace AsynGyanis::Database
             {
                 sqlText += ", ";
             }
-            // 列名一律走 renderFieldReference()：与 SELECT 列表用同一套引用/表达式判定规则
-            sqlText += renderFieldReference(query.selectColumns[index]);
+            // 列名一律走 appendFieldReference()：与 SELECT 列表用同一套引用/表达式判定规则
+            appendFieldReference(sqlText, query.selectColumns[index]);
         }
     }
 
@@ -294,6 +373,16 @@ namespace AsynGyanis::Database
         std::string &               sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
+        // 一次把两处缓冲定够：文本按内容估上界，参数个数由条件树精确算出
+        // （分页最多各占一个参数，方言若把取值内联进文本就是留宽一点，不影响产出）
+        sqlText.reserve(estimateSqlTextCapacity(query));
+        std::size_t expectedParameterCount = (query.limit.has_value() ? 1 : 0) + (query.offset.has_value() ? 1 : 0);
+        for (const Queryable::WhereCondition &condition: query.whereConditions)
+        {
+            expectedParameterCount += countConditionParameters(condition);
+        }
+        parameters.reserve(expectedParameterCount);
+
         // ---------- SELECT 列 ----------
         sqlText += "SELECT ";
         if (query.selectColumns.empty())
@@ -310,14 +399,14 @@ namespace AsynGyanis::Database
                 {
                     sqlText += ", ";
                 }
-                sqlText += renderFieldReference(query.selectColumns[index]);
+                appendFieldReference(sqlText, query.selectColumns[index]);
             }
         }
 
         // ---------- FROM ----------
         sqlText += " FROM ";
-        // 表名与别名的引用方式在四个方向上必须一致，因此统一走 renderTableReference()
-        sqlText += renderTableReference(query);
+        // 表名与别名的引用方式在四个方向上必须一致，因此统一走 appendTableReference()
+        appendTableReference(sqlText, query);
 
         // ---------- JOIN ----------
         for (const Queryable::JoinClause &joinClause: query.joins)
@@ -325,11 +414,11 @@ namespace AsynGyanis::Database
             sqlText += ' ';
             sqlText += joinTypeText(joinClause.type);
             sqlText += " JOIN ";
-            sqlText += renderFieldReference(joinClause.tableName);
+            appendFieldReference(sqlText, joinClause.tableName);
             if (!joinClause.tableAlias.empty())
             {
                 sqlText += " AS ";
-                sqlText += quoteIdentifier(joinClause.tableAlias);
+                appendQuotedIdentifier(sqlText, joinClause.tableAlias);
             }
 
             // CROSS JOIN 按语义不接受 ON 子句，但查询树若显式填了条件就照写，
@@ -362,7 +451,7 @@ namespace AsynGyanis::Database
                 {
                     sqlText += ", ";
                 }
-                sqlText += renderFieldReference(query.groupBy[index].name);
+                appendFieldReference(sqlText, query.groupBy[index].name);
             }
         }
 
@@ -384,7 +473,7 @@ namespace AsynGyanis::Database
                 {
                     sqlText += ", ";
                 }
-                sqlText += renderFieldReference(query.orderBy[index].field.name);
+                appendFieldReference(sqlText, query.orderBy[index].field.name);
                 // 方向必须显式写出：默认升序虽然与 SQL 一致，但显式 "ASC" 让生成的 SQL 可读且稳定
                 sqlText += query.orderBy[index].descending ? " DESC" : " ASC";
             }
@@ -404,10 +493,14 @@ namespace AsynGyanis::Database
         SqlStatement statement;
         std::string &sqlText = statement.sql;
 
+        sqlText.reserve(estimateSqlTextCapacity(query));
+        // INSERT 的参数就是逐列取值，个数已被 requireMatchingColumnCount 校验过，可以直接定容
+        statement.parameters.reserve(values.size());
+
         // INSERT 不接受表别名（"INSERT INTO 表 AS 别名" 是语法错误），因此这里只引用表名。
         // 查询树在插入方向由 ORM 现造，本来就不带别名，此处显式忽略是防止误用
         sqlText += "INSERT INTO ";
-        sqlText += quoteIdentifier(query.tableName);
+        appendQuotedIdentifier(sqlText, query.tableName);
         sqlText += " (";
         appendColumnList(sqlText, query);
         sqlText += ") VALUES ";
@@ -425,8 +518,17 @@ namespace AsynGyanis::Database
         std::string &               sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
+        sqlText.reserve(estimateSqlTextCapacity(query));
+        // SET 参数在前、条件参数在后：总数 = 列数 + 各条件树的参数数，一次定够
+        std::size_t expectedParameterCount = values.size();
+        for (const Queryable::WhereCondition &condition: query.whereConditions)
+        {
+            expectedParameterCount += countConditionParameters(condition);
+        }
+        parameters.reserve(expectedParameterCount);
+
         sqlText += "UPDATE ";
-        sqlText += renderTableReference(query);
+        appendTableReference(sqlText, query);
         sqlText += " SET ";
 
         // SET 子句先于 WHERE 输出，赋值参数因此排在条件参数之前，
@@ -437,7 +539,7 @@ namespace AsynGyanis::Database
             {
                 sqlText += ", ";
             }
-            sqlText += renderFieldReference(query.selectColumns[index]);
+            appendFieldReference(sqlText, query.selectColumns[index]);
             sqlText += " = ";
             sqlText += placeholder();
             // 赋值取值由 ORM 以 DatabaseValue 形式给出，已经是驱动可直接绑定的形态，无需再转换
@@ -455,9 +557,17 @@ namespace AsynGyanis::Database
         SqlStatement statement;
         std::string &sqlText = statement.sql;
 
+        sqlText.reserve(estimateSqlTextCapacity(query));
+        std::size_t expectedParameterCount = 0;
+        for (const Queryable::WhereCondition &condition: query.whereConditions)
+        {
+            expectedParameterCount += countConditionParameters(condition);
+        }
+        statement.parameters.reserve(expectedParameterCount);
+
         sqlText += "DELETE FROM ";
         // 别名一并带上：WHERE 里以别名限定的列名（"u"."id"）只有别名在场才能被解析
-        sqlText += renderTableReference(query);
+        appendTableReference(sqlText, query);
 
         // 无条件时 appendWhereClause() 不输出任何内容，SQL 退化为整表删除，与 SQL 语义一致
         appendWhereClause(sqlText, statement.parameters, query);
@@ -490,9 +600,11 @@ namespace AsynGyanis::Database
 
         // 参数总数 = 行数 × 列数，调用方可能只算了一遍列数，这里按最坏情况预留容量避免反复扩容
         parameters.reserve(query.selectColumns.size() * rows.size());
+        // 文本容量 = 查询树骨架 + 每行一组占位符（", " 与括号），批量方向行数可能远大于其它子句
+        sqlText.reserve(estimateSqlTextCapacity(query) + rows.size() * (query.selectColumns.size() * 3 + 2));
 
         sqlText += "INSERT INTO ";
-        sqlText += quoteIdentifier(query.tableName);
+        appendQuotedIdentifier(sqlText, query.tableName);
         sqlText += " (";
         appendColumnList(sqlText, query);
         sqlText += ") VALUES ";
@@ -580,7 +692,7 @@ namespace AsynGyanis::Database
 
             case SqlOperator::IsNull:
             {
-                sqlText += renderFieldReference(condition.left.name);
+                appendFieldReference(sqlText, condition.left.name);
                 // IS NULL 不接受右操作数，也绝不绑定参数：NULL 的比较必须用 IS 而不是 "= NULL"
                 sqlText += " IS NULL";
                 return;
@@ -588,7 +700,7 @@ namespace AsynGyanis::Database
 
             case SqlOperator::IsNotNull:
             {
-                sqlText += renderFieldReference(condition.left.name);
+                appendFieldReference(sqlText, condition.left.name);
                 sqlText += " IS NOT NULL";
                 return;
             }
@@ -596,7 +708,7 @@ namespace AsynGyanis::Database
             case SqlOperator::In:
             case SqlOperator::NotIn:
             {
-                sqlText += renderFieldReference(condition.left.name);
+                appendFieldReference(sqlText, condition.left.name);
                 sqlText += (condition.op == SqlOperator::In) ? " IN " : " NOT IN ";
 
                 if (condition.inValues.empty())
@@ -626,7 +738,7 @@ namespace AsynGyanis::Database
         }
 
         // ---------- 叶子比较 ----------
-        sqlText += renderFieldReference(condition.left.name);
+        appendFieldReference(sqlText, condition.left.name);
         sqlText += ' ';
         sqlText += comparisonOperatorText(condition.op);
         sqlText += ' ';
@@ -635,7 +747,7 @@ namespace AsynGyanis::Database
         if (std::holds_alternative<Queryable::FieldReference>(condition.right))
         {
             // 列-列比较两侧都是标识符，不需要也不能绑定参数
-            sqlText += renderFieldReference(std::get<Queryable::FieldReference>(condition.right).name);
+            appendFieldReference(sqlText, std::get<Queryable::FieldReference>(condition.right).name);
         } else
         {
             appendParameter(sqlText, parameters, std::get<Queryable::ParameterValue>(condition.right));
