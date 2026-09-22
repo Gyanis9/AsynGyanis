@@ -59,14 +59,8 @@ namespace AsynGyanis::Database
 
     bool SqliteResult::next()
     {
-        // 写回执没有游标，永远「没有下一行」
-        if (m_statement == nullptr)
-        {
-            m_hasCurrentRow = false;
-            return false;
-        }
-
-        // 快照可用时整趟遍历已在构造期跑完：这里只移动下标，同一条查询不再执行第二遍
+        // 快照分支必须排在「没有游标」之前：行全部物化之后游标可能已交还语句缓存，
+        // 那时 m_statement 为空但结果集依然有行可读
         if (m_isMaterializedRowsValid)
         {
             m_hasCurrentRow = (m_materializedRowCursor < m_materializedRows.size());
@@ -77,6 +71,13 @@ namespace AsynGyanis::Database
                 ++m_materializedRowCursor;
             }
             return m_hasCurrentRow;
+        }
+
+        // 写回执没有游标，永远「没有下一行」
+        if (m_statement == nullptr)
+        {
+            m_hasCurrentRow = false;
+            return false;
         }
 
         // SQLite 的约定是：对已返回 SQLITE_DONE 的语句再 step 一次，会隐式 reset 并从头重跑查询。
@@ -113,7 +114,18 @@ namespace AsynGyanis::Database
     {
         // 用缓存的无符号列数比较上界：不能把 index 强转成 int 再比较，
         // 传入 SIZE_MAX 时会回绕成 -1 从而绕过检查，导致越界调用 SQLite
-        if (m_statement == nullptr || index >= m_columnCount)
+        if (index >= m_columnCount)
+        {
+            return std::nullopt;
+        }
+
+        // 快照模式：列名在预扫描时就存下来了，游标可能已经交还语句缓存
+        if (m_isMaterializedRowsValid)
+        {
+            return m_columnNames[index];
+        }
+
+        if (m_statement == nullptr)
         {
             return std::nullopt;
         }
@@ -129,7 +141,25 @@ namespace AsynGyanis::Database
 
     std::optional<size_t> SqliteResult::columnIndex(const std::string_view name) const
     {
-        if (m_statement == nullptr || name.empty())
+        if (name.empty())
+        {
+            return std::nullopt;
+        }
+
+        // 快照模式走存下来的列名表，比较用 string_view 视图，不再每次造 std::string
+        if (m_isMaterializedRowsValid)
+        {
+            for (size_t index = 0; index < m_columnNames.size(); ++index)
+            {
+                if (name == std::string_view(m_columnNames[index]))
+                {
+                    return index;
+                }
+            }
+            return std::nullopt;
+        }
+
+        if (m_statement == nullptr)
         {
             return std::nullopt;
         }
@@ -156,13 +186,13 @@ namespace AsynGyanis::Database
         }
 
         // 同样走无符号比较，避免大索引强转 int 回绕后绕过边界检查
-        if (m_statement == nullptr || index >= m_columnCount)
+        if (index >= m_columnCount)
         {
             return std::monostate{};
         }
 
         // 当前行来自快照：交出构造期就转好的值（同一份 convertValue 产出，类型与列序逐位一致），
-        // 不再回到游标——此时游标并不停在这一行上，读它会拿到错位的残值
+        // 不再回到游标——此时游标要么停在别处，要么已交还语句缓存
         if (m_isCurrentRowMaterialized)
         {
             return m_materializedRows[m_materializedRowCursor - 1][index];
@@ -184,6 +214,12 @@ namespace AsynGyanis::Database
 
     std::vector<std::string> SqliteResult::columnNames() const
     {
+        // 快照模式：列名表在预扫描时就已经按列序填好，直接交出副本
+        if (m_isMaterializedRowsValid)
+        {
+            return m_columnNames;
+        }
+
         std::vector<std::string> names;
         if (m_statement == nullptr)
         {
@@ -202,6 +238,17 @@ namespace AsynGyanis::Database
 
     void SqliteResult::reset()
     {
+        // 快照模式：把下标拨回开头就是「退回首行之前」。这一路不碰游标——它要么在构造期已被
+        // reset 过并空载着，要么已经交还给语句缓存，再 reset 一次会撞上别人正在用它
+        if (m_isMaterializedRowsValid)
+        {
+            m_lastError.clear();
+            m_hasCurrentRow            = false;
+            m_isCurrentRowMaterialized = false;
+            m_materializedRowCursor    = 0;
+            return;
+        }
+
         // 写回执本来就是空集，reset 是安全的空操作
         if (m_statement == nullptr)
         {
@@ -288,6 +335,16 @@ namespace AsynGyanis::Database
             // swap 而不是 clear()：clear 只把 size 归零，容量与已分配的行值缓冲会一直占着，
             // 而这条结果集之后走的是游标遍历，那份快照再也用不上
             std::vector<std::vector<DatabaseValue> >().swap(m_materializedRows);
+        } else
+        {
+            // 列名也要一并存下：快照完整时连接会把游标收回语句缓存，之后 sqlite3_column_name
+            // 问到的就不再是「本结果集的那条语句」了。表达式列可能没有名字，补空串占位对齐下标
+            m_columnNames.reserve(m_columnCount);
+            for (size_t index = 0; index < m_columnCount; ++index)
+            {
+                const char *rawName = sqlite3_column_name(m_statement, static_cast<int>(index));
+                m_columnNames.emplace_back(rawName != nullptr ? rawName : "");
+            }
         }
 
         // 预扫描只是探路，必须把游标退回首行之前：快照可用时后续不再碰它，退回游标模式时

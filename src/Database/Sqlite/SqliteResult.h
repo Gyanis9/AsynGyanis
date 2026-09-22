@@ -151,7 +151,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 获取底层 SQLite 语句句柄，供高级场景使用
          * @warning 所有权仍属于本结果集，调用方不得 sqlite3_finalize，也不得在结果集销毁后使用
-         * @return sqlite3_stmt* 写回执结果为 nullptr
+         * @return sqlite3_stmt* 写回执结果为 nullptr；行已整份物化的快照结果在语句缓存收回游标后同样是
+         *         nullptr（那条游标已不属于本结果集，取它没有意义）
          */
         [[nodiscard]] sqlite3_stmt *nativeHandle() const noexcept
         {
@@ -178,6 +179,31 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;
 
     private:
+        // 语句缓存收回游标是「连接 ↔ 结果集」之间的协作，不对外放开：
+        // 只有 SqliteConnection::execute() 会在确认游标已 idle 之后取走它
+        friend class SqliteConnection;
+
+        /**
+         * @brief 行是否已整份物化（此时游标已被 reset 且本对象此后再不碰它）
+         * @return true 可以安全交还语句缓存复用
+         */
+        [[nodiscard]] bool isCursorIdle() const noexcept
+        {
+            return m_isMaterializedRowsValid;
+        }
+
+        /**
+         * @brief 交出游标的所有权，本对象不再 finalize 它
+         * @warning 仅在 isCursorIdle() 为真时调用；此时列名与行值都已存进快照，交出游标不影响读取
+         * @return sqlite3_stmt* 已 reset 到可重跑状态的游标
+         */
+        [[nodiscard]] sqlite3_stmt *releaseCursor() noexcept
+        {
+            sqlite3_stmt *const statement = m_statement;
+            m_statement                   = nullptr;
+            return statement;
+        }
+
         /**
          * @brief 把 SQLite 的列值按存储类转换成统一的 DatabaseValue
          * @param index 已通过上层校验的列索引（int 是 SQLite API 的原生索引类型）
@@ -205,6 +231,8 @@ namespace AsynGyanis::Database
         bool          m_isEmpty{true};        ///< 结果集是否为空（写回执恒为 true）
         /// 预扫描顺带存下的行值；m_isMaterializedRowsValid 为真时 next()/getValue() 只读这里
         std::vector<std::vector<DatabaseValue> > m_materializedRows;
+        /// 快照模式下的列名表：游标交还语句缓存后列名不能再从它身上问，故与行值同时存下
+        std::vector<std::string> m_columnNames;
         bool m_isMaterializedRowsValid{false}; ///< 快照是否可用（未预扫描或行数超限则为假，退回游标遍历）
         bool m_isCurrentRowMaterialized{false}; ///< 游标当前停的这一行是否来自快照（决定 getValue 走哪条路）
         size_t m_materializedRowCursor{0};      ///< 快照模式下的下一次读取下标

@@ -216,6 +216,15 @@ namespace AsynGyanis::Database
         [[nodiscard]] sqlite3_stmt *findCachedStatement(const std::string &sqlText) const noexcept;
 
         /**
+         * @brief 把一条查询游标从表里摘走，但不释放它
+         * @details 查询游标可能随结果集活到调用方手里（行数超过快照上限时不物化），
+         *          届时结果集析构会 finalize 它；表里若还留着同一地址就是悬空键。
+         *          写完收回的游标没有这个问题（本函数执行完一定回到表里），故只有查询路径摘。
+         * @param sqlText 语句文本
+         */
+        void detachCachedStatement(const std::string &sqlText) noexcept;
+
+        /**
          * @brief 把一条跑完并 reset 过的写语句放进缓存
          * @details 表内已有同文本条目时空操作（缓存命中的那条本就在表里）。
          * @param sqlText 语句文本，接管其内容作键
@@ -263,8 +272,8 @@ namespace AsynGyanis::Database
 
         sqlite3 *m_database{nullptr}; ///< SQLite C API 数据库句柄，本对象独占所有权
 
-        /// SQL 文本 → 已编译且已 reset 的**写**语句游标。查询用的游标不进这里：它的所有权要移交给
-        /// SqliteResult 并随其析构才归还，与本表的「调用结束即回表」不是同一套生命周期
+        /// SQL 文本 → 已编译且已 reset 的游标。写语句跑完即回表；查询语句只有「行已整份物化进快照」
+        /// 时才回表（那种游标此后不再被任何人引用），行没跑完的查询游标随结果集走、由结果集 finalize
         std::unordered_map<std::string, sqlite3_stmt *> m_statementCache;
     };
 

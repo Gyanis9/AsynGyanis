@@ -243,8 +243,35 @@ namespace AsynGyanis::Database
             auto result = std::make_unique<SqliteResult>(statement, m_database);
             if (const std::string preScanError = result->lastError(); !preScanError.empty())
             {
+                // 结果集析构会 finalize 这条游标。它若是从表里借来的，就得先把键摘掉，
+                // 否则表里留下的是一个已释放地址
+                if (isFromCache)
+                {
+                    detachCachedStatement(commandText);
+                }
+
                 m_lastError = preScanError;
                 return nullptr;
+            }
+
+            if (result->isCursorIdle())
+            {
+                // 行已整份物化：游标跑完了且被 reset 回「可从头重跑」，此后没有任何人引用它，
+                // 正是回收复用的时机。命中来的那条本来就还挂在表里，只需让结果集别再 finalize 它
+                if (isFromCache)
+                {
+                    static_cast<void>(result->releaseCursor());
+                }
+                else
+                {
+                    cacheStatement(std::move(commandText), result->releaseCursor());
+                }
+            }
+            else if (isFromCache)
+            {
+                // 行没跑完（超过快照上限或带写副作用的 RETURNING）：游标要随结果集活到调用方手里，
+                // 结果集析构时 finalize 它。表里那个键必须先行摘掉，否则同一条游标会被释放两次
+                detachCachedStatement(commandText);
             }
             return result;
         }
@@ -352,6 +379,12 @@ namespace AsynGyanis::Database
     {
         const auto entry = m_statementCache.find(sqlText);
         return entry == m_statementCache.end() ? nullptr : entry->second;
+    }
+
+    void SqliteConnection::detachCachedStatement(const std::string &sqlText) noexcept
+    {
+        // 只摘记录、不 finalize：调用方紧接着就要拿着这条游标继续用
+        static_cast<void>(m_statementCache.erase(sqlText));
     }
 
     void SqliteConnection::cacheStatement(std::string sqlText, sqlite3_stmt *statement)

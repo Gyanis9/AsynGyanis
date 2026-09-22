@@ -272,10 +272,11 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->columnIndex("twoValue"), std::optional<std::size_t>(1));
         EXPECT_FALSE(result->columnName(std::size_t{2}).has_value()) << "columnCount 处即越界";
 
-        // execute() 交出的动态类型必须是 SqliteResult，且查询结果持有真实游标（与写回执相对）
+        // execute() 交出的动态类型必须是 SqliteResult；查询结果若已把行整份物化，游标就在
+        // 构造期被交还语句缓存，nativeHandle() 如实给出 nullptr（写回执同样是 nullptr）
         SqliteResult *queryResult = asSqliteResult(*result);
         ASSERT_NE(queryResult, nullptr);
-        EXPECT_NE(queryResult->nativeHandle(), nullptr);
+        EXPECT_EQ(queryResult->nativeHandle(), nullptr) << "行已物化的快照结果不该再持有游标";
     }
 
     /** @brief 钉住 next() 之前没有当前行：两个取值重载都读不到残值 */
@@ -418,6 +419,50 @@ namespace AsynGyanis::Database
         result->reset();
         // 第二遍与第一遍逐行相同：重遍历不重新执行查询，也不会从中间某行接着读
         EXPECT_EQ(collectNames(*result), firstScan);
+    }
+
+    /**
+     * @brief 钉住同一条查询重复执行时，交还缓存的游标被再次用上且结果逐行不变
+     * @details 交还与复用之间游标经历了「reset 回表 → 再借出 → 再跑一遍」，中间任何一次
+     *          收尾没做对都会在第二遍上显形（少行、残值或直接被 ASan 抓到释放后使用）
+     */
+    TEST_F(SqliteUserQuery, RepeatingTheSameQueryReusesTheReturnedCursor)
+    {
+        seedBulkRows(SqliteResult::kMaximumMaterializedRowCount);
+
+        const std::unique_ptr<DatabaseResult> firstResult = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(firstResult, nullptr);
+        const std::vector<std::string> firstScan = collectNames(*firstResult);
+
+        // 第一份结果还活着（游标已交还缓存），第二条同样的查询要能从表里拿到那条可重跑的游标
+        const std::unique_ptr<DatabaseResult> secondResult = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(secondResult, nullptr) << connection().lastError();
+        EXPECT_EQ(collectNames(*secondResult), firstScan);
+
+        // 交还之后第一份结果仍能重遍历：它读的是快照，与游标此刻在谁手里无关
+        firstResult->reset();
+        EXPECT_EQ(collectNames(*firstResult), firstScan);
+    }
+
+    /**
+     * @brief 钉住行数超过快照上限时，两份同时打开的结果集各握一条游标、互不借用
+     * @details 这种结果集要 finalize 自己那条游标，因此它绝不能与缓存里同文本的那条混用，
+     *          否则先析构的一份会把另一份正在用的游标一起释放掉
+     */
+    TEST_F(SqliteUserQuery, TwoOpenOverLimitResultsEachKeepTheirOwnCursor)
+    {
+        const size_t rowCount = SqliteResult::kMaximumMaterializedRowCount + 1;
+        seedBulkRows(rowCount);
+
+        const std::unique_ptr<DatabaseResult> firstResult = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(firstResult, nullptr);
+        const std::unique_ptr<DatabaseResult> secondResult = query("SELECT id, name FROM bulkRows ORDER BY id");
+        ASSERT_NE(secondResult, nullptr) << connection().lastError();
+
+        // 两份都要交出完整 257 行：共享游标的话第二份会从头重跑、第一份读到错位或已释放的行
+        const std::vector<std::string> expected = expectedBulkNames(rowCount);
+        EXPECT_EQ(collectNames(*firstResult), expected);
+        EXPECT_EQ(collectNames(*secondResult), expected);
     }
 
     /** @brief 钉住空集仍有列元数据，游标一步都迈不出去 */
