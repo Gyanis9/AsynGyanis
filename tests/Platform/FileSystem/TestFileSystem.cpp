@@ -41,6 +41,32 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    TEST(FileSystem, Utf8FromPathRoundTripsPathFromUtf8)
+    {
+        // 成对关系必须闭合：配置里读到的 UTF-8 文本绕 path 一圈回来还是同一段字节，
+        // 否则「把路径打进日志与报错文案」这条通道会把名字写错
+        for (const std::string &utf8Path: {std::string{"logs/app.log"}, std::string{"配置/日志.txt"}, std::string{}})
+        {
+            EXPECT_EQ(FileSystem::utf8FromPath(FileSystem::pathFromUtf8(utf8Path)), utf8Path);
+        }
+    }
+
+    /**
+     * @brief 落在本地代码页之外的路径转文本时不抛异常
+     * @details Windows 上 `path::string()` 对这类字符直接抛 std::system_error，而路径文本多数只出现在
+     *          日志与报错文案里——诊断通道本身不该成为新的故障点。POSIX 上窄串就是原生刻度，
+     *          这一条只有 Windows 侧能证伪
+     */
+    TEST(FileSystem, Utf8FromPathDescribesNameOutsideCodePage)
+    {
+        const std::string       utf8Path = "🐳-鲸.log";
+        const std::filesystem::path path = FileSystem::pathFromUtf8(utf8Path);
+
+        std::string described;
+        EXPECT_NO_THROW(described = FileSystem::utf8FromPath(path));
+        EXPECT_EQ(described, utf8Path);
+    }
+
     TEST(FileSystem, FileCreatedWithNonAsciiNameIsReachableAgain)
     {
         TestSupport::TemporaryDirectory temporaryDirectory("FileSystem_Utf8");

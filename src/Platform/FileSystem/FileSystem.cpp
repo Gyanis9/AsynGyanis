@@ -14,4 +14,16 @@ namespace AsynGyanis::Platform
         return std::filesystem::path{utf8Path};
 #endif
     }
+
+    std::string FileSystem::utf8FromPath(const std::filesystem::path &path)
+    {
+#if ASYN_PLATFORM_WIN32
+        // 与 pathFromUtf8 成对：窄串刻度要过本地代码页，代码页外的字符直接抛出，
+        // 而路径文本多数只出现在日志与报错文案里——一条诊断不该毁掉整次装配
+        return TextEncoding::toUtf8String(path.native());
+#else
+        // Linux 的原生路径本身就是 UTF-8 字节序列，native() 已是窄串，无需转码
+        return path.native();
+#endif
+    }
 } // namespace AsynGyanis::Platform
