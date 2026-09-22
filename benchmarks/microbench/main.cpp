@@ -1904,19 +1904,20 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
-    // ---- Platform 层：被每条请求都摸一次的三个底座 ----
-    // 这三条的存在是为了让「Platform 侧的性能结论」有地方落脚：日历分解在每条响应的 Date 头与每行
+    // ---- Platform 层：每条请求都会摸到的几个底座 ----
+    // 这几条的存在是为了让「Platform 侧的性能结论」有地方落脚：日历分解在每条响应的 Date 头与每行
     // 日志的时间戳上，查文件信息在每次静态文件命中判定上，唤醒一次跨线程通知在每次「从别的线程
     // 把活投进事件循环」的路径上。它们都不在协议解析的量级里（h1 解析 ~424 ns），但都是每次付的。
-    // 本机（Release/MSVC，20 逻辑核，空载与并发构建下各测三次）实测：
-    //   platform-time-utc            8.6-8.8 ns
+    // 本机（Release/MSVC，20 逻辑核）空载连跑三次的读数：
+    //   platform-time-utc            9.3-9.4 ns
     //   platform-time-local          1.7-1.9 ns（同一秒命中缓存；未命中见下）
-    //   platform-time-local-varying  17.6-30.3 ns（每次换输入，走完整换算）
-    //   platform-wakeup-roundtrip    4.77-5.43 µs
-    //   platform-stat-basic-info     8.79-12.8 µs
-    // 只有前两条够格进基线：`-varying` 的输入每调用换一次，机器负载直接印在它身上（实测 17.6 → 30.3），
-    // 后两条则由系统调用与文件系统过滤器支配——拿摆动大的读数当门禁只会产出假红。五条都只记读数，
-    // 不当作「Platform 侧已经够快」的结论
+    //   platform-time-local-varying  17.6-18.2 ns（每次换输入，走完整换算）
+    //   platform-wakeup-roundtrip    4.79-5.21 µs
+    //   platform-stat-basic-info     8.26-10.75 µs
+    // 够格进基线的只有前两条：`-varying` 的输入每调用换一次，机器负载直接印在读数上；后两条由系统
+    // 调用与文件系统过滤器支配，一次调用的摆动就有 20% 以上，拿它定阈值只会产出假红。
+    // utc 这条的算法是「一次除法配一对余数」：改回「整除后乘回去再减」看着更省，但同一台机器三次读数
+    // 是 8.6 / 8.9 / 11.9 ns，与这里的 9.3–9.4 分不出胜负，而那一步乘法在 time_t 取最小值时会溢出
     constexpr std::time_t kMeasuredInstant = 1767225600; // 2026-01-01T00:00:00Z，固定值：稳态下相邻请求落在同一秒
     measureCase(
             "platform-time-utc",
