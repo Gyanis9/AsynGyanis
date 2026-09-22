@@ -30,9 +30,17 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 接收窗口大小，单位字节：与 HTTP/1.1 会话同档，只用来接住刚到的字节，
-        /// 跨读的半帧由帧解码器自己缓冲，因此固定大小就够，不需要按报文长度增长
+        /// 接收窗口的上限档，单位字节：与 HTTP/1.1 会话同档，只用来接住刚到的字节，
+        /// 跨读的半帧由帧解码器自己缓冲，因此封顶在这一档就够，与报文长度无关
         constexpr std::size_t kHttp2ReceiveWindowByteCount = 8ull * 1024;
+
+        /**
+         * @brief 接收窗口的起步档，单位字节
+         * @details 全额 8 KiB 是连接一建立就占住的，而浏览器类连接绝大多数时间在空闲：
+         *          与 HTTP/1.1 侧同一把尺子量到的结论（这一档占一条空闲连接分配量的过半），
+         *          故从这一档起步，只有把整窗读满才向上翻倍
+         */
+        constexpr std::size_t kHttp2InitialReceiveWindowByteCount = 2ull * 1024;
 
         /// 映射给 HttpRequest 的协议版本原文：HTTP/2 报文里没有版本字段，用协议名补齐
         constexpr std::string_view kHttp2RequestVersion = "HTTP/2";
@@ -296,7 +304,7 @@ namespace AsynGyanis::Net
     Core::Task<> Http2Session::runHttp2Loop()
     {
         // 接收缓冲提到成员上：流式正文的泵与主循环交替驱动同一条连接，缓冲必须共用一份
-        m_http2ReceiveBuffer.resize(kHttp2ReceiveWindowByteCount);
+        m_http2ReceiveBuffer.resize(kHttp2InitialReceiveWindowByteCount);
 
         // 连接被关停时把停止请求转成当前在途请求的协作式取消：业务只认 request.cancelToken() 一处，
         // 与 HTTP/1.1 侧的 ConnectionCancelForwarder 同一约定。回调随本协程帧存活，析构即注销
@@ -389,6 +397,13 @@ namespace AsynGyanis::Net
         {
             // 0 是对端正常关闭，负值是连接不可用，两者都只剩收尾
             co_return false;
+        }
+        if (receivedLength == static_cast<ssize_t>(m_http2ReceiveBuffer.size())
+            && m_http2ReceiveBuffer.size() < kHttp2ReceiveWindowByteCount)
+        {
+            // 读满整窗意味着传输层里还有字节没取走：翻倍到既有那一档封顶。空闲连接一次也读不满，
+            // 因此只占起步档；持续送正文的连接最多两趟就回到 8 KiB，整条连接上摊不出几次多余的读
+            m_http2ReceiveBuffer.resize(std::min(m_http2ReceiveBuffer.size() * 2, kHttp2ReceiveWindowByteCount));
         }
         refreshIdleDeadline(m_limits->readTimeout);
 
