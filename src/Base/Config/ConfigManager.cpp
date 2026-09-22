@@ -141,7 +141,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 把路径转成 UTF-8 文本，供结果列表与诊断文案使用
          * @details 不能就地用 `path::string()`：Windows 上它按本地代码页转换，落在代码页外的字符
-         *          直接抛 std::system_error，而本文件的转换点有三处就在 catch 块里——「构造一条报错」
+         *          直接抛 std::system_error，而本文件的转换点有四处就在 catch 块里——「构造一条报错」
          *          会把整次加载变成抛给调用方的异常。本文件所有对外的字符串通道（loadedFiles、
          *          failedFiles、errors）因此统一按 UTF-8 报，与配置文件内容的文本口径一致。
          * @param path 待报出的路径

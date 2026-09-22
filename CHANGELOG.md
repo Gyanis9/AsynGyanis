@@ -804,6 +804,17 @@
   与 `LoggerConfigLoader` 的两条端到端用例（file / rolling_file 各钉住「代码页外的名字落到真名」），其中
   rolling 那条在改前为红。容器（GCC 13.3 + ASan/LSan/UBSan）实测 `TestBase` 561 例通过 / 1 例按环境如实跳过、
   `TestPlatform` 184 例全绿、零告警、零 sanitizer；Windows 侧 `TestBase` 562 例全绿、`base_log` 示例 23 步全 PASS。
+- **配置的加载失败不再因文件名过代码页而变成抛出**：`loadFiles()` 与 `loadFromDirectory()` 把路径写进
+  `loadedFiles`、`failedFiles`、`errors` 时就地用 `path::string()`，Windows 上它按本地代码页转换，落在代码页外
+  的字符**直接抛** `std::system_error`——而二十一处转换点里有四处正落在 `catch` 块内。后果是一份语法有错的
+  配置只要文件名带表情符号或别种文字，调用方拿到的就不是「一条失败结果」而是一次逃逸的异常，
+  「全部失败也返回 `ConfigLoadResult`」这条契约当场失效。现在本模块的文本通道统一转 UTF-8（新增的
+  `pathText` 走 `FileSystem::utf8FromPath`），与 `errors` 里本就是 UTF-8 的中文文案同刻度；**口径**随之写明：
+  `ConfigLoadResult` 的三个列表都是 UTF-8 文本，非 ASCII 路径的取值因此从 ANSI 变成 UTF-8（这种名字此前要么
+  变形、要么抛出）。`enableHotReload()` 交给 `FileWatcher` 的那一处刻意保留窄串：那条接口整条都是原生窄串
+  刻度，换成 UTF-8 会让今天能正常热重载的中文配置目录对不上号——要覆盖代码页外的目录名得连 `FileWatcher`
+  的接口一起换成 path，另列一轮。新增 `ConfigManagerTest.FileNamesOutsideLocalCodePageAreReportedInsteadOfThrowing`
+  （断言不抛，且文件名原样出现在 `errors` 与 `failedFiles` 里），实测改前红；Windows 侧 `TestBase` 563 例全绿。
 
 ### 性能
 
