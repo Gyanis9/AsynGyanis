@@ -752,6 +752,11 @@ namespace AsynGyanis::Database::Queryable
          * @return std::shared_ptr<SqlDialect> 方言实例，恒非空
          * @throws DatabaseException 无法从池中取得连接以推导类型
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（MySQL / Redis）
+         * @warning 必须在**持有租约之前**调用：既未显式指定方言类型也未绑定事务时，它要自己再借一条
+         *          连接去探测类型。调用方若已经占着池里唯一的连接（maximumPoolSize 为 1 是文件型
+         *          SQLite 的常见配法），这次嵌套借用会白等满 acquireTimeoutMilliseconds，然后抛
+         *          「无法获取连接以推导类型」——一条离真实原因很远的错误。各执行入口都按
+         *          「先 requireDialect()、后 acquireConnection()」的顺序写，改动时请保持。
          */
         [[nodiscard]] std::shared_ptr<SqlDialect> resolveDialect()
         {
