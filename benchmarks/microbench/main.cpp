@@ -19,12 +19,18 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/ThreadPool.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Dialect/DialectRegistry.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
+#include "Database/Queryable/Column.h"
+#include "Database/Queryable/Expression.h"
+#include "Database/Queryable/Queryable.h"
+#include "Database/Queryable/TableSchema.h"
 #include "Database/Sqlite/SqliteConnection.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/FileSender.h"
@@ -367,7 +373,105 @@ namespace
 
         return connection;
     }
+
+    /// ORM 侧用例的底表行数：读 20 与 50 行都落在 SqliteResult 的快照物化上限（256 行）之内
+    inline constexpr int kOrmBenchRowCount = 64;
+
+    /// 方言批量渲染用例的行数：6 列 × 150 行 = 900 个占位符，留在 SQLite 999 个参数上限之内
+    inline constexpr int kDialectBatchRowCount = 150;
+
+    /**
+     * @brief ORM 侧用例的行结构体：三列长文本，使每个单元格的取值必然落堆
+     *
+     * @details 文本长度刻意超过 SSO 阈值：短文本的拷贝不触发分配，会把「每格多拷一次整串」这类
+     *          成本掩盖成常数。三列文本 + 一列整数 + 一列浮点也贴近真实业务行的形状。
+     */
+    struct BenchAccountRow
+    {
+        std::int64_t id;       ///< 主键
+        std::string  label;    ///< 长文本列
+        std::string  note;     ///< 长文本列
+        std::string  payload;  ///< 长文本列
+        std::int64_t quantity; ///< 整数列
+        double       price;    ///< 浮点列
+    };
+
+    /**
+     * @brief 建一个绑定内存 SQLite 的连接池，并填满 ORM 用例的底表
+     * @details 池上限压到 1：":memory:" 库随连接生命周期存在，多条连接会各自持有一份空库。
+     *          行数固定且写入不增长，否则改动前后的两枚二进制跑不到同一种数据规模上。
+     * @return std::unique_ptr<Database::ConnectionPool> 建库并填满的池；任一步失败时为空
+     */
+    [[nodiscard]] std::unique_ptr<Database::ConnectionPool> makeOrmBenchPool()
+    {
+        Database::PoolConfig poolConfiguration;
+        poolConfiguration.maximumPoolSize = 1;
+
+        auto pool = std::make_unique<Database::ConnectionPool>(
+                []() -> std::unique_ptr<Database::DatabaseConnection>
+                {
+                    auto connection = std::make_unique<Database::SqliteConnection>(
+                            Database::ConnectionConfig::sqliteDefault(":memory:"));
+                    // 池的工厂契约要求交出「已经 connect() 完成」的连接，池不会替调用方连接
+                    connection->connect();
+                    return connection;
+                },
+                poolConfiguration);
+
+        Database::PooledConnection connection = pool->acquire();
+        if (!connection)
+        {
+            return nullptr;
+        }
+        if (connection->execute("CREATE TABLE bench_accounts ("
+                                "id INTEGER PRIMARY KEY, "
+                                "label TEXT NOT NULL, "
+                                "note TEXT NOT NULL, "
+                                "payload TEXT NOT NULL, "
+                                "quantity INTEGER NOT NULL, "
+                                "price REAL NOT NULL)") == nullptr)
+        {
+            return nullptr;
+        }
+
+        // 每行 6 个占位符，150 行仍在 SQLite 的单语句参数上限之内；建底表走原生 SQL，不掺进 ORM 的成本
+        std::array<Database::DatabaseValue, 6> parameters{std::int64_t{0},
+                                                          std::string("bench-account-label-value"),
+                                                          std::string("bench-account-note-value"),
+                                                          std::string("bench-account-payload-value"),
+                                                          std::int64_t{0},
+                                                          1.5};
+        static_cast<void>(connection->execute("BEGIN"));
+        for (int rowIndex = 0; rowIndex < kOrmBenchRowCount; ++rowIndex)
+        {
+            parameters[0] = static_cast<std::int64_t>(rowIndex);
+            parameters[4] = static_cast<std::int64_t>(rowIndex);
+            if (connection->execute("INSERT INTO bench_accounts VALUES (?, ?, ?, ?, ?, ?)",
+                                    std::span<const Database::DatabaseValue>(parameters)) == nullptr)
+            {
+                return nullptr;
+            }
+        }
+        static_cast<void>(connection->execute("COMMIT"));
+
+        return pool;
+    }
 } // namespace
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<BenchAccountRow>
+{
+    static constexpr std::string_view kTableName = "bench_accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&BenchAccountRow::id, "id"),
+        Column(&BenchAccountRow::label, "label"),
+        Column(&BenchAccountRow::note, "note"),
+        Column(&BenchAccountRow::payload, "payload"),
+        Column(&BenchAccountRow::quantity, "quantity"),
+        Column(&BenchAccountRow::price, "price"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
 
 int main(int argumentCount, char **argumentValues)
 {
@@ -1086,6 +1190,97 @@ int main(int argumentCount, char **argumentValues)
                 },
                 results, checksum, failureCount);
     }
+
+    // ORM 侧的三段合成本：查询树副本 + 方言翻译 + 结果映射。上一行的 sqlite-select-* 只量到驱动那一侧，
+    // 这三例把差距定位到「ORM 自己加了多少钱」上，之后动查询树或映射路径就有读数可依，不必再靠推理取舍。
+    const std::unique_ptr<Database::ConnectionPool> ormPool = makeOrmBenchPool();
+    if (ormPool == nullptr)
+    {
+        std::printf("  跳过 ORM 三例：内存库没建起来\n");
+    }
+    else
+    {
+        int ormCursor = 0;
+        measureCase(
+                "orm-first-by-primary-key",
+                [&ormPool, &ormCursor]() -> std::uint64_t
+                {
+                    try
+                    {
+                        Database::Queryable::Queryable<BenchAccountRow> query(*ormPool);
+                        query.where(Database::Queryable::Column(&BenchAccountRow::id, "id")
+                                    == static_cast<std::int64_t>(ormCursor = (ormCursor + 1) % kOrmBenchRowCount));
+                        const std::optional<BenchAccountRow> row = query.first();
+                        // 真把文本列取出来：只判有没有命中的话，逐列取值与类型转换都不在计时里
+                        return row.has_value() ? row->label.size() + row->payload.size() : 0U;
+                    }
+                    catch (const std::exception &)
+                    {
+                        return 0U;
+                    }
+                },
+                results, checksum, failureCount);
+
+        // 20 行与 50 行成对：两档的差值就是「每多一行」的边际成本，也是判断映射路径是否仍在按行分配的依据
+        const auto measureOrmList = [&ormPool](const std::string_view caseName, const std::size_t rowLimit,
+                                               std::vector<CaseResult> &results, std::uint64_t &checksum, int &failureCount)
+        {
+            measureCase(
+                    std::string(caseName),
+                    [&ormPool, rowLimit]() -> std::uint64_t
+                    {
+                        try
+                        {
+                            Database::Queryable::Queryable<BenchAccountRow> query(*ormPool);
+                            query.orderBy(Database::Queryable::asc("id"));
+                            query.limit(rowLimit);
+                            std::vector<BenchAccountRow> rows = query.toList();
+                            std::uint64_t payloadBytes = 0U;
+                            for (const BenchAccountRow &row: rows)
+                            {
+                                payloadBytes += row.label.size() + row.note.size() + row.payload.size();
+                            }
+                            return payloadBytes;
+                        }
+                        catch (const std::exception &)
+                        {
+                            return 0U;
+                        }
+                    },
+                    results, checksum, failureCount);
+        };
+        measureOrmList("orm-tolist-20-rows", 20U, results, checksum, failureCount);
+        measureOrmList("orm-tolist-50-rows", 50U, results, checksum, failureCount);
+    }
+
+    // 方言纯文本合成本：一次多行 INSERT 的组帧。这一例不碰驱动也不碰结果集，量到的全是「每占位符」的成本，
+    // 因此占位符渲染方式（每格一个临时串还是一次 push_back）在这里能直接读出来
+    const std::shared_ptr<Database::SqlDialect> batchDialect =
+            Database::DialectRegistry::dialectFor(Database::DatabaseType::Sqlite);
+    Database::Queryable::QueryNode batchNode;
+    batchNode.tableName     = "bench_accounts";
+    batchNode.selectColumns = {"id", "label", "note", "payload", "quantity", "price"};
+    std::vector<std::vector<Database::DatabaseValue> > batchRows;
+    batchRows.reserve(static_cast<std::size_t>(kDialectBatchRowCount));
+    for (int rowIndex = 0; rowIndex < kDialectBatchRowCount; ++rowIndex)
+    {
+        batchRows.emplace_back(std::vector<Database::DatabaseValue>{static_cast<std::int64_t>(rowIndex),
+                                                                   std::string("bench-account-label-value"),
+                                                                   std::string("bench-account-note-value"),
+                                                                   std::string("bench-account-payload-value"),
+                                                                   static_cast<std::int64_t>(rowIndex),
+                                                                   1.5});
+    }
+    measureCase(
+            "dialect-insert-batch-150-rows",
+            [&batchDialect, &batchNode, &batchRows]() -> std::uint64_t
+            {
+                const Database::SqlStatement statement =
+                        batchDialect->translateInsertBatch(batchNode, std::span<const std::vector<Database::DatabaseValue> >(batchRows));
+                // 参数个数当自检证据：少一个就说明渲染与收集不同源，量到的只是半条语句
+                return statement.parameters.size() == batchRows.size() * 6U ? static_cast<std::uint64_t>(statement.sql.size()) : 0U;
+            },
+            results, checksum, failureCount);
 
     // 头部单值查询：真实请求几乎每条都会读一两个头部（If-None-Match、CORS、WebSocket 握手……），
     // 而存储的单值视图是「按需重建」的——第一次查询的代价取决于重建是否被单个查询触发。
