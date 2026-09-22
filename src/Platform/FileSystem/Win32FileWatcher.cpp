@@ -676,8 +676,18 @@ namespace AsynGyanis::Platform
         if (entry.pending && entry.directoryHandle != INVALID_HANDLE_VALUE)
         {
             ::CancelIo(entry.directoryHandle);
+
+            // 等完成包必须有上限。GetOverlappedResult 的 bWait=TRUE 是**无界**等待，而
+            // CancelIo 对某些状态的目录根本不会给出完成（本文件上面就记着「目录被改名走开后
+            // 不再往里写入时，等待永久不返回，监听线程就此停摆」这条实测）：调用 stop() 的线程
+            // 会被一起钉死，热重载的启停与进程退出都可能因此挂住几十秒到永久。
+            // 超时后直接关句柄——内核会在句柄回收时了结那条已取消的 IRP，我们不再等它。
+            constexpr DWORD kCompletionDrainTimeoutMilliseconds = 200;
+            static_cast<void>(::WaitForSingleObject(entry.eventHandle, kCompletionDrainTimeoutMilliseconds));
+
             DWORD bytesTransferred = 0;
-            ::GetOverlappedResult(entry.directoryHandle, &entry.overlapped, &bytesTransferred, TRUE);
+            // bWait 给 FALSE：结果没到就作罢，这一句本身绝不阻塞
+            static_cast<void>(::GetOverlappedResult(entry.directoryHandle, &entry.overlapped, &bytesTransferred, FALSE));
         }
         if (entry.eventHandle != nullptr)
         {
