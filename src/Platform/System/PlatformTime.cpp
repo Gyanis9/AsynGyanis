@@ -35,9 +35,17 @@ namespace AsynGyanis::Platform
     {
         std::tm result{};
 #if ASYN_PLATFORM_WIN32
-        ::localtime_s(&result, &calendarTime);
+        // MSVC 转换失败时把整个结构填成 -1（不是「保持原值」），只看得出返回码：
+        // 直接交回会让日志时间戳渲染成「1899-00--1 -1:-1:-1」这种带负号与空字段的文本
+        if (::localtime_s(&result, &calendarTime) != 0)
+        {
+            return std::tm{};
+        }
 #else
-        ::localtime_r(&calendarTime, &result);
+        if (::localtime_r(&calendarTime, &result) == nullptr)
+        {
+            return std::tm{};
+        }
 #endif
         return result;
     }

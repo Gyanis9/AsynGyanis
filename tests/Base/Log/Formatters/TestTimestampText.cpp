@@ -170,4 +170,22 @@ namespace AsynGyanis::Base
             EXPECT_LE(text.size(), buffer.size()) << "渲染写出的长度越出了调用方给的缓冲";
         }
     }
+
+    /**
+     * @brief 系统时钟两端的时刻也要渲染成合法版式（毫秒位必须是数字，不是垃圾字节）
+     * @details 整秒与亚秒残差此前靠两个 time_point 相减求得，其公共单位是纳秒，那次整秒→纳秒的
+     *          乘法在 time_point::min()/max() 上溢出（UBSan 报在 chrono.h）。两补数回绕恰好把
+     *          残差算回正确值，所以这条**不是**那条 UB 的判据——判据是容器里的 UBSan 报告；
+     *          本条只钉住「极端时刻的版式仍然是 23 个合法字符」这一侧，防的是后续把残差算歪。
+     */
+    TEST(TimestampText, ExtremeMomentsStillRenderDigitFields)
+    {
+        for (const TimestampMoment moment: {(std::chrono::system_clock::time_point::max)(),
+                                            (std::chrono::system_clock::time_point::min)()})
+        {
+            const std::string text = renderToString(moment);
+            EXPECT_TRUE(hasExpectedShape(text)) << "极端时刻渲染成了非法版式，长度 " << text.size()
+                                                << "：[" << text.substr(0, 28) << "]";
+        }
+    }
 } // namespace AsynGyanis::Base

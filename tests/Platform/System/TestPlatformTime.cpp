@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <limits>
 #include <thread>
 
 namespace AsynGyanis::Platform
@@ -31,6 +32,25 @@ namespace AsynGyanis::Platform
         // 纪元零点在任何时区都落在 1969 或 1970 年
         const int year = converted.tm_year + 1900;
         EXPECT_TRUE(year == 1969 || year == 1970);
+    }
+
+    /**
+     * @brief 折不出挂钟的秒数要交回零值结构，而不是各字段填 -1 的日历
+     * @details 头文件契约写着「转换失败时返回零值结构」。MSVC 的 localtime_s 失败时把整个结构
+     *          填成 -1，不看返回码就直接交回会让调用方拿到「1899-00--1 -1:-1:-1」这种文本；
+     *          glibc 侧恰好交回零值，所以这条判据只有两侧都跑过才算钉住。
+     */
+    TEST(PlatformTime, UnconvertibleEpochYieldsZeroCalendar)
+    {
+        // 远超任何历法实现支持的年份（CRT 的上限是 3089 年）
+        const std::tm converted = PlatformTime::localTime(std::numeric_limits<std::time_t>::max());
+
+        EXPECT_EQ(converted.tm_year, 0) << "失败时应交回零值结构，而不是 -1 填满的日历";
+        EXPECT_EQ(converted.tm_mon, 0);
+        EXPECT_EQ(converted.tm_mday, 0);
+        EXPECT_EQ(converted.tm_hour, 0);
+        EXPECT_EQ(converted.tm_min, 0);
+        EXPECT_EQ(converted.tm_sec, 0);
     }
 
     TEST(PlatformTime, LocalTimeMatchesChronoConversionOfCurrentTime)
