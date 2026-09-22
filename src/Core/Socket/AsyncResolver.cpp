@@ -5,8 +5,8 @@
 #include "Platform/IO/Socket.h"
 
 #include <atomic>
+#include <exception>
 #include <memory>
-#include <atomic>
 #include <string>
 #include <thread>
 #include <vector>
@@ -68,6 +68,34 @@ namespace AsynGyanis::Core
         };
 
         /**
+         * @brief 把结果交回等待方：先确认还有人等，再碰目标循环
+         * @details 投回动作要解引用 `EventLoop`，而循环可能在解析期间已被销毁（等待中的帧随它一起没）。
+         *          callerHandle 只在等待器析构时被置空，所以「非空」是「帧还在、因此循环也还在」的
+         *          强信号：判空之后再投递，把「整段 getaddrinfo 期间」这个窗口缩到「判空与入队之间」。
+         *          要彻底封死它得给循环加一道存活门闩（外部线程持其 shared_ptr 并与析构互斥），
+         *          那是跨模块的改动，不在这里顺手做。
+         * @note 本函数跑在分离线程上，异常一律不外抛：线程入口没人接就是 std::terminate，
+         *       而那时唤醒动作已无从补救，只能记一条日志让现场看得见
+         */
+        void deliverResult(EventLoop *targetLoop, const std::shared_ptr<ResolveState> &state) noexcept
+        {
+            if (state->callerHandle.load(std::memory_order_acquire) == nullptr)
+            {
+                return;
+            }
+            try
+            {
+                targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
+            } catch (const std::exception &deliveryError)
+            {
+                LOG_ERROR_EXCEPTION(deliveryError, "AsyncResolver: 解析结果未能投回事件循环，等待方将带着空结果收尾");
+            } catch (...)
+            {
+                LOG_ERROR("AsyncResolver: 解析结果未能投回事件循环（未知异常），等待方将带着空结果收尾");
+            }
+        }
+
+        /**
          * @brief 在后台线程执行阻塞的 getaddrinfo，完成后通过 postRemote 唤醒调用方协程
          */
         void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop,
@@ -78,7 +106,7 @@ namespace AsynGyanis::Core
             const Platform::Socket::Initialization winsock;
             if (!winsock.isValid())
             {
-                targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
+                deliverResult(targetLoop, state);
                 return;
             }
 
@@ -93,7 +121,7 @@ namespace AsynGyanis::Core
             if (getaddrinfo(host.c_str(), portString.c_str(), &hints, &result) != 0)
             {
                 // 解析失败：返回空列表
-                targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
+                deliverResult(targetLoop, state);
                 return;
             }
 
@@ -115,7 +143,7 @@ namespace AsynGyanis::Core
             }
             freeaddrinfo(result);
 
-            targetLoop->scheduler().postRemote([state] { state->wakeCaller(); });
+            deliverResult(targetLoop, state);
         }
     } // namespace
 

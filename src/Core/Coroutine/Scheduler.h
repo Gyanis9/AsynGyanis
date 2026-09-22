@@ -62,6 +62,9 @@ namespace AsynGyanis::Core
         /**
          * @brief 跨线程调度：将协程推入全局队列（线程安全）
          * @param handle 准备调度的协程句柄（必须非空）
+         * @note 本函数解引用调度器自身：调用方（执行器工作线程、解析线程等）必须在整个投递期间
+         *       保证目标循环还活着。要么按「先拆执行器再拆循环」的顺序释放资源，要么先判
+         *       「等待方还在不在」再投（AsyncResolver 就是这么收口窗口的）
          */
         void scheduleRemote(std::coroutine_handle<> handle);
 

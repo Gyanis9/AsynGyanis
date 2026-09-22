@@ -45,6 +45,9 @@ namespace AsynGyanis::Core
          * @note getaddrinfo 是阻塞调用，卸到后台线程执行；返回时已回到发起协程的事件循环上
          * @note host 按值取 std::string 而不是视图：本函数是惰性 Task，帧体要等 co_await 才跑，
          *       视图参数在那时早已悬垂
+         * @warning 解析线程是分离线程，本类没有「等它跑完」的收口点：它投回前会先看等待中的帧还在不在
+         *       （不在就不碰循环），因此调用方的约束是普通的「销毁循环前先销毁挂在它上面的帧」。
+         *       循环若会在有在途解析时被销毁，先把那些协程的帧收掉
          */
         static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port);
     };
