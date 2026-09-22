@@ -150,8 +150,13 @@ namespace AsynGyanis::Base
             // 摘出而非销毁：getLogger() 给出的是裸引用，使用中的调用方可能还没走完
             if (const auto existing = m_loggers.find(name); existing != m_loggers.end())
             {
-                displacedLogger = std::move(existing->second);
-                m_retiredLoggers.push_back(displacedLogger);
+                // 先把副本记进退休表：这一步要分配时抛的是 bad_alloc，而 map 还是原样。
+                // 反过来「先移动走再入表」会在入表失败时留下一个空 shared_ptr，
+                // 而 getLogger() 对表里的值直接解引用（它只保证查得到，不判空）
+                m_retiredLoggers.push_back(existing->second);
+                // 入表成功后才交接所有权：下面两步（移动赋值与按迭代器擦除）都没有分配点
+                m_retiredLoggers.back() = std::move(existing->second);
+                displacedLogger         = m_retiredLoggers.back();
                 m_loggers.erase(existing);
             }
         }
@@ -177,12 +182,16 @@ namespace AsynGyanis::Base
             const std::unique_lock lock(m_mutex);
             clearCachedRootLogger();
             displacedLoggers.reserve(m_loggers.size());
-            // 与 unregisterLogger 同一处置：全部移入退休表，不就地销毁使用中的对象
-            for (auto &entry: m_loggers)
+            // 先把两张表的位置一次留够：reserve 是这里唯一的分配点，它要抛就抛在循环之前，
+            // map 还是原样。循环里因此只记副本而不搬走值——万一还要分配，map 里就留下一个
+            // 空 shared_ptr，而 getLogger() 对表里的值直接解引用（它只保证查得到，不判空）
+            m_retiredLoggers.reserve(m_retiredLoggers.size() + m_loggers.size());
+            for (const auto &entry: m_loggers)
             {
-                m_retiredLoggers.push_back(std::move(entry.second));
+                m_retiredLoggers.push_back(entry.second);
                 displacedLoggers.push_back(m_retiredLoggers.back());
             }
+            // 到这里已经没有分配点：擦除只是清空表，被摘走的对象由上面两张表持有
             m_loggers.clear();
         }
         for (const auto &logger: displacedLoggers)
