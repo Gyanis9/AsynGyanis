@@ -209,9 +209,15 @@ std::filesystem::path sampleDirectory(const std::filesystem::path &root, const s
         Samples::checklist().check(manager.getString("runtime.flag") == "off", "热重载前读到的是初始配置");
 
         writeTextFile(path, "runtime:\n  flag: on\n");
-        // 有界等待：轮询窗口 + 防抖都在实现里，最迟几百毫秒内该看到变更
+        // 两条判据一起等，一条都不许单等：那一轮是先提交快照、后置回调标记，只盯「值变了」就可能
+        // 抢在回调落地前读到 false；只盯「回调过了」又可能被一轮早于本次写入的收尾满足。
+        // 先后与轮询窗口都是用例造不出来的条件，按规范不能赌调度
         const bool isReloaded = Samples::waitUntil(
-                [&manager] { return manager.getString("runtime.flag") == "on"; }, std::chrono::seconds{8});
+                [&manager, &isCallbackFired]
+                {
+                    return isCallbackFired.load(std::memory_order_acquire) && manager.getString("runtime.flag") == "on";
+                },
+                std::chrono::seconds{8});
         Samples::checklist().check(isReloaded, "改动文件后热重载把新值装了进来");
         Samples::checklist().check(isCallbackFired.load(std::memory_order_acquire), "热重载回调被调用过");
         Samples::checklist().check(isReloadCompletelySuccessful.load(std::memory_order_acquire),

@@ -14,6 +14,7 @@
 #include "Base/Log/Sinks/RollingFileSink.h"
 #include "common/SampleSupport.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -248,9 +249,11 @@ namespace
             // 换成正反两条：落盘 + 丢弃必须正好等于提交条数（计数不撒谎），且留在盘上的必须是
             // 最新那条（DropOldest 的定义是丢最旧的）。不要求「确实丢了」：那取决于 worker 抢不抢得到
             // 时间片，两种结果下这两条都成立，所以它们不会因为调度运气而假红
-            const std::size_t landedLineCount  = countLines(droppingPath);
-            const std::size_t droppedCount     = async.droppedEventCount();
-            const std::string landedText       = readWholeFile(droppingPath);
+            // 记账一律走有符号：countLines 读不到文件时如实给 -1，接成 std::size_t 就变成一个巨大的
+            // 正数，守恒式两边因此可以在「文件根本没读出来」时凑巧相等
+            const std::int64_t landedLineCount = countLines(droppingPath);
+            const std::int64_t droppedCount    = static_cast<std::int64_t>(async.droppedEventCount());
+            const std::string  landedText      = readWholeFile(droppingPath);
             Samples::checklist().check(landedLineCount + droppedCount == 50 &&
                                            landedText.find("第 49 条记录") != std::string::npos,
                                        "AsyncSink(DropOldest) 的丢弃计数与落盘条数对得上账，留下的是最新那条");
