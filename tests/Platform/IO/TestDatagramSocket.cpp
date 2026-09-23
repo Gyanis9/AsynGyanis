@@ -6,6 +6,8 @@
 #include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
 
+#include "PlatformTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -388,6 +390,25 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(target.isValid()) << "自赋值把套接字关掉后又接到自己空出来的描述符上";
         EXPECT_EQ(portOf(target.localAddress()), sourcePort) << "自赋值不该改变已经拥有的套接字";
     }
+
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（Windows）：绑好的数据报套接字已清掉继承位，POSIX 那一侧由 FD_CLOEXEC 用例覆盖
+     * @details Winsock 句柄**默认就是可继承的**，只有创建路径显式清这一位才不泄漏给子进程；这与
+     *          POSIX「默认不继承、要靠 SOCK_CLOEXEC 才不继承」正好相反，所以两侧各钉一条而不是共用。
+     *          漏清时 worker 子进程会替父进程持着这个端口，父进程退出后重启即报地址占用。
+     */
+    TEST(DatagramSocket, BoundSocketIsNotInheritable)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket socket = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(socket.isValid());
+
+        EXPECT_TRUE(TestSupport::isNotInheritable(socket.fileDescriptor()))
+                << "绑好的数据报套接字可被继承：worker 子进程会在父进程退出之后继续占着这个端口";
+    }
+#endif
 
 #if !ASYN_PLATFORM_WIN32
     /**

@@ -12,6 +12,7 @@
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include "PlatformTestSupport.h"
 
@@ -150,6 +151,84 @@ namespace AsynGyanis::Platform
         const std::optional<FileBasicInfo> afterRewrite = queryFileBasicInfo(targetPath);
         ASSERT_TRUE(afterRewrite.has_value());
         EXPECT_EQ(afterRewrite->sizeBytes, 10U) << "本层不缓存：改写之后必须立刻看到新大小，而不是上一次查到的那份";
+    }
+
+    /**
+     * @brief 钉住：三条取值与 std::filesystem 的对应函数在同一批路径形状上给出同一个判定
+     * @details 本层对外承诺「换成它不改变任何判定结论」，而静态文件服务每请求走的是本层、别处仍可能
+     *          用 std::filesystem——同一路径一处说可服务、另一处说不行，表现出来就是同一个文件时而
+     *          200 时而 404。覆盖形状：普通文件、目录、不存在的路径、本平台自带的空设备，以及超过
+     *          传统长度上限的深路径。
+     */
+    TEST(FileBasicInfo, AgreesWithStdFilesystemOnEveryPathShape)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_Parity");
+        const std::filesystem::path           regularFile = temporaryDirectory.path() / "plain.yaml";
+        writeTemporaryFile(regularFile, "a: 1\n");
+
+        // 空设备：既不是普通文件也往往没有可信的大小，两处必须给出同样的说法
+#if ASYN_PLATFORM_WIN32
+        const std::filesystem::path nullDevice = "NUL:";
+#else
+        const std::filesystem::path nullDevice = "/dev/null";
+#endif
+
+        const std::vector<std::pair<std::string, std::filesystem::path> > shapes = {
+                {"普通文件", regularFile},
+                {"目录", temporaryDirectory.path()},
+                {"不存在的路径", temporaryDirectory.path() / "missing.yaml"},
+                {"空设备", nullDevice},
+        };
+        for (const auto &[label, path]: shapes)
+        {
+            std::error_code regularError;
+            const bool      stdSaysRegular = std::filesystem::is_regular_file(path, regularError);
+            const std::optional<FileBasicInfo> info = queryFileBasicInfo(path);
+            if (!info.has_value())
+            {
+                EXPECT_TRUE(static_cast<bool>(regularError) || !stdSaysRegular)
+                        << label << "：本层查不到，std::filesystem 却把它当成可服务的普通文件";
+                continue;
+            }
+            EXPECT_EQ(info->isRegularFile, stdSaysRegular) << label << "：两处对「是不是普通文件」判定不一致";
+
+            std::error_code      sizeError;
+            const std::uintmax_t stdSize = std::filesystem::file_size(path, sizeError);
+            if (!sizeError)
+            {
+                EXPECT_EQ(info->sizeBytes, stdSize) << label << "：大小与 file_size 不一致";
+            }
+        }
+
+        // 深路径：一层层垫到超过 Windows 的传统上限（260 字符）。建得出来就比对两处对它的判定；
+        // 建不出来（进程未启用长路径意识时的常态）也要比对——那时候两边必须同样认不出这个路径
+        std::filesystem::path deepDirectory = temporaryDirectory.path();
+        for (int level = 0; level < 12; ++level)
+        {
+            deepDirectory /= "deep-directory-segment-with-a-longish-name";
+        }
+        std::error_code createError;
+        std::filesystem::create_directories(deepDirectory, createError);
+        const std::filesystem::path deepFile = deepDirectory / "nested.yaml";
+        if (!createError && std::filesystem::is_directory(deepDirectory))
+        {
+            writeTemporaryFile(deepFile, "deep: true\n");
+            std::error_code deepRegularError;
+            const bool stdSaysDeepIsRegular = std::filesystem::is_regular_file(deepFile, deepRegularError);
+            const std::optional<FileBasicInfo> deepInfo = queryFileBasicInfo(deepFile);
+            EXPECT_EQ(deepInfo.has_value(), stdSaysDeepIsRegular)
+                    << "深路径（" << deepFile.string().size() << " 字符）在一处可服务、在另一处不存在";
+            if (deepInfo.has_value() && !deepRegularError)
+            {
+                EXPECT_TRUE(deepInfo->isRegularFile) << "建出来的深路径文件必须判成普通文件";
+            }
+        } else
+        {
+            std::error_code deepRegularError;
+            const bool stdSaysDeepIsRegular = std::filesystem::is_regular_file(deepFile, deepRegularError);
+            EXPECT_FALSE(queryFileBasicInfo(deepFile).has_value()) << "连建都建不出的长路径，本层不该反过来报「查到了」";
+            EXPECT_FALSE(stdSaysDeepIsRegular) << "同一条长路径 std::filesystem 却认得出可服务的文件";
+        }
     }
 
 #if !ASYN_PLATFORM_WIN32
