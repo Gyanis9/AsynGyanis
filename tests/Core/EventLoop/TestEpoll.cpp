@@ -11,6 +11,7 @@
 
 #if !ASYN_PLATFORM_WIN32
 #include <sys/resource.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 #endif
 
@@ -317,6 +318,62 @@ namespace AsynGyanis::Core
             static_cast<void>(backend.delFileDescriptor(descriptor));
             Platform::FileDescriptor::close(descriptor);
         }
+    }
+
+    /**
+     * @brief 把已武装的轮询改成「可写」之后，无限等待必须当场交付新的就绪事件
+     * @details 改掩码在后端里是「取消在途轮询 → 完成通知到达时按新掩码重投」，而重投发生在收单
+     *          的过程中。那条重投若没在入睡前交给内核，内核就永远不会为它产出完成通知，而下一次
+     *          入睡前也没人再投它——EventLoop 空闲时跑的正是这种无限等待。可写位本就立即可满足，
+     *          因此这个形状在线上是「连接发不出请求、也收不到响应」而不是「慢一点」。
+     *          那只周期性 timerfd 是**兜底唤醒**而不是被测对象：退化实现下这条等待没有任何人叫醒，
+     *          没有它就会把用例变成挂起（挂起不是失败，门禁报出来只看超时看不出是谁的问题）。
+     *          判据取「这一批里有没有可写位」而不是「最后有没有」：退化实现会在下一次等待开头把
+     *          这条提交补发出去，绕几轮照样交付，只有第一批能把它和正确实现区分开。
+     */
+    TEST(Epoll, InfiniteWaitDeliversInterestChangedToWritable)
+    {
+        /// 兜底唤醒的间隔：远大于「提交投进去就立刻完成」所需的时间，因此只有退化实现会等到它
+        constexpr int kFallbackWakeupIntervalMs = 300;
+
+        Epoll backend;
+
+        const int timerDescriptor = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        ASSERT_GE(timerDescriptor, 0);
+        itimerspec timerSetting{};
+        timerSetting.it_value.tv_nsec    = static_cast<long>(kFallbackWakeupIntervalMs) * 1000000L;
+        timerSetting.it_interval.tv_nsec = static_cast<long>(kFallbackWakeupIntervalMs) * 1000000L;
+        ASSERT_EQ(::timerfd_settime(timerDescriptor, 0, &timerSetting, nullptr), 0);
+        // 不带 EPOLLONESHOT：水平触发的注册每轮都会被重新武装，因此才担得起兜底唤醒这个角色
+        int timerSentinel = 0;
+        ASSERT_TRUE(backend.addFileDescriptor(timerDescriptor, EPOLLIN, &timerSentinel));
+
+        TestEventFd eventFd;
+        ASSERT_GE(eventFd.fileDescriptor, 0);
+        int sentinel = 0;
+        ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel));
+
+        // 先让两条注册真正进内核（此刻两者都还没就绪，这一等是空的）
+        static_cast<void>(backend.wait(0));
+
+        // 读→写：这条注册此刻在途，于是走「取消 + 等取消完成通知到达时重投」那条路
+        ASSERT_TRUE(backend.modFileDescriptor(eventFd.fileDescriptor, EPOLLOUT, &sentinel));
+
+        bool isWritableReported = false;
+        for (const auto &event: backend.wait(-1))
+        {
+            if (event.data.ptr == static_cast<void *>(&sentinel) && (event.events & EPOLLOUT) != 0)
+            {
+                isWritableReported = true;
+            }
+        }
+        EXPECT_TRUE(isWritableReported)
+                << "无限等待只被兜底的 timerfd 叫醒，没有交付刚改成的可写位："
+                   "那条重投还悬在提交队列里，没在入睡前交给内核";
+
+        static_cast<void>(backend.delFileDescriptor(eventFd.fileDescriptor));
+        static_cast<void>(backend.delFileDescriptor(timerDescriptor));
+        Platform::FileDescriptor::close(timerDescriptor);
     }
 #endif
 } // namespace AsynGyanis::Core

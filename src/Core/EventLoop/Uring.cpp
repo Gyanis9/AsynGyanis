@@ -290,6 +290,34 @@ namespace AsynGyanis::Core
         return true;
     }
 
+    bool Uring::publishUntilQuiet()
+    {
+        // 「发布 → 收单」要推到不再产生新的提交项为止。收单会就地往队列里放新提交：
+        // 取消完成落到 handleCompletion 的 pendingRearm 分支时，那条「按新掩码重投」是在
+        // 收单的过程中取走的，固定两轮就收尾的写法会让它停在队列里。停在队列里等于没发生——
+        // 内核没见过这条 SQE，就不会为它产出完成通知，而等待方接下来那次阻塞是 to_submit=0 的
+        // 纯等待，谁也不会再来发布它。若它恰好是唯一能叫醒本觉的事件（可写位本就立即可满足，
+        // 投上去就会立刻完成），等待方就此睡死。
+        //
+        // 轮数封顶只为描述符反复抖动时不在本函数里空转；出圈后仍要把已取走的提交项发布出去，
+        // 保证「返回时队列里没有悬着的 SQE」这条不变式与轮数无关。
+        constexpr unsigned kMaxPublishRounds = 4;
+        for (unsigned round = 0; round < kMaxPublishRounds; ++round)
+        {
+            if (!flushSubmissions())
+            {
+                return false;
+            }
+            const unsigned reservedBeforeReap = m_reservedSubmissionCount;
+            reapCompletions();
+            if (m_reservedSubmissionCount == reservedBeforeReap)
+            {
+                return true;
+            }
+        }
+        return flushSubmissions();
+    }
+
     bool Uring::submitPoll(Registration &registration)
     {
         if (registration.events == 0)
@@ -585,19 +613,15 @@ namespace AsynGyanis::Core
     {
         m_readyEvents.clear();
 
+        // 上一觉留下的完成先收掉：它们要在本轮交付，也让下面的维护少做无用判断
         reapCompletions();
-        if (!flushSubmissions())
-        {
-            throw Base::SystemException("io_uring 提交失败");
-        }
         maintainRegistrations();
-        if (!flushSubmissions())
+        // 入睡前把「已取走的提交」全交给内核，并把因此就绪的完成收回来——publishUntilQuiet()
+        // 两件事一起担保：睡前不留悬着的 SQE，且 wait(0) 的「本轮能收的都收掉」成立
+        if (!publishUntilQuiet())
         {
             throw Base::SystemException("io_uring 提交失败");
         }
-        // 补投的这批里若有描述符本来就就绪，完成通知是在上一次 enter 里落进 CQ 的：
-        // 不再收一遍就会推迟到下一次等待才交付，wait(0) 的「本轮能收的都收掉」这条口径就不成立
-        reapCompletions();
 
         if (!m_readyEvents.empty())
         {
@@ -639,7 +663,12 @@ namespace AsynGyanis::Core
             break;
         }
 
-        reapCompletions();
+        // 醒来这一趟同样不许把重投悬着留给下一觉：被叫醒的那条完成可能就是某个取消完成，
+        // handleCompletion 会就地按新掩码重投，而调用方完全可能马上又进到无限等待里
+        if (!publishUntilQuiet())
+        {
+            throw Base::SystemException("io_uring 提交失败");
+        }
         return {m_readyEvents.data(), m_readyEvents.size()};
     }
 } // namespace AsynGyanis::Core

@@ -133,6 +133,14 @@ namespace AsynGyanis::Core
         bool flushSubmissions();
 
         /**
+         * @brief 把「发布 → 收单」推到不再产生新提交项为止
+         * @return true 已推到安静且队列里没有悬着的提交项；false 提交失败
+         * @details 收单会就地产生新提交项（取消完成后按新掩码重投），只看一次发布不够：
+         *          停在队列里的提交项到不了内核，也就永远不会产出完成通知。
+         */
+        bool publishUntilQuiet();
+
+        /**
          * @brief 收掉当前所有完成通知并翻译成就绪事件
          */
         void reapCompletions();
