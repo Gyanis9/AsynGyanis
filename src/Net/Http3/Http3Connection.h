@@ -368,6 +368,11 @@ namespace AsynGyanis::Net
 
         std::optional<QpackEncoder> m_qpackEncoder; ///< 本端编码器：写自己的动态表，受对端公布容量约束
         std::optional<QpackDecoder> m_qpackDecoder; ///< 本端解码器：受本端公布的容量约束
+        // 解码的落点与待发的解码器流字节都按连接复用：请求头块的字段行是逐条 owning 串，
+        // 每段新建一份就等于每条请求都付一遍「解出→交给请求存储→整份作废」。两处解码（当场解
+        // 与解除挂起后续解）都在事件循环线程上串行推进，且字段行在返回前就已交给请求存储，不跨用。
+        std::vector<QpackHeaderField> m_inboundFieldLines{}; ///< 请求字段行的复用落点
+        std::string m_decoderStreamScratch{};               ///< 本次解码该发的解码器流字节的复用缓冲
 
         std::int64_t m_localControlStreamId{-1};  ///< 本端控制流号
         std::int64_t m_localEncoderStreamId{-1};  ///< 本端 QPACK 编码器流号

@@ -453,8 +453,8 @@ namespace AsynGyanis::Net
                 state.isTrailersSeen = true;
             }
 
-            std::vector<QpackHeaderField> fields;
-            std::string decoderStreamBytes;
+            std::vector<QpackHeaderField> &fields = m_inboundFieldLines;
+            std::string &decoderStreamBytes = m_decoderStreamScratch;
             const auto decoded = m_qpackDecoder->decodeFieldSection(static_cast<std::uint64_t>(streamId), headersFrame.encodedFieldSection,
                                                                     fields, decoderStreamBytes);
             queueQpackInstructions({}, decoderStreamBytes);
@@ -630,8 +630,8 @@ namespace AsynGyanis::Net
         }
         StreamState &state = entry->second;
 
-        std::vector<QpackHeaderField> fields;
-        std::string decoderStreamBytes;
+        std::vector<QpackHeaderField> &fields = m_inboundFieldLines;
+        std::string &decoderStreamBytes = m_decoderStreamScratch;
         const auto resumed = m_qpackDecoder->resumeBlockedFieldSection(static_cast<std::uint64_t>(streamId), fields, decoderStreamBytes);
         queueQpackInstructions({}, decoderStreamBytes);
         if (!resumed)

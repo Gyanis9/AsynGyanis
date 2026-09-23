@@ -1718,4 +1718,65 @@ namespace AsynGyanis::Net
                 << "编一段响应头块仍在碰堆：读数为每次 "
                 << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
+
+    /**
+     * @brief 解一段请求头块要碰几次堆
+     * @details 解出来的字段行是 owning 串，交付进请求的头部存储后整份作废，故解码器自持一份复用槽位、
+     *          交付时逐条抄进调用方缓冲（整块交换会把对方的容量带走）。头部条数由对端决定，本端只对
+     *          「同一形状的重复请求」这一最常见形状负责零分配。取关掉动态表的段：不登记、不待确认。
+     */
+    TEST(QpackAllocations, DecodesRequestHeaderSectionIntoReusedBuffersWithoutAllocating)
+    {
+        QpackEncoder encoder(0, 0, 0);
+        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        const std::vector<QpackHeaderField> requestLines = makeFieldList({
+            {":method", "POST"},
+            {":scheme", "https"},
+            {":path", "/api/v1/orders/12345?page=2"},
+            {":authority", "api.example.com"},
+            {"user-agent", "AsynGyanisH3Client/1.0"},
+            {"accept", "application/json;charset=utf-8"},
+            {"content-type", "application/json"},
+            {"x-request-id", "0f1e2d3c4b5a69789abcdef"},
+        });
+        std::string encoded;
+        std::string instructions;
+        ASSERT_TRUE(encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(requestLines), encoded, instructions)
+                        .has_value());
+        ASSERT_TRUE(instructions.empty()) << "这台形状不该产生编码器流指令，否则读的是动态表路径";
+        const std::vector<std::uint8_t> fieldSection(encoded.begin(), encoded.end());
+
+        std::vector<QpackHeaderField> fields;
+        std::string decoderStreamBytes;
+        const auto decodeOnce = [&decoder, &fieldSection, &fields, &decoderStreamBytes]() -> std::size_t
+        {
+            const auto decoded = decoder.decodeFieldSection(0U, std::span<const std::uint8_t>(fieldSection), fields,
+                                                            decoderStreamBytes);
+            return decoded.has_value() && *decoded == QpackFieldSectionDecodeStatus::Decoded ? fields.size() : 0U;
+        };
+
+        ASSERT_EQ(decodeOnce(), requestLines.size()) << "第一条就没解全，稳态无从谈起";
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(decodeOnce);
+        std::printf("quic h3 解一段 %zu 条字段的请求头块：每次 %llu 次分配 / %llu 字节\n", requestLines.size(),
+                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
+        const AllocationHistogram histogram = snapshotAllocationHistogram();
+        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        {
+            if (histogram[bucket] != 0)
+            {
+                std::printf("  桶 %zu-%zu 字节：一千段合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U,
+                            static_cast<unsigned long long>(histogram[bucket]));
+            }
+        }
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * requestLines.size()) << "有一千段没解出全部字段，读数不可信";
+        // 准入线取「每条字段行不超过 4 次分配」：GCC 与 MSVC 发布版这里读到每次 0 次；MSVC 调试版
+        // （_ITERATOR_DEBUG_LEVEL=2）下每个局部 std::string 都要一份 16 字节的迭代器调试代理，而每行
+        // 要经过三个带错误出参的解析助手，实测每次 3 条 * 字段行数。交付点若改成临时量再移动，
+        // 同一形状实测涨到每次 45 次，当场越过这条线。
+        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * requestLines.size() * 4U)
+                << "解一段请求头块的逐条分配超线：读数为每次 "
+                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+    }
 } // namespace AsynGyanis::Net

@@ -1157,11 +1157,59 @@ namespace AsynGyanis::Net
         return {};
     }
 
+    void QpackDecoder::restartFieldLineScratch() noexcept
+    {
+        // 只回退游标：槽位与其中的串都是上一段留下的，逐条改写就把容量续上了
+        m_fieldLineCount = 0;
+    }
+
+    QpackHeaderField &QpackDecoder::beginDecodedFieldLine()
+    {
+        if (m_fieldLineCount == m_fieldLineScratch.size())
+        {
+            // 只有比历史最宽的那一段还长才要新槽；串本身仍是空的，赋值时才各自要一次堆
+            m_fieldLineScratch.emplace_back();
+        }
+        QpackHeaderField &slot = m_fieldLineScratch[m_fieldLineCount];
+        ++m_fieldLineCount;
+        slot.name.clear();
+        slot.value.clear();
+        return slot;
+    }
+
+    void QpackDecoder::deliverDecodedFieldLines(std::vector<QpackHeaderField> &fields) const
+    {
+        // 逐条改写而不是整块交换：交换会把调用方缓冲的容量带走，下一段又从头长
+        fields.resize(m_fieldLineCount);
+        for (std::size_t fieldIndex = 0; fieldIndex < m_fieldLineCount; ++fieldIndex)
+        {
+            fields[fieldIndex].name = m_fieldLineScratch[fieldIndex].name;
+            fields[fieldIndex].value = m_fieldLineScratch[fieldIndex].value;
+        }
+    }
+
     std::expected<QpackFieldSectionDecodeStatus, QpackError>
     QpackDecoder::decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
                                      std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
     {
-        fields.clear();
+        const auto decoded = decodeFieldSectionIntoScratch(streamId, encodedFieldSection, decoderStreamBytes);
+        // 只有整段解成才交付：失败或仍被挂起时调用方看到的仍是空表，与旧写法「先清空、末尾才填满」同形
+        if (decoded.has_value() && *decoded == QpackFieldSectionDecodeStatus::Decoded)
+        {
+            deliverDecodedFieldLines(fields);
+        }
+        else
+        {
+            fields.clear();
+        }
+        return decoded;
+    }
+
+    std::expected<QpackFieldSectionDecodeStatus, QpackError>
+    QpackDecoder::decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                               std::string &decoderStreamBytes)
+    {
+        restartFieldLineScratch();
         decoderStreamBytes.clear();
 
         const std::string_view section = toByteView(encodedFieldSection);
@@ -1223,35 +1271,31 @@ namespace AsynGyanis::Net
             return QpackFieldSectionDecodeStatus::Blocked;
         }
 
-        std::vector<QpackHeaderField> decodedFields;
         std::size_t decodedSizeByteCount = 0;
         std::uint64_t maximumReferencedAbsoluteIndex = 0;
-        std::size_t lineCount = 0;
         while (cursor < section.size())
         {
             if (auto lineResult = decodeFieldLineRepresentation(streamId, encodedFieldSection, cursor, baseValue, requiredInsertCount,
-                                                               decodedFields, maximumReferencedAbsoluteIndex);
+                                                               maximumReferencedAbsoluteIndex);
                 !lineResult.has_value())
             {
                 return std::unexpected(lineResult.error());
             }
             // 每解一个字段行就核对一次：字段行数与大小都是对端可以拉爆本端的维度
-            const QpackHeaderField &appended = decodedFields.back();
+            const QpackHeaderField &appended = m_fieldLineScratch[m_fieldLineCount - 1U];
             decodedSizeByteCount += QpackDynamicTable::entrySizeByteCountOf(appended);
             if (m_settings.maximumFieldSectionSizeByteCount != 0 && decodedSizeByteCount > m_settings.maximumFieldSectionSizeByteCount)
             {
                 return std::unexpected(makeQpackError(
                     QpackErrorKind::FieldSectionTooLarge, "流 " + std::to_string(streamId) + " 解到第 " +
-                                                              std::to_string(lineCount + 1) + " 个字段行时头段大小已达 " +
+                                                              std::to_string(m_fieldLineCount) + " 个字段行时头段大小已达 " +
                                                               std::to_string(decodedSizeByteCount) +
                                                               " 字节，超过本端 SETTINGS_MAX_FIELD_SECTION_SIZE " +
                                                               std::to_string(m_settings.maximumFieldSectionSizeByteCount) +
                                                               " 字节（RFC 9114 §4.2.2、§10.5.1）"));
             }
-            ++lineCount;
         }
 
-        fields = std::move(decodedFields);
         if (requiredInsertCount != 0)
         {
             // §4.4.1：Required Insert Count 非 0 的段必须回 Section Ack，但要等整段交付上层之后才发
@@ -1583,16 +1627,17 @@ namespace AsynGyanis::Net
     std::expected<void, QpackError>
     QpackDecoder::decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
                                                std::size_t &cursor, std::uint64_t baseValue, std::uint64_t requiredInsertCount,
-                                               std::vector<QpackHeaderField> &fields, std::uint64_t &maximumReferencedAbsoluteIndex)
+                                               std::uint64_t &maximumReferencedAbsoluteIndex)
     {
         const std::string_view section = toByteView(encodedFieldSection);
-        const std::size_t lineIndex = fields.size() + 1;
+        const std::size_t lineIndex = m_fieldLineCount + 1;
         const std::uint8_t firstByte = static_cast<std::uint8_t>(section[cursor]);
         std::string_view remaining = section.substr(cursor);
         QpackError error;
         std::uint64_t indexValue = 0;
         std::size_t consumedByteCount = 0;
-        QpackHeaderField field;
+        // 本条字段行写进复用的槽位：名与值先清空，上一段留下的容量原地接着用
+        QpackHeaderField &field = beginDecodedFieldLine();
 
         // 动态表引用统一走这里：先核对是否落在本段声明的表状态内，再取项（§2.2.3）
         const auto referenceDynamicEntry = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](
@@ -1656,7 +1701,6 @@ namespace AsynGyanis::Net
                 }
             }
             cursor += consumedByteCount;
-            fields.push_back(std::move(field));
             return {};
         }
 
@@ -1696,45 +1740,38 @@ namespace AsynGyanis::Net
                 }
             }
 
-            std::string valueText;
             std::size_t valueConsumedByteCount = 0;
+            // 直接解进槽位的值串：那里的容量是上一段留下的，移动临时串反而会把它丢掉
             const QpackParseStatus valueStatus =
                 decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值",
-                                            lineIndex, valueText, valueConsumedByteCount, &error);
+                                            lineIndex, field.value, valueConsumedByteCount, &error);
             if (valueStatus != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(valueStatus, error, streamId, lineIndex, "带名引用的字段行"));
             }
-            field.value = std::move(valueText);
             cursor += consumedByteCount + valueConsumedByteCount;
-            fields.push_back(std::move(field));
             return {};
         }
 
         if ((firstByte & kThreeBitPatternBitMask) == kLiteralNamePatternBits)
         {
             // §4.5.6：'001' + N + 4 位前缀的字段名字面量 + 8 位前缀的字段值字面量
-            std::string nameText;
             std::size_t nameConsumedByteCount = 0;
             QpackParseStatus status = decodePrefixedStringLiteral(remaining, 4, QpackErrorKind::DecompressionFailed, "字段名",
-                                                                 lineIndex, nameText, nameConsumedByteCount, &error);
+                                                                 lineIndex, field.name, nameConsumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "双字面量字段行"));
             }
 
-            std::string valueText;
             std::size_t valueConsumedByteCount = 0;
             status = decodePrefixedStringLiteral(remaining.substr(nameConsumedByteCount), 8, QpackErrorKind::DecompressionFailed,
-                                                "字段值", lineIndex, valueText, valueConsumedByteCount, &error);
+                                                "字段值", lineIndex, field.value, valueConsumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "双字面量字段行"));
             }
-            field.name = std::move(nameText);
-            field.value = std::move(valueText);
             cursor += nameConsumedByteCount + valueConsumedByteCount;
-            fields.push_back(std::move(field));
             return {};
         }
 
@@ -1752,7 +1789,6 @@ namespace AsynGyanis::Net
                 return referenceResult;
             }
             cursor += consumedByteCount;
-            fields.push_back(std::move(field));
             return {};
         }
 
@@ -1771,18 +1807,16 @@ namespace AsynGyanis::Net
                 return referenceResult;
             }
 
-            std::string valueText;
             std::size_t valueConsumedByteCount = 0;
+            // 同上：解进槽位的值串，不让临时串把复用容量顶掉
             const QpackParseStatus valueStatus =
                 decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值",
-                                           lineIndex, valueText, valueConsumedByteCount, &error);
+                                           lineIndex, field.value, valueConsumedByteCount, &error);
             if (valueStatus != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(valueStatus, error, streamId, lineIndex, "表后名引用的字段行"));
             }
-            field.value = std::move(valueText);
             cursor += consumedByteCount + valueConsumedByteCount;
-            fields.push_back(std::move(field));
             return {};
         }
 

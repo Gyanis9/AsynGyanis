@@ -524,19 +524,52 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 解一个字段行表示并把它收下
+         * @details 写进本解码器的字段行落点（`beginDecodedFieldLine()`），槽位与其中的串跨段复用。
          * @param streamId 所在流，仅用于报错定位
          * @param section 整段编码段
          * @param cursor [in,out] 字节游标，成功时推进到该表示之后
          * @param baseValue 该段的 Base（§3.2.5/§3.2.6 的换算基准）
          * @param requiredInsertCount 该段的 Required Insert Count，用于 §2.2.3 的越界判定
-         * @param fields 输出参数：解出的字段行按序追加
          * @param maximumReferencedAbsoluteIndex [in,out] 本段引用到的最大绝对索引，用于核对 RIC 取值
          * @return std::expected<void, QpackError> 成功；字节不够与表示非法都按 DecompressionFailed 返回
          */
         [[nodiscard]] std::expected<void, QpackError>
         decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> section, std::size_t &cursor,
                                       std::uint64_t baseValue, std::uint64_t requiredInsertCount,
-                                      std::vector<QpackHeaderField> &fields, std::uint64_t &maximumReferencedAbsoluteIndex);
+                                      std::uint64_t &maximumReferencedAbsoluteIndex);
+
+        /**
+         * @brief 解一段头块到本解码器的字段行落点里，不动调用方交出的缓冲
+         * @details 拆出来是为了让「交付」只有一处：解成功才把落点逐条改写进调用方的 vector，
+         *          失败与被挂起都让它保持空，调用方看到的形状与逐条 append 的写法完全一致。
+         * @param streamId 承载该头块的流标识，仅用于报错定位与挂起登记
+         * @param encodedFieldSection 编码段字节
+         * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，进入调用时先清空
+         * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> 与公开入口同一口径
+         */
+        [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError>
+        decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                      std::string &decoderStreamBytes);
+
+        /**
+         * @brief 开始解一段头块
+         * @details 字段行游标归零，已建好的槽与其中的串一概原地留着。
+         */
+        void restartFieldLineScratch() noexcept;
+
+        /**
+         * @brief 取本段下一条字段行的写入槽
+         * @details 名与值先清空，各自已要到的容量留着复用；落点不够用时才新建一槽。
+         * @return QpackHeaderField& 指向本段该条字段行的落点
+         */
+        [[nodiscard]] QpackHeaderField &beginDecodedFieldLine();
+
+        /**
+         * @brief 把本段解出的字段行逐条改写进调用方的缓冲
+         * @details 两侧串都按赋值改写：交换或移动会把调用方缓冲的容量带走，下一段又从头长。
+         * @param fields 输出参数：交付后的字段行，条数与本段解出的一致
+         */
+        void deliverDecodedFieldLines(std::vector<QpackHeaderField> &fields) const;
 
         /**
          * @brief 把动态表绝对索引换算成该索引对应的项
@@ -586,6 +619,8 @@ namespace AsynGyanis::Net
         std::map<std::uint64_t, std::deque<BlockedFieldSection>> m_blockedSectionsByStreamId; ///< 按流挂起的头块，队首最早
         std::map<std::uint64_t, std::deque<std::uint64_t>> m_unacknowledgedRequiredInsertCountsByStreamId; ///< 已解出、待 Ack 的 RIC
 
-        std::string m_encoderStreamBuffer;            ///< 编码器流上未凑齐一条指令的残留字节
+        std::string m_encoderStreamBuffer;                    ///< 编码器流上未凑齐一条指令的残留字节
+        std::vector<QpackHeaderField> m_fieldLineScratch{};   ///< 字段行的复用落点，高水位常驻：槽与其中的串跨段留着
+        std::size_t m_fieldLineCount{0};                      ///< 本段已写入落点的条数，超出部分是上一段的残留
     };
 } // namespace AsynGyanis::Net
