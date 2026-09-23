@@ -852,6 +852,75 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(isReportedAsFailure) << "本端已关闭被报成了「读到 0 字节」：上层会把故障当成干净的 EOF";
     }
 
+#if ASYN_PLATFORM_WIN32
+    namespace
+    {
+        /**
+         * @brief 等一次描述符可读
+         * @details Windows 上对监听描述符走这一步的意义不止是「等」：接受探针（AcceptEx）要到
+         *          首次等待才投出去，不先等一次就永远不会有连接可取。
+         * @param socket 目标套接字
+         * @return Task<bool> 惰性协程；true 表示事件就绪
+         */
+        Task<bool> waitReadableOnce(AsyncSocket &socket)
+        {
+            co_return co_await socket.waitReadable();
+        }
+    } // namespace
+
+    /**
+     * @brief Windows 的接受路径只能从后端取连接，且一条只交一次
+     * @details AcceptEx 完成时连接已被摘下并接进后端自己的接受套接字，`::accept()` 看不到它，
+     *          取不到就会一直「在监听却不应答」。这条通道此前零直测（只有 TcpAcceptor 在用），
+     *          而它最容易出的两种错都能在这里现形：没有连接时凭空的「取到一个」（交出去的是
+     *          垃圾句柄），以及同一条连接被交两次（两条会话共用一个 socket，数据互相串台）。
+     * @note 取到的句柄要能用：客户端写两个字节、从这个句柄读回来，才算证明交出的就是那条连接。
+     */
+    TEST(AsyncSocket, AcceptedConnectionsAreHandedOutOneAtATime)
+    {
+        EventLoop   loop;
+        AsyncSocket listener = AsyncSocket::create(loop);
+        ASSERT_TRUE(listener.bind(InetAddress::localhost(0)));
+        ASSERT_TRUE(listener.listen(4));
+        const std::uint16_t listeningPort = listener.localAddress().port();
+        ASSERT_GT(listeningPort, 0U);
+
+        EXPECT_FALSE(listener.takeAcceptedConnection().has_value())
+                << "一条连接都没到，后端却报「取到一个」：交出去的会是垃圾句柄";
+
+        // 先武装接受探针，再让客户端连上来：顺序反过来就可能永远等不到完成通知
+        Task<bool> arming = waitReadableOnce(listener);
+        arming.handle().resume();
+        ASSERT_FALSE(arming.isReady()) << "刚武装就拿到事件：本用例没测到「等一条连接到达」";
+
+        AsyncSocket client      = AsyncSocket::create(loop);
+        Task<>      connecting  = client.asyncConnect(InetAddress::localhost(listeningPort));
+        connecting.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&connecting, &arming]()
+        {
+            return connecting.isReady() && arming.isReady();
+        })) << "客户端连上之后，监听描述符上的接受探针没被叫醒";
+        EXPECT_NO_THROW(connecting.handle().promise().result()) << "回环上的连接没能建立成功";
+
+        ASSERT_TRUE(arming.handle().promise().result()) << "接受探针交回的是「未就绪」";
+        const std::optional<int> acceptedDescriptor = listener.takeAcceptedConnection();
+        ASSERT_TRUE(acceptedDescriptor.has_value()) << "AcceptEx 完成之后必须能取到已接入的连接";
+
+        EXPECT_FALSE(listener.takeAcceptedConnection().has_value())
+                << "同一条连接被交出去两次：两条会话会共用同一个 socket";
+
+        const std::string payload = "hi";
+        ASSERT_EQ(Platform::FileDescriptor::write(client.fileDescriptor(), payload.data(), payload.size()),
+                  static_cast<ssize_t>(payload.size()));
+        EXPECT_EQ(drainBytes(*acceptedDescriptor, payload.size()), payload)
+                << "取到的句柄读不到客户端写的字节：交出的不是那条连接";
+
+        client.close();
+        listener.close();
+        Platform::FileDescriptor::close(*acceptedDescriptor);
+    }
+#endif
+
 #if !ASYN_PLATFORM_WIN32
     namespace
     {
