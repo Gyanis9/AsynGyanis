@@ -19,24 +19,25 @@ if not exist "%BENCH_PATH%" (
     exit /b 1
 )
 
-rem The result JSON is a transient run artifact, so it goes to %TEMP% as well: build\
-rem only holds the debug/release build trees (see run-soak.bat for the same reasoning)
-set RESULT_PATH=%TEMP%\asyn-microbench-%ASYN_BENCH_BUILD%.json
-rem Remove the previous run's artifact first: the JSON path is reused, so a run that dies
-rem before writing it would otherwise be graded against last run's numbers and pass.
-del "%RESULT_PATH%" >nul 2>nul
-"%BENCH_PATH%" --json-out "%RESULT_PATH%"
-rem Compare against zero rather than "if errorlevel 1": cmd evaluates that test as a SIGNED
-rem comparison, so a crash exit code (0xC0000005 shows up as -1073741819) or ninja's 0xFFFFFFFF
-rem reads as "not at least 1" and the guard lets the run through as a success.
-if not "%ERRORLEVEL%"=="0" (
-    echo Microbenchmark run failed with exit code %ERRORLEVEL% - self-check or crash, not a regression verdict.
-    exit /b 1
-)
-if not exist "%RESULT_PATH%" (
-    echo Microbenchmark exited without writing %RESULT_PATH% - refusing to grade a stale or missing result.
-    exit /b 1
-)
+rem Three runs, graded by median. Two reasons, both observed rather than theoretical:
+rem the recorded baseline numbers are medians of three runs (microbench-baseline.json says
+rem so), so grading one run against them compares two different quantities; and the single
+rem scheduling-bound case here - eventloop-remote-post-roundtrip, a cross-thread wakeup -
+rem moves between process modes (today: 59k, 81k, 88k, 81k throughput/s on one binary),
+rem because where the loop thread lands is per-process luck. Median of three keeps the
+rem verdict on order-of-magnitude regressions while stopping the gate from firing on placement noise.
+rem The result JSONs are transient run artifacts, so they go to %TEMP% as well: build\
+rem only holds the debug/release build trees (see run-soak.bat for the same reasoning).
+set RESULT_1=%TEMP%\asyn-microbench-%ASYN_BENCH_BUILD%-run1.json
+set RESULT_2=%TEMP%\asyn-microbench-%ASYN_BENCH_BUILD%-run2.json
+set RESULT_3=%TEMP%\asyn-microbench-%ASYN_BENCH_BUILD%-run3.json
+
+call :runcase "%RESULT_1%"
+if not "%ERRORLEVEL%"=="0" exit /b 1
+call :runcase "%RESULT_2%"
+if not "%ERRORLEVEL%"=="0" exit /b 1
+call :runcase "%RESULT_3%"
+if not "%ERRORLEVEL%"=="0" exit /b 1
 
 if /i not "%ASYN_BENCH_BUILD%"=="release" (
     echo.
@@ -58,5 +59,25 @@ rem later one - worth a few percent, which is why no case here should be read as
 python "%REPOSITORY_ROOT%\benchmarks\check-baseline.py" ^
     --baseline "%REPOSITORY_ROOT%\benchmarks\microbench-baseline.json" ^
     --minimum-throughput-ratio 0.8 ^
-    "%RESULT_PATH%"
+    "%RESULT_1%" "%RESULT_2%" "%RESULT_3%"
 exit /b %ERRORLEVEL%
+
+rem ----------------------------------------------------------------------------
+rem One measurement pass. ERRORLEVEL is captured into a variable before the tests
+rem because inside a parenthesised block it would expand at parse time, and the
+rem comparison is against "0" rather than "if errorlevel 1" because cmd evaluates
+rem that test as SIGNED, so a crash exit code (0xC0000005 shows up as -1073741819)
+rem or ninja's 0xFFFFFFFF would read as "not at least 1" and pass as a success.
+:runcase
+del %1 >nul 2>nul
+"%BENCH_PATH%" --json-out %1
+set RUN_RESULT=%ERRORLEVEL%
+if not "%RUN_RESULT%"=="0" (
+    echo Microbenchmark run failed with exit code %RUN_RESULT% - self-check or crash, not a regression verdict.
+    exit /b 1
+)
+if not exist %1 (
+    echo Microbenchmark exited without writing %~1 - refusing to grade a stale or missing result.
+    exit /b 1
+)
+exit /b 0
