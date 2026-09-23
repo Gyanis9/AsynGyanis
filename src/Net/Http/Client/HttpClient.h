@@ -27,14 +27,26 @@ namespace AsynGyanis::Net
         std::string body;        ///< 正文；chunked 已按块拼回原样
     };
     /// URL 拆解结果
+    /**
+     * @brief 拆开的请求 URL
+     */
     struct ParsedUrl
     {
-        std::string scheme{"http"}; ///< 协议；只有 http 与 https 两条路，其余按 http 处理
-        std::string host;           ///< authority 里去掉端口的那一段（不做百分号解码）
+        std::string scheme{"http"}; ///< 协议，只有 "http" 与 "https" 两种取值（识别大小写无关，存下来已归一化成小写）
+        std::string host;           ///< 主机名或 IP 字面量，不做百分号解码；IPv6 已去掉方括号（发 Host 头时按规范加回）
         uint16_t    port{80};       ///< 端口；URL 里没写时 https 取 443、其余取 80
         std::string path{"/"};      ///< 请求路径，含查询串；没写路径时为 "/"
     };
-    /// URL 拆解工具
+
+    /**
+     * @brief 拆一个 http(s) URL
+     * @details 只做拆分，不改写：不百分号解码，也不接受空白与控制字符（那会撕裂请求行）。
+     *          写错的端口不会回落到 80——那会让一个 https URL 静默连到明文端口上。
+     * @param url 形如 http(s)://host[:port]/path；协议名大小写无关，IPv6 主机必须写成 "[::1]:8080"
+     * @return ParsedUrl 拆好的协议、主机、端口与路径
+     * @throws Base::InvalidArgumentException URL 含空白或控制字符、协议不是 http/https、没有主机、
+     *         端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号
+     */
     [[nodiscard]] ParsedUrl parseUrl(std::string_view url);
     /**
      * @brief 出站 HTTP 客户端

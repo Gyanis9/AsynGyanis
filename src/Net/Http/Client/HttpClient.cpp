@@ -26,6 +26,54 @@
 
 namespace AsynGyanis::Net
 {
+    namespace
+    {
+        /**
+         * @brief 把 left 按 ASCII 折成小写后与 right 比
+         * @details right 必须已是小写字面量（本文件里只用来认 "http"/"https" 两个常量）。URL 的协议名与
+         *          主机名都是 ASCII（RFC 3986 §6.1），因此只做 ASCII 折叠，不走 locale 的 tolower——
+         *          那会让同一份 URL 在不同机器上得出不同结论
+         */
+        [[nodiscard]] bool equalsIgnoreAsciiCase(const std::string_view left, const std::string_view right)
+        {
+            if (left.size() != right.size())
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index < left.size(); ++index)
+            {
+                char foldedLeft = left[index];
+                if (foldedLeft >= 'A' && foldedLeft <= 'Z')
+                {
+                    foldedLeft = static_cast<char>(foldedLeft - 'A' + 'a');
+                }
+                if (foldedLeft != right[index])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief 把冒号之后的端口文本读成一个可用的端口
+         * @param text 端口文本，必须全为十进制数字
+         * @param port 输出端口
+         * @return true 取值在 1..65535 内
+         */
+        [[nodiscard]] bool parsePort(std::string_view text, std::uint32_t &port)
+        {
+            // 超过 5 位必然大于 65535，先挡掉，省得 from_chars 溢出后还要判符号
+            if (text.empty() || text.size() > 5U)
+            {
+                return false;
+            }
+            const std::from_chars_result converted = std::from_chars(text.data(), text.data() + text.size(), port);
+            return converted.ec == std::errc{} && converted.ptr == text.data() + text.size() && port >= 1U &&
+                   port <= 65535U;
+        }
+    } // namespace
+
     ParsedUrl parseUrl(const std::string_view url)
     {
         // 请求行是把 path 原样拼出来的：里面若有 CR/LF 或空白，等于让调用方自己结束请求行、
@@ -37,31 +85,126 @@ namespace AsynGyanis::Net
         }
 
         ParsedUrl parsed;
-        auto p = url;
-        auto colon = p.find("://");
-        if (colon != std::string_view::npos)
+        std::string_view remainder = url;
+        const std::size_t schemeSeparator = remainder.find("://");
+        if (schemeSeparator != std::string_view::npos)
         {
-            parsed.scheme = std::string(p.substr(0, colon));
-            p.remove_prefix(colon + 3);
+            const std::string_view schemeText = remainder.substr(0, schemeSeparator);
+            // 协议名大小写无关（RFC 3986 §6.2.3）：HTTPS:// 悄悄当成 http 就是把 TLS 整段降级
+            if (equalsIgnoreAsciiCase(schemeText, "https"))
+            {
+                parsed.scheme = "https";
+            }
+            else if (equalsIgnoreAsciiCase(schemeText, "http"))
+            {
+                parsed.scheme = "http";
+            }
+            else
+            {
+                throw Base::InvalidArgumentException(R"(HttpClient：只支持 "http" 与 "https" 两种协议，收到的是「)" +
+                                                     std::string(schemeText) + R"(」：换成 http(s):// 开头再试)");
+            }
+            remainder.remove_prefix(schemeSeparator + 3);
         }
-        auto slash = p.find('/');
-        auto authority = (slash == std::string_view::npos) ? p : p.substr(0, slash);
-        auto pathPart = (slash == std::string_view::npos) ? std::string_view{} : p.substr(slash);
-        parsed.host = std::string(authority);
-        auto portColon = authority.rfind(':');
-        if (portColon != std::string_view::npos)
+
+        const std::size_t pathSeparator = remainder.find('/');
+        const std::string_view authority = pathSeparator == std::string_view::npos ? remainder : remainder.substr(0, pathSeparator);
+        const std::string_view pathPart = pathSeparator == std::string_view::npos ? std::string_view{} : remainder.substr(pathSeparator);
+
+        // 方括号里的是 IP 字面量（RFC 3986 §3.2.2）：IPv6 自带冒号，不这样区分就分不清哪段是端口
+        std::string_view hostText = authority;
+        std::string_view portText;
+        bool hasExplicitPort = false;
+        if (!authority.empty() && authority.front() == '[')
         {
-            parsed.host = std::string(authority.substr(0, portColon));
-            auto portStr = authority.substr(portColon + 1);
-            auto [ptr, ec] = std::from_chars(portStr.data(), portStr.data() + portStr.size(), parsed.port);
-            if (ec != std::errc{}) parsed.port = 80;
-        } else
+            const std::size_t closingBracket = authority.find(']');
+            if (closingBracket == std::string_view::npos)
+            {
+                throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机部分方括号没闭合（IPv6 字面量要写成 "[::1]:8080" 的形式）：「)" +
+                                                     std::string(authority) + R"(」)");
+            }
+            hostText = authority.substr(1, closingBracket - 1);
+            const std::string_view afterBracket = authority.substr(closingBracket + 1);
+            if (!afterBracket.empty())
+            {
+                if (afterBracket.front() != ':')
+                {
+                    throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机部分在 "]" 之后还跟着多余字符（端口要写成 ":8080"）：「)" +
+                                                         std::string(authority) + R"(」)");
+                }
+                hasExplicitPort = true;
+                portText = afterBracket.substr(1);
+            }
+        }
+        else
+        {
+            const std::size_t portSeparator = authority.rfind(':');
+            if (portSeparator != std::string_view::npos)
+            {
+                // 冒号不止一个又没有方括号：那是没按规范包起来的 IPv6，拆出来的「主机」会是半截地址
+                if (authority.find(':') != portSeparator)
+                {
+                    throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机是 IPv6 时必须写成方括号形式（"[::1]:8080"）：「)" +
+                                                         std::string(authority) + R"(」)");
+                }
+                hasExplicitPort = true;
+                hostText = authority.substr(0, portSeparator);
+                portText = authority.substr(portSeparator + 1);
+            }
+        }
+
+        if (hostText.empty())
+        {
+            throw Base::InvalidArgumentException(R"(HttpClient：URL 里没有主机部分：「)" + std::string(url) + R"(」)");
+        }
+        parsed.host = std::string(hostText);
+
+        if (hasExplicitPort)
+        {
+            std::uint32_t port = 0U;
+            if (!parsePort(portText, port))
+            {
+                // 原先这里回落到 80：一个写错的 https 端口会静默连到明文端口上，
+                // 宁可当场报错也不替调用方猜一个
+                throw Base::InvalidArgumentException(R"(HttpClient：URL 的端口「)" + std::string(portText) +
+                                                     R"(」不是 1..65535 的十进制数：完整 URL 是「)" + std::string(url) + R"(」)");
+            }
+            parsed.port = static_cast<uint16_t>(port);
+        }
+        else
         {
             parsed.port = (parsed.scheme == "https") ? 443 : 80;
         }
-        if (!pathPart.empty()) parsed.path = std::string(pathPart);
+        if (!pathPart.empty())
+        {
+            parsed.path = std::string(pathPart);
+        }
         return parsed;
     }
+
+    namespace
+    {
+        /**
+         * @brief 拼请求头的 Host 字段值
+         * @details IP 字面量在拆 URL 时按 RFC 3986 §3.2.2 去掉了方括号，这里要加回去：地址里自带冒号，
+         *          不加回去「Host: ::1」会把头部与端口分隔符混成一团
+         */
+        void appendHostHeader(std::string &request, const ParsedUrl &url)
+        {
+            request += "Host: ";
+            if (url.host.find(':') != std::string::npos)
+            {
+                request += '[';
+                request += url.host;
+                request += ']';
+            }
+            else
+            {
+                request += url.host;
+            }
+            request += "\r\n";
+        }
+    } // namespace
 
     namespace
     {
@@ -222,7 +365,7 @@ namespace AsynGyanis::Net
             request.reserve(256 + body.size());
             request += method; request += ' ';
             request += u.path; request += " HTTP/1.1\r\n";
-            request += "Host: "; request += u.host; request += "\r\n";
+            appendHostHeader(request, u);
             if (!body.empty())
             {
                 request += "Content-Type: "; request += contentType; request += "\r\n";
@@ -284,7 +427,7 @@ namespace AsynGyanis::Net
             request.reserve(256 + body.size());
             request += method; request += ' ';
             request += u.path; request += " HTTP/1.1\r\n";
-            request += "Host: "; request += u.host; request += "\r\n";
+            appendHostHeader(request, u);
             if (!body.empty())
             {
                 request += "Content-Type: "; request += contentType; request += "\r\n";
