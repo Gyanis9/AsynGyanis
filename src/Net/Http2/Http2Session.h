@@ -284,10 +284,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把连接层交出的请求映射成 HttpRequest
-         * @param http2Request 连接层交出的请求（伪头各自成字段）
+         * @param http2Request 连接层交出的请求（伪头各自成字段）；其 :path 与整块头部被换进返回值，调用后为空
          * @return HttpRequest 按 HTTP/1.1 语义填好的请求对象
          */
-        [[nodiscard]] static HttpRequest mapToHttpRequest(const Http2Request &http2Request);
+        [[nodiscard]] static HttpRequest mapToHttpRequest(Http2Request &http2Request);
 
         /**
          * @brief 把 HttpResponse 的头列表整理成 HTTP/2 可发的形式

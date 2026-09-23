@@ -1342,7 +1342,7 @@ namespace AsynGyanis::Net
         co_return true;
     }
 
-    HttpRequest Http2Session::mapToHttpRequest(const Http2Request &http2Request)
+    HttpRequest Http2Session::mapToHttpRequest(Http2Request &http2Request)
     {
         HttpRequest request;
         // 方法原文经 methodFromString 映射：未收录的方法（CONNECT、TRACE、自定义动词）落到
@@ -1357,23 +1357,16 @@ namespace AsynGyanis::Net
             request.setMethod(HttpRequest::methodFromString(http2Request.method));
         }
         // :path 与 :authority 分别对应 HttpRequest 的 uri 与 host；:scheme 在 HTTP/1.1 报文里
-        // 没有对应位置（服务端已知自己在 TLS 上），因此有意不映射，也不伪造一个头部
-        request.setUri(http2Request.path);
+        // 没有对应位置（服务端已知自己在 TLS 上），因此有意不映射，也不伪造一个头部。
+        // uri 与整块头部都走缓冲交换（与 h1 的「解析器 → 请求」同一条路径）：连接层攒下的那两块
+        // 连着容量一起换过来，这里不再逐字段抄一遍
+        request.adoptStagedUri(http2Request.path);
+        request.adoptStagedHeaders(http2Request.headerFields);
         request.setHttpVersion(std::string(kHttp2RequestVersion));
 
-        bool hasHostHeader = false;
-        for (const HpackHeaderField &headerField: http2Request.headerFields)
-        {
-            // 头名在连接层已校验为小写、头值已校验无控制字符，这里原样转交
-            request.addHeader(headerField.name, headerField.value);
-            if (headerField.name == "host")
-            {
-                hasHostHeader = true;
-            }
-        }
         // :authority 就是权威主机来源：对端没显式给 host 头时用它补齐，与 HTTP/1.1 侧「请求行
         // 目标 + host 头」的读取口径对齐（业务读 host 时两条协议拿到同一个值）
-        if (!http2Request.authority.empty() && !hasHostHeader)
+        if (!http2Request.authority.empty() && !request.hasHeader("host"))
         {
             request.addHeader("host", http2Request.authority);
         }

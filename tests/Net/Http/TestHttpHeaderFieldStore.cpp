@@ -271,6 +271,31 @@ namespace AsynGyanis::Net
         EXPECT_EQ(destination.singleValueView().size(), 3U) << "adopt 之后视图必须仍是脏的，由权威记录重建";
     }
 
+    TEST(HttpHeaderFieldStore, ReserveLeavesTheRecordsAndTheirOffsetsUntouched)
+    {
+        // 预留只是把容器长够，语义必须是纯空操作：协议层（h2 解完一个头块）按整块大小预留，
+        // 记的是偏移而不是指针，所以中途长缓冲也不能把已经写下那几条挪读
+        const std::vector<std::pair<std::string, std::string>> pairs = {
+                {"x-request-id", "upstream-edge-0001-0000000000000abc"},
+                {"accept-encoding", "gzip, deflate, br"},
+                {"cookie", "sid=0123456789abcdef0123456789abcdef"},
+        };
+        HttpHeaderFieldStore reserved;
+        reserved.reserve(pairs.size(), 8U); // 刻意少留：实到字节远超预留量，照常扩容也不能出错
+        reserved.append(pairs[0].first, pairs[0].second);
+        const std::string firstValueCopy = reserved.firstValue("x-request-id").value_or("<缺失>");
+        reserved.reserve(pairs.size(), 4096U); // 中途加大预留会让字节缓冲整块搬家
+        EXPECT_EQ(reserved.firstValue("x-request-id").value_or("<缺失>"), firstValueCopy) << "搬家之后第一条记录读不动了";
+        for (std::size_t index = 1; index < pairs.size(); ++index)
+        {
+            reserved.append(pairs[index].first, pairs[index].second);
+        }
+
+        EXPECT_EQ(snapshotFields(reserved), snapshotFields(makeStore(pairs))) << "预留过的那份与没预留的那份必须逐条一致";
+        EXPECT_EQ(reserved.get("cookie").value_or("<缺失>"), pairs[2].second);
+        EXPECT_EQ(reserved.singleValueView().size(), 3U);
+    }
+
     TEST(HttpHeaderFieldStore, ValueViewsAgreeWithTheirOwningCounterparts)
     {
         // 两条入口必须同一条查找：owning 版由视图版派生，否则「同名多条取首条」「大小写不敏感」

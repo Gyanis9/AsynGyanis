@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 
@@ -128,20 +129,13 @@ namespace AsynGyanis::Net
      */
     struct Http2Request
     {
-        /**
-         * @brief 取一条普通头部的值，按到达顺序取第一条命中的
-         * @param name 头名，小写（本层已按 §8.1.2 校验过大小写）
-         * @return 指向值的指针；没有该头部时返回 nullptr
-         * @note 返回的是本对象内部字段的地址，随本对象一并失效
-         */
-        [[nodiscard]] const std::string *findHeaderValue(std::string_view name) const noexcept;
-
         std::uint32_t streamId{0};                  ///< 该请求所属的流号，回响应时按它定位
         std::string method;                         ///< :method 原文（未知方法原样保留）
         std::string scheme;                         ///< :scheme 原文；CONNECT 请求为空
         std::string path;                           ///< :path 原文；CONNECT 请求为空
         std::string authority;                      ///< :authority 原文；对端没带时为空
-        std::vector<HpackHeaderField> headerFields; ///< 普通头部，按到达顺序，名已校验为小写
+        /// 普通头部，按到达顺序，名已校验为小写。与 HttpRequest 同一套存储，接线层整块换走、不逐字段抄
+        HttpHeaderFieldStore headerFields;
         bool hasBody{false};                        ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
         bool isHeaderListTooLarge{false};           ///< 头块超出本端上限：各字段全为空，上层应按 431 应答而不是派发路由
         std::string protocol;                        ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
@@ -788,6 +782,7 @@ namespace AsynGyanis::Net
         HeaderBlockPurpose m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
         bool m_pendingHeaderEndStream{false};                         ///< 正在拼的头块是否带 END_STREAM
         std::string m_pendingHeaderBlock;                             ///< 正在拼的头块字节
+        std::vector<HpackHeaderField> m_decodedHeaderFields;          ///< 头块解码的落点：表容量跨头块留着，字段本身每次解码重写
 
         std::map<std::uint32_t, StreamRecord> m_streams;              ///< 流账本：含刚终止的流
         std::vector<std::uint32_t> m_terminatedStreamIds{};           ///< 终止顺序，用于给账本里已终止的记录设上限

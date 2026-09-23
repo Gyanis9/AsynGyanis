@@ -104,6 +104,21 @@
 
 ### 变更
 
+- **破坏性变更：`Http2Request` 的普通头部改用 `HttpHeaderFieldStore`（与 `HttpRequest` 同一套存储）**。
+  字段类型由 `std::vector<HpackHeaderField>` 换成 `HttpHeaderFieldStore`，随之移除只在向量形状上成立的
+  `findHeaderValue()`（返回 `const std::string *`，而新存储把名值写在同一条字节缓冲里、只记偏移，
+  没有可交出去的 `std::string`）。迁移：按名取值写
+  `requests[i].headerFields.firstValueView("x-request-id")`，返回 `std::optional<std::string_view>`，
+  语义就是原来那条「按到达顺序取第一条命中」；整表遍历写
+  `requests[i].headerFields.forEachField([](std::string_view name, std::string_view value) { ... })`。
+  读到的内容、顺序与「可重复头部不合并」都不变，两点差别是取值返回视图而非指针、比较大小写不敏感。
+  为什么值得动契约：h2 每条请求原先要把头部装两份 owning 串（HPACK 解出来一份、请求里再逐条抄一份），
+  接线层 `mapToHttpRequest()` 还要抄第三份；现在请求里这块存储由 `adoptStagedHeaders()` 整块换给
+  `HttpRequest`，第三份不复存在，`:path` 与 uri 之间也改成 `adoptStagedUri()` 的缓冲交换。配套给
+  `HttpHeaderFieldStore` 加了 `reserve(fieldCount, byteCount)`：装配前就知道有几条、多少字节的地方
+  一次留够，不必让记录表与字节缓冲各自按倍扩容。实测同一条 7 头部的 GET，收方向的分配从
+  18 次 / 2824 字节降到 15 次 / 1621 字节（Release，按一千次原值计，判据见
+  `tests/Net/Http/TestHotPathAllocations.cpp`）。
 - **破坏性变更：`LogEvent::timestamp` 由文本改成时刻**。字段类型从 `std::string` 换成
   `TimestampMoment`（即 `std::chrono::system_clock::time_point`），配套的 `currentTimestamp()` 一并
   移除——事件只带时刻，文本由各格式化器在 Sink 写入线程上渲染。迁移：自建 `LogFormatter` 的实现里

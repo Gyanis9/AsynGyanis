@@ -123,19 +123,6 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    const std::string *Http2Request::findHeaderValue(const std::string_view name) const noexcept
-    {
-        // 按到达顺序取第一条命中：本对象已保证头名小写，比较不必再做归一化
-        for (const HpackHeaderField &field: headerFields)
-        {
-            if (field.name == name)
-            {
-                return &field.value;
-            }
-        }
-        return nullptr;
-    }
-
     Http2Connection::Http2Connection(Http2ConnectionConfiguration configuration)
         : m_configuration(std::move(configuration)),
           m_frameDecoder(Http2FrameLimits{.maximumFrameSizeByteCount = m_configuration.maximumFrameSize,
@@ -1110,13 +1097,15 @@ namespace AsynGyanis::Net
         const std::uint32_t streamId = m_pendingHeaderStreamId;
         const HeaderBlockPurpose purpose = m_pendingHeaderPurpose;
         const bool endStream = m_pendingHeaderEndStream;
-        std::string headerBlock = std::move(m_pendingHeaderBlock);
         // 拼接态先清掉：解码路径上可能判错收场，留着半成品会让后续帧被误判成「中途插帧」
         m_isAssemblingHeaderBlock = false;
-        m_pendingHeaderBlock.clear();
 
-        std::vector<HpackHeaderField> headerFields;
-        if (!m_hpackDecoder.decode(headerBlock, headerFields))
+        // 解码直接读成员缓冲、就地写进成员落点，两处的容量都跨头块留着：早先这里把头块 move 成
+        // 局部串再解，move 走的正是那份刚攒够容量的缓冲，下一条请求又得重新向堆要一块
+        std::vector<HpackHeaderField> &headerFields = m_decodedHeaderFields;
+        const bool isDecoded = m_hpackDecoder.decode(m_pendingHeaderBlock, headerFields);
+        m_pendingHeaderBlock.clear();
+        if (!isDecoded)
         {
             if (!m_hpackDecoder.isLimitExceeded())
             {
@@ -1218,6 +1207,21 @@ namespace AsynGyanis::Net
     {
         clearError(errorText);
         request = Http2Request{};
+
+        // 整块头部一次留够：这里已经知道有几条、共多少字节，逐条 append 就不必让记录表与字节缓冲
+        // 各自按倍扩好几轮。多留一条与 32 字节是给接线层的 host 补齐留的（对端没带 host 头时补一条）
+        std::size_t regularFieldCount = 0;
+        std::size_t headerByteCount = 0;
+        for (const HpackHeaderField &field: headerFields)
+        {
+            if (!field.name.empty() && field.name.front() == ':')
+            {
+                continue; // 伪头不进请求的头部存储，它们各自成一个字段
+            }
+            ++regularFieldCount;
+            headerByteCount += field.name.size() + field.value.size();
+        }
+        request.headerFields.reserve(regularFieldCount + 1U, headerByteCount + 32U);
 
         bool hasSeenRegularHeader = false;
         bool hasMethodField = false;
@@ -1364,7 +1368,7 @@ namespace AsynGyanis::Net
                 hasContentLengthField = true;
                 contentLengthValue    = declaredLength;
             }
-            request.headerFields.push_back(field);
+            request.headerFields.append(field.name, field.value);
         }
 
         if (!hasMethodField)

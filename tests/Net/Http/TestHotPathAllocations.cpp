@@ -20,8 +20,9 @@
 //     请求字段（两条都不再新取堆块；改前每请求 1 次 / 32 字节）；
 //   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
 //   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
-//   · 收一条 h2 请求（四条伪头加三条普通头部的 GET，与 h1 那条同一批语料）：18 次 / 2824 字节。
-//     同一条请求在 h1 侧是 0 次——h2 的头部逐字段落成 owning 串，且没有跨报文留存的缓冲可复用；
+//   · 收一条 h2 请求（四条伪头加三条普通头部的 GET，与 h1 那条同一批语料）：15 次 / 1621 字节。
+//     同一条请求在 h1 侧是 0 次——差下来的是「每条请求各要一套头部存储」这条结构性成本：h1 的请求
+//     对象按连接复用、容量留着，h2 每条流一份；改前这项是 18 次 / 2824 字节；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次；
 //   · 一条 h2 连接握手到关掉：每连接的固定成本（空闲连接也要付，故只作打印对照）。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
@@ -75,10 +76,10 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
         constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
         constexpr std::uint64_t kChunkFrameTotalAllocationsReused = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
-        // 收一条 h2 请求（7 条头部）：逐字段落 owning 串、建流记录、交出请求向量三处都在碰堆。
-        // 同一条语料在 h1 那条形状上是 0 次——这个差值就是「h2 头部要不要也改成按视图交出」的起点读数
-        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 18000U;
-        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 2824000U;
+        // 收一条 h2 请求（7 条头部）：解出来的字段串、整块头部的两份缓冲、流记录与交出请求的向量。
+        // 同一条语料在 h1 那条形状上是 0 次——差值里剩的是「每条请求各要一套存储」这一条结构性成本
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 15000U;
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 1621000U;
 #endif
         /// 一条贴近真实的 h1 请求：10 个头部 + 64 字节正文（与微基准的 http1-parse-request 同形）
         std::string makeRequestText()
@@ -201,10 +202,10 @@ namespace AsynGyanis::Net
             for (const Http2Request &request: requests)
             {
                 mark += request.method.size() + request.path.size() + request.authority.size();
-                for (const HpackHeaderField &field: request.headerFields)
-                {
-                    mark += field.name.size() + field.value.size();
-                }
+                request.headerFields.forEachField([&mark](const std::string_view name, const std::string_view value)
+                                                   {
+                                                       mark += name.size() + value.size();
+                                                   });
             }
             return mark;
         }
@@ -458,7 +459,7 @@ namespace AsynGyanis::Net
      * @brief 一条 h2 请求从字节走到交给上层的 Http2Request，本端付出多少次分配
      * @details 窗里含「解头块 → 伪头分档 → 普通头逐条落地 → 建流记录 → 交出请求」整段，不含响应方向。
      *          头块的字段与 h1 那条形状同一批语料（同一条 GET /api/v1/orders?trace=1 加三条常用头部），
-     *          两条读数因此可直接对照：同一条请求，h1 走零拷贝、h2 逐字段落owning串。
+     *          两条读数因此可直接对照：h1 侧的请求对象按连接复用、容量跨报文留着，所以是 0 次。
      */
     TEST(HotPathAllocations, Http2RequestIngestAllocations)
     {

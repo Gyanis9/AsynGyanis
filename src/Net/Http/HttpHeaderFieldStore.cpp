@@ -63,6 +63,14 @@ namespace AsynGyanis::Net
         m_isViewStale = true;
     }
 
+    void HttpHeaderFieldStore::reserve(const std::size_t fieldCount, const std::size_t byteCount)
+    {
+        // 只长不缩：vector::reserve 对更小的值不做任何事，所以同一条存储跨报文复用时，
+        // 暖到稳态的容量不会被一条短头部抹掉
+        m_fields.reserve(fieldCount);
+        m_bytes.reserve(m_bytes.size() + byteCount);
+    }
+
     void HttpHeaderFieldStore::overwriteOrAppend(const std::string_view name, const std::string_view value)
     {
         if (const auto iterator = findField(name); iterator != m_fields.end())

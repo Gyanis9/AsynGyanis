@@ -536,6 +536,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：请求的普通头部按到达顺序原样留着，可重复头部不合并，伪头不混进来
+     * @details 这份存储是接线层整块换给 HttpRequest 的那一份，顺序与重复在这里丢了就再也找不回来
+     */
+    TEST(Http2Connection, KeepsRegularHeaderFieldsInArrivalOrder)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        std::string headerBlock = makeMinimalGetRequestBlock();
+        headerBlock += hpackLiteralField("x-multi", "a=1");
+        headerBlock += hpackLiteralField("cookie", "sid=7");
+        headerBlock += hpackLiteralField("x-multi", "b=2");
+        const std::string headersFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock);
+        EXPECT_EQ(feed(connection, headersFrame), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        const std::vector<Http2Request> requests = connection.takeRequests();
+        ASSERT_EQ(requests.size(), 1U);
+        const HttpHeaderFieldStore &headerFields = requests[0].headerFields;
+        EXPECT_EQ(headerFields.values("x-multi"), (std::vector<std::string>{"a=1", "b=2"})) << "可重复头部被合并了：两条都该原样留着";
+        EXPECT_EQ(headerFields.firstValueView("x-multi").value_or("<缺失>"), "a=1") << "按名取值应取到达顺序的第一条";
+        EXPECT_FALSE(headerFields.contains(":path")) << "伪头不该进普通头部的存储，它们各自成字段";
+
+        // 整表的顺序是接线层序列化与业务遍历的读法，单独核对成一条串：换错方向或漏一条都会立刻显形
+        std::string orderedPairs;
+        headerFields.forEachField([&orderedPairs](const std::string_view name, const std::string_view value)
+                                  {
+                                      orderedPairs += std::string(name) + "=" + std::string(value) + ";";
+                                  });
+        EXPECT_EQ(orderedPairs, "x-multi=a=1;cookie=sid=7;x-multi=b=2;");
+    }
+
+    /**
      * @brief 钉住：RFC 7541 C.4.1 的 Huffman 版请求头块（黄金字节）解出同一个 :authority
      */
     TEST(Http2Connection, DeliversRequestFromRfc7541HuffmanSample)

@@ -59,6 +59,15 @@ namespace AsynGyanis::Net
         void append(std::string_view name, std::string_view value);
 
         /**
+         * @brief 一次留够整块头部的容量，把逐条 append 期间的按倍扩容并成一次
+         * @details 给「装配前就知道会有几条、多少字节」的调用方用（协议层解完一个头块之后）：
+         *          不预留时记录表与字节缓冲要各自长好几轮，一条七字段的请求能付到十次分配。
+         * @param fieldCount 预计的记录条数；实到条数超出时照常扩容
+         * @param byteCount 预计要追加的名值字节数；超出时照常扩容
+         */
+        void reserve(std::size_t fieldCount, std::size_t byteCount);
+
+        /**
          * @brief 覆盖或追加一条非可重复头部
          * @details 同名已有记录就地覆盖值，条目位置仍停在首次设置处；缺席则追加到末尾。
          * @param name 头部名，大小写不敏感；新建条目时按小写形态入库
