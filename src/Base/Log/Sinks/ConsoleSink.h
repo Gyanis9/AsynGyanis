@@ -33,9 +33,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 将日志事件写入标准输出或标准错误
-         * @details 重写 LogSink::write()：先按需初始化控制台编码，再持互斥锁输出整行；
+         * @details 重写 LogSink::write()：持互斥锁把整行一次性写出（拼接复用成员缓冲，稳态不取堆）；
          *          Warn 及以上等级写 std::cerr，其余写 std::cout，每次调用自带换行，
          *          且返回时该行已刷新落地（重定向到文件或管道时缓冲不会把它扣住）。
+         *          控制台编码由构造函数切一次，不在每行重复设置。
          * @param event 日志事件
          */
         void write(const LogEvent &event) override;
