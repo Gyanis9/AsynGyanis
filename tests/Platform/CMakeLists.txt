@@ -4,6 +4,10 @@ find_package(GTest REQUIRED)
 add_executable(TestPlatform
         PlatformTestSupport.h
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
+        # 分配计数探针的实体（替换全局 operator new，每个可执行体只能有一份定义）
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
+
+        TestHotPathAllocations.cpp
 
         IO/TestFileDescriptor.cpp
         IO/TestEventNotifier.cpp
