@@ -2290,18 +2290,28 @@ namespace AsynGyanis::Net
      * @brief 钉住：响应写到一半被对端抽走的连接记一条 writeAbortedConnectionCount，写满收口的不误计
      *
      * @details h2 的落账点是 `flushOutgoingBytes` 里「本侧把连接判死」那一处，与 h1 的
-     *          `recordSendFailure` 不是同一段代码，所以两侧各要一条直测。构造手法与 h1 那条
-     *          流式失败用例同源：先给足流控窗口让服务端真的往套接字里灌 4 MiB，客户端只取走
-     *          第一段就带着未读数据关闭，内核回 RST，下一次写出必然失败。
+     *          `recordSendFailure` 不是同一段代码，所以两侧各要一条直测。正文用流式一段段的写，
+     *          与 h1 那条流式失败用例同形状：客户端只取走第一段就带着未读数据关闭，内核回 RST，
+     *          处理器随后某一次挂起的写必然把失败交回来。
+     * @warning 不采用「一次给出 4 MiB 整块正文」的写法：Windows 的套接字缓冲能把整块收下，写侧
+     *          一次都不报错，读数停在 0（实测）——那种判据实际量的是各平台的缓冲大小。
      */
     TEST(Http2CleartextSession, CountsConnectionAbortedMidResponseBody)
     {
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.get("/huge", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            router.get("/abort-mid-body", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
             {
-                // 4 MiB 一次成型：远超套接字缓冲，服务端必定在某个时刻写不出去
-                response.setBody(std::string(4U * 1024U * 1024U, 'x'));
+                // 一段段写到传输层拒绝为止：这样失败一定落在某次写出上，不依赖内核能缓冲多少字节
+                response.startChunkedResponse(200);
+                const std::string payload(64U * 1024U, 'x');
+                for (int round = 0; round < 64; ++round)
+                {
+                    if (!co_await response.writeChunk(payload))
+                    {
+                        co_return;
+                    }
+                }
                 co_return;
             });
         };
@@ -2328,12 +2338,12 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
 
         // 窗口先给足再发请求：不给窗口的话服务端会停在流控上，永远不碰套接字，
-        // 这条用例要钉的「写出失败」就根本不会发生。
+        // 这条用例要钉的「写出失败」就根本不会发生（那一路另有对应用例）。
         // 顺序有讲究（RFC 7540 §6.9）：流级 WINDOW_UPDATE 必须排在该流的 HEADERS 之后，
         // 给一条还不存在的流还窗口是连接级错误，服务端会直接回 GOAWAY 把连接收掉
         std::string requestWithCredits;
         requestWithCredits += encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 4U * 1024U * 1024U}, 0U);
-        requestWithCredits += makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/huge"), true);
+        requestWithCredits += makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/abort-mid-body"), true);
         requestWithCredits += encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 4U * 1024U * 1024U}, 1U);
         ASSERT_TRUE(client.sendBytes(requestWithCredits, kWaitTimeout)) << "额度与请求未能写入";
 
