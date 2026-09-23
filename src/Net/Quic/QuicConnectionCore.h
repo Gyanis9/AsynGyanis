@@ -115,9 +115,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取走一条待发数据报
-         * @return 有数据报时返回它（取走即出队），队列空时返回空
+         * @return 有数据报时返回它（取走即出队，缓冲随所有权一起交出去），队列空时返回空
          */
-        [[nodiscard]] std::optional<std::vector<std::uint8_t>> takeOutboundDatagram();
+        [[nodiscard]] std::optional<std::string> takeOutboundDatagram();
 
         /**
          * @brief 推进一步握手，并把产出编成待发数据报
@@ -371,7 +371,9 @@ namespace AsynGyanis::Net
         std::size_t m_receivedByteCount{0};                          ///< 已收字节，反放大上限按它算（§8.1）
         std::size_t m_sentByteCount{0};                              ///< 已发字节，与上面那项一起决定还剩多少额度
         std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};  ///< 三个包号空间
-        std::deque<std::vector<std::uint8_t>> m_outboundDatagrams{}; ///< 待发数据报队列
+        /// 待发数据报队列：元素就是报文本体（std::string 在本仓里当字节缓冲用，与帧序列同一个口径），
+        /// 组包器直接往里写，取出时按所有权移交
+        std::deque<std::string> m_outboundDatagrams{};               ///< 待发数据报队列
         QuicConnectionPhase m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
         std::optional<std::uint64_t> m_localCloseErrorCode{};        ///< 待发的 CONNECTION_CLOSE 错误码
         std::string m_localCloseReasonPhrase{};                      ///< 随错误码一起发出的原因文案

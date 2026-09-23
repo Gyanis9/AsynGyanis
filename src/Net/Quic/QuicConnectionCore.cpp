@@ -894,13 +894,15 @@ namespace AsynGyanis::Net
         std::string datagram;
         appendQuicPacket(datagram, packet, *state.writeKeys);
         ++state.nextPacketNumber;
-        const std::span<const std::uint8_t> datagramBytes = asBytes(datagram);
-        m_outboundDatagrams.emplace_back(datagramBytes.begin(), datagramBytes.end());
+        const std::size_t datagramByteCount = datagram.size();
+        // 待发队列拿的是这条报文的本体而不是它的副本：下面 record 与字节数都只需要长度，
+        // 整包再抄一遍是白付的一次分配加一次 memcpy
+        m_outboundDatagrams.push_back(std::move(datagram));
 
         QuicSentPacketInfo record;
         record.packetNumber = packetNumber;
         record.timeSent = now;
-        record.byteCount = datagram.size();
+        record.byteCount = datagramByteCount;
         record.isAckEliciting = isAckEliciting;
         record.cryptoRange = cryptoRange;
         record.streamRanges = std::move(streamRanges);
@@ -919,7 +921,7 @@ namespace AsynGyanis::Net
         }
         m_congestion.onPacketSent(record);
         m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
-        m_sentByteCount += datagram.size();
+        m_sentByteCount += datagramByteCount;
     }
 
     std::size_t QuicConnectionCore::sendByteBudget(const std::size_t reservedByteLength, const bool ignoresCongestionWindow) const
@@ -1109,13 +1111,13 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::optional<std::vector<std::uint8_t>> QuicConnectionCore::takeOutboundDatagram()
+    std::optional<std::string> QuicConnectionCore::takeOutboundDatagram()
     {
         if (m_outboundDatagrams.empty())
         {
             return std::nullopt;
         }
-        std::optional<std::vector<std::uint8_t>> datagram = std::move(m_outboundDatagrams.front());
+        std::optional<std::string> datagram = std::move(m_outboundDatagrams.front());
         m_outboundDatagrams.pop_front();
         return datagram;
     }

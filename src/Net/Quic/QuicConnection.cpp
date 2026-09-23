@@ -262,13 +262,16 @@ namespace AsynGyanis::Net
             std::size_t sentDatagramCount = 0;
             while (sentDatagramCount < kMaximumDatagramsPerFlush)
             {
-                const std::optional<std::vector<std::uint8_t>> datagram = m_core->takeOutboundDatagram();
+                const std::optional<std::string> datagram = m_core->takeOutboundDatagram();
                 if (!datagram.has_value())
                 {
                     break;
                 }
                 ++sentDatagramCount;
-                if (!co_await m_configuration.sendDatagram(m_peerAddress, datagram->data(), datagram->size()))
+                // 报文本体从队列移交到这条栈上的 optional，因此这份指针在整次 await 期间都有效。
+                // std::string 在本仓里当字节缓冲用，这里只是把字符指针按线上字节解释
+                if (!co_await m_configuration.sendDatagram(m_peerAddress,
+                                                           reinterpret_cast<const std::uint8_t *>(datagram->data()), datagram->size()))
                 {
                     LOG_WARN("QuicConnection: 报文发送失败（对端可能已不可达），连接收口");
                     m_isClosed = true;

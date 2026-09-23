@@ -1039,7 +1039,7 @@ namespace AsynGyanis::Net
             std::vector<std::vector<std::uint8_t>> datagrams;
             while (const auto datagram = core.takeOutboundDatagram())
             {
-                datagrams.push_back(std::move(*datagram));
+                datagrams.emplace_back(datagram->begin(), datagram->end());
             }
             return datagrams;
         }
