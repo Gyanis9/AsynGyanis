@@ -16,6 +16,7 @@
 // - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
 // - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
 // - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
+// - BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded：累计创建数与借出超时数各自只在该长的时候长
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -1055,6 +1056,52 @@ namespace AsynGyanis::Database
                     << "一千次借还共碰了 " << profile.totalAllocations << " 次堆、申请 " << profile.totalBytes
                     << " 字节，稳态预算应是 0";
             EXPECT_EQ(counter.totalCreated.load(), 1) << "测量窗口里又新建了连接：复用没生效";
+        }
+
+        // ========================================================================
+        // BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded
+        // ========================================================================
+
+        /**
+         * @brief 验证两个统计读数只在该长的时侯长：累计创建数与借出超时数
+         *
+         * @details 借出超时原本是无声失败（调用方只拿到空的 PooledConnection），池侧此前只有瞬时
+         *          仪表、没有任何累计数。这里同时钉住反例：成功的借出不计入超时，从空闲栈复用也不
+         *          再算一次创建——否则这两个数就退化成「借用了多少次」，看不出容量与抖动。
+         */
+        TEST(ConnectionPool, BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 1;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 3600;
+            configuration.acquireTimeoutMilliseconds = 40; // 占着唯一额度时，再借一次只可能等到这里
+
+            ConnectionPool pool(factory, configuration);
+
+            EXPECT_EQ(pool.createdCount(), 0U) << "还没借过就有建连记录";
+            EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "计数器初值不为 0";
+
+            PooledConnection holding = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(holding));
+            EXPECT_EQ(pool.createdCount(), 1U) << "冷借没记进累计创建数";
+            EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "成功的借出被记成超时";
+
+            EXPECT_FALSE(static_cast<bool>(pool.acquire())) << "池满且无人归还，应当等到超时拿空连接";
+            EXPECT_FALSE(static_cast<bool>(pool.acquire())) << "同上，第二次也该空手";
+            EXPECT_EQ(pool.borrowTimeoutCount(), 2U) << "两次空手收尾没都记上（或多记了）";
+            EXPECT_EQ(pool.createdCount(), 1U) << "空手收尾不该再建连接";
+
+            // 归还后走的是复用：两个数都不该再动
+            holding.release();
+            const PooledConnection reused = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(reused));
+            EXPECT_EQ(pool.borrowTimeoutCount(), 2U) << "复用路径上的成功借出又记了一次超时";
+            EXPECT_EQ(pool.createdCount(), 1U) << "从空闲栈复用却又建了一条新的";
         }
 
     } // namespace

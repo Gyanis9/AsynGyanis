@@ -172,7 +172,12 @@ namespace AsynGyanis::Database
 
         if (!connection)
         {
-            // 超时或池已停摆：拿不到连接就交出空的包装，让调用方看见「没拿到」而不是异常
+            // 超时或池已停摆：拿不到连接就交出空的包装，让调用方看见「没拿到」而不是异常。
+            // 只有前者记账：停摆期空手是正常收尾，混进来会让这个容量指标在每次优雅停机时虚涨
+            if (!m_isShuttingDown.load(std::memory_order_acquire))
+            {
+                m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+            }
             return {};
         }
 
@@ -197,8 +202,16 @@ namespace AsynGyanis::Database
 
             // 三种情况收尾：拿到了连接；到了截止时刻；池正在停摆（停摆中以空连接就地唤醒，
             // 再挂一轮也等不到东西，而且等待表马上要随池一起销毁）
-            if (result || std::chrono::steady_clock::now() >= deadline || m_isShuttingDown.load(std::memory_order_acquire))
+            const bool isShuttingDown = m_isShuttingDown.load(std::memory_order_acquire);
+            if (result || isShuttingDown || std::chrono::steady_clock::now() >= deadline)
             {
+                // 停摆标志只读一次：两侧两次读之间它若翻假→真，同一次借出会被判成两种收尾。
+                // 记账口径与同步 acquire() 完全一致——空手且不是停摆造成的才算超时，
+                // 否则「异步借出超时」在这个指标上是个黑洞
+                if (!result && !isShuttingDown)
+                {
+                    m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+                }
                 co_return std::move(result);
             }
         }
@@ -516,6 +529,18 @@ namespace AsynGyanis::Database
         const std::size_t syncWaiters = m_syncWaitingCount.load(std::memory_order_relaxed);
         std::lock_guard   lock(m_asyncMutex);
         return syncWaiters + m_asyncWaiters.size();
+    }
+
+    std::size_t ConnectionPool::createdCount() const noexcept
+    {
+        // 建连的占位与回退都记在 m_totalCreated 上（那里是唯一改它的两处），这里只给读数出口，
+        // 因此不碰 m_mutex：统计读取排在锁后会把取出路径一起堵住
+        return m_totalCreated.load(std::memory_order_relaxed);
+    }
+
+    std::size_t ConnectionPool::borrowTimeoutCount() const noexcept
+    {
+        return m_borrowTimeoutCount.load(std::memory_order_relaxed);
     }
 
     // ========================================================================

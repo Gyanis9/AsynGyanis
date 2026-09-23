@@ -152,6 +152,24 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::size_t waitingCount() const noexcept;
 
+        /**
+         * @brief 池历史上创建过的连接总数（含之后被丢弃的）
+         * @details 与 totalCount()（当下活跃 + 空闲）配合看抖动：本数持续增长而 totalCount() 不涨，
+         *          就是「建了就丢、丢了又建」。它只是既有内部记账的读数出口，不额外碰任何锁。
+         * @return std::size_t 累计创建的连接数
+         */
+        [[nodiscard]] std::size_t createdCount() const noexcept;
+
+        /**
+         * @brief 等到截止时刻仍没拿到连接的次数（同步与异步两条取出路径共用这份计数）
+         * @details 借出失败原本是唯一会「无声」发生的一种：调用方只拿到一个空的 PooledConnection，
+         *          不留任何异常。停摆期的空交出不计入（那是正常收尾而非容量问题），tryAcquire() 的
+         *          「此刻没有」也不计入（它本就不等）。与 createdCount() 对着读可分诊：本数涨而活跃数
+         *          顶不上去是建连一直失败，本数涨且活跃数贴着上限才是池太小。
+         * @return std::size_t 借出超时次数
+         */
+        [[nodiscard]] std::size_t borrowTimeoutCount() const noexcept;
+
         // ========================================================================
         // 内部接口（被 PooledConnection 调用）
         // ========================================================================
@@ -417,6 +435,7 @@ namespace AsynGyanis::Database
         std::atomic<std::size_t> m_activeCount{0};      ///< 已取出未归还的连接数
         std::atomic<std::size_t> m_totalCreated{0};     ///< 已创建的连接总数（含已被丢弃的）
         std::atomic<std::size_t> m_syncWaitingCount{0}; ///< 同步等待者数量
+        std::atomic<std::size_t> m_borrowTimeoutCount{0}; ///< 借出超时次数：只记「等到截止时刻仍空手」，停摆与 tryAcquire 不计
 
         // ----- 异步等待列表（受 m_asyncMutex 保护） -----
         mutable std::mutex           m_asyncMutex;   ///< 保护异步等待列表

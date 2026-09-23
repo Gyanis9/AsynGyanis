@@ -11,6 +11,7 @@
 // - DiscardingTaskAfterHandoffDoesNotResumeFreedFrame（交接后销毁 Task 不得 resume 已释放帧）
 // - DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
 // - WaiterRebuildsInsteadOfTakingExpiredHandover（过期连接不直接交接，协程被腾出的名额救活后另建一条）
+// - AsyncBorrowTimeoutSharesTheCounter（异步空手收尾与同步共用同一份借出超时计数）
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 
 #include "Database/Common/DatabaseConnection.h"
@@ -212,6 +213,51 @@ namespace AsynGyanis::Database
         EXPECT_EQ(counter.totalCreated.load(), 2) << "过期那条不该被交给协程，得另建一条";
         EXPECT_EQ(counter.totalDestroyed.load(), 1) << "过期那条要被丢弃，不能留在池里";
         EXPECT_EQ(pool.totalCount(), 1U);
+
+        loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 钉住异步侧的账：等到截止时刻空手收尾要记进与同步同一份借出超时计数
+     *
+     * @details 异步获取是服务里更常用的那条线，若只有同步侧记账，池耗尽在这条线上依旧不可见。
+     *          空手收尾同时还不该留下「建过一条新连接」的痕迹——它只是等了一场，什么也没拿到。
+     */
+    TEST(ConnectionPoolAsync, AsyncBorrowTimeoutSharesTheCounter)
+    {
+        ConnectionCounter counter;
+
+        PoolConfig configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;
+        configuration.acquireTimeoutMilliseconds = 50; // 到点即空手；宣布到点的是后台那一拍，因此最迟一秒内
+
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+        EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "成功的借出也被记成超时";
+
+        AcquireProbe     probe;
+        Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
+        driver.handle().resume();
+        ASSERT_FALSE(probe.finished.load(std::memory_order_acquire)) << "占着唯一额度时不该立即完成";
+
+        // 没有人归还：这条协程只能靠截止时刻到点收场
+        ASSERT_TRUE(waitForCondition([&probe]()
+        {
+            return probe.finished.load(std::memory_order_acquire);
+        })) << "等待者没被超时叫醒：下面的计数没有对照";
+
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_FALSE(static_cast<bool>(probe.connection.value())) << "占着唯一额度时异步借出应当空手";
+        EXPECT_EQ(pool.borrowTimeoutCount(), 1U) << "异步空手没收进与同步共用的那份超时账";
+        EXPECT_EQ(pool.createdCount(), 1U) << "空手收尾不该再建一条连接";
 
         loopThread.parkDriver(std::move(driver));
     }

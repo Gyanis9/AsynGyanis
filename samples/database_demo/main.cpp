@@ -1214,8 +1214,10 @@ namespace
         Database::PooledConnection second = pool.acquire();
         Database::PooledConnection third  = pool.tryAcquire();
         Samples::checklist().check(static_cast<bool>(first) && static_cast<bool>(second) && !static_cast<bool>(third) &&
-                                           pool.activeCount() == 2 && pool.idleCount() == 0 && pool.waitingCount() == 0,
-                                   "连接池按上限发放：借满两条后 tryAcquire() 立刻给空，且不在等待队列里留下幻影借用者");
+                                           pool.activeCount() == 2 && pool.idleCount() == 0 && pool.waitingCount() == 0 &&
+                                           pool.borrowTimeoutCount() == 0,
+                                   "连接池按上限发放：借满两条后 tryAcquire() 立刻给空，且不在等待队列里留下幻影借用者"
+                                   "（非阻塞的空手不计进借出超时，它本就没等）");
 
         Database::DatabaseConnection *returnedConnection = second.operator->();
         const bool                    isMoved            = static_cast<bool>(second);
@@ -1306,8 +1308,10 @@ namespace
         emptyConfiguration.maximumPoolSize            = 0;
         emptyConfiguration.acquireTimeoutMilliseconds = 80;
         Database::ConnectionPool exhaustedPool(makeSqliteFactory(":memory:"), emptyConfiguration);
-        Samples::checklist().check(!static_cast<bool>(exhaustedPool.acquire()) && exhaustedPool.totalCount() == 0,
-                                   "maximumPoolSize 为 0 时 acquire() 按超时给出空连接，不挂死也不崩");
+        Samples::checklist().check(!static_cast<bool>(exhaustedPool.acquire()) && exhaustedPool.totalCount() == 0 &&
+                                       exhaustedPool.borrowTimeoutCount() == 1 && exhaustedPool.createdCount() == 0,
+                                   "maximumPoolSize 为 0 时 acquire() 按超时给出空连接，不挂死也不崩；这笔空手记进"
+                                   " borrowTimeoutCount()（池耗尽原本是无声的），而 createdCount() 说明它一条都没建成");
     }
 
     // ========================================================================
