@@ -17,7 +17,7 @@
 
 #include <cstdint>
 #include <span>
-#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -135,18 +135,17 @@ namespace AsynGyanis::Core
          * @brief 为一个方向投递探针
          * @param state 目标状态
          * @param direction EPOLLIN 或 EPOLLOUT
-         * @param errorText 可选输出参数：失败原因（进入调用时不会被清空，只在失败时写入）
          * @return true 已投递（含「该方向已有在途探针」）；false 投递失败或描述符当前不支持该操作
+         * @note 失败的原因与记账由本方法内部完成（见 noteArmFailure），调用方只看返回值
          */
-        bool armProbe(SocketState &state, uint32_t direction, std::string *errorText);
+        bool armProbe(SocketState &state, uint32_t direction);
 
         /**
          * @brief 投递 AcceptEx 探针（监听描述符的读方向）
          * @param state 监听描述符的状态
-         * @param errorText 可选输出参数：失败原因
-         * @return true 已投递，或已有一条接入/在途的连接
+         * @return true 已投递，或已有一条接入/在途的连接；false 时本方法已自行记下待重投
          */
-        bool armAcceptProbe(SocketState &state, std::string *errorText);
+        bool armAcceptProbe(SocketState &state);
 
         /**
          * @brief 把一条完成通知翻译成 epoll_event（必要时先完成状态的回收）
@@ -201,15 +200,28 @@ namespace AsynGyanis::Core
         void rearmLevelTriggered();
 
         /**
-         * @brief 记下一个方向投递失败，等下一次 wait() 再试
+         * @brief 记下「这个方向此刻武装不上、成因属于预期的暂时状态」，排进重投表且不留告警
+         * @param state 目标状态
+         * @param direction 待重投的方向
+         * @details 客户端套接字在 connect 之前、监听描述符在 listen() 之前都走这条：注册发生在
+         *          它们之前，因此每条连接都会命中一次，告警会把日志冲成噪声
+         */
+        void noteArmPending(SocketState &state, uint32_t direction);
+
+        /**
+         * @brief 记下一个方向投递失败、等下一次 wait() 再试，并在「刚转为失败」时留一条告警
          * @param state 目标状态
          * @param direction 失败的方向
+         * @param reason 失败原因的中文短语（错误码由 socketError 单独承载）
+         * @param socketError 当时的 WSAGetLastError()，写进告警供排查
          * @details 注册与武装是两件事：IoWatcher 在 AsyncSocket 构造时就注册（那时 listen() 还没调用、
          *          连接也还没建立），而关注位此刻根本武装不上。上层只看到「注册成功」，
          *          于是不会再要求武装一次——失败的方向必须由后端自己记住并重试，
          *          否则那天就不会有任何完成通知到达（监听描述符因此一条连接都接不进来）。
+         * @note 告警只在失败位由 0 转 1 的那一次发出：待重投表每轮 wait() 都要重投一次，每轮都记
+         *       一条会在长期失败的那条描述符上刷屏——反复重试的是状态，反复告警是噪声
          */
-        void noteArmFailure(SocketState &state, uint32_t direction);
+        void noteArmFailure(SocketState &state, uint32_t direction, std::string_view reason, int socketError);
 
         /// 重试上一次投递失败的方向（在每次 wait() 阻塞之前）
         void retryFailedArms();

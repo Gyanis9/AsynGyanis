@@ -1,4 +1,5 @@
-// Epoll 单元测试：实例句柄、移动语义、事件注册/修改/移除与超时等待
+// Epoll 单元测试：实例句柄、移动语义、事件注册/修改/移除与超时等待；
+// Windows 侧另测完成端口的探针重投记账会不会把日志写成噪声
 
 #include "Core/EventLoop/Epoll.h"
 #include "Platform/Platform.h"
@@ -12,6 +13,21 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+
+#if ASYN_PLATFORM_WIN32
+#include "Base/Log/LogEvent.h"
+#include "Base/Log/LogLevel.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
+#include "Platform/IO/Socket.h"
+
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#endif
 
 #if !ASYN_PLATFORM_WIN32
 #include <sys/resource.h>
@@ -520,6 +536,192 @@ namespace AsynGyanis::Core
                 << "空等待的固定开销随在册条数增长：" << kSmallRegistrationCount << " 条 " << smallCost
                 << " 纳秒，" << kLargeRegistrationCount << " 条 " << largeCost
                 << " 纳秒。每一次等待都不许按在册条数走一遍登记表";
+    }
+#endif
+
+#if ASYN_PLATFORM_WIN32
+    namespace
+    {
+        /// 空转的重试轮数：待重投表在每次 wait() 之前走一遍，取一个能让「每轮一条」与「只记一次」明显分开的数
+        constexpr int kArmRetryRoundCount = 20;
+
+        /**
+         * @brief 告警账本：收下根日志器写出的 Warn 事件原文
+         * @details Sink 由 Logger 以 unique_ptr 持有且没有摘除单条的接口，因此把账本放在这里由用例
+         *          共享持有，用例结束时关掉记录开关——留着的那份此后只做一次原子读。
+         */
+        class WarningLedger
+        {
+        public:
+            /** @brief 停止记录：让留在 Logger 里的那份 Sink 变成空操作 */
+            void stop() noexcept
+            {
+                m_isRecording.store(false, std::memory_order_release);
+            }
+
+            /**
+             * @brief 收下一条日志事件，等级为 Warn 时存下原文
+             * @param event 日志事件
+             */
+            void record(const Base::LogEvent &event)
+            {
+                if (!m_isRecording.load(std::memory_order_acquire) || event.level != Base::LogLevel::Warn)
+                {
+                    return;
+                }
+                const std::lock_guard lock(m_mutex);
+                m_messages.push_back(event.message);
+            }
+
+            /**
+             * @brief 已记下的告警条数
+             * @return std::size_t 条数
+             */
+            [[nodiscard]] std::size_t count() const
+            {
+                const std::lock_guard lock(m_mutex);
+                return m_messages.size();
+            }
+
+            /**
+             * @brief 已记下的告警原文快照
+             * @return std::vector<std::string> 按到达顺序排列的原文
+             */
+            [[nodiscard]] std::vector<std::string> messages() const
+            {
+                const std::lock_guard lock(m_mutex);
+                return m_messages;
+            }
+
+        private:
+            std::atomic<bool>          m_isRecording{true}; ///< 是否仍在记录
+            mutable std::mutex         m_mutex{};           ///< 保护原文列表
+            std::vector<std::string>   m_messages{};        ///< 已记下的告警原文
+        };
+
+        /**
+         * @brief 把事件转记账本的告警记录 Sink
+         */
+        class WarningRecordingSink final : public Base::LogSink
+        {
+        public:
+            /**
+             * @brief 用给定账本构造 Sink
+             * @param ledger 事件账本（由用例共享持有）
+             */
+            explicit WarningRecordingSink(std::shared_ptr<WarningLedger> ledger) :
+                m_ledger(std::move(ledger))
+            {
+            }
+
+            /**
+             * @brief 把事件交给账本记录
+             * @param event 日志事件
+             */
+            void write(const Base::LogEvent &event) override
+            {
+                m_ledger->record(event);
+            }
+
+            /**
+             * @brief 空实现：账本没有缓冲，无需刷新
+             */
+            void flush() override
+            {
+            }
+
+        private:
+            std::shared_ptr<WarningLedger> m_ledger; ///< 事件账本
+        };
+
+        /**
+         * @brief 作用域内的根日志器告警抓取器
+         * @details 只追加 Sink、不动既有的控制台 Sink，因此同一二进制里的其他用例照常输出。
+         */
+        class ScopedWarningCapture
+        {
+        public:
+            ScopedWarningCapture() :
+                m_ledger(std::make_shared<WarningLedger>())
+            {
+                Base::LoggerRegistry::instance().getRootLogger().addSink(
+                        std::make_unique<WarningRecordingSink>(m_ledger));
+            }
+
+            ~ScopedWarningCapture()
+            {
+                m_ledger->stop();
+            }
+
+            ScopedWarningCapture(const ScopedWarningCapture &)            = delete;
+            ScopedWarningCapture &operator=(const ScopedWarningCapture &) = delete;
+
+            /**
+             * @brief 账本本体，供用例断言
+             * @return const WarningLedger& 账本引用
+             */
+            [[nodiscard]] const WarningLedger &ledger() const noexcept
+            {
+                return *m_ledger;
+            }
+
+        private:
+            std::shared_ptr<WarningLedger> m_ledger; ///< 告警账本
+        };
+
+        /**
+         * @brief 建一个「已创建但没连上」的流套接字
+         * @details 正是完成端口投不了读探针的那个常态状态：AsyncSocket 构造即注册 EPOLLIN，
+         *          而 connect() 还在后面。
+         * @return int 套接字描述符，失败返回 FileDescriptor::kInvalid
+         */
+        [[nodiscard]] int makeUnconnectedStreamSocket()
+        {
+            const int fileDescriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (fileDescriptor == INVALID_SOCKET)
+            {
+                return Platform::FileDescriptor::kInvalid;
+            }
+            Platform::FileDescriptor::setNonBlocking(fileDescriptor);
+            return fileDescriptor;
+        }
+    } // namespace
+
+    /**
+     * @brief 「此刻武装不上」的常态不得写成告警：每条客户端连接都会经过它一次
+     * @details 完成端口在 connect() 之前投不进读探针（getpeername 不通过），后端把它记进待重投表
+     *          并静默重试。若这里也告警，正常发起的每条连接都会留下一行 Warn，真正需要人看的
+     *          资源耗尽类告警就被埋进噪声里。
+     * @note 只在 Windows 侧有意义：epoll 与 io_uring 后端注册即由内核盯着，没有这条重试路径。
+     */
+    TEST(Epoll, ArmRetryForExpectedTransientLogsNothing)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        ScopedWarningCapture capture;
+        std::size_t          warningCount = 0;
+        {
+            Epoll backend;
+            // 后端先析构：它要等自己的完成通知排空，描述符不能先被关掉
+            const int fileDescriptor = makeUnconnectedStreamSocket();
+            ASSERT_NE(fileDescriptor, Platform::FileDescriptor::kInvalid) << "建不出套接字，环境不允许";
+
+            int sentinel = 1;
+            ASSERT_TRUE(backend.addFileDescriptor(fileDescriptor, EPOLLIN, &sentinel));
+
+            // 每一轮 wait() 之前都会重投一次失败方向：二十轮全都没武装上，也不该留下一行告警
+            for (int round = 0; round < kArmRetryRoundCount; ++round)
+            {
+                static_cast<void>(backend.wait(1));
+            }
+
+            ASSERT_TRUE(backend.delFileDescriptor(fileDescriptor));
+            warningCount = capture.ledger().count();
+            Platform::FileDescriptor::close(fileDescriptor);
+        }
+
+        EXPECT_EQ(warningCount, 0U) << "预期中的暂时状态被写成了告警，日志会随连接数线性膨胀";
+        Platform::Socket::finalize();
     }
 #endif
 } // namespace AsynGyanis::Core

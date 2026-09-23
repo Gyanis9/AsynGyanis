@@ -1,10 +1,10 @@
 #include "Core/EventLoop/Iocp.h"
 
 #include "Base/Exception/SystemException.h"
+#include "Base/Log/LogMacros.h"
 
 #include <algorithm>
 #include <cstring>
-#include <format>
 
 namespace AsynGyanis::Core
 {
@@ -262,11 +262,11 @@ namespace AsynGyanis::Core
         // 上层真正等待时会经 modFileDescriptor() 再武装一次
         if ((events & EPOLLIN) != 0)
         {
-            static_cast<void>(armProbe(*state, EPOLLIN, nullptr));
+            static_cast<void>(armProbe(*state, EPOLLIN));
         }
         if ((events & EPOLLOUT) != 0)
         {
-            static_cast<void>(armProbe(*state, EPOLLOUT, nullptr));
+            static_cast<void>(armProbe(*state, EPOLLOUT));
         }
         return true;
     }
@@ -285,11 +285,11 @@ namespace AsynGyanis::Core
 
         if ((events & EPOLLIN) != 0)
         {
-            static_cast<void>(armProbe(state, EPOLLIN, nullptr));
+            static_cast<void>(armProbe(state, EPOLLIN));
         }
         if ((events & EPOLLOUT) != 0)
         {
-            static_cast<void>(armProbe(state, EPOLLOUT, nullptr));
+            static_cast<void>(armProbe(state, EPOLLOUT));
         }
         return true;
     }
@@ -359,7 +359,7 @@ namespace AsynGyanis::Core
         return socketError == WSAEWOULDBLOCK || socketError == WSAENOTCONN || socketError == WSAEINPROGRESS;
     }
 
-    bool Iocp::armProbe(SocketState &state, const std::uint32_t direction, std::string *const errorText)
+    bool Iocp::armProbe(SocketState &state, const std::uint32_t direction)
     {
         if (direction == EPOLLIN)
         {
@@ -382,13 +382,8 @@ namespace AsynGyanis::Core
             }
             if (state.isListening)
             {
-                // AcceptEx 投递失败（还没 listen()、拿不到接受套接字等）：记下来等下一次 wait() 重试
-                if (!armAcceptProbe(state, errorText))
-                {
-            noteArmFailure(state, EPOLLIN);
-                    return false;
-                }
-                return true;
+                // AcceptEx 投递失败（还没 listen()、拿不到接受套接字等）：armAcceptProbe 已自行记下待重投
+                return armAcceptProbe(state);
             }
 
             // 套接字类型现查一次并记住：数据报套接字是下面那条「先确认已连上」守卫的例外
@@ -421,7 +416,9 @@ namespace AsynGyanis::Core
                 int              peerAddressLength = static_cast<int>(sizeof(peerAddress));
                 if (::getpeername(state.socketHandle, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength) != 0)
                 {
-                    noteArmFailure(state, EPOLLIN);
+                    // 还没连上是每个客户端套接字注册时的常态（AsyncSocket 构造即注册 EPOLLIN，
+                    // connect 还在后面），因此这一条不告警，只排进重投表等连上
+                    noteArmPending(state, EPOLLIN);
                     return false;
                 }
                 // 连上了就不会再退回去：此后这次探测与上面的 SO_ACCEPTCONN 查询都不必再做
@@ -444,12 +441,16 @@ namespace AsynGyanis::Core
             if (!isRetryableProbeFailure(readSocketError))
             {
                 // 硬错误（对端复位、描述符已失效）：这条套接字上不会再有任何完成通知，
-                // 只记重投的话等待方永远收不到事件——合成一条错误事件让它立刻收尾
+                // 只记重投的话等待方永远收不到事件——合成一条错误事件让它立刻收尾，
+                // 真实错误码由等待方自己的 recv/send 去拿，这里不再重复报一遍
                 noteSyntheticReady(state, EPOLLIN);
             }
-            if (errorText != nullptr)
+            else
             {
-                *errorText = std::format("投递可读探针失败（WSARecv 错误码 {}）", readSocketError);
+                // 可重试：这一方向此刻没有探针在途，之后也不会有完成通知，必须由后端自己再投一次
+                // （上层看到的是「武装成功」，不会再要求武装）。静默处理：它属于暂时状态那一类，
+                // 而持续失败的告警已由接受探针那条路径负责
+                noteArmPending(state, EPOLLIN);
             }
             return false;
         }
@@ -477,14 +478,15 @@ namespace AsynGyanis::Core
             // 不会再有任何完成通知，合成一条错误事件让等待方立刻去拿真实错误
             noteSyntheticReady(state, EPOLLOUT);
         }
-        if (errorText != nullptr)
+        else
         {
-            *errorText = std::format("投递可写探针失败（WSASend 错误码 {}）", writeSocketError);
+            // 与读侧同一处置：可重试错误没有探针在途，必须排进重投表，否则这一方向永远静默
+            noteArmPending(state, EPOLLOUT);
         }
         return false;
     }
 
-    bool Iocp::armAcceptProbe(SocketState &state, std::string *const errorText)
+    bool Iocp::armAcceptProbe(SocketState &state)
     {
         // 已经有一条在途的 AcceptEx，或已经接入一条还没被取走：都不需要再投
         if (state.pendingAcceptSocket != INVALID_SOCKET || state.hasAcceptedSocket)
@@ -496,11 +498,7 @@ namespace AsynGyanis::Core
         const LPFN_ACCEPTEX acceptFunction = resolveAcceptExFunction(state.socketHandle);
         if (acceptFunction == nullptr)
         {
-            noteArmFailure(state, EPOLLIN);
-            if (errorText != nullptr)
-            {
-                *errorText = "本机不支持 AcceptEx（按 WSAID_ACCEPTEX 取函数指针失败）";
-            }
+            noteArmFailure(state, EPOLLIN, "本机不支持 AcceptEx（按 WSAID_ACCEPTEX 取函数指针失败）", ::WSAGetLastError());
             return false;
         }
 
@@ -509,10 +507,7 @@ namespace AsynGyanis::Core
         int              addressLength = static_cast<int>(sizeof(listenerAddress));
         if (::getsockname(state.socketHandle, reinterpret_cast<sockaddr *>(&listenerAddress), &addressLength) != 0)
         {
-            if (errorText != nullptr)
-            {
-                *errorText = std::format("取监听地址失败（getsockname 错误码 {}）", ::WSAGetLastError());
-            }
+            noteArmFailure(state, EPOLLIN, "取监听地址失败（getsockname）", ::WSAGetLastError());
             return false;
         }
 
@@ -523,10 +518,9 @@ namespace AsynGyanis::Core
                 WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
         if (acceptSocket == INVALID_SOCKET)
         {
-            if (errorText != nullptr)
-            {
-                *errorText = std::format("创建接受套接字失败（WSASocket 错误码 {}）", ::WSAGetLastError());
-            }
+            // 句柄或非分页内存耗尽时就是这里（WSAEMFILE / ENOBUFS）：监听描述符还在、
+            // backlog 还在收，但一条也接不上来——不留这一行就只能看到「在监听却不应答」
+            noteArmFailure(state, EPOLLIN, "创建接受套接字失败（WSASocket）", ::WSAGetLastError());
             return false;
         }
 
@@ -546,10 +540,7 @@ namespace AsynGyanis::Core
         {
             const int socketError = ::WSAGetLastError();
             ::closesocket(acceptSocket);
-            if (errorText != nullptr)
-            {
-                *errorText = std::format("投递 AcceptEx 探针失败（错误码 {}）", socketError);
-            }
+            noteArmFailure(state, EPOLLIN, "投递 AcceptEx 探针失败", socketError);
             return false;
         }
 
@@ -559,13 +550,26 @@ namespace AsynGyanis::Core
         return true;
     }
 
-    void Iocp::noteArmFailure(SocketState &state, const std::uint32_t direction)
+    void Iocp::noteArmPending(SocketState &state, const std::uint32_t direction)
     {
         state.failedDirections |= direction;
         if (!state.isArmRetryQueued)
         {
             state.isArmRetryQueued = true;
             m_pendingArmRetry.push_back(&state);
+        }
+    }
+
+    void Iocp::noteArmFailure(SocketState &state, const std::uint32_t direction, const std::string_view reason, const int socketError)
+    {
+        // 告警要在置位之前判：失败位还清着才是「刚转为失败」，此后每轮 wait() 的重投都算重复
+        const bool isFirstFailure = (state.failedDirections & direction) == 0;
+        noteArmPending(state, direction);
+        if (isFirstFailure)
+        {
+            LOG_WARN_FMT("IOCP 探针武装失败：{}（套接字 {}，错误码 {}）。该方向已排进重投表，每轮 wait() 前重试一次；"
+                         "若持续失败，等它的协程不会收到任何事件",
+                         reason, static_cast<std::uintptr_t>(state.socketHandle), socketError);
         }
     }
 
@@ -585,14 +589,14 @@ namespace AsynGyanis::Core
             const std::uint32_t failedDirections = state->failedDirections;
             if ((failedDirections & EPOLLIN) != 0 && (state->registeredEvents & EPOLLIN) != 0)
             {
-                static_cast<void>(armProbe(*state, EPOLLIN, nullptr));
+                static_cast<void>(armProbe(*state, EPOLLIN));
             }
             if ((failedDirections & EPOLLOUT) != 0 && (state->registeredEvents & EPOLLOUT) != 0)
             {
-                static_cast<void>(armProbe(*state, EPOLLOUT, nullptr));
+                static_cast<void>(armProbe(*state, EPOLLOUT));
             }
         }
-        // 这里**不能**清表：本轮重投又失败的方向已经由 noteArmFailure 重新入表，
+        // 这里**不能**清表：本轮重投又失败的方向已经由 noteArmPending／noteArmFailure 重新入表，
         // 清掉它们等于「只重投一次」，之后那个描述符再也不会被武装——实测后果是监听描述符
         // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接
     }
@@ -945,11 +949,11 @@ namespace AsynGyanis::Core
             }
             if ((state->registeredEvents & EPOLLIN) != 0)
             {
-                static_cast<void>(armProbe(*state, EPOLLIN, nullptr));
+                static_cast<void>(armProbe(*state, EPOLLIN));
             }
             if ((state->registeredEvents & EPOLLOUT) != 0)
             {
-                static_cast<void>(armProbe(*state, EPOLLOUT, nullptr));
+                static_cast<void>(armProbe(*state, EPOLLOUT));
             }
         }
         m_pendingRearm.clear();
