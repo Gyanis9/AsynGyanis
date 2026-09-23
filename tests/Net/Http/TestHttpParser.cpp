@@ -231,6 +231,45 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(earlyParser.takeContinueRequest()) << "同一条报文只许回一次 100";
     }
 
+    /**
+     * @brief 钉住：100-continue 的两枚门闩都随报文一起复位，keep-alive 上每条报文各拿自己的时机
+     * @details 两个方向的失效各有各的难看：「对端在等 100」不清 → 下一条不带 Expect 的报文被多回一个
+     *          100，正文还没到就先冒出一句状态行；「这条已经取过」不清 → 后面真带 Expect 的报文再也
+     *          要不到时机，客户端停在头部等表态，直到它自己的 Expect 超时（默认 1 秒）才发正文。
+     *          同一条连接上复用同一份解析器状态时才现形，因此必须用三条报文把两侧夹住。
+     */
+    TEST(HttpParser, ResetsContinueLatchesPerMessage)
+    {
+        HttpParser parser;
+
+        // 第一条：带 Expect。给一次时机，取过之后同一条不再给
+        const std::string expectingHead = "POST /first HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        EXPECT_EQ(parser.parse(expectingHead.data(), expectingHead.size()), ParseStatus::NeedMore);
+        EXPECT_TRUE(parser.takeContinueRequest());
+        EXPECT_FALSE(parser.takeContinueRequest());
+        const std::string firstBody = "abc";
+        EXPECT_EQ(parser.parse(firstBody.data(), firstBody.size()), ParseStatus::Done);
+
+        // 第二条：不带 Expect。上一条「对端在等」若留着，这里会平白多回一次时机
+        parser.reset();
+        const std::string plainHead = "POST /second HTTP/1.1\r\nContent-Length: 3\r\n\r\n";
+        EXPECT_EQ(parser.parse(plainHead.data(), plainHead.size()), ParseStatus::NeedMore);
+        EXPECT_FALSE(parser.takeContinueRequest()) << "门闩跨报文残留：不带 Expect 的报文被上一条的「在等 100」带走了";
+        const std::string secondBody = "def";
+        EXPECT_EQ(parser.parse(secondBody.data(), secondBody.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().uri(), "/second");
+
+        // 第三条：又带 Expect。「这条已取过」若留着，对端等到自己的超时也等不到 100
+        parser.reset();
+        const std::string thirdHead = "POST /third HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        EXPECT_EQ(parser.parse(thirdHead.data(), thirdHead.size()), ParseStatus::NeedMore);
+        EXPECT_TRUE(parser.takeContinueRequest()) << "「已取过 100」没随报文复位：这条报文再也拿不到回 100 的时机";
+        EXPECT_FALSE(parser.takeContinueRequest()) << "复位顺带把「同一条只给一次」也放开了";
+        const std::string thirdBody = "ghi";
+        EXPECT_EQ(parser.parse(thirdBody.data(), thirdBody.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body(), "ghi");
+    }
+
     TEST(HttpParser, RefusesToConsumeBytesAfterMessageCompleted)
     {
         HttpParser parser;
