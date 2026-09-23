@@ -314,12 +314,15 @@ namespace AsynGyanis::Base
 
             std::array<char, kTimestampTextBufferSize> timestampBuffer{};
             const std::string_view timestampText = formatTimestampText(timestampBuffer, event.timestamp);
-            std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
-            std::string                                    locationOverflow;
-            const std::string_view                         location = formatSourceLocationText(event.location, locationBuffer,
-                                                                                               locationOverflow);
 
 #ifdef ASYN_DEBUG
+            // 源码位置只在 Debug 版式里出现，取它的这三行因此也只能在 Debug 分支里跑：
+            // 放在 #ifdef 之外，Release 构建会因「赋值了却没读」在 -Werror 下整个编译不过，
+            // 于是 Release 侧的 Base 用例全都构建不出来（表现是 ctest 少一整套，而不是某条红）
+            std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
+            std::string                                     locationOverflow;
+            const std::string_view                          location = formatSourceLocationText(event.location, locationBuffer,
+                                                                                                locationOverflow);
             const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
                                                      timestampText,
                                                      event.threadIdView(),

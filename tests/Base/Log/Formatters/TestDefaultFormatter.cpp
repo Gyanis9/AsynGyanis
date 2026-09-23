@@ -381,12 +381,14 @@ namespace AsynGyanis::Base
 
             std::array<char, kTimestampTextBufferSize> timestampBuffer{};
             const std::string_view timestampText = formatTimestampText(timestampBuffer, event.timestamp);
-            std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
-            std::string                                    locationOverflow;
-            const std::string_view                         location = formatSourceLocationText(event.location, locationBuffer,
-                                                                                               locationOverflow);
 
 #ifdef ASYN_DEBUG
+            // 同 TestColorFormatter：这三行只在 Debug 版式里被读到，留在 #ifdef 外会让 Release
+            // 构建因「赋值了却没读」在 -Werror 下失败，整套 Release 侧的 Base 用例随之构建不出来
+            std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
+            std::string                                     locationOverflow;
+            const std::string_view                          location = formatSourceLocationText(event.location, locationBuffer,
+                                                                                                locationOverflow);
             const std::string expected = std::format("{} {} [{:<5}] [{}] {:<13} {}",
                                                      timestampText,
                                                      event.threadIdView(),
