@@ -203,12 +203,15 @@ namespace AsynGyanis::Net
         /**
          * @brief 取本服务器的统计快照
          *
-         * @details 各字段分别原子读取，因此快照不是严格同一瞬间的一致切面（跨字段求和可能与某次
-         *          采样略有偏差）；活跃连接数在取快照这一刻从连接管理器读取，与其它字段同为近似同时刻的值。
+          * @details 各字段分别原子读取，因此快照不是严格同一瞬间的一致切面（跨字段求和可能与某次
+         *          采样略有偏差）；活跃连接数是采集端上的镜像量，由连接管理器在增删连接时同步写入，
+         *          与本实例在册的连接同时刻变化。
          *
          * @return HttpServerStats 统计快照；尚未处理任何请求时各计数为零
-         * @note 可从任意线程调用（计数是原子量、活跃连接数由连接管理器加锁读取），
-         *       运维线程或测试线程可直接采样，不必把动作投递到事件循环
+         * @note 可从任意线程调用（计数都是原子量），运维线程或测试线程可直接采样，
+         *       不必把动作投递到事件循环
+         * @note 本服务器与别的服务器共用一份采集端时（见 setMetricsCollector()），这里读到的是
+         *       共用它的全部实例的合计，而不是本实例那一份
          * @see HttpServerStats, HttpMetricsCollector
          */
         [[nodiscard]] HttpServerStats stats() const;
@@ -221,6 +224,20 @@ namespace AsynGyanis::Net
          * @return std::shared_ptr<HttpMetricsCollector> 采集端，恒非空
          */
         [[nodiscard]] std::shared_ptr<HttpMetricsCollector> metricsCollector() const noexcept;
+
+        /**
+         * @brief 换用一份现成的统计采集端，让多台服务器把计数并进同一份口径
+         *
+         * @details 同一端口由多台服务器共同监听时（每循环线程一个），各持一份采集端会让
+         *          /metrics 每次只报出其中一台的量，且计数器在两次抓取之间可以变小——
+         *          采集侧的 rate() 与告警因此失真。让这几台共用一份采集端即是进程级口径。
+         * @param collector 要并入的采集端，非空；活跃连接数也随之并进它的合计
+         * @throws Base::InvalidArgumentException collector 为空：那会让本服务器没有任何采集出口
+         * @note 必须在 start() 之前调用：会话在创建时取走当时那份采集端，开机后再换只影响新连接，
+         *       换下来的旧采集端会继续持有已建立会话的计数
+         * @see metricsCollector(), setLimits()
+         */
+        void setMetricsCollector(std::shared_ptr<HttpMetricsCollector> collector);
 
         /**
          * @brief 取本服务器的 request-id 生成器
@@ -286,12 +303,19 @@ namespace AsynGyanis::Net
          */
         void ensureStaticFileSettings();
 
+        /**
+         * @brief 把本服务器的连接数镜像接到当前采集端上
+         * @details 构造与 setMetricsCollector() 都要接一次：镜像目标是采集端里的一个原子量，
+         *          换采集端不重接就会把连接数写进已经没人读的那一份
+         */
+        void attachActiveConnectionMirror() noexcept;
+
         Router m_router;                                ///< 路由器，存储路由表与处理函数
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
         bool m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）
-        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
+        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数，默认是自己的那一份
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
         std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
     };

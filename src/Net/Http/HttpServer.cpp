@@ -830,9 +830,8 @@ namespace AsynGyanis::Net
         m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
-        // 构造即给出一份默认限额：会话永远拿得到非空配置，不必在创建路径上判空。
-        // 统计与 request-id 生成器同样构造即就绪：它们没有开关，采集是常开行为，
-        // 会话按 shared_ptr 共享持有，因此生命周期一定覆盖所有会话
+        // 默认限额、统计与 request-id 生成器同样构造即就绪，理由见 metricsCollector() 的说明
+        attachActiveConnectionMirror();
     }
 
     HttpServer::HttpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor) :
@@ -841,7 +840,15 @@ namespace AsynGyanis::Net
         m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
-        // 默认限额、统计与 request-id 生成器同样构造即就绪，理由见按地址构造的那一处
+        // 与按地址构造的那一份同一接线：本服务器的连接数从一开始就并进自己的采集端
+        attachActiveConnectionMirror();
+    }
+
+    void HttpServer::attachActiveConnectionMirror() noexcept
+    {
+        // 活跃连接数由连接管理器在增删连接的临界区内写进采集端：本台服务器只交出自己那一份，
+        // 多台共用一份采集端时合起来的才是进程口径
+        m_connectionManager.setSharedActiveCountMirror(&m_metrics->activeConnectionCountMirror());
     }
 
     Router &HttpServer::router()
@@ -878,6 +885,20 @@ namespace AsynGyanis::Net
         return m_metrics;
     }
 
+    void HttpServer::setMetricsCollector(std::shared_ptr<HttpMetricsCollector> collector)
+    {
+        // 空采集端会让本服务器彻底没有计数出口：/metrics 与 stats() 一起变成零，
+        // 而这看起来与「没有流量」一模一样，事后极难发现，因此按用法错误直接拒绝
+        if (collector == nullptr)
+        {
+            throw Base::InvalidArgumentException("HttpServer: 统计采集端不能为空，请传入一份现成的采集端或调用 metricsCollector() 取本服务器的");
+        }
+
+        m_metrics = std::move(collector);
+        // 换采集端要连同镜像一起重接：否则新采集端上的活跃连接数永远停在旧目标上
+        attachActiveConnectionMirror();
+    }
+
     std::shared_ptr<HttpRequestIdGenerator> HttpServer::requestIdGenerator() const noexcept
     {
         return m_requestIdGenerator;
@@ -885,12 +906,9 @@ namespace AsynGyanis::Net
 
     HttpServerStats HttpServer::stats() const
     {
-        HttpServerStats snapshot = m_metrics->snapshot();
-
-        // 活跃连接数只有一个真值来源（连接管理器）：另设一份计数迟早与它漂移，
-        // 因此每次取快照都现读一次。size_t 到 uint64_t 是加宽转换，32 位平台上也不会丢信息
-        snapshot.activeConnectionCount = static_cast<std::uint64_t>(m_connectionManager.activeCount());
-        return snapshot;
+        // 活跃连接数已经在这份快照里：它是连接管理器在增删连接的临界区内写进采集端的镜像，
+        // 与在册表同时刻变化，不需要在这里再读一次本实例的连接表（那样只能报出本实例那一份）
+        return m_metrics->snapshot();
     }
 
     void HttpServer::enableMetricsEndpoint(const std::string_view path, const std::string_view metricNamePrefix)

@@ -18,7 +18,11 @@ namespace AsynGyanis::Core
         }
         {
             std::unique_lock lock(m_mutex);
-            m_connections.emplace(connection.get(), connection);
+            // 只有真的插入才同步镜像：同一连接重复 add 时 size() 不变，镜像也不能多算
+            if (m_connections.emplace(connection.get(), connection).second && m_sharedActiveCountMirror != nullptr)
+            {
+                m_sharedActiveCountMirror->fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         // 关闭已开始后才挂上来的连接必须立刻收尾。shutdown() 遍历的是它调用那一刻的快照，
@@ -41,8 +45,21 @@ namespace AsynGyanis::Core
         std::unique_lock lock(m_mutex);
         if (m_connections.erase(connection))
         {
+            // 与 add() 对称：真的摘掉了一条才回退镜像，重复 remove 不会把合并计数减穿
+            if (m_sharedActiveCountMirror != nullptr)
+            {
+                m_sharedActiveCountMirror->fetch_sub(1, std::memory_order_relaxed);
+            }
             m_condition.notify_all();
         }
+    }
+
+    void ConnectionManager::setSharedActiveCountMirror(std::atomic<std::uint64_t> *const counter) noexcept
+    {
+        // 与增删同一把写锁：镜像指针的读写不会被另一线程正在进行的加减夹在中间，
+        // 因此换目标时既不会丢一次计数也不会多算一次
+        std::unique_lock lock(m_mutex);
+        m_sharedActiveCountMirror = counter;
     }
 
     size_t ConnectionManager::activeCount() const

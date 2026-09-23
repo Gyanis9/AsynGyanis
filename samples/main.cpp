@@ -555,12 +555,27 @@ int main(int argc, char **argv)
         LOG_INFO_FMT("单来源并发上限 {}（所有 {} 个监听器共享同一份计数）", configuration.maximumConnectionsPerIp, actualThreads);
     }
 
-    // h3 的统计要并进哪一份采集端：多监听器下每台服务器各有一份采集端（/metrics 报的是
-    // 「本实例」的口径），这里取第一台启用指标的那份——抓它的 /metrics 就能同时看到 TCP 端与 h3 的量。
-    // 全进程口径需要所有服务路径共用一份采集端，那是部署方自己的取舍，样本不代劳。
-    // 指标端点两个服务类各有一份（HttpServer 与 HttpsServer 各是自己实现的），
-    // 谁先开着就把谁的采集端借给 h3；没开指标则留空指针，h3 不采集
+    // h3 的统计要并进哪一份采集端：全进程共用一份，抓任意一个监听器的 /metrics 都能同时看到
+    // TCP 端与 h3 的量。多监听器各持一份采集端时，一次抓取只报得出其中一台的数，
+    // 计数器还会在两次抓取之间变小，采集侧的 rate() 与告警都会失真，因此这里刻意共用
     std::shared_ptr<Net::HttpMetricsCollector> http3MetricsCollector;
+    // 所有监听器共用的那一份采集端：由第一台建起来的服务器交出，之后的每台都换接到它上面
+    std::shared_ptr<Net::HttpMetricsCollector> sharedMetricsCollector;
+    // 把这台服务器的采集端接到全进程共用的那一份：第一台交出它自己的，之后的都换接过去。
+    // 明文与 TLS 两条通道都调它，因此按泛型收参数（HttpServer 与 HttpsServer 各自实现同名接口）
+    const auto joinSharedMetricsCollector = [&](auto &server)
+    {
+        if (sharedMetricsCollector == nullptr)
+        {
+            sharedMetricsCollector = server->metricsCollector();
+        }
+        else
+        {
+            server->setMetricsCollector(sharedMetricsCollector);
+        }
+        // h3 也并进同一份：抓一次 /metrics 就覆盖 TCP 与 QUIC 两条服务路径
+        http3MetricsCollector = sharedMetricsCollector;
+    };
     // request-id 生成器同样借第一条服务器的：h1/h2/h3 落定的 id 前缀指向同一台机器，
     // 与 --metrics 无关（request-id 不是指标端点的一部分，一直开着）
     std::shared_ptr<Net::HttpRequestIdGenerator> http3RequestIdGenerator;
@@ -627,13 +642,11 @@ int main(int argc, char **argv)
         // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
         if (configuration.exposeMetrics)
         {
+            // 先接上共用的采集端再开端点：端点读的是 stats()，接线早于晚于它都不影响，
+            // 但顺序固定下来能让「抓到的数是谁的」这件事一眼可读
+            joinSharedMetricsCollector(server);
             server->enableMetricsEndpoint();
             server->enableHealthEndpoint();
-            // 第一台启用指标的服务器把自己的采集端借给 h3：一处抓取覆盖两条服务路径
-            if (http3MetricsCollector == nullptr)
-            {
-                http3MetricsCollector = server->metricsCollector();
-            }
         }
         return server;
     };
@@ -664,13 +677,10 @@ int main(int argc, char **argv)
         // 指标与健康检查端点同样是显式开关；与明文侧同一形态（HttpsServer 自己的实现）
         if (configuration.exposeMetrics)
         {
+            // 明文与 TLS 两侧共用那一份采集端：同一个端口号上开着两种协议时，抓哪一侧都是全量
+            joinSharedMetricsCollector(server);
             server->enableMetricsEndpoint();
             server->enableHealthEndpoint();
-            // 第一台启用指标的服务器把自己的采集端借给 h3：一处抓取覆盖 TLS 与 QUIC 两条服务路径
-            if (http3MetricsCollector == nullptr)
-            {
-                http3MetricsCollector = server->metricsCollector();
-            }
         }
         return server;
     };

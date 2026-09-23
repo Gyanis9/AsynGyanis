@@ -6,7 +6,8 @@
 //       响应里绝不出现这些不可信内容；
 //   四. 统计快照：连发 5 条 200 与 1 条 404 后，请求条数、状态码类计数与延迟直方图样本数对得上，
 //       客户端主动断开不计入超时计数，活跃连接数随连接关闭回落到 0；
-//   五. 超时计数：被空闲清扫协程按空闲超时收口的连接计入 timeoutClosedCount，且不计入请求条数。
+//   五. 超时计数：被空闲清扫协程按空闲超时收口的连接计入 timeoutClosedCount，且不计入请求条数；
+//   六. 共享采集端：两台服务器换接到同一份采集端后，请求条数与活跃连接数都报合计，抓哪台口径一致。
 // 夹具（RunningHttpServerFixture / LoopbackClient / 报文组装）在 HttpTestSupport.h 中，与限额用例共用一份。
 
 #include "Net/Http/HttpServer.h"
@@ -339,5 +340,67 @@ namespace AsynGyanis::Net
         EXPECT_GE(stats.timeoutClosedCount, 1u) << "超时收口计数未累加";
         EXPECT_EQ(stats.totalRequestCount, 0u) << "一个字节都没发的连接不该计入已处理请求";
         EXPECT_EQ(stats.badRequestCount, 0u) << "空闲收口不该算成协议错误";
+    }
+
+    /**
+     * @brief 钉住：多台服务器共用一份采集端时，抓任意一台都报出合计口径
+     *
+     * @details 常态部署是「每线程一个监听器同绑一个端口」，此时每台各持一份采集端会让一次抓取
+     *          只命中其中一台：请求条数偏小 1/N，且计数器能在两次抓取之间变小，采集侧的 rate()
+     *          与告警都失去意义。共享采集端就是把这几份口径并成一份。
+     * @note 对照判据：摘掉 setMetricsCollector 那一行，本用例即红（第二台的量落在它自己的采集端上，
+     *       合计读不到 2 条、活跃连接也只剩 1）
+     */
+    TEST(HttpObservability, ReportsProcessTotalWhenServersShareOneCollector)
+    {
+        RunningHttpServerFixture primaryFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
+        ASSERT_TRUE(primaryFixture.awaitRunning(kWaitTimeout)) << "主监听器未在时限内进入接受循环";
+
+        const std::shared_ptr<HttpMetricsCollector> sharedCollector = primaryFixture.server().metricsCollector();
+        ASSERT_NE(sharedCollector, nullptr);
+
+        // 第二台在 start() 之前换接到同一份采集端：配置动作正是为此时机准备的
+        RunningHttpServerFixture shadowFixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, {}, HttpParserLimits{},
+                [&sharedCollector](auto &server)
+                {
+                    server.setMetricsCollector(sharedCollector);
+                });
+        ASSERT_TRUE(shadowFixture.awaitRunning(kWaitTimeout)) << "共用采集端的第二台未在时限内进入接受循环";
+
+        // 两条连接都要保持打开到断言之后：客户端一旦析构，活跃连接数就落回去了
+        LoopbackClient primaryClient(primaryFixture.listeningPort());
+        LoopbackClient shadowClient(shadowFixture.listeningPort());
+        ASSERT_TRUE(primaryClient.isValid()) << "主监听器上的回环连接失败";
+        ASSERT_TRUE(shadowClient.isValid()) << "第二台监听器上的回环连接失败";
+
+        std::string primaryText;
+        std::string shadowText;
+        ASSERT_TRUE(primaryClient.sendText(helloRequestText(), kWaitTimeout)) << "主监听器上请求未能写入";
+        ASSERT_TRUE(waitForTextOccurrences(primaryClient, primaryText, "served-hello", 1, kWaitTimeout)) << "主监听器上请求未得到完整响应";
+        ASSERT_TRUE(shadowClient.sendText(helloRequestText(), kWaitTimeout)) << "第二台监听器上请求未能写入";
+        ASSERT_TRUE(waitForTextOccurrences(shadowClient, shadowText, "served-hello", 1, kWaitTimeout)) << "第二台监听器上请求未得到完整响应";
+
+        // 计数落在响应发完之后的那一轮恢复里，因此按条件轮询
+        ASSERT_TRUE(waitForCondition(
+                [&sharedCollector]
+                {
+                    return sharedCollector->snapshot().totalRequestCount >= 2;
+                },
+                kWaitTimeout)) << "两台服务器的请求没有并进同一份采集端";
+
+        const HttpServerStats sharedStats = sharedCollector->snapshot();
+        EXPECT_GE(sharedStats.activeConnectionCount, 2u) << "共用采集端的活跃连接数只报出了一台那一份";
+
+        // 从任一台读快照都是同一份合计：抓哪台监听器都不该改变口径
+        EXPECT_EQ(primaryFixture.server().stats().totalRequestCount, sharedStats.totalRequestCount) << "主监听器读到的不是合计口径";
+        EXPECT_EQ(shadowFixture.server().stats().totalRequestCount, sharedStats.totalRequestCount) << "第二台读到的不是合计口径";
+
+        // 两台各自的会话收口后镜像要归零：连接表与镜像在同一临界区里增减，谁摘走连接谁就回退计数
+        primaryClient.closeNow();
+        shadowClient.closeNow();
+        EXPECT_TRUE(primaryFixture.awaitConnectionsDrained(kWaitTimeout)) << "主监听器上的会话未收口";
+        EXPECT_TRUE(shadowFixture.awaitConnectionsDrained(kWaitTimeout)) << "第二台监听器上的会话未收口";
+        EXPECT_EQ(sharedCollector->snapshot().activeConnectionCount, 0u) << "会话已收口，共用采集端的活跃连接数没有跟着回落";
     }
 } // namespace AsynGyanis::Net

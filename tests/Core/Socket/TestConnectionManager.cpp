@@ -244,4 +244,50 @@ namespace AsynGyanis::Core
         EXPECT_EQ(manager.activeCount(), 1U);
         EXPECT_FALSE(firstConnectionRef.expired()) << "快照没有持有连接对象：遍历期间该对象可能已销毁";
     }
+
+    /**
+     * @brief 验证共享镜像把多台管理器的在册数并成一个合计，并且与各自的表不多不少
+     *
+     * @details 一台端口由每线程一个监听器共同服务时，运维侧要读的是进程总量；镜像与在册表在同
+     *          一临界区内增减，因此重复 add、摘除未知指针这类路径都不能让镜像偏离真实条数。
+     */
+    TEST(ConnectionManager, SharedMirrorAggregatesCountsWithoutDrifting)
+    {
+        EventLoop loop;
+        std::atomic<std::uint64_t> sharedCount{0};
+
+        ConnectionManager firstManager;
+        ConnectionManager secondManager;
+        firstManager.setSharedActiveCountMirror(&sharedCount);
+        secondManager.setSharedActiveCountMirror(&sharedCount);
+
+        const auto firstConnection  = makeDummyConnection(loop);
+        const auto secondConnection = makeDummyConnection(loop);
+
+        firstManager.add(firstConnection);
+        secondManager.add(secondConnection);
+        EXPECT_EQ(sharedCount.load(), 2U) << "两台管理器的在册连接没有并进同一份镜像";
+
+        // 同一条连接重复登记不会让表变大，镜像也就不该变大
+        firstManager.add(firstConnection);
+        EXPECT_EQ(firstManager.activeCount(), 1U);
+        EXPECT_EQ(sharedCount.load(), 2U) << "重复 add 让镜像多算了一条";
+
+        // 摘除在册连接：镜像跟着回退
+        secondManager.remove(secondConnection.get());
+        EXPECT_EQ(sharedCount.load(), 1U) << "在册连接被摘除后镜像没有回退";
+
+        // 同一个指针再摘一次是空操作：表里已经没有它了，镜像不能跟着减穿
+        secondManager.remove(secondConnection.get());
+        EXPECT_EQ(sharedCount.load(), 1U) << "重复 remove 把合并计数减穿了";
+
+        firstManager.remove(firstConnection.get());
+        EXPECT_EQ(sharedCount.load(), 0U) << "全部连接收口后镜像没归零";
+
+        // 取掉镜像之后增删照常工作（不写、也不崩）：单实例部署走的就是这条路
+        firstManager.setSharedActiveCountMirror(nullptr);
+        firstManager.add(firstConnection);
+        EXPECT_EQ(sharedCount.load(), 0U);
+        EXPECT_EQ(firstManager.activeCount(), 1U);
+    }
 }

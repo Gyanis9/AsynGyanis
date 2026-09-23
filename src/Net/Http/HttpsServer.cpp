@@ -22,6 +22,9 @@ namespace AsynGyanis::Net
         m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
+        // 连接数镜像先接上：本服务器的采集端从这一刻起就是它的计数出口，证书失败与否都不影响这条线
+        attachActiveConnectionMirror();
+
         // 证书必须在进入接受循环之前就位，理由见按地址构造的那一处：留着一个加载失败的上下文，
         // 表现是「端口开着、每条连接都握手失败」，比构造期直接抛异常更难排查
         if (!m_tlsContext.loadCertificate(certificateFile, keyFile))
@@ -38,6 +41,7 @@ namespace AsynGyanis::Net
     {
         // 限额、统计与 request-id 生成器都在此就绪：会话按 shared_ptr 共享持有它们，
         // 采集是常开行为，且它们的生命周期一定覆盖所有会话，创建路径上不必判空
+        attachActiveConnectionMirror();
 
         // 证书必须在进入接受循环之前就位：留着一个加载失败的上下文，
         // 表现是「端口开着、每条连接都握手失败」，比构造期直接抛异常更难排查
@@ -83,6 +87,27 @@ namespace AsynGyanis::Net
     std::shared_ptr<HttpMetricsCollector> HttpsServer::metricsCollector() const noexcept
     {
         return m_metrics;
+    }
+
+    void HttpsServer::setMetricsCollector(std::shared_ptr<HttpMetricsCollector> collector)
+    {
+        // 与明文侧同一处置：空采集端等于让本服务器没有计数出口，而读出来全是零、
+        // 与「没有流量」看不出差别，因此按用法错误直接拒绝
+        if (collector == nullptr)
+        {
+            throw Base::InvalidArgumentException("HttpsServer: 统计采集端不能为空，请传入一份现成的采集端或调用 metricsCollector() 取本服务器的");
+        }
+
+        m_metrics = std::move(collector);
+        // 换采集端要连同镜像一起重接，否则连接数会继续写进没人读的那一份
+        attachActiveConnectionMirror();
+    }
+
+    void HttpsServer::attachActiveConnectionMirror() noexcept
+    {
+        // 活跃连接数由连接管理器在增删连接的临界区内写进采集端：每台只交出自己那一份，
+        // 共用一份采集端时合起来的才是进程口径
+        m_connectionManager.setSharedActiveCountMirror(&m_metrics->activeConnectionCountMirror());
     }
 
     std::shared_ptr<HttpRequestIdGenerator> HttpsServer::requestIdGenerator() const noexcept
@@ -158,12 +183,9 @@ namespace AsynGyanis::Net
 
     HttpServerStats HttpsServer::stats() const
     {
-        HttpServerStats snapshot = m_metrics->snapshot();
-
-        // 活跃连接数与 HttpServer 同源：现读连接管理器，避免另设一份计数与它漂移。
-        // size_t 到 uint64_t 是加宽转换，32 位平台上也不会丢信息
-        snapshot.activeConnectionCount = static_cast<std::uint64_t>(m_connectionManager.activeCount());
-        return snapshot;
+        // 与 HttpServer 同一口径：活跃连接数是采集端上的镜像量，由本服务器的连接管理器在增删
+        // 连接时写入，共用一份采集端的多台合起来才是进程口径
+        return m_metrics->snapshot();
     }
 
     bool HttpsServer::reloadCertificate()

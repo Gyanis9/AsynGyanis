@@ -10,6 +10,9 @@
 # 探针自己要能被证伪：第 4 项（超大头部按 431）与第 8 项（合法放弃不记成坏请求）都读 /metrics 或
 # 读服务端给的状态码，而不是只看 curl 的退出码——只看 curl 会测到空气（实测：正文一秒就写完的
 # /sse 用 --max-time 去放弃，服务端一条取消都不会记）。取数需要服务端带 --metrics 启动。
+# 差值判据成立的前提是「这条计数是进程口径」：同一端口上多个监听器各持一份采集端时，一次抓取
+# 只命中其中一台，读数能在两次抓取之间变小。第 6 项前先做一道相邻两取的自证，把这种情况报出来
+# 而不是拿它当「服务端记坏了请求」（echo_server 从 2026-09-23 起让全部监听器共用一份采集端）。
 #
 # 用法：h2_adversarial_probe.sh <port>
 # 退出码 0 = 全部核对通过；非 0 时把每个失败项打到 stderr。
@@ -74,6 +77,15 @@ status=$(status_of -X POST -H 'Expect: 100-continue' --data-binary 'continued bo
 #    「对端在响应发出前取消这条流」由 tests/Net/Http2 的会话用例覆盖（那里能精确控制 RST 的时机）
 beforeAborts=$(metric_of bad_requests_total)
 [ -n "$beforeAborts" ] || fail "读不到 asyn_http_bad_requests_total，服务端没带 --metrics 启动？"
+# 相邻两次抓取必须不减：这条计数是进程级单调量，读数变小只有两种解释——端口上坐着不止一个
+# 监听进程（上一轮没杀干净），或者这些监听器没共用一份采集端（各自报自己那 1/N）。
+# 两种情况都让下面的差值判据失去意义，所以先自证取数通道，再谈「多出了几条」
+beforeAbortsAgain=$(metric_of bad_requests_total)
+[ -n "$beforeAbortsAgain" ] || fail "第二次取 asyn_http_bad_requests_total 就取空了：服务端中途停了？"
+if [ "$beforeAbortsAgain" -lt "$beforeAborts" ]; then
+    fail "相邻两次抓取里 ${beforeAborts} → ${beforeAbortsAgain}：计数不是进程口径，端口上有多余的监听进程或采集端没共用"
+    beforeAborts="$beforeAbortsAgain"
+fi
 for attempt in $(seq 1 8); do
     curl -s --http2-prior-knowledge --max-time 1 --limit-rate 32 -o /dev/null "${BASE}/big" >/dev/null 2>&1 &
 done
@@ -86,10 +98,10 @@ status=$(status_of "${BASE}/json")
 # 8) 一批「读到一半放弃」与超时不许被记成解析失败或协议错误：这类客户端行为完全合法，
 #    记坏了请求数会让运维看到的是「对端在发坏请求」，而真相是本端把发送背压当成了故障
 afterAborts=$(metric_of bad_requests_total)
-if [ -n "$afterAborts" ]; then
-    badFromAborts=$((afterAborts - beforeAborts))
-    [ "$badFromAborts" = "0" ] || fail "八次读到一半放弃多出 ${badFromAborts} 条坏请求记录"
-fi
+# 取空要当场判失败，不能悄悄跳过：静默跳过等于这条检查在服务器上什么都没核对
+[ -n "$afterAborts" ] || fail "八次放弃之后取不到 asyn_http_bad_requests_total，无法核对坏请求计数"
+badFromAborts=$((afterAborts - beforeAborts))
+[ "$badFromAborts" = "0" ] || fail "八次读到一半放弃多出 ${badFromAborts} 条坏请求记录（放弃前 ${beforeAborts}，放弃后 ${afterAborts}）"
 
 # 9) 一条连接上真并发多路复用：同一个 curl 进程带多个 URL 加 -Z 才会把它们并发复用到同一条连接。
 #    八个进程各带一个 URL 是八条连接，量的就不是多路复用了。

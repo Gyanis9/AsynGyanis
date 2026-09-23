@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <shared_mutex>
 #include <unordered_map>
@@ -56,6 +57,17 @@ namespace AsynGyanis::Core
         [[nodiscard]] size_t activeCount() const;
 
         /**
+         * @brief 指定一个「多份管理器合并计数」的镜像目标
+         *
+         * @details 同一端口常由多台服务器共同监听（每线程一个 TcpServer），各自的本表只看得见
+         *          自己那一份；把它们指向同一个原子量，运维侧才能读到进程总量。
+         * @param counter 镜像目标，nullptr 表示不镜像（默认）。写入方是本管理器，与增删在同一
+         *        临界区内完成，因此镜像与本表不会彼此漂移
+         * @note 必须在接受第一条连接之前设定；镜像对象的生存期要覆盖本管理器
+         */
+        void setSharedActiveCountMirror(std::atomic<std::uint64_t> *counter) noexcept;
+
+        /**
          * @brief 复制一份当前活跃连接的指针快照，供调用方在锁外遍历与操作。
          *
          * @details 有意只返回快照而不提供「持锁回调」形式：close() 的收尾路径会反过来调用
@@ -83,6 +95,7 @@ namespace AsynGyanis::Core
         std::unordered_map<const Connection *, std::shared_ptr<Connection> > m_connections; ///< 存储所有活跃连接的集合
         std::condition_variable_any                                          m_condition;   ///< 用于 waitAll 的条件变量，连接移除时通知
         std::atomic<bool>                                                    m_isShuttingDown{false}; ///< shutdown() 是否已经开始，供 add() 判断是否需要就地收尾
+        std::atomic<std::uint64_t> *                                         m_sharedActiveCountMirror{nullptr}; ///< 跨管理器合并计数的镜像目标，受 m_mutex 保护；空表示不镜像
     };
 
 } // namespace AsynGyanis::Core

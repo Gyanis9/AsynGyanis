@@ -142,11 +142,11 @@ namespace AsynGyanis::Net
          * @brief 取本服务器的统计快照
          *
          * @details 与 HttpServer::stats() 同一口径：各字段分别原子读取，快照不是严格同一瞬间的
-         *          一致切面；活跃连接数在取快照这一刻从连接管理器读取，与其它字段同为近似同时刻的值。
+         *          一致切面；活跃连接数是采集端上的镜像量，由连接管理器在增删连接时同步写入。
          *
          * @return HttpServerStats 统计快照；尚未处理任何请求时各计数为零
-         * @note 可从任意线程调用（计数是原子量、活跃连接数由连接管理器加锁读取），
-         *       运维线程或测试线程可直接采样，不必把动作投递到事件循环
+         * @note 可从任意线程调用（计数都是原子量），运维线程或测试线程可直接采样，
+         *       不必把动作投递到事件循环
          * @see HttpServerStats, HttpMetricsCollector, HttpServer::stats()
          */
         [[nodiscard]] HttpServerStats stats() const;
@@ -182,6 +182,17 @@ namespace AsynGyanis::Net
          * @return std::shared_ptr<HttpMetricsCollector> 采集端，恒非空
          */
         [[nodiscard]] std::shared_ptr<HttpMetricsCollector> metricsCollector() const noexcept;
+
+        /**
+         * @brief 换用一份现成的统计采集端，让多台服务器把计数并进同一份口径
+         * @details 与明文侧 `HttpServer::setMetricsCollector()` 同一用途与同一约束：TLS 侧与明文侧
+         *          各持一份采集端时，抓哪一份就只能看到那一条通道的量。
+         * @param collector 要并入的采集端，非空；活跃连接数也随之并进它的合计
+         * @throws Base::InvalidArgumentException collector 为空
+         * @note 必须在 start() 之前调用：会话按创建时那份采集端计数
+         * @see HttpServer::setMetricsCollector(), metricsCollector()
+         */
+        void setMetricsCollector(std::shared_ptr<HttpMetricsCollector> collector);
 
         /**
          * @brief 取本服务器的 request-id 生成器
@@ -221,6 +232,13 @@ namespace AsynGyanis::Net
         bool loadOcspResponse(const std::string &ocspResponseFile);
 
     private:
+        /**
+         * @brief 把本服务器的连接数镜像接到当前采集端上
+         * @details 构造与 setMetricsCollector() 各接一次：换采集端不重接就会把连接数写进
+         *          已经没人读的那一份
+         */
+        void attachActiveConnectionMirror() noexcept;
+
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享

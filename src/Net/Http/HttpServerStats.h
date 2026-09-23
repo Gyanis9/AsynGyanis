@@ -53,7 +53,7 @@ namespace AsynGyanis::Net
     struct HttpServerStats
     {
         std::uint64_t totalRequestCount{0};     ///< 累计成功解析（ParseStatus::Done）的请求条数，不含解析失败
-        std::uint64_t activeConnectionCount{0}; ///< 取快照那一刻挂在连接管理器上的活跃连接数
+        std::uint64_t activeConnectionCount{0}; ///< 取快照那一刻共用本采集端的全部连接管理器在册的连接数
         std::uint64_t badRequestCount{0};       ///< 解析失败或协议错误收口的条数（HttpParseErrorKind 各档合并为一类）
         std::uint64_t timeoutClosedCount{0};    ///< 被空闲清扫协程按空闲/读写超时关闭的 HTTP 连接数
         std::uint64_t status1xxCount{0};        ///< 状态码为 1xx 的响应条数
@@ -106,8 +106,9 @@ namespace AsynGyanis::Net
      * @note 计数一律用 std::atomic：同一台服务器的会话可能跑在不同循环线程上，而取快照的
      *       调用方通常在别的线程（运维接口、测试线程）。各字段独立原子，快照因此不是
      *       同一瞬间的一致切面；需要严格一致的切面时应在不再有新请求的时机采样。
-     * @note activeConnectionCount 不由本类维护：连接数的唯一真值来源是 Core::ConnectionManager，
-     *       由 HttpServer::stats() 在取快照时补上，避免两份计数彼此漂移。
+     * @note activeConnectionCount 由本类持有、由 Core::ConnectionManager 在增删连接的临界区内
+     *       同步维护（见 activeConnectionCountMirror()）。它刻意不由某台服务器自己填：同一端口
+     *       常由多台服务器（每线程一个）共同监听，各自读自己的连接表只会报出 1/N 的量。
      */
     class HttpMetricsCollector
     {
@@ -233,13 +234,27 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 取「活跃连接数」的镜像目标，交给连接管理器在增删连接时同步维护
+         * @details 由 HttpServer/HttpsServer 在构造时把自己的管理器接到这里；多台服务器共用一份
+         *          采集端时，本采集端上的活跃连接数就是这几台的合计。
+         * @return std::atomic<std::uint64_t>& 引用有效期同本采集端
+         * @warning 除连接管理器外不要写它：那会让它与各管理器在册的连接表脱钩
+         */
+        [[nodiscard]] std::atomic<std::uint64_t> &activeConnectionCountMirror() noexcept
+        {
+            return m_activeConnectionCount;
+        }
+
+        /**
          * @brief 取当前计数的快照
-         * @return HttpServerStats 各字段分别原子读取的结果；activeConnectionCount 留给调用方填充
+         * @return HttpServerStats 各字段分别原子读取的结果；activeConnectionCount 是这一刻
+         *         共用本采集端的连接管理器在册条数之和
          */
         [[nodiscard]] HttpServerStats snapshot() const noexcept
         {
             HttpServerStats stats;
             stats.totalRequestCount  = m_totalRequestCount.load(std::memory_order_relaxed);
+            stats.activeConnectionCount = m_activeConnectionCount.load(std::memory_order_relaxed);
             stats.badRequestCount    = m_badRequestCount.load(std::memory_order_relaxed);
             stats.timeoutClosedCount = m_timeoutClosedCount.load(std::memory_order_relaxed);
             stats.status1xxCount     = m_status1xxCount.load(std::memory_order_relaxed);
@@ -339,6 +354,10 @@ namespace AsynGyanis::Net
 
         std::atomic<std::uint64_t> m_streamCancelledCount{0}; ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
         std::atomic<std::uint64_t> m_zeroCopySendCount{0};    ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
+
+        // 活跃连接数按「每条连接一次加、一次减」被写，与上面「每请求都写」的那几组不同热度：
+        // 同处一行会让长连接的建连/断连把请求计数所在的行反复踢出缓存
+        alignas(kCacheLineBytes) std::atomic<std::uint64_t> m_activeConnectionCount{0}; ///< 共用本采集端的连接管理器在册连接数
     };
 #if defined(_MSC_VER)
 #pragma warning(pop)
