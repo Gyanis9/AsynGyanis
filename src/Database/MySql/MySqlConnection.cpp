@@ -197,7 +197,10 @@ namespace AsynGyanis::Database
             }
         }
 
-        // clientflag 传 0：不开 CLIENT_MULTI_STATEMENTS（一次一条语句），也不开 LOCAL_INFILE
+        // CLIENT_FOUND_ROWS 让 UPDATE/DELETE 的回执报「WHERE 匹配到多少行」而不是「实际改了几行的值」。
+        // 默认那套（改值才算）是 MySQL 独有的：同一条 ORM 更新在 SQLite 上报 1、在这里报 0，而调用方
+        // 拿这个数判的就是「那行在不在」——把值改回原样并不能让行凭空消失。开这个位把两侧对齐。
+        // 其余位照旧不开：CLIENT_MULTI_STATEMENTS（一次一条语句，别给拼接注入留门）与 LOCAL_INFILE。
         if (mysql_real_connect(m_mysqlHandle,
                                m_configuration.host.c_str(),
                                m_configuration.userName.c_str(),
@@ -205,7 +208,7 @@ namespace AsynGyanis::Database
                                m_configuration.database.c_str(),
                                m_configuration.port,
                                nullptr,
-                               0) == nullptr)
+                               CLIENT_FOUND_ROWS) == nullptr)
         {
             // 先摘 mysql_error 的文本再 disconnect：mysql_close 会释放错误缓冲，顺序反了就读到悬垂指针
             captureError("连接 MySQL 服务失败");

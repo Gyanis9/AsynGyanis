@@ -46,7 +46,8 @@ namespace AsynGyanis::Database
          *          除「自增标识宽不到有符号 64 位」这一种情况外不报告失败：数据已由客户端库完整读出，
          *          没有可摘取的服务端错误。
          * @param ownedResult MySQL C API 交出的 MYSQL_RES 指针，所有权移交本对象；可为 nullptr
-         * @param affectedRowCount 本条语句实际改动的行数，由连接在 mysql_affected_rows /
+         * @param affectedRowCount 本条语句影响的行数（WHERE 匹配到多少行；连接在握手里开了
+         *                         CLIENT_FOUND_ROWS，值改回原样也算一行），由连接在 mysql_affected_rows /
          *                         mysql_stmt_affected_rows 之后传入；只读结果集按约定传 0
          * @param generatedInsertId 本条语句带回的自增标识，由连接在 mysql_insert_id /
          *                          mysql_stmt_insert_id 之后传入；只读结果集与非插入语句按约定传 0

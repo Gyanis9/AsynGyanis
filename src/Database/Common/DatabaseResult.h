@@ -141,11 +141,12 @@ namespace AsynGyanis::Database
          * @brief 最近一次写语句影响的行数
          *
          * @details 本方法带默认实现（返回 0），不提供该信息的驱动可直接复用，调用方只依赖
-         *          DatabaseResult 就能取到它。语义约定：写语句返回本条语句实际改动的行数；
-         *          驱动不提供该信息（如 MySQL / Redis）或只读结果集返回 0，即「未知」，
-         *          不用虚假的非零值冒充统计结果；只能读到连接级计数器的驱动（SQLite）按快照如实返回。
+         *          DatabaseResult 就能取到它。口径是「WHERE 匹配到多少行」：把值改回原样也算一行
+         *          （SQLite 的 sqlite3_changes 就是这一口径；MySQL 驱动为此在握手里开了 CLIENT_FOUND_ROWS，
+         *          否则同一条 ORM 更新在两个驱动上会给出 1 与 0 两个答案）。驱动不提供该信息时返回 0，
+         *          即「未知」，不用虚假的非零值冒充统计结果。
          *
-         * @return std::int64_t 影响行数；0 表示未知、只读结果集或没有行被改动
+         * @return std::int64_t 影响行数；0 表示未知、只读结果集或没有行被匹配
          * @note 本方法必须 noexcept：它是执行路径上的统计读取，不允许因取数失败而打断调用方
          */
         [[nodiscard]] virtual std::int64_t affectedRowCount() const noexcept

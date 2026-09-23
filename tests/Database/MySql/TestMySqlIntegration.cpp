@@ -2394,14 +2394,14 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 钉住「匹配到但没改动任何值」的 UPDATE 在本驱动上算几行（MySQL 报的是改动数）
+     * @brief 钉住「匹配到但没改动任何值」的 UPDATE 报的是匹配数，与 SQLite 同口径
      *
-     * @details 这条不是在测驱动的实现细节，而是在测调用方能不能靠返回值区分「行不存在」与
-     *          「行存在但值没变」：两种情况下本驱动都给 0，而 SQLite 给 1。ORM 的 update()
-     *          返回受影响行数，调用方若按「0 就是没找到」来分支，换到 MySQL 上就会误判。
-     *          旧行为没被测过，也没写进任何文档——这里把实测口径钉住并供文档引用。
+     * @details 调用方拿这个数判的是「那行在不在」，而 MySQL 的默认口径是「改了值才算一行」：同一条
+     *          更新在 SQLite 上报 1、在这里报 0，「0 就是没找到」这个再自然不过的分支在换驱动时就错。
+     *          驱动因此在握手里开 CLIENT_FOUND_ROWS（SQLite 的 sqlite3_changes 本来就是匹配数口径，
+     *          那个方向也已被 TestSqliteConnection 钉住）。对齐之后两种情况可区分：匹配到 1、没匹配到 0。
      */
-    TEST_F(MySqlIntegrationTest, UpdateThatChangesNoValueReportsZeroAffectedRows)
+    TEST_F(MySqlIntegrationTest, UpdateThatChangesNoValueStillReportsTheMatchedRow)
     {
         ASSERT_TRUE(prepareTable(kNoOpUpdateTableName, kAutoIncrementColumns)) << m_lastSetupError;
 
@@ -2426,17 +2426,17 @@ namespace AsynGyanis::Database
         ASSERT_NE(noOpText, nullptr) << connection.lastError();
 
         // 两条协议路径必须同口径，否则调用方换个入口就会拿到不同的数
-        EXPECT_EQ(noOpPrepared->affectedRowCount(), 0) << "预处理路径给的是匹配数而不是改动数";
-        EXPECT_EQ(noOpText->affectedRowCount(), 0) << "文本路径与预处理路径口径不一致";
+        EXPECT_EQ(noOpPrepared->affectedRowCount(), 1) << "预处理路径报的是改动数而不是匹配数，与 SQLite 分歧";
+        EXPECT_EQ(noOpText->affectedRowCount(), 1) << "文本路径与预处理路径口径不一致";
 
-        // 真改了值才算一行：排除「本驱动压根不统计影响行数」这种误读
+        // 真改了值同样算一行：排除「本驱动把所有 UPDATE 都记成 1」这种误读
         const std::vector<DatabaseValue> changedParameters{std::string("新值"), targetId};
         const std::unique_ptr<DatabaseResult> changedReceipt = connection.execute(
             "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", changedParameters);
         ASSERT_NE(changedReceipt, nullptr) << connection.lastError();
         EXPECT_EQ(changedReceipt->affectedRowCount(), 1);
 
-        // 行不存在同样是 0：与上面那一格无法区分，这正是需要在文档里写清的点
+        // 行不存在是 0：与上面那一格分得开，这正是「0 就是没找到」这个分支能成立的前提
         const std::vector<DatabaseValue> missingParameters{std::string("新值"), targetId + 1000};
         const std::unique_ptr<DatabaseResult> missingReceipt = connection.execute(
             "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", missingParameters);
