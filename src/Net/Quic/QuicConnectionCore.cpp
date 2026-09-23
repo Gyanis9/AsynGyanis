@@ -212,6 +212,11 @@ namespace AsynGyanis::Net
                                                             QuicPacketDirection::ClientToServer);
         initialSpace.writeKeys = deriveQuicInitialPacketKeys(m_configuration.originalDestinationConnectionId,
                                                              QuicPacketDirection::ServerToClient);
+
+        // 建状态本身就是「收到了一份看起来属于本连接的报文」，因此这条连接的寿命从此刻起算，而不是
+        // 从第一次解密成功起算：解不开的报文按 §10.1 不算活动，若截止时刻也只在解密成功后才亮，
+        // 一个只发无法解密报文就消失的对端会让这条表项永远留在服务端的路由表里
+        restartIdleTimer(Timestamp{});
     }
 
     std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram,
