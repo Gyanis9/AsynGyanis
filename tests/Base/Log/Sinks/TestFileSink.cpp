@@ -513,5 +513,68 @@ namespace AsynGyanis::Base
         // 两次 flush 只许报一条：磁盘故障期间每条日志都往标准错误写一遍就成了噪声
         EXPECT_EQ(std::ranges::count(diagnostic, '\n'), 1);
     }
+    /**
+     * @brief reopen 换到能写的路径就恢复落盘，并把一次性上报重新武装
+     * @details 诊断文案里承诺「重新打开该文件后恢复」，这句承诺得有人验：换流之后旧流上的 badbit
+     *          随它一起消失，新流要真写得进去；而「连续失败只报一次」的那个开关若不在 reopen 里复位，
+     *          下一次再坏掉就一个字都不报——磁盘反复出问题的现场会被读成「只坏过一次」。
+     * @note 只在 POSIX 侧跑：Windows 没有 /dev/full 这类「打开必成功、写必失败」的设备
+     */
+    TEST(FileSinkWriteFailure, ReopenRecoversWritingAndRearmsTheDiagnostic)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileSink_ReopenRecovery");
+        const fs::path                        recoveredPath = temporaryDirectory.path() / "recovered.log";
+
+        std::ostringstream captured;
+        const auto         countReports = [&captured]
+        {
+            const std::string text = captured.str();
+            std::size_t       count = 0U;
+            for (std::string::size_type position = text.find("写日志失败");
+                 position != std::string::npos;
+                 position        = text.find("写日志失败", position + 1U))
+            {
+                ++count;
+            }
+            return count;
+        };
+
+        std::size_t recoveredWriteByteCount = 0U;
+        std::size_t writeAfterSecondFailure = 0U;
+        std::string landedText;
+        {
+            const TestSupport::ScopedStreamRedirect redirect(std::cerr, captured.rdbuf());
+            FileSink                                sink{fs::path("/dev/full")};
+            static_cast<void>(sink.writeLine("lost before recovery"));
+            sink.flush();
+            EXPECT_EQ(countReports(), 1U) << "第一次故障的基线没立住，后面的「第二次也报」无从判起";
+
+            sink.reopen(recoveredPath);
+            recoveredWriteByteCount = sink.writeLine("written after recovery");
+            sink.flush();
+            landedText = readWholeFile(recoveredPath);
+
+            // 再换回写不下去的设备：这一条要的是「第二次故障也出声」。注意第一次写进坏设备的返回值
+            // 仍然报字节数——正文还躺在流缓冲里，此刻无从知道会失败（能知道的只有下一次同步）；
+            // 因此判据取「同步之后再来一条」，那一条必须如实报 0
+            sink.reopen(fs::path("/dev/full"));
+            static_cast<void>(sink.writeLine("lost again"));
+            sink.flush();
+            writeAfterSecondFailure = sink.writeLine("and again");
+            EXPECT_EQ(countReports(), 2U) << "reopen 之后又坏掉却不再报：一次性开关没被重新武装";
+
+            // 上一条走的是「中间有过成功写」的复位；这里再走一格「坏设备直接换坏设备」，且第一笔写
+            // 就超出流缓冲（同步就失败，不给「缓冲里看着成功」的机会）：此时只有 reopen 自己复位开关
+            // 才出得来第三声——短写入会被随后那次成功入缓冲顺手复位，量不到这条规矩
+            sink.reopen(fs::path("/dev/full"));
+            static_cast<void>(sink.writeLine(std::string(8192U, 'x')));
+            sink.flush();
+            EXPECT_EQ(countReports(), 3U) << "坏到坏之间第一笔写就失败，reopen 没复位开关就再也听不到下文";
+        }
+
+        EXPECT_GT(recoveredWriteByteCount, 0U) << "换到能写的路径后仍报 0 字节，说明恢复没发生";
+        EXPECT_TRUE(landedText.find("written after recovery") != std::string::npos) << "换流后的正文没落到新文件";
+        EXPECT_EQ(writeAfterSecondFailure, 0U) << "流已失效之后还在报「写成功了」";
+    }
 #endif
 } // namespace AsynGyanis::Base
