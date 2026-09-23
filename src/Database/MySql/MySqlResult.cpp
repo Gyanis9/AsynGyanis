@@ -22,6 +22,8 @@
 
 #endif // DATABASE_HAS_MYSQL
 
+#include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -30,9 +32,23 @@ namespace AsynGyanis::Database
 {
 #ifdef DATABASE_HAS_MYSQL
 
-    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, const std::int64_t affectedRowCount) :
+    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, const std::int64_t affectedRowCount,
+                             const std::uint64_t generatedInsertId) :
         m_result(ownedResult), m_affectedRowCount(affectedRowCount)
     {
+        // 自增标识要交出去的宽度是有符号 64 位，而 BIGINT UNSIGNED 的自增列可以从 2^63 起播种：
+        // 那种值按补码转换会变成一个看着合理的负数，比报不出来危险得多，因此如实留 0 并写明原因
+        if (generatedInsertId > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+        {
+            m_lastError = std::format("MySQL 自增标识 {} 超出有符号 64 位上界，本接口无法如实表达（按 0 交出）；"
+                                      "请改从该列本身查询取值",
+                                      generatedInsertId);
+        }
+        else
+        {
+            m_lastInsertRowId = static_cast<std::int64_t>(generatedInsertId);
+        }
+
         // 空句柄即「写操作的成功回执」：没有列也没有行，两个计数保持默认 0，isEmpty() 因此恒为 true
         if (m_result == nullptr)
         {
@@ -199,7 +215,7 @@ namespace AsynGyanis::Database
     // 桩构建里不可能有 MYSQL_RES，构造函数刻意不使用参数值（也就无需 mysql_free_result），
     // 全部状态保持默认：0 行 0 列、isEmpty() 为 true。影响行数同样按默认 0 处理——
     // 桩下 connect() 必失败，任何写语句都执行不了，报出非零行数只会是假信息
-    MySqlResult::MySqlResult(MYSQL_RES *, const std::int64_t)
+    MySqlResult::MySqlResult(MYSQL_RES *, const std::int64_t, const std::uint64_t)
     {
     }
 
@@ -298,6 +314,13 @@ namespace AsynGyanis::Database
         // 只把构造时快照的语句级影响行数交出去：本方法不触碰任何句柄，因此 noexcept 成立。
         // 查询结果集构造时传的是 0，符合基类「只读结果集返回 0」的约定
         return m_affectedRowCount;
+    }
+
+    std::int64_t MySqlResult::lastInsertRowId() const noexcept
+    {
+        // 与影响行数同一条纪律：只交构造时就快照好的语句级值，本方法不碰句柄，因此 noexcept 成立。
+        // 桩构建下这条从未被写过，恒为 0——桩里 connect() 必失败，报出非零标识只会是假信息
+        return m_lastInsertRowId;
     }
 
 } // namespace AsynGyanis::Database

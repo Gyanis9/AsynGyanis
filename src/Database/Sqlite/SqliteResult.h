@@ -172,10 +172,12 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取最近一次插入操作生成的 rowid
-         * @details SQLite 的该计数器是连接级状态，构造时快照，之后连接上的新写入不会反映到本对象。
-         * @return std::int64_t rowid，从未插入过时为 0
+         * @details 重写 DatabaseResult::lastInsertRowId()：返回构造时快照的 sqlite3_last_insert_rowid()。
+         *          本驱动的计数器在非插入的写语句上不回零，因此紧跟 INSERT 之外的语句读到的仍是上一条
+         *          INSERT 的值——该差异已写进基类约定。
+         * @return std::int64_t rowid；从未插入过或构造时未持有连接句柄时为 0
          */
-        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept
+        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept override
         {
             return m_lastInsertRowId;
         }

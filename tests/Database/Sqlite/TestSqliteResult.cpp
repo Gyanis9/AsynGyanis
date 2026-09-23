@@ -972,4 +972,39 @@ namespace AsynGyanis::Database
         EXPECT_EQ(baseResult.affectedRowCount(), 4);
     }
 
+    /** @brief 钉住自增标识经基类虚接口即可取得，且交出的就是本条语句那一行的标识 */
+    TEST_F(SqliteUserQuery, GeneratedRowIdIsReachableThroughTheBaseInterface)
+    {
+        ASSERT_NE(executeRequired(connection(),
+                                  "CREATE TABLE autoIds (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL)"),
+                  nullptr);
+
+        const std::unique_ptr<DatabaseResult> insertReceipt = executeRequired(connection(), "INSERT INTO autoIds (label) VALUES ('only')");
+        ASSERT_NE(insertReceipt, nullptr);
+
+        // 刻意通过基类引用取值：affectedRowCount() 早已走这条路，自增标识接进同一层之后
+        // 调用方与 ORM 都不必再向下转型到 SqliteResult，换驱动也不用改代码
+        const DatabaseResult &baseResult = *insertReceipt;
+        EXPECT_EQ(baseResult.lastInsertRowId(), 1);
+
+        // 标识必须指向真那一行：只比计数器会漏掉「计数器对、行没写进去」这类错
+        const std::unique_ptr<DatabaseResult> readBack = query("SELECT label FROM autoIds WHERE id = 1");
+        ASSERT_NE(readBack, nullptr);
+        ASSERT_TRUE(readBack->next());
+        EXPECT_EQ(asText(readBack->getValue(std::size_t{0})), std::optional<std::string>("only"));
+    }
+
+    /** @brief 钉住没有连接句柄可问的写回执在基类接口上如实报 0，而不是回绕或报残值 */
+    TEST_F(SqliteUserQuery, ReceiptWithoutAConnectionHandleReportsNoGeneratedRowId)
+    {
+        // 先写一行，让这条连接上的计数器确实有值：再交出一个不带句柄的结果集，
+        // 它无从查询，只能如实给 0——把上一条的残值冒充成本条的结果是这里唯一可能的错法
+        ASSERT_NE(executeRequired(connection(), "INSERT INTO users (name) VALUES ('Zoe')"), nullptr);
+
+        const SqliteResult   handlelessReceipt(nullptr, nullptr);
+        const DatabaseResult &baseResult = handlelessReceipt;
+        EXPECT_EQ(baseResult.lastInsertRowId(), 0);
+        EXPECT_EQ(baseResult.affectedRowCount(), 0);
+    }
+
 } // namespace AsynGyanis::Database

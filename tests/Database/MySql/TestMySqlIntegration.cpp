@@ -5,6 +5,7 @@
 // - ORM 端到端：CRUD、排序分页、批量插入分块、引用标识符（保留字/空格/反引号）、SchemaMigrator 建表与删表
 // - 表存在性查询只认基表：同名视图不算「表已存在」，基表仍要算（TableExistsIgnoresViewsAndStillSeesBaseTables）
 // - BIT 列在文本协议与预处理协议上都按整数读出（BitColumnsAreReadAsIntegersOnBothProtocolPaths）
+// - 自增标识挂在写回执上：两条协议路径同口径、非插入语句与无自增列都回 0、宽不进 int64 时如实报 0 并写明原因
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
@@ -164,6 +165,24 @@ namespace AsynGyanis::Database
 
         /// 异步错误路径用例的表名：本表刻意不创建，用于制造「表不存在」这条异常路径
         constexpr std::string_view kAsyncMissingTableName = "Asyn_Mysql_AsyncMissing";
+
+        /// 自增标识用例的表：AUTO_INCREMENT 主键，验证写回执带出生成本条语句的标识
+        constexpr std::string_view kAutoIncrementTableName = "Asyn_Mysql_AutoIncrement";
+        constexpr std::string_view kAutoIncrementColumns =
+            "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+
+        /// 无自增列的对照表：插入之后自增标识必须是 0，不能凭空给出一个值
+        constexpr std::string_view kPlainKeyTableName = "Asyn_Mysql_PlainKey";
+        constexpr std::string_view kPlainKeyColumns =
+            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+
+        /// 超宽自增标识用例的表：BIGINT UNSIGNED 的自增列可以播种到 int64 上界之外
+        constexpr std::string_view kWideAutoIncrementTableName = "Asyn_Mysql_WideAutoIncrement";
+        constexpr std::string_view kWideAutoIncrementColumns =
+            "`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+
+        /// 播种起点 2^63：恰在有符号 64 位能表达的最大值之外一格
+        constexpr std::uint64_t kWideAutoIncrementSeed = 9223372036854775808ULL;
 
         /**
          * @brief 读取一个环境变量
@@ -2131,6 +2150,103 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(preparedResult->getValue(2)), "18446744073709551615");
 
         EXPECT_TRUE(connection->execute("DROP TABLE " + tableName) != nullptr) << connection->lastError();
+    }
+
+    /**
+     * @brief 验证自增标识挂在写回执上，两条协议路径同口径，且不会把上一条的值冒充过来
+     */
+    TEST_F(MySqlIntegrationTest, GeneratedIdRidesOnTheWriteReceiptOfBothProtocolPaths)
+    {
+        ASSERT_TRUE(prepareTable(kAutoIncrementTableName, kAutoIncrementColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::string insertPrefix = "INSERT INTO " + quote(kAutoIncrementTableName) + " (`name`) VALUES (";
+
+        // ---- 预处理协议：只给 name，id 由服务端生成 ----
+        const std::vector<DatabaseValue> parameters{std::string("甲")};
+        const std::unique_ptr<DatabaseResult> firstReceipt = connection.execute(insertPrefix + "?)", parameters);
+        ASSERT_NE(firstReceipt, nullptr) << connection.lastError();
+        EXPECT_EQ(firstReceipt->affectedRowCount(), 1);
+        // 刻意通过基类引用取值：这条通道对全部驱动开放，调用方不必向下转型到 MySqlResult
+        const DatabaseResult &firstBase = *firstReceipt;
+        EXPECT_EQ(firstBase.lastInsertRowId(), 1);
+
+        // ---- 文本协议：同一条语句形状，走的是 mysql_insert_id 那一格 ----
+        const std::unique_ptr<DatabaseResult> secondReceipt = connection.execute(insertPrefix + "'乙')");
+        ASSERT_NE(secondReceipt, nullptr) << connection.lastError();
+        EXPECT_EQ(secondReceipt->lastInsertRowId(), 2) << "两条协议路径的自增标识口径不一致";
+
+        // 标识要指向真那一行：只比计数器查不出「计数器对、行没写进去」
+        const std::unique_ptr<DatabaseResult> readBack = connection.execute(
+            "SELECT `name` FROM " + quote(kAutoIncrementTableName) + " WHERE `id` = 2");
+        ASSERT_NE(readBack, nullptr) << connection.lastError();
+        ASSERT_TRUE(readBack->next());
+        EXPECT_EQ(std::get<std::string>(readBack->getValue(std::size_t{0})), "乙");
+
+        // 非插入的写语句要回 0：服务端每条 OK 包都带这个字段，未生成时给的是 0，
+        // 而不是上一条 INSERT 的值——把残值交给调用方是最容易被当成主键用的那类错
+        const std::unique_ptr<DatabaseResult> updateReceipt = connection.execute(
+            "UPDATE " + quote(kAutoIncrementTableName) + " SET `name` = '丙' WHERE `id` = 1");
+        ASSERT_NE(updateReceipt, nullptr) << connection.lastError();
+        EXPECT_EQ(updateReceipt->affectedRowCount(), 1);
+        EXPECT_EQ(updateReceipt->lastInsertRowId(), 0) << "写回执把上一条插入的自增标识冒充成了本条的结果";
+
+        // 只读结果集同样不给值（构造时按约定传 0）
+        const std::unique_ptr<DatabaseResult> selection = connection.execute("SELECT `id` FROM " + quote(kAutoIncrementTableName));
+        ASSERT_NE(selection, nullptr) << connection.lastError();
+        EXPECT_EQ(selection->lastInsertRowId(), 0);
+    }
+
+    /**
+     * @brief 验证没有自增列的表上插入不给出自增标识，也不给上一条插入的残值
+     */
+    TEST_F(MySqlIntegrationTest, InsertIntoTableWithoutAutoIncrementGivesNoGeneratedId)
+    {
+        ASSERT_TRUE(prepareTable(kPlainKeyTableName, kPlainKeyColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::string insertStatement = "INSERT INTO " + quote(kPlainKeyTableName) + " (`id`, `name`) VALUES (?, ?)";
+        for (const std::int64_t id: {std::int64_t{11}, std::int64_t{12}})
+        {
+            const std::vector<DatabaseValue> parameters{id, std::string("手填主键")};
+            const std::unique_ptr<DatabaseResult> receipt = connection.execute(insertStatement, parameters);
+            ASSERT_NE(receipt, nullptr) << connection.lastError();
+            // 主键由调用方给定，服务端没有「生成」任何东西；显式给的值不该被当成生成结果
+            EXPECT_EQ(receipt->affectedRowCount(), 1);
+            EXPECT_EQ(receipt->lastInsertRowId(), 0) << "表上没有自增列，回执却给出了一个标识";
+        }
+    }
+
+    /**
+     * @brief 验证自增标识宽不进有符号 64 位时如实报 0 并写明原因，而不是回绕成负数
+     */
+    TEST_F(MySqlIntegrationTest, GeneratedIdBeyondSignedSixtyFourBitsReportsZeroWithAReason)
+    {
+        ASSERT_TRUE(prepareTable(kWideAutoIncrementTableName, kWideAutoIncrementColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 把自增起点播种到 2^63：下一条 INSERT 生成的值就落在 int64 能表达的最大值之外一格
+        const std::string seedStatement = "ALTER TABLE " + quote(kWideAutoIncrementTableName) + " AUTO_INCREMENT = " +
+                                          std::to_string(kWideAutoIncrementSeed);
+        ASSERT_NE(connection.execute(seedStatement), nullptr) << connection.lastError();
+
+        const std::vector<DatabaseValue> parameters{std::string("超宽")};
+        const std::unique_ptr<DatabaseResult> receipt = connection.execute(
+            "INSERT INTO " + quote(kWideAutoIncrementTableName) + " (`name`) VALUES (?)", parameters);
+        ASSERT_NE(receipt, nullptr) << connection.lastError();
+
+        // 行确实写进去了（起点被服务端接受），否则「报 0」可能只是插入没成功的假证据
+        EXPECT_EQ(countRows(connection, kWideAutoIncrementTableName), 1);
+
+        // 交不出这个值就如实说交不出：0 + lastError() 写明原因，比补码回绕成一个看似合理的负数安全
+        EXPECT_EQ(receipt->lastInsertRowId(), 0);
+        EXPECT_NE(receipt->lastError().find("超出有符号 64 位"), std::string::npos) << receipt->lastError();
     }
 
 } // namespace AsynGyanis::Database

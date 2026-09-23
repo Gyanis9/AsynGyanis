@@ -43,12 +43,15 @@ namespace AsynGyanis::Database
          * @brief 用 mysql_store_result 预读出的结果集构造，并接管其所有权
          * @details 构造阶段一次性快照行数与列数（之后不再调用 mysql_num_rows / mysql_num_fields），
          *          传 nullptr 表示「写操作的空回执」，此时不建立游标，全部计数保持为 0。
-         *          本构造函数不报告失败：数据已由客户端库完整读出，没有可摘取的服务端错误。
+         *          除「自增标识宽不到有符号 64 位」这一种情况外不报告失败：数据已由客户端库完整读出，
+         *          没有可摘取的服务端错误。
          * @param ownedResult MySQL C API 交出的 MYSQL_RES 指针，所有权移交本对象；可为 nullptr
          * @param affectedRowCount 本条语句实际改动的行数，由连接在 mysql_affected_rows /
          *                         mysql_stmt_affected_rows 之后传入；只读结果集按约定传 0
+         * @param generatedInsertId 本条语句带回的自增标识，由连接在 mysql_insert_id /
+         *                          mysql_stmt_insert_id 之后传入；只读结果集与非插入语句按约定传 0
          */
-        explicit MySqlResult(MYSQL_RES *ownedResult, std::int64_t affectedRowCount = 0);
+        explicit MySqlResult(MYSQL_RES *ownedResult, std::int64_t affectedRowCount = 0, std::uint64_t generatedInsertId = 0);
 
         /**
          * @brief 析构时释放所持有的 MYSQL_RES（行缓冲与列元数据一并回收）
@@ -160,6 +163,16 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;
 
+        /**
+         * @brief 获取最近一次插入生成的自增标识
+         * @details 重写 DatabaseResult::lastInsertRowId()：返回连接在本条语句执行完立即快照的
+         *          mysql_insert_id / mysql_stmt_insert_id（同样是语句级值，下一条命令就覆盖）。
+         *          BIGINT UNSIGNED 的自增列可以从 2^63 起播种，那种值宽不进有符号 64 位，构造时按 0
+         *          交出并把原因写进 lastError()——回绕成负数比报不出来更危险。
+         * @return std::int64_t 自增标识；只读结果集、非插入语句与不提供该信息时为 0
+         */
+        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept override;
+
     private:
         /**
          * @brief 按列的声明类型把一段 (指针, 长度) 的原始字节转换成统一的 DatabaseValue
@@ -176,6 +189,7 @@ namespace AsynGyanis::Database
         size_t       m_rowCount{0};         ///< 构造时快照的行数，写回执结果为 0
         size_t       m_columnCount{0};      ///< 构造时快照的列数，写回执结果为 0
         std::int64_t m_affectedRowCount{0}; ///< 构造时快照的语句级影响行数，只读结果集与写回执之外恒为 0
+        std::int64_t m_lastInsertRowId{0};  ///< 构造时快照的语句级自增标识，非插入语句与宽不进 int64 时为 0
     };
 
 } // namespace AsynGyanis::Database

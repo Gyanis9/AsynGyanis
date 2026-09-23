@@ -153,6 +153,23 @@ namespace AsynGyanis::Database
             return 0;
         }
 
+        /**
+         * @brief 本条语句所属连接上最近一次成功插入生成的自增标识
+         *
+         * @details 值在结果集构造时从驱动句柄就地快照：连接由池共享，等调用方想起来再查句柄，
+         *          读到的可能已是别人那次插入。插入之后的非插入写语句上两驱动有差异——MySQL 回 0
+         *          （服务端每条 OK 包都带该字段），SQLite 仍是上一条 INSERT 的 rowid（它只有连接级
+         *          计数器，与 affectedRowCount() 同一处境）。
+         *
+         * @return std::int64_t 自增标识；0 表示没有产生（从未插入、表无自增列、驱动不提供该信息，
+         *         或有符号 64 位装不下而如实报 0——后者会在 lastError() 里写明原因）
+         * @note 本方法必须 noexcept：它是执行路径上的统计读取，不允许因取数失败而打断调用方
+         */
+        [[nodiscard]] virtual std::int64_t lastInsertRowId() const noexcept
+        {
+            return 0;
+        }
+
     protected:
         std::string m_lastError; ///< 最后一次错误信息
     };

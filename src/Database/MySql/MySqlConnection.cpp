@@ -317,9 +317,11 @@ namespace AsynGyanis::Database
             // 影响行数必须在这里就地取：mysql_affected_rows 给的是「最近一条命令」的语句级计数，
             // 下一条命令一执行就被覆盖，因此不能拖到调用方读取时再取。
             // 只在写语句分支取，是因为查询下它返回的是「返回了多少行」，冒充影响行数会误导调用方
+            // 自增标识与它同一条纪律、同一个分支：文本协议下的 mysql_insert_id 同样是语句级值
             if (mysql_field_count(m_mysqlHandle) == 0)
             {
-                return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_affected_rows(m_mysqlHandle)));
+                return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_affected_rows(m_mysqlHandle)),
+                                                     mysql_insert_id(m_mysqlHandle));
             }
 
             // 有返回列却没拿到结果集：通常是预读途中内存不足，回复流的位置已不可知，这条连接不能再用于发命令。
@@ -420,9 +422,11 @@ namespace AsynGyanis::Database
 
         // 无返回列 = 写语句：交出一个 0 行 0 列的写回执，影响行数就地快照
         // （mysql_stmt_affected_rows 给的是语句级计数，下一条命令一执行就被覆盖）
+        // 自增标识同理：它来自本次执行收到的 OK 包，跟着一起快照，调用方就不必再发一条查询去问
         if (mysql_stmt_field_count(rawStatement) == 0)
         {
-            return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(rawStatement)));
+            return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(rawStatement)),
+                                                 mysql_stmt_insert_id(rawStatement));
         }
 
         // 有返回列 = 查询：先把整份结果从服务端读进客户端内存，之后逐行 fetch 不再有任何网络往返。
