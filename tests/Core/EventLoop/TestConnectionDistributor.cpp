@@ -19,6 +19,7 @@
 #include "Core/EventLoop/EventLoop.h"
 
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include "CoreTestSupport.h"
@@ -51,10 +52,13 @@ namespace AsynGyanis::Core
          * @brief 造一个未连接的 TCP 描述符
          * @details 分发器只负责把描述符交出去，不在这条连接上做 I/O，因此未连接套接字足够；
          *          它是有效的系统描述符，能覆盖「谁负责关闭」这条契约。
+         *          建之前先申请一次 Winsock 引用：ctest 按「一条用例一个进程」跑，不能指望同进程里
+         *          别处先构造过 EventLoop（Linux 侧这个申请是空操作）
          * @return int 描述符；无效时返回无效值
          */
         int makeDetachedSocketDescriptor()
         {
+            Platform::Socket::initialize();
             return static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         }
 
@@ -156,6 +160,8 @@ namespace AsynGyanis::Core
         EXPECT_EQ(distributor.workerCount(), 0U);
 
         const int fileDescriptor = makeDetachedSocketDescriptor();
+        // 描述符必须真是有效的：拿 -1 走这条断言也会「通过」，那样这条用例什么都没钉住
+        ASSERT_NE(fileDescriptor, static_cast<int>(Platform::FileDescriptor::kInvalid));
         EXPECT_FALSE(distributor.distribute(fileDescriptor)) << "没有工作循环却宣称接管了描述符";
         EXPECT_EQ(distributor.distributedCount(), 0U);
 
