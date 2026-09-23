@@ -10,7 +10,9 @@
 // 2、上报时就绪若没有协程在等，会被**记下来**，下一次等待立即完成且不再武装；
 // 3、销毁注册对象会唤醒仍挂着的等待者并以「未就绪」结束它的等待，等待方因此能收尾
 //    而不是永久挂起（关闭描述符本身不会唤醒 epoll 的等待者）；
-// 4、同一方向的第二个等待者当场抛错，而不是静默让其中一个永远等不到。
+// 4、同一方向的第二个等待者当场抛错，而不是静默让其中一个永远等不到；
+// 5、注册对象销毁后会从「存活登记表」里单独摘掉（同批里剩下的事件不得再派发给它，
+//    也不得牵连别的注册对象）。
 
 #include "Core/EventLoop/IoWatcher.h"
 
@@ -72,7 +74,123 @@ namespace AsynGyanis::Core
                 readCount = Platform::FileDescriptor::read(fileDescriptor, &payload, 1);
             } while (readCount > 0);
         }
+
+        /**
+         * @brief 等自己被叫醒，然后关掉对面板那条连接、停住循环
+         * @details 复刻「会话收口时顺手关掉另一条连接」的形状：恢复等待者就发生在这一批事件的
+         *          派发过程中，同一批里后一条事件此时已指向一个死掉的对象。
+         * @param own 本协程等待的注册对象
+         * @param peer 要在自己醒来时销毁的注册对象（两条协程互为对方的 peer）
+         * @param loop 事件循环（收尾时停住，run() 才会在测试线程上返回）
+         * @return Task<WaitOutcome> 惰性协程；交回 true 表示是被事件叫醒的，false 表示对面板
+         *         先收口、把自己销毁了
+         */
+        Task<WaitOutcome> wakeAndClosePeer(IoWatcher &own, std::unique_ptr<IoWatcher> &peer, EventLoop &loop)
+        {
+            const bool isReady = co_await own.waitReadable();
+            peer.reset();
+            loop.stop();
+            co_return isReady;
+        }
     } // namespace
+
+    /**
+     * @brief 销毁一个注册对象只会把它自己从存活登记表里摘掉
+     * @details 派发前的闸门问的就是这张表。两个方向都各有其害：不摘，同批的后一条事件就被派到
+     *          已释放的对象上（往死对象里写成员并 resume 垃圾句柄）；摘成「清空整张表」，剩下的
+     *          连接再也收不到事件，表现为读写永久挂起。
+     */
+    TEST(IoWatcher, DestroyingOneWatcherOnlyRemovesThatOneFromTheAliveRegistry)
+    {
+        EventLoop loop;
+
+        int firstLocal = -1;
+        int firstPeer  = -1;
+        int victimLocal = -1;
+        int victimPeer  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(firstLocal, firstPeer));
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(victimLocal, victimPeer));
+
+        const IoWatcher firstWatcher(loop, firstLocal);
+        auto            victimWatcher = std::make_unique<IoWatcher>(loop, victimLocal);
+        const IoWatcher *victimAddress = victimWatcher.get();
+        ASSERT_TRUE(loop.isWatcherAlive(&firstWatcher)) << "构造时没登记，闸门会把所有事件都当成 stale";
+        ASSERT_TRUE(loop.isWatcherAlive(victimAddress));
+
+        victimWatcher.reset();
+
+        EXPECT_FALSE(loop.isWatcherAlive(victimAddress))
+                << "注册对象析构后还留在存活表里：同批事件会被派发到已释放对象上";
+        EXPECT_TRUE(loop.isWatcherAlive(&firstWatcher))
+                << "注销一个却带走了整张表：剩下的连接再也收不到事件";
+
+        Platform::FileDescriptor::close(firstLocal);
+        Platform::FileDescriptor::close(firstPeer);
+        Platform::FileDescriptor::close(victimLocal);
+        Platform::FileDescriptor::close(victimPeer);
+    }
+
+    /**
+     * @brief 同一批里的后一条事件不得派发给已被前一条销毁的注册对象
+     * @details 事件是从内核一批批取回来的：派发循环拿的是取回那一刻的快照，而先处理的那条完全
+     *          可能销毁后一条所属的对象。这里刻意走 EventLoop::run() 而不是测试自己的分发步骤
+     *          ——存活闸门只长在 run() 里，自己分发等于绕过被测代码。
+     *          两条连接各挂一个等待者、醒来后互为对方去销毁：于是无论内核把哪条排在前面，
+     *          后一条一定是「已经死了的那个」，本用例的前提不依赖批内顺序。
+     * @note 判据是「两个结果必然一真一假」：被事件叫醒的那个交回 true，另一个只能是被对面板
+     *       销毁时叫醒的（交回 false）。若哪天两条事件不再同批，两个都会是 true，本用例就会红——
+     *       它不会静默地退化成一个不测任何东西的用例。
+     * @note 摘掉派发前的 isWatcherAlive 判定后，本用例在 ASan 下报 heap-use-after-free
+     */
+    TEST(IoWatcher, StaleEventInSameBatchIsNotDispatchedToADestroyedWatcher)
+    {
+        EventLoop loop;
+
+        int leftLocal = -1;
+        int leftPeer  = -1;
+        int rightLocal = -1;
+        int rightPeer  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(leftLocal, leftPeer));
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(rightLocal, rightPeer));
+
+        auto leftWatcher  = std::make_unique<IoWatcher>(loop, leftLocal);
+        auto rightWatcher = std::make_unique<IoWatcher>(loop, rightLocal);
+        ASSERT_TRUE(leftWatcher->isValid());
+        ASSERT_TRUE(rightWatcher->isValid());
+
+        // 先把构造时的一次性探测取走，再让两条都可读：两条等待一定都挂得住，
+        // 而两次可读会在 run() 第一次取事件时一起回来
+        static_cast<void>(dispatchOnce(loop, 0));
+        makeReadable(leftPeer);
+        makeReadable(rightPeer);
+
+        Task<WaitOutcome> left  = wakeAndClosePeer(*leftWatcher, rightWatcher, loop);
+        Task<WaitOutcome> right = wakeAndClosePeer(*rightWatcher, leftWatcher, loop);
+        left.handle().resume();
+        right.handle().resume();
+        ASSERT_FALSE(left.isReady() || right.isReady()) << "两条等待都没挂住：本用例没测到派发途中恢复的形状";
+
+        const IoWatcher *leftAddress  = leftWatcher.get();
+        const IoWatcher *rightAddress = rightWatcher.get();
+
+        // 由测试线程自己跑 run()：取事件、恢复、互相销毁全在一个线程上，时序完全确定
+        loop.run();
+
+        ASSERT_TRUE(left.isReady()) << "run() 返回了，左边的等待却没收尾";
+        ASSERT_TRUE(right.isReady()) << "run() 返回了，右边的等待却没收尾";
+        const bool leftWokenByEvent   = left.handle().promise().result();
+        const bool rightWokenByEvent  = right.handle().promise().result();
+        EXPECT_NE(leftWokenByEvent, rightWokenByEvent)
+                << "两条都拿到事件或都没拿到：说明两次销毁没落在同一次派发里，闸门那条路径没被走到";
+
+        EXPECT_FALSE(loop.isWatcherAlive(leftAddress)) << "注册对象销毁后仍留在存活表里";
+        EXPECT_FALSE(loop.isWatcherAlive(rightAddress)) << "注册对象销毁后仍留在存活表里";
+
+        Platform::FileDescriptor::close(leftLocal);
+        Platform::FileDescriptor::close(leftPeer);
+        Platform::FileDescriptor::close(rightLocal);
+        Platform::FileDescriptor::close(rightPeer);
+    }
 
     TEST(IoWatcher, InvalidDescriptorYieldsUnusableWatcher)
     {
