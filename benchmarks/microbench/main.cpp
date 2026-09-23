@@ -31,6 +31,7 @@
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/TableSchema.h"
+#include "Base/Config/ConfigManager.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/LogEvent.h"
@@ -1942,6 +1943,39 @@ int main(int argumentCount, char **argumentValues)
                 static_cast<void>(
                         agedLayer->writeStreamData(liveStreamId, std::span<const std::uint8_t>(kTinyResponseBody), false));
                 return agedLayer->collectFrames(frames, 1200U, sentRanges, announcements) ? 1U : 0U;
+            },
+            results, checksum, failureCount);
+
+    // ---- Config 层：读一次配置与改一次配置 ----
+    // 读这条在每次请求都可能付（开关、限额从配置里取），写这条是给 setValue 定价：一次写入要复制
+    // 整份快照，键越多越贵。容器（GCC 13 Release、-O3）连跑三次的读数：
+    //   config-get-int      30.4 / 31.2 / 32.1 ns（256 键的快照里取一个整数）
+    //   config-set-value  9 840 / 9 891 / 9 969 ns（同一份快照上覆盖一个已存在的键）
+    // 差在哪：把「定形扫描」单独摘掉再量一次是 9 908 / 9 926 ns —— 与带着它时同量级，也就是说
+    // 这 10 µs 全是「复制整份快照」的钱，为正确性加的那次全表扫描不到 1%。反过来这也定死了
+    // setValue 的用法：它按启动期/偶发覆盖定价，不该进逐请求路径（要按请求读的键应在启动时读进
+    // 自己的字段）。刻意不进基线：基线文件里其余读数出自 Windows/MSVC，混进来会让门禁量错东西
+    constexpr std::uint64_t kConfigFixtureKeyCount = 256;
+    auto &configManager = Base::ConfigManager::instance();
+    configManager.clear();
+    for (std::uint64_t keyIndex = 0; keyIndex < kConfigFixtureKeyCount; ++keyIndex)
+    {
+        static_cast<void>(configManager.setValue("fixture.key" + std::to_string(keyIndex), Base::ConfigValue(static_cast<std::int64_t>(keyIndex))));
+    }
+    measureCase(
+            "config-get-int",
+            [&configManager]
+            {
+                // 判据取「取回的就是当初写进去的那个值」：直接把值返回的话，键丢了会落到默认值 -1，
+                // 转成无符号仍是非零数，自检检不出来
+                return configManager.getInt("fixture.key128", -1) == 128 ? 1U : 0U;
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "config-set-value",
+            [&configManager]
+            {
+                return configManager.setValue("hot.override", Base::ConfigValue(std::int64_t{7})) ? 1U : 0U;
             },
             results, checksum, failureCount);
 
