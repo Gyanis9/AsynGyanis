@@ -1,7 +1,10 @@
 #include "Core/Coroutine/ThreadPool.h"
 
+#include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
 #include "Platform/System/CpuAffinity.h"
+
+#include <algorithm>
 
 namespace AsynGyanis::Core
 {
@@ -36,6 +39,11 @@ namespace AsynGyanis::Core
 
     void ThreadPool::start()
     {
+        // 生命周期锁把 start() 与 stop() 串起来：两者改的是同一只 m_threads（emplace_back 对
+        // clear），并发跑就是 vector 上的数据竞争。本池经由 IoContext::threadPool() 对外可见，
+        // 示例就直接拿它 start()，因此这把锁得由池自己负责，不能指望调用方另外上一层锁
+        const std::lock_guard lock(m_lifecycleMutex);
+
         // 防止重复启动导致同一 EventLoop 被多线程并发运行
         if (!m_threads.empty())
             return;
@@ -52,6 +60,7 @@ namespace AsynGyanis::Core
         }
 
         m_threads.reserve(m_threadCount);
+        m_workerThreadIds.reserve(m_threadCount);
         // 可绑的核数按「本进程被允许的核」算而不是硬件核数：容器 cpuset 收窄过的机器上两者不等，
         // 按硬件核数绑就会撞上许可集合外的编号
         const size_t availableCoreCount = m_pinsThreadsToCores ? Platform::CpuAffinity::availableCoreCount() : 0;
@@ -87,11 +96,29 @@ namespace AsynGyanis::Core
                     LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因未知异常退出", i);
                 }
             });
+            // 线程号在起出来当场记下：jthread 已被建好，get_id() 稳定，而读这张表的 stop() 持同一把锁
+            m_workerThreadIds.push_back(m_threads.back().get_id());
         }
+    }
+
+    bool ThreadPool::isCurrentThreadWorker() const
+    {
+        const std::lock_guard lock(m_lifecycleMutex);
+        const std::thread::id self = std::this_thread::get_id();
+        return std::find(m_workerThreadIds.begin(), m_workerThreadIds.end(), self) != m_workerThreadIds.end();
     }
 
     void ThreadPool::stop()
     {
+        // 自 join 先挡在改动任何状态之前：std::jthread 的析构会 join 自己，那是
+        // resource_deadlock_would_occur 从析构里抛出来＝terminate。宁可抛一个可 catch 的用法错误
+        if (isCurrentThreadWorker())
+        {
+            throw Base::LogicException("ThreadPool::stop() 不能从自己的工作线程上调用：它要 join 调用线程自身。"
+                                        "工作线程要收尾整个运行时，请把这件事交给池外的线程（例如持有本对象的那条）");
+        }
+
+        const std::lock_guard lock(m_lifecycleMutex);
         for (auto &loop: m_eventLoops)
         {
             if (loop)
@@ -102,6 +129,7 @@ namespace AsynGyanis::Core
 
         // std::jthread 的析构会 join，因此这里必须先把停止请求发给全部 EventLoop 再清空
         m_threads.clear();
+        m_workerThreadIds.clear();
         // 记下这批循环已经用过：EventLoop 一个实例只跑一轮生命周期，下次 start() 要换新的
         m_hasBeenStopped = true;
     }

@@ -1,7 +1,9 @@
-// ThreadPool 单元测试：线程数量、索引访问、启停、跨线程任务执行与可选的按线程绑核
+// ThreadPool 单元测试：线程数量、索引访问、启停、跨线程任务执行、可选的按线程绑核与工作线程自 stop 的拒绝
 
 #include "Core/Coroutine/ThreadPool.h"
 #include "Core/Coroutine/Task.h"
+
+#include "Base/Exception/LogicException.h"
 
 #include "Platform/System/CpuAffinity.h"
 
@@ -12,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <stdexcept>
 #include <thread>
@@ -221,6 +224,37 @@ namespace AsynGyanis::Core
             return isPinned.load(std::memory_order_acquire);
         }
     } // namespace
+
+    /**
+     * @brief 工作线程自己调 stop() 当场报用法错误，而不是自 join 把整个进程带走
+     * @details m_threads.clear() 会销毁每条 jthread，而 jthread 的析构就是 request_stop + join；
+     *          调用线程自己那条被 join 时抛 system_error，异常从析构里出来＝std::terminate。
+     *          判定必须发生在改动任何状态之前，因此本用例看到的是一条可 catch 的 LogicException，
+     *          并且被拒之后池子仍能被池外线程正常收尾
+     */
+    TEST(ThreadPool, StopFromOwnWorkerThreadFailsLoudlyInsteadOfSelfJoin)
+    {
+        ThreadPool pool(1);
+        pool.start();
+
+        std::exception_ptr stopError;
+        ASSERT_TRUE(runOnPoolThread(pool, 0, [&pool, &stopError]
+        {
+            try
+            {
+                pool.stop();
+            } catch (...)
+            {
+                stopError = std::current_exception();
+            }
+        })) << "投递没有在工作线程上跑完，这条路径没被走到";
+
+        ASSERT_NE(stopError, nullptr) << "工作线程自己 stop() 没被拒：它会 join 自己并让进程 terminate";
+        EXPECT_THROW(std::rethrow_exception(stopError), Base::LogicException);
+
+        // 被拒的那一次不能把池子留在「已请求停止却没 join 完」的半停状态
+        EXPECT_NO_THROW(pool.stop());
+    }
 
     /**
      * @brief 打开绑核开关后，每个工作线程在自己的线程体里被绑到一枚核上（掩码只剩一位）

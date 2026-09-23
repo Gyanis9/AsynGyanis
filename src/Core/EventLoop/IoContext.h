@@ -46,6 +46,8 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 通知所有工作线程停止，run() 随之返回
+         * @warning 不得从线程池的工作线程上调用：它要 join 那些线程，其中可能正是调用线程自己，
+         *          那种情形抛 Base::LogicException（用法错误）。收尾请交给池外的线程，析构同理
          */
         void stop();
 

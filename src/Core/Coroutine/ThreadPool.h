@@ -12,6 +12,7 @@
 #include "Core/Coroutine/Scheduler.h"
 
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -19,6 +20,11 @@ namespace AsynGyanis::Core
 {
     /**
      * @brief 固定大小线程池，每个工作线程绑定一个 EventLoop 与 Scheduler
+     * @details start() 与 stop() 由内部一把生命周期锁串行化，因此本类可以安全地被跨线程启停——
+     *          它经 `IoContext::threadPool()` 对外可见，示例就直接拿它 start()。
+     * @warning stop() 不得从本池的工作线程上调用：它要 join 调用线程自己，那是
+     *          std::jthread 的自 join（抛 system_error 且落在析构路径上＝terminate）。
+     *          工作线程要收尾整个运行时，请把它交给池外的线程。
      */
     class ThreadPool
     {
@@ -61,6 +67,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 停止所有工作线程并等待 join。
+         * @throws Base::LogicException 调用线程本身就是本池的工作线程（自 join 会走 terminate）
          */
         void stop();
 
@@ -89,9 +96,19 @@ namespace AsynGyanis::Core
         [[nodiscard]] Scheduler &scheduler(size_t index) const;
 
     private:
+        /**
+         * @brief 判断当前线程是不是本池起出来的工作线程
+         * @details stop() 在动任何状态之前先问一次：自 join 一旦走到 m_threads.clear()，
+         *          异常就从 ~jthread 里出来，那时候已经拦不住
+         * @return true 当前线程由本池起出且尚未被 join 掉
+         */
+        [[nodiscard]] bool isCurrentThreadWorker() const;
+
         size_t                                   m_threadCount; ///< 实际线程数量（启动后不变）
         std::vector<std::unique_ptr<EventLoop> > m_eventLoops;  ///< 每个线程独立的 EventLoop
         std::vector<std::jthread>                m_threads;     ///< 工作线程，使用 jthread 自动管理生命周期
+        std::vector<std::thread::id>             m_workerThreadIds; ///< 与 m_threads 同序的工作线程号，供自 join 判定
+        mutable std::mutex m_lifecycleMutex;                    ///< 串行化 start()/stop()：两者都会改上面两只表
         bool m_pinsThreadsToCores{false};                       ///< 是否在 start() 时把工作线程逐个绑到逻辑核
         bool m_hasBeenStopped{false};                           ///< 是否已 stop() 过一轮（下次 start() 要换新循环）
     };

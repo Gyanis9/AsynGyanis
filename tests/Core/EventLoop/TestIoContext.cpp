@@ -1,4 +1,4 @@
-// IoContext 单元测试：线程池配置、主调度器、启停阻塞与运行前投递任务
+// IoContext 单元测试：线程池配置、主调度器、启停阻塞、运行前投递任务，以及与另一线程 stop() 撞车的收尾
 
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Coroutine/Task.h"
@@ -9,7 +9,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <barrier>
 #include <chrono>
+#include <cstddef>
 #include <thread>
 
 namespace AsynGyanis::Core
@@ -140,5 +142,44 @@ namespace AsynGyanis::Core
         EXPECT_EQ(context.threadPool().threadCount(), Platform::CpuAffinity::recommendedWorkerCount())
             << "自动档没有走进程可用核数的统一口径";
         EXPECT_GE(context.threadPool().threadCount(), 1U) << "0 条循环的运行时没有人推进事件";
+    }
+    /**
+     * @brief run() 与 stop() 撞在一起时，两边都返回后不得留下还在跑的线程池
+     * @details 一条线程 run()、另一条 stop() 是本类文档写明的正常用法（信号处理与看门狗都这么收尾）。
+     *          一道 barrier 把两次调用放在同一瞬间放行，两百轮压下来钉的是收尾结果这条不变式。
+     *          它兜住的是「把停止标志检查与 start() 拆成两步」这类改法——那会起出一个没人收尾的池子；
+     *          旧实现两步合在同一把锁里，实测 TSan 下两百轮报不出竞争，故这条不是那件事的证伪
+     */
+    TEST(IoContext, ConcurrentRunAndStopNeverLeavesARunningPool)
+    {
+        constexpr int kRoundCount = 200;
+        for (int round = 0; round < kRoundCount; ++round)
+        {
+            IoContext      context(2);
+            std::barrier   releasePoint(2);
+            std::atomic<bool> isRunReturned{false};
+
+            std::thread runner([&context, &releasePoint, &isRunReturned]
+            {
+                releasePoint.arrive_and_wait();
+                context.run();
+                isRunReturned.store(true, std::memory_order_release);
+            });
+            std::thread stopper([&context, &releasePoint]
+            {
+                releasePoint.arrive_and_wait();
+                context.stop();
+            });
+
+            runner.join();
+            stopper.join();
+            EXPECT_TRUE(isRunReturned.load(std::memory_order_acquire)) << "第 " << round << " 轮 run() 没有返回";
+
+            for (size_t index = 0; index < context.threadPool().threadCount(); ++index)
+            {
+                EXPECT_FALSE(context.threadPool().eventLoop(index).isRunning())
+                        << "第 " << round << " 轮收尾后第 " << index << " 条循环仍在运行";
+            }
+        }
     }
 } // namespace AsynGyanis::Core

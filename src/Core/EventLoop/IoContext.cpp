@@ -25,8 +25,10 @@ namespace AsynGyanis::Core
     void IoContext::run()
     {
         {
-            // 与 stop() 互斥：ThreadPool::start() 会向 m_threads 追加线程，
-            // 若与 stop() 的 m_threads.clear() 并发执行即构成数据竞争
+            // 停止标志的检查与 start() 必须连成同一次持锁：stop() 要先拿到同一把锁才能置标志，
+            // 于是「整轮 stop() 插在检查与起线程之间」这条交错被排掉——它要么在进锁之前就置好标志
+            // （这里直接不起线程），要么排到 start() 之后（那次 join 收尾的正是本函数起出来的池）。
+            // 少了这道串行，两条线程撞在一起会留下没人收尾的池子
             std::lock_guard lock(m_mutex);
             // 已请求停止则不再启动线程池：此时再 spawn 的线程只会白白建好又销毁
             if (m_stopped)
@@ -51,7 +53,8 @@ namespace AsynGyanis::Core
             m_stopped = true;
         }
         m_condition.notify_all();
-        // 线程池的停止与 join 放在锁外：worker 线程退出前可能仍需获取 m_mutex
+        // 线程池的停止与 join 放在 m_mutex 之外：工作线程调本函数时会在池内部自 join 判定上
+        // 当场失败，而持锁 join 会让它先卡在锁上——那条线程正是被 join 的对象
         m_threadPool.stop();
     }
 
