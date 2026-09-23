@@ -99,6 +99,10 @@ namespace AsynGyanis::Core
         /**
          * @brief 获取 IP 地址的点分十进制（IPv4）或十六进制字符串（IPv6）
          * @return IP 地址字符串，若地址无效则返回空字符串
+         * @warning 文本面丢了 IPv6 的作用域号（链路本地地址的「%接口」后缀），且双栈监听器上的
+         *          IPv4 对端会以 "::ffff:a.b.c.d" 形状返回。要拿地址做唯一键（按来源限额、审计）
+         *          就得连同作用域号一起区分：本类的相等比较看的是原始字节，比文本分得更细
+         * @see fromIpPort
          */
         [[nodiscard]] std::string ip() const;
 

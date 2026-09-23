@@ -186,4 +186,79 @@ namespace AsynGyanis::Core
         const std::string textWithNul("1.2.3.4\0evil", 12);
         EXPECT_THROW(static_cast<void>(InetAddress(8080, textWithNul)), Base::InvalidArgumentException);
     }
+
+    /**
+     * @brief 拒绝面：IPv4 的宽松变体写法一律拒收，不许被读成「同一个地址的另一种写法」
+     * @details 走 inet_aton 那类宽松解析时 "0177.0.0.1" 会读成 127.0.0.1、"1.2.3.04" 会读成
+     *          1.2.3.4（八进制/前导零），按地址文本做的放行与限额就能被换个写法绕过。本类用的是
+     *          严格文法的 inet_pton：Windows 与 glibc 实测对这四种写法的判定完全一致。
+     */
+    TEST(InetAddress, RejectsAlternateEncodingsOfIpv4)
+    {
+        for (const char *ipText: {"0177.0.0.1", "1.2.3.04", "1.2.3.4 ", "256.1.1.1"})
+        {
+            EXPECT_THROW(static_cast<void>(InetAddress(80, ipText)), Base::InvalidArgumentException)
+                << "该文本不该被当成合法 IPv4：" << ipText;
+        }
+    }
+
+    /**
+     * @brief IPv4 映射写法按 IPv6 收下，文本里带 ::ffff: 前缀而不是折回四段十进制
+     * @details 双栈监听器上接到的 IPv4 对端就是这个形状（内核把 v4 地址放进 v6 的映射前缀），
+     *          因此拿 ip() 当键的消费方不能指望它和纯 IPv4 字符串相等；两平台的 inet_ntop
+     *          对该形状的输出一致（实测），故这里可以直接断言文本。
+     */
+    TEST(InetAddress, KeepsIpv4MappedIpv6TextAsIpv6Address)
+    {
+        const InetAddress address(80, "::ffff:1.2.3.4");
+        EXPECT_EQ(address.family(), AF_INET6) << "映射前缀是 IPv6 地址，不该被折成 AF_INET";
+        EXPECT_EQ(address.ip(), "::ffff:1.2.3.4");
+        EXPECT_EQ(address.nativeAddressLength(), sizeof(sockaddr_in6));
+    }
+
+    /**
+     * @brief 边界：IPv6 的作用域号既不出现在文本里，也不能从文本读回来
+     * @details 内核在链路本地对端上会填 sin6_scope_id，而 inet_ntop 不输出「%接口」后缀、
+     *          inet_pton 也不接受它（两平台实测一致）。后果：两块网卡上同名的 fe80:: 对端在
+     *          **文本面**撞成同一个串，按 ip() 做键的限额会把它们当成同一个来源；而对象级比较
+     *          （operator==）比的是原始字节，作用域号不同仍然区分得开。本用例钉住这两条现状。
+     */
+    TEST(InetAddress, Ipv6ScopeIdSurvivesInRawAddressButNotInText)
+    {
+        sockaddr_in6 rawAddress{};
+        rawAddress.sin6_family   = AF_INET6;
+        rawAddress.sin6_port     = htons(1234);
+        rawAddress.sin6_scope_id = 3;
+        ASSERT_GT(inet_pton(AF_INET6, "fe80::1", &rawAddress.sin6_addr), 0);
+
+        const InetAddress withScope(rawAddress);
+        EXPECT_EQ(withScope.ip(), "fe80::1") << "文本里不该混进作用域号：那会让 toString() 不再是可解析的写法";
+        EXPECT_EQ(withScope.toString(), "[fe80::1]:1234");
+
+        // 只有作用域号不同的两个对端（两块网卡上的同名链路本地地址）必须仍可区分
+        sockaddr_in6 otherRawAddress = rawAddress;
+        otherRawAddress.sin6_scope_id = 7;
+        EXPECT_NE(withScope, InetAddress(otherRawAddress));
+
+        // 反向不成立：带「%接口」后缀的文本被拒，因此 ip() 的输出与该文本不是同一条通道
+        EXPECT_THROW(static_cast<void>(InetAddress(1234, "fe80::1%3")), Base::InvalidArgumentException);
+    }
+
+    /**
+     * @brief 拒绝面：(sockaddr_storage, 长度) 这对参数里长度越界必须拒绝，而不是按容量截断照抄
+     * @details 长度由调用方给出（多半来自内核回填的 socklen_t），直接照着 memcpy 会越界写；
+     *          静默截断更糟——地址被悄悄改短，比对与限额都跟着错。
+     */
+    TEST(InetAddress, RejectsRawStorageLengthOutsideItsCapacity)
+    {
+        sockaddr_storage storage{};
+        storage.ss_family = AF_INET;
+
+        EXPECT_THROW(static_cast<void>(InetAddress(storage, 0)), Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(InetAddress(storage, static_cast<socklen_t>(sizeof(sockaddr_storage) + 1))),
+                     Base::InvalidArgumentException);
+        // 恰好放得下的两种真实长度都应当被接受：IPv4 与 IPv6 的地址长度不同，不能只认一种
+        EXPECT_NO_THROW(static_cast<void>(InetAddress(storage, sizeof(sockaddr_in))));
+        EXPECT_NO_THROW(static_cast<void>(InetAddress(storage, sizeof(sockaddr_storage))));
+    }
 } // namespace AsynGyanis::Core
