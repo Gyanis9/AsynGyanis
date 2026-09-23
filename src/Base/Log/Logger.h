@@ -88,7 +88,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 使用 std::format 格式化日志消息并记录
-         * @details 格式串非法时不抛给业务方，降级为一条 Error 日志并带上格式串原文。
+         * @details 格式串非法时不抛给业务方，降级为一条诊断日志并带上格式串原文；该记录的等级取
+         *          「本次等级与 Error 中更高的一档」，因此不会因记录器自身的阈值而被挡掉。
          * @tparam Args 格式化参数类型
          * @param level 本次日志级别
          * @param location 源码位置信息
@@ -204,8 +205,10 @@ namespace AsynGyanis::Base
         void writeToSinks(LogEvent &event) const;
 
         /**
-         * @brief 渲染格式串并分发事件，格式化失败时降级为带格式串原文的 Error 日志
+         * @brief 渲染格式串并分发事件，格式化失败时降级为带格式串原文的诊断记录
          * @details logFormat 与 logExceptionFormat 共用；降级路径与正常路径携带同一份调用栈。
+         *          降级记录的等级取「本次等级与 Error 中更高的一档」：writeEvent 还要再过一次
+         *          shouldLog，固定成 Error 会让阈值高于 Error 的记录器把这条失败也挡掉。
          * @tparam Args 格式化参数类型
          * @param level 本次日志级别
          * @param location 源码位置信息
@@ -222,7 +225,10 @@ namespace AsynGyanis::Base
                 writeEvent(level, std::vformat(formatString, std::make_format_args(arguments...)), location, std::move(stackTrace));
             } catch (const std::format_error &formatError)
             {
-                writeEvent(LogLevel::Error,
+                // 调用方已经通过了 shouldLog（否则不会走到格式化），因此降级记录只要不低于本次等级就
+                // 一定能落地；再取下界 Error 是为了让 Trace/Debug/Info 的失败在常规阈值下也看得见
+                const LogLevel diagnosticLevel = level >= LogLevel::Error ? level : LogLevel::Error;
+                writeEvent(diagnosticLevel,
                            std::format("日志格式化错误：{} [format='{}']", formatError.what(), formatString),
                            location, std::move(stackTrace));
             }

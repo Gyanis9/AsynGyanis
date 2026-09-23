@@ -704,6 +704,28 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(event.message, "no argument for this placeholder")) << event.message;
     }
 
+    /**
+     * @brief 阈值高于 Error 的记录器上，格式化失败仍要留下一条诊断
+     * @details 钉住「降级记录被自己那条降级路径的等级挡掉」这一类静默：本次调用已经通过了
+     *          shouldLog（等级 Fatal、阈值 Fatal），而降级记录若固定打成 Error，就会被同一道
+     *          过滤丢掉——现场是「代码里明明有日志调用，屏幕上什么也没有」，连格式串写错这件事
+     *          都看不见
+     */
+    TEST_F(LoggerTest, FormatFailureAtFatalThresholdStillDeliversTheDiagnostic)
+    {
+        Logger logger("fmt_broken_at_fatal");
+        logger.addSink(recordingSink());
+        logger.setLevel(LogLevel::Fatal);
+
+        EXPECT_NO_THROW(logger.logFormat(LogLevel::Fatal, SourceLocation::current(), "malformed {", "argument"));
+
+        ASSERT_EQ(m_ledger->eventCount(), 1u);
+        const LogEvent event = m_ledger->events().front();
+        EXPECT_EQ(event.level, LogLevel::Fatal) << "降级记录的等级不得低于本次调用的等级";
+        EXPECT_TRUE(contains(event.message, "日志格式化错误")) << event.message;
+        EXPECT_TRUE(contains(event.message, "malformed {")) << event.message;
+    }
+
     TEST_F(LoggerTest, LogFormatSkipsEventConstructionBelowThreshold)
     {
         Logger logger("fmt_threshold");
