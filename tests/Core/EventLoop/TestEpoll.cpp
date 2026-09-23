@@ -462,6 +462,50 @@ namespace AsynGyanis::Core
         }
     }
 
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 完成端口不允许把同一个仍打开的描述符注销之后再注册回来
+     * @details Windows 没有把句柄从完成端口解除关联的 API，因此这是平台硬限制而不是本层缺陷。
+     *          钉住它有两个理由：与下面那条 POSIX 用例对照，说明「注销后重新注册」不是跨后端可行
+     *          的写法；以及三种时序实测一致，免得后来人以为多等一轮就能注册回来。
+     */
+    TEST(Epoll, CannotReRegisterAnOpenDescriptorAfterDelete)
+    {
+        Epoll backend;
+        TestEventFd drained;
+        TestEventFd pending;
+        ASSERT_GE(drained.fileDescriptor, 0);
+        ASSERT_GE(pending.fileDescriptor, 0);
+
+        // 时序一：探针已经跑完一轮（可读→上报→注销），注销时没有在途取消要等
+        ASSERT_TRUE(drained.trigger());
+        ASSERT_TRUE(backend.addFileDescriptor(drained.fileDescriptor, EPOLLIN, &drained));
+        ASSERT_FALSE(backend.wait(200).empty()) << "前提不成立：可读的描述符没在首轮报出就绪";
+        ASSERT_TRUE(backend.delFileDescriptor(drained.fileDescriptor));
+        EXPECT_FALSE(backend.addFileDescriptor(drained.fileDescriptor, EPOLLIN, &drained))
+                << "探针跑完一轮之后仍不该能把同一个活描述符再注册回来";
+
+        // 时序二：注销时取消完成还压在队列里
+        ASSERT_TRUE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending));
+        ASSERT_TRUE(backend.delFileDescriptor(pending.fileDescriptor));
+        EXPECT_FALSE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending))
+                << "取消完成尚未取回时再注册应当同样被拒";
+
+        // 时序三：把那一轮等待做完（取消完成已被收掉）之后再试
+        static_cast<void>(backend.wait(200));
+        EXPECT_FALSE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending))
+                << "收掉取消完成之后就注册得回来了——那这条限制就不是 Windows 的硬边界，文档要改";
+
+        // 关掉之后新句柄复用同一个号是另一回事（下面那条 POSIX 用例钉的就是它），这里先把句柄还掉
+        Platform::FileDescriptor::close(drained.fileDescriptor);
+        Platform::FileDescriptor::close(pending.fileDescriptor);
+        drained.fileDescriptor = Platform::FileDescriptor::kInvalid;
+        drained.writeDescriptor = Platform::FileDescriptor::kInvalid;
+        pending.fileDescriptor = Platform::FileDescriptor::kInvalid;
+        pending.writeDescriptor = Platform::FileDescriptor::kInvalid;
+    }
+#endif
+
 #if !ASYN_PLATFORM_WIN32
     /**
      * @brief 注销一个已武装的描述符之后，同一个描述符号（已被新描述符占用）要能立刻重新注册

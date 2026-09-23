@@ -95,6 +95,10 @@ namespace AsynGyanis::Core
          *          上层的调用顺序是「先注销、后关闭描述符」，因此这里不负责关闭套接字。
          * @param fileDescriptor 目标描述符
          * @return true 已注销；false 表示它不在注册表里
+         * @warning 注销之后**同一个还打开着的描述符不能再注册回来**：Windows 没有把句柄从完成端口
+         *          解除关联的 API，第二次绑定会被拒（实测三种时序一致：探针已跑完一轮、取消完成尚未
+         *          取回、先收掉取消完成再注册）。epoll 与 io_uring 没有这条限制，因此「注销后再注册
+         *          同一个活描述符」不能当跨后端契约；本层的注销只发生在套接字关闭路径上。
          */
         bool delFileDescriptor(int fileDescriptor);
 
