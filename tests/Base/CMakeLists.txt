@@ -36,6 +36,7 @@ add_executable(TestBase
         Log/Sinks/TestConsoleSink.cpp
         Log/Sinks/TestFileSink.cpp
         Log/Sinks/TestRollingFileSink.cpp
+        Log/Sinks/TestRollingPeriod.cpp
         Log/Sinks/TestAsyncSink.cpp
 )
 
