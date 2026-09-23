@@ -129,6 +129,28 @@ namespace AsynGyanis::Net
                     : 1 + configuration.peerConnectionId.size() + 1;
             return headerByteLength + kQuicAuthenticationTagByteLength + kQuicCryptoFrameHeaderByteLimit;
         }
+        /**
+         * @brief 收包路径上那两块与包长成比例的临时缓冲
+         *
+         * @details 解头部保护要一份可写副本、AEAD 解密要一份明文缓冲，两者都要到能算出长度之后
+         *          才知道要多大——也就是说在判断「这条报文解不解得开」之前就已经付过一次分配。
+         *          按线程复用之后高水位只留一份，代价是**任何指向它们的视图都不许活到下一次收包**：
+         *          本层的交付路径（流层入队、TLS 缓冲、transport parameters 解析、错误文案）全部是
+         *          拷贝入存储，因此这一条成立。状态机不跨挂起点持有这些视图（它不是协程）。
+         */
+        enum class ReceiveScratch : std::uint8_t
+        {
+            PacketCopy,  ///< 整包的可写副本，只有头部那几个字节会被改写
+            Plaintext,   ///< AEAD 解出来的明文帧
+        };
+
+        /// @return 本线程那份复用缓冲，调用方自行填长度
+        std::vector<std::uint8_t> &receiveScratch(const ReceiveScratch kind) noexcept
+        {
+            thread_local std::vector<std::uint8_t> packetCopy{};
+            thread_local std::vector<std::uint8_t> plaintext{};
+            return kind == ReceiveScratch::PacketCopy ? packetCopy : plaintext;
+        }
     } // namespace
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::spaceOf(const QuicEncryptionLevel level) noexcept
@@ -273,7 +295,8 @@ namespace AsynGyanis::Net
         }
 
         // 去头部保护是就地改写，所以在可写副本上做；原数据报的其余部分不受影响
-        std::vector<std::uint8_t> workingBytes(packet.begin(), packet.end());
+        std::vector<std::uint8_t> &workingBytes = receiveScratch(ReceiveScratch::PacketCopy);
+        workingBytes.assign(packet.begin(), packet.end());
         const std::span<std::uint8_t> workingPacket(workingBytes);
 
         const std::expected<std::span<const std::uint8_t>, QuicDecodeError> sample =
@@ -338,7 +361,8 @@ namespace AsynGyanis::Net
 
         const std::span<const std::uint8_t> additionalData = workingPacket.subspan(0, headerByteCount);
         const std::span<const std::uint8_t> protectedPayload = workingPacket.subspan(headerByteCount);
-        std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
+        std::vector<std::uint8_t> &plaintext = receiveScratch(ReceiveScratch::Plaintext);
+        plaintext.resize(protectedPayload.size() - kQuicAuthenticationTagByteLength);
         const std::expected<std::size_t, QuicDecodeError> opened =
                 openQuicProtectedPayload(plaintext, *reading, packetNumber, additionalData, protectedPayload);
         if (!opened.has_value())

@@ -41,6 +41,8 @@
 #include "Net/Quic/QuicPacketBuilder.h"
 #include "NetTestSupport.h"
 
+#include "AllocationProbe.h"
+
 #include <gtest/gtest.h>
 
 #include <openssl/ssl.h>
@@ -65,6 +67,10 @@ namespace AsynGyanis::Net
     {
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
         using Timestamp = QuicConnectionCore::Timestamp;
+
+        using AsynGyanis::TestSupport::AllocationProfile;
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
 
         /// 客户端自报的源连接标识（也是它参数里 ISCID 该填的值）
         const std::vector<std::uint8_t> kClientConnectionId = makeBytesFromHex("0610c9aedfc9e2edb1");
@@ -2509,5 +2515,47 @@ namespace AsynGyanis::Net
         core.drive(Timestamp{111000});
         EXPECT_TRUE(drain(core).empty()) << "解不开的包不该惊动任何一侧状态";
         EXPECT_EQ(core.phase(), QuicConnectionPhase::Established) << "相位不合不是对端违规，不能收口";
+    }
+
+    /**
+     * @brief 一条入向报文「进门」要付多少次分配
+     * @details 解头部保护要一份整包可写副本、AEAD 解密要一份明文缓冲，这两份都要在判断
+     *          「这条报文解不解得开」之前先分配出来，因此是与收没收到正文无关的固定成本。
+     *          用重复包号那一支来量：它一定走到「这个包号已收过」就返回，帧解码与流层记账
+     *          摊不进读数，剩下的正是进门那两份缓冲。
+     */
+    TEST(QuicConnectionCore, ReceivePathScratchBuffersAreReusedAcrossDatagrams)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 正文取满一条 typical MTU：进门那两份缓冲都是按包长分配的，小包会把收益藏起来
+        const std::string bodyText(1100U, 'p');
+        const std::vector<std::uint8_t> body      = payloadBytes(bodyText);
+        const std::vector<std::uint8_t> datagram  = makeStreamDatagram(client, QuicEncryptionLevel::Application, 4ULL, 0ULL, body, false);
+        ASSERT_GT(datagram.size(), body.size()) << "这条报文没带上整包开销，读数量的不是被测形状";
+        ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{70000}).has_value()) << "第一条就没被收下，稳态无从谈起";
+
+        const auto feedOnce = [&core, &datagram]() -> std::size_t
+        {
+            static_cast<void>(core.onDatagramReceived(datagram, Timestamp{80000}));
+            return datagram.size();
+        };
+
+        const AllocationProfile profile = measurePerOperation(feedOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * datagram.size()) << "有一千次里没走完这段路径，读数不可信";
+        std::printf("quic 收一条 %zu 字节的 1-RTT 报文：每次 %llu 次分配 / %llu 字节\n", datagram.size(),
+                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
+        // 进门那两份缓冲按线程复用之后，这一档不该再有任何一次分配
+        EXPECT_EQ(profile.totalAllocations, 0ULL)
+                << "收包路径上又出现了逐包分配：读数为每次 "
+                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 } // namespace AsynGyanis::Net
