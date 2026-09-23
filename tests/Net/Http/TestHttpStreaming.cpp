@@ -682,6 +682,10 @@ namespace AsynGyanis::Net
         // 会话收尾补终止块同样走这条已判死的连接，因此整条断开连接只留一条日志
         EXPECT_EQ(logCapture.countContaining(kResponseWriteFailureFragment), 1u) << "会话收尾阶段把同一件事又记了一遍";
         EXPECT_EQ(logCapture.countContaining("请停止继续写并收口连接"), 1u) << "唯一那条日志必须是可操作的中文文案";
+        // 连接计数与日志共用同一个翻转点：一次失败记一条，重试与会话收尾的短路返回都不再加。
+        // 本用例只有一条连接，因此这个读数同时是「正常写出的连接不误计」的反向证据
+        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u)
+                << "写出失败的连接计数与日志口径不一致：同一次失败被记了多次，或一次都没记上";
         EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
     }
 } // namespace AsynGyanis::Net

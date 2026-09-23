@@ -17,6 +17,12 @@
 
 ### 新增
 
+- **新指标 `asyn_http_write_aborted_connections_total`**：响应已排入发送、却因写出失败而收口的连接条数。
+  此前这一类事件只有一行错误日志，`/metrics` 上没有任何出口——慢消费者把发送缓冲压满、对端带未读数据
+  关闭（内核回 RST）时，`responses_total{status_class="2xx"}` 已经把那次应答算进去了（口径是「排入待发
+  字节」），而 `http2_stream_cancelled_total` 的口径是「本端因此未发响应」，两条都对不上号。
+  它与 `timeout_closed_connections_total` 是两种毛病：那条是「没人来取」，这条是「取到一半不取了」。
+  一条连接至多记一次；只覆盖 h1/h2 的 TCP 侧，QUIC 由传输层自行重传，没有这个形态。
 - **`HttpServer::setMetricsCollector()` / `HttpsServer::setMetricsCollector()`**：把一台服务器的统计
   采集端换成现成的那一份，让同一端口上的多台监听器（每事件循环一个）把计数并进同一口径。
   此前 `metricsCollector()` 只能读不能换，共享只到「把本机的采集端借给 `QuicServer`」这一步。

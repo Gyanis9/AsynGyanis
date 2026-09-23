@@ -108,6 +108,7 @@ namespace AsynGyanis::Net
             stats.webSocketServerCloseCount        = 10;
             stats.streamCancelledCount             = 12;
             stats.zeroCopySendCount                = 13;
+            stats.writeAbortedConnectionCount      = 14;
             return stats;
         }
     } // namespace
@@ -123,6 +124,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("# TYPE asyn_http_requests_total counter\nasyn_http_requests_total 11\n"), std::string::npos) << text;
         EXPECT_NE(text.find("asyn_http_bad_requests_total 3\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_timeout_closed_connections_total 4\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_write_aborted_connections_total 14\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_websocket_upgrades_total 6\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_websocket_messages_total 7\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_websocket_protocol_error_closes_total 8\n"), std::string::npos);

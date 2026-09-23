@@ -538,7 +538,7 @@ namespace AsynGyanis::Net
             // 一次失败只留一条日志：普通分段写与零拷贝发送两条路径共用这段收口逻辑。
             // 失败原因优先采用异常自带的那条（错误码与上下文更全），没有异常可带时补一句通用的：
             // 对端关闭在底层是「非正返回值」而不是异常（见 AsyncSocket::asyncSend）
-            const auto recordSendFailure = [&isConnectionUnusable](std::string failureReason)
+            const auto recordSendFailure = [&isConnectionUnusable, &metrics](std::string failureReason)
             {
                 if (failureReason.empty())
                 {
@@ -547,8 +547,16 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
                               failureReason);
 
-                // 连接从此不再尝试写出：本侧收口
-                isConnectionUnusable = true;
+                // 连接从此不再尝试写出：本侧收口。计数挂在翻转上，一条连接至多记一次——
+                // 「异常 + 非正返回值」两条来源汇到这里，短路后的重试不再进这个函数
+                if (!isConnectionUnusable)
+                {
+                    if (metrics != nullptr)
+                    {
+                        metrics->countWriteAbortedConnection();
+                    }
+                    isConnectionUnusable = true;
+                }
             };
 
             // 发出响应：把「头部块 + 正文」作为两段提交，正文因此不必先拷进头部块。

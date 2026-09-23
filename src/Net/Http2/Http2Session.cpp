@@ -1702,7 +1702,15 @@ namespace AsynGyanis::Net
             }
             LOG_ERROR_FMT("Http2Session: 待发字节写出失败，连接已不可用，本条数据未完整发出，请停止继续写并收口连接。原因：{}",
                           failureReason);
-            m_isConnectionUnusable = true;
+            // 计数挂在翻转上：一条连接至多记一次，之后 flushOutgoingBytes 在入口处短路，不会再进这里
+            if (!m_isConnectionUnusable)
+            {
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countWriteAbortedConnection();
+                }
+                m_isConnectionUnusable = true;
+            }
         }
 
         // 缓冲还回去复用（容量留下）：h2 的每条响应至少要交两次待发字节，不复用就是每条响应

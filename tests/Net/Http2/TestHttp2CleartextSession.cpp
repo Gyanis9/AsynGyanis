@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -2282,6 +2283,96 @@ namespace AsynGyanis::Net
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：响应写到一半被对端抽走的连接记一条 writeAbortedConnectionCount，写满收口的不误计
+     *
+     * @details h2 的落账点是 `flushOutgoingBytes` 里「本侧把连接判死」那一处，与 h1 的
+     *          `recordSendFailure` 不是同一段代码，所以两侧各要一条直测。构造手法与 h1 那条
+     *          流式失败用例同源：先给足流控窗口让服务端真的往套接字里灌 4 MiB，客户端只取走
+     *          第一段就带着未读数据关闭，内核回 RST，下一次写出必然失败。
+     */
+    TEST(Http2CleartextSession, CountsConnectionAbortedMidResponseBody)
+    {
+        const auto registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            router.get("/huge", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                // 4 MiB 一次成型：远超套接字缓冲，服务端必定在某个时刻写不出去
+                response.setBody(std::string(4U * 1024U * 1024U, 'x'));
+                co_return;
+            });
+        };
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, {},
+                                         [](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+
+        // 窗口先给足再发请求：不给窗口的话服务端会停在流控上，永远不碰套接字，
+        // 这条用例要钉的「写出失败」就根本不会发生。
+        // 顺序有讲究（RFC 7540 §6.9）：流级 WINDOW_UPDATE 必须排在该流的 HEADERS 之后，
+        // 给一条还不存在的流还窗口是连接级错误，服务端会直接回 GOAWAY 把连接收掉
+        std::string requestWithCredits;
+        requestWithCredits += encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 4U * 1024U * 1024U}, 0U);
+        requestWithCredits += makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/huge"), true);
+        requestWithCredits += encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 4U * 1024U * 1024U}, 1U);
+        ASSERT_TRUE(client.sendBytes(requestWithCredits, kWaitTimeout)) << "额度与请求未能写入";
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return std::any_of(receivedFrames.begin(),
+                                                           receivedFrames.end(),
+                                                           [](const Http2Frame &frame)
+                                                           {
+                                                               return frame.header.type == Http2FrameType::Data && frame.header.streamId == 1U;
+                                                           });
+                                     },
+                                     kWaitTimeout)) << "一段正文都没拿到：服务端可能压根没开始写";
+
+        // 此刻内核里还压着大量未读字节，直接关闭回的是 RST 而不是优雅 EOF
+        client.closeNow();
+        ASSERT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在对端断开后没有收口";
+        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u)
+                << "写出被中途抽走的连接没有记上（或记了多次）：这条连接只该有一份「未发完」的记录";
+
+        // 反向下界：一条完整送到的连接不得被算成「写出被抽走」。同一条用例里读同一个计数，
+        // 因此它钉的是「不误计」，而不是另一个装配下的另一份读数
+        CleartextHttp2Client healthyClient(listeningPort);
+        ASSERT_TRUE(healthyClient.isValid()) << "对照连接失败";
+        std::vector<Http2Frame> healthyFrames;
+        ASSERT_TRUE(healthyClient.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(healthyClient.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+        ASSERT_TRUE(healthyClient.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(healthyClient.pumpUntil(healthyFrames,
+                                            [](const std::vector<Http2Frame> &receivedFrames)
+                                            {
+                                                return hasEndStream(receivedFrames, 1U);
+                                            },
+                                            kWaitTimeout)) << "对照请求没有拿到完整响应";
+        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u) << "正常写满收口的连接被误计成写出失败";
+
+        healthyClient.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "对照连接没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }
 } // namespace AsynGyanis::Net
