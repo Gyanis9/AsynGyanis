@@ -10,9 +10,11 @@
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
 // - 多语句文本在两条协议路径上都整次拒绝且首条不落库（这是「握手不开 CLIENT_MULTI_STATEMENTS」的可证形式）
 // - 语句表到顶时逐出最久没被读到的那一条：条数停在上界、热语句第二轮仍逐条命中
+// - 预处理结果的取值缓冲区跟着「本次数据长度」走：先读 1 MiB 再读 20 字节，同一句缓存语句的读数要收缩回百字节级
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
 
+#include "AllocationProbe.h"
 #include "DatabaseTestSupport.h"
 
 #include "Database/Common/BinaryBytes.h"
@@ -51,6 +53,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace AsynGyanis::Database
@@ -60,6 +63,10 @@ namespace AsynGyanis::Database
     using TestSupport::readEnvironmentTextOrDefault;
 
     using TestSupport::containsLocalizedText;
+
+    // 分配探针住在 AsynGyanis::TestSupport（跨模块共用），与本命名空间下的 Database::TestSupport 不是一处
+    using AsynGyanis::TestSupport::AllocationProfile;
+    using AsynGyanis::TestSupport::measureOperations;
     namespace
     {
 #ifdef DATABASE_HAS_MYSQL
@@ -155,6 +162,30 @@ namespace AsynGyanis::Database
 
         /// 二进制列用例的表：同表内放一列 LONGBLOB 与一列 TEXT，用于验证字符集是二者在协议层的唯一区分
         constexpr std::string_view kBinaryTableName = "Asyn_Mysql_Binary";
+
+        /// 取值缓冲区定量用例的表：一列 LONGBLOB，先后各放一条大载荷与小载荷
+        constexpr std::string_view kBlobSizingTableName = "Asyn_Mysql_BlobSizing";
+        constexpr std::string_view kBlobSizingColumns =
+            "`id` BIGINT PRIMARY KEY, `payload` LONGBLOB NOT NULL";
+
+        /// 大载荷的字节数：够大到让缓冲区明显跟着涨，又不至于把一次真机往返拉到秒级
+        constexpr std::size_t kBlobSizingLargePayloadBytes = 1024U * 1024U;
+        /// 小载荷的字节数
+        constexpr std::size_t kBlobSizingSmallPayloadBytes = 20U;
+        /// 大载荷格的连跑次数（每次要多搬 1 MiB，刻意压得比小载荷格低）
+        constexpr std::uint64_t kBlobSizingLargeRepetitions = 20U;
+        /// 小载荷格的连跑次数：一次真机往返约 0.4 毫秒，两百次量到的是稳态而不是首轮抖动
+        constexpr std::uint64_t kBlobSizingSmallRepetitions = 200U;
+        /// 大载荷格的下限：必须明显量出「缓冲区按数据大小分配」的痕迹，否则小载荷格的上限断言只是运气
+        constexpr std::uint64_t kBlobSizingLargeBytesFloor = 128U * 1024U;
+        /**
+         * @brief 小载荷格每次查询允许申请的字节数上界
+         * @details 实测稳态读数 542 B/次（余下的是绑定数组、逐列长度/类型表与行快照）。
+         *          这道界守的是「语句复用时缓冲区要跟着本次结果收缩」：缓冲区按元数据的
+         *          max_length 分配，而 max_length 由 store_result 每次执行重写；哪天改成
+         *          「取历史最大值」，小载荷格立刻跳到 MiB 一档。
+         */
+        constexpr std::uint64_t kBlobSizingBytesBudget = 4096U;
 
         /// 异步读写链路用例的表（异步路径与同步路径在同一张表上对照）
         constexpr std::string_view kAsyncChainTableName = "Asyn_Mysql_AsyncChain";
@@ -1802,6 +1833,77 @@ namespace AsynGyanis::Database
         }
 
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationBinaryRow>(*pool, true, &errorText)) << errorText;
+    }
+
+    /**
+     * @brief 验证预处理结果的取值缓冲区跟着「本次数据长度」走，既不跟列的声明上限也不跟历史最大值
+     * @details 缓冲区按列元数据的 max_length 分配，而 max_length 由 store_result 每次执行时按本次
+     *          结果重写。两个方向都会出错：跟着类型上限走，读 20 字节也要先清零一整个上限；跟着
+     *          历史最大值走，一句被复用的语句会永久停在首次的大载荷上。因此先量大载荷格（它的下限
+     *          证明这台探针确实看得见缓冲区大小），再量小载荷格（它的上限证明缓冲区收缩了）。
+     */
+    TEST_F(MySqlIntegrationTest, PreparedResultBuffersFollowThisExecutionDataLength)
+    {
+        ASSERT_TRUE(prepareTable(kBlobSizingTableName, kBlobSizingColumns)) << m_lastSetupError;
+
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        const std::string insertText =
+            "INSERT INTO " + std::string(kBlobSizingTableName) + " (id, payload) VALUES (?, ?)";
+        // 1 号行放大载荷、2 号行放小载荷：两格读的是同一条语句文本，因此第二格命中的是同一份缓存元数据
+        for (const std::pair<std::int64_t, std::size_t> entry :
+             {std::pair{1LL, kBlobSizingLargePayloadBytes}, {2LL, kBlobSizingSmallPayloadBytes}})
+        {
+            const BinaryBytes   payload(entry.second, 0x41);
+            const std::vector<DatabaseValue> values{entry.first, payload};
+            ASSERT_NE(connection->execute(insertText, values), nullptr) << connection->lastError();
+        }
+
+        const std::string selectText =
+            "SELECT payload FROM " + std::string(kBlobSizingTableName) + " WHERE id = ?";
+
+        // 预热：首次执行要编译语句并登记进缓存，那份一次性开销不该记进稳态读数
+        const std::vector<DatabaseValue> largeRowValues{static_cast<std::int64_t>(1)};
+        const std::vector<DatabaseValue> smallRowValues{static_cast<std::int64_t>(2)};
+        ASSERT_NE(connection->execute(selectText, largeRowValues), nullptr) << connection->lastError();
+        ASSERT_NE(connection->execute(selectText, smallRowValues), nullptr) << connection->lastError();
+
+        const auto measureRead = [&connection, &selectText](const std::vector<DatabaseValue> &rowValues,
+                                                           const std::size_t expectedBytes,
+                                                           const std::uint64_t repetitions) -> AllocationProfile
+        {
+            return measureOperations(repetitions,
+                [&connection, &selectText, &rowValues, expectedBytes]() -> std::uint64_t
+                {
+                    const std::unique_ptr<DatabaseResult> result = connection->execute(selectText, rowValues);
+                    if (result == nullptr || !result->next())
+                    {
+                        return 0U;
+                    }
+
+                    // 标记只认「整条载荷原样读回」：少读一个字节都不算命中，空转更算不出来
+                    const DatabaseValue value = result->getValue(0);
+                    const BinaryBytes  *bytes = std::get_if<BinaryBytes>(&value);
+                    return (bytes != nullptr && bytes->size() == expectedBytes) ? 1U : 0U;
+                });
+        };
+
+        const AllocationProfile largeProfile =
+            measureRead(largeRowValues, kBlobSizingLargePayloadBytes, kBlobSizingLargeRepetitions);
+        const AllocationProfile smallProfile =
+            measureRead(smallRowValues, kBlobSizingSmallPayloadBytes, kBlobSizingSmallRepetitions);
+
+        EXPECT_EQ(largeProfile.resultSum, kBlobSizingLargeRepetitions) << "大载荷格没能每次都读回完整载荷";
+        EXPECT_EQ(smallProfile.resultSum, kBlobSizingSmallRepetitions) << "小载荷格没能每次都读回完整载荷";
+
+        // 对照格：MiB 级载荷至少要被搬两遍（驱动缓冲一份、交出去的 BinaryBytes 一份），读数必然远超小载荷格
+        EXPECT_GE(largeProfile.bytesPerOperation, kBlobSizingLargeBytesFloor)
+            << "大载荷格每次只申请了 " << largeProfile.bytesPerOperation
+            << " 字节：读数看不见缓冲区大小，下面的上限断言就只是运气";
+        EXPECT_LE(smallProfile.bytesPerOperation, kBlobSizingBytesBudget)
+            << "同一条缓存语句改读 " << kBlobSizingSmallPayloadBytes << " 字节后仍申请 "
+            << smallProfile.bytesPerOperation << " 字节：缓冲区没有跟着本次结果收缩，而是停在了历史最大值上";
     }
 
     /**

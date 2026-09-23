@@ -408,8 +408,10 @@ namespace AsynGyanis::Database
                 return nullptr;
             }
 
-            // 打开「store_result 时顺带更新每列 max_length」这一属性：取值缓冲区正是按 max_length
-            // 分配的，正常路径上因此不会截断。该属性只影响元数据，且入表后一路保留，只需在首次编译时设一次
+            // 打开「store_result 时顺带更新每列 max_length」这一属性：取值缓冲区正是按 max_length 分配的，
+            // 而实测本客户端库对 BLOB/TEXT 列给出的初始 max_length 是 0（不是类型上限）。少了这个属性，
+            // 每行每列都会因长度超出 1 字节的最小缓冲而改走 mysql_stmt_fetch_column 逐列补取——结果仍对，
+            // 但每列多搬一次。该属性只影响元数据，且入表后一路保留，只需在首次编译时设一次
             constexpr bool kUpdateMaximumLength = true;
             if (mysql_stmt_attr_set(rawStatement, STMT_ATTR_UPDATE_MAX_LENGTH, &kUpdateMaximumLength) != 0)
             {
@@ -823,8 +825,9 @@ namespace AsynGyanis::Database
         }
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedMetadata{rawMetadata};
 
-        const auto         columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
-        const MYSQL_FIELD *fields      = mysql_fetch_fields(rawMetadata);
+        const auto    columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
+        // 这里要非 const 的字段数组：本轮取完数据后得把每列的 max_length 归零（见循环后的说明）
+        MYSQL_FIELD *fields = mysql_fetch_fields(rawMetadata);
         if (fields == nullptr && columnCount > 0)
         {
             // 有列却拿不到元数据：无法确定列名与列类型，构造出来的结果集只会误导调用方
@@ -945,6 +948,15 @@ namespace AsynGyanis::Database
             }
 
             rows.push_back(std::move(currentRow));
+        }
+
+        // 把每列的 max_length 归零再交出去。它记的不是「本次结果的最长值」而是「这条语句见过的最长值」：
+        // 客户端库按 max(已有, 本次观测) 累积，而这份字段数组跟着缓存语句长期活着。不归零的话，一条
+        // 先读过大 BLOB 的缓存语句会让之后每次小载荷查询都按那个高水位申请并清零缓冲（实测一次 20 字节
+        // 的读取要申请 1,049,137 字节）。归零后每次执行的累积值就等于本次自己的最长值，缓冲跟着本次数据收缩
+        for (std::size_t index = 0; index < columnCount; ++index)
+        {
+            fields[index].max_length = 0UL;
         }
 
         // 行数据已全部搬到快照里，语句与元数据在本方法返回后由守卫释放，快照不引用任何句柄
