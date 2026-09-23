@@ -575,16 +575,17 @@ namespace AsynGyanis::Core
 
     void Iocp::retryFailedArms()
     {
-        // 先把待重投表换出来再遍历：armProbe 失败时会往同一张表里再入表，
-        // 边遍历边插入会让迭代器失效（扩容后接着读的是已释放内存——实测表现为对同一个
-        // 描述符反复投递同一个失败方向，事件循环整轮空转）
-        std::vector<SocketState *> pending;
-        pending.swap(m_pendingArmRetry);
+        // 只处理进入时已在表里的那几条：armProbe 失败会由 noteArmPending 追加到**同一张表**的尾部，
+        // 按长度取本轮份额、再把处理过的前几条摘掉，就不会边遍历边插入（此前是「整张表换到局部
+        // 变量再销毁」，结果等价，但每轮都把缓冲还给堆、下一轮重新长出来）。
+        // 表项是堆上的 SocketState 指针，扩容只搬表本身，按下标取用不受影响
+        const std::size_t currentRoundCount = m_pendingArmRetry.size();
 
         // 逐条重试上一次投递失败的方向：注册成功但当时武装不上（监听描述符还没 listen()、
         // 套接字还没连上）是常态，失败必须在下一轮补上，否则那些描述符永远不会有完成通知
-        for (SocketState *state: pending)
+        for (std::size_t index = 0; index < currentRoundCount; ++index)
         {
+            SocketState *state = m_pendingArmRetry[index];
             state->isArmRetryQueued = false;
             const std::uint32_t failedDirections = state->failedDirections;
             if ((failedDirections & EPOLLIN) != 0 && (state->registeredEvents & EPOLLIN) != 0)
@@ -598,7 +599,9 @@ namespace AsynGyanis::Core
         }
         // 这里**不能**清表：本轮重投又失败的方向已经由 noteArmPending／noteArmFailure 重新入表，
         // 清掉它们等于「只重投一次」，之后那个描述符再也不会被武装——实测后果是监听描述符
-        // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接
+        // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接。
+        // 摘掉前 currentRoundCount 条即可：新排进来的被挪到表头，留给下一轮
+        m_pendingArmRetry.erase(m_pendingArmRetry.begin(), m_pendingArmRetry.begin() + static_cast<std::ptrdiff_t>(currentRoundCount));
     }
 
     void Iocp::noteSyntheticReady(SocketState &state, const std::uint32_t direction)
@@ -620,13 +623,12 @@ namespace AsynGyanis::Core
             return;
         }
 
-        // 同 retryFailedArms()：先换出来再遍历，避免与本轮内的入表操作互相干扰
-        std::vector<SocketState *> pending;
-        pending.swap(m_pendingSyntheticReady);
-
+        // 直接遍历成员表：本函数体内不武装探针（只把已记下的错误位合成事件），因此本轮不会有
+        // 新的入表操作，不需要像 retryFailedArms() 那样按本轮份额摘表。换表写法则每有一批硬错误
+        // 就多付一次「还给堆、下轮重新长出来」的分配
         // 表里只有真正撞上硬错误的状态，因此这里的代价与本批条数成正比：每轮 wait() 都要走这一步，
         // 按注册表整体遍历会让「没有任何硬错误」的常态轮次也付出随连接数线性放大的成本
-        for (SocketState *state: pending)
+        for (SocketState *state: m_pendingSyntheticReady)
         {
             state->isSyntheticReadyQueued = false;
             const std::uint32_t directions = state->readyDirections;
@@ -648,6 +650,7 @@ namespace AsynGyanis::Core
             noteResultSlot(event.data.ptr, m_results.size());
             m_results.push_back(event);
         }
+        m_pendingSyntheticReady.clear();
     }
 
     std::span<epoll_event> Iocp::wait(const int timeoutMs)
@@ -945,12 +948,11 @@ namespace AsynGyanis::Core
 
     void Iocp::rearmLevelTriggered()
     {
-        // 同 retryFailedArms()：先换出来再遍历，armProbe 的失败路径会往待重投表里插入，
-        // 边遍历边插入就是迭代器失效
-        std::vector<SocketState *> pending;
-        pending.swap(m_pendingRearm);
-
-        for (SocketState *state: pending)
+        // 直接遍历成员表，**不像 retryFailedArms() 那样先换到局部变量**：这张表只在
+        // translateCompletion 里入表，而它由 wait() 在本函数之后才调用，本轮内不会有人往里加，
+        // 因此不存在迭代器失效。换表反而每轮都把缓冲还给堆、下一批入表再从零长起——
+        // 水平触发下这张表每轮都非空，实测单是去掉这一处就把每轮 wait() 的分配从 12 次降到 1 次
+        for (SocketState *state: m_pendingRearm)
         {
             if ((state->registeredEvents & EPOLLONESHOT) != 0)
             {

@@ -5,13 +5,17 @@
 #include "Platform/Platform.h"
 #include "Platform/IO/FileDescriptor.h"
 
+#include "AllocationProbe.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 #if ASYN_PLATFORM_WIN32
@@ -25,7 +29,6 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <utility>
 #endif
 
@@ -255,6 +258,77 @@ namespace AsynGyanis::Core
         EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&sentinel));
 
         EXPECT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
+    }
+
+    /**
+     * @brief 水平触发的常驻注册在稳态每轮 wait() 都不该碰堆
+     * @details 完成端口靠「重新投一次探针」模拟水平触发，因此只要有人注册着，待重投表每轮都非空；
+     *          把整张表换到局部变量再销毁，等于每轮把缓冲还给堆、下一轮再按容量长出来（实测 32 条
+     *          注册下每轮 12 次分配，改成按下标消费后归零）。epoll 后端本来就零分配；io_uring 后端
+     *          另有一笔按在途轮询条数付的分配，口径见下面的 TODO。
+     */
+    TEST(Epoll, LevelTriggeredWaitDoesNotAllocatePerRound)
+    {
+        constexpr std::size_t kRegisteredDescriptorCount = 32;
+
+        Epoll backend;
+        // std::array：注册用的用户数据是各元素自己的地址，因此这批对象一次成型、永不被搬动
+        std::array<TestEventFd, kRegisteredDescriptorCount> eventFds;
+        for (auto &eventFd: eventFds)
+        {
+            ASSERT_GE(eventFd.fileDescriptor, 0);
+            // 先塞数据再注册：水平触发下每一份都没被消费，于是每一轮都该重新报一次就绪
+            ASSERT_TRUE(eventFd.trigger());
+            ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &eventFd));
+        }
+
+        // 预热：让结果表与索引表先长到位，测量窗口里才只剩「稳态」而不是首次扩容
+        for (std::size_t round = 0; round < 50; ++round)
+        {
+            static_cast<void>(backend.wait(50));
+        }
+        // 直方图是进程级的，测量窗口前先清零，读数才只属于这一段
+        TestSupport::resetAllocationHistogram();
+
+        const auto profile = TestSupport::measurePerOperation(
+                [&backend]() -> std::size_t
+                {
+                    // 窗口里只留「取一批就绪」这一步：注册、触发与预热都在外面
+                    return backend.wait(50).size();
+                });
+
+        // 读数非零才证明这 1000 轮真的在派发事件，而不是空转到断言上
+        EXPECT_GE(profile.resultSum, TestSupport::kMeasurementIterations) << "多数轮次没有取回任何就绪，等于没测";
+        // 失败时把「申请大小的分布」一起报出来：一眼分辨多出的是指针表（8/16 字节）还是记录节点
+        std::string histogramText;
+        const auto  histogram = TestSupport::snapshotAllocationHistogram();
+        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        {
+            if (histogram[bucket] != 0)
+            {
+                histogramText += " " + std::to_string(bucket * TestSupport::kAllocationHistogramBucketBytes) + "B×"
+                                 + std::to_string(histogram[bucket]);
+            }
+        }
+
+#if defined(ASYN_WITH_IO_URING)
+        // TODO(Gyanis): 这条口径记的是「已知成本」，不是设计上限。多出来的是每轮一条、48 字节的块：
+        // 票据到注册记录的映射是节点式的 std::map（Uring::m_inFlightPolls），每轮「完成时摘除 +
+        // 重投时登记」各碰一次堆。要归零得换成开放寻址的扁平表（与 Iocp 的合并索引同一套路）；
+        // 不能把票据按记录复用——被取消那条轮询的完成通知会错配到新一轮轮询上，把真实就绪吃掉
+        constexpr std::uint64_t kExpectedAllocations = TestSupport::kMeasurementIterations * kRegisteredDescriptorCount;
+#else
+        constexpr std::uint64_t kExpectedAllocations = 0;
+#endif
+        EXPECT_EQ(profile.totalAllocations, kExpectedAllocations)
+                << "稳态每轮 wait() 付了 " << (profile.totalAllocations / TestSupport::kMeasurementIterations)
+                << " 次分配（一千轮共 " << profile.totalAllocations << " 次，预期 " << kExpectedAllocations
+                << "，大小分布:" << histogramText << "）";
+
+        for (auto &eventFd: eventFds)
+        {
+            EXPECT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
+        }
     }
 
 #if !ASYN_PLATFORM_WIN32
