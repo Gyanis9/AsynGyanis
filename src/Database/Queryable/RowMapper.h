@@ -306,8 +306,21 @@ namespace AsynGyanis::Database::Queryable
                 if (const auto *integerValue = std::get_if<std::int64_t>(&cellValue))
                 {
                     // 只接受能逐位精确表示的整数：连续精确区间是 ±2^digits（float 为 2^24、double 为 2^53），
-                    // 越界的整数转成浮点会取整成邻近的可表示值，即静默改值
-                    constexpr std::int64_t exactIntegerLimit = std::int64_t{1} << std::numeric_limits<BareType>::digits;
+                    // 越界的整数转成浮点会取整成邻近的可表示值，即静默改值。
+                    // 有效位数达到 int64 宽度的类型（x86 的 long double 是 64 位）整个区间都精确，
+                    // 此时「1 左移 digits」本身就是非法移位——用 if constexpr 把那条分支整个丢掉，
+                    // 未选中的分支不会被实例化，也就不会在编译期留下移位告警
+                    constexpr std::int64_t exactIntegerLimit = []()
+                    {
+                        if constexpr (std::numeric_limits<BareType>::digits >= std::numeric_limits<std::int64_t>::digits)
+                        {
+                            return std::numeric_limits<std::int64_t>::max();
+                        }
+                        else
+                        {
+                            return std::int64_t{1} << std::numeric_limits<BareType>::digits;
+                        }
+                    }();
                     if (*integerValue > exactIntegerLimit || *integerValue < -exactIntegerLimit)
                     {
                         throwFloatNarrowingError(columnName, floatingTypeName<BareType>(),

@@ -13,7 +13,8 @@
 // - bool 成员：只认 0/1 与布尔备选，2/-1 等整数一律拒绝（「非零即真」是静默改值）
 // - 浮点成员：整数只接受连续精确区间 ±2^digits 内的取值（越界会取整）；double 收窄进 float 时
 //   跨出 float 上下界要报错（会变成无穷大），而本就是 inf/NaN 的取值逐值保真予以接受；
-//   文本/布尔/二进制落到浮点成员一律拒绝
+//   文本/布尔/二进制落到浮点成员一律拒绝；digits 达到 int64 宽度的成员（x86 的 long double）
+//   整个 int64 区间都精确，窄尾数那一侧仍拒（同一判据、两种结论，MSVC 与 GCC 各取一侧）
 // 这些形态在真机上难以稳定构造（后端私自改写的列类型、越界或带余文的数字文本、二进制成员）；整型「十进制文本」
 // 支路（引擎存得下、却给不出 int64 的取值只能以文本返回）也靠这里覆盖，真机侧由 MySQL 集成用例验证。
 
@@ -598,6 +599,38 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth + 1), kColumnName)),
                      RowMappingException);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(-16777217), kColumnName)), RowMappingException);
+    }
+
+    /**
+     * @brief 钉住精确区间按成员类型自己的 digits 判：宽尾数类型能吃下整个 int64 区间
+     * @details 尾数位等于或超过 int64 宽度的类型（x86-64 的 long double 有 64 位有效位）不存在
+     *          「装不下某个 int64」的情况，边界因此就是 int64 本身；而窄尾数类型（MSVC 上 long double
+     *          等同 double，53 位）仍要拒绝越界取值。两边同一判据、不同结论，用编译期分支各钉一侧。
+     * @warning 这条用例的证伪只能在容器里做：把区间换算改回「1 左移 digits」，GCC 侧是编译期非法移位
+     *          （整棵测试树编不过），MSVC 侧因 long double 就是 double 而看不出差别。
+     */
+    TEST(RowMapperFloating, JudgesExactnessByTheMemberTypeOwnDigitCount)
+    {
+        // 两侧共同的接受面：2^53 在任何浮点成员上都精确
+        EXPECT_EQ(static_cast<long double>(kTwoToTheFiftyThird),
+                  Detail::convertDatabaseValue<long double>(integerValue(kTwoToTheFiftyThird), kColumnName));
+
+        if constexpr (std::numeric_limits<long double>::digits >= std::numeric_limits<std::int64_t>::digits)
+        {
+            const std::int64_t maximumSigned = std::numeric_limits<std::int64_t>::max();
+            EXPECT_EQ(static_cast<long double>(maximumSigned),
+                      Detail::convertDatabaseValue<long double>(integerValue(maximumSigned), kColumnName));
+            // double 装不下的那个奇数，宽尾数类型仍然逐位精确
+            constexpr std::int64_t beyondDoubleExactness = -9007199254740993LL;
+            EXPECT_EQ(static_cast<long double>(beyondDoubleExactness),
+                      Detail::convertDatabaseValue<long double>(integerValue(beyondDoubleExactness), kColumnName));
+        }
+        else
+        {
+            EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<long double>(
+                             integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)),
+                         RowMappingException);
+        }
     }
 
     /**
