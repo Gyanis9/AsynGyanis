@@ -1,4 +1,4 @@
-// Base 配置子系统示例：多文件与目录加载、点分路径取值、schema 校验、类型不符与缺键、热重载
+// Base 配置子系统示例：多文件与目录加载、点分路径取值、schema 校验、类型不符与缺键、内存侧覆盖、热重载
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Exception/ConfigValidationException.h"
@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -190,6 +191,42 @@ std::filesystem::path sampleDirectory(const std::filesystem::path &root, const s
                                    "语法坏掉的 YAML 被拒，不会装进半份配置");
     }
 
+    /**
+     * @brief 内存侧覆盖：立即生效、不写盘，并与文件加载共用同一套「后写的说话」定形
+     * @details setValue 是运行期改配置的唯一通道（库里不替调用方决定该写哪个文件），它最容易踩空的
+     *          两处是「以为改了磁盘」与「把一个段名改成值之后，段里那些旧键还留着」。
+     */
+    void demonstrateInMemoryOverride(const std::filesystem::path &root)
+    {
+        const std::filesystem::path directory  = sampleDirectory(root, "override");
+        const std::filesystem::path configFile = directory / "service.yaml";
+        writeTextFile(configFile, "cache:\n  ttl: 60\n  shared: true\nmode: fast\n");
+
+        auto &manager = Base::ConfigManager::instance();
+        manager.clear();
+        Samples::checklist().check(manager.loadFromDirectory(directory, false).success, "内存覆盖演示的基准配置加载成功");
+
+        Samples::checklist().check(manager.setValue("cache.ttl", Base::ConfigValue(5)) && manager.getInt("cache.ttl", 0) == 5,
+                                   "setValue 立即生效于内存快照");
+
+        std::ifstream persisted(configFile);
+        const std::string persistedText{std::istreambuf_iterator<char>(persisted), std::istreambuf_iterator<char>{}};
+        Samples::checklist().check(persistedText.find("ttl: 5") == std::string::npos,
+                                   "setValue 不写回任何文件（磁盘上仍是文件里的取值）");
+
+        // 段名被改写成单个值时，段里那些旧键必须一起让位：否则 getSection 只看得到旧键，
+        // 刚设进去的那个值整段读不回来，而 has()/get() 又都报它存在
+        Samples::checklist().check(manager.setValue("cache", Base::ConfigValue(1)) && manager.getInt("cache", 0) == 1 &&
+                                       !manager.has("cache.ttl") && manager.getSection("cache").empty(),
+                                   "把一段表改写成单个值时，段里的旧键随之让位");
+
+        Samples::checklist().check(!manager.setValue("", Base::ConfigValue(1)), "空键被拒绝，而不是造出一个读不回来的键");
+
+        // 文件是唯一真源：reload 之后内存覆盖不保留，被让位的那些段内键也照文件回到表形态
+        Samples::checklist().check(manager.reload().success && manager.getInt("cache.ttl", 0) == 60 && !manager.has("cache"),
+                                   "reload 以文件为准，内存里的覆盖随之失效");
+    }
+
     void demonstrateHotReload(const std::filesystem::path &root)
     {
         const std::filesystem::path directory = sampleDirectory(root, "hot");
@@ -249,6 +286,7 @@ int main()
     demonstrateValueAccess(directory);
     demonstrateSchemaValidation(directory);
     demonstrateFailurePaths(directory);
+    demonstrateInMemoryOverride(directory);
     demonstrateHotReload(directory);
 
     Base::ConfigManager::instance().disableHotReload();
