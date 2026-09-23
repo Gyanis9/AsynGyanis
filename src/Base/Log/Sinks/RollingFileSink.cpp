@@ -1,13 +1,12 @@
 #include "Base/Log/Sinks/RollingFileSink.h"
+#include "Base/Log/Sinks/Detail/RollingPeriod.h"
 #include "Platform/FileSystem/FileSystem.h"
-#include "Platform/System/PlatformTime.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
-#include <format>
 #include <iostream>
 #include <memory>
 #include <ranges>
@@ -23,12 +22,6 @@ namespace AsynGyanis::Base
     {
         /// 按时间滚动时，同一周期备份名冲突的最大试探次数
         constexpr int kMaximumSuffixCollisions = 1000;
-
-        /// 一天的秒数，用于推算下一个整日边界
-        constexpr std::int64_t kSecondsPerDay = 24 * 60 * 60;
-
-        /// 一小时的秒数，用于推算下一个整点边界
-        constexpr std::int64_t kSecondsPerHour = 60 * 60;
 
         /// 活动文件打不开之后的重试间隔：让出锁与系统调用的同时保证故障自愈，取值与
         /// FileSink 那条「重新打开该文件后恢复」的指引相称——占用类故障通常在秒级内消失
@@ -319,31 +312,13 @@ namespace AsynGyanis::Base
 
     std::string RollingFileSink::generateTimestampSuffix() const
     {
-        const auto    now       = std::chrono::system_clock::now();
-        const auto    timeValue = std::chrono::system_clock::to_time_t(now);
-        const std::tm localTime = AsynGyanis::Platform::PlatformTime::localTime(timeValue);
-        if (m_policy == RollingPolicy::Daily)
-        {
-            return std::format("{:04d}-{:02d}-{:02d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday);
-        }
-        return std::format("{:04d}-{:02d}-{:02d}_{:02d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday, localTime.tm_hour);
+        // 换算本身收在 Detail/RollingPeriod.h：那里是纯函数，周期边界的判定才能脱离时钟直测
+        return Detail::rollingPeriodSuffix(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()), m_policy);
     }
 
     std::time_t RollingFileSink::nextPeriodBoundary(const std::time_t timeValue) const noexcept
     {
-        const std::tm      localTime     = AsynGyanis::Platform::PlatformTime::localTime(timeValue);
-        const bool         isDailyPolicy = m_policy == RollingPolicy::Daily;
-        const std::int64_t periodSeconds = isDailyPolicy ? kSecondsPerDay : kSecondsPerHour;
-
-        // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
-        const std::int64_t elapsedSeconds = isDailyPolicy
-                                                ? static_cast<std::int64_t>(localTime.tm_hour) * kSecondsPerHour +
-                                                  localTime.tm_min * 60 + localTime.tm_sec
-                                                : static_cast<std::int64_t>(localTime.tm_min) * 60 + localTime.tm_sec;
-
-        // elapsedSeconds == 0 时结果恰为 timeValue + periodSeconds，因此边界恒严格晚于当前时刻，
-        // 同一周期内不会重复触发格式化
-        return timeValue + static_cast<std::time_t>(periodSeconds - elapsedSeconds);
+        return Detail::nextRollingPeriodBoundary(timeValue, m_policy);
     }
 
     void RollingFileSink::cleanupOldFiles() const

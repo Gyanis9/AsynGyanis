@@ -2,6 +2,7 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/LogSink.h
         ${CMAKE_CURRENT_LIST_DIR}/LogSink.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Detail/RollingPeriod.h
         ${CMAKE_CURRENT_LIST_DIR}/ConsoleSink.h
         ${CMAKE_CURRENT_LIST_DIR}/ConsoleSink.cpp
         ${CMAKE_CURRENT_LIST_DIR}/FileSink.h

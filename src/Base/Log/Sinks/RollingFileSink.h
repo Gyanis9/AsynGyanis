@@ -106,14 +106,16 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::filesystem::path getCurrentFilename() const;
 
         /**
-         * @brief 生成按天或按小时滚动时的时间后缀
+         * @brief 取当前时刻所属周期的文件名后缀
+         * @details 换算在 `Detail::rollingPeriodSuffix()`，本成员只负责带上本 Sink 的策略
          * @return std::string 时间后缀字符串
          */
         [[nodiscard]] std::string generateTimestampSuffix() const;
 
         /**
          * @brief 计算当前时间之后、下一个需要检查滚动的时间点
-         * @details 用本地时间的时分秒推算到下一个整点（Hourly）或整日（Daily），
+         * @details 换算在 `Detail::nextRollingPeriodBoundary()`，本成员只负责带上本 Sink 的策略；
+         *          用本地时间的时分秒推算到下一个整点（Hourly）或整日（Daily），
          *          因此正常写入路径上既不做本地时间转换也不做字符串格式化。
          * @param timeValue 当前时间（time_t）
          * @return std::time_t 严格晚于 timeValue 的下一个周期边界
