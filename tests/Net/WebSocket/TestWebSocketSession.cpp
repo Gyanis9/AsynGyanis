@@ -801,11 +801,12 @@ namespace AsynGyanis::Net
                 HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
-        LoopbackClient client(server->listeningPort());
+        LoopbackClient client(server->listeningPort(), HttpTestSupport::kSlowReaderReceiveBufferBytes);
         ASSERT_TRUE(client.isValid());
 
         // 握手与首批帧数据都先读到客户端：接收缓冲里留着一大截未读字节，随后的 close 才会让
-        // 内核回 RST（只收到 EOF 的话写侧拿不到错误事件）
+        // 内核回 RST（只收到 EOF 的话写侧拿不到错误事件）。本端接收缓冲已在 connect 前收窄，
+        // 「一定留下一大截未读」因此是写明的前提，而不是赌各平台默认的缓冲大小
         std::string accumulated;
         ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
         ASSERT_TRUE(client.waitForText(accumulated, "Sec-WebSocket-Accept", kWaitTimeout)) << "握手没有完成：" << accumulated;
@@ -903,11 +904,12 @@ namespace AsynGyanis::Net
                 HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
-        LoopbackClient client(server->listeningPort());
+        LoopbackClient client(server->listeningPort(), HttpTestSupport::kSlowReaderReceiveBufferBytes);
         ASSERT_TRUE(client.isValid());
 
         // 握手与首批帧数据都先读到客户端：接收缓冲里留着一大截未读字节，随后的 close 才会让
-        // 内核回 RST（只收到 EOF 的话写侧拿不到错误事件）
+        // 内核回 RST（只收到 EOF 的话写侧拿不到错误事件）。本端接收缓冲已在 connect 前收窄，
+        // 「一定留下一大截未读」因此是写明的前提，而不是赌各平台默认的缓冲大小
         std::string accumulated;
         ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
         ASSERT_TRUE(client.waitForText(accumulated, "Sec-WebSocket-Accept", kWaitTimeout)) << "握手没有完成：" << accumulated;

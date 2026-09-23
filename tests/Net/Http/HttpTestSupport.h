@@ -64,6 +64,14 @@ namespace AsynGyanis::Net
         /// 客户端单次读取的切片大小
         constexpr std::size_t kClientChunkLength = 16 * 1024;
 
+        /**
+         * @brief 「对端停读」类用例把客户端接收缓冲收窄到的字节数
+         * @details 不传这个值就等于赌各平台默认接收缓冲装不下服务端要写的量——Windows 的默认值
+         *          能吃下整块 4 MiB，写侧因此一次都不失败（本轮就有一条用例因此在 Linux 全绿、
+         *          Windows 稳定红）。收窄之后「写侧会卡在等可写」成为写明的前提，与平台默认值无关
+         */
+        inline constexpr int kSlowReaderReceiveBufferBytes = 8 * 1024;
+
         /// drain 期限用例允许的超期余量：一个轮询节拍（TcpServer 内部 50ms）加上线程唤醒与观测误差
         constexpr std::chrono::milliseconds kDrainReturnSlack{500};
 

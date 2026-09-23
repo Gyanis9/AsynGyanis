@@ -522,7 +522,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
-        LoopbackClient client(listeningPort);
+        LoopbackClient client(listeningPort, HttpTestSupport::kSlowReaderReceiveBufferBytes);
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /endless HTTP/1.1"), kWaitTimeout));
 
@@ -588,7 +588,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
-        LoopbackClient client(listeningPort);
+        LoopbackClient client(listeningPort, HttpTestSupport::kSlowReaderReceiveBufferBytes);
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /endless HTTP/1.1"), kWaitTimeout));
 
