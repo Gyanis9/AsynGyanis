@@ -18,6 +18,8 @@
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/EventLoop.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -193,13 +195,16 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 空接手动作被忽略：不会留下一个会在目标线程上抛异常的工作循环
+     * @brief 空接手动作在登记时就当场拒绝
+     * @details 旧写法是悄悄不登记：配置里写了三个工作循环、实际只跑两个，连接集中投到剩下的循环上，
+     *          而日志里没有任何痕迹。用法错误按框架口径走 logic_error 分支，故改为抛
+     *          InvalidArgumentException；不希望某个循环参与分发就别登记它。
      */
-    TEST(ConnectionDistributorTest, IgnoresWorkerWithoutAdopter)
+    TEST(ConnectionDistributorTest, RejectsWorkerWithoutAdopter)
     {
-        EventLoop           worker;
+        EventLoop             worker;
         ConnectionDistributor distributor;
-        distributor.addWorker(worker, {});
+        EXPECT_THROW(distributor.addWorker(worker, {}), Base::InvalidArgumentException);
 
         EXPECT_EQ(distributor.workerCount(), 0U);
         EXPECT_FALSE(distributor.distribute(makeDetachedSocketDescriptor()));

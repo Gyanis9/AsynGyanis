@@ -47,7 +47,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 登记一个工作循环及其接手动作
          * @param loop 工作循环，必须比本分发器活得久
-         * @param adopter 接手动作，在 loop 所在线程上执行；空对象会被忽略
+         * @param adopter 接手动作，在 loop 所在线程上执行；不得为空
+         * @throws Base::InvalidArgumentException 接手动作为空（静默不登记会让连接集中投到剩下的循环上且毫无痕迹）
          */
         void addWorker(EventLoop &loop, Adopter adopter);
 

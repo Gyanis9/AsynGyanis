@@ -1,5 +1,6 @@
 #include "Core/EventLoop/ConnectionDistributor.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Platform/IO/FileDescriptor.h"
 
@@ -55,11 +56,15 @@ namespace AsynGyanis::Core
 
     void ConnectionDistributor::addWorker(EventLoop &loop, Adopter adopter)
     {
-        // 空接手动作会让 distribute() 在目标循环上抛 bad_function_call——那是在另一个线程上炸，
-        // 属于最难查的一类故障，因此在这里就挡掉
+        // 空接手动作当场拒绝。此前的写法是悄悄不登记，留下的是一个「工作循环比配得少」的部署：
+        // 连接会集中投到剩下的循环上，而日志里一个字都没有——与「配置键没被读到」同一类静默变形。
+        // 真把空对象投出去则是在目标线程上抛 bad_function_call，更难查，故在这里就拒；
+        // 用法错误按框架口径走 logic_error 分支，调用方能与运行期故障分开捕获
         if (!adopter)
         {
-            return;
+            throw Base::InvalidArgumentException("给连接分发器登记工作循环时接手动作为空："
+                                                "请传入一个以连接描述符为参数的可调用体；"
+                                                "不希望某个循环参与分发就不要登记它");
         }
         m_workers.push_back(Worker{&loop, std::move(adopter)});
     }
