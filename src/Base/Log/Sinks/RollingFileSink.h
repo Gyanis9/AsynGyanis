@@ -54,7 +54,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 构造滚动文件 Sink
-         * @param baseFilename 基础文件名（路径刻度，只取其中的文件名段做主名与扩展名切分）。
+         * @param baseFilename 基础文件名（路径刻度）。含目录段时**只取其中的文件名段**，活动文件与
+         *                     备份一律落在 directory 参数所指的那一层——两半分家时备份清不掉。
          *                     由 UTF-8 配置文本进来时要先经 `Platform::FileSystem::pathFromUtf8`，
          *                     直接交窄串会在 Windows 上过一遍本地代码页
          * @param directory 日志目录

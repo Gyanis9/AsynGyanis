@@ -172,6 +172,40 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief base_filename 带目录段时，活动文件与备份仍留在 directory 参数所指的同一个目录里
+     * @details 钉住 `operator/` 的两条语义：右操作数带目录段时结果走进那个子目录，右操作数是绝对路径时
+     *          整体替换左操作数。两种形态都会把「活动文件」与「备份、清理」拆到不同目录——滚动照旧发生，
+     *          备份却永远清不掉（清理只扫 directory 参数那一层），日志目录无界增长。
+     *          「只取其中的文件名段」是构造参数在头文件里早就写下的承诺，此前只有按时间滚动那条路兑现了
+     */
+    TEST(RollingFileSink, BaseFilenameCarryingDirectorySegmentIsReducedToItsFilename)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_BaseWithDirectory");
+        const fs::path                        configuredDirectory = temporaryDirectory.path() / "logs";
+
+        const std::vector<fs::path> misshapenBaseFilenames = {
+                fs::path("outside") / "rel.log",                    // 相对形式：原先会写进 logs/outside/
+                temporaryDirectory.path() / "outside" / "abs.log",  // 绝对形式：原先整体替换掉 directory
+        };
+
+        for (const fs::path &baseFilename: misshapenBaseFilenames)
+        {
+            const fs::path expectedName = baseFilename.filename();
+            RollingFileSink sink(baseFilename, configuredDirectory, RollingPolicy::Size, 1024, 20);
+            writeEvents(sink, 40, "nested_base_payload");
+
+            const fs::path activePath = configuredDirectory / expectedName;
+            ASSERT_TRUE(fs::exists(activePath)) << expectedName << " 的活动文件应落在 directory 参数那一层";
+            EXPECT_GE(collectFilesMatching(configuredDirectory, expectedName.stem().string() + R"(\.\d+\.log)").size(), 1u)
+                    << "活动文件与备份分家时，这里看不到任何备份，也就没人清得掉它们";
+
+            // 被吞掉的那段目录前缀不该凭空造出来
+            EXPECT_FALSE(fs::exists(configuredDirectory / "outside")) << expectedName;
+            EXPECT_FALSE(fs::exists(temporaryDirectory.path() / "outside")) << expectedName;
+        }
+    }
+
+    /**
      * @brief 改名失败时要把「滚动没做成、这一段被清空」说清楚，而不是静默吞掉日志
      * @details 兜底动作（清空活动文件）本身是对的——不清则滚动条件恒成立、活动日志在原地无限增长；
      *          缺的是那一声：现场只看得到日志文件反复变空，没有任何一处解释为什么。

@@ -136,7 +136,10 @@ namespace AsynGyanis::Base
                                      const size_t          maximumBackupFiles) :
         // 备份数上限自行钳制：它同时决定每次滚动要探测多少个序号，配置侧虽已夹过一道，
         // 但本类是公开可构造的，不能把「不会被卡死」的责任推给调用方
-        m_baseFilename(std::move(baseFilename)), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes),
+        // 只取文件名段（构造参数的注释对此已有承诺）：带目录段的 base_filename 会把活动文件写到
+        // 那个目录里去（operator/ 遇到绝对路径的右操作数会整体替换左操作数），而备份与清理都在
+        // m_directory 下按「主名.序号.扩展名」找——两半不在同一目录时滚动照样发生，备份却永远清不掉
+        m_baseFilename(baseFilename.filename()), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes),
         m_maximumBackupFiles(std::min(maximumBackupFiles, kMaximumBackupFileCount))
     {
         // error_code 重载：目录创建失败时不让 std::filesystem_error 从构造路径逃逸，
