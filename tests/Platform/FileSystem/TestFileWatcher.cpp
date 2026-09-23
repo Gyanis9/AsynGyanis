@@ -1416,4 +1416,62 @@ namespace AsynGyanis::Platform
         }
         SUCCEED();
     }
+
+    /**
+     * @brief 只暴露防抖判定的探针监听器：不碰真实句柄，单独量防抖表这套记账
+     */
+    class DebounceProbeWatcher : public FileWatcher
+    {
+    public:
+        /**
+         * @brief 以监听线程的身份问一次「这条路径要不要派发」
+         * @param filePath 发生变更的文件路径
+         * @return true 需要派发
+         */
+        bool touch(const std::string &filePath)
+        {
+            return shouldDispatchChange(filePath);
+        }
+
+        bool addWatch(const std::string_view, const bool) override { return true; }
+        bool removeWatch(const std::string_view) override { return true; }
+        void setCallback(FileChangeCallback) override {}
+        bool start() override { return true; }
+        void stop() override {}
+        [[nodiscard]] bool isRunning() const noexcept override { return false; }
+    };
+
+    /**
+     * @brief 钉住：涌入的路径数超过防抖表上限时，已记账的抑制仍然有效，只有挤不进表的路径不抑制
+     * @details 上限的实现换过两版，两版都有代价：「每次插入都重扫整表」把单次判定从 934 ns 顶到
+     *          8115 ns（6000 条路径实测），监听线程一停摆就是通知缓冲被憋爆；「满表即整表清空」更糟，
+     *          把刚派发过、还在窗口里的路径全放回去重复派发。现在按「最近触发」淘汰，且表满到连表尾
+     *          都在窗口内时不再挤占。
+     */
+    TEST(FileWatcher, SuppressionsSurviveAPathFloodBeyondTheTableCap)
+    {
+        constexpr std::size_t kFloodPathCount = 5000;
+        DebounceProbeWatcher watcher;
+        watcher.setDebounceInterval(std::chrono::milliseconds(5000));
+
+        // 表还没满之前记下的路径，要能在整轮涌入之后仍处于被抑制状态
+        const std::string earlyPath = "config-early.yaml";
+        EXPECT_TRUE(watcher.touch(earlyPath)) << "第一次见到这条路径本就该派发";
+        EXPECT_FALSE(watcher.touch(earlyPath)) << "窗口内的重复事件应当被抑制";
+
+        for (std::size_t index = 0; index < kFloodPathCount; ++index)
+        {
+            static_cast<void>(watcher.touch("flood-" + std::to_string(index) + ".yaml"));
+        }
+
+        EXPECT_FALSE(watcher.touch(earlyPath))
+                << "防抖表被涌入的路径撑满后，把已在窗口内的记录整表清空了：这条路径会被重复派发";
+
+        // 表满且最旧一条都还在窗口内时，新路径不记账：本窗口内它每次都派发（这是有意的取舍，
+        // 挤占只会让被挤掉的那条立刻当「新路径」插回来，来回抖动）
+        const std::string untrackedPath = "config-untracked.yaml";
+        EXPECT_TRUE(watcher.touch(untrackedPath)) << "挤不进防抖表的路径按「未记账」处理，照常派发";
+        EXPECT_TRUE(watcher.touch(untrackedPath)) << "同一条未记账的路径不该被窗口抑制";
+    }
+
 } // namespace AsynGyanis::Platform

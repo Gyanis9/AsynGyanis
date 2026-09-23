@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <list>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -135,7 +136,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 判断某路径的本次变更是否应当派发
          * @details 实现「同一路径在防抖窗口内只触发一次」的公共语义，并在防抖表
-         *          超过规模上限时清理已过期记录，避免递归监听大目录树时无界增长。
+         *          表规模有上限，超出时按「最久没再触发」挤掉旧记录，避免递归监听大目录树时无界增长。
          * @param filePath 发生变更的文件绝对路径
          * @return true 需要派发回调
          * @return false 仍在防抖窗口内，应当丢弃
@@ -146,7 +147,18 @@ namespace AsynGyanis::Platform
         /// 防抖间隔（毫秒）。用原子量存取：setDebounceInterval() 允许在监听运行期间调用，
         /// 而读它的监听线程与写它的调用线程之间没有任何锁（防抖表本身只归监听线程）
         std::atomic<std::int64_t> m_debounceIntervalMilliseconds{100};
-        std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_lastEventTime;         ///< 各路径上次触发的事件时间
+
+        /// 一条路径的上次触发时间；同时挂在防抖序表里，淘汰时按「最近触发」定序
+        struct DebounceRecord
+        {
+            std::string path;                                ///< 触发过事件的路径
+            std::chrono::steady_clock::time_point lastTime{}; ///< 上一次派发出去的时刻
+        };
+
+        /// 防抖序表：越靠表头越新触发，超出上限时从表尾挤掉
+        std::list<DebounceRecord> m_recentDebouncedPaths;
+        /// 路径 → 序表节点的索引，让「查这条是否还在窗口内」保持 O(1)
+        std::unordered_map<std::string, std::list<DebounceRecord>::iterator> m_lastEventTime;
 
     private:
         /// 防抖时间戳表最多跟踪的路径数，超出后清理已过期记录
