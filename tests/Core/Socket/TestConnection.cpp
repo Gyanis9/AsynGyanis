@@ -1,13 +1,17 @@
-// Connection 单元测试：构造、关闭、取消传播与基类协程启动
+// Connection 单元测试：构造、关闭、取消传播、地址文本与基类协程启动
 
 #include "Core/Socket/Connection.h"
 
+#include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncSocket.h"
+#include "Core/Socket/InetAddress.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
+#include <string>
 #include <utility>
 
 namespace AsynGyanis::Core
@@ -61,6 +65,33 @@ namespace AsynGyanis::Core
         auto task = connection.start();
         task.handle().resume();
         EXPECT_TRUE(task.isReady());
+    }
+
+    /**
+     * @brief 地址文本按「ip:端口」交出，取不到对端时如实抛错
+     * @details 这两个方法是访问日志与观测指标里对端身份的唯一来源，也是清扫协程之外没人复查的
+     *          字符串。两条判据各有其害：格式错了让日志解析与按端口归并失真；而「拿不到对端」若
+     *          被折成 0.0.0.0:0 这类看起来合法的地址，故障连接就会在统计里冒充成一条合法对端。
+     * @note 派生类（TLS 会话）必须重写这两个方法——基类读的是自己那条套接字的描述符，
+     *       持有自有传输层的派生类不重写就会读到无效描述符上。
+     */
+    TEST(Connection, AddressTextIsIpPortAndUnconnectedPeerThrows)
+    {
+        EventLoop   loop;
+        AsyncSocket socket = AsyncSocket::create(loop);
+        ASSERT_TRUE(socket.bind(InetAddress::localhost(0)));
+        const std::uint16_t boundPort = socket.localAddress().port();
+        ASSERT_GT(boundPort, 0U) << "绑定后读不回端口，本用例的判据无从成立";
+
+        Connection connection(std::move(socket));
+
+        EXPECT_EQ(connection.localAddress(), "127.0.0.1:" + std::to_string(boundPort))
+                << "本地地址文本与绑定值不一致：按端口归指标的日志会指着另一个监听器";
+        // 取对端的动作要包一层：EXPECT_THROW 会丢掉返回值，而本方法是 [[nodiscard]] 的
+        // （MSVC 据此报 C4834 并因「告警即错误」直接拒绝构建，GCC 不报这一条）
+        const auto readPeerAddress = [&connection]() { return connection.remoteAddress(); };
+        EXPECT_THROW(readPeerAddress(), Base::SystemException)
+                << "只绑定未连接的套接字问不出对端，必须报错而不是交出「0.0.0.0:0」这类假地址";
     }
 
     /**

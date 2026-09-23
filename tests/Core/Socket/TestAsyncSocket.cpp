@@ -84,6 +84,36 @@ namespace AsynGyanis::Core
             return peerDescriptor;
         }
 
+        /**
+         * @brief 从读取侧有界读满指定字节数
+         * @details 对端已经写完才调用：此刻字节全在内核队列里，本函数只负责把它们取出来，
+         *          因此不需要推进事件循环。
+         * @param descriptor 读取侧描述符
+         * @param expectedLength 期望读到的字节数
+         * @return std::string 实际读到的字节；不足时由调用方按长度报红
+         */
+        std::string drainBytes(const int descriptor, const std::size_t expectedLength)
+        {
+            std::string received;
+            received.reserve(expectedLength);
+            std::array<char, 16 * 1024> buffer{};
+
+            static_cast<void>(waitForCondition(
+                    [&]()
+                    {
+                        const ssize_t readLength = Platform::FileDescriptor::read(descriptor, buffer.data(), buffer.size());
+                        if (readLength > 0)
+                        {
+                            received.append(buffer.data(), static_cast<std::size_t>(readLength));
+                            return received.size() >= expectedLength;
+                        }
+                        // 读到真错误就提前收手：继续等只会把「对端重置」拖成超时，报出来的原因也是错的
+                        return readLength < 0 &&
+                               Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock;
+                    }));
+            return received;
+        }
+
         /// 灌满接收队列的轮数上限：跑满说明本机的缓冲大到构造不出「有未读数据」
         constexpr int kInboundFillRoundLimit = 4096;
 
@@ -526,6 +556,76 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 等待标记只报「真的有人在等」的那个方向
+     * @details 这两个标记是 TLS 侧判断「能不能去抢另一方向的等待槽」的唯一依据：一个方向只允许
+     *          一个等待者，抢槽会直接抛 LogicException。标记多报会让读侧白等一次定时让出，
+     *          少报则把「槽位已被占」当成空位，于是把别人的等待者挤掉。
+     */
+    TEST(AsyncSocket, WaitingFlagsReportOnlyTheDirectionThatHasAWaiter)
+    {
+        EventLoop   loop;
+        AsyncSocket socket = AsyncSocket::create(loop);
+        const int   peerDescriptor = connectAndAcceptPeer(loop, socket);
+        ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        // 注册对象是首次等待时才建的，之前两个方向都必须报「没人等」
+        EXPECT_FALSE(socket.isWaitingReadable()) << "还没人读过这条连接，读方向就报在等";
+        EXPECT_FALSE(socket.isWaitingWritable()) << "还没人写过这条连接，写方向就报在等";
+
+        std::string      buffer(16, '\0');
+        Task<ssize_t>    receiving = socket.asyncReceive(buffer.data(), buffer.size());
+        receiving.handle().resume();
+        ASSERT_FALSE(receiving.isReady()) << "对端没写，读却没挂到「等可读」上";
+        EXPECT_TRUE(socket.isWaitingReadable()) << "读方向已挂上等待者却没被认出来";
+        EXPECT_FALSE(socket.isWaitingWritable()) << "只有读方向有人在等，写方向却报了「在等」：TLS 会因此让出不必要的等待";
+
+        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, "ping", 4), 4);
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
+        {
+            return receiving.isReady();
+        })) << "对端已写入，读协程却没被叫醒";
+        EXPECT_FALSE(socket.isWaitingReadable())
+                << "等待者已被取走，标记却还留着：后续判断会以为这个槽位仍被占着";
+
+        socket.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief releaseFileDescriptor() 交出所有权后，本对象既不再持有也不得关掉那个描述符
+     * @details 这条通道用来把刚 accept 的连接转交给别的循环。误关的后果不是「连接断了」而是
+     *          「别人的连接断了」：描述符号一还系统就可能被下一条 accept 复用，第二次关闭等于
+     *          替别人掐线，且现场完全指不到本类。
+     *          用例不用 fcntl 之类的方式问「还开着没」，而是在 client 析构之后再拿那个号写一次
+     *          并从对端读回来：能被写、内容按序到达，才同时证明「没被误关」与「交出去的是可用的连接」。
+     */
+    TEST(AsyncSocket, ReleasedFileDescriptorStaysOpenAndUsableAfterTheSocketDies)
+    {
+        int releasedDescriptor = -1;
+        int peerDescriptor     = -1;
+        {
+            EventLoop   loop;
+            AsyncSocket client = AsyncSocket::create(loop);
+            peerDescriptor     = connectAndAcceptPeer(loop, client);
+            ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+            const int heldDescriptor = client.fileDescriptor();
+            releasedDescriptor       = client.releaseFileDescriptor();
+            EXPECT_EQ(releasedDescriptor, heldDescriptor) << "交出的不是本对象原先持有的那个号";
+            EXPECT_EQ(client.fileDescriptor(), -1) << "交出之后本对象仍认为自己持有那个号：析构就会再关一次";
+
+            // 出作用域：client 与 loop 依次析构。此刻交出去的描述符没有任何主人
+        }
+
+        ASSERT_EQ(Platform::FileDescriptor::write(releasedDescriptor, "x", 1), 1)
+                << "持有者析构把已交出的描述符一起关掉了：那个号可能已被下一条连接复用";
+        EXPECT_EQ(drainBytes(peerDescriptor, 1), "x") << "交出去的描述符写不进去，等于移交了一条坏连接";
+
+        Platform::FileDescriptor::close(releasedDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
      * @brief 关闭套接字必须唤醒正卡在「等可写」上的协程，并让它观察到「已关闭」而不是「就绪」
      *
      * @details 钉住收尾语义对**写方向**同样成立：对端不读，发送缓冲被填满后协程落在
@@ -787,36 +887,6 @@ namespace AsynGyanis::Core
                 content[index] = static_cast<char>(static_cast<unsigned char>(index % 251));
             }
             return content;
-        }
-
-        /**
-         * @brief 从读取侧有界读满指定字节数
-         * @details 发送侧已经跑完之后才调用：此刻字节全在内核队列里，本函数只负责把它们取出来，
-         *          因此不需要推进事件循环。
-         * @param descriptor 读取侧描述符
-         * @param expectedLength 期望读到的字节数
-         * @return std::string 实际读到的字节；不足时由调用方按长度报红
-         */
-        std::string drainBytes(const int descriptor, const std::size_t expectedLength)
-        {
-            std::string                 received;
-            received.reserve(expectedLength);
-            std::array<char, kDrainChunkLength> buffer{};
-
-            static_cast<void>(waitForCondition(
-                    [&]()
-                    {
-                        const ssize_t readLength = Platform::FileDescriptor::read(descriptor, buffer.data(), buffer.size());
-                        if (readLength > 0)
-                        {
-                            received.append(buffer.data(), static_cast<std::size_t>(readLength));
-                            return received.size() >= expectedLength;
-                        }
-                        // 读到真错误就提前收手：继续等只会把「对端重置」拖成超时，报出来的原因也是错的
-                        return readLength < 0 &&
-                               Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock;
-                    }));
-            return received;
         }
 
         /**
