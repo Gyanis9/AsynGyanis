@@ -161,18 +161,24 @@ namespace AsynGyanis::Base
          * @return 配置值或默认值
          * @note 取值遵循严格口径（见 configValueAs）：不做取整、回绕与跨类型转换，
          *       类型对不上按「未配置」处理而不抛出。
-         * @note 同样不是 noexcept：取用过程要深拷贝配置子树（见 getOptional）
+         * @note 同样不是 noexcept：命中的那个值要拷出来交给调用方（字符串与容器都是堆对象）。
+         *       类型判定本身不拷树——走快照按引用查，判定失败时不必为这次失败深拷整棵子树
          */
         template<typename T>
         T get(const std::string_view key, T &&defaultValue) const
         {
-            const auto optionalValue = getOptional(key);
-            if (!optionalValue)
+            // 快照在本函数内持强引用，因此下面那份引用只在本次调用期间有效：取的是表里的原对象
+            // 而不是 getOptional 的副本（那条通道判定类型之前先把整棵子树拷进 optional，
+            // 用一个 getInt 去碰一个 200 成员的表，光这次「类型不符」就要拷两千多个节点）。
+            // getString/getText 已按同一口径改成直查
+            const auto currentData = m_data.load(std::memory_order_acquire);
+            const auto iterator    = currentData->values.find(key);
+            if (iterator == currentData->values.end())
             {
                 return std::forward<T>(defaultValue);
             }
 
-            if (auto converted = configValueAs<std::decay_t<T> >(*optionalValue))
+            if (auto converted = configValueAs<std::decay_t<T>>(iterator->second))
             {
                 return std::move(*converted);
             }

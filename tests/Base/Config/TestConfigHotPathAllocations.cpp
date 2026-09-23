@@ -144,4 +144,78 @@ namespace AsynGyanis::Base
         static_cast<void>(manager.setSchema(ConfigSchema{}));
         manager.clear();
     }
+    /**
+     * @brief 类型不匹配的取用不得为「判失败」拷出整棵子树
+     * @details 带默认值的取值通道（getInt/getBool/getDouble 与 get<T>）原先经 getOptional：
+     *          它把命中键的整个 ConfigValue 深拷进 optional，之后才由 configValueAs 判类型。
+     *          于是对一个 200 成员的表调一次 getInt，判定失败也要先拷出两百多个节点、
+     *          再把它们全部丢掉——现场是「配置读了一下没读到」，堆却过了整棵树。
+     *          判据取「同样一次判定，命中在小标量上 vs 失败在大表上」两次读数相减：
+     *          两次都该只按返回的默认值付钱
+     */
+    TEST(ConfigHotPathAllocations, MismatchingTypedReading)
+    {
+        auto &manager = ConfigManager::instance();
+        manager.clear();
+        ASSERT_TRUE(manager.setValue("app.flag", ConfigValue(true)));
+
+        ConfigObject wideObject;
+        for (int index = 0; index < 200; ++index)
+        {
+            wideObject["k" + std::to_string(index)] = ConfigValue(std::string("wide-value-") + std::to_string(index));
+        }
+        ASSERT_TRUE(manager.setValue("app.map", ConfigValue(std::move(wideObject))));
+
+        // 两条都是「类型不符 → 返回默认值」，差别只在被拒的那个值有多大
+        const auto readMismatchingSmall = [&manager]
+        {
+            return static_cast<std::uint64_t>(manager.getInt("app.flag", 7));
+        };
+        const auto readMismatchingWide = [&manager]
+        {
+            return static_cast<std::uint64_t>(manager.getInt("app.map", 7));
+        };
+
+        readMismatchingSmall();          // 先热出快照的稳态形状
+        resetAllocationHistogram();
+        const AllocationProfile smallProfile = measurePerOperation(readMismatchingSmall);
+
+        readMismatchingWide();
+        resetAllocationHistogram();
+        const AllocationProfile wideProfile = measurePerOperation(readMismatchingWide);
+
+        // 两次都得真的走了「判类型不符、回默认值」这条分支，否则比的不是同一件事
+        EXPECT_EQ(smallProfile.resultSum, kMeasurementIterations * 7U);
+        EXPECT_EQ(wideProfile.resultSum, kMeasurementIterations * 7U);
+
+        // 正对照：同一个表改走 getOptional 就是把整棵子树拷出来。这条读数负责证明上面那条判据
+        // 真的看得见「判类型之前先拷树」这类退化——看不见的话「0 vs 0」就是假绿
+        const auto copyWideSubtreeOnce = [&manager]
+        {
+            return static_cast<std::uint64_t>(manager.getOptional("app.map")->size());
+        };
+        copyWideSubtreeOnce();
+        resetAllocationHistogram();
+        const AllocationProfile subtreeProfile = measurePerOperation(copyWideSubtreeOnce);
+        EXPECT_EQ(subtreeProfile.resultSum, kMeasurementIterations * 200U) << "那张表没被拷出来，对照不成立";
+        EXPECT_GT(subtreeProfile.totalAllocations, smallProfile.totalAllocations + kMeasurementIterations)
+                << "分配探针看不见整棵子树的拷贝，本用例的判据没有牙";
+#ifdef NDEBUG
+        // 大表那次的读数不得高过小标量那次：判定阶段多拷出来的节点全部会落在这里
+        EXPECT_LE(wideProfile.totalAllocations, smallProfile.totalAllocations + kMeasurementIterations / 64U)
+                << "类型判定之前先把配置子树拷了出来：取值通道没有按引用查快照";
+        EXPECT_LE(wideProfile.totalBytes, smallProfile.totalBytes + 64U * kMeasurementIterations)
+                << "取值通道的字节读数随被拒值的大小增长，说明整棵子树被拷过";
+#endif
+        std::printf("get-mismatch per-op small=%llu wide=%llu subtree=%llu bytes small=%llu wide=%llu subtree=%llu\n",
+                    static_cast<unsigned long long>(smallProfile.allocationsPerOperation),
+                    static_cast<unsigned long long>(wideProfile.allocationsPerOperation),
+                    static_cast<unsigned long long>(subtreeProfile.allocationsPerOperation),
+                    static_cast<unsigned long long>(smallProfile.totalBytes),
+                    static_cast<unsigned long long>(wideProfile.totalBytes),
+                    static_cast<unsigned long long>(subtreeProfile.totalBytes));
+
+        manager.clear();
+    }
+
 } // namespace AsynGyanis::Base
