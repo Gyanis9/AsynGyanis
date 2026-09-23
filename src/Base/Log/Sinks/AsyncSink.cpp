@@ -73,7 +73,7 @@ namespace AsynGyanis::Base
                 return;
             }
             appendSlot(std::move(event));
-            ++m_pendingCount;
+            ++m_acceptedCount;
         } else if (m_overflowPolicy == OverflowPolicy::DropOldest)
         {
             // 队列非空时才会淘汰：容量至少为 1，在队数 >= 容量 蕴含队列非空
@@ -82,11 +82,12 @@ namespace AsynGyanis::Base
                 // 淘汰队首最旧事件，为最新日志腾出空间
                 // 被淘汰的事件不会再被 worker 处理，需同步核销它的待落地计数
                 discardFrontSlot();
-                --m_pendingCount;
+                // 被淘汰的事件不再有人等它，当场了结；新进来的才是本次受理的那条
+                settleAcceptedEvent();
                 m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
             }
             appendSlot(std::move(event));
-            ++m_pendingCount;
+            ++m_acceptedCount;
         } else
         {
             // Block：等队列腾出空间。**等待有上界**——下游 sink 卡住（慢盘、网络盘失联）时
@@ -103,7 +104,7 @@ namespace AsynGyanis::Base
                 return;
             }
             appendSlot(std::move(event));
-            ++m_pendingCount;
+            ++m_acceptedCount;
         }
         lock.unlock();
         // 只叫消费者：**入队是占走一个空位，不是腾出一个空位**，等着腾位的写入者本来就不该被这一步
@@ -157,6 +158,17 @@ namespace AsynGyanis::Base
         return m_slots.size() - m_headIndex;
     }
 
+    void AsyncSink::settleAcceptedEvent()
+    {
+        // 调用方持有队列锁：这里与 flush() 读的两个计数因此天然同步
+        ++m_settledCount;
+        // 只有确实有人在等时才碰条件变量：每条事件都 notify_all 会让不相关的写路径白付唤醒钱
+        if (m_flushWaiterCount != 0)
+        {
+            m_flushCondition.notify_all();
+        }
+    }
+
     uint64_t AsyncSink::droppedEventCount() const noexcept
     {
         return m_droppedEventCount.load(std::memory_order_relaxed);
@@ -166,12 +178,16 @@ namespace AsynGyanis::Base
     {
         {
             std::unique_lock lock(m_queueMutex);
-            // 等待条件用「待落地数为 0」而非「队列为空」：worker 取出事件后队列即空，
-            // 但下游 write 尚未返回，此时放行会让 flush() 在日志仍在途时提前返回
-            m_flushCondition.wait(lock, [this]
+            // 水位取进场那一刻的受理数：worker 取出事件后队列即空但下游 write 还没返回，
+            // 所以不能等「队列空」；而等「清零」在有持续生产者的进程里永远不会成立——
+            // 后来者的账不是本次要等的账
+            const std::size_t targetAcceptedCount = m_acceptedCount;
+            ++m_flushWaiterCount;
+            m_flushCondition.wait(lock, [this, targetAcceptedCount]
             {
-                return m_pendingCount == 0 || m_stopToken.stop_requested();
+                return m_settledCount >= targetAcceptedCount || m_stopToken.stop_requested();
             });
+            --m_flushWaiterCount;
         }
         // 转发刷新必须在锁外：这一句可能是 FlushFileBuffers 或一次标准输出刷新，握着队列锁
         // 做它就等于让全进程所有写日志的线程排在一次慢盘刷新后面。m_wrappedSink 自构造起
@@ -239,11 +255,8 @@ namespace AsynGyanis::Base
             lock.lock();
             // 队列腾出空间，只叫因队列满而阻塞的写入者（消费者此刻不需要被叫）
             m_spaceCondition.notify_one();
-            // 事件已交给下游，待落地计数归零时唤醒全部 flush 等待者
-            if (--m_pendingCount == 0)
-            {
-                m_flushCondition.notify_all();
-            }
+            // 事件已交给下游（或被过滤丢掉），本次受理的账到这里才算清
+            settleAcceptedEvent();
         };
 
         while (!stopToken.stop_requested())

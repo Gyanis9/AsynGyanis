@@ -106,11 +106,13 @@ namespace AsynGyanis::Base
         void write(LogEvent &&event) override;
 
         /**
-         * @brief 阻塞等待所有已受理事件落地后刷新下游 Sink
-         * @details 重写 LogSink::flush()：等待条件是「待落地数为 0」而非「队列为空」，
-         *          因此 worker 已取出、仍在下游 write 中阻塞的事件也算在内；随后转发 flush()，
-         *          返回即代表已受理的日志都交给了下游。转发在队列锁外进行，别的线程不会被
-         *          这一次下游刷新排在后面。
+         * @brief 阻塞等待「本次进入时已受理的那些事件」全部落地，然后刷新下游 Sink
+         * @details 重写 LogSink::flush()：等待条件是**已结数追平进场时的受理水位**，而不是「队列空」，
+         *          也不是「待落地数为 0」。后者在有持续生产者的进程里永远不会成立（实测另一条线程按
+         *          每秒数万条写入时，flush() 等满 1.9 秒仍未返回，而该等的量只有容量 64 × 50µs ≈ 3ms），
+         *          调用方因此被后来者饿死。水位之下含 worker 已取出、仍在下游 write 中的在途事件，
+         *          也含被 DropOldest 淘汰和被等级过滤丢弃的那些——它们不再需要任何人等待。
+         *          转发下游 flush() 在队列锁外进行，别的线程不会被这一次刷新排在后面。
          * @note stop() 之后不再无限等待，避免 worker 退出后调用方挂死。
          */
         void flush() override;
@@ -163,6 +165,14 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] std::size_t queuedEventCount() const noexcept;
 
+        /**
+         * @brief 核销一条已受理事件的落地义务，并在有人等待时唤醒 flush 等待者
+         * @details 事件离开队列的每一条路都要走这里一次：worker 写出后、被下游等级过滤丢掉时、
+         *          被 DropOldest 淘汰时。少一次就有 flush() 永远等不到的账，多一次则让 flush()
+         *          在账还没清时就返回。必须在持有队列锁时调用。
+         */
+        void settleAcceptedEvent();
+
         std::unique_ptr<LogSink> m_wrappedSink;      ///< 被包装的下游 Sink
         std::vector<LogEvent>    m_slots;            ///< 事件槽位数组；m_headIndex 之前的槽位已消费、待回收
         std::size_t              m_headIndex = 0;    ///< 队首事件所在槽位下标
@@ -170,9 +180,11 @@ namespace AsynGyanis::Base
         size_t                   m_maximumQueueSize; ///< 队列容量上限（已钳到 kMinimumQueueSize 以上）
         OverflowPolicy           m_overflowPolicy;   ///< 溢出策略
 
-        size_t m_pendingCount = 0; ///< 已受理但尚未完成落地的事件数，含 worker 正在写出的在途事件
+        size_t m_acceptedCount = 0; ///< 已受理（进了队列）的事件累计数，flush() 据此定自己的等待水位
+        size_t m_settledCount  = 0; ///< 已了结的事件累计数：落地、被过滤丢弃、被淘汰都算，追平受理数即无在途
+        size_t m_flushWaiterCount = 0; ///< 正在等 flush 的线程数，为 0 时逐条核销不必碰条件变量
 
-        std::mutex              m_queueMutex;     ///< 保护 m_slots/m_headIndex 与 m_pendingCount 的互斥锁
+        std::mutex              m_queueMutex;     ///< 保护 m_slots/m_headIndex 与受理/已结计数的互斥锁
         /// 「队列非空」条件：只有 worker 在此等待，入队一侧 notify_one。与腾位条件分开是因为
         /// 一条条件变量上挂着两类谓词时，notify_one 可能叫到谓词不成立的那一类，唤醒被当场吞掉
         std::condition_variable m_workCondition;

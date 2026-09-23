@@ -910,4 +910,73 @@ namespace AsynGyanis::Base
                 << "实测等了 " << producerWait.count() << " ms：flush() 握着队列锁做下游刷新，"
                    "生产者被排在一次慢刷新后面";
     }
+    namespace
+    {
+        /**
+         * @brief 每条固定睡 200 微秒的下游：把「队列里排着多少条」折算成看得见的毫秒
+         * @details 有意不带 flush() 的转发目标——本用例要证的只有队列侧的账，
+         *          下游刷新是另一条用例的事。
+         */
+        class DelayedDownstream final : public LogSink
+        {
+        public:
+            void write(const LogEvent &event) override
+            {
+                static_cast<void>(event);
+                std::this_thread::sleep_for(std::chrono::microseconds{200});
+            }
+            void flush() override {}
+        };
+    } // namespace
+
+    /**
+     * @brief flush() 只等「本次进入时已受理的那批」，不等后来者
+     * @details 等「待落地数清零」在生产者持续写入时永远不成立（实测同一形状下 1.9 秒仍未返回，
+     *          而按容量 64 × 每条 200 微秒算只有约 13 毫秒的账要等）。水位判据把这条上限
+     *          固定回本次调用自己该等的量。
+     *          生产者每次写入之间留一拍：不留的话读数会混进队列锁的公平性，而不是本用例的说法。
+     */
+    TEST(AsyncSinkFlush, WaitsOnlyForEventsAcceptedBeforeTheCall)
+    {
+        constexpr std::size_t kQueueCapacity = 64U;
+        AsyncSink sink(std::make_unique<DelayedDownstream>(), kQueueCapacity, AsyncSink::OverflowPolicy::Drop);
+
+        // 生产者每分钟约 1 万条、下游每条约 200 微秒（5 千条/秒）：队列保持饱和，
+        // 「待落地数清零」因此永远不成立。写入之间刻意留一拍，免得把结论下在锁的公平性上
+        std::atomic<bool> producing{true};
+        std::thread producer([&sink, &producing]
+        {
+            while (producing.load(std::memory_order_acquire))
+            {
+                sink.write(makeEvent(LogLevel::Info, "busy producer"));
+                std::this_thread::sleep_for(std::chrono::microseconds{100});
+            }
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+
+        std::atomic<bool>         flushReturned{false};
+        std::atomic<long long>    waitedMs{-1};
+        std::thread               flusher([&]
+        {
+            const auto began = std::chrono::steady_clock::now();
+            sink.flush();
+            waitedMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(),
+                           std::memory_order_relaxed);
+            flushReturned.store(true, std::memory_order_release);
+        });
+        // 观察窗口 600 毫秒，远大于「容量 64 × 200 微秒 ≈ 13 毫秒」这个应有上限
+        for (int tick = 0; tick < 60 && !flushReturned.load(std::memory_order_acquire); ++tick)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        const bool blockedWhileProducerRan = !flushReturned.load(std::memory_order_acquire);
+        producing.store(false, std::memory_order_release);
+        producer.join();
+        flusher.join();
+
+        EXPECT_FALSE(blockedWhileProducerRan)
+                << "flush() 在持续生产者面前一直不返回：等的是「清零」，不是「进场时那批已落地」";
+        EXPECT_GE(waitedMs.load(), 0);
+        EXPECT_LT(waitedMs.load(), 100) << "实测等了 " << waitedMs.load() << " ms，而该等的只有容量 " << kQueueCapacity << " 条";
+    }
 } // namespace AsynGyanis::Base
