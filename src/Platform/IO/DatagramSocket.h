@@ -83,6 +83,9 @@ namespace AsynGyanis::Platform
          * @param peerAddress 输出参数：来源地址；传入时先被清零，失败时保持未设置
          * @return ssize_t 收到的字节数；无数据返回 -1 并置 kWouldBlock；缓冲小于报文时多出的字节
          *         被丢弃（UDP 语义），返回值即 capacity
+         * @note 截断交付时来源地址照旧有效：Windows 上这一形状由 WSAEMSGSIZE（即「调用失败」）
+         *       报回来，内核却已把来源地址写好，调用方据此回包。整条报文算已消费，后续读不会
+         *       拿到被截掉的后半截
          */
         [[nodiscard]] ssize_t receive(void *buffer, std::size_t capacity, SocketAddress &peerAddress) const noexcept;
 

@@ -430,4 +430,53 @@ namespace AsynGyanis::Platform
                 << "描述符没标 FD_CLOEXEC，子进程会继承它并占住这个 UDP 端口（标志实际为 " << descriptorFlags << "）";
     }
 #endif
+
+    /**
+     * @brief 报文比缓冲大时按容量截断交付：来源地址照旧可用，且整条报文算已消费
+     * @details 这是 receive() 在 Windows 上唯一「把失败的系统调用当成功交付」的出口（WSAEMSGSIZE），
+     *          Linux 侧同形状由 recvfrom 静默截断。两侧必须给同一个口径，否则上层得按平台分支读数。
+     *          来源地址尤其要紧：截断的调用在 Windows 上是「失败」回来的，地址字段是否已被内核写进
+     *          去没有承诺，而调用方拿它决定回包去向。
+     */
+    TEST(DatagramSocket, OversizedDatagramIsTruncatedToCapacityAndKeepsPeerAddress)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+
+        // 取值带位置信息：只比长度的话「错位交付」也能等长，按位置比才看得出来
+        constexpr std::size_t kPayloadBytes = 4096U;
+        std::vector<char>     payload(kPayloadBytes);
+        for (std::size_t index = 0; index < payload.size(); ++index)
+        {
+            payload[index] = static_cast<char>('A' + index % 26U);
+        }
+        ASSERT_EQ(sender.send(receiver.localAddress(), payload.data(), payload.size()), static_cast<ssize_t>(kPayloadBytes));
+
+        // 缓冲用满：交付长度应当恰好等于容量（截断而不是拒收），且缓冲区每个字节都被写过
+        constexpr std::size_t kCapacityBytes = 64U;
+        std::array<char, kCapacityBytes> buffer{};
+        buffer.fill('\0');
+        SocketAddress peerAddress;
+        const ssize_t receivedByteCount = receiveWithTimeout(receiver, buffer.data(), buffer.size(), peerAddress);
+        ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(kCapacityBytes))
+                << "比缓冲大的报文没有按容量交付：Windows 那侧把它当硬错误丢掉、Linux 那侧短于容量都算口径不符";
+        EXPECT_TRUE(std::equal(buffer.begin(), buffer.begin() + receivedByteCount, payload.begin()))
+                << "交付的不是报文开头的那一段，截断把数据错位了";
+        EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress()))
+                << "截断时交付了数据却丢了来源地址（端口 " << portOf(peerAddress) << " 与 "
+                << portOf(sender.localAddress()) << "）：调用方会照着它把回包发进黑洞";
+
+        // 数据报按整条交付：截断丢掉的后半不该留在队列里被下一次读拿到
+        std::array<char, kCapacityBytes> leftover{};
+        SocketAddress                    leftoverPeer;
+        const ssize_t leftoverByteCount = receiver.receive(leftover.data(), leftover.size(), leftoverPeer);
+        EXPECT_EQ(leftoverByteCount, -1)
+                << "截断之后套接字里还剩 " << leftoverByteCount << " 字节：UDP 该丢掉整条报文而不是留半截";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock)
+                << "截断后没有回到「无数据可读」态，错误码也不可信";
+    }
 } // namespace AsynGyanis::Platform
