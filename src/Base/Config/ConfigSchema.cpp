@@ -26,18 +26,20 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 取数值形式（整数或浮点），用于区间比较
+         * @details 判定顺序固定为「先无符号后有符号」：`is_number_integer()` 对两种整数都成立，
+         *          先按有符号读会把 2^63 以上的取值回绕成负数，区间于是判反方向。
          * @param value 配置值
          * @return std::optional<double> 非数值类型返回空
          */
         [[nodiscard]] std::optional<double> numericValueOf(const ConfigValue &value) noexcept
         {
-            if (value.is_number_integer())
-            {
-                return static_cast<double>(value.get<std::int64_t>());
-            }
             if (value.is_number_unsigned())
             {
                 return static_cast<double>(value.get<std::uint64_t>());
+            }
+            if (value.is_number_integer())
+            {
+                return static_cast<double>(value.get<std::int64_t>());
             }
             if (value.is_number_float())
             {

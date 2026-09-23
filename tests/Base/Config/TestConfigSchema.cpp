@@ -171,6 +171,31 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(hasErrorContaining(result, "高于上限"));
     }
 
+    TEST(ConfigSchemaTest, UnsignedValueBeyondInt64MaxExceedsMaximum)
+    {
+        // 原生解析把非负整数放进 number_unsigned，而 is_number_integer() 对两者都成立：
+        // 区间若先按有符号读出再比较，2^63 会变成 -2^63，「高于上限」于是判不出来
+        const ConfigKeyValueMap values = makeValues({{"max_connections", ConfigValue(std::uint64_t{9223372036854775808ULL})}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"max_connections", ConfigValueType::number_integer, true, std::nullopt, 1000.0}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_FALSE(result.valid);
+        EXPECT_TRUE(hasErrorContaining(result, "高于上限"));
+    }
+
+    TEST(ConfigSchemaTest, UnsignedValueBeyondInt64MaxStillSatisfiesMinimum)
+    {
+        // 同一取值只给下限时必须判通过：按有符号读会得出负数，于是「低于下限」被报出来，
+        // 而文案里那个负数根本不是你写进配置的值
+        const ConfigKeyValueMap values = makeValues({{"max_connections", ConfigValue(std::uint64_t{9223372036854775808ULL})}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"max_connections", ConfigValueType::number_integer, true, 1.0, std::nullopt}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_TRUE(result.valid) << (result.errors.empty() ? "" : result.errors.front());
+    }
+
     TEST(ConfigSchemaTest, EntryWithoutExpectedTypeAcceptsAnyStoredType)
     {
         const ConfigKeyValueMap values = makeValues({{"mixed", ConfigValue(std::string("text"))}});
