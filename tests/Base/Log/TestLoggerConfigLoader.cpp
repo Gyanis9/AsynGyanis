@@ -1484,6 +1484,44 @@ namespace AsynGyanis::Base
                 << "sinks 类型不符时说好「已忽略该字段」，实际却把原有 sink 清空了：" << captured;
     }
 
+    /**
+     * @brief 重复装配同一份配置不换掉日志器实例，退休表因此不随重载次数增长
+     * @details 重新装配走的是「取出现有实例 + 换 sink」这条路。若哪天改成用 registerLogger
+     *          覆盖，每次热重载都会往退休表留下一份日志器外壳（实测 sizeof(Logger) 80 字节
+     *          加共享计数块），而退休表按约定只能由调用方确认无在途裸引用时才清。
+     */
+    TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationKeepsTheSameLoggerInstances)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    worker:
+      level: INFO
+      sinks:
+        - type: file
+          path: identity_worker.log
+    app:
+      level: INFO
+      sinks:
+        - type: file
+          path: identity_app.log
+)");
+        applyLogging();
+
+        Logger &workerFirst = LoggerRegistry::instance().getLogger("worker");
+        Logger &appFirst    = LoggerRegistry::instance().getLogger("app");
+        Logger &rootFirst   = LoggerRegistry::instance().getRootLogger();
+
+        for (int round = 0; round < 3; ++round)
+        {
+            applyLogging();
+        }
+
+        EXPECT_EQ(&LoggerRegistry::instance().getLogger("worker"), &workerFirst) << "重复装配换掉了具名日志器实例";
+        EXPECT_EQ(&LoggerRegistry::instance().getLogger("app"), &appFirst);
+        EXPECT_EQ(&LoggerRegistry::instance().getRootLogger(), &rootFirst) << "重复装配换掉了 root 实例";
+    }
+
     TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationReplacesSinksInsteadOfDuplicating)
     {
         loadConfiguration(R"(logging:
