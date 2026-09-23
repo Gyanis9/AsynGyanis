@@ -7,7 +7,9 @@
 //   2) 补 PADDING：包号短到取不满 16 字节样本时，凑长度的 PADDING 帧必须在**密文内部**，
 //      因此这条用「组包 → 解码 → 去保护 → 解密」的完整回路验，看到明文尾部的 0x00 才算数；
 //   3) 合包：一个数据报里连发 Initial + Handshake，第二个包要能被第一个包的 packetByteCount 定位到；
-//   4) 拒绝面：空帧序列、包号字节数越界、连接标识超 20 字节、给非 Initial 带 Token、包号超 62 位上限。
+//   4) 拒绝面：空帧序列、包号字节数越界、连接标识超 20 字节、给非 Initial 带 Token、包号超 62 位上限；
+//   5) 分配台账：满载 Initial 与「短到要补 PADDING」的 ACK 包各量一次组包的碰堆次数——服务端一条
+//      大响应就是几百条这种包，这条读数直接乘在吞吐上。
 // 用例不建 SSL、不起网络，纯计算。
 
 #include "Net/Quic/QuicPacketBuilder.h"
@@ -19,9 +21,13 @@
 
 #include "NetTestSupport.h"
 
+#include "AllocationProbe.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -46,6 +52,15 @@ namespace AsynGyanis::Net
         using AsynGyanis::Net::TestSupport::kVectorDestinationConnectionIdHex;
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
         using AsynGyanis::Net::TestSupport::toUnsignedBytes;
+
+        using AsynGyanis::TestSupport::AllocationProfile;
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
+
+        /// 组一条包允许碰几次堆。两侧标准库的读数不同（libstdc++ 稳态 2 次：包缓冲 + AAD 副本；
+        /// MSVC Debug 5 次：多出的是它自己的迭代器与调试簿记），阈值按高的那侧留一格余量，
+        /// 精确读数留在打印里。它拦的是「有人往这条每包必经的路上又加了一块容器」
+        inline constexpr std::uint64_t kQuicMaximumPacketBuildAllocations = 8U;
 
         /**
          * @brief 把一组三件套密钥按十六进制摆好
@@ -280,5 +295,100 @@ namespace AsynGyanis::Net
         packet.packetNumber = kQuicMaximumIntegerValue + 1ULL;
         EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
         EXPECT_TRUE(datagram.empty()) << "校验在建头之前，五种非法输入都不该留下半个字节";
+    }
+
+    /**
+     * @brief 组一条满载 Initial 要碰几次堆——服务端一条大响应就是几百条这种包
+     * @details 读数用总次数原值而不是摊平均值：摊平会把「一千次里的零星几次」藏起来。
+     *          阈值钉在改动后的实测稳态值上，多一次分配就报红。
+     */
+    TEST(QuicPacketBuilderAllocations, FullSizeInitialPacketAllocationLedger)
+    {
+        const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
+        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ClientToServer);
+        const auto plaintext = buildAppendixA2Plaintext();
+
+        QuicOutboundPacket packet;
+        packet.destinationConnectionId  = destinationConnectionId;
+        packet.packetNumber             = kAppendixA2PacketNumber;
+        packet.packetNumberByteCount    = 4;
+        packet.frames                   = plaintext;
+
+        std::string probe;
+        appendQuicPacket(probe, packet, keys);
+        const std::size_t packetByteCount = probe.size();
+        ASSERT_GT(packetByteCount, 1000U) << "这条形状没组出满载包，读数量的不是被测形状";
+
+        const auto buildOnce = [&packet, &keys]() -> std::size_t
+        {
+            std::string datagram;
+            appendQuicPacket(datagram, packet, keys);
+            return datagram.size();
+        };
+
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto beganAt = std::chrono::steady_clock::now();
+        const AllocationProfile profile = measurePerOperation(buildOnce);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - beganAt).count();
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * packetByteCount) << "有几次没组出完整长度，读数不可信";
+        std::printf("quic 组一条 %zu 字节的 Initial：%llu 次分配 / %llu 字节 / 每次 %.1f 微秒\n", packetByteCount,
+                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations),
+                    static_cast<double>(elapsed) / static_cast<double>(kMeasurementIterations));
+        const AsynGyanis::TestSupport::AllocationHistogram histogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        {
+            if (histogram[bucket] != 0)
+            {
+                std::printf("  桶 %zu-%zu 字节：%llu 次\n", bucket * 16U, bucket * 16U + 15U,
+                            static_cast<unsigned long long>(histogram[bucket] / kMeasurementIterations));
+            }
+        }
+        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * kQuicMaximumPacketBuildAllocations)
+                << "组一条包的分配次数超过阈值：读数为每次 "
+                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+    }
+
+    /**
+     * @brief 组一条只有 ACK 的小包要碰几次堆——这是空闲连接上最常见的出站形状
+     * @details 载荷不足取样本的长度时要补 PADDING，补出来的那份缓冲与预留的容量是两回事，
+     *          所以这一条单独量：小包的比例在高并发连接上远高于大包。
+     */
+    TEST(QuicPacketBuilderAllocations, SmallAcknowledgementPacketAllocationLedger)
+    {
+        const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
+        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
+
+        // 一条 ACK 帧的真实长度量不出来也不要紧：被测的是「载荷短到需要补 PADDING」这一档
+        const std::vector<std::uint8_t> frames(6U, 0x00U);
+        QuicOutboundPacket packet;
+        packet.isLongHeader           = true;
+        packet.longPacketType         = QuicLongPacketType::Initial;
+        packet.version                = kQuicVersion1;
+        packet.destinationConnectionId = destinationConnectionId;
+        packet.packetNumber            = 1ULL;
+        packet.packetNumberByteCount   = 1;
+        packet.frames                  = std::span<const std::uint8_t>(frames);
+
+        std::string probe;
+        appendQuicPacket(probe, packet, keys);
+        const std::size_t packetByteCount = probe.size();
+        ASSERT_GT(packetByteCount, frames.size()) << "这条形状没补出 PADDING，量的就不是小包那一档";
+
+        const auto buildOnce = [&packet, &keys]() -> std::size_t
+        {
+            std::string datagram;
+            appendQuicPacket(datagram, packet, keys);
+            return datagram.size();
+        };
+
+        const AllocationProfile profile = measurePerOperation(buildOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * packetByteCount) << "有几次没组出完整长度，读数不可信";
+        std::printf("quic 组一条 %zu 字节的 ACK 包：%llu 次分配 / %llu 字节\n", packetByteCount,
+                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
+        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * kQuicMaximumPacketBuildAllocations)
+                << "组一条包的分配次数超过阈值：读数为每次 "
+                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 } // namespace AsynGyanis::Net
