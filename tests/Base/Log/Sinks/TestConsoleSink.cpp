@@ -163,38 +163,6 @@ namespace AsynGyanis::Base
         };
 
         /**
-         * @brief 把某个标准流临时改挂到给定缓冲，析构时还原原缓冲
-         */
-        class ScopedStreamRedirect
-        {
-        public:
-            /**
-             * @brief 改挂流缓冲
-             * @param buffer 临时缓冲，须活过本对象
-             */
-            ScopedStreamRedirect(std::ostream &stream, std::streambuf *buffer) :
-                m_stream(stream), m_original(stream.rdbuf(buffer))
-            {
-            }
-
-            /**
-             * @brief 析构时还原原缓冲，避免影响其它用例
-             */
-            ~ScopedStreamRedirect()
-            {
-                m_stream.rdbuf(m_original);
-            }
-
-            ScopedStreamRedirect(const ScopedStreamRedirect &) = delete;
-
-            ScopedStreamRedirect &operator=(const ScopedStreamRedirect &) = delete;
-
-        private:
-            std::ostream   &m_stream;   ///< 被改挂的标准流
-            std::streambuf *m_original; ///< 原缓冲，析构时还原
-        };
-
-        /**
          * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "console message")
@@ -320,7 +288,7 @@ namespace AsynGyanis::Base
         // 钉住：低于 Warn 的等级写 std::cout，且 write() 返回时这一行已经刷出。重定向到文件或
         // 管道时 std::cout 是全缓冲，不刷就 tail 不到实时内容，进程异常退出还会把尾部丢掉
         SyncCountingBuffer   buffer;
-        ScopedStreamRedirect redirect(std::cout, &buffer);
+        TestSupport::ScopedStreamRedirect redirect(std::cout, &buffer);
         ConsoleSink          sink(false);
 
         sink.write(makeEvent(LogLevel::Info, "flush_on_write"));
@@ -333,7 +301,7 @@ namespace AsynGyanis::Base
         // Warn 及以上走 std::cerr，它恒为 unitbuf、整行写出即落地；与上一条合起来构成
         // 「write() 返回时该行已落地」这条契约的两条实现路径
         SyncCountingBuffer   buffer;
-        ScopedStreamRedirect redirect(std::cerr, &buffer);
+        TestSupport::ScopedStreamRedirect redirect(std::cerr, &buffer);
         ConsoleSink          sink(false);
 
         sink.write(makeEvent(LogLevel::Error, "flush_on_write"));

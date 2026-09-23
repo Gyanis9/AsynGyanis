@@ -1,4 +1,5 @@
 #include "Base/Log/Sinks/RollingFileSink.h"
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/System/PlatformTime.h"
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <iostream>
 #include <memory>
 #include <ranges>
 #include <string>
@@ -241,10 +243,21 @@ namespace AsynGyanis::Base
                 std::filesystem::rename(currentPath, m_directory / backupName, renameError);
                 if (renameError)
                 {
-                    // 重命名失败（目标目录只读、跨卷等）时清空当前文件：
-                    // 否则滚动条件恒成立，活动日志会在原地无限增长
+                    // 这里的故障只能写 std::cerr：本 Sink 自己就是日志的出口，拿根日志器报这一条等于
+                    // 让 write() 递归回自己。清空当前文件是既定的兜底——不清则滚动条件恒成立，
+                    // 活动日志会在原地无限增长；但「日志被清掉了」这件事必须出声，否则现场只看得到
+                    // 文件在反复变空
+                    std::cerr << "RollingFileSink：滚动失败（" << Platform::FileSystem::utf8FromPath(currentPath) << " 改名为 "
+                            << Platform::FileSystem::utf8FromPath(m_directory / backupName) << "）：" << renameError.message()
+                            << "；已清空当前文件以免滚动条件恒成立，这一段日志随之丢弃" << '\n';
                     std::error_code truncateError;
                     std::filesystem::resize_file(currentPath, 0, truncateError);
+                    if (truncateError)
+                    {
+                        // 连清空也没做到：滚动条件会一直成立，每条日志都要再付一次失败滚动的代价
+                        std::cerr << "RollingFileSink：清空当前文件也失败：" << truncateError.message()
+                                << "；滚动条件持续成立，每条日志都会重试一次失败的滚动" << '\n';
+                    }
                 }
             }
             reopenActiveFile();

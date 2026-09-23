@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -168,6 +169,40 @@ namespace AsynGyanis::Base
         }
         // 最新一条事件必须落在活动文件里，而不是被滚动进备份
         EXPECT_NE(readWholeFile(activePath).find("sized_payload_39"), std::string::npos);
+    }
+
+    /**
+     * @brief 改名失败时要把「滚动没做成、这一段被清空」说清楚，而不是静默吞掉日志
+     * @details 兜底动作（清空活动文件）本身是对的——不清则滚动条件恒成立、活动日志在原地无限增长；
+     *          缺的是那一声：现场只看得到日志文件反复变空，没有任何一处解释为什么。
+     *          失败注入用「1 号与 2 号备份位都被非空目录占住」：滚动先顺移备份（1→2）再落位
+     *          （活动文件→1），两次 rename 都会因目标是非空目录而失败，两端走的是同一套目录语义
+     */
+    TEST(RollingFileSink, ReportsWhenRotationCannotRenameTheActiveFile)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_RenameBlocked");
+        for (const char *blockedBackupName: {"blocked.1.log", "blocked.2.log"})
+        {
+            const fs::path blocker = temporaryDirectory.path() / blockedBackupName;
+            std::filesystem::create_directories(blocker);
+            std::ofstream occupied(blocker / "occupied");
+            occupied << "占住这个序号\n";
+        }
+
+        std::ostringstream captured;
+        std::string        capturedText;
+        {
+            const TestSupport::ScopedStreamRedirect redirect(std::cerr, captured.rdbuf());
+            RollingFileSink                         sink("blocked.log", temporaryDirectory.path(), RollingPolicy::Size, 1, 1);
+            writeEvents(sink, 3, "blocked_payload");
+            sink.flush();
+            capturedText = captured.str();
+        }
+
+        EXPECT_NE(capturedText.find("滚动失败"), std::string::npos) << "改名失败一条诊断都没有：日志被清空这件事完全不可见";
+        EXPECT_NE(capturedText.find("blocked.1.log"), std::string::npos) << "诊断里没点名被占住的那个目标，运维无从知道该清哪";
+        // 兜底行为照旧：滚动做不成也要继续写得下去
+        EXPECT_GT(countLines(temporaryDirectory.path() / "blocked.log"), 0U);
     }
 
     TEST(RollingFileSink, SizePolicyPreservesEveryWrittenLine)

@@ -1,8 +1,8 @@
 /**
  * @file CommonTestSupport.h
- * @brief 跨模块共用的测试夹具：临时目录、轮询等待、栈帧符号判定与本地时刻折算
+ * @brief 跨模块共用的测试夹具：临时目录、轮询等待、标准流改挂、栈帧符号判定与本地时刻折算
  * @author Gyanis
- * @date 2026-09-18
+ * @date 2026-09-23
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -29,6 +30,41 @@ namespace AsynGyanis::TestSupport
 {
     /// 等待类断言的统一上限：正常耗时都在毫秒级，给足余量但不许无界等待
     inline constexpr std::chrono::milliseconds kWaitTimeout{5000};
+
+    /**
+     * @brief 把某个标准流临时改挂到给定缓冲，析构时还原原缓冲
+     * @details 生产代码里有一条不成文的口径：日志子系统自己的故障只能写 std::cerr（拿根日志器报
+     *          自己的故障会递归）。要断言这类诊断就只能把标准流接进内存缓冲。
+     */
+    class ScopedStreamRedirect
+    {
+    public:
+        /**
+         * @brief 改挂流缓冲
+         * @param stream 被改挂的标准流（std::cerr 等）
+         * @param buffer 临时缓冲，须活过本对象
+         */
+        ScopedStreamRedirect(std::ostream &stream, std::streambuf *buffer) :
+            m_stream(stream), m_original(stream.rdbuf(buffer))
+        {
+        }
+
+        /**
+         * @brief 析构时还原原缓冲，避免影响其它用例
+         */
+        ~ScopedStreamRedirect()
+        {
+            m_stream.rdbuf(m_original);
+        }
+
+        ScopedStreamRedirect(const ScopedStreamRedirect &) = delete;
+
+        ScopedStreamRedirect &operator=(const ScopedStreamRedirect &) = delete;
+
+    private:
+        std::ostream   &m_stream;   ///< 被改挂的标准流
+        std::streambuf *m_original; ///< 原缓冲，析构时还原
+    };
 
     /**
      * @brief 临时目录夹具
