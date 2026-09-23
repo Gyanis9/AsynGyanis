@@ -530,6 +530,51 @@ namespace AsynGyanis::Base
         EXPECT_EQ(LoggerRegistry::instance().getRootLogger().getLevel(), LogLevel::Error);
     }
 
+    /**
+     * @brief 等级名的小写写法在三处配置点上都按同一等级生效
+     * @details 钉住一次契约变更（旧语义：等级名大小写敏感，"error" 判成不认识并回落为 INFO）。
+     *          这份 YAML 其余取值全是小写（file/console/size/drop_oldest），所以小写等级是最自然的
+     *          写法；旧实现下「只留错误日志」的配置实际在打全量 INFO——多出来的不只是噪音，还可能
+     *          把正文里不该外泄的字段写进日志文件。三处配置点各配一条独立判据，回落发生在哪一处
+     *          就红在哪一处
+     */
+    TEST_F(LoggerConfigLoaderTest, LowercaseLevelNamesApplyAtEveryConfigurationPoint)
+    {
+        loadConfiguration(R"(logging:
+  global_level: trace
+  loggers:
+    root:
+      level: error
+      sinks:
+        - type: file
+          path: lowercase_root.log
+    app:
+      sinks:
+        - type: file
+          path: lowercase_sink.log
+          level: warn
+)");
+
+        applyLogging();
+
+        // global_level：app 没有写 level，因此它的等级只能来自这份小写的全局值
+        EXPECT_EQ(LoggerRegistry::instance().getLogger("app").getLevel(), LogLevel::Trace);
+
+        // logger 的 level：回落成 INFO 时这条 WARN 会落地
+        logAndFlush("root", LogLevel::Warn, "lowercase root warn line");
+        logAndFlush("root", LogLevel::Error, "lowercase root error line");
+        const std::string rootContent = readTemporaryFile("lowercase_root.log");
+        EXPECT_FALSE(contains(rootContent, "lowercase root warn line")) << rootContent;
+        EXPECT_TRUE(contains(rootContent, "lowercase root error line")) << rootContent;
+
+        // sink 的 level：回落成 INFO 时这条 INFO 会落地
+        logAndFlush("app", LogLevel::Info, "lowercase sink info line");
+        logAndFlush("app", LogLevel::Warn, "lowercase sink warn line");
+        const std::string sinkContent = readTemporaryFile("lowercase_sink.log");
+        EXPECT_FALSE(contains(sinkContent, "lowercase sink info line")) << sinkContent;
+        EXPECT_TRUE(contains(sinkContent, "lowercase sink warn line")) << sinkContent;
+    }
+
     TEST_F(LoggerConfigLoaderTest, InvalidLevelStringFallsBackToInfo)
     {
         loadConfiguration(R"(logging:

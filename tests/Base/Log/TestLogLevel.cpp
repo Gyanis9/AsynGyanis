@@ -1,4 +1,4 @@
-// LogLevel 单元测试：枚举数值连续性与顺序、等级字符串双向转换、非法输入回落
+// LogLevel 单元测试：枚举数值连续性与顺序、等级字符串双向转换、大小写折叠的边界、非法输入回落
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include "Platform/Platform.h"
@@ -134,22 +134,61 @@ namespace AsynGyanis::Base
         EXPECT_EQ(logLevelFromString("OFF"), LogLevel::Off);
     }
 
-    TEST(LogLevel, FromStringIsCaseSensitive)
+    TEST(LogLevel, FromStringIgnoresAsciiCase)
     {
-        const std::vector<std::string_view> mismatchedCaseLabels = {
-                "trace", "Trace", "tRaCe",
-                "debug", "Debug",
-                "info", "Info",
-                "warn", "Warn",
-                "error", "Error",
-                "fatal", "Fatal",
-                "off", "Off",
+        // 钉住一次契约变更（旧断言：大小写敏感，"error" 判成不认识）：日志配置里其余取值全是
+        // 小写（type: file、policy: size、overflow_policy: drop_oldest），于是 `level: error` 是最
+        // 自然的写法；把它判成不认识并按 INFO 生效，等于「只留错误日志」的配置在打全量 INFO。
+        // 新语义：任何 ASCII 大小写组合都解析为同一等级
+        struct LabelCase
+        {
+            std::string_view label; ///< 配置里可能出现的写法
+            LogLevel         level; ///< 期望解析结果
         };
 
-        for (const std::string_view label: mismatchedCaseLabels)
+        const std::vector<LabelCase> labelCases = {
+                {"trace", LogLevel::Trace}, {"Trace", LogLevel::Trace}, {"tRaCe", LogLevel::Trace},
+                {"debug", LogLevel::Debug}, {"Debug", LogLevel::Debug},
+                {"info", LogLevel::Info}, {"Info", LogLevel::Info}, {"iNFO", LogLevel::Info},
+                {"warn", LogLevel::Warn}, {"Warn", LogLevel::Warn}, {"WArN", LogLevel::Warn},
+                {"error", LogLevel::Error}, {"Error", LogLevel::Error},
+                {"fatal", LogLevel::Fatal}, {"Fatal", LogLevel::Fatal},
+                {"off", LogLevel::Off}, {"Off", LogLevel::Off},
+        };
+
+        for (const LabelCase &testCase: labelCases)
         {
-            EXPECT_EQ(logLevelFromString(label), LogLevel::Info) << "label " << std::string(label);
+            EXPECT_EQ(logLevelFromString(testCase.label), testCase.level) << "label " << testCase.label;
         }
+    }
+
+    TEST(LogLevel, LabelFoldingCoversOnlyAsciiLetters)
+    {
+        // 折叠按码位区间做而不是查 std::tolower 的 C locale 表：后者在土耳其语环境下把 'I' 折成
+        // 非 ASCII 字符，"INFO" 就会在那样的进程里解不出来。这里钉住折叠的边界——非字母字节原样
+        // 比较，因此长度相同但内容不同的标签一律配不上
+        static_assert(detail::toAsciiLowercase('I') == 'i');
+        static_assert(detail::toAsciiLowercase('i') == 'i');
+        static_assert(detail::toAsciiLowercase('0') == '0');
+        static_assert(detail::toAsciiLowercase('\x00') == '\x00');
+        // 高位字节（UTF-8 续字节）不被折叠成 ASCII 字母，也就不会误配成已知标签
+        static_assert(detail::toAsciiLowercase('\xC1') == '\xC1');
+
+        static_assert(detail::logLevelLabelEquals("info", "INFO"));
+        static_assert(detail::logLevelLabelEquals("INF", "INFO") == false);
+        static_assert(detail::logLevelLabelEquals("\xC1NFO", "INFO") == false);
+        static_assert(detail::logLevelLabelEquals("", "") == true);
+    }
+
+    TEST(LogLevel, NonAsciiAndWrongLengthLabelsStillFallBack)
+    {
+        // 与 FromStringIgnoresAsciiCase 相对的另一面：收大小写不等于收"看着像"。全角写法与
+        // 中文写法必须仍然走「诊断 + 回落」，否则一份坏配置连一行提示都没有
+        ::testing::internal::CaptureStderr();
+        EXPECT_EQ(logLevelFromString("\xef\xbc\xa1\xef\xbc\xb2\xef\xbc\xb2\xef\xbc\xb5\xef\xbc\xb2"), LogLevel::Info); // 全角 ERROR
+        EXPECT_EQ(logLevelFromString("\xe9\x94\x99\xe8\xaf\xaf"), LogLevel::Info);                                     // 「错误」
+        const std::string diagnostic = ::testing::internal::GetCapturedStderr();
+        EXPECT_NE(diagnostic.find("无法识别"), std::string::npos) << diagnostic;
     }
 
     TEST(LogLevel, FromStringFallsBackToInfoForUnknownLabels)
@@ -185,7 +224,9 @@ namespace AsynGyanis::Base
 
     TEST(LogLevel, FromStringStaysSilentForRecognizedLabels)
     {
-        const std::vector<std::string_view> knownLabels = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF"};
+        // 小写写法如今也是「认识」的取值，因此同样不该留下诊断：每条被挡下的写法都要付一行 stderr
+        const std::vector<std::string_view> knownLabels = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF",
+                                                           "trace", "debug", "info", "warn", "error", "fatal", "off"};
 
         ::testing::internal::CaptureStderr();
         for (const std::string_view label: knownLabels)
