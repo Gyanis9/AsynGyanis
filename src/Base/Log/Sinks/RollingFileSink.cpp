@@ -229,13 +229,38 @@ namespace AsynGyanis::Base
                     backupName = joinDottedName(namePart, "1", extensionPart);
                 } else
                 {
-                    backupName = joinDottedName(namePart, m_currentSuffix, extensionPart);
-                    // 同一周期内已有备份（例如进程重启后再次滚动）时追加序号，不覆盖历史内容
-                    for (int collisionIndex = 2;
-                         std::filesystem::exists(m_directory / backupName) && collisionIndex <= kMaximumSuffixCollisions;
-                         ++collisionIndex)
+                    // 同一周期内已有备份（例如进程重启后再次滚动）时追加序号，不覆盖历史内容。
+                    // 候选名逐个问到底：旧写法在数到第 kMaximumSuffixCollisions 个之前退出，那一个
+                    // 的名字从没被验过就被拿去改名，把「用满了」变成悄悄覆盖。探测一律用 error_code
+                    // 重载——这条路径跑在 Sink 的写线程上，抛出来只会让本轮滚动半途而废（活动文件已
+                    // 关、重开被跳过），而探测失败真要变成改名失败时，下面那条 rename 的诊断会接手
+                    std::error_code probeError;
+                    bool          isTargetFree = false;
+                    for (int candidateIndex = 1; candidateIndex <= kMaximumSuffixCollisions; ++candidateIndex)
                     {
-                        backupName = joinDottedName(namePart, m_currentSuffix + "." + std::to_string(collisionIndex), extensionPart);
+                        // 第 1 个候选是不带序号的名字，其后依次追加 .2、.3 ……与旧的取名口径逐字相同
+                        backupName = candidateIndex == 1
+                                         ? joinDottedName(namePart, m_currentSuffix, extensionPart)
+                                         : joinDottedName(namePart, m_currentSuffix + "." + std::to_string(candidateIndex),
+                                                         extensionPart);
+                        const bool isTaken = std::filesystem::exists(m_directory / backupName, probeError);
+                        if (probeError)
+                        {
+                            // 问不出「有没有」就不必再往后猜：后面的候选同样问不出，而本轮滚动必须落定一个名字
+                            break;
+                        }
+                        if (!isTaken)
+                        {
+                            isTargetFree = true;
+                            break;
+                        }
+                    }
+                    if (!isTargetFree && !probeError)
+                    {
+                        // 全被占：这是崩溃循环里同一周期反复滚动的现场，覆盖掉的那一段历史不会再有第二份
+                        std::cerr << "RollingFileSink：同一周期的备份名已用满 " << kMaximumSuffixCollisions
+                                << " 个，本次滚动覆盖 " << Platform::FileSystem::utf8FromPath(m_directory / backupName)
+                                << "，那一段日志丢失" << '\n';
                     }
                 }
 
