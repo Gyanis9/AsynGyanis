@@ -158,6 +158,11 @@ namespace AsynGyanis::Base
         // 后一个 Sink 读到的是已被搬空的消息，只留下一行有时间戳和级别的空日志
         const bool soleSink = snapshot->sinks.size() == 1U;
 
+        // Fatal 之后调用方往往接着就 abort()/退出，不会替日志系统补那一次 flush，于是「最想知道的最后
+        // 一条」整条留在文件流的用户态缓冲里丢掉。刷新因此只挂在 Fatal 上：常规等级不为它付这笔钱
+        // （FileSink 的 flush 是一次 FlushFileBuffers/fsync）
+        const bool flushAfterWrite = event.level == LogLevel::Fatal;
+
         for (const auto &sink: snapshot->sinks)
         {
             if (!sink || !sink->shouldLog(event.level))
@@ -172,6 +177,11 @@ namespace AsynGyanis::Base
                 } else
                 {
                     sink->write(event);
+                }
+                // 只刷收下这条的 Sink：没写进去的 Sink 缓冲里没有它，刷了也只是白付一次系统调用
+                if (flushAfterWrite)
+                {
+                    sink->flush();
                 }
             } catch (const std::exception &sinkError)
             {

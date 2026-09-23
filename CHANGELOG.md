@@ -198,6 +198,15 @@
 
 ### 修复
 
+- **`LOG_FATAL` 那一条不再留在缓冲里随进程一起丢**：`Logger::writeToSinks()` 分发完就返回，而 FileSink
+  走的是带缓冲的流——打致命错误的调用方往往接着就 `abort()`/退出，不会替日志系统补那次 flush，于是
+  「最想知道的最后一条」留在用户态缓冲里没了。分发循环因此只对 Fatal 这一条在写完后立刻刷新收下它的
+  Sink（AsyncSink 的 flush 会等到队列里的欠账都落地，语义正是「Fatal 之前的都已落下」）；常规等级不付
+  这笔钱（FileSink 的 flush 是一次 FlushFileBuffers/fsync）。用例 `Logger.FatalLineFlushesEverySinkThatTookIt`
+  同时钉住反方向：Info 不刷、没收下这条的 Sink 也不被顺带刷。改前实测两个 Sink 的 flush 计数都是 0。
+  Windows Debug `TestBase` 573 例全绿、Release 分配台账与 `Logger` 段全绿、微基准日志四例读数不变
+  （`log-filtered-out` 仍 1.4 ns）、示例 45 步全过；容器 GCC 零告警、ASan/UBSan/LSan 573 例零命中。
+
 - **多份配置互相改写形态时不再留下读不回来的幽灵键**：扁平键模型下「后一份文件把一段表写成一个值」
   （或反向）会让两种形态同时留在快照里——实测那份配置有 4 个键，其中 `server` 与 `server.port` 并存，
   而 `getSection()` 对这种键一律抛 `ConfigValidationException`：加载报成功，日志装配却整段停摆，

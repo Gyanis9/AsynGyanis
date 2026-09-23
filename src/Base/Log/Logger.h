@@ -57,6 +57,9 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 按当前日志级别过滤后写入日志事件
+         * @details 等级过滤排在正文拷贝之前：被挡下的那一条不碰堆。
+         * @note LogLevel::Fatal 在分发后立即刷新每个收下它的 Sink——调用方往往接着就退出，
+         *       不会替日志系统补那次 flush，常规等级不付这笔刷新钱。
          * @param level 本次日志级别
          * @param message 日志消息内容
          * @param location 源码位置信息

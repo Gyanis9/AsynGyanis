@@ -775,4 +775,38 @@ namespace AsynGyanis::Base
         EXPECT_EQ(m_ledger->eventCount(), static_cast<size_t>(kmessageCount));
         EXPECT_GE(m_ledger->flushCount(), 1);
     }
+
+    /**
+     * @brief Fatal 分发后立刻刷新每一个收下它的 Sink，其余等级不刷
+     * @details 打 Fatal 的调用方往往接着就 abort()/退出，不会替日志系统补那一次 flush；于是「最想知道的
+     *          最后一条」留在文件流的用户态缓冲里一起没了。刷新因此只挂在 Fatal 上——常规等级不为它付
+     *          这笔钱（FileSink 的 flush 是一次 FlushFileBuffers/fsync）。
+     */
+    TEST(Logger, FatalLineFlushesEverySinkThatTookIt)
+    {
+        auto firstLedger  = std::make_shared<SinkLedger>();
+        auto secondLedger = std::make_shared<SinkLedger>();
+        Logger logger("fatal_flush");
+        logger.setLevel(LogLevel::Trace);
+        logger.addSink(std::make_unique<RecordingSink>(firstLedger));
+        logger.addSink(std::make_unique<RecordingSink>(secondLedger));
+
+        logger.log(LogLevel::Info, "buffered info line");
+        EXPECT_EQ(firstLedger->eventCount(), 1U);
+        EXPECT_EQ(firstLedger->flushCount(), 0) << "常规等级不该为刷新付钱";
+
+        logger.log(LogLevel::Fatal, "the last line before abort");
+        EXPECT_EQ(firstLedger->flushCount(), 1) << "Fatal 之后仍要靠调用方记得 flush，那条日志就可能随进程一起丢";
+        EXPECT_EQ(secondLedger->flushCount(), 1) << "每个收下这条的 Sink 都要刷：只刷第一个等于漏";
+        EXPECT_EQ(secondLedger->eventCount(), 2U);
+
+        // 没收下这条的 Sink 不该被顺带刷新（它的缓冲里没有这条内容，刷了也只是白付一次系统调用）
+        auto skippedLedger = std::make_shared<SinkLedger>();
+        Logger warnOnly("fatal_flush_warn_only");
+        warnOnly.setLevel(LogLevel::Warn);
+        warnOnly.addSink(std::make_unique<RecordingSink>(skippedLedger));
+        warnOnly.log(LogLevel::Info, "filtered out");
+        EXPECT_EQ(skippedLedger->eventCount(), 0U);
+        EXPECT_EQ(skippedLedger->flushCount(), 0);
+    }
 } // namespace AsynGyanis::Base
