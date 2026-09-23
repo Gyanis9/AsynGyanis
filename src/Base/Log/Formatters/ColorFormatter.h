@@ -37,8 +37,9 @@ namespace AsynGyanis::Base
         /**
          * @brief 把带 ANSI 转义的日志行追加进调用方的缓冲
          * @details 重写 LogFormatter::formatInto()：版式与 format() 逐字一致，区别只在写法——
-         *          用 format_to 直接写进调用方留有容量的缓冲，稳态下整行不取堆；
-         *          format() 就是本函数加一个空串。
+         *          字段逐个 memcpy 进调用方留有容量的缓冲（一次 reserve），稳态下整行不取堆；
+         *          format() 就是本函数加一个空串。字段顺序与 DefaultFormatter 共用
+         *          Detail/PlainTextLogLine.h，本类只多传等级两侧的颜色码。
          * @param out 目标缓冲；不清空，本次文本追加在其现有内容之后
          * @param event 日志事件
          */
