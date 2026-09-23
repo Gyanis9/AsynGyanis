@@ -138,14 +138,9 @@ namespace AsynGyanis::Base
 
     bool Logger::shouldLog(const LogLevel level) const
     {
-        const LogLevel currentLevel = getLevel();
-
-        // Off 表示关闭全部输出，且它本身不是可用于记录消息的等级，因此一律不放行
-        if (currentLevel == LogLevel::Off)
-        {
-            return false;
-        }
-        return level >= currentLevel;
+        // 阈值只读一次：读两次会在两次取值之间留出一个窗口，让并发的 setLevel(Off) 有机会被
+        // 判定成「阈值还不是 Off」，刚被静音的记录器就又吐一行。判定本身与 Sink 侧共用一条函数
+        return logLevelPassesFilter(getLevel(), level);
     }
 
     void Logger::writeToSinks(LogEvent &event) const

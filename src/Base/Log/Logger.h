@@ -169,7 +169,8 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 判断指定级别是否满足输出条件
-         * @details 阈值为 LogLevel::Off 时表示关闭全部日志输出，任何级别都不放行。
+         * @details LogLevel::Off 两侧都不放行：作为阈值表示关闭全部日志输出，作为消息等级则不是
+         *          可记录的等级（见 logLevelPassesFilter）。
          * @param level 待判断日志级别
          * @return bool 当级别不低于当前阈值时返回 true
          */

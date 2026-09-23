@@ -169,7 +169,9 @@ namespace AsynGyanis::Base
         EXPECT_EQ(sink.getLevel(), LogLevel::Trace);
         for (const LogLevel level: allLevels())
         {
-            EXPECT_TRUE(sink.shouldLog(level)) << "level " << static_cast<int>(level);
+            // 最低阈值放行除 Off 以外的每个等级；Off 是「关掉全部输出」的阈值取值，
+            // 当消息等级用不算一次合法记录
+            EXPECT_EQ(sink.shouldLog(level), level != LogLevel::Off) << "level " << static_cast<int>(level);
         }
     }
 

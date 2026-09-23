@@ -316,7 +316,10 @@ namespace AsynGyanis::Base
                 {.threshold = LogLevel::Info, .level = LogLevel::Warn, .expected = true},
                 {.threshold = LogLevel::Info, .level = LogLevel::Error, .expected = true},
                 {.threshold = LogLevel::Info, .level = LogLevel::Fatal, .expected = true},
-                {.threshold = LogLevel::Info, .level = LogLevel::Off, .expected = true},
+                // Off 不是可记录的消息等级：放行会落出一行等级标签为 "?????" 的记录
+                {.threshold = LogLevel::Info, .level = LogLevel::Off, .expected = false},
+                // 数值在已知范围之外仍放行：宁可留下带 "?????" 标签的一行，也不静默吞掉
+                {.threshold = LogLevel::Info, .level = static_cast<LogLevel>(7), .expected = true},
         };
 
         for (const auto &[threshold, level, expected]: cases)
@@ -369,6 +372,24 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.message, "hello sink");
         EXPECT_EQ(event.level, LogLevel::Info);
         EXPECT_EQ(event.loggerNameView(), "dispatch");
+    }
+
+    TEST_F(LoggerTest, OffLevelMessageIsNotDeliveredToSink)
+    {
+        Logger logger("off-as-message-level");
+        logger.setLevel(LogLevel::Info);
+        logger.addSink(recordingSink());
+
+        // Off 只是「关掉全部输出」的阈值取值，拿它当消息等级是用错了枚举：放行后落盘的是一行
+        // 等级标签为 "?????" 的记录，采集端按等级解析就读到一个不存在的等级。两个公开入口同判
+        logger.log(LogLevel::Off, "不该落盘的 Off 级消息");
+        logger.logFormat(LogLevel::Off, SourceLocation::current(), "不该落盘的 {}", "Off 级格式化消息");
+
+        // 对照：同阈值下的真实等级照常落地，说明这条断言不是被阈值挡出来的假绿
+        logger.log(LogLevel::Fatal, "该落盘的 Fatal 消息");
+
+        ASSERT_EQ(m_ledger->eventCount(), 1u);
+        EXPECT_EQ(m_ledger->events().front().level, LogLevel::Fatal);
     }
 
     TEST_F(LoggerTest, LogFillsTimestampAndThreadId)

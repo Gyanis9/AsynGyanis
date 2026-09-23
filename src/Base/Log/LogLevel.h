@@ -37,6 +37,20 @@ namespace AsynGyanis::Base
     };
 
     /**
+     * @brief 判断一条日志是否通过等级阈值过滤
+     * @details Off 在两侧都不放行：作为阈值表示关闭全部输出，作为消息等级是用错了枚举——它不是
+     *          可记录的等级，放行会落出一行等级文本为 "?????" 的记录（静默变形比拒绝更难查）。
+     *          数值超出已知范围的等级仍放行，让用错枚举的现场留在日志里而不是静默消失。
+     * @param threshold 过滤器当前的最低等级（Logger 或 Sink 的级别）
+     * @param level 待判断的消息等级
+     * @return bool 本次消息应当被记录时返回 true
+     */
+    [[nodiscard]] inline constexpr bool logLevelPassesFilter(const LogLevel threshold, const LogLevel level) noexcept
+    {
+        return level != LogLevel::Off && level >= threshold && threshold != LogLevel::Off;
+    }
+
+    /**
      * @brief 将日志等级转换为固定宽度字符串（5 字符对齐）
      * @param level 日志等级
      * @return const char* 等级名称字符串，未知等级返回 "?????"

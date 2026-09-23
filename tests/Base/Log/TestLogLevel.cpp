@@ -238,4 +238,55 @@ namespace AsynGyanis::Base
         EXPECT_STREQ(logLevelToString(LogLevel::Off), "?????");
         EXPECT_EQ(logLevelFromString(trimTrailingSpaces(logLevelToString(LogLevel::Off))), LogLevel::Info);
     }
+
+    // 阈值过滤是 Logger 与 Sink 共用的那一条判定，这里按判定表整体验证：每个阈值都取
+    // 「低一档 / 恰好 / 高一档」三个边界，再加 Off 的两侧与超范围数值这两类反常输入
+    TEST(LogLevel, FilterPassesExactlyTheLevelsAtOrAboveThreshold)
+    {
+        struct FilterCase
+        {
+            LogLevel threshold;
+            LogLevel level;
+            bool expected;
+        };
+
+        const std::vector<FilterCase> cases = {
+                // 最低阈值放行除 Off 以外的全部等级
+                {LogLevel::Trace, LogLevel::Trace, true},
+                {LogLevel::Trace, LogLevel::Fatal, true},
+                {LogLevel::Trace, LogLevel::Off, false},
+                // 中间阈值的三档边界
+                {LogLevel::Info, LogLevel::Debug, false},
+                {LogLevel::Info, LogLevel::Info, true},
+                {LogLevel::Info, LogLevel::Warn, true},
+                {LogLevel::Info, LogLevel::Off, false},
+                // 最高有效阈值只放行它自己
+                {LogLevel::Fatal, LogLevel::Error, false},
+                {LogLevel::Fatal, LogLevel::Fatal, true},
+                {LogLevel::Fatal, LogLevel::Off, false},
+                // 阈值本身是 Off：连超范围的数值也不放行
+                {LogLevel::Off, LogLevel::Fatal, false},
+                {LogLevel::Off, LogLevel::Off, false},
+                {LogLevel::Off, static_cast<LogLevel>(7), false},
+                // 数值超出已知范围的等级仍放行：宁可落一行带 "?????" 标签的记录，
+                // 也不把一条注了册外的等级的日志静默吞掉
+                {LogLevel::Info, static_cast<LogLevel>(7), true},
+                {LogLevel::Info, static_cast<LogLevel>(255), true},
+        };
+
+        for (const auto &[threshold, level, expected]: cases)
+        {
+            EXPECT_EQ(logLevelPassesFilter(threshold, level), expected)
+                    << "threshold=" << static_cast<int>(threshold) << " level=" << static_cast<int>(level);
+        }
+    }
+
+    TEST(LogLevel, FilterIsUsableInConstantContext)
+    {
+        static_assert(logLevelPassesFilter(LogLevel::Info, LogLevel::Warn));
+        static_assert(!logLevelPassesFilter(LogLevel::Info, LogLevel::Debug));
+        static_assert(!logLevelPassesFilter(LogLevel::Info, LogLevel::Off));
+        static_assert(!logLevelPassesFilter(LogLevel::Off, LogLevel::Fatal));
+        SUCCEED();
+    }
 } // namespace AsynGyanis::Base
