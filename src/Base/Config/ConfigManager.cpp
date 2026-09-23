@@ -292,11 +292,11 @@ namespace AsynGyanis::Base
 
             // 监听范围与 reload 的重扫范围必须同一个口径：只递归挂监听却按非递归重扫，
             // 子目录里的改动会白叫醒一轮重载；反之则子目录的改动根本进不到重扫里。
-            // 这一处刻意保留 `.string()` 而不换成 pathText：FileWatcher 的接口（addWatch 的形参与
-            // 回调里的文件名）整条都是「原生窄串」刻度，两侧同刻度才配得上；改成 UTF-8 会让
-            // 今天能正常热重载的中文配置目录反而对不上号。要让代码页外的目录名也能热重载，
-            // 得把 FileWatcher 的接口一并换成 path 刻度，那是 Platform 侧的独立一轮
-            if (!m_fileWatcher->addWatch(currentData->configDirectory.string(), currentData->configDirectoryRecursive))
+            // 交给监视器的是 UTF-8 文本：FileWatcher 的接口刻度已写明 UTF-8（Windows 上它的登记键与
+            // 事件路径都由宽字符按 CP_UTF8 转出）。这里若换成 `.string()`，中文配置目录会被送去一份
+            // 本地代码页的字节，注册那一步按 UTF-8 解不开而静默失败——热重载整条被关掉，现场只看得见
+            // 「改了配置没反应」
+            if (!m_fileWatcher->addWatch(pathText(currentData->configDirectory), currentData->configDirectoryRecursive))
             {
                 m_fileWatcher.reset();
                 m_hotReloadEnabled.store(false, std::memory_order_release);
