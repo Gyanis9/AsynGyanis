@@ -26,8 +26,9 @@ namespace AsynGyanis::Platform
     public:
         /**
          * @brief 确保标准输出按 UTF-8 解释字节流
-         * @details Windows 下设置控制台输出代码页为 CP_UTF8，进程内只生效一次；
-         *          Linux 下终端编码由环境决定，本方法为空操作。
+         * @details Windows 下把控制台输出代码页设为 CP_UTF8，设成之后不再重复设置；设不成则不记账，
+         *          下一次调用仍会再试——进程以无控制台方式被拉起时这一设置当场失败，之后再接上控制台
+         *          还得靠它把代码页改过来。Linux 下终端编码由环境决定，本方法为空操作。
          */
         static void ensureUtf8Output() noexcept;
 
