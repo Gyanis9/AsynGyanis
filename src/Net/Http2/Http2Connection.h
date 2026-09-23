@@ -219,6 +219,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string takeOutgoingBytes();
 
         /**
+         * @brief 还有多少已经生成的响应字节没能送到对端
+         * @details 供会话收口时判断「这条连接是否有响应排好了却没发完」：既数已经拼进待发缓冲、
+         *          一次都没写出去的字节，也数卡在流控上仍躺在各条流队列里的正文（后者压根没到
+         *          套接字，写侧永远不会报错，只有这里看得见）。只读，不取走任何缓冲。
+         * @return std::size_t 未送出的字节数；0 表示已生成的响应全都交了出去
+         */
+        [[nodiscard]] std::size_t unsentResponseByteCount() const noexcept;
+
+        /**
          * @brief 把刚取走的待发缓冲还回来复用（容量留下、字节清空）
          * @param buffer 之前 takeOutgoingBytes() 取走的那个字符串（按右值移交）
          * @note 写完之后还回来，下一条响应就不必再分配一整块：take 走的那份容量原本随返回值一起

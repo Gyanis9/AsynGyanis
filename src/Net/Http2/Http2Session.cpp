@@ -375,6 +375,14 @@ namespace AsynGyanis::Net
 
         // 每一轮都以「取出并写出待发字节」收尾，因此退出时不必再补一次写出：对端已关闭或本侧
         // 写不出去时重试只会多留一条无意义的错误日志。收口统一交给 start() 里的 RAII 守卫
+        //
+        // 「响应没送出去」这件事要在离开循环这里落账：写出侧失败已经在 flushOutgoingBytes() 里
+        // 记过一次，剩下的一类是**写侧从没报错**的——对端不再读、响应卡在流控队列里，读侧先发现
+        // 连接断了就直接收口，那部分字节一次都没碰过套接字
+        if (m_metrics != nullptr && !m_isConnectionUnusable && m_connection.unsentResponseByteCount() > 0)
+        {
+            m_metrics->countWriteAbortedConnection();
+        }
         co_return;
     }
 

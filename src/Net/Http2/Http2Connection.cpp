@@ -235,6 +235,22 @@ namespace AsynGyanis::Net
         return std::exchange(m_outgoingBytes, std::string{});
     }
 
+    std::size_t Http2Connection::unsentResponseByteCount() const noexcept
+    {
+        // 两段都要数：待发缓冲里的是「帧已拼好但一次都没写出去」，各条流队列里的是「卡在流控上，
+        // 连帧都没拼出去」。后者写侧永远不会报错，只有在这里看得见——慢读者抽走连接时走的正是它
+        std::size_t unsentByteCount = m_outgoingBytes.size();
+        for (const auto &entry: m_streams)
+        {
+            const StreamRecord &record = entry.second;
+            if (record.hasPendingData())
+            {
+                unsentByteCount += record.pendingData.size() - record.pendingDataOffset;
+            }
+        }
+        return unsentByteCount;
+    }
+
     void Http2Connection::recycleOutgoingBytes(std::string &&buffer) noexcept
     {
         // 只在内部缓冲为空时回收：非空说明取走之后又产生了新字节（例如写挂起期间排队的帧），

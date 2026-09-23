@@ -56,9 +56,12 @@ namespace AsynGyanis::Net
         std::uint64_t activeConnectionCount{0}; ///< 取快照那一刻共用本采集端的全部连接管理器在册的连接数
         std::uint64_t badRequestCount{0};       ///< 解析失败或协议错误收口的条数（HttpParseErrorKind 各档合并为一类）
         std::uint64_t timeoutClosedCount{0};    ///< 被空闲清扫协程按空闲/读写超时关闭的 HTTP 连接数
-        /// 写出侧失败收口的连接数：响应已排入发送、但对端不再收（带未读数据关闭回 RST、写超时前
-        /// 连接被抽走）。与 timeoutClosedCount 分开是因为两者是两种毛病——那条是「没人来取」，
-        /// 这条是「取到一半不取了」；慢消费者压满发送缓冲时只有这条会动
+        /// 「本侧交出去的」响应没能完整交给传输层就收口的连接数：要么写出失败（对端带未读数据关闭，
+        /// 内核回 RST），要么收口时仍有响应留在待发缓冲或流控队列里（对端不读也不还窗口，那部分字节
+        /// 一次都没碰过套接字，写侧因此永不报错）。与 timeoutClosedCount 分开是因为两者是两种毛病——
+        /// 那条是「没人来取」，这条是「取到一半不取了」。
+        /// @warning 口径止于本侧：已经被传输层收下、但对端再没读走的字节看不见（256 KiB 的响应
+        ///          能整个塞进环回套接字缓冲，对端随后关掉，本侧一次失败都不会遇到）
         std::uint64_t writeAbortedConnectionCount{0};
         std::uint64_t status1xxCount{0};        ///< 状态码为 1xx 的响应条数
         std::uint64_t status2xxCount{0};        ///< 状态码为 2xx 的响应条数
@@ -146,11 +149,11 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 记一条因写出失败而收口的连接
-         * @details 调用点是「本侧刚把这条连接判死」那一刻：一条只计一次，判死之后的写出短路返回，
-         *          不再重复计数。与 countTimeoutClosedConnection 分开记是因为它们是两种毛病——
-         *          那条是「没人来取」，这条是「取到一半不取了」。
-         * @note 只覆盖 h1/h2 的 TCP 侧：QUIC 的发送由传输层自行重传，没有「写出被对端抽走」这个形态
+         * @brief 记一条「响应没送完就收口」的连接
+         * @details 两个落点：写侧失败处（h1 的 recordSendFailure、h2 的 flushOutgoingBytes 失败分支），
+         *          以及 h2 会话收口时仍有响应留在待发缓冲/流控队列里的场合。写侧那处挂在「连接判死」
+         *          的翻转上，收口那处以判死为否——因此一条连接至多记一次。
+         * @note 只覆盖 h1/h2 的 TCP 侧：QUIC 的发送由传输层自行重传，没有这个形态
          */
         void countWriteAbortedConnection() noexcept
         {
@@ -371,7 +374,7 @@ namespace AsynGyanis::Net
 
         std::atomic<std::uint64_t> m_streamCancelledCount{0}; ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
         std::atomic<std::uint64_t> m_zeroCopySendCount{0};    ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
-        std::atomic<std::uint64_t> m_writeAbortedConnectionCount{0}; ///< 累计因写出失败而收口的连接条数（慢消费者把发送缓冲压满等）
+        std::atomic<std::uint64_t> m_writeAbortedConnectionCount{0}; ///< 累计「响应没送完就收口」的连接条数（写出失败或收口时仍有未送出字节）
 
         // 活跃连接数按「每条连接一次加、一次减」被写，与上面「每请求都写」的那几组不同热度：
         // 同处一行会让长连接的建连/断连把请求计数所在的行反复踢出缓存

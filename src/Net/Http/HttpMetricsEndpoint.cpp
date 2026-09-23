@@ -52,7 +52,7 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "timeout_closed_connections_total"),
                       "被空闲清扫按超时关闭的连接数", stats.timeoutClosedCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "write_aborted_connections_total"),
-                      "响应已排入发送、但写出失败而收口的连接数（慢消费者把发送缓冲压满等；仅 TCP 侧）",
+                      "本侧没能把响应完整交给传输层就收口的连接数（写出失败，或仍有字节留在待发缓冲与流控队列；仅 TCP 侧）",
                       stats.writeAbortedConnectionCount);
 
         // 活跃连接数是瞬时量，用 gauge；取值来自连接管理器，见 HttpServer::stats()
