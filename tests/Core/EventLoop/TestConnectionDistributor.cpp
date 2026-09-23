@@ -2,11 +2,15 @@
 //
 // 末尾的 HandoffAllocationProfile 是派发这条路的分配台账（共用 AllocationProbe）：
 //   · 一千次「派发 + 取走」：MSVC 2002 块 / 112128 字节，libstdc++ 2062 块 / 103744 字节，
-//     即每交一条连接两块（交接句柄一块、回调载荷一块）；
+//     即每交一条连接两块（交接句柄一块、投进队列的回调载荷一块）；
+//   · 对照组（只造一个描述符再关掉，完全不碰派发）实测 0 块，所以上面两块都归派发本身，
+//     不是造描述符的开销冒充的；
 //   · 已试过并**被读数否决**的优化：把接手动作改成登记时共享持有、闭包只捕获一个指针——
 //     一千次仍是 2062 块（字节数从 103744 降到 87744），也就是说第二块并不是「复制 Adopter」
-//     带来的，改法只是把那块换小了一点，不值得为它动结构。
-//     要真降到一块，得先弄清第二块是 std::function 在装哪个载荷时要的。
+//     带来的，改法只是把那块换小了一点；
+//   · 要降到一块得给 Scheduler 加一条「载荷指针 + 平凡函数指针」的投递通道（std::function
+//     一旦捕获非平凡可复制的东西就必然进堆）。收益是每连接省一次分配，相对 accept 自身的
+//     微秒级开销不划算 —— 记为刻意不做，别再为它动结构。
 //
 // 用例跑真实的 EventLoop（各占一个线程）与真实的套接字描述符：跨循环这件事的坑
 // （唤醒丢失、描述符归属错）只有在真循环上才暴露得出来。
@@ -339,27 +343,58 @@ namespace AsynGyanis::Core
                     return loop.scheduler().runOne() ? 1U : 0U;
                 });
 
+        // 直方图要在对照组之前取：对照窗口会把它清零，两个窗口共用一份快照就打不出归属了
+        const auto handoffHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+
+        // 对照组：只造一个描述符再关掉，完全不碰派发链路。造描述符这一步在被测形状里也在做，
+        // 不把库自己的分配减出去，就会记到交接的头上
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto baseline = measurePerOperation(
+                []
+                {
+                    const int fileDescriptor = makeDetachedSocketDescriptor();
+                    Platform::FileDescriptor::close(fileDescriptor);
+                    return 1U;
+                });
+        const auto baselineHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+
         std::printf("distributor-handoff total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations),
                     static_cast<unsigned long long>(profile.totalBytes));
-        const auto histogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
-        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        std::printf("distributor-baseline total=%llu bytes=%llu\n", static_cast<unsigned long long>(baseline.totalAllocations),
+                    static_cast<unsigned long long>(baseline.totalBytes));
+        for (std::size_t bucket = 0; bucket < handoffHistogram.size(); ++bucket)
         {
-            if (histogram[bucket] != 0)
+            if (handoffHistogram[bucket] != 0)
             {
-                std::printf("   bucket=%zu bytes=%zu count=%llu\n", bucket,
+                std::printf("   handoff bucket=%zu bytes=%zu count=%llu\n", bucket,
                             bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
-                            static_cast<unsigned long long>(histogram[bucket]));
+                            static_cast<unsigned long long>(handoffHistogram[bucket]));
+            }
+        }
+        // 对照组的分布正常情况下一个桶都不该亮；亮了就说明造描述符自己也在碰堆，
+        // 上面那句「两块都归派发」的结论要重算
+        for (std::size_t bucket = 0; bucket < baselineHistogram.size(); ++bucket)
+        {
+            if (baselineHistogram[bucket] != 0)
+            {
+                std::printf("   baseline bucket=%zu bytes=%zu count=%llu\n", bucket,
+                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                            static_cast<unsigned long long>(baselineHistogram[bucket]));
             }
         }
 
         // 结构判据：一千次派发确实都被接手动作跑完，读数不是空转出来的
         EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "派发没有被取走，读数没有意义";
         EXPECT_EQ(handledCount.load(std::memory_order_relaxed), static_cast<int>(kMeasurementIterations));
+        // 对照组必须显著小于被测组：否则「每连接两块」就是拿造描述符的开销冒充派发本身的开销。
+        // 实测两侧读数为 2002 与 0（MSVC 与 libstdc++ 同向）
+        EXPECT_LE(baseline.totalAllocations, profile.totalAllocations / 2U)
+                << "对照组的分配已接近派发全程：台账把库自己的开销记到了交接头上";
 
 #ifdef NDEBUG
         // 一千次派发实测 2002 块（MSVC）/ 2062 块（libstdc++）：每交一条连接两块，一块是交接句柄
-        // （「没人接手就关闭」要求载荷可复制，只能共享持有），一块是回调载荷本身。上界取「每连接
-        // 至多三块」——换 STL 与队列分块差异都落在里面，而真多出一块时立刻报红
+        // （「没人接手就关闭」要求载荷可复制，只能共享持有），一块是投进队列的回调载荷。上界取
+        // 「每连接至多三块」——换 STL 与队列分块差异都落在里面，而真多出一块时立刻报红
         EXPECT_LE(profile.totalAllocations, kMeasurementIterations * 3U)
                 << "每交一条连接的堆块数越界：交接这条路上多半又多了一次分配";
 #endif
