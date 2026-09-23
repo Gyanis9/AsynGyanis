@@ -8,6 +8,8 @@
 // - UpdateByPrimaryKeyChangesOnlyTargetRow
 // - ExecuteNonQueryDeletesMatchingRows
 // - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
+// - JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
+//   （join() 与 groupBy() 这两个公开写入口从 ORM 这头跑通，不是只喂手工搭的查询树）
 // - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
 // - DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
 // - LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
@@ -136,6 +138,18 @@ namespace
         };
     }
 
+    /**
+     * @brief GROUP BY 的结果行：户名 + 该户名下的账户数
+     *
+     * @details 分组查询的投影与表结构不同构，因此需要一个自己的行类型；结果列靠 "cnt" 这个
+     *          别名对上成员，正好把「表达式列 + 别名」这条映射路径也走一遍。
+     */
+    struct NameCountRow
+    {
+        std::string  name;     ///< 分组列
+        std::int64_t rowCount; ///< COUNT(*) AS cnt 的结果
+    };
+
 } // namespace
 
 // ========================================================================
@@ -154,6 +168,18 @@ struct AsynGyanis::Database::Queryable::TableSchema<AccountRow>
         Column(&AccountRow::active, "active"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<NameCountRow>
+{
+    // 分组结果仍然来自 accounts 表，只是投影换成了「户名 + 该户名的行数」
+    static constexpr std::string_view kTableName = "accounts";
+    static constexpr auto kColumns = std::tuple{
+        Column(&NameCountRow::name,     "name"),
+        Column(&NameCountRow::rowCount, "cnt"),
+    };
+    static constexpr std::string_view kPrimaryKey = "name";
 };
 
 template<>
@@ -231,12 +257,17 @@ namespace
     using AsynGyanis::Database::Queryable::contains;
     using AsynGyanis::Database::Queryable::desc;
     using AsynGyanis::Database::Queryable::endsWith;
+    using AsynGyanis::Database::Queryable::FieldReference;
     using AsynGyanis::Database::Queryable::in;
+    using AsynGyanis::Database::Queryable::JoinClause;
+    using AsynGyanis::Database::Queryable::JoinType;
     using AsynGyanis::Database::Queryable::like;
     using AsynGyanis::Database::Queryable::mapResultRows;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
+    using AsynGyanis::Database::Queryable::SqlOperator;
     using AsynGyanis::Database::Queryable::startsWith;
+    using AsynGyanis::Database::Queryable::WhereCondition;
 
     /**
      * @brief ORM 端到端测试夹具
@@ -802,4 +833,84 @@ TEST_F(QueryableExecutionTest, TypeMismatchThrowsReadableError)
         // 提示里要给出「若可能为 NULL 请用 std::optional」这类可操作建议
         EXPECT_NE(message.find("std::optional"), std::string::npos);
     }
+}
+
+// ========================================================================
+// 构建器入口：join() 与 groupBy()
+// ========================================================================
+
+/**
+ * @brief 验证 join() 造出的 ON 子句确实能执行，并按被连接表把行筛掉
+ *
+ * @details join() 是 QueryNode::joins 唯一的公开写入口，此前所有 JOIN 断言都是手工搭查询树喂给
+ *          方言层，「从 ORM 这头拼出来的语句可执行」这件事从没被走过。两张表都有 id 列，因此
+ *          SELECT 列表必须按表限定——这顺带把「限定名投影 → 结果列名仍是不限定的 id → 映射回成员」
+ *          这条路也钉住。
+ */
+TEST_F(QueryableExecutionTest, JoinThroughBuilderNarrowsRowsByTheJoinedTable)
+{
+    insertSampleRows();
+
+    {
+        const PooledConnection connection = m_pool->acquire();
+        ASSERT_TRUE(connection);
+        ASSERT_TRUE(connection->execute(
+                        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, amount REAL NOT NULL)") != nullptr)
+            << connection->lastError();
+        // 账户 1 两单、账户 3 一单，账户 2 一笔都没下
+        ASSERT_TRUE(connection->execute(
+                        "INSERT INTO orders (order_id, account_id, amount) VALUES (1, 1, 10.0), (2, 1, 20.0), (3, 3, 30.0)") != nullptr)
+            << connection->lastError();
+    }
+
+    Queryable<AccountRow> query = newQuery();
+    query.select({"accounts.id", "accounts.name", "accounts.balance", "accounts.note", "accounts.active"});
+    query.join(JoinClause{
+        .type       = JoinType::Inner,
+        .tableName  = "orders",
+        .tableAlias = {},
+        .conditions = {WhereCondition{
+            .left  = FieldReference{"orders.account_id"},
+            .op    = SqlOperator::Eq,
+            .right = FieldReference{"accounts.id"}}}});
+    query.orderBy(asc("accounts.id"));
+
+    const std::vector<AccountRow> rows = query.toList();
+    // 三行而不是四行：INNER JOIN 把没下单的账户 2 筛掉，账户 1 因为两笔订单出现两次
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].id, 1);
+    EXPECT_EQ(rows[0].name, "张三");
+    EXPECT_EQ(rows[1].id, 1);
+    EXPECT_EQ(rows[2].id, 3);
+    EXPECT_EQ(rows[2].name, "李四");
+}
+
+/**
+ * @brief 验证 groupBy() 真的按组聚合，且表达式投影的别名列能映射回成员
+ *
+ * @details groupBy() 此前只被手工赋值的查询树测过：从 ORM 传进来的是「文本列名」，
+ *          转成 FieldReference 这一步（以及 "COUNT(*) AS cnt" 这种表达式列靠别名对上 rowCount
+ *          成员）从没从这头走过。
+ */
+TEST_F(QueryableExecutionTest, GroupByThroughBuilderAggregatesAndMapsAliasColumn)
+{
+    insertSampleRows();
+    Queryable<AccountRow> extra = newQuery();
+    // 第二个同名账户：没有这一行，「分组」与「全表一行」的结果看不出差别
+    ASSERT_EQ(extra.insert(makeRow(4, "张三", 5.0, std::nullopt, true)), 1);
+
+    Queryable<NameCountRow> query(*m_pool);
+    query.select({"name", "COUNT(*) AS cnt"});
+    query.groupBy({"name"});
+    query.orderBy(asc("name"));
+
+    const std::vector<NameCountRow> groups = query.toList();
+    ASSERT_EQ(groups.size(), 3U);
+    // 排序按字节序：ASCII 开头的注入样本在前，两条中文按 UTF-8 字节排在后
+    EXPECT_EQ(groups[0].name, "O'Brien -- DROP TABLE accounts; --");
+    EXPECT_EQ(groups[0].rowCount, 1);
+    EXPECT_EQ(groups[1].name, "张三");
+    EXPECT_EQ(groups[1].rowCount, 2);
+    EXPECT_EQ(groups[2].name, "李四");
+    EXPECT_EQ(groups[2].rowCount, 1);
 }
