@@ -9,6 +9,8 @@
 #include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
 
+#include "Platform/FileSystem/FileSystem.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -330,6 +332,67 @@ namespace AsynGyanis::Net
         EXPECT_EQ(rootFile.status(), 200);
         EXPECT_EQ(rootFile.body(), kHelloFileContent);
         EXPECT_EQ(headerValueOf(rootFile, "content-type"), "text/plain");
+    }
+
+    /**
+     * @brief 钉住：URI 里百分号编码的非 ASCII 文件名要取得到，而不是 404
+     * @details 静态服务把 URI 解码成 UTF-8 文本之后，直接把这段窄串交给 std::filesystem::path 会让
+     *          Windows 按本地代码页解释这些字节，取到的是另一个（不存在的）目录项。名字取泰文而不取
+     *          中文：中文在中文语境的 Windows 上能被代码页往返，那条路在这里测不出东西。
+     */
+    TEST(HttpServer, ServesPercentEncodedNonAsciiFileName)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticDirNonAsciiName");
+        ASSERT_TRUE(tree.isReady());
+
+        const std::string fileNameUtf8 = std::string("\xE0\xB8\x81\xE0\xB8\x82") + ".txt";
+        const std::string fileContent  = "thai-file-name";
+        {
+            std::ofstream file(tree.staticRoot() / Platform::FileSystem::pathFromUtf8(fileNameUtf8), std::ios::out | std::ios::binary);
+            file << fileContent;
+        }
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/%E0%B8%81%E0%B8%82.txt");
+        EXPECT_EQ(response.status(), 200) << "非 ASCII 的静态文件名取不到：URI 解码出的 UTF-8 字节又被按本地代码页解释了一次";
+        EXPECT_EQ(response.body(), fileContent);
+        EXPECT_EQ(headerValueOf(response, "content-type"), "text/plain") << "MIME 取自扩展名，路径换一套编码不该改掉它";
+    }
+
+    /**
+     * @brief 钉住：非 ASCII 的静态根目录配得进、读得回，且其下的文件取得到
+     * @details 配置口与查询口必须是同一刻度：Windows 上两侧原先各经一次本地代码页转换（配置时把窄串
+     *          交给 path，查询时用 path::string() 出串），于是中文站点目录读回来是另一串字节，请求
+     *          更是全落在一个不存在的目录上。
+     */
+    TEST(HttpServer, StaticRootWithNonAsciiNameIsEchoedAndServed)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticDirNonAsciiRoot");
+        ASSERT_TRUE(tree.isReady());
+
+        const std::string         rootNameUtf8 = std::string("\xE6\x96\x87") + "\xE4\xBB\xB6";
+        const std::filesystem::path rootPath   = tree.staticRoot() / Platform::FileSystem::pathFromUtf8(rootNameUtf8);
+        std::error_code             createError;
+        std::filesystem::create_directories(rootPath, createError);
+        ASSERT_FALSE(createError) << createError.message();
+        {
+            std::ofstream file(rootPath / "index.txt", std::ios::out | std::ios::binary);
+            file << "under-a-unicode-root";
+        }
+
+        server.staticFileDir(Platform::FileSystem::utf8FromPath(rootPath));
+        ASSERT_FALSE(server.staticFileDir().empty()) << "目录被判成规范化失败，静态服务根本没开起来";
+        EXPECT_NE(server.staticFileDir().find(rootNameUtf8), std::string::npos)
+                << "按 UTF-8 配进去的目录名读回来换了编码：两侧不同刻度就没法核对配置，也没法和 URI 里的名字比对";
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/index.txt");
+        EXPECT_EQ(response.status(), 200);
+        EXPECT_EQ(response.body(), "under-a-unicode-root");
     }
 
     TEST(HttpServer, FollowsExtensionCaseForContentType)

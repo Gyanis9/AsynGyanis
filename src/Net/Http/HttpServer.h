@@ -110,7 +110,7 @@ namespace AsynGyanis::Net
          *          本服务器的当前配置；之后再调用只更新配置，**不会**注册第二条兜底路由，
          *          也不会出现「新目录不生效、旧目录仍在服务」的悬空状态。
          *
-         * @param directoryPath 静态文件的根目录路径，相对或绝对均可；传入空串表示关闭静态服务
+         * @param directoryPath 静态文件的根目录路径（UTF-8 文本），相对或绝对均可；传入空串表示关闭静态服务
          *
          * @note 传入的目录在**此刻**被规范化（weakly_canonical）并落定：目录不存在或无权访问时
          *       直接判为关闭静态服务并记一条中文告警，不会推迟到请求到达时再报错。
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 查询当前生效的静态文件根目录。
-         * @return std::string 规范化后的绝对路径；未启用时返回空串
+         * @return std::string 规范化后的绝对路径（UTF-8 文本，与配置时同一刻度）；未启用时返回空串
          */
         [[nodiscard]] std::string staticFileDir() const;
 

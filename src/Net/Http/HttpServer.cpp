@@ -12,6 +12,7 @@
 #include "Net/Http/HttpSession.h"
 #include "Net/Http2/Http2Session.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Platform/IO/FileContents.h"
 #include "Platform/IO/MemoryMappedFile.h"
@@ -587,7 +588,10 @@ namespace AsynGyanis::Net
             }
 
             std::error_code pathError;
-            const std::filesystem::path candidatePath = std::filesystem::weakly_canonical(settings->rootDirectory / relativeText, pathError);
+            // URI 解码给出的是 UTF-8 文本，先按 UTF-8 解成路径对象再拼接：直接把窄串交给 path，Windows
+            // 会按本地代码页解释这段字节，非 ASCII 的名字因此永远指向另一个目录项（一律 404）
+            const std::filesystem::path candidatePath
+                    = std::filesystem::weakly_canonical(settings->rootDirectory / Platform::FileSystem::pathFromUtf8(relativeText), pathError);
             if (pathError)
             {
                 // 归一化失败多因路径过长、字符集不支持或中途权限不足：与「不存在」同权重，回 404
@@ -638,7 +642,9 @@ namespace AsynGyanis::Net
             const std::int64_t lastWriteSeconds = fileBasicInfo->lastWriteSeconds;
             const std::string entityTagText = makeStrongEtag(fileSize, lastWriteSeconds);
             const std::string lastModifiedText = formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)));
-            const std::string mimeType = FileSender::contentTypeForFile(candidatePath.string());
+            // 取 MIME 用的路径文本同样要按 UTF-8 出串：Windows 上 path::string() 走本地代码页，
+            // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上
+            const std::string mimeType = FileSender::contentTypeForFile(Platform::FileSystem::utf8FromPath(candidatePath));
 
             // 缓存验证器与 Cache-Control 只在 200/206/304 上写一次，避免三处各写一遍而漂移
             const auto appendCacheHeaders = [&response, &entityTagText, &lastModifiedText, &settings]()
@@ -998,7 +1004,9 @@ namespace AsynGyanis::Net
         }
 
         std::error_code canonicalError;
-        const std::filesystem::path canonicalRoot = std::filesystem::weakly_canonical(std::filesystem::path(directoryPath), canonicalError);
+        // 配置里的目录文本按 UTF-8 解释：直接交给 path 会让 Windows 拿本地代码页读这段字节，中文站点
+        // 目录会被规范化成另一个名字，之后每个请求都在那个名字下找不到的文件上
+        const std::filesystem::path canonicalRoot = std::filesystem::weakly_canonical(Platform::FileSystem::pathFromUtf8(directoryPath), canonicalError);
 
         // 规范化失败（含目录不存在、无权限、路径过长）就关掉静态服务并记中文告警：
         // 把问题留在配置时刻，好过在每个请求上都复现一次不确定行为
@@ -1021,7 +1029,9 @@ namespace AsynGyanis::Net
         {
             return {};
         }
-        return m_staticFileSettings->rootDirectory.string();
+        // 出去的口与进来的口同一刻度：调用方按 UTF-8 配的目录，读回来也必须是 UTF-8 文本
+        // （Windows 上 path::string() 给的是本地代码页的字节，中文目录名会读回另一串）
+        return Platform::FileSystem::utf8FromPath(m_staticFileSettings->rootDirectory);
     }
 
     void HttpServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)
