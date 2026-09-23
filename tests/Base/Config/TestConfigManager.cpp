@@ -494,6 +494,66 @@ server:
     }
 
     /**
+     * @brief 后一份文件把一段表写成单个值时，先前摊开的那些叶子键要一起让位并报到
+     * @details 扁平键模型下「server: 9090」会与前一份文件留下的 server.port / server.host 同时留在快照里，
+     *          而这个形态根本读不回来：`getSection` 对「同一个键既是值又是表」一律抛异常，装配整段停摆，
+     *          加载却报成功。冲突只可能来自多份文件（单份文件自己展开出来的键互不重叠），因此按
+     *          「后写的文件说话」定形，并把每一条丢弃报出来——静默删键与静默留幽灵同样不可接受。
+     */
+    TEST_F(ConfigManagerTest, ScalarOverrideInLaterFilePrunesTheShadowedSubtree)
+    {
+        const std::filesystem::path baseFile     = writeFile("base.yaml", "server:\n  port: 8080\n  host: 0.0.0.0\nkept: true\n");
+        const std::filesystem::path overrideFile = writeFile("override.yaml", "server: 9090\n");
+
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
+        const ConfigLoadResult result = configuration().loadFiles({baseFile, overrideFile});
+
+        EXPECT_TRUE(result.success);
+        EXPECT_FALSE(configuration().has("server.port")) << "旧的一段没让位：快照里 server 既是值又是表";
+        EXPECT_FALSE(configuration().has("server.host"));
+        EXPECT_TRUE(configuration().has("kept")) << "清理过头，把不相干的键也带走了";
+        EXPECT_EQ(configuration().getInt("server", 0), 9090);
+        EXPECT_EQ(configuration().keys().size(), 2U);
+
+        ASSERT_EQ(recorded->size(), 1U) << "一次取代报一条：两处丢弃各报一条就成了噪声";
+        EXPECT_TRUE(anyEntryContains(*recorded, "server.port"));
+        EXPECT_TRUE(anyEntryContains(*recorded, "server.host"));
+    }
+
+    /**
+     * @brief 反方向同理：后一份文件把单个值写成一段表，先前那个值也要让位并报到
+     * @details 同一形状的冲突，只是被淘汰的一方换成了叶子。此时快照必须能被 getSection 正常读出，
+     *          这条断言就是「定形之后确实可读」的证据。
+     */
+    TEST_F(ConfigManagerTest, TableOverrideInLaterFilePrunesTheShadowedLeaf)
+    {
+        const std::filesystem::path baseFile     = writeFile("base.yaml", "server: 9090\nkept: true\n");
+        const std::filesystem::path overrideFile = writeFile("override.yaml", "server:\n  port: 8080\n");
+
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
+        const ConfigLoadResult result = configuration().loadFiles({baseFile, overrideFile});
+
+        EXPECT_TRUE(result.success);
+        EXPECT_FALSE(configuration().has("server")) << "旧的值还赖在表的位置上";
+        EXPECT_EQ(configuration().getInt("server.port", 0), 8080);
+        EXPECT_EQ(configuration().keys().size(), 2U);
+        const ConfigValue section = configuration().getSection("server");
+        ASSERT_TRUE(section.is_object());
+        EXPECT_EQ(section.size(), 1U);
+
+        ASSERT_EQ(recorded->size(), 1U);
+        EXPECT_TRUE(anyEntryContains(*recorded, "server"));
+    }
+
+    /**
      * @brief 文件名落在本地代码页外时，加载失败要「报出来」而不是把异常抛给调用方
      * @details 本模块把路径写进结果列表与错误文案用的是 `path::string()`，Windows 上它按本地代码页
      *          转换，落在代码页外的字符**直接抛出**，而四处抛出点里有三处就在 catch 块内——
@@ -2577,16 +2637,52 @@ server:
      *          server.port.forwarded）：加载阶段两条键互不重名，所以都收得下；要到还原段落
      *          这一步才无法两全。原先分组会静默盖掉标量，于是 getSection 与 getInt 各说一套话。
      */
-    TEST_F(ConfigManagerTest, GetSectionReportsLeafVersusGroupCollision)
+    /**
+     * @brief 后一份文件把先前的标量叶子写成表时，加载阶段就定形并报到
+     * @details 旧断言是「两份文件各自合法、加载不报错，冲突留给 getSection 抛」——那等于把矛盾留给读的人，
+     *          加载报成功而这段永远读不回来。语义改为「后写的文件说话 + 淘汰时报一条」，依据是配置模块
+     *          既定的「容错必须可见」与本文件对 setValue 的同一口径。读侧那道 getSection 守卫仍然保留
+     *          （setValue 仍可造出该形态），由 GetSectionThrowsWhenSetValueRecreatesTheCollision 钉住。
+     */
+    TEST_F(ConfigManagerTest, LaterFileTableWinsOverEarlierScalarLeafAndReportsIt)
     {
         writeFile("base.yaml", "server:\n  port: 8080\n");
         writeFile("extra.yaml", "server:\n  port:\n    forwarded: true\n  host: 0.0.0.0\n");
         writeFile("cache.yaml", "cache:\n  ttl: 60\n");
 
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
-        ASSERT_TRUE(result.success) << "两份文件各自合法，加载阶段不该报错";
-        ASSERT_EQ(configuration().getInt("server.port", -1), 8080);
-        ASSERT_TRUE(configuration().has("server.port.forwarded"));
+        ASSERT_TRUE(result.success);
+
+        // 后一份文件在 server.port 下面写出了键，先前的标量叶子就该让位；这段现在是可读的表
+        EXPECT_FALSE(configuration().has("server.port")) << "旧的值没让位，getSection 仍会在这一段抛";
+        EXPECT_TRUE(configuration().has("server.port.forwarded"));
+        EXPECT_EQ(configuration().getString("server.host"), "0.0.0.0") << "host 被连带丢弃了：清理过头";
+        const ConfigValue serverSection = configuration().getSection("server");
+        ASSERT_TRUE(serverSection.is_object());
+        EXPECT_TRUE(serverSection.contains("port"));
+
+        // 冲突只报一条，且点名到被淘汰的那个键；不相干的段落不受影响
+        ASSERT_EQ(recorded->size(), 1U);
+        EXPECT_TRUE(anyEntryContains(*recorded, "server.port"));
+        const ConfigValue cacheSection = configuration().getSection("cache");
+        ASSERT_TRUE(cacheSection.is_object());
+        EXPECT_EQ(cacheSection.at("ttl").get<int>(), 60);
+    }
+
+    /**
+     * @brief 读侧守卫仍然在位：程序侧写入照样能造出「同一个键既是值又是表」
+     * @details 合并期的定形只走文件加载，setValue 是显式的程序侧通道、不碰那条规矩，
+     *          所以 getSection 必须继续拒绝这种快照，而不是悄悄丢掉其中一个。
+     */
+    TEST_F(ConfigManagerTest, GetSectionThrowsWhenSetValueRecreatesTheCollision)
+    {
+        ASSERT_TRUE(configuration().setValue("server.port", ConfigValue(8080)));
+        ASSERT_TRUE(configuration().setValue("server.port.forwarded", ConfigValue(true)));
 
         try
         {
@@ -2597,11 +2693,6 @@ server:
             // 文案要点名到真实的键，调用方才知道该改哪一条
             EXPECT_NE(std::string(error.what()).find("server.port"), std::string::npos);
         }
-
-        // 冲突只挡住撞名的那一段：别处的段落照常还原
-        const ConfigValue cacheSection = configuration().getSection("cache");
-        ASSERT_TRUE(cacheSection.is_object());
-        EXPECT_EQ(cacheSection.at("ttl").get<int>(), 60);
     }
 
     TEST_F(ConfigManagerTest, GetSectionRebuildsNestedObjectFromFlatKeys)

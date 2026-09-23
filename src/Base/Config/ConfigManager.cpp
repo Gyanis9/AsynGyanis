@@ -151,6 +151,114 @@ namespace AsynGyanis::Base
         {
             return AsynGyanis::Platform::FileSystem::utf8FromPath(path);
         }
+
+        /**
+         * @brief 取 key 在下一个点号之前的那段前缀（"a.b.c" 从 pos=1 起给出 "a"、"a.b"）
+         * @param key 扁平键
+         * @param searchFrom 从哪个下标开始找下一个点号
+         * @return std::string_view 空前缀（没有点号了）时返回空视图
+         */
+        [[nodiscard]] std::string_view ancestorAt(const std::string &key, std::size_t &searchFrom) noexcept
+        {
+            const std::size_t dotPosition = key.find('.', searchFrom);
+            if (dotPosition == std::string::npos)
+            {
+                searchFrom = std::string::npos;
+                return {};
+            }
+            const std::string_view ancestor{key.data(), dotPosition};
+            searchFrom = dotPosition + 1U;
+            return ancestor;
+        }
+
+        /**
+         * @brief 把一份文件摊平出来的键并进累计表，同时清掉被这份文件改掉形态的旧键
+         * @details 单份文件内部不可能冲突（同一棵文档树展开出的键互不重叠），冲突只出现在「后一份文件把
+         *          先前的一段表写成了单个值」或反向。让两种形态并存等于把矛盾留给读的人：getSection()
+         *          遇到「同一个键既是值又是表」一律抛异常，日志装配整段停摆，而加载报的是成功。
+         *          这里按「后写的文件说话」定形，每一次淘汰都报到日志（容错必须可见）。
+         *          setValue() 不走这条规矩：程序侧写入是显式行为，且它有自己的冲突播报通道。
+         * @param values 累计表，本文件的键并入其中
+         * @param fileValues 本文件摊平出来的键（键与值都被搬空）
+         * @param filePath 本文件路径，只用于报错文本
+         */
+        void mergeFileValues(ConfigKeyValueMap &values, ConfigKeyValueMap &&fileValues, const std::filesystem::path &filePath)
+        {
+            const std::string sourceFile = pathText(filePath);
+
+            // 方向一：本文件在某个旧叶子下面写出了键（旧 server 是值、本文件写 server.port）→ 淘汰那个旧值。
+            // 只按新键往上查祖先，代价是键的深度而不是表的大小；查中即擦，同段的兄弟键因此不会报第二遍
+            for (const auto &entry: fileValues)
+            {
+                for (std::size_t searchFrom = 0;;)
+                {
+                    const std::string_view ancestor = ancestorAt(entry.first, searchFrom);
+                    if (ancestor.empty())
+                    {
+                        break;
+                    }
+                    const auto staleLeaf = values.find(ancestor);
+                    if (staleLeaf == values.end())
+                    {
+                        continue;
+                    }
+                    LOG_ERROR_FMT("配置加载冲突：键 {} 在先前文件里是一个值，本文件（{}）在它下面写了 {}；同一个键不能既是值又是表，已按本文件取值，旧值丢弃",
+                                  ancestor, sourceFile, entry.first);
+                    values.erase(staleLeaf);
+                }
+            }
+
+            // 方向二：本文件把某段旧的表改写成了单个值 → 那段下面每个旧键都要让位。
+            // 单次全表扫描（按文件而非按键的代价），淘汰按「取代它的那个新键」聚合，一条取代只报一次
+            std::vector<std::pair<std::string, std::vector<std::string>>> shadowedLeaves;
+            for (auto entry = values.begin(); entry != values.end();)
+            {
+                std::string_view shadowingLeaf;
+                for (std::size_t searchFrom = 0;;)
+                {
+                    const std::string_view ancestor = ancestorAt(entry->first, searchFrom);
+                    if (ancestor.empty())
+                    {
+                        break;
+                    }
+                    if (fileValues.contains(ancestor))
+                    {
+                        shadowingLeaf = ancestor;
+                        break;
+                    }
+                }
+                if (shadowingLeaf.empty())
+                {
+                    ++entry;
+                    continue;
+                }
+
+                const auto bucket = std::ranges::find(shadowedLeaves, shadowingLeaf, &std::pair<std::string, std::vector<std::string>>::first);
+                if (bucket == shadowedLeaves.end())
+                {
+                    shadowedLeaves.emplace_back(std::string(shadowingLeaf), std::vector<std::string>{entry->first});
+                } else
+                {
+                    bucket->second.push_back(entry->first);
+                }
+                entry = values.erase(entry);
+            }
+            for (const auto &[leaf, droppedKeys]: shadowedLeaves)
+            {
+                std::string droppedText;
+                for (const auto &dropped: droppedKeys)
+                {
+                    droppedText += droppedText.empty() ? dropped : "、" + dropped;
+                }
+                LOG_ERROR_FMT("配置加载冲突：键 {} 在先前文件里摊开成 {} 个键（{}），本文件（{}）把它写成了一个值；已按本文件取值，先前那 {} 个键丢弃",
+                              leaf, droppedKeys.size(), droppedText, sourceFile, droppedKeys.size());
+            }
+
+            for (auto &[key, value]: fileValues)
+            {
+                values.insert_or_assign(std::move(key), std::move(value));
+            }
+        }
     } // namespace
 
     ConfigManager &ConfigManager::instance() noexcept
@@ -199,10 +307,7 @@ namespace AsynGyanis::Base
             {
                 result.loadedFiles.push_back(pathText(filePath));
                 loadedPaths.push_back(filePath);
-                for (auto &[key, value]: fileValues)
-                {
-                    values.insert_or_assign(std::move(key), std::move(value));
-                }
+                mergeFileValues(values, std::move(fileValues), filePath);
             } else
             {
                 result.failedFiles.push_back(pathText(filePath));
@@ -1149,10 +1254,7 @@ namespace AsynGyanis::Base
             if (loadConfigFile(filePath, fileValues, result.errors))
             {
                 result.loadedFiles.push_back(pathText(filePath));
-                for (auto &[key, value]: fileValues)
-                {
-                    values.insert_or_assign(std::move(key), std::move(value));
-                }
+                mergeFileValues(values, std::move(fileValues), filePath);
             } else
             {
                 result.failedFiles.push_back(pathText(filePath));
