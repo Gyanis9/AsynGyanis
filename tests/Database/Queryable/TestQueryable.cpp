@@ -16,7 +16,8 @@
 // - QueryNodeConvertsToSqlWithAllClauses
 // - SelectColumnOverride
 // - LimitAndOffset
-// - GroupByAndHaving
+// - NotConditionIsWrappedInParenthesesLikeTheDialect（预览与真正执行的语句同形）
+// - ColumnToColumnComparisonKeepsTheColumnNameInsteadOfAPlaceholder（列-列比较不占绑定参数）
 
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/TableSchema.h"
@@ -756,6 +757,44 @@ namespace AsynGyanis::Database::Queryable
         // 应生成 "NOT (age < ?)"
         EXPECT_NE(sql.find("NOT"), std::string::npos);
         EXPECT_NE(sql.find("age < ?"), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住 NOT 的离线预览与真正执行的语句同形：作用域靠括号界定
+     * @details 裸写 "NOT age < ?" 两个引擎都按 NOT(age < ?) 解析，语义没错，但方言渲染出来的是
+     *          带括号的那一种。预览文本的价值在于「照着它能改出可执行的语句」，形状不一致就会
+     *          逼着人去猜哪一处才是真发出去的那句。
+     */
+    TEST(QueryableSql, NotConditionIsWrappedInParenthesesLikeTheDialect)
+    {
+        Queryable<User> query;
+        constexpr auto ageColumn = Column(&User::age, "age");
+
+        query.where(!(ageColumn < 18));
+
+        const std::string sql = query.toSql();
+        EXPECT_NE(sql.find("NOT (age < ?)"), std::string::npos) << sql;
+    }
+
+    /**
+     * @brief 钉住列-列比较在离线预览里不占绑定参数：两侧都是列名，一个 '?' 都不该有
+     * @details 执行的语句走的是方言那一条判据（右操作数是 FieldReference 时不绑参数），
+     *          预览却把右值写成 '?'——照着预览去数参数、或把这段文本贴进客户端手工执行，
+     *          都会得到一句挂着占位符却没有绑定值的语句。
+     */
+    TEST(QueryableSql, ColumnToColumnComparisonKeepsTheColumnNameInsteadOfAPlaceholder)
+    {
+        WhereCondition condition;
+        condition.left  = FieldReference{.name = std::string("age")};
+        condition.op    = SqlOperator::Gt;
+        condition.right = FieldReference{.name = std::string("baseline_age")};
+
+        Queryable<User> query;
+        query.where(std::move(condition));
+
+        const std::string sql = query.toSql();
+        EXPECT_NE(sql.find("age > baseline_age"), std::string::npos) << sql;
+        EXPECT_EQ(sql.find('?'), std::string::npos) << "列-列比较仍被预览成绑定参数：" << sql;
     }
 
     // ========================================================================

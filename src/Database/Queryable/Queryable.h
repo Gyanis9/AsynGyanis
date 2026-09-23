@@ -298,7 +298,9 @@ namespace AsynGyanis::Database::Queryable
          *          （聚合结果只有一行，排序与分页没有意义，某些数据库还会直接报错）。
          *          手动设置的 SELECT 列会被本方法忽略；GROUP BY 保留，此时返回第一组的计数。
          *
-         * @return std::int64_t 匹配的行数；结果为空或计数列为 NULL 时返回 0
+         * @return std::int64_t 匹配的行数；带 GROUP BY 时是**其中一组**的计数（引擎按组各回一行，
+         *         本方法只读第一行且组序不保证），要在乎每一组就改用 toList() 投影 COUNT(*)；
+         *         结果为空或计数列为 NULL 时返回 0
          *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败或 SQL 执行失败
@@ -1611,7 +1613,9 @@ namespace AsynGyanis::Database::Queryable
                     throw Base::LogicException("Queryable: toSql 遇到带 " + std::to_string(condition.children.size()) +
                                                " 个子条件的 NOT，取非含义不确定，请先用 && 或 || 合成一个节点再取非");
                 }
-                return "NOT " + buildConditionString(condition.children[0]);
+                // 括号不能省：与方言同形（NOT (… )）。取非的作用域要靠括号界定，
+                // 裸写 "NOT a < ?" 虽然两个引擎都按 NOT(a < ?) 解析，预览文本却与真正执行的语句不一致
+                return "NOT (" + buildConditionString(condition.children[0]) + ")";
             }
 
             // 叶子节点：left op right
@@ -1648,7 +1652,16 @@ namespace AsynGyanis::Database::Queryable
                 return result;
             }
 
-            result += '?';
+            // 列-列比较两侧都是标识符，执行的语句在这一格不绑定参数（方言按同一条判据计数）：
+            // 预览里挂一个 '?' 会让调用方按占位符去数参数而对不上，读起来也像「少一个绑定值」
+            if (std::holds_alternative<FieldReference>(condition.right))
+            {
+                result += fieldReferenceToString(std::get<FieldReference>(condition.right));
+            }
+            else
+            {
+                result += '?';
+            }
             // 字面量匹配要连 ESCAPE 一起给出，否则对着这段文本改一改就会把转义过的 % 当成通配符。
             // 子句文本与方言渲染共用同一个常量，两处的「近似 SQL」才有对照价值
             if (condition.op == SqlOperator::LikeLiteral)
