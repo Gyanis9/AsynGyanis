@@ -7,6 +7,7 @@
 // - CountMatchesFilteredRows
 // - UpdateByPrimaryKeyChangesOnlyTargetRow
 // - ExecuteNonQueryDeletesMatchingRows
+// - DeleteWithLimitIsRejectedInsteadOfDeletingEverything（有界删除不能静默做成全表删除）
 // - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
 // - JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
 //   （join() 与 groupBy() 这两个公开写入口从 ORM 这头跑通，不是只喂手工搭的查询树）
@@ -576,6 +577,40 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 
     ASSERT_EQ(remainingRows.size(), 1U);
     EXPECT_EQ(remainingRows[0].id, 1);
+}
+
+/**
+ * @brief 钉住「DELETE 带 LIMIT 被当场拒绝」，而不是把有界删除静默做成全表删除
+ * @details 方言层不输出 DELETE 的 LIMIT / OFFSET（MySQL 单表删除支持，SQLite 要编译期开关
+ *          SQLITE_ENABLE_UPDATE_DELETE_LIMIT），跨引擎给不出同一语义。但「不支持」不能变成
+ *          「照发一句无界的同条件删除」：调用方要的是只删 1 行，实际删掉全部匹配行，且不可逆。
+ *          对照组同时钉住「去掉 limit 的删除照常工作」，拒绝面不能把删除能力一起关掉。
+ */
+TEST_F(QueryableExecutionTest, DeleteWithLimitIsRejectedInsteadOfDeletingEverything)
+{
+    insertSampleRows();
+
+    std::string rejectionMessage;
+    try
+    {
+        Queryable<AccountRow> deleteQuery = newQuery();
+        static_cast<void>(deleteQuery.where(Column(&AccountRow::id, "id") >= std::int64_t{2}).limit(1).executeNonQuery());
+        FAIL() << "带 LIMIT 的删除必须被拒绝：方言不输出 LIMIT，静默放行就是把有界删除做成全表删除";
+    } catch (const std::logic_error &exception)
+    {
+        rejectionMessage = exception.what();
+    }
+
+    // 文案要指名被拒的子句，只回一句「参数非法」等于把排查推回调用方
+    EXPECT_NE(rejectionMessage.find("LIMIT"), std::string::npos) << rejectionMessage;
+    EXPECT_NE(rejectionMessage.find("不支持"), std::string::npos) << rejectionMessage;
+
+    // 判据是行数：一条都不该被删掉，「多删了却报成功」正是这条缺陷的表现
+    Queryable<AccountRow> countQuery = newQuery();
+    EXPECT_EQ(countQuery.count(), 3);
+
+    Queryable<AccountRow> plainDelete = newQuery();
+    EXPECT_EQ(plainDelete.where(Column(&AccountRow::id, "id") >= std::int64_t{2}).executeNonQuery(), 2);
 }
 
 /**

@@ -332,10 +332,11 @@ namespace AsynGyanis::Database::Queryable
          * @return std::int64_t 受影响的行数；驱动不提供该信息时返回 0
          *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现；或查询树带着 LIMIT / OFFSET——
+         *         本层不生成带分页的删除语句，静默丢掉它就会把「只删 N 行」做成删掉全部匹配行
          * @throws DatabaseException 取连接失败或语句执行失败
-         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @warning 查询树不含任何条件时生成的语句是 "DELETE FROM 表"，会清空全表；
-         *          需要限定范围请先调用 where()
+         *          需要限定范围请先调用 where()，需要限定行数请改为「先按 limit 查出主键、再按主键删」
          */
         [[nodiscard]] std::int64_t executeNonQuery()
         {

@@ -13,6 +13,7 @@
 // - 参数顺序、数量、类型与 uint64 降级
 // - 参数上限：判定按实际产出的占位符数（SQLite 内联的分页不占额度），写方向同样受上限保护
 // - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
+//   （DELETE 带 LIMIT / OFFSET 在翻译期就被拒：本方言不输出它，静默放行等于把有界删除做成全表删除）
 // - 事务控制语句文本与单条语句的参数上限
 // - DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
 // - DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
@@ -31,6 +32,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -1413,6 +1415,39 @@ TEST(SqliteDialectWrite, DeleteWithoutConditionAndWithAlias)
     EXPECT_EQ(aliased.sql, "DELETE FROM \"users\" AS \"u\" WHERE \"u\".\"id\" > ?");
     ASSERT_EQ(aliased.parameters.size(), 1U);
     EXPECT_EQ(std::get<std::int64_t>(aliased.parameters[0]), 10);
+}
+
+/**
+ * @brief 钉住带 LIMIT / OFFSET 的 DELETE 在翻译阶段就被拒，而不是产出一句无界的同条件删除
+ * @details 本方言不输出 DELETE 的分页子句（MySQL 支持、SQLite 要编译期开关），这没问题；
+ *          有问题的是把「不支持」实现成「把调用方要的 N 行上限扔掉、删掉全部匹配行」——
+ *          那是不可逆的写。同一条用例钉住两侧：越界的必须抛，只带 ORDER BY 的仍照常渲染
+ *          （拒绝面要收窄到真正会被丢掉的那个子句）。
+ */
+TEST(SqliteDialectWrite, DeleteWithLimitOrOffsetIsRejectedRatherThanMadeUnbounded)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+    node.whereConditions.push_back(makeComparison("active", SqlOperator::Eq, ParameterValue{false}));
+
+    // 行数上限：被丢掉之后「只删 1 行」变成「删掉全部匹配行」
+    node.limit = 1U;
+    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException)
+        << "带 LIMIT 的 DELETE 被静默渲染成无界删除";
+
+    // 偏移量：同样改变被删的行集合（跳过前 N 行），必须一起拒
+    node.limit  = std::nullopt;
+    node.offset = 10U;
+    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException)
+        << "带 OFFSET 的 DELETE 被静默渲染成无界删除";
+
+    // 对照组：只带 ORDER BY 的删除仍渲染得出来——本方言同样不输出它，但它不改变被删的行集合
+    QueryNode orderedNode;
+    orderedNode.tableName = "users";
+    orderedNode.orderBy.push_back(OrderByClause{.field = makeField("id"), .descending = true});
+    EXPECT_NO_THROW(static_cast<void>(dialect.translateDelete(orderedNode)));
 }
 
 /**

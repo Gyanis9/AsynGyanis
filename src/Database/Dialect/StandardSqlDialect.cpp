@@ -640,6 +640,16 @@ namespace AsynGyanis::Database
 
     SqlStatement StandardSqlDialect::translateDelete(const Queryable::QueryNode &query) const
     {
+        // 本层不输出 DELETE 的 LIMIT / OFFSET（MySQL 单表删除支持，SQLite 要编译期开关
+        // SQLITE_ENABLE_UPDATE_DELETE_LIMIT，跨引擎给不出同一语义）。但「不支持」不能变成「照发一句
+        // 无界的同条件删除」：那会把「只删 N 行」悄悄做成删掉全部匹配行，而这是不可逆的写
+        if (query.limit.has_value() || query.offset.has_value())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName()) +
+                                                 " 方言：DELETE 不支持 LIMIT / OFFSET。请先用带同样条件与分页的"
+                                                 "查询取到主键，再按主键集合删除（IN 条件），不要靠删除语句的行数上限兜底");
+        }
+
         SqlStatement statement;
         std::string &sqlText = statement.sql;
 
