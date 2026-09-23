@@ -142,6 +142,95 @@ namespace AsynGyanis::Net
         EXPECT_EQ(parser.request().uri(), "/half-built");
     }
 
+    /**
+     * @brief 钉住：流式派发的「头部块已收齐」门闩只在收尾空行之后放行，且提前搬进来的头部不被最终提交抹掉
+     * @details 会话在头部收齐、正文还在路上这一刻就把 request() 交给处理器跑（HttpSession 的流式分支），
+     *          靠的就是这两条：门闩不早放，最终提交只补正文。
+     */
+    TEST(HttpParser, CommitsStreamingHeadersOnlyAfterTheHeaderBlockEnds)
+    {
+        HttpParser parser;
+
+        const std::string head = "PUT /stream HTTP/1.1\r\nContent-Length: 5\r\nX-Token: abc\r\n";
+        EXPECT_EQ(parser.parse(head.data(), head.size()), ParseStatus::NeedMore);
+        // 收尾空行还没到：头部块没收齐，既不许提交也不许读出来（与「半成品是空壳」同一条契约）
+        EXPECT_FALSE(parser.isHeaderBlockComplete());
+        EXPECT_FALSE(parser.commitHeadersForStreaming());
+        EXPECT_TRUE(parser.request().uri().empty());
+        EXPECT_FALSE(parser.request().getHeader("x-token").has_value());
+
+        const std::string blankLine = "\r\n";
+        EXPECT_EQ(parser.parse(blankLine.data(), blankLine.size()), ParseStatus::NeedMore);
+        EXPECT_TRUE(parser.isHeaderBlockComplete()) << "定长正文阶段：头部块早已收齐，流式派发该放行";
+        ASSERT_TRUE(parser.commitHeadersForStreaming());
+        EXPECT_EQ(parser.request().uri(), "/stream");
+        EXPECT_EQ(parser.request().getHeader("x-token").value_or("<缺失>"), "abc");
+        EXPECT_TRUE(parser.request().body().empty()) << "正文还没到，提交头部不该造出正文来";
+
+        // 同一轮里再要一次：必须幂等，且不许把已经搬进来的头部重置掉——会话手里正拿着这份对象在跑
+        ASSERT_TRUE(parser.commitHeadersForStreaming());
+        EXPECT_EQ(parser.request().getHeader("x-token").value_or("<缺失>"), "abc");
+
+        const std::string body = "hello";
+        EXPECT_EQ(parser.parse(body.data(), body.size()), ParseStatus::Done);
+        // 最终提交只补正文：方法/URI/头部要原样还在。这里若重跑一遍搬运，处理器跑完看到的就成了空壳
+        EXPECT_EQ(parser.request().uri(), "/stream");
+        EXPECT_EQ(parser.request().getHeader("x-token").value_or("<缺失>"), "abc");
+        EXPECT_EQ(parser.request().body(), "hello");
+    }
+
+    /**
+     * @brief 钉住：提前提交的门闩随报文复位，第二条报文不会沿用第一条的头部
+     */
+    TEST(HttpParser, ResetsTheStreamingCommitLatchPerMessage)
+    {
+        HttpParser parser;
+
+        const std::string firstHead = "PUT /first HTTP/1.1\r\nContent-Length: 2\r\nX-Only-First: 1\r\n\r\n";
+        EXPECT_EQ(parser.parse(firstHead.data(), firstHead.size()), ParseStatus::NeedMore);
+        ASSERT_TRUE(parser.commitHeadersForStreaming());
+        const std::string firstBody = "ab";
+        EXPECT_EQ(parser.parse(firstBody.data(), firstBody.size()), ParseStatus::Done);
+
+        parser.reset();
+        const std::string secondHead = "PUT /second HTTP/1.1\r\nContent-Length: 2\r\nX-Only-Second: 2\r\n\r\n";
+        EXPECT_EQ(parser.parse(secondHead.data(), secondHead.size()), ParseStatus::NeedMore);
+        // 复位没做对时这一句会走「已提交」那条早退分支：直接返回 true 却不再搬运，请求对象还挂着第一条的
+        // URI 与头部——处理器会把请求发到上一条报文的路由上，且现场看不出来
+        ASSERT_TRUE(parser.commitHeadersForStreaming());
+        EXPECT_EQ(parser.request().uri(), "/second");
+        EXPECT_TRUE(parser.request().getHeader("x-only-second").has_value());
+        EXPECT_FALSE(parser.request().getHeader("x-only-first").has_value()) << "门闩跨报文残留：上一条的头部被沿用了";
+        const std::string secondBody = "cd";
+        EXPECT_EQ(parser.parse(secondBody.data(), secondBody.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body(), "cd") << "复位之后最终提交没补上正文";
+    }
+
+    /**
+     * @brief 钉住：100-continue 只在正文还在路上时给一次；trailer 阶段头部块算收齐但不再欠对端表态
+     */
+    TEST(HttpParser, OffersContinueOnlyWhileTheChunkedBodyIsStillIncoming)
+    {
+        const std::string head = "POST /up HTTP/1.1\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+        // 一条都没表态的解析器：走到 trailer 段（最后一个块已到）之后正文已经收完，再回 100 没有意义
+        HttpParser lateParser;
+        EXPECT_EQ(lateParser.parse(head.data(), head.size()), ParseStatus::NeedMore);
+        const std::string oneChunk = "3\r\nabc\r\n";
+        EXPECT_EQ(lateParser.parse(oneChunk.data(), oneChunk.size()), ParseStatus::NeedMore);
+        const std::string lastChunk = "0\r\n";
+        EXPECT_EQ(lateParser.parse(lastChunk.data(), lastChunk.size()), ParseStatus::NeedMore);
+        EXPECT_FALSE(lateParser.takeContinueRequest()) << "trailer 阶段正文已收完，不该再回 100";
+        // 同一阶段的另一条判据却是「放行」：头部块早收齐了，流式派发不必等 trailer 段结束
+        EXPECT_TRUE(lateParser.isHeaderBlockComplete());
+
+        // 另一条解析器在块边界上表态：给一次，之后再要一律不给（同一条报文只回一个 100）
+        HttpParser earlyParser;
+        EXPECT_EQ(earlyParser.parse(head.data(), head.size()), ParseStatus::NeedMore);
+        EXPECT_TRUE(earlyParser.takeContinueRequest()) << "正文还在路上且带 Expect，应当给出 100 的时机";
+        EXPECT_FALSE(earlyParser.takeContinueRequest()) << "同一条报文只许回一次 100";
+    }
+
     TEST(HttpParser, RefusesToConsumeBytesAfterMessageCompleted)
     {
         HttpParser parser;
