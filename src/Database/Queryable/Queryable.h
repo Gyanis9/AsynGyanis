@@ -229,6 +229,22 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 设置 HAVING 条件（对分组结果的过滤）
+         *
+         * @details 与 where() 的差别只在时机：where 在分组前筛行，having 在分组后筛组。条件本身
+         *          与 where() 共用同一套 Expression/Column 组合与同一份方言渲染，因此不额外引入写法。
+         *          GROUP BY 为空时仍然合法——两个引擎都把整份结果当成一组。
+         * @param condition 分组过滤条件，可含聚合表达式（如 "COUNT(*)" 作为左值）
+         * @return Queryable& 自身引用，支持链式调用
+         * @note 条件里的字段与表达式文本沿用 select()/groupBy() 的同一条信任边界：表达式按原样拼进 SQL
+         */
+        Queryable &having(WhereCondition condition)
+        {
+            m_queryNode.having = std::move(condition);
+            return *this;
+        }
+
+        /**
          * @brief 指定异步执行器（阻塞任务的工作线程池）
          *
          * @details 只影响异步方法（toListAsync / firstAsync / countAsync / insertAsync /

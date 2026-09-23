@@ -12,6 +12,7 @@
 // - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
 // - JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
 //   （join() 与 groupBy() 这两个公开写入口从 ORM 这头跑通，不是只喂手工搭的查询树）
+// - HavingThroughBuilderFiltersGroups（having() 入口真的在分组后筛组，对照组是全量三组）
 // - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
 // - DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
 // - LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
@@ -265,6 +266,7 @@ namespace
     using AsynGyanis::Database::Queryable::JoinType;
     using AsynGyanis::Database::Queryable::like;
     using AsynGyanis::Database::Queryable::mapResultRows;
+    using AsynGyanis::Database::Queryable::ParameterValue;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
     using AsynGyanis::Database::Queryable::SqlOperator;
@@ -978,4 +980,31 @@ TEST_F(QueryableExecutionTest, GroupByThroughBuilderAggregatesAndMapsAliasColumn
     EXPECT_EQ(groups[1].rowCount, 2);
     EXPECT_EQ(groups[2].name, "李四");
     EXPECT_EQ(groups[2].rowCount, 1);
+}
+
+/**
+ * @brief 验证 having() 这个构建入口真的在分组之后筛组
+ * @details 查询树与方言层一直支持 HAVING，ORM 这一头没有入口时那条渲染分支从公开 API 走不到。
+ *          对照组就是上面那条 groupBy 用例：同一份数据分三组，加上 COUNT(*) > 1 之后只剩两行那一组。
+ */
+TEST_F(QueryableExecutionTest, HavingThroughBuilderFiltersGroups)
+{
+    insertSampleRows();
+    Queryable<AccountRow> extra = newQuery();
+    ASSERT_EQ(extra.insert(makeRow(4, "张三", 5.0, std::nullopt, true)), 1);
+
+    WhereCondition duplicatedGroup;
+    duplicatedGroup.left  = FieldReference{.name = std::string("COUNT(*)")};
+    duplicatedGroup.op    = SqlOperator::Gt;
+    duplicatedGroup.right = ParameterValue{static_cast<std::int64_t>(1)};
+
+    Queryable<NameCountRow> query(*m_pool);
+    query.select({"name", "COUNT(*) AS cnt"});
+    query.groupBy({"name"});
+    query.having(std::move(duplicatedGroup));
+
+    const std::vector<NameCountRow> groups = query.toList();
+    ASSERT_EQ(groups.size(), 1U) << "HAVING 没有筛掉只有一行的组，等于是把条件丢了";
+    EXPECT_EQ(groups[0].name, "张三");
+    EXPECT_EQ(groups[0].rowCount, 2);
 }

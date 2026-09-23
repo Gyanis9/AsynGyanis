@@ -18,6 +18,7 @@
 // - LimitAndOffset
 // - NotConditionIsWrappedInParenthesesLikeTheDialect（预览与真正执行的语句同形）
 // - ColumnToColumnComparisonKeepsTheColumnNameInsteadOfAPlaceholder（列-列比较不占绑定参数）
+// - HavingThroughBuilderAppearsInSql（having() 入口 + 离线文本给出 GROUP BY 与 HAVING）
 
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/TableSchema.h"
@@ -795,6 +796,25 @@ namespace AsynGyanis::Database::Queryable
         const std::string sql = query.toSql();
         EXPECT_NE(sql.find("age > baseline_age"), std::string::npos) << sql;
         EXPECT_EQ(sql.find('?'), std::string::npos) << "列-列比较仍被预览成绑定参数：" << sql;
+    }
+
+    /**
+     * @brief 钉住 having() 从构建器进入后，GROUP BY 与 HAVING 一起出现在离线文本里
+     * @details 查询树与方言层一直支持 HAVING，ORM 这一头没有入口时那条渲染分支从公开 API 走不到。
+     */
+    TEST(QueryableBuilder, HavingThroughBuilderAppearsInSql)
+    {
+        WhereCondition havingCondition;
+        havingCondition.left  = FieldReference{.name = std::string("COUNT(*)")};
+        havingCondition.op    = SqlOperator::Gt;
+        havingCondition.right = ParameterValue{static_cast<std::int64_t>(1)};
+
+        Queryable<User> query;
+        query.groupBy({"name"}).having(std::move(havingCondition));
+
+        const std::string sql = query.toSql();
+        EXPECT_NE(sql.find("GROUP BY name"), std::string::npos) << sql;
+        EXPECT_NE(sql.find("HAVING COUNT(*) > ?"), std::string::npos) << sql;
     }
 
     // ========================================================================
