@@ -113,6 +113,35 @@ namespace AsynGyanis::Base
         };
 
         /**
+         * @brief 写出必然失败的流缓冲：overflow 与 sync 都报「放不下」
+         * @details 对应真实现场「stdout 被重定向到已退出的读取端」：iostream 不抛异常，只把
+         *          badbit 立起来，此后每次 << 都是空操作——用例要复现的正是这个形状
+         */
+        class RejectingStreamBuffer final : public std::streambuf
+        {
+        protected:
+            /**
+             * @brief 重写 std::streambuf::overflow()：一律报 EOF
+             * @param character 待写入的字符，本缓冲不保存
+             * @return int traits_type::eof() 表示写入失败
+             */
+            int overflow(const int character) override
+            {
+                static_cast<void>(character);
+                return traits_type::eof();
+            }
+
+            /**
+             * @brief 重写 std::streambuf::sync()：报失败
+             * @return int -1 表示刷新失败
+             */
+            int sync() override
+            {
+                return -1;
+            }
+        };
+
+        /**
          * @brief 只统计刷新次数的流缓冲
          *
          * @details `std::flush` 走 `rdbuf()->pubsync()`，因此把标准流临时挂到本缓冲上就能观测
@@ -186,6 +215,39 @@ namespace AsynGyanis::Base
     // ============================================================================
     // 构造与基本写入
     // ============================================================================
+
+    TEST(ConsoleSink, ReportsOnceWhenStandardOutputRejectsTheLine)
+    {
+        ConsoleSink sink(false);
+        RejectingStreamBuffer rejectingStdout;
+
+        std::string capturedError;
+        {
+            const ScopedConsoleCapture capture;
+            auto *const savedStdoutBuffer = std::cout.rdbuf(&rejectingStdout);
+
+            sink.write(makeEvent(LogLevel::Info, "stdout-broken-one"));
+            sink.write(makeEvent(LogLevel::Info, "stdout-broken-two"));
+            sink.flush();
+
+            // badbit 是粘性的：不清掉就会把后面的用例与 gtest 自己的输出一起吞掉，
+            // 于是这条用例红不红全看谁先跑
+            std::cout.clear();
+            std::cout.rdbuf(savedStdoutBuffer);
+
+            capturedError = capture.stdErr();
+        }
+
+        // 三次写出（两行 + 一次 flush）只报第一条：流已经废了，每行再报一条会把现场淹没
+        std::size_t reportCount = 0;
+        for (std::size_t position = capturedError.find("ConsoleSink"); position != std::string::npos;
+             position = capturedError.find("ConsoleSink", position + 1))
+        {
+            ++reportCount;
+        }
+        EXPECT_EQ(reportCount, 1u) << capturedError;
+        EXPECT_TRUE(contains(capturedError, "stdout")) << capturedError;
+    }
 
     TEST(ConsoleSink, ConstructionInColorAndPlainTextModeDoesNotThrow)
     {

@@ -32,12 +32,14 @@ namespace AsynGyanis::Base
         {
             // std::cerr 恒为 unitbuf：整行写出即落地，无需额外刷新
             std::cerr << m_lineBuffer;
+            reportStreamFailureOnceLocked(std::cerr, m_hasReportedStderrFailure, "stderr");
         } else
         {
             // 每条刷新：std::cout 重定向到文件或管道时是全缓冲，不刷就 tail 不到实时内容，
             // 异常退出还会丢掉尾部（实测 +1 µs/行，Release /O2），换来 write() 返回即已落地
             std::cout << m_lineBuffer;
             std::cout.flush();
+            reportStreamFailureOnceLocked(std::cout, m_hasReportedStdoutFailure, "stdout");
         }
     }
 
@@ -46,6 +48,31 @@ namespace AsynGyanis::Base
         std::lock_guard lock(m_mutex);
         std::cout.flush();
         std::cerr.flush();
+        // 刷完要回头看流状态：目标管道另一头已经退出时，插入与刷新都只把 badbit 立起来而不抛，
+        // 此后每一行都是空操作。「write() 返回即已落地」这句承诺没有这一步就只是断言
+        reportStreamFailureOnceLocked(std::cout, m_hasReportedStdoutFailure, "stdout");
+        reportStreamFailureOnceLocked(std::cerr, m_hasReportedStderrFailure, "stderr");
+    }
+
+    void ConsoleSink::reportStreamFailureOnceLocked(std::ostream &stream, bool &hasReported, const char *const streamLabel)
+    {
+        if (stream.good())
+        {
+            // 成功写过一次就重新武装：下一次故障还要出声
+            hasReported = false;
+            return;
+        }
+        if (hasReported)
+        {
+            return;
+        }
+        hasReported = true;
+        // 诊断交给另一条流：本 Sink 就是日志出口，拿根日志器报自己等于让 write() 递归回来
+        std::ostream &escape = (&stream == &std::cout) ? std::cerr : std::cout;
+        escape << "ConsoleSink：" << streamLabel
+                << " 写出失败（目标可能已被关闭，或重定向到了已退出的读取端）；流已失效，该流上的后续日志不会再输出"
+                << '\n';
+        escape.flush();
     }
 
     void ConsoleSink::setColorEnabled(const bool enabled)

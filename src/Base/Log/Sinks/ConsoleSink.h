@@ -12,6 +12,7 @@
 #include "Base/Log/Sinks/LogSink.h"
 
 #include <mutex>
+#include <ostream>
 #include <string>
 
 namespace AsynGyanis::Base
@@ -36,6 +37,8 @@ namespace AsynGyanis::Base
          * @details 重写 LogSink::write()：持互斥锁把整行一次性写出（拼接复用成员缓冲，稳态不取堆）；
          *          Warn 及以上等级写 std::cerr，其余写 std::cout，每次调用自带换行，
          *          且返回时该行已刷新落地（重定向到文件或管道时缓冲不会把它扣住）。
+         *          流写入失败不抛异常，只置 badbit 并让后续每行都成空操作，因此写完要看流状态：
+         *          本次故障的第一条会经另一条标准流出声。
          *          控制台编码由构造函数切一次，不在每行重复设置。
          * @param event 日志事件
          */
@@ -63,7 +66,20 @@ namespace AsynGyanis::Base
          */
         void applyFormatter();
 
+        /**
+         * @brief 流已失效时出一行诊断，同一次故障只出一次
+         * @details 控制台没有「重新打开」这条路，因此诊断之后仍会持续静默——但静默得有话，
+         *          否则「日志不打了」与「没有日志」在现场分不开。报给另一条标准流：本 Sink 就是
+         *          日志出口，拿根日志器报自己等于让 write() 递归回来。调用方必须已持有 m_mutex。
+         * @param stream 刚写过的那条流
+         * @param hasReported 该流的「本次故障是否已报」标记，成功写一次就重新武装
+         * @param streamLabel 流名，只用于文案定位（stdout / stderr）
+         */
+        static void reportStreamFailureOnceLocked(std::ostream &stream, bool &hasReported, const char *streamLabel);
+
         bool       m_colorEnabled; ///< 是否启用彩色输出（唯一真相源：构造与运行期切换都写它，applyFormatter 读它）
+        bool       m_hasReportedStdoutFailure = false; ///< std::cout 本次故障是否已报（由 m_mutex 保护）
+        bool       m_hasReportedStderrFailure = false; ///< std::cerr 本次故障是否已报（由 m_mutex 保护）
         std::mutex m_mutex;        ///< 保护控制台输出与 formatter 切换的互斥锁
 
         /// 复用的行缓冲：格式化结果容量恰等于长度，直接给它追加换行必然再取一块堆并整行搬一次。
