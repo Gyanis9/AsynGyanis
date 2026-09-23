@@ -11,6 +11,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/MemoryMappedFile.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
 
@@ -20,19 +21,26 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace AsynGyanis::Core
 {
     namespace
     {
         using TestSupport::advanceUntil;
+        using TestSupport::stepLoopOnce;
         using TestSupport::waitForCondition;
+
+        /// 临时目录夹具在跨模块的那一份里（Core::TestSupport 只转发等待与泵循环的助手）
+        using AsynGyanis::TestSupport::TemporaryDirectory;
 
         /// 每轮发送的负载长度：对端不读时，两侧缓冲加起来远小于这里一轮的量
         constexpr std::size_t kBlockingSendChunkLength = 64 * 1024;
@@ -535,4 +543,419 @@ namespace AsynGyanis::Core
 
         Platform::FileDescriptor::close(peerDescriptor);
     }
+
+#if !ASYN_PLATFORM_WIN32
+    namespace
+    {
+        /// 普通样本文件长度：够大到必须分块才能读完，又小到默认套接字缓冲能整块吞下（不挂起）
+        constexpr std::size_t kSampleFileLength = 64 * 1024;
+
+        /// 背压用例的负载长度：必须远大于「压小之后的发送队列 + 接收队列」，才会写到一半停手
+        constexpr std::size_t kBackpressureFileLength = 512 * 1024;
+
+        /// 压窗口的目标字节数：内核会把它向上钳到自身下限，实际值比这里大，但仍是十几 KB 量级
+        constexpr int kTinySocketBufferBytes = 4096;
+
+        /// 背压用例里读取侧的接收缓冲：留出余量，好让窗口腾开时不必等内核的零窗口探测重传定时器
+        constexpr int kReaderReceiveBufferBytes = 64 * 1024;
+
+        /// 一次从读取侧取走的字节数上限
+        constexpr std::size_t kDrainChunkLength = 32 * 1024;
+
+        /// 空转轮数：不读对端时先把发送窗口写满，靠这个轮数把「挂起在等可写上」构造出来
+        constexpr int kIdlePumpRoundCount = 50;
+
+        /**
+         * @brief 生成「字节值 = 下标 mod 251」的样本内容
+         * @details 内容必须随位置变化：整个文件填同一个字节时，错位、重复、少发一截都核对不出来
+         * @param length 内容长度
+         * @return std::string 与文件字节逐位相同的样本
+         */
+        std::string makeSampleContent(const std::size_t length)
+        {
+            std::string content(length, '\0');
+            for (std::size_t index = 0; index < length; ++index)
+            {
+                content[index] = static_cast<char>(static_cast<unsigned char>(index % 251));
+            }
+            return content;
+        }
+
+        /**
+         * @brief 把调用方给出的套接字连到回环上的临时端口，并交出它的对端描述符
+         * @details 对端刻意不做成 AsyncSocket：读取由测试线程自己完成，挂事件循环只会多引入
+         *          一个线程而不会让断言更强。监听描述符在交出对端之后立即关闭——POSIX 上关闭
+         *          监听不影响已建立的连接。
+         * @param loop 驱动连接协程的事件循环
+         * @param socket 已 create() 出来的套接字，本函数把它连出去并作为写出侧
+         * @return int 对端（读取侧）描述符，非阻塞；建链或接受失败时返回 -1，由调用方断言
+         */
+        int connectAndAcceptPeer(EventLoop &loop, AsyncSocket &socket)
+        {
+            AsyncSocket listener = AsyncSocket::create(loop);
+            if (!listener.bind(InetAddress::localhost(0)) || !listener.listen(4))
+            {
+                return -1;
+            }
+
+            Task<> connecting = socket.asyncConnect(InetAddress::localhost(listener.localAddress().port()));
+            connecting.handle().resume();
+            if (!advanceUntil(loop, [&connecting]()
+            {
+                return connecting.isReady();
+            }))
+            {
+                return -1;
+            }
+
+            const int peerDescriptor = Platform::Socket::accept(listener.fileDescriptor(), nullptr, nullptr);
+            listener.close();
+            return peerDescriptor;
+        }
+
+        /**
+         * @brief 从读取侧有界读满指定字节数
+         * @details 发送侧已经跑完之后才调用：此刻字节全在内核队列里，本函数只负责把它们取出来，
+         *          因此不需要推进事件循环。
+         * @param descriptor 读取侧描述符
+         * @param expectedLength 期望读到的字节数
+         * @return std::string 实际读到的字节；不足时由调用方按长度报红
+         */
+        std::string drainBytes(const int descriptor, const std::size_t expectedLength)
+        {
+            std::string                 received;
+            received.reserve(expectedLength);
+            std::array<char, kDrainChunkLength> buffer{};
+
+            static_cast<void>(waitForCondition(
+                    [&]()
+                    {
+                        const ssize_t readLength = Platform::FileDescriptor::read(descriptor, buffer.data(), buffer.size());
+                        if (readLength > 0)
+                        {
+                            received.append(buffer.data(), static_cast<std::size_t>(readLength));
+                            return received.size() >= expectedLength;
+                        }
+                        // 读到真错误就提前收手：继续等只会把「对端重置」拖成超时，报出来的原因也是错的
+                        return readLength < 0 &&
+                               Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock;
+                    }));
+            return received;
+        }
+
+        /**
+         * @brief 在一个短时间窗内观察读取侧收到了多少字节
+         * @details 「什么都没有发出去」这类否定断言不能靠默认超时来等：等满 5 秒既拖慢用例，
+         *          也只是把「没有」读成「还没到」。回环上的字节若会到达，微秒级就到了。
+         * @param descriptor 读取侧描述符
+         * @param observationWindow 观察窗口
+         * @return std::size_t 窗口内读到的字节数
+         */
+        std::size_t readWithinWindow(const int descriptor, const std::chrono::milliseconds observationWindow)
+        {
+            std::size_t              receivedLength = 0;
+            std::array<char, 1024>   buffer{};
+            const auto               deadline = std::chrono::steady_clock::now() + observationWindow;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                const ssize_t readLength = Platform::FileDescriptor::read(descriptor, buffer.data(), buffer.size());
+                if (readLength > 0)
+                {
+                    receivedLength += static_cast<std::size_t>(readLength);
+                    continue;
+                }
+                // 读到真错误就此收手：它同样说明没有正文字节上线，继续轮询只会把结论拖得更模糊
+                if (readLength < 0 &&
+                    Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock)
+                {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return receivedLength;
+        }
+
+        /**
+         * @brief 驱动一个零拷贝任务到结束，交出它抛出的异常文案
+         * @param loop 驱动协程的事件循环
+         * @param sending 待驱动的零拷贝发送任务（尚未 resume）
+         * @return std::optional<std::string> 抛错时给出文案；正常返回结果时为空
+         */
+        std::optional<std::string> driveToExceptionText(EventLoop &loop, Task<ssize_t> &sending)
+        {
+            sending.handle().resume();
+            const bool isTaskSettled = advanceUntil(loop, [&sending]()
+            {
+                return sending.isReady();
+            });
+            EXPECT_TRUE(isTaskSettled) << "零拷贝任务既没成功也没报错，一直挂在那里";
+
+            try
+            {
+                static_cast<void>(sending.handle().promise().result());
+            } catch (const Base::Exception &exception)
+            {
+                return std::string(exception.what());
+            }
+            return std::nullopt;
+        }
+    } // namespace
+
+    /**
+     * @brief 源描述符非法与待发字节数为 0 都在当场被拒绝，而不是发到内核再去猜
+     * @details 这两种入参交给底层会折成同一个 kInvalidArgument，调用方无从分辨是自己传错了
+     *          哪一项。用例刻意给「长度为 0」配一个**有效**的文件描述符：它仍须按「字节数为 0」
+     *          报错，说明这条判定不是靠无效描述符顺带蒙对的。
+     */
+    TEST(AsyncSocket, AsyncSendFileRejectsInvalidSourceDescriptorAndEmptyLength)
+    {
+        EventLoop                loop;
+        AsyncSocket              socket(loop, -1); // 描述符无效不影响本用例：参数校验早于任何 I/O
+        TemporaryDirectory          directory("AsyncSendFile");
+        ASSERT_TRUE(directory.writeFile("sample.bin", makeSampleContent(1024)));
+        const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        Task<ssize_t> invalidDescriptor = socket.asyncSendFile(-1, 0, 1024);
+        const std::optional<std::string> descriptorFailure = driveToExceptionText(loop, invalidDescriptor);
+        ASSERT_TRUE(descriptorFailure.has_value()) << "源描述符为 -1 时没有报错，等于把无效句柄交给了内核";
+        EXPECT_NE(descriptorFailure->find("源文件描述符无效"), std::string::npos)
+                << "报错没有点明是源描述符的问题：文案为 " << *descriptorFailure;
+
+        Task<ssize_t> emptyLength = socket.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 0);
+        const std::optional<std::string> emptyFailure = driveToExceptionText(loop, emptyLength);
+        ASSERT_TRUE(emptyFailure.has_value()) << "待发字节数为 0 时被静默当成「已经发完」了";
+        EXPECT_NE(emptyFailure->find("待发字节数为 0"), std::string::npos)
+                << "报错没有点明是长度为 0：文案为 " << *emptyFailure;
+
+        socket.close();
+    }
+
+    /**
+     * @brief 零拷贝只发送请求的那一段，且不动源描述符自身的读写偏移
+     * @details 第二条用例钉的是「同一个文件被多条响应共用」：Range 响应各取一段，若 sendfile
+     *          改用了描述符自带的偏移，第二条就会从第一条停下的位置接着读，正文错位却不报错。
+     * @note 走真实回环 TCP：POSIX 侧的 socketpair 是 AF_UNIX，sendfile 对它直接 EINVAL。
+     */
+    TEST(AsyncSocket, AsyncSendFileDeliversRequestedRangeWithoutMovingFileOffset)
+    {
+        EventLoop                loop;
+        AsyncSocket              sender = AsyncSocket::create(loop);
+        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        constexpr std::uint64_t sliceOffset        = 4096;
+        constexpr std::size_t   sliceLength        = 8192;
+        constexpr std::size_t   followUpLength     = 1024;
+
+        TemporaryDirectory          directory("AsyncSendFileRange");
+        const std::string               sampleContent = makeSampleContent(kSampleFileLength);
+        ASSERT_TRUE(directory.writeFile("sample.bin", sampleContent));
+        const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        // 先中段、再开头：顺序本身就是判据，第二次的起点若被第一次推进过，收到的就不是 content[0..]
+        Task<ssize_t> firstSlice = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), sliceOffset, sliceLength);
+        firstSlice.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&firstSlice]()
+        {
+            return firstSlice.isReady();
+        })) << "中段切片没能跑完";
+        EXPECT_EQ(firstSlice.handle().promise().result(), static_cast<ssize_t>(sliceLength));
+
+        Task<ssize_t> headSlice = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, followUpLength);
+        headSlice.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&headSlice]()
+        {
+            return headSlice.isReady();
+        })) << "文件头切片没能跑完";
+        EXPECT_EQ(headSlice.handle().promise().result(), static_cast<ssize_t>(followUpLength));
+
+        const std::string expected =
+                sampleContent.substr(static_cast<std::size_t>(sliceOffset), sliceLength) +
+                sampleContent.substr(0, followUpLength);
+        EXPECT_EQ(drainBytes(readerDescriptor, expected.size()), expected)
+                << "收到的正文与「按位置取的切片」不一致：偏移要么被动过，要么发错了段";
+
+        sender.close();
+        Platform::FileDescriptor::close(readerDescriptor);
+    }
+
+    /**
+     * @brief 发送窗口写满之后协程挂起，对端一边读一边续发直到全部发完
+     * @details 钉住 EAGAIN 分支：这条路径若写成「等可写之后就地返回」或「不重发已算过的偏移」，
+     *          表现是大文件响应缺一截或永久挂起，而这正是慢消费者最常见的情形。
+     *          先空转若干轮、期间一次都不读，用「此时仍未结束」证明本机确实构造出了写阻塞；
+     *          随后每推进一轮循环就取走一批字节，进度由测试线程自己造成，不依赖任何调度运气。
+     */
+    TEST(AsyncSocket, AsyncSendFileResumesAndCompletesAfterTheSendWindowFillsUp)
+    {
+        EventLoop                loop;
+        AsyncSocket              sender = AsyncSocket::create(loop);
+        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        // 发送队列压到内核下限、接收侧留 64 KiB：总容量远小于正文，写到 EAGAIN 必然发生。
+        // 接收侧不能再压小——两侧都压到下限会让对端窗口彻底关死，此后每腾一次窗口都要等内核的
+        // 零窗口探测定时器（实测 512 KiB 要花 9.5 秒，而 copy 路径同样 9.6 秒：那是内核的粒度，
+        // 不是本方法的速度）
+        int sendBufferLength = kTinySocketBufferBytes;
+        ASSERT_TRUE(sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength)));
+        ASSERT_TRUE(Platform::Socket::setReceiveBufferSize(readerDescriptor, kReaderReceiveBufferBytes));
+
+        TemporaryDirectory          directory("AsyncSendFileBackpressure");
+        const std::string               sampleContent = makeSampleContent(kBackpressureFileLength);
+        ASSERT_TRUE(directory.writeFile("sample.bin", sampleContent));
+        const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        Task<ssize_t> sending = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, kBackpressureFileLength);
+        sending.handle().resume();
+        for (int round = 0; round < kIdlePumpRoundCount; ++round)
+        {
+            stepLoopOnce(loop, 0);
+        }
+        ASSERT_FALSE(sending.isReady())
+                << "对端一次都没读，512 KB 正文却已经报称发完：本机构造不出写阻塞，断言失去意义";
+
+        std::string               received;
+        received.reserve(kBackpressureFileLength);
+        std::array<char, kDrainChunkLength> readBuffer{};
+        const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (received.size() < kBackpressureFileLength && std::chrono::steady_clock::now() < drainDeadline)
+        {
+            // 先推进循环再读：内核刚腾出的窗口要在这一轮就用掉，反序会让每轮都白等一拍
+            stepLoopOnce(loop, 0);
+            const ssize_t readLength = Platform::FileDescriptor::read(readerDescriptor, readBuffer.data(), readBuffer.size());
+            if (readLength > 0)
+            {
+                received.append(readBuffer.data(), static_cast<std::size_t>(readLength));
+            }
+        }
+
+        ASSERT_TRUE(advanceUntil(loop, [&sending]()
+        {
+            return sending.isReady();
+        })) << "对端持续在读，零拷贝发送却始终没有收尾";
+        EXPECT_EQ(sending.handle().promise().result(), static_cast<ssize_t>(kBackpressureFileLength))
+                << "挂起续发之后把返回值算错了：部分写没有被累计";
+        EXPECT_EQ(received.size(), kBackpressureFileLength) << "读取侧没有收满：正文在窗口恢复时被丢了一段";
+        EXPECT_EQ(received, sampleContent);
+
+        sender.close();
+        Platform::FileDescriptor::close(readerDescriptor);
+    }
+
+    /**
+     * @brief 起始偏移已经在文件末尾之后：报错要说清是「起点越界」，不是「文件被中途改写」
+     * @details 这是调用方自己算错偏移的情形（一次都没发出去、零字节上线）。此时把原因归给
+     *          「服务期间有人改写了静态目录」会把排查支到完全相反的方向——日志里那条文案
+     *          就是运维唯一的线索。
+     */
+    TEST(AsyncSocket, AsyncSendFileReportsOffsetPastEndOfFileAsStartOutOfRange)
+    {
+        EventLoop                loop;
+        AsyncSocket              sender = AsyncSocket::create(loop);
+        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        TemporaryDirectory          directory("AsyncSendFilePastEnd");
+        ASSERT_TRUE(directory.writeFile("sample.bin", makeSampleContent(4096)));
+        const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        Task<ssize_t> sending = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 4096, 1024);
+        const std::optional<std::string> failureText = driveToExceptionText(loop, sending);
+        ASSERT_TRUE(failureText.has_value()) << "起点已经在文件末尾之后，却被当成发成功了";
+        EXPECT_NE(failureText->find("起点已在源文件末尾之后"), std::string::npos)
+                << "偏移越界没有被如实报出来：文案为 " << *failureText;
+        EXPECT_EQ(readWithinWindow(readerDescriptor, std::chrono::milliseconds(200)), 0u)
+                << "既然一次都没发出去，读取侧不该收到任何字节";
+
+        sender.close();
+        Platform::FileDescriptor::close(readerDescriptor);
+    }
+
+    /**
+     * @brief 请求长度越过文件末尾：报错，但已经发出去的前缀确实上线了
+     * @details 钉两件事：①到达文件末尾按失败收口（不能悄悄只发一半就报成功）；②失败会留下部分
+     *          字节——这正是调用方「失败后不得整块重发」的依据，否则前缀会在流里重复一遍。
+     */
+    TEST(AsyncSocket, AsyncSendFileThrowsWhenLengthRunsPastEndOfFileKeepingThePrefixOnTheWire)
+    {
+        EventLoop                loop;
+        AsyncSocket              sender = AsyncSocket::create(loop);
+        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        TemporaryDirectory          directory("AsyncSendFileOverLength");
+        const std::string               sampleContent = makeSampleContent(8192);
+        ASSERT_TRUE(directory.writeFile("sample.bin", sampleContent));
+        const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        Task<ssize_t> sending = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 8192 + 4096);
+        const std::optional<std::string> failureText = driveToExceptionText(loop, sending);
+        ASSERT_TRUE(failureText.has_value()) << "长度超出文件末尾时被当成发送成功，缺的那一截不会有人知道";
+        EXPECT_NE(failureText->find("到达文件末尾"), std::string::npos)
+                << "报的不是「文件比请求的短」：文案为 " << *failureText;
+
+        // 前缀必须已经在线：这条断言是「调用方不得整块重发」这条契约唯一的实证
+        EXPECT_EQ(drainBytes(readerDescriptor, sampleContent.size()), sampleContent)
+                << "抛错之前发出去的前缀没有出现在读取侧：部分写的后果无法被判定了";
+
+        sender.close();
+        Platform::FileDescriptor::close(readerDescriptor);
+    }
+
+    /**
+     * @brief 挂在「等可写」上的零拷贝发送被 close() 唤醒时，报的是「套接字已关闭」
+     * @details 与 asyncSend 同一条收尾契约：关闭描述符不会让内核唤醒等待者，必须靠注销注册时
+     *          主动投递的那次唤醒；少了它，这帧协程连同它持有的映射会一直留到进程退出。
+     *          区分「被关闭」与「事件就绪」也在这里：两者都让协程往下走，只有报错原因不同。
+     */
+    TEST(AsyncSocket, AsyncSendFileReportsClosureWhileWaitingForWritable)
+    {
+        EventLoop                loop;
+        AsyncSocket              sender = AsyncSocket::create(loop);
+        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        int sendBufferLength = kTinySocketBufferBytes;
+        ASSERT_TRUE(sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength)));
+        ASSERT_TRUE(Platform::Socket::setReceiveBufferSize(readerDescriptor, kTinySocketBufferBytes));
+
+        TemporaryDirectory          directory("AsyncSendFileClosed");
+        ASSERT_TRUE(directory.writeFile("sample.bin", makeSampleContent(kBackpressureFileLength)));
+        const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        Task<ssize_t> sending = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, kBackpressureFileLength);
+        sending.handle().resume();
+        for (int round = 0; round < kIdlePumpRoundCount; ++round)
+        {
+            stepLoopOnce(loop, 0);
+        }
+        ASSERT_FALSE(sending.isReady()) << "没能让发送挂到「等可写」上，本用例没有测到关闭唤醒";
+
+        // 与连接清扫同一做法：在事件循环线程上关闭，唤醒由注册对象的析构投给调度器
+        sender.close();
+        loop.scheduler().runAll();
+
+        ASSERT_TRUE(sending.isReady()) << "关闭套接字之后，挂在等可写上的零拷贝协程仍未被唤醒";
+        std::optional<std::string> failureText;
+        try
+        {
+            static_cast<void>(sending.handle().promise().result());
+        } catch (const Base::Exception &exception)
+        {
+            failureText = std::string(exception.what());
+        }
+        ASSERT_TRUE(failureText.has_value()) << "被唤醒之后当成「写好了」继续跑，等于向已关闭的连接发数据";
+        EXPECT_NE(failureText->find("等待可写期间套接字被关闭"), std::string::npos)
+                << "报的不是关闭而是别的失败：文案为 " << *failureText;
+
+        Platform::FileDescriptor::close(readerDescriptor);
+    }
+#endif
 } // namespace AsynGyanis::Core
