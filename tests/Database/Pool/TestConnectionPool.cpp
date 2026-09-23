@@ -12,6 +12,8 @@
 // - ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
 // - NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
 // - WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
+// - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
+// - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -816,6 +818,104 @@ namespace AsynGyanis::Database
 
             EXPECT_LT(elapsedMilliseconds, kBudgetMilliseconds)
                     << "六次建拆用了 " << elapsedMilliseconds << " ms：析构在等健康线程睡满 1 秒分片";
+        }
+
+        /**
+         * @brief 验证后台驱逐会在毫无流量时主动收掉过期的空闲连接
+         *
+         * @details 归还路径上本来就有一次过期判定，因此「空闲连接被丢掉」这件事在没有后台线程时也会发生——
+         *          但只在下一个借用者来取的时候。远端库的连接名额因此会一直占着：没人再借这个池，就没人去查
+         *          这条已该关闭的连接。本用例全程不再碰池，判的是「时间到了它自己收」，并核对连接确实被
+         *          销毁（不是只从栈里抹掉记录——那等于把名额留在远端）。
+         */
+        TEST(ConnectionPool, IdleConnectionIsEvictedByTheBackgroundSweep)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.idleTimeoutSeconds         = 1;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 1;
+            configuration.acquireTimeoutMilliseconds = 1000;
+
+            ConnectionPool pool(factory, configuration);
+
+            std::int64_t destroyedBeforeEviction = -1;
+            {
+                const PooledConnection borrowed = pool.acquire();
+                ASSERT_TRUE(static_cast<bool>(borrowed));
+            }
+            ASSERT_EQ(pool.idleCount(), 1U) << "归还的连接没有躺回空闲栈，用例前提不成立";
+            destroyedBeforeEviction = counter.totalDestroyed.load();
+
+            // 之后本线程不再碰池：只等后台那一轮
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+            while (pool.idleCount() > 0 && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+
+            EXPECT_EQ(pool.idleCount(), 0U) << "后台驱逐没有收走过期空闲连接";
+            EXPECT_EQ(pool.totalCount(), 0U) << "空闲栈清了但总数没跟着降：驱逐没有退还名额";
+            EXPECT_EQ(pool.activeCount(), 0U);
+            EXPECT_EQ(counter.totalDestroyed.load(), destroyedBeforeEviction + 1)
+                    << "过期的那条只是被摘了记录，连接对象没被销毁（远端名额仍占着）";
+
+            // 名额账目要经得起后续多轮扫描：把上限两条借满，第三条仍必须拿不到
+            const PooledConnection first  = pool.acquire();
+            const PooledConnection second = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(first) && static_cast<bool>(second))
+                    << "驱逐后借不满上限：后台那一轮没有把名额退还给池";
+            EXPECT_FALSE(static_cast<bool>(pool.tryAcquire())) << "驱逐多减了名额：池能建出超过上限的连接";
+        }
+
+        /**
+         * @brief 验证后台驱逐只碰空闲栈，正被人用的连接不受影响
+         * @details 借出去的连接不在空闲栈里，但它同属这个池、也同一个后台线程扫。若驱逐按「建立时刻」
+         *          而不是按「空闲时长」判定，正在跑长事务的连接会被半路掐掉——那是最难复现的一类故障。
+         */
+        TEST(ConnectionPool, BorrowedConnectionSurvivesTheBackgroundSweep)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.idleTimeoutSeconds         = 1;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 1;
+            configuration.acquireTimeoutMilliseconds = 1000;
+
+            ConnectionPool pool(factory, configuration);
+
+            PooledConnection held = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(held));
+            // 把建立时刻挪到远超存活期之后：手里这条「按年龄」早该被淘汰，但它不在空闲栈里
+            held->markEstablishedAt(std::chrono::steady_clock::now() - std::chrono::hours(2));
+
+            {
+                const PooledConnection transientConnection = pool.acquire();
+                ASSERT_TRUE(static_cast<bool>(transientConnection));
+            }
+
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+            while (pool.idleCount() > 0 && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            ASSERT_EQ(pool.idleCount(), 0U) << "后台驱逐没跑起来，下面的断言就没有对照";
+
+            EXPECT_EQ(pool.activeCount(), 1U) << "被借走的连接被后台驱逐算进了淘汰对象";
+            EXPECT_TRUE(held->isConnected()) << "手里这条连接被后台掐了：长事务会被半路打断";
+
+            // 它一直活到释放这一刻；之后才由归还路径按存活期丢弃——那是另一条既有判定，
+            // 与本用例要钉的「后台线程无权动在用的连接」正好互为对照
+            const std::int64_t destroyedWhileHeld = counter.totalDestroyed.load();
+            held.release();
+            EXPECT_EQ(pool.idleCount(), 0U) << "已过存活期的连接归还时不该躺回空闲栈";
+            EXPECT_EQ(counter.totalDestroyed.load(), destroyedWhileHeld + 1) << "释放时应当丢弃这条过期连接";
         }
 
     } // namespace
