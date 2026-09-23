@@ -31,13 +31,13 @@ namespace AsynGyanis::Database::TestPoolSupport
 {
 
     /**
-     * @brief 把一次 disconnect() 停在原地的门闩
-     * @details 池的纪律是「m_mutex 的临界区内不做断开」——断开是一次会阻塞的系统调用，留在锁内
-     *          会把取出路径、统计读取与后台驱逐一起堵住。要判定这条纪律有没有被守住，就得能把
-     *          「正在断开」变成一个可观察、可无限延长的状态，再从别的线程去碰那把锁。
-     *          布防期间到达的断开会等着解除布防；未布防时到达只记一次到达，不改变行为。
+     * @brief 把一次「到达」停在原地的门闩
+     * @details 要判定「某段代码不握着池的锁」或「某次通知正好落在等待者还没睡下的空档」，
+     *          就得能把那一次调用变成可观察、可无限延长的状态，再从别的线程安排对手方动作。
+     *          布防期间到达的调用会等着解除布防；未布防时到达只记一次到达，不改变行为。
+     *          现有两处用法：把一次 disconnect() 停在锁外，和把一次工厂建连停在取出与睡下之间。
      */
-    class DisconnectGate
+    class ArrivalGate
     {
     public:
         /**
@@ -51,7 +51,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         }
 
         /**
-         * @brief 解除布防并放行所有停在门闩里的断开
+         * @brief 解除布防并放行所有停在门闩里的到达
          */
         void release()
         {
@@ -63,7 +63,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         }
 
         /**
-         * @brief 断开被调用时进入：已布防就在此等到解除布防
+         * @brief 被调用时进入：已布防就在此等到解除布防
          */
         void arrive()
         {
@@ -74,7 +74,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         }
 
         /**
-         * @brief 是否已经有一次断开到达过本门闩
+         * @brief 是否已经有一次到达发生在布防之后
          * @return true 至少到达过一次
          */
         [[nodiscard]] bool hasArrived()
@@ -100,7 +100,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         std::atomic<std::int64_t> healthCheckCount{0}; ///< isConnected() 调用次数
         std::atomic<std::int64_t> sessionResetCount{0}; ///< resetSessionState() 调用次数（会话状态复位钩子）
         std::atomic<bool> connectionsHealthy{true};     ///< 全体连接的存活开关：用例据此造出「入栈后失联」
-        DisconnectGate *disconnectGate{nullptr};        ///< 断开门闩，空则 disconnect() 不额外停留
+        ArrivalGate *disconnectGate{nullptr};        ///< 断开门闩，空则 disconnect() 不额外停留
     };
 
     /**

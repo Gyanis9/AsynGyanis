@@ -145,6 +145,13 @@ namespace AsynGyanis::Database
                 {
                     break;
                 }
+                // 复检一次空闲栈再决定睡不睡：出锁试一轮的空档里可能已经有人归还入栈，而那一次
+                // notify_one 正好落在这位借用者「还没睡下」的时刻——条件变量不会补发，通知就此丢掉。
+                // 只把通知挪进锁内堵不住这个窗口（等待侧本来就不在队列里），必须两侧配成一对
+                if (!m_idleStack.empty())
+                {
+                    continue;
+                }
                 // 每次醒来重试一轮：唤醒源是「有人归还入栈」「有人丢弃腾出名额」与池停摆三处
                 if (m_idleCondition.wait_until(lock, deadline) == std::cv_status::timeout)
                 {
@@ -408,8 +415,8 @@ namespace AsynGyanis::Database
             entry.connection   = std::move(connection);
             entry.returnedTime = returnedAt;
             m_idleStack.push_back(std::move(entry));
-            // 通知留在锁内：等待者是「出锁试一轮、再回锁睡下」的形状，锁外通知会留一次窗口——
-            // 它刚试完、还没睡下，这次通知就落空，而它此后再没人叫醒，只能白等满超时
+            // 通知留在锁内，与等待侧「回锁后先看栈再睡」的复检配成一对：复检保证不会睡在一次
+            // 已经落空的通知之后，锁内提交保证复检与入栈之间不再插入别的归还（两者缺一都有白等满超时的窗口）
             m_idleCondition.notify_one();
         }
     }

@@ -12,6 +12,7 @@
 // - ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
 // - NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
 // - WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
+// - WaiterRechecksIdleStackBeforeSleeping：出锁试轮与睡下之间的空档里归还的连接，靠回锁后的复检修上
 // - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
 // - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
 
@@ -639,7 +640,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect)
         {
             ConnectionCounter counter;
-            DisconnectGate    gate;
+            ArrivalGate        gate;
             counter.disconnectGate = &gate;
 
             PoolConfig configuration;
@@ -693,7 +694,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect)
         {
             ConnectionCounter counter;
-            DisconnectGate    gate;
+            ArrivalGate        gate;
             counter.disconnectGate = &gate;
 
             PoolConfig configuration;
@@ -743,6 +744,92 @@ namespace AsynGyanis::Database
 
             EXPECT_TRUE(observerGotThrough)
                     << "取出路径握着 m_mutex 做 disconnect：过期与健康判定都留在锁内时，统计读取要等那次关闭";
+        }
+
+        /**
+         * @brief 等待者在「出锁试过一轮、还没睡下」的空档里被人归还了连接，不得白等满超时
+         *
+         * @details 唤醒是一次 notify_one：这一刻等待者还不在条件变量的队列上，通知不会补发。
+         *          池的纪律因此是两侧配成一对——归还方把通知留在锁内，等待方回锁后先看一眼栈再睡。
+         *          本用例把一次建连停在「取出之后、睡下之前」，于是丢通知从概率事件变成必然事件：
+         *          少了那道复检，借用者要睡满 acquireTimeoutMilliseconds 再拿一个空连接回去。
+         */
+        TEST(ConnectionPool, WaiterRechecksIdleStackBeforeSleeping)
+        {
+            ConnectionCounter counter;
+            ArrivalGate       factoryGate;
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 2;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 3600;
+            // 刻意放大：少了复检就要睡满这个数，用例因此能在远小于它的时间内判出差别
+            configuration.acquireTimeoutMilliseconds = 4000;
+
+            // 建连要失败两次才会让借用者走到「试完一轮、准备睡下」那一步：第一次失败把它送进等待段，
+            // 第二次失败被停在工厂里——归还因此能落进「这一轮已经试过、觉还没睡着」的窗口，
+            // 那一次 notify_one 必然落空（唤醒不会补发），丢通知从概率事件变成必然事件
+            auto innerFactory = makeMockFactory(counter);
+            std::atomic<std::size_t> factoryCallCount{0};
+            auto factory = [&innerFactory, &factoryGate, &factoryCallCount]() -> std::unique_ptr<DatabaseConnection>
+            {
+                switch (factoryCallCount.fetch_add(1))
+                {
+                    case 0U:
+                        return innerFactory(); // 主线程借走的那条
+                    case 1U:
+                        return nullptr;        // 第一次补建就失败：把借用者送进等待段
+                    case 2U:
+                        factoryGate.arrive(); // 第二次补建停在工厂里，归还落进这次的空档
+                        return nullptr;
+                    default:
+                        return innerFactory();
+                }
+            };
+
+            ConnectionPool pool(factory, configuration);
+
+            // 布防要早于第一次取连接：门闩只在布防期间停人，晚布防等于本次 arrive() 直接放行
+            factoryGate.arm();
+
+            PooledConnection held = pool.acquire();
+            ASSERT_TRUE(static_cast<bool>(held)) << "前提不成立：第一条连接没拿到";
+
+            PooledConnection  waiterConnection;
+            std::atomic<bool> isWaiterDone{false};
+            std::thread       waiter([&pool, &waiterConnection, &isWaiterDone]()
+            {
+                waiterConnection = pool.acquire();
+                isWaiterDone.store(true, std::memory_order_release);
+            });
+
+            // 本行往下都必须走到 waiter.join()：线程还挂在 joinable 上就返回，std::thread 析构会 terminate
+            const bool isParkedInFactory = TestSupport::waitForCondition([&factoryGate]()
+            {
+                return factoryGate.hasArrived();
+            }, 2000);
+
+            if (isParkedInFactory)
+            {
+                // 归还落进空档：这条连接入栈时唤醒的那一位还不在队列上，通知就此落空
+                held.release();
+                EXPECT_EQ(pool.idleCount(), 1U) << "前提不成立：归还没有进入空闲栈";
+            }
+            factoryGate.release();
+
+            const bool isRecheckedInTime = TestSupport::waitForCondition([&isWaiterDone]()
+            {
+                return isWaiterDone.load(std::memory_order_acquire);
+            }, 1500);
+
+            waiter.join();
+
+            EXPECT_TRUE(isParkedInFactory) << "借用者没有走到建连那一步：用例没有量到它要量的那段空档";
+            EXPECT_TRUE(isRecheckedInTime)
+                    << "回锁后没先复检空闲栈：明明有一条已归还的连接，借用者仍睡到接近超时";
+            EXPECT_TRUE(static_cast<bool>(waiterConnection)) << "复检了却仍没拿到连接";
+            EXPECT_EQ(pool.idleCount(), 0U) << "它拿的不是那条归还回来的连接";
         }
 
         /**
