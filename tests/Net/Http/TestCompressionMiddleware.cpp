@@ -1,7 +1,9 @@
-// 响应压缩中间件的用例：协商、阈值、已编码内容、ETag 降级与响应往返 断言一律把 gzip 正文解回原字节再比较（只比大小发现不了「解不开」），
+// 响应压缩中间件的用例：协商、阈值、收益判定、已编码内容、ETag 降级与响应往返 断言一律把 gzip 正文解回原字节再比较（只比大小发现不了「解不开」），
 // 并且每条用例都同时钉住「不该压的时候确实没压」——压缩这类改写正文的中间件， 最危险的失败是「悄悄改了不该改的响应」。
 #include "Net/Http/Middleware.h"
 
+#include "Net/Http/Compression.h"
+#include "Net/Http/Gzip.h"
 #include "Net/Http/HttpServer.h"
 
 #include "HttpTestSupport.h"
@@ -90,6 +92,31 @@ namespace AsynGyanis::Net
 
 
         /**
+         * @brief 一份接近随机的高熵正文：长度过阈值、内容类型也属于「可压」那一类，但三种压缩器都只会把它撑大
+         * @details 用来把「正文够长」与「压了确实更短」这两件事分开测——只看前缀阈值的实现会在这一份上放行。
+         *          xorshift 而不是 LCG 低位：后者低位周期短，压缩器能从里面找出重复
+         * @return const std::string & 正文本体（全进程造一次）
+         */
+        const std::string &highEntropyBody()
+        {
+            static const std::string body = []
+            {
+                std::uint32_t randomState = 0x9E3779B9U;
+                std::string bytes;
+                bytes.reserve(4096);
+                while (bytes.size() < 4096)
+                {
+                    randomState ^= randomState << 13;
+                    randomState ^= randomState >> 17;
+                    randomState ^= randomState << 5;
+                    bytes.push_back(static_cast<char>(randomState & 0xFFU));
+                }
+                return bytes;
+            }();
+            return body;
+        }
+
+        /**
          * @brief 造一台挂了压缩中间件与一条大正文路由的服务器
          * @param minimumBodySize 压缩阈值
          * @return RunningHttpServerFixture 夹具
@@ -141,6 +168,14 @@ namespace AsynGyanis::Net
                            {
                                response.setHeader("content-type", "image/png");
                                response.setBody(kLargeBody);
+                               co_return;
+                           });
+                router.get("/high-entropy",
+                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               // 内容类型属于「可压」、长度也过了阈值：唯一能挡住它的是实际收益
+                               response.setHeader("content-type", "text/plain; charset=utf-8");
+                               response.setBody(highEntropyBody());
                                co_return;
                            });
                 router.get("/declared-length",
@@ -384,6 +419,44 @@ namespace AsynGyanis::Net
 
         EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "正文没过阈值却压了";
         EXPECT_EQ(response->body, kLargeBody);
+    }
+
+    /**
+     * @brief 压完不比原文短就不换表示：过阈值、内容类型也可压的高熵正文，三种编码都不该上线
+     * @details 只看「够长、类型可压」的实现会给这份语料盖上 content-encoding 再发一个更大的体：
+     *          对端要多解一次、链路多跑几字节、缓存里还留下一份比原文更胖的变体。逐条编码各走一次，
+     *          判据是压缩前后的实际字节数。
+     */
+    TEST(CompressionMiddleware, SkipsBodiesThatCompressionWouldNotShorten)
+    {
+        const std::string_view body = highEntropyBody();
+
+        // 前置事实：这三种压缩器今天确实会把这份语料撑大。它变红说明压缩器换了实现，该换语料而不是改判据
+        const std::optional<std::string> gzipProbe   = gzipCompress(body);
+        const std::optional<std::string> zstdProbe   = zstdCompress(body);
+        const std::optional<std::string> brotliProbe = brotliCompress(body);
+        ASSERT_TRUE(gzipProbe.has_value() && zstdProbe.has_value() && brotliProbe.has_value()) << "压缩器连压都压不出结果";
+        ASSERT_GT(gzipProbe->size(), body.size()) << "gzip 语料已不是「没有收益」那一类";
+        ASSERT_GT(zstdProbe->size(), body.size()) << "zstd 语料已不是「没有收益」那一类";
+        ASSERT_GT(brotliProbe->size(), body.size()) << "brotli 语料已不是「没有收益」那一类";
+
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+        const std::uint16_t                             port    = fixture->listeningPort();
+        ASSERT_NE(port, 0U);
+
+        for (const std::string_view encoding: {"gzip", "br", "zstd"})
+        {
+            const std::optional<ParsedResponse> response =
+                    sendAndReadResponse(port, makeRequestText("GET /high-entropy HTTP/1.1",
+                                                              {std::string{"accept-encoding: "} + std::string{encoding}}),
+                                        kCompressionTestTimeout);
+            ASSERT_TRUE(response.has_value()) << encoding << "：没有读到完整响应";
+
+            EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding"))
+                    << encoding << "：压完更大却仍然换了表示\n" << response->headers;
+            EXPECT_FALSE(hasHeaderLine(response->headers, "vary:")) << encoding << "：没换表示就不该新增 vary";
+            EXPECT_EQ(response->body, body) << encoding << "：正文被换成了更差的表示";
+        }
     }
 
     /**

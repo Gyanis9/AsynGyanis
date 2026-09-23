@@ -48,6 +48,8 @@ namespace AsynGyanis::Net
      * @param payload 消息负载，可为空（空消息也会产出合法的压缩结果）
      * @return std::optional<std::string> 线上负载；zlib 失败（内存不足或输出未按预期收尾）时为空，
      *         调用方应放弃压缩并原样发送（README 同 HTTP 侧的「绝不发坏字节」口径）
+     * @note 本函数不判「压完是否更短」：空字典下短消息必然膨胀，而换不换表示是调用方的决定
+     *       （RFC 7692 §7.3 把这条判据交给禁用了上下文接管的一端）
      */
     [[nodiscard]] std::optional<std::string> deflateWebSocketMessage(std::string_view payload);
 

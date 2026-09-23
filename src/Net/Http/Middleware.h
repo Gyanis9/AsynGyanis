@@ -924,27 +924,40 @@ namespace AsynGyanis::Net
     namespace detail
     {
         /**
-         * @brief 按选定编码压一次正文，失败（含内存不足）返回空
+         * @brief 按选定编码压一次正文，没压成或压完不更短都返回空
          * @details 就地压与外置到工作线程压共用这一份实现：两条路径的产物必须逐字节相同，
          *          否则开关一拨就换了一套编码语义
          * @param encoding 选定的编码名，取值见 kCompressionPreference
          * @param body 待压的正文
          * @param options 各算法的档位
-         * @return std::optional<std::string> 压缩结果；为空表示没压成
+         * @return std::optional<std::string> 压缩结果；为空表示没压成，或压了不会更短
          */
         [[nodiscard]] inline std::optional<std::string> compressWithEncoding(const std::string_view encoding,
                                                                             const std::string_view body,
                                                                             const CompressionOptions options)
         {
+            std::optional<std::string> compressed;
             if (encoding == "zstd")
             {
-                return zstdCompress(body, options.zstdLevel);
+                compressed = zstdCompress(body, options.zstdLevel);
             }
-            if (encoding == "br")
+            else if (encoding == "br")
             {
-                return brotliCompress(body, options.brotliQuality);
+                compressed = brotliCompress(body, options.brotliQuality);
             }
-            return gzipCompress(body, options.gzipLevel);
+            else
+            {
+                compressed = gzipCompress(body, options.gzipLevel);
+            }
+
+            // 压完不比原文短就不换表示：长度阈值只是「值不值得压」的粗略代理，真判据是前后的实际字节数。
+            // 高熵正文（已压过的档案、随机内容）过了阈值也会被撑大几个百分点，而换表示的代价不止带宽：
+            // 对端要多解一次，缓存里还多一份比原文更胖的变体
+            if (compressed.has_value() && compressed->size() >= body.size())
+            {
+                return std::nullopt;
+            }
+            return compressed;
         }
     } // namespace detail
 

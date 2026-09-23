@@ -119,6 +119,9 @@ namespace AsynGyanis::Net
             return response;
         }
 
+        /// 7 位长度档的上界：126 不是长度而是「后面跟着 16 位扩展长度域」的标记（RFC 6455 §5.2）
+        constexpr std::size_t kExtendedLength16MinimumPayloadBytes = 126;
+
         /**
          * @brief 手写一个客户端帧：置 MASK 位并按 4 字节掩码键逐字节异或（RFC 6455 §5.3）
          * @param opCodeValue 操作码原始取值（0x1 Text、0x0 Continuation、0x8 Close、0x9 Ping）
@@ -126,7 +129,8 @@ namespace AsynGyanis::Net
          * @param isFinal 是否消息末帧
          * @param isCompressed 是否置 RSV1（permessage-deflate 的压缩标记）；用例用它构造压缩消息
          * @return std::string 线上字节
-         * @note 长度一律用 7 位档：用例负载都短于 126 字节。本函数有意不复用被测编码器，
+         * @note 长度按 RFC 6455 §5.2 分档：125 字节以内用 7 位档，更长的补 16 位扩展长度域；
+         *       超过 65535 字节请改用 maskedBinaryFrameWith64BitLength()。本函数有意不复用被测编码器，
          *       否则编码器出错时服务端与客户端会一起错，测试就失去判据
          */
         std::string maskedClientFrame(const std::uint8_t opCodeValue, const std::string_view payload, const bool isFinal = true,
@@ -135,7 +139,16 @@ namespace AsynGyanis::Net
             std::string frame;
             frame.push_back(static_cast<char>(
                     static_cast<std::uint8_t>(opCodeValue | (isFinal ? 0x80U : 0x00U) | (isCompressed ? 0x40U : 0x00U))));
-            frame.push_back(static_cast<char>(static_cast<std::uint8_t>(0x80U | payload.size())));
+            if (payload.size() < kExtendedLength16MinimumPayloadBytes)
+            {
+                frame.push_back(static_cast<char>(static_cast<std::uint8_t>(0x80U | payload.size())));
+            } else
+            {
+                // 16 位档：长度域先是 126 这个标记，再跟两个大端字节（RFC 6455 §5.2）
+                frame.push_back(static_cast<char>(0x80U | kExtendedLength16MinimumPayloadBytes));
+                frame.push_back(static_cast<char>((payload.size() >> 8) & 0xFFU));
+                frame.push_back(static_cast<char>(payload.size() & 0xFFU));
+            }
             for (const std::uint8_t maskByte: kClientMaskKey)
             {
                 frame.push_back(static_cast<char>(maskByte));
@@ -1230,11 +1243,12 @@ namespace AsynGyanis::Net
             "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n";
 
     /**
-     * @brief 钉住 permessage-deflate 端到端：协商成功 → 服务端解对端的压缩帧、自己也按压缩回帧
-     * @details 对端发的是 Python zlib 独立算出的压缩负载（不是本端编码器的产物），因此「服务端解压正确」
-     *          这条结论不依赖被测实现；服务端的回帧则钉住 RSV1 置位、线上不留四字节空块尾、且能解回原文。
+     * @brief 钉住入站解压链路：对端发来独立算出的压缩 "hello"，服务端解回原文交付，回帧则按收益决定压不压
+     * @details 压缩负载不是本端编码器的产物，因此「解压正确」这条结论不依赖被测实现。回帧那头 "hello"
+     *          压完是 7 字节（比原文长），RFC 7692 §7.3 在两侧都禁用上下文接管时要求端点自己判这件事：
+     *          置 RSV1 换不来带宽，只把 inflate 摊给了对端。
      */
-    TEST(WebSocketSession, CompressesMessagesAfterNegotiatingPerMessageDeflate)
+    TEST(WebSocketSession, DecompressesPeerMessagesAndSendsShortEchoesUncompressed)
     {
         const auto record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
@@ -1280,18 +1294,64 @@ namespace AsynGyanis::Net
 
         const auto firstByte = static_cast<std::uint8_t>(frameBytes[0]);
         EXPECT_EQ(firstByte & 0x80U, 0x80U) << "数据帧的 FIN 位必须为 1";
-        EXPECT_EQ(firstByte & 0x40U, 0x40U) << "协商之后服务端回帧必须置 RSV1（RFC 7692 §6）";
+        EXPECT_EQ(firstByte & 0x40U, 0x00U) << "压完不更短的消息该发未压缩帧（RFC 7692 §7.3）：RSV1 必须为 0";
         EXPECT_EQ(firstByte & 0x0FU, 0x01U) << "操作码应当是 Text";
 
         const auto payloadLength = static_cast<std::size_t>(static_cast<std::uint8_t>(frameBytes[1]));
         ASSERT_EQ(frameBytes.size(), 2U + payloadLength) << "回帧长度与长度域不一致：" << accumulated;
-        const std::string_view wirePayload = frameBytes.substr(2);
+        // 原文 5 字节、压缩形态 7 字节：更短的那个才是该上线的表示，线上必须逐字节是原文
+        EXPECT_EQ(payloadLength, 5U) << "回帧长度不是原文的 5 字节，说明没收益也压了";
+        EXPECT_EQ(frameBytes.substr(2), "hello") << "未压缩帧的负载必须原样是消息本身";
+
+        client.closeNow();
+        EXPECT_TRUE(server->awaitConnectionsDrained(kWaitTimeout));
+    }
+
+    /**
+     * @brief 对照另一侧：压得动的长消息在协商后仍必须置 RSV1，且线上确实更短
+     * @details 与「短消息不压」互为对照——只留一条会把实现推成「干脆全不压」这种看着更省的方向。
+     *          入站帧按 RFC 7692 §6 以未压缩形态发来（协商后混发两类消息是规范允许的）。
+     */
+    TEST(WebSocketSession, CompressesLongEchoWhenDeflationActuallyShortensIt)
+    {
+        const auto record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        std::string request = upgradeRequestText();
+        request.insert(request.size() - 2, std::string(kPerMessageDeflateOfferHeader));
+
+        // 1024 个同一字符在 level 6 下压到几十字节，因此回帧长度必然落在 7 位档（帧头 2 字节）
+        const std::string longPayload(1024U, 'a');
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(request + maskedClientFrame(0x1, longPayload), kWaitTimeout));
+
+        std::string expectedHandshake = expectedHandshakeResponseText();
+        expectedHandshake.insert(expectedHandshake.size() - 2, std::string(kPerMessageDeflateResponseLine));
+
+        std::string accumulated;
+        const std::size_t frameOffset = expectedHandshake.size();
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U, kWaitTimeout))
+                << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, frameOffset), expectedHandshake) << "101 与期望逐字节不符";
+
+        const auto expectedPayloadLength = static_cast<std::size_t>(static_cast<std::uint8_t>(accumulated[frameOffset + 1U]));
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U + expectedPayloadLength, kWaitTimeout))
+                << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
+        ASSERT_EQ(accumulated.size(), frameOffset + 2U + expectedPayloadLength) << "除 101 与一条回帧外不该有别的字节";
+
+        const auto firstByte = static_cast<std::uint8_t>(accumulated[frameOffset]);
+        EXPECT_EQ(firstByte & 0x40U, 0x40U) << "压得动的消息也没置 RSV1：no-gain 判据把该压的一起挡掉了";
+        EXPECT_LT(expectedPayloadLength, longPayload.size()) << "线上长度不低于原文，等于没压";
+
+        const std::string_view wirePayload(accumulated.data() + frameOffset + 2U, expectedPayloadLength);
         EXPECT_FALSE(wirePayload.ends_with(std::string("\x00\x00\xFF\xFF", 4)))
                 << "四字节空块尾不该出现在线上负载里（RFC 7692 §7.2.1）";
-
-        const std::optional<std::string> inflated = inflateWebSocketMessage(wirePayload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+        const std::optional<std::string> inflated =
+                inflateWebSocketMessage(wirePayload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
         ASSERT_TRUE(inflated.has_value()) << "服务端的回帧解不开";
-        EXPECT_EQ(*inflated, "hello");
+        EXPECT_EQ(*inflated, longPayload);
 
         client.closeNow();
         EXPECT_TRUE(server->awaitConnectionsDrained(kWaitTimeout));

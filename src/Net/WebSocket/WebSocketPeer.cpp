@@ -294,6 +294,13 @@ namespace AsynGyanis::Net
         if (m_isPerMessageDeflateEnabled && isDataMessage)
         {
             compressedPayload = deflateWebSocketMessage(payload);
+            // 每条消息都从空字典开始（本端协商了两条 no_context_takeover），因此这条判据零成本可得：
+            // 压完不比原文短就按未压缩帧发。RFC 7692 §7.3 正是这样要求禁用上下文接管的一端的——
+            // 短消息（"hello" 压成 7 字节）在空字典下几乎必然膨胀，而 RSV1 一置位就把 inflate 摊给了对端
+            if (compressedPayload.has_value() && compressedPayload->size() >= payload.size())
+            {
+                compressedPayload.reset();
+            }
         }
         const std::string_view payloadToSend = compressedPayload.has_value() ? std::string_view(*compressedPayload) : payload;
 
