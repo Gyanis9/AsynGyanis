@@ -212,7 +212,14 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(runSchemaValidation(values, schema).valid);
     }
 
-    TEST(ConfigSchemaTest, RangeIsSkippedForNonNumericTypes)
+    /**
+     * @brief 设了区间却拿到非数值，要报出来而不是「什么都不比就当通过」
+     * @details 旧断言是「非数值类型跳过区间检查、整体判为合法」，语义改为「无法判定即判为不通过」。
+     *          依据是同一条函数里 NaN/无穷那一支已经写下的口径：设了界限却什么都比不出来属于漏检，
+     *          判据取 fail-safe 一侧。最现实的漏检现场是 schema 只声明区间不声明类型，而 YAML 把
+     *          端口写成带引号的 `"8080"`——字符串躲过检查，取值方在运行期才失败。
+     */
+    TEST(ConfigSchemaTest, RangeDeclaredOnNonNumericValueFailsInsteadOfSilentlyPassing)
     {
         const ConfigKeyValueMap values = makeValues({
                 {"label", ConfigValue(std::string("text"))},
@@ -227,8 +234,30 @@ namespace AsynGyanis::Base
 
         const ConfigValidationResult result = runSchemaValidation(values, schema);
 
-        EXPECT_TRUE(result.valid);
-        EXPECT_TRUE(result.errors.empty());
+        // 三个键各一条：类型声明本身没错（string 配 string），是「区间对它无从判定」这件事要说出来
+        EXPECT_FALSE(result.valid);
+        EXPECT_EQ(result.errors.size(), 3U);
+        for (const auto &error: result.errors)
+        {
+            EXPECT_NE(error.find("区间"), std::string::npos) << error;
+        }
+    }
+
+    /**
+     * @brief 带引号的数字在「只声明区间、不声明类型」的 schema 下也要被挡下
+     * @details 这是上一条的现场版：运维只写了 min/max，配置里端口是字符串。类型不设限所以类型这一关
+     *          本来就该放行，放行之后区间必须给出结论——比不出来就是不合格。
+     */
+    TEST(ConfigSchemaTest, QuotedNumberWithBoundsOnlySchemaFailsInsteadOfPassingUnchecked)
+    {
+        const ConfigKeyValueMap values = makeValues({{"port", ConfigValue(std::string("8080"))}});
+        const ConfigSchema      schema = {ConfigSchemaEntry{"port", std::nullopt, true, 1.0, 65535.0}};
+
+        const ConfigValidationResult result = runSchemaValidation(values, schema);
+
+        EXPECT_FALSE(result.valid);
+        ASSERT_EQ(result.errors.size(), 1U);
+        EXPECT_NE(result.errors.front().find("string"), std::string::npos) << result.errors.front();
     }
 
     // ============================================================================

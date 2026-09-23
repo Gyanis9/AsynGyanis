@@ -75,21 +75,27 @@ namespace AsynGyanis::Base
                 continue;
             }
 
-            // 数值范围约束（对整数与浮点生效，其余类型跳过）
+            // 数值范围约束：只对能比较的取值有意义，但「比较不了」不等于「通过」
             if (minimum || maximum)
             {
-                if (const std::optional<double> numericValue = numericValueOf(value))
+                if (const std::optional<double> numericValue = numericValueOf(value); !numericValue.has_value())
+                {
+                    // 设了界限却连值都不是数值，等于一条都没比对——与下面 NaN 那支同一口径：
+                    // 判据取 fail-safe 一侧，宁可报「这条约束判不出来」，也不让它冒充「已校验通过」。
+                    // 最现实的漏检现场是 schema 只写区间不写类型，而 YAML 把端口写成带引号的 "8080"
+                    result.valid = false;
+                    result.errors.push_back(std::format("配置键 {} 设了区间约束但值不是数值（实际是 {}），区间无法判定", key,
+                                                        typeName(value.type())));
+                }
+                else if (!std::isfinite(*numericValue))
                 {
                     // 非有限值过不了任何一次区间比较：NaN 让两侧都为假，而只给一侧界限时
-                    // 另一侧的无穷大也落在界内——「设了界限却什么都比不出来」属于漏检。
-                    // 判据取 fail-safe 一侧：宁可多报一条，也不让这种取值冒充「已校验通过」
-                    if (!std::isfinite(*numericValue))
-                    {
-                        result.valid = false;
-                        result.errors.push_back(std::format("配置键 {} 的值不是有限数值（NaN 或无穷），无法满足区间约束", key));
-                        continue;
-                    }
-
+                    // 另一侧的无穷大也落在界内——「设了界限却什么都比不出来」属于漏检
+                    result.valid = false;
+                    result.errors.push_back(std::format("配置键 {} 的值不是有限数值（NaN 或无穷），无法满足区间约束", key));
+                }
+                else
+                {
                     if (minimum && *numericValue < *minimum)
                     {
                         result.valid = false;

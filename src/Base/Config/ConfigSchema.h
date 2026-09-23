@@ -29,8 +29,8 @@ namespace AsynGyanis::Base
         std::string                    key;             ///< 配置键
         std::optional<ConfigValueType> expectedType;    ///< 期望类型，空表示不限制；整数族（number_integer 与 number_unsigned）互通，见 runSchemaValidation
         bool                           required{false}; ///< 是否为必需键
-        std::optional<double>          minimum;         ///< 数值下限（仅对整数与浮点生效；NaN 与 ±Inf 视为违规）
-        std::optional<double>          maximum;         ///< 数值上限（仅对整数与浮点生效；NaN 与 ±Inf 视为违规）
+        std::optional<double>          minimum;         ///< 数值下限（值不是有限数值——非数值类型、NaN、±Inf——时判违规，区间无从判定）
+        std::optional<double>          maximum;         ///< 数值上限（判据同 minimum：不做「比不出来就当通过」的静默放行）
     };
 
     /// 配置 schema：约束条目列表
