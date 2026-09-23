@@ -3,6 +3,8 @@
 //
 // 口径与 tests/Net/Http/TestHotPathAllocations.cpp 一致（共用 AllocationProbe）：
 //   · 走一条日志（消息 40 字节）：一千次共 1000 次分配，就是消息体那一块；
+//   · 被等级挡下的一条：一千次共 0 次——正文连拷贝都不必做（放行时那 1000 次是同一条的对照形状，
+//     两者都印在同一条用例的输出里，缺了对照这条读数就什么都证不出来）；
 //   · 时刻渲染进调用方栈缓冲：一千次共 0 次；
 //   · 消融对照——把时刻落成 owning 文本：一千次共 1000 次，即本轮从事件里去掉的那一次；
 //   · 走异步队列的一行：一千次共 1007 次，多出的七次是槽位数组倍增到配置容量那一串；
@@ -94,6 +96,9 @@ namespace AsynGyanis::Base
 #ifdef NDEBUG
         /// 一条日志的稳态分配：只有消息体那一次；时间戳文本已改成在调用方缓冲里渲染
         constexpr std::uint64_t kLogLineTotalAllocationsPerThousand = 1000U;
+
+        /// 被等级挡下的一条日志：一次堆都不该碰，正文连拷贝都不必做
+        constexpr std::uint64_t kFilteredLineTotalAllocationsPerThousand = 0U;
 
         /// 渲染进栈缓冲：一次堆都不碰
         constexpr std::uint64_t kStackBufferRenderTotalAllocationsPerThousand = 0U;
@@ -215,6 +220,59 @@ namespace AsynGyanis::Base
 #ifdef NDEBUG
         EXPECT_EQ(profile.totalAllocations, kLogLineTotalAllocationsPerThousand)
                 << "一条日志又开始多碰堆了：时间戳文本还是消息体？";
+#endif
+    }
+
+    /**
+     * @brief 被等级挡下的那一条日志不碰堆
+     * @details 钉的是「等级过滤发生在消息体落地之前」。log() 以 string_view 收正文，若先把正文拷成
+     *          std::string 再去问等级，一条注定丢弃的 TRACE/DEBUG 记录也要为正文取一块堆——而按
+     *          INFO 跑的生产进程里，满代码库的 TRACE/DEBUG 调用走的正是这条被丢弃的路径。
+     *          对照形状是同一次调用在等级放行时的读数，两条一起印出来才看得出省掉的是哪一块。
+     */
+    TEST(LogHotPathAllocations, FilteredOutLineIsAllocationFree)
+    {
+        Logger logger("hot_path_filtered");
+        auto   sink            = std::make_unique<NonWritingSink>();
+        NonWritingSink &observedSink = *sink;
+        logger.addSink(std::move(sink));
+        // 阈值抬到 Error：下面每次 Trace 调用都该被挡在事件构造之前
+        logger.setLevel(LogLevel::Error);
+
+        const auto logFilteredOnce = [&logger]
+        {
+            logger.log(LogLevel::Trace, kMessageText);
+            return 1U;
+        };
+        logFilteredOnce();
+        // 自检：先证明这条日志确实被丢掉，否则下面的零分配断言量的是放行形状，等于什么都没钉
+        EXPECT_EQ(observedSink.writeCount(), 0U) << "等级过滤没生效，这条读数对应的不是「被丢弃」的形状";
+
+        const AllocationProfile filteredProfile = measurePerOperation(logFilteredOnce);
+        EXPECT_EQ(filteredProfile.resultSum, kMeasurementIterations) << "有几次没跑到测量体";
+        EXPECT_EQ(observedSink.writeCount(), 0U) << "测量期间有被过滤的日志漏到了 Sink";
+
+        // 对照：把阈值放开，同一次调用要为消息体取那一块堆
+        logger.setLevel(LogLevel::Trace);
+        const auto logAcceptedOnce = [&logger]
+        {
+            logger.log(LogLevel::Info, kMessageText);
+            return 1U;
+        };
+        logAcceptedOnce();
+        const AllocationProfile acceptedProfile = measurePerOperation(logAcceptedOnce);
+        EXPECT_EQ(observedSink.writeCount(), kMeasurementIterations + 1U) << "对照形状没跑满";
+
+        std::printf("filtered-line 一千次共 %llu 次 / %llu 字节；同一条放行时 %llu 次 / %llu 字节\n",
+                    static_cast<unsigned long long>(filteredProfile.totalAllocations),
+                    static_cast<unsigned long long>(filteredProfile.totalBytes),
+                    static_cast<unsigned long long>(acceptedProfile.totalAllocations),
+                    static_cast<unsigned long long>(acceptedProfile.totalBytes));
+#ifdef NDEBUG
+        EXPECT_EQ(filteredProfile.totalAllocations, kFilteredLineTotalAllocationsPerThousand)
+                << "被过滤的日志还在为消息体取堆：等级过滤排在了拷贝之后";
+        EXPECT_EQ(acceptedProfile.totalAllocations, kLogLineTotalAllocationsPerThousand)
+                << "对照形状的读数不对，上面那条零分配断言也就失去了意义";
 #endif
     }
 

@@ -1878,6 +1878,47 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 被等级挡下的那一条：生产进程按 INFO 跑，代码里成片的 TRACE/DEBUG 调用走的就是这条路径，
+    // 它付的钱应当只有「读一次等级」。这条盯住一个具体的退化：入口若先按 string_view 拷出消息体
+    // 再去问等级，一条注定丢弃的记录也要为正文取一块堆；同一形状的分配判据由
+    // tests/Base/Log/TestLogHotPathAllocations.cpp 的 FilteredOutLineIsAllocationFree 钉住
+    struct CountingSink final : Base::LogSink
+    {
+        /**
+         * @brief 只数条数，不格式化也不写盘
+         * @param event 日志事件
+         */
+        void write(const Base::LogEvent &event) override
+        {
+            static_cast<void>(event);
+            ++receivedCount;
+        }
+
+        /**
+         * @brief 无缓冲可刷
+         */
+        void flush() override
+        {
+        }
+
+        std::uint64_t receivedCount{0U}; ///< 收到的事件条数，用于自检「这条确实被挡下了」
+    };
+
+    Base::Logger filteredLogger("bench.filtered");
+    auto         countingSink           = std::make_unique<CountingSink>();
+    CountingSink &observedCountingSink  = *countingSink;
+    filteredLogger.addSink(std::move(countingSink));
+    filteredLogger.setLevel(Base::LogLevel::Error);
+    measureCase(
+            "log-filtered-out",
+            [&filteredLogger, &observedCountingSink]
+            {
+                filteredLogger.log(Base::LogLevel::Trace, kLogMessage);
+                // 自检判据：正文没落到 Sink 才算走对了形状；落进去了说明量的不是「被丢弃」这条路径
+                return observedCountingSink.receivedCount == 0U ? 1U : 0U;
+            },
+            results, checksum, failureCount);
+
     // 这条盯的是「编一帧要不要为历史的流买单」：连接先跑完 5000 条完整请求，再量每条请求收口后
     // 剩下的那次「写一段响应 + 编一帧」。实测（容器 GCC 13 Release、绑核）本端 255~261 ns/op；
     // 把 collectFrames 开头那一次 retireSettledStreams() 去掉后同一条跳到 88.7 µs/op（340 倍），

@@ -22,7 +22,15 @@ namespace AsynGyanis::Base
 
     void Logger::log(const LogLevel level, const std::string_view message, const SourceLocation &location) const
     {
-        // 公开入口以 string_view 接收（调用方无需构造字符串），此处做唯一一次拷贝
+        // 等级过滤排在正文落地之前：本入口以 string_view 收文本，若先拷成 std::string 再问等级，
+        // 一条注定被挡下的记录也要为消息体取一块堆——按 INFO 跑的进程里，满代码库的 TRACE/DEBUG
+        // 调用走的正是这条被丢弃的路径
+        if (!shouldLog(level))
+        {
+            return;
+        }
+
+        // 走到这里说明本条已放行：公开入口以 string_view 收正文，这是它唯一一次被拷成 owning 字符串
         writeEvent(level, std::string(message), location);
     }
 
@@ -39,6 +47,12 @@ namespace AsynGyanis::Base
 
     void Logger::logWithStackTrace(const LogLevel level, const std::string_view message, CapturedStackTrace stackTrace, const SourceLocation &location) const
     {
+        // 与 log() 同一口径：栈已由调用方采好，正文拷贝仍要排在等级过滤之后
+        if (!shouldLog(level))
+        {
+            return;
+        }
+
         // 栈由调用方携带（异常的抛出点栈），此处不做采集
         writeEvent(level, std::string(message), location, std::move(stackTrace));
     }
