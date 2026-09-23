@@ -919,7 +919,9 @@ namespace
                     AccountRow{.id = 5, .name = "未提交就离开作用域", .balance = 3.0, .note = std::nullopt, .active = true}));
             // 刻意不调用 commit / rollback：析构必须补上回滚，否则未结束的事务会串给下一个借用者
         }
-        Samples::checklist().check(bystanderCount() == 2, "事务对象析构时自动回滚，库里仍只有先前提交的两行");
+        Samples::checklist().check(bystanderCount() == 2,
+                                   "未提交就离开作用域不会留下半成品（事务析构与归还时的会话复位都会兜底，"
+                                   "能指认是哪一道起作用的用例在 tests/Database/Pool/TestTransaction.cpp）");
 
         // 约束违例穿过事务作用域：异常抛出后仍要看到完整回滚，而不是「前一条留下、后一条失败」的半成品
         std::string escapedReason;
@@ -1147,9 +1149,8 @@ namespace
         Database::PooledConnection second = pool.acquire();
         Database::PooledConnection third  = pool.tryAcquire();
         Samples::checklist().check(static_cast<bool>(first) && static_cast<bool>(second) && !static_cast<bool>(third) &&
-                                           pool.activeCount() == 2 && pool.idleCount() == 0 && pool.totalCount() == pool.activeCount() &&
-                                           pool.totalCount() <= 2,
-                                   "连接池按上限发放：借满两条后 tryAcquire() 立刻给空，统计自洽");
+                                           pool.activeCount() == 2 && pool.idleCount() == 0 && pool.waitingCount() == 0,
+                                   "连接池按上限发放：借满两条后 tryAcquire() 立刻给空，且不在等待队列里留下幻影借用者");
 
         Database::DatabaseConnection *returnedConnection = second.operator->();
         const bool                    isMoved            = static_cast<bool>(second);
@@ -1190,8 +1191,13 @@ namespace
         }
         {
             const Database::PooledConnection next = resetPool.acquire();
-            isReusedAcrossReturns = next.operator->() == rawConnection;
-            leftoversSeenByNextBorrower = scalarInteger(*next, "SELECT COUNT(*) FROM raw_values").value_or(-1);
+            // 两次都没拿到连接时「指针相等」也会成立，紧接着还要把空引用交给查询：
+            // 先把「确实拿到了这一条」写进判据，判空才与它要钉的性质同向
+            isReusedAcrossReturns = rawConnection != nullptr && next.operator->() == rawConnection;
+            if (isReusedAcrossReturns)
+            {
+                leftoversSeenByNextBorrower = scalarInteger(*next, "SELECT COUNT(*) FROM raw_values").value_or(-1);
+            }
         }
         Samples::checklist().check(isReusedAcrossReturns && leftoversSeenByNextBorrower == 0,
                                    "归还时池调 resetSessionState()：未提交的事务被滚掉，半成品没有串给下一个借用者");
@@ -1298,6 +1304,8 @@ namespace
         {
             loop.run();
         });
+        // join() 之后 get_id() 交出的是空 id：要看「探针在哪条线程上恢复」必须在 join 之前把 id 取走
+        const std::thread::id loopThreadId = loopThread.get_id();
         const bool isLoopRunning = Samples::waitUntil([&loop]
                                                       {
                                                           return loop.isRunning();
@@ -1328,7 +1336,7 @@ namespace
         // 公开面没有承诺「异步链路在哪条线程上恢复」，因此这里只记录不断言：
         // 若落在工作线程上，调用方就不能在 await 之后直接碰循环持有的对象——这条契约该由框架先定
         LOG_INFO_FMT("异步探针的恢复线程与事件循环线程{}一致",
-                     outcome.resumedThreadId == loopThread.get_id() ? "" : "不");
+                     outcome.resumedThreadId == loopThreadId ? "" : "不");
 
         // 异步写完必须用同步查询读回才算「数据真的落库」
         OrmQuery<AccountRow> syncRead(pool, Database::DatabaseType::Sqlite);
