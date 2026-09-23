@@ -375,6 +375,10 @@ namespace AsynGyanis::Base
         const auto currentData = m_data.load(std::memory_order_acquire);
         if (currentData->configDirectory.empty())
         {
+            // 四条失败路各自报明原因：只回一个 false 等于让运维去猜「是没设锚点、还是监视起不来」，
+            // 这两件事的修法完全不同。显式文件列表用相对路径时锚点推不出来，也归在这一条里
+            LOG_ERROR_FMT("ConfigManager：enableHotReload 失败，尚未设置配置目录锚点；"
+                          "请用 loadFromDirectory 或绝对路径的 loadFiles 加载（相对路径推不出稳定的锚点目录）");
             m_hotReloadEnabled.store(false, std::memory_order_release);
             return false;
         }
@@ -384,6 +388,7 @@ namespace AsynGyanis::Base
             m_fileWatcher = Platform::FileWatcher::create();
             if (!m_fileWatcher)
             {
+                LOG_ERROR_FMT("ConfigManager：enableHotReload 失败，FileWatcher::create() 返回空（本平台无法创建文件监视器）");
                 m_hotReloadEnabled.store(false, std::memory_order_release);
                 return false;
             }
@@ -403,6 +408,8 @@ namespace AsynGyanis::Base
             // 「改了配置没反应」
             if (!m_fileWatcher->addWatch(pathText(currentData->configDirectory), currentData->configDirectoryRecursive))
             {
+                LOG_ERROR_FMT("ConfigManager：enableHotReload 失败，给配置目录挂监视没成功：{}（目录可能已被删除、无权限，或系统监视句柄已用尽）",
+                              pathText(currentData->configDirectory));
                 m_fileWatcher.reset();
                 m_hotReloadEnabled.store(false, std::memory_order_release);
                 return false;
@@ -410,14 +417,22 @@ namespace AsynGyanis::Base
 
             if (!m_fileWatcher->start())
             {
+                LOG_ERROR_FMT("ConfigManager：enableHotReload 失败，文件监视线程起不来（配置目录 {}）", pathText(currentData->configDirectory));
                 m_fileWatcher.reset();
                 m_hotReloadEnabled.store(false, std::memory_order_release);
                 return false;
             }
 
             return true;
+        } catch (const std::exception &enableError)
+        {
+            LOG_ERROR_FMT("ConfigManager：enableHotReload 失败，装配监视器时抛出异常：{}", enableError.what());
+            m_fileWatcher.reset();
+            m_hotReloadEnabled.store(false, std::memory_order_release);
+            return false;
         } catch (...)
         {
+            LOG_ERROR_FMT("ConfigManager：enableHotReload 失败，装配监视器时抛出非标准异常");
             m_fileWatcher.reset();
             m_hotReloadEnabled.store(false, std::memory_order_release);
             return false;

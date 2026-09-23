@@ -2191,14 +2191,28 @@ server:
     // 热加载开关与状态机
     // ============================================================================
 
+    /**
+     * @brief 没设锚点时 enableHotReload 回 false，并且要说清是哪一条失败路
+     * @details 四条失败路（没锚点、FileWatcher::create() 返回空、addWatch 失败、start 失败、装配抛异常）
+     *          原先都只回一个 false——「改了配置没反应」在这种现场下根本无从下手，而「没锚点」与
+     *          「监视器起不来」的修法完全不同。现在每一条都报明原因，能带目录的带上目录。
+     */
     TEST_F(ConfigManagerTest, EnableHotReloadWithoutConfigDirectoryFailsAndStaysDisabled)
     {
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
         EXPECT_FALSE(configuration().isHotReloadEnabled());
 
         EXPECT_FALSE(configuration().enableHotReload());
 
         EXPECT_FALSE(configuration().isHotReloadEnabled());
         EXPECT_NO_THROW(configuration().disableHotReload());
+
+        ASSERT_EQ(recorded->size(), 1U) << "只回 false 不说原因，运维分不出「没设锚点」与「监视器起不来」";
+        EXPECT_TRUE(anyEntryContains(*recorded, "配置目录"));
     }
 
     TEST_F(ConfigManagerTest, HotReloadStateFollowsEnableResultAndDisableIsIdempotent)
