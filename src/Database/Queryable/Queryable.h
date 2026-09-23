@@ -692,6 +692,14 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("insertBatchAsync()");
 
+            // 空集合的判断排在方言探测之前：探测可能要借一条连接去问数据库类型，池被占满时那一次
+            // 借出会等满 acquireTimeout 再抛 ConnectionUnavailableException，而契约是「空集合直接得到 0，
+            // 不产生任何语句」。同步版也是先判空再取方言，两条方向同一口径
+            if (rows.empty())
+            {
+                co_return 0;
+            }
+
             // 方言解析可能借出连接探测类型，放在提交前（与其它异步方法一致）
             std::shared_ptr<SqlDialect> dialect     = resolveDialect();
             ConnectionPool *            pool        = m_pool;
@@ -701,12 +709,6 @@ namespace AsynGyanis::Database::Queryable
                     completionLoop,
                     [dialect, rows = std::move(rows), pool, transaction]() -> std::int64_t
                     {
-                        // 空集合的判断放在任务内部而不是提交前：本方法只 co_await 一次，
-                        // 不需要依赖「协程会在未挂起的情况下直接完成」这种额外前提
-                        if (rows.empty())
-                        {
-                            return 0;
-                        }
                         return insertBatchOn(pool, transaction, *dialect, rows);
                     });
 

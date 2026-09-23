@@ -596,6 +596,37 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionProducesNoStatemen
     EXPECT_EQ(countRows(), 0);
 }
 
+/**
+ * @brief 验证空集合的异步批量插入不需要连接：池被占满时也当场给出 0
+ *
+ * @details 方言探测会为了「问数据库类型」借一条连接。把它排在空集合判断之前，池饱和的调用方
+ *          拿到的就不再是 0，而是先等满 acquireTimeout 再抛 ConnectionUnavailableException——
+ *          而契约写的是「空集合直接得到 0，不产生任何语句」，同步版也是这个形状。
+ */
+TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionNeedsNoConnection)
+{
+    // 夹具的池上限是 1：占住唯一额度之后，任何借用都会撞上限
+    PooledConnection occupancy = m_pool->acquire();
+    ASSERT_TRUE(static_cast<bool>(occupancy)) << "前提不成立：占位连接没拿到";
+
+    const std::vector<AsyncAccountRow> noRows;
+
+    Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
+    asyncBatchQuery.useAsyncExecutor(m_executor);
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const CompletedTask<std::int64_t> asyncInserted =
+        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(noRows, eventLoop()));
+    const auto elapsedMilliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+
+    ASSERT_TRUE(asyncInserted.finished) << "池被占满时空集合也该当场完成，而不是先等一次借连接";
+    ASSERT_EQ(asyncInserted.error, nullptr) << "空集合被「借不到连接」顶掉了（契约是给出 0）";
+    ASSERT_TRUE(asyncInserted.value.has_value());
+    EXPECT_EQ(asyncInserted.value.value(), 0);
+    EXPECT_LT(elapsedMilliseconds, 1000) << "耗时 " << elapsedMilliseconds << " 毫秒，像是先等满了 acquireTimeout";
+}
+
 // ========================================================================
 // 不阻塞调用线程
 // ========================================================================
