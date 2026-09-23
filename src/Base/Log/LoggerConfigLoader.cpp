@@ -372,7 +372,17 @@ namespace AsynGyanis::Base
 
             // 基础文件名同样按 UTF-8 解成 path 再交给 Sink：直接交窄串，Sink 内部与目录拼接时
             // 会过一遍本地代码页，代码页外的字符变成 '?'，滚动日志就此写到改了名的文件上
-            sink = std::make_unique<RollingFileSink>(AsynGyanis::Platform::FileSystem::pathFromUtf8(*baseOptional), logDirectory, policy,
+            const std::filesystem::path basePath = AsynGyanis::Platform::FileSystem::pathFromUtf8(*baseOptional);
+            // Sink 只取文件名段（带着目录段会把活动文件与备份拆到两处，备份就此清不掉），因此这里
+            // 必须说一声：静默丢掉那段前缀等于把「日志放进子目录」的意图换成「写在 directory 那一层」。
+            // 与本文件其余容错口径一致——回落可以，但不能没人知道
+            if (basePath.has_parent_path())
+            {
+                std::cerr << "LoggerConfig：rolling_file sink 的 base_filename='" << *baseOptional
+                        << "' 带目录段，只取其中的文件名 '" << AsynGyanis::Platform::FileSystem::utf8FromPath(basePath.filename())
+                        << "'；要把日志放进子目录请写在 directory 字段里" << '\n';
+            }
+            sink = std::make_unique<RollingFileSink>(basePath, logDirectory, policy,
                                                      maximumSizeBytes, maximumBackupCount);
         } else if (type == "async")
         {

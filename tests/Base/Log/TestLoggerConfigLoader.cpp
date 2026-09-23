@@ -1388,6 +1388,40 @@ namespace AsynGyanis::Base
         EXPECT_EQ(listTemporaryFiles(), expected);
     }
 
+    /**
+     * @brief base_filename 带目录段时说明「只取文件名段」，而不是悄悄换个地方写
+     * @details Sink 只取文件名段是它自己的契约（带着目录段会把活动文件与备份拆到两处，备份就此
+     *          清不掉），但配置文本是运维写的：`base_filename: nested/app.log` 的本意是放进子目录，
+     *          一声不吭地改成平铺，现场就是「配置文件里明明写着 nested，日志却在上一层」。
+     *          诊断因此挂在读配置这一层，与 max_size_mb / policy 等回落同一口径
+     */
+    TEST_F(LoggerConfigLoaderTest, BaseFilenameWithDirectorySegmentIsDiagnosedAndFlattened)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: rolling_file
+          base_filename: nested/named.log
+          directory: rolling
+          policy: size
+          max_size_mb: 1
+)");
+
+        ::testing::internal::CaptureStderr();
+        applyLogging();
+        const std::string diagnostic = ::testing::internal::GetCapturedStderr();
+        EXPECT_NE(diagnostic.find("只取其中的文件名"), std::string::npos) << diagnostic;
+        EXPECT_NE(diagnostic.find("nested/named.log"), std::string::npos) << diagnostic;
+
+        logAndFlush("root", LogLevel::Info, "flattened base filename line");
+
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/named.log"), "flattened base filename line"));
+        EXPECT_FALSE(std::filesystem::exists(temporaryPath("rolling/nested")));
+    }
+
     TEST_F(LoggerConfigLoaderTest, AsyncSinkWithoutWrappedSinkIsSkipped)
     {
         loadConfiguration(R"(logging:
