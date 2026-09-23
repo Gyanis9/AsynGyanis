@@ -8,6 +8,8 @@
 // - 自增标识挂在写回执上：两条协议路径同口径、非插入语句与无自增列都回 0、宽不进 int64 时如实报 0 并写明原因
 // - 自增主键端到端：SchemaMigrator 生成的 DDL 被 InnoDB 接受，单条与批量两条写入路径都省略主键、标识连着排成 1..N
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
+// - 多语句文本在两条协议路径上都整次拒绝且首条不落库（这是「握手不开 CLIENT_MULTI_STATEMENTS」的可证形式）
+// - 语句表到顶时逐出最久没被读到的那一条：条数停在上界、热语句第二轮仍逐条命中
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
 
@@ -947,6 +949,46 @@ namespace AsynGyanis::Database
 
         connection.disconnect();
         EXPECT_EQ(connection.cachedStatementCount(), 0U) << "断开时表里的语句必须全部关掉";
+    }
+
+    /**
+     * @brief 钉住「带第二条语句的文本整次被拒，且第一条也不执行」——多语句注入那道防线要可证
+     *
+     * @details SQLite 侧同一形状早已钉住（MultipleStatementsAreRejectedWithoutRunningTheFirst），
+     *          MySQL 侧此前只靠「握手时不开 CLIENT_MULTI_STATEMENTS」这一个实现事实，没有用例守着：
+     *          谁把这个位加上（它正是拼接注入的常规出口），行为就会静默变成「首条照跑、后段报错」。
+     *          两条协议路径都钉：文本走 mysql_real_query，预处理走 mysql_stmt_prepare，服务端都要在
+     *          解析阶段就拒，且**首条不落库**——半执行状态比报错危险得多。
+     */
+    TEST_F(MySqlIntegrationTest, MultipleStatementsAreRejectedWithoutRunningTheFirst)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 首条是 DDL：它若生效，下面那句「查这张表」就会成功，判据正是它不成功
+        static constexpr std::string_view kNeverCreatedTable = "Asyn_Mysql_MultiStatementProbe";
+        static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(kNeverCreatedTable)));
+
+        const std::string script = "CREATE TABLE " + quote(kNeverCreatedTable) + " (id INT); SELECT 1";
+        EXPECT_EQ(connection.execute(script), nullptr) << "多语句文本没被拒绝（CLIENT_MULTI_STATEMENTS 被谁打开了？）";
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+
+        EXPECT_EQ(connection.execute("SELECT * FROM " + quote(kNeverCreatedTable)), nullptr)
+                << "第二条被拒了但第一条已经执行：留下半执行状态";
+        EXPECT_TRUE(connection.isConnected()) << "服务端拒绝一条语句不该把链路判断：" << connection.lastError();
+
+        // 预处理路径同形，且首条换成写语句：这一格的半执行就是脏数据
+        ASSERT_TRUE(prepareTable(kNoOpUpdateTableName, kAutoIncrementColumns)) << m_lastSetupError;
+        const std::vector<DatabaseValue> noParameters;
+        EXPECT_EQ(connection.execute("INSERT INTO " + quote(kNoOpUpdateTableName) + " (`name`) VALUES ('脏数据'); SELECT 2",
+                                     noParameters),
+                  nullptr) << "预处理路径没拒绝多语句";
+
+        const std::unique_ptr<DatabaseResult> probe =
+                connection.execute("SELECT COUNT(*) FROM " + quote(kNoOpUpdateTableName), noParameters);
+        ASSERT_NE(probe, nullptr) << connection.lastError();
+        ASSERT_TRUE(probe->next());
+        EXPECT_EQ(std::get<std::int64_t>(probe->getValue(0)), 0) << "首条 INSERT 落库了：半执行状态";
     }
 
     /**
