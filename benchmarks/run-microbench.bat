@@ -22,9 +22,19 @@ if not exist "%BENCH_PATH%" (
 rem The result JSON is a transient run artifact, so it goes to %TEMP% as well: build\
 rem only holds the debug/release build trees (see run-soak.bat for the same reasoning)
 set RESULT_PATH=%TEMP%\asyn-microbench-%ASYN_BENCH_BUILD%.json
+rem Remove the previous run's artifact first: the JSON path is reused, so a run that dies
+rem before writing it would otherwise be graded against last run's numbers and pass.
+del "%RESULT_PATH%" >nul 2>nul
 "%BENCH_PATH%" --json-out "%RESULT_PATH%"
-if errorlevel 1 (
-    echo Microbenchmark self-check failed: some case did not take its success path.
+rem Compare against zero rather than "if errorlevel 1": cmd evaluates that test as a SIGNED
+rem comparison, so a crash exit code (0xC0000005 shows up as -1073741819) or ninja's 0xFFFFFFFF
+rem reads as "not at least 1" and the guard lets the run through as a success.
+if not "%ERRORLEVEL%"=="0" (
+    echo Microbenchmark run failed with exit code %ERRORLEVEL% - self-check or crash, not a regression verdict.
+    exit /b 1
+)
+if not exist "%RESULT_PATH%" (
+    echo Microbenchmark exited without writing %RESULT_PATH% - refusing to grade a stale or missing result.
     exit /b 1
 )
 
