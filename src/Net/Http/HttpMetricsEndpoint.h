@@ -39,7 +39,9 @@ namespace AsynGyanis::Net
      *          它不参与耗时直方图（见 Http3Session 构造函数），请求数与状态码类照常计入
      * @warning 同一端口由多台服务器共同监听（每循环线程一个）时，还要让它们共用一份采集端
      *          （HttpServer::setMetricsCollector()）：各持一份时抓取会随机命中其中一台，报出的是
-     *          那台自己的量，计数器还能在两次抓取之间变小
+     *          那台自己的量，计数器还能在两次抓取之间变小。跨进程没有这条通道——多个 worker 进程
+     *          共用一个端口时，本端点报的只是被抓住的那个进程的口径，按进程各自暴露抓取端点再由
+     *          采集侧汇总
      * @see HttpServer::enableMetricsEndpoint(), HttpServerStats
      */
     [[nodiscard]] std::string formatPrometheusMetrics(const HttpServerStats &stats, std::string_view metricNamePrefix);

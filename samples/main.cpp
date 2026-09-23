@@ -821,6 +821,16 @@ int main(int argc, char **argv)
         LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
         LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
         LOG_INFO("Press Ctrl+C to exit");
+
+        // 指标端点是进程内的口径：多 worker 进程共用同一个监听端口时，一次抓取只命中其中一个进程，
+        // 计数器会在两次抓取之间回落（同一进程内的多个监听器已在装配时共用一份采集端，跨进程没有
+        // 这条通道）。不写出来的话，运维看到的就是「流量忽大忽小」而不是「这里少了一份进程」
+        if (configuration.exposeMetrics && workerProcessCount > 1)
+        {
+            LOG_WARN_FMT("--metrics 与 --workers {} 一起用：每条抓取只命中一个 worker 进程的口径，"
+                         "计数器会在两次抓取之间变小；要按进程聚合请让每个进程各自暴露一个抓取端点，或按单进程跑",
+                         workerProcessCount);
+        }
     }
 
     // 等待退出信号

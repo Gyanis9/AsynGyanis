@@ -82,9 +82,14 @@ beforeAborts=$(metric_of bad_requests_total)
 # 两种情况都让下面的差值判据失去意义，所以先自证取数通道，再谈「多出了几条」
 beforeAbortsAgain=$(metric_of bad_requests_total)
 [ -n "$beforeAbortsAgain" ] || fail "第二次取 asyn_http_bad_requests_total 就取空了：服务端中途停了？"
-if [ "$beforeAbortsAgain" -lt "$beforeAborts" ]; then
-    fail "相邻两次抓取里 ${beforeAborts} → ${beforeAbortsAgain}：计数不是进程口径，端口上有多余的监听进程或采集端没共用"
-    beforeAborts="$beforeAbortsAgain"
+# 自证取数通道：这两次抓取之间除了抓取自身没有别的流量，坏请求数因此必须一动不动。动了就说明
+# 一次抓取命中的不是同一份口径——端口上坐着多个 worker 进程（--workers 之间没有共用采集端这条
+# 通道）、有上一轮没杀干净的监听进程，或这些监听器没共用一份采集端。那种情况下第 8 项的差值
+# 判据没有意义：报这一条原因就够，再报一个「多出 -1 条」只会把人引向服务端计数逻辑
+countIsProcessWide=1
+if [ "$beforeAbortsAgain" != "$beforeAborts" ]; then
+    fail "相邻两次抓取里 ${beforeAborts} → ${beforeAbortsAgain}：这份计数不是进程口径，端口上有多个进程（--workers 或残留监听）或采集端没共用"
+    countIsProcessWide=0
 fi
 for attempt in $(seq 1 8); do
     curl -s --http2-prior-knowledge --max-time 1 --limit-rate 32 -o /dev/null "${BASE}/big" >/dev/null 2>&1 &
@@ -100,8 +105,20 @@ status=$(status_of "${BASE}/json")
 afterAborts=$(metric_of bad_requests_total)
 # 取空要当场判失败，不能悄悄跳过：静默跳过等于这条检查在服务器上什么都没核对
 [ -n "$afterAborts" ] || fail "八次放弃之后取不到 asyn_http_bad_requests_total，无法核对坏请求计数"
+if [ "$countIsProcessWide" != "1" ]; then
+    # 上面那条自证已经把原因报过一次了，这里只说明本项没核对，不再算一次必然无意义的差值
+    echo "SKIP: 第 8 项没核对（口径不是进程级，差值判据在这种部署下无效）" >&2
+else
 badFromAborts=$((afterAborts - beforeAborts))
-[ "$badFromAborts" = "0" ] || fail "八次读到一半放弃多出 ${badFromAborts} 条坏请求记录（放弃前 ${beforeAborts}，放弃后 ${afterAborts}）"
+if [ "$badFromAborts" -lt 0 ]; then
+    # 差值为负不是「服务端少记了」，而是这条判据的前提没了：读数来自两份互不相干的口径
+    # （--workers 起的多个进程共用一个监听端口，或上一轮残留的监听进程）。报成「多出 -1 条」
+    # 会把人引向服务端计数逻辑，而该查的是部署形状
+    fail "放弃前后 ${beforeAborts} → ${afterAborts}：这份计数不是进程口径，端口上有多个进程（--workers 或残留监听），第 8 项判据在此部署下无效"
+elif [ "$badFromAborts" != "0" ]; then
+    fail "八次读到一半放弃多出 ${badFromAborts} 条坏请求记录（放弃前 ${beforeAborts}，放弃后 ${afterAborts}）"
+fi
+fi
 
 # 9) 一条连接上真并发多路复用：同一个 curl 进程带多个 URL 加 -Z 才会把它们并发复用到同一条连接。
 #    八个进程各带一个 URL 是八条连接，量的就不是多路复用了。
