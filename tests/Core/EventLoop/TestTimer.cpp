@@ -11,9 +11,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -28,6 +30,9 @@ namespace AsynGyanis::Core
         /// 精度用例请求的等待时长，以及允许的迟到上限：8 ms 仍小于 Windows 的一个时钟整拍（15.6 ms）
         constexpr long long kPrecisionWaitMilliseconds = 20;
         constexpr long long kMaximumLatenessMilliseconds = 8;
+
+        /// 精度用例的采样次数：判据取这几次里最快的一次，见该用例的 @details
+        constexpr int kPrecisionSamples = 5;
 
         /// 参与交错取消的定时器条数：堆被撑到好几层，取消点因此散落在顶、中、尾各处
         constexpr std::size_t kScrambledTimerCount = 18;
@@ -245,31 +250,44 @@ namespace AsynGyanis::Core
     /**
      * @brief 一次短定时等待真的按设定时长醒来，不被系统时钟的整拍抬高
      * @details Windows 上的普通定时器按 15.6 ms 一节取整（实测等 20 ms 要 31 ms 才醒），退避与限速
-     *          这类短定时的尾延迟因此成倍。容差取 8 ms——仍小于一节，所以「又落回整拍」必然测得到；
-     *          醒来走的是「到期写一字节 → 循环被 I/O 叫醒」这条事件链，不是按间隔轮询
+     *          这类短定时的尾延迟因此成倍。醒来走的是「到期写一字节 → 循环被 I/O 叫醒」这条事件链，
+     *          不是按间隔轮询。
+     *          判据取 kPrecisionSamples 次里**最快**的一次：调度抖动只会把唤醒推晚、不会推前，
+     *          最小值才是这套机制的地板。单点测量的容差只比取整后的迟到小几毫秒，本机在一次
+     *          满载并发构建时红过一回（随后 55 次采样未复现）；而整拍取整会把每一次采样抬高同样
+     *          的量，最快的一次照样红。
      */
     TEST(Timer, ShortWaitWakesOnItsDeadlineNotOnTheNextTick)
     {
         EventLoop loop;
         Timer     timer(loop);
 
-        bool isExpired = false;
-        const auto begin = std::chrono::steady_clock::now();
-        auto waitingBody = [&timer, &isExpired]() -> Task<>
+        long long fastestLatenessMilliseconds = std::numeric_limits<long long>::max();
+        for (int sample = 0; sample < kPrecisionSamples; ++sample)
         {
-            co_await timer.waitFor(std::chrono::milliseconds(kPrecisionWaitMilliseconds));
-            isExpired = true;
-        };
-        auto waiting = waitingBody();
-        waiting.handle().resume();
+            bool isExpired = false;
+            const auto begin = std::chrono::steady_clock::now();
+            auto waitingBody = [&timer, &isExpired]() -> Task<>
+            {
+                co_await timer.waitFor(std::chrono::milliseconds(kPrecisionWaitMilliseconds));
+                isExpired = true;
+            };
+            auto waiting = waitingBody();
+            waiting.handle().resume();
 
-        ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "定时等待没有在时限内完成";
-        const auto elapsedMilliseconds =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+            ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout))
+                << "第 " << sample << " 次采样：定时等待没有在时限内完成";
 
-        EXPECT_GE(elapsedMilliseconds, kPrecisionWaitMilliseconds) << "不得提前到期";
-        EXPECT_LT(elapsedMilliseconds, kPrecisionWaitMilliseconds + kMaximumLatenessMilliseconds)
-                << "等 " << kPrecisionWaitMilliseconds << " ms 实际等了 " << elapsedMilliseconds
+            const long long elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::steady_clock::now() - begin)
+                                                      .count();
+            // 每一次都不许提前到期：早醒是硬缺陷，与机器忙闲无关
+            EXPECT_GE(elapsedMilliseconds, kPrecisionWaitMilliseconds) << "第 " << sample << " 次采样提前到期";
+            fastestLatenessMilliseconds = std::min(fastestLatenessMilliseconds, elapsedMilliseconds - kPrecisionWaitMilliseconds);
+        }
+
+        EXPECT_LT(fastestLatenessMilliseconds, kMaximumLatenessMilliseconds)
+                << kPrecisionSamples << " 次采样里最快的一次也迟到了 " << fastestLatenessMilliseconds
                 << " ms：到期被抬到了系统时钟的下一个整拍";
     }
 
