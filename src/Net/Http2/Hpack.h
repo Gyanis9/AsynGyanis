@@ -571,6 +571,20 @@ namespace AsynGyanis::Net
     [[nodiscard]] std::string encodeHpackInteger(std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits);
 
     /**
+     * @brief 把一个整数表示直接追加到目标串末尾
+     * @details 与 `encodeHpackInteger()` 逐字节等价，只是不经过「先装进一个临时串、再 append 过去」：
+     *          编码一段头块要写十几个整数，每个整数只有一两个字节却仍然要过堆（调试版的短缓冲容不下
+     *          一个带堆标记的串），这一串临时分配在每请求的固定成本里是实打实的一笔。
+     * @param out 目标串，二进制安全
+     * @param value 待编码的非负整数
+     * @param prefixBitCount 首字节的低位前缀位数，取值 1..8
+     * @param firstByteHighBits 首字节高位的模式位，低 prefixBitCount 位必须为 0
+     * @throws Base::InvalidArgumentException 用法错误：prefixBitCount 不在 1..8 内，
+     *         或 firstByteHighBits 占用了前缀位
+     */
+    void appendHpackInteger(std::string &out, std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits);
+
+    /**
      * @brief 解码一个整数表示（RFC 7541 §5.1）
      * @param bytes 数据起始处，须从该表示的首字节开始
      * @param prefixBitCount 首字节的低位前缀位数，取值 1..8

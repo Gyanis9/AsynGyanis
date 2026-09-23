@@ -220,7 +220,8 @@ namespace AsynGyanis::Net
         return Http2ErrorCode::InternalError;
     }
 
-    std::string encodeHpackInteger(const std::uint64_t value, const std::uint8_t prefixBitCount, const std::uint8_t firstByteHighBits)
+    void appendHpackInteger(std::string &out, const std::uint64_t value, const std::uint8_t prefixBitCount,
+                            const std::uint8_t firstByteHighBits)
     {
         if (prefixBitCount < 1 || prefixBitCount > 8)
         {
@@ -239,22 +240,27 @@ namespace AsynGyanis::Net
                                 firstByteHighBits, prefixBitCount, 8 - prefixBitCount));
         }
 
-        std::string encoded;
         if (value < prefixMaximumValue)
         {
-            encoded.push_back(static_cast<char>(firstByteHighBits | static_cast<std::uint8_t>(value)));
-            return encoded;
+            out.push_back(static_cast<char>(firstByteHighBits | static_cast<std::uint8_t>(value)));
+            return;
         }
 
         // 前缀填满表示「后面还有续字节」，剩下的数值按 7 位一组、低位组在前地追加（RFC 7541 §5.1）
-        encoded.push_back(static_cast<char>(firstByteHighBits | prefixMask));
+        out.push_back(static_cast<char>(firstByteHighBits | prefixMask));
         std::uint64_t remainingValue = value - prefixMaximumValue;
         while (remainingValue >= 128)
         {
-            encoded.push_back(static_cast<char>(static_cast<std::uint8_t>((remainingValue % 128) + 128)));
+            out.push_back(static_cast<char>(static_cast<std::uint8_t>((remainingValue % 128) + 128)));
             remainingValue /= 128;
         }
-        encoded.push_back(static_cast<char>(static_cast<std::uint8_t>(remainingValue)));
+        out.push_back(static_cast<char>(static_cast<std::uint8_t>(remainingValue)));
+    }
+
+    std::string encodeHpackInteger(const std::uint64_t value, const std::uint8_t prefixBitCount, const std::uint8_t firstByteHighBits)
+    {
+        std::string encoded;
+        appendHpackInteger(encoded, value, prefixBitCount, firstByteHighBits);
         return encoded;
     }
 
@@ -430,7 +436,7 @@ namespace AsynGyanis::Net
     void appendHpackString(std::string &out, const std::string_view value)
     {
         // H 位恒为 0（不启用 Huffman）：长度前缀与字节原样写出，见 HpackEncoder 的取舍说明
-        out.append(encodeHpackInteger(value.size(), 7, 0));
+        appendHpackInteger(out, value.size(), 7, 0);
         out.append(value);
     }
 
@@ -844,7 +850,7 @@ namespace AsynGyanis::Net
         // 上层改过表上限时必须先通告：RFC 7541 §4.2 要求它出现在头块开头，放在别处对端会判错
         if (m_hasPendingTableSizeUpdate)
         {
-            headerBlock.append(encodeHpackInteger(m_dynamicTable.maximumSizeByteCount(), 5, kDynamicTableSizeUpdatePattern));
+            appendHpackInteger(headerBlock, m_dynamicTable.maximumSizeByteCount(), 5, kDynamicTableSizeUpdatePattern);
             m_hasPendingTableSizeUpdate = false;
         }
 
@@ -855,14 +861,14 @@ namespace AsynGyanis::Net
             const std::size_t staticExactIndex = findHpackStaticExactIndex(staticNameRun, field.value);
             if (staticExactIndex != 0)
             {
-                headerBlock.append(encodeHpackInteger(staticExactIndex, 7, kIndexedRepresentationPattern));
+                appendHpackInteger(headerBlock, staticExactIndex, 7, kIndexedRepresentationPattern);
                 continue;
             }
 
             const std::size_t dynamicIndex = findHpackDynamicTableIndex(m_dynamicTable, field.name, field.value);
             if (dynamicIndex != 0)
             {
-                headerBlock.append(encodeHpackInteger(dynamicIndex, 7, kIndexedRepresentationPattern));
+                appendHpackInteger(headerBlock, dynamicIndex, 7, kIndexedRepresentationPattern);
                 continue;
             }
 
@@ -870,13 +876,13 @@ namespace AsynGyanis::Net
             const std::size_t staticNameIndex = staticNameRun == nullptr ? 0 : staticNameRun->firstEntryIndex + 1;
             if (staticNameIndex != 0)
             {
-                headerBlock.append(encodeHpackInteger(staticNameIndex, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern));
+                appendHpackInteger(headerBlock, staticNameIndex, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern);
                 appendHpackString(headerBlock, field.value);
             }
             else
             {
                 // 名字索引 0 表示名字也是字面量（RFC 7541 §6.2.1）
-                headerBlock.append(encodeHpackInteger(0, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern));
+                appendHpackInteger(headerBlock, 0, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern);
                 appendHpackString(headerBlock, field.name);
                 appendHpackString(headerBlock, field.value);
             }

@@ -11,6 +11,7 @@
 //      字节，判据取自条文；最后一节是往返性质检查，不作为字节向量。
 // 用例都是纯计算，不起网络、不依赖任何外部服务。
 
+#include "AllocationProbe.h"
 #include "Net/Http3/Qpack.h"
 
 #include "NetTestSupport.h"
@@ -31,6 +32,12 @@ namespace AsynGyanis::Net
     {
         using AsynGyanis::Net::TestSupport::containsText;
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
+        using AsynGyanis::TestSupport::resetAllocationHistogram;
+        using AsynGyanis::TestSupport::snapshotAllocationHistogram;
+        using AsynGyanis::TestSupport::AllocationHistogram;
+        using AsynGyanis::TestSupport::AllocationProfile;
 
         /// 头列表按规范里的「名 = 值」二元组表述
         using FieldListEntry = std::pair<const char *, const char *>;
@@ -1656,5 +1663,59 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "确认后阻塞名额全部归还";
         EXPECT_EQ(encoder.knownReceivedInsertCount(), encoder.insertCount()) << "三段都确认后，已知接收计数应追上本端插入数";
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), encoder.dynamicTableSizeByteCount()) << "两端的表必须长到同一个大小";
+    }
+
+    /**
+     * @brief 编一段响应头块要碰几次堆
+     * @details 编码原先要新建四份中间结果（字段行表示、两字节前缀、编码器流指令、引用清单），
+     *          再把它们抄进调用方给的两条串；改动前实测一段 83 字节的响应头块要 19 次分配 / 481 字节
+     *          （MSVC 调试版；GCC 侧 3 次 / 276 字节，它的短缓冲吃掉了一部分临时串），而这是每条响应
+     *          都要付的固定成本。判据打在「中间结果按线程复用、调用方缓冲也复用」这一侧：归零才说明
+     *          编码过程自己没有留中间容器（两侧平台上改动前的同一条用例都读得出不为零）。
+     */
+    TEST(QpackAllocations, EncodesResponseHeaderSectionIntoReusedBuffersWithoutAllocating)
+    {
+        QpackEncoder encoder(0, 0, 0);
+        const std::vector<QpackHeaderField> fieldLines = makeFieldList({
+            {":status", "200"},
+            {"content-type", "application/json"},
+            {"content-length", "1024"},
+            {"date", "Tue, 23 Sep 2025 10:00:00 GMT"},
+            {"server", "AsynGyanis"},
+            {"x-trace-id", "0f1e2d3c4b5a6978"},
+        });
+
+        std::string headerBlock;
+        std::string encoderStreamBytes;
+        ASSERT_TRUE(encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes)
+                        .has_value());
+        const std::size_t blockByteCount = headerBlock.size();
+        ASSERT_GT(blockByteCount, 40U) << "这段短到看不出扩容代价，读数量的不是被测形状";
+
+        const auto encodeOnce = [&encoder, &fieldLines, &headerBlock, &encoderStreamBytes]() -> std::size_t
+        {
+            return encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes)
+                       ? headerBlock.size()
+                       : 0U;
+        };
+
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(encodeOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * blockByteCount) << "有一千次没编出同一段头块，读数不可信";
+        std::printf("quic h3 编一段 %zu 字节的响应头块：每次 %llu 次分配 / %llu 字节\n", blockByteCount,
+                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
+        const AllocationHistogram histogram = snapshotAllocationHistogram();
+        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        {
+            if (histogram[bucket] != 0)
+            {
+                std::printf("  桶 %zu-%zu 字节：一千段合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U,
+                            static_cast<unsigned long long>(histogram[bucket]));
+            }
+        }
+        EXPECT_EQ(profile.totalAllocations, 0ULL)
+                << "编一段响应头块仍在碰堆：读数为每次 "
+                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 } // namespace AsynGyanis::Net

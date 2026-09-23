@@ -241,15 +241,25 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 按前缀整数编码追加一段字节
-         * @param out 目标串
-         * @param value 数值
-         * @param prefixBitCount 前缀位数
-         * @param firstBytePatternBits 首字节高位模式
+         * @brief 编一段头块时的复用缓冲
+         * @details 一段头块的字段行、编码器流指令与引用清单原先每次编码都新建一份，长到几十字节要
+         *          几何扩容好几回，而这是每条响应都要付的固定成本。按线程一份、每次进编码器先清空。
+         * @note 任何指向这三份缓冲的视图都不许活到下一次编码：本层的交付路径（`headerBlock`、
+         *       `encoderStreamBytes`、动态表存储）全部按值抄走，编码器不留视图。
          */
-        void appendPrefixedInteger(std::string &out, std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstBytePatternBits)
+        struct EncoderScratch
         {
-            out.append(encodeHpackInteger(value, prefixBitCount, firstBytePatternBits));
+            std::string fieldLineBytes;                           ///< 本段字段行的表示
+            std::string prefixBytes;                              ///< 本段的两字节前缀，最后垫在字段行之前
+            std::string instructionBytes;                         ///< 本段产生的编码器流指令
+            std::vector<std::uint64_t> referencedAbsoluteIndices; ///< 本段引用到的绝对索引
+        };
+
+        /// @return 本线程那份复用缓冲，调用方清空后往里追加
+        [[nodiscard]] EncoderScratch &encoderScratch()
+        {
+            thread_local EncoderScratch scratch{};
+            return scratch;
         }
 
         /**
@@ -653,7 +663,7 @@ namespace AsynGyanis::Net
             // §3.2.3：对端上限为 0 时不得发任何编码器流指令，而初始容量本就是 0，无需通告这次「不变」
             return {};
         }
-        appendPrefixedInteger(encoderStreamBytes, capacityByteCount, 5, kSetCapacityPatternBits);
+        appendHpackInteger(encoderStreamBytes, capacityByteCount, 5, kSetCapacityPatternBits);
         return {};
     }
 
@@ -673,19 +683,26 @@ namespace AsynGyanis::Net
                                                        " 字节，无法编码（RFC 9204 §3.2.3）"));
         }
 
-        std::string fieldLineBytes;
-        std::string localEncoderStream;
+        // 三段中间结果共用一份按线程复用的缓冲：清空即可续用，不必每段重新长容
+        EncoderScratch &scratch = encoderScratch();
+        scratch.fieldLineBytes.clear();
+        scratch.prefixBytes.clear();
+        scratch.instructionBytes.clear();
+        scratch.referencedAbsoluteIndices.clear();
+        std::string &fieldLineBytes = scratch.fieldLineBytes;
+        std::string &prefixBytes = scratch.prefixBytes;
+        std::string &instructionBytes = scratch.instructionBytes;
         if (m_hasPendingCapacityInstruction)
         {
             // 容量指令要早于任何插入到达对端，否则对端会因容量仍为 0 而判 EncoderStreamError（§3.2.2）
-            appendPrefixedInteger(localEncoderStream, m_tableCapacityByteCount, 5, kSetCapacityPatternBits);
+            appendHpackInteger(instructionBytes, m_tableCapacityByteCount, 5, kSetCapacityPatternBits);
             m_hasPendingCapacityInstruction = false;
         }
 
         // §4.5.1.2 与附录 C：Base 取本段开始时的插入计数快照，段内新插入的项靠表后索引引用
         const std::uint64_t baseValue = m_dynamicTable.insertCount();
         std::uint64_t requiredInsertCount = 0;
-        std::vector<std::uint64_t> referencedAbsoluteIndices;
+        std::vector<std::uint64_t> &referencedAbsoluteIndices = scratch.referencedAbsoluteIndices;
 
         const bool thisStreamAlreadyRisksBlocking = m_blockingSectionCountByStreamId.contains(streamId);
         // §2.1.2：可能阻塞的流数恒不得超过对端 SETTINGS_QPACK_BLOCKED_STREAMS；同一条流再阻塞不占新名额
@@ -701,7 +718,7 @@ namespace AsynGyanis::Net
             if (staticFullIndex != kQpackStaticTableNoIndex)
             {
                 // 静态表整项命中最省字节且不引入任何动态状态，故优先级最高（附录 C 的第一步）
-                appendPrefixedInteger(fieldLineBytes, staticFullIndex, 6, kIndexedStaticPatternBits);
+                appendHpackInteger(fieldLineBytes, staticFullIndex, 6, kIndexedStaticPatternBits);
                 continue;
             }
 
@@ -718,7 +735,7 @@ namespace AsynGyanis::Net
                     sourceFound ? m_dynamicTable.insert(std::move(sourceEntry), evictionPermitted) : std::nullopt;
                 if (duplicatedAbsoluteIndex.has_value())
                 {
-                    appendPrefixedInteger(localEncoderStream, relativeIndexToSource, 5, kDuplicatePatternBits);
+                    appendHpackInteger(instructionBytes, relativeIndexToSource, 5, kDuplicatePatternBits);
                     matchedAbsoluteIndex = *duplicatedAbsoluteIndex;
                     refreshDrainingAbsoluteIndex();
                 }
@@ -732,11 +749,11 @@ namespace AsynGyanis::Net
                     // 绝对索引小于 Base 的用相对索引，等于或大于 Base 的用表后索引（§3.2.5、§3.2.6）
                     if (matchedAbsoluteIndex < baseValue)
                     {
-                        appendPrefixedInteger(fieldLineBytes, baseValue - 1 - matchedAbsoluteIndex, 6, kIndexedPatternBits);
+                        appendHpackInteger(fieldLineBytes, baseValue - 1 - matchedAbsoluteIndex, 6, kIndexedPatternBits);
                     }
                     else
                     {
-                        appendPrefixedInteger(fieldLineBytes, matchedAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
+                        appendHpackInteger(fieldLineBytes, matchedAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
                     }
                     referencedAbsoluteIndices.push_back(matchedAbsoluteIndex);
                     requiredInsertCount = std::max(requiredInsertCount, matchedAbsoluteIndex + 1);
@@ -758,32 +775,32 @@ namespace AsynGyanis::Net
                 {
                     if (staticNameIndex != kQpackStaticTableNoIndex)
                     {
-                        appendPrefixedInteger(localEncoderStream, staticNameIndex, 6,
+                        appendHpackInteger(instructionBytes, staticNameIndex, 6,
                                               kInsertNameReferencePatternBits | kTableBitInOneBitPatternMask);
-                        appendHpackString(localEncoderStream, fieldLine.value);
+                        appendHpackString(instructionBytes, fieldLine.value);
                     }
                     else if (dynamicNameIndex != kQpackNoAbsoluteIndex)
                     {
-                        appendPrefixedInteger(localEncoderStream, dynamicNameRelativeIndex, 6, kInsertNameReferencePatternBits);
-                        appendHpackString(localEncoderStream, fieldLine.value);
+                        appendHpackInteger(instructionBytes, dynamicNameRelativeIndex, 6, kInsertNameReferencePatternBits);
+                        appendHpackString(instructionBytes, fieldLine.value);
                     }
                     else
                     {
                         // 6 位前缀字符串字面量：H 位在 bit5、长度前缀 5 位，本端不启用 Huffman
-                        localEncoderStream.append(encodeHpackInteger(fieldLine.name.size(), 5, kInsertLiteralNamePatternBits));
-                        localEncoderStream.append(fieldLine.name);
-                        appendHpackString(localEncoderStream, fieldLine.value);
+                        appendHpackInteger(instructionBytes, fieldLine.name.size(), 5, kInsertLiteralNamePatternBits);
+                        instructionBytes.append(fieldLine.name);
+                        appendHpackString(instructionBytes, fieldLine.value);
                     }
                     refreshDrainingAbsoluteIndex();
 
                     const std::uint64_t newAbsoluteIndex = *insertedAbsoluteIndex;
                     if (newAbsoluteIndex < baseValue)
                     {
-                        appendPrefixedInteger(fieldLineBytes, baseValue - 1 - newAbsoluteIndex, 6, kIndexedPatternBits);
+                        appendHpackInteger(fieldLineBytes, baseValue - 1 - newAbsoluteIndex, 6, kIndexedPatternBits);
                     }
                     else
                     {
-                        appendPrefixedInteger(fieldLineBytes, newAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
+                        appendHpackInteger(fieldLineBytes, newAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
                     }
                     referencedAbsoluteIndices.push_back(newAbsoluteIndex);
                     requiredInsertCount = std::max(requiredInsertCount, newAbsoluteIndex + 1);
@@ -797,7 +814,7 @@ namespace AsynGyanis::Net
                 staticNameIndex == kQpackStaticTableNoIndex ? m_dynamicTable.findNameEntry(fieldLine.name) : kQpackNoAbsoluteIndex;
             if (staticNameIndex != kQpackStaticTableNoIndex)
             {
-                appendPrefixedInteger(fieldLineBytes, staticNameIndex, 4, kLiteralStaticNamePatternBits);
+                appendHpackInteger(fieldLineBytes, staticNameIndex, 4, kLiteralStaticNamePatternBits);
                 appendHpackString(fieldLineBytes, fieldLine.value);
                 continue;
             }
@@ -806,11 +823,11 @@ namespace AsynGyanis::Net
             {
                 if (dynamicNameIndex < baseValue)
                 {
-                    appendPrefixedInteger(fieldLineBytes, baseValue - 1 - dynamicNameIndex, 4, kLiteralNameReferencePatternBits);
+                    appendHpackInteger(fieldLineBytes, baseValue - 1 - dynamicNameIndex, 4, kLiteralNameReferencePatternBits);
                 }
                 else
                 {
-                    appendPrefixedInteger(fieldLineBytes, dynamicNameIndex - baseValue, 3, kPostBaseNameReferencePatternBits);
+                    appendHpackInteger(fieldLineBytes, dynamicNameIndex - baseValue, 3, kPostBaseNameReferencePatternBits);
                 }
                 appendHpackString(fieldLineBytes, fieldLine.value);
                 referencedAbsoluteIndices.push_back(dynamicNameIndex);
@@ -819,18 +836,17 @@ namespace AsynGyanis::Net
             }
 
             // 4 位前缀字符串字面量：首字节高 3 位是 '001'、N 位 0、H 位在 bit3、长度前缀 3 位
-            fieldLineBytes.append(encodeHpackInteger(fieldLine.name.size(), 3, kLiteralNamePatternBits));
+            appendHpackInteger(fieldLineBytes, fieldLine.name.size(), 3, kLiteralNamePatternBits);
             fieldLineBytes.append(fieldLine.name);
             appendHpackString(fieldLineBytes, fieldLine.value);
         }
 
         // §4.5.1 的前缀占头块的最前两字节，必须排在所有字段行表示之前；它的取值要等整段编完才定得下来，
         // 故先单独攒在 prefixBytes 里，最后与字段行拼成一整段
-        std::string prefixBytes;
         if (requiredInsertCount == 0)
         {
-            appendPrefixedInteger(prefixBytes, 0, 8, 0x00);
-            appendPrefixedInteger(prefixBytes, 0, 7, 0x00);
+            appendHpackInteger(prefixBytes, 0, 8, 0x00);
+            appendHpackInteger(prefixBytes, 0, 7, 0x00);
         }
         else
         {
@@ -845,15 +861,15 @@ namespace AsynGyanis::Net
             }
             // §4.5.1.1：Required Insert Count 按 2×MaxEntries 取模再加一编码，MaxEntries 取自对端公布的容量上限
             const std::uint64_t fullRange = 2 * maximumEntryCount;
-            appendPrefixedInteger(prefixBytes, (requiredInsertCount % fullRange) + 1, 8, 0x00);
+            appendHpackInteger(prefixBytes, (requiredInsertCount % fullRange) + 1, 8, 0x00);
             if (baseValue >= requiredInsertCount)
             {
-                appendPrefixedInteger(prefixBytes, baseValue - requiredInsertCount, 7, 0x00);
+                appendHpackInteger(prefixBytes, baseValue - requiredInsertCount, 7, 0x00);
             }
             else
             {
                 // 符号位为 1 表示段内插过项：Base = Required Insert Count - Delta Base - 1（§4.5.1.2）
-                appendPrefixedInteger(prefixBytes, requiredInsertCount - baseValue - 1, 7, kSignBitMask);
+                appendHpackInteger(prefixBytes, requiredInsertCount - baseValue - 1, 7, kSignBitMask);
             }
         }
 
@@ -874,10 +890,12 @@ namespace AsynGyanis::Net
             ++m_blockingSectionCountByStreamId[streamId];
         }
 
+        // 一次预留到位：调用方那串在响应路径上是复用的，容量够时这一句不产生分配
         headerBlock.reserve(prefixBytes.size() + fieldLineBytes.size());
         headerBlock.append(prefixBytes);
         headerBlock.append(fieldLineBytes);
-        encoderStreamBytes = std::move(localEncoderStream);
+        // 复用缓冲不能交出去：这一段抄进调用方的串（通常空或几字节），容量留在原地接着用
+        encoderStreamBytes = instructionBytes;
         return {};
     }
 
@@ -999,7 +1017,7 @@ namespace AsynGyanis::Net
     {
         decoderStreamBytes.clear();
         // §4.4.2：本端不再等这条流的头块，告诉对端该流上的动态表引用全部作废
-        appendPrefixedInteger(decoderStreamBytes, streamId, 6, kStreamCancellationPatternBits);
+        appendHpackInteger(decoderStreamBytes, streamId, 6, kStreamCancellationPatternBits);
         cancelStreamReferences(streamId);
     }
 
@@ -1103,7 +1121,7 @@ namespace AsynGyanis::Net
             // 本端已处理过的插入全都告诉过对端了：这里必须什么都不发，否则就是对同一计数重复告知
             return;
         }
-        appendPrefixedInteger(decoderStreamBytes, insertCount - m_knownReceivedInsertCount, 6, kInsertCountIncrementPatternBits);
+        appendHpackInteger(decoderStreamBytes, insertCount - m_knownReceivedInsertCount, 6, kInsertCountIncrementPatternBits);
         m_knownReceivedInsertCount = insertCount;
     }
 
@@ -1290,7 +1308,7 @@ namespace AsynGyanis::Net
             m_unacknowledgedRequiredInsertCountsByStreamId.erase(streamIterator);
         }
 
-        appendPrefixedInteger(decoderStreamBytes, streamId, 7, kSectionAckPatternBits);
+        appendHpackInteger(decoderStreamBytes, streamId, 7, kSectionAckPatternBits);
         if (requiredInsertCount > m_knownReceivedInsertCount)
         {
             // §2.1.4：Ack 隐含确认了该段所需的插入，已知接收计数只前进不回退
@@ -1311,7 +1329,7 @@ namespace AsynGyanis::Net
     {
         decoderStreamBytes.clear();
         // §4.4.2：这条流的头块不再处理，告诉对端其上的动态表引用全部作废
-        appendPrefixedInteger(decoderStreamBytes, streamId, 6, kStreamCancellationPatternBits);
+        appendHpackInteger(decoderStreamBytes, streamId, 6, kStreamCancellationPatternBits);
         m_blockedSectionsByStreamId.erase(streamId);
         m_unacknowledgedRequiredInsertCountsByStreamId.erase(streamId);
     }
