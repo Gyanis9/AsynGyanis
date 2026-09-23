@@ -8,7 +8,8 @@
 // - FROM 与表别名
 // - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
 // - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
-// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
+// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件；被连接的表名与主表同一条引用规则
+//   （「schema.table」逐段引用，其余字节由引用字符兜住；表名为空或点号留空在翻译期被拒）
 // - 参数顺序、数量、类型与 uint64 降级
 // - 参数上限：判定按实际产出的占位符数（SQLite 内联的分页不占额度），写方向同样受上限保护
 // - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
@@ -898,6 +899,111 @@ TEST(SqliteDialectJoin, InnerJoinWithOnCondition)
               "SELECT \"id\", \"name\" FROM \"users\" "
               "INNER JOIN \"orders\" AS \"o\" ON \"id\" = \"user_id\"");
     EXPECT_TRUE(statement.parameters.empty());
+}
+
+/**
+ * @brief 验证被连接的表名一律加引用，不像字段引用那样为表达式「原样输出」让路
+ *
+ * @details 表名此前走的是字段引用那条通道，而它给 COUNT(*) 这类表达式留着原样拼出去的出口。
+ *          表名位置没有任何合法表达式，那个出口等于把 SQL 结构送进语句。下面这个名字看着像
+ *          注入串，加引用之后就只是一个名字很怪、但必定查不到的表。
+ */
+TEST(SqliteDialectJoin, JoinTargetTableNameIsAlwaysQuoted)
+{
+    const SqliteDialect dialect;
+
+    JoinClause joinClause;
+    joinClause.type       = JoinType::Inner;
+    joinClause.tableName  = "orders; DROP TABLE users; --";
+    joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
+
+    QueryNode node;
+    node.tableName = "users";
+    node.joins.push_back(std::move(joinClause));
+
+    const SqlStatement statement = dialect.translate(node);
+    // 整串在两个双引号之间：语句里那个分号只是名字的一部分，没有第二条语句被拼出来
+    EXPECT_EQ(statement.sql,
+              "SELECT * FROM \"users\" "
+              "INNER JOIN \"orders; DROP TABLE users; --\" ON \"id\" = \"user_id\"");
+}
+
+/**
+ * @brief 验证主表与被连接的表都把「schema.table」渲染成逐段引用的限定名
+ *
+ * @details 点号在 SQL 里是层级分隔符：整块包成一个标识符（"shop.users"）会得到一张名叫
+ *          shop.users 的表，而不是 shop 库下的 users。两侧必须同规则，否则同一个字符串
+ *          放进 FROM 与放进 JOIN 会指向两张不同的表。
+ */
+TEST(SqliteDialectJoin, SchemaPrefixedTableNamesAreQuotedSegmentBySegment)
+{
+    const SqliteDialect dialect;
+
+    JoinClause joinClause;
+    joinClause.type       = JoinType::Inner;
+    joinClause.tableName  = "shop.orders";
+    joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
+
+    QueryNode node;
+    node.tableName = "shop.users";
+    node.joins.push_back(std::move(joinClause));
+
+    const SqlStatement statement = dialect.translate(node);
+    EXPECT_NE(statement.sql.find("\"shop\".\"users\""), std::string::npos) << statement.sql;
+    EXPECT_NE(statement.sql.find("\"shop\".\"orders\""), std::string::npos) << statement.sql;
+}
+
+/**
+ * @brief 验证点号两侧留空的表名在翻译期就被拒，而不是产出一条语法不合法的引用
+ *
+ * @details "shop." 逐段引用会拼出 "shop"."",  服务端只报一句语法错，指不到「哪一段是空的」。
+ */
+TEST(SqliteDialectJoin, TableNameWithEmptySegmentAroundDotIsRejected)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName = "shop.";
+
+    try
+    {
+        static_cast<void>(dialect.translate(node));
+        FAIL() << "点号后留空的表名应当在翻译阶段就被拒绝";
+    }
+    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    {
+        EXPECT_NE(std::string_view(failure.what()).find("空段"), std::string_view::npos) << failure.what();
+    }
+}
+
+/**
+ * @brief 验证空的被连接表名给出的原因是「表名为空」而不是「字段名为空」
+ *
+ * @details 同一条语句里两种空值都会出现，指错位置会让人去查 SELECT 列表。
+ */
+TEST(SqliteDialectJoin, EmptyJoinTargetTableNameIsRejectedAsTableName)
+{
+    const SqliteDialect dialect;
+
+    JoinClause joinClause;
+    joinClause.type       = JoinType::Inner;
+    joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
+
+    QueryNode node;
+    node.tableName = "users";
+    node.joins.push_back(std::move(joinClause));
+
+    try
+    {
+        static_cast<void>(dialect.translate(node));
+        FAIL() << "空的被连接表名应当在翻译阶段就被拒绝";
+    }
+    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    {
+        const std::string message = failure.what();
+        EXPECT_NE(message.find("表名为空"), std::string::npos) << message;
+        EXPECT_EQ(message.find("字段名为空"), std::string::npos) << message;
+    }
 }
 
 /**

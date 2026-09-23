@@ -8,7 +8,7 @@
 // - FROM 与表别名
 // - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
 // - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET（含只有 OFFSET 时补出无符号上界）
-// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件
+// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件；被连接的表名与主表同一条引用规则（逐段引用限定名）
 // - 参数顺序、数量、类型与 uint64 降级
 // - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
 // - 事务控制语句文本
@@ -17,6 +17,7 @@
 
 #include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
@@ -664,6 +665,41 @@ TEST(MySqlDialectJoin, InnerJoinWithOnCondition)
               "SELECT `id`, `name` FROM `users` "
               "INNER JOIN `orders` AS `o` ON `id` = `user_id`");
     EXPECT_TRUE(statement.parameters.empty());
+}
+
+/**
+ * @brief 验证被连接的表名与主表同规则：「库.表」逐段引用，其余任何字节都由反引号兜住
+ *
+ * @details 表名走的是与 FROM 同一条通道，不再借道字段引用（那条通道为表达式留着「原样输出」的
+ *          出口）。这里同时钉住两件事：点号是层级分隔，而连字符这类合法名字字符不该被当成
+ *          结构字符拒掉——真机上就有一张叫 Asyn_Mysql_Quote-Table 的表在用。
+ */
+TEST(MySqlDialectJoin, JoinTargetTableNameFollowsTheSameQuotingRule)
+{
+    const MySqlDialect dialect;
+
+    JoinClause joinClause;
+    joinClause.type       = JoinType::Inner;
+    joinClause.tableName  = "shop.orders";
+    joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
+
+    QueryNode node;
+    node.tableName = "shop.users";
+    node.joins.push_back(std::move(joinClause));
+
+    const SqlStatement qualified = dialect.translate(node);
+    EXPECT_NE(qualified.sql.find("`shop`.`users`"), std::string::npos) << qualified.sql;
+    EXPECT_NE(qualified.sql.find("`shop`.`orders`"), std::string::npos) << qualified.sql;
+
+    // 名字里带连字符：整段进反引号，仍然是一个合法可查的表名
+    node.tableName = "Asyn_Mysql_Quote-Table";
+    const SqlStatement hyphenated = dialect.translate(node);
+    EXPECT_NE(hyphenated.sql.find("`Asyn_Mysql_Quote-Table`"), std::string::npos) << hyphenated.sql;
+
+    // 看着像注入串的名字同样只是名字：分号落在反引号之内，没有第二条语句被拼出来
+    node.tableName = "t; DROP TABLE users; --";
+    const SqlStatement hostile = dialect.translate(node);
+    EXPECT_NE(hostile.sql.find("`t; DROP TABLE users; --`"), std::string::npos) << hostile.sql;
 }
 
 /**

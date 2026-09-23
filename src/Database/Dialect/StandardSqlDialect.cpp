@@ -277,24 +277,55 @@ namespace AsynGyanis::Database
         }
     }
 
-    void StandardSqlDialect::appendTableReference(std::string &sqlText, const Queryable::QueryNode &query) const
+    void StandardSqlDialect::appendTableReference(std::string &sqlText, const std::string_view tableName,
+                                                  const std::string_view tableAlias) const
     {
         // 空表名加引用会得到 `""` / "" 这样一个合法但必定不存在的标识符，
         // 报出来的错在服务器侧（"no such table"），指不到「查询树根本没填表名」这个真因
-        if (query.tableName.empty())
+        if (tableName.empty())
         {
             throw Base::InvalidArgumentException(std::string(dialectName())
                                                 + " 方言：查询树的表名为空，无法生成语句。请填写 QueryNode::tableName"
                                                   "（Queryable 走 TableSchema<T>::kTableName，特化时别留空）");
         }
 
-        appendQuotedIdentifier(sqlText, query.tableName);
-        if (!query.tableAlias.empty())
+        // 点号在 SQL 里是「库.表」的层级分隔，因此逐段引用：整块包起来会得到一张名叫 shop.orders
+        // 的表，而不是 shop 库下的 orders。段与段之间只判空（"a..b" 生成的是不合法的引用），
+        // **不做字符校验**——加了引用的标识符能容纳任何字节（含空格、连字符的名字都合法），
+        // 校验只会把合法名字判死，而「原样拼进语句」这条路本来就由引用堵住了
+        std::size_t segmentStart = 0;
+        for (;;)
+        {
+            const std::size_t dotPosition = tableName.find('.', segmentStart);
+            const std::string_view segment = tableName.substr(segmentStart, dotPosition - segmentStart);
+            if (segment.empty())
+            {
+                throw Base::InvalidArgumentException(std::string(dialectName())
+                                                    + " 方言：表名「" + std::string(tableName)
+                                                    + "」有点号相邻的空段，无法逐段引用。"
+                                                      "要指定库/模式前缀就写成 \"schema.table\"，两侧都要有名字");
+            }
+            appendQuotedIdentifier(sqlText, segment);
+
+            if (dotPosition == std::string_view::npos)
+            {
+                break;
+            }
+            sqlText.push_back('.');
+            segmentStart = dotPosition + 1;
+        }
+
+        if (!tableAlias.empty())
         {
             // 别名同样加引用：不加引用的别名遇到保留字（order、group）会被当成关键字
             sqlText += " AS ";
-            appendQuotedIdentifier(sqlText, query.tableAlias);
+            appendQuotedIdentifier(sqlText, tableAlias);
         }
+    }
+
+    void StandardSqlDialect::appendTableReference(std::string &sqlText, const Queryable::QueryNode &query) const
+    {
+        appendTableReference(sqlText, query.tableName, query.tableAlias);
     }
 
     void StandardSqlDialect::appendWhereClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const
@@ -461,12 +492,10 @@ namespace AsynGyanis::Database
             sqlText += ' ';
             sqlText += joinTypeText(joinClause.type);
             sqlText += " JOIN ";
-            appendFieldReference(sqlText, joinClause.tableName);
-            if (!joinClause.tableAlias.empty())
-            {
-                sqlText += " AS ";
-                appendQuotedIdentifier(sqlText, joinClause.tableAlias);
-            }
+            // 被连接的表与主表是同一种东西，必须走同一条引用规则：此前它走的是字段引用，
+            // 而字段引用允许「表达式原样输出」——表名位置没有任何合法表达式，那条让路等于
+            // 把含运算符的文本直接拼进语句
+            appendTableReference(sqlText, joinClause.tableName, joinClause.tableAlias);
 
             // CROSS JOIN 按语义不接受 ON 子句，但查询树若显式填了条件就照写，
             // 由数据库报错而不是在这里静默丢弃调用方的意图

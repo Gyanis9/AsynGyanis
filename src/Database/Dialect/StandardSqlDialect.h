@@ -214,7 +214,19 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 把「已引用的表名 + 可选别名」追加进输出缓冲
-         * @details SELECT / UPDATE / DELETE 共用，保证表名与别名的引用方式在任何语句里都一致。
+         * @details SELECT / UPDATE / DELETE 与 JOIN 的目标表共用：表名在任何位置都按同一条规则渲染，
+         *          不像字段引用那样给表达式留「原样输出」的出口（表名位置没有合法表达式）。
+         *          点号按「库.表」逐段引用；段内任何字节都由引用字符兜住，因此不做字符校验。
+         * @param sqlText 输出缓冲区
+         * @param tableName 表名，允许 "schema.table" 形式的限定名与含空格、连字符的名字
+         * @param tableAlias 表别名，可为空
+         * @throws Base::InvalidArgumentException 表名为空，或点号两侧有空段（如 "a..b"）
+         */
+        void appendTableReference(std::string &sqlText, std::string_view tableName, std::string_view tableAlias) const;
+
+        /**
+         * @brief 把「已引用的表名 + 可选别名」追加进输出缓冲
+         * @details 与上面的重载同源，表名与别名的引用方式在任何语句里都一致。
          * @param sqlText 输出缓冲区
          * @param query 提供 tableName 与 tableAlias 的查询树
          */

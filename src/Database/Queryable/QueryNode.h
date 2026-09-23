@@ -148,7 +148,7 @@ namespace AsynGyanis::Database::Queryable
     struct JoinClause
     {
         JoinType                    type;       ///< 连接类型
-        std::string                 tableName;  ///< 被连接的表名
+        std::string                 tableName;  ///< 被连接的表名，引用规则与主表同源（表名位置没有表达式，一律加引用）
         std::string                 tableAlias; ///< 被连接表的别名（可为空）
         std::vector<WhereCondition> conditions; ///< ON 子句的连接条件
     };
@@ -181,7 +181,7 @@ namespace AsynGyanis::Database::Queryable
      */
     struct QueryNode
     {
-        std::string                   tableName;       ///< 主表名
+        std::string                   tableName;       ///< 主表名：点号按「库.表」逐段引用，其余字节由引用字符兜住；为空或点号留空即被拒
         std::string                   tableAlias;      ///< 主表别名（可为空）
         std::vector<std::string>      selectColumns;   ///< SELECT 列名列表；为空时自动推断为所有列
         std::vector<WhereCondition>   whereConditions; ///< WHERE 条件列表（逻辑与连接）
