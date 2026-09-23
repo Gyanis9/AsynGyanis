@@ -45,7 +45,8 @@
     "platform-time-utc / platform-time-local / platform-time-local-varying / platform-stat-basic-info / platform-wakeup-roundtrip / log-async-enqueue / quic-frame-scan-aged 七条在 2026-09-23 才纳入门禁（此前一直在跑，却没有基线条目，等于不判）。orm-first-by-primary-key、orm-tolist-20-rows、orm-tolist-50-rows、dialect-insert-batch-150-rows 四条刻意留在基线外：这几例只在编进了相应数据库驱动的构建里出现，而门禁把「基线里有、实测里没有」判失败，写进来会让关掉该模块的构建无故报红。",
     "eventloop-remote-post-roundtrip 的下限在 2026-09-23 按「已观察到的最慢跑」重录（101338/s、9.87 µs → 59284/s、16.87 µs；同日七跑为 59k/71k/77k/81k/81k/83k/88k）。依据是一段不含本仓库任何代码的对照探针：同机同日量裸 SetEvent+WaitForSingleObject 的双线程乒乓，中位 4.8 µs、p10 3.4 µs、p90 8.2 µs（光 p10→p90 就 2.4 倍），而同期 CPU 密集各例（hpack、http1-parse-request、mime-lookup-from-string、http-date-format、ws-unmask-payload、pool-acquire-return）全落在 ±8% 内，platform-wakeup-roundtrip（单线程写+读 socketpair）4.77 µs 对上它自己记录的 4.79-5.21 µs 也持平——位移只出现在「必须等另一个线程被调度起来」的那条上，即本例。代价说清楚：这样登记后本例再也报不出 1.7 倍以内的漂移，只能挡量级回归；要把它当回归信号用，先在一台空载机器上重录。",
     "config-get-int / config-set-value 两条在 2026-09-23 新增并同日登记基线。前者量「从 256 键的扁平快照里取一个整数」（含 atomic<shared_ptr> 装载与一次异质查找），本机三跑 28.4/28.8/29.0 ns；后者量 setValue 覆盖一个已存在的键，本机三跑 11 711.9/11 732.5/11 802.7 ns。这条贵的不是当天为正确性加的定形扫描而是**复制整份快照**：把扫描单独摘掉复量得到 9 908/9 926 ns（容器 GCC 13 Release，同机带扫描是 9 840~9 969 ns），差值不到 1%。两条都是纯 CPU、摆动 ±2% 以内，故按常规 0.8× 下限登记。读数口径由此也定死 setValue 的定位：启动期/偶发覆盖，不进逐请求路径。",
-    "log-format-default-into 在 2026-09-23 从 33.3 ns 重录到 46.1 ns：两批 3 跑共 6 个读数为 46.2/46.3/46.2 与 44.9/46.0/45.6（摆动 ±1.5%，不是负载尖峰，也没有别的例子跟着掉这么多）。同期短 CPU 例只退 7~10%（default-copy 61.9→66.5、json 644.3→710、http-date 47.3→52），本例却退 37%，多出的那截指向「一行文本日志的版式上收到一处」(8d52825) 之后 formatInto 少了一次内联调用——这是归属猜测，没做 A/B 构建证实。因此约定：日后若把内联找回来，这条要降回 ~33 ns 而不是留在 46；当下 0.8× 下限为 17.4 M/s，仍能挡住再退两成。"
+    "log-format-default-into 在 2026-09-23 从 33.3 ns 重录到 46.1 ns：两批 3 跑共 6 个读数为 46.2/46.3/46.2 与 44.9/46.0/45.6（摆动 ±1.5%，不是负载尖峰，也没有别的例子跟着掉这么多）。同期短 CPU 例只退 7~10%（default-copy 61.9→66.5、json 644.3→710、http-date 47.3→52），本例却退 37%，多出的那截指向「一行文本日志的版式上收到一处」(8d52825) 之后 formatInto 少了一次内联调用——这是归属猜测，没做 A/B 构建证实。因此约定：日后若把内联找回来，这条要降回 ~33 ns 而不是留在 46；当下 0.8× 下限为 17.4 M/s，仍能挡住再退两成。",
+    "h2-body-enqueue-* 四条（2026-09-23 新增）是 h2 出站正文两种排法的消融对照：旧写法「整片正文先抄进该流的发送队列、再由 pumpSendQueue 搬进连接待发缓冲」，新写法在队列已空且这一段一帧就能被两个窗口放行时直接从调用方的正文成帧。干净那跑：16 KiB 335.3 对 175.6 ns、256 KiB 7991.7 对 3910.2 ns——差值就是一趟整段拷贝加一次按正文长度现取的分配，约 15 µs/MiB。登记的仍是三跑中位数，但那三跑里未改动的对照例自己漂了 1.5 倍（h2-data-frame-direct 92.5→139.7、http1-parse-request 453.5→689.6），所以这四条按量级门禁看，别拿 1.2 倍以内的变化下结论。另记一条负结果：也试过直接量生产入口（Http2Connection::sendResponseData 一整趟，含两次 WINDOW_UPDATE 喂入与 takeOutgoingBytes 的取还），本机读到 ~59.7 µs——3.8 µs 摊在里头只有 6%，挡不住任何退化，而且 takeOutgoingBytes 按值交出会把连接缓冲的容量一并带走、下一轮重新长出来，读数被这笔无关开销主导，故删掉。生产调用点退回旧写法由 TestHttp2Connection 的「两条路字节逐字相同 + 窗口照实扣」两条用例配合。登记值取自同批三跑的中位数，而那批只有首跑干净（对照例 h2-data-frame-direct 三跑 10.8/7.2/7.3 M/s），故这四条的下限偏松、只当量级门禁；两条 256 KiB 例的跨跑离散反而紧（1.09~1.17 倍），16 KiB 两条被门禁自己标成噪声超限。配对差值本身在两批干净跑里互相印证：16 KiB 175.6 对 335.3 ns、256 KiB 3910.2 对 7991.7 ns（另一批是 167.2 对 326.8、3820.9 对 7629.2）。"
   ],
   "benchmarks": {
     "hpack-encode": {
@@ -153,6 +154,42 @@
       "observedNanosecondsRange": [
         91.8,
         92.2
+      ],
+      "runsMeasured": 3
+    },
+    "h2-body-enqueue-16k-via-stream-queue": {
+      "throughputPerSecond": 1984832,
+      "nanosecondsPerOperation": 503.8,
+      "observedNanosecondsRange": [
+        335.3,
+        550.4
+      ],
+      "runsMeasured": 3
+    },
+    "h2-body-enqueue-16k-direct": {
+      "throughputPerSecond": 4091015,
+      "nanosecondsPerOperation": 244.4,
+      "observedNanosecondsRange": [
+        175.6,
+        263.4
+      ],
+      "runsMeasured": 3
+    },
+    "h2-body-enqueue-256k-via-stream-queue": {
+      "throughputPerSecond": 123166,
+      "nanosecondsPerOperation": 8119.1,
+      "observedNanosecondsRange": [
+        7991.7,
+        8691.8
+      ],
+      "runsMeasured": 3
+    },
+    "h2-body-enqueue-256k-direct": {
+      "throughputPerSecond": 246332,
+      "nanosecondsPerOperation": 4059.6,
+      "observedNanosecondsRange": [
+        3910.2,
+        4570.7
       ],
       "runsMeasured": 3
     },

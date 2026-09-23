@@ -839,6 +839,68 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 出站正文「先排进该流的待发队列、再由泵拼进连接待发缓冲」这一趟往返的消融对照。连接层现在的写法
+    // 是整段正文先抄进流队列（窗口不足时留在这里等 WINDOW_UPDATE），泵再把它整段搬进连接缓冲——
+    // 一趟响应因此付两次载荷往返，外加一次按正文长度现取的分配（每条流都要新建自己的队列）。
+    // 「直接成帧」那一例就是队列空、窗口够时本可以走的路。两档载荷：16 KiB 是对端默认通告的
+    // SETTINGS_MAX_FRAME_SIZE，256 KiB 是一份典型静态文件。
+    const std::string queuedBodySmall(16 * 1024, 'b');
+    const std::string queuedBodyLarge(256 * 1024, 'b');
+    {
+        // 产出必须逐字相同，否则量的就是两回事：先比一次再进测量
+        std::string viaQueue;
+        std::string viaStreamQueue;
+        viaStreamQueue.append(queuedBodySmall);
+        Net::appendHttp2Frame(viaQueue, Net::Http2FrameType::Data, 0U, 1U, std::string_view{viaStreamQueue});
+        std::string direct;
+        Net::appendHttp2Frame(direct, Net::Http2FrameType::Data, 0U, 1U, std::string_view{queuedBodySmall});
+        if (viaQueue != direct)
+        {
+            std::printf("  %-24s 自检失败：走流队列与直接成帧产出不一致，本组读数不可比\n", "h2-body-enqueue-*");
+            ++failureCount;
+        }
+    }
+    measureCase(
+            "h2-body-enqueue-16k-via-stream-queue",
+            [&queuedBodySmall]
+            {
+                std::string streamQueue;
+                streamQueue.append(queuedBodySmall);
+                std::string outbound;
+                Net::appendHttp2Frame(outbound, Net::Http2FrameType::Data, 0U, 1U, std::string_view{streamQueue});
+                return outbound.size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "h2-body-enqueue-16k-direct",
+            [&queuedBodySmall]
+            {
+                std::string outbound;
+                Net::appendHttp2Frame(outbound, Net::Http2FrameType::Data, 0U, 1U, std::string_view{queuedBodySmall});
+                return outbound.size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "h2-body-enqueue-256k-via-stream-queue",
+            [&queuedBodyLarge]
+            {
+                std::string streamQueue;
+                streamQueue.append(queuedBodyLarge);
+                std::string outbound;
+                Net::appendHttp2Frame(outbound, Net::Http2FrameType::Data, 0U, 1U, std::string_view{streamQueue});
+                return outbound.size();
+            },
+            results, checksum, failureCount);
+    measureCase(
+            "h2-body-enqueue-256k-direct",
+            [&queuedBodyLarge]
+            {
+                std::string outbound;
+                Net::appendHttp2Frame(outbound, Net::Http2FrameType::Data, 0U, 1U, std::string_view{queuedBodyLarge});
+                return outbound.size();
+            },
+            results, checksum, failureCount);
+
     // h2 一条响应的 HEADERS 帧两种排法的消融对照。载荷取「连接首帧上的响应头块」——另起一台没对齐
     // 动态表的编码器，字段才按字面量编出来（拿已对齐的编码器会得到 12 字节的纯索引块，短到落进
     // 短串内联，两例都一次分配也不碰，量的就不是生产形状）。旧写法是「substr 成片段 → 拼进 body

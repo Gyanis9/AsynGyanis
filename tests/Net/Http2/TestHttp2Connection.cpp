@@ -1059,6 +1059,65 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：一帧装得下、两个窗口都放行时，正文直接成帧且窗口照实扣
+     * @details 直接成帧与排队续发两条路必须交出逐字相同的字节，判据取仓库自己的 DATA 帧编码器；
+     *          窗口扣错会由后半段「还差一字节只能排队」当场报出来。这条优化省掉的是排队那一趟
+     *          整段往返与一次按正文长度现取的分配（实测 16 KiB 多 160 ns、256 KiB 多 3.8 µs），
+     *          那一面由微基准的 h2-body-enqueue-* 两对用例守。
+     */
+    TEST(Http2Connection, FramesFittingSegmentWithoutParkingItAndChargesTheWindow)
+    {
+        Http2Connection connection;
+        // 流级窗口 10 字节（§6.9.2：peer 的 SETTINGS_INITIAL_WINDOW_SIZE 只改流级窗口，连接级仍是 65535）
+        completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 10U)});
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                             makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        std::string errorText;
+        const std::string fittingSegment(10U, 'a');
+        ASSERT_EQ(connection.sendResponseData(1U, fittingSegment, false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame(fittingSegment, false, 1U))
+                << "直接成帧的字节与队列路不一致";
+        EXPECT_EQ(connection.pendingResponseByteCount(1U), 0U) << "这一段已整帧排出，却仍有正文挂在该流队列上";
+
+        // 窗口已被上一段用满：这一字节只能排队，且收尾标记不能提前落到流上
+        ASSERT_EQ(connection.sendResponseData(1U, "z", true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "流级窗口已耗尽，却仍然出了帧";
+        EXPECT_EQ(connection.pendingResponseByteCount(1U), 1U) << "排队的那一字节没留在该流队列里";
+
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(1U))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame("z", true, 1U))
+                << "窗口还回来后续发的末片字节不对（END_STREAM 应落在它上面）";
+        Http2StreamState streamState{};
+        ASSERT_TRUE(connection.tryGetStreamState(1U, streamState));
+        EXPECT_EQ(streamState, Http2StreamState::Closed) << "两端都交出了 END_STREAM，这条流该终止（§5.1）";
+    }
+
+    /**
+     * @brief 钉住：没有正文只收尾时，直接成帧那一路与队列路交出同一个零长 DATA 帧
+     * @details 零长段是「本端结束这条流」的唯一写法之一，两路都必须交出一个带 END_STREAM 的空 DATA 帧，
+     *          且它不占窗口（§6.1）
+     */
+    TEST(Http2Connection, FramesEmptyEndingSegmentAsZeroLengthData)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
+                                             makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        std::string errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, "", true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame(std::string_view{}, true, 1U));
+    }
+
+    /**
      * @brief 钉住：流级窗口不足的数据不出帧，窗口以 WINDOW_UPDATE 或 SETTINGS 增量还回来后续发
      */
     TEST(Http2Connection, HoldsDataUntilTheStreamWindowAllowsSending)

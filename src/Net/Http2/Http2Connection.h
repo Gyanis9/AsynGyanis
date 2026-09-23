@@ -371,10 +371,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 在某条流上发响应正文
          *
-         * @details 字节先进该流的发送队列，再按「连接级窗口、流级窗口、对端 MAX_FRAME_SIZE」三者取小
-         *          尽量出帧（§5.2.2、§6.9）；窗口不足的部分留在队列里，等对端 WINDOW_UPDATE 进来后由
-         *          feedBytes() 续发。endStream 置位时 END_STREAM 只落在队列排空后的最后一帧上，因此
-         *          窗口不足时不会提前把流半关掉。
+         * @details 该流队列已空、且这一段能在一帧内同时通过两个窗口时，直接从 data 成帧上线；否则先进
+         *          该流的发送队列，再按「连接级窗口、流级窗口、对端 MAX_FRAME_SIZE」三者取小尽量出帧
+         *          （§5.2.2、§6.9），窗口不足的部分等对端 WINDOW_UPDATE 进来后由 feedBytes() 续发。
+         *          两条路上 END_STREAM 都只落在排空后的最后一帧上，窗口不足时不会提前把流半关掉。
          * @param streamId 目标流号，必须是本端仍可发正文的流（Open 或 HalfClosedRemote）
          * @param data 正文片段，按「指针 + 长度」取，可含 NUL 与任意二进制
          * @param endStream 本片之后本端不再发正文（本片可能因窗口不足尚未出帧）

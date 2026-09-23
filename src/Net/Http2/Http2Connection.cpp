@@ -531,6 +531,26 @@ namespace AsynGyanis::Net
             return Http2ResponseSendStatus::StreamNotWritable;
         }
 
+        // 队列是空的且这一段在一帧里就能被两个窗口一起放行：直接从调用方的正文成帧。
+        // 否则就成了「整片正文先抄进该流队列、再由泵搬进连接待发缓冲」——每片多付一趟整段往返
+        // 与一次按正文长度现取的分配（实测 16 KiB 多 160 ns、256 KiB 多 3.8 µs）
+        const std::int64_t directlyFrameableByteCount =
+                std::min({stream->sendWindowByteCount, m_connectionSendWindowByteCount,
+                          static_cast<std::int64_t>(peerMaximumFrameSize())});
+        if (!stream->hasPendingData() && static_cast<std::int64_t>(data.size()) <= directlyFrameableByteCount)
+        {
+            appendOutgoingFrame(Http2FrameType::Data, endStream ? kHttp2FlagEndStream : 0U, streamId, data);
+            const auto sentByteCount = static_cast<std::int64_t>(data.size());
+            stream->sendWindowByteCount -= sentByteCount;
+            m_connectionSendWindowByteCount -= sentByteCount;
+            // 收尾标记不进队列：这一帧就是本端在这条流上的最后一帧（§6.1 的 END_STREAM）
+            if (endStream)
+            {
+                noteLocalEndStream(*stream);
+            }
+            return Http2ResponseSendStatus::Sent;
+        }
+
         // 正文先进队列再按窗口尽量出帧：窗口不足的部分留在这里，等对端 WINDOW_UPDATE 进来后由 feedBytes() 续发
         stream->pendingData.append(data);
         if (endStream)
