@@ -886,6 +886,70 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 验证语句表到顶时逐出的是「最久没被读到」的那一条，而不是把整表关掉
+     *
+     * @details 一次命中省下的是一整趟 COM_STMT_PREPARE 往返，判据因此用命中计数与表内条数，不测时间。
+     *          形状是挑过的：热集合恰好 64 条（=上限）填满表，再插进一条一次性语句——LRU 只该逐出最久
+     *          没读到的那一条，而「到顶整表清空」会把表打回 1 条、并让第二遍一条也命中不了。
+     */
+    TEST_F(MySqlIntegrationTest, StatementCacheEvictsTheLeastRecentlyReadNotTheWholeTable)
+    {
+        constexpr std::size_t kHotStatementCount = 64U; // 与驱动里的 kMaximumCachedStatements 同值
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        EXPECT_EQ(connection.cachedStatementCount(), 0U) << "新连接不该带着任何缓存语句";
+        EXPECT_EQ(connection.statementCacheHitCount(), 0U) << "命中计数初值不为 0";
+
+        const std::array<DatabaseValue, 1> echoed{std::string{"x"}};
+        const auto runStatement = [&connection, &echoed](const std::size_t probeNumber)
+        {
+            // 每条文本只差一个字面量，因此它们是互不相同的预处理语句；回显值仍走占位符
+            const std::string sqlText = "SELECT " + std::to_string(probeNumber) + " AS probe, ? AS echoed";
+            const std::unique_ptr<DatabaseResult> result =
+                    connection.execute(sqlText, std::span<const DatabaseValue>{echoed});
+            EXPECT_NE(result, nullptr) << probeNumber << ": " << connection.lastError();
+            if (result == nullptr)
+            {
+                return;
+            }
+            // 读回 probe 才证明命中的是「那一条」语句：缓存键与句柄错配时这里会拿到别的数
+            EXPECT_TRUE(result->next()) << probeNumber;
+            const DatabaseValue probeValue = result->getValue(0);
+            EXPECT_TRUE(std::holds_alternative<std::int64_t>(probeValue)) << probeNumber;
+            if (const auto *number = std::get_if<std::int64_t>(&probeValue); number != nullptr)
+            {
+                EXPECT_EQ(*number, static_cast<std::int64_t>(probeNumber)) << "缓存把语句配错了行";
+            }
+        };
+
+        // 第一步：热集合把表填满（64 条各不相同，因此一条都不该命中）
+        for (std::size_t index = 0; index < kHotStatementCount; ++index)
+        {
+            runStatement(index);
+        }
+        ASSERT_EQ(connection.cachedStatementCount(), kHotStatementCount) << "「填满上限」这条前提没成立";
+        ASSERT_EQ(connection.statementCacheHitCount(), 0U) << "第一遍全是首次出现，不该有命中";
+
+        // 第二步：再塞一条一次性语句。LRU 逐出的应当只有最久没被读到的那条（热集合的第 0 条）
+        runStatement(kHotStatementCount + 1000U);
+        EXPECT_EQ(connection.cachedStatementCount(), kHotStatementCount)
+                << "越界的一条语句把整表关掉了：条数没有停在上界";
+
+        // 第三步：热集合剩下那 63 条重跑一遍，应当逐条命中——整表清空那一版一条也命中不了
+        const std::uint64_t hitsBeforeSecondPass = connection.statementCacheHitCount();
+        for (std::size_t index = 1; index < kHotStatementCount; ++index)
+        {
+            runStatement(index);
+        }
+        EXPECT_EQ(connection.statementCacheHitCount() - hitsBeforeSecondPass, kHotStatementCount - 1U)
+                << "热语句被一次性语句挤掉了：逐出的不是最久没被读到的那一条";
+
+        connection.disconnect();
+        EXPECT_EQ(connection.cachedStatementCount(), 0U) << "断开时表里的语句必须全部关掉";
+    }
+
+    /**
      * @brief 验证 queryTimeout 在服务端给只读语句装上时限，且打断的是语句而不是这条连接
      *
      * @details 客户端侧只有整秒的读写超时，那道界是以「废掉整条连接」为代价的（池里就此少一条可用连接，

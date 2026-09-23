@@ -195,6 +195,28 @@ namespace AsynGyanis::Database
             return m_mysqlHandle;
         }
 
+        /**
+         * @brief 语句缓存当前的预处理语句条数
+         * @details 上界是 kMaximumCachedStatements。表满时逐出的是「最久没被读到」的那一条，条数因此
+         *          稳定停在上界。与 SqliteConnection::cachedStatementCount() 同形，两驱动的策略要能对着看。
+         * @return std::size_t 表里的语句条数
+         */
+        [[nodiscard]] std::size_t cachedStatementCount() const noexcept
+        {
+            return m_statementCache.size();
+        }
+
+        /**
+         * @brief 语句缓存自本连接构造以来的累计命中次数
+         * @details 一次命中省下的是一整趟 COM_STMT_PREPARE 往返，因此这个计数就是「热语句有没有被逐出」
+         *          的可判定证据（用例按它判逐出策略，不靠测时间猜）。
+         * @return std::uint64_t 累计命中次数
+         */
+        [[nodiscard]] std::uint64_t statementCacheHitCount() const noexcept
+        {
+            return m_statementCacheHits;
+        }
+
     protected:
         /**
          * @brief 把新的 queryTimeout() 落成服务端的只读语句时限
@@ -287,21 +309,29 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> materializePreparedResult(MYSQL_STMT *statement);
 
         /**
-         * @brief 在语句缓存里找一条已预处理的语句
+         * @brief 在语句缓存里找一条已预处理的语句，并记下这次读取
          * @details 按视图查（C++20 的透明哈希 + 异质比较），命中时不必为键再分配一份字符串。
+         *          命中要把使用戳记推到最新并累计一次命中，因此本方法不是 const：一条连接同一时刻
+         *          只由一个线程使用，这两个字段不需要原子量。
          * @param statementText 语句文本，与预处理时交给客户端库的完全一致
          * @return MYSQL_STMT* 命中返回该语句（所有权仍属缓存）；未命中为 nullptr
          */
-        [[nodiscard]] MYSQL_STMT *findCachedStatement(std::string_view statementText) const noexcept;
+        [[nodiscard]] MYSQL_STMT *findCachedStatement(std::string_view statementText) noexcept;
 
         /**
          * @brief 把一条刚预处理成功的语句放进缓存，从此表接管它的所有权
-         * @details 表满时整表清空（不做 LRU）：会涨到上限的负载说明「同一句 SQL 被反复执行」这个前提
-         *          已经不成立，换来的是服务端语句数与内存都有常数上界、零簿记。
+         * @details 表满时逐出最久没被读到的一条（见 evictLeastRecentlyUsedStatement()）：条数与内存
+         *          仍有常数上界，而热语句不会被一批一次性语句整批挤掉。
          * @param statementText 语句文本，接管其内容作键
          * @param statement 已 prepare 的语句句柄
          */
         void cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept;
+
+        /**
+         * @brief 逐出使用戳记最小的一条语句并关闭它
+         * @details 上限只有 64 条，线性扫最小戳记即可，为它再挂一条链表不值（那样每次命中都要搬迁节点）
+         */
+        void evictLeastRecentlyUsedStatement() noexcept;
 
         /**
          * @brief 关闭并从表中移除一条语句（这条不再被认为可复用）
@@ -320,10 +350,21 @@ namespace AsynGyanis::Database
         /// 语句缓存的条数上限。服务端每条预处理语句都占一份会话级资源，上限换来可预期的占用
         static constexpr std::size_t kMaximumCachedStatements = 64;
 
+        /// 缓存里的一条语句连同它的使用记号
+        struct CachedStatement
+        {
+            MYSQL_STMT *statement{nullptr};   ///< 已 prepare 的语句句柄，所有权在表
+            std::uint64_t lastUseStamp{0};    ///< 最近一次被读到或写入时的戳记，越小越先被逐出
+        };
+
         MYSQL *m_mysqlHandle{nullptr}; ///< MySQL C API 连接句柄，本对象独占所有权，未连接时为 nullptr
         /// 语句文本 → 已预处理的语句句柄。所有权归表：预处理成功即入表，此后的失败路径一律走
         /// discardCachedStatement，本地不再持有 unique_ptr 守卫，避免与 disconnect() 的整表清理二次关闭
-        std::unordered_map<std::string, MYSQL_STMT *, StatementTextHash, std::equal_to<> > m_statementCache;
+        std::unordered_map<std::string, CachedStatement, StatementTextHash, std::equal_to<> > m_statementCache;
+        /// 单调递增的使用计数器，充当「最近使用」的比较依据：只用于逐出排序，不参与任何正确性判定
+        std::uint64_t m_statementCacheUseStamp{0};
+        /// 缓存命中累计次数：命中一次即少一趟 COM_STMT_PREPARE 往返，供用例判定逐出策略是否留住了热语句
+        std::uint64_t m_statementCacheHits{0};
         /// 本类开着的事务（beginTransaction 置位，commit/rollback 与连接生命周期重置清零）：
         /// 归还路径据此决定要不要滚，见 resetSessionState 的记账范围说明
         bool m_isTransactionOpen{false};

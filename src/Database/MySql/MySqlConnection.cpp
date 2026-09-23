@@ -604,24 +604,50 @@ namespace AsynGyanis::Database
         m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
     }
 
-    MYSQL_STMT *MySqlConnection::findCachedStatement(const std::string_view statementText) const noexcept
+    MYSQL_STMT *MySqlConnection::findCachedStatement(const std::string_view statementText) noexcept
     {
-        // 异质查找：键是 std::string 而形参是 string_view，命中时不必为一次查表再拷一份语句文本
+        // 按视图查：键是 std::string 而形参是 string_view，命中时不必为一次查表再拷一份语句文本
         const auto entry = m_statementCache.find(statementText);
-        return entry == m_statementCache.end() ? nullptr : entry->second;
+        if (entry == m_statementCache.end())
+        {
+            return nullptr;
+        }
+
+        // 命中即把这条推到最新，并累计一次命中（一次命中省下的是一整趟 COM_STMT_PREPARE 往返）
+        entry->second.lastUseStamp = ++m_statementCacheUseStamp;
+        ++m_statementCacheHits;
+        return entry->second.statement;
     }
 
     void MySqlConnection::cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept
     {
+        // 命中过的那条本来就在表里，此时表满也不该逐出——那会把一条正被反复使用的语句为一件
+        // 本来就不必做的事扔掉，所以先用一次查找把它排除掉；只有真正新增一条键才可能触到上限
         if (m_statementCache.size() >= kMaximumCachedStatements && m_statementCache.find(statementText) == m_statementCache.end())
         {
-            // 到上限就整表清空：会涨到上限的负载说明「同一句 SQL 被反复执行」这个前提已经不成立，
-            // 缓存对它本来就没收益；换来的是服务端语句数与客户端内存都有常数上界、零簿记
-            clearStatementCache();
+            evictLeastRecentlyUsedStatement();
         }
 
-        // emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏关谁
-        static_cast<void>(m_statementCache.emplace(std::move(statementText), statement));
+        // try_emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏关谁
+        static_cast<void>(m_statementCache.try_emplace(std::move(statementText),
+                                                      CachedStatement{statement, ++m_statementCacheUseStamp}));
+    }
+
+    void MySqlConnection::evictLeastRecentlyUsedStatement() noexcept
+    {
+        auto oldest = m_statementCache.begin();
+        for (auto candidate = std::next(m_statementCache.begin()); candidate != m_statementCache.end(); ++candidate)
+        {
+            if (candidate->second.lastUseStamp < oldest->second.lastUseStamp)
+            {
+                oldest = candidate;
+            }
+        }
+
+        // 表里的语句都没有未取完的结果（结果已整份物化进快照，或本就是写回执），因此逐出这一条
+        // 不会与在用的结果集抢句柄所有权
+        mysql_stmt_close(oldest->second.statement);
+        m_statementCache.erase(oldest);
     }
 
     void MySqlConnection::discardCachedStatement(const std::string_view statementText) noexcept
@@ -633,16 +659,16 @@ namespace AsynGyanis::Database
             return;
         }
 
-        mysql_stmt_close(entry->second);
+        mysql_stmt_close(entry->second.statement);
         m_statementCache.erase(entry);
     }
 
     void MySqlConnection::clearStatementCache() noexcept
     {
-        for (auto &[statementText, statement]: m_statementCache)
+        for (auto &[statementText, cachedStatement]: m_statementCache)
         {
             static_cast<void>(statementText);
-            mysql_stmt_close(statement);
+            mysql_stmt_close(cachedStatement.statement);
         }
         m_statementCache.clear();
     }
