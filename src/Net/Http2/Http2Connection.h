@@ -236,6 +236,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::vector<Http2Request> takeRequests();
 
         /**
+         * @brief 把刚取走的请求向量还回来复用容量
+         * @param buffer 之前 takeRequests() 取走的那个向量（按右值移交）
+         * @note 约定与 recycleOutgoingBytes() 一致：遍历完再还，本端只留容量、清掉剩下的空壳元素。
+         *       期间已解出新的待交请求时这份缓冲直接丢弃——覆盖会把刚解出来的请求清掉。
+         */
+        void recycleRequests(std::vector<Http2Request> &&buffer) noexcept;
+
+        /**
          * @brief 取走已收到的正文片段
          * @return std::vector<Http2ReceivedData> 按到达顺序排列的片段；没有新片段时为空
          * @note 取走即清空。零长 DATA 帧同样会出现（可能只为了带 END_STREAM）
@@ -243,6 +251,12 @@ namespace AsynGyanis::Net
          *       把窗口还回去，见该方法的说明
          */
         [[nodiscard]] std::vector<Http2ReceivedData> takeReceivedData();
+
+        /**
+         * @brief 把刚取走的正文向量还回来复用容量（约定同 recycleRequests）
+         * @param buffer 之前 takeReceivedData() 取走的那个向量（按右值移交）
+         */
+        void recycleReceivedData(std::vector<Http2ReceivedData> &&buffer) noexcept;
 
         /**
          * @brief 报告已消费的对端正文，按量把接收窗口还回去

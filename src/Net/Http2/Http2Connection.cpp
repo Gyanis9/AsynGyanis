@@ -121,6 +121,25 @@ namespace AsynGyanis::Net
             }
             return "未定义状态";
         }
+
+        /**
+         * @brief 接手一份还回来的事件缓冲：只留容量，元素清掉
+         * @details 与 recycleOutgoingBytes() 同一条约定——内部缓冲非空说明取走之后又攒出了新事件，
+         *          换过去就是覆盖，此时把还回来的那份丢掉。
+         * @tparam T 事件类型（Http2Request 或 Http2ReceivedData）
+         * @param destination 本端要填的缓冲
+         * @param buffer 上层遍历完还回来的向量；被丢弃时随形参一并析构
+         */
+        template <typename T>
+        void recycleEventBuffer(std::vector<T> &destination, std::vector<T> &&buffer) noexcept
+        {
+            if (!destination.empty())
+            {
+                return;
+            }
+            buffer.clear();
+            destination = std::move(buffer);
+        }
     } // namespace
 
     Http2Connection::Http2Connection(Http2ConnectionConfiguration configuration)
@@ -233,9 +252,19 @@ namespace AsynGyanis::Net
         return std::exchange(m_pendingRequests, std::vector<Http2Request>{});
     }
 
+    void Http2Connection::recycleRequests(std::vector<Http2Request> &&buffer) noexcept
+    {
+        recycleEventBuffer(m_pendingRequests, std::move(buffer));
+    }
+
     std::vector<Http2ReceivedData> Http2Connection::takeReceivedData()
     {
         return std::exchange(m_pendingReceivedData, std::vector<Http2ReceivedData>{});
+    }
+
+    void Http2Connection::recycleReceivedData(std::vector<Http2ReceivedData> &&buffer) noexcept
+    {
+        recycleEventBuffer(m_pendingReceivedData, std::move(buffer));
     }
 
     bool Http2Connection::creditReceivedData(const std::uint32_t streamId, const std::size_t byteCount, std::string *const errorText)

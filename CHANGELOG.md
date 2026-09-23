@@ -17,6 +17,12 @@
 
 ### 新增
 
+- **`Http2Connection` 的请求与正文向量有了回收口**：新增 `recycleRequests()` 与
+  `recycleReceivedData()`，约定与既有的 `recycleOutgoingBytes()` 一条不差——上层遍历完把向量还回来，
+  本端只留容量、清掉剩下的空壳元素；期间已另攒出新事件时这份缓冲丢弃而不是覆盖。
+  此前 `takeRequests()` / `takeReceivedData()` 用 `std::exchange` 把向量连同容量一起交出，每次取用
+  都要重新向堆要一块。`Http2Session` 的三处消费点（收请求、收正文、隧道期内的收正文）已跟着改，
+  实测收一条 h2 请求的分配从 15 次 / 1621 字节降到 14 次 / 1325 字节（Release，一千次原值）。
 - **`HttpRequest::reserveHeaders(fieldCount, byteCount)`**：给「一条请求从零装配头部」的调用方一个
   一次留够容量的入口（按整块交换头部的那两条路径不需要它）。HTTP/3 收请求头正是这条形状：请求对象
   随流新建，头部一条一条 `addHeader` 进去。实测同一条 10 头部的请求，不预留要 24 次分配 / 2588 字节，

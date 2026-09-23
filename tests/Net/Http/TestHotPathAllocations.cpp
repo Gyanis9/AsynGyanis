@@ -20,9 +20,9 @@
 //     请求字段（两条都不再新取堆块；改前每请求 1 次 / 32 字节）；
 //   · 响应头序列化：每次新建串 1 次，复用同一块缓冲 0 次；
 //   · 解一帧 200 字节头块的 HEADERS：1 次 / 208 字节，就是取走的那份负载；
-//   · 收一条 h2 请求（四条伪头加三条普通头部的 GET，与 h1 那条同一批语料）：15 次 / 1621 字节。
+//   · 收一条 h2 请求（四条伪头加三条普通头部的 GET，与 h1 那条同一批语料）：14 次 / 1325 字节。
 //     同一条请求在 h1 侧是 0 次——差下来的是「每条请求各要一套头部存储」这条结构性成本：h1 的请求
-//     对象按连接复用、容量留着，h2 每条流一份；改前这项是 18 次 / 2824 字节；
+//     对象按连接复用、容量留着，h2 每条流一份；这条形状刚钉下时是 18 次 / 2824 字节；
 //   · 一条请求新建一个 HttpRequest 逐条装 10 条头部：不预留 24 次 / 2588 字节，先留 4 条 128 字节
 //     是 12 次 / 2080 字节。HTTP/3 收请求头走的正是这条形状（请求对象随流新建，头部一条一条写进去）；
 //   · 答一条 h2 响应：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 2 次 / 243 字节（一千次共
@@ -81,10 +81,11 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
         constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
         constexpr std::uint64_t kChunkFrameTotalAllocationsReused = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
-        // 收一条 h2 请求（7 条头部）：解出来的字段串、整块头部的两份缓冲、流记录与交出请求的向量。
+        // 收一条 h2 请求（7 条头部）：解出来的字段串、整块头部的两份缓冲、流记录。交出请求的那份向量
+        // 按会话的节奏还回来复用容量，因此不再计一次容器重建。
         // 同一条语料在 h1 那条形状上是 0 次——差值里剩的是「每条请求各要一套存储」这一条结构性成本
-        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 15000U;
-        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 1621000U;
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 14000U;
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 1325000U;
         // 一条请求新建一个 HttpRequest 装 10 条头部：记录表与字节缓冲都从 0 按倍长上去的代价。
         // 预留那一档只留 4 条 / 128 字节（HTTP/3 收头实际用的猜测值），超出部分照常扩容
         constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand = 24000U;
@@ -585,8 +586,11 @@ namespace AsynGyanis::Net
             ++frameCursor;
             static_cast<void>(connection.feedBytes(frame.data(), frame.size()));
             // 判据只取长度之和：这里既不能构造临时串也不能建容器，否则量进来的是用例自己的分配
-            const std::vector<Http2Request> requests = connection.takeRequests();
+            std::vector<Http2Request> requests = connection.takeRequests();
             const std::size_t mark = decodedRequestMark(requests);
+            // 会话侧是「遍历完把向量还回去复用容量」的（absorbPendingRequests），这里跟同一条节奏：
+            // 不还的话每轮都要为这份向量另要一块堆，量的就不是稳态成本
+            connection.recycleRequests(std::move(requests));
             static_cast<void>(connection.takeOutgoingBytes());
             return mark;
         };

@@ -459,7 +459,9 @@ namespace AsynGyanis::Net
 
     void Http2Session::absorbPendingRequests()
     {
-        for (Http2Request &http2Request: m_connection.takeRequests())
+        // 向量拿到具名局部：遍历完连容量一起还回去，下一批请求不必再向堆要一块
+        std::vector<Http2Request> requests = m_connection.takeRequests();
+        for (Http2Request &http2Request: requests)
         {
             PendingRequest pending;
             // 本条流的正文额度从这里开始记：记录被摘掉时由 Reservation 自己归还
@@ -505,14 +507,17 @@ namespace AsynGyanis::Net
                 }
             }
         }
+        m_connection.recycleRequests(std::move(requests));
     }
 
     void Http2Session::absorbReceivedData()
     {
-        for (const Http2ReceivedData &receivedData: m_connection.takeReceivedData())
+        std::vector<Http2ReceivedData> receivedChunks = m_connection.takeReceivedData();
+        for (const Http2ReceivedData &receivedData: receivedChunks)
         {
             absorbOneReceivedData(receivedData);
         }
+        m_connection.recycleReceivedData(std::move(receivedChunks));
     }
 
     void Http2Session::absorbOneReceivedData(const Http2ReceivedData &receivedData)
@@ -1208,7 +1213,8 @@ namespace AsynGyanis::Net
                 break;
             }
 
-            for (const Http2ReceivedData &receivedData: m_connection.takeReceivedData())
+            std::vector<Http2ReceivedData> receivedChunks = m_connection.takeReceivedData();
+            for (const Http2ReceivedData &receivedData: receivedChunks)
             {
                 if (receivedData.streamId == streamId)
                 {
@@ -1233,6 +1239,7 @@ namespace AsynGyanis::Net
                 // 其它流的正文：按与主循环完全相同的口径累积与还窗口——隧道期间它们同样要被服务
                 absorbOneReceivedData(receivedData);
             }
+            m_connection.recycleReceivedData(std::move(receivedChunks));
 
             absorbPendingRequests();
             // 隧道期间本协程即这条连接的驱动者：其它流上已收齐的请求就地服务掉，

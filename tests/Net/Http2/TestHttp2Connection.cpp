@@ -569,6 +569,42 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：还回来的请求向量只被接走容量；本端已另攒出新待交请求时那份缓冲丢弃而不覆盖
+     * @details 漏了这道判断的话，回收会把「已经交出去还没处理完的旧请求」换进本端，结果同一条请求被
+     *          交付两次、而刚解出来的那条直接消失——两头都错且现场无任何报错。
+     */
+    TEST(Http2Connection, RecycledRequestBufferNeverOverwritesNewerPendingRequests)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        const auto feedRequest = [&connection](const std::uint32_t streamId)
+        {
+            return feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
+                                              makeMinimalGetRequestBlock()));
+        };
+
+        // 正常路径：取空、还空，本端只留那份容量
+        ASSERT_EQ(feedRequest(1U), Http2ConnectionFeedStatus::NeedMore);
+        std::vector<Http2Request> firstTake = connection.takeRequests();
+        ASSERT_EQ(firstTake.size(), 1U);
+        firstTake.clear();
+        connection.recycleRequests(std::move(firstTake));
+        ASSERT_EQ(feedRequest(3U), Http2ConnectionFeedStatus::NeedMore);
+        std::vector<Http2Request> secondTake = connection.takeRequests();
+        ASSERT_EQ(secondTake.size(), 1U) << "还回来的空向量上追加新请求时把新的弄丢了";
+        EXPECT_EQ(secondTake[0].streamId, 3U);
+
+        // 手里那份还带着没处理完的旧请求，此时本端又解出一条新的：回收只能丢弃
+        std::vector<Http2Request> staleBuffer = std::move(secondTake);
+        ASSERT_EQ(feedRequest(5U), Http2ConnectionFeedStatus::NeedMore);
+        connection.recycleRequests(std::move(staleBuffer));
+
+        const std::vector<Http2Request> thirdTake = connection.takeRequests();
+        ASSERT_EQ(thirdTake.size(), 1U) << "回收覆盖了本端刚解出的请求，或对旧向量做了二次交付";
+        EXPECT_EQ(thirdTake[0].streamId, 5U);
+    }
+
+    /**
      * @brief 钉住：RFC 7541 C.4.1 的 Huffman 版请求头块（黄金字节）解出同一个 :authority
      */
     TEST(Http2Connection, DeliversRequestFromRfc7541HuffmanSample)
