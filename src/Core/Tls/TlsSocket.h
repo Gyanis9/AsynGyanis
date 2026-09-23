@@ -84,10 +84,17 @@ namespace AsynGyanis::Core
         /**
          * @brief TLS 加密接收数据。
          * @param buffer 接收缓冲区
-         * @param length 缓冲区长度
-         * @return Task<ssize_t> 协程，恢复时返回实际读取的字节数（0 表示连接关闭，负数表示错误）
-         * @throws CoreException TLS 会话已失效（对端异常关闭等）。对端**正常**关闭会返回 0
-         *         而不是抛异常，因此调用方看到的异常一律意味着会话不可再用
+         * @param length 缓冲区长度，不得超过 INT_MAX（底层 SSL_read 按 int 收长度，超限会被静默窄化，
+         *        因此当场拒绝，请分批读取）
+         * @return Task<ssize_t> 协程，恢复时返回实际读取的字节数；0 表示连接已正常收口
+         *         （对端发了 close_notify 或 TLS 层的 EOF）。**本方法不返回负数**，失败一律以异常结束
+         * @warning 返回 0 有两种来源：连接正常收口，以及**本次 length 就是 0**（此时不做任何 I/O 直接
+         *          返回 0）。不要把「缓冲区剩余空间」这类可能算出 0 的值当长度传进来——0 会被读成一次
+         *          干净的收口。口径与 `AsyncSocket::asyncReceive` 一致（两者在会话层可互相替换）
+         * @throws Base::InvalidArgumentException 长度超过 INT_MAX：取值非法属用法错误，走
+         *         std::invalid_argument 分支（不在 CoreException 这条运行期故障链上）
+         * @throws CoreException TLS 会话已失效（对端异常关闭等）。对端**正常**关闭会返回 0 而不是
+         *         抛异常，因此调用方看到的异常一律意味着会话不可再用
          * @throws CoreException 本端会话已释放：close() 之后调用，或协程挂起期间被 close()
          */
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
@@ -95,8 +102,14 @@ namespace AsynGyanis::Core
         /**
          * @brief TLS 加密发送数据。
          * @param buffer 发送缓冲区
-         * @param length 缓冲区长度
-         * @return Task<ssize_t> 协程，恢复时返回实际发送的字节数（负数表示错误）
+         * @param length 缓冲区长度，不得超过 INT_MAX（底层 SSL_write 按 int 收长度，超限会被静默窄化，
+         *        因此当场拒绝，请分批写入）
+         * @return Task<ssize_t> 协程，恢复时返回实际写入的字节数（可能小于 length，调用方按已写长度续发）
+         * @note **本方法不返回负数**，这一点与明文侧的 `AsyncSocket::asyncSend` 不同：那条以 -1 表示
+         *       「对端已关闭」，而这里对端关闭走的是异常。只判返回值 `<= 0` 的写法在 TLS 上不会命中，
+         *       失败要靠 catch 观察（会话层的两种传输因此在错误出口上并不等价）
+         * @throws Base::InvalidArgumentException 长度超过 INT_MAX：取值非法属用法错误，走
+         *         std::invalid_argument 分支（不在 CoreException 这条运行期故障链上）
          * @throws CoreException TLS 会话已失效（对端异常关闭、连接被重置等）
          * @throws CoreException 本端会话已释放：close() 之后调用，或协程挂起期间被 close()
          */
