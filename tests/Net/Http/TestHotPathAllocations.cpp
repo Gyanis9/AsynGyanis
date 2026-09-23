@@ -25,6 +25,9 @@
 //     对象按连接复用、容量留着，h2 每条流一份；改前这项是 18 次 / 2824 字节；
 //   · 一条请求新建一个 HttpRequest 逐条装 10 条头部：不预留 24 次 / 2588 字节，先留 4 条 128 字节
 //     是 12 次 / 2080 字节。HTTP/3 收请求头走的正是这条形状（请求对象随流新建，头部一条一条写进去）；
+//   · 答一条 h2 响应：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 2 次 / 243 字节（一千次共
+//     2014 次，多出那 14 次是 HPACK 动态表的插入与逐出）。这条量下来不是靶子——字段行那份向量本来
+//     就 reserve(8) 过，响应头部的取值多数字符短到进小串内联；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次；
 //   · 一条 h2 连接握手到关掉：每连接的固定成本（空闲连接也要付，故只作打印对照）。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
@@ -86,6 +89,10 @@ namespace AsynGyanis::Net
         // 预留那一档只留 4 条 / 128 字节（HTTP/3 收头实际用的猜测值），超出部分照常扩容
         constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand = 24000U;
         constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;
+        // 答一条 h2 响应分两段：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 2 次 / 243 字节。
+        // 连接侧按一千次的原值钉：HPACK 动态表的插入与逐出不是每轮一次，摊平会把这点抖动抹平
+        constexpr std::uint64_t kResponseCollectTotalAllocationsPerThousand = 3000U;
+        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand = 2014U;
 #endif
         /// 一条贴近真实的 h1 请求：10 个头部 + 64 字节正文（与微基准的 http1-parse-request 同形）
         std::string makeRequestText()
@@ -600,6 +607,115 @@ namespace AsynGyanis::Net
                 << "收一条 h2 请求的分配数变了：头部逐字段落串、流记录与交出向量这三处都会计进来";
         EXPECT_EQ(profile.totalBytes, kRequestIngestTotalBytesPerThousand)
                 << "读数按一千次原值钉：条数不变但每块更大，同样是实现变了";
+#endif
+    }
+
+    /**
+     * @brief 答一条 h2 请求付多少次分配：会话侧摊字段行、连接侧组帧发出
+     * @details 两段分开量——采集器那条与 `Http2Session::collectResponseHeaderFields()` 同形（每响应
+     *          一份 `vector<HpackHeaderField>`，逐条两份 owning 串），组帧那条走连接层的公开出口并按
+     *          会话的节奏把待发缓冲还回去。两条相加才是一条响应的每响应成本。
+     */
+    TEST(HotPathAllocations, Http2ResponseSendAllocations)
+    {
+        const HttpResponse response = makeResponseFixture();
+        const auto collectOnce = [&response]
+        {
+            std::vector<HpackHeaderField> fieldLines;
+            fieldLines.reserve(8U);
+            std::size_t mark = 0;
+            response.forEachHeaderField([&fieldLines, &mark](const std::string_view name, const std::string_view value)
+                                        {
+                                            mark += name.size() + value.size();
+                                            fieldLines.push_back(HpackHeaderField{std::string(name), std::string(value)});
+                                        });
+            return mark + fieldLines.size();
+        };
+        ASSERT_GT(collectOnce(), 40U) << "这条形状没把响应头部摊出来，读数没意义";
+
+        const AllocationProfile collected = measurePerOperation(collectOnce);
+        std::printf("h2 每条响应：会话侧摊字段行 %llu 次分配 / %llu 字节\n",
+                    static_cast<unsigned long long>(collected.allocationsPerOperation),
+                    static_cast<unsigned long long>(collected.bytesPerOperation));
+
+        // 组帧要有活着的流：先把整窗口的请求喂在窗外，测量窗口里只剩「发响应」这一段
+        Http2ConnectionConfiguration configuration;
+        configuration.maximumConcurrentStreams = static_cast<std::uint32_t>(kMeasurementIterations + 2U);
+        Http2Connection connection{configuration};
+        std::string settingsFrame;
+        settingsFrame.append(3, '\0');
+        settingsFrame.push_back(0x04);
+        settingsFrame.push_back(0x00);
+        settingsFrame.append(4, '\0');
+        static_cast<void>(connection.feedBytes(kHttp2ConnectionPreface.data(), kHttp2ConnectionPreface.size()));
+        static_cast<void>(connection.feedBytes(settingsFrame.data(), settingsFrame.size()));
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        std::string requestBlock;
+        requestBlock += hpackUnindexedNamedField(2U, "GET");
+        requestBlock += hpackUnindexedNamedField(6U, "http");
+        requestBlock += hpackUnindexedNamedField(4U, "/bench");
+        // 多喂一条给窗外那次「先看产物长度」的调用吃掉，测量窗口里才不会用到没开过的流
+        for (std::uint64_t iteration = 0; iteration <= kMeasurementIterations; ++iteration)
+        {
+            Http2HeadersPayload headPayload;
+            headPayload.endStream = true;
+            headPayload.endHeaders = true; // 不落 END_HEADERS 就变成「等 CONTINUATION」，下一帧的 HEADERS 会被 §6.10 判成连接错误
+            headPayload.headerBlockFragment = requestBlock;
+            const std::string frame = encodeHttp2HeadersFrame(headPayload, static_cast<std::uint32_t>(2U * iteration + 1U));
+            static_cast<void>(connection.feedBytes(frame.data(), frame.size()));
+            static_cast<void>(connection.takeRequests());
+            static_cast<void>(connection.takeOutgoingBytes());
+        }
+
+        const std::vector<HpackHeaderField> fieldLines = [&response]
+        {
+            std::vector<HpackHeaderField> lines;
+            response.forEachHeaderField([&lines](const std::string_view name, const std::string_view value)
+                                        {
+                                            lines.push_back(HpackHeaderField{std::string(name), std::string(value)});
+                                        });
+            return lines;
+        }();
+        const std::string_view body = response.body();
+
+        std::uint64_t sendCursor = 0;
+        std::size_t lastResponseBytes = 0;
+        std::string lastErrorText;
+        const auto sendOnce = [&connection, &fieldLines, &body, &sendCursor, &lastResponseBytes, &lastErrorText]() -> std::size_t
+        {
+            const std::uint32_t streamId = static_cast<std::uint32_t>(2U * sendCursor + 1U);
+            ++sendCursor;
+            std::string errorText;
+            const Http2ResponseSendStatus headerStatus =
+                    connection.sendResponseHeaders(streamId, 200U, fieldLines, false, &errorText);
+            const Http2ResponseSendStatus bodyStatus = connection.sendResponseData(streamId, body, true, &errorText);
+            std::string outgoingBytes = connection.takeOutgoingBytes();
+            lastResponseBytes = outgoingBytes.size();
+            lastErrorText = errorText;
+            // 会话发完就把这块还回去复用容量，这里跟着同一个节奏走，免得把「每响应一整块待发串」算成实现的成本
+            connection.recycleOutgoingBytes(std::move(outgoingBytes));
+            // 判据取「这一轮确实把响应发出去了」而不是产物长度：HPACK 动态表会把同一条响应越编越短，
+            // 长度逐轮变小是设计行为，拿它当一致性判据会把正确的实现读成「有几次没发全」
+            return headerStatus == Http2ResponseSendStatus::Sent && bodyStatus == Http2ResponseSendStatus::Sent
+                           ? std::size_t{1}
+                           : std::size_t{0};
+        };
+        // 先把「响应真的发出去了」钉住再谈读数：Rejected 与 StreamNotWritable 也会产出几十字节的 RST，
+        // 只按字节数判绿会把一条根本没发的响应读成「每响应只付 2 次分配」
+        ASSERT_EQ(sendOnce(), 1U) << lastErrorText;
+        EXPECT_GT(lastResponseBytes, 60U) << "响应一帧都没发出去，这条用例没测到东西";
+
+        const AllocationProfile sent = measurePerOperation(sendOnce);
+        EXPECT_EQ(sent.resultSum, kMeasurementIterations) << "有几次响应没发出去，这条读数测的不是「发一条响应」";
+        std::printf("h2 每条响应：连接组帧发出 %llu 次分配 / %llu 字节\n",
+                    static_cast<unsigned long long>(sent.allocationsPerOperation),
+                    static_cast<unsigned long long>(sent.bytesPerOperation));
+#ifdef NDEBUG
+        EXPECT_EQ(collected.totalAllocations, kResponseCollectTotalAllocationsPerThousand)
+                << "会话侧摊一次响应头部的分配数变了：字段行的形状或预留方式改了";
+        EXPECT_EQ(sent.totalAllocations, kResponseSendTotalAllocationsPerThousand)
+                << "连接侧发一条响应的分配数变了：HPACK 组帧、DATA 帧或待发缓冲的复用改了";
 #endif
     }
 
