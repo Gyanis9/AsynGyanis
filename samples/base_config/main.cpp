@@ -82,6 +82,15 @@ std::filesystem::path sampleDirectory(const std::filesystem::path &root, const s
         Samples::checklist().check(reloaded.success && reloaded.loadedFiles.size() == 3 &&
                                        manager.getInt("server.workers", 0) == 8,
                                    "reload 按同一批路径重扫，并把磁盘上的新值装了进来");
+
+        // 后一份文件把整段表改写成单个值时，先前摊开的叶子键必须一起让位：否则快照里 server 既是值
+        // 又是表，getSection 读不回来，而加载报的是成功。这里不 flush、不重新加载，直接看键表形态
+        writeTextFile(directory / "collapse.yaml", "server: 9090\n");
+        const Base::ConfigLoadResult collapsed = manager.loadFiles({directory / "app.yaml", directory / "collapse.yaml"});
+        Samples::checklist().check(collapsed.success && manager.getInt("server", 0) == 9090 &&
+                                       !manager.has("server.port") && !manager.has("server.host") &&
+                                       manager.has("feature.enable_tls"),
+                                   "后写的文件把一段表改成单个值时，旧的叶子键随之让位（不相干的键留着）");
     }
 
     void demonstrateValueAccess(const std::filesystem::path &root)

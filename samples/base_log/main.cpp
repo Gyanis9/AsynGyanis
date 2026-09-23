@@ -148,6 +148,13 @@ namespace
         sink.reset();
         Samples::checklist().check(countLines(reopenedPath) == 1 && countLines(path) == 2,
                                    "FileSink::reopen 之后写到新路径，旧文件不再增长");
+
+        // Fatal 这一条不靠调用方记得 flush：打完就 abort 的路径上，留在流缓冲里的最后一条等于没打。
+        // 判据是直接重开文件读它——既不 flush 也不销毁 logger，读得到才算真落到了磁盘上。
+        // 放在最后一步：它会让 plain.log 多出一行，夹在上面的「旧文件不再增长」中间就把那条判据改了
+        LOG_LOGGER_FATAL_FMT(logger, "崩溃前的最后一条记录");
+        Samples::checklist().check(readWholeFile(path).find("崩溃前的最后一条记录") != std::string::npos,
+                                   "LOG_FATAL 无需显式 flush 就已落盘（崩溃前最后一条不会留在缓冲里）");
     }
 
     void demonstrateRollingSink(const std::filesystem::path &directory)
