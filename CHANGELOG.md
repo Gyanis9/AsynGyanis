@@ -136,6 +136,13 @@
 
 ### 变更
 
+- **破坏性变更：`WorkerSupervisor` 的「配置不成立」改走用法错误那条异常分支**。可执行文件路径为空、
+  `workerCount < 2`、轮询间隔或收尾期限不大于 0、本平台不支持多进程（Windows 缺 `SO_REUSEPORT`）这四类拒绝
+  此前抛 `CoreException`（运行期故障链），而构造函数的 `@throws` 一直承诺的是 `Base::LogicException`——代码
+  与自己的文档相反。留在运行期链上的代价是让调用方把「自己配置填错了」当成可重试的故障。迁移：原先
+  `catch (Base::Exception)` / `catch (CoreException)` 兜这几条的代码改捕 `Base::LogicException`（或直接
+  `catch (const std::logic_error &)`，它与 `InvalidArgumentException` 同支）；真正的运行期故障（拉起进程失败等）
+  仍走 `CoreException`，不受影响。
 - **破坏性变更：`AsyncSocket` 的「参数取值非法」改走用法错误那条异常分支**。单次收发长度超 `INT_MAX`、
   聚合发送段数为 0 或超平台上限、零拷贝发送的源描述符非法与待发字节数为 0，此前都抛 `Base::SystemException`
   （运行期故障链），而可替换的另一半 `TlsSocket` 早就在抛 `Base::InvalidArgumentException`

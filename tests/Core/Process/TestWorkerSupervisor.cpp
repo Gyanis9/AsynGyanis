@@ -3,6 +3,7 @@
 #include "Core/Process/WorkerSupervisor.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/LogicException.h"
 #include "Platform/Platform.h"
 
 #include "CommonTestSupport.h"
@@ -135,7 +136,7 @@ namespace AsynGyanis::Core
         configuration.executablePath = "some-server";
         configuration.workerCount    = 1;
 
-        EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::Exception);
+        EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::LogicException);
     }
 
     /**
@@ -146,7 +147,7 @@ namespace AsynGyanis::Core
         WorkerSupervisor::Configuration configuration;
         configuration.workerCount = 2;
 
-        EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::Exception);
+        EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::LogicException);
     }
 
 #if ASYN_PLATFORM_WIN32
@@ -164,7 +165,7 @@ namespace AsynGyanis::Core
         {
             const WorkerSupervisor supervisor(configuration);
             FAIL() << "Windows 上构造多进程编排应当被拒绝";
-        } catch (const Base::Exception &exception)
+        } catch (const Base::LogicException &exception)
         {
             EXPECT_NE(std::string(exception.what()).find("SO_REUSEPORT"), std::string::npos)
                     << "拒绝原因应当说清缺的是端口共享能力：" << exception.what();

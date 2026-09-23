@@ -144,11 +144,17 @@ namespace
         {
             Core::WorkerSupervisor supervisor(configuration);
             static_cast<void>(supervisor);
-        } catch (const Base::Exception &failure)
+        } catch (const Base::LogicException &failure)
         {
             const bool isExpected = std::string_view{failure.what()}.find(expectedFragment) != std::string_view::npos;
             LOG_INFO_FMT("{} 被构造期拒掉：{}{}", label, failure.what(), isExpected ? "" : "（与预期关键片段不符）");
             return isExpected;
+        } catch (const Base::Exception &failure)
+        {
+            // 配置不成立属用法错误，应当走 logic_error 那条分支；报成框架运行期故障的话，
+            // 调用方会把「自己填错了」当成可重试的故障
+            LOG_ERROR_FMT("{} 的拒因被报成了运行期故障：{}", label, failure.what());
+            return false;
         } catch (...)
         {
             LOG_ERROR_FMT("{} 抛出了非框架异常", label);

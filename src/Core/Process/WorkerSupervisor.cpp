@@ -55,22 +55,23 @@ namespace AsynGyanis::Core
     {
         if (m_configuration.executablePath.empty())
         {
-            throw CoreException("多进程编排无法启动：可执行文件路径为空。请在配置里给出服务器可执行文件的路径");
+            throw Base::LogicException("多进程编排无法启动：可执行文件路径为空。请在配置里给出服务器可执行文件的路径");
         }
         if (m_configuration.workerCount < 2)
         {
-            throw CoreException("多进程编排要求 worker 数至少为 2（当前 " + std::to_string(m_configuration.workerCount) +
-                                "）。只想跑单进程时不要构造 WorkerSupervisor，直接启动服务器即可");
+            throw Base::LogicException("多进程编排要求 worker 数至少为 2（当前 " +
+                                       std::to_string(m_configuration.workerCount) +
+                                       "）。只想跑单进程时不要构造 WorkerSupervisor，直接启动服务器即可");
         }
         if (m_configuration.pollInterval <= std::chrono::milliseconds::zero() || m_configuration.shutdownTimeout <= std::chrono::milliseconds::zero())
         {
-            throw CoreException("多进程编排的轮询间隔与收尾期限都必须大于 0，否则循环会空转或收尾没有期限");
+            throw Base::LogicException("多进程编排的轮询间隔与收尾期限都必须大于 0，否则循环会空转或收尾没有期限");
         }
 #if ASYN_PLATFORM_WIN32
         // Windows 上没有 SO_REUSEPORT 的等价物，端口共享无从谈起：这里当场拒绝，
         // 而不是让调用方拿到一个「启动了多个进程但只有一个能绑定端口」的假成功
-        throw CoreException("Windows 不支持多进程 worker 模型：端口共享依赖 SO_REUSEPORT，而 Windows 没有等价物。"
-                            "请把 workers 设为 1（单进程 + 多工作循环），或改在 Linux 上部署");
+        throw Base::LogicException("Windows 不支持多进程 worker 模型：端口共享依赖 SO_REUSEPORT，而 Windows 没有等价物。"
+                                   "请把 workers 设为 1（单进程 + 多工作循环），或改在 Linux 上部署");
 #else
         m_workers.resize(m_configuration.workerCount);
 #endif
