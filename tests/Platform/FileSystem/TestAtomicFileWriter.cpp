@@ -1,6 +1,7 @@
 // AtomicFileWriter 单元测试：原子写、父目录创建、失败路径与残留清理
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/System/ProcessInfo.h"
 
 #include <gtest/gtest.h>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "PlatformTestSupport.h"
 
@@ -93,11 +95,41 @@ namespace AsynGyanis::Platform
     TEST(AtomicFileWriter, Utf8FileNameIsWrittenAndReadable)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("AtomicWriter_Utf8");
-        const std::filesystem::path           targetPath = temporaryDirectory.path() / "用户设置.json";
+        // 目标名按 UTF-8 交给 path：直接拿窄字面量去拼，Windows 上会先经本地代码页解释一遍，那样这条
+        // 用例测的就只是「同一个错名字自洽」——落盘的目录项其实不是要的那个
+        const std::filesystem::path targetPath = temporaryDirectory.path() / FileSystem::pathFromUtf8("用户设置.json");
 
         std::string error;
         ASSERT_TRUE(AtomicFileWriter::writeText(targetPath, "{\"语言\": \"简体中文\"}", {}, &error)) << error;
         EXPECT_NE(readWholeFile(targetPath).find("简体中文"), std::string::npos);
+        EXPECT_EQ(FileSystem::utf8FromPath(targetPath.filename()), "用户设置.json") << "落盘的目录项不是请求的那个名字";
+    }
+
+    /**
+     * @brief 钉住：名字落在本地代码页之外的目标写得出，失败通道仍然只有 error 出参
+     * @details Windows 上本层此前拿 `path::string()` 拼临时文件名，泰文名在 ACP 936 下直接抛出
+     *          system_error（实测），而这层对外承诺的是「失败以 bool + error 表达」。名字取泰文而不
+     *          取中文：中文在中文语境的 Windows 上能被代码页原样往返，那条路在这里测不出东西。
+     */
+    TEST(AtomicFileWriter, TargetNameOutsideLocalCodePageIsWrittenWithoutThrowing)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("AtomicWriter_OutsideCodePage");
+        const std::string                     targetNameUtf8 = std::string("\xE0\xB8\x81\xE0\xB8\x82") + ".json";
+        const std::filesystem::path           targetPath = temporaryDirectory.path() / FileSystem::pathFromUtf8(targetNameUtf8);
+
+        std::string error;
+        bool        succeeded = false;
+        EXPECT_NO_THROW(succeeded = AtomicFileWriter::writeText(targetPath, "{\"th\": true}", {}, &error));
+        EXPECT_TRUE(succeeded) << error;
+        EXPECT_EQ(readWholeFile(targetPath), "{\"th\": true}");
+
+        // 目录里只该留下目标本身：临时名过一遍代码页会落到另一个名字上，那种残留没人清
+        std::vector<std::string> entryNames;
+        for (const auto &entry: std::filesystem::directory_iterator(temporaryDirectory.path()))
+        {
+            entryNames.push_back(FileSystem::utf8FromPath(entry.path().filename()));
+        }
+        EXPECT_EQ(entryNames, std::vector<std::string>{targetNameUtf8}) << "落盘的名字与请求的不是同一个，或多出一份临时文件";
     }
 
     TEST(AtomicFileWriter, LargeContentIsWrittenWithoutTruncation)

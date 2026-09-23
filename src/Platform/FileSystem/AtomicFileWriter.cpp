@@ -1,5 +1,6 @@
 #include "Platform/FileSystem/AtomicFileWriter.h"
 
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Platform/System/ProcessInfo.h"
 
@@ -93,7 +94,7 @@ namespace AsynGyanis::Platform
             std::filesystem::create_directories(parentDirectory, fileSystemError);
             if (fileSystemError)
             {
-                return reportFailure("创建目录 '" + parentDirectory.string() + "' 失败：" + fileSystemError.message());
+                return reportFailure("创建目录 '" + FileSystem::utf8FromPath(parentDirectory) + "' 失败：" + fileSystemError.message());
             }
         }
 
@@ -102,16 +103,20 @@ namespace AsynGyanis::Platform
         // 恰好在最需要它的跨进程发布场景里失效——两个写者交叉写同一个 .tmp，再把夹杂内容
         // rename 成目标。进程号在同一台机器上同时存活的进程之间唯一，配上计数器两个维度都分开
         static std::atomic<std::uint32_t> temporaryFileCounter{0};
-        const std::filesystem::path       temporaryPath = targetPath.string() + ".tmp." +
-                                                    std::to_string(ProcessInfo::currentProcessId()) + "." +
-                                                    std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed));
+        // 拼临时名要在 UTF-8 刻度上做：把 targetPath.string()（Windows 上是本地代码页的字节）再交给
+        // path 构造，等于让代码页过一遍文件名——名字落在代码页之外时它当场抛出，而本层的失败通道是
+        // error 出参，不是异常
+        const std::filesystem::path temporaryPath = FileSystem::pathFromUtf8(
+                FileSystem::utf8FromPath(targetPath) + ".tmp." +
+                std::to_string(ProcessInfo::currentProcessId()) + "." +
+                std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed)));
 
         bool isTemporaryFileWritten = false;
         {
             std::ofstream temporaryFile(temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc);
             if (!temporaryFile.is_open())
             {
-                return reportFailure("无法打开临时文件 '" + temporaryPath.string() + "'");
+                return reportFailure("无法打开临时文件 '" + FileSystem::utf8FromPath(temporaryPath) + "'");
             }
 
             temporaryFile.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -124,7 +129,7 @@ namespace AsynGyanis::Platform
         if (!isTemporaryFileWritten)
         {
             discardTemporaryFile(temporaryPath);
-            return reportFailure("写入临时文件 '" + temporaryPath.string() + "' 失败");
+            return reportFailure("写入临时文件 '" + FileSystem::utf8FromPath(temporaryPath) + "' 失败");
         }
 
         // 落盘屏障：flush 只把用户态缓冲交给内核，断电时仍可能留下「目标文件已存在但内容为空/半截」。
@@ -132,7 +137,7 @@ namespace AsynGyanis::Platform
         if (!flushFileToDisk(temporaryPath))
         {
             discardTemporaryFile(temporaryPath);
-            return reportFailure("把临时文件 '" + temporaryPath.string() + "' 刷入持久存储失败");
+            return reportFailure("把临时文件 '" + FileSystem::utf8FromPath(temporaryPath) + "' 刷入持久存储失败");
         }
 
         if (permissions.has_value())
@@ -141,7 +146,7 @@ namespace AsynGyanis::Platform
             std::filesystem::permissions(temporaryPath, *permissions, std::filesystem::perm_options::replace, permissionError);
             if (permissionError)
             {
-                const std::string reason = "设置 '" + temporaryPath.string() + "' 权限失败：" + permissionError.message();
+                const std::string reason = "设置 '" + FileSystem::utf8FromPath(temporaryPath) + "' 权限失败：" + permissionError.message();
                 discardTemporaryFile(temporaryPath);
                 return reportFailure(reason);
             }
@@ -151,7 +156,7 @@ namespace AsynGyanis::Platform
         std::filesystem::rename(temporaryPath, targetPath, renameError);
         if (renameError)
         {
-            const std::string reason = "替换 '" + targetPath.string() + "' 失败：" + renameError.message();
+            const std::string reason = "替换 '" + FileSystem::utf8FromPath(targetPath) + "' 失败：" + renameError.message();
             discardTemporaryFile(temporaryPath);
             return reportFailure(reason);
         }
