@@ -64,19 +64,22 @@ namespace AsynGyanis::TestSupport
     };
 
     /**
-     * @brief 把 body 连跑 kMeasurementIterations 次，给出分配原值与摊平读数
+     * @brief 把 body 连跑指定次数，给出分配原值与摊平读数
+     * @details 供一次操作就要毫秒级的重形状（TLS 握手这类）自己指定次数：默认的一千次会把
+     *          整份用例的时限吃掉，而摊平读数对次数的要求只是「够抵消顺序噪声」
      * @tparam Body 可调用体，返回一个与「做成了多少」成正比的标记
+     * @param iterationCount 连跑次数，必须大于 0（摊平读数按它做除法）
      * @param body 被测形状：只做事、不断言
      * @return AllocationProfile 分配总次数与字节数，外加所有标记之和
      */
     template<typename Body>
-    [[nodiscard]] AllocationProfile measurePerOperation(const Body &body)
+    [[nodiscard]] AllocationProfile measureOperations(const std::uint64_t iterationCount, const Body &body)
     {
         const std::uint64_t beganCount = allocationCount.load(std::memory_order_relaxed);
         const std::uint64_t beganBytes = allocationBytes.load(std::memory_order_relaxed);
 
         std::uint64_t resultSum = 0;
-        for (std::uint64_t iteration = 0; iteration < kMeasurementIterations; ++iteration)
+        for (std::uint64_t iteration = 0; iteration < iterationCount; ++iteration)
         {
             resultSum += static_cast<std::uint64_t>(body());
         }
@@ -84,9 +87,21 @@ namespace AsynGyanis::TestSupport
         AllocationProfile profile;
         profile.totalAllocations        = allocationCount.load(std::memory_order_relaxed) - beganCount;
         profile.totalBytes              = allocationBytes.load(std::memory_order_relaxed) - beganBytes;
-        profile.allocationsPerOperation = profile.totalAllocations / kMeasurementIterations;
-        profile.bytesPerOperation       = profile.totalBytes / kMeasurementIterations;
+        profile.allocationsPerOperation = profile.totalAllocations / iterationCount;
+        profile.bytesPerOperation       = profile.totalBytes / iterationCount;
         profile.resultSum               = resultSum;
         return profile;
+    }
+
+    /**
+     * @brief 按默认次数（kMeasurementIterations）测量，供轻量形状直接用
+     * @tparam Body 可调用体，返回一个与「做成了多少」成正比的标记
+     * @param body 被测形状：只做事、不断言
+     * @return AllocationProfile 分配总次数与字节数，外加所有标记之和
+     */
+    template<typename Body>
+    [[nodiscard]] AllocationProfile measurePerOperation(const Body &body)
+    {
+        return measureOperations(kMeasurementIterations, body);
     }
 } // namespace AsynGyanis::TestSupport

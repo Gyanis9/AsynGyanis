@@ -1,4 +1,13 @@
 // TlsSocket 单元测试：构造、移动语义、安全关闭与地址查询，以及会话释放后的拒绝面（使用仓库预生成证书）
+//
+// 台账读数（HandshakeAllocationProfile，Release 形态、按两百次摊平）：
+//   · 一次双向 TLS1.3 握手：11 块 / 640 B；
+//   · 两侧接线（SSL 对象 + AsyncSocket + IoWatcher 构造析构）：0 块；两只立刻跑完的协程帧：0 块
+//     ——帧确实从帧池拿。带 sanitizer 的构建按 CoroutinePool.h 的既定口径绕开池，那时每条形状
+//     都会各多出一到两块（Debug 实测：握手 16、明文等待 7、两只帧 2）；
+//   · 一次明文「向后端注册 + 等一次可读」：5 块 / 312 B。握手两侧各摊一次注册，也就是说
+//     **TLS 自己这一层基本不花分配，读数的九成落在这条 I/O 等待与注册上**。别把它跟「每连接
+//     注册成本台账」里 epoll 0 次、io_uring 3 次直接对照：那份量的是后端注册本身，这条还含着等待。
 
 #include "Core/Tls/TlsSocket.h"
 
@@ -13,12 +22,14 @@
 #include "Platform/IO/FileDescriptor.h"
 
 #include "CoreTestSupport.h"
+#include "AllocationProbe.h"
 
 #include <gtest/gtest.h>
 
 #include <openssl/ssl.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -580,6 +591,290 @@ namespace AsynGyanis::Core
         EXPECT_EQ(writeFailureText.find("00000000"), std::string::npos) << writeFailureText;
 
         serverSocket.close();
+    }
+
+    namespace
+    {
+        /**
+         * @brief 只回一个数的协程：用来分清「帧本身」与「握手路径」各占几次分配
+         * @param marker 写一个标记，证明它真的跑过
+         * @return Task<int> 固定 1
+         */
+        Task<int> trivialHandshakeShape(int &marker)
+        {
+            marker += 1;
+            co_return 1;
+        }
+
+        /**
+         * @brief 等一次可读的协程：把「注册 + 等可读」这条 I/O 路径包成可驱动的形状
+         * @param socket 目标套接字
+         * @return Task<bool> 等待是否被叫醒（false 表示注册失效）
+         */
+        Task<bool> waitOnceReadable(AsyncSocket &socket)
+        {
+            co_return co_await socket.waitReadable();
+        }
+
+        /**
+         * @brief 对照组二：明文走一次「向后端注册 + 等可读」，完全不碰 TLS
+         * @details IoWatcher 是首次等待才向后端注册的，握手形状里也含着这一次注册。把它单独量出来，
+         *          才知道 TLS 台账里那几块有几张属于「每连接的 I/O 注册记账」而不是 TLS 本身
+         * @param loop 承载等待的循环
+         * @return true 等待被就绪事件叫醒
+         */
+        bool runOnePlaintextIoWait(EventLoop &loop)
+        {
+            int readDescriptor = -1;
+            int writeDescriptor = -1;
+            if (!Platform::FileDescriptor::createPair(readDescriptor, writeDescriptor))
+            {
+                return false;
+            }
+
+            AsyncSocket reader(loop, readDescriptor);
+            AsyncSocket writer(loop, writeDescriptor);
+            // 先放一个字节再等：等可读这一步必然被叫醒，不会把「没人叫醒」当成读数
+            static constexpr char kMarker = 'x';
+            if (Platform::FileDescriptor::write(writeDescriptor, &kMarker, 1) != 1)
+            {
+                return false;
+            }
+
+            Task<bool> waitTask = waitOnceReadable(reader);
+            static_cast<void>(waitTask.handle().resume());
+            if (!advanceUntil(loop, [&waitTask]
+                              {
+                                  return waitTask.isReady();
+                              }))
+            {
+                return false;
+            }
+            return waitTask.handle().promise().result();
+        }
+    } // namespace
+
+    namespace
+    {
+        /**
+         * @brief 走一次完整的 TLS 握手：服务端与客户端各一条协程，同一个循环上驱动
+         * @param loop 承载两条协程的事件循环
+         * @param serverContext 已装好证书与私钥的服务端上下文
+         * @param clientContext 只信那张自签测试证书的客户端上下文
+         * @return true 两侧握手都成功完成；任何一步没做成都是 false
+         */
+        bool runOneTlsHandshake(EventLoop &loop, TlsContext &serverContext, SSL_CTX &clientContext)
+        {
+            int serverDescriptor = -1;
+            int clientDescriptor = -1;
+            if (!Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor))
+            {
+                return false;
+            }
+
+            SSL *const serverHandle = serverContext.createSSL(serverDescriptor);
+            if (serverHandle == nullptr)
+            {
+                Platform::FileDescriptor::close(serverDescriptor);
+                Platform::FileDescriptor::close(clientDescriptor);
+                return false;
+            }
+
+            SSL *const clientHandle = SSL_new(&clientContext);
+            if (clientHandle == nullptr || SSL_set_fd(clientHandle, clientDescriptor) == 0)
+            {
+                // 还没交给 TlsSocket 接管：这一侧的 SSL 与两个描述符都由本函数自己归还
+                static_cast<void>(SSL_free(clientHandle));
+                static_cast<void>(SSL_free(serverHandle));
+                Platform::FileDescriptor::close(serverDescriptor);
+                Platform::FileDescriptor::close(clientDescriptor);
+                return false;
+            }
+
+            {
+                TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
+                TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+                Task<> serverHandshake = serverSocket.handshake();
+                Task<> clientHandshake = clientSocket.handshake();
+                static_cast<void>(serverHandshake.handle().resume());
+                static_cast<void>(clientHandshake.handle().resume());
+                if (!advanceUntil(loop, [&serverHandshake, &clientHandshake]
+                                  {
+                                      return serverHandshake.isReady() && clientHandshake.isReady();
+                                  }))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    static_cast<void>(serverHandshake.handle().promise().result());
+                    static_cast<void>(clientHandshake.handle().promise().result());
+                } catch (...)
+                {
+                    return false;
+                }
+            }   // 两条协程帧先退，再退两个 TlsSocket：反过来就是对已释放帧的收尾
+            return true;
+        }
+
+        /**
+         * @brief 对照组：把两侧 TlsSocket 建起来又销毁，但一次握手都不做
+         * @details 要减掉的是「我们这一层的接线成本」：SSL 对象、AsyncSocket、IoWatcher 注册
+         *          （IOCP 上还要发探针）都在这一步发生。不减掉就会全记到握手本身头上。
+         * @return true 这一步做完了（对照组只关心「有没有空转」）
+         */
+        bool runOneTlsSessionSetup(EventLoop &loop, TlsContext &serverContext, SSL_CTX &clientContext)
+        {
+            int serverDescriptor = -1;
+            int clientDescriptor = -1;
+            if (!Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor))
+            {
+                return false;
+            }
+
+            SSL *const serverHandle = serverContext.createSSL(serverDescriptor);
+            if (serverHandle == nullptr)
+            {
+                Platform::FileDescriptor::close(serverDescriptor);
+                Platform::FileDescriptor::close(clientDescriptor);
+                return false;
+            }
+
+            SSL *const clientHandle = SSL_new(&clientContext);
+            if (clientHandle == nullptr || SSL_set_fd(clientHandle, clientDescriptor) == 0)
+            {
+                static_cast<void>(SSL_free(clientHandle));
+                static_cast<void>(SSL_free(serverHandle));
+                Platform::FileDescriptor::close(serverDescriptor);
+                Platform::FileDescriptor::close(clientDescriptor);
+                return false;
+            }
+
+            {
+                TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
+                TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+                static_cast<void>(serverSocket.fileDescriptor());
+            }   // 两侧都在这里析构：close_notify 的写入属于接线成本，不属于握手
+            return true;
+        }
+    } // namespace
+
+    /**
+     * @brief 一次完整 TLS 握手的分配画像（Core 里第一份 TLS 台账）
+     * @details 口径同 tests/Net/Http 那套：把「建描述符对 → 两侧握手 → 关」连跑两百次摊平。
+     *          三条对照（只接线不起协程、只起两只会立刻跑完的协程、一次明文「注册 + 等可读」）用来把
+     *          TLS 自己的份额从帧、接线与后端记账里分出来。OpenSSL 走它自己的分配器、这台探针看不见，
+     *          因此读数只归我们这一层；判据只在 Release 下钉，Debug 仍跑同样形状并打出直方图供对照。
+     */
+    TEST(TlsSocket, HandshakeAllocationProfile)
+    {
+        using AsynGyanis::TestSupport::measureOperations;
+
+        // 一次握手要毫秒级（Debug+ASan 下 ECDSA 双端验签与密钥派生都在跑），一千次会吃掉整份用例
+        // 的时限；摊平读数只需要次数够抵消顺序噪声
+        constexpr std::uint64_t kMeasurementRounds = 200U;
+
+        EventLoop  loop;
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        auto clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+
+        // 先热一次身：OpenSSL 的进程内一次性初始化（错误队列、随机池、算法表）不能记到握手头上
+        ASSERT_TRUE(runOneTlsHandshake(loop, serverContext, *clientContext)) << "本机跑不成 TLS 握手，量不了";
+
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto profile = measureOperations(
+                kMeasurementRounds,
+                [&]
+                {
+                    return runOneTlsHandshake(loop, serverContext, *clientContext) ? 1U : 0U;
+                });
+        const auto handshakeHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto baseline = measureOperations(
+                kMeasurementRounds,
+                [&]
+                {
+                    return runOneTlsSessionSetup(loop, serverContext, *clientContext) ? 1U : 0U;
+                });
+        const auto setupHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+
+        // 第三条对照：只起两条会立刻跑完的协程。它量的是「握手用的那两只帧」本身——帧走帧池时
+        // 这里应为 0，握手读数里的 12~16 次就都不在帧上
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        int marker = 0;
+        const auto frameBody = [&marker]
+        {
+            Task<int> first  = trivialHandshakeShape(marker);
+            Task<int> second = trivialHandshakeShape(marker);
+            static_cast<void>(first.handle().resume());
+            static_cast<void>(second.handle().resume());
+            return (first.isReady() && second.isReady()) ? 1U : 0U;
+        };
+        const auto frames = measureOperations(kMeasurementRounds, frameBody);
+        // 第二趟读数用来分清「帧池一次性扩块」与「每次真的各走一次全局 new」：
+        // 池在回收的话第二趟应接近 0，仍然按次涨就是没回收
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto secondFramePass = measureOperations(kMeasurementRounds, frameBody);
+
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const auto ioWait = measureOperations(kMeasurementRounds, [&loop]
+        {
+            return runOnePlaintextIoWait(loop) ? 1U : 0U;
+        });
+
+        std::printf("tls-handshake total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations),
+                    static_cast<unsigned long long>(profile.totalBytes));
+        std::printf("tls-session-setup total=%llu bytes=%llu\n", static_cast<unsigned long long>(baseline.totalAllocations),
+                    static_cast<unsigned long long>(baseline.totalBytes));
+        std::printf("tls-two-frames total=%llu bytes=%llu\n", static_cast<unsigned long long>(frames.totalAllocations),
+                    static_cast<unsigned long long>(frames.totalBytes));
+        std::printf("tls-two-frames-second-pass total=%llu bytes=%llu\n",
+                    static_cast<unsigned long long>(secondFramePass.totalAllocations),
+                    static_cast<unsigned long long>(secondFramePass.totalBytes));
+        std::printf("tls-plaintext-iowait total=%llu bytes=%llu\n", static_cast<unsigned long long>(ioWait.totalAllocations),
+                    static_cast<unsigned long long>(ioWait.totalBytes));
+        for (std::size_t bucket = 0; bucket < handshakeHistogram.size(); ++bucket)
+        {
+            if (handshakeHistogram[bucket] != 0)
+            {
+                std::printf("   handshake bucket=%zu bytes=%zu count=%llu\n", bucket,
+                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                            static_cast<unsigned long long>(handshakeHistogram[bucket]));
+            }
+        }
+        for (std::size_t bucket = 0; bucket < setupHistogram.size(); ++bucket)
+        {
+            if (setupHistogram[bucket] != 0)
+            {
+                std::printf("   setup bucket=%zu bytes=%zu count=%llu\n", bucket,
+                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                            static_cast<unsigned long long>(setupHistogram[bucket]));
+            }
+        }
+
+        EXPECT_EQ(profile.resultSum, kMeasurementRounds) << "握手没有全部做成，读数没有意义";
+        EXPECT_EQ(baseline.resultSum, kMeasurementRounds) << "对照组在空转，减不出归属";
+        EXPECT_EQ(frames.resultSum, kMeasurementRounds) << "帧对照组没跑起来，它那份读数不作数";
+        EXPECT_GT(profile.totalAllocations, baseline.totalAllocations)
+                << "握手比「只接线不握手」还省？说明被测形状没有真的跑握手";
+        // 带 sanitizer 的构建里帧池按 CoroutinePool.h 的既定口径被绕开（要让 ASan 能报出帧上的
+        // use-after-free），所以这里的读数含「每帧一次全局 new」，比生产形态高。这一侧只拦量级
+        EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 40ULL)
+                << "每次握手的分配数越过量级上界，检查握手路径上新增的缓冲与闭包";
+        EXPECT_EQ(ioWait.resultSum, kMeasurementRounds) << "明文等待没有每次都被叫醒，那份对照读数不作数";
+#ifdef NDEBUG
+        // 生产形态（Release、帧池生效）实测：两侧接线 0 块、两只协程帧 0 块，一次双向 TLS1.3
+        // 握手 11 块 / 640 B；而「一条套接字注册 + 等一次可读」的明文形状就要 5 块 / 312 B，
+        // 握手两侧各摊一次 ≈ 10 块——**TLS 自己这一层几乎不再花分配**，剩下的都在后端的每连接注册记账上
+        EXPECT_EQ(frames.totalAllocations, 0U) << "协程帧没有从帧池拿到：池的接线被改坏了";
+        EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 16ULL)
+                << "每次握手的堆块数越界：TLS 这条路上多半又多了一次分配";
+#endif
     }
 
 } // namespace AsynGyanis::Core
