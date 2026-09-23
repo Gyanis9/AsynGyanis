@@ -1,4 +1,4 @@
-// 中间件单元测试：管道顺序与短路、日志、CORS、协作式超时、体积与速率限制
+// 中间件单元测试：管道顺序与短路、日志、CORS、HTTP/3 端点通告、协作式超时、体积与速率限制
 #include "Net/Http/Middleware.h"
 
 #include "Base/Log/LogEvent.h"
@@ -11,18 +11,24 @@
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpMethod.h"
+#include "Net/Http/HttpServer.h"
+#include "Net/Http/Router.h"
 
 #include "CoreTestSupport.h"
 
 #include "NetTestSupport.h"
 
+#include "HttpTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -638,6 +644,136 @@ namespace AsynGyanis::Net
         // 头要在下游之前挂好：业务既能读到也能自行改写
         EXPECT_EQ(originSeenByHandler, "*");
         EXPECT_EQ(response.getHeader("access-control-allow-origin").value_or(""), "*");
+    }
+
+    // ============================================================================
+    // altSvcMiddleware（RFC 7838 的 HTTP/3 端点通告）
+    // ============================================================================
+
+    TEST(AltSvcMiddleware, AdvertisesHttp3PortWithDefaultMaxAge)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(altSvcMiddleware(8443));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        // 逐字节比对整条字段值：端口漏写、ma 单位写错、引号位置不对都会在这里露出来
+        EXPECT_EQ(response.getHeader("alt-svc").value_or(""), "h3=\":8443\"; ma=86400");
+    }
+
+    TEST(AltSvcMiddleware, AdvertisesOnHttp2RequestAsWell)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(altSvcMiddleware(8443));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        request.setHttpVersion("HTTP/2");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        EXPECT_EQ(response.getHeader("alt-svc").value_or(""), "h3=\":8443\"; ma=86400");
+    }
+
+    TEST(AltSvcMiddleware, SkipsRequestAlreadyServedOverHttp3)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(altSvcMiddleware(8443));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        request.setHttpVersion("HTTP/3");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        EXPECT_FALSE(response.hasHeader("alt-svc"));
+        EXPECT_EQ(response.body(), "index");
+    }
+
+    TEST(AltSvcMiddleware, DeclaresConfiguredAuthorityAndMaxAge)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(altSvcMiddleware(443, std::chrono::seconds{3600}, "edge.example.com"));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        EXPECT_EQ(response.getHeader("alt-svc").value_or(""), "h3=\"edge.example.com:443\"; ma=3600");
+    }
+
+    TEST(AltSvcMiddleware, LetsHandlerOverrideAdvertisement)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(altSvcMiddleware(8443));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpResponse response;
+        std::string advertisementSeenByHandler;
+        const TerminalHandler handler = [&response, &advertisementSeenByHandler]() -> Core::Task<void>
+        {
+            advertisementSeenByHandler = response.getHeader("alt-svc").value_or("");
+            static_cast<void>(response.setHeader("alt-svc", "h3=\":9999\"; ma=60"));
+            co_return;
+        };
+        runPipeline(pipeline, request, response, handler);
+
+        // 与 x-request-id、CORS 同一个优先级口径：中间件在下游之前挂，业务显式写过就以业务为准
+        EXPECT_EQ(advertisementSeenByHandler, "h3=\":8443\"; ma=86400");
+        EXPECT_EQ(response.getHeader("alt-svc").value_or(""), "h3=\":9999\"; ma=60");
+    }
+
+    TEST(AltSvcMiddleware, RejectsZeroPort)
+    {
+        EXPECT_THROW(altSvcMiddleware(0), Base::InvalidArgumentException);
+    }
+
+    TEST(AltSvcMiddleware, RejectsNonPositiveMaxAge)
+    {
+        EXPECT_THROW(altSvcMiddleware(8443, std::chrono::seconds{0}), Base::InvalidArgumentException);
+        EXPECT_THROW(altSvcMiddleware(8443, std::chrono::seconds{-1}), Base::InvalidArgumentException);
+    }
+
+    TEST(AltSvcMiddleware, RejectsAuthorityThatWouldSplitFieldValue)
+    {
+        // 双引号会提前结束 quoted-string，分号会被读成下一个参数，CR/LF 直接撕裂报文
+        EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge\".example.com"), Base::InvalidArgumentException);
+        EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com; ma=1"), Base::InvalidArgumentException);
+        EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com\r\nx"), Base::InvalidArgumentException);
+    }
+
+    /**
+     * @brief 通告要真的上线：走真实回环连接，逐字节比对线上那一行
+     * @details 管道内的用例只证明「响应对象上有这条头」，客户端读到的是序列化后的字节。
+     *          这里钉住线上形态——字段名按本框架口径小写、值带引号与 ma 参数，
+     *          也就是浏览器与 curl 实际要解析的那串文本。
+     */
+    TEST(AltSvcMiddleware, AdvertisementReachesTheWireOnHttp1Response)
+    {
+        /// 线上用例的等待上限：要覆盖「起监听 + 建连 + 一来一回」，比内存内管道宽松得多
+        constexpr auto kWireProbeTimeout = std::chrono::milliseconds{5000};
+
+        const HttpTestSupport::RouteRegistrar registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            router.get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.setBody("hello");
+                co_return;
+            });
+            router.addMiddleware(altSvcMiddleware(8443));
+        };
+
+        auto fixture = std::make_unique<HttpTestSupport::RunningHttpServerFixture>(
+                HttpServerLimits{}, std::chrono::milliseconds{100}, HttpTestSupport::SlowRouteOptions{}, registerRoutes,
+                HttpParserLimits{}, [](HttpTestSupport::TestHttpServer &) {});
+        ASSERT_TRUE(fixture->awaitRunning(kWireProbeTimeout));
+
+        const std::optional<HttpTestSupport::ParsedResponse> response = HttpTestSupport::sendAndReadResponse(
+                fixture->listeningPort(), HttpTestSupport::makeRequestText("GET /hello HTTP/1.1"), kWireProbeTimeout);
+        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+
+        EXPECT_TRUE(HttpTestSupport::hasHeaderLine(response->headers, "alt-svc: h3=\":8443\"; ma=86400"))
+                << "线上响应没有带上通告：\n" << response->headers;
     }
 
     // ============================================================================

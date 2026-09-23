@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <charconv>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -327,6 +328,73 @@ namespace AsynGyanis::Net
             if (policy.allowCredentials && policy.allowOrigin != "*")
             {
                 response.setHeader("access-control-allow-credentials", "true");
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief alt-svc 通告的缺省缓存时长（RFC 7838 §3.2 的 ma 参数，单位秒）
+     *
+     * @details 取 24 小时：与 nginx 文档示例、Kestrel 的自动通告同值。客户端把它当成「这条备选端点
+     *          信息最多可信这么久」，到期后回落到原来的端点重新学一次，因此它同时是「h3 关掉之后
+     *          旧客户端还会敲多久 UDP」的上界。
+     */
+    inline constexpr std::chrono::seconds kAltSvcDefaultMaxAge{86400};
+
+    /**
+     * @brief 创建一个通告 HTTP/3 备选端点的中间件（RFC 7838 的 Alt-Svc）。
+     * @param http3Port             HTTP/3 服务在监听的 UDP 端口，不能为 0
+     * @param maxAge                通告的缓存时长（`ma` 参数），必须为正
+     * @param alternativeAuthority  备选端点的主机名；留空表示「与本次响应同一个主机」，
+     *                              只在 h3 挂在另一台主机上（前置 TLS 终结、CDN 回源）时才需要给出
+     * @return MiddlewareFunc 中间件函数
+     * @throws Base::InvalidArgumentException 端口为 0、maxAge 非正，或 alternativeAuthority 里带了
+     *         会撕裂字段值的字符（CR/LF/NUL、双引号、分号）
+     *
+     * @details 产出形如 `alt-svc: h3=":8443"; ma=86400`（给了主机名则是 `h3="edge.example.com:8443"; ma=86400`）。
+     *          取值与请求无关，因此在工厂里**渲染一次**由所有请求共享，逐条请求不再拼字符串、不分配。
+     *
+     *          头在下游之前挂上，与 corsMiddleware、x-request-id 自动补齐同一个优先级口径：
+     *          业务处理器自己 `setHeader("alt-svc", ...)` 就会覆盖掉这条通告。
+     *
+     * @note 已经跑在 HTTP/3 上的请求（`HttpRequest::httpVersion()` 以 `HTTP/3` 开头）不通告：
+     *       它不需要被告知怎么切到自己正在用的协议。
+     * @note 只有走到路由器的请求才经过管道，因此会话在派发之前就收口的那些应答（头部过大的 431、
+     *       过载的 503）不带这条通告。客户端从任意一条正常应答学到即可，覆盖面不需要做到 100%。
+     * @note 通告只是「另一个端点在那儿等着」，本框架不会替你把 QUIC 服务起起来：h3 侧要另行
+     *       构造 QuicServer 并让它与 HttpsServer 用同一套证书，端口号才与本中间件声明的一致。
+     */
+    inline MiddlewareFunc altSvcMiddleware(const std::uint16_t http3Port, const std::chrono::seconds maxAge = kAltSvcDefaultMaxAge,
+                                           const std::string_view alternativeAuthority = {})
+    {
+        if (http3Port == 0U)
+        {
+            throw Base::InvalidArgumentException("altSvcMiddleware: HTTP/3 端口不能为 0，那不是可连接的端点");
+        }
+        if (maxAge <= std::chrono::seconds::zero())
+        {
+            throw Base::InvalidArgumentException("altSvcMiddleware: 通告缓存时长必须为正数；不想被缓存就不要注册本中间件");
+        }
+        if (!containsOnlyFieldValueCharacters(alternativeAuthority) ||
+            alternativeAuthority.find_first_of("\";") != std::string_view::npos)
+        {
+            throw Base::InvalidArgumentException("altSvcMiddleware: 备选端点主机名不能含 CR/LF/NUL/双引号/分号，否则会撕裂 alt-svc 字段值");
+        }
+
+        std::string advertisement = "h3=\"";
+        advertisement.append(alternativeAuthority);
+        advertisement += ':';
+        advertisement += std::to_string(http3Port);
+        advertisement += "\"; ma=";
+        advertisement += std::to_string(maxAge.count());
+
+        return [advertisement = std::move(advertisement)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            if (!request.httpVersion().starts_with("HTTP/3"))
+            {
+                static_cast<void>(response.setHeader("alt-svc", advertisement));
             }
 
             co_await next();
