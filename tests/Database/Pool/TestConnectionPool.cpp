@@ -15,6 +15,7 @@
 // - WaiterRechecksIdleStackBeforeSleeping：出锁试轮与睡下之间的空档里归还的连接，靠回锁后的复检修上
 // - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
 // - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
+// - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
 
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -23,6 +24,7 @@
 
 #include "TestConnectionPool.h"
 
+#include "AllocationProbe.h"
 #include "CommonTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -40,6 +42,10 @@ namespace AsynGyanis::Database
     {
 
         using namespace TestPoolSupport;
+
+        using AsynGyanis::TestSupport::AllocationProfile;
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
 
         // ========================================================================
         // AcquireReleaseReusesConnection
@@ -1003,6 +1009,52 @@ namespace AsynGyanis::Database
             held.release();
             EXPECT_EQ(pool.idleCount(), 0U) << "已过存活期的连接归还时不该躺回空闲栈";
             EXPECT_EQ(counter.totalDestroyed.load(), destroyedWhileHeld + 1) << "释放时应当丢弃这条过期连接";
+        }
+
+        // ========================================================================
+        // SteadyBorrowAndReturnTouchNoHeap
+        // ========================================================================
+
+        /**
+         * @brief 钉住热路径预算：稳态下「借出 + 归还」一次都不碰堆
+         *
+         * @details 池是每一次经池查询的第一跳，借用路径上的一次分配会按 QPS 放大成持续的分配与释放。
+         *          判据取 totalAllocations 原值而不是摊平读数——摊平是整除，一千次里零星几次会被读成 0。
+         *          后台检查的间隔拉到窗口之外，否则它每轮那几个容器会盖掉池自己的账。
+         */
+        TEST(ConnectionPool, SteadyBorrowAndReturnTouchNoHeap)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 1;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.healthCheckIntervalSeconds = 3600;
+            configuration.acquireTimeoutMilliseconds = 1000;
+
+            ConnectionPool pool(factory, configuration);
+
+            // 预热：让那条连接先建出来、空闲栈先把容量长到位，一次性惰性分配因此都落在测量窗口之外
+            {
+                const PooledConnection warmUp = pool.acquire();
+                ASSERT_TRUE(static_cast<bool>(warmUp));
+            }
+            ASSERT_EQ(counter.totalCreated.load(), 1) << "预热之后还在新建连接：下面量的不是稳态";
+
+            const AllocationProfile profile = measurePerOperation(
+                    [&pool]() -> std::uint64_t
+                    {
+                        const PooledConnection borrowed = pool.acquire();
+                        return static_cast<bool>(borrowed) ? 1U : 0U;
+                    });
+
+            EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有一轮没借到连接，分配读数就不成立";
+            EXPECT_EQ(profile.totalAllocations, 0U)
+                    << "一千次借还共碰了 " << profile.totalAllocations << " 次堆、申请 " << profile.totalBytes
+                    << " 字节，稳态预算应是 0";
+            EXPECT_EQ(counter.totalCreated.load(), 1) << "测量窗口里又新建了连接：复用没生效";
         }
 
     } // namespace
