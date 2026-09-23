@@ -4,7 +4,8 @@
 //   二. 请求行的整行上限由 URI 上限推出（URI + 方法名与版本串的固定余量）：既钉住推导公式本身，
 //       也钉住「只放宽 URI 一项即可放行更长的整行」；
 //   三. 拒绝面：0 表示关闭该项保护（不设上限），不是「不允许任何长度」；
-//   四. 出厂默认值：七个字段与推导出的请求行上限本身就是对外契约，钉在用例里防止实现漂移。
+//   四. 出厂默认值：七个字段与推导出的请求行上限本身就是对外契约，钉在用例里防止实现漂移；
+//   五. 跨连接正文预算的唯一读数 bufferedBodyByteCount()：随喂入增长、分块按解码后计、收齐后归零。
 // 默认上限的用例保留在 TestHttpParser.cpp，两侧不重复；报文拼接的辅助函数与那边同口径。
 
 #include "Net/Http/HttpParser.h"
@@ -238,6 +239,49 @@ namespace AsynGyanis::Net
         const std::string aboveLimit = std::string(kChunkedHeaderBlock) + "5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n";
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::BodyTooLarge, "分块解码后的请求体超出上限 8 字节");
+    }
+
+    /**
+     * @brief 预算读数随喂入增长、收齐后归零：它是跨连接正文预算的唯一输入
+     * @details request() 要等 Done 才拿到正文，所以「收到一半时占了多少内存」只能靠这个读数；
+     *          读数若在中途恒为 0，慢速正文洪水就绕过了全局预算（等看见时内存已经占住）；
+     *          若 Done 之后不归零，流水线里的下一条请求会背上上一条的残留而被误拒。
+     */
+    TEST(HttpParserLimits, BufferedBodyReadingGrowsWhileFeedingAndZeroesAfterDone)
+    {
+        HttpParser parser;
+
+        const std::string firstPart = "POST /submit HTTP/1.1\r\nContent-Length: 8\r\n\r\n1234";
+        ASSERT_EQ(parser.parse(firstPart.data(), firstPart.size()), ParseStatus::NeedMore);
+        EXPECT_EQ(parser.bufferedBodyByteCount(), 4U) << "已喂进来的 4 字节正文没被读数算进去，预算挡不住半截正文";
+
+        const std::string secondPart = "5678";
+        ASSERT_EQ(parser.parse(secondPart.data(), secondPart.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body().size(), 8U);
+        // 正文已移交请求对象，读数交回 0；此时该由 request().body().size() 接着记账
+        EXPECT_EQ(parser.bufferedBodyByteCount(), 0U) << "收齐后读数没归零：读数与请求对象里那份正文会被重复计一次";
+    }
+
+    /**
+     * @brief 分块请求的预算读数按解码后字节计，不含长度行与 CRLF 这些帧开销
+     * @details 「分块按解码后的字节数计」这条口径此前只在拒绝面（超上限判 413）上钉过，读数本身没钉。
+     *          按线上字节计会让「小块多帧」的写法把额度虚报掉好几倍，同一份预算实际能收的正文反而变小。
+     */
+    TEST(HttpParserLimits, BufferedBodyReadingCountsDecodedChunkedBytesNotWireFraming)
+    {
+        HttpParser parser;
+
+        // 14 个线上字节里只有 2 字节是正文，其余是分块长度行与 CRLF
+        const std::string chunkedFrames = "1\r\na\r\n1\r\nb\r\n";
+        const std::string firstPart = std::string(kChunkedHeaderBlock) + chunkedFrames;
+        ASSERT_EQ(parser.parse(firstPart.data(), firstPart.size()), ParseStatus::NeedMore);
+        EXPECT_EQ(parser.bufferedBodyByteCount(), 2U)
+                << "读数把分块的帧开销也算进了正文（线上 " << chunkedFrames.size() << " 字节 / 解码后 2 字节）";
+
+        const std::string secondPart = "1\r\nc\r\n0\r\n\r\n";
+        ASSERT_EQ(parser.parse(secondPart.data(), secondPart.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body(), "abc");
+        EXPECT_EQ(parser.bufferedBodyByteCount(), 0U);
     }
 
     /**
