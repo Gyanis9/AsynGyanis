@@ -41,6 +41,7 @@
     "log-format-* 三例在 2026-09-22 连改三步：文本版式把 std::format_to 换成逐字段追加（default-into 301.2 → 33.3 ns、default-copy 333.0 → 61.9 ns），JSON 版式先把输出摊进 Sink 的行缓冲、再把字段对象改成线程局域复用（log-format-json 1529.4 → 1133.4 → 644.3 ns，合 −58%）。分配读数（AllocationProbe、一千行同一条事件）：JSON 的 Sink 通道约 24000 → 2000 次 / 560 字节每次、独立 format() 出口 3000 次 / 736 字节每次；文本一条仍是 1000 次（只付消息体那块堆）。逐字段追加的对拍是 Default/ColorFormatter 的 LineAssemblyMatchesFormatSpecByteForByte：期望值仍按原格式串现算，抓到了 std::format 的 {:<N} 量显示宽度（宽字符两格）而不是码元数这件事。JSON 一例的本批读数有离散（644.8 / 683.7 / 892.9，同机有并行构建在跑），地板仍留 644.3 不收紧。",
     "log-filtered-out（2026-09-23 新增，作吞吐下限门禁）量的是被等级挡下的那一条日志：Logger::log() 原先先把 string_view 正文拷成 std::string 再判等级，一条注定丢弃的记录要为正文取一块堆——40 字节的消息一千次共 1000 次分配 / 48000 字节，与真写出去的那条一模一样。过滤排到拷贝之前之后，同机三跑 28.6 → 1.4 ns 且分配归零；对照形状（同一条放行时仍是 1000 次 / 48000 字节）写在同一个用例里，见 TestLogHotPathAllocations.FilteredOutLineIsAllocationFree。下限按微基准惯例收 0.8，改回去是 20 倍落差，挡得住。",
     "mime-lookup-from-path 那笔「入口只取扩展名」在 2026-09-23 落到调用方一侧（2d3ba79）：静态服务改为把 candidatePath.extension() 出串，整条路径那次窄化拷贝不再发生，同批实测 329.6 → 173.5 ns。上面那条「改入口签名省不下来」的结论仍然成立——省的是整条路径的转换而不是 std::string 的拷贝，所以查表入口保持 std::string 不动。",
+    "log-sync-dispatch（2026-09-23 新增）量一行被收下的日志在生产者侧的全部成本：等级判定 + 一次原子快照读 + 事件构造 + 单 Sink 交出本体 + 下游计数。放进来是因为派发这一段此前只在 log-async-enqueue 里出现，而那条有消费者线程、负载一来就摆到 2 倍，按设计不当门禁。空载三跑 81.6/81.6/81.7 ns（基线取中位数 81.7），同一批在并行构建下读到 94.5 ns——0.6x 下限（相当于容忍到 136 ns） 吃得下这个摆动。构成里已把「快照发布」单独定价：同机同编译器单线程量 std::atomic<std::shared_ptr> 的 load 是 17.5 ns，而 std::atomic<T*> 的 load 是 0.19 ns，即这 82 ns 里约两成来自 shared_ptr 快照的发布方式。据此评估过换成裸指针发布 + 退休表保命（LoggerRegistry 给 root 用的那一套），结论是**不做**：省下的 17 ns 要靠读者侧进出计数（两次落在同一缓存行上的原子改）来换，多核并发写日志时这类 RMW 比一次 shared_ptr 读更贵，而 Sink 变更只在启动期发生、退休表还会无界增长。要动这条线先看这三个数。检出能力已实测：把事件构造换成「线程号与日志器名各自再分配一次」的那个便捷重载（LogEvent 的按值 ctor），本例读数 81.7 → 355.8 ns（4.4 倍），门禁在 0.23x 处判失败——这条盯得住「分配或格式化被搬回生产侧」这类量级退化，盯不住 20% 级的漂移（更细的形状由 TestLogHotPathAllocations 的分配台账守）。",
     "platform-time-utc / platform-time-local / platform-time-local-varying / platform-stat-basic-info / platform-wakeup-roundtrip / log-async-enqueue / quic-frame-scan-aged 七条在 2026-09-23 才纳入门禁（此前一直在跑，却没有基线条目，等于不判）。orm-first-by-primary-key、orm-tolist-20-rows、orm-tolist-50-rows、dialect-insert-batch-150-rows 四条刻意留在基线外：这几例只在编进了相应数据库驱动的构建里出现，而门禁把「基线里有、实测里没有」判失败，写进来会让关掉该模块的构建无故报红。",
     "eventloop-remote-post-roundtrip 的下限在 2026-09-23 按「已观察到的最慢跑」重录（101338/s、9.87 µs → 59284/s、16.87 µs；同日七跑为 59k/71k/77k/81k/81k/83k/88k）。依据是一段不含本仓库任何代码的对照探针：同机同日量裸 SetEvent+WaitForSingleObject 的双线程乒乓，中位 4.8 µs、p10 3.4 µs、p90 8.2 µs（光 p10→p90 就 2.4 倍），而同期 CPU 密集各例（hpack、http1-parse-request、mime-lookup-from-string、http-date-format、ws-unmask-payload、pool-acquire-return）全落在 ±8% 内，platform-wakeup-roundtrip（单线程写+读 socketpair）4.77 µs 对上它自己记录的 4.79-5.21 µs 也持平——位移只出现在「必须等另一个线程被调度起来」的那条上，即本例。代价说清楚：这样登记后本例再也报不出 1.7 倍以内的漂移，只能挡量级回归；要把它当回归信号用，先在一台空载机器上重录。",
     "config-get-int / config-set-value 两条在 2026-09-23 新增并同日登记基线。前者量「从 256 键的扁平快照里取一个整数」（含 atomic<shared_ptr> 装载与一次异质查找），本机三跑 28.4/28.8/29.0 ns；后者量 setValue 覆盖一个已存在的键，本机三跑 11 711.9/11 732.5/11 802.7 ns。这条贵的不是当天为正确性加的定形扫描而是**复制整份快照**：把扫描单独摘掉复量得到 9 908/9 926 ns（容器 GCC 13 Release，同机带扫描是 9 840~9 969 ns），差值不到 1%。两条都是纯 CPU、摆动 ±2% 以内，故按常规 0.8× 下限登记。读数口径由此也定死 setValue 的定位：启动期/偶发覆盖，不进逐请求路径。"
@@ -646,6 +647,15 @@
       "observedNanosecondsRange": [
         1.4,
         1.4
+      ],
+      "runsMeasured": 3
+    },
+    "log-sync-dispatch": {
+      "throughputPerSecond": 12241866,
+      "nanosecondsPerOperation": 81.7,
+      "observedNanosecondsRange": [
+        81.6,
+        81.7
       ],
       "runsMeasured": 3
     },

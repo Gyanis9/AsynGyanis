@@ -1920,6 +1920,24 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
+    // 这条量「一行日志被收下」的生产者全成本：等级判定 + 一次原子快照读 + 事件构造 + 单 Sink 交出本体。
+    // 与 log-async-enqueue 的差别只在没有消费者线程，因此它不被调度负载摆布，可以进基线；有了它，
+    // 「Sink 快照怎么发布」这类改动才有能落地的门禁（log-async-enqueue 那条按设计只出读数不当门禁）
+    Base::Logger syncDispatchLogger("bench.sync-dispatch");
+    auto         dispatchSink          = std::make_unique<CountingSink>();
+    CountingSink &observedDispatchSink = *dispatchSink;
+    syncDispatchLogger.addSink(std::move(dispatchSink));
+    syncDispatchLogger.setLevel(Base::LogLevel::Info);
+    measureCase(
+            "log-sync-dispatch",
+            [&syncDispatchLogger, &observedDispatchSink]
+            {
+                syncDispatchLogger.log(Base::LogLevel::Info, kLogMessage);
+                // 自检判据：正文确实到了 Sink 才算量了「放行并派发」，否则量的又只是过滤那条路
+                return observedDispatchSink.receivedCount != 0U ? 1U : 0U;
+            },
+            results, checksum, failureCount);
+
     // 这条盯的是「编一帧要不要为历史的流买单」：连接先跑完 5000 条完整请求，再量每条请求收口后
     // 剩下的那次「写一段响应 + 编一帧」。实测（容器 GCC 13 Release、绑核）本端 255~261 ns/op；
     // 把 collectFrames 开头那一次 retireSettledStreams() 去掉后同一条跳到 88.7 µs/op（340 倍），
