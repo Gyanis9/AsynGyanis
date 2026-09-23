@@ -953,26 +953,25 @@ namespace AsynGyanis::Net
         std::visit(FrameAppender{bytes}, frame);
     }
 
-    std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const std::set<std::uint64_t> &receivedPacketNumbers,
-                                                                         const std::uint64_t acknowledgedUpTo)
+    std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers,
+                                                                        const std::uint64_t acknowledgedUpTo)
     {
         std::vector<QuicAcknowledgementRange> ranges;
-        for (const std::uint64_t packetNumber : receivedPacketNumbers | std::views::reverse)
+        const std::map<std::uint64_t, std::uint64_t> &spans = receivedPacketNumbers.ranges();
+        // 从最高的一段往下走：§19.3.1 要的是递减区间，而集合里相邻的号早已并成一段，不必再合并
+        for (auto cursor = spans.rbegin(); cursor != spans.rend(); ++cursor)
         {
-            if (packetNumber > acknowledgedUpTo)
+            if (cursor->first > acknowledgedUpTo)
             {
-                continue;
-            }
-            if (!ranges.empty() && ranges.back().smallestAcknowledged == packetNumber + 1)
-            {
-                ranges.back().smallestAcknowledged = packetNumber;
+                // 整段都在这次确认值之上：本次不认（下一次确认才会带上）
                 continue;
             }
             if (ranges.size() >= kQuicMaximumAcknowledgementRanges)
             {
                 break;
             }
-            ranges.push_back(QuicAcknowledgementRange{packetNumber, packetNumber});
+            // 只有最高那一段会被夹掉尾端：夹出来的尾端就是本次的确认值
+            ranges.push_back(QuicAcknowledgementRange{cursor->first, std::min(cursor->second, acknowledgedUpTo)});
         }
         if (ranges.empty())
         {

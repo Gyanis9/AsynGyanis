@@ -27,6 +27,7 @@
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
+#include "Net/Quic/QuicReceivedPacketNumbers.h"
 #include "Net/Quic/Recovery/QuicRecovery.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 
@@ -37,7 +38,6 @@
 #include <expected>
 #include <memory>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -250,7 +250,7 @@ namespace AsynGyanis::Net
             std::uint64_t nextPacketNumber{0};           ///< 下一个要发出的完整包号
 
             std::optional<std::uint64_t> largestReceivedPacketNumber{}; ///< 本空间已认证的最大包号，包号还原要靠它
-            std::set<std::uint64_t> receivedPacketNumbers{};            ///< 已解密成功的包号，出 ACK 的原料
+            QuicReceivedPacketNumbers receivedPacketNumbers{};                  ///< 已解密成功的包号，出 ACK 的原料
             std::optional<std::uint64_t> largestAckElicitingReceived{}; ///< 最新的触发确认的包号，即 ACK 帧的最大确认值
             std::optional<Timestamp> largestAckElicitingArrival{};      ///< 它的到达时刻，算 ack_delay
             bool isAcknowledgementPending{false};        ///< 有触发确认的包尚未被确认：下一次出包要带 ACK

@@ -404,14 +404,12 @@ namespace AsynGyanis::Net
         }
 
         // 到这一步包才是「认证过」的，包号记账与重复判定都只在这个前提下推进
-        if (!state.receivedPacketNumbers.insert(packetNumber).second)
+        if (!state.receivedPacketNumbers.insert(packetNumber))
         {
             return {};
         }
-        while (state.receivedPacketNumbers.size() > kQuicMaximumTrackedPacketNumbers)
-        {
-            state.receivedPacketNumbers.erase(state.receivedPacketNumbers.begin());
-        }
+        // 额度按「记了多少个包号」算而不是「几段」：连号流量下几十万个包号也只占一段
+        state.receivedPacketNumbers.dropOldestUntil(kQuicMaximumTrackedPacketNumbers);
         if (!state.largestReceivedPacketNumber.has_value() || packetNumber > *state.largestReceivedPacketNumber)
         {
             state.largestReceivedPacketNumber = packetNumber;

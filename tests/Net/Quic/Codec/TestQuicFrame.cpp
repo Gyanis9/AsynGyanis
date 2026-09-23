@@ -509,10 +509,10 @@ namespace AsynGyanis::Net
         EXPECT_EQ(buildQuicAcknowledgementRanges({}, 7),
                   (std::vector<QuicAcknowledgementRange>{{7, 7}}));
 
-        std::set<std::uint64_t> isolated;
+        QuicReceivedPacketNumbers isolated;
         for (std::uint64_t packetNumber = 1; packetNumber <= 79; packetNumber += 2)
         {
-            isolated.insert(packetNumber);
+            ASSERT_TRUE(isolated.insert(packetNumber)) << "跳号 1..79 每个都该是新号";
         }
         const std::vector<QuicAcknowledgementRange> capped = buildQuicAcknowledgementRanges(isolated, 79);
         ASSERT_EQ(capped.size(), kQuicMaximumAcknowledgementRanges);

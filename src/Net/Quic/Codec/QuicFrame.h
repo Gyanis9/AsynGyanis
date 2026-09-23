@@ -16,13 +16,13 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Codec/QuicDecodeError.h"
+#include "Net/Quic/QuicReceivedPacketNumbers.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
 #include <variant>
@@ -359,14 +359,14 @@ namespace AsynGyanis::Net
     void appendQuicFrame(std::string &bytes, const QuicFrame &frame);
 
     /**
-     * @brief 把已收到的包号集合折成 ACK 区间
-     * @details §19.3.1 要求区间按包号递减、互不重叠，相邻的会被合并成一段；`QuicAcknowledgementRange`
-     *          存绝对包号，递推出来的 gap 由帧编码器负责。超过 `kQuicMaximumAcknowledgementRanges`
-     *          段的老区间直接砍掉。
-     * @param receivedPacketNumbers 升序的已收包号
+     * @brief 把已收包号折成 ACK 区间
+     * @details §19.3.1 要求区间按包号递减、互不重叠；`QuicReceivedPacketNumbers` 里相邻的号已经并成
+     *          一段，因此折出来就是一一映射，只有最高那一段会被 `acknowledgedUpTo` 夹掉尾端。
+     *          超过 `kQuicMaximumAcknowledgementRanges` 段的老区间直接砍掉。
+     * @param receivedPacketNumbers 已收包号的区间集合
      * @param acknowledgedUpTo 本次确认到的包号（含），即 ACK 帧的最大确认值
-     * @return std::vector<QuicAcknowledgementRange> 递减的区间，至少一段且首段含 `acknowledgedUpTo`
+     * @return std::vector<QuicAcknowledgementRange> 递减的区间，至少一段
      */
     [[nodiscard]] std::vector<QuicAcknowledgementRange>
-    buildQuicAcknowledgementRanges(const std::set<std::uint64_t> &receivedPacketNumbers, std::uint64_t acknowledgedUpTo);
+    buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers, std::uint64_t acknowledgedUpTo);
 } // namespace AsynGyanis::Net
