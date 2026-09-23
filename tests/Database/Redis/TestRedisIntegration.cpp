@@ -17,6 +17,7 @@
 // - PooledReturnClearsSessionForNextBorrower（经连接池借还这一形状下，管道与 MULTI 都不串给下一个）
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
+// - QueryTimeoutChangeAppliesToEstablishedConnection（建连后改超时当场生效，不必重连）
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
 // 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
@@ -33,6 +34,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstdint>
 #include <memory>
@@ -738,6 +740,27 @@ namespace AsynGyanis::Database
         // 引号未闭合属切词失败：本地即可判掉，且原因是中文
         EXPECT_EQ(m_connection->execute("SET \"unterminated"), nullptr);
         EXPECT_TRUE(containsLocalizedText(m_connection->lastError())) << m_connection->lastError();
+    }
+
+    /** @brief 钉住已建立的连接上改 queryTimeout 当场生效：阻塞命令被新值截断，不必断开重连 */
+    TEST_F(RedisIntegrationTest, QueryTimeoutChangeAppliesToEstablishedConnection)
+    {
+        // BLPOP 的超时参数给 0 是「服务端无限期挂住这条命令」，能截断它的只有客户端的收发超时。
+        // 若实现只在 connect() 读一次这个值，这一步要等满建连时的 30 秒默认值，用例就红在耗时上界
+        m_connection->setQueryTimeout(200);
+        const std::string blockedKey = makeKey("blpop-timeout");
+
+        const auto startedAt = std::chrono::steady_clock::now();
+        const std::unique_ptr<DatabaseResult> blocked = m_connection->executeCommand({"BLPOP", blockedKey, "0"});
+        const auto elapsedMilliseconds =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+
+        ASSERT_EQ(blocked, nullptr) << "BLPOP 拿到了回复，说明新的收发超时没落到上下文上";
+        EXPECT_LT(elapsedMilliseconds, 3000) << "耗时 " << elapsedMilliseconds << " 毫秒，不像是 200 毫秒截断的";
+        EXPECT_TRUE(containsLocalizedText(m_connection->lastError())) << m_connection->lastError();
+
+        // 收发超时属传输层失败：回复流的位置已不可知，这条连接必须被判为不可再用（池据此换掉它）
+        EXPECT_FALSE(m_connection->isConnected());
     }
 
 } // namespace AsynGyanis::Database

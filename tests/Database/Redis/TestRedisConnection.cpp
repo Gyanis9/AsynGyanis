@@ -165,6 +165,20 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.connectTimeout(), kDefaultConnectTimeoutMilliseconds);
     }
 
+    /** @brief 钉住未连接时改查询超时是空操作：不碰尚未建立的上下文，也不报任何错 */
+    TEST(RedisConnection, QueryTimeoutChangeBeforeConnectTouchesNoHandle)
+    {
+        RedisConnection connection(ConnectionConfig::redisDefault());
+
+        // 基类 setter 现在会立刻把新值通知驱动去应用；未连接与「没有 hiredis 的降级桩」都必须安静返回，
+        // 建连时再由 connect() 按最新值配置上下文
+        connection.setQueryTimeout(750);
+
+        EXPECT_EQ(connection.queryTimeout(), 750);
+        EXPECT_EQ(connection.nativeHandle(), nullptr);
+        EXPECT_TRUE(connection.lastError().empty()) << connection.lastError();
+    }
+
     // ------------------------------------------------------------------------
     // connect() 的离线失败路径
     // ------------------------------------------------------------------------

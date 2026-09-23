@@ -31,7 +31,8 @@ namespace AsynGyanis::Database
      * @details 可选编译：未取得 hiredis 时编译为报错桩（各执行入口把「当前构建未编译 Redis 驱动」写入
      *          lastError()）。命令一律走 hiredis 的 argv 接口，参数按「指针 + 长度」传递，因此 '%' 不是
      *          格式串、内嵌 '\0' 不被截断；execute() 的整行命令按 redis-cli 规则切词后送出。queryTimeout()
-     *          在建连后由 redisSetTimeout 应用到上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内。
+     *          在建连后由 redisSetTimeout 应用到上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内；
+     *          连接存续期间改这个值同样当场生效，不必断开重连。
      *
      * @warning 管道命令登记后不立即发送，flushPipeline() 之前不会有任何网络往返；
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
@@ -184,6 +185,16 @@ namespace AsynGyanis::Database
         {
             return m_redisContext;
         }
+
+    protected:
+        /**
+         * @brief 把新的 queryTimeout() 立刻落到已建立的上下文上
+         * @details 重写 DatabaseConnection::applyQueryTimeoutNow()：redisSetTimeout 改的是上下文里的收发
+         *          超时并顺手对套接字下 setsockopt，对已经连上的会话同样有效，因此借到连接的调用方改完
+         *          下一条命令即受新值约束，不必先断开。未连接与降级桩（句柄恒为空）时空操作，
+         *          connect() 自会按最新值配置。设不上超时只把原因留在 lastError()，不改变连接状态。
+         */
+        void applyQueryTimeoutNow() noexcept override;
 
     private:
         /**

@@ -171,11 +171,16 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 设置单条命令的执行超时时间
-         * @param milliseconds 超时毫秒数
+         * @param milliseconds 超时毫秒数，0 与负数一律按「不设超时」处理
+         * @details 写入后立即调用 applyQueryTimeoutNow()，因此改值不必重连：SQLite 在每条语句入口现读
+         *          这个值，Redis 当场改已建立上下文的收发超时。MySQL 客户端库只在握手前读一次该选项，
+         *          它的实现是空操作，改完仍需重连（见 MySqlConnection 的 @warning）。
+         * @note 同一线程借用期间调用：连接对象不是线程安全的，本方法会与命令执行争用同一个底层句柄
          */
         void setQueryTimeout(const int milliseconds) noexcept
         {
             m_queryTimeout = milliseconds;
+            applyQueryTimeoutNow();
         }
 
         /**
@@ -197,6 +202,16 @@ namespace AsynGyanis::Database
         }
 
     protected:
+        /**
+         * @brief 把当前的 queryTimeout() 落到已建立的底层句柄上
+         * @details 默认空实现：没有「存续期间可改」这一能力的驱动不必重写。重写它即表示本驱动能在连接
+         *          已建立时改超时，调用方因此不必先断开再重连。
+         * @note 未连接时必须是空操作——connect() 会按最新值配置句柄
+         */
+        virtual void applyQueryTimeoutNow() noexcept
+        {
+        }
+
         ConnectionConfig m_configuration;          ///< 连接配置
         std::string      m_lastError;              ///< 最后一次错误信息
         int              m_connectTimeout = 5000;  ///< 连接超时毫秒数

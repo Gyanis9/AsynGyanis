@@ -658,6 +658,19 @@ namespace AsynGyanis::Database
         return false;
     }
 
+    void RedisConnection::applyQueryTimeoutNow() noexcept
+    {
+        // 未连接时无处可设：值留在基类里，connect() 会按最新值配置上下文
+        if (m_redisContext == nullptr)
+        {
+            return;
+        }
+
+        // 中途设不上只留原因、不断开这条连接：它仍能按上一次的超时继续用，
+        // 而 connect() 那条路把「设不上超时」判成连接失败是因为那里还没有任何保护
+        static_cast<void>(applyQueryTimeout());
+    }
+
     std::unique_ptr<DatabaseResult> RedisConnection::executeArguments(const std::span<const std::string_view> argumentValues)
     {
         // 前置条件由调用方保证上下文有效；这里再兜一次，任何路径都不会把空句柄交给 hiredis
@@ -783,6 +796,12 @@ namespace AsynGyanis::Database
     {
         m_lastError = kMissingDriverError;
         return false;
+    }
+
+    void RedisConnection::applyQueryTimeoutNow() noexcept
+    {
+        // 桩里没有上下文可设，也不该报错：基类 setter 只是记下取值并通知驱动，真正的失败要在 connect()
+        // 上报（那里返回 false）。留空实现同时保证两种构建配置都能链上头文件里那句 override 声明
     }
 
 #endif // DATABASE_HAS_REDIS
