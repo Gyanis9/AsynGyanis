@@ -83,7 +83,7 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 目标引擎的方言，提供类型名映射与标识符引用
          * @param ifNotExists true 生成 "CREATE TABLE IF NOT EXISTS"（默认，便于重复执行）
          * @return SqlStatement 完整建表语句；DDL 不含值，因此 parameters 恒为空
-         * @throws Base::LogicException TableSchema<T>::kTableName 为空，或 kPrimaryKey 非空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空或含点号，或 kPrimaryKey 非空
          *         但在 kColumns 中找不到同名列（列名拼写不一致）
          */
         template<RowMappable T>
@@ -98,12 +98,7 @@ namespace AsynGyanis::Database::Queryable
                           "以及它们的 std::optional 包装");
 
             const std::string_view tableName = TableSchema<T>::kTableName;
-            if (tableName.empty())
-            {
-                // 表名为空（主模板的默认值，或完全特化里被显式留空）时生成 "CREATE TABLE """ 毫无意义
-                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                        "请先特化 TableSchema 并填写表名");
-            }
+            requireMigratableTableName(tableName);
 
             bool        primaryKeyDeclared = false;
             std::string columnDefinitions;
@@ -149,17 +144,13 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 目标引擎的方言，提供标识符引用
          * @param ifExists true 生成 "DROP TABLE IF EXISTS"（默认，便于收尾清理）
          * @return SqlStatement 完整删表语句，parameters 恒为空
-         * @throws Base::LogicException TableSchema<T>::kTableName 为空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空或含点号
          */
         template<RowMappable T>
         [[nodiscard]] static SqlStatement dropTableStatement(const SqlDialect &dialect, const bool ifExists = true)
         {
             const std::string_view tableName = TableSchema<T>::kTableName;
-            if (tableName.empty())
-            {
-                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                        "请先特化 TableSchema 并填写表名");
-            }
+            requireMigratableTableName(tableName);
 
             SqlStatement statement;
             statement.sql = "DROP TABLE ";
@@ -181,7 +172,8 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 语句已被引擎接受（表已存在时同样返回 true，因为目标状态已达成）
          * @return false 取连接失败、方言不支持或 DDL 被引擎拒绝，原因见 errorText
-         * @throws Base::LogicException 表结构本身不合法（表名为空、主键列不存在），见 createTableStatement()
+         * @throws Base::LogicException 表结构本身不合法（表名为空或含点号、列名含点号、主键列不存在），
+         *         见 createTableStatement()
          * @warning 不做结构漂移检测：ifNotExists 为 true 时，表已存在就直接跳过整条语句，
          *          即使现有表的列与 TableSchema<T> 已经不一致（缺列、类型变了）也不会被发现，
          *          本方法不会生成 ALTER。改过 TableSchema 后需要调用方自行迁移或重建表。
@@ -212,7 +204,7 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 语句已被引擎接受（表本就不存在时同样返回 true）
          * @return false 取连接失败、方言不支持或 DDL 被引擎拒绝，原因见 errorText
-         * @throws Base::LogicException TableSchema<T>::kTableName 为空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空或含点号
          */
         template<RowMappable T>
         [[nodiscard]] static bool dropTable(ConnectionPool &pool, const bool ifExists = true, std::string *errorText = nullptr)
@@ -240,7 +232,7 @@ namespace AsynGyanis::Database::Queryable
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 表存在
          * @return false 表不存在，**或**查询失败（用 errorText 区分：失败时它非空）
-         * @throws Base::LogicException TableSchema<T>::kTableName 为空
+         * @throws Base::LogicException TableSchema<T>::kTableName 为空或含点号
          * @note 查询失败不抛异常而返回 false，是因为本方法以布尔语义对外；需要区分「不存在」
          *       与「查询失败」的调用方应传入 errorText 并检查它是否被写入
          */
@@ -251,11 +243,7 @@ namespace AsynGyanis::Database::Queryable
             clearError(errorText);
 
             const std::string_view tableName = TableSchema<T>::kTableName;
-            if (tableName.empty())
-            {
-                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                        "请先特化 TableSchema 并填写表名");
-            }
+            requireMigratableTableName(tableName);
 
             const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
             if (dialect == nullptr)
@@ -347,6 +335,33 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 校验表名能被迁移器使用：非空，且不带点号
+         *
+         * @details 迁移器的一切都锚在「本连接的默认库」上：存在性检查按 MySQL 的 DATABASE() 与 SQLite 的
+         *          sqlite_master 取，建表与删表也只有那一个落点。带库/模式前缀的名字没有一致解释
+         *          （检查报「不存在」、建表建到别处、查询读第三张表），因此与空表名一起在生成语句前拒掉。
+         *
+         * @param tableName TableSchema<T>::kTableName
+         * @throws Base::LogicException 表名为空，或含点号
+         */
+        static void requireMigratableTableName(const std::string_view tableName)
+        {
+            if (tableName.empty())
+            {
+                // 表名为空（主模板的默认值，或完全特化里被显式留空）时生成 "CREATE TABLE """ 毫无意义
+                throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
+                        "请先特化 TableSchema 并填写表名");
+            }
+
+            if (tableName.find('.') != std::string_view::npos)
+            {
+                throw Base::LogicException("SchemaMigrator: 表名 \"" + std::string(tableName) +
+                        "\" 含点号，迁移器不支持带库/模式前缀的表名：存在性检查只看本连接的默认库。"
+                        "要换库请改 ConnectionConfig.database，或直接用原生 execute() 发这条 DDL");
+            }
+        }
+
+        /**
          * @brief 生成一列的完整定义并追加到列定义串
          *
          * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
@@ -369,6 +384,16 @@ namespace AsynGyanis::Database::Queryable
         {
             using MemberType = typename ColumnDescriptorType::MemberType;
             using BareType   = std::remove_cv_t<MemberType>;
+
+            // 列定义里的点号没有一致解释：DDL 会把 "a.b" 建成一个真名叫 a.b 的列，而 INSERT 的列清单
+            // 与读侧按「表.列」分段引用，那张表此后没有一行能写进这一列。限定名属于查询侧的
+            // where()/orderBy()，不该出现在 kColumns 里
+            if (columnDescriptor.columnName.find('.') != std::string_view::npos)
+            {
+                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的列名 \""
+                        + std::string(columnDescriptor.columnName)
+                        + "\" 含点号，列名请填裸名；要按「表.列」限定名查询，请写在 where()/orderBy() 里");
+            }
 
             // 可空规则：std::optional<X> 允许 NULL，其余一律 NOT NULL。
             // optional 只是可空标记而不是存储类型，去掉包装后的类型才是真正的列类型

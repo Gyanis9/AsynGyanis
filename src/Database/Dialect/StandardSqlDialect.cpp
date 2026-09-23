@@ -578,10 +578,11 @@ namespace AsynGyanis::Database
         // INSERT 的参数就是逐列取值，个数已被 requireMatchingColumnCount 校验过，可以直接定容
         statement.parameters.reserve(values.size());
 
-        // INSERT 不接受表别名（"INSERT INTO 表 AS 别名" 是语法错误），因此这里只引用表名。
-        // 查询树在插入方向由 ORM 现造，本来就不带别名，此处显式忽略是防止误用
+        // 表名与 SELECT / UPDATE / DELETE 共用 appendTableReference()：逐段引用、空名与空段都拒。
+        // 本方向刻意不接表别名（"INSERT INTO 表 AS 别名" 是语法错误），查询树在插入方向也不带别名，
+        // 传空别名只是把「这里不该有别名」写在本函数的签名上
         sqlText += "INSERT INTO ";
-        appendQuotedIdentifier(sqlText, query.tableName);
+        appendTableReference(sqlText, query.tableName, {});
         sqlText += " (";
         appendColumnList(sqlText, query);
         sqlText += ") VALUES ";
@@ -691,7 +692,8 @@ namespace AsynGyanis::Database
         sqlText.reserve(estimateSqlTextCapacity(query) + rows.size() * (query.selectColumns.size() * 3 + 2));
 
         sqlText += "INSERT INTO ";
-        appendQuotedIdentifier(sqlText, query.tableName);
+        // 与单行插入同一套表名渲染（逐段引用 + 空名拒绝），两条方向不能一个整块引用一个分段引用
+        appendTableReference(sqlText, query.tableName, {});
         sqlText += " (";
         appendColumnList(sqlText, query);
         sqlText += ") VALUES ";

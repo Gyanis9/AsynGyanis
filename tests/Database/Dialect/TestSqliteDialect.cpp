@@ -1202,6 +1202,63 @@ TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
 /**
  * @brief 验证列与取值个数不一致时抛异常，而不是生成写错列的语句
  */
+/**
+ * @brief 验证插入方向（单行与批量）把限定表名渲染成与 SELECT 同一个形状
+ *
+ * @details 这两个方向曾把表名整块引用，于是同一个 "shop.users" 在 SELECT 里指 shop 库的 users 表、
+ *          在 INSERT 里指一张名叫 "shop.users" 的表：写入与读取落在两张不同的表上，引擎还不报错。
+ */
+TEST(SqliteDialectWrite, InsertDirectionsQuoteQualifiedTableNamesSegmentBySegment)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "shop.users";
+    node.selectColumns = {"id", "name"};
+
+    const std::vector<DatabaseValue> values{std::int64_t{1}, std::string("Alice")};
+    const SqlStatement               single = dialect.translateInsert(node, values);
+    EXPECT_NE(single.sql.find("INSERT INTO \"shop\".\"users\""), std::string::npos) << single.sql;
+
+    const std::vector<std::vector<DatabaseValue> > rows{values, values};
+    const SqlStatement batch = dialect.translateInsertBatch(node, rows);
+    EXPECT_NE(batch.sql.find("INSERT INTO \"shop\".\"users\""), std::string::npos) << batch.sql;
+
+    // 插入方向不带别名："INSERT INTO 表 AS 别名" 是语法错误，别名只能出现在读侧
+    EXPECT_EQ(single.sql.find(" AS "), std::string::npos) << single.sql;
+}
+
+/**
+ * @brief 验证插入方向的空表名在翻译期就被拒，而不是拼出一条 "INSERT INTO \"\""
+ * @details 读侧的空表名由 appendTableReference() 拦下并指明「查询树没填表名」；插入方向曾直接整块引用，
+ *          失败于是挪到引擎侧，报出的话指不到该填哪个字段。
+ */
+TEST(SqliteDialectWrite, EmptyTableNameIsRejectedInInsertDirection)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.selectColumns = {"id"};
+
+    const std::vector<DatabaseValue>             values{std::int64_t{1}};
+    const std::vector<std::vector<DatabaseValue> > rows{values};
+
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, values)),
+                 AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, rows)),
+                 AsynGyanis::Base::InvalidArgumentException);
+
+    try
+    {
+        static_cast<void>(dialect.translateInsert(node, values));
+        FAIL() << "空表名应当在翻译阶段就被拒绝";
+    }
+    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    {
+        EXPECT_NE(std::string_view(failure.what()).find("表名为空"), std::string_view::npos) << failure.what();
+    }
+}
+
 TEST(SqliteDialectWrite, InsertRejectsColumnAndValueCountMismatch)
 {
     const SqliteDialect dialect;

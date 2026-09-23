@@ -899,6 +899,29 @@ TEST(MySqlDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
 /**
  * @brief 验证列与取值个数不一致时抛异常，而不是生成写错列的语句
  */
+/**
+ * @brief 验证 MySQL 的插入方向与读侧同样按「库.表」逐段引用（反引号）
+ * @details 插入方向曾把表名整块包进反引号，于是写入落在一张名叫 shop.users 的表上，
+ *          而 SELECT 读的是 shop 库里的 users——两侧都"成功"，数据却对不上。
+ */
+TEST(MySqlDialectWrite, InsertDirectionsQuoteQualifiedTableNamesSegmentBySegment)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "shop.users";
+    node.selectColumns = {"id", "name"};
+
+    const std::vector<DatabaseValue> values{std::int64_t{1}, std::string("Alice")};
+    const SqlStatement               single = dialect.translateInsert(node, values);
+    EXPECT_NE(single.sql.find("INSERT INTO `shop`.`users`"), std::string::npos) << single.sql;
+    EXPECT_EQ(single.sql.find(" AS "), std::string::npos) << single.sql;
+
+    const std::vector<std::vector<DatabaseValue> > rows{values, values};
+    const SqlStatement batch = dialect.translateInsertBatch(node, rows);
+    EXPECT_NE(batch.sql.find("INSERT INTO `shop`.`users`"), std::string::npos) << batch.sql;
+}
+
 TEST(MySqlDialectWrite, InsertRejectsColumnAndValueCountMismatch)
 {
     const MySqlDialect dialect;

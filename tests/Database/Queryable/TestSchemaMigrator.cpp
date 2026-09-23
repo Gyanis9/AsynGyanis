@@ -90,6 +90,23 @@ namespace
         std::int64_t id; ///< 唯一一列
     };
 
+    /**
+     * @brief 表名带库/模式前缀的结构体：迁移器只在连接的默认库内建表，这种写法必须被拒
+     */
+    struct QualifiedTableNameRow
+    {
+        std::int64_t id; ///< 唯一一列
+    };
+
+    /**
+     * @brief 列名带点号的结构体：DDL 会建成一个叫 "user.name" 的列，而读写侧按「表.列」分段引用
+     */
+    struct DottedColumnNameRow
+    {
+        std::int64_t    id;   ///< 主键列
+        std::string     name; ///< 列名写成 "user.name"，用于验证建表前就被拒
+    };
+
 } // namespace
 
 template<>
@@ -153,6 +170,28 @@ struct AsynGyanis::Database::Queryable::TableSchema<MissingTableNameRow>
     static constexpr std::string_view kTableName = "";
     static constexpr auto kColumns = std::tuple{
         Column(&MissingTableNameRow::id, "id"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<QualifiedTableNameRow>
+{
+    // 带库/模式前缀：查询侧会逐段引用成 "shop"."migrated"，而存在性检查只看默认库
+    static constexpr std::string_view kTableName = "shop.migrated";
+    static constexpr auto kColumns = std::tuple{
+        Column(&QualifiedTableNameRow::id, "id"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<DottedColumnNameRow>
+{
+    static constexpr std::string_view kTableName = "dotted column";
+    static constexpr auto kColumns = std::tuple{
+        Column(&DottedColumnNameRow::id,   "id"),
+        Column(&DottedColumnNameRow::name, "user.name"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -323,6 +362,57 @@ TEST(SchemaMigratorOffline, InvalidSchemaIsRejectedWithLocalizedReason)
                  std::logic_error);
     EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<MissingTableNameRow>(dialect)),
                  std::logic_error);
+}
+
+/**
+ * @brief 验证带库/模式前缀的表名进不了迁移器，无论建表还是删表
+ *
+ * @details 迁移器的三件事都锚在「本连接的默认库」上：存在性检查按 DATABASE()/sqlite_master 取，
+ *          建表与删表也只有那一个落点。放行前缀会让同一张表在「查是否存在」「建到哪」「读哪张」
+ *          三处得到三种答案，因此在建表前就拒，而不是启动纠偏反复重建。
+ */
+TEST(SchemaMigratorOffline, SchemaPrefixedTableNameIsRejected)
+{
+    const SqliteDialect dialect;
+
+    try
+    {
+        static_cast<void>(SchemaMigrator::createTableStatement<QualifiedTableNameRow>(dialect));
+        FAIL() << "带前缀的表名应当在生成 DDL 之前就被拒绝";
+    }
+    catch (const std::logic_error &error)
+    {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("点号"), std::string::npos) << message;
+        EXPECT_NE(message.find("shop.migrated"), std::string::npos) << message;
+    }
+
+    // 删表同一判据：只拒建表会留下「建不出来也删不掉」的名字
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<QualifiedTableNameRow>(dialect)),
+                 std::logic_error);
+}
+
+/**
+ * @brief 验证列名里的点号在建表前被拒：DDL 与读写侧对同一个名字的解释不一致
+ *
+ * @details 整块引用会建出一个真名叫 "user.name" 的列，而 INSERT 的列清单与读侧按「表.列」分段引用，
+ *          那张表此后没有一行能写进这一列。限定名属于 where()/orderBy()，不该出现在 kColumns 里。
+ */
+TEST(SchemaMigratorOffline, DottedColumnNameIsRejectedBeforeDdl)
+{
+    const SqliteDialect dialect;
+
+    try
+    {
+        static_cast<void>(SchemaMigrator::createTableStatement<DottedColumnNameRow>(dialect));
+        FAIL() << "列名含点号应当在生成 DDL 之前就被拒绝";
+    }
+    catch (const std::logic_error &error)
+    {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("user.name"), std::string::npos) << message;
+        EXPECT_NE(message.find("列名"), std::string::npos) << message;
+    }
 }
 
 // ========================================================================
