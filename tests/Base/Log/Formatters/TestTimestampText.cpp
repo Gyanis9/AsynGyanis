@@ -107,6 +107,19 @@ namespace AsynGyanis::Base
         EXPECT_EQ(text.substr(0, 19), referenceLocalText(-2, 0).substr(0, 19)) << text;
     }
 
+    TEST(TimestampText, SubMillisecondInstantBeforeEpochKeepsTheResidualInRange)
+    {
+        // 残差的定义域是 [0,1000) 毫秒：epoch 往前 0.5 毫秒时整秒仍取到 -1，但「朝零截断」的
+        // 毫秒数把这段不足一毫秒的负量当成 0，残差于是算成 1000 —— 逐位写出的三位毫秒会溢成
+        // ":00"，整条文本变成 "…:59:59.:00" 这种不合版式的串（挂钟字段没错，坏的是尾部四位）
+        const TimestampMoment moment = TimestampMoment{} - std::chrono::microseconds(500);
+        const std::string     text   = renderToString(moment);
+
+        EXPECT_TRUE(hasExpectedShape(text)) << text;
+        // -1 秒那一格的最后 0.5 毫秒就是 .999，不是 .1000 也不是 .000
+        EXPECT_EQ(text, referenceLocalText(-1, 999)) << text;
+    }
+
     TEST(TimestampText, PerSecondCacheRefreshesThePrefixWhenTheSecondAdvances)
     {
         std::array<char, kTimestampTextBufferSize> buffer{};

@@ -67,11 +67,12 @@ namespace AsynGyanis::Base
 
         // 残差按「毫秒刻度」取，不用 moment - wholeSeconds：两个 time_point 相减要先落到彼此更细的
         // 公共单位（本平台是纳秒或 100 纳秒），那次整秒→细单位的乘法在 time_point::min()/max() 上
-        // 直接溢出（UBSan 实测报在 chrono.h 的 __duration_cast_impl）。duration_cast 是除法，
-        // 极端值也不会溢出；整秒向下取整、毫秒朝零截断，二者之差因此恒落在 [0, 1000) 毫秒
+        // 直接溢出（UBSan 实测报在 chrono.h 的 __duration_cast_impl）。换算到毫秒是除法，极端值不会
+        // 溢出。要的恰是 floor 而不是 duration_cast：后者朝零截断，落在 (-1ms, 0) 这类「不足一毫秒的
+        // 负时刻」上会把这段量当成 0，残差于是等于 1000，逐位写的三位毫秒溢出成 ".:00" 这种不合版式的文本
         constexpr std::int64_t kMillisecondsPerSecond = 1'000LL;
         const std::int64_t millisecondCount =
-                std::chrono::duration_cast<std::chrono::milliseconds>(moment.time_since_epoch()).count();
+                std::chrono::floor<std::chrono::milliseconds>(moment.time_since_epoch()).count();
         const std::int64_t millisecondValue = millisecondCount - secondValue * kMillisecondsPerSecond;
 
         thread_local detail::TimestampPrefixCache prefixCache;
