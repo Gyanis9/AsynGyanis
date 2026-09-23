@@ -602,6 +602,10 @@ namespace AsynGyanis::Net
                 << "清扫关连接之后处理器协程仍挂在写等待上：关闭没有唤醒等可写的等待者";
         EXPECT_LT(writtenChunkCount.load(std::memory_order_relaxed), 64)
                 << "对端早已停止读取，写侧却宣称 64 段全部成功";
+        // 收口的归因也要落账：这类连接是「写不出去」而不是「没人来取」，缺了这一条，运维在
+        // /metrics 上看到的仍是 timeout_closed 之外的沉默流失
+        EXPECT_GE(fixture.server().stats().timeoutClosedCount, 1u)
+                << "写超时把这条慢消费者收口了，却没记进 timeout_closed：观测口径漏了这一类";
         EXPECT_FALSE(fixture.startThrew()) << "把写侧卡住的连接收口时把服务器主协程带崩了";
     }
 
