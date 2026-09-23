@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Base/Log/Sinks/LogSink.h"
+#include "Base/Log/LogEvent.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -29,7 +30,7 @@ namespace AsynGyanis::Base
      *          队列满时按 OverflowPolicy 阻塞、丢新事件或丢最旧事件，丢弃量经
      *          droppedEventCount() 暴露给运维监控。
      * @note 析构或 stop() 尽力排空残留事件，不保证跨进程崩溃时的日志完整性。
-     * @note 队列容量最小为 1（原因见 kMinimumQueueSize），构造函数自行钳制，
+     * @note 队列容量钳制在 [kMinimumQueueSize, kMaximumQueueSize] 之间，构造函数自己完成，
      *       调用方无需保证传入合法容量。
      */
     class AsyncSink : public LogSink
@@ -55,9 +56,27 @@ namespace AsynGyanis::Base
         static constexpr std::size_t kMinimumQueueSize = 1;
 
         /**
+         * @brief 队列可占内存的预算
+         *
+         * @details 队列是「业务线程与落地线程之间的短暂缓冲」，不是应用的堆外存：下游卡住时，
+         *          容量决定的是这条线在被溢出策略接管之前最多占住多少内存。
+         */
+        static constexpr std::size_t kMaximumQueueMemoryBudget = 64U * 1024U * 1024U;
+
+        /**
+         * @brief 队列容量的上界，由内存预算与单条事件的大小算出
+         *
+         * @details 不写死条数：LogEvent 以后加字段，这里会自动收紧。本类自行钳到该上限，
+         *          配置边界另有一次钳制与诊断。
+         */
+        static constexpr std::size_t kMaximumQueueSize = kMaximumQueueMemoryBudget / sizeof(LogEvent);
+
+        static_assert(kMaximumQueueSize >= kMinimumQueueSize, "单条日志事件不得大于队列的整份内存预算");
+
+        /**
          * @brief 构造异步 Sink 并启动后台消费线程
          * @param wrappedSink 被包装的真实 Sink
-         * @param queueSize 队列容量上限，小于 1 时按 kMinimumQueueSize 钳制
+         * @param queueSize 队列容量上限，钳制到 [kMinimumQueueSize, kMaximumQueueSize]
          * @param policy 队列满时溢出策略
          */
         explicit AsyncSink(std::unique_ptr<LogSink> wrappedSink, size_t queueSize = 1024, OverflowPolicy policy = OverflowPolicy::Block);

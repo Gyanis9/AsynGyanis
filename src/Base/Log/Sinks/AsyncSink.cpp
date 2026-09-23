@@ -22,10 +22,12 @@ namespace AsynGyanis::Base
     } // namespace
     AsyncSink::AsyncSink(std::unique_ptr<LogSink> wrappedSink, const size_t queueSize, const OverflowPolicy policy) :
         m_wrappedSink(std::move(wrappedSink))
-        // 容量兜底钳制：0 容量不是「不限量」而是三种策略各自的错误语义——Drop 全丢、
+        // 容量两端都要钳。下界：0 容量不是「不限量」而是三种策略各自的错误语义——Drop 全丢、
         // DropOldest 对空队列 pop（未定义行为）且待落地计数回绕、Block 永久阻塞。
-        // 配置边界已有一次钳制，这里再做一次是为了让 AsyncSink 自身不依赖「调用方传了合法容量」。
-        , m_maximumQueueSize(queueSize < kMinimumQueueSize ? kMinimumQueueSize : queueSize)
+        // 上界：一条事件在队列里要占 sizeof(LogEvent) 字节，容量乘以它就是下游卡住时最多占住的
+        // 内存；配置里 queue_size 多打几个 0，本该「按策略丢弃或阻塞」的背压就变成了 OOM。
+        // 配置边界已有一次钳制，这里再做一次是为了让 AsyncSink 自身不依赖「调用方传了合法容量」
+        , m_maximumQueueSize(std::clamp(queueSize, kMinimumQueueSize, kMaximumQueueSize))
         , m_overflowPolicy(policy)
     {
         // jthread 在析构时会 request_stop 并 join；本类的 stop() 已负责唤醒条件变量后再 join，
