@@ -2,8 +2,9 @@
 // SQLite 是进程内引擎，全部用例零外部服务（内存库 ":memory:"，文件库用 TestSupport::TemporaryDatabaseFile 的临时路径，
 // 结束即连 -wal/-shm/-journal 残留一起删除）。
 // 钉住的契约：execute() 一次只执行一条语句（分号后还有可执行语句就整次失败、一条都不执行）；queryTimeout() 走
-// sqlite3_busy_timeout 并经 PRAGMA 直读验证；启动期两条 PRAGMA 失败不致命；刻意不测命令超 INT_MAX 与
-// SQLITE_MISUSE（外部抢先关句柄）两条分支。
+// sqlite3_busy_timeout 并经 PRAGMA 直读验证，另作为每条语句的执行时限（进度回调打断，非正值不设时限，
+// 且只覆盖 execute() 同步执行那一段——慢速遍历交出去的游标不受它约束）；启动期两条 PRAGMA 失败不致命；
+// 刻意不测命令超 INT_MAX 与 SQLITE_MISUSE（外部抢先关句柄）两条分支。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
@@ -16,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +27,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <variant>
 
 namespace AsynGyanis::Database
@@ -38,6 +41,33 @@ namespace AsynGyanis::Database
     {
         /// 基类 DatabaseConnection 声明的单条命令执行超时默认毫秒数
         constexpr int kDefaultQueryTimeoutMilliseconds = 30000;
+
+        /// 本机实测约 21 秒的递归统计（Python 的同款查询实测 2 百万行 210 毫秒，这里取 100 倍）：
+        /// 语句时限一生效就应当在毫秒级截断它，用作「打断确实发生了」的下界判据
+        constexpr const char *kUnboundedCountSql =
+                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 200000000)"
+                " SELECT count(*) FROM tick";
+
+        /// 本机实测约 0.8 秒的递归统计：既长到能被 20 毫秒的时限截断，又短到能放宽时限后当场跑完
+        constexpr const char *kSlowCountSql =
+                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 8000000)"
+                " SELECT count(*) FROM tick";
+
+        /// 上式在时限放宽后的正确返回值，一并钉住「打断的不是算错了的查询」
+        constexpr std::int64_t kSlowCountExpectedValue = 8000000;
+
+        /// 本机实测约 0.2 秒的递归统计：只用来证明非正超时没被当成「立即打断」
+        constexpr const char kQuickCountSql[] =
+                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 2000000)"
+                " SELECT count(*) FROM tick";
+
+        /// 超过结果集物化上限（256 行）的单列查询：execute() 返回后行仍要靠 next() 逐条取
+        constexpr const char kStreamingRowCountSql[] =
+                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 400)"
+                " SELECT n FROM tick";
+
+        /// 上述游标查询的总行数，与语句里的上限一致
+        constexpr std::size_t kStreamingRowCount = 400;
 
         /// 建表样板：一列主键 + 文本 + 整数 + 浮点 + 整型布尔位 + 二进制，覆盖全部映射分支
         constexpr const char *kCreateUsersTableSql =
@@ -672,6 +702,82 @@ namespace AsynGyanis::Database
             EXPECT_EQ(readScalarInteger(connection, "PRAGMA busy_timeout"), std::optional<std::int64_t>(0))
                     << "queryTimeout=" << timeoutSetting;
         }
+    }
+
+    /** @brief 钉住 queryTimeout 是一道真的语句时限：跑不完的查询在毫秒级被打断，且报出可操作的中文原因 */
+    TEST_F(SqliteConnectedMemoryDatabase, StatementDeadlineInterruptsAnUnboundedQuery)
+    {
+        // 这条查询不受界要跑数十秒，时限 100 毫秒：用例本身因此只花几十毫秒
+        connection().setQueryTimeout(100);
+
+        const auto                        startedAt = std::chrono::steady_clock::now();
+        const std::unique_ptr<DatabaseResult> result = connection().execute(kUnboundedCountSql);
+        const auto                        elapsedMilliseconds =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+
+        ASSERT_EQ(result, nullptr) << "长查询没有被语句时限打断，耗时 " << elapsedMilliseconds << " 毫秒";
+        EXPECT_TRUE(containsText(connection().lastError(), "时限")) << connection().lastError();
+        EXPECT_TRUE(containsText(connection().lastError(), "queryTimeout")) << connection().lastError();
+        // 50 倍余量：打断发生在毫秒级，落到秒级说明进度回调根本没起作用（余量同时容忍机器噪声）
+        EXPECT_LT(elapsedMilliseconds, 5000) << "耗时 " << elapsedMilliseconds << " 毫秒，不像是被打断的";
+
+        // 被打断的语句不能把连接一起废掉：语句缓存里那条要 reset 回可用，后续照常执行
+        const std::unique_ptr<DatabaseResult> followUp = connection().execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "打断后连接不可用：" << connection().lastError();
+    }
+
+    /** @brief 钉住改时限不必重连：下一条语句就按新值受界，放宽后同一条语句又跑得完 */
+    TEST_F(SqliteConnectedMemoryDatabase, QueryTimeoutChangeAppliesToTheNextStatementWithoutReconnecting)
+    {
+        // 建连时的默认值是 30 秒：若实现只在 connect() 读一次，这一步就不会被打断（用例即红）
+        connection().setQueryTimeout(20);
+        EXPECT_EQ(connection().execute(kSlowCountSql), nullptr) << "改小到 20 毫秒后仍按建连时的旧值执行";
+        EXPECT_TRUE(containsText(connection().lastError(), "时限")) << connection().lastError();
+
+        // 放宽到 60 秒：同一条语句（实测约 0.8 秒）必须完整跑完，说明时限不会粘在连接上
+        connection().setQueryTimeout(60000);
+        const std::unique_ptr<DatabaseResult> result = connection().execute(kSlowCountSql);
+        ASSERT_NE(result, nullptr) << "放宽时限后仍失败：" << connection().lastError();
+        ASSERT_TRUE(result->next());
+        EXPECT_EQ(asInteger(result->getValue(std::size_t{0})), std::optional<std::int64_t>(kSlowCountExpectedValue));
+    }
+
+    /** @brief 钉住非正超时是「不设语句时限」，而不是「立即打断」或「按 1 毫秒」 */
+    TEST_F(SqliteConnectedMemoryDatabase, NonPositiveQueryTimeoutSetsNoStatementDeadline)
+    {
+        // 这一用例钉的是「非正值没被当成一个极小的时限」。它区分不了「不设上界」与「退回 30 秒默认」，
+        // 那需要一条 30 秒以上的语句，为一个用例占住那么多机器时间不值
+        for (const int timeoutSetting: {0, -100})
+        {
+            connection().setQueryTimeout(timeoutSetting);
+
+            const std::unique_ptr<DatabaseResult> result = connection().execute(kQuickCountSql);
+            ASSERT_NE(result, nullptr) << "queryTimeout=" << timeoutSetting << " 被打断：" << connection().lastError();
+            ASSERT_TRUE(result->next());
+            EXPECT_EQ(asInteger(result->getValue(std::size_t{0})), std::optional<std::int64_t>(2000000));
+        }
+    }
+
+    /** @brief 钉住时限只管 execute() 同步执行那一段：慢速遍历交出去的游标不会被它截断 */
+    TEST_F(SqliteConnectedMemoryDatabase, SlowCursorIterationOutlivesTheStatementDeadline)
+    {
+        // 400 行超过结果集的物化上限，走游标模式：execute() 返回后每一行都靠 next() 现取
+        connection().setQueryTimeout(20);
+        const std::unique_ptr<DatabaseResult> result = connection().execute(kStreamingRowCountSql);
+        ASSERT_NE(result, nullptr) << "预扫描没能在 20 毫秒内跑完：" << connection().lastError();
+
+        std::size_t readRowCount = 0;
+        while (result->next())
+        {
+            // 遍历总时长刻意远超那条语句的 20 毫秒时限：闸门若没在 execute() 出口撤下，
+            // next() 会静默返回 false（按契约不写错误文本），这里就表现为少读了几十行
+            if (++readRowCount % 40 == 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+
+        EXPECT_EQ(readRowCount, kStreamingRowCount) << "游标被上一次语句的时限截断了";
     }
 
     /** @brief 钉住内存库改不成 WAL 不算失败：不报错且连接照常可用 */

@@ -11,6 +11,7 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -31,13 +32,14 @@ namespace AsynGyanis::Database
      * @brief SQLite 嵌入式数据库连接
      *
      * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口：进程内引擎、没有网络往返，因此
-     *          ConnectionConfig 只有 database 字段被读取，基类 queryTimeout() 映射成 sqlite3_busy_timeout。
-     *          一条参数化语句里「编译」占约八成耗时，所以跑完的游标按 SQL 文本缓存在 m_statementCache
-     *          里复用（写语句跑完即回表；查询只有「行已整份物化进快照」时才回表，行没跑完的那条随结果集
-     *          走、由结果集 finalize）。表满时逐出最久没被读到的一条。键只有文本，故 disconnect() 先清表。
+     *          ConnectionConfig 只有 database 字段被读取。基类 queryTimeout() 在这里落成两道界，都在
+     *          execute() 入口按当次取值现读（改超时不必重连），非正值一律按「不设界」处理：等锁上限走
+     *          sqlite3_busy_timeout，语句执行时限由进度回调打断。一条参数化语句里「编译」占约八成耗时，
+     *          故跑完的游标按 SQL 文本缓存在 m_statementCache 里复用，表满时逐出最久没被读到的一条。
      *
-     * @warning execute() 交出的 SqliteResult 保存本连接句柄的非拥有指针，
-     *          结果集必须严格早于连接对象销毁，否则游标会访问已释放的 sqlite3*。
+     * @warning execute() 交出的 SqliteResult 保存本连接句柄的非拥有指针，结果集必须严格早于连接对象销毁，
+     *          否则游标会访问已释放的 sqlite3*。语句时限同样只管 execute() 同步执行那一段：交出游标之后的
+     *          next() 不受它约束，慢速遍历不会被当成超时打断。
      */
     class SqliteConnection : public DatabaseConnection
     {
@@ -68,8 +70,9 @@ namespace AsynGyanis::Database
          * @brief 打开（或创建）SQLite 数据库文件
          * @details 重写 DatabaseConnection::connect()：SQLite 不需要握手与认证，打开失败只来自文件系统或
          *          文件本身（路径非法、目录不可写、文件损坏等）。与基类的差异：已连接时直接返回 true 保持幂等；
-         *          打开失败立刻关闭 sqlite3_open 可能已分配的半开句柄；成功后应用 busy_timeout 与两条 PRAGMA
-         *          （PRAGMA 失败不影响返回值）；connectTimeout() 无对应能力，不参与配置。其余与基类一致。
+         *          打开失败立刻关闭 sqlite3_open 可能已分配的半开句柄；成功后应用 busy_timeout、挂上语句时限
+         *          的进度回调、执行两条 PRAGMA（PRAGMA 失败不影响返回值）；connectTimeout() 无对应能力，不参与配置。
+         *          其余与基类一致。
          * @return true 连接已建立
          * @return false 打开失败，具体原因（含 SQLite 错误码与路径）见 lastError()
          * @note 路径必须是 UTF-8 字节序列；Windows 下由调用方负责从宽字符路径转换而来
@@ -223,6 +226,72 @@ namespace AsynGyanis::Database
 
     private:
         /**
+         * @brief 语句时限的闸门：进入 execute() 时按当次 queryTimeout() 装上，离开作用域一律撤下
+         * @details 必须成对：时限留在连接上，调用方之后慢速遍历游标就会被上一次语句的截止时刻打断，
+         *          而 SqliteResult::next() 按契约不写错误文本——那会表现为「结果集悄悄少了若干行」。
+         */
+        class StatementDeadlineGuard
+        {
+        public:
+            /**
+             * @brief 用归属连接的当前超时值装上时限
+             * @param owner 执行这条语句的连接
+             */
+            explicit StatementDeadlineGuard(SqliteConnection &owner) noexcept : m_owner(owner)
+            {
+                m_owner.armStatementDeadline(m_owner.queryTimeout());
+            }
+
+            /**
+             * @brief 离开作用域时无条件撤下时限
+             */
+            ~StatementDeadlineGuard()
+            {
+                m_owner.disarmStatementDeadline();
+            }
+
+            StatementDeadlineGuard(const StatementDeadlineGuard &) = delete;
+
+            StatementDeadlineGuard &operator=(const StatementDeadlineGuard &) = delete;
+
+        private:
+            SqliteConnection &m_owner; ///< 被装上/撤下时限的连接，活在本闸门外层作用域里
+        };
+
+        /**
+         * @brief 把「本条语句最迟何时结束」记进连接状态
+         * @details 由 SQLite 的进度回调读取，因此每次执行都要重装一次：这样 setQueryTimeout() 改完
+         *          下一条语句即生效，不必像 MySQL 那样等到重连。
+         * @param milliseconds 时限毫秒数，取自 queryTimeout()；非正值表示不装时限（与 MySQL/Redis 对
+         *                     非正值的解读一致，此处刻意不钳成 1 毫秒去伪造一个上界）
+         */
+        void armStatementDeadline(const int milliseconds) noexcept;
+
+        /**
+         * @brief 撤下语句时限
+         * @details 时限不再参与判定，进度回调回到「一次布尔比较就返回」的零成本路径
+         */
+        void disarmStatementDeadline() noexcept
+        {
+            m_statementDeadlineArmed = false;
+        }
+
+        /**
+         * @brief SQLite 进度回调：到点就请求打断本条语句
+         * @details 回调按 kProgressHandlerInterval 个虚拟机指令的间隔被调用，返回非 0 时 SQLite 以
+         *          SQLITE_INTERRUPT 中止当前操作。签名必须是 C 函数指针形态，故不带 noexcept。
+         * @param ownerPointer 注册时传入的 SqliteConnection 指针，SQLite 原样送回
+         * @return int 0 表示继续执行，1 表示要求打断
+         */
+        static int enforceStatementDeadline(void *ownerPointer);
+
+        /**
+         * @brief 拼装「被语句时限打断」的中文错误文本
+         * @return std::string 带上限毫秒数与出路的文案，交进 m_lastError
+         */
+        [[nodiscard]] std::string statementDeadlineErrorText() const;
+
+        /**
          * @brief 把参数按位置绑定到已编译的语句上
          * @param statement 已 prepare 的语句句柄，绑定失败时由调用方负责收尾
          * @param parameters 待绑定的参数列表，第 i 个元素绑定到第 i 个占位符（SQLite 序号从 1 起）
@@ -319,6 +388,15 @@ namespace AsynGyanis::Database
 
         /// 缓存命中累计次数：命中一次即少编译一条语句，供用例与基准判定逐出策略是否留住了热语句
         std::uint64_t m_statementCacheHits{0};
+
+        /// 进度回调的触发间隔（虚拟机指令条数）：1000 条一次，检查成本相对指令执行可忽略，
+        /// 而超时的最大过冲只有一个指令批次的粒度
+        static constexpr int kProgressHandlerInterval = 1000;
+
+        std::chrono::steady_clock::time_point m_statementDeadline{}; ///< 本条语句的最迟结束时刻，仅 m_statementDeadlineArmed 为真时有意义
+        int  m_statementDeadlineMilliseconds{0};                     ///< 装时限时使用毫秒数，只用于错误文案里报出上限
+        bool m_statementDeadlineArmed{false};                        ///< 时限是否生效，false 时回调不做任何时钟读取
+        bool m_statementDeadlineHit{false};                          ///< 本次执行是否真的因超时被打断，用于把 SQLITE_INTERRUPT 翻成可操作的中文原因
     };
 
 } // namespace AsynGyanis::Database

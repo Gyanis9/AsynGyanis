@@ -488,6 +488,20 @@ namespace
         Samples::checklist().check(scalarInteger(connection, "PRAGMA busy_timeout") == std::optional<std::int64_t>(4321),
                                    "queryTimeout() 真的映射成了 PRAGMA busy_timeout");
 
+        // 同一枚 queryTimeout 还是每条语句的执行时限：改小到 20 毫秒后，一条不受界的递归统计必须当场被打断，
+        // 且原因里写的是「时限」而不是 SQLite 那句光秃秃的 interrupted。改完不必重连，下一条语句即生效
+        connection.setQueryTimeout(20);
+        const std::unique_ptr<Database::DatabaseResult> overLimitSelection = connection.execute(
+                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 200000000)"
+                " SELECT count(*) FROM tick");
+        Samples::checklist().check(overLimitSelection == nullptr && connection.lastError().find("时限") != std::string::npos,
+                                   "queryTimeout() 也是语句执行时限：跑不完的查询在毫秒级被打断并给出中文原因");
+
+        // 时限撤回去，后面的步骤不再受一条 20 毫秒的界约束；被打断的连接必须照常可用
+        connection.setQueryTimeout(4321);
+        Samples::checklist().check(scalarInteger(connection, "SELECT 1") == std::optional<std::int64_t>(1),
+                                   "被打断之后同一条连接照常能查询");
+
         const std::unique_ptr<Database::DatabaseResult> createResult = connection.execute(kCreateRawTableSql);
         bool                                            isSeeded     = createResult != nullptr;
         if (isSeeded)

@@ -74,10 +74,15 @@ namespace AsynGyanis::Database
         }
 
         // SQLite 是进程内引擎，没有网络握手，基类的 connectTimeout() 在这里没有对应能力；
-        // queryTimeout() 则映射成 busy_timeout：表被其他连接占用时最多等待这么多毫秒再报 SQLITE_BUSY。
+        // queryTimeout() 则落成两道界，第一道是 busy_timeout：表被其他连接占用时最多等待这么多毫秒再报 SQLITE_BUSY。
         // 单位与基类一致（毫秒），非正值按「不等待、立即返回 SQLITE_BUSY」处理，避免负数被底层当成特殊值
         const int busyTimeoutMilliseconds = queryTimeout() > 0 ? queryTimeout() : 0;
         sqlite3_busy_timeout(m_database, busyTimeoutMilliseconds);
+
+        // 第二道界（语句本身的执行时限）以进度回调的形式挂在句柄上，只在每条语句执行期间被装上，
+        // 所以这里挂的是一次性的回调登记，不含任何时限值；disconnect() 必须在关句柄前撤掉它，
+        // 否则 close_v2 把句柄留成 zombie 后，回调里的 this 指针就可能先于句柄失效
+        sqlite3_progress_handler(m_database, kProgressHandlerInterval, &SqliteConnection::enforceStatementDeadline, this);
 
         // 两条 PRAGMA 属于「尽力而为」的初始化：内存库改不了 WAL、只读目录改不了日志模式都属正常场景，
         // 失败只把原因留在 lastError()，不改变连接结果
@@ -107,6 +112,11 @@ namespace AsynGyanis::Database
         // 缓存里的游标属于**当前这个**数据库句柄，必须在关句柄前全部 finalize：
         // 键只有 SQL 文本，重连之后拿旧游标去 step 就是对已释放对象的访问
         clearStatementCache();
+
+        // 撤掉语句时限的回调登记：close_v2 遇上游标未 finalize 时会把句柄转成 zombie 延后释放，
+        // 那份僵尸句柄里若还留着指向本对象的回调，本对象析构后它就悬垂了
+        sqlite3_progress_handler(m_database, 0, nullptr, nullptr);
+        m_statementDeadlineArmed = false;
 
         // 交给外层的 SqliteResult 可能仍持有本连接的语句：
         // sqlite3_close 遇到未 finalize 的语句会返回 SQLITE_BUSY 并拒绝关闭，句柄就此泄漏；
@@ -146,6 +156,10 @@ namespace AsynGyanis::Database
             m_lastError = "未连接到 SQLite，命令未执行：请先调用 connect() 建立连接";
             return nullptr;
         }
+
+        // 语句时限只在本次调用同步进行的那段 SQLite 执行里生效：时限值在此现读 queryTimeout()，
+        // 出口由闸门撤下（游标交给调用方后再慢速遍历，不该被上一次语句的截止时刻打断）
+        const StatementDeadlineGuard deadlineGuard{*this};
 
         if (command.empty())
         {
@@ -252,7 +266,9 @@ namespace AsynGyanis::Database
                     detachCachedStatement(commandText);
                 }
 
-                m_lastError = preScanError;
+                // 被语句时限打断时，结果集只能报出底层的 "interrupted"，看不出是谁打断的、该调哪个参数，
+                // 这里换成本驱动的中文文案；与时限无关的错误（锁超时、IO 错误）原样交给调用方
+                m_lastError = m_statementDeadlineHit ? statementDeadlineErrorText() : preScanError;
                 return nullptr;
             }
 
@@ -551,8 +567,67 @@ namespace AsynGyanis::Database
         return true;
     }
 
+    void SqliteConnection::armStatementDeadline(const int milliseconds) noexcept
+    {
+        // 每次装时限都先清掉上一次的打断标记：残留标记会把下一次不相关的失败文案改写成「超时」
+        m_statementDeadlineHit = false;
+
+        if (milliseconds <= 0)
+        {
+            // 非正值按「不设语句时限」处理，与 MySQL / Redis 对同一取值的解读一致；
+            // 刻意不钳成 1 毫秒去伪造一个上界，那会把调用方「不要上界」的意图变成「几乎立即打断」
+            m_statementDeadlineArmed = false;
+            return;
+        }
+
+        m_statementDeadlineMilliseconds = milliseconds;
+        m_statementDeadline             = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+        m_statementDeadlineArmed        = true;
+    }
+
+    int SqliteConnection::enforceStatementDeadline(void *ownerPointer)
+    {
+        // ownerPointer 是本连接在 connect() 里登记进 sqlite3_progress_handler 的 this，SQLite 只原样送回；
+        // 登记与撤除成对发生在句柄的打开/关闭两侧，因此回调被调到时对象一定还活着
+        auto &connection = *static_cast<SqliteConnection *>(ownerPointer);
+
+        // 未装时限（包括语句时限被撤下之后、以及非正值配置）时一次布尔比较就返回，不读时钟
+        if (!connection.m_statementDeadlineArmed)
+        {
+            return 0;
+        }
+
+        if (std::chrono::steady_clock::now() < connection.m_statementDeadline)
+        {
+            return 0;
+        }
+
+        // 返回非 0 是 SQLite 官方的「打断本条语句」约定，step 随即以 SQLITE_INTERRUPT 结束。
+        // 标记先置位再返回：错误文案要靠它把底层的 "interrupted" 换成中文原因
+        connection.m_statementDeadlineHit = true;
+        return 1;
+    }
+
+    std::string SqliteConnection::statementDeadlineErrorText() const
+    {
+        // 底层只报 "interrupted"，既看不出是谁打断的也看不出该改哪个参数，因此把上限毫秒数与出路写全
+        return composeNativeErrorText("执行 SQL 语句超过 " + std::to_string(m_statementDeadlineMilliseconds) + " 毫秒的时限被打断",
+                                      "interrupted；如需更多时间请调大 queryTimeout，反复超时的语句应改用索引或拆成小批扫描",
+                                      sqlite3_errstr(SQLITE_INTERRUPT), SQLITE_INTERRUPT);
+    }
+
     void SqliteConnection::captureError(const std::string_view description)
     {
+        // 本驱动主动打断的语句，底层错误文本只剩 "interrupted" 这一个词：换成带原因与出路的中文文案，
+        // 否则调用方分不清是自己调了 sqlite3_interrupt、是被时限打断、还是外部锁竞争。
+        // 判据只看装时限期间置起的那个标记：它每执行一条语句先清零，只有本驱动的回调会置位，
+        // 而回调一旦置位本次 step 就以 SQLITE_INTERRUPT 收场，等锁超时（SQLITE_BUSY）走不到这一格
+        if (m_statementDeadlineHit)
+        {
+            m_lastError = statementDeadlineErrorText();
+            return;
+        }
+
         // sqlite3_errmsg 的返回指针只在下一次使用同一连接的 API 之前有效，必须立刻拷进 std::string；
         // 句柄为空时（连接根本没建起来）不能调用它，改用不依赖句柄的全局 sqlite3_errstr
         const int   errorCode  = (m_database != nullptr) ? sqlite3_errcode(m_database) : SQLITE_ERROR;
