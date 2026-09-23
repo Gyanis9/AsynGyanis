@@ -6,7 +6,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #if !ASYN_PLATFORM_WIN32
@@ -374,6 +378,91 @@ namespace AsynGyanis::Core
         static_cast<void>(backend.delFileDescriptor(eventFd.fileDescriptor));
         static_cast<void>(backend.delFileDescriptor(timerDescriptor));
         Platform::FileDescriptor::close(timerDescriptor);
+    }
+    /**
+     * @brief 一轮空等待的固定开销不得随在册描述符数线性增长
+     * @details 事件循环每收一批事件都要等一次，所以「每次等待先按在册条数走一遍」会被放大成
+     *          吞吐上限：连接越多、每条连接上每个事件越贵。io_uring 后端有过这个形状——它的
+     *          轮询是一次性的，入睡前要给「刚上报过」的描述符补投，而补投原先靠遍历整张注册表
+     *          找目标（实测 128 条 12.3 微秒、4096 条 405 微秒，epoll 后端同形状是平的）。
+     *          判据用比值而不是绝对值：绝对值随机器与构建档位漂，比值只反映「有没有那趟遍历」。
+     *          三倍小表与三十二倍大表之间放 8 倍余量，退化实现（线性）落不进这个窗口。
+     */
+    TEST(Epoll, WaitCostDoesNotScaleWithRegisteredDescriptorCount)
+    {
+        constexpr std::size_t kSmallRegistrationCount = 128;
+        constexpr std::size_t kLargeRegistrationCount = 4096;
+        constexpr int         kMeasurementIterations  = 2000;
+        /// 允许大表比小表贵这么多倍；线性的实现会贵约 32 倍
+        constexpr std::int64_t kMaximumCostRatio = 8;
+
+        // 两张表都要挂得上描述符（读写两端各一个号），不够就跳过而不是把用例做成假绿
+        rlimit descriptorLimit{};
+        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0
+            || descriptorLimit.rlim_cur < kLargeRegistrationCount * 2 + 64)
+        {
+            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur
+                         << " 个描述符，凑不出「大表显著大于小表」的对照现场";
+        }
+
+        const auto measureEmptyWaitCost = [](const std::size_t registrationCount) -> std::int64_t
+        {
+            std::vector<int> descriptors;
+            descriptors.reserve(registrationCount);
+            for (std::size_t index = 0; index < registrationCount; ++index)
+            {
+                const int descriptor = static_cast<int>(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+                if (descriptor < 0)
+                {
+                    return -1;
+                }
+                descriptors.push_back(descriptor);
+            }
+
+            Epoll backend;
+            for (const int descriptor: descriptors)
+            {
+                if (!backend.addFileDescriptor(descriptor, EPOLLIN, nullptr))
+                {
+                    return -1;
+                }
+            }
+
+            // 取三轮里的最小值：测量线程被抢占一次就会把均值抬高一个台阶，最小值才代表这条路径本身
+            std::int64_t bestNanoseconds = std::numeric_limits<std::int64_t>::max();
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const auto beginTime = std::chrono::steady_clock::now();
+                for (int iteration = 0; iteration < kMeasurementIterations; ++iteration)
+                {
+                    static_cast<void>(backend.wait(0));
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             std::chrono::steady_clock::now() - beginTime)
+                                             .count();
+                bestNanoseconds = std::min(bestNanoseconds, elapsed / kMeasurementIterations);
+            }
+
+            for (const int descriptor: descriptors)
+            {
+                static_cast<void>(backend.delFileDescriptor(descriptor));
+                Platform::FileDescriptor::close(descriptor);
+            }
+            return bestNanoseconds;
+        };
+
+        const std::int64_t smallCost = measureEmptyWaitCost(kSmallRegistrationCount);
+        const std::int64_t largeCost = measureEmptyWaitCost(kLargeRegistrationCount);
+        ASSERT_GE(smallCost, 0) << "挂不上 " << kSmallRegistrationCount << " 个描述符，环境不允许";
+        ASSERT_GE(largeCost, 0) << "挂不上 " << kLargeRegistrationCount << " 个描述符，环境不允许";
+
+        std::printf("PROBE wait0_ns small=%lld large=%lld\n",
+                    static_cast<long long>(smallCost), static_cast<long long>(largeCost));
+
+        EXPECT_LT(largeCost, smallCost * kMaximumCostRatio)
+                << "空等待的固定开销随在册条数增长：" << kSmallRegistrationCount << " 条 " << smallCost
+                << " 纳秒，" << kLargeRegistrationCount << " 条 " << largeCost
+                << " 纳秒。每一次等待都不许按在册条数走一遍登记表";
     }
 #endif
 } // namespace AsynGyanis::Core

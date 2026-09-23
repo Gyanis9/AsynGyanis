@@ -32,7 +32,8 @@ namespace AsynGyanis::Core
      * @details 把 `IORING_OP_POLL_ADD` 当作一次性就绪通知：每次武装提交一条 poll 请求，内核在关注
      *          事件满足时投递完成通知，wait() 翻译回 epoll_event 交给上层（上层因此无平台分支）。
      *          两处适配：`EPOLLONESHOT` 与一次性天然对应，完成送达后不自动重投、由上层重新武装；
-     *          水平触发（只有循环的唤醒描述符用它）在每次 wait() 入睡前补投一次。
+     *          水平触发（IoWatcher 的注册全是这一类）在上报后要补投，补投只按登记下来的描述符做，
+     *          不遍历整张注册表——每轮全表扫描会把单事件循环的开销做成连接数的线性函数。
      * @warning 本后端只在 `ASYN_WITH_IO_URING=ON` 时参与构建，而 CI 那条作业是**只编译不运行**的：
      *          语义漂移（就绪事件迟一拍交付、空闲注册对象被反复唤醒这类）不会由默认门禁发现。
      *          要实跑得在放行 io_uring 的容器里执行同一批用例：io_uring 系统调用会被 Docker 默认
@@ -173,7 +174,9 @@ namespace AsynGyanis::Core
         void handleCompletion(std::uint64_t ticket, std::int32_t result);
 
         /**
-         * @brief 入睡前维护注册表：水平触发补投、待重投补投、待删除补撤
+         * @brief 维护需要动作的注册项：水平触发补投、待重投补投、待删除补撤
+         * @details 只走 m_attentionDescriptors 记下的那几条，不遍历整张注册表：在途轮询没完成
+         *          的描述符本来就无事可做，扫它们要把单轮开销做成 O(在册描述符数)。
          */
         void maintainRegistrations();
 
@@ -228,6 +231,9 @@ namespace AsynGyanis::Core
         /// 到达时在这里释放；在那之前同一个 fd 号必须能被新连接重新注册
         std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls;
         std::map<std::uint64_t, Registration *>      m_inFlightPolls; ///< 票据到在途轮询的映射
+        /// 需要维护动作的描述符（按号存，不存指针：记录可能在这之前就被销毁）
+        /// 投递一次电平事件、或某次提交没成功时登记，维护只走这几条
+        std::vector<int>                             m_attentionDescriptors;
         std::uint64_t                                m_nextTicket{1};  ///< 票据分配器（单调递增）
         std::uint64_t                                m_timeoutTicket{0}; ///< 在途超时操作的票据
 

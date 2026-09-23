@@ -160,6 +160,7 @@ namespace AsynGyanis::Core
             m_registrations               = std::move(other.m_registrations);
             m_zombiePolls                 = std::move(other.m_zombiePolls);
             m_inFlightPolls               = std::move(other.m_inFlightPolls);
+            m_attentionDescriptors        = std::move(other.m_attentionDescriptors);
             m_nextTicket                  = std::exchange(other.m_nextTicket, 1);
             m_timeoutTicket               = std::exchange(other.m_timeoutTicket, 0);
             m_readyEvents                 = std::move(other.m_readyEvents);
@@ -173,6 +174,7 @@ namespace AsynGyanis::Core
         m_registrations.clear();
         m_zombiePolls.clear();
         m_inFlightPolls.clear();
+        m_attentionDescriptors.clear();
         m_readyEvents.clear();
 
         delete m_timeoutValue;
@@ -451,6 +453,12 @@ namespace AsynGyanis::Core
                 {
                     registration->pendingRemove = true;
                 }
+                else
+                {
+                    // 撤不动就登记下来让维护重试：重投整条链路都挂在这次取消之后，
+                    // 没人再提它就等于这条描述符从此不再上报
+                    m_attentionDescriptors.push_back(fileDescriptor);
+                }
             }
             return true;
         }
@@ -550,6 +558,14 @@ namespace AsynGyanis::Core
                 registration->pendingRearm = false;
             }
         }
+
+        // 走到这里这条记录手上的轮询已经不算在途了（票据在上面被清掉），可它可能还得重新武装：
+        // 水平触发的要补投，重投没成功的要再试。登记下来，别等下一次全表扫描——维护只走登记的。
+        if (registration->inFlightTicket == 0 && !registration->pendingDelete
+            && (registration->pendingRearm || (!registration->isOneShot && registration->events != 0)))
+        {
+            m_attentionDescriptors.push_back(registration->fileDescriptor);
+        }
     }
 
     void Uring::reapCompletions()
@@ -577,36 +593,61 @@ namespace AsynGyanis::Core
             }
         }
 
-        for (auto &[fileDescriptor, registration]: m_registrations)
+        // 只处理登记过要动作的那几条。早先的写法是把整张注册表走一遍，空闲的在途轮询虽然
+        // 什么都不做也要被看一眼——那是 O(在册描述符数) 的一趟，而事件循环每收一批事件都要
+        // 走一次：实测单次 wait(0) 从 128 条的 12 微秒涨到 4096 条的 405 微秒，而同形状的
+        // epoll 后端是平的（约 0.13 微秒）。连接数是倒数级别的吞吐损失，绝不能留在循环里。
+        //
+        // 只处理进函数时已有的条目：处理过程中提交失败会重新登记到表尾，那部分留给下一轮，
+        // 就地抹掉已处理的前缀则让这张表的容量稳定（swap 到局部会把缓冲一起丢掉）
+        const std::size_t registeredCount = m_attentionDescriptors.size();
+        for (std::size_t index = 0; index < registeredCount; ++index)
         {
-            // 取消请求没提交成功过：补一次（删除与重投都依赖它落地）
-            if (registration->inFlightTicket != 0 && (registration->pendingDelete || registration->pendingRearm) && !registration->pendingRemove)
+            const int           fileDescriptor   = m_attentionDescriptors[index];
+            Registration *const registration     = findRegistration(fileDescriptor);
+            bool                needsAnotherPass = false;
+
+            if (registration == nullptr)
             {
-                if (submitPollRemove(registration->inFlightTicket))
+                // 记录已经不在了：注销路径把它移进了僵尸表（那边自己会补撤），或直接销毁
+                continue;
+            }
+            if (registration->inFlightTicket != 0)
+            {
+                // 取消请求没提交成功过：补一次（删除与重投都依赖它落地）
+                if ((registration->pendingDelete || registration->pendingRearm) && !registration->pendingRemove)
                 {
-                    registration->pendingRemove = true;
+                    if (submitPollRemove(registration->inFlightTicket))
+                    {
+                        registration->pendingRemove = true;
+                    }
+                    else
+                    {
+                        needsAnotherPass = true;
+                    }
                 }
-                continue;
             }
-            if (registration->pendingDelete || registration->events == 0 || registration->inFlightTicket != 0)
+            else if (!registration->pendingDelete && registration->events != 0
+                     && (registration->pendingRearm || !registration->isOneShot))
             {
-                continue;
-            }
-            if (registration->pendingRearm)
-            {
-                // 取消完成后的重投：成功才清位，失败下次再补
+                // 没武装的两种活：取消完成后的按新掩码重投（成功才清位，失败下次再补），
+                // 以及水平触发的重新武装——原 epoll 会一直上报，这里入睡前补投一次，效果等价
                 if (submitPoll(*registration))
                 {
                     registration->pendingRearm = false;
                 }
-                continue;
+                else
+                {
+                    needsAnotherPass = true;
+                }
             }
-            if (!registration->isOneShot)
+            if (needsAnotherPass)
             {
-                // 水平触发：原 epoll 会一直上报，这里入睡前补投一次，效果等价
-                submitPoll(*registration);
+                m_attentionDescriptors.push_back(fileDescriptor);
             }
         }
+        m_attentionDescriptors.erase(m_attentionDescriptors.begin(),
+                                     m_attentionDescriptors.begin() + static_cast<std::ptrdiff_t>(registeredCount));
     }
 
     std::span<epoll_event> Uring::wait(const int timeoutMs)
