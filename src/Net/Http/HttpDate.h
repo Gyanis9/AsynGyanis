@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -28,6 +29,19 @@ namespace AsynGyanis::Net
      * @return IMF-fixdate 文本
      */
     [[nodiscard]] std::string formatHttpDate(std::chrono::system_clock::time_point time);
+
+    /**
+     * @brief 把时间点写成 HTTP 日期，产物落在调用方给的定长缓冲里
+     * @details 与返回 std::string 的那条共用同一份拼装，区别只在不碰堆：29 字节超出小串内联缓冲，
+     *          按值交出文本就是每次静态文件请求一份白付的分配，而调用方只需要一个活到 setHeader
+     *          把内容拷走之前的视图。长度写在类型里（std::span 的定长切片），不存在「缓冲给小了
+     *          静默截断」这种形状。
+     * @param time 待格式化的时间点，按 UTC 解释
+     * @param buffer 恰好 29 字节的输出缓冲
+     * @return 指向 buffer 的定长视图，生命周期由调用方的缓冲决定
+     */
+    [[nodiscard]] std::string_view formatHttpDate(std::chrono::system_clock::time_point time,
+                                                  std::span<char, kHttpDateTextLength> buffer) noexcept;
 
     /**
      * @brief 取「此刻」的 HTTP 日期文本，按整秒缓存

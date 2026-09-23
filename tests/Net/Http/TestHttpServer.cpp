@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -681,6 +682,40 @@ namespace AsynGyanis::Net
         EXPECT_EQ(headerValueOf(response, "accept-ranges"), "bytes");
         // 未配置时不发 Cache-Control
         EXPECT_FALSE(response.getHeader("cache-control").has_value());
+    }
+
+    /**
+     * @brief 钉住两个验证器的线上形状：ETag 恰为 `"hex(字节数)-hex(修改秒)"`，Last-Modified 与它同源
+     * @details 验证器要能被客户端与中间代理复现才有意义（弱匹配按不透明串比，但缓存键与脚本会按
+     *          这份形状生成）。ETag 的拼装从「两段 to_chars 拼进 string」改成「写进调用方的栈缓冲」
+     *          时，这条就是那堵字节等价的墙：期望值只取文件系统那两个事实自己算，不借服务端代码算，
+     *          因此服务端换写法会红而换格式也会红。
+     */
+    TEST(HttpServer, StrongEtagIsHexSizeDashHexMtimeAndSharesItWithLastModified)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticEtagShape");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const std::filesystem::path helloPath = tree.staticRoot() / "hello.txt";
+        const std::uintmax_t        fileSize  = std::filesystem::file_size(helloPath);
+        // file_time_type 的纪元两家不一样（MSVC 是 1601-01-01，libstdc++ 是 1970-01-01），只有
+        // clock_cast 给出跨平台的 UTC 时刻；直接取 time_since_epoch 会把这个差值当成秒数算进期望值
+        const std::int64_t writeSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                                 std::chrono::clock_cast<std::chrono::system_clock>(
+                                                         std::filesystem::last_write_time(helloPath))
+                                                         .time_since_epoch())
+                                                 .count();
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        ASSERT_EQ(response.status(), 200);
+        EXPECT_EQ(headerValueOf(response, "etag"), std::format("\"{:x}-{:x}\"", fileSize, writeSeconds));
+        EXPECT_EQ(headerValueOf(response, "last-modified"),
+                  formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(writeSeconds))))
+                << "Last-Modified 与 ETag 里的修改秒不是同一个数";
     }
 
     /**

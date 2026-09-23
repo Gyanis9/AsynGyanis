@@ -279,29 +279,33 @@ namespace AsynGyanis::Net
             return true;
         }
 
+        /// 强 ETag 文本的字节上限：引号 + 十六进制大小（最多 16）+ 连字符 + 十六进制修改秒（负数带符号，最多 17）+ 引号
+        constexpr std::size_t kMaximumEtagTextBytes = 36U;
+
         /**
          * @brief 按「文件大小 + 修改时间整秒」构造强 ETag
          * @param fileSize 文件字节数
          * @param lastWriteSeconds 文件修改时间，自 Unix 纪元起的秒数
+         * @param buffer 输出缓冲，容量恰为 kMaximumEtagTextBytes
          * @return 形如 "\"1a-5f2c3d4e\"" 的带双引号标签；大小或修改时间任一变化都会改变它
          */
-        std::string makeStrongEtag(const std::uintmax_t fileSize, const std::int64_t lastWriteSeconds)
+        std::string_view makeStrongEtag(const std::uintmax_t fileSize, const std::int64_t lastWriteSeconds,
+                                        std::array<char, kMaximumEtagTextBytes> &buffer)
         {
-            // 缓冲按 64 位上限给足（无符号十六进制最多 16 位，有符号再含负号），to_chars 不会写不下
-            std::array<char, 24> sizeText{};
-            const auto sizeResult = std::to_chars(sizeText.data(), sizeText.data() + sizeText.size(), fileSize, 16);
-
-            std::array<char, 24> timeText{};
-            const auto timeResult = std::to_chars(timeText.data(), timeText.data() + timeText.size(), lastWriteSeconds, 16);
-
-            std::string etagText;
-            etagText.reserve(2 + sizeText.size() + 1 + timeText.size());
-            etagText.push_back('"');
-            etagText.append(sizeText.data(), static_cast<std::size_t>(sizeResult.ptr - sizeText.data()));
-            etagText.push_back('-');
-            etagText.append(timeText.data(), static_cast<std::size_t>(timeResult.ptr - timeText.data()));
-            etagText.push_back('"');
-            return etagText;
+            // 写法与旧的「两段 to_chars 再拼进 string」逐字节一致：同一个十六进制基数、同一个字段
+            // 次序，只是目标换成了调用方的缓冲。这段文本只活到 setHeader 把内容拷走，按值交出就是
+            // 每个静态请求一份超出小串内联缓冲的堆分配
+            std::size_t cursor = 0;
+            buffer[cursor++] = '"';
+            // 缓冲按上限算足（1+16+1+17+1 = 36），仍按剩余区间逐段交出：to_chars 写不下只会返回
+            // 错误而不越界
+            const auto sizeResult = std::to_chars(buffer.data() + cursor, buffer.data() + buffer.size(), fileSize, 16);
+            cursor = static_cast<std::size_t>(sizeResult.ptr - buffer.data());
+            buffer[cursor++] = '-';
+            const auto timeResult = std::to_chars(buffer.data() + cursor, buffer.data() + buffer.size(), lastWriteSeconds, 16);
+            cursor = static_cast<std::size_t>(timeResult.ptr - buffer.data());
+            buffer[cursor++] = '"';
+            return std::string_view(buffer.data(), cursor);
         }
 
         /**
@@ -640,8 +644,13 @@ namespace AsynGyanis::Net
             // 三样取自同一次查询，因此大小与修改时间必然描述同一个版本；分三次查时中间被改过
             // 就会拼出一对来自不同版本的验证器，那才是原先两处 500 分支想挡的东西
             const std::int64_t lastWriteSeconds = fileBasicInfo->lastWriteSeconds;
-            const std::string entityTagText = makeStrongEtag(fileSize, lastWriteSeconds);
-            const std::string lastModifiedText = formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)));
+            // 两份验证器文本都落在栈上：它们只活到 setHeader 把内容拷进响应的头部存储为止，
+            // 按 std::string 交回就是每请求两次超出内联缓冲的堆分配（ETag 最长 36、日期定长 29）
+            std::array<char, kMaximumEtagTextBytes> etagBuffer{};
+            const std::string_view entityTagText = makeStrongEtag(fileSize, lastWriteSeconds, etagBuffer);
+            std::array<char, kHttpDateTextLength> lastModifiedBuffer{};
+            const std::string_view lastModifiedText = formatHttpDate(
+                    std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)), lastModifiedBuffer);
             // MIME 只看最后一段扩展名，因此只把扩展名按 UTF-8 出串：整条路径的文本要一次堆分配，
             // 而扩展名短到能留在小串内联里。两条都不走 path::string()——Windows 上它按本地代码页出串，
             // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上

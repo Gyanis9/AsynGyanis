@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -97,6 +98,25 @@ namespace AsynGyanis::Net
     {
         EXPECT_EQ(formatHttpDate(instantFromSeconds(0)).size(), kHttpDateTextLength);
         EXPECT_EQ(formatHttpDate(instantFromSeconds(784111777)).size(), kHttpDateTextLength);
+    }
+
+    /**
+     * @brief 定长缓冲那条出口与按值交出的那条逐字节同文，且产物确实落在调用方的缓冲里
+     * @details 静态文件的 Last-Modified 走的是缓冲出口（每请求一份，29 字节超出小串内联）。两条必须
+     *          同文，否则同一份文件在两次请求里会出现两种验证器；视图指回调用方的缓冲，才说明这条
+     *          真的没碰堆。取样覆盖纪元、纪元前一秒与两个正常年份。
+     */
+    TEST(HttpDate, FixedBufferFormatProducesTheSameTextIntoTheCallersBuffer)
+    {
+        for (const std::int64_t seconds : {784111777LL, 0LL, -1LL, 1788393600LL})
+        {
+            const std::chrono::system_clock::time_point instant = instantFromSeconds(seconds);
+            std::array<char, kHttpDateTextLength> buffer{};
+            const std::string_view formatted = formatHttpDate(instant, buffer);
+            EXPECT_EQ(formatted, formatHttpDate(instant)) << "秒数 " << seconds << " 两条出口不同文";
+            EXPECT_EQ(formatted.data(), buffer.data()) << "产物没落在调用方的缓冲里，这条还是在碰堆";
+            EXPECT_EQ(formatted.size(), kHttpDateTextLength);
+        }
     }
 
     TEST(HttpDate, ParsesKnownTextBackToSameInstant)

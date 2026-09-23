@@ -164,12 +164,25 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    std::string formatHttpDate(const std::chrono::system_clock::time_point time)
+    std::string_view formatHttpDate(const std::chrono::system_clock::time_point time,
+                                    const std::span<char, kHttpDateTextLength> buffer) noexcept
     {
         const std::time_t calendarTime = std::chrono::system_clock::to_time_t(time);
         const Platform::UtcTimeFields fields = Platform::PlatformTime::utcTime(calendarTime);
         const std::array<char, kHttpDateTextLength> text = buildHttpDateText(fields);
-        return std::string(text.data(), text.size());
+        for (std::size_t index = 0; index < kHttpDateTextLength; ++index)
+        {
+            buffer[index] = text[index];
+        }
+        return std::string_view(buffer.data(), buffer.size());
+    }
+
+    std::string formatHttpDate(const std::chrono::system_clock::time_point time)
+    {
+        // 拼装只有一份：按值交出的那条先落在栈上，再拷成调用方的 string
+        std::array<char, kHttpDateTextLength> text{};
+        const std::string_view formatted = formatHttpDate(time, text);
+        return std::string(formatted.begin(), formatted.end());
     }
 
     std::string_view currentHttpDateText()
