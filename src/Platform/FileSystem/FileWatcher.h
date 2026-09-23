@@ -91,14 +91,17 @@ namespace AsynGyanis::Platform
          * @param recursive 是否递归监听子目录，仅对目录有效
          * @return true 添加成功或已在监听集合中
          * @return false 路径无法解析或原生监听注册失败
+         * @note 注册失败（最常见的是路径当时还不存在）仍会留下一条**待挂登记**：目录之后出现时，
+         *       监听线程按秒节的复查会把它挂上并开始派发事件。热加载一类「服务比配置目录先起来」
+         *       的用法依赖这条，因此它不随 false 一起消失；要收回它只能显式 removeWatch（两平台同口径）。
          */
         virtual bool addWatch(std::string_view path, bool recursive = false) = 0;
 
         /**
          * @brief 移除指定路径的监听
          * @param path 之前添加过的文件或目录路径
-         * @return true 移除成功
-         * @return false 该路径未在监听集合中
+         * @return true 移除成功，或撤掉的是一条尚未成立的待挂登记
+         * @return false 该路径既不在监听集合中，也没有等着补挂的登记
          */
         virtual bool removeWatch(std::string_view path) = 0;
 

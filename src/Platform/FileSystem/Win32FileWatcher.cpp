@@ -285,7 +285,17 @@ namespace AsynGyanis::Platform
         const auto                   iterator       = m_watches.find(normalizedPath);
         if (iterator == m_watches.end())
         {
-            return false;
+            if (keepRecursiveWatchPath)
+            {
+                return false;
+            }
+            // 「没有活监视」不等于「这条路径没被登记过」：addWatch 当场失败（路径当时不存在）会留下
+            // 一份待挂登记，目录之后出现时自愈节拍会把它挂上并开始派发事件。显式撤销要把这份意图一起
+            // 清掉，否则调用方以为撤干净了，事件却在之后的某个时刻开始流过来（登记清单的写入在原生
+            // 注册之前，失败时不会自己回退）
+            const std::size_t revokedPendingEntries
+                    = m_selfHealPaths.erase(normalizedPath) + m_recursiveWatchPaths.erase(normalizedPath);
+            return revokedPendingEntries > 0;
         }
 
         closeEntry(*iterator->second);

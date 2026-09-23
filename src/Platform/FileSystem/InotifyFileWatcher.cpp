@@ -153,7 +153,12 @@ namespace AsynGyanis::Platform
         const auto iterator = m_pathToWatchDescriptor.find(absolutePath);
         if (iterator == m_pathToWatchDescriptor.end())
         {
-            return false;
+            // 「没有活监视」不等于「这条路径没被登记过」：注册失败（路径当时不存在）也保留清单里的那一条，
+            // 目录之后出现时由自愈节拍补挂。显式撤销连这份意图一起清掉，否则调用方以为撤干净了，事件
+            // 却在之后的某个时刻开始流过来。与 Windows 侧 dropWatch 同一口径
+            const std::size_t revokedPendingEntries
+                    = m_selfHealPaths.erase(absolutePath) + m_recursiveRoots.erase(absolutePath);
+            return revokedPendingEntries > 0;
         }
 
         // 原生解除失败（例如监视已被内核回收）时同样清理映射，防止悬挂描述符

@@ -657,6 +657,83 @@ namespace AsynGyanis::Platform
         EXPECT_FALSE(watcher->addWatch(missingDirectory.string()));
     }
 
+    /**
+     * @brief 钉住：当场报失败的 addWatch 留下一条待挂登记，目录之后出现时由框架自己挂上
+     * @details 登记清单写在原生注册之前，失败时不回退——这是有意为之（服务比配置目录先起来的场景靠它），
+     *          但 `addWatch` 返回 false 让这件事在契约上完全看不见。本用例把这条真实行为钉成契约的一部分，
+     *          并且两平台必须给同一种结果（Windows 此前也这样做，只是没人钉）。全程不再调第二次 addWatch。
+     */
+    TEST(FileWatcher, AddWatchOnMissingDirectoryAttachesAfterTheDirectoryAppears)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_PendingInterest");
+        const std::filesystem::path           missingDirectory = temporaryDirectory.path() / "not_created";
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_FALSE(watcher->addWatch(missingDirectory.string())) << "目录不在时这条注册就该当场报失败";
+
+        ASSERT_TRUE(std::filesystem::create_directories(missingDirectory));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200));   // 跨过至少两个自愈节拍
+
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("not_created/late.yaml", "attached: true\n"));
+        const bool attachedLater = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("late.yaml");
+                },
+                3000);
+
+        watcher->stop();
+        EXPECT_TRUE(attachedLater) << "待挂登记没起作用：目录后来出现也没人替这条路径补挂监视";
+    }
+
+    /**
+     * @brief 钉住：removeWatch 要能收回那条尚未成立的待挂登记
+     * @details 光看 `removeWatch` 的返回值，「没在监听」与「登记过但还没成立」是同一个 false；于是撤销
+     *          掉不了那份意图，事件会在目录出现之后的某个时刻突然开始流过来，而调用方以为自己已经撤干净了。
+     *          与上一条用例配成一对：登记是真的会留下，撤销也必须真的能收回来。
+     */
+    TEST(FileWatcher, RemoveWatchRevokesAPendingRegistration)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RevokePending");
+        const std::filesystem::path           missingDirectory = temporaryDirectory.path() / "not_created";
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+        {
+            recorder.record(filePath, changeType);
+        });
+
+        ASSERT_FALSE(watcher->addWatch(missingDirectory.string()));
+        EXPECT_TRUE(watcher->removeWatch(missingDirectory.string()))
+                << "撤销该承认「收回了一条待挂登记」——它确实动过状态，只是没在监听";
+
+        ASSERT_TRUE(std::filesystem::create_directories(missingDirectory));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200));   // 跨过至少两个自愈节拍
+
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("not_created/late.yaml", "surprise: true\n"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+        const std::size_t reportedEventCount = recorder.eventCount();
+        watcher->stop();
+        EXPECT_EQ(reportedEventCount, 0U)
+                << "被撤销过的 addWatch 后来自己开始派发事件：调用方拿到的「撤销成功」成了一句空话";
+    }
+
     TEST(FileWatcher, AddingSameDirectoryTwiceIsIdempotent)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Duplicate");
@@ -884,10 +961,9 @@ namespace AsynGyanis::Platform
 
     /**
      * @brief 钉住：非递归的目录监视在目录被换掉之后同样要由自愈补挂
-     * @details 自愈清单原先只收「递归监视覆盖到的目录」，调用方按 recursive=false 注册的那一条不在里面：
-     *          目录被删掉再放回时旧监视随句柄失效，而重建出来的目录没有人会再调 addWatch，它内部的变更
-     *          从此不上报。Linux 侧的清单已经改成「调用方请求过的每条路径」，覆盖这一条；Windows 仍漏，
-     *          于是同一次调用在两台机器上给出不同的可靠性。全程不重新注册，只等自愈节拍。
+     * @details 自愈清单收的是「调用方请求过的每条路径」，不只是递归监视覆盖到的那些：目录被删掉再放回时
+     *          旧监视随句柄失效，而重建出来的目录没有人会再调 addWatch，它内部的变更从此不上报。
+     *          全程不重新注册、只等自愈节拍，两平台必须给出同一种可靠性。
      */
     TEST(FileWatcher, NonRecursiveWatchIsRewatchedAfterDirectoryIsReplaced)
     {
