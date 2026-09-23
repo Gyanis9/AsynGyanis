@@ -290,6 +290,32 @@ namespace
             Samples::checklist().check(!text.empty() && text.find(expectedFragment) != std::string::npos,
                                        formatterName + " 产出的行里带着预期字段");
         }
+
+        // 非法 UTF-8 的处置是「整条不写」而不是写出一串看着合法、内容已被改写的字节——采集端拿到
+        // 静默变形的日志比少一条更难查。判据一正一反：坏的那条连标记都不该出现，紧随其后的正常行
+        // 照样落得下去，且这条失败不抛给调用方（日志写不出去不该带走业务流程）
+        // 文件与 logger 名单独一套：复用上面那一步的 JsonFormatter.log 会把它的正文截掉，
+        // 事后翻日志的人就分不清哪个文件是哪一步留下的
+        const auto  invalidUtf8Path = directory / "JsonFormatterInvalidUtf8.log";
+        Base::Logger &invalidUtf8Logger = makeFileLogger("sample.JsonFormatterInvalidUtf8", invalidUtf8Path, true, "JsonFormatter");
+        std::string  brokenMessage      = "带非法字节的正文 ";
+        brokenMessage.push_back('\xFF');
+        bool threwIntoCaller = false;
+        try
+        {
+            invalidUtf8Logger.log(Base::LogLevel::Info, brokenMessage);
+            invalidUtf8Logger.log(Base::LogLevel::Info, "坏消息之后的正常一行");
+        } catch (...)
+        {
+            threwIntoCaller = true;
+        }
+        static_cast<void>(invalidUtf8Logger.flush());
+
+        const std::string invalidUtf8Text = readWholeFile(invalidUtf8Path);
+        Samples::checklist().check(!threwIntoCaller &&
+                                       invalidUtf8Text.find("带非法字节的正文") == std::string::npos &&
+                                       invalidUtf8Text.find("坏消息之后的正常一行") != std::string::npos,
+                                   "含非法 UTF-8 的那条整条不写也不抛给调用方，后面的正常行照常落盘");
     }
 
     void demonstrateExceptionLogging(const std::filesystem::path &directory)
