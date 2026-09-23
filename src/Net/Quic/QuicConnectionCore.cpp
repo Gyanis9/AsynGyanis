@@ -151,6 +151,20 @@ namespace AsynGyanis::Net
             thread_local std::vector<std::uint8_t> plaintext{};
             return kind == ReceiveScratch::PacketCopy ? packetCopy : plaintext;
         }
+
+        /**
+         * @brief 出站帧序列的复用缓冲（一包的帧先编进它，再由组包器抄进报文）
+         * @details 与 `receiveScratch()` 同一套纪律：按线程一份、每包开始时清空，
+         *          任何指向它的视图都不许活到下一次取用。这里成立的理由是组包器
+         *          （`appendQuicPacket`）在返回前就把字节全部抄走了，中间的恢复层与拥塞层
+         *          只读记账不读内容。
+         * @return 本线程那份帧缓冲，调用方清空后往里追加
+         */
+        std::string &outboundFrameAssemblyBuffer() noexcept
+        {
+            thread_local std::string frames{};
+            return frames;
+        }
     } // namespace
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::spaceOf(const QuicEncryptionLevel level) noexcept
@@ -750,9 +764,12 @@ namespace AsynGyanis::Net
         // 整轮探测都豁免窗口（§7.5）：欠的那一条可能分两包出去，只豁免第一包等于把后半段卡在门外
         const bool isProbingSpace = owesProbe;
 
+        // 整轮的帧序列都编进同一块缓冲：它只活到 emitPacket 把字节抄进报文为止，留在循环里逐包新建
+        // 就是每个出站包都付一次「从空长到一包大小」的几何扩容
+        std::string &frames = outboundFrameAssemblyBuffer();
         for (;;)
         {
-            std::string frames;
+            frames.clear();
             bool elicitsAcknowledgement = false;
             if (std::exchange(state.isAcknowledgementPending, false) && state.largestAckElicitingReceived.has_value())
             {
