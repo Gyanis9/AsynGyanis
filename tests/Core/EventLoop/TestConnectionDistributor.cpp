@@ -266,6 +266,46 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 目标循环先退出、投递从未被执行时，描述符由交接句柄关回去
+     * @details 交接句柄（HandoffDescriptor）存在的唯一理由就是这一条：投出去的回调可能永远没人取，
+     *          而调用方按契约已经交出了所有权、不会再关它。少这一步，每丢一条待接手的连接就漏一个
+     *          描述符，连接风暴会把进程的文件描述符配额耗光。
+     *          用例刻意不起后台线程：循环从未 run()，队列里的投递只能随调度器析构一起被丢弃，
+     *          「没被执行」因此是构造出来的确定状态，而不是撞上时序运气。
+     * @note 同时钉住 distributedCount() 的口径：它记的是「已交出所有权」，不是「已被接手」——
+     *       这一条连接没人接手，计数仍然加它
+     */
+    TEST(ConnectionDistributorTest, DiscardedHandoffClosesTheDescriptorWhenTheLoopStopsFirst)
+    {
+        const int fileDescriptor = makeDetachedSocketDescriptor();
+        ASSERT_NE(fileDescriptor, static_cast<int>(Platform::FileDescriptor::kInvalid));
+
+        std::atomic<bool> isAdopterEntered{false};
+        std::size_t       distributedCountBeforeScopeEnd = 0;
+        {
+            EventLoop             loop; // 不启动：没有人会来取这条投递
+            ConnectionDistributor distributor;
+            distributor.addWorker(loop, [&isAdopterEntered](int)
+            {
+                isAdopterEntered.store(true, std::memory_order_release);
+            });
+
+            ASSERT_TRUE(distributor.distribute(fileDescriptor)) << "句柄已建成，按契约应当报「已接管」";
+            distributedCountBeforeScopeEnd = distributor.distributedCount();
+            EXPECT_TRUE(isDescriptorStillOpen(fileDescriptor))
+                    << "投递还没被执行就把描述符关掉，等于掐掉一条本可以接手成功的连接";
+
+            // 出作用域：distributor 先销毁（投递自带 adopter 副本，不依赖它），随后 loop 销毁
+            // → 调度器成员析构 → 队列里那条投递连同交接句柄一起被丢掉
+        }
+
+        EXPECT_EQ(distributedCountBeforeScopeEnd, 1U) << "计数应当把这条「已交出所有权」的连接算进去";
+        EXPECT_FALSE(isAdopterEntered.load(std::memory_order_acquire)) << "循环没跑过，接手动作不该执行";
+        EXPECT_FALSE(isDescriptorStillOpen(fileDescriptor))
+                << "目标循环退出后没被执行的那条投递没有把描述符关回去：每丢一条就漏一个句柄";
+    }
+
+    /**
      * @brief 派发一条连接的分配画像：交接句柄与回调载荷各自一块堆
      * @details 量的是「投一条 + 那条被取走」这一整趟，跑在单线程上（循环不起线程，由本用例
      *          直接 runOne() 取用），否则读数里会混进后台线程自己的动作。判据只在 Release 下钉，
