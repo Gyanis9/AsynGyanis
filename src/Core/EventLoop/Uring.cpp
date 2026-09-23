@@ -22,6 +22,15 @@ namespace AsynGyanis::Core
         /// 环形队列条目数：与 Epoll 侧的事件数组默认容量同档
         constexpr unsigned kRingEntryCount = 1024;
 
+        /// 超时操作票据的标记位：轮询票据的高 32 位是「槽位下标 + 1」，到不了这一位，两者永不撞车
+        constexpr std::uint64_t kTimeoutTicketFlag = 1ULL << 63;
+
+        /// 槽位下标在票据里占的位数：低 32 位留给该槽位的代数
+        constexpr unsigned kInFlightSlotIndexShift = 32;
+
+        /// 首次分配槽位时的起步格数：与一轮里可能同时在途的轮询数同档，避免逐格长
+        constexpr std::size_t kInitialInFlightSlotCount = 64;
+
         /**
          * @brief 提交一次系统调用形态的 io_uring_enter
          * @return 非负返回值为内核实际消费/唤醒的数量；-1 表示失败（errno 已置位）
@@ -162,7 +171,8 @@ namespace AsynGyanis::Core
             m_timeoutValue                = std::exchange(other.m_timeoutValue, nullptr);
             m_registrations               = std::move(other.m_registrations);
             m_zombiePolls                 = std::move(other.m_zombiePolls);
-            m_inFlightPolls               = std::move(other.m_inFlightPolls);
+            m_inFlightSlots                 = std::move(other.m_inFlightSlots);
+            m_freeInFlightSlots             = std::move(other.m_freeInFlightSlots);
             m_attentionDescriptors        = std::move(other.m_attentionDescriptors);
             m_nextTicket                  = std::exchange(other.m_nextTicket, 1);
             m_timeoutTicket               = std::exchange(other.m_timeoutTicket, 0);
@@ -176,7 +186,8 @@ namespace AsynGyanis::Core
         // 注册记录只清本地状态：描述符归调用方所有，这里不 close
         m_registrations.clear();
         m_zombiePolls.clear();
-        m_inFlightPolls.clear();
+        m_inFlightSlots.clear();
+        m_freeInFlightSlots.clear();
         m_attentionDescriptors.clear();
         m_readyEvents.clear();
 
@@ -235,11 +246,65 @@ namespace AsynGyanis::Core
         {
             return;
         }
-        // 把 unique_ptr 移到僵尸表：描述符键随之释放，记录仍被持有着（m_inFlightPolls 里那份
+        // 把 unique_ptr 移到僵尸表：描述符键随之释放，记录仍被持有着（在途表里那份
         // 裸指针继续有效），等取消完成通知到了再销毁
         const std::uint64_t ticket = registration->inFlightTicket;
         m_zombiePolls.emplace(ticket, std::move(iterator->second));
         m_registrations.erase(iterator);
+    }
+
+    // ---- 在途轮询表（票据 → 注册记录） --------------------------------------
+
+    std::uint64_t Uring::reserveInFlightPoll(Registration &registration)
+    {
+        std::uint32_t slotIndex{0};
+        std::uint32_t generation{1};
+        if (!m_freeInFlightSlots.empty())
+        {
+            // 后进先出：刚腾出来的格子大概率还在缓存里，也不用把数组两头都占着
+            slotIndex  = m_freeInFlightSlots.back();
+            generation = static_cast<std::uint32_t>(m_inFlightSlots[slotIndex].generation + 1U);
+            // 代数转回 0 会与「从没用过」撞编码（单条连接复用 40 亿次才会遇到），跳过这个值
+            if (generation == 0)
+            {
+                generation = 1;
+            }
+            m_inFlightSlots[slotIndex].generation = generation;
+            m_inFlightSlots[slotIndex].record     = &registration;
+            m_freeInFlightSlots.pop_back();
+        }
+        else
+        {
+            slotIndex = static_cast<std::uint32_t>(m_inFlightSlots.size());
+            if (m_inFlightSlots.size() == m_inFlightSlots.capacity())
+            {
+                // 只有格子用完才倍增一次容量；此后同一批在途条数之内都零分配
+                m_inFlightSlots.reserve(m_inFlightSlots.empty() ? kInitialInFlightSlotCount : m_inFlightSlots.capacity() * 2);
+            }
+            m_inFlightSlots.push_back(InFlightSlot{1, &registration});
+        }
+        // 下标整体加一再编码：票据 0 因此永远发不出来，而 0 正是「没有在途轮询」的现成哨兵
+        return (static_cast<std::uint64_t>(slotIndex + 1U) << kInFlightSlotIndexShift) | generation;
+    }
+
+    Uring::Registration *Uring::takeInFlightPoll(const std::uint64_t ticket) noexcept
+    {
+        const std::uint64_t encodedSlotIndex = ticket >> kInFlightSlotIndexShift;
+        // 超时那一路的票据带标记位，解出来的下标必然越界 -> 直接拒，不会错认成某条轮询
+        if (encodedSlotIndex == 0 || encodedSlotIndex > m_inFlightSlots.size())
+        {
+            return nullptr;
+        }
+        auto &slot = m_inFlightSlots[static_cast<std::size_t>(encodedSlotIndex - 1U)];
+        if (slot.record == nullptr || slot.generation != static_cast<std::uint32_t>(ticket & 0xFFFFFFFFU))
+        {
+            // 格子已还给空闲栈，或代数对不上：取消操作自身的完成、或已被新掩码取代的陈旧票据
+            return nullptr;
+        }
+        Registration *const registration = slot.record;
+        slot.record = nullptr;
+        m_freeInFlightSlots.push_back(static_cast<std::uint32_t>(encodedSlotIndex - 1U));
+        return registration;
     }
 
     // ---- 提交 ---------------------------------------------------------------
@@ -337,7 +402,8 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        const std::uint64_t ticket = m_nextTicket++;
+        // 先占格子：票据本身编码了「哪一格、第几代」，因此不需要另建查找表
+        const std::uint64_t ticket = reserveInFlightPoll(registration);
         submission->opcode         = IORING_OP_POLL_ADD;
         submission->fd             = registration.fileDescriptor;
         submission->poll32_events  = registration.events;
@@ -345,7 +411,6 @@ namespace AsynGyanis::Core
 
         registration.inFlightTicket = ticket;
         registration.inFlightEvents = registration.events;
-        m_inFlightPolls[ticket]     = &registration;
         return true;
     }
 
@@ -380,7 +445,7 @@ namespace AsynGyanis::Core
         m_timeoutValue->tv_sec  = timeoutMs / 1000;
         m_timeoutValue->tv_nsec = static_cast<long>(timeoutMs % 1000) * 1000000L;
 
-        const std::uint64_t ticket = m_nextTicket++;
+        const std::uint64_t ticket = kTimeoutTicketFlag | (m_nextTicket++ & 0x00000000FFFFFFFFULL);
         submission->opcode         = IORING_OP_TIMEOUT;
         submission->addr           = reinterpret_cast<std::uint64_t>(m_timeoutValue);
         submission->len            = 1;
@@ -511,15 +576,13 @@ namespace AsynGyanis::Core
             return;
         }
 
-        const auto pollIterator = m_inFlightPolls.find(ticket);
-        if (pollIterator == m_inFlightPolls.end())
+        Registration *const registration = takeInFlightPoll(ticket);
+        if (registration == nullptr)
         {
             // 取消操作自身的完成、或已被取代的陈旧票据：没有可投递的事件
             return;
         }
 
-        Registration *const registration = pollIterator->second;
-        m_inFlightPolls.erase(pollIterator);
 
         if (registration->inFlightTicket != ticket)
         {

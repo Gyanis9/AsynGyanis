@@ -190,6 +190,24 @@ namespace AsynGyanis::Core
         void maintainRegistrations();
 
         /**
+         * @brief 为一条要提交的轮询占一个在途槽位，并返回该填进 user_data 的票据
+         * @details 水平触发下每轮都要「摘一条 + 登记一条」，按在册描述符数各来一次，因此这条路
+         *          必须零分配：槽位数组长到位之后只靠空闲栈来回取还。
+         * @param registration 该轮询所属的注册记录（必须活到完成通知到达，见 zombifyRegistration()）
+         * @return std::uint64_t （槽位下标 + 1）<< 32 | 代数；票据 0 因此永不发出，同一槽位每次复用
+         *         代数加一，迟到的陈旧票据就对不上当前的归属
+         */
+        [[nodiscard]] std::uint64_t reserveInFlightPoll(Registration &registration);
+
+        /**
+         * @brief 按票据摘回一条在途轮询所占的槽位
+         * @param ticket 完成通知带回的 user_data
+         * @return Registration * nullptr 表示这张票不对应在途轮询：取消操作自身的完成、已被新掩码
+         *         取代的陈旧票据，或超时那一路的票据（带高位标记，落不进槽位编码）
+         */
+        [[nodiscard]] Registration *takeInFlightPoll(std::uint64_t ticket) noexcept;
+
+        /**
          * @brief 按描述符查注册记录
          */
         [[nodiscard]] Registration *findRegistration(int fileDescriptor) const;
@@ -239,13 +257,23 @@ namespace AsynGyanis::Core
         /// 僵尸登记项（键是在途票据）：描述符键已释放、但内核还持有记录地址的那些。取消完成通知
         /// 到达时在这里释放；在那之前同一个 fd 号必须能被新连接重新注册
         std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls;
-        std::map<std::uint64_t, Registration *>      m_inFlightPolls; ///< 票据到在途轮询的映射
+        /// 一条在途轮询的槽位：票据 =（（槽位下标 + 1）<< 32）| 代数，完成通知据此直接定位，不查表
+        struct InFlightSlot
+        {
+            std::uint32_t generation{0};   ///< 每次复用加一；0 表示这格从没用过
+            Registration *record{nullptr}; ///< 这轮轮询属于哪条注册记录，空表示本格空闲
+        };
+
+        /// 在途轮询的槽位数组：容量长到「同时在途的条数」后保持不变，摘除只把下标还给空闲栈
+        std::vector<InFlightSlot>                   m_inFlightSlots;     ///< 槽位本体
+        std::vector<std::uint32_t>                  m_freeInFlightSlots; ///< 空闲槽位下标栈（后进先出）
+
         /// 需要维护动作的描述符（按号存，不存指针：记录可能在这之前就被销毁）
         /// 投递一次电平事件、或某次提交没成功时登记，维护只走这几条。
         /// 残留的号被新连接复用也无害：那条登记最多让新注册提前补投一次它本来就要补的轮询，
         /// 而不会把动作错派给别的对象——维护读的是注册记录此刻的状态，不是登记时的状态
         std::vector<int>                             m_attentionDescriptors;
-        std::uint64_t                                m_nextTicket{1};  ///< 票据分配器（单调递增）
+        std::uint64_t                                m_nextTicket{1};  ///< 超时票据的计数（带高位标记，与轮询槽位编码不重叠）
         std::uint64_t                                m_timeoutTicket{0}; ///< 在途超时操作的票据
 
         std::vector<epoll_event> m_readyEvents; ///< wait() 的落地缓冲：构造时一次定容，改容量会让已交出去的视图悬垂

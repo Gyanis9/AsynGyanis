@@ -264,8 +264,8 @@ namespace AsynGyanis::Core
      * @brief 水平触发的常驻注册在稳态每轮 wait() 都不该碰堆
      * @details 完成端口靠「重新投一次探针」模拟水平触发，因此只要有人注册着，待重投表每轮都非空；
      *          把整张表换到局部变量再销毁，等于每轮把缓冲还给堆、下一轮再按容量长出来（实测 32 条
-     *          注册下每轮 12 次分配，改成按下标消费后归零）。epoll 后端本来就零分配；io_uring 后端
-     *          另有一笔按在途轮询条数付的分配，口径见下面的 TODO。
+     *          注册下每轮 12 次分配，改成就地消费后归零）。io_uring 侧另有同一形状的一笔、按在途轮询
+     *          条数付的节点分配，也换成了扁平表；三个后端因此共用「零分配」这一条判据。
      */
     TEST(Epoll, LevelTriggeredWaitDoesNotAllocatePerRound)
     {
@@ -311,19 +311,150 @@ namespace AsynGyanis::Core
             }
         }
 
-#if defined(ASYN_WITH_IO_URING)
-        // TODO(Gyanis): 这条口径记的是「已知成本」，不是设计上限。多出来的是每轮一条、48 字节的块：
-        // 票据到注册记录的映射是节点式的 std::map（Uring::m_inFlightPolls），每轮「完成时摘除 +
-        // 重投时登记」各碰一次堆。要归零得换成开放寻址的扁平表（与 Iocp 的合并索引同一套路）；
-        // 不能把票据按记录复用——被取消那条轮询的完成通知会错配到新一轮轮询上，把真实就绪吃掉
-        constexpr std::uint64_t kExpectedAllocations = TestSupport::kMeasurementIterations * kRegisteredDescriptorCount;
-#else
-        constexpr std::uint64_t kExpectedAllocations = 0;
-#endif
-        EXPECT_EQ(profile.totalAllocations, kExpectedAllocations)
+        EXPECT_EQ(profile.totalAllocations, 0U)
                 << "稳态每轮 wait() 付了 " << (profile.totalAllocations / TestSupport::kMeasurementIterations)
-                << " 次分配（一千轮共 " << profile.totalAllocations << " 次，预期 " << kExpectedAllocations
-                << "，大小分布:" << histogramText << "）";
+                << " 次分配（一千轮共 " << profile.totalAllocations << " 次，大小分布:" << histogramText << "）";
+
+        for (auto &eventFd: eventFds)
+        {
+            EXPECT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
+        }
+    }
+
+    /**
+     * @brief 一直挂着不动的那份轮询，要被后面成千张新票据挤过位置也还得接回来
+     * @details 空闲连接的轮询会带着**一张很旧的票据**一直挂在途，而活跃连接每轮都在换新票据——
+     *          票据号相差整数个槽位时两者会落到同一格上（探测链由此接成一段），删掉其中一条就得把
+     *          同段后面的条目往前挪。挪错或漏挪的表现是这条空闲注册从此不再报就绪，而这是服务端
+     *          最常见的一种连接（keep-alive 空转），不能等到线上才发现。
+     */
+    TEST(Epoll, IdleRegistrationSurvivesTicketWraparound)
+    {
+        // 8 条「挂着不动」的注册：整个用例期间都不触发，所以票据一直留在途、且越来越旧
+        constexpr std::size_t kIdleDescriptorCount   = 8;
+        // 256 条每轮冲刷的注册：每轮两张新票据，几千张之后必然越过一整圈槽位与旧票据撞格
+        constexpr std::size_t kActiveDescriptorCount = 256;
+        constexpr std::size_t kRoundCount            = 24;
+
+        Epoll backend;
+        std::array<TestEventFd, kIdleDescriptorCount> idleFds;
+        std::array<TestEventFd, kActiveDescriptorCount> activeFds;
+        for (auto &idleFd: idleFds)
+        {
+            ASSERT_GE(idleFd.fileDescriptor, 0);
+            // 刻意不 trigger：这份轮询要一直挂在途，才有「旧票据」可言
+            ASSERT_TRUE(backend.addFileDescriptor(idleFd.fileDescriptor, EPOLLIN, &idleFd));
+        }
+        for (auto &activeFd: activeFds)
+        {
+            ASSERT_GE(activeFd.fileDescriptor, 0);
+            ASSERT_TRUE(activeFd.trigger());
+            ASSERT_TRUE(backend.addFileDescriptor(activeFd.fileDescriptor, EPOLLIN, &activeFd));
+        }
+
+        for (std::size_t round = 0; round < kRoundCount; ++round)
+        {
+            for (auto &activeFd: activeFds)
+            {
+                ASSERT_TRUE(backend.modFileDescriptor(activeFd.fileDescriptor, 0, &activeFd));
+                ASSERT_TRUE(backend.modFileDescriptor(activeFd.fileDescriptor, EPOLLIN, &activeFd));
+            }
+            static_cast<void>(backend.wait(500));
+        }
+
+        // 现在才让空闲注册可读：它在途那份轮询该照常完成并把就绪交回来
+        for (auto &idleFd: idleFds)
+        {
+            ASSERT_TRUE(idleFd.trigger());
+        }
+        std::size_t idleReportedCount{0};
+        for (std::size_t drain = 0; drain < 20 && idleReportedCount < kIdleDescriptorCount; ++drain)
+        {
+            for (const auto &event: backend.wait(500))
+            {
+                const auto *const slot = static_cast<const TestEventFd *>(event.data.ptr);
+                // 只在空闲那批里比对地址（活跃批的指针也在这里出现，跨数组相减是未定义的）
+                const auto idleIterator = std::find_if(idleFds.begin(), idleFds.end(),
+                                                       [slot](const TestEventFd &candidate)
+                                                       {
+                                                           return &candidate == slot;
+                                                       });
+                if (idleIterator != idleFds.end())
+                {
+                    ++idleReportedCount;
+                }
+            }
+        }
+        EXPECT_GE(idleReportedCount, kIdleDescriptorCount)
+                << "空闲注册被冲刷的票据挤掉了：那份在途轮询的归属已经丢了";
+
+        for (auto &idleFd: idleFds)
+        {
+            EXPECT_TRUE(backend.delFileDescriptor(idleFd.fileDescriptor));
+        }
+        for (auto &activeFd: activeFds)
+        {
+            EXPECT_TRUE(backend.delFileDescriptor(activeFd.fileDescriptor));
+        }
+    }
+
+    /**
+     * @brief 大批注册在「反复改关注位」的冲刷下，一条就绪都不许丢
+     * @details 每轮把关注位清零再改回来，给后端造出「撤掉在途轮询 + 立刻重投」的成对操作：在途表要
+     *          连续摘除与登记，还会晚到陈旧的取消通知。水平触发下每条注册每轮都该报一次就绪，因此
+     *          按注册对象分别计数、每条都至少要有轮数次；少一条就是某条重投的轮询被摘丢或错配掉了。
+     * @note 单轮交回哪几条不固定（批量取只要等到一条就返回），所以断言落在**每条各自的次数**上
+     */
+    TEST(Epoll, LargeRegistrationSetSurvivesMaskChurn)
+    {
+        constexpr std::size_t kRegisteredDescriptorCount = 200;
+        constexpr std::size_t kRoundCount                = 40;
+
+        Epoll backend;
+        std::array<TestEventFd, kRegisteredDescriptorCount> eventFds;
+        for (auto &eventFd: eventFds)
+        {
+            ASSERT_GE(eventFd.fileDescriptor, 0);
+            ASSERT_TRUE(eventFd.trigger());
+            ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &eventFd));
+        }
+
+        std::array<std::size_t, kRegisteredDescriptorCount> reportedCounts{};
+        const auto collectReports = [&backend, &eventFds, &reportedCounts]()
+        {
+            for (const auto &event: backend.wait(500))
+            {
+                const auto *const slot  = static_cast<const TestEventFd *>(event.data.ptr);
+                const std::size_t index = static_cast<std::size_t>(slot - eventFds.data());
+                if (index >= reportedCounts.size())
+                {
+                    ADD_FAILURE_AT(__FILE__, __LINE__) << "事件带回了不属于本批注册的用户数据";
+                    continue;
+                }
+                ++reportedCounts[index];
+            }
+        };
+
+        for (std::size_t round = 0; round < kRoundCount; ++round)
+        {
+            for (auto &eventFd: eventFds)
+            {
+                ASSERT_TRUE(backend.modFileDescriptor(eventFd.fileDescriptor, 0, &eventFd));
+                ASSERT_TRUE(backend.modFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &eventFd));
+            }
+            collectReports();
+        }
+        // 数据始终没人消费，靠后的轮次可能把上一轮的就绪推到这一轮：补几轮收完，别把「还没轮到」当成丢了
+        for (std::size_t drain = 0; drain < 10; ++drain)
+        {
+            collectReports();
+        }
+
+        for (std::size_t index = 0; index < reportedCounts.size(); ++index)
+        {
+            EXPECT_GE(reportedCounts[index], kRoundCount)
+                    << "第 " << index << " 号描述符只报了 " << reportedCounts[index] << " 次，冲刷中被摘丢了";
+        }
 
         for (auto &eventFd: eventFds)
         {
