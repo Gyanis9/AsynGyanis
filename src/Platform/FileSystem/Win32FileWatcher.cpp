@@ -658,6 +658,14 @@ namespace AsynGyanis::Platform
 
         if (bytesTransferred == 0)
         {
+            // 溢出还有第二副面孔，而且它才是常见的那一副：监听线程正忙着上一批（回调慢、或整机被压满）
+            // 时，挂着的读被灌满后先以「有数据」收场，之后内核只能靠自己那份内部队列顶着；内部队列一满
+            // 就把攒下的通知整批扔掉，然后让下一条读以「成功、零字节」收场。
+            // 实测（脱离本层的裸 ReadDirectoryChangesW 探针）：消费侧每批停 50 ms、同一目录并发写 1200 个
+            // 文件，1027 个文件名再也没出现，而零字节完成出现 3 次、ERROR_NOTIFY_ENUM_DIR 一次都没报。
+            // 也就是说这条是那种丢法唯一的告状，当成「没事发生」返回就等于把事件静默吞掉——与上面那条
+            // 同为溢出，给同一个「该重扫了」信号
+            events.emplace_back(entry.path, FileChangeType::NeedsRescan);
             return;
         }
 

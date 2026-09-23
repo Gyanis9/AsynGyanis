@@ -239,10 +239,10 @@ namespace AsynGyanis::Platform
         static constexpr std::chrono::seconds kRootRecheckInterval{1};
         std::chrono::steady_clock::time_point rootRecheckDeadline{}; ///< 下一次复查时刻
 
-        /// 变更通知缓冲区字节数。64 KiB 不是随手取的：并发写同一个被监视目录时，通知超过缓冲区能装的
-        /// 条数就会被直接丢弃，而 Windows **不一定**报 ERROR_NOTIFY_ENUM_DIR——实测 4 KiB 下
-        /// 1200 个文件会静默丢掉 17~19 个（3/3 次运行），换成 64 KiB 后连跑 10 次一条不丢。
-        /// 每条监视一份缓冲区，代价是常驻内存按监视目录数线性增长（配置目录这类用法以 KiB 计）
+        /// 变更通知缓冲区字节数：它只决定「一趟往返能带走多少条记录」，装不下的那些由内核的内部队列
+        /// 代管，而代管部分在监听线程停摆期间会整批丢掉（那种丢法唯一的告状是零字节完成，见
+        /// processEntry）。64 KiB 让常见突发一趟带走、少跑几趟；每条监视一份缓冲区，常驻内存按
+        /// 监视目录数线性增长（配置目录这类用法以 KiB 计）
         static constexpr std::size_t kBufferSize  = 65536;
         static constexpr DWORD       kWatchFilter =       ///< 关注的目录变更类型掩码
                 FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;

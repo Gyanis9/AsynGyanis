@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -24,6 +25,10 @@ namespace AsynGyanis::Platform
     {
         /**
          * @brief 线程安全的事件记录器，收集监听回调上报的路径与类型
+         * @details 记录器跑在监听线程的回调里：它每次拿锁做多少工作，直接决定监听线程多久回来取
+         *          下一批通知。因此「出现过哪些文件名」与「有没有重扫信号」都在 record() 里增量维护，
+         *          查询只做查表而不是重建整份索引——否则轮询侧会把锁占满，监听线程卡在回调里不再排空
+         *          通知缓冲，缓冲区一溢出就静默丢事件，用例于是把「自己拖慢了被测方」测成平台缺陷。
          */
         class FileWatchRecorder
         {
@@ -37,6 +42,8 @@ namespace AsynGyanis::Platform
             {
                 std::lock_guard lock(m_mutex);
                 m_events.emplace_back(std::string(filePath), changeType);
+                m_distinctNames.insert(std::string(fileNameOf(filePath)));
+                m_sawRescanEvent = m_sawRescanEvent || changeType == FileChangeType::NeedsRescan;
             }
 
             /**
@@ -116,21 +123,11 @@ namespace AsynGyanis::Platform
              */
             [[nodiscard]] std::size_t missingFileCount(const std::vector<std::string> &fileNames) const
             {
-                std::unordered_set<std::string> seenNames;
-                {
-                    std::lock_guard lock(m_mutex);
-                    seenNames.reserve(m_events.size() * 2U);
-                    for (const auto &[filePath, changeType]: m_events)
-                    {
-                        (void) changeType;
-                        seenNames.insert(std::string(fileNameOf(filePath)));
-                    }
-                }
-
-                std::size_t missingCount = 0;
+                const std::lock_guard lock(m_mutex);
+                std::size_t           missingCount = 0;
                 for (const std::string &fileName: fileNames)
                 {
-                    if (!seenNames.contains(fileName))
+                    if (!m_distinctNames.contains(fileName))
                     {
                         ++missingCount;
                     }
@@ -144,16 +141,8 @@ namespace AsynGyanis::Platform
              */
             [[nodiscard]] bool sawRescan() const
             {
-                std::lock_guard lock(m_mutex);
-                for (const auto &[filePath, changeType]: m_events)
-                {
-                    (void) filePath;
-                    if (changeType == FileChangeType::NeedsRescan)
-                    {
-                        return true;
-                    }
-                }
-                return false;
+                const std::lock_guard lock(m_mutex);
+                return m_sawRescanEvent;
             }
 
         private:
@@ -170,7 +159,57 @@ namespace AsynGyanis::Platform
 
             mutable std::mutex                                   m_mutex;  ///< 保护事件列表
             std::vector<std::pair<std::string, FileChangeType> > m_events; ///< 已记录事件
+            std::unordered_set<std::string>                      m_distinctNames; ///< 出现过事件的文件名，record() 增量维护
+            bool                                                 m_sawRescanEvent{false}; ///< 是否出现过 NeedsRescan
         };
+
+        /**
+         * @brief 多线程同时往一个目录里灌长文件名，构造「生产比消费快」的突发
+         * @details 单线程逐个写的速率低于监听端排空的速度，永远灌不满缓冲区，因此溢出条件只能靠并发写
+         *          凑出来。文件名刻意加长：每条通知按 UTF-16 名字长度占缓冲，长名让同等字节数装下更少条。
+         * @param directory 目标临时目录
+         * @param fileCount 要写的文件条数
+         * @param threadCount 并发写入的线程数
+         * @return std::vector<std::string> 确实写成功的文件名（写失败的那些文件根本不存在，不该有事件）
+         */
+        std::vector<std::string> floodDirectory(const TestSupport::TemporaryDirectory &directory,
+                                                const std::size_t fileCount,
+                                                const std::size_t threadCount)
+        {
+            std::vector<std::string> fileNames;
+            fileNames.reserve(fileCount);
+            for (std::size_t index = 0; index < fileCount; ++index)
+            {
+                fileNames.push_back("flood-" + std::string(40, 'x') + '-' + std::to_string(index) + ".tmp");
+            }
+
+            // 灌入必须全部发生完才谈得上「有没有漏」：线程组放在内层作用域里，出作用域即 join
+            std::mutex                 writtenNamesMutex;
+            std::vector<std::string>   writtenNames;
+            writtenNames.reserve(fileCount);
+            {
+                std::vector<std::jthread> floodThreads;
+                floodThreads.reserve(threadCount);
+                for (std::size_t workerIndex = 0; workerIndex < threadCount; ++workerIndex)
+                {
+                    floodThreads.emplace_back(
+                            [&fileNames, &directory, &writtenNames, &writtenNamesMutex, workerIndex, threadCount]
+                            {
+                                std::vector<std::string> locallyWritten;
+                                for (std::size_t index = workerIndex; index < fileNames.size(); index += threadCount)
+                                {
+                                    if (directory.writeFile(fileNames[index], "x"))
+                                    {
+                                        locallyWritten.push_back(fileNames[index]);
+                                    }
+                                }
+                                const std::lock_guard lock(writtenNamesMutex);
+                                writtenNames.insert(writtenNames.end(), locallyWritten.begin(), locallyWritten.end());
+                            });
+                }
+            }
+            return writtenNames;
+        }
     } // namespace
 
     TEST(FileWatcher, CreateReturnsInstanceForCurrentPlatform)
@@ -1248,16 +1287,17 @@ namespace AsynGyanis::Platform
     /**
      * @brief 钉住：并发涌入同一个被监视目录的通知不允许静默丢失
      * @details 8 线程共写 1200 个文件，契约是「要么每个文件都收到事件，要么收到一条 NeedsRescan
-     *          让消费方去重扫」。两头都不占就是丢事件：实测通知缓冲区取 4 KiB 时，三次运行各自
-     *          静默丢掉 17~19 个文件名，且 `GetOverlappedResult` 全程成功、没有
-     *          ERROR_NOTIFY_ENUM_DIR——也就是这种丢法平台不告状，只能靠把缓冲区给足来避免
-     *          （取 64 KiB 后连跑 10 次一条不丢）。期望集合只收「确实写成功」的文件名，
-     *          灌入本身失败不算丢失。
+     *          让消费方去重扫」。两头都不占就是丢事件，而 Windows 在这种丢法上给的是「成功、零字节」
+     *          的完成而不是 ERROR_NOTIFY_ENUM_DIR（探针读数见 Win32FileWatcher::processEntry）。
+     *          期望集合只收「确实写成功」的文件名，灌入失败不算丢失。
      * @note 断言取两支之或，不赌调度时序：慢机器上排得过来就走「收齐」那一支，同样算通过。
+     *       判定侧只查表、不重建索引：轮询若把记录器的锁占满，监听线程就卡在回调里不再排空通知
+     *       缓冲，这条用例测的就不再是平台而是自己有多慢。
      */
     TEST(FileWatcher, ConcurrentChangesAreNeverSilentlyDropped)
     {
-        constexpr int kFloodFileCount = 1200;
+        constexpr std::size_t kFloodFileCount   = 1200;
+        constexpr std::size_t kFloodThreadCount = 8;
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Overflow");
 
         const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
@@ -1274,46 +1314,8 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->start());
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        // 文件名刻意加长：每条通知记录按 UTF-16 名字长度占缓冲，长名让 4 KiB 更早装满。
-        // 单线程逐个写的速率低于监听端排空的速度，永远灌不满，因此由多个线程同时往同一个
-        // 目录里写——溢出要的就是「生产比消费快」这个条件
-        constexpr int kFloodThreadCount = 8;
-        std::vector<std::string> floodNames;
-        floodNames.reserve(static_cast<std::size_t>(kFloodFileCount));
-        for (int index = 0; index < kFloodFileCount; ++index)
-        {
-            floodNames.push_back("flood-" + std::string(40, 'x') + '-' + std::to_string(index) + ".tmp");
-        }
-
-        // 灌入必须全部发生完才谈得上「有没有漏」：线程组放在内层作用域里，出作用域即 join。
-        // 期望集合只收「确实写成功的那些名字」——写失败时那个文件根本不存在，不该指望它有事件
-        std::mutex             writtenNamesMutex;
-        std::vector<std::string> writtenNames;
-        writtenNames.reserve(static_cast<std::size_t>(kFloodFileCount));
-        {
-            std::vector<std::jthread> floodThreads;
-            floodThreads.reserve(kFloodThreadCount);
-            for (int workerIndex = 0; workerIndex < kFloodThreadCount; ++workerIndex)
-            {
-                floodThreads.emplace_back(
-                        [&floodNames, &temporaryDirectory, &writtenNames, &writtenNamesMutex, workerIndex]
-                        {
-                            std::vector<std::string> locallyWritten;
-                            for (std::size_t index = static_cast<std::size_t>(workerIndex);
-                                 index < floodNames.size();
-                                 index += static_cast<std::size_t>(kFloodThreadCount))
-                            {
-                                if (temporaryDirectory.writeFile(floodNames[index], "x"))
-                                {
-                                    locallyWritten.push_back(floodNames[index]);
-                                }
-                            }
-                            const std::lock_guard lock(writtenNamesMutex);
-                            writtenNames.insert(writtenNames.end(), locallyWritten.begin(), locallyWritten.end());
-                        });
-            }
-        }
-        ASSERT_GT(writtenNames.size(), static_cast<std::size_t>(kFloodFileCount * 3 / 4))
+        const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
+        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4)
                 << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
 
         const bool everythingArrived = TestSupport::waitForCondition(
@@ -1328,6 +1330,67 @@ namespace AsynGyanis::Platform
         watcher->stop();
         EXPECT_TRUE(everythingArrived || recorder.sawRescan())
                 << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+    }
+
+    /**
+     * @brief 钉住：消费方停摆把内核那份内部队列顶爆时，必须拿到「该重扫」而不是什么都没有
+     * @details Windows 在这种丢法上给两种告状：`ERROR_NOTIFY_ENUM_DIR` 与「成功、零字节」的完成，
+     *          而实测常见的是后者（裸 API 探针：消费侧每批停 50 ms、并发写 1200 个文件，零字节完成
+     *          出现 3 次、`ERROR_NOTIFY_ENUM_DIR` 一次没报，上千个文件名再也不出现）。两条出口都要
+     *          落到 NeedsRescan，否则「要么收齐、要么告状」的契约两头都不成立。
+     * @note 严格那一支只在 Windows 断言：inotify 的队列上限以万条计，同样的停摆丢不出溢出，
+     *       Linux 侧走「收齐」那一支。
+     */
+    TEST(FileWatcher, StalledConsumerIsToldToRescanInsteadOfLosingEvents)
+    {
+        constexpr std::size_t kFloodFileCount   = 2000;
+        constexpr std::size_t kFloodThreadCount = 8;
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_StalledConsumer");
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        std::atomic_flag  hasStalled = ATOMIC_FLAG_INIT;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback(
+                [&recorder, &hasStalled](const std::string_view filePath, const FileChangeType changeType)
+                {
+                    recorder.record(filePath, changeType);
+                    // 只停这一次，且停在第一批刚被取走的时候：停摆期间挂着的读会被灌满，之后的变更
+                    // 只能靠内核自己那份内部队列顶着——要构造的就是「消费比生产慢」这个溢出条件
+                    if (!hasStalled.test_and_set())
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    }
+                });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
+        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4)
+                << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
+
+        const bool everythingArrived = TestSupport::waitForCondition(
+                [&recorder, &writtenNames]()
+                {
+                    return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0;
+                },
+                8000);
+        const std::size_t missingCount = recorder.missingFileCount(writtenNames);
+        const bool        rescanned    = recorder.sawRescan();
+
+        watcher->stop();
+        EXPECT_TRUE(everythingArrived || rescanned)
+                << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+#ifdef _WIN32
+        // 这个停摆量必然丢出溢出（探针读数见 @details），所以 Windows 侧再钉两条：一条没丢就是构造
+        // 失效（用例白跑而报告全绿）；丢了却没告状就是那条「成功、零字节」的溢出告状被当成没事发生
+        EXPECT_GT(missingCount, 0U) << "消费方停摆 200 ms 也一条都没丢掉：这个构造已不触溢出路径，用例需要加强";
+        EXPECT_TRUE(rescanned) << "丢了 " << missingCount << " 个文件的事件却没告状：零字节完成被当成「没事发生」";
+#endif
     }
 
     TEST(FileWatcher, DestructorStopsRunningWatcherSafely)
