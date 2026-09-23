@@ -2,13 +2,16 @@
 // Net 侧早有同口径的台账（每请求分配数），Database 侧此前只有耗时读数：耗时能看出「变慢了」，
 // 看不出「慢在哪一次分配上」，而 ORM 的每条语句都要经过查询树、方言渲染、结果映射三段合成，
 // 段数一多就必须靠分配次数与字节分布才能定位。
-// 覆盖形状：first() 按主键取一行、toList() 取二十行、count()、update() 按主键改一行。
+// 覆盖形状：first() 按主键取一行、toList() 取二十行、count()、update() 按主键改一行、
+// insertBatch() 的两条形状（20 行单条语句、1000 行分块）。
 // 两条自检先行：计数件要看得见一次普通堆分配，空窗口要量出零次——否则下面所有读数都不可信。
 // 稳态读数（语句缓存与分配器空闲链已预热，每次操作）：
 //   first() 取一行     GCC 13 次，MSVC 14 次
 //   toList() 取二十行  GCC 37 次 / 23736 字节（每行不到两次），MSVC 86 次
 //   count()            两侧都是 6 次 / 451 字节
 //   update() 改一行    GCC 16 次 / 1812 字节，MSVC 20 次
+//   批量 20 行         两侧都是 88 次（每次 4.4 次/行），MSVC 9960 / GCC 8729 字节
+//   批量 1000 行       两侧都是 4022 次（每次约 4 次/行），MSVC 473954 / GCC 415451 字节
 // 两侧读数不同不是代码差异，而是 STL 的 vector 扩容系数与 string 分档不同（直方图实测：
 // libstdc++ 把 21 字节的户名记在 16..31 档、MSVC 记在 32..47 档，且 MSVC 的扩容链更长）。
 // 预算一般取实测加一档；first() 这一格已收到实测值本身——它走的是「一行都不必经向量」的通道，
@@ -50,6 +53,7 @@ namespace
     using AsynGyanis::Database::TestSupport::TemporaryDatabaseFile;
     using AsynGyanis::TestSupport::AllocationProfile;
     using AsynGyanis::TestSupport::kMeasurementIterations;
+    using AsynGyanis::TestSupport::measureOperations;
     using AsynGyanis::TestSupport::measurePerOperation;
 
 #if defined(_MSC_VER)
@@ -67,6 +71,26 @@ namespace
     /// 台账用的行数：二十行足够让「每行成本」与「每次调用成本」分得开，又不让单条用例跑太久
     constexpr std::int64_t kLedgerRowCount = 20;
 
+    /// 批量插入台账的行数：两列写入下 SQLite 的 999 参数上限折成 499 行一条语句，20 行仍是单条
+    constexpr std::size_t kSmallBatchRowCount = 20U;
+    /// 分块格的行数：1000 行两列 = 2000 个参数，必然拆成三条语句并落进一个本地事务
+    constexpr std::size_t kChunkedBatchRowCount = 1000U;
+    /// 分块格的连跑次数：每次一千行，二十次就够摊平；再多只会把库撑大而量不出新东西
+    constexpr std::uint64_t kChunkedBatchIterations = 20U;
+    /// 单条格的连跑次数：文件库上每一批都是一次独立提交，容器 overlayfs 的提交成本撑不起默认的一千轮
+    constexpr std::uint64_t kSmallBatchIterations = 200U;
+
+    // 批量两格的读数在两台编译器上次数完全一致（差在 STL 分档，而这里没走 vector 扩容路径），
+    // 因此预算不需要按平台分档
+    /// 单条格（20 行一批）的分配次数上界：两侧实测同为 88 次
+    constexpr std::uint64_t kSmallBatchAllocationBudget = 100U;
+    /// 单条格的申请字节上界：实测 MSVC 9960 / GCC 8729
+    constexpr std::uint64_t kSmallBatchBytesBudget = 12U * 1024U;
+    /// 分块格（1000 行一批）的分配次数上界：两侧实测同为 4022 次
+    constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;
+    /// 分块格的申请字节上界：实测 MSVC 473954 / GCC 415451
+    constexpr std::uint64_t kChunkedBatchBytesBudget = 512U * 1024U;
+
     /**
      * @brief 台账行：五列覆盖整型、文本、浮点、可空文本与布尔，与 ORM 的全部标量映射分支对齐
      */
@@ -77,6 +101,17 @@ namespace
         double                     amount;  ///< 金额
         std::optional<std::string> note;    ///< 备注，可空
         bool                       active;  ///< 是否启用
+    };
+
+    /**
+     * @brief 批量插入台账用的行：两列文本/整型，表不带主键约束
+     * @details 不带主键才能连着跑一千轮而不撞约束——撞了约束的那条路径分配形状完全不同，
+     *          量出来的不是稳态。列数刻意保持两列，让「单条」与「分块」两格只差在行数上。
+     */
+    struct BatchLedgerRow
+    {
+        std::int64_t id;    ///< 序号，无约束
+        std::string  name;  ///< 名称，刻意超过短串内联长度
     };
 
 } // namespace
@@ -93,6 +128,18 @@ struct AsynGyanis::Database::Queryable::TableSchema<LedgerRow>
         Column(&LedgerRow::active, "active"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<BatchLedgerRow>
+{
+    static constexpr std::string_view kTableName = "ledger_batch";
+    static constexpr auto kColumns = std::tuple{
+        Column(&BatchLedgerRow::id,   "id"),
+        Column(&BatchLedgerRow::name, "name"),
+    };
+    /// 无主键：本表只做批量写入的台账，按主键更新/删除的形状另有 ledger 表覆盖
+    static constexpr std::string_view kPrimaryKey = "";
 };
 
 namespace
@@ -132,6 +179,11 @@ namespace
                             "amount REAL, "
                             "note TEXT, "
                             "active INTEGER NOT NULL)") != nullptr)
+                    << connection->lastError();
+
+            // 批量写入格用的表：无主键、无约束，因此同一批行可以连着写一千轮而不撞约束
+            ASSERT_TRUE(connection->execute(
+                            "CREATE TABLE ledger_batch (id INTEGER, name TEXT)") != nullptr)
                     << connection->lastError();
 
             for (std::int64_t index = 1; index <= kLedgerRowCount; ++index)
@@ -275,6 +327,92 @@ namespace
         // update() 走写方向的完整翻译与参数收集：GCC 实测 16 次 / 1812 字节，MSVC 实测 20 次
         EXPECT_LE(updateProfile.allocationsPerOperation, kUpdateAllocationBudget)
                 << "update() 分配次数涨了，实测=" << updateProfile.allocationsPerOperation;
+    }
+
+    /**
+     * @brief 造一批批量插入用的行
+     * @details 刻意在测量窗口之外构造：入参的行向量本身不是被测形状，被测的是「拿着这批行写一次」
+     *          要碰几次堆。
+     * @param rowCount 行数
+     * @return std::vector<BatchLedgerRow> 批次内容
+     */
+    [[nodiscard]] static std::vector<BatchLedgerRow> makeBatchRows(const std::size_t rowCount)
+    {
+        std::vector<BatchLedgerRow> rows;
+        rows.reserve(rowCount);
+        for (std::size_t index = 0; index < rowCount; ++index)
+        {
+            rows.push_back(BatchLedgerRow{
+                .id   = static_cast<std::int64_t>(index),
+                .name = "batch-account-name-" + std::to_string(index)
+            });
+        }
+        return rows;
+    }
+
+    /**
+     * @brief 单条多行 INSERT 的分配台账（行数在方言的参数上限之内，不触发分块）
+     * @details 实测两行/列的形状：20 行一批 = 88 次 / MSVC 9960 字节 / GCC 8729 字节，两侧次数一致、
+     *          只差在分配器的分档上。4 次/行来自两处双重存放：`insertValuesOf` 先给每行建一个
+     *          值向量，`translateInsertBatch` 再把每个值拷进语句的参数表（文本列因此各拷一遍）。
+     *          要压掉这两个方向得改 `SqlDialect::translateInsertBatch` 的形参（换成一段扁平值 +
+     *          列数并按值取走），那是对外部方言实现者的破坏性变更，先只做记录不动契约。
+     */
+    TEST_F(OrmAllocationLedger, SingleStatementBatchInsertAllocationLedger)
+    {
+        const std::vector<BatchLedgerRow> batch = makeBatchRows(kSmallBatchRowCount);
+
+        for (int warmUp = 0; warmUp < 10; ++warmUp)
+        {
+            Queryable<BatchLedgerRow> query(*m_pool);
+            static_cast<void>(query.insertBatch(batch));
+        }
+
+        // 次数刻意低于其它格：文件库上每批都是一次独立提交，容器 overlayfs 的提交成本会把用例拖到秒级
+        const AllocationProfile profile = measureOperations(kSmallBatchIterations,
+                [this, &batch]
+                {
+                    Queryable<BatchLedgerRow> query(*m_pool);
+                    return static_cast<std::uint64_t>(query.insertBatch(batch));
+                });
+
+        EXPECT_EQ(profile.resultSum, kSmallBatchIterations * kSmallBatchRowCount)
+            << "有整批没写进去，读数不能算稳态";
+        EXPECT_LE(profile.allocationsPerOperation, kSmallBatchAllocationBudget)
+            << "20 行一批的分配次数涨了，实测=" << profile.allocationsPerOperation;
+        EXPECT_LE(profile.bytesPerOperation, kSmallBatchBytesBudget)
+            << "20 行一批的申请字节涨了，实测=" << profile.bytesPerOperation;
+    }
+
+    /**
+     * @brief 分块批量插入的分配台账：参数总数超上限，必然拆成多条语句并落进一个本地事务
+     * @details 实测 1000 行 = 4022 次 / MSVC 473954 字节 / GCC 415451 字节，即每次约 4 次、
+     *          与单条那格同一形状（分块只多了一次事务控制语句与三条语句的骨架，按行摊已看不见）。
+     *          这一格守的是「分块不要退化成每行一次往返」，那一退化会是几百倍的读数。
+     */
+    TEST_F(OrmAllocationLedger, ChunkedBatchInsertAllocationLedger)
+    {
+        const std::vector<BatchLedgerRow> batch = makeBatchRows(kChunkedBatchRowCount);
+
+        for (int warmUp = 0; warmUp < 2; ++warmUp)
+        {
+            Queryable<BatchLedgerRow> query(*m_pool);
+            static_cast<void>(query.insertBatch(batch));
+        }
+
+        const AllocationProfile profile = measureOperations(kChunkedBatchIterations,
+                [this, &batch]
+                {
+                    Queryable<BatchLedgerRow> query(*m_pool);
+                    return static_cast<std::uint64_t>(query.insertBatch(batch));
+                });
+
+        EXPECT_EQ(profile.resultSum, kChunkedBatchIterations * kChunkedBatchRowCount)
+            << "有整批没写进去，读数不能算稳态";
+        EXPECT_LE(profile.allocationsPerOperation, kChunkedBatchAllocationBudget)
+            << "1000 行一批的分配次数涨了，实测=" << profile.allocationsPerOperation;
+        EXPECT_LE(profile.bytesPerOperation, kChunkedBatchBytesBudget)
+            << "1000 行一批的申请字节涨了，实测=" << profile.bytesPerOperation;
     }
 
 } // namespace
