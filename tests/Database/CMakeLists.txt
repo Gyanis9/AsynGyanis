@@ -4,6 +4,9 @@ find_package(GTest REQUIRED)
 add_executable(TestDatabase
         DatabaseTestSupport.h
 
+        # 分配台账用例要替换全局 operator new 计数，实体定义在共用探针里（与 Base/Core/Net 同一份）
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
+
         Common/TestDatabaseTypes.cpp
         Common/TestDatabaseFactory.cpp
         Common/TestDatabaseException.cpp
@@ -21,6 +24,7 @@ add_executable(TestDatabase
         Queryable/TestRowMapper.cpp
         Queryable/TestSchemaMigrator.cpp
         Queryable/TestQueryableAsync.cpp
+        Queryable/TestOrmAllocations.cpp
 
         Sqlite/TestSqliteConnection.cpp
         Sqlite/TestSqliteResult.cpp
