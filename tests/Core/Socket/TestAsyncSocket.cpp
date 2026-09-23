@@ -6,6 +6,7 @@
 #include "Core/Socket/AsyncSocket.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -25,12 +26,14 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 
 namespace AsynGyanis::Core
 {
@@ -539,14 +542,14 @@ namespace AsynGyanis::Core
         Task<ssize_t> emptyTask = socket.asyncSendVectored(nullptr, 0);
         emptyTask.handle().resume();
         ASSERT_TRUE(emptyTask.isReady());
-        EXPECT_THROW(emptyTask.handle().promise().result(), Base::SystemException);
+        EXPECT_THROW(static_cast<void>(emptyTask.handle().promise().result()), Base::InvalidArgumentException);
 
         constexpr std::size_t                                          kTooManyCount = Platform::Socket::kMaximumVectorCount + 1;
         const std::array<Platform::Socket::WriteBuffer, kTooManyCount> tooManyBuffers{};
         Task<ssize_t> tooManyTask = socket.asyncSendVectored(tooManyBuffers.data(), kTooManyCount);
         tooManyTask.handle().resume();
         ASSERT_TRUE(tooManyTask.isReady());
-        EXPECT_THROW(tooManyTask.handle().promise().result(), Base::SystemException);
+        EXPECT_THROW(static_cast<void>(tooManyTask.handle().promise().result()), Base::InvalidArgumentException);
 
         Task<ssize_t> singleTask = socket.asyncSendVectored(single, 1);
         singleTask.handle().resume();
@@ -675,6 +678,53 @@ namespace AsynGyanis::Core
                 << "对端从未读过，写侧却宣称把负载全部提交成功了";
 
         Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 参数取值非法必须落在「用法错误」那条分支上，而不是运行期故障链
+     * @details 明文套接字与 TLS 套接字在 HttpSession 里是可替换的（调用方用 requires 探测能力），
+     *          同一条误用因此必须走同一条分支：TlsSocket 早就把这类拒绝放在 std::invalid_argument
+     *          上，而本类原先混在 SystemException 里。落错分支的两种后果都对不上：只
+     *          `catch (Base::Exception)` 的调用点会把用法错误当成「可恢复故障」重试一遍，而按
+     *          运行期故障统计的地方又会让真正的坏参数在指标里隐身。
+     * @note 参数取值的拒绝重试不会变好，这是它与「对端重置」这类运行期故障的分界
+     */
+    TEST(AsyncSocket, ParameterValueRejectionsUseTheLogicErrorBranch)
+    {
+        static_assert(!std::is_base_of_v<Base::Exception, Base::InvalidArgumentException>,
+                      "用法错误一旦被并入运行期故障链，本用例的判据就失效了");
+
+        EventLoop           loop;
+        AsyncSocket         socket(loop, -1); // 描述符无效不影响本用例：这些判定都早于任何 I/O
+        std::array<char, 8> buffer{};
+
+        const auto runAndReportBranch = [](const std::function<Task<ssize_t>(void)> &start)
+        {
+            Task<ssize_t> pending = start();
+            pending.handle().resume();
+            try
+            {
+                static_cast<void>(pending.handle().promise().result());
+                ADD_FAILURE() << "参数非法却没有抛错";
+            } catch (const Base::Exception &)
+            {
+                ADD_FAILURE() << "误用被报成了运行期故障：只 catch Base::Exception 的调用点会把它当成可恢复故障";
+            } catch (const std::logic_error &error)
+            {
+                // 只验分支：各条拒绝的具体文案由对应的用例逐条钉住
+                EXPECT_FALSE(std::string_view(error.what()).empty()) << "报错文案是空的，运维无从定位是哪个参数";
+            } catch (const std::exception &error)
+            {
+                ADD_FAILURE() << "既不在 logic_error 分支也不在框架异常链上：" << error.what();
+            }
+        };
+
+        const std::size_t oversizedLength = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1;
+        runAndReportBranch([&]() { return socket.asyncSend(buffer.data(), oversizedLength); });
+        runAndReportBranch([&]() { return socket.asyncReceive(buffer.data(), oversizedLength); });
+        runAndReportBranch([&]() { return socket.asyncSendVectored(nullptr, 0); });
+
+        socket.close();
     }
 
     /**
@@ -809,14 +859,14 @@ namespace AsynGyanis::Core
         try
         {
             static_cast<void>(receiving.handle().promise().result());
-        } catch (const Base::SystemException &exception)
+        } catch (const Base::InvalidArgumentException &exception)
         {
             isRejectedWithReason = std::string_view(exception.what()).find("超过上限") != std::string_view::npos;
         } catch (const Base::Exception &)
         {
             isRejectedWithReason = false;
         }
-        EXPECT_TRUE(isRejectedWithReason) << "没按「长度超限」的理由拒绝：调用方会以为可以换个缓冲区重试";
+        EXPECT_TRUE(isRejectedWithReason) << "没按「长度超限」的用法错误拒绝：调用方会以为可以换个缓冲区重试";
     }
 
     /**
@@ -1008,8 +1058,9 @@ namespace AsynGyanis::Core
             try
             {
                 static_cast<void>(sending.handle().promise().result());
-            } catch (const Base::Exception &exception)
+            } catch (const std::exception &exception)
             {
+                // 两条分支都收：参数非法走 logic_error，发送故障走框架的运行期故障链
                 return std::string(exception.what());
             }
             return std::nullopt;
@@ -1032,10 +1083,10 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(mappedFile.isValid());
 
         Task<ssize_t> invalidDescriptor = socket.asyncSendFile(-1, 0, 1024);
-        const std::optional<std::string> descriptorFailure = driveToExceptionText(loop, invalidDescriptor);
-        ASSERT_TRUE(descriptorFailure.has_value()) << "源描述符为 -1 时没有报错，等于把无效句柄交给了内核";
-        EXPECT_NE(descriptorFailure->find("源文件描述符无效"), std::string::npos)
-                << "报错没有点明是源描述符的问题：文案为 " << *descriptorFailure;
+        invalidDescriptor.handle().resume();
+        ASSERT_TRUE(invalidDescriptor.isReady());
+        EXPECT_THROW(static_cast<void>(invalidDescriptor.handle().promise().result()), Base::InvalidArgumentException)
+                << "源描述符非法是传进来的取值不对，必须落在用法错误那条分支上";
 
         Task<ssize_t> emptyLength = socket.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 0);
         const std::optional<std::string> emptyFailure = driveToExceptionText(loop, emptyLength);

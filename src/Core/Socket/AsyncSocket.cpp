@@ -3,6 +3,7 @@
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Socket/VectoredSendCursor.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
@@ -213,7 +214,7 @@ namespace AsynGyanis::Core
         // 因此宁可当场失败也不让底层收到一个已被改写过的长度
         if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
-            throw Base::SystemException("单次接收长度超过上限（" + std::to_string(length) +
+            throw Base::InvalidArgumentException("单次接收长度超过上限（" + std::to_string(length) +
                                         " 字节 > INT_MAX）：底层 recv 的长度形参是 int，"
                                         "超限会被静默窄化；请把数据分成多次接收");
         }
@@ -251,7 +252,7 @@ namespace AsynGyanis::Core
         // 同 asyncReceive：先把会静默窄化的长度挡在底层 C API 之外
         if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
-            throw Base::SystemException("单次发送长度超过上限（" + std::to_string(length) +
+            throw Base::InvalidArgumentException("单次发送长度超过上限（" + std::to_string(length) +
                                         " 字节 > INT_MAX）：底层 send 的长度形参是 int，"
                                         "超限会被静默窄化；请把数据分成多次发送");
         }
@@ -284,16 +285,18 @@ namespace AsynGyanis::Core
     Task<ssize_t> AsyncSocket::asyncSendVectored(const Platform::Socket::WriteBuffer *const buffers, const std::size_t bufferCount) const
     {
         // 段数与空数组属于调用方契约：静默拆分会让「一次系统调用」的前提悄悄失效，
-        // 静默补齐零段则会让调用方以为数据发出去了，两者都必须当场失败
+        // 静默补齐零段则会让调用方以为数据发出去了，两者都必须当场失败。
+        // 报错走 logic_error 分支而不是运行期故障链：失败点是**传进来的取值**，重试不会变好
         if (buffers == nullptr || bufferCount == 0)
         {
-            throw Base::SystemException("聚合发送失败：段数组为空");
+            throw Base::InvalidArgumentException("聚合发送失败：段数组为空");
         }
         if (bufferCount > Platform::Socket::kMaximumVectorCount)
         {
-            throw Base::SystemException("聚合发送失败：段数 " + std::to_string(bufferCount) + " 超过平台上限 " +
-                                        std::to_string(Platform::Socket::kMaximumVectorCount) +
-                                        "（Windows 的 WSASend 最多 16 段），请先把相邻小段合并后再发送");
+            throw Base::InvalidArgumentException("聚合发送失败：段数 " + std::to_string(bufferCount) +
+                                                 " 超过平台上限 " +
+                                                 std::to_string(Platform::Socket::kMaximumVectorCount) +
+                                                 "（Windows 的 WSASend 最多 16 段），请先把相邻小段合并后再发送");
         }
 
         // 游标负责「部分写之后从哪继续、跨段怎么推进」这段最容易出错的账目；
@@ -361,12 +364,12 @@ namespace AsynGyanis::Core
         // 在这里当场报错能把「哪一侧的参数不对」说清楚
         if (fileDescriptor < 0)
         {
-            throw Base::SystemException("零拷贝发送失败：源文件描述符无效（" + std::to_string(fileDescriptor) +
+            throw Base::InvalidArgumentException("零拷贝发送失败：源文件描述符无效（" + std::to_string(fileDescriptor) +
                                         "），请先把文件打开再交给本方法");
         }
         if (length == 0)
         {
-            throw Base::SystemException("零拷贝发送失败：待发字节数为 0，本方法只用于发送文件正文，"
+            throw Base::InvalidArgumentException("零拷贝发送失败：待发字节数为 0，本方法只用于发送文件正文，"
                                         "空正文请直接跳过发送");
         }
 

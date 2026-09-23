@@ -146,8 +146,10 @@ namespace AsynGyanis::Core
          * @note **buffer 必须活到本次 co_await 恢复**：协程在挂起期间只持有这个裸指针，
          *       违约（例如把临时缓冲传进来后立刻离开作用域）会让恢复后的 recv 写入已释放内存，
          *       且不报错、表现为随机数据损坏
-         * @throws Base::SystemException 接收失败（连接重置等），或 length 超过 INT_MAX；
-         *         异常文本带平台 socket 错误码与其可读描述（winsock 失败不写 errno，不要按 errno 判读）
+         * @throws Base::InvalidArgumentException length 超过 INT_MAX：取值非法走 logic_error 分支，
+         *         与 TlsSocket 同一条口径
+         * @throws Base::SystemException 接收失败（连接重置等运行期故障）；异常文本带平台 socket 错误码
+         *         与其可读描述（winsock 失败不写 errno，不要按 errno 判读）
          */
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
@@ -162,7 +164,9 @@ namespace AsynGyanis::Core
          * @note 返回 -1 表示**对端已关闭连接**（底层 send 返回 0 的那条路径），
          *       这条路径下 errno 未被设置，判定请以返回值为准，不要去读 errno
          * @note **buffer 必须活到本次 co_await 恢复**，理由同 asyncReceive
-         * @throws Base::SystemException 发送失败（连接重置等），或 length 超过 INT_MAX
+         * @throws Base::InvalidArgumentException length 超过 INT_MAX：这是传进来的取值非法（重试不会变好），
+         *         走 logic_error 分支，与 TlsSocket 同一条口径
+         * @throws Base::SystemException 发送失败（连接重置、对端关闭等运行期故障）
          */
         Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
 
@@ -174,7 +178,9 @@ namespace AsynGyanis::Core
          * @note 多段合成一次提交（scatter/gather），省掉「头部块 + 正文」拼进同一块缓冲的整体拷贝；
          *       部分写由内部游标推进，调用方不必关心
          * @note **每段的地址必须活到本次 co_await 恢复**，理由同 asyncSend
-         * @throws Base::SystemException 段数为 0 或超过平台上限（当场拒绝而不是静默拆分），或发送失败
+         * @throws Base::InvalidArgumentException 段数为 0 或超过平台上限（当场拒绝而不是静默拆分）：
+         *         取值非法走 logic_error 分支
+         * @throws Base::SystemException 发送失败（连接重置、对端关闭等运行期故障）
          */
         Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const;
 
@@ -202,10 +208,11 @@ namespace AsynGyanis::Core
          * @note 正文不经过用户态缓冲：内核把文件页缓存直接推给协议栈，省掉整份文件的拷贝与首触缺页
          * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层没有零拷贝发送能力，本方法也不在
          *       TlsSocket 上（调用方用 requires 探测该能力）；Windows 无等价原语，见 sendFileChunk
-         * @throws Base::SystemException 源文件描述符非法、待发字节数为 0，或发送失败
-         *         （连接重置、对端在发送期间关闭、请求的偏移/长度越过源文件末尾等）。
-         *         越界一律按失败收口，但两种越界报法不同：起点越界时一个字节都没上线，
-         *         长度越界时前缀已经上线且不可整块重发
+         * @throws Base::InvalidArgumentException 源文件描述符非法、待发字节数为 0（取值非法走 logic_error
+         *         分支，与 TlsSocket 同一条口径）
+         * @throws Base::SystemException 发送失败（连接重置、对端在发送期间关闭、请求的偏移/长度越过
+         *         源文件末尾等运行期故障）。越界一律按失败收口，但两种越界报法不同：起点越界时一个
+         *         字节都没上线，长度越界时前缀已经上线且不可整块重发
          */
         Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const;
 #endif
