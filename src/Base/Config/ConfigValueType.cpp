@@ -78,33 +78,4 @@ namespace AsynGyanis::Base
     {
         return isYamlFile(filePath) || isJsonFile(filePath);
     }
-
-    std::vector<std::string> splitKey(std::string_view key, const char delimiter)
-    {
-        std::vector<std::string> parts;
-        if (key.empty())
-        {
-            return parts;
-        }
-
-        size_t start = 0;
-        size_t end   = key.find(delimiter);
-
-        while (end != std::string_view::npos)
-        {
-            if (end > start)
-            {
-                parts.emplace_back(key.substr(start, end - start));
-            }
-            start = end + 1;
-            end   = key.find(delimiter, start);
-        }
-
-        if (start < key.length())
-        {
-            parts.emplace_back(key.substr(start));
-        }
-
-        return parts;
-    }
 } // namespace AsynGyanis::Base

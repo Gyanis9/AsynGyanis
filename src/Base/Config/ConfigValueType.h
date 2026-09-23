@@ -1,6 +1,6 @@
 /**
  * @file ConfigValueType.h
- * @brief 配置模块的值类型别名与配置文件后缀、键路径等通用工具
+ * @brief 配置模块的值类型别名与配置文件后缀判定工具
  * @author Gyanis
  * @date 2026-09-15
  * @version 1.0.0
@@ -13,7 +13,6 @@
 
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace AsynGyanis::Base
 {
@@ -53,13 +52,4 @@ namespace AsynGyanis::Base
      * @return bool 当后缀为 .json/.yaml/.yml（大小写不敏感）时返回 true。
      */
     [[nodiscard]] bool isConfigFile(std::string_view filePath) noexcept;
-
-    /**
-     * @brief 使用指定分隔符拆分配置键字符串。
-     * @details 连续分隔符与首尾分隔符产生的空片段会被忽略。
-     * @param key 待拆分的原始键字符串。
-     * @param delimiter 分隔字符。
-     * @return std::vector<std::string> 拆分后的键片段列表。
-     */
-    std::vector<std::string> splitKey(std::string_view key, char delimiter = '.');
 } // namespace AsynGyanis::Base

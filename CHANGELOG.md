@@ -127,6 +127,13 @@
 
 ### 变更
 
+- **破坏性变更：移除 `Base::splitKey()`（点分键拆分工具）**。配置系统按「扁平键 + 前缀匹配」工作
+  （`get`/`getSection`/`validateRegisteredSchema` 都不切分键），这个工具在本仓库里没有任何调用方，
+  却带着一条会咬人的语义：连续分隔符与首尾分隔符产生的空片段被**静默丢弃**，于是 `"a..b"`、`".a"`、
+  `"a."` 全都归并成同一个路径——谁将来拿它去做嵌套查找，就把三种写错的键当成了同一个。迁移：
+  需要按段处理自己用 `std::ranges` 切；要读一段配置用 `getSection(prefix)`，要取单个值直接用点分键 `get(key)`。
+  同时删掉它带在 `ConfigValueType.h` 里的 `<vector>` 依赖与该文件的 9 条用例（`TestBase` 577 → 568 例）。
+
 - **破坏性变更：`Http2Request` 的普通头部改用 `HttpHeaderFieldStore`（与 `HttpRequest` 同一套存储）**。
   字段类型由 `std::vector<HpackHeaderField>` 换成 `HttpHeaderFieldStore`，随之移除只在向量形状上成立的
   `findHeaderValue()`（返回 `const std::string *`，而新存储把名值写在同一条字节缓冲里、只记偏移，
