@@ -165,6 +165,20 @@ namespace AsynGyanis::Database
                 }
             }
 
+            // 记账必须排在「同步等待者计数减一」之前且留在锁内：池析构等的就是这条计数归零，计数一降
+            // 它随时可能把本对象释放掉，此后再碰任何成员都是踩已释放内存（TSan 实测报出过一次）。
+            // 第一、二段的成功返回各记自己那一次，这里只负责等待段的出口
+            if (connection)
+            {
+                m_activeCount.fetch_add(1);
+            }
+            else if (!m_isShuttingDown.load(std::memory_order_acquire))
+            {
+                // 只记「等到截止时刻仍空手」：停摆期空手是正常收尾，混进来会让这道容量指标在每次
+                // 优雅停机时虚涨
+                m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+            }
+
             m_syncWaitingCount.fetch_sub(1);
             // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_idleCondition 上等计数归零）
             m_idleCondition.notify_all();
@@ -173,15 +187,10 @@ namespace AsynGyanis::Database
         if (!connection)
         {
             // 超时或池已停摆：拿不到连接就交出空的包装，让调用方看见「没拿到」而不是异常。
-            // 只有前者记账：停摆期空手是正常收尾，混进来会让这个容量指标在每次优雅停机时虚涨
-            if (!m_isShuttingDown.load(std::memory_order_acquire))
-            {
-                m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
-            }
+            // 账已在锁内记过，这里只交出空的包装
             return {};
         }
 
-        m_activeCount.fetch_add(1);
         return PooledConnection(std::move(connection), this);
     }
 
