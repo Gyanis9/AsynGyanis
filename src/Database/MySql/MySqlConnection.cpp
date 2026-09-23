@@ -324,7 +324,17 @@ namespace AsynGyanis::Database
                                                      mysql_insert_id(m_mysqlHandle));
             }
 
-            // 有返回列却没拿到结果集：通常是预读途中内存不足，回复流的位置已不可知，这条连接不能再用于发命令。
+            // 有返回列却没拿到结果集。这里要分两种，判据是客户端库文档给的：mysql_store_result 返回 NULL
+            // 且 mysql_errno() 非 0，说明是「服务端报错」（3024 语句超时、递归深度超限这类），ERR 包已被
+            // 本次调用消化完，链路完好，连接必须留着继续用；只有 mysql_errno() 为 0 才是客户端预读时
+            // 分配不出内存——那时回复流的位置不可知，这条连接才真的不能再用于发命令。
+            // 早先这里不分情形一律断开，于是任何一句被服务端拒绝的查询都会白废一条池里的连接
+            if (const unsigned int storeError = mysql_errno(m_mysqlHandle); storeError != 0)
+            {
+                captureError("执行 SQL 命令失败");
+                return nullptr;
+            }
+
             // 依旧是先摘文本、再断开
             captureError("读取 MySQL 结果集失败");
             disconnect();
@@ -924,7 +934,6 @@ namespace AsynGyanis::Database
         // 桩里没有客户端库可问，返回空串（含义与「未连接」一致，调用方本就连不上）
         return {};
     }
-
 #endif // DATABASE_HAS_MYSQL
 
     // ------------------------------------------------------------------------

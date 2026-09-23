@@ -853,6 +853,39 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 验证「服务端在发出列定义之后才报错」不会被当成链路断裂，从而白废一条好连接
+     *
+     * @details mysql_store_result() 返回 NULL 有两条来路，驱动只能靠 mysql_errno() 分辨：
+     *          ①服务端把 ERR 包发在列元数据之后（3024 语句超时、3636 递归深度超限都是这个形状），
+     *          回复包已被完整读完，链路完好；②客户端预读时分配不出内存，回复流的位置不可知，连接必须弃用。
+     *          判错方向的后果是任何一句被服务端拒绝的查询都让池里永久少一条可用连接。
+     */
+    TEST_F(MySqlIntegrationTest, ServerErrorAfterColumnMetadataKeepsTheConnectionUsable)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 把递归深度上限压到 10：语句本身合法，是服务端跑到一半才中止的。列定义此时已经发出，
+        // 因此错误只可能从 mysql_store_result 这条路上回来——正是上面说的第 ① 种来路
+        ASSERT_NE(connection.execute("SET SESSION cte_max_recursion_depth = 10"), nullptr) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> abortedScan = connection.execute(
+                "WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000)"
+                " SELECT n FROM seq");
+
+        ASSERT_EQ(abortedScan, nullptr) << "递归深度超限本该报错";
+        EXPECT_TRUE(connection.isConnected()) << "服务端报错不该把链路完好的连接一起废掉：" << connection.lastError();
+        // 报错文本是服务端原文（"Recursive query aborted ..."）而不是「读取结果集失败」，
+        // 说明驱动按「服务端拒绝」而非「客户端读不动」来归类
+        EXPECT_NE(connection.lastError().find("ursive"), std::string::npos) << connection.lastError();
+
+        // 同一条会话还能继续用：这才是本用例真正钉住的行为
+        const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "报错之后连接不可用：" << connection.lastError();
+        ASSERT_TRUE(followUp->next());
+    }
+
+    /**
      * @brief 验证错误口令连不上，且失败原因是面向使用者的中文
      */
     TEST_F(MySqlIntegrationTest, ConnectWithWrongPasswordFailsWithLocalizedReason)
