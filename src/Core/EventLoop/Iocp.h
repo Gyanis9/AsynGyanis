@@ -203,8 +203,9 @@ namespace AsynGyanis::Core
          * @brief 记下「这个方向此刻武装不上、成因属于预期的暂时状态」，排进重投表且不留告警
          * @param state 目标状态
          * @param direction 待重投的方向
-         * @details 客户端套接字在 connect 之前、监听描述符在 listen() 之前都走这条：注册发生在
-         *          它们之前，因此每条连接都会命中一次，告警会把日志冲成噪声
+         * @details 注册是惰性的（第一次等待才建 IoWatcher），那一刻客户端可能还在 connect 途中、
+         *          监听描述符可能还没 listen()：这些状态过一会儿自己就会变好，而出向连接每条都要
+         *          经过一次，告警只会把日志冲成噪声
          */
         void noteArmPending(SocketState &state, uint32_t direction);
 
@@ -214,10 +215,9 @@ namespace AsynGyanis::Core
          * @param direction 失败的方向
          * @param reason 失败原因的中文短语（错误码由 socketError 单独承载）
          * @param socketError 当时的 WSAGetLastError()，写进告警供排查
-         * @details 注册与武装是两件事：IoWatcher 在 AsyncSocket 构造时就注册（那时 listen() 还没调用、
-         *          连接也还没建立），而关注位此刻根本武装不上。上层只看到「注册成功」，
-         *          于是不会再要求武装一次——失败的方向必须由后端自己记住并重试，
-         *          否则那天就不会有任何完成通知到达（监听描述符因此一条连接都接不进来）。
+         * @details 注册那一刻关注位可能根本武装不上。此后关注位一变（有等待者出现或退场），
+         *          `modFileDescriptor()` 会顺手再投一次，因此这张表兜的是「状态已就绪但关注位没变」
+         *          那一段——没有它，那一方向再没人投，等待方收不到任何完成通知。
          * @note 告警只在失败位由 0 转 1 的那一次发出：待重投表每轮 wait() 都要重投一次，每轮都记
          *       一条会在长期失败的那条描述符上刷屏——反复重试的是状态，反复告警是噪声
          */

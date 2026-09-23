@@ -367,10 +367,10 @@ namespace AsynGyanis::Core
             {
                 return true;
             }
-            // 监听态要在这里现查而不是注册时查一次：IoWatcher 在 AsyncSocket 构造时就注册了，
-            // 那时 listen() 还没被调用，SO_ACCEPTCONN 必然是 0（实测：因此把监听描述符当成
-            // 普通套接字投了 WSARecv，得到 10057 且再没有任何完成通知，接受路径整个卡死）。
-            // 连接性一旦确认过就不再查：已连接的套接字不会变回监听态，而这次查询与下面的
+            // 监听态要在这里现查而不能只信注册时那一份：注册发生在第一次等待上
+            // （AsyncSocket::ensureWatcher 是惰性的），若那次等待早于 bind()/listen()，登记到的就不是
+            // 监听态，而按普通套接字投 WSARecv 会得到 10057 且此后没有任何完成通知（实测：接受路径
+            // 整个卡死）。连接性一旦确认过就不再查：已连上的套接字不会变回监听态，而这次查询与下面的
             // getpeername 都是内核往返，落在「每条可读事件后的重新武装」这条热路径上
             if (!state.isListening && state.isConnectivitySettled != 1)
             {
