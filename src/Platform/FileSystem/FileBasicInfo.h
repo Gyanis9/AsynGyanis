@@ -43,6 +43,11 @@ namespace AsynGyanis::Platform
      * @param path 文件路径，原样交给底层 API，本层不做存在性预检
      * @return std::optional<FileBasicInfo> 查询成功时给出信息；路径不存在、无权限或参数非法时为空
      * @note 本层不抛异常（与 Platform 其它封装一致）：失败只以空值表达，文案与分支由上层决定。
+     * @note 「路径太长」在本层不以失败区分，而是长成一次查不到：超过传统 MAX_PATH（260 字符）能不能
+     *       查到，取决于**可执行体**有没有在清单里声明长路径意识（并且系统开了 LongPathsEnabled），
+     *       这是库替调用方决定不了的事。实测同一棵 559 字符的深目录树：未声明的进程在 265 字符处就
+     *       建不下去，声明之后走到 1770 字符仍能创建与读写。深目录树下的静态文件若在别处看得见、
+     *       在服务端一律 404，先按这条查，不要去怀疑目录遍历或缓存。
      */
     [[nodiscard]] std::optional<FileBasicInfo> queryFileBasicInfo(const std::filesystem::path &path) noexcept;
 }

@@ -200,8 +200,9 @@ namespace AsynGyanis::Platform
             }
         }
 
-        // 深路径：一层层垫到超过 Windows 的传统上限（260 字符）。建得出来就比对两处对它的判定；
-        // 建不出来（进程未启用长路径意识时的常态）也要比对——那时候两边必须同样认不出这个路径
+        // 深路径：一层层垫到超过传统上限（260 字符）。可执行体没在清单里声明长路径意识时，进程在
+        // 265 字符处就建不下去（同一棵树在带清单的进程里能走到 1770 字符并正常读写，见 FileBasicInfo.h
+        // 的那条说明）；建不出来也要比对——「两处判定一致」这条承诺不该依赖进程的清单
         std::filesystem::path deepDirectory = temporaryDirectory.path();
         for (int level = 0; level < 12; ++level)
         {
