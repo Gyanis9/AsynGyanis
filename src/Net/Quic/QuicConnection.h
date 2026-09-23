@@ -128,11 +128,13 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把一条收到的报文交给本连接处理，并把由此产生的待发字节写出去
-         * @param peerAddress 来源地址
-         * @param datagram 报文净字节
+         * @param peerAddress 来源地址，按值收：本协程惰性启动，参数要到首次恢复才被读，
+         *                     按引用接调用方的临时量会在恢复之前失效
+         * @param datagram 报文净字节，指向调用方的收包缓冲；调用方必须让它活到本协程完成，
+         *                 本层不复制它
          * @return Core::Task<> 处理并写出完成
          */
-        [[nodiscard]] Core::Task<> handleDatagram(const Platform::SocketAddress &peerAddress, std::span<const std::uint8_t> datagram);
+        [[nodiscard]] Core::Task<> handleDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
 
         /**
          * @brief 把待发字节写出去（ACK、握手、流数据都从这里走）

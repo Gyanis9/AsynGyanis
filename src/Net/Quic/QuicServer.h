@@ -169,16 +169,17 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 按目的连接标识把报文交给对应的连接；不认识的长头 Initial 则开一条新连接
-         * @param peerAddress 来源地址
-         * @param datagram 报文净字节
+         * @param peerAddress 来源地址，按值收（理由同 `QuicConnection::handleDatagram()` 的说明）
+         * @param datagram 报文净字节，指向收包缓冲；本方法会带着它一路 co_await 到连接侧，
+         *                 调用方必须让它活到本协程完成
          * @note 本方法是协程：连接侧的 handleDatagram 是惰性协程，必须被真正 co_await。早先写成
          *       static_cast<void>(handleDatagram(...)) 等于构造完就把 Task 丢掉、协程从不恢复——
          *       读报文与写出都没发生，服务端一条报文也发不出去（实测：客户端收不到任何回包）。
          *       分成「排进就绪队列 + 由对象持有」那条路也能走通，但收报文本来就是串行的，
          *       直接 co_await 更简单，也少一份任务表的记账
          */
-        [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress &peerAddress,
-                                                std::span<const std::uint8_t> datagram);
+        [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress peerAddress,
+                                                 std::span<const std::uint8_t> datagram);
 
         /**
          * @brief 把已收口的连接摘出路由表

@@ -190,7 +190,7 @@ namespace AsynGyanis::Net
         m_needsFlush = true;
     }
 
-    Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> datagram)
+    Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)
     {
         if (m_core == nullptr || m_isClosed)
         {

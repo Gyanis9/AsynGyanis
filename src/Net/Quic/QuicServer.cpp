@@ -399,7 +399,7 @@ namespace AsynGyanis::Net
         return m_listeningPort.load(std::memory_order_acquire);
     }
 
-    Core::Task<> QuicServer::routeDatagram(const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> datagram)
+    Core::Task<> QuicServer::routeDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)
     {
         if (m_isStopped.load(std::memory_order_acquire))
         {
