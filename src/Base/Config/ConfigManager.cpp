@@ -1517,6 +1517,15 @@ namespace AsynGyanis::Base
                 if (const auto callback = m_hotReloadCallback.load(std::memory_order_acquire); callback && *callback)
                 {
                     (*callback)(result);
+                } else if (!result.success)
+                {
+                    // 没挂回调时这份结果无处可去，失败就整轮静默：某个文件解析不了会让它的全部键
+                    // 从新快照里缺席，而热重载开关照旧是开的，现场只看得到「改了配置没反应」。
+                    // 逐条按错误原文报出来——这些文案已经带上文件名与行列
+                    for (const std::string &error: result.errors)
+                    {
+                        LOG_ERROR_FMT("ConfigManager: 热重载本轮失败，且没有回调可通知：{}", error);
+                    }
                 }
             }
         } catch (const std::exception &reloadError)

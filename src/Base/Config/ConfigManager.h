@@ -95,7 +95,7 @@ namespace AsynGyanis::Base
          * @details 回调在**重载工作线程**上执行（不是文件监听线程、也不是调用方线程），
          *          其快照在启动监听前发布（release/acquire 配对），因此回调内可安全做耗时处理。
          *          已在监听时重复调用不会重起监视器，但这一轮的回调与防抖间隔照样生效。
-         * @param callback 热加载完成后的回调函数；传 nullptr 即不回调（重载照跑）
+         * @param callback 热加载完成后的回调函数；传 nullptr 即不回调（重载照跑，本轮失败改由日志报出）
          * @param debounceMilliseconds 防抖间隔（毫秒），默认 500ms
          * @return bool 成功返回 true；重复调用返回 true；未加载目录或平台不支持返回 false。
          *               返回 false 的每一条路（没有锚点、创建监视器失败、挂目录失败、监视线程起不来、

@@ -249,6 +249,18 @@ namespace AsynGyanis::Base
                 return m_messages;
             }
 
+            /**
+             * @brief 取截至此刻的消息副本
+             * @details 要在别的线程上轮询「这条日志报了没有」时只能走这里：直接读共享表会与
+             *          写入线程撞同一个 vector，副本是在消息锁内拷出来的
+             * @return std::vector<std::string> 已收下的消息原文
+             */
+            [[nodiscard]] std::vector<std::string> snapshot() const
+            {
+                const std::lock_guard lock(m_mutex);
+                return *m_messages;
+            }
+
         private:
             std::shared_ptr<std::vector<std::string>> m_messages; ///< 与用例共享的消息表
             mutable std::mutex                        m_mutex;    ///< 保护消息表：Sink 可能被多个线程写
@@ -2551,6 +2563,69 @@ server:
         ASSERT_FALSE(static_cast<bool>(renameError)) << "改名移走配置文件失败：" << renameError.message();
 
         EXPECT_TRUE(waitsForMoreCallbacks(countBeforeRename + 1)) << "改名移走配置文件没有触发热重载：Moved 事件被消费方的种类判据滤掉了";
+
+        configuration().disableHotReload();
+    }
+
+    /**
+     * @brief 没挂回调时，热重载那一轮的失败要自己落到日志上
+     * @details enableHotReload(nullptr) 是默认用法（「重载照跑」），而重载结果原本只有一个去处——
+     *          那个回调。没有它，一个文件解析不了就从新快照里整份缺席，开关照旧是开的，现场只看得见
+     *          「改了配置没反应」。判据走日志：先换一条路径写合法内容并等新值进快照（证明监视通道是活的，
+     *          否则下面的红只是「监听没起来」），再把另一个文件写成非法 YAML，等有内容的错误行出现。
+     *          两步分开在不同文件上做：同一条路径在防抖窗口内被再次上报会被压掉
+     */
+    TEST_F(ConfigManagerTest, FailedHotReloadWithoutCallbackIsLogged)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        writeFile("other.yaml", "other: 1\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        auto recorder = std::make_unique<RecordingSink>();
+        RecordingSink *const recorderPointer = recorder.get();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
+        if (!configuration().enableHotReload(nullptr, std::chrono::milliseconds(50)))
+        {
+            configuration().disableHotReload();
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        // 有界轮询：构造不出「日志已落地」时用例该报失败，而不是赌调度
+        const auto waitsFor = [](const auto &condition)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (condition())
+                {
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return false;
+        };
+
+        writeFile("cfg.yaml", "value: second\n");
+        const bool watcherAlive = waitsFor([]
+        {
+            return ConfigManager::instance().getString("value") == "second";
+        });
+        EXPECT_TRUE(watcherAlive) << "普通改写没触发热重载：监视通道没建立，后面的判据无从谈起";
+
+        bool sawFailureLogged = false;
+        if (watcherAlive)
+        {
+            // 保留字符 @ 不能作为标量开头：这条改动会让那一轮重载整轮失败
+            writeFile("other.yaml", "other: 1\nbroken: @invalid\n");
+            sawFailureLogged = waitsFor([recorderPointer]
+            {
+                const std::vector<std::string> recorded = recorderPointer->snapshot();
+                return anyEntryContains(recorded, "热重载本轮失败") && anyEntryContains(recorded, "YAML 语法错误");
+            });
+            EXPECT_TRUE(sawFailureLogged) << "热重载失败且没有回调时，一条诊断都没落到日志上";
+        }
 
         configuration().disableHotReload();
     }
