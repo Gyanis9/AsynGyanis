@@ -40,18 +40,18 @@ namespace AsynGyanis::Database
             m_healthThread.join();
         }
 
+        std::vector<IdleEntry> doomedConnections;
         {
             std::unique_lock lock(m_mutex);
 
             // 停摆标志：同步等待者的谓词据此成立，醒来后返回空连接而不是继续睡在 m_idleCondition 上
             m_isShuttingDown.store(true, std::memory_order_release);
 
-            for (auto &entry: m_idleStack)
-            {
-                // 池正在析构，名额与统计都不再有意义，只做关闭
-                closeTrackedConnection(std::move(entry.connection));
-            }
-            m_idleStack.clear();
+            // 整栈先换出来，关闭留到锁外：断开是一次会阻塞的系统调用（SQLite 关文件句柄、
+            // MySQL / Redis 关 socket），握着 m_mutex 逐条关会让统计读取和同步等待者的退出都排在
+            // 整批关闭之后。本池的纪律一直是「断开不进 m_mutex」（取出与归还两条丢弃出口都如此），
+            // 析构不该例外
+            doomedConnections.swap(m_idleStack);
 
             // 唤醒所有剩余的同步等待者：它们醒来会看到停摆标志、返回空连接并自减计数
             m_idleCondition.notify_all();
@@ -59,6 +59,12 @@ namespace AsynGyanis::Database
             // 等最后一位同步等待者真的离开等待。不等的话本析构返回后它还睡在 m_idleCondition 上——而 m_idleCondition
             // 已随对象销毁（等待者的退出路径也会 notify_all，因此这里的等待不会漏唤醒）
             m_idleCondition.wait(lock, [this] { return m_syncWaitingCount.load(std::memory_order_acquire) == 0; });
+        }
+
+        // 池正在析构，名额与统计都不再有意义，只做关闭；成员销毁前必须把它们全部释放完
+        for (auto &entry: doomedConnections)
+        {
+            closeTrackedConnection(std::move(entry.connection));
         }
 
         // 唤醒所有异步等待者：给它们空连接。
