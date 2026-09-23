@@ -464,6 +464,43 @@ server:
     }
 
     /**
+     * @brief 空键段也判加载失败：它让嵌套与平铺写法塌缩成同一个扁平键，后写者静默覆盖前者
+     * @details 带点号的键已经被上面那条拦住了，但空键段绕过了那道判定：递归进空键那一层时
+     *          前缀缓冲仍是空串（`prefixLength != 0` 才补点号），于是子层的 `port` 与顶层的
+     *          `port` 落成同一个键。配置文件按 `std::map` 的键序展开，空键排在最前，
+     *          因此「9090 覆盖 8080」是确定结果，而这份覆盖毫无提示
+     */
+    TEST_F(ConfigManagerTest, EmptyKeySegmentIsRejectedInsteadOfSilentlyCollapsing)
+    {
+        writeFile("empty-key.yaml", R"("":
+  port: 8080
+port: 9090
+)");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "空")) << "报错里没有指出这是空键段的问题";
+        EXPECT_TRUE(configuration().keys().empty()) << "失败的那份配置不该留下一半";
+    }
+
+    /**
+     * @brief 只有空键本身时同样拒绝：空键进表后就再也改不动
+     * @details `{"": 5}` 会往扁平表里塞一个空键，`has("")` 报有值；而 `setValue("")` 拒绝空键，
+     *          于是这条记录既取不到默认值路径也永远无法被改写——一份「在配置里但不可写」的键
+     */
+    TEST_F(ConfigManagerTest, BareEmptyKeyIsRejectedAndNeverEntersTheTable)
+    {
+        writeFile("bare-empty.json", R"({"": 5, "kept": 1})");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_FALSE(configuration().has("")) << "空键进了生效的快照";
+        EXPECT_TRUE(configuration().keys().empty()) << "失败的那份配置不该留下一半";
+    }
+
+    /**
      * @brief 解析中途失败的文件：它已经展开的那半份键不能跟着提交进快照
      * @details 钉住 ConfigLoadResult 写明的「失败文件里的键从快照中消失」：半份配置被一起
      *          提交时，运维只看到失败提示，实际却已应用了一半新配置
