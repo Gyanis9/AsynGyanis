@@ -136,6 +136,9 @@ namespace AsynGyanis::Core
          * @param length 缓冲区最大能接收的字节数，不得超过 INT_MAX（超出会被底层 C API 静默窄化，
          *        因此本方法提前报错，请分段调用）
          * @return Task<ssize_t> — co_await 返回实际接收的字节数；0 表示对端正常关闭连接
+         * @warning 返回 0 有两种来源：对端关闭，以及**本次 length 就是 0**（此时不做任何 I/O 直接
+         *          返回 0）。因此不要把「缓冲区剩余空间」这类可能算出 0 的值当长度传进来——
+         *          0 会被读成一次干净的 EOF，一条健康的连接就此被收口
          *
          * 内部循环调用 recv(MSG_NOSIGNAL)，当没有数据可读（EAGAIN）时，
          * 挂起等待 EPOLLIN 事件。

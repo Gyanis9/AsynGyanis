@@ -25,6 +25,7 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -50,6 +51,38 @@ namespace AsynGyanis::Core
 
         /// 灌满对端接收队列的单轮负载长度
         constexpr std::size_t kInboundFillChunkLength = 16 * 1024;
+
+        /**
+         * @brief 把调用方给出的套接字连到回环上的临时端口，并交出它的对端描述符
+         * @details 对端刻意不做成 AsyncSocket：收发的另一端由测试线程自己读写，挂事件循环只会
+         *          多引入一个线程而不会让断言更强。监听描述符在交出对端之后立即关闭——POSIX 上
+         *          关闭监听不影响已建立的连接。
+         * @param loop 驱动连接协程的事件循环
+         * @param socket 已 create() 出来的套接字，本函数把它连出去
+         * @return int 对端描述符（非阻塞）；建链或接受失败时返回 -1，由调用方断言
+         */
+        int connectAndAcceptPeer(EventLoop &loop, AsyncSocket &socket)
+        {
+            AsyncSocket listener = AsyncSocket::create(loop);
+            if (!listener.bind(InetAddress::localhost(0)) || !listener.listen(4))
+            {
+                return -1;
+            }
+
+            Task<> connecting = socket.asyncConnect(InetAddress::localhost(listener.localAddress().port()));
+            connecting.handle().resume();
+            if (!advanceUntil(loop, [&connecting]()
+            {
+                return connecting.isReady();
+            }))
+            {
+                return -1;
+            }
+
+            const int peerDescriptor = Platform::Socket::accept(listener.fileDescriptor(), nullptr, nullptr);
+            listener.close();
+            return peerDescriptor;
+        }
 
         /// 灌满接收队列的轮数上限：跑满说明本机的缓冲大到构造不出「有未读数据」
         constexpr int kInboundFillRoundLimit = 4096;
@@ -544,6 +577,181 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 接收返回对端写来的那一段字节
+     * @details 明文 TCP 读路径的头号契约：返回实际字节数、且字节内容与对端写的一致。
+     *          数据在 co_await 之前就已到达，因此这条走的是「一次 recv 就拿到」的快路径。
+     */
+    TEST(AsyncSocket, AsyncReceiveReturnsWhatThePeerWrote)
+    {
+        EventLoop   loop;
+        AsyncSocket reader = AsyncSocket::create(loop);
+        const int   peerDescriptor = connectAndAcceptPeer(loop, reader);
+        ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        const std::string payload = "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, payload.data(), payload.size()),
+                  static_cast<ssize_t>(payload.size())) << "对端没能把请求写进来";
+
+        std::string buffer(256, '\0');
+        Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
+        receiving.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
+        {
+            return receiving.isReady();
+        })) << "已到期的数据没能读完";
+
+        const ssize_t receivedLength = receiving.handle().promise().result();
+        ASSERT_GT(receivedLength, 0) << "对端明明写了数据，接收却报「没有」";
+        EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(receivedLength)),
+                  payload.substr(0, static_cast<std::size_t>(receivedLength)));
+
+        reader.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 没有数据时协程挂到「等可读」上，对端随后写入才把它叫醒
+     * @details 钉住 EAGAIN 分支：这条路径若把「等待失败」当成「读到了 0 字节」，或反过来在没数据时
+     *          就地返回 0，表现都是连接被当成对端关闭而掐掉。用例先断言「确实挂住了」，再写入，
+     *          因此唤醒与内容两件事都是用例自己造成的，不依赖调度运气。
+     */
+    TEST(AsyncSocket, AsyncReceiveWaitsUntilThePeerWrites)
+    {
+        EventLoop   loop;
+        AsyncSocket reader = AsyncSocket::create(loop);
+        const int   peerDescriptor = connectAndAcceptPeer(loop, reader);
+        ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        std::string buffer(64, '\0');
+        Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
+        receiving.handle().resume();
+        ASSERT_FALSE(receiving.isReady()) << "对端一个字都没写，接收却已经返回：没有真的挂到「等可读」上";
+
+        const std::string payload = "PING\r\n";
+        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, payload.data(), payload.size()),
+                  static_cast<ssize_t>(payload.size()));
+
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
+        {
+            return receiving.isReady();
+        })) << "对端已经写入，挂在等可读上的接收却没被叫醒";
+        const ssize_t receivedLength = receiving.handle().promise().result();
+        ASSERT_EQ(receivedLength, static_cast<ssize_t>(payload.size()));
+        EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(receivedLength)), payload);
+
+        reader.close();
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 对端正常关闭（FIN）读成 0，而不是抛错也不是挂住
+     * @details 「0 = 对端关闭」是整个读路径赖以收口的信号：读循环据此结束协程、据此把响应写干净。
+     *          它若变成 EBADF 异常或永久挂起，管线化的最后一条请求就会以故障收场。
+     */
+    TEST(AsyncSocket, AsyncReceiveReportsPeerClosureAsZero)
+    {
+        EventLoop   loop;
+        AsyncSocket reader = AsyncSocket::create(loop);
+        const int   peerDescriptor = connectAndAcceptPeer(loop, reader);
+        ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
+
+        // 先关掉对端：FIN 已在路上，随后的接收只会读到 EOF
+        Platform::FileDescriptor::close(peerDescriptor);
+
+        std::string buffer(64, '\0');
+        Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
+        receiving.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
+        {
+            return receiving.isReady();
+        })) << "对端已经关闭，读侧却还在等一个永远不会来的可读";
+        EXPECT_EQ(receiving.handle().promise().result(), 0) << "对端正常关闭必须读成 0";
+
+        reader.close();
+    }
+
+    /**
+     * @brief 长度为 0 的接收是「什么都不做」，且不得被当成对端关闭
+     * @details 底层 recv(fd, buf, 0) 返回 0，而 0 正是「对端正常关闭」的编码值：两者不可区分。
+     *          本方法因此在任何 I/O 之前短路掉，调用方绝不能拿「缓冲区剩余空间」当长度传进来
+     *          （算出 0 就会被误读成 EOF）。这里用无效描述符证明短路真的先于任何系统调用。
+     */
+    TEST(AsyncSocket, AsyncReceiveWithZeroLengthShortCircuitsBeforeAnyIo)
+    {
+        EventLoop   loop;
+        AsyncSocket socket(loop, -1); // 描述符无效：若真去 recv，只会拿到 EBADF 异常
+        std::array<char, 8> buffer{};
+
+        Task<ssize_t> receiving = socket.asyncReceive(buffer.data(), 0);
+        receiving.handle().resume();
+        ASSERT_TRUE(receiving.isReady()) << "长度为 0 的请求不该挂起";
+        EXPECT_EQ(receiving.handle().promise().result(), 0) << "短路返回值必须是 0（调用方据此知道「没读」）";
+    }
+
+    /**
+     * @brief 单次接收长度超过 INT_MAX 当场拒绝，而不是让底层静默窄化
+     * @details recv 的长度形参是 int，强转过去会拿到一个可疑的负数（Windows 上更是直接进 WSA 参数）。
+     *          这条拒绝先于任何系统调用，因此无效描述符也能验证到。
+     */
+    TEST(AsyncSocket, AsyncReceiveRejectsLengthBeyondSingleCallCeiling)
+    {
+        EventLoop   loop;
+        AsyncSocket socket(loop, -1);
+        std::array<char, 8> buffer{};
+
+        const std::size_t oversizedLength = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1;
+        Task<ssize_t>     receiving       = socket.asyncReceive(buffer.data(), oversizedLength);
+        receiving.handle().resume();
+        ASSERT_TRUE(receiving.isReady()) << "超限长度应当场失败，而不是挂起等一次永远不会来的可读";
+
+        bool isRejectedWithReason = false;
+        try
+        {
+            static_cast<void>(receiving.handle().promise().result());
+        } catch (const Base::SystemException &exception)
+        {
+            isRejectedWithReason = std::string_view(exception.what()).find("超过上限") != std::string_view::npos;
+        } catch (const Base::Exception &)
+        {
+            isRejectedWithReason = false;
+        }
+        EXPECT_TRUE(isRejectedWithReason) << "没按「长度超限」的理由拒绝：调用方会以为可以换个缓冲区重试";
+    }
+
+    /**
+     * @brief 本端已关闭时读的是「故障」，不能报成 0（那会被当成对端正常关闭）
+     * @details 这两个 0 的含义正好相反：EOF 意味着「数据读完了，收口」，而本端关闭意味着
+     *          「这条连接早就不在了」。把后者报成前者，上层会以为收到了一次干净的结束。
+     */
+    TEST(AsyncSocket, AsyncReceiveOnClosedSocketThrowsInsteadOfReportingEof)
+    {
+        EventLoop   loop;
+        AsyncSocket socket = AsyncSocket::create(loop);
+        ASSERT_GE(socket.fileDescriptor(), 0);
+        socket.close();
+
+        std::array<char, 16> buffer{};
+        Task<ssize_t>        receiving = socket.asyncReceive(buffer.data(), buffer.size());
+        receiving.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
+        {
+            return receiving.isReady();
+        })) << "本端已关闭，接收却挂住了";
+
+        bool isReportedAsFailure = false;
+        try
+        {
+            const ssize_t receivedLength = receiving.handle().promise().result();
+            isReportedAsFailure          = false;
+            static_cast<void>(receivedLength);
+        } catch (const Base::Exception &)
+        {
+            isReportedAsFailure = true;
+        }
+        EXPECT_TRUE(isReportedAsFailure) << "本端已关闭被报成了「读到 0 字节」：上层会把故障当成干净的 EOF";
+    }
+
 #if !ASYN_PLATFORM_WIN32
     namespace
     {
@@ -579,38 +787,6 @@ namespace AsynGyanis::Core
                 content[index] = static_cast<char>(static_cast<unsigned char>(index % 251));
             }
             return content;
-        }
-
-        /**
-         * @brief 把调用方给出的套接字连到回环上的临时端口，并交出它的对端描述符
-         * @details 对端刻意不做成 AsyncSocket：读取由测试线程自己完成，挂事件循环只会多引入
-         *          一个线程而不会让断言更强。监听描述符在交出对端之后立即关闭——POSIX 上关闭
-         *          监听不影响已建立的连接。
-         * @param loop 驱动连接协程的事件循环
-         * @param socket 已 create() 出来的套接字，本函数把它连出去并作为写出侧
-         * @return int 对端（读取侧）描述符，非阻塞；建链或接受失败时返回 -1，由调用方断言
-         */
-        int connectAndAcceptPeer(EventLoop &loop, AsyncSocket &socket)
-        {
-            AsyncSocket listener = AsyncSocket::create(loop);
-            if (!listener.bind(InetAddress::localhost(0)) || !listener.listen(4))
-            {
-                return -1;
-            }
-
-            Task<> connecting = socket.asyncConnect(InetAddress::localhost(listener.localAddress().port()));
-            connecting.handle().resume();
-            if (!advanceUntil(loop, [&connecting]()
-            {
-                return connecting.isReady();
-            }))
-            {
-                return -1;
-            }
-
-            const int peerDescriptor = Platform::Socket::accept(listener.fileDescriptor(), nullptr, nullptr);
-            listener.close();
-            return peerDescriptor;
         }
 
         /**
