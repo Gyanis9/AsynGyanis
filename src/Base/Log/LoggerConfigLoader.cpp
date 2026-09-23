@@ -212,6 +212,16 @@ namespace AsynGyanis::Base
         // 树里每个子对象就是一份日志器配置，直接交给 applyLoggerConfig，不再从扁平键反推名字
         for (const auto &[loggerName, loggerConfiguration]: loggers)
         {
+            // 形态判据排在取 logger 之前：getLogger 会顺手把这个名字建出来，而下面的
+            // setLevel(defaultLevel) 对一份读不出字段的配置来说就是凭空改写——运维写错一行
+            // YAML，代价是某个 logger 的级别被悄悄换掉，而日志里一个字都没有
+            if (!loggerConfiguration.is_object())
+            {
+                std::cerr << "LoggerConfig：日志器 '" << loggerName << "' 的配置不是对象（实际是 "
+                        << typeName(loggerConfiguration.type()) << "，它的字段要写成 'level:' 与 'sinks:' 那样的键值对），已跳过该日志器"
+                        << '\n';
+                continue;
+            }
             auto &logger = LoggerRegistry::instance().getLogger(loggerName);
             logger.setLevel(defaultLevel);
             applyLoggerConfig(logger, loggerConfiguration, baseDirectory);

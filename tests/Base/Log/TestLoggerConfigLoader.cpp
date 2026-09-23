@@ -1607,12 +1607,60 @@ namespace AsynGyanis::Base
     }
 
     /**
-     * @brief 段落自相矛盾时不抛异常、也不动日志器
-     * @details 这份形状走文件加载进不来（加载侧自己就把「同一个名字既是标量又是更长键的第一段」
-     *          拒了），能造出它的是 setValue——那条通道不做形状校验。装配路径的既有口径是
-     *          「不让异常逃出配置加载」，因此这里必须被就地报出而不是抛给调用方。
+     * @brief 单个日志器的配置写成标量时报诊断，并且不动这个日志器
+     * @details 'loggers: {app: "on"}' 这种手写原先两头不着：字段读不出来因而无处报错，而取 logger
+     *          那一步会顺手把级别改成 global_level——一行写错的字段换来一次没人报告的级别变更。
+     *          形态判据因此排在取 logger 之前。级别是否被改写只看「低于原级别的那条不落盘」，
+     *          这一侧才分得开 ERROR 与被改成的 INFO。
      */
-    TEST_F(LoggerConfigLoaderTest, ContradictorySectionIsReportedInsteadOfThrowing)
+    TEST_F(LoggerConfigLoaderTest, LoggerEntryThatIsNotAnObjectIsReportedAndLeftUntouched)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+    app:
+      level: ERROR
+      sinks:
+        - type: file
+          path: kept_when_entry_bad.log
+)");
+        applyLogging();
+        logAndFlush("app", LogLevel::Error, "kept before the bad entry");
+        ASSERT_TRUE(contains(readTemporaryFile("kept_when_entry_bad.log"), "kept before the bad entry"));
+
+        // 同一份配置把 app 那一段写成了一个标量（root 仍是合法对象）
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+    app: "on"
+)");
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            EXPECT_NO_THROW(applyLogging());
+            diagnostic = capture.text();
+        }
+        EXPECT_TRUE(contains(diagnostic, "日志器 'app' 的配置不是对象")) << diagnostic;
+
+        logAndFlush("app", LogLevel::Error, "kept after the bad entry");
+        EXPECT_TRUE(contains(readTemporaryFile("kept_when_entry_bad.log"), "kept after the bad entry"));
+        logAndFlush("app", LogLevel::Info, "info must stay filtered");
+        EXPECT_FALSE(contains(readTemporaryFile("kept_when_entry_bad.log"), "info must stay filtered"))
+                << "级别被 global_level 改写了：一份读不出字段的配置不该动这个日志器";
+    }
+
+    /**
+     * @brief 用 setValue 把整个 loggers 段改写成标量时，装配报出来、不抛也不动日志器
+     * @details 这一段先由配置文件摊成 logging.loggers.root.* 那些键，再用 setValue 写一个同名标量：
+     *          定形之后段里那些键一起让位，因此装配看到的是「loggers 是个标量」而不是「既是值又是表」
+     *          ——两条通道合起来才让这个形状根本不出现。装配路径的既有口径是「不让异常逃出配置加载」，
+     *          所以这里要就地报出并把已有的 sink 原样留着。
+     */
+    TEST_F(LoggerConfigLoaderTest, ScalarOverrideOfTheLoggersSectionIsRejectedWithoutThrowing)
     {
         loadConfiguration(R"(logging:
   global_level: INFO
