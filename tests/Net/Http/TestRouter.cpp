@@ -370,6 +370,45 @@ namespace AsynGyanis::Net
         EXPECT_EQ(putCalls.load(), 1);
     }
 
+    /**
+     * @brief 钉住 del() 与 patch() 两个注册别名各自落在 DELETE 与 PATCH 上
+     * @details 它们是注册入口里唯一没有直测的两个（del 因 delete 是 C++ 关键字而改名，更不容易看出
+     *          登记到了哪个方法上）。写错方法枚举不会编译报错，而症状是「注册了却永远匹配不上」，
+     *          连 405 的 Allow 都会跟着说错话
+     */
+    TEST(Router, RegistersDeleteAndPatchThroughTheirAliases)
+    {
+        Router router;
+        std::atomic<int> deleteCalls{0};
+        std::atomic<int> patchCalls{0};
+        router.del("/item", textHandler("removed", &deleteCalls));
+        router.patch("/item", textHandler("merged", &patchCalls));
+
+        HttpRequest deleteRequest = makeRequest(HttpMethod::DELETE, "/item");
+        HttpResponse deleteResponse;
+        routeRequest(router, deleteRequest, deleteResponse);
+        EXPECT_EQ(deleteResponse.status(), 200) << "del() 没有把路由登记到 DELETE 上";
+        EXPECT_EQ(deleteResponse.body(), "removed");
+        EXPECT_EQ(deleteCalls.load(), 1);
+        EXPECT_EQ(patchCalls.load(), 0);
+
+        HttpRequest patchRequest = makeRequest(HttpMethod::PATCH, "/item");
+        HttpResponse patchResponse;
+        routeRequest(router, patchRequest, patchResponse);
+        EXPECT_EQ(patchResponse.status(), 200) << "patch() 没有把路由登记到 PATCH 上";
+        EXPECT_EQ(patchResponse.body(), "merged");
+        EXPECT_EQ(patchCalls.load(), 1);
+
+        // 对照：同一路径上没注册的方法必须 405，Allow 只列这两个方法。少了这条，
+        // 「两个别名都注册成了 any()」这种错也会被前面的命中判成通过
+        HttpRequest getRequest = makeRequest(HttpMethod::GET, "/item");
+        HttpResponse getResponse;
+        routeRequest(router, getRequest, getResponse);
+        EXPECT_EQ(getResponse.status(), 405) << "别名把路由放到了别的方法上，或注册成了任意方法";
+        EXPECT_EQ(getResponse.getHeader("allow").value_or(std::string{}), "DELETE, PATCH");
+        EXPECT_EQ(deleteCalls.load(), 1) << "未注册的 GET 打到了 DELETE 路由上";
+    }
+
     // ============================================================================
     // 模式路由：具名参数
     // ============================================================================
