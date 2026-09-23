@@ -41,6 +41,34 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 算出一条出站包会往缓冲里追加多少字节
+         * @details 与 `appendQuicPacket` 的写入顺序逐项对应，用来一次预留到位。算多算少都只影响
+         *          这次预留的收益，不影响线上字节。
+         * @param packet 明文侧描述
+         * @param plaintextByteCount 补齐 PADDING 之后的明文长度
+         * @return std::size_t 本包的总字节数
+         */
+        std::size_t outboundPacketByteCount(const QuicOutboundPacket &packet, const std::size_t plaintextByteCount) noexcept
+        {
+            // Length 域覆盖的正是「包号 + 密文 + 标签」这三项，与下面要写的字节数同源
+            const std::size_t protectedPayloadByteCount =
+                    packet.packetNumberByteCount + plaintextByteCount + kQuicAuthenticationTagByteLength;
+            // 首字节与目的标识两种头部都要写；目的标识的长度字节只有长头才有
+            std::size_t byteCount = 1U + packet.destinationConnectionId.size();
+            if (!packet.isLongHeader)
+            {
+                return byteCount + protectedPayloadByteCount;
+            }
+            byteCount += 4U + 1U + 1U + packet.sourceConnectionId.size()
+                    + quicVariableLengthIntegerByteCount(protectedPayloadByteCount);
+            if (packet.longPacketType == QuicLongPacketType::Initial)
+            {
+                byteCount += quicVariableLengthIntegerByteCount(packet.token.size()) + packet.token.size();
+            }
+            return byteCount + protectedPayloadByteCount;
+        }
+
+        /**
          * @brief 把首字节写成线上要的样子（保护前）
          * @param packet 明文侧描述
          * @param packetNumberByteCount 包号字段字节数
@@ -120,6 +148,8 @@ namespace AsynGyanis::Net
         }
 
         const std::size_t packetStartOffset = datagram.size();
+        // 一次预留到本包的精确长度：这条路径每包都走，交给几何扩容就是把整包重复拷贝三四遍
+        datagram.reserve(packetStartOffset + outboundPacketByteCount(packet, plaintext.size()));
         datagram.push_back(static_cast<char>(firstByte));
         if (packet.isLongHeader)
         {
