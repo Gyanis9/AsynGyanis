@@ -564,6 +564,11 @@ namespace AsynGyanis::Net
         }
 
         flushPendingStreamData();
+        // 这一趟里收口的隧道在这里摘账。两处收口都只置标记不摘表：对端事后用 END_STREAM 收的那处
+        // 只把流号交给 closeDeferredTunnels()，扩展 CONNECT 与 END_STREAM 同趟到达的那处在派发里就地
+        // 收口。摘账放在泵的最后是为了两处都覆盖到——记录留着，hasOutstandingWork() 就一直为真，
+        // 而承载层正是拿它决定「单连接请求数到量后可以收这条连接」与「优雅收口已经排空」
+        reapFinishedTunnels();
         co_return;
     }
 

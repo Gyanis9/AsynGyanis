@@ -1784,6 +1784,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(peer.response().isComplete)
                 << "对端已收尾的隧道没有跟着收口：响应永远收不完（业务也醒不过来）";
         EXPECT_TRUE(isBusinessFinished) << "隧道收口后业务没有醒来收尾";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "同趟收尾的隧道收口后仍留在账上：承载层会一直认为这条连接有在途工作";
     }
 
     /**
@@ -1838,6 +1839,75 @@ namespace AsynGyanis::Net
 
         session.abandonPendingStreams();
         EXPECT_FALSE(session.hasOutstandingWork()) << "业务跑完后会话仍报「有在途工作」：承载层会一直不敢收这条连接";
+    }
+
+    /**
+     * @brief 对端事后用 END_STREAM 收隧道：业务醒过来收尾，会话也要跟着报「手上没活」
+     * @details 这条路径上两个动作缺一不可：唤醒经 `finishRequest()` 推到 `pump()` 的安全点做（当场叫醒
+     *          等于在连接层回调里重入连接层），记录要在那一趟里摘掉——留着它 `hasOutstandingWork()` 就永远
+     *          为真，单连接请求条数到量后的排空收口与优雅停机等的都是这条已经死掉的隧道
+     */
+    TEST(Http3Session, ReapsTunnelClosedByPeersLaterEndStream)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        bool   isBusinessFinished = false;
+        Router router;
+        router.get("/chat",
+                   [&isBusinessFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [&isBusinessFinished](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   isBusinessFinished = true;
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        // 只带一条帧、不带 END_STREAM：隧道建起来，业务读完这一条后挂在 receive() 上等下一条
+        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
+        const std::size_t                 sentCountAfterConnect = sentStreamData.size();
+        const std::vector<CapturedStreamData> requestChunks =
+                peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> firstPumpTask = session.pump();
+        resumeUntilReady(firstPumpTask);
+        ASSERT_FALSE(isBusinessFinished) << "用例前提：业务要还挂在 receive() 上";
+        ASSERT_TRUE(session.hasOutstandingWork()) << "用例前提：隧道没建起来就没东西可收口";
+
+        // 对端事后收尾：走真实的连接层入口（空正文 + END_STREAM），而不是直接调 finishRequest()
+        session.onStreamData(kFirstRequestStreamId, {}, true);
+        EXPECT_FALSE(isBusinessFinished) << "收到对端收尾的那一趟就把业务叫醒：那是在连接层的回调里重入连接层";
+
+        Core::Task<> secondPumpTask = session.pump();
+        resumeUntilReady(secondPumpTask);
+        EXPECT_TRUE(isBusinessFinished) << "安全点没有兑现收尾：业务永远挂在 receive() 上";
+
+        for (std::size_t writtenIndex = sentCountAfterConnect; writtenIndex < sentStreamData.size(); ++writtenIndex)
+        {
+            const CapturedStreamData &written = sentStreamData[writtenIndex];
+            if (written.streamId == kFirstRequestStreamId)
+            {
+                peer.receive(written.streamId, written.bytes, written.isEndStream);
+            }
+        }
+        EXPECT_TRUE(peer.response().isComplete) << "本端没跟着交出 END_STREAM：对端那条流永远收不完";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "隧道已收口却还留在账上：排空收口与优雅停机等的就是这条死流";
     }
 
     /**
