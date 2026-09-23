@@ -27,6 +27,11 @@ namespace AsynGyanis::Net
             return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
         }
 
+        /// 收请求头时给这条流的请求对象预留的头部容量：4 条 / 128 字节够一条典型的 GET，
+        /// 比这多就照常按倍扩容。取小值是刻意的——留多了每一份在途请求都要多养一段空缓冲
+        constexpr std::size_t kIncomingRequestHeaderFieldGuess = 4U;
+        constexpr std::size_t kIncomingRequestHeaderByteGuess = 128U;
+
         /// 100..999 之外（RFC 9110 §15）的状态码不得上线：连接层会拒收这个 :status，
         /// 整条流就此发不出东西，改回 500 至少让对端拿到一份能读的响应
         [[nodiscard]] int normalizeWireStatusCode(const int responseStatus, const std::int64_t streamId)
@@ -565,6 +570,13 @@ namespace AsynGyanis::Net
     void Http3Session::addRequestHeader(const std::int64_t streamId, std::string name, std::string value)
     {
         IncomingRequest &incoming = m_incomingRequests[streamId];
+        if (incoming.headerFieldCount == 0)
+        {
+            // 这条流的第一场头部：先按典型请求留够存储，逐条 addHeader 就不再让记录表与字节缓冲
+            // 各自从 0 按倍扩上去（实测同一条 10 头部的请求，不预留 24 次分配，留这一档是 12 次，
+            // 判据见 HotPathAllocations.HttpRequestHeaderAssemblyAllocations）
+            incoming.request.reserveHeaders(kIncomingRequestHeaderFieldGuess, kIncomingRequestHeaderByteGuess);
+        }
         // 收到一段请求就是「有进展」：读时限按 readTimeout 往后推，慢客户端一直发就一直不算超时
         incoming.deadline = nextRequestDeadline();
         // 头部限额与 h1/h2 同口径：条数、单名/单值长度、整块净字节。越限只置位、让请求收完，
@@ -943,7 +955,16 @@ namespace AsynGyanis::Net
         // 方法原文经 methodFromString 映射：未收录的方法落到 UNKNOWN，路由器按既有规则回 404/405，
         // 绝不静默降级成某条业务路由
         request.setMethod(isWebSocketTunnelRequest ? HttpMethod::GET : HttpRequest::methodFromString(incoming.method));
-        request.setUri(incoming.path.empty() ? std::string("/") : incoming.path);
+        if (incoming.path.empty())
+        {
+            // CONNECT 一类可以不带 :path：按根路径交给路由，与 h1/h2 侧「uri 至少是 /」的口径一致
+            request.setUri(std::string("/"));
+        }
+        else
+        {
+            // 换缓冲而不是再抄一条：这条 :path 除了当 uri 之外没有第二个读点，抄一遍只是白要一块堆
+            request.adoptStagedUri(incoming.path);
+        }
         request.setHttpVersion(std::string(kHttp3RequestVersion));
         request.setBody(std::move(incoming.body));
         // :authority 就是权威主机来源：对端没显式给 host 头时用它补齐，与 h1/h2 读 host 的口径对齐

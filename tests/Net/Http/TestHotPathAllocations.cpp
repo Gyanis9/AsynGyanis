@@ -23,6 +23,8 @@
 //   · 收一条 h2 请求（四条伪头加三条普通头部的 GET，与 h1 那条同一批语料）：15 次 / 1621 字节。
 //     同一条请求在 h1 侧是 0 次——差下来的是「每条请求各要一套头部存储」这条结构性成本：h1 的请求
 //     对象按连接复用、容量留着，h2 每条流一份；改前这项是 18 次 / 2824 字节；
+//   · 一条请求新建一个 HttpRequest 逐条装 10 条头部：不预留 24 次 / 2588 字节，先留 4 条 128 字节
+//     是 12 次 / 2080 字节。HTTP/3 收请求头走的正是这条形状（请求对象随流新建，头部一条一条写进去）；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次；
 //   · 一条 h2 连接握手到关掉：每连接的固定成本（空闲连接也要付，故只作打印对照）。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
@@ -80,6 +82,10 @@ namespace AsynGyanis::Net
         // 同一条语料在 h1 那条形状上是 0 次——差值里剩的是「每条请求各要一套存储」这一条结构性成本
         constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 15000U;
         constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 1621000U;
+        // 一条请求新建一个 HttpRequest 装 10 条头部：记录表与字节缓冲都从 0 按倍长上去的代价。
+        // 预留那一档只留 4 条 / 128 字节（HTTP/3 收头实际用的猜测值），超出部分照常扩容
+        constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand = 24000U;
+        constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;
 #endif
         /// 一条贴近真实的 h1 请求：10 个头部 + 64 字节正文（与微基准的 http1-parse-request 同形）
         std::string makeRequestText()
@@ -325,6 +331,63 @@ namespace AsynGyanis::Net
 #ifdef NDEBUG
         EXPECT_EQ(profile.totalAllocations, kHeaderRefillTotalAllocationsPerThousand)
                 << "装 10 条头部的分配数变了：稳态下这张表只该按需扩容，不该每条头各要一块";
+#endif
+    }
+
+    /**
+     * @brief 一条请求新建一个 HttpRequest 逐条装头部付多少次分配（不预留 vs 预留四分之一个量）
+     * @details HTTP/3 收请求头走的就是这条形状：请求对象随流新建，头部一条条 addHeader 进去，装完
+     *          随请求交给业务。与上面「复用同一份存储装 10 条头部＝0 次」对照，差的全在
+     *          「每条请求各要一套新缓冲」——记录表与字节缓冲各自从 0 按倍长上去。
+     */
+    TEST(HotPathAllocations, HttpRequestHeaderAssemblyAllocations)
+    {
+        const std::vector<std::pair<std::string, std::string>> fixtures = makeHeaderFixtures();
+        const auto markOf = [](const HttpRequest &request)
+        {
+            // 只走视图出口：取值返回 optional<string> 的那条每次都要造临时串，会把读数弄脏
+            return request.firstHeaderValueView("content-length").value_or(std::string_view{}).size()
+                 + request.firstHeaderValueView("authorization").value_or(std::string_view{}).size();
+        };
+        const auto assembleWithoutReserve = [&fixtures, &markOf]
+        {
+            HttpRequest request;
+            for (const auto &[name, value]: fixtures)
+            {
+                request.addHeader(name, value);
+            }
+            return markOf(request);
+        };
+        // 4 条 / 128 字节是 HTTP/3 那边实际要用的猜测值：常见请求头比这少，超出照样扩容
+        const auto assembleWithSmallReserve = [&fixtures, &markOf]
+        {
+            HttpRequest request;
+            request.reserveHeaders(4U, 128U);
+            for (const auto &[name, value]: fixtures)
+            {
+                request.addHeader(name, value);
+            }
+            return markOf(request);
+        };
+        // content-length 的 "64" 两条字符，加 authorization 那条 43 字符的取值
+        const std::size_t expectedMark = 2U + 43U;
+        ASSERT_EQ(assembleWithoutReserve(), expectedMark) << "这条形状没把头部装上，读数没意义";
+        ASSERT_EQ(assembleWithSmallReserve(), expectedMark) << "预留过的那份与不预留的那份读到的值不一致";
+
+        const AllocationProfile fresh = measurePerOperation(assembleWithoutReserve);
+        const AllocationProfile reserved = measurePerOperation(assembleWithSmallReserve);
+        EXPECT_LT(reserved.totalAllocations, fresh.totalAllocations)
+                << "一次留够反而不比逐条扩容省：reserveHeaders 没接到存储侧，或两侧容器已不再按倍长";
+        std::printf("request-header-assembly 每次分配 不预留 %llu 次 / %llu 字节；预留 4 条 128 字节 %llu 次 / %llu 字节\n",
+                    static_cast<unsigned long long>(fresh.allocationsPerOperation),
+                    static_cast<unsigned long long>(fresh.bytesPerOperation),
+                    static_cast<unsigned long long>(reserved.allocationsPerOperation),
+                    static_cast<unsigned long long>(reserved.bytesPerOperation));
+#ifdef NDEBUG
+        EXPECT_EQ(fresh.totalAllocations, kAssemblyWithoutReserveTotalAllocationsPerThousand)
+                << "逐条装 10 条头部的分配数变了：记录表或字节缓冲的扩容节奏改了";
+        EXPECT_EQ(reserved.totalAllocations, kAssemblyWithSmallReserveTotalAllocationsPerThousand)
+                << "预留过的那条读数变了：留的量或扩容节奏改了，HTTP/3 收头那条路径要按这条重估";
 #endif
     }
 

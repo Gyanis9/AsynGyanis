@@ -110,6 +110,11 @@ namespace AsynGyanis::Net
         m_headerStore.adoptFrom(stagedHeaders);
     }
 
+    void HttpRequest::reserveHeaders(const std::size_t fieldCount, const std::size_t byteCount)
+    {
+        m_headerStore.reserve(fieldCount, byteCount);
+    }
+
     std::optional<std::string> HttpRequest::getHeader(const std::string_view key) const
     {
         return m_headerStore.get(key);

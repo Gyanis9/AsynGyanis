@@ -125,6 +125,15 @@ namespace AsynGyanis::Net
         void adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept;
 
         /**
+         * @brief 一次留够整块头部的容量，逐条 addHeader 时不再反复扩容
+         * @details 给「一条请求从零装配头部」的调用方用（HTTP/3 收请求头就是逐条写进本对象）。
+         *          h1 那条按缓冲交换交接整块头部的路径不需要它——那边容量本来就在请求与解析器之间滚。
+         * @param fieldCount 预计的头部条数；实到条数超出时照常扩容
+         * @param byteCount 预计要写入的名值字节数；超出时照常扩容
+         */
+        void reserveHeaders(std::size_t fieldCount, std::size_t byteCount);
+
+        /**
          * @brief 获取指定名称的 HTTP 头部值。
          * @param key 头部字段名，大小写不敏感（内部统一按小写存储与查找）
          * @return 命中时返回该名字的单个值：普通头部为 ", " 合并后的完整值，
