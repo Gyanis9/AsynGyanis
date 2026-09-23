@@ -1569,6 +1569,79 @@ namespace AsynGyanis::Base
                 << "旧 sink 没被换掉：装配没有按新快照清过 sink";
     }
 
+    /**
+     * @brief loggers 段不是对象时报诊断，并且一个日志器都不动
+     * @details 装配被拒绝时最坏的走法是把已有 sink 清空：那之后该日志器的日志全丢，而现场只有一行
+     *          标准错误。这里同时钉两点——报得出形态、原有 sink 还活着。
+     */
+    TEST_F(LoggerConfigLoaderTest, LoggersSectionThatIsNotAnObjectLeavesExistingSinksAlone)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: kept_when_section_bad.log
+)");
+        applyLogging();
+        logAndFlush("root", LogLevel::Info, "applied while well-formed");
+        ASSERT_TRUE(contains(readTemporaryFile("kept_when_section_bad.log"), "applied while well-formed"));
+
+        // 同一份文件把 loggers 写成了一个标量（少写了下面那层结构）
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers: root
+)");
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            EXPECT_NO_THROW(applyLogging());
+            diagnostic = capture.text();
+        }
+        EXPECT_TRUE(contains(diagnostic, ".loggers 不是对象")) << diagnostic;
+
+        logAndFlush("root", LogLevel::Info, "still writing after a rejected section");
+        EXPECT_TRUE(contains(readTemporaryFile("kept_when_section_bad.log"), "still writing after a rejected section"));
+    }
+
+    /**
+     * @brief 段落自相矛盾时不抛异常、也不动日志器
+     * @details 这份形状走文件加载进不来（加载侧自己就把「同一个名字既是标量又是更长键的第一段」
+     *          拒了），能造出它的是 setValue——那条通道不做形状校验。装配路径的既有口径是
+     *          「不让异常逃出配置加载」，因此这里必须被就地报出而不是抛给调用方。
+     */
+    TEST_F(LoggerConfigLoaderTest, ContradictorySectionIsReportedInsteadOfThrowing)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: kept_when_section_contradicts.log
+)");
+        applyLogging();
+        logAndFlush("root", LogLevel::Info, "applied while consistent");
+        ASSERT_TRUE(contains(readTemporaryFile("kept_when_section_contradicts.log"), "applied while consistent"));
+
+        // logging.loggers 被写成标量，而 logging.loggers.root.level 已经带着它作为第一段
+        ASSERT_TRUE(ConfigManager::instance().setValue("logging.loggers", ConfigValue(std::string("scalar_and_also_a_prefix"))));
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            EXPECT_NO_THROW(applyLogging());
+            diagnostic = capture.text();
+        }
+        EXPECT_TRUE(contains(diagnostic, "本次不改动任何日志器")) << diagnostic;
+
+        logAndFlush("root", LogLevel::Info, "still writing after a contradictory section");
+        EXPECT_TRUE(contains(readTemporaryFile("kept_when_section_contradicts.log"), "still writing after a contradictory section"));
+    }
+
     TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationReplacesSinksInsteadOfDuplicating)
     {
         loadConfiguration(R"(logging:

@@ -872,6 +872,16 @@
   新增 `AsyncSinkClampsOversizedQueueSizeAndReportsIt`，并给既有的标量条目用例补上诊断断言——两条
   实测都在改前变红；Windows 侧 `TestBase` 571 例全绿、示例 `base_log`/`base_config` 45 步全过，
   容器 GCC 编同一套零告警、ASan/UBSan/LSan 对日志段 114 例零命中。
+- **日志装配不再拼两份快照**：`LoggerConfigLoader::loadFromConfig()` 过去是「`keys()` 取一份快照挑出
+  日志器名单，之后每个 `getOptional()` 再各取一份」——中途插进来的一次热重载能把「A 的等级来自上一版、
+  A 的 sinks 来自这一版」拼成一份装配结果，而一次读取才是配置唯一的一致视图边界。现在整段 `logging`
+  经 `getSection()` 一次取回（它只读一份快照），日志器名字也不再从扁平键反推，直接走树里的子对象。
+  段落形状不可装配时（`loggers` 不是对象；或同一个名字既配成标量又是更长键的第一段——后者只有
+  `setValue()` 造得出来，文件加载那侧自己就拒了）报诊断并**一个日志器都不动**：清空 sink 会让该日志器
+  此后静默丢日志，而 `getSection` 抛的 `ConfigValidationException` 也不该逃出配置装配路径。新增
+  `LoggersSectionThatIsNotAnObjectLeavesExistingSinksAlone` 与 `ContradictorySectionIsReportedInsteadOfThrowing`，
+  两条换回旧实现都变红；Windows 侧 `TestBase` 576 例全绿，容器 GCC 同套零告警、ASan/UBSan/LSan 命中 0，
+  示例 `base_log`/`base_config` 45 步全过。
 
 ### 性能
 

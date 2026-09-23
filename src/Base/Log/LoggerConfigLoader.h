@@ -31,6 +31,9 @@ namespace AsynGyanis::Base
     public:
         /**
          * @brief 从配置系统读取日志器配置并应用到注册表
+         * @details 整段配置按**一份快照**取回后再装配（不是一键一读），因此并发改掉配置也不会
+         *          拼出「等级来自上一版、sinks 来自这一版」的半新半旧结果。段落形状自相矛盾或
+         *          整段类型不符时报诊断并**一个日志器都不动**，异常不逃出本函数。
          * @param configurationPrefix 日志配置根键前缀
          * @param baseDirectory 相对日志路径的基准目录（为空时使用可执行文件目录）
          */

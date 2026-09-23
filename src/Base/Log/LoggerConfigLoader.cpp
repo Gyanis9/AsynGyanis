@@ -2,6 +2,7 @@
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
+#include "Base/Exception/ConfigValidationException.h"
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Sinks/FileSink.h"
@@ -18,7 +19,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -127,77 +127,94 @@ namespace AsynGyanis::Base
             }
             return resolvedPath;
         }
+
+        /**
+         * @brief 给 root 装上默认的控制台 Sink 并按全局等级设级
+         * @details 没配 root 与完全没配 loggers 两处都要走这里：框架自身那些走 root 的日志若没有
+         *          sink 就被静默丢掉，而那正是最需要看到的诊断
+         * @param level 从 global_level 得出的默认等级
+         */
+        void installDefaultRootLogger(const LogLevel level)
+        {
+            auto &root = LoggerRegistry::instance().getRootLogger();
+            root.clearSinks();
+            root.setLevel(level);
+            root.addSink(std::make_unique<ConsoleSink>(true));
+        }
     } // namespace
 
     void LoggerConfigLoader::loadFromConfig(const std::string &configurationPrefix, const std::filesystem::path &baseDirectory)
     {
         const auto &configuration = ConfigManager::instance();
 
-        const std::string globalLevelKey = configurationPrefix + ".global_level";
+        // 整段配置一次取回：getSection 只读一份快照。原先是 keys() 取一份、之后每个 getOptional
+        // 再各取一份，跨键没有一致视图——中途插进来的一次热重载会把「A 的等级来自上一版、
+        // A 的 sinks 来自这一版」拼成一份装配结果
+        ConfigValue loggingSection;
+        try
+        {
+            loggingSection = configuration.getSection(configurationPrefix);
+        } catch (const ConfigValidationException &sectionError)
+        {
+            // 与 createSinkFromConfig 同一口径：不让异常逃出配置装配路径。段落形状自相矛盾时
+            // （同一个名字既配成标量、又是更长键的第一段）整棵子树都不可信，于是一个日志器都不动，
+            // 比按半截树改一半更强
+            std::cerr << "LoggerConfig：" << sectionError.what() << "，本次不改动任何日志器" << '\n';
+            return;
+        }
+        if (!loggingSection.is_object())
+        {
+            std::cerr << "LoggerConfig：" << configurationPrefix << " 段不是对象（实际是 "
+                    << typeName(loggingSection.type()) << "），本次不改动任何日志器" << '\n';
+            return;
+        }
 
         // 键不存在时按 INFO 是正常路径；存在但不是字符串（YAML 里写成不带引号的数字、或整段漏了
         // 缩进被解析成列表）原先会静默按 INFO 生效——「明明配了等级却没生效」是这里最难查的一类
         // 现场，因此按 sinks 各字段的同一口径报出实际类型再回落
-        const std::optional<ConfigValue> globalLevelValue = configuration.getOptional(globalLevelKey);
-        LogLevel                        defaultLevel      = LogLevel::Info;
-        if (globalLevelValue.has_value())
+        LogLevel defaultLevel = LogLevel::Info;
+        if (const auto globalLevelIterator = loggingSection.find("global_level"); globalLevelIterator != loggingSection.end())
         {
-            if (const auto globalLevel = configValueAs<std::string>(*globalLevelValue); globalLevel.has_value())
+            if (const auto globalLevel = configValueAs<std::string>(*globalLevelIterator); globalLevel.has_value())
             {
                 defaultLevel = logLevelFromString(*globalLevel);
             } else
             {
-                std::cerr << "LoggerConfig：" << globalLevelKey << " 类型是 " << typeName(globalLevelValue->type())
-                        << "，要求 " << configTypeNameOf<std::string>() << "，已按 INFO 处理" << '\n';
+                std::cerr << "LoggerConfig：" << configurationPrefix << ".global_level 类型是 "
+                        << typeName(globalLevelIterator->type()) << "，要求 " << configTypeNameOf<std::string>()
+                        << "，已按 INFO 处理" << '\n';
             }
         }
 
-        // 配置以扁平键存储，具名 logger 由前缀下的键推导
-        const std::string     loggerPrefix = configurationPrefix + ".loggers.";
-        std::set<std::string> loggerNames;
-        for (const auto &key: configuration.keys())
+        const auto loggersIterator = loggingSection.find("loggers");
+        if (loggersIterator == loggingSection.end())
         {
-            if (!key.starts_with(loggerPrefix))
-            {
-                continue;
-            }
-
-            const auto nameStart   = loggerPrefix.size();
-            const auto dotPosition = key.find('.', nameStart);
-            if (const auto name = key.substr(nameStart, dotPosition == std::string::npos ? std::string::npos : dotPosition - nameStart); !name.empty())
-            {
-                loggerNames.insert(name);
-            }
+            // 只配了别的键的部署里，框架自身那些走 root 的日志会停在「无 sink」的默认状态上被
+            // 静默丢掉，而那正是最需要看到的诊断
+            installDefaultRootLogger(defaultLevel);
+            return;
+        }
+        if (!loggersIterator->is_object())
+        {
+            std::cerr << "LoggerConfig：" << configurationPrefix << ".loggers 不是对象（实际是 "
+                    << typeName(loggersIterator->type()) << "，每个日志器要写成 '名字:' 加它的字段），本次不改动任何日志器"
+                    << '\n';
+            return;
         }
 
-        // 没人显式配 root 时也要按 global_level 装上控制台 sink：只配了具名 logger 的部署里，
-        // 框架自身那些走 root 的日志会停在「无 sink」的默认状态上被静默丢掉，而那正是最需要
-        // 看到的诊断。显式配了 root 的走下面具名 logger 那条路
-        if (!loggerNames.contains("root"))
+        const ConfigObject &loggers = loggersIterator->get_ref<const ConfigObject &>();
+        // 没人显式配 root 时也要装上控制台 sink；显式配了 root 的走下面那条路
+        if (!loggers.contains("root"))
         {
-            auto &root = LoggerRegistry::instance().getRootLogger();
-            root.clearSinks();
-            root.setLevel(defaultLevel);
-            root.addSink(std::make_unique<ConsoleSink>(true));
+            installDefaultRootLogger(defaultLevel);
         }
 
-        for (const auto &name: loggerNames)
+        // 树里每个子对象就是一份日志器配置，直接交给 applyLoggerConfig，不再从扁平键反推名字
+        for (const auto &[loggerName, loggerConfiguration]: loggers)
         {
-            auto &logger = LoggerRegistry::instance().getLogger(name);
-
-            ConfigObject      loggerConfigurationObject;
-            const std::string loggerConfigurationKey = loggerPrefix + name;
-            if (const auto levelOptional = configuration.getOptional(loggerConfigurationKey + ".level"); levelOptional.has_value())
-            {
-                loggerConfigurationObject.emplace("level", *levelOptional);
-            }
-            if (const auto sinksOptional = configuration.getOptional(loggerConfigurationKey + ".sinks"); sinksOptional.has_value())
-            {
-                loggerConfigurationObject.emplace("sinks", *sinksOptional);
-            }
-
+            auto &logger = LoggerRegistry::instance().getLogger(loggerName);
             logger.setLevel(defaultLevel);
-            applyLoggerConfig(logger, ConfigValue(std::move(loggerConfigurationObject)), baseDirectory);
+            applyLoggerConfig(logger, loggerConfiguration, baseDirectory);
         }
     }
 
