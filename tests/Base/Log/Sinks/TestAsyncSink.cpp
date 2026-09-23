@@ -12,6 +12,7 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -142,6 +143,30 @@ namespace AsynGyanis::Base
         private:
             std::shared_ptr<RecordedEvents> m_events;       ///< 共享记录
             std::chrono::microseconds       m_perEventCost; ///< 单条事件模拟耗时
+        };
+
+        /**
+         * @brief 每次 write 都抛出的桩 Sink，用于制造「worker 落地失败」的场景
+         */
+        class ThrowingSink final : public LogSink
+        {
+        public:
+            /**
+             * @brief 抛出异常，模拟下游写入失败
+             * @details 重写 LogSink::write()：滚动时反复打不开文件走的就是这条抛出路径，异步包装
+             *          必须把这一条当作「没能落地」处理，而不是让 worker 线程跟着倒下。
+             */
+            void write(const LogEvent &) override
+            {
+                throw std::runtime_error("桩：下游写入必然失败");
+            }
+
+            /**
+             * @brief 桩无缓冲区，刷新为空操作
+             */
+            void flush() override
+            {
+            }
         };
 
         /**
@@ -574,6 +599,20 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(events->contains("at_wrapped_level")) << "达到等级的事件被误挡";
         EXPECT_EQ(events->size(), 1u);
         EXPECT_EQ(sink.droppedEventCount(), 1u) << "被下游等级挡下的事件应计入丢弃";
+    }
+
+    TEST(AsyncSink, EventsLostToAThrowingDownstreamAreCountedAsDropped)
+    {
+        AsyncSink sink(std::make_unique<ThrowingSink>(), 8);
+
+        sink.write(makeEvent(LogLevel::Info, "lost-one"));
+        sink.write(makeEvent(LogLevel::Info, "lost-two"));
+        // 下游每次都抛：worker 必须把它咽下来继续跑（jthread 入口的未捕获异常会直接 terminate 进程），
+        // 且待落地账要照清——否则 flush() 会等一条永远不会被核销的账
+        sink.flush();
+
+        EXPECT_EQ(sink.droppedEventCount(), 2u)
+                << "落地失败没计入丢弃数：异步路径上这条丢失连一行诊断都没有，计数是它唯一的出口";
     }
 
     TEST(AsyncSink, FlushBlocksUntilQueueDrainedAndDownstreamFlushed)

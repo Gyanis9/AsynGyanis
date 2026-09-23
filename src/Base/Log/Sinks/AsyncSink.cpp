@@ -248,9 +248,10 @@ namespace AsynGyanis::Base
                 }
             } catch (...)
             {
-                // 防止单个 Sink 异常导致整个 worker 线程崩溃
-                // 注意：这里刻意不在日志库内部再打日志，否则异常递归/自死锁风险大于收益，
-                // 当前代价是该条事件静默丢失（由 AsyncSink 之外的调用方决定是否需要补偿）
+                // 防止单个 Sink 异常拖垮整个 worker 线程。刻意不在这里再打日志：本类正是日志出口，
+                // 报错会递归回自己。但这条事件确实没了，因此计入丢弃数——另外三种「worker 侧没能
+                // 落地」的情形都走这一个出口，漏计会让丢失规模在 droppedEventCount() 上完全看不见
+                m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
             }
             lock.lock();
             // 队列腾出空间，只叫因队列满而阻塞的写入者（消费者此刻不需要被叫）

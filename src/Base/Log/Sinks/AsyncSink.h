@@ -125,8 +125,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 返回被丢弃的事件累计数
-         * @details 三种情形计入：队列溢出按策略丢弃、已请求停止后写入、以及被包装 sink 的
-         *          level 过滤挡下（那一层过滤没有别人会问，见 workerLoop 里的说明）
+         * @details 四种情形计入：队列溢出按策略丢弃、已请求停止后写入、被包装 sink 的 level 过滤
+         *          挡下（那一层过滤没有别人会问，见 workerLoop 里的说明），以及被包装 sink 的
+         *          write() 抛出——最后这一种不落 std::cerr（本类就是日志出口，报错会递归回自己），
+         *          计数是它唯一的出口
          * @return uint64_t 丢弃事件总数
          */
         [[nodiscard]] uint64_t droppedEventCount() const noexcept;
