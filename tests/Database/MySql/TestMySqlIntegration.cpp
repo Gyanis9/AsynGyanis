@@ -886,6 +886,46 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 验证 queryTimeout 在服务端给只读语句装上时限，且打断的是语句而不是这条连接
+     *
+     * @details 客户端侧只有整秒的读写超时，那道界是以「废掉整条连接」为代价的（池里就此少一条可用连接，
+     *          而服务端可能还在跑那条查询）。会话变量 max_execution_time 把同一笔预算交给服务端：
+     *          到点只中止语句，会话留着。判据因此不能只看「返回空」——读写超时也会返回空——要看连接还在。
+     */
+    TEST_F(MySqlIntegrationTest, ReadOnlyStatementTimeLimitStopsTheQueryNotTheConnection)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 递归 CTE 的默认深度上限只有 1000，会先以 3636 报错而不是跑满时间；把上限抬到本用例的规模，
+        // 才让「被打断」这一件事由语句时限来说话
+        ASSERT_NE(connection.execute("SET SESSION cte_max_recursion_depth = 200000000"), nullptr) << connection.lastError();
+
+        // 建连之后再改：语句时限走的是会话变量，下一条语句就该受它约束（不必断开重连）
+        connection.setQueryTimeout(500);
+
+        // 刻意不用 SELECT SLEEP(n)：那条被时限掐断时 SLEEP 会返回「被打断」而语句本身算成功，
+        // 报不出超时。递归 CTE 计数是真要在服务端跑完的只读语句，只能以报错收场。
+        const auto startedAt = std::chrono::steady_clock::now();
+        const std::unique_ptr<DatabaseResult> longScan = connection.execute(
+                "WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000000)"
+                " SELECT COUNT(*) FROM seq");
+        const auto elapsedMilliseconds =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+
+        ASSERT_EQ(longScan, nullptr) << "这条递归统计没被只读语句时限打断";
+        EXPECT_LT(elapsedMilliseconds, 3000) << "耗时 " << elapsedMilliseconds << " 毫秒，不像 500 毫秒的会话时限";
+        // 服务端原文（而不是客户端的「Lost connection」之类）说明中止是服务端做的，链路没被拆掉
+        EXPECT_NE(connection.lastError().find("maximum statement execution time"), std::string::npos) << connection.lastError();
+        EXPECT_TRUE(connection.isConnected()) << "只读语句超时不该把连接一起废掉：" << connection.lastError();
+
+        // 同一条会话还能继续用：这正是相比读写超时的关键差别
+        const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "超时之后连接不可用：" << connection.lastError();
+        ASSERT_TRUE(followUp->next());
+    }
+
+    /**
      * @brief 验证错误口令连不上，且失败原因是面向使用者的中文
      */
     TEST_F(MySqlIntegrationTest, ConnectWithWrongPasswordFailsWithLocalizedReason)

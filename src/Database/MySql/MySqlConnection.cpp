@@ -217,6 +217,15 @@ namespace AsynGyanis::Database
         // 事务标记随新会话一起归零：新连接上不可能开着上一次连接的事务
         m_isConnected       = true;
         m_isTransactionOpen = false;
+
+        // 只读语句的服务端时限只能在握手之后下发（它是一条普通语句）。设不上不该把一次成功的连接判成失败：
+        // 没有这道界时客户端读写超时仍在守着，只是那一道会连连接一起废掉，原因由 lastError() 给出。
+        // 但若这条语句把连接本身弄断了（握手刚完就失联），那就不是一条可用的会话，如实判失败
+        if (!applyStatementTimeLimit() && !isConnected())
+        {
+            return false;
+        }
+
         return true;
     }
 
@@ -526,6 +535,38 @@ namespace AsynGyanis::Database
         // 字符集在握手期一次定成 utf8mb4：服务端不认识该字符集时这里就会失败，
         // 好过连上之后中文列被按 latin1 解读成乱码
         return applyOption(MYSQL_SET_CHARSET_NAME, kConnectionCharacterSet, "设置 MySQL 连接字符集");
+    }
+
+    bool MySqlConnection::applyStatementTimeLimit()
+    {
+        const int timeoutMilliseconds = queryTimeout();
+
+        // 会话变量的单位与基类一致（毫秒），不做换算；非正值下发 0，含义是服务端不设限——
+        // 不下发会把上一次设过的值继续留着，让「改成不设时限」变成一句空话。
+        // 这个数来自 queryTimeout() 这个 int，不是外部文本，因此直接拼进语句不引入注入面
+        const std::string statementText =
+                "SET SESSION MAX_EXECUTION_TIME = " + std::to_string(timeoutMilliseconds > 0 ? timeoutMilliseconds : 0);
+
+        if (execute(statementText) != nullptr)
+        {
+            return true;
+        }
+
+        // execute() 已把服务端原文写进 lastError（不认识该变量的分支会报 Unknown system variable）。
+        // 再补一句这条会话少了哪道界：调用方要能看出「毫秒级语句时限没生效，只剩会连连接一起废掉的那道」
+        m_lastError += "；该会话的只读语句时限未能下发，之后只有客户端读写超时兜底（那道会连连接一起断开）";
+        return false;
+    }
+
+    void MySqlConnection::applyQueryTimeoutNow() noexcept
+    {
+        // 未连接时无处可发：connect() 会在握手成功后按最新值下发一次
+        if (!isConnected())
+        {
+            return;
+        }
+
+        static_cast<void>(applyStatementTimeLimit());
     }
 
     void MySqlConnection::captureError(const std::string_view description)
@@ -934,6 +975,13 @@ namespace AsynGyanis::Database
         // 桩里没有客户端库可问，返回空串（含义与「未连接」一致，调用方本就连不上）
         return {};
     }
+
+    void MySqlConnection::applyQueryTimeoutNow() noexcept
+    {
+        // 桩里既没有会话也没有服务端可变可设，空操作即可：基类已把毫秒值记好，
+        // 真驱动接上时自会按它下发。本方法声明为虚，因此即使没人调用也需要这份定义把虚表槽链上
+    }
+
 #endif // DATABASE_HAS_MYSQL
 
     // ------------------------------------------------------------------------

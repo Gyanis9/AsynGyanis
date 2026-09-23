@@ -40,8 +40,10 @@ namespace AsynGyanis::Database
      *
      * @details 可选编译：找到 libmysqlclient 时编出真实实现，否则退化为「connect() 恒为 false、
      *          原因写进 lastError()」的桩。基类超时单位是毫秒而客户端选项只接受整秒（向上取整），
-     *          且这三个选项只在握手前被读取一次，因此必须在 connect() 之前设置，否则对当前会话无效。
-     *          一条连接同一时刻只能由一个线程使用；mysql_close 之后 mysql_error() 的返回值即失效。
+     *          且这三个选项只在握手前被读取一次，因此 setConnectTimeout() 与读写超时必须早于 connect()；
+     *          queryTimeout() 另有一道服务端会话变量 max_execution_time（毫秒，只约束只读语句），
+     *          那道可以在会话存续期间改，下一条语句即生效。一条连接同一时刻只能由一个线程使用；
+     *          mysql_close 之后 mysql_error() 的返回值即失效。
      */
     class MySqlConnection : public DatabaseConnection
     {
@@ -193,6 +195,17 @@ namespace AsynGyanis::Database
             return m_mysqlHandle;
         }
 
+    protected:
+        /**
+         * @brief 把新的 queryTimeout() 落成服务端的只读语句时限
+         * @details 重写 DatabaseConnection::applyQueryTimeoutNow()：客户端选项（连接/读写超时）只能在握手前
+         *          设，但服务端还有会话变量 max_execution_time 可以在会话存续期间改，改完下一条只读语句即受
+         *          约束，因此这里下发的是后者。未连接时空操作，connect() 会按最新值配置。
+         * @note 设不上（例如服务端不认识该变量）只把原因留在 lastError()，不改连接状态：客户端的读写超时
+         *       仍在守着这条会话，只是那一道会连连接一起废掉
+         */
+        void applyQueryTimeoutNow() noexcept override;
+
     private:
         /**
          * @brief 语句文本的透明哈希，让 std::unordered_map 支持按 string_view 查 std::string 键
@@ -228,6 +241,16 @@ namespace AsynGyanis::Database
          * @return false 任一选项被拒（原因已写入 m_lastError），调用方应放弃本次连接而不是留下无超时会话
          */
         bool applyConnectionOptions();
+
+        /**
+         * @brief 把 queryTimeout() 下发成服务端的会话级只读语句时限
+         * @details 走 execute()：结果与错误处理只此一份实现。上限毫秒数直接进语句文本（它来自
+         *          queryTimeout() 这个 int，不是外部输入），非正值下发 0，含义是服务端不限——
+         *          留着上一次设过的值会让「改成不设时限」变成一句空话。
+         * @return true 会话变量已设上
+         * @return false 被服务端拒绝（不认识该变量的分支等），原因留在 lastError()，不影响连接可用
+         */
+        bool applyStatementTimeLimit();
 
         /**
          * @brief 采集预处理语句上的错误文本与错误码并写入 m_lastError
