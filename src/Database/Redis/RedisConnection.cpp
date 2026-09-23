@@ -379,6 +379,8 @@ namespace AsynGyanis::Database
 
         // ConnectionConfig::database 对 Redis 的解释是键空间编号：非空就在建连后 SELECT，
         // 否则这个配置字段会被静默忽略
+        m_configuredKeySpaceIndex = 0;
+        m_currentKeySpaceIndex    = 0;
         if (!m_configuration.database.empty())
         {
             // 十进制解析：解析失败、留有余文（如 "3abc"）或负值都不猜测、不回退到 0 号库，
@@ -404,6 +406,11 @@ namespace AsynGyanis::Database
                 disconnect();
                 return false;
             }
+
+            // 会话确实停在这个库上了，才把它记成「配置要求」与「当前所在」：
+            // 归还时按这两者的差决定要不要补一次 SELECT
+            m_configuredKeySpaceIndex = keySpaceIndex;
+            m_currentKeySpaceIndex    = keySpaceIndex;
         }
 
         // 全部步骤走通才置位：中途任何失败都不会让 isConnected() 读到「已连接」的中间态
@@ -437,6 +444,10 @@ namespace AsynGyanis::Database
         // 记账必须跟着归零，否则重连后的第一次归还白发一条 DISCARD / UNWATCH
         m_isInTransaction = false;
         m_isWatchingKeys  = false;
+
+        // 会话模式与库位也随会话一起没了：下一次 connect() 会按配置重设这两格
+        m_isSessionModeChanged = false;
+        m_currentKeySpaceIndex = m_configuredKeySpaceIndex;
     }
 
     bool RedisConnection::isConnected() const
@@ -525,10 +536,14 @@ namespace AsynGyanis::Database
         const size_t registeredCommandCount = m_pipelineCommands.size();
         results.reserve(registeredCommandCount);
 
+        // 整批登记先搬到局部：会话记账要按回复来更新（见下面的读回复循环），而那里只能按同一条
+        // 顺序回看命令名。搬到局部也让「已交给协议流的命令一律不重放」在异常路径上自动成立
+        std::vector<std::vector<std::string> > registeredCommands;
+        registeredCommands.swap(m_pipelineCommands);
+
         if (!isConnected())
         {
             m_lastError = "未连接到 Redis，" + std::to_string(registeredCommandCount) + " 条管道命令均未发送";
-            m_pipelineCommands.clear();
             return results;
         }
 
@@ -539,7 +554,7 @@ namespace AsynGyanis::Database
         std::vector<const char *> argumentPointers;
         std::vector<size_t>       argumentLengths;
         size_t appendedCommandCount = 0;
-        for (const std::vector<std::string> &commandArguments: m_pipelineCommands)
+        for (const std::vector<std::string> &commandArguments: registeredCommands)
         {
             buildArgumentViews(commandArguments, argumentPointers, argumentLengths);
 
@@ -548,20 +563,12 @@ namespace AsynGyanis::Database
             {
                 // 先摘 errstr 再断开：redisFree 之后那就是已释放内存
                 captureError("发送 Redis 管道命令失败");
-                m_pipelineCommands.clear();
                 disconnect();
                 return results;
             }
 
-            // 与单命令路径同一份记账：管道里的 MULTI / EXEC 同样会留下（或了结）连接级状态，
-            // 漏记的话这条连接带着未了结的事务回池，下一个借用者的写全部被静默排队
-            noteSessionCommand(commandArguments.front());
-
             ++appendedCommandCount;
         }
-
-        // 已交给协议流的命令不再重放，无论后面读回多少条回复
-        m_pipelineCommands.clear();
 
         // 第二阶段：按「已发出的条数」读回复。Redis 严格按请求顺序回包，
         // 因此 results[i] 与登记顺序的第 i 条命令一一对应
@@ -595,6 +602,11 @@ namespace AsynGyanis::Database
                 return results;
             }
 
+            // 与单命令路径同一份记账，且同样以回复为准：管道里的 MULTI / EXEC 也会留下（或了结）连接级状态，
+            // 漏记的话这条连接带着未了结的事务回池，下一个借用者的写全部被静默排队；
+            // 而在 append 那一刻记账会把「被服务端退回的 EXEC」当成已了结，那句 WATCH 就跟着泄漏下去
+            noteSessionCommand(registeredCommands[round].front(), serverReply->type != REDIS_REPLY_ERROR);
+
             // 所有权移交：此后由 RedisResult 析构释放。
             // error 类型的回复刻意保留成结果集而不是报错中断——一条命令失败不该让整批管道作废，
             // 调用方用 RedisResult::isError() 逐条定位，这正是管道路径与单命令路径的差异所在
@@ -616,7 +628,15 @@ namespace AsynGyanis::Database
         const std::string keySpaceText = std::to_string(index);
 
         // 走 executeCommand：非 error 回复才算成功（executeArguments 已把 error 转成 nullptr 与原因）
-        return executeCommand({std::string_view("SELECT"), keySpaceText}) != nullptr;
+        if (executeCommand({std::string_view("SELECT"), keySpaceText}) == nullptr)
+        {
+            return false;
+        }
+
+        // 服务端认了这个编号才记账：resetSessionState() 按「当前所在 ≠ 配置要求」决定要不要 SELECT 回去，
+        // 没换成功就记成换了，等于把库位不明的连接交给下一个借用者
+        m_currentKeySpaceIndex = index;
+        return true;
     }
 
     void RedisConnection::captureError(const std::string_view description)
@@ -710,9 +730,10 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 收到任何回复都说明服务端已经收下这条命令，记账据此更新（error 回复也算收下：
-        // 被服务端中止的 EXEC 同样把事务了结了）；没回复的传输层失败在上面已经断开并清零
-        noteSessionCommand(argumentValues.front());
+        // 记账按「服务端有没有认这条命令」更新：这六个命令的 error 回复一律表示状态未变，
+        // 把它当成「已了结」就会把真实存在的 WATCH 当成已撤销，那句监视接着毒害下一个借用者。
+        // 传输层失败在上面已经断开并清零，走不到这里
+        noteSessionCommand(argumentValues.front(), serverReply->type != REDIS_REPLY_ERROR);
 
         if (serverReply->type == REDIS_REPLY_ERROR)
         {
@@ -849,14 +870,19 @@ namespace AsynGyanis::Database
 
     } // namespace
 
-    void RedisConnection::noteSessionCommand(const std::string_view commandName) noexcept
+    void RedisConnection::noteSessionCommand(const std::string_view commandName, const bool isAccepted) noexcept
     {
-        // 只认六个会留下连接级状态的命令名。先按首字母分叉，其余命令（GET/SET/MGET…）一次字符串比较都不做
+        // 只认留下连接级状态的命令名。先按首字母分叉，其余命令（GET/SET/MGET…）一次字符串比较都不做
         switch (commandName.empty() ? '\0' : foldAsciiToLower(commandName.front()))
         {
             case 'm':
-                // MULTI：从这一刻起本连接的命令全部排队，直到 EXEC 或 DISCARD
-                if (commandNameMatches(commandName, "multi"))
+                // MULTI：从这一刻起本连接的命令全部排队，直到 EXEC 或 DISCARD。
+                // MONITOR 与它首字母相同，走另一条分支：那条命令把连接变成持续推送，本类读不回「一条命令一条回复」
+                if (isAccepted && commandNameMatches(commandName, "monitor"))
+                {
+                    m_isSessionModeChanged = true;
+                }
+                else if (isAccepted && commandNameMatches(commandName, "multi"))
                 {
                     m_isInTransaction = true;
                 }
@@ -865,9 +891,10 @@ namespace AsynGyanis::Database
             case 'e':
             case 'd':
             case 'r':
-                // EXEC / DISCARD / RESET 都会把事务与监视一并了结（EXEC 被服务端中止时同样算已了结）
-                if (commandNameMatches(commandName, "exec") || commandNameMatches(commandName, "discard")
-                    || commandNameMatches(commandName, "reset"))
+                // EXEC / DISCARD / RESET 都会把事务与监视一并了结。被服务端退回时（EXEC/DISCARD
+                // without MULTI）这条命令等于没执行，记账必须原样留着——留着才会在归还时补上 UNWATCH
+                if (isAccepted && (commandNameMatches(commandName, "exec") || commandNameMatches(commandName, "discard")
+                                   || commandNameMatches(commandName, "reset")))
                 {
                     m_isInTransaction = false;
                     m_isWatchingKeys  = false;
@@ -876,7 +903,7 @@ namespace AsynGyanis::Database
 
             case 'w':
                 // WATCH 在 MULTI 之外也能单独发出，并且一直有效到事务了结为止
-                if (commandNameMatches(commandName, "watch"))
+                if (isAccepted && commandNameMatches(commandName, "watch"))
                 {
                     m_isWatchingKeys = true;
                 }
@@ -884,9 +911,21 @@ namespace AsynGyanis::Database
 
             case 'u':
                 // UNWATCH 只撤监视，不碰事务
-                if (commandNameMatches(commandName, "unwatch"))
+                if (isAccepted && commandNameMatches(commandName, "unwatch"))
                 {
                     m_isWatchingKeys = false;
+                }
+                return;
+
+            case 'h':
+            case 's':
+                // HELLO 换掉回复的形态，订阅三个把连接切到推送模式：本类按
+                // 「一条命令一条回复」读，退不回去也就无法再替下一个借用者保证读到的就是它那条命令的回复
+                if (isAccepted && (commandNameMatches(commandName, "hello") || commandNameMatches(commandName, "subscribe")
+                                   || commandNameMatches(commandName, "psubscribe")
+                                   || commandNameMatches(commandName, "ssubscribe")))
+                {
+                    m_isSessionModeChanged = true;
                 }
                 return;
 
@@ -903,14 +942,26 @@ namespace AsynGyanis::Database
         m_pipelineCommands.clear();
 
         // 账先取走再归零：本方法要幂等，且清理命令发不出去（链路已断）时也不该留下「还欠一条 DISCARD」
-        const bool wasInTransaction = m_isInTransaction;
-        const bool wasWatchingKeys  = m_isWatchingKeys;
-        m_isInTransaction = false;
-        m_isWatchingKeys  = false;
+        const bool wasInTransaction          = m_isInTransaction;
+        const bool wasWatchingKeys           = m_isWatchingKeys;
+        const bool needsFreshSession         = m_isSessionModeChanged;
+        const int  keySpaceIndexBeforeReturn = m_currentKeySpaceIndex;
+        m_isInTransaction     = false;
+        m_isWatchingKeys      = false;
+        m_isSessionModeChanged = false;
+        m_currentKeySpaceIndex = m_configuredKeySpaceIndex;
 
         // 桩构建与未连接都在这里止步：没有会话可复位，也就不必为一条发不出去的命令报错
         if (!isConnected())
         {
+            return;
+        }
+
+        // MONITOR / 订阅 / HELLO 之后本类退不回「一条命令一次回复」：这条连接读到的下一段字节不属于
+        // 下一个借用者。断开比把错位的回复流交出去便宜——池看到 isConnected() 为假就会另起一条
+        if (needsFreshSession)
+        {
+            disconnect();
             return;
         }
 
@@ -926,6 +977,16 @@ namespace AsynGyanis::Database
                 // 只 WATCH 过、没进 MULTI 时 DISCARD 会被服务端判成错误（DISCARD without MULTI），
                 // 而那句错误回复并不撤监视，因此这里必须发 UNWATCH
                 [[maybe_unused]] const std::unique_ptr<DatabaseResult> unwatched = executeCommand({std::string_view("UNWATCH")});
+            }
+
+            // 键空间同样是会话状态：被借去 SELECT 过就得还回配置里那个编号，否则下一位照配置以为
+            // 自己停在 15 号库，写进去的键却落在别人的库里，还一句报错都没有。
+            // 走 selectDatabase() 而不是另发一条 SELECT：换库的含义（编号校验、成功才算换了）只有一处定义
+            if (keySpaceIndexBeforeReturn != m_configuredKeySpaceIndex && !selectDatabase(m_configuredKeySpaceIndex))
+            {
+                // 还不回去的连接不能当成「已复位」交出去：链路可能已断（失败路径里已断开），
+                // 也可能是服务端不认这个编号。两种都让池另起一条，别把库位不明的连接给下一位
+                disconnect();
             }
         } catch (...)
         {

@@ -38,7 +38,8 @@ namespace AsynGyanis::Database
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
      * @warning 不支持订阅式用法（SUBSCRIBE/PSUBSCRIBE/监视模式）：本类按「一条命令一次读回复」
      *          的模型执行，一旦对端切到推送模式，后续回复会与命令错位——调用方若需要订阅，
-     *          请自行使用 hiredis 的异步 API。
+     *          请自行使用 hiredis 的异步 API。发出这类命令不会被拦下（那等于替调用方决定用途），
+     *          但连接归还时会直接断开而不是带着错位的回复流回池。
      */
     class RedisConnection : public DatabaseConnection
     {
@@ -145,12 +146,17 @@ namespace AsynGyanis::Database
         bool pipelineCommand(std::string_view command);
 
         /**
-         * @brief 归还连接池时丢掉残留的会话状态：未发送的管道命令、服务端留着的 MULTI 与 WATCH
+         * @brief 归还连接池时丢掉残留的会话状态：未发送的管道命令、服务端留着的 MULTI 与 WATCH、
+         *        被 selectDatabase() 移走的键空间，以及退不出去的模式
          * @details 管道残留命令会被下一个借用者的 flushPipeline() 代发，回复按下标错位且毫无报错；
          *          MULTI 与 WATCH 留在服务端一侧，本地清缓冲清不掉它——留着时下一个借用者的写命令全部
          *          被排进别人的事务、服务端逐条回 +QUEUED，看着像执行成功却一条都没落库。
+         *          键空间同理是会话级的：本连接被借去 SELECT 3 之后，不还回配置里那个库，
+         *          下一位按配置以为自己停在 15 号库，写进去的键却在 3 号库。
          *          池在归还时统一调用本方法（见 DatabaseConnection::resetSessionState）
          * @note 只在按命令名记的账说「确有残留」时才发清理命令，干净连接不额外付一次往返
+         * @note MONITOR / 订阅 / HELLO 之后本类退不回「一条命令一条回复」的形态，此时直接断开：
+         *       池会丢掉这条不健康的连接并另起一条，比让它带着错位的回复流回池便宜
          */
         void resetSessionState() noexcept override;
 
@@ -169,6 +175,8 @@ namespace AsynGyanis::Database
          * @details 等价于 executeCommand({"SELECT", 编号})。Redis 默认有 16 个键空间（0..15），
          *          服务端也可用 databases 配置项改数量：本方法只校验非负，
          *          超出范围的编号由服务端报错，并按 executeCommand 的失败路径如实返回 false。
+         *          切换是连接级会话状态：本对象由池共享时，归还那一刻会 SELECT 回配置里的编号
+         *          （见 resetSessionState()），下一个借用者拿到的仍是配置里那个库。
          * @param index 键空间编号，必须为非负整数
          * @return true 切换成功（服务端回了非 error 回复）
          * @return false 编号非法、未连接或服务端拒绝，原因见 lastError()
@@ -220,12 +228,16 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> executeArguments(std::span<const std::string_view> argumentValues);
 
         /**
-         * @brief 按送出的命令名维护「服务端还替这条连接留着什么状态」的记账
-         * @details MULTI 与 WATCH 是连接级状态，命令被服务端收到即生效，一直留到 EXEC / DISCARD / RESET
+         * @brief 按送出的命令名与它的回复维护「服务端还替这条连接留着什么状态」的记账
+         * @details MULTI 与 WATCH 是连接级状态，命令被服务端收下即生效，一直留到 EXEC / DISCARD / RESET
          *          为止；本方法在两条发送路径上各调一次，resetSessionState() 据此决定要不要发清理命令。
+         *          六个名字的 error 回复一律意味着服务端什么都没做（EXEC/DISCARD 报「without MULTI」、
+         *          WATCH 报「inside MULTI」），因此记账保持原样——据此才漏不掉「被拒的 EXEC 之后仍挂着的
+         *          WATCH」。HELLO / MONITOR / 订阅三类改的是回复的形态或流向，本类退不回去，只记一个标记。
          * @param commandName 命令的第一个参数（命令名），Redis 的命令名不区分大小写
+         * @param isAccepted 服务端给出了非 error 回复；false 表示这条命令被原样退回，未改变任何状态
          */
-        void noteSessionCommand(std::string_view commandName) noexcept;
+        void noteSessionCommand(std::string_view commandName, bool isAccepted) noexcept;
 
         redisContext *m_redisContext{nullptr}; ///< hiredis 连接上下文，本对象独占所有权，未连接时为 nullptr
 
@@ -235,6 +247,10 @@ namespace AsynGyanis::Database
 
         bool m_isInTransaction{false}; ///< 服务端是否停在 MULTI 里：归还时发 DISCARD，否则下一个借用者的写全被排队
         bool m_isWatchingKeys{false};  ///< 服务端是否留着 WATCH 监视：归还时发 UNWATCH，否则别人的键改动会让他人的 EXEC 判成冲突
+
+        int  m_configuredKeySpaceIndex{0};      ///< 配置里那个键空间编号，即一条新会话应当停在的库
+        int  m_currentKeySpaceIndex{0};         ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
+        bool m_isSessionModeChanged{false};     ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO）：归还时断开这条连接
     };
 
 } // namespace AsynGyanis::Database

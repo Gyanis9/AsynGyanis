@@ -14,6 +14,10 @@
 // - ResetSessionStateDiscardsLeftoverTransaction（残留 MULTI 会让下一个借用者的写全被排队）
 // - CompletedTransactionLeavesNothingForSessionReset（EXEC 之后复位不再发命令）
 // - ResetSessionStateUnwatchesLeftoverWatch（残留 WATCH 会让下一个借用者的 EXEC 中止）
+// - RejectedExecDoesNotSettleTheWatchItImplies（被退回的 EXEC 不算了结，复位仍补 UNWATCH）
+// - PipelineSessionBookkeepingFollowsTheReply（管道那条路径同样按回复定记账）
+// - SessionResetReturnsToTheConfiguredKeySpace（selectDatabase 换走的库在归还时还回配置值）
+// - MonitorStyleSessionIsDroppedOnReturn（MONITOR 这类退不回去的模式：归还时断开而不是回池）
 // - PooledReturnClearsSessionForNextBorrower（经连接池借还这一形状下，管道与 MULTI 都不串给下一个）
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
@@ -637,6 +641,136 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(*readBack), "committed-by-me");
 
         otherBorrower.disconnect();
+    }
+
+    /**
+     * @brief 钉住「被服务端退回的 EXEC 不算把 WATCH 了结」：会话复位仍会补上 UNWATCH
+     * @details Redis 的 EXEC 不在 MULTI 里时回一句 -EXEC without MULTI 就原路返回，那句监视留在服务端。
+     *          把这条 error 回复当成「事务已了结」，本地账就跟着清零，归还时什么也不发——下一个借用者
+     *          的 EXEC 中不中止，改由上一个借用者盯过的键决定。
+     */
+    TEST_F(RedisIntegrationTest, RejectedExecDoesNotSettleTheWatchItImplies)
+    {
+        const std::string key = makeKey("rejected-exec-watch");
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "initial"}), nullptr) << m_connection->lastError();
+
+        ASSERT_NE(m_connection->executeCommand({"WATCH", key}), nullptr) << m_connection->lastError();
+
+        // 没进 MULTI 就发 EXEC：服务端退回这条命令，本连接的监视照旧有效
+        EXPECT_EQ(m_connection->executeCommand({"EXEC"}), nullptr) << "EXEC without MULTI 本该按失败处理";
+        EXPECT_FALSE(m_connection->lastError().empty()) << "被拒的命令要把服务端原文留在 lastError() 里";
+
+        m_connection->resetSessionState();
+
+        // 另开一条连接改动被盯过的键：监视没被撤掉时，这一步就让本连接的下一个事务注定中止
+        RedisConnection otherBorrower(m_configuration);
+        ASSERT_TRUE(otherBorrower.connect()) << otherBorrower.lastError();
+        ASSERT_NE(otherBorrower.executeCommand({"SET", key, "changed-by-other"}), nullptr) << otherBorrower.lastError();
+
+        ASSERT_NE(m_connection->executeCommand({"MULTI"}), nullptr) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "committed-by-me"}), nullptr) << m_connection->lastError();
+        const std::unique_ptr<DatabaseResult> execReply = m_connection->executeCommand({"EXEC"});
+        ASSERT_NE(execReply, nullptr) << m_connection->lastError();
+        EXPECT_FALSE(execReply->isEmpty()) << "被拒的 EXEC 把 WATCH 记成了已了结，下一个借用者的事务被中止";
+
+        const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_EQ(std::get<std::string>(*readBack), "committed-by-me");
+
+        otherBorrower.disconnect();
+    }
+
+    /**
+     * @brief 钉住管道那条路径的会话记账按回复定，不按 append 定
+     * @details append 那一刻还不知道服务端认不认这条命令：在 append 处记账，「WATCH + EXEC」这样一条
+     *          管道就会把监视记没了，于是复位时漏发 UNWATCH。改到读回复处按条记账之后，同一套判据
+     *          在两条发送路径上成立。
+     */
+    TEST_F(RedisIntegrationTest, PipelineSessionBookkeepingFollowsTheReply)
+    {
+        const std::string key = makeKey("pipeline-watch");
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "initial"}), nullptr) << m_connection->lastError();
+
+        ASSERT_TRUE(m_connection->pipelineCommand("WATCH " + key));
+        ASSERT_TRUE(m_connection->pipelineCommand("EXEC"));
+
+        const std::vector<std::unique_ptr<DatabaseResult> > replies = m_connection->flushPipeline();
+        ASSERT_EQ(replies.size(), 2U);
+        ASSERT_NE(replies[1], nullptr);
+        EXPECT_FALSE(replies[1]->lastError().empty()) << "管道里的 EXEC 应当以 error 回复收场，否则这条用例没有构造出前提";
+
+        m_connection->resetSessionState();
+
+        RedisConnection otherBorrower(m_configuration);
+        ASSERT_TRUE(otherBorrower.connect()) << otherBorrower.lastError();
+        ASSERT_NE(otherBorrower.executeCommand({"SET", key, "changed-by-other"}), nullptr) << otherBorrower.lastError();
+
+        ASSERT_NE(m_connection->executeCommand({"MULTI"}), nullptr) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"SET", key, "committed-by-me"}), nullptr) << m_connection->lastError();
+        const std::unique_ptr<DatabaseResult> execReply = m_connection->executeCommand({"EXEC"});
+        ASSERT_NE(execReply, nullptr) << m_connection->lastError();
+        EXPECT_FALSE(execReply->isEmpty()) << "管道里被拒的 EXEC 把 WATCH 记成了已了结";
+
+        otherBorrower.disconnect();
+    }
+
+    /**
+     * @brief 钉住会话复位把键空间还回配置里那个编号：借出去时是什么库，还回来还是什么库
+     * @details selectDatabase() 换的是服务端一侧的会话状态，本地清不掉。池上限为 1 时下一个借用者
+     *          拿到的就是同一条连接，他还按配置以为自己停在 15 号库，写进去的键却落在别人库里，
+     *          而且一句报错都没有。
+     */
+    TEST_F(RedisIntegrationTest, SessionResetReturnsToTheConfiguredKeySpace)
+    {
+        constexpr int kForeignKeySpaceIndex = 3;
+
+        const std::string foreignKey = makeKey("keyspace-foreign");
+        const std::string homeKey    = makeKey("keyspace-home");
+
+        ASSERT_TRUE(m_connection->selectDatabase(kForeignKeySpaceIndex)) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"SET", foreignKey, "in-foreign-db"}), nullptr) << m_connection->lastError();
+        // 前提：这条连接此刻确实停在别的库上（同一个键在配置库里还不存在）
+        ASSERT_TRUE(runScalar({"GET", foreignKey}).has_value()) << "SELECT 没有生效，用例没有构造出可判定的前提";
+
+        m_connection->resetSessionState();
+        ASSERT_TRUE(m_connection->isConnected()) << "复位把连接弄断了，下面的判据无从落地";
+
+        // 已还回配置里的库：那个外库键在这里读不到，而本库的读写一切正常
+        EXPECT_FALSE(runScalar({"GET", foreignKey}).has_value()) << "复位后仍停在别处，键空间串给了下一个借用者";
+        ASSERT_NE(m_connection->executeCommand({"SET", homeKey, "in-configured-db"}), nullptr) << m_connection->lastError();
+        const std::optional<DatabaseValue> homeRead = runScalar({"GET", homeKey});
+        ASSERT_TRUE(homeRead.has_value()) << "回到配置库这一步没做成：连本库的写都读不到";
+        EXPECT_EQ(std::get<std::string>(*homeRead), "in-configured-db");
+
+        // 外库那个键只能由认识它的连接来删：TearDown 的清扫扫得到配置库，扫不到 3 号库
+        RedisConnection foreignCleaner(m_configuration);
+        ASSERT_TRUE(foreignCleaner.connect()) << foreignCleaner.lastError();
+        ASSERT_TRUE(foreignCleaner.selectDatabase(kForeignKeySpaceIndex)) << foreignCleaner.lastError();
+        static_cast<void>(foreignCleaner.executeCommand({"DEL", foreignKey}));
+        foreignCleaner.disconnect();
+    }
+
+    /**
+     * @brief 钉住「退不回去的会话模式」在归还时被断开，而不是带着错位的回复流回池
+     * @details MONITOR 之后服务端持续推送，本类按「一条命令一次回复」读，下一位借用者读到的
+     *          会是别人的跟踪行。这类模式没有可靠的撤销命令（RESET 要 6.2+），因此判据就是
+     *          isConnected() 转假：池的健康检查看到假就会另起一条。
+     */
+    TEST_F(RedisIntegrationTest, MonitorStyleSessionIsDroppedOnReturn)
+    {
+        ASSERT_NE(m_connection->executeCommand({"MONITOR"}), nullptr) << m_connection->lastError();
+        ASSERT_TRUE(m_connection->isConnected());
+
+        m_connection->resetSessionState();
+
+        EXPECT_FALSE(m_connection->isConnected()) << "MONITOR 之后的连接被当成健康连接交还给下一个借用者";
+
+        // 对照：没进过这种模式的连接复位后照常可用（否则上面的断开看不出差别）
+        RedisConnection cleanConnection(m_configuration);
+        ASSERT_TRUE(cleanConnection.connect()) << cleanConnection.lastError();
+        cleanConnection.resetSessionState();
+        EXPECT_TRUE(cleanConnection.isConnected()) << "干净的连接也被复位路径断开了";
+        cleanConnection.disconnect();
     }
 
     /**
