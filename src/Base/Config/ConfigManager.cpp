@@ -742,6 +742,37 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 把一位数字累加进无符号量，超出 uint64 可表示范围时返回 false
+         * @details YAML 与 JSON 两条解析路共用这一条越界判据：同一个字面量在一侧被明确拒绝、
+         *          在另一侧被静默折成 double，等于「同一份配置换个后缀就换行为」
+         * @param magnitude 已累加的绝对值，成功时就地更新
+         * @param digit 本次累加的数字（0~15）
+         * @param base 进制（8、10、16）
+         * @return bool 未溢出返回 true；返回 false 时 magnitude 保持原值
+         */
+        [[nodiscard]] bool accumulateDecimalDigit(std::uint64_t &magnitude, const int digit, const std::uint64_t base) noexcept
+        {
+            // 先判「乘 base 再加一位」是否会回绕：静默回绕会得到一个看似正常的错误数值
+            if (magnitude > (std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(digit)) / base)
+            {
+                return false;
+            }
+            magnitude = magnitude * base + static_cast<std::uint64_t>(digit);
+            return true;
+        }
+
+        /**
+         * @brief 判断一个绝对值在带负号时是否还能落进 int64
+         * @details uint64 能装下的负数只到 INT64_MIN 的量级（|-2^63| = 2^63），再大同样越界
+         * @param magnitude 绝对值
+         * @return bool 可表示为 int64 时返回 true
+         */
+        [[nodiscard]] constexpr bool fitsNegativeInt64(const std::uint64_t magnitude) noexcept
+        {
+            return magnitude <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL;
+        }
+
+        /**
          * @brief 按核心 schema 识别整数文本（十进制、0o 八进制、0x 十六进制，可带正负号）
          * @details 非负整数与 JSON 侧口径一致地落无符号数（原生解析把非负整数放进 number_unsigned）。
          * @param text 标量文本
@@ -795,17 +826,16 @@ namespace AsynGyanis::Base
                     return std::nullopt;
                 }
                 // 先按无符号累加，溢出即越界：静默回绕会得到看似正常的错误数值
-                if (magnitude > (std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(digit)) / static_cast<std::uint64_t>(base))
+                if (!accumulateDecimalDigit(magnitude, digit, static_cast<std::uint64_t>(base)))
                 {
                     throw DocumentConversionException(std::format("整数 '{}' 超出 64 位表示范围（{}）", text, describeYamlMark(node.Mark())));
                 }
-                magnitude = magnitude * base + static_cast<std::uint64_t>(digit);
             }
 
             if (negative)
             {
                 // 负方向 uint64 只到 INT64_MIN 的量级，再大同样越界
-                if (magnitude > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL)
+                if (!fitsNegativeInt64(magnitude))
                 {
                     throw DocumentConversionException(std::format("整数 '{}' 超出 64 位表示范围（{}）", text, describeYamlMark(node.Mark())));
                 }
@@ -1036,13 +1066,116 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 挡下 JSON 文本里超出 64 位表示范围的整数字面量
+         * @details nlohmann 在词法阶段就把超出 [INT64_MIN, UINT64_MAX] 的整数字面量折成 double：
+         *          精度当场丢失且不留任何标记，之后 `getInt` 只能按「类型不符」回落默认值——而同一份
+         *          数值写成 YAML 会被明确拒绝（见 parseCoreInteger）。同一份配置换个后缀就换行为，
+         *          是这里最难查的一类现场，因此解析前先把这种字面量扫出来拒掉。
+         *          扫描只认**字符串字面量之外**「可带负号的纯数字」：带小数点或指数的写法本来就是
+         *          浮点数，不在这条判据之内。
+         * @param text 去掉 BOM 后的 JSON 文档文本
+         * @throws DocumentConversionException 存在越界的整数字面量
+         */
+        void rejectOverflowingJsonIntegers(const std::string &text)
+        {
+            std::size_t index = 0;
+            while (index < text.size())
+            {
+                const char currentCharacter = text[index];
+
+                if (currentCharacter == '"')
+                {
+                    // 整个字符串字面量跳掉：键名与字符串值里的数字与数值记数器无关；
+                    // 反斜杠只让它后面那一个字符失去含义（"...\"" 之后才是串的结束）
+                    ++index;
+                    for (bool isEscaped = false; index < text.size(); ++index)
+                    {
+                        const char stringCharacter = text[index];
+                        if (isEscaped)
+                        {
+                            isEscaped = false;
+                        } else if (stringCharacter == '\\')
+                        {
+                            isEscaped = true;
+                        } else if (stringCharacter == '"')
+                        {
+                            ++index;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                const bool startsInteger =
+                        (currentCharacter >= '0' && currentCharacter <= '9') ||
+                        (currentCharacter == '-' && index + 1 < text.size() && text[index + 1] >= '0' && text[index + 1] <= '9');
+                if (!startsInteger)
+                {
+                    ++index;
+                    continue;
+                }
+
+                const std::size_t tokenBegin  = index;
+                const bool        isNegative  = currentCharacter == '-';
+                const std::size_t digitsBegin = tokenBegin + (isNegative ? 1U : 0U);
+
+                std::size_t cursor         = digitsBegin;
+                bool        looksLikeFloat = false;
+                while (cursor < text.size())
+                {
+                    const char digitCharacter = text[cursor];
+                    if (digitCharacter >= '0' && digitCharacter <= '9')
+                    {
+                        ++cursor;
+                        continue;
+                    }
+                    if (digitCharacter == '.' || digitCharacter == 'e' || digitCharacter == 'E')
+                    {
+                        // 带小数点或指数：本来就是浮点字面量，落到 double 不算变形
+                        looksLikeFloat = true;
+                        ++cursor;
+                        continue;
+                    }
+                    break;
+                }
+                index = cursor;
+                if (looksLikeFloat)
+                {
+                    continue;
+                }
+
+                std::uint64_t magnitude  = 0;
+                bool          overflowed = false;
+                for (std::size_t digitPosition = digitsBegin; digitPosition < cursor; ++digitPosition)
+                {
+                    if (!accumulateDecimalDigit(magnitude, text[digitPosition] - '0', 10U))
+                    {
+                        overflowed = true;
+                        break;
+                    }
+                }
+                if (overflowed || (isNegative && !fitsNegativeInt64(magnitude)))
+                {
+                    throw DocumentConversionException(std::format("整数 '{}' 超出 64 位表示范围（第 {} 字节处）："
+                                                                  "JSON 会把这样的字面量折成 double 并丢掉精度，"
+                                                                  "取用时会按类型不符回落默认值",
+                                                                  text.substr(tokenBegin, cursor - tokenBegin),
+                                                                  tokenBegin + 1U));
+                }
+            }
+        }
+
+        /**
          * @brief 解析 JSON 文本（先剥掉可选的 UTF-8 BOM）
          * @details 深度闸门挂在解析回调上：nlohmann 的解析器自己是状态机，超限的是随后
          *          那个几万层的 DOM 的递归析构，以及我们把嵌套结构摊平成点分键的那趟递归，
          *          所以在建 DOM 的途中就抛出，交回调用方的是「一轮失败的加载」而不是崩溃。
+         *          越界整数字面量在建 DOM 之前先挡掉（见 rejectOverflowingJsonIntegers）——
+         *          nlohmann 一旦把它们折成 double，事后从 DOM 里就分不出「写了个超大整数」还是
+         *          「写了个浮点数」。
          * @param text 文档文本
          * @return ConfigValue 文档根值
-         * @throws DocumentConversionException 嵌套超过 kMaximumDocumentDepth 层
+         * @throws DocumentConversionException 嵌套超过 kMaximumDocumentDepth 层，或整数字面量超出 64 位表示范围
          * @throws nlohmann::json::exception 语法错误（消息自带行列与出错记号）
          */
         [[nodiscard]] ConfigValue parseJsonDocument(const std::string &text)
@@ -1057,12 +1190,17 @@ namespace AsynGyanis::Base
                 return true;
             };
 
-            // nlohmann 不认 UTF-8 BOM，而 Windows 编辑器常写 BOM：先剥掉再解析
+            // nlohmann 不认 UTF-8 BOM，而 Windows 编辑器常写 BOM：先剥掉再解析。
+            // 判越界整数用的是同一份去 BOM 后的文本，字节位置才对得上
             constexpr std::string_view kUtf8Bom{"\xEF\xBB\xBF"};
             if (text.starts_with(kUtf8Bom))
             {
-                return ConfigValue::parse(text.substr(kUtf8Bom.size()), depthGuard);
+                const std::string documentText = text.substr(kUtf8Bom.size());
+                rejectOverflowingJsonIntegers(documentText);
+                return ConfigValue::parse(documentText, depthGuard);
             }
+
+            rejectOverflowingJsonIntegers(text);
             return ConfigValue::parse(text, depthGuard);
         }
 

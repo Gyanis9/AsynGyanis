@@ -1306,6 +1306,83 @@ port: 9090
         EXPECT_TRUE(anyEntryContains(result.errors, "超出 64 位表示范围"));
     }
 
+    /**
+     * @brief JSON 侧的越界整数与 YAML 同口径拒绝
+     * @details 钉住一条跨格式的一致性：nlohmann 在词法阶段就把超出 [INT64_MIN, UINT64_MAX] 的整数
+     *          字面量折成 double——精度当场丢失且不留标记，之后 getInt 只能按「类型不符」回落默认值。
+     *          同一个数字写成 YAML 会被明确拒绝（上一条用例），于是「同一份配置换个后缀就换行为」
+     */
+    TEST_F(ConfigManagerTest, JsonRejectsIntegerBeyond64BitLikeYamlDoes)
+    {
+        writeFile("huge.json", R"({"big": 123456789012345678901234567890})");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "超出 64 位表示范围")) << "报错没说清这是越界整数";
+        EXPECT_TRUE(anyEntryContains(result.errors, "huge.json")) << "报错没点名那份文件";
+        EXPECT_FALSE(configuration().has("big")) << "越界的那份配置不该留下浮点数";
+    }
+
+    /**
+     * @brief 64 位能表示的整数边界都必须收下，且不塌成浮点
+     * @details 这条是上一条的反向半边：判据若写窄了（比如按 19 位一刀切），uint64 上段与 INT64_MIN
+     *          这类合法写法就会被误拒；判据若晚于解析，越界值已经变成 double 再也分不出来
+     */
+    TEST_F(ConfigManagerTest, JsonAcceptsTheWholeRepresentableIntegerRange)
+    {
+        writeFile("edges.json", R"({"unsignedMax": 18446744073709551615, "int64Min": -9223372036854775808, "int64Max": 9223372036854775807})");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        ASSERT_TRUE(result.success);
+        const std::optional<ConfigValue> unsignedMax = configuration().getOptional("unsignedMax");
+        ASSERT_TRUE(unsignedMax.has_value());
+        EXPECT_TRUE(unsignedMax->is_number_integer()) << "uint64 上段被折成了浮点";
+        EXPECT_TRUE(unsignedMax->is_number_unsigned());
+
+        const std::optional<ConfigValue> int64Min = configuration().getOptional("int64Min");
+        ASSERT_TRUE(int64Min.has_value());
+        EXPECT_TRUE(int64Min->is_number_integer());
+        EXPECT_EQ(configuration().getInt("int64Min", 0), std::numeric_limits<std::int64_t>::min());
+        EXPECT_EQ(configuration().getInt("int64Max", 0), std::numeric_limits<std::int64_t>::max());
+    }
+
+    /**
+     * @brief 字符串里的长数字不是数值记数器，正斜杠转义也不得把扫描器带偏
+     * @details 误拒比漏拒更糟：一份把雪花 ID 放在字符串里的配置本来完全合法。
+     *          第二个键的值里先有一个被转义的引号，扫描器若按「见到引号就出串」处理，
+     *          就会把串尾当成串外、把引号后面那串数字当成数值字面量误拒
+     */
+    TEST_F(ConfigManagerTest, JsonDigitsInsideStringsAreNotTreatedAsNumbers)
+    {
+        writeFile("strings.json",
+                  R"({"token": "id-123456789012345678901234567890", "quote": "escaped\"then 123456789012345678901234567890", "port": 8080})");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        ASSERT_TRUE(result.success) << "字符串里的数字被当成越界整数拒了";
+        EXPECT_EQ(configuration().getInt("port", 0), 8080);
+        EXPECT_EQ(configuration().getString("token", ""), "id-123456789012345678901234567890");
+    }
+
+    /**
+     * @brief 带小数点或指数的字面量本来就是浮点，不进这条判据
+     * @details 误拒候选之二：1e25 与 DBL_MAX 都能安全落进 double，若按「数字串长度」一刀切，
+     *          科学计数法写出来的合法浮点配置就被拒了
+     */
+    TEST_F(ConfigManagerTest, JsonFloatLiteralsAboveInt64RangeStayFloats)
+    {
+        writeFile("floats.json", R"({"ratio": 1.7976931348623157e308, "count": 1e25, "plain": 3.25})");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        ASSERT_TRUE(result.success);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("count", 0.0), 1e25);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("plain", 0.0), 3.25);
+        EXPECT_GT(configuration().getDouble("ratio", 0.0), 1e307);
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryCutsOffCyclicAliases)
     {
         // 自引用别名：转换必须在上限处停下并报错，而不是无限递归
