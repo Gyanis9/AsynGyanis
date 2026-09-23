@@ -15,38 +15,20 @@ namespace AsynGyanis::Core
 {
     namespace
     {
-        /**
-         * @brief 解析任务的状态：后台线程与协程之间通过它交换结果与句柄
-         */
-        struct ResolveState
-        {
-            /// 等待结果的协程句柄。**必须是原子的**：置空发生在等待器析构（帧销毁，可能在
-            /// 任意线程），读取发生在后台线程投回的唤醒里，两者无同步就是数据竞争；而且
-            /// 「先判活再 resume」本身有个窗口——判活通过之后帧仍可能被销毁。改成一取一空
-            /// （exchange）：谁取到句柄谁负责恢复，帧销毁时置空则那次恢复自然作废
-            std::atomic<std::coroutine_handle<>> callerHandle{nullptr};
-            std::vector<InetAddress>             addresses; ///< 解析结果
-
-            /// 唤醒等待方：句柄已被取走或已被置空时什么都不做（resume 已释放的帧是释放后使用）
-            void wakeCaller() noexcept
-            {
-                if (const std::coroutine_handle<> handle = callerHandle.exchange(nullptr, std::memory_order_acq_rel); handle != nullptr)
-                {
-                    handle.resume();
-                }
-            }
-        };
-
         /// 同时在跑的解析线程上限：解析要起线程去跑阻塞的 getaddrinfo，线程栈与内核调度都不免费，
         /// 不设上限的话一次解析风暴能把进程线程数顶到系统限制。到顶之后的解析**如实失败**
         /// （空地址列表）并留一条日志，而不是无限起线程
         constexpr int kMaximumConcurrentResolutions = 256;
 
-        /// 当前在跑的解析线程数（进程级）
+        /// 当前在跑的解析数（进程级）
         std::atomic<int> g_activeResolutionCount{0};
 
         /**
-         * @brief 解析线程的计数守卫：线程函数无论怎么退出都把名额还回去
+         * @brief 一份已占住的解析名额：构造即计一次，析构即还一次
+         * @details 名额必须在**发起方线程上同步占用**（见 AsyncResolver::resolve 的 await_suspend），
+         *          不能等解析线程起跑后才加计：一批协程在同一个循环线程上连着挂起时，每个发起方读到的
+         *          都是「还没到顶」，上限就被整片冲开了。占用凭据跟着 ResolveState 活着，因此解析线程
+         *          正常结束、线程没起来、等待方先销毁这三种收场都只归还一次。
          */
         struct ResolutionSlotGuard
         {
@@ -65,6 +47,31 @@ namespace AsynGyanis::Core
             ResolutionSlotGuard(const ResolutionSlotGuard &) = delete;
 
             ResolutionSlotGuard &operator=(const ResolutionSlotGuard &) = delete;
+        };
+
+        /**
+         * @brief 解析任务的状态：后台线程与协程之间通过它交换结果与句柄
+         */
+        struct ResolveState
+        {
+            /// 等待结果的协程句柄。**必须是原子的**：置空发生在等待器析构（帧销毁，可能在
+            /// 任意线程），读取发生在后台线程投回的唤醒里，两者无同步就是数据竞争；而且
+            /// 「先判活再 resume」本身有个窗口——判活通过之后帧仍可能被销毁。改成一取一空
+            /// （exchange）：谁取到句柄谁负责恢复，帧销毁时置空则那次恢复自然作废
+            std::atomic<std::coroutine_handle<>> callerHandle{nullptr};
+            std::vector<InetAddress>             addresses; ///< 解析结果
+
+            /// 本次解析占住的名额：随这份状态一起活到「解析线程与等待方都松手」，那时才归还
+            std::shared_ptr<ResolutionSlotGuard> slot;
+
+            /// 唤醒等待方：句柄已被取走或已被置空时什么都不做（resume 已释放的帧是释放后使用）
+            void wakeCaller() noexcept
+            {
+                if (const std::coroutine_handle<> handle = callerHandle.exchange(nullptr, std::memory_order_acq_rel); handle != nullptr)
+                {
+                    handle.resume();
+                }
+            }
         };
 
         /**
@@ -97,11 +104,11 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 在后台线程执行阻塞的 getaddrinfo，完成后通过 postRemote 唤醒调用方协程
+         * @details 本次解析占住的名额挂在 state->slot 上，由这份状态负责归还，本函数不另设计数
          */
         void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop,
                              std::shared_ptr<ResolveState> state)
         {
-            const ResolutionSlotGuard slotGuard;
             // Windows 上 getaddrinfo 需要 Winsock 已初始化
             const Platform::Socket::Initialization winsock;
             if (!winsock.isValid())
@@ -171,22 +178,34 @@ namespace AsynGyanis::Core
             bool await_suspend(const std::coroutine_handle<> handle) noexcept
             {
                 state->callerHandle.store(handle, std::memory_order_release);
-                // 并发上限：到顶了就按「解析失败（空列表）」就地收尾，并留一条可见的日志——
-                // 无限起线程会把进程线程数顶到系统限制，那比一次解析失败严重得多
-                if (g_activeResolutionCount.load(std::memory_order_relaxed) >= kMaximumConcurrentResolutions)
-                {
-                    LOG_WARN_FMT("AsyncResolver: 同时在跑的解析已达上限 {}，本次解析按失败返回空地址列表", kMaximumConcurrentResolutions);
-                    return false;
-                }
-                // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
-                // 结果保持空列表，按文档的「空列表表示解析失败」收尾
+
+                // 并发上限与线程创建放在同一个 try 里：守卫的构造要分配内存，noexcept 函数里抛出即
+                // terminate，而这里两条都是「资源耗尽就按失败收尾」的同一处置
                 try
                 {
+                    // 名额在**发起线程上**就占住（构造即加计），不是等解析线程起跑后才计：一批协程在
+                    // 同一个循环线程上连着挂起时，只读计数的发起方全都看到「还没到顶」，上限被整片冲开
+                    auto slot = std::make_shared<ResolutionSlotGuard>();
+                    if (g_activeResolutionCount.load(std::memory_order_relaxed) > kMaximumConcurrentResolutions)
+                    {
+                        // 局部 slot 出作用域即归还这一份加计
+                        LOG_WARN_FMT("AsyncResolver: 同时在跑的解析已达上限 {}，本次解析按失败返回空地址列表", kMaximumConcurrentResolutions);
+                        return false;
+                    }
+
+                    // 名额改由状态持有：解析线程与等待方最后松手的那一个负责归还
+                    state->slot = std::move(slot);
+
+                    // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
+                    // 结果保持空列表，按文档的「空列表表示解析失败」收尾
                     std::thread worker(blockingResolve, std::move(host), port, &targetLoop, state);
                     worker.detach();
                 } catch (...)
                 {
                     LOG_WARN("AsyncResolver: 启动解析线程失败（资源耗尽），本次解析按失败返回空地址列表");
+                    // 线程没起来就立刻把名额还回去，不等状态销毁：否则反复失败会把名额耗干，
+                    // 让此后的解析永远被上限拒绝
+                    state->slot.reset();
                     return false;
                 }
                 return true;

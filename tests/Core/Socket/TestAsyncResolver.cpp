@@ -3,6 +3,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncResolver.h"
 #include <gtest/gtest.h>
+#include <cstddef>
 #include <string>
 #include <vector>
 namespace AsynGyanis::Core
@@ -83,5 +84,42 @@ namespace AsynGyanis::Core
         loop.run();
 
         EXPECT_TRUE(result.empty()) << "这个主机名不该解析出任何地址";
+    }
+
+    /// 在同一个循环上连着跑 attempts 次回环解析，数下其中有几次空手而归（作为被调度到 loop 上的协程使用）
+    static Core::Task<void> doResolveRepeatedly(Core::EventLoop &loop, std::size_t &emptyResultCount, const int attempts)
+    {
+        for (int attempt = 0; attempt < attempts; ++attempt)
+        {
+            const std::vector<InetAddress> addresses = co_await AsyncResolver::resolve(loop, "127.0.0.1", 80);
+            if (addresses.empty())
+            {
+                ++emptyResultCount;
+            }
+        }
+        loop.stop();
+    }
+
+    /**
+     * @brief 每次解析都要把并发名额还得回去：漏还一次，攒到上限之后的解析就永远被拒
+     * @details 解析并发上限是进程级的（同时在跑的解析到顶后按「失败返回空列表」收场）。这里连着跑
+     *          300 次 —— 超过那个上限 —— 回环解析：只要有任何一次没归还名额，后面的解析就会整片命中
+     *          上限而返回空列表。判据取「每一次都解析得出地址」，不测耗时也不赌调度时机
+     */
+    TEST(AsyncResolver, RepeatedResolutionsNeverGetStarvedByLeakedSlots)
+    {
+        constexpr int kResolutionAttempts = 300;
+
+        Core::EventLoop loop;
+        std::size_t     emptyResultCount{0};
+        auto            work = doResolveRepeatedly(loop, emptyResultCount, kResolutionAttempts);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(emptyResultCount, 0U)
+            << "回环地址解析不该空手而归：空结果说明并发名额没归还，攒到上限后解析会永久被拒";
     }
 } // namespace AsynGyanis::Core
