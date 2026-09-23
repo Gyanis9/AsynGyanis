@@ -1,6 +1,8 @@
 // FileWatcher 单元测试：工厂创建、生命周期、事件回调与防抖
 #include "Platform/FileSystem/FileWatcher.h"
 
+#include "Platform/FileSystem/FileSystem.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -143,6 +145,28 @@ namespace AsynGyanis::Platform
             {
                 const std::lock_guard lock(m_mutex);
                 return m_sawRescanEvent;
+            }
+
+            /**
+             * @brief 指定文件名的第一条事件所报告的完整路径
+             * @details 递归覆盖与撤销那两条用例要比对的是「回调给的整条路径」，只看文件名看不出编码：
+             *          路径带着本地代码页的字节回去时，文件名照样对得上，而调用方拿它去和配置里那段
+             *          UTF-8 文本比对永远对不上
+             * @param fileName 文件名（不含目录）
+             * @return std::optional<std::string> 没有该文件名的记录时为空
+             */
+            [[nodiscard]] std::optional<std::string> firstPathNamed(const std::string &fileName) const
+            {
+                const std::lock_guard lock(m_mutex);
+                for (const auto &[filePath, changeType]: m_events)
+                {
+                    (void) changeType;
+                    if (fileNameOf(filePath) == fileName)
+                    {
+                        return filePath;
+                    }
+                }
+                return std::nullopt;
             }
 
         private:
@@ -855,6 +879,136 @@ namespace AsynGyanis::Platform
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "递归监听未能覆盖子目录中的文件";
+    }
+
+    /**
+     * @brief 钉住：递归根的名字落在本地代码页之外时，子目录一样要被覆盖，回调也要报回 UTF-8
+     * @details Windows 上把一段 UTF-8 文本直接交给 std::filesystem，它按**本地代码页**解释这些字节
+     *          （实测 ACP 936 下「文档」被解成 U+93C2 U+56E6 U+6B22，即同一段字节的 GBK 读法），于是
+     *          「这目录是不是目录」查不出来、整棵树的枚举被跳过，而 addWatch 照旧返回 true。反方向
+     *          `path::string()` 给出的是代码页字节而不是 UTF-8，名字代码页装不下时它直接抛出。
+     * @note 对照步骤（根目录里的文件必须有事件）刻意在被测步骤之前跑：少了它，「子目录没事件」测到的
+     *       可能只是这条监视压根没挂上。
+     */
+    TEST(FileWatcher, RecursiveWatchCoversSubDirectoriesUnderNonAsciiName)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_NonAsciiRecursive");
+        // 名字用转义写：用例要钉的是「交给文件系统的那段字节是 UTF-8」，不该依赖源文件编码
+        const std::string             nonAsciiNameUtf8 = "\xE6\x96\x87\xE4\xBB\xB6";
+        const std::filesystem::path   nonAsciiDirectory
+                = temporaryDirectory.path() / FileSystem::pathFromUtf8(nonAsciiNameUtf8);
+        std::error_code                 createError;
+        std::filesystem::create_directories(nonAsciiDirectory / "sub", createError);
+        ASSERT_FALSE(createError) << createError.message();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+                             {
+                                 recorder.record(filePath, changeType);
+                             });
+
+        // 交给监视器的是调用方手里那段 UTF-8 文本（配置读来的、URI 解出来的都是这种形态）
+        ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(nonAsciiDirectory), true));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        {
+            std::ofstream topLevelFile(nonAsciiDirectory / "top.yaml");
+            topLevelFile << "top: true\n";
+        }
+        const bool sawRootEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("top.yaml");
+                },
+                3000);
+        EXPECT_TRUE(sawRootEvent) << "根目录里的文件没有事件，这条用例的对照步骤不成立";
+
+        {
+            std::ofstream nestedFile(nonAsciiDirectory / "sub" / "nested.yaml");
+            nestedFile << "nested: true\n";
+        }
+        const bool sawNestedEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("nested.yaml");
+                },
+                3000);
+
+        std::optional<std::string> nestedEventPath;
+        if (sawNestedEvent)
+        {
+            nestedEventPath = recorder.firstPathNamed("nested.yaml");
+        }
+        watcher->stop();
+
+        EXPECT_TRUE(sawNestedEvent) << "递归根的名字是中文时，子目录里的变更没有上报：注册函数按本地代码页"
+                                       "去解释那段 UTF-8 字节，递归枚举整段被跳过，而 addWatch 仍返回 true";
+        ASSERT_TRUE(nestedEventPath.has_value());
+        EXPECT_NE(nestedEventPath->find(nonAsciiNameUtf8), std::string::npos)
+                << "回调报回的整条路径不是 UTF-8（实测Windows 上带中文的名字经 path::string() 会得到 GBK "
+                   "字节）：文件名对得上没用的，调用方拿这段字节去和配置里的路径比对永远对不上";
+    }
+
+    /**
+     * @brief 钉住：撤销一条中文目录下的子监视要真的摘掉它
+     * @details 登记表以 UTF-8 文本为键，而事件路径由宽字符名字按 UTF-8 转出来。注册时若把宽路径经
+     *          本地代码页转回窄串，表里存的就是另一种编码的键：调用方按 UTF-8 给的同一个路径摘不掉它，
+     *          返回 false 不说，事件还会一直流过来。
+     */
+    TEST(FileWatcher, RemoveWatchOnNonAsciiSubDirectoryStopsDelivery)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_NonAsciiRemove");
+        const std::string               nonAsciiNameUtf8 = "\xE6\x96\x87\xE4\xBB\xB6";
+        const std::filesystem::path     nonAsciiDirectory
+                = temporaryDirectory.path() / FileSystem::pathFromUtf8(nonAsciiNameUtf8);
+        std::error_code createError;
+        std::filesystem::create_directories(nonAsciiDirectory / "sub", createError);
+        ASSERT_FALSE(createError) << createError.message();
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
+                             {
+                                 recorder.record(filePath, changeType);
+                             });
+
+        ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(nonAsciiDirectory), true));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        {
+            std::ofstream nestedFile(nonAsciiDirectory / "sub" / "first.yaml");
+            nestedFile << "first: true\n";
+        }
+        const bool sawFirstEvent = TestSupport::waitForCondition(
+                [&recorder]()
+                {
+                    return recorder.sawFileNamed("first.yaml");
+                },
+                3000);
+        EXPECT_TRUE(sawFirstEvent) << "子目录没被覆盖，撤销这一步就没有可撤销的东西";
+
+        EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(nonAsciiDirectory / "sub")))
+                << "按 UTF-8 报出的子目录路径摘不掉那条监视：登记表里存的键是本地代码页的字节";
+
+        // 判据取「第二个文件名没出现过」而不是「事件总数不再增长」：往子目录里写东西，父目录那条监视
+        // 会报出子目录本身的一条 Modified，那一条与被撤销的监视无关，摘掉它也不该消失
+        {
+            std::ofstream secondFile(nonAsciiDirectory / "sub" / "second.yaml");
+            secondFile << "second: true\n";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        watcher->stop();
+
+        EXPECT_FALSE(recorder.sawFileNamed("second.yaml")) << "撤销之后事件仍在流过来";
     }
 
     /**

@@ -1,5 +1,6 @@
 #include "Platform/FileSystem/Win32FileWatcher.h"
 
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/System/TextEncoding.h"
 
 #include <algorithm>
@@ -12,6 +13,20 @@ namespace AsynGyanis::Platform
 {
     namespace
     {
+        /**
+         * @brief 把一段 UTF-8 路径文本交给文件系统
+         * @details 直接把窄字符序列交给 std::filesystem::path，Windows 会按**本地代码页**解释这些字节
+         *          （实测 ACP 936 下 UTF-8 的「文档」解成 U+93C2 U+56E6 U+6B22），查询与建监视就落在
+         *          另一个名字上；反方向的 `path::string()` 同样按代码页出串，代码页装不下的名字直接
+         *          抛出。跨这一层的路径文本因此一律走 FileSystem 的那对 UTF-8 转换
+         * @param utf8Path UTF-8 编码的路径文本
+         * @return std::filesystem::path 原生刻度正确的路径对象
+         */
+        [[nodiscard]] std::filesystem::path pathFromUtf8Text(const std::string_view utf8Path)
+        {
+            return FileSystem::pathFromUtf8(std::string(utf8Path));
+        }
+
         /**
          * @brief 把 Windows 目录通知动作映射为平台无关的变更类型
          * @param action FILE_ACTION_* 常量
@@ -173,11 +188,16 @@ namespace AsynGyanis::Platform
     bool Win32FileWatcher::registerWatch(const std::string_view path, const bool recursive, const bool partOfRecursiveTree)
     {
         std::error_code errorCode;
-        const auto      absolutePath = std::filesystem::absolute(path, errorCode).string();
+        // 先按 UTF-8 解成路径对象再问文件系统：直接把窄串交下去，Windows 会拿本地代码页解释这段字节
+        const std::filesystem::path absolutePathObject = std::filesystem::absolute(pathFromUtf8Text(path), errorCode);
         if (errorCode)
         {
             return false;
         }
+        // 登记表的键位与派发出去的事件路径都是 UTF-8 文本（事件里的文件名由宽字符按 CP_UTF8 转出），
+        // 所以绝对路径也要按 UTF-8 出串。这里换成 path::string() 会让中文目录的键变成另一套编码的字节，
+        // 代码页装不下的名字还会当场抛出
+        const std::string absolutePath = FileSystem::utf8FromPath(absolutePathObject);
 
         // 只有「这一次才把它变成递归根」才需要走一遍目录树；子目录自己再挂递归时同样要枚举它下面那层
         bool needsDescend = false;
@@ -210,7 +230,8 @@ namespace AsynGyanis::Platform
                 auto entry  = std::make_unique<WatchEntry>();
                 entry->path = directoryPath;
                 entry->buffer.resize(kBufferSize);
-                entry->directoryHandle = ::CreateFileW(TextEncoding::toWideString(absolutePath).c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                // 路径对象的原生刻度已经在手，不必把 UTF-8 键再折算回宽字符
+                entry->directoryHandle = ::CreateFileW(absolutePathObject.native().c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
 
                 if (entry->directoryHandle == INVALID_HANDLE_VALUE)
@@ -244,9 +265,9 @@ namespace AsynGyanis::Platform
         }
 
         // 递归注册放在锁外，避免持锁期间遍历目录树
-        if (needsDescend && std::filesystem::is_directory(absolutePath, errorCode))
+        if (needsDescend && std::filesystem::is_directory(absolutePathObject, errorCode))
         {
-            for (const auto &directoryEntry: std::filesystem::recursive_directory_iterator(absolutePath, errorCode))
+            for (const auto &directoryEntry: std::filesystem::recursive_directory_iterator(absolutePathObject, errorCode))
             {
                 if (errorCode)
                 {
@@ -256,7 +277,7 @@ namespace AsynGyanis::Platform
                 {
                     // 子目录自身不再往下枚举（外层迭代器已经把整棵树走了一遍，逐个递归注册会重复
                     // 走树），但要记进递归覆盖清单，让它享有和根本地一样的自愈补挂
-                    static_cast<void>(registerWatch(directoryEntry.path().string(), false, true));
+                    static_cast<void>(registerWatch(FileSystem::utf8FromPath(directoryEntry.path()), false, true));
                 }
             }
         }
@@ -267,7 +288,9 @@ namespace AsynGyanis::Platform
     bool Win32FileWatcher::removeWatch(const std::string_view path)
     {
         std::error_code errorCode;
-        const auto      absolutePath = std::filesystem::absolute(path, errorCode).string();
+        // 撤销走的键位查找必须与注册时同一套编码，否则「按 UTF-8 报出的路径」摘不掉按另一种编码存进去
+        // 的那条监视（见 registerWatch 里同样的转换）
+        const std::string absolutePath = FileSystem::utf8FromPath(std::filesystem::absolute(pathFromUtf8Text(path), errorCode));
         if (errorCode)
         {
             return false;
@@ -538,7 +561,9 @@ namespace AsynGyanis::Platform
             }
 
             std::error_code directoryError;
-            if (std::filesystem::is_directory(changedPath, directoryError) && !directoryError)
+            // 事件路径是 UTF-8 文本，问文件系统之前先按 UTF-8 解一次：直接交给 std::filesystem 会让
+            // Windows 按本地代码页解释这段字节，中文新建的目录查不到，于是永远补不上监视
+            if (std::filesystem::is_directory(pathFromUtf8Text(changedPath), directoryError) && !directoryError)
             {
                 // 锁外补挂：addWatch() 要拿写锁，持锁递归注册会自死锁
                 static_cast<void>(addWatch(changedPath, true));

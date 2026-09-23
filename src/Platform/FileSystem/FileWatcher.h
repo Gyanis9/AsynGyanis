@@ -41,6 +41,7 @@ namespace AsynGyanis::Platform
      * @brief 文件变更回调函数类型
      * @param filePath 发生变更的文件绝对路径；changeType 为 NeedsRescan 时是被监视的**目录**路径
      * @param changeType 变更事件类型
+     * @note 路径文本一律是 UTF-8（与 addWatch 收的那份同一刻度），拿它去比对配置里的路径才是对得上的
      * @note 回调在监听线程上执行，实现方不得在回调内阻塞过久或直接销毁监听器
      */
     using FileChangeCallback = std::function<void(std::string_view filePath, FileChangeType changeType)>;
@@ -88,19 +89,22 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 添加要监听的文件或目录
-         * @param path 文件或目录路径，内部统一转为绝对路径
+         * @param path 文件或目录路径（UTF-8 文本；POSIX 上就是原生字节序列），内部统一转为绝对路径
          * @param recursive 是否递归监听子目录，仅对目录有效
          * @return true 添加成功或已在监听集合中
          * @return false 路径无法解析或原生监听注册失败
          * @note 注册失败（最常见的是路径当时还不存在）仍会留下一条**待挂登记**：目录之后出现时，
          *       监听线程按秒节的复查会把它挂上并开始派发事件。热加载一类「服务比配置目录先起来」
          *       的用法依赖这条，因此它不随 false 一起消失；要收回它只能显式 removeWatch（两平台同口径）。
+         * @note 这段字节的编码刻度是 UTF-8，不是本地代码页：Windows 上按代码页解释会把
+         *       「文档」看成另一个名字（该目录既挂不上也摘不掉）。addWatch 与 removeWatch 要成对，
+         *       回调报回来的路径也按这一刻度给出。
          */
         virtual bool addWatch(std::string_view path, bool recursive = false) = 0;
 
         /**
          * @brief 移除指定路径的监听
-         * @param path 之前添加过的文件或目录路径
+         * @param path 之前添加过的文件或目录路径，编码刻度与当时 addWatch 给的那份一致（UTF-8）
          * @return true 移除成功，或撤掉的是一条尚未成立的待挂登记
          * @return false 该路径既不在监听集合中，也没有等着补挂的登记
          */
