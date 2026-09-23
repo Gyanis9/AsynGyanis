@@ -1303,7 +1303,10 @@ namespace AsynGyanis::Database::Queryable
 
             if (transaction != nullptr)
             {
-                // 已绑定事务：块之间共用事务连接，提交/回滚的决定权仍在调用方手里
+                // 已绑定事务：块之间共用事务连接，提交/回滚的决定权仍在调用方手里。
+                // 分块是「多条语句落在同一条连接上」，与单条语句一样要占住连接使用权：
+                // 调用方可能在另一条语句（或另一条批量插入）执行到一半时踩进同一个驱动句柄
+                const std::unique_lock<std::mutex> statementLock = transaction->acquireStatementLock();
                 return executeBatchOn(transaction->connection(), dialect, batchNode, rows, rowsPerStatement);
             }
 

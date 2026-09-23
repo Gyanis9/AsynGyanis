@@ -13,6 +13,7 @@
 // - BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt / BatchInsertEdgeCases
 // - StatementsComeFromTheDialect（事务控制语句来自方言）
 // - StatementsOnOneTransactionWaitForTheConnection（同一事务上的语句互斥：ORM 查询与 COMMIT 都排队）
+// - ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch（分块批量插入整批占住使用权，块间不插进别的语句）
 // - SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
 
 #include "Database/Common/ConnectionConfig.h"
@@ -585,6 +586,43 @@ TEST_F(TransactionTest, StatementsOnOneTransactionWaitForTheConnection)
     EXPECT_TRUE(commitFuture.get());
     EXPECT_TRUE(rows.empty());
     EXPECT_FALSE(transaction.isActive());
+}
+
+/**
+ * @brief 钉住分块批量插入整批占住连接使用权，而不只占住一条语句
+ * @details 单条语句的路径经 acquireConnection() 取使用权，分块那条分支是「一条接一条地往同一条
+ *          连接上发」：不整批占住，块与块之间就能插进别的语句，一个驱动句柄上的协议流随即交错。
+ *          用例不赌调度：主线程占住使用权时批量插入**不可能**到达驱动，交还之后三块才依次写完。
+ */
+TEST_F(TransactionTest, ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch)
+{
+    // 4 列 × 每块 249 行贴近 999 参数上限，500 行拆成三块：只有一条语句的粒度会漏掉这种交错
+    std::vector<LedgerRow> rows;
+    rows.reserve(500);
+    for (std::int64_t id = 1; id <= 500; ++id)
+    {
+        rows.push_back(makeLedgerRow(id, "分块批量", static_cast<double>(id), std::nullopt));
+    }
+
+    Transaction transaction(*m_pool);
+
+    std::unique_lock<std::mutex> heldLock = transaction.acquireStatementLock();
+    ASSERT_TRUE(heldLock.owns_lock());
+
+    std::future<std::int64_t> insertedRows = std::async(std::launch::async, [&transaction, &rows]()
+    {
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        return transactionalQuery.insertBatch(rows);
+    });
+
+    EXPECT_EQ(insertedRows.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
+        << "分块批量插入没等连接使用权：块语句会与并发语句交错在同一个驱动句柄上";
+
+    heldLock.unlock();
+
+    EXPECT_EQ(insertedRows.get(), static_cast<std::int64_t>(rows.size()));
+    EXPECT_TRUE(transaction.commit()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 500);
 }
 
 /**
