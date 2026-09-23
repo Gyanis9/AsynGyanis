@@ -212,6 +212,65 @@ namespace AsynGyanis::Base
             std::thread  &m_loaderThread;  ///< 要接回的加载线程
             std::thread  &m_setterThread;  ///< 要接回的写入线程
         };
+
+        /**
+         * @brief 把 root 日志器收到的消息原文收进一张表的 Sink，用于断言「这条日志到底报了没有」
+         * @details 消息表按 shared_ptr 与 Sink 共享：Sink 挂在 root 上、随用例收尾被换掉，
+         *          而用例手里的句柄仍要能读到已经收下的那些消息，因此表不能随 Sink 一起销毁
+         */
+        class RecordingSink final : public LogSink
+        {
+        public:
+            RecordingSink() : m_messages(std::make_shared<std::vector<std::string>>())
+            {
+            }
+
+            /**
+             * @brief 记下一条消息的原文
+             * @param event 日志事件，只取它的 message
+             */
+            void write(const LogEvent &event) override
+            {
+                const std::lock_guard lock(m_mutex);
+                m_messages->push_back(event.message);
+            }
+
+            /// 不落盘，没有缓冲需要刷新
+            void flush() override
+            {
+            }
+
+            /**
+             * @brief 取共享的消息表句柄，存在期独立于本 Sink
+             * @return std::shared_ptr<std::vector<std::string>> 用例侧可一直读到收尾
+             */
+            [[nodiscard]] std::shared_ptr<std::vector<std::string>> messages() const noexcept
+            {
+                return m_messages;
+            }
+
+        private:
+            std::shared_ptr<std::vector<std::string>> m_messages; ///< 与用例共享的消息表
+            mutable std::mutex                        m_mutex;    ///< 保护消息表：Sink 可能被多个线程写
+        };
+
+        /**
+         * @brief 作用域结束时换掉整棵 root 日志器，摘掉本用例挂上去的 Sink
+         * @details Logger 只有 clearSinks() 而没有「摘掉单个 Sink」的口，沿用本文件既有的
+         *          「整份换掉 root」做法；退休表兜住在途引用，因此后面的用例拿不到这份 Sink
+         */
+        class RootSinkScope
+        {
+        public:
+            RootSinkScope()                        = default;
+            RootSinkScope(const RootSinkScope &)   = delete;
+            RootSinkScope &operator=(const RootSinkScope &) = delete;
+
+            ~RootSinkScope()
+            {
+                LoggerRegistry::instance().clear();
+            }
+        };
     } // namespace
 
     /**
@@ -2018,13 +2077,54 @@ server:
         EXPECT_FALSE(registration.valid);
         EXPECT_TRUE(anyEntryContains(registration.errors, "缺少必需配置键"));
 
-        // 现状记录：schema 为建议性约束，setValue 不校验类型，仅由 validateSchema 暴露违规
+        // schema 为建议性约束：setValue 不拦下违规值，但违规要与文件加载同一口径报进日志（见下面两条用例）
         EXPECT_TRUE(configuration().setValue("app.size", ConfigValue(std::string("not-a-number"))));
         EXPECT_EQ(configuration().getOptional("app.size")->type(), ConfigValueType::string);
 
         const ConfigValidationResult result = configuration().validateSchema(schema);
         EXPECT_FALSE(result.valid);
         EXPECT_TRUE(anyEntryContains(result.errors, "类型不符"));
+    }
+
+    TEST_F(ConfigManagerTest, SetValueReportsSchemaViolationOfTheKeyItWrites)
+    {
+        // 钉住的是可观测性：类型不符的写入此后每次 getInt 都静默回落到默认值，
+        // 同样的值写在文件里会报一条 ERROR，写在程序里却什么都不报
+        static_cast<void>(configuration().setSchema(ConfigSchema{
+                ConfigSchemaEntry{"app.size", ConfigValueType::number_integer, false, std::nullopt, std::nullopt},
+        }));
+
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
+        EXPECT_TRUE(configuration().setValue("app.size", ConfigValue(std::string("not-a-number"))));
+
+        ASSERT_EQ(recorded->size(), 1U) << "违规写入没有按文件加载的同一口径上报";
+        EXPECT_TRUE(anyEntryContains(*recorded, "类型不符"));
+        EXPECT_TRUE(anyEntryContains(*recorded, "app.size"));
+    }
+
+    TEST_F(ConfigManagerTest, SetValueStaysSilentForKeysItShouldNotComplainAbout)
+    {
+        // 必需键此刻是缺的：那是文件那边的事，不该由每次无关写入重复播报
+        static_cast<void>(configuration().setSchema(ConfigSchema{
+                ConfigSchemaEntry{"app.size", ConfigValueType::number_integer, true, 1.0, 65535.0},
+        }));
+
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
+        // schema 里没有这个键：写什么都不报
+        EXPECT_TRUE(configuration().setValue("runtime.flag", ConfigValue(std::string("on"))));
+        // 类型与区间都合规：也不报
+        EXPECT_TRUE(configuration().setValue("app.size", ConfigValue(42)));
+
+        EXPECT_TRUE(recorded->empty()) << "每次 setValue 都重播一遍别人的欠账，等于把这条通道变成噪声";
+        EXPECT_EQ(configuration().getInt("app.size", 0), 42);
     }
 
     // ============================================================================

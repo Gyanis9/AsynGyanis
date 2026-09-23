@@ -225,6 +225,8 @@ namespace AsynGyanis::Base
          * @param key 配置键（点号路径，如 server.port）。
          * @param value 配置值。
          * @return bool 成功返回 true；键为空返回 false。
+         * @note 该键在已注册 schema 里有约束时，违规按与文件加载同一口径记进日志；
+         *       schema 是建议性约束，这里只报告不阻断，写入照常生效
          */
         bool setValue(std::string_view key, ConfigValue value);
 
@@ -454,8 +456,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。
+         * @details 未注册 schema 或没有命中任何约束条目时什么都不做，也不取日志的代价。
          * @param values 扁平化配置字典。
+         * @param onlyKey 只判这一个键的约束条目；留空表示判全部（整份快照提交时用）
          */
-        void validateRegisteredSchema(const ConfigKeyValueMap &values) const;
+        void validateRegisteredSchema(const ConfigKeyValueMap &values, std::string_view onlyKey = {}) const;
     };
 } // namespace AsynGyanis::Base

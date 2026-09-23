@@ -457,14 +457,22 @@ namespace AsynGyanis::Base
         // 写侧串行化：本方法对快照执行「读取 → 复制 → 修改 → 发布」事务，
         // 两个并发写者若同时基于同一份旧快照构造新快照，后发布者会丢掉先发布者的键。
         // 这里只串行化写者之间；读者仍通过 atomic<shared_ptr> 无锁读取快照，不受影响
-        const std::lock_guard writeLock(m_writeMutex);
+        std::shared_ptr<ConfigData> newData;
+        {
+            const std::lock_guard writeLock(m_writeMutex);
 
-        // 复制当前快照并更新目标键，原子替换后立即对所有读者生效
-        const auto currentData = m_data.load(std::memory_order_acquire);
-        const auto newData     = std::make_shared<ConfigData>(*currentData);
+            // 复制当前快照并更新目标键，原子替换后立即对所有读者生效
+            const auto currentData = m_data.load(std::memory_order_acquire);
+            newData                = std::make_shared<ConfigData>(*currentData);
 
-        newData->values[std::string(key)] = std::move(value);
-        m_data.store(newData, std::memory_order_release);
+            newData->values[std::string(key)] = std::move(value);
+            m_data.store(newData, std::memory_order_release);
+        }
+
+        // 校验与日志放在写锁之外，与 commitConfigData 同一排法：按违规做一次 std::format
+        // 并走一次 Sink 写入，锁内做这些等于把「落一条日志」的成本转嫁给所有并发的写者。
+        // 判的是自己刚发布的那份快照里的这个键，后来者替换快照也不影响这条报告的归属
+        validateRegisteredSchema(newData->values, key);
 
         return true;
     }
@@ -1045,20 +1053,35 @@ namespace AsynGyanis::Base
         return validation;
     }
 
-    void ConfigManager::validateRegisteredSchema(const ConfigKeyValueMap &values) const
+    void ConfigManager::validateRegisteredSchema(const ConfigKeyValueMap &values, const std::string_view onlyKey) const
     {
-        ConfigSchema schema;
+        ConfigSchema targets;
         {
             const std::lock_guard lock(m_schemaMutex);
-            schema = m_schema;
+            if (onlyKey.empty())
+            {
+                // 整份快照提交：一次复制全表，随后逐条判
+                targets = m_schema;
+            } else
+            {
+                // 单键提交：只挑这个键的约束条目。整表复制在这里是白花力气——
+                // setValue 一次只改一个键，而「别的必需键还没出现」不该由这次写入重复播报
+                for (const auto &entry: m_schema)
+                {
+                    if (entry.key == onlyKey)
+                    {
+                        targets.push_back(entry);
+                    }
+                }
+            }
         }
-        if (schema.empty())
+        if (targets.empty())
         {
             return;
         }
 
-        // 针对给定字典逐项校验（不依赖当前快照，供热重载提交路径使用）
-        for (const auto &error: runSchemaValidation(values, schema).errors)
+        // 针对给定字典逐项校验（不依赖当前快照，提交路径据此判自己刚发布的那一份）
+        for (const auto &error: runSchemaValidation(values, targets).errors)
         {
             LOG_ERROR_FMT("配置 schema 校验失败：{}", error);
         }

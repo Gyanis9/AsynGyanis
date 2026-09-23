@@ -17,6 +17,13 @@
 
 ### 新增
 
+- **`HttpRequest::reserveHeaders(fieldCount, byteCount)`**：给「一条请求从零装配头部」的调用方一个
+  一次留够容量的入口（按整块交换头部的那两条路径不需要它）。HTTP/3 收请求头正是这条形状：请求对象
+  随流新建，头部一条一条 `addHeader` 进去。实测同一条 10 头部的请求，不预留要 24 次分配 / 2588 字节，
+  先按 4 条 / 128 字节留一档是 12 次 / 2080 字节（Release，按一千次原值计，判据是
+  `HotPathAllocations.HttpRequestHeaderAssemblyAllocations`）。留的量刻意取小：比典型请求少留一点，
+  超出照常按倍扩容，不让每一份在途请求都多养一段空缓冲。顺带把 h3 的 `:path → uri` 从「再抄一条串」
+  改成 `adoptStagedUri()` 换缓冲。
 - **响应压缩可以交给工作线程做**：新增 `compressionMiddleware(completionLoop, executor, options)`
   一版重载，把「压完整块正文」这一步交给 `Core::AsyncExecutor` 的工作线程，压完再回到发起请求的那条
   事件循环续上（`scheduleRemote`）。判断、阈值、编码协商、ETag 降级与头部改写全部与就地版共用同一份
@@ -840,6 +847,13 @@
   刚好比对在这次记录之前。新增 `TestReloadRoundGate` 5 条：一条按七步确定性调用顺序复现该交错（不依赖
   线程调度），一条把旧的双旗写法原样搬来当对照、证明这条交错真的会丢，另有一条四线程用例压
   「同一时刻至多一轮占着执行权」的安全不变式。Windows 侧 `TestBase` 568 例全绿。
+- **程序改配置不再绕开 schema 校验**：`setValue()` 与文件加载是两条快照提交路径，过去只有一条执行
+  已注册 schema——同一个写错的值（例如往整数键里塞字符串）落在文件里会报一条 ERROR，落在程序里却
+  什么都不报，而此后每次 `getInt()` 都静默回落到默认值，现场只剩「改了配置没反应」。现在两条提交路径
+  共用同一段校验：`validateRegisteredSchema` 支持「只判某一个键」，单键提交因此既不会把别人欠的账
+  （必需键缺失）重播一遍，也不必整表复制 schema。schema 仍是建议性约束——只报告、不阻断，违规值照常
+  生效。新增两条用例（一条钉「该报的报了没有」，一条钉「不该报的别报」），实测摘掉那次调用后前一条
+  变红；Windows 侧 `TestBase` 570 例全绿，容器 TSan 同数零告警、ASan/UBSan/LSan 对配置段 116 例零命中。
 
 ### 性能
 
