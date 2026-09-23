@@ -878,6 +878,69 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 写语句缓存涨到上限时整表清空，此后旧文本要能重新编译、手里的游标不受影响
+     *
+     * @details kMaximumCachedStatements 之上那一格此前从没被踩过：表满即整表清空（不是逐条淘汰），
+     *          清空要 finalize 表里全部游标——漏 finalize 是泄漏，动到结果集还在用的那一条就是
+     *          use-after-free。被写的表与被读的表刻意分开：同一张表上「边读边写」的可见性本来
+     *          就不确定，那会让行数为断言失效。
+     */
+    TEST(SqliteConnection, WriteStatementCacheIsEmptiedWholeOnceItReachesTheLimit)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE seed_rows (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+
+        // 300 行 > 256 行的物化上限：下面那条 SELECT 因此交出的是一条真游标，不是一份快照
+        for (std::int64_t rowIndex = 1; rowIndex <= 300; ++rowIndex)
+        {
+            const std::array<DatabaseValue, 2> parameters{rowIndex, "seed-" + std::to_string(rowIndex)};
+            ASSERT_NE(connection.execute("INSERT INTO seed_rows VALUES (?, ?)", std::span<const DatabaseValue>(parameters)), nullptr)
+                << connection.lastError();
+        }
+
+        // 第一次用一个筛不出行的条件：0 行属于「已跑完」，这条文本因此被收进缓存
+        constexpr const char *kSelectionSql = "SELECT id, name FROM seed_rows WHERE id > ? ORDER BY id";
+        {
+            const std::array<DatabaseValue, 1> coldBound{std::int64_t{300}};
+            ASSERT_NE(connection.execute(kSelectionSql, std::span<const DatabaseValue>(coldBound)), nullptr) << connection.lastError();
+        }
+
+        // 第二次换条件跑出 300 行（> 物化上限）：这次是缓存命中，而游标要跟着结果集活到
+        // 调用方手里——归还路径必须先把这个键从表里摘掉，否则下面的整表清空会释放一条仍在用的游标
+        const std::array<DatabaseValue, 1> warmBound{std::int64_t{0}};
+        const std::unique_ptr<DatabaseResult> heldSelection =
+                connection.execute(kSelectionSql, std::span<const DatabaseValue>(warmBound));
+        ASSERT_NE(heldSelection, nullptr) << connection.lastError();
+        // 越界一格：70 条互不相同的写语句文本，从第 65 条起每次都触发整表清空
+        for (std::int64_t index = 1; index <= 70; ++index)
+        {
+            const std::string statement =
+                    "INSERT INTO t VALUES (" + std::to_string(1000 + index) + ", 'bulk-" + std::to_string(index) + "')";
+            const std::unique_ptr<DatabaseResult> receipt = connection.execute(statement);
+            ASSERT_NE(receipt, nullptr) << statement << "：" << connection.lastError();
+            EXPECT_EQ(receipt->affectedRowCount(), 1) << statement;
+        }
+
+        // 整表清空只能 finalize 没人引用的游标：手里这条读完仍有 300 行
+        std::int64_t readRowCount = 0;
+        while (heldSelection->next())
+        {
+            ++readRowCount;
+        }
+        EXPECT_EQ(readRowCount, 300) << "表满清空动到了结果集仍在使用的游标";
+
+        // 最早入过表的那批文本已被清掉：再跑一次只能重新编译，行为与第一次一模一样
+        const std::array<DatabaseValue, 2> rebind{std::string{"re-bound"}, std::int64_t{1001}};
+        ASSERT_NE(connection.execute("UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(rebind)), nullptr)
+            << connection.lastError();
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1001 AND name = 're-bound'"),
+                  std::optional<std::int64_t>(1));
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(70));
+    }
+
+    /**
      * @brief 断开再重连之后，不能沿用上一个数据库句柄上编译出来的游标
      * @details 缓存的键只有 SQL 文本，而 sqlite3_stmt 属于具体的那个 sqlite3 句柄：disconnect() 把
      *          句柄关掉之后，表里那些游标全部是上一个数据库对象图里的东西。因此清表必须落在换句柄
