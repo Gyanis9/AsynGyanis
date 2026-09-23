@@ -43,15 +43,16 @@ namespace AsynGyanis::Core
             std::chrono::milliseconds pollInterval{100};             ///< 观察存活与响应停止请求的轮询间隔
             std::chrono::milliseconds restartBackoff{500};           ///< 补 worker 前的等待：避免崩溃循环里打转
             std::chrono::milliseconds shutdownTimeout{10000};        ///< 收尾期限：请求退出后等到这个点就强杀
-            std::chrono::milliseconds crashLoopWindow{3000};         ///< 存活不足这个时长就退出，算一次「起来就崩」
-            std::size_t              crashLoopLimit{5};              ///< 连续「起来就崩」达到这个次数就停止补该 worker
+            std::chrono::milliseconds crashLoopWindow{3000};         ///< 存活不足这个时长就退出，算一次「起来就崩」；必须大于 0
+            std::size_t              crashLoopLimit{5};              ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
         };
 
         /**
          * @brief 校验配置并构造
          * @param configuration 编排参数
-         * @throws Base::LogicException 配置不成立（可执行文件为空、workerCount 小于 2）或本平台不支持
-         *         （Windows 上没有 SO_REUSEPORT，多进程无法共享端口；提示改用 workers=1）
+         * @throws Base::LogicException 配置不成立（可执行文件为空、workerCount 小于 2、崩溃判据
+         *         非正）或本平台不支持（Windows 上没有 SO_REUSEPORT，多进程无法共享端口；
+         *         提示改用 workers=1）
          */
         explicit WorkerSupervisor(Configuration configuration);
 

@@ -67,6 +67,15 @@ namespace AsynGyanis::Core
         {
             throw Base::LogicException("多进程编排的轮询间隔与收尾期限都必须大于 0，否则循环会空转或收尾没有期限");
         }
+        // 崩溃判据单独判：窗口非正时「存活不足窗口才算一次起来就崩」这条比较恒不成立，崩溃计数会
+        // 走「稳定运行后退出」那条清零分支——既不涨计数也就永不放弃、永不退避，秒退型 worker 被按
+        // 轮询间隔满速重启，run() 永不返回。上限取 0 是反方向的写错：崩一次就放弃整池
+        if (m_configuration.crashLoopWindow <= std::chrono::milliseconds::zero() || m_configuration.crashLoopLimit < 1)
+        {
+            throw Base::LogicException("多进程编排的崩溃判据非法：crashLoopWindow 必须大于 0（存活不足它就退出才算一次"
+                                       "「起来就崩」，取 0 或负数会让这条判定永不成立，秒退的 worker 会被满速重启且永不放弃）；"
+                                       "crashLoopLimit 至少为 1（连续崩这么多次就停止补那个 worker）");
+        }
 #if ASYN_PLATFORM_WIN32
         // Windows 上没有 SO_REUSEPORT 的等价物，端口共享无从谈起：这里当场拒绝，
         // 而不是让调用方拿到一个「启动了多个进程但只有一个能绑定端口」的假成功

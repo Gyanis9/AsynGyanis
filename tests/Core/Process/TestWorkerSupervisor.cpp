@@ -150,6 +150,55 @@ namespace AsynGyanis::Core
         EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::LogicException);
     }
 
+    /**
+     * @brief 拒绝面：崩溃判据非正会让编排变成满速重启循环，配置错误要在构造期就被挡下
+     * @details 存活窗口取 0 或负数时，「存活不足窗口才算一次起来就崩」这条比较恒不成立，崩溃计数
+     *          走的是「稳定运行后退出」那条清零分支：既不涨计数也就永不放弃、永不退避，秒退型
+     *          worker 会被按轮询间隔满速 fork/exec，run() 永不返回。上限取 0 是反方向的写错：
+     *          崩一次就放弃整池。
+     *          断言盯的是异常文本而不是异常类型：Windows 上本类对任何配置都抛 LogicException
+     *          （没有 SO_REUSEPORT），只判类型在这台机器上恒真，看不出这条校验有没有生效。
+     */
+    TEST(WorkerSupervisor, RejectsNonPositiveCrashLoopJudgement)
+    {
+        // 返回构造抛出的异常文本；构造成功则返回空串
+        auto rejectionTextOf = [](const WorkerSupervisor::Configuration &configuration)
+        {
+            try
+            {
+                static_cast<void>(WorkerSupervisor(configuration));
+            } catch (const Base::LogicException &exception)
+            {
+                return std::string(exception.what());
+            }
+            return std::string{};
+        };
+
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath = "some-server";
+        configuration.workerCount    = 2;
+        configuration.crashLoopLimit = 3;
+
+        for (const long long windowMilliseconds : {0LL, -1LL})
+        {
+            configuration.crashLoopWindow = std::chrono::milliseconds{windowMilliseconds};
+            const std::string rejectionText = rejectionTextOf(configuration);
+            EXPECT_FALSE(rejectionText.empty()) << "窗口 " << windowMilliseconds << " 毫秒该被拒绝";
+            EXPECT_NE(rejectionText.find("crashLoopWindow"), std::string::npos) << rejectionText;
+        }
+
+        configuration.crashLoopWindow = std::chrono::milliseconds{3000};
+        configuration.crashLoopLimit  = 0;
+        const std::string limitRejectionText = rejectionTextOf(configuration);
+        EXPECT_FALSE(limitRejectionText.empty()) << "上限 0 意味着崩一次就放弃整池，该被拒绝";
+        EXPECT_NE(limitRejectionText.find("crashLoopLimit"), std::string::npos) << limitRejectionText;
+
+        // 对照：合法判据不许被这条校验挡掉，否则上面的断言就成了「什么都拒」
+        configuration.crashLoopLimit = 3;
+        const std::string acceptedRejectionText = rejectionTextOf(configuration);
+        EXPECT_EQ(acceptedRejectionText.find("崩溃判据"), std::string::npos) << acceptedRejectionText;
+    }
+
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief Windows 上多进程被明确拒绝：没有 SO_REUSEPORT，多个进程绑不上同一个端口
