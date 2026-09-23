@@ -2,12 +2,14 @@
 // 连接落到哪个循环就由哪个循环的服务器应答——响应正文自报家门，因此「分没分过去」 是从客户端看得见的事实，而不是内部计数的自说自话。
 #include "Net/Http/HttpServer.h"
 
+#include "Base/Exception/Exception.h"
 #include "Core/EventLoop/ConnectionDistributor.h"
 
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -255,30 +257,40 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 没有登记工作循环时 startAccepting() 直接拒绝，而不是跑起来一条条丢连接
+     * @details 「跑一次启动、看它有没有起来」整段都放在循环线程上做：协程帧与服务器字段都归那条
+     *          循环，测试线程轮询 isReady() 就是与那次 resume 抢同一块帧（TSan 实测报在
+     *          TcpServer::startAccepting 的 co_await 上），close() 同理只能在循环上收。
      */
     TEST(HttpAcceptDispatch, RefusesToStartWithoutWorkers)
     {
-        WorkerLoop   loop;
-        HttpServer   acceptor(loop.loop(), Core::InetAddress::localhost(0));
-        auto         emptyDistributor = std::make_shared<Core::ConnectionDistributor>();
+        WorkerLoop loop;
+        HttpServer acceptor(loop.loop(), Core::InetAddress::localhost(0));
+        auto       emptyDistributor = std::make_shared<Core::ConnectionDistributor>();
 
-        // 启动协程在所属循环上执行，异常也从那里冒出来：这里用 isRunning 观察「没能起来」
-        Core::Task<> acceptTask = acceptor.startAccepting(emptyDistributor);
-        loop.loop().scheduler().postRemote(
-                [&loop, &acceptTask]()
+        std::atomic<bool> didThrowConfigError{false};
+        std::atomic<bool> didEnterAcceptLoop{false};
+        loop.runOnLoopAndWait(
+                [&acceptor, &emptyDistributor, &didThrowConfigError, &didEnterAcceptLoop]
                 {
-                    loop.loop().scheduler().schedule(acceptTask.handle());
+                    Core::Task<> acceptTask = acceptor.startAccepting(emptyDistributor);
+                    acceptTask.handle().resume();
+
+                    // 配置错误存在 promise 里：把结果取一次它才会浮出来，否则随帧销毁被静默吞掉，
+                    // 用例就退化成「只判有没有进入接受循环」
+                    try
+                    {
+                        acceptTask.handle().promise().result();
+                    } catch (const Base::Exception &)
+                    {
+                        didThrowConfigError.store(true, std::memory_order_release);
+                    }
+                    didEnterAcceptLoop.store(acceptor.isRunning(), std::memory_order_release);
+                    acceptor.close();
                 });
 
-        const auto deadline = std::chrono::steady_clock::now() + kRequestTimeout;
-        while (!acceptTask.isReady() && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        EXPECT_TRUE(acceptTask.isReady()) << "没有工作循环时启动协程既没完成也没报错";
-        EXPECT_FALSE(acceptor.isRunning()) << "没有工作循环却进入了接受循环";
+        EXPECT_TRUE(didThrowConfigError.load(std::memory_order_acquire)) << "没有工作循环时启动协程既没完成也没报错";
+        EXPECT_FALSE(didEnterAcceptLoop.load(std::memory_order_acquire)) << "没有工作循环却进入了接受循环";
 
-        acceptor.close();
         loop.stopAndJoin();
     }
 } // namespace AsynGyanis::Net
