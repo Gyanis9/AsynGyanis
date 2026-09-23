@@ -8,6 +8,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicKeySchedule.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicHeaderProtection.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicHeaderProtection.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicCipherContext.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicCipherContext.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketProtection.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketProtection.cpp
 )

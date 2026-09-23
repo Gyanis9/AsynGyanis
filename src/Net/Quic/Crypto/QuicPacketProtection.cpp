@@ -3,6 +3,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
+#include "Net/Quic/Crypto/QuicCipherContext.h"
 #include "Net/Quic/QuicOpenSslError.h"
 
 #include <openssl/evp.h>
@@ -89,10 +90,10 @@ namespace AsynGyanis::Net
                                                                  destination.size(), input.size()));
             }
 
-            EVP_CIPHER_CTX *const context = EVP_CIPHER_CTX_new();
+            EVP_CIPHER_CTX *const context = acquireQuicCipherContext();
             if (context == nullptr)
             {
-                throw Base::Exception("QUIC 包保护失败：无法创建 AEAD 上下文（" + quicOpenSslErrorText() + "）");
+                throw Base::Exception("QUIC 包保护失败：拿不到可复用的 AEAD 上下文（" + quicOpenSslErrorText() + "）");
             }
 
             // 三种套件的 IV 都取密码的默认长度，因此不必发 SET_IVLEN；哪天支持到非 12 字节 IV 的
@@ -144,20 +145,19 @@ namespace AsynGyanis::Net
             }
             else if (!isEncryption && EVP_CipherFinal_ex(context, trailer.data(), &writtenLength) != 1)
             {
-                // 交完标签再 Final 才会做校验：返回 0 就是标签不合，属正常失败而不是环境故障
-                EVP_CIPHER_CTX_free(context);
+                // 交完标签再 Final 才会做校验：返回 0 就是标签不合，属正常失败而不是环境故障。
+                // 上下文留给下一次取用时重置，不在这里归还
                 return false;
             }
 
             if (failedStage != nullptr)
             {
+                // 先把错误队列取空再拼文案：std::format 的实参求值顺序不定，晚一步就报不出真凶
                 const std::string detail = quicOpenSslErrorText();
-                EVP_CIPHER_CTX_free(context);
                 throw Base::Exception(std::format("QUIC 包保护失败：{}这一步被拒（套件 {}，密钥 {} 字节，IV {} 字节，{}）：OpenSSL 报 {}",
                                                   failedStage, quicCipherSuiteName(keys.cipherSuite), encryptionKey.size(),
                                                   initializationVector.size(), isEncryption ? "加密" : "解密", detail));
             }
-            EVP_CIPHER_CTX_free(context);
             return true;
         }
     } // namespace

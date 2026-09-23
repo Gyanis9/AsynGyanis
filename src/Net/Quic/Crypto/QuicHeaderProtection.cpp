@@ -2,6 +2,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Net/Quic/Crypto/QuicCipherContext.h"
 
 #include <openssl/evp.h>
 
@@ -27,10 +28,10 @@ namespace AsynGyanis::Net
             // 密钥长度就是档位：16 字节 AES-128、32 字节 AES-256，其余取值不可能是本层的密钥
             const EVP_CIPHER *const cipher = key.size() == 16 ? EVP_aes_128_ecb() : EVP_aes_256_ecb();
 
-            EVP_CIPHER_CTX *const context = EVP_CIPHER_CTX_new();
+            EVP_CIPHER_CTX *const context = acquireQuicCipherContext();
             if (context == nullptr)
             {
-                throw Base::Exception("QUIC 头部保护失败：无法创建 AES-ECB 上下文（OpenSSL 未正确初始化或内存不足）");
+                throw Base::Exception("QUIC 头部保护失败：拿不到可复用的 AES-ECB 上下文（OpenSSL 未正确初始化或内存不足）");
             }
             std::array<std::uint8_t, kQuicHeaderProtectionSampleByteLength> output{};
             int outputLength = 0;
@@ -40,8 +41,7 @@ namespace AsynGyanis::Net
                                      EVP_CipherUpdate(context, output.data(), &outputLength, sample.data(),
                                                       static_cast<int>(sample.size())) == 1 &&
                                      static_cast<std::size_t>(outputLength) == output.size();
-            // 上下文无论成败都要释放：这条路径每包都走，漏一次就是一句一个的泄漏
-            EVP_CIPHER_CTX_free(context);
+            // 上下文不在这里归还：这条路径每包都走，下一次取用会先把它重置
             if (!isSucceeded)
             {
                 throw Base::Exception("QUIC 头部保护失败：AES-ECB 未能算出完整的一个密文块（OpenSSL 拒绝了密钥长度或样本长度）");
@@ -62,10 +62,10 @@ namespace AsynGyanis::Net
         std::array<std::uint8_t, kQuicHeaderProtectionMaskByteLength> encryptZerosWithChaCha20(const std::span<const std::uint8_t> key,
                                                                                               const std::span<const std::uint8_t> sample)
         {
-            EVP_CIPHER_CTX *const context = EVP_CIPHER_CTX_new();
+            EVP_CIPHER_CTX *const context = acquireQuicCipherContext();
             if (context == nullptr)
             {
-                throw Base::Exception("QUIC 头部保护失败：无法创建 ChaCha20 上下文（OpenSSL 未正确初始化或内存不足）");
+                throw Base::Exception("QUIC 头部保护失败：拿不到可复用的 ChaCha20 上下文（OpenSSL 未正确初始化或内存不足）");
             }
             std::array<std::uint8_t, kQuicHeaderProtectionMaskByteLength> mask{};
             const std::array<std::uint8_t, kQuicHeaderProtectionMaskByteLength> zeros{};
@@ -75,7 +75,6 @@ namespace AsynGyanis::Net
                                      EVP_CipherUpdate(context, mask.data(), &outputLength, zeros.data(),
                                                       static_cast<int>(zeros.size())) == 1 &&
                                      static_cast<std::size_t>(outputLength) == mask.size();
-            EVP_CIPHER_CTX_free(context);
             if (!isSucceeded)
             {
                 throw Base::Exception("QUIC 头部保护失败：ChaCha20 未能算出 5 字节掩码（OpenSSL 拒绝了 32 字节密钥或 16 字节 IV）");
