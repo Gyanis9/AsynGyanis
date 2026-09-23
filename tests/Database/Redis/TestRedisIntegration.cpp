@@ -14,14 +14,19 @@
 // - ResetSessionStateDiscardsLeftoverTransaction（残留 MULTI 会让下一个借用者的写全被排队）
 // - CompletedTransactionLeavesNothingForSessionReset（EXEC 之后复位不再发命令）
 // - ResetSessionStateUnwatchesLeftoverWatch（残留 WATCH 会让下一个借用者的 EXEC 中止）
+// - PooledReturnClearsSessionForNextBorrower（经连接池借还这一形状下，管道与 MULTI 都不串给下一个）
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
 // 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
 #include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Pool/ConnectionPool.h"
+#include "Database/Pool/PoolConfig.h"
+#include "Database/Pool/PooledConnection.h"
 #include "Database/Redis/RedisConnection.h"
 
 #include "DatabaseTestSupport.h"
@@ -630,6 +635,67 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(*readBack), "committed-by-me");
 
         otherBorrower.disconnect();
+    }
+
+    /**
+     * @brief 钉住「经连接池借还」这一使用形状下，残留会话不会串给下一个借用者
+     *
+     * @details 上面几条直接调 resetSessionState()，钉住的是驱动那一层；真正会出事的形状是借用者把
+     *          「登记了却没 flush 的管道」与「没 DISCARD 的 MULTI」原样还进池。池上限设 1，
+     *          保证第二个借用者拿到的就是同一条连接——换一条新连接的话这条用例什么也没钉住。
+     */
+    TEST_F(RedisIntegrationTest, PooledReturnClearsSessionForNextBorrower)
+    {
+        const std::string staleKey = makeKey("pooled-stale");
+        const std::string freshKey = makeKey("pooled-fresh");
+
+        PoolConfig poolConfiguration;
+        poolConfiguration.maximumPoolSize            = 1;
+        poolConfiguration.acquireTimeoutMilliseconds = 5000;
+        const ConnectionConfig configuration         = m_configuration;
+        ConnectionPool pool(
+            [configuration]() -> std::unique_ptr<DatabaseConnection>
+            {
+                auto connection = std::make_unique<RedisConnection>(configuration);
+                // 池的工厂契约要求交出「已经 connect() 完成」的连接
+                static_cast<void>(connection->connect());
+                return connection;
+            },
+            poolConfiguration);
+
+        // 命令数组与管道接口在 RedisConnection 上而不是基类，取值前先按类型取回具体驱动
+        const RedisConnection *firstBorrowedConnection = nullptr;
+        {
+            const PooledConnection borrowed = pool.acquire();
+            ASSERT_TRUE(borrowed) << "池里没能建起 Redis 连接";
+            auto *redisConnection = dynamic_cast<RedisConnection *>(borrowed.operator->());
+            ASSERT_TRUE(redisConnection != nullptr) << "池交出的不是 RedisConnection";
+            firstBorrowedConnection = redisConnection;
+
+            ASSERT_TRUE(redisConnection->pipelineCommand("SET " + staleKey + " must-not-be-sent"));
+            ASSERT_NE(redisConnection->executeCommand({"MULTI"}), nullptr) << redisConnection->lastError();
+            // 带着未 flush 的管道与未了结的事务离开作用域：归还路径要把两样都了结
+        }
+
+        const PooledConnection nextBorrowed = pool.acquire();
+        ASSERT_TRUE(nextBorrowed) << "上一个借用者的连接没有回到池里";
+        auto *nextConnection = dynamic_cast<RedisConnection *>(nextBorrowed.operator->());
+        ASSERT_TRUE(nextConnection != nullptr) << "池交出的不是 RedisConnection";
+        ASSERT_EQ(nextConnection, firstBorrowedConnection) << "池没有复用同一条连接，判据无从落地";
+
+        // 未 flush 的管道只停在本地暂存表：复位丢表之后这次 GET 只能读到 nil
+        const std::unique_ptr<DatabaseResult> staleRead = nextConnection->executeCommand({"GET", staleKey});
+        ASSERT_NE(staleRead, nullptr) << nextConnection->lastError();
+        EXPECT_TRUE(staleRead->isEmpty()) << "上一个借用者的 SET 串到了这条连接上";
+
+        // MULTI 停在服务端一侧，本地清缓冲清不掉：没 DISCARD 时这条写只会收到 +QUEUED 而不落库
+        const std::unique_ptr<DatabaseResult> freshWrite = nextConnection->executeCommand({"SET", freshKey, "fresh"});
+        ASSERT_NE(freshWrite, nullptr) << nextConnection->lastError();
+        EXPECT_EQ(std::get<std::string>(freshWrite->getValue(0)), "OK");
+
+        const std::optional<DatabaseValue> readBack = runScalar({"GET", freshKey});
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_EQ(std::get<std::string>(*readBack), "fresh") << "写命令被排进上一个借用者的事务，数据没落库";
     }
 
     /**
