@@ -37,8 +37,10 @@ namespace AsynGyanis::Platform
 
     bool FileDescriptor::markNonInheritable(const int fileDescriptor) noexcept
     {
+        // 与读写同一条要求：拒掉无效描述符时要把原因留下，否则调用方查到的永远是上一次的错误码
         if (!isValid(fileDescriptor))
         {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return false;
         }
 #if ASYN_PLATFORM_WIN32
@@ -54,8 +56,11 @@ namespace AsynGyanis::Platform
 
     ssize_t FileDescriptor::read(const int fileDescriptor, void *buffer, const std::size_t length) noexcept
     {
+        // 无效描述符也要把错误码置上：本接口的失败语义是「-1，原因见 PlatformError」，不置就等于
+        // 让调用方读到上一次调用留下的残值。与 Socket::writeVectored 同一套判据（无效描述符归参数非法）
         if (!isValid(fileDescriptor))
         {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return -1;
         }
         // 超限当场拒绝而不是静默少读：回绕后的长度交给底层，读回来的字节数与「对端关闭」同为 0，
@@ -75,8 +80,10 @@ namespace AsynGyanis::Platform
 
     ssize_t FileDescriptor::write(const int fileDescriptor, const void *buffer, const std::size_t length) noexcept
     {
+        // 与读侧同一条要求：失败必须留下本次的错误码，而不是上一次的
         if (!isValid(fileDescriptor))
         {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
             return -1;
         }
         // 与读同一条界：这里静默截断更糟——少写了字节却回报成功，是最难排查的那种数据损坏

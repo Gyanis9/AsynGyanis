@@ -39,6 +39,64 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(FileDescriptor::write(FileDescriptor::kInvalid, buffer, sizeof(buffer)), -1);
     }
 
+    /**
+     * @brief 钉住：无效描述符这三条拒掉的入口，要把「为什么拒」留在 PlatformError 里
+     * @details 本接口的失败语义写成「-1，原因见 PlatformError」，而原先只有长度超限那一条置了码：
+     *          描述符无效时直接返回，调用方查到的码属于**上一次别的调用**——报出来的原因是假的。
+     *          判据刻意取「先把码清成 0、再问它」：不这么写的用例在实现不置码时也会蒙对。
+     *          取值与 Socket::writeVectored 对齐（无效描述符与超限长度同归 kInvalidArgument），
+     *          PlatformError 没有 EBADF 一档，两平台要给出同一个数就只能用这一个。
+     */
+    TEST(FileDescriptor, InvalidDescriptorFailuresLeaveTheirOwnReason)
+    {
+        char buffer[8] = {0};
+
+        PlatformError::setLastErrorCode(0);
+        EXPECT_EQ(FileDescriptor::read(FileDescriptor::kInvalid, buffer, sizeof(buffer)), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument)
+                << "只置了 socket 那一侧，按文件类通道读错误码的调用方拿到的还是残值";
+
+        PlatformError::setLastErrorCode(0);
+        EXPECT_EQ(FileDescriptor::write(FileDescriptor::kInvalid, buffer, sizeof(buffer)), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument);
+
+        PlatformError::setLastErrorCode(0);
+        EXPECT_FALSE(FileDescriptor::markNonInheritable(FileDescriptor::kInvalid));
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument);
+    }
+
+    /**
+     * @brief 标记「不随 spawn 传给子进程」要落到查得回的位置上，而不只是返回 true
+     * @details 判据是先把继承位打回去、再调这一次、再查一遍：只看返回值会放过「调用成功但标志写歪」
+     *          那一类实现（比如把 F_SETFD 写成 F_SETFL，fcntl 两趟都返回 0）。createPair 出来的两端
+     *          本来就是不可继承的，不先打回去这条用例在坏实现下也会绿。
+     */
+    TEST(FileDescriptor, MarkNonInheritableActuallyClearsTheInheritFlag)
+    {
+        int readDescriptor  = FileDescriptor::kInvalid;
+        int writeDescriptor = FileDescriptor::kInvalid;
+        ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
+
+#if ASYN_PLATFORM_WIN32
+        const HANDLE handle = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(readDescriptor));
+        ASSERT_NE(::SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT), 0);
+#else
+        const int initialFlags = ::fcntl(readDescriptor, F_GETFD);
+        ASSERT_GE(initialFlags, 0);
+        ASSERT_NE(::fcntl(readDescriptor, F_SETFD, initialFlags & ~FD_CLOEXEC), -1);
+#endif
+        ASSERT_FALSE(TestSupport::isNotInheritable(readDescriptor)) << "继承位没打回去，这条用例就没有被测的那一半";
+
+        EXPECT_TRUE(FileDescriptor::markNonInheritable(readDescriptor));
+        EXPECT_TRUE(TestSupport::isNotInheritable(readDescriptor)) << "返回 true 而继承位没清：子进程仍能拿到这一端";
+
+        FileDescriptor::close(readDescriptor);
+        FileDescriptor::close(writeDescriptor);
+    }
+
     TEST(FileDescriptor, CloseOnInvalidDescriptorIsNoOpSuccess)
     {
         EXPECT_EQ(FileDescriptor::close(FileDescriptor::kInvalid), 0);

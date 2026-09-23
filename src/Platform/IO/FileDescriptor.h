@@ -52,7 +52,8 @@ namespace AsynGyanis::Platform
          *          不必再调它——每次 accept 多两趟 fcntl 是要付的代价，只在没有创建期标志可用来表达时补。
          * @param fileDescriptor 目标描述符
          * @return true 标记成功
-         * @return false 标记失败（描述符无效或平台调用出错），调用方按「仍可能被子进程继承」处置
+         * @return false 标记失败（描述符无效按 kInvalidArgument 报，平台调用出错按平台自己的码报），
+         *               调用方按「仍可能被子进程继承」处置
          */
         static bool markNonInheritable(int fileDescriptor) noexcept;
 
@@ -61,7 +62,8 @@ namespace AsynGyanis::Platform
          * @param fileDescriptor 源描述符
          * @param buffer 接收缓冲区，调用方保证容量
          * @param length 期望读取字节数，超过 int 上限时本次调用直接失败（两平台同一界、同一错误码）
-         * @return ssize_t 实际读取字节数，0 表示对端已关闭，-1 表示失败（原因见 PlatformError）
+         * @return ssize_t 实际读取字节数，0 表示对端已关闭，-1 表示失败（原因见 PlatformError；
+         *                 描述符无效与长度超限都按 kInvalidArgument 报）
          */
         static ssize_t read(int fileDescriptor, void *buffer, std::size_t length) noexcept;
 
