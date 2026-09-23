@@ -709,6 +709,33 @@ namespace AsynGyanis::Platform
     }
 #endif
 
+    /**
+     * @brief 钉住：空路径不会被退化成「监视进程落脚的当前工作目录」
+     * @details 围栏性质的一条：absolute 对空路径这一步就判错，addWatch 因此返回 false，本层不需要
+     *          再加一道解码判据。顺带记两条实测——非法 UTF-8（GBK 的「文档」即 CE C4 BC FE）不会被
+     *          MultiByteToWideChar(CP_UTF8) 报错，它把非法字节替换成 U+FFFD，于是解出一个不存在的名字，
+     *          注册在 CreateFileW 那一步自然失败；POSIX 的原生刻度就是字节，没有「解不开」这条路。
+     */
+    TEST(FileWatcher, AddWatchRejectsAnEmptyPathInsteadOfWatchingTheWorkingDirectory)
+    {
+#if !ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "只有 Windows 侧存在「把这段字节解释成另一个名字」这条路：POSIX 的原生刻度就是字节";
+#else
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_EmptyPath");
+        // 参照形状：同一台监视器接合法 UTF-8 时必须成功，否则「返回 false」测的是监视器坏了
+        ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(temporaryDirectory.path())));
+
+        EXPECT_FALSE(watcher->addWatch("")) << "空路径被当成「相对于当前目录」挂上了，监视对象换成了进程落脚的地方";
+        EXPECT_FALSE(watcher->removeWatch("")) << "既然没挂上，也不该留下能摘掉的东西（那一步会去摘 CWD 那条）";
+        EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(temporaryDirectory.path())))
+                << "上一步的拒绝不该把合法那条监视一起弄坏";
+        watcher->stop();
+#endif
+    }
+
     TEST(FileWatcher, AddWatchOnMissingDirectoryFails)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Missing");
