@@ -232,7 +232,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 指定异步执行器（阻塞任务的工作线程池）
          *
          * @details 只影响异步方法（toListAsync / firstAsync / countAsync / insertAsync /
-         *          insertBatchAsync / updateAsync / executeNonQueryAsync）：
+         *          insertAndGetGeneratedIdAsync / insertBatchAsync / updateAsync / executeNonQueryAsync）：
          *          未调用本方法时这些方法使用进程级共享的 AsyncExecutor::shared()，
          *          需要控制工作线程数或让执行器与连接池成对管理时用本方法注入自己的实例。
          *
@@ -361,6 +361,35 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("insert()");
             return executeStatement(buildInsertStatement(row));
+        }
+
+        /**
+         * @brief 插入一行并取回数据库生成的自增标识
+         *
+         * @details 与 insert() 走同一份语句生成与执行路径，只是把读的是写回执上的自增标识而不是影响
+         *          行数。该值在语句执行完就地快照（见 DatabaseResult::lastInsertRowId()），因此不需要
+         *          再补一条查询去问：连接由池共享，「先插入、再查 last_insert_rowid()」的两次取出可能
+         *          落到两条连接上，读到的是别人的值。
+         *
+         * @param row 待插入的结构体；TableSchema<T>::kIsAutoIncrementPrimaryKey 为真时主键字段被忽略
+         * @return std::int64_t 数据库生成的自增标识；0 表示这条语句没有产生（未声明自增主键、
+         *         表上没有自增列、驱动不提供该信息，或值超出有符号 64 位——最后一种由结果集的
+         *         lastError() 说明，ORM 这一层拿不到那份文本）
+         *
+         * @throws Base::LogicException 当前为离线模式，或声明了自增主键却没有其它可写列
+         * @throws DatabaseException 取连接失败或语句执行失败（如唯一约束冲突）
+         * @note 批量插入不提供这个通道：一次写多行时「哪个标识属于哪一行」两家引擎口径不同
+         *       （MySQL 给首行、SQLite 给末行），交出一个含义不明的值不如让调用方按业务键回查
+         */
+        [[nodiscard]] std::int64_t insertAndGetGeneratedId(const T &row)
+        {
+            requireOnline("insertAndGetGeneratedId()");
+
+            // 语句必须先在锁外生成：方言解析要借一条连接探测数据库类型，握着租约再借一次就是把
+            // 自己排在自己后面——池上限为 1 时（内存库的常见配置）直接等到 acquire 超时
+            const SqlStatement  statement = buildInsertStatement(row);
+            const ConnectionLease lease   = acquireConnection(m_pool, m_transaction);
+            return runOn(*lease.connection, statement)->lastInsertRowId();
         }
 
         /**
@@ -607,6 +636,38 @@ namespace AsynGyanis::Database::Queryable
                     });
 
             co_return affectedRows;
+        }
+
+        /**
+         * @brief 异步插入一行并取回数据库生成的自增标识
+         * @details 与 insertAndGetGeneratedId() 语义完全一致：语句在提交前由方言定型，
+         *          「取连接 → 执行 → 读写回执上的自增标识」整段交给工作线程，快照因此就在那条
+         *          连接上完成，回到事件循环之后再也没有别人能改写它。
+         * @param row 待插入的结构体（声明为自增的主键字段被忽略）
+         * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
+         * @return Core::Task<std::int64_t> 惰性启动的协程；数据库生成的自增标识，未产生时为 0
+         * @throws Base::LogicException 当前为离线模式，或声明了自增主键却没有其它可写列
+         * @throws DatabaseException 取连接失败或语句执行失败
+         * @note row 按值接收的理由见 insertAsync()
+         */
+        [[nodiscard]] Core::Task<std::int64_t> insertAndGetGeneratedIdAsync(T row, Core::EventLoop &completionLoop)
+        {
+            requireOnline("insertAndGetGeneratedIdAsync()");
+
+            // 语句生成要读 row 并访问本对象的查询树，必须在提交前完成；之后按值捕获交给工作线程
+            SqlStatement    statement   = buildInsertStatement(row);
+            ConnectionPool *pool        = m_pool;
+            Transaction *   transaction = m_transaction;
+
+            const std::int64_t generatedId = co_await asyncExecutor().template submit<std::int64_t>(
+                    completionLoop,
+                    [statement = std::move(statement), pool, transaction]() -> std::int64_t
+                    {
+                        ConnectionLease lease = acquireConnection(pool, transaction);
+                        return runOn(*lease.connection, statement)->lastInsertRowId();
+                    });
+
+            co_return generatedId;
         }
 
         /**
@@ -1013,16 +1074,30 @@ namespace AsynGyanis::Database::Queryable
          */
         [[nodiscard]] static std::int64_t executeOn(DatabaseConnection &connection, const SqlStatement &statement)
         {
-            const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{statement.sql}, statement.parameters);
+            // 影响行数由结果集自己回答：DatabaseResult::affectedRowCount() 带默认实现
+            // （不提供该信息的驱动返回 0），SQLite 覆盖它返回真实的 sqlite3_changes 快照。
+            // ORM 侧因此不需要按 DatabaseType 向下转型，也不依赖任何具体驱动
+            return runOn(connection, statement)->affectedRowCount();
+        }
+
+        /**
+         * @brief 在指定连接上执行一条写语句并把结果集交给调用方
+         * @details 与 executeOn() 共用同一份「执行 + 判失败 + 抛异常」，区别只是把结果集原样交出
+         *          而不是当场折算成影响行数：自增标识这类同样挂在写回执上的语句级信息要走这条路，
+         *          ORM 侧仍然不向下转型到具体驱动。
+         * @param connection 目标连接，生命周期由调用方保证
+         * @param statement 待执行的参数化语句
+         * @return std::unique_ptr<DatabaseResult> 结果集；写语句是 0 行 0 列的写回执
+         * @throws QueryExecutionException 语句执行失败，原因见连接的错误文本
+         */
+        [[nodiscard]] static std::unique_ptr<DatabaseResult> runOn(DatabaseConnection &connection, const SqlStatement &statement)
+        {
+            std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
                 throw QueryExecutionException("Queryable: 语句执行失败：" + connection.lastError());
             }
-
-            // 影响行数由结果集自己回答：DatabaseResult::affectedRowCount() 带默认实现
-            // （不提供该信息的驱动返回 0），SQLite 覆盖它返回真实的 sqlite3_changes 快照。
-            // ORM 侧因此不需要按 DatabaseType 向下转型，也不依赖任何具体驱动
-            return result->affectedRowCount();
+            return result;
         }
 
         /**
@@ -1031,15 +1106,15 @@ namespace AsynGyanis::Database::Queryable
          *          selectColumns，取值转成 DatabaseValue 后按同序排列，SQL 文本、标识符引用、
          *          占位符写法全部由方言的 translateInsert() 决定，本类不拼任何 SQL 片段。
          * @param row 待插入的结构体
-         * @return SqlStatement "INSERT INTO 表 (列…) VALUES (?, …)"
+         * @return SqlStatement "INSERT INTO 表 (列…) VALUES (?, …)"；声明为自增的主键不出现在列清单里
          */
         [[nodiscard]] SqlStatement buildInsertStatement(const T &row)
         {
             QueryNode insertNode     = makeWriteQueryNode();
-            insertNode.selectColumns = allColumnNames();
+            insertNode.selectColumns = insertColumnNames();
 
             // 取值向量是临时对象，但它活到整条表达式结束，方言在本次调用内完成读取，不存在悬垂
-            return requireDialect().translateInsert(insertNode, rowValuesOf(row));
+            return requireDialect().translateInsert(insertNode, insertValuesOf(row));
         }
 
         /**
@@ -1122,21 +1197,65 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 把一行的全部字段转成绑定参数，顺序与 kColumns 一致
-         * @param row 待转换的结构体
-         * @return std::vector<DatabaseValue> 与列名一一对应的取值列表
+         * @brief 取 INSERT 要写的列名：全部列减去「由数据库生成的自增主键」
+         * @details 自增主键不能出现在列清单里：显式给值会占掉号段（MySQL 甚至直接把它当业务值存下），
+         *          与「让引擎生成」这个声明自相矛盾。SELECT 侧不受影响——读回来时那一列是有值的，
+         *          仍须出现在结果映射的列清单里，因此这里只服务写入路径。
+         * @return std::vector<std::string> 与 kColumns 同序的待写列名
+         * @throws Base::LogicException 声明了自增主键却没有任何其它列可写（此时 INSERT 无列可生成）
          */
-        [[nodiscard]] static std::vector<DatabaseValue> rowValuesOf(const T &row)
+        [[nodiscard]] static std::vector<std::string> insertColumnNames()
         {
-            std::vector<DatabaseValue> rowValues;
+            const std::string_view autoIncrementName = Detail::declaresAutoIncrementPrimaryKey<T>()
+                                                           ? TableSchema<T>::kPrimaryKey
+                                                           : std::string_view{};
 
-            std::apply(
-                    [&rowValues, &row](const auto &... columnDescriptors)
-                    {
-                        // 成员值 → 绑定参数：optional 空值绑定为 SQL NULL，无符号超范围降级为十进制文本
-                        (rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptors.memberPointer))), ...);
-                    },
-                    TableSchema<T>::kColumns);
+            std::vector<std::string> columnNames;
+            const auto               appendIfWritten = [&columnNames, autoIncrementName](const auto &columnDescriptor)
+            {
+                if (columnDescriptor.columnName != autoIncrementName)
+                {
+                    columnNames.emplace_back(columnDescriptor.columnName);
+                }
+            };
+
+            std::apply([&appendIfWritten](const auto &... columnDescriptors) { (appendIfWritten(columnDescriptors), ...); },
+                       TableSchema<T>::kColumns);
+
+            if (columnNames.empty())
+            {
+                // 只剩自增主键：一条 VALUES 都没有的 INSERT 不是「写法不同」而是根本没有可写内容，
+                // 交给方言只会生成语法错误的语句，这里按编程错误当场拒绝
+                throw Base::LogicException("Queryable: 表 " + std::string(TableSchema<T>::kTableName) +
+                                           " 声明了自增主键且没有其它列，无法生成 INSERT");
+            }
+
+            return columnNames;
+        }
+
+        /**
+         * @brief 把一行里要写入的字段转成绑定参数，顺序与 insertColumnNames() 一致
+         * @details 与列名走的是同一个判定（同一个自增列被跳过），两个列表因此按构造对齐。
+         * @param row 待转换的结构体
+         * @return std::vector<DatabaseValue> 与待写列一一对应的取值列表
+         */
+        [[nodiscard]] static std::vector<DatabaseValue> insertValuesOf(const T &row)
+        {
+            const std::string_view autoIncrementName = Detail::declaresAutoIncrementPrimaryKey<T>()
+                                                           ? TableSchema<T>::kPrimaryKey
+                                                           : std::string_view{};
+
+            std::vector<DatabaseValue> rowValues;
+            const auto                   appendIfWritten = [&rowValues, &row, autoIncrementName](const auto &columnDescriptor)
+            {
+                if (columnDescriptor.columnName != autoIncrementName)
+                {
+                    rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer)));
+                }
+            };
+
+            std::apply([&appendIfWritten](const auto &... columnDescriptors) { (appendIfWritten(columnDescriptors), ...); },
+                       TableSchema<T>::kColumns);
 
             return rowValues;
         }
@@ -1158,9 +1277,10 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool, const Transaction *transaction, const SqlDialect &dialect, const std::span<const T> rows)
         {
             QueryNode batchNode     = makeWriteQueryNode();
-            batchNode.selectColumns = allColumnNames();
+            batchNode.selectColumns = insertColumnNames();
 
-            // 列数不可能为 0（TableSchema 的列已在编译期校验过），因此除法不会除零
+            // 每行的参数个数就是待写列数（自增主键不进 INSERT，因此这里必须用写入侧的列数）；
+            // insertColumnNames() 已经保证它非空，除法不会除零
             const std::size_t columnCount      = batchNode.selectColumns.size();
             const std::size_t parameterLimit   = dialect.maximumStatementParameters();
             const std::size_t rowsPerStatement = std::max<std::size_t>(1, parameterLimit / columnCount);
@@ -1172,7 +1292,7 @@ namespace AsynGyanis::Database::Queryable
                 batchRows.reserve(rows.size());
                 for (const T &row: rows)
                 {
-                    batchRows.push_back(rowValuesOf(row));
+                    batchRows.push_back(insertValuesOf(row));
                 }
 
                 ConnectionLease lease = acquireConnection(pool, transaction);
@@ -1227,7 +1347,7 @@ namespace AsynGyanis::Database::Queryable
                 chunkRows.reserve(lastRow - firstRow);
                 for (std::size_t rowIndex = firstRow; rowIndex < lastRow; ++rowIndex)
                 {
-                    chunkRows.push_back(rowValuesOf(rows[rowIndex]));
+                    chunkRows.push_back(insertValuesOf(rows[rowIndex]));
                 }
 
                 // 参数顺序为「行优先、行内按列序」，与方言生成的占位符顺序一一对应

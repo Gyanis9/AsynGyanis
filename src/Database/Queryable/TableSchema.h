@@ -32,6 +32,41 @@ namespace AsynGyanis::Database::Queryable
         static constexpr auto kColumns = std::tuple{}; ///< 列信息元组，使用 Column() 函数列出的 ColumnDescriptor 元组
 
         static constexpr std::string_view kPrimaryKey = "id"; ///< 主键列名，默认值为 "id"
+
+        /**
+         * @brief 主键是否由数据库自增生成，默认 false
+         * @details 置为 true 时三处一起变：INSERT 的列清单里不出现主键（值交给引擎生成，
+         *          写进去反而会占号段或与已用值冲突）；SchemaMigrator 建表时给主键加上本引擎的
+         *          自增约束；生成的标识由 Queryable::insertAndGetGeneratedId() 从写回执上取回。
+         *          只作用于主键——两个引擎都要求自增列是键，因此不提供「非主键的自增列」这种写法。
+         */
+        static constexpr bool kIsAutoIncrementPrimaryKey = false;
     };
+
+    namespace Detail
+    {
+        /**
+         * @brief 读取 TableSchema<T> 的自增主键声明，未声明时按 false 处理
+         *
+         * @details 必须用 requires 探测而不是直接写 TableSchema<T>::kIsAutoIncrementPrimaryKey：
+         *          用户的特化是**完全特化**，不继承主模板的默认成员，直接取会让所有既有声明在这个
+         *          字段加入后一起编译失败。探测使它成为纯粹的增量声明，老代码一行不改仍然成立。
+         *
+         * @tparam T 已特化 TableSchema 的聚合类型
+         * @return bool 主键是否由数据库自增生成
+         */
+        template<typename T>
+        [[nodiscard]] consteval bool declaresAutoIncrementPrimaryKey()
+        {
+            if constexpr (requires { TableSchema<T>::kIsAutoIncrementPrimaryKey; })
+            {
+                return TableSchema<T>::kIsAutoIncrementPrimaryKey;
+            }
+            else
+            {
+                return false;
+            }
+        }
+    } // namespace Detail
 
 } // namespace AsynGyanis::Database::Queryable

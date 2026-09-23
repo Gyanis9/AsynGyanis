@@ -71,6 +71,20 @@ namespace AsynGyanis::Database
         }
     }
 
+    std::string SqliteDialect::autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName,
+                                                                const ColumnType type) const
+    {
+        // 只有整数主键能当自增列：其它类型 SQLite 会直接拒建，这里给空串让迁移工具在建表前就报明
+        if (type != ColumnType::Int64 && type != ColumnType::UInt64)
+        {
+            return {};
+        }
+
+        // 类型名刻意取 INTEGER 而不是按成员映射：SQLite 只把「类型正好写成 INTEGER 的单列主键」
+        // 当作 rowid 别名，写成 INT 或 BIGINT 都只会得到一个普通整数主键，AUTOINCREMENT 也就无从谈起
+        return std::string(quotedColumnName) + " " + std::string(columnTypeName(ColumnType::Int64)) + " PRIMARY KEY AUTOINCREMENT";
+    }
+
     SqlStatement SqliteDialect::tableExistsStatement(const std::string_view tableName) const
     {
         SqlStatement statement;

@@ -3,6 +3,8 @@
 // - 端到端：建表 → ORM 读写 → tableExists → dropTable 全链路；重复建表幂等，不带 IF NOT EXISTS 时对已存在表如实失败
 // - 二进制列专项：用 typeof() 断言存储类确实是 blob（声明成 BLOB 却按文本绑定会存成 text，只看 DDL 发现不了）、
 //   零长载荷与 NULL 可区分、按二进制列做参数化条件查询；成功返回的调用清空出参（表不存在 vs 查询失败的判据）
+// - 自增主键专项：两副方言各按本引擎的语法给出列定义（关键字位置不同）、文本主键声明自增时在建表前就被拒绝、
+//   SQLite 上「方言生成的 DDL → 省略主键的 INSERT → 读回生成的标识」整条链路成立
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
@@ -153,6 +155,51 @@ struct AsynGyanis::Database::Queryable::TableSchema<MissingTableNameRow>
         Column(&MissingTableNameRow::id, "id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
+};
+
+namespace
+{
+    /**
+     * @brief 自增主键行：id 由数据库生成，因此主键要声明成自增
+     */
+    struct AutoIncrementTicketRow
+    {
+        std::int64_t id    = 0;  ///< 由数据库生成的自增主键
+        std::string  title = ""; ///< 标题列
+    };
+
+    /**
+     * @brief 文本主键却声明自增的行：覆盖「这套引擎给不出自增写法」那条拒绝路径
+     */
+    struct TextKeyAutoIncrementRow
+    {
+        std::string code = ""; ///< 文本主键，两个引擎都不能把它建成自增列
+        std::string note = ""; ///< 备注列
+    };
+} // namespace
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AutoIncrementTicketRow>
+{
+    static constexpr std::string_view kTableName = "generated tickets";
+    static constexpr auto kColumns = std::tuple{
+        Column(&AutoIncrementTicketRow::id,    "id"),
+        Column(&AutoIncrementTicketRow::title, "title"),
+    };
+    static constexpr std::string_view kPrimaryKey               = "id";
+    static constexpr bool             kIsAutoIncrementPrimaryKey = true;
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<TextKeyAutoIncrementRow>
+{
+    static constexpr std::string_view kTableName = "text keyed";
+    static constexpr auto kColumns = std::tuple{
+        Column(&TextKeyAutoIncrementRow::code, "code"),
+        Column(&TextKeyAutoIncrementRow::note, "note"),
+    };
+    static constexpr std::string_view kPrimaryKey               = "code";
+    static constexpr bool             kIsAutoIncrementPrimaryKey = true;
 };
 
 // ========================================================================
@@ -486,4 +533,76 @@ TEST_F(SchemaMigratorSqliteTest, SuccessfulCallClearsStaleErrorFromPreviousFailu
     // 于是「表确实不存在」这一路径上，出参为空才真正代表「查询成功但没有这张表」
     EXPECT_FALSE(SchemaMigrator::tableExists<MigratedUserRow>(*m_pool, &errorText));
     EXPECT_TRUE(errorText.empty()) << errorText;
+}
+
+/**
+ * @brief 验证自增主键在两副方言上各按本引擎的语法生成（关键字位置完全不同）
+ * @details 只断言主键那一列的片段：其余列的定义由既有用例覆盖，整串精确相等会让本用例
+ *          随任何无关排版改动而红。
+ */
+TEST(SchemaMigratorOffline, AutoIncrementPrimaryKeyUsesTheEngineOwnSyntax)
+{
+    const SqliteDialect sqlite;
+    const std::string   sqliteDdl = SchemaMigrator::createTableStatement<AutoIncrementTicketRow>(sqlite).sql;
+    // SQLite：类型必须正好写成 INTEGER，且 AUTOINCREMENT 只能跟在 PRIMARY KEY 之后
+    EXPECT_NE(sqliteDdl.find("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT"), std::string::npos) << sqliteDdl;
+    // 反过来钉住「没有把 NOT NULL 也加上」：INTEGER PRIMARY KEY 本身就是 rowid 别名
+    EXPECT_EQ(sqliteDdl.find("\"id\" INTEGER NOT NULL"), std::string::npos) << sqliteDdl;
+
+    const MySqlDialect mySql;
+    const std::string  mySqlDdl = SchemaMigrator::createTableStatement<AutoIncrementTicketRow>(mySql).sql;
+    // MySQL：AUTO_INCREMENT 在 PRIMARY KEY 之前，且该列同时要求 NOT NULL
+    EXPECT_NE(mySqlDdl.find("`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY"), std::string::npos) << mySqlDdl;
+}
+
+/**
+ * @brief 验证文本主键声明为自增时在建表语句生成阶段就被拒绝，而不是交给引擎报错
+ * @details 两个引擎都不能把文本列建成自增列。方言给不出这段文本时若继续拼语句，失败会落在
+ *          引擎的错误码上，排查的人看不出问题出在结构体声明里。
+ */
+TEST(SchemaMigratorOffline, NonIntegerAutoIncrementPrimaryKeyIsRejectedBeforeDdl)
+{
+    const SqliteDialect sqlite;
+
+    std::string reasonText;
+    try
+    {
+        static_cast<void>(SchemaMigrator::createTableStatement<TextKeyAutoIncrementRow>(sqlite));
+    }
+    catch (const std::logic_error &caught)
+    {
+        reasonText = caught.what();
+    }
+
+    EXPECT_FALSE(reasonText.empty()) << "文本主键声明为自增时应当拒绝生成建表语句";
+    EXPECT_NE(reasonText.find("自增"), std::string::npos) << reasonText;
+    EXPECT_NE(reasonText.find("code"), std::string::npos) << reasonText;
+}
+
+/**
+ * @brief 验证自增主键端到端可用：建表带自增约束、INSERT 不写主键、生成的标识读得回来
+ */
+TEST_F(SchemaMigratorSqliteTest, AutoIncrementPrimaryKeyIsGeneratedAndReadBack)
+{
+    std::string errorText;
+    ASSERT_TRUE((SchemaMigrator::createTable<AutoIncrementTicketRow>(*m_pool, true, &errorText))) << errorText;
+
+    Queryable<AutoIncrementTicketRow> query(*m_pool);
+    const std::int64_t firstId = query.insertAndGetGeneratedId(AutoIncrementTicketRow{0, "第一张"});
+    const std::int64_t secondId = query.insertAndGetGeneratedId(AutoIncrementTicketRow{7, "第二张"});
+
+    // 主键字段被忽略：第二条虽然填了 7，生成的仍是紧接着的下一个标识
+    EXPECT_EQ(firstId, 1);
+    EXPECT_EQ(secondId, 2) << "INSERT 仍把主键写进了列清单：声明的自增主键没有真的被省略";
+
+    // 普通 insert() 同样不写主键，且仍回报受影响行数
+    EXPECT_EQ(query.insert(AutoIncrementTicketRow{0, "第三张"}), 1);
+
+    const std::vector<AutoIncrementTicketRow> rows = query.orderBy(asc("id")).toList();
+    ASSERT_EQ(rows.size(), 3U);
+    // 读回来时主键必须在列清单里：省略只发生在写入侧，否则整表读出的 id 全是 0
+    EXPECT_EQ(rows[0].id, 1);
+    EXPECT_EQ(rows[1].id, 2);
+    EXPECT_EQ(rows[2].id, 3);
+    EXPECT_EQ(rows[2].title, "第三张");
 }

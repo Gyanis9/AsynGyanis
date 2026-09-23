@@ -174,6 +174,28 @@ namespace AsynGyanis::Database
         }
 
         /**
+         * @brief 生成「自增主键」那一列的完整定义文本
+         *
+         * @details 各引擎的写法连位置都不一样：MySQL 是 `col` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY，
+         *          SQLite 是 "col" INTEGER PRIMARY KEY AUTOINCREMENT 且类型必须正好是 INTEGER，
+         *          因此整串由方言给出而不是由迁移工具拼。返回空串表示本方言没有这种写法，
+         *          调用方（SchemaMigrator）据此在建表前就拒绝——悄悄建出一张主键不会自增的表，
+         *          省略主键的 INSERT 之后会以引擎错误失败，排查成本比这里报明「不支持」高得多。
+         *
+         * @param quotedColumnName 已按本方言引用好的列名
+         * @param type 主键成员的逻辑列类型；只有整数类型能当自增列，其余取值本钩子给空串
+         * @return std::string 该列的完整定义（含约束），给不出这种写法时为空串
+         */
+        [[nodiscard]] virtual std::string autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName,
+                                                                            const ColumnType type) const
+        {
+            // 默认实现刻意不使用两个参数：标准 SQL 没有自增列关键字，这里没有可给的文本
+            static_cast<void>(quotedColumnName);
+            static_cast<void>(type);
+            return {};
+        }
+
+        /**
          * @brief 生成「查询某张表是否存在」的元数据语句
          *
          * @details 各引擎的表清单来源完全不同：SQLite 查 sqlite_master，MySQL 查

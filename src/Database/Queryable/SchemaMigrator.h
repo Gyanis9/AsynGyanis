@@ -113,7 +113,8 @@ namespace AsynGyanis::Database::Queryable
                     {
                         // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
                         (appendColumnDefinition(columnDefinitions, primaryKeyDeclared, dialect,
-                                                columnDescriptors, TableSchema<T>::kPrimaryKey), ...);
+                                                columnDescriptors, TableSchema<T>::kPrimaryKey,
+                                                Detail::declaresAutoIncrementPrimaryKey<T>(), tableName), ...);
                     },
                     TableSchema<T>::kColumns);
 
@@ -354,13 +355,17 @@ namespace AsynGyanis::Database::Queryable
          * @param dialect 提供类型名映射与标识符引用的方言
          * @param columnDescriptor 列的元信息（列名 + 成员指针）
          * @param primaryKeyName TableSchema<T>::kPrimaryKey
+         * @param isAutoIncrementPrimaryKey 主键是否声明为数据库自增生成
+         * @param tableName 表名，只用于拒绝自增写法时把原因指到具体的表
          */
         template<typename ColumnDescriptorType>
         static void appendColumnDefinition(std::string &               columnDefinitions,
                                            bool &                      primaryKeyDeclared,
                                            const SqlDialect &          dialect,
                                            const ColumnDescriptorType &columnDescriptor,
-                                           const std::string_view      primaryKeyName)
+                                           const std::string_view      primaryKeyName,
+                                           const bool                  isAutoIncrementPrimaryKey,
+                                           const std::string_view      tableName)
         {
             using MemberType = typename ColumnDescriptorType::MemberType;
             using BareType   = std::remove_cv_t<MemberType>;
@@ -377,6 +382,25 @@ namespace AsynGyanis::Database::Queryable
             }
 
             const bool isKeyColumn = columnDescriptor.columnName == primaryKeyName;
+
+            if (isKeyColumn && isAutoIncrementPrimaryKey)
+            {
+                // 自增写法的位置与关键字两个引擎都不同，整串交给方言；给不出文本就是这套引擎
+                // 不支持把该列建成自增列——在建表前失败，而不是建出一张主键不会自增的表让
+                // 省略主键的 INSERT 之后以引擎错误收场
+                const std::string autoIncrementDefinition = dialect.autoIncrementPrimaryKeyDefinition(
+                        dialect.quoteIdentifier(columnDescriptor.columnName), columnTypeOf<ValueType>());
+                if (autoIncrementDefinition.empty())
+                {
+                    throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) +
+                                               " 的主键列 \"" + std::string(columnDescriptor.columnName) +
+                                               "\" 声明为自增，但当前方言不能把它建成自增列（自增列要求整数类型的主键）");
+                }
+
+                columnDefinitions  += autoIncrementDefinition;
+                primaryKeyDeclared = true;
+                return;
+            }
 
             // 列名一律引用：含空格、保留字或引用字符的列名只有被引用才能作为标识符出现
             columnDefinitions += dialect.quoteIdentifier(columnDescriptor.columnName);

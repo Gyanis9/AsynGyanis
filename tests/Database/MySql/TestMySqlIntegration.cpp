@@ -6,6 +6,7 @@
 // - 表存在性查询只认基表：同名视图不算「表已存在」，基表仍要算（TableExistsIgnoresViewsAndStillSeesBaseTables）
 // - BIT 列在文本协议与预处理协议上都按整数读出（BitColumnsAreReadAsIntegersOnBothProtocolPaths）
 // - 自增标识挂在写回执上：两条协议路径同口径、非插入语句与无自增列都回 0、宽不进 int64 时如实报 0 并写明原因
+// - 自增主键端到端：SchemaMigrator 生成的 DDL 被 InnoDB 接受，单条与批量两条写入路径都省略主键、标识连着排成 1..N
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
@@ -185,6 +186,9 @@ namespace AsynGyanis::Database
             "`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// 播种起点 2^63：恰在有符号 64 位能表达的最大值之外一格
+        /// 自增主键 ORM 用例的表：由 SchemaMigrator 用方言生成的 DDL 建出来
+        constexpr std::string_view kOrmAutoIncrementTableName = "Asyn_Mysql_OrmAutoInc";
+
         constexpr std::uint64_t kWideAutoIncrementSeed = 9223372036854775808ULL;
 
         /**
@@ -2301,6 +2305,66 @@ namespace AsynGyanis::Database
             "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", missingParameters);
         ASSERT_NE(missingReceipt, nullptr) << connection.lastError();
         EXPECT_EQ(missingReceipt->affectedRowCount(), 0);
+    }
+
+    /**
+     * @brief 自增主键行：id 由 InnoDB 生成，声明里把主键标成自增
+     */
+    struct IntegrationTicketRow
+    {
+        std::int64_t id   = 0;  ///< 数据库生成的自增主键
+        std::string  name = ""; ///< 名称列
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationTicketRow>
+    {
+        static constexpr std::string_view kTableName = kOrmAutoIncrementTableName;
+        static constexpr auto kColumns = std::tuple{
+            Column(&IntegrationTicketRow::id, "id"),
+            Column(&IntegrationTicketRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey                = "id";
+        static constexpr bool             kIsAutoIncrementPrimaryKey = true;
+    };
+
+    /**
+     * @brief 验证自增主键在真实 MySQL 上端到端成立：方言生成的 DDL 被服务端接受，省略主键的写入真生成标识
+     *
+     * @details 离线断言只能证明 DDL 文本长什么样，本用例证明 InnoDB 认它，并且单条与批量两条写入路径
+     *          都没有把主键列写进 INSERT（写了就会存下那个显式值，读回来的 id 不会连着排成 1..5）。
+     */
+    TEST_F(MySqlIntegrationTest, OrmAutoIncrementPrimaryKeyWorksOnRealServer)
+    {
+        // 先登记清理：中途任何断言失败，TearDown 都会把这张表删掉，不留残留
+        m_preparedTableName = std::string(kOrmAutoIncrementTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        std::string                     errorText;
+
+        // 上次崩溃可能留下的表先清掉，保证自增计数从 1 起
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationTicketRow>(*pool, true, &errorText)) << errorText;
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationTicketRow>(*pool, false, &errorText)) << errorText;
+
+        OrmQuery<IntegrationTicketRow> query(*pool);
+        // 结构体里刻意填了主键值：声明为自增之后它必须被忽略
+        EXPECT_EQ(query.insertAndGetGeneratedId(IntegrationTicketRow{999, "第一张"}), 1)
+                << "自增主键仍被写进 INSERT：显式值占了号段";
+        EXPECT_EQ(query.insertAndGetGeneratedId(IntegrationTicketRow{0, "第二张"}), 2);
+
+        // 批量路径同样省略主键：三行的标识必须接着往下走
+        const std::vector<IntegrationTicketRow> batchRows{
+            IntegrationTicketRow{0, "第三张"}, IntegrationTicketRow{0, "第四张"}, IntegrationTicketRow{0, "第五张"}};
+        ASSERT_EQ(query.insertBatch(batchRows), 3);
+
+        const std::vector<IntegrationTicketRow> rows = query.orderBy(asc("id")).toList();
+        ASSERT_EQ(rows.size(), 5U);
+        for (std::size_t index = 0; index < rows.size(); ++index)
+        {
+            EXPECT_EQ(rows[index].id, static_cast<std::int64_t>(index) + 1) << "第 " << index << " 行的主键不是生成的";
+        }
+        EXPECT_EQ(rows[0].name, "第一张");
+        EXPECT_EQ(rows[4].name, "第五张");
     }
 
 } // namespace AsynGyanis::Database

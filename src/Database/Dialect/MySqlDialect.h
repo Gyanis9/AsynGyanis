@@ -89,6 +89,20 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view keyColumnTypeName(ColumnType type) const noexcept override;
 
         /**
+         * @brief 生成 MySQL 的自增主键列定义
+         * @details 重写 SqlDialect::autoIncrementPrimaryKeyDefinition()：写成 `col` BIGINT NOT NULL
+         *          AUTO_INCREMENT PRIMARY KEY——AUTO_INCREMENT 必须在 PRIMARY KEY 之前（与 SQLite 相反），
+         *          且该列必须同时是 NOT NULL 的键。类型取 keyColumnTypeName() 的结果，因此 Int64→BIGINT、
+         *          UInt64→BIGINT UNSIGNED 都按成员位宽对齐；文本/浮点等不能当自增列，给空串由迁移工具
+         *          在建表前报「不支持」。
+         * @param quotedColumnName 已按本方言引用好的列名
+         * @param type 主键成员的逻辑列类型
+         * @return std::string 该列的完整定义；主键不是整数类型时为空串
+         */
+        [[nodiscard]] std::string autoIncrementPrimaryKeyDefinition(std::string_view quotedColumnName,
+                                                                   ColumnType type) const override;
+
+        /**
          * @brief 生成 MySQL 的「表是否存在」查询
          * @details 重写 SqlDialect::tableExistsStatement()：表清单在 information_schema.tables 里，
          *          它是整个实例共享的，只用 table_name 过滤会把其它库里的同名表统计进来，

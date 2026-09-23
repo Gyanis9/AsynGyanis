@@ -76,6 +76,20 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view columnTypeName(ColumnType type) const noexcept override;
 
         /**
+         * @brief 生成 SQLite 的自增主键列定义
+         * @details 重写 SqlDialect::autoIncrementPrimaryKeyDefinition()：写成 "col" INTEGER PRIMARY KEY
+         *          AUTOINCREMENT。类型必须是 INTEGER 且主键是单列——这是 SQLite 把该列认作 rowid 别名
+         *          的语法条件（写成 INT/BIGINT 只会得到一个普通整数主键）；非整数主键给空串，由
+         *          迁移工具在建表前报「不支持」。AUTOINCREMENT 一词只能跟在 PRIMARY KEY 之后，
+         *          作用是「不复用已删除行的 rowid」，不写时 SQLite 仍会自增但会回收空洞。
+         * @param quotedColumnName 已按本方言引用好的列名
+         * @param type 主键成员的逻辑列类型
+         * @return std::string 该列的完整定义；主键不是整数类型时为空串
+         */
+        [[nodiscard]] std::string autoIncrementPrimaryKeyDefinition(std::string_view quotedColumnName,
+                                                                   ColumnType type) const override;
+
+        /**
          * @brief 生成 SQLite 的「表是否存在」查询
          * @details 重写 SqlDialect::tableExistsStatement()：表清单在 sqlite_master（只读系统表）里，
          *          用 type='table' 过滤掉索引、视图与触发器。它是当前库文件私有的，因此不需要

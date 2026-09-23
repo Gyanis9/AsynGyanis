@@ -76,6 +76,19 @@ namespace AsynGyanis::Database
         }
     }
 
+    std::string MySqlDialect::autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName,
+                                                               const ColumnType type) const
+    {
+        // InnoDB 只接受整数列做自增键；文本/浮点等给空串，由迁移工具在建表前报「不支持」
+        if (type != ColumnType::Int64 && type != ColumnType::UInt64)
+        {
+            return {};
+        }
+
+        // AUTO_INCREMENT 必须写在 PRIMARY KEY 之前，且该列同时要求 NOT NULL——与 SQLite 的位置正好相反
+        return std::string(quotedColumnName) + " " + std::string(keyColumnTypeName(type)) + " NOT NULL AUTO_INCREMENT PRIMARY KEY";
+    }
+
     SqlStatement MySqlDialect::tableExistsStatement(const std::string_view tableName) const
     {
         SqlStatement statement;
