@@ -547,13 +547,25 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 告警账本：收下根日志器写出的 Warn 事件原文
-         * @details Sink 由 Logger 以 unique_ptr 持有且没有摘除单条的接口，因此把账本放在这里由用例
-         *          共享持有，用例结束时关掉记录开关——留着的那份此后只做一次原子读。
+         * @details Logger 只有「追加 Sink」与「清空全部 Sink」两个口子，没有摘除单条的接口，
+         *          而清空会连带毁掉控制台 Sink（其他用例的输出就没了）。因此 Sink 在进程内只挂一份
+         *          （见 ScopedWarningCapture::processLedger），用例只负责开关记录与清零——
+         *          每进一个作用域就挂一份，会在 --gtest_repeat 下把 Sink 与已捕获文本一路累积下去。
          */
         class WarningLedger
         {
         public:
-            /** @brief 停止记录：让留在 Logger 里的那份 Sink 变成空操作 */
+            /** @brief 开始记录：清掉上一轮留下的文本，避免跨用例串读 */
+            void begin()
+            {
+                {
+                    const std::lock_guard lock(m_mutex);
+                    m_messages.clear();
+                }
+                m_isRecording.store(true, std::memory_order_release);
+            }
+
+            /** @brief 停止记录：留在 Logger 里的那份 Sink 从此变成一次原子读 */
             void stop() noexcept
             {
                 m_isRecording.store(false, std::memory_order_release);
@@ -583,18 +595,8 @@ namespace AsynGyanis::Core
                 return m_messages.size();
             }
 
-            /**
-             * @brief 已记下的告警原文快照
-             * @return std::vector<std::string> 按到达顺序排列的原文
-             */
-            [[nodiscard]] std::vector<std::string> messages() const
-            {
-                const std::lock_guard lock(m_mutex);
-                return m_messages;
-            }
-
         private:
-            std::atomic<bool>          m_isRecording{true}; ///< 是否仍在记录
+            std::atomic<bool>          m_isRecording{false}; ///< 是否仍在记录（默认关，只有作用域内开着）
             mutable std::mutex         m_mutex{};           ///< 保护原文列表
             std::vector<std::string>   m_messages{};        ///< 已记下的告警原文
         };
@@ -607,7 +609,7 @@ namespace AsynGyanis::Core
         public:
             /**
              * @brief 用给定账本构造 Sink
-             * @param ledger 事件账本（由用例共享持有）
+             * @param ledger 事件账本（进程内唯一的那份，由 ScopedWarningCapture 开关）
              */
             explicit WarningRecordingSink(std::shared_ptr<WarningLedger> ledger) :
                 m_ledger(std::move(ledger))
@@ -636,16 +638,16 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 作用域内的根日志器告警抓取器
-         * @details 只追加 Sink、不动既有的控制台 Sink，因此同一二进制里的其他用例照常输出。
+         * @details 只追加 Sink、不动既有的控制台 Sink，因此同一二进制里的其他用例照常输出；
+         *          Sink 在进程内只挂一份，作用域只负责清零、开记与关记。
          */
         class ScopedWarningCapture
         {
         public:
             ScopedWarningCapture() :
-                m_ledger(std::make_shared<WarningLedger>())
+                m_ledger(processLedger())
             {
-                Base::LoggerRegistry::instance().getRootLogger().addSink(
-                        std::make_unique<WarningRecordingSink>(m_ledger));
+                m_ledger->begin();
             }
 
             ~ScopedWarningCapture()
@@ -666,7 +668,26 @@ namespace AsynGyanis::Core
             }
 
         private:
-            std::shared_ptr<WarningLedger> m_ledger; ///< 告警账本
+            /**
+             * @brief 取进程内唯一的那份账本：首次调用时把 Sink 挂到根日志器，之后只复用
+             * @details 挂上去就摘不下来（Logger 没有摘除单条的接口），所以必须只挂一次——
+             *          每个作用域各挂一份会让 Sink 与捕获文本随 --gtest_repeat 线性累积。
+             *          函数内 static 的初始化由标准保证只做一次且线程安全。
+             * @return std::shared_ptr<WarningLedger> 共享账本
+             */
+            static std::shared_ptr<WarningLedger> processLedger()
+            {
+                static const std::shared_ptr<WarningLedger> kLedger = []
+                {
+                    auto ledger = std::make_shared<WarningLedger>();
+                    Base::LoggerRegistry::instance().getRootLogger().addSink(
+                            std::make_unique<WarningRecordingSink>(ledger));
+                    return ledger;
+                }();
+                return kLedger;
+            }
+
+            std::shared_ptr<WarningLedger> m_ledger; ///< 进程内唯一账本的引用
         };
 
         /**
