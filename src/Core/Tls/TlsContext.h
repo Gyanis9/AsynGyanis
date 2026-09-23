@@ -94,6 +94,10 @@ namespace AsynGyanis::Core
         /**
          * @brief 获取底层的 SSL_CTX 原生句柄。
          * @return SSL_CTX* 指针
+         * @warning 只是**借出**指针，不加引用：调用方不得 SSL_CTX_free 它，也不得跨一次
+         *          reloadCertificate() 继续持有（换代时旧上下文按引用计数释放，本函数没有计数）。
+         *          要在新上下文生效后继续建会话，就重新取一次；需要在握手里活过换代的对象请走
+         *          createSSL()，它自带与换代互斥的引用
          */
         [[nodiscard]] SSL_CTX *nativeHandle() const;
 
