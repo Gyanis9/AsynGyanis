@@ -310,6 +310,31 @@ namespace AsynGyanis::Net
         EXPECT_EQ(serveRequest(server, HttpMethod::GET, "/hello.txt").status(), 404);
     }
 
+    /**
+     * @brief 钉住：空文件是一条合法表示，不能因为「正文没打开、身份比不了」被判成服务端故障
+     * @details 正文长度为 0 时读正文那一步压根不打开文件（省一次系统调用），因此也就拿不到「实际读到的
+     *          那个对象」的身份。验证器与正文的一致性判定必须在缺这份证据时放行，否则每个空文件都回 500。
+     */
+    TEST(HttpServer, ServesEmptyStaticFileAsZeroLengthRepresentation)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticDirEmptyFile");
+        ASSERT_TRUE(tree.isReady());
+
+        {
+            std::ofstream emptyFile(tree.staticRoot() / "empty.txt", std::ios::out | std::ios::binary | std::ios::trunc);
+        }
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/empty.txt");
+        EXPECT_EQ(response.status(), 200) << "空文件被误判成版本不一致：它没打开文件，也就没有可比的身份";
+        EXPECT_TRUE(response.body().empty());
+        EXPECT_TRUE(response.getHeader("etag").has_value()) << "空文件同样是一条可缓存的表示，验证器要给";
+        EXPECT_EQ(headerValueOf(response, "content-type"), "text/plain");
+    }
+
     TEST(HttpServer, ServesFileFromNestedSubdirectory)
     {
         Core::EventLoop loop;

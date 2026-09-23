@@ -1,5 +1,7 @@
 #include "Platform/IO/FileContents.h"
 
+#include "Platform/FileSystem/FileBasicInfo.h"
+
 #include "Platform/Platform.h"
 
 #if ASYN_PLATFORM_WIN32
@@ -21,7 +23,8 @@ namespace AsynGyanis::Platform
     std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath,
                                                                      const std::size_t offset,
                                                                      const std::size_t length,
-                                                                     std::string &target) noexcept
+                                                                     std::string &target,
+                                                                     FileBasicInfo *openedAs) noexcept
     {
         // 先把缓冲调到位：容量够时 resize 只是改长度，keep-alive 连接的第二条请求起不再分配
         target.resize(length);
@@ -72,7 +75,23 @@ namespace AsynGyanis::Platform
             }
             bytesRead += readNow;
         }
-        ::CloseHandle(fileHandle);
+        // 把「实际读到的那个对象」交回调用方：路径在 open 与 stat 之间被换掉时，句柄仍然绑着旧对象，
+        // 只有从句柄问才能判「发出去的这段字节是不是验证器描述的那一版」。问不出来就整单失败：
+        // 带着一个无法核对的验证器把正文发出去，比回一条 500 更糟
+        if (openedAs != nullptr)
+        {
+            const std::optional<FileBasicInfo> openedInfo = queryOpenedFileBasicInfo(fileHandle);
+            ::CloseHandle(fileHandle);
+            if (!openedInfo.has_value())
+            {
+                return std::unexpected(std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+            }
+            *openedAs = *openedInfo;
+        }
+        else
+        {
+            ::CloseHandle(fileHandle);
+        }
 
         target.resize(bytesRead);
         return bytesRead;
@@ -81,7 +100,8 @@ namespace AsynGyanis::Platform
     std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath,
                                                                      const std::size_t offset,
                                                                      const std::size_t length,
-                                                                     std::string &target) noexcept
+                                                                     std::string &target,
+                                                                     FileBasicInfo *openedAs) noexcept
     {
         target.resize(length);
         if (length == 0)
@@ -118,7 +138,21 @@ namespace AsynGyanis::Platform
             }
             bytesRead += static_cast<std::size_t>(readNow);
         }
-        ::close(descriptor);
+        // 与 Windows 那半边同口径：身份从已打开的描述符上问，不随路径后来的替换而改变
+        if (openedAs != nullptr)
+        {
+            const std::optional<FileBasicInfo> openedInfo = queryOpenedFileBasicInfo(descriptor);
+            ::close(descriptor);
+            if (!openedInfo.has_value())
+            {
+                return std::unexpected(std::error_code(errno, std::system_category()));
+            }
+            *openedAs = *openedInfo;
+        }
+        else
+        {
+            ::close(descriptor);
+        }
 
         target.resize(bytesRead);
         return bytesRead;

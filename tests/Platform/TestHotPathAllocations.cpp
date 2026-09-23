@@ -10,6 +10,8 @@
 //     大小、修改秒与身份标记，产物是不带堆成员的 optional 值（Debug 同为 0）；
 //   · MemoryMappedFile::open 到析构：0 次（Debug 0）。对象只装句柄、长度与 error_code，正文按视图交出，
 //     聚合体本身不在堆上；调用本身要付的系统调用不在本台账口径里；
+//   · MemoryMappedFile::openedFileInfo 与 readFileContentsInto(带身份出参)：各 0 次。静态服务为核对
+//     「正文与验证器同版本」每请求多问的那一次身份，产物同样是一份不带堆成员的 optional 值；
 //   · UTF-8→path 与 path→UTF-8 各 1 次 / 64 与 32 字节（ASCII 名；非 ASCII 名 1 次 / 48 与 32 字节）。
 //     那一次就是产物本身的缓冲——按值交出一段新文本没有更省的形状了。Debug 下同一形状是 4 次与 3 次，
 //     差的是 STL 调试期的中间量，不是实现退化。扩展名只有几字符时产物进小串内联，因此「只把 extension()
@@ -17,6 +19,7 @@
 
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/FileSystem/FileSystem.h"
+#include "Platform/IO/FileContents.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include "AllocationProbe.h"
@@ -45,6 +48,7 @@ namespace AsynGyanis::Platform
         // 名字里带 Total 的钉的是「一千次一共多少次」（原值），不是摊平读数
         constexpr std::uint64_t kFileBasicInfoTotalAllocationsPerThousand = 0U;      ///< 静态文件每请求都要查的那一次
         constexpr std::uint64_t kMappedFileOpenTotalAllocationsPerThousand = 0U;     ///< 映射未命中时才付，但同样每请求都可能付
+        constexpr std::uint64_t kOpenedFileInfoTotalAllocationsPerThousand = 0U;     ///< 核对「正文与验证器同版本」时每请求要问的那一次
 #endif
     } // namespace
 
@@ -155,6 +159,55 @@ namespace AsynGyanis::Platform
 #ifdef NDEBUG
         EXPECT_EQ(profile.totalAllocations, kMappedFileOpenTotalAllocationsPerThousand)
                 << "映射对象开始带堆成员了：它只该装句柄、长度与 error_code";
+#endif
+    }
+
+    /**
+     * @brief 从已打开的对象问一次身份付出多少次分配（映射与整段读两条形状各量一次）
+     * @details 静态文件服务为防止「验证器描述旧版本、正文是新版本」，每请求都要在关掉句柄之前问一次
+     *          身份。这两条就是那条新查问的全部产物开销：Windows 侧走整段读，POSIX 侧走映射
+     */
+    TEST(PlatformHotPathAllocations, OpenedFileInfoQueryAllocations)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_OpenedFileInfo");
+        ASSERT_TRUE(temporaryDirectory.writeFile("ledger.bin", std::string(kLedgerFileBytes, 'z')));
+        const std::filesystem::path targetPath = temporaryDirectory.path() / "ledger.bin";
+
+        const MemoryMappedFile mappedFile = MemoryMappedFile::open(targetPath);
+        ASSERT_TRUE(mappedFile.isValid()) << "映射没建立成功，读数没意义";
+
+        const auto queryOnce = [&mappedFile]
+        {
+            const std::optional<FileBasicInfo> info = mappedFile.openedFileInfo();
+            return info.has_value() ? static_cast<std::size_t>(info->sizeBytes) : 0U;
+        };
+        ASSERT_EQ(queryOnce(), kLedgerFileBytes);
+        const AllocationProfile mappedQuery = measurePerOperation(queryOnce);
+        EXPECT_EQ(mappedQuery.resultSum, kMeasurementIterations * kLedgerFileBytes) << "有几次问不出大小，读的不是那条形状";
+
+        // 整段读那条要预先备好缓冲：稳态下 resize 只改长度，这里量的是「读 + 问身份」这一段
+        std::string body(kLedgerFileBytes, '\0');
+        FileBasicInfo   openedAs;
+        const auto readOnce = [&targetPath, &body, &openedAs]
+        {
+            const std::expected<std::size_t, std::error_code> read =
+                    readFileContentsInto(targetPath, 0U, kLedgerFileBytes, body, &openedAs);
+            return read.has_value() ? *read : 0U;
+        };
+        ASSERT_EQ(readOnce(), kLedgerFileBytes) << "读不出整段正文，读数没意义";
+        const AllocationProfile readWithIdentity = measurePerOperation(readOnce);
+        EXPECT_EQ(readWithIdentity.resultSum, kMeasurementIterations * kLedgerFileBytes) << "有几次没读满，读的不是那条形状";
+
+        std::printf("openedFileInfo 每次 %llu 次 / %llu 字节；readFileContentsInto(带身份) 每次 %llu 次 / %llu 字节\n",
+                    static_cast<unsigned long long>(mappedQuery.allocationsPerOperation),
+                    static_cast<unsigned long long>(mappedQuery.bytesPerOperation),
+                    static_cast<unsigned long long>(readWithIdentity.allocationsPerOperation),
+                    static_cast<unsigned long long>(readWithIdentity.bytesPerOperation));
+#ifdef NDEBUG
+        EXPECT_EQ(mappedQuery.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand)
+                << "每请求一次的身份查询开始碰堆：产物只该是一份不带堆成员的 optional 值";
+        EXPECT_EQ(readWithIdentity.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand)
+                << "整段读带身份核对不再是稳态零分配：多半是失败路径开始现造诊断串";
 #endif
     }
 

@@ -219,4 +219,18 @@ namespace AsynGyanis::Platform
         m_length  = 0;
         m_isValid = false;
     }
+
+    std::optional<FileBasicInfo> MemoryMappedFile::openedFileInfo() const noexcept
+    {
+        // 已关闭或被移走的对象连句柄都没有，无从问起；调用方拿到空值当「说不清」处理
+        if (!m_isValid)
+        {
+            return std::nullopt;
+        }
+#if ASYN_PLATFORM_WIN32
+        return queryOpenedFileBasicInfo(m_fileHandle);
+#else
+        return queryOpenedFileBasicInfo(m_fileDescriptor);
+#endif
+    }
 } // namespace AsynGyanis::Platform

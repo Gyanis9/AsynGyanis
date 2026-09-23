@@ -1,11 +1,13 @@
 // FileContents 单元测试：整段读、按区间读、短读、越界偏移、空长度、缺失路径与二进制安全
 #include "Platform/IO/FileContents.h"
 
+#include "Platform/FileSystem/FileBasicInfo.h"
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "PlatformTestSupport.h"
@@ -104,8 +106,73 @@ namespace AsynGyanis::Platform
     /**
      * @brief 钉住：路径不存在时以错误码表达，不抛也不给空串冒充成功
      */
-    TEST(FileContents, YieldsErrorCodeForMissingPath)
+    /**
+     * @brief 钉住：出参交回的是**真的读到的那个对象**，且取值与按路径查的那条同刻度
+     * @details 两条路的取值一旦分叉（换算、取整方向或身份标记算法不同），调用方一比就永远得到
+     *          「不是同一版」，静态文件会整批回 500。这条就是拿来挡住那种分叉的。
+     */
+    TEST(FileContents, ReportsIdentityOfTheFileItActuallyOpened)
     {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_OpenedIdentity");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "hello-static-body"));
+        const std::filesystem::path targetPath = temporaryDirectory.path() / "asset.bin";
+
+        const std::optional<FileBasicInfo> byPath = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(byPath.has_value());
+
+        std::string contents;
+        FileBasicInfo opened;
+        const std::expected<std::size_t, std::error_code> result =
+                readFileContentsInto(targetPath, 0U, 17U, contents, &opened);
+
+        ASSERT_TRUE(result.has_value()) << result.error().message();
+        EXPECT_TRUE(opened.isRegularFile);
+        EXPECT_EQ(opened.sizeBytes, byPath->sizeBytes) << "按句柄查与按路径查的大小不是同一刻度";
+        EXPECT_EQ(opened.lastWriteSeconds, byPath->lastWriteSeconds) << "两条路的修改秒不是同一刻度（取整方向分叉）";
+        EXPECT_EQ(opened.identityTag, byPath->identityTag) << "两条路的身份标记不是同一算法，调用方一比就永远不等";
+    }
+
+    /**
+     * @brief 钉住：查过元数据之后路径被换掉时，出参交回的是新版本而不是先前那份
+     * @details 静态服务先查元数据算出 ETag、再打开读正文，中间文件被原子替换（部署就是这个动作）时
+     *          读到的长度可以完全「对得上」（新文件更长，我们只取旧长度那段前缀），短读判据抓不住它。
+     *          唯一能认出「字节与验证器不是同一版」的就是这条身份比对，所以它必须报出差异来。
+     */
+    TEST(FileContents, OpenedIdentityFollowsTheObjectAndNotThePathWhenTheFileIsReplaced)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_ReplacedBetweenQueries");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "abc"));
+        const std::filesystem::path targetPath = temporaryDirectory.path() / "asset.bin";
+
+        const std::optional<FileBasicInfo> advertised = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(advertised.has_value());
+        ASSERT_EQ(advertised->sizeBytes, 3U);
+
+        // 请求处理到「打开正文」之间，发布方把文件换成了另一份：这里走「写临时文件再 rename 覆盖」，
+        // 与部署同一个动作。就地改写（ofstream trunc）不算替换——那是同一个文件对象，创建时间不变
+        ASSERT_TRUE(temporaryDirectory.writeFile("incoming.bin", std::string(64U, 'x')));
+        std::error_code replaceError;
+        std::filesystem::rename(temporaryDirectory.path() / "incoming.bin", targetPath, replaceError);
+        ASSERT_FALSE(replaceError) << replaceError.message();
+
+        std::string contents;
+        FileBasicInfo opened;
+        const std::expected<std::size_t, std::error_code> result = readFileContentsInto(targetPath, 0U, 3U, contents, &opened);
+
+        // 读到 3 字节、短读判据不会响——能认出「发出去的不是那一版」的只有这份身份
+        ASSERT_TRUE(result.has_value()) << result.error().message();
+        ASSERT_EQ(*result, 3U);
+        EXPECT_EQ(contents.size(), 3U);
+        EXPECT_NE(opened.sizeBytes, advertised->sizeBytes) << "文件已被换掉，身份却没看出差别，验证器就会被发去描述另一版内容";
+#if !ASYN_PLATFORM_WIN32
+        // POSIX 的身份标记折了 (设备号, inode, ctime)，认得出这次替换；Windows 用的是创建时间，
+        // NTFS 的隧道缓存会把旧文件的创建时间还原到同名新文件上（FileBasicInfo.h 里记着这条限制），
+        // 所以那里只有大小与修改秒可用——同大小同秒的替换本平台本来就判不出，不是这次改动带来的退化
+        EXPECT_NE(opened.identityTag, advertised->identityTag) << "同一份 inode/ctime 折叠算出了两个值，两条路不同刻度";
+#endif
+    }
+
+    TEST(FileContents, YieldsErrorCodeForMissingPath)    {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_Missing");
         const std::filesystem::path           missingPath = temporaryDirectory.path() / "no-such-file.bin";
 

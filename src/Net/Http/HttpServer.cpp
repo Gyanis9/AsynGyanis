@@ -721,6 +721,19 @@ namespace AsynGyanis::Net
                     return nullptr;
                 }
 
+                // 映射绑定的对象必须就是刚查到的那一份：stat 与 open 之间文件被原子替换时，
+                // 发出去的是新版本的字节、配的是旧版本的验证器，客户端会把这份内容长期挂在旧 ETag 下。
+                // 这里在登记之前判，对不上就不登记（登记了会让后续请求按旧元数据命中这份新映射）
+                const std::optional<Platform::FileBasicInfo> mappedAs = mappedFile->openedFileInfo();
+                if (!mappedAs.has_value() || mappedAs->sizeBytes != fileSize ||
+                    mappedAs->lastWriteSeconds != lastWriteSeconds || mappedAs->identityTag != fileBasicInfo->identityTag)
+                {
+                    response.setStatus(500);
+                    response.setBody("Internal Server Error");
+                    response.setHeader("content-type", "text/plain");
+                    return nullptr;
+                }
+
                 // 登记的元数据就是刚查到的那一份：下一次请求带着新的 size/mtime 来比，
                 // 文件被换掉即不命中，不需要额外的失效通知通道
                 settings->mappingCache->store(candidatePath, mappedFile, *fileBasicInfo);
@@ -750,9 +763,18 @@ namespace AsynGyanis::Net
             if (!isHeadRequest)
             {
                 std::string &bodyBuffer = response.prepareBodyBuffer(bodyLength);
+                Platform::FileBasicInfo openedBody;
                 const std::expected<std::size_t, std::error_code> readResult =
-                        Platform::readFileContentsInto(candidatePath, bodyOffset, bodyLength, bodyBuffer);
-                if (!readResult.has_value() || *readResult < bodyLength)
+                        Platform::readFileContentsInto(candidatePath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
+                // 验证器取自查元数据那一次，正文取自这一次打开：两次之间文件被原子替换时，发出去的是
+                // 新版本的字节配的却是旧版本的 ETag/Last-Modified，客户端会把这份内容长期挂在旧验证器
+                // 下。两处必须是同一个对象，否则与短读一样按服务端故障收口
+                // 正文长度为 0 时那一步压根没打开文件（少一次系统调用），openedBody 也就无从填起：
+                // 空文件是一条合法表示，不能因为「比不了」被判成服务端故障
+                const bool isVersionMismatch = bodyLength > 0U &&
+                        (openedBody.sizeBytes != fileSize || openedBody.lastWriteSeconds != lastWriteSeconds ||
+                         openedBody.identityTag != fileBasicInfo->identityTag);
+                if (!readResult.has_value() || *readResult < bodyLength || isVersionMismatch)
                 {
                     // 两种情形都不是「可以发出去的正文」：文件在 stat 之后被删/改权限（TOCTOU 窗口），
                     // 或被截断到比请求的那段还短。按服务端故障收口，不回半个文件

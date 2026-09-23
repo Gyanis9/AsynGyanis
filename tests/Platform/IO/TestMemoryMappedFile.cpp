@@ -1,6 +1,9 @@
 // MemoryMappedFile 单元测试：映射内容、空文件、失败路径与移动语义
 #include "Platform/IO/MemoryMappedFile.h"
 
+#include "Platform/FileSystem/FileBasicInfo.h"
+#include <optional>
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -157,6 +160,40 @@ namespace AsynGyanis::Platform
     /**
      * @brief 映射目录：返回无效对象（Windows 在打开阶段拒绝，POSIX 在映射阶段拒绝）
      */
+    /**
+     * @brief 钉住：映射交回的身份信息说的就是它映射到的那个对象，且与按路径查同刻度
+     * @details 静态服务用它判「已经写下的 ETag 还在不在描述这段正文」。两条路的取值一旦
+     *          分叉（换算或身份标记算法不同），每一版正文都会被误判成「不是同一版」而回 500。
+     */
+    TEST(MemoryMappedFile, OpenedFileInfoMatchesThePathQueryForTheSameObject)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_OpenedInfo");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", std::string(4096U, 'q')));
+        const std::filesystem::path targetPath = temporaryDirectory.path() / "asset.bin";
+
+        const std::optional<FileBasicInfo> byPath = queryFileBasicInfo(targetPath);
+        ASSERT_TRUE(byPath.has_value());
+
+        const MemoryMappedFile mappedFile = MemoryMappedFile::open(targetPath);
+        ASSERT_TRUE(mappedFile.isValid()) << mappedFile.lastError().message();
+        const std::optional<FileBasicInfo> mappedAs = mappedFile.openedFileInfo();
+        ASSERT_TRUE(mappedAs.has_value());
+        EXPECT_TRUE(mappedAs->isRegularFile);
+        EXPECT_EQ(mappedAs->sizeBytes, byPath->sizeBytes);
+        EXPECT_EQ(mappedAs->lastWriteSeconds, byPath->lastWriteSeconds);
+        EXPECT_EQ(mappedAs->identityTag, byPath->identityTag) << "两条路的身份标记算法分叉";
+    }
+
+    /// 没映射成功的对象无从问身份：给空值而不是给一份凭路径现查的答案（那会把「问的是谁」说反）
+    TEST(MemoryMappedFile, OpenedFileInfoIsEmptyForInvalidObject)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_OpenedInfoMissing");
+        const MemoryMappedFile mappedFile =
+                MemoryMappedFile::open(temporaryDirectory.path() / "missing.bin");
+        ASSERT_FALSE(mappedFile.isValid());
+        EXPECT_FALSE(mappedFile.openedFileInfo().has_value());
+    }
+
     TEST(MemoryMappedFile, OpenDirectoryYieldsInvalidObject)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_Directory");

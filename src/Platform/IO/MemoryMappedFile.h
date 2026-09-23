@@ -9,6 +9,10 @@
 
 #pragma once
 
+#include "Platform/FileSystem/FileBasicInfo.h"
+
+#include <optional>
+
 #include "Platform/Platform.h"
 
 #include <cstddef>
@@ -79,6 +83,17 @@ namespace AsynGyanis::Platform
          * @return std::error_code 系统类别错误码；未失败时为空
          */
         [[nodiscard]] std::error_code lastError() const noexcept;
+
+        /**
+         * @brief 取这份映射**实际映射到的那个文件对象**的基本信息
+         * @details 句柄绑定的对象不会随「同路径被原子替换」而改变，因此这条能回答「我映射到的还是
+         *          刚才按路径查到的那一份吗」——静态服务据此判断已经写下的 ETag 是否还在描述发出去的
+         *          那段字节。取值刻度与 queryFileBasicInfo 逐位一致，可以直接比。
+         * @return std::optional<FileBasicInfo> 映射有效且查询成功时给出信息；无效对象、句柄已关或
+         *         查询失败时为空，不抛异常
+         * @see queryOpenedFileBasicInfo
+         */
+        [[nodiscard]] std::optional<FileBasicInfo> openedFileInfo() const noexcept;
 
 #if !ASYN_PLATFORM_WIN32
         /**

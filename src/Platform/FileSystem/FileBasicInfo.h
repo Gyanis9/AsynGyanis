@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Platform/Platform.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -33,6 +35,17 @@ namespace AsynGyanis::Platform
     };
 
     /**
+     * @brief 已经打开的文件对象的句柄刻度
+     * @details Windows 是 CreateFileW 返回的 HANDLE（void*），POSIX 是 open 返回的文件描述符。
+     *          本模块用它把「按路径查」与「按句柄查」两条路接上同一份换算，句柄不外泄到调用方。
+     */
+#if ASYN_PLATFORM_WIN32
+    using NativeFileHandle = void *;
+#else
+    using NativeFileHandle = int;
+#endif
+
+    /**
      * @brief 读回文件基本信息：是否普通文件、字节数、最后修改时间与文件身份
      * @details std::filesystem 的 is_regular_file / file_size / last_write_time 各自都要把路径重新打开查一遍
      *          （Windows 上是三轮 CreateFileW + CloseHandle）。逐样查在热路径上是白付的——静态文件服务
@@ -50,4 +63,16 @@ namespace AsynGyanis::Platform
      *       在服务端一律 404，先按这条查，不要去怀疑目录遍历或缓存。
      */
     [[nodiscard]] std::optional<FileBasicInfo> queryFileBasicInfo(const std::filesystem::path &path) noexcept;
+
+    /**
+     * @brief 从一个**已经打开**的文件对象读回基本信息
+     * @details 与按路径查的那条同刻度（同样的取整方向、同样的身份标记算法），区别在于它问的是句柄
+     *          绑定的那个对象，而不是「这个路径现在指向谁」。打开与查询之间文件被原子替换时，路径
+     *          会跟着换对象而句柄不会——发出去的正文与据此写下的 ETag 是否描述同一版本，只能靠这条判。
+     *          不额外开句柄，因此比按路径查少一次路径查询（Windows 上两条窄句柄查询合起来给全四项，
+     *          比一次带目录索引项的宽查询便宜近一半）。
+     * @param handle 已打开的文件句柄（Windows 为 HANDLE，POSIX 为文件描述符）
+     * @return std::optional<FileBasicInfo> 成功时给出信息；句柄无效或查询失败时为空，不抛异常
+     */
+    [[nodiscard]] std::optional<FileBasicInfo> queryOpenedFileBasicInfo(const NativeFileHandle handle) noexcept;
 }
