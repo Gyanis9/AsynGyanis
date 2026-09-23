@@ -90,6 +90,10 @@ namespace AsynGyanis::Core
          * @brief 等待就绪事件（把完成通知翻译成 epoll_event）
          * @param timeoutMs 超时毫秒数，-1 表示无限等待，0 表示立即返回
          * @return 就绪事件视图；空表示超时/无事件
+         * @warning 视图指向本对象的固定容量缓冲，下一次 wait() 会覆盖它的内容：在持有视图期间
+         *          **不得**再进入 wait()，也不得把视图跨线程留着用（Epoll 侧同一约束）
+         * @note 一次最多返回 kMaximumEventCount 条。取满不算丢：没处理的完成通知仍留在 CQ 环里
+         *       （头指针不越过未处理的那条），下一次 wait() 开头就先把它们收掉
          * @throws Base::SystemException 提交或等待的系统调用失败
          */
         [[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0);
@@ -100,6 +104,11 @@ namespace AsynGyanis::Core
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
     private:
+        /// 单次 wait() 最多交付的就绪事件数，同时是落地缓冲的固定容量。
+        /// **必须与 Epoll / Iocp 的同名常量同值**：上层（EventLoop::run）按「一批不超过这个数」
+        /// 安排处理预算，三个后端只有一个是特例就等于把这条约定写死在文档里而不成立
+        static constexpr int kMaximumEventCount = 1024;
+
         /**
          * @brief 单个描述符的注册记录
          */
@@ -239,6 +248,6 @@ namespace AsynGyanis::Core
         std::uint64_t                                m_nextTicket{1};  ///< 票据分配器（单调递增）
         std::uint64_t                                m_timeoutTicket{0}; ///< 在途超时操作的票据
 
-        std::vector<epoll_event> m_readyEvents; ///< wait() 返回的事件缓冲
+        std::vector<epoll_event> m_readyEvents; ///< wait() 的落地缓冲：构造时一次定容，改容量会让已交出去的视图悬垂
     };
 } // namespace AsynGyanis::Core

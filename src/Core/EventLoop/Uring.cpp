@@ -118,6 +118,9 @@ namespace AsynGyanis::Core
             throw Base::SystemException("io_uring 超时时值分配失败");
         }
 
+        // 落地缓冲一次定容：此后只 clear 不扩容，交出去的视图不会因下一次 wait() 而悬垂
+        m_readyEvents.reserve(kMaximumEventCount);
+
         m_isValid = true;
     }
 
@@ -572,7 +575,11 @@ namespace AsynGyanis::Core
     {
         unsigned       head = __atomic_load_n(m_completionHead, __ATOMIC_RELAXED);
         const unsigned tail = __atomic_load_n(m_completionTail, __ATOMIC_ACQUIRE);
-        for (; head != tail; ++head)
+        // 一批最多交 kMaximumEventCount 条，与 Epoll/Iocp 同一条口径：取满就停，且头指针不越过
+        // 未处理的那条，剩下的完成通知留在 CQ 环里，下一次 wait() 开头先收掉（不丢）。
+        // 不设上限时一次突发能把几千条事件塞进同一轮，事件循环要整批派发完才回头取 IO，
+        // 尾延迟直接由批大小决定；而且落地缓冲会随之扩容，把上一个视图变成悬垂读。
+        for (; head != tail && m_readyEvents.size() < static_cast<std::size_t>(kMaximumEventCount); ++head)
         {
             const io_uring_cqe *const completion = &m_completionEntries[head & *m_completionRingMask];
             handleCompletion(completion->user_data, completion->res);

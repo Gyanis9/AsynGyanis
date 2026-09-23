@@ -325,6 +325,63 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 一次等待最多交出一批事件，剩下的留到下一次：三个后端必须同口径
+     * @details 上限管着两件事：突发就绪时不必把整批派发给完才回头取 IO（尾延迟直接由批大小决定），
+     *          以及落地缓冲可以一次定容（改容量会把上一次交出去的视图变成悬垂读）。
+     *          io_uring 后端在这里与另外两个不一致过——它把 CQ 里的完成一次全交完。
+     *          次轮只断言「剩下的至少补上」：水平触发的描述符仍然就绪，会被再报一次，
+     *          所以两批之和大于注册数才是预期，不能拿它当「不丢」的判据。
+     */
+    TEST(Epoll, WaitDeliversAtMostOneBatchAndKeepsTheRestForNextWait)
+    {
+        /// 比单轮上限多出一截，才同时有「取满」与「剩下」两半可断言
+        constexpr int kTriggeredDescriptorCount = 1200;
+        /// 与 Epoll/Iocp 各自那个私有常量同值：三处不一致就是缺陷，不是本用例该放宽的地方
+        constexpr std::size_t kMaximumEventsPerWait = 1024;
+
+        rlimit descriptorLimit{};
+        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0
+            || descriptorLimit.rlim_cur < kTriggeredDescriptorCount + 256)
+        {
+            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur
+                         << " 个描述符，凑不出「超过单轮上限的一批就绪事件」";
+        }
+
+        TestEventFd trigger;
+        ASSERT_TRUE(Platform::FileDescriptor::isValid(trigger.fileDescriptor));
+        // 写一次计数：dup 出来的副本共享同一个 open file description，因此全部副本同时可读
+        ASSERT_TRUE(trigger.trigger());
+
+        Epoll          backend;
+        std::vector<int> descriptors;
+        descriptors.reserve(kTriggeredDescriptorCount);
+        for (int index = 0; index < kTriggeredDescriptorCount; ++index)
+        {
+            const int duplicated = ::dup(trigger.fileDescriptor);
+            ASSERT_GE(duplicated, 0) << "dup 到第 " << index << " 次失败，环境句柄数不够";
+            descriptors.push_back(duplicated);
+            ASSERT_TRUE(backend.addFileDescriptor(duplicated, EPOLLIN,
+                                                  reinterpret_cast<void *>(static_cast<std::uintptr_t>(index + 1U))));
+        }
+
+        const auto firstBatch = backend.wait(0);
+        EXPECT_EQ(firstBatch.size(), kMaximumEventsPerWait)
+                << "单轮交出 " << firstBatch.size() << " 条：要么没按 " << kMaximumEventsPerWait
+                << " 的上限截断，要么没把就绪的描述符取满";
+
+        const auto secondBatch = backend.wait(0);
+        EXPECT_GE(secondBatch.size(), static_cast<std::size_t>(kTriggeredDescriptorCount) - kMaximumEventsPerWait)
+                << "首轮取满之后，剩下的 " << kTriggeredDescriptorCount - kMaximumEventsPerWait
+                << " 条至少要留到下一次交付，一条都不能丢";
+
+        for (const int descriptor: descriptors)
+        {
+            static_cast<void>(backend.delFileDescriptor(descriptor));
+            Platform::FileDescriptor::close(descriptor);
+        }
+    }
+
+    /**
      * @brief 把已武装的轮询改成「可写」之后，无限等待必须当场交付新的就绪事件
      * @details 改掩码在后端里是「取消在途轮询 → 完成通知到达时按新掩码重投」，而重投发生在收单
      *          的过程中。那条重投若没在入睡前交给内核，内核就永远不会为它产出完成通知，而下一次
