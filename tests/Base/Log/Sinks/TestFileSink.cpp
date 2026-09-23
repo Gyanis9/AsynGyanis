@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -483,4 +485,33 @@ namespace AsynGyanis::Base
         EXPECT_EQ(landed, "single\na\nb\nc\n") << "POSIX 上行尾就是单个换行，不该多出 '\\r'";
 #endif
     }
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 字节其实没落盘时，flush 也要把那一声报出来
+     * @details /dev/full 是 POSIX 上确定性的 ENOSPC 来源：打开成功，短写入先进流缓冲，
+     *          于是 writeLine 照样报「写成了几个字节」，真正把字节推出去的是这一次刷新。
+     *          刷完不看流状态，「Fatal 那条已经落盘」就等于没人核过——打完就 abort 的调用方
+     *          丢了最后一条日志，而现场全静默。
+     * @note Windows 上没有等价的「写必失败」设备，本例只在 POSIX 侧跑
+     */
+    TEST(FileSinkWriteFailure, FlushReportsWhatTheBufferedWriteCouldNot)
+    {
+        std::ostringstream captured;
+        std::size_t        bufferedByteCount = 0;
+        {
+            const TestSupport::ScopedStreamRedirect redirect(std::cerr, captured.rdbuf());
+            FileSink                                sink{fs::path("/dev/full")};
+            bufferedByteCount = sink.writeLine("the last line before abort");
+            sink.flush();
+            sink.flush();
+        }
+
+        const std::string diagnostic = captured.str();
+        EXPECT_GT(bufferedByteCount, 0U) << "本例的前提是「短写入先落进流缓冲」，报了 0 就说明走的是另一条失败路径";
+        EXPECT_NE(diagnostic.find("写日志失败"), std::string::npos) << "刷不出去这件事一个字都没报";
+        EXPECT_NE(diagnostic.find("/dev/full"), std::string::npos) << "诊断里没点名是哪个目标写不下去";
+        // 两次 flush 只许报一条：磁盘故障期间每条日志都往标准错误写一遍就成了噪声
+        EXPECT_EQ(std::ranges::count(diagnostic, '\n'), 1);
+    }
+#endif
 } // namespace AsynGyanis::Base

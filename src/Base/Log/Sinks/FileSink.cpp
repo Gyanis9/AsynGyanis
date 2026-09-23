@@ -144,25 +144,36 @@ namespace AsynGyanis::Base
 
         // 写入后必须看流状态：磁盘写满或配额耗尽时插入不会抛异常，只会把 failbit/badbit 置起，
         // 此后每次 << 都是空操作——日志整片静默消失，而返回值还在报「写成功了」。
-        // 这里如实返回 0，并把诊断写到标准错误：日志系统自身出了故障，没有别的去处可报。
-        // 诊断只在「连续失败」的第一条上报一次，避免磁盘故障时每一行日志都去写一次标准错误
+        // 这里如实返回 0，诊断交给 reportStreamFailureOnceLocked（连续失败只报第一条）
+        reportStreamFailureOnceLocked();
         if (!m_file.good())
         {
-            if (!m_hasReportedWriteFailure)
-            {
-                m_hasReportedWriteFailure = true;
-                std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）："
-                        << AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath)
-                        << "；流已失效，后续日志不会再落盘，重新打开该文件（reopen）后恢复" << '\n';
-            }
             return 0;
         }
-        m_hasReportedWriteFailure = false;
 
         // 报回真正落到磁盘上的字节数：Windows 的行尾由我们自己补成 "\r\n"，缓冲里的长度就是落盘长度，
         // 不必再按换行个数补差。按大小滚动的阈值直接累加这个数（见 RollingFileSink::write），
         // 报小了活动文件就会系统性超出上限才滚
         return m_lineBuffer.size();
+    }
+
+    void FileSink::reportStreamFailureOnceLocked()
+    {
+        if (m_file.good())
+        {
+            // 恢复过一次成功写入就重新武装：下一次故障还要出声
+            m_hasReportedWriteFailure = false;
+            return;
+        }
+        if (m_hasReportedWriteFailure)
+        {
+            return;
+        }
+        // 日志系统自身出了故障，没有别的去处可报——拿根日志器报自己等于让 write() 递归
+        m_hasReportedWriteFailure = true;
+        std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）："
+                << AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath)
+                << "；流已失效，后续日志不会再落盘，重新打开该文件（reopen）后恢复" << '\n';
     }
 
     void FileSink::flush()
@@ -171,6 +182,10 @@ namespace AsynGyanis::Base
         if (m_file.is_open())
         {
             m_file.flush();
+            // 缓冲没满时 << 只在内存里追加，设备满、配额耗尽往往要到这一次同步才浮出来。
+            // 刷完不回头看流状态，「Fatal 那条已经落盘」就等于没人核过：打完就 abort 的调用方
+            // 丢了最后一条日志，而现场连一句诊断都没有
+            reportStreamFailureOnceLocked();
         }
     }
 

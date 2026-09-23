@@ -67,6 +67,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 刷新文件缓冲区
          * @details 重写 LogSink::flush()：持锁调用 ofstream::flush，文件未打开时直接返回。
+         *          刷新后照样检查流状态并按同一条一次性开关上报——设备满/配额耗尽往往到这一步
+         *          才浮出来，不检查就等于「Fatal 那条已经落盘」没人核过。
          */
         void flush() override;
 
@@ -84,6 +86,14 @@ namespace AsynGyanis::Base
          * @return std::size_t 写入字节数（含换行）；文件未打开或流已失效时返回 0
          */
         std::size_t writePreparedLineLocked();
+
+        /**
+         * @brief 流已失效时上报一次，恢复后重新武装这条一次性上报
+         * @details 调用方必须已持有 m_mutex。写日志这条路与刷新这条路共用同一个判据与开关：
+         *          日志系统自身的故障没有别的去处可报（拿根日志器报自己会递归），只能进标准错误，
+         *          而磁盘故障期间每条日志都报一次就成了噪声。
+         */
+        void reportStreamFailureOnceLocked();
 
         std::filesystem::path m_filePath;   ///< 当前日志文件路径
         std::ofstream         m_file;       ///< 日志文件输出流
