@@ -252,6 +252,12 @@ namespace AsynGyanis::Core
         // 关闭压缩：压缩会引入 CRIME 侧信道，服务端一律不协商压缩
         SSL_CTX_set_options(context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
 
+        // 关掉服务端侧重协商：TLS 1.2 及更早的「客户端可要求重新握手」是一条按连接放大的 CPU 消耗
+        // 通道——一条已建立的连接上反复请求重协商，服务端就反复做完整的密钥交换，而这只花客户端
+        // 几个包。服务端主动发起的 HelloRequest 一并关掉（浏览器都不用这条路，post-handshake
+        // 认证在 TLS 1.3 里另有机制，而 1.3 本身没有重协商）。行业默认（nginx/cloudflare）同样关闭
+        SSL_CTX_set_options(context, SSL_OP_NO_RENEGOTIATION);
+
         // 安全等级 2：拒绝 1024 位以下 RSA/DH 与 SHA-1 签名；本仓库夹具证书是
         // 2048 位 RSA + SHA-256，实测可在等级 2 下完成握手，故不降到等级 1
         SSL_CTX_set_security_level(context, 2);

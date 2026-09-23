@@ -353,6 +353,24 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 服务端不接受重协商：客户端发起的重握手是一条按单条连接放大的 CPU 消耗通道
+     * @details 断言落在配置面（与本文件其余加固项同一层次）：选项位挂在 SSL_CTX 上，
+     *          构造与热轮换两条创建路径因此共用同一份加固。TLS 1.3 本身没有重协商，
+     *          这条只管住 1.2 及更早——而最低版本又被限制在 1.2，正是它还有用的地方。
+     */
+    TEST(TlsContext, ContextDisablesRenegotiation)
+    {
+        const TlsContext tlsContext;
+        SSL_CTX         *context = tlsContext.nativeHandle();
+        ASSERT_NE(context, nullptr);
+
+        EXPECT_TRUE((SSL_CTX_get_options(context) & SSL_OP_NO_RENEGOTIATION) != 0UL)
+                // 关掉这一位，一条已建立的连接就能被反复要求重做密钥交换：服务端每次都要付
+                // 完整的非对称运算，而客户端只花几个包
+                << "服务端没有关掉重协商：单个客户端可以在一条连接上按包比例放大服务端的 CPU 开销";
+    }
+
+    /**
      * @brief 生效的候选套件里没有 3DES/RC4/MD5/NULL/单 DES/匿名/导出级套件，且列表不为空
      * @details 断言 ctx 里最终生效的套件列表：既挡住弱算法，也挡住「把列表配空」这种
      *          看似更严、实则连握手都做不成的写法
