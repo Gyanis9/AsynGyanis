@@ -306,7 +306,10 @@ namespace AsynGyanis::Core
         // 「证书文件不存在」——同一份文案指向错的那个文件
         ERR_clear_error();
 
-        if (SSL_CTX_use_certificate_file(context, certificateFile.c_str(), SSL_FILETYPE_PEM) != 1)
+        // 按「链文件」而非「单证书文件」加载：首张证书作本机证书，其余逐张进链并随握手一并出示。
+        // use_certificate_file 只读第一张，链上的中间 CA 会被静默丢掉 —— 部署里全链证书
+        // （fullchain.pem）是常态，缺链时对端只信任根 CA 就无法把证书串到根，握手直接失败
+        if (SSL_CTX_use_certificate_chain_file(context, certificateFile.c_str()) != 1)
         {
             return false;
         }

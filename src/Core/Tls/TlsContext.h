@@ -52,9 +52,10 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 加载服务器证书和私钥文件。
-         * @param certificateFile 证书文件路径（PEM 格式，通常包含证书链）
+         * @param certificateFile 证书链文件路径（PEM 格式：首张为本机证书，其余逐张作为中间证书一并出示）
          * @param keyFile  私钥文件路径（PEM 格式）
          * @return 成功返回 true，失败返回 false（可通过 OpenSSL 错误栈获取日志）
+         * @note 只放本机证书的单张文件同样合法；链里不需要包含根 CA（对端按本地信任库补最后一跳）
          */
         bool loadCertificate(const std::string &certificateFile, const std::string &keyFile) const;
 

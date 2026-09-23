@@ -14,6 +14,7 @@
 #include <openssl/tls1.h>
 
 #include <ctime>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -879,7 +880,126 @@ namespace AsynGyanis::Core
             std::filesystem::copy_file(kTestCertificatePath, destination, std::filesystem::copy_options::overwrite_existing, errorCode);
             return !errorCode;
         }
+
+        /**
+         * @brief 把两份文本文件按顺序拼成一份（用来造「叶子 + 中间证书」的全链 PEM）
+         * @param first  先写入的文件
+         * @param second 后写入的文件
+         * @param destination 拼接结果路径
+         * @return bool 两份都读到且结果写出
+         */
+        bool concatenateTextFiles(const std::filesystem::path &first, const std::filesystem::path &second,
+                                  const std::filesystem::path &destination)
+        {
+            std::ofstream stream(destination, std::ios::binary);
+            if (!stream)
+            {
+                return false;
+            }
+
+            for (const std::filesystem::path &source : {first, second})
+            {
+                std::ifstream input(source, std::ios::binary);
+                if (!input)
+                {
+                    return false;
+                }
+                stream << input.rdbuf();
+                // 逐份补一个换行：PEM 的分段判定靠行首，源文件缺尾换行时不能把两段粘成一行
+                stream << '\n';
+            }
+
+            stream.close();
+            return static_cast<bool>(stream);
+        }
+
+        /**
+         * @brief 上下文链栈里登记的证书张数（不含本机证书本身）
+         * @param context 目标上下文
+         * @return std::size_t 链栈大小；取不到链时返回 0
+         */
+        std::size_t chainCertificateCount(SSL_CTX *context)
+        {
+            STACK_OF(X509) *chain = nullptr;
+            if (SSL_CTX_get0_chain_certs(context, &chain) != 1)
+            {
+                return 0;
+            }
+            return chain == nullptr ? 0 : static_cast<std::size_t>(sk_X509_num(chain));
+        }
     } // namespace
+
+    /**
+     * @brief 全链证书文件里的中间证书要一并登记，本机证书仍是第一张
+     * @details 钉住「部署用 fullchain.pem 时不会只出示叶子」这条契约：只信任根 CA 的对端拿不到
+     *          中间证书就无法把证书串到根，缺链等于对一部分客户端不可用。判据取上下文的链栈大小，
+     *          单证书文件为 0、两证书文件为 1；顺带钉住「单张证书文件仍合法」。
+     */
+    TEST(TlsContext, LoadsIntermediateCertificatesFromCertificateChainFile)
+    {
+        const std::filesystem::path leafOnlyPath   = makeUniqueTemporaryPath("chain_leaf");
+        const std::filesystem::path extraCertPath  = makeUniqueTemporaryPath("chain_extra");
+        const std::filesystem::path chainFilePath  = makeUniqueTemporaryPath("chain_full");
+        ASSERT_TRUE(copyFixtureCertificate(leafOnlyPath));
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, extraCertPath, 0x1234L));
+        ASSERT_TRUE(concatenateTextFiles(leafOnlyPath, extraCertPath, chainFilePath));
+
+        // 对照组：同一张叶子单独成文件时应能加载，且链里什么都没有
+        const std::size_t leafOnlyChainCount = [&leafOnlyPath]
+        {
+            const TlsContext context;
+            EXPECT_TRUE(context.loadCertificate(leafOnlyPath.string(), kTestKeyPath.string()))
+                << "单张证书文件必须继续可用；OpenSSL 错误：" << lastOpenSslErrorText();
+            return chainCertificateCount(context.nativeHandle());
+        }();
+        EXPECT_EQ(leafOnlyChainCount, 0U) << "只有一张证书时不该凭空多出链证书";
+
+        const TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(chainFilePath.string(), kTestKeyPath.string()))
+            << "全链文件应当被接受；OpenSSL 错误：" << lastOpenSslErrorText();
+
+        // 顺序契约：第一张才是本机证书，中间证书不许顶替它
+        const std::string fixtureSerialNumber = [&leafOnlyPath]
+        {
+            const TlsContext reference;
+            return reference.loadCertificate(leafOnlyPath.string(), kTestKeyPath.string())
+                       ? presentedCertificateSerialNumber(reference.nativeHandle())
+                       : std::string{};
+        }();
+        ASSERT_FALSE(fixtureSerialNumber.empty());
+        EXPECT_EQ(presentedCertificateSerialNumber(context.nativeHandle()), fixtureSerialNumber)
+            << "出示的本机证书应当仍是文件里的第一张";
+
+        // 这一条是本次契约的核心：链上那张中间证书必须被登记，之后才会随握手一并出示
+        EXPECT_EQ(chainCertificateCount(context.nativeHandle()), 1U)
+            << "全链文件里除本机证书之外的证书必须进链，否则对端只信任根 CA 时建不出可信路径";
+    }
+
+    /**
+     * @brief 轮换后的新上下文同样带上链证书：链不是只在首次加载时才登记
+     * @details reloadCertificate() 与 loadCertificate() 共用同一份安装代码，这条钉住「换代后
+     *          中间证书没丢」——丢链的轮换会让原本正常的对端在下次握手时突然验不过。
+     */
+    TEST(TlsContext, ReloadedContextKeepsTheCertificateChain)
+    {
+        const std::filesystem::path leafOnlyPath  = makeUniqueTemporaryPath("reload_chain_leaf");
+        const std::filesystem::path extraCertPath = makeUniqueTemporaryPath("reload_chain_extra");
+        const std::filesystem::path chainFilePath = makeUniqueTemporaryPath("reload_chain_full");
+        ASSERT_TRUE(copyFixtureCertificate(leafOnlyPath));
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, extraCertPath, 0x1235L));
+        ASSERT_TRUE(concatenateTextFiles(leafOnlyPath, extraCertPath, chainFilePath));
+
+        TlsContext context;
+        ASSERT_TRUE(context.loadCertificate(chainFilePath.string(), kTestKeyPath.string()));
+        ASSERT_EQ(chainCertificateCount(context.nativeHandle()), 1U);
+
+        const SSL_CTX *const previousContext = context.nativeHandle();
+        ASSERT_NE(previousContext, nullptr);
+
+        ASSERT_TRUE(context.reloadCertificate()) << "路径上的证书未变，轮换应当成功；OpenSSL 错误：" << lastOpenSslErrorText();
+        EXPECT_NE(context.nativeHandle(), previousContext) << "换代语义：新证书挂在新的 SSL_CTX 上";
+        EXPECT_EQ(chainCertificateCount(context.nativeHandle()), 1U) << "换代后链上的中间证书不能丢";
+    }
 
     /**
      * @brief 钉住：路径上的证书被换掉后 reloadCertificate() 换代成功，且出示的证书真的换了
