@@ -483,4 +483,59 @@ namespace AsynGyanis::Net
                 << "占着额度的那条请求没能做完，实际收到：" << holdingText;
         EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "全部请求收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
     }
+
+    /**
+     * @brief 钉住：分块正文按「解码后字节数」占用全局预算，而不是按线上字节数
+     * @details 这份预算管的是「同时在途的正文总量」，要防的是内存被占爆，记账对象只能是留在内存里的
+     *          解码后字节。按线上字节数记会让「小块多帧」的合法上传被 framing 顶出预算（可用性问题）；
+     *          完全不记则解码量可以远超预算（防线失效）。此前这条预算路径只用 content-length 形状走过，
+     *          两个方向都没有证据。
+     */
+    TEST(HttpMemoryBudgetTest, ChargesChunkedBodyByDecodedBytesNotWireBytes)
+    {
+        // 预算 64 字节：8 个 8 字节块（解码 64、线上 104）要放行，9 个块（解码 72）要按 503 收口
+        auto budget = std::make_shared<HttpMemoryBudget>(64);
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 1024; // 让全局预算成为唯一的约束，而不是单请求正文上限
+
+        RunningHttpServerFixture fixture(makeBudgetTestLimits(), std::chrono::milliseconds{100}, {}, {}, parserLimits,
+                                         [budget](TestHttpServer &server)
+                                         {
+                                             server.setMemoryBudget(budget);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        // 每一块线上占 13 字节（长度行 + CRLF + 8 字节数据），解码后只留 8 字节
+        const auto makeChunkedUpload = [](const std::size_t blockCount)
+        {
+            std::string request = "POST /missing HTTP/1.1\r\nhost: test\r\ntransfer-encoding: chunked\r\n\r\n";
+            for (std::size_t index = 0; index < blockCount; ++index)
+            {
+                request += "8\r\nzzzzzzzz\r\n";
+            }
+            request += "0\r\n\r\n";
+            return request;
+        };
+
+        {
+            const LoopbackClient withinBudget(fixture.listeningPort());
+            ASSERT_TRUE(withinBudget.isValid()) << "回环连接失败";
+            ASSERT_TRUE(withinBudget.sendText(makeChunkedUpload(8), kWaitTimeout)) << "解码 64 字节的分块上传没能写入";
+            std::string acceptedText;
+            ASSERT_TRUE(waitForTextOccurrence(withinBudget, acceptedText, "404", kWaitTimeout))
+                    << "解码后恰好等于预算的分块上传被误拒（按线上 104 字节记账就会这样），实际收到：" << acceptedText;
+            EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout))
+                    << "请求收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
+        }
+
+        const LoopbackClient overBudget(fixture.listeningPort());
+        ASSERT_TRUE(overBudget.isValid()) << "回环连接失败";
+        ASSERT_TRUE(overBudget.sendText(makeChunkedUpload(9), kWaitTimeout)) << "解码 72 字节的分块上传没能写入";
+        std::string rejectedText;
+        ASSERT_TRUE(waitForTextOccurrence(overBudget, rejectedText, "503", kWaitTimeout))
+                << "解码后超出预算的分块上传没被按 503 收口，防线等于没有，实际收到：" << rejectedText;
+        EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout))
+                << "被拒请求收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
+    }
 } // namespace AsynGyanis::Net
