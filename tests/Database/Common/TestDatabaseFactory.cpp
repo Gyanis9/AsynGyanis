@@ -7,6 +7,7 @@
 // - CreateFromConfigRejectsNetworkConfigWithoutPort / CreateFromConfigFallsBackToSqliteWhenOnlyDatabaseNameGiven
 // - CreateFromConfigPrefersPortOverDatabasePath / CreateFromConfigThrowsForUnknownPortEvenWithDatabase /
 //   CreateFromConfigThrowsWithoutPortAndWithoutDatabase
+// - CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing：报错只说真正缺的那一样，不对空配置宣称有网络特征
 // - GuessTypeRecognizesMySqlDefaultPort / GuessTypeRecognizesRedisDefaultPort / GuessTypeReturnsEmptyForUnrecognizedPorts
 // 工厂只负责「挑驱动」，不负责连接，因此全部用例都在未连接状态下断言：只读 databaseType() / configuration()，
 // 不触发任何 IO 与文件系统访问。异常文本只断言「非空 + 含关键子串 + 含本地化（多字节）文案」，不硬编码整句中文，
@@ -269,6 +270,39 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(message.empty());
         EXPECT_TRUE(containsLocalizedText(message)) << message;
         EXPECT_NE(message.find(std::to_string(configuration.port)), std::string::npos) << message;
+    }
+
+    /**
+     * @brief 钉住「判不出类型」的报错说清缺的到底是哪一样，不对空配置宣称带着网络特征
+     *
+     * @details 一条文案同时断言两件事时，什么都没填的默认配置会被告知「还带着网络库特征」，
+     *          把排查方向引向并不存在的字段。两个方向都要钉住：空配置只提 database，
+     *          确实填了主机/账号的配置才提网络特征。
+     */
+    TEST(DatabaseFactory, CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing)
+    {
+        const std::string emptyConfigurationMessage = captureInvalidArgumentMessage(
+                []()
+                {
+                    static_cast<void>(DatabaseFactory::create(ConnectionConfig{}));
+                });
+
+        EXPECT_TRUE(containsLocalizedText(emptyConfigurationMessage)) << emptyConfigurationMessage;
+        EXPECT_NE(emptyConfigurationMessage.find("database"), std::string::npos) << emptyConfigurationMessage;
+        EXPECT_EQ(emptyConfigurationMessage.find("网络库特征"), std::string::npos)
+                << "什么都没填却被告知「带着网络库特征」，报错把人引向不存在的字段：" << emptyConfigurationMessage;
+
+        // 对照组：真带了主机字段的配置，才该听到那句「配置里还带着网络库特征」
+        ConnectionConfig networkOnly;
+        networkOnly.host = "127.0.0.1";
+
+        const std::string networkMessage = captureInvalidArgumentMessage(
+                [&networkOnly]()
+                {
+                    static_cast<void>(DatabaseFactory::create(networkOnly));
+                });
+
+        EXPECT_NE(networkMessage.find("网络库特征"), std::string::npos) << networkMessage;
     }
 
     // ------------------------------------------------------------------------

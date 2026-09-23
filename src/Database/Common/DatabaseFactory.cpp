@@ -25,9 +25,18 @@ namespace AsynGyanis::Database
             return createSqlite(config);
         }
 
-        throw Base::InvalidArgumentException("无法从配置判定数据库类型：端口 " + std::to_string(config.port) +
-                                             " 未知，配置里还带着网络库特征（主机/账号/口令非空）："
-                                             "请补上端口，或清空这些字段并按 SQLite 使用");
+        // 报错要说准「缺的到底是哪一样」。原先一条文案同时断言两件事，于是一份什么都没填的默认配置
+        // 会被告知「配置里还带着网络库特征」——把排查方向引向并不存在的字段（规范第 10 条：文案要可操作）
+        const bool hasNetworkFeatures = !config.host.empty() || !config.userName.empty() || !config.password.empty();
+
+        std::string message = "无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 推不出驱动，";
+        message += hasNetworkFeatures
+                           ? "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理："
+                             "请补上端口，或清空这些字段并按 SQLite 使用"
+                           : "且 database 为空，没有可作为嵌入式库依据的库名或路径："
+                             "连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
+
+        throw Base::InvalidArgumentException(message);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::create(const DatabaseType type, const ConnectionConfig &config)
