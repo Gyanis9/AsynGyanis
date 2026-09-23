@@ -406,7 +406,10 @@ namespace AsynGyanis::Core
 
     bool Uring::addFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
     {
-        if (!m_isValid || m_registrations.contains(fileDescriptor))
+        // 无效描述符当场拒：epoll_ctl 会直接报 EBADF，完成端口那边 CreateIoCompletionPort 也失败。
+        // 这边若不拦，POLL_ADD 会带着 -1 进环，内核回一份 POLLERR|POLLHUP 的完成——
+        // 于是注册「成功」了，而之后每一轮都有一个凭空冒出来的就绪要交给上层
+        if (fileDescriptor < 0 || !m_isValid || m_registrations.contains(fileDescriptor))
         {
             return false;
         }
@@ -537,18 +540,36 @@ namespace AsynGyanis::Core
             return;
         }
 
+        std::uint32_t reportedEvents = 0;
         if (result >= 0)
         {
             // 轮询结果就是 POLL* 掩码，数值与 EPOLL* 同源
-            epoll_event readyEvent{};
-            readyEvent.events   = static_cast<std::uint32_t>(result) & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM | EPOLLWRNORM);
-            readyEvent.data.ptr = registration->userData;
-            m_readyEvents.push_back(readyEvent);
-        } else if (result != -ECANCELED)
+            reportedEvents = static_cast<std::uint32_t>(result) &
+                             (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM | EPOLLWRNORM);
+        }
+        else if (result != -ECANCELED)
         {
             // 轮询本身失败（描述符被关闭等）：按错误事件上报，让等待方收尾
+            reportedEvents = EPOLLERR | EPOLLHUP;
+        }
+
+        // 只上报这张记录此刻还要的那些位。提交被推迟到 wait() 才做，于是「关注位已经改掉」与
+        // 「内核把旧掩码那份轮询做完了」会撞在一起（epoll 不会——它改掩码当场生效）。不拦的话，
+        // 那份没人要的就绪会被 IoWatcher 缓存成「已就绪」，下一次等待凭空醒一次；写侧更糟，
+        // 一份陈旧的可写会让人以为缓冲已经排空
+        if (registration->events == 0)
+        {
+            reportedEvents = 0;
+        }
+        else
+        {
+            reportedEvents &= registration->events | EPOLLERR | EPOLLHUP;
+        }
+
+        if (reportedEvents != 0)
+        {
             epoll_event readyEvent{};
-            readyEvent.events   = EPOLLERR | EPOLLHUP;
+            readyEvent.events   = reportedEvents;
             readyEvent.data.ptr = registration->userData;
             m_readyEvents.push_back(readyEvent);
         }

@@ -743,6 +743,16 @@ namespace AsynGyanis::Core
             return;
         }
 
+        if ((state.registeredEvents & direction) == 0)
+        {
+            // 这一方向的关注位已经被摘掉（清零掩码时旧探针还在途，或等待者刚好退场）：通知只清账、
+            // 不上报。epoll 在这一刻根本不会把这个描述符报回来，而完成端口做得到——清零不回收已投出
+            // 的操作。交上去的那一份就绪会被上层当成「有新数据」缓存起来，下一次等待凭空醒一次
+            // （写侧更糟：一份陈旧的可写会让人以为缓冲已经排空）。探针标记已在上面清掉，
+            // 重新关注时会另投一份，水平触发的语义不丢
+            return;
+        }
+
         if ((state.registeredEvents & EPOLLONESHOT) == 0)
         {
             m_pendingRearm.push_back(&state);

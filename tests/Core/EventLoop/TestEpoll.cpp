@@ -176,6 +176,87 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(events.empty());
     }
 
+    /**
+     * @brief 无效描述符与重复注册都要当场被拒，而失败的那一次不许伤到已成立的那一次
+     * @details 三个后端各用自己的办法实现这张表（内核报 EEXIST / 表里已有 / 提交失败）。这里盯的是
+     *          共同的后果：把「拒重复」实现成「先摘旧的再建新的」，第二份注册对象就会悄悄顶掉第一份
+     *          的归属——上层两份注册对象于是有一份永远收不到事件。
+     */
+    TEST(Epoll, RejectsInvalidAndDuplicateRegistrationWithoutHurtingTheFirst)
+    {
+        Epoll backend;
+        TestEventFd eventFd;
+        ASSERT_GE(eventFd.fileDescriptor, 0);
+
+        EXPECT_FALSE(backend.addFileDescriptor(Platform::FileDescriptor::kInvalid, EPOLLIN, nullptr))
+                << "无效描述符被收下：注册表里会留一条永远等不到通知的记录";
+
+        int firstSentinel = 1;
+        ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &firstSentinel));
+
+        int secondSentinel = 2;
+        EXPECT_FALSE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &secondSentinel))
+                << "同一个描述符注册了两次都报成功：两份注册对象会在同一个就绪上互相覆盖";
+
+        // 被拒的那一次不许动第一次的归属：触发一次，事件仍要带着第一份用户数据回来
+        ASSERT_TRUE(eventFd.trigger());
+        const auto events = backend.wait(100);
+        ASSERT_EQ(events.size(), 1U) << "重复注册被拒之后，第一次注册收不到事件了";
+        EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&firstSentinel)) << "事件带的是第二次的用户数据：归属被顶掉了";
+
+        EXPECT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
+    }
+
+    /**
+     * @brief 未注册描述符上的改与删、以及第二次删，都必须报「没做成」
+     * @details 这三条都返回 bool，而调用方（IoWatcher）用它区分「内核状态未知」与「已经落好」：
+     *          把失败报成成功，账本就会记成一个内核里并不存在的关注位。
+     */
+    TEST(Epoll, OperationsOnUnregisteredDescriptorsReportFailure)
+    {
+        Epoll backend;
+        TestEventFd eventFd;
+        ASSERT_GE(eventFd.fileDescriptor, 0);
+
+        int sentinel = 1;
+        EXPECT_FALSE(backend.modFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel))
+                << "没注册过的描述符被当成改成功了";
+        EXPECT_FALSE(backend.delFileDescriptor(eventFd.fileDescriptor)) << "没注册过的描述符被当成注销成功了";
+
+        ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel));
+        ASSERT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
+        EXPECT_FALSE(backend.delFileDescriptor(eventFd.fileDescriptor))
+                << "第二次注销也报成功：注销的返回值就成了不可靠信号，重复摘除会被当成一次真实收尾";
+    }
+
+    /**
+     * @brief 关注位清零期间不许上报，改回来之后那份一直就绪的状态仍要能收到
+     * @details 这是 IoWatcher「不关注必须显式写进内核」那一侧的后端义务：清零后若不把在途探针取消，
+     *          恢复关注时那份旧就绪会被当成新事件交回来；而恢复之后不再补投，那个一直可读的描述符
+     *          就再也报不上来（epoll 靠内核重取状态看不见这个缺口，只有另两个后端会露出来）。
+     */
+    TEST(Epoll, ClearedMaskStaysQuietAndRestoringItDeliversAgain)
+    {
+        Epoll backend;
+        TestEventFd eventFd;
+        ASSERT_GE(eventFd.fileDescriptor, 0);
+
+        int sentinel = 1;
+        ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel));
+        ASSERT_TRUE(backend.modFileDescriptor(eventFd.fileDescriptor, 0, &sentinel));
+
+        // 清零期间触发：没有任何关注位，这一份就绪不该出现在结果里
+        ASSERT_TRUE(eventFd.trigger());
+        EXPECT_TRUE(backend.wait(50).empty()) << "关注位已清零，后端还在上报这个描述符";
+
+        ASSERT_TRUE(backend.modFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel));
+        const auto events = backend.wait(100);
+        ASSERT_FALSE(events.empty()) << "恢复关注之后，那份一直就绪的状态再也没有被上报过";
+        EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&sentinel));
+
+        EXPECT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
+    }
+
 #if !ASYN_PLATFORM_WIN32
     /**
      * @brief 注销一个已武装的描述符之后，同一个描述符号（已被新描述符占用）要能立刻重新注册
