@@ -200,7 +200,9 @@ namespace AsynGyanis::Core
          * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层没有零拷贝发送能力，本方法也不在
          *       TlsSocket 上（调用方用 requires 探测该能力）；Windows 无等价原语，见 sendFileChunk
          * @throws Base::SystemException 源文件描述符非法、待发字节数为 0，或发送失败
-         *         （连接重置、对端在发送期间关闭、源文件在发送期间被截断等）
+         *         （连接重置、对端在发送期间关闭、请求的偏移/长度越过源文件末尾等）。
+         *         越界一律按失败收口，但两种越界报法不同：起点越界时一个字节都没上线，
+         *         长度越界时前缀已经上线且不可整块重发
          */
         Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const;
 #endif

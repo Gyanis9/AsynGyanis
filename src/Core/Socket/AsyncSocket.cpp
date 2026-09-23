@@ -386,10 +386,21 @@ namespace AsynGyanis::Core
             if (sentBytes == 0)
             {
                 // sendfile 只在「已到文件末尾」时返回 0（本循环的待发字节数恒大于 0），
-                // 与 send/sendmsg 返回 0 表示对端关闭不是一回事：文件在发送期间被截断了。
-                // 按发送失败处理并给出准确原因，而不是复用「对端已关闭」那句会误导排查的文案
-                throw Base::SystemException("零拷贝发送失败：源文件在发送期间被截断，偏移 " + std::to_string(currentOffset) +
-                                            " 已越过文件末尾（文件不应在服务期间被改写，请检查静态目录的写入方）");
+                // 与 send/sendmsg 返回 0 表示对端关闭不是一回事。
+                // 两种成因要分开报：一次都没发出去是调用方给的起点本就在文件之外，
+                // 发过一部分才是文件比声称的长度短——归错因会把排查支到相反的方向
+                if (remainingLength == length)
+                {
+                    throw Base::SystemException("零拷贝发送失败：起点已在源文件末尾之后（偏移 " +
+                                                std::to_string(currentOffset) +
+                                                " 处读不到任何字节），请按源文件实际长度校正偏移与长度");
+                }
+                // 已经上线的前缀收不回来：调用方若整块重发，这段字节会在流里重复一遍
+                throw Base::SystemException("零拷贝发送失败：已发出 " + std::to_string(length - remainingLength) +
+                                            " 字节后到达文件末尾，源文件比声称的长度 " + std::to_string(length) +
+                                            " 短（此刻偏移 " + std::to_string(currentOffset) +
+                                            "）。长度多半取自早前的 stat、文件随后被改写；"
+                                            "已上线的前缀不可整块重发，只能收口本条连接");
             }
 
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
