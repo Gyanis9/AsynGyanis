@@ -1175,6 +1175,18 @@ namespace
         OrmQuery<AccountRow> afterQuery(pool, Database::DatabaseType::Sqlite);
         Samples::checklist().check(isExceptionAsExpected && afterQuery.count() == countBefore + 1,
                                    "重复主键经 ORM 抛出 QueryExecutionException（中文原因），失败的那一行没有落库");
+
+        // 自增标识挂在写回执上：经 DatabaseResult 基类接口即可读到，不必向下转型到具体驱动，
+        // 也不必补一条查询去问——池化连接上「先插入再查 last_insert_rowid()」两次取出可能落到两条连接
+        static_cast<void>(connection.execute("CREATE TABLE generated (id INTEGER PRIMARY KEY AUTOINCREMENT, tag TEXT NOT NULL)"));
+        const std::unique_ptr<Database::DatabaseResult> firstGeneratedReceipt =
+                connection.execute("INSERT INTO generated (tag) VALUES (?)", std::vector<Database::DatabaseValue>{std::string("甲")});
+        const std::unique_ptr<Database::DatabaseResult> secondGeneratedReceipt =
+                connection.execute("INSERT INTO generated (tag) VALUES (?)", std::vector<Database::DatabaseValue>{std::string("乙")});
+        const std::int64_t firstGeneratedId  = firstGeneratedReceipt != nullptr ? firstGeneratedReceipt->lastInsertRowId() : -1;
+        const std::int64_t secondGeneratedId = secondGeneratedReceipt != nullptr ? secondGeneratedReceipt->lastInsertRowId() : -1;
+        Samples::checklist().check(firstGeneratedId > 0 && secondGeneratedId == firstGeneratedId + 1,
+                                   "写回执带着本条语句生成的自增标识，且各自快照不被后来的插入推走");
     }
 
     // ========================================================================
