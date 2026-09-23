@@ -11,12 +11,16 @@
 //   5) 拒绝面：帧类型非最短编码（§16 里唯一的例外）、未定义类型、各字段越出载荷末尾、
 //      NEW_CONNECTION_ID 的连接标识长度不在 1..20；
 //   6) ACK 区间的折叠助手 `buildQuicAcknowledgementRanges`：相邻合并、超出确认值的不认、
-//      段数封顶后砍最老的区间、空集合时兜底成只含最大确认值那一段。
+//      段数封顶后砍最老的区间、空集合时兜底成只含最大确认值那一段；
+//   7) 分配台账：把一包的帧编进「每包新建的串」与「复用同一块缓冲」各量一次——出站方向原先每个包
+//      都要从空串长到一包大小，调用方复用缓冲之后稳态应当一次都不碰堆。
 // 用例全是纯计算，不起网络也不依赖外部服务。
 
 #include "Net/Quic/Codec/QuicFrame.h"
 
 #include "NetTestSupport.h"
+
+#include "AllocationProbe.h"
 
 #include <gtest/gtest.h>
 
@@ -36,6 +40,10 @@ namespace AsynGyanis::Net
         using AsynGyanis::Net::TestSupport::containsText;
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
         using AsynGyanis::Net::TestSupport::toUnsignedBytes;
+
+        using AsynGyanis::TestSupport::AllocationProfile;
+        using AsynGyanis::TestSupport::kMeasurementIterations;
+        using AsynGyanis::TestSupport::measurePerOperation;
 
         /**
          * @brief 编出一帧的字节
@@ -513,5 +521,63 @@ namespace AsynGyanis::Net
                                                           79 - 2 * (kQuicMaximumAcknowledgementRanges - 1)}));
         // 砍掉的是最老的那些：1 号包不再被覆盖，而首段仍含最大确认值
         EXPECT_GT(capped.back().smallestAcknowledged, 1U);
+    }
+
+    /**
+     * @brief 把一包的帧编进复用的缓冲与每包新建的缓冲，各碰几次堆
+     * @details 出站方向原先每个包都把帧序列编进一个新建的空串，长到一包大小要几何扩容好几回；
+     *          调用方改成复用一块按线程的缓冲后，稳态应当一次都不碰堆。判据打在复用那一侧
+     *          （归零才说明帧编码里没有隐藏的中间容器），对照侧只打印。
+     */
+    TEST(QuicFrameAllocations, FrameAssemblyIntoReusedBufferDoesNotAllocate)
+    {
+        const std::vector<std::uint8_t> body(1100U, 's');
+        QuicStreamFrame stream;
+        stream.streamId = 4ULL;
+        stream.offset   = 0ULL;
+        stream.data     = std::span<const std::uint8_t>(body);
+        stream.isFinal  = false;
+
+        QuicAcknowledgementFrame acknowledgement;
+        acknowledgement.largestAcknowledgedPacketNumber = 41ULL;
+        acknowledgement.ranges                          = {QuicAcknowledgementRange{38ULL, 41ULL},
+                                                           QuicAcknowledgementRange{30ULL, 34ULL}};
+
+        const std::vector<QuicFrame> packetFrames{QuicFrame{acknowledgement}, QuicFrame{stream}};
+        const auto appendAll = [&packetFrames](std::string &frames)
+        {
+            for (const QuicFrame &frame: packetFrames)
+            {
+                appendQuicFrame(frames, frame);
+            }
+        };
+
+        std::string reusedFrames;
+        appendAll(reusedFrames);
+        const std::size_t frameByteCount = reusedFrames.size();
+        ASSERT_GT(frameByteCount, body.size()) << "这一包连正文都没编全，读数的形状不对";
+
+        const auto reuseOnce = [&appendAll, &reusedFrames]() -> std::size_t
+        {
+            reusedFrames.clear();
+            appendAll(reusedFrames);
+            return reusedFrames.size();
+        };
+        const AllocationProfile reused = measurePerOperation(reuseOnce);
+        EXPECT_EQ(reused.resultSum, kMeasurementIterations * frameByteCount) << "有一千次没编完整，读数不可信";
+        EXPECT_EQ(reused.totalAllocations, 0ULL)
+                << "复用缓冲那一侧仍有分配：帧编码里藏了中间容器，每包还是会碰堆";
+
+        const auto freshOnce = [&appendAll]() -> std::size_t
+        {
+            std::string frames;
+            appendAll(frames);
+            return frames.size();
+        };
+        const AllocationProfile fresh = measurePerOperation(freshOnce);
+        EXPECT_GT(fresh.totalAllocations, reused.totalAllocations) << "对照侧也没扩容，这条形状太短，读数没有区分度";
+        std::printf("quic 编一包 %zu 字节的帧序列：每包新建缓冲 %llu 次分配，复用同一块缓冲 %llu 次\n", frameByteCount,
+                    static_cast<unsigned long long>(fresh.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(reused.totalAllocations / kMeasurementIterations));
     }
 } // namespace AsynGyanis::Net

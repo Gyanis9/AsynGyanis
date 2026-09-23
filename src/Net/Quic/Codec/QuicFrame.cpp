@@ -242,14 +242,15 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 编码侧的区间换算：把绝对区间换成线格式的 (gap, 区间长度)，顺带验出没算出负包号
+         * @brief 编码侧的区间校验：确认这帧区间能按 §19.3.1 换成线格式，且不算出负包号
+         * @details 换算结果（首项 (0, First ACK Range) 与其后的每个 (gap, 区间长度) 对）都能由相邻
+         *          区间当场算出来，因此不在此处物化一份中间向量：这条路径每个带确认的出站包都要走
+         *          一遍，物化就是每包一次分配。校验整体先于写入完成，抛异常时一个字节都不会落进缓冲。
          * @param frame ACK 帧
-         * @return std::vector<std::pair<std::uint64_t, std::uint64_t>> 首项是 (0, First ACK Range)，
-         *         其后每项是一个 (gap, 区间长度) 对
          * @throws Base::InvalidArgumentException 用法错误：区间为空、首区间最大值不等于声明的最大包号、
          *         区间不递减或按 §19.3.1 会算出负包号
          */
-        std::vector<std::pair<std::uint64_t, std::uint64_t>> encodeAcknowledgementRanges(const QuicAcknowledgementFrame &frame)
+        void requireEncodableAcknowledgementRanges(const QuicAcknowledgementFrame &frame)
         {
             if (frame.ranges.empty())
             {
@@ -262,9 +263,6 @@ namespace AsynGyanis::Net
                                                                  frame.ranges.front().largestAcknowledged,
                                                                  frame.largestAcknowledgedPacketNumber));
             }
-
-            std::vector<std::pair<std::uint64_t, std::uint64_t>> wireRanges;
-            wireRanges.emplace_back(0ULL, frame.largestAcknowledgedPacketNumber - frame.ranges.front().smallestAcknowledged);
             for (std::size_t rangeIndex = 1; rangeIndex < frame.ranges.size(); ++rangeIndex)
             {
                 const QuicAcknowledgementRange &previous = frame.ranges[rangeIndex - 1];
@@ -278,10 +276,7 @@ namespace AsynGyanis::Net
                                                                      rangeIndex + 1, current.largestAcknowledged, current.smallestAcknowledged,
                                                                      previous.smallestAcknowledged));
                 }
-                wireRanges.emplace_back(previous.smallestAcknowledged - current.largestAcknowledged - 2,
-                                        current.largestAcknowledged - current.smallestAcknowledged);
             }
-            return wireRanges;
         }
 
         /**
@@ -311,19 +306,22 @@ namespace AsynGyanis::Net
 
             void operator()(const QuicAcknowledgementFrame &frame) const
             {
-                const std::vector<std::pair<std::uint64_t, std::uint64_t>> wireRanges = encodeAcknowledgementRanges(frame);
+                requireEncodableAcknowledgementRanges(frame);
                 appendQuicVariableLengthInteger(bytes,
                                                 static_cast<std::uint64_t>(frame.hasEcnCounts ? QuicFrameType::AcknowledgementEcn
                                                                                               : QuicFrameType::Acknowledgement));
                 appendQuicVariableLengthInteger(bytes, frame.largestAcknowledgedPacketNumber);
                 appendQuicVariableLengthInteger(bytes, frame.acknowledgementDelay);
-                appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(wireRanges.size() - 1));
-                // 首区间由 First ACK Range 单独表达，就是首项的区间长度
-                appendQuicVariableLengthInteger(bytes, wireRanges.front().second);
-                for (std::size_t rangeIndex = 1; rangeIndex < wireRanges.size(); ++rangeIndex)
+                // ACK Range Count 就是「首区间之外还有几段」，不必先物化区间对才知道
+                appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(frame.ranges.size() - 1));
+                // 首区间由 First ACK Range 单独表达：含最大包号那一段的跨度
+                appendQuicVariableLengthInteger(bytes, frame.largestAcknowledgedPacketNumber - frame.ranges.front().smallestAcknowledged);
+                for (std::size_t rangeIndex = 1; rangeIndex < frame.ranges.size(); ++rangeIndex)
                 {
-                    appendQuicVariableLengthInteger(bytes, wireRanges[rangeIndex].first);
-                    appendQuicVariableLengthInteger(bytes, wireRanges[rangeIndex].second);
+                    const QuicAcknowledgementRange &previous = frame.ranges[rangeIndex - 1];
+                    const QuicAcknowledgementRange &current = frame.ranges[rangeIndex];
+                    appendQuicVariableLengthInteger(bytes, previous.smallestAcknowledged - current.largestAcknowledged - 2);
+                    appendQuicVariableLengthInteger(bytes, current.largestAcknowledged - current.smallestAcknowledged);
                 }
                 if (frame.hasEcnCounts)
                 {
