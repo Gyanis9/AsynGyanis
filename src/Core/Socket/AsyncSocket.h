@@ -73,7 +73,7 @@ namespace AsynGyanis::Core
          * @param domain 协议族，通常为 AF_INET（IPv4）或 AF_INET6（IPv6）
          * @param type   socket 类型，默认为 SOCK_STREAM（TCP）
          * @note 内部固定带上 SOCK_NONBLOCK | SOCK_CLOEXEC：socket 必为非阻塞，且子进程不会继承该描述符
-         * @throws SystemException socket() 系统调用失败
+         * @throws Base::SystemException socket() 系统调用失败
          */
         static AsyncSocket create(EventLoop &loop, int domain = AF_INET, int type = SOCK_STREAM);
 

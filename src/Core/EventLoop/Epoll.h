@@ -59,6 +59,8 @@ namespace AsynGyanis::Core
     public:
         /**
          * @brief 创建 epoll 实例
+         * @throws Base::SystemException epoll_create1 失败（文件描述符耗尽，或内核不允许创建 epoll
+         *         实例）。没有可用实例的循环无法等待任何事件，因此当场抛而不是留下一个空壳对象
          */
         Epoll();
 
@@ -105,6 +107,8 @@ namespace AsynGyanis::Core
          * @param timeoutMs 超时毫秒数，-1 表示无限等待，0 表示立即返回（非阻塞）
          * @return 就绪事件列表的视图（std::span<epoll_event>），
          *         长度为 0 表示超时或无事件，长度 >0 表示有事件发生
+         * @throws Base::SystemException epoll_wait 失败（句柄已销毁或内核报错）。EINTR 不算失败：
+         *         它返回空视图，让调用方回到循环开头重新检查停止请求
          * @warning 视图指向本对象的固定容量缓冲（每次取满 kMaximumEventCount 条为止）。
          *          下一次 wait() 会覆盖它的内容，因此在持有视图期间**不得**再进入 wait()，
          *          也不得把这个视图跨线程留着用——EventLoop::run() 正是靠「先取完这批、
