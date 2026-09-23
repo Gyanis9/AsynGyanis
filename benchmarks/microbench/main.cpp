@@ -532,6 +532,14 @@ namespace
         }
         return layer;
     }
+
+    /**
+     * @brief 日志用例共用的一行正文
+     * @details 放在命名空间作用域而不是 main() 里：块内常量被 lambda 用到时按标准仍需捕获，
+     *          GCC 与 MSVC 在这条上判定不同（后者放行），写在 main() 里就是一颗只在 Linux 侧
+     *          才炸的雷——本文件此前正是因此编不过。
+     */
+    constexpr std::string_view kLogMessage = "request served in 12 ms, path=/api/orders, status=200";
 } // namespace
 
 template<>
@@ -1803,7 +1811,6 @@ int main(int argumentCount, char **argumentValues)
     // 日志热路径：一条日志从「调用 log()」到「渲成一行人读文本」的成本。
     // 事件循环线程上每请求至少一条，这条路的钱要和 h1 解析同量级才不打扰业务。
     // ------------------------------------------------------------------
-    constexpr std::string_view kLogMessage = "request served in 12 ms, path=/api/orders, status=200";
     const Base::LogEvent logEvent{Base::LogLevel::Info, std::chrono::system_clock::now(), "tid-bench",
                                   Base::SourceLocation("microbench.cpp", 4711, "benchLogFunction"),
                                   "bench.logger", std::string{kLogMessage}};
