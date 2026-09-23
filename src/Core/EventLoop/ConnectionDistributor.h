@@ -70,7 +70,9 @@ namespace AsynGyanis::Core
         [[nodiscard]] bool distribute(int fileDescriptor) noexcept;
 
         /**
-         * @brief 取累计派发成功的连接数（用于观测与用例断言）
+         * @brief 取累计交给过工作循环的连接数（用于观测与用例断言）
+         * @details 口径是「投递已排上队」，不是「接手动作已跑完」：目标循环先退出、投递随队列一起被
+         *          丢弃的那些仍计入。只有交接句柄建不起来、或投递没能排上队（那条连接当场被关闭）的不计。
          * @return std::size_t 累计条数
          */
         [[nodiscard]] std::size_t distributedCount() const noexcept;
@@ -85,6 +87,6 @@ namespace AsynGyanis::Core
 
         std::vector<Worker> m_workers;           ///< 已登记的工作循环，轮转顺序即登记顺序
         std::size_t         m_nextWorkerIndex{0}; ///< 下一次派发给哪个工作循环
-        std::size_t         m_distributedCount{0}; ///< 累计派发成功的连接数
+        std::size_t         m_distributedCount{0}; ///< 累计派发成功的连接数（投递未能排队而当场关闭的那些不算）
     };
 } // namespace AsynGyanis::Core
