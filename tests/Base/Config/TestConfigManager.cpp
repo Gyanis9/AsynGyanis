@@ -1367,13 +1367,14 @@ port: 9090
     }
 
     /**
-     * @brief 带小数点或指数的字面量本来就是浮点，不进这条判据
+     * @brief 带小数点或指数的字面量本来就是浮点，不进整数那条判据
      * @details 误拒候选之二：1e25 与 DBL_MAX 都能安全落进 double，若按「数字串长度」一刀切，
      *          科学计数法写出来的合法浮点配置就被拒了
      */
     TEST_F(ConfigManagerTest, JsonFloatLiteralsAboveInt64RangeStayFloats)
     {
-        writeFile("floats.json", R"({"ratio": 1.7976931348623157e308, "count": 1e25, "plain": 3.25})");
+        writeFile("floats.json",
+                  R"({"ratio": 1.7976931348623157e308, "count": 1e25, "plain": 3.25, "subnormal": 5e-324, "tiny": 1e-309})");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
@@ -1381,6 +1382,28 @@ port: 9090
         EXPECT_DOUBLE_EQ(configuration().getDouble("count", 0.0), 1e25);
         EXPECT_DOUBLE_EQ(configuration().getDouble("plain", 0.0), 3.25);
         EXPECT_GT(configuration().getDouble("ratio", 0.0), 1e307);
+        // 下溢边界的两个写法都在 double 可表示范围内（次正规数），必须照常收下
+        EXPECT_GT(configuration().getDouble("subnormal", 0.0), 0.0);
+        EXPECT_GT(configuration().getDouble("tiny", 0.0), 0.0);
+    }
+
+    /**
+     * @brief JSON 的下溢浮点字面量不再被悄悄折成 0.0
+     * @details 实测两侧口径此前不一致：nlohmann 把 1e-400 直接给成 0.0（不报错也不留标记），
+     *          而 YAML 走 std::from_chars，上下溢都报 errc::result_out_of_range 因而被拒
+     *          （MSVC 与 libstdc++ 的读数逐位相同，不是平台差异）。一份「极小阈值」的配置
+     *          在 JSON 侧就此变成 0，而 0 往往是「关掉这个机制」的意思
+     */
+    TEST_F(ConfigManagerTest, JsonRejectsFloatLiteralBeyondDoubleRangeLikeYamlDoes)
+    {
+        writeFile("underflow.json", R"({"threshold": 1e-400})");
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "超出 double 表示范围")) << "报错没说清这是浮点越界";
+        EXPECT_TRUE(anyEntryContains(result.errors, "underflow.json")) << "报错没点名那份文件";
+        EXPECT_DOUBLE_EQ(configuration().getDouble("threshold", -1.0), -1.0) << "被折成 0.0 的那份配置留下了值";
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryCutsOffCyclicAliases)

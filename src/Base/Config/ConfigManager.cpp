@@ -1066,17 +1066,18 @@ namespace AsynGyanis::Base
         }
 
         /**
-         * @brief 挡下 JSON 文本里超出 64 位表示范围的整数字面量
+         * @brief 挡下 JSON 文本里超出 64 位整数范围或 double 表示范围的数值字面量
          * @details nlohmann 在词法阶段就把超出 [INT64_MIN, UINT64_MAX] 的整数字面量折成 double：
-         *          精度当场丢失且不留任何标记，之后 `getInt` 只能按「类型不符」回落默认值——而同一份
-         *          数值写成 YAML 会被明确拒绝（见 parseCoreInteger）。同一份配置换个后缀就换行为，
-         *          是这里最难查的一类现场，因此解析前先把这种字面量扫出来拒掉。
-         *          扫描只认**字符串字面量之外**「可带负号的纯数字」：带小数点或指数的写法本来就是
-         *          浮点数，不在这条判据之内。
+         *          精度当场丢失且不留任何标记，之后 `getInt` 只能按「类型不符」回落默认值；浮点侧同样
+         *          静默——下溢的写法（1e-400）被折成 0.0。而同一个数值写成 YAML 会被明确拒绝
+         *          （见 parseCoreInteger 与 parseCoreFloat）。同一份配置换个后缀就换行为，
+         *          是这里最难查的一类现场，因此解析前先把这两种字面量扫出来拒掉。
+         *          判范围只能在解析前做：事后 DOM 里已经分不出「超大整数」与「浮点数」。
+         *          扫描只认**字符串字面量之外**的数值记数器，误拒比漏拒更糟（合法配置会直接加载失败）。
          * @param text 去掉 BOM 后的 JSON 文档文本
-         * @throws DocumentConversionException 存在越界的整数字面量
+         * @throws DocumentConversionException 存在超出表示范围的数值字面量
          */
-        void rejectOverflowingJsonIntegers(const std::string &text)
+        void rejectOutOfRangeJsonNumbers(const std::string &text)
         {
             std::size_t index = 0;
             while (index < text.size())
@@ -1131,9 +1132,18 @@ namespace AsynGyanis::Base
                     }
                     if (digitCharacter == '.' || digitCharacter == 'e' || digitCharacter == 'E')
                     {
-                        // 带小数点或指数：本来就是浮点字面量，落到 double 不算变形
+                        // 带小数点或指数：本来就是浮点字面量，落到 double 不算变形（范围另判）
                         looksLikeFloat = true;
                         ++cursor;
+                        // 指数符号只在 e/E 之后才算这一串的一部分：漏了它就把 "1e-400" 扫成 "1e"，
+                        // 后面的 from_chars 只会报「形态不合」而看不见下溢
+                        if (digitCharacter == 'e' || digitCharacter == 'E')
+                        {
+                            if (cursor < text.size() && (text[cursor] == '+' || text[cursor] == '-'))
+                            {
+                                ++cursor;
+                            }
+                        }
                         continue;
                     }
                     break;
@@ -1141,6 +1151,19 @@ namespace AsynGyanis::Base
                 index = cursor;
                 if (looksLikeFloat)
                 {
+                    // 浮点写法不在整数判据里，但同样要判范围：nlohmann 把下溢（1e-400）悄悄折成 0.0，
+                    // 而 YAML 侧走 from_chars，上下溢都会报「超出 double 表示范围」——两侧口径必须一致。
+                    // 上溢 nlohmann 自己会抛 out_of_range，这里先拦下只是让文案统一
+                    double     floatingValue     = 0.0;
+                    const auto [stopPosition, errorCode] =
+                            std::from_chars(text.data() + tokenBegin, text.data() + cursor, floatingValue);
+                    static_cast<void>(stopPosition);
+                    if (errorCode == std::errc::result_out_of_range)
+                    {
+                        throw DocumentConversionException(std::format("浮点值 '{}' 超出 double 表示范围（第 {} 字节处）",
+                                                                      text.substr(tokenBegin, cursor - tokenBegin),
+                                                                      tokenBegin + 1U));
+                    }
                     continue;
                 }
 
@@ -1170,12 +1193,12 @@ namespace AsynGyanis::Base
          * @details 深度闸门挂在解析回调上：nlohmann 的解析器自己是状态机，超限的是随后
          *          那个几万层的 DOM 的递归析构，以及我们把嵌套结构摊平成点分键的那趟递归，
          *          所以在建 DOM 的途中就抛出，交回调用方的是「一轮失败的加载」而不是崩溃。
-         *          越界整数字面量在建 DOM 之前先挡掉（见 rejectOverflowingJsonIntegers）——
+         *          越界数值字面量在建 DOM 之前先挡掉（见 rejectOutOfRangeJsonNumbers）——
          *          nlohmann 一旦把它们折成 double，事后从 DOM 里就分不出「写了个超大整数」还是
          *          「写了个浮点数」。
          * @param text 文档文本
          * @return ConfigValue 文档根值
-         * @throws DocumentConversionException 嵌套超过 kMaximumDocumentDepth 层，或整数字面量超出 64 位表示范围
+         * @throws DocumentConversionException 嵌套超过 kMaximumDocumentDepth 层，或数值字面量超出可表示范围
          * @throws nlohmann::json::exception 语法错误（消息自带行列与出错记号）
          */
         [[nodiscard]] ConfigValue parseJsonDocument(const std::string &text)
@@ -1196,11 +1219,11 @@ namespace AsynGyanis::Base
             if (text.starts_with(kUtf8Bom))
             {
                 const std::string documentText = text.substr(kUtf8Bom.size());
-                rejectOverflowingJsonIntegers(documentText);
+                rejectOutOfRangeJsonNumbers(documentText);
                 return ConfigValue::parse(documentText, depthGuard);
             }
 
-            rejectOverflowingJsonIntegers(text);
+            rejectOutOfRangeJsonNumbers(text);
             return ConfigValue::parse(text, depthGuard);
         }
 
