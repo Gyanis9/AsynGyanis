@@ -37,6 +37,24 @@ namespace AsynGyanis::Database
                 return {};
             }
 
+            // 元素型回复一律压成 "[a, b]"：RESP2 的数组与 RESP3 的 SET / MAP / PUSH / ATTR 都靠
+            // elements 承载，判据因此取 elements 而不是枚举常量——这些名字在各 hiredis 版本里并不
+            // 一致（本文件刻意不引用它们）。牺牲层级，换「不静默丢数据」
+            if (sourceReply->elements > 0)
+            {
+                std::string nestedText("[");
+                for (size_t index = 0; index < sourceReply->elements; ++index)
+                {
+                    if (index > 0)
+                    {
+                        nestedText += ", ";
+                    }
+                    nestedText += flattenReplyText(sourceReply->element[index]);
+                }
+                nestedText += ']';
+                return nestedText;
+            }
+
             switch (sourceReply->type)
             {
                 // 列表的备选类型只有 std::vector<std::string>：整数转成十进制文本，
@@ -45,22 +63,8 @@ namespace AsynGyanis::Database
                     return std::to_string(sourceReply->integer);
 
                 case REDIS_REPLY_ARRAY:
-                {
-                    // 更深一层的数组同样无法在 DatabaseValue 里表达结构，
-                    // 这里串成 "[a, b]" 形式：牺牲层级，换取「不静默丢数据」；
-                    // 需要精确结构时用 nativeHandle() 自行遍历
-                    std::string nestedText("[");
-                    for (size_t index = 0; index < sourceReply->elements; ++index)
-                    {
-                        if (index > 0)
-                        {
-                            nestedText += ", ";
-                        }
-                        nestedText += flattenReplyText(sourceReply->element[index]);
-                    }
-                    nestedText += ']';
-                    return nestedText;
-                }
+                    // 空数组：没有元素可压，但服务端确实给了一份列表
+                    return "[]";
 
                 // nil 子元素用空串占位，保证下标对齐（例如 MGET 未命中的那一项）
                 case REDIS_REPLY_NIL:
@@ -87,14 +91,25 @@ namespace AsynGyanis::Database
 
         m_replyType = m_replyPointer->type;
 
-        // 列数等于元素个数：数组回复取 elements；nil 既无值也无元素，按「0 列」的空集处理；
-        // 其余标量回复（整数、批量字符串、状态、error）都是一行一列
-        if (m_replyType == REDIS_REPLY_ARRAY)
+        // 列数按回复的**结构**定，不按类型枚举定：
+        // - 带元素的回复（RESP2 数组，以及 RESP3 的 SET / MAP / PUSH / ATTR）一列一个元素，
+        //   否则整份容器回复只能读出一个空值——那两个成员的集合就这样无声消失；
+        // - nil 既无值也无元素，按 0 列的空集处理；
+        // - 整数没有文本载体但仍是一个值，算一列；
+        // - 带 str 的标量（批量字符串 / 状态 / error / DOUBLE / VERB）一行一列；
+        // - 剩下的只有「空容器」（如 ~0 的空集合）：没有任何元素可给，按 0 列
+        if (m_replyPointer->elements > 0)
         {
             m_columnCount = m_replyPointer->elements;
-        } else if (m_replyType != REDIS_REPLY_NIL)
+        } else if (m_replyType == REDIS_REPLY_NIL)
+        {
+            m_columnCount = 0;
+        } else if (m_replyType == REDIS_REPLY_INTEGER || m_replyPointer->str != nullptr)
         {
             m_columnCount = 1;
+        } else
+        {
+            m_columnCount = 0;
         }
 
         // 构造属于非 const 写路径：在这里把 error 回复的原文摘进 m_lastError，
@@ -126,8 +141,8 @@ namespace AsynGyanis::Database
             return std::monostate{};
         }
 
-        // 数组回复：第 index 列就是第 index 个元素
-        if (m_replyType == REDIS_REPLY_ARRAY)
+        // 元素型回复：第 index 列就是第 index 个元素（数组与 RESP3 容器同一条判据，见构造函数）
+        if (m_replyPointer->elements > 0)
         {
             return convertReply(m_replyPointer->element[index]);
         }
@@ -148,6 +163,19 @@ namespace AsynGyanis::Database
             return std::monostate{};
         }
 
+        // 元素型回复（数组与 RESP3 容器）映射成列表：判据取 elements 而不是枚举常量，理由见构造函数
+        if (sourceReply->elements > 0)
+        {
+            // 子元素全部压成文本，这是列表备选类型只有字符串造成的有损映射，取舍与理由见 flattenReplyText()
+            std::vector<std::string> elements;
+            elements.reserve(sourceReply->elements);
+            for (size_t index = 0; index < sourceReply->elements; ++index)
+            {
+                elements.push_back(flattenReplyText(sourceReply->element[index]));
+            }
+            return elements;
+        }
+
         switch (sourceReply->type)
         {
             // 批量字符串、状态回复与 error 回复都由 str/len 承载，按长度拷贝成 string：
@@ -166,23 +194,13 @@ namespace AsynGyanis::Database
                 return std::monostate{};
 
             case REDIS_REPLY_ARRAY:
-            {
-                // 顶层数组映射成列表；子元素全部压成文本，这是列表备选类型只有字符串造成的有损映射，
-                // 取舍与理由见 flattenReplyText()
-                std::vector<std::string> elements;
-                elements.reserve(sourceReply->elements);
-                for (size_t index = 0; index < sourceReply->elements; ++index)
-                {
-                    elements.push_back(flattenReplyText(sourceReply->element[index]));
-                }
-                return elements;
-            }
+                // 走到这里说明 elements 为 0：一份确实为空、但不是「没有值」的列表
+                return std::vector<std::string>{};
 
             default:
             {
-                // RESP3 扩展类型（DOUBLE / MAP / SET / ATTR / PUSH / VERB）：本驱动从不发送 HELLO 3，
-                // 正常路径走不到这里。真遇到时优先按原始文本取回（DOUBLE、VERB 有文本），
-                // 既保住信息，也让本文件不依赖各版本命名不一致的枚举常量；纯容器型只能回 monostate
+                // 其余标量型（RESP3 的 DOUBLE / VERB 等）优先按原始文本取回，保住信息；
+                // 连文本都没有、也不是上面任何已识别形状的类型，如实回「没有值」而不是编一个空串
                 return (sourceReply->str != nullptr) ? DatabaseValue{copyReplyText(sourceReply)} : DatabaseValue{std::monostate{}};
             }
         }

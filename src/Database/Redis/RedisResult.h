@@ -148,8 +148,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 判断结果集是否为空
-         * @details 重写 DatabaseResult::isEmpty()：等价于 rowCount() == 0，即「无回复 / nil 回复 / 空数组」；
-         *          标量 0 或空字符串回复都不算空——那是服务端确实给出的值，与「没有值」必须区分开。
+         * @details 重写 DatabaseResult::isEmpty()：等价于 rowCount() == 0，即「无回复 / nil 回复 /
+         *          空数组 / 空容器」；标量 0 或空字符串回复都不算空——那是服务端确实给出的值，
+         *          与「没有值」必须区分开。
          * @return true 没有任何数据行
          */
         [[nodiscard]] bool isEmpty() const override;

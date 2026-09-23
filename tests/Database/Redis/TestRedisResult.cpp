@@ -2,6 +2,7 @@
 // - 无回复即空集：形状、游标、列元数据、取值与错误状态（真实驱动与桩构建同义）
 // - 标量回复：状态/整数/零值/空批量字符串/内嵌 '\0' 的批量字符串各按自己的类型交出
 // - 数组回复：一列一元素、越界与空数组、嵌套数组降级为文本、nil 子元素占位、error 回复
+// - RESP3 容器（SET 等）：成员按 elements 逐列交出、空容器与空数组同为空集
 // - 游标与合成列名：单行只访问一次、reset 后重放、valueN 按名与按索引取值一致
 // 未编译 hiredis 时结果集退化成永远为空的对象，只有「无回复」一组用例仍可跑。
 
@@ -397,6 +398,44 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->columnCount(), 2u);
         EXPECT_EQ(*withHole, (std::vector<std::string>{"foo", ""}));
         EXPECT_EQ(textAt(*result, 1), std::optional<std::string>("x"));
+    }
+
+    /**
+     * @brief 钉住 RESP3 容器回复（这里是 SET）把成员逐列交出，而不是塌成一列空值
+     * @details 驱动从不主动发 HELLO 3，但调用方可以自己切协议（连接归还时才被断开），
+     *          服务端随后就会用 `~` / `%` 回容器。列数原先只认 REDIS_REPLY_ARRAY 这一个类型，
+     *          于是一份两个成员的集合读起来是「有一列、没有值」——数据在回复里，却无声消失。
+     *          判据改用元素个数：所有容器型都靠 elements 承载，也就不必依赖各版本命名不一的枚举常量。
+     */
+    TEST(RedisResult, ContainerReplyExposesItsMembersAsColumns)
+    {
+        const std::unique_ptr<RedisResult> setResult = makeResultFromResp("~2\r\n$1\r\na\r\n$1\r\nb\r\n");
+        ASSERT_NE(setResult, nullptr) << "RESP 文本解析失败，用例前置条件不成立";
+        ASSERT_NE(setResult->replyType(), REDIS_REPLY_ARRAY) << "这份回复根本不是数组，用例没构造出要钉的形状";
+
+        EXPECT_EQ(setResult->columnCount(), 2u) << "容器成员没有各占一列";
+        EXPECT_EQ(textAt(*setResult, 0), std::optional<std::string>("a"));
+        EXPECT_EQ(textAt(*setResult, 1), std::optional<std::string>("b"));
+        EXPECT_FALSE(setResult->isEmpty());
+    }
+
+    /**
+     * @brief 钉住空容器是「有这份列表但一行都没有」，与「没有值」的 nil 同样按空集处理
+     */
+    TEST(RedisResult, EmptyContainerReplyIsAnEmptyResult)
+    {
+        const std::unique_ptr<RedisResult> emptySet = makeResultFromResp("~0\r\n");
+        ASSERT_NE(emptySet, nullptr) << "RESP 文本解析失败，用例前置条件不成立";
+
+        EXPECT_EQ(emptySet->columnCount(), 0u);
+        EXPECT_TRUE(emptySet->isEmpty());
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(emptySet->getValue(std::size_t{0})));
+
+        // 对照组：RESP2 的空数组一直是同样的语义，两者不能一个为空集、另一个为一列空值
+        const std::unique_ptr<RedisResult> emptyArray = makeResultFromResp("*0\r\n");
+        ASSERT_NE(emptyArray, nullptr);
+        EXPECT_TRUE(emptyArray->isEmpty());
+        EXPECT_EQ(emptyArray->columnCount(), 0u);
     }
 
     // ------------------------------------------------------------------------
