@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <coroutine>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -1908,6 +1909,81 @@ namespace AsynGyanis::Net
         }
         EXPECT_TRUE(peer.response().isComplete) << "本端没跟着交出 END_STREAM：对端那条流永远收不完";
         EXPECT_FALSE(session.hasOutstandingWork()) << "隧道已收口却还留在账上：排空收口与优雅停机等的就是这条死流";
+    }
+
+    /**
+     * @brief 被唤醒之后还要再挂一次的业务：隧道记录不能被摘走，等它真跑完才摘
+     * @details 摘账的判据是「业务跑完 且 流已关闭」两个标记，缺一不可。这条用例把「流已关闭但业务
+     *          还没跑完」这一档单独造出来（处理器在 receive() 返回终点之后又挂起一次），因为协程帧
+     *          由隧道记录持有——提前摘表等于把还在别人手里的句柄连帧一起销毁
+     */
+    TEST(Http3Session, KeepsTunnelRecordAliveWhileBusinessStillSuspended)
+    {
+        struct SuspendUntilResumed
+        {
+            std::coroutine_handle<> *slot;   ///< 用例手里那只句柄的落点：等它被外部 resume
+
+            [[nodiscard]] bool await_ready() const noexcept { return false; }
+            void await_suspend(const std::coroutine_handle<> waiter) const noexcept { *slot = waiter; }
+            static void await_resume() noexcept {}
+        };
+
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        std::coroutine_handle<> handlerWaiter{};
+        bool                    isBusinessFinished = false;
+        Router                  router;
+        router.get("/chat",
+                   [&isBusinessFinished, &handlerWaiter](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [&isBusinessFinished, &handlerWaiter](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   // 收尾还要做一次异步动作（真业务里是刷最后一段帧或等落盘）：
+                                   // 此刻流已关闭、业务没跑完，记录必须还在
+                                   co_await SuspendUntilResumed{&handlerWaiter};
+                                   isBusinessFinished = true;
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
+        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
+        const std::vector<CapturedStreamData> requestChunks =
+                peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> firstPumpTask = session.pump();
+        resumeUntilReady(firstPumpTask);
+        ASSERT_TRUE(session.hasOutstandingWork()) << "用例前提：隧道要已经建起来并挂着业务";
+
+        session.onStreamData(kFirstRequestStreamId, {}, true);
+        Core::Task<> secondPumpTask = session.pump();
+        resumeUntilReady(secondPumpTask);
+        ASSERT_FALSE(isBusinessFinished) << "用例前提：业务要在「唤醒之后又挂起一次」的位置上";
+        ASSERT_TRUE(handlerWaiter != nullptr) << "业务没挂起来，这条用例就没东西可保命";
+        EXPECT_TRUE(session.hasOutstandingWork())
+                << "流关闭就把记录摘走了：还挂在处理器协程里的帧被连帧销毁，下一次 resume 用的是已释放内存";
+
+        handlerWaiter.resume();
+        EXPECT_TRUE(isBusinessFinished) << "恢复之后业务没跑完";
+        // 业务是在泵之外跑完的：下一趟泵收尾时要把这条记录摘掉，否则账又留下一个恒真的「有在途工作」
+        Core::Task<> thirdPumpTask = session.pump();
+        resumeUntilReady(thirdPumpTask);
+        EXPECT_FALSE(session.hasOutstandingWork()) << "业务跑完之后记录仍留在账上：摘账只挂在收口那一趟，漏了迟到的那一批";
     }
 
     /**
