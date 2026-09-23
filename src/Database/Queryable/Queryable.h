@@ -288,12 +288,7 @@ namespace AsynGyanis::Database::Queryable
             // 只取一行：LIMIT 1 让数据库侧提前停止扫描，比取回全部再取首元素高效得多
             limitedNode.limit     = 1U;
 
-            std::vector<T> rows = fetchRows(limitedNode);
-            if (rows.empty())
-            {
-                return std::nullopt;
-            }
-            return std::move(rows.front());
+            return fetchFirst(limitedNode);
         }
 
         /**
@@ -496,12 +491,7 @@ namespace AsynGyanis::Database::Queryable
                     [dialect, limitedNode = std::move(limitedNode), pool, transaction]() -> std::optional<T>
                     {
                         ConnectionLease lease = acquireConnection(pool, transaction);
-                        std::vector<T>  rows  = fetchRowsOn(*lease.connection, *dialect, limitedNode);
-                        if (rows.empty())
-                        {
-                            return std::nullopt;
-                        }
-                        return std::optional<T>(std::move(rows.front()));
+                        return fetchFirstOn(*lease.connection, *dialect, limitedNode);
                     });
 
             co_return firstRow;
@@ -886,6 +876,20 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 执行一次 SELECT 并只映射出第一行（同步路径）
+         * @param queryNode 已展开列的查询树
+         * @return std::optional<T> 第一行；没有匹配行时为空值
+         * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败
+         */
+        [[nodiscard]] std::optional<T> fetchFirst(const QueryNode &queryNode)
+        {
+            const SqlDialect &dialect = requireDialect();
+            ConnectionLease   lease   = acquireConnection(m_pool, m_transaction);
+            // 连接在 result 之前声明、之后析构，因此结果集必定比连接短命
+            return fetchFirstOn(*lease.connection, dialect, queryNode);
+        }
+
+        /**
          * @brief 在指定连接上执行 SELECT 并映射结果（同步与异步路径共用）
          * @details 与「用哪条连接、在哪个线程执行」无关：调用方负责提供一条可用的连接
          *          （同步路径在调用线程上取，异步路径在工作线程上取），本函数只做翻译、执行与映射。
@@ -908,6 +912,39 @@ namespace AsynGyanis::Database::Queryable
             }
 
             return mapResultRows<T>(*result);
+        }
+
+        /**
+         * @brief 在指定连接上执行 SELECT 并只映射第一行（同步与异步路径共用）
+         *
+         * @details 与 fetchRowsOn() 的差别只在「要不要为剩余行准备向量」：取一行时先分配一个
+         *          std::vector 再交出首元素，等于为这次调用白付一次堆分配与一次搬移。
+         *          列下标解析与逐列赋值仍走 Detail 里的那一份实现，两条路径的映射规则不会分岔。
+         *
+         * @param connection 目标连接，必须在结果集存活期间保持有效
+         * @param dialect 方言，提供 translate()
+         * @param queryNode 已展开列的查询树
+         * @return std::optional<T> 第一行；结果集为空时为空值
+         * @throws QueryExecutionException SQL 执行失败
+         * @throws RowMappingException 首行的列缺失、类型不符或收窄会改变数值
+         * @note 空结果集不去解析列下标，因此「列缺失」只在真有一行时才报错——与列表路径同一条语义
+         */
+        [[nodiscard]] static std::optional<T> fetchFirstOn(DatabaseConnection &connection, const SqlDialect &dialect, const QueryNode &queryNode)
+        {
+            const auto [sql, parameters] = dialect.translate(queryNode);
+
+            const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
+            if (result == nullptr)
+            {
+                throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError());
+            }
+
+            // mapResultRow 的契约要求游标已停在有效行上；0 行是「没有匹配」而不是映射失败
+            if (!result->next())
+            {
+                return std::nullopt;
+            }
+            return mapResultRow<T>(*result);
         }
 
         /**

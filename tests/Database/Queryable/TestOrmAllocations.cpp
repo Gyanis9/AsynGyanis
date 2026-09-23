@@ -5,13 +5,14 @@
 // 覆盖形状：first() 按主键取一行、toList() 取二十行、count()、update() 按主键改一行。
 // 两条自检先行：计数件要看得见一次普通堆分配，空窗口要量出零次——否则下面所有读数都不可信。
 // 稳态读数（语句缓存与分配器空闲链已预热，每次操作）：
-//   first() 取一行     GCC 14 次 / 1964 字节，MSVC 15 次
+//   first() 取一行     GCC 13 次，MSVC 14 次
 //   toList() 取二十行  GCC 37 次 / 23736 字节（每行不到两次），MSVC 86 次
 //   count()            两侧都是 6 次 / 451 字节
 //   update() 改一行    GCC 16 次 / 1812 字节，MSVC 20 次
 // 两侧读数不同不是代码差异，而是 STL 的 vector 扩容系数与 string 分档不同（直方图实测：
 // libstdc++ 把 21 字节的户名记在 16..31 档、MSVC 记在 32..47 档，且 MSVC 的扩容链更长）。
-// 因此预算按平台各自取实测加一档，判的是量级而不是台次。
+// 预算一般取实测加一档；first() 这一格已收到实测值本身——它走的是「一行都不必经向量」的通道，
+// 再多一次分配就是回归，留着余量反而看不住。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
@@ -53,12 +54,12 @@ namespace
 
 #if defined(_MSC_VER)
     /// MSVC 的 STL 分档与扩容系数不同，同一形状的读数比 libstdc++ 高一截，各自按实测收紧
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 17U;
+    inline constexpr std::uint64_t kFirstRowAllocationBudget = 14U;
     inline constexpr std::uint64_t kListAllocationBudget = 96U;
     inline constexpr std::uint64_t kUpdateAllocationBudget = 24U;
 #else
     /// libstdc++ 侧的实测读数（容器 GCC 13）加一档
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 16U;
+    inline constexpr std::uint64_t kFirstRowAllocationBudget = 13U;
     inline constexpr std::uint64_t kListAllocationBudget = 44U;
     inline constexpr std::uint64_t kUpdateAllocationBudget = 18U;
 #endif
