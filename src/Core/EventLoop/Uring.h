@@ -232,7 +232,9 @@ namespace AsynGyanis::Core
         std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls;
         std::map<std::uint64_t, Registration *>      m_inFlightPolls; ///< 票据到在途轮询的映射
         /// 需要维护动作的描述符（按号存，不存指针：记录可能在这之前就被销毁）
-        /// 投递一次电平事件、或某次提交没成功时登记，维护只走这几条
+        /// 投递一次电平事件、或某次提交没成功时登记，维护只走这几条。
+        /// 残留的号被新连接复用也无害：那条登记最多让新注册提前补投一次它本来就要补的轮询，
+        /// 而不会把动作错派给别的对象——维护读的是注册记录此刻的状态，不是登记时的状态
         std::vector<int>                             m_attentionDescriptors;
         std::uint64_t                                m_nextTicket{1};  ///< 票据分配器（单调递增）
         std::uint64_t                                m_timeoutTicket{0}; ///< 在途超时操作的票据
