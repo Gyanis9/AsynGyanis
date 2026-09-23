@@ -1002,6 +1002,134 @@ namespace AsynGyanis::Base
     }
 
     // ============================================================================
+    // formatter 键：版式此前只能在代码里换（LogSink::setFormatter）
+    // ============================================================================
+
+    /**
+     * @brief 文件 sink 配 formatter: json 时整行按 JSON 落盘
+     * @details 全靠配置起服务的部署拿不到 JSON 日志，是这条 API 与配置之间剩下的最后一处不对称。
+     *          判据取版式的三处区别：正文挂在 message 字段上、等级是裸字符串而不是文本版式那对方括号
+     */
+    TEST_F(LoggerConfigLoaderTest, FileSinkWithJsonFormatterWritesJsonLines)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: formatter_json.log
+          formatter: json
+)");
+
+        applyLogging();
+        logAndFlush("root", LogLevel::Info, "json formatter line");
+
+        const std::string content = readTemporaryFile("formatter_json.log");
+        EXPECT_TRUE(contains(content, R"("message":"json formatter line")")) << content;
+        EXPECT_TRUE(contains(content, R"("level":"INFO")")) << content;
+        EXPECT_FALSE(contains(content, "[INFO")) << "JSON 版式却写出了文本版式的方括号：" << content;
+    }
+
+    /**
+     * @brief 认不出的 formatter 值按 default 处理，但必须出声
+     * @details 与本文件其余回落同一口径：静默按默认版式生效，就是「配置里写了 json、落盘却是文本」
+     *          这类要查半天的现场
+     */
+    TEST_F(LoggerConfigLoaderTest, UnknownFormatterNameIsDiagnosedAndKeepsPlainText)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: formatter_unknown.log
+          formatter: YamlFormatter
+)");
+
+        ::testing::internal::CaptureStderr();
+        applyLogging();
+        const std::string diagnostic = ::testing::internal::GetCapturedStderr();
+        EXPECT_NE(diagnostic.find("YamlFormatter"), std::string::npos) << diagnostic;
+        EXPECT_NE(diagnostic.find("只支持 default / color / json"), std::string::npos) << diagnostic;
+
+        logAndFlush("root", LogLevel::Info, "unknown formatter line");
+        const std::string content = readTemporaryFile("formatter_unknown.log");
+        EXPECT_TRUE(contains(content, "unknown formatter line")) << content;
+        EXPECT_FALSE(contains(content, R"("message")")) << "报了非法取值却又用上了别的版式：" << content;
+    }
+
+    /**
+     * @brief formatter 挂在 sink 上，因此 async 包着的那一条也认
+     * @details 异步包装的下游由同一份递归装配创建，键必须能落到被包的那个 sink 上；
+     *          否则「异步 + JSON」这条最常见的生产组合仍然只能写代码
+     */
+    TEST_F(LoggerConfigLoaderTest, AsyncWrappedFileSinkHonoursItsOwnFormatter)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: async
+          queue_size: 64
+          wrapped:
+            type: file
+            path: formatter_async.log
+            formatter: json
+)");
+
+        applyLogging();
+        logAndFlush("root", LogLevel::Info, "async wrapped json line");
+
+        const bool delivered = TestSupport::waitForCondition(
+                [this]
+                {
+                    return contains(readTemporaryFile("formatter_async.log"), "async wrapped json line");
+                },
+                10000);
+        ASSERT_TRUE(delivered) << readTemporaryFile("formatter_async.log");
+
+        const std::string content = readTemporaryFile("formatter_async.log");
+        EXPECT_TRUE(contains(content, R"("message":"async wrapped json line")")) << content;
+    }
+
+    /**
+     * @brief 显式的 formatter 覆盖控制台的颜色选择，且 JSON 行里不含 ANSI 转义
+     * @details 控制台那条路走的是 setColorEnabled 而不是直接换格式化器（那一条会先看输出目标支不支持
+     *          ANSI 序列）。这里钉住两件事：显式 formatter 的优先级高于 color，以及 JSON 版式不带转义码
+     */
+    TEST_F(LoggerConfigLoaderTest, ConsoleSinkWithJsonFormatterEmitsNoAnsiEscapes)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: console
+          color: true
+          formatter: json
+)");
+
+        applyLogging();
+
+        std::string captured;
+        {
+            const ConsoleCapture capture;
+            LoggerRegistry::instance().getRootLogger().log(LogLevel::Info, "console json line");
+            captured = capture.text();
+        }
+
+        EXPECT_TRUE(contains(captured, R"("message":"console json line")")) << captured;
+        EXPECT_EQ(captured.find('\x1b'), std::string::npos) << "JSON 行里混进了 ANSI 转义：" << captured;
+    }
+
+    // ============================================================================
     // rolling_file sink
     // ============================================================================
 

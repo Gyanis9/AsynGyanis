@@ -3,6 +3,9 @@
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
 #include "Base/Exception/ConfigValidationException.h"
+#include "Base/Log/Formatters/ColorFormatter.h"
+#include "Base/Log/Formatters/DefaultFormatter.h"
+#include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Sinks/FileSink.h"
@@ -285,11 +288,16 @@ namespace AsynGyanis::Base
         const std::string &type = *typeOptional;
 
         std::unique_ptr<LogSink> sink;
+        // 下面 formatter 那条要区分「控制台」：它的彩色与否有一条终端能力兜底，
+        // 必须走 setColorEnabled 而不是直接换格式化器。非控制台保持空指针
+        ConsoleSink *consoleSink = nullptr;
 
         if (type == "console")
         {
             const bool color = optionalFieldWithDiagnosis(sinkConfiguration, "color", true, "console sink");
-            sink             = std::make_unique<ConsoleSink>(color);
+            auto       consoleInstance = std::make_unique<ConsoleSink>(color);
+            consoleSink                = consoleInstance.get();
+            sink                       = std::move(consoleInstance);
         } else if (type == "file")
         {
             const std::optional<std::string> pathOptional = requiredStringField(sinkConfiguration, "path", "file sink");
@@ -436,6 +444,51 @@ namespace AsynGyanis::Base
             // 模块初始化阶段日志系统可能尚未就绪，使用 std::cerr
             std::cerr << "LoggerConfig：未知的 sink 类型 '" << type << "'，已跳过" << '\n';
             return nullptr;
+        }
+
+        if (sink && sinkConfiguration.contains("formatter"))
+        {
+            // 版式此前只能在代码里换（LogSink::setFormatter），全靠配置起服务的部署就拿不到 JSON 日志。
+            // 取值沿用本文件的小写词表（与 type / policy / overflow_policy 同一口径），非法写法照旧
+            // 「诊断 + 按 default 处理」。挂在 sink 上而不是 logger 上：同一条 logger 可以并排挂两种版式
+            // （控制台走文本、文件走 JSON 交给采集端）
+            const std::string formatterName = optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "formatter",
+                                                                                     std::string{"default"}, "sink");
+            if (formatterName == "json")
+            {
+                sink->setFormatter(std::make_unique<JsonFormatter>());
+            } else if (formatterName == "color")
+            {
+                // 控制台走 setColorEnabled：那一条会先看输出目标支不支持 ANSI 序列，
+                // 直接塞 ColorFormatter 就把「重定向到文件时退回纯文本」的兜底绕过了
+                if (consoleSink != nullptr)
+                {
+                    consoleSink->setColorEnabled(true);
+                } else
+                {
+                    sink->setFormatter(std::make_unique<ColorFormatter>());
+                }
+            } else if (formatterName == "default")
+            {
+                if (consoleSink != nullptr)
+                {
+                    consoleSink->setColorEnabled(false);
+                } else
+                {
+                    sink->setFormatter(std::make_unique<DefaultFormatter>());
+                }
+            } else
+            {
+                std::cerr << "LoggerConfig：sink 的 formatter='" << formatterName
+                        << "' 非法（只支持 default / color / json），已按 default 处理" << '\n';
+                if (consoleSink != nullptr)
+                {
+                    consoleSink->setColorEnabled(false);
+                } else
+                {
+                    sink->setFormatter(std::make_unique<DefaultFormatter>());
+                }
+            }
         }
 
         if (sink && sinkConfiguration.contains("level"))
