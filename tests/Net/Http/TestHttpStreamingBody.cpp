@@ -225,6 +225,79 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：带 trailer 段的分块请求在流式与普通两种路由上都「正文一段不少、trailer 字段不混进头部」
+     * @details 这条形状压两点：① `parseTrailerLine()` 照语法解析 trailer 字段却有意丢弃——留着就让
+     *          「Content-Length: 999」以请求头部的身份被上层读到，正是请求走私要的形状；
+     *          ② 终止块与 trailer 段的字节都不许算进正文（bytes 只数那 8 字节真实负载）。
+     *          `isHeaderBlockComplete()` 把 `Stage::Trailer` 算进「头部块已收齐」，所以流式派发的时机
+     *          本身就落在这段附近，两种派发各发一条同样的报文才两边都有证据（实测改成「trailer 字段
+     *          照样入表」时，先红的是流式那一条）。两条响应带不同前缀，免得第二条重复命中第一条。
+     */
+    TEST(HttpStreamingBody, DiscardsTrailerFieldsOnBothDispatchModes)
+    {
+        const auto registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            const auto report = [](HttpRequest &request, const std::size_t bodyBytes)
+            {
+                return "bytes=" + std::to_string(bodyBytes)
+                       + "|cl=" + (request.getHeader("content-length").has_value() ? "yes" : "no")
+                       + "|xt=" + (request.getHeader("x-trailer-only").has_value() ? "yes" : "no")
+                       + "|tr=" + (request.getHeader("trailer").has_value() ? "yes" : "no");
+            };
+
+            router.postStreaming("/upload-trailer", [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            {
+                HttpRequestBody *stream = request.bodyStream();
+                if (stream == nullptr)
+                {
+                    response.setBody("stream|no-stream");
+                    co_return;
+                }
+                std::size_t totalBytes = 0;
+                while (co_await stream->readNext())
+                {
+                    totalBytes += stream->chunk().size();
+                }
+                response.setBody("stream|" + report(request, totalBytes));
+                co_return;
+            });
+
+            router.post("/upload-trailer-plain", [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            {
+                response.setBody("plain|" + report(request, request.body().size()));
+                co_return;
+            });
+        };
+
+        RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+
+        // 一条报文的完整线上形状：真实头部 → 一个 8 字节块 → 终止块 → 两行 trailer → 空行收口
+        const auto makeTrailerRequest = [](const std::string_view path)
+        {
+            return std::string("POST ") + std::string(path)
+                   + " HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: chunked\r\n"
+                     "Trailer: Content-Length, X-Trailer-Only\r\n\r\n"
+                     "8\r\nabcdefgh\r\n0\r\nContent-Length: 999\r\nX-Trailer-Only: smuggled\r\n\r\n";
+        };
+
+        // 正文恰好是那 8 字节（trailer 段一段都不算进来），且只有真头部可读
+        ASSERT_TRUE(client.sendText(makeTrailerRequest("/upload-trailer"), kWaitTimeout));
+        std::string receivedText;
+        ASSERT_TRUE(client.waitForText(receivedText, "stream|bytes=8|cl=no|xt=no|tr=yes", kWaitTimeout))
+                << "流式派发上的 trailer 请求读回来的是：" << receivedText;
+
+        ASSERT_TRUE(client.sendText(makeTrailerRequest("/upload-trailer-plain"), kWaitTimeout));
+        ASSERT_TRUE(client.waitForText(receivedText, "plain|bytes=8|cl=no|xt=no|tr=yes", kWaitTimeout))
+                << "普通派发上的 trailer 请求读回来的是：" << receivedText;
+    }
+
+    /**
      * @brief 钉住：处理器没读完正文也安全——剩余字节被排空，连接按 keep-alive 继续服务
      */
 
