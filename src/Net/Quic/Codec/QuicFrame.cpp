@@ -27,10 +27,10 @@ namespace AsynGyanis::Net
             /**
              * @brief 构造游标
              * @param bytes 一个报文的净载荷
-             * @param ownerDescription 当前帧的中文名，进入所有失败文案
+             * @param ownerOffset 本帧在净载荷里的起始偏移，出错时格式化成帧名
              */
-            FrameReader(std::span<const std::uint8_t> bytes, std::string ownerDescription)
-                : m_bytes(bytes), m_ownerDescription(std::move(ownerDescription))
+            FrameReader(std::span<const std::uint8_t> bytes, std::size_t ownerOffset)
+                : m_bytes(bytes), m_ownerOffset(ownerOffset)
             {
             }
 
@@ -66,7 +66,7 @@ namespace AsynGyanis::Net
                     return std::unexpected(makeError(QuicDecodeErrorKind::Malformed,
                                                      std::format("{}的帧类型用了 {} 字节而非最短的 {} 字节编码（RFC 9000 §16 里帧类型是唯一要求最短编码的字段）："
                                                                  "按 FRAME_ENCODING_ERROR 处理",
-                                                                 m_ownerDescription, decoded->byteCount,
+                                                                 ownerDescription(), decoded->byteCount,
                                                                  quicVariableLengthIntegerByteCount(decoded->value))));
                 }
                 return decoded->value;
@@ -149,13 +149,19 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] QuicDecodeError makeError(QuicDecodeErrorKind kind, std::string detail) const
             {
-                return QuicDecodeError{kind, std::format("{}：{}", m_ownerDescription, detail)};
+                return QuicDecodeError{kind, std::format("{}：{}", ownerDescription(), detail)};
             }
 
         private:
+            /// 本帧的中文名：只在造错误时才格式化，成功路径上一帧都不碰堆
+            [[nodiscard]] std::string ownerDescription() const
+            {
+                return std::format("载荷偏移 {} 处的帧", m_ownerOffset);
+            }
+
             std::span<const std::uint8_t> m_bytes; ///< 整个净载荷，视图都指向它
             std::size_t m_offset{0};               ///< 当前读位置
-            std::string m_ownerDescription;        ///< 当前帧的中文名，用于文案定位
+            std::size_t m_ownerOffset{0};          ///< 本帧在净载荷里的起始偏移，出错时才格式化成帧名
         };
 
         /**
@@ -570,14 +576,16 @@ namespace AsynGyanis::Net
                 frame);
     }
 
-    std::expected<std::vector<QuicFrame>, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload)
+    std::expected<void, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload,
+                                                           std::vector<QuicFrame> &frames)
     {
-        std::vector<QuicFrame> frames;
+        // 进出自明：容量留下、内容清空，调用方才敢把同一块缓冲一包接一包地交回来
+        frames.clear();
         std::size_t readOffset = 0;
         while (readOffset < payload.size())
         {
-            // 帧名在每轮重新取：游标的文案要指出错在哪一帧，一轮到底会把 5 帧之后的错安到第一帧头上
-            FrameReader reader(payload.subspan(readOffset), std::format("载荷偏移 {} 处的帧", readOffset));
+            // 游标逐帧新建：失败文案要指出错在哪一帧，一轮用到底会把第 5 帧的错安到第一帧头上
+            FrameReader reader(payload.subspan(readOffset), readOffset);
             const auto typeValue = reader.readFrameType();
             if (!typeValue.has_value())
             {
@@ -926,6 +934,16 @@ namespace AsynGyanis::Net
 
             frames.push_back(std::move(frame));
             readOffset = payload.size() - reader.remainingByteCount();
+        }
+        return {};
+    }
+
+    std::expected<std::vector<QuicFrame>, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload)
+    {
+        std::vector<QuicFrame> frames;
+        if (const std::expected<void, QuicDecodeError> decoded = decodeQuicFrames(payload, frames); !decoded.has_value())
+        {
+            return std::unexpected(decoded.error());
         }
         return frames;
     }

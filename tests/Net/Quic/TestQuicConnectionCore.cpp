@@ -2558,4 +2558,68 @@ namespace AsynGyanis::Net
                 << "收包路径上又出现了逐包分配：读数为每次 "
                 << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
+
+    /**
+     * @brief 收一条「新包号」的报文要付多少次分配
+     * @details 上面那条量的是重复包号那一支（读到零），真实流量每包都是新包号，还要再付帧解码与
+     *          「记进已收包号集合」。读数 1 次 / 40 字节那一档就是 `std::set` 的一个树节点，
+     *          阈值留一次给测量窗口里可能落进来的复用缓冲长容。
+     */
+    TEST(QuicConnectionCore, FreshPacketNumberAllocationLedger)
+    {
+        /// 逐包分配的准入线：稳态实测 1 次（包号集合的树节点），多出来的一次给窗口内的首次扩容
+        constexpr std::uint64_t kQuicMaximumFreshPacketAllocations = 2U;
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        std::string pingFrames;
+        appendQuicFrame(pingFrames, QuicFrame{QuicPingFrame{}});
+
+        std::vector<std::vector<std::uint8_t>> pool;
+        pool.reserve(kMeasurementIterations);
+        std::size_t poolByteCount = 0;
+        for (std::uint64_t index = 0; index < kMeasurementIterations; ++index)
+        {
+            pool.push_back(client.buildDatagramWith(QuicEncryptionLevel::Application, pingFrames));
+            poolByteCount += pool.back().size();
+        }
+        ASSERT_EQ(pool.size(), kMeasurementIterations);
+
+        std::size_t poolIndex = 0;
+        const auto feedFresh = [&core, &pool, &poolIndex, &poolByteCount]() -> std::size_t
+        {
+            const std::vector<std::uint8_t> &datagram = pool[poolIndex];
+            poolIndex = poolIndex + 1U < pool.size() ? poolIndex + 1U : 0U;
+            // 只有解密成功才算数：包号重复或密钥不合都会返回空，读数就会对不上而不是假绿
+            return core.onDatagramReceived(datagram, Timestamp{200000 + poolIndex * 10}).has_value()
+                       ? datagram.size()
+                       : 0U;
+        };
+
+        AsynGyanis::TestSupport::resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(feedFresh);
+        EXPECT_EQ(profile.resultSum, poolByteCount) << "有一千包没被真正解开并收下，读数不可信";
+        std::printf("quic 收一条新包号的 PING 报文：每次 %llu 次分配 / %llu 字节\n",
+                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
+        const AsynGyanis::TestSupport::AllocationHistogram histogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
+        for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
+        {
+            if (histogram[bucket] != 0)
+            {
+                // 打原值而不是摊平值：窗口里混进的首次长容是一笔，摊到一千次就成了「0 次」这种误导读数
+                std::printf("  桶 %zu-%zu 字节：一千包合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U,
+                            static_cast<unsigned long long>(histogram[bucket]));
+            }
+        }
+        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * kQuicMaximumFreshPacketAllocations)
+                << "新包号那一支的逐包分配超过阈值：读数为每次 "
+                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+    }
 } // namespace AsynGyanis::Net

@@ -580,4 +580,55 @@ namespace AsynGyanis::Net
                     static_cast<unsigned long long>(fresh.totalAllocations / kMeasurementIterations),
                     static_cast<unsigned long long>(reused.totalAllocations / kMeasurementIterations));
     }
+
+    /**
+     * @brief 把一包的帧解进复用的缓冲与每包新建的缓冲，各碰几次堆
+     * @details 收包侧原先每包新建一个空 vector 装帧，帧序列里最宽的那个变体成员把每格撑到几十字节，
+     *          几何扩容因此不是零头。载荷刻意只放「不持有容器」的帧（STREAM 带的是视图、PING 无字段），
+     *          这样复用那一侧应当归零；不归零就说明解码过程自己藏了中间容器。
+     *          带 ACK 的载荷另算：它那串区间确实要一份自己的存储，不在这条的判据里。
+     */
+    TEST(QuicFrameAllocations, FrameDecodingIntoReusedBufferDoesNotAllocate)
+    {
+        const std::vector<std::uint8_t> body(1100U, 's');
+        QuicStreamFrame stream;
+        stream.streamId = 4ULL;
+        stream.offset   = 0ULL;
+        stream.data     = std::span<const std::uint8_t>(body);
+        stream.isFinal  = false;
+
+        std::string bytes;
+        appendQuicFrame(bytes, QuicFrame{stream});
+        for (int pingIndex = 0; pingIndex < 4; ++pingIndex)
+        {
+            appendQuicFrame(bytes, QuicFrame{QuicPingFrame{}});
+        }
+        const std::span<const std::uint8_t> payload(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
+        constexpr std::size_t kDecodedFrameCount = 5U;
+
+        std::vector<QuicFrame> reusedFrames;
+        // 先跑一遍把容量长到位：否则测到的第一次扩容会被当成逐包成本（实测这一趟就是 5 次）
+        ASSERT_TRUE(decodeQuicFrames(payload, reusedFrames).has_value());
+        ASSERT_EQ(reusedFrames.size(), kDecodedFrameCount) << "这条载荷不是五条帧，读数量的不是被测形状";
+
+        const auto decodeReused = [&payload, &reusedFrames]() -> std::size_t
+        {
+            return decodeQuicFrames(payload, reusedFrames).has_value() ? reusedFrames.size() : 0U;
+        };
+        const AllocationProfile reused = measurePerOperation(decodeReused);
+        EXPECT_EQ(reused.resultSum, kMeasurementIterations * kDecodedFrameCount) << "有一千次没把五帧解全，读数不可信";
+        EXPECT_EQ(reused.totalAllocations, 0ULL)
+                << "复用缓冲那一侧仍有分配：解码自己还藏着中间容器，每包都会碰堆";
+
+        const auto decodeFresh = [&payload]() -> std::size_t
+        {
+            const auto frames = decodeQuicFrames(payload);
+            return frames.has_value() ? frames->size() : 0U;
+        };
+        const AllocationProfile fresh = measurePerOperation(decodeFresh);
+        EXPECT_GT(fresh.totalAllocations, reused.totalAllocations) << "对照侧也没扩容，这条形状太短，读数没有区分度";
+        std::printf("quic 解一包 %zu 字节的帧序列：每包新建缓冲 %llu 次分配，复用同一块缓冲 %llu 次\n", bytes.size(),
+                    static_cast<unsigned long long>(fresh.totalAllocations / kMeasurementIterations),
+                    static_cast<unsigned long long>(reused.totalAllocations / kMeasurementIterations));
+    }
 } // namespace AsynGyanis::Net

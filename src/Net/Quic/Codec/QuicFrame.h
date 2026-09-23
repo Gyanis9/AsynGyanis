@@ -337,6 +337,18 @@ namespace AsynGyanis::Net
     decodeQuicFrames(std::span<const std::uint8_t> payload);
 
     /**
+     * @brief 把报文载荷里的全部帧解进调用方给的缓冲
+     * @details 语义与按值返回的那一份完全一致，只是帧序列落在 `frames` 里：收包路径每包都要解一次帧，
+     *          缓冲按包新分配就成了逐包固定成本，交还调用方复用可以把这一段压到零次分配。
+     * @param payload 一个报文的净载荷，按「指针 + 长度」取
+     * @param frames 出参：进入时先被清空（保留容量），成功时是按出现顺序排列的帧序列
+     * @return std::expected<void, QuicDecodeError> 成功返回空值；失败与按值那一份同口径
+     * @note 视图进出的规矩同按值那一份：解出的帧持有指向 payload 的视图，payload 必须活到帧用完
+     */
+    [[nodiscard]] std::expected<void, QuicDecodeError>
+    decodeQuicFrames(std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames);
+
+    /**
      * @brief 把一帧追写到缓冲末尾
      * @details 变长整数按最少字节数编码；STREAM 恒带 Length 字段，偏移为 0 时省掉 Offset 字段。
      * @param bytes 目标缓冲，二进制安全

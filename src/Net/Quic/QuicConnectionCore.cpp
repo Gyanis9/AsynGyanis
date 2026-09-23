@@ -165,6 +165,19 @@ namespace AsynGyanis::Net
             thread_local std::string frames{};
             return frames;
         }
+
+        /**
+         * @brief 入向帧序列的复用缓冲（一包解出的帧先落它，再逐帧交给处理分支）
+         * @details 与 `receiveScratch()` 同一套纪律：按线程一份、每次解码开头清空，因此指向其中某帧的
+         *          视图不许活到下一次收包。这里成立的理由是 `handlePacket` 在返回前就把每一帧处理完，
+         *          交付路径（流层入队、TLS 缓冲、错误文案）各自把要留的字节抄进自己的存储。
+         * @return 本线程那份帧缓冲，解码函数负责清空
+         */
+        std::vector<QuicFrame> &inboundFrameScratch()
+        {
+            thread_local std::vector<QuicFrame> frames{};
+            return frames;
+        }
     } // namespace
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::spaceOf(const QuicEncryptionLevel level) noexcept
@@ -419,18 +432,20 @@ namespace AsynGyanis::Net
             m_isAddressValidated = true;
         }
 
-        const std::expected<std::vector<QuicFrame>, QuicDecodeError> frames =
-                decodeQuicFrames(std::span<const std::uint8_t>(plaintext).subspan(0, *opened));
-        if (!frames.has_value())
+        std::vector<QuicFrame> &frames = inboundFrameScratch();
+        const std::expected<void, QuicDecodeError> decodedFrames =
+                decodeQuicFrames(std::span<const std::uint8_t>(plaintext).subspan(0, *opened), frames);
+        if (!decodedFrames.has_value())
         {
             // 能解密就说明这包出自持有密钥的对端，帧解不开是对端违规（§19.1）
-            beginClose(frames.error().kind == QuicDecodeErrorKind::Truncated ? kQuicProtocolViolation : kQuicFrameEncodingError,
-                       std::format("帧序列不合 RFC 9000 §19：{}", frames.error().message), arrivalTime);
-            return std::unexpected(frames.error());
+            beginClose(decodedFrames.error().kind == QuicDecodeErrorKind::Truncated ? kQuicProtocolViolation
+                                                                                    : kQuicFrameEncodingError,
+                       std::format("帧序列不合 RFC 9000 §19：{}", decodedFrames.error().message), arrivalTime);
+            return std::unexpected(decodedFrames.error());
         }
 
         bool hasAckElicitingFrame = false;
-        for (const QuicFrame &frame : *frames)
+        for (const QuicFrame &frame : frames)
         {
             const std::uint64_t frameType = quicFrameTypeValue(frame);
             if (isOneRttOnlyFrameType(frameType) && space != PacketNumberSpace::Application)
