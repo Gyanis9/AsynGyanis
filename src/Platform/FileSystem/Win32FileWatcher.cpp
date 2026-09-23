@@ -402,6 +402,17 @@ namespace AsynGyanis::Platform
             // WaitForMultipleObjects 单次最多等待 MAXIMUM_WAIT_OBJECTS 个对象：从轮转起点截一段，
             // 下一轮从截断处接着排，保证每个待等待目录迟早进入等待集
             constexpr std::size_t kMaximumWatchedDirectoryCount = MAXIMUM_WAIT_OBJECTS - 1; // 去掉停止事件
+            // 等待超时按「一整轮扫描」定，而不是每次固定 100 ms：一轮窗口只推进 63 个目录，固定超时下
+            // 排在后面窗口里的目录，事件最迟要等 ceil(待等待数/63) × 100 ms 才被看到（实测 601 个目录
+            // 时单次跑到 404 ms，热重载因此慢到肉眼可见）。摊薄之后一整轮的预算仍是 100 ms，与只有一组
+            // 目录时同量级；5 ms 的下限防止目录极多时把这条循环变成纯自旋（每轮的快照成本随目录数线性涨）
+            constexpr DWORD kFullSweepBudgetMilliseconds = 100;
+            constexpr DWORD kMinimumWaitMilliseconds     = 5;
+            const DWORD windowCount = static_cast<DWORD>(
+                    (allEventHandles.size() + kMaximumWatchedDirectoryCount - 1) / kMaximumWatchedDirectoryCount);
+            const DWORD waitTimeoutMilliseconds = std::max(kMinimumWaitMilliseconds,
+                                                           windowCount == 0 ? kFullSweepBudgetMilliseconds
+                                                                            : kFullSweepBudgetMilliseconds / windowCount);
             if (allEventHandles.size() <= kMaximumWatchedDirectoryCount)
             {
                 rotationOffset = 0;
@@ -428,7 +439,7 @@ namespace AsynGyanis::Platform
                 continue;
             }
 
-            const DWORD waitResult = ::WaitForMultipleObjects(static_cast<DWORD>(eventHandles.size()), eventHandles.data(), FALSE, 100);
+            const DWORD waitResult = ::WaitForMultipleObjects(static_cast<DWORD>(eventHandles.size()), eventHandles.data(), FALSE, waitTimeoutMilliseconds);
 
             if (waitResult == WAIT_FAILED || waitResult == WAIT_TIMEOUT)
             {
