@@ -15,6 +15,23 @@
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 本进程内是否已有用例把共享帧池顶到过块数上限
+         * @details 池的块数只增不减（块一旦切出来就留在池里），所以顶满之后，同一个进程里那些
+         *          「要求池还能扩容」的用例前提就不成立了：此时大档只能借全局堆，扩容步长也观察不到。
+         *          CTest 给每条用例起独立进程，平时看不到这个标记；整文件连跑或 `--gtest_repeat`
+         *          时靠它把「前提不成立」与「实现退化」分开——后者仍然报红，前者明确报 SKIP。
+         * @return bool& 可读写的前提标记
+         */
+        bool &poolBlockCeilingReached()
+        {
+            static bool isReached = false;
+            return isReached;
+        }
+    } // namespace
+
     /**
      * @brief instance() 是进程级单例：另一个线程取到的也是同一个池（协程帧跨线程换手，按线程拆池就无法回收）
      */
@@ -66,6 +83,12 @@ namespace AsynGyanis::Core
      */
     TEST(CoroutinePool, ServesOversizedFramesFromTheLargeTier)
     {
+        // 顶满之后大档只能从全局堆拿块，那时 owns() 为假并不代表分档退化（独立进程里跑必不发生）
+        if (poolBlockCeilingReached())
+        {
+            GTEST_SKIP() << "共享帧池已被同进程先前的用例顶到块数上限，本用例「从池里拿大块」的前提不成立";
+        }
+
         auto &pool = CoroutinePool::instance();
 
         // 两倍小档：小档装不下，应当由大档接手
@@ -318,6 +341,12 @@ namespace AsynGyanis::Core
      */
     TEST(CoroutinePool, TierExpansionStepFollowsItsOwnHistoryNotTheOtherTiers)
     {
+        // 池顶满之后再没有一次扩容可观察，两段「等一次扩容」的循环都会空转到上限
+        if (poolBlockCeilingReached())
+        {
+            GTEST_SKIP() << "共享帧池已被同进程先前的用例顶到块数上限，本用例「池还会扩容」的前提不成立";
+        }
+
         auto &pool = CoroutinePool::instance();
 
         // 大档按自己的需求长到这一步：步长参照值从这里取
@@ -413,8 +442,10 @@ namespace AsynGyanis::Core
     /**
      * @brief 池到达块数上限后不崩溃也不静默失败：改由全局堆承担且 owns() 返回 false；归还后池内块仍可复用
      * @details 池的块数上限是私有常量，用例不硬编码它，而是一路分配到出现「不属于本池」的块为止。
-     *          本用例会把共享单例顶到上限，因此排在本文件最后：直接跑整个可执行体时，排在它后面的
-     *          用例再也扩不出容（CTest 给每条用例起独立进程，顺序不影响各自的结论）
+     *          本用例会把共享单例顶到上限且**再也退不下来**：块只增不减，所以同进程里后续「要求池还能
+     *          扩容」的用例前提就不成立了。单靠排在本文件最后挡不住 `--gtest_repeat`（下一轮它们会跑到
+     *          本用例之后），因此这里显式记下标记，让那几条用例报 SKIP 而不是把「前提没了」当成实现退化
+     *          报红。CTest 给每条用例起独立进程，那种跑法下这个标记永远不被读到。
      */
     TEST(CoroutinePool, AllocationBeyondBlockCeilingFallsBackToGlobalHeap)
     {
@@ -439,6 +470,9 @@ namespace AsynGyanis::Core
 
         ASSERT_NE(firstForeignBlock, nullptr)
             << "在 " << kAllocationAttemptCeiling << " 次分配内没有观察到池上限：上限常量是否被调大了？";
+
+        // 走到这里池已顶满且退不回来（块只增不减）：把「后续用例的前提没了」记下来
+        poolBlockCeilingReached() = true;
 
         // 越过上限的块由全局堆承载，且归还时也必须走全局堆释放路径
         // （deallocate 靠 isOwnedBlock() 判定归属，因此判定分支与 allocate 天然一致）
