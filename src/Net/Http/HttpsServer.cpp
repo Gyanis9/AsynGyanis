@@ -190,8 +190,8 @@ namespace AsynGyanis::Net
 
     bool HttpsServer::reloadCertificate()
     {
-        // 只做转发：换代的全部语义（先建后换、失败不碰旧上下文、复现 mTLS 与 OCSP）都在 TlsContext 里，
-        // 这里再包一层是为了让运维调用方不必接触内部上下文对象
+        // 只做转发：换代的全部语义（先建后换、失败不碰旧上下文、复现 mTLS、OCSP 与票据密钥）都在
+        // TlsContext 里，这里再包一层是为了让运维调用方不必接触内部上下文对象
         return m_tlsContext.reloadCertificate();
     }
 
@@ -199,6 +199,12 @@ namespace AsynGyanis::Net
     {
         // 同 reloadCertificate()：纯转发，装订数据的存放与线程安全都由 TlsContext 负责
         return m_tlsContext.loadOcspResponse(ocspResponseFile);
+    }
+
+    bool HttpsServer::loadSessionTicketKeys(const std::vector<std::string> &keyFiles)
+    {
+        // 同 reloadCertificate()：纯转发，密钥环的存放、快照替换与换代复现都由 TlsContext 负责
+        return m_tlsContext.loadSessionTicketKeys(keyFiles);
     }
 
 } // namespace AsynGyanis::Net

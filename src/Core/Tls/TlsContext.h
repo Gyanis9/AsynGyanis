@@ -12,6 +12,7 @@
 
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -24,8 +25,9 @@ namespace AsynGyanis::Core
      *       忽略后写失败以 EPIPE 返回，走既有错误路径
      * @note 配置挂在 SSL_CTX 上且被进程内所有连接共享：改动只影响之后创建的 SSL 对象，
      *       已建立的连接不受影响
-     * @note 会话恢复按 OpenSSL 默认即开启；票据密钥随上下文生成，reloadCertificate() 换代后
-     *       旧票据无法恢复，客户端自动退回全量握手
+     * @note 会话恢复按 OpenSSL 默认即开启；不装载票据密钥时每个上下文自己随机生成一份，
+     *       于是跨进程/跨机不通用、reloadCertificate() 换代后旧票据也无法恢复（客户端退回全量握手）。
+     *       要消除这两条就用 loadSessionTicketKeys() 让各进程装载同一份密钥文件
      * @note 证书换代不中断服务：reloadCertificate() 用同一套加固配置新建 SSL_CTX 整台换掉，
      *       已建立的连接仍绑在旧上下文上（OpenSSL 引用计数保证最后一个引用消失前不释放它）
      */
@@ -129,6 +131,31 @@ namespace AsynGyanis::Core
          */
         bool loadOcspResponse(const std::string &ocspResponseFile) const;
 
+        /**
+         * @brief 装载会话票据密钥，让多个上下文（多进程 worker、多台机器、换代前后）互相认得对方签的票据
+         * @param keyFiles 密钥文件路径列表，**二进制**内容，每份 48 或 80 字节
+         *        （`openssl rand 48 > ticket.key` 即可产出；48 走 AES-128、80 走 AES-256，可混用）。
+         *        首份用于签发新票据，其余只用于解开轮换窗口内旧密钥签发的票据
+         * @return true 全部密钥已装载并生效（此后新建的 SSL 用它）；false 表示某个文件读不出来或为空，
+         *         此时保持原状态不变——已装的密钥继续用，没装过的仍按 OpenSSL 默认走内部随机密钥
+         * @throws CoreException 列表为空，或某份密钥的长度既不是 48 也不是 80。长度决定票据正文用的
+         *         AES 密钥长度，写错就是配置错误：当场拒绝好过静默退化成「不发票据」，
+         *         后者的表现只是恢复命中率莫名其妙地掉到零
+         * @note 不装载时按 OpenSSL 默认，每个 SSL_CTX 自己随机生成一份密钥，于是有两处代价：
+         *       ①多进程/多机之间票据互不通用，客户端第二次连接若被 SO_REUSEPORT 分到另一个
+         *       worker，恢复必然落空、只能退回全量握手；②reloadCertificate() 换代后旧票据全废。
+         *       各进程装载**同一份**密钥文件即同时消除这两条（nginx 的 ssl_session_ticket_key 同此形态）
+         * @note 与证书、OCSP 同为「路径即身份」：reloadCertificate() 按原路径重读密钥并在新上下文上复现，
+         *       重读失败则整次换代失败、旧上下文继续服务（与 OCSP 重读同一语义）
+         * @note 轮换：把新密钥插到列表首位、旧的留在后面，旧票据仍解得开且 OpenSSL 会顺手换发一张
+         *       新密钥签的票据；等旧票据全部过期后再把尾部那份摘掉。可在服务运行中调用，
+         *       替换是原子的整份快照，握手线程要么看到旧的整份、要么看到新的整份
+         * @note 密钥文件按私钥同级保管（属主可读、不入版本库）：拿到它就能解开本服务签发的所有票据，
+         *       进而解密被抓走的会话
+         * @see reloadCertificate()
+         */
+        bool loadSessionTicketKeys(const std::vector<std::string> &keyFiles) const;
+
     private:
         /**
          * @brief 新建一个 SSL_CTX 并施加全部安全加固（构造与热轮换共用同一份，避免两处配置各自漂移）
@@ -150,12 +177,13 @@ namespace AsynGyanis::Core
         SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
         mutable std::mutex m_contextMutex; ///< 保护 m_context 的读取与整台换代（createSSL/reload 互斥）
 
-        // 下面四项记录「当前生效的配置」，供 reloadCertificate() 在新上下文上原样复现。
+        // 下面五项记录「当前生效的配置」，供 reloadCertificate() 在新上下文上原样复现。
         // 加载类接口都是 const（它们改的是 SSL_CTX 内容而不是本对象的身份），因此这几项为 mutable
         mutable std::string m_certificateFile; ///< 上次成功加载的证书路径；空表示还没加载过，reloadCertificate() 据此判断
         mutable std::string m_keyFile;         ///< 上次成功加载的私钥路径
         mutable std::string m_clientCertificateAuthorityFile; ///< 已加载的校验 CA 路径；换代时要复现，空表示没加载过
         mutable std::string m_ocspResponseFile; ///< 已加载的 OCSP 响应路径；换代时按此重读，空表示没加载过
+        mutable std::vector<std::string> m_sessionTicketKeyFiles; ///< 已装载的票据密钥文件路径，首份用于签发、其余只用于解开旧票据；换代时按此重读，空表示没装载过
 
         mutable bool m_clientCertificateRequired{false};        ///< 是否要求并校验对端证书（换代时同样要复现）
         mutable bool m_clientCertificateAuthorityLoaded{false}; ///< 是否已成功加载校验对端证书的 CA

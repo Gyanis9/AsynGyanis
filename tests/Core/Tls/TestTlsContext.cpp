@@ -6,6 +6,8 @@
 #include "Core/Exception/CoreException.h"
 #include "Platform/IO/FileDescriptor.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <openssl/err.h>
@@ -1338,6 +1340,316 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(outcome.second.clientCompleted) << outcome.second.clientErrorText;
         EXPECT_TRUE(outcome.second.clientReused) << "mTLS 部署下第二次握手没有命中恢复（客户端视角）";
         EXPECT_TRUE(outcome.second.serverReused) << "mTLS 部署下第二次握手没有命中恢复（服务端视角）";
+    }
+
+    // ============================================================================
+    // 会话票据密钥（跨上下文共享与轮换）
+    // ============================================================================
+
+    namespace
+    {
+        /// AES-128 布局的密钥长度：名 16 + HMAC 16 + AES 16
+        constexpr std::size_t kAes128TicketKeyBytes = 48;
+
+        /// AES-256 布局的密钥长度：名 16 + HMAC 32 + AES 32
+        constexpr std::size_t kAes256TicketKeyBytes = 80;
+
+        /**
+         * @brief 造一份内容确定的票据密钥字节
+         * @param seed 种子：同 seed 得到同一份密钥（跨上下文共享就是这么建模的），异 seed 得到不同密钥
+         * @param length 密钥长度，取 48 或 80 两种合法布局之一
+         * @return std::string 密钥原始字节
+         * @details 不用 RAND_bytes：用例要可复现——密钥随机时，「两个上下文恰好生成了同一份密钥」
+         *          这种极端情形会让对照组假绿，而失败也无法在同一台机器上重放
+         */
+        std::string makeTicketKeyBytes(const unsigned int seed, const std::size_t length = kAes128TicketKeyBytes)
+        {
+            std::string key(length, '\0');
+            for (std::size_t index = 0; index < key.size(); ++index)
+            {
+                key[index] = static_cast<char>(static_cast<unsigned char>((index * 7U + seed * 31U + 11U) & 0xFFU));
+            }
+            return key;
+        }
+
+        /**
+         * @brief 把一份密钥字节写成临时目录里的**二进制**文件
+         * @param directory 用例独占的临时目录
+         * @param fileName 文件名
+         * @param keyBytes 密钥原始字节
+         * @return std::string 文件路径文本
+         * @note 不能借用 TestSupport::TemporaryDirectory::writeFile()：它按文本模式打开，
+         *       Windows 上会把 0x0A 翻成 CRLF，密钥长度当场就错了，而错的长度正是本组要拒的东西
+         */
+        std::string writeTicketKeyFile(const AsynGyanis::TestSupport::TemporaryDirectory &directory, const std::string &fileName,
+                                       const std::string &keyBytes)
+        {
+            const std::filesystem::path keyPath = directory.path() / fileName;
+            std::ofstream               file(keyPath, std::ios::out | std::ios::binary | std::ios::trunc);
+            EXPECT_TRUE(file.is_open()) << "密钥文件写不出来：" << keyPath.string();
+            file.write(keyBytes.data(), static_cast<std::streamsize>(keyBytes.size()));
+            file.close();
+            return keyPath.string();
+        }
+
+        /**
+         * @brief 就地给上下文装上仓库夹具证书
+         * @param context 目标上下文
+         * @note TlsContext 既禁拷贝也没有移动构造，因此只能由调用方构造好再装载，
+         *       不能做成「返回一个装好的上下文」的工厂
+         */
+        void installFixtureCertificate(TlsContext &context)
+        {
+            ASSERT_TRUE(context.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：两个上下文装载同一份密钥后，A 签的票据 B 解得开
+     * @details 多进程 worker 各有一份 TlsContext，而 SO_REUSEPORT 不保证第二次连接落回同一个进程。
+     *          本用例把「落到另一个进程」直接建模成「换一个 SSL_CTX 握手」——这正是共享密钥要解决的场景
+     */
+    TEST(TlsContext, SharedTicketKeyLetsAnotherContextResumeTheSession)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyShared");
+        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", makeTicketKeyBytes(1));
+
+        TlsContext issuingContext;
+        installFixtureCertificate(issuingContext);
+        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({keyFile}));
+
+        TlsContext resumingContext;
+        installFixtureCertificate(resumingContext);
+        ASSERT_TRUE(resumingContext.loadSessionTicketKeys({keyFile}));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const HandshakeWithSession first = completeHandshakeWithSession(issuingContext.nativeHandle(), clientContext.get(), false);
+        ASSERT_FALSE(first.setupFailed);
+        ASSERT_TRUE(first.outcome.serverCompleted) << first.outcome.serverErrorText;
+        ASSERT_TRUE(first.outcome.clientCompleted) << first.outcome.clientErrorText;
+        ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
+
+        const HandshakeWithSession second =
+                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        ASSERT_FALSE(second.setupFailed);
+        ASSERT_TRUE(second.outcome.serverCompleted) << second.outcome.serverErrorText;
+        ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
+        EXPECT_TRUE(second.outcome.clientReused) << "换了一个上下文就没认出来：票据密钥没有跨上下文共享";
+        EXPECT_TRUE(second.outcome.serverReused) << "服务端视角没有命中恢复";
+    }
+
+    /**
+     * @brief 对照组：不装载密钥时，换上下文必然恢复不了
+     * @details 上一条用例的证伪判据。没有它，「命中恢复」可能只是同一进程里 OpenSSL 自己的会话缓存
+     *          凑巧生效，把一条恒绿的用例当成共享密钥已经work的证据
+     */
+    TEST(TlsContext, ResumptionMissesAcrossContextsWithoutSharedTicketKey)
+    {
+        TlsContext issuingContext;
+        installFixtureCertificate(issuingContext);
+        TlsContext resumingContext;
+        installFixtureCertificate(resumingContext);
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const HandshakeWithSession first = completeHandshakeWithSession(issuingContext.nativeHandle(), clientContext.get(), false);
+        ASSERT_FALSE(first.setupFailed);
+        ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
+
+        const HandshakeWithSession second =
+                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        ASSERT_FALSE(second.setupFailed);
+        ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
+
+        // 每个上下文各有一份随机密钥，因此票据解不开：退回全量握手，而不是恢复
+        EXPECT_FALSE(second.outcome.clientReused) << "没共享密钥却命中了恢复，说明本组用例判不出共享语义";
+        EXPECT_FALSE(second.outcome.serverReused);
+    }
+
+    /**
+     * @brief 轮换：新密钥插到首位、旧的留在环里时，旧密钥签的票据仍解得开
+     */
+    TEST(TlsContext, RotatedTicketKeyStillDecryptsTicketsFromPreviousKey)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyRotated");
+        const std::string                           previousKeyFile = writeTicketKeyFile(directory, "previous.key", makeTicketKeyBytes(2));
+        const std::string                           currentKeyFile  = writeTicketKeyFile(directory, "current.key", makeTicketKeyBytes(3));
+
+        TlsContext issuingContext;
+        installFixtureCertificate(issuingContext);
+        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({previousKeyFile}));
+
+        // 轮换后的形状：首份是当前密钥（用它签发），上一份留着只用于解开旧票据
+        TlsContext rotatedContext;
+        installFixtureCertificate(rotatedContext);
+        ASSERT_TRUE(rotatedContext.loadSessionTicketKeys({currentKeyFile, previousKeyFile}));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const HandshakeWithSession first = completeHandshakeWithSession(issuingContext.nativeHandle(), clientContext.get(), false);
+        ASSERT_FALSE(first.setupFailed);
+        ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
+
+        const HandshakeWithSession second =
+                completeHandshakeWithSession(rotatedContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        ASSERT_FALSE(second.setupFailed);
+        ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
+        EXPECT_TRUE(second.outcome.clientReused) << "轮换把旧票据一起废掉了：环里的旧密钥没被用来解密";
+    }
+
+    /**
+     * @brief 密钥对不上时按「不认这张票据」处理：恢复不命中，但握手必须照常完成
+     * @details 回调在这里回的是「婉拒」而不是「致命错误」。写成致命错误的表现是客户端带来一张
+     *          过期或别处签的票据就连不上——那是把加速手段变成了可用性依赖
+     */
+    TEST(TlsContext, UnknownTicketKeyIsDeclinedWithoutBreakingHandshake)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyUnknown");
+        const std::string                           firstKeyFile  = writeTicketKeyFile(directory, "first.key", makeTicketKeyBytes(4));
+        const std::string                           secondKeyFile = writeTicketKeyFile(directory, "second.key", makeTicketKeyBytes(5));
+
+        TlsContext issuingContext;
+        installFixtureCertificate(issuingContext);
+        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({firstKeyFile}));
+
+        TlsContext unrelatedContext;
+        installFixtureCertificate(unrelatedContext);
+        ASSERT_TRUE(unrelatedContext.loadSessionTicketKeys({secondKeyFile}));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const HandshakeWithSession first = completeHandshakeWithSession(issuingContext.nativeHandle(), clientContext.get(), false);
+        ASSERT_FALSE(first.setupFailed);
+        ASSERT_TRUE(first.sessionResumable);
+
+        const HandshakeWithSession second =
+                completeHandshakeWithSession(unrelatedContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        ASSERT_FALSE(second.setupFailed);
+        ASSERT_TRUE(second.outcome.serverCompleted) << second.outcome.serverErrorText;
+        ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
+        EXPECT_FALSE(second.outcome.clientReused) << "密钥不同却命中了恢复";
+    }
+
+    /**
+     * @brief 证书换代要把票据密钥一起带到新上下文
+     * @details 换代是「整台新建 SSL_CTX 再换掉」，任何一项配置没复现就等于被换代悄悄清掉。
+     *          这里的判据是换代**之后**签的票据仍能被装载同一份密钥的另一个上下文解开
+     */
+    TEST(TlsContext, ReloadCertificateReplaysTicketKeys)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyReload");
+        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", makeTicketKeyBytes(6));
+
+        TlsContext reloadedContext;
+        installFixtureCertificate(reloadedContext);
+        ASSERT_TRUE(reloadedContext.loadSessionTicketKeys({keyFile}));
+        ASSERT_TRUE(reloadedContext.reloadCertificate()) << "证书换代本身失败了，本用例的前提不成立";
+
+        TlsContext resumingContext;
+        installFixtureCertificate(resumingContext);
+        ASSERT_TRUE(resumingContext.loadSessionTicketKeys({keyFile}));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const HandshakeWithSession first = completeHandshakeWithSession(reloadedContext.nativeHandle(), clientContext.get(), false);
+        ASSERT_FALSE(first.setupFailed);
+        ASSERT_TRUE(first.sessionResumable) << "换代后的上下文没有签发票据";
+
+        const HandshakeWithSession second =
+                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        ASSERT_FALSE(second.setupFailed);
+        ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
+        EXPECT_TRUE(second.outcome.clientReused) << "证书换代把票据密钥丢了：新上下文退回内部随机密钥";
+    }
+
+    /**
+     * @brief AES-256 布局（80 字节）同样能签能解
+     * @details 只校验长度是不够的：长度对了但 HMAC/AES 段切错，表现是签发正常而解密恒失败。
+     *          因此这里跑完整一轮跨上下文恢复，而不是只断言装载返回 true
+     */
+    TEST(TlsContext, ResumesWithAes256TicketKey)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyAes256");
+        const std::string keyFile = writeTicketKeyFile(directory, "ticket256.key", makeTicketKeyBytes(7, kAes256TicketKeyBytes));
+
+        TlsContext issuingContext;
+        installFixtureCertificate(issuingContext);
+        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({keyFile}));
+
+        TlsContext resumingContext;
+        installFixtureCertificate(resumingContext);
+        ASSERT_TRUE(resumingContext.loadSessionTicketKeys({keyFile}));
+
+        SslContextPointer clientContext = createClientContext();
+        ASSERT_NE(clientContext, nullptr);
+
+        const HandshakeWithSession first = completeHandshakeWithSession(issuingContext.nativeHandle(), clientContext.get(), false);
+        ASSERT_FALSE(first.setupFailed);
+        ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
+
+        const HandshakeWithSession second =
+                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        ASSERT_FALSE(second.setupFailed);
+        ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
+        EXPECT_TRUE(second.outcome.clientReused) << "80 字节密钥签的票据解不开";
+    }
+
+    /**
+     * @brief 长度不对的密钥当场拒绝，而不是静默降级成「一张票据都不发」
+     * @details 长度决定 HMAC 段与 AES 段怎么切：写错了要么恢复命中率莫名归零，要么按错误偏移读密钥。
+     *          两种都不该沉默，因此这里与「非正的 worker 配置在构造期就被拒」同口径
+     */
+    TEST(TlsContext, RejectsTicketKeyFileWithWrongLength)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyWrongLength");
+        const std::string tooShort = writeTicketKeyFile(directory, "short.key", makeTicketKeyBytes(8, kAes128TicketKeyBytes - 1));
+        const std::string tooLong  = writeTicketKeyFile(directory, "long.key", makeTicketKeyBytes(9, kAes256TicketKeyBytes + 1));
+        // 64 字节夹在两种合法布局中间，最容易被当成「差不多就行」放过
+        const std::string inBetween = writeTicketKeyFile(directory, "middle.key", makeTicketKeyBytes(10, 64));
+
+        TlsContext context;
+        installFixtureCertificate(context);
+        EXPECT_THROW(context.loadSessionTicketKeys({tooShort}), CoreException);
+        EXPECT_THROW(context.loadSessionTicketKeys({tooLong}), CoreException);
+        EXPECT_THROW(context.loadSessionTicketKeys({inBetween}), CoreException);
+
+        // 列表里有一份不对就整批拒绝：半份生效的密钥环比不生效更难排查
+        const std::string valid = writeTicketKeyFile(directory, "valid.key", makeTicketKeyBytes(11));
+        EXPECT_THROW(context.loadSessionTicketKeys({valid, inBetween}), CoreException);
+    }
+
+    /**
+     * @brief 空列表是配置错误：它会关掉发票据的能力，而不是「取消共享」
+     */
+    TEST(TlsContext, RejectsEmptyTicketKeyFileList)
+    {
+        TlsContext context;
+        installFixtureCertificate(context);
+        EXPECT_THROW(context.loadSessionTicketKeys({}), CoreException);
+    }
+
+    /**
+     * @brief 文件读不出来按 false 报告，与证书、OCSP 的加载接口同一口径
+     */
+    TEST(TlsContext, ReportsFalseForUnreadableTicketKeyFile)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyMissing");
+
+        TlsContext context;
+        installFixtureCertificate(context);
+        EXPECT_FALSE(context.loadSessionTicketKeys({(directory.path() / "missing.key").string()}));
+
+        // 空文件同样算读不出来：readFileBytes 的判据是「读到了且非空」
+        std::ofstream emptyFile(directory.path() / "empty.key", std::ios::out | std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(emptyFile.is_open());
+        emptyFile.close();
+        EXPECT_FALSE(context.loadSessionTicketKeys({(directory.path() / "empty.key").string()}));
     }
 
     // ============================================================================

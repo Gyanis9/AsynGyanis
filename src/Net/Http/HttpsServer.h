@@ -22,6 +22,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -230,6 +231,25 @@ namespace AsynGyanis::Net
          * @see Core::TlsContext::loadOcspResponse()
          */
         bool loadOcspResponse(const std::string &ocspResponseFile);
+
+        /**
+         * @brief 装载会话票据密钥，让本服务器与别的进程、别的机器互相认得对方签发的票据。
+         *
+         * @details 纯转发，完整语义（长度校验、轮换、换代时按原路径重读）见
+         *          Core::TlsContext::loadSessionTicketKeys()。之所以要在这一层露出来：多进程部署
+         *          （SO_REUSEPORT 的 WorkerSupervisor）里每个 worker 各有一份 TlsContext，
+         *          不装载同一份密钥文件的话，客户端第二次连接被分到别的 worker 就恢复不了会话，
+         *          只能退回全量握手；证书换代前后同理。
+         *
+         * @param keyFiles 密钥文件路径列表（**二进制**，每份 48 或 80 字节），首份用于签发新票据、
+         *                 其余只用于解开轮换窗口内的旧票据
+         * @return true 已生效；false 某个文件读不出来或为空，此时保持原状态
+         * @throws Core::CoreException 列表为空，或某份密钥长度既不是 48 也不是 80
+         * @note 在开始接受连接之前调用；此后新建的连接用它，已建立的连接不受影响
+         * @note 密钥文件按私钥同级保管：拿到它就能解开本服务签发的所有票据
+         * @see Core::TlsContext::loadSessionTicketKeys(), reloadCertificate()
+         */
+        bool loadSessionTicketKeys(const std::vector<std::string> &keyFiles);
 
     private:
         /**
