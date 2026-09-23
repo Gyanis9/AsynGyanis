@@ -161,7 +161,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 设置连接超时时间
-         * @param milliseconds 超时毫秒数，必须在 connect() 之前设置才会生效
+         * @param milliseconds 超时毫秒数，必须在 connect() 之前设置才会生效；0 与负数一律按「不设超时」处理
          * @note 派生类若在 connect() 内读取该值配置底层句柄，重连时需要再次调用
          */
         void setConnectTimeout(const int milliseconds) noexcept

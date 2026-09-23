@@ -18,6 +18,7 @@
 // - PipelineSessionBookkeepingFollowsTheReply（管道那条路径同样按回复定记账）
 // - SessionResetReturnsToTheConfiguredKeySpace（selectDatabase 换走的库在归还时还回配置值）
 // - MonitorStyleSessionIsDroppedOnReturn（MONITOR 这类退不回去的模式：归还时断开而不是回池）
+// - NonPositiveConnectTimeoutDoesNotMeanInstantFailure（connectTimeout 的 0 与负数＝不设超时，守卫性质见用例注释）
 // - PooledReturnClearsSessionForNextBorrower（经连接池借还这一形状下，管道与 MULTI 都不串给下一个）
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
@@ -771,6 +772,33 @@ namespace AsynGyanis::Database
         cleanConnection.resetSessionState();
         EXPECT_TRUE(cleanConnection.isConnected()) << "干净的连接也被复位路径断开了";
         cleanConnection.disconnect();
+    }
+
+    /**
+     * @brief 守卫非正值的连接超时按「不设超时」处理，而不是被当成配置错误拒掉
+     * @details setQueryTimeout() 明写「0 与负数一律按不设超时」，MySQL 驱动同口径；建连这一侧原先把
+     *          -1 毫秒折算成 tv_sec=0、tv_usec=-1000 交给 select()，那是一次无效或零窗口的等待。
+     * @warning 本用例证伪不成立：把换算改回旧写法它照样绿——回环地址上的握手在第一帧就已完成，
+     *          零窗口的等待也读得到「可写」。真正的差别只在慢速链路上看得见，这里钉住的是较弱的一条：
+     *          非正值仍然要能连上并发得出命令，而不是被折算成立刻失败或直接判成非法配置。
+     */
+    TEST_F(RedisIntegrationTest, NonPositiveConnectTimeoutDoesNotMeanInstantFailure)
+    {
+        for (const int timeoutMilliseconds: {0, -1})
+        {
+            RedisConnection connection(m_configuration);
+            connection.setConnectTimeout(timeoutMilliseconds);
+            EXPECT_TRUE(connection.connect()) << "connectTimeout=" << timeoutMilliseconds
+                                              << " 被折算成立刻超时：" << connection.lastError();
+            EXPECT_TRUE(connection.isConnected());
+
+            // 连上了还得能发命令：只把 connect() 判成成功而句柄不可用，同样是不设超时没落地
+            if (connection.isConnected())
+            {
+                EXPECT_NE(connection.executeCommand({"PING"}), nullptr) << connection.lastError();
+            }
+            connection.disconnect();
+        }
     }
 
     /**

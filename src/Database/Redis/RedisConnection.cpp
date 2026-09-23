@@ -306,8 +306,15 @@ namespace AsynGyanis::Database
         // 基类的 connectTimeout() 换算成「秒 + 微秒」交给 redisConnectWithTimeout。
         // 该接口只有内存分配失败才返回 nullptr，网络/拒绝连接类失败会返回带 err 的有效上下文，
         // 两条失败路径都必须先摘错误文本再释放上下文——顺序反了就是在读已释放内存
-        const struct timeval connectionTimeout = makeTimeval(connectTimeout());
-        m_redisContext                         = redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), connectionTimeout);
+        const int connectionTimeoutMilliseconds = connectTimeout();
+        m_redisContext = connectionTimeoutMilliseconds > 0
+                                 ? redisConnectWithTimeout(m_configuration.host.c_str(),
+                                                           static_cast<int>(m_configuration.port),
+                                                           makeTimeval(connectionTimeoutMilliseconds))
+                                 // 非正值是「不设连接超时」（与 setQueryTimeout、MySQL 驱动同一口径）：
+                                 // 折算成 {0, -1000} 交给 select() 只会得到一次无效或零窗口的等待，
+                                 // 对着活着的服务器也报连接失败。redisConnect 这条路径不带等待窗口
+                                 : redisConnect(m_configuration.host.c_str(), static_cast<int>(m_configuration.port));
         if (m_redisContext == nullptr)
         {
             // redisConnectWithTimeout 只在内存分配失败时返回空（网络类失败会给出带 err 的上下文），
