@@ -1522,6 +1522,53 @@ namespace AsynGyanis::Base
         EXPECT_EQ(&LoggerRegistry::instance().getRootLogger(), &rootFirst) << "重复装配换掉了 root 实例";
     }
 
+    /**
+     * @brief 端到端：改文件 → reload() → 重新装配 → 日志换到新文件、旧文件不再增长
+     * @details 三段各自都有单测（热重载把新值装进快照、提交路径执行 schema 校验、装配按新值换
+     *          sink），但没有任何一条把「磁盘上的改动」一路传到「落在文件里的日志」。断了任何一段
+     *          的现场都是「改了配置没生效」，而那正是各测一段时看不见的形状。
+     * @note 用显式 reload() 而不是等文件监视器：等事件会把断言交给调度运气
+     */
+    TEST_F(LoggerConfigLoaderTest, ReloadFromDiskThenReapplyMovesLogsToTheNewFile)
+    {
+        // 只往磁盘写、不加载：让「新值进快照」这一步只能由 loadFromDirectory/reload 完成，
+        // 否则夹具的 loadConfiguration 会顺手把它读进来，reload() 就成了走过场
+        const auto writeYaml = [this](const std::string &logFileName)
+        { return m_temporaryDirectory.writeFile(kconfigurationFileName, R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: )" + logFileName + R"()");
+        };
+
+        ASSERT_TRUE(writeYaml("chain_stage_one.log"));
+        ASSERT_TRUE(ConfigManager::instance().loadFromDirectory(m_temporaryDirectory.path()).success);
+        applyLogging();
+        logAndFlush("root", LogLevel::Info, "line before the change");
+
+        ASSERT_TRUE(contains(readTemporaryFile("chain_stage_one.log"), "line before the change"));
+
+        // 改的是同一份文件：sink 指向换到第二个文件，磁盘之外什么都不做
+        ASSERT_TRUE(writeYaml("chain_stage_two.log"));
+        const ConfigLoadResult reloaded = ConfigManager::instance().reload();
+        ASSERT_TRUE(reloaded.success) << (reloaded.errors.empty() ? std::string{} : reloaded.errors.front());
+        // 中间那道检查别省：先确认「新值确实进了快照」，末端红时才分得清是配置没到还是装配没接
+        const auto sinksSnapshot = ConfigManager::instance().getOptional("logging.loggers.root.sinks");
+        ASSERT_TRUE(sinksSnapshot.has_value()) << "reload() 之后快照里连 sinks 键都没有";
+        EXPECT_NE(sinksSnapshot->dump().find("chain_stage_two.log"), std::string::npos)
+                << "reload() 之后快照里还是旧 sink 配置";
+
+        applyLogging();
+        logAndFlush("root", LogLevel::Info, "line after the change");
+
+        EXPECT_TRUE(contains(readTemporaryFile("chain_stage_two.log"), "line after the change"));
+        EXPECT_FALSE(contains(readTemporaryFile("chain_stage_one.log"), "line after the change"))
+                << "旧 sink 没被换掉：装配没有按新快照清过 sink";
+    }
+
     TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationReplacesSinksInsteadOfDuplicating)
     {
         loadConfiguration(R"(logging:
