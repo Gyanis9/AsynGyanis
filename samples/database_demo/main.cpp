@@ -384,6 +384,45 @@ namespace
     }
 
     /**
+     * @brief 作用域退出时执行一段收尾动作
+     *
+     * @details 写在函数尾的收尾在异常路径上会被整段跳过：runStep 只把异常折成一条失败结论，
+     *          残表、残键与还 joinable 的线程都留在原地。挂到析构上，正常与异常两条出路都跑得到。
+     */
+    class ScopedCleanup final
+    {
+    public:
+        /**
+         * @brief 记下收尾动作
+         * @param action 离开作用域时执行的动作，抛出的异常按「收尾失败」吞掉并记日志
+         */
+        explicit ScopedCleanup(std::function<void ()> action) : m_action(std::move(action))
+        {
+        }
+
+        ScopedCleanup(const ScopedCleanup &) = delete;
+        ScopedCleanup &operator=(const ScopedCleanup &) = delete;
+        ScopedCleanup(ScopedCleanup &&) = delete;
+        ScopedCleanup &operator=(ScopedCleanup &&) = delete;
+
+        ~ScopedCleanup()
+        {
+            try
+            {
+                m_action();
+            }
+            catch (...)
+            {
+                // 析构里抛不出去（隐式 noexcept 即 terminate），只能落成一条日志
+                LOG_ERROR("示例的收尾动作抛出异常，已按失败吞掉");
+            }
+        }
+
+    private:
+        std::function<void ()> m_action; ///< 离开作用域时执行的收尾动作
+    };
+
+    /**
      * @brief 跑一步自检：框架异常绝不逃出 main，抛出来就折成一条失败结论
      * @param stepName 步骤名，出现在日志与失败结论里
      * @param body 步骤体
@@ -1213,6 +1252,14 @@ namespace
                     isWaiterHoldsConnection.store(static_cast<bool>(borrowed), std::memory_order_relaxed);
                     isWaiterServed.store(true, std::memory_order_release);
                 });
+        // 这条线程的 join 也挂在作用域上：走到 join 之前抛出异常，joinable 的 std::thread 析构就是 terminate
+        const ScopedCleanup joinWaiterThread([&waiter]
+        {
+            if (waiter.joinable())
+            {
+                waiter.join();
+            }
+        });
         const bool isWaiterQueued = Samples::waitUntil([&resetPool]
                                                        {
                                                            return resetPool.waitingCount() > 0;
@@ -1427,6 +1474,12 @@ namespace
         const Database::MySqlDialect dialect;
         const std::string            tableName = dialect.quoteIdentifier("asyn_sample_mysql_" + std::to_string(Platform::ProcessInfo::currentProcessId()));
 
+        // 残表不能等走到函数尾才删：中途抛异常时这张带进程号的表就永久留在共享库里
+        const ScopedCleanup dropSampleTable([&connection, &tableName]
+        {
+            static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + tableName));
+        });
+
         static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + tableName));
         const bool isCreated = connection.execute("CREATE TABLE " + tableName +
                                                   " (`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL)") != nullptr;
@@ -1472,9 +1525,7 @@ namespace
         Samples::checklist().check(isMySqlCommitEffective && duplicateReceipt == nullptr && containsChinese(duplicateError) &&
                                            duplicateError.find("错误码") != std::string::npos,
                                    "MySQL 提交让第三行可见；重复主键以 nullptr + 中文原因（含错误码）暴露而不是崩掉");
-
-        static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + tableName));
-        connection.disconnect();
+        // 表的删除与断开连接都交给作用域收尾：删表守卫先跑，连接的析构随后关连接
     }
 
     /**
@@ -1500,6 +1551,18 @@ namespace
             createdKeys.push_back(key);
             return key;
         };
+
+        const int configuredKeyspace = readEnvironmentInteger(kRedisDatabaseVariableName, kDefaultRedisKeyspaceIndex);
+        // 键的清理挂在作用域上而不是函数尾：中途抛异常也要把本次的键删干净。
+        // 删之前先切回配置的键空间——键空间切换那一步可能把连接停在 0 号库上，那就删错库了
+        const ScopedCleanup removeSampleKeys([&connection, &createdKeys, configuredKeyspace]
+        {
+            static_cast<void>(connection.selectDatabase(configuredKeyspace));
+            for (const std::string &key: createdKeys)
+            {
+                static_cast<void>(connection.executeCommand({"DEL", key}));
+            }
+        });
 
         const std::string probeKey  = makeKey("probe");
         const std::string secondKey = makeKey("second");
@@ -1558,15 +1621,9 @@ namespace
         Samples::checklist().check(isCommandErrorReported && connection.executeCommand({"PING"}) != nullptr,
                                    "Redis 命令报错给出中文前缀，且失败不会把连接本身弄坏");
 
-        for (const std::string &key: createdKeys)
-        {
-            static_cast<void>(connection.executeCommand({"DEL", key}));
-        }
-
         // 键空间切换：切到 0 号库后刚写的键必须消失，切回配置的库又看得见
         static_cast<void>(connection.executeCommand({"SET", probeKey, "after-cleanup"}));
-        const int configuredKeyspace = readEnvironmentInteger(kRedisDatabaseVariableName, kDefaultRedisKeyspaceIndex);
-        bool      isKeyspaceSwitched = false;
+        bool isKeyspaceSwitched = false;
         if (connection.selectDatabase(0))
         {
             const bool isHiddenInDefaultKeyspace = readIntegerReply(connection, {"EXISTS", probeKey}) == std::optional<std::int64_t>(0);
@@ -1577,8 +1634,7 @@ namespace
             }
         }
         Samples::checklist().check(isKeyspaceSwitched, "selectDatabase() 真的换了键空间：同一个键在 0 号库里不可见");
-        static_cast<void>(connection.executeCommand({"DEL", probeKey}));
-        connection.disconnect();
+        // 键的删除与断开连接都交给作用域收尾：清理守卫先把键空间切回来再删，连接的析构随后关连接
     }
 } // namespace
 
