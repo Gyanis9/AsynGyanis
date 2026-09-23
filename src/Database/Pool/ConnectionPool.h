@@ -337,13 +337,6 @@ namespace AsynGyanis::Database
         void healthCheckLoop(const std::stop_token& stopToken);
 
         /**
-         * @brief 尝试唤醒一个异步等待者
-         * @param connection 归还的连接引用，成功唤醒时被移走，失败时保持有效
-         * @return true 成功唤醒了一个等待者
-         */
-        bool notifyAsyncWaiter(std::unique_ptr<DatabaseConnection> &connection);
-
-        /**
          * @brief 将等待者从异步等待列表移除
          * @param waiter 待移除的等待者指针
          * @note 要求调用方已持有 m_asyncMutex：等待器析构要在一段锁里同时完成

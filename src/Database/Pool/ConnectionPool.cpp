@@ -210,7 +210,7 @@ namespace AsynGyanis::Database
         const std::lock_guard livenessLock(m_liveness->mutex);
         if (m_liveness->isAlive)
         {
-            // 摘表与「取走交接结果」必须在唤醒方那把锁里做：notifyAsyncWaiter() / expireTimedOutWaiters()
+            // 摘表与「取走交接结果」必须在唤醒方那把锁里做：returnConnection() 的交接段 / expireTimedOutWaiters()
             // 都是持 m_asyncMutex 写 m_result 与 m_inList 的，而本析构可能跑在任意线程、与它们没有任何
             // happens-before。无锁读的后果不只是摘表漏一条：读不到刚交接进来的连接就会把它随帧一起销毁，
             // 而池的总创建数不降、空闲栈也拿不回它——反复几次之后所有 acquire 都卡在「池已满」上。
@@ -272,9 +272,9 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 仍无可用连接：加入等待列表。**这次判定必须与入表同锁**：唤醒方（归还路径）拿的
+        // 仍无可用连接：加入等待列表。**这次判定必须与入表同锁**：唤醒方（归还路径的「交接或入栈」）拿的
         // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
-        // notifyAsyncWaiter 判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
+        // 归还侧判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
             // 锁里**只从空闲栈摘一条**，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
@@ -401,23 +401,51 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // ---- 优先直接交给异步等待者 ----
-        if (notifyAsyncWaiter(connection))
+        // ---- 交给排队的异步等待者，没人等就入空闲栈 ----
+        // 两件事必须在同一段 m_asyncMutex 之内决定：等待者的 await_suspend 是「持着这把锁先摘一次
+        // 空闲栈，摘不到才把自己挂进等待表」的形状。判定与入栈若分处两段锁，「判没人等 → 等待者入表
+        // → 连接入栈」这条交错会让连接躺在栈里、等待者睡到超时，而两侧各自的复检都拦不住它。
+        // 锁序沿用既定方向（m_asyncMutex → m_mutex，反向嵌套就是 AB-BA）；恢复动作照纪律挪到锁外投递。
+        std::shared_ptr<AcquireAwaiter::ResumeTicket> resumeTicket;
+        Core::EventLoop *                             completionLoop = nullptr;
         {
-            return;
+            const std::lock_guard asyncLock(m_asyncMutex);
+
+            if (!m_asyncWaiters.empty())
+            {
+                // 队首优先：先等的先拿到连接（FIFO 公平）
+                AcquireAwaiter *const waiter = m_asyncWaiters.front();
+                m_asyncWaiters.pop_front();
+
+                waiter->m_result = std::move(connection);
+                waiter->m_inList = false;
+                resumeTicket     = waiter->m_resumeTicket;
+                completionLoop   = waiter->m_completionLoop;
+            }
+            else
+            {
+                const std::lock_guard lock(m_mutex);
+
+                IdleEntry entry;
+                entry.connection   = std::move(connection);
+                entry.returnedTime = returnedAt;
+                m_idleStack.push_back(std::move(entry));
+                // 通知留在锁内：等待侧回锁后会先复检空闲栈再睡，锁内提交保证两者之间不再插入别的归还
+                m_idleCondition.notify_one();
+            }
         }
 
-        // ---- 入空闲栈 ----
+        // 恢复投回等待者自己的事件循环，而不是就地跑：归还可能发生在任意线程（工作线程、
+        // 另一个事件循环），就地恢复会让协程的后续代码落到那个线程上，与调用方「回调在自己的
+        // 循环线程」的写法相悖。放在锁外还有一条理由：postRemote 要拿目标循环的锁，
+        // 握着 m_asyncMutex 等它就等于把归还路径排在一个陌生锁后面
+        if (resumeTicket != nullptr)
         {
-            const std::lock_guard lock(m_mutex);
-
-            IdleEntry entry;
-            entry.connection   = std::move(connection);
-            entry.returnedTime = returnedAt;
-            m_idleStack.push_back(std::move(entry));
-            // 通知留在锁内，与等待侧「回锁后先看栈再睡」的复检配成一对：复检保证不会睡在一次
-            // 已经落空的通知之后，锁内提交保证复检与入栈之间不再插入别的归还（两者缺一都有白等满超时的窗口）
-            m_idleCondition.notify_one();
+            completionLoop->scheduler().postRemote(
+                    [resumeTicket]()
+                    {
+                        resumeTicket->resumeOnce();
+                    });
         }
     }
 
@@ -679,41 +707,6 @@ namespace AsynGyanis::Database
             // 锁外断开：析构 unique_ptr 即关闭底层连接
             expiredConnections.clear();
         }
-    }
-
-    bool ConnectionPool::notifyAsyncWaiter(std::unique_ptr<DatabaseConnection> &connection)
-    {
-        std::lock_guard lock(m_asyncMutex);
-
-        if (m_asyncWaiters.empty())
-        {
-            return false;
-        }
-
-        // 从队首取出一个等待者（FIFO 公平：先等的先拿到连接）
-        AcquireAwaiter *waiter = m_asyncWaiters.front();
-        m_asyncWaiters.pop_front();
-
-        waiter->m_result = std::move(connection);
-        waiter->m_inList = false;
-
-        // 把恢复动作投递回等待者所属的事件循环，而不是就地恢复：归还连接可能发生在
-        // 任意线程（工作线程、另一个事件循环），就地恢复会让协程的后续代码跑在那个线程上，
-        // 而调用方是按「回调都在自己的事件循环线程上」来写代码的。
-        // postRemote 内部持锁入队并唤醒目标循环，因此不存在丢唤醒的窗口。
-        // **经票据投递**：这次投递之后调用方随时可能销毁 Task（帧连同等待器一起析构），
-        // 投裸句柄会让循环那边 resume 一块已释放的帧——票据让那次恢复在帧没了之后变成空操作
-        const auto resumeTicket = waiter->m_resumeTicket;
-        if (resumeTicket != nullptr)
-        {
-            waiter->m_completionLoop->scheduler().postRemote(
-                    [resumeTicket]()
-                    {
-                        resumeTicket->resumeOnce();
-                    });
-        }
-
-        return true;
     }
 
     void ConnectionPool::removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept
