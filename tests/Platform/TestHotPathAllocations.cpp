@@ -15,7 +15,8 @@
 //   · UTF-8→path 与 path→UTF-8 各 1 次 / 64 与 32 字节（ASCII 名；非 ASCII 名 1 次 / 48 与 32 字节）。
 //     那一次就是产物本身的缓冲——按值交出一段新文本没有更省的形状了。Debug 下同一形状是 4 次与 3 次，
 //     差的是 STL 调试期的中间量，不是实现退化。扩展名只有几字符时产物进小串内联，因此「只把 extension()
-//     交给 MIME 查询」这类改法能把每请求那一次也省掉。
+//     交给 MIME 查询」这类改法能把每请求那一次也省掉（已这么落：静态服务的 MIME 查询实测从整条路径的
+//     1 次 / 112 字节降到只取出串名的 0 次，Release MSVC；容器 GCC 同形状 1 次 / 0 次）。
 
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/FileSystem/FileSystem.h"
@@ -49,6 +50,7 @@ namespace AsynGyanis::Platform
         constexpr std::uint64_t kFileBasicInfoTotalAllocationsPerThousand = 0U;      ///< 静态文件每请求都要查的那一次
         constexpr std::uint64_t kMappedFileOpenTotalAllocationsPerThousand = 0U;     ///< 映射未命中时才付，但同样每请求都可能付
         constexpr std::uint64_t kOpenedFileInfoTotalAllocationsPerThousand = 0U;     ///< 核对「正文与验证器同版本」时每请求要问的那一次
+        constexpr std::uint64_t kPathTextConversionTotalAllocationsPerThousand = 0U; ///< 只取扩展名那条：产物短到留在内联缓冲里
 #endif
     } // namespace
 
@@ -208,6 +210,61 @@ namespace AsynGyanis::Platform
                 << "每请求一次的身份查询开始碰堆：产物只该是一份不带堆成员的 optional 值";
         EXPECT_EQ(readWithIdentity.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand)
                 << "整段读带身份核对不再是稳态零分配：多半是失败路径开始现造诊断串";
+#endif
+    }
+
+    /**
+     * @brief 只为查 MIME 而把路径出成 UTF-8 文本：整条路径与只取扩展名两种形状各量一次
+     * @details 静态文件服务每请求都要查一次 MIME，而查表只看最后一段扩展名。扩展名短到能留在小串
+     *          内联缓冲里（MSVC 是 15 字节），因此「只出扩展名」这条稳态零分配；整条路径出串则按路径
+     *          长度线性碰堆。对照形状同时量：0 读数有一部分来自内联缓冲，把扩展名拉长到超出内联就要
+     *          重新碰堆，只看「短扩展名 0 次」会把这种依赖当成实现保证。
+     */
+    TEST(PlatformHotPathAllocations, MimeTypePathTextConversionAllocations)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_MimeTypeText");
+        ASSERT_TRUE(temporaryDirectory.writeFile("app.min.js", "x"));
+        const std::filesystem::path fullPath    = temporaryDirectory.path() / "app.min.js";
+        const std::filesystem::path extension   = fullPath.extension();
+        // 拉长到超出小串内联的扩展名，作为「0 次是靠内联缓冲」的对照（取的是同一条形状：扩展名本身）
+        const std::filesystem::path longExtension = std::filesystem::path("archive.thisisareallylongextension").extension();
+
+        const auto wholePathOnce = [&fullPath]
+        {
+            return FileSystem::utf8FromPath(fullPath).size();
+        };
+        const auto extensionOnce = [&extension]
+        {
+            return FileSystem::utf8FromPath(extension).size();
+        };
+        const auto longExtensionOnce = [&longExtension]
+        {
+            return FileSystem::utf8FromPath(longExtension).size();
+        };
+
+        const AllocationProfile wholePath    = measurePerOperation(wholePathOnce);
+        const AllocationProfile shortSuffix  = measurePerOperation(extensionOnce);
+        const AllocationProfile longSuffix   = measurePerOperation(longExtensionOnce);
+        // 产物长度自己算：这两条判据要证的是「一千轮都在读同一条形状」，不是某个手写常数
+        const std::size_t shortSuffixBytes  = FileSystem::utf8FromPath(extension).size();
+        const std::size_t longSuffixBytes   = FileSystem::utf8FromPath(longExtension).size();
+        EXPECT_EQ(shortSuffix.resultSum, kMeasurementIterations * shortSuffixBytes) << "读的不是那条扩展名形状";
+        EXPECT_EQ(longSuffix.resultSum, kMeasurementIterations * longSuffixBytes);
+        ASSERT_GT(longSuffixBytes, shortSuffixBytes) << "对照形状没拉长，比不出内联缓冲的那一层";
+
+        std::printf("出 MIME 用的路径文本：整条路径（%zu 字符）每次 %llu 次 / %llu 字节；只取扩展名（%zu 字符）%llu 次；"
+                    "超出内联的长扩展名（%zu 字符）%llu 次\n",
+                    FileSystem::utf8FromPath(fullPath).size(),
+                    static_cast<unsigned long long>(wholePath.allocationsPerOperation),
+                    static_cast<unsigned long long>(wholePath.bytesPerOperation),
+                    shortSuffixBytes,
+                    static_cast<unsigned long long>(shortSuffix.allocationsPerOperation),
+                    longSuffixBytes,
+                    static_cast<unsigned long long>(longSuffix.allocationsPerOperation));
+#ifdef NDEBUG
+        EXPECT_EQ(shortSuffix.totalAllocations, kPathTextConversionTotalAllocationsPerThousand)
+                << "只取扩展名的那条不该碰堆：产物长度只有 3，超出内联缓冲之前不该有分配";
+        EXPECT_GT(wholePath.totalAllocations, 0U) << "整条路径出串那条一直是按长度碰堆的，读数为 0 说明探针没生效";
 #endif
     }
 

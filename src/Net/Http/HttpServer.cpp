@@ -642,9 +642,12 @@ namespace AsynGyanis::Net
             const std::int64_t lastWriteSeconds = fileBasicInfo->lastWriteSeconds;
             const std::string entityTagText = makeStrongEtag(fileSize, lastWriteSeconds);
             const std::string lastModifiedText = formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)));
-            // 取 MIME 用的路径文本同样要按 UTF-8 出串：Windows 上 path::string() 走本地代码页，
+            // MIME 只看最后一段扩展名，因此只把扩展名按 UTF-8 出串：整条路径的文本要一次堆分配，
+            // 而扩展名短到能留在小串内联里。两条都不走 path::string()——Windows 上它按本地代码页出串，
             // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上
-            const std::string mimeType = FileSender::contentTypeForFile(Platform::FileSystem::utf8FromPath(candidatePath));
+            // 查表返回的是静态字面量，直接交给 setHeader 的 string_view 形参；再拷一份进 std::string
+            // 等于把「application/octet-stream」这种超出内联的长度白付一次堆分配
+            const char *const mimeType = FileSender::contentTypeForFile(Platform::FileSystem::utf8FromPath(candidatePath.extension()));
 
             // 缓存验证器与 Cache-Control 只在 200/206/304 上写一次，避免三处各写一遍而漂移
             const auto appendCacheHeaders = [&response, &entityTagText, &lastModifiedText, &settings]()
