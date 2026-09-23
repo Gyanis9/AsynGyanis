@@ -1075,4 +1075,33 @@ namespace AsynGyanis::Database
         EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE value IS NULL"), std::optional<std::int64_t>(0));
     }
 
+    /**
+     * @brief 钉住「匹配到但写回的是同一个值」在 SQLite 上仍算改动一行（与 MySQL 的口径相反）
+     *
+     * @details 本驱动报的是「WHERE 匹配到并被写入的行数」，SQLite 不比较新旧值；MySQL 报的是
+     *          「值真的变了的行数」。同一语句两侧差 1，因此 ORM 的 update() 返回值不能当存在性判据
+     *          （MySQL 侧「行在但值没变」与「行不存在」都是 0）。两侧口径各由一条用例钉住：
+     *          MySQL 那一条见 TestMySqlIntegration.cpp 的 UpdateThatChangesNoValueReportsZeroAffectedRows。
+     */
+    TEST(SqliteConnection, UpdateWritingTheSameValueStillCountsAsOneAffectedRow)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE keep (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+        ASSERT_NE(executeRequired(connection, "INSERT INTO keep VALUES (1, 'same')"), nullptr);
+
+        const std::array<DatabaseValue, 2> parameters{std::string("same"), std::int64_t{1}};
+        const std::unique_ptr<DatabaseResult> noOpUpdate =
+                connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(parameters));
+        ASSERT_NE(noOpUpdate, nullptr) << connection.lastError();
+        EXPECT_EQ(noOpUpdate->affectedRowCount(), 1) << "SQLite 按匹配并写入的行计数；这里变成 0 说明计数口径被换成了 MySQL 那套";
+
+        // 行不存在才是 0：与上面那一格的差别正是文档要写清的点
+        const std::array<DatabaseValue, 2> missingParameters{std::string("same"), std::int64_t{999}};
+        const std::unique_ptr<DatabaseResult> missingUpdate =
+                connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(missingParameters));
+        ASSERT_NE(missingUpdate, nullptr) << connection.lastError();
+        EXPECT_EQ(missingUpdate->affectedRowCount(), 0);
+    }
+
 } // namespace AsynGyanis::Database

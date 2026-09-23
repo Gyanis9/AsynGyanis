@@ -403,7 +403,10 @@ namespace AsynGyanis::Database::Queryable
          *          条件渲染与 SELECT / DELETE 共用方言层的那一份实现。
          *
          * @param row 待更新的结构体，主键字段用于定位目标行
-         * @return std::int64_t 受影响的行数；0 表示没有匹配的行（无此主键）
+         * @return std::int64_t 驱动口径的受影响行数
+         * @warning 不要拿它判断「这行存在不存在」：SQLite 统计匹配到并被写入的行（写回原值也算 1），
+         *          MySQL 只统计值真变了的行（写回原值是 0，与主键不存在无法区分）。两侧口径各由一条
+         *          用例钉住，存在性请用 first() / count() 确认。
          *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws Base::LogicException TableSchema<T>::kPrimaryKey 未在 kColumns 中声明，
@@ -657,7 +660,8 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param row 待更新的结构体，主键字段用于定位目标行
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
-         * @return Core::Task<std::int64_t> 惰性启动的协程；受影响行数（0 表示没有匹配的行）
+         * @return Core::Task<std::int64_t> 惰性启动的协程；驱动口径的受影响行数，含义与 update() 相同
+         *         （不要拿它当存在性判据，理由见 update() 的 @warning）
          * @throws Base::LogicException 当前为离线模式；或主键未在 kColumns 声明、表中只有主键列
          * @throws DatabaseException 取连接失败或语句执行失败
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现

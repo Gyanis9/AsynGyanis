@@ -171,6 +171,9 @@ namespace AsynGyanis::Database
         constexpr std::string_view kAutoIncrementColumns =
             "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
+        /// 空改动 UPDATE 用例的表：借用自增表的列定义，表名独立以免与其它用例并行时撞车
+        constexpr std::string_view kNoOpUpdateTableName = "Asyn_Mysql_NoOpUpdate";
+
         /// 无自增列的对照表：插入之后自增标识必须是 0，不能凭空给出一个值
         constexpr std::string_view kPlainKeyTableName = "Asyn_Mysql_PlainKey";
         constexpr std::string_view kPlainKeyColumns =
@@ -2247,6 +2250,57 @@ namespace AsynGyanis::Database
         // 交不出这个值就如实说交不出：0 + lastError() 写明原因，比补码回绕成一个看似合理的负数安全
         EXPECT_EQ(receipt->lastInsertRowId(), 0);
         EXPECT_NE(receipt->lastError().find("超出有符号 64 位"), std::string::npos) << receipt->lastError();
+    }
+
+    /**
+     * @brief 钉住「匹配到但没改动任何值」的 UPDATE 在本驱动上算几行（MySQL 报的是改动数）
+     *
+     * @details 这条不是在测驱动的实现细节，而是在测调用方能不能靠返回值区分「行不存在」与
+     *          「行存在但值没变」：两种情况下本驱动都给 0，而 SQLite 给 1。ORM 的 update()
+     *          返回受影响行数，调用方若按「0 就是没找到」来分支，换到 MySQL 上就会误判。
+     *          旧行为没被测过，也没写进任何文档——这里把实测口径钉住并供文档引用。
+     */
+    TEST_F(MySqlIntegrationTest, UpdateThatChangesNoValueReportsZeroAffectedRows)
+    {
+        ASSERT_TRUE(prepareTable(kNoOpUpdateTableName, kAutoIncrementColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::vector<DatabaseValue> insertParameters{std::string("原值")};
+        const std::unique_ptr<DatabaseResult> insertReceipt = connection.execute(
+            "INSERT INTO " + quote(kNoOpUpdateTableName) + " (`name`) VALUES (?)", insertParameters);
+        ASSERT_NE(insertReceipt, nullptr) << connection.lastError();
+        const std::int64_t targetId = insertReceipt->lastInsertRowId();
+        ASSERT_GT(targetId, 0);
+
+        // 同样的值再写一次：行被匹配到了，但没有一格的值发生变化
+        const std::vector<DatabaseValue> sameValueParameters{std::string("原值"), targetId};
+        const std::unique_ptr<DatabaseResult> noOpPrepared = connection.execute(
+            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", sameValueParameters);
+        ASSERT_NE(noOpPrepared, nullptr) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> noOpText = connection.execute(
+            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = '原值' WHERE `id` = " + std::to_string(targetId));
+        ASSERT_NE(noOpText, nullptr) << connection.lastError();
+
+        // 两条协议路径必须同口径，否则调用方换个入口就会拿到不同的数
+        EXPECT_EQ(noOpPrepared->affectedRowCount(), 0) << "预处理路径给的是匹配数而不是改动数";
+        EXPECT_EQ(noOpText->affectedRowCount(), 0) << "文本路径与预处理路径口径不一致";
+
+        // 真改了值才算一行：排除「本驱动压根不统计影响行数」这种误读
+        const std::vector<DatabaseValue> changedParameters{std::string("新值"), targetId};
+        const std::unique_ptr<DatabaseResult> changedReceipt = connection.execute(
+            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", changedParameters);
+        ASSERT_NE(changedReceipt, nullptr) << connection.lastError();
+        EXPECT_EQ(changedReceipt->affectedRowCount(), 1);
+
+        // 行不存在同样是 0：与上面那一格无法区分，这正是需要在文档里写清的点
+        const std::vector<DatabaseValue> missingParameters{std::string("新值"), targetId + 1000};
+        const std::unique_ptr<DatabaseResult> missingReceipt = connection.execute(
+            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", missingParameters);
+        ASSERT_NE(missingReceipt, nullptr) << connection.lastError();
+        EXPECT_EQ(missingReceipt->affectedRowCount(), 0);
     }
 
 } // namespace AsynGyanis::Database
