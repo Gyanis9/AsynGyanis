@@ -854,6 +854,18 @@
   （必需键缺失）重播一遍，也不必整表复制 schema。schema 仍是建议性约束——只报告、不阻断，违规值照常
   生效。新增两条用例（一条钉「该报的报了没有」，一条钉「不该报的别报」），实测摘掉那次调用后前一条
   变红；Windows 侧 `TestBase` 570 例全绿，容器 TSan 同数零告警、ASan/UBSan/LSan 对配置段 116 例零命中。
+- **异步日志队列的容量补上界**：`queue_size` 过去只钳下界（0 会让三种溢出策略各自退化成错误语义），
+  上界却没人管。一条事件在队列里占 `sizeof(LogEvent)`（实测 112 字节），容量乘过去就是下游卡住时最多
+  占住的内存——`queue_size` 多打几个 0，本该「按策略丢弃或阻塞」的背压就变成了 OOM。现在上界由
+  `AsyncSink::kMaximumQueueMemoryBudget`（64 MiB）除以单条事件的大小算出（本机读数 599186 条，
+  `LogEvent` 以后加字段会自动收紧），配置侧与构造侧各钳一次、共用同一对常量，钳制照 `max_backup` 的
+  口径报出「非法取值 + 要求区间 + 钳制结果」。
+- **sink 条目不是对象时会报出来**：`sinks:` 下少写一个 `-`（整条被写成标量）过去一声不吭地跳过，
+  运维看到的是一份「配置里有两条 sink、实际只挂上一条」的现场。本文件的口径是「容错必须可见」
+  （`overflow_policy`、`max_size_mb`、缺字段、类型不符都报），这条拒绝路径漏了，补上报出实际形态。
+  新增 `AsyncSinkClampsOversizedQueueSizeAndReportsIt`，并给既有的标量条目用例补上诊断断言——两条
+  实测都在改前变红；Windows 侧 `TestBase` 571 例全绿、示例 `base_log`/`base_config` 45 步全过，
+  容器 GCC 编同一套零告警、ASan/UBSan/LSan 对日志段 114 例零命中。
 
 ### 性能
 

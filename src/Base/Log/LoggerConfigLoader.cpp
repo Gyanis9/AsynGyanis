@@ -240,6 +240,11 @@ namespace AsynGyanis::Base
     {
         if (!sinkConfiguration.is_object())
         {
+            // 本文件的口径是「容错必须可见」：少写一个 '-'（`- type: file` 变成 `- console`，或整条
+            // 被写成标量）时这个 sink 就是不成立了，但一声不吭地跳过后，运维看到的是一份
+            // 「配置里有两条 sink、实际只挂上一条」的现场——与其余拒绝路径同样报出形态与原因
+            std::cerr << "LoggerConfig：sink 配置不是对象（实际是 " << typeName(sinkConfiguration.type())
+                    << "），已跳过该 sink；每条 sink 要写成 '- type: ...' 加它的字段" << '\n';
             return nullptr;
         }
 
@@ -355,16 +360,20 @@ namespace AsynGyanis::Base
 
             const int64_t configuredQueueSize = optionalFieldWithDiagnosis(sinkConfiguration, "queue_size", int64_t{1024},
                                                                            "async sink");
-            // 配置边界钳制：queue_size 为 0（或负数）会让 AsyncSink 的三种策略全部退化——
-            // Drop 丢弃全部事件、DropOldest 对空队列 pop（未定义行为）、Block 永久阻塞。
-            // 这里钳到 AsyncSink 声明的最小容量并给出可见诊断，AsyncSink 内部还有一次兜底钳制
-            auto          queueSize           = static_cast<size_t>(configuredQueueSize);
-            if (configuredQueueSize < static_cast<int64_t>(AsyncSink::kMinimumQueueSize))
+            // 边界钳制两端都要，与 max_size_mb / max_backup 同一口径：
+            // 下界——queue_size 为 0（或负数）会让 AsyncSink 的三种策略全部退化（Drop 全丢、
+            // DropOldest 对空队列 pop 是未定义行为、Block 永久阻塞）；
+            // 上界——一条事件在队列里占 sizeof(LogEvent) 字节，容量乘过去就是下游卡住时最多占住的
+            // 内存，多打几个 0 会把「按策略丢弃或阻塞」的背压变成 OOM。
+            // AsyncSink 构造里还有同样一对兜底钳制，两处共用它声明的这两个常量
+            constexpr int64_t minimumQueueSizeLimit = static_cast<int64_t>(AsyncSink::kMinimumQueueSize);
+            constexpr int64_t maximumQueueSizeLimit = static_cast<int64_t>(AsyncSink::kMaximumQueueSize);
+            const int64_t     clampedQueueSize      = std::clamp(configuredQueueSize, minimumQueueSizeLimit, maximumQueueSizeLimit);
+            if (clampedQueueSize != configuredQueueSize)
             {
                 std::cerr << "LoggerConfig：async sink 的 queue_size=" << configuredQueueSize
-                        << " 非法（要求 >= " << AsyncSink::kMinimumQueueSize << "），已钳制为 "
-                        << AsyncSink::kMinimumQueueSize << '\n';
-                queueSize = AsyncSink::kMinimumQueueSize;
+                        << " 非法（要求 " << minimumQueueSizeLimit << "~" << maximumQueueSizeLimit
+                        << "），已钳制为 " << clampedQueueSize << "；队列容量按钳制后的值生效" << '\n';
             }
             const std::string overflowPolicyName = optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "overflow_policy",
                                                                                             std::string{"block"}, "async sink");
@@ -384,7 +393,7 @@ namespace AsynGyanis::Base
                         << "' 非法（只支持 block / drop / drop_oldest），已按 block 处理" << '\n';
             }
 
-            sink = std::make_unique<AsyncSink>(std::move(wrappedSink), queueSize, overflowPolicy);
+            sink = std::make_unique<AsyncSink>(std::move(wrappedSink), static_cast<size_t>(clampedQueueSize), overflowPolicy);
         } else
         {
             // 模块初始化阶段日志系统可能尚未就绪，使用 std::cerr

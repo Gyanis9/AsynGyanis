@@ -9,6 +9,7 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerConfigLoader.h"
 #include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/AsyncSink.h"
 #include "Base/Log/Sinks/RollingFileSink.h"
 #include "BaseTestSupport.h"
 #include "Platform/FileSystem/FileSystem.h"
@@ -1182,6 +1183,54 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(delivered) << readTemporaryFile("clamped_queue.log");
     }
 
+    /**
+     * @brief queue_size 填成天文数字时钳到上限并给出诊断，而不是照单建队列
+     * @details 一条事件在队列里占 sizeof(LogEvent) 字节，容量乘过去就是下游卡住时最多占住的内存：
+     *          「100000 多打几个 0」会把本该按策略丢弃/阻塞的背压变成 OOM。钳的是上限、不是拒绝，
+     *          因此钳后仍要正常投递（下面写 8 条并等最后一条落地）。
+     */
+    TEST_F(LoggerConfigLoaderTest, AsyncSinkClampsOversizedQueueSizeAndReportsIt)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: async
+          queue_size: 999999999999
+          overflow_policy: block
+          wrapped:
+            type: file
+            path: oversized_queue.log
+)");
+
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "queue_size=999999999999")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "已钳制为 " + std::to_string(AsyncSink::kMaximumQueueSize))) << diagnostic;
+
+        for (int index = 0; index < 8; ++index)
+        {
+            logAndFlush("root", LogLevel::Info, "oversized_" + std::to_string(index));
+        }
+
+        const bool delivered = TestSupport::waitForCondition(
+                [this]
+                {
+                    return contains(readTemporaryFile("oversized_queue.log"), "oversized_7");
+                },
+                10000);
+        EXPECT_TRUE(delivered) << readTemporaryFile("oversized_queue.log");
+    }
+
     TEST_F(LoggerConfigLoaderTest, AsyncSinkNestedInsideAsyncSinkDeliversEvents)
     {
         loadConfiguration(R"(logging:
@@ -1375,10 +1424,21 @@ namespace AsynGyanis::Base
           path: kept_after_scalar.log
 )");
 
-        EXPECT_NO_THROW(applyLogging());
+        LoggerRegistry::instance().clear();
+
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            EXPECT_NO_THROW(applyLogging());
+            diagnostic = capture.text();
+        }
         logAndFlush("root", LogLevel::Info, "kept after scalar entry");
 
         EXPECT_TRUE(contains(readTemporaryFile("kept_after_scalar.log"), "kept after scalar entry"));
+
+        // 跳过可以，但不能无声：这份配置「写了两条 sink、实际只挂上一条」必须被说出口
+        EXPECT_TRUE(contains(diagnostic, "sink 配置不是对象")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "已跳过该 sink")) << diagnostic;
     }
 
     // ============================================================================
