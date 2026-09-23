@@ -165,4 +165,31 @@ namespace AsynGyanis::Platform
 #endif
         EXPECT_FALSE(utf8Text.empty());
     }
+
+    /**
+     * @brief 钉住：MiB 级、但没到 int 上限的文本仍然按字节与字符数完整往返
+     * @details 转换层新加了一道「长度超过 int 上限即按失败返回空串」的判界（Windows 那两个 API 的
+     *          负长度不是长度，而是「自行扫到 NUL 为止」的哨兵，会把调用方的缓冲区读穿）。这条用例
+     *          钉住那道判界没有把合法的大输入一起挡掉，也没有把字节数与字符数混为一谈：真要构造
+     *          越过 2 GiB 的输入才能命中拒绝支路，那种内存量在 CI 上不现实。
+     */
+    TEST(TextEncoding, MultiMiBTextStillRoundTripsIntact)
+    {
+        constexpr std::size_t kRepeatCount = 1024U * 1024U;
+
+        std::string utf8Text;
+        utf8Text.reserve(kRepeatCount * 4U);
+        for (std::size_t index = 0; index < kRepeatCount; ++index)
+        {
+            // 一段 1 字节 + 一段 3 字节：字节数与字符数因此不相等，判界写错对象会当场露出来
+            utf8Text.push_back('a');
+            utf8Text.append("\xE5\xA3\xAB");
+        }
+        ASSERT_EQ(utf8Text.size(), kRepeatCount * 4U);
+
+        const std::wstring wideText = TextEncoding::toWideString(utf8Text);
+        ASSERT_EQ(wideText.size(), kRepeatCount * 2U) << "宽字符数不对：判界或转换把字节数当成了字符数";
+
+        EXPECT_EQ(TextEncoding::toUtf8String(wideText), utf8Text) << "MiB 级文本往返不一致";
+    }
 } // namespace AsynGyanis::Platform

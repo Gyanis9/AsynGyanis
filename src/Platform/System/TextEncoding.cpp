@@ -1,12 +1,18 @@
 #include "Platform/System/TextEncoding.h"
 #include "Platform/Platform.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace AsynGyanis::Platform
 {
     namespace
     {
+        /// 转换 API 的长度形参是 int：超上限的 size_t 强转后得到的是负数，而负数在 Windows 那两个
+        /// API 那里不是长度而是「自行扫到 NUL 为止」的哨兵，调用会把缓冲区读穿还不报错。宁可判失败
+        constexpr std::size_t kMaximumConvertibleLength = static_cast<std::size_t>(std::numeric_limits<int>::max());
+
 #if ASYN_PLATFORM_LINUX
         /// UTF-8 编码相关的 Unicode 常量
         constexpr std::uint32_t kUnicodeReplacementCharacter = 0xFFFD;
@@ -45,6 +51,13 @@ namespace AsynGyanis::Platform
     std::wstring TextEncoding::toWideString(const std::string &utf8Text)
     {
         if (utf8Text.empty())
+        {
+            return {};
+        }
+
+        // 先判长度再转换：这一步不做，超过 int 上限的字节数强转后是负数，而 MultiByteToWideChar
+        // 把负数解释成「自己扫到 NUL 为止」，会读穿调用方的缓冲区且不报任何错
+        if (utf8Text.size() > kMaximumConvertibleLength)
         {
             return {};
         }
@@ -136,6 +149,12 @@ namespace AsynGyanis::Platform
     std::string TextEncoding::toUtf8String(const std::wstring &wideText)
     {
         if (wideText.empty())
+        {
+            return {};
+        }
+
+        // 与 toWideString 同一道判界：负的长度形参在 WideCharToMultiByte 那里是「扫到 NUL」的哨兵
+        if (wideText.size() > kMaximumConvertibleLength)
         {
             return {};
         }
