@@ -8,6 +8,7 @@
 // - UpdateByPrimaryKeyChangesOnlyTargetRow
 // - ExecuteNonQueryDeletesMatchingRows
 // - DeleteWithLimitIsRejectedInsteadOfDeletingEverything（有界删除不能静默做成全表删除）
+// - UnregisteredTypeNamesTheMissingSchemaSpecialization（空 kColumns 要说成真因，不推给自增主键）
 // - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
 // - JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
 //   （join() 与 groupBy() 这两个公开写入口从 ORM 这头跑通，不是只喂手工搭的查询树）
@@ -611,6 +612,35 @@ TEST_F(QueryableExecutionTest, DeleteWithLimitIsRejectedInsteadOfDeletingEveryth
 
     Queryable<AccountRow> plainDelete = newQuery();
     EXPECT_EQ(plainDelete.where(Column(&AccountRow::id, "id") >= std::int64_t{2}).executeNonQuery(), 2);
+}
+
+/**
+ * @brief 钉住「没有 TableSchema 特化」报出真正的成因，而不是推给一个没人写过的自增主键
+ * @details kColumns 为空有两种来路：类型压根没特化 TableSchema，或者确实只声明了一个自增主键列。
+ *          前者说成后者会把人指到一个自己没写过的声明上（此时表名也是空串，读起来更像笔误）。
+ */
+TEST_F(QueryableExecutionTest, UnregisteredTypeNamesTheMissingSchemaSpecialization)
+{
+    struct UnregisteredRow
+    {
+        std::int64_t id{};
+        std::string  name;
+    };
+
+    std::string message;
+    try
+    {
+        Queryable<UnregisteredRow> query(*m_pool);
+        static_cast<void>(query.insert(UnregisteredRow{}));
+        FAIL() << "没有列可写却生成了语句，说明空 kColumns 没有被拒";
+    } catch (const std::logic_error &exception)
+    {
+        message = exception.what();
+    }
+
+    EXPECT_NE(message.find("TableSchema"), std::string::npos) << message;
+    EXPECT_EQ(message.find("自增主键"), std::string::npos)
+        << "把「没特化 TableSchema」报成「声明了自增主键」，调用方会去改一个自己没写过的声明：" << message;
 }
 
 /**
