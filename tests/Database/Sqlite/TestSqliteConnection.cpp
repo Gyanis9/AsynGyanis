@@ -878,14 +878,14 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 写语句缓存涨到上限时整表清空，此后旧文本要能重新编译、手里的游标不受影响
+     * @brief 缓存涨到上限时逐条淘汰，此后旧文本要能重新编译、手里的游标不受影响
      *
-     * @details kMaximumCachedStatements 之上那一格此前从没被踩过：表满即整表清空（不是逐条淘汰），
-     *          清空要 finalize 表里全部游标——漏 finalize 是泄漏，动到结果集还在用的那一条就是
+     * @details kMaximumCachedStatements 之上那一格此前从没被踩过：表满即逐出「最久没被读到」的一条，
+     *          逐出要 finalize 那一条游标——漏 finalize 是泄漏，动到结果集还在用的那一条就是
      *          use-after-free。被写的表与被读的表刻意分开：同一张表上「边读边写」的可见性本来
      *          就不确定，那会让行数为断言失效。
      */
-    TEST(SqliteConnection, WriteStatementCacheIsEmptiedWholeOnceItReachesTheLimit)
+    TEST(SqliteConnection, HeldStreamingCursorSurvivesTheEvictionFlood)
     {
         SqliteConnection connection(ConnectionConfig::sqliteDefault());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
@@ -908,12 +908,12 @@ namespace AsynGyanis::Database
         }
 
         // 第二次换条件跑出 300 行（> 物化上限）：这次是缓存命中，而游标要跟着结果集活到
-        // 调用方手里——归还路径必须先把这个键从表里摘掉，否则下面的整表清空会释放一条仍在用的游标
+        // 调用方手里——归还路径必须先把这个键从表里摘掉，否则下面的逐出会释放一条仍在用的游标
         const std::array<DatabaseValue, 1> warmBound{std::int64_t{0}};
         const std::unique_ptr<DatabaseResult> heldSelection =
                 connection.execute(kSelectionSql, std::span<const DatabaseValue>(warmBound));
         ASSERT_NE(heldSelection, nullptr) << connection.lastError();
-        // 越界一格：70 条互不相同的写语句文本，从第 65 条起每次都触发整表清空
+        // 越界一格：70 条互不相同的写语句文本，从第 65 条起每次都触发表满逐出
         for (std::int64_t index = 1; index <= 70; ++index)
         {
             const std::string statement =
@@ -923,7 +923,7 @@ namespace AsynGyanis::Database
             EXPECT_EQ(receipt->affectedRowCount(), 1) << statement;
         }
 
-        // 整表清空只能 finalize 没人引用的游标：手里这条读完仍有 300 行
+        // 逐出只能 finalize 没人引用的游标：手里这条读完仍有 300 行
         std::int64_t readRowCount = 0;
         while (heldSelection->next())
         {
@@ -931,13 +931,59 @@ namespace AsynGyanis::Database
         }
         EXPECT_EQ(readRowCount, 300) << "表满清空动到了结果集仍在使用的游标";
 
-        // 最早入过表的那批文本已被清掉：再跑一次只能重新编译，行为与第一次一模一样
+        // 最早入表的那几条已被逐出：再跑一次只能重新编译，行为与第一次一模一样
         const std::array<DatabaseValue, 2> rebind{std::string{"re-bound"}, std::int64_t{1001}};
         ASSERT_NE(connection.execute("UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(rebind)), nullptr)
             << connection.lastError();
         EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1001 AND name = 're-bound'"),
                   std::optional<std::int64_t>(1));
         EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(70));
+    }
+
+    /**
+     * @brief 验证表满时逐出的是「最久没被读到」的那一条，热语句不会被一次性语句挤掉
+     *
+     * @details 一条热语句 + 200 条一次性语句是真实负载最常见的形状（IN 列表长度会变，语句文本就跟着变）。
+     *          旧行为在这里的命中数只有个位数：每清一次表，热语句就要重新编译一遍——而编译约占一条
+     *          参数化语句的八成耗时。命中数与表内条数都由驱动自己报，判据因此不依赖计时。
+     */
+    TEST(SqliteConnection, HotStatementSurvivesTheFloodOfOneShotStatements)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
+        ASSERT_NE(executeRequired(connection, "CREATE TABLE hot (id INTEGER PRIMARY KEY, tag TEXT NOT NULL)"), nullptr);
+
+        constexpr const char *kHotSql = "UPDATE hot SET tag = 'hot' WHERE id = ?";
+        const std::array<DatabaseValue, 1> hotBound{std::int64_t{1}};
+
+        // 第一次执行是编译（不入账为命中），第二次起才走缓存
+        ASSERT_NE(connection.execute(kHotSql, std::span<const DatabaseValue>(hotBound)), nullptr) << connection.lastError();
+        EXPECT_EQ(connection.statementCacheHitCount(), 0U) << "首次执行没有可复用的游标，不该记成命中";
+        ASSERT_NE(connection.execute(kHotSql, std::span<const DatabaseValue>(hotBound)), nullptr) << connection.lastError();
+        EXPECT_EQ(connection.statementCacheHitCount(), 1U);
+
+        // 200 条互不相同的一次性语句，每 20 条回读一次热语句（真实负载里热点总是持续被读）
+        for (std::int64_t index = 1; index <= 200; ++index)
+        {
+            const std::string statement = "INSERT INTO t VALUES (" + std::to_string(index) + ", 'flood-" + std::to_string(index) + "')";
+            ASSERT_NE(connection.execute(statement), nullptr) << statement << "：" << connection.lastError();
+
+            if (index % 20 == 0)
+            {
+                ASSERT_NE(connection.execute(kHotSql, std::span<const DatabaseValue>(hotBound)), nullptr) << connection.lastError();
+            }
+        }
+
+        // 上界仍然守得住：条数停在容量上，而不是随一次性语句一直涨
+        EXPECT_EQ(connection.cachedStatementCount(), 64U);
+        // 热语句在这 200 次冲击里一次都没被挤出去：10 次回读全部命中（加上冲击前的那一次共 11 次）
+        EXPECT_EQ(connection.statementCacheHitCount(), 11U) << "一次性语句挤掉了热语句：它每次都要重新编译一遍";
+
+        // 收尾再单独读一次，仍然不必编译
+        ASSERT_NE(connection.execute(kHotSql, std::span<const DatabaseValue>(hotBound)), nullptr) << connection.lastError();
+        EXPECT_EQ(connection.statementCacheHitCount(), 12U);
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(200));
     }
 
     /**

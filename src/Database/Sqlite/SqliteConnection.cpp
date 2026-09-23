@@ -8,6 +8,7 @@
 #include <sqlite3.h>
 
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <string>
 
@@ -376,10 +377,18 @@ namespace AsynGyanis::Database
         return m_database != nullptr ? sqlite3_last_insert_rowid(m_database) : 0;
     }
 
-    sqlite3_stmt *SqliteConnection::findCachedStatement(const std::string &sqlText) const noexcept
+    sqlite3_stmt *SqliteConnection::findCachedStatement(const std::string &sqlText) noexcept
     {
         const auto entry = m_statementCache.find(sqlText);
-        return entry == m_statementCache.end() ? nullptr : entry->second;
+        if (entry == m_statementCache.end())
+        {
+            return nullptr;
+        }
+
+        // 命中即刷新戳记：逐出时按「最久没被读到」挑一条，被反复执行的那批因此一直留在表里
+        entry->second.lastUseStamp = ++m_statementCacheUseStamp;
+        ++m_statementCacheHits;
+        return entry->second.statement;
     }
 
     void SqliteConnection::detachCachedStatement(const std::string &sqlText) noexcept
@@ -390,17 +399,35 @@ namespace AsynGyanis::Database
 
     void SqliteConnection::cacheStatement(std::string sqlText, sqlite3_stmt *statement)
     {
-        // 命中缓存的这条本来就在表里，此时表满也不该清表——那会把 64 条可用游标为一件本来就不必做的
-        // 事扔掉，所以先用一次查找把它排除掉；只有真正新增一条键才可能触到上限
+        // 命中缓存的这条本来就在表里，此时表满也不该逐出——那会把一条正被反复使用的游标为一件
+        // 本来就不必做的事扔掉，所以先用一次查找把它排除掉；只有真正新增一条键才可能触到上限
         if (m_statementCache.size() >= kMaximumCachedStatements && m_statementCache.find(sqlText) == m_statementCache.end())
         {
-            // 到上限就整表清空：会涨到上限的负载说明「同一句 SQL 被反复执行」这个前提已经不成立，
-            // 缓存对它本来就没收益；换来的是游标数有常数上界，且省掉一套 LRU 簿记
-            clearStatementCache();
+            evictLeastRecentlyUsedStatement();
+
         }
 
-        // emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏 finalize 谁
-        static_cast<void>(m_statementCache.emplace(std::move(sqlText), statement));
+        // try_emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏 finalize 谁
+        static_cast<void>(m_statementCache.try_emplace(std::move(sqlText),
+                                                      CachedStatement{statement, ++m_statementCacheUseStamp}));
+    }
+
+    void SqliteConnection::evictLeastRecentlyUsedStatement() noexcept
+    {
+        // 线性扫最小戳记：上限只有 64 条，为它再挂一条链表不值（那样每次命中都要搬迁节点）
+        auto oldest = m_statementCache.begin();
+        for (auto candidate = std::next(m_statementCache.begin()); candidate != m_statementCache.end(); ++candidate)
+        {
+            if (candidate->second.lastUseStamp < oldest->second.lastUseStamp)
+            {
+                oldest = candidate;
+            }
+        }
+
+        // 表里的游标都处于 reset 态且没有结果集引用它（行没跑完的查询游标已由 detachCachedStatement
+        // 摘走键），因此逐出这一条不会与在用的结果集抢所有权
+        sqlite3_finalize(oldest->second.statement);
+        m_statementCache.erase(oldest);
     }
 
     int SqliteConnection::retireStatement(sqlite3_stmt *statement, const bool isFromCache) noexcept
@@ -417,10 +444,10 @@ namespace AsynGyanis::Database
 
     void SqliteConnection::clearStatementCache() noexcept
     {
-        for (const auto &[sqlText, statement] : m_statementCache)
+        for (const auto &[sqlText, cached] : m_statementCache)
         {
             static_cast<void>(sqlText);
-            sqlite3_finalize(statement);
+            sqlite3_finalize(cached.statement);
         }
         m_statementCache.clear();
     }

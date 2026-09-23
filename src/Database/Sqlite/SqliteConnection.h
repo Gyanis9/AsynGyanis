@@ -32,8 +32,9 @@ namespace AsynGyanis::Database
      *
      * @details 封装 SQLite C API，实现 DatabaseConnection 抽象接口：进程内引擎、没有网络往返，因此
      *          ConnectionConfig 只有 database 字段被读取，基类 queryTimeout() 映射成 sqlite3_busy_timeout。
-     *          一条参数化语句里「编译」占约八成耗时，所以跑完的**写**语句按 SQL 文本缓存在 m_statementCache
-     *          里复用（查询不进这张表：游标所有权要移交给 SqliteResult）；键只有文本，故 disconnect() 先清表。
+     *          一条参数化语句里「编译」占约八成耗时，所以跑完的游标按 SQL 文本缓存在 m_statementCache
+     *          里复用（写语句跑完即回表；查询只有「行已整份物化进快照」时才回表，行没跑完的那条随结果集
+     *          走、由结果集 finalize）。表满时逐出最久没被读到的一条。键只有文本，故 disconnect() 先清表。
      *
      * @warning execute() 交出的 SqliteResult 保存本连接句柄的非拥有指针，
      *          结果集必须严格早于连接对象销毁，否则游标会访问已释放的 sqlite3*。
@@ -198,6 +199,28 @@ namespace AsynGyanis::Database
             return m_database;
         }
 
+        /**
+         * @brief 语句缓存当前的游标条数
+         * @details 上界是 kMaximumCachedStatements。表满时逐出的是「最久没被读到」的那一条，
+         *          条数因此稳定停在上界，不会像整表清空那样一夜回到 0。
+         * @return std::size_t 表里的游标条数
+         */
+        [[nodiscard]] std::size_t cachedStatementCount() const noexcept
+        {
+            return m_statementCache.size();
+        }
+
+        /**
+         * @brief 语句缓存自本连接构造以来的累计命中次数
+         * @details 一次命中省下的是一整趟 sqlite3_prepare 编译，因此这个计数就是「热语句有没有被
+         *          逐出」的可判定证据（用例与基准都按它来判，不靠测时间猜）。
+         * @return std::uint64_t 累计命中次数
+         */
+        [[nodiscard]] std::uint64_t statementCacheHitCount() const noexcept
+        {
+            return m_statementCacheHits;
+        }
+
     private:
         /**
          * @brief 把参数按位置绑定到已编译的语句上
@@ -209,11 +232,11 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool bindParameters(sqlite3_stmt *statement, std::span<const DatabaseValue> parameters);
 
         /**
-         * @brief 在写语句缓存里找一条已编译的游标
+         * @brief 在语句缓存里找一条已编译的游标，并把这条记为「刚被用到」
          * @param sqlText 语句文本（本次调用已有的那份带零终止符的副本，不再另造键）
          * @return sqlite3_stmt* 命中时返回已 reset 到可重跑状态的游标；未命中为 nullptr
          */
-        [[nodiscard]] sqlite3_stmt *findCachedStatement(const std::string &sqlText) const noexcept;
+        [[nodiscard]] sqlite3_stmt *findCachedStatement(const std::string &sqlText) noexcept;
 
         /**
          * @brief 把一条查询游标从表里摘走，但不释放它
@@ -225,7 +248,7 @@ namespace AsynGyanis::Database
         void detachCachedStatement(const std::string &sqlText) noexcept;
 
         /**
-         * @brief 把一条跑完并 reset 过的写语句放进缓存
+         * @brief 把一条跑完并 reset 过的游标放进缓存
          * @details 表内已有同文本条目时空操作（缓存命中的那条本就在表里）。
          * @param sqlText 语句文本，接管其内容作键
          * @param statement 可复用的游标，所有权移交缓存
@@ -251,6 +274,14 @@ namespace AsynGyanis::Database
         void clearStatementCache() noexcept;
 
         /**
+         * @brief 逐出缓存里最久没被读到的那一条游标
+         * @details 只在表已满、正要新增一个键时调用（调用方保证表非空）。逐出而不是清空，是因为
+         *          「少数热语句 + 大量一次性语句」才是常态：整表清空会把热的那批一起扔掉，
+         *          接下来每一次热语句执行都要重新编译，代价比省下的那点内存大得多。
+         */
+        void evictLeastRecentlyUsedStatement() noexcept;
+
+        /**
          * @brief 采集 SQLite 的错误文本与错误码并写入 m_lastError
          * @param description 面向使用者的中文动作说明，例如「编译 SQL 语句失败」
          */
@@ -264,17 +295,30 @@ namespace AsynGyanis::Database
         void applyStartupPragma(std::string_view pragmaText, std::string_view description);
 
         /**
-         * @brief 写语句缓存的容量上限
-         * @details 到上限时整表清空而不是做 LRU：会涨到上限的负载说明「同一句 SQL 被反复执行」这个
-         *          前提已经不成立，缓存对它本来就没收益；换来的是内存有常数上界与零簿记。
+         * @brief 语句缓存的容量上限
+         * @details 到上限时逐出最久没被读到的一条（见 evictLeastRecentlyUsedStatement()），
+         *          游标数与内存因此仍有常数上界，而热语句不会被一次性语句挤掉。
          */
         static constexpr std::size_t kMaximumCachedStatements = 64;
+
+        /// 缓存里的一条游标连同它的使用记号
+        struct CachedStatement
+        {
+            sqlite3_stmt *statement{nullptr};  ///< 已编译且处于 reset 态的游标，所有权在表
+            std::uint64_t lastUseStamp{0};     ///< 最近一次被读到或写入时的戳记，越小越先被逐出
+        };
 
         sqlite3 *m_database{nullptr}; ///< SQLite C API 数据库句柄，本对象独占所有权
 
         /// SQL 文本 → 已编译且已 reset 的游标。写语句跑完即回表；查询语句只有「行已整份物化进快照」
         /// 时才回表（那种游标此后不再被任何人引用），行没跑完的查询游标随结果集走、由结果集 finalize
-        std::unordered_map<std::string, sqlite3_stmt *> m_statementCache;
+        std::unordered_map<std::string, CachedStatement> m_statementCache;
+
+        /// 单调递增的使用计数器，充当「最近使用」的比较依据：只用于逐出排序，不参与任何正确性判定
+        std::uint64_t m_statementCacheUseStamp{0};
+
+        /// 缓存命中累计次数：命中一次即少编译一条语句，供用例与基准判定逐出策略是否留住了热语句
+        std::uint64_t m_statementCacheHits{0};
     };
 
 } // namespace AsynGyanis::Database
