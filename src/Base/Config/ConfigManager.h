@@ -229,6 +229,8 @@ namespace AsynGyanis::Base
          * @return bool 成功返回 true；键为空返回 false。
          * @note 该键在已注册 schema 里有约束时，违规按与文件加载同一口径记进日志；
          *       schema 是建议性约束，这里只报告不阻断，写入照常生效
+         * @note 写入同样按「后写的说话」定形：把一段表改写成单个值时，段里那些旧键一并让位（反向亦然），
+         *       每次取代报一条日志。代价是一次全表扫描，因此它按「偶发的程序侧覆盖」定价，不适合逐请求调用
          */
         bool setValue(std::string_view key, ConfigValue value);
 
@@ -269,13 +271,13 @@ namespace AsynGyanis::Base
         /**
          * @brief 取出某一段配置并还原成嵌套对象。
          * @details 把 sectionPrefix 下所有键的剩余路径重新聚成嵌套对象，供只认文档结构的消费方
-         *          直接使用；段名本身不是键（get("server") 只会抛「键不存在」）。返回值不含段名
-         *          这一层（键是 "port" 而非 "server.port"），段落无键时返回空对象。
+         *          直接使用；返回值不含段名这一层（键是 "port" 而非 "server.port"），段落无键时返回空对象。
+         *          段名自己那个值不并进来：两条写入通道都按「后写的说话」定形，一段有键时段名就不会是键。
          * @param sectionPrefix 段名，如 "server"
          * @return ConfigValue 该段自身的对象副本，热重载不会改写已取走的这一份
          * @throws ConfigValidationException 段内同一个名字既配成标量、又是更长键的第一段
          *         （如 server.port 与 server.port.forwarded 并存）：段落结构无法同时表达两者，
-         *         宁可报错也不静默丢掉其中一条
+         *         宁可报错也不静默丢掉其中一条。定形之后这条属于不变式自检
          */
         [[nodiscard]] ConfigValue getSection(std::string_view sectionPrefix) const;
 

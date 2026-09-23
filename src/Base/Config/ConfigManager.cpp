@@ -172,23 +172,26 @@ namespace AsynGyanis::Base
         }
 
         /**
-         * @brief 把一份文件摊平出来的键并进累计表，同时清掉被这份文件改掉形态的旧键
-         * @details 单份文件内部不可能冲突（同一棵文档树展开出的键互不重叠），冲突只出现在「后一份文件把
-         *          先前的一段表写成了单个值」或反向。让两种形态并存等于把矛盾留给读的人：getSection()
-         *          遇到「同一个键既是值又是表」一律抛异常，日志装配整段停摆，而加载报的是成功。
-         *          这里按「后写的文件说话」定形，每一次淘汰都报到日志（容错必须可见）。
-         *          setValue() 不走这条规矩：程序侧写入是显式行为，且它有自己的冲突播报通道。
-         * @param values 累计表，本文件的键并入其中
-         * @param fileValues 本文件摊平出来的键（键与值都被搬空）
-         * @param filePath 本文件路径，只用于报错文本
+         * @brief 把一批新键并进累计表，同时清掉被这批键改掉形态的旧键
+         * @details 同一棵文档树展开出的键互不重叠，程序侧一次也只写一个键，因此冲突只出现在
+         *          「后来的写入把先前的一段表写成单个值」或反向。让两种形态并存等于把矛盾留给读的人：
+         *          getSection() 只看得到 `<段名>.` 前缀下的那些键，段名自己那份值被静默吞掉；而它抛
+         *          「既是值又是表」的那条路径又只在段内自撞时才算得出来。这里按「后写的说话」定形。
+         *          报告以文本列表返回而不在这里落日志：调用方有的是持写锁的事务，锁内落日志等于把
+         *          「写一条日志」的成本转嫁给所有并发写者。
+         * @param values 累计表，新键并入其中
+         * @param incomingValues 本次写入摊平出来的键（键与值都被搬空）
+         * @param sourceLabel 本次写入的可读来源，只用于报错文本
+         * @return std::vector<std::string> 每一次取代一条中文说明，无冲突时为空
          */
-        void mergeFileValues(ConfigKeyValueMap &values, ConfigKeyValueMap &&fileValues, const std::filesystem::path &filePath)
+        [[nodiscard]] std::vector<std::string> mergeFileValues(ConfigKeyValueMap &values, ConfigKeyValueMap &&incomingValues,
+                                                              const std::string_view sourceLabel)
         {
-            const std::string sourceFile = pathText(filePath);
+            std::vector<std::string> conflicts;
 
-            // 方向一：本文件在某个旧叶子下面写出了键（旧 server 是值、本文件写 server.port）→ 淘汰那个旧值。
+            // 方向一：新键写在某个旧叶子下面（旧 server 是值、本次写 server.port）→ 淘汰那个旧值。
             // 只按新键往上查祖先，代价是键的深度而不是表的大小；查中即擦，同段的兄弟键因此不会报第二遍
-            for (const auto &entry: fileValues)
+            for (const auto &entry: incomingValues)
             {
                 for (std::size_t searchFrom = 0;;)
                 {
@@ -202,14 +205,14 @@ namespace AsynGyanis::Base
                     {
                         continue;
                     }
-                    LOG_ERROR_FMT("配置加载冲突：键 {} 在先前文件里是一个值，本文件（{}）在它下面写了 {}；同一个键不能既是值又是表，已按本文件取值，旧值丢弃",
-                                  ancestor, sourceFile, entry.first);
+                    conflicts.push_back(std::format("配置键冲突：键 {} 先前是一个值，{} 在它下面写了 {}；同一个键不能既是值又是表，已按后者取值，旧值丢弃",
+                                                    ancestor, sourceLabel, entry.first));
                     values.erase(staleLeaf);
                 }
             }
 
-            // 方向二：本文件把某段旧的表改写成了单个值 → 那段下面每个旧键都要让位。
-            // 单次全表扫描（按文件而非按键的代价），淘汰按「取代它的那个新键」聚合，一条取代只报一次
+            // 方向二：新键把某段旧的表改写成了单个值 → 那段下面每个旧键都要让位。
+            // 单次全表扫描（按本次写入而非按键的代价），淘汰按「取代它的那个新键」聚合，一条取代只报一次
             std::vector<std::pair<std::string, std::vector<std::string>>> shadowedLeaves;
             for (auto entry = values.begin(); entry != values.end();)
             {
@@ -221,7 +224,7 @@ namespace AsynGyanis::Base
                     {
                         break;
                     }
-                    if (fileValues.contains(ancestor))
+                    if (incomingValues.contains(ancestor))
                     {
                         shadowingLeaf = ancestor;
                         break;
@@ -250,13 +253,28 @@ namespace AsynGyanis::Base
                 {
                     droppedText += droppedText.empty() ? dropped : "、" + dropped;
                 }
-                LOG_ERROR_FMT("配置加载冲突：键 {} 在先前文件里摊开成 {} 个键（{}），本文件（{}）把它写成了一个值；已按本文件取值，先前那 {} 个键丢弃",
-                              leaf, droppedKeys.size(), droppedText, sourceFile, droppedKeys.size());
+                conflicts.push_back(std::format("配置键冲突：键 {} 先前摊开成 {} 个键（{}），{} 把它写成了一个值；已按后者取值，先前那 {} 个键丢弃",
+                                                leaf, droppedKeys.size(), droppedText, sourceLabel, droppedKeys.size()));
             }
 
-            for (auto &[key, value]: fileValues)
+            for (auto &[key, value]: incomingValues)
             {
                 values.insert_or_assign(std::move(key), std::move(value));
+            }
+            return conflicts;
+        }
+
+        /**
+         * @brief 并一批键并把取代说明逐条落到日志上
+         * @param values 累计表
+         * @param incomingValues 本次写入摊平出来的键
+         * @param sourceLabel 本次写入的可读来源
+         */
+        void mergeAndReport(ConfigKeyValueMap &values, ConfigKeyValueMap &&incomingValues, const std::string_view sourceLabel)
+        {
+            for (const std::string &conflict: mergeFileValues(values, std::move(incomingValues), sourceLabel))
+            {
+                LOG_ERROR(conflict);
             }
         }
     } // namespace
@@ -307,7 +325,7 @@ namespace AsynGyanis::Base
             {
                 result.loadedFiles.push_back(pathText(filePath));
                 loadedPaths.push_back(filePath);
-                mergeFileValues(values, std::move(fileValues), filePath);
+                mergeAndReport(values, std::move(fileValues), std::format("文件 '{}'", pathText(filePath)));
             } else
             {
                 result.failedFiles.push_back(pathText(filePath));
@@ -578,6 +596,7 @@ namespace AsynGyanis::Base
         // 两个并发写者若同时基于同一份旧快照构造新快照，后发布者会丢掉先发布者的键。
         // 这里只串行化写者之间；读者仍通过 atomic<shared_ptr> 无锁读取快照，不受影响
         std::shared_ptr<ConfigData> newData;
+        std::vector<std::string>    shapeConflicts;
         {
             const std::lock_guard writeLock(m_writeMutex);
 
@@ -585,8 +604,19 @@ namespace AsynGyanis::Base
             const auto currentData = m_data.load(std::memory_order_acquire);
             newData                = std::make_shared<ConfigData>(*currentData);
 
-            newData->values[std::string(key)] = std::move(value);
+            // 与装载路径共用同一套定形规矩：只往快照里塞一个新键会让同一个名字既是值又是表，
+            // 而 getSection() 只扫 `<段名>.` 前缀——刚设进去的那个值会被静默吞掉
+            ConfigKeyValueMap incoming;
+            incoming.emplace(std::string(key), std::move(value));
+            shapeConflicts = mergeFileValues(newData->values, std::move(incoming), std::format("setValue(\"{}\")", key));
             m_data.store(newData, std::memory_order_release);
+        }
+
+        // 取代说明排在写锁之外，与下面的 schema 校验同一排法：锁内落日志等于把「写一条日志」
+        // 的成本转嫁给所有并发写者
+        for (const std::string &conflict: shapeConflicts)
+        {
+            LOG_ERROR(conflict);
         }
 
         // 校验与日志放在写锁之外，与 commitConfigData 同一排法：按违规做一次 std::format
@@ -1269,7 +1299,7 @@ namespace AsynGyanis::Base
             if (loadConfigFile(filePath, fileValues, result.errors))
             {
                 result.loadedFiles.push_back(pathText(filePath));
-                mergeFileValues(values, std::move(fileValues), filePath);
+                mergeAndReport(values, std::move(fileValues), std::format("文件 '{}'", pathText(filePath)));
             } else
             {
                 result.failedFiles.push_back(pathText(filePath));

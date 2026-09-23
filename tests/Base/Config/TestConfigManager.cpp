@@ -1839,6 +1839,44 @@ server:
         EXPECT_EQ(configuration().keys().size(), 1U);
     }
 
+    /**
+     * @brief setValue 改掉一个键的形态时，被它盖住的旧键要一起让位
+     * @details 装载路径按「后写的说话」定形，setValue 原先只是往快照里塞一个新键，于是同一个名字
+     *          可以既是值又是表。这样的快照读起来是骗人的：getSection() 只扫 `<段名>.` 前缀下的那些键，
+     *          刚设进去的那个值整段看不见，而 keys()/has()/get() 又都报它存在——两边各自都「对」，
+     *          合起来没有一句真话。反向（在旧叶子下面写出键）同理。
+     */
+    TEST_F(ConfigManagerTest, SetValueCollapsingASectionDropsTheKeysItShadows)
+    {
+        const std::filesystem::path baseFile = writeFile("base.yaml", "server:\n  port: 8080\n  host: 0.0.0.0\nkept: true\n");
+        ASSERT_TRUE(configuration().loadFiles({baseFile}).success);
+
+        auto recorder = std::make_unique<RecordingSink>();
+        auto recorded = recorder->messages();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
+        ASSERT_TRUE(configuration().setValue("server", ConfigValue(std::int64_t{9090})));
+
+        EXPECT_EQ(configuration().getInt("server", 0), 9090);
+        EXPECT_FALSE(configuration().has("server.port")) << "旧叶子没让位：getSection(\"server\") 会把刚设进去的值吞掉";
+        EXPECT_FALSE(configuration().has("server.host"));
+        EXPECT_TRUE(configuration().has("kept")) << "清理过头，把不相干的键也带走了";
+        // 消费方真正看得见的形状：段空了，值在段名自己身上
+        EXPECT_TRUE(configuration().getSection("server").empty()) << "getSection 还在报出已被废掉的段内键";
+        ASSERT_EQ(recorded->size(), 1U) << "一次取代只报一条";
+        EXPECT_TRUE(anyEntryContains(*recorded, "server.port"));
+        EXPECT_TRUE(anyEntryContains(*recorded, "setValue")) << "报错里认不出这一次是谁写的";
+
+        // 反向：在旧叶子下面写出一个键，那个旧值同样要让位
+        ASSERT_TRUE(configuration().setValue("logging", ConfigValue(std::int64_t{3})));
+        ASSERT_TRUE(configuration().setValue("logging.level", ConfigValue(std::string("DEBUG"))));
+
+        EXPECT_EQ(configuration().getString("logging.level", ""), "DEBUG");
+        EXPECT_FALSE(configuration().has("logging")) << "旧值留着：logging 同时是 3 又是一张表";
+        EXPECT_TRUE(anyEntryContains(*recorded, "既是值又是表"));
+    }
+
     TEST_F(ConfigManagerTest, SetValueRejectsEmptyKey)
     {
         EXPECT_FALSE(configuration().setValue("", ConfigValue(std::string("value"))));
@@ -2721,17 +2759,10 @@ server:
     // ============================================================================
 
     /**
-     * @brief 段里同一个名字既是标量又是更长键的第一段时，点名报冲突而不是悄悄丢掉标量
-     * @details 两份各自合法的文件就能叠出这个形状（一份给 server.port，另一份给
-     *          server.port.forwarded）：加载阶段两条键互不重名，所以都收得下；要到还原段落
-     *          这一步才无法两全。原先分组会静默盖掉标量，于是 getSection 与 getInt 各说一套话。
-     */
-    /**
      * @brief 后一份文件把先前的标量叶子写成表时，加载阶段就定形并报到
      * @details 旧断言是「两份文件各自合法、加载不报错，冲突留给 getSection 抛」——那等于把矛盾留给读的人，
-     *          加载报成功而这段永远读不回来。语义改为「后写的文件说话 + 淘汰时报一条」，依据是配置模块
-     *          既定的「容错必须可见」与本文件对 setValue 的同一口径。读侧那道 getSection 守卫仍然保留
-     *          （setValue 仍可造出该形态），由 GetSectionThrowsWhenSetValueRecreatesTheCollision 钉住。
+     *          加载报成功而这段永远读不回来。语义改为「后写的说话 + 淘汰时报一条」，依据是配置模块
+     *          既定的「容错必须可见」，与 setValue 走的同一条定形规矩。
      */
     TEST_F(ConfigManagerTest, LaterFileTableWinsOverEarlierScalarLeafAndReportsIt)
     {
@@ -2764,24 +2795,37 @@ server:
     }
 
     /**
-     * @brief 读侧守卫仍然在位：程序侧写入照样能造出「同一个键既是值又是表」
-     * @details 合并期的定形只走文件加载，setValue 是显式的程序侧通道、不碰那条规矩，
-     *          所以 getSection 必须继续拒绝这种快照，而不是悄悄丢掉其中一个。
+     * @brief setValue 沿一条已有标量的路径往下写键时，旧标量让位、整段照样读得回来
+     * @details 旧断言是「程序侧写入照样能造出『同一个键既是值又是表』，而 getSection 必须拒绝这种快照」——
+     *          那等于把矛盾留给读的人：刚写进去的值整段看不见，keys()/has() 又都报它存在。语义改成与装载
+     *          路径同一口径（后写的说话 + 淘汰时报一条），依据是本模块既定的「容错必须可见」。
+     *          读侧 buildNestedObject 那道守卫因此再没有公开入口能触发，留着当不变式自检。
      */
-    TEST_F(ConfigManagerTest, GetSectionThrowsWhenSetValueRecreatesTheCollision)
+    TEST_F(ConfigManagerTest, SetValueWritingBelowAScalarRebuildsTheSectionInsteadOfThrowing)
     {
+        auto recorder = std::make_unique<RecordingSink>();
+        RecordingSink *const recorderPointer = recorder.get();
+        LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
+        const RootSinkScope detachSink;
+
         ASSERT_TRUE(configuration().setValue("server.port", ConfigValue(8080)));
         ASSERT_TRUE(configuration().setValue("server.port.forwarded", ConfigValue(true)));
 
+        EXPECT_FALSE(configuration().has("server.port")) << "旧标量没让位：这一段会被判成「既是值又是表」";
+        EXPECT_TRUE(configuration().has("server.port.forwarded"));
+
+        ConfigValue serverSection;
         try
         {
-            static_cast<void>(configuration().getSection("server"));
-            FAIL() << "标量与分组撞名时 getSection 必须报错，而不是丢掉其中一个";
+            serverSection = configuration().getSection("server");
         } catch (const ConfigValidationException &error)
         {
-            // 文案要点名到真实的键，调用方才知道该改哪一条
-            EXPECT_NE(std::string(error.what()).find("server.port"), std::string::npos);
+            FAIL() << "getSection 仍拒绝这种快照：" << error.what();
         }
+        ASSERT_TRUE(serverSection.is_object());
+        ASSERT_TRUE(serverSection.contains("port"));
+        EXPECT_TRUE(serverSection.at("port").at("forwarded").get<bool>()) << "定形做对了，段落还原却漏了嵌套层";
+        EXPECT_TRUE(anyEntryContains(recorderPointer->snapshot(), "既是值又是表"));
     }
 
     TEST_F(ConfigManagerTest, GetSectionRebuildsNestedObjectFromFlatKeys)
