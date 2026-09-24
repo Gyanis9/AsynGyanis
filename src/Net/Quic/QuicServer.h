@@ -55,6 +55,11 @@ namespace AsynGyanis::Net
         {
             std::string              certificateFile;               ///< 服务器证书（PEM）
             std::string              privateKeyFile;                ///< 私钥（PEM）
+            /// 会话票据密钥文件（可空：留空即 OpenSSL 默认，每个 SSL_CTX 一份随机密钥）。每份是
+            /// 48 或 80 字节的二进制内容，首份用于签发、其余只用于解开轮换窗口内的旧票据。
+            /// **多进程 worker 要共享恢复能力就得各进程装同一份**：QUIC 的恢复走 TLS 1.3 票据，
+            /// 密钥不共享时客户端第二次连接被分到别的进程只能退回全量握手
+            std::vector<std::string> sessionTicketKeyFiles;
             std::size_t              maximumConnections{1024};      ///< 同时在线连接上限
             std::chrono::seconds     idleTimeout{30};               ///< 空闲超时：超过即由传输层收口
             std::string              applicationProtocol{"h3"};     ///< 必须协商出的 ALPN；不是它就拒绝握手

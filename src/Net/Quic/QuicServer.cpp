@@ -4,6 +4,7 @@
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Scheduler.h"
+#include "Core/Tls/SessionTicketKeyRing.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 #include "Net/Http/Router.h"
@@ -100,6 +101,15 @@ namespace AsynGyanis::Net
             throw Base::SystemException("QUIC 服务端启动失败：私钥与证书不匹配：" + quicOpenSslErrorText());
         }
         SSL_CTX_set_alpn_select_cb(tlsContext, selectApplicationProtocol, nullptr);
+
+        // 票据密钥与证书一样在构造期就位：装不上就是配置错误，当场抛（消息点名是哪一份文件），
+        // 而不是悄悄退回「每个上下文一份随机密钥」——那种形态的代价只在恢复命中率上体现，查起来最费时间
+        if (!m_configuration.sessionTicketKeyFiles.empty())
+        {
+            std::vector<std::string> ticketKeys;
+            Core::SessionTicketKeyRing::readKeyFiles(m_configuration.sessionTicketKeyFiles, ticketKeys);
+            Core::SessionTicketKeyRing::install(tlsContext, std::move(ticketKeys));
+        }
         // 到这里才算构造成功：所有权交给成员，由析构函数释放，守卫不再重复 free
         m_tlsContext = ownedTlsContext.release();
     }

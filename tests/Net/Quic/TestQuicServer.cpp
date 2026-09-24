@@ -15,6 +15,8 @@
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/Socket.h"
 
+#include "CoreTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <ngtcp2/ngtcp2.h>
@@ -117,9 +119,12 @@ namespace AsynGyanis::Net
              * @brief 起一条真正的回环 UDP 套接字并与服务端地址建立 ngtcp2 客户端连接
              * @param serverAddress 服务端 UDP 地址
              * @param applicationProtocols 本端要提的 ALPN 列表（线格式）；默认提 h3
+             * @param sessionToResume 要带上的会话（TLS 1.3 票据）；空表示做全量握手。
+             *        生命周期归调用方，本客户端只在握手前把它交给 SSL_set_session，不持有
              * @return true 初始化完成（此时握手尚未开始，要靠 pumpOnce() 推进）
              */
-            bool initialize(const Platform::SocketAddress &serverAddress, const std::span<const unsigned char> applicationProtocols = kHttp3Alpn)
+            bool initialize(const Platform::SocketAddress &serverAddress, const std::span<const unsigned char> applicationProtocols = kHttp3Alpn,
+                            SSL_SESSION *sessionToResume = nullptr)
             {
                 m_serverAddress = serverAddress;
                 m_socket        = Platform::DatagramSocket::bindTo(makeLoopbackAddress(0));
@@ -144,6 +149,12 @@ namespace AsynGyanis::Net
                 if (ngtcp2_crypto_ossl_configure_client_session(m_ssl) != 0)
                 {
                     return false;
+                }
+                if (sessionToResume != nullptr)
+                {
+                    // 只是登记候选会话：命不命中由握手本身决定，没命中就退回全量握手。
+                    // 记下发没发出去，用例才能分辨「客户端根本没带会话」与「服务端解不开这张票据」
+                    m_sessionApplied = SSL_set_session(m_ssl, sessionToResume) == 1;
                 }
                 SSL_set_connect_state(m_ssl);
                 if (SSL_set_alpn_protos(m_ssl, applicationProtocols.data(), static_cast<unsigned int>(applicationProtocols.size())) != 0)
@@ -285,6 +296,44 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool isHandshakeCompleted() const noexcept
             {
                 return m_isHandshakeCompleted;
+            }
+
+            /**
+             * @brief 是否把调用方给的会话登记进了本次握手
+             * @return true SSL_set_session 成功（不代表命中，命中看 isSessionReused()）
+             */
+            [[nodiscard]] bool isSessionApplied() const noexcept
+            {
+                return m_sessionApplied;
+            }
+
+            /**
+             * @brief 本次握手是否走了会话恢复（客户端视角）
+             * @return true 服务端接受了我们的 PSK，没有做全量握手
+             */
+            [[nodiscard]] bool isSessionReused() const
+            {
+                return SSL_session_reused(m_ssl) == 1;
+            }
+
+            /**
+             * @brief 客户端是否已经拿到一张可恢复的会话票据
+             * @details TLS 1.3 的 NewSessionTicket 在握手完成**之后**才到，所以握手完成不等于
+             *          票据到手——调用方要 pumpUntil 到这里，再去取会话
+             */
+            [[nodiscard]] bool hasResumableSession() const
+            {
+                const std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> session(SSL_get1_session(m_ssl), &SSL_SESSION_free);
+                return session != nullptr && SSL_SESSION_is_resumable(session.get()) == 1;
+            }
+
+            /**
+             * @brief 取走当前会话（加一份引用），供下一条连接恢复用
+             * @return std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> 会话；没有则空
+             */
+            [[nodiscard]] std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> takeResumableSession() const
+            {
+                return {SSL_get1_session(m_ssl), &SSL_SESSION_free};
             }
 
             /// 最近一次写失败的错误码（0 表示没出错）
@@ -516,6 +565,8 @@ namespace AsynGyanis::Net
             std::vector<std::uint8_t> m_pendingStreamPayload;          ///< 待发负载（必须活到确认）
             ngtcp2_vec                m_pendingStreamVector{};         ///< 待发负载的 ngtcp2 视图
             std::atomic<bool>         m_isHandshakeCompleted{false};   ///< 握手是否完成（回调里置位）
+            /// 调用方给的会话是否登记进了握手：只在 initialize() 里由测试线程写、用例读，不进回调
+            bool m_sessionApplied{false};
             std::atomic<int>          m_lastWriteError{0};             ///< 最近一次写失败的错误码
             std::atomic<bool>         m_hasReadError{false};           ///< 读入是否失败过
             std::atomic<std::size_t>  m_receivedDatagramCount{0};   ///< 收到过多少条服务端报文
@@ -534,15 +585,19 @@ namespace AsynGyanis::Net
              * @brief 起一台回环上的服务端
              * @param idleTimeout 空闲/握手超时；考「超时收口」的用例把它调小，免得干等默认的 30 秒
              * @param perIpConnectionLimiter 单来源并发上限的限额器；空表示不按来源限制
+             * @param sessionTicketKeyFiles 会话票据密钥文件列表；空表示按 OpenSSL 默认，
+             *        每个 SSL_CTX 一份随机密钥（跨实例恢复因此必然落空，正是对照组的形态）
              */
             explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30},
-                                       std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter = nullptr)
+                                       std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter = nullptr,
+                                       std::vector<std::string> sessionTicketKeyFiles = {})
             {
                 QuicServer::Configuration configuration;
                 configuration.certificateFile = certificatePath();
                 configuration.privateKeyFile  = privateKeyPath();
                 configuration.idleTimeout     = idleTimeout;
                 configuration.perIpConnectionLimiter = std::move(perIpConnectionLimiter);
+                configuration.sessionTicketKeyFiles  = std::move(sessionTicketKeyFiles);
 
                 m_server = std::make_unique<QuicServer>(m_loop, configuration);
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
@@ -656,6 +711,26 @@ namespace AsynGyanis::Net
             return address;
         }
 
+        /// 票据密钥的字节数：名 16 + HMAC 16 + AES-128 16
+        constexpr std::size_t kTicketKeyBytes = 48;
+
+        /**
+         * @brief 在临时目录里写一份内容确定的会话票据密钥文件
+         * @param directory 用例独占的临时目录
+         * @param fileName 文件名
+         * @param seed 密钥内容种子：同 seed 得到同一份密钥（跨服务端实例共享就是这么建模的）
+         * @return std::string 文件路径文本
+         * @details 走 writeBinaryFile()：密钥里有 0x0A，文本模式在 Windows 上会翻成 CRLF，
+         *          长度当场就错，而长度合法正是被测前置。不用随机数是可复现的要求
+         */
+        std::string writeTicketKeyFile(const AsynGyanis::TestSupport::TemporaryDirectory &directory, const std::string &fileName,
+                                       const unsigned int seed)
+        {
+            EXPECT_TRUE(directory.writeBinaryFile(fileName, AsynGyanis::TestSupport::makeBytePattern(seed, kTicketKeyBytes)))
+                    << "密钥文件写不出来：" << fileName;
+            return (directory.path() / fileName).string();
+        }
+
         /**
          * @brief 在时限内反复推进客户端，直到条件成立
          * @param client 客户端
@@ -696,6 +771,106 @@ namespace AsynGyanis::Net
                 << "握手没有在时限内完成（写错误码 " << client.lastWriteError() << "，服务端连接数 " << server.sampleConnectionCount() << "，读错 " << client.hasReadError() << "，收 " << client.receivedDatagramCount() << " 条 / 发 " << client.sentDatagramCount() << " 条）";
         EXPECT_STREQ(client.selectedApplicationProtocol().c_str(), "h3") << "协商出的 ALPN 不是 h3";
         EXPECT_EQ(server.sampleConnectionCount(), 1U) << "服务端应当正好有一条连接";
+    }
+
+    /**
+     * @brief 两台服务端实例装同一份票据密钥时，第二条连接在另一台实例上命中会话恢复
+     * @details 多进程 worker 各持一份 SSL_CTX，而 SO_REUSEPORT 不保证第二次连接落回同一个进程：
+     *          密钥不共享时票据解不开，只能退回全量握手。这里把「落到别的进程」直接建模成
+     *          「换一台 QuicServer 握手」。判据取客户端视角的 SSL_session_reused，并额外断言
+     *          会话确实被登记进了握手——只信「命中」会把「客户端根本没带会话」也看成恢复
+     */
+    TEST(QuicServer, ResumesSessionOnAnotherServerInstanceWithSharedTicketKeys)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        AsynGyanis::TestSupport::TemporaryDirectory directory("QuicTicketKeyShared");
+        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", 21);
+
+        RunningQuicServer firstServer(std::chrono::seconds{30}, nullptr, {keyFile});
+        ASSERT_NE(firstServer.listeningPort(), 0) << "第一台服务端没有绑定成功（证书或套接字有问题）";
+
+        QuicTestClient firstClient;
+        ASSERT_TRUE(firstClient.initialize(makeServerAddress(firstServer.listeningPort())));
+        ASSERT_TRUE(pumpUntil(firstClient, [&firstClient] { return firstClient.isHandshakeCompleted(); }))
+                << "第一条连接的握手没有在时限内完成";
+
+        // 握手完成不等于票据到手：TLS 1.3 的 NewSessionTicket 是握手之后才发的
+        ASSERT_TRUE(pumpUntil(firstClient, [&firstClient] { return firstClient.hasResumableSession(); }))
+                << "第一条连接没有拿到可恢复的会话票据";
+        const std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> session = firstClient.takeResumableSession();
+        ASSERT_NE(session, nullptr);
+
+        RunningQuicServer secondServer(std::chrono::seconds{30}, nullptr, {keyFile});
+        ASSERT_NE(secondServer.listeningPort(), 0) << "第二台服务端没有绑定成功";
+
+        QuicTestClient secondClient;
+        ASSERT_TRUE(secondClient.initialize(makeServerAddress(secondServer.listeningPort()), kHttp3Alpn, session.get()));
+        ASSERT_TRUE(secondClient.isSessionApplied()) << "SSL_set_session 登记失败，后面的判据无从谈起";
+        ASSERT_TRUE(pumpUntil(secondClient, [&secondClient] { return secondClient.isHandshakeCompleted(); }))
+                << "第二条连接的握手没有在时限内完成（即便解不开票据也应退回全量握手，不该失败）";
+        EXPECT_TRUE(secondClient.isSessionReused()) << "换了一台实例就没认出来：票据密钥没有跨实例共享";
+    }
+
+    /**
+     * @brief 对照组：不装密钥时，换实例必然恢复不了
+     * @details 上一条用例的证伪判据。没有它，「命中恢复」可能只是同一进程里 OpenSSL 自己的会话缓存
+     *          凑巧生效——两台服务端跑在同一进程的同一个测试里，各自一份随机密钥，
+     *          跨实例本就不该解得开
+     */
+    TEST(QuicServer, ResumptionMissesOnAnotherServerInstanceWithoutSharedTicketKeys)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        RunningQuicServer firstServer;
+        ASSERT_NE(firstServer.listeningPort(), 0) << "第一台服务端没有绑定成功";
+
+        QuicTestClient firstClient;
+        ASSERT_TRUE(firstClient.initialize(makeServerAddress(firstServer.listeningPort())));
+        ASSERT_TRUE(pumpUntil(firstClient, [&firstClient] { return firstClient.isHandshakeCompleted(); }));
+        ASSERT_TRUE(pumpUntil(firstClient, [&firstClient] { return firstClient.hasResumableSession(); }))
+                << "第一条连接没有拿到可恢复的会话票据";
+        const std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> session = firstClient.takeResumableSession();
+        ASSERT_NE(session, nullptr);
+
+        RunningQuicServer secondServer;
+        ASSERT_NE(secondServer.listeningPort(), 0) << "第二台服务端没有绑定成功";
+
+        QuicTestClient secondClient;
+        ASSERT_TRUE(secondClient.initialize(makeServerAddress(secondServer.listeningPort()), kHttp3Alpn, session.get()));
+        ASSERT_TRUE(secondClient.isSessionApplied()) << "SSL_set_session 登记失败";
+        ASSERT_TRUE(pumpUntil(secondClient, [&secondClient] { return secondClient.isHandshakeCompleted(); }));
+        EXPECT_FALSE(secondClient.isSessionReused()) << "没共享密钥却命中了恢复，说明本组用例判不出共享语义";
+    }
+
+    /**
+     * @brief 票据密钥不合格时构造当场失败，而不是悄悄退回「每个上下文一份随机密钥」
+     * @details 退回随机密钥的表现是恢复命中率归零而服务一切正常——既没有错误日志也没有失败请求，
+     *          是这类配置最贵的失败形态。异常文本还要点名是哪一份文件：本条失败没有 OpenSSL
+     *          错误栈可查
+     */
+    TEST(QuicServer, RejectsInvalidTicketKeyFilesDuringConstruction)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("QuicTicketKeyInvalid");
+        const std::string                           wrongLengthPath = (directory.path() / "wrong-length.key").string();
+        EXPECT_TRUE(directory.writeBinaryFile("wrong-length.key", AsynGyanis::TestSupport::makeBytePattern(31, 64)));
+
+        const std::vector<std::string> keyFiles{wrongLengthPath};
+        try
+        {
+            static_cast<void>(std::make_unique<RunningQuicServer>(std::chrono::seconds{30}, nullptr, keyFiles));
+            FAIL() << "长度为 64 字节的密钥文件（既不是 48 也不是 80）应当让构造失败";
+        } catch (const Base::Exception &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_TRUE(message.find("wrong-length.key") != std::string::npos) << "异常没点名是哪一份文件：" << message;
+        }
+
+        // 文件根本不存在同样要抛，且不能留下半构造的对象：上面那台已经抛在构造期，
+        // 这里的断言只判「会不会抛」，端口与握手都不参与
+        EXPECT_THROW(static_cast<void>(std::make_unique<RunningQuicServer>(
+                             std::chrono::seconds{30}, nullptr, std::vector<std::string>{(directory.path() / "missing.key").string()})),
+                     Base::Exception);
     }
 
     /**
