@@ -7,3 +7,7 @@
 /packaging/conan/test_package/CMakeUserPresets.json
 /bin/
 __pycache__/
+
+# scripts/fuzz-net.sh 的产物：clang-cl 编出的目标文件、模糊可执行体与撞出来的样本
+# （样本要人工判读后搬进 gtest 用例常驻，不该以「一堆没看过的 crash 文件」的形式留在树里）
+/.fuzz/

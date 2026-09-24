@@ -1,9 +1,14 @@
 // libFuzzer 入口：把同一个内核交给覆盖引导的模糊器跑。仅在 -DASYN_BUILD_FUZZ_TARGETS=ON 时构建。
 //
-// 工具链现状（2026-09-24 实查，别再重走）：本机的 llvm-mingw clang 22.1.7 对 x86_64-w64-windows-gnu
-// 目标直接拒绝 -fsanitize=fuzzer 与 -fsanitize=fuzzer-no-link，常用容器里没装 clang——因此这条路只能
-// 在装了 clang 的 Linux 上跑（CI 的 fuzz 作业自己 apt 装）。这份入口的代码本身已过 clang 的
-// -fsyntax-only（连同四个解码器 TU 一起全绿），换到 Linux 上缺的只是模糊器运行时，不是可编性。
+// 工具链现状（2026-09-24 实查，别再重走）：
+//   · llvm.org 官方包（本机 G:\Tools\LLVM，clang 23.1.1 / x86_64-pc-windows-msvc）**带** fuzzer 运行时
+//     （lib/clang/23/lib/windows/clang_rt.fuzzer*.lib），这条路能跑——scripts/fuzz-net.sh 就是它：
+//     实测 61 秒 266 万次执行、新增 3263 个覆盖单元、峰值常驻 33 MB，四类解码器零违例。
+//     唯一的坑：那份运行时按静态 CRT 编，整产物必须 /MT，混不上项目里 /MD 的 Net.lib，
+//     所以脚本只编「内核 + 四个解码器 + 依赖闭包」，不链项目现成的库。
+//   · Qt 附带的 llvm-mingw clang 22.1.7（x86_64-w64-windows-gnu）对 -fsanitize=fuzzer 与
+//     -fsanitize=fuzzer-no-link 都是 unsupported option——这条路在本机不存在。
+//   · 常用容器里没装 clang，Linux 侧要跑得自己 apt 装。
 //
 // 与 gtest 那套的分工：gtest 用例是常驻防线（固定种子、每次全量跑、判同一批不变量），
 // 这里是持续探索（输入由模糊器按覆盖率反馈生成，撞出来的语料落盘后可回填进 gtest 的种子用例）。

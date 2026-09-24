@@ -146,10 +146,11 @@ gtest_discover_tests(TestNet)
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(TestNet)
 
-# libFuzzer 入口：默认不构建。它要 clang 的 -fsanitize=fuzzer，而本机能拿到的 clang（llvm-mingw 22.1.7）
-# 对 windows-gnu 目标根本不支持这个 sanitizer，常用容器里也没装——因此单独立一个开关，
-# 由 CI 的 fuzz 作业（自己 apt 装 clang）显式打开。开关打开但不是 Clang 时当场拒绝，
-# 不要静默产出一个「链接成功但没有模糊能力」的可执行体。
+# libFuzzer 入口：默认不构建。开这个开关要求**整份项目**用带 fuzzer 运行时的 Clang 配置
+# （llvm.org 的 clang 可以；Qt 自带的 llvm-mingw clang 对 windows-gnu 目标根本不支持这个 sanitizer）。
+# 本机日常想跑模糊不必走这条路：scripts/fuzz-net.sh 只编「内核 + 四个解码器 + 依赖闭包」，
+# 因为 compiler-rt 的 Windows fuzzer 运行时是静态 CRT，混不上本项目 /MD 编出来的库。
+# 开关打开但不是 Clang 时当场拒绝，不要静默产出一个「链接成功但没有模糊能力」的可执行体。
 option(ASYN_BUILD_FUZZ_TARGETS "构建 Net 协议解码器的 libFuzzer 目标（需要 Clang）" OFF)
 if(ASYN_BUILD_FUZZ_TARGETS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
