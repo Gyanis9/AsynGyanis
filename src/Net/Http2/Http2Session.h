@@ -224,7 +224,6 @@ namespace AsynGyanis::Net
             bool isExtendedConnect{false}; ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
             bool isWebSocketTunnel{false}; ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
             bool isStreamingBody{false};   ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
-
             /// 本条流的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
             HttpMemoryBudget::Reservation bodyBudget;
 
@@ -278,6 +277,32 @@ namespace AsynGyanis::Net
          *       连接不可用与用法错误才让调用方停止循环，两者都已由各自的发送入口记过原因
          */
         [[nodiscard]] Core::Task<RequestServeOutcome> serveOneRequest(PendingRequest &pending);
+
+        /**
+         * @brief 按畸形请求处置一次「声明长度 vs 实收长度」：先发 400，再发 RST_STREAM(PROTOCOL_ERROR)
+         * @details RFC 7540 §8.1.2.6 三条要连着读：「A request or response is also malformed if the
+         *          value of a content-length header field does not equal the sum of the DATA frame
+         *          payload lengths that form the body」→「Malformed requests or responses that are
+         *          detected MUST be treated as a stream error (Section 5.4.2) of type
+         *          PROTOCOL_ERROR」→「For malformed requests, a server MAY send an HTTP response
+         *          prior to closing or resetting the stream」。那句 MAY 是嵌在 MUST 之前的许可，
+         *          因此两步都要做：只回 400 是不成立的那一支，只发 RST 则白白丢掉了能给客户端的原因。
+         *          次序也有讲究：400 的那帧 DATA 不能带 END_STREAM。对端已经 END_STREAM（正文收齐
+         *          才谈得上比对长度），本端一发 END_STREAM 流就进 closed，而 §5.1 规定「An endpoint
+         *          MUST NOT send frames other than PRIORITY on a closed stream」——RST 就再也发不
+         *          出去了。对端凭头部里补齐的 content-length 判正文收齐，不受影响。
+         * @param streamId 目标流号
+         * @param declaredLength 请求头部声明的正文长度（已由 parseContentLengthValue 解析出来）
+         * @param receivedLength 该流实收正文的字节数
+         * @param isHeadRequest 本请求是不是 HEAD：HEAD 的响应本就不许带正文，只能发完头就收尾，
+         *        那条 RST 也就发不出去了（对端此刻没在等正文，少一个 RST 不影响它判正文收齐）
+         * @return RequestServeOutcome 发完之后的结论：已排入待发字节 / 对端已取消这条流 / 连接不可再用。
+         *         「对端已取消」的统计与日志留在调用方，与其它几处出口共用同一处记账
+         */
+        [[nodiscard]] Core::Task<RequestServeOutcome> rejectMalformedBodyLength(std::uint32_t streamId,
+                                                                                std::size_t declaredLength,
+                                                                                std::size_t receivedLength,
+                                                                                bool isHeadRequest);
 
         /**
          * @brief 记下一条已服务的请求，达到单连接上限时发 GOAWAY 收尾通告

@@ -839,8 +839,9 @@ namespace AsynGyanis::Net
         }
         const std::chrono::steady_clock::time_point requestReceivedTime = std::chrono::steady_clock::now();
 
-        // content-length 与实收正文必须一致（RFC 9113 §8.1.1 引用 RFC 9110 §8.6）：不一致按报文错误
-        // 回 400，绝不把「声明一个长度、实收另一个长度」的正文交给业务——那正是走私的收益所在
+        // content-length 与实收正文必须一致（RFC 7540 §8.1.2.6）：不一致是畸形请求，MUST 按流错误
+        // PROTOCOL_ERROR 收口，收口前先把 400 交给对端。绝不把「声明一个长度、实收另一个长度」的
+        // 正文交给业务——那正是走私的收益所在
         if (!pending.isStreamingBody)
         {
             // 只看首条：这里要的就是那一个声明值，为它构造整列 string 是每条请求一次的多余分配
@@ -849,18 +850,8 @@ namespace AsynGyanis::Net
             if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) &&
                 request.body().size() != declaredLength)
             {
-                if (m_metrics != nullptr)
-                {
-                    m_metrics->countBadRequest();
-                }
-                LOG_ERROR_FMT("Http2Session: 流 {} 的 content-length 声明 {} 字节、实收 {} 字节，已按 400 收口",
-                              streamId, declaredLength, request.body().size());
-                HttpResponse mismatchResponse;
-                mismatchResponse.setStatus(400);
-                mismatchResponse.setBody("Content-Length mismatch");
-                static_cast<void>(mismatchResponse.setHeader("content-type", "text/plain; charset=utf-8"));
                 const RequestServeOutcome mismatchOutcome =
-                        toRequestServeOutcome(co_await sendResponse(streamId, mismatchResponse, isHeadRequest));
+                        co_await rejectMalformedBodyLength(streamId, declaredLength, request.body().size(), isHeadRequest);
                 if (mismatchOutcome == RequestServeOutcome::StreamCancelled)
                 {
                     noteStreamCancelled();
@@ -1502,6 +1493,68 @@ namespace AsynGyanis::Net
             }
         }
         co_return Http2ResponseSendStatus::Sent;
+    }
+
+    Core::Task<Http2Session::RequestServeOutcome> Http2Session::rejectMalformedBodyLength(
+            const std::uint32_t streamId, const std::size_t declaredLength, const std::size_t receivedLength,
+            const bool isHeadRequest)
+    {
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countBadRequest();
+        }
+        LOG_ERROR_FMT("Http2Session: 流 {} 的 content-length 声明 {} 字节、实收 {} 字节，已按 400 + 流错误收口",
+                      streamId, declaredLength, receivedLength);
+
+        HttpResponse mismatchResponse;
+        mismatchResponse.setStatus(400);
+        mismatchResponse.setBody("Content-Length mismatch");
+        static_cast<void>(mismatchResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+
+        // HEAD 的响应不许带正文：头部带 END_STREAM 即收尾，此后流是 closed，那句 MUST 的 RST 发不出去
+        // （§5.1）。对端此刻没在等正文，少一个 RST 不影响它判收齐，也不影响它看见这条 400
+        const std::string_view responseBody = isHeadRequest ? std::string_view{} : mismatchResponse.body();
+        std::string            errorText;
+        const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
+                streamId, 400U, collectResponseHeaderFields(mismatchResponse), responseBody.empty(), &errorText);
+        if (headersStatus != Http2ResponseSendStatus::Sent)
+        {
+            if (headersStatus != Http2ResponseSendStatus::StreamNotWritable)
+            {
+                LOG_ERROR_FMT("Http2Session: 流 {} 的 400 响应头未能排入待发字节。原因：{}", streamId, errorText);
+            }
+            co_return toRequestServeOutcome(headersStatus);
+        }
+        if (!responseBody.empty())
+        {
+            const Http2ResponseSendStatus bodyStatus =
+                    m_connection.sendResponseData(streamId, responseBody, false, &errorText);
+            if (bodyStatus != Http2ResponseSendStatus::Sent)
+            {
+                if (bodyStatus != Http2ResponseSendStatus::StreamNotWritable)
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的 400 响应正文未能排入待发字节，该响应不完整。原因：{}",
+                                  streamId, errorText);
+                }
+                co_return toRequestServeOutcome(bodyStatus);
+            }
+        }
+
+        if (isHeadRequest)
+        {
+            co_return RequestServeOutcome::Served;
+        }
+        // 响应先行、随后重置这条流：RST 是本条 MUST 的落点，400 只是那句 MAY
+        std::string abortErrorText;
+        if (!m_connection.abortStream(streamId,
+                                      std::format("请求正文实收 {} 字节，与 content-length 声明的 {} 字节不符（RFC 7540 §8.1.2.6）",
+                                                  receivedLength, declaredLength),
+                                      &abortErrorText, Http2ErrorCode::ProtocolError))
+        {
+            // 发不出去也要把已经排好的 400 交出去：对端至少看得见原因，这条流也不会被当成已受理
+            LOG_ERROR_FMT("Http2Session: 流 {} 的畸形请求未能按流错误中止。原因：{}", streamId, abortErrorText);
+        }
+        co_return RequestServeOutcome::Served;
     }
 
     std::uint32_t Http2Session::normalizeWireStatusCode(const int responseStatus, const std::uint32_t streamId)

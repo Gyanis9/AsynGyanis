@@ -334,10 +334,14 @@ namespace AsynGyanis::Net
          * @param streamId 目标流号
          * @param reason 中文原因，只写进 lastStreamErrorMessage() 供排查（不发给对端）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+         * @param errorCode 要发的 RST_STREAM 错误码。默认 NO_ERROR＝「这条流不需要了」；
+         *        收到畸形报文时调用方传 PROTOCOL_ERROR 之类，语义就切成「这条流出错了」——
+         *        线上只有一个字节不同，收口路径（终止流、丢队列、还账）完全一样，故共用一个入口
          * @return true 已把 RST_STREAM 排进待发字节并终止该流
          * @return false 没有写入任何字节：连接状态不允许收发、流不在账本里或已经终止
          */
-        [[nodiscard]] bool abortStream(std::uint32_t streamId, std::string_view reason, std::string *errorText = nullptr);
+        [[nodiscard]] bool abortStream(std::uint32_t streamId, std::string_view reason, std::string *errorText = nullptr,
+                                       Http2ErrorCode errorCode = Http2ErrorCode::NoError);
 
         /**
          * @brief 本端初始 SETTINGS 是否还没被对端 ACK

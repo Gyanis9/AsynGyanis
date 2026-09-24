@@ -359,7 +359,8 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    bool Http2Connection::abortStream(const std::uint32_t streamId, const std::string_view reason, std::string *const errorText)
+    bool Http2Connection::abortStream(const std::uint32_t streamId, const std::string_view reason, std::string *const errorText,
+                                      const Http2ErrorCode errorCode)
     {
         clearError(errorText);
         if (m_state != Http2ConnectionState::Open && m_state != Http2ConnectionState::Closing)
@@ -376,9 +377,9 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // NO_ERROR：RFC 9113 §8.1 允许服务端在发完完整响应后这样请对端中止请求正文（不是「出错」，
-        // 而是「这条流不再需要了」），因此走同一个「终止单流」的收口路径
-        failStream(*stream, Http2ErrorCode::NoError, std::string(reason));
+        // 默认 NO_ERROR 的语义：RFC 9113 §8.1 允许服务端在发完完整响应后这样请对端中止请求正文
+        // （不是「出错」，而是「这条流不再需要了」）；传进错误码时走同一条「终止单流」的收口路径
+        failStream(*stream, errorCode, std::string(reason));
         return true;
     }
 

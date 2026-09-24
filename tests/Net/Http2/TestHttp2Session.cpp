@@ -1471,11 +1471,18 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：content-length 与实收正文字节数不一致时回 400，绝不把这条正文交给业务
-     * @details RFC 9113 §8.1.1 引用 RFC 9110 §8.6——「声明一个长度、实收另一个长度」正是请求走私的
-     *          收益所在。/echo 路由会把收到的正文长度回显出来，所以一旦校验缺失，本用例会看到 200 与 "3"。
+     * @brief 钉住：content-length 与实收正文字节数不一致时先回 400，再以 RST_STREAM(PROTOCOL_ERROR) 作废这条流
+     * @details RFC 7540 §8.1.2.6 两句要连着读：这类请求属畸形报文，「Malformed requests or responses
+     *          that are detected MUST be treated as a stream error (Section 5.4.2) of type
+     *          PROTOCOL_ERROR」；紧接一句「a server MAY send an HTTP response prior to closing or
+     *          resetting the stream」许可先把 400 交出去。两句合起来是「响应 + 重置」两步都要做——
+     *          只回 400 通不过 h2spec 8.1.2.6 那两条，只发 RST 则白白丢掉能给客户端的原因。
+     * @note 400 的那帧 DATA 不带 END_STREAM：对端已经 END_STREAM（正文收齐才谈得上比对长度），
+     *       本端一发 END_STREAM 流就进 closed，而 §5.1 规定 closed 之上只许发 PRIORITY，RST 就永远
+     *       发不出去了。下面那条「收不到 END_STREAM」的断言钉的就是这个次序，去掉它就只剩 400。
+     *       /echo 路由会把收到的正文长度回显出来，所以一旦校验缺失，本用例会看到 200 与 "3"。
      */
-    TEST(Http2Session, RejectsBodyLengthMismatchWith400)
+    TEST(Http2Session, RejectsBodyLengthMismatchWith400AndStreamError)
     {
         ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
@@ -1506,13 +1513,21 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.pumpUntil(frames,
                                      [](const std::vector<TestFrame> &receivedFrames)
                                      {
-                                         return hasEndStream(receivedFrames, 1U);
+                                         return findFrame(receivedFrames, Http2FrameType::RstStream) != nullptr;
                                      },
-                                     kWaitTimeout)) << "长度不符的请求没有在时限内收到响应";
+                                     kWaitTimeout)) << "长度不符的请求没有在时限内收到 RST_STREAM";
+
         HpackDecoder responseDecoder;
         const std::vector<HpackHeaderField> responseHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 1U));
-        EXPECT_EQ(findHeaderValue(responseHeaders, ":status"), "400") << "content-length 与实收正文不符必须回 400";
+        EXPECT_EQ(findHeaderValue(responseHeaders, ":status"), "400") << "content-length 与实收正文不符必须先回 400";
         EXPECT_NE(responseDataPayload(frames, 1U), "3") << "长度不符的正文绝不能交给业务";
+
+        const TestFrame *const resetFrame = findFrame(frames, Http2FrameType::RstStream);
+        ASSERT_TRUE(resetFrame != nullptr);
+        EXPECT_EQ(resetFrame->streamId, 1U) << "畸形请求的流错误只能落在这一条流上";
+        EXPECT_EQ(readRstStreamErrorCode(resetFrame->payload), Http2ErrorCode::ProtocolError)
+                << "§8.1.2.6 指定这类畸形报文按 PROTOCOL_ERROR 处理，换别的码就是另一套语义";
+        EXPECT_FALSE(hasEndStream(frames, 1U)) << "400 的 DATA 不能带 END_STREAM：本端一收尾这条流就进 closed，RST 发不出去";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
