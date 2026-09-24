@@ -151,6 +151,20 @@ namespace AsynGyanis::Net
         Core::Task<> drain(std::chrono::milliseconds drainTimeout);
 
         /**
+         * @brief 取本服务器实际在听的端口
+         * @return std::uint16_t 端口号；从未成功进入监听状态则为 0（stop() 之后保留最后一次的端口，
+         *          它表示「曾经听在哪」而不是「现在在听」）
+         *
+         * @details 构造时把端口写成 0 交给内核挑，此后只有内核知道实际端口——没有这个入口，
+         *          调用方（和测试）只能靠派生类去读监听器再自己 getsockname，跨协议驱动时
+         *          每条通道都得重抄一遍。QUIC 侧的 `QuicServer::listeningPort()` 同名同语义
+         * @note 端口在绑定成功后**最后**才发布，因此非 0 就意味着监听套接字已经就绪；
+         *       值由所属循环写入、别的线程可读，故用原子量（与 QuicServer 同一口径）
+         * @see Core::TcpServer::start(), QuicServer::listeningPort()
+         */
+        [[nodiscard]] std::uint16_t listeningPort() const noexcept;
+
+        /**
          * @brief 设置最大并发连接数
          * @param maximumConnectionCount 允许同时存活的连接条数，0 表示不做限制
          * @note 必须在 start() 之前调用；循环期间修改虽能被读到，但已排队的连接不受新上限约束
@@ -212,6 +226,8 @@ namespace AsynGyanis::Net
     protected:
         Core::EventLoop &       m_loop;              ///< 事件循环引用，用于调度连接协程
         TcpAcceptor             m_acceptor;          ///< 监听器，接受新连接并吸收可恢复错误
+        /// 实际在听的端口，绑定成功后由所属循环写入；测试与运维会从别的线程读，所以是原子量
+        std::atomic<std::uint16_t> m_listeningPort{0};
         Core::ConnectionManager m_connectionManager; ///< 连接管理器，跟踪并负责关闭所有活跃连接
 
     private:

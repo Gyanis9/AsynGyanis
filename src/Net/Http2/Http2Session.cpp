@@ -117,13 +117,16 @@ namespace AsynGyanis::Net
                                std::shared_ptr<HttpMetricsCollector> metrics,
                                std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
                                HttpParserLimits parserLimits,
-                               std::shared_ptr<HttpMemoryBudget> memoryBudget) :
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget,
+                               Http2ConnectionConfiguration http2Configuration) :
         // TLS 模式下基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）
         HttpSession(Core::AsyncSocket(loop, kInvalidSocketDescriptor), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
         // 回退路径的解析器按调用方给的解析上限构造，否则回退到 HTTP/1.1 时
         // 头部/正文上限会退回默认值，该回的 431/413 就不出现了
         m_parser(parserLimits),
+        // 连接层配置按值交给本连接的状态机：SETTINGS 通告与各项上限都在它里面生效
+        m_connection(std::move(http2Configuration)),
         m_scheduler(loop.scheduler()),
         m_router(router),
         m_parserLimits(parserLimits),
@@ -142,10 +145,13 @@ namespace AsynGyanis::Net
                                std::shared_ptr<HttpMetricsCollector> metrics,
                                std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
                                HttpParserLimits parserLimits,
-                               std::shared_ptr<HttpMemoryBudget> memoryBudget) :
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget,
+                               Http2ConnectionConfiguration http2Configuration) :
         // 明文模式：没有第二条通道，套接字直接交给基类持有，本类不留 TLS 通道（m_tlsSocket 保持空）
         HttpSession(std::move(socket), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
         m_parser(parserLimits),
+        // 连接层配置按值交给本连接的状态机：SETTINGS 通告与各项上限都在它里面生效
+        m_connection(std::move(http2Configuration)),
         m_scheduler(loop.scheduler()),
         m_router(router),
         m_parserLimits(parserLimits),

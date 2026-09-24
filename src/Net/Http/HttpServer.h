@@ -17,6 +17,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/Http2/Http2Connection.h"
 #include "Net/Http/StaticFileMappingCache.h"
 #include "Net/Tcp/TcpServer.h"
 
@@ -186,6 +187,29 @@ namespace AsynGyanis::Net
          * @note 必须在 start() 之前调用：它只影响此后的 createConnection()
          * @see Http2Session, kHttp2ConnectionPreface
          */
+        /**
+         * @brief 设置 HTTP/2 连接层配置（SETTINGS 通告值与本端各项上限）。
+         *
+         * @details h2 的限额此前只能从服务端 SETTINGS 里**观测**、改不动：整条链上没有任何入口能把
+         *          一份 Http2ConnectionConfiguration 交进去，连接层一律按缺省值构造。本方法补上这个入口。
+         *          配置按值交给此后新建的会话，已建立的连接继续用它握手时那份（SETTINGS 是连接级的，
+         *          中途改会让两端认知不一致）。
+         *
+         * @param configuration 新的连接层配置
+         * @throws Base::InvalidArgumentException 取值非法（ENABLE_PUSH / ENABLE_CONNECT_PROTOCOL 不是 0/1，
+         *         或 MAX_FRAME_SIZE 越出 RFC 7540 §6.5.2 的合法区间）：**设置时就拒绝**，而不是等第一条
+         *         连接进来才在会话构造里抛出——后者在启动日志里看不到任何异常
+         * @note 明文(h2c)与 TLS 上的 h2 共用这一份配置
+         * @see Http2ConnectionConfiguration, setHttp2CleartextEnabled()
+         */
+        void setHttp2Configuration(Http2ConnectionConfiguration configuration);
+
+        /**
+         * @brief 查询当前生效的 HTTP/2 连接层配置
+         * @return Http2ConnectionConfiguration 最近一次 setHttp2Configuration() 的值，未设置过则为缺省值
+         */
+        [[nodiscard]] const Http2ConnectionConfiguration &http2Configuration() const noexcept;
+
         void setHttp2CleartextEnabled(bool enabled) noexcept;
 
         /**
@@ -314,6 +338,7 @@ namespace AsynGyanis::Net
         std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
+        Http2ConnectionConfiguration m_http2Configuration{}; ///< h2 连接层配置，按值交给每个新会话（两条通道共用这一份）
         bool m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数，默认是自己的那一份
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例

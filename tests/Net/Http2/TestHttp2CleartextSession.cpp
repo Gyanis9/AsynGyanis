@@ -13,6 +13,7 @@
 //
 // 本文件不起 TLS：h2c 的全部意义就是不经过 TLS 直接说 h2，用真实明文回环才测得到这条路径。
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerLimits.h"
@@ -594,6 +595,84 @@ namespace AsynGyanis::Net
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：服务器改了 h2 连接层配置，SETTINGS 通告与各项上限随之改变
+     * @details 此前 h2 的限额只能在服务端 SETTINGS 里**观测**、改不动（配置一路按缺省值构造）。
+     *          三项取值都故意偏离缺省（100 / 16384 / 16 KiB），因此这条断言不是恒等的：
+     *          配置没落到连接层就会退回缺省值而变红
+     */
+    TEST(Http2CleartextSession, AdvertisesConfiguredSettingsWhenServerOverridesThem)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server)
+        {
+            server.setHttp2CleartextEnabled(true);
+            Http2ConnectionConfiguration configuration;
+            configuration.maximumConcurrentStreams = 3;
+            configuration.maximumFrameSize         = 32768;
+            configuration.maximumHeaderListSize    = 2048;
+            server.setHttp2Configuration(configuration);
+        });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() &&
+                                                receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        Http2SettingsPayload serverSettings;
+        std::string          parseError;
+        ASSERT_TRUE(parseHttp2SettingsPayload(frames.front(), serverSettings, &parseError)) << "服务端 SETTINGS 负载解析失败：" << parseError;
+
+        std::uint32_t advertised = 0;
+        ASSERT_TRUE(tryGetHttp2Setting(serverSettings, Http2SettingIdentifier::MaxConcurrentStreams, advertised));
+        EXPECT_EQ(advertised, 3U) << "最大并发流数没有落到通告里（缺省是 100）";
+        ASSERT_TRUE(tryGetHttp2Setting(serverSettings, Http2SettingIdentifier::MaxFrameSize, advertised));
+        EXPECT_EQ(advertised, 32768U) << "MAX_FRAME_SIZE 没有落到通告里（缺省是 16384）";
+        ASSERT_TRUE(tryGetHttp2Setting(serverSettings, Http2SettingIdentifier::MaxHeaderListSize, advertised));
+        EXPECT_EQ(advertised, 2048U) << "MAX_HEADER_LIST_SIZE 没有落到通告里（缺省是 16 KiB）";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+    }
+
+    /**
+     * @brief 钉住：非法的 h2 连接层配置在**设置时**就被拒绝
+     * @details 若留到第一条连接构造会话时才抛，部署方在启动日志里看不到任何异常，
+     *          表现只是「h2 服务时好时坏」——那是最难查的一类失败
+     */
+    TEST(Http2CleartextSession, RejectsInvalidServerConfigurationAtSetter)
+    {
+        Core::EventLoop loop;
+        TestHttpServer  server(loop, Core::InetAddress::localhost(0));
+
+        Http2ConnectionConfiguration tooSmallFrame;
+        tooSmallFrame.maximumFrameSize = 8192; // 低于 RFC 7540 §6.5.2 的下界 16384
+        EXPECT_THROW(server.setHttp2Configuration(tooSmallFrame), Base::InvalidArgumentException);
+
+        Http2ConnectionConfiguration tooLargeFrame;
+        tooLargeFrame.maximumFrameSize = 16777216; // 上界是 16777215
+        EXPECT_THROW(server.setHttp2Configuration(tooLargeFrame), Base::InvalidArgumentException);
+
+        Http2ConnectionConfiguration badPush;
+        badPush.enablePush = 2;
+        EXPECT_THROW(server.setHttp2Configuration(badPush), Base::InvalidArgumentException);
+
+        // 被拒绝的设置不能留下半成品：当前生效的仍是那一份合法配置
+        Http2ConnectionConfiguration legal;
+        legal.maximumConcurrentStreams = 7;
+        server.setHttp2Configuration(legal);
+        EXPECT_EQ(server.http2Configuration().maximumConcurrentStreams, 7U);
+        EXPECT_EQ(server.http2Configuration().maximumFrameSize, kHttp2DefaultMaximumFrameSize);
     }
 
     /**

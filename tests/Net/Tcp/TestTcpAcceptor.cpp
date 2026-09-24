@@ -326,18 +326,29 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(acceptor.listen(1));
     }
 
-    TEST(TcpAcceptor, LocalAddressReportsRequestedAddressOnly)
+    /**
+     * @brief 绑定成功后 localAddress() 反映内核实际分配的端口，而不是请求时那份 0
+     * @details 旧契约是「本类只报请求地址，要实际端口得自己 getsockname」——那条限制的表现是每个
+     *          使用者各抄一份 queryBoundAddress（本文件与 HttpTestSupport 里就各有一份）。现在
+     *          bind() 成功后回填，`TcpServer::listeningPort()` 用的就是这个值。断言仍与内核口径
+     *          对账（getsockname），既不写死端口号也不与常量比，因此不是恒等式
+     */
+    TEST(TcpAcceptor, LocalAddressReflectsKernelAssignedPortAfterBind)
     {
         Core::EventLoop loop;
         const Core::InetAddress requestedAddress = Core::InetAddress::localhost(0);
         TcpAcceptor             acceptor(loop, requestedAddress);
 
-        // 端口 0 时返回的仍是请求值：本类的 localAddress() 不反映内核分配的端口，
-        // 想要实际端口必须自己问套接字（见 queryBoundAddress 的用例）
-        ASSERT_TRUE(acceptor.bind());
+        // 构造阶段不绑定，此刻确实没有实际端口可报：读到的还是请求值
         EXPECT_EQ(acceptor.localAddress().port(), 0);
+
+        ASSERT_TRUE(acceptor.bind());
+
+        const Core::InetAddress boundAddress = queryBoundAddress(acceptor.fileDescriptor());
+        ASSERT_NE(boundAddress.port(), 0) << "前提不成立：内核没有分配出非零端口";
+        EXPECT_EQ(acceptor.localAddress().port(), boundAddress.port()) << "绑定后没有回填内核分配的端口";
         EXPECT_EQ(acceptor.localAddress().ip(), "127.0.0.1");
-        EXPECT_EQ(acceptor.localAddress(), requestedAddress);
+        EXPECT_NE(acceptor.localAddress(), requestedAddress) << "回填没生效：报回来的仍是请求时那个 0 端口";
     }
 
     TEST(TcpAcceptor, BindThenListenEntersListeningState)

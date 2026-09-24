@@ -86,6 +86,8 @@ namespace AsynGyanis::Net
          * @param parserLimits 解析上限；HTTP/2 路径只用其中的 maximumBodySize（头块上限由
          *        Http2ConnectionConfiguration 管），语义与 HTTP 侧一致
          * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
+         * @param http2Configuration HTTP/2 连接层配置（SETTINGS 通告值、头块与流控上限等）；
+         *        留默认值即按 Http2ConnectionConfiguration 的缺省跑
          * @note 构造函数不做握手：握手是协程动作，放在 start() 的第一步
          */
         Http2Session(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
@@ -93,7 +95,8 @@ namespace AsynGyanis::Net
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
                      HttpParserLimits parserLimits = {},
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
+                     Http2ConnectionConfiguration http2Configuration = {});
 
         /**
          * @brief 构造明文连接上的 HTTP/2 会话（h2c 先验知识）。
@@ -109,13 +112,15 @@ namespace AsynGyanis::Net
          * @param requestIdGenerator request-id 生成器；传空指针表示不为请求落定 request-id
          * @param parserLimits 解析上限；HTTP/2 路径只用其中的 maximumBodySize，语义与上一个构造函数一致
          * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
+         * @param http2Configuration HTTP/2 连接层配置，含义与上一个构造函数同名参数一致
          */
         Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
                      std::shared_ptr<const HttpServerLimits> limits = nullptr,
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
                      HttpParserLimits parserLimits = {},
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
+                     Http2ConnectionConfiguration http2Configuration = {});
 
         /**
          * @brief 启动会话主协程：TLS 会话先握手并按 ALPN 选协议，明文会话直接进 HTTP/2 循环。

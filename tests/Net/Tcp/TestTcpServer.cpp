@@ -552,6 +552,8 @@ namespace AsynGyanis::Net
 
         // 构造不绑定也不监听：start() 才是唯一入口
         EXPECT_FALSE(server.isRunning());
+        // 端口同理：绑定发生在 start() 里，此前没有任何端口可报
+        EXPECT_EQ(server.listeningPort(), 0);
         EXPECT_EQ(server.activeConnectionCount(), 0u);
         EXPECT_EQ(server.createConnectionCalls(), 0u);
     }
@@ -562,7 +564,11 @@ namespace AsynGyanis::Net
 
         // start() 依次 bind() 与 listen(kDefaultListenBacklog)，两步都成功才会置位运行标志
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "start() 未在时限内进入接受循环：上界 kWaitTimeout";
-        EXPECT_NE(queryBoundPort(fixture.listenDescriptor()), 0);
+        // 端口 0 交给内核挑，因此公开 accessor 必须报出**实际**端口，而不是当初传进去的那个 0。
+        // 对照判据仍取 getsockname：那是内核口径，accessor 与它不一致就是回填没做
+        const std::uint16_t kernelPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(kernelPort, 0);
+        EXPECT_EQ(fixture.server().listeningPort(), kernelPort) << "listeningPort() 与实际绑定端口不一致";
         EXPECT_EQ(fixture.server().createConnectionCalls(), 0u);
     }
 

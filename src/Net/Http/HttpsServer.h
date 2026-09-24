@@ -18,6 +18,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/Http2/Http2Connection.h"
 #include "Net/Tcp/TcpServer.h"
 
 #include <memory>
@@ -251,6 +252,26 @@ namespace AsynGyanis::Net
          */
         void loadSessionTicketKeys(const std::vector<std::string> &keyFiles);
 
+        /**
+         * @brief 设置 HTTP/2 连接层配置（SETTINGS 通告值与本端各项上限）。
+         *
+         * @details 本服务器是唯一跑 h2 的 TLS 入口，而配置此前改不动：连接层一律按缺省值构造，
+         *          最大并发流数、头块上限这些只能在服务端 SETTINGS 里观测。取值交给此后新建的会话，
+         *          已建立的连接继续用它握手时那份。完整判据见 HttpServer::setHttp2Configuration()，
+         *          两端共用同一份 Http2ConnectionConfiguration，非法值都在设置时就抛。
+         *
+         * @param configuration 新的连接层配置
+         * @throws Base::InvalidArgumentException 取值非法（见 Http2Connection::validateConfiguration()）
+         * @see Http2ConnectionConfiguration, HttpServer::setHttp2Configuration()
+         */
+        void setHttp2Configuration(Http2ConnectionConfiguration configuration);
+
+        /**
+         * @brief 查询当前生效的 HTTP/2 连接层配置
+         * @return Http2ConnectionConfiguration 最近一次设置值，未设置过则为缺省值
+         */
+        [[nodiscard]] const Http2ConnectionConfiguration &http2Configuration() const noexcept;
+
     private:
         /**
          * @brief 把本服务器的连接数镜像接到当前采集端上
@@ -263,6 +284,7 @@ namespace AsynGyanis::Net
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
+        Http2ConnectionConfiguration m_http2Configuration{}; ///< h2 连接层配置，按值交给每个新会话
         std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
         std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例

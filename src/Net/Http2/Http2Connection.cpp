@@ -149,18 +149,30 @@ namespace AsynGyanis::Net
           m_hpackDecoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = m_configuration.headerTableSize,
                                             .maximumHeaderListByteCount = m_configuration.maximumHeaderListSize})
     {
+        validateConfiguration(m_configuration);
+    }
+
+    void Http2Connection::validateConfiguration(const Http2ConnectionConfiguration &configuration)
+    {
         // 配置取值在本端通告出去之前就校验：非法值一旦发出去，对端只能按连接错误收场（§6.5.2）
-        if (m_configuration.enablePush > 1)
+        if (configuration.enablePush > 1)
         {
             throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 ENABLE_PUSH 只能是 0 或 1（RFC 7540 §6.5.2），"
                                                              "收到 {}：请改为 0（本端不推送）或 1（允许对端期待推送）",
-                                                             m_configuration.enablePush));
+                                                             configuration.enablePush));
         }
-        if (m_configuration.enableConnectProtocol > 1)
+        if (configuration.enableConnectProtocol > 1)
         {
             throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 ENABLE_CONNECT_PROTOCOL 只能是 0 或 1（RFC 8441 §3），"
                                                              "收到 {}：请改为 1（接受扩展 CONNECT）或 0（不接受）",
-                                                             m_configuration.enableConnectProtocol));
+                                                             configuration.enableConnectProtocol));
+        }
+        if (configuration.maximumFrameSize < kHttp2DefaultMaximumFrameSize || configuration.maximumFrameSize > kHttp2MaximumMaximumFrameSize)
+        {
+            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 MAX_FRAME_SIZE 收到 {}：合法区间是 [{}, {}]（RFC 7540 §6.5.2），"
+                                                             "越界的值发出去对端会按连接错误收场",
+                                                             configuration.maximumFrameSize,
+                                                             kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
         }
     }
 

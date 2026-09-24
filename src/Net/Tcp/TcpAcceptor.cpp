@@ -118,6 +118,17 @@ namespace AsynGyanis::Net
             return false;
         }
 
+        // 端口给 0 时内核才决定实际端口：把绑定后的地址回填进缓存，否则 localAddress() 报的是
+        // 调用方传进来的那个 0，而它与「本端在听哪个端口」已经不是同一件事了（QuicServer 同一口径）。
+        // getsockname 失败不影响监听是否成立，故只忽略、保留原地址
+        try
+        {
+            m_address = m_listenSocket.localAddress();
+        } catch (const Base::Exception &)
+        {
+            // 保留请求时那份地址：端口为 0 时它仍然是 0，比抛出来更可用（监听已经成功了）
+        }
+
         m_bound = true;
         return true;
     }

@@ -188,6 +188,17 @@ namespace AsynGyanis::Net
         explicit Http2Connection(Http2ConnectionConfiguration configuration = {});
 
         /**
+         * @brief 校验一份连接配置是否可用，不可用即抛出并说清是哪一项
+         * @param configuration 待校验的配置
+         * @throws Base::InvalidArgumentException ENABLE_PUSH 或 ENABLE_CONNECT_PROTOCOL 不是 0/1，
+         *         或 MAX_FRAME_SIZE 落在 RFC 7540 §6.5.2 的合法区间 [16384, 16777215] 之外
+         * @details 构造函数会调它，服务器侧的 setHttp2Configuration() 也调它：同一份判据只写一处。
+         *          让服务器在**设置时**就拒绝，是因为按构造时机检查的表现是「第一条连接进来才炸」，
+         *          部署方在启动日志里看不到任何异常
+         */
+        static void validateConfiguration(const Http2ConnectionConfiguration &configuration);
+
+        /**
          * @brief 析构函数：成员都是按值的标准容器，无额外资源需要回收。
          */
         ~Http2Connection() = default;

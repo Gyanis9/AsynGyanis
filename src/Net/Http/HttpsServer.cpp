@@ -81,7 +81,7 @@ namespace AsynGyanis::Net
         // 明文 h2c（前奏直发、无 ALPN）不在本片：那条路径上没有任何 ALPN 可读，连接按 HTTP/1.1 处理
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
         return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
-                                              m_memoryBudget);
+                                              m_memoryBudget, m_http2Configuration);
     }
 
     std::shared_ptr<HttpMetricsCollector> HttpsServer::metricsCollector() const noexcept
@@ -186,6 +186,18 @@ namespace AsynGyanis::Net
         // 与 HttpServer 同一口径：活跃连接数是采集端上的镜像量，由本服务器的连接管理器在增删
         // 连接时写入，共用一份采集端的多台合起来才是进程口径
         return m_metrics->snapshot();
+    }
+
+    void HttpsServer::setHttp2Configuration(Http2ConnectionConfiguration configuration)
+    {
+        // 与连接层同一份判据：设置时就告状，别拖到第一条连接构造会话时才抛
+        Http2Connection::validateConfiguration(configuration);
+        m_http2Configuration = std::move(configuration);
+    }
+
+    const Http2ConnectionConfiguration &HttpsServer::http2Configuration() const noexcept
+    {
+        return m_http2Configuration;
     }
 
     bool HttpsServer::reloadCertificate()

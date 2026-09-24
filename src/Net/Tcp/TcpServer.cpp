@@ -32,6 +32,11 @@ namespace AsynGyanis::Net
         // 监听器接手了外部交来的套接字，其余与按地址构造时一致
     }
 
+    std::uint16_t TcpServer::listeningPort() const noexcept
+    {
+        return m_listeningPort.load(std::memory_order_acquire);
+    }
+
     Core::Task<> TcpServer::start()
     {
         co_await runAcceptLoop(nullptr);
@@ -61,6 +66,10 @@ namespace AsynGyanis::Net
         {
             throw Base::Exception("TcpServer: 进入监听状态失败，地址 " + m_acceptor.localAddress().toString());
         }
+
+        // 端口在这里发布，且排在监听成功之后：读到非 0 就等于「已经可以连」，
+        // 反过来说，绑定或监听失败的分支跑不到这一行，调用方不会看到假的端口
+        m_listeningPort.store(m_acceptor.localAddress().port(), std::memory_order_release);
 
         m_running = true;
 

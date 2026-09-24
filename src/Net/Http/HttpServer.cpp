@@ -904,10 +904,22 @@ namespace AsynGyanis::Net
         if (m_isHttp2CleartextEnabled)
         {
             return std::make_shared<Http2Session>(m_loop, std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
-                                                 m_memoryBudget);
+                                                 m_memoryBudget, m_http2Configuration);
         }
         return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
                                              m_memoryBudget);
+    }
+
+    void HttpServer::setHttp2Configuration(Http2ConnectionConfiguration configuration)
+    {
+        // 与连接层同一份判据：设置时就告状，别拖到第一条连接构造会话时才抛
+        Http2Connection::validateConfiguration(configuration);
+        m_http2Configuration = std::move(configuration);
+    }
+
+    const Http2ConnectionConfiguration &HttpServer::http2Configuration() const noexcept
+    {
+        return m_http2Configuration;
     }
 
     void HttpServer::setHttp2CleartextEnabled(const bool enabled) noexcept
