@@ -105,6 +105,26 @@ namespace AsynGyanis::Net
         m_headerStore.append(key, value);
     }
 
+    bool HttpRequest::setHeader(const std::string_view key, const std::string_view value)
+    {
+        // 判据与 HttpResponse::setHeader 同一张表、同一条口径：名与值不合法就拒写且不动任何已有状态。
+        // 两侧共用判据不是为了少写几行，而是为了让同一段头部在「收进来」与「发出去」之间不分裂
+        if (!isValidHeaderFieldName(key) || !containsOnlyFieldValueCharacters(value))
+        {
+            return false;
+        }
+
+        if (HttpHeaderFieldStore::isRepeatableHeaderName(key))
+        {
+            // 可重复头部的 set 退化为追加一条，与响应侧同语义：覆盖式写法会静默丢掉前面的条目
+            m_headerStore.append(key, value);
+            return true;
+        }
+
+        m_headerStore.overwriteOrAppend(key, value);
+        return true;
+    }
+
     void HttpRequest::adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept
     {
         m_headerStore.adoptFrom(stagedHeaders);
@@ -134,6 +154,11 @@ namespace AsynGyanis::Net
     bool HttpRequest::hasHeader(const std::string_view key) const
     {
         return m_headerStore.contains(key);
+    }
+
+    std::size_t HttpRequest::headerFieldCount(const std::string_view key) const
+    {
+        return m_headerStore.countOf(key);
     }
 
     bool HttpRequest::hasHeaderValueToken(const std::string_view key, const std::string_view expectedToken) const

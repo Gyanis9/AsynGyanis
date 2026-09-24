@@ -23,12 +23,14 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -740,6 +742,182 @@ namespace AsynGyanis::Net
         EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge\".example.com"), Base::InvalidArgumentException);
         EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com; ma=1"), Base::InvalidArgumentException);
         EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com\r\nx"), Base::InvalidArgumentException);
+    }
+
+    // ============================================================================
+    // traceContextMiddleware（W3C Trace Context 的链路上下文归一化）
+    // ============================================================================
+
+    /// 规范 §3.2 的示例取值，管道用例里当作「上游已经决定好的链路」
+    constexpr std::string_view kSpecExampleTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    /// 收集请求上的头部名，按到达顺序（钉「只覆盖不追加」与「一条都不多写」）
+    std::vector<std::string> collectHeaderNames(const HttpRequest &request)
+    {
+        std::vector<std::string> names;
+        request.forEachHeaderField(
+                [&names](const std::string_view name, const std::string_view)
+                {
+                    names.push_back(std::string(name));
+                });
+        return names;
+    }
+
+    TEST(TraceContextMiddleware, GeneratesTraceparentWhenAbsent)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware());
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+        ASSERT_TRUE(identifiers.has_value()) << "没带 traceparent 的请求应当被起一条新链路";
+        EXPECT_EQ(identifiers->version, 0U);
+        EXPECT_TRUE(identifiers->isSampled());
+        // 生成的字段必须落在请求的头部上：处理器与下游读的是同一份状态，不是中间件私藏的副本
+        EXPECT_EQ(request.getHeader(kTraceparentHeaderName).value_or(""), Traceparent::value(*identifiers));
+        // 业务照常执行，中间件不短路
+        EXPECT_EQ(response.body(), "index");
+    }
+
+    TEST(TraceContextMiddleware, LeavesAValidInboundValueByteForByteUntouched)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware());
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        static_cast<void>(request.setHeader(kTraceparentHeaderName, kSpecExampleTraceparent));
+        const std::size_t fieldCountBefore = collectHeaderNames(request).size();
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        // 合法就一个字都不写：值原样、条目数原样（改写会白白把头部缓冲再长一截）
+        EXPECT_EQ(request.getHeader(kTraceparentHeaderName).value_or(""), kSpecExampleTraceparent);
+        EXPECT_EQ(collectHeaderNames(request).size(), fieldCountBefore);
+        // 采样位由上游定：这里把 flags 改成 00，本中间件不得自作主张抬高
+        HttpRequest unsampledRequest = makeRequest(HttpMethod::GET, "/index.html");
+        static_cast<void>(unsampledRequest.setHeader(kTraceparentHeaderName, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"));
+        HttpResponse unsampledResponse;
+        runPipeline(pipeline, unsampledRequest, unsampledResponse, terminalWriting(unsampledResponse, "index"));
+        const std::optional<TraceIdentifiers> unsampled = extractTraceContext(unsampledRequest);
+        ASSERT_TRUE(unsampled.has_value());
+        EXPECT_FALSE(unsampled->isSampled());
+    }
+
+    TEST(TraceContextMiddleware, PassesAnUnknownVersionWithExtraFieldsThroughUntouched)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware());
+
+        // 版本 01 并多带一个附加字段：本实现认得前 55 字节，但绝不自作主张「升级到 00」或删掉看不懂的字段。
+        // 这条比上一条更尖：如果实现是「无论如何都重渲染一遍」，尾字段就会在这里消失
+        constexpr std::string_view kFutureVersionValue = "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-future";
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        static_cast<void>(request.setHeader(kTraceparentHeaderName, kFutureVersionValue));
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        EXPECT_EQ(request.getHeader(kTraceparentHeaderName).value_or(""), kFutureVersionValue);
+        const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+        ASSERT_TRUE(identifiers.has_value());
+        EXPECT_EQ(identifiers->version, 1U);
+    }
+
+    TEST(TraceContextMiddleware, ReplacesMalformedValueWithAFreshTrace)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware());
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        static_cast<void>(request.setHeader(kTraceparentHeaderName, "00-not-a-valid-traceparent-at-all------------01"));
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+        ASSERT_TRUE(identifiers.has_value()) << "畸形取值没有被换成一条新链路：下游还会读到坏字段";
+        EXPECT_NE(request.getHeader(kTraceparentHeaderName).value_or(""), "00-not-a-valid-traceparent-at-all------------01");
+    }
+
+    TEST(TraceContextMiddleware, RestartsTraceWhenTheHeaderAppearsTwice)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware());
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        // 两条同名 traceparent 会被头部存储折成一条带逗号的取值：歧义不猜任何一种解释，按「上游没给」重起
+        request.addHeader(kTraceparentHeaderName, kSpecExampleTraceparent);
+        request.addHeader(kTraceparentHeaderName, "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        const std::vector<std::string> names = collectHeaderNames(request);
+        EXPECT_EQ(std::ranges::count(names, "traceparent"), 1);
+        const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+        ASSERT_TRUE(identifiers.has_value());
+        EXPECT_NE(identifiers->traceIdText(), "4bf92f3577b34da6a3ce929d0e0e4736");
+        EXPECT_NE(identifiers->traceIdText(), "0af7651916cd43dd8448eb211c80319c");
+    }
+
+    TEST(TraceContextMiddleware, StaysSilentWhenGenerationIsDisabled)
+    {
+        TraceContextOptions options;
+        options.isGeneratedWhenAbsent = false;
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware(std::move(options)));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        EXPECT_FALSE(request.hasHeader(kTraceparentHeaderName)) << "关掉生成就不该无中生有：链路要么来自上游，要么就没有";
+        EXPECT_FALSE(extractTraceContext(request).has_value());
+    }
+
+    TEST(TraceContextMiddleware, MovesVendorEntryToFrontOfTraceState)
+    {
+        TraceContextOptions options;
+        options.vendorKey = "asyn";
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware(std::move(options)));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        static_cast<void>(request.setHeader(kTraceparentHeaderName, kSpecExampleTraceparent));
+        static_cast<void>(request.setHeader(kTracestateHeaderName, "a=1,b=2"));
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        // 自己的键挪到最前，上游条目的相对次序不动（§3.2.4.1）；值取本段的 span-id
+        EXPECT_EQ(request.getHeader(kTracestateHeaderName).value_or(""), "asyn=00f067aa0ba902b7,a=1,b=2");
+    }
+
+    TEST(TraceContextMiddleware, TreatsInvalidTraceStateAsAbsent)
+    {
+        TraceContextOptions options;
+        options.vendorKey = "asyn";
+        MiddlewarePipeline pipeline;
+        pipeline.use(traceContextMiddleware(std::move(options)));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        static_cast<void>(request.setHeader(kTraceparentHeaderName, kSpecExampleTraceparent));
+        static_cast<void>(request.setHeader(kTracestateHeaderName, "roto=abc,roto=xyz")); // 重复键：整条判废
+        HttpResponse response;
+        runPipeline(pipeline, request, response, terminalWriting(response, "index"));
+
+        EXPECT_EQ(request.getHeader(kTracestateHeaderName).value_or(""), "asyn=00f067aa0ba902b7")
+                << "无效 tracestate 应按缺席处理：不该把上游的坏字段继续往下传";
+    }
+
+    TEST(TraceContextMiddleware, RejectsInvalidVendorKeyAtRegistration)
+    {
+        TraceContextOptions options;
+        options.vendorKey = "BadKey";
+        EXPECT_THROW(traceContextMiddleware(std::move(options)), Base::InvalidArgumentException);
+
+        TraceContextOptions reservedKey;
+        reservedKey.vendorKey = "congo";
+        EXPECT_THROW(traceContextMiddleware(std::move(reservedKey)), Base::InvalidArgumentException);
     }
 
     /**

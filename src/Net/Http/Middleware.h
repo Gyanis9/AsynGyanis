@@ -18,6 +18,7 @@
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
+#include "Net/Http/TraceContext.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
@@ -395,6 +396,80 @@ namespace AsynGyanis::Net
             if (!request.httpVersion().starts_with("HTTP/3"))
             {
                 static_cast<void>(response.setHeader("alt-svc", advertisement));
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief traceContextMiddleware 的策略开关
+     */
+    struct TraceContextOptions
+    {
+        bool isGeneratedWhenAbsent{true}; ///< 上游没给、或给的形态不合法时，是否新起一条链路
+        bool isSampledByDefault{true};    ///< 新起链路的采样位初值；已存在的链路一律沿用上游的采样位
+        std::string vendorKey{};          ///< 非空时把自己的条目 upsert 进 tracestate，键须合 W3C §3.2.3
+    };
+
+    /**
+     * @brief 创建 W3C Trace Context 中间件：把请求上的链路上下文归一化成一条可信的 traceparent
+     *
+     * @details 三条口径，都是踩过坑的取舍：
+     *          - **上下文的权威形态就是那条头部**，本中间件不另存第二份。合法就原样放过（一个字都不写、
+     *            一次分配都不碰），缺席/畸形才生成并 `setHeader` 写回——处理器与下游看到的永远是同一串字节，
+     *            不会出现「中间件记了一份、头部还是另一份」的两处状态。读侧用 extractTraceContext()。
+     *          - 畸形包含「同一请求带多条 traceparent」：读侧按名计数把这种歧义与「恰好一条」分开，
+     *            多条一律按「上游没给」重起一条。歧义不该被猜成任何一种解释，而写回时存储会把这个名
+     *            收拢成一条，下游不会再看到两份链路。
+     *          - tracestate 只在显式给出 vendorKey 时才动：它按规范要把自己的键挪到最前并丢掉后面的同名项，
+     *            而条目表按值持串，默认做这件事等于给每条被跟踪的请求加一次分配。无效 tracestate 按缺席处理
+     *            （规范就是这么规定的），不影响本条链路。
+     *          - 响应上刻意什么都不写：traceparent/tracestate 是**请求侧**的传播字段，规范没定义响应形态，
+     *            自创一个回声头只会让下游误以为可以照它续链。
+     *
+     * @param options 策略开关；vendorKey 非空但键不合法时在**注册期**抛异常，不留到运行期静默不写
+     * @return MiddlewareFunc 中间件函数
+     * @throws Base::InvalidArgumentException 用法错误：vendorKey 不是合法的 tracestate 键
+     * @see Traceparent, TraceState, extractTraceContext()
+     */
+    inline MiddlewareFunc traceContextMiddleware(TraceContextOptions options = {})
+    {
+        if (!options.vendorKey.empty() && !TraceState::isValidKey(options.vendorKey))
+        {
+            throw Base::InvalidArgumentException("traceContextMiddleware: tracestate 的键「" + options.vendorKey
+                                                 + "」不合 W3C §3.2.3（小写字母/数字起头，字符集 a-z 0-9 _ - . @ / *，"
+                                                   "且不得是 congo 或 tircongo）");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, [[maybe_unused]] HttpResponse &response,
+                                              const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+            if (!identifiers.has_value() && options.isGeneratedWhenAbsent)
+            {
+                identifiers = Traceparent::generate(options.isSampledByDefault);
+                // 渲染进循环线程自己的复用缓冲再写回头部：与 request-id 的落定同一条路子，
+                // 稳态下这条路径一次堆分配也不碰
+                thread_local std::string traceparentText;
+                Traceparent::renderInto(traceparentText, *identifiers);
+                static_cast<void>(request.setHeader(kTraceparentHeaderName, traceparentText));
+            }
+
+            if (!options.vendorKey.empty() && identifiers.has_value())
+            {
+                std::optional<TraceState> parsedState =
+                        TraceState::parse(request.firstHeaderValueView(kTracestateHeaderName).value_or(std::string_view{}));
+                TraceState state;
+                if (parsedState.has_value())
+                {
+                    state = std::move(*parsedState);
+                }
+                // 条目值取本段的 span-id：下游据此能把「谁参与过这条链路」与具体那一段对上
+                static_cast<void>(state.upsertFront(options.vendorKey, identifiers->parentIdText()));
+                thread_local std::string traceStateText;
+                state.renderInto(traceStateText);
+                static_cast<void>(request.setHeader(kTracestateHeaderName, traceStateText));
             }
 
             co_await next();

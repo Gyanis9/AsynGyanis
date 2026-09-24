@@ -88,6 +88,18 @@ namespace AsynGyanis::Net
             {
                 appendValueToBytes(ref, value);
             }
+
+            // 「set」意味着这个名此后只有一条记录：不清掉后面的旧记录，合并视图（get()/singleValueView()）
+            // 就会把旧值与新值一起带下去，改写等于没改干净。findField 给的是首条，重复项都在它后面，
+            // 因此从尾部往前删不会动到刚写好的那一条（vector 的 erase 只挪其后元素，被改写的条目在更前处）
+            const std::size_t keptIndex = static_cast<std::size_t>(iterator - m_fields.begin());
+            for (std::size_t index = m_fields.size(); index-- > keptIndex + 1U;)
+            {
+                if (equalsIgnoringCase(nameOf(m_fields[index]), name))
+                {
+                    m_fields.erase(m_fields.begin() + static_cast<std::ptrdiff_t>(index));
+                }
+            }
         }
         else
         {
@@ -216,6 +228,20 @@ namespace AsynGyanis::Net
             }
         }
         return collectedValues;
+    }
+
+    std::size_t HttpHeaderFieldStore::countOf(const std::string_view name) const
+    {
+        // 线性扫描：头部数量级为几十条，而这里只要个数，不碰取值也就一次都不拷
+        std::size_t matchCount = 0;
+        for (const FieldRef &ref: m_fields)
+        {
+            if (equalsIgnoringCase(nameOf(ref), name))
+            {
+                ++matchCount;
+            }
+        }
+        return matchCount;
     }
 
     const std::unordered_map<std::string, std::string> &HttpHeaderFieldStore::singleValueView() const

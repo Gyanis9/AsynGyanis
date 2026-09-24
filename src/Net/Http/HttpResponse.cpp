@@ -93,23 +93,6 @@ namespace AsynGyanis::Net
             target.append(std::to_string(value));
         }
 
-        /**
-         * @brief 判断字符串是否是合法的 HTTP 头部字段名
-         * @details 按 RFC 9110 §5.1 的 tchar 集合校验，与请求侧共用同一张表：两侧判定不一致时，
-         *          同一段转发代码会在「收得进来、发不出去」之间分裂。空白、冒号与控制字符都
-         *          让报文无法定界，一律拒绝；空名字同样非法。
-         * @param fieldName 头部字段名，原样判定（字符集与大小写无关）
-         * @return true 可作为头部字段名
-         */
-        bool isValidHeaderFieldName(const std::string_view fieldName)
-        {
-            if (fieldName.empty())
-            {
-                return false;
-            }
-
-            return containsOnlyTokenCharacters(fieldName);
-        }
     } // namespace
 
     HttpResponse::HttpResponse() = default;

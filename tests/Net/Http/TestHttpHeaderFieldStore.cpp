@@ -143,6 +143,25 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fields[0].first, "host");
     }
 
+    TEST(HttpHeaderFieldStore, OverwriteCollapsesTheDuplicateRecordsOfTheSameName)
+    {
+        // 线上分两行发来的同名普通头部会留下两条记录；一次「set」之后这个名必须只剩一条，
+        // 否则合并视图仍把旧那条一起带下去，改写等于没改干净
+        HttpHeaderFieldStore store = makeStore({{"traceparent", "00-old-old-old-old-01"},
+                                                {"accept", "*/*"},
+                                                {"traceparent", "00-older-older-older-00"}});
+        ASSERT_EQ(store.countOf("traceparent"), 2U);
+
+        store.overwriteOrAppend("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+        EXPECT_EQ(store.countOf("traceparent"), 1U);
+        EXPECT_EQ(store.countOf("accept"), 1U) << "删同名不得牵连别的名字";
+        EXPECT_EQ(store.countOf("x-absent"), 0U);
+        EXPECT_EQ(store.get("traceparent").value_or("<缺失>"), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                << "合并视图里还混着旧值：set 的语义没有生效";
+        EXPECT_EQ(store.values("traceparent").size(), 1U);
+    }
+
     TEST(HttpHeaderFieldStore, FirstValueTakesTheEarliestFieldAndNeverMerges)
     {
         const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"},

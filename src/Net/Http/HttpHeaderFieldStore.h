@@ -70,6 +70,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 覆盖或追加一条非可重复头部
          * @details 同名已有记录就地覆盖值，条目位置仍停在首次设置处；缺席则追加到末尾。
+         *          覆盖时会一并清掉该名的其余记录——「set」之后这个名只对应一条，否则合并视图
+         *          会把新旧两条一起带下去，改写等于没改干净。
          * @param name 头部名，大小写不敏感；新建条目时按小写形态入库
          * @param value 头部值
          */
@@ -133,6 +135,17 @@ namespace AsynGyanis::Net
          * @return std::vector<std::string> 全部取值；未命中时为空
          */
         [[nodiscard]] std::vector<std::string> values(std::string_view name) const;
+
+        /**
+         * @brief 该名下有几条记录（不参与合并，也不拷任何字节）
+         * @details 「0 条」与「多于 1 条」是两种需要分开处理的情形：缺席可以补一个值，
+         *          而多条同名普通头部是有歧义的输入（合并视图会把两条折成一条带逗号的取值），
+         *          按名取值的入口都看不出这个差别。判定为链路上下文这类严格字段所必需，
+         *          又不必为一次计数构造值列表。
+         * @param name 头部名，大小写不敏感
+         * @return std::size_t 记录条数；未命中为 0
+         */
+        [[nodiscard]] std::size_t countOf(std::string_view name) const;
 
         /**
          * @brief 取单值视图（名 → 合并后的值）

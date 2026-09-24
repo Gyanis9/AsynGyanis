@@ -23,6 +23,7 @@ add_executable(TestNet
         Http/TestHotPathAllocations.cpp
         Http/TestHttpRequest.cpp
         Http/TestHttpRequestId.cpp
+        Http/TestTraceContext.cpp
         Http/TestHttpResponse.cpp
         Http/TestHttpSession.cpp
         Http/TestHttpStreaming.cpp

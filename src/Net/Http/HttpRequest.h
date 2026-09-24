@@ -116,6 +116,19 @@ namespace AsynGyanis::Net
         void addHeader(std::string_view key, std::string_view value);
 
         /**
+         * @brief 覆盖或新增一条请求头部（与 HttpResponse::setHeader 同一口径）
+         * @details 请求对象原本是「解析产物只追加」的：只有 addHeader。归一化链路上下文这类横切逻辑
+         *          必须能改写一条头部，否则中间件读到的与下游看到的就是两份状态。
+         *          同名多条时按覆盖式写法收拢成一条（条目位置不变）；可重复头部（Set-Cookie）退化为
+         *          追加一条，与响应侧同一套语义。
+         * @param key   头部名，大小写不敏感（入库转小写）；必须是合法 token 且非空
+         * @param value 头部值；CR/LF/NUL 会让头部块提前结束（响应拆分），一律拒绝（HTAB 是允许的 OWS）
+         * @return true 已写入
+         * @return false 名字或取值不合法，**已有状态一字未改**
+         */
+        [[nodiscard]] bool setHeader(std::string_view key, std::string_view value);
+
+        /**
          * @brief 接手解析器暂存的头部记录，整块换下本请求当前的头部
          * @details 报文收齐那一刻由解析器调用：只做容器交换，不逐字节拷贝，也不问调用方要临时串。
          *          调用前本请求必须已经 reset()（否则上一条报文的头部会被换进解析器的暂存里，
@@ -180,6 +193,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool hasHeader(std::string_view key) const;
 
         /**
+         * @brief 该名的头部记录有几条（不合并、不拷贝取值）
+         * @details 给「缺席 / 恰好一条 / 多于一条」必须分开的判定用：traceparent 这类严格字段
+         *          收到多条就是歧义，而 hasHeader 与取值入口都看不出这个差别。
+         * @param key 头部字段名，大小写不敏感
+         * @return std::size_t 记录条数；未出现为 0
+         */
+        [[nodiscard]] std::size_t headerFieldCount(std::string_view key) const;
+
+        /**
          * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
          * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
          *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表：Connection/Upgrade
@@ -196,6 +218,20 @@ namespace AsynGyanis::Net
          *         可重复头部在此只有一条（首次出现的值），逐条取值请用 headerValues()
          */
         [[nodiscard]] const std::unordered_map<std::string, std::string> &headers() const;
+
+        /**
+         * @brief 按到达顺序遍历请求的全部头部记录，同名多条各访问一次
+         * @details 与 HttpResponse 同一条目：走 headers() 单值视图既要先重建哈希表，又会把
+         *          「同名多条」折成一条；要看线上到底有几条、按什么顺序，只有权威记录这一份。
+         *          断言头部改写是否「只覆盖不追加」也用它——单值视图分不出「一条」与「两条被合并」。
+         * @tparam Visitor 可调用对象，接受 (头名视图, 头值视图)
+         * @param visitor 每个头部访问一次
+         */
+        template <typename Visitor>
+        void forEachHeaderField(const Visitor &visitor) const
+        {
+            m_headerStore.forEachField(visitor);
+        }
 
         /**
          * @brief 设置请求正文，覆盖已有内容。

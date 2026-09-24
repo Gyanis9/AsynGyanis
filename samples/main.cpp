@@ -106,6 +106,31 @@ namespace
             co_return;
         });
 
+        router.get("/trace", [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
+        {
+            // 链路上下文的自检出口：把本条请求所在的 trace-id / span-id / 采样位吐回来。
+            // 没装 --trace-context 且上游也没给字段时就报 null——「不在任何链路里」这个区分本身要看得到。
+            // 只回显经过严格校验的十六进制标识：tracestate 的取值是外部文本，原样拼进 JSON 就是注入
+            response.setStatus(200);
+            response.setHeader("Content-Type", "application/json");
+            std::string body = R"({"traceId":)";
+            if (const auto context = Net::extractTraceContext(request); context.has_value())
+            {
+                body += '"';
+                body.append(context->traceIdText());
+                body += R"(","spanId":")";
+                body.append(context->parentIdText());
+                body += R"(","sampled":)";
+                body += context->isSampled() ? "true" : "false";
+            } else
+            {
+                body += R"(null,"spanId":null,"sampled":null)";
+            }
+            body += ",\"pid\":" + std::to_string(Platform::ProcessInfo::currentProcessId()) + "}";
+            response.setBody(std::move(body));
+            co_return;
+        });
+
         router.get("/bench", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
         {
             response.setStatus(200);
@@ -264,6 +289,7 @@ int main(int argc, char **argv)
     std::size_t workerProcessCount = 1;   // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
     bool        isWorkerProcess = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
     bool        useHttp3 = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
+    bool        useTraceContext = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
     bool        showUsage = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
@@ -304,6 +330,8 @@ int main(int argc, char **argv)
             useHttp2Cleartext = true;
         else if (arg == "--h3")
             useHttp3 = true;
+        else if (arg == "--trace-context")
+            useTraceContext = true;
         else if (arg == "--metrics")
             exposeMetrics = true;
         else if (arg == "--log-json")
@@ -389,6 +417,9 @@ int main(int argc, char **argv)
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）；"
             "同时让 TCP 侧响应带上 alt-svc 通告，客户端由此自己学到 h3 端口");
         LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
+        LOG_INFO("  --trace-context 挂 W3C Trace Context 中间件：上游带了合法的 traceparent 就原样沿用，");
+        LOG_INFO("            缺席或畸形（含同名多条）则新起一条链路并写回请求头，业务读 GET /trace 就能看到；");
+        LOG_INFO("            同时把自己的条目 asyn=<span-id> 挪到 tracestate 最前（上游条目次序不动）");
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz；开了 --h3 时 h3 的请求数/状态码类一并计入");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
@@ -654,12 +685,27 @@ int main(int argc, char **argv)
         }
     };
 
+    // --trace-context：把链路上下文归一化到请求头上（合法的沿用、缺席或畸形的重起），
+    // 业务与下游读的是同一份状态；三端（h1/h2/https 与 h3）各挂一次，见 Net/Http/TraceContext.h
+    const auto enableTraceContextIfRequested = [&](Net::Router &router)
+    {
+        if (!useTraceContext)
+        {
+            return;
+        }
+        Net::TraceContextOptions options;
+        // tracestate 里代表本进程的条目，值取本段的 span-id
+        options.vendorKey = "asyn";
+        router.addMiddleware(Net::traceContextMiddleware(std::move(options)));
+    };
+
     // 按 --https 决定造哪种协议的服务器；返回基类指针，两条路径共用一套构造逻辑
     const auto buildHttpServer = [&](Core::EventLoop &loop)
     {
         auto server = std::make_unique<Net::HttpServer>(loop, *address);
         setupRoutes(server->router());
         advertiseHttp3IfEnabled(server->router());
+        enableTraceContextIfRequested(server->router());
         server->setPerIpConnectionLimiter(perIpConnectionLimiter);
         server->setMaxConnections(configuration.maximumConnections);
         server->setLimits(configuration.limits);
@@ -708,6 +754,7 @@ int main(int argc, char **argv)
         }
         setupRoutes(server->router());
         advertiseHttp3IfEnabled(server->router());
+        enableTraceContextIfRequested(server->router());
         if (compressResponses)
         {
             server->router().addMiddleware(makeCompressionMiddleware(loop));
@@ -812,6 +859,7 @@ int main(int argc, char **argv)
     if (useHttp3)
     {
         setupRoutes(http3Router);
+        enableTraceContextIfRequested(http3Router);
         if (compressResponses)
         {
             // 三条通道一律走外置版：h3 的会话收口现在会先叫醒并等完挂在业务协程上的在途动作

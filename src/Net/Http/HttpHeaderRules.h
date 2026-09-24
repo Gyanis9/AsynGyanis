@@ -214,6 +214,19 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 判断字符串是否是合法的 HTTP 头部字段名
+     * @details 按 RFC 9110 §5.1 的 tchar 集合校验，请求侧与响应侧共用同一张表：两侧判定不一致时，
+     *          同一段转发代码会在「收得进来、发不出去」之间分裂。空白、冒号与控制字符都
+     *          让报文无法定界，一律拒绝；空名字同样非法。
+     * @param fieldName 头部字段名，原样判定（字符集与大小写无关）
+     * @return true 可作为头部字段名
+     */
+    [[nodiscard]] inline bool isValidHeaderFieldName(const std::string_view fieldName) noexcept
+    {
+        return !fieldName.empty() && containsOnlyTokenCharacters(fieldName);
+    }
+
+    /**
      * @brief 判断一个响应头名是不是「连接特定」字段
      *
      * @details h1 口径的 `HttpResponse` 会带上 `transfer-encoding`、`connection`、`upgrade` 这类字段，

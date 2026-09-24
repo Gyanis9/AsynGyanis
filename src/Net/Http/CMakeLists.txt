@@ -18,6 +18,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/HttpMetricsEndpoint.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpMetricsEndpoint.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpRequestId.h
+        ${CMAKE_CURRENT_LIST_DIR}/TraceContext.h
+        ${CMAKE_CURRENT_LIST_DIR}/TraceContext.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpParserLimits.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParser.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParser.cpp
