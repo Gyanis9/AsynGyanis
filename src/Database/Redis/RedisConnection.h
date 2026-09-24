@@ -262,9 +262,13 @@ namespace AsynGyanis::Database
         /**
          * @brief 退掉全部频道与模式订阅，把这条连接送回「一条命令一条回复」的形态
          * @details 不带参数的 UNSUBSCRIBE / PUNSUBSCRIBE 会为**每个当前订阅**回一条确认，本方法按
-         *          服务端给出的订阅数计数读到归零。之后这条连接可以安全地交给池复用
-         *          （见 resetSessionState() 里那条「退不出去就断开」的判据）。
-         * @return true 两类订阅都已退干净（本来就没订阅也算成功）
+         *          自己记下的条数把它们收干（服务端回复里那个整数是两类合计的剩余订阅数，分不出
+         *          单一类退完没有，所以条数只能本地记）。收干之后这条连接能再发普通命令并拿回
+         *          正常回复——用例 UnsubscribeAllRestoresTheCommandReplyShape 钉的就是这件事。
+         * @note 但**不要指望它被池留下**：经历过推送形态，这条连接上的 m_isSessionModeChanged 一直是真，
+         *       归还时池照旧把它换掉。那一位是 HELLO / MONITOR / 订阅三类共用的「本类退不回去」标记，
+         *       在这里顺手清掉就会把前两类的账一起抹了——宁可多换一条连接。
+         * @return true 两类订阅都已退干净（本来就没订阅也算成功，且不发任何命令）
          * @return false 未连接或收发失败，原因见 lastError()；此时订阅状态不确定，调用方应断开重连
          */
         bool unsubscribeAll();
