@@ -51,3 +51,19 @@ asyn_add_sample(net_http3_demo net_http3_demo/main.cpp)
 # Database：SQLite 文件库/内存库、ORM 与查询构造、事务、二进制列、参数绑定、连接池；MySQL/Redis 按环境变量门控
 asyn_add_sample(database_demo database_demo/main.cpp)
 target_link_libraries(database_demo PRIVATE Database)
+
+# Core 零停机换代：把正在监听的套接字交给新一代进程，端口全程不关（POSIX 才构建，理由见下）
+#
+# 移交本身两家都有原语（POSIX 走 SCM_RIGHTS，Windows 走 WSADuplicateSocket），拦住 Windows 的是
+# 事件后端：套接字与完成端口的关联是**内核对象级**且不可解除的，交棒方的循环一开跑就把监听句柄挂上了
+# 自己的端口，新一代再把它挂进自己的完成端口就被拒（实测 CreateIoCompletionPort 报 87，父代答完话、
+# 子代一次都没接上）。那条拒因现在带得出码，用例是 IoWatcher.DescriptorOnAnotherCompletionPortThrowsWithWin32Reason。
+# 要让 Windows 也走得通，得给换代单独配一条「阻塞 accept 线程 + adoptConnection」的接手路径，
+# 那是另一件工程，不该由这条示例顺带宣布支持。
+#
+# POSIX 侧成立的前提有两条，两条都是实测换来的：通道必须 AF_UNIX（TCP 通道上内核静默丢描述符），
+# 以及交棒方收口时不对端点做 shutdown（见 AsyncSocket::markAsListening()）。
+if (NOT WIN32)
+        asyn_add_sample(core_upgrade core_upgrade/main.cpp)
+        target_link_libraries(core_upgrade PRIVATE Platform)
+endif()
