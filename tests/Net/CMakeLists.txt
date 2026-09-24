@@ -6,6 +6,10 @@ add_executable(TestNet
         Quic/QuicRfcVectors.h
         Http/HttpTestSupport.h
         Http2/Http2TestSupport.h
+        # 协议解码器的属性化随机模糊：内核与用例（libFuzzer 入口另见文件末尾的可选目标）
+        Fuzz/ProtocolFuzzKernel.h
+        Fuzz/ProtocolFuzzKernel.cpp
+        Fuzz/TestProtocolFuzz.cpp
         # 分配计数探针的实体（替换全局 operator new，每个可执行体只能有一份定义）
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
@@ -139,3 +143,23 @@ gtest_discover_tests(TestNet)
 
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(TestNet)
+
+# libFuzzer 入口：默认不构建。它要 clang 的 -fsanitize=fuzzer，而本机能拿到的 clang（llvm-mingw 22.1.7）
+# 对 windows-gnu 目标根本不支持这个 sanitizer，常用容器里也没装——因此单独立一个开关，
+# 由 CI 的 fuzz 作业（自己 apt 装 clang）显式打开。开关打开但不是 Clang 时当场拒绝，
+# 不要静默产出一个「链接成功但没有模糊能力」的可执行体。
+option(ASYN_BUILD_FUZZ_TARGETS "构建 Net 协议解码器的 libFuzzer 目标（需要 Clang）" OFF)
+if(ASYN_BUILD_FUZZ_TARGETS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "ASYN_BUILD_FUZZ_TARGETS 需要 Clang 工具链（-fsanitize=fuzzer 是 clang 提供的）；"
+                            "当前编译器是 ${CMAKE_CXX_COMPILER_ID}。请改用 gcc/clang 之外的持续模糊方案，或关掉本开关")
+    endif()
+
+    add_executable(NetFuzzTargets Fuzz/FuzzTargets.cpp Fuzz/ProtocolFuzzKernel.cpp)
+    target_include_directories(NetFuzzTargets PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(NetFuzzTargets PRIVATE Net)
+    target_compile_features(NetFuzzTargets PRIVATE cxx_std_23)
+    # -fsanitize=fuzzer-no-link 用于对象编译（否则每个 TU 都会塞进一个 main），链接时才用完整版本
+    target_compile_options(NetFuzzTargets PRIVATE -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer)
+    target_link_options(NetFuzzTargets PRIVATE -fsanitize=fuzzer,address,undefined)
+endif()

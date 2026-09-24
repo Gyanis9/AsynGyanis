@@ -16,11 +16,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -313,5 +315,35 @@ namespace AsynGyanis::TestSupport
 
         return std::chrono::system_clock::from_time_t(std::mktime(&calendarTime))
                + std::chrono::milliseconds(millisecond);
+    }
+
+    /**
+     * @brief 读一个环境变量，把「没设」与「设成空串」分开报
+     * @details MSVC 在 /W4 /WX 下把 std::getenv 判为弃用（C4996 直接升级成错误），因此 Windows 侧走
+     *          _dupenv_s；这不是平台差异而是 CRT 差异，故按编译器判定而非按 ASYN_PLATFORM_WIN32。
+     *          两种实现都立即拷贝，调用方不保留指向环境块的指针
+     * @param variableName 环境变量名
+     * @return std::optional<std::string> 设过则返回值（可能为空串），未设返回 nullopt
+     */
+    [[nodiscard]] inline std::optional<std::string> readEnvironmentVariable(const char *const variableName)
+    {
+#if defined(_MSC_VER)
+        char  *rawValue      = nullptr;
+        size_t valueCapacity = 0;
+        if (::_dupenv_s(&rawValue, &valueCapacity, variableName) != 0 || rawValue == nullptr)
+        {
+            return std::nullopt;
+        }
+        std::string variableValue(rawValue);
+        std::free(rawValue);
+        return variableValue;
+#else
+        const char *const rawValue = std::getenv(variableName);
+        if (rawValue == nullptr)
+        {
+            return std::nullopt;
+        }
+        return std::string(rawValue);
+#endif
     }
 } // namespace AsynGyanis::TestSupport
