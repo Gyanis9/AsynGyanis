@@ -69,16 +69,22 @@ namespace AsynGyanis::Platform
         }
 
         /**
-         * @brief 造一对已连通的阻塞 loopback 套接字，当移交通道
+         * @brief 造一对已连通的阻塞套接字，当移交通道
          * @param[out] sendingEnd 写端
          * @param[out] receivingEnd 读端
          * @return true 两端都建成并连通
+         * @details 通道类型按平台分家，这不是冗余分支而是这条链的硬边界：POSIX 上内核只在 unix 域里
+         *          随 SCM_RIGHTS 送描述符，拿 loopback TCP 当通道时 sendmsg/recvmsg 双双成功、字节一字
+         *          不差，只有描述符被静默丢掉，收端只剩 EBADF 可报（实测两条通道各跑一遍对照过，
+         *          见 Platform/IO/Socket.h 的 @note）。Windows 那边载荷本身就是一串字节
+         *          （WSADuplicateSocket 换回的协议信息表），loopback TCP 正是它能用的通道。
          */
         bool makeBlockingChannel(int &sendingEnd, int &receivingEnd)
         {
             sendingEnd   = -1;
             receivingEnd = -1;
 
+#if ASYN_PLATFORM_WIN32
             std::uint16_t channelPort = 0U;
             const int     listener    = makeLoopbackListener(channelPort);
             if (listener < 0)
@@ -108,6 +114,16 @@ namespace AsynGyanis::Platform
             }
             sendingEnd = writer;
             return true;
+#else
+            int pair[2] = {-1, -1};
+            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0)
+            {
+                return false;
+            }
+            sendingEnd   = pair[0];
+            receivingEnd = pair[1];
+            return true;
+#endif
         }
 
         /// 本轮用过的描述符，析构时统一关掉
@@ -139,7 +155,8 @@ namespace AsynGyanis::Platform
      * @brief 交出与收下是一对操作：收端拿到的必须是一个还能 accept 的监听套接字
      *
      * @details 这是零停机换代的核心性质——新进程接手的不该只是一个数字，而是「带着 backlog 的监听态」。
-     *          通道用真 loopback 字节流，因此这条同时钉住了线路格式（定长头 + 平台载体）与
+     *          通道用各平台真能送描述符的那条（见 makeBlockingChannel），因此这条同时钉住了线路格式
+     *          （定长头 + 平台载体）与
      *          「收端重建的套接字确实能服务连接」两件事。
      * @note 通道上的读一律直接阻塞读，不用 TestSupport::waitForReadable：那个助手是真把字节读走再
      *       丢掉（它判的是「能不能读到」），先跑它就把移交消息的头吞了。第一次排查这条用例时正是
