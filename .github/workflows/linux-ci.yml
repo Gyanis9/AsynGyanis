@@ -144,6 +144,116 @@ jobs:
           path: build/debug/tests/*/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
+  # 跨实现一致性验收（HTTP/2 与 WebSocket）：拿独立实现当对端，把「两边都按 RFC 办事」变成每次
+  # 合入都跑的判据，而不是一次性手工结论。自写客户端只会重复本框架自己对协议的理解，两边一起错的
+  # 地方查不出来——h2c 那条探针就是这样查出一条取消会带走整条连接的问题。
+  #
+  # 跑的是 scripts/ 下那两条与手动完全相同的脚本（挂上 CI 只为不让它们烂掉）：
+  # h2_adversarial_probe.sh（curl 自带 nghttp2）与 ws_interop_probe.py（websockets）。
+  # h3 那侧已有 http3-acceptance 作业跑 aioquic，这里不重复；Windows 侧不建这个作业：
+  # 本机 mingw 的 curl 编译时没带 HTTP/2，--http2-prior-knowledge 直接报「不支持」，
+  # 等于跑给空气看。
+  #
+  # 三台服务端的分工写在下面那一步里（--h2c 会把同一端口的明文连接全部收走，不再服务 h1）。
+  protocol-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-conformance-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-conformance-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            ccache-${{ runner.os }}-
+
+      # websockets 与 Conan 同放一个 venv：ubuntu-latest 的系统 pip 受 PEP 668 限制不能直接装包
+      - name: 安装 Conan 与独立 WebSocket 实现
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25" websockets
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（Debug + sanitizers + ccache）
+        run: |
+          cmake --preset debug -DDATABASE_WITH_MYSQL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # 探针只需要「一个能跑的服务端」，示例服务器就是它：h2c / TLS 的开关都齐
+      - name: 构建 echo_server
+        run: cmake --build build/debug --target echo_server -- -k 0
+
+      - name: 降低 ASLR 熵（稳定 AddressSanitizer）
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      - name: 起服务端并跑两条跨实现探针
+        run: |
+          # 最后一个参数是 URL，其余全转给 curl；等到真能应答才开测——ASan 下的启动比平时慢，
+          # 不等就绪就会拿到「000」这种与协议无关的红
+          wait_ready() {
+            local url="${*:$#}"
+            local extra=("${@:1:$#-1}")
+            for _ in $(seq 1 60); do
+              if curl -s -o /dev/null --max-time 2 "${extra[@]}" "$url"; then return 0; fi
+              sleep 0.5
+            done
+            echo "服务端没在 30 秒内应答：$url" >&2
+            return 1
+          }
+
+          # 18080：h2c + /metrics（那条探针要读计数）。--h2c 会把明文连接一律收进 HTTP/2，
+          # 同一端口不再服务 HTTP/1.1，所以下面的 WebSocket 探针必须另开一台明文 h1 的服务端
+          build/debug/samples/echo_server --port 18080 --threads 2 --metrics --h2c > /tmp/h2c.log 2>&1 &
+          h2c_pid=$!
+          build/debug/samples/echo_server --port 18081 --threads 2 --metrics > /tmp/plain.log 2>&1 &
+          plain_pid=$!
+          # 18443：TLS。wss 走 TCP+ALPN，对端只报 http/1.1 时就按 h1 服务（这正是它要协商到的形态）
+          build/debug/samples/echo_server --port 18443 --threads 1 --https \
+            --cert tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem \
+            > /tmp/tls.log 2>&1 &
+          tls_pid=$!
+
+          # 四条都要跑完再收：任一失败就让作业红，并把服务端日志留成产物
+          status=0
+          wait_ready --http2-prior-knowledge "http://127.0.0.1:18080/json" \
+            && bash scripts/h2_adversarial_probe.sh 18080 || status=1
+          wait_ready "http://127.0.0.1:18081/json" \
+            && python scripts/ws_interop_probe.py 127.0.0.1 18081 || status=1
+          wait_ready -k "https://127.0.0.1:18443/json" \
+            && python scripts/ws_interop_probe.py 127.0.0.1 18443 --wss || status=1
+
+          kill "$h2c_pid" "$plain_pid" "$tls_pid" 2>/dev/null
+          wait "$h2c_pid" "$plain_pid" "$tls_pid" 2>/dev/null
+          exit "$status"
+
+      - name: 失败时上传服务端日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-server-logs
+          path: /tmp/*.log
+          if-no-files-found: ignore
+
   # MySQL 真机驱动分支的**编译**覆盖：其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
   # -DDATABASE_WITH_MYSQL=OFF，于是 MySqlConnection/MySqlResult 那些源文件在 CI 里从不参与编译，
   # 连语法/类型错误都不会红（本机真机用例跑的是另一套环境）。这个作业只构建 Database 目标，
