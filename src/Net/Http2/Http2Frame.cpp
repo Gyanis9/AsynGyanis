@@ -12,7 +12,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 流号字段的最高位是保留位 R（RFC 7540 §4.1）：本实现按要求从严，收到即判错
+        /// 32 位字段的最高位掩码，两处用途：帧头流号的保留位 R（§4.1，接收侧忽略）与
+        /// PRIORITY 依赖字段里的 E 位（§6.3，那是有定义的一段，取出来就是 isExclusive）
         constexpr std::uint32_t kStreamIdReservedBitMask = 0x80000000U;
 
         /// SETTINGS 一个参数的线长：16 位标识 + 32 位取值（RFC 7540 §6.5.1）
@@ -349,14 +350,10 @@ namespace AsynGyanis::Net
                                             (static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[1])) << 8) |
                                             static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[2]));
         const std::uint32_t streamIdField = readBigEndian32(bytes.data() + 5);
-        if ((streamIdField & kStreamIdReservedBitMask) != 0)
-        {
-            // RFC 7540 §4.1 允许接收侧忽略该位，本实现从严：放行等于让「这一帧是什么」取决于对端是否在用
-            // 未定义的扩展，而这些帧在本端无法被正确解释
-            writeError(errorText, "帧头流号的最高位 R 必须为 0（RFC 7540 §4.1）：请检查对端是否在写未定义的保留位，或先用抓包工具核对这 9 字节");
-            return false;
-        }
-
+        // 帧头流号的最高位 R 在接收侧**忽略**（RFC 7540 §4.1 原文是「MUST remain unset when sending
+        // and MUST be ignored when receiving」）。此前本实现按「从严」把它判成错误并断链，
+        // h2spec 4.1.3 抓到：置位的那一帧本该按没置位处理，连接要继续活着（那条用例随后还发 PING
+        // 探这一点）。掩码在下面那行照旧生效，不必额外分支
         header.payloadLength = payloadLength;
         header.type = static_cast<Http2FrameType>(static_cast<std::uint8_t>(bytes[3]));
         header.flags = static_cast<std::uint8_t>(bytes[4]);

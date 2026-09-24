@@ -343,24 +343,36 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief R 位非 0 判错（独立入口与增量解码器两条路径）
-     * @details RFC 7540 §4.1 允许接收侧忽略该位，本实现从严：放行会让「这一帧是什么」取决于对端是否
-     *          在写未定义的扩展，而这些帧在本端无法被正确解释。
+     * @brief 接收侧忽略帧头流号的 R 位；发送侧仍不许把它置起来
+     * @details 旧断言是「独立入口与增量解码器两条路径都把置位的 R 判成协议错误」，备注写的依据
+     *          （§4.1 允许接收侧忽略）读反了方向：§4.1 的原话是「MUST remain unset (0x0) when sending
+     *          and MUST be ignored when receiving」——发送侧必须清零，接收侧只能当它不存在。
+     *          按旧断言实现会被 h2spec 4.1.3 判红（它发一帧置位的帧，随后要求连接仍能应答 PING），
+     *          而那是本框架主动断链，等于给对端一个「一帧打掉整条连接」的开关。
+     *          编码侧那条判据原样保留：本端绝不发出置位的 R 位。
      */
-    TEST(Http2Frame, RejectsFrameHeaderWithReservedBitSet)
+    TEST(Http2Frame, IgnoresReservedBitOnReceiveAndRejectsItOnEncode)
     {
-        const std::string headerWithReservedBit = makeFrameHeaderBytes(0, 0x0, 0, 0x80000001U);
-
+        // 独立入口：掩掉 R 位后按低 31 位认流，不是判错
         Http2FrameHeader header;
         std::string reason;
-        EXPECT_FALSE(decodeHttp2FrameHeader(headerWithReservedBit, header, &reason));
-        EXPECT_TRUE(containsText(reason, "R")) << "原因里要写清是哪个字段越界：" << reason;
+        ASSERT_TRUE(decodeHttp2FrameHeader(makeFrameHeaderBytes(0, 0x0, 0, 0x80000001U), header, &reason)) << reason;
+        EXPECT_EQ(header.streamId, 1U);
 
+        // 增量解码器：整帧（DATA，2 字节正文）流号带上 R 位，同样解析成流 1
+        std::string wireFrame = makeFrameHeaderBytes(2, 0x0, 0, 0x80000001U);
+        wireFrame += makeBytes({'h', 'i'});
         Http2FrameDecoder decoder;
-        reason = "残留";
-        EXPECT_TRUE(containsText(feedAndExpectError(decoder, headerWithReservedBit), "R"));
-        EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::ProtocolError);
-        EXPECT_EQ(toHttp2ErrorCode(decoder.errorKind()), Http2ErrorCode::ProtocolError);
+        const Http2Frame frame = feedAndTakeFrame(decoder, wireFrame);
+        EXPECT_EQ(frame.header.streamId, 1U);
+        EXPECT_EQ(frame.payload, "hi");
+        EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::None);
+
+        // 发送侧：置位的 R 位仍按非法流号拒绝，且不动目标缓冲
+        Http2FrameHeader outbound{};
+        outbound.type = Http2FrameType::Data;
+        outbound.streamId = 0x80000001U;
+        EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(outbound)), Base::InvalidArgumentException);
     }
 
     /**
