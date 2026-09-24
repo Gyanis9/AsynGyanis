@@ -319,6 +319,39 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(connection.lastStreamErrorMessage().empty()) << "流级错误必须留下可排查的中文原因";
             return connection.lastStreamErrorMessage();
         }
+
+        /**
+         * @brief 喂一帧并核对本端回敬的 RST_STREAM：恰好一枚、落在流 1 上、错误码是 STREAM_CLOSED
+         * @param connection 目标连接
+         * @param frameBytes 要喂的完整帧
+         * @param frameDescription 这帧叫什么，只用来把失败信息指到具体那一帧
+         * @return true 连接收下这帧并按流错误回了那一枚
+         */
+        bool feedsAndAnswersStreamClosed(Http2Connection &connection, const std::string &frameBytes,
+                                         const std::string_view frameDescription)
+        {
+            if (feed(connection, frameBytes) != Http2ConnectionFeedStatus::NeedMore)
+            {
+                ADD_FAILURE() << frameDescription << " 之后连接应当收下它并继续（不判死整条连接）";
+                return false;
+            }
+            const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+            if (resetFrames.size() != 1U || resetFrames.front().header.streamId != 1U)
+            {
+                ADD_FAILURE() << frameDescription << " 之后本端应当只回敬一枚落在流 1 上的 RST_STREAM，实收 "
+                              << resetFrames.size() << " 枚";
+                return false;
+            }
+            Http2RstStreamPayload payload;
+            std::string errorText;
+            if (!parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText))
+            {
+                ADD_FAILURE() << frameDescription << " 的回帧不是合法的 RST_STREAM：" << errorText;
+                return false;
+            }
+            EXPECT_EQ(payload.errorCode, Http2ErrorCode::StreamClosed) << frameDescription << " 的流错误码";
+            return true;
+        }
     } // namespace
 
     /**
@@ -1466,6 +1499,55 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：对端 RST_STREAM 之后再来的 DATA / HEADERS 按流错误 STREAM_CLOSED 回敬，且只回敬一次
+     * @details §5.1「closed」段把两种终止分开写：**本端**发过 RST 之后的帧 MUST ignore（那些帧对端撤不
+     *          回来）；而**收到**对端的 RST 之后再来的帧要按流错误 STREAM_CLOSED 处理。TCP 按序到达保证
+     *          后者排在那枚 RST 之后，属明知故犯，不能沿用前一支的宽容——h2spec 5.1/8 与 5.1/9 判的就是
+     *          这里，原先一律忽略的表现是对端超时。回敬一次就把终止方式改记成「本端复位」，其后的同类帧
+     *          转为忽略（§5.4.2：一个流上通常不该发第二枚 RST_STREAM）。
+     */
+    TEST(Http2Connection, AnswersStreamClosedOnceForFramesAfterPeerReset)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        // 对端取消这条流：此刻本端不该回敬任何东西（§5.4.2 明令不得因 RST_STREAM 回敬 RST_STREAM）
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty());
+
+        ASSERT_TRUE(feedsAndAnswersStreamClosed(connection, makeFrame(Http2FrameType::Data, 0, 1U, "late"),
+                                                "取消之后补发的 DATA"));
+        EXPECT_FALSE(connection.hasFailed()) << "这是流错误，连接应当继续：" << connection.errorMessage();
+
+        // 第二条同类帧不再回敬：同一件事说一遍就够
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, "again")), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(takeRstStreamFrames(connection).empty()) << "回敬只发生一次";
+        EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "第二次之后回到忽略语义，不该再回任何帧";
+
+        // 头块走同一条判据：换一个连接重做一遍，取消之后补发的 HEADERS 同样回敬一枚
+        Http2Connection headerCase;
+        completeHandshake(headerCase);
+        ASSERT_EQ(feed(headerCase, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(headerCase.takeRequests());
+        static_cast<void>(headerCase.takeOutgoingBytes());
+        ASSERT_EQ(feed(headerCase, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(headerCase.takeOutgoingBytes());
+        ASSERT_TRUE(feedsAndAnswersStreamClosed(headerCase,
+                                                makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U,
+                                                          makeMinimalGetRequestBlock()),
+                                                "取消之后补发的 HEADERS"));
+        // 那一块照样被解码丢弃：动态表是连接级状态，跳过解码会把错位留给后面所有流的头块
+        EXPECT_FALSE(headerCase.hasFailed()) << headerCase.errorMessage();
+    }
+
+    /**
      * @brief 钉住：双向 END_STREAM 正常终止的流上，只有窗口/复位类帧可忽略，DATA 判连接错误 STREAM_CLOSED
      */
     TEST(Http2Connection, RejectsFramesAfterEndStreamOnCompletedStreams)
@@ -1769,6 +1851,38 @@ namespace AsynGyanis::Net
                                              hpackIndexedField(8))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_NE(expectStreamRejected(withPseudo, 1U).find("伪头"), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住：不带 END_STREAM 的第二个 HEADERS 按畸形报文作废这一条流，连接与其余流照旧（RFC 9113 §7.1）
+     * @details 尾部头块的定义就是「以一枚带 END_STREAM 的 HEADERS 开始」；没带收尾的那一枚既不终结消息、
+     *          也不算正文，留着不判的话这条流只会一直等一个再也不会来的 END_STREAM——h2spec 8.1/1 看到的
+     *          就是对端超时。判据落在 §8.1.1：畸形报文按流错误 PROTOCOL_ERROR 处理，牵连不到整条连接。
+     */
+    TEST(Http2Connection, RejectsTrailerHeaderBlockWithoutEndStream)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+        static_cast<void>(connection.takeOutgoingBytes());
+
+        // 第二个 HEADERS 只带 END_HEADERS：畸形 → 这条流被 RST，且没有任何一帧被当成正文收尾交出去
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U,
+                                            hpackLiteralField("x-checksum", "42"))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_NE(expectStreamRejected(connection, 1U).find("END_STREAM"), std::string::npos);
+        EXPECT_TRUE(connection.takeReceivedData().empty()) << "畸形的尾部头块不该被当成正文收尾的信号";
+        EXPECT_TRUE(connection.takeRequests().empty()) << "尾部头块不是新请求";
+
+        // 连接还要能服务别的流：这正是「流错误」与「连接错误」的分别
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
+                                            makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> followUpRequests = connection.takeRequests();
+        ASSERT_EQ(followUpRequests.size(), 1U) << "一条流上的畸形报文不该挡住其它流";
+        EXPECT_EQ(followUpRequests[0].streamId, 3U);
     }
 
     /**

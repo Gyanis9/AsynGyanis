@@ -807,11 +807,24 @@ namespace AsynGyanis::Net
         }
         if (stream->state == Http2StreamState::Closed)
         {
-            if (isIgnorableFrameOnTerminatedStream(*stream, Http2FrameType::Data))
+            const TerminatedStreamFrameVerdict verdict = judgeFrameOnTerminatedStream(*stream, Http2FrameType::Data);
+            if (verdict != TerminatedStreamFrameVerdict::FailConnection)
             {
                 // 这片数据不会再交给上层（流已终止），就当它已被消费：把连接级窗口还回去，
-                // 否则对端在终止流上补发的在途 DATA 会永久吃掉连接窗口
+                // 否则对端在终止流上补发的在途 DATA 会永久吃掉连接窗口（§5.1「closed」段末段）
                 creditConnectionReceiveWindow(static_cast<std::size_t>(frameByteCount));
+            }
+            if (verdict == TerminatedStreamFrameVerdict::Ignore)
+            {
+                return true;
+            }
+            if (verdict == TerminatedStreamFrameVerdict::ResetStream)
+            {
+                // 对端自己复位过这条流，其后又发 DATA：TCP 保证这片排在它那枚 RST 之后，按流错误回敬
+                failStream(*stream, Http2ErrorCode::StreamClosed,
+                           std::format("流 {} 已被对端的 RST_STREAM 终止，其后又收到 DATA：RFC 7540 §5.1「closed」段"
+                                       "要求按流错误 STREAM_CLOSED 处理",
+                                       streamId));
                 return true;
             }
             fail(Http2ErrorCode::StreamClosed,
@@ -894,12 +907,21 @@ namespace AsynGyanis::Net
 
         if (stream->state == Http2StreamState::Closed)
         {
-            if (!isIgnorableFrameOnTerminatedStream(*stream, Http2FrameType::Headers))
+            const TerminatedStreamFrameVerdict verdict = judgeFrameOnTerminatedStream(*stream, Http2FrameType::Headers);
+            if (verdict == TerminatedStreamFrameVerdict::FailConnection)
             {
                 fail(Http2ErrorCode::StreamClosed,
                      std::format("流 {} 已正常终止（双向 END_STREAM），再收到 HEADERS：RFC 7540 §5.1「closed」段要求按连接错误 STREAM_CLOSED 处理",
                                  streamId));
                 return false;
+            }
+            if (verdict == TerminatedStreamFrameVerdict::ResetStream)
+            {
+                // 对端自己复位过这条流，其后又发头块：同 DATA 那一支，按流错误 STREAM_CLOSED 回敬
+                failStream(*stream, Http2ErrorCode::StreamClosed,
+                           std::format("流 {} 已被对端的 RST_STREAM 终止，其后又收到 HEADERS：RFC 7540 §5.1「closed」段"
+                                       "要求按流错误 STREAM_CLOSED 处理",
+                                       streamId));
             }
             // 终止过的流上补发的 HEADERS：字段已经没有归属，但字节必须解码——带增量索引的表示已经改动了
             // 对端编码器的动态表，跳过一次解码会让后续头块的索引整体错位
@@ -913,7 +935,23 @@ namespace AsynGyanis::Net
                        std::format("流 {} 的对端已 END_STREAM（half-closed (remote)），不能再发 HEADERS", streamId));
             return true;
         }
-        // 剩余情形是尾部头块（§8.1）：字段有意丢弃，但字节必须解码，否则动态表与对端编码器错位
+        // 尾部头块必须带 END_STREAM：RFC 9113 §7.1 说得很直白——「trailer fields comprise a sequence
+        // starting with a HEADERS frame, followed by zero or more CONTINUATION frames, where the
+        // HEADERS frame bears an END_STREAM flag」，紧接着「An endpoint that receives a HEADERS frame
+        // without the END_STREAM flag set after receiving the HEADERS frame that opens a request …
+        // MUST treat the corresponding request or response as malformed」，而畸形报文按 §8.1.1 是流错误
+        // PROTOCOL_ERROR。不判的话这条流只会一直等一个再也不会来的收尾。
+        if (!payload.endStream)
+        {
+            failStream(*stream, Http2ErrorCode::ProtocolError,
+                       std::format("流 {} 的第二个 HEADERS 未带 END_STREAM：尾部头块必须同时终结这条流"
+                                   "（RFC 9113 §7.1，判为畸形报文）",
+                                   streamId));
+            // 字节照样要解码：动态表是连接级状态，跳过这一块会让后续头块的索引整体错位
+            return beginHeaderBlock(streamId, HeaderBlockPurpose::Discard, payload.endStream, payload.headerBlockFragment,
+                                    payload.endHeaders);
+        }
+        // 收尾齐了才是合法的尾部头块（§8.1）：字段有意丢弃，但字节必须解码，否则动态表与对端编码器错位
         return beginHeaderBlock(streamId, HeaderBlockPurpose::Trailers, payload.endStream, payload.headerBlockFragment,
                                 payload.endHeaders);
     }
@@ -968,8 +1006,9 @@ namespace AsynGyanis::Net
             // 已终止的流：RST_STREAM 按 §5.1「closed」段必须忽略（对端可能还没看到终止它的那一帧）
             return true;
         }
-        // 对端主动取消（§5.4.2）：终止该流，队列里没发出去的正文一并丢掉
-        terminateStream(*stream, true);
+        // 对端主动取消（§5.4.2）：终止该流，队列里没发出去的正文一并丢掉。终止方式要按方向记：
+        // 「本端发过 RST」之后的帧一律忽略，「收到对端 RST」之后的帧则要按流错误回敬（§5.1「closed」段）
+        terminateStream(*stream, StreamTermination::ResetByPeer);
         return true;
     }
 
@@ -1729,7 +1768,7 @@ namespace AsynGyanis::Net
         }
         if (stream.state == Http2StreamState::HalfClosedLocal)
         {
-            terminateStream(stream, false);
+            terminateStream(stream, StreamTermination::Completed);
         }
     }
 
@@ -1742,11 +1781,11 @@ namespace AsynGyanis::Net
         }
         if (stream.state == Http2StreamState::HalfClosedRemote)
         {
-            terminateStream(stream, false);
+            terminateStream(stream, StreamTermination::Completed);
         }
     }
 
-    void Http2Connection::terminateStream(StreamRecord &stream, const bool wasTerminatedByReset)
+    void Http2Connection::terminateStream(StreamRecord &stream, const StreamTermination termination)
     {
         if (stream.state == Http2StreamState::Closed)
         {
@@ -1754,7 +1793,7 @@ namespace AsynGyanis::Net
             return;
         }
         stream.state = Http2StreamState::Closed;
-        stream.wasTerminatedByReset = wasTerminatedByReset;
+        stream.termination = termination;
         // 终止之后本端不再发正文：队列里没出去的数据就此丢掉（对端已经或将要按 RST/END_STREAM 看待它）
         stream.pendingData.clear();
         stream.pendingDataOffset = 0;
@@ -1794,22 +1833,42 @@ namespace AsynGyanis::Net
         stream.streamId = streamId;
         stream.state = Http2StreamState::Closed;
         // 本端 RST 掉的流：其上的在途帧一律忽略，而不是再回一次 RST_STREAM
-        stream.wasTerminatedByReset = true;
+        stream.termination = StreamTermination::ResetByLocal;
         m_streams[streamId] = std::move(stream);
         rememberTerminatedStream(streamId);
         m_lastStreamErrorMessage = std::move(reason);
     }
 
-    bool Http2Connection::isIgnorableFrameOnTerminatedStream(const StreamRecord &stream, const Http2FrameType frameType)
+    Http2Connection::TerminatedStreamFrameVerdict Http2Connection::judgeFrameOnTerminatedStream(
+            StreamRecord &stream, const Http2FrameType frameType)
     {
-        // RST_STREAM 终止的流：对端可能还没看到那一帧，其上的在途帧一律忽略（回敬 RST 只会变成风暴）
-        if (stream.wasTerminatedByReset)
+        // PRIORITY 在任意状态的流上都被允许（§5.3），永不判错
+        if (frameType == Http2FrameType::Priority)
         {
-            return true;
+            return TerminatedStreamFrameVerdict::Ignore;
         }
-        // 正常终止（双向 END_STREAM）的流：§5.1「closed」段明确要求忽略 WINDOW_UPDATE / RST_STREAM / PRIORITY
-        return frameType == Http2FrameType::WindowUpdate || frameType == Http2FrameType::RstStream ||
-               frameType == Http2FrameType::Priority;
+        // WINDOW_UPDATE 与 RST_STREAM 是 §5.1「closed」段点名要忽略的两类：对端可能还没看到终止它的那一帧。
+        // RST_STREAM 另有一条独立禁令——§5.4.2「To avoid looping, an endpoint MUST NOT send a RST_STREAM
+        // in response to a RST_STREAM frame」，所以它连「回敬」这一档都不参与
+        if (frameType == Http2FrameType::WindowUpdate || frameType == Http2FrameType::RstStream)
+        {
+            return TerminatedStreamFrameVerdict::Ignore;
+        }
+        // 本端复位掉的流：对端撤不回来的在途帧一律忽略（回敬只会变成风暴）
+        if (stream.termination == StreamTermination::ResetByLocal)
+        {
+            return TerminatedStreamFrameVerdict::Ignore;
+        }
+        // 对端复位之后的 DATA / HEADERS：TCP 保证它们排在那枚 RST_STREAM 之后，属明知故犯，§5.1 要求按
+        // 流错误 STREAM_CLOSED 处理。回敬一次就把终止方式改记成「本端复位」，其后的同类帧转为忽略——
+        // §5.4.2 的「Normally SHOULD NOT send more than one RST_STREAM for any stream」要的正是只回一次
+        if (stream.termination == StreamTermination::ResetByPeer)
+        {
+            stream.termination = StreamTermination::ResetByLocal;
+            return TerminatedStreamFrameVerdict::ResetStream;
+        }
+        // 正常收尾（双向 END_STREAM）的流上再来 DATA / HEADERS：§5.1「closed」段第二句判连接错误
+        return TerminatedStreamFrameVerdict::FailConnection;
     }
 
     bool Http2Connection::acceptPeerStreamIdParity(const std::uint32_t streamId, std::string *const errorText)
@@ -2050,7 +2109,7 @@ namespace AsynGyanis::Net
     {
         // 流错误只终止这一条流：连接继续，对端从 RST_STREAM 的错误码看出原因（§5.4.2）
         appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = errorCode}, stream.streamId));
-        terminateStream(stream, true);
+        terminateStream(stream, StreamTermination::ResetByLocal);
         m_lastStreamErrorMessage = std::move(reason);
     }
 } // namespace AsynGyanis::Net

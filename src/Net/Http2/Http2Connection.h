@@ -485,13 +485,36 @@ namespace AsynGyanis::Net
 
     private:
         /**
+         * @brief 一条流被终止的方式：之后的帧落在它上面时，判「忽略」还是「判错」全看这一个字
+         * @details RFC 7540 §5.1「closed」段把两种终止分得很清：**收到**对端的 RST_STREAM 之后再来的帧
+         *          按流错误 STREAM_CLOSED 处理；**发出** RST_STREAM 之后再来的帧则 MUST ignore（那些帧
+         *          撤不回来）。两者共用一个布尔分不开，故按方向摊成三个取值。
+         */
+        enum class StreamTermination
+        {
+            Completed,     ///< 双向 END_STREAM 正常收尾
+            ResetByPeer,   ///< 对端发来 RST_STREAM，本端只是接受了这次取消
+            ResetByLocal,  ///< 本端发出 RST_STREAM（拒新流、流错误、请对端别再发正文）
+        };
+
+        /**
+         * @brief 落在已终止流上的一帧该怎样处置
+         */
+        enum class TerminatedStreamFrameVerdict
+        {
+            Ignore,          ///< 什么也不回：撤不回来的在途帧，或对端还没看到本端的终止帧
+            ResetStream,     ///< 按流错误 STREAM_CLOSED 回敬一枚 RST_STREAM（只回一次）
+            FailConnection,  ///< 按连接错误 STREAM_CLOSED 收尾整条连接
+        };
+
+        /**
          * @brief 账本里的一条流：含已终止的流，用于区分「忽略」与「判错」
          */
         struct StreamRecord
         {
             std::uint32_t streamId{0};                                        ///< 流号
             Http2StreamState state{Http2StreamState::Idle};                   ///< 当前状态
-            bool wasTerminatedByReset{false};                                 ///< 终止方式：true 表示 RST_STREAM（任一端），false 表示双向 END_STREAM
+            StreamTermination termination{StreamTermination::Completed};       ///< 终止方式（未终止时无人读它）
             std::int64_t sendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端可发送的流级窗口，可为负（§6.9.2 要求允许并等 WINDOW_UPDATE 救回来）
             std::string pendingData;                                          ///< 窗口不足时排队的正文
             /// 已交给对端的前缀长度（游标语义）：出帧后只推进游标，不整段搬移缓冲；
@@ -655,9 +678,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 把流置为 Closed 并记进终止窗口（同一流号之后的帧据此判「忽略」还是「判错」）
          * @param stream 待终止的流
-         * @param wasTerminatedByReset true 表示由 RST_STREAM 终止（任一端），false 表示双向 END_STREAM
+         * @param termination 终止方式：正常收尾、被对端复位、被本端复位——三者在「之后又收到帧」时的
+         *        处置各不相同（§5.1），故记方向而不只记「是不是 RST_STREAM」
          */
-        void terminateStream(StreamRecord &stream, bool wasTerminatedByReset);
+        void terminateStream(StreamRecord &stream, StreamTermination termination);
 
         /**
          * @brief 把一条已终止的流号记进终止窗口，超出上限时挤掉最旧的记录
@@ -673,12 +697,16 @@ namespace AsynGyanis::Net
         void refuseNewStream(std::uint32_t streamId, std::string reason);
 
         /**
-         * @brief 判一条已终止流上的帧该忽略还是该判错
-         * @param stream 已终止的流记录
+         * @brief 判一条已终止流上的帧该忽略、该回敬流错误，还是该判连接错误
+         * @details 三条判据都出自 RFC 7540 §5.1「closed」段，区别只在终止方式（见 StreamTermination）。
+         *          回敬只发生一次：本端一旦发出 RST_STREAM，这条流的终止方式就转成本端复位，其后的帧
+         *          一律忽略——§5.4.2 的「Normally SHOULD NOT send more than one RST_STREAM」要的正是这样。
+         * @param stream 已终止的流记录（就地可把 ResetByPeer 改成 ResetByLocal）
          * @param frameType 落在它上面的帧类型
-         * @return true 忽略本帧；false 按连接错误 STREAM_CLOSED 收场
+         * @return TerminatedStreamFrameVerdict 本帧的处置
          */
-        [[nodiscard]] static bool isIgnorableFrameOnTerminatedStream(const StreamRecord &stream, Http2FrameType frameType);
+        [[nodiscard]] static TerminatedStreamFrameVerdict judgeFrameOnTerminatedStream(StreamRecord &stream,
+                                                                                       Http2FrameType frameType);
 
         /**
          * @brief 校验流号奇偶：本端不推送，偶数流号只可能属于服务端的对端，收到即意外流号
