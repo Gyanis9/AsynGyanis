@@ -1100,7 +1100,9 @@ namespace AsynGyanis::Net
         }
         if (!increaseStreamSendWindow(*stream, payload.windowSizeIncrement))
         {
-            return false;
+            // 溢出已按 §6.9.1 在这条流上了结（RST_STREAM FLOW_CONTROL_ERROR）：连接要继续跑，
+            // 所以这里返回 true 而不是把整条连接的解码循环打断
+            return true;
         }
         pumpSendQueue(*stream);
         return true;
@@ -1842,9 +1844,12 @@ namespace AsynGyanis::Net
         if (stream.sendWindowByteCount + static_cast<std::int64_t>(increment) >
             static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
         {
-            fail(Http2ErrorCode::FlowControlError,
-                 std::format("流 {} 的发送窗口加上 WINDOW_UPDATE 的增量 {} 会超过上限 2^31-1（RFC 7540 §6.9.1）：本端无法为这么大的窗口记账",
-                             stream.streamId, increment));
+            // §6.9.1 原文：「For streams, the sender sends a RST_STREAM with an error code of
+            // FLOW_CONTROL_ERROR; for the connection, a GOAWAY frame ... is sent.」——流级溢出只结这条流，
+            // 打掉整条连接会把同连接上别的在途流一起带走（一个对端就能做到的可用性缺口）
+            failStream(stream, Http2ErrorCode::FlowControlError,
+                       std::format("流 {} 的发送窗口加上 WINDOW_UPDATE 的增量 {} 会超过上限 2^31-1（RFC 7540 §6.9.1）：本端无法为这么大的窗口记账",
+                                   stream.streamId, increment));
             return false;
         }
         stream.sendWindowByteCount += static_cast<std::int64_t>(increment);

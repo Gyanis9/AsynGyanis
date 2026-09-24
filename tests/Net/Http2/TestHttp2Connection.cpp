@@ -1329,7 +1329,14 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：窗口增益导致窗口超过 2^31-1 时判 FLOW_CONTROL_ERROR（§6.9.1）
+     * @brief 钉住：窗口增益导致窗口超过 2^31-1 时按 §6.9.1 分「流级 RST_STREAM / 连接级 GOAWAY」两种了结
+     * @details 旧断言把流级溢出也判成连接错误（GOAWAY + 连接失败），依据是 §6.9.1 的原文：
+     *          「If a sender receives a WINDOW_UPDATE that causes a flow-control window to exceed this
+     *          maximum, it MUST terminate either the stream or the connection, as appropriate. For
+     *          streams, the sender sends a RST_STREAM with an error code of FLOW_CONTROL_ERROR; for the
+     *          connection, a GOAWAY frame with an error code of FLOW_CONTROL_ERROR is sent.」
+     *          按旧行为，一个对端只要对某条流发一次越界的 WINDOW_UPDATE，就能带走整条连接上所有在途流。
+     *          h2spec 的 6.9.1.3 判的就是这个（Expected: RST_STREAM(FLOW_CONTROL_ERROR)）。
      */
     TEST(Http2Connection, RejectsWindowUpdateThatOverflowsTheWindow)
     {
@@ -1341,14 +1348,22 @@ namespace AsynGyanis::Net
         EXPECT_EQ(connectionLevel.errorCode(), Http2ErrorCode::FlowControlError);
         EXPECT_NE(connectionLevel.errorMessage().find("连接级发送窗口"), std::string::npos) << connectionLevel.errorMessage();
 
-        // 流级窗口溢出：流窗口初值 65535，同样加上 2^31-1 就越界
+        // 流级窗口溢出：流窗口初值 65535，同样加上 2^31-1 就越界——但只该结这条流
         Http2Connection streamLevel;
         completeHandshake(streamLevel);
         ASSERT_EQ(feed(streamLevel, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
-        EXPECT_EQ(feed(streamLevel, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, maximumIncrement)), Http2ConnectionFeedStatus::Failed);
-        EXPECT_EQ(streamLevel.errorCode(), Http2ErrorCode::FlowControlError);
-        EXPECT_EQ(takeGoAwayErrorCode(streamLevel.takeOutgoingBytes()), Http2ErrorCode::FlowControlError);
+        const Http2ConnectionFeedStatus overflowStatus = feed(streamLevel, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, maximumIncrement));
+        EXPECT_EQ(overflowStatus, Http2ConnectionFeedStatus::NeedMore) << "流级溢出不该让连接进入失败态（失败只结这条流）";
+        EXPECT_NE(streamLevel.errorCode(), Http2ErrorCode::FlowControlError);
+
+        const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(streamLevel);
+        ASSERT_EQ(resetFrames.size(), 1U) << "流级窗口溢出应当只回一条 RST_STREAM";
+        EXPECT_EQ(resetFrames.front().header.streamId, 1U);
+        Http2RstStreamPayload reset;
+        std::string resetErrorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), reset, &resetErrorText)) << resetErrorText;
+        EXPECT_EQ(reset.errorCode, Http2ErrorCode::FlowControlError);
     }
 
     /**
@@ -1362,9 +1377,16 @@ namespace AsynGyanis::Net
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << "2^31-1 是合法窗口：" << connection.errorMessage();
 
-        // 再加 1 字节就越界：§6.9.1 要求按 FLOW_CONTROL_ERROR 处理
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(1U))), Http2ConnectionFeedStatus::Failed);
-        EXPECT_EQ(connection.errorCode(), Http2ErrorCode::FlowControlError);
+        // 再加 1 字节就越界：§6.9.1 对**流级**要求 RST_STREAM(FLOW_CONTROL_ERROR)，连接继续服务其它流
+        // （旧断言把它写成连接失败，与下面 RejectsWindowUpdateThatOverflowsTheWindow 一并更正）
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(1U))), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << "流级窗口越界只该结这条流：" << connection.errorMessage();
+        const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+        ASSERT_EQ(resetFrames.size(), 1U);
+        Http2RstStreamPayload reset;
+        std::string resetErrorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), reset, &resetErrorText)) << resetErrorText;
+        EXPECT_EQ(reset.errorCode, Http2ErrorCode::FlowControlError);
     }
 
     /**
