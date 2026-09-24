@@ -4,6 +4,10 @@
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 
+#include <string>
+#include <string_view>
+#include <system_error>
+
 namespace AsynGyanis::Core
 {
     IoWatcher::Awaiter::Awaiter(IoWatcher &watcher, const std::uint32_t event) noexcept :
@@ -75,8 +79,18 @@ namespace AsynGyanis::Core
         // 水平触发下这次关注会一直有效，直到本类显式改掩码（见 armEvents）
         if (!m_loop->epoll().addFileDescriptor(m_fileDescriptor, EPOLLIN, this))
         {
-            throw Base::SystemException("把文件描述符注册到 epoll 失败（该描述符可能已被另一个 "
-                                        "IoWatcher 注册，或不是有效的描述符）");
+            const std::string_view reason =
+                    "把文件描述符注册到事件后端失败（该描述符可能已被另一个 IoWatcher 注册、"
+                    "不是有效的描述符，或已关联到别的完成端口）";
+#if ASYN_PLATFORM_WIN32
+            // Windows 上这一句拒绝来自 kernel32（CreateIoCompletionPort），码在 GetLastError 空间里，
+            // 必须按该空间显式给出：走默认的 errno 重载会报成「[0] success」，读日志的人据此以为没失败过。
+            // 跨进程移交来的监听套接字撞的正是这条——句柄只能关联一个完成端口，而关联不可解除
+            throw Base::SystemException(std::string(reason),
+                                        std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+#else
+            throw Base::SystemException(std::string(reason));
+#endif
         }
         m_isRegistered = true;
         m_armedEvents  = EPOLLIN;

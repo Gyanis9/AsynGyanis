@@ -17,6 +17,7 @@
 #include "Core/EventLoop/IoWatcher.h"
 
 #include "Base/Exception/LogicException.h"
+#include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -27,6 +28,7 @@
 
 #include <coroutine>
 #include <memory>
+#include <system_error>
 
 namespace AsynGyanis::Core
 {
@@ -191,6 +193,47 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(rightLocal);
         Platform::FileDescriptor::close(rightPeer);
     }
+
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 已经挂在别的完成端口上的描述符换一条循环注册不上，而且报错要带得出原因
+     * @details 句柄与完成端口的关联是**内核对象级**且不可解除的：这正是「把监听套接字交给另一个进程」
+     *          在 Windows 上走不通的那条硬限制——新一代的事件循环接不上那份句柄（POSIX 上同一个描述符
+     *          能挂在两个 epoll 实例下，因此这条只在 Windows 侧断言）。
+     *          断言落在错误码与它的空间上：这一句拒绝来自 kernel32，码在 GetLastError 空间里；抛出方
+     *          若按默认的 errno 通道取码，日志上就是「[0] success」——看着像根本没失败过，白查一轮。
+     */
+    TEST(IoWatcher, DescriptorOnAnotherCompletionPortThrowsWithWin32Reason)
+    {
+        EventLoop firstLoop;
+        EventLoop secondLoop;
+        int       local = -1;
+        int       peer  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(local, peer));
+
+        bool            isThrown = false;
+        std::error_code captured;
+        {
+            const IoWatcher firstWatcher(firstLoop, local);
+            try
+            {
+                const IoWatcher secondWatcher(secondLoop, local);
+            }
+            catch (const Base::SystemException &error)
+            {
+                isThrown = true;
+                captured = error.errorCode();
+            }
+        }
+        Platform::FileDescriptor::close(local);
+        Platform::FileDescriptor::close(peer);
+
+        EXPECT_TRUE(isThrown) << "换一条循环居然注册上了：完成端口的关联不是句柄级的，示例与文档的结论都要改";
+        EXPECT_NE(captured.value(), 0) << "注册被拒却没有带出原因码";
+        EXPECT_TRUE(captured.category() == std::system_category())
+                << "码取自 GetLastError 却按 errno 空间解释：报出来的描述与本次失败无关";
+    }
+#endif
 
     TEST(IoWatcher, InvalidDescriptorYieldsUnusableWatcher)
     {

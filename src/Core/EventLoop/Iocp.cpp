@@ -232,7 +232,10 @@ namespace AsynGyanis::Core
     {
         if (m_sockets.contains(fileDescriptor))
         {
-            // 调用方多半是把两个注册对象套在了同一个描述符上
+            // 调用方多半是把两个注册对象套在了同一个描述符上。
+            // 按 Win32 的惯例把原因留在 GetLastError 里（系统调用失败时也是这么做的）：本方法只回
+            // 一个 bool，抛出方读的就是这个码——不写的话它只能报成「[0] success」，看着像没失败过
+            ::SetLastError(ERROR_ALREADY_EXISTS);
             return false;
         }
 
@@ -249,7 +252,9 @@ namespace AsynGyanis::Core
 
         if (::CreateIoCompletionPort(toHandle(state->socketHandle), m_iocp, reinterpret_cast<ULONG_PTR>(state), 0) == nullptr)
         {
-            // 描述符无效或已属于另一个完成端口
+            // 描述符无效或已属于另一个完成端口。失败原因由系统调用自己留在 GetLastError 里，抛出方
+            // 按 Win32 空间取用（见 IoWatcher 那条 throw）；不写进 errno——那是另一个错误空间，混着报
+            // 会给出与本次失败无关的描述（见 Base::SystemException::lastErrnoErrorCode 的注释）
             delete state;
             return false;
         }
